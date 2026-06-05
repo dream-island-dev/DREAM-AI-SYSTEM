@@ -1,1 +1,9 @@
 node_modules
+
+# סודות וסביבה מקומית — אסור שיעלו ל-GitHub
+.env
+.env.local
+.env.*.local
+
+# build
+/build
