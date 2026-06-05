@@ -1,19 +1,13 @@
 {
-  "name": "react",
+  "name": "dream-ai-system",
   "version": "1.0.0",
-  "description": "",
-  "keywords": [],
-  "main": "src/index.tsx",
+  "description": "Dream Island AI System",
+  "private": true,
+  "main": "src/index.js",
   "dependencies": {
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-scripts": "^5.0.0"
-  },
-  "devDependencies": {
-    "@types/react": "19.0.0",
-    "@types/react-dom": "19.0.0",
-    "loader-utils": "3.2.1",
-    "typescript": "5.7.2"
   },
   "scripts": {
     "start": "react-scripts start",
