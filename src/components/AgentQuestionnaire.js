@@ -1,210 +1,85 @@
 // src/components/AgentQuestionnaire.js
-// 7-step onboarding wizard that builds a personalised agent profile.
-// Works fully offline (localStorage). Swap buildSystemPrompt() for the
-// Supabase Edge Function call when ready for production.
+// Questionnaire based on the original Dream Island manager profiling form (Code.gs).
+// Fields: name, role, repetitive, questions, sources, tools, dream, tone, email, phone, notes.
 import { useState } from "react";
 import { buildDemoProfile } from "../data/demoAgentProfile";
 
-const DEPARTMENTS = ["קבלה", "ניקיון", "מסעדה", "תחזוקה", "ביטחון", "ספא", "כללי"];
-
-const QUESTIONS = [
-  {
-    id: "dept_overview",
-    title: "פעילות המחלקה",
-    question: "תאר את הפעילות היומיומית של מחלקתך:",
-    placeholder:
-      "לדוגמה: ניהול צ׳ק-אין/אאוט, מתן מענה לאורחים, שמירה על רמת שירות גבוהה...",
-    type: "textarea",
-    required: true,
-  },
-  {
-    id: "challenges",
-    title: "אתגרים עיקריים",
-    question: "מהם האתגרים הגדולים שאתה מתמודד איתם כמנהל?",
-    placeholder: "פרט 2-3 אתגרים מרכזיים:\n1. ...\n2. ...\n3. ...",
-    type: "textarea",
-    required: true,
-  },
-  {
-    id: "kpis",
-    title: "מדדי הצלחה (KPI)",
-    question: "אילו מדדים חשובים לך לעקוב עבור הצלחת המחלקה?",
-    placeholder:
-      "לדוגמה: שביעות רצון אורחים, זמן תגובה לקריאות, אחוז ביצוע צ׳קליסט יומי...",
-    type: "textarea",
-    required: false,
-  },
-  {
-    id: "communication_style",
-    title: "סגנון תקשורת",
-    question: "איזה סגנון תשובות אתה מעדיף מהסוכן?",
-    type: "radio",
-    required: true,
-    options: [
-      {
-        value: "formal",
-        label: "רשמי ומקצועי",
-        desc: "מדויק, ממוקד, ללא עיגולי פינות",
-      },
-      {
-        value: "friendly",
-        label: "חברותי ותומך",
-        desc: "חם, מעודד, פתוח לדיאלוג",
-      },
-      {
-        value: "concise",
-        label: "תמציתי וממוקד",
-        desc: "ישר לעניין, מינימום מילים",
-      },
-      {
-        value: "detailed",
-        label: "מפורט ומקיף",
-        desc: "הסברים נרחבים עם רקע ועיגונים",
-      },
-    ],
-  },
-  {
-    id: "sensitive_topics",
-    title: "נושאים רגישים",
-    question: "אילו נושאים דורשים את אישורך האישי לפני כל פעולה?",
-    placeholder:
-      "לדוגמה: שינוי מחיר חדרים, טיפול בלקוחות VIP, בעיות כוח אדם, חריגות תקציביות...",
-    type: "textarea",
-    required: false,
-  },
-  {
-    id: "agent_help_areas",
-    title: "תחומי עזרה עיקריים",
-    question: "במה הסוכן יוכל לסייע לך הכי הרבה?",
-    placeholder:
-      "לדוגמה: סיכומי משמרת, ניתוח נתונים, כתיבת דוחות, ניסוח מיילים, תזכורות...",
-    type: "textarea",
-    required: false,
-  },
-  {
-    id: "drive_url",
-    title: "Google Drive מחלקתי",
-    question: "קישור תיקיית Google Drive המחלקתית שלך (אופציונלי):",
-    placeholder: "https://drive.google.com/drive/folders/...",
-    type: "url",
-    required: false,
-  },
+const TONE_OPTIONS = [
+  { value: "professional", label: "מקצועי ורשמי", desc: "ענייני, מדויק, ללא עיגולי פינות" },
+  { value: "friendly",     label: "חברותי ותומך",  desc: "חם, מעודד, פתוח לדיאלוג" },
+  { value: "concise",      label: "תמציתי וממוקד", desc: "ישר לעניין, מינימום מילים" },
+  { value: "detailed",     label: "מפורט ומקיף",   desc: "הסברים נרחבים עם רקע ועיגונים" },
 ];
 
-const STYLE_MAP = {
-  formal: "רשמי, מקצועי ומדויק",
-  friendly: "חברותי, תומך ומעודד",
-  concise: "תמציתי, ממוקד ולעניין",
-  detailed: "מפורט ומקיף עם הסברים נרחבים",
+const TONE_LABEL = {
+  professional: "מקצועי ורשמי",
+  friendly:     "חברותי ותומך",
+  concise:      "תמציתי וממוקד",
+  detailed:     "מפורט ומקיף",
 };
 
-function buildSystemPrompt(managerName, department, r) {
+function buildSystemPrompt(f) {
   return `# זהות הסוכן
-אתה ${department}Bot — עוזר AI חכם ומסור של ${managerName}, מנהל/ת מחלקת ${department} במלון Dream Island.
-תפקידך לסייע בניהול היומיומי: ניתוח נתונים, זיהוי בעיות, הצעת פתרונות ויצירת תוצרים מדויקים.
+אתה עוזר AI אישי של ${f.name}, ${f.role} ב-Dream Island Resort.
+תפקידך לסייע בניהול היומיומי, לנתח מצבים ולהציע פתרונות מדויקים.
 
-# אחריות המחלקה
-${r.dept_overview || "—"}
+# תפקיד וסמכות
+${f.role}
 
-# אתגרים מרכזיים
-${r.challenges || "—"}
+# משימות חוזרות של המנהל
+${f.repetitive || "—"}
 
-# KPIs ומדדי הצלחה
-${r.kpis || "—"}
+# שאלות שחוזרות מהצוות
+${f.questions || "—"}
 
-# סגנון תקשורת
-${STYLE_MAP[r.communication_style] || "מקצועי ותמציתי"}
+# מקורות המידע שבהם המנהל משתמש
+${f.sources || "—"}
 
-# תחומי עזרה עיקריים
-${r.agent_help_areas || "—"}
+# כלים ומערכות רלוונטיים
+${f.tools || "—"}
 
-# נושאים הדורשים זהירות / אישור
-${r.sensitive_topics || "—"}
-${
-  r.drive_url
-    ? `\n# חומרים מחלקתיים\nגישה לתיקיית Google Drive: ${r.drive_url}`
-    : ""
-}
+# החזון / החלום של המנהל
+${f.dream || "—"}
+
+# סגנון מענה מועדף
+${TONE_LABEL[f.tone] || "מקצועי ורשמי"}
 
 # כללי עבודה
-1. ענה תמיד בעברית, בסגנון ${STYLE_MAP[r.communication_style] || "מקצועי"}.
-2. התמקד בצרכי מחלקת ${department} ב-Dream Island.
-3. הצג נתונים בצורה מובנית (כותרות, רשימות, טבלאות) כשרלוונטי.
-4. זכור תיקונים והעדפות שקיבלת ממשובים קודמים.
-5. אל תקבל החלטות בנושאים רגישים ללא אישור ${managerName}.`.trim();
+1. ענה תמיד בעברית בסגנון ${TONE_LABEL[f.tone] || "מקצועי"}.
+2. התמקד בצרכים הספציפיים של ${f.name} ב-Dream Island.
+3. כשמציע פעולה — ציין מי אחראי, מה הפעולה ומה לוח הזמנים.
+4. אם חסר מידע — שאל שאלה ממוקדת אחת.
+5. זכור תיקונים ממשובים קודמים ואל תחזור על טעויות.`.trim();
 }
 
 export default function AgentQuestionnaire({ user, onComplete }) {
-  const [step, setStep] = useState(0);
-  const [responses, setResponses] = useState({});
-  const [department, setDepartment] = useState(user?.department || "");
+  const [form, setForm] = useState({
+    name: user?.name || "",
+    role: "",
+    repetitive: "",
+    questions: "",
+    sources: "",
+    tools: "",
+    dream: "",
+    tone: "",
+    email: user?.email || "",
+    phone: "",
+    notes: "",
+  });
   const [generating, setGenerating] = useState(false);
-  const [error, setError] = useState("");
+  const [errors, setErrors] = useState({});
 
-  const current = QUESTIONS[step];
-  const isLast = step === QUESTIONS.length - 1;
-  const value = responses[current.id] ?? "";
-  const canContinue =
-    !current.required || (typeof value === "string" && value.trim().length > 0);
+  const set = (field) => (e) =>
+    setForm((f) => ({ ...f, [field]: e.target.value }));
 
-  const handleComplete = async () => {
-    setError("");
-    setGenerating(true);
-
-    try {
-      // Production: call Supabase Edge Function
-      // const EDGE_URL = `${process.env.REACT_APP_SUPABASE_URL}/functions/v1/generate-agent-profile`;
-      // const res = await fetch(EDGE_URL, { method: "POST", ... });
-      // const { agentProfile } = await res.json();
-
-      // Demo mode: build system prompt client-side
-      await new Promise((r) => setTimeout(r, 1200));
-
-      const dept = department || user?.department || "כללי";
-      const systemPrompt = buildSystemPrompt(user?.name ?? "המנהל", dept, responses);
-
-      const profile = {
-        id: `profile_${user?.id}_${Date.now()}`,
-        manager_id: user?.id,
-        department: dept,
-        display_name: `סוכן ${dept}`,
-        system_prompt: systemPrompt,
-        drive_folder_url: responses.drive_url || null,
-        personality_traits: {
-          communication_style: responses.communication_style || "formal",
-        },
-        is_active: true,
-        created_at: new Date().toISOString(),
-      };
-
-      localStorage.setItem(
-        `agent_profile_${user?.id}`,
-        JSON.stringify(profile)
-      );
-      localStorage.setItem(
-        `questionnaire_${user?.id}`,
-        JSON.stringify({
-          manager_id: user?.id,
-          department: dept,
-          responses,
-          drive_folder_url: responses.drive_url || null,
-          completed_at: new Date().toISOString(),
-          agent_profile_id: profile.id,
-        })
-      );
-
-      onComplete(profile);
-    } catch (e) {
-      setError("שגיאה ביצירת הפרופיל. נסה שוב.");
-    } finally {
-      setGenerating(false);
-    }
-  };
-
-  const next = () => {
-    if (!canContinue) return;
-    if (isLast) handleComplete();
-    else setStep((s) => s + 1);
+  const validate = () => {
+    const e = {};
+    if (!form.name.trim())       e.name = "שדה חובה";
+    if (!form.role.trim())       e.role = "שדה חובה";
+    if (!form.repetitive.trim()) e.repetitive = "שדה חובה";
+    if (!form.tone)              e.tone = "בחר סגנון";
+    setErrors(e);
+    return Object.keys(e).length === 0;
   };
 
   const loadDemo = () => {
@@ -213,339 +88,195 @@ export default function AgentQuestionnaire({ user, onComplete }) {
     onComplete(profile);
   };
 
+  const handleSubmit = async () => {
+    if (!validate()) return;
+    setGenerating(true);
+
+    await new Promise((r) => setTimeout(r, 1200));
+
+    const systemPrompt = buildSystemPrompt(form);
+    const profile = {
+      id: `profile_${user?.id}_${Date.now()}`,
+      manager_id: user?.id,
+      department: form.role,
+      display_name: `סוכן של ${form.name}`,
+      system_prompt: systemPrompt,
+      drive_folder_url: null,
+      personality_traits: { communication_style: form.tone },
+      is_active: true,
+      created_at: new Date().toISOString(),
+      _questionnaire: form,
+    };
+
+    localStorage.setItem(`agent_profile_${user?.id}`, JSON.stringify(profile));
+    setGenerating(false);
+    onComplete(profile);
+  };
+
   if (generating) {
     return (
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          minHeight: 440,
-          gap: 20,
-          textAlign: "center",
-        }}
-      >
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: 440, gap: 20, textAlign: "center" }}>
         <div style={{ fontSize: 52 }}>🤖</div>
-        <div
-          style={{
-            fontSize: 20,
-            fontWeight: 800,
-            color: "var(--black)",
-            fontFamily: "Playfair Display, serif",
-          }}
-        >
+        <div style={{ fontSize: 20, fontWeight: 800, color: "var(--black)", fontFamily: "Playfair Display, serif" }}>
           בונה את הסוכן שלך...
         </div>
         <div style={{ fontSize: 14, color: "var(--text-muted)", maxWidth: 340 }}>
-          מנתח את הנתונים ויוצר פרופיל סוכן מותאם אישית למחלקה שלך
+          מנתח את הנתונים ויוצר פרופיל סוכן מותאם אישית
         </div>
         <div className="progress-bar" style={{ width: 240, marginTop: 8 }}>
-          <div
-            className="progress-fill"
-            style={{ width: "100%", transition: "none" }}
-          />
+          <div className="progress-fill" style={{ width: "100%", transition: "none" }} />
         </div>
       </div>
     );
   }
 
+  const field = (label, key, placeholder, required, textarea) => (
+    <div className="form-field" key={key}>
+      <label>
+        {label}
+        {required && <span style={{ color: "#C0392B", marginRight: 4 }}>*</span>}
+      </label>
+      {textarea ? (
+        <textarea
+          rows={3}
+          placeholder={placeholder}
+          value={form[key]}
+          onChange={set(key)}
+          style={{ resize: "vertical" }}
+        />
+      ) : (
+        <input
+          type="text"
+          placeholder={placeholder}
+          value={form[key]}
+          onChange={set(key)}
+        />
+      )}
+      {errors[key] && (
+        <div style={{ color: "#C0392B", fontSize: 11, marginTop: 4 }}>{errors[key]}</div>
+      )}
+    </div>
+  );
+
   return (
     <div>
-      {/* Demo shortcut banner */}
-      <div
-        style={{
-          background: "linear-gradient(135deg, rgba(201,169,110,0.12) 0%, rgba(201,169,110,0.04) 100%)",
-          border: "1px solid rgba(201,169,110,0.35)",
-          borderRadius: 14,
-          padding: "18px 22px",
-          marginBottom: 24,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 16,
-        }}
-      >
+      {/* Demo shortcut */}
+      <div style={{
+        background: "linear-gradient(135deg, rgba(201,169,110,0.12), rgba(201,169,110,0.04))",
+        border: "1px solid rgba(201,169,110,0.35)",
+        borderRadius: 14, padding: "18px 22px", marginBottom: 24,
+        display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16,
+      }}>
         <div>
           <div style={{ fontWeight: 800, fontSize: 15, color: "var(--black)", marginBottom: 4 }}>
             🎯 רוצה לראות סוכן מוכן מיד?
           </div>
           <div style={{ fontSize: 13, color: "var(--text-muted)", lineHeight: 1.5 }}>
-            טען פרופיל דמו מלא — DreamBot עם ידע מעמיק על כל 6 מחלקות המלון,
-            פרוטוקולים, KPIs ואופי מותאם.
+            טען פרופיל דמו מלא — DreamBot עם ידע על כל 6 מחלקות המלון
           </div>
         </div>
-        <button
-          className="btn btn-primary"
-          onClick={loadDemo}
-          style={{ whiteSpace: "nowrap", minWidth: 140, flexShrink: 0 }}
-        >
+        <button className="btn btn-primary" onClick={loadDemo} style={{ whiteSpace: "nowrap", minWidth: 140, flexShrink: 0 }}>
           ⚡ טען דמו מיידי
         </button>
       </div>
 
-      {/* Divider */}
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 24 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 28 }}>
         <div style={{ flex: 1, height: 1, background: "var(--border)" }} />
-        <span style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 600 }}>
-          או מלא את השאלון בעצמך
-        </span>
+        <span style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 600 }}>או מלא את השאלון</span>
         <div style={{ flex: 1, height: 1, background: "var(--border)" }} />
       </div>
 
       {/* Header */}
-      <div style={{ marginBottom: 28 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 12 }}>
-          <span style={{ fontSize: 32 }}>🤖</span>
+      <div style={{ marginBottom: 24 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
+          <span style={{ fontSize: 28 }}>🤖</span>
           <div>
-            <div
-              style={{
-                fontSize: 20,
-                fontWeight: 800,
-                color: "var(--black)",
-                fontFamily: "Playfair Display, serif",
-              }}
-            >
-              הגדרת הסוכן האישי שלך
+            <div style={{ fontSize: 18, fontWeight: 800, color: "var(--black)", fontFamily: "Playfair Display, serif" }}>
+              אפיון הסוכן האישי שלך
             </div>
-            <div style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 2 }}>
-              ענה על השאלות כדי שהסוכן יתאים את עצמו בדיוק לצרכי המחלקה שלך
+            <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
+              מלא את הפרטים כדי שהסוכן ילמד לעבוד בדיוק לפי הצרכים שלך
             </div>
           </div>
-        </div>
-
-        {/* Department selector — shown on first step only */}
-        {step === 0 && (
-          <div className="form-field" style={{ marginBottom: 20 }}>
-            <label>מחלקה</label>
-            <select
-              value={department}
-              onChange={(e) => setDepartment(e.target.value)}
-              style={{
-                width: "100%",
-                padding: "12px 14px",
-                border: "1.5px solid var(--border)",
-                borderRadius: 8,
-                fontFamily: "Heebo, sans-serif",
-                fontSize: 14,
-                color: "var(--text-main)",
-                outline: "none",
-                background: "var(--card-bg)",
-              }}
-            >
-              <option value="">בחר מחלקה...</option>
-              {DEPARTMENTS.map((d) => (
-                <option key={d}>{d}</option>
-              ))}
-            </select>
-          </div>
-        )}
-
-        {/* Step progress bar */}
-        <div style={{ display: "flex", gap: 4 }}>
-          {QUESTIONS.map((_, i) => (
-            <div
-              key={i}
-              style={{
-                flex: 1,
-                height: 4,
-                borderRadius: 4,
-                background: i <= step ? "var(--gold)" : "var(--border)",
-                transition: "background 0.3s",
-              }}
-            />
-          ))}
-        </div>
-        <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>
-          שאלה {step + 1} מתוך {QUESTIONS.length}
         </div>
       </div>
 
-      {/* Question card */}
       <div className="card" style={{ marginBottom: 20 }}>
         <div style={{ padding: 28 }}>
-          <div
-            style={{
-              fontSize: 11,
-              fontWeight: 700,
-              color: "var(--gold-dark)",
-              textTransform: "uppercase",
-              letterSpacing: 1,
-              marginBottom: 8,
-            }}
-          >
-            {current.title}
+
+          {/* Section: פרטים אישיים */}
+          <div style={{ fontSize: 11, fontWeight: 700, color: "var(--gold-dark)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 16 }}>
+            פרטים אישיים
           </div>
-          <div
-            style={{
-              fontSize: 16,
-              fontWeight: 700,
-              color: "var(--black)",
-              marginBottom: 20,
-              lineHeight: 1.5,
-            }}
-          >
-            {current.question}
+          <div className="form-grid">
+            {field("שם מלא", "name", "לדוגמה: שירה לוי", true, false)}
+            {field("תפקיד", "role", "לדוגמה: מנהלת קבלה", true, false)}
           </div>
-
-          {current.type === "textarea" && (
-            <textarea
-              rows={5}
-              placeholder={current.placeholder}
-              value={value}
-              onChange={(e) =>
-                setResponses((r) => ({ ...r, [current.id]: e.target.value }))
-              }
-              style={{
-                width: "100%",
-                padding: "14px 16px",
-                border: "1.5px solid var(--border)",
-                borderRadius: 10,
-                fontFamily: "Heebo, sans-serif",
-                fontSize: 14,
-                color: "var(--text-main)",
-                outline: "none",
-                resize: "vertical",
-                minHeight: 120,
-                background: "var(--card-bg)",
-              }}
-              onFocus={(e) =>
-                (e.target.style.borderColor = "var(--gold)")
-              }
-              onBlur={(e) =>
-                (e.target.style.borderColor = "var(--border)")
-              }
-            />
-          )}
-
-          {current.type === "url" && (
-            <input
-              type="url"
-              placeholder={current.placeholder}
-              value={value}
-              onChange={(e) =>
-                setResponses((r) => ({ ...r, [current.id]: e.target.value }))
-              }
-              style={{
-                width: "100%",
-                padding: "14px 16px",
-                border: "1.5px solid var(--border)",
-                borderRadius: 10,
-                fontFamily: "Heebo, sans-serif",
-                fontSize: 14,
-                color: "var(--text-main)",
-                outline: "none",
-                direction: "ltr",
-                textAlign: "left",
-                background: "var(--card-bg)",
-              }}
-            />
-          )}
-
-          {current.type === "radio" && (
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "1fr 1fr",
-                gap: 12,
-              }}
-            >
-              {current.options.map((opt) => (
-                <div
-                  key={opt.value}
-                  onClick={() =>
-                    setResponses((r) => ({
-                      ...r,
-                      [current.id]: opt.value,
-                    }))
-                  }
-                  style={{
-                    padding: "14px 18px",
-                    borderRadius: 12,
-                    cursor: "pointer",
-                    border: `2px solid ${
-                      value === opt.value
-                        ? "var(--gold)"
-                        : "var(--border)"
-                    }`,
-                    background:
-                      value === opt.value
-                        ? "rgba(201,169,110,0.08)"
-                        : "var(--card-bg)",
-                    transition: "all 0.2s",
-                  }}
-                >
-                  <div
-                    style={{
-                      fontWeight: 700,
-                      fontSize: 14,
-                      color: "var(--black)",
-                      marginBottom: 4,
-                    }}
-                  >
-                    {value === opt.value ? "✓ " : ""}
-                    {opt.label}
-                  </div>
-                  <div
-                    style={{ fontSize: 12, color: "var(--text-muted)" }}
-                  >
-                    {opt.desc}
-                  </div>
-                </div>
-              ))}
+          <div className="form-grid">
+            <div className="form-field">
+              <label>אימייל</label>
+              <input type="email" placeholder="manager@dreamisland.co.il" value={form.email} onChange={set("email")} dir="ltr" />
             </div>
+            <div className="form-field">
+              <label>טלפון</label>
+              <input type="tel" placeholder="05X-XXXXXXX" value={form.phone} onChange={set("phone")} dir="ltr" />
+            </div>
+          </div>
+
+          <div style={{ height: 1, background: "var(--border)", margin: "20px 0" }} />
+
+          {/* Section: עבודה יומיומית */}
+          <div style={{ fontSize: 11, fontWeight: 700, color: "var(--gold-dark)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 16 }}>
+            עבודה יומיומית
+          </div>
+          {field("משימות חוזרות", "repetitive", "אילו משימות אתה מבצע כמעט כל יום?\nלדוגמה: סיכום משמרת, בדיקת צ'קליסט, תיאום עם מחלקות...", true, true)}
+          {field("שאלות שחוזרות מהצוות", "questions", "אילו שאלות הצוות שואל אותך לעתים קרובות?\nלדוגמה: מה לוח השמרות? מה הפרוטוקול ל...?", false, true)}
+          {field("מקורות מידע", "sources", "מאיפה אתה מקבל מידע? (ווטסאפ, אקסל, מערכות, דוחות...)", false, true)}
+          {field("כלים ומערכות", "tools", "אילו כלים אתה משתמש בהם? (Gmail, WhatsApp, Google Sheets...)", false, true)}
+
+          <div style={{ height: 1, background: "var(--border)", margin: "20px 0" }} />
+
+          {/* Section: חזון */}
+          <div style={{ fontSize: 11, fontWeight: 700, color: "var(--gold-dark)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 16 }}>
+            חזון ומטרות
+          </div>
+          {field("החלום שלך", "dream", "מה היית רוצה שהסוכן יעזור לך להשיג? מה הייתה הצלחה עבורך?", false, true)}
+          {field("הערות נוספות", "notes", "כל מידע נוסף שיעזור לסוכן להכיר אותך טוב יותר...", false, true)}
+
+          <div style={{ height: 1, background: "var(--border)", margin: "20px 0" }} />
+
+          {/* Section: סגנון */}
+          <div style={{ fontSize: 11, fontWeight: 700, color: "var(--gold-dark)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 16 }}>
+            סגנון מענה מועדף <span style={{ color: "#C0392B" }}>*</span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            {TONE_OPTIONS.map((opt) => (
+              <div
+                key={opt.value}
+                onClick={() => setForm((f) => ({ ...f, tone: opt.value }))}
+                style={{
+                  padding: "14px 18px", borderRadius: 12, cursor: "pointer",
+                  border: `2px solid ${form.tone === opt.value ? "var(--gold)" : "var(--border)"}`,
+                  background: form.tone === opt.value ? "rgba(201,169,110,0.08)" : "var(--card-bg)",
+                  transition: "all 0.2s",
+                }}
+              >
+                <div style={{ fontWeight: 700, fontSize: 14, color: "var(--black)", marginBottom: 4 }}>
+                  {form.tone === opt.value ? "✓ " : ""}{opt.label}
+                </div>
+                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{opt.desc}</div>
+              </div>
+            ))}
+          </div>
+          {errors.tone && (
+            <div style={{ color: "#C0392B", fontSize: 11, marginTop: 8 }}>{errors.tone}</div>
           )}
         </div>
       </div>
 
-      {error && (
-        <div
-          style={{
-            color: "#c0392b",
-            fontSize: 13,
-            textAlign: "center",
-            marginBottom: 12,
-          }}
-        >
-          {error}
-        </div>
-      )}
-
-      {/* Navigation */}
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-        }}
-      >
-        <button
-          className="btn btn-ghost"
-          onClick={() => setStep((s) => Math.max(0, s - 1))}
-          disabled={step === 0}
-          style={{ opacity: step === 0 ? 0.35 : 1 }}
-        >
-          ← הקודם
-        </button>
-        {!current.required && !isLast && (
-          <button
-            className="btn btn-ghost btn-sm"
-            onClick={() => setStep((s) => s + 1)}
-            style={{ fontSize: 12, color: "var(--text-muted)" }}
-          >
-            דלג →
-          </button>
-        )}
-        <button
-          className="btn btn-primary"
-          onClick={next}
-          disabled={!canContinue && current.required}
-          style={{
-            opacity: canContinue || !current.required ? 1 : 0.45,
-            minWidth: 150,
-          }}
-        >
-          {isLast ? "🚀 צור סוכן!" : "הבא →"}
+      <div style={{ display: "flex", justifyContent: "flex-end" }}>
+        <button className="btn btn-primary" onClick={handleSubmit} style={{ minWidth: 180, fontSize: 15 }}>
+          🚀 צור את הסוכן שלי
         </button>
       </div>
     </div>
