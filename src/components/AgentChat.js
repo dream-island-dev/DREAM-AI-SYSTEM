@@ -5,6 +5,7 @@
 // examples on the next request so the agent never repeats the same mistake.
 import { useState, useRef, useEffect, useCallback } from "react";
 import { getLocalCorrections, appendLocalLearningLog, saveLearningLog } from "../supabaseClient";
+import { DEMO_OPENING_SUGGESTIONS } from "../data/demoAgentProfile";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const SUPABASE_URL = process.env.REACT_APP_SUPABASE_URL;
@@ -252,17 +253,62 @@ export default function AgentChat({ user, agentProfile, onResetProfile }) {
                 alignItems: "center",
                 justifyContent: "center",
                 height: "100%",
-                gap: 12,
-                color: C.muted,
+                gap: 16,
+                padding: "24px 16px",
               }}
             >
-              <span style={{ fontSize: 40 }}>💬</span>
-              <div style={{ fontSize: 15, fontWeight: 600 }}>
-                שלום {user?.name}!
+              <span style={{ fontSize: 44 }}>🤖</span>
+              <div style={{ textAlign: "center" }}>
+                <div style={{ fontSize: 16, fontWeight: 800, color: C.black, marginBottom: 4 }}>
+                  שלום {user?.name}!
+                </div>
+                <div style={{ fontSize: 13, color: C.muted, maxWidth: 340 }}>
+                  אני {agentProfile.display_name}. מוכן לעבוד.
+                  {agentProfile.is_demo && (
+                    <span style={{ display: "block", marginTop: 4, color: "var(--gold-dark)", fontWeight: 600 }}>
+                      פרופיל דמו פעיל — ידע מלא על Dream Island
+                    </span>
+                  )}
+                </div>
               </div>
-              <div style={{ fontSize: 13, textAlign: "center", maxWidth: 320 }}>
-                אני {agentProfile.display_name}, מוכן לעזור לך לנהל את מחלקת{" "}
-                {agentProfile.department}. במה נתחיל?
+
+              {/* Quick suggestion chips */}
+              <div style={{ width: "100%", maxWidth: 500 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, textAlign: "center", marginBottom: 10, letterSpacing: 0.5, textTransform: "uppercase" }}>
+                  התחל בשאלה:
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center" }}>
+                  {DEMO_OPENING_SUGGESTIONS.map((suggestion) => (
+                    <button
+                      key={suggestion}
+                      onClick={() => {
+                        setInput(suggestion.replace(/^[^\s]+ /, ""));
+                      }}
+                      style={{
+                        padding: "8px 14px",
+                        borderRadius: 20,
+                        border: "1.5px solid var(--border)",
+                        background: "var(--card-bg)",
+                        color: C.black,
+                        fontSize: 12,
+                        fontFamily: "Heebo, sans-serif",
+                        cursor: "pointer",
+                        transition: "all 0.15s",
+                        fontWeight: 500,
+                      }}
+                      onMouseEnter={(e) => {
+                        e.target.style.borderColor = "var(--gold)";
+                        e.target.style.background = "rgba(201,169,110,0.08)";
+                      }}
+                      onMouseLeave={(e) => {
+                        e.target.style.borderColor = "var(--border)";
+                        e.target.style.background = "var(--card-bg)";
+                      }}
+                    >
+                      {suggestion}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
           )}

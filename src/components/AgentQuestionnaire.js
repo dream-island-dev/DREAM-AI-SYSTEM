@@ -3,6 +3,7 @@
 // Works fully offline (localStorage). Swap buildSystemPrompt() for the
 // Supabase Edge Function call when ready for production.
 import { useState } from "react";
+import { buildDemoProfile } from "../data/demoAgentProfile";
 
 const DEPARTMENTS = ["קבלה", "ניקיון", "מסעדה", "תחזוקה", "ביטחון", "ספא", "כללי"];
 
@@ -206,6 +207,12 @@ export default function AgentQuestionnaire({ user, onComplete }) {
     else setStep((s) => s + 1);
   };
 
+  const loadDemo = () => {
+    const profile = buildDemoProfile(user?.id ?? "demo");
+    localStorage.setItem(`agent_profile_${user?.id}`, JSON.stringify(profile));
+    onComplete(profile);
+  };
+
   if (generating) {
     return (
       <div
@@ -245,6 +252,47 @@ export default function AgentQuestionnaire({ user, onComplete }) {
 
   return (
     <div>
+      {/* Demo shortcut banner */}
+      <div
+        style={{
+          background: "linear-gradient(135deg, rgba(201,169,110,0.12) 0%, rgba(201,169,110,0.04) 100%)",
+          border: "1px solid rgba(201,169,110,0.35)",
+          borderRadius: 14,
+          padding: "18px 22px",
+          marginBottom: 24,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 16,
+        }}
+      >
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 15, color: "var(--black)", marginBottom: 4 }}>
+            🎯 רוצה לראות סוכן מוכן מיד?
+          </div>
+          <div style={{ fontSize: 13, color: "var(--text-muted)", lineHeight: 1.5 }}>
+            טען פרופיל דמו מלא — DreamBot עם ידע מעמיק על כל 6 מחלקות המלון,
+            פרוטוקולים, KPIs ואופי מותאם.
+          </div>
+        </div>
+        <button
+          className="btn btn-primary"
+          onClick={loadDemo}
+          style={{ whiteSpace: "nowrap", minWidth: 140, flexShrink: 0 }}
+        >
+          ⚡ טען דמו מיידי
+        </button>
+      </div>
+
+      {/* Divider */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 24 }}>
+        <div style={{ flex: 1, height: 1, background: "var(--border)" }} />
+        <span style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 600 }}>
+          או מלא את השאלון בעצמך
+        </span>
+        <div style={{ flex: 1, height: 1, background: "var(--border)" }} />
+      </div>
+
       {/* Header */}
       <div style={{ marginBottom: 28 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 12 }}>
