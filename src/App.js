@@ -1,5 +1,7 @@
 import { useState, useEffect } from "react";
 import { initGoogleSignIn } from "./googleAuth";
+import AgentQuestionnaire from "./components/AgentQuestionnaire";
+import AgentChat from "./components/AgentChat";
 
 // ============================================================
 // MOCK DATA - יוחלף ב-Supabase בגרסה האמיתית
@@ -723,6 +725,7 @@ function Sidebar({ user, active, setActive, openCallsCount, onLogout }) {
     { id: "calls", icon: "🔔", label: "קריאות שירות", badge: openCallsCount },
     { id: "checklist", icon: "✅", label: "צ'קליסטים" },
     { id: "employees", icon: "👥", label: "עובדים" },
+    { id: "agent", icon: "🤖", label: "הסוכן שלי" },
   ];
 
   return (
@@ -1824,6 +1827,19 @@ export default function App() {
   const [shifts, setShifts] = useState(initialShifts);
   const [calls, setCalls] = useState(initialCalls);
   const [checklist, setChecklist] = useState(initialChecklists);
+  const [agentProfile, setAgentProfile] = useState(null);
+
+  // Load agent profile from localStorage when user logs in / out
+  useEffect(() => {
+    if (user) {
+      try {
+        const stored = localStorage.getItem(`agent_profile_${user.id}`);
+        if (stored) setAgentProfile(JSON.parse(stored));
+      } catch {}
+    } else {
+      setAgentProfile(null);
+    }
+  }, [user]);
 
   const openCallsCount = calls.filter((c) => c.status === "פתוח").length;
 
@@ -1833,6 +1849,7 @@ export default function App() {
     calls: "קריאות שירות 🔔",
     checklist: "צ'קליסטים יומיים ✅",
     employees: "ניהול עובדים 👥",
+    agent: agentProfile ? `${agentProfile.display_name} 🤖` : "הסוכן שלי 🤖",
   };
 
   const today = new Date();
@@ -1880,6 +1897,25 @@ export default function App() {
         return (
           <EmployeesPage employees={employees} setEmployees={setEmployees} />
         );
+      case "agent":
+        if (!agentProfile) {
+          return (
+            <AgentQuestionnaire
+              user={user}
+              onComplete={(profile) => setAgentProfile(profile)}
+            />
+          );
+        }
+        return (
+          <AgentChat
+            user={user}
+            agentProfile={agentProfile}
+            onResetProfile={() => {
+              localStorage.removeItem(`agent_profile_${user.id}`);
+              setAgentProfile(null);
+            }}
+          />
+        );
       default:
         return null;
     }
@@ -1890,7 +1926,7 @@ export default function App() {
     { id: "shifts", icon: "🕐", label: "משמרות" },
     { id: "calls", icon: "🔔", label: "קריאות" },
     { id: "checklist", icon: "✅", label: "צ'קליסט" },
-    { id: "employees", icon: "👥", label: "עובדים" },
+    { id: "agent", icon: "🤖", label: "סוכן" },
   ];
 
   return (
