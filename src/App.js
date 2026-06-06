@@ -3,7 +3,8 @@ import { initGoogleSignIn } from "./googleAuth";
 import AgentQuestionnaire from "./components/AgentQuestionnaire";
 import AgentChat from "./components/AgentChat";
 import AdminPanel from "./components/AdminPanel";
-import { isAdminUser, loadDepartments } from "./utils/admin";
+import UserManagement from "./components/UserManagement";
+import { isAdminUser, isSuperAdmin, loadDepartments } from "./utils/admin";
 
 // ============================================================
 // MOCK DATA - יוחלף ב-Supabase בגרסה האמיתית
@@ -780,6 +781,14 @@ function Sidebar({ user, active, setActive, openCallsCount, onLogout, isAdmin })
             >
               <span className="icon">🔧</span>
               <span>ניהול מערכת</span>
+            </button>
+            <button
+              className={`nav-item ${active === "users_mgmt" ? "active" : ""}`}
+              onClick={() => setActive("users_mgmt")}
+              style={{ color: active === "users_mgmt" ? "var(--gold)" : "rgba(201,169,110,0.6)" }}
+            >
+              <span className="icon">👥</span>
+              <span>ניהול משתמשים</span>
             </button>
           </div>
         )}
@@ -1848,7 +1857,8 @@ export default function App() {
   const [calls, setCalls] = useState(initialCalls);
   const [checklist, setChecklist] = useState(initialChecklists);
   const [agentProfile, setAgentProfile] = useState(null);
-  const isAdmin = isAdminUser(user);
+  const isAdmin      = isAdminUser(user);
+  const isSuperAdminUser = isSuperAdmin(user);
 
   // Load agent profile from localStorage when user logs in / out
   useEffect(() => {
@@ -1872,6 +1882,7 @@ export default function App() {
     employees: "ניהול עובדים 👥",
     agent:     agentProfile ? `${agentProfile.display_name} 🤖` : "הסוכן שלי 🤖",
     admin:     "👑 ניהול מערכת",
+    users_mgmt: "👥 ניהול משתמשים",
   };
 
   const today = new Date();
@@ -1941,6 +1952,9 @@ export default function App() {
       case "admin":
         if (!isAdmin) return null;
         return <AdminPanel user={user} mockUsers={MOCK_USERS} />;
+      case "users_mgmt":
+        if (!isAdmin) return null;
+        return <UserManagement currentUser={user} />;
       default:
         return null;
     }

@@ -11,11 +11,21 @@ export const DEFAULT_DEPARTMENTS = [
 
 const DEPT_KEY = "di_departments";
 
-/** Returns true if the user has admin privileges */
+/** Returns true if the user has admin or super_admin privileges */
 export function isAdminUser(user) {
   if (!user) return false;
   return (
     user.role === "admin" ||
+    user.role === "super_admin" ||
+    (user.email ?? "").toLowerCase() === ADMIN_EMAIL
+  );
+}
+
+/** Returns true ONLY for super_admin (can manage other users) */
+export function isSuperAdmin(user) {
+  if (!user) return false;
+  return (
+    user.role === "super_admin" ||
     (user.email ?? "").toLowerCase() === ADMIN_EMAIL
   );
 }
