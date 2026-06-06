@@ -2,6 +2,8 @@ import { useState, useEffect } from "react";
 import { initGoogleSignIn } from "./googleAuth";
 import AgentQuestionnaire from "./components/AgentQuestionnaire";
 import AgentChat from "./components/AgentChat";
+import AdminPanel from "./components/AdminPanel";
+import { isAdminUser, loadDepartments } from "./utils/admin";
 
 // ============================================================
 // MOCK DATA - יוחלף ב-Supabase בגרסה האמיתית
@@ -35,7 +37,8 @@ const MOCK_USERS = [
   },
 ];
 
-const DEPARTMENTS = ["קבלה", "ניקיון", "מסעדה", "תחזוקה", "ביטחון", "ספא"];
+// Departments are editable by admin via AdminPanel — stored in localStorage
+const DEPARTMENTS = loadDepartments();
 
 const initialEmployees = [
   {
@@ -718,14 +721,14 @@ function LoginPage({ onLogin }) {
   );
 }
 
-function Sidebar({ user, active, setActive, openCallsCount, onLogout }) {
+function Sidebar({ user, active, setActive, openCallsCount, onLogout, isAdmin }) {
   const navItems = [
     { id: "dashboard", icon: "📊", label: "דאשבורד" },
-    { id: "shifts", icon: "🕐", label: "משמרות" },
-    { id: "calls", icon: "🔔", label: "קריאות שירות", badge: openCallsCount },
+    { id: "shifts",    icon: "🕐", label: "משמרות" },
+    { id: "calls",     icon: "🔔", label: "קריאות שירות", badge: openCallsCount },
     { id: "checklist", icon: "✅", label: "צ'קליסטים" },
     { id: "employees", icon: "👥", label: "עובדים" },
-    { id: "agent", icon: "🤖", label: "הסוכן שלי" },
+    { id: "agent",     icon: "🤖", label: "הסוכן שלי" },
   ];
 
   return (
@@ -741,12 +744,13 @@ function Sidebar({ user, active, setActive, openCallsCount, onLogout }) {
           <div className="avatar">{user.avatar}</div>
           <div className="sidebar-user-info">
             <div className="sidebar-user-name">{user.name}</div>
-            <div className="sidebar-user-role">
-              {user.role === "admin" ? "מנהל כללי" : "מנהל מחלקה"}
+            <div className="sidebar-user-role" style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              {isAdmin ? "👑 מנהל מערכת" : user.role === "admin" ? "מנהל כללי" : "מנהל מחלקה"}
             </div>
           </div>
         </div>
       </div>
+
       <div className="sidebar-nav">
         <div className="nav-section">
           <div className="nav-section-title">ניהול</div>
@@ -764,7 +768,23 @@ function Sidebar({ user, active, setActive, openCallsCount, onLogout }) {
             </button>
           ))}
         </div>
+
+        {/* Admin-only section */}
+        {isAdmin && (
+          <div className="nav-section" style={{ marginTop: 16 }}>
+            <div className="nav-section-title">👑 אדמין</div>
+            <button
+              className={`nav-item ${active === "admin" ? "active" : ""}`}
+              onClick={() => setActive("admin")}
+              style={{ color: active === "admin" ? "var(--gold)" : "rgba(201,169,110,0.6)" }}
+            >
+              <span className="icon">🔧</span>
+              <span>ניהול מערכת</span>
+            </button>
+          </div>
+        )}
       </div>
+
       <div className="sidebar-footer">
         <button className="logout-btn" onClick={onLogout}>
           <span>🚪</span> התנתקות
@@ -1828,6 +1848,7 @@ export default function App() {
   const [calls, setCalls] = useState(initialCalls);
   const [checklist, setChecklist] = useState(initialChecklists);
   const [agentProfile, setAgentProfile] = useState(null);
+  const isAdmin = isAdminUser(user);
 
   // Load agent profile from localStorage when user logs in / out
   useEffect(() => {
@@ -1845,11 +1866,12 @@ export default function App() {
 
   const pageTitle = {
     dashboard: "דאשבורד ראשי 📊",
-    shifts: "סידור משמרות 🕐",
-    calls: "קריאות שירות 🔔",
+    shifts:    "סידור משמרות 🕐",
+    calls:     "קריאות שירות 🔔",
     checklist: "צ'קליסטים יומיים ✅",
     employees: "ניהול עובדים 👥",
-    agent: agentProfile ? `${agentProfile.display_name} 🤖` : "הסוכן שלי 🤖",
+    agent:     agentProfile ? `${agentProfile.display_name} 🤖` : "הסוכן שלי 🤖",
+    admin:     "👑 ניהול מערכת",
   };
 
   const today = new Date();
@@ -1916,6 +1938,9 @@ export default function App() {
             }}
           />
         );
+      case "admin":
+        if (!isAdmin) return null;
+        return <AdminPanel user={user} mockUsers={MOCK_USERS} />;
       default:
         return null;
     }
@@ -1940,6 +1965,7 @@ export default function App() {
             setActive={setActivePage}
             openCallsCount={openCallsCount}
             onLogout={() => setUser(null)}
+            isAdmin={isAdmin}
           />
           <div className="main">
             <div className="topbar">
