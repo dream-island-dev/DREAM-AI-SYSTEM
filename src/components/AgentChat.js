@@ -88,11 +88,10 @@ export default function AgentChat({ user, agentProfile, onResetProfile }) {
       let reply = "";
 
       if (USE_DEMO_MODE) {
-        // Demo: no backend — return placeholder so UI is testable
         await new Promise((r) => setTimeout(r, 900));
         reply =
           `שלום ${user?.name ?? ""}! אני ${agentProfile.display_name}.\n\n` +
-          `כדי לקבל תשובות אמיתיות, יש להגדיר REACT_APP_BACKEND_URL או REACT_APP_SUPABASE_URL.\n` +
+          `כדי לקבל תשובות אמיתיות יש לדלוק את Edge Function "chat" ב-Supabase.\n` +
           `כרגע אני פועל במצב דמו בלבד.`;
       } else {
         const url = CHAT_EDGE_URL ?? BACKEND_URL;
@@ -100,13 +99,36 @@ export default function AgentChat({ user, agentProfile, onResetProfile }) {
         if (CHAT_EDGE_URL && user?.supabaseAccessToken) {
           headers["Authorization"] = `Bearer ${user.supabaseAccessToken}`;
         }
-        const res = await fetch(url, {
-          method: "POST",
-          headers,
-          body: buildRequestBody(next.map((m) => ({ role: m.role, content: m.content }))),
-        });
-        const data = await res.json();
-        reply = data.ok ? data.reply : `שגיאה: ${data.error}`;
+
+        let res;
+        try {
+          res = await fetch(url, {
+            method: "POST",
+            headers,
+            body: buildRequestBody(next.map((m) => ({ role: m.role, content: m.content }))),
+          });
+        } catch {
+          reply = "⚠️ לא ניתן להתחבר לשרת. בדוק חיבור אינטרנט או שה-Edge Function הועלתה.";
+          setMessages((prev) => [...prev, {
+            id: `msg_a_${Date.now()}`, role: "assistant", content: reply,
+            ts: new Date().toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" }),
+          }]);
+          return;
+        }
+
+        if (!res.ok) {
+          const status = res.status;
+          if (status === 404) {
+            reply = `⚠️ Edge Function "chat" עדיין לא הועלתה ל-Supabase.\n\nלהפעלת הסוכן:\n1. כנס ל-Supabase → Edge Functions\n2. צור פונקציה חדשה בשם "chat"\n3. הדבק את הקוד ולחץ Deploy`;
+          } else if (status === 401) {
+            reply = "⚠️ שגיאת הרשאות — בדוק שה-ANON_KEY מוגדר נכון.";
+          } else {
+            reply = `⚠️ שגיאת שרת (${status}) — נסה שוב או בדוק את ה-Edge Function.`;
+          }
+        } else {
+          const data = await res.json();
+          reply = data.ok ? data.reply : `⚠️ ${data.error ?? "שגיאה לא ידועה מהשרת"}`;
+        }
       }
 
       const assistantId = `msg_a_${Date.now()}`;
