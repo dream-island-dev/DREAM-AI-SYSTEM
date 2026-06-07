@@ -7,3 +7,8 @@ node_modules
 
 # build
 /build
+
+.vercel
+
+# Supabase CLI local temp
+supabase/.temp/

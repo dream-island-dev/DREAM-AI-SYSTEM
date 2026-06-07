@@ -1,5 +1,5 @@
 // src/components/AdminPanel.js
-// Admin-only management interface. Visible only to promote7il@gmail.com.
+// Admin-only management interface. Owner: tzalamnadlan@gmail.com (super_admin).
 // Features: system stats, departments CRUD, all chat history, user list.
 import { useState, useEffect } from "react";
 import { supabase } from "../supabaseClient";
@@ -75,8 +75,9 @@ function StatsTab() {
         <div style={{ padding: 20, fontSize: 13, color: T.muted, lineHeight: 2 }}>
           <div>🟢 Supabase: מחובר</div>
           <div>🟢 Edge Function: <code>chat</code></div>
-          <div>📧 מנהל: promote7il@gmail.com</div>
-          <div>📦 גרסת DB Schema: 002</div>
+          <div>👑 בעלים (Super-Admin): tzalamnadlan@gmail.com</div>
+          <div>📧 אדמין: promote7il@gmail.com</div>
+          <div>📦 גרסת DB Schema: 004</div>
         </div>
       </div>
     </div>

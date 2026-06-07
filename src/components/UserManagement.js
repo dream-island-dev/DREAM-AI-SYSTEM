@@ -103,7 +103,6 @@ function dropdownStyle(bg, color) {
 
 function UserCard({ u, isSelf, saving, canEdit, onUpdate, onToggle }) {
   const roleMeta   = ROLE_META[u.role]     ?? ROLE_META.staff;
-  const statusMeta = STATUS_META[u.status] ?? STATUS_META.active;
   const isSuspended = u.status === "suspended";
 
   return (

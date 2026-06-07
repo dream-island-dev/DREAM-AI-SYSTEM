@@ -52,6 +52,89 @@ async function fetchDriveContext(
   }
 }
 
+// ── Model router: Gemini (primary) → Claude (fallback) ────────────────────────
+//
+// Gemini is the DEFAULT engine for all agent interactions. If GEMINI_API_KEY is
+// absent, or Gemini errors / hits quota, the request transparently falls back to
+// Anthropic Claude. The system runs end-to-end on Claude alone until the Gemini
+// key is added — zero downtime when it arrives.
+
+const GEMINI_MODEL = "gemini-2.5-pro";        // latest 2.x Pro
+const CLAUDE_MODEL = "claude-sonnet-4-6";     // fallback engine
+
+type ChatMsg = { role: "user" | "assistant"; content: string };
+
+async function callGemini(systemPrompt: string, messages: ChatMsg[]): Promise<string> {
+  const key = Deno.env.get("GEMINI_API_KEY");
+  if (!key) throw new Error("no_gemini_key");
+
+  // Anthropic-style roles → Gemini roles ("assistant" → "model")
+  const contents = messages.map((m) => ({
+    role: m.role === "assistant" ? "model" : "user",
+    parts: [{ text: m.content }],
+  }));
+
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${key}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: systemPrompt }] },
+        contents,
+        generationConfig: { maxOutputTokens: 2048, temperature: 0.7 },
+      }),
+      signal: AbortSignal.timeout(30000),
+    }
+  );
+
+  if (!res.ok) {
+    const body = await res.text();
+    // 429 = quota/limit → caller falls back to Claude
+    throw new Error(`gemini_http_${res.status}: ${body.slice(0, 200)}`);
+  }
+
+  const data = await res.json();
+  const text =
+    data?.candidates?.[0]?.content?.parts
+      ?.map((p: { text?: string }) => p.text ?? "")
+      .join("") ?? "";
+
+  if (!text.trim()) throw new Error("gemini_empty_response");
+  return text;
+}
+
+async function callClaude(systemPrompt: string, messages: ChatMsg[]): Promise<string> {
+  const key = Deno.env.get("ANTHROPIC_API_KEY");
+  if (!key) throw new Error("no_anthropic_key");
+
+  const anthropic = new Anthropic({ apiKey: key });
+  const resp = await anthropic.messages.create({
+    model: CLAUDE_MODEL,
+    max_tokens: 2048,
+    system: systemPrompt,
+    messages,
+  });
+  return resp.content[0].type === "text" ? resp.content[0].text : "";
+}
+
+/** Try Gemini first; on any failure fall back to Claude. */
+async function routeChat(
+  systemPrompt: string,
+  messages: ChatMsg[]
+): Promise<{ reply: string; engine: "gemini" | "claude" }> {
+  if (Deno.env.get("GEMINI_API_KEY")) {
+    try {
+      const reply = await callGemini(systemPrompt, messages);
+      return { reply, engine: "gemini" };
+    } catch (e) {
+      console.error("[router] Gemini failed → falling back to Claude:", (e as Error).message);
+    }
+  }
+  const reply = await callClaude(systemPrompt, messages);
+  return { reply, engine: "claude" };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 serve(async (req: Request) => {
@@ -124,22 +207,8 @@ serve(async (req: Request) => {
       { role: "user" as const, content: message },
     ];
 
-    // ── 5. Call Claude ───────────────────────────────────────────────────────
-    const anthropic = new Anthropic({
-      apiKey: Deno.env.get("ANTHROPIC_API_KEY")!,
-    });
-
-    const claudeResponse = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 2048,
-      system: systemPrompt,
-      messages,
-    });
-
-    const reply =
-      claudeResponse.content[0].type === "text"
-        ? claudeResponse.content[0].text
-        : "";
+    // ── 5. Generate reply via model router (Gemini → Claude fallback) ─────────
+    const { reply, engine } = await routeChat(systemPrompt, messages);
 
     // ── 6. Persist both messages to DB ───────────────────────────────────────
     const agentId = agentProfile?.id ?? "unknown";
@@ -154,6 +223,7 @@ serve(async (req: Request) => {
       JSON.stringify({
         ok: true,
         reply,
+        engine,                              // "gemini" | "claude" — which model answered
         driveUsed: Boolean(driveContext),   // lets the UI show a Drive indicator
         historyCount: (history ?? []).length,
       }),

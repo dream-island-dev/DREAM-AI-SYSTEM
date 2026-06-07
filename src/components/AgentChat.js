@@ -69,6 +69,7 @@ export default function AgentChat({ user, agentProfile, onResetProfile }) {
   const [busy, setBusy]         = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [driveUsed, setDriveUsed] = useState(false);
+  const [engine, setEngine]       = useState(null); // "gemini" | "claude"
   const [feedbackState, setFeedbackState] = useState({});
   const [corrections, setCorrections]     = useState({});
 
@@ -157,6 +158,7 @@ export default function AgentChat({ user, agentProfile, onResetProfile }) {
           const data = await res.json();
           reply = data.ok ? data.reply : `⚠️ ${data.error ?? "שגיאה לא ידועה"}`;
           if (data.driveUsed) setDriveUsed(true);
+          if (data.engine) setEngine(data.engine);
         }
       }
 
@@ -221,6 +223,11 @@ export default function AgentChat({ user, agentProfile, onResetProfile }) {
               {agentProfile.drive_folder_url && (
                 <span style={{ marginRight: 8, color: driveUsed ? "#1A7A4A" : C.muted }}>
                   {" "}· 📁 Drive {driveUsed ? "✓" : ""}
+                </span>
+              )}
+              {engine && (
+                <span style={{ marginRight: 8, color: C.muted }}>
+                  {" "}· {engine === "gemini" ? "✨ Gemini" : "🤖 Claude"}
                 </span>
               )}
             </div>

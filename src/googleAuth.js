@@ -27,7 +27,6 @@ export async function initGoogleSignIn(onCredential) {
     return;
   }
   await loadScript("https://accounts.google.com/gsi/client");
-  /* global google */
   window.google.accounts.id.initialize({
     client_id: CLIENT_ID,
     callback: (resp) => onCredential(resp),

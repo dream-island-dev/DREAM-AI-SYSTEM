@@ -257,6 +257,8 @@ function decodeJwt(token) {
 const css = `
   @import url('https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700;800;900&family=Playfair+Display:wght@400;600;700&display=swap');
 
+  @keyframes di-spin { to { transform: rotate(360deg); } }
+
   :root {
     --gold: #C9A96E;
     --gold-dark: #A8843A;
@@ -596,6 +598,9 @@ const css = `
   /* GOLD ACCENT LINE */
   .gold-line { width: 32px; height: 2px; background: var(--gold); border-radius: 2px; margin-bottom: 12px; }
 
+  /* DASHBOARD two-column section grid */
+  .dash-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+
   @media (max-width: 768px) {
     .sidebar { display: none; }
     .main { margin-right: 0; padding-bottom: 80px; }
@@ -605,7 +610,32 @@ const css = `
     .stat-grid { grid-template-columns: repeat(2, 1fr); gap: 12px; }
     .form-grid { grid-template-columns: 1fr; }
     .kanban { grid-template-columns: 1fr; }
+    .dash-grid { grid-template-columns: 1fr; gap: 14px; }
     .table-scroll { overflow-x: auto; }
+  }
+
+  /* ────────────────────────────────────────────────────────────────────────
+     DeX "COMMAND CENTER" — Samsung Galaxy Tab S9 Ultra (landscape / DeX)
+     Expansive, multi-column control dashboard for large tablet/desktop mode.
+     ──────────────────────────────────────────────────────────────────────── */
+  @media (min-width: 1280px) {
+    .sidebar { width: 264px; }
+    .main { margin-right: 264px; }
+    .content { padding: 36px 48px; max-width: 1760px; margin: 0 auto; }
+    .topbar { padding: 20px 48px; }
+    .topbar-title { font-size: 24px; }
+    .stat-grid { grid-template-columns: repeat(4, 1fr); gap: 22px; margin-bottom: 34px; }
+    .stat-card { padding: 24px; }
+    .stat-value { font-size: 34px; }
+    .kanban { gap: 24px; }
+    .card-title { font-size: 16px; }
+  }
+
+  /* Ultra-wide (DeX on external monitor): denser KPIs + 3-up sections */
+  @media (min-width: 1760px) {
+    .content { max-width: 2100px; }
+    .stat-grid { grid-template-columns: repeat(4, 1fr); gap: 26px; }
+    .dash-grid { grid-template-columns: 1.2fr 1fr; gap: 26px; }
   }
 `;
 
@@ -723,7 +753,7 @@ function LoginPage({ onLogin }) {
   );
 }
 
-function Sidebar({ user, active, setActive, openCallsCount, onLogout, isAdmin }) {
+function Sidebar({ user, active, setActive, openCallsCount, onLogout, isAdmin, isSuperAdminUser }) {
   const navItems = [
     { id: "dashboard", icon: "📊", label: "דאשבורד" },
     { id: "shifts",    icon: "🕐", label: "משמרות" },
@@ -783,14 +813,17 @@ function Sidebar({ user, active, setActive, openCallsCount, onLogout, isAdmin })
               <span className="icon">🔧</span>
               <span>ניהול מערכת</span>
             </button>
-            <button
-              className={`nav-item ${active === "users_mgmt" ? "active" : ""}`}
-              onClick={() => setActive("users_mgmt")}
-              style={{ color: active === "users_mgmt" ? "var(--gold)" : "rgba(201,169,110,0.6)" }}
-            >
-              <span className="icon">👥</span>
-              <span>ניהול משתמשים</span>
-            </button>
+            {/* User Management — owner (super-admin) only */}
+            {isSuperAdminUser && (
+              <button
+                className={`nav-item ${active === "users_mgmt" ? "active" : ""}`}
+                onClick={() => setActive("users_mgmt")}
+                style={{ color: active === "users_mgmt" ? "var(--gold)" : "rgba(201,169,110,0.6)" }}
+              >
+                <span className="icon">👥</span>
+                <span>ניהול משתמשים</span>
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -884,7 +917,7 @@ function Dashboard({ shifts, calls, checklist, employees }) {
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+      <div className="dash-grid">
         <div className="card">
           <div className="card-header">
             <div className="card-title">🕐 עובדים במשמרת עכשיו</div>
@@ -1886,16 +1919,93 @@ async function loadUserWithProfile(session, setUser) {
 }
 
 // ============================================================
+// SUPABASE PERSISTENCE HOOK
+// ============================================================
+//
+// Drop-in replacement for useState that:
+//   1. Fetches the table on mount (with a loading flag).
+//   2. Seeds the table with mock data on first run (empty table).
+//   3. On every local change, async-upserts the added/changed rows
+//      so operational data survives a refresh (F5).
+//
+// Keeps the exact [data, setData] contract the page components expect,
+// so ShiftsPage / CallsPage / ChecklistPage / EmployeesPage are unchanged.
+// In demo/offline mode (no Supabase) it behaves like plain useState.
+
+function usePersistentState(table, initialMock) {
+  const [data, setDataRaw] = useState(initialMock);
+  const [loading, setLoading] = useState(Boolean(isSupabaseConfigured));
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      if (!isSupabaseConfigured || !supabase) { setLoading(false); return; }
+      try {
+        const { data: rows, error } = await supabase.from(table).select("*");
+        if (!active) return;
+        if (error) {
+          console.error(`[persist] load ${table}:`, error.message);
+        } else if (Array.isArray(rows) && rows.length > 0) {
+          setDataRaw(rows);
+        } else {
+          // Empty table → seed with mock data so the dashboard isn't blank.
+          const { error: seedErr } = await supabase.from(table).upsert(initialMock);
+          if (seedErr) console.error(`[persist] seed ${table}:`, seedErr.message);
+          if (active) setDataRaw(initialMock);
+        }
+      } catch (e) {
+        console.error(`[persist] ${table}:`, e?.message);
+      } finally {
+        if (active) setLoading(false);
+      }
+    })();
+    return () => { active = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [table]);
+
+  const setData = useCallback((updater) => {
+    setDataRaw((prev) => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      if (isSupabaseConfigured && supabase) {
+        // Upsert only rows that were added or changed.
+        const prevById = new Map(prev.map((r) => [r.id, r]));
+        const changed = next.filter((r) => {
+          const old = prevById.get(r.id);
+          return !old || JSON.stringify(old) !== JSON.stringify(r);
+        });
+        if (changed.length > 0) {
+          supabase.from(table).upsert(changed).then(({ error }) => {
+            if (error) console.error(`[persist] upsert ${table}:`, error.message);
+          });
+        }
+        // Propagate deletions (rows removed locally).
+        const nextIds = new Set(next.map((r) => r.id));
+        const removed = prev.filter((r) => !nextIds.has(r.id)).map((r) => r.id);
+        if (removed.length > 0) {
+          supabase.from(table).delete().in("id", removed).then(({ error }) => {
+            if (error) console.error(`[persist] delete ${table}:`, error.message);
+          });
+        }
+      }
+      return next;
+    });
+  }, [table]);
+
+  return [data, setData, loading];
+}
+
+// ============================================================
 // MAIN APP
 // ============================================================
 export default function App() {
   const [user, setUser] = useState(null);
   const [isLoading, setIsLoading] = useState(true); // true until auth resolves
   const [activePage, setActivePage] = useState("dashboard");
-  const [employees, setEmployees] = useState(initialEmployees);
-  const [shifts, setShifts] = useState(initialShifts);
-  const [calls, setCalls] = useState(initialCalls);
-  const [checklist, setChecklist] = useState(initialChecklists);
+  const [employees, setEmployees, empLoading]   = usePersistentState("employees", initialEmployees);
+  const [shifts, setShifts, shiftLoading]       = usePersistentState("shifts", initialShifts);
+  const [calls, setCalls, callsLoading]         = usePersistentState("service_calls", initialCalls);
+  const [checklist, setChecklist, checkLoading] = usePersistentState("checklist_items", initialChecklists);
+  const opsLoading = empLoading || shiftLoading || callsLoading || checkLoading;
   const [agentProfile, setAgentProfile] = useState(null);
   const isAdmin      = isAdminUser(user);
   const isSuperAdminUser = isSuperAdmin(user);
@@ -1996,6 +2106,20 @@ export default function App() {
     );
 
   const renderPage = () => {
+    // Mandatory loading state while operational data is fetched from Supabase.
+    const dataPages = ["dashboard", "shifts", "calls", "checklist", "employees"];
+    if (opsLoading && dataPages.includes(activePage)) {
+      return (
+        <div style={{ textAlign: "center", padding: 64, color: "var(--text-muted)" }}>
+          <div style={{
+            width: 40, height: 40, margin: "0 auto 16px",
+            border: "4px solid var(--border)", borderTop: "4px solid var(--gold)",
+            borderRadius: "50%", animation: "di-spin 0.8s linear infinite",
+          }} />
+          טוען נתונים...
+        </div>
+      );
+    }
     switch (activePage) {
       case "dashboard":
         return (
@@ -2080,8 +2204,15 @@ export default function App() {
             active={activePage}
             setActive={setActivePage}
             openCallsCount={openCallsCount}
-            onLogout={() => setUser(null)}
+            onLogout={async () => {
+              // Sign out of Supabase so the session isn't restored on refresh.
+              if (isSupabaseConfigured && supabase) {
+                try { await supabase.auth.signOut(); } catch {}
+              }
+              setUser(null);
+            }}
             isAdmin={isAdmin}
+            isSuperAdminUser={isSuperAdminUser}
           />
           <div className="main">
             <div className="topbar">
