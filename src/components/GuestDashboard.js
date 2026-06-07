@@ -5,9 +5,11 @@
 // Displays: name, phone (tappable), room, room-type badge, arrival badge,
 // and a three-stage EZGO pipeline indicator per guest.
 //
-// "חדר מוכן" button:
-//   Phase 3 (current): console.log payload + update msg_room_ready_sent in DB.
-//   Phase 4 (next):    will invoke whatsapp-send Edge Function.
+// "חדר מוכן" button (Phase 4 — LIVE):
+//   Invokes whatsapp-send Edge Function with { trigger: "room_ready", guestId }.
+//   The Edge Function is the SOLE writer of msg_room_ready_sent (single source of truth).
+//   Frontend updates local state only on confirmed success response.
+//   Per-guest loadingId prevents double-fires.
 //
 // Auth: reads via RLS — manager sees only their own rows (manager_id = auth.uid()).
 // Super-admin / General Manager see all rows via their tier policies.
@@ -72,9 +74,12 @@ function RoomTypeBadge({ type }) {
 // ── Main component ─────────────────────────────────────────────────────────────
 
 export default function GuestDashboard({ user }) {
-  const [guests,  setGuests]  = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [toast,   setToast]   = useState(null);
+  const [guests,    setGuests]    = useState([]);
+  const [loading,   setLoading]   = useState(true);
+  const [toast,     setToast]     = useState(null);
+  // loadingId: guest.id currently being processed — prevents double-fire and
+  // shows a per-guest spinner while the Edge Function round-trip is in flight.
+  const [loadingId, setLoadingId] = useState(null);
 
   const showToast = useCallback((type, msg) => {
     setToast({ type, msg });
@@ -106,42 +111,40 @@ export default function GuestDashboard({ user }) {
 
   useEffect(() => { fetchGuests(); }, [fetchGuests]);
 
-  // ── Mark Room Ready ──────────────────────────────────────────────────────
-  // Phase 3 stub: logs the payload and updates the DB flag.
-  // Phase 4 will replace the console.log with a whatsapp-send invoke.
+  // ── Mark Room Ready (Phase 4 — LIVE) ────────────────────────────────────
+  // Invokes whatsapp-send Edge Function. The function:
+  //   1. Checks idempotency (notification_log) — skips if already sent.
+  //   2. Sends/simulates the room_ready WhatsApp message.
+  //   3. Atomically sets guests.msg_room_ready_sent = true server-side.
+  // On success we update local state. No direct DB write here — the Edge
+  // Function is the sole writer (single source of truth).
   const markRoomReady = useCallback(async (guest) => {
-    if (guest.msg_room_ready_sent) return;
+    // Guard: already done, or another guest's button is mid-flight
+    if (guest.msg_room_ready_sent || loadingId) return;
 
-    // ── Phase 4 hook: replace this log with whatsapp-send invoke ──────────
-    console.log("[EZGO] 🏨 Room Ready →", {
-      name:      guest.name,
-      phone:     guest.phone,
-      room_type: guest.room_type,
-      room:      guest.room,
-      arrival:   guest.arrival_date,
-    });
+    setLoadingId(guest.id);
+    try {
+      const { data, error } = await supabase.functions.invoke("whatsapp-send", {
+        body: { trigger: "room_ready", guestId: guest.id },
+      });
+      // supabase.functions.invoke always wraps non-2xx with a generic error.message;
+      // the real error from the function body is in data?.error — prefer it.
+      if (error) throw new Error(data?.error ?? error.message ?? "edge_function_error");
+      if (!data?.ok) throw new Error(data?.error ?? "שליחת ההודעה נכשלה");
 
-    // Optimistic UI update
-    setGuests((prev) =>
-      prev.map((g) => g.id === guest.id ? { ...g, msg_room_ready_sent: true } : g)
-    );
-
-    // Persist to DB (msg_room_ready_sent = true)
-    const { error } = await supabase
-      .from("guests")
-      .update({ msg_room_ready_sent: true })
-      .eq("id", guest.id);
-
-    if (error) {
-      showToast("err", "שגיאה בעדכון: " + error.message);
-      // Roll back the optimistic update
+      // Update local state — DB flag was already set server-side
       setGuests((prev) =>
-        prev.map((g) => g.id === guest.id ? { ...g, msg_room_ready_sent: false } : g)
+        prev.map((g) => g.id === guest.id ? { ...g, msg_room_ready_sent: true } : g)
       );
-    } else {
-      showToast("ok", `✅ חדר מוכן סומן עבור ${guest.name}`);
+      const simNote = data.simulation ? " (סימולציה)" : "";
+      showToast("ok", `✅ הודעת חדר מוכן נשלחה ל${guest.name}${simNote}`);
+    } catch (err) {
+      showToast("err", "שגיאה בשליחה: " + (err?.message ?? String(err)));
+      // Button stays active — no state change on error; user can retry
+    } finally {
+      setLoadingId(null);
     }
-  }, [showToast]);
+  }, [loadingId, showToast]);
 
   // ── Stats ─────────────────────────────────────────────────────────────────
   const todayCount     = guests.filter((g) => g.arrival_date === localISO(0)).length;
@@ -267,24 +270,43 @@ export default function GuestDashboard({ user }) {
                 <PipelineStage label="פולו-אפ"       done={guest.msg_post_checkin_sent} />
               </div>
 
-              {/* Row 4: Room Ready action button */}
-              <button
-                onClick={() => markRoomReady(guest)}
-                disabled={guest.msg_room_ready_sent}
-                style={{
-                  width: "100%", padding: "12px 0", borderRadius: 10,
-                  fontFamily: "Heebo, sans-serif", fontSize: 15, fontWeight: 700,
-                  cursor: guest.msg_room_ready_sent ? "default" : "pointer",
-                  border: "none",
-                  background: guest.msg_room_ready_sent
-                    ? "#E8F5EF"
-                    : "linear-gradient(135deg, var(--gold), var(--gold-dark))",
-                  color: guest.msg_room_ready_sent ? "#1A7A4A" : "#fff",
-                  transition: "opacity 0.2s",
-                }}
-              >
-                {guest.msg_room_ready_sent ? "✅ החדר מוכן — סומן" : "🏨 סמן חדר מוכן"}
-              </button>
+              {/* Row 4: Room Ready action button — three visual states:
+                    idle    → gold gradient  "🏨 סמן חדר מוכן"  (active)
+                    loading → gray muted     "⏳ שולח הודעה..."  (disabled)
+                    done    → green solid    "✅ נשלח ✓"          (disabled, permanent) */}
+              {(() => {
+                const isLoading = loadingId === guest.id;
+                const isDone    = guest.msg_room_ready_sent;
+                return (
+                  <button
+                    onClick={() => markRoomReady(guest)}
+                    disabled={isDone || isLoading || (!!loadingId && !isLoading)}
+                    style={{
+                      width: "100%", padding: "12px 0", borderRadius: 10,
+                      fontFamily: "Heebo, sans-serif", fontSize: 15, fontWeight: 700,
+                      border: "none", transition: "opacity 0.2s, background 0.2s",
+                      cursor: (isDone || isLoading) ? "default" : "pointer",
+                      opacity: (!!loadingId && !isLoading && !isDone) ? 0.45 : 1,
+                      background: isDone
+                        ? "#E8F5EF"
+                        : isLoading
+                        ? "#F0F0F0"
+                        : "linear-gradient(135deg, var(--gold), var(--gold-dark))",
+                      color: isDone
+                        ? "#1A7A4A"
+                        : isLoading
+                        ? "var(--text-muted)"
+                        : "#fff",
+                    }}
+                  >
+                    {isDone
+                      ? "✅ נשלח ✓"
+                      : isLoading
+                      ? "⏳ שולח הודעה..."
+                      : "🏨 סמן חדר מוכן"}
+                  </button>
+                );
+              })()}
             </div>
           ))}
         </div>

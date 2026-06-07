@@ -9,6 +9,12 @@
 //
 // Body: { trigger, guestId?, assignments?, weekStart? }
 //   trigger ∈ night_before | morning_suite | room_ready | butler_1h | shift_assignment
+//
+// After each guest trigger, the corresponding pipeline flag is atomically
+// updated on the guests row (server-side single source of truth):
+//   night_before → msg_pre_arrival_sent = true
+//   room_ready   → msg_room_ready_sent  = true
+//   butler_1h    → msg_post_checkin_sent = true
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -27,11 +33,19 @@ const T = {
     `בוקר טוב ${g.name}! ☀️ צוות Dream Island שמח לארח אותך היום בסוויטה. ` +
     `מוזמן/ת ליהנות ממתקני הנופש ומטרקלין הסימפוניה ה-VIP שלנו. נתראה בקרוב! 👑`,
   room_ready: (g: any) =>
-    `${g.name}, חדרך מוכן! 🛎️ הסוויטה שלך${g.room ? ` (${g.room})` : ""} ממתינה לך. ` +
-    `גש/י לקבלה לקבלת המפתח ותחילת חופשה מושלמת ב-Dream Island. 👑`,
+    `היי ${g.name}, הסוויטה שלכם בדרים איילנד מוכנה!` +
+    `${g.room ? ` (חדר ${g.room})` : ""} מחכים לכם בקבלה. 🏨`,
   butler_1h: (g: any) =>
     `${g.name}, ברוך/ה הבא/ה לסוויטה! 🥂 הבטלר האישי שלך לרשותך. נשמח להציע: ` +
     `שירות חדרים 24/7, הזמנת מסעדה וטיפולי ספא מפנקים. השב/י להודעה זו או חייג/י 9 מהחדר. שהייה נעימה! 🌸`,
+};
+
+// Maps each guest trigger to the boolean pipeline flag it should stamp on guests.
+// morning_suite is a supplementary VIP touch — no dedicated pipeline column.
+const GUEST_FLAG: Record<string, string> = {
+  night_before: "msg_pre_arrival_sent",
+  room_ready:   "msg_room_ready_sent",
+  butler_1h:    "msg_post_checkin_sent",
 };
 
 function shiftMsg(name: string, weekStart: string, shifts: any[]) {
@@ -130,6 +144,15 @@ serve(async (req: Request) => {
       guest_id: guestId, recipient: guest.phone, trigger_type: trigger,
       channel: "whatsapp", status, payload: { body },
     });
+
+    // Atomically stamp the pipeline flag — this is the SOLE writer of these flags.
+    // Frontend reads the flag back from local state after a successful invoke.
+    if (GUEST_FLAG[trigger]) {
+      await supabase
+        .from("guests")
+        .update({ [GUEST_FLAG[trigger]]: true })
+        .eq("id", guestId);
+    }
 
     return new Response(JSON.stringify({ ok: true, simulation: sim, status, body }), {
       headers: { ...CORS, "Content-Type": "application/json" },
