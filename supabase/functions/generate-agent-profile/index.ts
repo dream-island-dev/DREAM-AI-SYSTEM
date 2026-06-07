@@ -150,6 +150,25 @@ serve(async (req: Request) => {
       console.warn("[profiles] upsert note:", profileErr.message);
     }
 
+    // ── 2b. Fetch existing agent memory to ground the generated system prompt ─
+    const { data: existingMemory } = await supabase
+      .from("agent_memory")
+      .select("rule_text")
+      .eq("manager_id", user.id)
+      .eq("is_active", true)
+      .order("created_at", { ascending: false })
+      .limit(15);
+
+    const memorySection =
+      existingMemory && existingMemory.length > 0
+        ? `\nכללי עבודה שהמנהל כבר לימד את הסוכן (ממסמכי עבודה שהועלו):\n` +
+          existingMemory
+            .map((m: { rule_text: string }) => `• ${m.rule_text}`)
+            .join("\n") +
+          "\n"
+        : "";
+    console.log("[generate-agent-profile] memory rules loaded:", existingMemory?.length ?? 0);
+
     // ── 3. Build the generation prompt ─────────────────────────────────────
     const formatted = Object.entries(responses as Record<string, string>)
       .filter(([, v]) => v && String(v).trim())
@@ -169,7 +188,7 @@ serve(async (req: Request) => {
 
 תשובות השאלון:
 ${formatted}
-
+${memorySection}
 ---
 הנחיות לבניית ה-System Prompt:
 1. פתח עם הגדרת זהות ברורה (שם הסוכן, המחלקה, שם המנהל).

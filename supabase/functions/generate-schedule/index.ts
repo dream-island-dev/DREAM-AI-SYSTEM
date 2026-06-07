@@ -7,6 +7,7 @@
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.20.0";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -56,10 +57,17 @@ function buildPrompt(
   constraints: string,
   weekStart: string,
   department?: string,
+  memoryRules?: string[],
 ) {
   const deptRules = department && DEPT_RULES[department]
     ? `\nכללים ייחודיים למחלקה (${department}) — חובה לכבד:\n${DEPT_RULES[department]}\n`
     : "";
+
+  const dynamicRules =
+    memoryRules && memoryRules.length > 0
+      ? `\nכללים נוספים שהמנהל לימד את הסוכן (ממסמכי עבודה):\n` +
+        memoryRules.map((r, i) => `${i + 1}. ${r}`).join("\n") + "\n"
+      : "";
 
   return `אתה אחראי משאבי אנוש במלון יוקרה "Dream Island". צור סידור משמרות שבועי חדש, מאוזן והוגן.
 
@@ -75,7 +83,7 @@ ${JSON.stringify(pastShifts, null, 2)}
 """
 ${constraints || "אין אילוצים מיוחדים"}
 """
-${deptRules}
+${deptRules}${dynamicRules}
 כללי בסיס:
 1. אזן עומס בין העובדים, שמור על רצף סביר והימנע ממשמרות כפולות באותו יום.
 2. כבד כל אילוץ שצוין (חופשות, החלפות, העדפות).
@@ -134,10 +142,31 @@ function parseSchedule(raw: string): any[] {
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   try {
-    const { pastShifts = [], employees = [], constraints = "", weekStart, department } = await req.json();
+    const { pastShifts = [], employees = [], constraints = "", weekStart, department, managerId } = await req.json();
     if (!weekStart) throw new Error("weekStart is required");
 
-    const prompt = buildPrompt(pastShifts, employees, constraints, weekStart, department);
+    // ── 2b. Fetch agent memory rules for dynamic scheduling context ──────────
+    let memoryRules: string[] = [];
+    if (managerId && managerId !== "anonymous") {
+      const supabase = createClient(
+        Deno.env.get("SUPABASE_URL")!,
+        Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+      );
+      const { data: memories } = await supabase
+        .from("agent_memory")
+        .select("rule_text")
+        .eq("manager_id", managerId)
+        .eq("is_active", true)
+        .order("created_at", { ascending: false })
+        .limit(10);
+
+      if (memories && memories.length > 0) {
+        memoryRules = memories.map((m: { rule_text: string }) => m.rule_text);
+        console.log("[generate-schedule] injecting", memoryRules.length, "memory rules");
+      }
+    }
+
+    const prompt = buildPrompt(pastShifts, employees, constraints, weekStart, department, memoryRules);
 
     let raw = "", engine: "gemini" | "claude" = "gemini";
     if (Deno.env.get("GEMINI_API_KEY")) {

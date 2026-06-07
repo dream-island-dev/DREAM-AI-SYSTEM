@@ -177,6 +177,28 @@ serve(async (req: Request) => {
       driveContext = await fetchDriveContext(appsScriptUrl, driveUrl, message);
     }
 
+    // ── 2b. Agent Long-Term Memory (Pillar 3) ────────────────────────────────
+    let memoryContext = "";
+    if (managerId && managerId !== "anonymous") {
+      const { data: memories } = await supabase
+        .from("agent_memory")
+        .select("rule_text, category")
+        .eq("manager_id", managerId)
+        .eq("is_active", true)
+        .order("created_at", { ascending: false })
+        .limit(20);
+
+      if (memories && memories.length > 0) {
+        memoryContext =
+          "\n\n---\n## כללי עבודה שהמנהל לימד את הסוכן\n" +
+          "אלה כללי עבודה שהמנהל העלה ממסמכי עבודה — יש לכבד אותם תמיד:\n\n" +
+          memories
+            .map((m: { rule_text: string }, i: number) => `${i + 1}. ${m.rule_text}`)
+            .join("\n");
+        console.log("[chat] injecting", memories.length, "memory rules for manager:", managerId);
+      }
+    }
+
     // ── 3. Build system prompt ───────────────────────────────────────────────
     let systemPrompt =
       agentProfile?.systemPrompt ??
@@ -185,6 +207,11 @@ serve(async (req: Request) => {
     // Inject Drive RAG context (if found)
     if (driveContext) {
       systemPrompt += driveContext;
+    }
+
+    // Inject long-term memory rules (Pillar 3)
+    if (memoryContext) {
+      systemPrompt += memoryContext;
     }
 
     // Inject learning-log corrections as few-shot examples

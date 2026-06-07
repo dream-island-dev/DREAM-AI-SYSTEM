@@ -10,6 +10,7 @@ import ShiftGenerator from "./components/ShiftGenerator";
 import { isAdminUser, isSuperAdmin, loadDepartments } from "./utils/admin";
 import { supabase, isSupabaseConfigured, loadAgentProfile } from "./supabaseClient";
 import { getPushState, subscribeToPush, unsubscribeFromPush, syncSubscriptionToSupabase } from "./utils/pushNotifications";
+import KnowledgeUploader from "./components/KnowledgeUploader";
 
 // ============================================================
 // MOCK DATA - יוחלף ב-Supabase בגרסה האמיתית
@@ -2036,6 +2037,8 @@ export default function App() {
   const [showQuestionnaire, setShowQuestionnaire] = useState(false);
   // Push notification state: 'unsupported'|'unsubscribed'|'subscribed'|'denied'|'loading'
   const [pushState, setPushState] = useState("loading");
+  // Active tab inside the settings slide-up modal (0 = questionnaire, 1 = knowledge)
+  const [settingsTab, setSettingsTab] = useState(0);
   const isAdmin      = isAdminUser(user);
   const isSuperAdminUser = isSuperAdmin(user);
 
@@ -2460,32 +2463,65 @@ export default function App() {
             maxHeight: "90vh", overflowY: "auto",
             animation: "slideUp 0.3s ease-out",
           }}>
-            {/* Modal header */}
+            {/* ── Sticky header ─────────────────────────────────────── */}
             <div style={{
-              display: "flex", justifyContent: "space-between", alignItems: "center",
-              padding: "20px 24px 16px",
-              borderBottom: "1px solid var(--border)",
               position: "sticky", top: 0, background: "var(--ivory)", zIndex: 1,
+              borderBottom: "1px solid var(--border)",
             }}>
-              <span style={{ fontWeight: 800, fontSize: 16, color: "var(--black)", fontFamily: "Playfair Display, serif" }}>
-                ⚙️ הגדרות הסוכן
-              </span>
-              <button
-                onClick={() => setShowQuestionnaire(false)}
-                className="btn btn-ghost btn-sm"
-              >
-                ← חזור לצ׳אט
-              </button>
+              {/* Title row */}
+              <div style={{
+                display: "flex", justifyContent: "space-between", alignItems: "center",
+                padding: "18px 24px 0",
+              }}>
+                <span style={{ fontWeight: 800, fontSize: 16, color: "var(--black)", fontFamily: "Playfair Display, serif" }}>
+                  ⚙️ מרכז הגדרות הסוכן
+                </span>
+                <button
+                  onClick={() => setShowQuestionnaire(false)}
+                  className="btn btn-ghost btn-sm"
+                >
+                  ← חזור לצ׳אט
+                </button>
+              </div>
+              {/* Tab bar */}
+              <div style={{ display: "flex", gap: 0, padding: "10px 24px 0" }}>
+                {[
+                  { id: 0, label: "📋 פרופיל הסוכן" },
+                  { id: 1, label: "🧠 למד את הסוכן" },
+                ].map((tab) => (
+                  <button
+                    key={tab.id}
+                    onClick={() => setSettingsTab(tab.id)}
+                    style={{
+                      flex: 1, padding: "10px 8px", border: "none",
+                      borderBottom: settingsTab === tab.id
+                        ? "2px solid var(--gold)"
+                        : "2px solid transparent",
+                      background: "transparent", cursor: "pointer",
+                      fontSize: 13, fontWeight: settingsTab === tab.id ? 700 : 500,
+                      color: settingsTab === tab.id ? "var(--gold-dark)" : "var(--text-muted)",
+                      fontFamily: "Heebo, sans-serif", transition: "all 0.15s",
+                    }}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
             </div>
-            {/* Modal body */}
+
+            {/* ── Modal body (tab-switched) ──────────────────────────── */}
             <div style={{ padding: "20px 24px 40px" }}>
-              <AgentQuestionnaire
-                user={user}
-                onComplete={(profile) => {
-                  setAgentProfile(profile);
-                  setShowQuestionnaire(false);
-                }}
-              />
+              {settingsTab === 0 ? (
+                <AgentQuestionnaire
+                  user={user}
+                  onComplete={(profile) => {
+                    setAgentProfile(profile);
+                    setShowQuestionnaire(false);
+                  }}
+                />
+              ) : (
+                <KnowledgeUploader user={user} />
+              )}
             </div>
           </div>
         </div>

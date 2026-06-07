@@ -75,7 +75,7 @@ export default function ShiftGenerator({ onApproved, user }) {
     setGenerating(true); setSchedule(null);
     try {
       const { data, error } = await supabase.functions.invoke("generate-schedule", {
-        body: { pastShifts, employees, constraints, weekStart, department: managerDepartment },
+        body: { pastShifts, employees, constraints, weekStart, department: managerDepartment, managerId: user?.id },
       });
       if (error) throw error;
       if (!data?.ok) throw new Error(data?.error || "יצירת הסידור נכשלה");
