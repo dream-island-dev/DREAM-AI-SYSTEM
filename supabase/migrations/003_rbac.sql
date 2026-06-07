@@ -60,7 +60,7 @@ BEGIN
 
   v_role := CASE NEW.email
     WHEN 'promote7il@gmail.com' THEN 'super_admin'
-    ELSE 'manager'
+    ELSE 'staff'
   END;
 
   INSERT INTO public.profiles (id, name, email, role, avatar_text, avatar, status)

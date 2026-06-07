@@ -1,10 +1,11 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { initGoogleSignIn } from "./googleAuth";
 import AgentQuestionnaire from "./components/AgentQuestionnaire";
 import AgentChat from "./components/AgentChat";
 import AdminPanel from "./components/AdminPanel";
 import UserManagement from "./components/UserManagement";
 import { isAdminUser, isSuperAdmin, loadDepartments } from "./utils/admin";
+import { supabase, isSupabaseConfigured } from "./supabaseClient";
 
 // ============================================================
 // MOCK DATA - יוחלף ב-Supabase בגרסה האמיתית
@@ -1847,10 +1848,49 @@ function EmployeesPage({ employees, setEmployees }) {
 }
 
 // ============================================================
+// SUPABASE AUTH HELPERS
+// ============================================================
+
+/** Map a raw Supabase session → minimal user object (role resolved from DB) */
+function mapSupabaseUser(session) {
+  if (!session?.user) return null;
+  const u = session.user;
+  return {
+    id: u.id,
+    email: u.email,
+    name: u.user_metadata?.name || u.email?.split("@")[0] || "User",
+    avatar: u.user_metadata?.avatar_url || null,
+    avatar_text: (u.user_metadata?.name || u.email || "U")
+      .slice(0, 2)
+      .toUpperCase(),
+    role: "staff",   // overwritten below after DB lookup
+    source: "supabase",
+  };
+}
+
+/** Fetch the profile row from DB and merge with the base user object */
+async function loadUserWithProfile(session, setUser) {
+  const base = mapSupabaseUser(session);
+  if (!base) return;
+  try {
+    const { data } = await supabase
+      .from("profiles")
+      .select("role, name, department, status, avatar, avatar_text")
+      .eq("id", base.id)
+      .single();
+    setUser({ ...base, ...(data ?? {}) });
+  } catch {
+    // No profile row yet — use base (trigger will create it shortly)
+    setUser(base);
+  }
+}
+
+// ============================================================
 // MAIN APP
 // ============================================================
 export default function App() {
   const [user, setUser] = useState(null);
+  const [isLoading, setIsLoading] = useState(true); // true until auth resolves
   const [activePage, setActivePage] = useState("dashboard");
   const [employees, setEmployees] = useState(initialEmployees);
   const [shifts, setShifts] = useState(initialShifts);
@@ -1859,6 +1899,39 @@ export default function App() {
   const [agentProfile, setAgentProfile] = useState(null);
   const isAdmin      = isAdminUser(user);
   const isSuperAdminUser = isSuperAdmin(user);
+
+  /** Redirect users without the required role back to dashboard */
+  const guardPage = useCallback((allowedRoles, component) => {
+    if (!user) return null;
+    if (allowedRoles.includes(user.role)) return component;
+    // Staff tried to access an admin URL — bounce them out
+    setTimeout(() => setActivePage("dashboard"), 0);
+    return null;
+  }, [user]);
+
+  // ── Supabase session persistence ────────────────────────────────────────────
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase) {
+      setIsLoading(false); // offline / demo mode
+      return;
+    }
+    // Restore session that already exists (survives F5)
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session) loadUserWithProfile(session, setUser);
+      setIsLoading(false);
+    });
+    // Keep state in sync with future sign-in / sign-out events
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      (_event, session) => {
+        if (session) {
+          loadUserWithProfile(session, setUser);
+        } else {
+          setUser(null);
+        }
+      }
+    );
+    return () => subscription.unsubscribe();
+  }, []);
 
   // Load agent profile from localStorage when user logs in / out
   useEffect(() => {
@@ -1890,6 +1963,29 @@ export default function App() {
   const dateStr = `${days[today.getDay()]}, ${today.getDate()}/${
     today.getMonth() + 1
   }/${today.getFullYear()}`;
+
+  // ── Auth loading spinner (prevents flash of login screen on F5) ────────────
+  if (isLoading)
+    return (
+      <>
+        <style>{css}</style>
+        <style>{`@keyframes di-spin { to { transform: rotate(360deg); } }`}</style>
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "center",
+          height: "100vh", background: "#0a0a0a", flexDirection: "column", gap: 16,
+          fontFamily: "Heebo, sans-serif",
+        }}>
+          <div style={{
+            width: 48, height: 48,
+            border: "4px solid #2a2a2a",
+            borderTop: "4px solid #C9A96E",
+            borderRadius: "50%",
+            animation: "di-spin 0.8s linear infinite",
+          }} />
+          <div style={{ color: "#C9A96E", fontSize: 14 }}>טוען...</div>
+        </div>
+      </>
+    );
 
   if (!user)
     return (
@@ -1950,11 +2046,17 @@ export default function App() {
           />
         );
       case "admin":
-        if (!isAdmin) return null;
-        return <AdminPanel user={user} mockUsers={MOCK_USERS} />;
+        // admin + super_admin can access panel; staff/manager → redirected
+        return guardPage(
+          ["admin", "super_admin"],
+          <AdminPanel user={user} mockUsers={MOCK_USERS} />
+        );
       case "users_mgmt":
-        if (!isAdmin) return null;
-        return <UserManagement currentUser={user} />;
+        // only super_admin manages users
+        return guardPage(
+          ["super_admin"],
+          <UserManagement currentUser={user} />
+        );
       default:
         return null;
     }

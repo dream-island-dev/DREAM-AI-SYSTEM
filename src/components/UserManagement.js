@@ -85,16 +85,17 @@ function StatusPill({ status }) {
   );
 }
 
-// Shared dropdown style builder
+// Shared dropdown style builder (box-sizing ensures width:100% works on iOS)
 function dropdownStyle(bg, color) {
   return {
-    width: "100%", padding: "11px 14px",
+    width: "100%", boxSizing: "border-box", padding: "11px 14px",
     border: "1.5px solid var(--border)", borderRadius: 8,
     fontFamily: "Heebo, sans-serif", fontSize: 14, fontWeight: 600,
     cursor: "pointer", outline: "none",
     background: bg ?? "var(--card-bg)",
     color: color ?? "var(--text-main)",
     appearance: "none", WebkitAppearance: "none",
+    MozAppearance: "none",
   };
 }
 
@@ -107,6 +108,7 @@ function UserCard({ u, isSelf, saving, canEdit, onUpdate, onToggle }) {
 
   return (
     <div style={{
+      width: "100%", boxSizing: "border-box",
       background: "var(--card-bg)",
       border: "1px solid var(--border)",
       borderRadius: 14,
