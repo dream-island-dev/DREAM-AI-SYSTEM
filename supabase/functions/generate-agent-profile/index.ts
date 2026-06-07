@@ -14,7 +14,8 @@ const CORS = {
 };
 
 // ── Model router: Gemini (primary) → Claude (fallback) ────────────────────────
-const GEMINI_MODEL = "gemini-2.5-pro";
+// gemini-2.5-flash is free-tier eligible; 2.5-pro requires billing (429 limit:0).
+const GEMINI_MODEL = "gemini-2.5-flash";
 const CLAUDE_MODEL = "claude-sonnet-4-6";
 
 /** Single-shot text generation via Gemini, throws on any failure. */

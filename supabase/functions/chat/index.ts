@@ -59,7 +59,9 @@ async function fetchDriveContext(
 // Anthropic Claude. The system runs end-to-end on Claude alone until the Gemini
 // key is added — zero downtime when it arrives.
 
-const GEMINI_MODEL = "gemini-2.5-pro";        // latest 2.x Pro
+// gemini-2.5-flash is available on the free tier; 2.5-pro / 2.0 require billing
+// (returned 429 limit:0). Swap back to gemini-2.5-pro once billing is enabled.
+const GEMINI_MODEL = "gemini-2.5-flash";      // primary engine (free-tier ok)
 const CLAUDE_MODEL = "claude-sonnet-4-6";     // fallback engine
 
 type ChatMsg = { role: "user" | "assistant"; content: string };
