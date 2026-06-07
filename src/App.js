@@ -1945,13 +1945,11 @@ function usePersistentState(table, initialMock) {
         if (!active) return;
         if (error) {
           console.error(`[persist] load ${table}:`, error.message);
-        } else if (Array.isArray(rows) && rows.length > 0) {
+        } else if (Array.isArray(rows)) {
+          // Use whatever is in the DB — including an empty array, so a clean
+          // database stays clean. Demo data is added manually via the
+          // "Seed demo data" control in the Admin panel.
           setDataRaw(rows);
-        } else {
-          // Empty table → seed with mock data so the dashboard isn't blank.
-          const { error: seedErr } = await supabase.from(table).upsert(initialMock);
-          if (seedErr) console.error(`[persist] seed ${table}:`, seedErr.message);
-          if (active) setDataRaw(initialMock);
         }
       } catch (e) {
         console.error(`[persist] ${table}:`, e?.message);
@@ -2018,6 +2016,23 @@ export default function App() {
     setTimeout(() => setActivePage("dashboard"), 0);
     return null;
   }, [user]);
+
+  // ── Demo-data controls (Admin panel) ────────────────────────────────────────
+  // Reuse the persistent setters: setX(rows) upserts adds/changes, setX([])
+  // deletes everything — so these sync the DB and the UI in one shot.
+  const seedDemoData = useCallback(() => {
+    setEmployees(initialEmployees);
+    setShifts(initialShifts);
+    setCalls(initialCalls);
+    setChecklist(initialChecklists);
+  }, [setEmployees, setShifts, setCalls, setChecklist]);
+
+  const clearAllData = useCallback(() => {
+    setEmployees([]);
+    setShifts([]);
+    setCalls([]);
+    setChecklist([]);
+  }, [setEmployees, setShifts, setCalls, setChecklist]);
 
   // ── Supabase session persistence ────────────────────────────────────────────
   useEffect(() => {
@@ -2173,7 +2188,13 @@ export default function App() {
         // admin + super_admin can access panel; staff/manager → redirected
         return guardPage(
           ["admin", "super_admin"],
-          <AdminPanel user={user} mockUsers={MOCK_USERS} />
+          <AdminPanel
+            user={user}
+            mockUsers={MOCK_USERS}
+            canManageData={isSuperAdminUser}
+            onSeedDemo={seedDemoData}
+            onClearData={clearAllData}
+          />
         );
       case "users_mgmt":
         // only super_admin manages users

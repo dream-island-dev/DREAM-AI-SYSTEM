@@ -310,8 +310,13 @@ function UsersTab({ mockUsers }) {
 
 // ── Main AdminPanel ───────────────────────────────────────────────────────────
 
-export default function AdminPanel({ user, mockUsers }) {
+export default function AdminPanel({ user, mockUsers, canManageData, onSeedDemo, onClearData }) {
   const [tab, setTab] = useState("stats");
+
+  // The "data" tab (seed / clear demo data) is super-admin only.
+  const tabs = canManageData
+    ? [...TABS, { id: "data", icon: "📦", label: "נתונים" }]
+    : TABS;
 
   return (
     <div>
@@ -331,7 +336,7 @@ export default function AdminPanel({ user, mockUsers }) {
 
       {/* Tabs */}
       <div style={{ display: "flex", gap: 4, marginBottom: 24, borderBottom: `1px solid ${T.border}`, paddingBottom: 0 }}>
-        {TABS.map((t) => (
+        {tabs.map((t) => (
           <button key={t.id} onClick={() => setTab(t.id)}
             style={{
               padding: "10px 18px", border: "none", cursor: "pointer",
@@ -350,6 +355,82 @@ export default function AdminPanel({ user, mockUsers }) {
       {tab === "depts" && <DeptsTab />}
       {tab === "chats" && <ChatsTab />}
       {tab === "users" && <UsersTab mockUsers={mockUsers ?? []} />}
+      {tab === "data"  && <DataTab onSeedDemo={onSeedDemo} onClearData={onClearData} />}
+    </div>
+  );
+}
+
+// ── Data tab (seed / clear demo data) — super-admin only ──────────────────────
+
+function DataTab({ onSeedDemo, onClearData }) {
+  const [msg, setMsg] = useState(null);
+
+  const seed = () => {
+    try {
+      onSeedDemo?.();
+      setMsg({ ok: true, text: "✅ נתוני דמה הוזנו (עובדים, משמרות, קריאות, צ'קליסטים). הנתונים נשמרים אוטומטית ב-Supabase." });
+    } catch (e) {
+      setMsg({ ok: false, text: "שגיאה: " + (e?.message ?? e) });
+    }
+  };
+
+  const clear = () => {
+    const ok = window.confirm(
+      "⚠️ פעולה בלתי הפיכה!\n\nכל העובדים, המשמרות, הקריאות והצ'קליסטים יימחקו לצמיתות מבסיס הנתונים.\n\nלהמשיך?"
+    );
+    if (!ok) return;
+    try {
+      onClearData?.();
+      setMsg({ ok: true, text: "🗑️ כל נתוני התפעול נוקו. בסיס הנתונים נקי לחלוטין." });
+    } catch (e) {
+      setMsg({ ok: false, text: "שגיאה: " + (e?.message ?? e) });
+    }
+  };
+
+  return (
+    <div className="card">
+      <div className="card-header"><div className="card-title">📦 ניהול נתוני תפעול</div></div>
+      <div style={{ padding: 20 }}>
+        <p style={{ fontSize: 13, color: T.muted, lineHeight: 1.8, marginBottom: 20 }}>
+          כלים לאתחול בסיס הנתונים. <strong>הזנת נתוני דמה</strong> ממלאת את המערכת
+          בדוגמאות לבדיקה; <strong>ניקוי כל הנתונים</strong> מאפס למצב נקי לחלוטין
+          לקראת עבודה אמיתית. הפעולות חלות ישירות על Supabase.
+        </p>
+
+        {msg && (
+          <div style={{
+            marginBottom: 16, padding: "10px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600,
+            background: msg.ok ? "#E8F5EF" : "#FFF0EE",
+            color:      msg.ok ? "#1A7A4A" : "#C0392B",
+            border: `1px solid ${msg.ok ? "#1A7A4A" : "#C0392B"}`,
+          }}>
+            {msg.text}
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+          <button
+            onClick={seed}
+            style={{
+              padding: "12px 22px", borderRadius: 10, border: "none", cursor: "pointer",
+              fontFamily: "Heebo, sans-serif", fontSize: 14, fontWeight: 700,
+              background: "#E8F5EF", color: "#1A7A4A",
+            }}
+          >
+            🌱 הזן נתוני דמה
+          </button>
+          <button
+            onClick={clear}
+            style={{
+              padding: "12px 22px", borderRadius: 10, border: "none", cursor: "pointer",
+              fontFamily: "Heebo, sans-serif", fontSize: 14, fontWeight: 700,
+              background: "#FFF0EE", color: "#C0392B",
+            }}
+          >
+            🗑️ נקה את כל הנתונים
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
