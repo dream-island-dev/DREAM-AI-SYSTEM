@@ -185,7 +185,10 @@ export default function KnowledgeUploader({ user }) {
         },
       });
 
-      if (error) throw new Error(error.message ?? "edge_function_error");
+      // supabase.functions.invoke sets error.message = generic "Edge Function returned
+      // a non-2xx status code". The real error from the function body lives in data?.error.
+      // Always prefer data?.error so specific handlers (e.g. profile_no_department) work.
+      if (error) throw new Error(data?.error ?? error.message ?? "edge_function_error");
       if (!data?.ok) throw new Error(data?.error ?? "extraction_failed");
 
       const count = data.rules_extracted ?? 0;

@@ -115,9 +115,13 @@ export default function AgentQuestionnaire({ user, onComplete }) {
         const session = refreshData?.session ?? (await supabase.auth.getSession()).data.session;
 
         if (session) {
-          // Persist department to profiles table (idempotent RPC, SECURITY DEFINER)
+          // Persist department to profiles table (idempotent RPC, SECURITY DEFINER).
+          // NOTE: supabase.rpc() returns PostgrestBuilder (PromiseLike), NOT a native
+          // Promise — it has no .catch() method. Use try/catch instead.
           if (form.department) {
-            await supabase.rpc("set_my_department", { p_department: form.department }).catch(() => {});
+            try {
+              await supabase.rpc("set_my_department", { p_department: form.department });
+            } catch (_) { /* non-fatal — department write failure should not block agent creation */ }
           }
 
           const responses = { ...form, communication_style: form.tone };
