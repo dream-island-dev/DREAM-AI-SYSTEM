@@ -8,7 +8,18 @@ import { supabase, isSupabaseConfigured } from "../supabaseClient";
 // NOTE: xlsx (SheetJS) is large (~110KB gz). It is lazy-loaded on first parse
 // via dynamic import() so it never bloats the initial mobile bundle.
 
-const norm = (s) => String(s ?? "").trim().toLowerCase();
+// Normalise a header/alias string for fuzzy matching:
+//   1. lowercase + trim
+//   2. strip everything that is not ASCII alphanumeric OR Hebrew Unicode (U+0590–U+05FF)
+//      • removes spaces, dashes, slashes, apostrophes, geresh (׳), dots …
+//      • preserves Hebrew letters so Hebrew aliases still resolve
+// Both sides of every alias comparison go through this function, so
+// "room type" ↔ "roomtype", "שם אורח" ↔ "שםאורח", "check-in" ↔ "checkin" all match.
+const norm = (s) =>
+  String(s ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9֐-׿]/g, "");
 
 // ── EZGO-specific parsing helpers ─────────────────────────────────────────────
 
@@ -187,7 +198,11 @@ const TARGETS = {
 function mapHeaders(aliases, headers) {
   const map = {};
   for (const [col, al] of Object.entries(aliases)) {
-    const found = headers.find((h) => al.includes(norm(h)));
+    // Normalise BOTH sides: the raw header from the file AND each alias string.
+    // This means "room type" (file) matches "roomtype" (alias), "check-in" matches
+    // "checkin", and Hebrew variants with different spacing/punctuation all unify.
+    const normAliases = al.map(norm);
+    const found = headers.find((h) => normAliases.includes(norm(h)));
     if (found) map[col] = found;
   }
   return map;
@@ -269,18 +284,25 @@ export default function DataUpload({ onImported, user }) {
     if (missingRequired.length) return showToast("err", `חסרות עמודות חובה: ${missingRequired.join(", ")}`);
     if (!mappedRows.length) return showToast("err", "אין שורות תקינות לייבוא");
     setBusy(true);
-    const payload = mappedRows.map((r, i) => {
-      const row = target.transform(r, i);
-      // Tag every shift row with the manager's department
-      if (mode === "shifts" && managerDepartment) row.department = managerDepartment;
-      return row;
-    });
-    const { error } = await target.insert(payload);
-    setBusy(false);
-    if (error) return showToast("err", "שגיאה בייבוא: " + error.message);
-    showToast("ok", `✅ יובאו ${payload.length} רשומות בהצלחה`);
-    setRawRows([]); setHeaders([]); setFileName("");
-    onImported?.(mode);
+    try {
+      // transform() can throw on malformed dates / unexpected types — caught below
+      const payload = mappedRows.map((r, i) => {
+        const row = target.transform(r, i);
+        // Tag every shift row with the manager's department
+        if (mode === "shifts" && managerDepartment) row.department = managerDepartment;
+        return row;
+      });
+      const { error } = await target.insert(payload);
+      if (error) { showToast("err", "שגיאה בייבוא: " + error.message); return; }
+      showToast("ok", `✅ יובאו ${payload.length} רשומות בהצלחה`);
+      setRawRows([]); setHeaders([]); setFileName("");
+      onImported?.(mode);
+    } catch (err) {
+      showToast("err", "שגיאה בייבוא: " + (err?.message ?? String(err)));
+    } finally {
+      // Guaranteed reset — UI never freezes even if transform() or insert() throws
+      setBusy(false);
+    }
   };
 
   return (
