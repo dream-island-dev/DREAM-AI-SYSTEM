@@ -6,6 +6,7 @@ import AdminPanel from "./components/AdminPanel";
 import UserManagement from "./components/UserManagement";
 import DataUpload from "./components/DataUpload";
 import GuestsPage from "./components/GuestsPage";
+import ShiftGenerator from "./components/ShiftGenerator";
 import { isAdminUser, isSuperAdmin, loadDepartments } from "./utils/admin";
 import { supabase, isSupabaseConfigured, loadAgentProfile } from "./supabaseClient";
 
@@ -2210,6 +2211,8 @@ export default function App() {
         );
       case "guests":
         return <GuestsPage />;
+      case "scheduler":
+        return <ShiftGenerator onApproved={() => setActivePage("shifts")} />;
       case "upload":
         return (
           <DataUpload
