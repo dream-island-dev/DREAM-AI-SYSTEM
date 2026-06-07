@@ -10,6 +10,69 @@ import { supabase, isSupabaseConfigured } from "../supabaseClient";
 
 const norm = (s) => String(s ?? "").trim().toLowerCase();
 
+// ── EZGO-specific parsing helpers ─────────────────────────────────────────────
+
+/**
+ * Parses a date value from an EZGO Excel export into ISO YYYY-MM-DD.
+ * Handles four input forms that SheetJS + Israeli PMS systems produce:
+ *   1. JS Date object   — SheetJS auto-converts Excel date-formatted cells
+ *   2. ISO string       — "2026-06-07" or "2026/06/07"
+ *   3. Israeli string   — "07/06/2026" or "07.06.2026" (DD/MM/YYYY)
+ *   4. Excel serial     — numeric days-since-1900 (SheetJS raw:true for text cells)
+ */
+function parseEzgoDate(raw) {
+  if (!raw) return null;
+  // ── Form 1: JS Date (SheetJS parsed an Excel date-format cell) ──
+  if (raw instanceof Date) {
+    return isNaN(raw.getTime()) ? null : raw.toISOString().slice(0, 10);
+  }
+  const s = String(raw).trim();
+  if (!s) return null;
+  // ── Form 2: ISO — YYYY-MM-DD or YYYY/MM/DD ──
+  if (/^\d{4}[-\/]\d{2}[-\/]\d{2}/.test(s)) {
+    return s.slice(0, 10).replace(/\//g, "-");
+  }
+  // ── Form 3: Israeli — DD/MM/YYYY, DD.MM.YYYY, or DD-MM-YYYY ──
+  const dmy = s.match(/^(\d{1,2})[\/\.\-](\d{1,2})[\/\.\-](\d{2,4})$/);
+  if (dmy) {
+    const [, d, m, y] = dmy;
+    const year = y.length === 2 ? `20${y}` : y;
+    return `${year}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+  }
+  // ── Form 4: Excel numeric serial (days since 1900-01-00, base-25569 from Unix) ──
+  const serial = parseFloat(s);
+  if (!isNaN(serial) && serial > 1000) {
+    const d = new Date(Math.round((serial - 25569) * 86_400_000));
+    if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+  }
+  return null;
+}
+
+/**
+ * Normalises room-type strings to a standard value.
+ * Recognises Hebrew and English suite / deluxe / standard variants.
+ * Falls back to the raw value (lowercased) so non-standard types are preserved.
+ */
+function normalizeRoomType(raw) {
+  const s = String(raw ?? "");
+  if (/suite|סוויט|junior suite|penthouse|פנטהאוז|presidential|vip/i.test(s)) return "suite";
+  if (/deluxe|דלוקס/i.test(s)) return "deluxe";
+  if (/standard|סטנדרט|classic|קלאסי|basic/i.test(s)) return "standard";
+  const n = s.trim().toLowerCase();
+  return n || "standard";
+}
+
+/**
+ * Strips formatting from phone numbers (spaces, dashes, parentheses).
+ * Preserves leading + for international prefix.
+ * Returns null when the result has fewer than 9 digits (not a valid number).
+ */
+function sanitizePhone(raw) {
+  if (!raw) return null;
+  const cleaned = String(raw).replace(/[^\d+]/g, "");
+  return cleaned.length >= 9 ? cleaned : null;
+}
+
 const TARGETS = {
   guests: {
     label: "🛎️ צ'ק-אין אורחים",
@@ -32,6 +95,70 @@ const TARGETS = {
     }),
     insert: (rows) => supabase.from("guests").insert(rows), // identity id
   },
+  ezgo: {
+    label: "🏨 EZGO — הגעות VIP",
+    table: "guests",
+    required: ["name"],
+    // ── Column aliases ──────────────────────────────────────────────────────
+    // Each array is tried left-to-right against the normalised header string.
+    // Hebrew aliases are listed first (most likely in EZGO exports).
+    // English aliases follow for systems configured in English.
+    aliases: {
+      name: [
+        // Hebrew
+        "שם אורח", "שם מלא", "שם", "אורח", "שם האורח", "שם לקוח",
+        // English
+        "full name", "guest name", "guest", "name", "client name",
+        "customer name", "customer",
+      ],
+      phone: [
+        // Hebrew
+        "טלפון", "נייד", "טלפון נייד", "מספר טלפון", "מס׳ טלפון",
+        // English
+        "phone", "mobile", "cell", "phone number", "mobile number",
+        "telephone", "tel",
+      ],
+      room_type: [
+        // Hebrew
+        "סוג חדר", "סוג", "קטגוריה", "חבילה", "חדר", "סוויטה", "חדר סוויטה",
+        // English
+        "room type", "type", "room", "suite", "category", "package",
+        "accommodation type", "room category",
+      ],
+      room: [
+        // Hebrew
+        "מספר חדר", "חדר מס׳", "#חדר", "מס חדר", "מס׳ חדר", "מספר",
+        // English
+        "room number", "room no", "room #", "room num", "unit", "unit number",
+      ],
+      arrival_date: [
+        // Hebrew
+        "תאריך הגעה", "הגעה", "תאריך", "תאריך צ׳ק אין", "צ׳ק אין", "תאריך כניסה",
+        // English
+        "arrival date", "arrival", "check in", "check-in", "checkin",
+        "check in date", "arrival_date", "date", "in date",
+      ],
+      notes: [
+        // Hebrew
+        "הערות", "הערה", "בקשות מיוחדות", "הנחיות",
+        // English
+        "notes", "note", "special requests", "requests", "remarks", "comments",
+      ],
+    },
+    transform: (r) => ({
+      name:         String(r.name ?? "").trim(),
+      phone:        sanitizePhone(r.phone),
+      room:         r.room  ? String(r.room).trim()  : null,
+      room_type:    normalizeRoomType(r.room_type),
+      arrival_date: parseEzgoDate(r.arrival_date),
+      notes:        r.notes ? String(r.notes).trim() : null,
+      status:       "expected",
+      // msg_* flags default FALSE via DB column defaults.
+      // manager_id is auto-stamped by the set_guests_manager_id BEFORE INSERT trigger.
+    }),
+    insert: (rows) => supabase.from("guests").insert(rows),
+  },
+
   shifts: {
     label: "🕐 משמרות צוות",
     table: "shifts",

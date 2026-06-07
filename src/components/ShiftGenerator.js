@@ -56,6 +56,23 @@ export default function ShiftGenerator({ onApproved, user }) {
 
   const parsePast = useCallback((file) => {
     if (!file) return;
+
+    // Guard: mobile browsers sometimes ignore the accept attribute and let users
+    // pick any file. Catch PDFs early with a clear redirect message.
+    if (
+      file.type === "application/pdf" ||
+      file.name.toLowerCase().endsWith(".pdf")
+    ) {
+      showToast(
+        "err",
+        "קובץ PDF אינו נתמך כאן. סידור קודם יש להעלות בפורמט אקסל בלבד. " +
+        "נהלי עבודה ב-PDF יש להעלות דרך מרכז הגדרות הסוכן."
+      );
+      // Reset the hidden input so the same file can retrigger onChange if needed
+      if (inputRef.current) inputRef.current.value = "";
+      return;
+    }
+
     setPastName(file.name);
     const reader = new FileReader();
     reader.onload = async (e) => {
@@ -77,8 +94,10 @@ export default function ShiftGenerator({ onApproved, user }) {
       const { data, error } = await supabase.functions.invoke("generate-schedule", {
         body: { pastShifts, employees, constraints, weekStart, department: managerDepartment, managerId: user?.id },
       });
-      if (error) throw error;
-      if (!data?.ok) throw new Error(data?.error || "יצירת הסידור נכשלה");
+      // supabase.functions.invoke sets error.message to a generic string on non-2xx.
+      // The real error from the Edge Function body lives in data?.error — prefer it.
+      if (error) throw new Error(data?.error ?? error.message ?? "edge_function_error");
+      if (!data?.ok) throw new Error(data?.error ?? "יצירת הסידור נכשלה");
       setSchedule(data.schedule || []);
       setEngine(data.engine || null);
       if (!data.schedule?.length) showToast("err", "המודל לא החזיר משמרות — נסה לחדד אילוצים");

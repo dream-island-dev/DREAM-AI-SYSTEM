@@ -11,6 +11,7 @@ import { isAdminUser, isSuperAdmin, loadDepartments } from "./utils/admin";
 import { supabase, isSupabaseConfigured, loadAgentProfile } from "./supabaseClient";
 import { getPushState, subscribeToPush, unsubscribeFromPush, syncSubscriptionToSupabase } from "./utils/pushNotifications";
 import KnowledgeUploader from "./components/KnowledgeUploader";
+import GuestDashboard from "./components/GuestDashboard";
 
 // ============================================================
 // MOCK DATA - יוחלף ב-Supabase בגרסה האמיתית
@@ -780,15 +781,16 @@ function LoginPage({ onLogin }) {
 
 function Sidebar({ user, active, setActive, openCallsCount, onLogout, isAdmin, isSuperAdminUser }) {
   const navItems = [
-    { id: "dashboard", icon: "📊", label: "דאשבורד" },
-    { id: "shifts",    icon: "🕐", label: "משמרות" },
-    { id: "calls",     icon: "🔔", label: "קריאות שירות", badge: openCallsCount },
-    { id: "checklist", icon: "✅", label: "צ'קליסטים" },
-    { id: "employees", icon: "👥", label: "עובדים" },
-    { id: "guests",    icon: "🛎️", label: "אורחים" },
-    { id: "scheduler", icon: "🪄", label: "מחולל משמרות" },
-    { id: "upload",    icon: "📤", label: "העלאת נתונים" },
-    { id: "agent",     icon: "🤖", label: "הסוכן שלי" },
+    { id: "dashboard",  icon: "📊", label: "דאשבורד" },
+    { id: "shifts",     icon: "🕐", label: "משמרות" },
+    { id: "calls",      icon: "🔔", label: "קריאות שירות", badge: openCallsCount },
+    { id: "checklist",  icon: "✅", label: "צ'קליסטים" },
+    { id: "employees",  icon: "👥", label: "עובדים" },
+    { id: "vip_guests", icon: "🏨", label: "VIP אורחים EZGO" },
+    { id: "guests",     icon: "🛎️", label: "אורחים" },
+    { id: "scheduler",  icon: "🪄", label: "מחולל משמרות" },
+    { id: "upload",     icon: "📤", label: "העלאת נתונים" },
+    { id: "agent",      icon: "🤖", label: "הסוכן שלי" },
   ];
 
   return (
@@ -2158,16 +2160,17 @@ export default function App() {
   const openCallsCount = calls.filter((c) => c.status === "פתוח").length;
 
   const pageTitle = {
-    dashboard: "דאשבורד ראשי 📊",
-    shifts:    "סידור משמרות 🕐",
-    calls:     "קריאות שירות 🔔",
-    checklist: "צ'קליסטים יומיים ✅",
-    employees: "ניהול עובדים 👥",
-    guests:    "🛎️ ניהול אורחים",
-    scheduler: "🪄 מחולל משמרות AI",
-    upload:    "📤 העלאת נתונים",
-    agent:     agentProfile ? `${agentProfile.display_name} 🤖` : "הסוכן שלי 🤖",
-    admin:     "👑 ניהול מערכת",
+    dashboard:  "דאשבורד ראשי 📊",
+    shifts:     "סידור משמרות 🕐",
+    calls:      "קריאות שירות 🔔",
+    checklist:  "צ'קליסטים יומיים ✅",
+    employees:  "ניהול עובדים 👥",
+    vip_guests: "🏨 EZGO — אורחי VIP",
+    guests:     "🛎️ ניהול אורחים",
+    scheduler:  "🪄 מחולל משמרות AI",
+    upload:     "📤 העלאת נתונים",
+    agent:      agentProfile ? `${agentProfile.display_name} 🤖` : "הסוכן שלי 🤖",
+    admin:      "👑 ניהול מערכת",
     users_mgmt: "👥 ניהול משתמשים",
   };
 
@@ -2253,6 +2256,8 @@ export default function App() {
         return (
           <EmployeesPage employees={employees} setEmployees={setEmployees} />
         );
+      case "vip_guests":
+        return <GuestDashboard user={user} />;
       case "guests":
         return <GuestsPage />;
       case "scheduler":
@@ -2261,7 +2266,12 @@ export default function App() {
         return (
           <DataUpload
             user={user}
-            onImported={(mode) => setActivePage(mode === "guests" ? "guests" : "shifts")}
+            onImported={(mode) =>
+              setActivePage(
+                mode === "ezgo"   ? "vip_guests" :
+                mode === "guests" ? "guests"     : "shifts"
+              )
+            }
           />
         );
       case "agent":
@@ -2304,11 +2314,11 @@ export default function App() {
   };
 
   const mobileNav = [
-    { id: "dashboard", icon: "📊", label: "ראשי" },
-    { id: "shifts", icon: "🕐", label: "משמרות" },
-    { id: "calls", icon: "🔔", label: "קריאות" },
-    { id: "checklist", icon: "✅", label: "צ'קליסט" },
-    { id: "agent", icon: "🤖", label: "סוכן" },
+    { id: "dashboard",  icon: "📊", label: "ראשי" },
+    { id: "shifts",     icon: "🕐", label: "משמרות" },
+    { id: "vip_guests", icon: "🏨", label: "VIP" },
+    { id: "calls",      icon: "🔔", label: "קריאות" },
+    { id: "agent",      icon: "🤖", label: "סוכן" },
   ];
 
   return (
