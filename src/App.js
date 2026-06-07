@@ -9,6 +9,7 @@ import GuestsPage from "./components/GuestsPage";
 import ShiftGenerator from "./components/ShiftGenerator";
 import { isAdminUser, isSuperAdmin, loadDepartments } from "./utils/admin";
 import { supabase, isSupabaseConfigured, loadAgentProfile } from "./supabaseClient";
+import { getPushState, subscribeToPush, unsubscribeFromPush, syncSubscriptionToSupabase } from "./utils/pushNotifications";
 
 // ============================================================
 // MOCK DATA - יוחלף ב-Supabase בגרסה האמיתית
@@ -2033,6 +2034,8 @@ export default function App() {
   const [agentProfile, setAgentProfile] = useState(null);
   // Controls the settings/questionnaire modal overlay (keeps chat mounted underneath)
   const [showQuestionnaire, setShowQuestionnaire] = useState(false);
+  // Push notification state: 'unsupported'|'unsubscribed'|'subscribed'|'denied'|'loading'
+  const [pushState, setPushState] = useState("loading");
   const isAdmin      = isAdminUser(user);
   const isSuperAdminUser = isSuperAdmin(user);
 
@@ -2097,6 +2100,38 @@ export default function App() {
     );
     return () => subscription.unsubscribe();
   }, []);
+
+  // ── Push state: initialise when user logs in, clear on logout ───────────────
+  useEffect(() => {
+    if (!user) { setPushState("loading"); return; }
+    getPushState().then(setPushState);
+
+    // Listen for subscription-change events dispatched by index.js ↔ SW bridge
+    const onSubChanged = async (e) => {
+      if (!supabase || !user?.id) return;
+      try { await syncSubscriptionToSupabase(supabase, user.id, e.detail); } catch {}
+      setPushState("subscribed");
+    };
+    window.addEventListener("pushsubscriptionchanged", onSubChanged);
+    return () => window.removeEventListener("pushsubscriptionchanged", onSubChanged);
+  }, [user]);
+
+  // Push toggle handler called by the bell button
+  const handlePushToggle = async () => {
+    if (!user?.id) return;
+    setPushState("loading");
+    try {
+      if (pushState === "subscribed") {
+        await unsubscribeFromPush(supabase, user.id);
+        setPushState("unsubscribed");
+      } else {
+        await subscribeToPush(supabase, user.id);
+        setPushState("subscribed");
+      }
+    } catch (err) {
+      setPushState(err.message === "permission_denied" ? "denied" : await getPushState());
+    }
+  };
 
   // Load agent profile when user logs in / out.
   // Supabase first (so the agent syncs across devices), localStorage fallback.
@@ -2292,6 +2327,39 @@ export default function App() {
               <div className="topbar-title">{pageTitle[activePage]}</div>
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                 <div className="topbar-date">{dateStr}</div>
+
+                {/* ── Push notification bell ────────────────────────── */}
+                {pushState !== "unsupported" && (() => {
+                  const bellMap = {
+                    loading:      { icon: "🔔", label: "...",              color: "var(--text-muted)", disabled: true  },
+                    unsubscribed: { icon: "🔔", label: "הפעל התראות",     color: "var(--gold-dark)",  disabled: false },
+                    subscribed:   { icon: "🔔", label: "התראות פעילות",   color: "#1A7A4A",            disabled: false },
+                    denied:       { icon: "🔕", label: "חסומות בדפדפן",   color: "#C0392B",            disabled: true  },
+                    sw_missing:   { icon: "🔔", label: "הפעל התראות",     color: "var(--gold-dark)",  disabled: false },
+                  };
+                  const b = bellMap[pushState] || bellMap.loading;
+                  return (
+                    <button
+                      onClick={handlePushToggle}
+                      disabled={b.disabled}
+                      title={b.label}
+                      style={{
+                        border: `1px solid ${pushState === "subscribed" ? "#1A7A4A33" : "var(--border)"}`,
+                        background: pushState === "subscribed" ? "#E8F5EF" : "var(--card-bg)",
+                        borderRadius: 8, padding: "5px 10px", cursor: b.disabled ? "default" : "pointer",
+                        fontSize: 12, fontWeight: 700, color: b.color,
+                        fontFamily: "Heebo, sans-serif", display: "flex", alignItems: "center", gap: 5,
+                        opacity: b.disabled ? 0.6 : 1, transition: "all 0.2s", whiteSpace: "nowrap",
+                      }}
+                    >
+                      <span style={{ fontSize: 16 }}>{b.icon}</span>
+                      <span className="topbar-date" style={{ background: "none", border: "none", padding: 0, fontSize: 12, color: b.color }}>
+                        {b.label}
+                      </span>
+                    </button>
+                  );
+                })()}
+
                 {/* Account control — always visible (works on mobile too) */}
                 <div style={{
                   display: "flex", alignItems: "center", gap: 8,

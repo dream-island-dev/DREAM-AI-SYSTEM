@@ -64,6 +64,23 @@ serve(async (req: Request) => {
       }
     }
 
+    // ── Push notifications: alert reception manager when new WhatsApp triggers fire ──
+    if (results.some((r) => r.ok)) {
+      try {
+        await fetch(`${supabaseUrl}/functions/v1/push-notify`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", apikey: anon, Authorization: `Bearer ${anon}` },
+          body: JSON.stringify({
+            department: "reception",
+            title: "עדכון WhatsApp",
+            body: `נשלחו ${results.filter((r) => r.ok).length} הודעות אוטומטיות לאורחים`,
+            tag: "whatsapp-cron",
+            url: "/",
+          }),
+        });
+      } catch { /* best-effort — push failure must not break cron */ }
+    }
+
     return new Response(JSON.stringify({ ok: true, scanned: guests?.length ?? 0, fired: results.length, results }), {
       headers: { ...CORS, "Content-Type": "application/json" },
     });
