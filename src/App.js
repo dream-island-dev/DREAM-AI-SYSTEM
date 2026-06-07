@@ -606,6 +606,7 @@ const css = `
     .main { margin-right: 0; padding-bottom: 80px; }
     .mobile-bar { display: block; }
     .topbar { padding: 14px 18px; }
+    .topbar-date { display: none; } /* free up room for the account control */
     .content { padding: 16px; }
     .stat-grid { grid-template-columns: repeat(2, 1fr); gap: 12px; }
     .form-grid { grid-template-columns: 1fr; }
@@ -2049,6 +2050,18 @@ export default function App() {
     setChecklist([]);
   }, [setEmployees, setShifts, setCalls, setChecklist]);
 
+  // ── Logout (shared by Sidebar + Topbar) ──────────────────────────────────────
+  // Also disables Google auto-select so the next login shows the account chooser
+  // (lets the user switch between Google accounts cleanly).
+  const handleLogout = useCallback(async () => {
+    try { window.google?.accounts?.id?.disableAutoSelect?.(); } catch {}
+    if (isSupabaseConfigured && supabase) {
+      try { await supabase.auth.signOut(); } catch {}
+    }
+    setUser(null);
+    setActivePage("dashboard");
+  }, []);
+
   // ── Supabase session persistence ────────────────────────────────────────────
   useEffect(() => {
     if (!isSupabaseConfigured || !supabase) {
@@ -2247,13 +2260,7 @@ export default function App() {
             active={activePage}
             setActive={setActivePage}
             openCallsCount={openCallsCount}
-            onLogout={async () => {
-              // Sign out of Supabase so the session isn't restored on refresh.
-              if (isSupabaseConfigured && supabase) {
-                try { await supabase.auth.signOut(); } catch {}
-              }
-              setUser(null);
-            }}
+            onLogout={handleLogout}
             isAdmin={isAdmin}
             isSuperAdminUser={isSuperAdminUser}
           />
@@ -2262,18 +2269,44 @@ export default function App() {
               <div className="topbar-title">{pageTitle[activePage]}</div>
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                 <div className="topbar-date">{dateStr}</div>
-                <div
-                  style={{
-                    width: 6,
-                    height: 6,
-                    borderRadius: "50%",
-                    background: "#C9A96E",
-                  }}
-                />
-                <div
-                  style={{ fontSize: 12, color: "#A8843A", fontWeight: 700 }}
-                >
-                  Dream Island
+                {/* Account control — always visible (works on mobile too) */}
+                <div style={{
+                  display: "flex", alignItems: "center", gap: 8,
+                  paddingInlineStart: 12, borderInlineStart: "1px solid var(--border)",
+                }}>
+                  <div
+                    title={user.email}
+                    style={{
+                      width: 30, height: 30, borderRadius: "50%", flexShrink: 0,
+                      background: "linear-gradient(135deg, var(--gold), var(--gold-dark))",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      fontSize: 12, fontWeight: 800, color: "#0F0F0F", overflow: "hidden",
+                    }}
+                  >
+                    {user.avatar && /^https?:\/\//.test(user.avatar)
+                      ? <img src={user.avatar} alt={user.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                      : (user.avatar_text || user.avatar || (user.name || "?")[0])}
+                  </div>
+                  <div style={{ lineHeight: 1.2, maxWidth: 130, overflow: "hidden" }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: "var(--black)", whiteSpace: "nowrap", textOverflow: "ellipsis", overflow: "hidden" }}>
+                      {user.name}
+                    </div>
+                    <div style={{ fontSize: 10, color: isSuperAdminUser ? "var(--gold-dark)" : "var(--text-muted)", fontWeight: 600 }}>
+                      {isSuperAdminUser ? "👑 בעלים" : isAdmin ? "מנהל" : "צוות"}
+                    </div>
+                  </div>
+                  <button
+                    onClick={handleLogout}
+                    title="התנתקות"
+                    style={{
+                      border: "1px solid var(--border)", background: "var(--card-bg)",
+                      borderRadius: 8, padding: "6px 10px", cursor: "pointer",
+                      fontSize: 13, fontWeight: 700, color: "#C0392B",
+                      fontFamily: "Heebo, sans-serif", whiteSpace: "nowrap",
+                    }}
+                  >
+                    🚪 יציאה
+                  </button>
                 </div>
               </div>
             </div>
