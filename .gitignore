@@ -12,3 +12,7 @@ node_modules
 
 # Supabase CLI local temp
 supabase/.temp/
+
+# temp SQL runner
+.run-sql.mjs
+.verify.sql
