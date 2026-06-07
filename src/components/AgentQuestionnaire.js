@@ -117,7 +117,7 @@ export default function AgentQuestionnaire({ user, onComplete }) {
         if (session) {
           // Persist department to profiles table (idempotent RPC, SECURITY DEFINER)
           if (form.department) {
-            await supabase.rpc("set_my_department", { p_department: form.department }).catch(() => {});
+            await supabase.rpc("set_my_department", { p_department: form.department }).then(null, () => {});
           }
 
           const responses = { ...form, communication_style: form.tone };
