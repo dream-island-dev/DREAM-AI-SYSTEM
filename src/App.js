@@ -4,6 +4,8 @@ import AgentQuestionnaire from "./components/AgentQuestionnaire";
 import AgentChat from "./components/AgentChat";
 import AdminPanel from "./components/AdminPanel";
 import UserManagement from "./components/UserManagement";
+import DataUpload from "./components/DataUpload";
+import GuestsPage from "./components/GuestsPage";
 import { isAdminUser, isSuperAdmin, loadDepartments } from "./utils/admin";
 import { supabase, isSupabaseConfigured, loadAgentProfile } from "./supabaseClient";
 
@@ -776,6 +778,9 @@ function Sidebar({ user, active, setActive, openCallsCount, onLogout, isAdmin, i
     { id: "calls",     icon: "🔔", label: "קריאות שירות", badge: openCallsCount },
     { id: "checklist", icon: "✅", label: "צ'קליסטים" },
     { id: "employees", icon: "👥", label: "עובדים" },
+    { id: "guests",    icon: "🛎️", label: "אורחים" },
+    { id: "scheduler", icon: "🪄", label: "מחולל משמרות" },
+    { id: "upload",    icon: "📤", label: "העלאת נתונים" },
     { id: "agent",     icon: "🤖", label: "הסוכן שלי" },
   ];
 
@@ -2113,6 +2118,9 @@ export default function App() {
     calls:     "קריאות שירות 🔔",
     checklist: "צ'קליסטים יומיים ✅",
     employees: "ניהול עובדים 👥",
+    guests:    "🛎️ ניהול אורחים",
+    scheduler: "🪄 מחולל משמרות AI",
+    upload:    "📤 העלאת נתונים",
     agent:     agentProfile ? `${agentProfile.display_name} 🤖` : "הסוכן שלי 🤖",
     admin:     "👑 ניהול מערכת",
     users_mgmt: "👥 ניהול משתמשים",
@@ -2199,6 +2207,14 @@ export default function App() {
       case "employees":
         return (
           <EmployeesPage employees={employees} setEmployees={setEmployees} />
+        );
+      case "guests":
+        return <GuestsPage />;
+      case "upload":
+        return (
+          <DataUpload
+            onImported={(mode) => setActivePage(mode === "guests" ? "guests" : "shifts")}
+          />
         );
       case "agent":
         if (!agentProfile) {
