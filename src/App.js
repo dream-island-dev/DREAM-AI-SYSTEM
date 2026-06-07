@@ -5,7 +5,7 @@ import AgentChat from "./components/AgentChat";
 import AdminPanel from "./components/AdminPanel";
 import UserManagement from "./components/UserManagement";
 import { isAdminUser, isSuperAdmin, loadDepartments } from "./utils/admin";
-import { supabase, isSupabaseConfigured } from "./supabaseClient";
+import { supabase, isSupabaseConfigured, loadAgentProfile } from "./supabaseClient";
 
 // ============================================================
 // MOCK DATA - יוחלף ב-Supabase בגרסה האמיתית
@@ -650,7 +650,22 @@ function LoginPage({ onLogin }) {
 
   // אתחול כפתור Google Sign-In
   useEffect(() => {
-    initGoogleSignIn((cred) => {
+    initGoogleSignIn(async (cred) => {
+      // Preferred path: exchange the Google ID token for a REAL Supabase
+      // session. This fires the handle_new_auth_user trigger (creates the
+      // profile + assigns the role) and unlocks all RLS-protected writes.
+      // App()'s onAuthStateChange then picks up the session and sets the user.
+      if (isSupabaseConfigured && supabase) {
+        const { error } = await supabase.auth.signInWithIdToken({
+          provider: "google",
+          token: cred.credential,
+        });
+        if (!error) return; // onAuthStateChange handles setUser + profile load
+        console.error("signInWithIdToken failed → local fallback:", error.message);
+      }
+
+      // Fallback (offline/demo, or auth error): decode the token locally.
+      // NOTE: default role is 'staff' — never auto-grant admin client-side.
       const profile = decodeJwt(cred.credential);
       const gEmail = (profile.email || "").toLowerCase();
       const matched = MOCK_USERS.find(
@@ -666,7 +681,7 @@ function LoginPage({ onLogin }) {
         .map((n) => n[0])
         .join("")
         .slice(0, 2);
-      onLogin({ id: Date.now(), name, role: "admin", email: gEmail, avatar: initials });
+      onLogin({ id: Date.now(), name, role: "staff", email: gEmail, avatar: initials });
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -2058,16 +2073,23 @@ export default function App() {
     return () => subscription.unsubscribe();
   }, []);
 
-  // Load agent profile from localStorage when user logs in / out
+  // Load agent profile when user logs in / out.
+  // Supabase first (so the agent syncs across devices), localStorage fallback.
   useEffect(() => {
-    if (user) {
+    let active = true;
+    if (!user) { setAgentProfile(null); return; }
+    (async () => {
       try {
-        const stored = localStorage.getItem(`agent_profile_${user.id}`);
-        if (stored) setAgentProfile(JSON.parse(stored));
-      } catch {}
-    } else {
-      setAgentProfile(null);
-    }
+        const profile = await loadAgentProfile(user.id); // Supabase → localStorage
+        if (active && profile) setAgentProfile(profile);
+      } catch {
+        try {
+          const stored = localStorage.getItem(`agent_profile_${user.id}`);
+          if (active && stored) setAgentProfile(JSON.parse(stored));
+        } catch {}
+      }
+    })();
+    return () => { active = false; };
   }, [user]);
 
   const openCallsCount = calls.filter((c) => c.status === "פתוח").length;

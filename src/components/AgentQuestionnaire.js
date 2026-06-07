@@ -3,6 +3,7 @@
 // Fields: name, role, repetitive, questions, sources, tools, dream, tone, email, phone, notes.
 import { useState } from "react";
 import { buildDemoProfile } from "../data/demoAgentProfile";
+import { supabase, isSupabaseConfigured } from "../supabaseClient";
 
 const TONE_OPTIONS = [
   { value: "professional", label: "מקצועי ורשמי", desc: "ענייני, מדויק, ללא עיגולי פינות" },
@@ -60,6 +61,7 @@ export default function AgentQuestionnaire({ user, onComplete }) {
     questions: "",
     sources: "",
     tools: "",
+    driveUrl: "",
     dream: "",
     tone: "",
     email: user?.email || "",
@@ -91,26 +93,62 @@ export default function AgentQuestionnaire({ user, onComplete }) {
   const handleSubmit = async () => {
     if (!validate()) return;
     setGenerating(true);
+    setErrors({});
 
-    await new Promise((r) => setTimeout(r, 1200));
+    try {
+      // ── Preferred path: real Supabase session → generate + persist in DB ──
+      if (isSupabaseConfigured && supabase) {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session) {
+          const responses = { ...form, communication_style: form.tone };
+          const { data, error } = await supabase.functions.invoke(
+            "generate-agent-profile",
+            {
+              body: {
+                responses,
+                department: form.role,
+                managerName: form.name,
+                driveFolderUrl: form.driveUrl || null,
+              },
+            }
+          );
+          if (error) throw error;
+          if (data?.ok && data.agentProfile) {
+            // Cache locally too (instant load), but the source of truth is the DB.
+            localStorage.setItem(
+              `agent_profile_${user?.id}`,
+              JSON.stringify(data.agentProfile)
+            );
+            setGenerating(false);
+            onComplete(data.agentProfile);
+            return;
+          }
+          throw new Error(data?.error || "יצירת הסוכן נכשלה בשרת");
+        }
+      }
 
-    const systemPrompt = buildSystemPrompt(form);
-    const profile = {
-      id: `profile_${user?.id}_${Date.now()}`,
-      manager_id: user?.id,
-      department: form.role,
-      display_name: `סוכן של ${form.name}`,
-      system_prompt: systemPrompt,
-      drive_folder_url: null,
-      personality_traits: { communication_style: form.tone },
-      is_active: true,
-      created_at: new Date().toISOString(),
-      _questionnaire: form,
-    };
-
-    localStorage.setItem(`agent_profile_${user?.id}`, JSON.stringify(profile));
-    setGenerating(false);
-    onComplete(profile);
+      // ── Fallback: offline / demo (no Supabase session) → build locally ──
+      await new Promise((r) => setTimeout(r, 1000));
+      const systemPrompt = buildSystemPrompt(form);
+      const profile = {
+        id: `profile_${user?.id}_${Date.now()}`,
+        manager_id: user?.id,
+        department: form.role,
+        display_name: `סוכן של ${form.name}`,
+        system_prompt: systemPrompt,
+        drive_folder_url: form.driveUrl || null,
+        personality_traits: { communication_style: form.tone },
+        is_active: true,
+        created_at: new Date().toISOString(),
+        _questionnaire: form,
+      };
+      localStorage.setItem(`agent_profile_${user?.id}`, JSON.stringify(profile));
+      setGenerating(false);
+      onComplete(profile);
+    } catch (e) {
+      setGenerating(false);
+      setErrors({ submit: "שגיאה ביצירת הסוכן: " + (e?.message ?? e) });
+    }
   };
 
   if (generating) {
@@ -233,6 +271,19 @@ export default function AgentQuestionnaire({ user, onComplete }) {
           {field("שאלות שחוזרות מהצוות", "questions", "אילו שאלות הצוות שואל אותך לעתים קרובות?\nלדוגמה: מה לוח השמרות? מה הפרוטוקול ל...?", false, true)}
           {field("מקורות מידע", "sources", "מאיפה אתה מקבל מידע? (ווטסאפ, אקסל, מערכות, דוחות...)", false, true)}
           {field("כלים ומערכות", "tools", "אילו כלים אתה משתמש בהם? (Gmail, WhatsApp, Google Sheets...)", false, true)}
+          <div className="form-field">
+            <label>📁 קישור לתיקיית Google Drive (לחיפוש חכם במסמכים)</label>
+            <input
+              type="text"
+              placeholder="https://drive.google.com/drive/folders/..."
+              value={form.driveUrl}
+              onChange={set("driveUrl")}
+              dir="ltr"
+            />
+            <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+              הסוכן יחפש תשובות במסמכים שבתיקייה זו (RAG). אפשר להשאיר ריק.
+            </div>
+          </div>
 
           <div style={{ height: 1, background: "var(--border)", margin: "20px 0" }} />
 
@@ -274,6 +325,14 @@ export default function AgentQuestionnaire({ user, onComplete }) {
         </div>
       </div>
 
+      {errors.submit && (
+        <div style={{
+          background: "#FFF0EE", border: "1px solid #C0392B", color: "#C0392B",
+          borderRadius: 8, padding: "10px 14px", marginBottom: 12, fontSize: 13, fontWeight: 600,
+        }}>
+          {errors.submit}
+        </div>
+      )}
       <div style={{ display: "flex", justifyContent: "flex-end" }}>
         <button className="btn btn-primary" onClick={handleSubmit} style={{ minWidth: 180, fontSize: 15 }}>
           🚀 צור את הסוכן שלי
