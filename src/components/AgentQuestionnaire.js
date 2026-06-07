@@ -5,6 +5,15 @@ import { useState } from "react";
 import { buildDemoProfile } from "../data/demoAgentProfile";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 
+// Department options — values match the DB enum constraint in profiles.department
+const DEPT_OPTIONS = [
+  { value: "housekeeping", emoji: "🛏️", label: "ניקיון וחדרים",  desc: "תורנויות, מצעים, בקרת איכות חדרים" },
+  { value: "maintenance",  emoji: "🔧", label: "תחזוקה",          desc: "תקלות, ציוד, תחזוקה מונעת" },
+  { value: "reception",    emoji: "🏨", label: "קבלה ופרונט",     desc: "צ׳ק-אין, הזמנות, שירות אורחים" },
+  { value: "spa",          emoji: "💆", label: "ספא ובריאות",     desc: "טיפולים, תורים, מטפלים" },
+  { value: "management",   emoji: "📋", label: "ניהול כללי",      desc: "ניהול רוחבי, KPIs, תקצוב" },
+];
+
 const TONE_OPTIONS = [
   { value: "professional", label: "מקצועי ורשמי", desc: "ענייני, מדויק, ללא עיגולי פינות" },
   { value: "friendly",     label: "חברותי ותומך",  desc: "חם, מעודד, פתוח לדיאלוג" },
@@ -56,7 +65,8 @@ ${TONE_LABEL[f.tone] || "מקצועי ורשמי"}
 export default function AgentQuestionnaire({ user, onComplete }) {
   const [form, setForm] = useState({
     name: user?.name || "",
-    role: "",
+    department: "",          // enum: housekeeping | maintenance | reception | spa | management
+    role: "",                // free-text job title, e.g. "מנהלת קבלה"
     repetitive: "",
     questions: "",
     sources: "",
@@ -76,10 +86,11 @@ export default function AgentQuestionnaire({ user, onComplete }) {
 
   const validate = () => {
     const e = {};
-    if (!form.name.trim())       e.name = "שדה חובה";
-    if (!form.role.trim())       e.role = "שדה חובה";
-    if (!form.repetitive.trim()) e.repetitive = "שדה חובה";
-    if (!form.tone)              e.tone = "בחר סגנון";
+    if (!form.department)          e.department = "חובה לבחור מחלקה";
+    if (!form.name.trim())         e.name = "שדה חובה";
+    if (!form.role.trim())         e.role = "שדה חובה";
+    if (!form.repetitive.trim())   e.repetitive = "שדה חובה";
+    if (!form.tone)                e.tone = "בחר סגנון";
     setErrors(e);
     return Object.keys(e).length === 0;
   };
@@ -104,13 +115,19 @@ export default function AgentQuestionnaire({ user, onComplete }) {
         const session = refreshData?.session ?? (await supabase.auth.getSession()).data.session;
 
         if (session) {
+          // Persist department to profiles table (idempotent RPC, SECURITY DEFINER)
+          if (form.department) {
+            await supabase.rpc("set_my_department", { p_department: form.department }).catch(() => {});
+          }
+
           const responses = { ...form, communication_style: form.tone };
           const { data, error } = await supabase.functions.invoke(
             "generate-agent-profile",
             {
               body: {
                 responses,
-                department: form.role,
+                department: form.department,   // validated enum value
+                jobTitle:   form.role,         // free-text position/title
                 managerName: form.name,
                 driveFolderUrl: form.driveUrl || null,
               },
@@ -254,13 +271,43 @@ export default function AgentQuestionnaire({ user, onComplete }) {
       <div className="card" style={{ marginBottom: 20 }}>
         <div style={{ padding: 28 }}>
 
+          {/* Section: בחר מחלקה ─── FIRST, mandatory */}
+          <div style={{ fontSize: 11, fontWeight: 700, color: "var(--gold-dark)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 16 }}>
+            מחלקה <span style={{ color: "#C0392B" }}>*</span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 10, marginBottom: 6 }}>
+            {DEPT_OPTIONS.map((opt) => (
+              <div
+                key={opt.value}
+                onClick={() => setForm((f) => ({ ...f, department: opt.value }))}
+                style={{
+                  padding: "14px 12px", borderRadius: 12, cursor: "pointer", textAlign: "center",
+                  border: `2px solid ${form.department === opt.value ? "var(--gold)" : "var(--border)"}`,
+                  background: form.department === opt.value ? "rgba(201,169,110,0.1)" : "var(--card-bg)",
+                  transition: "all 0.18s",
+                }}
+              >
+                <div style={{ fontSize: 22, marginBottom: 6 }}>{opt.emoji}</div>
+                <div style={{ fontWeight: 700, fontSize: 13, color: "var(--black)", marginBottom: 3 }}>
+                  {form.department === opt.value ? "✓ " : ""}{opt.label}
+                </div>
+                <div style={{ fontSize: 11, color: "var(--text-muted)", lineHeight: 1.4 }}>{opt.desc}</div>
+              </div>
+            ))}
+          </div>
+          {errors.department && (
+            <div style={{ color: "#C0392B", fontSize: 12, marginBottom: 16, fontWeight: 600 }}>⚠️ {errors.department}</div>
+          )}
+
+          <div style={{ height: 1, background: "var(--border)", margin: "20px 0" }} />
+
           {/* Section: פרטים אישיים */}
           <div style={{ fontSize: 11, fontWeight: 700, color: "var(--gold-dark)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 16 }}>
             פרטים אישיים
           </div>
           <div className="form-grid">
             {field("שם מלא", "name", "לדוגמה: שירה לוי", true, false)}
-            {field("תפקיד", "role", "לדוגמה: מנהלת קבלה", true, false)}
+            {field("תפקיד / תואר תפקיד", "role", "לדוגמה: מנהלת קבלה, טכנאי ראשי", true, false)}
           </div>
           <div className="form-grid">
             <div className="form-field">

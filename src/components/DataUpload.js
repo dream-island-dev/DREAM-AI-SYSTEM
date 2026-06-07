@@ -3,7 +3,7 @@
 // Parses Daily Check-Ins (Guests) OR Staff Shifts client-side (SheetJS),
 // previews + auto-maps columns, then writes to Supabase.
 // Works from smartphone (file picker) and desktop (drag-drop).
-import { useState, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 // NOTE: xlsx (SheetJS) is large (~110KB gz). It is lazy-loaded on first parse
 // via dynamic import() so it never bloats the initial mobile bundle.
@@ -66,15 +66,35 @@ function mapHeaders(aliases, headers) {
   return map;
 }
 
-export default function DataUpload({ onImported }) {
-  const [mode, setMode]       = useState("guests");
-  const [rawRows, setRawRows] = useState([]);   // parsed objects keyed by original header
-  const [headers, setHeaders] = useState([]);
-  const [fileName, setFileName] = useState("");
-  const [busy, setBusy]       = useState(false);
-  const [toast, setToast]     = useState(null);
-  const [dragging, setDragging] = useState(false);
+const DEPT_LABEL = {
+  housekeeping: "🛏️ ניקיון וחדרים",
+  maintenance:  "🔧 תחזוקה",
+  reception:    "🏨 קבלה ופרונט",
+  spa:          "💆 ספא ובריאות",
+  management:   "📋 ניהול כללי",
+};
+
+export default function DataUpload({ onImported, user }) {
+  const [mode, setMode]               = useState("guests");
+  const [rawRows, setRawRows]         = useState([]);
+  const [headers, setHeaders]         = useState([]);
+  const [fileName, setFileName]       = useState("");
+  const [busy, setBusy]               = useState(false);
+  const [toast, setToast]             = useState(null);
+  const [dragging, setDragging]       = useState(false);
+  const [managerDepartment, setManagerDepartment] = useState(null);
   const inputRef = useRef(null);
+
+  // Fetch this manager's department once on mount
+  useEffect(() => {
+    if (!user?.id || !isSupabaseConfigured || !supabase) return;
+    supabase
+      .from("profiles")
+      .select("department")
+      .eq("id", user.id)
+      .single()
+      .then(({ data }) => { if (data?.department) setManagerDepartment(data.department); });
+  }, [user?.id]);
 
   const target = TARGETS[mode];
 
@@ -122,7 +142,12 @@ export default function DataUpload({ onImported }) {
     if (missingRequired.length) return showToast("err", `חסרות עמודות חובה: ${missingRequired.join(", ")}`);
     if (!mappedRows.length) return showToast("err", "אין שורות תקינות לייבוא");
     setBusy(true);
-    const payload = mappedRows.map((r, i) => target.transform(r, i));
+    const payload = mappedRows.map((r, i) => {
+      const row = target.transform(r, i);
+      // Tag every shift row with the manager's department
+      if (mode === "shifts" && managerDepartment) row.department = managerDepartment;
+      return row;
+    });
     const { error } = await target.insert(payload);
     setBusy(false);
     if (error) return showToast("err", "שגיאה בייבוא: " + error.message);
@@ -142,6 +167,16 @@ export default function DataUpload({ onImported }) {
           color:      toast.type === "ok" ? "#1A7A4A" : "#C0392B",
           border:     `1px solid ${toast.type === "ok" ? "#1A7A4A" : "#C0392B"}`,
         }}>{toast.msg}</div>
+      )}
+
+      {/* Department badge */}
+      {managerDepartment && (
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 8, marginBottom: 16,
+          background: "rgba(201,169,110,0.12)", border: "1px solid var(--gold)", borderRadius: 20,
+          padding: "6px 14px", fontSize: 13, fontWeight: 700, color: "var(--gold-dark)" }}>
+          {DEPT_LABEL[managerDepartment] || managerDepartment}
+          <span style={{ fontSize: 11, fontWeight: 400, color: "var(--text-muted)" }}>מחלקה נוכחית</span>
+        </div>
       )}
 
       {/* Mode selector */}

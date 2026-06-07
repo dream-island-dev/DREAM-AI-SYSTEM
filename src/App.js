@@ -261,6 +261,10 @@ const css = `
   @import url('https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700;800;900&family=Playfair+Display:wght@400;600;700&display=swap');
 
   @keyframes di-spin { to { transform: rotate(360deg); } }
+  @keyframes slideUp {
+    from { transform: translateY(100%); opacity: 0; }
+    to   { transform: translateY(0);    opacity: 1; }
+  }
 
   :root {
     --gold: #C9A96E;
@@ -2027,6 +2031,8 @@ export default function App() {
   const [checklist, setChecklist, checkLoading] = usePersistentState("checklist_items", initialChecklists);
   const opsLoading = empLoading || shiftLoading || callsLoading || checkLoading;
   const [agentProfile, setAgentProfile] = useState(null);
+  // Controls the settings/questionnaire modal overlay (keeps chat mounted underneath)
+  const [showQuestionnaire, setShowQuestionnaire] = useState(false);
   const isAdmin      = isAdminUser(user);
   const isSuperAdminUser = isSuperAdmin(user);
 
@@ -2212,10 +2218,11 @@ export default function App() {
       case "guests":
         return <GuestsPage />;
       case "scheduler":
-        return <ShiftGenerator onApproved={() => setActivePage("shifts")} />;
+        return <ShiftGenerator user={user} onApproved={() => setActivePage("shifts")} />;
       case "upload":
         return (
           <DataUpload
+            user={user}
             onImported={(mode) => setActivePage(mode === "guests" ? "guests" : "shifts")}
           />
         );
@@ -2232,10 +2239,7 @@ export default function App() {
           <AgentChat
             user={user}
             agentProfile={agentProfile}
-            onResetProfile={() => {
-              localStorage.removeItem(`agent_profile_${user.id}`);
-              setAgentProfile(null);
-            }}
+            onOpenSettings={() => setShowQuestionnaire(true)}
           />
         );
       case "admin":
@@ -2369,6 +2373,55 @@ export default function App() {
             ))}
           </div>
         </div>
+
+      {/* ── Settings / questionnaire modal — slides up over active chat ─────────
+           AgentChat stays MOUNTED underneath so its message state is preserved. */}
+      {showQuestionnaire && (
+        <div
+          onClick={(e) => { if (e.target === e.currentTarget) setShowQuestionnaire(false); }}
+          style={{
+            position: "fixed", inset: 0, zIndex: 1000,
+            background: "rgba(0,0,0,0.65)", backdropFilter: "blur(4px)",
+            display: "flex", alignItems: "flex-end", justifyContent: "center",
+          }}
+        >
+          <div style={{
+            width: "100%", maxWidth: 680,
+            background: "var(--ivory)",
+            borderRadius: "24px 24px 0 0",
+            maxHeight: "90vh", overflowY: "auto",
+            animation: "slideUp 0.3s ease-out",
+          }}>
+            {/* Modal header */}
+            <div style={{
+              display: "flex", justifyContent: "space-between", alignItems: "center",
+              padding: "20px 24px 16px",
+              borderBottom: "1px solid var(--border)",
+              position: "sticky", top: 0, background: "var(--ivory)", zIndex: 1,
+            }}>
+              <span style={{ fontWeight: 800, fontSize: 16, color: "var(--black)", fontFamily: "Playfair Display, serif" }}>
+                ⚙️ הגדרות הסוכן
+              </span>
+              <button
+                onClick={() => setShowQuestionnaire(false)}
+                className="btn btn-ghost btn-sm"
+              >
+                ← חזור לצ׳אט
+              </button>
+            </div>
+            {/* Modal body */}
+            <div style={{ padding: "20px 24px 40px" }}>
+              <AgentQuestionnaire
+                user={user}
+                onComplete={(profile) => {
+                  setAgentProfile(profile);
+                  setShowQuestionnaire(false);
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
       </div>
     </>
   );

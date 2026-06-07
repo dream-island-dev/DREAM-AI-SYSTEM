@@ -11,21 +11,31 @@ function nextSunday() {
   return d.toISOString().slice(0, 10);
 }
 
-export default function ShiftGenerator({ onApproved }) {
-  const [employees, setEmployees] = useState([]);
-  const [pastShifts, setPastShifts] = useState([]);
-  const [pastName, setPastName] = useState("");
+const DEPT_LABEL = {
+  housekeeping: "🛏️ ניקיון וחדרים",
+  maintenance:  "🔧 תחזוקה",
+  reception:    "🏨 קבלה ופרונט",
+  spa:          "💆 ספא ובריאות",
+  management:   "📋 ניהול כללי",
+};
+
+export default function ShiftGenerator({ onApproved, user }) {
+  const [employees, setEmployees]     = useState([]);
+  const [pastShifts, setPastShifts]   = useState([]);
+  const [pastName, setPastName]       = useState("");
   const [constraints, setConstraints] = useState("");
-  const [weekStart, setWeekStart] = useState(nextSunday());
-  const [schedule, setSchedule] = useState(null);
-  const [engine, setEngine] = useState(null);
-  const [generating, setGenerating] = useState(false);
-  const [approving, setApproving] = useState(false);
-  const [toast, setToast] = useState(null);
+  const [weekStart, setWeekStart]     = useState(nextSunday());
+  const [schedule, setSchedule]       = useState(null);
+  const [engine, setEngine]           = useState(null);
+  const [generating, setGenerating]   = useState(false);
+  const [approving, setApproving]     = useState(false);
+  const [toast, setToast]             = useState(null);
+  const [managerDepartment, setManagerDepartment] = useState(null);
   const inputRef = useRef(null);
 
   const showToast = (type, msg) => { setToast({ type, msg }); setTimeout(() => setToast(null), 4500); };
 
+  // Fetch employees filtered by department, and manager's own department
   useEffect(() => {
     (async () => {
       if (!isSupabaseConfigured || !supabase) return;
@@ -33,6 +43,16 @@ export default function ShiftGenerator({ onApproved }) {
       setEmployees(data ?? []);
     })();
   }, []);
+
+  useEffect(() => {
+    if (!user?.id || !isSupabaseConfigured || !supabase) return;
+    supabase
+      .from("profiles")
+      .select("department")
+      .eq("id", user.id)
+      .single()
+      .then(({ data }) => { if (data?.department) setManagerDepartment(data.department); });
+  }, [user?.id]);
 
   const parsePast = useCallback((file) => {
     if (!file) return;
@@ -55,7 +75,7 @@ export default function ShiftGenerator({ onApproved }) {
     setGenerating(true); setSchedule(null);
     try {
       const { data, error } = await supabase.functions.invoke("generate-schedule", {
-        body: { pastShifts, employees, constraints, weekStart },
+        body: { pastShifts, employees, constraints, weekStart, department: managerDepartment },
       });
       if (error) throw error;
       if (!data?.ok) throw new Error(data?.error || "יצירת הסידור נכשלה");
@@ -76,7 +96,8 @@ export default function ShiftGenerator({ onApproved }) {
     const rows = schedule.map((s, i) => ({
       id: Date.now() + i,
       employeeName: s.employeeName,
-      department: s.department,
+      // Always stamp with manager's department; fall back to what the AI returned
+      department: managerDepartment || s.department,
       date: s.date,
       start: s.start,
       end: s.end,
@@ -110,6 +131,16 @@ export default function ShiftGenerator({ onApproved }) {
           color: toast.type === "ok" ? "#1A7A4A" : "#C0392B",
           border: `1px solid ${toast.type === "ok" ? "#1A7A4A" : "#C0392B"}`,
         }}>{toast.msg}</div>
+      )}
+
+      {/* Department badge */}
+      {managerDepartment && (
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 8, marginBottom: 16,
+          background: "rgba(201,169,110,0.12)", border: "1px solid var(--gold)", borderRadius: 20,
+          padding: "6px 14px", fontSize: 13, fontWeight: 700, color: "var(--gold-dark)" }}>
+          {DEPT_LABEL[managerDepartment] || managerDepartment}
+          <span style={{ fontSize: 11, fontWeight: 400, color: "var(--text-muted)" }}>מחלקה נוכחית</span>
+        </div>
       )}
 
       <div className="card" style={{ marginBottom: 20 }}>

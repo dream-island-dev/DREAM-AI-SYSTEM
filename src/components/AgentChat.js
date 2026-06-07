@@ -63,7 +63,7 @@ async function loadHistory(sessionId) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-export default function AgentChat({ user, agentProfile, onResetProfile }) {
+export default function AgentChat({ user, agentProfile, onOpenSettings }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput]       = useState("");
   const [busy, setBusy]         = useState(false);
@@ -77,14 +77,34 @@ export default function AgentChat({ user, agentProfile, onResetProfile }) {
   const sessionId = useRef(getOrCreateSessionId(agentProfile.id));
   const endRef    = useRef(null);
 
-  // ── Load history on mount ─────────────────────────────────────────────────
+  // ── Load history on mount — localStorage first (instant), then Supabase ─────
   useEffect(() => {
     setLoadingHistory(true);
+    // Step 1: pre-populate instantly from localStorage cache (no flash on F5)
+    try {
+      const cached = localStorage.getItem(`chat_msgs_${sessionId.current}`);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (parsed.length > 0) setMessages(parsed);
+      }
+    } catch {}
+    // Step 2: load authoritative data from Supabase — replaces cache if non-empty
     loadHistory(sessionId.current).then((hist) => {
-      setMessages(hist);
+      if (hist.length > 0) setMessages(hist);
       setLoadingHistory(false);
     });
   }, [agentProfile.id]);
+
+  // Persist messages to localStorage on every change (survives F5 + navigation)
+  useEffect(() => {
+    if (messages.length === 0) return;
+    try {
+      localStorage.setItem(
+        `chat_msgs_${sessionId.current}`,
+        JSON.stringify(messages.slice(-50))
+      );
+    } catch {}
+  }, [messages]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -237,7 +257,7 @@ export default function AgentChat({ user, agentProfile, onResetProfile }) {
           <button className="btn btn-ghost btn-sm" onClick={startNewConversation} title="שיחה חדשה">
             🔄 שיחה חדשה
           </button>
-          <button className="btn btn-ghost btn-sm" onClick={onResetProfile} title="הגדר מחדש">
+          <button className="btn btn-ghost btn-sm" onClick={onOpenSettings} title="הגדרות הסוכן">
             ⚙️ הגדרות
           </button>
         </div>

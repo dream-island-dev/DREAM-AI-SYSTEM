@@ -85,11 +85,20 @@ async function generateText(
   }
 }
 
+// Department-specific AI context for system prompt generation
+const DEPT_CONTEXT: Record<string, string> = {
+  housekeeping: "ניקיון וחדרים — תורנויות ניקיון, החלפת מצעים, בקרת איכות חדרים, ניהול ציוד ניקוי, KPIs: אחוז חדרים נקיים בזמן, זמן פנוי ממוצע, תלונות אורחים על ניקיון.",
+  maintenance:  "תחזוקה — תיקון תקלות, תחזוקה מונעת, ניהול ציוד טכני, KPIs: זמן תגובה לתקלות (<4h), אחוז תקלות שנפתרו בביקור ראשון, עלות תחזוקה לחדר.",
+  reception:    "קבלה ופרונט — צ׳ק-אין/צ׳ק-אאוט, הזמנות, שירות אורחים, KPIs: ציון שביעות רצון (NPS), זמן ממתין בצ׳ק-אין, אחוז אורחים שחזרו.",
+  spa:          "ספא ובריאות — לוח תורים לטיפולים, ניהול מטפלים, מוצרי ספא, KPIs: אחוז ניצול קיבולת, הכנסה לשעת מטפל, ביקורות לקוחות.",
+  management:   "ניהול כללי — ניהול רוחבי של כל מחלקות המלון, תקצוב, KPIs, דיווח לבעלים, תיאום בין מחלקות, קבלת החלטות אסטרטגיות.",
+};
+
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
   try {
-    const { responses, department, managerName, driveFolderUrl } =
+    const { responses, department, jobTitle, managerName, driveFolderUrl } =
       await req.json();
 
     if (!responses || !department || !managerName) {
@@ -153,7 +162,9 @@ serve(async (req: Request) => {
 שישרת את המנהל באופן אישי.
 
 שם המנהל: ${managerName}
+תפקיד: ${jobTitle || "מנהל"}
 מחלקה: ${department}
+הקשר מחלקה: ${DEPT_CONTEXT[department] || "מחלקת מלון — שירות, ניהול ותפעול."}
 קישור Google Drive: ${driveFolderUrl || "לא צוין"}
 
 תשובות השאלון:
