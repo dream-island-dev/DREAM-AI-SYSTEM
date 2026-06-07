@@ -1,6 +1,7 @@
 // supabase/functions/generate-agent-profile/index.ts
 // Edge Function: takes questionnaire responses → generates a rich system
-// prompt via Claude Sonnet → saves agent_profile + questionnaire_responses.
+// prompt via Gemini (primary) / Claude (fallback) → saves agent_profile
+// + questionnaire_responses.
 // Deploy: supabase functions deploy generate-agent-profile
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
@@ -14,7 +15,6 @@ const CORS = {
 };
 
 // ── Model router: Gemini (primary) → Claude (fallback) ────────────────────────
-// gemini-2.5-flash is free-tier eligible; 2.5-pro requires billing (429 limit:0).
 const GEMINI_MODEL = "gemini-2.5-flash";
 const CLAUDE_MODEL = "claude-sonnet-4-6";
 
@@ -67,12 +67,22 @@ async function generateText(
 ): Promise<{ text: string; engine: "gemini" | "claude" }> {
   if (Deno.env.get("GEMINI_API_KEY")) {
     try {
-      return { text: await genGemini(prompt), engine: "gemini" };
+      const text = await genGemini(prompt);
+      console.log("[router] Gemini succeeded");
+      return { text, engine: "gemini" };
     } catch (e) {
       console.error("[router] Gemini failed → Claude:", (e as Error).message);
     }
   }
-  return { text: await genClaude(prompt), engine: "claude" };
+  try {
+    const text = await genClaude(prompt);
+    console.log("[router] Claude succeeded");
+    return { text, engine: "claude" };
+  } catch (e) {
+    console.error("[router] Claude also failed:", (e as Error).message);
+    // Both failed — return a safe static fallback so the DB save can still proceed
+    return { text: "", engine: "claude" };
+  }
 }
 
 serve(async (req: Request) => {
@@ -82,20 +92,58 @@ serve(async (req: Request) => {
     const { responses, department, managerName, driveFolderUrl } =
       await req.json();
 
+    if (!responses || !department || !managerName) {
+      throw new Error("missing_required_fields: responses, department, managerName");
+    }
+
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
 
+    // ── 1. Authenticate the caller ─────────────────────────────────────────
     const bearer = req.headers.get("Authorization") ?? "";
-    const { data: { user }, error: authErr } = await supabase.auth.getUser(
-      bearer.replace("Bearer ", "")
-    );
-    if (authErr || !user) throw new Error("Unauthorized");
+    const token = bearer.replace("Bearer ", "").trim();
+    if (!token) throw new Error("Unauthorized: no token provided");
 
-    // Craft a richer system prompt from the raw questionnaire via the router
-    // (Gemini primary → Claude fallback).
+    const { data: authData, error: authErr } = await supabase.auth.getUser(token);
+    const user = authData?.user;
+    if (authErr || !user) {
+      console.error("[auth] getUser error:", authErr?.message);
+      throw new Error(`Unauthorized: ${authErr?.message ?? "invalid token"}`);
+    }
+    console.log("[auth] user:", user.id, user.email);
+
+    // ── 2. Safety-net: ensure profiles row exists ──────────────────────────
+    // The trigger should create this on login, but it can fail silently.
+    // INSERT ... ON CONFLICT DO NOTHING is idempotent — safe to always run.
+    const avatarText = (
+      user.user_metadata?.name ||
+      user.email ||
+      "M"
+    ).slice(0, 2).toUpperCase();
+
+    const { error: profileErr } = await supabase.from("profiles").upsert(
+      {
+        id: user.id,
+        name: user.user_metadata?.name || user.email?.split("@")[0] || managerName,
+        email: user.email ?? "",
+        role: "staff",
+        avatar_text: avatarText,
+        avatar: user.user_metadata?.avatar_url ?? null,
+        status: "active",
+      },
+      { onConflict: "id", ignoreDuplicates: true }
+    );
+    if (profileErr) {
+      // Non-fatal: profile likely already exists or status col may not exist
+      // in older schema. Log and continue.
+      console.warn("[profiles] upsert note:", profileErr.message);
+    }
+
+    // ── 3. Build the generation prompt ─────────────────────────────────────
     const formatted = Object.entries(responses as Record<string, string>)
+      .filter(([, v]) => v && String(v).trim())
       .map(([q, a]) => `שאלה: ${q}\nתשובה: ${a}`)
       .join("\n\n");
 
@@ -124,12 +172,15 @@ ${formatted}
 החזר רק את ה-System Prompt עצמו, ללא כותרות נוספות.
 `.trim();
 
-    const { text: generatedText } = await generateText(generationPrompt);
+    // ── 4. Generate system prompt via AI router ────────────────────────────
+    const { text: generatedText, engine } = await generateText(generationPrompt);
     const generatedPrompt =
       generatedText?.trim() ||
-      `# סוכן מחלקת ${department}\nאתה עוזר AI של ${managerName}.`;
+      `# סוכן מחלקת ${department}\nאתה עוזר AI אישי של ${managerName} ב-Dream Island Resort.\nתפקידך לסייע בניהול יומיומי של מחלקת ${department}.`;
 
-    // Save questionnaire responses first
+    console.log("[ai] engine:", engine, "prompt_len:", generatedPrompt.length);
+
+    // ── 5. Save questionnaire responses ───────────────────────────────────
     const { data: qRecord, error: qErr } = await supabase
       .from("questionnaire_responses")
       .insert({
@@ -141,9 +192,12 @@ ${formatted}
       .select()
       .single();
 
-    if (qErr) throw qErr;
+    if (qErr) {
+      console.error("[db] questionnaire_responses insert:", qErr.message, qErr.details, qErr.hint);
+      throw new Error(`db_questionnaire: ${qErr.message}`);
+    }
 
-    // Upsert agent profile (one per manager)
+    // ── 6. Upsert agent profile (one per manager) ──────────────────────────
     const { data: agentProfile, error: agentErr } = await supabase
       .from("agent_profiles")
       .upsert(
@@ -164,18 +218,24 @@ ${formatted}
       .select()
       .single();
 
-    if (agentErr) throw agentErr;
+    if (agentErr) {
+      console.error("[db] agent_profiles upsert:", agentErr.message, agentErr.details, agentErr.hint);
+      throw new Error(`db_agent_profile: ${agentErr.message}`);
+    }
 
-    // Link questionnaire back to the profile
+    // ── 7. Back-link questionnaire → profile ──────────────────────────────
     await supabase
       .from("questionnaire_responses")
       .update({ agent_profile_id: agentProfile.id })
       .eq("id", qRecord.id);
 
-    return new Response(JSON.stringify({ ok: true, agentProfile }), {
+    console.log("[success] agent profile created:", agentProfile.id);
+
+    return new Response(JSON.stringify({ ok: true, engine, agentProfile }), {
       headers: { ...CORS, "Content-Type": "application/json" },
     });
   } catch (err: any) {
+    console.error("[error]", err.message);
     return new Response(
       JSON.stringify({ ok: false, error: err.message }),
       { status: 400, headers: { ...CORS, "Content-Type": "application/json" } }

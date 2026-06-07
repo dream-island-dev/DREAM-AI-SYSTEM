@@ -98,7 +98,11 @@ export default function AgentQuestionnaire({ user, onComplete }) {
     try {
       // ── Preferred path: real Supabase session → generate + persist in DB ──
       if (isSupabaseConfigured && supabase) {
-        const { data: { session } } = await supabase.auth.getSession();
+        // Refresh the session first — prevents expired-token errors on mobile
+        // where the app may have been backgrounded.
+        const { data: refreshData } = await supabase.auth.refreshSession();
+        const session = refreshData?.session ?? (await supabase.auth.getSession()).data.session;
+
         if (session) {
           const responses = { ...form, communication_style: form.tone };
           const { data, error } = await supabase.functions.invoke(
@@ -112,9 +116,17 @@ export default function AgentQuestionnaire({ user, onComplete }) {
               },
             }
           );
-          if (error) throw error;
+
+          // Extract the real error from the Edge Function response body.
+          // supabase-js throws FunctionsHttpError on non-2xx; the actual
+          // error string lives in data?.error (body is still returned alongside).
+          if (error) {
+            const realMsg = data?.error || error.message;
+            throw new Error(realMsg);
+          }
+
           if (data?.ok && data.agentProfile) {
-            // Cache locally too (instant load), but the source of truth is the DB.
+            // Cache locally too (instant load), but source of truth is the DB.
             localStorage.setItem(
               `agent_profile_${user?.id}`,
               JSON.stringify(data.agentProfile)
