@@ -1,12 +1,22 @@
-// src/components/BroadcastDashboard.js
-// Smart Broadcast Module — allows managers to compose a free-form WhatsApp
-// message and send it to a filtered subset of their guests.
+// src/components/BroadcastDashboard.js  v2
+// Smart Broadcast Module — manager composes a WhatsApp message and sends
+// it to a filtered subset of guests.
 //
-// Audience filters (all client-side after fetch):
-//   • Room Type:    all | suite (סוויטות) | standard (חדרים רגילים)
-//   • Booking Type: all | overnight (לינה — guest has a room number)
-//                      | daily (יומי — no room number, day-use guest)
-//   • Status:       all | expected (מתוכנן) | checked_in (צ'ק-אין)
+// Dream Island booking model (two types only — no "standard rooms"):
+//   • סוויטות   (suite)     — overnight VIP hospitality
+//   • בילוי יומי (day_guest) — day-spa / day-use packages
+//
+// Audience filters:
+//   • סוג אורח:  all | suite | day_guest
+//   • סטטוס:     all | expected | checked_in
+//   • חלון הגעה: today+tomorrow | 7d | 30d | 90d | all
+//
+// Real-time sync: Supabase Realtime (postgres_changes) keeps allGuests
+// live — any check-in action in GuestDashboard is reflected immediately.
+//
+// Defensive targeting:
+//   • When filterStatus=all, warns if checked-in guests are in audience
+//   • Console.warn emitted per failed send during broadcast loop
 //
 // Message template supports dynamic placeholders:
 //   {{guest_name}}, {{room}}, {{room_type}}, {{arrival_date}}
@@ -58,11 +68,11 @@ export default function BroadcastDashboard({ user }) {
   const [toast,        setToast]        = useState(null);
 
   // ── Audience filters ──────────────────────────────────────────────────────
-  const [filterRoom,    setFilterRoom]    = useState("all"); // all | suite | standard
-  const [filterBooking, setFilterBooking] = useState("all"); // all | overnight | daily
-  const [filterStatus,  setFilterStatus]  = useState("all"); // all | expected | checked_in
-  const [filterDept,    setFilterDept]    = useState("all"); // all | department name
-  const [filterWindow,  setFilterWindow]  = useState("7");   // arrival window in days
+  // filterGuest: uses room_type — the single source of truth for booking model
+  const [filterGuest,  setFilterGuest]  = useState("all"); // all | suite | day_guest
+  const [filterStatus, setFilterStatus] = useState("all"); // all | expected | checked_in
+  const [filterDept,   setFilterDept]   = useState("all"); // all | department name
+  const [filterWindow, setFilterWindow] = useState("7");   // arrival window in days
 
   // ── Compose ───────────────────────────────────────────────────────────────
   const [template, setTemplate] = useState("");
@@ -116,6 +126,56 @@ export default function BroadcastDashboard({ user }) {
 
   useEffect(() => { fetchGuests(); }, [fetchGuests]);
 
+  // ── Supabase Realtime — keep allGuests live ───────────────────────────────
+  // Any check-in / status change in GuestDashboard is reflected here instantly
+  // without a manual refresh. Uses postgres_changes (WAL-based, no extra config).
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase) return;
+    const channel = supabase
+      .channel("broadcast-guests-sync")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "guests" },
+        (payload) => {
+          if (payload.eventType === "UPDATE") {
+            setAllGuests((prev) =>
+              prev.map((g) =>
+                String(g.id) === String(payload.new.id)
+                  ? { ...g, ...payload.new }
+                  : g
+              )
+            );
+            if (process.env.NODE_ENV === "development") {
+              console.info(
+                "[BroadcastDashboard] Realtime UPDATE — guest",
+                payload.new.id, payload.new.name,
+                "→ status:", payload.new.status
+              );
+            }
+          } else if (payload.eventType === "INSERT") {
+            setAllGuests((prev) => {
+              // Avoid duplicates if fetchGuests already added it
+              if (prev.some((g) => String(g.id) === String(payload.new.id))) return prev;
+              return [...prev, payload.new].sort((a, b) =>
+                (a.arrival_date ?? "").localeCompare(b.arrival_date ?? "")
+              );
+            });
+          } else if (payload.eventType === "DELETE") {
+            setAllGuests((prev) =>
+              prev.filter((g) => String(g.id) !== String(payload.old.id))
+            );
+          }
+        }
+      )
+      .subscribe((status) => {
+        if (process.env.NODE_ENV === "development") {
+          console.info("[BroadcastDashboard] Realtime channel status:", status);
+        }
+      });
+
+    return () => { supabase.removeChannel(channel); };
+  }, []); // mount/unmount only — channel is self-maintaining
+
   // ── Compute filtered audience ─────────────────────────────────────────────
   const today = localISO(0);
   const filteredGuests = allGuests.filter((g) => {
@@ -125,13 +185,11 @@ export default function BroadcastDashboard({ user }) {
       const cutoff = localISO(days);
       if (!g.arrival_date || g.arrival_date < today || g.arrival_date > cutoff) return false;
     }
-    // Room type
-    if (filterRoom === "suite"    && g.room_type !== "suite")  return false;
-    if (filterRoom === "standard" && g.room_type === "suite")  return false;
-    // Booking type: overnight = has room number, daily = no room number
-    if (filterBooking === "overnight" && !g.room)  return false;
-    if (filterBooking === "daily"     &&  g.room)  return false;
-    // Status
+    // Guest type — room_type is the canonical booking category
+    // ('standard' legacy rows treated as suite/overnight for backward compat)
+    if (filterGuest === "suite"     && g.room_type === "day_guest") return false;
+    if (filterGuest === "day_guest" && g.room_type !== "day_guest") return false;
+    // Status — live state after Realtime updates
     if (filterStatus !== "all" && g.status !== filterStatus) return false;
     // Department (via manager profile)
     if (filterDept !== "all") {
@@ -140,6 +198,15 @@ export default function BroadcastDashboard({ user }) {
     }
     return true;
   });
+
+  // Defensive: flag if checked-in guests will receive a broadcast
+  const checkedInInAudience = filteredGuests.filter((g) => g.status === "checked_in").length;
+  if (process.env.NODE_ENV === "development" && checkedInInAudience > 0 && filterStatus === "all") {
+    console.warn(
+      `[BroadcastDashboard] ⚠️ Audience includes ${checkedInInAudience} checked-in guest(s).`,
+      "Set filterStatus='expected' to exclude them from pre-arrival sends."
+    );
+  }
 
   // Guests without a phone number can't be messaged
   const sendableGuests = filteredGuests.filter((g) => g.phone);
@@ -220,10 +287,9 @@ export default function BroadcastDashboard({ user }) {
     setIsSending(false);
 
     if (!aborted) {
-      const simNote = "(סימולציה — WHATSAPP_SIMULATION=true)";
       showToast(
         errorCount === 0 ? "ok" : "warn",
-        `שליחה הסתיימה: ${successCount} הצליחו, ${errorCount} נכשלו. ${simNote}`
+        `שליחה הסתיימה: ${successCount} הצליחו${errorCount > 0 ? `, ${errorCount} נכשלו` : ""}`
       );
     }
   }, [template, sendableGuests, showToast]);
@@ -307,33 +373,23 @@ export default function BroadcastDashboard({ user }) {
                 </select>
               </div>
 
-              {/* Room type */}
+              {/* Guest type — Dream Island: Suites or Daily Experience only */}
               <div className="form-field" style={{ marginBottom: 0 }}>
-                <label>סוג חדר</label>
-                <select value={filterRoom} onChange={(e) => setFilterRoom(e.target.value)}>
-                  <option value="all">כל סוגי החדרים</option>
-                  <option value="suite">סוויטות בלבד 👑</option>
-                  <option value="standard">חדרים רגילים בלבד</option>
+                <label>סוג אורח</label>
+                <select value={filterGuest} onChange={(e) => setFilterGuest(e.target.value)}>
+                  <option value="all">כל האורחים</option>
+                  <option value="suite">👑 סוויטות (לינה)</option>
+                  <option value="day_guest">🏊 בילוי יומי</option>
                 </select>
               </div>
 
-              {/* Booking type */}
-              <div className="form-field" style={{ marginBottom: 0 }}>
-                <label>סוג הזמנה</label>
-                <select value={filterBooking} onChange={(e) => setFilterBooking(e.target.value)}>
-                  <option value="all">הכל</option>
-                  <option value="overnight">לינה (עם חדר מוקצה)</option>
-                  <option value="daily">יומי (ללא חדר)</option>
-                </select>
-              </div>
-
-              {/* Status */}
+              {/* Status — live values via Realtime sync */}
               <div className="form-field" style={{ marginBottom: 0 }}>
                 <label>סטטוס</label>
                 <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)}>
                   <option value="all">כל הסטטוסים</option>
-                  <option value="expected">מתוכנן (לא הגיע)</option>
-                  <option value="checked_in">צ׳ק-אין בוצע</option>
+                  <option value="expected">ממתין (טרם הגיע)</option>
+                  <option value="checked_in">✅ צ׳ק-אין בוצע</option>
                 </select>
               </div>
 
@@ -370,6 +426,23 @@ export default function BroadcastDashboard({ user }) {
               {noPhoneCount > 0 && (
                 <div style={{ fontSize: 11, color: "#B5600A", marginTop: 4 }}>
                   ⚠️ {noPhoneCount} אורחים ללא מספר טלפון (יוחסרו)
+                </div>
+              )}
+              {/* Defensive warning: checked-in guests in pre-arrival broadcast */}
+              {checkedInInAudience > 0 && filterStatus === "all" && (
+                <div style={{
+                  marginTop: 8, padding: "8px 10px", borderRadius: 8,
+                  background: "#FFF5E8", border: "1px solid #F59E0B", fontSize: 11, color: "#92400E",
+                }}>
+                  ⚠️ {checkedInInAudience} אורח/ים כבר עשו צ׳ק-אין בקהל זה.
+                  {" "}<button
+                    onClick={() => setFilterStatus("expected")}
+                    style={{
+                      background: "none", border: "none", color: "#D97706",
+                      fontWeight: 700, cursor: "pointer", fontSize: 11, padding: 0,
+                      fontFamily: "Heebo, sans-serif",
+                    }}
+                  >הסר אותם ←</button>
                 </div>
               )}
               {filteredGuests.length > 0 && (
@@ -512,10 +585,6 @@ export default function BroadcastDashboard({ user }) {
               </div>
               <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
                 נשלחו: {progress.current - progress.errors} · נכשלו: {progress.errors} · סה"כ: {progress.total}
-                {" "}
-                <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                  (WHATSAPP_SIMULATION=true — הודעות אמיתיות לא נשלחו עדיין)
-                </span>
               </div>
               <button
                 className="btn btn-ghost btn-sm"
@@ -599,7 +668,7 @@ export default function BroadcastDashboard({ user }) {
                 ))}
                 {filteredGuests.length > 50 && (
                   <tr>
-                    <td colSpan={6} style={{ textAlign: "center", color: "var(--text-muted)", fontSize: 12, padding: 10 }}>
+                    <td colSpan={7} style={{ textAlign: "center", color: "var(--text-muted)", fontSize: 12, padding: 10 }}>
                       מוצגים 50 מתוך {filteredGuests.length} — הודעה תישלח לכולם
                     </td>
                   </tr>
