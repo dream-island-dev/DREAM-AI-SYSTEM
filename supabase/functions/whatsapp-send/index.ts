@@ -82,10 +82,7 @@ function shiftMsg(name: string, weekStart: string, shifts: Array<Record<string, 
 }
 
 // ── Meta WhatsApp Cloud API (live) ────────────────────────────────────────────
-// POST https://graph.facebook.com/v20.0/{META_PHONE_NUMBER_ID}/messages
-// Requires META_WHATSAPP_TOKEN + META_PHONE_NUMBER_ID (or legacy WHATSAPP_* names).
 async function sendViaMeta(to: string, body: string): Promise<void> {
-  // New env var names first, legacy as fallback (backward-compatible transition)
   const token   = Deno.env.get("META_WHATSAPP_TOKEN")    ?? Deno.env.get("WHATSAPP_TOKEN");
   const phoneId = Deno.env.get("META_PHONE_NUMBER_ID")   ?? Deno.env.get("WHATSAPP_PHONE_NUMBER_ID");
   if (!token || !phoneId) throw new Error("missing_meta_whatsapp_creds");
@@ -107,6 +104,34 @@ async function sendViaMeta(to: string, body: string): Promise<void> {
   }
 }
 
+// ── Meta WhatsApp Template message ───────────────────────────────────────────
+// Used for business-initiated messages (no open 24h window).
+// templateName must match an APPROVED template in WhatsApp Manager.
+async function sendViaTemplate(to: string, templateName: string, langCode = "he"): Promise<void> {
+  const token   = Deno.env.get("META_WHATSAPP_TOKEN")  ?? Deno.env.get("WHATSAPP_TOKEN");
+  const phoneId = Deno.env.get("META_PHONE_NUMBER_ID") ?? Deno.env.get("WHATSAPP_PHONE_NUMBER_ID");
+  if (!token || !phoneId) throw new Error("missing_meta_whatsapp_creds");
+
+  const res = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      to,
+      type: "template",
+      template: {
+        name: templateName,
+        language: { code: langCode },
+      },
+    }),
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!res.ok) {
+    const detail = (await res.text()).slice(0, 300);
+    throw new Error(`meta_template_${res.status}: ${detail}`);
+  }
+}
+
 // Simulation: true when explicitly set OR when Meta credentials are absent.
 const isSimulation = (): boolean =>
   Deno.env.get("WHATSAPP_SIMULATION") === "true" ||
@@ -119,12 +144,13 @@ serve(async (req: Request) => {
 
   try {
     const body = await req.json();
-    const { trigger, guestId, assignments, weekStart, messageTemplate } = body as {
-      trigger:         string;
-      guestId?:        string;
-      assignments?:    Record<string, unknown[]>;
-      weekStart?:      string;
-      messageTemplate?: string;   // broadcast only — may contain {{placeholders}}
+    const { trigger, guestId, assignments, weekStart, messageTemplate, waTemplateName } = body as {
+      trigger:          string;
+      guestId?:         string;
+      assignments?:     Record<string, unknown[]>;
+      weekStart?:       string;
+      messageTemplate?: string;   // broadcast only — free-text (24h window)
+      waTemplateName?:  string;   // broadcast only — approved WA template name
     };
 
     if (!trigger) throw new Error("trigger is required");
@@ -169,26 +195,37 @@ serve(async (req: Request) => {
     // ─────────────────────────────────────────────────────────────────────────
     if (trigger === "broadcast") {
       if (!guestId) throw new Error("guestId required for broadcast trigger");
-      if (!messageTemplate || !messageTemplate.trim()) throw new Error("messageTemplate is required for broadcast");
+      if (!waTemplateName && (!messageTemplate || !messageTemplate.trim()))
+        throw new Error("messageTemplate or waTemplateName is required for broadcast");
 
       const { data: guest, error: gErr } = await supabase
         .from("guests").select("*").eq("id", guestId).single();
       if (gErr || !guest) throw new Error("guest_not_found");
       if (!guest.phone) throw new Error("guest_no_phone");
 
-      // Resolve {{guest_name}}, {{room}}, {{room_type}}, {{phone}}, {{arrival_date}}
-      const rendered = interpolate(messageTemplate, {
-        guest_name:   guest.name,
-        room:         guest.room         ?? "",
-        room_type:    guest.room_type    ?? "",
-        phone:        guest.phone        ?? "",
-        arrival_date: guest.arrival_date ?? "",
-      });
+      // Template send (approved WA template) OR free-text (24h window)
+      const useTemplate = Boolean(waTemplateName);
+      const rendered = useTemplate
+        ? `[template:${waTemplateName}]`
+        : interpolate(messageTemplate!, {
+            guest_name:   guest.name,
+            room:         guest.room         ?? "",
+            room_type:    guest.room_type    ?? "",
+            phone:        guest.phone        ?? "",
+            arrival_date: guest.arrival_date ?? "",
+          });
 
       let status = "simulated";
       let sendError: string | null = null;
       try {
-        if (!sim) { await sendViaMeta(guest.phone as string, rendered); status = "sent"; }
+        if (!sim) {
+          if (useTemplate) {
+            await sendViaTemplate(guest.phone as string, waTemplateName!);
+          } else {
+            await sendViaMeta(guest.phone as string, rendered);
+          }
+          status = "sent";
+        }
       } catch (e) {
         sendError = (e as Error).message;
         console.error("[whatsapp] broadcast send failed:", sendError);
@@ -201,10 +238,14 @@ serve(async (req: Request) => {
         trigger_type: "broadcast",
         channel: "whatsapp",
         status,
-        payload: { body: rendered, template: messageTemplate, ...(sendError ? { error: sendError } : {}) },
+        payload: {
+          body: rendered,
+          template: waTemplateName ?? messageTemplate,
+          mode: useTemplate ? "wa_template" : "free_text",
+          ...(sendError ? { error: sendError } : {}),
+        },
       });
 
-      // ok:false when status=failed so the frontend can count it as an error
       return new Response(
         JSON.stringify({
           ok: status !== "failed",
