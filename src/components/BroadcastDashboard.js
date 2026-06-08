@@ -296,6 +296,40 @@ export default function BroadcastDashboard({ user }) {
 
   const handleCancel = () => { abortRef.current = true; };
 
+  // ── Quick Send: approved WA template to tomorrow's guests ─────────────────
+  const [quickSending, setQuickSending] = useState(false);
+  const [quickResult,  setQuickResult]  = useState(null);
+
+  const handleQuickSendTomorrow = useCallback(async () => {
+    const tomorrow = localISO(1);
+    const targets = allGuests.filter((g) => g.phone && g.arrival_date === tomorrow);
+    if (!targets.length) return showToast("err", "אין אורחים מחר עם מספר טלפון");
+    if (!isSupabaseConfigured || !supabase) return showToast("err", "Supabase לא מחובר");
+
+    setQuickSending(true);
+    setQuickResult(null);
+    let ok = 0, fail = 0;
+
+    for (const guest of targets) {
+      try {
+        const { data, error } = await supabase.functions.invoke("whatsapp-send", {
+          body: { trigger: "broadcast", guestId: guest.id, waTemplateName: "dream_arrival_tomorrow" },
+        });
+        if (error || !data?.ok) throw new Error(data?.error ?? error?.message ?? "failed");
+        ok++;
+      } catch (e) {
+        fail++;
+        console.warn("[quickSend] failed for", guest.name, e?.message);
+      }
+      await sleep(300);
+    }
+
+    setQuickSending(false);
+    setQuickResult({ ok, fail, total: targets.length });
+    showToast(fail === 0 ? "ok" : "warn",
+      `📤 נשלח ל-${ok} אורחים מחר${fail > 0 ? ` (${fail} נכשלו)` : " ✅"}`);
+  }, [allGuests, showToast]);
+
   // ── Send to a single guest (uses current template) ────────────────────────
   const sendToOne = useCallback(async (guest) => {
     if (!template.trim()) return showToast("err", "נא להזין תוכן הודעה תחילה");
@@ -342,6 +376,51 @@ export default function BroadcastDashboard({ user }) {
           {toast.msg}
         </div>
       )}
+
+      {/* ── Quick Send Banner ────────────────────────────────────────────── */}
+      {(() => {
+        const tomorrow = localISO(1);
+        const tomorrowGuests = allGuests.filter((g) => g.phone && g.arrival_date === tomorrow);
+        if (!tomorrowGuests.length) return null;
+        return (
+          <div style={{
+            background: "linear-gradient(135deg, #075E54 0%, #128C7E 100%)",
+            borderRadius: 14, padding: "18px 24px", marginBottom: 20,
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+            boxShadow: "0 4px 20px rgba(7,94,84,0.25)", flexWrap: "wrap", gap: 12,
+          }}>
+            <div style={{ color: "white" }}>
+              <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 4 }}>
+                📅 מחר מגיעים {tomorrowGuests.length} אורחים
+              </div>
+              <div style={{ fontSize: 13, opacity: 0.85 }}>
+                שלח תבנית ברכה אוטומטית — dream_arrival_tomorrow
+              </div>
+              {quickResult && (
+                <div style={{ fontSize: 12, marginTop: 6, opacity: 0.9 }}>
+                  {quickResult.fail === 0
+                    ? `✅ נשלח בהצלחה ל-${quickResult.ok} אורחים!`
+                    : `⚠️ הצליח: ${quickResult.ok} | נכשל: ${quickResult.fail}`}
+                </div>
+              )}
+            </div>
+            <button
+              onClick={handleQuickSendTomorrow}
+              disabled={quickSending}
+              style={{
+                background: quickSending ? "rgba(255,255,255,0.3)" : "white",
+                color: "#075E54", border: "none", borderRadius: 10,
+                padding: "12px 24px", fontWeight: 800, fontSize: 14,
+                cursor: quickSending ? "not-allowed" : "pointer",
+                fontFamily: "Heebo, sans-serif", whiteSpace: "nowrap",
+                boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+              }}
+            >
+              {quickSending ? "⏳ שולח..." : `📤 שלח לכולם (${tomorrowGuests.length})`}
+            </button>
+          </div>
+        );
+      })()}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
 
