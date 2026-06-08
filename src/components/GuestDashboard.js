@@ -242,6 +242,7 @@ export default function GuestDashboard({ user }) {
   const [activeTab,   setActiveTab]   = useState("all"); // all | day_guest | suite
   const [showAdd,     setShowAdd]     = useState(false);
   const [waModal,     setWaModal]     = useState(null);  // guest object or null
+  const [selected,    setSelected]    = useState(new Set()); // checked guest IDs
 
   const showToast = useCallback((type, msg) => {
     setToast({ type, msg });
@@ -267,6 +268,8 @@ export default function GuestDashboard({ user }) {
   }, [showToast]);
 
   useEffect(() => { fetchGuests(); }, [fetchGuests]);
+  // Clear selection when tab or data changes
+  useEffect(() => { setSelected(new Set()); }, [activeTab]);
 
   // ── Mark Room Ready (EZGO pipeline — hotel guests only) ───────────────────
   const markRoomReady = useCallback(async (guest) => {
@@ -350,6 +353,26 @@ export default function GuestDashboard({ user }) {
     setAddBusy(false);
   }, [showToast]);
 
+  // ── Selection + bulk delete ───────────────────────────────────────────────
+  const toggleSelect = useCallback((id) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const deleteSelected = useCallback(async () => {
+    if (!selected.size) return;
+    if (!window.confirm(`מחק ${selected.size} אורחים? פעולה זו לא ניתנת לביטול.`)) return;
+    const ids = [...selected];
+    const { error } = await supabase.from("guests").delete().in("id", ids);
+    if (error) { showToast("err", "שגיאה: " + error.message); return; }
+    setGuests((prev) => prev.filter((g) => !ids.includes(g.id)));
+    setSelected(new Set());
+    showToast("ok", `🗑️ נמחקו ${ids.length} אורחים בהצלחה`);
+  }, [selected, showToast]);
+
   // ── Tab filtering ─────────────────────────────────────────────────────────
   const dayGuests   = guests.filter((g) => g.room_type === "day_guest");
   const hotelGuests = guests.filter((g) => g.room_type !== "day_guest");
@@ -430,6 +453,44 @@ export default function GuestDashboard({ user }) {
             >{label}</button>
           ))}
         </div>
+        {/* Select all checkbox */}
+        {tabGuests.length > 0 && (
+          <label style={{
+            display: "flex", alignItems: "center", gap: 6,
+            cursor: "pointer", fontSize: 13, fontWeight: 600,
+            color: "var(--text-muted)", userSelect: "none",
+          }}>
+            <input
+              type="checkbox"
+              style={{ width: 16, height: 16, cursor: "pointer", accentColor: "#C0392B" }}
+              checked={tabGuests.length > 0 && selected.size === tabGuests.length}
+              onChange={() =>
+                setSelected(
+                  selected.size === tabGuests.length
+                    ? new Set()
+                    : new Set(tabGuests.map((g) => g.id))
+                )
+              }
+            />
+            בחר הכל
+          </label>
+        )}
+
+        {/* Bulk delete — appears only when selection is active */}
+        {selected.size > 0 && (
+          <button
+            onClick={deleteSelected}
+            style={{
+              padding: "7px 16px", borderRadius: 20, cursor: "pointer",
+              fontFamily: "Heebo, sans-serif", fontSize: 13, fontWeight: 700,
+              border: "2px solid #DC2626", background: "#FEF2F2", color: "#DC2626",
+              animation: "pulse 1s ease-in-out infinite",
+            }}
+          >
+            🗑️ מחק נבחרים ({selected.size})
+          </button>
+        )}
+
         {/* Add + Refresh */}
         <button
           onClick={() => setShowAdd((s) => !s)}
@@ -494,20 +555,35 @@ export default function GuestDashboard({ user }) {
                 key={guest.id}
                 style={{
                   padding: "14px 16px", borderRadius: 14,
-                  border: `1px solid ${isDayGuest ? "#BFDBFE" : "var(--border)"}`,
-                  background: isDayGuest ? "rgba(37,99,235,0.03)" : "var(--card-bg)",
+                  border: `1px solid ${
+                    selected.has(guest.id) ? "#DC2626"
+                    : isDayGuest ? "#BFDBFE"
+                    : "var(--border)"
+                  }`,
+                  background: selected.has(guest.id)
+                    ? "#FEF2F2"
+                    : isDayGuest ? "rgba(37,99,235,0.03)"
+                    : "var(--card-bg)",
                   boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
                   opacity: isDeleting ? 0.5 : 1,
-                  transition: "opacity 0.2s",
+                  transition: "border-color 0.15s, background 0.15s, opacity 0.2s",
                 }}
               >
-                {/* Row 1: Name + arrival badge + delete */}
+                {/* Row 1: Checkbox + Name + arrival badge + delete */}
                 <div style={{
                   display: "flex", alignItems: "center",
                   justifyContent: "space-between", marginBottom: 8,
                 }}>
-                  <div style={{ fontWeight: 800, fontSize: 16, color: "var(--black)" }}>
-                    {guest.name}
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <input
+                      type="checkbox"
+                      checked={selected.has(guest.id)}
+                      onChange={() => toggleSelect(guest.id)}
+                      style={{ width: 16, height: 16, cursor: "pointer", accentColor: "#DC2626" }}
+                    />
+                    <div style={{ fontWeight: 800, fontSize: 16, color: "var(--black)" }}>
+                      {guest.name}
+                    </div>
                   </div>
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                     <ArrivalBadge date={guest.arrival_date} />
@@ -524,7 +600,7 @@ export default function GuestDashboard({ user }) {
                       }}
                     >🗑️</button>
                   </div>
-                </div>
+                </div>  {/* end row-1 */}
 
                 {/* Row 2: Phone + WA button + room + type badge */}
                 <div style={{
