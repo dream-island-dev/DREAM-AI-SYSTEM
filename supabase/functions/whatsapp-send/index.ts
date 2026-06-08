@@ -186,10 +186,12 @@ serve(async (req: Request) => {
       });
 
       let status = "simulated";
+      let sendError: string | null = null;
       try {
         if (!sim) { await sendViaMeta(guest.phone as string, rendered); status = "sent"; }
       } catch (e) {
-        console.error("[whatsapp] broadcast send failed:", (e as Error).message);
+        sendError = (e as Error).message;
+        console.error("[whatsapp] broadcast send failed:", sendError);
         status = "failed";
       }
 
@@ -199,11 +201,18 @@ serve(async (req: Request) => {
         trigger_type: "broadcast",
         channel: "whatsapp",
         status,
-        payload: { body: rendered, template: messageTemplate },
+        payload: { body: rendered, template: messageTemplate, ...(sendError ? { error: sendError } : {}) },
       });
 
+      // ok:false when status=failed so the frontend can count it as an error
       return new Response(
-        JSON.stringify({ ok: true, simulation: sim, status, body: rendered }),
+        JSON.stringify({
+          ok: status !== "failed",
+          simulation: sim,
+          status,
+          body: rendered,
+          ...(sendError ? { error: sendError } : {}),
+        }),
         { headers: { ...CORS, "Content-Type": "application/json" } }
       );
     }
