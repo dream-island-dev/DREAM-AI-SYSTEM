@@ -12,6 +12,7 @@ import { supabase, isSupabaseConfigured, loadAgentProfile } from "./supabaseClie
 import { getPushState, subscribeToPush, unsubscribeFromPush, syncSubscriptionToSupabase } from "./utils/pushNotifications";
 import KnowledgeUploader from "./components/KnowledgeUploader";
 import GuestDashboard from "./components/GuestDashboard";
+import BroadcastDashboard from "./components/BroadcastDashboard";
 
 // ============================================================
 // MOCK DATA - יוחלף ב-Supabase בגרסה האמיתית
@@ -787,6 +788,7 @@ function Sidebar({ user, active, setActive, openCallsCount, onLogout, isAdmin, i
     { id: "checklist",  icon: "✅", label: "צ'קליסטים" },
     { id: "employees",  icon: "👥", label: "עובדים" },
     { id: "vip_guests", icon: "🏨", label: "VIP אורחים EZGO" },
+    { id: "broadcast",  icon: "📣", label: "שליחת הודעות" },
     { id: "guests",     icon: "🛎️", label: "אורחים" },
     { id: "scheduler",  icon: "🪄", label: "מחולל משמרות" },
     { id: "upload",     icon: "📤", label: "העלאת נתונים" },
@@ -2166,6 +2168,7 @@ export default function App() {
     checklist:  "צ'קליסטים יומיים ✅",
     employees:  "ניהול עובדים 👥",
     vip_guests: "🏨 EZGO — אורחי VIP",
+    broadcast:  "📣 מודול שידור — WhatsApp",
     guests:     "🛎️ ניהול אורחים",
     scheduler:  "🪄 מחולל משמרות AI",
     upload:     "📤 העלאת נתונים",
@@ -2258,6 +2261,8 @@ export default function App() {
         );
       case "vip_guests":
         return <GuestDashboard user={user} />;
+      case "broadcast":
+        return <BroadcastDashboard user={user} />;
       case "guests":
         return <GuestsPage />;
       case "scheduler":
