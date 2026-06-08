@@ -112,8 +112,11 @@ const TARGETS = {
       name:         String(r.name ?? "").trim(),
       phone:        sanitizePhone(r.phone),
       room:         r.room ? String(r.room).trim() : null,
-      room_type:    /suite|סוויט/i.test(String(r.room_type ?? "")) ? "suite" : "standard",
-      arrival_date: parseEzgoDate(r.arrival_date),   // handles serial / ISO / Israeli / Date
+      // No room number → day-use guest (בילוי יומי)
+      room_type:    r.room
+        ? (/suite|סוויט/i.test(String(r.room_type ?? "")) ? "suite" : "standard")
+        : "day_guest",
+      arrival_date: parseEzgoDate(r.arrival_date),
       status:       "expected",
     }),
     insert: (rows) => supabase.from("guests").insert(rows), // identity id
@@ -180,7 +183,8 @@ const TARGETS = {
       phone:        sanitizePhone(r.phone),
       email:        r.email ? String(r.email).trim().toLowerCase() : null,
       room:         r.room  ? String(r.room).trim()  : null,
-      room_type:    normalizeRoomType(r.room_type),
+      // No room number → day-use guest (בילוי יומי), not an overnight suite booking
+      room_type:    r.room ? normalizeRoomType(r.room_type) : "day_guest",
       arrival_date: parseEzgoDate(r.arrival_date),
       notes:        r.notes ? String(r.notes).trim() : null,
       status:       "expected",

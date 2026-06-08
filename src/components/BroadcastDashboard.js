@@ -71,6 +71,7 @@ export default function BroadcastDashboard({ user }) {
   // ── Send state ────────────────────────────────────────────────────────────
   const [isSending,    setIsSending]    = useState(false);
   const [progress,     setProgress]     = useState(null);
+  const [sendingOneId, setSendingOneId] = useState(null); // individual guest send
   // { current, total, errors, done }
   const abortRef = useRef(false); // lets the user cancel mid-broadcast
 
@@ -228,6 +229,25 @@ export default function BroadcastDashboard({ user }) {
   }, [template, sendableGuests, showToast]);
 
   const handleCancel = () => { abortRef.current = true; };
+
+  // ── Send to a single guest (uses current template) ────────────────────────
+  const sendToOne = useCallback(async (guest) => {
+    if (!template.trim()) return showToast("err", "נא להזין תוכן הודעה תחילה");
+    if (!guest.phone)     return showToast("err", `ל${guest.name} אין מספר טלפון`);
+    setSendingOneId(guest.id);
+    try {
+      const { data, error } = await supabase.functions.invoke("whatsapp-send", {
+        body: { trigger: "broadcast", guestId: guest.id, messageTemplate: template },
+      });
+      if (error) throw new Error(data?.error ?? error.message ?? "edge_function_error");
+      if (!data?.ok) throw new Error(data?.error ?? "שגיאה בשליחה");
+      showToast("ok", `✅ נשלח ל${guest.name}${data.simulation ? " (סימולציה)" : ""}`);
+    } catch (err) {
+      showToast("err", `שגיאה: ${err?.message ?? err}`);
+    } finally {
+      setSendingOneId(null);
+    }
+  }, [template, showToast]);
 
   // ── Render ────────────────────────────────────────────────────────────────
   const pct = progress
@@ -527,6 +547,7 @@ export default function BroadcastDashboard({ user }) {
                   <th>סוג</th>
                   <th>הגעה</th>
                   <th>סטטוס</th>
+                  <th>שלח</th>
                 </tr>
               </thead>
               <tbody>
@@ -543,6 +564,8 @@ export default function BroadcastDashboard({ user }) {
                     <td>
                       {g.room_type === "suite"
                         ? <span style={{ color: "var(--gold-dark)", fontWeight: 700, fontSize: 12 }}>👑 סוויטה</span>
+                        : g.room_type === "day_guest"
+                        ? <span style={{ color: "#1D4ED8", fontSize: 12 }}>🏊 יומי</span>
                         : <span style={{ color: "var(--text-muted)", fontSize: 12 }}>{g.room_type || "standard"}</span>
                       }
                     </td>
@@ -555,6 +578,22 @@ export default function BroadcastDashboard({ user }) {
                       }`}>
                         {g.status || "—"}
                       </span>
+                    </td>
+                    <td>
+                      <button
+                        onClick={() => sendToOne(g)}
+                        disabled={!g.phone || sendingOneId === g.id || isSending}
+                        title={!template.trim() ? "כתוב הודעה תחילה" : `שלח ל${g.name}`}
+                        style={{
+                          padding: "4px 10px", borderRadius: 16, fontSize: 11, fontWeight: 700,
+                          border: "1px solid #22C55E", background: "#F0FDF4", color: "#15803D",
+                          cursor: (!g.phone || isSending) ? "default" : "pointer",
+                          opacity: !g.phone ? 0.3 : 1,
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {sendingOneId === g.id ? "⏳" : "📤 שלח"}
+                      </button>
                     </td>
                   </tr>
                 ))}
