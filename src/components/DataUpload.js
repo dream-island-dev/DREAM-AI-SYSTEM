@@ -74,13 +74,25 @@ function normalizeRoomType(raw) {
 }
 
 /**
- * Strips formatting from phone numbers (spaces, dashes, parentheses).
- * Preserves leading + for international prefix.
- * Returns null when the result has fewer than 9 digits (not a valid number).
+ * Strips formatting from phone numbers and normalises to E.164.
+ * Israeli mobile numbers (from EZGO exports) come in two forms:
+ *   • 9 digits starting with 5  → 506489150  → +972506489150
+ *   • 10 digits starting with 05 → 0506489150 → +972506489150
+ * Meta WhatsApp Cloud API requires E.164 format for all sends.
+ * Returns null when the result has fewer than 9 digits.
  */
 function sanitizePhone(raw) {
   if (!raw) return null;
   const cleaned = String(raw).replace(/[^\d+]/g, "");
+  if (!cleaned) return null;
+  // Already E.164
+  if (cleaned.startsWith("+")) return cleaned.length >= 10 ? cleaned : null;
+  // Israeli mobile — 9 digits starting with 5 (EZGO strips the leading 0)
+  if (/^5\d{8}$/.test(cleaned)) return `+972${cleaned}`;
+  // Israeli mobile — 10 digits starting with 05
+  if (/^05\d{8}$/.test(cleaned)) return `+972${cleaned.slice(1)}`;
+  // Already prefixed with country code 972
+  if (cleaned.startsWith("972") && cleaned.length >= 11) return `+${cleaned}`;
   return cleaned.length >= 9 ? cleaned : null;
 }
 
@@ -90,11 +102,11 @@ const TARGETS = {
     table: "guests",
     required: ["name"],
     aliases: {
-      name:         ["name", "שם", "שם אורח", "guest", "guest name", "אורח"],
+      name:         ["name", "שם", "שם אורח", "שם מלא", "guest", "guest name", "אורח"],
       phone:        ["phone", "טלפון", "נייד", "mobile", "phone number", "מספר טלפון"],
       room:         ["room", "חדר", "מספר חדר", "room number", "room no"],
       room_type:    ["room_type", "type", "סוג", "סוג חדר", "roomtype", "קטגוריה"],
-      arrival_date: ["arrival_date", "arrival", "date", "תאריך", "תאריך הגעה", "check-in", "checkin", "הגעה"],
+      arrival_date: ["arrival_date", "arrival", "date", "תאריך", "תאריך הגעה", "check-in", "checkin", "הגעה", "ת. התחלה", "התחלה"],
     },
     transform: (r) => ({
       name: r.name,
@@ -143,11 +155,18 @@ const TARGETS = {
         "room number", "room no", "room #", "room num", "unit", "unit number",
       ],
       arrival_date: [
-        // Hebrew
+        // Hebrew — EZGO exports "ת. התחלה" (start date = arrival date)
         "תאריך הגעה", "הגעה", "תאריך", "תאריך צ׳ק אין", "צ׳ק אין", "תאריך כניסה",
+        "ת. התחלה", "ת׳ התחלה", "התחלה", "ת.התחלה",
         // English
         "arrival date", "arrival", "check in", "check-in", "checkin",
         "check in date", "arrival_date", "date", "in date",
+      ],
+      email: [
+        // Hebrew
+        "דואר אלקטרוני", "אימייל", "מייל", "ד״א", "דוא״ל",
+        // English
+        "email", "e-mail", "mail", "email address",
       ],
       notes: [
         // Hebrew
@@ -159,6 +178,7 @@ const TARGETS = {
     transform: (r) => ({
       name:         String(r.name ?? "").trim(),
       phone:        sanitizePhone(r.phone),
+      email:        r.email ? String(r.email).trim().toLowerCase() : null,
       room:         r.room  ? String(r.room).trim()  : null,
       room_type:    normalizeRoomType(r.room_type),
       arrival_date: parseEzgoDate(r.arrival_date),
