@@ -13,6 +13,7 @@ import { getPushState, subscribeToPush, unsubscribeFromPush, syncSubscriptionToS
 import KnowledgeUploader from "./components/KnowledgeUploader";
 import GuestDashboard from "./components/GuestDashboard";
 import BroadcastDashboard from "./components/BroadcastDashboard";
+import WhatsAppInbox from "./components/WhatsAppInbox";
 
 // ============================================================
 // MOCK DATA - יוחלף ב-Supabase בגרסה האמיתית
@@ -789,6 +790,7 @@ function Sidebar({ user, active, setActive, openCallsCount, onLogout, isAdmin, i
     { id: "employees",  icon: "👥", label: "עובדים" },
     { id: "vip_guests", icon: "🏨", label: "VIP אורחים EZGO" },
     { id: "broadcast",  icon: "📣", label: "שליחת הודעות" },
+    { id: "wa_inbox",   icon: "💬", label: "DREAM BOT — שיחות" },
     { id: "guests",     icon: "🛎️", label: "אורחים" },
     { id: "scheduler",  icon: "🪄", label: "מחולל משמרות" },
     { id: "upload",     icon: "📤", label: "העלאת נתונים" },
@@ -2169,6 +2171,7 @@ export default function App() {
     employees:  "ניהול עובדים 👥",
     vip_guests: "🏨 EZGO — אורחי VIP",
     broadcast:  "📣 מודול שידור — WhatsApp",
+    wa_inbox:   "💬 DREAM BOT — תיבת שיחות",
     guests:     "🛎️ ניהול אורחים",
     scheduler:  "🪄 מחולל משמרות AI",
     upload:     "📤 העלאת נתונים",
@@ -2263,6 +2266,8 @@ export default function App() {
         return <GuestDashboard user={user} />;
       case "broadcast":
         return <BroadcastDashboard user={user} />;
+      case "wa_inbox":
+        return <WhatsAppInbox />;
       case "guests":
         return <GuestsPage />;
       case "scheduler":
