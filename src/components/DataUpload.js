@@ -109,12 +109,12 @@ const TARGETS = {
       arrival_date: ["arrival_date", "arrival", "date", "תאריך", "תאריך הגעה", "check-in", "checkin", "הגעה", "ת. התחלה", "התחלה"],
     },
     transform: (r) => ({
-      name: r.name,
-      phone: r.phone ?? null,
-      room: r.room ?? null,
-      room_type: /suite|סוויט/i.test(String(r.room_type ?? "")) ? "suite" : "standard",
-      arrival_date: r.arrival_date ? String(r.arrival_date).slice(0, 10) : null,
-      status: "expected",
+      name:         String(r.name ?? "").trim(),
+      phone:        sanitizePhone(r.phone),
+      room:         r.room ? String(r.room).trim() : null,
+      room_type:    /suite|סוויט/i.test(String(r.room_type ?? "")) ? "suite" : "standard",
+      arrival_date: parseEzgoDate(r.arrival_date),   // handles serial / ISO / Israeli / Date
+      status:       "expected",
     }),
     insert: (rows) => supabase.from("guests").insert(rows), // identity id
   },
