@@ -152,33 +152,58 @@ export default function AgentChat({ user, agentProfile, onOpenSettings }) {
           learningLogs: getLocalCorrections(agentProfile.id),
         });
 
-        let res;
-        try {
-          res = await fetch(url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body,
+        // ── Route: Supabase Edge Function vs legacy Apps Script ─────────────────
+        // supabase.functions.invoke() automatically attaches:
+        //   apikey: <SUPABASE_ANON_KEY>          (required by Supabase gateway)
+        //   Authorization: Bearer <session-jwt>  (satisfies JWT guard)
+        // A plain fetch() without these headers gets an immediate 401 from the
+        // gateway — the function code never even runs.
+        if (CHAT_EDGE_URL && supabase) {
+          const { data, error } = await supabase.functions.invoke("chat", {
+            body: JSON.parse(body),
           });
-        } catch {
-          reply = "⚠️ לא ניתן להתחבר לשרת. בדוק חיבור אינטרנט.";
-          setMessages((prev) => [...prev, {
-            id: `msg_err_${Date.now()}`, role: "assistant", content: reply,
-            ts: new Date().toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" }),
-          }]);
-          setBusy(false);
-          return;
-        }
-
-        if (!res.ok) {
-          const s = res.status;
-          reply = s === 404
-            ? `⚠️ Edge Function "chat" לא נמצאה. יש לדלוק אותה ב-Supabase.`
-            : `⚠️ שגיאת שרת (${s}).`;
+          if (error) {
+            const status = error?.context?.status ?? 0;
+            if (status === 401) {
+              reply = "⚠️ שגיאת הרשאה (401) — ודא ש-REACT_APP_SUPABASE_ANON_KEY מוגדר נכון בסביבה.";
+            } else if (status === 404) {
+              reply = '⚠️ Edge Function "chat" לא נמצאה — יש לדלוק אותה ב-Supabase.';
+            } else {
+              reply = `⚠️ ${error.message ?? "שגיאת שרת"}`;
+            }
+          } else if (!data?.ok) {
+            reply = `⚠️ ${data?.error ?? "שגיאה לא ידועה"}`;
+          } else {
+            reply = data.reply;
+            if (data.driveUsed) setDriveUsed(true);
+            if (data.engine)    setEngine(data.engine);
+          }
         } else {
-          const data = await res.json();
-          reply = data.ok ? data.reply : `⚠️ ${data.error ?? "שגיאה לא ידועה"}`;
-          if (data.driveUsed) setDriveUsed(true);
-          if (data.engine) setEngine(data.engine);
+          // Legacy path — plain fetch to Apps Script BACKEND_URL (no Supabase auth needed)
+          let res;
+          try {
+            res = await fetch(BACKEND_URL, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body,
+            });
+          } catch {
+            reply = "⚠️ לא ניתן להתחבר לשרת. בדוק חיבור אינטרנט.";
+            setMessages((prev) => [...prev, {
+              id: `msg_err_${Date.now()}`, role: "assistant", content: reply,
+              ts: new Date().toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" }),
+            }]);
+            setBusy(false);
+            return;
+          }
+          if (!res.ok) {
+            reply = `⚠️ שגיאת שרת (${res.status}).`;
+          } else {
+            const data = await res.json();
+            reply = data.ok ? data.reply : `⚠️ ${data.error ?? "שגיאה לא ידועה"}`;
+            if (data.driveUsed) setDriveUsed(true);
+            if (data.engine)    setEngine(data.engine);
+          }
         }
       }
 

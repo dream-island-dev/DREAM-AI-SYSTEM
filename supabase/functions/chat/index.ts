@@ -258,10 +258,27 @@ serve(async (req: Request) => {
       }),
       { headers: { ...CORS, "Content-Type": "application/json" } }
     );
-  } catch (err: any) {
+  } catch (err: unknown) {
+    const raw = err instanceof Error ? err.message : String(err);
+    console.error("[chat] error:", raw);
+
+    // Map internal error codes → actionable Hebrew messages
+    let userError = raw;
+    if (raw === "no_gemini_key" || raw === "no_anthropic_key") {
+      userError =
+        "לא הוגדר מפתח AI ב-Supabase Secrets. הרץ:\n" +
+        "  npx supabase secrets set GEMINI_API_KEY=<your-key> --project-ref <ref>";
+    } else if (raw.includes("gemini_http_429") || raw.includes("quota")) {
+      userError = "מכסת Gemini מוצתה (429) — נסה שוב מאוחר יותר.";
+    } else if (raw.includes("gemini_http_")) {
+      userError = `שגיאת Gemini API: ${raw}`;
+    }
+
+    // ⚠️  Always HTTP 200 — supabase-js populates `data` (not `error`) so the
+    //     frontend receives the real error string instead of a generic wrapper.
     return new Response(
-      JSON.stringify({ ok: false, error: err.message }),
-      { status: 400, headers: { ...CORS, "Content-Type": "application/json" } }
+      JSON.stringify({ ok: false, error: userError }),
+      { status: 200, headers: { ...CORS, "Content-Type": "application/json" } }
     );
   }
 });
