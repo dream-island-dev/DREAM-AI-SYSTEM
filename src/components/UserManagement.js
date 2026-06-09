@@ -44,9 +44,12 @@ const STATUS_META = {
 };
 
 const DEPARTMENTS = [
-  "Management","Reception","Maintenance","Finance",
-  "Restaurant","Cleaning","Security","Spa",
-  "קבלה","ניקיון","מסעדה","תחזוקה","ביטחון","ספא",
+  "תפעול",
+  "משק",
+  "קבלה",
+  "ספא",
+  'מזמ"ש (F&B)',
+  "הנהלה",
 ];
 
 // ── Shared UI atoms ───────────────────────────────────────────────────────────

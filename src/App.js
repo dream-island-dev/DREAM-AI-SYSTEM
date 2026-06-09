@@ -781,21 +781,119 @@ function LoginPage({ onLogin }) {
   );
 }
 
+// ── Hebrew department options (canonical list used across the whole app) ────────
+const HOTEL_DEPARTMENTS = [
+  "תפעול", "משק", "קבלה", "ספא", 'מזמ"ש (F&B)', "הנהלה",
+];
+
+// ── Department onboarding modal — shown to new users who have no department ─────
+// Forces role to stay 'staff'; admin promotes later from UserManagement.
+function DepartmentOnboardingModal({ user, onComplete }) {
+  const [selected, setSelected] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    if (!selected) return;
+    setSaving(true);
+    try {
+      if (isSupabaseConfigured && supabase) {
+        // Only set department — role is managed by DB trigger + admin
+        await supabase
+          .from("profiles")
+          .update({ department: selected })
+          .eq("id", user.id);
+      }
+      onComplete({ ...user, department: selected });
+    } catch (e) {
+      console.error("[onboarding] department save failed:", e);
+    }
+    setSaving(false);
+  };
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 2000,
+      background: "rgba(15,15,15,0.85)", backdropFilter: "blur(10px)",
+      display: "flex", alignItems: "center", justifyContent: "center", padding: 20,
+    }}>
+      <div style={{
+        background: "var(--card-bg)", borderRadius: 20, padding: "36px 32px",
+        width: "100%", maxWidth: 420, textAlign: "center",
+        boxShadow: "0 32px 80px rgba(0,0,0,0.4)",
+        border: "1px solid var(--border)",
+      }}>
+        <div style={{ fontSize: 44, marginBottom: 14 }}>🏝️</div>
+        <div style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, fontWeight: 700, color: "var(--black)", marginBottom: 6 }}>
+          ברוך הבא, {(user.name || "").split(" ")[0] || "עמית"}!
+        </div>
+        <div style={{ fontSize: 14, color: "var(--text-muted)", marginBottom: 24 }}>
+          לאיזו מחלקה אתה שייך?
+        </div>
+        <select
+          value={selected}
+          onChange={e => setSelected(e.target.value)}
+          style={{
+            width: "100%", padding: "14px 16px",
+            border: "1.5px solid var(--border)", borderRadius: 10,
+            fontFamily: "Heebo, sans-serif", fontSize: 15,
+            color: selected ? "var(--text-main)" : "var(--text-muted)",
+            background: "var(--card-bg)", outline: "none", marginBottom: 16,
+            cursor: "pointer",
+          }}
+        >
+          <option value="">בחר מחלקה...</option>
+          {HOTEL_DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}
+        </select>
+        <button
+          onClick={handleSave}
+          disabled={!selected || saving}
+          style={{
+            width: "100%", padding: "14px",
+            background: selected
+              ? "linear-gradient(135deg, var(--gold) 0%, var(--gold-dark) 100%)"
+              : "var(--border)",
+            border: "none", borderRadius: 10,
+            fontFamily: "Heebo, sans-serif", fontSize: 15, fontWeight: 800,
+            color: selected ? "#0F0F0F" : "var(--text-muted)",
+            cursor: selected && !saving ? "pointer" : "not-allowed",
+            transition: "all 0.2s",
+          }}
+        >
+          {saving ? "שומר..." : "כניסה למערכת ←"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function Sidebar({ user, active, setActive, openCallsCount, onLogout, isAdmin, isSuperAdminUser }) {
-  const navItems = [
+  // Managers, admins, and super-admins can see all nav items.
+  // Staff (employees) see only: dashboard, shifts, and the AI agent.
+  const isManagerOrAbove = isAdmin || isSuperAdminUser || user.role === "manager";
+
+  const allNavItems = [
     { id: "dashboard",  icon: "📊", label: "דאשבורד" },
     { id: "shifts",     icon: "🕐", label: "משמרות" },
-    { id: "calls",      icon: "🔔", label: "קריאות שירות", badge: openCallsCount },
-    { id: "checklist",  icon: "✅", label: "צ'קליסטים" },
-    { id: "employees",  icon: "👥", label: "עובדים" },
-    { id: "vip_guests", icon: "🏨", label: "VIP אורחים EZGO" },
-    { id: "broadcast",  icon: "📣", label: "שליחת הודעות" },
-    { id: "wa_inbox",   icon: "💬", label: "DREAM BOT — שיחות" },
-    { id: "guests",     icon: "🛎️", label: "אורחים" },
-    { id: "scheduler",  icon: "🪄", label: "מחולל משמרות" },
-    { id: "upload",     icon: "📤", label: "העלאת נתונים" },
+    { id: "calls",      icon: "🔔", label: "קריאות שירות", badge: openCallsCount, managerOnly: true },
+    { id: "checklist",  icon: "✅", label: "צ'קליסטים",                              managerOnly: true },
+    { id: "employees",  icon: "👥", label: "עובדים",                                 managerOnly: true },
+    { id: "vip_guests", icon: "🏨", label: "VIP אורחים EZGO",                       managerOnly: true },
+    { id: "broadcast",  icon: "📣", label: "שליחת הודעות",                           managerOnly: true },
+    { id: "wa_inbox",   icon: "💬", label: "DREAM BOT — שיחות",                     managerOnly: true },
+    { id: "guests",     icon: "🛎️", label: "אורחים",                                managerOnly: true },
+    { id: "scheduler",  icon: "🪄", label: "מחולל משמרות",                           managerOnly: true },
+    { id: "upload",     icon: "📤", label: "העלאת נתונים",                           managerOnly: true },
     { id: "agent",      icon: "🤖", label: "הסוכן שלי" },
   ];
+
+  const navItems = allNavItems.filter(item => !item.managerOnly || isManagerOrAbove);
+
+  // User role label
+  const roleLabel = isAdmin
+    ? "👑 מנהל מערכת"
+    : user.role === "manager"
+    ? "🏢 מנהל מחלקה"
+    : "👤 עובד";
 
   return (
     <div className="sidebar">
@@ -811,7 +909,7 @@ function Sidebar({ user, active, setActive, openCallsCount, onLogout, isAdmin, i
           <div className="sidebar-user-info">
             <div className="sidebar-user-name">{user.name}</div>
             <div className="sidebar-user-role" style={{ display: "flex", alignItems: "center", gap: 4 }}>
-              {isAdmin ? "👑 מנהל מערכת" : user.role === "admin" ? "מנהל כללי" : "מנהל מחלקה"}
+              {roleLabel}
             </div>
           </div>
         </div>
@@ -2464,6 +2562,16 @@ export default function App() {
             ))}
           </div>
         </div>
+
+      {/* ── Department onboarding modal — blocks UI until new user selects dept ──
+           Only shown to non-admin users who have no department set in DB.
+           Role is NOT changed here; DB trigger + admin promote manages that. */}
+      {user && !user.department && !isAdmin && (
+        <DepartmentOnboardingModal
+          user={user}
+          onComplete={(updated) => setUser(updated)}
+        />
+      )}
 
       {/* ── Settings / questionnaire modal — slides up over active chat ─────────
            AgentChat stays MOUNTED underneath so its message state is preserved. */}

@@ -831,43 +831,61 @@ export default function ShiftGenerator({ onApproved, user }) {
 
   const removeRow = (i) => setDraftShifts((s) => s.filter((_, idx) => idx !== i));
 
-  // approve() — only INSERT into `shifts` on explicit manager confirmation
+  // approve() — sync employee UUIDs, then INSERT shifts with correct DB column names
   const approve = async () => {
     if (!draftShifts?.length) return;
     setApproving(true);
     try {
-      // Build DB rows — use exact column names from schema
-      const rows = draftShifts.map((s, i) => ({
-        id:             Date.now() + i,
-        "employeeName": s.employeeName,          // quoted camelCase — matches DB column
-        department:     managerDepartment || s.department || "כללי",
-        date:           s.date,
-        start:          s.start,
-        "end":          s.end,                   // "end" is reserved word — use quotes
-        station:        s.station ?? "",
-        status:         s.status || "עתידי",
-        notes:          s.notes ?? "",
-      }));
+      // ── Step 1: Resolve employee UUIDs (create missing employees silently) ──
+      const uniqueNames = [...new Set(draftShifts.map(s => s.employeeName).filter(Boolean))];
+      const empMap = {};
 
-      // Upsert in batches of 50 to avoid payload limits
-      const BATCH = 50;
-      for (let i = 0; i < rows.length; i += BATCH) {
-        const { error } = await supabase.from("shifts").upsert(rows.slice(i, i + BATCH));
-        if (error) throw new Error(error.message);
+      if (uniqueNames.length > 0 && isSupabaseConfigured && supabase) {
+        // Fetch existing employees by name
+        const { data: existingEmps } = await supabase
+          .from("employees")
+          .select("id, name")
+          .in("name", uniqueNames);
+        (existingEmps ?? []).forEach(e => { empMap[e.name] = e.id; });
+
+        // Create any employees not yet in the DB, linked to current manager
+        const missing = uniqueNames.filter(n => !empMap[n]);
+        if (missing.length > 0) {
+          const dept = managerDepartment || "כללי";
+          const { data: created } = await supabase
+            .from("employees")
+            .upsert(
+              missing.map(name => ({
+                name, department: dept, role: "עובד", status: "פעיל",
+                created_by: user?.id ?? null,
+              })),
+              { onConflict: "name", ignoreDuplicates: false }
+            )
+            .select("id, name");
+          (created ?? []).forEach(e => { empMap[e.name] = e.id; });
+        }
       }
 
-      // ── WhatsApp staff notifications ──────────────────────────────────────
-      try {
-        const byEmp = {};
-        rows.forEach((r) => {
-          const empPhone = employees.find(e => e.name === r["employeeName"])?.phone;
-          const key = r["employeeName"];
-          (byEmp[key] ||= []).push({ ...r, phone: empPhone ?? "" });
-        });
-        await supabase.functions.invoke("whatsapp-send", {
-          body: { trigger: "shift_assignment", weekStart, assignments: byEmp },
-        });
-      } catch { /* non-critical */ }
+      // ── Step 2: Build rows using EXACT DB column names ───────────────────
+      // DB schema: employee_name, start_time, end_time  (NOT start/end/"employeeName")
+      const rows = draftShifts.map((s) => ({
+        // id omitted — Supabase auto-generates UUID via DEFAULT uuid_generate_v4()
+        employee_id:   empMap[s.employeeName] ?? null,
+        employee_name: s.employeeName,
+        department:    managerDepartment || s.department || "כללי",
+        date:          s.date,
+        start_time:    s.start,
+        end_time:      s.end,
+        status:        s.status || "עתידי",
+        created_by:    user?.id ?? null,
+      }));
+
+      // ── Step 3: Insert in batches of 50 to avoid payload limits ─────────
+      const BATCH = 50;
+      for (let i = 0; i < rows.length; i += BATCH) {
+        const { error } = await supabase.from("shifts").insert(rows.slice(i, i + BATCH));
+        if (error) throw new Error(error.message);
+      }
 
       showToast("ok", `✅ ${rows.length} משמרות נשמרו בהצלחה!`);
       setDraftShifts(null);
@@ -1242,7 +1260,7 @@ export default function ShiftGenerator({ onApproved, user }) {
               <button className="btn btn-ghost" onClick={() => setDraftShifts(null)}>ביטול טיוטה</button>
               <button className="btn btn-primary" disabled={approving} onClick={approve}
                 style={{ minWidth: 180, opacity: approving ? 0.6 : 1 }}>
-                {approving ? "שומר..." : "✓ אשר ושמור + שלח לצוות"}
+                {approving ? "שומר..." : "✓ אשר ושמור במערכת"}
               </button>
             </div>
           </div>
