@@ -6,17 +6,14 @@
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.20.0";
-
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
     "authorization, x-client-info, apikey, content-type",
 };
 
-// ── Model router: Gemini (primary) → Claude (fallback) ────────────────────────
+// ── Gemini-only text generation (Anthropic key restricted — removed) ──────────
 const GEMINI_MODEL = "gemini-2.5-flash";
-const CLAUDE_MODEL = "claude-sonnet-4-6";
 
 /** Single-shot text generation via Gemini, throws on any failure. */
 async function genGemini(prompt: string): Promise<string> {
@@ -48,41 +45,22 @@ async function genGemini(prompt: string): Promise<string> {
   return text;
 }
 
-/** Single-shot text generation via Claude. */
-async function genClaude(prompt: string): Promise<string> {
-  const key = Deno.env.get("ANTHROPIC_API_KEY");
-  if (!key) throw new Error("no_anthropic_key");
-  const anthropic = new Anthropic({ apiKey: key });
-  const resp = await anthropic.messages.create({
-    model: CLAUDE_MODEL,
-    max_tokens: 1500,
-    messages: [{ role: "user", content: prompt }],
-  });
-  return resp.content[0].type === "text" ? resp.content[0].text : "";
-}
-
-/** Try Gemini first, fall back to Claude. Returns text + which engine. */
+/** Try Gemini; on failure return empty string (caller uses built-in static template). */
 async function generateText(
   prompt: string
-): Promise<{ text: string; engine: "gemini" | "claude" }> {
+): Promise<{ text: string; engine: "gemini" | "static" }> {
   if (Deno.env.get("GEMINI_API_KEY")) {
     try {
       const text = await genGemini(prompt);
       console.log("[router] Gemini succeeded");
       return { text, engine: "gemini" };
     } catch (e) {
-      console.error("[router] Gemini failed → Claude:", (e as Error).message);
+      console.error("[router] Gemini failed:", (e as Error).message);
     }
   }
-  try {
-    const text = await genClaude(prompt);
-    console.log("[router] Claude succeeded");
-    return { text, engine: "claude" };
-  } catch (e) {
-    console.error("[router] Claude also failed:", (e as Error).message);
-    // Both failed — return a safe static fallback so the DB save can still proceed
-    return { text: "", engine: "claude" };
-  }
+  // No Gemini key or quota hit → use built-in static template (see caller fallback)
+  console.warn("[router] Gemini unavailable — using static system-prompt template");
+  return { text: "", engine: "static" };
 }
 
 // Department-specific AI context for system prompt generation
@@ -264,11 +242,13 @@ ${memorySection}
     return new Response(JSON.stringify({ ok: true, engine, agentProfile }), {
       headers: { ...CORS, "Content-Type": "application/json" },
     });
-  } catch (err: any) {
-    console.error("[error]", err.message);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("[error]", msg);
+    // HTTP 200 so supabase-js surfaces the error in `data`, not as a network exception
     return new Response(
-      JSON.stringify({ ok: false, error: err.message }),
-      { status: 400, headers: { ...CORS, "Content-Type": "application/json" } }
+      JSON.stringify({ ok: false, error: msg }),
+      { status: 200, headers: { ...CORS, "Content-Type": "application/json" } }
     );
   }
 });

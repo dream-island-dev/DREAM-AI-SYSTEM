@@ -55,7 +55,59 @@ function isOffValue(val, customBlacklist) {
   );
 }
 
-// ── Schema Detection: 3 Excel formats ───────────────────────────────────────
+// ── Parse "8:00-17:30" or "07:00-18:30" → { start:"08:00", end:"17:30" } ─────
+// Uses only the FIRST line of multi-line cells (e.g. "09:00-21:00\n12").
+function parseTimeRange(cellVal) {
+  if (!cellVal) return null;
+  const firstLine = String(cellVal).split(/[\n\r]/)[0].trim();
+  const m = firstLine.match(/(\d{1,2}):(\d{2})\s*[-–]\s*(\d{1,2}):(\d{2})/);
+  if (!m) return null;
+  const pad = n => String(n).padStart(2, "0");
+  return { start: `${pad(m[1])}:${m[2]}`, end: `${pad(m[3])}:${m[4]}` };
+}
+
+// True when a cell means "not working". Handles multi-line cells like "חופש\nday off".
+function isCellDayOff(cellVal, customBlacklist) {
+  if (cellVal == null || cellVal === "") return true;
+  return String(cellVal).split(/[\n\r]+/).some(l => isOffValue(l.trim(), customBlacklist));
+}
+
+// ── Detect "employee-cols" layout (Lidor's actual files) ─────────────────────
+// Structure: title row (row 1) becomes SheetJS garbage keys. Row 2 or 3 contains
+// the REAL column labels as VALUES: "date" in one cell, employee names in others.
+// We scan the first 5 rows for this pattern and return the key→name mapping.
+function detectEmployeeColsHeader(rows) {
+  for (let ri = 0; ri < Math.min(5, rows.length); ri++) {
+    const row   = rows[ri];
+    const entries = Object.entries(row);
+
+    // Find the key whose value is exactly "date" (case-insensitive)
+    const dateEntry = entries.find(([, v]) => String(v ?? "").trim().toLowerCase() === "date");
+    if (!dateEntry) continue;
+    const dateKey = dateEntry[0];
+
+    // Collect value entries that look like employee (human) names
+    const nameEntries = entries.filter(([k, v]) => {
+      const s = String(v ?? "").trim();
+      if (k === dateKey)             return false;
+      if (s.length < 2 || s.length > 22) return false;
+      if (/["'׳״]/.test(s))         return false; // skip ס"כ etc.
+      if (/total|ס[״"]כ/i.test(s))  return false;
+      if (CORE_OFF_VALUES.has(s.toLowerCase())) return false;
+      // Must look like a human name — Latin or Hebrew letters + spaces only
+      return /^[a-zA-Z֐-׿\s'-]+$/.test(s);
+    });
+
+    if (nameEntries.length >= 2) {
+      const empKeyMap = {}; // SheetJS key  →  employee name string
+      nameEntries.forEach(([k, v]) => { empKeyMap[k] = String(v).trim(); });
+      return { found: true, headerRowIndex: ri, dateKey, empKeyMap };
+    }
+  }
+  return { found: false };
+}
+
+// ── Schema Detection: 4 Excel formats ───────────────────────────────────────
 // A) employee-rows  — first col = name, day cols = shift type (בוקר/ערב)
 // B) station-rows   — first col = station/position, day cols = employee names
 // C) shift-rows     — each row is one shift (name, date, start, end)
@@ -118,6 +170,13 @@ function isDayHeader(k) {
 
 function detectExcelSchema(rows) {
   if (!rows.length) return { schema: "unknown", confidence: 0 };
+
+  // ── employee-cols: Lidor's format (employees as columns, dates as rows) ──────
+  const ecResult = detectEmployeeColsHeader(rows);
+  if (ecResult.found) {
+    return { schema: "employee-cols", confidence: 0.97, ...ecResult };
+  }
+
   const keys = Object.keys(rows[0]);
 
   // No day columns → shift-rows
@@ -193,11 +252,17 @@ function extractNamesFromFirstCol(rows, nameCol, customBlacklist) {
 // Master extraction — auto-detects format, returns { names, schema, schemaLabel }
 function extractNamesFromExcel(rows, customBlacklist = new Set()) {
   if (!rows.length) return { names: [], schema: "unknown", schemaLabel: "לא זוהה" };
-  const { schema, dayKeys, nameCol } = detectExcelSchema(rows);
+  const detected = detectExcelSchema(rows);
+  const { schema, dayKeys, nameCol, empKeyMap } = detected;
 
   let names = [];
   let schemaLabel = "";
-  if (schema === "station-rows") {
+
+  if (schema === "employee-cols") {
+    // Employee names are the VALUES of the header row (not SheetJS keys)
+    names = Object.values(empKeyMap ?? {}).filter(n => !isOffValue(n, customBlacklist));
+    schemaLabel = "עובד-עמודה (תאריכים בשורות)";
+  } else if (schema === "station-rows") {
     names = extractNamesFromCells(rows, dayKeys, customBlacklist);
     schemaLabel = "תחנות-שורה (שמות בתאים)";
   } else if (schema === "employee-rows") {
@@ -211,14 +276,32 @@ function extractNamesFromExcel(rows, customBlacklist = new Set()) {
   return { names, schema, schemaLabel };
 }
 
-// Summarise shift patterns per employee for learning panel — supports all 3 schemas
+// Summarise shift patterns per employee for learning panel — supports all 4 schemas
 function buildLearnedSummary(rows, schema) {
   if (!rows.length) return [];
-  const { dayKeys, nameCol } = detectExcelSchema(rows);
-  const customBL = loadCustomBlacklist();
-  const summaryMap = {};   // name → Set of "dayName: station/shift"
+  const detected   = detectExcelSchema(rows);
+  const { dayKeys, nameCol, empKeyMap, headerRowIndex, dateKey } = detected;
+  const customBL   = loadCustomBlacklist();
+  const summaryMap = {};   // name → Set of "dayName: HH:MM-HH:MM"
 
-  if (schema === "employee-rows" || schema === "shift-rows") {
+  if (schema === "employee-cols") {
+    // Data rows start after the header row; skip rows without a date value
+    const dataRows = rows.slice(headerRowIndex + 1).filter(row => {
+      const dv = row[dateKey];
+      return dv != null && (dv instanceof Date || !isNaN(new Date(dv).getTime()));
+    });
+    for (const [empKey, empName] of Object.entries(empKeyMap ?? {})) {
+      if (isOffValue(empName, customBL)) continue;
+      dataRows.forEach(row => {
+        const cellVal = String(row[empKey] ?? "").trim();
+        if (!cellVal || isCellDayOff(cellVal, customBL)) return;
+        const tr = parseTimeRange(cellVal);
+        if (!tr) return;
+        if (!summaryMap[empName]) summaryMap[empName] = new Set();
+        summaryMap[empName].add(`${tr.start}-${tr.end}`);
+      });
+    }
+  } else if (schema === "employee-rows" || schema === "shift-rows") {
     const keys = Object.keys(rows[0]);
     rows.forEach(row => {
       const name = String(row[nameCol ?? keys[0]] ?? "").trim();
@@ -268,13 +351,73 @@ function buildLearnedSummary(rows, schema) {
 // ══════════════════════════════════════════════════════════════════════════════
 function buildEmployeeProfiles(rows, schema, customBlacklist, weekStartDate) {
   if (!rows.length) return [];
-  const { dayKeys, nameCol } = detectExcelSchema(rows);
+  const detected = detectExcelSchema(rows);
+  const { dayKeys, nameCol, empKeyMap, headerRowIndex, dateKey } = detected;
 
   // For each employee we'll collect: which day → which station + hours
   const profileMap = {};   // name → { workDays: [...], offDays: [...] }
   const whitelist = loadCustomWhitelist();
 
-  if (schema === "station-rows") {
+  if (schema === "employee-cols") {
+    // ── Lidor's format: dates = rows, employees = columns ─────────────────────
+    // Data rows = rows AFTER the header row that have a real date in the date col.
+    const dataRows = rows.slice(headerRowIndex + 1).filter(row => {
+      const dv = row[dateKey];
+      if (dv == null) return false;
+      if (dv instanceof Date) return true;
+      const n = Number(dv);
+      if (!isNaN(n) && n > 43000 && n < 50000) return true;
+      return !isNaN(new Date(String(dv)).getTime());
+    });
+
+    for (const [empKey, empName] of Object.entries(empKeyMap ?? {})) {
+      if (isOffValue(empName, customBlacklist)) continue;
+      if (!profileMap[empName]) profileMap[empName] = { name: empName, workDays: [] };
+
+      dataRows.forEach(row => {
+        // ── Parse the date ───────────────────────────────────────────────────
+        const dv = row[dateKey];
+        let date;
+        if (dv instanceof Date) {
+          // SheetJS Date objects are UTC midnight; reconstruct in local calendar
+          date = new Date(dv.getUTCFullYear(), dv.getUTCMonth(), dv.getUTCDate());
+        } else {
+          const n = Number(dv);
+          if (!isNaN(n) && n > 43000 && n < 50000) {
+            const tmp = new Date((n - 25569) * 86400000);
+            date = new Date(tmp.getUTCFullYear(), tmp.getUTCMonth(), tmp.getUTCDate());
+          } else {
+            date = parseDateHeader(String(dv));
+          }
+        }
+        if (!date) return;
+
+        const dayIndex = date.getDay(); // 0=Sun … 6=Sat
+
+        // ── Parse the shift cell ──────────────────────────────────────────────
+        const cellVal = String(row[empKey] ?? "").trim();
+        if (!cellVal || isCellDayOff(cellVal, customBlacklist)) return;
+
+        const tr = parseTimeRange(cellVal);
+        if (!tr) return; // no recognisable HH:MM-HH:MM → skip
+
+        // Compute date relative to weekStart (consistent with other schemas)
+        const d = new Date(weekStartDate ?? "2026-01-01");
+        d.setDate(d.getDate() + dayIndex);
+        const dateStr = d.toISOString().slice(0, 10);
+
+        profileMap[empName].workDays.push({
+          dayIndex,
+          dayName: HEBREW_DAYS[dayIndex] ?? String(dayIndex),
+          date:    dateStr,
+          station: "",         // Lidor's files don't have per-cell station
+          start:   tr.start,
+          end:     tr.end,
+        });
+      });
+    }
+
+  } else if (schema === "station-rows") {
     // Row = station/position. Cells = employee name assigned to that station that day.
     // e.g.: { "תחנה": "toilet", "ראשון": "mihiran", "שני": "asanka", ... }
     const stationCol = nameCol ?? Object.keys(rows[0])[0];
@@ -561,26 +704,28 @@ export default function ShiftGenerator({ onApproved, user }) {
 
   // ── Upsert extracted employees to DB (before generation) ────────────────────
   // Uses UPSERT on conflict(name) — never creates duplicates, safe to call repeatedly.
+  // new employees are linked to the logged-in manager via created_by (e.g. Lidor Naim).
   const persistConfirmedEmployees = async (names) => {
     if (!names.length || !isSupabaseConfigured || !supabase) return 0;
     try {
-      const dept = managerDepartment || "כללי";
+      const dept       = managerDepartment || "כללי";
+      const createdBy  = user?.id ?? null;   // links new employees to current manager
       const rows = names.map(n => ({
-        id:         Date.now() + Math.floor(Math.random() * 1e6),
+        // Omit `id` — let Supabase generate a proper UUID via DEFAULT uuid_generate_v4()
         name:       n,
         department: dept,
         role:       "עובד",
         status:     "פעיל",
+        created_by: createdBy,  // FK → profiles.id (Lidor Naim when he uploads)
       }));
-      // onConflict: 'name' — skip existing employees, insert only new ones
+      // onConflict: 'name' — skip existing employees, insert only truly new ones
       const { error } = await supabase
         .from("employees")
         .upsert(rows, { onConflict: "name", ignoreDuplicates: true });
       if (error) throw error;
       const { data: fresh } = await supabase.from("employees").select("id,name,department,role,phone");
       setEmployees(fresh ?? []);
-      // Return count of truly new records by comparing before vs after
-      return names.length; // approximate — exact count via fresh vs prior not worth the query
+      return names.length;
     } catch (e) { console.warn("[ShiftGenerator] persist employees:", e.message); }
     return 0;
   };
