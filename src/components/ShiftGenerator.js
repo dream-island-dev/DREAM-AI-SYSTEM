@@ -612,11 +612,12 @@ export default function ShiftGenerator({ onApproved, user }) {
 
       // ══════════════════════════════════════════════════════════════════════════
       // PATH A — LOCAL DUPLICATE (zero API, instant)
-      // Condition: we have learned profiles from the uploaded Excel AND
-      //            the manager did NOT enter any special constraints.
+      // Condition: profiles learned from uploaded Excel exist.
+      // Constraints (if any) are saved as "notes" on each shift row so the
+      // manager can review them — no AI call is made.
       // Result: dates shifted to target week, done in <10ms in the browser.
       // ══════════════════════════════════════════════════════════════════════════
-      if (employeeProfiles.length > 0 && !constraints.trim()) {
+      if (employeeProfiles.length > 0) {
         setGenerateStep("⚡ שכפול תאריכים...");
         const schedule = duplicateScheduleLocally(
           employeeProfiles, weekStart, managerDepartment, constraints
@@ -1044,8 +1045,10 @@ export default function ShiftGenerator({ onApproved, user }) {
                 </span>
               ) : (
                 // Show mode indicator on button so manager knows what will happen
-                employeeProfiles.length > 0 && !constraints.trim()
-                  ? "⚡ שכפול אוטומטי לשבוע הבא"
+                employeeProfiles.length > 0
+                  ? constraints.trim()
+                    ? "⚡ שכפול + אילוצים כהערות"
+                    : "⚡ שכפול אוטומטי לשבוע הבא"
                   : "🪄 צור סידור חכם עם AI"
               )}
             </button>
