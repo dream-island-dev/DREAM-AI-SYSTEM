@@ -227,11 +227,11 @@ function UserCard({ u, isSelf, saving, canEdit, onUpdate, onToggle }) {
 
 export default function UserManagement({ currentUser }) {
   const isMobile   = useIsMobile();
-  const [users, setUsers]     = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving]   = useState({});   // { [userId]: fieldName | null }
-  const [toast, setToast]     = useState(null); // { type: 'ok'|'err', msg }
-  const [search, setSearch]   = useState("");
+  const [users, setUsers]         = useState([]);
+  const [loading, setLoading]     = useState(true);
+  const [saving, setSaving]       = useState({});   // { [userId]: fieldName | null }
+  const [toast, setToast]         = useState(null); // { type: 'ok'|'err', msg, undoFn? }
+  const [search, setSearch]       = useState("");
 
   const canEdit = isSuperAdmin(currentUser);
 
@@ -253,9 +253,34 @@ export default function UserManagement({ currentUser }) {
 
   // ── Actions ────────────────────────────────────────────────────────────────
 
-  function showToast(type, msg) {
-    setToast({ type, msg });
-    setTimeout(() => setToast(null), 3000);
+  function showToast(type, msg, undoFn = null) {
+    setToast({ type, msg, undoFn });
+    setTimeout(() => setToast(null), undoFn ? 5000 : 3000);
+  }
+
+  async function deleteUser(u) {
+    if (!canEdit) return showToast("err", "נדרשות הרשאות super_admin");
+    if (!supabase) return showToast("err", "Supabase לא מחובר");
+
+    // Optimistic remove from UI
+    setUsers((prev) => prev.filter((x) => x.id !== u.id));
+
+    // Delete from DB
+    const { error } = await supabase.from("profiles").delete().eq("id", u.id);
+    if (error) {
+      // Rollback
+      setUsers((prev) => [...prev, u].sort((a, b) => a.created_at.localeCompare(b.created_at)));
+      return showToast("err", `שגיאה במחיקה: ${error.message}`);
+    }
+
+    // Show undo toast for 5 seconds
+    showToast("ok", `🗑️ ${u.name || u.email} נמחק`, async () => {
+      // Undo: re-insert the user
+      const { error: insertErr } = await supabase.from("profiles").insert(u);
+      if (insertErr) return showToast("err", "שגיאה בשחזור: " + insertErr.message);
+      setUsers((prev) => [...prev, u].sort((a, b) => a.created_at.localeCompare(b.created_at)));
+      showToast("ok", "✅ המשתמש שוחזר");
+    });
   }
 
   async function updateField(userId, field, value) {
@@ -299,14 +324,26 @@ export default function UserManagement({ currentUser }) {
       {toast && (
         <div style={{
           position: "fixed", top: 20, left: "50%", transform: "translateX(-50%)",
-          zIndex: 9999, padding: "12px 24px", borderRadius: 10,
-          fontWeight: 700, fontSize: 14, whiteSpace: "nowrap",
+          zIndex: 9999, padding: "12px 20px", borderRadius: 10,
+          fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", gap: 12,
           boxShadow: "0 8px 32px rgba(0,0,0,0.15)",
           background: toast.type === "ok" ? "#E8F5EF" : "#FFF0EE",
           color:      toast.type === "ok" ? "#1A7A4A" : "#C0392B",
           border:     `1px solid ${toast.type === "ok" ? "#1A7A4A" : "#C0392B"}`,
         }}>
-          {toast.msg}
+          <span>{toast.msg}</span>
+          {toast.undoFn && (
+            <button
+              onClick={() => { toast.undoFn(); setToast(null); }}
+              style={{
+                background: "rgba(0,0,0,0.08)", border: "1px solid currentColor",
+                borderRadius: 6, padding: "2px 10px", cursor: "pointer",
+                fontWeight: 800, fontSize: 13, color: "inherit", fontFamily: "Heebo, sans-serif",
+              }}
+            >
+              בטל ↩
+            </button>
+          )}
         </div>
       )}
 
@@ -456,16 +493,12 @@ export default function UserManagement({ currentUser }) {
                       <td>
                         {canEdit && !isSelf && (
                           <button
-                            onClick={() => toggleSuspend(u)}
+                            onClick={() => deleteUser(u)}
                             disabled={Boolean(isSaving)}
                             className="btn btn-sm"
-                            style={{
-                              minWidth: 90,
-                              background: u.status === "suspended" ? "#E8F5EF" : "#FFF0EE",
-                              color:      u.status === "suspended" ? "#1A7A4A" : "#C0392B",
-                            }}
+                            style={{ minWidth: 90, background: "#FFF0EE", color: "#C0392B" }}
                           >
-                            {isSaving === "status" ? "..." : u.status === "suspended" ? "✓ הפעל" : "⊘ השעה"}
+                            🗑️ מחק
                           </button>
                         )}
                       </td>
@@ -486,7 +519,7 @@ export default function UserManagement({ currentUser }) {
               <span key={role}>{(ROLE_META[role] ?? ROLE_META.staff).label}: <strong>{n}</strong></span>
             ))}
           <span style={{ marginRight: "auto" }}>
-            מושעים: <strong>{users.filter((u) => u.status === "suspended").length}</strong>
+            סה״כ: <strong>{users.length}</strong>
           </span>
         </div>
       )}

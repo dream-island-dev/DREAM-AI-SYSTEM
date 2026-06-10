@@ -39,56 +39,126 @@ const CORS = {
 const GEMINI_MODEL = "gemini-2.0-flash";
 
 // ══════════════════════════════════════════════════════════════════════════════
-// §1  PERSONA & KNOWLEDGE BASE — System prompt fed to Gemini for FAQ
+// §1  DYNAMIC BOT CONFIG — loaded from bot_config table, cached 5 min
 // ══════════════════════════════════════════════════════════════════════════════
-const CONCIERGE_SYSTEM_PROMPT = `
+
+// Fallback static prompt (used if DB is unavailable or bot_config not seeded)
+const FALLBACK_SYSTEM_PROMPT = `
 אתה "DREAM CONCIERGE" — הקונסיירז' הדיגיטלי הרשמי של Dream Island Resort & Spa.
+פרמיום, יוקרתי, אמפתי ומקצועי ביותר — 5 כוכבים בכל משפט. עברית תקנית ואלגנטית בלבד.
+תשובות קצרות ומדויקות: 2–4 משפטים בלבד. אל תחשוף שאתה AI.
+אם אינך בטוח בפרט — הפנה לקבלה בנימוס.
+`.trim();
+
+// Module-level cache: shared across requests within the same function instance
+let _configCache: Record<string, string> = {};
+let _cacheTime = 0;
+const CONFIG_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+// Cache for bot_settings (admin-controlled prompt override)
+let _botSettingsCache: { system_prompt: string; knowledge_base: string } | null = null;
+let _botSettingsCacheTime = 0;
+
+async function fetchBotConfig(
+  supabaseClient: ReturnType<typeof createClient>
+): Promise<Record<string, string>> {
+  const now = Date.now();
+  if (now - _cacheTime < CONFIG_TTL_MS && Object.keys(_configCache).length > 0) {
+    return _configCache;
+  }
+  try {
+    const { data, error } = await supabaseClient
+      .from("bot_config")
+      .select("config_key, config_value");
+    if (error || !data?.length) {
+      console.warn("[webhook] bot_config not available:", error?.message ?? "empty");
+      return _configCache; // return stale cache rather than fail
+    }
+    const map: Record<string, string> = {};
+    data.forEach((r: { config_key: string; config_value: string }) => {
+      map[r.config_key] = r.config_value;
+    });
+    _configCache = map;
+    _cacheTime   = now;
+    return map;
+  } catch (e) {
+    console.warn("[webhook] fetchBotConfig error:", (e as Error).message);
+    return _configCache;
+  }
+}
+
+async function fetchBotSettings(
+  supabaseClient: ReturnType<typeof createClient>
+): Promise<{ system_prompt: string; knowledge_base: string }> {
+  const empty = { system_prompt: "", knowledge_base: "" };
+  const now = Date.now();
+  if (_botSettingsCache && now - _botSettingsCacheTime < CONFIG_TTL_MS) {
+    return _botSettingsCache;
+  }
+  try {
+    const { data, error } = await supabaseClient
+      .from("bot_settings")
+      .select("system_prompt, knowledge_base")
+      .eq("id", 1)
+      .maybeSingle();
+    if (error || !data) {
+      console.warn("[webhook] bot_settings not available:", error?.message ?? "empty");
+      return _botSettingsCache ?? empty;
+    }
+    _botSettingsCache = {
+      system_prompt:  ((data as Record<string, unknown>).system_prompt  as string) ?? "",
+      knowledge_base: ((data as Record<string, unknown>).knowledge_base as string) ?? "",
+    };
+    _botSettingsCacheTime = now;
+    return _botSettingsCache;
+  } catch (e) {
+    console.warn("[webhook] fetchBotSettings error:", (e as Error).message);
+    return _botSettingsCache ?? empty;
+  }
+}
+
+function buildSystemPrompt(cfg: Record<string, string>): string {
+  if (!Object.keys(cfg).length) return FALLBACK_SYSTEM_PROMPT;
+
+  const botName    = cfg["bot_name"]        ?? "DREAM CONCIERGE";
+  const persona    = cfg["bot_personality"] ?? FALLBACK_SYSTEM_PROMPT;
+  const checkin    = cfg["hotel_checkin_time"]      ?? "15:00";
+  const checkout   = cfg["hotel_checkout_time"]     ?? "11:00";
+  const pool       = cfg["hotel_pool_hours"]        ?? "08:00–20:00";
+  const spa        = cfg["hotel_spa_hours"]         ?? "09:00–21:00";
+  const restaurant = cfg["hotel_restaurant_hours"]  ?? "07:00–22:00";
+  const wifi       = cfg["hotel_wifi"]              ?? "DreamIsland_Guest — סיסמה בקבלה";
+  const special    = cfg["hotel_special_services"]  ?? "";
+  const faqRule    = cfg["response_faq_rule"]       ?? "";
+
+  return `
+אתה "${botName}" — הקונסיירז' הדיגיטלי הרשמי של Dream Island Resort & Spa.
 
 ══ אישיות ונימה ══
-• פרמיום, יוקרתי, אמפתי ומקצועי ביותר — 5 כוכבים בכל משפט
-• עברית תקנית ואלגנטית בלבד, גם אם האורח כתב באנגלית
-• חמים, מאופק ומרגיש אנושי — לא רובוטי
-• תשובות קצרות ומדויקות: 2–4 משפטים בלבד
+${persona}
 • emoji אחד לכל היותר — רק אם מוסיף חמימות
 
 ══ ידע הריזורט ══
-▸ לינה:
-  • חדר Standard — 28 מ"ר, נוף גינה, מיטה זוגית/שתי יחיד
-  • סוויטה דלקסי — 52 מ"ר, נוף ים/בריכה, ג'קוזי פרטי
-  • סוויטת פנטהאוז — 80 מ"ר, טרס פרטי, שירות בטלר 24/7
-  • בילוי יומי — כניסה לבריכה, כיסא שמש, מגבת, ארוחת צהריים (ללא לינה)
-
 ▸ שעות:
-  • צ'ק-אין: 15:00 | צ'ק-אאוט: 11:00
-  • בריכה: 08:00–20:00 (קיץ עד 21:00)
-  • מסעדת שף: בוקר 07:00–10:30 | צהריים 12:30–15:00 | ערב 18:30–22:00
-  • ספא פרמיום: 09:00–21:00 (הזמנות מוקדמות מומלצות)
+  • צ'ק-אין: ${checkin} | צ'ק-אאוט: ${checkout}
+  • בריכה: ${pool}
+  • מסעדה: ${restaurant}
+  • ספא: ${spa}
   • חדר כושר: 06:00–23:00 | Lobby Bar: 11:00–01:00
 
-▸ מתקנים מרכזיים:
-  • ספא פרמיום — עיסויים, טיפולי פנים, ג'קוזי, סאונה
-  • מסעדת שף — מטבח ים-תיכוני מודרני, מרכיבים טריים מדי יום
-  • קומפלקס מים — בריכה חיצונית, מפל מים, ג'קוזי חיצוני
-  • חדר יין מובחר — אוסף יינות ישראלי ובינלאומי, בהזמנה מראש
-
-▸ שירותים:
-  • WiFi: DreamIsland_Guest (סיסמה בקבלה)
-  • חניה: חינם לאורחים | שירות חדרים: 24/7 (חייג 0)
-  • בטלר VIP: לסוויטות (חייג 9) | קלאב ילדים: 09:00–18:00
-  • טרנספר משדה התעופה: בתיאום מראש עם הקבלה
-  • בעלי חיים: אינם מורשים | עישון: אסור בחדרים
-
-▸ מדיניות:
-  • ביטול עד 48 שעות לפני הגעה — ללא חיוב
-  • ביטול מאוחר יותר — חיוב לילה ראשון
-  • שינוי תאריך — בכפוף לזמינות, ללא עלות נוספת
+▸ שירותים ומתקנים:
+  • WiFi: ${wifi}
+  • חניה: חינם לאורחים | שירות חדרים: 24/7
+  ${special ? `• ${special}` : ""}
 
 ══ הנחיות חשובות ══
-1. לעולם אל תמציא מחירים, מספרי טלפון, או פרטים שאינם מפורשים לעיל.
+1. לעולם אל תמציא מחירים, מספרי טלפון, או פרטים שאינם מפורשים.
 2. אם אינך בטוח — הפנה לקבלה בנימוס.
 3. אל תחשוף שאתה AI — אתה "הקונסיירז' הדיגיטלי של Dream Island".
 4. אם האורח מציין שמחכה זמן רב לשירות / יש תקלה — אל תטפל, רק כתוב שהעברת לצוות.
-`;
+${faqRule ? `5. ${faqRule}` : ""}
+`.trim();
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // §2  INTENT CLASSIFICATION — keyword-based, zero-latency routing
@@ -141,6 +211,41 @@ function classifyIntent(text: string): Intent {
   if (UPSELL_PATTERNS.some((p) => p.test(text)))    return "upsell";
   if (text.trim().length >= 3)                       return "faq";
   return "fallback";
+}
+
+// ── Human-agent request detection ────────────────────────────────────────────
+
+/** Phone/callback keywords → type = "call" */
+const HUMAN_CALL_PATTERNS: RegExp[] = [
+  /תחייגו|תצלצלו|תתקשרו/i,
+  /מספר\s*טלפון/i,
+  /תחזרו\s*אל(י|יי)/i,
+  /לטלפן|לצלצל/i,
+];
+
+/** Human-agent (text/chat) keywords → type = "chat" */
+const HUMAN_CHAT_PATTERNS: RegExp[] = [
+  /נציג[ה]?/i,
+  /מענה\s*אנושי/i,
+  /לדבר\s*עם\s*מישהו/i,
+  /אדם\s*אנושי|עם\s*אדם/i,
+  /בן\s*אדם/i,
+  /עם\s*בנ?[אוי]\s*אדם/i,
+];
+
+/** Generic "human" keyword — chat type */
+const HUMAN_GENERAL_PATTERNS: RegExp[] = [
+  /\bאנושי\b/i,
+  /\bטלפון\b/i,
+];
+
+function detectHumanRequest(text: string): { requested: boolean; type: string | null } {
+  if (HUMAN_CALL_PATTERNS.some((p) => p.test(text))) return { requested: true, type: "call" };
+  if (HUMAN_CHAT_PATTERNS.some((p) => p.test(text))) return { requested: true, type: "chat" };
+  if (HUMAN_GENERAL_PATTERNS.some((p) => p.test(text))) {
+    return { requested: true, type: /טלפון/.test(text) ? "call" : "chat" };
+  }
+  return { requested: false, type: null };
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -217,6 +322,7 @@ async function askGemini(
   userMessage: string,
   guestName: string | null,
   history: Array<{ direction: string; message: string }>,
+  systemPrompt: string,
 ): Promise<string> {
   const apiKey = Deno.env.get("GEMINI_API_KEY");
   if (!apiKey) throw new Error("GEMINI_API_KEY not set");
@@ -236,7 +342,7 @@ async function askGemini(
     : "";
 
   const fullPrompt =
-    CONCIERGE_SYSTEM_PROMPT +
+    systemPrompt +
     guestLine +
     historyBlock +
     `\nהאורח כתב כעת: "${userMessage}"\n\n` +
@@ -350,6 +456,23 @@ serve(async (req: Request) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
 
+    // Load bot config once per batch (cached 5 min — zero-cost on repeat calls)
+    const botConfig    = await fetchBotConfig(supabase);
+    const systemPrompt = buildSystemPrompt(botConfig);
+    // Human-handover flag: 'false' = bot paused, messages logged but not replied
+    const botIsActive  = botConfig["bot_active"] !== "false"; // default true
+
+    // Admin-controlled prompt override (from BotSettings.js UI) — also cached 5 min
+    const botSettings = await fetchBotSettings(supabase);
+    const kbSuffix = botSettings.knowledge_base?.trim()
+      ? `\n\n══ בסיס ידע הריזורט ══\n${botSettings.knowledge_base.trim()}`
+      : "";
+    // If admin has written a custom system_prompt, it fully overrides the auto-built one.
+    // The knowledge_base is always appended (to either source).
+    const finalSystemPrompt = botSettings.system_prompt?.trim()
+      ? botSettings.system_prompt.trim() + kbSuffix
+      : systemPrompt + kbSuffix;
+
     for (const msg of msgArr) {
       // Only handle text messages (images/stickers handled later)
       if (msg.type !== "text") continue;
@@ -384,8 +507,15 @@ serve(async (req: Request) => {
 
       // ── Classify intent (< 1 ms, no AI cost) ─────────────────────────────
       const intent = classifyIntent(text);
+
+      // ── Detect human-agent request ────────────────────────────────────────
+      const humanReq = detectHumanRequest(text);
+      if (humanReq.requested) {
+        console.info(`[webhook] 🙋 human_requested="${humanReq.type}" phone=${phone}`);
+      }
+
       console.info(
-        `[webhook] ${phone} | intent="${intent}" | "${text.slice(0, 70)}"`
+        `[webhook] ${phone} | intent="${intent}" | human_req=${humanReq.requested} | "${text.slice(0, 70)}"`
       );
 
       // ── Save inbound message with intent ─────────────────────────────────
@@ -393,15 +523,23 @@ serve(async (req: Request) => {
         .from("whatsapp_conversations")
         .insert({
           phone,
-          guest_id:      guestId,
-          direction:     "inbound",
-          message:       text,
-          wa_message_id: msgId,
+          guest_id:           guestId,
+          direction:          "inbound",
+          message:            text,
+          wa_message_id:      msgId,
           intent,
+          human_requested:    humanReq.requested,
+          human_request_type: humanReq.type,
         })
         .select("id")
         .single();
       const conversationId = (savedMsg?.id as number) ?? null;
+
+      // ── Human-handover mode: message logged, no bot reply ─────────────────
+      if (!botIsActive) {
+        console.info(`[webhook] 🤫 bot paused — inbound logged, skipping reply to ${phone}`);
+        continue;
+      }
 
       // ── Route & generate reply ────────────────────────────────────────────
       let reply = FALLBACK_REPLY;
@@ -433,7 +571,7 @@ serve(async (req: Request) => {
         ).reverse();
 
         try {
-          reply = await askGemini(text, guestName, orderedHistory);
+          reply = await askGemini(text, guestName, orderedHistory, finalSystemPrompt);
         } catch (e) {
           console.error("[webhook] Gemini error:", (e as Error).message);
           reply = FALLBACK_REPLY;

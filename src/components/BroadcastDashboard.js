@@ -66,13 +66,14 @@ export default function BroadcastDashboard({ user }) {
   const [deptMap,      setDeptMap]      = useState({}); // manager_id → department
   const [dataLoading,  setDataLoading]  = useState(true);
   const [toast,        setToast]        = useState(null);
+  const [dbTemplates,  setDbTemplates]  = useState([]); // from message_templates table
 
   // ── Audience filters ──────────────────────────────────────────────────────
   // filterGuest: uses room_type — the single source of truth for booking model
   const [filterGuest,  setFilterGuest]  = useState("all"); // all | suite | day_guest
   const [filterStatus, setFilterStatus] = useState("all"); // all | expected | checked_in
   const [filterDept,   setFilterDept]   = useState("all"); // all | department name
-  const [filterWindow, setFilterWindow] = useState("7");   // arrival window in days
+  const [filterWindow, setFilterWindow] = useState("all"); // arrival window in days — default: all guests
 
   // ── Compose ───────────────────────────────────────────────────────────────
   const [template, setTemplate] = useState("");
@@ -125,6 +126,22 @@ export default function BroadcastDashboard({ user }) {
   }, [showToast]);
 
   useEffect(() => { fetchGuests(); }, [fetchGuests]);
+
+  // ── Fetch message templates from DB ───────────────────────────────────────
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase) return;
+    supabase
+      .from("message_templates")
+      .select("id, label, content, sort_order")
+      .order("sort_order", { ascending: true })
+      .then(({ data, error }) => {
+        if (error) {
+          console.warn("[BroadcastDashboard] templates fetch error:", error.message);
+        } else {
+          setDbTemplates(data ?? []);
+        }
+      });
+  }, []); // mount only — templates don't change during a session
 
   // ── Supabase Realtime — keep allGuests live ───────────────────────────────
   // Any check-in / status change in GuestDashboard is reflected here instantly
@@ -179,8 +196,8 @@ export default function BroadcastDashboard({ user }) {
   // ── Compute filtered audience ─────────────────────────────────────────────
   const today = localISO(0);
   const filteredGuests = allGuests.filter((g) => {
-    // Arrival window
-    if (filterWindow !== "all") {
+    // Arrival window — checked_in guests bypass the window filter (they're on property now)
+    if (filterWindow !== "all" && g.status !== "checked_in") {
       const days = parseInt(filterWindow, 10);
       const cutoff = localISO(days);
       if (!g.arrival_date || g.arrival_date < today || g.arrival_date > cutoff) return false;
@@ -544,6 +561,29 @@ export default function BroadcastDashboard({ user }) {
               <div className="card-title">✍️ עריכת הודעה</div>
             </div>
             <div style={{ padding: "16px 20px" }}>
+
+              {/* Quick templates — one-click message presets */}
+              <div style={{ marginBottom: 14 }}>
+                <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 700, marginBottom: 6, letterSpacing: 0.5 }}>
+                  תבניות מהירות:
+                </div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {dbTemplates.length === 0 ? (
+                    <span style={{ fontSize: 11, color: "var(--text-muted)", fontStyle: "italic" }}>
+                      טוען תבניות...
+                    </span>
+                  ) : dbTemplates.map(({ id, label, content }) => (
+                    <button
+                      key={id}
+                      onClick={() => setTemplate(content)}
+                      className="btn btn-ghost btn-sm"
+                      style={{ fontSize: 11, padding: "4px 10px" }}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
 
               {/* Tag inserter */}
               <div style={{ marginBottom: 10 }}>

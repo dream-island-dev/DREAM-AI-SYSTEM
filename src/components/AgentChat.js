@@ -137,7 +137,6 @@ export default function AgentChat({ user, agentProfile, onOpenSettings }) {
           `כדי לקבל תשובות אמיתיות, יש לדלוק את ה-Edge Function "chat" ב-Supabase.\n` +
           `כרגע פועל במצב דמו.`;
       } else {
-        const url = CHAT_EDGE_URL ?? BACKEND_URL;
         const body = JSON.stringify({
           message:   text,
           sessionId: sessionId.current,

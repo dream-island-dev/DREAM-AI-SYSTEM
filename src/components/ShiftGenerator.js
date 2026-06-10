@@ -133,14 +133,14 @@ function parseDateHeader(key) {
   }
 
   // ── DD/MM/YYYY  |  DD.MM.YYYY  |  DD-MM-YYYY ─────────────────────────────
-  const m1 = s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})$/);
+  const m1 = s.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})$/);
   if (m1) {
     const year = m1[3].length === 2 ? 2000 + parseInt(m1[3]) : parseInt(m1[3]);
     return new Date(year, parseInt(m1[2]) - 1, parseInt(m1[1]));
   }
 
   // ── DD/MM  |  DD.MM  (no year — assume current year) ─────────────────────
-  const m2 = s.match(/^(\d{1,2})[\/\-\.](\d{1,2})$/);
+  const m2 = s.match(/^(\d{1,2})[/.-](\d{1,2})$/);
   if (m2) {
     return new Date(new Date().getFullYear(), parseInt(m2[2]) - 1, parseInt(m2[1]));
   }
@@ -159,7 +159,7 @@ function isDayHeader(k) {
   return (
     HEBREW_DAYS.some(d => s.includes(d)) ||
     HEBREW_DAYS_SHORT.some(d => s === d) ||
-    /^\d{1,2}[\/\-.]\d{1,2}([\/\-.]\d{2,4})?$/.test(s) ||    // 12/6  |  12.6.2026
+    /^\d{1,2}[/.-]\d{1,2}([/.-]\d{2,4})?$/.test(s) ||        // 12/6  |  12.6.2026
     /^\d{4}-\d{2}-\d{2}$/.test(s) ||                           // 2026-06-12
     /^(sun|mon|tue|wed|thu|fri|sat)/i.test(s) ||               // Sun / Sunday
     /^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i.test(s) || // Jun 12
@@ -564,7 +564,7 @@ function duplicateScheduleLocally(profiles, weekStart, department, constraints) 
         end:     String(wd.end     ?? "16:00"),
         station: String(wd.station ?? ""),
         status:  "עתידי",
-        notes:   constraints?.trim() ? `אילוץ: ${constraints.slice(0, 80)}` : "",
+        notes:   "",
       });
     }
   }
@@ -618,10 +618,9 @@ export default function ShiftGenerator({ onApproved, user }) {
   const [newBlackWord, setNewBlackWord]     = useState("");
   const [pastShifts, setPastShifts]         = useState([]);
   const [pastName, setPastName]             = useState("");
-  const [constraints, setConstraints]       = useState("");
+  // constraints removed (AI purge — local duplicate only)
   const [weekStart, setWeekStart]           = useState(nextSunday());
   const [draftShifts, setDraftShifts]       = useState(null); // draft only — saved on approval
-  const [engine, setEngine]                 = useState(null);
   const [generating, setGenerating]         = useState(false);
   const [generateStep, setGenerateStep]     = useState("");
   const [approving, setApproving]           = useState(false);
@@ -691,16 +690,27 @@ export default function ShiftGenerator({ onApproved, user }) {
         const summary = buildLearnedSummary(rows, schema);
         setLearnedSummary(summary);
 
-        showToast(
-          names.length > 0 ? "ok" : "err",
-          names.length > 0
-            ? `🧠 פורמט: ${schemaLabel} · ${names.length} עובדים · ${profiles.length} פרופילי משמרות`
-            : `⚠️ לא זוהו עובדים (${schemaLabel}) — פתח כוונון 🔧`
-        );
+        // ── Auto-generate immediately after parsing (PATH A — local duplicate) ──
+        if (profiles.length > 0) {
+          const autoSchedule = duplicateScheduleLocally(profiles, weekStart, managerDepartment, "");
+          if (autoSchedule.length > 0) {
+            setDraftShifts(autoSchedule);
+            showToast("ok", `⚡ ${names.length} עובדים · ${autoSchedule.length} משמרות — מוכן לאישור`);
+          } else {
+            showToast("ok", `🧠 פורמט: ${schemaLabel} · ${names.length} עובדים זוהו`);
+          }
+        } else {
+          showToast(
+            names.length > 0 ? "ok" : "err",
+            names.length > 0
+              ? `🧠 פורמט: ${schemaLabel} · ${names.length} עובדים זוהו`
+              : `⚠️ לא זוהו עובדים (${schemaLabel}) — פתח כוונון 🔧`
+          );
+        }
       } catch (err) { showToast("err", "שגיאה בקריאת הקובץ: " + err.message); }
     };
     reader.readAsArrayBuffer(file);
-  }, [weekStart, customBlacklist]);
+  }, [weekStart, customBlacklist, managerDepartment]);
 
   // ── Upsert extracted employees to DB (before generation) ────────────────────
   // Uses UPSERT on conflict(name) — never creates duplicates, safe to call repeatedly.
@@ -731,97 +741,29 @@ export default function ShiftGenerator({ onApproved, user }) {
   };
 
   const generate = async () => {
-    if (!isSupabaseConfigured || !supabase) return showToast("err", "Supabase לא מחובר");
-
-    // Use DB employees OR confirmed-from-Excel employees
-    const effectiveEmployees = employees.length > 0
-      ? employees
-      : extractedEmployees.map(name => ({ name, department: managerDepartment || "כללי", role: "עובד" }));
-
-    if (!pastShifts.length && !effectiveEmployees.length) {
-      return showToast("err", "העלה קובץ Excel עם סידור קודם, או הוסף עובדים למערכת תחילה");
-    }
-    if (effectiveEmployees.length === 0) {
-      return showToast("err", "לא זוהו עובדים — בדוק את רשימת העובדים בכלי הכוונון 🔧");
+    if (!employeeProfiles.length) {
+      return showToast("err", "העלה קובץ Excel עם הסידור הקודם לפני יצירת סידור חדש ⬆️");
     }
 
     setGenerating(true); setDraftShifts(null);
-    setGenerateStep("📊 מנתח דפוסי סידור...");
+    setGenerateStep("⚡ שכפול תאריכים...");
 
     try {
-      // ── Step 1: upsert extracted employees to DB (before generation) ─────────
-      if (extractedEmployees.length > 0) {
+      // Sync employees to DB before generating
+      if (extractedEmployees.length > 0 && isSupabaseConfigured && supabase) {
         setGenerateStep("💾 מסנכרן עובדים...");
         await persistConfirmedEmployees(extractedEmployees);
       }
 
-      // ══════════════════════════════════════════════════════════════════════════
-      // PATH A — LOCAL DUPLICATE (zero API, instant)
-      // Condition: profiles learned from uploaded Excel exist.
-      // Constraints (if any) are saved as "notes" on each shift row so the
-      // manager can review them — no AI call is made.
-      // Result: dates shifted to target week, done in <10ms in the browser.
-      // ══════════════════════════════════════════════════════════════════════════
-      if (employeeProfiles.length > 0) {
-        setGenerateStep("⚡ שכפול תאריכים...");
-        const schedule = duplicateScheduleLocally(
-          employeeProfiles, weekStart, managerDepartment, constraints
-        );
-        if (!schedule.length) {
-          showToast("err", "לא נמצאו ימי עבודה בפרופילים — בדוק את קובץ ה-Excel");
-          setGenerating(false); setGenerateStep("");
-          return;
-        }
-        setDraftShifts(schedule);
-        setEngine("local-duplicate");
-        showToast("ok", `⚡ שכפול מקומי · ${schedule.length} משמרות מוכנות לאישור`);
+      // LOCAL DUPLICATE — zero API, instant
+      const schedule = duplicateScheduleLocally(employeeProfiles, weekStart, managerDepartment, "");
+      if (!schedule.length) {
+        showToast("err", "לא נמצאו ימי עבודה בפרופילים — בדוק את קובץ ה-Excel");
         setGenerating(false); setGenerateStep("");
-        return; // ← no Edge Function called at all
+        return;
       }
-
-      // ══════════════════════════════════════════════════════════════════════════
-      // PATH B — AI (Gemini via Edge Function)
-      // Cases:
-      //   B1. profiles + constraints → AI applies constraint exceptions to known schedule
-      //   B2. no profiles at all     → AI generates creative schedule from scratch
-      // ══════════════════════════════════════════════════════════════════════════
-      setGenerateStep("🤖 שולח ל-AI...");
-
-      const { data, error } = await supabase.functions.invoke("generate-schedule", {
-        body: {
-          pastShifts,
-          employees:       effectiveEmployees,
-          employeeProfiles,
-          constraints,
-          weekStart,
-          department:      managerDepartment,
-          managerId:       user?.id,
-          excelSchema:     detectedSchema,
-        },
-      });
-
-      // Edge Function always returns HTTP 200 — real errors are in data.error
-      if (error) throw new Error("שגיאת רשת — לא ניתן להגיע לשרת: " + error.message);
-      if (!data?.ok) {
-        const raw = data?.error ?? "יצירת הסידור נכשלה";
-        if (raw.includes("quota") || raw.includes("429"))
-          throw new Error("⚠️ מכסת Gemini מוצתה. העלה Excel עם הסידור הקודם לייצור ללא AI.");
-        if (raw.includes("schedule_empty"))
-          throw new Error("⚠️ ה-AI לא הצליח לייצר משמרות — נסה לפרט יותר באילוצים.");
-        throw new Error(raw);
-      }
-
-      setDraftShifts(data.schedule || []);
-      setEngine(data.engine || null);
-      if (!data.schedule?.length) {
-        showToast("err", "ה-AI לא החזיר משמרות — נסה לחדד אילוצים");
-      } else {
-        const engineLabel = {
-          "local-duplicate": "⚡ שכפול מקומי",
-          "gemini":          "✨ Gemini",
-        }[data.engine] ?? data.engine;
-        showToast("ok", `${engineLabel} · ${data.schedule.length} משמרות מוכנות לאישור`);
-      }
+      setDraftShifts(schedule);
+      showToast("ok", `⚡ ${schedule.length} משמרות מוכנות לאישור`);
     } catch (e) {
       showToast("err", "שגיאה: " + (e?.message ?? e));
       console.error("[ShiftGenerator] generate error:", e);
@@ -922,36 +864,53 @@ export default function ShiftGenerator({ onApproved, user }) {
       <div className="card" style={{ marginBottom: 20 }}>
         <div style={{ padding: 24 }}>
           <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 20, lineHeight: 1.7 }}>
-            העלה סידור משמרות קודם, הוסף אילוצים בשפה חופשית, וה-AI ייצור סידור שבועי חדש ומאוזן.
-            תוכל לעבור עליו ולאשר לפני שמירה.
+            📂 העלה קובץ Excel עם הסידור הקודם — המערכת תשכפל אוטומטית לשבוע הבא.
+            עבור על הטיוטה, ערוך לפי הצורך, ולחץ <strong>אשר ושמור</strong>.
           </div>
 
-          <div className="form-grid">
-            <div className="form-field">
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            {/* ── Week date picker ──────────────────────────────────── */}
+            <div className="form-field" style={{ marginBottom: 0, maxWidth: 260 }}>
               <label>שבוע מתחיל בתאריך</label>
               <input type="date" value={weekStart} onChange={(e) => setWeekStart(e.target.value)} dir="ltr" />
             </div>
-            <div className="form-field">
-              <label>סידור קודם (Excel/CSV)</label>
-              <button onClick={() => inputRef.current?.click()}
-                className="btn btn-ghost" style={{ width: "100%", justifyContent: "center" }}>
-                {pastName || "📂 בחר קובץ"}
-              </button>
-              <input ref={inputRef} type="file" accept=".csv,.xlsx,.xls" style={{ display: "none" }}
-                onChange={(e) => parsePast(e.target.files?.[0])} />
-            </div>
-          </div>
 
-          <div className="form-field" style={{ marginTop: 4 }}>
-            <label>
-              אילוצים והתאמות (טקסט חופשי)
-              <span style={{ fontSize: 11, fontWeight: 400, color: "#888", marginRight: 6 }}>
-                — ריק = שכפול מיידי ⚡ · עם טקסט = AI מטפל בחריגות ✨
-              </span>
-            </label>
-            <textarea rows={4} value={constraints} onChange={(e) => setConstraints(e.target.value)}
-              placeholder='ריק = שכפול אוטומטי של כל המשמרות לשבוע הבא (מהיר, ללא AI). עם אילוצים: "אביב בחופשה ביום שלישי", "החלף בין בני ליוסי", "דנה רק בקרים"'
-              style={{ resize: "vertical" }} />
+            {/* ── Drag & Drop / click upload zone ──────────────────── */}
+            <div
+              onClick={() => inputRef.current?.click()}
+              onDragOver={(e) => { e.preventDefault(); e.currentTarget.style.borderColor = "var(--gold)"; e.currentTarget.style.background = "rgba(201,169,110,0.08)"; }}
+              onDragLeave={(e) => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.background = "var(--ivory)"; }}
+              onDrop={(e) => {
+                e.preventDefault();
+                e.currentTarget.style.borderColor = "var(--border)";
+                e.currentTarget.style.background = "var(--ivory)";
+                const file = e.dataTransfer.files?.[0];
+                if (file) parsePast(file);
+              }}
+              style={{
+                border: `2px dashed ${pastName ? "var(--gold)" : "var(--border)"}`,
+                borderRadius: 14, padding: "28px 20px",
+                textAlign: "center", cursor: "pointer",
+                background: pastName ? "rgba(201,169,110,0.07)" : "var(--ivory)",
+                transition: "all 0.15s",
+              }}
+            >
+              <div style={{ fontSize: 32, marginBottom: 8 }}>
+                {pastName ? "✅" : "📊"}
+              </div>
+              <div style={{ fontWeight: 700, fontSize: 14, color: pastName ? "var(--gold-dark)" : "var(--black)", marginBottom: 4 }}>
+                {pastName || "גרור קובץ Excel לכאן, או לחץ לבחירה"}
+              </div>
+              <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                {pastName ? "לחץ להחלפה" : "תומך ב: .xlsx · .xls · .csv"}
+              </div>
+            </div>
+            <input
+              ref={inputRef} type="file"
+              accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv"
+              style={{ display: "none" }}
+              onChange={(e) => parsePast(e.target.files?.[0])}
+            />
           </div>
 
           {/* ── Detected employees — admin-editable chips ─────────────────── */}
@@ -1193,28 +1152,20 @@ export default function ShiftGenerator({ onApproved, user }) {
               {extractedEmployees.length > 0 && employees.length === 0 && (
                 <span style={{ color: "#c09a2f" }}> (מהאקסל)</span>
               )}
-              {" "}· {pastShifts.length} שורות עבר
+              {pastShifts.length > 0 && ` · ${pastShifts.length} שורות`}
             </div>
-            <button className="btn btn-primary" disabled={generating} onClick={generate}
-              style={{ minWidth: 200, opacity: generating ? 0.7 : 1, position: "relative" }}>
-              {generating ? (
-                <span style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "center" }}>
-                  <span style={{
-                    width: 14, height: 14, border: "2px solid rgba(255,255,255,0.4)",
-                    borderTopColor: "white", borderRadius: "50%",
-                    animation: "spin 0.7s linear infinite", display: "inline-block",
-                  }} />
-                  {generateStep || "מייצר סידור..."}
-                </span>
-              ) : (
-                // Show mode indicator on button so manager knows what will happen
-                employeeProfiles.length > 0
-                  ? constraints.trim()
-                    ? "⚡ שכפול + אילוצים כהערות"
-                    : "⚡ שכפול אוטומטי לשבוע הבא"
-                  : "🪄 צור סידור חכם עם AI"
-              )}
-            </button>
+            {/* Regenerate button — shows only after file is loaded */}
+            {employeeProfiles.length > 0 && (
+              <button className="btn btn-ghost btn-sm" disabled={generating} onClick={generate}
+                style={{ opacity: generating ? 0.6 : 1 }}>
+                {generating ? (
+                  <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ width: 12, height: 12, border: "2px solid var(--border)", borderTopColor: "var(--gold)", borderRadius: "50%", animation: "spin 0.7s linear infinite", display: "inline-block" }} />
+                    {generateStep || "מייצר..."}
+                  </span>
+                ) : "🔄 שכפל מחדש"}
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -1224,9 +1175,6 @@ export default function ShiftGenerator({ onApproved, user }) {
           <div className="card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div className="card-title">
               טיוטה לאישור · {draftShifts.length} משמרות
-              {engine && <span style={{ marginRight: 8, fontSize: 11, color: "var(--text-muted)" }}>
-                {engine === "gemini" ? "✨ Gemini" : "🤖 Claude"}
-              </span>}
             </div>
           </div>
           <div style={{ padding: 16 }}>

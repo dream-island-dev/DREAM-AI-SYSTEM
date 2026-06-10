@@ -40,11 +40,11 @@ function parseEzgoDate(raw) {
   const s = String(raw).trim();
   if (!s) return null;
   // ── Form 2: ISO — YYYY-MM-DD or YYYY/MM/DD ──
-  if (/^\d{4}[-\/]\d{2}[-\/]\d{2}/.test(s)) {
+  if (/^\d{4}[-/]\d{2}[-/]\d{2}/.test(s)) {
     return s.slice(0, 10).replace(/\//g, "-");
   }
   // ── Form 3: Israeli — DD/MM/YYYY, DD.MM.YYYY, or DD-MM-YYYY ──
-  const dmy = s.match(/^(\d{1,2})[\/\.\-](\d{1,2})[\/\.\-](\d{2,4})$/);
+  const dmy = s.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})$/);
   if (dmy) {
     const [, d, m, y] = dmy;
     const year = y.length === 2 ? `20${y}` : y;
@@ -97,32 +97,8 @@ function sanitizePhone(raw) {
 }
 
 const TARGETS = {
-  guests: {
-    label: "🛎️ צ'ק-אין אורחים",
-    table: "guests",
-    required: ["name"],
-    aliases: {
-      name:         ["name", "שם", "שם אורח", "שם מלא", "guest", "guest name", "אורח"],
-      phone:        ["phone", "טלפון", "נייד", "mobile", "phone number", "מספר טלפון"],
-      room:         ["room", "חדר", "מספר חדר", "room number", "room no"],
-      room_type:    ["room_type", "type", "סוג", "סוג חדר", "roomtype", "קטגוריה"],
-      arrival_date: ["arrival_date", "arrival", "date", "תאריך", "תאריך הגעה", "check-in", "checkin", "הגעה", "ת. התחלה", "התחלה"],
-    },
-    transform: (r) => ({
-      name:         String(r.name ?? "").trim(),
-      phone:        sanitizePhone(r.phone),
-      room:         r.room ? String(r.room).trim() : null,
-      // No room number → day-use guest (בילוי יומי)
-      room_type:    r.room
-        ? (/suite|סוויט/i.test(String(r.room_type ?? "")) ? "suite" : "standard")
-        : "day_guest",
-      arrival_date: parseEzgoDate(r.arrival_date),
-      status:       "expected",
-    }),
-    insert: (rows) => supabase.from("guests").insert(rows), // identity id
-  },
   ezgo: {
-    label: "🏨 EZGO — הגעות VIP",
+    label: "🏨 הגעות VIP",
     table: "guests",
     required: ["name"],
     // ── Column aliases ──────────────────────────────────────────────────────
@@ -241,7 +217,7 @@ const DEPT_LABEL = {
 };
 
 export default function DataUpload({ onImported, user }) {
-  const [mode, setMode]               = useState("guests");
+  const [mode, setMode]               = useState("ezgo");
   const [rawRows, setRawRows]         = useState([]);
   const [headers, setHeaders]         = useState([]);
   const [fileName, setFileName]       = useState("");

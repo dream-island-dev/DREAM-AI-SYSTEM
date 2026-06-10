@@ -16,6 +16,7 @@ export default function GuestsPage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy]       = useState(null);
   const [toast, setToast]     = useState(null);
+  const [badgeHover, setBadgeHover] = useState(null); // tracks which badge is hovered
 
   const showToast = (type, msg) => { setToast({ type, msg }); setTimeout(() => setToast(null), 3500); };
 
@@ -39,6 +40,7 @@ export default function GuestsPage() {
     setBusy(guest.id);
     const patch = { status };
     if (status === "checked_in") patch.checkin_time = new Date().toISOString();
+    if (status === "expected")   patch.checkin_time = null; // clear on revert
     const { error } = await supabase.from("guests").update(patch).eq("id", guest.id);
     if (error) { showToast("err", "שגיאה: " + error.message); setBusy(null); return; }
     setGuests((prev) => prev.map((g) => (g.id === guest.id ? { ...g, ...patch } : g)));
@@ -52,7 +54,8 @@ export default function GuestsPage() {
         });
       } catch { /* function may not be deployed yet */ }
     }
-    showToast("ok", "עודכן ✓");
+    const labels = { checked_in: "צ'ק-אין ✓", room_ready: "חדר מוכן ✓", expected: "הוחזר לממתין ↩" };
+    showToast("ok", labels[status] ?? "עודכן ✓");
     setBusy(null);
   };
 
@@ -114,25 +117,64 @@ export default function GuestsPage() {
                       </td>
                       <td style={{ fontSize: 13 }}>{g.arrival_date ?? "—"}</td>
                       <td>
-                        <span style={{ padding: "4px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: sm.bg, color: sm.color }}>
-                          {sm.label}
+                        <span
+                          onClick={g.status === "checked_in" ? () => setStatus(g, "expected") : undefined}
+                          onMouseEnter={g.status === "checked_in" ? () => setBadgeHover(g.id) : undefined}
+                          onMouseLeave={g.status === "checked_in" ? () => setBadgeHover(null) : undefined}
+                          title={g.status === "checked_in" ? "לחץ לביטול צ'ק-אין" : undefined}
+                          style={{
+                            padding: "4px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700,
+                            background: badgeHover === g.id ? "#FFF0EE" : sm.bg,
+                            color:      badgeHover === g.id ? "#C0392B" : sm.color,
+                            cursor: g.status === "checked_in" ? "pointer" : "default",
+                            transition: "background 0.15s, color 0.15s",
+                            userSelect: "none",
+                          }}
+                        >
+                          {badgeHover === g.id ? "↩ בטל" : sm.label}
                         </span>
                       </td>
                       <td>
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                          {g.status !== "room_ready" && (
+                          {/* ── ממתין: can mark room-ready or go straight to check-in ── */}
+                          {g.status === "expected" && (<>
                             <button className="btn btn-sm" disabled={busy === g.id}
                               onClick={() => setStatus(g, "room_ready")}
                               style={{ background: "#E8F5EF", color: "#1A7A4A" }}>
                               ✓ חדר מוכן
                             </button>
-                          )}
-                          {g.status !== "checked_in" && (
                             <button className="btn btn-sm" disabled={busy === g.id}
                               onClick={() => setStatus(g, "checked_in")}
                               style={{ background: "#EEF4FF", color: "#2952A3" }}>
                               🛎️ צ'ק-אין
                             </button>
+                          </>)}
+
+                          {/* ── חדר מוכן: confirm check-in OR revert to waiting ── */}
+                          {g.status === "room_ready" && (<>
+                            <button className="btn btn-sm" disabled={busy === g.id}
+                              onClick={() => setStatus(g, "checked_in")}
+                              style={{ background: "#EEF4FF", color: "#2952A3" }}>
+                              🛎️ צ'ק-אין
+                            </button>
+                            <button className="btn btn-sm" disabled={busy === g.id}
+                              onClick={() => setStatus(g, "expected")}
+                              style={{ background: "#FFF0EE", color: "#C0392B" }}>
+                              ↩ בטל
+                            </button>
+                          </>)}
+
+                          {/* ── צ'ק-אין: undo / revert back to waiting ── */}
+                          {g.status === "checked_in" && (
+                            <button className="btn btn-sm" disabled={busy === g.id}
+                              onClick={() => setStatus(g, "expected")}
+                              style={{ background: "#FFF5E8", color: "#B5600A", fontWeight: 700 }}>
+                              ↩ בטל צ'ק-אין
+                            </button>
+                          )}
+
+                          {busy === g.id && (
+                            <span style={{ fontSize: 12, color: "var(--text-muted)", alignSelf: "center" }}>⏳</span>
                           )}
                         </div>
                       </td>

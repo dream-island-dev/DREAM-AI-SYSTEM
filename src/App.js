@@ -14,6 +14,9 @@ import KnowledgeUploader from "./components/KnowledgeUploader";
 import GuestDashboard from "./components/GuestDashboard";
 import BroadcastDashboard from "./components/BroadcastDashboard";
 import WhatsAppInbox from "./components/WhatsAppInbox";
+import TaskBoard from "./components/TaskBoard";
+import BotConfigPanel from "./components/BotConfigPanel";
+import BotSettings from "./components/BotSettings";
 
 // ============================================================
 // MOCK DATA - יוחלף ב-Supabase בגרסה האמיתית
@@ -786,29 +789,80 @@ const HOTEL_DEPARTMENTS = [
   "תפעול", "משק", "קבלה", "ספא", 'מזמ"ש (F&B)', "הנהלה",
 ];
 
-// ── Department onboarding modal — shown to new users who have no department ─────
-// Forces role to stay 'staff'; admin promotes later from UserManagement.
+// ── Smart onboarding modal — 3-step wizard for new users ────────────────────────
+// Step 0: Department selection
+// Step 1: Job title input
+// Step 2: Role selection (manager / staff)
+// Saves all fields to profiles atomically at the end.
 function DepartmentOnboardingModal({ user, onComplete }) {
-  const [selected, setSelected] = useState("");
-  const [saving, setSaving] = useState(false);
+  const [step,       setStep]       = useState(0);
+  const [dept,       setDept]       = useState("");
+  const [jobTitle,   setJobTitle]   = useState("");
+  const [roleChoice, setRoleChoice] = useState(""); // 'manager' | 'staff'
+  const [saving,     setSaving]     = useState(false);
+
+  const firstName = (user.name || "").split(" ")[0] || "עמית";
 
   const handleSave = async () => {
-    if (!selected) return;
+    if (!dept || !roleChoice) return;
     setSaving(true);
     try {
       if (isSupabaseConfigured && supabase) {
-        // Only set department — role is managed by DB trigger + admin
         await supabase
           .from("profiles")
-          .update({ department: selected })
+          .update({
+            department: dept,
+            job_title:  jobTitle.trim() || null,
+            role:       roleChoice,
+          })
           .eq("id", user.id);
       }
-      onComplete({ ...user, department: selected });
+      onComplete({ ...user, department: dept, job_title: jobTitle.trim(), role: roleChoice });
     } catch (e) {
-      console.error("[onboarding] department save failed:", e);
+      console.error("[onboarding] save failed:", e);
     }
     setSaving(false);
   };
+
+  const cardStyle = {
+    background: "var(--card-bg)", borderRadius: 20, padding: "36px 32px",
+    width: "100%", maxWidth: 440, textAlign: "center",
+    boxShadow: "0 32px 80px rgba(0,0,0,0.4)",
+    border: "1px solid var(--border)",
+  };
+
+  const inputStyle = {
+    width: "100%", padding: "14px 16px",
+    border: "1.5px solid var(--border)", borderRadius: 10,
+    fontFamily: "Heebo, sans-serif", fontSize: 15,
+    background: "var(--card-bg)", outline: "none", marginBottom: 16,
+    boxSizing: "border-box", direction: "rtl",
+  };
+
+  const btnPrimary = (disabled) => ({
+    width: "100%", padding: "14px",
+    background: disabled
+      ? "var(--border)"
+      : "linear-gradient(135deg, var(--gold) 0%, var(--gold-dark) 100%)",
+    border: "none", borderRadius: 10,
+    fontFamily: "Heebo, sans-serif", fontSize: 15, fontWeight: 800,
+    color: disabled ? "var(--text-muted)" : "#0F0F0F",
+    cursor: disabled ? "not-allowed" : "pointer",
+    transition: "all 0.2s",
+  });
+
+  // Progress dots
+  const ProgressDots = () => (
+    <div style={{ display: "flex", justifyContent: "center", gap: 8, marginBottom: 24 }}>
+      {[0, 1, 2].map(i => (
+        <div key={i} style={{
+          width: i === step ? 24 : 8, height: 8, borderRadius: 4,
+          background: i <= step ? "var(--gold)" : "var(--border)",
+          transition: "all 0.3s",
+        }} />
+      ))}
+    </div>
+  );
 
   return (
     <div style={{
@@ -816,52 +870,120 @@ function DepartmentOnboardingModal({ user, onComplete }) {
       background: "rgba(15,15,15,0.85)", backdropFilter: "blur(10px)",
       display: "flex", alignItems: "center", justifyContent: "center", padding: 20,
     }}>
-      <div style={{
-        background: "var(--card-bg)", borderRadius: 20, padding: "36px 32px",
-        width: "100%", maxWidth: 420, textAlign: "center",
-        boxShadow: "0 32px 80px rgba(0,0,0,0.4)",
-        border: "1px solid var(--border)",
-      }}>
-        <div style={{ fontSize: 44, marginBottom: 14 }}>🏝️</div>
-        <div style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, fontWeight: 700, color: "var(--black)", marginBottom: 6 }}>
-          ברוך הבא, {(user.name || "").split(" ")[0] || "עמית"}!
+
+      {/* ── Step 0: Department ── */}
+      {step === 0 && (
+        <div style={cardStyle}>
+          <div style={{ fontSize: 44, marginBottom: 12 }}>🏝️</div>
+          <div style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, fontWeight: 700, color: "var(--black)", marginBottom: 6 }}>
+            ברוך הבא, {firstName}!
+          </div>
+          <div style={{ fontSize: 14, color: "var(--text-muted)", marginBottom: 20 }}>
+            כמה שאלות קצרות כדי שנגדיר אותך במערכת
+          </div>
+          <ProgressDots />
+          <div style={{ fontSize: 15, fontWeight: 700, color: "var(--black)", marginBottom: 12, textAlign: "right" }}>
+            לאיזו מחלקה אתה שייך?
+          </div>
+          <select
+            value={dept}
+            onChange={e => setDept(e.target.value)}
+            style={{ ...inputStyle, color: dept ? "var(--text-main)" : "var(--text-muted)", cursor: "pointer" }}
+          >
+            <option value="">בחר מחלקה...</option>
+            {HOTEL_DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}
+          </select>
+          <button onClick={() => setStep(1)} disabled={!dept} style={btnPrimary(!dept)}>
+            המשך ←
+          </button>
         </div>
-        <div style={{ fontSize: 14, color: "var(--text-muted)", marginBottom: 24 }}>
-          לאיזו מחלקה אתה שייך?
+      )}
+
+      {/* ── Step 1: Job title ── */}
+      {step === 1 && (
+        <div style={cardStyle}>
+          <div style={{ fontSize: 44, marginBottom: 12 }}>💼</div>
+          <div style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, fontWeight: 700, color: "var(--black)", marginBottom: 6 }}>
+            מה תפקידך?
+          </div>
+          <div style={{ fontSize: 14, color: "var(--text-muted)", marginBottom: 20 }}>
+            מחלקה: <strong>{dept}</strong>
+          </div>
+          <ProgressDots />
+          <div style={{ fontSize: 15, fontWeight: 700, color: "var(--black)", marginBottom: 12, textAlign: "right" }}>
+            כותרת תפקיד
+          </div>
+          <input
+            autoFocus
+            type="text"
+            value={jobTitle}
+            onChange={e => setJobTitle(e.target.value)}
+            placeholder="לדוגמה: מנהל משמרת, מלצר, קונסיירז'..."
+            style={inputStyle}
+          />
+          <div style={{ display: "flex", gap: 10 }}>
+            <button onClick={() => setStep(0)} style={{
+              flex: 1, padding: "14px", borderRadius: 10, border: "1.5px solid var(--border)",
+              background: "var(--card-bg)", fontFamily: "Heebo, sans-serif", fontSize: 14,
+              color: "var(--text-muted)", cursor: "pointer",
+            }}>→ חזור</button>
+            <button onClick={() => setStep(2)} style={{ ...btnPrimary(false), flex: 2 }}>
+              המשך ←
+            </button>
+          </div>
         </div>
-        <select
-          value={selected}
-          onChange={e => setSelected(e.target.value)}
-          style={{
-            width: "100%", padding: "14px 16px",
-            border: "1.5px solid var(--border)", borderRadius: 10,
-            fontFamily: "Heebo, sans-serif", fontSize: 15,
-            color: selected ? "var(--text-main)" : "var(--text-muted)",
-            background: "var(--card-bg)", outline: "none", marginBottom: 16,
-            cursor: "pointer",
-          }}
-        >
-          <option value="">בחר מחלקה...</option>
-          {HOTEL_DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}
-        </select>
-        <button
-          onClick={handleSave}
-          disabled={!selected || saving}
-          style={{
-            width: "100%", padding: "14px",
-            background: selected
-              ? "linear-gradient(135deg, var(--gold) 0%, var(--gold-dark) 100%)"
-              : "var(--border)",
-            border: "none", borderRadius: 10,
-            fontFamily: "Heebo, sans-serif", fontSize: 15, fontWeight: 800,
-            color: selected ? "#0F0F0F" : "var(--text-muted)",
-            cursor: selected && !saving ? "pointer" : "not-allowed",
-            transition: "all 0.2s",
-          }}
-        >
-          {saving ? "שומר..." : "כניסה למערכת ←"}
-        </button>
-      </div>
+      )}
+
+      {/* ── Step 2: Role ── */}
+      {step === 2 && (
+        <div style={cardStyle}>
+          <div style={{ fontSize: 44, marginBottom: 12 }}>🔑</div>
+          <div style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, fontWeight: 700, color: "var(--black)", marginBottom: 6 }}>
+            מה רמת הגישה שלך?
+          </div>
+          <div style={{ fontSize: 14, color: "var(--text-muted)", marginBottom: 20 }}>
+            {dept}{jobTitle ? ` · ${jobTitle}` : ""}
+          </div>
+          <ProgressDots />
+          <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 20 }}>
+            {[
+              { value: "manager", icon: "🏢", title: "מנהל מחלקה", desc: "גישה מלאה לניהול, משמרות, עובדים ודוחות" },
+              { value: "staff",   icon: "👤", title: "עובד",         desc: "גישה לדאשבורד, משמרות ועוזר AI אישי" },
+            ].map(({ value, icon, title, desc }) => (
+              <button
+                key={value}
+                onClick={() => setRoleChoice(value)}
+                style={{
+                  width: "100%", padding: "16px", borderRadius: 12, cursor: "pointer",
+                  border: `2px solid ${roleChoice === value ? "var(--gold)" : "var(--border)"}`,
+                  background: roleChoice === value ? "rgba(201,169,110,0.1)" : "var(--card-bg)",
+                  textAlign: "right", fontFamily: "Heebo, sans-serif",
+                  transition: "all 0.15s",
+                }}
+              >
+                <div style={{ fontWeight: 800, fontSize: 15, color: "var(--black)", marginBottom: 4 }}>
+                  {icon} {title}
+                </div>
+                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{desc}</div>
+              </button>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <button onClick={() => setStep(1)} style={{
+              flex: 1, padding: "14px", borderRadius: 10, border: "1.5px solid var(--border)",
+              background: "var(--card-bg)", fontFamily: "Heebo, sans-serif", fontSize: 14,
+              color: "var(--text-muted)", cursor: "pointer",
+            }}>→ חזור</button>
+            <button
+              onClick={handleSave}
+              disabled={!roleChoice || saving}
+              style={{ ...btnPrimary(!roleChoice || saving), flex: 2 }}
+            >
+              {saving ? "⏳ שומר..." : "✅ כניסה למערכת"}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -877,10 +999,11 @@ function Sidebar({ user, active, setActive, openCallsCount, onLogout, isAdmin, i
     { id: "calls",      icon: "🔔", label: "קריאות שירות", badge: openCallsCount, managerOnly: true },
     { id: "checklist",  icon: "✅", label: "צ'קליסטים",                              managerOnly: true },
     { id: "employees",  icon: "👥", label: "עובדים",                                 managerOnly: true },
-    { id: "vip_guests", icon: "🏨", label: "VIP אורחים EZGO",                       managerOnly: true },
+    { id: "vip_guests", icon: "🏨", label: "VIP אורחים",                             managerOnly: true },
     { id: "broadcast",  icon: "📣", label: "שליחת הודעות",                           managerOnly: true },
     { id: "wa_inbox",   icon: "💬", label: "DREAM BOT — שיחות",                     managerOnly: true },
     { id: "guests",     icon: "🛎️", label: "אורחים",                                managerOnly: true },
+    { id: "tasks",      icon: "📋", label: "לוח משימות",                             managerOnly: false },
     { id: "scheduler",  icon: "🪄", label: "מחולל משמרות",                           managerOnly: true },
     { id: "upload",     icon: "📤", label: "העלאת נתונים",                           managerOnly: true },
     { id: "agent",      icon: "🤖", label: "הסוכן שלי" },
@@ -945,6 +1068,22 @@ function Sidebar({ user, active, setActive, openCallsCount, onLogout, isAdmin, i
               <span className="icon">🔧</span>
               <span>ניהול מערכת</span>
             </button>
+            <button
+              className={`nav-item ${active === "bot_config" ? "active" : ""}`}
+              onClick={() => setActive("bot_config")}
+              style={{ color: active === "bot_config" ? "var(--gold)" : "rgba(201,169,110,0.6)" }}
+            >
+              <span className="icon">🤖</span>
+              <span>הגדרות בוט</span>
+            </button>
+            <button
+              className={`nav-item ${active === "bot_settings" ? "active" : ""}`}
+              onClick={() => setActive("bot_settings")}
+              style={{ color: active === "bot_settings" ? "var(--gold)" : "rgba(201,169,110,0.6)" }}
+            >
+              <span className="icon">🧠</span>
+              <span>מוח הבוט</span>
+            </button>
             {/* User Management — owner (super-admin) only */}
             {isSuperAdminUser && (
               <button
@@ -978,7 +1117,7 @@ function Dashboard({ shifts, calls, checklist, employees }) {
     (c) => c.priority === "דחופה" && c.status !== "טופל"
   );
   const doneChecks = checklist.filter((c) => c.done).length;
-  const checkPct = Math.round((doneChecks / checklist.length) * 100);
+  const checkPct = checklist.length ? Math.round((doneChecks / checklist.length) * 100) : 0;
 
   return (
     <div>
@@ -1650,7 +1789,7 @@ function ChecklistPage({ checklist, setChecklist }) {
   };
 
   const doneCount = checklist.filter((c) => c.done).length;
-  const pct = Math.round((doneCount / checklist.length) * 100);
+  const pct = checklist.length ? Math.round((doneCount / checklist.length) * 100) : 0;
 
   const byDept = DEPARTMENTS.reduce((acc, d) => {
     const items = checklist.filter((c) => c.department === d);
@@ -2146,14 +2285,19 @@ export default function App() {
   const isAdmin      = isAdminUser(user);
   const isSuperAdminUser = isSuperAdmin(user);
 
-  /** Redirect users without the required role back to dashboard */
+  /** Redirect users without the required role back to dashboard.
+   *  Checks the DB role first, then falls back to email-based detection so
+   *  that admin emails (isAdmin / isSuperAdminUser) are never locked out even
+   *  if the DB role hasn't been synced yet (e.g. first login race condition). */
   const guardPage = useCallback((allowedRoles, component) => {
     if (!user) return null;
-    if (allowedRoles.includes(user.role)) return component;
-    // Staff tried to access an admin URL — bounce them out
+    if (allowedRoles.includes(user.role))                        return component;
+    if (allowedRoles.includes("super_admin") && isSuperAdminUser) return component;
+    if (allowedRoles.includes("admin")       && isAdmin)          return component;
+    // Non-privileged user tried to access a restricted URL — bounce them out
     setTimeout(() => setActivePage("dashboard"), 0);
     return null;
-  }, [user]);
+  }, [user, isAdmin, isSuperAdminUser]);
 
   // ── Demo-data controls (Admin panel) ────────────────────────────────────────
   // Reuse the persistent setters: setX(rows) upserts adds/changes, setX([])
@@ -2267,12 +2411,15 @@ export default function App() {
     calls:      "קריאות שירות 🔔",
     checklist:  "צ'קליסטים יומיים ✅",
     employees:  "ניהול עובדים 👥",
-    vip_guests: "🏨 EZGO — אורחי VIP",
+    vip_guests: "🏨 VIP אורחים",
     broadcast:  "📣 מודול שידור — WhatsApp",
     wa_inbox:   "💬 DREAM BOT — תיבת שיחות",
     guests:     "🛎️ ניהול אורחים",
-    scheduler:  "🪄 מחולל משמרות AI",
+    scheduler:  "🪄 מחולל משמרות",
     upload:     "📤 העלאת נתונים",
+    tasks:      "📋 לוח משימות",
+    bot_config:    "🤖 הגדרות Smart Concierge",
+    bot_settings:  "🧠 מוח הבוט",
     agent:      agentProfile ? `${agentProfile.display_name} 🤖` : "הסוכן שלי 🤖",
     admin:      "👑 ניהול מערכת",
     users_mgmt: "👥 ניהול משתמשים",
@@ -2410,6 +2557,18 @@ export default function App() {
             onClearData={clearAllData}
           />
         );
+      case "tasks":
+        return <TaskBoard user={user} isAdmin={isAdmin} />;
+      case "bot_config":
+        return guardPage(
+          ["admin", "super_admin"],
+          <BotConfigPanel user={user} />
+        );
+      case "bot_settings":
+        return guardPage(
+          ["admin", "super_admin"],
+          <BotSettings />
+        );
       case "users_mgmt":
         // only super_admin manages users
         return guardPage(
@@ -2424,8 +2583,8 @@ export default function App() {
   const mobileNav = [
     { id: "dashboard",  icon: "📊", label: "ראשי" },
     { id: "shifts",     icon: "🕐", label: "משמרות" },
+    { id: "tasks",      icon: "📋", label: "משימות" },
     { id: "vip_guests", icon: "🏨", label: "VIP" },
-    { id: "calls",      icon: "🔔", label: "קריאות" },
     { id: "agent",      icon: "🤖", label: "סוכן" },
   ];
 

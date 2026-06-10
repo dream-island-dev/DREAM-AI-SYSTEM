@@ -22,12 +22,27 @@ function groupByPhone(rows) {
   const map = new Map();
   for (const row of rows) {
     if (!map.has(row.phone)) {
-      map.set(row.phone, { phone: row.phone, guestName: row.guest_name, messages: [] });
+      map.set(row.phone, {
+        phone: row.phone,
+        guestName: row.guest_name,
+        messages: [],
+        humanRequested: false,
+        humanRequestType: null,
+      });
     }
-    map.get(row.phone).messages.push(row);
+    const contact = map.get(row.phone);
+    contact.messages.push(row);
+    // Flag contact if any inbound message is a human request
+    if (row.human_requested && row.direction === "inbound") {
+      contact.humanRequested = true;
+      if (row.human_request_type && !contact.humanRequestType) {
+        contact.humanRequestType = row.human_request_type;
+      }
+    }
   }
-  // Sort by latest message desc
+  // Human-requested contacts first, then by latest message desc
   return [...map.values()].sort((a, b) => {
+    if (a.humanRequested !== b.humanRequested) return a.humanRequested ? -1 : 1;
     const aLast = a.messages[a.messages.length - 1]?.created_at ?? "";
     const bLast = b.messages[b.messages.length - 1]?.created_at ?? "";
     return bLast.localeCompare(aLast);
@@ -36,10 +51,15 @@ function groupByPhone(rows) {
 
 // ── Contact list item ────────────────────────────────────────────────────────
 function ContactItem({ contact, isActive, onClick }) {
-  const last = contact.messages[contact.messages.length - 1];
+  const last  = contact.messages[contact.messages.length - 1];
   const unread = contact.messages.filter(
     (m) => m.direction === "inbound" && !m._read
   ).length;
+
+  const waPhone = contact.phone.replace(/^\+/, "");
+  const humanLabel = contact.humanRequestType === "call"
+    ? "🔴 מבקש שיחת טלפון"
+    : "🔴 מבקש מענה אנושי";
 
   return (
     <div
@@ -48,17 +68,22 @@ function ContactItem({ contact, isActive, onClick }) {
         padding: "12px 16px",
         cursor: "pointer",
         borderBottom: "1px solid #f0f0f0",
-        background: isActive ? "#e8f4fd" : "white",
-        borderRight: isActive ? "4px solid #25D366" : "4px solid transparent",
+        background: contact.humanRequested
+          ? (isActive ? "#ffdfdf" : "#FFF0F0")
+          : (isActive ? "#e8f4fd" : "white"),
+        borderRight: contact.humanRequested
+          ? "4px solid #ef4444"
+          : isActive ? "4px solid #25D366" : "4px solid transparent",
         transition: "background 0.15s",
       }}
     >
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           {/* Avatar */}
           <div style={{
             width: 40, height: 40, borderRadius: "50%",
-            background: "#25D366", color: "white",
+            background: contact.humanRequested ? "#ef4444" : "#25D366",
+            color: "white",
             display: "flex", alignItems: "center", justifyContent: "center",
             fontWeight: 700, fontSize: 16, flexShrink: 0,
           }}>
@@ -73,13 +98,31 @@ function ContactItem({ contact, isActive, onClick }) {
             </div>
           </div>
         </div>
-        <div style={{ textAlign: "left", flexShrink: 0 }}>
-          <div style={{ fontSize: 11, color: "#aaa" }}>{formatTime(last?.created_at)}</div>
+        {/* Right side: WA button + time + unread */}
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, flexShrink: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <a
+              href={`https://wa.me/${waPhone}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              title="פתח שיחת וואטסאפ"
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "center",
+                width: 26, height: 26, borderRadius: "50%",
+                background: "#25D366", color: "white",
+                fontSize: 13, textDecoration: "none", flexShrink: 0,
+              }}
+            >
+              💬
+            </a>
+            <div style={{ fontSize: 11, color: "#aaa" }}>{formatTime(last?.created_at)}</div>
+          </div>
           {unread > 0 && (
             <div style={{
-              marginTop: 4, background: "#25D366", color: "white",
+              background: "#25D366", color: "white",
               borderRadius: 12, fontSize: 11, fontWeight: 700,
-              padding: "1px 7px", display: "inline-block", marginLeft: "auto",
+              padding: "1px 7px", display: "inline-block",
             }}>
               {unread}
             </div>
@@ -93,6 +136,17 @@ function ContactItem({ contact, isActive, onClick }) {
           paddingRight: 48,
         }}>
           {last.direction === "outbound" ? "✓ " : ""}{last.message}
+        </div>
+      )}
+      {contact.humanRequested && (
+        <div style={{
+          marginTop: 6, display: "inline-block",
+          background: "#FEE2E2", color: "#DC2626",
+          fontSize: 11, fontWeight: 700,
+          padding: "2px 8px", borderRadius: 10,
+          border: "1px solid #FECACA",
+        }}>
+          {humanLabel}
         </div>
       )}
     </div>
@@ -141,6 +195,9 @@ export default function WhatsAppInbox() {
   const [sending, setSending]     = useState(false);
   const [reply, setReply]         = useState("");
   const [error, setError]         = useState(null);
+  // ── Bot active / human-handover toggle ───────────────────────────────────
+  const [botActive, setBotActive]     = useState(true);
+  const [togglingBot, setTogglingBot] = useState(false);
   const bottomRef = useRef(null);
   const pollRef   = useRef(null);
 
@@ -150,6 +207,7 @@ export default function WhatsAppInbox() {
       .from("whatsapp_conversations")
       .select(`
         id, phone, direction, message, wa_message_id, created_at,
+        human_requested, human_request_type,
         guests ( name )
       `)
       .order("created_at", { ascending: true })
@@ -159,7 +217,9 @@ export default function WhatsAppInbox() {
 
     const flat = (data ?? []).map((r) => ({
       ...r,
-      guest_name: r.guests?.name ?? null,
+      guest_name:          r.guests?.name ?? null,
+      human_requested:     r.human_requested     ?? false,
+      human_request_type:  r.human_request_type  ?? null,
     }));
 
     const grouped = groupByPhone(flat);
@@ -173,6 +233,29 @@ export default function WhatsAppInbox() {
     pollRef.current = setInterval(fetchAll, POLL_MS);
     return () => clearInterval(pollRef.current);
   }, [fetchAll]);
+
+  // ── Fetch bot active status from bot_config ───────────────────────────────
+  useEffect(() => {
+    supabase
+      .from("bot_config")
+      .select("config_value")
+      .eq("config_key", "bot_active")
+      .maybeSingle()
+      .then(({ data }) => {
+        if (data) setBotActive(data.config_value !== "false");
+      });
+  }, []);
+
+  // ── Toggle bot active flag ────────────────────────────────────────────────
+  async function toggleBot() {
+    setTogglingBot(true);
+    const newVal = !botActive;
+    await supabase
+      .from("bot_config")
+      .upsert({ config_key: "bot_active", config_value: String(newVal) }, { onConflict: "config_key" });
+    setBotActive(newVal);
+    setTogglingBot(false);
+  }
 
   // ── Realtime subscription ─────────────────────────────────────────────────
   useEffect(() => {
@@ -196,22 +279,22 @@ export default function WhatsAppInbox() {
   async function sendManualReply() {
     if (!reply.trim() || !active) return;
     setSending(true);
+    setError(null);
     try {
-      const { error: fnErr } = await supabase.functions.invoke("whatsapp-send", {
+      const { data, error: fnErr } = await supabase.functions.invoke("whatsapp-send", {
         body: {
-          trigger: "broadcast",
-          // find guest id for active phone
-          guestId: contacts
-            .find((c) => c.phone === active)
-            ?.messages.find((m) => m.guest_id)?.guest_id ?? null,
-          messageTemplate: reply.trim(),
+          trigger: "inbox_reply",
+          phone:   active,
+          message: reply.trim(),
         },
       });
-      if (fnErr) throw fnErr;
+      // supabase.functions.invoke wraps non-2xx in fnErr; real detail is in data?.error
+      if (fnErr) throw new Error(data?.error ?? fnErr.message ?? "שגיאה בשליחה");
+      if (data && !data.ok) throw new Error(data.error ?? "שגיאה בשליחה");
       setReply("");
       await fetchAll();
     } catch (e) {
-      setError(e.message ?? "שגיאה בשליחה");
+      setError(e?.message ?? "שגיאה בשליחה");
     } finally {
       setSending(false);
     }
@@ -256,7 +339,29 @@ export default function WhatsAppInbox() {
         }}>
           <span>💬</span>
           <span>DREAM BOT — שיחות</span>
-          {loading && <span style={{ fontSize: 12, opacity: 0.7, marginRight: "auto" }}>טוען...</span>}
+          <div style={{ marginRight: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+            {loading && <span style={{ fontSize: 12, opacity: 0.7 }}>טוען...</span>}
+            <button
+              onClick={toggleBot}
+              disabled={togglingBot}
+              title={botActive ? "לחץ להשתיק — מעבר למענה אנושי" : "לחץ להפעיל את הרובוט"}
+              style={{
+                background: botActive ? "rgba(255,255,255,0.15)" : "rgba(239,68,68,0.35)",
+                color: "white",
+                border: `1px solid ${botActive ? "rgba(255,255,255,0.35)" : "rgba(239,68,68,0.6)"}`,
+                borderRadius: 20,
+                padding: "4px 12px",
+                fontSize: 11,
+                fontWeight: 700,
+                cursor: togglingBot ? "not-allowed" : "pointer",
+                fontFamily: "inherit",
+                whiteSpace: "nowrap",
+                transition: "all 0.2s",
+              }}
+            >
+              {togglingBot ? "⏳" : botActive ? "🟢 רובוט מופעל" : "🔴 מענה אנושי"}
+            </button>
+          </div>
         </div>
 
         {/* Contact list */}

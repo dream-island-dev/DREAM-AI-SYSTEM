@@ -1,10 +1,10 @@
 // src/components/GuestDashboard.js  v2
-// EZGO Guest Pipeline Dashboard — daily tactical view.
+// Guest Pipeline Dashboard — daily tactical view.
 //
 // Tabs:   כולם | 🏊 בילוי יומי | 👑 לינה
 // CRUD:   הוסף אורח ידנית | מחק אורח
 // WA:     כפתור "💬" ליד כל טלפון → שלח הודעה ספציפית לאורח
-//         כפתור "🏨 חדר מוכן" → EZGO pipeline (לינה בלבד)
+//         כפתור "🏨 חדר מוכן" → pipeline (לינה בלבד)
 //
 // room_type logic:
 //   day_guest  = בילוי יומי (ללא מספר חדר — נגזר אוטומטית מהאקסל)
@@ -149,16 +149,22 @@ function WAModal({ guest, onClose, onSend, isSending }) {
 // ── Add Guest inline form ─────────────────────────────────────────────────────
 function AddGuestForm({ onSave, onCancel, busy }) {
   const [form, setForm] = useState({
-    name: "", phone: "", room: "", room_type: "day_guest",
-    arrival_date: localISO(0),
+    name: "", phone: "", room: "", room_type: "suite",
+    arrival_date: localISO(0), departure_date: "",
   });
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
-  // Auto-switch type when room is entered/cleared
+  // Auto-switch type based on room text
   const handleRoom = (v) => {
-    setForm((f) => ({
-      ...f, room: v,
-      room_type: v ? (f.room_type === "day_guest" ? "standard" : f.room_type) : "day_guest",
-    }));
+    const lower = v.trim().toLowerCase();
+    let room_type = form.room_type;
+    if (!v) {
+      room_type = "day_guest"; // empty = day guest
+    } else if (/סוויט|suite/i.test(lower)) {
+      room_type = "suite";
+    } else if (room_type === "day_guest") {
+      room_type = "suite"; // any text entered → default to suite
+    }
+    setForm((f) => ({ ...f, room: v, room_type }));
   };
 
   return (
@@ -187,11 +193,11 @@ function AddGuestForm({ onSave, onCancel, busy }) {
             />
           </div>
           <div className="form-field" style={{ marginBottom: 0 }}>
-            <label>מספר חדר (ריק = בילוי יומי)</label>
+            <label>שם חדר</label>
             <input
               type="text" value={form.room}
               onChange={(e) => handleRoom(e.target.value)}
-              placeholder="ללא → בילוי יומי"
+              placeholder="ריק = בילוי יומי"
             />
           </div>
           <div className="form-field" style={{ marginBottom: 0 }}>
@@ -211,6 +217,14 @@ function AddGuestForm({ onSave, onCancel, busy }) {
             <input
               type="date" value={form.arrival_date}
               onChange={(e) => set("arrival_date", e.target.value)}
+            />
+          </div>
+          <div className="form-field" style={{ marginBottom: 0 }}>
+            <label>תאריך עזיבה</label>
+            <input
+              type="date" value={form.departure_date}
+              min={form.arrival_date || localISO(0)}
+              onChange={(e) => set("departure_date", e.target.value)}
             />
           </div>
         </div>
@@ -256,10 +270,11 @@ export default function GuestDashboard({ user }) {
     const { data, error } = await supabase
       .from("guests")
       .select(
-        "id, name, phone, room, room_type, arrival_date, status, " +
+        "id, name, phone, room, room_type, arrival_date, departure_date, status, " +
         "msg_pre_arrival_sent, msg_room_ready_sent, msg_post_checkin_sent"
       )
-      .in("arrival_date", [localISO(0), localISO(1)])
+      // Fetch: today + tomorrow arrivals AND any checked-in guest still on property
+      .or(`arrival_date.in.(${localISO(-1)},${localISO(0)},${localISO(1)}),status.eq.checked_in`)
       .order("arrival_date", { ascending: true })
       .order("name",         { ascending: true });
     if (error) showToast("err", "שגיאה בטעינת אורחים: " + error.message);
@@ -271,7 +286,7 @@ export default function GuestDashboard({ user }) {
   // Clear selection when tab or data changes
   useEffect(() => { setSelected(new Set()); }, [activeTab]);
 
-  // ── Mark Room Ready (EZGO pipeline — hotel guests only) ───────────────────
+  // ── Mark Room Ready (pipeline — hotel guests only) ────────────────────────
   const markRoomReady = useCallback(async (guest) => {
     if (guest.msg_room_ready_sent || loadingId) return;
     setLoadingId(guest.id);
@@ -330,12 +345,13 @@ export default function GuestDashboard({ user }) {
     setAddBusy(true);
     const phone = fmtPhone(form.phone);
     const payload = {
-      name:         form.name.trim(),
-      phone:        phone,
-      room:         form.room || null,
-      room_type:    form.room ? form.room_type : "day_guest",
-      arrival_date: form.arrival_date || localISO(0),
-      status:       "expected",
+      name:           form.name.trim(),
+      phone:          phone,
+      room:           form.room || null,
+      room_type:      form.room ? form.room_type : "day_guest",
+      arrival_date:   form.arrival_date || localISO(0),
+      departure_date: form.departure_date || null,
+      status:         "expected",
     };
     const { data, error } = await supabase
       .from("guests").insert([payload]).select().single();
@@ -540,7 +556,7 @@ export default function GuestDashboard({ user }) {
           <div style={{ fontSize: 40, marginBottom: 8 }}>🛎️</div>
           אין הגעות בטאב זה להיום ולמחר.
           <br />
-          <span style={{ fontSize: 12 }}>ייבא דוח EZGO דרך "העלאת נתונים" או הוסף אורח ידנית.</span>
+          <span style={{ fontSize: 12 }}>ייבא קובץ הגעות דרך "העלאת נתונים" או הוסף אורח ידנית.</span>
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -634,13 +650,18 @@ export default function GuestDashboard({ user }) {
                   )}
                   {guest.room && (
                     <span style={{ fontSize: 13, color: "var(--text-muted)", fontWeight: 600 }}>
-                      חדר {guest.room}
+                      🚪 {guest.room}
+                    </span>
+                  )}
+                  {guest.departure_date && (
+                    <span style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 500 }}>
+                      עד {guest.departure_date}
                     </span>
                   )}
                   <RoomTypeBadge type={guest.room_type} />
                 </div>
 
-                {/* Hotel guests only: EZGO pipeline + room ready button */}
+                {/* Hotel guests only: pipeline + room ready button */}
                 {!isDayGuest && (
                   <>
                     <div style={{ display: "flex", gap: 14, marginBottom: 12, marginTop: 10, flexWrap: "wrap" }}>

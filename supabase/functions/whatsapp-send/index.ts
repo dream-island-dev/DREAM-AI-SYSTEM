@@ -259,7 +259,51 @@ serve(async (req: Request) => {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // BRANCH C: EZGO pipeline triggers (idempotent via notification_log)
+    // BRANCH C: inbox_reply — manual reply typed in WhatsApp Inbox UI
+    //   • Sends free-text directly to a phone number (no guest lookup needed)
+    //   • Inserts an outbound row into whatsapp_conversations so the thread
+    //     reflects the sent message without waiting for the next webhook event
+    // ─────────────────────────────────────────────────────────────────────────
+    if (trigger === "inbox_reply") {
+      const b = body as Record<string, unknown>;
+      const targetPhone = (b.phone as string | undefined)?.trim();
+      const inboxMsg    = (b.message as string | undefined)?.trim();
+
+      if (!targetPhone) throw new Error("phone is required for inbox_reply");
+      if (!inboxMsg)    throw new Error("message is required for inbox_reply");
+
+      let replyStatus = "simulated";
+      let replyErr: string | null = null;
+
+      try {
+        if (!sim) { await sendViaMeta(targetPhone, inboxMsg); replyStatus = "sent"; }
+      } catch (e) {
+        replyErr = (e as Error).message;
+        console.error("[whatsapp] inbox_reply send failed:", replyErr);
+        replyStatus = "failed";
+      }
+
+      // Insert outbound row so the inbox thread shows the message immediately
+      await supabase.from("whatsapp_conversations").insert({
+        phone:         targetPhone,
+        direction:     "outbound",
+        message:       inboxMsg,
+        wa_message_id: null,
+      });
+
+      return new Response(
+        JSON.stringify({
+          ok:         replyStatus !== "failed",
+          simulation: sim,
+          status:     replyStatus,
+          ...(replyErr ? { error: replyErr } : {}),
+        }),
+        { headers: { ...CORS, "Content-Type": "application/json" } }
+      );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // BRANCH D: Pipeline triggers (idempotent via notification_log)
     // ─────────────────────────────────────────────────────────────────────────
     if (!guestId) throw new Error("guestId is required for guest triggers");
     if (!(trigger in T)) throw new Error("unknown trigger: " + trigger);
