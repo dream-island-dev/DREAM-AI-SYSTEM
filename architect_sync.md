@@ -207,15 +207,16 @@ DREAM-AI-SYSTEM/
 
 | בעיה | פתרון |
 |---|---|
-| 3 Edge Functions לא deployed | `npx supabase functions deploy <name> --project-ref bunohsdggxyyzruubvcd --no-verify-jwt` |
+| `META_PHONE_NUMBER_ID` לא עודכן | לחץ "Phone numbers" ב-WhatsApp Manager → העתק ID → `npx supabase secrets set META_PHONE_NUMBER_ID=<id> --project-ref bunohsdggxyyzruubvcd` |
+| `META_WHATSAPP_TOKEN` — ודא שהוא System User Token | הסוד חייב להיות System User Token (לא זמני). ודא ב-Supabase Dashboard → Settings → Edge Functions → Secrets |
+| `META_WEBHOOK_VERIFY_TOKEN` — ודא קיים | ערך חופשי לבחירה. `npx supabase secrets set META_WEBHOOK_VERIFY_TOKEN=dream_island_webhook_2026 --project-ref bunohsdggxyyzruubvcd` |
+| Webhook לא מוגדר ב-Meta | Meta Developers → DREAM ISLAND BOT → WhatsApp → Configuration → Callback URL: `https://bunohsdggxyyzruubvcd.supabase.co/functions/v1/whatsapp-webhook` |
 | `dream_arrival_tomorrow` template חסר | ליצור ב-Meta Business Manager + אישור 24-48ש׳ |
-| `whatsapp-webhook` uncommitted rewrite | `git add + git commit` |
-| `src/index.js` + `src/styles.css` uncommitted | `git add + git commit` |
+| uncommitted files | `git add -A && git commit -m "deploy: all 5 edge functions + rbac fixes"` |
 
 ### ❌ שבור
 | | |
 |---|---|
-| ShiftGenerator PATH B (AI) | Edge Function ישנה deployed — קוראת Anthropic → 404 |
 | כפתור "שלח להגעות מחר" | Template לא קיים ב-Meta |
 
 ---
@@ -245,7 +246,7 @@ META_PHONE_NUMBER_ID        # מספר הטלפון העסקי
 META_BUSINESS_ACCOUNT_ID    # WABA ID
 APPS_SCRIPT_URL             # Google Drive RAG bridge
 VAPID_PRIVATE_KEY           # Web Push — לעולם לא בגיט
-WHATSAPP_VERIFY_TOKEN       # webhook verification
+META_WEBHOOK_VERIFY_TOKEN   # webhook verification (שם מדויק בקוד!)
 ```
 
 ---

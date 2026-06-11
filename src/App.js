@@ -17,6 +17,7 @@ import WhatsAppInbox from "./components/WhatsAppInbox";
 import TaskBoard from "./components/TaskBoard";
 import BotConfigPanel from "./components/BotConfigPanel";
 import BotSettings from "./components/BotSettings";
+import PasswordChangeScreen from "./components/PasswordChangeScreen";
 
 // ============================================================
 // MOCK DATA - יוחלף ב-Supabase בגרסה האמיתית
@@ -999,7 +1000,7 @@ function Sidebar({ user, active, setActive, openCallsCount, onLogout, isAdmin, i
     { id: "calls",      icon: "🔔", label: "קריאות שירות", badge: openCallsCount, managerOnly: true },
     { id: "checklist",  icon: "✅", label: "צ'קליסטים",                              managerOnly: true },
     { id: "employees",  icon: "👥", label: "עובדים",                                 managerOnly: true },
-    { id: "vip_guests", icon: "🏨", label: "VIP אורחים",                             managerOnly: true },
+    { id: "vip_guests", icon: "🏨", label: "אורחים סוויטות",                         managerOnly: true },
     { id: "broadcast",  icon: "📣", label: "שליחת הודעות",                           managerOnly: true },
     { id: "wa_inbox",   icon: "💬", label: "DREAM BOT — שיחות",                     managerOnly: true },
     { id: "guests",     icon: "🛎️", label: "אורחים",                                managerOnly: true },
@@ -2179,7 +2180,7 @@ async function loadUserWithProfile(session, setUser) {
   try {
     const { data } = await supabase
       .from("profiles")
-      .select("role, name, department, status, avatar, avatar_text")
+      .select("role, name, department, status, avatar, avatar_text, must_change_password")
       .eq("id", base.id)
       .single();
     setUser({ ...base, ...(data ?? {}) });
@@ -2411,7 +2412,7 @@ export default function App() {
     calls:      "קריאות שירות 🔔",
     checklist:  "צ'קליסטים יומיים ✅",
     employees:  "ניהול עובדים 👥",
-    vip_guests: "🏨 VIP אורחים",
+    vip_guests: "🏨 אורחים סוויטות",
     broadcast:  "📣 מודול שידור — WhatsApp",
     wa_inbox:   "💬 DREAM BOT — תיבת שיחות",
     guests:     "🛎️ ניהול אורחים",
@@ -2459,6 +2460,17 @@ export default function App() {
       <>
         <style>{css}</style>
         <LoginPage onLogin={setUser} />
+      </>
+    );
+
+  if (user.must_change_password)
+    return (
+      <>
+        <style>{css}</style>
+        <PasswordChangeScreen
+          user={user}
+          onComplete={(updated) => setUser(updated)}
+        />
       </>
     );
 
@@ -2584,7 +2596,7 @@ export default function App() {
     { id: "dashboard",  icon: "📊", label: "ראשי" },
     { id: "shifts",     icon: "🕐", label: "משמרות" },
     { id: "tasks",      icon: "📋", label: "משימות" },
-    { id: "vip_guests", icon: "🏨", label: "VIP" },
+    { id: "vip_guests", icon: "🏨", label: "סוויטות" },
     { id: "agent",      icon: "🤖", label: "סוכן" },
   ];
 

@@ -98,7 +98,7 @@ function sanitizePhone(raw) {
 
 const TARGETS = {
   ezgo: {
-    label: "🏨 הגעות VIP",
+    label: "🏨 הגעות סוויטות",
     table: "guests",
     required: ["name"],
     // ── Column aliases ──────────────────────────────────────────────────────

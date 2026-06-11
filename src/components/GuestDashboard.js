@@ -273,8 +273,6 @@ export default function GuestDashboard({ user }) {
         "id, name, phone, room, room_type, arrival_date, departure_date, status, " +
         "msg_pre_arrival_sent, msg_room_ready_sent, msg_post_checkin_sent"
       )
-      // Fetch: today + tomorrow arrivals AND any checked-in guest still on property
-      .or(`arrival_date.in.(${localISO(-1)},${localISO(0)},${localISO(1)}),status.eq.checked_in`)
       .order("arrival_date", { ascending: true })
       .order("name",         { ascending: true });
     if (error) showToast("err", "שגיאה בטעינת אורחים: " + error.message);

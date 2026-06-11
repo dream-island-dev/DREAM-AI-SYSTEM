@@ -21,7 +21,7 @@ export const ADMIN_EMAILS = ["promote7il@gmail.com"];
 export const ADMIN_EMAIL = SUPER_ADMIN_EMAIL;
 
 export const DEFAULT_DEPARTMENTS = [
-  "תפעול", "משק", "קבלה", "ספא", 'מזמ"ש (F&B)', "הנהלה",
+  "תפעול", "משק", "קבלה", "ספא", 'מזמ"ש (F&B)', "הנהלה", "סוויטות",
 ];
 
 const DEPT_KEY = "di_departments";

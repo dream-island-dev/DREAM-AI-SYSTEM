@@ -50,6 +50,7 @@ const DEPARTMENTS = [
   "ספא",
   'מזמ"ש (F&B)',
   "הנהלה",
+  "סוויטות",
 ];
 
 // ── Shared UI atoms ───────────────────────────────────────────────────────────
@@ -223,6 +224,118 @@ function UserCard({ u, isSelf, saving, canEdit, onUpdate, onToggle }) {
   );
 }
 
+// ── Invite form ───────────────────────────────────────────────────────────────
+
+function InviteForm({ onSubmit, onCancel, busy }) {
+  const [form, setForm] = useState({ name: "", email: "", role: "staff", department: "" });
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  const valid = form.name.trim() && form.email.trim() && form.email.includes("@");
+
+  return (
+    <div className="card" style={{ marginBottom: 20, border: "1.5px solid var(--gold)" }}>
+      <div className="card-header">
+        <div className="card-title">➕ הוסף משתמש חדש</div>
+        <button className="btn btn-ghost btn-sm" onClick={onCancel} disabled={busy}>✕ ביטול</button>
+      </div>
+      <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 16 }}>
+
+        {/* Name + Email */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <div className="form-field" style={{ marginBottom: 0 }}>
+            <label>שם מלא *</label>
+            <input
+              type="text" value={form.name}
+              onChange={(e) => set("name", e.target.value)}
+              placeholder="ישראל ישראלי"
+            />
+          </div>
+          <div className="form-field" style={{ marginBottom: 0 }}>
+            <label>אימייל *</label>
+            <input
+              type="email" value={form.email}
+              onChange={(e) => set("email", e.target.value)}
+              placeholder="user@example.com"
+              style={{ direction: "ltr" }}
+            />
+          </div>
+        </div>
+
+        {/* Role */}
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>
+            תפקיד
+          </div>
+          <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+            {[
+              { v: "staff",   l: "👤 עובד" },
+              { v: "manager", l: "🏢 מנהל" },
+              { v: "admin",   l: "🔧 Admin" },
+            ].map(({ v, l }) => (
+              <label key={v} style={{
+                display: "flex", alignItems: "center", gap: 6,
+                cursor: "pointer", fontSize: 14, fontWeight: form.role === v ? 700 : 500,
+                color: form.role === v ? "var(--gold-dark)" : "var(--text-main)",
+                padding: "6px 12px", borderRadius: 8,
+                border: `1.5px solid ${form.role === v ? "var(--gold)" : "var(--border)"}`,
+                background: form.role === v ? "rgba(201,169,110,0.1)" : "var(--card-bg)",
+                transition: "all 0.15s",
+              }}>
+                <input
+                  type="radio" name="invite-role" value={v}
+                  checked={form.role === v}
+                  onChange={() => set("role", v)}
+                  style={{ display: "none" }}
+                />
+                {l}
+              </label>
+            ))}
+          </div>
+        </div>
+
+        {/* Department checkboxes */}
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>
+            מחלקה
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {DEPARTMENTS.map((d) => (
+              <label key={d} style={{
+                display: "flex", alignItems: "center", gap: 5,
+                cursor: "pointer", fontSize: 13, fontWeight: form.department === d ? 700 : 500,
+                color: form.department === d ? "var(--gold-dark)" : "var(--text-muted)",
+                padding: "5px 11px", borderRadius: 20,
+                border: `1.5px solid ${form.department === d ? "var(--gold)" : "var(--border)"}`,
+                background: form.department === d ? "rgba(201,169,110,0.1)" : "var(--ivory)",
+                transition: "all 0.15s",
+              }}>
+                <input
+                  type="checkbox"
+                  checked={form.department === d}
+                  onChange={() => set("department", form.department === d ? "" : d)}
+                  style={{ display: "none" }}
+                />
+                {d}
+              </label>
+            ))}
+          </div>
+        </div>
+
+        {/* Submit */}
+        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <button
+            className="btn btn-primary"
+            disabled={busy || !valid}
+            onClick={() => onSubmit(form)}
+            style={{ minWidth: 180 }}
+          >
+            {busy ? "⏳ שולח הזמנה..." : "📨 שלח הזמנה"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function UserManagement({ currentUser }) {
@@ -232,6 +345,8 @@ export default function UserManagement({ currentUser }) {
   const [saving, setSaving]       = useState({});   // { [userId]: fieldName | null }
   const [toast, setToast]         = useState(null); // { type: 'ok'|'err', msg, undoFn? }
   const [search, setSearch]       = useState("");
+  const [showInvite, setShowInvite] = useState(false);
+  const [inviting, setInviting]     = useState(false);
 
   const canEdit = isSuperAdmin(currentUser);
 
@@ -303,6 +418,30 @@ export default function UserManagement({ currentUser }) {
   const toggleSuspend = (u) =>
     updateField(u.id, "status", u.status === "suspended" ? "active" : "suspended");
 
+  async function handleInvite(form) {
+    if (!canEdit) return showToast("err", "נדרשות הרשאות super_admin");
+    if (!supabase) return showToast("err", "Supabase לא מחובר");
+    setInviting(true);
+    const { data, error } = await supabase.functions.invoke("invite-user", {
+      body: {
+        email:      form.email.trim().toLowerCase(),
+        name:       form.name.trim(),
+        role:       form.role,
+        department: form.department || null,
+      },
+    });
+    setInviting(false);
+    if (error || !data?.ok) {
+      return showToast("err", "שגיאה: " + (data?.error ?? error?.message ?? "unknown"));
+    }
+    showToast("ok", data.alreadyExists
+      ? `✅ פרופיל עודכן עבור ${form.email}`
+      : `✅ הזמנה נשלחה ל-${form.email}`
+    );
+    setShowInvite(false);
+    await fetchUsers();
+  }
+
   // ── Filter ─────────────────────────────────────────────────────────────────
 
   const filtered = users.filter((u) => {
@@ -349,9 +488,25 @@ export default function UserManagement({ currentUser }) {
 
       {/* Header */}
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 20 }}>
-        <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
-          {users.length} משתמשים
-          {!canEdit && <span style={{ marginRight: 8, color: "#C0392B" }}>· צפייה בלבד</span>}
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
+            {users.length} משתמשים
+            {!canEdit && <span style={{ marginRight: 8, color: "#C0392B" }}>· צפייה בלבד</span>}
+          </div>
+          {canEdit && (
+            <button
+              onClick={() => setShowInvite((s) => !s)}
+              style={{
+                padding: "8px 16px", borderRadius: 20, cursor: "pointer",
+                fontFamily: "Heebo, sans-serif", fontSize: 13, fontWeight: 700,
+                border: `2px solid ${showInvite ? "var(--gold)" : "var(--gold)"}`,
+                background: showInvite ? "rgba(201,169,110,0.15)" : "var(--card-bg)",
+                color: "var(--gold-dark)", transition: "all 0.15s",
+              }}
+            >
+              {showInvite ? "✕ סגור" : "+ הוסף משתמש"}
+            </button>
+          )}
         </div>
         <div style={{ display: "flex", gap: 8, flex: 1, justifyContent: "flex-end" }}>
           <input
@@ -371,6 +526,15 @@ export default function UserManagement({ currentUser }) {
           </button>
         </div>
       </div>
+
+      {/* Invite form */}
+      {showInvite && (
+        <InviteForm
+          onSubmit={handleInvite}
+          onCancel={() => setShowInvite(false)}
+          busy={inviting}
+        />
+      )}
 
       {!supabase && (
         <div style={{ background: "#FFF5E8", border: "1px solid #F5A623", borderRadius: 10, padding: "12px 16px", marginBottom: 16, fontSize: 13, color: "#7A4A00" }}>
