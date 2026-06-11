@@ -38,29 +38,42 @@ const CORS = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+// Resort contact phone for {{2}} in templates that include a callback number.
+// Set RESORT_CONTACT_PHONE in Supabase Secrets to replace this placeholder.
+const RESORT_CONTACT_PHONE = Deno.env.get("RESORT_CONTACT_PHONE") ?? "054-0000000";
+
+// Workshop signup URL for dream_workshop_signup {{2}}.
+// Set WORKSHOP_SIGNUP_URL in Supabase Secrets once the user provides the link.
+const WORKSHOP_SIGNUP_URL = Deno.env.get("WORKSHOP_SIGNUP_URL") ?? "dream-island.co.il/workshops";
+
 // ── Pipeline trigger → approved WA template name ─────────────────────────────
 // Each key maps to a template registered & approved in Meta WhatsApp Manager.
 const PIPELINE_TEMPLATE: Record<string, string> = {
-  night_before:  "dream_arrival_tomorrow",
-  morning_suite: "dream_checkin_reminder",
-  room_ready:    "dream_checkin_reminder",
-  butler_1h:     "dream_handover_agent",
+  night_before:    "dream_checkin_reminder",     // T-1 night  → "מחר מגיעים" + contact
+  morning_suite:   "dream_morning_welcome",      // suite arrival AM → "בוקר טוב, היום מגיעים"
+  room_ready:      "dream_arrival_tomorrow",     // room ready  → "היום מגיעים"
+  butler_1h:       "dream_handover_agent",       // 1h post check-in
+  pre_arrival_2d:  "dream_pre_arrival_confirm",  // T-2 days   → asks for confirmation
+  morning_welcome: "dream_morning_welcome",      // non-suite arrival AM
 };
 
 // Variables passed as {{1}}, {{2}}, … to each pipeline template.
 const PIPELINE_VARS: Record<string, (g: Record<string, unknown>) => string[]> = {
-  night_before:  (g) => [String(g.name ?? "")],
-  morning_suite: (g) => [String(g.name ?? "")],
-  room_ready:    (g) => [String(g.name ?? ""), String(g.room ?? "")].filter(Boolean),
-  butler_1h:     (g) => [String(g.name ?? "")],
+  night_before:    (g) => [String(g.name ?? ""), RESORT_CONTACT_PHONE],
+  morning_suite:   (g) => [String(g.name ?? "")],
+  room_ready:      (g) => [String(g.name ?? "")],
+  butler_1h:       (g) => [String(g.name ?? "")],
+  pre_arrival_2d:  (g) => [String(g.name ?? ""), String(g.arrival_date ?? "")],
+  morning_welcome: (g) => [String(g.name ?? "")],
 };
 
-// Maps each EZGO pipeline trigger to the DB flag it atomically stamps.
-// morning_suite has no dedicated pipeline column (supplementary VIP touch).
+// Maps each pipeline trigger to the DB flag it atomically stamps.
 const GUEST_FLAG: Record<string, string> = {
-  night_before: "msg_pre_arrival_sent",
-  room_ready:   "msg_room_ready_sent",
-  butler_1h:    "msg_post_checkin_sent",
+  night_before:    "msg_pre_arrival_sent",
+  room_ready:      "msg_room_ready_sent",
+  butler_1h:       "msg_post_checkin_sent",
+  pre_arrival_2d:  "msg_pre_arrival_2d_sent",
+  morning_welcome: "msg_morning_welcome_sent",
 };
 
 // ── Staff shift assignment message ────────────────────────────────────────────

@@ -377,6 +377,45 @@ async function askGemini(
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// §5b PRE-ARRIVAL CONFIRMATION — detect "כן" reply, send payment + workshop
+// ══════════════════════════════════════════════════════════════════════════════
+
+/** Matches affirmative replies to the pre-arrival confirmation request. */
+const CONFIRMATION_RE = /^(כן|אישור|yes|1|מאשר|מאשרת|כן תודה|כן אישור|אישורי|בסדר|ok)\s*$/i;
+
+// Set WORKSHOP_SIGNUP_URL in Supabase Secrets once the user provides the URL.
+const WORKSHOP_SIGNUP_URL = Deno.env.get("WORKSHOP_SIGNUP_URL") ?? "dream-island.co.il/workshops";
+
+async function sendTemplate(
+  to: string, templateName: string, vars: string[], langCode = "he"
+): Promise<void> {
+  const token   = Deno.env.get("META_WHATSAPP_TOKEN");
+  const phoneId = Deno.env.get("META_PHONE_NUMBER_ID");
+  if (!token || !phoneId) throw new Error("missing_meta_creds");
+
+  const components = vars.length > 0
+    ? [{ type: "body", parameters: vars.map((v) => ({ type: "text", text: v })) }]
+    : [];
+
+  const res = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      to,
+      type: "template",
+      template: {
+        name: templateName,
+        language: { code: langCode },
+        ...(components.length > 0 ? { components } : {}),
+      },
+    }),
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!res.ok) throw new Error(`meta_template_${res.status}: ${(await res.text()).slice(0, 200)}`);
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // §6  META CLOUD API — send WhatsApp reply
 // ══════════════════════════════════════════════════════════════════════════════
 async function sendReply(to: string, body: string): Promise<string> {
@@ -499,11 +538,69 @@ serve(async (req: Request) => {
       // ── Lookup registered guest ───────────────────────────────────────────
       const { data: guest } = await supabase
         .from("guests")
-        .select("id, name")
+        .select("id, name, msg_pre_arrival_2d_sent, arrival_confirmed, payment_amount, payment_link_url")
         .eq("phone", phone)
         .maybeSingle();
       const guestId   = (guest?.id   as number)     ?? null;
       const guestName = (guest?.name as string|null) ?? null;
+
+      // ── Pre-arrival confirmation detection ────────────────────────────────
+      // If the message is an affirmative reply AND this guest is waiting for
+      // confirmation (T-2 template was sent, but not yet confirmed), handle it
+      // here and skip normal intent routing.
+      if (
+        CONFIRMATION_RE.test(text.trim()) &&
+        guest?.msg_pre_arrival_2d_sent &&
+        !guest?.arrival_confirmed
+      ) {
+        // 1. Mark guest as confirmed
+        await supabase.from("guests").update({ arrival_confirmed: true }).eq("id", guestId);
+
+        // 2. Log the inbound confirmation
+        await supabase.from("whatsapp_conversations").insert({
+          phone,
+          guest_id:      guestId,
+          direction:     "inbound",
+          message:       text,
+          wa_message_id: msgId,
+          intent:        "confirmation",
+        });
+
+        const sim = Deno.env.get("WHATSAPP_SIMULATION") === "true";
+        const guestDisplayName = String(guest?.name ?? "");
+        const amount = String((guest as Record<string,unknown>).payment_amount ?? "יישלח בנפרד");
+        const payUrl = String((guest as Record<string,unknown>).payment_link_url ?? "יישלח בקרוב");
+
+        if (!sim) {
+          try {
+            // 3. Send payment link template
+            await sendTemplate(phone, "dream_payment_link", [guestDisplayName, amount, payUrl]);
+            await supabase.from("whatsapp_conversations").insert({
+              phone, guest_id: guestId, direction: "outbound",
+              message: `[תבנית: dream_payment_link]`, wa_message_id: null,
+            });
+          } catch (e) {
+            console.error("[webhook] payment_link send failed:", (e as Error).message);
+          }
+
+          // 4. Brief pause then send workshop signup
+          await new Promise((r) => setTimeout(r, 800));
+          try {
+            await sendTemplate(phone, "dream_workshop_signup", [guestDisplayName, WORKSHOP_SIGNUP_URL]);
+            await supabase.from("whatsapp_conversations").insert({
+              phone, guest_id: guestId, direction: "outbound",
+              message: `[תבנית: dream_workshop_signup]`, wa_message_id: null,
+            });
+          } catch (e) {
+            console.error("[webhook] workshop_signup send failed:", (e as Error).message);
+          }
+        } else {
+          console.info(`[webhook] SIM — confirmation from ${phone}, would send payment_link + workshop_signup`);
+        }
+
+        console.info(`[webhook] ✅ pre-arrival confirmed — phone:${phone} guest:${guestId}`);
+        continue; // skip normal intent routing
+      }
 
       // ── Classify intent (< 1 ms, no AI cost) ─────────────────────────────
       const intent = classifyIntent(text);

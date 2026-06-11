@@ -5,21 +5,16 @@
 // Usage:
 //   node scripts/create_templates.js
 //
-// Required env vars (set before running):
+// Required env vars:
 //   META_WHATSAPP_TOKEN   — System User access token from Meta Developer portal
 //   META_WABA_ID          — WhatsApp Business Account ID (not the phone number ID)
 //
-// To get META_WABA_ID: Meta Business Suite → WhatsApp → API Setup → scroll to
-//   "WhatsApp Business Account ID" (numeric, e.g. 123456789012345)
-//
-// Existing templates return status ALREADY_EXISTS (not an error).
-//
-// Exit codes: 0 = all ok, 1 = missing credentials, 2 = one or more failures
-//
-// Meta template rules (enforced server-side):
-//   ✗ HEADER: no emojis, no formatting characters, no variables without example
+// Meta template rules:
 //   ✗ BODY: cannot start OR end with {{n}} — must have literal text at both ends
-//   ✓ BODY: emojis are fine anywhere except start/end positions next to {{n}}
+//   ✗ HEADER: no emojis, no formatting characters, no variables without example
+//   ✓ BODY: emojis fine; Hebrew RTL fine
+//
+// Existing templates: Meta returns ALREADY_EXISTS (not an error).
 
 "use strict";
 
@@ -37,99 +32,31 @@ if (!TOKEN || !WABA_ID) {
   process.exit(1);
 }
 
-// ── Template definitions (all 13) ─────────────────────────────────────────────
+// ── Template definitions ──────────────────────────────────────────────────────
+//
+// Funnel stage key:
+//   Stage 1 — Discovery / Awareness
+//   Stage 2 — Consideration / Offers
+//   Stage 3 — Pre-arrival flow (UTILITY)
+//   Stage 4 — On-property
+//   Stage 5 — Post-visit / Loyalty
+//
 const TEMPLATES = [
 
-  // ── UTILITY templates (transactional) ────────────────────────────────────────
-
-  {
-    name: "dream_arrival_tomorrow",
-    category: "UTILITY",
-    language: "he",
-    components: [
-      {
-        type: "BODY",
-        text:
-          "Dream Island שמחה לראותכם מחר, {{1}}! 🌴\n" +
-          "צ'ק-אין מ-15:00. כניסה לבריכות ומתקנים מרגע ההגעה.\n" +
-          "צ'ק-אאוט עד 11:00. מחכים לכם!",
-        example: { body_text: [["שרה כהן"]] },
-      },
-    ],
-  },
-
-  {
-    name: "dream_handover_agent",
-    category: "UTILITY",
-    language: "he",
-    components: [
-      {
-        type: "BODY",
-        text:
-          "תודה על פנייתך, {{1}}. 🙏\n" +
-          "העברנו את בקשתך לנציג שלנו שיצור איתך קשר בהקדם.\n" +
-          "Dream Island — תמיד לשירותך.",
-        example: { body_text: [["מיכל גולן"]] },
-      },
-    ],
-  },
-
-  {
-    name: "dream_checkin_reminder",
-    category: "UTILITY",
-    language: "he",
-    components: [
-      { type: "HEADER", format: "TEXT", text: "מחכים לכם מחר" },
-      {
-        type: "BODY",
-        text:
-          "תזכורת לקראת הגעתכם מחר ל-Dream Island, {{1}}.\n" +
-          "• צ'ק-אין: מ-15:00\n" +
-          "• צ'ק-אאוט: עד 11:00\n" +
-          "• בריכות ומתקני הספא פתוחים מרגע ההגעה\n\n" +
-          "לשאלות: {{2}}\n" +
-          "Dream Island — מחכים לכם! 🌊",
-        example: { body_text: [["אבי ורדי", "054-0000000"]] },
-      },
-    ],
-  },
-
-  {
-    name: "dream_workshop_reminder",
-    category: "UTILITY",
-    language: "he",
-    components: [
-      {
-        type: "BODY",
-        text:
-          "תזכורת מ-Dream Island, {{1}}! 📅\n" +
-          "אתם רשומים לסדנת {{2}}.\n" +
-          "מיקום: {{3}}\n" +
-          "שעה: {{4}}\n\n" +
-          "מצפים לכם!",
-        example: {
-          body_text: [["רונית מזרחי", "בישול ים-תיכוני", "מסעדת ערמונים", "11:00"]],
-        },
-      },
-    ],
-  },
-
-  // ── MARKETING templates (promotional) ────────────────────────────────────────
+  // ── STAGE 1: Discovery ────────────────────────────────────────────────────
 
   {
     name: "dream_availability_offer",
     category: "MARKETING",
     language: "he",
     components: [
-      { type: "HEADER", format: "TEXT", text: "התאריך שבחרתם פנוי" },
       {
         type: "BODY",
         text:
-          "בשורה מצוינת עבורכם, {{1}} — התאריך שעניין אתכם זמין ב-Dream Island.\n" +
-          "מהרו לשריין לפני שהמקום יתפס.\n" +
-          "לפרטים ולהזמנה: {{2}}\n" +
-          "Dream Island — מחכים לכם! 🌴",
-        example: { body_text: [["דניאל לוי", "https://dreamisland.co.il"]] },
+          "שלום {{1}}, תודה שפנית לדרים איילנד! " +
+          "התאריך שעניין אתכם פנוי ואנחנו שמחים לשמור מקום. " +
+          "לפרטים על החבילות ולהשלמת ההזמנה: {{2}} — מחכים לכם",
+        example: { body_text: [["ישראל ישראלי", "https://dream-island.co.il"]] },
       },
     ],
   },
@@ -142,119 +69,31 @@ const TEMPLATES = [
       {
         type: "BODY",
         text:
-          "שלום {{1}}, שלחנו לכם הצעה לאחרונה ולא שמענו ממכם. 😊\n" +
-          "אנחנו כאן לכל שאלה — ההצעה עדיין בתוקף.\n" +
-          "נשמח לקבוע ביקור ב-Dream Island בזמן הנוח לכם.",
-        example: { body_text: [["יוסי בן-דוד"]] },
+          "שלום {{1}}, דרים איילנד בודקת מה שלומכם — " +
+          "פנינו אליכם לפני כמה ימים ולא שמענו. " +
+          "ה-60 דונם שלנו עדיין מחכים לכם. " +
+          "נשמח לענות על כל שאלה ולמצוא את החבילה המושלמת",
+        example: { body_text: [["ישראל ישראלי"]] },
       },
     ],
   },
 
-  {
-    name: "dream_post_visit",
-    category: "MARKETING",
-    language: "he",
-    components: [
-      { type: "HEADER", format: "TEXT", text: "תודה שביקרתם" },
-      {
-        type: "BODY",
-        text:
-          "תודה שבחרתם ב-Dream Island, {{1}}! 🙏\n" +
-          "מקווים שנהניתם מכל רגע.\n" +
-          "נשמח לשמוע על החוויה שלכם — וכבר מחכים לביקור הבא.",
-        example: { body_text: [["נועה שמיר"]] },
-      },
-    ],
-  },
-
-  {
-    name: "dream_special_occasion",
-    category: "MARKETING",
-    language: "he",
-    components: [
-      { type: "HEADER", format: "TEXT", text: "חגיגה מיוחדת ב-Dream Island" },
-      {
-        type: "BODY",
-        text:
-          "ב-Dream Island אנחנו אוהבים לחגוג עם {{1}}! 🎉\n" +
-          "יום הולדת, יום נישואין, בת/בר מצווה — יש לנו חבילות פרמיום מותאמות אישית.\n" +
-          "לפרטים ולהזמנה: {{2}}\n" +
-          "Dream Island — נשמח לחגוג אתכם! 🎉",
-        example: { body_text: [["תמי ואלי", "https://dreamisland.co.il/events"]] },
-      },
-    ],
-  },
-
-  {
-    name: "dream_spa_package",
-    category: "MARKETING",
-    language: "he",
-    components: [
-      { type: "HEADER", format: "TEXT", text: "חבילת ספא מיוחדת" },
-      {
-        type: "BODY",
-        text:
-          "חבילת הספא המיוחדת שלנו ממתינה לכם, {{1}}. 🧖\n" +
-          "טיפולי גוף | חמאם טורקי | עיסויי Watsu\n" +
-          "לשריין מקום: {{2}}\n" +
-          "Dream Island — הפינוק שמגיע לכם. 🧖",
-        example: { body_text: [["גיל אברהם", "https://dreamisland.co.il/spa"]] },
-      },
-    ],
-  },
-
-  {
-    name: "dream_suite_upsell",
-    category: "MARKETING",
-    language: "he",
-    components: [
-      { type: "HEADER", format: "TEXT", text: "שדרגו לסוויטת VIP" },
-      {
-        type: "BODY",
-        text:
-          "הצעה מיוחדת עבורכם, {{1}} — סוויטת VIP עם בריכה פרטית ב-Dream Island. 🌴\n" +
-          "זמינות מוגבלת — הזדמנות שלא תחזור.\n" +
-          "לפרטים ומחירים: {{2}}\n" +
-          "Dream Island — חוויה ברמה אחרת. 🌴",
-        example: { body_text: [["שלמה כץ", "https://dreamisland.co.il/vip"]] },
-      },
-    ],
-  },
+  // ── STAGE 2: Consideration / Offers ──────────────────────────────────────
 
   {
     name: "dream_last_minute",
     category: "MARKETING",
     language: "he",
     components: [
-      { type: "HEADER", format: "TEXT", text: "הצעת רגע אחרון" },
       {
         type: "BODY",
         text:
-          "Dream Island מציעה: מקום פנוי ל-{{1}} במחיר מיוחד עבורכם, {{2}}! ⚡\n" +
-          "הצעה לזמן מוגבל — עד {{3}} בלבד.\n" +
-          "לפרטים: {{4}}\n" +
-          "Dream Island — מחכה לכם! ⚡",
+          "שלום {{1}}, יש לנו בשורה — ל-{{2}} נפתחו מקומות אחרונים בדרים איילנד! " +
+          "הצעה מיוחדת לתאריך הזה, תוקף עד {{3}}. " +
+          "לפרטים ולשריון מיידי: {{4}} — אל תפספסו",
         example: {
-          body_text: [["סוף שבוע", "חן לוי", "יום שישי 18:00", "https://dreamisland.co.il"]],
+          body_text: [["ישראל ישראלי", "5 ביולי", "יום שישי 18:00", "https://dream-island.co.il"]],
         },
-      },
-    ],
-  },
-
-  {
-    name: "dream_wine_experience",
-    category: "MARKETING",
-    language: "he",
-    components: [
-      { type: "HEADER", format: "TEXT", text: "חוויית יין ייחודית" },
-      {
-        type: "BODY",
-        text:
-          "Dream Island מזמינה אתכם, {{1}}, לחוויית יין ייחודית. 🍷\n" +
-          "מבחר יינות ישראליים מובחרים לצד נוף מרהיב ואווירה אינטימית.\n" +
-          "להזמנה: {{2}}\n" +
-          "Dream Island — לחיים! 🍷",
-        example: { body_text: [["ורד ואייל", "https://dreamisland.co.il/wine"]] },
       },
     ],
   },
@@ -264,20 +103,240 @@ const TEMPLATES = [
     category: "MARKETING",
     language: "he",
     components: [
-      { type: "HEADER", format: "TEXT", text: "הצעה עונתית מ-Dream Island" },
       {
         type: "BODY",
         text:
-          "Dream Island מציעה חבילות {{1}} מיוחדות עבורכם, {{2}}! 🌟\n" +
-          "עכשיו הזמן המושלם לבקר — הנחות בלעדיות לזמן מוגבל.\n" +
-          "לפרטים ולהזמנה: {{3}}\n" +
-          "Dream Island — מחכה לכם! 🌟",
+          "שלום {{1}}, לכבוד {{2}} יש לנו הפתעה מדרים איילנד — " +
+          "הצעה בלעדית שנוצרה במיוחד עבורכם. כמות מוגבלת, לזמן קצוב. " +
+          "לפרטים ולהזמנה: {{3}} — מחכים לכם",
         example: {
-          body_text: [["קיץ", "משפחת לוי", "https://dreamisland.co.il/summer"]],
+          body_text: [["ישראל ישראלי", "קיץ 2026", "https://dream-island.co.il"]],
         },
       },
     ],
   },
+
+  {
+    name: "dream_spa_package",
+    category: "MARKETING",
+    language: "he",
+    components: [
+      {
+        type: "BODY",
+        text:
+          "שלום {{1}}, חשבנו עליכם — " +
+          "חבילות הספא של דרים איילנד מושלמות לבריחה קצרה. " +
+          "Classic & More, Deluxe עם טיפול ספא, Special Dream זוגי עם ואטסו או חמאם. " +
+          "הכל כולל מסעדת ארמונים. לפרטים ולהזמנה: {{2}} — שמרו מקום",
+        example: { body_text: [["ישראל ישראלי", "https://dream-island.co.il/spa"]] },
+      },
+    ],
+  },
+
+  {
+    name: "dream_special_occasion",
+    category: "MARKETING",
+    language: "he",
+    components: [
+      {
+        type: "BODY",
+        text:
+          "שלום {{1}}, שמענו שיש לכם סיבה לחגוג! " +
+          "דרים איילנד היא המקום המושלם — סוויטות עם בריכה פרטית, ספא ומסעדת ארמונים. " +
+          "נכין עבורכם חוויה שלא תשכחו. לפרטים ולתיאום: {{2}} — שיהיה מזל טוב",
+        example: { body_text: [["ישראל ישראלי", "https://dream-island.co.il/events"]] },
+      },
+    ],
+  },
+
+  {
+    name: "dream_suite_upsell",
+    category: "MARKETING",
+    language: "he",
+    components: [
+      {
+        type: "BODY",
+        text:
+          "שלום {{1}}, יש לנו הצעה שלא תוכלו לסרב — " +
+          "הסוויטות שלנו הן עולם אחר לגמרי. " +
+          "רובי עם בריכה פרטית, אקוומרין עם גינה, אמטיסט עם נוף פנורמי. " +
+          "כולן עם ג'קוזי פרטי וגישה לטרקלין VIP Symphony. " +
+          "לפרטים: {{2}} — מחכים לכם",
+        example: { body_text: [["ישראל ישראלי", "https://dream-island.co.il/suites"]] },
+      },
+    ],
+  },
+
+  {
+    name: "dream_wine_experience",
+    category: "MARKETING",
+    language: "he",
+    components: [
+      {
+        type: "BODY",
+        text:
+          "שלום {{1}}, דרים איילנד מזמינה אתכם לחוויית יין ייחודית — " +
+          "יינות ישראליים מובחרים, אווירה קסומה, לצד בריכות, ספא ומסעדת ארמונים. " +
+          "ערב שלא תשכחו. לפרטים ולהזמנה: {{2}} — לחיים",
+        example: { body_text: [["ישראל ישראלי", "https://dream-island.co.il/wine"]] },
+      },
+    ],
+  },
+
+  // ── STAGE 3: Pre-arrival flow (UTILITY) ──────────────────────────────────
+
+  {
+    name: "dream_pre_arrival_confirm",
+    category: "UTILITY",
+    language: "he",
+    components: [
+      {
+        type: "BODY",
+        text:
+          "שלום {{1}}, אנחנו ב-Dream Island שמחים לקבל אתכם בתאריך {{2}}. " +
+          "מאשרים הגעה? השיבו *כן* לאישור ולקבלת פרטי התשלום והמתחם",
+        example: { body_text: [["ישראל ישראלי", "15.07.2026"]] },
+      },
+    ],
+  },
+
+  {
+    name: "dream_payment_link",
+    category: "UTILITY",
+    language: "he",
+    components: [
+      {
+        type: "BODY",
+        text:
+          "מעולה {{1}}! לסיום ההזמנה לדרים איילנד — " +
+          "הסכום לתשלום: {{2}} ₪. לתשלום מאובטח: {{3}} — נתראה בקרוב",
+        example: {
+          body_text: [["ישראל ישראלי", "1200", "https://pay.dream-island.co.il/abc123"]],
+        },
+      },
+    ],
+  },
+
+  {
+    name: "dream_workshop_signup",
+    category: "UTILITY",
+    language: "he",
+    components: [
+      {
+        type: "BODY",
+        text:
+          "דרים איילנד מזמינה אתכם, {{1}}, להירשם לסדנאות המיוחדות שלנו! " +
+          "מגוון סדנאות בבישול, יין, ספא ועוד. להרשמה: {{2}} — מחכים לכם",
+        example: {
+          body_text: [["ישראל ישראלי", "https://dream-island.co.il/workshops"]],
+        },
+      },
+    ],
+  },
+
+  {
+    name: "dream_checkin_reminder",
+    category: "UTILITY",
+    language: "he",
+    components: [
+      {
+        type: "BODY",
+        text:
+          "שלום {{1}}, מחר מגיעים לדרים איילנד — מחכים לכם! " +
+          "המתחם פתוח מ-9:00, צ'ק אין לסוויטות מ-15:00. " +
+          "בואו מוקדם ותיהנו מהכל. לכל שאלה: {{2}} — נתראה מחר",
+        example: { body_text: [["ישראל ישראלי", "054-0000000"]] },
+      },
+    ],
+  },
+
+  // ── STAGE 4: On-property ──────────────────────────────────────────────────
+
+  {
+    name: "dream_morning_welcome",
+    category: "UTILITY",
+    language: "he",
+    components: [
+      {
+        type: "BODY",
+        text:
+          "בוקר טוב {{1}}! היום מגיעים לדרים איילנד. " +
+          "כמה דברים שכדאי לדעת: הכניסה פתוחה מ-9:00, חנייה חינם בכניסה. " +
+          "הבריכות והספא פתוחים מרגע ההגעה. צ'ק אין לסוויטות מ-15:00. " +
+          "לבעלי סוויטה — הטרקלין Symphony ממתין לכם. נסיעה טובה ומחכים לכם בחום",
+        example: { body_text: [["ישראל ישראלי"]] },
+      },
+    ],
+  },
+
+  {
+    name: "dream_arrival_tomorrow",
+    category: "UTILITY",
+    language: "he",
+    components: [
+      {
+        type: "BODY",
+        text:
+          "שלום {{1}}, היום מגיעים לדרים איילנד! " +
+          "המתחם פתוח מ-9:00, צ'ק אין לסוויטות מ-15:00. " +
+          "הבריכות, הספא ומסעדת ארמונים מוכנים עבורכם. " +
+          "לבעלי סוויטה — הטרקלין Symphony מוכן. מחכים לכם בחום",
+        example: { body_text: [["ישראל ישראלי"]] },
+      },
+    ],
+  },
+
+  {
+    name: "dream_workshop_reminder",
+    category: "UTILITY",
+    language: "he",
+    components: [
+      {
+        type: "BODY",
+        text:
+          "תזכורת מדרים איילנד, {{1}}! " +
+          "אתם רשומים לסדנת {{2}}. מיקום: {{3}} שעה: {{4}} — מצפים לכם",
+        example: {
+          body_text: [["ישראל ישראלי", "בישול ים-תיכוני", "מסעדת ארמונים", "11:00"]],
+        },
+      },
+    ],
+  },
+
+  {
+    name: "dream_handover_agent",
+    category: "UTILITY",
+    language: "he",
+    components: [
+      {
+        type: "BODY",
+        text:
+          "תודה על פנייתך, {{1}}. " +
+          "העברנו את בקשתך לאחד מהצוות שיחזור אליך בהקדם. " +
+          "דרים איילנד — תמיד לשירותך",
+        example: { body_text: [["ישראל ישראלי"]] },
+      },
+    ],
+  },
+
+  // ── STAGE 5: Post-visit / Loyalty ─────────────────────────────────────────
+
+  {
+    name: "dream_post_visit",
+    category: "MARKETING",
+    language: "he",
+    components: [
+      {
+        type: "BODY",
+        text:
+          "תודה שבחרתם בדרים איילנד, {{1}}! " +
+          "מקווים שנהניתם מכל רגע — מהמים, הספא ומסעדת ארמונים. " +
+          "נשמח לשמוע מכם, וכבר מחכים לביקור הבא. אתם תמיד מוזמנים",
+        example: { body_text: [["ישראל ישראלי"]] },
+      },
+    ],
+  },
+
 ];
 
 // ── Runner ────────────────────────────────────────────────────────────────────
@@ -322,7 +381,7 @@ async function main() {
   let failed  = 0;
 
   for (const tpl of TEMPLATES) {
-    process.stdout.write(`  ${tpl.name.padEnd(35)}`);
+    process.stdout.write(`  ${tpl.name.padEnd(38)}`);
     try {
       const result = await createTemplate(tpl);
       if (result.ok) {

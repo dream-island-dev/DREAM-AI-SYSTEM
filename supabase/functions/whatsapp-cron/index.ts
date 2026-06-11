@@ -26,22 +26,30 @@ serve(async (req: Request) => {
     const supabase = createClient(supabaseUrl, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
     const now = new Date();
-    const today = ymd(now);
-    const tomorrow = ymd(new Date(now.getTime() + 24 * 3600 * 1000));
+    const today      = ymd(now);
+    const tomorrow   = ymd(new Date(now.getTime() +     24 * 3600 * 1000));
+    const twoDaysOut = ymd(new Date(now.getTime() + 2 * 24 * 3600 * 1000));
     const hourUTC = now.getUTCHours(); // ~Israel = UTC+2/3
 
     const { data: guests = [] } = await supabase.from("guests").select("*");
 
     const due: { guestId: number; trigger: string }[] = [];
     for (const g of guests ?? []) {
-      // T1 — night before (all guests)
+      // T-2 — pre-arrival confirmation request (all guests, any hour)
+      if (g.arrival_date === twoDaysOut) due.push({ guestId: g.id, trigger: "pre_arrival_2d" });
+
+      // T-1 night — check-in reminder (all guests)
       if (g.arrival_date === tomorrow) due.push({ guestId: g.id, trigger: "night_before" });
 
+      // Arrival morning — welcome message for non-suite guests (UTC 06+ ≈ Israel 08+)
+      if (g.arrival_date === today && g.room_type !== "suite" && hourUTC >= 6)
+        due.push({ guestId: g.id, trigger: "morning_welcome" });
+
       if (g.room_type === "suite") {
-        // T2 — morning of arrival (suites), only during morning window (>=04 UTC ≈ 07 IL)
+        // Arrival morning for suites (UTC 04+ ≈ Israel 06+)
         if (g.arrival_date === today && hourUTC >= 4) due.push({ guestId: g.id, trigger: "morning_suite" });
 
-        // T4 — 1h after check-in (suites)
+        // 1h after check-in (suites)
         if (g.status === "checked_in" && g.checkin_time) {
           const mins = (now.getTime() - new Date(g.checkin_time).getTime()) / 60000;
           if (mins >= 60) due.push({ guestId: g.id, trigger: "butler_1h" });

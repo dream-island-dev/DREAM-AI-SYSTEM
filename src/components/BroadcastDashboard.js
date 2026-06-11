@@ -61,6 +61,10 @@ export default function BroadcastDashboard({ user }) {
   const [sendingOneId, setSendingOneId] = useState(null);
   const abortRef = useRef(false);
 
+  // ── Send mode: template | free_text ──────────────────────────────────────
+  const [sendMode,    setSendMode]    = useState("template");
+  const [freeTextMsg, setFreeTextMsg] = useState("");
+
   // ── Quick Send state ──────────────────────────────────────────────────────
   const [quickSending, setQuickSending] = useState(false);
   const [quickResult,  setQuickResult]  = useState(null);
@@ -178,10 +182,13 @@ export default function BroadcastDashboard({ user }) {
 
   // ── Broadcast send loop ───────────────────────────────────────────────────
   const handleBroadcast = useCallback(async () => {
-    if (!selectedTemplate)
-      return showToast("err", "נא לבחור תבנית הודעה");
-    if (selectedTemplate.varCount > 0 && templateVarValues.some((v) => !v.trim()))
-      return showToast("err", "נא למלא את כל שדות המשתנים");
+    if (sendMode === "template") {
+      if (!selectedTemplate) return showToast("err", "נא לבחור תבנית הודעה");
+      if (selectedTemplate.varCount > 0 && templateVarValues.some((v) => !v.trim()))
+        return showToast("err", "נא למלא את כל שדות המשתנים");
+    } else {
+      if (!freeTextMsg.trim()) return showToast("err", "נא להקליד הודעה");
+    }
     if (!sendableGuests.length)
       return showToast("err", "אין אורחים עם מספר טלפון בקהל זה");
     if (!isSupabaseConfigured || !supabase)
@@ -200,12 +207,9 @@ export default function BroadcastDashboard({ user }) {
       const guest = sendableGuests[i];
       try {
         const { data, error } = await supabase.functions.invoke("whatsapp-send", {
-          body: {
-            trigger:           "broadcast",
-            guestId:           guest.id,
-            waTemplateName:    selectedTemplate.name,
-            templateVariables: templateVarValues,
-          },
+          body: sendMode === "template"
+            ? { trigger: "broadcast", guestId: guest.id, waTemplateName: selectedTemplate.name, templateVariables: templateVarValues }
+            : { trigger: "inbox_reply", phone: guest.phone, message: freeTextMsg },
         });
         if (error) throw new Error(data?.error ?? error.message ?? "edge_function_error");
         if (!data?.ok) throw new Error(data?.error ?? "שליחת ההודעה נכשלה");
@@ -232,7 +236,7 @@ export default function BroadcastDashboard({ user }) {
         `שליחה הסתיימה: ${successCount} הצליחו${errorCount > 0 ? `, ${errorCount} נכשלו` : ""}`
       );
     }
-  }, [selectedTemplate, templateVarValues, sendableGuests, showToast]);
+  }, [sendMode, selectedTemplate, templateVarValues, freeTextMsg, sendableGuests, showToast]);
 
   const handleCancel = () => { abortRef.current = true; };
 
@@ -274,17 +278,17 @@ export default function BroadcastDashboard({ user }) {
 
   // ── Send to a single guest (uses selected template) ───────────────────────
   const sendToOne = useCallback(async (guest) => {
-    if (!selectedTemplate)  return showToast("err", "נא לבחור תבנית הודעה תחילה");
-    if (!guest.phone)        return showToast("err", `ל${guest.name} אין מספר טלפון`);
+    if (sendMode === "template" && !selectedTemplate)
+      return showToast("err", "נא לבחור תבנית הודעה תחילה");
+    if (sendMode === "free_text" && !freeTextMsg.trim())
+      return showToast("err", "נא להקליד הודעה תחילה");
+    if (!guest.phone) return showToast("err", `ל${guest.name} אין מספר טלפון`);
     setSendingOneId(guest.id);
     try {
       const { data, error } = await supabase.functions.invoke("whatsapp-send", {
-        body: {
-          trigger:           "broadcast",
-          guestId:           guest.id,
-          waTemplateName:    selectedTemplate.name,
-          templateVariables: templateVarValues,
-        },
+        body: sendMode === "template"
+          ? { trigger: "broadcast", guestId: guest.id, waTemplateName: selectedTemplate.name, templateVariables: templateVarValues }
+          : { trigger: "inbox_reply", phone: guest.phone, message: freeTextMsg },
       });
       if (error) throw new Error(data?.error ?? error.message ?? "edge_function_error");
       if (!data?.ok) throw new Error(data?.error ?? "שגיאה בשליחה");
@@ -294,17 +298,18 @@ export default function BroadcastDashboard({ user }) {
     } finally {
       setSendingOneId(null);
     }
-  }, [selectedTemplate, templateVarValues, showToast]);
+  }, [sendMode, selectedTemplate, templateVarValues, freeTextMsg, showToast]);
 
   // ── Render ────────────────────────────────────────────────────────────────
   const pct = progress
     ? Math.round((progress.current / Math.max(progress.total, 1)) * 100)
     : 0;
 
-  const sendReady =
-    !!selectedTemplate &&
-    (selectedTemplate.varCount === 0 || templateVarValues.every((v) => v.trim())) &&
-    sendableGuests.length > 0;
+  const sendReady = sendableGuests.length > 0 && (
+    sendMode === "template"
+      ? !!selectedTemplate && (selectedTemplate.varCount === 0 || templateVarValues.every((v) => v.trim()))
+      : freeTextMsg.trim().length > 0
+  );
 
   return (
     <div>
@@ -462,108 +467,165 @@ export default function BroadcastDashboard({ user }) {
           </div>
         </div>
 
-        {/* ── RIGHT: Template Selector ────────────────────────────────────── */}
+        {/* ── RIGHT: Message composer ─────────────────────────────────────── */}
         <div>
           <div className="card" style={{ marginBottom: 0 }}>
             <div className="card-header">
-              <div className="card-title">📋 תבנית WhatsApp מאושרת</div>
-              {loadingTemplates && (
+              <div className="card-title">✉️ הודעה לשידור</div>
+              {sendMode === "template" && loadingTemplates && (
                 <span style={{ fontSize: 11, color: "var(--text-muted)" }}>⏳ טוען תבניות...</span>
               )}
             </div>
+
+            {/* Mode tabs */}
+            <div style={{ display: "flex", borderBottom: "1px solid var(--border)", padding: "0 20px" }}>
+              {[
+                { key: "template",   label: "📋 תבנית מאושרת" },
+                { key: "free_text",  label: "✏️ הודעה חופשית" },
+              ].map(({ key, label }) => (
+                <button
+                  key={key}
+                  onClick={() => setSendMode(key)}
+                  style={{
+                    background: "none", border: "none", cursor: "pointer",
+                    padding: "10px 16px", fontSize: 13, fontWeight: sendMode === key ? 800 : 500,
+                    color: sendMode === key ? "var(--gold-dark)" : "var(--text-muted)",
+                    borderBottom: sendMode === key ? "2px solid var(--gold-dark)" : "2px solid transparent",
+                    marginBottom: -1, fontFamily: "Heebo, sans-serif",
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
             <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 16 }}>
 
-              {/* Template dropdown */}
-              <div className="form-field" style={{ marginBottom: 0 }}>
-                <label>בחר תבנית</label>
-                {!loadingTemplates && waTemplates.length === 0 ? (
-                  <div style={{
-                    fontSize: 12, color: "#C0392B", padding: "10px 12px", borderRadius: 8,
-                    background: "#FFF0EE", border: "1px solid #C0392B",
-                  }}>
-                    ⚠️ לא נמצאו תבניות מאושרות ב-Meta. בדוק שה-META_BUSINESS_ACCOUNT_ID מוגדר כ-Secret בסופאבייס.
+              {/* ── Template mode ── */}
+              {sendMode === "template" && (
+                <>
+                  <div className="form-field" style={{ marginBottom: 0 }}>
+                    <label>בחר תבנית</label>
+                    {!loadingTemplates && waTemplates.length === 0 ? (
+                      <div style={{
+                        fontSize: 12, color: "#C0392B", padding: "10px 12px", borderRadius: 8,
+                        background: "#FFF0EE", border: "1px solid #C0392B",
+                      }}>
+                        ⚠️ לא נמצאו תבניות מאושרות ב-Meta. בדוק שה-META_BUSINESS_ACCOUNT_ID מוגדר כ-Secret בסופאבייס.
+                      </div>
+                    ) : (
+                      <select
+                        value={selectedTemplate?.name ?? ""}
+                        onChange={(e) => handleSelectTemplate(e.target.value)}
+                        disabled={loadingTemplates}
+                      >
+                        <option value="">— בחר תבנית —</option>
+                        {waTemplates.map((t) => (
+                          <option key={t.name} value={t.name}>{t.name}</option>
+                        ))}
+                      </select>
+                    )}
                   </div>
-                ) : (
-                  <select
-                    value={selectedTemplate?.name ?? ""}
-                    onChange={(e) => handleSelectTemplate(e.target.value)}
-                    disabled={loadingTemplates}
-                  >
-                    <option value="">— בחר תבנית —</option>
-                    {waTemplates.map((t) => (
-                      <option key={t.name} value={t.name}>{t.name}</option>
-                    ))}
-                  </select>
-                )}
-              </div>
 
-              {/* Body text preview */}
-              {selectedTemplate?.bodyText && (
-                <div>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", marginBottom: 6, letterSpacing: 0.5 }}>
-                    תוכן התבנית:
-                  </div>
-                  <div style={{
-                    background: "var(--ivory)", border: "1px solid var(--border)",
-                    borderRadius: 10, padding: "12px 14px",
-                    fontSize: 12, lineHeight: 1.7, color: "var(--black)",
-                    direction: "ltr", textAlign: "left",
-                    maxHeight: 120, overflowY: "auto", whiteSpace: "pre-wrap",
-                  }}>
-                    {selectedTemplate.bodyText}
-                  </div>
-                </div>
-              )}
-
-              {/* Variable inputs */}
-              {selectedTemplate && selectedTemplate.varCount > 0 && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", letterSpacing: 0.5 }}>
-                    ערכי משתנים לכלל הקהל:
-                  </div>
-                  {templateVarValues.map((val, idx) => (
-                    <div key={idx} className="form-field" style={{ marginBottom: 0 }}>
-                      <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <span style={{
-                          background: "var(--gold)", color: "#1B3A32",
-                          borderRadius: 5, padding: "1px 7px",
-                          fontSize: 11, fontWeight: 800, fontFamily: "monospace",
-                        }}>
-                          {`{{${idx + 1}}}`}
-                        </span>
-                        {VAR_LABELS[idx] ?? `משתנה ${idx + 1}`}
-                      </label>
-                      <input
-                        type="text"
-                        value={val}
-                        onChange={(e) => {
-                          const next = [...templateVarValues];
-                          next[idx] = e.target.value;
-                          setTemplateVarValues(next);
-                        }}
-                        placeholder={`ערך עבור {{${idx + 1}}}`}
-                      />
+                  {selectedTemplate?.bodyText && (
+                    <div>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", marginBottom: 6, letterSpacing: 0.5 }}>
+                        תוכן התבנית:
+                      </div>
+                      <div style={{
+                        background: "var(--ivory)", border: "1px solid var(--border)",
+                        borderRadius: 10, padding: "12px 14px",
+                        fontSize: 12, lineHeight: 1.7, color: "var(--black)",
+                        direction: "ltr", textAlign: "left",
+                        maxHeight: 120, overflowY: "auto", whiteSpace: "pre-wrap",
+                      }}>
+                        {selectedTemplate.bodyText}
+                      </div>
                     </div>
-                  ))}
-                </div>
+                  )}
+
+                  {selectedTemplate && selectedTemplate.varCount > 0 && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", letterSpacing: 0.5 }}>
+                        ערכי משתנים לכלל הקהל:
+                      </div>
+                      {templateVarValues.map((val, idx) => (
+                        <div key={idx} className="form-field" style={{ marginBottom: 0 }}>
+                          <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <span style={{
+                              background: "var(--gold)", color: "#1B3A32",
+                              borderRadius: 5, padding: "1px 7px",
+                              fontSize: 11, fontWeight: 800, fontFamily: "monospace",
+                            }}>
+                              {`{{${idx + 1}}}`}
+                            </span>
+                            {VAR_LABELS[idx] ?? `משתנה ${idx + 1}`}
+                          </label>
+                          <input
+                            type="text"
+                            value={val}
+                            onChange={(e) => {
+                              const next = [...templateVarValues];
+                              next[idx] = e.target.value;
+                              setTemplateVarValues(next);
+                            }}
+                            placeholder={`ערך עבור {{${idx + 1}}}`}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {!selectedTemplate && !loadingTemplates && waTemplates.length > 0 && (
+                    <div style={{ fontSize: 12, color: "var(--text-muted)", textAlign: "center", padding: "16px 0", fontStyle: "italic" }}>
+                      בחר תבנית מאושרת כדי להמשיך
+                    </div>
+                  )}
+
+                  {sendReady && sendMode === "template" && (
+                    <div style={{
+                      fontSize: 12, fontWeight: 700, color: "#1A7A4A",
+                      padding: "8px 12px", borderRadius: 8,
+                      background: "#E8F5EF", border: "1px solid #1A7A4A",
+                    }}>
+                      ✅ מוכן לשליחה — {selectedTemplate.name}
+                    </div>
+                  )}
+                </>
               )}
 
-              {/* Nudge when no template selected */}
-              {!selectedTemplate && !loadingTemplates && waTemplates.length > 0 && (
-                <div style={{ fontSize: 12, color: "var(--text-muted)", textAlign: "center", padding: "16px 0", fontStyle: "italic" }}>
-                  בחר תבנית מאושרת כדי להמשיך
-                </div>
-              )}
-
-              {/* Ready indicator */}
-              {sendReady && (
-                <div style={{
-                  fontSize: 12, fontWeight: 700, color: "#1A7A4A",
-                  padding: "8px 12px", borderRadius: 8,
-                  background: "#E8F5EF", border: "1px solid #1A7A4A",
-                }}>
-                  ✅ מוכן לשליחה — {selectedTemplate.name}
-                </div>
+              {/* ── Free text mode ── */}
+              {sendMode === "free_text" && (
+                <>
+                  <div style={{
+                    fontSize: 12, padding: "10px 12px", borderRadius: 8,
+                    background: "#FFF5E8", border: "1px solid #F59E0B", color: "#92400E",
+                  }}>
+                    ⚠️ הודעות חופשיות נשלחות רק בתוך חלון שירות 24 שעות מההודעה האחרונה של האורח. מחוץ לחלון — ההודעה תיכשל. להגעה לקהל רחב בחרו תבנית מאושרת.
+                  </div>
+                  <div className="form-field" style={{ marginBottom: 0 }}>
+                    <label>תוכן ההודעה</label>
+                    <textarea
+                      value={freeTextMsg}
+                      onChange={(e) => setFreeTextMsg(e.target.value)}
+                      placeholder="הקלד את ההודעה כאן..."
+                      rows={5}
+                      style={{ resize: "vertical", fontFamily: "Heebo, sans-serif", fontSize: 14, lineHeight: 1.6 }}
+                    />
+                    <div style={{ fontSize: 11, color: "var(--text-muted)", textAlign: "left", marginTop: 4 }}>
+                      {freeTextMsg.length} תווים
+                    </div>
+                  </div>
+                  {sendReady && (
+                    <div style={{
+                      fontSize: 12, fontWeight: 700, color: "#1A7A4A",
+                      padding: "8px 12px", borderRadius: 8,
+                      background: "#E8F5EF", border: "1px solid #1A7A4A",
+                    }}>
+                      ✅ מוכן לשליחה — הודעה חופשית ל-{sendableGuests.length} אורחים
+                    </div>
+                  )}
+                </>
               )}
             </div>
           </div>
@@ -577,11 +639,13 @@ export default function BroadcastDashboard({ user }) {
           {!isSending && !progress?.done && (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
               <div style={{ fontSize: 14, color: "var(--text-muted)" }}>
-                {!selectedTemplate
+                {sendableGuests.length === 0
+                  ? "⚠️ אין אורחים מתאימים — שנה פילטרים"
+                  : sendMode === "template" && !selectedTemplate
                   ? "⚠️ בחר תבנית כדי להתחיל"
-                  : sendableGuests.length > 0
-                  ? `📤 מוכן לשלוח ל-${sendableGuests.length} אורחים`
-                  : "⚠️ אין אורחים מתאימים — שנה פילטרים"}
+                  : sendMode === "free_text" && !freeTextMsg.trim()
+                  ? "⚠️ הקלד הודעה כדי להתחיל"
+                  : `📤 מוכן לשלוח ל-${sendableGuests.length} אורחים`}
               </div>
               <button
                 className="btn btn-primary"
