@@ -38,20 +38,21 @@ const CORS = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-// ── Hebrew message templates (EZGO pipeline triggers) ──────────────────────────
-const T: Record<string, (g: Record<string, unknown>) => string> = {
-  night_before: (g) =>
-    `שלום ${g.name}! 🌙 כאן Dream Island. אנו מצפים לבואך מחר — הצ'ק-אין מהשעה 15:00. ` +
-    `נשמח לדעת שעת הגעה משוערת כדי להכין הכל עבורך. נסיעה טובה! 🏝️`,
-  morning_suite: (g) =>
-    `בוקר טוב ${g.name}! ☀️ צוות Dream Island שמח לארח אותך היום בסוויטה. ` +
-    `מוזמן/ת ליהנות ממתקני הנופש ומטרקלין הסימפוניה ה-VIP שלנו. נתראה בקרוב! 👑`,
-  room_ready: (g) =>
-    `היי ${g.name}, הסוויטה שלכם בדרים איילנד מוכנה!` +
-    `${g.room ? ` (חדר ${g.room})` : ""} מחכים לכם בקבלה. 🏨`,
-  butler_1h: (g) =>
-    `${g.name}, ברוך/ה הבא/ה לסוויטה! 🥂 הבטלר האישי שלך לרשותך. נשמח להציע: ` +
-    `שירות חדרים 24/7, הזמנת מסעדה וטיפולי ספא מפנקים. השב/י להודעה זו או חייג/י 9 מהחדר. שהייה נעימה! 🌸`,
+// ── Pipeline trigger → approved WA template name ─────────────────────────────
+// Each key maps to a template registered & approved in Meta WhatsApp Manager.
+const PIPELINE_TEMPLATE: Record<string, string> = {
+  night_before:  "dream_arrival_tomorrow",
+  morning_suite: "dream_checkin_reminder",
+  room_ready:    "dream_checkin_reminder",
+  butler_1h:     "dream_handover_agent",
+};
+
+// Variables passed as {{1}}, {{2}}, … to each pipeline template.
+const PIPELINE_VARS: Record<string, (g: Record<string, unknown>) => string[]> = {
+  night_before:  (g) => [String(g.name ?? "")],
+  morning_suite: (g) => [String(g.name ?? "")],
+  room_ready:    (g) => [String(g.name ?? ""), String(g.room ?? "")].filter(Boolean),
+  butler_1h:     (g) => [String(g.name ?? "")],
 };
 
 // Maps each EZGO pipeline trigger to the DB flag it atomically stamps.
@@ -61,16 +62,6 @@ const GUEST_FLAG: Record<string, string> = {
   room_ready:   "msg_room_ready_sent",
   butler_1h:    "msg_post_checkin_sent",
 };
-
-// ── Placeholder interpolation ─────────────────────────────────────────────────
-// Replaces {{guest_name}}, {{room}}, {{room_type}} etc. in broadcast templates.
-// Unknown keys are left as-is so managers can see un-resolved placeholders.
-function interpolate(template: string, vars: Record<string, unknown>): string {
-  return template.replace(/\{\{([^}]+)\}\}/g, (_, key: string) => {
-    const val = vars[key.trim()];
-    return val !== null && val !== undefined ? String(val) : `{{${key}}}`;
-  });
-}
 
 // ── Staff shift assignment message ────────────────────────────────────────────
 function shiftMsg(name: string, weekStart: string, shifts: Array<Record<string, unknown>>): string {
@@ -105,12 +96,22 @@ async function sendViaMeta(to: string, body: string): Promise<void> {
 }
 
 // ── Meta WhatsApp Template message ───────────────────────────────────────────
-// Used for business-initiated messages (no open 24h window).
+// Used for all business-initiated messages (required outside the 24h window).
 // templateName must match an APPROVED template in WhatsApp Manager.
-async function sendViaTemplate(to: string, templateName: string, langCode = "he"): Promise<void> {
+// variables maps to {{1}}, {{2}}, ... body parameters in the template.
+async function sendViaTemplate(
+  to: string,
+  templateName: string,
+  variables: string[] = [],
+  langCode = "he"
+): Promise<void> {
   const token   = Deno.env.get("META_WHATSAPP_TOKEN")  ?? Deno.env.get("WHATSAPP_TOKEN");
   const phoneId = Deno.env.get("META_PHONE_NUMBER_ID") ?? Deno.env.get("WHATSAPP_PHONE_NUMBER_ID");
   if (!token || !phoneId) throw new Error("missing_meta_whatsapp_creds");
+
+  const components = variables.length > 0
+    ? [{ type: "body", parameters: variables.map((v) => ({ type: "text", text: v })) }]
+    : [];
 
   const res = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
     method: "POST",
@@ -122,6 +123,7 @@ async function sendViaTemplate(to: string, templateName: string, langCode = "he"
       template: {
         name: templateName,
         language: { code: langCode },
+        ...(components.length > 0 ? { components } : {}),
       },
     }),
     signal: AbortSignal.timeout(15000),
@@ -144,13 +146,13 @@ serve(async (req: Request) => {
 
   try {
     const body = await req.json();
-    const { trigger, guestId, assignments, weekStart, messageTemplate, waTemplateName } = body as {
-      trigger:          string;
-      guestId?:         string;
-      assignments?:     Record<string, unknown[]>;
-      weekStart?:       string;
-      messageTemplate?: string;   // broadcast only — free-text (24h window)
-      waTemplateName?:  string;   // broadcast only — approved WA template name
+    const { trigger, guestId, assignments, weekStart, waTemplateName, templateVariables } = body as {
+      trigger:             string;
+      guestId?:            string;
+      assignments?:        Record<string, unknown[]>;
+      weekStart?:          string;
+      waTemplateName?:     string;    // approved WA template name
+      templateVariables?:  string[];  // values for {{1}}, {{2}}, … in the template body
     };
 
     if (!trigger) throw new Error("trigger is required");
@@ -194,36 +196,21 @@ serve(async (req: Request) => {
     //   • No GUEST_FLAG update: broadcasts do not advance the EZGO pipeline
     // ─────────────────────────────────────────────────────────────────────────
     if (trigger === "broadcast") {
-      if (!guestId) throw new Error("guestId required for broadcast trigger");
-      if (!waTemplateName && (!messageTemplate || !messageTemplate.trim()))
-        throw new Error("messageTemplate or waTemplateName is required for broadcast");
+      if (!guestId)        throw new Error("guestId required for broadcast trigger");
+      if (!waTemplateName) throw new Error("waTemplateName is required for broadcast");
 
       const { data: guest, error: gErr } = await supabase
         .from("guests").select("*").eq("id", guestId).single();
       if (gErr || !guest) throw new Error("guest_not_found");
-      if (!guest.phone) throw new Error("guest_no_phone");
+      if (!guest.phone)   throw new Error("guest_no_phone");
 
-      // Template send (approved WA template) OR free-text (24h window)
-      const useTemplate = Boolean(waTemplateName);
-      const rendered = useTemplate
-        ? `[template:${waTemplateName}]`
-        : interpolate(messageTemplate!, {
-            guest_name:   guest.name,
-            room:         guest.room         ?? "",
-            room_type:    guest.room_type    ?? "",
-            phone:        guest.phone        ?? "",
-            arrival_date: guest.arrival_date ?? "",
-          });
+      const vars = templateVariables ?? [];
 
       let status = "simulated";
       let sendError: string | null = null;
       try {
         if (!sim) {
-          if (useTemplate) {
-            await sendViaTemplate(guest.phone as string, waTemplateName!);
-          } else {
-            await sendViaMeta(guest.phone as string, rendered);
-          }
+          await sendViaTemplate(guest.phone as string, waTemplateName, vars);
           status = "sent";
         }
       } catch (e) {
@@ -233,15 +220,14 @@ serve(async (req: Request) => {
       }
 
       await supabase.from("notification_log").insert({
-        guest_id: guestId,
-        recipient: guest.phone,
+        guest_id:     guestId,
+        recipient:    guest.phone,
         trigger_type: "broadcast",
-        channel: "whatsapp",
+        channel:      "whatsapp",
         status,
         payload: {
-          body: rendered,
-          template: waTemplateName ?? messageTemplate,
-          mode: useTemplate ? "wa_template" : "free_text",
+          template:  waTemplateName,
+          variables: vars,
           ...(sendError ? { error: sendError } : {}),
         },
       });
@@ -251,7 +237,6 @@ serve(async (req: Request) => {
           ok: status !== "failed",
           simulation: sim,
           status,
-          body: rendered,
           ...(sendError ? { error: sendError } : {}),
         }),
         { headers: { ...CORS, "Content-Type": "application/json" } }
@@ -306,7 +291,7 @@ serve(async (req: Request) => {
     // BRANCH D: Pipeline triggers (idempotent via notification_log)
     // ─────────────────────────────────────────────────────────────────────────
     if (!guestId) throw new Error("guestId is required for guest triggers");
-    if (!(trigger in T)) throw new Error("unknown trigger: " + trigger);
+    if (!(trigger in PIPELINE_TEMPLATE)) throw new Error("unknown trigger: " + trigger);
 
     // Idempotency: skip if already sent for this guest+trigger
     const { data: existing } = await supabase
@@ -323,10 +308,14 @@ serve(async (req: Request) => {
       .from("guests").select("*").eq("id", guestId).single();
     if (gErr || !guest) throw new Error("guest_not_found");
 
-    const msg = T[trigger](guest);
+    const tmplName = PIPELINE_TEMPLATE[trigger];
+    const tmplVars = PIPELINE_VARS[trigger]?.(guest) ?? [];
     let status = "simulated";
     try {
-      if (!sim) { await sendViaMeta(guest.phone as string, msg); status = "sent"; }
+      if (!sim) {
+        await sendViaTemplate(guest.phone as string, tmplName, tmplVars);
+        status = "sent";
+      }
     } catch (e) {
       console.error("[whatsapp] pipeline send failed:", (e as Error).message);
       status = "failed";
@@ -334,7 +323,8 @@ serve(async (req: Request) => {
 
     await supabase.from("notification_log").insert({
       guest_id: guestId, recipient: guest.phone, trigger_type: trigger,
-      channel: "whatsapp", status, payload: { body: msg },
+      channel: "whatsapp", status,
+      payload: { template: tmplName, variables: tmplVars },
     });
 
     // Atomically stamp the pipeline flag — this is the SOLE writer of these flags.
@@ -346,7 +336,7 @@ serve(async (req: Request) => {
     }
 
     return new Response(
-      JSON.stringify({ ok: true, simulation: sim, status, body: msg }),
+      JSON.stringify({ ok: true, simulation: sim, status, template: tmplName }),
       { headers: { ...CORS, "Content-Type": "application/json" } }
     );
 
