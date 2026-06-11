@@ -4,7 +4,7 @@
 // Real-time updates via Supabase Realtime
 
 import React, { useEffect, useState, useRef, useCallback } from "react";
-import { supabase } from "../supabaseClient";
+import { supabase, isSupabaseConfigured } from "../supabaseClient";
 
 const POLL_MS = 8000; // fallback polling interval
 
@@ -187,6 +187,275 @@ function Bubble({ msg }) {
   );
 }
 
+// ── New Conversation Modal ────────────────────────────────────────────────────
+function NewChatModal({ onClose, onSent }) {
+  const [guestSearch,   setGuestSearch]   = useState("");
+  const [guestResults,  setGuestResults]  = useState([]);
+  const [selectedGuest, setSelectedGuest] = useState(null);
+  const [waTemplates,   setWaTemplates]   = useState([]);
+  const [loadingTmpls,  setLoadingTmpls]  = useState(false);
+  const [selectedTmpl,  setSelectedTmpl]  = useState(null);
+  const [varValues,     setVarValues]     = useState([]);
+  const [sending,       setSending]       = useState(false);
+  const [err,           setErr]           = useState(null);
+
+  // Fetch WA templates on mount
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase) return;
+    setLoadingTmpls(true);
+    supabase.functions.invoke("get-wa-templates")
+      .then(({ data }) => { setWaTemplates(data?.templates ?? []); })
+      .finally(() => setLoadingTmpls(false));
+  }, []);
+
+  // Search guests by name or phone
+  useEffect(() => {
+    if (!guestSearch.trim() || !supabase) { setGuestResults([]); return; }
+    const q = guestSearch.trim();
+    supabase
+      .from("guests")
+      .select("id, name, phone, room, arrival_date")
+      .or(`name.ilike.%${q}%,phone.ilike.%${q}%`)
+      .limit(8)
+      .then(({ data }) => setGuestResults(data ?? []));
+  }, [guestSearch]);
+
+  function selectTemplate(name) {
+    const tmpl = waTemplates.find((t) => t.name === name) ?? null;
+    setSelectedTmpl(tmpl);
+    setVarValues(tmpl ? Array(tmpl.varCount).fill("") : []);
+  }
+
+  async function handleSend() {
+    if (!selectedGuest)  return setErr("נא לבחור אורח");
+    if (!selectedGuest.phone) return setErr("לאורח זה אין מספר טלפון");
+    if (!selectedTmpl)   return setErr("נא לבחור תבנית");
+    if (selectedTmpl.varCount > 0 && varValues.some((v) => !v.trim()))
+      return setErr("נא למלא את כל שדות המשתנים");
+
+    setSending(true);
+    setErr(null);
+    try {
+      const { data, error } = await supabase.functions.invoke("whatsapp-send", {
+        body: {
+          trigger:           "broadcast",
+          guestId:           selectedGuest.id,
+          waTemplateName:    selectedTmpl.name,
+          templateVariables: varValues,
+        },
+      });
+      if (error || !data?.ok) throw new Error(data?.error ?? error?.message ?? "שגיאה בשליחה");
+
+      // Insert into inbox so the thread appears immediately
+      await supabase.from("whatsapp_conversations").insert({
+        phone:         selectedGuest.phone,
+        direction:     "outbound",
+        message:       `[תבנית: ${selectedTmpl.name}]`,
+        wa_message_id: null,
+      });
+
+      onSent(selectedGuest.phone, data.simulation);
+    } catch (e) {
+      setErr(e?.message ?? "שגיאה");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  const VAR_LABELS = ["שם אורח", "מספר חדר", "תאריך הגעה", "סוג חדר"];
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 9999,
+      background: "rgba(0,0,0,0.45)",
+      display: "flex", alignItems: "center", justifyContent: "center",
+    }} onClick={onClose}>
+      <div style={{
+        background: "white", borderRadius: 16, width: 480, maxWidth: "95vw",
+        maxHeight: "90vh", overflowY: "auto",
+        boxShadow: "0 24px 64px rgba(0,0,0,0.3)",
+        direction: "rtl",
+      }} onClick={(e) => e.stopPropagation()}>
+
+        {/* Header */}
+        <div style={{
+          background: "#075E54", color: "white",
+          padding: "16px 20px", borderRadius: "16px 16px 0 0",
+          display: "flex", justifyContent: "space-between", alignItems: "center",
+        }}>
+          <span style={{ fontWeight: 700, fontSize: 16 }}>➕ שיחה חדשה</span>
+          <button onClick={onClose} style={{
+            background: "none", border: "none", color: "white",
+            fontSize: 20, cursor: "pointer", lineHeight: 1,
+          }}>✕</button>
+        </div>
+
+        <div style={{ padding: "20px", display: "flex", flexDirection: "column", gap: 18 }}>
+
+          {/* Guest search */}
+          <div>
+            <label style={{ display: "block", fontWeight: 700, fontSize: 13, marginBottom: 6, color: "#333" }}>
+              בחר אורח מהמערכת
+            </label>
+            {selectedGuest ? (
+              <div style={{
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+                padding: "10px 14px", borderRadius: 10,
+                background: "#E8F5EF", border: "1px solid #25D366",
+              }}>
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: 14 }}>{selectedGuest.name}</div>
+                  <div style={{ fontSize: 12, color: "#666", direction: "ltr" }}>{selectedGuest.phone}</div>
+                </div>
+                <button onClick={() => { setSelectedGuest(null); setGuestSearch(""); }}
+                  style={{ background: "none", border: "none", cursor: "pointer", color: "#888", fontSize: 16 }}>
+                  ✕
+                </button>
+              </div>
+            ) : (
+              <div style={{ position: "relative" }}>
+                <input
+                  type="text"
+                  value={guestSearch}
+                  onChange={(e) => setGuestSearch(e.target.value)}
+                  placeholder="חפש לפי שם או טלפון..."
+                  autoFocus
+                  style={{
+                    width: "100%", boxSizing: "border-box",
+                    padding: "10px 14px", borderRadius: 10, fontSize: 14,
+                    border: "1px solid #ddd", outline: "none", direction: "rtl",
+                    fontFamily: "inherit",
+                  }}
+                />
+                {guestResults.length > 0 && (
+                  <div style={{
+                    position: "absolute", top: "100%", right: 0, left: 0, zIndex: 10,
+                    background: "white", border: "1px solid #ddd", borderRadius: "0 0 10px 10px",
+                    boxShadow: "0 4px 16px rgba(0,0,0,0.12)", maxHeight: 200, overflowY: "auto",
+                  }}>
+                    {guestResults.map((g) => (
+                      <div key={g.id} onClick={() => { setSelectedGuest(g); setGuestSearch(""); setGuestResults([]); }}
+                        style={{
+                          padding: "10px 14px", cursor: "pointer",
+                          borderBottom: "1px solid #f5f5f5", fontSize: 13,
+                        }}
+                        onMouseEnter={(e) => e.currentTarget.style.background = "#f5f5f5"}
+                        onMouseLeave={(e) => e.currentTarget.style.background = "white"}
+                      >
+                        <span style={{ fontWeight: 600 }}>{g.name}</span>
+                        <span style={{ color: "#888", marginRight: 8, direction: "ltr", fontSize: 12 }}>
+                          {g.phone ?? "ללא טלפון"}
+                        </span>
+                        {g.arrival_date && (
+                          <span style={{ color: "#aaa", fontSize: 11, marginRight: 6 }}>
+                            {g.arrival_date}
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Template selector */}
+          <div>
+            <label style={{ display: "block", fontWeight: 700, fontSize: 13, marginBottom: 6, color: "#333" }}>
+              תבנית WhatsApp
+            </label>
+            {loadingTmpls ? (
+              <div style={{ fontSize: 12, color: "#888" }}>⏳ טוען תבניות...</div>
+            ) : (
+              <select
+                value={selectedTmpl?.name ?? ""}
+                onChange={(e) => selectTemplate(e.target.value)}
+                style={{
+                  width: "100%", padding: "10px 14px", borderRadius: 10, fontSize: 14,
+                  border: "1px solid #ddd", fontFamily: "inherit", background: "white",
+                }}
+              >
+                <option value="">— בחר תבנית —</option>
+                {waTemplates.map((t) => (
+                  <option key={t.name} value={t.name}>{t.name}</option>
+                ))}
+              </select>
+            )}
+          </div>
+
+          {/* Template body preview */}
+          {selectedTmpl?.bodyText && (
+            <div style={{
+              background: "#f9f9f9", border: "1px solid #eee", borderRadius: 10,
+              padding: "10px 14px", fontSize: 12, color: "#555",
+              direction: "ltr", textAlign: "left", whiteSpace: "pre-wrap", lineHeight: 1.6,
+              maxHeight: 100, overflowY: "auto",
+            }}>
+              {selectedTmpl.bodyText}
+            </div>
+          )}
+
+          {/* Variable inputs */}
+          {selectedTmpl && selectedTmpl.varCount > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <label style={{ fontWeight: 700, fontSize: 13, color: "#333" }}>ערכי משתנים:</label>
+              {varValues.map((val, idx) => (
+                <div key={idx} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{
+                    background: "#075E54", color: "white", borderRadius: 5,
+                    padding: "2px 8px", fontSize: 11, fontWeight: 700,
+                    fontFamily: "monospace", flexShrink: 0,
+                  }}>
+                    {`{{${idx + 1}}}`}
+                  </span>
+                  <input
+                    type="text"
+                    value={val}
+                    onChange={(e) => {
+                      const next = [...varValues];
+                      next[idx] = e.target.value;
+                      setVarValues(next);
+                    }}
+                    placeholder={VAR_LABELS[idx] ?? `משתנה ${idx + 1}`}
+                    style={{
+                      flex: 1, padding: "8px 12px", borderRadius: 8, fontSize: 13,
+                      border: "1px solid #ddd", outline: "none", fontFamily: "inherit",
+                    }}
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Error */}
+          {err && (
+            <div style={{
+              background: "#FFF0EE", border: "1px solid #C0392B",
+              borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#C0392B",
+            }}>
+              {err}
+            </div>
+          )}
+
+          {/* Send button */}
+          <button
+            onClick={handleSend}
+            disabled={sending || !selectedGuest || !selectedTmpl}
+            style={{
+              width: "100%", padding: "14px", borderRadius: 10, border: "none",
+              background: sending || !selectedGuest || !selectedTmpl ? "#ccc" : "#25D366",
+              color: "white", fontFamily: "inherit", fontSize: 15, fontWeight: 700,
+              cursor: sending || !selectedGuest || !selectedTmpl ? "not-allowed" : "pointer",
+            }}
+          >
+            {sending ? "⏳ שולח..." : "📤 שלח"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 export default function WhatsAppInbox() {
   const [contacts, setContacts]   = useState([]); // grouped by phone
@@ -195,6 +464,7 @@ export default function WhatsAppInbox() {
   const [sending, setSending]     = useState(false);
   const [reply, setReply]         = useState("");
   const [error, setError]         = useState(null);
+  const [showNewChat, setShowNewChat] = useState(false);
   // ── Bot active / human-handover toggle ───────────────────────────────────
   const [botActive, setBotActive]     = useState(true);
   const [togglingBot, setTogglingBot] = useState(false);
@@ -304,6 +574,12 @@ export default function WhatsAppInbox() {
   const activeContact = contacts.find((c) => c.phone === active);
   const thread = activeContact?.messages ?? [];
 
+  // ── After new chat sent: refresh + open the thread ───────────────────────
+  function handleNewChatSent(phone, simulation) {
+    setShowNewChat(false);
+    fetchAll().then(() => setActive(phone));
+  }
+
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div style={{
@@ -316,6 +592,12 @@ export default function WhatsAppInbox() {
       overflow: "hidden",
       boxShadow: "0 2px 16px rgba(0,0,0,0.1)",
     }}>
+      {showNewChat && (
+        <NewChatModal
+          onClose={() => setShowNewChat(false)}
+          onSent={handleNewChatSent}
+        />
+      )}
 
       {/* ── Contact list (right panel) ───────────────────────────────────── */}
       <div style={{
@@ -328,19 +610,37 @@ export default function WhatsAppInbox() {
       }}>
         {/* Header */}
         <div style={{
-          padding: "16px 20px",
+          padding: "12px 16px",
           background: "#075E54",
           color: "white",
-          fontSize: 18,
+          fontSize: 16,
           fontWeight: 700,
           display: "flex",
           alignItems: "center",
-          gap: 10,
+          gap: 8,
         }}>
           <span>💬</span>
-          <span>DREAM BOT — שיחות</span>
-          <div style={{ marginRight: "auto", display: "flex", alignItems: "center", gap: 8 }}>
-            {loading && <span style={{ fontSize: 12, opacity: 0.7 }}>טוען...</span>}
+          <span style={{ fontSize: 15 }}>DREAM BOT — שיחות</span>
+          <div style={{ marginRight: "auto", display: "flex", alignItems: "center", gap: 6 }}>
+            {loading && <span style={{ fontSize: 11, opacity: 0.7 }}>טוען...</span>}
+            <button
+              onClick={() => setShowNewChat(true)}
+              title="פתח שיחה חדשה"
+              style={{
+                background: "rgba(255,255,255,0.15)",
+                color: "white",
+                border: "1px solid rgba(255,255,255,0.35)",
+                borderRadius: 20,
+                padding: "4px 10px",
+                fontSize: 11,
+                fontWeight: 700,
+                cursor: "pointer",
+                fontFamily: "inherit",
+                whiteSpace: "nowrap",
+              }}
+            >
+              ➕ חדש
+            </button>
             <button
               onClick={toggleBot}
               disabled={togglingBot}
@@ -350,7 +650,7 @@ export default function WhatsAppInbox() {
                 color: "white",
                 border: `1px solid ${botActive ? "rgba(255,255,255,0.35)" : "rgba(239,68,68,0.6)"}`,
                 borderRadius: 20,
-                padding: "4px 12px",
+                padding: "4px 10px",
                 fontSize: 11,
                 fontWeight: 700,
                 cursor: togglingBot ? "not-allowed" : "pointer",
@@ -359,7 +659,7 @@ export default function WhatsAppInbox() {
                 transition: "all 0.2s",
               }}
             >
-              {togglingBot ? "⏳" : botActive ? "🟢 רובוט מופעל" : "🔴 מענה אנושי"}
+              {togglingBot ? "⏳" : botActive ? "🟢 רובוט" : "🔴 אנושי"}
             </button>
           </div>
         </div>
