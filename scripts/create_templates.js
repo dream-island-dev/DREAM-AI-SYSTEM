@@ -228,7 +228,7 @@ const TEMPLATES = [
           "דרים איילנד מזמינה אתכם, {{1}}, להירשם לסדנאות המיוחדות שלנו! " +
           "מגוון סדנאות בבישול, יין, ספא ועוד. להרשמה: {{2}} — מחכים לכם",
         example: {
-          body_text: [["ישראל ישראלי", "https://dream-island.co.il/workshops"]],
+          body_text: [["ישראל ישראלי", "https://go.oncehub.com/DreamIsland"]],
         },
       },
     ],
