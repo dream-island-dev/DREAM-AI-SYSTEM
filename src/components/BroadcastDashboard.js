@@ -3,6 +3,21 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 
+const PHONE_ID = process.env.REACT_APP_PHONE_NUMBER_ID;
+const WA_TOKEN = process.env.REACT_APP_WHATSAPP_TOKEN;
+const GRAPH = `https://graph.facebook.com/v19.0`;
+
+// ── Meta send helper ──────────────────────────────────────────────────────────
+async function sendDirect(to, payloadBody) {
+  const res = await fetch(`${GRAPH}/${PHONE_ID}/messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${WA_TOKEN}` },
+    body: JSON.stringify({ messaging_product: "whatsapp", to, ...payloadBody }),
+  });
+  const json = await res.json();
+  if (res.ok && json.messages?.[0]?.id) return { ok: true, id: json.messages[0].id };
+  return { ok: false, error: json.error?.message ?? "שגיאה לא ידועה" };
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function normalizePhone(raw) {
@@ -217,29 +232,19 @@ export default function BroadcastDashboard() {
       let result;
       try {
         if (mode === "template") {
-          const vars   = getBodyVars(selectedTpl);
+          const vars = getBodyVars(selectedTpl);
           const params = vars.map((n) => n === 1 ? rec.guest_name : (varValues[n] ?? "").trim());
-          const tplPayload = { name: selectedTpl.name, language: selectedTpl.language ?? "he", params };
-          if (isSupabaseConfigured) {
-            const { data, error } = await supabase.functions.invoke("whatsapp-send", {
-              body: { to: phone, template: tplPayload },
-            });
-            result = error ? { ok: false, error: error.message }
-              : data?.ok ? { ok: true } : { ok: false, error: data?.error ?? "שגיאה" };
-          } else {
-            result = { ok: false, error: "נדרש חיבור Supabase לשליחת הודעות" };
-          }
+          result = await sendDirect(phone, {
+            type: "template",
+            template: {
+              name: selectedTpl.name,
+              language: { code: selectedTpl.language ?? "he" },
+              ...(params.length ? { components: [{ type: "body", parameters: params.map((t) => ({ type: "text", text: t })) }] } : {}),
+            },
+          });
         } else {
           const body = freeText.replace(/\{guest_name\}/g, rec.guest_name);
-          if (isSupabaseConfigured) {
-            const { data, error } = await supabase.functions.invoke("whatsapp-send", {
-              body: { to: phone, message: body },
-            });
-            result = error ? { ok: false, error: error.message }
-              : data?.ok ? { ok: true } : { ok: false, error: data?.error ?? "שגיאה" };
-          } else {
-            result = { ok: false, error: "נדרש חיבור Supabase לשליחת הודעות" };
-          }
+          result = await sendDirect(phone, { type: "text", text: { body } });
         }
       } catch (e) { result = { ok: false, error: e.message }; }
       results.push({ name: rec.guest_name, phone, ...result });
@@ -260,21 +265,19 @@ export default function BroadcastDashboard() {
     if (!selectedTpl || sendingTo) return;
     const phone = normalizePhone(guest.phone);
     setSendingTo(phone);
-    let result;
     try {
-      if (isSupabaseConfigured) {
-        const vars   = getBodyVars(selectedTpl);
-        const params = vars.map((n) => n === 1 ? guest.guest_name : (varValues[n] ?? "").trim());
-        const { data, error } = await supabase.functions.invoke("whatsapp-send", {
-          body: { to: phone, template: { name: selectedTpl.name, language: selectedTpl.language ?? "he", params } },
-        });
-        result = error ? { ok: false, error: error.message }
-          : data?.ok ? { ok: true } : { ok: false, error: data?.error ?? "שגיאה" };
-      } else {
-        result = { ok: false, error: "נדרש חיבור Supabase לשליחת הודעות" };
-      }
-    } catch (e) { result = { ok: false, error: e.message }; }
-    showToast(result.ok ? `✅ נשלח ל-${guest.guest_name}` : `❌ ${result.error}`);
+      const vars = getBodyVars(selectedTpl);
+      const params = vars.map((n) => n === 1 ? guest.guest_name : (varValues[n] ?? "").trim());
+      const result = await sendDirect(phone, {
+        type: "template",
+        template: {
+          name: selectedTpl.name,
+          language: { code: selectedTpl.language ?? "he" },
+          ...(params.length ? { components: [{ type: "body", parameters: params.map((t) => ({ type: "text", text: t })) }] } : {}),
+        },
+      });
+      showToast(result.ok ? `✅ נשלח ל-${guest.guest_name}` : `❌ ${result.error}`);
+    } catch (e) { showToast(`❌ ${e.message}`); }
     setSendingTo(null);
   };
 
