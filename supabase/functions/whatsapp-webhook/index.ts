@@ -906,32 +906,58 @@ serve(async (req: Request) => {
             console.error("[webhook] flagGuestAlert error:", e.message)
           );
 
-      } else if (intent === "upsell") {
-        // Pre-written warm upsell response
-        reply = buildUpsellReply(guestName);
-
-      } else if (intent === "faq") {
-        // Load last 5 messages for conversation context
-        const { data: history } = await supabase
+      } else if (intent === "upsell" || intent === "faq") {
+        // Load last 10 real conversation messages — filter out system markers
+        // ([כפתור:...], [תבנית:...], [תפריט ספא], etc.) so the AI only sees
+        // human-readable content and isn't confused by metadata strings.
+        const { data: rawHistory } = await supabase
           .from("whatsapp_conversations")
           .select("direction, message")
           .eq("phone", phone)
           .order("created_at", { ascending: false })
-          .limit(5);
+          .limit(20);
 
         const orderedHistory = (
-          history as Array<{ direction: string; message: string }> | null ?? []
-        ).reverse();
+          rawHistory as Array<{ direction: string; message: string }> | null ?? []
+        )
+          .filter((h) => !h.message.startsWith("["))   // strip system markers
+          .slice(0, 10)                                  // keep last 10 real turns
+          .reverse();
+
+        // Build guest-specific context suffix for richer personalisation
+        const guestCtx = guest
+          ? [
+              (guest as Record<string,unknown>).arrival_date
+                ? `תאריך הגעה: ${(guest as Record<string,unknown>).arrival_date}`
+                : "",
+              (guest as Record<string,unknown>).room
+                ? `חדר: ${(guest as Record<string,unknown>).room}`
+                : "",
+              (guest as Record<string,unknown>).room_type === "suite"
+                ? "סוג: סוויטה"
+                : "",
+            ].filter(Boolean).join(" | ")
+          : "";
+
+        // For upsell intent, prime the AI with an explicit upgrade hint so it
+        // offers a smooth, contextual response rather than a generic one.
+        const upsellPrefix = intent === "upsell"
+          ? "\n\n[הנחיה פנימית: האורח מתעניין בהארכת שהות / שדרוג / late check-out. הצע בחמימות ובגמישות.]"
+          : "";
+
+        const enrichedPrompt = finalSystemPrompt
+          + (guestCtx ? `\n\nפרטי האורח הנוכחי: ${guestCtx}` : "")
+          + upsellPrefix;
 
         try {
-          reply = await askGemini(text, guestName, orderedHistory, finalSystemPrompt);
+          reply = await askGemini(text, guestName, orderedHistory, enrichedPrompt);
         } catch (e) {
           console.error("[webhook] Gemini failed → trying Claude:", (e as Error).message);
           try {
-            reply = await callClaude(text, guestName, orderedHistory, finalSystemPrompt);
+            reply = await callClaude(text, guestName, orderedHistory, enrichedPrompt);
           } catch (e2) {
             console.error("[webhook] Claude also failed:", (e2 as Error).message);
-            reply = FALLBACK_REPLY;
+            reply = intent === "upsell" ? buildUpsellReply(guestName) : FALLBACK_REPLY;
           }
         }
       }
