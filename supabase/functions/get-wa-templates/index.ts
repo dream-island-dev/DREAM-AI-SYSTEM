@@ -44,13 +44,16 @@ serve(async (req: Request) => {
 
   try {
     const token  = Deno.env.get("META_WHATSAPP_TOKEN") ?? Deno.env.get("WHATSAPP_TOKEN");
-    const wabaId = Deno.env.get("META_BUSINESS_ACCOUNT_ID");
+    // WABA ID — try META_BUSINESS_ACCOUNT_ID first, fall back to META_PHONE_NUMBER_ID
+    const wabaId = Deno.env.get("META_BUSINESS_ACCOUNT_ID")
+                ?? Deno.env.get("META_PHONE_NUMBER_ID")
+                ?? Deno.env.get("WHATSAPP_PHONE_NUMBER_ID");
 
     // Startup diagnostics — visible in Supabase → Edge Functions → Logs
-    console.log("[get-wa-templates] token present:", !!token, "| wabaId:", wabaId ?? "MISSING");
+    console.log("[get-wa-templates] token:", !!token, "| wabaId:", wabaId ?? "MISSING");
 
-    if (!token)  throw new Error("missing_secret: META_WHATSAPP_TOKEN");
-    if (!wabaId) throw new Error("missing_secret: META_BUSINESS_ACCOUNT_ID");
+    if (!token)  throw new Error("missing_secret: META_WHATSAPP_TOKEN not configured");
+    if (!wabaId) throw new Error("missing_secret: META_BUSINESS_ACCOUNT_ID not configured");
 
     const url_obj = new URL(req.url);
     let fetchAll = url_obj.searchParams.get("all") === "true";
@@ -106,9 +109,12 @@ serve(async (req: Request) => {
       { headers: { ...CORS, "Content-Type": "application/json" } }
     );
   } catch (e) {
+    const msg = (e as Error).message;
+    console.error("[get-wa-templates] error:", msg);
+    // Return 200 so the frontend can read data?.error instead of getting a generic "non-2xx" message
     return new Response(
-      JSON.stringify({ ok: false, error: (e as Error).message }),
-      { status: 400, headers: { ...CORS, "Content-Type": "application/json" } }
+      JSON.stringify({ ok: false, error: msg }),
+      { status: 200, headers: { ...CORS, "Content-Type": "application/json" } }
     );
   }
 });
