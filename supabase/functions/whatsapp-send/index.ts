@@ -235,6 +235,17 @@ serve(async (req: Request) => {
       if (gErr || !guest) throw new Error("guest_not_found");
       if (!guest.phone)   throw new Error("guest_no_phone");
 
+      // Anti-loop guard: arrival confirmation is a one-time pipeline step.
+      // If the guest already confirmed, skip silently — prevents re-sending when
+      // a manager clicks "שלח לכולם" again after a guest tapped "כן, מגיעים!".
+      if (waTemplateName === "dream_arrival_confirmation" && guest.arrival_confirmed === true) {
+        console.info(`[whatsapp] broadcast skip — ${guest.name} already confirmed arrival`);
+        return new Response(
+          JSON.stringify({ ok: true, skipped: true, reason: "already_confirmed" }),
+          { headers: { ...CORS, "Content-Type": "application/json" } },
+        );
+      }
+
       const vars = templateVariables ?? [];
 
       let status = "simulated";

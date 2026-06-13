@@ -100,7 +100,7 @@ export default function BroadcastDashboard({ user }) {
     try {
       const { data: guests, error } = await supabase
         .from("guests")
-        .select("id, name, phone, room, room_type, arrival_date, status, manager_id")
+        .select("id, name, phone, room, room_type, arrival_date, status, manager_id, arrival_confirmed")
         .order("arrival_date", { ascending: true });
 
       if (error) throw new Error(error.message);
@@ -1307,7 +1307,14 @@ export default function BroadcastDashboard({ user }) {
               <tbody>
                 {filteredGuests.slice(0, 50).map((g) => (
                   <tr key={g.id}>
-                    <td style={{ fontWeight: 700 }}>{g.name}</td>
+                    <td style={{ fontWeight: 700 }}>
+                      {g.name}
+                      {g.arrival_confirmed && selectedTemplate?.name === "dream_arrival_confirmation" && (
+                        <span style={{ fontSize: 10, marginRight: 6, background: "#E8F5EF", color: "#1A7A4A", padding: "2px 6px", borderRadius: 8, fontWeight: 700 }}>
+                          ✓ אישר — יושמט
+                        </span>
+                      )}
+                    </td>
                     <td style={{ direction: "ltr", fontSize: 13 }}>
                       {g.phone
                         ? <a href={`tel:${g.phone}`} style={{ color: "#2563EB", textDecoration: "none" }}>{g.phone}</a>
