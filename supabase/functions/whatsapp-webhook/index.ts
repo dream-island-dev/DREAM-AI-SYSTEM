@@ -36,7 +36,8 @@ const CORS = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-const GEMINI_MODEL = "gemini-2.0-flash";
+// Allow overriding via Supabase Secret (e.g. "gemini-1.5-flash" if 2.0 is deprecated)
+const GEMINI_MODEL = Deno.env.get("GEMINI_MODEL") ?? "gemini-2.0-flash";
 
 // ══════════════════════════════════════════════════════════════════════════════
 // §1  DYNAMIC BOT CONFIG — loaded from bot_config table, cached 5 min
@@ -348,6 +349,7 @@ async function askGemini(
     `\nהאורח כתב כעת: "${userMessage}"\n\n` +
     `תשובתך (עברית, 2–4 משפטים, נימה פרמיום):`;
 
+  console.log(`[webhook] calling Gemini model="${GEMINI_MODEL}" msgLen=${userMessage.length}`);
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
     {
@@ -366,7 +368,9 @@ async function askGemini(
   );
 
   if (!res.ok) {
-    throw new Error(`gemini_${res.status}: ${(await res.text()).slice(0, 200)}`);
+    const errBody = await res.text();
+    console.error(`[webhook] Gemini ${res.status} model="${GEMINI_MODEL}":`, errBody.slice(0, 400));
+    throw new Error(`gemini_${res.status}: ${errBody.slice(0, 200)}`);
   }
 
   const data = await res.json();
