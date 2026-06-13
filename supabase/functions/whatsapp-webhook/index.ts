@@ -480,6 +480,16 @@ async function sendReply(to: string, body: string): Promise<string> {
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
+  // ── POST: log immediately so Supabase logs confirm Meta is calling us ────────
+  if (req.method === "POST") {
+    console.log("[webhook] 📨 POST received —", new Date().toISOString(),
+      "| sim:", Deno.env.get("WHATSAPP_SIMULATION") ?? "false",
+      "| token?", !!(Deno.env.get("META_WHATSAPP_TOKEN") ?? Deno.env.get("WHATSAPP_TOKEN")),
+      "| phoneId?", !!Deno.env.get("META_PHONE_NUMBER_ID"),
+      "| gemini?", !!Deno.env.get("GEMINI_API_KEY"),
+    );
+  }
+
   // ── GET: Meta webhook verification handshake ────────────────────────────────
   if (req.method === "GET") {
     const url       = new URL(req.url);
@@ -513,6 +523,8 @@ serve(async (req: Request) => {
   const changes = (entry?.changes   as Array<Record<string, unknown>>)?.[0];
   const value   = changes?.value    as Record<string, unknown> | undefined;
   const msgArr  = (value?.messages  as Array<Record<string, unknown>>) ?? [];
+
+  console.log(`[webhook] payload parsed — messages:${msgArr.length} statuses:${((value?.statuses as unknown[]) ?? []).length}`);
 
   // ── Fire-and-forget — return 200 immediately, process in background ─────────
   const processAsync = async () => {
