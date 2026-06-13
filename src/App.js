@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { supabase } from "./supabaseClient";
 import { initGoogleSignIn } from "./googleAuth";
 import AgentQuestionnaire from "./components/AgentQuestionnaire";
 import AgentChat from "./components/AgentChat";
@@ -618,6 +619,7 @@ function LoginPage({ onLogin }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
   // אתחול כפתור Google Sign-In
   useEffect(() => {
@@ -642,12 +644,30 @@ function LoginPage({ onLogin }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleLogin = () => {
-    const user = MOCK_USERS.find(
-      (u) => u.email === email && u.password === password
-    );
-    if (user) onLogin(user);
-    else setError("אימייל או סיסמה שגויים");
+  const handleLogin = async () => {
+    setError("");
+    setLoading(true);
+    const { data, error: authError } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+    setLoading(false);
+    if (authError) {
+      setError("אימייל או סיסמה שגויים");
+      return;
+    }
+    const u = data.user;
+    const meta = u.user_metadata || {};
+    const name = meta.name || u.email;
+    const initials = name.split(" ").map((n) => n[0]).join("").slice(0, 2).toUpperCase();
+    onLogin({
+      id: u.id,
+      name,
+      role: meta.role || "manager",
+      email: u.email,
+      avatar: meta.avatar || initials,
+      department: meta.department || "",
+    });
   };
 
   return (
@@ -662,7 +682,7 @@ function LoginPage({ onLogin }) {
 
         {/* התחברות עם Google */}
         <div className="gsi-wrap" id="gsi-button" />
-        <div className="login-or">או התחברות עם משתמש דמו</div>
+        <div className="login-or">או</div>
 
         <div className="login-field">
           <label>אימייל</label>
@@ -684,41 +704,10 @@ function LoginPage({ onLogin }) {
             onKeyDown={(e) => e.key === "Enter" && handleLogin()}
           />
         </div>
-        <button className="login-btn" onClick={handleLogin}>
-          כניסה למערכת
+        <button className="login-btn" onClick={handleLogin} disabled={loading}>
+          {loading ? "מתחבר..." : "כניסה למערכת"}
         </button>
         {error && <div className="login-error">{error}</div>}
-        <div
-          style={{
-            marginTop: 20,
-            padding: 14,
-            background: "rgba(255,255,255,0.06)",
-            borderRadius: 10,
-          }}
-        >
-          <div
-            style={{
-              color: "rgba(255,255,255,0.5)",
-              fontSize: 11,
-              marginBottom: 6,
-            }}
-          >
-            משתמשי דמו:
-          </div>
-          {MOCK_USERS.map((u) => (
-            <div
-              key={u.id}
-              style={{
-                color: "rgba(255,255,255,0.35)",
-                fontSize: 11,
-                lineHeight: 1.8,
-              }}
-            >
-              {u.email} / 1234 (
-              {u.role === "admin" ? "מנהל כללי" : "מנהל מחלקה"})
-            </div>
-          ))}
-        </div>
       </div>
     </div>
   );
