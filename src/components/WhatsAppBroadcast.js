@@ -190,20 +190,13 @@ export default function WhatsAppBroadcast() {
     if (!window.confirm(`למחוק את "${name}"?\nלא ניתן לשחזר את התבנית לאחר המחיקה.`)) return;
     setDeleting(true);
     try {
-      let result;
       if (isSupabaseConfigured) {
-        const { data, error } = await supabase.functions.invoke("whatsapp-send", {
-          body: { action: "delete_template", name },
-        });
-        result = error ? { ok: false, error: error.message } : data;
-      } else {
-        result = { ok: false, error: "נדרש חיבור Supabase לפעולה זו" };
-      }
-      if (result.ok) {
+        const { error } = await supabase.from("message_templates").delete().eq("name", name);
+        if (error) throw new Error(error.message);
         showToast(`✅ "${name}" נמחקה`);
         await fetchMetaTemplates();
       } else {
-        showToast(`❌ ${result.error}`);
+        showToast("❌ נדרש חיבור Supabase");
       }
     } catch (e) { showToast(`❌ ${e.message}`); }
     setDeleting(false);
@@ -216,34 +209,20 @@ export default function WhatsAppBroadcast() {
     if (!tplName || !editTpl.body.trim()) { showToast("❌ שם ותוכן נדרשים"); return; }
     setDeleting(true);
     try {
-      let delResult;
       if (isSupabaseConfigured) {
-        const { data, error } = await supabase.functions.invoke("whatsapp-send", {
-          body: { action: "delete_template", name: editTpl.originalName },
+        const { error: delErr } = await supabase.from("message_templates").delete().eq("name", editTpl.originalName);
+        if (delErr) throw new Error(delErr.message);
+
+        const { data, error: regErr } = await supabase.functions.invoke("submit-wa-template", {
+          body: { name: tplName, body: editTpl.body.trim(), category: editTpl.category },
         });
-        delResult = error ? { ok: false, error: error.message } : data;
-      } else {
-        delResult = { ok: false, error: "נדרש חיבור Supabase לפעולה זו" };
-      }
-      if (!delResult.ok) {
-        showToast(`❌ מחיקה נכשלה: ${delResult.error}`);
-        setDeleting(false); return;
-      }
-      let regResult;
-      if (isSupabaseConfigured) {
-        const { data, error } = await supabase.functions.invoke("whatsapp-send", {
-          body: { action: "register_template", name: tplName, bodyText: editTpl.body.trim(), category: editTpl.category },
-        });
-        regResult = error ? { ok: false, error: error.message } : data;
-      } else {
-        regResult = { ok: false, error: "נדרש חיבור Supabase לפעולה זו" };
-      }
-      if (regResult.ok) {
+        if (regErr || !data?.ok) throw new Error(regErr?.message ?? data?.error ?? "שגיאה");
+
         showToast(`✅ "${tplName}" נשלחה לאישור Meta מחדש`);
         setEditTpl(null);
         await fetchMetaTemplates();
       } else {
-        showToast(`❌ ${regResult.error}`);
+        showToast("❌ נדרש חיבור Supabase");
       }
     } catch (e) { showToast(`❌ ${e.message}`); }
     setDeleting(false);
@@ -264,31 +243,18 @@ export default function WhatsAppBroadcast() {
       try {
         if (mode === "template") {
           const allVars = getBodyVars(selectedTpl);
-          // {{1}} = rec.name always, {{2}}+ = manual values
           const params = allVars.map((n) => n === 1 ? rec.name : (varValues[n] ?? "").trim());
-          const tplPayload = { name: selectedTpl.name, language: selectedTpl.language ?? "he", params };
-          if (isSupabaseConfigured) {
-            const { data, error } = await supabase.functions.invoke("whatsapp-send", {
-              body: { to: rec.phone, template: tplPayload },
-            });
-            result = error ? { ok: false, error: error.message }
-              : data?.ok ? { ok: true, id: data.messages?.[0]?.id }
-              : { ok: false, error: data?.error ?? "שגיאה" };
-          } else {
-            result = { ok: false, error: "נדרש חיבור Supabase לשליחת הודעות" };
-          }
+          result = await sendDirect(rec.phone, {
+            type: "template",
+            template: {
+              name: selectedTpl.name,
+              language: { code: selectedTpl.language ?? "he" },
+              ...(params.length ? { components: [{ type: "body", parameters: params.map((t) => ({ type: "text", text: t })) }] } : {}),
+            },
+          });
         } else {
           const msgBody = message.replace(/\{guest_name\}/g, rec.name);
-          if (isSupabaseConfigured) {
-            const { data, error } = await supabase.functions.invoke("whatsapp-send", {
-              body: { to: rec.phone, message: msgBody },
-            });
-            result = error ? { ok: false, error: error.message }
-              : data?.ok ? { ok: true, id: data.messages?.[0]?.id }
-              : { ok: false, error: data?.error ?? "שגיאה" };
-          } else {
-            result = { ok: false, error: "נדרש חיבור Supabase לשליחת הודעות" };
-          }
+          result = await sendDirect(rec.phone, { type: "text", text: { body: msgBody } });
         }
       } catch (e) { result = { ok: false, error: e.message }; }
       results.push({ ...rec, ...result, ts });
