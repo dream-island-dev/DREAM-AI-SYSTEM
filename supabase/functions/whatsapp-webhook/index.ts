@@ -325,6 +325,35 @@ async function flagGuestAlert(
   );
 }
 
+// ── Gemini model auto-discovery (used only when all hardcoded models 404) ────
+let _discoveredModel: string | null = null;
+let _discoveredModelTime = 0;
+const DISCOVER_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+async function discoverGeminiModel(apiKey: string): Promise<string | null> {
+  const now = Date.now();
+  if (_discoveredModel && now - _discoveredModelTime < DISCOVER_TTL_MS) return _discoveredModel;
+  try {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}&pageSize=100`,
+      { signal: AbortSignal.timeout(8000) },
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    const candidates: string[] = ((data.models ?? []) as Array<{ name: string; supportedGenerationMethods?: string[] }>)
+      .filter(m => m.name.includes("flash") && m.supportedGenerationMethods?.includes("generateContent"))
+      .map(m => m.name.replace("models/", ""))
+      .sort((a, b) => b.localeCompare(a));
+    const chosen = candidates[0] ?? null;
+    if (chosen) { _discoveredModel = chosen; _discoveredModelTime = now; }
+    console.log(`[webhook] Gemini model discovery — candidates:${candidates.length} chosen:${chosen ?? "none"}`);
+    return chosen;
+  } catch (e) {
+    console.warn("[webhook] model discovery failed:", (e as Error).message);
+    return null;
+  }
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // §5  GEMINI — FAQ handler with conversation history context
 // ══════════════════════════════════════════════════════════════════════════════
@@ -387,6 +416,21 @@ async function askGemini(
     if (!text) throw new Error("gemini_empty_response");
     console.log(`[webhook] Gemini OK model="${model}"`);
     return text;
+  }
+
+  // All hardcoded models failed → query the API to find whatever is currently available
+  const discovered = await discoverGeminiModel(apiKey);
+  if (discovered && !GEMINI_MODELS.includes(discovered)) {
+    console.log(`[webhook] trying auto-discovered model="${discovered}"`);
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${discovered}:generateContent?key=${apiKey}`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body, signal: AbortSignal.timeout(15000) },
+    );
+    if (res.ok) {
+      const data = await res.json();
+      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
+      if (text) { console.log(`[webhook] Gemini OK (discovered) model="${discovered}"`); return text; }
+    }
   }
 
   throw new Error("gemini_all_models_unavailable");
