@@ -616,7 +616,7 @@ const css = `
 // ============================================================
 
 function LoginPage({ onLogin }) {
-  const [email, setEmail] = useState("");
+  const [emailOrUsername, setEmailOrUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -647,13 +647,16 @@ function LoginPage({ onLogin }) {
   const handleLogin = async () => {
     setError("");
     setLoading(true);
+    const loginEmail = emailOrUsername.includes("@")
+      ? emailOrUsername
+      : `${emailOrUsername}@dream.io`;
     const { data, error: authError } = await supabase.auth.signInWithPassword({
-      email,
+      email: loginEmail,
       password,
     });
     setLoading(false);
     if (authError) {
-      setError("אימייל או סיסמה שגויים");
+      setError("שם משתמש/אימייל או סיסמה שגויים");
       return;
     }
     const u = data.user;
@@ -685,12 +688,12 @@ function LoginPage({ onLogin }) {
         <div className="login-or">או</div>
 
         <div className="login-field">
-          <label>אימייל</label>
+          <label>שם משתמש או אימייל</label>
           <input
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="your@email.com"
+            type="text"
+            value={emailOrUsername}
+            onChange={(e) => setEmailOrUsername(e.target.value)}
+            placeholder="username (or full email)"
             onKeyDown={(e) => e.key === "Enter" && handleLogin()}
           />
         </div>
@@ -715,21 +718,21 @@ function LoginPage({ onLogin }) {
 
 function UserManagementPage({ currentUser }) {
   const [showModal, setShowModal] = useState(false);
-  const [form, setForm] = useState({ email: "", password: "", name: "", role: "manager", department: "" });
+  const [form, setForm] = useState({ username: "", password: "", name: "", role: "manager", department: "" });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [created, setCreated] = useState([]);
 
   const handleCreate = async () => {
-    if (!form.email || !form.password || !form.name) {
-      setError("אימייל, סיסמה ושם הם שדות חובה");
+    if (!form.username || !form.password || !form.name) {
+      setError("שם משתמש, סיסמה ושם הם שדות חובה");
       return;
     }
     setLoading(true);
     setError("");
     const { data, error: fnError } = await supabase.functions.invoke("create-user", {
       body: {
-        email: form.email,
+        email: `${form.username}@dream.io`,
         password: form.password,
         name: form.name,
         newRole: form.role,
@@ -743,7 +746,7 @@ function UserManagementPage({ currentUser }) {
     }
     setCreated((prev) => [...prev, { ...form, id: data.user.id }]);
     setShowModal(false);
-    setForm({ email: "", password: "", name: "", role: "manager", department: "" });
+    setForm({ username: "", password: "", name: "", role: "manager", department: "" });
   };
 
   return (
@@ -763,13 +766,13 @@ function UserManagementPage({ currentUser }) {
           <div className="card-body table-scroll">
             <table className="table">
               <thead>
-                <tr><th>שם</th><th>אימייל</th><th>תפקיד</th><th>מחלקה</th></tr>
+                <tr><th>שם</th><th>שם משתמש</th><th>תפקיד</th><th>מחלקה</th></tr>
               </thead>
               <tbody>
                 {created.map((u) => (
                   <tr key={u.id}>
                     <td style={{ fontWeight: 600 }}>{u.name}</td>
-                    <td style={{ direction: "ltr", textAlign: "right" }}>{u.email}</td>
+                    <td style={{ direction: "ltr", textAlign: "right" }}>{u.username}@dream.io</td>
                     <td>
                       <span className="badge badge-gold">
                         {u.role === "admin" ? "מנהל כללי" : "מנהל מחלקה"}
@@ -803,12 +806,12 @@ function UserManagementPage({ currentUser }) {
               />
             </div>
             <div className="form-field">
-              <label>אימייל</label>
+              <label>שם משתמש (באנגלית)</label>
               <input
-                type="email"
-                placeholder="user@dreamisland.com"
-                value={form.email}
-                onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+                type="text"
+                placeholder="username (no spaces)"
+                value={form.username}
+                onChange={(e) => setForm((f) => ({ ...f, username: e.target.value }))}
               />
             </div>
             <div className="form-field">
