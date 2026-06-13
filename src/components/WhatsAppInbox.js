@@ -187,25 +187,101 @@ function Bubble({ msg }) {
   );
 }
 
+// ── Quick marketing phrases ───────────────────────────────────────────────────
+const QUICK_PHRASES = [
+  { label: "ברוכים הבאים 🌴", text: "שלום {{שם}}! ברוכים הבאים ל-Dream Island. אנחנו שמחים לארח אתכם — אם יש משהו שנוכל לעשות כדי שהחופשה תהיה מושלמת, אנחנו כאן! 🏖️" },
+  { label: "חדר מוכן ✅", text: "שלום {{שם}}, חדרכם מוכן ומחכה לכם 🎉 ניתן להיכנס מ-15:00. צוות הקבלה שלנו ישמח לקבל אתכם!" },
+  { label: "צ׳ק-אאוט מחר ⏰", text: "שלום {{שם}}, תזכורת ידידותית — הצ׳ק-אאוט שלכם מחר בשעה 11:00. אם תרצו לאחר יציאה, נשמח לנסות לסדר. 😊" },
+  { label: "הצעת ספא 💆", text: "שלום {{שם}}, יש לנו מתנה קטנה בשבילכם — 20% הנחה על טיפולי הספא שלנו לאורח בית! מוזמנים לתאם: 📞" },
+  { label: "שאלון שביעות רצון ⭐", text: "שלום {{שם}}, תודה שבחרתם ב-Dream Island! נשמח לשמוע כיצד הייתה שהייתכם — דירוג קטן של 1–5 יסייע לנו להשתפר 🙏" },
+  { label: "הצעה מיוחדת 🎁", text: "שלום {{שם}}, כאורחים מיוחדים שלנו — יש לנו הצעה בלעדית רק בשבילכם! צרו קשר ונספר לכם 😍" },
+];
+
 // ── New Conversation Modal ────────────────────────────────────────────────────
 function NewChatModal({ onClose, onSent }) {
+  const [mode,          setMode]          = useState("free"); // "free" | "template"
   const [guestSearch,   setGuestSearch]   = useState("");
   const [guestResults,  setGuestResults]  = useState([]);
   const [selectedGuest, setSelectedGuest] = useState(null);
+
+  // Template mode
   const [waTemplates,   setWaTemplates]   = useState([]);
+  const [dbTemplates,   setDbTemplates]   = useState([]);
   const [loadingTmpls,  setLoadingTmpls]  = useState(false);
   const [selectedTmpl,  setSelectedTmpl]  = useState(null);
   const [varValues,     setVarValues]     = useState([]);
+
+  // Free-text mode
+  const [freeText,      setFreeText]      = useState("");
+
   const [sending,       setSending]       = useState(false);
   const [err,           setErr]           = useState(null);
+  const [hoveredPhrase, setHoveredPhrase] = useState(null);
+  const [hoveredTmpl,   setHoveredTmpl]   = useState(null);
 
-  // Fetch WA templates on mount
+  // Bulk mode
+  const [bulkFilter,    setBulkFilter]    = useState("checked_in"); // "all"|"checked_in"|"expected"|"suite"|"day_guest"|"checkout_today"
+  const [bulkGuests,    setBulkGuests]    = useState([]);
+  const [bulkText,      setBulkText]      = useState("");
+  const [bulkSending,   setBulkSending]   = useState(false);
+  const [bulkProgress,  setBulkProgress]  = useState(null); // { done, total }
+  const [bulkDone,      setBulkDone]      = useState(false);
+  const [showBulkList,  setShowBulkList]  = useState(false);
+
+  // Load guests for bulk mode whenever filter changes
+  useEffect(() => {
+    if (mode !== "bulk" || !supabase) return;
+    const today = new Date().toISOString().slice(0, 10);
+    let q = supabase.from("guests").select("id, name, phone, room, room_type, arrival_date, status").not("phone", "is", null);
+    if (bulkFilter === "checked_in")      q = q.eq("status", "checked_in");
+    else if (bulkFilter === "expected")   q = q.eq("status", "expected");
+    else if (bulkFilter === "suite")      q = q.eq("room_type", "suite");
+    else if (bulkFilter === "day_guest")  q = q.eq("room_type", "day_guest");
+    else if (bulkFilter === "checkout_today") q = q.eq("status", "checked_in").lte("departure_date", today);
+    q.limit(200).then(({ data }) => setBulkGuests((data ?? []).filter((g) => g.phone)));
+  }, [mode, bulkFilter]);
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  async function handleSendBulk() {
+    if (!bulkText.trim())        return setErr("נא לכתוב הודעה");
+    if (bulkGuests.length === 0) return setErr("אין נמענים בסינון הנוכחי");
+
+    setBulkSending(true); setErr(null); setBulkDone(false);
+    let done = 0;
+    for (const g of bulkGuests) {
+      setBulkProgress({ done, total: bulkGuests.length });
+      const personalised = bulkText.replace(/{{שם}}/g, g.name ?? "").replace(/\{\{שם\}\}/g, g.name ?? "");
+      try {
+        const { data, error } = await supabase.functions.invoke("whatsapp-send", {
+          body: { trigger: "inbox_reply", phone: g.phone, message: personalised },
+        });
+        if (!error && data?.ok) {
+          await supabase.from("whatsapp_conversations").insert({
+            phone: g.phone, direction: "outbound", message: personalised, wa_message_id: null,
+          });
+        }
+      } catch (_) { /* skip failed individual sends */ }
+      done++;
+      await sleep(650); // rate-limit: ~90 msgs/min
+    }
+    setBulkProgress({ done, total: bulkGuests.length });
+    setBulkSending(false);
+    setBulkDone(true);
+  }
+
+  // Fetch WA templates + DB templates on mount
   useEffect(() => {
     if (!isSupabaseConfigured || !supabase) return;
     setLoadingTmpls(true);
-    supabase.functions.invoke("get-wa-templates")
-      .then(({ data }) => { setWaTemplates(data?.templates ?? []); })
-      .finally(() => setLoadingTmpls(false));
+
+    Promise.all([
+      supabase.functions.invoke("get-wa-templates").then(({ data }) => data?.templates ?? []),
+      supabase.from("message_templates").select("*").order("sort_order").then(({ data }) => data ?? []),
+    ]).then(([wa, db]) => {
+      setWaTemplates(wa);
+      setDbTemplates(db);
+    }).finally(() => setLoadingTmpls(false));
   }, []);
 
   // Search guests by name or phone
@@ -214,27 +290,59 @@ function NewChatModal({ onClose, onSent }) {
     const q = guestSearch.trim();
     supabase
       .from("guests")
-      .select("id, name, phone, room, arrival_date")
+      .select("id, name, phone, room, room_type, arrival_date, status")
       .or(`name.ilike.%${q}%,phone.ilike.%${q}%`)
       .limit(8)
       .then(({ data }) => setGuestResults(data ?? []));
   }, [guestSearch]);
 
-  function selectTemplate(name) {
-    const tmpl = waTemplates.find((t) => t.name === name) ?? null;
+  function pickTemplate(tmpl) {
     setSelectedTmpl(tmpl);
-    setVarValues(tmpl ? Array(tmpl.varCount).fill("") : []);
+    setVarValues(tmpl ? Array(tmpl.varCount ?? 0).fill("") : []);
   }
 
-  async function handleSend() {
-    if (!selectedGuest)  return setErr("נא לבחור אורח");
+  function insertPhrase(text) {
+    const personalised = selectedGuest
+      ? text.replace("{{שם}}", selectedGuest.name ?? "")
+      : text;
+    setFreeText(personalised);
+  }
+
+  // ── Free-text send (inbox_reply — works within 24h service window) ──────────
+  async function handleSendFree() {
+    if (!selectedGuest)       return setErr("נא לבחור אורח");
     if (!selectedGuest.phone) return setErr("לאורח זה אין מספר טלפון");
-    if (!selectedTmpl)   return setErr("נא לבחור תבנית");
-    if (selectedTmpl.varCount > 0 && varValues.some((v) => !v.trim()))
+    if (!freeText.trim())     return setErr("נא לכתוב הודעה");
+
+    setSending(true); setErr(null);
+    try {
+      const { data, error } = await supabase.functions.invoke("whatsapp-send", {
+        body: { trigger: "inbox_reply", phone: selectedGuest.phone, message: freeText.trim() },
+      });
+      if (error) throw new Error(data?.error ?? error.message ?? "שגיאה בשליחה");
+      if (data && !data.ok) throw new Error(data.error ?? "שגיאה בשליחה");
+
+      await supabase.from("whatsapp_conversations").insert({
+        phone: selectedGuest.phone, direction: "outbound",
+        message: freeText.trim(), wa_message_id: null,
+      });
+      onSent(selectedGuest.phone, data?.simulation);
+    } catch (e) {
+      setErr(e?.message ?? "שגיאה");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  // ── Template send ───────────────────────────────────────────────────────────
+  async function handleSendTemplate() {
+    if (!selectedGuest)       return setErr("נא לבחור אורח");
+    if (!selectedGuest.phone) return setErr("לאורח זה אין מספר טלפון");
+    if (!selectedTmpl)        return setErr("נא לבחור תבנית");
+    if ((selectedTmpl.varCount ?? 0) > 0 && varValues.some((v) => !v.trim()))
       return setErr("נא למלא את כל שדות המשתנים");
 
-    setSending(true);
-    setErr(null);
+    setSending(true); setErr(null);
     try {
       const { data, error } = await supabase.functions.invoke("whatsapp-send", {
         body: {
@@ -246,14 +354,10 @@ function NewChatModal({ onClose, onSent }) {
       });
       if (error || !data?.ok) throw new Error(data?.error ?? error?.message ?? "שגיאה בשליחה");
 
-      // Insert into inbox so the thread appears immediately
       await supabase.from("whatsapp_conversations").insert({
-        phone:         selectedGuest.phone,
-        direction:     "outbound",
-        message:       `[תבנית: ${selectedTmpl.name}]`,
-        wa_message_id: null,
+        phone: selectedGuest.phone, direction: "outbound",
+        message: `[תבנית: ${selectedTmpl.name}]`, wa_message_id: null,
       });
-
       onSent(selectedGuest.phone, data.simulation);
     } catch (e) {
       setErr(e?.message ?? "שגיאה");
@@ -262,94 +366,141 @@ function NewChatModal({ onClose, onSent }) {
     }
   }
 
-  const VAR_LABELS = ["שם אורח", "מספר חדר", "תאריך הגעה", "סוג חדר"];
+  // Build live preview text (template with vars substituted)
+  function buildPreview() {
+    if (!selectedTmpl?.bodyText) return null;
+    let text = selectedTmpl.bodyText;
+    varValues.forEach((v, i) => { text = text.replace(new RegExp(`\\{\\{${i + 1}\\}\\}`, "g"), v || `{{${i + 1}}}`); });
+    return text;
+  }
+
+  const VAR_LABELS = ["שם אורח", "מספר חדר", "תאריך הגעה", "סוג חדר", "שעת הגעה"];
+  const allTmpls   = [
+    ...dbTemplates.map((d) => ({ name: d.name ?? d.title, bodyText: d.body_text ?? d.message, varCount: 0, source: "db", emoji: d.emoji ?? "📋" })),
+    ...waTemplates.map((w) => ({ ...w, source: "wa", emoji: "✅" })),
+  ];
 
   return (
     <div style={{
       position: "fixed", inset: 0, zIndex: 9999,
-      background: "rgba(0,0,0,0.45)",
+      background: "rgba(0,0,0,0.5)",
       display: "flex", alignItems: "center", justifyContent: "center",
     }} onClick={onClose}>
       <div style={{
-        background: "white", borderRadius: 16, width: 480, maxWidth: "95vw",
-        maxHeight: "90vh", overflowY: "auto",
-        boxShadow: "0 24px 64px rgba(0,0,0,0.3)",
+        background: "white", borderRadius: 18, width: 520, maxWidth: "96vw",
+        maxHeight: "92vh", overflowY: "auto",
+        boxShadow: "0 32px 80px rgba(0,0,0,0.35)",
         direction: "rtl",
       }} onClick={(e) => e.stopPropagation()}>
 
-        {/* Header */}
+        {/* ── Header ── */}
         <div style={{
-          background: "#075E54", color: "white",
-          padding: "16px 20px", borderRadius: "16px 16px 0 0",
+          background: "linear-gradient(135deg, #075E54 0%, #128C7E 100%)",
+          color: "white", padding: "18px 22px", borderRadius: "18px 18px 0 0",
           display: "flex", justifyContent: "space-between", alignItems: "center",
         }}>
-          <span style={{ fontWeight: 700, fontSize: 16 }}>➕ שיחה חדשה</span>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 17 }}>✉️ הודעה חדשה</div>
+            <div style={{ fontSize: 11, opacity: 0.75, marginTop: 2 }}>שיווק ושימור לקוחות</div>
+          </div>
           <button onClick={onClose} style={{
-            background: "none", border: "none", color: "white",
-            fontSize: 20, cursor: "pointer", lineHeight: 1,
+            background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.3)",
+            color: "white", fontSize: 16, cursor: "pointer", borderRadius: 8,
+            width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center",
           }}>✕</button>
         </div>
 
-        <div style={{ padding: "20px", display: "flex", flexDirection: "column", gap: 18 }}>
+        <div style={{ padding: "20px 22px", display: "flex", flexDirection: "column", gap: 16 }}>
 
-          {/* Guest search */}
+          {/* ── Guest search ── */}
           <div>
-            <label style={{ display: "block", fontWeight: 700, fontSize: 13, marginBottom: 6, color: "#333" }}>
-              בחר אורח מהמערכת
+            <label style={{ display: "block", fontWeight: 700, fontSize: 12, marginBottom: 6, color: "#555", textTransform: "uppercase", letterSpacing: 0.5 }}>
+              👤 נמען
             </label>
             {selectedGuest ? (
               <div style={{
-                display: "flex", alignItems: "center", justifyContent: "space-between",
-                padding: "10px 14px", borderRadius: 10,
-                background: "#E8F5EF", border: "1px solid #25D366",
+                padding: "12px 16px", borderRadius: 12,
+                background: "linear-gradient(135deg, #E8F5EF, #F0FAF5)",
+                border: "1.5px solid #25D366",
+                display: "flex", justifyContent: "space-between", alignItems: "flex-start",
               }}>
-                <div>
-                  <div style={{ fontWeight: 700, fontSize: 14 }}>{selectedGuest.name}</div>
-                  <div style={{ fontSize: 12, color: "#666", direction: "ltr" }}>{selectedGuest.phone}</div>
+                <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+                  <div style={{
+                    width: 38, height: 38, borderRadius: "50%", background: "#25D366",
+                    color: "white", display: "flex", alignItems: "center", justifyContent: "center",
+                    fontWeight: 800, fontSize: 16, flexShrink: 0,
+                  }}>
+                    {selectedGuest.name?.[0]?.toUpperCase() ?? "?"}
+                  </div>
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 15, color: "#1a1a1a" }}>{selectedGuest.name}</div>
+                    <div style={{ fontSize: 12, color: "#555", direction: "ltr", marginTop: 1 }}>{selectedGuest.phone}</div>
+                    <div style={{ display: "flex", gap: 8, marginTop: 4, flexWrap: "wrap" }}>
+                      {selectedGuest.room && (
+                        <span style={{ background: "#E0F2FE", color: "#0369A1", fontSize: 11, padding: "2px 7px", borderRadius: 6, fontWeight: 600 }}>
+                          🏨 חדר {selectedGuest.room}
+                        </span>
+                      )}
+                      {selectedGuest.arrival_date && (
+                        <span style={{ background: "#FEF3C7", color: "#92400E", fontSize: 11, padding: "2px 7px", borderRadius: 6, fontWeight: 600 }}>
+                          📅 {selectedGuest.arrival_date}
+                        </span>
+                      )}
+                      {selectedGuest.status && (
+                        <span style={{
+                          background: selectedGuest.status === "checked_in" ? "#D1FAE5" : "#F3F4F6",
+                          color: selectedGuest.status === "checked_in" ? "#065F46" : "#6B7280",
+                          fontSize: 11, padding: "2px 7px", borderRadius: 6, fontWeight: 600,
+                        }}>
+                          {selectedGuest.status === "checked_in" ? "✅ שוהה" : "🕐 מתוכנן"}
+                        </span>
+                      )}
+                    </div>
+                  </div>
                 </div>
                 <button onClick={() => { setSelectedGuest(null); setGuestSearch(""); }}
-                  style={{ background: "none", border: "none", cursor: "pointer", color: "#888", fontSize: 16 }}>
+                  style={{ background: "none", border: "none", cursor: "pointer", color: "#999", fontSize: 18, lineHeight: 1, paddingTop: 2 }}>
                   ✕
                 </button>
               </div>
             ) : (
               <div style={{ position: "relative" }}>
                 <input
-                  type="text"
-                  value={guestSearch}
+                  type="text" value={guestSearch}
                   onChange={(e) => setGuestSearch(e.target.value)}
-                  placeholder="חפש לפי שם או טלפון..."
+                  placeholder="חפש לפי שם או מספר טלפון..."
                   autoFocus
                   style={{
                     width: "100%", boxSizing: "border-box",
-                    padding: "10px 14px", borderRadius: 10, fontSize: 14,
-                    border: "1px solid #ddd", outline: "none", direction: "rtl",
-                    fontFamily: "inherit",
+                    padding: "11px 16px", borderRadius: 12, fontSize: 14,
+                    border: "1.5px solid #ddd", outline: "none", direction: "rtl",
+                    fontFamily: "inherit", transition: "border 0.2s",
                   }}
+                  onFocus={(e) => e.target.style.borderColor = "#25D366"}
+                  onBlur={(e) => e.target.style.borderColor = "#ddd"}
                 />
                 {guestResults.length > 0 && (
                   <div style={{
-                    position: "absolute", top: "100%", right: 0, left: 0, zIndex: 10,
-                    background: "white", border: "1px solid #ddd", borderRadius: "0 0 10px 10px",
-                    boxShadow: "0 4px 16px rgba(0,0,0,0.12)", maxHeight: 200, overflowY: "auto",
+                    position: "absolute", top: "100%", right: 0, left: 0, zIndex: 20,
+                    background: "white", border: "1.5px solid #ddd", borderRadius: "0 0 12px 12px",
+                    boxShadow: "0 8px 24px rgba(0,0,0,0.12)", maxHeight: 220, overflowY: "auto",
                   }}>
                     {guestResults.map((g) => (
-                      <div key={g.id} onClick={() => { setSelectedGuest(g); setGuestSearch(""); setGuestResults([]); }}
-                        style={{
-                          padding: "10px 14px", cursor: "pointer",
-                          borderBottom: "1px solid #f5f5f5", fontSize: 13,
-                        }}
-                        onMouseEnter={(e) => e.currentTarget.style.background = "#f5f5f5"}
+                      <div key={g.id}
+                        onClick={() => { setSelectedGuest(g); setGuestSearch(""); setGuestResults([]); }}
+                        style={{ padding: "10px 16px", cursor: "pointer", borderBottom: "1px solid #f5f5f5", fontSize: 13 }}
+                        onMouseEnter={(e) => e.currentTarget.style.background = "#f0faf5"}
                         onMouseLeave={(e) => e.currentTarget.style.background = "white"}
                       >
-                        <span style={{ fontWeight: 600 }}>{g.name}</span>
-                        <span style={{ color: "#888", marginRight: 8, direction: "ltr", fontSize: 12 }}>
-                          {g.phone ?? "ללא טלפון"}
-                        </span>
-                        {g.arrival_date && (
-                          <span style={{ color: "#aaa", fontSize: 11, marginRight: 6 }}>
-                            {g.arrival_date}
-                          </span>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <span style={{ fontWeight: 700 }}>{g.name}</span>
+                          <span style={{ color: "#888", direction: "ltr", fontSize: 12 }}>{g.phone ?? "ללא טלפון"}</span>
+                        </div>
+                        {(g.room || g.arrival_date) && (
+                          <div style={{ marginTop: 3, display: "flex", gap: 6 }}>
+                            {g.room && <span style={{ background: "#E0F2FE", color: "#0369A1", fontSize: 10, padding: "1px 5px", borderRadius: 4 }}>חדר {g.room}</span>}
+                            {g.arrival_date && <span style={{ background: "#FEF3C7", color: "#92400E", fontSize: 10, padding: "1px 5px", borderRadius: 4 }}>{g.arrival_date}</span>}
+                          </div>
                         )}
                       </div>
                     ))}
@@ -359,97 +510,469 @@ function NewChatModal({ onClose, onSent }) {
             )}
           </div>
 
-          {/* Template selector */}
-          <div>
-            <label style={{ display: "block", fontWeight: 700, fontSize: 13, marginBottom: 6, color: "#333" }}>
-              תבנית WhatsApp
-            </label>
-            {loadingTmpls ? (
-              <div style={{ fontSize: 12, color: "#888" }}>⏳ טוען תבניות...</div>
-            ) : (
-              <select
-                value={selectedTmpl?.name ?? ""}
-                onChange={(e) => selectTemplate(e.target.value)}
+          {/* ── Mode tabs ── */}
+          <div style={{
+            display: "flex", background: "#F3F4F6", borderRadius: 12, padding: 4, gap: 2,
+          }}>
+            {[
+              { id: "free",     label: "✍️ יחיד" },
+              { id: "template", label: "📋 תבנית" },
+              { id: "bulk",     label: "📢 קבוצתי" },
+            ].map((tab) => (
+              <button key={tab.id} onClick={() => { setMode(tab.id); setErr(null); }}
                 style={{
-                  width: "100%", padding: "10px 14px", borderRadius: 10, fontSize: 14,
-                  border: "1px solid #ddd", fontFamily: "inherit", background: "white",
+                  flex: 1, padding: "9px 0", border: "none", borderRadius: 9,
+                  fontFamily: "inherit", fontWeight: 700, fontSize: 13, cursor: "pointer",
+                  transition: "all 0.2s",
+                  background: mode === tab.id ? "white" : "transparent",
+                  color: mode === tab.id ? "#075E54" : "#6B7280",
+                  boxShadow: mode === tab.id ? "0 1px 6px rgba(0,0,0,0.1)" : "none",
                 }}
               >
-                <option value="">— בחר תבנית —</option>
-                {waTemplates.map((t) => (
-                  <option key={t.name} value={t.name}>{t.name}</option>
-                ))}
-              </select>
-            )}
+                {tab.label}
+              </button>
+            ))}
           </div>
 
-          {/* Template body preview */}
-          {selectedTmpl?.bodyText && (
-            <div style={{
-              background: "#f9f9f9", border: "1px solid #eee", borderRadius: 10,
-              padding: "10px 14px", fontSize: 12, color: "#555",
-              direction: "ltr", textAlign: "left", whiteSpace: "pre-wrap", lineHeight: 1.6,
-              maxHeight: 100, overflowY: "auto",
-            }}>
-              {selectedTmpl.bodyText}
-            </div>
-          )}
-
-          {/* Variable inputs */}
-          {selectedTmpl && selectedTmpl.varCount > 0 && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              <label style={{ fontWeight: 700, fontSize: 13, color: "#333" }}>ערכי משתנים:</label>
-              {varValues.map((val, idx) => (
-                <div key={idx} style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <span style={{
-                    background: "#075E54", color: "white", borderRadius: 5,
-                    padding: "2px 8px", fontSize: 11, fontWeight: 700,
-                    fontFamily: "monospace", flexShrink: 0,
-                  }}>
-                    {`{{${idx + 1}}}`}
-                  </span>
-                  <input
-                    type="text"
-                    value={val}
-                    onChange={(e) => {
-                      const next = [...varValues];
-                      next[idx] = e.target.value;
-                      setVarValues(next);
-                    }}
-                    placeholder={VAR_LABELS[idx] ?? `משתנה ${idx + 1}`}
-                    style={{
-                      flex: 1, padding: "8px 12px", borderRadius: 8, fontSize: 13,
-                      border: "1px solid #ddd", outline: "none", fontFamily: "inherit",
-                    }}
-                  />
+          {/* ── FREE TEXT TAB ── */}
+          {mode === "free" && (
+            <>
+              {/* Quick phrases */}
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#555", marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                  ⚡ ביטויים מהירים
                 </div>
-              ))}
-            </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {QUICK_PHRASES.map((ph, i) => (
+                    <button key={i}
+                      onClick={() => insertPhrase(ph.text)}
+                      onMouseEnter={() => setHoveredPhrase(i)}
+                      onMouseLeave={() => setHoveredPhrase(null)}
+                      style={{
+                        padding: "6px 12px", borderRadius: 20, border: "1.5px solid",
+                        borderColor: hoveredPhrase === i ? "#075E54" : "#E0D5C5",
+                        background: hoveredPhrase === i ? "#E8F5EF" : "#FAFAFA",
+                        color: hoveredPhrase === i ? "#075E54" : "#444",
+                        fontSize: 12, fontWeight: 600, cursor: "pointer",
+                        fontFamily: "inherit", transition: "all 0.15s",
+                      }}
+                    >
+                      {ph.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Textarea */}
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#555", marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                  💬 תוכן ההודעה
+                </div>
+                <div style={{ position: "relative" }}>
+                  <textarea
+                    value={freeText}
+                    onChange={(e) => setFreeText(e.target.value.slice(0, 1000))}
+                    placeholder="כתוב הודעה... או לחץ על ביטוי מהיר למעלה"
+                    rows={5}
+                    style={{
+                      width: "100%", boxSizing: "border-box",
+                      padding: "12px 16px", paddingBottom: 30,
+                      borderRadius: 12, fontSize: 14, lineHeight: 1.6,
+                      border: "1.5px solid #ddd", outline: "none",
+                      fontFamily: "inherit", direction: "rtl", resize: "vertical",
+                      background: "#FAFAFA", transition: "border 0.2s",
+                    }}
+                    onFocus={(e) => e.target.style.borderColor = "#25D366"}
+                    onBlur={(e) => e.target.style.borderColor = "#ddd"}
+                  />
+                  <div style={{
+                    position: "absolute", bottom: 10, left: 12,
+                    fontSize: 11, color: freeText.length > 900 ? "#DC2626" : "#aaa",
+                  }}>
+                    {freeText.length}/1000
+                  </div>
+                </div>
+                <div style={{
+                  marginTop: 6, fontSize: 11, color: "#888",
+                  display: "flex", alignItems: "center", gap: 4,
+                }}>
+                  <span>⚠️</span>
+                  <span>שליחה חופשית אפשרית בתוך חלון 24 שעות לאחר הודעת הלקוח</span>
+                </div>
+              </div>
+
+              {/* Live preview */}
+              {freeText.trim() && (
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "#555", marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                    👁️ תצוגה מקדימה
+                  </div>
+                  <div style={{
+                    background: "#DCF8C6", borderRadius: "18px 18px 4px 18px",
+                    padding: "10px 14px", fontSize: 13, lineHeight: 1.6,
+                    color: "#1a1a1a", maxWidth: "85%", wordBreak: "break-word",
+                    boxShadow: "0 1px 3px rgba(0,0,0,0.08)", direction: "rtl",
+                  }}>
+                    {freeText}
+                    <div style={{ fontSize: 10, color: "#666", marginTop: 4, textAlign: "left" }}>✓✓ עכשיו</div>
+                  </div>
+                </div>
+              )}
+
+              {err && (
+                <div style={{ background: "#FFF0EE", border: "1px solid #C0392B", borderRadius: 10, padding: "10px 14px", fontSize: 13, color: "#C0392B" }}>
+                  {err}
+                </div>
+              )}
+
+              <button onClick={handleSendFree} disabled={sending || !selectedGuest || !freeText.trim()}
+                style={{
+                  width: "100%", padding: "14px", borderRadius: 12, border: "none",
+                  background: sending || !selectedGuest || !freeText.trim()
+                    ? "#E5E7EB"
+                    : "linear-gradient(135deg, #25D366 0%, #128C7E 100%)",
+                  color: sending || !selectedGuest || !freeText.trim() ? "#9CA3AF" : "white",
+                  fontFamily: "inherit", fontSize: 15, fontWeight: 800,
+                  cursor: sending || !selectedGuest || !freeText.trim() ? "not-allowed" : "pointer",
+                  transition: "all 0.2s", letterSpacing: 0.3,
+                }}
+              >
+                {sending ? "⏳ שולח..." : "📤 שלח הודעה"}
+              </button>
+            </>
           )}
 
-          {/* Error */}
-          {err && (
-            <div style={{
-              background: "#FFF0EE", border: "1px solid #C0392B",
-              borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#C0392B",
-            }}>
-              {err}
-            </div>
+          {/* ── TEMPLATE TAB ── */}
+          {mode === "template" && (
+            <>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#555", marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                  📋 בחר תבנית
+                </div>
+                {loadingTmpls ? (
+                  <div style={{ fontSize: 13, color: "#888", padding: "12px 0", textAlign: "center" }}>⏳ טוען תבניות...</div>
+                ) : allTmpls.length === 0 ? (
+                  <div style={{ fontSize: 13, color: "#aaa", padding: "12px 0", textAlign: "center" }}>
+                    לא נמצאו תבניות מאושרות.<br />
+                    <span style={{ fontSize: 11 }}>הגדר תבניות ב-Meta Business Manager</span>
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {allTmpls.map((t) => (
+                      <div key={t.name}
+                        onClick={() => pickTemplate(t)}
+                        onMouseEnter={() => setHoveredTmpl(t.name)}
+                        onMouseLeave={() => setHoveredTmpl(null)}
+                        style={{
+                          padding: "12px 16px", borderRadius: 12, cursor: "pointer",
+                          border: "2px solid",
+                          borderColor: selectedTmpl?.name === t.name ? "#25D366" : (hoveredTmpl === t.name ? "#c3e6cb" : "#E5E7EB"),
+                          background: selectedTmpl?.name === t.name ? "#E8F5EF" : (hoveredTmpl === t.name ? "#F9FFFE" : "white"),
+                          transition: "all 0.15s",
+                        }}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                            <span style={{ fontSize: 20 }}>{t.emoji}</span>
+                            <div>
+                              <div style={{ fontWeight: 700, fontSize: 13, color: "#1a1a1a" }}>{t.name}</div>
+                              {t.source === "wa" && (
+                                <span style={{ fontSize: 10, background: "#D1FAE5", color: "#065F46", padding: "1px 6px", borderRadius: 4, fontWeight: 600 }}>
+                                  מאושר Meta
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          {selectedTmpl?.name === t.name && (
+                            <span style={{ color: "#25D366", fontSize: 18, fontWeight: 800 }}>✓</span>
+                          )}
+                        </div>
+                        {t.bodyText && (
+                          <div style={{
+                            marginTop: 8, fontSize: 12, color: "#666", lineHeight: 1.5,
+                            maxHeight: 48, overflow: "hidden",
+                            display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical",
+                          }}>
+                            {t.bodyText}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Variable inputs */}
+              {selectedTmpl && (selectedTmpl.varCount ?? 0) > 0 && (
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "#555", marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                    🔧 ערכי משתנים
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {varValues.map((val, idx) => (
+                      <div key={idx} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        <span style={{
+                          background: "#075E54", color: "white", borderRadius: 6,
+                          padding: "3px 8px", fontSize: 11, fontWeight: 700,
+                          fontFamily: "monospace", flexShrink: 0,
+                        }}>
+                          {`{{${idx + 1}}}`}
+                        </span>
+                        <input type="text" value={val}
+                          onChange={(e) => {
+                            const next = [...varValues]; next[idx] = e.target.value; setVarValues(next);
+                          }}
+                          placeholder={
+                            idx === 0 && selectedGuest ? selectedGuest.name :
+                            idx === 1 && selectedGuest?.room ? `חדר ${selectedGuest.room}` :
+                            idx === 2 && selectedGuest?.arrival_date ? selectedGuest.arrival_date :
+                            VAR_LABELS[idx] ?? `משתנה ${idx + 1}`
+                          }
+                          style={{
+                            flex: 1, padding: "9px 12px", borderRadius: 10, fontSize: 13,
+                            border: "1.5px solid #ddd", outline: "none", fontFamily: "inherit",
+                          }}
+                          onFocus={(e) => e.target.style.borderColor = "#25D366"}
+                          onBlur={(e) => e.target.style.borderColor = "#ddd"}
+                        />
+                      </div>
+                    ))}
+                    {selectedGuest && varValues.length > 0 && (
+                      <button
+                        onClick={() => {
+                          const next = [...varValues];
+                          if (next[0] === "" && selectedGuest.name)           next[0] = selectedGuest.name;
+                          if (next[1] === "" && selectedGuest.room)            next[1] = `${selectedGuest.room}`;
+                          if (next[2] === "" && selectedGuest.arrival_date)    next[2] = selectedGuest.arrival_date;
+                          setVarValues(next);
+                        }}
+                        style={{
+                          alignSelf: "flex-start", padding: "6px 12px",
+                          border: "1.5px solid #25D366", borderRadius: 8, background: "white",
+                          color: "#075E54", fontSize: 12, fontWeight: 700,
+                          cursor: "pointer", fontFamily: "inherit",
+                        }}
+                      >
+                        ⚡ מלא אוטומטית מפרטי האורח
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Preview */}
+              {buildPreview() && (
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "#555", marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                    👁️ תצוגה מקדימה
+                  </div>
+                  <div style={{
+                    background: "#DCF8C6", borderRadius: "18px 18px 4px 18px",
+                    padding: "10px 14px", fontSize: 12, lineHeight: 1.6,
+                    color: "#1a1a1a", direction: "ltr", textAlign: "left",
+                    whiteSpace: "pre-wrap", wordBreak: "break-word",
+                    boxShadow: "0 1px 3px rgba(0,0,0,0.08)", maxHeight: 120, overflowY: "auto",
+                  }}>
+                    {buildPreview()}
+                    <div style={{ fontSize: 10, color: "#666", marginTop: 4 }}>✓✓ עכשיו</div>
+                  </div>
+                </div>
+              )}
+
+              {err && (
+                <div style={{ background: "#FFF0EE", border: "1px solid #C0392B", borderRadius: 10, padding: "10px 14px", fontSize: 13, color: "#C0392B" }}>
+                  {err}
+                </div>
+              )}
+
+              <button onClick={handleSendTemplate}
+                disabled={sending || !selectedGuest || !selectedTmpl}
+                style={{
+                  width: "100%", padding: "14px", borderRadius: 12, border: "none",
+                  background: sending || !selectedGuest || !selectedTmpl
+                    ? "#E5E7EB"
+                    : "linear-gradient(135deg, #25D366 0%, #128C7E 100%)",
+                  color: sending || !selectedGuest || !selectedTmpl ? "#9CA3AF" : "white",
+                  fontFamily: "inherit", fontSize: 15, fontWeight: 800,
+                  cursor: sending || !selectedGuest || !selectedTmpl ? "not-allowed" : "pointer",
+                  transition: "all 0.2s", letterSpacing: 0.3,
+                }}
+              >
+                {sending ? "⏳ שולח..." : "📤 שלח תבנית"}
+              </button>
+            </>
           )}
 
-          {/* Send button */}
-          <button
-            onClick={handleSend}
-            disabled={sending || !selectedGuest || !selectedTmpl}
-            style={{
-              width: "100%", padding: "14px", borderRadius: 10, border: "none",
-              background: sending || !selectedGuest || !selectedTmpl ? "#ccc" : "#25D366",
-              color: "white", fontFamily: "inherit", fontSize: 15, fontWeight: 700,
-              cursor: sending || !selectedGuest || !selectedTmpl ? "not-allowed" : "pointer",
-            }}
-          >
-            {sending ? "⏳ שולח..." : "📤 שלח"}
-          </button>
+          {/* ── BULK TAB ── */}
+          {mode === "bulk" && (
+            <>
+              {/* Filter chips */}
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#555", marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                  🎯 קהל יעד
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {[
+                    { id: "checked_in",     label: "שוהים עכשיו 🏨" },
+                    { id: "expected",       label: "מגיעים בקרוב 📅" },
+                    { id: "suite",          label: "אורחי סוויטות 👑" },
+                    { id: "day_guest",      label: "אורחי יום ☀️" },
+                    { id: "checkout_today", label: "יוצאים היום 🧳" },
+                    { id: "all",            label: "כולם 📋" },
+                  ].map((f) => (
+                    <button key={f.id} onClick={() => { setBulkFilter(f.id); setBulkDone(false); setBulkProgress(null); }}
+                      style={{
+                        padding: "7px 13px", borderRadius: 20, border: "2px solid",
+                        borderColor: bulkFilter === f.id ? "#075E54" : "#E5E7EB",
+                        background: bulkFilter === f.id ? "#E8F5EF" : "white",
+                        color: bulkFilter === f.id ? "#075E54" : "#555",
+                        fontSize: 12, fontWeight: 700, cursor: "pointer",
+                        fontFamily: "inherit", transition: "all 0.15s",
+                      }}
+                    >
+                      {f.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Recipient count + preview toggle */}
+              <div style={{
+                padding: "10px 14px", borderRadius: 10,
+                background: bulkGuests.length > 0 ? "#E8F5EF" : "#F9FAFB",
+                border: `1px solid ${bulkGuests.length > 0 ? "#25D366" : "#E5E7EB"}`,
+                display: "flex", justifyContent: "space-between", alignItems: "center",
+              }}>
+                <span style={{ fontWeight: 700, fontSize: 14, color: bulkGuests.length > 0 ? "#075E54" : "#9CA3AF" }}>
+                  {bulkGuests.length > 0 ? `👥 ${bulkGuests.length} נמענים` : "⏳ טוען..."}
+                </span>
+                {bulkGuests.length > 0 && (
+                  <button onClick={() => setShowBulkList((p) => !p)}
+                    style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, color: "#075E54", fontFamily: "inherit", fontWeight: 600 }}>
+                    {showBulkList ? "▲ הסתר" : "▼ הצג רשימה"}
+                  </button>
+                )}
+              </div>
+
+              {/* Collapsible names list */}
+              {showBulkList && bulkGuests.length > 0 && (
+                <div style={{
+                  maxHeight: 130, overflowY: "auto",
+                  border: "1px solid #E5E7EB", borderRadius: 10,
+                  background: "#FAFAFA",
+                }}>
+                  {bulkGuests.map((g) => (
+                    <div key={g.id} style={{
+                      padding: "7px 14px", fontSize: 12, borderBottom: "1px solid #F3F4F6",
+                      display: "flex", justifyContent: "space-between",
+                    }}>
+                      <span style={{ fontWeight: 600 }}>{g.name}</span>
+                      <span style={{ color: "#888", direction: "ltr" }}>{g.room ? `חדר ${g.room}` : ""}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Quick phrases (personalised with {{שם}}) */}
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#555", marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                  ⚡ ביטויים מהירים
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {QUICK_PHRASES.map((ph, i) => (
+                    <button key={i} onClick={() => setBulkText(ph.text)}
+                      style={{
+                        padding: "6px 12px", borderRadius: 20, border: "1.5px solid #E0D5C5",
+                        background: "#FAFAFA", color: "#444",
+                        fontSize: 12, fontWeight: 600, cursor: "pointer",
+                        fontFamily: "inherit", transition: "all 0.15s",
+                      }}
+                      onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#075E54"; e.currentTarget.style.background = "#E8F5EF"; e.currentTarget.style.color = "#075E54"; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#E0D5C5"; e.currentTarget.style.background = "#FAFAFA"; e.currentTarget.style.color = "#444"; }}
+                    >
+                      {ph.label}
+                    </button>
+                  ))}
+                </div>
+                <div style={{ marginTop: 6, fontSize: 11, color: "#888" }}>
+                  💡 השתמש ב-<code style={{ background: "#F3F4F6", padding: "1px 4px", borderRadius: 3 }}>{"{{שם}}"}</code> לשם אישי של כל אורח
+                </div>
+              </div>
+
+              {/* Bulk textarea */}
+              <div style={{ position: "relative" }}>
+                <textarea
+                  value={bulkText}
+                  onChange={(e) => setBulkText(e.target.value.slice(0, 1000))}
+                  placeholder={`כתוב הודעה... השתמש ב-{{שם}} לשם אישי`}
+                  rows={4}
+                  style={{
+                    width: "100%", boxSizing: "border-box",
+                    padding: "12px 16px", paddingBottom: 28,
+                    borderRadius: 12, fontSize: 14, lineHeight: 1.6,
+                    border: "1.5px solid #ddd", outline: "none",
+                    fontFamily: "inherit", direction: "rtl", resize: "vertical",
+                    background: "#FAFAFA",
+                  }}
+                  onFocus={(e) => e.target.style.borderColor = "#25D366"}
+                  onBlur={(e) => e.target.style.borderColor = "#ddd"}
+                />
+                <div style={{ position: "absolute", bottom: 8, left: 12, fontSize: 11, color: bulkText.length > 900 ? "#DC2626" : "#aaa" }}>
+                  {bulkText.length}/1000
+                </div>
+              </div>
+
+              {/* Progress bar */}
+              {bulkProgress && (
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#555", marginBottom: 4 }}>
+                    <span>{bulkDone ? "✅ שליחה הושלמה!" : `שולח... ${bulkProgress.done}/${bulkProgress.total}`}</span>
+                    <span>{Math.round((bulkProgress.done / bulkProgress.total) * 100)}%</span>
+                  </div>
+                  <div style={{ height: 6, background: "#E5E7EB", borderRadius: 3, overflow: "hidden" }}>
+                    <div style={{
+                      height: "100%", borderRadius: 3, transition: "width 0.4s",
+                      width: `${(bulkProgress.done / bulkProgress.total) * 100}%`,
+                      background: bulkDone ? "#25D366" : "linear-gradient(90deg, #25D366, #128C7E)",
+                    }} />
+                  </div>
+                </div>
+              )}
+
+              {err && (
+                <div style={{ background: "#FFF0EE", border: "1px solid #C0392B", borderRadius: 10, padding: "10px 14px", fontSize: 13, color: "#C0392B" }}>
+                  {err}
+                </div>
+              )}
+
+              {bulkDone ? (
+                <button onClick={onClose} style={{
+                  width: "100%", padding: "14px", borderRadius: 12, border: "none",
+                  background: "#25D366", color: "white",
+                  fontFamily: "inherit", fontSize: 15, fontWeight: 800, cursor: "pointer",
+                }}>
+                  ✅ סגור
+                </button>
+              ) : (
+                <button onClick={handleSendBulk}
+                  disabled={bulkSending || !bulkText.trim() || bulkGuests.length === 0}
+                  style={{
+                    width: "100%", padding: "14px", borderRadius: 12, border: "none",
+                    background: bulkSending || !bulkText.trim() || bulkGuests.length === 0
+                      ? "#E5E7EB"
+                      : "linear-gradient(135deg, #128C7E 0%, #075E54 100%)",
+                    color: bulkSending || !bulkText.trim() || bulkGuests.length === 0 ? "#9CA3AF" : "white",
+                    fontFamily: "inherit", fontSize: 15, fontWeight: 800,
+                    cursor: bulkSending || !bulkText.trim() || bulkGuests.length === 0 ? "not-allowed" : "pointer",
+                    transition: "all 0.2s",
+                  }}
+                >
+                  {bulkSending ? `⏳ שולח... ${bulkProgress?.done ?? 0}/${bulkGuests.length}` : `📢 שלח ל-${bulkGuests.length} נמענים`}
+                </button>
+              )}
+            </>
+          )}
+
         </div>
       </div>
     </div>
