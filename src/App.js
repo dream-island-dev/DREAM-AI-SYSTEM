@@ -17,6 +17,7 @@ import WhatsAppInbox from "./components/WhatsAppInbox";
 import TaskBoard from "./components/TaskBoard";
 import BotConfigPanel from "./components/BotConfigPanel";
 import BotSettings from "./components/BotSettings";
+import RoomBoard from "./components/RoomBoard";
 import PasswordChangeScreen from "./components/PasswordChangeScreen";
 
 // ============================================================
@@ -1004,6 +1005,7 @@ function Sidebar({ user, active, setActive, openCallsCount, onLogout, isAdmin, i
     { id: "broadcast",  icon: "📣", label: "שליחת הודעות",                           managerOnly: true },
     { id: "wa_inbox",   icon: "💬", label: "DREAM BOT — שיחות",                     managerOnly: true },
     { id: "guests",     icon: "🛎️", label: "אורחים",                                managerOnly: true },
+    { id: "room_board", icon: "🏨", label: "לוח חדרים",                              managerOnly: false },
     { id: "tasks",      icon: "📋", label: "לוח משימות",                             managerOnly: false },
     { id: "scheduler",  icon: "🪄", label: "מחולל משמרות",                           managerOnly: true },
     { id: "upload",     icon: "📤", label: "העלאת נתונים",                           managerOnly: true },
@@ -2419,6 +2421,7 @@ export default function App() {
     scheduler:  "🪄 מחולל משמרות",
     upload:     "📤 העלאת נתונים",
     tasks:      "📋 לוח משימות",
+    room_board:    "🏨 לוח חדרים",
     bot_config:    "🤖 הגדרות Smart Concierge",
     bot_settings:  "🧠 מוח הבוט",
     agent:      agentProfile ? `${agentProfile.display_name} 🤖` : "הסוכן שלי 🤖",
@@ -2569,6 +2572,8 @@ export default function App() {
             onClearData={clearAllData}
           />
         );
+      case "room_board":
+        return <RoomBoard />;
       case "tasks":
         return <TaskBoard user={user} isAdmin={isAdmin} />;
       case "bot_config":
