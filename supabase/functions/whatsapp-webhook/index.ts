@@ -36,10 +36,17 @@ const CORS = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-// Ordered fallback list — first model in list wins; next tried on 404
+// Ordered fallback list — newest first, falls through on 404.
+// Override ALL by setting the GEMINI_MODEL Supabase secret.
 const GEMINI_MODELS: string[] = Deno.env.get("GEMINI_MODEL")
   ? [Deno.env.get("GEMINI_MODEL")!]
-  : ["gemini-2.0-flash-lite", "gemini-1.5-flash", "gemini-2.0-flash"];
+  : [
+      "gemini-2.5-flash",
+      "gemini-2.5-flash-preview-05-20",
+      "gemini-2.5-flash-preview-04-17",
+      "gemini-2.0-flash-lite",
+      "gemini-1.5-flash",
+    ];
 
 // ══════════════════════════════════════════════════════════════════════════════
 // §1  DYNAMIC BOT CONFIG — loaded from bot_config table, cached 5 min
