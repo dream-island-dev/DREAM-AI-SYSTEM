@@ -30,11 +30,14 @@
 
 import { serve }        from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import Anthropic        from "https://esm.sh/@anthropic-ai/sdk@0.20.0";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
+
+const CLAUDE_MODEL = "claude-sonnet-4-6"; // final fallback when all Gemini models fail
 
 // Ordered fallback list — newest first, falls through on 404.
 // Override ALL by setting the GEMINI_MODEL Supabase secret.
@@ -434,6 +437,56 @@ async function askGemini(
   }
 
   throw new Error("gemini_all_models_unavailable");
+}
+
+// ── Claude fallback — used when all Gemini models are unavailable ─────────────
+async function callClaude(
+  userMessage: string,
+  guestName: string | null,
+  history: Array<{ direction: string; message: string }>,
+  systemPrompt: string,
+): Promise<string> {
+  const key = Deno.env.get("ANTHROPIC_API_KEY");
+  if (!key) throw new Error("no_anthropic_key");
+
+  const system = systemPrompt
+    + (guestName ? `\n\nשם האורח/ת: ${guestName}. פנה/י אליו/ה בשמו/ה.` : "")
+    + "\n\nענה תמיד בעברית. 2–4 משפטים בלבד. נימה פרמיום.";
+
+  // Convert history to Claude alternating user/assistant format
+  const rawMessages = [
+    ...history.map((h) => ({
+      role: (h.direction === "inbound" ? "user" : "assistant") as "user" | "assistant",
+      content: h.message,
+    })),
+    { role: "user" as const, content: userMessage },
+  ];
+
+  // Merge consecutive messages with the same role (Claude requires strict alternation)
+  const messages = rawMessages.reduce<{ role: "user" | "assistant"; content: string }[]>(
+    (acc, msg) => {
+      if (acc.length && acc[acc.length - 1].role === msg.role) {
+        acc[acc.length - 1] = { ...acc[acc.length - 1], content: acc[acc.length - 1].content + "\n" + msg.content };
+      } else {
+        acc.push(msg);
+      }
+      return acc;
+    },
+    [],
+  );
+
+  const anthropic = new Anthropic({ apiKey: key });
+  const resp = await anthropic.messages.create({
+    model:      CLAUDE_MODEL,
+    max_tokens: 400,
+    system,
+    messages,
+  });
+
+  const text = resp.content[0].type === "text" ? resp.content[0].text.trim() : "";
+  if (!text) throw new Error("claude_empty_response");
+  console.log(`[webhook] ✅ Claude OK (fallback) engine=${CLAUDE_MODEL}`);
+  return text;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -875,8 +928,13 @@ serve(async (req: Request) => {
         try {
           reply = await askGemini(text, guestName, orderedHistory, finalSystemPrompt);
         } catch (e) {
-          console.error("[webhook] Gemini error:", (e as Error).message);
-          reply = FALLBACK_REPLY;
+          console.error("[webhook] Gemini failed → trying Claude:", (e as Error).message);
+          try {
+            reply = await callClaude(text, guestName, orderedHistory, finalSystemPrompt);
+          } catch (e2) {
+            console.error("[webhook] Claude also failed:", (e2 as Error).message);
+            reply = FALLBACK_REPLY;
+          }
         }
       }
       // else "fallback" → FALLBACK_REPLY already set
