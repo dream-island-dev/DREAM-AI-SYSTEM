@@ -53,6 +53,7 @@ export default function BroadcastDashboard({ user }) {
   const [loadingAllTmpls,  setLoadingAllTmpls]  = useState(false);
   const [selectedTemplate, setSelectedTemplate] = useState(null); // { name, bodyText, varCount }
   const [templateVarValues,setTemplateVarValues]= useState([]);   // string[] for {{1}}, {{2}}…
+  const [autoVarGuestName, setAutoVarGuestName] = useState(false); // {{1}} auto-filled with guest.name per-guest
 
   // ── Template Manager state ─────────────────────────────────────────────────
   const [showCreateForm,   setShowCreateForm]   = useState(false);
@@ -80,6 +81,9 @@ export default function BroadcastDashboard({ user }) {
   // ── Quick Send state ──────────────────────────────────────────────────────
   const [quickSending, setQuickSending] = useState(false);
   const [quickResult,  setQuickResult]  = useState(null);
+
+  // ── DB templates (from message_templates table, linked to Meta templates) ─
+  const [dbTemplates, setDbTemplates] = useState([]);
 
   // ── Toast helper ──────────────────────────────────────────────────────────
   const showToast = useCallback((type, msg) => {
@@ -223,6 +227,16 @@ export default function BroadcastDashboard({ user }) {
     return () => { supabase.removeChannel(channel); };
   }, []);
 
+  // ── Fetch DB templates (friendly labels + Meta template mapping) ─────────
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase) return;
+    supabase
+      .from("message_templates")
+      .select("id, label, content, sort_order, wa_template_name, workshop_link")
+      .order("sort_order")
+      .then(({ data }) => setDbTemplates(data ?? []));
+  }, []);
+
   // ── Compute filtered audience ─────────────────────────────────────────────
   const today = localISO(0);
   const filteredGuests = allGuests.filter((g) => {
@@ -252,13 +266,25 @@ export default function BroadcastDashboard({ user }) {
     const tmpl = waTemplates.find((t) => t.name === name) ?? null;
     setSelectedTemplate(tmpl);
     setTemplateVarValues(tmpl ? Array(tmpl.varCount).fill("") : []);
+    setAutoVarGuestName(false);
+  }
+
+  // ── Arrival automation selection ─────────────────────────────────────────
+  function handleSelectArrival(tmpl) {
+    setSelectedTemplate(tmpl);
+    setTemplateVarValues(tmpl.varCount > 0 ? Array(tmpl.varCount).fill("") : []);
+    setAutoVarGuestName(tmpl.varCount > 0); // {{1}} = guest name, injected per-guest in send loop
+    setSendMode("template");
   }
 
   // ── Broadcast send loop ───────────────────────────────────────────────────
   const handleBroadcast = useCallback(async () => {
     if (sendMode === "template") {
       if (!selectedTemplate) return showToast("err", "נא לבחור תבנית הודעה");
-      if (selectedTemplate.varCount > 0 && templateVarValues.some((v) => !v.trim()))
+      if (selectedTemplate._dbOnly)
+        return showToast("err", "התבנית עדיין ממתינה לאישור Meta — לא ניתן לשלוח עדיין");
+      const valsToCheck = autoVarGuestName ? templateVarValues.slice(1) : templateVarValues;
+      if (selectedTemplate.varCount > 0 && valsToCheck.some((v) => !v.trim()))
         return showToast("err", "נא למלא את כל שדות המשתנים");
     } else {
       if (!freeTextMsg.trim()) return showToast("err", "נא להקליד הודעה");
@@ -282,7 +308,7 @@ export default function BroadcastDashboard({ user }) {
       try {
         const { data, error } = await supabase.functions.invoke("whatsapp-send", {
           body: sendMode === "template"
-            ? { trigger: "broadcast", guestId: guest.id, waTemplateName: selectedTemplate.name, templateVariables: templateVarValues }
+            ? { trigger: "broadcast", guestId: guest.id, waTemplateName: selectedTemplate.name, templateVariables: autoVarGuestName ? [String(guest.name ?? ""), ...templateVarValues.slice(1)] : templateVarValues }
             : { trigger: "inbox_reply", phone: guest.phone, message: freeTextMsg },
         });
         if (error) throw new Error(data?.error ?? error.message ?? "edge_function_error");
@@ -310,7 +336,7 @@ export default function BroadcastDashboard({ user }) {
         `שליחה הסתיימה: ${successCount} הצליחו${errorCount > 0 ? `, ${errorCount} נכשלו` : ""}`
       );
     }
-  }, [sendMode, selectedTemplate, templateVarValues, freeTextMsg, sendableGuests, showToast]);
+  }, [sendMode, selectedTemplate, templateVarValues, autoVarGuestName, freeTextMsg, sendableGuests, showToast]);
 
   const handleCancel = () => { abortRef.current = true; };
 
@@ -361,7 +387,7 @@ export default function BroadcastDashboard({ user }) {
     try {
       const { data, error } = await supabase.functions.invoke("whatsapp-send", {
         body: sendMode === "template"
-          ? { trigger: "broadcast", guestId: guest.id, waTemplateName: selectedTemplate.name, templateVariables: templateVarValues }
+          ? { trigger: "broadcast", guestId: guest.id, waTemplateName: selectedTemplate.name, templateVariables: autoVarGuestName ? [String(guest.name ?? ""), ...templateVarValues.slice(1)] : templateVarValues }
           : { trigger: "inbox_reply", phone: guest.phone, message: freeTextMsg },
       });
       if (error) throw new Error(data?.error ?? error.message ?? "edge_function_error");
@@ -372,7 +398,7 @@ export default function BroadcastDashboard({ user }) {
     } finally {
       setSendingOneId(null);
     }
-  }, [sendMode, selectedTemplate, templateVarValues, freeTextMsg, showToast]);
+  }, [sendMode, selectedTemplate, templateVarValues, autoVarGuestName, freeTextMsg, showToast]);
 
   // ── Render ────────────────────────────────────────────────────────────────
   const pct = progress
@@ -381,9 +407,35 @@ export default function BroadcastDashboard({ user }) {
 
   const sendReady = sendableGuests.length > 0 && (
     sendMode === "template"
-      ? !!selectedTemplate && (selectedTemplate.varCount === 0 || templateVarValues.every((v) => v.trim()))
+      ? !!selectedTemplate && (selectedTemplate.varCount === 0 || (
+          autoVarGuestName
+            ? templateVarValues.slice(1).every((v) => v.trim())
+            : templateVarValues.every((v) => v.trim())
+        ))
       : freeTextMsg.trim().length > 0
   );
+
+  // Detect arrival-confirmation template for automation banner.
+  // Prefers the live approved Meta template; falls back to the DB template stub
+  // so the banner always shows even before Meta approval.
+  const arrivalMetaTmpl = waTemplates.find((t) =>
+    t.name.startsWith("dream_arrival") ||
+    t.name.includes("arrival_confirm") ||
+    t.name.includes("check_in_confirm") ||
+    /confirm.*arrival|arrival.*confirm/.test(t.name)
+  ) ?? null;
+  const arrivalDbEntry = dbTemplates.find((d) =>
+    d.wa_template_name === "dream_arrival_confirmation" ||
+    d.wa_template_name?.startsWith("dream_arrival")
+  ) ?? null;
+  // Build a unified stub when Meta template isn't available yet
+  const arrivalTemplate = arrivalMetaTmpl ?? (arrivalDbEntry ? {
+    name:     arrivalDbEntry.wa_template_name ?? "dream_arrival_confirmation",
+    bodyText: arrivalDbEntry.content,
+    varCount: (arrivalDbEntry.content.match(/\{\{\d+\}\}/g) ?? []).length,
+    status:   "PENDING",
+    _dbOnly:  true, // flag: not yet in Meta
+  } : null);
 
   // ── Template Manager render ───────────────────────────────────────────────
   const STATUS_META = {
@@ -431,7 +483,7 @@ export default function BroadcastDashboard({ user }) {
             {/* Info banner */}
             <div style={{ fontSize: 12, padding: "10px 14px", borderRadius: 8, background: "#EFF6FF", border: "1px solid #93C5FD", color: "#1E40AF", lineHeight: 1.6 }}>
               💡 <strong>Meta דורשת:</strong> שם תבנית — אותיות לועזיות קטנות + קו תחתון בלבד (לדוג׳ <code>dream_welcome</code>).
-              משתנים בגוף ההודעה — <code style={{ background: "rgba(0,0,0,0.07)", padding: "1px 4px", borderRadius: 3 }}>{"{{"+"1"+"}}"}</code> <code style={{ background: "rgba(0,0,0,0.07)", padding: "1px 4px", borderRadius: 3 }}>{"{{"+"2"+"}}"}</code> וכן הלאה.
+              משתנים בגוף ההודעה — <code style={{ background: "rgba(0,0,0,0.07)", padding: "1px 4px", borderRadius: 3 }}>{"{{1}}"}</code> <code style={{ background: "rgba(0,0,0,0.07)", padding: "1px 4px", borderRadius: 3 }}>{"{{2}}"}</code> וכן הלאה.
               לאחר שליחה, Meta מאשרת תוך כ-1–3 שעות.
             </div>
 
@@ -835,80 +887,191 @@ export default function BroadcastDashboard({ user }) {
               {/* ── Template mode ── */}
               {sendMode === "template" && (
                 <>
-                  <div className="form-field" style={{ marginBottom: 0 }}>
-                    <label>בחר תבנית</label>
+                  {/* Arrival Automation Banner */}
+                  {arrivalTemplate && (
+                    <div
+                      onClick={() => handleSelectArrival(arrivalTemplate)}
+                      style={{
+                        background: selectedTemplate?.name === arrivalTemplate.name
+                          ? "linear-gradient(135deg, #0D4731 0%, #156B3E 100%)"
+                          : "linear-gradient(135deg, #075E54 0%, #128C7E 100%)",
+                        borderRadius: 12, padding: "14px 18px", cursor: "pointer",
+                        border: selectedTemplate?.name === arrivalTemplate.name
+                          ? "2px solid var(--gold)"
+                          : "2px solid transparent",
+                        boxShadow: "0 4px 16px rgba(7,94,84,0.25)",
+                      }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                        <div style={{ color: "white", flex: 1 }}>
+                          <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 3 }}>
+                            🏝️ אוטומציה — אישור הגעה
+                            {arrivalTemplate._dbOnly && (
+                              <span style={{ fontSize: 10, fontWeight: 500, opacity: 0.8, marginRight: 8, background: "rgba(255,255,255,0.15)", borderRadius: 6, padding: "2px 7px" }}>
+                                ⏳ ממתין לאישור Meta
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ fontSize: 11, opacity: 0.85, lineHeight: 1.5 }}>
+                            שם אורח ממולא אוטומטית · קישור תשלום + סדנאות · הבוט ממשיך שיחה אוטומטית
+                          </div>
+                        </div>
+                        <div style={{
+                          background: selectedTemplate?.name === arrivalTemplate.name ? "var(--gold)" : "rgba(255,255,255,0.2)",
+                          color: selectedTemplate?.name === arrivalTemplate.name ? "#1B3A32" : "white",
+                          borderRadius: 8, padding: "7px 14px", fontSize: 12, fontWeight: 800, whiteSpace: "nowrap",
+                          opacity: arrivalTemplate._dbOnly ? 0.6 : 1,
+                        }}>
+                          {arrivalTemplate._dbOnly ? "⏳ בהמתנה" : selectedTemplate?.name === arrivalTemplate.name ? "✅ נבחר" : "⚡ בחר →"}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Template Cards */}
+                  <div>
+                    <label style={{ fontSize: 12, fontWeight: 700, color: "var(--text-muted)", letterSpacing: 0.4, display: "block", marginBottom: 8 }}>
+                      בחר תבנית{loadingTemplates ? " ⏳" : ""}
+                    </label>
                     {!loadingTemplates && waTemplates.length === 0 ? (
-                      <div style={{
-                        fontSize: 12, color: "#C0392B", padding: "10px 12px", borderRadius: 8,
-                        background: "#FFF0EE", border: "1px solid #C0392B",
-                      }}>
+                      <div style={{ fontSize: 12, color: "#C0392B", padding: "10px 12px", borderRadius: 8, background: "#FFF0EE", border: "1px solid #C0392B" }}>
                         ⚠️ לא נמצאו תבניות מאושרות ב-Meta. בדוק שה-META_BUSINESS_ACCOUNT_ID מוגדר כ-Secret בסופאבייס.
                       </div>
                     ) : (
-                      <select
-                        value={selectedTemplate?.name ?? ""}
-                        onChange={(e) => handleSelectTemplate(e.target.value)}
-                        disabled={loadingTemplates}
-                      >
-                        <option value="">— בחר תבנית —</option>
-                        {waTemplates.map((t) => (
-                          <option key={t.name} value={t.name}>{t.name}</option>
-                        ))}
-                      </select>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 7, maxHeight: 240, overflowY: "auto", paddingLeft: 2 }}>
+                        {waTemplates.map((t) => {
+                          const isSelected = selectedTemplate?.name === t.name;
+                          return (
+                            <div
+                              key={t.name}
+                              onClick={() => handleSelectTemplate(t.name)}
+                              style={{
+                                padding: "11px 14px", borderRadius: 10, cursor: "pointer",
+                                border: isSelected ? "2px solid var(--gold-dark)" : "1px solid var(--border)",
+                                background: isSelected ? "rgba(201,169,110,0.08)" : "var(--card-bg)",
+                                boxShadow: isSelected ? "0 2px 8px rgba(201,169,110,0.15)" : "none",
+                              }}
+                            >
+                              {(() => {
+                                const dbMatch = dbTemplates.find(d => d.wa_template_name === t.name);
+                                return (
+                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: t.bodyText ? 5 : 0 }}>
+                                    <div>
+                                      {dbMatch && (
+                                        <div style={{ fontSize: 12, fontWeight: 700, color: isSelected ? "var(--gold-dark)" : "var(--black)", marginBottom: 2 }}>
+                                          {dbMatch.label}
+                                        </div>
+                                      )}
+                                      <code style={{ fontFamily: "monospace", fontWeight: dbMatch ? 500 : 800, fontSize: 11, color: isSelected ? "var(--gold-dark)" : "var(--text-muted)", direction: "ltr" }}>
+                                        {t.name}
+                                      </code>
+                                    </div>
+                                    {t.varCount > 0 && (
+                                      <span style={{ fontSize: 10, background: "var(--ivory)", border: "1px solid var(--border)", borderRadius: 10, padding: "1px 7px", color: "var(--text-muted)", flexShrink: 0 }}>
+                                        {t.varCount} משתנ{t.varCount === 1 ? "ה" : "ים"}
+                                      </span>
+                                    )}
+                                  </div>
+                                );
+                              })()}
+                              {t.bodyText && (
+                                <div style={{
+                                  fontSize: 11, color: "#666", lineHeight: 1.5,
+                                  direction: "ltr", textAlign: "left",
+                                  overflow: "hidden", display: "-webkit-box",
+                                  WebkitLineClamp: 2, WebkitBoxOrient: "vertical",
+                                }}>
+                                  {t.bodyText}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
                     )}
                   </div>
 
-                  {selectedTemplate?.bodyText && (
-                    <div>
-                      <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", marginBottom: 6, letterSpacing: 0.5 }}>
-                        תוכן התבנית:
-                      </div>
-                      <div style={{
-                        background: "var(--ivory)", border: "1px solid var(--border)",
-                        borderRadius: 10, padding: "12px 14px",
-                        fontSize: 12, lineHeight: 1.7, color: "var(--black)",
-                        direction: "ltr", textAlign: "left",
-                        maxHeight: 120, overflowY: "auto", whiteSpace: "pre-wrap",
-                      }}>
-                        {selectedTemplate.bodyText}
-                      </div>
-                    </div>
-                  )}
-
-                  {selectedTemplate && selectedTemplate.varCount > 0 && (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                      <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", letterSpacing: 0.5 }}>
-                        ערכי משתנים לכלל הקהל:
-                      </div>
-                      {templateVarValues.map((val, idx) => (
-                        <div key={idx} className="form-field" style={{ marginBottom: 0 }}>
-                          <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                            <span style={{
-                              background: "var(--gold)", color: "#1B3A32",
-                              borderRadius: 5, padding: "1px 7px",
-                              fontSize: 11, fontWeight: 800, fontFamily: "monospace",
-                            }}>
-                              {`{{${idx + 1}}}`}
-                            </span>
-                            {VAR_LABELS[idx] ?? `משתנה ${idx + 1}`}
-                          </label>
-                          <input
-                            type="text"
-                            value={val}
-                            onChange={(e) => {
-                              const next = [...templateVarValues];
-                              next[idx] = e.target.value;
-                              setTemplateVarValues(next);
-                            }}
-                            placeholder={`ערך עבור {{${idx + 1}}}`}
-                          />
+                  {/* Selected template: live preview bubble + variable inputs */}
+                  {selectedTemplate && (
+                    <>
+                      {selectedTemplate.bodyText && (
+                        <div>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", marginBottom: 6, letterSpacing: 0.4 }}>
+                            תצוגה מקדימה:
+                          </div>
+                          <div style={{
+                            background: "#E9FBE5", border: "1px solid #A8E6A3",
+                            borderRadius: "0 12px 12px 12px",
+                            padding: "12px 14px", fontSize: 12, lineHeight: 1.7,
+                            direction: "ltr", textAlign: "left", whiteSpace: "pre-wrap",
+                            maxHeight: 110, overflowY: "auto",
+                            boxShadow: "0 1px 4px rgba(0,0,0,0.07)",
+                          }}>
+                            {templateVarValues.reduce((text, val, i) => {
+                              const display = (autoVarGuestName && i === 0)
+                                ? "[שם אורח]"
+                                : (val.trim() || `{{${i + 1}}}`);
+                              return text.replace(new RegExp(`\\{\\{${i + 1}\\}\\}`, "g"), display);
+                            }, selectedTemplate.bodyText)}
+                          </div>
                         </div>
-                      ))}
-                    </div>
+                      )}
+
+                      {selectedTemplate.varCount > 0 && (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", letterSpacing: 0.4 }}>
+                            ערכי משתנים לכלל הקהל:
+                          </div>
+                          {templateVarValues.map((val, idx) => {
+                            const isAutoName = autoVarGuestName && idx === 0;
+                            const arrivalLabels = ["שם אורח (אוטומטי)", "קישור לתשלום 💳", "קישור לסדנאות 📚"];
+                            const varLabel = autoVarGuestName
+                              ? (arrivalLabels[idx] ?? `משתנה ${idx + 1}`)
+                              : (VAR_LABELS[idx] ?? `משתנה ${idx + 1}`);
+                            return (
+                              <div key={idx} className="form-field" style={{ marginBottom: 0 }}>
+                                <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                  <span style={{
+                                    background: "var(--gold)", color: "#1B3A32",
+                                    borderRadius: 5, padding: "1px 7px",
+                                    fontSize: 11, fontWeight: 800, fontFamily: "monospace",
+                                  }}>
+                                    {`{{${idx + 1}}}`}
+                                  </span>
+                                  {varLabel}
+                                </label>
+                                {isAutoName ? (
+                                  <div style={{ fontSize: 11, color: "#1A7A4A", padding: "8px 12px", background: "#E8F5EF", borderRadius: 8, border: "1px solid #86EFAC" }}>
+                                    ✅ שם האורח יוזן אוטומטית לפי כל אורח בקהל
+                                  </div>
+                                ) : (
+                                  <input
+                                    type="text"
+                                    value={val}
+                                    onChange={(e) => {
+                                      const next = [...templateVarValues];
+                                      next[idx] = e.target.value;
+                                      setTemplateVarValues(next);
+                                    }}
+                                    placeholder={
+                                      autoVarGuestName && idx === 1
+                                        ? "https://pay.dreamisland.co.il/..."
+                                        : autoVarGuestName && idx === 2
+                                        ? "https://dreamisland.co.il/workshops"
+                                        : `ערך עבור {{${idx + 1}}}`
+                                    }
+                                  />
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </>
                   )}
 
                   {!selectedTemplate && !loadingTemplates && waTemplates.length > 0 && (
-                    <div style={{ fontSize: 12, color: "var(--text-muted)", textAlign: "center", padding: "16px 0", fontStyle: "italic" }}>
+                    <div style={{ fontSize: 12, color: "var(--text-muted)", textAlign: "center", padding: "8px 0", fontStyle: "italic" }}>
                       בחר תבנית מאושרת כדי להמשיך
                     </div>
                   )}
@@ -920,6 +1083,53 @@ export default function BroadcastDashboard({ user }) {
                       background: "#E8F5EF", border: "1px solid #1A7A4A",
                     }}>
                       ✅ מוכן לשליחה — {selectedTemplate.name}
+                      {autoVarGuestName && (
+                        <span style={{ fontWeight: 400, marginRight: 8, fontSize: 11 }}>· שם אורח ממולא אוטומטית 🤖</span>
+                      )}
+                    </div>
+                  )}
+                  {/* ── Automation Flow Timeline ─────────────────────────────── */}
+                  {autoVarGuestName && (
+                    <div style={{
+                      background: "var(--ivory)", border: "1px solid var(--border)",
+                      borderRadius: 10, padding: "12px 14px", marginTop: 4,
+                    }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", marginBottom: 10, letterSpacing: 0.4 }}>
+                        ⚡ זרימת האוטומציה לאחר השליחה
+                      </div>
+                      <div style={{ display: "flex", gap: 0, alignItems: "flex-start", overflowX: "auto" }}>
+                        {[
+                          { step: 1, label: "אישור הגעה", sub: "ידני · עכשיו", active: true,  auto: false },
+                          { step: 2, label: "תשלום + סדנאות", sub: 'אוטומטי · לאחר "כן"', active: false, auto: true  },
+                          { step: 3, label: "בוקר הגעה", sub: "אוטומטי · בוקר ההגעה", active: false, auto: true  },
+                          { step: 4, label: "צ׳ק-אין מצב", sub: "אוטומטי · במהלך השהות", active: false, auto: true  },
+                          { step: 5, label: "פידבק יציאה", sub: "אוטומטי · ביום העזיבה", active: false, auto: true  },
+                        ].map((s, idx, arr) => (
+                          <div key={s.step} style={{ display: "flex", alignItems: "center" }}>
+                            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", minWidth: 90 }}>
+                              <div style={{
+                                width: 28, height: 28, borderRadius: "50%",
+                                background: s.active ? "var(--gold)" : s.auto ? "#E8F5EF" : "var(--border)",
+                                border: s.active ? "2px solid var(--gold-dark)" : s.auto ? "1.5px solid #1A7A4A" : "1.5px solid var(--border)",
+                                display: "flex", alignItems: "center", justifyContent: "center",
+                                fontSize: 11, fontWeight: 800,
+                                color: s.active ? "#1B3A32" : s.auto ? "#1A7A4A" : "var(--text-muted)",
+                              }}>
+                                {s.active ? "✓" : s.step}
+                              </div>
+                              <div style={{ fontSize: 10, fontWeight: 700, color: s.active ? "var(--gold-dark)" : "var(--black)", marginTop: 5, textAlign: "center", whiteSpace: "nowrap" }}>
+                                {s.label}
+                              </div>
+                              <div style={{ fontSize: 9, color: "var(--text-muted)", textAlign: "center", lineHeight: 1.3, marginTop: 2 }}>
+                                {s.sub}
+                              </div>
+                            </div>
+                            {idx < arr.length - 1 && (
+                              <div style={{ width: 20, height: 1.5, background: "var(--border)", flexShrink: 0, marginBottom: 18 }} />
+                            )}
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   )}
                 </>
