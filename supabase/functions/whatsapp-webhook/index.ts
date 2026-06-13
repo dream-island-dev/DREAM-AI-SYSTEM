@@ -403,7 +403,8 @@ async function sendTemplate(
     components.push({ type: "body", parameters: vars.map((v) => ({ type: "text", text: v })) });
   }
   if (buttonUrlParam !== undefined) {
-    components.push({ type: "button", sub_type: "url", index: "0", parameters: [{ type: "text", text: buttonUrlParam }] });
+    // index must be integer (not string) — Meta rejects "0" as string
+    components.push({ type: "button", sub_type: "url", index: 0, parameters: [{ type: "text", text: buttonUrlParam }] });
   }
 
   const res = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
@@ -421,7 +422,11 @@ async function sendTemplate(
     }),
     signal: AbortSignal.timeout(15000),
   });
-  if (!res.ok) throw new Error(`meta_template_${res.status}: ${(await res.text()).slice(0, 200)}`);
+  if (!res.ok) {
+    const errText = await res.text();
+    console.error(`[sendTemplate] Meta ${res.status} for ${templateName} to ${to}:`, errText.slice(0, 400));
+    throw new Error(`meta_template_${res.status}: ${errText.slice(0, 200)}`);
+  };
 }
 
 const SPA_MENU =
@@ -596,21 +601,34 @@ serve(async (req: Request) => {
 
         // ── "כן, מגיעים! ✨" — arrival confirmed → send payment + workshop ──
         if (buttonTitle.includes("כן, מגיעים") || buttonTitle.includes("כן מגיעים")) {
-          await supabase.from("guests").update({ arrival_confirmed: true }).eq("id", guestId);
+          if (guestId) await supabase.from("guests").update({ arrival_confirmed: true }).eq("id", guestId);
+
+          // Non-empty name required — Meta rejects empty body parameters
+          const safeName = name.trim() || "אורח יקר";
           const amount   = String((guest as Record<string,unknown>)?.payment_amount ?? "יישלח בנפרד");
-          // Extract token suffix from full payment URL for the URL button parameter.
-          // Until Gama redirect endpoint is live, falls back to full URL in a text message.
+          // URL button requires a non-empty suffix for https://pay.dream-island.co.il/r/{{1}}
           const fullUrl  = String((guest as Record<string,unknown>)?.payment_link_url ?? "");
-          const urlToken = fullUrl ? fullUrl.split("/").pop() ?? fullUrl : "pending";
+          const urlToken = fullUrl ? (fullUrl.split("/").pop() ?? fullUrl) : "register";
+
+          console.info(`[webhook] arrival confirmed: ${phone} name="${safeName}" urlToken="${urlToken}"`);
+
           if (!sim) {
             try {
-              await sendTemplate(phone, "dream_payment_and_workshops", [name, amount], "he", urlToken);
+              await sendTemplate(phone, "dream_payment_and_workshops", [safeName, amount], "he", urlToken);
               await supabase.from("whatsapp_conversations").insert({
                 phone, guest_id: guestId, direction: "outbound",
                 message: "[תבנית: dream_payment_and_workshops]", wa_message_id: null,
               });
             } catch (e) {
               console.error("[webhook] payment_and_workshops send failed:", (e as Error).message);
+              // Fallback: send a text reply so the guest isn't left hanging
+              try {
+                await sendReply(phone,
+                  `תודה ${safeName}! 🎉 קיבלנו את האישור שלך.\nנציג שלנו ישלח לך את פרטי התשלום ורישום הסדנאות בקרוב.`
+                );
+              } catch (e2) {
+                console.error("[webhook] fallback text reply also failed:", (e2 as Error).message);
+              }
             }
           } else {
             console.info(`[webhook] SIM — "כן מגיעים" from ${phone}, would send dream_payment_and_workshops`);
