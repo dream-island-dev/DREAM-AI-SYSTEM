@@ -227,9 +227,9 @@ function UserCard({ u, isSelf, saving, canEdit, onUpdate, onToggle }) {
 // ── Invite form ───────────────────────────────────────────────────────────────
 
 function InviteForm({ onSubmit, onCancel, busy }) {
-  const [form, setForm] = useState({ name: "", email: "", role: "staff", department: "" });
+  const [form, setForm] = useState({ name: "", username: "", role: "staff", department: "" });
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
-  const valid = form.name.trim() && form.email.trim() && form.email.includes("@");
+  const valid = form.name.trim() && form.username.trim();
 
   return (
     <div className="card" style={{ marginBottom: 20, border: "1.5px solid var(--gold)" }}>
@@ -250,11 +250,11 @@ function InviteForm({ onSubmit, onCancel, busy }) {
             />
           </div>
           <div className="form-field" style={{ marginBottom: 0 }}>
-            <label>אימייל *</label>
+            <label>שם משתמש *</label>
             <input
-              type="email" value={form.email}
-              onChange={(e) => set("email", e.target.value)}
-              placeholder="user@example.com"
+              type="text" value={form.username}
+              onChange={(e) => set("username", e.target.value)}
+              placeholder="david"
               style={{ direction: "ltr" }}
             />
           </div>
@@ -422,9 +422,11 @@ export default function UserManagement({ currentUser }) {
     if (!canEdit) return showToast("err", "נדרשות הרשאות super_admin");
     if (!supabase) return showToast("err", "Supabase לא מחובר");
     setInviting(true);
+    const rawUsername = form.username.trim().toLowerCase().replace(/\s+/g, "");
+    const inviteEmail = rawUsername.includes("@") ? rawUsername : `${rawUsername}@dream.io`;
     const { data, error } = await supabase.functions.invoke("invite-user", {
       body: {
-        email:      form.email.trim().toLowerCase(),
+        email:      inviteEmail,
         name:       form.name.trim(),
         role:       form.role,
         department: form.department || null,
@@ -435,8 +437,8 @@ export default function UserManagement({ currentUser }) {
       return showToast("err", "שגיאה: " + (data?.error ?? error?.message ?? "unknown"));
     }
     showToast("ok", data.alreadyExists
-      ? `✅ פרופיל עודכן עבור ${form.email}`
-      : `✅ הזמנה נשלחה ל-${form.email}`
+      ? `✅ פרופיל עודכן עבור ${form.username}`
+      : `✅ משתמש נוצר: ${form.username}`
     );
     setShowInvite(false);
     await fetchUsers();

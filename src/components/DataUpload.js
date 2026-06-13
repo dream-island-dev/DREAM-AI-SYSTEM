@@ -216,8 +216,8 @@ const DEPT_LABEL = {
   management:   "📋 ניהול כללי",
 };
 
-export default function DataUpload({ onImported, user }) {
-  const [mode, setMode]               = useState("ezgo");
+export default function DataUpload({ onImported, user, lockedMode }) {
+  const [mode, setMode]               = useState(lockedMode ?? "ezgo");
   const [rawRows, setRawRows]         = useState([]);
   const [headers, setHeaders]         = useState([]);
   const [fileName, setFileName]       = useState("");
@@ -328,21 +328,23 @@ export default function DataUpload({ onImported, user }) {
         </div>
       )}
 
-      {/* Mode selector */}
-      <div style={{ display: "flex", gap: 10, marginBottom: 20, flexWrap: "wrap" }}>
-        {Object.entries(TARGETS).map(([k, t]) => (
-          <button key={k} onClick={() => { setMode(k); setRawRows([]); setHeaders([]); setFileName(""); }}
-            style={{
-              flex: "1 1 160px", padding: "14px 18px", borderRadius: 12, cursor: "pointer",
-              fontFamily: "Heebo, sans-serif", fontSize: 15, fontWeight: 700,
-              border: `2px solid ${mode === k ? "var(--gold)" : "var(--border)"}`,
-              background: mode === k ? "rgba(201,169,110,0.1)" : "var(--card-bg)",
-              color: "var(--black)",
-            }}>
-            {mode === k ? "✓ " : ""}{t.label}
-          </button>
-        ))}
-      </div>
+      {/* Mode selector — hidden when a lockedMode is provided */}
+      {!lockedMode && (
+        <div style={{ display: "flex", gap: 10, marginBottom: 20, flexWrap: "wrap" }}>
+          {Object.entries(TARGETS).map(([k, t]) => (
+            <button key={k} onClick={() => { setMode(k); setRawRows([]); setHeaders([]); setFileName(""); }}
+              style={{
+                flex: "1 1 160px", padding: "14px 18px", borderRadius: 12, cursor: "pointer",
+                fontFamily: "Heebo, sans-serif", fontSize: 15, fontWeight: 700,
+                border: `2px solid ${mode === k ? "var(--gold)" : "var(--border)"}`,
+                background: mode === k ? "rgba(201,169,110,0.1)" : "var(--card-bg)",
+                color: "var(--black)",
+              }}>
+              {mode === k ? "✓ " : ""}{t.label}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Drop zone */}
       <div

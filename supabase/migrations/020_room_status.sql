@@ -13,10 +13,12 @@ CREATE TABLE IF NOT EXISTS room_status (
 
 ALTER TABLE room_status ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "auth_read_room_status" ON room_status;
 CREATE POLICY "auth_read_room_status"
   ON room_status FOR SELECT
   USING (auth.uid() IS NOT NULL);
 
+DROP POLICY IF EXISTS "auth_write_room_status" ON room_status;
 CREATE POLICY "auth_write_room_status"
   ON room_status FOR ALL
   USING (auth.uid() IS NOT NULL);

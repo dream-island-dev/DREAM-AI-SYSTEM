@@ -704,12 +704,30 @@ function LoginPage({ onLogin }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleLogin = () => {
+  const handleLogin = async () => {
+    setError("");
+    const raw = email.trim().toLowerCase().replace(/\s+/g, "");
+    const pass = password;
+    if (!raw || !pass) { setError("נא למלא שם משתמש וסיסמה"); return; }
+
+    // ── 1. Supabase real auth ─────────────────────────────────────────────
+    if (isSupabaseConfigured && supabase) {
+      const emailToTry = raw.includes("@") ? raw : `${raw}@dream.io`;
+      const { error: authErr } = await supabase.auth.signInWithPassword({
+        email: emailToTry,
+        password: pass,
+      });
+      if (!authErr) return; // onAuthStateChange → loadUserWithProfile → setUser
+      setError("שם משתמש או סיסמה שגויים");
+      return;
+    }
+
+    // ── 2. Fallback: MOCK_USERS (offline / demo) ──────────────────────────
     const user = MOCK_USERS.find(
-      (u) => u.email === email && u.password === password
+      (u) => (u.email === raw || u.email === `${raw}@dream.io`) && u.password === pass
     );
     if (user) onLogin(user);
-    else setError("אימייל או סיסמה שגויים");
+    else setError("שם משתמש או סיסמה שגויים");
   };
 
   return (
@@ -727,12 +745,12 @@ function LoginPage({ onLogin }) {
         <div className="login-or">או התחברות עם משתמש דמו</div>
 
         <div className="login-field">
-          <label>אימייל</label>
+          <label>שם משתמש</label>
           <input
-            type="email"
+            type="text"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            placeholder="your@email.com"
+            placeholder="david"
             onKeyDown={(e) => e.key === "Enter" && handleLogin()}
           />
         </div>

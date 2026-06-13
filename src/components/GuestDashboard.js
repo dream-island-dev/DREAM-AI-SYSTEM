@@ -15,6 +15,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
+import DataUpload from "./DataUpload";
 
 // ── Date helpers (local time) ─────────────────────────────────────────────────
 function localISO(offsetDays = 0) {
@@ -452,6 +453,7 @@ export default function GuestDashboard({ user }) {
             { key: "all",       label: `כולם (${guests.length})` },
             { key: "day_guest", label: `🏊 יומי (${dayGuests.length})` },
             { key: "suite",     label: `👑 לינה (${hotelGuests.length})` },
+            { key: "upload",    label: `📤 העלאת נתונים` },
           ].map(({ key, label }) => (
             <button
               key={key}
@@ -467,8 +469,8 @@ export default function GuestDashboard({ user }) {
             >{label}</button>
           ))}
         </div>
-        {/* Select all checkbox */}
-        {tabGuests.length > 0 && (
+        {/* Select all checkbox — hidden on upload tab */}
+        {activeTab !== "upload" && tabGuests.length > 0 && (
           <label style={{
             display: "flex", alignItems: "center", gap: 6,
             cursor: "pointer", fontSize: 13, fontWeight: 600,
@@ -491,7 +493,7 @@ export default function GuestDashboard({ user }) {
         )}
 
         {/* Bulk delete — appears only when selection is active */}
-        {selected.size > 0 && (
+        {activeTab !== "upload" && selected.size > 0 && (
           <button
             onClick={deleteSelected}
             style={{
@@ -505,34 +507,47 @@ export default function GuestDashboard({ user }) {
           </button>
         )}
 
-        {/* Add + Refresh */}
-        <button
-          onClick={() => setShowAdd((s) => !s)}
-          style={{
-            padding: "7px 16px", borderRadius: 20, cursor: "pointer",
-            fontFamily: "Heebo, sans-serif", fontSize: 13, fontWeight: 700,
-            border: "2px solid var(--gold)",
-            background: showAdd ? "rgba(201,169,110,0.15)" : "var(--card-bg)",
-            color: "var(--gold-dark)",
-          }}
-        >
-          {showAdd ? "✕ סגור" : "➕ הוסף אורח"}
-        </button>
-        <button
-          onClick={fetchGuests}
-          disabled={loading}
-          style={{
-            padding: "7px 14px", borderRadius: 20, cursor: loading ? "default" : "pointer",
-            border: "1px solid var(--border)", background: "var(--card-bg)",
-            fontSize: 13, fontFamily: "Heebo, sans-serif", color: "var(--text-muted)",
-          }}
-        >
-          {loading ? "⏳" : "🔄"}
-        </button>
+        {/* Add + Refresh — hidden on upload tab */}
+        {activeTab !== "upload" && (
+          <>
+            <button
+              onClick={() => setShowAdd((s) => !s)}
+              style={{
+                padding: "7px 16px", borderRadius: 20, cursor: "pointer",
+                fontFamily: "Heebo, sans-serif", fontSize: 13, fontWeight: 700,
+                border: "2px solid var(--gold)",
+                background: showAdd ? "rgba(201,169,110,0.15)" : "var(--card-bg)",
+                color: "var(--gold-dark)",
+              }}
+            >
+              {showAdd ? "✕ סגור" : "➕ הוסף אורח"}
+            </button>
+            <button
+              onClick={fetchGuests}
+              disabled={loading}
+              style={{
+                padding: "7px 14px", borderRadius: 20, cursor: loading ? "default" : "pointer",
+                border: "1px solid var(--border)", background: "var(--card-bg)",
+                fontSize: 13, fontFamily: "Heebo, sans-serif", color: "var(--text-muted)",
+              }}
+            >
+              {loading ? "⏳" : "🔄"}
+            </button>
+          </>
+        )}
       </div>
 
+      {/* Upload tab content */}
+      {activeTab === "upload" && (
+        <DataUpload
+          lockedMode="ezgo"
+          user={user}
+          onImported={() => { fetchGuests(); setActiveTab("all"); }}
+        />
+      )}
+
       {/* Add guest form */}
-      {showAdd && (
+      {activeTab !== "upload" && showAdd && (
         <AddGuestForm
           busy={addBusy}
           onSave={handleAddGuest}
@@ -540,8 +555,8 @@ export default function GuestDashboard({ user }) {
         />
       )}
 
-      {/* Guest list */}
-      {loading ? (
+      {/* Guest list — hidden on upload tab */}
+      {activeTab !== "upload" && (loading ? (
         <div style={{ textAlign: "center", padding: 56, color: "var(--text-muted)", fontSize: 14 }}>
           ⏳ טוען אורחים...
         </div>
@@ -692,7 +707,7 @@ export default function GuestDashboard({ user }) {
             );
           })}
         </div>
-      )}
+      ))}
     </div>
   );
 }

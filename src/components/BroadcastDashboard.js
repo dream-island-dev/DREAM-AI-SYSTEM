@@ -50,6 +50,7 @@ export default function BroadcastDashboard({ user }) {
   const [waTemplates,      setWaTemplates]      = useState([]);
   const [allMetaTemplates, setAllMetaTemplates] = useState([]); // all statuses for manager
   const [loadingTemplates, setLoadingTemplates] = useState(false);
+  const [templateFetchError, setTemplateFetchError] = useState(null);
   const [loadingAllTmpls,  setLoadingAllTmpls]  = useState(false);
   const [selectedTemplate, setSelectedTemplate] = useState(null); // { name, bodyText, varCount }
   const [templateVarValues,setTemplateVarValues]= useState([]);   // string[] for {{1}}, {{2}}…
@@ -83,7 +84,8 @@ export default function BroadcastDashboard({ user }) {
   const [quickResult,  setQuickResult]  = useState(null);
 
   // ── DB templates (from message_templates table, linked to Meta templates) ─
-  const [dbTemplates, setDbTemplates] = useState([]);
+  const [dbTemplates,   setDbTemplates]   = useState([]);
+  const [syncingToDb,   setSyncingToDb]   = useState(false);
 
   // ── Toast helper ──────────────────────────────────────────────────────────
   const showToast = useCallback((type, msg) => {
@@ -128,11 +130,14 @@ export default function BroadcastDashboard({ user }) {
   useEffect(() => {
     if (!isSupabaseConfigured || !supabase) return;
     setLoadingTemplates(true);
+    setTemplateFetchError(null);
     supabase.functions
       .invoke("get-wa-templates")
       .then(({ data, error }) => {
         if (error || !data?.ok) {
-          console.warn("[BroadcastDashboard] WA templates fetch failed:", data?.error ?? error?.message);
+          const msg = data?.error ?? error?.message ?? "unknown error";
+          console.error("[BroadcastDashboard] get-wa-templates failed:", msg);
+          setTemplateFetchError(msg);
           return;
         }
         // Only approved, exclude hello_world (test-only template)
@@ -170,6 +175,32 @@ export default function BroadcastDashboard({ user }) {
   useEffect(() => {
     if (mainTab === "templates") fetchAllMetaTemplates();
   }, [mainTab, fetchAllMetaTemplates]);
+
+  // ── Sync approved Meta templates → message_templates table ───────────────
+  const refreshDbTemplates = useCallback(async () => {
+    if (!isSupabaseConfigured || !supabase) return;
+    const { data } = await supabase
+      .from("message_templates")
+      .select("id, label, content, sort_order, wa_template_name, workshop_link")
+      .order("sort_order");
+    setDbTemplates(data ?? []);
+  }, []);
+
+  const handleFullSync = useCallback(async () => {
+    if (!isSupabaseConfigured || !supabase) return;
+    setSyncingToDb(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("sync-wa-templates");
+      if (error) throw new Error(error.message);
+      if (!data?.ok) throw new Error(data?.error ?? "sync failed");
+      showToast("ok", `✅ סונכרן ${data.synced} תבניות מ-Meta לבסיס הנתונים`);
+      await Promise.all([refreshDbTemplates(), fetchAllMetaTemplates()]);
+    } catch (err) {
+      showToast("err", "שגיאה בסנכרון: " + (err?.message ?? err));
+    } finally {
+      setSyncingToDb(false);
+    }
+  }, [showToast, refreshDbTemplates, fetchAllMetaTemplates]);
 
   // ── Create new Meta template ──────────────────────────────────────────────
   const handleCreateTemplate = useCallback(async () => {
@@ -458,10 +489,10 @@ export default function BroadcastDashboard({ user }) {
         <div style={{ display: "flex", gap: 8 }}>
           <button
             className="btn btn-ghost btn-sm"
-            onClick={fetchAllMetaTemplates}
-            disabled={loadingAllTmpls}
+            onClick={handleFullSync}
+            disabled={loadingAllTmpls || syncingToDb}
           >
-            {loadingAllTmpls ? "⏳ מסנכרן..." : "🔄 סנכרן מ-Meta"}
+            {syncingToDb ? "⏳ מסנכרן..." : "🔄 סנכרן מ-Meta"}
           </button>
           <button
             className="btn btn-primary btn-sm"
@@ -935,7 +966,10 @@ export default function BroadcastDashboard({ user }) {
                     </label>
                     {!loadingTemplates && waTemplates.length === 0 ? (
                       <div style={{ fontSize: 12, color: "#C0392B", padding: "10px 12px", borderRadius: 8, background: "#FFF0EE", border: "1px solid #C0392B" }}>
-                        ⚠️ לא נמצאו תבניות מאושרות ב-Meta. בדוק שה-META_BUSINESS_ACCOUNT_ID מוגדר כ-Secret בסופאבייס.
+                        {templateFetchError
+                          ? <>⚠️ שגיאה בטעינת תבניות מ-Meta:<br /><code style={{ fontSize: 11, wordBreak: "break-all" }}>{templateFetchError}</code></>
+                          : "⚠️ לא נמצאו תבניות מאושרות ב-Meta. בדוק שה-META_BUSINESS_ACCOUNT_ID מוגדר כ-Secret בסופאבייס."
+                        }
                       </div>
                     ) : (
                       <div style={{ display: "flex", flexDirection: "column", gap: 7, maxHeight: 240, overflowY: "auto", paddingLeft: 2 }}>
@@ -1300,20 +1334,31 @@ export default function BroadcastDashboard({ user }) {
                       </span>
                     </td>
                     <td>
+                      {(() => {
+                        // Only block clicks during an active send — let sendToOne's guards
+                        // handle validation (template not selected, no phone) via toast feedback.
+                        const isBusy = sendingOneId === g.id || isSending;
+                        const tooltipMsg = !g.phone ? `ל${g.name} אין מספר טלפון`
+                          : sendMode === "template" && !selectedTemplate ? "בחר תבנית תחילה"
+                          : sendMode === "free_text" && !freeTextMsg.trim() ? "הקלד הודעה תחילה"
+                          : `שלח ל${g.name}`;
+                        return (
                       <button
                         onClick={() => sendToOne(g)}
-                        disabled={!g.phone || !selectedTemplate || sendingOneId === g.id || isSending}
-                        title={!selectedTemplate ? "בחר תבנית תחילה" : `שלח ל${g.name}`}
+                        disabled={isBusy}
+                        title={tooltipMsg}
                         style={{
                           padding: "4px 10px", borderRadius: 16, fontSize: 11, fontWeight: 700,
                           border: "1px solid #22C55E", background: "#F0FDF4", color: "#15803D",
-                          cursor: (!g.phone || !selectedTemplate || isSending) ? "default" : "pointer",
-                          opacity: (!g.phone || !selectedTemplate) ? 0.3 : 1,
+                          cursor: isBusy ? "not-allowed" : "pointer",
+                          opacity: !g.phone ? 0.45 : 1,
                           whiteSpace: "nowrap",
                         }}
                       >
                         {sendingOneId === g.id ? "⏳" : "📤 שלח"}
                       </button>
+                        );
+                      })()}
                     </td>
                   </tr>
                 ))}

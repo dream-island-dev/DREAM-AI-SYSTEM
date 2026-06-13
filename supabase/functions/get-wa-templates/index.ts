@@ -46,6 +46,9 @@ serve(async (req: Request) => {
     const token  = Deno.env.get("META_WHATSAPP_TOKEN") ?? Deno.env.get("WHATSAPP_TOKEN");
     const wabaId = Deno.env.get("META_BUSINESS_ACCOUNT_ID");
 
+    // Startup diagnostics — visible in Supabase → Edge Functions → Logs
+    console.log("[get-wa-templates] token present:", !!token, "| wabaId:", wabaId ?? "MISSING");
+
     if (!token)  throw new Error("missing_secret: META_WHATSAPP_TOKEN");
     if (!wabaId) throw new Error("missing_secret: META_BUSINESS_ACCOUNT_ID");
 
@@ -72,6 +75,8 @@ serve(async (req: Request) => {
 
     if (!res.ok) {
       const detail = (await res.text()).slice(0, 400);
+      // Log raw Meta error so it appears in Supabase Edge Function logs
+      console.error(`[get-wa-templates] Meta API ${res.status} for WABA ${wabaId}:`, detail);
       throw new Error(`meta_api_${res.status}: ${detail}`);
     }
 

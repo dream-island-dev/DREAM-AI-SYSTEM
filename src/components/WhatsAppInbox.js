@@ -436,17 +436,39 @@ function NewChatModal({ onClose, onSent }) {
   }
 
   const VAR_LABELS = ["שם אורח", "מספר חדר", "תאריך הגעה", "סוג חדר", "שעת הגעה"];
-  const allTmpls   = [
-    ...dbTemplates.map((d) => ({
-      name:     d.label ?? d.name ?? d.title ?? d.template_name ?? "(ללא שם)",
-      bodyText: d.body_text ?? d.content ?? d.message ?? d.text ?? "",
-      varCount: (d.body_text ?? d.content ?? d.text ?? "").match(/\{\{\d+\}\}/g)?.length ?? 0,
-      source: "db",
-      emoji:    d.emoji ?? "📋",
-      category: d.category ?? "",
-    })),
-    ...waTemplates.map((w) => ({ ...w, source: "wa", emoji: "✅" })),
+
+  // Canonical send order — dream_arrival_confirmation must be index 0
+  const TEMPLATE_ORDER = [
+    "dream_arrival_confirmation",
+    "dream_welcome_morning",
+    "dream_payment_and_workshops",
+    "dream_mid_stay_check",
+    "dream_checkout_feedback",
+    "dream_checkin_reminder_v2",
+    "dream_handover_agent_v2",
   ];
+
+  // Source of truth: Meta-approved templates only.
+  // DB templates are used solely to enrich with Hebrew display labels (via wa_template_name match).
+  // This ensures waTemplateName sent to the edge function is always the real Meta name.
+  const allTmpls = waTemplates
+    .map((w) => {
+      const dbMatch = dbTemplates.find((d) => d.wa_template_name === w.name);
+      return {
+        ...w,
+        source:      "wa",
+        emoji:       "✅",
+        displayName: dbMatch?.label ?? w.name,
+      };
+    })
+    .sort((a, b) => {
+      const ia = TEMPLATE_ORDER.indexOf(a.name);
+      const ib = TEMPLATE_ORDER.indexOf(b.name);
+      if (ia === -1 && ib === -1) return 0;
+      if (ia === -1) return 1;
+      if (ib === -1) return -1;
+      return ia - ib;
+    });
 
   return (
     <div style={{
@@ -806,7 +828,7 @@ function NewChatModal({ onClose, onSent }) {
                           <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
                             <span style={{ fontSize: 20 }}>{t.emoji}</span>
                             <div>
-                              <div style={{ fontWeight: 700, fontSize: 13, color: "#1a1a1a" }}>{t.name}</div>
+                              <div style={{ fontWeight: 700, fontSize: 13, color: "#1a1a1a" }}>{t.displayName ?? t.name}</div>
                               {t.source === "wa" && (
                                 <span style={{ fontSize: 10, background: "#D1FAE5", color: "#065F46", padding: "1px 6px", borderRadius: 4, fontWeight: 600 }}>
                                   מאושר Meta
