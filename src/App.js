@@ -713,23 +713,162 @@ function LoginPage({ onLogin }) {
   );
 }
 
+function UserManagementPage({ currentUser }) {
+  const [showModal, setShowModal] = useState(false);
+  const [form, setForm] = useState({ email: "", password: "", name: "", role: "manager", department: "" });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [created, setCreated] = useState([]);
+
+  const handleCreate = async () => {
+    if (!form.email || !form.password || !form.name) {
+      setError("אימייל, סיסמה ושם הם שדות חובה");
+      return;
+    }
+    setLoading(true);
+    setError("");
+    const { data, error: fnError } = await supabase.functions.invoke("create-user", {
+      body: {
+        email: form.email,
+        password: form.password,
+        name: form.name,
+        newRole: form.role,
+        department: form.department,
+      },
+    });
+    setLoading(false);
+    if (fnError || data?.error) {
+      setError(fnError?.message || data?.error);
+      return;
+    }
+    setCreated((prev) => [...prev, { ...form, id: data.user.id }]);
+    setShowModal(false);
+    setForm({ email: "", password: "", name: "", role: "manager", department: "" });
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+        <div style={{ fontSize: 14, color: "#8a9ab0" }}>
+          {created.length > 0 ? `${created.length} משתמשים נוספו בסשן זה` : "יצירת חשבונות כניסה למערכת"}
+        </div>
+        <button className="btn btn-primary" onClick={() => { setError(""); setShowModal(true); }}>
+          ＋ הוסף משתמש
+        </button>
+      </div>
+
+      {created.length > 0 ? (
+        <div className="card">
+          <div className="card-header"><div className="card-title">✅ נוצרו בסשן זה</div></div>
+          <div className="card-body table-scroll">
+            <table className="table">
+              <thead>
+                <tr><th>שם</th><th>אימייל</th><th>תפקיד</th><th>מחלקה</th></tr>
+              </thead>
+              <tbody>
+                {created.map((u) => (
+                  <tr key={u.id}>
+                    <td style={{ fontWeight: 600 }}>{u.name}</td>
+                    <td style={{ direction: "ltr", textAlign: "right" }}>{u.email}</td>
+                    <td>
+                      <span className="badge badge-gold">
+                        {u.role === "admin" ? "מנהל כללי" : "מנהל מחלקה"}
+                      </span>
+                    </td>
+                    <td>{u.department || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : (
+        <div className="card" style={{ textAlign: "center", padding: 48 }}>
+          <div style={{ fontSize: 44, marginBottom: 12 }}>🔑</div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: "var(--black)", marginBottom: 6 }}>אין משתמשים עדיין</div>
+          <div style={{ fontSize: 13, color: "var(--text-muted)" }}>לחץ "הוסף משתמש" ליצירת חשבון חדש — יהיה פעיל מיד</div>
+        </div>
+      )}
+
+      {showModal && (
+        <div className="modal-overlay" onClick={() => setShowModal(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-title">🔑 הוספת משתמש חדש</div>
+            <div className="form-field">
+              <label>שם מלא</label>
+              <input
+                placeholder="שם פרטי + משפחה"
+                value={form.name}
+                onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+              />
+            </div>
+            <div className="form-field">
+              <label>אימייל</label>
+              <input
+                type="email"
+                placeholder="user@dreamisland.com"
+                value={form.email}
+                onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+              />
+            </div>
+            <div className="form-field">
+              <label>סיסמה זמנית</label>
+              <input
+                type="password"
+                placeholder="לפחות 6 תווים"
+                value={form.password}
+                onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
+              />
+            </div>
+            <div className="form-grid">
+              <div className="form-field">
+                <label>תפקיד</label>
+                <select value={form.role} onChange={(e) => setForm((f) => ({ ...f, role: e.target.value }))}>
+                  <option value="manager">מנהל מחלקה</option>
+                  <option value="admin">מנהל כללי</option>
+                </select>
+              </div>
+              <div className="form-field">
+                <label>מחלקה</label>
+                <select value={form.department} onChange={(e) => setForm((f) => ({ ...f, department: e.target.value }))}>
+                  <option value="">ללא מחלקה</option>
+                  {DEPARTMENTS.map((d) => <option key={d}>{d}</option>)}
+                </select>
+              </div>
+            </div>
+            {error && <div style={{ color: "#ff8a80", fontSize: 13, marginBottom: 12 }}>{error}</div>}
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <button className="btn btn-ghost" onClick={() => setShowModal(false)}>ביטול</button>
+              <button className="btn btn-primary" onClick={handleCreate} disabled={loading}>
+                {loading ? "יוצר..." : "צור משתמש"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Sidebar({ user, active, setActive, openCallsCount, onLogout }) {
-  const isManager = user.role === "admin" || user.role === "manager";
+  const isAdmin   = user.role === "admin" || user.role === "super_admin";
+  const isManager = isAdmin || user.role === "manager";
 
   const navItems = [
-    { id: "dashboard",  icon: "📊", label: "דאשבורד" },
-    { id: "shifts",     icon: "🕐", label: "משמרות" },
-    { id: "calls",      icon: "🔔", label: "קריאות שירות", badge: openCallsCount },
-    { id: "checklist",  icon: "✅", label: "צ'קליסטים" },
-    { id: "employees",  icon: "👥", label: "עובדים" },
-    { id: "marketing",  icon: "🎯", label: "שיווק ושימור",  managerOnly: true },
+    { id: "dashboard",      icon: "📊", label: "דאשבורד" },
+    { id: "shifts",         icon: "🕐", label: "משמרות" },
+    { id: "calls",          icon: "🔔", label: "קריאות שירות", badge: openCallsCount },
+    { id: "checklist",      icon: "✅", label: "צ'קליסטים" },
+    { id: "employees",      icon: "👥", label: "עובדים" },
+    { id: "users",          icon: "🔑", label: "ניהול משתמשים", adminOnly: true },
+    { id: "marketing",      icon: "🎯", label: "שיווק ושימור",  managerOnly: true },
     { id: "broadcast",      icon: "📨", label: "WhatsApp Broadcast" },
     { id: "broadcast_dash", icon: "📊", label: "Broadcast Dashboard" },
-    { id: "rooms",      icon: "🏨", label: "סטטוס חדרים" },
-    { id: "cleaning",   icon: "🧹", label: "QR ניקיון" },
-    { id: "bookings",   icon: "💳", label: "הזמנות ותשלומים" },
-    { id: "agent",      icon: "🤖", label: "הסוכן שלי" },
-  ].filter((item) => !item.managerOnly || isManager);
+    { id: "rooms",          icon: "🏨", label: "סטטוס חדרים" },
+    { id: "cleaning",       icon: "🧹", label: "QR ניקיון" },
+    { id: "bookings",       icon: "💳", label: "הזמנות ותשלומים" },
+    { id: "agent",          icon: "🤖", label: "הסוכן שלי" },
+  ].filter((item) => (!item.managerOnly || isManager) && (!item.adminOnly || isAdmin));
 
   return (
     <div className="sidebar">
@@ -1858,6 +1997,7 @@ export default function App() {
     rooms:      "סטטוס חדרים 🏨",
     cleaning:   "QR ניקיון 🧹",
     bookings:   "הזמנות ובקרת תשלומים 💳",
+    users:      "ניהול משתמשים 🔑",
     agent:      agentProfile ? `${agentProfile.display_name} 🤖` : "הסוכן שלי 🤖",
   };
 
@@ -1918,6 +2058,8 @@ export default function App() {
         return <CleaningQR />;
       case "bookings":
         return <BookingsManager />;
+      case "users":
+        return <UserManagementPage currentUser={user} />;
       case "agent":
         if (!agentProfile) {
           return (
