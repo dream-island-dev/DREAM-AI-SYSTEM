@@ -119,7 +119,14 @@ export default function BroadcastDashboard({ user }) {
           console.warn("[BroadcastDashboard] WA templates fetch failed:", data?.error ?? error?.message);
           return;
         }
-        setWaTemplates(data.templates ?? []);
+        // Only approved, exclude hello_world (test-only template)
+        setWaTemplates(
+          (data.templates ?? []).filter(
+            (w) =>
+              w.name !== "hello_world" &&
+              (w.status == null || String(w.status).toUpperCase() === "APPROVED")
+          )
+        );
       })
       .finally(() => setLoadingTemplates(false));
   }, []);

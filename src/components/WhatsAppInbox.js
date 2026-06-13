@@ -228,6 +228,14 @@ function NewChatModal({ onClose, onSent }) {
   const [bulkDone,      setBulkDone]      = useState(false);
   const [showBulkList,  setShowBulkList]  = useState(false);
 
+  // Template audience mode
+  const [tmplMode,           setTmplMode]           = useState("single"); // "single"|"audience"
+  const [tmplAudienceFilter, setTmplAudienceFilter] = useState("checked_in");
+  const [tmplAudienceGuests, setTmplAudienceGuests] = useState([]);
+  const [tmplBulkSending,    setTmplBulkSending]    = useState(false);
+  const [tmplBulkProgress,   setTmplBulkProgress]   = useState(null);
+  const [tmplBulkDone,       setTmplBulkDone]       = useState(false);
+
   // Load guests for bulk mode whenever filter changes
   useEffect(() => {
     if (mode !== "bulk" || !supabase) return;
@@ -279,7 +287,13 @@ function NewChatModal({ onClose, onSent }) {
       supabase.functions.invoke("get-wa-templates").then(({ data }) => data?.templates ?? []),
       supabase.from("message_templates").select("*").order("sort_order").then(({ data }) => data ?? []),
     ]).then(([wa, db]) => {
-      setWaTemplates(wa);
+      // Only show APPROVED Meta templates; exclude hello_world (test-number only)
+      const approvedWa = wa.filter(
+        (w) =>
+          w.name !== "hello_world" &&
+          (w.status == null || String(w.status).toUpperCase() === "APPROVED")
+      );
+      setWaTemplates(approvedWa);
       setDbTemplates(db);
     }).finally(() => setLoadingTmpls(false));
   }, []);
@@ -366,6 +380,53 @@ function NewChatModal({ onClose, onSent }) {
     }
   }
 
+  // Load guests for template audience mode
+  useEffect(() => {
+    if (mode !== "template" || tmplMode !== "audience" || !supabase) return;
+    const today = new Date().toISOString().slice(0, 10);
+    let q = supabase.from("guests").select("id, name, phone, room, room_type, arrival_date, status").not("phone", "is", null);
+    if (tmplAudienceFilter === "checked_in")      q = q.eq("status", "checked_in");
+    else if (tmplAudienceFilter === "expected")   q = q.eq("status", "expected");
+    else if (tmplAudienceFilter === "arriving_today") q = q.eq("arrival_date", today);
+    else if (tmplAudienceFilter === "suite")      q = q.eq("room_type", "suite");
+    else if (tmplAudienceFilter === "past")       q = q.eq("status", "checked_out");
+    q.limit(200).then(({ data }) => setTmplAudienceGuests((data ?? []).filter((g) => g.phone)));
+  }, [mode, tmplMode, tmplAudienceFilter]);
+
+  // ── Template audience bulk send ─────────────────────────────────────────────
+  async function handleSendTemplateAudience() {
+    if (!selectedTmpl)              return setErr("נא לבחור תבנית");
+    if (tmplAudienceGuests.length === 0) return setErr("אין נמענים בסינון הנוכחי");
+
+    setTmplBulkSending(true); setErr(null); setTmplBulkDone(false);
+    let done = 0;
+    for (const g of tmplAudienceGuests) {
+      setTmplBulkProgress({ done, total: tmplAudienceGuests.length });
+      try {
+        const autoVars = varValues.map((v, idx) => {
+          if (v.trim()) return v;
+          if (idx === 0) return g.name ?? "";
+          if (idx === 1) return g.room ?? "";
+          if (idx === 2) return g.arrival_date ?? "";
+          return "";
+        });
+        const { data, error } = await supabase.functions.invoke("whatsapp-send", {
+          body: { trigger: "broadcast", guestId: g.id, waTemplateName: selectedTmpl.name, templateVariables: autoVars },
+        });
+        if (!error && data?.ok) {
+          await supabase.from("whatsapp_conversations").insert({
+            phone: g.phone, direction: "outbound", message: `[תבנית: ${selectedTmpl.name}]`, wa_message_id: null,
+          });
+        }
+      } catch (_) {}
+      done++;
+      await sleep(650);
+    }
+    setTmplBulkProgress({ done, total: tmplAudienceGuests.length });
+    setTmplBulkSending(false);
+    setTmplBulkDone(true);
+  }
+
   // Build live preview text (template with vars substituted)
   function buildPreview() {
     if (!selectedTmpl?.bodyText) return null;
@@ -376,7 +437,13 @@ function NewChatModal({ onClose, onSent }) {
 
   const VAR_LABELS = ["שם אורח", "מספר חדר", "תאריך הגעה", "סוג חדר", "שעת הגעה"];
   const allTmpls   = [
-    ...dbTemplates.map((d) => ({ name: d.name ?? d.title, bodyText: d.body_text ?? d.message, varCount: 0, source: "db", emoji: d.emoji ?? "📋" })),
+    ...dbTemplates.map((d) => ({
+      name:     d.name ?? d.title ?? d.template_name ?? "(ללא שם)",
+      bodyText: d.body_text ?? d.message ?? d.content ?? d.text ?? "",
+      varCount: 0, source: "db",
+      emoji:    d.emoji ?? "📋",
+      category: d.category ?? "",
+    })),
     ...waTemplates.map((w) => ({ ...w, source: "wa", emoji: "✅" })),
   ];
 
@@ -412,8 +479,8 @@ function NewChatModal({ onClose, onSent }) {
 
         <div style={{ padding: "20px 22px", display: "flex", flexDirection: "column", gap: 16 }}>
 
-          {/* ── Guest search ── */}
-          <div>
+          {/* ── Guest search (hidden when template audience mode) ── */}
+          <div style={{ display: mode === "template" && tmplMode === "audience" ? "none" : "block" }}>
             <label style={{ display: "block", fontWeight: 700, fontSize: 12, marginBottom: 6, color: "#555", textTransform: "uppercase", letterSpacing: 0.5 }}>
               👤 נמען
             </label>
@@ -645,6 +712,69 @@ function NewChatModal({ onClose, onSent }) {
           {/* ── TEMPLATE TAB ── */}
           {mode === "template" && (
             <>
+              {/* Recipient mode toggle */}
+              <div style={{ display: "flex", background: "#F3F4F6", borderRadius: 10, padding: 3, gap: 2 }}>
+                {[{ id: "single", label: "👤 אורח בודד" }, { id: "audience", label: "👥 קהל נבחר" }].map((m) => (
+                  <button key={m.id}
+                    onClick={() => { setTmplMode(m.id); setErr(null); setTmplBulkDone(false); setTmplBulkProgress(null); }}
+                    style={{
+                      flex: 1, padding: "8px 0", border: "none", borderRadius: 8,
+                      fontFamily: "inherit", fontWeight: 700, fontSize: 13, cursor: "pointer",
+                      background: tmplMode === m.id ? "white" : "transparent",
+                      color: tmplMode === m.id ? "#075E54" : "#6B7280",
+                      boxShadow: tmplMode === m.id ? "0 1px 4px rgba(0,0,0,0.1)" : "none",
+                      transition: "all 0.2s",
+                    }}
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Audience filter chips (audience mode) */}
+              {tmplMode === "audience" && (
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "#555", marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>🎯 קהל יעד</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    {[
+                      { id: "checked_in",     label: "שוהים עכשיו 🏨" },
+                      { id: "expected",       label: "מגיעים בקרוב 📅" },
+                      { id: "arriving_today", label: "מגיעים היום 🌅" },
+                      { id: "suite",          label: "אורחי סוויטות 👑" },
+                      { id: "past",           label: "לקוחות עבר 📋" },
+                    ].map((f) => (
+                      <button key={f.id}
+                        onClick={() => { setTmplAudienceFilter(f.id); setTmplBulkDone(false); setTmplBulkProgress(null); }}
+                        style={{
+                          padding: "7px 13px", borderRadius: 20, border: "2px solid",
+                          borderColor: tmplAudienceFilter === f.id ? "#075E54" : "#E5E7EB",
+                          background: tmplAudienceFilter === f.id ? "#E8F5EF" : "white",
+                          color: tmplAudienceFilter === f.id ? "#075E54" : "#555",
+                          fontSize: 12, fontWeight: 700, cursor: "pointer",
+                          fontFamily: "inherit", transition: "all 0.15s",
+                        }}
+                      >
+                        {f.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{
+                    marginTop: 8, padding: "8px 12px", borderRadius: 8,
+                    background: tmplAudienceGuests.length > 0 ? "#E8F5EF" : "#F9FAFB",
+                    border: `1px solid ${tmplAudienceGuests.length > 0 ? "#25D366" : "#E5E7EB"}`,
+                    fontSize: 13, fontWeight: 700,
+                    color: tmplAudienceGuests.length > 0 ? "#075E54" : "#9CA3AF",
+                  }}>
+                    {tmplAudienceGuests.length > 0 ? `👥 ${tmplAudienceGuests.length} נמענים` : "⏳ טוען..."}
+                    {tmplAudienceGuests.length > 0 && (
+                      <span style={{ fontSize: 11, fontWeight: 400, marginRight: 8, color: "#555" }}>
+                        {tmplAudienceGuests.slice(0, 3).map(g => g.name).join(", ") + (tmplAudienceGuests.length > 3 ? ` ועוד ${tmplAudienceGuests.length - 3}` : "")}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+
               <div>
                 <div style={{ fontSize: 12, fontWeight: 700, color: "#555", marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>
                   📋 בחר תבנית
@@ -785,21 +915,64 @@ function NewChatModal({ onClose, onSent }) {
                 </div>
               )}
 
-              <button onClick={handleSendTemplate}
-                disabled={sending || !selectedGuest || !selectedTmpl}
-                style={{
+              {/* Progress bar (audience mode) */}
+              {tmplBulkProgress && (
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#555", marginBottom: 4 }}>
+                    <span>{tmplBulkDone ? "✅ שליחה הושלמה!" : `שולח... ${tmplBulkProgress.done}/${tmplBulkProgress.total}`}</span>
+                    <span>{Math.round((tmplBulkProgress.done / tmplBulkProgress.total) * 100)}%</span>
+                  </div>
+                  <div style={{ height: 6, background: "#E5E7EB", borderRadius: 3, overflow: "hidden" }}>
+                    <div style={{
+                      height: "100%", borderRadius: 3, transition: "width 0.4s",
+                      width: `${(tmplBulkProgress.done / tmplBulkProgress.total) * 100}%`,
+                      background: tmplBulkDone ? "#25D366" : "linear-gradient(90deg, #25D366, #128C7E)",
+                    }} />
+                  </div>
+                </div>
+              )}
+
+              {tmplBulkDone ? (
+                <button onClick={onClose} style={{
                   width: "100%", padding: "14px", borderRadius: 12, border: "none",
-                  background: sending || !selectedGuest || !selectedTmpl
-                    ? "#E5E7EB"
-                    : "linear-gradient(135deg, #25D366 0%, #128C7E 100%)",
-                  color: sending || !selectedGuest || !selectedTmpl ? "#9CA3AF" : "white",
-                  fontFamily: "inherit", fontSize: 15, fontWeight: 800,
-                  cursor: sending || !selectedGuest || !selectedTmpl ? "not-allowed" : "pointer",
-                  transition: "all 0.2s", letterSpacing: 0.3,
-                }}
-              >
-                {sending ? "⏳ שולח..." : "📤 שלח תבנית"}
-              </button>
+                  background: "#25D366", color: "white",
+                  fontFamily: "inherit", fontSize: 15, fontWeight: 800, cursor: "pointer",
+                }}>✅ סגור</button>
+              ) : tmplMode === "audience" ? (
+                <button onClick={handleSendTemplateAudience}
+                  disabled={tmplBulkSending || !selectedTmpl || tmplAudienceGuests.length === 0}
+                  style={{
+                    width: "100%", padding: "14px", borderRadius: 12, border: "none",
+                    background: tmplBulkSending || !selectedTmpl || tmplAudienceGuests.length === 0
+                      ? "#E5E7EB"
+                      : "linear-gradient(135deg, #128C7E 0%, #075E54 100%)",
+                    color: tmplBulkSending || !selectedTmpl || tmplAudienceGuests.length === 0 ? "#9CA3AF" : "white",
+                    fontFamily: "inherit", fontSize: 15, fontWeight: 800,
+                    cursor: tmplBulkSending || !selectedTmpl || tmplAudienceGuests.length === 0 ? "not-allowed" : "pointer",
+                    transition: "all 0.2s",
+                  }}
+                >
+                  {tmplBulkSending
+                    ? `⏳ שולח... ${tmplBulkProgress?.done ?? 0}/${tmplAudienceGuests.length}`
+                    : `📢 שלח ל-${tmplAudienceGuests.length} נמענים`}
+                </button>
+              ) : (
+                <button onClick={handleSendTemplate}
+                  disabled={sending || !selectedGuest || !selectedTmpl}
+                  style={{
+                    width: "100%", padding: "14px", borderRadius: 12, border: "none",
+                    background: sending || !selectedGuest || !selectedTmpl
+                      ? "#E5E7EB"
+                      : "linear-gradient(135deg, #25D366 0%, #128C7E 100%)",
+                    color: sending || !selectedGuest || !selectedTmpl ? "#9CA3AF" : "white",
+                    fontFamily: "inherit", fontSize: 15, fontWeight: 800,
+                    cursor: sending || !selectedGuest || !selectedTmpl ? "not-allowed" : "pointer",
+                    transition: "all 0.2s", letterSpacing: 0.3,
+                  }}
+                >
+                  {sending ? "⏳ שולח..." : "📤 שלח תבנית"}
+                </button>
+              )}
             </>
           )}
 
