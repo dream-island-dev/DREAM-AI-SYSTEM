@@ -123,19 +123,26 @@ async function sendViaMeta(to: string, body: string): Promise<void> {
 // Used for all business-initiated messages (required outside the 24h window).
 // templateName must match an APPROVED template in WhatsApp Manager.
 // variables maps to {{1}}, {{2}}, ... body parameters in the template.
+// buttonUrlParam: dynamic suffix for the first URL button (index 0) — used by
+//   dream_payment_and_workshops whose payment link ends with /r/{{1}}.
 async function sendViaTemplate(
   to: string,
   templateName: string,
   variables: string[] = [],
-  langCode = "he"
+  langCode = "he",
+  buttonUrlParam?: string,
 ): Promise<void> {
   const token   = Deno.env.get("META_WHATSAPP_TOKEN")  ?? Deno.env.get("WHATSAPP_TOKEN");
   const phoneId = Deno.env.get("META_PHONE_NUMBER_ID") ?? Deno.env.get("WHATSAPP_PHONE_NUMBER_ID");
   if (!token || !phoneId) throw new Error("missing_meta_whatsapp_creds");
 
-  const components = variables.length > 0
-    ? [{ type: "body", parameters: variables.map((v) => ({ type: "text", text: v })) }]
-    : [];
+  const components: unknown[] = [];
+  if (variables.length > 0) {
+    components.push({ type: "body", parameters: variables.map((v) => ({ type: "text", text: v })) });
+  }
+  if (buttonUrlParam !== undefined) {
+    components.push({ type: "button", sub_type: "url", index: 0, parameters: [{ type: "text", text: buttonUrlParam }] });
+  }
 
   const res = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
     method: "POST",
@@ -308,6 +315,64 @@ serve(async (req: Request) => {
           ...(replyErr ? { error: replyErr } : {}),
         }),
         { headers: { ...CORS, "Content-Type": "application/json" } }
+      );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // BRANCH E: payment_and_workshops — manual trigger from GuestsPage dashboard
+    //   Sends dream_payment_and_workshops template with URL button suffix.
+    //   Not in the pipeline map because it needs a buttonUrlParam.
+    //   Not idempotent: staff may intentionally resend after updating the amount.
+    // ─────────────────────────────────────────────────────────────────────────
+    if (trigger === "payment_and_workshops") {
+      if (!guestId) throw new Error("guestId required for payment_and_workshops");
+
+      const { data: guest, error: gErr } = await supabase
+        .from("guests")
+        .select("id, name, phone, payment_amount, payment_link_url")
+        .eq("id", guestId)
+        .single();
+      if (gErr || !guest) throw new Error("guest_not_found");
+      if (!guest.phone)            throw new Error("guest_no_phone");
+      if (!guest.payment_amount)   throw new Error("payment_amount_not_set");
+      if (!guest.payment_link_url) throw new Error("payment_link_url_not_set");
+
+      const safeName = (String(guest.name ?? "").trim()) || "אורח יקר";
+      const amount   = String(guest.payment_amount);
+      const fullUrl  = String(guest.payment_link_url);
+      const urlToken = fullUrl.split("/").pop() ?? fullUrl;
+
+      let status = "simulated";
+      let sendError: string | null = null;
+      try {
+        if (!sim) {
+          await sendViaTemplate(
+            String(guest.phone),
+            "dream_payment_and_workshops",
+            [safeName, amount],
+            "he",
+            urlToken,
+          );
+          status = "sent";
+        }
+      } catch (e) {
+        sendError = (e as Error).message;
+        console.error("[whatsapp] payment_and_workshops send failed:", sendError);
+        status = "failed";
+      }
+
+      await supabase.from("notification_log").insert({
+        guest_id:     guestId,
+        recipient:    guest.phone,
+        trigger_type: "payment_and_workshops",
+        channel:      "whatsapp",
+        status,
+        payload: { template: "dream_payment_and_workshops", amount, urlToken, ...(sendError ? { error: sendError } : {}) },
+      });
+
+      return new Response(
+        JSON.stringify({ ok: status !== "failed", simulation: sim, status, ...(sendError ? { error: sendError } : {}) }),
+        { headers: { ...CORS, "Content-Type": "application/json" } },
       );
     }
 

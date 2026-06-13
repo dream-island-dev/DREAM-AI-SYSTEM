@@ -728,35 +728,58 @@ serve(async (req: Request) => {
         if (buttonTitle.includes("כן, מגיעים") || buttonTitle.includes("כן מגיעים")) {
           if (guestId) await supabase.from("guests").update({ arrival_confirmed: true }).eq("id", guestId);
 
-          // Non-empty name required — Meta rejects empty body parameters
-          const safeName = name.trim() || "אורח יקר";
-          const amount   = String((guest as Record<string,unknown>)?.payment_amount ?? "יישלח בנפרד");
-          // URL button requires a non-empty suffix for https://pay.dream-island.co.il/r/{{1}}
-          const fullUrl  = String((guest as Record<string,unknown>)?.payment_link_url ?? "");
-          const urlToken = fullUrl ? (fullUrl.split("/").pop() ?? fullUrl) : "register";
+          const safeName       = name.trim() || "אורח יקר";
+          const paymentAmount  = (guest as Record<string,unknown>)?.payment_amount;
+          const paymentLinkUrl = String((guest as Record<string,unknown>)?.payment_link_url ?? "");
+          const hasPaymentData = !!paymentAmount && !!paymentLinkUrl;
 
-          console.info(`[webhook] arrival confirmed: ${phone} name="${safeName}" urlToken="${urlToken}"`);
+          console.info(`[webhook] arrival confirmed: ${phone} name="${safeName}" hasPaymentData=${hasPaymentData}`);
 
           if (!sim) {
-            try {
-              await sendTemplate(phone, "dream_payment_and_workshops", [safeName, amount], "he", urlToken);
-              await supabase.from("whatsapp_conversations").insert({
-                phone, guest_id: guestId, direction: "outbound",
-                message: "[תבנית: dream_payment_and_workshops]", wa_message_id: null,
-              });
-            } catch (e) {
-              console.error("[webhook] payment_and_workshops send failed:", (e as Error).message);
-              // Fallback: send a text reply so the guest isn't left hanging
+            if (hasPaymentData) {
+              // All payment data in DB → send template immediately
+              const amount   = String(paymentAmount);
+              const urlToken = paymentLinkUrl.split("/").pop() ?? paymentLinkUrl;
+              try {
+                await sendTemplate(phone, "dream_payment_and_workshops", [safeName, amount], "he", urlToken);
+                await supabase.from("whatsapp_conversations").insert({
+                  phone, guest_id: guestId, direction: "outbound",
+                  message: "[תבנית: dream_payment_and_workshops]", wa_message_id: null,
+                });
+                console.info(`[webhook] ✅ dream_payment_and_workshops sent to ${phone}`);
+              } catch (e) {
+                console.error("[webhook] payment_and_workshops send failed:", (e as Error).message);
+                try {
+                  await sendReply(phone,
+                    `תודה ${safeName}! 🎉 קיבלנו את האישור שלך.\nנציג שלנו ישלח לך את פרטי התשלום בקרוב.`
+                  );
+                } catch (e2) {
+                  console.error("[webhook] fallback reply failed:", (e2 as Error).message);
+                }
+              }
+            } else {
+              // Payment data missing → acknowledge guest, flag staff in dashboard
+              if (guestId) {
+                await supabase.from("guests").update({
+                  requires_attention: true,
+                  requires_attention_since: new Date().toISOString(),
+                }).eq("id", guestId);
+              }
               try {
                 await sendReply(phone,
-                  `תודה ${safeName}! 🎉 קיבלנו את האישור שלך.\nנציג שלנו ישלח לך את פרטי התשלום ורישום הסדנאות בקרוב.`
+                  `תודה ${safeName}! 🎉 קיבלנו את האישור שלך — מחכים לכם בשמחה!\nנציג שלנו ייצור איתכם קשר בקרוב עם פרטי התשלום ואפשרויות הסדנאות.`
                 );
-              } catch (e2) {
-                console.error("[webhook] fallback text reply also failed:", (e2 as Error).message);
+                await supabase.from("whatsapp_conversations").insert({
+                  phone, guest_id: guestId, direction: "outbound",
+                  message: "[אישור הגעה — ממתין להגדרת תשלום]", wa_message_id: null,
+                });
+                console.info(`[webhook] arrival confirmed (no payment data) — staff flagged for ${phone}`);
+              } catch (e) {
+                console.error("[webhook] confirmation reply failed:", (e as Error).message);
               }
             }
           } else {
-            console.info(`[webhook] SIM — "כן מגיעים" from ${phone}, would send dream_payment_and_workshops`);
+            console.info(`[webhook] SIM — "כן מגיעים" from ${phone} hasPaymentData=${hasPaymentData}`);
           }
 
         // ── "לא, שינוי בתאריך" — date change → ask + flag for staff ─────────
