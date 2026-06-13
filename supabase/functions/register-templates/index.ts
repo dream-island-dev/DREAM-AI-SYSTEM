@@ -1,342 +1,201 @@
 // supabase/functions/register-templates/index.ts
-// ONE-SHOT utility — registers Dream Island WhatsApp Business templates with Meta.
-// Deploy once, invoke once, then delete.
-//
+// Registers all Dream Island WhatsApp templates with Meta Graph API.
 // Reads META_WHATSAPP_TOKEN + META_BUSINESS_ACCOUNT_ID from Supabase Secrets.
-// Returns per-template ✅/❌ report.
+// Invoke: supabase functions invoke register-templates --no-verify-jwt
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
 const CORS = {
-  "Access-Control-Allow-Origin":  "*",
+  "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-const API_VER = "v20.0";
+interface QuickReplyButton { type: "QUICK_REPLY"; text: string; }
+interface UrlButton        { type: "URL"; text: string; url: string; example?: string[]; }
+type Button = QuickReplyButton | UrlButton;
+interface BodyComponent    { type: "BODY"; text: string; example?: { body_text: string[][] }; }
+interface ButtonsComponent { type: "BUTTONS"; buttons: Button[]; }
+type Component = BodyComponent | ButtonsComponent;
+interface Template { name: string; category: string; language: string; components: Component[]; }
 
-interface TemplateComponent {
-  type:    string;
-  format?: string;
-  text:    string;
-  example?: { body_text: string[][] };
-}
+const TEMPLATES: Template[] = [
 
-interface TemplateDef {
-  name:       string;
-  category:   string;
-  language:   string;
-  components: TemplateComponent[];
-}
-
-// Meta WhatsApp template rules (enforced by API):
-//   ✗ HEADER TEXT: no emojis, no formatting, no variables without example
-//   ✗ BODY: first token cannot be {{n}} — must start with at least one literal word
-//   ✓ BODY: emojis are fine mid-text
-//   ✓ HEADER example required when header contains {{n}} — simplest fix: make headers static
-
-const TEMPLATES: TemplateDef[] = [
-
+  // ── Stage 1: Discovery ────────────────────────────────────────────────────
   {
-    name: "dream_arrival_tomorrow",
-    category: "UTILITY",
-    language: "he",
+    name: "dream_availability_offer", category: "MARKETING", language: "he",
+    components: [{ type: "BODY",
+      text: "שלום {{1}}, תודה שפנית לדרים איילנד! התאריך שעניין אתכם פנוי ואנחנו שמחים לשמור מקום. לפרטים על החבילות ולהשלמת ההזמנה: {{2}} — מחכים לכם",
+      example: { body_text: [["ישראל ישראלי", "https://dream-island.co.il"]] } }],
+  },
+  {
+    name: "dream_followup_no_response", category: "MARKETING", language: "he",
+    components: [{ type: "BODY",
+      text: "שלום {{1}}, דרים איילנד בודקת מה שלומכם — פנינו אליכם לפני כמה ימים ולא שמענו. ה-60 דונם שלנו עדיין מחכים לכם. נשמח לענות על כל שאלה ולמצוא את החבילה המושלמת",
+      example: { body_text: [["ישראל ישראלי"]] } }],
+  },
+
+  // ── Stage 2: Consideration ────────────────────────────────────────────────
+  {
+    name: "dream_last_minute", category: "MARKETING", language: "he",
+    components: [{ type: "BODY",
+      text: "שלום {{1}}, יש לנו בשורה — ל-{{2}} נפתחו מקומות אחרונים בדרים איילנד! הצעה מיוחדת לתאריך הזה, תוקף עד {{3}}. לפרטים ולשריון מיידי: {{4}} — אל תפספסו",
+      example: { body_text: [["ישראל ישראלי", "5 ביולי", "יום שישי 18:00", "https://dream-island.co.il"]] } }],
+  },
+  {
+    name: "dream_seasonal_offer", category: "MARKETING", language: "he",
+    components: [{ type: "BODY",
+      text: "שלום {{1}}, לכבוד {{2}} יש לנו הפתעה מדרים איילנד — הצעה בלעדית שנוצרה במיוחד עבורכם. כמות מוגבלת, לזמן קצוב. לפרטים ולהזמנה: {{3}} — מחכים לכם",
+      example: { body_text: [["ישראל ישראלי", "קיץ 2026", "https://dream-island.co.il"]] } }],
+  },
+  {
+    name: "dream_spa_package", category: "MARKETING", language: "he",
+    components: [{ type: "BODY",
+      text: "שלום {{1}}, חשבנו עליכם — חבילות הספא של דרים איילנד מושלמות לבריחה קצרה. Classic & More, Deluxe עם טיפול ספא, Special Dream זוגי עם ואטסו או חמאם. הכל כולל מסעדת ארמונים. לפרטים ולהזמנה: {{2}} — שמרו מקום",
+      example: { body_text: [["ישראל ישראלי", "https://dream-island.co.il/spa"]] } }],
+  },
+  {
+    name: "dream_special_occasion", category: "MARKETING", language: "he",
+    components: [{ type: "BODY",
+      text: "שלום {{1}}, שמענו שיש לכם סיבה לחגוג! דרים איילנד היא המקום המושלם — סוויטות עם בריכה פרטית, ספא ומסעדת ארמונים. נכין עבורכם חוויה שלא תשכחו. לפרטים ולתיאום: {{2}} — שיהיה מזל טוב",
+      example: { body_text: [["ישראל ישראלי", "https://dream-island.co.il/events"]] } }],
+  },
+  {
+    name: "dream_suite_upsell", category: "MARKETING", language: "he",
+    components: [{ type: "BODY",
+      text: "שלום {{1}}, יש לנו הצעה שלא תוכלו לסרב — הסוויטות שלנו הן עולם אחר לגמרי. רובי עם בריכה פרטית, אקוומרין עם גינה, אמטיסט עם נוף פנורמי. כולן עם ג'קוזי פרטי וגישה לטרקלין VIP Symphony. לפרטים: {{2}} — מחכים לכם",
+      example: { body_text: [["ישראל ישראלי", "https://dream-island.co.il/suites"]] } }],
+  },
+  {
+    name: "dream_wine_experience", category: "MARKETING", language: "he",
+    components: [{ type: "BODY",
+      text: "שלום {{1}}, דרים איילנד מזמינה אתכם לחוויית יין ייחודית — יינות ישראליים מובחרים, אווירה קסומה, לצד בריכות, ספא ומסעדת ארמונים. ערב שלא תשכחו. לפרטים ולהזמנה: {{2}} — לחיים",
+      example: { body_text: [["ישראל ישראלי", "https://dream-island.co.il/wine"]] } }],
+  },
+
+  // ── Stage 3: Pre-arrival (UTILITY) ───────────────────────────────────────
+  {
+    name: "dream_arrival_confirmation", category: "UTILITY", language: "he",
     components: [
-      {
-        type: "BODY",
-        text:
-          "Dream Island שמחה לראותכם מחר, {{1}}! 🌴\n" +
-          "צ'ק-אין מ-15:00. כניסה לבריכות ומתקנים מרגע ההגעה.\n" +
-          "צ'ק-אאוט עד 11:00. מחכים לכם!",
-        example: { body_text: [["שרה כהן"]] },
-      },
+      { type: "BODY",
+        text: "היי {{1}}! כבר ממש סופרים את הימים... 🥳\nרק רצינו לוודא שהכל כרגיל לקראת השהות שלכם אצלנו בריזורט בעוד יומיים. נשמח אם תאשרו לנו את הגעתכם כאן למטה:",
+        example: { body_text: [["ישראל ישראלי"]] } },
+      { type: "BUTTONS", buttons: [
+        { type: "QUICK_REPLY", text: "כן, מגיעים!" },
+        { type: "QUICK_REPLY", text: "לא, שינוי בתאריך" },
+      ]},
+    ],
+  },
+  {
+    name: "dream_payment_and_workshops", category: "UTILITY", language: "he",
+    components: [
+      { type: "BODY",
+        text: "היי {{1}}! איזה כיף, אנחנו כבר מחכים לכם! 🥰\nכדי שהצ'ק-אין שלכם בריזורט יהיה מהיר, חלק וללא המתנה מיותרת בדלפק הקבלה, נשמח אם תסדירו את יתרת השהות על סך {{2}} ₪ בקישור המאובטח שלכם.\n\nבנוסף, מקומות היין והסדנאות הייחודיות שלנו בריזורט כבר כמעט מלאים! שווה לשריין מקום מראש בקישור המצורף. נתראה ממש בקרוב! 🥂",
+        example: { body_text: [["ישראל ישראלי", "1200"]] } },
+      { type: "BUTTONS", buttons: [
+        { type: "URL", text: "תשלום מהיר", url: "https://pay.dream-island.co.il/r/{{1}}", example: ["session_abc123"] },
+        { type: "URL", text: "שריון סדנאות", url: "https://go.oncehub.com/DreamIsland" },
+      ]},
+    ],
+  },
+  {
+    name: "dream_checkin_reminder_v2", category: "UTILITY", language: "he",
+    components: [{ type: "BODY",
+      text: "שלום {{1}}, מחר מגיעים לדרים איילנד — מחכים לכם! המתחם פתוח מ-9:00, צ'ק אין לסוויטות מ-15:00. בואו מוקדם ותיהנו מהכל. לכל שאלה: {{2}} — נתראה מחר",
+      example: { body_text: [["ישראל ישראלי", "054-0000000"]] } }],
+  },
+
+  // ── Stage 4: On-property (UTILITY) ───────────────────────────────────────
+  {
+    name: "dream_welcome_morning", category: "UTILITY", language: "he",
+    components: [{ type: "BODY",
+      text: "בוקר אור {{1}}! ✨ היום זה היום!\nהריזורט מוכן, השמש בחוץ, וכל הצוות שלנו כבר מחכה להעניק לכם חוויה בלתי נשכחת.\n\nכמה פרטים קטנים וחשובים לדרך:\n🌸 מתקני הריזורט, הבריכות והמתחמים פתוחים עבורכם כבר מהשעה 09:00 בבוקר.\n🔑 קבלת החדרים והסוויטות היא החל מהשעה 15:00.\n\nאם יש לכם שאלה כלשהי בדרך, אנחנו זמינים כאן בצ'אט. נסיעה טובה ובטוחה! 🚗❤️",
+      example: { body_text: [["ישראל ישראלי"]] } }],
+  },
+  {
+    name: "dream_mid_stay_check", category: "UTILITY", language: "he",
+    components: [
+      { type: "BODY",
+        text: "היי {{1}}, הזמן עף כשנהנים... 🤍\nרק רצינו לעצור לרגע ולוודא שאתם נרגעים, נהנים ומנצלים את כל הטוב שיש לדרים איילנד להציע.\n\nאם חסר לכם משהו בסוויטה, או אם יש כל דבר שנוכל לעשות כדי להפוך את השהות שלכם לעוד יותר מושלמת — פשוט תכתבו לנו כאן תגובה חופשית, או לחצו על הכפתור למטה ונציג יצור איתכם קשר מיד. תמשיכו ליהנות! ✨",
+        example: { body_text: [["ישראל ישראלי"]] } },
+      { type: "BUTTONS", buttons: [
+        { type: "QUICK_REPLY", text: "ספא וטיפולים" },
+        { type: "QUICK_REPLY", text: "דברו איתי" },
+      ]},
+    ],
+  },
+  {
+    name: "dream_workshop_reminder", category: "UTILITY", language: "he",
+    components: [{ type: "BODY",
+      text: "תזכורת מדרים איילנד, {{1}}! אתם רשומים לסדנת {{2}}. מיקום: {{3}} שעה: {{4}} — מצפים לכם",
+      example: { body_text: [["ישראל ישראלי", "בישול ים-תיכוני", "מסעדת ארמונים", "11:00"]] } }],
+  },
+  {
+    name: "dream_handover_agent_v2", category: "UTILITY", language: "he",
+    components: [{ type: "BODY",
+      text: "תודה על פנייתך, {{1}}. העברנו את בקשתך לאחד מהצוות שיחזור אליך בהקדם. דרים איילנד — תמיד לשירותך",
+      example: { body_text: [["ישראל ישראלי"]] } }],
+  },
+
+  // ── Stage 5: Post-visit ───────────────────────────────────────────────────
+  {
+    name: "dream_checkout_feedback", category: "UTILITY", language: "he",
+    components: [
+      { type: "BODY",
+        text: "היי {{1}}, השערים של הריזורט נסגרו מאחוריכם, ורצינו להגיד תודה ענקית שהתארחתם אצלנו. 🙏 החיוך והחוויה שלכם הם הכל עבורנו.\nנשמח מאוד לשמוע בכנות — איך היתה השהות שלכם אצלנו?",
+        example: { body_text: [["ישראל ישראלי"]] } },
+      { type: "BUTTONS", buttons: [
+        { type: "QUICK_REPLY", text: "היה מושלם!" },
+        { type: "QUICK_REPLY", text: "יש מקום לשיפור" },
+      ]},
     ],
   },
 
-  {
-    name: "dream_availability_offer",
-    category: "MARKETING",
-    language: "he",
-    components: [
-      { type: "HEADER", format: "TEXT", text: "התאריך שבחרתם פנוי" },
-      {
-        type: "BODY",
-        text:
-          "בשורה מצוינת עבורכם, {{1}} — התאריך שעניין אתכם זמין ב-Dream Island.\n" +
-          "מהרו לשריין לפני שהמקום יתפס.\n" +
-          "לפרטים ולהזמנה: {{2}}\n" +
-          "Dream Island — מחכים לכם! 🌴",
-        example: { body_text: [["דניאל לוי", "https://dreamisland.co.il"]] },
-      },
-    ],
-  },
-
-  {
-    name: "dream_handover_agent",
-    category: "UTILITY",
-    language: "he",
-    components: [
-      {
-        type: "BODY",
-        text:
-          "תודה על פנייתך, {{1}}. 🙏\n" +
-          "העברנו את בקשתך לנציג שלנו שיצור איתך קשר בהקדם.\n" +
-          "Dream Island — תמיד לשירותך.",
-        example: { body_text: [["מיכל גולן"]] },
-      },
-    ],
-  },
-
-  {
-    name: "dream_checkin_reminder",
-    category: "UTILITY",
-    language: "he",
-    components: [
-      { type: "HEADER", format: "TEXT", text: "מחכים לכם מחר" },
-      {
-        type: "BODY",
-        text:
-          "תזכורת לקראת הגעתכם מחר ל-Dream Island, {{1}}.\n" +
-          "• צ'ק-אין: מ-15:00\n" +
-          "• צ'ק-אאוט: עד 11:00\n" +
-          "• בריכות ומתקני הספא פתוחים מרגע ההגעה\n\n" +
-          "לשאלות: {{2}}\n" +
-          "Dream Island — מחכים לכם! 🌊",
-        example: { body_text: [["אבי ורדי", "054-0000000"]] },
-      },
-    ],
-  },
-
-  {
-    name: "dream_workshop_reminder",
-    category: "UTILITY",
-    language: "he",
-    components: [
-      {
-        type: "BODY",
-        text:
-          "תזכורת מ-Dream Island, {{1}}! 📅\n" +
-          "אתם רשומים לסדנת {{2}}.\n" +
-          "מיקום: {{3}}\n" +
-          "שעה: {{4}}\n\n" +
-          "מצפים לכם!",
-        example: {
-          body_text: [["רונית מזרחי", "בישול ים-תיכוני", "מסעדת ערמונים", "11:00"]],
-        },
-      },
-    ],
-  },
-
-  {
-    name: "dream_followup_no_response",
-    category: "MARKETING",
-    language: "he",
-    components: [
-      {
-        type: "BODY",
-        text:
-          "שלום {{1}}, שלחנו לכם הצעה לאחרונה ולא שמענו ממכם. 😊\n" +
-          "אנחנו כאן לכל שאלה — ההצעה עדיין בתוקף.\n" +
-          "נשמח לקבוע ביקור ב-Dream Island בזמן הנוח לכם.",
-        example: { body_text: [["יוסי בן-דוד"]] },
-      },
-    ],
-  },
-
-  {
-    name: "dream_post_visit",
-    category: "MARKETING",
-    language: "he",
-    components: [
-      { type: "HEADER", format: "TEXT", text: "תודה שביקרתם" },
-      {
-        type: "BODY",
-        text:
-          "תודה שבחרתם ב-Dream Island, {{1}}! 🙏\n" +
-          "מקווים שנהניתם מכל רגע.\n" +
-          "נשמח לשמוע על החוויה שלכם — וכבר מחכים לביקור הבא.",
-        example: { body_text: [["נועה שמיר"]] },
-      },
-    ],
-  },
-
-  {
-    name: "dream_special_occasion",
-    category: "MARKETING",
-    language: "he",
-    components: [
-      { type: "HEADER", format: "TEXT", text: "חגיגה מיוחדת ב-Dream Island" },
-      {
-        type: "BODY",
-        text:
-          "ב-Dream Island אנחנו אוהבים לחגוג עם {{1}}! 🎉\n" +
-          "יום הולדת, יום נישואין, בת/בר מצווה — יש לנו חבילות פרמיום מותאמות אישית.\n" +
-          "לפרטים ולהזמנה: {{2}}\n" +
-          "Dream Island — נשמח לחגוג אתכם! 🎉",
-        example: { body_text: [["תמי ואלי", "https://dreamisland.co.il/events"]] },
-      },
-    ],
-  },
-
-  {
-    name: "dream_spa_package",
-    category: "MARKETING",
-    language: "he",
-    components: [
-      { type: "HEADER", format: "TEXT", text: "חבילת ספא מיוחדת" },
-      {
-        type: "BODY",
-        text:
-          "חבילת הספא המיוחדת שלנו ממתינה לכם, {{1}}. 🧖\n" +
-          "טיפולי גוף | חמאם טורקי | עיסויי Watsu\n" +
-          "לשריין מקום: {{2}}\n" +
-          "Dream Island — הפינוק שמגיע לכם. 🧖",
-        example: { body_text: [["גיל אברהם", "https://dreamisland.co.il/spa"]] },
-      },
-    ],
-  },
-
-  {
-    name: "dream_suite_upsell",
-    category: "MARKETING",
-    language: "he",
-    components: [
-      { type: "HEADER", format: "TEXT", text: "שדרגו לסוויטת VIP" },
-      {
-        type: "BODY",
-        text:
-          "הצעה מיוחדת עבורכם, {{1}} — סוויטת VIP עם בריכה פרטית ב-Dream Island. 🌴\n" +
-          "זמינות מוגבלת — הזדמנות שלא תחזור.\n" +
-          "לפרטים ומחירים: {{2}}\n" +
-          "Dream Island — חוויה ברמה אחרת. 🌴",
-        example: { body_text: [["שלמה כץ", "https://dreamisland.co.il/vip"]] },
-      },
-    ],
-  },
-
-  {
-    name: "dream_last_minute",
-    category: "MARKETING",
-    language: "he",
-    components: [
-      { type: "HEADER", format: "TEXT", text: "הצעת רגע אחרון" },
-      {
-        type: "BODY",
-        text:
-          "Dream Island מציעה: מקום פנוי ל-{{1}} במחיר מיוחד עבורכם, {{2}}! ⚡\n" +
-          "הצעה לזמן מוגבל — עד {{3}} בלבד.\n" +
-          "לפרטים: {{4}}\n" +
-          "Dream Island — מחכה לכם! ⚡",
-        example: {
-          body_text: [["סוף שבוע", "חן לוי", "יום שישי 18:00", "https://dreamisland.co.il"]],
-        },
-      },
-    ],
-  },
-
-  {
-    name: "dream_wine_experience",
-    category: "MARKETING",
-    language: "he",
-    components: [
-      { type: "HEADER", format: "TEXT", text: "חוויית יין ייחודית" },
-      {
-        type: "BODY",
-        text:
-          "Dream Island מזמינה אתכם, {{1}}, לחוויית יין ייחודית. 🍷\n" +
-          "מבחר יינות ישראליים מובחרים לצד נוף מרהיב ואווירה אינטימית.\n" +
-          "להזמנה: {{2}}\n" +
-          "Dream Island — לחיים! 🍷",
-        example: { body_text: [["ורד ואייל", "https://dreamisland.co.il/wine"]] },
-      },
-    ],
-  },
-
-  {
-    name: "dream_seasonal_offer",
-    category: "MARKETING",
-    language: "he",
-    components: [
-      { type: "HEADER", format: "TEXT", text: "הצעה עונתית מ-Dream Island" },
-      {
-        type: "BODY",
-        text:
-          "Dream Island מציעה חבילות {{1}} מיוחדות עבורכם, {{2}}! 🌟\n" +
-          "עכשיו הזמן המושלם לבקר — הנחות בלעדיות לזמן מוגבל.\n" +
-          "לפרטים ולהזמנה: {{3}}\n" +
-          "Dream Island — מחכה לכם! 🌟",
-        example: {
-          body_text: [["קיץ", "משפחת לוי", "https://dreamisland.co.il/summer"]],
-        },
-      },
-    ],
-  },
 ];
 
-async function createTemplate(
-  wabaId: string,
-  token:  string,
-  tpl:    TemplateDef
-): Promise<{ name: string; ok: boolean; status?: string; id?: string; error?: string }> {
-  const url = `https://graph.facebook.com/${API_VER}/${wabaId}/message_templates`;
-  const res = await fetch(url, {
-    method:  "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body:    JSON.stringify({
-      name:       tpl.name,
-      language:   tpl.language,
-      category:   tpl.category,
-      components: tpl.components,
-    }),
-    signal: AbortSignal.timeout(20_000),
-  });
-
-  const data = await res.json() as Record<string, unknown>;
-
-  if (res.ok && data.id) {
-    return { name: tpl.name, ok: true, id: String(data.id), status: String(data.status ?? "PENDING") };
-  }
-
-  const err  = data.error as Record<string, unknown> | undefined;
-  const code = Number(err?.code ?? 0);
-  const msg  = String(err?.error_user_msg ?? err?.message ?? JSON.stringify(data));
-
-  // code 100 = template already exists → treat as success
-  if (code === 100 && msg.toLowerCase().includes("already")) {
-    return { name: tpl.name, ok: true, status: "ALREADY_EXISTS" };
-  }
-
-  return { name: tpl.name, ok: false, error: `${msg} (code ${code})` };
-}
+interface TemplateResult { name: string; ok: boolean; status?: string; id?: string; error?: string; }
 
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
-  const token  = Deno.env.get("META_WHATSAPP_TOKEN");
+  const token  = Deno.env.get("META_WHATSAPP_TOKEN") ?? Deno.env.get("WHATSAPP_TOKEN");
   const wabaId = Deno.env.get("META_BUSINESS_ACCOUNT_ID");
 
-  if (!token || !wabaId) {
-    return new Response(
-      JSON.stringify({ ok: false, error: "META_WHATSAPP_TOKEN or META_BUSINESS_ACCOUNT_ID not set in secrets" }),
-      { status: 500, headers: { ...CORS, "Content-Type": "application/json" } }
-    );
-  }
+  if (!token)  return new Response(JSON.stringify({ ok: false, error: "missing META_WHATSAPP_TOKEN" }), { status: 400, headers: { ...CORS, "Content-Type": "application/json" } });
+  if (!wabaId) return new Response(JSON.stringify({ ok: false, error: "missing META_BUSINESS_ACCOUNT_ID" }), { status: 400, headers: { ...CORS, "Content-Type": "application/json" } });
 
-  const results = [];
+  const base = `https://graph.facebook.com/v20.0/${wabaId}/message_templates`;
+  const results: TemplateResult[] = [];
+
   for (const tpl of TEMPLATES) {
     try {
-      const r = await createTemplate(wabaId, token, tpl);
-      results.push(r);
-      console.log(`[register-templates] ${r.ok ? "✅" : "❌"} ${r.name}: ${r.status ?? r.error}`);
+      const res = await fetch(base, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ name: tpl.name, language: tpl.language, category: tpl.category, components: tpl.components }),
+        signal: AbortSignal.timeout(15000),
+      });
+      const data = await res.json() as Record<string, unknown>;
+      if (res.ok && data.id) {
+        results.push({ name: tpl.name, ok: true, id: String(data.id), status: String(data.status ?? "PENDING") });
+      } else {
+        const errObj = data?.error as Record<string, unknown> | undefined;
+        const msg = String(errObj?.error_user_msg ?? errObj?.message ?? JSON.stringify(data));
+        if ((errObj?.code === 100) && msg.toLowerCase().includes("already")) {
+          results.push({ name: tpl.name, ok: true, status: "ALREADY_EXISTS" });
+        } else {
+          results.push({ name: tpl.name, ok: false, error: msg });
+        }
+      }
     } catch (e) {
       results.push({ name: tpl.name, ok: false, error: (e as Error).message });
     }
   }
 
   const passed = results.filter((r) => r.ok).length;
-  const failed  = results.filter((r) => !r.ok).length;
+  const failed = results.filter((r) => !r.ok).length;
 
   return new Response(
-    JSON.stringify({ ok: failed === 0, passed, failed, results }),
+    JSON.stringify({ ok: failed === 0, total: TEMPLATES.length, passed, failed, results }, null, 2),
     { headers: { ...CORS, "Content-Type": "application/json" } }
   );
 });

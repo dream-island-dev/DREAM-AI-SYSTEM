@@ -37,6 +37,9 @@ function localISO(offsetDays = 0) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export default function BroadcastDashboard({ user }) {
+  // ── Top-level tab ─────────────────────────────────────────────────────────
+  const [mainTab, setMainTab] = useState("broadcast"); // "broadcast" | "templates"
+
   // ── Data ──────────────────────────────────────────────────────────────────
   const [allGuests,   setAllGuests]   = useState([]);
   const [deptMap,     setDeptMap]     = useState({});
@@ -45,9 +48,18 @@ export default function BroadcastDashboard({ user }) {
 
   // ── WA Templates (fetched from Meta via edge function) ────────────────────
   const [waTemplates,      setWaTemplates]      = useState([]);
+  const [allMetaTemplates, setAllMetaTemplates] = useState([]); // all statuses for manager
   const [loadingTemplates, setLoadingTemplates] = useState(false);
+  const [loadingAllTmpls,  setLoadingAllTmpls]  = useState(false);
   const [selectedTemplate, setSelectedTemplate] = useState(null); // { name, bodyText, varCount }
   const [templateVarValues,setTemplateVarValues]= useState([]);   // string[] for {{1}}, {{2}}…
+
+  // ── Template Manager state ─────────────────────────────────────────────────
+  const [showCreateForm,   setShowCreateForm]   = useState(false);
+  const [newTmpl, setNewTmpl] = useState({
+    name: "", language: "he", category: "MARKETING", body: "", header: "", footer: "",
+  });
+  const [creating, setCreating] = useState(false);
 
   // ── Audience filters ──────────────────────────────────────────────────────
   const [filterGuest,  setFilterGuest]  = useState("all");
@@ -130,6 +142,61 @@ export default function BroadcastDashboard({ user }) {
       })
       .finally(() => setLoadingTemplates(false));
   }, []);
+
+  // ── Fetch ALL Meta templates (for manager tab) ───────────────────────────
+  const fetchAllMetaTemplates = useCallback(async () => {
+    if (!isSupabaseConfigured || !supabase) return;
+    setLoadingAllTmpls(true);
+    try {
+      // Pass all=true in the body so the edge function returns all statuses
+      const { data, error } = await supabase.functions.invoke("get-wa-templates", {
+        body: { all: true },
+      });
+      if (error) throw new Error(error.message);
+      const templates = data?.templates ?? [];
+      setAllMetaTemplates(templates);
+    } catch (err) {
+      showToast("err", "שגיאה בטעינת תבניות: " + (err?.message ?? err));
+    } finally {
+      setLoadingAllTmpls(false);
+    }
+  }, [showToast]);
+
+  // Fetch all templates when switching to manager tab
+  useEffect(() => {
+    if (mainTab === "templates") fetchAllMetaTemplates();
+  }, [mainTab, fetchAllMetaTemplates]);
+
+  // ── Create new Meta template ──────────────────────────────────────────────
+  const handleCreateTemplate = useCallback(async () => {
+    if (!newTmpl.name.trim()) return showToast("err", "נא להזין שם תבנית");
+    if (!newTmpl.body.trim()) return showToast("err", "נא להזין גוף הודעה");
+    if (!isSupabaseConfigured || !supabase) return;
+
+    setCreating(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("create-wa-template", {
+        body: {
+          name:     newTmpl.name.trim().toLowerCase().replace(/\s+/g, "_"),
+          language: newTmpl.language,
+          category: newTmpl.category,
+          body:     newTmpl.body.trim(),
+          header:   newTmpl.header.trim() || undefined,
+          footer:   newTmpl.footer.trim() || undefined,
+        },
+      });
+      if (error || !data?.ok) throw new Error(data?.error ?? error?.message ?? "שגיאה");
+      showToast("ok", `✅ תבנית "${newTmpl.name}" נשלחה לאישור Meta! בדרך כלל מאושרת תוך 1-3 שעות.`);
+      setNewTmpl({ name: "", language: "he", category: "MARKETING", body: "", header: "", footer: "" });
+      setShowCreateForm(false);
+      // Refresh the list
+      setTimeout(() => fetchAllMetaTemplates(), 1500);
+    } catch (err) {
+      showToast("err", "שגיאה ביצירת תבנית: " + (err?.message ?? err));
+    } finally {
+      setCreating(false);
+    }
+  }, [newTmpl, showToast, fetchAllMetaTemplates]);
 
   // ── Supabase Realtime ─────────────────────────────────────────────────────
   useEffect(() => {
@@ -318,9 +385,263 @@ export default function BroadcastDashboard({ user }) {
       : freeTextMsg.trim().length > 0
   );
 
+  // ── Template Manager render ───────────────────────────────────────────────
+  const STATUS_META = {
+    APPROVED: { bg: "#E8F5EF", color: "#1A7A4A", border: "#1A7A4A", label: "✅ מאושרת" },
+    PENDING:  { bg: "#FFF8E1", color: "#B5600A", border: "#F59E0B", label: "⏳ ממתינה" },
+    REJECTED: { bg: "#FFF0EE", color: "#C0392B", border: "#C0392B", label: "❌ נדחתה" },
+    PAUSED:   { bg: "#F0F0F0", color: "#555",    border: "#aaa",    label: "⏸ מושהית" },
+  };
+
+  const renderTemplateManager = () => (
+    <div>
+      {/* Header */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 18 }}>📋 ניהול תבניות WhatsApp</div>
+          <div style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 2 }}>
+            סנכרון עם Meta Business Manager — תבניות מאושרות בלבד ניתנות לשליחה
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={fetchAllMetaTemplates}
+            disabled={loadingAllTmpls}
+          >
+            {loadingAllTmpls ? "⏳ מסנכרן..." : "🔄 סנכרן מ-Meta"}
+          </button>
+          <button
+            className="btn btn-primary btn-sm"
+            onClick={() => setShowCreateForm((v) => !v)}
+          >
+            {showCreateForm ? "✕ ביטול" : "✨ צור תבנית חדשה"}
+          </button>
+        </div>
+      </div>
+
+      {/* Create form */}
+      {showCreateForm && (
+        <div className="card" style={{ marginBottom: 20, border: "2px solid var(--gold)" }}>
+          <div className="card-header">
+            <div className="card-title">✨ תבנית חדשה — שליחה לאישור Meta</div>
+          </div>
+          <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 14 }}>
+
+            {/* Info banner */}
+            <div style={{ fontSize: 12, padding: "10px 14px", borderRadius: 8, background: "#EFF6FF", border: "1px solid #93C5FD", color: "#1E40AF", lineHeight: 1.6 }}>
+              💡 <strong>Meta דורשת:</strong> שם תבנית — אותיות לועזיות קטנות + קו תחתון בלבד (לדוג׳ <code>dream_welcome</code>).
+              משתנים בגוף ההודעה — <code style={{ background: "rgba(0,0,0,0.07)", padding: "1px 4px", borderRadius: 3 }}>{"{{"+"1"+"}}"}</code> <code style={{ background: "rgba(0,0,0,0.07)", padding: "1px 4px", borderRadius: 3 }}>{"{{"+"2"+"}}"}</code> וכן הלאה.
+              לאחר שליחה, Meta מאשרת תוך כ-1–3 שעות.
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+              <div className="form-field" style={{ marginBottom: 0 }}>
+                <label>שם תבנית <span style={{ color: "#C0392B" }}>*</span></label>
+                <input
+                  type="text"
+                  placeholder="dream_welcome_guest"
+                  value={newTmpl.name}
+                  onChange={(e) => setNewTmpl((p) => ({ ...p, name: e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, "") }))}
+                  style={{ direction: "ltr" }}
+                />
+              </div>
+              <div className="form-field" style={{ marginBottom: 0 }}>
+                <label>שפה</label>
+                <select value={newTmpl.language} onChange={(e) => setNewTmpl((p) => ({ ...p, language: e.target.value }))}>
+                  <option value="he">עברית (he)</option>
+                  <option value="en_US">English (en_US)</option>
+                  <option value="ar">عربي (ar)</option>
+                  <option value="ru">Русский (ru)</option>
+                </select>
+              </div>
+              <div className="form-field" style={{ marginBottom: 0 }}>
+                <label>קטגוריה</label>
+                <select value={newTmpl.category} onChange={(e) => setNewTmpl((p) => ({ ...p, category: e.target.value }))}>
+                  <option value="MARKETING">📣 MARKETING (שיווק)</option>
+                  <option value="UTILITY">🔔 UTILITY (שירות)</option>
+                  <option value="AUTHENTICATION">🔐 AUTHENTICATION (אימות)</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="form-field" style={{ marginBottom: 0 }}>
+              <label>כותרת (אופציונלי) — מוצגת מעל גוף ההודעה</label>
+              <input
+                type="text"
+                placeholder="Dream Island 🌴"
+                value={newTmpl.header}
+                onChange={(e) => setNewTmpl((p) => ({ ...p, header: e.target.value }))}
+              />
+            </div>
+
+            <div className="form-field" style={{ marginBottom: 0 }}>
+              <label>גוף ההודעה <span style={{ color: "#C0392B" }}>*</span></label>
+              <textarea
+                rows={4}
+                placeholder={"היי {{1}}! ברוכים הבאים ל-Dream Island 🌴\nהחדר שלך מוכן ומחכה לך מ-15:00 🏨"}
+                value={newTmpl.body}
+                onChange={(e) => setNewTmpl((p) => ({ ...p, body: e.target.value }))}
+                style={{ fontFamily: "Heebo, sans-serif", fontSize: 14, lineHeight: 1.6, resize: "vertical" }}
+              />
+              <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+                {newTmpl.body.length} תווים · {(newTmpl.body.match(/\{\{\d+\}\}/g) ?? []).length} משתנים
+              </div>
+            </div>
+
+            <div className="form-field" style={{ marginBottom: 0 }}>
+              <label>כותרת תחתונה (אופציונלי) — טקסט קטן מתחת להודעה</label>
+              <input
+                type="text"
+                placeholder="Dream Island Resort · לא להשיב להודעה זו"
+                value={newTmpl.footer}
+                onChange={(e) => setNewTmpl((p) => ({ ...p, footer: e.target.value }))}
+              />
+            </div>
+
+            {/* Live preview */}
+            {newTmpl.body.trim() && (
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", marginBottom: 6, letterSpacing: 0.5 }}>
+                  תצוגה מקדימה:
+                </div>
+                <div style={{
+                  background: "#E9FBE5", border: "1px solid #A8E6A3", borderRadius: "0 14px 14px 14px",
+                  padding: "12px 14px", maxWidth: 340, fontSize: 13, lineHeight: 1.7,
+                  boxShadow: "0 1px 4px rgba(0,0,0,0.08)",
+                }}>
+                  {newTmpl.header && <div style={{ fontWeight: 700, marginBottom: 6 }}>{newTmpl.header}</div>}
+                  <div style={{ whiteSpace: "pre-wrap" }}>{newTmpl.body}</div>
+                  {newTmpl.footer && <div style={{ fontSize: 11, color: "#777", marginTop: 6 }}>{newTmpl.footer}</div>}
+                </div>
+              </div>
+            )}
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+              <button className="btn btn-ghost" onClick={() => setShowCreateForm(false)}>ביטול</button>
+              <button
+                className="btn btn-primary"
+                onClick={handleCreateTemplate}
+                disabled={creating || !newTmpl.name.trim() || !newTmpl.body.trim()}
+              >
+                {creating ? "⏳ שולח ל-Meta..." : "📤 שלח לאישור Meta"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Templates list */}
+      <div className="card">
+        <div className="card-header">
+          <div className="card-title">
+            תבניות ב-Meta ({allMetaTemplates.length})
+          </div>
+          <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+            {allMetaTemplates.filter((t) => t.status === "APPROVED").length} מאושרות ·{" "}
+            {allMetaTemplates.filter((t) => t.status === "PENDING").length} ממתינות ·{" "}
+            {allMetaTemplates.filter((t) => t.status === "REJECTED").length} נדחו
+          </div>
+        </div>
+
+        {loadingAllTmpls ? (
+          <div style={{ padding: "40px 20px", textAlign: "center", color: "var(--text-muted)" }}>⏳ טוען תבניות מ-Meta...</div>
+        ) : allMetaTemplates.length === 0 ? (
+          <div style={{ padding: "40px 20px", textAlign: "center", color: "var(--text-muted)" }}>
+            <div style={{ fontSize: 32, marginBottom: 8 }}>📭</div>
+            <div>לא נמצאו תבניות. לחץ "סנכרן מ-Meta" או צור תבנית חדשה.</div>
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+            {allMetaTemplates.map((tmpl, idx) => {
+              const st = STATUS_META[tmpl.status] ?? STATUS_META.PENDING;
+              return (
+                <div key={tmpl.id ?? tmpl.name} style={{
+                  padding: "16px 20px",
+                  borderBottom: idx < allMetaTemplates.length - 1 ? "1px solid var(--border)" : "none",
+                  display: "flex", flexDirection: "column", gap: 6,
+                }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+                    <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                      <code style={{
+                        fontFamily: "monospace", fontWeight: 800, fontSize: 14,
+                        color: "var(--black)", direction: "ltr",
+                      }}>{tmpl.name}</code>
+                      <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                        {tmpl.language} · {tmpl.category}
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <span style={{
+                        fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 20,
+                        background: st.bg, color: st.color, border: `1px solid ${st.border}`,
+                      }}>
+                        {st.label}
+                      </span>
+                      {tmpl.status === "APPROVED" && (
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          style={{ fontSize: 11, color: "var(--gold-dark)", border: "1px solid var(--gold)" }}
+                          onClick={() => {
+                            setSelectedTemplate(tmpl);
+                            setTemplateVarValues(Array(tmpl.varCount).fill(""));
+                            setMainTab("broadcast");
+                          }}
+                        >
+                          📣 שלח עכשיו ←
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  {tmpl.bodyText && (
+                    <div style={{
+                      fontSize: 12, color: "#444", background: "var(--ivory)",
+                      borderRadius: 8, padding: "8px 12px", lineHeight: 1.6,
+                      maxHeight: 80, overflowY: "auto",
+                      direction: tmpl.language === "he" || tmpl.language === "ar" ? "rtl" : "ltr",
+                      textAlign: tmpl.language === "he" || tmpl.language === "ar" ? "right" : "left",
+                    }}>
+                      {tmpl.bodyText}
+                    </div>
+                  )}
+                  {tmpl.rejectedReason && (
+                    <div style={{ fontSize: 11, color: "#C0392B", background: "#FFF0EE", borderRadius: 6, padding: "6px 10px" }}>
+                      ❌ סיבת דחייה: {tmpl.rejectedReason}
+                    </div>
+                  )}
+                  {tmpl.varCount > 0 && (
+                    <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                      {tmpl.varCount} משתנ{tmpl.varCount === 1 ? "ה" : "ים"} ({Array.from({ length: tmpl.varCount }, (_, i) => `{{${i + 1}}}`).join(", ")})
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
   return (
     <div>
-      {/* Toast */}
+      {/* ── Main tab switcher ─────────────────────────────────────────────── */}
+      <div style={{ display: "flex", borderBottom: "2px solid var(--border)", marginBottom: 20, gap: 4 }}>
+        {[
+          { key: "broadcast", label: "📣 שידור הודעות" },
+          { key: "templates", label: "📋 ניהול תבניות" },
+        ].map(({ key, label }) => (
+          <button key={key} onClick={() => setMainTab(key)} style={{
+            background: "none", border: "none", cursor: "pointer",
+            padding: "10px 20px", fontSize: 14, fontWeight: mainTab === key ? 800 : 500,
+            color: mainTab === key ? "var(--gold-dark)" : "var(--text-muted)",
+            borderBottom: mainTab === key ? "2px solid var(--gold-dark)" : "2px solid transparent",
+            marginBottom: -2, fontFamily: "Heebo, sans-serif",
+          }}>{label}</button>
+        ))}
+      </div>
+
+      {/* Toast — visible in both tabs */}
       {toast && (
         <div style={{
           position: "fixed", top: 20, left: "50%", transform: "translateX(-50%)",
@@ -335,6 +656,9 @@ export default function BroadcastDashboard({ user }) {
         </div>
       )}
 
+      {mainTab === "templates" && renderTemplateManager()}
+
+      {mainTab === "broadcast" && <div>
       {/* ── Quick Send Banner ────────────────────────────────────────────── */}
       {(() => {
         const tomorrow = localISO(1);
@@ -795,6 +1119,7 @@ export default function BroadcastDashboard({ user }) {
           </div>
         </div>
       )}
+      </div>}{/* end broadcast tab */}
     </div>
   );
 }

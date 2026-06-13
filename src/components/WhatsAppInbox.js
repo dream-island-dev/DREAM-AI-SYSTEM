@@ -6,7 +6,7 @@
 import React, { useEffect, useState, useRef, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 
-const POLL_MS = 8000; // fallback polling interval
+const POLL_MS = 2500; // fallback polling interval
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 function formatTime(iso) {
@@ -164,11 +164,11 @@ function Bubble({ msg }) {
     }}>
       <div style={{
         maxWidth: "72%",
-        background: isOut ? "#dcf8c6" : "white",
-        border: isOut ? "none" : "1px solid #e8e8e8",
+        background: isOut ? "#dcf8c6" : "#ffffff",
+        border: isOut ? "none" : "1.5px solid #c5d9f0",
         borderRadius: isOut ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
+        boxShadow: isOut ? "0 1px 2px rgba(0,0,0,0.08)" : "0 1px 4px rgba(55,138,221,0.12)",
         padding: "8px 12px",
-        boxShadow: "0 1px 2px rgba(0,0,0,0.08)",
         fontSize: 14,
         color: "#1a1a1a",
         lineHeight: 1.5,
@@ -438,9 +438,10 @@ function NewChatModal({ onClose, onSent }) {
   const VAR_LABELS = ["שם אורח", "מספר חדר", "תאריך הגעה", "סוג חדר", "שעת הגעה"];
   const allTmpls   = [
     ...dbTemplates.map((d) => ({
-      name:     d.name ?? d.title ?? d.template_name ?? "(ללא שם)",
-      bodyText: d.body_text ?? d.message ?? d.content ?? d.text ?? "",
-      varCount: 0, source: "db",
+      name:     d.label ?? d.name ?? d.title ?? d.template_name ?? "(ללא שם)",
+      bodyText: d.body_text ?? d.content ?? d.message ?? d.text ?? "",
+      varCount: (d.body_text ?? d.content ?? d.text ?? "").match(/\{\{\d+\}\}/g)?.length ?? 0,
+      source: "db",
       emoji:    d.emoji ?? "📋",
       category: d.category ?? "",
     })),
@@ -1250,126 +1251,93 @@ export default function WhatsAppInbox() {
       const { data, error: fnErr } = await supabase.functions.invoke("whatsapp-send", {
         body: {
           trigger: "inbox_reply",
-          phone:   active,
+          phone: active,
           message: reply.trim(),
         },
       });
-      // supabase.functions.invoke wraps non-2xx in fnErr; real detail is in data?.error
-      if (fnErr) throw new Error(data?.error ?? fnErr.message ?? "שגיאה בשליחה");
-      if (data && !data.ok) throw new Error(data.error ?? "שגיאה בשליחה");
+      if (fnErr || !data?.ok) throw new Error(fnErr?.message ?? data?.error ?? "שגיאה בשליחה");
       setReply("");
       await fetchAll();
-    } catch (e) {
-      setError(e?.message ?? "שגיאה בשליחה");
+    } catch (err) {
+      setError(err?.message ?? "שגיאה בשליחה");
     } finally {
       setSending(false);
     }
   }
 
-  // ── Active thread messages ────────────────────────────────────────────────
-  const activeContact = contacts.find((c) => c.phone === active);
-  const thread = activeContact?.messages ?? [];
+  // ── Derived state ──────────────────────────────────────────────────────────
+  const activeContact = contacts.find((c) => c.phone === active) ?? null;
+  const thread        = activeContact?.messages ?? [];
+  const unreadTotal   = contacts.reduce((sum, c) => {
+    return sum + c.messages.filter((m) => m.direction === "inbound" && !m._read).length;
+  }, 0);
 
-  // ── After new chat sent: refresh + open the thread ───────────────────────
-  function handleNewChatSent(phone, simulation) {
-    setShowNewChat(false);
-    fetchAll().then(() => setActive(phone));
-  }
-
-  // ── Render ────────────────────────────────────────────────────────────────
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
-    <div style={{
-      display: "flex",
-      height: "calc(100vh - 120px)",
-      fontFamily: "Segoe UI, Arial, sans-serif",
-      direction: "rtl",
-      background: "#f5f5f5",
-      borderRadius: 12,
-      overflow: "hidden",
-      boxShadow: "0 2px 16px rgba(0,0,0,0.1)",
-    }}>
-      {showNewChat && (
-        <NewChatModal
-          onClose={() => setShowNewChat(false)}
-          onSent={handleNewChatSent}
-        />
-      )}
+    <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 80px)", overflow: "hidden", borderRadius: 12, border: "1px solid var(--border)", boxShadow: "0 4px 20px rgba(0,0,0,0.06)" }}>
 
-      {/* ── Contact list (right panel) ───────────────────────────────────── */}
+      {/* Toolbar */}
       <div style={{
-        width: 320,
-        borderLeft: "1px solid #e0e0e0",
-        background: "white",
-        display: "flex",
-        flexDirection: "column",
-        flexShrink: 0,
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        padding: "10px 16px", background: "#075E54", color: "white", flexShrink: 0,
+        borderRadius: "12px 12px 0 0",
       }}>
-        {/* Header */}
-        <div style={{
-          padding: "12px 16px",
-          background: "#075E54",
-          color: "white",
-          fontSize: 16,
-          fontWeight: 700,
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-        }}>
-          <span>💬</span>
-          <span style={{ fontSize: 15 }}>DREAM BOT — שיחות</span>
-          <div style={{ marginRight: "auto", display: "flex", alignItems: "center", gap: 6 }}>
-            {loading && <span style={{ fontSize: 11, opacity: 0.7 }}>טוען...</span>}
-            <button
-              onClick={() => setShowNewChat(true)}
-              title="פתח שיחה חדשה"
-              style={{
-                background: "rgba(255,255,255,0.15)",
-                color: "white",
-                border: "1px solid rgba(255,255,255,0.35)",
-                borderRadius: 20,
-                padding: "4px 10px",
-                fontSize: 11,
-                fontWeight: 700,
-                cursor: "pointer",
-                fontFamily: "inherit",
-                whiteSpace: "nowrap",
-              }}
-            >
-              ➕ חדש
-            </button>
-            <button
-              onClick={toggleBot}
-              disabled={togglingBot}
-              title={botActive ? "לחץ להשתיק — מעבר למענה אנושי" : "לחץ להפעיל את הרובוט"}
-              style={{
-                background: botActive ? "rgba(255,255,255,0.15)" : "rgba(239,68,68,0.35)",
-                color: "white",
-                border: `1px solid ${botActive ? "rgba(255,255,255,0.35)" : "rgba(239,68,68,0.6)"}`,
-                borderRadius: 20,
-                padding: "4px 10px",
-                fontSize: 11,
-                fontWeight: 700,
-                cursor: togglingBot ? "not-allowed" : "pointer",
-                fontFamily: "inherit",
-                whiteSpace: "nowrap",
-                transition: "all 0.2s",
-              }}
-            >
-              {togglingBot ? "⏳" : botActive ? "🟢 רובוט" : "🔴 אנושי"}
-            </button>
-          </div>
-        </div>
-
-        {/* Contact list */}
-        <div style={{ flex: 1, overflowY: "auto" }}>
-          {error && (
-            <div style={{ padding: 16, color: "red", fontSize: 13 }}>שגיאה: {error}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontWeight: 800, fontSize: 15 }}>{"💬 DREAM BOT — תיבת שיחות"}</span>
+          {unreadTotal > 0 && (
+            <span style={{
+              background: "#25D366", color: "white", borderRadius: 20,
+              fontSize: 11, fontWeight: 800, padding: "2px 8px",
+            }}>{unreadTotal} {"חדשות"}</span>
           )}
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <button
+            onClick={toggleBot}
+            disabled={togglingBot}
+            style={{
+              padding: "5px 14px", borderRadius: 20, fontSize: 12, fontWeight: 700,
+              border: "1.5px solid rgba(255,255,255,0.4)",
+              background: botActive ? "rgba(37,211,102,0.25)" : "rgba(255,255,255,0.12)",
+              color: "white", cursor: togglingBot ? "not-allowed" : "pointer",
+            }}
+          >
+            {togglingBot ? "⏳" : botActive ? "🤖 בוט פעיל" : "😴 בוט כבוי"}
+          </button>
+          <button
+            onClick={() => setShowNewChat(true)}
+            style={{
+              padding: "5px 14px", borderRadius: 20, fontSize: 12, fontWeight: 700,
+              background: "white", color: "#075E54", border: "none", cursor: "pointer",
+            }}
+          >
+            {"✉️ חדש"}
+          </button>
+        </div>
+      </div>
+
+      {/* Body */}
+      <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
+
+        {/* Right: contact list */}
+        <div style={{
+          width: 290, borderLeft: "1px solid #e0e0e0",
+          overflowY: "auto", background: "#ffffff", flexShrink: 0,
+        }}>
+          <div style={{
+            padding: "10px 14px", borderBottom: "1px solid #f0f0f0",
+            display: "flex", justifyContent: "space-between", alignItems: "center",
+            background: "#F7F7F7",
+          }}>
+            <span style={{ fontWeight: 700, fontSize: 12, color: "#555" }}>
+              {contacts.length} {"הודעות"}
+            </span>
+            {loading && <span style={{ fontSize: 11, color: "#aaa" }}>{"⏳ מסנכרן..."}</span>}
+          </div>
           {!loading && contacts.length === 0 && (
-            <div style={{ padding: 24, textAlign: "center", color: "#aaa", fontSize: 14 }}>
-              <div style={{ fontSize: 40, marginBottom: 8 }}>💬</div>
-              עדיין אין שיחות.<br />
-              שיחות יופיעו כאשר לקוחות ישלחו הודעות.
+            <div style={{ padding: 24, textAlign: "center", color: "#aaa" }}>
+              <div style={{ fontSize: 32, marginBottom: 8 }}>{"📭"}</div>
+              <div style={{ fontSize: 13 }}>{"אין שיחות עדיין"}</div>
             </div>
           )}
           {contacts.map((c) => (
@@ -1382,134 +1350,102 @@ export default function WhatsAppInbox() {
           ))}
         </div>
 
-        {/* Stats bar */}
-        <div style={{
-          padding: "8px 16px",
-          background: "#f9f9f9",
-          borderTop: "1px solid #eee",
-          fontSize: 12,
-          color: "#888",
-        }}>
-          {contacts.length} שיחות פעילות
+        {/* Left: chat thread */}
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          {!active ? (
+            <div style={{
+              flex: 1, display: "flex", alignItems: "center", justifyContent: "center",
+              background: "#E5DDD5", color: "#666", flexDirection: "column", gap: 10,
+            }}>
+              <div style={{ fontSize: 52 }}>{"💬"}</div>
+              <div style={{ fontSize: 15 }}>{"בחר שיחה כדי לצפות בה"}</div>
+            </div>
+          ) : (
+            <>
+              {/* Thread header */}
+              <div style={{
+                padding: "10px 16px", borderBottom: "1px solid #e0e0e0",
+                background: "#128C7E", color: "white",
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+                flexShrink: 0,
+              }}>
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: 14 }}>
+                    {activeContact?.guestName ?? active}
+                  </div>
+                  {activeContact?.guestName && (
+                    <div style={{ fontSize: 11, opacity: 0.75, direction: "ltr", marginTop: 1 }}>
+                      {active}
+                    </div>
+                  )}
+                </div>
+                <div style={{ fontSize: 11, opacity: 0.75 }}>{thread.length} {"הודעות"}</div>
+              </div>
+
+              {/* Messages */}
+              <div style={{
+                flex: 1, overflowY: "auto", padding: "16px 20px",
+                background: "#E5DDD5", display: "flex", flexDirection: "column", gap: 4,
+              }}>
+                {thread.map((msg) => (
+                  <Bubble key={msg.id} msg={msg} />
+                ))}
+                <div ref={bottomRef} />
+              </div>
+
+              {error && (
+                <div style={{ padding: "6px 16px", background: "#FFF0EE", color: "#C0392B", fontSize: 12, flexShrink: 0 }}>
+                  {"⚠️"} {error}
+                </div>
+              )}
+
+              {/* Reply input */}
+              <div style={{
+                padding: "10px 14px", borderTop: "1px solid #e0e0e0",
+                background: "#F0F0F0", display: "flex", gap: 8, alignItems: "flex-end",
+                flexShrink: 0,
+              }}>
+                <textarea
+                  value={reply}
+                  onChange={(e) => setReply(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendManualReply(); }
+                  }}
+                  placeholder="כתוב הודעה ידנית... (Enter לשליחה)"
+                  rows={2}
+                  style={{
+                    flex: 1, resize: "none", borderRadius: 20,
+                    border: "1px solid #ddd", padding: "10px 16px",
+                    fontSize: 14, fontFamily: "Heebo, sans-serif",
+                    outline: "none", lineHeight: 1.5, background: "white",
+                  }}
+                />
+                <button
+                  onClick={sendManualReply}
+                  disabled={sending || !reply.trim()}
+                  style={{
+                    background: (sending || !reply.trim()) ? "#ccc" : "#25D366",
+                    color: "white", border: "none", borderRadius: "50%",
+                    width: 44, height: 44, fontSize: 20,
+                    cursor: (sending || !reply.trim()) ? "not-allowed" : "pointer",
+                    flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
+                  }}
+                >
+                  {sending ? "⏳" : "➤"}
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </div>
 
-      {/* ── Message thread (left panel) ──────────────────────────────────── */}
-      <div style={{
-        flex: 1,
-        display: "flex",
-        flexDirection: "column",
-        background: "#efeae2",
-        backgroundImage: "url(\"data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23c8c0b8' fill-opacity='0.15'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E\")",
-      }}>
-        {!active ? (
-          /* Empty state */
-          <div style={{
-            flex: 1, display: "flex", flexDirection: "column",
-            alignItems: "center", justifyContent: "center",
-            color: "#888",
-          }}>
-            <div style={{ fontSize: 64, marginBottom: 16 }}>💬</div>
-            <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 8 }}>DREAM BOT Inbox</div>
-            <div style={{ fontSize: 14, color: "#aaa" }}>בחר שיחה מהרשימה כדי לצפות בהודעות</div>
-          </div>
-        ) : (
-          <>
-            {/* Thread header */}
-            <div style={{
-              padding: "12px 20px",
-              background: "#075E54",
-              color: "white",
-              display: "flex",
-              alignItems: "center",
-              gap: 12,
-            }}>
-              <div style={{
-                width: 40, height: 40, borderRadius: "50%",
-                background: "#25D366",
-                display: "flex", alignItems: "center", justifyContent: "center",
-                fontWeight: 700, fontSize: 16,
-              }}>
-                {(activeContact?.guestName ?? activeContact?.phone)?.[0]?.toUpperCase() ?? "?"}
-              </div>
-              <div>
-                <div style={{ fontWeight: 700, fontSize: 15 }}>
-                  {activeContact?.guestName ?? activeContact?.phone}
-                </div>
-                {activeContact?.guestName && (
-                  <div style={{ fontSize: 12, opacity: 0.8 }}>{activeContact?.phone}</div>
-                )}
-              </div>
-              <div style={{ marginRight: "auto", fontSize: 12, opacity: 0.7 }}>
-                {thread.length} הודעות
-              </div>
-            </div>
-
-            {/* Messages */}
-            <div style={{ flex: 1, overflowY: "auto", padding: "16px 20px" }}>
-              {thread.map((msg) => (
-                <Bubble key={msg.id} msg={msg} />
-              ))}
-              <div ref={bottomRef} />
-            </div>
-
-            {/* Reply input */}
-            <div style={{
-              padding: "12px 16px",
-              background: "#f0f0f0",
-              borderTop: "1px solid #ddd",
-              display: "flex",
-              gap: 10,
-              alignItems: "flex-end",
-            }}>
-              <textarea
-                value={reply}
-                onChange={(e) => setReply(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    sendManualReply();
-                  }
-                }}
-                placeholder="כתוב הודעה ידנית... (Enter לשליחה)"
-                rows={2}
-                style={{
-                  flex: 1,
-                  border: "1px solid #ddd",
-                  borderRadius: 20,
-                  padding: "10px 16px",
-                  fontSize: 14,
-                  resize: "none",
-                  outline: "none",
-                  fontFamily: "inherit",
-                  direction: "rtl",
-                  background: "white",
-                }}
-              />
-              <button
-                onClick={sendManualReply}
-                disabled={sending || !reply.trim()}
-                style={{
-                  background: sending || !reply.trim() ? "#ccc" : "#25D366",
-                  color: "white",
-                  border: "none",
-                  borderRadius: "50%",
-                  width: 44,
-                  height: 44,
-                  fontSize: 20,
-                  cursor: sending || !reply.trim() ? "not-allowed" : "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  flexShrink: 0,
-                }}
-              >
-                {sending ? "⏳" : "➤"}
-              </button>
-            </div>
-          </>
-        )}
-      </div>
+      {/* New Chat Modal */}
+      {showNewChat && (
+        <NewChatModal
+          onClose={() => setShowNewChat(false)}
+          onSent={() => { setShowNewChat(false); setTimeout(fetchAll, 600); }}
+        />
+      )}
     </div>
   );
 }

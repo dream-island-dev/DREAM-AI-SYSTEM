@@ -3,9 +3,13 @@
 // time-based WhatsApp triggers are due and delegates each to whatsapp-send
 // (which templates, sends/simulates, and dedupes via notification_log).
 //
-//   night_before  — ALL guests, the day before arrival
-//   morning_suite — SUITES, morning of arrival
-//   butler_1h     — SUITES, 1h+ after check-in
+//   pre_arrival_2d  — ALL guests, T-2 days before arrival (any hour)
+//   night_before    — ALL guests, day before arrival (any hour)
+//   morning_welcome — non-suite guests, morning of arrival (Israel 08:00+)
+//   morning_suite   — suite guests, morning of arrival (Israel 06:00+)
+//   mid_stay        — checked-in guests, day after arrival (Israel 10:00+)
+//   checkout_fb     — all guests, day after departure (Israel 09:00+)
+//   butler_1h       — suite guests, 1h+ after check-in
 // (room_ready is event-driven from the UI toggle, not here.)
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
@@ -31,12 +35,18 @@ serve(async (req: Request) => {
     const twoDaysOut = ymd(new Date(now.getTime() + 2 * 24 * 3600 * 1000));
     const hourUTC = now.getUTCHours(); // ~Israel = UTC+2/3
 
-    const { data: guests = [] } = await supabase.from("guests").select("*");
+    const { data: guests = [] } = await supabase
+      .from("guests")
+      .select("id, name, phone, arrival_date, departure_date, room_type, status, checkin_time, msg_pre_arrival_2d_sent, msg_mid_stay_sent, msg_checkout_fb_sent");
+
+    // yesterday = day after departure that triggers checkout feedback
+    const yesterday = ymd(new Date(now.getTime() - 24 * 3600 * 1000));
 
     const due: { guestId: number; trigger: string }[] = [];
     for (const g of guests ?? []) {
       // T-2 — pre-arrival confirmation request (all guests, any hour)
-      if (g.arrival_date === twoDaysOut) due.push({ guestId: g.id, trigger: "pre_arrival_2d" });
+      if (g.arrival_date === twoDaysOut && !g.msg_pre_arrival_2d_sent)
+        due.push({ guestId: g.id, trigger: "pre_arrival_2d" });
 
       // T-1 night — check-in reminder (all guests)
       if (g.arrival_date === tomorrow) due.push({ guestId: g.id, trigger: "night_before" });
@@ -44,6 +54,20 @@ serve(async (req: Request) => {
       // Arrival morning — welcome message for non-suite guests (UTC 06+ ≈ Israel 08+)
       if (g.arrival_date === today && g.room_type !== "suite" && hourUTC >= 6)
         due.push({ guestId: g.id, trigger: "morning_welcome" });
+
+      // Mid-stay check — day after arrival, while still on property (UTC 08+ ≈ Israel 10+)
+      // Only fires once (flag guard) and only for checked-in guests.
+      if (
+        g.arrival_date === yesterday &&
+        g.departure_date && g.departure_date >= today &&
+        g.status === "checked_in" &&
+        !g.msg_mid_stay_sent &&
+        hourUTC >= 8
+      ) due.push({ guestId: g.id, trigger: "mid_stay" });
+
+      // Checkout feedback — day after departure (UTC 07+ ≈ Israel 09+)
+      if (g.departure_date === yesterday && !g.msg_checkout_fb_sent && hourUTC >= 7)
+        due.push({ guestId: g.id, trigger: "checkout_fb" });
 
       if (g.room_type === "suite") {
         // Arrival morning for suites (UTC 04+ ≈ Israel 06+)

@@ -1,13 +1,15 @@
 // supabase/functions/get-wa-templates/index.ts
-// Fetches approved WhatsApp templates from Meta WABA API and returns a
-// simplified list for the BroadcastDashboard UI.
+// Fetches WhatsApp templates from Meta WABA API.
+//
+// Query params:
+//   ?all=true   — returns ALL statuses (APPROVED, PENDING, REJECTED) for template manager
+//   (default)   — returns only APPROVED templates for broadcast UI
 //
 // Env (Supabase secrets):
 //   META_WHATSAPP_TOKEN       — Meta Cloud API bearer token
 //   META_BUSINESS_ACCOUNT_ID  — WhatsApp Business Account (WABA) ID
 //
-// Returns: { ok: true, templates: [{ name, language, status, bodyText, varCount }] }
-// varCount = max {{N}} index found in body text (so {{1}}{{2}} → varCount=2)
+// Returns: { ok: true, templates: [{ name, language, status, bodyText, varCount, category }] }
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
@@ -23,10 +25,13 @@ interface MetaComponent {
 }
 
 interface MetaTemplate {
+  id:         string;
   name:       string;
   language:   string;
   status:     string;
+  category:   string;
   components: MetaComponent[];
+  rejected_reason?: string;
 }
 
 function countVars(bodyText: string): number {
@@ -44,9 +49,21 @@ serve(async (req: Request) => {
     if (!token)  throw new Error("missing_secret: META_WHATSAPP_TOKEN");
     if (!wabaId) throw new Error("missing_secret: META_BUSINESS_ACCOUNT_ID");
 
+    const url_obj = new URL(req.url);
+    let fetchAll = url_obj.searchParams.get("all") === "true";
+    // Also accept all:true in request body (for Supabase invoke which can't set query params easily)
+    if (!fetchAll && req.method === "POST") {
+      try {
+        const body = await req.json() as Record<string, unknown>;
+        fetchAll = body?.all === true;
+      } catch { /* no body — keep false */ }
+    }
+
+    // When all=true fetch all statuses; otherwise only APPROVED
+    const statusFilter = fetchAll ? "" : "&status=APPROVED";
     const url =
       `https://graph.facebook.com/v20.0/${wabaId}/message_templates` +
-      `?status=APPROVED&limit=30&fields=name,language,status,components`;
+      `?limit=50${statusFilter}&fields=id,name,language,status,category,components,rejected_reason`;
 
     const res = await fetch(url, {
       headers: { Authorization: `Bearer ${token}` },
@@ -61,14 +78,21 @@ serve(async (req: Request) => {
     const json = await res.json() as { data?: MetaTemplate[] };
 
     const templates = (json.data ?? []).map((t) => {
-      const bodyComp = t.components.find((c) => c.type === "BODY");
-      const bodyText = bodyComp?.text ?? "";
+      const bodyComp   = t.components.find((c) => c.type === "BODY");
+      const headerComp = t.components.find((c) => c.type === "HEADER");
+      const footerComp = t.components.find((c) => c.type === "FOOTER");
+      const bodyText   = bodyComp?.text ?? "";
       return {
-        name:     t.name,
-        language: t.language,
-        status:   t.status,
+        id:              t.id,
+        name:            t.name,
+        language:        t.language,
+        status:          t.status,
+        category:        t.category ?? "MARKETING",
         bodyText,
-        varCount: countVars(bodyText),
+        headerText:      headerComp?.text ?? null,
+        footerText:      footerComp?.text ?? null,
+        varCount:        countVars(bodyText),
+        rejectedReason:  t.rejected_reason ?? null,
       };
     });
 

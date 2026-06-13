@@ -383,19 +383,28 @@ async function askGemini(
 /** Matches affirmative replies to the pre-arrival confirmation request. */
 const CONFIRMATION_RE = /^(כן|אישור|yes|1|מאשר|מאשרת|כן תודה|כן אישור|אישורי|בסדר|ok)\s*$/i;
 
-// Set WORKSHOP_SIGNUP_URL in Supabase Secrets once the user provides the URL.
-const WORKSHOP_SIGNUP_URL = Deno.env.get("WORKSHOP_SIGNUP_URL") ?? "dream-island.co.il/workshops";
+const WORKSHOP_SIGNUP_URL = Deno.env.get("WORKSHOP_SIGNUP_URL") ?? "go.oncehub.com/DreamIsland";
+const GOOGLE_REVIEW_URL   = Deno.env.get("GOOGLE_REVIEW_URL")   ?? "";
 
+// buttonUrlParam: if set, passes a dynamic URL suffix to button index 0
 async function sendTemplate(
-  to: string, templateName: string, vars: string[], langCode = "he"
+  to: string,
+  templateName: string,
+  vars: string[],
+  langCode = "he",
+  buttonUrlParam?: string,
 ): Promise<void> {
   const token   = Deno.env.get("META_WHATSAPP_TOKEN");
   const phoneId = Deno.env.get("META_PHONE_NUMBER_ID");
   if (!token || !phoneId) throw new Error("missing_meta_creds");
 
-  const components = vars.length > 0
-    ? [{ type: "body", parameters: vars.map((v) => ({ type: "text", text: v })) }]
-    : [];
+  const components: unknown[] = [];
+  if (vars.length > 0) {
+    components.push({ type: "body", parameters: vars.map((v) => ({ type: "text", text: v })) });
+  }
+  if (buttonUrlParam !== undefined) {
+    components.push({ type: "button", sub_type: "url", index: "0", parameters: [{ type: "text", text: buttonUrlParam }] });
+  }
 
   const res = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
     method: "POST",
@@ -414,6 +423,18 @@ async function sendTemplate(
   });
   if (!res.ok) throw new Error(`meta_template_${res.status}: ${(await res.text()).slice(0, 200)}`);
 }
+
+const SPA_MENU =
+  "🌿 *תפריט ספא Dream Island*\n\n" +
+  "💆 *טיפולים זוגיים:*\n" +
+  "• ספא בואטסו — 60 דק'\n" +
+  "• חמאם ושמנים — 90 דק'\n" +
+  "• עיסוי לכל הגוף — 60 דק'\n\n" +
+  "💆 *טיפולים אישיים:*\n" +
+  "• טיפול פנים — 45 דק'\n" +
+  "• עיסוי רגליים — 30 דק'\n" +
+  "• עיסוי גב — 30 דק'\n\n" +
+  "📞 להזמנה — שלחו לנו את שם הטיפול והשעה המועדפת ונתאם לכם. תמשיכו ליהנות! 🙏";
 
 // ══════════════════════════════════════════════════════════════════════════════
 // §6  META CLOUD API — send WhatsApp reply
@@ -513,14 +534,30 @@ serve(async (req: Request) => {
       : systemPrompt + kbSuffix;
 
     for (const msg of msgArr) {
-      // Only handle text messages (images/stickers handled later)
-      if (msg.type !== "text") continue;
-
       const from  = String(msg.from ?? "");
       const msgId = String(msg.id   ?? "");
-      const text  = (msg.text as Record<string, unknown>)?.body as string ?? "";
-      // Normalise to E.164
       const phone = from.startsWith("+") ? from : `+${from}`;
+
+      // Extract text from both plain text and interactive button_reply messages
+      let text = "";
+      let isButtonReply = false;
+      let buttonTitle   = "";
+
+      if (msg.type === "text") {
+        text = (msg.text as Record<string, unknown>)?.body as string ?? "";
+        if (!text.trim()) continue;
+      } else if (msg.type === "interactive") {
+        const interactive = msg.interactive as Record<string, unknown>;
+        if ((interactive?.type as string) === "button_reply") {
+          isButtonReply = true;
+          buttonTitle   = ((interactive?.button_reply as Record<string, unknown>)?.title as string) ?? "";
+          text          = buttonTitle;
+        } else {
+          continue;
+        }
+      } else {
+        continue; // skip images, audio, stickers, etc.
+      }
 
       if (!text.trim()) continue;
 
@@ -538,68 +575,146 @@ serve(async (req: Request) => {
       // ── Lookup registered guest ───────────────────────────────────────────
       const { data: guest } = await supabase
         .from("guests")
-        .select("id, name, msg_pre_arrival_2d_sent, arrival_confirmed, payment_amount, payment_link_url")
+        .select("id, name, arrival_confirmed, payment_amount, payment_link_url, msg_pre_arrival_2d_sent, needs_callback, requires_attention")
         .eq("phone", phone)
         .maybeSingle();
       const guestId   = (guest?.id   as number)     ?? null;
       const guestName = (guest?.name as string|null) ?? null;
+      const sim       = Deno.env.get("WHATSAPP_SIMULATION") === "true";
 
-      // ── Pre-arrival confirmation detection ────────────────────────────────
-      // If the message is an affirmative reply AND this guest is waiting for
-      // confirmation (T-2 template was sent, but not yet confirmed), handle it
-      // here and skip normal intent routing.
+      // ── Button reply router ───────────────────────────────────────────────
+      // Handles taps on Quick Reply / URL buttons in approved templates.
+      // Each branch logs the interaction and sends an appropriate response,
+      // then skips normal intent classification.
+      if (isButtonReply && buttonTitle) {
+        await supabase.from("whatsapp_conversations").insert({
+          phone, guest_id: guestId, direction: "inbound",
+          message: `[כפתור: ${buttonTitle}]`, wa_message_id: msgId, intent: "button_reply",
+        });
+
+        const name = String(guest?.name ?? "");
+
+        // ── "כן, מגיעים! ✨" — arrival confirmed → send payment + workshop ──
+        if (buttonTitle.includes("כן, מגיעים") || buttonTitle.includes("כן מגיעים")) {
+          await supabase.from("guests").update({ arrival_confirmed: true }).eq("id", guestId);
+          const amount   = String((guest as Record<string,unknown>)?.payment_amount ?? "יישלח בנפרד");
+          // Extract token suffix from full payment URL for the URL button parameter.
+          // Until Gama redirect endpoint is live, falls back to full URL in a text message.
+          const fullUrl  = String((guest as Record<string,unknown>)?.payment_link_url ?? "");
+          const urlToken = fullUrl ? fullUrl.split("/").pop() ?? fullUrl : "pending";
+          if (!sim) {
+            try {
+              await sendTemplate(phone, "dream_payment_and_workshops", [name, amount], "he", urlToken);
+              await supabase.from("whatsapp_conversations").insert({
+                phone, guest_id: guestId, direction: "outbound",
+                message: "[תבנית: dream_payment_and_workshops]", wa_message_id: null,
+              });
+            } catch (e) {
+              console.error("[webhook] payment_and_workshops send failed:", (e as Error).message);
+            }
+          } else {
+            console.info(`[webhook] SIM — "כן מגיעים" from ${phone}, would send dream_payment_and_workshops`);
+          }
+
+        // ── "לא, שינוי בתאריך" — date change → ask + flag for staff ─────────
+        } else if (buttonTitle.includes("שינוי בתאריך") || buttonTitle.includes("לא,")) {
+          if (guestId) {
+            await supabase.from("guests").update({ requires_attention: true, requires_attention_since: new Date().toISOString() }).eq("id", guestId);
+          }
+          const reply = "מובן לגמרי! 🗓️ מה התאריך החדש המועדף עליכם? שלחו לנו ונעדכן את ההזמנה.";
+          if (!sim) {
+            try { await sendReply(phone, reply); } catch (e) { console.error("[webhook] reply error:", (e as Error).message); }
+          }
+          await supabase.from("whatsapp_conversations").insert({
+            phone, guest_id: guestId, direction: "outbound", message: reply, wa_message_id: null, intent: "button_reply",
+          });
+
+        // ── "ספא וטיפולים 📜" — send spa menu as free text ──────────────────
+        } else if (buttonTitle.includes("ספא") || buttonTitle.includes("טיפולים")) {
+          if (!sim) {
+            try { await sendReply(phone, SPA_MENU); } catch (e) { console.error("[webhook] spa menu send error:", (e as Error).message); }
+          }
+          await supabase.from("whatsapp_conversations").insert({
+            phone, guest_id: guestId, direction: "outbound", message: "[תפריט ספא]", wa_message_id: null, intent: "button_reply",
+          });
+
+        // ── "דברו איתי 📞" — callback requested → alert staff ───────────────
+        } else if (buttonTitle.includes("דברו איתי") || buttonTitle.includes("מענה אנושי")) {
+          if (guestId) {
+            await supabase.from("guests").update({
+              needs_callback: true, requires_attention: true, requires_attention_since: new Date().toISOString(),
+            }).eq("id", guestId);
+          }
+          const reply = "קיבלנו! 🙏 אחד מהצוות שלנו יצור אתכם קשר בהקדם. תמשיכו ליהנות!";
+          if (!sim) {
+            try { await sendReply(phone, reply); } catch (e) { console.error("[webhook] reply error:", (e as Error).message); }
+          }
+          await supabase.from("whatsapp_conversations").insert({
+            phone, guest_id: guestId, direction: "outbound", message: reply, wa_message_id: null, intent: "button_reply",
+          });
+
+        // ── "היה מושלם! ✨" — positive feedback → send Google review link ────
+        } else if (buttonTitle.includes("מושלם") || buttonTitle.includes("מושלמת")) {
+          const reviewUrl = GOOGLE_REVIEW_URL || "dream-island.co.il";
+          const reply = `שמחנו מאוד לשמוע! 🌟 אם תרצו לשתף את החוויה שלכם — זה יאיר לנו את היום:\n${reviewUrl}\nתודה ענקית ומחכים לכם בפעם הבאה! 💫`;
+          if (!sim) {
+            try { await sendReply(phone, reply); } catch (e) { console.error("[webhook] reply error:", (e as Error).message); }
+          }
+          await supabase.from("whatsapp_conversations").insert({
+            phone, guest_id: guestId, direction: "outbound", message: reply, wa_message_id: null, intent: "button_reply",
+          });
+
+        // ── "יש מקום לשיפור 💬" — negative feedback → collect + flag ────────
+        } else if (buttonTitle.includes("לשיפור") || buttonTitle.includes("שיפור")) {
+          if (guestId) {
+            await supabase.from("guests").update({ requires_attention: true, requires_attention_since: new Date().toISOString() }).eq("id", guestId);
+          }
+          const reply = "תודה על הכנות — זה חשוב לנו מאוד. 🙏 מה היה אפשר לשפר? כתבו לנו כאן ונשתפר.";
+          if (!sim) {
+            try { await sendReply(phone, reply); } catch (e) { console.error("[webhook] reply error:", (e as Error).message); }
+          }
+          await supabase.from("whatsapp_conversations").insert({
+            phone, guest_id: guestId, direction: "outbound", message: reply, wa_message_id: null, intent: "button_reply",
+          });
+        }
+
+        console.info(`[webhook] ✅ button reply handled — "${buttonTitle}" phone:${phone}`);
+        continue; // skip normal intent routing
+      }
+
+      // ── Text confirmation detection (fallback for guests who type "כן" manually) ──
       if (
         CONFIRMATION_RE.test(text.trim()) &&
         guest?.msg_pre_arrival_2d_sent &&
         !guest?.arrival_confirmed
       ) {
-        // 1. Mark guest as confirmed
         await supabase.from("guests").update({ arrival_confirmed: true }).eq("id", guestId);
-
-        // 2. Log the inbound confirmation
         await supabase.from("whatsapp_conversations").insert({
-          phone,
-          guest_id:      guestId,
-          direction:     "inbound",
-          message:       text,
-          wa_message_id: msgId,
-          intent:        "confirmation",
+          phone, guest_id: guestId, direction: "inbound",
+          message: text, wa_message_id: msgId, intent: "confirmation",
         });
 
-        const sim = Deno.env.get("WHATSAPP_SIMULATION") === "true";
-        const guestDisplayName = String(guest?.name ?? "");
+        const name   = String(guest?.name ?? "");
         const amount = String((guest as Record<string,unknown>).payment_amount ?? "יישלח בנפרד");
-        const payUrl = String((guest as Record<string,unknown>).payment_link_url ?? "יישלח בקרוב");
+        const fullUrl = String((guest as Record<string,unknown>).payment_link_url ?? "");
+        const urlToken = fullUrl ? fullUrl.split("/").pop() ?? fullUrl : "pending";
 
         if (!sim) {
           try {
-            // 3. Send payment link template
-            await sendTemplate(phone, "dream_payment_link", [guestDisplayName, amount, payUrl]);
+            await sendTemplate(phone, "dream_payment_and_workshops", [name, amount], "he", urlToken);
             await supabase.from("whatsapp_conversations").insert({
               phone, guest_id: guestId, direction: "outbound",
-              message: `[תבנית: dream_payment_link]`, wa_message_id: null,
+              message: "[תבנית: dream_payment_and_workshops]", wa_message_id: null,
             });
           } catch (e) {
-            console.error("[webhook] payment_link send failed:", (e as Error).message);
-          }
-
-          // 4. Brief pause then send workshop signup
-          await new Promise((r) => setTimeout(r, 800));
-          try {
-            await sendTemplate(phone, "dream_workshop_signup", [guestDisplayName, WORKSHOP_SIGNUP_URL]);
-            await supabase.from("whatsapp_conversations").insert({
-              phone, guest_id: guestId, direction: "outbound",
-              message: `[תבנית: dream_workshop_signup]`, wa_message_id: null,
-            });
-          } catch (e) {
-            console.error("[webhook] workshop_signup send failed:", (e as Error).message);
+            console.error("[webhook] payment_and_workshops send failed:", (e as Error).message);
           }
         } else {
-          console.info(`[webhook] SIM — confirmation from ${phone}, would send payment_link + workshop_signup`);
+          console.info(`[webhook] SIM — text confirmation from ${phone}`);
         }
 
-        console.info(`[webhook] ✅ pre-arrival confirmed — phone:${phone} guest:${guestId}`);
-        continue; // skip normal intent routing
+        console.info(`[webhook] ✅ pre-arrival confirmed (text) — phone:${phone} guest:${guestId}`);
+        continue;
       }
 
       // ── Classify intent (< 1 ms, no AI cost) ─────────────────────────────

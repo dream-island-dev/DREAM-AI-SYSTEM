@@ -2,10 +2,14 @@
 // Central WhatsApp dispatcher for Dream Island.
 //
 // Supported triggers:
-//   night_before     — pre-arrival greeting (idempotent)
-//   morning_suite    — day-of VIP welcome (idempotent)
-//   room_ready       — room is ready, proceed to reception (idempotent)
+//   pre_arrival_2d   — T-2 confirmation request (idempotent)
+//   night_before     — T-1 pre-arrival greeting (idempotent)
+//   morning_suite    — day-of VIP welcome for suites (idempotent)
+//   morning_welcome  — day-of welcome for standard rooms (idempotent)
+//   mid_stay         — mid-stay check after first night (idempotent)
+//   checkout_fb      — feedback request day after departure (idempotent)
 //   butler_1h        — post check-in butler touch (idempotent)
+//   room_ready       — manual UI: room ready notification (idempotent)
 //   shift_assignment — staff schedule notification (not idempotent)
 //   broadcast        — manager-composed free-form message (not idempotent)
 //                      supports {{guest_name}}, {{room}}, {{room_type}} placeholders
@@ -20,15 +24,16 @@
 //
 // API: Meta WhatsApp Cloud API v20.0
 //   POST https://graph.facebook.com/v20.0/{META_PHONE_NUMBER_ID}/messages
-//   NOTE: Business-initiated messages require an APPROVED TEMPLATE in production.
-//         Free-text body works within the 24h customer-service window / sandbox testing.
-//         Swap to { type:"template", template:{...} } when Meta approves your templates.
 //
 // Pipeline flag ownership (single source of truth — Edge Function only):
-//   night_before  → guests.msg_pre_arrival_sent  = true
-//   room_ready    → guests.msg_room_ready_sent   = true
-//   butler_1h     → guests.msg_post_checkin_sent = true
-//   broadcast     → no pipeline flag (ad-hoc sends)
+//   pre_arrival_2d   → guests.msg_pre_arrival_2d_sent  = true
+//   night_before     → guests.msg_pre_arrival_sent     = true
+//   morning_welcome  → guests.msg_morning_welcome_sent = true
+//   room_ready       → guests.msg_room_ready_sent      = true
+//   butler_1h        → guests.msg_post_checkin_sent    = true
+//   mid_stay         → guests.msg_mid_stay_sent        = true
+//   checkout_fb      → guests.msg_checkout_fb_sent     = true
+//   broadcast        → no pipeline flag (ad-hoc sends)
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -49,31 +54,37 @@ const WORKSHOP_SIGNUP_URL = Deno.env.get("WORKSHOP_SIGNUP_URL") ?? "dream-island
 // ── Pipeline trigger → approved WA template name ─────────────────────────────
 // Each key maps to a template registered & approved in Meta WhatsApp Manager.
 const PIPELINE_TEMPLATE: Record<string, string> = {
-  night_before:    "dream_checkin_reminder",     // T-1 night  → "מחר מגיעים" + contact
-  morning_suite:   "dream_morning_welcome",      // suite arrival AM → "בוקר טוב, היום מגיעים"
-  room_ready:      "dream_arrival_tomorrow",     // room ready  → "היום מגיעים"
-  butler_1h:       "dream_handover_agent",       // 1h post check-in
-  pre_arrival_2d:  "dream_pre_arrival_confirm",  // T-2 days   → asks for confirmation
-  morning_welcome: "dream_morning_welcome",      // non-suite arrival AM
+  pre_arrival_2d:  "dream_arrival_confirmation",  // T-2 days    → confirmation + Quick Reply buttons
+  night_before:    "dream_checkin_reminder_v2",     // T-1 night   → "מחר מגיעים" + contact number
+  morning_suite:   "dream_welcome_morning",        // suite AM    → "בוקר אור, היום מגיעים"
+  morning_welcome: "dream_welcome_morning",        // standard AM → same template
+  room_ready:      "dream_welcome_morning",        // manual UI   → morning welcome (idempotent)
+  mid_stay:        "dream_mid_stay_check",         // day 2       → mid-stay check + Quick Reply buttons
+  checkout_fb:     "dream_checkout_feedback",      // day after departure → feedback + Quick Reply buttons
+  butler_1h:       "dream_handover_agent_v2",       // 1h post check-in
 };
 
 // Variables passed as {{1}}, {{2}}, … to each pipeline template.
 const PIPELINE_VARS: Record<string, (g: Record<string, unknown>) => string[]> = {
+  pre_arrival_2d:  (g) => [String(g.name ?? "")],
   night_before:    (g) => [String(g.name ?? ""), RESORT_CONTACT_PHONE],
   morning_suite:   (g) => [String(g.name ?? "")],
-  room_ready:      (g) => [String(g.name ?? "")],
-  butler_1h:       (g) => [String(g.name ?? "")],
-  pre_arrival_2d:  (g) => [String(g.name ?? ""), String(g.arrival_date ?? "")],
   morning_welcome: (g) => [String(g.name ?? "")],
+  room_ready:      (g) => [String(g.name ?? "")],
+  mid_stay:        (g) => [String(g.name ?? "")],
+  checkout_fb:     (g) => [String(g.name ?? "")],
+  butler_1h:       (g) => [String(g.name ?? "")],
 };
 
 // Maps each pipeline trigger to the DB flag it atomically stamps.
 const GUEST_FLAG: Record<string, string> = {
+  pre_arrival_2d:  "msg_pre_arrival_2d_sent",
   night_before:    "msg_pre_arrival_sent",
+  morning_welcome: "msg_morning_welcome_sent",
   room_ready:      "msg_room_ready_sent",
   butler_1h:       "msg_post_checkin_sent",
-  pre_arrival_2d:  "msg_pre_arrival_2d_sent",
-  morning_welcome: "msg_morning_welcome_sent",
+  mid_stay:        "msg_mid_stay_sent",
+  checkout_fb:     "msg_checkout_fb_sent",
 };
 
 // ── Staff shift assignment message ────────────────────────────────────────────
