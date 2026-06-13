@@ -36,8 +36,10 @@ const CORS = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-// Allow overriding via Supabase Secret (e.g. "gemini-1.5-flash" if 2.0 is deprecated)
-const GEMINI_MODEL = Deno.env.get("GEMINI_MODEL") ?? "gemini-2.0-flash";
+// Ordered fallback list — first model in list wins; next tried on 404
+const GEMINI_MODELS: string[] = Deno.env.get("GEMINI_MODEL")
+  ? [Deno.env.get("GEMINI_MODEL")!]
+  : ["gemini-2.0-flash-lite", "gemini-1.5-flash", "gemini-2.0-flash"];
 
 // ══════════════════════════════════════════════════════════════════════════════
 // §1  DYNAMIC BOT CONFIG — loaded from bot_config table, cached 5 min
@@ -349,35 +351,38 @@ async function askGemini(
     `\nהאורח כתב כעת: "${userMessage}"\n\n` +
     `תשובתך (עברית, 2–4 משפטים, נימה פרמיום):`;
 
-  console.log(`[webhook] calling Gemini model="${GEMINI_MODEL}" msgLen=${userMessage.length}`);
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text: fullPrompt }] }],
-        generationConfig: {
-          maxOutputTokens: 350,
-          temperature:     0.65,
-          candidateCount:  1,
-        },
-      }),
-      signal: AbortSignal.timeout(15000),
-    }
-  );
+  const body = JSON.stringify({
+    contents: [{ role: "user", parts: [{ text: fullPrompt }] }],
+    generationConfig: { maxOutputTokens: 350, temperature: 0.65, candidateCount: 1 },
+  });
 
-  if (!res.ok) {
-    const errBody = await res.text();
-    console.error(`[webhook] Gemini ${res.status} model="${GEMINI_MODEL}":`, errBody.slice(0, 400));
-    throw new Error(`gemini_${res.status}: ${errBody.slice(0, 200)}`);
+  for (const model of GEMINI_MODELS) {
+    console.log(`[webhook] calling Gemini model="${model}" msgLen=${userMessage.length}`);
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body, signal: AbortSignal.timeout(15000) },
+    );
+
+    if (res.status === 404) {
+      const errBody = await res.text();
+      console.warn(`[webhook] Gemini model "${model}" not found — trying next. ${errBody.slice(0, 150)}`);
+      continue;
+    }
+
+    if (!res.ok) {
+      const errBody = await res.text();
+      console.error(`[webhook] Gemini ${res.status} model="${model}":`, errBody.slice(0, 400));
+      throw new Error(`gemini_${res.status}: ${errBody.slice(0, 200)}`);
+    }
+
+    const data = await res.json();
+    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
+    if (!text) throw new Error("gemini_empty_response");
+    console.log(`[webhook] Gemini OK model="${model}"`);
+    return text;
   }
 
-  const data = await res.json();
-  const text =
-    data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
-  if (!text) throw new Error("gemini_empty_response");
-  return text;
+  throw new Error("gemini_all_models_unavailable");
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
