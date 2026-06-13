@@ -860,23 +860,47 @@ serve(async (req: Request) => {
           message: text, wa_message_id: msgId, intent: "confirmation",
         });
 
-        const name   = String(guest?.name ?? "");
-        const amount = String((guest as Record<string,unknown>).payment_amount ?? "יישלח בנפרד");
-        const fullUrl = String((guest as Record<string,unknown>).payment_link_url ?? "");
-        const urlToken = fullUrl ? fullUrl.split("/").pop() ?? fullUrl : "pending";
+        const safeName2      = String(guest?.name ?? "").trim() || "אורח יקר";
+        const paymentAmount2  = (guest as Record<string,unknown>).payment_amount;
+        const paymentLinkUrl2 = String((guest as Record<string,unknown>).payment_link_url ?? "");
+        const hasPayment2     = !!paymentAmount2 && !!paymentLinkUrl2;
 
         if (!sim) {
-          try {
-            await sendTemplate(phone, "dream_payment_and_workshops", [name, amount], "he", urlToken);
-            await supabase.from("whatsapp_conversations").insert({
-              phone, guest_id: guestId, direction: "outbound",
-              message: "[תבנית: dream_payment_and_workshops]", wa_message_id: null,
-            });
-          } catch (e) {
-            console.error("[webhook] payment_and_workshops send failed:", (e as Error).message);
+          if (hasPayment2) {
+            const amount2   = String(paymentAmount2);
+            const urlToken2 = paymentLinkUrl2.split("/").pop() ?? paymentLinkUrl2;
+            try {
+              await sendTemplate(phone, "dream_payment_and_workshops", [safeName2, amount2], "he", urlToken2);
+              await supabase.from("whatsapp_conversations").insert({
+                phone, guest_id: guestId, direction: "outbound",
+                message: "[תבנית: dream_payment_and_workshops]", wa_message_id: null,
+              });
+            } catch (e) {
+              console.error("[webhook] payment_and_workshops send failed:", (e as Error).message);
+              try { await sendReply(phone, `תודה ${safeName2}! 🎉 נציג שלנו ישלח פרטי תשלום בקרוב.`); }
+              catch { /* ignore fallback failure */ }
+            }
+          } else {
+            if (guestId) {
+              await supabase.from("guests").update({
+                requires_attention: true,
+                requires_attention_since: new Date().toISOString(),
+              }).eq("id", guestId);
+            }
+            try {
+              await sendReply(phone,
+                `תודה ${safeName2}! 🎉 קיבלנו את האישור שלך — מחכים לכם בשמחה!\nנציג שלנו ייצור איתכם קשר בקרוב עם פרטי התשלום.`
+              );
+              await supabase.from("whatsapp_conversations").insert({
+                phone, guest_id: guestId, direction: "outbound",
+                message: "[אישור הגעה טקסט — ממתין להגדרת תשלום]", wa_message_id: null,
+              });
+            } catch (e) {
+              console.error("[webhook] text confirmation reply failed:", (e as Error).message);
+            }
           }
         } else {
-          console.info(`[webhook] SIM — text confirmation from ${phone}`);
+          console.info(`[webhook] SIM — text confirmation from ${phone} hasPayment=${hasPayment2}`);
         }
 
         console.info(`[webhook] ✅ pre-arrival confirmed (text) — phone:${phone} guest:${guestId}`);
