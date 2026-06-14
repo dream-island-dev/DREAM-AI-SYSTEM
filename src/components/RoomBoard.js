@@ -1,43 +1,41 @@
 // src/components/RoomBoard.js
-// Dream Island — Room Status Board
-// Reads from: room_status table (operational status) + guests table (occupant info)
-// Requires: migration 020_room_status.sql
+// Sprint 1 — Tablet-Optimized Housekeeping Kiosk
+// • Bilingual HE/EN toggle (no npm deps)
+// • Live cleaning timer (mm:ss) per room, self-contained in each card
+// • Confirmation modal before marking a room "פנוי"
+// • Auto-notifies arriving guest via room-clean-notify Edge Function
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { supabase } from "../supabaseClient";
 
-// ── 26 Dream Island suites — static definitions ──────────────────────────────
+// ── Suite definitions (26 rooms) ──────────────────────────────────────────
 const SUITES = [
-  // Floor 1 — Garden suites
-  { id: "101", type: "סוויטת ג'ספר",    desc: "חצר פרטית + ג'קוזי",      floor: 1 },
-  { id: "102", type: "סוויטת ג'ספר",    desc: "חצר פרטית + ג'קוזי",      floor: 1 },
-  { id: "103", type: "סוויטת אמרלד",    desc: "חצר + ג'קוזי + סאונה",    floor: 1 },
-  { id: "104", type: "סוויטת אמרלד",    desc: "חצר + ג'קוזי + סאונה",    floor: 1 },
-  { id: "105", type: "סוויטת אקוומרין", desc: "חצר + בריכה פרטית",       floor: 1 },
-  { id: "106", type: "סוויטת אקוומרין", desc: "חצר + בריכה פרטית",       floor: 1 },
-  { id: "107", type: "סוויטת אקוומרין", desc: "חצר + בריכה פרטית",       floor: 1 },
-  { id: "108", type: "סוויטת ג'ספר",    desc: "חצר פרטית + ג'קוזי",      floor: 1 },
-  // Floor 2 — Balcony & panoramic suites
-  { id: "201", type: "סוויטת אמטיסט",   desc: "מרפסת + Hot Tub",          floor: 2 },
-  { id: "202", type: "סוויטת אמטיסט",   desc: "מרפסת + Hot Tub",          floor: 2 },
-  { id: "203", type: "סוויטת אמטיסט",   desc: "מרפסת + Hot Tub",          floor: 2 },
-  { id: "204", type: "סוויטת אמטיסט",   desc: "מרפסת + Hot Tub",          floor: 2 },
-  { id: "205", type: "סוויטת אוניקס",   desc: "גג פנורמי + ג'קוזי",      floor: 2 },
-  { id: "206", type: "סוויטת אוניקס",   desc: "גג פנורמי + ג'קוזי",      floor: 2 },
-  { id: "207", type: "סוויטת אוניקס",   desc: "גג פנורמי + ג'קוזי",      floor: 2 },
-  { id: "208", type: "סוויטת אוניקס",   desc: "גג פנורמי + ג'קוזי",      floor: 2 },
-  // Floor 3 — Penthouse
-  { id: "301", type: "סוויטת אמטיסט",   desc: "מרפסת + Hot Tub",          floor: 3 },
-  { id: "302", type: "סוויטת אוניקס",   desc: "גג פנורמי + ג'קוזי",      floor: 3 },
-  { id: "303", type: "סוויטת רובי",     desc: "חצר מלכותית + בריכה",     floor: 3 },
-  { id: "304", type: "סוויטת רובי",     desc: "חצר מלכותית + בריכה",     floor: 3 },
-  // Premium Day bungalows
-  { id: "P1",  type: "Premium Day",     desc: "בקתה מפנקת יומית",         floor: 0 },
-  { id: "P2",  type: "Premium Day",     desc: "בקתה מפנקת יומית",         floor: 0 },
-  { id: "P3",  type: "Premium Day",     desc: "בקתה מפנקת יומית",         floor: 0 },
-  { id: "P4",  type: "Premium Day",     desc: "בקתה מפנקת יומית",         floor: 0 },
-  { id: "P5",  type: "Premium Day",     desc: "בקתה מפנקת יומית",         floor: 0 },
-  { id: "P6",  type: "Premium Day",     desc: "בקתה מפנקת יומית",         floor: 0 },
+  { id: "101", type: "סוויטת ג'ספר",    desc: "חצר פרטית + ג'קוזי",    floor: 1 },
+  { id: "102", type: "סוויטת ג'ספר",    desc: "חצר פרטית + ג'קוזי",    floor: 1 },
+  { id: "103", type: "סוויטת אמרלד",    desc: "חצר + ג'קוזי + סאונה",  floor: 1 },
+  { id: "104", type: "סוויטת אמרלד",    desc: "חצר + ג'קוזי + סאונה",  floor: 1 },
+  { id: "105", type: "סוויטת אקוומרין", desc: "חצר + בריכה פרטית",     floor: 1 },
+  { id: "106", type: "סוויטת אקוומרין", desc: "חצר + בריכה פרטית",     floor: 1 },
+  { id: "107", type: "סוויטת אקוומרין", desc: "חצר + בריכה פרטית",     floor: 1 },
+  { id: "108", type: "סוויטת ג'ספר",    desc: "חצר פרטית + ג'קוזי",    floor: 1 },
+  { id: "201", type: "סוויטת אמטיסט",   desc: "מרפסת + Hot Tub",        floor: 2 },
+  { id: "202", type: "סוויטת אמטיסט",   desc: "מרפסת + Hot Tub",        floor: 2 },
+  { id: "203", type: "סוויטת אמטיסט",   desc: "מרפסת + Hot Tub",        floor: 2 },
+  { id: "204", type: "סוויטת אמטיסט",   desc: "מרפסת + Hot Tub",        floor: 2 },
+  { id: "205", type: "סוויטת אוניקס",   desc: "גג פנורמי + ג'קוזי",    floor: 2 },
+  { id: "206", type: "סוויטת אוניקס",   desc: "גג פנורמי + ג'קוזי",    floor: 2 },
+  { id: "207", type: "סוויטת אוניקס",   desc: "גג פנורמי + ג'קוזי",    floor: 2 },
+  { id: "208", type: "סוויטת אוניקס",   desc: "גג פנורמי + ג'קוזי",    floor: 2 },
+  { id: "301", type: "סוויטת אמטיסט",   desc: "מרפסת + Hot Tub",        floor: 3 },
+  { id: "302", type: "סוויטת אוניקס",   desc: "גג פנורמי + ג'קוזי",    floor: 3 },
+  { id: "303", type: "סוויטת רובי",     desc: "חצר מלכותית + בריכה",   floor: 3 },
+  { id: "304", type: "סוויטת רובי",     desc: "חצר מלכותית + בריכה",   floor: 3 },
+  { id: "P1",  type: "Premium Day",     desc: "בקתה מפנקת יומית",       floor: 0 },
+  { id: "P2",  type: "Premium Day",     desc: "בקתה מפנקת יומית",       floor: 0 },
+  { id: "P3",  type: "Premium Day",     desc: "בקתה מפנקת יומית",       floor: 0 },
+  { id: "P4",  type: "Premium Day",     desc: "בקתה מפנקת יומית",       floor: 0 },
+  { id: "P5",  type: "Premium Day",     desc: "בקתה מפנקת יומית",       floor: 0 },
+  { id: "P6",  type: "Premium Day",     desc: "בקתה מפנקת יומית",       floor: 0 },
 ];
 
 const STATUS_META = {
@@ -48,44 +46,125 @@ const STATUS_META = {
   תחזוקה:  { border: "#888780", bg: "#F1EFE8", text: "#5F5E5A" },
 };
 
-const FLOOR_LABELS = {
-  1: "קומה 1 — סוויטות גן",
-  2: "קומה 2 — סוויטות מרפסת ופנורמה",
-  3: "קומה 3 — פנטהאוז",
-  0: "Premium Day — בקתות יומיות",
-};
-
-const NEXT_ACTIONS = {
-  תפוס:    [{ label: "→ לניקיון", next: "לניקיון", primary: false }],
-  לניקיון: [{ label: "התחל ניקיון", next: "בניקיון", primary: true }],
-  בניקיון: [{ label: "✓ פנוי",    next: "פנוי",    primary: true }],
-  פנוי:    [
-    { label: "צ'ק-אין",  next: "תפוס",    primary: true  },
-    { label: "תחזוקה",   next: "תחזוקה",  primary: false },
+// fn: "update" | "start_clean" | "confirm_clean"
+const STATUS_ACTIONS = {
+  תפוס:    [{ labelKey: "toClean",    next: "לניקיון", primary: false, fn: "update"        }],
+  לניקיון: [{ labelKey: "startClean", next: "בניקיון", primary: true,  fn: "start_clean"   }],
+  בניקיון: [{ labelKey: "markReady",  next: "פנוי",    primary: true,  fn: "confirm_clean" }],
+  פנוי: [
+    { labelKey: "checkin", next: "תפוס",   primary: true,  fn: "update" },
+    { labelKey: "maint",   next: "תחזוקה", primary: false, fn: "update" },
   ],
-  תחזוקה:  [{ label: "✓ פנוי", next: "פנוי", primary: true }],
+  תחזוקה: [{ labelKey: "doneReady", next: "פנוי", primary: true, fn: "update" }],
 };
 
-const fmtDate = (iso) => {
+// ── Translations ──────────────────────────────────────────────────────────
+const TR = {
+  he: {
+    header:          "🏨 לוח חדרים",
+    loading:         "טוען לוח חדרים...",
+    all:             "הכל",
+    toggleLang:      "EN",
+    updating:        "מעדכן...",
+    awaitingArrival: "ממתין להגעה",
+    noRooms:         "אין חדרים בסטטוס זה",
+    occupiedOf:      (n, total) => `${n}/${total} תפוסים`,
+    availLabel:      (n) => `${n} פנויים`,
+    statusLabels:    { תפוס: "תפוס", פנוי: "פנוי", לניקיון: "לניקיון", בניקיון: "בניקיון", תחזוקה: "תחזוקה" },
+    floorLabels: {
+      1: "קומה 1 — סוויטות גן",
+      2: "קומה 2 — מרפסת ופנורמה",
+      3: "קומה 3 — פנטהאוז",
+      0: "Premium Day — בקתות יומיות",
+    },
+    actions: {
+      toClean:    "→ לניקיון",
+      startClean: "▶ התחל ניקיון",
+      markReady:  "✓ סיים",
+      checkin:    "צ'ק-אין",
+      maint:      "תחזוקה",
+      doneReady:  "✓ פנוי",
+    },
+    confirmTitle:    (id) => `חדר ${id} — סיום ניקיון`,
+    confirmMsg:      "הסוויטה נקייה ומוכנה לאורח?",
+    confirmYes:      "✓ אישור — סמן פנוי",
+    confirmNo:       "ביטול",
+    cleanedIn:       (dur) => `נוקתה ב-${dur}`,
+    toastUpdate:     (id, st) => `חדר ${id} → ${st}`,
+    toastCleanStart: (id) => `חדר ${id} — ניקיון התחיל`,
+    toastCleanDone:  (id) => `חדר ${id} — מוכן לאורח ✓`,
+  },
+  en: {
+    header:          "🏨 Room Board",
+    loading:         "Loading room board...",
+    all:             "All",
+    toggleLang:      "עב",
+    updating:        "Updating...",
+    awaitingArrival: "Awaiting arrival",
+    noRooms:         "No rooms with this status",
+    occupiedOf:      (n, total) => `${n}/${total} occupied`,
+    availLabel:      (n) => `${n} available`,
+    statusLabels:    { תפוס: "Occupied", פנוי: "Available", לניקיון: "For Cleaning", בניקיון: "Cleaning", תחזוקה: "Maintenance" },
+    floorLabels: {
+      1: "Floor 1 — Garden Suites",
+      2: "Floor 2 — Balcony & Panoramic",
+      3: "Floor 3 — Penthouse",
+      0: "Premium Day — Daily Bungalows",
+    },
+    actions: {
+      toClean:    "→ For Cleaning",
+      startClean: "▶ Start Cleaning",
+      markReady:  "✓ Mark Ready",
+      checkin:    "Check-in",
+      maint:      "Maintenance",
+      doneReady:  "✓ Available",
+    },
+    confirmTitle:    (id) => `Room ${id} — Confirm Clean`,
+    confirmMsg:      "Is the suite clean and ready for the guest?",
+    confirmYes:      "✓ Confirm — Mark Ready",
+    confirmNo:       "Cancel",
+    cleanedIn:       (dur) => `Cleaned in ${dur}`,
+    toastUpdate:     (id, st) => `Room ${id} → ${st}`,
+    toastCleanStart: (id) => `Room ${id} — Cleaning started`,
+    toastCleanDone:  (id) => `Room ${id} — Ready for guest ✓`,
+  },
+};
+
+function fmtDuration(sec) {
+  if (sec == null || sec < 0) return "0:00";
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function fmtDate(iso) {
   if (!iso) return null;
   const d = new Date(iso);
   return `${d.getDate()}/${d.getMonth() + 1}`;
-};
+}
 
-// ── Main component ────────────────────────────────────────────────────────────
+const STATUSES = ["תפוס", "פנוי", "לניקיון", "בניקיון", "תחזוקה"];
+
+// ── Main component ────────────────────────────────────────────────────────
 export default function RoomBoard() {
-  const [statusMap,  setStatusMap]  = useState({});
-  const [guests,     setGuests]     = useState([]);
-  const [loading,    setLoading]    = useState(true);
-  const [filter,     setFilter]     = useState("הכל");
-  const [updating,   setUpdating]   = useState(null);
-  const [toast,      setToast]      = useState(null);
+  const [statusMap,   setStatusMap]   = useState({});
+  const [guests,      setGuests]      = useState([]);
+  const [loading,     setLoading]     = useState(true);
+  const [filter,      setFilter]      = useState("הכל");
+  const [updating,    setUpdating]    = useState(null);
+  const [toast,       setToast]       = useState(null);
+  const [lang,        setLang]        = useState("he");
+  const [confirmRoom, setConfirmRoom] = useState(null);
 
-  // ── Fetch ───────────────────────────────────────────────────────────────────
+  const t = TR[lang];
+
+  // ── Fetch ───────────────────────────────────────────────────────────────
   const fetchAll = useCallback(async () => {
     if (!supabase) return;
     const [{ data: statuses }, { data: guestRows }] = await Promise.all([
-      supabase.from("room_status").select("room_id, status"),
+      supabase
+        .from("room_status")
+        .select("room_id, status, cleaning_started_at, last_clean_duration_sec"),
       supabase
         .from("guests")
         .select("id, name, room, arrival_date, departure_date, status, phone")
@@ -93,7 +172,13 @@ export default function RoomBoard() {
     ]);
     if (statuses) {
       const map = {};
-      statuses.forEach((r) => (map[r.room_id] = r.status));
+      statuses.forEach(r => {
+        map[r.room_id] = {
+          status:            r.status,
+          cleaningStartedAt: r.cleaning_started_at,
+          lastDuration:      r.last_clean_duration_sec,
+        };
+      });
       setStatusMap(map);
     }
     setGuests(guestRows ?? []);
@@ -102,170 +187,319 @@ export default function RoomBoard() {
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
-  // ── Realtime ────────────────────────────────────────────────────────────────
+  // ── Realtime ────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!supabase) return;
     const ch = supabase
       .channel("room-board-rt")
       .on("postgres_changes", { event: "*", schema: "public", table: "room_status" }, fetchAll)
-      .on("postgres_changes", { event: "*", schema: "public", table: "guests" },      fetchAll)
+      .on("postgres_changes", { event: "*", schema: "public", table: "guests" }, fetchAll)
       .subscribe();
     return () => supabase.removeChannel(ch);
   }, [fetchAll]);
 
-  // ── Update room status ──────────────────────────────────────────────────────
-  async function updateStatus(roomId, newStatus) {
+  // ── Toast ───────────────────────────────────────────────────────────────
+  function showToast(msg, type = "ok") {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 3500);
+  }
+
+  // ── Regular status transition ───────────────────────────────────────────
+  async function updateStatus(roomId, nextStatus) {
     if (!supabase) return;
     setUpdating(roomId);
-    const { error } = await supabase
-      .from("room_status")
-      .upsert(
-        { room_id: roomId, status: newStatus, updated_at: new Date().toISOString() },
-        { onConflict: "room_id" }
-      );
+    const { error } = await supabase.from("room_status").upsert(
+      { room_id: roomId, status: nextStatus, updated_at: new Date().toISOString() },
+      { onConflict: "room_id" }
+    );
     if (error) {
-      showToast("שגיאה: " + error.message, "error");
+      showToast("שגיאה: " + error.message, "err");
     } else {
-      setStatusMap((prev) => ({ ...prev, [roomId]: newStatus }));
-      showToast(`חדר ${roomId} → ${newStatus}`);
+      setStatusMap(prev => ({
+        ...prev,
+        [roomId]: { ...(prev[roomId] ?? {}), status: nextStatus },
+      }));
+      showToast(t.toastUpdate(roomId, t.statusLabels[nextStatus] ?? nextStatus));
     }
     setUpdating(null);
   }
 
-  function showToast(msg, type = "success") {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), 3000);
+  // ── Start cleaning — stamps cleaning_started_at ─────────────────────────
+  async function handleCleanStart(roomId) {
+    if (!supabase) return;
+    setUpdating(roomId);
+    const startedAt = new Date().toISOString();
+    const { error } = await supabase.from("room_status").upsert(
+      {
+        room_id:             roomId,
+        status:              "בניקיון",
+        cleaning_started_at: startedAt,
+        updated_at:          startedAt,
+      },
+      { onConflict: "room_id" }
+    );
+    if (error) {
+      showToast("שגיאה: " + error.message, "err");
+    } else {
+      setStatusMap(prev => ({
+        ...prev,
+        [roomId]: { ...(prev[roomId] ?? {}), status: "בניקיון", cleaningStartedAt: startedAt },
+      }));
+      showToast(t.toastCleanStart(roomId));
+    }
+    setUpdating(null);
   }
 
-  // ── Merge rooms ─────────────────────────────────────────────────────────────
-  const rooms = SUITES.map((s) => ({
-    ...s,
-    status: statusMap[s.id] ?? "פנוי",
-    guest:  guests.find((g) => String(g.room ?? "").trim() === String(s.id)) ?? null,
-  }));
+  // ── Open confirmation modal ─────────────────────────────────────────────
+  function handleCleanDoneRequest(room) {
+    setConfirmRoom({
+      id:                room.id,
+      cleaningStartedAt: room.cleaningStartedAt,
+      guestName:         room.guest?.name ?? null,
+    });
+  }
 
-  const filtered = filter === "הכל" ? rooms : rooms.filter((r) => r.status === filter);
+  // ── Confirm → write duration, mark פנוי, notify guest ──────────────────
+  async function handleCleanConfirm() {
+    if (!confirmRoom || !supabase) return;
+    const { id: roomId, cleaningStartedAt } = confirmRoom;
+    setConfirmRoom(null);
+    setUpdating(roomId);
 
-  const countOf = (st) => rooms.filter((r) => r.status === st).length;
+    const endedAt     = new Date().toISOString();
+    const durationSec = cleaningStartedAt
+      ? Math.floor((Date.now() - new Date(cleaningStartedAt).getTime()) / 1000)
+      : null;
 
-  // ── Styles ──────────────────────────────────────────────────────────────────
-  const page = {
-    direction: "rtl",
-    padding: "24px",
-    background: "var(--ivory, #F5F0E8)",
-    minHeight: "100%",
-    fontFamily: "Heebo, sans-serif",
-  };
+    const { error } = await supabase.from("room_status").upsert(
+      {
+        room_id:                 roomId,
+        status:                  "פנוי",
+        cleaning_ended_at:       endedAt,
+        last_clean_duration_sec: durationSec,
+        updated_at:              endedAt,
+      },
+      { onConflict: "room_id" }
+    );
+
+    if (error) {
+      showToast("שגיאה: " + error.message, "err");
+    } else {
+      setStatusMap(prev => ({
+        ...prev,
+        [roomId]: {
+          ...(prev[roomId] ?? {}),
+          status:            "פנוי",
+          cleaningStartedAt: null,
+          lastDuration:      durationSec,
+        },
+      }));
+      showToast(t.toastCleanDone(roomId));
+      supabase.functions
+        .invoke("room-clean-notify", { body: { room_id: roomId } })
+        .catch(() => {});
+    }
+    setUpdating(null);
+  }
+
+  // ── Derived ─────────────────────────────────────────────────────────────
+  const rooms = useMemo(() =>
+    SUITES.map(s => ({
+      ...s,
+      status:            statusMap[s.id]?.status            ?? "פנוי",
+      cleaningStartedAt: statusMap[s.id]?.cleaningStartedAt ?? null,
+      lastDuration:      statusMap[s.id]?.lastDuration      ?? null,
+      guest:             guests.find(g => String(g.room ?? "").trim() === String(s.id)) ?? null,
+    })),
+    [statusMap, guests]
+  );
+
+  const filtered = filter === "הכל" ? rooms : rooms.filter(r => r.status === filter);
+  const countOf  = (st) => rooms.filter(r => r.status === st).length;
 
   if (loading) return (
-    <div style={{ ...page, display: "flex", alignItems: "center", justifyContent: "center", gap: 12 }}>
-      <span style={{ fontSize: 32 }}>🏨</span>
-      <span style={{ color: "var(--text-muted, #888)" }}>טוען לוח חדרים...</span>
+    <div style={{ direction: "rtl", display: "flex", alignItems: "center", justifyContent: "center",
+      gap: 12, padding: 48, fontFamily: "Heebo, sans-serif" }}>
+      <span style={{ fontSize: 36 }}>🏨</span>
+      <span style={{ color: "var(--text-muted)" }}>{t.loading}</span>
     </div>
   );
 
   return (
-    <div style={page}>
+    <div style={{ direction: "rtl", padding: "20px 24px", fontFamily: "Heebo, sans-serif",
+      background: "var(--ivory)", minHeight: "100%" }}>
 
       {/* Toast */}
       {toast && (
         <div style={{
           position: "fixed", top: 20, right: 20, zIndex: 9999,
-          background: toast.type === "error" ? "#E24B4A" : "var(--gold, #C9A96E)",
-          color: toast.type === "error" ? "#fff" : "#412402",
-          borderRadius: 10, padding: "10px 18px",
-          fontSize: 14, fontWeight: 700,
-          boxShadow: "0 2px 12px rgba(0,0,0,0.15)",
+          padding: "12px 20px", borderRadius: 10, fontWeight: 700, fontSize: 14,
+          boxShadow: "0 4px 16px rgba(0,0,0,0.18)",
+          background: toast.type === "err" ? "#FCEBEB" : "#EAF3DE",
+          color:      toast.type === "err" ? "#A32D2D"  : "#3B6D11",
+          border:     `1px solid ${toast.type === "err" ? "#E24B4A" : "#639922"}`,
         }}>
           {toast.msg}
         </div>
       )}
 
+      {/* Confirmation Modal */}
+      {confirmRoom && (
+        <div
+          style={{ position: "fixed", inset: 0, zIndex: 9998, background: "rgba(0,0,0,0.55)",
+            display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+          onClick={() => setConfirmRoom(null)}
+        >
+          <div
+            style={{ background: "var(--card-bg)", borderRadius: 20, padding: 36,
+              maxWidth: 440, width: "100%", textAlign: "center",
+              boxShadow: "0 20px 60px rgba(0,0,0,0.25)" }}
+            onClick={e => e.stopPropagation()}
+          >
+            <div style={{ fontSize: 52, marginBottom: 14 }}>🛏️</div>
+            <div style={{ fontSize: 20, fontWeight: 800, color: "var(--black)", marginBottom: 10 }}>
+              {t.confirmTitle(confirmRoom.id)}
+            </div>
+            {confirmRoom.guestName && (
+              <div style={{ fontSize: 14, color: "var(--text-muted)", marginBottom: 6 }}>
+                👤 {confirmRoom.guestName}
+              </div>
+            )}
+            {confirmRoom.cleaningStartedAt && (
+              <div style={{ fontSize: 14, color: "#185FA5", fontWeight: 700, marginBottom: 16 }}>
+                ⏱️ {fmtDuration(Math.floor((Date.now() - new Date(confirmRoom.cleaningStartedAt).getTime()) / 1000))}
+              </div>
+            )}
+            <div style={{ fontSize: 15, color: "var(--black)", marginBottom: 28, lineHeight: 1.7 }}>
+              {t.confirmMsg}
+            </div>
+            <div style={{ display: "flex", gap: 12 }}>
+              <button
+                onClick={() => setConfirmRoom(null)}
+                style={{
+                  flex: 1, padding: "15px 0", borderRadius: 12, fontSize: 15, fontWeight: 600,
+                  cursor: "pointer", fontFamily: "Heebo, sans-serif",
+                  border: "1.5px solid var(--border)", background: "var(--card-bg)", color: "var(--text-muted)",
+                }}
+              >
+                {t.confirmNo}
+              </button>
+              <button
+                onClick={handleCleanConfirm}
+                style={{
+                  flex: 2, padding: "15px 0", borderRadius: 12, fontSize: 15, fontWeight: 800,
+                  cursor: "pointer", fontFamily: "Heebo, sans-serif",
+                  border: "none", background: "#639922", color: "#fff",
+                  boxShadow: "0 4px 16px rgba(99,153,34,0.4)",
+                }}
+              >
+                {t.confirmYes}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
-        <div style={{ fontSize: 22, fontWeight: 700, color: "var(--black, #1A1A1A)" }}>
-          🏨 לוח חדרים — Dream Island
+        <div style={{ fontSize: 22, fontWeight: 800, color: "var(--black)" }}>
+          {t.header}
         </div>
-        <div style={{ fontSize: 13, color: "var(--text-muted, #888)" }}>
-          {countOf("תפוס")}/{rooms.length} תפוסים · {countOf("פנוי")} פנויים
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
+            {t.occupiedOf(countOf("תפוס"), rooms.length)} · {t.availLabel(countOf("פנוי"))}
+          </div>
+          <button
+            onClick={() => setLang(l => l === "he" ? "en" : "he")}
+            style={{
+              padding: "5px 14px", borderRadius: 20, fontSize: 13, fontWeight: 700,
+              cursor: "pointer", fontFamily: "Heebo, sans-serif",
+              border: "1.5px solid var(--border)", background: "var(--card-bg)", color: "var(--text-muted)",
+            }}
+          >
+            {t.toggleLang}
+          </button>
         </div>
       </div>
 
-      {/* Stats bar */}
-      <div style={{
-        display: "grid", gridTemplateColumns: "repeat(5, 1fr)",
-        gap: 10, marginBottom: 16,
-      }}>
-        {["תפוס", "פנוי", "לניקיון", "בניקיון", "תחזוקה"].map((st) => (
+      {/* Stats bar — click to filter */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8, marginBottom: 16 }}>
+        {STATUSES.map(st => (
           <div
             key={st}
             onClick={() => setFilter(filter === st ? "הכל" : st)}
             style={{
-              background: "var(--card-bg, #fff)",
-              border: "1px solid var(--border, #E0D5C5)",
-              borderTop: `3px solid ${STATUS_META[st].border}`,
-              borderRadius: 10, padding: "10px 12px",
+              background: "var(--card-bg)",
+              border:     "1px solid var(--border)",
+              borderTop:  `3px solid ${STATUS_META[st].border}`,
+              borderRadius: 10, padding: "10px 8px",
               textAlign: "center", cursor: "pointer",
-              opacity: filter !== "הכל" && filter !== st ? 0.45 : 1,
+              opacity: filter !== "הכל" && filter !== st ? 0.4 : 1,
               transition: "opacity 0.2s",
             }}
           >
-            <div style={{ fontSize: 26, fontWeight: 700, color: STATUS_META[st].border, lineHeight: 1.2 }}>
+            <div style={{ fontSize: 24, fontWeight: 700, color: STATUS_META[st].border, lineHeight: 1.2 }}>
               {countOf(st)}
             </div>
-            <div style={{ fontSize: 12, color: "var(--text-muted, #888)", marginTop: 2 }}>{st}</div>
+            <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
+              {t.statusLabels[st]}
+            </div>
           </div>
         ))}
       </div>
 
       {/* Filter chips */}
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20 }}>
-        {["הכל", "תפוס", "פנוי", "לניקיון", "בניקיון", "תחזוקה"].map((f) => {
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 20 }}>
+        {["הכל", ...STATUSES].map(f => {
           const active = filter === f;
+          const label  = f === "הכל"
+            ? `${t.all} (${rooms.length})`
+            : `${t.statusLabels[f]} (${countOf(f)})`;
           return (
             <button
               key={f}
               onClick={() => setFilter(f)}
               style={{
-                padding: "5px 14px", borderRadius: 20, fontSize: 13,
+                padding: "7px 16px", borderRadius: 20, fontSize: 13,
                 cursor: "pointer", fontFamily: "inherit",
-                border: active ? "none" : "1px solid var(--border, #E0D5C5)",
-                background: active ? "var(--gold, #C9A96E)" : "var(--card-bg, #fff)",
-                color: active ? "#412402" : "var(--text-muted, #666)",
+                border:     active ? "none" : "1px solid var(--border)",
+                background: active ? "var(--gold)" : "var(--card-bg)",
+                color:      active ? "#412402"     : "var(--text-muted)",
                 fontWeight: active ? 700 : 400,
               }}
             >
-              {f === "הכל" ? `הכל (${rooms.length})` : `${f} (${countOf(f)})`}
+              {label}
             </button>
           );
         })}
       </div>
 
-      {/* Floors & rooms */}
-      {[1, 2, 3, 0].map((floorNum) => {
-        const floorRooms = filtered.filter((r) => r.floor === floorNum);
+      {/* Floors & cards */}
+      {[1, 2, 3, 0].map(floorNum => {
+        const floorRooms = filtered.filter(r => r.floor === floorNum);
         if (!floorRooms.length) return null;
         return (
           <div key={floorNum}>
             <div style={{
-              fontSize: 13, fontWeight: 600, color: "var(--text-muted, #888)",
-              margin: "18px 0 10px",
-              borderBottom: "1px solid var(--border, #E0D5C5)",
-              paddingBottom: 6,
+              fontSize: 13, fontWeight: 600, color: "var(--text-muted)",
+              margin: "20px 0 10px", borderBottom: "1px solid var(--border)", paddingBottom: 6,
             }}>
-              {FLOOR_LABELS[floorNum]}
+              {t.floorLabels[floorNum]}
             </div>
             <div style={{
               display: "grid",
-              gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))",
-              gap: 12,
+              gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
+              gap: 14,
             }}>
-              {floorRooms.map((room) => (
+              {floorRooms.map(room => (
                 <RoomCard
                   key={room.id}
                   room={room}
                   isUpdating={updating === room.id}
+                  t={t}
                   onUpdate={updateStatus}
+                  onCleanStart={handleCleanStart}
+                  onCleanDone={handleCleanDoneRequest}
                 />
               ))}
             </div>
@@ -274,93 +508,126 @@ export default function RoomBoard() {
       })}
 
       {filtered.length === 0 && (
-        <div style={{ textAlign: "center", padding: "40px 0", color: "var(--text-muted, #aaa)" }}>
-          אין חדרים בסטטוס זה
+        <div style={{ textAlign: "center", padding: "48px 0", color: "var(--text-muted)" }}>
+          {t.noRooms}
         </div>
       )}
     </div>
   );
 }
 
-// ── RoomCard ──────────────────────────────────────────────────────────────────
-function RoomCard({ room, isUpdating, onUpdate }) {
-  const [hovered, setHovered] = useState(null);
-  const meta = STATUS_META[room.status] ?? STATUS_META["פנוי"];
-  const actions = NEXT_ACTIONS[room.status] ?? [];
+// ── RoomCard — self-contained timer, 52px touch buttons ──────────────────
+function RoomCard({ room, isUpdating, t, onUpdate, onCleanStart, onCleanDone }) {
+  const [hovered,  setHovered]  = useState(null);
+  const [timerSec, setTimerSec] = useState(0);
+
+  const meta    = STATUS_META[room.status] ?? STATUS_META["פנוי"];
+  const actions = STATUS_ACTIONS[room.status] ?? [];
+
+  // Per-card cleaning timer — only runs when this room is being cleaned
+  useEffect(() => {
+    if (room.status !== "בניקיון" || !room.cleaningStartedAt) {
+      setTimerSec(0);
+      return;
+    }
+    const compute = () =>
+      Math.max(0, Math.floor((Date.now() - new Date(room.cleaningStartedAt).getTime()) / 1000));
+    setTimerSec(compute());
+    const id = setInterval(() => setTimerSec(compute()), 1000);
+    return () => clearInterval(id);
+  }, [room.status, room.cleaningStartedAt]);
+
+  function handleAction(action) {
+    if (action.fn === "start_clean")   return onCleanStart(room.id);
+    if (action.fn === "confirm_clean") return onCleanDone(room);
+    onUpdate(room.id, action.next);
+  }
 
   return (
-    <div
-      style={{
-        background: "var(--card-bg, #fff)",
-        borderRadius: 12,
-        border: "1px solid var(--border, #E0D5C5)",
-        borderRight: `4px solid ${meta.border}`,
-        padding: 14,
-        opacity: isUpdating ? 0.6 : 1,
-        transition: "opacity 0.15s",
-      }}
-    >
-      {/* Room number + badge */}
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 4 }}>
-        <div style={{ fontSize: 17, fontWeight: 700, color: "var(--black, #1A1A1A)" }}>
-          חדר {room.id}
+    <div style={{
+      background: "var(--card-bg)", borderRadius: 14,
+      border: "1px solid var(--border)",
+      borderRight: `4px solid ${meta.border}`,
+      padding: "16px 14px", minHeight: 210,
+      display: "flex", flexDirection: "column",
+      opacity: isUpdating ? 0.5 : 1, transition: "opacity 0.15s",
+    }}>
+      {/* Room number + status badge */}
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 6 }}>
+        <div style={{ fontSize: 19, fontWeight: 800, color: "var(--black)" }}>
+          {room.id}
         </div>
         <span style={{
-          display: "inline-block", fontSize: 11, fontWeight: 700,
-          padding: "2px 8px", borderRadius: 20,
+          fontSize: 11, fontWeight: 700, padding: "3px 9px", borderRadius: 20,
           background: meta.bg, color: meta.text,
         }}>
-          {room.status}
+          {t.statusLabels[room.status] ?? room.status}
         </span>
       </div>
 
       {/* Suite type */}
-      <div style={{ fontSize: 11, color: "var(--text-muted, #888)", marginBottom: 10 }}>
+      <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 8 }}>
         {room.type}
       </div>
 
-      {/* Guest info */}
-      {room.guest ? (
-        <div style={{ marginBottom: 10 }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--black, #1A1A1A)", marginBottom: 2 }}>
-            👤 {room.guest.name}
-          </div>
-          <div style={{ fontSize: 11, color: "var(--text-muted, #888)" }}>
-            {fmtDate(room.guest.arrival_date)} — {fmtDate(room.guest.departure_date) ?? "?"}
-          </div>
-        </div>
-      ) : (
-        <div style={{ fontSize: 11, color: "#bbb", marginBottom: 10, height: 28 }}>
-          ממתין להגעה
-        </div>
-      )}
+      {/* Body: guest / timer / last-clean badge */}
+      <div style={{ flex: 1 }}>
+        {room.guest ? (
+          <>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--black)", marginBottom: 2 }}>
+              👤 {room.guest.name}
+            </div>
+            <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+              {fmtDate(room.guest.arrival_date)} — {fmtDate(room.guest.departure_date) ?? "?"}
+            </div>
+          </>
+        ) : (
+          <div style={{ fontSize: 11, color: "#ccc" }}>{t.awaitingArrival}</div>
+        )}
 
-      {/* Action buttons */}
-      <div style={{ display: "flex", gap: 6 }}>
+        {room.status === "בניקיון" && (
+          <div style={{
+            marginTop: 10, display: "inline-flex", alignItems: "center", gap: 6,
+            background: "#E6F1FB", borderRadius: 8, padding: "5px 10px",
+            fontSize: 14, fontWeight: 800, color: "#185FA5",
+          }}>
+            ⏱️ {fmtDuration(timerSec)}
+          </div>
+        )}
+
+        {room.status === "פנוי" && room.lastDuration != null && (
+          <div style={{ marginTop: 8, fontSize: 11, color: "#639922", fontWeight: 600 }}>
+            ✓ {t.cleanedIn(fmtDuration(room.lastDuration))}
+          </div>
+        )}
+      </div>
+
+      {/* Action buttons — min 52px tall for touch */}
+      <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
         {isUpdating ? (
-          <div style={{ fontSize: 12, color: "var(--text-muted, #888)", flex: 1, textAlign: "center" }}>
-            מעדכן...
+          <div style={{ flex: 1, textAlign: "center", fontSize: 12, color: "var(--text-muted)", padding: "14px 0" }}>
+            {t.updating}
           </div>
         ) : (
-          actions.map(({ label, next, primary }) => (
+          actions.map(action => (
             <button
-              key={next}
-              onClick={() => onUpdate(room.id, next)}
-              onMouseEnter={() => setHovered(next)}
+              key={action.next}
+              onClick={() => handleAction(action)}
+              onMouseEnter={() => setHovered(action.next)}
               onMouseLeave={() => setHovered(null)}
               style={{
-                flex: 1, padding: "5px 0", borderRadius: 6,
-                fontSize: 12, fontWeight: 600, cursor: "pointer",
-                fontFamily: "Heebo, sans-serif",
-                border: primary ? "none" : "1px solid var(--border, #E0D5C5)",
-                background: primary
-                  ? (hovered === next ? "var(--gold-dark, #A8843A)" : "var(--gold, #C9A96E)")
-                  : (hovered === next ? "var(--ivory, #F5F0E8)" : "var(--card-bg, #fff)"),
-                color: primary ? "#412402" : "var(--black, #1A1A1A)",
+                flex: 1, minHeight: 52, padding: "10px 6px", borderRadius: 10,
+                fontSize: 13, fontWeight: 700, cursor: "pointer",
+                fontFamily: "Heebo, sans-serif", lineHeight: 1.3,
+                border: action.primary ? "none" : "1.5px solid var(--border)",
+                background: action.primary
+                  ? (hovered === action.next ? "var(--gold-dark)" : "var(--gold)")
+                  : (hovered === action.next ? "var(--ivory)"     : "var(--card-bg)"),
+                color: action.primary ? "#412402" : "var(--black)",
                 transition: "background 0.15s",
               }}
             >
-              {label}
+              {t.actions[action.labelKey]}
             </button>
           ))
         )}
