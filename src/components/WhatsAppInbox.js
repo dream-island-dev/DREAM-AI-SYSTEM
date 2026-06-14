@@ -475,10 +475,10 @@ function NewChatModal({ onClose, onSent }) {
       position: "fixed", inset: 0, zIndex: 9999,
       background: "rgba(0,0,0,0.5)",
       display: "flex", alignItems: "center", justifyContent: "center",
-    }} onClick={onClose}>
+    }}>
       <div style={{
-        background: "white", borderRadius: 18, width: 520, maxWidth: "96vw",
-        maxHeight: "92vh", overflowY: "auto",
+        background: "white", borderRadius: 18, width: 680, maxWidth: "96vw",
+        maxHeight: "95vh", overflowY: "auto",
         boxShadow: "0 32px 80px rgba(0,0,0,0.35)",
         direction: "rtl",
       }} onClick={(e) => e.stopPropagation()}>
