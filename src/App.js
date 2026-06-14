@@ -17,6 +17,7 @@ import WhatsAppInbox from "./components/WhatsAppInbox";
 import TaskBoard from "./components/TaskBoard";
 import BotConfigPanel from "./components/BotConfigPanel";
 import BotSettings from "./components/BotSettings";
+import BotScriptEditor from "./components/BotScriptEditor";
 import RoomBoard from "./components/RoomBoard";
 import PasswordChangeScreen from "./components/PasswordChangeScreen";
 
@@ -1104,6 +1105,14 @@ function Sidebar({ user, active, setActive, openCallsCount, onLogout, isAdmin, i
             >
               <span className="icon">🧠</span>
               <span>מוח הבוט</span>
+            </button>
+            <button
+              className={`nav-item ${active === "bot_scripts" ? "active" : ""}`}
+              onClick={() => setActive("bot_scripts")}
+              style={{ color: active === "bot_scripts" ? "var(--gold)" : "rgba(201,169,110,0.6)" }}
+            >
+              <span className="icon">📝</span>
+              <span>סקריפטי הבוט</span>
             </button>
             {/* User Management — owner (super-admin) only */}
             {isSuperAdminUser && (
@@ -2442,6 +2451,7 @@ export default function App() {
     room_board:    "🏨 לוח חדרים",
     bot_config:    "🤖 הגדרות Smart Concierge",
     bot_settings:  "🧠 מוח הבוט",
+    bot_scripts:   "📝 עורך סקריפטי הבוט",
     agent:      agentProfile ? `${agentProfile.display_name} 🤖` : "הסוכן שלי 🤖",
     admin:      "👑 ניהול מערכת",
     users_mgmt: "👥 ניהול משתמשים",
@@ -2603,6 +2613,11 @@ export default function App() {
         return guardPage(
           ["admin", "super_admin"],
           <BotSettings />
+        );
+      case "bot_scripts":
+        return guardPage(
+          ["admin", "super_admin"],
+          <BotScriptEditor />
         );
       case "users_mgmt":
         // only super_admin manages users
