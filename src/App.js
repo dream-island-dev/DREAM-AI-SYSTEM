@@ -828,14 +828,14 @@ function DepartmentOnboardingModal({ user, onComplete }) {
     setSaving(true);
     try {
       if (isSupabaseConfigured && supabase) {
-        await supabase
+        const { error } = await supabase
           .from("profiles")
           .update({
             department: dept,
             job_title:  jobTitle.trim() || null,
-            role:       roleChoice,
           })
           .eq("id", user.id);
+        if (error) throw error;
       }
       onComplete({ ...user, department: dept, job_title: jobTitle.trim(), role: roleChoice });
     } catch (e) {

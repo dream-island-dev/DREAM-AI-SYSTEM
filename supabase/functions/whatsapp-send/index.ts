@@ -80,6 +80,7 @@ const PIPELINE_VARS: Record<string, (g: Record<string, unknown>) => string[]> = 
 const GUEST_FLAG: Record<string, string> = {
   pre_arrival_2d:  "msg_pre_arrival_2d_sent",
   night_before:    "msg_pre_arrival_sent",
+  morning_suite:   "msg_morning_suite_sent",
   morning_welcome: "msg_morning_welcome_sent",
   room_ready:      "msg_room_ready_sent",
   butler_1h:       "msg_post_checkin_sent",

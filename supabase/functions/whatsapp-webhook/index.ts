@@ -392,7 +392,7 @@ async function askGemini(
 
   const body = JSON.stringify({
     contents: [{ role: "user", parts: [{ text: fullPrompt }] }],
-    generationConfig: { maxOutputTokens: 350, temperature: 0.65, candidateCount: 1 },
+    generationConfig: { maxOutputTokens: 700, temperature: 0.65, candidateCount: 1 },
   });
 
   for (const model of GEMINI_MODELS) {

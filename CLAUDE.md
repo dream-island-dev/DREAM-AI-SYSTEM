@@ -83,7 +83,9 @@ DREAM-AI-SYSTEM/
 │   │   ├── 001–016_*.sql        applied ✅
 │   │   ├── 017_bot_active.sql   applied ✅ — seeds bot_active key in bot_config
 │   │   ├── 018_bot_settings.sql applied ✅ — bot_settings table (single row, id=1)
-│   │   └── 019_message_templates.sql  applied ✅ — 4 Dream Island templates seeded
+│   │   ├── 019_message_templates.sql  applied ✅ — 4 Dream Island templates seeded
+│   │   ├── 020–026_*.sql            applied ✅
+│   │   └── 027_guests_manager_sync.sql ★ NEW — manager_id column + trigger + RLS all-auth fix
 │   └── functions/
 │       ├── chat/                deployed ✅ — Gemini 2.5→Claude fallback
 │       ├── generate-schedule/   deployed ✅ ⚠️ ORPHAN — frontend לא קורא אותה
@@ -133,7 +135,7 @@ switch (activePage) {
 | `profiles` | משתמשים — extends Supabase Auth | `auth.uid() = id` |
 | `employees` | עובדי מלון | `created_by = auth.uid()` |
 | `shifts` | משמרות | `created_by = auth.uid()` |
-| `guests` | אורחי מלון (suite/day_guest) | manager scoped |
+| `guests` | אורחי מלון (suite/day_guest) | כל authenticated קורא/כותב; `manager_id` לtracking בלבד |
 | `agent_profiles` | פרופיל AI אחד למנהל | `manager_id = auth.uid()` |
 | `agent_memory` | ידע שנחלץ מקבצים | `manager_id = auth.uid()` |
 | `chat_history` | היסטוריית שיחה per session_id | open (mock auth compat) |
