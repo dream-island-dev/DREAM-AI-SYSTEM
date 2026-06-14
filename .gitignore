@@ -16,3 +16,7 @@ supabase/.temp/
 # temp SQL runner
 .run-sql.mjs
 .verify.sql
+
+# Make.com blueprints — מכילים סיסמה, לא לגיט
+make-blueprint.json
+make-blueprint-spa.json

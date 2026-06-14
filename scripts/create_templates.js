@@ -198,7 +198,8 @@ const TEMPLATES = [
 
   {
     // T-1 night: check-in reminder. {{1}} = name, {{2}} = resort phone.
-    name: "dream_checkin_reminder", category: "UTILITY", language: "he",
+    // NOTE: _v2 suffix is canonical — matches register-templates edge function + whatsapp-send pipeline.
+    name: "dream_checkin_reminder_v2", category: "UTILITY", language: "he",
     components: [{
       type: "BODY",
       text: "שלום {{1}}, מחר מגיעים לדרים איילנד — מחכים לכם! " +
@@ -261,7 +262,8 @@ const TEMPLATES = [
   },
 
   {
-    name: "dream_handover_agent", category: "UTILITY", language: "he",
+    // NOTE: _v2 suffix is canonical — matches register-templates edge function + whatsapp-send GUEST_FLAG[butler_1h].
+    name: "dream_handover_agent_v2", category: "UTILITY", language: "he",
     components: [{
       type: "BODY",
       text: "תודה על פנייתך, {{1}}. " +

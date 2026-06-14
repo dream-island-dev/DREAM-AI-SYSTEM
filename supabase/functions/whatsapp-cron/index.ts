@@ -48,8 +48,9 @@ serve(async (req: Request) => {
       if (g.arrival_date === twoDaysOut && !g.msg_pre_arrival_2d_sent)
         due.push({ guestId: g.id, trigger: "pre_arrival_2d" });
 
-      // T-1 night — check-in reminder (all guests)
-      if (g.arrival_date === tomorrow) due.push({ guestId: g.id, trigger: "night_before" });
+      // T-1 night — check-in reminder (all guests), only between UTC 17-21 = Israel 19-23
+      if (g.arrival_date === tomorrow && hourUTC >= 17 && hourUTC <= 21)
+        due.push({ guestId: g.id, trigger: "night_before" });
 
       // Arrival morning — welcome message for non-suite guests (UTC 06+ ≈ Israel 08+)
       if (g.arrival_date === today && g.room_type !== "suite" && hourUTC >= 6)

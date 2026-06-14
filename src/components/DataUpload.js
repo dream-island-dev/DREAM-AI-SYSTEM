@@ -96,9 +96,56 @@ function sanitizePhone(raw) {
   return cleaned.length >= 9 ? cleaned : null;
 }
 
+// Phone normalizer for bookings table — stores 972XXXXXXXXX (no leading +)
+function normalizePhoneBookings(raw) {
+  if (!raw) return null;
+  const p = String(raw).replace(/[\s\-().+]/g, "");
+  if (!p) return null;
+  if (p.startsWith("972") && p.length >= 11) return p;
+  if (p.startsWith("0") && p.length === 10) return "972" + p.slice(1);
+  if (/^5\d{8}$/.test(p)) return "972" + p;
+  return p.length >= 9 ? p : null;
+}
+
+// Compute checkout date from arrival + nights
+function addNights(arrival_date, nights) {
+  if (!arrival_date || !nights) return null;
+  const d = new Date(arrival_date);
+  d.setDate(d.getDate() + parseInt(nights));
+  return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+}
+
 const TARGETS = {
+  bookings: {
+    label: "📋 הגעות EZGO (חדש)",
+    table: "bookings",
+    required: ["phone"],
+    aliases: {
+      guest_name:   ["שם מלא", "שם אורח", "שם", "שם לקוח", "לקוח", "name", "guest name", "full name"],
+      phone:        ["טלפון", "נייד", "טלפון נייד", "מספר טלפון", "phone", "mobile", "cell"],
+      arrival_date: ["ת. התחלה", "ת.התחלה", "תאריך התחלה", "תאריך הגעה", "הגעה", "arrival date", "check-in", "checkin"],
+      nights:       ["לילות", "nights"],
+      amount:       ["מחיר", 'סה"כ', "סה\"כ לתשלום", "יתרה", "סכום", "price", "amount", "total"],
+    },
+    transform: (r) => {
+      const phone = normalizePhoneBookings(r.phone);
+      const arrival_date = parseEzgoDate(r.arrival_date);
+      const nights = r.nights ? parseInt(r.nights) : null;
+      return {
+        guest_name:   String(r.guest_name ?? "").trim() || null,
+        phone,
+        arrival_date,
+        checkout_date: addNights(arrival_date, nights),
+        nights,
+        amount: r.amount ? parseFloat(String(r.amount).replace(/[^\d.]/g, "")) : null,
+      };
+    },
+    insert: (rows) =>
+      supabase.from("bookings").upsert(rows, { onConflict: "phone,arrival_date", ignoreDuplicates: false }),
+  },
+
   ezgo: {
-    label: "🏨 הגעות סוויטות",
+    label: "🏨 הגעות סוויטות (ישן)",
     table: "guests",
     required: ["name"],
     // ── Column aliases ──────────────────────────────────────────────────────

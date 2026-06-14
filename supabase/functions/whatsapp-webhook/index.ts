@@ -379,8 +379,10 @@ async function askGemini(
         "\n══════════════════════════════\n"
       : "";
 
+  // Tell the AI the guest's name but ask it NOT to open with "שלום [שם]" every time —
+  // that pattern gets truncated in WhatsApp bubble previews and looks like a half-answer.
   const guestLine = guestName
-    ? `\nשם האורח/ת: ${guestName}. פנה/י אליו/ה בשמו/ה.\n`
+    ? `\nשם האורח/ת: ${guestName}. השתמש/י בשמו/ה בטבעיות בתוך התשובה (לא בהכרח כפתיחה).\n`
     : "";
 
   const fullPrompt =
@@ -392,7 +394,7 @@ async function askGemini(
 
   const body = JSON.stringify({
     contents: [{ role: "user", parts: [{ text: fullPrompt }] }],
-    generationConfig: { maxOutputTokens: 700, temperature: 0.65, candidateCount: 1 },
+    generationConfig: { maxOutputTokens: 1000, temperature: 0.65, candidateCount: 1 },
   });
 
   for (const model of GEMINI_MODELS) {
@@ -478,7 +480,7 @@ async function callClaude(
   const anthropic = new Anthropic({ apiKey: key });
   const resp = await anthropic.messages.create({
     model:      CLAUDE_MODEL,
-    max_tokens: 400,
+    max_tokens: 800,
     system,
     messages,
   });
@@ -705,7 +707,7 @@ serve(async (req: Request) => {
       // ── Lookup registered guest ───────────────────────────────────────────
       const { data: guest } = await supabase
         .from("guests")
-        .select("id, name, arrival_confirmed, payment_amount, payment_link_url, msg_pre_arrival_2d_sent, needs_callback, requires_attention")
+        .select("id, name, arrival_confirmed, payment_amount, payment_link_url, msg_pre_arrival_2d_sent, needs_callback, requires_attention, arrival_date, room, room_type")
         .eq("phone", phone)
         .maybeSingle();
       const guestId   = (guest?.id   as number)     ?? null;
@@ -729,26 +731,61 @@ serve(async (req: Request) => {
         // We reply with a natural message — no template needed.
         // Payment link is sent later by staff via the GuestsPage 💳 button
         // once a payment link exists. This avoids any dependency on payment data.
-        if (buttonTitle.includes("כן, מגיעים") || buttonTitle.includes("כן מגיעים")) {
+        // Normalize title: strip emoji & trim so minor Meta formatting differences don't break matching
+        const normalizedTitle = buttonTitle.replace(/[^ -׿\s,!.]/g, "").trim();
+        if (normalizedTitle.includes("כן, מגיעים") || normalizedTitle.includes("כן מגיעים")) {
           if (guestId) await supabase.from("guests").update({ arrival_confirmed: true }).eq("id", guestId);
 
           const safeName = name.trim() || "אורח יקר";
+          // Look up nearest upcoming booking to include spa treatment time in reply
+          const bookingPhone = phone.startsWith("+") ? phone.slice(1) : phone;
+          const todayStr = new Date().toISOString().split("T")[0];
+          const { data: spaBooking } = await supabase
+            .from("bookings")
+            .select("treatment_time, treatment_type")
+            .eq("phone", bookingPhone)
+            .gte("arrival_date", todayStr)
+            .order("arrival_date", { ascending: true })
+            .limit(1)
+            .maybeSingle();
+          const workshopUrl = Deno.env.get("WORKSHOP_SIGNUP_URL") ?? "";
+          const treatmentLine = spaBooking?.treatment_time
+            ? `\n\n🕐 *הטיפול שלך בספא:* ${spaBooking.treatment_type ?? "טיפול"} בשעה ${spaBooking.treatment_time}`
+            : "";
+          const workshopLine = workshopUrl
+            ? `\n\n🎯 *לסדנאות שלנו — הרשמו מראש:*\n👉 ${workshopUrl}`
+            : "";
           const arrivalReply =
             `מגיעים! 🎉 כבר מתרגשים מאד מהגעתכם, ${safeName}!\n\n` +
-            `הצוות שלנו ב-Dream Island מכין את הכל ומחכה לכם עם חיוך גדול 🌴\n\n` +
-            `יש לכם שאלות לפני ההגעה? על הצ׳ק-אין, החדר, הספא, הסדנאות — אני כאן לכל שאלה 😊`;
+            `הצוות שלנו ב-Dream Island מכין את הכל ומחכה לכם עם חיוך גדול 🌴` +
+            treatmentLine +
+            workshopLine +
+            `\n\nיש לכם שאלות לפני ההגעה? על הצ׳ק-אין, החדר, הספא — אני כאן לכל שאלה 😊`;
 
-          console.info(`[webhook] arrival confirmed (conversational reply): ${phone} name="${safeName}"`);
+          console.info(`[webhook] 🎉 arrival confirmed — phone:${phone} name="${safeName}" sim:${sim}`);
 
           if (!sim) {
+            let replySent = false;
             try {
               await sendReply(phone, arrivalReply);
+              replySent = true;
               await supabase.from("whatsapp_conversations").insert({
                 phone, guest_id: guestId, direction: "outbound",
                 message: arrivalReply, wa_message_id: null,
               });
+              console.info(`[webhook] ✅ arrival reply sent to ${phone}`);
             } catch (e) {
-              console.error("[webhook] arrival reply failed:", (e as Error).message);
+              const errMsg = (e as Error).message;
+              console.error(`[webhook] ❌ arrival reply FAILED to ${phone}:`, errMsg);
+              // Log failure so it appears in notification_log for diagnosis
+              await supabase.from("notification_log").insert({
+                guest_id: guestId, recipient: phone,
+                trigger_type: "arrival_confirmed_reply", channel: "whatsapp",
+                status: "failed", payload: { error: errMsg, buttonTitle },
+              }).catch(() => {});
+            }
+            if (!replySent) {
+              console.warn(`[webhook] ⚠️ arrival reply not sent — check Meta API error above`);
             }
           } else {
             console.info(`[webhook] SIM — arrival confirmed, would reply conversationally to ${phone}`);
@@ -835,10 +872,30 @@ serve(async (req: Request) => {
         // Same conversational strategy as the button handler — no template needed.
         // 24h window opens when the guest sends any message; reply with free text.
         const safeName2 = String(guest?.name ?? "").trim() || "אורח יקר";
+        // Same spa lookup as button handler — include treatment time if available
+        const bookingPhone2 = phone.startsWith("+") ? phone.slice(1) : phone;
+        const todayStr2 = new Date().toISOString().split("T")[0];
+        const { data: spaBooking2 } = await supabase
+          .from("bookings")
+          .select("treatment_time, treatment_type")
+          .eq("phone", bookingPhone2)
+          .gte("arrival_date", todayStr2)
+          .order("arrival_date", { ascending: true })
+          .limit(1)
+          .maybeSingle();
+        const workshopUrl2 = Deno.env.get("WORKSHOP_SIGNUP_URL") ?? "";
+        const treatmentLine2 = spaBooking2?.treatment_time
+          ? `\n\n🕐 *הטיפול שלך בספא:* ${spaBooking2.treatment_type ?? "טיפול"} בשעה ${spaBooking2.treatment_time}`
+          : "";
+        const workshopLine2 = workshopUrl2
+          ? `\n\n🎯 *לסדנאות שלנו — הרשמו מראש:*\n👉 ${workshopUrl2}`
+          : "";
         const textArrivalReply =
           `מגיעים! 🎉 כבר מתרגשים מאד מהגעתכם, ${safeName2}!\n\n` +
-          `הצוות שלנו ב-Dream Island מכין את הכל ומחכה לכם עם חיוך גדול 🌴\n\n` +
-          `יש לכם שאלות לפני ההגעה? על הצ׳ק-אין, החדר, הספא, הסדנאות — אני כאן לכל שאלה 😊`;
+          `הצוות שלנו ב-Dream Island מכין את הכל ומחכה לכם עם חיוך גדול 🌴` +
+          treatmentLine2 +
+          workshopLine2 +
+          `\n\nיש לכם שאלות לפני ההגעה? על הצ׳ק-אין, החדר, הספא — אני כאן לכל שאלה 😊`;
 
         if (!sim) {
           try {

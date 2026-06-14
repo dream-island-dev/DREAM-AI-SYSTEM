@@ -21,11 +21,12 @@ const VAR_LABELS = ["שם אורח", "מספר חדר", "תאריך הגעה", "
 
 // ── Arrival-window options ───────────────────────────────────────────────────
 const ARRIVAL_WINDOWS = [
-  { value: "1",   label: "היום + מחר" },
-  { value: "7",   label: "7 ימים קדימה" },
-  { value: "30",  label: "30 יום קדימה" },
-  { value: "90",  label: "90 יום קדימה" },
-  { value: "all", label: "כל האורחים" },
+  { value: "today",    label: "היום" },
+  { value: "tomorrow", label: "מחר" },
+  { value: "7",        label: "7 ימים קדימה" },
+  { value: "30",       label: "30 יום קדימה" },
+  { value: "90",       label: "90 יום קדימה" },
+  { value: "all",      label: "כל האורחים" },
 ];
 
 function localISO(offsetDays = 0) {
@@ -270,11 +271,18 @@ export default function BroadcastDashboard({ user }) {
 
   // ── Compute filtered audience ─────────────────────────────────────────────
   const today = localISO(0);
+  const tomorrow = localISO(1);
   const filteredGuests = allGuests.filter((g) => {
     if (filterWindow !== "all" && g.status !== "checked_in") {
-      const days = parseInt(filterWindow, 10);
-      const cutoff = localISO(days);
-      if (!g.arrival_date || g.arrival_date < today || g.arrival_date > cutoff) return false;
+      if (filterWindow === "today") {
+        if (!g.arrival_date || g.arrival_date !== today) return false;
+      } else if (filterWindow === "tomorrow") {
+        if (!g.arrival_date || g.arrival_date !== tomorrow) return false;
+      } else {
+        const days = parseInt(filterWindow, 10);
+        const cutoff = localISO(days);
+        if (!g.arrival_date || g.arrival_date < today || g.arrival_date > cutoff) return false;
+      }
     }
     if (filterGuest === "suite"     && g.room_type === "day_guest") return false;
     if (filterGuest === "day_guest" && g.room_type !== "day_guest") return false;
