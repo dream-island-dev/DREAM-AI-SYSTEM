@@ -306,13 +306,14 @@ export default function GuestDashboard({ user }) {
     }
   }, [loadingId, showToast]);
 
-  // ── Send WA to a specific guest (broadcast trigger) ───────────────────────
+  // ── Send WA to a specific guest (free-text via inbox_reply) ─────────────
   const sendWAToGuest = useCallback(async (guest, message) => {
     if (!message?.trim()) return showToast("err", "נא להזין הודעה");
+    if (!guest.phone)     return showToast("err", "לאורח זה אין מספר טלפון");
     setSendingWAId(guest.id);
     try {
       const { data, error } = await supabase.functions.invoke("whatsapp-send", {
-        body: { trigger: "broadcast", guestId: guest.id, messageTemplate: message },
+        body: { trigger: "inbox_reply", phone: guest.phone, message: message.trim() },
       });
       if (error) throw new Error(data?.error ?? error.message ?? "edge_function_error");
       if (!data?.ok) throw new Error(data?.error ?? "שגיאה בשליחה");
