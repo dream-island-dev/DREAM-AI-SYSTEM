@@ -1027,7 +1027,7 @@ function Sidebar({ user, active, setActive, openCallsCount, onLogout, isAdmin, i
     { id: "room_board", icon: "🏨", label: "לוח חדרים",                              managerOnly: false },
     { id: "tasks",      icon: "📋", label: "לוח משימות",                             managerOnly: false },
     { id: "scheduler",  icon: "🪄", label: "מחולל משמרות",                           managerOnly: true },
-    { id: "upload",     icon: "📤", label: "העלאת נתונים",                           managerOnly: true },
+    // { id: "upload", icon: "📤", label: "העלאת נתונים", managerOnly: true }, // moved into GuestDashboard modal
     { id: "agent",      icon: "🤖", label: "הסוכן שלי" },
   ];
 

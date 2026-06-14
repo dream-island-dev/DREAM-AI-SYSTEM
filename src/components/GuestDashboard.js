@@ -258,6 +258,7 @@ export default function GuestDashboard({ user }) {
   const [showAdd,     setShowAdd]     = useState(false);
   const [waModal,     setWaModal]     = useState(null);  // guest object or null
   const [selected,    setSelected]    = useState(new Set()); // checked guest IDs
+  const [showUpload,  setShowUpload]  = useState(false);
 
   const showToast = useCallback((type, msg) => {
     setToast({ type, msg });
@@ -427,6 +428,45 @@ export default function GuestDashboard({ user }) {
         />
       )}
 
+      {/* Upload modal */}
+      {showUpload && (
+        <div
+          style={{
+            position: "fixed", inset: 0, zIndex: 9997,
+            background: "rgba(0,0,0,0.5)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            padding: 20,
+          }}
+          onClick={() => setShowUpload(false)}
+        >
+          <div
+            style={{
+              background: "var(--card-bg)", borderRadius: 16, padding: 24,
+              width: "100%", maxWidth: 620, maxHeight: "85vh",
+              overflow: "auto", direction: "rtl",
+              boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+              <div style={{ fontWeight: 800, fontSize: 17 }}>📥 ייבוא קובץ אורחים</div>
+              <button
+                onClick={() => setShowUpload(false)}
+                style={{
+                  background: "none", border: "none", fontSize: 22,
+                  cursor: "pointer", color: "var(--text-muted)", lineHeight: 1,
+                }}
+              >✕</button>
+            </div>
+            <DataUpload
+              lockedMode="ezgo"
+              user={user}
+              onImported={() => { fetchGuests(); setShowUpload(false); }}
+            />
+          </div>
+        </div>
+      )}
+
       {/* Stats bar */}
       <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
         {[
@@ -454,7 +494,6 @@ export default function GuestDashboard({ user }) {
             { key: "all",       label: `כולם (${guests.length})` },
             { key: "day_guest", label: `🏊 יומי (${dayGuests.length})` },
             { key: "suite",     label: `👑 לינה (${hotelGuests.length})` },
-            { key: "upload",    label: `📤 העלאת נתונים` },
           ].map(({ key, label }) => (
             <button
               key={key}
@@ -470,8 +509,8 @@ export default function GuestDashboard({ user }) {
             >{label}</button>
           ))}
         </div>
-        {/* Select all checkbox — hidden on upload tab */}
-        {activeTab !== "upload" && tabGuests.length > 0 && (
+        {/* Select all checkbox */}
+        {tabGuests.length > 0 && (
           <label style={{
             display: "flex", alignItems: "center", gap: 6,
             cursor: "pointer", fontSize: 13, fontWeight: 600,
@@ -494,7 +533,7 @@ export default function GuestDashboard({ user }) {
         )}
 
         {/* Bulk delete — appears only when selection is active */}
-        {activeTab !== "upload" && selected.size > 0 && (
+        {selected.size > 0 && (
           <button
             onClick={deleteSelected}
             style={{
@@ -508,47 +547,47 @@ export default function GuestDashboard({ user }) {
           </button>
         )}
 
-        {/* Add + Refresh — hidden on upload tab */}
-        {activeTab !== "upload" && (
-          <>
-            <button
-              onClick={() => setShowAdd((s) => !s)}
-              style={{
-                padding: "7px 16px", borderRadius: 20, cursor: "pointer",
-                fontFamily: "Heebo, sans-serif", fontSize: 13, fontWeight: 700,
-                border: "2px solid var(--gold)",
-                background: showAdd ? "rgba(201,169,110,0.15)" : "var(--card-bg)",
-                color: "var(--gold-dark)",
-              }}
-            >
-              {showAdd ? "✕ סגור" : "➕ הוסף אורח"}
-            </button>
-            <button
-              onClick={fetchGuests}
-              disabled={loading}
-              style={{
-                padding: "7px 14px", borderRadius: 20, cursor: loading ? "default" : "pointer",
-                border: "1px solid var(--border)", background: "var(--card-bg)",
-                fontSize: 13, fontFamily: "Heebo, sans-serif", color: "var(--text-muted)",
-              }}
-            >
-              {loading ? "⏳" : "🔄"}
-            </button>
-          </>
-        )}
+        {/* Import + Add + Refresh */}
+        <>
+          <button
+            onClick={() => setShowUpload(true)}
+            style={{
+              padding: "7px 16px", borderRadius: 20, cursor: "pointer",
+              fontFamily: "Heebo, sans-serif", fontSize: 13, fontWeight: 700,
+              border: "2px solid var(--border)",
+              background: "var(--card-bg)", color: "var(--text-muted)",
+            }}
+          >
+            📥 ייבוא קובץ
+          </button>
+          <button
+            onClick={() => setShowAdd((s) => !s)}
+            style={{
+              padding: "7px 16px", borderRadius: 20, cursor: "pointer",
+              fontFamily: "Heebo, sans-serif", fontSize: 13, fontWeight: 700,
+              border: "2px solid var(--gold)",
+              background: showAdd ? "rgba(201,169,110,0.15)" : "var(--card-bg)",
+              color: "var(--gold-dark)",
+            }}
+          >
+            {showAdd ? "✕ סגור" : "➕ הוסף אורח"}
+          </button>
+          <button
+            onClick={fetchGuests}
+            disabled={loading}
+            style={{
+              padding: "7px 14px", borderRadius: 20, cursor: loading ? "default" : "pointer",
+              border: "1px solid var(--border)", background: "var(--card-bg)",
+              fontSize: 13, fontFamily: "Heebo, sans-serif", color: "var(--text-muted)",
+            }}
+          >
+            {loading ? "⏳" : "🔄"}
+          </button>
+        </>
       </div>
 
-      {/* Upload tab content */}
-      {activeTab === "upload" && (
-        <DataUpload
-          lockedMode="ezgo"
-          user={user}
-          onImported={() => { fetchGuests(); setActiveTab("all"); }}
-        />
-      )}
-
       {/* Add guest form */}
-      {activeTab !== "upload" && showAdd && (
+      {showAdd && (
         <AddGuestForm
           busy={addBusy}
           onSave={handleAddGuest}
@@ -556,8 +595,8 @@ export default function GuestDashboard({ user }) {
         />
       )}
 
-      {/* Guest list — hidden on upload tab */}
-      {activeTab !== "upload" && (loading ? (
+      {/* Guest list */}
+      {loading ? (
         <div style={{ textAlign: "center", padding: 56, color: "var(--text-muted)", fontSize: 14 }}>
           ⏳ טוען אורחים...
         </div>
@@ -570,7 +609,7 @@ export default function GuestDashboard({ user }) {
           <div style={{ fontSize: 40, marginBottom: 8 }}>🛎️</div>
           אין הגעות בטאב זה להיום ולמחר.
           <br />
-          <span style={{ fontSize: 12 }}>ייבא קובץ הגעות דרך "העלאת נתונים" או הוסף אורח ידנית.</span>
+          <span style={{ fontSize: 12 }}>לחץ "📥 ייבוא קובץ" כדי לייבא הגעות, או הוסף אורח ידנית.</span>
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -708,7 +747,7 @@ export default function GuestDashboard({ user }) {
             );
           })}
         </div>
-      ))}
+      )}
     </div>
   );
 }
