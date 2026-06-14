@@ -1,5 +1,5 @@
 // src/components/EmployeesPage.js
-// Employee management — Dream Island XOS Sprint 2.
+// Employee management — Dream Island XOS Sprint 2/3.
 // Self-contained: fetches from Supabase directly, no App.js state dependency.
 // RBAC: uses canPerform() from utils/auth.js.
 
@@ -8,6 +8,7 @@ import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import { canPerform } from "../utils/auth";
 import { loadDepartments } from "../utils/admin";
 import ManageEmployeeModal from "./ManageEmployeeModal";
+import ShiftScheduleTab from "./ShiftScheduleTab";
 
 // Department → accent color
 const DEPT_COLOR = {
@@ -48,14 +49,25 @@ function Initials({ name }) {
   );
 }
 
+function tabBtnStyle(active) {
+  return {
+    padding: "8px 20px", borderRadius: 8, fontSize: 14, fontWeight: active ? 700 : 400,
+    cursor: "pointer", fontFamily: "Heebo, sans-serif", transition: "all 0.15s",
+    border: "none",
+    background: active ? "var(--gold)" : "transparent",
+    color:      active ? "#412402"     : "var(--text-muted)",
+  };
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
-export default function EmployeesPage({ user }) {
+export default function EmployeesPage({ user, onNavigate }) {
   const [employees,   setEmployees]   = useState([]);
   const [loading,     setLoading]     = useState(true);
   const [modal,       setModal]       = useState(null); // null | { mode, employee? }
   const [toast,       setToast]       = useState(null);
   const [departments, setDepartments] = useState([]);
   const [filterDept,  setFilterDept]  = useState("הכל");
+  const [activeTab,   setActiveTab]   = useState("employees");
 
   const canAdd  = canPerform("add_employee",  user);
   const canEdit = canPerform("edit_employee", user);
@@ -146,7 +158,7 @@ export default function EmployeesPage({ user }) {
             {activeCount} פעילים · {employees.length} סה"כ
           </div>
         </div>
-        {canAdd && (
+        {activeTab === "employees" && canAdd && (
           <button
             className="btn btn-primary"
             onClick={() => setModal({ mode: "add" })}
@@ -156,70 +168,91 @@ export default function EmployeesPage({ user }) {
         )}
       </div>
 
-      {/* Department filter chips */}
-      {departments.length > 0 && (
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 20 }}>
-          {allDepts.map(d => {
-            const active = filterDept === d;
-            const count  = d === "הכל"
-              ? employees.length
-              : employees.filter(e => e.department === d).length;
-            return (
-              <button
-                key={d}
-                onClick={() => setFilterDept(d)}
-                style={{
-                  padding: "6px 14px", borderRadius: 20, fontSize: 13,
-                  cursor: "pointer", fontFamily: "inherit",
-                  border:     active ? "none" : "1px solid var(--border)",
-                  background: active ? "var(--gold)" : "var(--card-bg)",
-                  color:      active ? "#412402"     : "var(--text-muted)",
-                  fontWeight: active ? 700 : 400,
-                }}
-              >
-                {d} ({count})
-              </button>
-            );
-          })}
-        </div>
-      )}
+      {/* Tab navigation */}
+      <div style={{
+        display: "inline-flex", gap: 2, marginBottom: 24,
+        padding: 4, borderRadius: 10,
+        background: "var(--ivory)", border: "1px solid var(--border)",
+      }}>
+        <button onClick={() => setActiveTab("employees")} style={tabBtnStyle(activeTab === "employees")}>
+          👥 עובדים
+        </button>
+        <button onClick={() => setActiveTab("shifts")} style={tabBtnStyle(activeTab === "shifts")}>
+          📅 לוח משמרות
+        </button>
+      </div>
 
-      {/* Grid */}
-      {displayed.length === 0 ? (
-        <div style={{
-          textAlign: "center", padding: "48px 20px",
-          border: "1px dashed var(--border)", borderRadius: 14,
-          color: "var(--text-muted)", fontSize: 14, lineHeight: 2,
-        }}>
-          <div style={{ fontSize: 36, marginBottom: 8 }}>👤</div>
-          {employees.length === 0 ? "אין עובדים במערכת עדיין." : "אין עובדים במחלקה זו."}
-          {canAdd && employees.length === 0 && (
-            <div>
-              <button
-                className="btn btn-primary"
-                style={{ marginTop: 12 }}
-                onClick={() => setModal({ mode: "add" })}
-              >
-                ＋ הוסף עובד ראשון
-              </button>
+      {/* Tab content */}
+      {activeTab === "shifts" ? (
+        <ShiftScheduleTab user={user} employees={employees} onNavigate={onNavigate} />
+      ) : (
+        <>
+          {/* Department filter chips */}
+          {departments.length > 0 && (
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 20 }}>
+              {allDepts.map(d => {
+                const active = filterDept === d;
+                const count  = d === "הכל"
+                  ? employees.length
+                  : employees.filter(e => e.department === d).length;
+                return (
+                  <button
+                    key={d}
+                    onClick={() => setFilterDept(d)}
+                    style={{
+                      padding: "6px 14px", borderRadius: 20, fontSize: 13,
+                      cursor: "pointer", fontFamily: "inherit",
+                      border:     active ? "none" : "1px solid var(--border)",
+                      background: active ? "var(--gold)" : "var(--card-bg)",
+                      color:      active ? "#412402"     : "var(--text-muted)",
+                      fontWeight: active ? 700 : 400,
+                    }}
+                  >
+                    {d} ({count})
+                  </button>
+                );
+              })}
             </div>
           )}
-        </div>
-      ) : (
-        <div style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
-          gap: 16,
-        }}>
-          {displayed.map(emp => (
-            <EmployeeCard
-              key={emp.id}
-              emp={emp}
-              canEdit={canEdit}
-              onEdit={() => setModal({ mode: "edit", employee: emp })}
-            />
-          ))}
-        </div>
+
+          {/* Employee grid */}
+          {displayed.length === 0 ? (
+            <div style={{
+              textAlign: "center", padding: "48px 20px",
+              border: "1px dashed var(--border)", borderRadius: 14,
+              color: "var(--text-muted)", fontSize: 14, lineHeight: 2,
+            }}>
+              <div style={{ fontSize: 36, marginBottom: 8 }}>👤</div>
+              {employees.length === 0 ? "אין עובדים במערכת עדיין." : "אין עובדים במחלקה זו."}
+              {canAdd && employees.length === 0 && (
+                <div>
+                  <button
+                    className="btn btn-primary"
+                    style={{ marginTop: 12 }}
+                    onClick={() => setModal({ mode: "add" })}
+                  >
+                    ＋ הוסף עובד ראשון
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
+              gap: 16,
+            }}>
+              {displayed.map(emp => (
+                <EmployeeCard
+                  key={emp.id}
+                  emp={emp}
+                  canEdit={canEdit}
+                  onEdit={() => setModal({ mode: "edit", employee: emp })}
+                />
+              ))}
+            </div>
+          )}
+        </>
       )}
     </div>
   );

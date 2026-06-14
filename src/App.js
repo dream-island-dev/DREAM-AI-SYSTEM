@@ -2356,7 +2356,7 @@ export default function App() {
         );
       case "employees":
         return (
-          <EmployeesPage user={user} />
+          <EmployeesPage user={user} onNavigate={setActivePage} />
         );
       case "vip_guests":
         return <GuestDashboard user={user} />;
