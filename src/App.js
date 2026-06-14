@@ -7,6 +7,7 @@ import UserManagement from "./components/UserManagement";
 import DataUpload from "./components/DataUpload";
 import GuestsPage from "./components/GuestsPage";
 import ShiftGenerator from "./components/ShiftGenerator";
+import EmployeesPage from "./components/EmployeesPage";
 import { isAdminUser, isSuperAdmin, loadDepartments } from "./utils/admin";
 import { supabase, isSupabaseConfigured, loadAgentProfile } from "./supabaseClient";
 import { getPushState, subscribeToPush, unsubscribeFromPush, syncSubscriptionToSupabase } from "./utils/pushNotifications";
@@ -20,6 +21,7 @@ import BotSettings from "./components/BotSettings";
 import BotScriptEditor from "./components/BotScriptEditor";
 import RoomBoard from "./components/RoomBoard";
 import PasswordChangeScreen from "./components/PasswordChangeScreen";
+import SpaStagingPanel from "./components/SpaStagingPanel";
 
 // ============================================================
 // MOCK DATA - יוחלף ב-Supabase בגרסה האמיתית
@@ -1025,8 +1027,9 @@ function Sidebar({ user, active, setActive, openCallsCount, onLogout, isAdmin, i
     { id: "broadcast",  icon: "📣", label: "שליחת הודעות",                           managerOnly: true },
     { id: "wa_inbox",   icon: "💬", label: "DREAM BOT — שיחות",                     managerOnly: true },
     { id: "guests",     icon: "🛎️", label: "אורחים",                                managerOnly: true },
-    { id: "room_board", icon: "🏨", label: "לוח חדרים",                              managerOnly: false },
-    { id: "scheduler",  icon: "🪄", label: "מחולל משמרות",                           managerOnly: true },
+    { id: "room_board",   icon: "🏨", label: "לוח חדרים",                              managerOnly: false },
+    { id: "scheduler",   icon: "🪄", label: "מחולל משמרות",                           managerOnly: true },
+    { id: "spa_staging", icon: "💆", label: "לוח ספא — אישור",                        managerOnly: true },
     // { id: "upload", icon: "📤", label: "העלאת נתונים", managerOnly: true }, // moved into GuestDashboard modal
     { id: "agent",      icon: "🤖", label: "הסוכן שלי" },
   ];
@@ -1985,201 +1988,6 @@ function ChecklistPage({ checklist, setChecklist }) {
   );
 }
 
-function EmployeesPage({ employees, setEmployees }) {
-  const [showModal, setShowModal] = useState(false);
-  const [form, setForm] = useState({
-    name: "",
-    department: "קבלה",
-    role: "",
-    phone: "",
-    status: "פעיל",
-  });
-
-  const addEmployee = () => {
-    if (!form.name) return;
-    setEmployees((prev) => [...prev, { id: Date.now(), ...form }]);
-    setShowModal(false);
-    setForm({
-      name: "",
-      department: "קבלה",
-      role: "",
-      phone: "",
-      status: "פעיל",
-    });
-  };
-
-  const deptColors = {
-    קבלה: "badge-blue",
-    ניקיון: "badge-green",
-    מסעדה: "badge-orange",
-    תחזוקה: "badge-red",
-    ביטחון: "badge-purple",
-    ספא: "badge-green",
-  };
-
-  return (
-    <div>
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: 20,
-        }}
-      >
-        <div style={{ fontSize: 14, color: "#8a9ab0" }}>
-          {employees.length} עובדים פעילים
-        </div>
-        <button className="btn btn-primary" onClick={() => setShowModal(true)}>
-          ＋ עובד חדש
-        </button>
-      </div>
-
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
-          gap: 16,
-        }}
-      >
-        {employees.map((emp) => (
-          <div key={emp.id} className="card" style={{ margin: 0 }}>
-            <div style={{ padding: 20 }}>
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 14,
-                  marginBottom: 14,
-                }}
-              >
-                <div
-                  className="avatar"
-                  style={{ width: 44, height: 44, fontSize: 15 }}
-                >
-                  {emp.name
-                    .split(" ")
-                    .map((n) => n[0])
-                    .join("")
-                    .slice(0, 2)}
-                </div>
-                <div>
-                  <div
-                    style={{ fontWeight: 700, fontSize: 15, color: "#0f2027" }}
-                  >
-                    {emp.name}
-                  </div>
-                  <div style={{ fontSize: 12, color: "#8a9ab0" }}>
-                    {emp.role}
-                  </div>
-                </div>
-              </div>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <span
-                  className={`badge ${
-                    deptColors[emp.department] || "badge-gray"
-                  }`}
-                >
-                  {emp.department}
-                </span>
-                <span
-                  className={`badge ${
-                    emp.status === "פעיל" ? "badge-green" : "badge-gray"
-                  }`}
-                >
-                  {emp.status}
-                </span>
-              </div>
-              {emp.phone && (
-                <div style={{ fontSize: 12, color: "#8a9ab0", marginTop: 10 }}>
-                  📞 {emp.phone}
-                </div>
-              )}
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {showModal && (
-        <div className="modal-overlay" onClick={() => setShowModal(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-title">👤 הוספת עובד חדש</div>
-            <div className="form-field">
-              <label>שם מלא</label>
-              <input
-                placeholder="שם פרטי + משפחה"
-                value={form.name}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, name: e.target.value }))
-                }
-              />
-            </div>
-            <div className="form-grid">
-              <div className="form-field">
-                <label>מחלקה</label>
-                <select
-                  value={form.department}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, department: e.target.value }))
-                  }
-                >
-                  {DEPARTMENTS.map((d) => (
-                    <option key={d}>{d}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="form-field">
-                <label>תפקיד</label>
-                <input
-                  placeholder="לדוגמה: מנהל משמרת"
-                  value={form.role}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, role: e.target.value }))
-                  }
-                />
-              </div>
-              <div className="form-field">
-                <label>טלפון</label>
-                <input
-                  placeholder="05X-XXXXXXX"
-                  value={form.phone}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, phone: e.target.value }))
-                  }
-                />
-              </div>
-              <div className="form-field">
-                <label>סטטוס</label>
-                <select
-                  value={form.status}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, status: e.target.value }))
-                  }
-                >
-                  <option>פעיל</option>
-                  <option>לא פעיל</option>
-                </select>
-              </div>
-            </div>
-            <div
-              style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}
-            >
-              <button
-                className="btn btn-ghost"
-                onClick={() => setShowModal(false)}
-              >
-                ביטול
-              </button>
-              <button className="btn btn-primary" onClick={addEmployee}>
-                הוסף עובד
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
 
 // ============================================================
 // SUPABASE AUTH HELPERS
@@ -2548,7 +2356,7 @@ export default function App() {
         );
       case "employees":
         return (
-          <EmployeesPage employees={employees} setEmployees={setEmployees} />
+          <EmployeesPage user={user} />
         );
       case "vip_guests":
         return <GuestDashboard user={user} />;
@@ -2600,6 +2408,8 @@ export default function App() {
             onClearData={clearAllData}
           />
         );
+      case "spa_staging":
+        return <SpaStagingPanel />;
       case "room_board":
         return <RoomBoard />;
       case "tasks":

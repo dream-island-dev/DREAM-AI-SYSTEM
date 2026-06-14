@@ -6,7 +6,7 @@
 import React, { useEffect, useState, useRef, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 
-const POLL_MS = 2500; // fallback polling interval
+const POLL_MS = 1500; // fallback polling interval (realtime is primary)
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 function formatTime(iso) {
@@ -1187,41 +1187,77 @@ export default function WhatsAppInbox() {
   // ── Bot active / human-handover toggle ───────────────────────────────────
   const [botActive, setBotActive]     = useState(true);
   const [togglingBot, setTogglingBot] = useState(false);
-  const bottomRef = useRef(null);
-  const pollRef   = useRef(null);
+  // ── Realtime connection status ────────────────────────────────────────────
+  const [realtimeOk, setRealtimeOk]   = useState(false);
+  const [lastUpdated, setLastUpdated] = useState(null);
+  const bottomRef  = useRef(null);
+  const pollRef    = useRef(null);
+  const allMsgsRef = useRef([]);   // raw flat messages — source of truth for merging
+  const lastSeenAt = useRef(null); // ISO timestamp of last fetch — used by fetchSince
 
-  // ── Fetch all conversations ────────────────────────────────────────────────
+  // ── Shared row normaliser ─────────────────────────────────────────────────
+  const normalise = (r) => ({
+    ...r,
+    guest_name:         r.guests?.name ?? null,
+    human_requested:    r.human_requested    ?? false,
+    human_request_type: r.human_request_type ?? null,
+  });
+
+  // ── Full fetch (initial load only) ────────────────────────────────────────
   const fetchAll = useCallback(async () => {
     const { data, error: err } = await supabase
       .from("whatsapp_conversations")
-      .select(`
-        id, phone, direction, message, wa_message_id, created_at,
-        human_requested, human_request_type,
-        guests ( name )
-      `)
+      .select("id, phone, direction, message, wa_message_id, created_at, human_requested, human_request_type, guests(name)")
       .order("created_at", { ascending: true })
       .limit(2000);
 
     if (err) { setError(err.message); return; }
 
-    const flat = (data ?? []).map((r) => ({
-      ...r,
-      guest_name:          r.guests?.name ?? null,
-      human_requested:     r.human_requested     ?? false,
-      human_request_type:  r.human_request_type  ?? null,
-    }));
-
-    const grouped = groupByPhone(flat);
-    setContacts(grouped);
+    const flat = (data ?? []).map(normalise);
+    allMsgsRef.current = flat;
+    lastSeenAt.current = new Date().toISOString();
+    setContacts(groupByPhone(flat));
+    setLastUpdated(new Date());
     setLoading(false);
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Initial load + polling fallback ──────────────────────────────────────
+  // ── Incremental fetch — only rows newer than lastSeenAt ──────────────────
+  // Used by: polling interval + Realtime callback.
+  // Fetches at most 100 new rows, merges by ID (no duplicates), regroups.
+  const fetchSince = useCallback(async () => {
+    if (!lastSeenAt.current) return; // wait for first fetchAll
+    const since = lastSeenAt.current;
+    lastSeenAt.current = new Date().toISOString(); // advance window immediately
+
+    const { data } = await supabase
+      .from("whatsapp_conversations")
+      .select("id, phone, direction, message, wa_message_id, created_at, human_requested, human_request_type, guests(name)")
+      .gt("created_at", since)
+      .order("created_at", { ascending: true })
+      .limit(100);
+
+    if (!data?.length) return;
+
+    const newFlat = data.map(normalise);
+    const existingIds = new Set(allMsgsRef.current.map((m) => m.id));
+    const merged = [
+      ...allMsgsRef.current,
+      ...newFlat.filter((m) => !existingIds.has(m.id)),
+    ];
+    allMsgsRef.current = merged;
+    setContacts(groupByPhone(merged));
+    setLastUpdated(new Date());
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Initial load + incremental polling fallback ───────────────────────────
+  // fetchAll fires once; after that only fetchSince runs every POLL_MS.
+  // This keeps the payload tiny (≤100 rows) on every tick.
   useEffect(() => {
-    fetchAll();
-    pollRef.current = setInterval(fetchAll, POLL_MS);
+    fetchAll().then(() => {
+      pollRef.current = setInterval(fetchSince, POLL_MS);
+    });
     return () => clearInterval(pollRef.current);
-  }, [fetchAll]);
+  }, [fetchAll, fetchSince]);
 
   // ── Fetch bot active status from bot_config ───────────────────────────────
   useEffect(() => {
@@ -1247,17 +1283,49 @@ export default function WhatsAppInbox() {
   }
 
   // ── Realtime subscription ─────────────────────────────────────────────────
+  // Listens to INSERT + UPDATE on whatsapp_conversations.
+  // On any event → fetchSince() (incremental, not full refetch).
+  // subscribe() callback tracks connection status for the LIVE indicator.
+  // NOTE: Requires Realtime enabled for whatsapp_conversations in Supabase:
+  //   Dashboard → Database → Replication → whatsapp_conversations ✓
   useEffect(() => {
-    const channel = supabase
-      .channel("wa-inbox-realtime")
-      .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "whatsapp_conversations" },
-        () => fetchAll()
-      )
-      .subscribe();
-    return () => supabase.removeChannel(channel);
-  }, [fetchAll]);
+    let reconnectTimer = null;
+
+    function buildChannel() {
+      const ch = supabase
+        .channel("wa-inbox-rt-v2")
+        .on(
+          "postgres_changes",
+          { event: "INSERT", schema: "public", table: "whatsapp_conversations" },
+          () => { fetchSince(); }
+        )
+        .on(
+          "postgres_changes",
+          { event: "UPDATE", schema: "public", table: "whatsapp_conversations" },
+          () => { fetchSince(); }
+        )
+        .subscribe((status, err) => {
+          console.log("[WA-inbox] realtime status:", status, err ?? "");
+          setRealtimeOk(status === "SUBSCRIBED");
+
+          // If channel drops (CHANNEL_ERROR / TIMED_OUT), attempt reconnect after 5s
+          if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+            console.warn("[WA-inbox] realtime lost — reconnecting in 5s");
+            supabase.removeChannel(ch);
+            reconnectTimer = setTimeout(() => {
+              buildChannel();
+            }, 5000);
+          }
+        });
+      return ch;
+    }
+
+    const channel = buildChannel();
+    return () => {
+      clearTimeout(reconnectTimer);
+      supabase.removeChannel(channel);
+    };
+  }, [fetchSince]);
 
   // ── Auto-scroll to bottom of thread ─────────────────────────────────────
   useEffect(() => {
@@ -1279,7 +1347,7 @@ export default function WhatsAppInbox() {
       });
       if (fnErr || !data?.ok) throw new Error(fnErr?.message ?? data?.error ?? "שגיאה בשליחה");
       setReply("");
-      await fetchAll();
+      await fetchSince();
     } catch (err) {
       setError(err?.message ?? "שגיאה בשליחה");
     } finally {
@@ -1297,6 +1365,12 @@ export default function WhatsAppInbox() {
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 80px)", overflow: "hidden", borderRadius: 12, border: "1px solid var(--border)", boxShadow: "0 4px 20px rgba(0,0,0,0.06)" }}>
+      <style>{`
+        @keyframes wa-pulse {
+          0%, 100% { opacity: 1; transform: scale(1); }
+          50%       { opacity: 0.5; transform: scale(1.4); }
+        }
+      `}</style>
 
       {/* Toolbar */}
       <div style={{
@@ -1311,6 +1385,28 @@ export default function WhatsAppInbox() {
               background: "#25D366", color: "white", borderRadius: 20,
               fontSize: 11, fontWeight: 800, padding: "2px 8px",
             }}>{unreadTotal} {"חדשות"}</span>
+          )}
+          {/* ── LIVE indicator ── */}
+          <span style={{
+            display: "flex", alignItems: "center", gap: 5,
+            background: realtimeOk ? "rgba(37,211,102,0.18)" : "rgba(255,255,255,0.10)",
+            border: `1px solid ${realtimeOk ? "rgba(37,211,102,0.5)" : "rgba(255,255,255,0.25)"}`,
+            borderRadius: 20, padding: "3px 9px",
+            fontSize: 10, fontWeight: 700, letterSpacing: 0.5,
+            color: realtimeOk ? "#7EFFA0" : "rgba(255,255,255,0.55)",
+          }}>
+            <span style={{
+              width: 6, height: 6, borderRadius: "50%",
+              background: realtimeOk ? "#25D366" : "#f59e0b",
+              display: "inline-block",
+              animation: realtimeOk ? "wa-pulse 2s ease-in-out infinite" : "none",
+            }} />
+            {realtimeOk ? "LIVE" : "מתחבר..."}
+          </span>
+          {lastUpdated && (
+            <span style={{ fontSize: 10, opacity: 0.5 }}>
+              {lastUpdated.toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+            </span>
           )}
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>

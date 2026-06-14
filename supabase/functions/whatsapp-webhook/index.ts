@@ -674,6 +674,7 @@ serve(async (req: Request) => {
       let text = "";
       let isButtonReply = false;
       let buttonTitle   = "";
+      let buttonId      = "";
 
       if (msg.type === "text") {
         text = (msg.text as Record<string, unknown>)?.body as string ?? "";
@@ -682,8 +683,10 @@ serve(async (req: Request) => {
         const interactive = msg.interactive as Record<string, unknown>;
         if ((interactive?.type as string) === "button_reply") {
           isButtonReply = true;
-          buttonTitle   = ((interactive?.button_reply as Record<string, unknown>)?.title as string) ?? "";
-          text          = buttonTitle;
+          const br    = interactive?.button_reply as Record<string, unknown>;
+          buttonTitle = (br?.title as string) ?? "";
+          buttonId    = (br?.id    as string) ?? "";
+          text        = buttonTitle;
         } else {
           continue;
         }
@@ -732,8 +735,12 @@ serve(async (req: Request) => {
         // Payment link is sent later by staff via the GuestsPage 💳 button
         // once a payment link exists. This avoids any dependency on payment data.
         // Normalize title: strip emoji & trim so minor Meta formatting differences don't break matching
-        const normalizedTitle = buttonTitle.replace(/[^ -׿\s,!.]/g, "").trim();
-        if (normalizedTitle.includes("כן, מגיעים") || normalizedTitle.includes("כן מגיעים")) {
+        const normalizedTitle = buttonTitle.replace(/[^ -׿\s,!.]/g, "").trim();
+        const normalizedId    = buttonId.replace(/[^ -׿\s,!.]/g, "").trim();
+        const isArrivalConfirm =
+          normalizedTitle.includes("כן, מגיעים") || normalizedTitle.includes("כן מגיעים") ||
+          normalizedId.includes("כן, מגיעים")    || normalizedId.includes("כן מגיעים");
+        if (isArrivalConfirm) {
           if (guestId) await supabase.from("guests").update({ arrival_confirmed: true }).eq("id", guestId);
 
           const safeName = name.trim() || "אורח יקר";

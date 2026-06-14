@@ -1,20 +1,19 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-const EXPECTED_KEY = Deno.env.get("EMAIL_IMPORT_API_KEY") ?? "";
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
+const EXPECTED_KEY            = Deno.env.get("EMAIL_IMPORT_API_KEY") ?? "";
+const SUPABASE_URL            = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 
-// Hebrew column → internal field name
 const COL_MAP: Record<string, string> = {
-  "תזמון": "treatment_time",
+  "תזמון":        "treatment_time",
   "סוגי טיפולים": "treatment_type",
-  "תוספות": "extras",
-  "טלפון": "phone",
-  "לקוח": "guest_name",
-  "פעילות": "activity",
-  "מטפל": "therapist",
-  "הערה": "note",
+  "תוספות":       "extras",
+  "טלפון":        "phone",
+  "לקוח":         "guest_name",
+  "פעילות":       "activity",
+  "מטפל":         "therapist",
+  "הערה":         "note",
 };
 
 const SUITE_MARKER = "לאורחי הסוויטות";
@@ -72,43 +71,51 @@ function parseHtmlTable(html: string): Record<string, string>[] {
 function normalizePhone(raw: string): string {
   let p = raw.replace(/[\s\-().+]/g, "");
   if (p.startsWith("972")) return p;
-  if (p.startsWith("0")) return "972" + p.slice(1);
-  if (p.length === 9) return "972" + p;
+  if (p.startsWith("0"))   return "972" + p.slice(1);
+  if (p.length === 9)      return "972" + p;
   return p;
 }
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
-    return new Response(null, { headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "*" } });
+    return new Response(null, {
+      headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "*" },
+    });
   }
 
   const apiKey = req.headers.get("x-api-key") ?? "";
   if (!EXPECTED_KEY || apiKey !== EXPECTED_KEY) {
-    return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: { "Content-Type": "application/json" } });
+    return new Response(JSON.stringify({ error: "unauthorized" }), {
+      status: 401, headers: { "Content-Type": "application/json" },
+    });
   }
 
   let body: { html?: string; filter?: string };
   try {
     body = await req.json();
   } catch {
-    return new Response(JSON.stringify({ error: "invalid json" }), { status: 400, headers: { "Content-Type": "application/json" } });
+    return new Response(JSON.stringify({ error: "invalid json" }), {
+      status: 400, headers: { "Content-Type": "application/json" },
+    });
   }
 
   const { html, filter } = body;
   if (!html) {
-    return new Response(JSON.stringify({ error: "missing html" }), { status: 400, headers: { "Content-Type": "application/json" } });
+    return new Response(JSON.stringify({ error: "missing html" }), {
+      status: 400, headers: { "Content-Type": "application/json" },
+    });
   }
 
   const suiteOnly = filter !== "all";
+  const rows      = parseHtmlTable(html);
 
-  const rows = parseHtmlTable(html);
   if (!rows.length) {
-    return new Response(JSON.stringify({ success: true, updated: 0, skipped: 0, message: "no rows parsed" }), {
+    return new Response(JSON.stringify({ success: true, staged: 0, message: "no rows parsed" }), {
       headers: { "Content-Type": "application/json" },
     });
   }
 
-  // Map Hebrew columns to internal names and filter
+  // Map Hebrew columns → internal field names
   const mapped = rows.map(row => {
     const out: Record<string, string> = {};
     for (const [heb, field] of Object.entries(COL_MAP)) {
@@ -123,35 +130,36 @@ serve(async (req) => {
     : mapped;
 
   if (!filtered.length) {
-    return new Response(JSON.stringify({ success: true, updated: 0, skipped: rows.length, message: "no suite guests found" }), {
-      headers: { "Content-Type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({ success: true, staged: 0, skipped: rows.length, message: "no suite guests found" }),
+      { headers: { "Content-Type": "application/json" } },
+    );
   }
 
-  // Deduplicate by phone — keep first occurrence (earliest in the email = first treatment)
-  const byPhone = new Map<string, { treatment_time: string; treatment_type: string }>();
+  // Group by phone to detect shared phones (couples/families)
+  const byPhone = new Map<string, Array<{ treatment_time: string; treatment_type: string; guest_name: string; raw_extras: string }>>();
   for (const r of filtered) {
     const raw = r.phone ?? "";
     if (!raw) continue;
     const phone = normalizePhone(raw);
-    if (!byPhone.has(phone)) {
-      byPhone.set(phone, {
-        treatment_time: r.treatment_time ?? "",
-        treatment_type: r.treatment_type ?? "",
-      });
-    }
+    if (!byPhone.has(phone)) byPhone.set(phone, []);
+    byPhone.get(phone)!.push({
+      treatment_time: r.treatment_time ?? "",
+      treatment_type: r.treatment_type ?? "",
+      guest_name:     r.guest_name    ?? "",
+      raw_extras:     r.extras        ?? "",
+    });
   }
 
-  const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+  const supabase  = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+  const batchId   = crypto.randomUUID();
+  const stagingRows: Record<string, unknown>[] = [];
 
-  let updated = 0;
-  let skipped = 0;
-  const skipped_details: string[] = [];
+  for (const [phone, entries] of byPhone) {
+    const isSharedPhone = entries.length > 1;
 
-  for (const [phone, data] of byPhone) {
-    if (!data.treatment_time) { skipped++; skipped_details.push(`${phone}: no treatment_time`); continue; }
-
-    const { data: existing, error: lookupErr } = await supabase
+    // Look up matching booking
+    const { data: existing } = await supabase
       .from("bookings")
       .select("id")
       .eq("phone", phone)
@@ -159,36 +167,53 @@ serve(async (req) => {
       .limit(1)
       .maybeSingle();
 
-    if (lookupErr) {
-      console.error(`[spa-webhook] lookup error for ${phone}:`, lookupErr.message);
-      skipped++;
-      skipped_details.push(`${phone}: db error`);
-      continue;
-    }
+    for (const entry of entries) {
+      let match_status: string;
+      let suspicious_reason: string | null = null;
 
-    if (!existing) {
-      skipped++;
-      skipped_details.push(`${phone}: no matching booking`);
-      continue;
-    }
+      if (!existing) {
+        match_status = "no_booking";
+      } else if (isSharedPhone) {
+        match_status = "suspicious";
+        suspicious_reason = `${entries.length} אורחים על אותו טלפון`;
+      } else {
+        match_status = "matched";
+      }
 
-    const { error: updateErr } = await supabase
-      .from("bookings")
-      .update({ treatment_time: data.treatment_time, treatment_type: data.treatment_type })
-      .eq("id", existing.id);
-
-    if (updateErr) {
-      console.error(`[spa-webhook] update error for ${phone}:`, updateErr.message);
-      skipped++;
-      skipped_details.push(`${phone}: update failed`);
-    } else {
-      console.info(`[spa-webhook] ✅ updated ${phone} → ${data.treatment_type} @ ${data.treatment_time}`);
-      updated++;
+      stagingRows.push({
+        import_batch:       batchId,
+        treatment_time:     entry.treatment_time || null,
+        treatment_type:     entry.treatment_type || null,
+        guest_name:         entry.guest_name     || null,
+        phone,
+        raw_extras:         entry.raw_extras     || null,
+        matched_booking_id: existing?.id         ?? null,
+        match_status,
+        suspicious_reason,
+        sync_status:        "pending",
+      });
     }
   }
 
-  const result: Record<string, unknown> = { success: true, updated, skipped };
-  if (skipped_details.length) result.skipped_details = skipped_details;
+  const { error: insertErr } = await supabase
+    .from("spa_staging")
+    .insert(stagingRows);
 
-  return new Response(JSON.stringify(result), { headers: { "Content-Type": "application/json" } });
+  if (insertErr) {
+    console.error("[spa-webhook] staging insert error:", insertErr.message);
+    return new Response(JSON.stringify({ error: "staging insert failed", detail: insertErr.message }), {
+      status: 500, headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  const matched    = stagingRows.filter(r => r.match_status === "matched").length;
+  const suspicious = stagingRows.filter(r => r.match_status === "suspicious").length;
+  const no_booking = stagingRows.filter(r => r.match_status === "no_booking").length;
+
+  console.info(`[spa-webhook] batch ${batchId}: ${matched} matched, ${suspicious} suspicious, ${no_booking} no_booking`);
+
+  return new Response(
+    JSON.stringify({ success: true, staged: stagingRows.length, matched, suspicious, no_booking, batch_id: batchId }),
+    { headers: { "Content-Type": "application/json" } },
+  );
 });
