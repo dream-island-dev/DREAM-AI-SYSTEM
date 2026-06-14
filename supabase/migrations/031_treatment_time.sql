@@ -27,7 +27,10 @@ CREATE TRIGGER trg_bookings_updated
 
 ALTER TABLE public.bookings ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "auth users can read bookings"  ON public.bookings FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "auth users can read bookings"   ON public.bookings;
+DROP POLICY IF EXISTS "auth users can insert bookings" ON public.bookings;
+DROP POLICY IF EXISTS "auth users can update bookings" ON public.bookings;
+CREATE POLICY "auth users can read bookings"   ON public.bookings FOR SELECT TO authenticated USING (true);
 CREATE POLICY "auth users can insert bookings" ON public.bookings FOR INSERT TO authenticated WITH CHECK (true);
 CREATE POLICY "auth users can update bookings" ON public.bookings FOR UPDATE TO authenticated USING (true);
 
