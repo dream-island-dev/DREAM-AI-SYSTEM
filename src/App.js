@@ -2313,6 +2313,18 @@ export default function App() {
       </>
     );
 
+  // ── Cleaner kiosk — full-screen RoomBoard, no sidebar ──────────────────
+  if (user.role === "cleaner")
+    return (
+      <>
+        <style>{css}</style>
+        <style>{`@keyframes di-spin { to { transform: rotate(360deg); } }`}</style>
+        <div style={{ background: "var(--ivory)", minHeight: "100vh" }}>
+          <RoomBoard isKioskMode onLogout={handleLogout} />
+        </div>
+      </>
+    );
+
   const renderPage = () => {
     // Mandatory loading state while operational data is fetched from Supabase.
     const dataPages = ["dashboard", "shifts", "calls", "checklist", "employees"];

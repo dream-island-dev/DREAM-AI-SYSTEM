@@ -146,15 +146,17 @@ function fmtDate(iso) {
 const STATUSES = ["תפוס", "פנוי", "לניקיון", "בניקיון", "תחזוקה"];
 
 // ── Main component ────────────────────────────────────────────────────────
-export default function RoomBoard() {
+export default function RoomBoard({ isKioskMode = false, onLogout }) {
   const [statusMap,   setStatusMap]   = useState({});
   const [guests,      setGuests]      = useState([]);
   const [loading,     setLoading]     = useState(true);
-  const [filter,      setFilter]      = useState("הכל");
+  const [filter,      setFilter]      = useState(isKioskMode ? "לניקיון" : "הכל");
   const [updating,    setUpdating]    = useState(null);
   const [toast,       setToast]       = useState(null);
   const [lang,        setLang]        = useState("he");
   const [confirmRoom, setConfirmRoom] = useState(null);
+  // WA notification state per room: "sending" | "sent" | "failed"
+  const [notifyState, setNotifyState] = useState({});
 
   const t = TR[lang];
 
@@ -204,47 +206,57 @@ export default function RoomBoard() {
     setTimeout(() => setToast(null), 3500);
   }
 
-  // ── Regular status transition ───────────────────────────────────────────
+  // ── WA notify helper (shared by confirm + retry) ───────────────────────
+  function fireNotify(roomId) {
+    setNotifyState(prev => ({ ...prev, [roomId]: "sending" }));
+    supabase.functions
+      .invoke("room-clean-notify", { body: { room_id: roomId } })
+      .then(({ data, error: waErr }) => {
+        const ok = !waErr && data?.notified !== false;
+        setNotifyState(prev => ({ ...prev, [roomId]: ok ? "sent" : "failed" }));
+        if (ok) setTimeout(() => setNotifyState(prev => {
+          const s = { ...prev }; delete s[roomId]; return s;
+        }), 6000);
+      })
+      .catch(() => setNotifyState(prev => ({ ...prev, [roomId]: "failed" })));
+  }
+
+  // ── Regular status transition — optimistic ──────────────────────────────
   async function updateStatus(roomId, nextStatus) {
     if (!supabase) return;
+    const prevEntry = statusMap[roomId];
+    // Optimistic: update UI immediately
+    setStatusMap(prev => ({ ...prev, [roomId]: { ...(prev[roomId] ?? {}), status: nextStatus } }));
     setUpdating(roomId);
     const { error } = await supabase.from("room_status").upsert(
       { room_id: roomId, status: nextStatus, updated_at: new Date().toISOString() },
       { onConflict: "room_id" }
     );
     if (error) {
+      setStatusMap(prev => ({ ...prev, [roomId]: prevEntry ?? {} })); // revert
       showToast("שגיאה: " + error.message, "err");
     } else {
-      setStatusMap(prev => ({
-        ...prev,
-        [roomId]: { ...(prev[roomId] ?? {}), status: nextStatus },
-      }));
       showToast(t.toastUpdate(roomId, t.statusLabels[nextStatus] ?? nextStatus));
     }
     setUpdating(null);
   }
 
-  // ── Start cleaning — stamps cleaning_started_at ─────────────────────────
+  // ── Start cleaning — optimistic, stamps cleaning_started_at ────────────
   async function handleCleanStart(roomId) {
     if (!supabase) return;
-    setUpdating(roomId);
+    const prevEntry = statusMap[roomId];
     const startedAt = new Date().toISOString();
+    // Optimistic
+    setStatusMap(prev => ({ ...prev, [roomId]: { ...(prev[roomId] ?? {}), status: "בניקיון", cleaningStartedAt: startedAt } }));
+    setUpdating(roomId);
     const { error } = await supabase.from("room_status").upsert(
-      {
-        room_id:             roomId,
-        status:              "בניקיון",
-        cleaning_started_at: startedAt,
-        updated_at:          startedAt,
-      },
+      { room_id: roomId, status: "בניקיון", cleaning_started_at: startedAt, updated_at: startedAt },
       { onConflict: "room_id" }
     );
     if (error) {
+      setStatusMap(prev => ({ ...prev, [roomId]: prevEntry ?? {} })); // revert
       showToast("שגיאה: " + error.message, "err");
     } else {
-      setStatusMap(prev => ({
-        ...prev,
-        [roomId]: { ...(prev[roomId] ?? {}), status: "בניקיון", cleaningStartedAt: startedAt },
-      }));
       showToast(t.toastCleanStart(roomId));
     }
     setUpdating(null);
@@ -259,45 +271,36 @@ export default function RoomBoard() {
     });
   }
 
-  // ── Confirm → write duration, mark פנוי, notify guest ──────────────────
+  // ── Confirm → write duration, mark פנוי, notify guest — optimistic ─────
   async function handleCleanConfirm() {
     if (!confirmRoom || !supabase) return;
     const { id: roomId, cleaningStartedAt } = confirmRoom;
     setConfirmRoom(null);
-    setUpdating(roomId);
 
+    const prevEntry   = statusMap[roomId];
     const endedAt     = new Date().toISOString();
     const durationSec = cleaningStartedAt
       ? Math.floor((Date.now() - new Date(cleaningStartedAt).getTime()) / 1000)
       : null;
 
+    // Optimistic: mark ready immediately so cleaner sees instant feedback
+    setStatusMap(prev => ({
+      ...prev,
+      [roomId]: { ...(prev[roomId] ?? {}), status: "פנוי", cleaningStartedAt: null, lastDuration: durationSec },
+    }));
+    setUpdating(roomId);
+
     const { error } = await supabase.from("room_status").upsert(
-      {
-        room_id:                 roomId,
-        status:                  "פנוי",
-        cleaning_ended_at:       endedAt,
-        last_clean_duration_sec: durationSec,
-        updated_at:              endedAt,
-      },
+      { room_id: roomId, status: "פנוי", cleaning_ended_at: endedAt, last_clean_duration_sec: durationSec, updated_at: endedAt },
       { onConflict: "room_id" }
     );
 
     if (error) {
+      setStatusMap(prev => ({ ...prev, [roomId]: prevEntry ?? {} })); // revert
       showToast("שגיאה: " + error.message, "err");
     } else {
-      setStatusMap(prev => ({
-        ...prev,
-        [roomId]: {
-          ...(prev[roomId] ?? {}),
-          status:            "פנוי",
-          cleaningStartedAt: null,
-          lastDuration:      durationSec,
-        },
-      }));
       showToast(t.toastCleanDone(roomId));
-      supabase.functions
-        .invoke("room-clean-notify", { body: { room_id: roomId } })
-        .catch(() => {});
+      fireNotify(roomId); // WA with visual tracking
     }
     setUpdating(null);
   }
@@ -405,7 +408,7 @@ export default function RoomBoard() {
         <div style={{ fontSize: 22, fontWeight: 800, color: "var(--black)" }}>
           {t.header}
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
             {t.occupiedOf(countOf("תפוס"), rooms.length)} · {t.availLabel(countOf("פנוי"))}
           </div>
@@ -419,6 +422,18 @@ export default function RoomBoard() {
           >
             {t.toggleLang}
           </button>
+          {isKioskMode && onLogout && (
+            <button
+              onClick={onLogout}
+              style={{
+                padding: "5px 14px", borderRadius: 20, fontSize: 13, fontWeight: 700,
+                cursor: "pointer", fontFamily: "Heebo, sans-serif",
+                border: "1.5px solid #E24B4A", background: "#FCEBEB", color: "#A32D2D",
+              }}
+            >
+              יציאה
+            </button>
+          )}
         </div>
       </div>
 
@@ -500,6 +515,8 @@ export default function RoomBoard() {
                   onUpdate={updateStatus}
                   onCleanStart={handleCleanStart}
                   onCleanDone={handleCleanDoneRequest}
+                  waState={notifyState[room.id] ?? null}
+                  onRetryNotify={fireNotify}
                 />
               ))}
             </div>
@@ -517,7 +534,7 @@ export default function RoomBoard() {
 }
 
 // ── RoomCard — self-contained timer, 52px touch buttons ──────────────────
-function RoomCard({ room, isUpdating, t, onUpdate, onCleanStart, onCleanDone }) {
+function RoomCard({ room, isUpdating, t, onUpdate, onCleanStart, onCleanDone, waState, onRetryNotify }) {
   const [hovered,  setHovered]  = useState(null);
   const [timerSec, setTimerSec] = useState(0);
 
@@ -599,6 +616,34 @@ function RoomCard({ room, isUpdating, t, onUpdate, onCleanStart, onCleanDone }) 
           <div style={{ marginTop: 8, fontSize: 11, color: "#639922", fontWeight: 600 }}>
             ✓ {t.cleanedIn(fmtDuration(room.lastDuration))}
           </div>
+        )}
+
+        {/* WA notification status indicator */}
+        {waState === "sending" && (
+          <div style={{ marginTop: 8, display: "inline-flex", alignItems: "center", gap: 5,
+            background: "#EEF5FD", border: "1px solid #BFDBFE", borderRadius: 7, padding: "4px 9px",
+            fontSize: 11, fontWeight: 700, color: "#1e40af" }}>
+            <div style={{ width: 10, height: 10, border: "2px solid #93c5fd", borderTop: "2px solid #1e40af",
+              borderRadius: "50%", animation: "di-spin 0.8s linear infinite", flexShrink: 0 }} />
+            שולח WhatsApp...
+          </div>
+        )}
+        {waState === "sent" && (
+          <div style={{ marginTop: 8, display: "inline-flex", alignItems: "center", gap: 5,
+            background: "#EAF3DE", border: "1px solid #86efac", borderRadius: 7, padding: "4px 9px",
+            fontSize: 11, fontWeight: 700, color: "#15803d" }}>
+            📱 ✓ הודעה נשלחה
+          </div>
+        )}
+        {waState === "failed" && (
+          <button
+            onClick={() => onRetryNotify(room.id)}
+            style={{ marginTop: 8, display: "inline-flex", alignItems: "center", gap: 5,
+              background: "#FCEBEB", border: "1px solid #E24B4A", borderRadius: 7, padding: "4px 9px",
+              fontSize: 11, fontWeight: 700, color: "#A32D2D", cursor: "pointer",
+              fontFamily: "Heebo, sans-serif" }}>
+            🔄 שלח שוב
+          </button>
         )}
       </div>
 
