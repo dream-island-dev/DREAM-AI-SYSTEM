@@ -71,12 +71,117 @@ function normalizeTimeVal(raw) {
   if (digits.length === 4) return `${digits.slice(0, 2)}:${digits.slice(2)}`;
   return null;
 }
+// ── Combined Daily Report parser (stateful) ───────────────────────────────────
+// Handles EZGO combined format: columns 'הזמנה' (booking string with phone)
+// and 'תוספות' (extras with embedded spa time).
+//
+// KEY CHALLENGE: phone is on the BOOKING row, but spa time may be on the NEXT row.
+// Uses a state machine — currentPhone/currentName persist across iterations.
+//
+// Booking format:  "267135: פרי טורס - 0522822548"  or  "דיין חיים - 0507834236"
+// Tosafot format:  "2 - 15:00 - טיפול 45 דקות לאורחי הסוויטות"
+const PHONE_IN_BOOKING_RE = /(0[5-9]\d[-\s]?\d{3}[-\s]?\d{4}|0[5-9]\d{8}|\+972[5-9]\d{8}|972[5-9]\d{8})/;
+const TIME_IN_TOSAFOT_RE  = /\b(\d{1,2}:\d{2})\b/;
+
+function parseCombinedReport(rows) {
+  const byPhone    = {};
+  let currentPhone = null;
+  let currentName  = null;
+
+  for (const row of rows) {
+    // Clean all hidden EZGO whitespace (\xa0 = non-breaking space is common)
+    const cleanBooking = String(row["הזמנה"] ?? "")
+      .replace(/[\r\n\t\xa0]+/g, " ").replace(/\s+/g, " ").trim();
+    const cleanTosafot = String(row["תוספות"] ?? "")
+      .replace(/[\r\n\t\xa0]+/g, " ").replace(/\s+/g, " ").trim();
+
+    // ── Step 1: extract phone from booking cell → update context ──────────────
+    const phoneMatch = cleanBooking.match(PHONE_IN_BOOKING_RE);
+    if (phoneMatch) {
+      currentPhone = normalizePhone(phoneMatch[1]);
+      // Name = everything before the phone number, strip booking-ID prefix "12345: "
+      const beforePhone = cleanBooking
+        .slice(0, cleanBooking.indexOf(phoneMatch[1]))
+        .replace(/\s*[-–]\s*$/, "")
+        .trim();
+      currentName = beforePhone.replace(/^\d+:\s*/, "").trim() || null;
+    }
+
+    // ── Step 2: check tosafot for spa time + category ─────────────────────────
+    if (!cleanTosafot || cleanTosafot === "null") continue;
+
+    const timeMatch = cleanTosafot.match(TIME_IN_TOSAFOT_RE);
+    if (!timeMatch) continue; // no time → not a spa row
+
+    const rawTime = timeMatch[1];
+    // Ensure HH:MM (pad single-digit hour)
+    const time = rawTime.includes(":") && rawTime.length === 4 ? `0${rawTime}` : rawTime;
+
+    // Categorize by marker phrases
+    let category;
+    if (
+      cleanTosafot.includes("לאורחי הסוויטות") ||
+      cleanTosafot.includes("סוויט") ||
+      cleanTosafot.includes("לשובר")
+    ) {
+      category = "suite";
+    } else if (
+      cleanTosafot.includes("בחבילה") ||
+      cleanTosafot.includes("מוזל") ||
+      cleanTosafot.includes("לאורחי היום")
+    ) {
+      category = "day_guest";
+    } else {
+      console.log("[parseCombinedReport] unrecognized tosafot:", cleanTosafot.slice(0, 80));
+      continue;
+    }
+
+    if (!currentPhone) continue; // no phone context yet
+
+    // Treatment description: strip leading "N - HH:MM - " prefix if present
+    const afterTime = cleanTosafot.replace(/^\d+\s*[-–]\s*\d{1,2}:\d{2}\s*[-–]\s*/, "").trim();
+    const treatmentType = afterTime || cleanTosafot;
+
+    if (!byPhone[currentPhone]) {
+      byPhone[currentPhone] = {
+        phone: currentPhone,
+        treatment_time: time,
+        treatment_type: treatmentType,
+        guest_name: currentName,
+        raw_extras: cleanTosafot,
+        category,
+        room: null,
+        arrival_date: null,
+      };
+    } else {
+      // Multiple spa rows for same phone: keep earliest time; suite overrides day_guest
+      if (time < byPhone[currentPhone].treatment_time) {
+        byPhone[currentPhone].treatment_time = time;
+      }
+      if (category === "suite") byPhone[currentPhone].category = "suite";
+    }
+  }
+
+  const all = Object.values(byPhone);
+  return {
+    suite: all.filter((r) => r.category === "suite"),
+    day:   all.filter((r) => r.category === "day_guest"),
+  };
+}
+
 // ── EZGO Spa CSV parser ───────────────────────────────────────────────────────
-// Detects EZGO format by presence of tmStart / sTel column names.
+// Dispatcher: detects format from column names, then delegates to the right parser.
+// — EZGO isolated spa schedule: columns tmStart / sTel / sExtraDesc
+// — EZGO combined daily report:  columns הזמנה / תוספות
 // Deduplicates by phone (earliest time wins). Skips groups + cancelled rows.
 // EZGO cells contain embedded \r\n within the phrase — aggressive cleaning required.
 function parseEzgoSpa(rows) {
   if (!rows.length) return { suite: [], day: [] };
+
+  // Route to combined-report parser when header columns match
+  if ("הזמנה" in rows[0] || "תוספות" in rows[0]) {
+    return parseCombinedReport(rows);
+  }
 
   const isEzgo = "tmStart" in rows[0] || "sTel" in rows[0];
   const byPhone  = {};
@@ -520,7 +625,7 @@ function ExcelImportZone({ onImportDone, onError }) {
 
       const parsed = parseEzgoSpa(rows);
       if (!parsed.suite.length && !parsed.day.length) {
-        onError("לא נמצאו לקוחות ספא — בדוק שהקובץ מ-EZGO עם עמודת sExtraDesc"); return;
+        onError("לא נמצאו לקוחות ספא — בדוק שהקובץ מ-EZGO (דוח ספא יומי עם tmStart/sTel, או דוח משולב עם הזמנה/תוספות)"); return;
       }
       setParsed(parsed);
       setPreviewTab(parsed.suite.length ? "suite" : "day");

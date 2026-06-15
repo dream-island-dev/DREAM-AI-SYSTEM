@@ -275,6 +275,17 @@ serve(async (req: Request) => {
         },
       });
 
+      // Log to conversation history so inbox shows the template message
+      if (status === "sent" || status === "simulated") {
+        await supabase.from("whatsapp_conversations").insert({
+          phone:         guest.phone as string,
+          guest_id:      guestId,
+          direction:     "outbound",
+          message:       `[תבנית: ${waTemplateName}]`,
+          wa_message_id: null,
+        }).catch(() => {}); // non-blocking: if fails, don't break the broadcast
+      }
+
       return new Response(
         JSON.stringify({
           ok: status !== "failed",
@@ -427,6 +438,17 @@ serve(async (req: Request) => {
       channel: "whatsapp", status,
       payload: { template: tmplName, variables: tmplVars },
     });
+
+    // Log to conversation history so inbox shows it
+    if (status === "sent" || status === "simulated") {
+      await supabase.from("whatsapp_conversations").insert({
+        phone: guest.phone as string,
+        guest_id: guestId,
+        direction: "outbound",
+        message: `[תבנית: ${tmplName}]`,
+        wa_message_id: null,
+      }).catch(() => {}); // non-blocking: if fails, don't break the pipeline
+    }
 
     // Atomically stamp the pipeline flag — this is the SOLE writer of these flags.
     if (GUEST_FLAG[trigger]) {

@@ -925,6 +925,44 @@ serve(async (req: Request) => {
             phone, guest_id: guestId, direction: "outbound", message: improvReply, wa_message_id: null, intent: "button_reply",
           });
 
+        // ── Therapy upsell — "Hot & Cold Restart" campaign positive replies ─
+        // Buttons: "נשמע מושלם, אשמח לפרטים!" / "שריינו לי מקום 🙏"
+        } else if (
+          buttonTitle.includes("נשמע מושלם") ||
+          buttonTitle.includes("שריינו לי מקום") ||
+          buttonId.includes("upsell_yes")
+        ) {
+          const upsellPositiveReply =
+            "איזה יופי! ✨ העברתי את פנייתך לצוות הספא שלנו, והם ייצרו איתך קשר בהקדם לתיאום שעה מדויקת.";
+          // bookings table stores phone without leading +
+          const bookingPhoneUpsell = phone.startsWith("+") ? phone.slice(1) : phone;
+          supabase
+            .from("bookings")
+            .update({ upsell_interest: true, upsell_requested_at: new Date().toISOString() })
+            .eq("phone", bookingPhoneUpsell)
+            .then(({ error: uErr }) => {
+              if (uErr) console.warn("[webhook] upsell_interest update error:", uErr.message);
+              else console.info("[webhook] ✅ upsell_interest flagged for", bookingPhoneUpsell);
+            });
+          try { await sendReply(phone, upsellPositiveReply); } catch (e) { console.error("[webhook] upsell reply error:", (e as Error).message); }
+          await supabase.from("whatsapp_conversations").insert({
+            phone, guest_id: guestId, direction: "outbound",
+            message: upsellPositiveReply, wa_message_id: null, intent: "button_reply",
+          });
+
+        // ── "פחות מתאים הפעם" — therapy decline → graceful exit ────────────
+        } else if (
+          buttonTitle.includes("פחות מתאים") ||
+          buttonId.includes("upsell_no")
+        ) {
+          const declineReply =
+            "הכל בסדר גמור! אנחנו כאן לכל דבר אחר שתצטרכו לקראת החופשה. 🌴";
+          try { await sendReply(phone, declineReply); } catch (e) { console.error("[webhook] decline reply error:", (e as Error).message); }
+          await supabase.from("whatsapp_conversations").insert({
+            phone, guest_id: guestId, direction: "outbound",
+            message: declineReply, wa_message_id: null, intent: "button_reply",
+          });
+
         // ── Unrecognized button — generic reply so no button is ever silent ──
         } else {
           console.warn(`[webhook] ⚠️ unmatched button title="${buttonTitle}" id="${buttonId}" — sending generic reply`);

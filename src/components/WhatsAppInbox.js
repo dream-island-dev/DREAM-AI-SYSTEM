@@ -6,7 +6,7 @@
 import React, { useEffect, useState, useRef, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 
-const POLL_MS = 800; // fallback polling interval (realtime is primary)
+const POLL_MS = 200; // fallback polling interval (realtime is primary) — faster sync
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 function formatTime(iso) {
@@ -1290,6 +1290,7 @@ export default function WhatsAppInbox() {
   //   Dashboard → Database → Replication → whatsapp_conversations ✓
   useEffect(() => {
     let reconnectTimer = null;
+    let intentionalCleanup = false;
 
     function buildChannel() {
       const ch = supabase
@@ -1297,24 +1298,30 @@ export default function WhatsAppInbox() {
         .on(
           "postgres_changes",
           { event: "INSERT", schema: "public", table: "whatsapp_conversations" },
-          () => { fetchSince(); }
+          (payload) => {
+            console.log("[WA-inbox] realtime INSERT:", payload.new?.id);
+            fetchSince();
+          }
         )
         .on(
           "postgres_changes",
           { event: "UPDATE", schema: "public", table: "whatsapp_conversations" },
-          () => { fetchSince(); }
+          (payload) => {
+            console.log("[WA-inbox] realtime UPDATE:", payload.new?.id);
+            fetchSince();
+          }
         )
         .subscribe((status, err) => {
           console.log("[WA-inbox] realtime status:", status, err ?? "");
           setRealtimeOk(status === "SUBSCRIBED");
 
-          // If channel drops (CHANNEL_ERROR / TIMED_OUT), attempt reconnect after 5s
-          if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
-            console.warn("[WA-inbox] realtime lost — reconnecting in 5s");
+          // If channel drops (CHANNEL_ERROR / TIMED_OUT), attempt reconnect after 2s
+          if ((status === "CHANNEL_ERROR" || status === "TIMED_OUT") && !intentionalCleanup) {
+            console.warn("[WA-inbox] realtime lost:", err?.message ?? status, "— reconnecting in 2s");
             supabase.removeChannel(ch);
             reconnectTimer = setTimeout(() => {
               buildChannel();
-            }, 5000);
+            }, 2000);
           }
         });
       return ch;
@@ -1322,6 +1329,7 @@ export default function WhatsAppInbox() {
 
     const channel = buildChannel();
     return () => {
+      intentionalCleanup = true;
       clearTimeout(reconnectTimer);
       supabase.removeChannel(channel);
     };
@@ -1336,6 +1344,17 @@ export default function WhatsAppInbox() {
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [fetchSince]);
+
+  // ── Aggressive fallback sync when Realtime is down ───────────────────────
+  // If realtime is not connected for >3s, force a faster poll
+  useEffect(() => {
+    if (realtimeOk) return;
+    const timer = setTimeout(() => {
+      console.warn("[WA-inbox] Realtime not connected for 3s — forcing sync...");
+      fetchSince();
+    }, 3000);
+    return () => clearTimeout(timer);
+  }, [realtimeOk, fetchSince]);
 
   // ── Auto-scroll to bottom of thread ─────────────────────────────────────
   useEffect(() => {

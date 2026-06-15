@@ -695,7 +695,7 @@ export default function BroadcastDashboard({ user }) {
                       {tmpl.bodyText}
                     </div>
                   )}
-                  {tmpl.rejectedReason && (
+                  {tmpl.rejectedReason && tmpl.rejectedReason !== "NONE" && (
                     <div style={{ fontSize: 11, color: "#C0392B", background: "#FFF0EE", borderRadius: 6, padding: "6px 10px" }}>
                       ❌ סיבת דחייה: {tmpl.rejectedReason}
                     </div>
