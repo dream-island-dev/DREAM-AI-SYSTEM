@@ -22,6 +22,7 @@ import BotScriptEditor from "./components/BotScriptEditor";
 import RoomBoard from "./components/RoomBoard";
 import PasswordChangeScreen from "./components/PasswordChangeScreen";
 import SpaStagingPanel from "./components/SpaStagingPanel";
+import DataHub from "./components/DataHub";
 
 // ============================================================
 // MOCK DATA - יוחלף ב-Supabase בגרסה האמיתית
@@ -1030,7 +1031,7 @@ function Sidebar({ user, active, setActive, openCallsCount, onLogout, isAdmin, i
     { id: "room_board",   icon: "🏨", label: "לוח חדרים",                              managerOnly: false },
     { id: "scheduler",   icon: "🪄", label: "מחולל משמרות",                           managerOnly: true },
     { id: "spa_staging", icon: "💆", label: "לוח ספא — אישור",                        managerOnly: true },
-    // { id: "upload", icon: "📤", label: "העלאת נתונים", managerOnly: true }, // moved into GuestDashboard modal
+    { id: "data_hub",    icon: "🗂️", label: "Data Hub — ייבוא",                       managerOnly: true },
     { id: "agent",      icon: "🤖", label: "הסוכן שלי" },
   ];
 
@@ -2422,6 +2423,8 @@ export default function App() {
         );
       case "spa_staging":
         return <SpaStagingPanel />;
+      case "data_hub":
+        return <DataHub />;
       case "room_board":
         return <RoomBoard />;
       case "tasks":
