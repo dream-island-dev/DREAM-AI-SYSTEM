@@ -116,6 +116,112 @@ function addNights(arrival_date, nights) {
   return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
 }
 
+// ── Daily Arrivals Parser ─────────────────────────────────────────────────────
+// Parses the hotel's daily "ספר הזמנות" Excel format:
+//   Col A: Excel date serial (arrival date, first row only)
+//   Col B: "BOOKING_ID: [SOURCE - ] GUEST_NAME - PHONE"
+//   Col C: Add-ons / extras (spa slots embedded here)
+//   Col D: Meal plan (HB etc.)
+// Blocks: one booking per section; next row has "N חדרים, N לילות"; extras follow.
+
+const ARRIVALS_SOURCE_RE = /^(Hotel\s+WebSite|Booking\s+Collect|Booking\.com|Booking|Expedia|Hotels\.com)\s*-\s*/i;
+
+function extractSpaFromExtras(block, raw) {
+  const clean = String(raw).replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
+  const timeM = clean.match(/(\d{1,2}):(\d{2})/);
+  if (!timeM) return;
+  const time = timeM[1].padStart(2, "0") + ":" + timeM[2];
+  if (clean.includes("לקבוצות")) return; // skip group treatments
+  let category = null;
+  if (clean.includes("לאורחי הסוויטות") || clean.includes("לשובר סוויטה")) category = "suite";
+  else if (clean.includes("בחבילה")) category = "day_guest";
+  else return; // unrecognized marker
+  // Keep earliest time; suite overrides day_guest
+  if (!block.spa_time || time < block.spa_time) {
+    block.spa_time     = time;
+    block.spa_category = category;
+  }
+  if (category === "suite") block.spa_category = "suite";
+}
+
+function parseArrivalsExcel(rows) {
+  let arrivalDate = null;
+  let current     = null;
+  const blocks    = [];
+
+  for (const row of rows) {
+    // rows come in header:1 format → plain arrays
+    const [c0, c1, c2, c3] = Array.isArray(row) ? row : [];
+
+    // Arrival date: first Excel serial found in col A
+    if (!arrivalDate && typeof c0 === "number" && c0 > 40000) {
+      arrivalDate = parseEzgoDate(c0); // reuses existing serial→ISO converter
+    }
+
+    // New booking block: col B starts with "DIGITS:"
+    if (c1 && typeof c1 === "string" && /^\d+:/.test(c1)) {
+      if (current) blocks.push(current);
+
+      // Phone: always the LAST token after final " - " (handles intl +972 format)
+      const phoneMatch = c1.match(/\s+-\s+([+\d][\d\s\-+]{7,})\s*$/);
+      const phone      = phoneMatch ? normalizePhoneBookings(phoneMatch[1]) : null;
+
+      // Name: strip "DIGITS: " prefix + optional source + phone suffix
+      const afterId  = c1.replace(/^\d+:\s*/, "");
+      const nameRaw  = phoneMatch
+        ? afterId.slice(0, afterId.lastIndexOf(phoneMatch[0])).trim()
+        : afterId.trim();
+      const guestName = nameRaw.replace(ARRIVALS_SOURCE_RE, "").trim() || null;
+
+      current = {
+        guest_name:   guestName,
+        phone,
+        arrival_date: arrivalDate,
+        nights:       null,
+        rooms:        1,
+        meal:         c3 ? String(c3).trim() : null,
+        spa_time:     null,
+        spa_category: null,
+      };
+
+      if (c2) extractSpaFromExtras(current, c2);
+      continue;
+    }
+
+    if (!current) continue;
+
+    // Rooms / nights metadata row (col B = "N חדרים , N לילות ...")
+    if (c1 && typeof c1 === "string" && c1.includes("חדרים")) {
+      const rm = c1.match(/(\d+)\s*חדרים/);  if (rm) current.rooms  = parseInt(rm[1]);
+      const nm = c1.match(/(\d+)\s*לילות/);  if (nm) current.nights = parseInt(nm[1]);
+    }
+
+    // Additional extras lines (more spa slots)
+    if (c2) extractSpaFromExtras(current, c2);
+  }
+
+  if (current) blocks.push(current);
+
+  // Deduplicate by phone: sum rooms, keep earliest spa time
+  const byPhone = {};
+  for (const b of blocks) {
+    if (!b.phone) continue;
+    if (!byPhone[b.phone]) {
+      byPhone[b.phone] = { ...b };
+    } else {
+      const ex = byPhone[b.phone];
+      ex.rooms += b.rooms;
+      if (b.spa_time && (!ex.spa_time || b.spa_time < ex.spa_time)) {
+        ex.spa_time     = b.spa_time;
+        ex.spa_category = b.spa_category;
+      }
+      if (b.spa_category === "suite") ex.spa_category = "suite";
+    }
+  }
+
+  return Object.values(byPhone);
+}
+
 const TARGETS = {
   bookings: {
     label: "📋 הגעות EZGO (חדש)",
@@ -403,14 +509,27 @@ export default function DataUpload({ onImported, user, lockedMode }) {
             }}>
             {mode === "spa" ? "✓ " : ""}💆 לוח ספא
           </button>
+          <button onClick={() => { setMode("arrivals"); setRawRows([]); setHeaders([]); setFileName(""); }}
+            style={{
+              flex: "1 1 160px", padding: "14px 18px", borderRadius: 12, cursor: "pointer",
+              fontFamily: "Heebo, sans-serif", fontSize: 15, fontWeight: 700,
+              border: `2px solid ${mode === "arrivals" ? "var(--gold)" : "var(--border)"}`,
+              background: mode === "arrivals" ? "rgba(201,169,110,0.1)" : "var(--card-bg)",
+              color: "var(--black)",
+            }}>
+            {mode === "arrivals" ? "✓ " : ""}📅 ייבוא יומי
+          </button>
         </div>
       )}
 
       {/* Spa tab — fully self-contained component */}
       {mode === "spa" && <SpaScheduleUploader />}
 
+      {/* Arrivals daily import — self-contained parser */}
+      {mode === "arrivals" && <ArrivalsImporter />}
+
       {/* Drop zone */}
-      {mode !== "spa" && <div
+      {mode !== "spa" && mode !== "arrivals" && <div
         onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
         onDragLeave={() => setDragging(false)}
         onDrop={onDrop}
@@ -432,7 +551,7 @@ export default function DataUpload({ onImported, user, lockedMode }) {
       </div>}
 
       {/* Preview */}
-      {mode !== "spa" && rawRows.length > 0 && (
+      {mode !== "spa" && mode !== "arrivals" && rawRows.length > 0 && (
         <div className="card" style={{ marginBottom: 20 }}>
           <div className="card-header">
             <div className="card-title">תצוגה מקדימה · {mappedRows.length} שורות תקינות מתוך {rawRows.length}</div>
@@ -469,6 +588,273 @@ export default function DataUpload({ onImported, user, lockedMode }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── ArrivalsImporter — daily hotel bookings file parser ───────────────────────
+// Reads "ספר הזמנות" Excel format: name+phone from col B, spa time from col C.
+// Deduplicates by phone, then upserts to bookings + guests tables.
+function ArrivalsImporter() {
+  const [step,       setStep]       = useState("upload"); // upload|preview|done
+  const [dragging,   setDragging]   = useState(false);
+  const [parsed,     setParsed]     = useState([]);
+  const [previewTab, setPreviewTab] = useState("suite");
+  const [busy,       setBusy]       = useState(false);
+  const [result,     setResult]     = useState(null);
+  const [toast,      setToast]      = useState(null);
+  const fileRef = useRef(null);
+
+  function showToast(type, msg) {
+    setToast({ type, msg });
+    setTimeout(() => setToast(null), 4500);
+  }
+
+  const suiteGuests = parsed.filter((g) => g.spa_category === "suite");
+  const dayGuests   = parsed.filter((g) => g.spa_category === "day_guest");
+  const noSpaGuests = parsed.filter((g) => !g.spa_category);
+
+  const previewRows =
+    previewTab === "suite" ? suiteGuests :
+    previewTab === "day"   ? dayGuests   : noSpaGuests;
+
+  const handleFile = useCallback(async (file) => {
+    if (!file) return;
+    try {
+      const XLSX = await import("xlsx");
+      const buf  = await file.arrayBuffer();
+      const wb   = XLSX.read(buf, { type: "array" });
+      const ws   = wb.Sheets[wb.SheetNames[0]];
+      // header:1 → plain arrays; preserves col positions for structural format
+      const rows = XLSX.utils.sheet_to_json(ws, { defval: null, header: 1 });
+      const data = parseArrivalsExcel(rows);
+      if (!data.length) {
+        showToast("err", "לא נמצאו הזמנות — בדוק שהקובץ בפורמט ספר ההזמנות היומי");
+        return;
+      }
+      setParsed(data);
+      setPreviewTab(data.some((g) => g.spa_category === "suite") ? "suite" : "day");
+      setStep("preview");
+    } catch (err) {
+      showToast("err", "שגיאה בקריאת הקובץ: " + err.message);
+    }
+  }, []);
+
+  const handleSync = async () => {
+    if (!supabase) { showToast("err", "Supabase לא מחובר"); return; }
+    setBusy(true);
+    try {
+      // ── 1. Upsert to bookings (primary target) ──
+      const bookingRows = parsed
+        .filter((g) => g.phone && g.arrival_date)
+        .map((g) => ({
+          guest_name:    g.guest_name,
+          phone:         g.phone,
+          arrival_date:  g.arrival_date,
+          checkout_date: addNights(g.arrival_date, g.nights),
+          nights:        g.nights,
+          room_count:    g.rooms,
+          status:        "pending",
+        }));
+
+      const { error: bErr } = await supabase
+        .from("bookings")
+        .upsert(bookingRows, { onConflict: "phone,arrival_date", ignoreDuplicates: false });
+      if (bErr) throw new Error(bErr.message);
+
+      // ── 2. Upsert to guests (individuals: rooms ≤ 2) ──
+      const guestRows = parsed
+        .filter((g) => g.guest_name && g.phone && g.rooms <= 2 && g.arrival_date)
+        .map((g) => ({
+          name:           g.guest_name,
+          phone:          sanitizePhone(g.phone), // +972... format for guests table
+          arrival_date:   g.arrival_date,
+          departure_date: addNights(g.arrival_date, g.nights),
+          status:         "expected",
+        }));
+
+      if (guestRows.length) {
+        await supabase
+          .from("guests")
+          .upsert(guestRows, { onConflict: "phone,arrival_date", ignoreDuplicates: false })
+          .then(() => {});
+      }
+
+      setResult({
+        total:  bookingRows.length,
+        suite:  suiteGuests.length,
+        day:    dayGuests.length,
+        date:   parsed[0]?.arrival_date,
+      });
+      setStep("done");
+    } catch (err) {
+      showToast("err", "שגיאה בסנכרון: " + err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const ToastEl = toast && (
+    <div style={{
+      position: "fixed", top: 20, left: "50%", transform: "translateX(-50%)", zIndex: 9999,
+      padding: "12px 24px", borderRadius: 10, fontWeight: 700, fontSize: 14, maxWidth: "90vw",
+      boxShadow: "0 8px 32px rgba(0,0,0,0.15)",
+      background: toast.type === "ok" ? "#E8F5EF" : "#FFF0EE",
+      color:      toast.type === "ok" ? "#1A7A4A" : "#C0392B",
+      border:     `1px solid ${toast.type === "ok" ? "#1A7A4A" : "#C0392B"}`,
+    }}>{toast.msg}</div>
+  );
+
+  // ── Done ──
+  if (step === "done" && result) return (
+    <div>
+      {ToastEl}
+      <div style={{ background: "#d1fae5", border: "1px solid #6ee7b7", borderRadius: 12, padding: "24px" }}>
+        <div style={{ fontSize: 32, marginBottom: 10 }}>✅</div>
+        <div style={{ fontWeight: 800, fontSize: 16, color: "#065f46", marginBottom: 6 }}>
+          {result.total} הזמנות סונכרנו בהצלחה — {result.date}
+        </div>
+        <div style={{ fontSize: 13, color: "#065f46", marginBottom: 16 }}>
+          🏨 {result.suite} סוויטות עם ספא · ☀️ {result.day} בילוי יומי · הבוט מוכן לשלוח הודעות אישור
+        </div>
+        <button
+          onClick={() => { setStep("upload"); setParsed([]); setResult(null); }}
+          style={{ padding: "8px 18px", borderRadius: 8, border: "1px solid #6ee7b7",
+            background: "transparent", color: "#065f46", cursor: "pointer",
+            fontFamily: "Heebo, sans-serif", fontSize: 13, fontWeight: 700 }}>
+          ← ייבוא יומי נוסף
+        </button>
+      </div>
+    </div>
+  );
+
+  // ── Preview ──
+  if (step === "preview") {
+    const TABS = [
+      { key: "suite", label: "🏨 סוויטות", count: suiteGuests.length, color: "#7c3aed" },
+      { key: "day",   label: "☀️ בילוי יומי", count: dayGuests.length, color: "#16a34a" },
+      { key: "none",  label: "👥 ללא ספא",  count: noSpaGuests.length, color: "#888" },
+    ];
+    return (
+      <div>
+        {ToastEl}
+
+        {/* Stats + tab selector */}
+        <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+          {TABS.map(({ key, label, count, color }) => (
+            <button key={key} onClick={() => setPreviewTab(key)}
+              style={{
+                padding: "10px 18px", borderRadius: 10, cursor: "pointer",
+                fontFamily: "Heebo, sans-serif", fontWeight: 800, fontSize: 13,
+                border: `2px solid ${previewTab === key ? color : "var(--border)"}`,
+                background: previewTab === key ? "var(--card-bg)" : "var(--ivory)",
+                color: previewTab === key ? color : "var(--text-muted)",
+              }}>
+              {label} <span style={{ fontSize: 18, marginRight: 4 }}>{count}</span>
+            </button>
+          ))}
+          <div style={{ marginRight: "auto", fontSize: 12, color: "var(--text-muted)", padding: "0 4px" }}>
+            סה"כ {parsed.length} הזמנות · תאריך הגעה: <strong>{parsed[0]?.arrival_date}</strong>
+          </div>
+        </div>
+
+        {/* Preview table */}
+        <div style={{ background: "var(--card-bg)", border: "1px solid var(--border)", borderRadius: 10,
+          overflow: "hidden", marginBottom: 14 }}>
+          <div style={{ overflowX: "auto", maxHeight: 340 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 520 }}>
+              <thead>
+                <tr style={{ background: "var(--ivory)" }}>
+                  {["שם", "טלפון", "לילות", "חדרים", "ספא", "שעה"].map((h) => (
+                    <th key={h} style={{ padding: "9px 12px", fontSize: 11, color: "var(--text-muted)",
+                      fontWeight: 700, textAlign: "right", borderBottom: "1px solid var(--border)" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {previewRows.slice(0, 60).map((g, i) => (
+                  <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
+                    <td style={{ padding: "9px 12px", fontSize: 13, fontWeight: 600 }}>{g.guest_name || "—"}</td>
+                    <td style={{ padding: "9px 12px", fontSize: 12, color: "var(--text-muted)",
+                      direction: "ltr", textAlign: "right" }}>
+                      {g.phone ? "0" + g.phone.slice(3) : "—"}
+                    </td>
+                    <td style={{ padding: "9px 12px", fontSize: 12 }}>{g.nights ?? "—"}</td>
+                    <td style={{ padding: "9px 12px", fontSize: 12 }}>{g.rooms > 1 ? `${g.rooms} 🏢` : g.rooms}</td>
+                    <td style={{ padding: "9px 12px", fontSize: 11 }}>
+                      {g.spa_category === "suite" ? "🏨" : g.spa_category === "day_guest" ? "☀️" : "—"}
+                    </td>
+                    <td style={{ padding: "9px 12px", fontSize: 14, fontWeight: 800, color: "#7c3aed" }}>
+                      {g.spa_time || "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {previewRows.length > 60 && (
+            <div style={{ padding: "8px 12px", fontSize: 11, color: "var(--text-muted)", textAlign: "center" }}>
+              ועוד {previewRows.length - 60} שורות...
+            </div>
+          )}
+        </div>
+
+        {/* Action buttons */}
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={handleSync} disabled={busy} style={{
+            flex: 1, padding: "13px", borderRadius: 10, border: "none",
+            background: busy ? "var(--border)" : "linear-gradient(135deg,var(--gold),var(--gold-dark))",
+            color: busy ? "var(--text-muted)" : "#0F0F0F",
+            fontFamily: "Heebo, sans-serif", fontSize: 14, fontWeight: 800,
+            cursor: busy ? "not-allowed" : "pointer",
+          }}>
+            {busy ? "מסנכרן..." : `⚡ אשר וסנכרן הכל (${parsed.length} הזמנות)`}
+          </button>
+          <button onClick={() => setStep("upload")} style={{
+            padding: "13px 18px", borderRadius: 10, border: "1px solid var(--border)",
+            background: "var(--card-bg)", cursor: "pointer",
+            fontFamily: "Heebo, sans-serif", fontSize: 13, color: "var(--text-muted)",
+          }}>← חזור</button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Upload drop zone ──
+  return (
+    <div>
+      {ToastEl}
+      <div
+        onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={(e) => { e.preventDefault(); setDragging(false); handleFile(e.dataTransfer.files?.[0]); }}
+        onClick={() => fileRef.current?.click()}
+        style={{
+          border: `2px dashed ${dragging ? "var(--gold)" : "var(--border)"}`,
+          background: dragging ? "rgba(201,169,110,0.08)" : "var(--card-bg)",
+          borderRadius: 16, padding: "44px 20px", textAlign: "center", cursor: "pointer",
+          transition: "all 0.2s",
+        }}>
+        <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }}
+          onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])} />
+        <div style={{ fontSize: 44, marginBottom: 10 }}>📅</div>
+        <div style={{ fontSize: 16, fontWeight: 700, color: "var(--black)", marginBottom: 6 }}>
+          גרור ספר הזמנות יומי לכאן
+        </div>
+        <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 10 }}>
+          קובץ יומי מהמלון (.xlsx/.xls) · מזהה אוטומטית שם, טלפון, לילות, שעת ספא
+        </div>
+        <div style={{ display: "inline-flex", gap: 16, fontSize: 12, color: "var(--text-muted)" }}>
+          <span>🏨 סוויטות</span>
+          <span>☀️ בילוי יומי</span>
+          <span>📱 מוכן לבוט</span>
+        </div>
+      </div>
+      <div style={{ marginTop: 14, padding: "10px 14px", background: "var(--ivory)",
+        borderRadius: 8, fontSize: 11, color: "var(--text-muted)", lineHeight: 1.7 }}>
+        <strong>פורמט נתמך:</strong> ספר הזמנות יומי כולל "ID: שם - טלפון", לילות, תוספות ספא ·
+        קבוצות מסוננות אוטומטית · טלפונים בינלאומיים מנורמלים
+      </div>
     </div>
   );
 }
