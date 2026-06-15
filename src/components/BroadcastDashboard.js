@@ -952,7 +952,7 @@ export default function BroadcastDashboard({ user }) {
                             )}
                           </div>
                           <div style={{ fontSize: 11, opacity: 0.85, lineHeight: 1.5 }}>
-                            שם אורח ממולא אוטומטית · קישור תשלום + סדנאות · הבוט ממשיך שיחה אוטומטית
+                            שם אורח ממולא אוטומטית · שעת טיפול + סדנאות · הבוט ממשיך שיחה אוטומטית
                           </div>
                         </div>
                         <div style={{
@@ -1142,7 +1142,7 @@ export default function BroadcastDashboard({ user }) {
                       <div style={{ display: "flex", gap: 0, alignItems: "flex-start", overflowX: "auto" }}>
                         {[
                           { step: 1, label: "אישור הגעה", sub: "ידני · עכשיו", active: true,  auto: false },
-                          { step: 2, label: "תשלום + סדנאות", sub: 'אוטומטי · לאחר "כן"', active: false, auto: true  },
+                          { step: 2, label: "שעת טיפול + סדנאות", sub: 'אוטומטי · לאחר "כן"', active: false, auto: true  },
                           { step: 3, label: "בוקר הגעה", sub: "אוטומטי · בוקר ההגעה", active: false, auto: true  },
                           { step: 4, label: "צ׳ק-אין מצב", sub: "אוטומטי · במהלך השהות", active: false, auto: true  },
                           { step: 5, label: "פידבק יציאה", sub: "אוטומטי · ביום העזיבה", active: false, auto: true  },
