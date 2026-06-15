@@ -74,25 +74,35 @@ function normalizeTimeVal(raw) {
 // ── EZGO Spa CSV parser ───────────────────────────────────────────────────────
 // Detects EZGO format by presence of tmStart / sTel column names.
 // Deduplicates by phone (earliest time wins). Skips groups + cancelled rows.
+// EZGO cells contain embedded \r\n within the phrase — aggressive cleaning required.
 function parseEzgoSpa(rows) {
   if (!rows.length) return { suite: [], day: [] };
 
   const isEzgo = "tmStart" in rows[0] || "sTel" in rows[0];
-  const byPhone = {};
+  const byPhone  = {};
+  const unmatched = [];
 
   for (const row of rows) {
     // Skip cancelled (iLineStatus = "0")
     const status = String(isEzgo ? (row.iLineStatus ?? "1") : "1").trim();
     if (status === "0") continue;
 
-    const extraRaw = String(row.sExtraDesc ?? "");
+    // AGGRESSIVE CLEANING: strip \r \n \t, collapse multiple spaces
+    const extraRaw   = String(row.sExtraDesc ?? "");
+    const cleanExtra = extraRaw.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
 
-    // Categorize
+    // Categorize — fuzzy: phrase may be split across lines in raw cell
     let category;
-    if (extraRaw.includes("לאורחי הסוויטות")) category = "suite";
-    else if (extraRaw.includes("לקבוצות"))       continue; // skip groups
-    else if (extraRaw.includes("בחבילה"))         category = "day_guest";
-    else continue;
+    if (cleanExtra.includes("לאורחי הסוויטות")) category = "suite";
+    else if (cleanExtra.includes("לקבוצות"))       continue; // skip groups
+    else if (cleanExtra.includes("בחבילה"))         category = "day_guest";
+    else {
+      // Track rows that had phone+time but no recognized category marker
+      const dbgPhone = isEzgo ? row.sTel : null;
+      const dbgTime  = isEzgo ? row.tmStart : null;
+      if (dbgPhone && dbgTime) unmatched.push({ phone: dbgPhone, time: dbgTime, extra: cleanExtra });
+      continue;
+    }
 
     const rawPhone = isEzgo ? row.sTel : null;
     const phone    = normalizePhone(rawPhone ?? "");
@@ -107,17 +117,22 @@ function parseEzgoSpa(rows) {
     const parenMatch = clientRaw.match(/\(([^)]+)\)/);
     const guestName  = parenMatch ? parenMatch[1].trim() : clientRaw.split("(")[0].trim() || null;
 
-    const arrivalDate    = isEzgo ? String(row.dtDate ?? "").trim().slice(0, 10) || null : null;
-    const treatmentType  = isEzgo ? String(row.sTreatDesc ?? "").trim() || null : null;
-    const room           = isEzgo ? String(row.sActivityDesc ?? "").trim() || null : null;
+    const arrivalDate   = isEzgo ? String(row.dtDate ?? "").trim().slice(0, 10) || null : null;
+    const treatmentType = isEzgo ? String(row.sTreatDesc ?? "").trim() || null : null;
+    const room          = isEzgo ? String(row.sActivityDesc ?? "").trim() || null : null;
 
     if (!byPhone[phone]) {
       byPhone[phone] = { phone, treatment_time: time, treatment_type: treatmentType,
-        guest_name: guestName, raw_extras: extraRaw.trim(), category, room, arrival_date: arrivalDate };
+        guest_name: guestName, raw_extras: cleanExtra, category, room, arrival_date: arrivalDate };
     } else {
+      // Couple sharing phone: keep earliest time; suite overrides day_guest
       if (time < byPhone[phone].treatment_time) byPhone[phone].treatment_time = time;
       if (category === "suite") byPhone[phone].category = "suite";
     }
+  }
+
+  if (unmatched.length) {
+    console.log("Spa parser — unmatched rows (phone+time present, no category):", unmatched);
   }
 
   const all = Object.values(byPhone);
