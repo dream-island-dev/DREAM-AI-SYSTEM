@@ -72,6 +72,58 @@ const CONFIG_TTL_MS = 5 * 60 * 1000; // 5 minutes
 let _botSettingsCache: { system_prompt: string; knowledge_base: string } | null = null;
 let _botSettingsCacheTime = 0;
 
+// ── §1b  BOT SCRIPTS — loaded from bot_scripts table, cached 5 min ──────────
+interface BotScript {
+  script_key:       string;
+  trigger_event:    string;
+  message_text:     string | null;
+  ai_system_prompt: string | null;
+}
+
+let _scriptsCache: BotScript[] = [];
+let _scriptsCacheTime = 0;
+
+async function fetchBotScripts(
+  supabaseClient: ReturnType<typeof createClient>
+): Promise<Record<string, BotScript>> {
+  const now = Date.now();
+  if (_scriptsCache.length > 0 && now - _scriptsCacheTime < CONFIG_TTL_MS) {
+    return Object.fromEntries(_scriptsCache.map(s => [s.script_key, s]));
+  }
+  try {
+    const { data } = await supabaseClient
+      .from("bot_scripts")
+      .select("script_key, trigger_event, message_text, ai_system_prompt")
+      .eq("is_active", true)
+      .order("sort_order");
+    _scriptsCache = (data as BotScript[] | null) ?? [];
+    _scriptsCacheTime = now;
+    return Object.fromEntries(_scriptsCache.map(s => [s.script_key, s]));
+  } catch (e) {
+    console.warn("[webhook] fetchBotScripts error:", (e as Error).message);
+    return Object.fromEntries(_scriptsCache.map(s => [s.script_key, s]));
+  }
+}
+
+// Resolve {{GUEST_NAME}} {{SPA_TIME}} {{WORKSHOP_URL}} in a script template.
+// If spaTime is null, strips any line/sentence that still contains the token.
+function resolvePlaceholders(
+  template: string,
+  vars: { guestName: string; spaTime: string | null; workshopUrl: string }
+): string {
+  let text = template
+    .replace(/\{\{GUEST_NAME\}\}/g, vars.guestName)
+    .replace(/\{\{WORKSHOP_URL\}\}/g, vars.workshopUrl);
+
+  if (vars.spaTime) {
+    text = text.replace(/\{\{SPA_TIME\}\}/g, vars.spaTime);
+  } else {
+    // Remove any sentence/line that still mentions the spa-time placeholder
+    text = text.replace(/[^\n.!?]*\{\{SPA_TIME\}\}[^\n.!?]*[.!?]?\s*/g, "");
+  }
+  return text.trim();
+}
+
 async function fetchBotConfig(
   supabaseClient: ReturnType<typeof createClient>
 ): Promise<Record<string, string>> {
@@ -648,22 +700,37 @@ serve(async (req: Request) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
 
-    // Load bot config once per batch (cached 5 min — zero-cost on repeat calls)
-    const botConfig    = await fetchBotConfig(supabase);
+    // Load all config in parallel — each has its own 5-min cache
+    const [botConfig, botSettings, scripts] = await Promise.all([
+      fetchBotConfig(supabase),
+      fetchBotSettings(supabase),
+      fetchBotScripts(supabase),
+    ]);
+
     const systemPrompt = buildSystemPrompt(botConfig);
     // Human-handover flag: 'false' = bot paused, messages logged but not replied
     const botIsActive  = botConfig["bot_active"] !== "false"; // default true
 
-    // Admin-controlled prompt override (from BotSettings.js UI) — also cached 5 min
-    const botSettings = await fetchBotSettings(supabase);
     const kbSuffix = botSettings.knowledge_base?.trim()
       ? `\n\n══ בסיס ידע הריזורט ══\n${botSettings.knowledge_base.trim()}`
       : "";
-    // If admin has written a custom system_prompt, it fully overrides the auto-built one.
-    // The knowledge_base is always appended (to either source).
-    const finalSystemPrompt = botSettings.system_prompt?.trim()
-      ? botSettings.system_prompt.trim() + kbSuffix
-      : systemPrompt + kbSuffix;
+
+    // System prompt priority (highest → lowest):
+    //   1. bot_settings.system_prompt (admin override via BotSettings UI)
+    //   2. bot_scripts[ongoing_concierge].ai_system_prompt (BotScriptEditor)
+    //   3. buildSystemPrompt(botConfig) (auto-built from bot_config values)
+    const ongoingScript = scripts["ongoing_concierge"];
+    const finalSystemPrompt =
+      botSettings.system_prompt?.trim()
+        ? botSettings.system_prompt.trim() + kbSuffix
+        : (ongoingScript?.ai_system_prompt?.trim()
+            ? ongoingScript.ai_system_prompt.trim() + kbSuffix
+            : systemPrompt + kbSuffix);
+
+    console.info(`[webhook] prompt source: ${
+      botSettings.system_prompt?.trim() ? "bot_settings" :
+      ongoingScript?.ai_system_prompt?.trim() ? "bot_scripts/ongoing_concierge" : "bot_config"
+    }`);
 
     for (const msg of msgArr) {
       const from  = String(msg.from ?? "");
@@ -756,18 +823,31 @@ serve(async (req: Request) => {
             .limit(1)
             .maybeSingle();
           const workshopUrl = Deno.env.get("WORKSHOP_SIGNUP_URL") ?? "";
-          const treatmentLine = spaBooking?.treatment_time
-            ? `\n\n🕐 *הטיפול שלך בספא:* ${spaBooking.treatment_type ?? "טיפול"} בשעה ${spaBooking.treatment_time}`
-            : "";
-          const workshopLine = workshopUrl
-            ? `\n\n🎯 *לסדנאות שלנו — הרשמו מראש:*\n👉 ${workshopUrl}`
-            : "";
-          const arrivalReply =
-            `מגיעים! 🎉 כבר מתרגשים מאד מהגעתכם, ${safeName}!\n\n` +
-            `הצוות שלנו ב-Dream Island מכין את הכל ומחכה לכם עם חיוך גדול 🌴` +
-            treatmentLine +
-            workshopLine +
-            `\n\nיש לכם שאלות לפני ההגעה? על הצ׳ק-אין, החדר, הספא — אני כאן לכל שאלה 😊`;
+          const spaTime = spaBooking?.treatment_time
+            ? `${spaBooking.treatment_type ?? "טיפול"} בשעה ${spaBooking.treatment_time}`
+            : null;
+
+          // Use stage_2_arrival script from BotScriptEditor if available
+          const stage2Script = scripts["stage_2_arrival"];
+          let arrivalReply: string;
+          if (stage2Script?.message_text?.trim()) {
+            arrivalReply = resolvePlaceholders(stage2Script.message_text, {
+              guestName: safeName, spaTime, workshopUrl,
+            });
+          } else {
+            // Fallback to hardcoded reply
+            const treatmentLine = spaTime
+              ? `\n\n🕐 *הטיפול שלך בספא:* ${spaTime}`
+              : "";
+            const workshopLine = workshopUrl
+              ? `\n\n🎯 *לסדנאות שלנו — הרשמו מראש:*\n👉 ${workshopUrl}`
+              : "";
+            arrivalReply =
+              `מגיעים! 🎉 כבר מתרגשים מאד מהגעתכם, ${safeName}!\n\n` +
+              `הצוות שלנו ב-Dream Island מכין את הכל ומחכה לכם עם חיוך גדול 🌴` +
+              treatmentLine + workshopLine +
+              `\n\nיש לכם שאלות לפני ההגעה? על הצ׳ק-אין, החדר, הספא — אני כאן לכל שאלה 😊`;
+          }
 
           console.info(`[webhook] 🎉 arrival confirmed — phone:${phone} name="${safeName}"`);
 
@@ -880,18 +960,25 @@ serve(async (req: Request) => {
           .limit(1)
           .maybeSingle();
         const workshopUrl2 = Deno.env.get("WORKSHOP_SIGNUP_URL") ?? "";
-        const treatmentLine2 = spaBooking2?.treatment_time
-          ? `\n\n🕐 *הטיפול שלך בספא:* ${spaBooking2.treatment_type ?? "טיפול"} בשעה ${spaBooking2.treatment_time}`
-          : "";
-        const workshopLine2 = workshopUrl2
-          ? `\n\n🎯 *לסדנאות שלנו — הרשמו מראש:*\n👉 ${workshopUrl2}`
-          : "";
-        const textArrivalReply =
-          `מגיעים! 🎉 כבר מתרגשים מאד מהגעתכם, ${safeName2}!\n\n` +
-          `הצוות שלנו ב-Dream Island מכין את הכל ומחכה לכם עם חיוך גדול 🌴` +
-          treatmentLine2 +
-          workshopLine2 +
-          `\n\nיש לכם שאלות לפני ההגעה? על הצ׳ק-אין, החדר, הספא — אני כאן לכל שאלה 😊`;
+        const spaTime2 = spaBooking2?.treatment_time
+          ? `${spaBooking2.treatment_type ?? "טיפול"} בשעה ${spaBooking2.treatment_time}`
+          : null;
+
+        const stage2Script2 = scripts["stage_2_arrival"];
+        let textArrivalReply: string;
+        if (stage2Script2?.message_text?.trim()) {
+          textArrivalReply = resolvePlaceholders(stage2Script2.message_text, {
+            guestName: safeName2, spaTime: spaTime2, workshopUrl: workshopUrl2,
+          });
+        } else {
+          const treatmentLine2 = spaTime2 ? `\n\n🕐 *הטיפול שלך בספא:* ${spaTime2}` : "";
+          const workshopLine2  = workshopUrl2 ? `\n\n🎯 *לסדנאות שלנו:*\n👉 ${workshopUrl2}` : "";
+          textArrivalReply =
+            `מגיעים! 🎉 כבר מתרגשים מאד מהגעתכם, ${safeName2}!\n\n` +
+            `הצוות שלנו ב-Dream Island מכין את הכל ומחכה לכם עם חיוך גדול 🌴` +
+            treatmentLine2 + workshopLine2 +
+            `\n\nיש לכם שאלות לפני ההגעה? על הצ׳ק-אין, החדר, הספא — אני כאן לכל שאלה 😊`;
+        }
 
         if (!sim) {
           try {
@@ -951,15 +1038,33 @@ serve(async (req: Request) => {
       let reply = FALLBACK_REPLY;
 
       if (intent === "complaint") {
-        // Pre-written empathy reply (never let AI handle complaints)
-        reply = buildComplaintReply(guestName);
+        // Use complaint_reply from BotScriptEditor if available, else fallback to hardcoded
+        const complaintScript = scripts["complaint_reply"];
+        if (complaintScript?.message_text?.trim()) {
+          reply = resolvePlaceholders(complaintScript.message_text, {
+            guestName: guestName ?? "אורח יקר", spaTime: null, workshopUrl: "",
+          });
+        } else {
+          reply = buildComplaintReply(guestName);
+        }
         // Non-blocking DB alert — duty manager dashboard picks this up
         flagGuestAlert(supabase, phone, guestId, text, conversationId)
           .catch((e: Error) =>
             console.error("[webhook] flagGuestAlert error:", e.message)
           );
 
-      } else if (intent === "upsell" || intent === "faq") {
+      } else if (intent === "upsell") {
+        // Use upsell_reply from BotScriptEditor if available
+        const upsellScript = scripts["upsell_reply"];
+        if (upsellScript?.message_text?.trim()) {
+          reply = resolvePlaceholders(upsellScript.message_text, {
+            guestName: guestName ?? "אורח יקר", spaTime: null, workshopUrl: "",
+          });
+        } else {
+          reply = buildUpsellReply(guestName);
+        }
+
+      } else if (intent === "faq") {
         // Load last 10 real conversation messages — filter out system markers
         // ([כפתור:...], [תבנית:...], [תפריט ספא], etc.) so the AI only sees
         // human-readable content and isn't confused by metadata strings.
@@ -992,15 +1097,8 @@ serve(async (req: Request) => {
             ].filter(Boolean).join(" | ")
           : "";
 
-        // For upsell intent, prime the AI with an explicit upgrade hint so it
-        // offers a smooth, contextual response rather than a generic one.
-        const upsellPrefix = intent === "upsell"
-          ? "\n\n[הנחיה פנימית: האורח מתעניין בהארכת שהות / שדרוג / late check-out. הצע בחמימות ובגמישות.]"
-          : "";
-
         const enrichedPrompt = finalSystemPrompt
-          + (guestCtx ? `\n\nפרטי האורח הנוכחי: ${guestCtx}` : "")
-          + upsellPrefix;
+          + (guestCtx ? `\n\nפרטי האורח הנוכחי: ${guestCtx}` : "");
 
         try {
           reply = await askGemini(text, guestName, orderedHistory, enrichedPrompt);
@@ -1010,7 +1108,7 @@ serve(async (req: Request) => {
             reply = await callClaude(text, guestName, orderedHistory, enrichedPrompt);
           } catch (e2) {
             console.error("[webhook] Claude also failed:", (e2 as Error).message);
-            reply = intent === "upsell" ? buildUpsellReply(guestName) : FALLBACK_REPLY;
+            reply = FALLBACK_REPLY;
           }
         }
       }
