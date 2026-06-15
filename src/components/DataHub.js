@@ -155,28 +155,31 @@ function parseCombinedRows(rawRows, headers) {
       currentPhone = info.phone;
       currentName  = info.name;
       currentRooms = info.roomCount;
+      // Catch-all: create entry immediately, even guests with no spa treatment
+      if (!byPhone[currentPhone]) {
+        byPhone[currentPhone] = {
+          _id:            crypto.randomUUID(),
+          name:           currentName,
+          phone:          currentPhone,
+          arrival_date:   currentDate,
+          room_count:     currentRooms,
+          room_type:      "day_guest",
+          treatment_time: null,
+          treatment_type: null,
+          suite_name:     "",
+        };
+      }
     }
 
     const spa = extractSpaFromExtra(tosaCell);
-    if (!spa || !currentPhone) continue;
-
-    if (!byPhone[currentPhone]) {
-      byPhone[currentPhone] = {
-        _id:            crypto.randomUUID(),
-        name:           currentName,
-        phone:          currentPhone,
-        arrival_date:   currentDate,
-        room_count:     currentRooms,
-        room_type:      spa.category,
-        treatment_time: spa.time,
-        treatment_type: spa.treatmentType,
-        suite_name:     "",
-      };
-    } else {
-      if (spa.time < byPhone[currentPhone].treatment_time) {
-        byPhone[currentPhone].treatment_time = spa.time;
+    if (spa && currentPhone && byPhone[currentPhone]) {
+      const e = byPhone[currentPhone];
+      if (!e.treatment_time || spa.time < e.treatment_time) {
+        e.treatment_time = spa.time;
+        e.treatment_type = spa.treatmentType;
       }
-      if (spa.category === "suite") byPhone[currentPhone].room_type = "suite";
+      if (spa.category === "suite") e.room_type = "suite";
+      else if (spa.category === "day_guest" && e.room_type !== "suite") e.room_type = "day_guest";
     }
   }
 

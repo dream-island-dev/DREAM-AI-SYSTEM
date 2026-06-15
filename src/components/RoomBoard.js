@@ -39,18 +39,20 @@ const SUITES = [
 ];
 
 const STATUS_META = {
-  תפוס:    { border: "#E24B4A", bg: "#FCEBEB", text: "#A32D2D" },
-  פנוי:    { border: "#639922", bg: "#EAF3DE", text: "#3B6D11" },
-  לניקיון: { border: "#BA7517", bg: "#FAEEDA", text: "#854F0B" },
-  בניקיון: { border: "#378ADD", bg: "#E6F1FB", text: "#185FA5" },
-  תחזוקה:  { border: "#888780", bg: "#F1EFE8", text: "#5F5E5A" },
+  תפוס:           { border: "#E24B4A", bg: "#FCEBEB", text: "#A32D2D" },
+  פנוי:           { border: "#639922", bg: "#EAF3DE", text: "#3B6D11" },
+  לניקיון:        { border: "#BA7517", bg: "#FAEEDA", text: "#854F0B" },
+  בניקיון:        { border: "#378ADD", bg: "#E6F1FB", text: "#185FA5" },
+  "ממתין לאישור": { border: "#E8AE0A", bg: "#FDF6DC", text: "#8A6A00" },
+  תחזוקה:         { border: "#888780", bg: "#F1EFE8", text: "#5F5E5A" },
 };
 
 // fn: "update" | "start_clean" | "confirm_clean"
 const STATUS_ACTIONS = {
-  תפוס:    [{ labelKey: "toClean",    next: "לניקיון", primary: false, fn: "update"        }],
-  לניקיון: [{ labelKey: "startClean", next: "בניקיון", primary: true,  fn: "start_clean"   }],
-  בניקיון: [{ labelKey: "markReady",  next: "פנוי",    primary: true,  fn: "confirm_clean" }],
+  תפוס:           [{ labelKey: "toClean",    next: "לניקיון", primary: false, fn: "update"        }],
+  לניקיון:        [{ labelKey: "startClean", next: "בניקיון", primary: true,  fn: "start_clean"   }],
+  בניקיון:        [{ labelKey: "markReady",  next: "פנוי",    primary: true,  fn: "confirm_clean" }],
+  "ממתין לאישור": [],  // managed by AICopilot — no cleaner actions
   פנוי: [
     { labelKey: "checkin", next: "תפוס",   primary: true,  fn: "update" },
     { labelKey: "maint",   next: "תחזוקה", primary: false, fn: "update" },
@@ -61,8 +63,8 @@ const STATUS_ACTIONS = {
 // ── Translations ──────────────────────────────────────────────────────────
 const TR = {
   he: {
-    header:          "🏨 לוח חדרים",
-    loading:         "טוען לוח חדרים...",
+    header:          "🏨 לוח סוויטות",
+    loading:         "טוען לוח סוויטות...",
     all:             "הכל",
     toggleLang:      "EN",
     updating:        "מעדכן...",
@@ -70,7 +72,7 @@ const TR = {
     noRooms:         "אין חדרים בסטטוס זה",
     occupiedOf:      (n, total) => `${n}/${total} תפוסים`,
     availLabel:      (n) => `${n} פנויים`,
-    statusLabels:    { תפוס: "תפוס", פנוי: "פנוי", לניקיון: "לניקיון", בניקיון: "בניקיון", תחזוקה: "תחזוקה" },
+    statusLabels:    { תפוס: "תפוס", פנוי: "פנוי", לניקיון: "לניקיון", בניקיון: "בניקיון", "ממתין לאישור": "ממתין לאישור", תחזוקה: "תחזוקה" },
     floorLabels: {
       1: "קומה 1 — סוויטות גן",
       2: "קומה 2 — מרפסת ופנורמה",
@@ -85,14 +87,14 @@ const TR = {
       maint:      "תחזוקה",
       doneReady:  "✓ פנוי",
     },
-    confirmTitle:    (id) => `חדר ${id} — סיום ניקיון`,
+    confirmTitle:    (id) => `סוויטה ${id} — סיום ניקיון`,
     confirmMsg:      "הסוויטה נקייה ומוכנה לאורח?",
-    confirmYes:      "✓ אישור — סמן פנוי",
+    confirmYes:      "✓ אישור — שלח לאישור מנהל",
     confirmNo:       "ביטול",
     cleanedIn:       (dur) => `נוקתה ב-${dur}`,
-    toastUpdate:     (id, st) => `חדר ${id} → ${st}`,
-    toastCleanStart: (id) => `חדר ${id} — ניקיון התחיל`,
-    toastCleanDone:  (id) => `חדר ${id} — מוכן לאורח ✓`,
+    toastUpdate:     (id, st) => `סוויטה ${id} → ${st}`,
+    toastCleanStart: (id) => `סוויטה ${id} — ניקיון התחיל`,
+    toastCleanDone:  (id) => `סוויטה ${id} — ממתין לאישור מנהל 🔔`,
   },
   en: {
     header:          "🏨 Room Board",
@@ -104,7 +106,7 @@ const TR = {
     noRooms:         "No rooms with this status",
     occupiedOf:      (n, total) => `${n}/${total} occupied`,
     availLabel:      (n) => `${n} available`,
-    statusLabels:    { תפוס: "Occupied", פנוי: "Available", לניקיון: "For Cleaning", בניקיון: "Cleaning", תחזוקה: "Maintenance" },
+    statusLabels:    { תפוס: "Occupied", פנוי: "Available", לניקיון: "For Cleaning", בניקיון: "Cleaning", "ממתין לאישור": "Pending Approval", תחזוקה: "Maintenance" },
     floorLabels: {
       1: "Floor 1 — Garden Suites",
       2: "Floor 2 — Balcony & Panoramic",
@@ -143,7 +145,7 @@ function fmtDate(iso) {
   return `${d.getDate()}/${d.getMonth() + 1}`;
 }
 
-const STATUSES = ["תפוס", "פנוי", "לניקיון", "בניקיון", "תחזוקה"];
+const STATUSES = ["תפוס", "פנוי", "לניקיון", "בניקיון", "ממתין לאישור", "תחזוקה"];
 
 // ── Main component ────────────────────────────────────────────────────────
 export default function RoomBoard({ isKioskMode = false, onLogout }) {
@@ -271,7 +273,7 @@ export default function RoomBoard({ isKioskMode = false, onLogout }) {
     });
   }
 
-  // ── Confirm → write duration, mark פנוי, notify guest — optimistic ─────
+  // ── Confirm → write duration, mark ממתין לאישור — optimistic ───────────
   async function handleCleanConfirm() {
     if (!confirmRoom || !supabase) return;
     const { id: roomId, cleaningStartedAt } = confirmRoom;
@@ -283,15 +285,15 @@ export default function RoomBoard({ isKioskMode = false, onLogout }) {
       ? Math.floor((Date.now() - new Date(cleaningStartedAt).getTime()) / 1000)
       : null;
 
-    // Optimistic: mark ready immediately so cleaner sees instant feedback
+    // Optimistic: show pending approval so cleaner sees instant feedback
     setStatusMap(prev => ({
       ...prev,
-      [roomId]: { ...(prev[roomId] ?? {}), status: "פנוי", cleaningStartedAt: null, lastDuration: durationSec },
+      [roomId]: { ...(prev[roomId] ?? {}), status: "ממתין לאישור", cleaningStartedAt: null, lastDuration: durationSec },
     }));
     setUpdating(roomId);
 
     const { error } = await supabase.from("room_status").upsert(
-      { room_id: roomId, status: "פנוי", cleaning_ended_at: endedAt, last_clean_duration_sec: durationSec, updated_at: endedAt },
+      { room_id: roomId, status: "ממתין לאישור", cleaning_ended_at: endedAt, last_clean_duration_sec: durationSec, updated_at: endedAt },
       { onConflict: "room_id" }
     );
 
@@ -300,7 +302,6 @@ export default function RoomBoard({ isKioskMode = false, onLogout }) {
       showToast("שגיאה: " + error.message, "err");
     } else {
       showToast(t.toastCleanDone(roomId));
-      fireNotify(roomId); // WA with visual tracking
     }
     setUpdating(null);
   }

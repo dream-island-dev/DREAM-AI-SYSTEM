@@ -23,6 +23,7 @@ import RoomBoard from "./components/RoomBoard";
 import PasswordChangeScreen from "./components/PasswordChangeScreen";
 import SpaStagingPanel from "./components/SpaStagingPanel";
 import DataHub from "./components/DataHub";
+import AICopilot from "./components/AICopilot";
 
 // ============================================================
 // MOCK DATA - יוחלף ב-Supabase בגרסה האמיתית
@@ -1024,11 +1025,11 @@ function Sidebar({ user, active, setActive, openCallsCount, onLogout, isAdmin, i
     { id: "checklist",  icon: "✅", label: "צ'קליסטים",                              managerOnly: true },
     { id: "tasks",      icon: "📋", label: "לוח משימות",                             managerOnly: false },
     { id: "employees",  icon: "👥", label: "עובדים",                                 managerOnly: true },
-    { id: "vip_guests", icon: "🏨", label: "אורחים סוויטות",                         managerOnly: true },
+    { id: "vip_guests", icon: "🏨", label: "ניהול אורחים",                            managerOnly: true },
     { id: "broadcast",  icon: "📣", label: "שליחת הודעות",                           managerOnly: true },
     { id: "wa_inbox",   icon: "💬", label: "DREAM BOT — שיחות",                     managerOnly: true },
-    { id: "guests",     icon: "🛎️", label: "אורחים",                                managerOnly: true },
-    { id: "room_board",   icon: "🏨", label: "לוח חדרים",                              managerOnly: false },
+    { id: "guests",     icon: "🛎️", label: "צ'ק-אין",                               managerOnly: true },
+    { id: "room_board",   icon: "🏨", label: "לוח סוויטות",                            managerOnly: false },
     { id: "scheduler",   icon: "🪄", label: "מחולל משמרות",                           managerOnly: true },
     { id: "spa_staging", icon: "💆", label: "לוח ספא — אישור",                        managerOnly: true },
     { id: "data_hub",    icon: "🗂️", label: "Data Hub — ייבוא",                       managerOnly: true },
@@ -2250,14 +2251,14 @@ export default function App() {
     calls:      "קריאות שירות 🔔",
     checklist:  "צ'קליסטים יומיים ✅",
     employees:  "ניהול עובדים 👥",
-    vip_guests: "🏨 אורחים סוויטות",
+    vip_guests: "🏨 ניהול אורחים",
     broadcast:  "📣 מודול שידור — WhatsApp",
     wa_inbox:   "💬 DREAM BOT — תיבת שיחות",
-    guests:     "🛎️ ניהול אורחים",
+    guests:     "🛎️ צ'ק-אין",
     scheduler:  "🪄 מחולל משמרות",
     upload:     "📤 העלאת נתונים",
     tasks:      "📋 לוח משימות",
-    room_board:    "🏨 לוח חדרים",
+    room_board:    "🏨 לוח סוויטות",
     bot_config:    "🤖 הגדרות Smart Concierge",
     bot_settings:  "🧠 מוח הבוט",
     bot_scripts:   "📝 עורך סקריפטי הבוט",
@@ -2600,6 +2601,9 @@ export default function App() {
       {/* ── Department onboarding modal — blocks UI until new user selects dept ──
            Only shown to non-admin users who have no department set in DB.
            Role is NOT changed here; DB trigger + admin promote manages that. */}
+      {/* AI Copilot — floating realtime widget for room-ready approval */}
+      {user && <AICopilot user={user} />}
+
       {user && !user.department && !isAdmin && (
         <DepartmentOnboardingModal
           user={user}
