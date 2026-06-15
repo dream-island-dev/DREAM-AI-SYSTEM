@@ -379,7 +379,7 @@ export default function BroadcastDashboard({ user }) {
 
   const handleCancel = () => { abortRef.current = true; };
 
-  // ── Quick Send: dream_arrival_tomorrow to tomorrow's guests ───────────────
+  // ── Quick Send: dream_arrival_confirmation to tomorrow's guests ──────────
   const handleQuickSendTomorrow = useCallback(async () => {
     const tomorrow = localISO(1);
     const targets = allGuests.filter((g) => g.phone && g.arrival_date === tomorrow);
@@ -396,7 +396,7 @@ export default function BroadcastDashboard({ user }) {
           body: {
             trigger: "broadcast",
             guestId: guest.id,
-            waTemplateName: "dream_arrival_tomorrow",
+            waTemplateName: "dream_arrival_confirmation",
             templateVariables: [String(guest.name ?? "")],
           },
         });
@@ -767,7 +767,7 @@ export default function BroadcastDashboard({ user }) {
                 📅 מחר מגיעים {tomorrowGuests.length} אורחים
               </div>
               <div style={{ fontSize: 13, opacity: 0.85 }}>
-                שלח תבנית ברכה אוטומטית — dream_arrival_tomorrow
+                שלח תבנית אישור הגעה אוטומטית — dream_arrival_confirmation
               </div>
               {quickResult && (
                 <div style={{ fontSize: 12, marginTop: 6, opacity: 0.9 }}>
