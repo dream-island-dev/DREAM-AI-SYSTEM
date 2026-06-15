@@ -48,6 +48,49 @@ function normalizePhone(raw) {
 
 const SUITE_MARKER      = "לאורחי הסוויטות";
 const PHONE_CELL_RE     = /^(\+?972|0)\d{8,9}$/;
+
+// ── Excel import helpers ──────────────────────────────────────────────────────
+const SPA_ALIASES = {
+  phone:          ["טלפון", "נייד", "מספר טלפון", "phone", "mobile"],
+  treatment_time: ["שעה", "שעת טיפול", "שעת התחלה", "time", "hour"],
+  treatment_type: ["טיפול", "שם טיפול", "סוג טיפול", "treatment", "treatment type"],
+  guest_name:     ["שם אורח", "שם מלא", "שם", "לקוח", "guest name", "name"],
+  package:        ["חבילה", "תוספות", "הערות", "package", "additions"],
+};
+
+const normHeader = (s) =>
+  String(s ?? "").trim().toLowerCase().replace(/[^a-z0-9א-׿]/g, "");
+
+function mapSpaHeaders(headers) {
+  const map = {};
+  for (const [col, aliases] of Object.entries(SPA_ALIASES)) {
+    const normed = aliases.map(normHeader);
+    const found  = headers.find((h) => normed.includes(normHeader(h)));
+    if (found) map[col] = found;
+  }
+  return map;
+}
+
+function normalizeTimeVal(raw) {
+  if (!raw && raw !== 0) return null;
+  // Excel time serial: fraction of a day (e.g. 0.375 = 09:00)
+  if (typeof raw === "number" && raw >= 0 && raw < 1) {
+    const totalMin = Math.round(raw * 24 * 60);
+    const h = Math.floor(totalMin / 60);
+    const m = totalMin % 60;
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+  }
+  if (raw instanceof Date && !isNaN(raw.getTime())) {
+    return `${String(raw.getHours()).padStart(2, "0")}:${String(raw.getMinutes()).padStart(2, "0")}`;
+  }
+  const s = String(raw).trim();
+  const m = s.match(/(\d{1,2})[:.h](\d{2})/);
+  if (m) return `${m[1].padStart(2, "0")}:${m[2]}`;
+  const digits = s.replace(/\D/g, "");
+  if (digits.length === 3) return `0${digits[0]}:${digits.slice(1)}`;
+  if (digits.length === 4) return `${digits.slice(0, 2)}:${digits.slice(2)}`;
+  return null;
+}
 const TIME_RE           = /\d{1,2}:\d{2}\s*[-–]\s*\d{1,2}:\d{2}/;
 const KNOWN_TREATMENTS  = [
   "שוודי", "רקמות עמוק", "עיסוי לנשים הרות", "חמאם", "פילינג",
@@ -397,6 +440,111 @@ function PdfImportZone({ onImportDone, onError }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Excel Import Zone
+// ─────────────────────────────────────────────────────────────────────────────
+function ExcelImportZone({ onImportDone, onError }) {
+  const [dragging,     setDragging]     = useState(false);
+  const [parsing,      setParsing]      = useState(false);
+  const [importResult, setImportResult] = useState(null);
+  const fileRef = useRef();
+
+  const handleFile = useCallback(async (file) => {
+    if (!file) return;
+    const ext = file.name.split(".").pop().toLowerCase();
+    if (!["xlsx", "xls", "csv"].includes(ext)) {
+      onError("בחר קובץ Excel (.xlsx / .xls) או CSV"); return;
+    }
+    setParsing(true);
+    setImportResult(null);
+    try {
+      const XLSX   = await import("xlsx");
+      const buf    = await file.arrayBuffer();
+      const wb     = XLSX.read(buf, { type: "array" });
+      const ws     = wb.Sheets[wb.SheetNames[0]];
+      const rows   = XLSX.utils.sheet_to_json(ws, { defval: null });
+      if (!rows.length) { onError("הקובץ ריק או ללא כותרות"); return; }
+
+      const colMap = mapSpaHeaders(Object.keys(rows[0]));
+      if (!colMap.phone)          { onError("לא זוהתה עמודת טלפון — בדוק כותרות"); return; }
+      if (!colMap.treatment_time) { onError("לא זוהתה עמודת שעת טיפול — בדוק כותרות"); return; }
+
+      const parsed = rows.map((r) => ({
+        phone:          normalizePhone(colMap.phone ? String(r[colMap.phone] ?? "") : ""),
+        treatment_time: normalizeTimeVal(colMap.treatment_time ? r[colMap.treatment_time] : null),
+        treatment_type: colMap.treatment_type ? String(r[colMap.treatment_type] ?? "").trim() || null : null,
+        guest_name:     colMap.guest_name     ? String(r[colMap.guest_name]     ?? "").trim() || null : null,
+        raw_extras:     colMap.package        ? String(r[colMap.package]        ?? "").trim() || null : null,
+      })).filter((r) => r.phone && r.treatment_time);
+
+      if (!parsed.length) { onError("אין שורות עם טלפון ושעת טיפול תקינים"); return; }
+
+      const result = await insertParsedRows(parsed);
+      setImportResult(result);
+      onImportDone(result);
+    } catch (err) {
+      onError(err.message);
+    } finally {
+      setParsing(false);
+    }
+  }, [onImportDone, onError]);
+
+  if (importResult) {
+    return (
+      <div style={{ background: "#d1fae5", border: "1px solid #6ee7b7", borderRadius: 12, padding: "16px 20px", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 24 }}>✅</span>
+        <div>
+          <div style={{ fontWeight: 700, color: "#065f46", fontSize: 14 }}>
+            {importResult.total} שורות נקלטו לאישור
+          </div>
+          <div style={{ fontSize: 12, color: "#065f46", marginTop: 2 }}>
+            {importResult.matched} ירוק · {importResult.suspicious} צהוב · {importResult.no_booking} אדום
+          </div>
+        </div>
+        <button onClick={() => setImportResult(null)} style={{ marginRight: "auto", padding: "6px 14px", borderRadius: 7, border: "1px solid #6ee7b7", background: "transparent", color: "#065f46", cursor: "pointer", fontFamily: "Heebo,sans-serif", fontSize: 12, fontWeight: 700 }}>
+          ייבוא נוסף
+        </button>
+      </div>
+    );
+  }
+
+  if (parsing) {
+    return (
+      <div style={{ background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 12, padding: "18px 20px", display: "flex", alignItems: "center", gap: 12 }}>
+        <div style={{ width: 20, height: 20, border: "3px solid #86efac", borderTop: "3px solid #16a34a", borderRadius: "50%", animation: "di-spin 0.8s linear infinite", flexShrink: 0 }} />
+        <span style={{ fontSize: 14, fontWeight: 600, color: "#15803d" }}>מנתח קובץ Excel...</span>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={(e) => { e.preventDefault(); setDragging(false); handleFile(e.dataTransfer.files?.[0]); }}
+      onClick={() => fileRef.current?.click()}
+      style={{
+        border: `2px dashed ${dragging ? "#16a34a" : "#86efac"}`,
+        borderRadius: 12, background: dragging ? "#f0fdf4" : "#fafffe",
+        padding: "24px 20px", textAlign: "center", cursor: "pointer", transition: "all 0.2s",
+      }}
+    >
+      <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: "none" }}
+        onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])} />
+      <div style={{ fontSize: 32, marginBottom: 8 }}>{dragging ? "📂" : "📊"}</div>
+      <div style={{ fontSize: 14, fontWeight: 700, color: "#15803d", marginBottom: 4 }}>
+        גרור לכאן את קובץ ה-Excel מ-EZGO
+      </div>
+      <div style={{ fontSize: 12, color: "#4ade80" }}>
+        או לחץ לבחירת קובץ · תומך ב-.xlsx / .xls / .csv
+      </div>
+      <div style={{ fontSize: 11, color: "#86efac", marginTop: 6 }}>
+        עמודות: טלפון · שעת טיפול · שם טיפול · שם אורח · חבילה
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Main Panel
 // ─────────────────────────────────────────────────────────────────────────────
 export default function SpaStagingPanel() {
@@ -407,6 +555,7 @@ export default function SpaStagingPanel() {
   const [statusMsg,    setStatusMsg]    = useState(null);
   const [filterMode,   setFilterMode]   = useState("pending");
   const [showImport,   setShowImport]   = useState(false);
+  const [importMode,   setImportMode]   = useState("pdf"); // "pdf" | "excel"
   const [pendingCount, setPendingCount] = useState(0);
 
   // ── data fetching ─────────────────────────────────────────────────────────
@@ -512,20 +661,40 @@ export default function SpaStagingPanel() {
   return (
     <div>
 
-      {/* ── PDF Import Zone (toggle) ─────────────────────────────────────── */}
+      {/* ── Import Zone (PDF / Excel toggle) ───────────────────────────── */}
       {showImport && (
         <div style={{ marginBottom: 20 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-            <div style={{ fontWeight: 700, fontSize: 14, color: "var(--black)" }}>📥 ייבוא לוח ספא מ-PDF</div>
+            <div style={{ display: "flex", gap: 6 }}>
+              {[["pdf", "📄 PDF"], ["excel", "📊 Excel"]].map(([m, lbl]) => (
+                <button key={m} onClick={() => setImportMode(m)} style={{
+                  padding: "6px 14px", borderRadius: 20, border: "none", cursor: "pointer",
+                  fontFamily: "Heebo,sans-serif", fontSize: 13, fontWeight: 700,
+                  background: importMode === m ? "var(--gold)" : "var(--border)",
+                  color: importMode === m ? "#0F0F0F" : "var(--text-muted)",
+                  transition: "all 0.2s",
+                }}>{lbl}</button>
+              ))}
+            </div>
             <button onClick={() => setShowImport(false)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 18, color: "var(--text-muted)", lineHeight: 1 }}>✕</button>
           </div>
-          <PdfImportZone
-            onImportDone={(result) => {
-              setShowImport(false);
-              flash("ok", `✅ ${result.total} שורות נקלטו — ${result.matched} ירוק · ${result.suspicious} צהוב · ${result.no_booking} אדום`, 6000);
-            }}
-            onError={(msg) => flash("error", msg)}
-          />
+          {importMode === "pdf" ? (
+            <PdfImportZone
+              onImportDone={(result) => {
+                setShowImport(false);
+                flash("ok", `✅ ${result.total} שורות נקלטו — ${result.matched} ירוק · ${result.suspicious} צהוב · ${result.no_booking} אדום`, 6000);
+              }}
+              onError={(msg) => flash("error", msg)}
+            />
+          ) : (
+            <ExcelImportZone
+              onImportDone={(result) => {
+                setShowImport(false);
+                flash("ok", `✅ ${result.total} שורות נקלטו — ${result.matched} ירוק · ${result.suspicious} צהוב · ${result.no_booking} אדום`, 6000);
+              }}
+              onError={(msg) => flash("error", msg)}
+            />
+          )}
         </div>
       )}
 
@@ -558,18 +727,30 @@ export default function SpaStagingPanel() {
       {/* ── Action bar ───────────────────────────────────────────────────── */}
       <div style={{ display: "flex", gap: 8, marginBottom: 14, alignItems: "center", flexWrap: "wrap" }}>
 
-        {/* PDF Import button */}
+        {/* Import button — PDF or Excel */}
         <button
-          onClick={() => setShowImport((v) => !v)}
+          onClick={() => { setImportMode("pdf"); setShowImport((v) => !v); }}
           style={{
             padding: "10px 16px", borderRadius: 8, border: "none", cursor: "pointer",
-            background: showImport ? "#6f42c1" : "#f3f0ff",
-            color: showImport ? "#fff" : "#6f42c1",
+            background: showImport && importMode === "pdf" ? "#6f42c1" : "#f3f0ff",
+            color: showImport && importMode === "pdf" ? "#fff" : "#6f42c1",
             fontFamily: "Heebo,sans-serif", fontWeight: 700, fontSize: 13,
             display: "flex", alignItems: "center", gap: 6, transition: "all 0.2s",
           }}
         >
-          📥 ייבוא PDF
+          📄 ייבוא PDF
+        </button>
+        <button
+          onClick={() => { setImportMode("excel"); setShowImport((v) => !v); }}
+          style={{
+            padding: "10px 16px", borderRadius: 8, border: "none", cursor: "pointer",
+            background: showImport && importMode === "excel" ? "#16a34a" : "#f0fdf4",
+            color: showImport && importMode === "excel" ? "#fff" : "#16a34a",
+            fontFamily: "Heebo,sans-serif", fontWeight: 700, fontSize: 13,
+            display: "flex", alignItems: "center", gap: 6, transition: "all 0.2s",
+          }}
+        >
+          📊 ייבוא Excel
         </button>
 
         {/* Sync all green */}
