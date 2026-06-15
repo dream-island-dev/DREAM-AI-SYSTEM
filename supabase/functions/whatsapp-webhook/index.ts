@@ -105,20 +105,26 @@ async function fetchBotScripts(
   }
 }
 
-// Resolve {{GUEST_NAME}} {{SPA_TIME}} {{WORKSHOP_URL}} in a script template.
-// If spaTime is null, strips any line/sentence that still contains the token.
+// Resolve template placeholders.
+// {{OPTIONAL_SPA_TEXT}} → "מתואם לכם טיפול בספא בשעה HH:MM.\n" if spaTime set, else "".
+// {{SPA_TIME}}          → spaTime or strips the containing sentence (legacy support).
+// {{GUEST_NAME}} / {{WORKSHOP_URL}} → direct substitution.
 function resolvePlaceholders(
   template: string,
   vars: { guestName: string; spaTime: string | null; workshopUrl: string }
 ): string {
+  const optionalSpaText = vars.spaTime
+    ? `מתואם לכם טיפול בספא בשעה ${vars.spaTime}.\n`
+    : "";
+
   let text = template
     .replace(/\{\{GUEST_NAME\}\}/g, vars.guestName)
-    .replace(/\{\{WORKSHOP_URL\}\}/g, vars.workshopUrl);
+    .replace(/\{\{WORKSHOP_URL\}\}/g, vars.workshopUrl)
+    .replace(/\{\{OPTIONAL_SPA_TEXT\}\}/g, optionalSpaText);
 
   if (vars.spaTime) {
     text = text.replace(/\{\{SPA_TIME\}\}/g, vars.spaTime);
   } else {
-    // Remove any sentence/line that still mentions the spa-time placeholder
     text = text.replace(/[^\n.!?]*\{\{SPA_TIME\}\}[^\n.!?]*[.!?]?\s*/g, "");
   }
   return text.trim();
