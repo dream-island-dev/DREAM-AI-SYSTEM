@@ -769,33 +769,23 @@ serve(async (req: Request) => {
             workshopLine +
             `\n\nיש לכם שאלות לפני ההגעה? על הצ׳ק-אין, החדר, הספא — אני כאן לכל שאלה 😊`;
 
-          console.info(`[webhook] 🎉 arrival confirmed — phone:${phone} name="${safeName}" sim:${sim}`);
+          console.info(`[webhook] 🎉 arrival confirmed — phone:${phone} name="${safeName}"`);
 
-          if (!sim) {
-            let replySent = false;
-            try {
-              await sendReply(phone, arrivalReply);
-              replySent = true;
-              await supabase.from("whatsapp_conversations").insert({
-                phone, guest_id: guestId, direction: "outbound",
-                message: arrivalReply, wa_message_id: null,
-              });
-              console.info(`[webhook] ✅ arrival reply sent to ${phone}`);
-            } catch (e) {
-              const errMsg = (e as Error).message;
-              console.error(`[webhook] ❌ arrival reply FAILED to ${phone}:`, errMsg);
-              // Log failure so it appears in notification_log for diagnosis
-              await supabase.from("notification_log").insert({
-                guest_id: guestId, recipient: phone,
-                trigger_type: "arrival_confirmed_reply", channel: "whatsapp",
-                status: "failed", payload: { error: errMsg, buttonTitle },
-              }).catch(() => {});
-            }
-            if (!replySent) {
-              console.warn(`[webhook] ⚠️ arrival reply not sent — check Meta API error above`);
-            }
-          } else {
-            console.info(`[webhook] SIM — arrival confirmed, would reply conversationally to ${phone}`);
+          try {
+            await sendReply(phone, arrivalReply);
+            await supabase.from("whatsapp_conversations").insert({
+              phone, guest_id: guestId, direction: "outbound",
+              message: arrivalReply, wa_message_id: null,
+            });
+            console.info(`[webhook] ✅ arrival reply sent to ${phone}`);
+          } catch (e) {
+            const errMsg = (e as Error).message;
+            console.error(`[webhook] ❌ arrival reply FAILED to ${phone}:`, errMsg);
+            await supabase.from("notification_log").insert({
+              guest_id: guestId, recipient: phone,
+              trigger_type: "arrival_confirmed_reply", channel: "whatsapp",
+              status: "failed", payload: { error: errMsg, buttonTitle },
+            }).catch(() => {});
           }
 
         // ── "לא, שינוי בתאריך" — date change → ask + flag for staff ─────────
@@ -803,19 +793,15 @@ serve(async (req: Request) => {
           if (guestId) {
             await supabase.from("guests").update({ requires_attention: true, requires_attention_since: new Date().toISOString() }).eq("id", guestId);
           }
-          const reply = "מובן לגמרי! 🗓️ מה התאריך החדש המועדף עליכם? שלחו לנו ונעדכן את ההזמנה.";
-          if (!sim) {
-            try { await sendReply(phone, reply); } catch (e) { console.error("[webhook] reply error:", (e as Error).message); }
-          }
+          const dateChangeReply = "מובן לגמרי! 🗓️ מה התאריך החדש המועדף עליכם? שלחו לנו ונעדכן את ההזמנה.";
+          try { await sendReply(phone, dateChangeReply); } catch (e) { console.error("[webhook] reply error:", (e as Error).message); }
           await supabase.from("whatsapp_conversations").insert({
-            phone, guest_id: guestId, direction: "outbound", message: reply, wa_message_id: null, intent: "button_reply",
+            phone, guest_id: guestId, direction: "outbound", message: dateChangeReply, wa_message_id: null, intent: "button_reply",
           });
 
         // ── "ספא וטיפולים 📜" — send spa menu as free text ──────────────────
         } else if (buttonTitle.includes("ספא") || buttonTitle.includes("טיפולים")) {
-          if (!sim) {
-            try { await sendReply(phone, SPA_MENU); } catch (e) { console.error("[webhook] spa menu send error:", (e as Error).message); }
-          }
+          try { await sendReply(phone, SPA_MENU); } catch (e) { console.error("[webhook] spa menu send error:", (e as Error).message); }
           await supabase.from("whatsapp_conversations").insert({
             phone, guest_id: guestId, direction: "outbound", message: "[תפריט ספא]", wa_message_id: null, intent: "button_reply",
           });
@@ -827,23 +813,19 @@ serve(async (req: Request) => {
               needs_callback: true, requires_attention: true, requires_attention_since: new Date().toISOString(),
             }).eq("id", guestId);
           }
-          const reply = "קיבלנו! 🙏 אחד מהצוות שלנו יצור אתכם קשר בהקדם. תמשיכו ליהנות!";
-          if (!sim) {
-            try { await sendReply(phone, reply); } catch (e) { console.error("[webhook] reply error:", (e as Error).message); }
-          }
+          const callbackReply = "קיבלנו! 🙏 אחד מהצוות שלנו יצור אתכם קשר בהקדם. תמשיכו ליהנות!";
+          try { await sendReply(phone, callbackReply); } catch (e) { console.error("[webhook] reply error:", (e as Error).message); }
           await supabase.from("whatsapp_conversations").insert({
-            phone, guest_id: guestId, direction: "outbound", message: reply, wa_message_id: null, intent: "button_reply",
+            phone, guest_id: guestId, direction: "outbound", message: callbackReply, wa_message_id: null, intent: "button_reply",
           });
 
         // ── "היה מושלם! ✨" — positive feedback → send Google review link ────
         } else if (buttonTitle.includes("מושלם") || buttonTitle.includes("מושלמת")) {
           const reviewUrl = GOOGLE_REVIEW_URL || "dream-island.co.il";
-          const reply = `שמחנו מאוד לשמוע! 🌟 אם תרצו לשתף את החוויה שלכם — זה יאיר לנו את היום:\n${reviewUrl}\nתודה ענקית ומחכים לכם בפעם הבאה! 💫`;
-          if (!sim) {
-            try { await sendReply(phone, reply); } catch (e) { console.error("[webhook] reply error:", (e as Error).message); }
-          }
+          const feedbackReply = `שמחנו מאוד לשמוע! 🌟 אם תרצו לשתף את החוויה שלכם — זה יאיר לנו את היום:\n${reviewUrl}\nתודה ענקית ומחכים לכם בפעם הבאה! 💫`;
+          try { await sendReply(phone, feedbackReply); } catch (e) { console.error("[webhook] reply error:", (e as Error).message); }
           await supabase.from("whatsapp_conversations").insert({
-            phone, guest_id: guestId, direction: "outbound", message: reply, wa_message_id: null, intent: "button_reply",
+            phone, guest_id: guestId, direction: "outbound", message: feedbackReply, wa_message_id: null, intent: "button_reply",
           });
 
         // ── "יש מקום לשיפור 💬" — negative feedback → collect + flag ────────
@@ -851,12 +833,19 @@ serve(async (req: Request) => {
           if (guestId) {
             await supabase.from("guests").update({ requires_attention: true, requires_attention_since: new Date().toISOString() }).eq("id", guestId);
           }
-          const reply = "תודה על הכנות — זה חשוב לנו מאוד. 🙏 מה היה אפשר לשפר? כתבו לנו כאן ונשתפר.";
-          if (!sim) {
-            try { await sendReply(phone, reply); } catch (e) { console.error("[webhook] reply error:", (e as Error).message); }
-          }
+          const improvReply = "תודה על הכנות — זה חשוב לנו מאוד. 🙏 מה היה אפשר לשפר? כתבו לנו כאן ונשתפר.";
+          try { await sendReply(phone, improvReply); } catch (e) { console.error("[webhook] reply error:", (e as Error).message); }
           await supabase.from("whatsapp_conversations").insert({
-            phone, guest_id: guestId, direction: "outbound", message: reply, wa_message_id: null, intent: "button_reply",
+            phone, guest_id: guestId, direction: "outbound", message: improvReply, wa_message_id: null, intent: "button_reply",
+          });
+
+        // ── Unrecognized button — generic reply so no button is ever silent ──
+        } else {
+          console.warn(`[webhook] ⚠️ unmatched button title="${buttonTitle}" id="${buttonId}" — sending generic reply`);
+          const genericReply = "תודה! 😊 קיבלנו את בחירתך. האם יש משהו נוסף שנוכל לעשות עבורכם?";
+          try { await sendReply(phone, genericReply); } catch (e) { console.error("[webhook] generic button reply error:", (e as Error).message); }
+          await supabase.from("whatsapp_conversations").insert({
+            phone, guest_id: guestId, direction: "outbound", message: genericReply, wa_message_id: null, intent: "button_reply",
           });
         }
 

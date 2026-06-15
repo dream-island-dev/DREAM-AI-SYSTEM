@@ -6,7 +6,7 @@
 import React, { useEffect, useState, useRef, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 
-const POLL_MS = 1500; // fallback polling interval (realtime is primary)
+const POLL_MS = 800; // fallback polling interval (realtime is primary)
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 function formatTime(iso) {
@@ -1325,6 +1325,16 @@ export default function WhatsAppInbox() {
       clearTimeout(reconnectTimer);
       supabase.removeChannel(channel);
     };
+  }, [fetchSince]);
+
+  // ── Re-fetch immediately when the browser tab becomes visible again ──────
+  // Handles the common case where staff switch away and miss incoming messages.
+  useEffect(() => {
+    function onVisible() {
+      if (document.visibilityState === "visible") fetchSince();
+    }
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
   }, [fetchSince]);
 
   // ── Auto-scroll to bottom of thread ─────────────────────────────────────
