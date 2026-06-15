@@ -5,6 +5,7 @@
 // Works from smartphone (file picker) and desktop (drag-drop).
 import { useState, useEffect, useRef, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
+import SpaScheduleUploader from "./SpaScheduleUploader";
 // NOTE: xlsx (SheetJS) is large (~110KB gz). It is lazy-loaded on first parse
 // via dynamic import() so it never bloats the initial mobile bundle.
 
@@ -285,7 +286,7 @@ export default function DataUpload({ onImported, user, lockedMode }) {
       .then(({ data }) => { if (data?.department) setManagerDepartment(data.department); });
   }, [user?.id]);
 
-  const target = TARGETS[mode];
+  const target = mode !== "spa" ? TARGETS[mode] : null;
 
   const showToast = (type, msg) => { setToast({ type, msg }); setTimeout(() => setToast(null), 4000); };
 
@@ -314,17 +315,19 @@ export default function DataUpload({ onImported, user, lockedMode }) {
     parseFile(e.dataTransfer.files?.[0]);
   };
 
-  // Map raw rows → target columns
-  const colMap = mapHeaders(target.aliases, headers);
-  const mappedRows = rawRows
-    .map((r) => {
-      const o = {};
-      for (const col of Object.keys(target.aliases)) o[col] = colMap[col] ? r[colMap[col]] : null;
-      return o;
-    })
-    .filter((r) => target.required.every((req) => r[req] != null && String(r[req]).trim() !== ""));
+  // Map raw rows → target columns (skipped when mode === "spa")
+  const colMap = target ? mapHeaders(target.aliases, headers) : {};
+  const mappedRows = target
+    ? rawRows
+        .map((r) => {
+          const o = {};
+          for (const col of Object.keys(target.aliases)) o[col] = colMap[col] ? r[colMap[col]] : null;
+          return o;
+        })
+        .filter((r) => target.required.every((req) => r[req] != null && String(r[req]).trim() !== ""))
+    : [];
 
-  const missingRequired = target.required.filter((req) => !colMap[req]);
+  const missingRequired = target ? target.required.filter((req) => !colMap[req]) : [];
 
   const handleImport = async () => {
     if (!isSupabaseConfigured || !supabase) return showToast("err", "Supabase לא מחובר");
@@ -390,11 +393,24 @@ export default function DataUpload({ onImported, user, lockedMode }) {
               {mode === k ? "✓ " : ""}{t.label}
             </button>
           ))}
+          <button onClick={() => { setMode("spa"); setRawRows([]); setHeaders([]); setFileName(""); }}
+            style={{
+              flex: "1 1 160px", padding: "14px 18px", borderRadius: 12, cursor: "pointer",
+              fontFamily: "Heebo, sans-serif", fontSize: 15, fontWeight: 700,
+              border: `2px solid ${mode === "spa" ? "var(--gold)" : "var(--border)"}`,
+              background: mode === "spa" ? "rgba(201,169,110,0.1)" : "var(--card-bg)",
+              color: "var(--black)",
+            }}>
+            {mode === "spa" ? "✓ " : ""}💆 לוח ספא
+          </button>
         </div>
       )}
 
+      {/* Spa tab — fully self-contained component */}
+      {mode === "spa" && <SpaScheduleUploader />}
+
       {/* Drop zone */}
-      <div
+      {mode !== "spa" && <div
         onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
         onDragLeave={() => setDragging(false)}
         onDrop={onDrop}
@@ -413,10 +429,10 @@ export default function DataUpload({ onImported, user, lockedMode }) {
         <input ref={inputRef} type="file" accept=".csv,.xlsx,.xls"
           style={{ display: "none" }}
           onChange={(e) => parseFile(e.target.files?.[0])} />
-      </div>
+      </div>}
 
       {/* Preview */}
-      {rawRows.length > 0 && (
+      {mode !== "spa" && rawRows.length > 0 && (
         <div className="card" style={{ marginBottom: 20 }}>
           <div className="card-header">
             <div className="card-title">תצוגה מקדימה · {mappedRows.length} שורות תקינות מתוך {rawRows.length}</div>
