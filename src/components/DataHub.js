@@ -32,12 +32,37 @@ const ARRIVALS_COLS = [
   { id: "suite_name",     label: "🏨 סוויטה",           editable: true,  w: 175, gold: true, options: ["", ...SUITE_REGISTRY] },
 ];
 
+// Brand names as they appear in EZGO CSV → canonical names in SUITE_REGISTRY
+const BRAND_MAP = {
+  "אמטיסט":     "אמטיסט",
+  "אוניקס":     "אוניקס",
+  "אמרלד":      "אמרלד",
+  "רובי":       "רובי",
+  "אקוומרין":   "אקווה מרין",   // EZGO spelling → registry spelling
+  "אקווה מרין": "אקווה מרין",
+  "ג'ספר":      "ג׳ספר",        // straight apostrophe → Hebrew geresh
+  "ג׳ספר":      "ג׳ספר",
+};
+
+const EZGO_ARRIVALS_COLS = [
+  ...ARRIVALS_COLS,
+  { id: "notes", label: "📝 הערה", editable: false, w: 200 },
+];
+
 const PROFILES = {
   daily_arrivals: {
     label:      "📅 הגעות יומיות + ספא",
     hint:       "קובץ EZGO יומי — אורחים, שעות ספא, שיוך חדר",
     columns:    ARRIVALS_COLS,
     parser:     "arrivals",
+    syncable:   true,
+    exportable: false,
+  },
+  ezgo_arrivals: {
+    label:      "📋 דוח כניסות EZGO",
+    hint:       "ייצוא CSV מ-EZGO — שיוך סוויטה אוטומטי",
+    columns:    EZGO_ARRIVALS_COLS,
+    parser:     "ezgo_csv",
     syncable:   true,
     exportable: false,
   },
@@ -240,6 +265,62 @@ async function parseArrivalsFile(arrayBuf) {
     return parseCombinedRows(raw, headers);
   }
   return parseStandardRows(raw.slice(1));
+}
+
+// Parse EZGO arrivals CSV (iOrderId, sClientFullName, sTel1, iNights, sSubItemName, sRoomName, ...)
+async function parseEzgoCsv(arrayBuf, arrivalDate) {
+  const XLSX = await import("xlsx");
+  const wb   = XLSX.read(arrayBuf, { type: "array", raw: false });
+  const ws   = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
+
+  const date   = arrivalDate || new Date().toISOString().slice(0, 10);
+  const result = [];
+
+  for (const row of rows) {
+    const guestName   = String(row.sClientFullName ?? "").trim();
+    const rawPhone    = String(row.sTel1           ?? "").trim();
+    const subItemName = String(row.sSubItemName    ?? "").trim();
+    const roomName    = String(row.sRoomName       ?? "").trim();
+    const nights      = parseInt(String(row.iNights ?? "0"), 10);
+    const notes       = String(row.sRemark         ?? "").trim();
+
+    if (!guestName) continue;
+
+    const phone = sanitizePhone(rawPhone);
+    if (!phone) continue;
+
+    const isPremiumDay = /^premium/i.test(subItemName);
+    let suiteName = null;
+    let roomType  = "suite";
+
+    if (isPremiumDay || nights === 0) {
+      roomType  = "day_guest";
+    } else {
+      // Strip "סוויטת " prefix, apply brand normalisation
+      let brand = subItemName.replace(/^סוויטת\s+/u, "").trim();
+      brand = BRAND_MAP[brand] ?? brand;
+
+      // Extract leading digits from sRoomName (e.g. "21 סוויטה נגישה" → "21")
+      const numMatch = roomName.match(/^(\d+)/);
+      if (numMatch) suiteName = `${brand} ${numMatch[1]}`;
+    }
+
+    result.push({
+      _id:            crypto.randomUUID(),
+      name:           guestName,
+      phone:          phone,
+      arrival_date:   date,
+      room_count:     1,
+      room_type:      roomType,
+      treatment_time: null,
+      treatment_type: null,
+      suite_name:     suiteName ?? "",
+      notes:          notes || null,
+    });
+  }
+
+  return result;
 }
 
 async function parseShiftFile(arrayBuf) {
@@ -563,6 +644,7 @@ function BulkEditBar({ count, columns, onReplace, onClear }) {
 export default function DataHub() {
   const [profileKey,  setProfileKey]  = useState(null);
   const [step,        setStep]        = useState("select"); // select | upload | edit | done
+  const [arrivalDate, setArrivalDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [rows,        setRows]        = useState([]);
   const [dynCols,     setDynCols]     = useState([]); // shifts: derived from file headers
   const [selectedIds, setSelectedIds] = useState(new Set());
@@ -599,6 +681,13 @@ export default function DataHub() {
         }
         setRows(parsed);
 
+      } else if (profileKey === "ezgo_arrivals") {
+        const parsed = await parseEzgoCsv(buf, arrivalDate);
+        if (!parsed.length) {
+          showToast("לא נמצאו שורות — בדוק שהקובץ הוא ייצוא CSV מ-EZGO", "error"); return;
+        }
+        setRows(parsed);
+
       } else if (profileKey === "shift_schedule") {
         const parsed = await parseShiftFile(buf);
         if (!parsed.length) { showToast("הקובץ ריק", "error"); return; }
@@ -613,7 +702,7 @@ export default function DataHub() {
     } finally {
       setUploading(false);
     }
-  }, [profileKey]);
+  }, [profileKey, arrivalDate]);
 
   // ── Bulk replace ────────────────────────────────────────────────────────────
   const handleReplace = (colId, search, replacement) => {
@@ -655,7 +744,7 @@ export default function DataHub() {
   };
 
   // ── Stats for arrivals ──────────────────────────────────────────────────────
-  const stats = profileKey === "daily_arrivals" ? [
+  const stats = (profileKey === "daily_arrivals" || profileKey === "ezgo_arrivals") ? [
     { label: "סוויטות",    val: rows.filter(r => r.room_type === "suite").length,     c: "#7c3aed", bg: "#f3f0ff" },
     { label: "בילוי יומי", val: rows.filter(r => r.room_type === "day_guest").length, c: "#16a34a", bg: "#f0fdf4" },
     { label: "עם ספא",     val: rows.filter(r => r.treatment_time).length,            c: "#0e7490", bg: "#ecfeff" },
@@ -728,6 +817,31 @@ export default function DataHub() {
             </button>
             <span style={{ fontWeight: 800, fontSize: 18 }}>{profileDef?.label}</span>
           </div>
+
+          {/* Arrival date picker — EZGO CSV profile only */}
+          {profileKey === "ezgo_arrivals" && (
+            <div style={{
+              display: "flex", alignItems: "center", gap: 14, marginBottom: 18,
+              padding: "13px 18px", background: "var(--ivory)",
+              borderRadius: 12, border: "1px solid var(--border)",
+            }}>
+              <span style={{ fontSize: 18 }}>📅</span>
+              <label style={{ fontWeight: 700, fontSize: 13, whiteSpace: "nowrap" }}>תאריך הגעה:</label>
+              <input
+                type="date"
+                value={arrivalDate}
+                onChange={e => setArrivalDate(e.target.value)}
+                style={{
+                  padding: "6px 10px", borderRadius: 8,
+                  border: "1.5px solid var(--gold)", outline: "none",
+                  fontFamily: "Heebo,sans-serif", fontSize: 13,
+                }}
+              />
+              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                תאריך זה יחול על כל האורחים בקובץ
+              </span>
+            </div>
+          )}
 
           {uploading ? (
             <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "24px", background: "#f0fdf4", borderRadius: 14, border: "1px solid #86efac" }}>
