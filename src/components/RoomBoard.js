@@ -7,36 +7,18 @@
 
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { supabase } from "../supabaseClient";
+import { SUITE_REGISTRY, SUITE_SECTIONS } from "../data/suiteRegistry";
 
-// ── Suite definitions (26 rooms) ──────────────────────────────────────────
-const SUITES = [
-  { id: "101", type: "סוויטת ג'ספר",    desc: "חצר פרטית + ג'קוזי",    floor: 1 },
-  { id: "102", type: "סוויטת ג'ספר",    desc: "חצר פרטית + ג'קוזי",    floor: 1 },
-  { id: "103", type: "סוויטת אמרלד",    desc: "חצר + ג'קוזי + סאונה",  floor: 1 },
-  { id: "104", type: "סוויטת אמרלד",    desc: "חצר + ג'קוזי + סאונה",  floor: 1 },
-  { id: "105", type: "סוויטת אקוומרין", desc: "חצר + בריכה פרטית",     floor: 1 },
-  { id: "106", type: "סוויטת אקוומרין", desc: "חצר + בריכה פרטית",     floor: 1 },
-  { id: "107", type: "סוויטת אקוומרין", desc: "חצר + בריכה פרטית",     floor: 1 },
-  { id: "108", type: "סוויטת ג'ספר",    desc: "חצר פרטית + ג'קוזי",    floor: 1 },
-  { id: "201", type: "סוויטת אמטיסט",   desc: "מרפסת + Hot Tub",        floor: 2 },
-  { id: "202", type: "סוויטת אמטיסט",   desc: "מרפסת + Hot Tub",        floor: 2 },
-  { id: "203", type: "סוויטת אמטיסט",   desc: "מרפסת + Hot Tub",        floor: 2 },
-  { id: "204", type: "סוויטת אמטיסט",   desc: "מרפסת + Hot Tub",        floor: 2 },
-  { id: "205", type: "סוויטת אוניקס",   desc: "גג פנורמי + ג'קוזי",    floor: 2 },
-  { id: "206", type: "סוויטת אוניקס",   desc: "גג פנורמי + ג'קוזי",    floor: 2 },
-  { id: "207", type: "סוויטת אוניקס",   desc: "גג פנורמי + ג'קוזי",    floor: 2 },
-  { id: "208", type: "סוויטת אוניקס",   desc: "גג פנורמי + ג'קוזי",    floor: 2 },
-  { id: "301", type: "סוויטת אמטיסט",   desc: "מרפסת + Hot Tub",        floor: 3 },
-  { id: "302", type: "סוויטת אוניקס",   desc: "גג פנורמי + ג'קוזי",    floor: 3 },
-  { id: "303", type: "סוויטת רובי",     desc: "חצר מלכותית + בריכה",   floor: 3 },
-  { id: "304", type: "סוויטת רובי",     desc: "חצר מלכותית + בריכה",   floor: 3 },
-  { id: "P1",  type: "Premium Day",     desc: "בקתה מפנקת יומית",       floor: 0 },
-  { id: "P2",  type: "Premium Day",     desc: "בקתה מפנקת יומית",       floor: 0 },
-  { id: "P3",  type: "Premium Day",     desc: "בקתה מפנקת יומית",       floor: 0 },
-  { id: "P4",  type: "Premium Day",     desc: "בקתה מפנקת יומית",       floor: 0 },
-  { id: "P5",  type: "Premium Day",     desc: "בקתה מפנקת יומית",       floor: 0 },
-  { id: "P6",  type: "Premium Day",     desc: "בקתה מפנקת יומית",       floor: 0 },
-];
+// ── Suite definitions — driven by the physical registry (26 suites) ───────
+const SUITES = SUITE_REGISTRY.map(name => {
+  const brand   = name.replace(/\s+\d+$/, "").trim();          // "ג׳ספר 1" → "ג׳ספר"
+  const secEntry = SUITE_SECTIONS.find(sec => sec.prefix.some(p => name.startsWith(p)));
+  return {
+    id:      name,                          // used as room_status.room_id in DB
+    type:    `סוויטת ${brand}`,
+    section: secEntry?.label ?? "אחר",
+  };
+});
 
 const STATUS_META = {
   תפוס:           { border: "#E24B4A", bg: "#FCEBEB", text: "#A32D2D" },
@@ -73,12 +55,6 @@ const TR = {
     occupiedOf:      (n, total) => `${n}/${total} תפוסים`,
     availLabel:      (n) => `${n} פנויים`,
     statusLabels:    { תפוס: "תפוס", פנוי: "פנוי", לניקיון: "לניקיון", בניקיון: "בניקיון", "ממתין לאישור": "ממתין לאישור", תחזוקה: "תחזוקה" },
-    floorLabels: {
-      1: "קומה 1 — סוויטות גן",
-      2: "קומה 2 — מרפסת ופנורמה",
-      3: "קומה 3 — פנטהאוז",
-      0: "Premium Day — בקתות יומיות",
-    },
     actions: {
       toClean:    "→ לניקיון",
       startClean: "▶ התחל ניקיון",
@@ -107,12 +83,6 @@ const TR = {
     occupiedOf:      (n, total) => `${n}/${total} occupied`,
     availLabel:      (n) => `${n} available`,
     statusLabels:    { תפוס: "Occupied", פנוי: "Available", לניקיון: "For Cleaning", בניקיון: "Cleaning", "ממתין לאישור": "Pending Approval", תחזוקה: "Maintenance" },
-    floorLabels: {
-      1: "Floor 1 — Garden Suites",
-      2: "Floor 2 — Balcony & Panoramic",
-      3: "Floor 3 — Penthouse",
-      0: "Premium Day — Daily Bungalows",
-    },
     actions: {
       toClean:    "→ For Cleaning",
       startClean: "▶ Start Cleaning",
@@ -171,8 +141,8 @@ export default function RoomBoard({ isKioskMode = false, onLogout }) {
         .select("room_id, status, cleaning_started_at, last_clean_duration_sec"),
       supabase
         .from("guests")
-        .select("id, name, room, arrival_date, departure_date, status, phone")
-        .in("status", ["checked_in", "room_ready"]),
+        .select("id, name, room, suite_name, arrival_date, departure_date, status, phone")
+        .in("status", ["checked_in", "room_ready", "pending"]),
     ]);
     if (statuses) {
       const map = {};
@@ -313,7 +283,11 @@ export default function RoomBoard({ isKioskMode = false, onLogout }) {
       status:            statusMap[s.id]?.status            ?? "פנוי",
       cleaningStartedAt: statusMap[s.id]?.cleaningStartedAt ?? null,
       lastDuration:      statusMap[s.id]?.lastDuration      ?? null,
-      guest:             guests.find(g => String(g.room ?? "").trim() === String(s.id)) ?? null,
+      // Match by suite_name (new flow) or legacy room column
+      guest: guests.find(g =>
+        String(g.suite_name ?? "").trim() === s.id ||
+        String(g.room       ?? "").trim() === s.id
+      ) ?? null,
     })),
     [statusMap, guests]
   );
@@ -491,23 +465,28 @@ export default function RoomBoard({ isKioskMode = false, onLogout }) {
       </div>
 
       {/* Floors & cards */}
-      {[1, 2, 3, 0].map(floorNum => {
-        const floorRooms = filtered.filter(r => r.floor === floorNum);
-        if (!floorRooms.length) return null;
+      {SUITE_SECTIONS.map(sec => {
+        const secRooms = filtered.filter(r => r.section === sec.label);
+        if (!secRooms.length) return null;
         return (
-          <div key={floorNum}>
+          <div key={sec.label}>
             <div style={{
               fontSize: 13, fontWeight: 600, color: "var(--text-muted)",
               margin: "20px 0 10px", borderBottom: "1px solid var(--border)", paddingBottom: 6,
+              display: "flex", alignItems: "center", gap: 8,
             }}>
-              {t.floorLabels[floorNum]}
+              <span>{sec.icon}</span>
+              <span>{sec.label}</span>
+              <span style={{ fontSize: 11, opacity: 0.55, marginRight: "auto" }}>
+                {secRooms.length} סוויטות
+              </span>
             </div>
             <div style={{
               display: "grid",
               gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
               gap: 14,
             }}>
-              {floorRooms.map(room => (
+              {secRooms.map(room => (
                 <RoomCard
                   key={room.id}
                   room={room}

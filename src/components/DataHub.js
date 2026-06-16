@@ -14,6 +14,7 @@
 
 import { useState, useRef, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
+import { SUITE_REGISTRY } from "../data/suiteRegistry";
 
 // ══════════════════════════════════════════════════════════════════════════════
 // §1  PROFILE DEFINITIONS
@@ -28,7 +29,7 @@ const ARRIVALS_COLS = [
     options: ["suite", "day_guest", "group"] },
   { id: "treatment_time", label: "שעת ספא",           editable: true,  w: 82  },
   { id: "treatment_type", label: "סוג טיפול",         editable: true,  w: 210 },
-  { id: "suite_name",     label: "🏨 שם חדר / סוויטה", editable: true,  w: 155, gold: true },
+  { id: "suite_name",     label: "🏨 סוויטה",           editable: true,  w: 175, gold: true, options: ["", ...SUITE_REGISTRY] },
 ];
 
 const PROFILES = {
@@ -295,26 +296,49 @@ async function syncArrivals(rows) {
     if (error) throw new Error("bookings: " + error.message);
   }
 
-  // Individual guests (room_count ≤ 2) → guests table
-  const guests = rows
-    .filter(r => r.phone && (r.room_count ?? 1) <= 2)
-    .map(r => ({
-      phone:        r.phone,
-      arrival_date: r.arrival_date ?? today,
-      name:         r.name ?? null,
-      room_type:    r.room_type ?? "day_guest",
-      suite_name:   r.suite_name || null,
-      status:       "pending",
-    }));
+  // All rows → guests table.
+  // Solo booking (room_count = 1): one row with guest_index = 1.
+  // Group booking (room_count = N > 1): N rows with guest_index 1..N.
+  // Conflict key: (phone, arrival_date, guest_index) — requires migration 042.
+  const guestRows = [];
+  for (const r of rows) {
+    if (!r.phone) continue;
+    const n = Math.max(1, r.room_count ?? 1);
+    if (n === 1) {
+      guestRows.push({
+        phone:        r.phone,
+        arrival_date: r.arrival_date ?? today,
+        name:         r.name ?? null,
+        room_type:    r.room_type ?? "day_guest",
+        suite_name:   r.suite_name || null,
+        guest_index:  1,
+        status:       "pending",
+      });
+    } else {
+      // Group: suite_name is null per sub-guest — assign individually after sync
+      const baseName = r.name ?? "אורח";
+      for (let i = 1; i <= n; i++) {
+        guestRows.push({
+          phone:        r.phone,
+          arrival_date: r.arrival_date ?? today,
+          name:         `${baseName} — אורח ${i}`,
+          room_type:    "suite",
+          suite_name:   null,
+          guest_index:  i,
+          status:       "pending",
+        });
+      }
+    }
+  }
 
-  if (guests.length) {
+  if (guestRows.length) {
     const { error } = await supabase
       .from("guests")
-      .upsert(guests, { onConflict: "phone,arrival_date", ignoreDuplicates: false });
+      .upsert(guestRows, { onConflict: "phone,arrival_date,guest_index", ignoreDuplicates: false });
     if (error) throw new Error("guests: " + error.message);
   }
 
-  return { bookings: bookings.length, guests: guests.length };
+  return { bookings: bookings.length, guests: guestRows.length };
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -438,7 +462,7 @@ function EditableGrid({ columns, rows, onRowsChange, selectedIds, onSelectionCha
                               fontFamily: "Heebo,sans-serif", fontSize: 13, outline: "none",
                             }}
                           >
-                            {col.options.map(o => <option key={o} value={o}>{o}</option>)}
+                            {col.options.map(o => <option key={o} value={o}>{o || "— בחר סוויטה —"}</option>)}
                           </select>
                         ) : (
                           <input
@@ -457,7 +481,7 @@ function EditableGrid({ columns, rows, onRowsChange, selectedIds, onSelectionCha
                         )
                       ) : col.gold && !val ? (
                         <span style={{ color: "var(--gold)", fontStyle: "italic", fontSize: 12, opacity: 0.7 }}>
-                          הוסף שם חדר...
+                          לחץ לבחירת סוויטה...
                         </span>
                       ) : (
                         <span style={{
