@@ -1021,10 +1021,10 @@ function Sidebar({ user, active, setActive, openCallsCount, onLogout, isAdmin, i
   const allNavItems = [
     { id: "dashboard",  icon: "📊", label: "דאשבורד" },
     { id: "shifts",     icon: "🕐", label: "משמרות" },
+    { id: "employees",  icon: "👥", label: "עובדים",                                 managerOnly: true },
     { id: "calls",      icon: "🔔", label: "קריאות שירות", badge: openCallsCount, managerOnly: true },
     { id: "checklist",  icon: "✅", label: "צ'קליסטים",                              managerOnly: true },
     { id: "tasks",      icon: "📋", label: "לוח משימות",                             managerOnly: false },
-    { id: "employees",  icon: "👥", label: "עובדים",                                 managerOnly: true },
     { id: "vip_guests", icon: "🏨", label: "ניהול אורחים",                            managerOnly: true },
     { id: "broadcast",  icon: "📣", label: "שליחת הודעות",                           managerOnly: true },
     { id: "wa_inbox",   icon: "💬", label: "DREAM BOT — שיחות",                     managerOnly: true },
