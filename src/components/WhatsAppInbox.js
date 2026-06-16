@@ -6,7 +6,7 @@
 import React, { useEffect, useState, useRef, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 
-const POLL_MS = 200; // fallback polling interval (realtime is primary) — faster sync
+const POLL_MS = 5000; // fallback polling interval (realtime is primary) — 5s safe minimum
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 function formatTime(iso) {
@@ -1250,13 +1250,24 @@ export default function WhatsAppInbox() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Initial load + incremental polling fallback ───────────────────────────
-  // fetchAll fires once; after that only fetchSince runs every POLL_MS.
+  // fetchAll fires once; after that only fetchSince runs every POLL_MS (fallback).
+  // Polling is ONLY a fallback when Realtime is unavailable — Realtime is primary.
   // This keeps the payload tiny (≤100 rows) on every tick.
   useEffect(() => {
+    console.log("[WA-inbox] Initial load: calling fetchAll()...");
     fetchAll().then(() => {
-      pollRef.current = setInterval(fetchSince, POLL_MS);
+      console.log(`[WA-inbox] ✓ fetchAll complete — starting fallback polling every ${POLL_MS}ms`);
+      pollRef.current = setInterval(() => {
+        console.log("[WA-inbox] 📋 Polling tick (fallback)");
+        fetchSince();
+      }, POLL_MS);
     });
-    return () => clearInterval(pollRef.current);
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        console.log("[WA-inbox] Cleared fallback polling on unmount");
+      }
+    };
   }, [fetchAll, fetchSince]);
 
   // ── Fetch bot active status from bot_config ───────────────────────────────
@@ -1293,35 +1304,55 @@ export default function WhatsAppInbox() {
     let intentionalCleanup = false;
 
     function buildChannel() {
+      console.log("[WA-inbox] Building Realtime channel for whatsapp_conversations...");
       const ch = supabase
-        .channel("wa-inbox-rt-v2")
+        .channel("wa-inbox-rt-v2", { config: { broadcast: { self: true } } })
         .on(
           "postgres_changes",
-          { event: "INSERT", schema: "public", table: "whatsapp_conversations" },
+          {
+            event: "INSERT",
+            schema: "public",
+            table: "whatsapp_conversations",
+            filter: undefined,
+          },
           (payload) => {
-            console.log("[WA-inbox] realtime INSERT:", payload.new?.id);
+            console.log("[WA-inbox] ✅ Realtime INSERT received:", payload.new?.id, payload.new?.phone);
             fetchSince();
           }
         )
         .on(
           "postgres_changes",
-          { event: "UPDATE", schema: "public", table: "whatsapp_conversations" },
+          {
+            event: "UPDATE",
+            schema: "public",
+            table: "whatsapp_conversations",
+            filter: undefined,
+          },
           (payload) => {
-            console.log("[WA-inbox] realtime UPDATE:", payload.new?.id);
+            console.log("[WA-inbox] ✅ Realtime UPDATE received:", payload.new?.id, payload.new?.phone);
             fetchSince();
           }
         )
         .subscribe((status, err) => {
-          console.log("[WA-inbox] realtime status:", status, err ?? "");
+          const timestamp = new Date().toISOString().slice(11, 19);
+          console.log(`[${timestamp}] [WA-inbox] Realtime channel status: ${status}${err ? " — " + err.message : ""}`);
           setRealtimeOk(status === "SUBSCRIBED");
 
-          // If channel drops (CHANNEL_ERROR / TIMED_OUT), attempt reconnect after 2s
-          if ((status === "CHANNEL_ERROR" || status === "TIMED_OUT") && !intentionalCleanup) {
-            console.warn("[WA-inbox] realtime lost:", err?.message ?? status, "— reconnecting in 2s");
-            supabase.removeChannel(ch);
-            reconnectTimer = setTimeout(() => {
-              buildChannel();
-            }, 2000);
+          if (status === "SUBSCRIBED") {
+            console.log("[WA-inbox] ✅ Realtime SUBSCRIBED — now listening for live updates");
+          } else if (status === "CHANNEL_ERROR") {
+            console.error("[WA-inbox] ❌ CHANNEL_ERROR:", err?.message ?? "unknown");
+            if (!intentionalCleanup) {
+              console.warn("[WA-inbox] Attempting reconnect in 2s...");
+              supabase.removeChannel(ch);
+              reconnectTimer = setTimeout(() => buildChannel(), 2000);
+            }
+          } else if (status === "TIMED_OUT") {
+            console.warn("[WA-inbox] ⚠️ TIMED_OUT — will reconnect...");
+            if (!intentionalCleanup) {
+              supabase.removeChannel(ch);
+              reconnectTimer = setTimeout(() => buildChannel(), 2000);
+            }
           }
         });
       return ch;
@@ -1345,12 +1376,16 @@ export default function WhatsAppInbox() {
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [fetchSince]);
 
-  // ── Aggressive fallback sync when Realtime is down ───────────────────────
-  // If realtime is not connected for >3s, force a faster poll
+  // ── Alert + one-shot sync when Realtime is down for 3s ─────────────────────
+  // If realtime subscription is not SUBSCRIBED for >3s, trigger immediate sync
+  // but DO NOT start an aggressive polling loop — rely on the 5s fallback polling.
   useEffect(() => {
-    if (realtimeOk) return;
+    if (realtimeOk) {
+      console.log("[WA-inbox] ✅ Realtime is healthy — no need for emergency sync");
+      return;
+    }
     const timer = setTimeout(() => {
-      console.warn("[WA-inbox] Realtime not connected for 3s — forcing sync...");
+      console.warn("[WA-inbox] ⚠️ Realtime not connected for 3s — triggering emergency sync...");
       fetchSince();
     }, 3000);
     return () => clearTimeout(timer);
