@@ -7,6 +7,7 @@ import UserManagement from "./components/UserManagement";
 import DataUpload from "./components/DataUpload";
 import GuestsPage from "./components/GuestsPage";
 import ShiftGenerator from "./components/ShiftGenerator";
+import ShiftScheduleTab from "./components/ShiftScheduleTab";
 import EmployeesPage from "./components/EmployeesPage";
 import { isAdminUser, isSuperAdmin, loadDepartments } from "./utils/admin";
 import { supabase, isSupabaseConfigured, loadAgentProfile } from "./supabaseClient";
@@ -2046,6 +2047,9 @@ async function loadUserWithProfile(session, setUser) {
 function usePersistentState(table, initialMock) {
   const [data, setDataRaw] = useState(initialMock);
   const [loading, setLoading] = useState(Boolean(isSupabaseConfigured));
+  const [tick, setTick] = useState(0);
+
+  const refetch = useCallback(() => setTick(t => t + 1), []);
 
   useEffect(() => {
     let active = true;
@@ -2070,7 +2074,7 @@ function usePersistentState(table, initialMock) {
     })();
     return () => { active = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [table]);
+  }, [table, tick]);
 
   const setData = useCallback((updater) => {
     setDataRaw((prev) => {
@@ -2100,7 +2104,7 @@ function usePersistentState(table, initialMock) {
     });
   }, [table]);
 
-  return [data, setData, loading];
+  return [data, setData, loading, refetch];
 }
 
 // ============================================================
@@ -2110,7 +2114,7 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [isLoading, setIsLoading] = useState(true); // true until auth resolves
   const [activePage, setActivePage] = useState("dashboard");
-  const [employees, setEmployees, empLoading]   = usePersistentState("employees", initialEmployees);
+  const [employees, setEmployees, empLoading, refetchEmployees] = usePersistentState("employees", initialEmployees);
   const [shifts, setShifts, shiftLoading]       = usePersistentState("shifts", initialShifts);
   const [calls, setCalls, callsLoading]         = usePersistentState("service_calls", initialCalls);
   const [checklist, setChecklist, checkLoading] = usePersistentState("checklist_items", initialChecklists);
@@ -2354,10 +2358,10 @@ export default function App() {
         );
       case "shifts":
         return (
-          <ShiftsPage
-            shifts={shifts}
-            setShifts={setShifts}
+          <ShiftScheduleTab
+            user={user}
             employees={employees}
+            onNavigate={setActivePage}
           />
         );
       case "calls":
@@ -2381,7 +2385,12 @@ export default function App() {
       case "guests":
         return <GuestsPage />;
       case "scheduler":
-        return <ShiftGenerator user={user} onApproved={() => setActivePage("shifts")} />;
+        return (
+          <ShiftGenerator
+            user={user}
+            onApproved={() => { refetchEmployees(); setActivePage("shifts"); }}
+          />
+        );
       case "upload":
         return (
           <DataUpload
