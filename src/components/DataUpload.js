@@ -83,6 +83,14 @@ function sanitizePhone(raw) {
   return cleaned.length >= 9 ? cleaned : null;
 }
 
+// Phone normaliser for the EZGO↔Spa join — both sides → 05XXXXXXXXX Israeli local format.
+function normalizePhone(tel) {
+  let t = (tel || '').trim().replace(/[\s\-]/g, '');
+  if (t.startsWith('+972')) t = '0' + t.slice(4);
+  else if (t.startsWith('972'))  t = '0' + t.slice(3);
+  return t;
+}
+
 // Phone normalizer for bookings table — stores 972XXXXXXXXX (no leading +)
 function normalizePhoneBookings(raw) {
   if (!raw) return null;
@@ -465,10 +473,12 @@ export default function DataUpload({ onImported, user, lockedMode }) {
 // ── Spa-CSV helpers (used only by ArrivalsImporter) ───────────────────────────
 
 const SPA_CSV_ALIASES_AR = {
-  guest_name:     ["שם אורח", "שם מלא", "שם", "לקוח", "guest name", "name"],
-  treatment_time: ["שעה", "שעת טיפול", "שעת התחלה", "time", "hour"],
+  phone:          ["sTel", "tel", "טלפון", "phone", "טל"],
+  line_status:    ["iLineStatus", "lineStatus", "status", "סטטוס"],
+  treatment_time: ["tmStart", "שעה", "שעת טיפול", "שעת התחלה", "time", "hour"],
   treatment_type: ["טיפול", "שם טיפול", "סוג טיפול", "treatment", "treatment type"],
   category:       ["חבילה", "קטגוריה", "סוג", "package", "category"],
+  guest_name:     ["שם אורח", "שם מלא", "שם", "לקוח", "guest name", "name"],
 };
 
 // Compact name key for fuzzy matching across EZGO and Spa CSV name formats.
@@ -503,11 +513,20 @@ function spaCatFromRaw(raw) {
 }
 
 // Merge spaRows (from the secondary Spa Activities CSV) into EZGO parsed array.
-// Matching is done by normalized guest name. Spa CSV data wins over EZGO col-C extraction.
+// Primary join: normalized phone (05XXXXXXXXX). Fallback: normalized guest name.
 function mergeSpaIntoEzgo(parsed, spaRows) {
   if (!spaRows.length) return parsed;
 
-  // Build primary lookup: exact normalized name → earliest spa entry
+  // ── Phone-based index (primary) — pick earliest time per phone ───────────
+  const byPhone = {};
+  for (const s of spaRows) {
+    const phone = s.phone ? normalizePhone(s.phone) : null;
+    if (!phone || phone === '0') continue;
+    if (!byPhone[phone] || (s.treatment_time && (!byPhone[phone].treatment_time || s.treatment_time < byPhone[phone].treatment_time)))
+      byPhone[phone] = s;
+  }
+
+  // ── Name-based index (fallback for spa rows without phone) ───────────────
   const byExact = {};
   for (const s of spaRows) {
     const key = normNameKey(s.guest_name);
@@ -517,17 +536,23 @@ function mergeSpaIntoEzgo(parsed, spaRows) {
   }
 
   return parsed.map((g) => {
-    const gKey = normNameKey(g.guest_name);
-    // Exact match first; then partial (one name contains the other — handles flipped order)
-    let match = byExact[gKey];
-    if (!match) {
-      match = spaRows.find((s) => {
-        const sKey = normNameKey(s.guest_name);
-        return sKey && gKey && (gKey.includes(sKey) || sKey.includes(gKey));
-      });
-    }
-    if (!match) return g;
+    // 1. Phone match — EZGO .phone is "972XXXXXXXXX"; normalizePhone converts to "05XXXXXXXXX"
+    const gPhone = g.phone ? normalizePhone(g.phone) : null;
+    let match = gPhone ? byPhone[gPhone] : null;
 
+    // 2. Name fallback
+    if (!match) {
+      const gKey = normNameKey(g.guest_name);
+      match = byExact[gKey];
+      if (!match) {
+        match = spaRows.find((s) => {
+          const sKey = normNameKey(s.guest_name);
+          return sKey && gKey && (gKey.includes(sKey) || sKey.includes(gKey));
+        });
+      }
+    }
+
+    if (!match) return g;
     const spa_time     = match.treatment_time ?? g.spa_time;
     const rawCat       = spaCatFromRaw(match.category);
     const spa_category = rawCat ?? g.spa_category;
@@ -607,15 +632,22 @@ function ArrivalsImporter() {
 
       const rows = rawRows
         .map((r) => ({
+          phone:          colMap.phone          ? String(r[colMap.phone]          ?? "").trim() || null : null,
+          line_status:    colMap.line_status    ? String(r[colMap.line_status]    ?? "").trim()         : null,
           guest_name:     colMap.guest_name     ? String(r[colMap.guest_name]     ?? "").trim() || null : null,
           treatment_time: colMap.treatment_time ? normSpaTime(r[colMap.treatment_time])                 : null,
           treatment_type: colMap.treatment_type ? String(r[colMap.treatment_type] ?? "").trim() || null : null,
           category:       colMap.category       ? String(r[colMap.category]       ?? "").trim() || null : null,
         }))
-        .filter((r) => r.guest_name && r.treatment_time);
+        .filter((r) => {
+          if (!r.treatment_time) return false;
+          // iLineStatus "0" = cancelled — skip; null means column absent (old CSV format)
+          if (r.line_status !== null && r.line_status !== "1") return false;
+          return r.phone || r.guest_name;
+        });
 
       if (!rows.length) {
-        showToast("err", "לא נמצאו שורות תקינות בקובץ הספא — בדוק שעמודות שם ושעה קיימות");
+        showToast("err", "לא נמצאו שורות תקינות בקובץ הספא — בדוק שעמודות טלפון/שם ושעה קיימות");
         return;
       }
 
@@ -625,7 +657,7 @@ function ArrivalsImporter() {
         const merged = mergeSpaIntoEzgo(parsed, rows);
         setParsed(merged);
       }
-      showToast("ok", `💆 ${rows.length} טיפולי ספא נטענו — יתמזגו עם ההזמנות לפי שם אורח`);
+      showToast("ok", `💆 ${rows.length} טיפולי ספא נטענו — יתמזגו עם ההזמנות לפי טלפון`);
     } catch (err) {
       showToast("err", "שגיאה בקריאת קובץ הספא: " + err.message);
     }
