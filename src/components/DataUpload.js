@@ -61,20 +61,6 @@ function parseEzgoDate(raw) {
 }
 
 /**
- * Normalises room-type strings to a standard value.
- * Recognises Hebrew and English suite / deluxe / standard variants.
- * Falls back to the raw value (lowercased) so non-standard types are preserved.
- */
-function normalizeRoomType(raw) {
-  const s = String(raw ?? "");
-  if (/suite|סוויט|junior suite|penthouse|פנטהאוז|presidential|vip/i.test(s)) return "suite";
-  if (/deluxe|דלוקס/i.test(s)) return "deluxe";
-  if (/standard|סטנדרט|classic|קלאסי|basic/i.test(s)) return "standard";
-  const n = s.trim().toLowerCase();
-  return n || "standard";
-}
-
-/**
  * Strips formatting from phone numbers and normalises to E.164.
  * Israeli mobile numbers (from EZGO exports) come in two forms:
  *   • 9 digits starting with 5  → 506489150  → +972506489150
@@ -223,107 +209,6 @@ function parseArrivalsExcel(rows) {
 }
 
 const TARGETS = {
-  bookings: {
-    label: "📋 הגעות EZGO (חדש)",
-    table: "bookings",
-    required: ["phone"],
-    aliases: {
-      guest_name:   ["שם מלא", "שם אורח", "שם", "שם לקוח", "לקוח", "name", "guest name", "full name"],
-      phone:        ["טלפון", "נייד", "טלפון נייד", "מספר טלפון", "phone", "mobile", "cell"],
-      arrival_date: ["ת. התחלה", "ת.התחלה", "תאריך התחלה", "תאריך הגעה", "הגעה", "arrival date", "check-in", "checkin"],
-      nights:       ["לילות", "nights"],
-      amount:       ["מחיר", 'סה"כ', "סה\"כ לתשלום", "יתרה", "סכום", "price", "amount", "total"],
-    },
-    transform: (r) => {
-      const phone = normalizePhoneBookings(r.phone);
-      const arrival_date = parseEzgoDate(r.arrival_date);
-      const nights = r.nights ? parseInt(r.nights) : null;
-      return {
-        guest_name:   String(r.guest_name ?? "").trim() || null,
-        phone,
-        arrival_date,
-        checkout_date: addNights(arrival_date, nights),
-        nights,
-        amount: r.amount ? parseFloat(String(r.amount).replace(/[^\d.]/g, "")) : null,
-      };
-    },
-    insert: (rows) =>
-      supabase.from("bookings").upsert(rows, { onConflict: "phone,arrival_date", ignoreDuplicates: false }),
-  },
-
-  ezgo: {
-    label: "🏨 הגעות סוויטות (ישן)",
-    table: "guests",
-    required: ["name"],
-    // ── Column aliases ──────────────────────────────────────────────────────
-    // Each array is tried left-to-right against the normalised header string.
-    // Hebrew aliases are listed first (most likely in EZGO exports).
-    // English aliases follow for systems configured in English.
-    aliases: {
-      name: [
-        // Hebrew
-        "שם אורח", "שם מלא", "שם", "אורח", "שם האורח", "שם לקוח",
-        // English
-        "full name", "guest name", "guest", "name", "client name",
-        "customer name", "customer",
-      ],
-      phone: [
-        // Hebrew
-        "טלפון", "נייד", "טלפון נייד", "מספר טלפון", "מס׳ טלפון",
-        // English
-        "phone", "mobile", "cell", "phone number", "mobile number",
-        "telephone", "tel",
-      ],
-      room_type: [
-        // Hebrew
-        "סוג חדר", "סוג", "קטגוריה", "חבילה", "חדר", "סוויטה", "חדר סוויטה",
-        // English
-        "room type", "type", "room", "suite", "category", "package",
-        "accommodation type", "room category",
-      ],
-      room: [
-        // Hebrew
-        "מספר חדר", "חדר מס׳", "#חדר", "מס חדר", "מס׳ חדר", "מספר",
-        // English
-        "room number", "room no", "room #", "room num", "unit", "unit number",
-      ],
-      arrival_date: [
-        // Hebrew — EZGO exports "ת. התחלה" (start date = arrival date)
-        "תאריך הגעה", "הגעה", "תאריך", "תאריך צ׳ק אין", "צ׳ק אין", "תאריך כניסה",
-        "ת. התחלה", "ת׳ התחלה", "התחלה", "ת.התחלה",
-        // English
-        "arrival date", "arrival", "check in", "check-in", "checkin",
-        "check in date", "arrival_date", "date", "in date",
-      ],
-      email: [
-        // Hebrew
-        "דואר אלקטרוני", "אימייל", "מייל", "ד״א", "דוא״ל",
-        // English
-        "email", "e-mail", "mail", "email address",
-      ],
-      notes: [
-        // Hebrew
-        "הערות", "הערה", "בקשות מיוחדות", "הנחיות",
-        // English
-        "notes", "note", "special requests", "requests", "remarks", "comments",
-      ],
-    },
-    transform: (r) => ({
-      name:         String(r.name ?? "").trim(),
-      phone:        sanitizePhone(r.phone),
-      email:        r.email ? String(r.email).trim().toLowerCase() : null,
-      room:         r.room  ? String(r.room).trim()  : null,
-      // No room number → day-use guest (בילוי יומי), not an overnight suite booking
-      room_type:    r.room ? normalizeRoomType(r.room_type) : "day_guest",
-      arrival_date: parseEzgoDate(r.arrival_date),
-      notes:        r.notes ? String(r.notes).trim() : null,
-      status:       "expected",
-      // msg_* flags default FALSE via DB column defaults.
-      // manager_id is auto-stamped by the set_guests_manager_id BEFORE INSERT trigger.
-    }),
-    insert: (rows) => supabase.from("guests").insert(rows),
-  },
-
   shifts: {
     label: "🕐 משמרות צוות",
     table: "shifts",
@@ -371,7 +256,7 @@ const DEPT_LABEL = {
 };
 
 export default function DataUpload({ onImported, user, lockedMode }) {
-  const [mode, setMode]               = useState(lockedMode ?? "ezgo");
+  const [mode, setMode]               = useState(lockedMode ?? "arrivals");
   const [rawRows, setRawRows]         = useState([]);
   const [headers, setHeaders]         = useState([]);
   const [fileName, setFileName]       = useState("");
@@ -392,7 +277,7 @@ export default function DataUpload({ onImported, user, lockedMode }) {
       .then(({ data }) => { if (data?.department) setManagerDepartment(data.department); });
   }, [user?.id]);
 
-  const target = mode !== "spa" ? TARGETS[mode] : null;
+  const target = (mode !== "spa" && mode !== "arrivals") ? TARGETS[mode] : null;
 
   const showToast = (type, msg) => { setToast({ type, msg }); setTimeout(() => setToast(null), 4000); };
 
@@ -487,38 +372,23 @@ export default function DataUpload({ onImported, user, lockedMode }) {
       {/* Mode selector — hidden when a lockedMode is provided */}
       {!lockedMode && (
         <div style={{ display: "flex", gap: 10, marginBottom: 20, flexWrap: "wrap" }}>
-          {Object.entries(TARGETS).map(([k, t]) => (
-            <button key={k} onClick={() => { setMode(k); setRawRows([]); setHeaders([]); setFileName(""); }}
+          {[
+            { key: "arrivals", label: "📅 ייבוא יומי" },
+            { key: "spa",      label: "💆 לוח ספא"    },
+            { key: "shifts",   label: "🕐 משמרות צוות" },
+          ].map(({ key, label }) => (
+            <button key={key}
+              onClick={() => { setMode(key); setRawRows([]); setHeaders([]); setFileName(""); }}
               style={{
                 flex: "1 1 160px", padding: "14px 18px", borderRadius: 12, cursor: "pointer",
                 fontFamily: "Heebo, sans-serif", fontSize: 15, fontWeight: 700,
-                border: `2px solid ${mode === k ? "var(--gold)" : "var(--border)"}`,
-                background: mode === k ? "rgba(201,169,110,0.1)" : "var(--card-bg)",
+                border: `2px solid ${mode === key ? "var(--gold)" : "var(--border)"}`,
+                background: mode === key ? "rgba(201,169,110,0.1)" : "var(--card-bg)",
                 color: "var(--black)",
               }}>
-              {mode === k ? "✓ " : ""}{t.label}
+              {mode === key ? "✓ " : ""}{label}
             </button>
           ))}
-          <button onClick={() => { setMode("spa"); setRawRows([]); setHeaders([]); setFileName(""); }}
-            style={{
-              flex: "1 1 160px", padding: "14px 18px", borderRadius: 12, cursor: "pointer",
-              fontFamily: "Heebo, sans-serif", fontSize: 15, fontWeight: 700,
-              border: `2px solid ${mode === "spa" ? "var(--gold)" : "var(--border)"}`,
-              background: mode === "spa" ? "rgba(201,169,110,0.1)" : "var(--card-bg)",
-              color: "var(--black)",
-            }}>
-            {mode === "spa" ? "✓ " : ""}💆 לוח ספא
-          </button>
-          <button onClick={() => { setMode("arrivals"); setRawRows([]); setHeaders([]); setFileName(""); }}
-            style={{
-              flex: "1 1 160px", padding: "14px 18px", borderRadius: 12, cursor: "pointer",
-              fontFamily: "Heebo, sans-serif", fontSize: 15, fontWeight: 700,
-              border: `2px solid ${mode === "arrivals" ? "var(--gold)" : "var(--border)"}`,
-              background: mode === "arrivals" ? "rgba(201,169,110,0.1)" : "var(--card-bg)",
-              color: "var(--black)",
-            }}>
-            {mode === "arrivals" ? "✓ " : ""}📅 ייבוא יומי
-          </button>
         </div>
       )}
 
@@ -592,32 +462,111 @@ export default function DataUpload({ onImported, user, lockedMode }) {
   );
 }
 
+// ── Spa-CSV helpers (used only by ArrivalsImporter) ───────────────────────────
+
+const SPA_CSV_ALIASES_AR = {
+  guest_name:     ["שם אורח", "שם מלא", "שם", "לקוח", "guest name", "name"],
+  treatment_time: ["שעה", "שעת טיפול", "שעת התחלה", "time", "hour"],
+  treatment_type: ["טיפול", "שם טיפול", "סוג טיפול", "treatment", "treatment type"],
+  category:       ["חבילה", "קטגוריה", "סוג", "package", "category"],
+};
+
+// Compact name key for fuzzy matching across EZGO and Spa CSV name formats.
+function normNameKey(s) {
+  return String(s ?? "").trim().toLowerCase().replace(/[^a-z0-9֐-׿]/g, "");
+}
+
+// Convert Excel time serial / JS Date / "HH:MM" strings → "HH:MM".
+function normSpaTime(raw) {
+  if (!raw && raw !== 0) return null;
+  if (typeof raw === "number" && raw >= 0 && raw < 1) {
+    const tot = Math.round(raw * 24 * 60);
+    return `${String(Math.floor(tot / 60)).padStart(2, "0")}:${String(tot % 60).padStart(2, "0")}`;
+  }
+  if (raw instanceof Date && !isNaN(raw.getTime()))
+    return `${String(raw.getHours()).padStart(2, "0")}:${String(raw.getMinutes()).padStart(2, "0")}`;
+  const s = String(raw).trim();
+  const m = s.match(/(\d{1,2})[:.h](\d{2})/);
+  if (m) return `${m[1].padStart(2, "0")}:${m[2]}`;
+  const d = s.replace(/\D/g, "");
+  if (d.length === 3) return `0${d[0]}:${d.slice(1)}`;
+  if (d.length === 4) return `${d.slice(0, 2)}:${d.slice(2)}`;
+  return null;
+}
+
+// Derive suite/day_guest category from the Spa CSV "category" / "חבילה" column.
+function spaCatFromRaw(raw) {
+  const s = String(raw ?? "").toLowerCase();
+  if (/סוויט|suite|vip/.test(s))         return "suite";
+  if (/יומי|day|בחבילה|package/.test(s)) return "day_guest";
+  return null;
+}
+
+// Merge spaRows (from the secondary Spa Activities CSV) into EZGO parsed array.
+// Matching is done by normalized guest name. Spa CSV data wins over EZGO col-C extraction.
+function mergeSpaIntoEzgo(parsed, spaRows) {
+  if (!spaRows.length) return parsed;
+
+  // Build primary lookup: exact normalized name → earliest spa entry
+  const byExact = {};
+  for (const s of spaRows) {
+    const key = normNameKey(s.guest_name);
+    if (!key) continue;
+    if (!byExact[key] || (s.treatment_time && (!byExact[key].treatment_time || s.treatment_time < byExact[key].treatment_time)))
+      byExact[key] = s;
+  }
+
+  return parsed.map((g) => {
+    const gKey = normNameKey(g.guest_name);
+    // Exact match first; then partial (one name contains the other — handles flipped order)
+    let match = byExact[gKey];
+    if (!match) {
+      match = spaRows.find((s) => {
+        const sKey = normNameKey(s.guest_name);
+        return sKey && gKey && (gKey.includes(sKey) || sKey.includes(gKey));
+      });
+    }
+    if (!match) return g;
+
+    const spa_time     = match.treatment_time ?? g.spa_time;
+    const rawCat       = spaCatFromRaw(match.category);
+    const spa_category = rawCat ?? g.spa_category;
+    return { ...g, spa_time, spa_category, spa_from_csv: true };
+  });
+}
+
 // ── ArrivalsImporter — daily hotel bookings file parser ───────────────────────
-// Reads "ספר הזמנות" Excel format: name+phone from col B, spa time from col C.
-// Deduplicates by phone, then upserts to bookings + guests tables.
+// Step 1 (upload): EZGO "ספר הזמנות" Excel + optional "פעילות ספא" CSV.
+// Step 2 (preview): merged table grouped by category.
+// Step 3 (done): confirmation summary.
 function ArrivalsImporter() {
-  const [step,       setStep]       = useState("upload"); // upload|preview|done
-  const [dragging,   setDragging]   = useState(false);
-  const [parsed,     setParsed]     = useState([]);
-  const [previewTab, setPreviewTab] = useState("suite");
-  const [busy,       setBusy]       = useState(false);
-  const [result,     setResult]     = useState(null);
-  const [toast,      setToast]      = useState(null);
-  const fileRef = useRef(null);
+  const [step,        setStep]        = useState("upload"); // upload|preview|done
+  const [dragging,    setDragging]    = useState(false);
+  const [spaDragging, setSpaDragging] = useState(false);
+  const [parsed,      setParsed]      = useState([]);       // EZGO data (possibly merged)
+  const [spaRows,     setSpaRows]     = useState([]);       // Spa CSV rows
+  const [spaFileName, setSpaFileName] = useState("");
+  const [previewTab,  setPreviewTab]  = useState("suite");
+  const [busy,        setBusy]        = useState(false);
+  const [result,      setResult]      = useState(null);
+  const [toast,       setToast]       = useState(null);
+  const fileRef    = useRef(null);
+  const spaFileRef = useRef(null);
 
   function showToast(type, msg) {
     setToast({ type, msg });
     setTimeout(() => setToast(null), 4500);
   }
 
+  // ── Derived view lists (recomputed on every render from current parsed) ──
   const suiteGuests = parsed.filter((g) => g.spa_category === "suite");
   const dayGuests   = parsed.filter((g) => g.spa_category === "day_guest");
   const noSpaGuests = parsed.filter((g) => !g.spa_category);
-
   const previewRows =
     previewTab === "suite" ? suiteGuests :
     previewTab === "day"   ? dayGuests   : noSpaGuests;
 
+  // ── Parse EZGO "ספר הזמנות" Excel ──
   const handleFile = useCallback(async (file) => {
     if (!file) return;
     try {
@@ -625,66 +574,118 @@ function ArrivalsImporter() {
       const buf  = await file.arrayBuffer();
       const wb   = XLSX.read(buf, { type: "array" });
       const ws   = wb.Sheets[wb.SheetNames[0]];
-      // header:1 → plain arrays; preserves col positions for structural format
       const rows = XLSX.utils.sheet_to_json(ws, { defval: null, header: 1 });
       const data = parseArrivalsExcel(rows);
       if (!data.length) {
         showToast("err", "לא נמצאו הזמנות — בדוק שהקובץ בפורמט ספר ההזמנות היומי");
         return;
       }
-      setParsed(data);
-      setPreviewTab(data.some((g) => g.spa_category === "suite") ? "suite" : "day");
+      // If a Spa CSV is already loaded, merge immediately
+      const merged = spaRows.length ? mergeSpaIntoEzgo(data, spaRows) : data;
+      setParsed(merged);
+      setPreviewTab(merged.some((g) => g.spa_category === "suite") ? "suite" : "day");
       setStep("preview");
     } catch (err) {
-      showToast("err", "שגיאה בקריאת הקובץ: " + err.message);
+      showToast("err", "שגיאה בקריאת קובץ ההזמנות: " + err.message);
     }
-  }, []);
+  }, [spaRows]);
 
+  // ── Parse "פעילות ספא" CSV/Excel ──
+  const handleSpaFile = useCallback(async (file) => {
+    if (!file) return;
+    setSpaFileName(file.name);
+    try {
+      const XLSX = await import("xlsx");
+      const buf  = await file.arrayBuffer();
+      const wb   = XLSX.read(buf, { type: "array" });
+      const ws   = wb.Sheets[wb.SheetNames[0]];
+      const rawRows = XLSX.utils.sheet_to_json(ws, { defval: null });
+      if (!rawRows.length) { showToast("err", "קובץ הספא ריק"); return; }
+
+      const hdrs  = Object.keys(rawRows[0]);
+      const colMap = mapHeaders(SPA_CSV_ALIASES_AR, hdrs);
+
+      const rows = rawRows
+        .map((r) => ({
+          guest_name:     colMap.guest_name     ? String(r[colMap.guest_name]     ?? "").trim() || null : null,
+          treatment_time: colMap.treatment_time ? normSpaTime(r[colMap.treatment_time])                 : null,
+          treatment_type: colMap.treatment_type ? String(r[colMap.treatment_type] ?? "").trim() || null : null,
+          category:       colMap.category       ? String(r[colMap.category]       ?? "").trim() || null : null,
+        }))
+        .filter((r) => r.guest_name && r.treatment_time);
+
+      if (!rows.length) {
+        showToast("err", "לא נמצאו שורות תקינות בקובץ הספא — בדוק שעמודות שם ושעה קיימות");
+        return;
+      }
+
+      setSpaRows(rows);
+      // Re-merge if EZGO data is already loaded (preview mode)
+      if (parsed.length) {
+        const merged = mergeSpaIntoEzgo(parsed, rows);
+        setParsed(merged);
+      }
+      showToast("ok", `💆 ${rows.length} טיפולי ספא נטענו — יתמזגו עם ההזמנות לפי שם אורח`);
+    } catch (err) {
+      showToast("err", "שגיאה בקריאת קובץ הספא: " + err.message);
+    }
+  }, [parsed]);
+
+  // ── Sync both tables ──
   const handleSync = async () => {
     if (!supabase) { showToast("err", "Supabase לא מחובר"); return; }
     setBusy(true);
     try {
-      // ── 1. Upsert to bookings (primary target) ──
+      // ── 1. bookings — primary EZGO target with spa fields ──────────────────
       const bookingRows = parsed
         .filter((g) => g.phone && g.arrival_date)
         .map((g) => ({
-          guest_name:    g.guest_name,
-          phone:         g.phone,
-          arrival_date:  g.arrival_date,
-          checkout_date: addNights(g.arrival_date, g.nights),
-          nights:        g.nights,
-          room_count:    g.rooms,
-          status:        "pending",
+          guest_name:     g.guest_name,
+          phone:          g.phone,
+          arrival_date:   g.arrival_date,
+          checkout_date:  addNights(g.arrival_date, g.nights),
+          nights:         g.nights,
+          room_count:     g.rooms,
+          status:         "pending",
+          treatment_time: g.spa_time     ?? null,
+          treatment_type: g.spa_category ?? null,
         }));
 
       const { error: bErr } = await supabase
         .from("bookings")
         .upsert(bookingRows, { onConflict: "phone,arrival_date", ignoreDuplicates: false });
-      if (bErr) throw new Error(bErr.message);
+      if (bErr) throw new Error("bookings: " + bErr.message);
 
-      // ── 2. Upsert to guests (individuals: rooms ≤ 2) ──
+      // ── 2. guests — individual suite rows for the WhatsApp pipeline ────────
+      // Only guests with ≤ 2 rooms (solo/couple) are written here; group
+      // bookings live in bookings only and are handled by the cron directly.
+      // onConflict targets the 3-col constraint added by migration 042.
       const guestRows = parsed
         .filter((g) => g.guest_name && g.phone && g.rooms <= 2 && g.arrival_date)
         .map((g) => ({
           name:           g.guest_name,
-          phone:          sanitizePhone(g.phone), // +972... format for guests table
+          phone:          sanitizePhone(g.phone),
           arrival_date:   g.arrival_date,
           departure_date: addNights(g.arrival_date, g.nights),
-          status:         "expected",
+          room_type:      g.spa_category === "suite" ? "suite" : "standard",
+          status:         "pending",
+          guest_index:    1,
         }));
 
       if (guestRows.length) {
-        await supabase
+        const { error: gErr } = await supabase
           .from("guests")
-          .upsert(guestRows, { onConflict: "phone,arrival_date", ignoreDuplicates: false })
-          .then(() => {});
+          .upsert(guestRows, { onConflict: "phone,arrival_date,guest_index", ignoreDuplicates: false });
+        if (gErr) throw new Error("guests: " + gErr.message);
       }
 
+      const withSpa = parsed.filter((g) => g.spa_time).length;
       setResult({
-        total:  bookingRows.length,
-        suite:  suiteGuests.length,
-        day:    dayGuests.length,
-        date:   parsed[0]?.arrival_date,
+        total:   bookingRows.length,
+        suite:   suiteGuests.length,
+        day:     dayGuests.length,
+        withSpa,
+        date:    parsed[0]?.arrival_date,
       });
       setStep("done");
     } catch (err) {
@@ -714,11 +715,12 @@ function ArrivalsImporter() {
         <div style={{ fontWeight: 800, fontSize: 16, color: "#065f46", marginBottom: 6 }}>
           {result.total} הזמנות סונכרנו בהצלחה — {result.date}
         </div>
-        <div style={{ fontSize: 13, color: "#065f46", marginBottom: 16 }}>
-          🏨 {result.suite} סוויטות עם ספא · ☀️ {result.day} בילוי יומי · הבוט מוכן לשלוח הודעות אישור
+        <div style={{ fontSize: 13, color: "#065f46", marginBottom: 16, lineHeight: 1.8 }}>
+          🏨 {result.suite} סוויטות · ☀️ {result.day} בילוי יומי · 💆 {result.withSpa} עם שעת ספא
+          <br />הבוט מוכן לשלוח הודעות אישור
         </div>
         <button
-          onClick={() => { setStep("upload"); setParsed([]); setResult(null); }}
+          onClick={() => { setStep("upload"); setParsed([]); setSpaRows([]); setSpaFileName(""); setResult(null); }}
           style={{ padding: "8px 18px", borderRadius: 8, border: "1px solid #6ee7b7",
             background: "transparent", color: "#065f46", cursor: "pointer",
             fontFamily: "Heebo, sans-serif", fontSize: 13, fontWeight: 700 }}>
@@ -730,16 +732,37 @@ function ArrivalsImporter() {
 
   // ── Preview ──
   if (step === "preview") {
+    const spaMergedCount = parsed.filter((g) => g.spa_from_csv).length;
     const TABS = [
-      { key: "suite", label: "🏨 סוויטות", count: suiteGuests.length, color: "#7c3aed" },
-      { key: "day",   label: "☀️ בילוי יומי", count: dayGuests.length, color: "#16a34a" },
-      { key: "none",  label: "👥 ללא ספא",  count: noSpaGuests.length, color: "#888" },
+      { key: "suite", label: "🏨 סוויטות",   count: suiteGuests.length, color: "#7c3aed" },
+      { key: "day",   label: "☀️ בילוי יומי", count: dayGuests.length,   color: "#16a34a" },
+      { key: "none",  label: "👥 ללא ספא",    count: noSpaGuests.length,  color: "#888"    },
     ];
     return (
       <div>
         {ToastEl}
 
-        {/* Stats + tab selector */}
+        {/* Spa-CSV merge banner */}
+        {spaFileName && (
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12,
+            padding: "8px 14px", borderRadius: 8, background: "rgba(124,58,237,0.07)",
+            border: "1px solid rgba(124,58,237,0.25)", fontSize: 12, color: "#7c3aed", fontWeight: 700 }}>
+            💆 לוח ספא נטען: {spaFileName}
+            {spaMergedCount > 0
+              ? <span style={{ fontWeight: 400, color: "var(--text-muted)" }}>· {spaMergedCount} אורחים הותאמו</span>
+              : <span style={{ fontWeight: 400, color: "#C0392B" }}> · לא נמצאו התאמות — בדוק שמות</span>}
+            <button onClick={() => spaFileRef.current?.click()}
+              style={{ marginRight: "auto", fontSize: 11, color: "#7c3aed", background: "none",
+                border: "1px solid currentColor", borderRadius: 5, padding: "2px 8px", cursor: "pointer",
+                fontFamily: "Heebo, sans-serif" }}>
+              החלף קובץ
+            </button>
+            <input ref={spaFileRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: "none" }}
+              onChange={(e) => e.target.files?.[0] && handleSpaFile(e.target.files[0])} />
+          </div>
+        )}
+
+        {/* Tabs */}
         <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
           {TABS.map(({ key, label, count, color }) => (
             <button key={key} onClick={() => setPreviewTab(key)}
@@ -758,11 +781,11 @@ function ArrivalsImporter() {
           </div>
         </div>
 
-        {/* Preview table */}
+        {/* Table */}
         <div style={{ background: "var(--card-bg)", border: "1px solid var(--border)", borderRadius: 10,
           overflow: "hidden", marginBottom: 14 }}>
           <div style={{ overflowX: "auto", maxHeight: 340 }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 520 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 560 }}>
               <thead>
                 <tr style={{ background: "var(--ivory)" }}>
                   {["שם", "טלפון", "לילות", "חדרים", "ספא", "שעה"].map((h) => (
@@ -774,7 +797,13 @@ function ArrivalsImporter() {
               <tbody>
                 {previewRows.slice(0, 60).map((g, i) => (
                   <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
-                    <td style={{ padding: "9px 12px", fontSize: 13, fontWeight: 600 }}>{g.guest_name || "—"}</td>
+                    <td style={{ padding: "9px 12px", fontSize: 13, fontWeight: 600 }}>
+                      {g.guest_name || "—"}
+                      {g.spa_from_csv && (
+                        <span style={{ fontSize: 9, color: "#7c3aed", marginRight: 4,
+                          border: "1px solid #7c3aed", borderRadius: 3, padding: "1px 3px" }}>CSV</span>
+                      )}
+                    </td>
                     <td style={{ padding: "9px 12px", fontSize: 12, color: "var(--text-muted)",
                       direction: "ltr", textAlign: "right" }}>
                       {g.phone ? "0" + g.phone.slice(3) : "—"}
@@ -784,7 +813,8 @@ function ArrivalsImporter() {
                     <td style={{ padding: "9px 12px", fontSize: 11 }}>
                       {g.spa_category === "suite" ? "🏨" : g.spa_category === "day_guest" ? "☀️" : "—"}
                     </td>
-                    <td style={{ padding: "9px 12px", fontSize: 14, fontWeight: 800, color: "#7c3aed" }}>
+                    <td style={{ padding: "9px 12px", fontSize: 14, fontWeight: 800,
+                      color: g.spa_time ? "#7c3aed" : "var(--text-muted)" }}>
                       {g.spa_time || "—"}
                     </td>
                   </tr>
@@ -808,7 +838,7 @@ function ArrivalsImporter() {
             fontFamily: "Heebo, sans-serif", fontSize: 14, fontWeight: 800,
             cursor: busy ? "not-allowed" : "pointer",
           }}>
-            {busy ? "מסנכרן..." : `⚡ אשר וסנכרן הכל (${parsed.length} הזמנות)`}
+            {busy ? "מסנכרן..." : `⚡ סנכרן ל-DB (${parsed.length} הזמנות)`}
           </button>
           <button onClick={() => setStep("upload")} style={{
             padding: "13px 18px", borderRadius: 10, border: "1px solid var(--border)",
@@ -820,10 +850,12 @@ function ArrivalsImporter() {
     );
   }
 
-  // ── Upload drop zone ──
+  // ── Upload step: EZGO drop zone + optional Spa CSV drop zone ──
   return (
     <div>
       {ToastEl}
+
+      {/* ── Primary: EZGO "ספר הזמנות" ── */}
       <div
         onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
         onDragLeave={() => setDragging(false)}
@@ -833,7 +865,7 @@ function ArrivalsImporter() {
           border: `2px dashed ${dragging ? "var(--gold)" : "var(--border)"}`,
           background: dragging ? "rgba(201,169,110,0.08)" : "var(--card-bg)",
           borderRadius: 16, padding: "44px 20px", textAlign: "center", cursor: "pointer",
-          transition: "all 0.2s",
+          transition: "all 0.2s", marginBottom: 14,
         }}>
         <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }}
           onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])} />
@@ -842,18 +874,47 @@ function ArrivalsImporter() {
           גרור ספר הזמנות יומי לכאן
         </div>
         <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 10 }}>
-          קובץ יומי מהמלון (.xlsx/.xls) · מזהה אוטומטית שם, טלפון, לילות, שעת ספא
+          קובץ יומי מ-EZGO (.xlsx/.xls) · שם, טלפון, לילות, שעת ספא מעמודת התוספות
         </div>
         <div style={{ display: "inline-flex", gap: 16, fontSize: 12, color: "var(--text-muted)" }}>
-          <span>🏨 סוויטות</span>
-          <span>☀️ בילוי יומי</span>
-          <span>📱 מוכן לבוט</span>
+          <span>🏨 סוויטות</span><span>☀️ בילוי יומי</span><span>📱 מוכן לבוט</span>
         </div>
       </div>
-      <div style={{ marginTop: 14, padding: "10px 14px", background: "var(--ivory)",
-        borderRadius: 8, fontSize: 11, color: "var(--text-muted)", lineHeight: 1.7 }}>
-        <strong>פורמט נתמך:</strong> ספר הזמנות יומי כולל "ID: שם - טלפון", לילות, תוספות ספא ·
-        קבוצות מסוננות אוטומטית · טלפונים בינלאומיים מנורמלים
+
+      {/* ── Secondary: "פעילות ספא" CSV (optional) ── */}
+      <div
+        onDragOver={(e) => { e.preventDefault(); setSpaDragging(true); }}
+        onDragLeave={() => setSpaDragging(false)}
+        onDrop={(e) => { e.preventDefault(); setSpaDragging(false); handleSpaFile(e.dataTransfer.files?.[0]); }}
+        onClick={() => spaFileRef.current?.click()}
+        style={{
+          border: `2px dashed ${spaDragging ? "#7c3aed" : spaFileName ? "rgba(124,58,237,0.5)" : "var(--border)"}`,
+          background: spaDragging
+            ? "rgba(124,58,237,0.06)"
+            : spaFileName ? "rgba(124,58,237,0.03)" : "var(--ivory)",
+          borderRadius: 12, padding: "20px", textAlign: "center", cursor: "pointer",
+          transition: "all 0.2s",
+        }}>
+        <input ref={spaFileRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: "none" }}
+          onChange={(e) => e.target.files?.[0] && handleSpaFile(e.target.files[0])} />
+        {spaFileName ? (
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#7c3aed" }}>
+            💆 {spaFileName}
+            <span style={{ fontSize: 12, fontWeight: 400, color: "var(--text-muted)", marginRight: 8 }}>
+              · {spaRows.length} טיפולים טעונים · לחץ להחלפה
+            </span>
+          </div>
+        ) : (
+          <>
+            <div style={{ fontSize: 22, marginBottom: 6 }}>💆</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-muted)", marginBottom: 4 }}>
+              הוסף לוח פעילות ספא <span style={{ fontWeight: 400 }}>(אופציונלי)</span>
+            </div>
+            <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+              CSV/Excel עם שם אורח + שעת טיפול · יתמזג עם ההזמנות לפי שם
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

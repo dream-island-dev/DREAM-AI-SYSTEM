@@ -69,7 +69,8 @@ export default function SpaScheduleUploader() {
   const [toast, setToast]       = useState(null);
   const [dragging, setDragging] = useState(false);
   const [staged, setStaged]     = useState([]);
-  const [approving, setApproving] = useState(new Set());
+  const [approving,    setApproving]    = useState(new Set());
+  const [selectedIds,  setSelectedIds]  = useState(new Set());
   const inputRef = useRef(null);
 
   const showToast = (type, msg) => {
@@ -200,6 +201,24 @@ export default function SpaScheduleUploader() {
     setStaged((prev) => prev.map((r) => (r.id === row.id ? { ...r, sync_status: "rejected" } : r)));
   };
 
+  // ── Bulk delete selected rows ───────────────────────────────────────────────
+  const deleteSelected = async () => {
+    if (!selectedIds.size) return;
+    setBusy(true);
+    try {
+      const ids = [...selectedIds];
+      const { error } = await supabase.from("spa_staging").delete().in("id", ids);
+      if (error) throw error;
+      setStaged((prev) => prev.filter((r) => !selectedIds.has(r.id)));
+      setSelectedIds(new Set());
+      showToast("ok", `🗑 ${ids.length} שורות נמחקו`);
+    } catch (err) {
+      showToast("err", "שגיאה במחיקה: " + err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   // ── Approve ALL matched pending rows ────────────────────────────────────────
   const approveAllMatched = async () => {
     const pending = staged.filter((r) => r.match_status === "matched" && r.sync_status === "pending");
@@ -234,6 +253,27 @@ export default function SpaScheduleUploader() {
     noBooking: staged.filter((r) => r.match_status === "no_booking").length,
     synced:    staged.filter((r) => r.sync_status === "synced").length,
     pending:   staged.filter((r) => r.sync_status === "pending" && r.match_status === "matched").length,
+  };
+
+  // Select-all helpers — synced rows are excluded (nothing to delete there)
+  const selectableIds  = staged.filter((r) => r.sync_status !== "synced").map((r) => r.id);
+  const allSelected    = selectableIds.length > 0 && selectableIds.every((id) => selectedIds.has(id));
+  const someSelected   = !allSelected && selectableIds.some((id) => selectedIds.has(id));
+
+  const toggleAll = () => {
+    if (allSelected) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(selectableIds));
+    }
+  };
+
+  const toggleRow = (id) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
   };
 
   // ── Render ──────────────────────────────────────────────────────────────────
@@ -380,7 +420,20 @@ export default function SpaScheduleUploader() {
               style={{ opacity: busy ? 0.6 : 1 }}>
               {busy ? "מסנכרן..." : `✅ אשר הכל matched (${stats.pending})`}
             </button>
-            <button className="btn" onClick={() => { setStep("upload"); setRawRows([]); setHeaders([]); setFileName(""); setStaged([]); }}
+            {selectedIds.size > 0 && (
+              <button
+                onClick={deleteSelected}
+                disabled={busy}
+                style={{
+                  padding: "8px 18px", borderRadius: 8, border: "1px solid #C0392B",
+                  background: "#C0392B", color: "#fff", fontSize: 14, fontWeight: 700,
+                  cursor: busy ? "not-allowed" : "pointer", opacity: busy ? 0.6 : 1,
+                  fontFamily: "Heebo, sans-serif",
+                }}>
+                🗑 מחק מסומנים ({selectedIds.size})
+              </button>
+            )}
+            <button className="btn" onClick={() => { setStep("upload"); setRawRows([]); setHeaders([]); setFileName(""); setStaged([]); setSelectedIds(new Set()); }}
               style={{ border: "1px solid var(--border)", background: "var(--card-bg)" }}>
               ← העלה קובץ חדש
             </button>
@@ -395,6 +448,16 @@ export default function SpaScheduleUploader() {
               <table className="table" style={{ minWidth: 700 }}>
                 <thead>
                   <tr>
+                    <th style={{ width: 36, textAlign: "center" }}>
+                      <input
+                        type="checkbox"
+                        checked={allSelected}
+                        ref={(el) => { if (el) el.indeterminate = someSelected; }}
+                        onChange={toggleAll}
+                        style={{ cursor: "pointer", width: 15, height: 15 }}
+                        title="בחר הכל"
+                      />
+                    </th>
                     <th>שם אורח</th>
                     <th>טלפון</th>
                     <th>שעת טיפול</th>
@@ -406,22 +469,35 @@ export default function SpaScheduleUploader() {
                 </thead>
                 <tbody>
                   {staged.map((row) => {
-                    const isMatched  = row.match_status === "matched";
-                    const isSynced   = row.sync_status === "synced";
-                    const isRejected = row.sync_status === "rejected";
+                    const isMatched   = row.match_status === "matched";
+                    const isSynced    = row.sync_status === "synced";
+                    const isRejected  = row.sync_status === "rejected";
                     const isApproving = approving.has(row.id);
+                    const isSelected  = selectedIds.has(row.id);
 
-                    const rowBg = isSynced   ? "rgba(201,169,110,0.08)"
-                                : isRejected ? "rgba(192,57,43,0.04)"
-                                : isMatched  ? "rgba(26,122,74,0.07)"
-                                :              "rgba(230,126,34,0.07)";
-                    const borderColor = isSynced   ? "rgba(201,169,110,0.4)"
-                                      : isRejected ? "rgba(192,57,43,0.2)"
-                                      : isMatched  ? "rgba(26,122,74,0.25)"
-                                      :              "rgba(230,126,34,0.3)";
+                    const rowBg = isSelected  ? "rgba(192,57,43,0.06)"
+                                : isSynced    ? "rgba(201,169,110,0.08)"
+                                : isRejected  ? "rgba(192,57,43,0.04)"
+                                : isMatched   ? "rgba(26,122,74,0.07)"
+                                :               "rgba(230,126,34,0.07)";
+                    const borderColor = isSelected  ? "rgba(192,57,43,0.5)"
+                                      : isSynced    ? "rgba(201,169,110,0.4)"
+                                      : isRejected  ? "rgba(192,57,43,0.2)"
+                                      : isMatched   ? "rgba(26,122,74,0.25)"
+                                      :               "rgba(230,126,34,0.3)";
 
                     return (
                       <tr key={row.id} style={{ background: rowBg, borderRight: `3px solid ${borderColor}` }}>
+                        <td style={{ textAlign: "center", padding: "9px 6px" }}>
+                          {!isSynced && (
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => toggleRow(row.id)}
+                              style={{ cursor: "pointer", width: 15, height: 15 }}
+                            />
+                          )}
+                        </td>
                         <td style={{ fontSize: 13 }}>
                           {row.guest_name || "—"}
                           {row.matched_guest_name && row.matched_guest_name !== row.guest_name && (
