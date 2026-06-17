@@ -83,14 +83,6 @@ function sanitizePhone(raw) {
   return cleaned.length >= 9 ? cleaned : null;
 }
 
-// Phone normaliser for the EZGO↔Spa join — both sides → 05XXXXXXXXX Israeli local format.
-function normalizePhone(tel) {
-  let t = (tel || '').trim().replace(/[\s\-]/g, '');
-  if (t.startsWith('+972')) t = '0' + t.slice(4);
-  else if (t.startsWith('972'))  t = '0' + t.slice(3);
-  return t;
-}
-
 // Phone normalizer for bookings table — stores 972XXXXXXXXX (no leading +)
 function normalizePhoneBookings(raw) {
   if (!raw) return null;
@@ -481,47 +473,65 @@ const SPA_CSV_ALIASES_AR = {
   guest_name:     ["sClientName", "שם אורח", "שם מלא", "שם", "לקוח", "guest name", "name"],
 };
 
-// Column aliases for EZGO CSV export format (column-header based, as opposed to
-// the positional "ספר הזמנות" Excel format handled by parseArrivalsExcel).
+// Column aliases for EZGO CSV export (named-column format — iOrderId, sClientFullName, sTel1 …).
+// Includes sub-item and room columns for suite vs day_guest detection.
 const EZGO_CSV_ALIASES = {
-  guest_name:   ["sClientFullName", "sClientName", "clientFullName", "שם"],
-  phone:        ["sTel1", "sTel", "phone", "טלפון"],
-  nights:       ["iNights", "nights", "לילות"],
-  arrival_date: ["dCheckIn", "dArrival", "checkIn", "תאריך הגעה"],
-  rooms:        ["iRooms", "iRoomCount", "rooms", "חדרים"],
+  guest_name:    ["sClientFullName", "sClientName", "clientFullName", "שם"],
+  phone:         ["sTel1", "sTel", "phone", "טלפון"],
+  nights:        ["iNights", "nights", "לילות"],
+  arrival_date:  ["dCheckIn", "dArrival", "dtCheckIn", "checkIn", "תאריך הגעה"],
+  rooms:         ["iRooms", "iRoomCount", "rooms", "חדרים"],
+  sub_item_name: ["sSubItemName", "subItemName"],
+  room_name:     ["sRoomName", "roomName"],
+  group_id:      ["Group_Id", "groupId"],
 };
 
-// Parse an EZGO CSV export that has named column headers (iOrderId, sClientFullName, sTel1 …).
-// arrivalDate is used as fallback when the file has no date column (extracted from filename).
-function parseEzgoCsv(rows, arrivalDate) {
+// Parse EZGO named-column CSV into guest objects with category and room detection.
+// arrivalDate (ISO string) is the fallback when the file has no valid date column
+// (extracted from filename, e.g. "16.6.26.csv" → "2026-06-16").
+function parseEzgoCsvFull(rows, arrivalDate) {
   if (!rows.length) return [];
   const headers = Object.keys(rows[0]);
   const colMap  = mapHeaders(EZGO_CSV_ALIASES, headers);
 
   const byPhone = {};
   for (const r of rows) {
-    const guestName = colMap.guest_name   ? String(r[colMap.guest_name]   ?? "").trim() || null : null;
-    const phoneRaw  = colMap.phone        ? String(r[colMap.phone]        ?? "").trim()          : "";
-    const phone     = normalizePhoneBookings(phoneRaw);
-    const nights    = colMap.nights       ? parseInt(String(r[colMap.nights]       ?? "")) || null : null;
-    const rooms     = colMap.rooms        ? parseInt(String(r[colMap.rooms]        ?? "")) || 1    : 1;
-    const rawDate   = colMap.arrival_date ? String(r[colMap.arrival_date] ?? "").trim()           : "";
-    const rowDate   = rawDate ? parseEzgoDate(rawDate) : arrivalDate;
+    const guestName   = colMap.guest_name    ? String(r[colMap.guest_name]    ?? "").trim() || null : null;
+    const phoneRaw    = colMap.phone         ? String(r[colMap.phone]         ?? "").trim()          : "";
+    const phone       = normalizePhoneBookings(phoneRaw);
+    const nights      = colMap.nights        ? parseInt(String(r[colMap.nights]        ?? "0")) || 0  : 0;
+    const rooms       = colMap.rooms         ? parseInt(String(r[colMap.rooms]         ?? "1")) || 1  : 1;
+    const roomName    = colMap.room_name     ? String(r[colMap.room_name]     ?? "").trim() || null  : null;
+    const subItemName = colMap.sub_item_name ? String(r[colMap.sub_item_name] ?? "").trim()           : "";
+    const groupId     = colMap.group_id      ? String(r[colMap.group_id]      ?? "").trim()           : "";
 
     if (!phone && !guestName) continue;
-    const key = phone ?? normNameKey(guestName);
+
+    // Arrival date: use filename fallback; ignore EZGO dummy dates (01/01/2001)
+    const rawDate = colMap.arrival_date ? String(r[colMap.arrival_date] ?? "").trim() : "";
+    let rowDate = arrivalDate;
+    if (rawDate && !/^01[/.-]01[/.-](1900|1970|2001)/i.test(rawDate)) {
+      const parsed = parseEzgoDate(rawDate);
+      if (parsed && parsed > "2020-01-01") rowDate = parsed;
+    }
+
+    // Category: day_guest when sSubItemName contains "Day"/"Premium" OR iNights=0 OR Group_Id=1
+    let category = "suite";
+    if (/premium\s*day|day\s*guest|בילוי.*יומי/i.test(subItemName) || nights === 0 || groupId === "1") {
+      category = "day_guest";
+    }
+
+    const key = phone ?? guestName;
+    if (!key) continue;
+
     if (!byPhone[key]) {
-      byPhone[key] = { guest_name: guestName, phone, arrival_date: rowDate, nights, rooms: rooms || 1, spa_time: null, spa_category: null };
+      byPhone[key] = { guest_name: guestName, phone, arrival_date: rowDate, nights, rooms: rooms || 1, room: roomName, category };
     } else {
       byPhone[key].rooms += (rooms || 1);
+      if (category === "suite") byPhone[key].category = "suite";
     }
   }
   return Object.values(byPhone);
-}
-
-// Compact name key for fuzzy matching across EZGO and Spa CSV name formats.
-function normNameKey(s) {
-  return String(s ?? "").trim().toLowerCase().replace(/[^a-z0-9֐-׿]/g, "");
 }
 
 // Convert Excel time serial / JS Date / "HH:MM" strings → "HH:MM".
@@ -542,95 +552,37 @@ function normSpaTime(raw) {
   return null;
 }
 
-// Derive suite/day_guest category from the Spa CSV "category" / "חבילה" column.
-function spaCatFromRaw(raw) {
-  const s = String(raw ?? "").toLowerCase();
-  if (/סוויט|suite|vip/.test(s))         return "suite";
-  if (/יומי|day|בחבילה|package/.test(s)) return "day_guest";
-  return null;
-}
-
-// Merge spaRows (from the secondary Spa Activities CSV) into EZGO parsed array.
-// Primary join: normalized phone (05XXXXXXXXX). Fallback: normalized guest name.
-function mergeSpaIntoEzgo(parsed, spaRows) {
-  if (!spaRows.length) return parsed;
-
-  // ── Phone-based index (primary) — pick earliest time per phone ───────────
-  const byPhone = {};
-  for (const s of spaRows) {
-    const phone = s.phone ? normalizePhone(s.phone) : null;
-    if (!phone || phone === '0') continue;
-    if (!byPhone[phone] || (s.treatment_time && (!byPhone[phone].treatment_time || s.treatment_time < byPhone[phone].treatment_time)))
-      byPhone[phone] = s;
-  }
-
-  // ── Name-based index (fallback for spa rows without phone) ───────────────
-  const byExact = {};
-  for (const s of spaRows) {
-    const key = normNameKey(s.guest_name);
-    if (!key) continue;
-    if (!byExact[key] || (s.treatment_time && (!byExact[key].treatment_time || s.treatment_time < byExact[key].treatment_time)))
-      byExact[key] = s;
-  }
-
-  return parsed.map((g) => {
-    // 1. Phone match — EZGO .phone is "972XXXXXXXXX"; normalizePhone converts to "05XXXXXXXXX"
-    const gPhone = g.phone ? normalizePhone(g.phone) : null;
-    let match = gPhone ? byPhone[gPhone] : null;
-
-    // 2. Name fallback
-    if (!match) {
-      const gKey = normNameKey(g.guest_name);
-      match = byExact[gKey];
-      if (!match) {
-        match = spaRows.find((s) => {
-          const sKey = normNameKey(s.guest_name);
-          return sKey && gKey && (gKey.includes(sKey) || sKey.includes(gKey));
-        });
-      }
-    }
-
-    if (!match) return g;
-    const spa_time     = match.treatment_time ?? g.spa_time;
-    const rawCat       = spaCatFromRaw(match.category);
-    const spa_category = rawCat ?? g.spa_category;
-    return { ...g, spa_time, spa_category, spa_from_csv: true };
-  });
-}
-
-// ── ArrivalsImporter — daily hotel bookings file parser ───────────────────────
-// Step 1 (upload): EZGO "ספר הזמנות" Excel + optional "פעילות ספא" CSV.
-// Step 2 (preview): merged table grouped by category.
-// Step 3 (done): confirmation summary.
+// ── ArrivalsImporter — 2-tab daily import ────────────────────────────────────
+// Tab 1 — EZGO: upload CSV/Excel → preview → INSERT to guests + bookings
+// Tab 2 — Spa:  upload Spa CSV → UPDATE guests.spa_time by E.164 phone (no new rows)
 function ArrivalsImporter() {
-  const [step,        setStep]        = useState("upload"); // upload|preview|done
-  const [dragging,    setDragging]    = useState(false);
-  const [spaDragging, setSpaDragging] = useState(false);
-  const [parsed,      setParsed]      = useState([]);       // EZGO data (possibly merged)
-  const [spaRows,     setSpaRows]     = useState([]);       // Spa CSV rows
-  const [spaFileName, setSpaFileName] = useState("");
-  const [previewTab,  setPreviewTab]  = useState("suite");
-  const [busy,        setBusy]        = useState(false);
-  const [result,      setResult]      = useState(null);
-  const [toast,       setToast]       = useState(null);
-  const fileRef    = useRef(null);
-  const spaFileRef = useRef(null);
+  const [activeTab,    setActiveTab]    = useState("ezgo");    // "ezgo" | "spa"
+
+  // EZGO state
+  const [ezgoStep,     setEzgoStep]     = useState("upload");  // "upload" | "preview" | "done"
+  const [ezgoParsed,   setEzgoParsed]   = useState([]);
+  const [ezgoDragging, setEzgoDragging] = useState(false);
+  const [ezgoBusy,     setEzgoBusy]     = useState(false);
+  const [ezgoResult,   setEzgoResult]   = useState(null);
+  const ezgoRef = useRef(null);
+
+  // Spa state
+  const [spaUpdates,   setSpaUpdates]   = useState([]);        // [{phone, spa_time}]
+  const [spaFileName,  setSpaFileName]  = useState("");
+  const [spaDragging,  setSpaDragging]  = useState(false);
+  const [spaBusy,      setSpaBusy]      = useState(false);
+  const [spaResult,    setSpaResult]    = useState(null);
+  const spaRef = useRef(null);
+
+  const [toast, setToast] = useState(null);
 
   function showToast(type, msg) {
     setToast({ type, msg });
     setTimeout(() => setToast(null), 4500);
   }
 
-  // ── Derived view lists (recomputed on every render from current parsed) ──
-  const suiteGuests = parsed.filter((g) => g.spa_category === "suite");
-  const dayGuests   = parsed.filter((g) => g.spa_category === "day_guest");
-  const noSpaGuests = parsed.filter((g) => !g.spa_category);
-  const previewRows =
-    previewTab === "suite" ? suiteGuests :
-    previewTab === "day"   ? dayGuests   : noSpaGuests;
-
-  // ── Parse EZGO file — auto-detect Excel "ספר הזמנות" vs CSV with column headers ──
-  const handleFile = useCallback(async (file) => {
+  // ── Tab 1: Parse EZGO CSV or Excel ─────────────────────────────────────────
+  const handleEzgoFile = useCallback(async (file) => {
     if (!file) return;
     try {
       const XLSX = await import("xlsx");
@@ -638,7 +590,6 @@ function ArrivalsImporter() {
       const wb   = XLSX.read(buf, { type: "array" });
       const ws   = wb.Sheets[wb.SheetNames[0]];
 
-      // Peek at first row with header:1 to detect format
       const firstRow = (XLSX.utils.sheet_to_json(ws, { defval: null, header: 1 })[0] ?? []);
       const isEzgoCsv = firstRow.some(
         (h) => typeof h === "string" && /^(iOrderId|sClientFullName|sTel1)$/i.test(h.trim())
@@ -646,39 +597,33 @@ function ArrivalsImporter() {
 
       let data;
       if (isEzgoCsv) {
-        // Named-column CSV export from EZGO
         const csvRows = XLSX.utils.sheet_to_json(ws, { defval: null });
-        // Try to extract arrival date from filename (e.g. "16.6.26.csv" → 2026-06-16)
         const dm = file.name.match(/(\d{1,2})[.\-_](\d{1,2})[.\-_](\d{2,4})/);
         const fallbackDate = dm
           ? `${dm[3].length === 2 ? `20${dm[3]}` : dm[3]}-${dm[2].padStart(2,"0")}-${dm[1].padStart(2,"0")}`
           : null;
-        data = parseEzgoCsv(csvRows, fallbackDate);
-        if (data.length) showToast("ok", `📋 זוהה פורמט EZGO CSV — ${data.length} הזמנות`);
+        data = parseEzgoCsvFull(csvRows, fallbackDate);
       } else {
-        // Positional Excel "ספר הזמנות" format
         const rows = XLSX.utils.sheet_to_json(ws, { defval: null, header: 1 });
         data = parseArrivalsExcel(rows);
       }
 
       if (!data.length) {
-        showToast("err", "לא נמצאו הזמנות — בדוק שהקובץ בפורמט ספר ההזמנות היומי");
+        showToast("err", "לא נמצאו הזמנות — בדוק פורמט קובץ");
         return;
       }
-      // If a Spa CSV is already loaded, merge immediately
-      const merged = spaRows.length ? mergeSpaIntoEzgo(data, spaRows) : data;
-      setParsed(merged);
-      setPreviewTab(merged.some((g) => g.spa_category === "suite") ? "suite" : "day");
-      setStep("preview");
+      setEzgoParsed(data);
+      setEzgoStep("preview");
     } catch (err) {
-      showToast("err", "שגיאה בקריאת קובץ ההזמנות: " + err.message);
+      showToast("err", "שגיאה בקריאת קובץ EZGO: " + err.message);
     }
-  }, [spaRows]);
+  }, []);
 
-  // ── Parse "פעילות ספא" CSV/Excel ──
+  // ── Tab 2: Parse Spa CSV → extract earliest {phone E.164, spa_time} per guest ──
   const handleSpaFile = useCallback(async (file) => {
     if (!file) return;
     setSpaFileName(file.name);
+    setSpaResult(null);
     try {
       const XLSX = await import("xlsx");
       const buf  = await file.arrayBuffer();
@@ -687,82 +632,76 @@ function ArrivalsImporter() {
       const rawRows = XLSX.utils.sheet_to_json(ws, { defval: null });
       if (!rawRows.length) { showToast("err", "קובץ הספא ריק"); return; }
 
-      const hdrs  = Object.keys(rawRows[0]);
+      const hdrs   = Object.keys(rawRows[0]);
       const colMap = mapHeaders(SPA_CSV_ALIASES_AR, hdrs);
 
-      const rows = rawRows
-        .map((r) => ({
-          phone:          colMap.phone          ? String(r[colMap.phone]          ?? "").trim() || null : null,
-          line_status:    colMap.line_status    ? String(r[colMap.line_status]    ?? "").trim()         : null,
-          guest_name:     colMap.guest_name     ? String(r[colMap.guest_name]     ?? "").trim() || null : null,
-          treatment_time: colMap.treatment_time ? normSpaTime(r[colMap.treatment_time])                 : null,
-          treatment_type: colMap.treatment_type ? String(r[colMap.treatment_type] ?? "").trim() || null : null,
-          category:       colMap.category       ? String(r[colMap.category]       ?? "").trim() || null : null,
-        }))
-        .filter((r) => {
-          if (!r.treatment_time) return false;
-          // iLineStatus "0" = cancelled — skip; null means column absent (old CSV format)
-          if (r.line_status !== null && r.line_status !== "1") return false;
-          return r.phone || r.guest_name;
-        });
+      // Index by E.164 phone; keep earliest tmStart (iLineStatus=1 only)
+      const byPhone = {};
+      for (const r of rawRows) {
+        const statusVal = colMap.line_status ? String(r[colMap.line_status] ?? "").trim() : null;
+        if (statusVal !== null && statusVal !== "1") continue;
 
+        const rawTel = colMap.phone ? String(r[colMap.phone] ?? "").trim() : "";
+        if (!rawTel) continue;
+        const phone = sanitizePhone(rawTel); // E.164 "+972XXXXXXXXX"
+        if (!phone) continue;
+
+        const time = colMap.treatment_time ? normSpaTime(r[colMap.treatment_time]) : null;
+        if (!time) continue;
+
+        if (!byPhone[phone] || time < byPhone[phone]) byPhone[phone] = time;
+      }
+
+      const rows = Object.entries(byPhone).map(([phone, spa_time]) => ({ phone, spa_time }));
       if (!rows.length) {
-        showToast("err", "לא נמצאו שורות תקינות בקובץ הספא — בדוק שעמודות טלפון/שם ושעה קיימות");
+        showToast("err", "לא נמצאו טיפולים פעילים (iLineStatus=1) עם טלפון ושעה");
         return;
       }
-
-      setSpaRows(rows);
-      // Re-merge if EZGO data is already loaded (preview mode)
-      if (parsed.length) {
-        const merged = mergeSpaIntoEzgo(parsed, rows);
-        setParsed(merged);
-      }
-      showToast("ok", `💆 ${rows.length} טיפולי ספא נטענו — יתמזגו עם ההזמנות לפי טלפון`);
+      setSpaUpdates(rows);
+      showToast("ok", `💆 ${rows.length} אורחים ייחודיים זוהו`);
     } catch (err) {
-      showToast("err", "שגיאה בקריאת קובץ הספא: " + err.message);
+      showToast("err", "שגיאה בקריאת קובץ ספא: " + err.message);
     }
-  }, [parsed]);
+  }, []);
 
-  // ── Sync both tables ──
-  const handleSync = async () => {
+  // ── Tab 1 DB Sync: upsert parsed EZGO data ─────────────────────────────────
+  const handleEzgoSync = async () => {
     if (!supabase) { showToast("err", "Supabase לא מחובר"); return; }
-    setBusy(true);
+    setEzgoBusy(true);
     try {
-      // ── 1. bookings — primary EZGO target with spa fields ──────────────────
-      const bookingRows = parsed
+      const bookingRows = ezgoParsed
         .filter((g) => g.phone && g.arrival_date)
         .map((g) => ({
           guest_name:     g.guest_name,
-          phone:          g.phone,
+          phone:          g.phone,                            // 972XXXXXXXXX (no +)
           arrival_date:   g.arrival_date,
           checkout_date:  addNights(g.arrival_date, g.nights),
           nights:         g.nights,
           room_count:     g.rooms,
           status:         "pending",
-          treatment_time: g.spa_time     ?? null,
-          treatment_type: g.spa_category ?? null,
+          treatment_time: null,
+          treatment_type: null,
         }));
 
-      const { error: bErr } = await supabase
-        .from("bookings")
-        .upsert(bookingRows, { onConflict: "phone,arrival_date", ignoreDuplicates: false });
-      if (bErr) throw new Error("bookings: " + bErr.message);
+      if (bookingRows.length) {
+        const { error: bErr } = await supabase
+          .from("bookings")
+          .upsert(bookingRows, { onConflict: "phone,arrival_date", ignoreDuplicates: false });
+        if (bErr) throw new Error("bookings: " + bErr.message);
+      }
 
-      // ── 2. guests — individual suite rows for the WhatsApp pipeline ────────
-      // Only guests with ≤ 2 rooms (solo/couple) are written here; group
-      // bookings live in bookings only and are handled by the cron directly.
-      // onConflict targets the 3-col constraint added by migration 042.
-      const guestRows = parsed
-        .filter((g) => g.guest_name && g.phone && g.rooms <= 2 && g.arrival_date)
+      const guestRows = ezgoParsed
+        .filter((g) => g.guest_name && g.phone && g.arrival_date)
         .map((g) => ({
           name:           g.guest_name,
-          phone:          sanitizePhone(g.phone),
+          phone:          sanitizePhone(g.phone),             // E.164 "+972XXXXXXXXX"
           arrival_date:   g.arrival_date,
           departure_date: addNights(g.arrival_date, g.nights),
-          room_type:      g.spa_category === "suite" ? "suite" : "standard",
+          room_type:      g.category === "suite" ? "suite" : "standard",
+          room:           g.room ?? null,
           status:         "pending",
           guest_index:    1,
-          spa_time:       g.spa_time ?? null,
+          spa_time:       null,
         }));
 
       if (guestRows.length) {
@@ -772,19 +711,38 @@ function ArrivalsImporter() {
         if (gErr) throw new Error("guests: " + gErr.message);
       }
 
-      const withSpa = parsed.filter((g) => g.spa_time).length;
-      setResult({
-        total:   bookingRows.length,
-        suite:   suiteGuests.length,
-        day:     dayGuests.length,
-        withSpa,
-        date:    parsed[0]?.arrival_date,
-      });
-      setStep("done");
+      const suites = ezgoParsed.filter((g) => g.category === "suite").length;
+      const days   = ezgoParsed.filter((g) => g.category === "day_guest").length;
+      setEzgoResult({ total: guestRows.length, suites, days, date: ezgoParsed[0]?.arrival_date });
+      setEzgoStep("done");
     } catch (err) {
       showToast("err", "שגיאה בסנכרון: " + err.message);
     } finally {
-      setBusy(false);
+      setEzgoBusy(false);
+    }
+  };
+
+  // ── Tab 2 DB Sync: UPDATE guests.spa_time by phone (NO new guest rows) ─────
+  const handleSpaSync = async () => {
+    if (!supabase) { showToast("err", "Supabase לא מחובר"); return; }
+    setSpaBusy(true);
+    let matched = 0, missed = 0;
+    try {
+      for (const { phone, spa_time } of spaUpdates) {
+        const { data, error } = await supabase
+          .from("guests")
+          .update({ spa_time })
+          .eq("phone", phone)
+          .select("id");
+        if (error) { console.warn("[spa sync]", phone, error.message); missed++; }
+        else if (!data?.length) missed++;
+        else matched += data.length;
+      }
+      setSpaResult({ matched, missed, total: spaUpdates.length });
+    } catch (err) {
+      showToast("err", "שגיאה בעדכון ספא: " + err.message);
+    } finally {
+      setSpaBusy(false);
     }
   };
 
@@ -799,216 +757,271 @@ function ArrivalsImporter() {
     }}>{toast.msg}</div>
   );
 
-  // ── Done ──
-  if (step === "done" && result) return (
-    <div>
-      {ToastEl}
-      <div style={{ background: "#d1fae5", border: "1px solid #6ee7b7", borderRadius: 12, padding: "24px" }}>
-        <div style={{ fontSize: 32, marginBottom: 10 }}>✅</div>
-        <div style={{ fontWeight: 800, fontSize: 16, color: "#065f46", marginBottom: 6 }}>
-          {result.total} הזמנות סונכרנו בהצלחה — {result.date}
-        </div>
-        <div style={{ fontSize: 13, color: "#065f46", marginBottom: 16, lineHeight: 1.8 }}>
-          🏨 {result.suite} סוויטות · ☀️ {result.day} בילוי יומי · 💆 {result.withSpa} עם שעת ספא
-          <br />הבוט מוכן לשלוח הודעות אישור
-        </div>
-        <button
-          onClick={() => { setStep("upload"); setParsed([]); setSpaRows([]); setSpaFileName(""); setResult(null); }}
-          style={{ padding: "8px 18px", borderRadius: 8, border: "1px solid #6ee7b7",
-            background: "transparent", color: "#065f46", cursor: "pointer",
-            fontFamily: "Heebo, sans-serif", fontSize: 13, fontWeight: 700 }}>
-          ← ייבוא יומי נוסף
-        </button>
-      </div>
-    </div>
-  );
-
-  // ── Preview ──
-  if (step === "preview") {
-    const spaMergedCount = parsed.filter((g) => g.spa_from_csv).length;
-    const TABS = [
-      { key: "suite", label: "🏨 סוויטות",   count: suiteGuests.length, color: "#7c3aed" },
-      { key: "day",   label: "☀️ בילוי יומי", count: dayGuests.length,   color: "#16a34a" },
-      { key: "none",  label: "👥 ללא ספא",    count: noSpaGuests.length,  color: "#888"    },
-    ];
-    return (
-      <div>
-        {ToastEl}
-
-        {/* Spa-CSV merge banner */}
-        {spaFileName && (
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12,
-            padding: "8px 14px", borderRadius: 8, background: "rgba(124,58,237,0.07)",
-            border: "1px solid rgba(124,58,237,0.25)", fontSize: 12, color: "#7c3aed", fontWeight: 700 }}>
-            💆 לוח ספא נטען: {spaFileName}
-            {spaMergedCount > 0
-              ? <span style={{ fontWeight: 400, color: "var(--text-muted)" }}>· {spaMergedCount} אורחים הותאמו</span>
-              : <span style={{ fontWeight: 400, color: "#C0392B" }}> · לא נמצאו התאמות — בדוק שמות</span>}
-            <button onClick={() => spaFileRef.current?.click()}
-              style={{ marginRight: "auto", fontSize: 11, color: "#7c3aed", background: "none",
-                border: "1px solid currentColor", borderRadius: 5, padding: "2px 8px", cursor: "pointer",
-                fontFamily: "Heebo, sans-serif" }}>
-              החלף קובץ
-            </button>
-            <input ref={spaFileRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: "none" }}
-              onChange={(e) => e.target.files?.[0] && handleSpaFile(e.target.files[0])} />
-          </div>
-        )}
-
-        {/* Tabs */}
-        <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
-          {TABS.map(({ key, label, count, color }) => (
-            <button key={key} onClick={() => setPreviewTab(key)}
-              style={{
-                padding: "10px 18px", borderRadius: 10, cursor: "pointer",
-                fontFamily: "Heebo, sans-serif", fontWeight: 800, fontSize: 13,
-                border: `2px solid ${previewTab === key ? color : "var(--border)"}`,
-                background: previewTab === key ? "var(--card-bg)" : "var(--ivory)",
-                color: previewTab === key ? color : "var(--text-muted)",
-              }}>
-              {label} <span style={{ fontSize: 18, marginRight: 4 }}>{count}</span>
-            </button>
-          ))}
-          <div style={{ marginRight: "auto", fontSize: 12, color: "var(--text-muted)", padding: "0 4px" }}>
-            סה"כ {parsed.length} הזמנות · תאריך הגעה: <strong>{parsed[0]?.arrival_date}</strong>
-          </div>
-        </div>
-
-        {/* Table */}
-        <div style={{ background: "var(--card-bg)", border: "1px solid var(--border)", borderRadius: 10,
-          overflow: "hidden", marginBottom: 14 }}>
-          <div style={{ overflowX: "auto", maxHeight: 340 }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 560 }}>
-              <thead>
-                <tr style={{ background: "var(--ivory)" }}>
-                  {["שם", "טלפון", "לילות", "חדרים", "ספא", "שעה"].map((h) => (
-                    <th key={h} style={{ padding: "9px 12px", fontSize: 11, color: "var(--text-muted)",
-                      fontWeight: 700, textAlign: "right", borderBottom: "1px solid var(--border)" }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {previewRows.slice(0, 60).map((g, i) => (
-                  <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
-                    <td style={{ padding: "9px 12px", fontSize: 13, fontWeight: 600 }}>
-                      {g.guest_name || "—"}
-                      {g.spa_from_csv && (
-                        <span style={{ fontSize: 9, color: "#7c3aed", marginRight: 4,
-                          border: "1px solid #7c3aed", borderRadius: 3, padding: "1px 3px" }}>CSV</span>
-                      )}
-                    </td>
-                    <td style={{ padding: "9px 12px", fontSize: 12, color: "var(--text-muted)",
-                      direction: "ltr", textAlign: "right" }}>
-                      {g.phone ? "0" + g.phone.slice(3) : "—"}
-                    </td>
-                    <td style={{ padding: "9px 12px", fontSize: 12 }}>{g.nights ?? "—"}</td>
-                    <td style={{ padding: "9px 12px", fontSize: 12 }}>{g.rooms > 1 ? `${g.rooms} 🏢` : g.rooms}</td>
-                    <td style={{ padding: "9px 12px", fontSize: 11 }}>
-                      {g.spa_category === "suite" ? "🏨" : g.spa_category === "day_guest" ? "☀️" : "—"}
-                    </td>
-                    <td style={{ padding: "9px 12px", fontSize: 14, fontWeight: 800,
-                      color: g.spa_time ? "#7c3aed" : "var(--text-muted)" }}>
-                      {g.spa_time || "—"}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {previewRows.length > 60 && (
-            <div style={{ padding: "8px 12px", fontSize: 11, color: "var(--text-muted)", textAlign: "center" }}>
-              ועוד {previewRows.length - 60} שורות...
-            </div>
-          )}
-        </div>
-
-        {/* Action buttons */}
-        <div style={{ display: "flex", gap: 10 }}>
-          <button onClick={handleSync} disabled={busy} style={{
-            flex: 1, padding: "13px", borderRadius: 10, border: "none",
-            background: busy ? "var(--border)" : "linear-gradient(135deg,var(--gold),var(--gold-dark))",
-            color: busy ? "var(--text-muted)" : "#0F0F0F",
-            fontFamily: "Heebo, sans-serif", fontSize: 14, fontWeight: 800,
-            cursor: busy ? "not-allowed" : "pointer",
-          }}>
-            {busy ? "מסנכרן..." : `⚡ סנכרן ל-DB (${parsed.length} הזמנות)`}
-          </button>
-          <button onClick={() => setStep("upload")} style={{
-            padding: "13px 18px", borderRadius: 10, border: "1px solid var(--border)",
-            background: "var(--card-bg)", cursor: "pointer",
-            fontFamily: "Heebo, sans-serif", fontSize: 13, color: "var(--text-muted)",
-          }}>← חזור</button>
-        </div>
-      </div>
-    );
-  }
-
-  // ── Upload step: EZGO drop zone + optional Spa CSV drop zone ──
   return (
     <div>
       {ToastEl}
 
-      {/* ── Primary: EZGO "ספר הזמנות" ── */}
-      <div
-        onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={(e) => { e.preventDefault(); setDragging(false); handleFile(e.dataTransfer.files?.[0]); }}
-        onClick={() => fileRef.current?.click()}
-        style={{
-          border: `2px dashed ${dragging ? "var(--gold)" : "var(--border)"}`,
-          background: dragging ? "rgba(201,169,110,0.08)" : "var(--card-bg)",
-          borderRadius: 16, padding: "44px 20px", textAlign: "center", cursor: "pointer",
-          transition: "all 0.2s", marginBottom: 14,
-        }}>
-        <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }}
-          onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])} />
-        <div style={{ fontSize: 44, marginBottom: 10 }}>📅</div>
-        <div style={{ fontSize: 16, fontWeight: 700, color: "var(--black)", marginBottom: 6 }}>
-          גרור ספר הזמנות יומי לכאן
-        </div>
-        <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 10 }}>
-          קובץ יומי מ-EZGO (.xlsx/.xls) · שם, טלפון, לילות, שעת ספא מעמודת התוספות
-        </div>
-        <div style={{ display: "inline-flex", gap: 16, fontSize: 12, color: "var(--text-muted)" }}>
-          <span>🏨 סוויטות</span><span>☀️ בילוי יומי</span><span>📱 מוכן לבוט</span>
-        </div>
+      {/* Tab switcher */}
+      <div style={{ display: "flex", gap: 10, marginBottom: 20, flexWrap: "wrap" }}>
+        {[
+          { key: "ezgo", label: "📅 הזמנות EZGO" },
+          { key: "spa",  label: "💆 עדכון ספא"   },
+        ].map(({ key, label }) => (
+          <button key={key} onClick={() => setActiveTab(key)} style={{
+            flex: "1 1 160px", padding: "14px 18px", borderRadius: 12, cursor: "pointer",
+            fontFamily: "Heebo, sans-serif", fontSize: 15, fontWeight: 700,
+            border: `2px solid ${activeTab === key ? "var(--gold)" : "var(--border)"}`,
+            background: activeTab === key ? "rgba(201,169,110,0.1)" : "var(--card-bg)",
+            color: "var(--black)",
+          }}>
+            {activeTab === key ? "✓ " : ""}{label}
+          </button>
+        ))}
       </div>
 
-      {/* ── Secondary: "פעילות ספא" CSV (optional) ── */}
-      <div
-        onDragOver={(e) => { e.preventDefault(); setSpaDragging(true); }}
-        onDragLeave={() => setSpaDragging(false)}
-        onDrop={(e) => { e.preventDefault(); setSpaDragging(false); handleSpaFile(e.dataTransfer.files?.[0]); }}
-        onClick={() => spaFileRef.current?.click()}
-        style={{
-          border: `2px dashed ${spaDragging ? "#7c3aed" : spaFileName ? "rgba(124,58,237,0.5)" : "var(--border)"}`,
-          background: spaDragging
-            ? "rgba(124,58,237,0.06)"
-            : spaFileName ? "rgba(124,58,237,0.03)" : "var(--ivory)",
-          borderRadius: 12, padding: "20px", textAlign: "center", cursor: "pointer",
-          transition: "all 0.2s",
-        }}>
-        <input ref={spaFileRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: "none" }}
-          onChange={(e) => e.target.files?.[0] && handleSpaFile(e.target.files[0])} />
-        {spaFileName ? (
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#7c3aed" }}>
-            💆 {spaFileName}
-            <span style={{ fontSize: 12, fontWeight: 400, color: "var(--text-muted)", marginRight: 8 }}>
-              · {spaRows.length} טיפולים טעונים · לחץ להחלפה
-            </span>
+      {/* ══════════ TAB 1: EZGO ══════════ */}
+      {activeTab === "ezgo" && (
+        <>
+          {/* Upload step */}
+          {ezgoStep === "upload" && (
+            <div
+              onDragOver={(e) => { e.preventDefault(); setEzgoDragging(true); }}
+              onDragLeave={() => setEzgoDragging(false)}
+              onDrop={(e) => { e.preventDefault(); setEzgoDragging(false); handleEzgoFile(e.dataTransfer.files?.[0]); }}
+              onClick={() => ezgoRef.current?.click()}
+              style={{
+                border: `2px dashed ${ezgoDragging ? "var(--gold)" : "var(--border)"}`,
+                background: ezgoDragging ? "rgba(201,169,110,0.08)" : "var(--card-bg)",
+                borderRadius: 16, padding: "44px 20px", textAlign: "center", cursor: "pointer",
+                transition: "all 0.2s",
+              }}>
+              <input ref={ezgoRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: "none" }}
+                onChange={(e) => e.target.files?.[0] && handleEzgoFile(e.target.files[0])} />
+              <div style={{ fontSize: 44, marginBottom: 10 }}>📅</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: "var(--black)", marginBottom: 6 }}>
+                גרור קובץ EZGO לכאן או לחץ לבחירה
+              </div>
+              <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 10 }}>
+                CSV או Excel מ-EZGO · מזהה אוטומטי סוויטות vs בילוי יומי · תאריך מתוך שם הקובץ
+              </div>
+              <div style={{ display: "inline-flex", gap: 16, fontSize: 12, color: "var(--text-muted)" }}>
+                <span>🏨 סוויטות</span><span>☀️ בילוי יומי</span><span>📱 מוכן לבוט</span>
+              </div>
+            </div>
+          )}
+
+          {/* Preview step */}
+          {ezgoStep === "preview" && (
+            <>
+              <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 12 }}>
+                <strong>{ezgoParsed.length}</strong> הזמנות ·
+                🏨 {ezgoParsed.filter((g) => g.category === "suite").length} סוויטות ·
+                ☀️ {ezgoParsed.filter((g) => g.category === "day_guest").length} בילוי יומי ·
+                תאריך: <strong>{ezgoParsed[0]?.arrival_date ?? "—"}</strong>
+              </div>
+
+              <div style={{ background: "var(--card-bg)", border: "1px solid var(--border)", borderRadius: 10,
+                overflow: "hidden", marginBottom: 14 }}>
+                <div style={{ overflowX: "auto", maxHeight: 360 }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 520 }}>
+                    <thead>
+                      <tr style={{ background: "var(--ivory)" }}>
+                        {["שם", "טלפון", "חדר", "סוג", "לילות", "הגעה"].map((h) => (
+                          <th key={h} style={{ padding: "9px 12px", fontSize: 11, color: "var(--text-muted)",
+                            fontWeight: 700, textAlign: "right", borderBottom: "1px solid var(--border)" }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ezgoParsed.slice(0, 80).map((g, i) => (
+                        <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
+                          <td style={{ padding: "9px 12px", fontSize: 13, fontWeight: 600 }}>{g.guest_name || "—"}</td>
+                          <td style={{ padding: "9px 12px", fontSize: 12, color: "var(--text-muted)",
+                            direction: "ltr", textAlign: "right" }}>
+                            {g.phone ? "0" + String(g.phone).slice(3) : "—"}
+                          </td>
+                          <td style={{ padding: "9px 12px", fontSize: 12 }}>{g.room ?? "—"}</td>
+                          <td style={{ padding: "9px 12px", fontSize: 12 }}>
+                            {g.category === "suite" ? "🏨 סוויטה" : g.category === "day_guest" ? "☀️ יומי" : "—"}
+                          </td>
+                          <td style={{ padding: "9px 12px", fontSize: 12 }}>{g.nights ?? "—"}</td>
+                          <td style={{ padding: "9px 12px", fontSize: 12 }}>{g.arrival_date ?? "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {ezgoParsed.length > 80 && (
+                  <div style={{ padding: "8px 12px", fontSize: 11, color: "var(--text-muted)", textAlign: "center" }}>
+                    ועוד {ezgoParsed.length - 80} שורות...
+                  </div>
+                )}
+              </div>
+
+              <div style={{ display: "flex", gap: 10 }}>
+                <button onClick={handleEzgoSync} disabled={ezgoBusy} style={{
+                  flex: 1, padding: "13px", borderRadius: 10, border: "none",
+                  background: ezgoBusy ? "var(--border)" : "linear-gradient(135deg,var(--gold),var(--gold-dark))",
+                  color: ezgoBusy ? "var(--text-muted)" : "#0F0F0F",
+                  fontFamily: "Heebo, sans-serif", fontSize: 14, fontWeight: 800,
+                  cursor: ezgoBusy ? "not-allowed" : "pointer",
+                }}>
+                  {ezgoBusy ? "מייבא..." : `⚡ ייבא ${ezgoParsed.length} אורחים ל-DB`}
+                </button>
+                <button onClick={() => { setEzgoStep("upload"); setEzgoParsed([]); }} style={{
+                  padding: "13px 18px", borderRadius: 10, border: "1px solid var(--border)",
+                  background: "var(--card-bg)", cursor: "pointer",
+                  fontFamily: "Heebo, sans-serif", fontSize: 13, color: "var(--text-muted)",
+                }}>← חזור</button>
+              </div>
+            </>
+          )}
+
+          {/* Done step */}
+          {ezgoStep === "done" && ezgoResult && (
+            <div style={{ background: "#d1fae5", border: "1px solid #6ee7b7", borderRadius: 12, padding: "24px" }}>
+              <div style={{ fontSize: 32, marginBottom: 10 }}>✅</div>
+              <div style={{ fontWeight: 800, fontSize: 16, color: "#065f46", marginBottom: 6 }}>
+                {ezgoResult.total} אורחים יובאו — {ezgoResult.date}
+              </div>
+              <div style={{ fontSize: 13, color: "#065f46", marginBottom: 16, lineHeight: 1.8 }}>
+                🏨 {ezgoResult.suites} סוויטות · ☀️ {ezgoResult.days} בילוי יומי
+                <br />עכשיו העלה קובץ פעילות ספא כדי להזריק שעות טיפול
+              </div>
+              <div style={{ display: "flex", gap: 10 }}>
+                <button onClick={() => setActiveTab("spa")} style={{
+                  padding: "8px 18px", borderRadius: 8, border: "none",
+                  background: "#7c3aed", color: "#fff", cursor: "pointer",
+                  fontFamily: "Heebo, sans-serif", fontSize: 13, fontWeight: 700 }}>
+                  💆 עדכן ספא עכשיו
+                </button>
+                <button onClick={() => { setEzgoStep("upload"); setEzgoParsed([]); setEzgoResult(null); }} style={{
+                  padding: "8px 18px", borderRadius: 8, border: "1px solid #6ee7b7",
+                  background: "transparent", color: "#065f46", cursor: "pointer",
+                  fontFamily: "Heebo, sans-serif", fontSize: 13, fontWeight: 700 }}>
+                  ← ייבוא יומי נוסף
+                </button>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ══════════ TAB 2: SPA ENRICHMENT ══════════ */}
+      {activeTab === "spa" && (
+        <>
+          {/* Info banner */}
+          <div style={{ background: "rgba(124,58,237,0.07)", border: "1px solid rgba(124,58,237,0.2)",
+            borderRadius: 10, padding: "12px 16px", marginBottom: 16, fontSize: 12,
+            color: "#5b21b6", lineHeight: 1.7 }}>
+            <strong>חשוב:</strong> ייבוא ספא <u>לא יוצר</u> אורחים חדשים.
+            הוא מזריק שעת ספא (<code>spa_time</code>) לאורחים שכבר קיימים ב-DB לפי מספר טלפון.
+            <br />ייבא קובץ EZGO קודם (טאב שמאל) כדי ליצור רשומות אורחים.
           </div>
-        ) : (
-          <>
-            <div style={{ fontSize: 22, marginBottom: 6 }}>💆</div>
-            <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-muted)", marginBottom: 4 }}>
-              הוסף לוח פעילות ספא <span style={{ fontWeight: 400 }}>(אופציונלי)</span>
+
+          {/* Drop zone */}
+          <div
+            onDragOver={(e) => { e.preventDefault(); setSpaDragging(true); }}
+            onDragLeave={() => setSpaDragging(false)}
+            onDrop={(e) => { e.preventDefault(); setSpaDragging(false); handleSpaFile(e.dataTransfer.files?.[0]); }}
+            onClick={() => spaRef.current?.click()}
+            style={{
+              border: `2px dashed ${spaDragging ? "#7c3aed" : spaFileName ? "rgba(124,58,237,0.5)" : "var(--border)"}`,
+              background: spaDragging ? "rgba(124,58,237,0.06)" : spaFileName ? "rgba(124,58,237,0.03)" : "var(--ivory)",
+              borderRadius: 16, padding: "36px 20px", textAlign: "center", cursor: "pointer",
+              transition: "all 0.2s", marginBottom: 16,
+            }}>
+            <input ref={spaRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: "none" }}
+              onChange={(e) => e.target.files?.[0] && handleSpaFile(e.target.files[0])} />
+            {spaFileName ? (
+              <div style={{ fontSize: 14, fontWeight: 700, color: "#7c3aed" }}>
+                💆 {spaFileName}
+                <span style={{ display: "block", fontSize: 12, fontWeight: 400, color: "var(--text-muted)", marginTop: 4 }}>
+                  {spaUpdates.length} אורחים ייחודיים זוהו · לחץ להחלפה
+                </span>
+              </div>
+            ) : (
+              <>
+                <div style={{ fontSize: 36, marginBottom: 8 }}>💆</div>
+                <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-muted)", marginBottom: 4 }}>
+                  גרור קובץ פעילות ספא לכאן
+                </div>
+                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                  CSV מ-EZGO ספא · עמודות: sTel, tmStart, iLineStatus
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Preview spa updates (before sync) */}
+          {spaUpdates.length > 0 && !spaResult && (
+            <>
+              <div style={{ background: "var(--card-bg)", border: "1px solid var(--border)", borderRadius: 10,
+                overflow: "hidden", marginBottom: 14 }}>
+                <div style={{ overflowX: "auto", maxHeight: 280 }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr style={{ background: "var(--ivory)" }}>
+                        {["טלפון", "שעת ספא"].map((h) => (
+                          <th key={h} style={{ padding: "8px 12px", fontSize: 11, color: "var(--text-muted)",
+                            fontWeight: 700, textAlign: "right", borderBottom: "1px solid var(--border)" }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {spaUpdates.slice(0, 50).map(({ phone, spa_time }, i) => (
+                        <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
+                          <td style={{ padding: "8px 12px", fontSize: 12,
+                            direction: "ltr", textAlign: "right", color: "var(--text-muted)" }}>{phone}</td>
+                          <td style={{ padding: "8px 12px", fontSize: 14, fontWeight: 800, color: "#7c3aed" }}>
+                            {spa_time}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <button onClick={handleSpaSync} disabled={spaBusy} style={{
+                width: "100%", padding: "13px", borderRadius: 10, border: "none",
+                background: spaBusy ? "var(--border)" : "#7c3aed",
+                color: spaBusy ? "var(--text-muted)" : "#fff",
+                fontFamily: "Heebo, sans-serif", fontSize: 14, fontWeight: 800,
+                cursor: spaBusy ? "not-allowed" : "pointer",
+              }}>
+                {spaBusy ? "מעדכן..." : `💉 הזרק שעות ספא ל-${spaUpdates.length} אורחים`}
+              </button>
+            </>
+          )}
+
+          {/* Result */}
+          {spaResult && (
+            <div style={{
+              background: spaResult.matched > 0 ? "#d1fae5" : "#FFF0EE",
+              border: `1px solid ${spaResult.matched > 0 ? "#6ee7b7" : "#fca5a5"}`,
+              borderRadius: 12, padding: "20px",
+            }}>
+              <div style={{ fontSize: 28, marginBottom: 8 }}>{spaResult.matched > 0 ? "✅" : "⚠️"}</div>
+              <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 8,
+                color: spaResult.matched > 0 ? "#065f46" : "#C0392B" }}>
+                {spaResult.matched} אורחים עודכנו עם שעת ספא
+              </div>
+              {spaResult.missed > 0 && (
+                <div style={{ fontSize: 12, color: "#92400e", marginBottom: 12 }}>
+                  ⚠️ {spaResult.missed} טלפונים לא נמצאו ב-guests
+                  {spaResult.matched === 0 ? " — ייבא קובץ EZGO קודם" : ""}
+                </div>
+              )}
+              <button onClick={() => { setSpaUpdates([]); setSpaFileName(""); setSpaResult(null); }} style={{
+                padding: "8px 18px", borderRadius: 8, border: "1px solid #6ee7b7",
+                background: "transparent", color: "#065f46", cursor: "pointer",
+                fontFamily: "Heebo, sans-serif", fontSize: 13, fontWeight: 700 }}>
+                ← עדכון ספא נוסף
+              </button>
             </div>
-            <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-              CSV/Excel עם שם אורח + שעת טיפול · יתמזג עם ההזמנות לפי שם
-            </div>
-          </>
-        )}
-      </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
