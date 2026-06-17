@@ -478,8 +478,46 @@ const SPA_CSV_ALIASES_AR = {
   treatment_time: ["tmStart", "שעה", "שעת טיפול", "שעת התחלה", "time", "hour"],
   treatment_type: ["טיפול", "שם טיפול", "סוג טיפול", "treatment", "treatment type"],
   category:       ["חבילה", "קטגוריה", "סוג", "package", "category"],
-  guest_name:     ["שם אורח", "שם מלא", "שם", "לקוח", "guest name", "name"],
+  guest_name:     ["sClientName", "שם אורח", "שם מלא", "שם", "לקוח", "guest name", "name"],
 };
+
+// Column aliases for EZGO CSV export format (column-header based, as opposed to
+// the positional "ספר הזמנות" Excel format handled by parseArrivalsExcel).
+const EZGO_CSV_ALIASES = {
+  guest_name:   ["sClientFullName", "sClientName", "clientFullName", "שם"],
+  phone:        ["sTel1", "sTel", "phone", "טלפון"],
+  nights:       ["iNights", "nights", "לילות"],
+  arrival_date: ["dCheckIn", "dArrival", "checkIn", "תאריך הגעה"],
+  rooms:        ["iRooms", "iRoomCount", "rooms", "חדרים"],
+};
+
+// Parse an EZGO CSV export that has named column headers (iOrderId, sClientFullName, sTel1 …).
+// arrivalDate is used as fallback when the file has no date column (extracted from filename).
+function parseEzgoCsv(rows, arrivalDate) {
+  if (!rows.length) return [];
+  const headers = Object.keys(rows[0]);
+  const colMap  = mapHeaders(EZGO_CSV_ALIASES, headers);
+
+  const byPhone = {};
+  for (const r of rows) {
+    const guestName = colMap.guest_name   ? String(r[colMap.guest_name]   ?? "").trim() || null : null;
+    const phoneRaw  = colMap.phone        ? String(r[colMap.phone]        ?? "").trim()          : "";
+    const phone     = normalizePhoneBookings(phoneRaw);
+    const nights    = colMap.nights       ? parseInt(String(r[colMap.nights]       ?? "")) || null : null;
+    const rooms     = colMap.rooms        ? parseInt(String(r[colMap.rooms]        ?? "")) || 1    : 1;
+    const rawDate   = colMap.arrival_date ? String(r[colMap.arrival_date] ?? "").trim()           : "";
+    const rowDate   = rawDate ? parseEzgoDate(rawDate) : arrivalDate;
+
+    if (!phone && !guestName) continue;
+    const key = phone ?? normNameKey(guestName);
+    if (!byPhone[key]) {
+      byPhone[key] = { guest_name: guestName, phone, arrival_date: rowDate, nights, rooms: rooms || 1, spa_time: null, spa_category: null };
+    } else {
+      byPhone[key].rooms += (rooms || 1);
+    }
+  }
+  return Object.values(byPhone);
+}
 
 // Compact name key for fuzzy matching across EZGO and Spa CSV name formats.
 function normNameKey(s) {
@@ -591,7 +629,7 @@ function ArrivalsImporter() {
     previewTab === "suite" ? suiteGuests :
     previewTab === "day"   ? dayGuests   : noSpaGuests;
 
-  // ── Parse EZGO "ספר הזמנות" Excel ──
+  // ── Parse EZGO file — auto-detect Excel "ספר הזמנות" vs CSV with column headers ──
   const handleFile = useCallback(async (file) => {
     if (!file) return;
     try {
@@ -599,8 +637,30 @@ function ArrivalsImporter() {
       const buf  = await file.arrayBuffer();
       const wb   = XLSX.read(buf, { type: "array" });
       const ws   = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(ws, { defval: null, header: 1 });
-      const data = parseArrivalsExcel(rows);
+
+      // Peek at first row with header:1 to detect format
+      const firstRow = (XLSX.utils.sheet_to_json(ws, { defval: null, header: 1 })[0] ?? []);
+      const isEzgoCsv = firstRow.some(
+        (h) => typeof h === "string" && /^(iOrderId|sClientFullName|sTel1)$/i.test(h.trim())
+      );
+
+      let data;
+      if (isEzgoCsv) {
+        // Named-column CSV export from EZGO
+        const csvRows = XLSX.utils.sheet_to_json(ws, { defval: null });
+        // Try to extract arrival date from filename (e.g. "16.6.26.csv" → 2026-06-16)
+        const dm = file.name.match(/(\d{1,2})[.\-_](\d{1,2})[.\-_](\d{2,4})/);
+        const fallbackDate = dm
+          ? `${dm[3].length === 2 ? `20${dm[3]}` : dm[3]}-${dm[2].padStart(2,"0")}-${dm[1].padStart(2,"0")}`
+          : null;
+        data = parseEzgoCsv(csvRows, fallbackDate);
+        if (data.length) showToast("ok", `📋 זוהה פורמט EZGO CSV — ${data.length} הזמנות`);
+      } else {
+        // Positional Excel "ספר הזמנות" format
+        const rows = XLSX.utils.sheet_to_json(ws, { defval: null, header: 1 });
+        data = parseArrivalsExcel(rows);
+      }
+
       if (!data.length) {
         showToast("err", "לא נמצאו הזמנות — בדוק שהקובץ בפורמט ספר ההזמנות היומי");
         return;

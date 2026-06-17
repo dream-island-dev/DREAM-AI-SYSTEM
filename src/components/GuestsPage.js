@@ -19,6 +19,8 @@ export default function GuestsPage() {
   const [badgeHover, setBadgeHover] = useState(null);
   const [paymentModal, setPaymentModal] = useState(null); // { id, name, phone, amount, link }
   const [paymentBusy, setPaymentBusy]   = useState(null); // guestId being sent
+  const [selectedIds, setSelectedIds]   = useState(new Set()); // batch selection
+  const [resetBusy, setResetBusy]       = useState(false);
 
   const showToast = (type, msg) => { setToast({ type, msg }); setTimeout(() => setToast(null), 3500); };
 
@@ -62,6 +64,45 @@ export default function GuestsPage() {
   };
 
   const isSuite = (g) => g.room_type === "suite";
+
+  // ── Batch selection helpers ──────────────────────────────────────────────────
+  const toggleSelect = (id) =>
+    setSelectedIds((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+
+  const toggleSelectAll = () =>
+    setSelectedIds((prev) => prev.size === guests.length ? new Set() : new Set(guests.map((g) => g.id)));
+
+  // ── Safe spa reset — UPDATE only, never DELETE ───────────────────────────────
+  const handleResetSpa = async () => {
+    if (!selectedIds.size || !supabase) return;
+    const ids = [...selectedIds];
+    if (!window.confirm(`לאפס נתוני ספא ל-${ids.length} אורחים שנבחרו?\n(הרשומות לא יימחקו, רק שעת הספא תתאפס)`)) return;
+    setResetBusy(true);
+    try {
+      const { error } = await supabase
+        .from("guests")
+        .update({ spa_time: null })
+        .in("id", ids);
+      if (error) throw error;
+      // Best-effort: clear bookings table too (phone without + prefix)
+      const phones = guests
+        .filter((g) => selectedIds.has(g.id) && g.phone)
+        .map((g) => g.phone.replace(/^\+/, ""));
+      if (phones.length) {
+        await supabase
+          .from("bookings")
+          .update({ treatment_time: null, treatment_type: null })
+          .in("phone", phones);
+      }
+      setGuests((prev) => prev.map((g) => selectedIds.has(g.id) ? { ...g, spa_time: null } : g));
+      setSelectedIds(new Set());
+      showToast("ok", `✅ נתוני ספא אופסו ל-${ids.length} אורחים`);
+    } catch (e) {
+      showToast("err", "שגיאה באיפוס: " + (e?.message ?? e));
+    } finally {
+      setResetBusy(false);
+    }
+  };
 
   // ── Payment template sender ──────────────────────────────────────────────────
   const doSendPayment = async (guestId) => {
@@ -199,9 +240,23 @@ export default function GuestsPage() {
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
         <div style={{ fontSize: 13, color: "var(--text-muted)" }}>{guests.length} אורחים</div>
-        <button className="btn btn-ghost btn-sm" onClick={fetchGuests} disabled={loading}>
-          {loading ? "..." : "↺ רענון"}
-        </button>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {selectedIds.size > 0 && (
+            <button
+              onClick={handleResetSpa}
+              disabled={resetBusy}
+              style={{
+                padding: "7px 14px", borderRadius: 8, border: "1px solid #C0392B",
+                background: resetBusy ? "var(--ivory)" : "#FFF0EE", color: "#C0392B",
+                fontFamily: "Heebo, sans-serif", fontSize: 13, fontWeight: 700, cursor: resetBusy ? "not-allowed" : "pointer",
+              }}>
+              {resetBusy ? "⏳ מאפס..." : `🗑️ מחיקת נתוני ספא שנבחרו (${selectedIds.size})`}
+            </button>
+          )}
+          <button className="btn btn-ghost btn-sm" onClick={fetchGuests} disabled={loading}>
+            {loading ? "..." : "↺ רענון"}
+          </button>
+        </div>
       </div>
 
       {!isSupabaseConfigured && (
@@ -221,13 +276,28 @@ export default function GuestsPage() {
           <div style={{ overflowX: "auto" }}>
             <table className="table" style={{ minWidth: 720 }}>
               <thead><tr>
-                <th>שם</th><th>טלפון</th><th>חדר</th><th>סוג</th><th>הגעה</th><th>סטטוס</th><th>פעולות</th>
+                <th style={{ width: 36 }}>
+                  <input type="checkbox"
+                    checked={guests.length > 0 && selectedIds.size === guests.length}
+                    onChange={toggleSelectAll}
+                    title="בחר הכל"
+                    style={{ cursor: "pointer", accentColor: "var(--gold)" }} />
+                </th>
+                <th>שם</th><th>טלפון</th><th>חדר</th><th>סוג</th><th>הגעה</th>
+                <th style={{ color: "#7c3aed" }}>ספא</th>
+                <th>סטטוס</th><th>פעולות</th>
               </tr></thead>
               <tbody>
                 {guests.map((g) => {
                   const sm = STATUS_META[g.status] ?? STATUS_META.expected;
                   return (
-                    <tr key={g.id}>
+                    <tr key={g.id} style={{ background: selectedIds.has(g.id) ? "rgba(201,169,110,0.07)" : undefined }}>
+                      <td>
+                        <input type="checkbox"
+                          checked={selectedIds.has(g.id)}
+                          onChange={() => toggleSelect(g.id)}
+                          style={{ cursor: "pointer", accentColor: "var(--gold)" }} />
+                      </td>
                       <td style={{ fontWeight: 700 }}>
                         {g.name}
                         {g.arrival_confirmed && (
@@ -247,6 +317,12 @@ export default function GuestsPage() {
                         }}>{isSuite(g) ? "👑 סוויטה" : "סטנדרט"}</span>
                       </td>
                       <td style={{ fontSize: 13 }}>{g.arrival_date ?? "—"}</td>
+                      <td style={{
+                        fontSize: 13, fontWeight: g.spa_time ? 800 : 400,
+                        color: g.spa_time ? "#7c3aed" : "var(--text-muted)",
+                      }}>
+                        {g.spa_time || "—"}
+                      </td>
                       <td>
                         <span
                           onClick={g.status === "checked_in" ? () => setStatus(g, "expected") : undefined}
