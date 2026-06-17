@@ -670,6 +670,7 @@ function ArrivalsImporter() {
           room_type:      g.spa_category === "suite" ? "suite" : "standard",
           status:         "pending",
           guest_index:    1,
+          spa_time:       g.spa_time ?? null,
         }));
 
       if (guestRows.length) {

@@ -1,6 +1,6 @@
 # CLAUDE.md — Dream Island AI System
 > קובץ זה נקרא אוטומטית בכל שיחה. הוא מקור-האמת שלך. קרא אותו לפני כל פעולה.
-> **עדכון אחרון:** 2026-06-10 (post full-audit sync)
+> **עדכון אחרון:** 2026-06-17 (post whatsapp-webhook full overhaul)
 
 ---
 
@@ -51,7 +51,7 @@
 
 ```
 DREAM-AI-SYSTEM/
-├── src/                          (last build: Jun 10 00:41)
+├── src/
 │   ├── App.js                    ★ ראוטר ראשי, Auth, global state (104KB — הקובץ הכי גדול)
 │   ├── Chat.js                   ⚠️ ORPHAN 3.9KB — לא מיובא בשום מקום, ממתין למחיקה
 │   ├── supabaseClient.js         2.8KB — Supabase client + loadAgentProfile + saveLearningLog
@@ -63,7 +63,7 @@ DREAM-AI-SYSTEM/
 │   │   └── pushNotifications.js  3.3KB — getPushState, subscribe/unsubscribe
 │   ├── data/
 │   │   └── demoAgentProfile.js   9.1KB — DreamBot demo profile + opening suggestions
-│   └── components/               (sizes = bytes מ-ls -la, Jun 10)
+│   └── components/
 │       ├── ShiftGenerator.js     58KB  מחולל משמרות — LOCAL ONLY, אין קריאת Edge Function
 │       ├── BroadcastDashboard.js 37KB  שידור WhatsApp — תבניות מ-DB (message_templates)
 │       ├── GuestDashboard.js     31KB  pipeline אורחים
@@ -72,20 +72,36 @@ DREAM-AI-SYSTEM/
 │       ├── AgentQuestionnaire.js 19KB  שאלון הגדרת סוכן
 │       ├── WhatsAppInbox.js      18KB  תיבת שיחות WA + bot toggle
 │       ├── AdminPanel.js         18KB  לוח בקרה admin
-│       ├── DataUpload.js         18KB  העלאת Excel אורחים/משמרות
+│       ├── DataUpload.js         ★ EZGO+Spa merger — מייבא הגעות EZGO + CSV ספא,
+│       │                            מחבר לפי שם → כותב ל-bookings (treatment_time, treatment_type)
+│       │                            phone format: sanitizePhone() → E.164 לguests,
+│       │                            normalizePhoneBookings() → 972XXXXXXXXX (ללא +) לbookings
 │       ├── TaskBoard.js          18KB  לוח משימות
 │       ├── KnowledgeUploader.js  17KB  העלאת מסמכי ידע → agent_memory
 │       ├── BotConfigPanel.js     13KB  הגדרות Smart Concierge (bot_config table)
 │       ├── GuestsPage.js         9.6KB רשימת אורחים + badge toggle
-│       └── BotSettings.js        9.6KB ★ NEW מוח הבוט — system_prompt + knowledge_base
+│       └── BotSettings.js        ★ מוח הבוט — system_prompt + knowledge_base
+│                                    חשוב: משפיע רק על תשובות free-text (Gemini)
+│                                    לא משפיע על לחיצות כפתור (hardcoded routing)
 ├── supabase/
 │   ├── migrations/
-│   │   ├── 001–016_*.sql        applied ✅
-│   │   ├── 017_bot_active.sql   applied ✅ — seeds bot_active key in bot_config
-│   │   ├── 018_bot_settings.sql applied ✅ — bot_settings table (single row, id=1)
-│   │   ├── 019_message_templates.sql  applied ✅ — 4 Dream Island templates seeded
-│   │   ├── 020–026_*.sql            applied ✅
-│   │   └── 027_guests_manager_sync.sql ★ NEW — manager_id column + trigger + RLS all-auth fix
+│   │   ├── 001–027_*.sql        applied ✅
+│   │   ├── 028_guests_rls_open_to_all_auth.sql  applied ✅
+│   │   ├── 029_room_status.sql                  applied ✅
+│   │   ├── 030_guests_pipeline_flags.sql         applied ✅
+│   │   ├── 031_treatment_time.sql               applied ✅ — bookings table עם treatment_time/type
+│   │   ├── 032_bot_scripts.sql                  applied ✅
+│   │   ├── 033_guests_window_tracking.sql        applied ✅
+│   │   ├── 034_bot_sales_directives.sql          applied ✅
+│   │   ├── 035_spa_staging.sql                  applied ✅ — spa_staging staging table
+│   │   ├── 036_room_cleaning_timer.sql           applied ✅
+│   │   ├── 037_bot_scripts_calibration.sql       applied ✅
+│   │   ├── 038_cleaner_role.sql                 applied ✅
+│   │   ├── 039_arrivals_import.sql              applied ✅ — room_count + status לbookings
+│   │   ├── 040_upsell_interest.sql              applied ✅
+│   │   ├── 041_suite_name.sql                   applied ✅
+│   │   ├── 042_guest_index.sql                  applied ✅
+│   │   └── 043_guests_status_pending.sql         applied ✅ — הוסיף 'pending' לstatus check
 │   └── functions/
 │       ├── chat/                deployed ✅ — Gemini 2.5→Claude fallback
 │       ├── generate-schedule/   deployed ✅ ⚠️ ORPHAN — frontend לא קורא אותה
@@ -94,7 +110,7 @@ DREAM-AI-SYSTEM/
 │       ├── push-notify/         deployed ✅
 │       ├── whatsapp-send/       deployed ✅ — תומך ב-inbox_reply trigger
 │       ├── whatsapp-cron/       deployed ✅ ⚠️ pg_cron לא אומת
-│       └── whatsapp-webhook/    deployed ✅ — Gemini + bot_settings injection
+│       └── whatsapp-webhook/    ★ deployed ✅ v3 — ראה §6 לתיאור מלא
 └── public/
     └── service-worker.js        PWA push listener
 ```
@@ -135,30 +151,152 @@ switch (activePage) {
 | `profiles` | משתמשים — extends Supabase Auth | `auth.uid() = id` |
 | `employees` | עובדי מלון | `created_by = auth.uid()` |
 | `shifts` | משמרות | `created_by = auth.uid()` |
-| `guests` | אורחי מלון (suite/day_guest) | כל authenticated קורא/כותב; `manager_id` לtracking בלבד |
+| `guests` | אורחי מלון — phone בפורמט E.164 (`+972XXXXXXXXX`) | כל authenticated קורא/כותב |
+| `bookings` | ★ הגעות מיובאות מEZGO — phone בפורמט `972XXXXXXXXX` (ללא `+`) | authenticated |
+| `spa_staging` | שלב ביניים לייבוא ספא — ממתין לאישור מנהל | authenticated |
 | `agent_profiles` | פרופיל AI אחד למנהל | `manager_id = auth.uid()` |
 | `agent_memory` | ידע שנחלץ מקבצים | `manager_id = auth.uid()` |
 | `chat_history` | היסטוריית שיחה per session_id | open (mock auth compat) |
 | `whatsapp_conversations` | שיחות WA נכנסות/יוצאות | `auth.uid() IS NOT NULL` |
 | `guest_alerts` | דגלי alert מהבוט | authenticated |
 | `bot_config` | הגדרות בוט שורה-שורה (key-value) | admin write |
-| `bot_settings` | ★ NEW system_prompt + knowledge_base (id=1) | `auth.uid() IS NOT NULL` |
-| `message_templates` | ★ NEW תבניות שידור עם sort_order | `auth.uid() IS NOT NULL` |
+| `bot_settings` | system_prompt + knowledge_base (id=1) — משפיע על Gemini בלבד | `auth.uid() IS NOT NULL` |
+| `message_templates` | תבניות שידור עם sort_order | `auth.uid() IS NOT NULL` |
+| `bot_scripts` | סקריפטים מותאמים לכל trigger_event | authenticated |
 | `tasks` | משימות צוות | open to authenticated |
 | `notification_log` | dedup שליחות WA | service role |
 | `schedule_patterns` | דפוסי Excel שנלמדו | |
 | `push_subscriptions` | Web Push endpoints | `user_id = auth.uid()` |
 
+### פורמטי טלפון — חיוני להבנה
+```
+guests.phone    = "+972501234567"   ← E.164, עם + (sanitizePhone בDataUpload)
+bookings.phone  = "972501234567"    ← ללא +  (normalizePhoneBookings בDataUpload)
+Meta sends from = "972501234567"    ← ללא +  (webhook מוסיף + בעצמו)
+
+⚠️ כשמחפשים bookings מה-webhook — phone.slice(1) כדי להסיר את ה-+
+⚠️ לעולם אל תחפש bookings עם phone שמכיל + — הבדיקה תחזיר ריק
+```
+
+### עמודות חשובות ב-`bookings`
+```
+phone          TEXT  — 972XXXXXXXXX (ללא +)
+arrival_date   DATE
+treatment_time TEXT  — שעת טיפול ספא ("14:00") — הבדק מול spa_time בDataUpload שהוא שם משתנה internal בלבד
+treatment_type TEXT  — סוג טיפול ("ספא בואטסו" וכו')
+status         TEXT  — 'pending' | 'expected' | 'room_ready' | 'checked_in'
+```
+
+### עמודות חשובות ב-`guests`
+```
+phone               TEXT  — +972XXXXXXXXX (E.164)
+needs_callback      BOOL  — true = thread הועבר לידי אדם, הבוט שותק
+requires_attention  BOOL  — badge אדום בדאשבורד
+arrival_confirmed   BOOL  — האורח אישר הגעה
+msg_pre_arrival_2d_sent BOOL — נשלחה תבנית אישור הגעה
+status              TEXT  — 'pending' | 'expected' | 'room_ready' | 'checked_in'
+```
+
 ---
 
 ## 6. Edge Functions — תיאור מהיר
 
-### `whatsapp-webhook` — בוט AI לאורחים
-- **מה עושה:** קולט הודעות WA נכנסות, מסווג intent, מחליט אם לענות עם Gemini
-- **bot_active:** קורא `bot_config.bot_active` — אם `'false'` מתעד ללא תשובה
-- **prompt building:** `buildSystemPrompt(botConfig)` + override מ-`bot_settings` (id=1)
-- **final prompt:** אם `bot_settings.system_prompt` לא ריק — מחליף לחלוטין; `knowledge_base` תמיד מוסף
-- **cache:** שני caches ל-5 דקות: `_configCache` + `_botSettingsCache`
+### `whatsapp-webhook` v3 — ★ FULLY OVERHAULED (Jun 17 2026)
+
+#### ארכיטקטורת ניתוב — עיקרון יסוד שחייב להישמר
+```
+לחיצת כפתור (interactive/button_reply)
+  → HARDCODED routing בEdge Function בלבד
+  → אסור לשלוח ל-Gemini/LLM
+
+הודעת טקסט חופשי
+  → intent classification → Gemini (+ system prompt מbot_settings)
+  → LLM מטפל בשאלות, מידע, שיחה
+
+bot_settings.system_prompt = AI persona בלבד
+  → לא שולט על ניתוב כפתורים, לא על arrival flow
+```
+
+#### פייפליין עיבוד הודעה (סדר מדויק)
+```
+1. Raw payload dump (console.log — לdiagnostics)
+2. Parse Meta envelope → msgArr
+3. Per message:
+   a. DIAGNOSTIC log: type, from, msgId
+   b. Extract text/buttonTitle/buttonId לפי msg.type:
+      - "text"        → msg.text.body
+      - "interactive" → msg.interactive.button_reply.{title, id}
+      - אחר           → continue (skip)
+   c. Dedup check (whatsapp_conversations.wa_message_id)
+   d. Guest lookup (guests table, by phone with +)
+   e. DIAGNOSTIC pre-flight log: guestId, needs_callback, isButton
+   f. needs_callback gate (ראה פירוט)
+   g. Button router (אם isButtonReply)
+   h. Text confirmation detection (CONFIRMATION_RE)
+   i. Date-change detection (DATE_CHANGE_RE)
+   j. Intent classification → Gemini/Claude
+```
+
+#### `needs_callback` Gate — Human Handoff
+```typescript
+// אם guest.needs_callback === true → הבוט שותק (message מתועד, לא נשלחת תשובה)
+// OVERRIDE יוצאים מכלל זה:
+//   - לחיצת כפתור "כן,מגיעים!" → מנקה needs_callback, ממשיך לbutton router
+//   - הקלדת טקסט שמתאים לCONFIRMATION_RE → מנקה needs_callback, ממשיך
+// ⚠️ לאפס needs_callback ידנית ב-GuestsPage כשסיימת לטפל באורח
+```
+
+#### Button Router — כל הכפתורים הידועים
+| כפתור | פעולה |
+|---|---|
+| "כן,מגיעים!" | `arrival_confirmed=true` → `lookupSpaTime()` → תשובה חמה |
+| "לא,שינוי בתאריך" | `needs_callback=true`, `requires_attention=true` → handoff message מדויק |
+| "ספא/טיפולים" | שליחת `SPA_MENU` כטקסט חופשי |
+| "דברו איתי/מענה אנושי" | `needs_callback=true` → "נחזור אליך" |
+| "היה מושלם!/מושלמת" | שליחת Google Review URL |
+| "יש מקום לשיפור" | `requires_attention=true` → בקשת משוב |
+| "נשמע מושלם/שריינו מקום" | `upsell_interest=true` בbookings → צוות ספא |
+| "פחות מתאים" | decline graceful |
+| כל אחר | generic reply — שום כפתור לא שותק |
+
+#### `lookupSpaTime(supabase, phone)` — Helper
+```typescript
+// מחפש treatment_time בbookings לפי phone (ללא +)
+// שלב 1: arrival_date >= today (עדכני)
+// שלב 2: כל booking (fallback לtest עם תאריך עבר)
+// מחזיר: "סוג בשעה HH:MM" | null
+// מדפיס log ברור עם מה שמצא/לא מצא
+```
+
+#### Arrival Confirmation Reply — IF/ELSE חיוני
+```
+יש treatment_time:
+  ✅ ברכה חמה + "🕐 הטיפול שלך בספא: [type] בשעה [time]" + workshops link
+  ✅ closing: "על הצ׳ק-אין, החדר, הספא"
+
+אין treatment_time (null):
+  ✅ ברכה חמה + workshops link בלבד
+  ❌ אפס אזכורים של "ספא", "טיפול", "null"
+  ✅ closing: "על הצ׳ק-אין, החדר" (ללא הספא)
+```
+
+#### LLM Fixes
+- **Gemini thought leak**: `rawParts.find(p => !p.thought && typeof p.text === "string")` — מדלג על `thought:true` parts
+- **sanitizeReply()**: מנקה `[תבנית:...]` ותגיות פנימיות לפני שליחה לאורח
+- **System prompt**: כולל כלל מפורש נגד echo של תגיות פנימיות
+
+#### Caches (module-level, 5 דקות TTL)
+- `_configCache` — bot_config table
+- `_botSettingsCache` — bot_settings (id=1)
+- `_scriptsCache` — bot_scripts table
+
+#### Handoff Message המדויק לdate-change
+```
+"העברתי את בקשתך לצוות הסוויטות שלנו (אדיר ואפק), והם יצרו איתך קשר בהקדם. 🙏"
+```
+⚠️ לא לשנות את הנוסח — זה מה שסוכם עם הצוות.
+
+---
 
 ### `whatsapp-send` — שליחת WA
 - Triggers: `night_before`, `morning_of`, `broadcast`, `manual`, `inbox_reply`
@@ -166,7 +304,6 @@ switch (activePage) {
 
 ### `generate-schedule` ⚠️ ORPHAN
 - **פרוס אבל לא מחובר** — ShiftGenerator קורא `duplicateScheduleLocally()` בלבד
-- אם רוצים להפעיל AI בסידור משמרות — צריך לחבר את הפונקציה
 
 ### `whatsapp-cron` ⚠️ לא אומת
 - הקוד קיים ופרוס, אבל **pg_cron schedule לא אומת שרץ**
@@ -270,8 +407,17 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
 | `whatsapp-cron` pg_cron | לא אומת שרץ — צריך `SELECT cron.schedule(...)` ב-SQL editor | גבוה |
 | Meta Webhook URL | לא מוגדר ב-Meta Business Manager → WhatsApp → Configuration | גבוה |
 | `dream_arrival_tomorrow` WA template | לא קיים ב-Meta (כפתור ירוק בשידור שבור) | גבוה |
-| DataUpload EZGO בשמות פונקציות | `parseEzgoDate`, `normaliseEzgoPhone` — לא visible לuser, לא דחוף | נמוך |
 | ShiftGenerator Gemini "creative mode" | תוכנן, לא מומש — חיבור לgenerate-schedule אם רוצים | בינוני |
+| Arrival flow — ייצוב בייצור | הבוט עובד בקוד, טרם אומת E2E בייצור עם לחיצת כפתור אמיתי | גבוה |
+
+### מה הושלם בסשן Jun 17 2026
+- ✅ Interactive button parser (`msg.type === 'interactive'`)
+- ✅ `needs_callback` Human Handoff gate + arrival confirmation override
+- ✅ Gemini `thought:true` leak fix + `sanitizeReply()`
+- ✅ `lookupSpaTime()` helper — multi-date-order, logs ברורים
+- ✅ Arrival reply IF/ELSE — עם ספא / ללא ספא (zero mentions)
+- ✅ Migrations 028–043 documented
+- ✅ Phone format documented (`guests` vs `bookings` vs Meta)
 
 ---
 

@@ -180,6 +180,10 @@ export default function SpaScheduleUploader() {
         }).eq("id", row.matched_booking_id);
         if (error) throw error;
       }
+      // guests is the webhook's source of truth — always update spa_time here too
+      await supabase.from("guests").update({
+        spa_time: row.treatment_time,
+      }).eq("phone", "+" + row.phone);
       await supabase.from("spa_staging").update({
         sync_status: "synced",
         reviewed_at: new Date().toISOString(),
@@ -233,13 +237,19 @@ export default function SpaScheduleUploader() {
       if (updates.length) {
         await supabase.from("bookings").upsert(updates, { onConflict: "id" });
       }
+      // Update guests.spa_time for every approved row — guests is the webhook's source of truth
+      await Promise.all(
+        pending.map((r) =>
+          supabase.from("guests").update({ spa_time: r.treatment_time }).eq("phone", "+" + r.phone)
+        )
+      );
       const ids = pending.map((r) => r.id);
       await supabase.from("spa_staging").update({
         sync_status: "synced",
         reviewed_at: new Date().toISOString(),
       }).in("id", ids);
       setStaged((prev) => prev.map((r) => (ids.includes(r.id) ? { ...r, sync_status: "synced" } : r)));
-      showToast("ok", `✅ סונכרנו ${updates.length} שעות טיפול ל-Bookings`);
+      showToast("ok", `✅ סונכרנו ${updates.length} שעות טיפול ל-Guests ול-Bookings`);
     } catch (err) {
       showToast("err", "שגיאה: " + err.message);
     } finally {

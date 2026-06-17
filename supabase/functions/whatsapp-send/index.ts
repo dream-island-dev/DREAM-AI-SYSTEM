@@ -65,6 +65,8 @@ const PIPELINE_TEMPLATE: Record<string, string> = {
 };
 
 // Variables passed as {{1}}, {{2}}, … to each pipeline template.
+// All values pass through sanitizeTemplateVars() at send time — these lambdas
+// produce raw values; sanitization is applied in BRANCH D before the API call.
 const PIPELINE_VARS: Record<string, (g: Record<string, unknown>) => string[]> = {
   pre_arrival_2d:  (g) => [String(g.name ?? "")],
   night_before:    (g) => [String(g.name ?? ""), RESORT_CONTACT_PHONE],
@@ -87,6 +89,18 @@ const GUEST_FLAG: Record<string, string> = {
   mid_stay:        "msg_mid_stay_sent",
   checkout_fb:     "msg_checkout_fb_sent",
 };
+
+// ── Template variable sanitizer — prevents Meta error 131008 (empty param) ────
+// Meta rejects any template variable that is an empty string or whitespace.
+// Position 0 is always the guest name → fallback to "אורח יקר".
+// All other positions fall back to "-" (a safe non-empty placeholder).
+function sanitizeTemplateVars(vars: string[]): string[] {
+  return vars.map((v, i) => {
+    const t = String(v ?? "").trim();
+    if (t) return t;
+    return i === 0 ? "אורח יקר" : "-";
+  });
+}
 
 // ── Staff shift assignment message ────────────────────────────────────────────
 function shiftMsg(name: string, weekStart: string, shifts: Array<Record<string, unknown>>): string {
@@ -247,7 +261,7 @@ serve(async (req: Request) => {
         );
       }
 
-      const vars = templateVariables ?? [];
+      const vars = sanitizeTemplateVars(templateVariables ?? []);
 
       let status = "simulated";
       let sendError: string | null = null;
@@ -421,7 +435,7 @@ serve(async (req: Request) => {
     if (gErr || !guest) throw new Error("guest_not_found");
 
     const tmplName = PIPELINE_TEMPLATE[trigger];
-    const tmplVars = PIPELINE_VARS[trigger]?.(guest) ?? [];
+    const tmplVars = sanitizeTemplateVars(PIPELINE_VARS[trigger]?.(guest) ?? []);
     let status = "simulated";
     try {
       if (!sim) {

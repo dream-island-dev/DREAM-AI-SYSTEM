@@ -347,7 +347,7 @@ export default function BroadcastDashboard({ user }) {
       try {
         const { data, error } = await supabase.functions.invoke("whatsapp-send", {
           body: sendMode === "template"
-            ? { trigger: "broadcast", guestId: guest.id, waTemplateName: selectedTemplate.name, templateVariables: autoVarGuestName ? [String(guest.name ?? ""), ...templateVarValues.slice(1)] : templateVarValues }
+            ? { trigger: "broadcast", guestId: guest.id, waTemplateName: selectedTemplate.name, templateVariables: autoVarGuestName ? [(String(guest.name ?? "").trim()) || "אורח יקר", ...templateVarValues.slice(1)] : templateVarValues }
             : { trigger: "inbox_reply", phone: guest.phone, message: freeTextMsg },
         });
         if (error) throw new Error(data?.error ?? error.message ?? "edge_function_error");
@@ -397,7 +397,7 @@ export default function BroadcastDashboard({ user }) {
             trigger: "broadcast",
             guestId: guest.id,
             waTemplateName: "dream_arrival_confirmation",
-            templateVariables: [String(guest.name ?? "")],
+            templateVariables: [(String(guest.name ?? "").trim()) || "אורח יקר"],
           },
         });
         if (error || !data?.ok) throw new Error(data?.error ?? error?.message ?? "failed");
