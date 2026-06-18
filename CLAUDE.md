@@ -1,6 +1,6 @@
 # CLAUDE.md — Dream Island AI System
 > קובץ זה נקרא אוטומטית בכל שיחה. הוא מקור-האמת שלך. קרא אותו לפני כל פעולה.
-> **עדכון אחרון:** 2026-06-18 (automation audit + root cause + spa_time fix)
+> **עדכון אחרון:** 2026-06-18 (Golden Guest Profile + suite_rooms + SuitesDashboard deployed)
 
 ---
 
@@ -60,7 +60,9 @@ DREAM-AI-SYSTEM/
 │   ├── styles.css                162B  — minimal (real styles ב-App.js)
 │   ├── utils/
 │   │   ├── admin.js              2.2KB — isAdminUser(), isSuperAdmin(), loadDepartments()
-│   │   └── pushNotifications.js  3.3KB — getPushState, subscribe/unsubscribe
+│   │   ├── pushNotifications.js  3.3KB — getPushState, subscribe/unsubscribe
+│   │   └── ezgoParser.js         ★ NEW — IL mobile regex + extractGuestDetails + aggregateGuestProfiles
+│   │                                Pure transform — zero Supabase calls. Called from DataUpload Tab 1.
 │   ├── data/
 │   │   └── demoAgentProfile.js   9.1KB — DreamBot demo profile + opening suggestions
 │   └── components/
@@ -80,6 +82,7 @@ DREAM-AI-SYSTEM/
 │       ├── KnowledgeUploader.js  17KB  העלאת מסמכי ידע → agent_memory
 │       ├── BotConfigPanel.js     13KB  הגדרות Smart Concierge (bot_config table)
 │       ├── GuestsPage.js         9.6KB רשימת אורחים + badge toggle
+│       ├── SuitesDashboard.js    ★ NEW — per-room grid from suite_rooms, grouped by order_number
 │       └── BotSettings.js        ★ מוח הבוט — system_prompt + knowledge_base
 │                                    חשוב: משפיע רק על תשובות free-text (Gemini)
 │                                    לא משפיע על לחיצות כפתור (hardcoded routing)
@@ -133,6 +136,7 @@ switch (activePage) {
   "guests"       → GuestsPage
   "scheduler"    → ShiftGenerator
   "upload"       → DataUpload
+  "suites"       → SuitesDashboard  ★ NEW — per-room grid from suite_rooms table
   "tasks"        → TaskBoard
   "bot_config"   → BotConfigPanel   (admin only — guardPage)
   "bot_settings" → BotSettings      (admin only — guardPage) ★ NEW
@@ -164,6 +168,7 @@ switch (activePage) {
 | `message_templates` | תבניות שידור עם sort_order | `auth.uid() IS NOT NULL` |
 | `bot_scripts` | סקריפטים מותאמים לכל trigger_event | authenticated |
 | `tasks` | משימות צוות | open to authenticated |
+| `suite_rooms` | ★ NEW — חדר לכל שורה מ-EZGO Suites CSV. key: `(order_number, res_line_id)`. מקור: DataUpload Tab 1 | authenticated |
 | `notification_log` | dedup שליחות WA | service role |
 | `schedule_patterns` | דפוסי Excel שנלמדו | |
 | `push_subscriptions` | Web Push endpoints | `user_id = auth.uid()` |
@@ -425,6 +430,22 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
 | `dream_arrival_tomorrow` WA template | לא קיים ב-Meta (כפתור ירוק בשידור שבור) | גבוה |
 | ShiftGenerator Gemini "creative mode" | תוכנן, לא מומש — חיבור לgenerate-schedule אם רוצים | בינוני |
 | Arrival flow — ייצוב בייצור | הבוט עובד בקוד, טרם אומת E2E בייצור עם לחיצת כפתור אמיתי | גבוה |
+
+### מה הושלם בסשן Jun 18 2026 (session 5 — Golden Guest Profile complete)
+- ✅ **Migration 046** — `suite_rooms` table (unique: order_number+res_line_id) + `sync_suite_arrivals` RPC
+- ✅ **sync_suite_arrivals RPC** — ACID dual-write: guests + suite_rooms + bookings בטרנזקציה אחת
+  - RAISE NOTICE logs לכל שלב (נראים ב-Supabase Dashboard → Logs → Postgres)
+  - EXCEPTION WHEN OTHERS THEN RAISE → rollback אוטומטי של הכל
+  - לא מחליף: status, spa_time, needs_callback (שדות בוט חיים)
+- ✅ **handleEzgoSync** — מזהה Suite CSV (guestPhone בשדה) vs Excel ישן; מנתב בהתאם
+  - Suite CSV → supabase.rpc('sync_suite_arrivals') עם payload מלוג
+  - Excel grouped → legacy bookings+guests upsert (ללא שינוי)
+- ✅ **SuitesDashboard.js** — גריד חדרים מ-suite_rooms, מקובץ לפי order_number
+  - badge "פרטי"/"קואורד׳" על כל כרטיס חדר
+  - לחיצה על טלפון → clipboard copy
+  - פילטר לפי תאריך הגעה
+- ✅ **App.js** — route "suites" + nav item 🛏️ (manager-only)
+- ✅ **ezgoParser.js preview table** — badge מקור, ספירת טלפונים אישיים, שורות ירוקות
 
 ### מה הושלם בסשן Jun 18 2026 (session 2)
 - ✅ **Golden Guest Profile** — `parseComprehensiveReport()` פרסר ספר הזמנות יומי (grouped Excel)
