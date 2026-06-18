@@ -1053,7 +1053,8 @@ serve(async (req: Request) => {
 
         // ── "ספא וטיפולים 📜" — send spa menu as free text ──────────────────
         } else if (buttonTitle.includes("ספא") || buttonTitle.includes("טיפולים")) {
-          try { await sendReply(phone, SPA_MENU); } catch (e) { console.error("[webhook] spa menu send error:", (e as Error).message); }
+          const spaMenuText = scripts["spa_menu"]?.message_text?.trim() || SPA_MENU;
+          try { await sendReply(phone, spaMenuText); } catch (e) { console.error("[webhook] spa menu send error:", (e as Error).message); }
           await supabase.from("whatsapp_conversations").insert({
             phone, guest_id: guestId, direction: "outbound", message: "[תפריט ספא]", wa_message_id: null, intent: "button_reply",
           });
@@ -1065,7 +1066,8 @@ serve(async (req: Request) => {
               needs_callback: true, requires_attention: true, requires_attention_since: new Date().toISOString(),
             }).eq("id", guestId);
           }
-          const callbackReply = "קיבלנו! 🙏 אחד מהצוות שלנו יצור אתכם קשר בהקדם. תמשיכו ליהנות!";
+          const callbackReply = scripts["callback_reply"]?.message_text?.trim()
+            || "קיבלנו! 🙏 אחד מהצוות שלנו יצור אתכם קשר בהקדם. תמשיכו ליהנות!";
           try { await sendReply(phone, callbackReply); } catch (e) { console.error("[webhook] reply error:", (e as Error).message); }
           await supabase.from("whatsapp_conversations").insert({
             phone, guest_id: guestId, direction: "outbound", message: callbackReply, wa_message_id: null, intent: "button_reply",
@@ -1074,7 +1076,8 @@ serve(async (req: Request) => {
         // ── "היה מושלם! ✨" — positive feedback → send Google review link ────
         } else if (buttonTitle.includes("מושלם") || buttonTitle.includes("מושלמת")) {
           const reviewUrl = GOOGLE_REVIEW_URL || "dream-island.co.il";
-          const feedbackReply = `שמחנו מאוד לשמוע! 🌟 אם תרצו לשתף את החוויה שלכם — זה יאיר לנו את היום:\n${reviewUrl}\nתודה ענקית ומחכים לכם בפעם הבאה! 💫`;
+          const feedbackReply = scripts["positive_feedback_reply"]?.message_text?.trim()
+            || `שמחנו מאוד לשמוע! 🌟 אם תרצו לשתף את החוויה שלכם — זה יאיר לנו את היום:\n${reviewUrl}\nתודה ענקית ומחכים לכם בפעם הבאה! 💫`;
           try { await sendReply(phone, feedbackReply); } catch (e) { console.error("[webhook] reply error:", (e as Error).message); }
           await supabase.from("whatsapp_conversations").insert({
             phone, guest_id: guestId, direction: "outbound", message: feedbackReply, wa_message_id: null, intent: "button_reply",
@@ -1085,7 +1088,8 @@ serve(async (req: Request) => {
           if (guestId) {
             await supabase.from("guests").update({ requires_attention: true, requires_attention_since: new Date().toISOString() }).eq("id", guestId);
           }
-          const improvReply = "תודה על הכנות — זה חשוב לנו מאוד. 🙏 מה היה אפשר לשפר? כתבו לנו כאן ונשתפר.";
+          const improvReply = scripts["negative_feedback_reply"]?.message_text?.trim()
+            || "תודה על הכנות — זה חשוב לנו מאוד. 🙏 מה היה אפשר לשפר? כתבו לנו כאן ונשתפר.";
           try { await sendReply(phone, improvReply); } catch (e) { console.error("[webhook] reply error:", (e as Error).message); }
           await supabase.from("whatsapp_conversations").insert({
             phone, guest_id: guestId, direction: "outbound", message: improvReply, wa_message_id: null, intent: "button_reply",
@@ -1099,6 +1103,7 @@ serve(async (req: Request) => {
           buttonId.includes("upsell_yes")
         ) {
           const upsellPositiveReply =
+            scripts["upsell_accepted_reply"]?.message_text?.trim() ||
             "איזה יופי! ✨ העברתי את פנייתך לצוות הספא שלנו, והם ייצרו איתך קשר בהקדם לתיאום שעה מדויקת.";
           // bookings table stores phone without leading +
           const bookingPhoneUpsell = phone.startsWith("+") ? phone.slice(1) : phone;
@@ -1122,6 +1127,7 @@ serve(async (req: Request) => {
           buttonId.includes("upsell_no")
         ) {
           const declineReply =
+            scripts["upsell_decline_reply"]?.message_text?.trim() ||
             "הכל בסדר גמור! אנחנו כאן לכל דבר אחר שתצטרכו לקראת החופשה. 🌴";
           try { await sendReply(phone, declineReply); } catch (e) { console.error("[webhook] decline reply error:", (e as Error).message); }
           await supabase.from("whatsapp_conversations").insert({
@@ -1302,7 +1308,7 @@ serve(async (req: Request) => {
           human_request_type: humanReq.type,
         })
         .select("id")
-        .single();
+        .maybeSingle();
       const conversationId = (savedMsg?.id as number) ?? null;
 
       // ── Human-handover mode: message logged, no bot reply ─────────────────
@@ -1312,7 +1318,7 @@ serve(async (req: Request) => {
       }
 
       // ── Route & generate reply ────────────────────────────────────────────
-      let reply = FALLBACK_REPLY;
+      let reply = scripts["fallback_reply"]?.message_text?.trim() || FALLBACK_REPLY;
 
       if (intent === "complaint") {
         // Use complaint_reply from BotScriptEditor if available, else fallback to hardcoded

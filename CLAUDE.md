@@ -1,6 +1,6 @@
 # CLAUDE.md — Dream Island AI System
 > קובץ זה נקרא אוטומטית בכל שיחה. הוא מקור-האמת שלך. קרא אותו לפני כל פעולה.
-> **עדכון אחרון:** 2026-06-17 (post whatsapp-webhook full overhaul)
+> **עדכון אחרון:** 2026-06-18 (automation audit + root cause + spa_time fix)
 
 ---
 
@@ -109,7 +109,7 @@ DREAM-AI-SYSTEM/
 │       ├── process-knowledge/   deployed ✅
 │       ├── push-notify/         deployed ✅
 │       ├── whatsapp-send/       deployed ✅ — תומך ב-inbox_reply trigger
-│       ├── whatsapp-cron/       deployed ✅ ⚠️ pg_cron לא אומת
+│       ├── whatsapp-cron/       deployed ✅ — pg_cron job "wa-cron" פעיל (*/15) ⚠️ KILL SWITCH ON
 │       └── whatsapp-webhook/    ★ deployed ✅ v3 — ראה §6 לתיאור מלא
 └── public/
     └── service-worker.js        PWA push listener
@@ -182,7 +182,7 @@ Meta sends from = "972501234567"    ← ללא +  (webhook מוסיף + בעצמ
 ```
 phone          TEXT  — 972XXXXXXXXX (ללא +)
 arrival_date   DATE
-treatment_time TEXT  — שעת טיפול ספא ("14:00") — הבדק מול spa_time בDataUpload שהוא שם משתנה internal בלבד
+treatment_time TEXT  — שעת טיפול ספא ("14:00") — נכתב מDataUpload Tab 1 EZGO merge
 treatment_type TEXT  — סוג טיפול ("ספא בואטסו" וכו')
 status         TEXT  — 'pending' | 'expected' | 'room_ready' | 'checked_in'
 ```
@@ -193,8 +193,20 @@ phone               TEXT  — +972XXXXXXXXX (E.164)
 needs_callback      BOOL  — true = thread הועבר לידי אדם, הבוט שותק
 requires_attention  BOOL  — badge אדום בדאשבורד
 arrival_confirmed   BOOL  — האורח אישר הגעה
-msg_pre_arrival_2d_sent BOOL — נשלחה תבנית אישור הגעה
 status              TEXT  — 'pending' | 'expected' | 'room_ready' | 'checked_in'
+spa_time            TEXT  — שעת ספא ("14:00") — כותב: DataUpload Tab 2 (דוח יומי מקיף)
+                            ★ זו העמודה שהwebhook קורא להצגת שעת ספא בהודעת אישור
+order_number        TEXT  — מזהה הזמנה מPMS ("266932") — כותב: DataUpload Tab 2
+treatment_count     INT   — סה"כ חריצי ספא שהוזמנו — כותב: DataUpload Tab 2
+
+── Flag Guards (whatsapp-send כותב TRUE אחרי שליחה, cron בודק לפני שליחה) ──
+msg_pre_arrival_2d_sent   BOOL — pre_arrival_2d (T-2)
+msg_pre_arrival_sent      BOOL — night_before (T-1)
+msg_morning_suite_sent    BOOL — morning_suite (ביום ההגעה לסוויטות)
+msg_morning_welcome_sent  BOOL — morning_welcome (ביום ההגעה לרגילים)
+msg_post_checkin_sent     BOOL — butler_1h (שעה אחרי צ'ק-אין)
+msg_mid_stay_sent         BOOL — mid_stay (יום שני)
+msg_checkout_fb_sent      BOOL — checkout_fb (יום אחרי עזיבה)
 ```
 
 ---
@@ -249,7 +261,7 @@ bot_settings.system_prompt = AI persona בלבד
 #### Button Router — כל הכפתורים הידועים
 | כפתור | פעולה |
 |---|---|
-| "כן,מגיעים!" | `arrival_confirmed=true` → `lookupSpaTime()` → תשובה חמה |
+| "כן,מגיעים!" | `arrival_confirmed=true` → קריאת `guests.spa_time` → תשובה חמה |
 | "לא,שינוי בתאריך" | `needs_callback=true`, `requires_attention=true` → handoff message מדויק |
 | "ספא/טיפולים" | שליחת `SPA_MENU` כטקסט חופשי |
 | "דברו איתי/מענה אנושי" | `needs_callback=true` → "נחזור אליך" |
@@ -259,13 +271,14 @@ bot_settings.system_prompt = AI persona בלבד
 | "פחות מתאים" | decline graceful |
 | כל אחר | generic reply — שום כפתור לא שותק |
 
-#### `lookupSpaTime(supabase, phone)` — Helper
-```typescript
-// מחפש treatment_time בbookings לפי phone (ללא +)
-// שלב 1: arrival_date >= today (עדכני)
-// שלב 2: כל booking (fallback לtest עם תאריך עבר)
-// מחזיר: "סוג בשעה HH:MM" | null
-// מדפיס log ברור עם מה שמצא/לא מצא
+#### `spa_time` — מקור האמת לתצוגה בbotה
+```
+webhook קורא: guests.spa_time (שדה TEXT)
+מי כותב: DataUpload Tab 2 → UPDATE guests SET spa_time=? WHERE phone=?
+אם NULL: הודעת אישור הגעה לא מזכירה ספא בכלל (Condition B)
+אם קיים: "🕐 הטיפול שלך בספא: HH:MM" מוצג (Condition A)
+
+⚠️ lookupSpaTime() שהוזכר בתיעוד קודם — לא קיים בקוד בפועל. לא ממומש.
 ```
 
 #### Arrival Confirmation Reply — IF/ELSE חיוני
@@ -305,8 +318,12 @@ bot_settings.system_prompt = AI persona בלבד
 ### `generate-schedule` ⚠️ ORPHAN
 - **פרוס אבל לא מחובר** — ShiftGenerator קורא `duplicateScheduleLocally()` בלבד
 
-### `whatsapp-cron` ⚠️ לא אומת
-- הקוד קיים ופרוס, אבל **pg_cron schedule לא אומת שרץ**
+### `whatsapp-cron` — KILL SWITCH ACTIVE
+- pg_cron job **"wa-cron"** (jobid: 2) — `*/15 * * * *`, active: TRUE
+- לעצור ב-SQL: `SELECT cron.unschedule('wa-cron');` (לא 'whatsapp-triggers' — זה שגוי)
+- **KILL SWITCH:** `CRON_ENABLED` env var לא מוגדר → whatsapp-cron מחזיר `{halted: true}` מיידית
+- להפעיל מחדש: Set `CRON_ENABLED=true` בSupabase Secrets → Edge Functions
+- ⚠️ לפני הפעלה מחדש: הוסף flag guards לnight_before, morning_welcome, morning_suite, butler_1h בcron
 
 ---
 
@@ -404,19 +421,35 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
 |---|---|---|
 | `Chat.js` | קובץ orphan, ממתין למחיקה | נמוך |
 | `generate-schedule` | פרוס אבל לא מחובר לפרונטאנד | בינוני |
-| `whatsapp-cron` pg_cron | לא אומת שרץ — צריך `SELECT cron.schedule(...)` ב-SQL editor | גבוה |
 | Meta Webhook URL | לא מוגדר ב-Meta Business Manager → WhatsApp → Configuration | גבוה |
 | `dream_arrival_tomorrow` WA template | לא קיים ב-Meta (כפתור ירוק בשידור שבור) | גבוה |
 | ShiftGenerator Gemini "creative mode" | תוכנן, לא מומש — חיבור לgenerate-schedule אם רוצים | בינוני |
 | Arrival flow — ייצוב בייצור | הבוט עובד בקוד, טרם אומת E2E בייצור עם לחיצת כפתור אמיתי | גבוה |
 
+### מה הושלם בסשן Jun 18 2026 (session 2)
+- ✅ **Golden Guest Profile** — `parseComprehensiveReport()` פרסר ספר הזמנות יומי (grouped Excel)
+- ✅ **DataUpload Tab 2** — מחליף Spa CSV uploader בפרסר דוח יומי מקיף:
+  - Auto-detect: grouped Excel (18.6.26.xlsx) vs CSV ישן (sTel/tmStart)
+  - Upsert-or-insert: UPDATE לאורחים קיימים (לא מחליף room/suite), INSERT לאורחי ספא יומיים
+  - תצוגה מקדימה מלאה: שם, טלפון, הזמנה #, שעת ספא, ספירת טיפולים
+- ✅ **Migration 045** — `order_number TEXT`, `treatment_count INT` לטבלת guests
+- ✅ **Cron Flag Guards (Option B)** — cron מוגן מפני ghost-triggers:
+  - SELECT כולל את כל 7 ה-flags
+  - night_before checks `!msg_pre_arrival_sent`
+  - morning_welcome checks `!msg_morning_welcome_sent`
+  - morning_suite checks `!msg_morning_suite_sent`
+  - butler_1h checks `!msg_post_checkin_sent` ← קריטי ביותר (חזר כל 15 דק' בלי flag!)
+- ✅ **whatsapp-cron deployed** לSupabase
+
 ### מה הושלם בסשן Jun 17 2026
 - ✅ Interactive button parser (`msg.type === 'interactive'`)
 - ✅ `needs_callback` Human Handoff gate + arrival confirmation override
 - ✅ Gemini `thought:true` leak fix + `sanitizeReply()`
-- ✅ `lookupSpaTime()` helper — multi-date-order, logs ברורים
-- ✅ Arrival reply IF/ELSE — עם ספא / ללא ספא (zero mentions)
+- ✅ Arrival reply IF/ELSE — עם ספא / ללא ספא (zero mentions) — קורא guests.spa_time
 - ✅ Migrations 028–043 documented
+- ✅ Jun 18 2026: automation audit — pg_cron job "wa-cron" מאומת, kill switches פעילים
+- ✅ Jun 18 2026: .single() → .maybeSingle() בwebhook (שורה 1311)
+- ✅ Jun 18 2026: CLAUDE.md מתוקן: spa_time=עמודה אמיתית בguests, lookupSpaTime=לא קיים
 - ✅ Phone format documented (`guests` vs `bookings` vs Meta)
 
 ---

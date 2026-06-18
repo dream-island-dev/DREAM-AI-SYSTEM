@@ -24,6 +24,19 @@ const ymd = (d: Date) => d.toISOString().slice(0, 10);
 
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
+
+  // ── EMERGENCY KILL SWITCH ───────────────────────────────────────────────────
+  // ALL automated outbound sends are halted until CRON_ENABLED=true is set
+  // explicitly in Supabase Secrets (Project → Settings → Edge Functions → Secrets).
+  // Deploying without this secret is the off switch. Set it to re-enable.
+  if (Deno.env.get("CRON_ENABLED") !== "true") {
+    console.log("[whatsapp-cron] 🚫 HALTED — CRON_ENABLED not set to 'true'. Zero messages dispatched.");
+    return new Response(
+      JSON.stringify({ ok: true, halted: true, reason: "CRON_ENABLED_not_set" }),
+      { headers: { ...CORS, "Content-Type": "application/json" } }
+    );
+  }
+
   try {
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const anon = Deno.env.get("SUPABASE_ANON_KEY")!;
@@ -37,7 +50,7 @@ serve(async (req: Request) => {
 
     const { data: guests = [] } = await supabase
       .from("guests")
-      .select("id, name, phone, arrival_date, departure_date, room_type, status, checkin_time, msg_pre_arrival_2d_sent, msg_mid_stay_sent, msg_checkout_fb_sent");
+      .select("id, name, phone, arrival_date, departure_date, room_type, status, checkin_time, msg_pre_arrival_2d_sent, msg_pre_arrival_sent, msg_morning_suite_sent, msg_morning_welcome_sent, msg_post_checkin_sent, msg_mid_stay_sent, msg_checkout_fb_sent");
 
     // yesterday = day after departure that triggers checkout feedback
     const yesterday = ymd(new Date(now.getTime() - 24 * 3600 * 1000));
@@ -49,11 +62,11 @@ serve(async (req: Request) => {
         due.push({ guestId: g.id, trigger: "pre_arrival_2d" });
 
       // T-1 night — check-in reminder (all guests), only between UTC 17-21 = Israel 19-23
-      if (g.arrival_date === tomorrow && hourUTC >= 17 && hourUTC <= 21)
+      if (g.arrival_date === tomorrow && hourUTC >= 17 && hourUTC <= 21 && !g.msg_pre_arrival_sent)
         due.push({ guestId: g.id, trigger: "night_before" });
 
       // Arrival morning — welcome message for non-suite guests (UTC 06+ ≈ Israel 08+)
-      if (g.arrival_date === today && g.room_type !== "suite" && hourUTC >= 6)
+      if (g.arrival_date === today && g.room_type !== "suite" && hourUTC >= 6 && !g.msg_morning_welcome_sent)
         due.push({ guestId: g.id, trigger: "morning_welcome" });
 
       // Mid-stay check — day after arrival, while still on property (UTC 08+ ≈ Israel 10+)
@@ -72,10 +85,11 @@ serve(async (req: Request) => {
 
       if (g.room_type === "suite") {
         // Arrival morning for suites (UTC 04+ ≈ Israel 06+)
-        if (g.arrival_date === today && hourUTC >= 4) due.push({ guestId: g.id, trigger: "morning_suite" });
+        if (g.arrival_date === today && hourUTC >= 4 && !g.msg_morning_suite_sent)
+          due.push({ guestId: g.id, trigger: "morning_suite" });
 
-        // 1h after check-in (suites)
-        if (g.status === "checked_in" && g.checkin_time) {
+        // 1h after check-in (suites) — flag guard prevents re-firing every 15 min
+        if (g.status === "checked_in" && g.checkin_time && !g.msg_post_checkin_sent) {
           const mins = (now.getTime() - new Date(g.checkin_time).getTime()) / 60000;
           if (mins >= 60) due.push({ guestId: g.id, trigger: "butler_1h" });
         }

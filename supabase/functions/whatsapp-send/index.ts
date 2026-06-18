@@ -203,6 +203,19 @@ serve(async (req: Request) => {
 
     if (!trigger) throw new Error("trigger is required");
 
+    // ── EMERGENCY KILL SWITCH ─────────────────────────────────────────────────
+    // inbox_reply is the ONLY permitted send — it is a manual staff action
+    // inside an already-open conversation. Everything else (pipeline triggers,
+    // broadcast campaigns, shift assignments, payment links) is blocked until
+    // AUTOMATION_ENABLED=true is set in Supabase Secrets.
+    if (trigger !== "inbox_reply" && Deno.env.get("AUTOMATION_ENABLED") !== "true") {
+      console.log(`[whatsapp-send] 🚫 HALTED — trigger "${trigger}" blocked. Set AUTOMATION_ENABLED=true in Supabase Secrets to re-enable.`);
+      return new Response(
+        JSON.stringify({ ok: false, halted: true, reason: "automation_disabled", trigger }),
+        { headers: { ...CORS, "Content-Type": "application/json" } }
+      );
+    }
+
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!

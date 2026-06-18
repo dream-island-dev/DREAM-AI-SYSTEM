@@ -25,6 +25,7 @@ import PasswordChangeScreen from "./components/PasswordChangeScreen";
 import SpaStagingPanel from "./components/SpaStagingPanel";
 import DataHub from "./components/DataHub";
 import AICopilot from "./components/AICopilot";
+import SuitesDashboard from "./components/SuitesDashboard";
 
 // ============================================================
 // MOCK DATA - יוחלף ב-Supabase בגרסה האמיתית
@@ -1034,6 +1035,7 @@ function Sidebar({ user, active, setActive, openCallsCount, onLogout, isAdmin, i
     { id: "scheduler",   icon: "🪄", label: "מחולל משמרות",                           managerOnly: true },
     { id: "spa_staging", icon: "💆", label: "לוח ספא — אישור",                        managerOnly: true },
     { id: "data_hub",    icon: "🗂️", label: "Data Hub — ייבוא",                       managerOnly: true },
+    { id: "suites",      icon: "🛏️", label: "פירוט חדרים",                              managerOnly: true },
     { id: "agent",      icon: "🤖", label: "הסוכן שלי" },
   ];
 
@@ -2437,6 +2439,8 @@ export default function App() {
         return <DataHub />;
       case "room_board":
         return <RoomBoard />;
+      case "suites":
+        return <SuitesDashboard />;
       case "tasks":
         return <TaskBoard user={user} isAdmin={isAdmin} />;
       case "bot_config":

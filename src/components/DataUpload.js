@@ -6,6 +6,10 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import SpaScheduleUploader from "./SpaScheduleUploader";
+import {
+  aggregateGuestProfiles,
+  profilesToArray,
+} from "../utils/ezgoParser";
 // NOTE: xlsx (SheetJS) is large (~110KB gz). It is lazy-loaded on first parse
 // via dynamic import() so it never bloats the initial mobile bundle.
 
@@ -206,6 +210,96 @@ function parseArrivalsExcel(rows) {
   }
 
   return Object.values(byPhone);
+}
+
+// ── Comprehensive Daily Report Parser ────────────────────────────────────────
+// Parses the same grouped Excel format as parseArrivalsExcel but produces
+// the richer "Golden Guest Profile" payload: order_number, treatment_count,
+// and phone in E.164 (for guests table, not bookings).
+//
+// Format recap (18.6.26.xlsx):
+//   Col A: Excel date serial (first non-empty row only)
+//   Col B: "ORDER_NUM: [SOURCE - ]GUEST_NAME - PHONE"
+//   Col C: "N - HH:MM - TYPE"  (spa slot) or "N - TYPE" (non-time extra)
+function parseComprehensiveReport(rows) {
+  let arrivalDate = null;
+  let current     = null;
+  const blocks    = [];
+
+  for (const row of rows) {
+    const [c0, c1, c2] = Array.isArray(row) ? row : [];
+
+    // Arrival date from first Excel serial in col A
+    if (!arrivalDate && typeof c0 === "number" && c0 > 40000) {
+      arrivalDate = parseEzgoDate(c0);
+    }
+
+    // New booking block — col B starts with "DIGITS:"
+    if (c1 && typeof c1 === "string" && /^\d+:/.test(c1)) {
+      if (current) blocks.push(current);
+
+      const orderMatch = c1.match(/^(\d+):/);
+      const orderNum   = orderMatch ? orderMatch[1] : null;
+
+      // Phone: last token after final " - "
+      const phoneMatch = c1.match(/\s+-\s+([+\d][\d\s\-+]{7,})\s*$/);
+      const phone      = phoneMatch ? sanitizePhone(phoneMatch[1]) : null; // E.164
+
+      // Name: strip "DIGITS: " prefix + optional source + phone suffix
+      const afterId  = c1.replace(/^\d+:\s*/, "");
+      const nameRaw  = phoneMatch
+        ? afterId.slice(0, afterId.lastIndexOf(phoneMatch[0])).trim()
+        : afterId.trim();
+      const guestName = nameRaw.replace(ARRIVALS_SOURCE_RE, "").trim() || null;
+
+      current = {
+        order_number:    orderNum,
+        guest_name:      guestName,
+        phone,
+        arrival_date:    arrivalDate,
+        spa_time:        null,
+        treatment_count: 0,
+      };
+
+      if (c2) _extractComprehensiveExtras(current, c2);
+      continue;
+    }
+
+    if (!current) continue;
+    if (c2) _extractComprehensiveExtras(current, c2);
+  }
+
+  if (current) blocks.push(current);
+
+  // Deduplicate by phone — keep earliest spa_time, sum treatment_count
+  const byPhone = {};
+  for (const b of blocks) {
+    if (!b.phone) continue;
+    if (!byPhone[b.phone]) {
+      byPhone[b.phone] = { ...b };
+    } else {
+      const ex = byPhone[b.phone];
+      ex.treatment_count += b.treatment_count;
+      if (b.spa_time && (!ex.spa_time || b.spa_time < ex.spa_time)) {
+        ex.spa_time = b.spa_time;
+      }
+    }
+  }
+
+  return Object.values(byPhone);
+}
+
+// Parse one "extras" cell and update the block in-place.
+// Counts spa treatment quantities and keeps the earliest time.
+function _extractComprehensiveExtras(block, raw) {
+  const clean = String(raw).replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
+  // "N - HH:MM - TYPE" pattern — the only form we care about for time + count
+  const m = clean.match(/^(\d+)\s*-\s*(\d{1,2}):(\d{2})/);
+  if (!m) return;
+  const count = parseInt(m[1]);
+  const time  = m[2].padStart(2, "0") + ":" + m[3];
+  block.treatment_count += count;
+  if (!block.spa_time || time < block.spa_time) block.spa_time = time;
 }
 
 const TARGETS = {
@@ -473,67 +567,6 @@ const SPA_CSV_ALIASES_AR = {
   guest_name:     ["sClientName", "שם אורח", "שם מלא", "שם", "לקוח", "guest name", "name"],
 };
 
-// Column aliases for EZGO CSV export (named-column format — iOrderId, sClientFullName, sTel1 …).
-// Includes sub-item and room columns for suite vs day_guest detection.
-const EZGO_CSV_ALIASES = {
-  guest_name:    ["sClientFullName", "sClientName", "clientFullName", "שם"],
-  phone:         ["sTel1", "sTel", "phone", "טלפון"],
-  nights:        ["iNights", "nights", "לילות"],
-  arrival_date:  ["dCheckIn", "dArrival", "dtCheckIn", "checkIn", "תאריך הגעה"],
-  rooms:         ["iRooms", "iRoomCount", "rooms", "חדרים"],
-  sub_item_name: ["sSubItemName", "subItemName"],
-  room_name:     ["sRoomName", "roomName"],
-  group_id:      ["Group_Id", "groupId"],
-};
-
-// Parse EZGO named-column CSV into guest objects with category and room detection.
-// arrivalDate (ISO string) is the fallback when the file has no valid date column
-// (extracted from filename, e.g. "16.6.26.csv" → "2026-06-16").
-function parseEzgoCsvFull(rows, arrivalDate) {
-  if (!rows.length) return [];
-  const headers = Object.keys(rows[0]);
-  const colMap  = mapHeaders(EZGO_CSV_ALIASES, headers);
-
-  const byPhone = {};
-  for (const r of rows) {
-    const guestName   = colMap.guest_name    ? String(r[colMap.guest_name]    ?? "").trim() || null : null;
-    const phoneRaw    = colMap.phone         ? String(r[colMap.phone]         ?? "").trim()          : "";
-    const phone       = normalizePhoneBookings(phoneRaw);
-    const nights      = colMap.nights        ? parseInt(String(r[colMap.nights]        ?? "0")) || 0  : 0;
-    const rooms       = colMap.rooms         ? parseInt(String(r[colMap.rooms]         ?? "1")) || 1  : 1;
-    const roomName    = colMap.room_name     ? String(r[colMap.room_name]     ?? "").trim() || null  : null;
-    const subItemName = colMap.sub_item_name ? String(r[colMap.sub_item_name] ?? "").trim()           : "";
-    const groupId     = colMap.group_id      ? String(r[colMap.group_id]      ?? "").trim()           : "";
-
-    if (!phone && !guestName) continue;
-
-    // Arrival date: use filename fallback; ignore EZGO dummy dates (01/01/2001)
-    const rawDate = colMap.arrival_date ? String(r[colMap.arrival_date] ?? "").trim() : "";
-    let rowDate = arrivalDate;
-    if (rawDate && !/^01[/.-]01[/.-](1900|1970|2001)/i.test(rawDate)) {
-      const parsed = parseEzgoDate(rawDate);
-      if (parsed && parsed > "2020-01-01") rowDate = parsed;
-    }
-
-    // Category: day_guest when sSubItemName contains "Day"/"Premium" OR iNights=0 OR Group_Id=1
-    let category = "suite";
-    if (/premium\s*day|day\s*guest|בילוי.*יומי/i.test(subItemName) || nights === 0 || groupId === "1") {
-      category = "day_guest";
-    }
-
-    const key = phone ?? guestName;
-    if (!key) continue;
-
-    if (!byPhone[key]) {
-      byPhone[key] = { guest_name: guestName, phone, arrival_date: rowDate, nights, rooms: rooms || 1, room: roomName, category };
-    } else {
-      byPhone[key].rooms += (rooms || 1);
-      if (category === "suite") byPhone[key].category = "suite";
-    }
-  }
-  return Object.values(byPhone);
-}
-
 // Convert Excel time serial / JS Date / "HH:MM" strings → "HH:MM".
 function normSpaTime(raw) {
   if (!raw && raw !== 0) return null;
@@ -598,11 +631,17 @@ function ArrivalsImporter() {
       let data;
       if (isEzgoCsv) {
         const csvRows = XLSX.utils.sheet_to_json(ws, { defval: null });
+        // Extract fallback date from filename ("18.6.26 סוויטות.csv" → "2026-06-18")
         const dm = file.name.match(/(\d{1,2})[.\-_](\d{1,2})[.\-_](\d{2,4})/);
         const fallbackDate = dm
           ? `${dm[3].length === 2 ? `20${dm[3]}` : dm[3]}-${dm[2].padStart(2,"0")}-${dm[1].padStart(2,"0")}`
           : null;
-        data = parseEzgoCsvFull(csvRows, fallbackDate);
+
+        // Stage 1+2: extract per-row + aggregate into per-guest profiles
+        const profileMap = aggregateGuestProfiles(csvRows, fallbackDate);
+        data = profilesToArray(profileMap);
+        // Mark as suite-CSV so the preview and sync know the richer shape
+        data._isSuiteCsv = true;
       } else {
         const rows = XLSX.utils.sheet_to_json(ws, { defval: null, header: 1 });
         data = parseArrivalsExcel(rows);
@@ -619,7 +658,10 @@ function ArrivalsImporter() {
     }
   }, []);
 
-  // ── Tab 2: Parse Spa CSV → extract earliest {phone E.164, spa_time} per guest ──
+  // ── Tab 2: Parse Comprehensive Daily Report OR legacy Spa CSV ─────────────────
+  // Auto-detects format:
+  //   • Grouped Excel ("266932: NAME - PHONE" in col B) → parseComprehensiveReport
+  //   • Named-column CSV (sTel / tmStart / iLineStatus)  → legacy path
   const handleSpaFile = useCallback(async (file) => {
     if (!file) return;
     setSpaFileName(file.name);
@@ -629,38 +671,52 @@ function ArrivalsImporter() {
       const buf  = await file.arrayBuffer();
       const wb   = XLSX.read(buf, { type: "array" });
       const ws   = wb.Sheets[wb.SheetNames[0]];
-      const rawRows = XLSX.utils.sheet_to_json(ws, { defval: null });
-      if (!rawRows.length) { showToast("err", "קובץ הספא ריק"); return; }
 
-      const hdrs   = Object.keys(rawRows[0]);
-      const colMap = mapHeaders(SPA_CSV_ALIASES_AR, hdrs);
+      // Peek at first row to detect format
+      const firstRow = (XLSX.utils.sheet_to_json(ws, { defval: null, header: 1 })[0] ?? []);
+      const isGroupedExcel = firstRow.some(
+        (h) => typeof h === "string" && /הזמנה|booking/i.test(h)
+      ) || firstRow.some((h) => typeof h === "number" && h > 40000);
 
-      // Index by E.164 phone; keep earliest tmStart (iLineStatus=1 only)
-      const byPhone = {};
-      for (const r of rawRows) {
-        const statusVal = colMap.line_status ? String(r[colMap.line_status] ?? "").trim() : null;
-        if (statusVal !== null && statusVal !== "1") continue;
+      let rows;
+      if (isGroupedExcel) {
+        // Comprehensive daily report — same grouped format as the daily arrivals Excel
+        const rawRows = XLSX.utils.sheet_to_json(ws, { defval: null, header: 1 });
+        rows = parseComprehensiveReport(rawRows);
+        if (!rows.length) { showToast("err", "לא נמצאו הזמנות בדוח — בדוק פורמט קובץ"); return; }
+      } else {
+        // Legacy Spa CSV (sTel / tmStart / iLineStatus named columns)
+        const rawRows = XLSX.utils.sheet_to_json(ws, { defval: null });
+        if (!rawRows.length) { showToast("err", "קובץ הספא ריק"); return; }
 
-        const rawTel = colMap.phone ? String(r[colMap.phone] ?? "").trim() : "";
-        if (!rawTel) continue;
-        const phone = sanitizePhone(rawTel); // E.164 "+972XXXXXXXXX"
-        if (!phone) continue;
-
-        const time = colMap.treatment_time ? normSpaTime(r[colMap.treatment_time]) : null;
-        if (!time) continue;
-
-        if (!byPhone[phone] || time < byPhone[phone]) byPhone[phone] = time;
+        const hdrs   = Object.keys(rawRows[0]);
+        const colMap = mapHeaders(SPA_CSV_ALIASES_AR, hdrs);
+        const byPhone = {};
+        for (const r of rawRows) {
+          const statusVal = colMap.line_status ? String(r[colMap.line_status] ?? "").trim() : null;
+          if (statusVal !== null && statusVal !== "1") continue;
+          const rawTel = colMap.phone ? String(r[colMap.phone] ?? "").trim() : "";
+          if (!rawTel) continue;
+          const phone = sanitizePhone(rawTel);
+          if (!phone) continue;
+          const time = colMap.treatment_time ? normSpaTime(r[colMap.treatment_time]) : null;
+          if (!time) continue;
+          if (!byPhone[phone] || time < byPhone[phone]) byPhone[phone] = time;
+        }
+        rows = Object.entries(byPhone).map(([phone, spa_time]) => ({
+          phone, spa_time, order_number: null, guest_name: null, treatment_count: 0, arrival_date: null,
+        }));
+        if (!rows.length) {
+          showToast("err", "לא נמצאו טיפולים פעילים (iLineStatus=1) עם טלפון ושעה");
+          return;
+        }
       }
 
-      const rows = Object.entries(byPhone).map(([phone, spa_time]) => ({ phone, spa_time }));
-      if (!rows.length) {
-        showToast("err", "לא נמצאו טיפולים פעילים (iLineStatus=1) עם טלפון ושעה");
-        return;
-      }
       setSpaUpdates(rows);
-      showToast("ok", `💆 ${rows.length} אורחים ייחודיים זוהו`);
+      const withSpa = rows.filter((r) => r.spa_time).length;
+      showToast("ok", `📋 ${rows.length} רשומות — ${withSpa} עם שעת ספא`);
     } catch (err) {
-      showToast("err", "שגיאה בקריאת קובץ ספא: " + err.message);
+      showToast("err", "שגיאה בקריאת הקובץ: " + err.message);
     }
   }, []);
 
@@ -669,51 +725,116 @@ function ArrivalsImporter() {
     if (!supabase) { showToast("err", "Supabase לא מחובר"); return; }
     setEzgoBusy(true);
     try {
-      const bookingRows = ezgoParsed
-        .filter((g) => g.phone && g.arrival_date)
-        .map((g) => ({
-          guest_name:     g.guest_name,
-          phone:          g.phone,                            // 972XXXXXXXXX (no +)
-          arrival_date:   g.arrival_date,
-          checkout_date:  addNights(g.arrival_date, g.nights),
-          nights:         g.nights,
-          room_count:     g.rooms,
-          status:         "pending",
-          treatment_time: null,
-          treatment_type: null,
-        }));
+      // Detect which shape was parsed: Suite CSV (new) vs grouped Excel (legacy)
+      const isSuiteProfile = ezgoParsed.length > 0 && "guestPhone" in ezgoParsed[0];
 
-      if (bookingRows.length) {
-        const { error: bErr } = await supabase
-          .from("bookings")
-          .upsert(bookingRows, { onConflict: "phone,arrival_date", ignoreDuplicates: false });
-        if (bErr) throw new Error("bookings: " + bErr.message);
+      if (isSuiteProfile) {
+        // ── Suite CSV path → RPC (atomic: guests + suite_rooms + bookings) ────
+        const profiles = ezgoParsed
+          .filter((g) => g.guestPhone)
+          .map((g) => {
+            const nights = (g.rooms ?? []).reduce((mx, r) => Math.max(mx, r.nights || 0), 0);
+            return {
+              guestPhone:      g.guestPhone,                // E.164 "+972XXXXXXXXX"
+              guestName:       g.guestName ?? "",
+              arrivalDate:     g.arrivalDate ?? null,
+              departureDate:   addNights(g.arrivalDate, nights),
+              orderNumber:     g.orderNumbers?.[0] ?? null,
+              hasSuite:        !!g.hasSuite,
+              treatment_count: g.treatment_count ?? 0,
+              nights,
+            };
+          });
+
+        const rooms = ezgoParsed
+          .flatMap((g) =>
+            (g.rooms ?? []).map((r) => ({
+              resLineId:    r.resLineId,
+              orderNumber:  r.orderNumber,
+              roomName:     r.roomName,
+              suiteType:    r.suiteType,
+              guestName:    g.guestName ?? "",
+              guestPhone:   g.guestPhone ?? null,
+              coordPhone:   g.coordPhone ?? null,
+              phoneSource:  g.phoneSource,
+              adults:       r.adults,
+              nights:       r.nights,
+              arrivalDate:  g.arrivalDate ?? null,
+              checkinTime:  r.checkinTime ?? null,
+              checkoutTime: r.checkoutTime ?? null,
+              isDayGuest:   !!r.isDayGuest,
+            }))
+          )
+          .filter((r) => r.resLineId && r.orderNumber);
+
+        console.log("[handleEzgoSync] Suite CSV → RPC sync_suite_arrivals");
+        console.log("[handleEzgoSync] profiles payload (%d):", profiles.length, JSON.stringify(profiles, null, 2));
+        console.log("[handleEzgoSync] rooms payload (%d):", rooms.length, JSON.stringify(rooms, null, 2));
+
+        const { data: rpcData, error: rpcErr } = await supabase
+          .rpc("sync_suite_arrivals", { payload: { profiles, rooms } });
+
+        if (rpcErr) throw new Error("sync_suite_arrivals: " + rpcErr.message);
+        console.log("[handleEzgoSync] RPC result:", rpcData);
+
+        const suites = ezgoParsed.filter((g) => g.hasSuite).length;
+        const days   = ezgoParsed.filter((g) => g.hasDayBooking && !g.hasSuite).length;
+        setEzgoResult({
+          total:  rpcData.guests,
+          suites,
+          days,
+          rooms:  rpcData.rooms,
+          date:   ezgoParsed[0]?.arrivalDate,
+        });
+      } else {
+        // ── Excel (grouped) path — legacy bookings + guests upsert ────────────
+        const bookingRows = ezgoParsed
+          .filter((g) => g.phone && g.arrival_date)
+          .map((g) => ({
+            guest_name:     g.guest_name,
+            phone:          g.phone,                          // 972XXXXXXXXX (no +)
+            arrival_date:   g.arrival_date,
+            checkout_date:  addNights(g.arrival_date, g.nights),
+            nights:         g.nights,
+            room_count:     g.rooms,
+            status:         "pending",
+            treatment_time: null,
+            treatment_type: null,
+          }));
+
+        if (bookingRows.length) {
+          const { error: bErr } = await supabase
+            .from("bookings")
+            .upsert(bookingRows, { onConflict: "phone,arrival_date", ignoreDuplicates: false });
+          if (bErr) throw new Error("bookings: " + bErr.message);
+        }
+
+        const guestRows = ezgoParsed
+          .filter((g) => g.guest_name && g.phone && g.arrival_date)
+          .map((g) => ({
+            name:           g.guest_name,
+            phone:          sanitizePhone(g.phone),           // E.164 "+972XXXXXXXXX"
+            arrival_date:   g.arrival_date,
+            departure_date: addNights(g.arrival_date, g.nights),
+            room_type:      g.category === "suite" ? "suite" : "standard",
+            room:           g.room ?? null,
+            status:         "pending",
+            guest_index:    1,
+            spa_time:       null,
+          }));
+
+        if (guestRows.length) {
+          const { error: gErr } = await supabase
+            .from("guests")
+            .upsert(guestRows, { onConflict: "phone,arrival_date,guest_index", ignoreDuplicates: false });
+          if (gErr) throw new Error("guests: " + gErr.message);
+        }
+
+        const suites = ezgoParsed.filter((g) => g.category === "suite").length;
+        const days   = ezgoParsed.filter((g) => g.category === "day_guest").length;
+        setEzgoResult({ total: guestRows.length, suites, days, date: ezgoParsed[0]?.arrival_date });
       }
 
-      const guestRows = ezgoParsed
-        .filter((g) => g.guest_name && g.phone && g.arrival_date)
-        .map((g) => ({
-          name:           g.guest_name,
-          phone:          sanitizePhone(g.phone),             // E.164 "+972XXXXXXXXX"
-          arrival_date:   g.arrival_date,
-          departure_date: addNights(g.arrival_date, g.nights),
-          room_type:      g.category === "suite" ? "suite" : "standard",
-          room:           g.room ?? null,
-          status:         "pending",
-          guest_index:    1,
-          spa_time:       null,
-        }));
-
-      if (guestRows.length) {
-        const { error: gErr } = await supabase
-          .from("guests")
-          .upsert(guestRows, { onConflict: "phone,arrival_date,guest_index", ignoreDuplicates: false });
-        if (gErr) throw new Error("guests: " + gErr.message);
-      }
-
-      const suites = ezgoParsed.filter((g) => g.category === "suite").length;
-      const days   = ezgoParsed.filter((g) => g.category === "day_guest").length;
-      setEzgoResult({ total: guestRows.length, suites, days, date: ezgoParsed[0]?.arrival_date });
       setEzgoStep("done");
     } catch (err) {
       showToast("err", "שגיאה בסנכרון: " + err.message);
@@ -722,25 +843,63 @@ function ArrivalsImporter() {
     }
   };
 
-  // ── Tab 2 DB Sync: UPDATE guests.spa_time by phone (NO new guest rows) ─────
+  // ── Tab 2 DB Sync: Golden Guest Profile upsert-or-insert ─────────────────────
+  // 1. UPDATE existing guests by E.164 phone → enrich spa_time, order_number, treatment_count
+  // 2. If phone not found → INSERT new guest row (day-spa guest without a suite)
   const handleSpaSync = async () => {
     if (!supabase) { showToast("err", "Supabase לא מחובר"); return; }
     setSpaBusy(true);
-    let matched = 0, missed = 0;
+    let matched = 0, created = 0, missed = 0;
     try {
-      for (const { phone, spa_time } of spaUpdates) {
+      for (const g of spaUpdates) {
+        const { phone, spa_time, order_number, guest_name, treatment_count, arrival_date } = g;
+        if (!phone) { missed++; continue; }
+
+        // Build enrichment patch — only include fields that have actual values
+        const patch = {};
+        if (spa_time)        patch.spa_time        = spa_time;
+        if (order_number)    patch.order_number    = order_number;
+        if (treatment_count) patch.treatment_count = treatment_count;
+
+        if (!Object.keys(patch).length) { missed++; continue; }
+
         const { data, error } = await supabase
           .from("guests")
-          .update({ spa_time })
+          .update(patch)
           .eq("phone", phone)
           .select("id");
-        if (error) { console.warn("[spa sync]", phone, error.message); missed++; }
-        else if (!data?.length) missed++;
-        else matched += data.length;
+
+        if (error) {
+          console.warn("[spa sync] update error", phone, error.message);
+          missed++;
+        } else if (data?.length) {
+          matched += data.length;
+        } else {
+          // Phone not found — create a new guest row (day-spa guest)
+          const newRow = {
+            name:            guest_name || "אורח ספא",
+            phone,
+            status:          "pending",
+            guest_index:     1,
+            spa_time:        spa_time   ?? null,
+            order_number:    order_number ?? null,
+            treatment_count: treatment_count ?? 0,
+          };
+          if (arrival_date) {
+            newRow.arrival_date = arrival_date;
+          }
+          const { error: insErr } = await supabase.from("guests").insert(newRow);
+          if (insErr) {
+            console.warn("[spa sync] insert error", phone, insErr.message);
+            missed++;
+          } else {
+            created++;
+          }
+        }
       }
-      setSpaResult({ matched, missed, total: spaUpdates.length });
+      setSpaResult({ matched, created, missed, total: spaUpdates.length });
     } catch (err) {
-      showToast("err", "שגיאה בעדכון ספא: " + err.message);
+      showToast("err", "שגיאה בסנכרון ספא: " + err.message);
     } finally {
       setSpaBusy(false);
     }
@@ -764,8 +923,8 @@ function ArrivalsImporter() {
       {/* Tab switcher */}
       <div style={{ display: "flex", gap: 10, marginBottom: 20, flexWrap: "wrap" }}>
         {[
-          { key: "ezgo", label: "📅 הזמנות EZGO" },
-          { key: "spa",  label: "💆 עדכון ספא"   },
+          { key: "ezgo", label: "📅 EZGO — עיגון חדר" },
+          { key: "spa",  label: "📋 דוח יומי מקיף"  },
         ].map(({ key, label }) => (
           <button key={key} onClick={() => setActiveTab(key)} style={{
             flex: "1 1 160px", padding: "14px 18px", borderRadius: 12, cursor: "pointer",
@@ -811,49 +970,118 @@ function ArrivalsImporter() {
           )}
 
           {/* Preview step */}
-          {ezgoStep === "preview" && (
+          {ezgoStep === "preview" && (() => {
+            // Detect which shape we're working with:
+            //   isSuiteProfile = output of aggregateGuestProfiles (new)
+            //   else = output of parseArrivalsExcel (old grouped-Excel path)
+            const isSuiteProfile = ezgoParsed.length > 0 && "guestPhone" in ezgoParsed[0];
+            const suitesCount = isSuiteProfile
+              ? ezgoParsed.filter((g) => g.hasSuite).length
+              : ezgoParsed.filter((g) => g.category === "suite").length;
+            const daysCount = isSuiteProfile
+              ? ezgoParsed.filter((g) => g.hasDayBooking && !g.hasSuite).length
+              : ezgoParsed.filter((g) => g.category === "day_guest").length;
+            const individualPhones = isSuiteProfile
+              ? ezgoParsed.filter((g) => g.phoneSource === "individual").length : 0;
+            const arrivalDate = isSuiteProfile
+              ? ezgoParsed[0]?.arrivalDate : ezgoParsed[0]?.arrival_date;
+
+            return (
             <>
-              <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 12 }}>
-                <strong>{ezgoParsed.length}</strong> הזמנות ·
-                🏨 {ezgoParsed.filter((g) => g.category === "suite").length} סוויטות ·
-                ☀️ {ezgoParsed.filter((g) => g.category === "day_guest").length} בילוי יומי ·
-                תאריך: <strong>{ezgoParsed[0]?.arrival_date ?? "—"}</strong>
+              <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 8 }}>
+                <strong>{ezgoParsed.length}</strong> פרופילים ·
+                🏨 {suitesCount} סוויטות ·
+                ☀️ {daysCount} בילוי יומי ·
+                {isSuiteProfile && individualPhones > 0 && (
+                  <span style={{ color: "#16A34A", fontWeight: 700 }}>
+                    {" "}✅ {individualPhones} טלפונים אישיים זוהו ·
+                  </span>
+                )}
+                {" "}תאריך: <strong>{arrivalDate ?? "—"}</strong>
               </div>
+
+              {isSuiteProfile && (
+                <div style={{ background: "rgba(22,163,74,0.06)", border: "1px solid rgba(22,163,74,0.3)",
+                  borderRadius: 8, padding: "8px 12px", marginBottom: 10, fontSize: 11, color: "#15803D", lineHeight: 1.6 }}>
+                  <strong>✅ Golden Guest Profile</strong> — טלפונים אישיים חולצו מ-sRemark.
+                  עמודת "מקור" מציינת <strong>פרטי</strong> (sRemark) או <strong>קואורד׳</strong> (sTel1).
+                  רשומות עם טלפון פרטי = פרופיל נפרד לכל אורח בחדר.
+                </div>
+              )}
 
               <div style={{ background: "var(--card-bg)", border: "1px solid var(--border)", borderRadius: 10,
                 overflow: "hidden", marginBottom: 14 }}>
-                <div style={{ overflowX: "auto", maxHeight: 360 }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 520 }}>
+                <div style={{ overflowX: "auto", maxHeight: 400 }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", minWidth: isSuiteProfile ? 640 : 520 }}>
                     <thead>
                       <tr style={{ background: "var(--ivory)" }}>
-                        {["שם", "טלפון", "חדר", "סוג", "לילות", "הגעה"].map((h) => (
-                          <th key={h} style={{ padding: "9px 12px", fontSize: 11, color: "var(--text-muted)",
-                            fontWeight: 700, textAlign: "right", borderBottom: "1px solid var(--border)" }}>{h}</th>
-                        ))}
+                        {isSuiteProfile
+                          ? ["שם אורח", "טלפון", "מקור", "חדרים", "שעת ספא", "הגעה"].map((h) => (
+                              <th key={h} style={{ padding: "9px 12px", fontSize: 11, color: "var(--text-muted)",
+                                fontWeight: 700, textAlign: "right", borderBottom: "1px solid var(--border)" }}>{h}</th>
+                            ))
+                          : ["שם", "טלפון", "חדר", "סוג", "לילות", "הגעה"].map((h) => (
+                              <th key={h} style={{ padding: "9px 12px", fontSize: 11, color: "var(--text-muted)",
+                                fontWeight: 700, textAlign: "right", borderBottom: "1px solid var(--border)" }}>{h}</th>
+                            ))
+                        }
                       </tr>
                     </thead>
                     <tbody>
-                      {ezgoParsed.slice(0, 80).map((g, i) => (
-                        <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
-                          <td style={{ padding: "9px 12px", fontSize: 13, fontWeight: 600 }}>{g.guest_name || "—"}</td>
-                          <td style={{ padding: "9px 12px", fontSize: 12, color: "var(--text-muted)",
-                            direction: "ltr", textAlign: "right" }}>
-                            {g.phone ? "0" + String(g.phone).slice(3) : "—"}
-                          </td>
-                          <td style={{ padding: "9px 12px", fontSize: 12 }}>{g.room ?? "—"}</td>
-                          <td style={{ padding: "9px 12px", fontSize: 12 }}>
-                            {g.category === "suite" ? "🏨 סוויטה" : g.category === "day_guest" ? "☀️ יומי" : "—"}
-                          </td>
-                          <td style={{ padding: "9px 12px", fontSize: 12 }}>{g.nights ?? "—"}</td>
-                          <td style={{ padding: "9px 12px", fontSize: 12 }}>{g.arrival_date ?? "—"}</td>
-                        </tr>
-                      ))}
+                      {isSuiteProfile
+                        ? ezgoParsed.slice(0, 100).map((g, i) => (
+                            <tr key={i} style={{ borderBottom: "1px solid var(--border)",
+                              background: g.phoneSource === "individual" ? "rgba(22,163,74,0.03)" : undefined }}>
+                              <td style={{ padding: "9px 12px", fontSize: 13, fontWeight: 600 }}>{g.guestName || "—"}</td>
+                              <td style={{ padding: "9px 12px", fontSize: 12, color: "var(--text-muted)",
+                                direction: "ltr", textAlign: "right" }}>
+                                {g.guestPhone ? "0" + String(g.guestPhone).slice(4) : "—"}
+                              </td>
+                              <td style={{ padding: "9px 12px", fontSize: 11, textAlign: "center" }}>
+                                <span style={{
+                                  display: "inline-block", padding: "2px 7px", borderRadius: 10, fontWeight: 700,
+                                  background: g.phoneSource === "individual" ? "#DCFCE7" : "#F1F5F9",
+                                  color:      g.phoneSource === "individual" ? "#15803D"  : "#64748B",
+                                }}>
+                                  {g.phoneSource === "individual" ? "פרטי" : "קואורד׳"}
+                                </span>
+                              </td>
+                              <td style={{ padding: "9px 12px", fontSize: 12 }}>
+                                {g.rooms.length > 1
+                                  ? `${g.rooms.length} חדרים`
+                                  : g.rooms[0]?.roomName
+                                    ? `${g.rooms[0].suiteType?.split(" ")[1] ?? ""} ${g.rooms[0].roomName}`
+                                    : "—"}
+                              </td>
+                              <td style={{ padding: "9px 12px", fontSize: 13, fontWeight: 800,
+                                color: g.spa_time ? "var(--gold-dark)" : "var(--text-muted)" }}>
+                                {g.spa_time ?? "—"}
+                              </td>
+                              <td style={{ padding: "9px 12px", fontSize: 12 }}>{g.arrivalDate ?? "—"}</td>
+                            </tr>
+                          ))
+                        : ezgoParsed.slice(0, 80).map((g, i) => (
+                            <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
+                              <td style={{ padding: "9px 12px", fontSize: 13, fontWeight: 600 }}>{g.guest_name || "—"}</td>
+                              <td style={{ padding: "9px 12px", fontSize: 12, color: "var(--text-muted)",
+                                direction: "ltr", textAlign: "right" }}>
+                                {g.phone ? "0" + String(g.phone).slice(3) : "—"}
+                              </td>
+                              <td style={{ padding: "9px 12px", fontSize: 12 }}>{g.room ?? "—"}</td>
+                              <td style={{ padding: "9px 12px", fontSize: 12 }}>
+                                {g.category === "suite" ? "🏨 סוויטה" : g.category === "day_guest" ? "☀️ יומי" : "—"}
+                              </td>
+                              <td style={{ padding: "9px 12px", fontSize: 12 }}>{g.nights ?? "—"}</td>
+                              <td style={{ padding: "9px 12px", fontSize: 12 }}>{g.arrival_date ?? "—"}</td>
+                            </tr>
+                          ))
+                      }
                     </tbody>
                   </table>
                 </div>
-                {ezgoParsed.length > 80 && (
+                {ezgoParsed.length > (isSuiteProfile ? 100 : 80) && (
                   <div style={{ padding: "8px 12px", fontSize: 11, color: "var(--text-muted)", textAlign: "center" }}>
-                    ועוד {ezgoParsed.length - 80} שורות...
+                    ועוד {ezgoParsed.length - (isSuiteProfile ? 100 : 80)} רשומות...
                   </div>
                 )}
               </div>
@@ -875,7 +1103,7 @@ function ArrivalsImporter() {
                 }}>← חזור</button>
               </div>
             </>
-          )}
+          ); })()}
 
           {/* Done step */}
           {ezgoStep === "done" && ezgoResult && (
@@ -907,16 +1135,17 @@ function ArrivalsImporter() {
         </>
       )}
 
-      {/* ══════════ TAB 2: SPA ENRICHMENT ══════════ */}
+      {/* ══════════ TAB 2: GOLDEN GUEST PROFILE — Comprehensive Report ══════════ */}
       {activeTab === "spa" && (
         <>
           {/* Info banner */}
-          <div style={{ background: "rgba(124,58,237,0.07)", border: "1px solid rgba(124,58,237,0.2)",
+          <div style={{ background: "rgba(201,169,110,0.08)", border: "1px solid rgba(201,169,110,0.4)",
             borderRadius: 10, padding: "12px 16px", marginBottom: 16, fontSize: 12,
-            color: "#5b21b6", lineHeight: 1.7 }}>
-            <strong>חשוב:</strong> ייבוא ספא <u>לא יוצר</u> אורחים חדשים.
-            הוא מזריק שעת ספא (<code>spa_time</code>) לאורחים שכבר קיימים ב-DB לפי מספר טלפון.
-            <br />ייבא קובץ EZGO קודם (טאב שמאל) כדי ליצור רשומות אורחים.
+            color: "var(--gold-dark)", lineHeight: 1.7 }}>
+            <strong>דוח יומי מקיף — עיטור פרופיל אורח</strong><br />
+            מקבל את קובץ ספר ההזמנות היומי (Excel מקובץ). מייצר/מעדכן פרופיל אורח אחד לפי טלפון:<br />
+            • אורח קיים (מEZGO) → עדכון שעת ספא + מספר הזמנה + כמות טיפולים בלבד, ללא שכפול<br />
+            • אורח חדש (ספא יומי ללא חדר) → יצירת רשומה חדשה
           </div>
 
           {/* Drop zone */}
@@ -926,70 +1155,88 @@ function ArrivalsImporter() {
             onDrop={(e) => { e.preventDefault(); setSpaDragging(false); handleSpaFile(e.dataTransfer.files?.[0]); }}
             onClick={() => spaRef.current?.click()}
             style={{
-              border: `2px dashed ${spaDragging ? "#7c3aed" : spaFileName ? "rgba(124,58,237,0.5)" : "var(--border)"}`,
-              background: spaDragging ? "rgba(124,58,237,0.06)" : spaFileName ? "rgba(124,58,237,0.03)" : "var(--ivory)",
+              border: `2px dashed ${spaDragging ? "var(--gold)" : spaFileName ? "rgba(201,169,110,0.6)" : "var(--border)"}`,
+              background: spaDragging ? "rgba(201,169,110,0.08)" : spaFileName ? "rgba(201,169,110,0.04)" : "var(--ivory)",
               borderRadius: 16, padding: "36px 20px", textAlign: "center", cursor: "pointer",
               transition: "all 0.2s", marginBottom: 16,
             }}>
             <input ref={spaRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: "none" }}
               onChange={(e) => e.target.files?.[0] && handleSpaFile(e.target.files[0])} />
             {spaFileName ? (
-              <div style={{ fontSize: 14, fontWeight: 700, color: "#7c3aed" }}>
-                💆 {spaFileName}
+              <div style={{ fontSize: 14, fontWeight: 700, color: "var(--gold-dark)" }}>
+                📋 {spaFileName}
                 <span style={{ display: "block", fontSize: 12, fontWeight: 400, color: "var(--text-muted)", marginTop: 4 }}>
-                  {spaUpdates.length} אורחים ייחודיים זוהו · לחץ להחלפה
+                  {spaUpdates.length} רשומות ·{" "}
+                  {spaUpdates.filter((r) => r.spa_time).length} עם שעת ספא · לחץ להחלפה
                 </span>
               </div>
             ) : (
               <>
-                <div style={{ fontSize: 36, marginBottom: 8 }}>💆</div>
+                <div style={{ fontSize: 36, marginBottom: 8 }}>📋</div>
                 <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-muted)", marginBottom: 4 }}>
-                  גרור קובץ פעילות ספא לכאן
+                  גרור דוח יומי מקיף לכאן
                 </div>
                 <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                  CSV מ-EZGO ספא · עמודות: sTel, tmStart, iLineStatus
+                  Excel מ-EZGO (ספר הזמנות) · כולל הזמנות + שעות ספא
                 </div>
               </>
             )}
           </div>
 
-          {/* Preview spa updates (before sync) */}
+          {/* Preview — Golden Guest Profile rows */}
           {spaUpdates.length > 0 && !spaResult && (
             <>
               <div style={{ background: "var(--card-bg)", border: "1px solid var(--border)", borderRadius: 10,
                 overflow: "hidden", marginBottom: 14 }}>
-                <div style={{ overflowX: "auto", maxHeight: 280 }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <div style={{ overflowX: "auto", maxHeight: 320 }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 540 }}>
                     <thead>
                       <tr style={{ background: "var(--ivory)" }}>
-                        {["טלפון", "שעת ספא"].map((h) => (
+                        {["שם", "טלפון", "הזמנה #", "שעת ספא", "טיפולים"].map((h) => (
                           <th key={h} style={{ padding: "8px 12px", fontSize: 11, color: "var(--text-muted)",
                             fontWeight: 700, textAlign: "right", borderBottom: "1px solid var(--border)" }}>{h}</th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
-                      {spaUpdates.slice(0, 50).map(({ phone, spa_time }, i) => (
+                      {spaUpdates.slice(0, 60).map((g, i) => (
                         <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
-                          <td style={{ padding: "8px 12px", fontSize: 12,
-                            direction: "ltr", textAlign: "right", color: "var(--text-muted)" }}>{phone}</td>
-                          <td style={{ padding: "8px 12px", fontSize: 14, fontWeight: 800, color: "#7c3aed" }}>
-                            {spa_time}
+                          <td style={{ padding: "8px 12px", fontSize: 13, fontWeight: 600 }}>
+                            {g.guest_name || "—"}
+                          </td>
+                          <td style={{ padding: "8px 12px", fontSize: 12, color: "var(--text-muted)",
+                            direction: "ltr", textAlign: "right" }}>
+                            {g.phone ? "0" + String(g.phone).replace("+972", "") : "—"}
+                          </td>
+                          <td style={{ padding: "8px 12px", fontSize: 12, color: "var(--text-muted)" }}>
+                            {g.order_number || "—"}
+                          </td>
+                          <td style={{ padding: "8px 12px", fontSize: 14, fontWeight: 800,
+                            color: g.spa_time ? "var(--gold-dark)" : "var(--text-muted)" }}>
+                            {g.spa_time || "—"}
+                          </td>
+                          <td style={{ padding: "8px 12px", fontSize: 13, textAlign: "center" }}>
+                            {g.treatment_count > 0 ? g.treatment_count : "—"}
                           </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
+                {spaUpdates.length > 60 && (
+                  <div style={{ padding: "6px 12px", fontSize: 11, color: "var(--text-muted)", textAlign: "center" }}>
+                    ועוד {spaUpdates.length - 60} רשומות...
+                  </div>
+                )}
               </div>
               <button onClick={handleSpaSync} disabled={spaBusy} style={{
                 width: "100%", padding: "13px", borderRadius: 10, border: "none",
-                background: spaBusy ? "var(--border)" : "#7c3aed",
-                color: spaBusy ? "var(--text-muted)" : "#fff",
+                background: spaBusy ? "var(--border)" : "linear-gradient(135deg,var(--gold),var(--gold-dark))",
+                color: spaBusy ? "var(--text-muted)" : "#0F0F0F",
                 fontFamily: "Heebo, sans-serif", fontSize: 14, fontWeight: 800,
                 cursor: spaBusy ? "not-allowed" : "pointer",
               }}>
-                {spaBusy ? "מעדכן..." : `💉 הזרק שעות ספא ל-${spaUpdates.length} אורחים`}
+                {spaBusy ? "מסנכרן..." : `⚡ עדכן פרופיל אורח (${spaUpdates.length} רשומות)`}
               </button>
             </>
           )}
@@ -997,26 +1244,30 @@ function ArrivalsImporter() {
           {/* Result */}
           {spaResult && (
             <div style={{
-              background: spaResult.matched > 0 ? "#d1fae5" : "#FFF0EE",
-              border: `1px solid ${spaResult.matched > 0 ? "#6ee7b7" : "#fca5a5"}`,
+              background: (spaResult.matched + spaResult.created) > 0 ? "#d1fae5" : "#FFF0EE",
+              border: `1px solid ${(spaResult.matched + spaResult.created) > 0 ? "#6ee7b7" : "#fca5a5"}`,
               borderRadius: 12, padding: "20px",
             }}>
-              <div style={{ fontSize: 28, marginBottom: 8 }}>{spaResult.matched > 0 ? "✅" : "⚠️"}</div>
+              <div style={{ fontSize: 28, marginBottom: 8 }}>
+                {(spaResult.matched + spaResult.created) > 0 ? "✅" : "⚠️"}
+              </div>
               <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 8,
-                color: spaResult.matched > 0 ? "#065f46" : "#C0392B" }}>
-                {spaResult.matched} אורחים עודכנו עם שעת ספא
+                color: (spaResult.matched + spaResult.created) > 0 ? "#065f46" : "#C0392B",
+                lineHeight: 1.8 }}>
+                {spaResult.matched > 0 && `✅ ${spaResult.matched} אורחים עודכנו (שעת ספא + מספר הזמנה)`}
+                {spaResult.matched > 0 && spaResult.created > 0 && <br />}
+                {spaResult.created > 0 && `🆕 ${spaResult.created} אורחי ספא חדשים נוצרו`}
               </div>
               {spaResult.missed > 0 && (
                 <div style={{ fontSize: 12, color: "#92400e", marginBottom: 12 }}>
-                  ⚠️ {spaResult.missed} טלפונים לא נמצאו ב-guests
-                  {spaResult.matched === 0 ? " — ייבא קובץ EZGO קודם" : ""}
+                  ⚠️ {spaResult.missed} רשומות ללא שדות לעדכון / שגיאת שמירה
                 </div>
               )}
               <button onClick={() => { setSpaUpdates([]); setSpaFileName(""); setSpaResult(null); }} style={{
                 padding: "8px 18px", borderRadius: 8, border: "1px solid #6ee7b7",
                 background: "transparent", color: "#065f46", cursor: "pointer",
                 fontFamily: "Heebo, sans-serif", fontSize: 13, fontWeight: 700 }}>
-                ← עדכון ספא נוסף
+                ← ייבוא נוסף
               </button>
             </div>
           )}
