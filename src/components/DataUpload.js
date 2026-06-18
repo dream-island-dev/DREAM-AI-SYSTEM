@@ -1,4 +1,4 @@
-// src/components/DataUpload.js
+// src/components/DataUpload.js  v2 — 2-tab pipeline: EZGO INSERT + Spa UPDATE
 // Dual-purpose responsive Excel/CSV upload engine.
 // Parses Daily Check-Ins (Guests) OR Staff Shifts client-side (SheetJS),
 // previews + auto-maps columns, then writes to Supabase.
