@@ -7,6 +7,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
+import ArrivalImportPanel from "./ArrivalImportPanel";
 
 const HOTEL_DEPARTMENTS = ["תפעול", "משק", "קבלה", "ספא", 'מזמ"ש (F&B)', "הנהלה"];
 
@@ -373,6 +374,9 @@ export default function TaskBoard({ user, isAdmin }) {
           border: `1px solid ${toast.type === "ok" ? "#1A7A4A" : "#C0392B"}`,
         }}>{toast.msg}</div>
       )}
+
+      {/* Daily arrival import — managers & admins only */}
+      {canCreate && <ArrivalImportPanel />}
 
       {/* New task form — managers & admins only */}
       {canCreate && (

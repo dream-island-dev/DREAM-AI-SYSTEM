@@ -5,7 +5,6 @@
 // Works from smartphone (file picker) and desktop (drag-drop).
 import { useState, useEffect, useRef, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
-import SpaScheduleUploader from "./SpaScheduleUploader";
 import {
   aggregateGuestProfiles,
   profilesToArray,
@@ -371,7 +370,7 @@ export default function DataUpload({ onImported, user, lockedMode }) {
       .then(({ data }) => { if (data?.department) setManagerDepartment(data.department); });
   }, [user?.id]);
 
-  const target = (mode !== "spa" && mode !== "arrivals") ? TARGETS[mode] : null;
+  const target = mode !== "arrivals" ? TARGETS[mode] : null;
 
   const showToast = (type, msg) => { setToast({ type, msg }); setTimeout(() => setToast(null), 4000); };
 
@@ -468,7 +467,6 @@ export default function DataUpload({ onImported, user, lockedMode }) {
         <div style={{ display: "flex", gap: 10, marginBottom: 20, flexWrap: "wrap" }}>
           {[
             { key: "arrivals", label: "📅 ייבוא יומי" },
-            { key: "spa",      label: "💆 לוח ספא"    },
             { key: "shifts",   label: "🕐 משמרות צוות" },
           ].map(({ key, label }) => (
             <button key={key}
@@ -486,14 +484,11 @@ export default function DataUpload({ onImported, user, lockedMode }) {
         </div>
       )}
 
-      {/* Spa tab — fully self-contained component */}
-      {mode === "spa" && <SpaScheduleUploader />}
-
       {/* Arrivals daily import — self-contained parser */}
       {mode === "arrivals" && <ArrivalsImporter />}
 
       {/* Drop zone */}
-      {mode !== "spa" && mode !== "arrivals" && <div
+      {mode !== "arrivals" && <div
         onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
         onDragLeave={() => setDragging(false)}
         onDrop={onDrop}
@@ -515,7 +510,7 @@ export default function DataUpload({ onImported, user, lockedMode }) {
       </div>}
 
       {/* Preview */}
-      {mode !== "spa" && mode !== "arrivals" && rawRows.length > 0 && (
+      {mode !== "arrivals" && rawRows.length > 0 && (
         <div className="card" style={{ marginBottom: 20 }}>
           <div className="card-header">
             <div className="card-title">תצוגה מקדימה · {mappedRows.length} שורות תקינות מתוך {rawRows.length}</div>
