@@ -21,9 +21,10 @@ export default function GuestsPage() {
   const [paymentBusy, setPaymentBusy]   = useState(null); // guestId being sent
   const [selectedIds, setSelectedIds]   = useState(new Set()); // batch selection
   const [resetBusy, setResetBusy]       = useState(false);
-  const [editGuest,  setEditGuest]      = useState(null);  // guest obj being edited
-  const [editForm,   setEditForm]       = useState({});
-  const [editSaving, setEditSaving]     = useState(false);
+  const [editGuest,     setEditGuest]    = useState(null);  // {} = new guest, {id,...} = existing
+  const [editForm,     setEditForm]     = useState({});
+  const [editSaving,   setEditSaving]   = useState(false);
+  const [availableRooms, setAvailableRooms] = useState([]);  // from suite_rooms table
 
   const showToast = (type, msg) => { setToast({ type, msg }); setTimeout(() => setToast(null), 3500); };
 
@@ -40,7 +41,17 @@ export default function GuestsPage() {
     setLoading(false);
   }, []);
 
-  useEffect(() => { fetchGuests(); }, [fetchGuests]);
+  const fetchRooms = useCallback(async () => {
+    if (!supabase) return;
+    const { data } = await supabase
+      .from("suite_rooms")
+      .select("room_name, suite_type, arrival_date")
+      .order("arrival_date", { ascending: true })
+      .order("room_name",    { ascending: true });
+    setAvailableRooms(data ?? []);
+  }, []);
+
+  useEffect(() => { fetchGuests(); fetchRooms(); }, [fetchGuests, fetchRooms]);
 
   const setStatus = async (guest, status) => {
     if (!supabase) return;
@@ -143,20 +154,30 @@ export default function GuestsPage() {
   const openEdit = (g) => {
     setEditGuest(g);
     setEditForm({
-      name:               g.name               ?? "",
-      arrival_date:       g.arrival_date        ?? "",
-      spa_time:           g.spa_time            ?? "",
+      phone:              g.phone               ?? "",
+      name:               g.name                ?? "",
+      arrival_date:       g.arrival_date         ?? "",
+      spa_time:           g.spa_time             ?? "",
       treatment_count:    g.treatment_count != null ? String(g.treatment_count) : "",
-      order_number:       g.order_number        ?? "",
-      status:             g.status              ?? "expected",
+      order_number:       g.order_number         ?? "",
+      status:             g.status               ?? "expected",
       requires_attention: !!g.requires_attention,
       needs_callback:     !!g.needs_callback,
-      room:               g.room                ?? "",
+      room:               g.room                 ?? "",
+    });
+  };
+
+  const openAdd = () => {
+    setEditGuest({}); // empty = new guest (no id)
+    setEditForm({
+      phone: "", name: "", arrival_date: "", spa_time: "",
+      treatment_count: "", order_number: "", room: "",
+      status: "pending", requires_attention: false, needs_callback: false,
     });
   };
 
   const handleSaveEdit = async () => {
-    if (!editGuest || !supabase) return;
+    if (editGuest === null || !supabase) return;
     setEditSaving(true);
     try {
       const patch = {
@@ -164,17 +185,30 @@ export default function GuestsPage() {
         arrival_date:       editForm.arrival_date  || null,
         spa_time:           editForm.spa_time       || null,
         treatment_count:    editForm.treatment_count !== "" ? parseInt(editForm.treatment_count, 10) : null,
-        order_number:       editForm.order_number.trim() || null,
+        order_number:       (editForm.order_number ?? "").trim() || null,
         status:             editForm.status,
-        requires_attention: editForm.requires_attention,
-        needs_callback:     editForm.needs_callback,
-        room:               editForm.room.trim()   || null,
+        requires_attention: !!editForm.requires_attention,
+        needs_callback:     !!editForm.needs_callback,
+        room:               editForm.room || null,
       };
-      const { error } = await supabase.from("guests").update(patch).eq("id", editGuest.id);
-      if (error) throw error;
-      setGuests(prev => prev.map(g => g.id === editGuest.id ? { ...g, ...patch } : g));
+
+      if (editGuest.id) {
+        // UPDATE existing guest
+        const { error } = await supabase.from("guests").update(patch).eq("id", editGuest.id);
+        if (error) throw error;
+        setGuests(prev => prev.map(g => g.id === editGuest.id ? { ...g, ...patch } : g));
+        showToast("ok", "✅ פרופיל אורח עודכן בהצלחה");
+      } else {
+        // INSERT new guest
+        const phone = (editForm.phone ?? "").trim();
+        if (!phone) { showToast("err", "מספר טלפון הוא שדה חובה"); setEditSaving(false); return; }
+        const { data: created, error } = await supabase
+          .from("guests").insert({ ...patch, phone }).select().maybeSingle();
+        if (error) throw error;
+        if (created) setGuests(prev => [created, ...prev]);
+        showToast("ok", "✅ אורח נוסף בהצלחה");
+      }
       setEditGuest(null);
-      showToast("ok", "✅ פרופיל אורח עודכן בהצלחה");
     } catch (e) {
       showToast("err", "שגיאה: " + (e?.message ?? e));
     } finally {
@@ -291,14 +325,39 @@ export default function GuestsPage() {
               maxHeight: "90vh", overflowY: "auto",
             }}
           >
-            <div style={{ fontWeight: 800, fontSize: 17, marginBottom: 4 }}>✏️ עריכת פרופיל אורח</div>
-            <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 20, direction: "ltr" }}>
-              {editGuest.phone}
+            <div style={{ fontWeight: 800, fontSize: 17, marginBottom: 4 }}>
+              {editGuest.id ? "✏️ עריכת פרופיל אורח" : "➕ הוספת אורח ידני"}
             </div>
+            {editGuest.id && (
+              <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 16, direction: "ltr" }}>
+                {editGuest.phone}
+              </div>
+            )}
 
+            {/* Phone — required for new guests only */}
+            {!editGuest.id && (
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ fontSize: 12, fontWeight: 700, display: "block", marginBottom: 4 }}>
+                  טלפון <span style={{ color: "#C0392B" }}>*</span>
+                </label>
+                <input
+                  type="tel"
+                  value={editForm.phone ?? ""}
+                  onChange={e => setEditForm(p => ({ ...p, phone: e.target.value }))}
+                  placeholder="+972501234567"
+                  disabled={editSaving}
+                  style={{
+                    width: "100%", padding: "9px 12px", boxSizing: "border-box",
+                    border: "1px solid var(--border,#ddd)", borderRadius: 8, fontSize: 14,
+                    direction: "ltr", fontFamily: "Heebo,sans-serif",
+                  }}
+                />
+              </div>
+            )}
+
+            {/* Text fields */}
             {[
               { label: "שם מלא",       field: "name",            type: "text"   },
-              { label: "חדר",           field: "room",            type: "text"   },
               { label: "תאריך הגעה",   field: "arrival_date",    type: "date"   },
               { label: "שעת ספא",      field: "spa_time",        type: "time"   },
               { label: "מספר טיפולים", field: "treatment_count", type: "number" },
@@ -319,6 +378,46 @@ export default function GuestsPage() {
                 />
               </div>
             ))}
+
+            {/* Room / suite selector */}
+            {(() => {
+              const grouped = availableRooms.reduce((acc, r) => {
+                const k = r.arrival_date ?? "ללא תאריך";
+                if (!acc[k]) acc[k] = [];
+                acc[k].push(r);
+                return acc;
+              }, {});
+              return (
+                <div style={{ marginBottom: 14 }}>
+                  <label style={{ fontSize: 12, fontWeight: 700, display: "block", marginBottom: 4 }}>חדר / חבילה</label>
+                  <select
+                    value={editForm.room ?? ""}
+                    onChange={e => setEditForm(p => ({ ...p, room: e.target.value }))}
+                    disabled={editSaving}
+                    style={{
+                      width: "100%", padding: "9px 12px", border: "1px solid var(--border,#ddd)",
+                      borderRadius: 8, fontSize: 14, fontFamily: "Heebo,sans-serif",
+                      background: "var(--card-bg,#fff)", cursor: "pointer",
+                    }}
+                  >
+                    <option value="">— ללא חדר —</option>
+                    <optgroup label="⭐ בילוי יומי">
+                      <option value="Premium Day 1">חבילת פרימיום בילוי יומי 1</option>
+                      <option value="Premium Day 2">חבילת פרימיום בילוי יומי 2</option>
+                    </optgroup>
+                    {Object.entries(grouped).map(([date, rooms]) => (
+                      <optgroup key={date} label={`🗓️ הגעה ${date}`}>
+                        {rooms.map((r, i) => (
+                          <option key={i} value={r.room_name}>
+                            {`חדר ${r.room_name}${r.suite_type ? ` — ${r.suite_type.replace(/^סוויטת\s*/u, "")}` : ""}`}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ))}
+                  </select>
+                </div>
+              );
+            })()}
 
             <div style={{ marginBottom: 14 }}>
               <label style={{ fontSize: 12, fontWeight: 700, display: "block", marginBottom: 4 }}>סטטוס</label>
@@ -378,7 +477,7 @@ export default function GuestsPage() {
                   color: "#0F0F0F", fontFamily: "Heebo,sans-serif",
                   fontSize: 14, fontWeight: 800, cursor: editSaving ? "not-allowed" : "pointer",
                 }}>
-                {editSaving ? "⏳ שומר..." : "💾 שמור"}
+                {editSaving ? "⏳ שומר..." : editGuest?.id ? "💾 שמור שינויים" : "➕ הוסף אורח"}
               </button>
             </div>
           </div>
@@ -411,6 +510,16 @@ export default function GuestsPage() {
               {resetBusy ? "⏳ מאפס..." : `🗑️ מחיקת נתוני ספא שנבחרו (${selectedIds.size})`}
             </button>
           )}
+          <button
+            onClick={openAdd}
+            style={{
+              padding: "7px 14px", borderRadius: 8, border: "none",
+              background: "linear-gradient(135deg,var(--gold),var(--gold-dark))",
+              color: "#0F0F0F", fontFamily: "Heebo,sans-serif",
+              fontSize: 13, fontWeight: 800, cursor: "pointer",
+            }}>
+            + הוסף אורח
+          </button>
           <button className="btn btn-ghost btn-sm" onClick={fetchGuests} disabled={loading}>
             {loading ? "..." : "↺ רענון"}
           </button>
