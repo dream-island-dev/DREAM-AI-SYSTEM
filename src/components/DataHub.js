@@ -136,19 +136,20 @@ function extractSpaFromExtra(raw) {
   if (!timeMatch) return null;
 
   const rawTime = timeMatch[1];
-  const time    = rawTime.length === 4 ? "0" + rawTime : rawTime;
+  const time    = rawTime.length === 4 ? "0" + rawTime : rawTime; // ensure HH:MM
 
   let category = null;
   if (s.includes("לאורחי הסוויטות") || s.includes("סוויט") || s.includes("לשובר")) {
     category = "suite";
   } else if (s.includes("בחבילה") || s.includes("מוזל") || s.includes("לאורחי היום")) {
     category = "day_guest";
+  } else {
+    // No recognised spa keyword — the time in this cell is not a spa slot
+    // (could be a check-in time, meal time, etc.). Do not extract.
+    return null;
   }
-  // No early return — always extract when a time is present.
-  // Day-guest packages always carry explicit labels ("בחבילה מוזלת" etc).
-  // Unlabeled time entries are suite packages that omit the boilerplate suffix.
 
-  const afterTime = s.replace(/.*\d{1,2}:\d{2}\s*[-–]\s*/, "").trim();
+  const afterTime = s.replace(/^\d+\s*[-–]\s*\d{1,2}:\d{2}\s*[-–]\s*/, "").trim();
   return { time, category, treatmentType: afterTime || s };
 }
 
@@ -205,14 +206,8 @@ function parseCombinedRows(rawRows, headers) {
         e.treatment_time = spa.time;
         e.treatment_type = spa.treatmentType;
       }
-      if (spa.category === "suite") {
-        e.room_type = "suite";
-      } else if (spa.category === "day_guest") {
-        if (e.room_type !== "suite") e.room_type = "day_guest";
-      } else {
-        // Unlabeled time entry → suite (day packages always have explicit labels)
-        if (e.room_type !== "suite") e.room_type = "suite";
-      }
+      if (spa.category === "suite") e.room_type = "suite";
+      else if (spa.category === "day_guest" && e.room_type !== "suite") e.room_type = "day_guest";
     }
   }
 
