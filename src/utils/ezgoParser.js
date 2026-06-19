@@ -162,8 +162,10 @@ export function extractGuestDetails(row, fallbackDate = null) {
   const seqLineId    = String(row.iResLineId            ?? "").trim(); // sequential within booking
   const roomName     = String(row.sRoomName             ?? "").trim();
   const suiteType    = String(row.sSubItemName          ?? "").trim();
-  const coordNameRaw = String(row.sClientFullName       ?? row.sGroupName ?? "").trim();
-  const coordPhoneRaw= String(row.sTel1                 ?? "").trim();
+  // SheetJS defval:"" makes missing fields "", not null — use || (not ??) so the
+  // fallback actually fires when the primary field is an empty string.
+  const coordNameRaw = String(row.sClientFullName || row.sGroupName || "").trim();
+  const coordPhoneRaw= String(row.sTel1           || "").trim();
   const remark       = String(row.sRemark               ?? "").trim();
   const opRemark     = String(row.sOperationRemark      ?? "").trim();
   const adults       = parseInt(row.iAdults ?? "1") || 1;
@@ -290,7 +292,8 @@ export function aggregateGuestProfiles(rows, fallbackDate = null) {
 
   for (const row of rows) {
     const g = extractGuestDetails(row, fallbackDate);
-    if (!g.guestPhone && !g.guestName) continue;
+    // Only skip genuinely empty rows — any PMS identifier keeps the row alive
+    if (!g.guestPhone && !g.guestName && !g.resLineId && !g.orderNumber) continue;
 
     // Stable key: prefer phone (E.164), fall back to resLineId (globally unique PMS ID)
     // so every phoneless row gets its own profile — never silently merge two separate rooms
