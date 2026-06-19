@@ -788,19 +788,30 @@ function ArrivalsImporter() {
         });
       } else {
         // ── Excel (grouped) path — legacy bookings + guests upsert ────────────
-        const bookingRows = ezgoParsed
+        // Deduplicate by conflict key before upsert.
+        // parseArrivalsExcel can produce multiple rows for the same (phone, arrival_date)
+        // when a guest has multiple bookings on the same day — PostgreSQL rejects batch
+        // upserts that would touch the same row twice (ON CONFLICT DO UPDATE constraint).
+        const bookingMap = new Map();
+        ezgoParsed
           .filter((g) => g.phone && g.arrival_date)
-          .map((g) => ({
-            guest_name:     g.guest_name,
-            phone:          g.phone,                          // 972XXXXXXXXX (no +)
-            arrival_date:   g.arrival_date,
-            checkout_date:  addNights(g.arrival_date, g.nights),
-            nights:         g.nights,
-            room_count:     g.rooms,
-            status:         "pending",
-            treatment_time: null,
-            treatment_type: null,
-          }));
+          .forEach((g) => {
+            const key = `${g.phone}|${g.arrival_date}`;
+            if (!bookingMap.has(key)) {
+              bookingMap.set(key, {
+                guest_name:     g.guest_name,
+                phone:          g.phone,
+                arrival_date:   g.arrival_date,
+                checkout_date:  addNights(g.arrival_date, g.nights),
+                nights:         g.nights,
+                room_count:     g.rooms,
+                status:         "pending",
+                treatment_time: null,
+                treatment_type: null,
+              });
+            }
+          });
+        const bookingRows = [...bookingMap.values()];
 
         if (bookingRows.length) {
           const { error: bErr } = await supabase
@@ -809,19 +820,26 @@ function ArrivalsImporter() {
           if (bErr) throw new Error("bookings: " + bErr.message);
         }
 
-        const guestRows = ezgoParsed
+        const guestMap = new Map();
+        ezgoParsed
           .filter((g) => g.guest_name && g.phone && g.arrival_date)
-          .map((g) => ({
-            name:           g.guest_name,
-            phone:          sanitizePhone(g.phone),           // E.164 "+972XXXXXXXXX"
-            arrival_date:   g.arrival_date,
-            departure_date: addNights(g.arrival_date, g.nights),
-            room_type:      g.category === "suite" ? "suite" : "standard",
-            room:           g.room ?? null,
-            status:         "pending",
-            guest_index:    1,
-            spa_time:       null,
-          }));
+          .forEach((g) => {
+            const key = `${sanitizePhone(g.phone)}|${g.arrival_date}`;
+            if (!guestMap.has(key)) {
+              guestMap.set(key, {
+                name:           g.guest_name,
+                phone:          sanitizePhone(g.phone),
+                arrival_date:   g.arrival_date,
+                departure_date: addNights(g.arrival_date, g.nights),
+                room_type:      g.category === "suite" ? "suite" : "standard",
+                room:           g.room ?? null,
+                status:         "pending",
+                guest_index:    1,
+                spa_time:       null,
+              });
+            }
+          });
+        const guestRows = [...guestMap.values()];
 
         if (guestRows.length) {
           const { error: gErr } = await supabase

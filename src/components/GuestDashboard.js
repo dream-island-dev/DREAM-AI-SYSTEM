@@ -459,7 +459,7 @@ export default function GuestDashboard({ user }) {
               >✕</button>
             </div>
             <DataUpload
-              lockedMode="ezgo"
+              lockedMode="arrivals"
               user={user}
               onImported={() => { fetchGuests(); setShowUpload(false); }}
             />
