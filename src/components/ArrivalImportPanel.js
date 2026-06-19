@@ -225,7 +225,9 @@ export default function ArrivalImportPanel() {
       const ws   = wb.Sheets[wb.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
 
+      console.log("Total Raw Rows:", rows.length);
       const profileMap = aggregateGuestProfiles(rows, _dateFromFilename(file.name));
+      console.log("Total Final Profiles:", profileMap.size);
       if (!profileMap.size) {
         showToast("err", "לא נמצאו פרופילים — בדוק שהקובץ הוא ייצוא EZGO Suites CSV");
         return;

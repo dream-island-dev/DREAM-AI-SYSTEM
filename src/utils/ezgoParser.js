@@ -290,75 +290,47 @@ export function extractGuestDetails(row, fallbackDate = null) {
 export function aggregateGuestProfiles(rows, fallbackDate = null) {
   const profiles = new Map();
 
-  for (const row of rows) {
+  // Key = absolute row index — 1 CSV row = 1 profile, zero merging.
+  // Phone duplication (two guests sharing a number, e.g. group members) must NOT
+  // collapse rows — the DB upsert layer handles deduplication by phone at write time.
+  rows.forEach((row, index) => {
     const g = extractGuestDetails(row, fallbackDate);
-    // Only skip genuinely empty rows — any PMS identifier keeps the row alive
-    if (!g.guestPhone && !g.guestName && !g.resLineId && !g.orderNumber) continue;
+    // Only skip completely blank rows (header artifacts, trailing newlines, etc.)
+    if (!g.guestPhone && !g.guestName && !g.resLineId && !g.orderNumber) return;
 
-    // Stable key: prefer phone (E.164), fall back to resLineId (globally unique PMS ID)
-    // so every phoneless row gets its own profile — never silently merge two separate rooms
-    const key = g.guestPhone ?? `res:${g.resLineId || g.seqLineId || Math.random()}`;
+    profiles.set(`row_${index}`, {
+      guestPhone:      g.guestPhone,
+      coordPhone:      g.coordPhone,
+      guestName:       g.guestName,
+      phoneSource:     g.phoneSource,
+      arrivalDate:     g.arrivalDate,
+      isDayGuest:      g.isDayGuest,
 
-    if (!profiles.has(key)) {
-      profiles.set(key, {
-        // Identity (set on first encounter — individual phone wins)
-        guestPhone:        g.guestPhone,
-        coordPhone:        g.coordPhone,
-        guestName:         g.guestName,
-        phoneSource:       g.phoneSource,
-        arrivalDate:       g.arrivalDate,
-        isDayGuest:        g.isDayGuest,
+      rooms: [{
+        resLineId:    g.resLineId,
+        orderNumber:  g.orderNumber,
+        roomName:     g.roomName,
+        suiteType:    g.suiteType,
+        adults:       g.adults,
+        children:     g.children,
+        nights:       g.nights,
+        checkinTime:  g.checkinTime,
+        checkoutTime: g.checkoutTime,
+        price:        g.price,
+        isDayGuest:   g.isDayGuest,
+      }],
 
-        // Rooms belonging to this profile
-        rooms:             [],
-
-        // All order numbers seen — used for Excel spa-time JOIN
-        orderNumbers:      new Set(),
-
-        // Category roll-up
-        hasSuite:          false,
-        hasDayBooking:     false,
-
-        // Enrichment slots (Stage 3 populates these)
-        spa_time:          null,
-        treatment_count:   0,
-        treatment_type:    null,
-        meal_plan:         null,
-      });
-    }
-
-    const profile = profiles.get(key);
-
-    // Keep first non-null arrival date; individual phone takes precedence
-    if (!profile.arrivalDate && g.arrivalDate) profile.arrivalDate = g.arrivalDate;
-    if (g.phoneSource === "individual" && profile.phoneSource !== "individual") {
-      profile.guestName  = g.guestName;
-      profile.phoneSource = "individual";
-    }
-
-    // Collect order numbers (Set prevents duplicates)
-    if (g.orderNumber) profile.orderNumbers.add(g.orderNumber);
-
-    // Append room to this guest's profile
-    profile.rooms.push({
-      resLineId:   g.resLineId,
-      orderNumber: g.orderNumber,
-      roomName:    g.roomName,
-      suiteType:   g.suiteType,
-      adults:      g.adults,
-      children:    g.children,
-      nights:      g.nights,
-      checkinTime: g.checkinTime,
-      checkoutTime: g.checkoutTime,
-      price:       g.price,
-      isDayGuest:  g.isDayGuest,
+      orderNumbers:    g.orderNumber ? new Set([g.orderNumber]) : new Set(),
+      hasSuite:        !g.isDayGuest,
+      hasDayBooking:   g.isDayGuest,
+      spa_time:        null,
+      treatment_count: 0,
+      treatment_type:  null,
+      meal_plan:       null,
     });
+  });
 
-    // Category roll-up
-    if (g.isDayGuest) profile.hasDayBooking = true;
-    else              profile.hasSuite       = true;
-  }
-
+  console.log("[aggregateGuestProfiles] raw rows:", rows.length, "→ profiles:", profiles.size);
   return profiles;
 }
 
