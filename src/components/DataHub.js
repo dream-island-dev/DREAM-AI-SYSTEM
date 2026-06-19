@@ -197,6 +197,14 @@ function parseCombinedRows(rawRows, headers) {
           suite_name:     "",
         };
       }
+    } else if (currentPhone && byPhone[currentPhone] && bookingCell.includes("חדרים")) {
+      // "N חדרים" appears as a separate metadata row with no phone — backfill current guest
+      const rMatch = bookingCell.match(/(\d+)\s*חדרים/);
+      if (rMatch) {
+        const rc = parseInt(rMatch[1]);
+        currentRooms = rc;
+        byPhone[currentPhone].room_count = rc;
+      }
     }
 
     const spa = extractSpaFromExtra(tosaCell);
