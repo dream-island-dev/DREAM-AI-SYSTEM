@@ -96,8 +96,7 @@ export function extractNameFromRemark(remark) {
   IL_MOBILE_RE.lastIndex = 0;
 
   if (!phoneMatch) {
-    // No phone found — treat the whole remark as a name (rare)
-    return s || null;
+    return null; // sRemark without a phone is NOT a name source
   }
 
   const namePart = s.slice(0, phoneMatch.index);
@@ -293,8 +292,9 @@ export function aggregateGuestProfiles(rows, fallbackDate = null) {
     const g = extractGuestDetails(row, fallbackDate);
     if (!g.guestPhone && !g.guestName) continue;
 
-    // Stable key: prefer phone (E.164), fall back to name+order for phoneless rows
-    const key = g.guestPhone ?? `anon:${g.guestName}:${g.orderNumber}`;
+    // Stable key: prefer phone (E.164), fall back to resLineId (globally unique PMS ID)
+    // so every phoneless row gets its own profile — never silently merge two separate rooms
+    const key = g.guestPhone ?? `res:${g.resLineId || g.seqLineId || Math.random()}`;
 
     if (!profiles.has(key)) {
       profiles.set(key, {

@@ -1,9 +1,9 @@
 // src/components/ArrivalImportPanel.js
-// Dual-upload panel for daily arrival import.
-// Doc 2 (Suite CSV) → per-room individual profiles via ezgoParser.js
-// Doc 1 (Comprehensive Daily Report Excel) → spa_time enrichment
-// Merge: enrichProfilesFromExcel joins by order_number → 26 individual profiles for group bookings
-// Sync:  sync_suite_arrivals RPC (guests + suite_rooms + bookings) + separate spa_time UPDATE
+// Dual-upload panel — each document can be synced independently.
+//
+// Doc 2 (Suite CSV)  → aggregateGuestProfiles → sync_suite_arrivals RPC (guests + suite_rooms + bookings)
+// Doc 1 (Daily Report Excel) → parseComprehensiveReport → UPDATE guests.spa_time only
+// Both loaded        → full merge: enrichProfilesFromExcel joins by order_number, then both syncs run
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { supabase } from "../supabaseClient";
@@ -13,7 +13,7 @@ import {
   enrichProfilesFromExcel,
 } from "../utils/ezgoParser";
 
-// ── Date / phone helpers (pure, no side effects) ──────────────────────────────
+// ── Date / phone helpers ──────────────────────────────────────────────────────
 
 const DUMMY_DATE_RE = /^01[/.-]01[/.-](1900|1970|2001)/;
 
@@ -55,7 +55,6 @@ function _sanitizeE164(raw) {
 }
 
 // ── Comprehensive Daily Report Parser (Doc 1) ─────────────────────────────────
-// Mirrors parseComprehensiveReport in DataUpload.js (pure function, safe to duplicate).
 // Produces: [{ order_number, guest_name, phone, arrival_date, spa_time, treatment_count }]
 
 const _SOURCE_RE = /^(Hotel\s+WebSite|Booking\s+Collect|Booking\.com|Booking|Expedia|Hotels\.com)\s*-\s*/i;
@@ -107,6 +106,7 @@ function parseComprehensiveReport(rows) {
   }
   if (current) blocks.push(current);
 
+  // Deduplicate by phone — accumulate treatment counts
   const byPhone = {};
   for (const b of blocks) {
     if (!b.phone) continue;
@@ -121,7 +121,6 @@ function parseComprehensiveReport(rows) {
 }
 
 // ── Profile Map cloner ────────────────────────────────────────────────────────
-// Prevents enrichProfilesFromExcel from mutating the stored state Map.
 
 function _cloneProfileMap(map) {
   const clone = new Map();
@@ -142,7 +141,7 @@ function _dateFromFilename(name) {
 
 // ── DropZone ─────────────────────────────────────────────────────────────────
 
-function DropZone({ label, hint, loaded, fileName, onFile, inputRef }) {
+function DropZone({ label, hint, loaded, fileName, onFile, inputRef, optional }) {
   const [dragging, setDragging] = useState(false);
   return (
     <div
@@ -153,20 +152,27 @@ function DropZone({ label, hint, loaded, fileName, onFile, inputRef }) {
       style={{
         border: `2px dashed ${loaded ? "var(--gold)" : dragging ? "var(--gold-dark)" : "var(--border)"}`,
         background: loaded ? "rgba(201,169,110,0.07)" : dragging ? "rgba(201,169,110,0.1)" : "var(--ivory)",
-        borderRadius: 14, padding: "22px 14px", textAlign: "center",
-        cursor: "pointer", transition: "all 0.18s",
+        borderRadius: 14, padding: "18px 12px", textAlign: "center",
+        cursor: "pointer", transition: "all 0.18s", position: "relative",
       }}
     >
+      {optional && !loaded && (
+        <span style={{
+          position: "absolute", top: 7, left: 9, fontSize: 9, fontWeight: 700,
+          background: "var(--border)", color: "var(--text-muted)",
+          padding: "1px 6px", borderRadius: 6,
+        }}>אופציונלי</span>
+      )}
       <input ref={inputRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: "none" }}
         onChange={e => e.target.files?.[0] && onFile(e.target.files[0])} />
-      <div style={{ fontSize: 26, marginBottom: 6 }}>{loaded ? "✅" : "📂"}</div>
-      <div style={{ fontSize: 13, fontWeight: 700,
+      <div style={{ fontSize: 24, marginBottom: 5 }}>{loaded ? "✅" : "📂"}</div>
+      <div style={{ fontSize: 12, fontWeight: 700,
         color: loaded ? "var(--gold-dark)" : "var(--black)", marginBottom: 3 }}>
         {label}
       </div>
       {fileName
         ? <div style={{ fontSize: 10, color: "var(--text-muted)", wordBreak: "break-all" }}>{fileName}</div>
-        : <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{hint}</div>
+        : <div style={{ fontSize: 10, color: "var(--text-muted)" }}>{hint}</div>
       }
     </div>
   );
@@ -176,11 +182,11 @@ function DropZone({ label, hint, loaded, fileName, onFile, inputRef }) {
 
 export default function ArrivalImportPanel() {
   const [open,     setOpen]     = useState(false);
-  const [doc2Map,  setDoc2Map]  = useState(null);   // Map<phone, profile> — Suite CSV
-  const [doc1Rec,  setDoc1Rec]  = useState(null);   // array of spa records — Daily Report
+  const [doc2Map,  setDoc2Map]  = useState(null);   // Map<key, profile> from Suite CSV
+  const [doc1Rec,  setDoc1Rec]  = useState(null);   // [] from Daily Report Excel
   const [doc2Name, setDoc2Name] = useState("");
   const [doc1Name, setDoc1Name] = useState("");
-  const [merged,   setMerged]   = useState(null);   // final array shown in preview
+  const [merged,   setMerged]   = useState(null);   // enriched profiles array (doc2 + doc1 join)
   const [syncing,  setSyncing]  = useState(false);
   const [result,   setResult]   = useState(null);
   const [toast,    setToast]    = useState(null);
@@ -192,7 +198,12 @@ export default function ArrivalImportPanel() {
     setTimeout(() => setToast(null), 4500);
   };
 
-  // Recompute merged profiles whenever either document changes
+  // Derived flags
+  const hasDoc2 = !!doc2Map;
+  const hasDoc1 = !!(doc1Rec && doc1Rec.length > 0);
+  const canSync = hasDoc2 || hasDoc1;
+
+  // Recompute merged whenever Suite CSV or Daily Report changes
   useEffect(() => {
     if (!doc2Map) { setMerged(null); return; }
     const mapCopy = _cloneProfileMap(doc2Map);
@@ -225,10 +236,11 @@ export default function ArrivalImportPanel() {
     }
   }, []);
 
-  // ── Parse Doc 1: Comprehensive Daily Report ─────────────────────────────
+  // ── Parse Doc 1: Comprehensive Daily Report Excel ───────────────────────
   const handleDoc1 = useCallback(async (file) => {
     if (!file) return;
     setDoc1Name(file.name);
+    setResult(null);
     try {
       const XLSX = await import("xlsx");
       const buf  = await file.arrayBuffer();
@@ -246,70 +258,89 @@ export default function ArrivalImportPanel() {
     }
   }, []);
 
-  // ── DB Sync ──────────────────────────────────────────────────────────────
+  // ── DB Sync — 3 independent paths ────────────────────────────────────────
   const handleSync = async () => {
-    if (!supabase || !merged) return;
+    if (!supabase || !canSync) return;
     setSyncing(true);
     setResult(null);
     try {
-      // Build RPC payload — same shape as DataUpload.js handleEzgoSync
-      const profiles = merged
-        .filter(g => g.guestPhone)
-        .map(g => {
-          const nights = (g.rooms ?? []).reduce((mx, r) => Math.max(mx, r.nights || 0), 0);
-          return {
-            guestPhone:      g.guestPhone,
-            guestName:       g.guestName ?? "",
-            arrivalDate:     g.arrivalDate ?? null,
-            departureDate:   _addNights(g.arrivalDate, nights),
-            orderNumber:     [...(g.orderNumbers ?? [])][0] ?? null,
-            hasSuite:        !!g.hasSuite,
-            treatment_count: g.treatment_count ?? 0,
-            nights,
-          };
+
+      // ── PATH A: Suite CSV loaded (rooms + guests + bookings) ─────────────
+      if (hasDoc2 && merged) {
+        const profiles = merged
+          .filter(g => g.guestPhone)
+          .map(g => {
+            const nights = (g.rooms ?? []).reduce((mx, r) => Math.max(mx, r.nights || 0), 0);
+            return {
+              guestPhone:      g.guestPhone,
+              guestName:       g.guestName ?? "",
+              arrivalDate:     g.arrivalDate ?? null,
+              departureDate:   _addNights(g.arrivalDate, nights),
+              orderNumber:     [...(g.orderNumbers ?? [])][0] ?? null,
+              hasSuite:        !!g.hasSuite,
+              treatment_count: g.treatment_count ?? 0,
+              nights,
+            };
+          });
+
+        const rooms = merged
+          .flatMap(g =>
+            (g.rooms ?? []).map(r => ({
+              resLineId:    r.resLineId,
+              orderNumber:  r.orderNumber,
+              roomName:     r.roomName,
+              suiteType:    r.suiteType,
+              guestName:    g.guestName ?? "",
+              guestPhone:   g.guestPhone ?? null,
+              coordPhone:   g.coordPhone ?? null,
+              phoneSource:  g.phoneSource,
+              adults:       r.adults,
+              nights:       r.nights,
+              arrivalDate:  g.arrivalDate ?? null,
+              checkinTime:  r.checkinTime ?? null,
+              checkoutTime: r.checkoutTime ?? null,
+              isDayGuest:   !!r.isDayGuest,
+            }))
+          )
+          .filter(r => r.resLineId && r.orderNumber);
+
+        const { data: rpcData, error: rpcErr } = await supabase
+          .rpc("sync_suite_arrivals", { payload: { profiles, rooms } });
+        if (rpcErr) throw new Error("sync_suite_arrivals: " + rpcErr.message);
+
+        // Inject spa_time where Doc 1 enrichment provided it
+        const spaProfiles = merged.filter(g => g.guestPhone && g.spa_time);
+        for (const g of spaProfiles) {
+          await supabase.from("guests")
+            .update({ spa_time: g.spa_time, treatment_count: g.treatment_count ?? 0 })
+            .eq("phone", g.guestPhone);
+        }
+
+        setResult({
+          mode:   "suites",
+          total:  rpcData?.guests ?? profiles.length,
+          rooms:  rpcData?.rooms  ?? rooms.length,
+          suites: merged.filter(g => g.hasSuite).length,
+          days:   merged.filter(g => g.hasDayBooking && !g.hasSuite).length,
+          spa:    spaProfiles.length,
         });
 
-      const rooms = merged
-        .flatMap(g =>
-          (g.rooms ?? []).map(r => ({
-            resLineId:    r.resLineId,
-            orderNumber:  r.orderNumber,
-            roomName:     r.roomName,
-            suiteType:    r.suiteType,
-            guestName:    g.guestName ?? "",
-            guestPhone:   g.guestPhone ?? null,
-            coordPhone:   g.coordPhone ?? null,
-            phoneSource:  g.phoneSource,
-            adults:       r.adults,
-            nights:       r.nights,
-            arrivalDate:  g.arrivalDate ?? null,
-            checkinTime:  r.checkinTime ?? null,
-            checkoutTime: r.checkoutTime ?? null,
-            isDayGuest:   !!r.isDayGuest,
-          }))
-        )
-        .filter(r => r.resLineId && r.orderNumber);
-
-      // Step 1: RPC — atomic guests + suite_rooms + bookings write
-      const { data: rpcData, error: rpcErr } = await supabase
-        .rpc("sync_suite_arrivals", { payload: { profiles, rooms } });
-      if (rpcErr) throw new Error("sync_suite_arrivals: " + rpcErr.message);
-
-      // Step 2: Inject spa_time — RPC intentionally does not overwrite this field
-      const spaProfiles = merged.filter(g => g.guestPhone && g.spa_time);
-      for (const g of spaProfiles) {
-        const patch = { spa_time: g.spa_time };
-        if (g.treatment_count) patch.treatment_count = g.treatment_count;
-        await supabase.from("guests").update(patch).eq("phone", g.guestPhone);
+      // ── PATH B: Daily Report only (update spa_time, no room writes) ──────
+      } else if (!hasDoc2 && hasDoc1) {
+        let updated = 0;
+        let skipped = 0;
+        for (const rec of doc1Rec) {
+          if (!rec.phone || !rec.spa_time) { skipped++; continue; }
+          const patch = { spa_time: rec.spa_time };
+          if (rec.treatment_count) patch.treatment_count = rec.treatment_count;
+          const { error } = await supabase.from("guests")
+            .update(patch)
+            .eq("phone", rec.phone);
+          if (!error) updated++;
+        }
+        setResult({ mode: "spa", total: updated, skipped });
       }
 
-      setResult({
-        total:  rpcData.guests,
-        rooms:  rpcData.rooms,
-        suites: merged.filter(g => g.hasSuite).length,
-        days:   merged.filter(g => g.hasDayBooking && !g.hasSuite).length,
-        spa:    spaProfiles.length,
-      });
     } catch (err) {
       showToast("err", "שגיאת סנכרון: " + err.message);
     } finally {
@@ -323,14 +354,35 @@ export default function ArrivalImportPanel() {
     setMerged(null); setResult(null);
   };
 
-  // ── Stats ────────────────────────────────────────────────────────────────
-  const stats = merged ? {
-    total:      merged.length,
-    suites:     merged.filter(g => g.hasSuite).length,
-    days:       merged.filter(g => g.hasDayBooking && !g.hasSuite).length,
-    withSpa:    merged.filter(g => g.spa_time).length,
-    individual: merged.filter(g => g.phoneSource === "individual").length,
-  } : null;
+  // ── Sync button label ─────────────────────────────────────────────────────
+  const syncLabel = syncing
+    ? "⏳ מסנכרן..."
+    : (hasDoc2 && hasDoc1)
+      ? `⚡ ייבא ${merged?.length ?? 0} פרופילים + עדכן ספא`
+    : hasDoc2
+      ? `⚡ ייבא ${merged?.length ?? 0} פרופילים`
+      : `⚡ עדכן שעות ספא (${doc1Rec?.length ?? 0} אורחים)`;
+
+  // ── Stats ─────────────────────────────────────────────────────────────────
+  const stats = (hasDoc2 && merged)
+    ? {
+        mode:       "suites",
+        total:      merged.length,
+        suites:     merged.filter(g => g.hasSuite).length,
+        days:       merged.filter(g => g.hasDayBooking && !g.hasSuite).length,
+        withSpa:    merged.filter(g => g.spa_time).length,
+        individual: merged.filter(g => g.phoneSource === "individual").length,
+      }
+    : hasDoc1
+      ? {
+          mode:    "spa",
+          total:   doc1Rec.length,
+          withSpa: doc1Rec.filter(r => r.spa_time).length,
+        }
+      : null;
+
+  const showSuitePreview = hasDoc2 && merged && merged.length > 0 && !result;
+  const showSpaPreview   = !hasDoc2 && hasDoc1 && !result;
 
   return (
     <div style={{ marginBottom: 20 }}>
@@ -365,7 +417,9 @@ export default function ArrivalImportPanel() {
         </span>
         {stats && (
           <span style={{ fontSize: 12, color: "var(--gold-dark)", fontWeight: 600 }}>
-            {stats.total} פרופילים · {stats.individual} פרטיים
+            {stats.mode === "suites"
+              ? `${stats.total} פרופילים · ${stats.individual} פרטיים`
+              : `${stats.total} אורחי ספא`}
           </span>
         )}
         <span style={{ color: "var(--text-muted)", fontSize: 13 }}>{open ? "▲" : "▼"}</span>
@@ -382,56 +436,78 @@ export default function ArrivalImportPanel() {
           <div style={{
             background: "rgba(201,169,110,0.06)", border: "1px solid rgba(201,169,110,0.3)",
             borderRadius: 8, padding: "10px 14px", marginBottom: 14,
-            fontSize: 12, color: "var(--gold-dark)", lineHeight: 1.7,
+            fontSize: 12, color: "var(--gold-dark)", lineHeight: 1.8,
           }}>
-            <strong>שלב 1:</strong> העלה דוח כניסות EZGO (Doc 2) — חובה<br />
-            <strong>שלב 2:</strong> העלה דוח יומי מקיף (Doc 1) — להזרקת שעות ספא (אופציונלי)<br />
-            המערכת מחלצת <strong>טלפון אישי</strong> מעמודת ההערה ויוצרת פרופיל נפרד לכל אורח.
+            <strong>Doc 2 — דוח כניסות EZGO (CSV):</strong> ייבוא חדרים, אורחים, הזמנות<br />
+            <strong>Doc 1 — דוח יומי מקיף (Excel):</strong> עדכון שעות ספא בלבד<br />
+            <span style={{ color: "var(--text-muted)", fontSize: 11 }}>
+              ניתן להעלות כל דוח בנפרד ● כל סנכרון מעדכן רק את השדות הרלוונטיים ● שדות בוט חיים לא נדרסים
+            </span>
           </div>
 
           {/* Two drop zones */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }}>
             <DropZone
-              label="📋 דוח כניסות EZGO"
-              hint="CSV מ-EZGO — חדרים, שמות, טלפונים (חובה)"
-              loaded={!!doc2Map}
+              label="📋 Doc 2 — כניסות EZGO"
+              hint="CSV מ-EZGO (חדרים, שמות, טלפונים)"
+              loaded={hasDoc2}
               fileName={doc2Name}
               onFile={handleDoc2}
               inputRef={doc2Ref}
             />
             <DropZone
-              label="📊 דוח יומי מקיף"
-              hint="Excel — שעות ספא לפי הזמנה (אופציונלי)"
-              loaded={!!doc1Rec}
+              label="📊 Doc 1 — דוח יומי מקיף"
+              hint="Excel — שעות ספא לפי הזמנה"
+              loaded={hasDoc1}
               fileName={doc1Name}
               onFile={handleDoc1}
               inputRef={doc1Ref}
+              optional
             />
           </div>
 
           {/* Stats bar */}
           {stats && (
             <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-              {[
-                { label: "פרופילים",    val: stats.total,      c: "#7c3aed", bg: "#f3f0ff" },
-                { label: "סוויטות",     val: stats.suites,     c: "#b45309", bg: "#fef3c7" },
-                { label: "בילוי יומי",  val: stats.days,       c: "#0e7490", bg: "#ecfeff" },
-                { label: "עם ספא",      val: stats.withSpa,    c: "#16a34a", bg: "#f0fdf4" },
-                { label: "טלפון פרטי",  val: stats.individual, c: "#dc2626", bg: "#fef2f2" },
-              ].map(({ label, val, c, bg }) => (
-                <div key={label} style={{
-                  background: bg, borderRadius: 8, padding: "6px 12px",
-                  border: `1px solid ${c}22`, display: "flex", alignItems: "baseline", gap: 5,
-                }}>
-                  <span style={{ fontSize: 18, fontWeight: 900, color: c, lineHeight: 1 }}>{val}</span>
-                  <span style={{ fontSize: 11, color: c, fontWeight: 700 }}>{label}</span>
-                </div>
-              ))}
+              {stats.mode === "suites" ? (
+                <>
+                  {[
+                    { label: "פרופילים",    val: stats.total,      c: "#7c3aed", bg: "#f3f0ff" },
+                    { label: "סוויטות",     val: stats.suites,     c: "#b45309", bg: "#fef3c7" },
+                    { label: "בילוי יומי",  val: stats.days,       c: "#0e7490", bg: "#ecfeff" },
+                    { label: "עם ספא",      val: stats.withSpa,    c: "#16a34a", bg: "#f0fdf4" },
+                    { label: "טלפון פרטי",  val: stats.individual, c: "#dc2626", bg: "#fef2f2" },
+                  ].map(({ label, val, c, bg }) => (
+                    <div key={label} style={{
+                      background: bg, borderRadius: 8, padding: "6px 12px",
+                      border: `1px solid ${c}22`, display: "flex", alignItems: "baseline", gap: 5,
+                    }}>
+                      <span style={{ fontSize: 18, fontWeight: 900, color: c, lineHeight: 1 }}>{val}</span>
+                      <span style={{ fontSize: 11, color: c, fontWeight: 700 }}>{label}</span>
+                    </div>
+                  ))}
+                </>
+              ) : (
+                <>
+                  {[
+                    { label: "הזמנות",  val: stats.total,   c: "#7c3aed", bg: "#f3f0ff" },
+                    { label: "עם ספא",  val: stats.withSpa, c: "#16a34a", bg: "#f0fdf4" },
+                  ].map(({ label, val, c, bg }) => (
+                    <div key={label} style={{
+                      background: bg, borderRadius: 8, padding: "6px 12px",
+                      border: `1px solid ${c}22`, display: "flex", alignItems: "baseline", gap: 5,
+                    }}>
+                      <span style={{ fontSize: 18, fontWeight: 900, color: c, lineHeight: 1 }}>{val}</span>
+                      <span style={{ fontSize: 11, color: c, fontWeight: 700 }}>{label}</span>
+                    </div>
+                  ))}
+                </>
+              )}
             </div>
           )}
 
-          {/* Preview table */}
-          {merged && merged.length > 0 && !result && (
+          {/* Preview — Suite CSV profiles table */}
+          {showSuitePreview && (
             <div style={{
               border: "1px solid var(--border)", borderRadius: 10,
               overflow: "hidden", marginBottom: 14,
@@ -501,12 +577,61 @@ export default function ArrivalImportPanel() {
             </div>
           )}
 
-          {/* Sync + reset buttons */}
-          {doc2Map && !result && (
+          {/* Preview — Daily Report only (spa times) */}
+          {showSpaPreview && (
+            <div style={{
+              border: "1px solid var(--border)", borderRadius: 10,
+              overflow: "hidden", marginBottom: 14,
+            }}>
+              <div style={{
+                padding: "8px 12px", background: "var(--ivory)",
+                fontSize: 11, fontWeight: 700, color: "var(--text-muted)",
+                borderBottom: "1px solid var(--border)",
+              }}>
+                עדכון שעות ספא בלבד — לא ייבאו חדרים
+              </div>
+              <div style={{ overflowX: "auto", maxHeight: 280 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 400 }}>
+                  <thead>
+                    <tr style={{ background: "var(--ivory)" }}>
+                      {["הזמנה #", "שם", "שעת ספא", "# טיפולים"].map(h => (
+                        <th key={h} style={{
+                          padding: "8px 12px", fontSize: 11, fontWeight: 700,
+                          color: "var(--text-muted)", textAlign: "right",
+                          borderBottom: "1px solid var(--border)",
+                        }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {doc1Rec.slice(0, 80).map((r, i) => (
+                      <tr key={i} style={{
+                        borderBottom: "1px solid var(--border)",
+                        background: i % 2 === 0 ? "#fff" : "var(--ivory)",
+                      }}>
+                        <td style={{ padding: "8px 12px", fontSize: 12, color: "var(--text-muted)" }}>{r.order_number ?? "—"}</td>
+                        <td style={{ padding: "8px 12px", fontSize: 13, fontWeight: 600 }}>{r.guest_name ?? "—"}</td>
+                        <td style={{ padding: "8px 12px", fontSize: 13, fontWeight: 800,
+                          color: r.spa_time ? "var(--gold-dark)" : "var(--text-muted)" }}>
+                          {r.spa_time ?? "—"}
+                        </td>
+                        <td style={{ padding: "8px 12px", fontSize: 12, textAlign: "center" }}>
+                          {r.treatment_count > 0 ? r.treatment_count : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Sync + reset buttons — visible when either doc is loaded */}
+          {canSync && !result && (
             <div style={{ display: "flex", gap: 10 }}>
               <button
                 onClick={handleSync}
-                disabled={syncing || !merged}
+                disabled={syncing}
                 style={{
                   flex: 1, padding: "13px", borderRadius: 10, border: "none",
                   background: syncing ? "var(--border)" : "linear-gradient(135deg,var(--gold),var(--gold-dark))",
@@ -514,7 +639,7 @@ export default function ArrivalImportPanel() {
                   fontFamily: "Heebo, sans-serif", fontSize: 14, fontWeight: 800,
                   cursor: syncing ? "not-allowed" : "pointer", transition: "all 0.15s",
                 }}>
-                {syncing ? "⏳ מסנכרן..." : `⚡ ייבא ${merged?.length ?? 0} פרופילים ל-DB`}
+                {syncLabel}
               </button>
               <button onClick={reset} style={{
                 padding: "13px 16px", borderRadius: 10,
@@ -534,15 +659,28 @@ export default function ArrivalImportPanel() {
               borderRadius: 12, padding: "20px",
             }}>
               <div style={{ fontSize: 32, marginBottom: 10 }}>✅</div>
-              <div style={{ fontWeight: 800, fontSize: 16, color: "#065f46", marginBottom: 6 }}>
-                {result.total} אורחים יובאו בהצלחה
-              </div>
-              <div style={{ fontSize: 13, color: "#065f46", lineHeight: 1.9 }}>
-                🏨 {result.suites} סוויטות ·
-                ☀️ {result.days} בילוי יומי ·
-                🛏️ {result.rooms} חדרים
-                {result.spa > 0 && <> · 💆 {result.spa} עם שעת ספא</>}
-              </div>
+              {result.mode === "suites" ? (
+                <>
+                  <div style={{ fontWeight: 800, fontSize: 16, color: "#065f46", marginBottom: 6 }}>
+                    {result.total} אורחים יובאו בהצלחה
+                  </div>
+                  <div style={{ fontSize: 13, color: "#065f46", lineHeight: 1.9 }}>
+                    🏨 {result.suites} סוויטות ·
+                    ☀️ {result.days} בילוי יומי ·
+                    🛏️ {result.rooms} חדרים
+                    {result.spa > 0 && <> · 💆 {result.spa} עם שעת ספא</>}
+                  </div>
+                </>
+              ) : (
+                <div style={{ fontWeight: 800, fontSize: 16, color: "#065f46", marginBottom: 6 }}>
+                  עודכנו {result.total} אורחים עם שעות ספא
+                  {result.skipped > 0 && (
+                    <span style={{ fontSize: 12, fontWeight: 400, marginRight: 8, color: "#1d7a5a" }}>
+                      ({result.skipped} ללא טלפון/ספא — דולגו)
+                    </span>
+                  )}
+                </div>
+              )}
               <button onClick={reset} style={{
                 marginTop: 16, padding: "8px 18px", borderRadius: 8,
                 border: "1px solid #6ee7b7", background: "transparent",
