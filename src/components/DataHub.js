@@ -136,18 +136,19 @@ function extractSpaFromExtra(raw) {
   if (!timeMatch) return null;
 
   const rawTime = timeMatch[1];
-  const time    = rawTime.length === 4 ? "0" + rawTime : rawTime; // ensure HH:MM
+  const time    = rawTime.length === 4 ? "0" + rawTime : rawTime;
 
   let category = null;
   if (s.includes("לאורחי הסוויטות") || s.includes("סוויט") || s.includes("לשובר")) {
     category = "suite";
   } else if (s.includes("בחבילה") || s.includes("מוזל") || s.includes("לאורחי היום")) {
     category = "day_guest";
-  } else {
-    return null;
   }
+  // No early return — always extract when a time is present.
+  // Day-guest packages always carry explicit labels ("בחבילה מוזלת" etc).
+  // Unlabeled time entries are suite packages that omit the boilerplate suffix.
 
-  const afterTime = s.replace(/^\d+\s*[-–]\s*\d{1,2}:\d{2}\s*[-–]\s*/, "").trim();
+  const afterTime = s.replace(/.*\d{1,2}:\d{2}\s*[-–]\s*/, "").trim();
   return { time, category, treatmentType: afterTime || s };
 }
 
@@ -204,8 +205,14 @@ function parseCombinedRows(rawRows, headers) {
         e.treatment_time = spa.time;
         e.treatment_type = spa.treatmentType;
       }
-      if (spa.category === "suite") e.room_type = "suite";
-      else if (spa.category === "day_guest" && e.room_type !== "suite") e.room_type = "day_guest";
+      if (spa.category === "suite") {
+        e.room_type = "suite";
+      } else if (spa.category === "day_guest") {
+        if (e.room_type !== "suite") e.room_type = "day_guest";
+      } else {
+        // Unlabeled time entry → suite (day packages always have explicit labels)
+        if (e.room_type !== "suite") e.room_type = "suite";
+      }
     }
   }
 
@@ -386,7 +393,7 @@ async function syncArrivals(rows) {
     if (!r.phone) continue;
     const n = Math.max(1, r.room_count ?? 1);
     if (n === 1) {
-      guestRows.push({
+      const gr = {
         phone:        r.phone,
         arrival_date: r.arrival_date ?? today,
         name:         r.name ?? null,
@@ -394,12 +401,14 @@ async function syncArrivals(rows) {
         suite_name:   r.suite_name || null,
         guest_index:  1,
         status:       "pending",
-      });
+      };
+      if (r.treatment_time) gr.spa_time = r.treatment_time;
+      guestRows.push(gr);
     } else {
       // Group: suite_name is null per sub-guest — assign individually after sync
       const baseName = r.name ?? "אורח";
       for (let i = 1; i <= n; i++) {
-        guestRows.push({
+        const gr = {
           phone:        r.phone,
           arrival_date: r.arrival_date ?? today,
           name:         `${baseName} — אורח ${i}`,
@@ -407,7 +416,9 @@ async function syncArrivals(rows) {
           suite_name:   null,
           guest_index:  i,
           status:       "pending",
-        });
+        };
+        if (r.treatment_time) gr.spa_time = r.treatment_time;
+        guestRows.push(gr);
       }
     }
   }
