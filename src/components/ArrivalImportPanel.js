@@ -327,20 +327,48 @@ export default function ArrivalImportPanel() {
           spa:    spaProfiles.length,
         });
 
-      // ── PATH B: Daily Report only (update spa_time, no room writes) ──────
+      // ── PATH B: Daily Report only — upsert guests ────────────────────────
+      // If guest exists → update spa fields only (never touch status/needs_callback)
+      // If guest is new → INSERT full profile so they appear in guest management
       } else if (!hasDoc2 && hasDoc1) {
-        let updated = 0;
-        let skipped = 0;
-        for (const rec of doc1Rec) {
-          if (!rec.phone || !rec.spa_time) { skipped++; continue; }
-          const patch = { spa_time: rec.spa_time };
-          if (rec.treatment_count) patch.treatment_count = rec.treatment_count;
-          const { error } = await supabase.from("guests")
-            .update(patch)
-            .eq("phone", rec.phone);
-          if (!error) updated++;
+        const allPhones = doc1Rec.filter(r => r.phone).map(r => r.phone);
+        let updated = 0, created = 0, skipped = 0;
+
+        if (allPhones.length > 0) {
+          const { data: existingRows } = await supabase
+            .from("guests").select("phone").in("phone", allPhones);
+          const existingPhones = new Set((existingRows ?? []).map(g => g.phone));
+
+          for (const rec of doc1Rec) {
+            if (!rec.phone) { skipped++; continue; }
+
+            if (existingPhones.has(rec.phone)) {
+              // UPDATE — spa fields only, preserve all bot-live fields
+              const patch = {};
+              if (rec.spa_time)        patch.spa_time        = rec.spa_time;
+              if (rec.treatment_count) patch.treatment_count = rec.treatment_count;
+              if (rec.order_number)    patch.order_number    = rec.order_number;
+              if (rec.arrival_date)    patch.arrival_date    = rec.arrival_date;
+              const { error } = await supabase.from("guests").update(patch).eq("phone", rec.phone);
+              if (!error) updated++; else skipped++;
+            } else {
+              // INSERT — create full guest profile
+              const { error } = await supabase.from("guests").insert({
+                phone:           rec.phone,
+                name:            rec.guest_name ?? null,
+                spa_time:        rec.spa_time   ?? null,
+                treatment_count: rec.treatment_count ?? 0,
+                order_number:    rec.order_number   ?? null,
+                arrival_date:    rec.arrival_date   ?? null,
+                status:          "pending",
+              });
+              if (!error) created++; else skipped++;
+            }
+          }
+        } else {
+          skipped = doc1Rec.length;
         }
-        setResult({ mode: "spa", total: updated, skipped });
+        setResult({ mode: "spa", updated, created, skipped });
       }
 
     } catch (err) {
@@ -674,12 +702,21 @@ export default function ArrivalImportPanel() {
                   </div>
                 </>
               ) : (
-                <div style={{ fontWeight: 800, fontSize: 16, color: "#065f46", marginBottom: 6 }}>
-                  עודכנו {result.total} אורחים עם שעות ספא
+                <div style={{ color: "#065f46" }}>
+                  {result.created > 0 && (
+                    <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 4 }}>
+                      ✨ נוצרו {result.created} אורחים חדשים במערכת
+                    </div>
+                  )}
+                  {result.updated > 0 && (
+                    <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 4 }}>
+                      🔄 עודכנו {result.updated} אורחים קיימים (שעת ספא)
+                    </div>
+                  )}
                   {result.skipped > 0 && (
-                    <span style={{ fontSize: 12, fontWeight: 400, marginRight: 8, color: "#1d7a5a" }}>
-                      ({result.skipped} ללא טלפון/ספא — דולגו)
-                    </span>
+                    <div style={{ fontSize: 12, color: "#1d7a5a", marginTop: 4 }}>
+                      {result.skipped} רשומות דולגו (ללא טלפון או שגיאה)
+                    </div>
                   )}
                 </div>
               )}

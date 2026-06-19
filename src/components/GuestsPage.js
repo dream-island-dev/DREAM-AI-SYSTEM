@@ -21,6 +21,9 @@ export default function GuestsPage() {
   const [paymentBusy, setPaymentBusy]   = useState(null); // guestId being sent
   const [selectedIds, setSelectedIds]   = useState(new Set()); // batch selection
   const [resetBusy, setResetBusy]       = useState(false);
+  const [editGuest,  setEditGuest]      = useState(null);  // guest obj being edited
+  const [editForm,   setEditForm]       = useState({});
+  const [editSaving, setEditSaving]     = useState(false);
 
   const showToast = (type, msg) => { setToast({ type, msg }); setTimeout(() => setToast(null), 3500); };
 
@@ -137,6 +140,48 @@ export default function GuestsPage() {
     }
   };
 
+  const openEdit = (g) => {
+    setEditGuest(g);
+    setEditForm({
+      name:               g.name               ?? "",
+      arrival_date:       g.arrival_date        ?? "",
+      spa_time:           g.spa_time            ?? "",
+      treatment_count:    g.treatment_count != null ? String(g.treatment_count) : "",
+      order_number:       g.order_number        ?? "",
+      status:             g.status              ?? "expected",
+      requires_attention: !!g.requires_attention,
+      needs_callback:     !!g.needs_callback,
+      room:               g.room                ?? "",
+    });
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editGuest || !supabase) return;
+    setEditSaving(true);
+    try {
+      const patch = {
+        name:               editForm.name.trim() || null,
+        arrival_date:       editForm.arrival_date  || null,
+        spa_time:           editForm.spa_time       || null,
+        treatment_count:    editForm.treatment_count !== "" ? parseInt(editForm.treatment_count, 10) : null,
+        order_number:       editForm.order_number.trim() || null,
+        status:             editForm.status,
+        requires_attention: editForm.requires_attention,
+        needs_callback:     editForm.needs_callback,
+        room:               editForm.room.trim()   || null,
+      };
+      const { error } = await supabase.from("guests").update(patch).eq("id", editGuest.id);
+      if (error) throw error;
+      setGuests(prev => prev.map(g => g.id === editGuest.id ? { ...g, ...patch } : g));
+      setEditGuest(null);
+      showToast("ok", "✅ פרופיל אורח עודכן בהצלחה");
+    } catch (e) {
+      showToast("err", "שגיאה: " + (e?.message ?? e));
+    } finally {
+      setEditSaving(false);
+    }
+  };
+
   const handleSavePaymentAndSend = async () => {
     if (!paymentModal || !supabase) return;
     if (!paymentModal.amount) { showToast("err", "נא להזין סכום תשלום"); return; }
@@ -221,6 +266,119 @@ export default function GuestsPage() {
                 style={{ background: "#1B3A32", color: "#fff", fontWeight: 700 }}
               >
                 {paymentBusy === paymentModal.id ? "⏳ שולח..." : "💳 שמור ושלח"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Edit guest profile modal ──────────────────────────────────────── */}
+      {editGuest && (
+        <div
+          onClick={() => !editSaving && setEditGuest(null)}
+          style={{
+            position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)",
+            zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center",
+            padding: 16,
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              background: "var(--card-bg,#fff)", borderRadius: 18,
+              padding: "28px 24px 22px", width: "100%", maxWidth: 480,
+              boxShadow: "0 24px 64px rgba(0,0,0,0.25)", direction: "rtl",
+              maxHeight: "90vh", overflowY: "auto",
+            }}
+          >
+            <div style={{ fontWeight: 800, fontSize: 17, marginBottom: 4 }}>✏️ עריכת פרופיל אורח</div>
+            <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 20, direction: "ltr" }}>
+              {editGuest.phone}
+            </div>
+
+            {[
+              { label: "שם מלא",       field: "name",            type: "text"   },
+              { label: "חדר",           field: "room",            type: "text"   },
+              { label: "תאריך הגעה",   field: "arrival_date",    type: "date"   },
+              { label: "שעת ספא",      field: "spa_time",        type: "time"   },
+              { label: "מספר טיפולים", field: "treatment_count", type: "number" },
+              { label: "מספר הזמנה",   field: "order_number",    type: "text"   },
+            ].map(({ label, field, type }) => (
+              <div key={field} style={{ marginBottom: 14 }}>
+                <label style={{ fontSize: 12, fontWeight: 700, display: "block", marginBottom: 4 }}>{label}</label>
+                <input
+                  type={type}
+                  value={editForm[field] ?? ""}
+                  onChange={e => setEditForm(p => ({ ...p, [field]: e.target.value }))}
+                  disabled={editSaving}
+                  style={{
+                    width: "100%", padding: "9px 12px", boxSizing: "border-box",
+                    border: "1px solid var(--border,#ddd)", borderRadius: 8, fontSize: 14,
+                    direction: type === "text" ? "rtl" : "ltr", fontFamily: "Heebo,sans-serif",
+                  }}
+                />
+              </div>
+            ))}
+
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ fontSize: 12, fontWeight: 700, display: "block", marginBottom: 4 }}>סטטוס</label>
+              <select
+                value={editForm.status ?? "expected"}
+                onChange={e => setEditForm(p => ({ ...p, status: e.target.value }))}
+                disabled={editSaving}
+                style={{
+                  width: "100%", padding: "9px 12px", border: "1px solid var(--border,#ddd)",
+                  borderRadius: 8, fontSize: 14, fontFamily: "Heebo,sans-serif",
+                  background: "var(--card-bg,#fff)", cursor: "pointer",
+                }}
+              >
+                <option value="pending">ממתין לייבוא</option>
+                <option value="expected">ממתין</option>
+                <option value="room_ready">חדר מוכן</option>
+                <option value="checked_in">צ'ק-אין</option>
+              </select>
+            </div>
+
+            {[
+              { label: "דורש תשומת לב 🔴",         field: "requires_attention" },
+              { label: "הועבר לטיפול אנושי (בוט שותק)", field: "needs_callback"     },
+            ].map(({ label, field }) => (
+              <div key={field} style={{
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+                padding: "10px 0", borderBottom: "1px solid var(--border,#eee)",
+              }}>
+                <span style={{ fontSize: 13, fontWeight: 600 }}>{label}</span>
+                <input
+                  type="checkbox"
+                  checked={!!editForm[field]}
+                  onChange={e => setEditForm(p => ({ ...p, [field]: e.target.checked }))}
+                  disabled={editSaving}
+                  style={{ width: 18, height: 18, cursor: "pointer", accentColor: "var(--gold)" }}
+                />
+              </div>
+            ))}
+
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 22 }}>
+              <button
+                onClick={() => setEditGuest(null)}
+                disabled={editSaving}
+                style={{
+                  padding: "9px 18px", borderRadius: 8,
+                  border: "1px solid var(--border,#ddd)", background: "transparent",
+                  fontFamily: "Heebo,sans-serif", fontSize: 13, cursor: "pointer",
+                }}>
+                ביטול
+              </button>
+              <button
+                onClick={handleSaveEdit}
+                disabled={editSaving}
+                style={{
+                  padding: "9px 22px", borderRadius: 8, border: "none",
+                  background: "linear-gradient(135deg,var(--gold),var(--gold-dark))",
+                  color: "#0F0F0F", fontFamily: "Heebo,sans-serif",
+                  fontSize: 14, fontWeight: 800, cursor: editSaving ? "not-allowed" : "pointer",
+                }}>
+                {editSaving ? "⏳ שומר..." : "💾 שמור"}
               </button>
             </div>
           </div>
@@ -343,6 +501,14 @@ export default function GuestsPage() {
                       </td>
                       <td>
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          {/* ── Edit profile ── */}
+                          <button
+                            className="btn btn-sm"
+                            onClick={() => openEdit(g)}
+                            title="ערוך פרופיל אורח"
+                            style={{ background: "var(--ivory)", color: "var(--gold-dark)", fontWeight: 700, border: "1px solid var(--gold)" }}>
+                            ✏️
+                          </button>
                           {/* ── ממתין: can mark room-ready or go straight to check-in ── */}
                           {g.status === "expected" && (<>
                             <button className="btn btn-sm" disabled={busy === g.id}
