@@ -1077,7 +1077,8 @@ serve(async (req: Request) => {
         } else if (buttonTitle.includes("מושלם") || buttonTitle.includes("מושלמת")) {
           const reviewUrl = GOOGLE_REVIEW_URL || "dream-island.co.il";
           const feedbackReply = scripts["positive_feedback_reply"]?.message_text?.trim()
-            || `שמחנו מאוד לשמוע! 🌟 אם תרצו לשתף את החוויה שלכם — זה יאיר לנו את היום:\n${reviewUrl}\nתודה ענקית ומחכים לכם בפעם הבאה! 💫`;
+            ? scripts["positive_feedback_reply"]!.message_text!.replace(/\{\{GOOGLE_REVIEW_URL\}\}/g, reviewUrl)
+            : `שמחנו מאוד לשמוע! 🌟 אם תרצו לשתף את החוויה שלכם — זה יאיר לנו את היום:\n${reviewUrl}\nתודה ענקית ומחכים לכם בפעם הבאה! 💫`;
           try { await sendReply(phone, feedbackReply); } catch (e) { console.error("[webhook] reply error:", (e as Error).message); }
           await supabase.from("whatsapp_conversations").insert({
             phone, guest_id: guestId, direction: "outbound", message: feedbackReply, wa_message_id: null, intent: "button_reply",
@@ -1138,7 +1139,8 @@ serve(async (req: Request) => {
         // ── Unrecognized button — generic reply so no button is ever silent ──
         } else {
           console.warn(`[webhook] ⚠️ unmatched button title="${buttonTitle}" id="${buttonId}" — sending generic reply`);
-          const genericReply = "תודה! 😊 קיבלנו את בחירתך. האם יש משהו נוסף שנוכל לעשות עבורכם?";
+          const genericReply = scripts["generic_button_reply"]?.message_text?.trim()
+            || "תודה! 😊 קיבלנו את בחירתך. האם יש משהו נוסף שנוכל לעשות עבורכם?";
           try { await sendReply(phone, genericReply); } catch (e) { console.error("[webhook] generic button reply error:", (e as Error).message); }
           await supabase.from("whatsapp_conversations").insert({
             phone, guest_id: guestId, direction: "outbound", message: genericReply, wa_message_id: null, intent: "button_reply",
@@ -1155,7 +1157,7 @@ serve(async (req: Request) => {
         guest?.msg_pre_arrival_2d_sent &&
         !guest?.arrival_confirmed
       ) {
-        await supabase.from("guests").update({ arrival_confirmed: true, status: "Approved" }).eq("id", guestId);
+        await supabase.from("guests").update({ arrival_confirmed: true }).eq("id", guestId);
         await supabase.from("whatsapp_conversations").insert({
           phone, guest_id: guestId, direction: "inbound",
           message: text, wa_message_id: msgId, intent: "confirmation",

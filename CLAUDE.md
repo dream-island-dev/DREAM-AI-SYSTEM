@@ -1,6 +1,6 @@
 # CLAUDE.md — Dream Island AI System
 > קובץ זה נקרא אוטומטית בכל שיחה. הוא מקור-האמת שלך. קרא אותו לפני כל פעולה.
-> **עדכון אחרון:** 2026-06-20 (session 7 — איחוד ייבוא נתונים ל-Task Board בלבד, Universal Editable Grid מומש, תיקון webhook status, גילוי ותיעוד RoomBoard/AICopilot/BotScriptEditor)
+> **עדכון אחרון:** 2026-06-20 (session 8 — Phase 6 Bot Brain seed completion: 7 script_key חדשים + תיקון status bug שני בwebhook)
 
 ---
 
@@ -167,7 +167,10 @@ DREAM-AI-SYSTEM/
 │   │   ├── 044_guests_spa_time.sql              applied ✅
 │   │   ├── 045_golden_guest_profile.sql          applied ✅ — order_number, treatment_count
 │   │   ├── 046_suite_rooms.sql                  applied ✅ — suite_rooms table + sync_suite_arrivals RPC
-│   │   └── 047_sync_suite_arrivals_room_denorm.sql  applied ✅ — מרחיב את הRPC לכתוב גם guests.room.
+│   │   ├── 047_sync_suite_arrivals_room_denorm.sql  applied ✅ — מרחיב את הRPC לכתוב גם guests.room.
+│   │   └── 048_bot_scripts_missing_seeds.sql     applied ✅ — 8 script_key חדשים (fallback_reply,
+│   │                                spa_menu, callback_reply, positive/negative_feedback_reply,
+│   │                                upsell_accepted/decline_reply, generic_button_reply). ראה §10 session 8.
 │   └── functions/
 │       ├── chat/                deployed ✅ — Gemini 2.5→Claude fallback
 │       ├── generate-schedule/   deployed ✅ ⚠️ ORPHAN — frontend לא קורא אותה
@@ -209,7 +212,9 @@ switch (activePage) {
   "tasks"        → TaskBoard        // ArrivalImportPanel (sole import surface) mounted here
   "bot_config"   → BotConfigPanel   (admin only — guardPage)
   "bot_settings" → BotSettings      (admin only — guardPage)
-  "bot_scripts"  → BotScriptEditor  // not in Sidebar nav array — reachable via direct setActivePage only
+  "bot_scripts"  → BotScriptEditor  (admin only) // ✏️ session 8 correction: IS in Sidebar nav
+                                    // (App.js:1114-1121, admin-only section, "📝 סקריפטי הבוט")
+                                    // — earlier docs claiming it was nav-hidden were wrong
   "agent"        → AgentQuestionnaire / AgentChat
   "admin"        → AdminPanel       (admin only)
   "users_mgmt"   → UserManagement   (super_admin only)
@@ -514,7 +519,9 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
 | ייבוא נתונים יומי (Sprint 3) | Completed & committed | 28/28 שורות נטענות ע"י row-index key ב-`ezgoParser.js`; group extraction מ-sRemark; שני מסמכים independent uploads |
 | Golden Guest Profile + suite_rooms sync | Completed & committed | `sync_suite_arrivals` RPC — ACID dual-write guests+suite_rooms+bookings |
 | UI/UX צ'ק-אין — "Disable, Don't Hide" | ✅ Completed & committed (302803c), pushed ל-main | `GuestsPage.js` + `SuitesDashboard.js` — ממתין ל-QA חי שלך בפרודקשן (Vercel auto-deploy מ-main) |
-| webhook status bug (STEP 1) | ✅ Fixed, committed, pushed, **ופרוס בפועל** | שתי כתיבות `status: "Approved"`/`"Human_intervention_required"` הוסרו מ-`whatsapp-webhook/index.ts`. `arrival_confirmed`/`needs_callback`+`requires_attention` הם המקור היחיד למצב הזה כעת. `supabase functions deploy whatsapp-webhook --no-verify-jwt` הורץ — הגרסה החדשה רצה בייצור. |
+| webhook status bug (STEP 1) | ✅ Fixed, committed, pushed, **ופרוס בפועל** | שתי כתיבות `status: "Approved"`/`"Human_intervention_required"` הוסרו מ-`whatsapp-webhook/index.ts` (session 7, בנתיב לחיצת כפתור). `arrival_confirmed`/`needs_callback`+`requires_attention` הם המקור היחיד למצב הזה כעת. |
+| webhook status bug — נתיב שני (session 8) | ✅ Fixed, deployed | סשן 7 תיקן רק את נתיב לחיצת הכפתור (שורה 976). שורה 1160 (אישור הגעה ע"י **הקלדת** "כן" ולא לחיצת כפתור) עדיין כתבה `status: "Approved"` — ערך לא חוקי מול ה-CHECK constraint. הוסר, נשאר רק `arrival_confirmed: true`. נפרס ב-`supabase functions deploy whatsapp-webhook`. |
+| Phase 6 Bot Brain seed completion | ✅ Completed, applied, deployed | migration 048 — 7 script_key חדשים שהwebhook כבר קרא אך לא היו ניתנים לעריכה (`fallback_reply`, `spa_menu`, `callback_reply`, `positive_feedback_reply`, `negative_feedback_reply`, `upsell_accepted_reply`, `upsell_decline_reply`) + 8. `generic_button_reply` שלא היה אפילו DB lookup עבורו (נוסף קוד + seed). כל הטקסטים הוזרעו זהים למחרוזות hardcoded הקיימות — אין שינוי התנהגות, רק נפתחה אפשרות עריכה. ראה §10 session 8. |
 | איחוד ייבוא נתונים ל-Task Board | ✅ Completed & committed (302803c), pushed ל-main | `DataUpload.js` + `DataHub.js` נמחקו. `ArrivalImportPanel.js` (בתוך TaskBoard) הוא משטח הייבוא היחיד באפליקציה — ראה §3. |
 | Universal Editable Grid (עקרון #4) | ✅ מומש לראשונה, committed | `EditableGrid.js` — חולץ מ-DataHub, בשימוש ב-ArrivalImportPanel (suites + shifts profiles) |
 | guests.room denormalization | ✅ Completed — migration 047 applied לDB החי | sync_suite_arrivals RPC כותב guests.room ישירות (לא רק suite_rooms) |
@@ -538,30 +545,29 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
 5. ~~STEP 3: Universal Editable Grid~~ ✅ Done — `EditableGrid.js` מומש, ראה טבלה לעיל.
 6. **STEP 4:** הפעלת `CRON_ENABLED` — רק אחרי אימות שלוש תבניות ה-Meta ו-QA מלא ל-STEP 2c.
 
-### 🤖 Phase 6 — Bot Brain Audit (session 7)
+### 🤖 Phase 6 — Bot Brain Audit (session 7, seed gap closed session 8)
 
 **1. איפה הסקריפטים/חוקים/ידע מאוחסנים?**
 
 שלוש טבלאות DB, כולן עם admin UI קיים:
 - `bot_config` (migration 015) — key-value: persona, knowledge (שעות, WiFi, שירותים), templates, rules. נערך ב-`BotConfigPanel.js`.
 - `bot_settings` (migration 018) — שורה יחידה (id=1): `system_prompt` + `knowledge_base`, מוזרק לכל קריאת Gemini. נערך ב-`BotSettings.js`.
-- `bot_scripts` (migration 032) — שורה per trigger_event (`arrival_confirmed`, `morning_of`, `ongoing`, `complaint`, `upsell`): `message_text` עם placeholders (`{{GUEST_NAME}}`, `{{SPA_TIME}}`, `{{WORKSHOP_URL}}`) + `ai_system_prompt` + `is_active`. נערך ב-**`BotScriptEditor.js`** — ★ קיים, מחובר, לא תועד ב-CLAUDE.md לפני session 7.
+- `bot_scripts` (migration 032 + 048) — שורה per `script_key` (לא רק per trigger_event — כל הודעה קונקרטית = שורה נפרדת). `trigger_event` ערכים: `arrival_confirmed`, `morning_of`, `ongoing`, `complaint`, `upsell`, `fallback`, `button_reply`. `message_text` עם placeholders (`{{GUEST_NAME}}`, `{{SPA_LINE}}`/`{{OPTIONAL_SPA_TEXT}}`/`{{SPA_TIME}}`, `{{WORKSHOP_URL}}`, `{{GOOGLE_REVIEW_URL}}`) + `ai_system_prompt` + `is_active`. נערך ב-**`BotScriptEditor.js`**. session 8: כל 8 ה-`script_key`-ים שהwebhook קורא יש להם כעת שורה (ראה טבלה למטה).
 
 כל השלוש נקראות ב-runtime ע"י `whatsapp-webhook` + `whatsapp-send` (cache 5 דקות, module-level).
 
 **2. מה מוסתר ולא ניתן לערוך דרך ה-admin UI?**
 
 - `FALLBACK_SYSTEM_PROMPT` (`whatsapp-webhook/index.ts:58`) — hardcoded, אבל **כבר fallback אחרון בלבד**: הקוד עושה `cfg["bot_personality"] ?? FALLBACK_SYSTEM_PROMPT` (שורה 216) — כל עוד `bot_config.bot_personality` קיים (וזה מאוכלס ע"י migration 015), הfallback הזה לא מופעל בפועל.
-- `FALLBACK_REPLY` (`whatsapp-webhook/index.ts:395-397`) — אותו דבר: `scripts["fallback_reply"]?.message_text?.trim() || FALLBACK_REPLY` (שורה 1321). **הארכיטקטורה כבר תומכת בעקיפה דרך BotScriptEditor** — רק חסרה שורת `bot_scripts` עם `script_key='fallback_reply'`. זו לא "תכנון נדרש", זו שורת seed חסרה.
+- ✅ **session 8 — נסגר.** `FALLBACK_REPLY` (`whatsapp-webhook/index.ts:395-397`) ועוד 6 script_key נוספים (`spa_menu`, `callback_reply`, `positive_feedback_reply`, `negative_feedback_reply`, `upsell_accepted_reply`, `upsell_decline_reply`) היו עם DB lookup אבל בלי שורה לערוך — וכפתור אחד (unmatched/generic) לא ניסה אפילו לקרוא מה-DB. migration 048 הזריעה את כל 8 השורות (טקסט זהה להardcoded הקיים — אין שינוי התנהגות), ושורת קוד אחת נוספה ל-unmatched-button כדי שתקרא מה-DB. כל script_key שwebhook קורא — ניתן לעריכה כעת.
 - Regex patterns (COMPLAINT_PATTERNS, UPSELL_PATTERNS, HUMAN_CALL_PATTERNS, DATE_CHANGE_RE) — hardcoded בכוונה. אלו לוגיקת **זיהוי כוונה**, לא טקסט תשובה — הזזה ל-DB תדרוש UI לעריכת regex, לא מומלץ.
 - ⚠️ צימוד שביר: `whatsapp-webhook/index.ts:282-286` בודק substring ("איזה כיף", "בוקר אור") בהיסטוריית שיחה כדי לדעת אם stage מסוים נשלח כבר. אם תערוך/י את הטקסט של `stage_2_arrival`/`stage_3_morning` ב-BotScriptEditor כך שלא יכיל את אחת המחרוזות האלה — הבדיקה הזו תפסיק לעבוד בשקט (לא תזהה ששלב נשלח). FAIL VISIBLE לא חל כאן עדיין — לא נגעתי בקוד הזה בsession 7, רק מתעד.
 
 **3. ארכיטקטורה לסשן הבא — ניהול סקריפטים מה-Admin Dashboard:**
 
-לא צריך לבנות מערכת חדשה — `BotScriptEditor.js` + `bot_scripts` **כבר עושים את זה**. מה שחסר בפועל:
-- הוסף שורת seed ל-`bot_scripts` עם `script_key='fallback_reply'` כך שה-fallback text יהיה ניתן לעריכה (לא רק hardcoded).
-- שקול UI חדש בתוך BotScriptEditor (או panel נפרד) לעריכת ה-regex patterns כ"keyword lists" ניתנים לעריכה (לא raw regex) — אם רוצים שליטה על זיהוי כוונה בלי redeploy.
-- אין צורך במיגרציה חדשה — הסכמה הקיימת (`message_text`, `ai_system_prompt`, `is_active`, `trigger_event`) מספיקה.
+לא היה צריך לבנות מערכת חדשה — `BotScriptEditor.js` + `bot_scripts` **כבר עושים את זה**, וsession 8 השלים את ה-seed (ראה למעלה). מה שנשאר אופציונלי:
+- שקול UI חדש בתוך BotScriptEditor (או panel נפרד) לעריכת ה-regex patterns כ"keyword lists" ניתנים לעריכה (לא raw regex) — אם רוצים שליטה על זיהוי כוונה בלי redeploy. לא בוצע — feature נפרד וגדול יותר.
+- אין צורך במיגרציה נוספת — הסכמה הקיימת (`message_text`, `ai_system_prompt`, `is_active`, `trigger_event`) מספיקה לכל script_key עתידי.
 
 ### פריטים פתוחים אחרים
 
@@ -572,11 +578,21 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
 | Meta Webhook URL | לא מוגדר ב-Meta Business Manager → WhatsApp → Configuration | גבוה |
 | `whatsapp-cron` (`CRON_ENABLED`) | קיל-סוויץ' נפרד, לא מוגדר — ראה STEP 4 | גבוה |
 | ShiftGenerator Gemini "creative mode" | תוכנן, לא מומש — חיבור לgenerate-schedule אם רוצים | בינוני |
-| `bot_scripts['fallback_reply']` | שורת seed חסרה — ראה Phase 6 Audit §2 | נמוך |
+| Regex intent patterns (COMPLAINT/UPSELL/HUMAN_CALL/DATE_CHANGE) | hardcoded בכוונה — UI לעריכת keyword-lists לא בוצע, ראה Phase 6 Audit §3 | נמוך |
 
 ---
 
 ### היסטוריית סשנים
+
+#### session 8 — Jun 20 2026 (Phase 6 seed completion + second status-bug fix)
+- ✅ אומת מול הקוד החי (לא מהזיכרון/CLAUDE.md): webhook קורא 8 `script_key` שונים מ-`bot_scripts`, רק 4 היו עם שורת seed (`stage_2_arrival`, `ongoing_concierge`, `complaint_reply`, `upsell_reply` — migrations 032/037). הפער היה גדול יותר מהתיעוד הקודם ("רק fallback_reply חסר").
+- ✅ Migration 048 — הזריעה 8 שורות חדשות: `fallback_reply`, `spa_menu`, `callback_reply`, `positive_feedback_reply`, `negative_feedback_reply`, `upsell_accepted_reply`, `upsell_decline_reply`, `generic_button_reply`. כל הטקסטים הם copy-paste מדויק מהמחרוזות hardcoded הקיימות — אין שינוי התנהגות, רק נפתחה עריכה.
+- ✅ Code patch ב-`whatsapp-webhook/index.ts`: (1) נתיב "כפתור לא מזוהה" (שורה ~1141) לא ניסה אפילו לקרוא מה-DB — נוסף lookup ל-`generic_button_reply`. (2) `positive_feedback_reply` עודכן לפענוח placeholder `{{GOOGLE_REVIEW_URL}}` (לא הוחלף לערך קבוע — ה-URL מגיע מ-secret חי, לא ניחוש).
+- 🐛 התגלה ותוקן: שורה 1160 (אישור הגעה ע"י **הקלדת** "כן", לא לחיצת כפתור) עדיין כתבה `status: "Approved"` — בדיוק הבאג שSTEP 1 (session 7) חשב שתוקן במלואו, אבל זה תיקן רק את נתיב הכפתור (שורה 976). הוסר.
+- ✅ תיקון תיעוד: CLAUDE.md §3/§4 טענו ש-`bot_scripts` route לא ב-Sidebar nav — שגוי. נמצא ב-`App.js:1114-1121`, סקשן אדמין, כפתור "📝 סקריפטי הבוט" — תוקן.
+- ✅ `npm run build` — Compiled (אזהרה אחת קיימת מראש, לא קשורה: `ShiftsPage` unused ב-App.js — לא טופלה, מחוץ לסקופ).
+- ✅ `npx supabase db push` (migration 048 applied) + `npx supabase functions deploy whatsapp-webhook --no-verify-jwt` — שניהם פרוסים בייצור.
+- ⚠️ לא בוצע QA חי בדפדפן (אין session דפדפן מחובר בסשן הזה) — Mike: כנס ל-BotScriptEditor ואמת ש-8 השורות החדשות מופיעות ועריכה שלהן נכנסת לתוקף.
 
 #### session 7 — Jun 20 2026 (איחוד ייבוא + Universal Grid + תיקון webhook + Bot Brain Audit)
 - ✅ הוחל תיקון STEP 1 שסוכם בsession 6: שתי כתיבות `status` שגויות הוסרו מ-whatsapp-webhook

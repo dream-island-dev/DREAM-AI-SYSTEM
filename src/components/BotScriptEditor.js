@@ -19,6 +19,8 @@ const TRIGGER_LABELS = {
   ongoing:           { label: "שיחה שוטפת AI",   color: "#0369A1", bg: "#E0F2FE" },
   complaint:         { label: "תלונה",            color: "#C0392B", bg: "#FFF0EE" },
   upsell:            { label: "שדרוג / Upsell",  color: "#92400E", bg: "#FEF3C7" },
+  fallback:          { label: "תגובת נפילה",      color: "#6B7280", bg: "#F3F4F6" },
+  button_reply:      { label: "תגובת כפתור",      color: "#0E7490", bg: "#ECFEFF" },
 };
 
 function TriggerBadge({ event }) {
