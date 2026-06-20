@@ -53,6 +53,20 @@ const WORKSHOP_SIGNUP_URL = Deno.env.get("WORKSHOP_SIGNUP_URL") ?? "dream-island
 
 // ── Pipeline trigger → approved WA template name ─────────────────────────────
 // Each key maps to a template registered & approved in Meta WhatsApp Manager.
+//
+// ⚠️ SEASONAL/WORDING CHANGES — READ BEFORE EDITING TEMPLATE BODY TEXT:
+// These are Meta-approved TEMPLATES, not free text — they're the only way to
+// message a guest outside the 24h customer-service window (which is most of
+// this pipeline: T-2, T-1, morning-of, mid-stay, checkout). The body text you
+// see in BroadcastDashboard's preview is a LOCAL COPY of what Meta approved.
+// Changing it here (or in Meta Business Manager) — e.g. swapping "השמש בחוץ"
+// for a winter line — does NOT take effect until Meta RE-APPROVES the edited
+// template (hours, sometimes longer). Sending to an un-approved edit either
+// silently uses the OLD approved text or gets rejected outright. Any seasonal
+// wording change to dream_welcome_morning (or any template here) must go
+// through Meta Business Manager → WhatsApp Manager → edit + resubmit, and
+// should NOT be assumed live until its status shows APPROVED again in the
+// "📋 ניהול תבניות" tab. See CLAUDE.md §6 for the same note.
 const PIPELINE_TEMPLATE: Record<string, string> = {
   pre_arrival_2d:  "dream_arrival_confirmation",  // T-2 days    → confirmation + Quick Reply buttons
   night_before:    "dream_checkin_reminder_v2",     // T-1 night   → "מחר מגיעים" + contact number
@@ -275,13 +289,25 @@ serve(async (req: Request) => {
     //   • No GUEST_FLAG update: broadcasts do not advance the EZGO pipeline
     // ─────────────────────────────────────────────────────────────────────────
     if (trigger === "broadcast") {
+      // DIAGNOSTIC (session 11): the only way this branch produces the generic
+      // "Edge Function returned a non-2xx status code" is one of the throws
+      // below firing before any Meta call happens — none of them are specific
+      // to template variables. This pins down exactly which one fires, instead
+      // of guessing, the next time a manual broadcast test fails.
+      console.log(`[whatsapp-send] 🩺 broadcast request — guestId:${JSON.stringify(guestId)} waTemplateName:"${waTemplateName}" varsLen:${templateVariables?.length ?? 0}`);
+
       if (!guestId)        throw new Error("guestId required for broadcast trigger");
       if (!waTemplateName) throw new Error("waTemplateName is required for broadcast");
 
+      // .maybeSingle() — never .single() (CLAUDE.md red line): .single() throws
+      // a Postgrest error (not a clean null) on zero OR multiple rows, which is
+      // exactly the kind of thing that was surfacing as an opaque "guest_not_found"
+      // with no detail on what actually went wrong.
       const { data: guest, error: gErr } = await supabase
-        .from("guests").select("*").eq("id", guestId).single();
-      if (gErr || !guest) throw new Error("guest_not_found");
-      if (!guest.phone)   throw new Error("guest_no_phone");
+        .from("guests").select("*").eq("id", guestId).maybeSingle();
+      if (gErr)    throw new Error(`guest_lookup_error: ${gErr.message}`);
+      if (!guest)  throw new Error(`guest_not_found: no guest row for id=${JSON.stringify(guestId)}`);
+      if (!guest.phone) throw new Error(`guest_no_phone: guest id=${guestId} (${guest.name ?? "?"}) has no phone on file`);
 
       // Anti-loop guard: arrival confirmation is a one-time pipeline step.
       // If the guest already confirmed, skip silently — prevents re-sending when
@@ -407,9 +433,10 @@ serve(async (req: Request) => {
         .from("guests")
         .select("id, name, phone, payment_amount, payment_link_url")
         .eq("id", guestId)
-        .single();
-      if (gErr || !guest) throw new Error("guest_not_found");
-      if (!guest.phone)            throw new Error("guest_no_phone");
+        .maybeSingle();
+      if (gErr)   throw new Error(`guest_lookup_error: ${gErr.message}`);
+      if (!guest) throw new Error(`guest_not_found: no guest row for id=${JSON.stringify(guestId)}`);
+      if (!guest.phone) throw new Error("guest_no_phone");
       if (!guest.payment_amount)   throw new Error("payment_amount_not_set");
       if (!guest.payment_link_url) throw new Error("payment_link_url_not_set");
 
@@ -458,11 +485,19 @@ serve(async (req: Request) => {
     if (!guestId) throw new Error("guestId is required for guest triggers");
     if (!(trigger in PIPELINE_TEMPLATE)) throw new Error("unknown trigger: " + trigger);
 
-    // Idempotency: skip if already sent for this guest+trigger
-    const { data: existing } = await supabase
+    // Idempotency: skip ONLY if a genuinely successful (or simulated) send already
+    // exists for this guest+trigger. A prior "failed"/"timeout" row must NOT block
+    // a retry — that was the exact bug that made a failed pipeline send permanent
+    // (flagged session 9, fixed here together with the GUEST_FLAG gate below).
+    // .limit(1) instead of .maybeSingle(): retries can legitimately accumulate
+    // multiple failed/timeout rows for the same guest+trigger, which maybeSingle()
+    // would error on.
+    const { data: existingSent } = await supabase
       .from("notification_log").select("id")
-      .eq("guest_id", guestId).eq("trigger_type", trigger).maybeSingle();
-    if (existing) {
+      .eq("guest_id", guestId).eq("trigger_type", trigger)
+      .in("status", ["sent", "simulated"])
+      .limit(1);
+    if (existingSent && existingSent.length > 0) {
       return new Response(
         JSON.stringify({ ok: true, skipped: true, reason: "already_sent" }),
         { headers: { ...CORS, "Content-Type": "application/json" } }
@@ -470,8 +505,9 @@ serve(async (req: Request) => {
     }
 
     const { data: guest, error: gErr } = await supabase
-      .from("guests").select("*").eq("id", guestId).single();
-    if (gErr || !guest) throw new Error("guest_not_found");
+      .from("guests").select("*").eq("id", guestId).maybeSingle();
+    if (gErr)   throw new Error(`guest_lookup_error: ${gErr.message}`);
+    if (!guest) throw new Error(`guest_not_found: no guest row for id=${JSON.stringify(guestId)}`);
 
     const tmplName = PIPELINE_TEMPLATE[trigger];
     const tmplVars = sanitizeTemplateVars(PIPELINE_VARS[trigger]?.(guest) ?? []);
@@ -505,7 +541,9 @@ serve(async (req: Request) => {
     }
 
     // Atomically stamp the pipeline flag — this is the SOLE writer of these flags.
-    if (GUEST_FLAG[trigger]) {
+    // Only on a real success: stamping it on "failed"/"timeout" would mark a
+    // message that may never have arrived as permanently "sent", with no retry.
+    if (GUEST_FLAG[trigger] && (status === "sent" || status === "simulated")) {
       await supabase
         .from("guests")
         .update({ [GUEST_FLAG[trigger]]: true })
@@ -519,9 +557,16 @@ serve(async (req: Request) => {
 
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
+    console.error("[whatsapp-send] error:", msg);
+    // ⚠️ Always HTTP 200 — matches the convention already established in
+    // get-wa-templates/chat/suggest-import-mapping in this codebase. This
+    // function was the one outlier returning 400, which meant supabase-js's
+    // generic "Edge Function returned a non-2xx status code" was ALL the
+    // frontend ever saw — the actual reason (e.g. guest_not_found,
+    // guest_no_phone) was thrown away, masked behind that wrapper text.
     return new Response(
       JSON.stringify({ ok: false, error: msg }),
-      { status: 400, headers: { ...CORS, "Content-Type": "application/json" } }
+      { status: 200, headers: { ...CORS, "Content-Type": "application/json" } }
     );
   }
 });

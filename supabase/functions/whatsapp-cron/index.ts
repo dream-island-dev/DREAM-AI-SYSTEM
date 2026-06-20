@@ -50,7 +50,7 @@ serve(async (req: Request) => {
 
     const { data: guests = [] } = await supabase
       .from("guests")
-      .select("id, name, phone, arrival_date, departure_date, room_type, status, checkin_time, msg_pre_arrival_2d_sent, msg_pre_arrival_sent, msg_morning_suite_sent, msg_morning_welcome_sent, msg_post_checkin_sent, msg_mid_stay_sent, msg_checkout_fb_sent");
+      .select("id, name, phone, arrival_date, departure_date, room_type, status, checkin_time, needs_callback, msg_pre_arrival_2d_sent, msg_pre_arrival_sent, msg_morning_suite_sent, msg_morning_welcome_sent, msg_post_checkin_sent, msg_mid_stay_sent, msg_checkout_fb_sent");
 
     // yesterday = day after departure that triggers checkout feedback
     const yesterday = ymd(new Date(now.getTime() - 24 * 3600 * 1000));
@@ -66,7 +66,10 @@ serve(async (req: Request) => {
         due.push({ guestId: g.id, trigger: "night_before" });
 
       // Arrival morning — welcome message for non-suite guests (UTC 06+ ≈ Israel 08+)
-      if (g.arrival_date === today && g.room_type !== "suite" && hourUTC >= 6 && !g.msg_morning_welcome_sent)
+      // needs_callback guard: a guest who tapped "לא,שינוי בתאריך" (or otherwise
+      // got flagged for human follow-up) must NOT get a "welcome, we're waiting
+      // for you!" message — their arrival date itself may no longer be today.
+      if (g.arrival_date === today && g.room_type !== "suite" && hourUTC >= 6 && !g.msg_morning_welcome_sent && !g.needs_callback)
         due.push({ guestId: g.id, trigger: "morning_welcome" });
 
       // Mid-stay check — day after arrival, while still on property (UTC 08+ ≈ Israel 10+)
@@ -84,8 +87,9 @@ serve(async (req: Request) => {
         due.push({ guestId: g.id, trigger: "checkout_fb" });
 
       if (g.room_type === "suite") {
-        // Arrival morning for suites (UTC 04+ ≈ Israel 06+)
-        if (g.arrival_date === today && hourUTC >= 4 && !g.msg_morning_suite_sent)
+        // Arrival morning for suites (UTC 04+ ≈ Israel 06+) — same needs_callback
+        // guard as morning_welcome above; both send dream_welcome_morning.
+        if (g.arrival_date === today && hourUTC >= 4 && !g.msg_morning_suite_sent && !g.needs_callback)
           due.push({ guestId: g.id, trigger: "morning_suite" });
 
         // 1h after check-in (suites) — flag guard prevents re-firing every 15 min

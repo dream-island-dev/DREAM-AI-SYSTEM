@@ -136,17 +136,21 @@ function resolvePlaceholders(
     ? `מתואם לכם טיפול בספא בשעה ${vars.spaTime}.\n`
     : "";
 
+  // Tolerant of internal whitespace ("{{ OPTIONAL_SPA_TEXT }}") and casing —
+  // a script edited by hand via BotScriptEditor is exactly where a stray space
+  // or wrong case would silently break a strict literal match, leaving the
+  // placeholder text either unreplaced or (worse) silently treated as "absent".
   let text = template
-    .replace(/\{\{GUEST_NAME\}\}/g, vars.guestName)
-    .replace(/\{\{WORKSHOP_URL\}\}/g, vars.workshopUrl)
-    .replace(/\{\{SPA_LINE\}\}/g, spaLine)
-    .replace(/\{\{OPTIONAL_SPA_TEXT\}\}/g, optionalSpaText);
+    .replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, vars.guestName)
+    .replace(/\{\{\s*WORKSHOP_URL\s*\}\}/gi, vars.workshopUrl)
+    .replace(/\{\{\s*SPA_LINE\s*\}\}/gi, spaLine)
+    .replace(/\{\{\s*OPTIONAL_SPA_TEXT\s*\}\}/gi, optionalSpaText);
 
   // Legacy {{SPA_TIME}}: substitute or strip the containing sentence
   if (vars.spaTime) {
-    text = text.replace(/\{\{SPA_TIME\}\}/g, vars.spaTime);
+    text = text.replace(/\{\{\s*SPA_TIME\s*\}\}/gi, vars.spaTime);
   } else {
-    text = text.replace(/[^\n.!?]*\{\{SPA_TIME\}\}[^\n.!?]*[.!?]?\s*/g, "");
+    text = text.replace(/[^\n.!?]*\{\{\s*SPA_TIME\s*\}\}[^\n.!?]*[.!?]?\s*/gi, "");
   }
   return text.trim();
 }
@@ -965,7 +969,7 @@ serve(async (req: Request) => {
         } else {
           await supabase.from("whatsapp_conversations").insert({
             phone, guest_id: guestId, direction: "inbound",
-            message: isButtonReply ? `[כפתור: ${buttonTitle}]` : text,
+            message: isButtonReply ? buttonTitle : text,
             wa_message_id: msgId, intent: "human_handoff",
           }).catch(() => {});
           console.info(`[webhook] 🔕 thread in human-handoff (needs_callback) — silenced for ${phone}`);
@@ -978,9 +982,18 @@ serve(async (req: Request) => {
       // Each branch logs the interaction and sends an appropriate response,
       // then skips normal intent classification.
       if (isButtonReply && buttonTitle) {
+        // These two buttons are explicit human-attention requests, exactly like
+        // the typed DATE_CHANGE_RE / "talk to a person" paths — tag the inbound
+        // row with human_requested so WhatsAppInbox.js's red "🔴 מבקש מענה אנושי"
+        // indicator shows for button taps too, not just typed text.
+        const isDateChangeButton = buttonTitle.includes("שינוי בתאריך") || buttonTitle.includes("לא,");
+        const isCallbackButton   = buttonTitle.includes("דברו איתי") || buttonTitle.includes("מענה אנושי");
+
         await supabase.from("whatsapp_conversations").insert({
           phone, guest_id: guestId, direction: "inbound",
-          message: `[כפתור: ${buttonTitle}]`, wa_message_id: msgId, intent: "button_reply",
+          message: buttonTitle, wa_message_id: msgId, intent: "button_reply",
+          ...(isDateChangeButton ? { human_requested: true, human_request_type: "date_change" } : {}),
+          ...(isCallbackButton   ? { human_requested: true, human_request_type: "callback" }    : {}),
         });
 
         const name = String(guest?.name ?? "");
@@ -1015,6 +1028,14 @@ serve(async (req: Request) => {
           const stage2Script = scripts["stage_2_arrival"];
           let arrivalReply: string;
           if (stage2Script?.message_text?.trim()) {
+            // DIAGNOSTIC (session 10): pins down spa_time placeholder issues without
+            // guessing — logs the exact DB value and whether the saved script text
+            // contains the placeholder at all, so a future report has hard evidence.
+            console.log(
+              `[webhook] 🩺 resolvePlaceholders input — phone:${phone} spaTime:${JSON.stringify(spaTime)}` +
+              ` scriptHasOptionalSpaText:${/\{\{\s*OPTIONAL_SPA_TEXT\s*\}\}/i.test(stage2Script.message_text)}` +
+              ` scriptHasSpaLine:${/\{\{\s*SPA_LINE\s*\}\}/i.test(stage2Script.message_text)}`
+            );
             arrivalReply = resolvePlaceholders(stage2Script.message_text, {
               guestName: safeName, spaTime, workshopUrl,
             });
@@ -1110,7 +1131,7 @@ serve(async (req: Request) => {
         } else if (buttonTitle.includes("מושלם") || buttonTitle.includes("מושלמת")) {
           const reviewUrl = GOOGLE_REVIEW_URL || "dream-island.co.il";
           const feedbackReply = scripts["positive_feedback_reply"]?.message_text?.trim()
-            ? scripts["positive_feedback_reply"]!.message_text!.replace(/\{\{GOOGLE_REVIEW_URL\}\}/g, reviewUrl)
+            ? scripts["positive_feedback_reply"]!.message_text!.replace(/\{\{\s*GOOGLE_REVIEW_URL\s*\}\}/gi, reviewUrl)
             : `שמחנו מאוד לשמוע! 🌟 אם תרצו לשתף את החוויה שלכם — זה יאיר לנו את היום:\n${reviewUrl}\nתודה ענקית ומחכים לכם בפעם הבאה! 💫`;
           try { await sendReply(phone, feedbackReply); } catch (e) { console.error("[webhook] reply error:", (e as Error).message); }
           await supabase.from("whatsapp_conversations").insert({
@@ -1205,6 +1226,11 @@ serve(async (req: Request) => {
         const stage2Script2 = scripts["stage_2_arrival"];
         let textArrivalReply: string;
         if (stage2Script2?.message_text?.trim()) {
+          console.log(
+            `[webhook] 🩺 resolvePlaceholders input (text-confirm) — phone:${phone} spaTime:${JSON.stringify(spaTime2)}` +
+            ` scriptHasOptionalSpaText:${/\{\{\s*OPTIONAL_SPA_TEXT\s*\}\}/i.test(stage2Script2.message_text)}` +
+            ` scriptHasSpaLine:${/\{\{\s*SPA_LINE\s*\}\}/i.test(stage2Script2.message_text)}`
+          );
           textArrivalReply = resolvePlaceholders(stage2Script2.message_text, {
             guestName: safeName2, spaTime: spaTime2, workshopUrl: workshopUrl2,
           });

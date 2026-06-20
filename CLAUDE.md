@@ -1,6 +1,6 @@
 # CLAUDE.md — Dream Island AI System
 > קובץ זה נקרא אוטומטית בכל שיחה. הוא מקור-האמת שלך. קרא אותו לפני כל פעולה.
-> **עדכון אחרון:** 2026-06-20 (session 9 — תיקון 2 באגים קריטיים בproduction: כפתור WhatsApp שותק (message type "button" לא טופל) + "נכשלו" כוזב בbroadcast (timeout≠כשל ממשי))
+> **עדכון אחרון:** 2026-06-20 (session 11 — needs_callback guard ב-cron, תיקון non-2xx + GUEST_FLAG-on-failure בwhatsapp-send, הרחבת notification_log status, Pipeline Monitor query design)
 
 ---
 
@@ -359,14 +359,18 @@ bot_settings.system_prompt = AI persona בלבד
 | כפתור | פעולה |
 |---|---|
 | "כן,מגיעים!" | `arrival_confirmed=true` → קריאת `guests.spa_time` → תשובה חמה |
-| "לא,שינוי בתאריך" | `needs_callback=true`, `requires_attention=true` → handoff message מדויק |
+| "לא,שינוי בתאריך" | `needs_callback=true`, `requires_attention=true` + ★ session 10: `human_requested=true, human_request_type="date_change"` על שורת ה-inbound ב-`whatsapp_conversations` (אותו מנגנון בדיוק כמו DATE_CHANGE_RE בטקסט חופשי) → handoff message מדויק |
 | "ספא/טיפולים" | שליחת `SPA_MENU` כטקסט חופשי |
-| "דברו איתי/מענה אנושי" | `needs_callback=true` → "נחזור אליך" |
+| "דברו איתי/מענה אנושי" | `needs_callback=true` + ★ session 10: `human_requested=true, human_request_type="callback"` (תוקן יחד עם date_change — אותו פער) → "נחזור אליך" |
 | "היה מושלם!/מושלמת" | שליחת Google Review URL |
 | "יש מקום לשיפור" | `requires_attention=true` → בקשת משוב |
 | "נשמע מושלם/שריינו מקום" | `upsell_interest=true` בbookings → צוות ספא |
 | "פחות מתאים" | decline graceful |
 | כל אחר | generic reply — שום כפתור לא שותק |
+
+⚠️ **`human_requested`/`human_request_type`** הם עמודות על `whatsapp_conversations` (per-message, migration 020) — **לא** `guests.needs_callback`. `WhatsAppInbox.js`'s "🔴 מבקש מענה אנושי" קורא רק את `human_requested` על השורה. עד session 10 רק הנתיב של טקסט חופשי (DATE_CHANGE_RE) כתב את זה — לחיצת כפתור הזינה את `guests` נכון אבל לא סימנה את השורה ב-inbox, אז הדגל האדום לא הופיע למרות שה-state התפעולי היה תקין.
+
+★ **session 10:** ה-inbound log הגנרי לכל הכפתורים (שורה אחת, לפני ה-if/else) הוסר ממנו `[כפתור: ]` prefix — נשמר רק טקסט הכפתור הגולמי, כדי שה-Live Chat יראה הודעת משתמש טבעית. **לא** שונה ב-`guest_alerts` (alert log פנימי לצוות, לא ה-chat UI).
 
 #### `spa_time` — מקור האמת לתצוגה בbotה
 ```
@@ -377,6 +381,10 @@ webhook קורא: guests.spa_time (שדה TEXT)
 
 ⚠️ lookupSpaTime() שהוזכר בתיעוד קודם — לא קיים בקוד בפועל. לא ממומש.
 ```
+
+★ **session 10 — דווח כ"spa_time לא מוצג למרות שמוגדר".** קראתי את כל השרשרת (SELECT כולל spa_time ✅, `extractGuestDetails`/חילוץ ✅, `resolvePlaceholders` ✅) — לא נמצא באג בלוגיקה עצמה. שתי תוספות הגנתיות בלי לנחש מה השורש המדויק:
+1. `resolvePlaceholders()` — כל regex placeholder הפך tolerant לרווחים פנימיים וcase (`{{\s*OPTIONAL_SPA_TEXT\s*}}/gi` וכו') — מגן מפני type ב-BotScriptEditor כמו `{{ optional_spa_text }}`.
+2. נוסף `console.log` דיאגנוסטי בשתי נקודות הקריאה ל-`resolvePlaceholders` (כפתור + טקסט חופשי) שמדפיס את `spa_time` הממשי + אם הסקריפט השמור מכיל בכלל `{{OPTIONAL_SPA_TEXT}}`/`{{SPA_LINE}}` — אם זה יקרה שוב, לוגי הפונקציה (Supabase Dashboard → Functions → Logs) ייתנו תשובה חד-משמעית: ערך guests.spa_time שגוי/null, או placeholder syntax לא תואם בטקסט השמור.
 
 #### Arrival Confirmation Reply — IF/ELSE חיוני
 ```
@@ -426,9 +434,34 @@ webhook קורא: guests.spa_time (שדה TEXT)
                 BroadcastDashboard.js מציג "לא ודאי" כקטגוריה שלישית, נפרדת מ-
                 "נכשלו" (עקרון FAIL VISIBLE — §0.3: לא להציג ערך לא-ידוע כ"נכשל"
                 בביטחון מזויף).
-⚠️ עדיין פתוח (לא תוקן, מחוץ לסקופ session 9): GUEST_FLAG[trigger] ו-notification_log
-   נכתבים גם כש-status הוא "failed"/"timeout" ב-BRANCH D (pipeline) — מסמן הודעה
-   שלא אושרה כ"נשלחה" לצורך idempotency, ולכן לעולם לא תינסה שוב. דורש תיקון נפרד.
+✅ session 11 — תוקן (היה "פתוח" בsession 9): GUEST_FLAG[trigger] עכשיו נכתב רק
+   כש-status הוא "sent"/"simulated" — לא עוד "failed"/"timeout". בנוסף, בדיקת
+   ה-idempotency ב-BRANCH D (notification_log existence check) משתמשת כעת ב-
+   `.in("status", ["sent","simulated"])` במקום סתם "יש שורה כלשהי" — שורת "failed"
+   קודמת **לא** חוסמת ניסיון חזרה בcron הבא. (status="timeout" עצמו לא נכתב היה
+   בכלל לפני session 11 — ראה למטה.)
+```
+
+#### notification_log.status CHECK constraint widened (migration 050, session 11)
+```
+migration 006 הגדירה CHECK (status IN ('sent','simulated','failed')) — בלי 'timeout'.
+session 9 הוסיפה status:"timeout" בקוד בלי לעדכן את ה-constraint → כל insert עם
+status='timeout' נכשל בשקט (ה-insert לא נבדק ל-error) — השורה פשוט לא נכתבה.
+migration 050 הרחיבה את ה-constraint ל-('sent','simulated','failed','timeout').
+```
+
+#### `.single()` → `.maybeSingle()` + always-HTTP-200 (session 11 fix)
+```
+שלושת ה-guest lookups ב-whatsapp-send (BRANCH B/D/E) השתמשו ב-.single() —
+מפר את הקו האדום ב-§9. תוקן לכולם ל-.maybeSingle() + הודעת שגיאה מפורטת
+(כוללת guestId/שם) במקום "guest_not_found" גנרי.
+
+★ ממצא חשוב יותר: ה-outer catch (סוף הפונקציה) החזיר status:400 — היחיד בכל
+הקודבייס שלא עוקב אחר הקונבנציה "Always HTTP 200, error בbody" (chat,
+get-wa-templates, suggest-import-mapping כולם 200). תוצאה: supabase-js תמיד
+זרק את ה-wrapper הגנרי "Edge Function returned a non-2xx status code" —
+ה-data.error המפורט בפועל אף פעם לא הגיע ל-frontend. תוקן ל-200 — עכשיו
+BroadcastDashboard.js יציג את הסיבה האמיתית (guest_not_found/guest_no_phone/וכו').
 ```
 
 ### `generate-schedule` ⚠️ ORPHAN
@@ -437,9 +470,11 @@ webhook קורא: guests.spa_time (שדה TEXT)
 ### `whatsapp-cron` — KILL SWITCH ACTIVE
 - pg_cron job **"wa-cron"** (jobid: 2) — `*/15 * * * *`, active: TRUE
 - לעצור ב-SQL: `SELECT cron.unschedule('wa-cron');` (לא 'whatsapp-triggers' — זה שגוי)
-- **KILL SWITCH:** `CRON_ENABLED` env var לא מוגדר → whatsapp-cron מחזיר `{halted: true}` מיידית
+- **KILL SWITCH:** `CRON_ENABLED` env var לא מוגדר → whatsapp-cron מחזיר `{halted: true}` מיידית — **עדיין כך כיום (session 10)**
 - להפעיל מחדש: Set `CRON_ENABLED=true` בSupabase Secrets → Edge Functions
-- ⚠️ לפני הפעלה מחדש: הוסף flag guards לnight_before, morning_welcome, morning_suite, butler_1h בcron
+- ✅ תוקן תיעוד (session 10): השורה הקודמת כאן טענה ש"צריך להוסיף flag guards לפני הפעלה מחדש" — שגוי. נקרא הקוד בפועל (`whatsapp-cron/index.ts`): flag guards (`!msg_pre_arrival_sent`/`!msg_morning_welcome_sent`/`!msg_morning_suite_sent`/`!msg_post_checkin_sent`/`!msg_mid_stay_sent`/`!msg_checkout_fb_sent`) **כולם קיימים כבר** — נוספו בsession 2, ראה היסטוריה למטה. אין פעולה נדרשת כאן מעבר להגדרת `CRON_ENABLED=true`.
+- ★ **session 10 — נמצא תוך אימות:** `morning_welcome`/`morning_suite` **לא** תלויים ב-`guests.arrival_confirmed` בכלל — התנאי היחיד הוא `arrival_date === today` + `room_type` + flag guard.
+- ✅ **session 11 — תוקן:** נוסף `!g.needs_callback` לשני התנאים (`morning_welcome` + `morning_suite`, ששניהם שולחים `dream_welcome_morning`) — אורח עם `needs_callback=true` (למשל לחץ "לא,שינוי בתאריך") כבר **לא** מקבל את הודעת "בוקר ההגעה". `needs_callback` נוסף ל-SELECT של ה-cron. החלטת Mike מאומתת.
 
 ---
 
@@ -559,7 +594,7 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
 | תחום | סטטוס | הערה |
 |---|---|---|
 | WhatsApp Automation — שכבת שליחה | חלקי | `AUTOMATION_ENABLED=true` הוגדר ב-Secrets → משפיע **רק** על `whatsapp-send` (שליחות יזומות: room_ready, payment_and_workshops; inbox_reply תמיד פטור). ⚠️ **לא** משפיע על ה-cron התקופתי — `whatsapp-cron` חסום בנפרד ע"י kill switch עצמאי (`CRON_ENABLED`, עדיין לא מוגדר). night_before/morning_welcome/morning_suite/butler_1h **לא ישלחו** עד שגם הוא יופעל. |
-| תבניות Meta מאושרות | לאמת | שמות נוכחיים בקוד (`whatsapp-send/index.ts:57-61`): `dream_arrival_confirmation` (T-2), `dream_checkin_reminder_v2` (T-1/night_before), `dream_welcome_morning` (יום הגעה — suite+standard). יש לאמת מול Meta Business Manager לפני הפעלת ה-cron. |
+| תבניות Meta מאושרות | לאמת | שמות נוכחיים בקוד (`whatsapp-send/index.ts:57-61`): `dream_arrival_confirmation` (T-2), `dream_checkin_reminder_v2` (T-1/night_before), `dream_welcome_morning` (יום הגעה — suite+standard). יש לאמת מול Meta Business Manager לפני הפעלת ה-cron. ⚠️ **שינוי טקסט עונתי** (session 11): כל שינוי בגוף הודעה של תבנית מאושרת (למשל "השמש בחוץ" → ניסוח חורפי ל-`dream_welcome_morning`) **דורש אישור Meta מחדש** — התבנית פעילה *מחוץ* לחלון 24 השעות, אז אי אפשר לסמוך על free-text. אל תניחו שהשינוי חי עד שהסטטוס ב-"📋 ניהול תבניות" חוזר ל-APPROVED. ראה הערה זהה ב-`whatsapp-send/index.ts` מעל `PIPELINE_TEMPLATE`. |
 | SpaStagingPanel automation | ★ גילוי session 7 | מוזן ע"י `email-import-webhook` + `spa-schedule-webhook` — לא ברור באיזו פלטפורמת אוטומציה חיצונית (סביר Make.com) השרשור עצמו רץ. לא נחקר השרשור החיצוני, רק נקודות הקצה ב-Supabase. |
 
 ### מפת דרכים — השלבים הבאים
@@ -605,18 +640,35 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
 | `whatsapp-cron` (`CRON_ENABLED`) | קיל-סוויץ' נפרד, לא מוגדר — ראה STEP 4 | גבוה |
 | ShiftGenerator Gemini "creative mode" | תוכנן, לא מומש — חיבור לgenerate-schedule אם רוצים | בינוני |
 | Regex intent patterns (COMPLAINT/UPSELL/HUMAN_CALL/DATE_CHANGE) | hardcoded בכוונה — UI לעריכת keyword-lists לא בוצע, ראה Phase 6 Audit §3 | נמוך |
-| `GUEST_FLAG`/`notification_log` נכתבים גם בכשל (`whatsapp-send` BRANCH D) | הודעת pipeline שנכשלה/timeout מסומנת כ"נשלחה" — לעולם לא תינסה שוב. נמצא בsession 9, לא תוקן (מחוץ לסקופ) | גבוה |
 | Resilient Import Agent — **מושהה באמצע** (session 9) | `suggest-import-mapping` Edge Function + `import_mapping_memory` table (migration 049) **פרוסים בפועל** ב-Supabase, אבל שינויי הפרונטאנד (`ArrivalImportPanel.js`, `MappingReviewPanel.js`, `importMapper.js`, פרמטריזציית `ezgoParser.js`) **לא commit-ים, לא pushed** — קיימים רק ב-working tree המקומי. יש גם debug-branch זמני (`if (debug)`) ב-`suggest-import-mapping/index.ts` שצריך להסיר לפני שמחליטים שזה "מוכן". המשך/סגור בסשן נפרד. | בינוני |
 
 ---
 
 ### היסטוריית סשנים
 
+#### session 11 — Jun 20 2026 (Pipeline polish — cron safeguard, non-2xx root cause, retry-safe failures, Pipeline Monitor design)
+- ✅ **תוקן (Mike's explicit decision):** `whatsapp-cron/index.ts` — נוסף `!g.needs_callback` ל-`morning_welcome`+`morning_suite` (שניהם שולחים `dream_welcome_morning`). אורח עם needs_callback פתוח (למשל "לא,שינוי בתאריך") לא יקבל "בוקר טוב, מחכים לך!" יותר. `needs_callback` נוסף ל-SELECT.
+- 🐛→✅ **שורש "non-2xx" נמצא ותוקן:** הקריאה ל-`whatsapp-send` בבדיקה ידנית של `dream_welcome_morning` חזרה עם "Edge Function returned a non-2xx status code" — ה-wrapper הגנרי של supabase-js. נקרא הקוד המלא: ה-outer catch ב-`whatsapp-send/index.ts` היה היחיד בכל הקודבייס שמחזיר `status:400` במקום 200 — כל שאר הפונקציות (chat, get-wa-templates, suggest-import-mapping) עוקבות אחר הקונבנציה המתועדת "Always 200, error בbody". בגלל זה ה-frontend אף פעם לא ראה את הסיבה האמיתית (guest_not_found/guest_no_phone/וכו') — רק את ה-wrapper. תוקן ל-200. **לא** נמצא באג ספציפי ל-`{{1}}`/template variables — מנגנון ה-sanitizeTemplateVars/sendViaTemplate תקין מבחינה לוגית; חוסר var פשוט גורם לדחיית Meta (status:"failed" רגיל, לא throw).
+- ✅ **תוקן יחד (קו אדום §9):** שלושת ה-`.single()` ב-`whatsapp-send` (BRANCH B/D/E) → `.maybeSingle()` + הודעות שגיאה מפורטות.
+- 🐛→✅ **תוקן (היה "פתוח" מsession 9):** `GUEST_FLAG[trigger]` נכתב כעת רק על `status:"sent"/"simulated"`, ובדיקת idempotency ב-BRANCH D משתמשת ב-`.in("status",["sent","simulated"])` במקום "קיימת שורה כלשהי" — שורת "failed" קודמת לא חוסמת retry יותר.
+- ✅ **migration 050** — `notification_log.status` CHECK constraint הורחב ל-`('sent','simulated','failed','timeout')`. נמצא תוך כך: status="timeout" (שנוסף בקוד בsession 9) **נכשל בשקט** בכל insert מאז, כי ה-constraint הישן לא הכיר אותו — השורות פשוט לא נכתבו. ה-Pipeline Monitor (להלן) תלוי בתיקון הזה כדי לראות timeouts בכלל.
+- ✅ נוספה הערה מבנית ב-`whatsapp-send/index.ts` (מעל `PIPELINE_TEMPLATE`) + כאן ב-CLAUDE.md: שינוי טקסט עונתי לתבנית מאושרת דורש אישור Meta מחדש לפני שהוא "חי".
+- 📐 **Pipeline Monitor — עיצוב query logic** (לא מומש UI עדיין, לפי בקשת Mike "next session"): שלוש שאלות — (1) אורחים שמגיעים היום (`guests` WHERE arrival_date=today), (2) הודעות בוקר שנשלחו בהצלחה היום (`notification_log` WHERE trigger_type IN (morning_welcome,morning_suite) AND status='sent' AND sent_at>=today), (3) שליחות שנכשלו/timeout שדורשות fallback ידני (אותו filter עם status IN (failed,timeout), join ל-guests). ⚠️ קריטי: **לא** להשתמש ב-`guests.msg_morning_welcome_sent`/`msg_morning_suite_sent` כ"נשלח בהצלחה" — אחרי תיקון session 11 הדגל אמנם נכון יותר (רק success), אבל `notification_log.status` נשאר מקור האמת התפעולי המדויק ביותר (תומך במספר ניסיונות/retries).
+- ✅ `supabase db push` (migration 050) + `supabase functions deploy whatsapp-send --no-verify-jwt` + `supabase functions deploy whatsapp-cron --no-verify-jwt` — שלושתם פרוסים בייצור.
+
+#### session 10 — Jun 20 2026 (Live E2E follow-up — human-request flag, chat UI cleanup, placeholder hardening, cron audit)
+- ✅ **אומת בהצלחה:** session 9's button-type fix עבד בפרודקשן — לחיצת "כן,מגיעים!" נתפסה ושלחה את התשובה המוגדרת מ-`bot_scripts`. דיווח חי ראשון על button routing שעובד מקצה לקצה.
+- ✅→🐛 **תוקן:** "לא,שינוי בתאריך" עדכן את `guests.needs_callback`/`requires_attention` נכון, אבל **לא** סימן את שורת ה-inbound ב-`whatsapp_conversations` עם `human_requested`/`human_request_type` — ולכן "🔴 מבקש מענה אנושי" ב-`WhatsAppInbox.js` (שקורא רק `human_requested`, לא `guests.needs_callback`) לא הופיע. אותו פער קיים גם בכפתור "דברו איתי" — תוקן יחד, אותה שורת קוד. ה-state התפעולי (guests) היה תקין כל הזמן; רק הסימון ל-UI חסר.
+- ✅ **תוקן:** הוסר `[כפתור: ]` prefix משני ה-inserts ל-`whatsapp_conversations` (button router הגנרי + needs_callback-silenced log) — נשמר רק טקסט הכפתור הגולמי. `guest_alerts` (alert log פנימי לצוות) **לא** שונה — היקף שונה, לא Live Chat UI.
+- 🔍 **נחקר ולא נמצא קוד שגוי:** "spa_time לא מוצג" — קראתי SELECT + extraction + `resolvePlaceholders` במלואם, כולם תקינים. הוספו: (1) regex tolerance לרווחים/casing בכל placeholder ב-`resolvePlaceholders` (הגנה, לא ניחוש), (2) `console.log` דיאגנוסטי בשתי נקודות הקריאה שמדפיס spa_time + אם הסקריפט מכיל את ה-placeholder בכלל — אם זה יקרה שוב, הלוגים ייתנו תשובה מדויקת בלי ניחוש נוסף.
+- 🔍 **אומת:** `whatsapp-cron/index.ts` נקרא במלואו — `morning_welcome`/`morning_suite` תלויים רק ב-`arrival_date`+`room_type`+flag guard, **לא** ב-`arrival_confirmed`. ה-cron **עדיין halted** ע"י `CRON_ENABLED` (לא הוגדר) — לא קשור לתיקוני session 9/10. תוקן תיעוד שגוי שטען ש"חסרים flag guards" — הם קיימים מאז session 2.
+- ✅ `supabase functions deploy whatsapp-webhook --no-verify-jwt` — פרוס בייצור.
+
 #### session 9 — Jun 20 2026 (Live bug hunt — button router silent + false "failed" reports)
 - 🐛→✅ **באג קריטי נמצא ותוקן:** `whatsapp-webhook/index.ts`'s message-type switch טיפל רק ב-`"text"` ו-`"interactive"`. לחיצה על כפתור Quick Reply בתוך הודעת **template** (כל broadcast/pipeline send היום עובר ב-`sendTemplate`/`sendViaTemplate`) מגיעה מ-Meta כ-`msg.type:"button"` — עם shape **שונה** (`{button:{text,payload}}`, לא `{interactive:{button_reply:{title,id}}}`). זה נפל ל-`else` הכוללני ונדלג בשקט — הבוט היה שותק לחלוטין בלחיצה על "כן,מגיעים!"/"לא,שינוי בתאריך". **לא** היה key mismatch ב-`bot_scripts` כמו שחשדנו בהתחלה — `scripts["stage_2_arrival"]` תמיד היה נכון. תוקן: ענף `msg.type === "button"` חדש שממפה ל-`buttonTitle`/`buttonId`/`isButtonReply` הקיימים — שום קוד downstream (button router, needs_callback override, bot_scripts lookup) לא השתנה.
 - 🐛→✅ **באג קריטי שני נמצא ותוקן:** "נכשלו: 2" שהוצג ב-`BroadcastDashboard.js` כששתי ההודעות בכל זאת הגיעו לטלפון. שורש: `sendViaTemplate`/`sendViaMeta` (whatsapp-send) ו-`sendTemplate`/`sendReply` (whatsapp-webhook) תפסו **כל** כשל fetch ל-Meta (כולל timeout/AbortError על `AbortSignal.timeout(15000)`) כ-"failed" זהה לדחייה ממשית — בזמן ש-timeout פירושו "לא ידוע אם Meta עיבדה את הבקשה", לא "Meta דחתה". תוקן: timeout הועלה ל-25s, ו-timeout מסומן בנפרד כ-`"timeout_no_response"` → `status:"timeout"` (לא `"failed"`) → `BroadcastDashboard.js` מציג "לא ודאי" כקטגוריה שלישית נפרדת מ-"נכשלו" (`handleBroadcast`, `sendToOne`, `handleQuickSendTomorrow` כולם עודכנו).
 - ✅ אומת מול הקוד (לא ניחוש): `resolvePlaceholders()`'s `{{SPA_TIME}}`/`{{OPTIONAL_SPA_TEXT}}`/`{{SPA_LINE}}` handling — והsource `guests.spa_time` ב-SELECT — כבר נכונים. "שעת ספא חסרה" (bug #3 שדווח) צריכה לעבוד אוטומטית כש-bug #2 (כפתור שותק) מתוקן; אם עדיין חסרה אחרי הפריסה — לבדוק אם ל-guest הבדיקה הספציפי יש בכלל `spa_time` בDB (נתון, לא קוד).
-- ⚠️ נמצא ולא תוקן (מחוץ לסקופ session 9, ראה "פריטים פתוחים"): `GUEST_FLAG`/`notification_log` ב-BRANCH D נכתבים גם בכשל/timeout — מסמן הודעת pipeline שלא אושרה כ"נשלחה" לצורך idempotency.
+- ⚠️ נמצא ולא תוקן בsession 9 (מחוץ לסקופ): `GUEST_FLAG`/`notification_log` ב-BRANCH D נכתבים גם בכשל/timeout — מסמן הודעת pipeline שלא אושרה כ"נשלחה" לצורך idempotency. **✅ תוקן בsession 11** — ראה שם.
 - ✅ `npm run build` — Compiled (אזהרה אחת קיימת מראש, לא קשורה).
 - ✅ `supabase functions deploy whatsapp-webhook --no-verify-jwt` + `supabase functions deploy whatsapp-send --no-verify-jwt` — שניהם פרוסים בייצור. שינויי `BroadcastDashboard.js` (פרונטאנד) **לא** commit-ים/pushed עדיין.
 - ⏸ Resilient Import Agent (AI-driven column mapping, suite CSV import) — הושהה באמצע העבודה לבקשת Mike כדי לטפל בבאגים הקריטיים האלה. ראה "פריטים פתוחים" — Edge Function + migration פרוסים, פרונטאנד לא.
