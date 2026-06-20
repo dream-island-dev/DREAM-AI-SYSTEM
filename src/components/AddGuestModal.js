@@ -2,8 +2,9 @@
 // Universal Add/Edit Guest modal — single source of truth for the guest CRUD
 // form (§0.5 — golden guests profile). Extracted from GuestsPage.js so every
 // surface that can create a guest (GuestsPage, GuestDashboard) shares the same
-// complete field set — incl. spa_time, treatment_count, order_number — instead
-// of each maintaining its own partial duplicate that the automation pipeline
+// complete field set — incl. spa_time, treatment_count, order_number,
+// room_type, departure_date — instead of each maintaining its own partial
+// duplicate that the automation pipeline or GuestDashboard's tab bucketing
 // then silently can't read from.
 //
 // Caller contract: only mount this when `guest` is truthy, e.g.
@@ -19,6 +20,7 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast }) {
     phone:              guest.phone               ?? "",
     name:               guest.name                ?? "",
     arrival_date:       guest.arrival_date         ?? "",
+    departure_date:     guest.departure_date       ?? "",
     spa_time:           guest.spa_time             ?? "",
     treatment_count:    guest.treatment_count != null ? String(guest.treatment_count) : "",
     order_number:       guest.order_number         ?? "",
@@ -26,6 +28,7 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast }) {
     requires_attention: !!guest.requires_attention,
     needs_callback:     !!guest.needs_callback,
     room:               guest.room                 ?? "",
+    room_type:          guest.room_type            ?? "standard",
   });
   const [saving, setSaving] = useState(false);
 
@@ -33,11 +36,16 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast }) {
 
   const handleSave = async () => {
     if (!supabase) return;
+    if (form.departure_date && form.arrival_date && form.departure_date < form.arrival_date) {
+      showToast?.("err", "תאריך עזיבה לא יכול להיות לפני תאריך ההגעה");
+      return;
+    }
     setSaving(true);
     try {
       const patch = {
         name:               form.name.trim() || null,
         arrival_date:       form.arrival_date  || null,
+        departure_date:     form.departure_date || null,
         spa_time:           form.spa_time       || null,
         treatment_count:    form.treatment_count !== "" ? parseInt(form.treatment_count, 10) : null,
         order_number:       (form.order_number ?? "").trim() || null,
@@ -45,6 +53,7 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast }) {
         requires_attention: !!form.requires_attention,
         needs_callback:     !!form.needs_callback,
         room:               form.room || null,
+        room_type:          form.room_type || null,
       };
 
       if (isEdit) {
@@ -141,6 +150,24 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast }) {
           </div>
         ))}
 
+        {/* Departure date — kept separate from the generic text-field list so it
+            can enforce a min of the arrival date. */}
+        <div style={{ marginBottom: 14 }}>
+          <label style={{ fontSize: 12, fontWeight: 700, display: "block", marginBottom: 4 }}>תאריך עזיבה</label>
+          <input
+            type="date"
+            value={form.departure_date ?? ""}
+            min={form.arrival_date || undefined}
+            onChange={(e) => setField("departure_date", e.target.value)}
+            disabled={saving}
+            style={{
+              width: "100%", padding: "9px 12px", boxSizing: "border-box",
+              border: "1px solid var(--border,#ddd)", borderRadius: 8, fontSize: 14,
+              direction: "ltr", fontFamily: "Heebo,sans-serif",
+            }}
+          />
+        </div>
+
         {/* Room / suite selector — SUITE_REGISTRY is the single source for every
             "assign a room" UI in the app (this modal + ArrivalImportPanel's grid). */}
         <div style={{ marginBottom: 14 }}>
@@ -167,6 +194,27 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast }) {
                   .map((s) => <option key={s} value={s}>{s}</option>)}
               </optgroup>
             ))}
+          </select>
+        </div>
+
+        {/* Room type — drives day_guest/standard/suite badges + tab bucketing
+            in GuestDashboard.js. Independent of the room/suite name above so
+            staff can still flag a guest as a day guest without clearing room. */}
+        <div style={{ marginBottom: 14 }}>
+          <label style={{ fontSize: 12, fontWeight: 700, display: "block", marginBottom: 4 }}>סוג שיוך</label>
+          <select
+            value={form.room_type ?? "standard"}
+            onChange={(e) => setField("room_type", e.target.value)}
+            disabled={saving}
+            style={{
+              width: "100%", padding: "9px 12px", border: "1px solid var(--border,#ddd)",
+              borderRadius: 8, fontSize: 14, fontFamily: "Heebo,sans-serif",
+              background: "var(--card-bg,#fff)", cursor: "pointer",
+            }}
+          >
+            <option value="day_guest">🏊 בילוי יומי</option>
+            <option value="standard">🏨 חדר רגיל</option>
+            <option value="suite">👑 סוויטה</option>
           </select>
         </div>
 

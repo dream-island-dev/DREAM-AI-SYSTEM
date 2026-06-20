@@ -34,6 +34,24 @@
 
 ---
 
+## CORE BUSINESS LOGIC & GUEST UX GUARDRAILS
+> נוסף session 12 — שלושה כללי-יסוד לכל קוד שנוגע בשליחת הודעות לאורח (cron, broadcast, webhook reply). לכל כלל יש סטטוס אכיפה אמיתי שנבדק מול הקוד הקיים — לא הנחה. עקרון FAIL VISIBLE (§0.3) חל גם כאן: לא לסמן ✅ אלא אם נקרא הקוד ואומת.
+
+1. **Zero-Spam Policy** — לעולם לא לשלוח broadcast/הודעה אוטומטית אם `needs_callback = true` או שהאורח מבוטל.
+   ⚠️ **סטטוס נוכחי — אכיפה חלקית בלבד.** `whatsapp-cron/index.ts` בודק `!g.needs_callback` רק על שני triggers (`morning_welcome` שורה 72, `morning_suite` שורה 92 — session 11). **חמשת ה-triggers האחרים — `pre_arrival_2d` (שורה 61), `night_before` (שורה 65), `mid_stay` (שורה 77-83), `checkout_fb` (שורה 86), `butler_1h` (שורה 96) — לא בודקים `needs_callback` בכלל.** כל אחד מהם יכול לשלוח הודעה אוטומטית לאורח שכבר סומן לטיפול אנושי.
+   ⚠️ **"status = cancelled" — לא קיים בסכמה היום.** `guests.status` מוגבל ל-`pending`/`expected`/`room_ready`/`checked_in` (CHECK constraint, migration 043) — אין ערך `cancelled` בכלל. אם רוצים לאכוף את הכלל הזה, צריך קודם migration שמוסיפה את הערך לconstraint + שדה/דרך לסמן אורח כמבוטל.
+   📋 **לא תוקן בsession 12 במכוון** — תועד כפער ידוע, ממתין להחלטת Mike אם להרחיב את ה-guard לשאר ה-triggers ו/או להוסיף מושג "מבוטל" לסכמה.
+
+2. **Graceful Fallback** — אם דאטה דינמי (כמו `spa_time`) חסר, להסיר את הplaceholder בניקיון. לעולם לא לשלוח `{{VARS}}` גולמי לאורח.
+   ✅ **אכוף לסט הplaceholders המוכר.** `resolvePlaceholders()` (`whatsapp-webhook/index.ts:124-156`) — `{{SPA_LINE}}`/`{{OPTIONAL_SPA_TEXT}}` הופכים ל-`""` כש-`spaTime` חסר; `{{SPA_TIME}}` הלגאסי מוחק את כל המשפט המכיל אותו (regex) במקום להציג ריק/גולמי.
+   ⚠️ **אין רשת-ביטחון גנרית.** `sanitizeReply()` (שורה 716) מנקה רק תגיות מרובעות (`[תבנית:...]`) — **אין** regex כוללני שמסיר כל `{{...}}` שנשאר לא-מטופל. אם ייערך script חדש ב-BotScriptEditor עם placeholder שלא קיים ב-`resolvePlaceholders()` (למשל טעות הקלדה, או placeholder חדש שלא נוסף לקוד), הוא יישלח גולמי לאורח בלי שיתפס. **המלצה לסשן עתידי:** להוסיף שורת `.replace(/\{\{[^}]+\}\}/g, "")` בסוף `sanitizeReply()` כרשת ביטחון אחרונה.
+
+3. **Template Awareness** — הודעות מעבר לחלון 24h של Meta חייבות תבנית מאושרת מראש.
+   ℹ️ **אכוף-by-design לכל שליחה אוטומטית.** כל ה-triggers הפרואקטיביים (`PIPELINE_TEMPLATE` map + `payment_and_workshops` + `broadcast`, כולם ב-`whatsapp-send/index.ts`) עוברים תמיד דרך `sendViaTemplate` — בלי תלות אם זה בתוך/מעבר ל-24h, פשוט תמיד תבנית. זה שמרני יותר מהדרישה, לא רק תואם לה.
+   ⚠️ **לא נבדק אקטיבית בתשובות מנהל (`inbox_reply`).** מענה חופשי של מנהל מ-`WhatsAppInbox.js` (trigger `inbox_reply`) שולח free-text דרך `sendViaMeta` ללא בדיקת "מתי ההודעה האחרונה מהאורח" — אם המנהל עונה מעבר ל-24h, ה-Meta API עצמו ידחה את השליחה (לא raw send שמתעלם מהכלל), אבל המערכת לא מזהירה את המנהל *לפני* השליחה, רק נכשלת אחרי. ⚠️ זה גם תלוי בתיקון session 11 (status:200 + error מפורט) כדי שהמנהל בכלל יראה למה זה נכשל.
+
+---
+
 ## 1. מה המערכת הזאת
 
 **Dream Island Resort Management System** — אפליקציית ניהול מלון יוקרה בעברית, RTL.
