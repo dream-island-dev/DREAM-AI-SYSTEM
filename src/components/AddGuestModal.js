@@ -234,6 +234,7 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast }) {
             <option value="expected">ממתין</option>
             <option value="room_ready">חדר מוכן</option>
             <option value="checked_in">צ'ק-אין</option>
+            <option value="cancelled">❌ מבוטל</option>
           </select>
         </div>
 

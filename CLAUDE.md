@@ -38,9 +38,8 @@
 > נוסף session 12 — שלושה כללי-יסוד לכל קוד שנוגע בשליחת הודעות לאורח (cron, broadcast, webhook reply). לכל כלל יש סטטוס אכיפה אמיתי שנבדק מול הקוד הקיים — לא הנחה. עקרון FAIL VISIBLE (§0.3) חל גם כאן: לא לסמן ✅ אלא אם נקרא הקוד ואומת.
 
 1. **Zero-Spam Policy** — לעולם לא לשלוח broadcast/הודעה אוטומטית אם `needs_callback = true` או שהאורח מבוטל.
-   ⚠️ **סטטוס נוכחי — אכיפה חלקית בלבד.** `whatsapp-cron/index.ts` בודק `!g.needs_callback` רק על שני triggers (`morning_welcome` שורה 72, `morning_suite` שורה 92 — session 11). **חמשת ה-triggers האחרים — `pre_arrival_2d` (שורה 61), `night_before` (שורה 65), `mid_stay` (שורה 77-83), `checkout_fb` (שורה 86), `butler_1h` (שורה 96) — לא בודקים `needs_callback` בכלל.** כל אחד מהם יכול לשלוח הודעה אוטומטית לאורח שכבר סומן לטיפול אנושי.
-   ⚠️ **"status = cancelled" — לא קיים בסכמה היום.** `guests.status` מוגבל ל-`pending`/`expected`/`room_ready`/`checked_in` (CHECK constraint, migration 043) — אין ערך `cancelled` בכלל. אם רוצים לאכוף את הכלל הזה, צריך קודם migration שמוסיפה את הערך לconstraint + שדה/דרך לסמן אורח כמבוטל.
-   📋 **לא תוקן בsession 12 במכוון** — תועד כפער ידוע, ממתין להחלטת Mike אם להרחיב את ה-guard לשאר ה-triggers ו/או להוסיף מושג "מבוטל" לסכמה.
+   ✅ **סטטוס נוכחי — אכיפה מלאה על כל 7 ה-triggers + cancelled status.** `whatsapp-cron/index.ts` מדלג על אורחים מבוטלים (`if (g.status === 'cancelled') continue;`) ובודק `!g.needs_callback` על כל trigger אוטומטי: `pre_arrival_2d`, `night_before`, `morning_welcome`, `morning_suite`, `mid_stay`, `checkout_fb`, `butler_1h` (session 13 — Jun 20/21 2026). אורח עם `needs_callback=true` **או** `status='cancelled'` **לא יקבל שום הודעה אוטומטית**.
+   ✅ **"status = cancelled" — נוסף בsession 13 (migration 051).** `guests.status` כולל כעת: `pending`/`expected`/`room_ready`/`checked_in`/`cancelled`. מנהלים יכולים לסמן אורח כמבוטל דרך AddGuestModal (אופציה "❌ מבוטל" בdropdown הסטטוס) — שימושי לno-shows, החזרים כספיים, או הזמנות שממתינות לשינוי תאריך.
 
 2. **Graceful Fallback** — אם דאטה דינמי (כמו `spa_time`) חסר, להסיר את הplaceholder בניקיון. לעולם לא לשלוח `{{VARS}}` גולמי לאורח.
    ✅ **אכוף לסט הplaceholders המוכר.** `resolvePlaceholders()` (`whatsapp-webhook/index.ts:124-156`) — `{{SPA_LINE}}`/`{{OPTIONAL_SPA_TEXT}}` הופכים ל-`""` כש-`spaTime` חסר; `{{SPA_TIME}}` הלגאסי מוחק את כל המשפט המכיל אותו (regex) במקום להציג ריק/גולמי.

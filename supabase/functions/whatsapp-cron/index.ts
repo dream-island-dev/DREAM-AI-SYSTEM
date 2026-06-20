@@ -57,12 +57,17 @@ serve(async (req: Request) => {
 
     const due: { guestId: number; trigger: string }[] = [];
     for (const g of guests ?? []) {
+      // Skip cancelled guests entirely — they should never receive automated messages
+      if (g.status === 'cancelled') continue;
+
       // T-2 — pre-arrival confirmation request (all guests, any hour)
-      if (g.arrival_date === twoDaysOut && !g.msg_pre_arrival_2d_sent)
+      // needs_callback guard: don't send if guest flagged for human follow-up
+      if (g.arrival_date === twoDaysOut && !g.msg_pre_arrival_2d_sent && !g.needs_callback)
         due.push({ guestId: g.id, trigger: "pre_arrival_2d" });
 
       // T-1 night — check-in reminder (all guests), only between UTC 17-21 = Israel 19-23
-      if (g.arrival_date === tomorrow && hourUTC >= 17 && hourUTC <= 21 && !g.msg_pre_arrival_sent)
+      // needs_callback guard: don't send if guest flagged for human follow-up
+      if (g.arrival_date === tomorrow && hourUTC >= 17 && hourUTC <= 21 && !g.msg_pre_arrival_sent && !g.needs_callback)
         due.push({ guestId: g.id, trigger: "night_before" });
 
       // Arrival morning — welcome message for non-suite guests (UTC 06+ ≈ Israel 08+)
@@ -74,16 +79,19 @@ serve(async (req: Request) => {
 
       // Mid-stay check — day after arrival, while still on property (UTC 08+ ≈ Israel 10+)
       // Only fires once (flag guard) and only for checked-in guests.
+      // needs_callback guard: don't send if guest has open callback request
       if (
         g.arrival_date === yesterday &&
         g.departure_date && g.departure_date >= today &&
         g.status === "checked_in" &&
         !g.msg_mid_stay_sent &&
+        !g.needs_callback &&
         hourUTC >= 8
       ) due.push({ guestId: g.id, trigger: "mid_stay" });
 
       // Checkout feedback — day after departure (UTC 07+ ≈ Israel 09+)
-      if (g.departure_date === yesterday && !g.msg_checkout_fb_sent && hourUTC >= 7)
+      // needs_callback guard: don't auto-request feedback if they left with unresolved issues
+      if (g.departure_date === yesterday && !g.msg_checkout_fb_sent && !g.needs_callback && hourUTC >= 7)
         due.push({ guestId: g.id, trigger: "checkout_fb" });
 
       if (g.room_type === "suite") {
@@ -93,7 +101,8 @@ serve(async (req: Request) => {
           due.push({ guestId: g.id, trigger: "morning_suite" });
 
         // 1h after check-in (suites) — flag guard prevents re-firing every 15 min
-        if (g.status === "checked_in" && g.checkin_time && !g.msg_post_checkin_sent) {
+        // needs_callback guard: don't send automated butler intro if guest needs human attention
+        if (g.status === "checked_in" && g.checkin_time && !g.msg_post_checkin_sent && !g.needs_callback) {
           const mins = (now.getTime() - new Date(g.checkin_time).getTime()) / 60000;
           if (mins >= 60) due.push({ guestId: g.id, trigger: "butler_1h" });
         }
