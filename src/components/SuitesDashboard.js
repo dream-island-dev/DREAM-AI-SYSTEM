@@ -1,16 +1,24 @@
 // SuitesDashboard.js
-// Per-room grid sourced from suite_rooms table (populated by DataUpload Tab 1 Suite CSV).
+// Per-room grid sourced from suite_rooms table (populated by ArrivalImportPanel Suite CSV import).
 // Groups rooms by order_number (booking group) and shows individual guest details
 // including the phone_source badge (individual vs coordinator extraction).
 
 import { useState, useEffect, useCallback } from "react";
 import { supabase } from "../supabaseClient";
 
+const GUEST_STATUS = {
+  pending:    { label: "טרם נקלט", bg: "#F5F5F5", color: "#888888" },
+  expected:   { label: "ממתין",    bg: "#FFF5E8", color: "#B5600A" },
+  room_ready: { label: "חדר מוכן", bg: "#E8F5EF", color: "#1A7A4A" },
+  checked_in: { label: "צ'ק-אין",  bg: "#EEF4FF", color: "#2952A3" },
+};
+
 export default function SuitesDashboard() {
-  const [date, setDate]       = useState(new Date().toISOString().slice(0, 10));
-  const [rooms, setRooms]     = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [toast, setToast]     = useState(null);
+  const [date, setDate]               = useState(new Date().toISOString().slice(0, 10));
+  const [rooms, setRooms]             = useState([]);
+  const [loading, setLoading]         = useState(false);
+  const [toast, setToast]             = useState(null);
+  const [guestStatus, setGuestStatus] = useState({}); // E.164 phone → { status, arrival_confirmed, spa_time }
 
   const showToast = (msg) => {
     setToast(msg);
@@ -29,7 +37,21 @@ export default function SuitesDashboard() {
     if (error) {
       console.error("[SuitesDashboard] load error:", error.message);
     } else {
-      setRooms(data ?? []);
+      const rows = data ?? [];
+      setRooms(rows);
+      // Fetch live check-in status from guests table (same phone = E.164)
+      const phones = [...new Set(rows.map((r) => r.guest_phone).filter(Boolean))];
+      if (phones.length) {
+        const { data: gd } = await supabase
+          .from("guests")
+          .select("phone, status, arrival_confirmed, spa_time")
+          .in("phone", phones);
+        const sm = {};
+        for (const g of (gd ?? [])) sm[g.phone] = g;
+        setGuestStatus(sm);
+      } else {
+        setGuestStatus({});
+      }
     }
     setLoading(false);
   }, [date]);
@@ -223,6 +245,27 @@ export default function SuitesDashboard() {
                         <span style={{ color: "#B45309", fontWeight: 700 }}>☀️ יומי</span>
                       )}
                     </div>
+
+                    {/* Live check-in status from guests table */}
+                    {(() => {
+                      const gs = r.guest_phone ? guestStatus[r.guest_phone] : null;
+                      if (!gs) return null;
+                      const sm = GUEST_STATUS[gs.status] ?? GUEST_STATUS.pending;
+                      return (
+                        <div style={{ marginTop: 7, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                          <span style={{ fontSize: 9, padding: "2px 8px", borderRadius: 8, fontWeight: 700,
+                            background: sm.bg, color: sm.color }}>
+                            {sm.label}
+                          </span>
+                          {gs.arrival_confirmed && (
+                            <span style={{ fontSize: 9, color: "#1A7A4A", fontWeight: 700 }}>✓ אישר הגעה</span>
+                          )}
+                          {gs.spa_time && (
+                            <span style={{ fontSize: 9, color: "#7c3aed", fontWeight: 700 }}>💆 {gs.spa_time}</span>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
                 );
               })}

@@ -1155,7 +1155,7 @@ serve(async (req: Request) => {
         guest?.msg_pre_arrival_2d_sent &&
         !guest?.arrival_confirmed
       ) {
-        await supabase.from("guests").update({ arrival_confirmed: true }).eq("id", guestId);
+        await supabase.from("guests").update({ arrival_confirmed: true, status: "Approved" }).eq("id", guestId);
         await supabase.from("whatsapp_conversations").insert({
           phone, guest_id: guestId, direction: "inbound",
           message: text, wa_message_id: msgId, intent: "confirmation",

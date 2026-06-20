@@ -1,7 +1,7 @@
 // src/utils/ezgoParser.js
 // ── EZGO Guest Extraction & Golden Guest Profile Aggregation ─────────────────
 // Pure data transformation — zero Supabase calls, zero side effects.
-// Called from DataUpload.js during the SUITE CSV import preview step.
+// Called from ArrivalImportPanel.js during the SUITE CSV import preview step.
 //
 // Two-stage pipeline:
 //   Stage 1: extractGuestDetails(row)  — per-row, resolves TRUE identity
@@ -27,7 +27,7 @@
 const IL_MOBILE_RE = /(0(?:5[0-9])[-. ]?\d{3}[-. ]?\d{4})(?!\d)/g;
 
 // EZGO booking source aliases to strip from name strings
-// (same pattern as ARRIVALS_SOURCE_RE in DataUpload.js)
+// (same pattern as ARRIVALS_SOURCE_RE in ArrivalImportPanel.js)
 const SOURCE_RE = /^(Hotel\s+WebSite|Booking\s+Collect|Booking\.com|Booking|Expedia|Hotels\.com)\s*-\s*/i;
 
 // EZGO dummy date sentinel — "01/01/2001" means "no real date assigned"
@@ -106,7 +106,7 @@ export function extractNameFromRemark(remark) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// § DATE HELPER (inline — mirrors parseEzgoDate from DataUpload.js)
+// § DATE HELPER (inline — mirrors parseEzgoDate from ArrivalImportPanel.js)
 // ─────────────────────────────────────────────────────────────────────────────
 
 function parseDate(raw) {
@@ -342,7 +342,7 @@ export function aggregateGuestProfiles(rows, fallbackDate = null) {
  * enrichProfilesFromExcel(profiles, excelRecords)
  *
  * Merges spa_time and treatment data from the comprehensive Excel report
- * (parsed by parseComprehensiveReport() in DataUpload.js) into the in-memory
+ * (parsed by parseComprehensiveReport() in ArrivalImportPanel.js) into the in-memory
  * profiles built by aggregateGuestProfiles().
  *
  * JOIN strategy: profile.orderNumbers ∩ excelRecord.order_number

@@ -4,8 +4,10 @@
 // (suites) immediately via the whatsapp-send edge function.
 import { useState, useEffect, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
+import { SUITE_REGISTRY, SUITE_SECTIONS } from "../data/suiteRegistry";
 
 const STATUS_META = {
+  pending:    { label: "טרם נקלט",  bg: "#F5F5F5", color: "#888888" },
   expected:   { label: "ממתין",     bg: "#FFF5E8", color: "#B5600A" },
   room_ready: { label: "חדר מוכן",  bg: "#E8F5EF", color: "#1A7A4A" },
   checked_in: { label: "צ'ק-אין",   bg: "#EEF4FF", color: "#2952A3" },
@@ -24,7 +26,7 @@ export default function GuestsPage() {
   const [editGuest,     setEditGuest]    = useState(null);  // {} = new guest, {id,...} = existing
   const [editForm,     setEditForm]     = useState({});
   const [editSaving,   setEditSaving]   = useState(false);
-  const [availableRooms, setAvailableRooms] = useState([]);  // from suite_rooms table
+  const [roomByPhone,    setRoomByPhone]    = useState({});  // phone → { roomName, suiteType, isDayGuest } — fallback display only; the room dropdown itself uses SUITE_REGISTRY
 
   const showToast = (type, msg) => { setToast({ type, msg }); setTimeout(() => setToast(null), 3500); };
 
@@ -45,10 +47,18 @@ export default function GuestsPage() {
     if (!supabase) return;
     const { data } = await supabase
       .from("suite_rooms")
-      .select("room_name, suite_type, arrival_date")
+      .select("room_name, suite_type, arrival_date, guest_phone, is_day_guest")
       .order("arrival_date", { ascending: true })
       .order("room_name",    { ascending: true });
-    setAvailableRooms(data ?? []);
+    const rows = data ?? [];
+    // Build phone → room lookup so the table can show room for CSV-imported guests
+    const map = {};
+    for (const r of rows) {
+      if (r.guest_phone && !map[r.guest_phone]) {
+        map[r.guest_phone] = { roomName: r.room_name, suiteType: r.suite_type, isDayGuest: !!r.is_day_guest };
+      }
+    }
+    setRoomByPhone(map);
   }, []);
 
   useEffect(() => { fetchGuests(); fetchRooms(); }, [fetchGuests, fetchRooms]);
@@ -77,7 +87,19 @@ export default function GuestsPage() {
     setBusy(null);
   };
 
-  const isSuite = (g) => g.room_type === "suite";
+  const isSuite = (g) =>
+    g.room_type === "suite" ||
+    SUITE_REGISTRY.includes(g.room) ||
+    (!!roomByPhone[g.phone] && !roomByPhone[g.phone].isDayGuest);
+
+  // ── Room-prerequisite gating for check-in actions ───────────────────────────
+  // Day packages (Premium Day 1/2, or any suite_rooms row flagged is_day_guest)
+  // never get an actual room — they're exempt from the room requirement.
+  const DAY_GUEST_ROOM_VALUES = new Set(["Premium Day 1", "Premium Day 2"]);
+  const isDayGuest = (g) =>
+    DAY_GUEST_ROOM_VALUES.has(g.room) || !!roomByPhone[g.phone]?.isDayGuest;
+  const hasRoomAssigned = (g) => !!(g.room || roomByPhone[g.phone]?.roomName);
+  const roomMissing = (g) => !isDayGuest(g) && !hasRoomAssigned(g);
 
   // ── Batch selection helpers ──────────────────────────────────────────────────
   const toggleSelect = (id) =>
@@ -379,14 +401,9 @@ export default function GuestsPage() {
               </div>
             ))}
 
-            {/* Room / suite selector */}
+            {/* Room / suite selector — SUITE_REGISTRY is the single source for every
+                "assign a room" UI in the app (this modal + ArrivalImportPanel's grid). */}
             {(() => {
-              const grouped = availableRooms.reduce((acc, r) => {
-                const k = r.arrival_date ?? "ללא תאריך";
-                if (!acc[k]) acc[k] = [];
-                acc[k].push(r);
-                return acc;
-              }, {});
               return (
                 <div style={{ marginBottom: 14 }}>
                   <label style={{ fontSize: 12, fontWeight: 700, display: "block", marginBottom: 4 }}>חדר / חבילה</label>
@@ -405,13 +422,11 @@ export default function GuestsPage() {
                       <option value="Premium Day 1">חבילת פרימיום בילוי יומי 1</option>
                       <option value="Premium Day 2">חבילת פרימיום בילוי יומי 2</option>
                     </optgroup>
-                    {Object.entries(grouped).map(([date, rooms]) => (
-                      <optgroup key={date} label={`🗓️ הגעה ${date}`}>
-                        {rooms.map((r, i) => (
-                          <option key={i} value={r.room_name}>
-                            {`חדר ${r.room_name}${r.suite_type ? ` — ${r.suite_type.replace(/^סוויטת\s*/u, "")}` : ""}`}
-                          </option>
-                        ))}
+                    {SUITE_SECTIONS.map(sec => (
+                      <optgroup key={sec.label} label={`${sec.icon} ${sec.label}`}>
+                        {SUITE_REGISTRY
+                          .filter(s => sec.prefix.some(p => s.startsWith(p)))
+                          .map(s => <option key={s} value={s}>{s}</option>)}
                       </optgroup>
                     ))}
                   </select>
@@ -556,7 +571,9 @@ export default function GuestsPage() {
               </tr></thead>
               <tbody>
                 {guests.map((g) => {
-                  const sm = STATUS_META[g.status] ?? STATUS_META.expected;
+                  // Unknown status (e.g. a stray value written outside the app) must be visible,
+                  // not silently masked as "ממתין" — that's exactly what hid the button bug.
+                  const sm = STATUS_META[g.status] ?? { label: `⚠ ${g.status ?? "ללא סטטוס"}`, bg: "#FFF0EE", color: "#C0392B" };
                   return (
                     <tr key={g.id} style={{ background: selectedIds.has(g.id) ? "rgba(201,169,110,0.07)" : undefined }}>
                       <td>
@@ -575,7 +592,7 @@ export default function GuestsPage() {
                         )}
                       </td>
                       <td style={{ direction: "ltr", fontSize: 13 }}>{g.phone ?? "—"}</td>
-                      <td>{g.room ?? "—"}</td>
+                      <td>{g.room ?? roomByPhone[g.phone]?.roomName ?? "—"}</td>
                       <td>
                         <span style={{
                           padding: "3px 9px", borderRadius: 20, fontSize: 11, fontWeight: 700,
@@ -618,40 +635,49 @@ export default function GuestsPage() {
                             style={{ background: "var(--ivory)", color: "var(--gold-dark)", fontWeight: 700, border: "1px solid var(--gold)" }}>
                             ✏️
                           </button>
-                          {/* ── ממתין: can mark room-ready or go straight to check-in ── */}
-                          {g.status === "expected" && (<>
-                            <button className="btn btn-sm" disabled={busy === g.id}
-                              onClick={() => setStatus(g, "room_ready")}
-                              style={{ background: "#E8F5EF", color: "#1A7A4A" }}>
-                              ✓ חדר מוכן
-                            </button>
-                            <button className="btn btn-sm" disabled={busy === g.id}
-                              onClick={() => setStatus(g, "checked_in")}
-                              style={{ background: "#EEF4FF", color: "#2952A3" }}>
-                              🛎️ צ'ק-אין
-                            </button>
-                          </>)}
-
-                          {/* ── חדר מוכן: confirm check-in OR revert to waiting ── */}
-                          {g.status === "room_ready" && (<>
-                            <button className="btn btn-sm" disabled={busy === g.id}
-                              onClick={() => setStatus(g, "checked_in")}
-                              style={{ background: "#EEF4FF", color: "#2952A3" }}>
-                              🛎️ צ'ק-אין
-                            </button>
+                          {/* ── Slot 1: חדר מוכן — always rendered, never disappears ── */}
+                          {g.status === "room_ready" ? (
                             <button className="btn btn-sm" disabled={busy === g.id}
                               onClick={() => setStatus(g, "expected")}
                               style={{ background: "#FFF0EE", color: "#C0392B" }}>
-                              ↩ בטל
+                              ↩ בטל חדר מוכן
                             </button>
-                          </>)}
+                          ) : g.status === "checked_in" ? (
+                            <button className="btn btn-sm" disabled
+                              title="האורח כבר בצ'ק-אין"
+                              style={{ background: "#F5F5F5", color: "#AAAAAA", cursor: "not-allowed" }}>
+                              ✓ חדר מוכן
+                            </button>
+                          ) : (
+                            <button className="btn btn-sm" disabled={busy === g.id || roomMissing(g)}
+                              onClick={() => setStatus(g, "room_ready")}
+                              title={roomMissing(g) ? "יש לשבץ חדר לפני סימון כמוכן — לחץ ✏️ לעריכה" : undefined}
+                              style={{
+                                background: roomMissing(g) ? "#F5F5F5" : "#E8F5EF",
+                                color:      roomMissing(g) ? "#AAAAAA" : "#1A7A4A",
+                                cursor:     roomMissing(g) ? "not-allowed" : "pointer",
+                              }}>
+                              ✓ חדר מוכן
+                            </button>
+                          )}
 
-                          {/* ── צ'ק-אין: undo / revert back to waiting ── */}
-                          {g.status === "checked_in" && (
+                          {/* ── Slot 2: צ'ק-אין — always rendered, never disappears ── */}
+                          {g.status === "checked_in" ? (
                             <button className="btn btn-sm" disabled={busy === g.id}
                               onClick={() => setStatus(g, "expected")}
                               style={{ background: "#FFF5E8", color: "#B5600A", fontWeight: 700 }}>
                               ↩ בטל צ'ק-אין
+                            </button>
+                          ) : (
+                            <button className="btn btn-sm" disabled={busy === g.id || roomMissing(g)}
+                              onClick={() => setStatus(g, "checked_in")}
+                              title={roomMissing(g) ? "יש לשבץ חדר לפני צ'ק-אין — לחץ ✏️ לעריכה" : undefined}
+                              style={{
+                                background: roomMissing(g) ? "#F5F5F5" : "#EEF4FF",
+                                color:      roomMissing(g) ? "#AAAAAA" : "#2952A3",
+                                cursor:     roomMissing(g) ? "not-allowed" : "pointer",
+                              }}>
+                              🛎️ צ'ק-אין
                             </button>
                           )}
 

@@ -15,7 +15,6 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
-import DataUpload from "./DataUpload";
 
 // ── Date helpers (local time) ─────────────────────────────────────────────────
 function localISO(offsetDays = 0) {
@@ -258,7 +257,6 @@ export default function GuestDashboard({ user }) {
   const [showAdd,     setShowAdd]     = useState(false);
   const [waModal,     setWaModal]     = useState(null);  // guest object or null
   const [selected,    setSelected]    = useState(new Set()); // checked guest IDs
-  const [showUpload,  setShowUpload]  = useState(false);
 
   const showToast = useCallback((type, msg) => {
     setToast({ type, msg });
@@ -428,44 +426,6 @@ export default function GuestDashboard({ user }) {
         />
       )}
 
-      {/* Upload modal */}
-      {showUpload && (
-        <div
-          style={{
-            position: "fixed", inset: 0, zIndex: 9997,
-            background: "rgba(0,0,0,0.5)",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            padding: 20,
-          }}
-          onClick={() => setShowUpload(false)}
-        >
-          <div
-            style={{
-              background: "var(--card-bg)", borderRadius: 16, padding: 24,
-              width: "100%", maxWidth: 620, maxHeight: "85vh",
-              overflow: "auto", direction: "rtl",
-              boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-              <div style={{ fontWeight: 800, fontSize: 17 }}>📥 ייבוא קובץ אורחים</div>
-              <button
-                onClick={() => setShowUpload(false)}
-                style={{
-                  background: "none", border: "none", fontSize: 22,
-                  cursor: "pointer", color: "var(--text-muted)", lineHeight: 1,
-                }}
-              >✕</button>
-            </div>
-            <DataUpload
-              lockedMode="arrivals"
-              user={user}
-              onImported={() => { fetchGuests(); setShowUpload(false); }}
-            />
-          </div>
-        </div>
-      )}
 
       {/* Stats bar */}
       <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
@@ -547,19 +507,8 @@ export default function GuestDashboard({ user }) {
           </button>
         )}
 
-        {/* Import + Add + Refresh */}
+        {/* Add + Refresh */}
         <>
-          <button
-            onClick={() => setShowUpload(true)}
-            style={{
-              padding: "7px 16px", borderRadius: 20, cursor: "pointer",
-              fontFamily: "Heebo, sans-serif", fontSize: 13, fontWeight: 700,
-              border: "2px solid var(--border)",
-              background: "var(--card-bg)", color: "var(--text-muted)",
-            }}
-          >
-            📥 ייבוא קובץ
-          </button>
           <button
             onClick={() => setShowAdd((s) => !s)}
             style={{

@@ -90,27 +90,36 @@ export default function AICopilot({ user }) {
         `ברוכים הבאים לחוויה שלא תשכחו! 🌴\n` +
         `הצוות שלנו כאן לכל בקשה.`;
 
+      // Never fail silently: a swallowed WhatsApp error must not let the room/guest
+      // state advance as if the guest was actually notified.
       if (guest?.phone) {
-        await supabase.functions.invoke("whatsapp-send", {
+        const { error: waError } = await supabase.functions.invoke("whatsapp-send", {
           body: { trigger: "inbox_reply", phone: guest.phone, message },
         });
+        if (waError) {
+          throw new Error(`שליחת WhatsApp נכשלה (${waError.message}) — הסטטוס לא עודכן, אפשר לנסות שוב`);
+        }
       }
 
       // Mark suite ready
-      await supabase.from("room_status").upsert(
+      const { error: roomErr } = await supabase.from("room_status").upsert(
         { room_id: alert.room_id, status: "פנוי", updated_at: new Date().toISOString() },
         { onConflict: "room_id" }
       );
+      if (roomErr) throw new Error("עדכון סטטוס חדר נכשל: " + roomErr.message);
 
       // Mark guest checked_in
       if (guest?.id) {
-        await supabase.from("guests").update({ status: "checked_in" }).eq("id", guest.id);
+        const { error: guestErr } = await supabase
+          .from("guests").update({ status: "checked_in" }).eq("id", guest.id);
+        if (guestErr) throw new Error("עדכון סטטוס אורח נכשל: " + guestErr.message);
       }
 
       setAlerts(prev => prev.filter(a => a._alertId !== alert._alertId));
       showToast(`✓ ${alert.room_id} — אושר, הודעה נשלחה`);
     } catch (e) {
-      showToast("שגיאה: " + ((e)?.message ?? "בעיה לא ידועה"), "err");
+      // Keep the alert in the list (don't dismiss) so the manager can retry.
+      showToast((e)?.message ?? "שגיאה לא ידועה", "err");
     } finally {
       setProcessing(null);
     }

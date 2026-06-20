@@ -1,6 +1,7 @@
 // src/data/suiteRegistry.js
 // Single source of truth for the 26 physical suites at Dream Island Resort.
-// Used by: DataHub (dropdown), RoomBoard (board layout), AICopilot (alert lookup).
+// Used by: ArrivalImportPanel (room dropdown), GuestsPage (room dropdown),
+// RoomBoard (board layout), AICopilot (alert lookup).
 
 export const SUITE_REGISTRY = [
   "ג׳ספר 1",  "ג׳ספר 2",  "ג׳ספר 3",  "ג׳ספר 4",  "ג׳ספר 5",  "ג׳ספר 6",

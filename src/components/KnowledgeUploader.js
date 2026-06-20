@@ -2,7 +2,7 @@
 // "Train your Agent" — unstructured knowledge ingestion UI for Pillar 3.
 //
 // Accepts: .pdf  .png  .jpg  .jpeg  .txt  .docx
-// Does NOT accept: .xlsx  .csv  (use DataUpload.js for tabular data)
+// Does NOT accept: .xlsx  .csv  (use ArrivalImportPanel.js for tabular data)
 //
 // Pipeline per file:
 //   TXT   → FileReader.text()             → isText=true  → process-knowledge

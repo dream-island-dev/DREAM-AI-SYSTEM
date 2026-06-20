@@ -4,7 +4,6 @@ import AgentQuestionnaire from "./components/AgentQuestionnaire";
 import AgentChat from "./components/AgentChat";
 import AdminPanel from "./components/AdminPanel";
 import UserManagement from "./components/UserManagement";
-import DataUpload from "./components/DataUpload";
 import GuestsPage from "./components/GuestsPage";
 import ShiftGenerator from "./components/ShiftGenerator";
 import ShiftScheduleTab from "./components/ShiftScheduleTab";
@@ -23,7 +22,6 @@ import BotScriptEditor from "./components/BotScriptEditor";
 import RoomBoard from "./components/RoomBoard";
 import PasswordChangeScreen from "./components/PasswordChangeScreen";
 import SpaStagingPanel from "./components/SpaStagingPanel";
-import DataHub from "./components/DataHub";
 import AICopilot from "./components/AICopilot";
 import SuitesDashboard from "./components/SuitesDashboard";
 
@@ -1034,7 +1032,6 @@ function Sidebar({ user, active, setActive, openCallsCount, onLogout, isAdmin, i
     { id: "room_board",   icon: "🏨", label: "לוח סוויטות",                            managerOnly: false },
     { id: "scheduler",   icon: "🪄", label: "מחולל משמרות",                           managerOnly: true },
     { id: "spa_staging", icon: "💆", label: "לוח ספא — אישור",                        managerOnly: true },
-    { id: "data_hub",    icon: "🗂️", label: "Data Hub — ייבוא",                       managerOnly: true },
     { id: "suites",      icon: "🛏️", label: "פירוט חדרים",                              managerOnly: true },
     { id: "agent",      icon: "🤖", label: "הסוכן שלי" },
   ];
@@ -2262,7 +2259,6 @@ export default function App() {
     wa_inbox:   "💬 DREAM BOT — תיבת שיחות",
     guests:     "🛎️ צ'ק-אין",
     scheduler:  "🪄 מחולל משמרות",
-    upload:     "📤 העלאת נתונים",
     tasks:      "📋 לוח משימות",
     room_board:    "🏨 לוח סוויטות",
     bot_config:    "🤖 הגדרות Smart Concierge",
@@ -2393,18 +2389,6 @@ export default function App() {
             onApproved={() => { refetchEmployees(); setActivePage("shifts"); }}
           />
         );
-      case "upload":
-        return (
-          <DataUpload
-            user={user}
-            onImported={(mode) =>
-              setActivePage(
-                mode === "ezgo"   ? "vip_guests" :
-                mode === "guests" ? "guests"     : "shifts"
-              )
-            }
-          />
-        );
       case "agent":
         if (!agentProfile) {
           return (
@@ -2435,8 +2419,6 @@ export default function App() {
         );
       case "spa_staging":
         return <SpaStagingPanel />;
-      case "data_hub":
-        return <DataHub />;
       case "room_board":
         return <RoomBoard />;
       case "suites":
