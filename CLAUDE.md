@@ -167,8 +167,7 @@ DREAM-AI-SYSTEM/
 │   │   ├── 044_guests_spa_time.sql              applied ✅
 │   │   ├── 045_golden_guest_profile.sql          applied ✅ — order_number, treatment_count
 │   │   ├── 046_suite_rooms.sql                  applied ✅ — suite_rooms table + sync_suite_arrivals RPC
-│   │   └── 047_sync_suite_arrivals_room_denorm.sql  ★ NEW — ⚠️ קובץ קיים, **טרם הורץ** (לא push-נתי
-│   │                                                  ל-DB). מרחיב את הRPC לכתוב גם guests.room.
+│   │   └── 047_sync_suite_arrivals_room_denorm.sql  applied ✅ — מרחיב את הRPC לכתוב גם guests.room.
 │   └── functions/
 │       ├── chat/                deployed ✅ — Gemini 2.5→Claude fallback
 │       ├── generate-schedule/   deployed ✅ ⚠️ ORPHAN — frontend לא קורא אותה
@@ -271,8 +270,8 @@ status         TEXT  — 'pending' | 'expected' | 'room_ready' | 'checked_in'
 ```
 phone               TEXT  — +972XXXXXXXXX (E.164)
 room                TEXT  — ★ session 7: כתוב ע"י (1) ArrivalImportPanel's editable grid דרך
-                            sync_suite_arrivals RPC (migration 047, "roomDisplay" field — טרם
-                            push-נתי) ו-(2) GuestsPage edit modal. ערך = string מ-SUITE_REGISTRY
+                            sync_suite_arrivals RPC (migration 047, "roomDisplay" field — applied ✅)
+                            ו-(2) GuestsPage edit modal. ערך = string מ-SUITE_REGISTRY
                             או "Premium Day 1"/"Premium Day 2". GuestsPage עדיין fallback-ת ל-
                             roomByPhone (suite_rooms) לרשומות ישנות שיובאו לפני migration 047.
 needs_callback      BOOL  — true = thread הועבר לידי אדם, הבוט שותק
@@ -514,11 +513,11 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
 |---|---|---|
 | ייבוא נתונים יומי (Sprint 3) | Completed & committed | 28/28 שורות נטענות ע"י row-index key ב-`ezgoParser.js`; group extraction מ-sRemark; שני מסמכים independent uploads |
 | Golden Guest Profile + suite_rooms sync | Completed & committed | `sync_suite_arrivals` RPC — ACID dual-write guests+suite_rooms+bookings |
-| UI/UX צ'ק-אין — "Disable, Don't Hide" | קוד הושלם, build נקי | `GuestsPage.js` + `SuitesDashboard.js` — **לא committed עדיין**, ממתין ל-QA חי שלך בפרודקשן |
-| webhook status bug (STEP 1) | ✅ Fixed, **לא committed עדיין** | שתי כתיבות `status: "Approved"`/`"Human_intervention_required"` הוסרו מ-`whatsapp-webhook/index.ts`. `arrival_confirmed`/`needs_callback`+`requires_attention` הם המקור היחיד למצב הזה כעת. |
-| איחוד ייבוא נתונים ל-Task Board | ✅ קוד הושלם, build נקי, **לא committed** | `DataUpload.js` + `DataHub.js` נמחקו. `ArrivalImportPanel.js` (בתוך TaskBoard) הוא משטח הייבוא היחיד באפליקציה — ראה §3. |
-| Universal Editable Grid (עקרון #4) | ✅ מומש לראשונה | `EditableGrid.js` — חולץ מ-DataHub, בשימוש ב-ArrivalImportPanel (suites + shifts profiles) |
-| guests.room denormalization | ✅ קוד+migration מוכנים, **migration טרם push-נתי** | migration 047 — sync_suite_arrivals RPC כותב guests.room ישירות (לא רק suite_rooms) |
+| UI/UX צ'ק-אין — "Disable, Don't Hide" | ✅ Completed & committed (302803c), pushed ל-main | `GuestsPage.js` + `SuitesDashboard.js` — ממתין ל-QA חי שלך בפרודקשן (Vercel auto-deploy מ-main) |
+| webhook status bug (STEP 1) | ✅ Fixed, committed, pushed, **ופרוס בפועל** | שתי כתיבות `status: "Approved"`/`"Human_intervention_required"` הוסרו מ-`whatsapp-webhook/index.ts`. `arrival_confirmed`/`needs_callback`+`requires_attention` הם המקור היחיד למצב הזה כעת. `supabase functions deploy whatsapp-webhook --no-verify-jwt` הורץ — הגרסה החדשה רצה בייצור. |
+| איחוד ייבוא נתונים ל-Task Board | ✅ Completed & committed (302803c), pushed ל-main | `DataUpload.js` + `DataHub.js` נמחקו. `ArrivalImportPanel.js` (בתוך TaskBoard) הוא משטח הייבוא היחיד באפליקציה — ראה §3. |
+| Universal Editable Grid (עקרון #4) | ✅ מומש לראשונה, committed | `EditableGrid.js` — חולץ מ-DataHub, בשימוש ב-ArrivalImportPanel (suites + shifts profiles) |
+| guests.room denormalization | ✅ Completed — migration 047 applied לDB החי | sync_suite_arrivals RPC כותב guests.room ישירות (לא רק suite_rooms) |
 | GuestsPage room dropdown | ✅ Completed | עובר מ-suite_rooms-derived ל-SUITE_REGISTRY ישיר — מבטל כפילויות, "Premium Day 1/2" קבועים |
 | AICopilot WhatsApp send — fail visible | ✅ Completed | `handleApprove` בודק את `{error}` מ-`whatsapp-send` invoke; בכשל — toast שגיאה, ה-alert לא נעלם, room_status/guests.status לא מתקדמים |
 
@@ -532,10 +531,12 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
 
 ### מפת דרכים — השלבים הבאים
 
-1. ~~STEP 1: webhook status fix~~ ✅ Done — ראה טבלה לעיל.
-2. **STEP 2:** Push migration 047 ל-DB (`supabase db push`) + commit כל שינויי session 7 + בדיקת E2E מלאה של webhook עם לחיצת כפתור אמיתית בפרודקשן (QA חי — באחריות Mike).
-3. ~~STEP 3: Universal Editable Grid~~ ✅ Done — `EditableGrid.js` מומש, ראה טבלה לעיל.
-4. **STEP 4 (חדש):** הפעלת `CRON_ENABLED` — רק אחרי אימות שלוש תבניות ה-Meta ו-QA מלא ל-STEP 2.
+1. ~~STEP 1: webhook status fix~~ ✅ Done, committed, pushed, deployed — ראה טבלה לעיל.
+2. ~~STEP 2a: Push migration 047~~ ✅ Done — applied לDB החי ב-session 7.
+3. ~~STEP 2b: Deploy whatsapp-webhook~~ ✅ Done — `supabase functions deploy whatsapp-webhook --no-verify-jwt` הורץ ב-session 7.
+4. **STEP 2c:** בדיקת E2E מלאה של webhook עם לחיצת כפתור אמיתית בפרודקשן (QA חי — באחריות Mike) — כל הקוד פרוס, נשאר רק QA אנושי.
+5. ~~STEP 3: Universal Editable Grid~~ ✅ Done — `EditableGrid.js` מומש, ראה טבלה לעיל.
+6. **STEP 4:** הפעלת `CRON_ENABLED` — רק אחרי אימות שלוש תבניות ה-Meta ו-QA מלא ל-STEP 2c.
 
 ### 🤖 Phase 6 — Bot Brain Audit (session 7)
 
@@ -583,14 +584,14 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
 - ✅ הוחלט (אישור Mike): "Super Component" אחד — backend מ-ArrivalImportPanel + UX מ-DataHub — בתוך TaskBoard בלבד; SpaStagingPanel נשאר standalone (תלות אוטומציה חיצונית, לא נמוג)
 - ✅ `EditableGrid.js` חולץ מ-DataHub — מימוש ראשון לעקרון #4 Universal Architecture
 - ✅ `ArrivalImportPanel.js` נכתב מחדש — suites profile (grid עם dropdown SUITE_REGISTRY) + shifts profile (מ-DataHub)
-- ✅ Migration 047 (טרם push) — sync_suite_arrivals RPC כותב guests.room ישירות (roomDisplay field)
+- ✅ Migration 047 — sync_suite_arrivals RPC כותב guests.room ישירות (roomDisplay field) — applied לDB החי
 - ✅ `DataUpload.js` + `DataHub.js` נמחקו; routes+nav items+imports הוסרו מ-App.js/GuestDashboard.js
 - ✅ GuestsPage room dropdown → SUITE_REGISTRY ישיר (לא suite_rooms-derived) — מבטל כפילויות
 - ✅ AICopilot.handleApprove מתוקן — שגיאת WA invoke לא נבלעת, room/guest status לא מתקדמים בכשל
 - ✅ גילוי ותיעוד: RoomBoard.js, AICopilot.js, BotScriptEditor.js, DataHub.js(נמחק), SpaStagingPanel.js, room_status table, cleaner role, suiteRegistry.js, email-import-webhook, spa-schedule-webhook, room-clean-notify
 - ✅ אובחן (לא באג): "ג'ספר 3 — ממתין לאישור" הוא RoomBoard עובד כמתוכנן (housekeeping approval pending), לא דליפת סטטוס WhatsApp
 - ✅ Phase 6 Bot Brain Audit — ראה למעלה
-- ⚠️ build נקי, אך **שום קובץ JS בsession זה לא committed** — ראה STEP 2
+- ✅ commit `302803c` + `git push` ל-main (Vercel auto-deploy) + `supabase db push` (migration 047 live) + `supabase functions deploy whatsapp-webhook` — כל שכבות הקוד פרוסות בפועל
 
 #### session 6 — Jun 20 2026 (Disable/Don't Hide UI + CLAUDE.md overhaul)
 - ✅ אבחון "fail closed" anti-pattern: כפתורי פעולה נעלמו לאורחי status='pending' (וכל ערך לא-מוכר) ב-GuestsPage — switch בלעדי על מחרוזת status מדויקת
