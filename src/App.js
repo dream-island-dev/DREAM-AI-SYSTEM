@@ -1031,8 +1031,6 @@ function Sidebar({ user, active, setActive, openCallsCount, onLogout, isAdmin, i
     { id: "guests",     icon: "🛎️", label: "צ'ק-אין",                               managerOnly: true },
     { id: "room_board",   icon: "🏨", label: "לוח סוויטות",                            managerOnly: false },
     { id: "scheduler",   icon: "🪄", label: "מחולל משמרות",                           managerOnly: true },
-    { id: "spa_staging", icon: "💆", label: "לוח ספא — אישור",                        managerOnly: true },
-    { id: "suites",      icon: "🛏️", label: "פירוט חדרים",                              managerOnly: true },
     { id: "agent",      icon: "🤖", label: "הסוכן שלי" },
   ];
 

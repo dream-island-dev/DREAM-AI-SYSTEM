@@ -15,6 +15,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
+import AddGuestModal from "./AddGuestModal";
 
 // ── Date helpers (local time) ─────────────────────────────────────────────────
 function localISO(offsetDays = 0) {
@@ -25,18 +26,6 @@ function localISO(offsetDays = 0) {
     "-" + String(d.getMonth() + 1).padStart(2, "0") +
     "-" + String(d.getDate()).padStart(2, "0")
   );
-}
-
-// ── Phone normalizer (mirrors DataUpload sanitizePhone) ───────────────────────
-function fmtPhone(raw) {
-  if (!raw) return null;
-  const c = String(raw).replace(/[^\d+]/g, "");
-  if (!c) return null;
-  if (c.startsWith("+"))            return c.length >= 10 ? c : null;
-  if (/^5\d{8}$/.test(c))          return `+972${c}`;
-  if (/^05\d{8}$/.test(c))         return `+972${c.slice(1)}`;
-  if (c.startsWith("972") && c.length >= 11) return `+${c}`;
-  return c.length >= 9 ? c : null;
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -146,103 +135,6 @@ function WAModal({ guest, onClose, onSend, isSending }) {
   );
 }
 
-// ── Add Guest inline form ─────────────────────────────────────────────────────
-function AddGuestForm({ onSave, onCancel, busy }) {
-  const [form, setForm] = useState({
-    name: "", phone: "", room: "", room_type: "suite",
-    arrival_date: localISO(0), departure_date: "",
-  });
-  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
-  // Auto-switch type based on room text
-  const handleRoom = (v) => {
-    const lower = v.trim().toLowerCase();
-    let room_type = form.room_type;
-    if (!v) {
-      room_type = "day_guest"; // empty = day guest
-    } else if (/סוויט|suite/i.test(lower)) {
-      room_type = "suite";
-    } else if (room_type === "day_guest") {
-      room_type = "suite"; // any text entered → default to suite
-    }
-    setForm((f) => ({ ...f, room: v, room_type }));
-  };
-
-  return (
-    <div className="card" style={{ marginBottom: 20, borderColor: "var(--gold)" }}>
-      <div className="card-header">
-        <div className="card-title">➕ הוסף אורח ידנית</div>
-        <button className="btn btn-ghost btn-sm" onClick={onCancel}>ביטול ✕</button>
-      </div>
-      <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 12 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          <div className="form-field" style={{ marginBottom: 0 }}>
-            <label>שם מלא *</label>
-            <input
-              type="text" value={form.name}
-              onChange={(e) => set("name", e.target.value)}
-              placeholder="ישראל ישראלי"
-            />
-          </div>
-          <div className="form-field" style={{ marginBottom: 0 }}>
-            <label>טלפון</label>
-            <input
-              type="tel" value={form.phone}
-              onChange={(e) => set("phone", e.target.value)}
-              placeholder="05X-XXXXXXX"
-              style={{ direction: "ltr" }}
-            />
-          </div>
-          <div className="form-field" style={{ marginBottom: 0 }}>
-            <label>שם חדר</label>
-            <input
-              type="text" value={form.room}
-              onChange={(e) => handleRoom(e.target.value)}
-              placeholder="ריק = בילוי יומי"
-            />
-          </div>
-          <div className="form-field" style={{ marginBottom: 0 }}>
-            <label>סוג</label>
-            <select
-              value={form.room_type}
-              onChange={(e) => set("room_type", e.target.value)}
-              disabled={!form.room}
-            >
-              <option value="day_guest">🏊 בילוי יומי</option>
-              <option value="standard">🏨 חדר רגיל</option>
-              <option value="suite">👑 סוויטה</option>
-            </select>
-          </div>
-          <div className="form-field" style={{ marginBottom: 0 }}>
-            <label>תאריך הגעה</label>
-            <input
-              type="date" value={form.arrival_date}
-              onChange={(e) => set("arrival_date", e.target.value)}
-            />
-          </div>
-          <div className="form-field" style={{ marginBottom: 0 }}>
-            <label>תאריך עזיבה</label>
-            <input
-              type="date" value={form.departure_date}
-              min={form.arrival_date || localISO(0)}
-              onChange={(e) => set("departure_date", e.target.value)}
-            />
-          </div>
-        </div>
-        <div style={{ display: "flex", justifyContent: "flex-end" }}>
-          <button
-            className="btn btn-primary"
-            disabled={busy || !form.name.trim()}
-            onClick={() => onSave(form)}
-            style={{ minWidth: 160 }}
-          >
-            {busy ? "⏳ שומר..." : "✅ שמור אורח"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ── Main component ────────────────────────────────────────────────────────────
 export default function GuestDashboard({ user }) {
   const [guests,      setGuests]      = useState([]);
@@ -251,10 +143,9 @@ export default function GuestDashboard({ user }) {
   const [loadingId,   setLoadingId]   = useState(null);  // room_ready pipeline
   const [sendingWAId, setSendingWAId] = useState(null);  // individual WA
   const [deletingId,  setDeletingId]  = useState(null);  // delete
-  const [addBusy,     setAddBusy]     = useState(false);
 
   const [activeTab,   setActiveTab]   = useState("all"); // all | day_guest | suite
-  const [showAdd,     setShowAdd]     = useState(false);
+  const [addingGuest, setAddingGuest] = useState(null);  // {} = add modal open, null = closed
   const [waModal,     setWaModal]     = useState(null);  // guest object or null
   const [selected,    setSelected]    = useState(new Set()); // checked guest IDs
 
@@ -338,35 +229,20 @@ export default function GuestDashboard({ user }) {
     setDeletingId(null);
   }, [showToast]);
 
-  // ── Add guest ─────────────────────────────────────────────────────────────
-  const handleAddGuest = useCallback(async (form) => {
-    if (!form.name.trim()) return showToast("err", "שם חובה");
-    setAddBusy(true);
-    const phone = fmtPhone(form.phone);
-    const payload = {
-      name:           form.name.trim(),
-      phone:          phone,
-      room:           form.room || null,
-      room_type:      form.room ? form.room_type : "day_guest",
-      arrival_date:   form.arrival_date || localISO(0),
-      departure_date: form.departure_date || null,
-      status:         "expected",
-    };
-    const { data, error } = await supabase
-      .from("guests").insert([payload]).select().single();
-    if (error) {
-      showToast("err", "שגיאה: " + error.message);
-    } else {
-      setGuests((prev) => [...prev, data].sort((a, b) => {
+  // ── Add/edit guest — shared with GuestsPage via AddGuestModal ────────────
+  const handleGuestSaved = useCallback((saved) => {
+    setGuests((prev) => {
+      const exists = prev.some((g) => g.id === saved.id);
+      const next = exists
+        ? prev.map((g) => (g.id === saved.id ? { ...g, ...saved } : g))
+        : [...prev, saved];
+      return next.sort((a, b) => {
         if (a.arrival_date !== b.arrival_date)
-          return a.arrival_date < b.arrival_date ? -1 : 1;
-        return a.name.localeCompare(b.name, "he");
-      }));
-      setShowAdd(false);
-      showToast("ok", `✅ ${data.name} נוסף בהצלחה`);
-    }
-    setAddBusy(false);
-  }, [showToast]);
+          return (a.arrival_date ?? "") < (b.arrival_date ?? "") ? -1 : 1;
+        return (a.name ?? "").localeCompare(b.name ?? "", "he");
+      });
+    });
+  }, []);
 
   // ── Selection + bulk delete ───────────────────────────────────────────────
   const toggleSelect = useCallback((id) => {
@@ -510,16 +386,16 @@ export default function GuestDashboard({ user }) {
         {/* Add + Refresh */}
         <>
           <button
-            onClick={() => setShowAdd((s) => !s)}
+            onClick={() => setAddingGuest((g) => (g ? null : {}))}
             style={{
               padding: "7px 16px", borderRadius: 20, cursor: "pointer",
               fontFamily: "Heebo, sans-serif", fontSize: 13, fontWeight: 700,
               border: "2px solid var(--gold)",
-              background: showAdd ? "rgba(201,169,110,0.15)" : "var(--card-bg)",
+              background: addingGuest ? "rgba(201,169,110,0.15)" : "var(--card-bg)",
               color: "var(--gold-dark)",
             }}
           >
-            {showAdd ? "✕ סגור" : "➕ הוסף אורח"}
+            {addingGuest ? "✕ סגור" : "➕ הוסף אורח"}
           </button>
           <button
             onClick={fetchGuests}
@@ -535,12 +411,13 @@ export default function GuestDashboard({ user }) {
         </>
       </div>
 
-      {/* Add guest form */}
-      {showAdd && (
-        <AddGuestForm
-          busy={addBusy}
-          onSave={handleAddGuest}
-          onCancel={() => setShowAdd(false)}
+      {/* Add guest modal — universal AddGuestModal, shared with GuestsPage */}
+      {addingGuest && (
+        <AddGuestModal
+          guest={addingGuest}
+          onClose={() => setAddingGuest(null)}
+          onSaved={handleGuestSaved}
+          showToast={showToast}
         />
       )}
 
