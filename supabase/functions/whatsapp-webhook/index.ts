@@ -640,6 +640,14 @@ const CONFIRMATION_RE = /^[\s🎉✨😊🙂🙏💫🌴]*(?:כן[,!\s.]*)?(?:מ
 const WORKSHOP_SIGNUP_URL = Deno.env.get("WORKSHOP_SIGNUP_URL") ?? "go.oncehub.com/DreamIsland";
 const GOOGLE_REVIEW_URL   = Deno.env.get("GOOGLE_REVIEW_URL")   ?? "";
 
+// A timeout/abort means we never learned whether Meta processed the request —
+// not the same as Meta rejecting it. Tagged distinctly so callers (notification_log
+// writers, AICopilot, etc.) can report "outcome unknown" instead of a confident
+// but possibly-wrong "failed" (FAIL VISIBLE, CLAUDE.md §0.3).
+function _isAbortError(e: unknown): boolean {
+  return e instanceof Error && (e.name === "AbortError" || e.name === "TimeoutError");
+}
+
 // buttonUrlParam: if set, passes a dynamic URL suffix to button index 0
 async function sendTemplate(
   to: string,
@@ -661,26 +669,31 @@ async function sendTemplate(
     components.push({ type: "button", sub_type: "url", index: 0, parameters: [{ type: "text", text: buttonUrlParam }] });
   }
 
-  const res = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      messaging_product: "whatsapp",
-      to,
-      type: "template",
-      template: {
-        name: templateName,
-        language: { code: langCode },
-        ...(components.length > 0 ? { components } : {}),
-      },
-    }),
-    signal: AbortSignal.timeout(15000),
-  });
-  if (!res.ok) {
-    const errText = await res.text();
-    console.error(`[sendTemplate] Meta ${res.status} for ${templateName} to ${to}:`, errText.slice(0, 400));
-    throw new Error(`meta_template_${res.status}: ${errText.slice(0, 200)}`);
-  };
+  try {
+    const res = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        to,
+        type: "template",
+        template: {
+          name: templateName,
+          language: { code: langCode },
+          ...(components.length > 0 ? { components } : {}),
+        },
+      }),
+      signal: AbortSignal.timeout(25000),
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error(`[sendTemplate] Meta ${res.status} for ${templateName} to ${to}:`, errText.slice(0, 400));
+      throw new Error(`meta_template_${res.status}: ${errText.slice(0, 200)}`);
+    }
+  } catch (e) {
+    if (_isAbortError(e)) throw new Error("timeout_no_response: Meta did not respond within 25s — message may have still been delivered");
+    throw e;
+  }
 }
 
 const SPA_MENU =
@@ -716,29 +729,34 @@ async function sendReply(to: string, body: string): Promise<string> {
   const phoneId = Deno.env.get("META_PHONE_NUMBER_ID");
   if (!token || !phoneId) throw new Error("missing_meta_creds");
 
-  const res = await fetch(
-    `https://graph.facebook.com/v20.0/${phoneId}/messages`,
-    {
-      method:  "POST",
-      headers: {
-        Authorization:  `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        messaging_product: "whatsapp",
-        to,
-        type: "text",
-        text: { body, preview_url: false },
-      }),
-      signal: AbortSignal.timeout(15000),
-    }
-  );
+  try {
+    const res = await fetch(
+      `https://graph.facebook.com/v20.0/${phoneId}/messages`,
+      {
+        method:  "POST",
+        headers: {
+          Authorization:  `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          messaging_product: "whatsapp",
+          to,
+          type: "text",
+          text: { body, preview_url: false },
+        }),
+        signal: AbortSignal.timeout(25000),
+      }
+    );
 
-  if (!res.ok) {
-    throw new Error(`meta_send_${res.status}: ${(await res.text()).slice(0, 300)}`);
+    if (!res.ok) {
+      throw new Error(`meta_send_${res.status}: ${(await res.text()).slice(0, 300)}`);
+    }
+    const data = await res.json();
+    return data?.messages?.[0]?.id ?? "unknown";
+  } catch (e) {
+    if (_isAbortError(e)) throw new Error("timeout_no_response: Meta did not respond within 25s — message may have still been delivered");
+    throw e;
   }
-  const data = await res.json();
-  return data?.messages?.[0]?.id ?? "unknown";
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -865,6 +883,20 @@ serve(async (req: Request) => {
           console.log(`[webhook] ⏭️ interactive sub-type "${(msg.interactive as Record<string,unknown>)?.type}" — skipped`);
           continue;
         }
+      } else if (msg.type === "button") {
+        // Quick Reply tap on a TEMPLATE message (type:"template" with quick-reply
+        // buttons — sent via sendTemplate()/sendViaTemplate(), e.g. dream_arrival_confirmation).
+        // Meta delivers these as type:"button" with { button: { text, payload } } —
+        // a DIFFERENT shape than the "interactive"/button_reply case above, which is
+        // only for free-standing interactive button messages. This case was previously
+        // unhandled and fell into the catch-all skip below, which is why tapping
+        // "כן,מגיעים!" on the broadcast template produced zero reply in production.
+        isButtonReply = true;
+        const btn   = msg.button as Record<string, unknown>;
+        buttonTitle = (btn?.text    as string) ?? "";
+        buttonId    = (btn?.payload as string) ?? "";
+        text        = buttonTitle;
+        console.log(`[webhook] 🔘 template button title:"${buttonTitle}" payload:"${buttonId}"`);
       } else {
         console.log(`[webhook] ⏭️ msg type "${msg.type}" — skipped`);
         continue; // skip images, audio, stickers, etc.
@@ -1022,11 +1054,12 @@ serve(async (req: Request) => {
             console.info(`[webhook] ✅ arrival reply sent to ${phone}`);
           } catch (e) {
             const errMsg = (e as Error).message;
-            console.error(`[webhook] ❌ arrival reply FAILED to ${phone}:`, errMsg);
+            const replyStatus = errMsg.startsWith("timeout_no_response") ? "timeout" : "failed";
+            console.error(`[webhook] ❌ arrival reply ${replyStatus} to ${phone}:`, errMsg);
             await supabase.from("notification_log").insert({
               guest_id: guestId, recipient: phone,
               trigger_type: "arrival_confirmed_reply", channel: "whatsapp",
-              status: "failed", payload: { error: errMsg, buttonTitle },
+              status: replyStatus, payload: { error: errMsg, buttonTitle },
             }).catch(() => {});
           }
 

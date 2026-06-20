@@ -335,10 +335,11 @@ export default function BroadcastDashboard({ user }) {
 
     setIsSending(true);
     abortRef.current = false;
-    setProgress({ current: 0, total: sendableGuests.length, errors: 0, done: false });
+    setProgress({ current: 0, total: sendableGuests.length, errors: 0, uncertain: 0, done: false });
 
-    let successCount = 0;
-    let errorCount   = 0;
+    let successCount   = 0;
+    let errorCount     = 0;
+    let uncertainCount = 0; // Meta never confirmed OR rejected (timeout) — message may have still arrived
 
     for (let i = 0; i < sendableGuests.length; i++) {
       if (abortRef.current) break;
@@ -351,14 +352,22 @@ export default function BroadcastDashboard({ user }) {
             : { trigger: "inbox_reply", phone: guest.phone, message: freeTextMsg },
         });
         if (error) throw new Error(data?.error ?? error.message ?? "edge_function_error");
-        if (!data?.ok) throw new Error(data?.error ?? "שליחת ההודעה נכשלה");
-        successCount++;
+        if (data?.status === "timeout") {
+          // Distinct from a confirmed failure — don't assert "failed" when we
+          // genuinely don't know (this exact mislabeling is what made
+          // successfully-delivered broadcasts show up as failed).
+          uncertainCount++;
+        } else if (!data?.ok) {
+          throw new Error(data?.error ?? "שליחת ההודעה נכשלה");
+        } else {
+          successCount++;
+        }
       } catch (err) {
         errorCount++;
         console.warn("[broadcast] guest", guest.id, guest.name, "—", err?.message ?? err);
       }
 
-      setProgress({ current: i + 1, total: sendableGuests.length, errors: errorCount, done: false });
+      setProgress({ current: i + 1, total: sendableGuests.length, errors: errorCount, uncertain: uncertainCount, done: false });
 
       if (i < sendableGuests.length - 1 && !abortRef.current) {
         await sleep(200);
@@ -366,13 +375,15 @@ export default function BroadcastDashboard({ user }) {
     }
 
     const aborted = abortRef.current;
-    setProgress({ current: successCount + errorCount, total: sendableGuests.length, errors: errorCount, done: true, aborted });
+    setProgress({ current: successCount + errorCount + uncertainCount, total: sendableGuests.length, errors: errorCount, uncertain: uncertainCount, done: true, aborted });
     setIsSending(false);
 
     if (!aborted) {
       showToast(
         errorCount === 0 ? "ok" : "warn",
-        `שליחה הסתיימה: ${successCount} הצליחו${errorCount > 0 ? `, ${errorCount} נכשלו` : ""}`
+        `שליחה הסתיימה: ${successCount} הצליחו` +
+          (uncertainCount > 0 ? `, ${uncertainCount} לא ודאי (Meta לא אישרה בזמן — ייתכן שנשלחו)` : "") +
+          (errorCount > 0 ? `, ${errorCount} נכשלו` : "")
       );
     }
   }, [sendMode, selectedTemplate, templateVarValues, autoVarGuestName, freeTextMsg, sendableGuests, showToast]);
@@ -388,7 +399,7 @@ export default function BroadcastDashboard({ user }) {
 
     setQuickSending(true);
     setQuickResult(null);
-    let ok = 0, fail = 0;
+    let ok = 0, fail = 0, uncertain = 0;
 
     for (const guest of targets) {
       try {
@@ -400,8 +411,10 @@ export default function BroadcastDashboard({ user }) {
             templateVariables: [(String(guest.name ?? "").trim()) || "אורח יקר"],
           },
         });
-        if (error || !data?.ok) throw new Error(data?.error ?? error?.message ?? "failed");
-        ok++;
+        if (error) throw new Error(data?.error ?? error?.message ?? "failed");
+        if (data?.status === "timeout") { uncertain++; }
+        else if (!data?.ok) { throw new Error(data?.error ?? "failed"); }
+        else { ok++; }
       } catch (e) {
         fail++;
         console.warn("[quickSend] failed for", guest.name, e?.message);
@@ -410,9 +423,11 @@ export default function BroadcastDashboard({ user }) {
     }
 
     setQuickSending(false);
-    setQuickResult({ ok, fail, total: targets.length });
+    setQuickResult({ ok, fail, uncertain, total: targets.length });
     showToast(fail === 0 ? "ok" : "warn",
-      `📤 נשלח ל-${ok} אורחים מחר${fail > 0 ? ` (${fail} נכשלו)` : " ✅"}`);
+      `📤 נשלח ל-${ok} אורחים מחר` +
+        (uncertain > 0 ? ` · ${uncertain} לא ודאי` : "") +
+        (fail > 0 ? ` (${fail} נכשלו)` : ok > 0 && uncertain === 0 ? " ✅" : ""));
   }, [allGuests, showToast]);
 
   // ── Send to a single guest (uses selected template) ───────────────────────
@@ -430,8 +445,13 @@ export default function BroadcastDashboard({ user }) {
           : { trigger: "inbox_reply", phone: guest.phone, message: freeTextMsg },
       });
       if (error) throw new Error(data?.error ?? error.message ?? "edge_function_error");
-      if (!data?.ok) throw new Error(data?.error ?? "שגיאה בשליחה");
-      showToast("ok", `✅ נשלח ל${guest.name}${data.simulation ? " (סימולציה)" : ""}`);
+      if (data?.status === "timeout") {
+        showToast("warn", `⚠ לא ודאי ל${guest.name} — Meta לא אישרה תוך 25 שניות (ייתכן שההודעה בכל זאת הגיעה)`);
+      } else if (!data?.ok) {
+        throw new Error(data?.error ?? "שגיאה בשליחה");
+      } else {
+        showToast("ok", `✅ נשלח ל${guest.name}${data.simulation ? " (סימולציה)" : ""}`);
+      }
     } catch (err) {
       showToast("err", `שגיאה: ${err?.message ?? err}`);
     } finally {
@@ -771,9 +791,11 @@ export default function BroadcastDashboard({ user }) {
               </div>
               {quickResult && (
                 <div style={{ fontSize: 12, marginTop: 6, opacity: 0.9 }}>
-                  {quickResult.fail === 0
+                  {quickResult.fail === 0 && !quickResult.uncertain
                     ? `✅ נשלח בהצלחה ל-${quickResult.ok} אורחים!`
-                    : `⚠️ הצליח: ${quickResult.ok} | נכשל: ${quickResult.fail}`}
+                    : `⚠️ הצליח: ${quickResult.ok}` +
+                      (quickResult.uncertain > 0 ? ` | לא ודאי: ${quickResult.uncertain}` : "") +
+                      (quickResult.fail > 0 ? ` | נכשל: ${quickResult.fail}` : "")}
                 </div>
               )}
             </div>
@@ -1248,11 +1270,18 @@ export default function BroadcastDashboard({ user }) {
                 <span style={{ fontWeight: 700, fontSize: 14, color: "var(--black)" }}>
                   שולח הודעה {progress.current} מתוך {progress.total}...
                 </span>
-                {progress.errors > 0 && (
-                  <span style={{ fontSize: 12, color: "#C0392B", fontWeight: 600 }}>
-                    {progress.errors} שגיאות
-                  </span>
-                )}
+                <span>
+                  {(progress.uncertain ?? 0) > 0 && (
+                    <span style={{ fontSize: 12, color: "#92400E", fontWeight: 600, marginLeft: 8 }}>
+                      {progress.uncertain} לא ודאי
+                    </span>
+                  )}
+                  {progress.errors > 0 && (
+                    <span style={{ fontSize: 12, color: "#C0392B", fontWeight: 600 }}>
+                      {progress.errors} שגיאות
+                    </span>
+                  )}
+                </span>
               </div>
               <div className="progress-bar" style={{ height: 10 }}>
                 <div className="progress-fill" style={{ width: `${pct}%` }} />
@@ -1277,8 +1306,15 @@ export default function BroadcastDashboard({ user }) {
                 {progress.aborted ? "⛔ שליחה הופסקה" : "✅ שליחה הסתיימה"}
               </div>
               <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
-                נשלחו: {progress.current - progress.errors} · נכשלו: {progress.errors} · סה"כ: {progress.total}
+                נשלחו: {progress.current - progress.errors - (progress.uncertain ?? 0)} ·{" "}
+                {(progress.uncertain ?? 0) > 0 && <>לא ודאי: {progress.uncertain} · </>}
+                נכשלו: {progress.errors} · סה"כ: {progress.total}
               </div>
+              {(progress.uncertain ?? 0) > 0 && (
+                <div style={{ fontSize: 11, color: "#92400E", marginTop: 4 }}>
+                  ⚠ "לא ודאי" = Meta לא אישרה תוך 25 שניות — ייתכן שההודעה בכל זאת הגיעה. בדוק/י עם האורח אם יש ספק.
+                </div>
+              )}
               <button
                 className="btn btn-ghost btn-sm"
                 onClick={() => { setProgress(null); setIsSending(false); }}

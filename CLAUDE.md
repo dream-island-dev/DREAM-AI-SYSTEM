@@ -1,6 +1,6 @@
 # CLAUDE.md — Dream Island AI System
 > קובץ זה נקרא אוטומטית בכל שיחה. הוא מקור-האמת שלך. קרא אותו לפני כל פעולה.
-> **עדכון אחרון:** 2026-06-20 (session 8 — Phase 6 Bot Brain seed completion: 7 script_key חדשים + תיקון status bug שני בwebhook)
+> **עדכון אחרון:** 2026-06-20 (session 9 — תיקון 2 באגים קריטיים בproduction: כפתור WhatsApp שותק (message type "button" לא טופל) + "נכשלו" כוזב בbroadcast (timeout≠כשל ממשי))
 
 ---
 
@@ -327,7 +327,14 @@ bot_settings.system_prompt = AI persona בלבד
    a. DIAGNOSTIC log: type, from, msgId
    b. Extract text/buttonTitle/buttonId לפי msg.type:
       - "text"        → msg.text.body
-      - "interactive" → msg.interactive.button_reply.{title, id}
+      - "interactive" → msg.interactive.button_reply.{title, id} — free-standing interactive button messages
+      - "button"      → msg.button.{text, payload} — ★ session 9: Quick Reply tap on a TEMPLATE message
+                         (every broadcast/pipeline send today uses sendTemplate/sendViaTemplate, so THIS
+                         is the real-world shape for "כן,מגיעים!"/"לא,שינוי בתאריך" in production — not
+                         "interactive"). Was UNHANDLED before session 9 → fell into the catch-all skip
+                         below → bot was completely silent on every template button tap. Fixed: now maps
+                         into the same buttonTitle/buttonId/isButtonReply variables, so all downstream
+                         routing (needs_callback override, button router, bot_scripts lookup) is unchanged.
       - אחר           → continue (skip)
    c. Dedup check (whatsapp_conversations.wa_message_id)
    d. Guest lookup (guests table, by phone with +)
@@ -404,6 +411,25 @@ webhook קורא: guests.spa_time (שדה TEXT)
 ### `whatsapp-send` — שליחת WA
 - Triggers: `night_before`, `morning_of`, `broadcast`, `manual`, `inbox_reply`
 - `inbox_reply` → `{phone, message}` ישיר, ללא guestId
+
+#### Meta send timeout → status "failed" vs "timeout" (session 9 fix)
+```
+לפני session 9: כל timeout/abort בקריאת fetch ל-Meta נתפס כ-"failed" זהה לדחייה
+                ממשית מ-Meta. תוצאה אמיתית בפרודקשן: broadcast הציג "נכשלו: 2"
+                כששתי ההודעות בכל זאת הגיעו לטלפון — Meta הגיב לאט מ-15 שניות,
+                ה-AbortSignal ניתק את החיבור, אבל ההודעה כבר נשלחה בפועל בצד Meta.
+
+אחרי session 9: sendViaMeta/sendViaTemplate (whatsapp-send) + sendReply/sendTemplate
+                (whatsapp-webhook) — timeout הועלה ל-25s, ותקלת timeout/AbortError
+                מסומנת בנפרד כ-"timeout_no_response" (לא "failed"). הקריאה ל-
+                whatsapp-send מחזירה status:"timeout" (ok:false, אבל לא "failed") —
+                BroadcastDashboard.js מציג "לא ודאי" כקטגוריה שלישית, נפרדת מ-
+                "נכשלו" (עקרון FAIL VISIBLE — §0.3: לא להציג ערך לא-ידוע כ"נכשל"
+                בביטחון מזויף).
+⚠️ עדיין פתוח (לא תוקן, מחוץ לסקופ session 9): GUEST_FLAG[trigger] ו-notification_log
+   נכתבים גם כש-status הוא "failed"/"timeout" ב-BRANCH D (pipeline) — מסמן הודעה
+   שלא אושרה כ"נשלחה" לצורך idempotency, ולכן לעולם לא תינסה שוב. דורש תיקון נפרד.
+```
 
 ### `generate-schedule` ⚠️ ORPHAN
 - **פרוס אבל לא מחובר** — ShiftGenerator קורא `duplicateScheduleLocally()` בלבד
@@ -579,10 +605,21 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
 | `whatsapp-cron` (`CRON_ENABLED`) | קיל-סוויץ' נפרד, לא מוגדר — ראה STEP 4 | גבוה |
 | ShiftGenerator Gemini "creative mode" | תוכנן, לא מומש — חיבור לgenerate-schedule אם רוצים | בינוני |
 | Regex intent patterns (COMPLAINT/UPSELL/HUMAN_CALL/DATE_CHANGE) | hardcoded בכוונה — UI לעריכת keyword-lists לא בוצע, ראה Phase 6 Audit §3 | נמוך |
+| `GUEST_FLAG`/`notification_log` נכתבים גם בכשל (`whatsapp-send` BRANCH D) | הודעת pipeline שנכשלה/timeout מסומנת כ"נשלחה" — לעולם לא תינסה שוב. נמצא בsession 9, לא תוקן (מחוץ לסקופ) | גבוה |
+| Resilient Import Agent — **מושהה באמצע** (session 9) | `suggest-import-mapping` Edge Function + `import_mapping_memory` table (migration 049) **פרוסים בפועל** ב-Supabase, אבל שינויי הפרונטאנד (`ArrivalImportPanel.js`, `MappingReviewPanel.js`, `importMapper.js`, פרמטריזציית `ezgoParser.js`) **לא commit-ים, לא pushed** — קיימים רק ב-working tree המקומי. יש גם debug-branch זמני (`if (debug)`) ב-`suggest-import-mapping/index.ts` שצריך להסיר לפני שמחליטים שזה "מוכן". המשך/סגור בסשן נפרד. | בינוני |
 
 ---
 
 ### היסטוריית סשנים
+
+#### session 9 — Jun 20 2026 (Live bug hunt — button router silent + false "failed" reports)
+- 🐛→✅ **באג קריטי נמצא ותוקן:** `whatsapp-webhook/index.ts`'s message-type switch טיפל רק ב-`"text"` ו-`"interactive"`. לחיצה על כפתור Quick Reply בתוך הודעת **template** (כל broadcast/pipeline send היום עובר ב-`sendTemplate`/`sendViaTemplate`) מגיעה מ-Meta כ-`msg.type:"button"` — עם shape **שונה** (`{button:{text,payload}}`, לא `{interactive:{button_reply:{title,id}}}`). זה נפל ל-`else` הכוללני ונדלג בשקט — הבוט היה שותק לחלוטין בלחיצה על "כן,מגיעים!"/"לא,שינוי בתאריך". **לא** היה key mismatch ב-`bot_scripts` כמו שחשדנו בהתחלה — `scripts["stage_2_arrival"]` תמיד היה נכון. תוקן: ענף `msg.type === "button"` חדש שממפה ל-`buttonTitle`/`buttonId`/`isButtonReply` הקיימים — שום קוד downstream (button router, needs_callback override, bot_scripts lookup) לא השתנה.
+- 🐛→✅ **באג קריטי שני נמצא ותוקן:** "נכשלו: 2" שהוצג ב-`BroadcastDashboard.js` כששתי ההודעות בכל זאת הגיעו לטלפון. שורש: `sendViaTemplate`/`sendViaMeta` (whatsapp-send) ו-`sendTemplate`/`sendReply` (whatsapp-webhook) תפסו **כל** כשל fetch ל-Meta (כולל timeout/AbortError על `AbortSignal.timeout(15000)`) כ-"failed" זהה לדחייה ממשית — בזמן ש-timeout פירושו "לא ידוע אם Meta עיבדה את הבקשה", לא "Meta דחתה". תוקן: timeout הועלה ל-25s, ו-timeout מסומן בנפרד כ-`"timeout_no_response"` → `status:"timeout"` (לא `"failed"`) → `BroadcastDashboard.js` מציג "לא ודאי" כקטגוריה שלישית נפרדת מ-"נכשלו" (`handleBroadcast`, `sendToOne`, `handleQuickSendTomorrow` כולם עודכנו).
+- ✅ אומת מול הקוד (לא ניחוש): `resolvePlaceholders()`'s `{{SPA_TIME}}`/`{{OPTIONAL_SPA_TEXT}}`/`{{SPA_LINE}}` handling — והsource `guests.spa_time` ב-SELECT — כבר נכונים. "שעת ספא חסרה" (bug #3 שדווח) צריכה לעבוד אוטומטית כש-bug #2 (כפתור שותק) מתוקן; אם עדיין חסרה אחרי הפריסה — לבדוק אם ל-guest הבדיקה הספציפי יש בכלל `spa_time` בDB (נתון, לא קוד).
+- ⚠️ נמצא ולא תוקן (מחוץ לסקופ session 9, ראה "פריטים פתוחים"): `GUEST_FLAG`/`notification_log` ב-BRANCH D נכתבים גם בכשל/timeout — מסמן הודעת pipeline שלא אושרה כ"נשלחה" לצורך idempotency.
+- ✅ `npm run build` — Compiled (אזהרה אחת קיימת מראש, לא קשורה).
+- ✅ `supabase functions deploy whatsapp-webhook --no-verify-jwt` + `supabase functions deploy whatsapp-send --no-verify-jwt` — שניהם פרוסים בייצור. שינויי `BroadcastDashboard.js` (פרונטאנד) **לא** commit-ים/pushed עדיין.
+- ⏸ Resilient Import Agent (AI-driven column mapping, suite CSV import) — הושהה באמצע העבודה לבקשת Mike כדי לטפל בבאגים הקריטיים האלה. ראה "פריטים פתוחים" — Edge Function + migration פרוסים, פרונטאנד לא.
 
 #### session 8 — Jun 20 2026 (Phase 6 seed completion + second status-bug fix)
 - ✅ אומת מול הקוד החי (לא מהזיכרון/CLAUDE.md): webhook קורא 8 `script_key` שונים מ-`bot_scripts`, רק 4 היו עם שורת seed (`stage_2_arrival`, `ongoing_concierge`, `complaint_reply`, `upsell_reply` — migrations 032/037). הפער היה גדול יותר מהתיעוד הקודם ("רק fallback_reply חסר").

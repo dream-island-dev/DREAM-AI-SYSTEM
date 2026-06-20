@@ -111,26 +111,41 @@ function shiftMsg(name: string, weekStart: string, shifts: Array<Record<string, 
     `לשינויים פנה/י למנהל המשמרת. תודה! — Dream Island`;
 }
 
+// A timeout/network abort means we genuinely don't know whether Meta processed
+// the request before the connection was cut — it is NOT the same thing as Meta
+// rejecting the message. Tagging it distinctly lets callers report "outcome
+// unknown" instead of a confident-but-possibly-wrong "failed" (FAIL VISIBLE,
+// CLAUDE.md §0.3) — this is the root cause of broadcasts showing as failed
+// when the message demonstrably arrived.
+function _isAbortError(e: unknown): boolean {
+  return e instanceof Error && (e.name === "AbortError" || e.name === "TimeoutError");
+}
+
 // ── Meta WhatsApp Cloud API (live) ────────────────────────────────────────────
 async function sendViaMeta(to: string, body: string): Promise<void> {
   const token   = Deno.env.get("META_WHATSAPP_TOKEN")    ?? Deno.env.get("WHATSAPP_TOKEN");
   const phoneId = Deno.env.get("META_PHONE_NUMBER_ID")   ?? Deno.env.get("WHATSAPP_PHONE_NUMBER_ID");
   if (!token || !phoneId) throw new Error("missing_meta_whatsapp_creds");
 
-  const res = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      messaging_product: "whatsapp",
-      to,
-      type: "text",
-      text: { body, preview_url: false },
-    }),
-    signal: AbortSignal.timeout(15000),
-  });
-  if (!res.ok) {
-    const detail = (await res.text()).slice(0, 300);
-    throw new Error(`meta_http_${res.status}: ${detail}`);
+  try {
+    const res = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        to,
+        type: "text",
+        text: { body, preview_url: false },
+      }),
+      signal: AbortSignal.timeout(25000),
+    });
+    if (!res.ok) {
+      const detail = (await res.text()).slice(0, 300);
+      throw new Error(`meta_http_${res.status}: ${detail}`);
+    }
+  } catch (e) {
+    if (_isAbortError(e)) throw new Error("timeout_no_response: Meta did not respond within 25s — message may have still been delivered");
+    throw e;
   }
 }
 
@@ -159,24 +174,29 @@ async function sendViaTemplate(
     components.push({ type: "button", sub_type: "url", index: 0, parameters: [{ type: "text", text: buttonUrlParam }] });
   }
 
-  const res = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      messaging_product: "whatsapp",
-      to,
-      type: "template",
-      template: {
-        name: templateName,
-        language: { code: langCode },
-        ...(components.length > 0 ? { components } : {}),
-      },
-    }),
-    signal: AbortSignal.timeout(15000),
-  });
-  if (!res.ok) {
-    const detail = (await res.text()).slice(0, 300);
-    throw new Error(`meta_template_${res.status}: ${detail}`);
+  try {
+    const res = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        to,
+        type: "template",
+        template: {
+          name: templateName,
+          language: { code: langCode },
+          ...(components.length > 0 ? { components } : {}),
+        },
+      }),
+      signal: AbortSignal.timeout(25000),
+    });
+    if (!res.ok) {
+      const detail = (await res.text()).slice(0, 300);
+      throw new Error(`meta_template_${res.status}: ${detail}`);
+    }
+  } catch (e) {
+    if (_isAbortError(e)) throw new Error("timeout_no_response: Meta did not respond within 25s — message may have still been delivered");
+    throw e;
   }
 }
 
@@ -285,8 +305,11 @@ serve(async (req: Request) => {
         }
       } catch (e) {
         sendError = (e as Error).message;
-        console.error("[whatsapp] broadcast send failed:", sendError);
-        status = "failed";
+        // A timeout means Meta never confirmed OR rejected — not the same as a
+        // real rejection. Reporting it as "failed" is exactly the misleading
+        // signal that showed messages as failed after they'd actually arrived.
+        status = sendError.startsWith("timeout_no_response") ? "timeout" : "failed";
+        console.error(`[whatsapp] broadcast send ${status}:`, sendError);
       }
 
       await supabase.from("notification_log").insert({
@@ -315,7 +338,10 @@ serve(async (req: Request) => {
 
       return new Response(
         JSON.stringify({
-          ok: status !== "failed",
+          // "timeout" is NOT treated as ok — we have no confirmation either way —
+          // but it's reported via a distinct `status` so the caller doesn't lump
+          // it in with a confirmed Meta rejection.
+          ok: status === "sent" || status === "simulated",
           simulation: sim,
           status,
           ...(sendError ? { error: sendError } : {}),
@@ -456,8 +482,9 @@ serve(async (req: Request) => {
         status = "sent";
       }
     } catch (e) {
-      console.error("[whatsapp] pipeline send failed:", (e as Error).message);
-      status = "failed";
+      const msg = (e as Error).message;
+      status = msg.startsWith("timeout_no_response") ? "timeout" : "failed";
+      console.error(`[whatsapp] pipeline send ${status}:`, msg);
     }
 
     await supabase.from("notification_log").insert({
