@@ -1,6 +1,6 @@
 # CLAUDE.md — Dream Island AI System
 > קובץ זה נקרא אוטומטית בכל שיחה. הוא מקור-האמת שלך. קרא אותו לפני כל פעולה.
-> **עדכון אחרון:** 2026-06-20 (session 11 — needs_callback guard ב-cron, תיקון non-2xx + GUEST_FLAG-on-failure בwhatsapp-send, הרחבת notification_log status, Pipeline Monitor query design)
+> **עדכון אחרון:** 2026-06-20 (session 12 — UI cleanup: הסרת "פירוט חדרים"/"לוח ספא" מה-Sidebar, איחוד טופס הוספת/עריכת אורח ל-AddGuestModal משותף)
 
 ---
 
@@ -105,6 +105,8 @@ DREAM-AI-SYSTEM/
 │       ├── GuestDashboard.js     ★ "ניהול אורחים" (vip_guests route) — pipeline tactical view
 │       │                            (כולם / בילוי יומי / לינה). שונה מ-GuestsPage ("צ'ק-אין")!
 │       │                            ⚠️ שני קומפוננטות שונות מנהלות אורחים — לא לבלבל בשיחה.
+│       │                            session 12: "הוסף אורח" עובר עכשיו דרך AddGuestModal המשותף
+│       │                            (לא טופס מקומי מקוצר) — כך שגם אורח שנוסף מכאן מקבל spa_time.
 │       ├── UserManagement.js     21KB  ניהול משתמשים
 │       ├── AgentChat.js          22KB  שיחה עם סוכן AI
 │       ├── AgentQuestionnaire.js 19KB  שאלון הגדרת סוכן
@@ -128,8 +130,18 @@ DREAM-AI-SYSTEM/
 │       │                            נקרא ע"י whatsapp-webhook + whatsapp-send. ראה §10 Phase 6 Audit.
 │       ├── GuestsPage.js         "צ'ק-אין" (guests route) — Slot 1/Slot 2 check-in pipeline UI.
 │       │                            שונה מ-GuestDashboard ("ניהול אורחים")!
+│       │                            session 12: טופס ההוספה/עריכה המלא חולץ ל-AddGuestModal.js.
+│       ├── AddGuestModal.js      ★ NEW (session 12) — Universal Add/Edit Guest modal (עקרון #5,
+│       │                            §0). שדות: name/phone(חדש בלבד)/arrival_date/spa_time/
+│       │                            treatment_count/order_number/room(SUITE_REGISTRY)/status/
+│       │                            requires_attention/needs_callback. כותב/קורא guests ישירות
+│       │                            (insert חדש / update קיים). בשימוש ע"י GuestsPage.js +
+│       │                            GuestDashboard.js — single source of truth לטופס אורח,
+│       │                            כך ש-spa_time לא יחסר יותר לאורח שנוסף מ-GuestDashboard.
 │       ├── SuitesDashboard.js    "פירוט חדרים" (suites route) — per-room grid מ-suite_rooms,
 │       │                            סטטוס חי מ-guests. ⚠️ לא להתבלבל עם RoomBoard ("לוח סוויטות")!
+│       │                            session 12: route עדיין קיים אך הוסר מה-Sidebar nav (לא נגיש
+│       │                            יותר ל-UI רגיל — ראה §4).
 │       ├── RoomBoard.js          ★ קיוסק ניקיון לתפקיד cleaner (+ ניהול דרך "room_board" route).
 │       │                            סטטוסים: תפוס/פנוי/לניקיון/בניקיון/ממתין לאישור/תחזוקה —
 │       │                            pipeline נפרד לחלוטין מ-guests.status. מקור: room_status table.
@@ -142,6 +154,7 @@ DREAM-AI-SYSTEM/
 │       │                            table: matched/suspicious/no_booking + quick-add. מוזן ע"י
 │       │                            email-import-webhook + spa-schedule-webhook (אוטומציה חיצונית —
 │       │                            כנראה Make.com). הוחלט בsession 7: נשאר standalone, לא מוזג.
+│       │                            session 12: route עדיין קיים אך הוסר מה-Sidebar nav (ראה §4).
 │       └── BotSettings.js        ★ מוח הבוט — system_prompt + knowledge_base
 │                                    חשוב: משפיע רק על תשובות free-text (Gemini)
 │                                    לא משפיע על לחיצות כפתור (hardcoded routing)
@@ -207,8 +220,11 @@ switch (activePage) {
   "guests"       → GuestsPage       // "צ'ק-אין" — Slot 1/Slot 2 check-in UI. ≠ vip_guests!
   "scheduler"    → ShiftGenerator
   "suites"       → SuitesDashboard  // "פירוט חדרים" — per-room grid from suite_rooms. ≠ room_board!
+                                    // ⚠️ session 12: route עדיין קיים ב-switch, אבל ה-Sidebar nav item
+                                    // הוסר (decluttering) — לא נגיש יותר דרך ה-UI הרגיל, ראה deep-link בלבד
   "room_board"   → RoomBoard        // ★ "לוח סוויטות" — housekeeping kiosk (room_status table)
   "spa_staging"  → SpaStagingPanel  // "לוח ספא — אישור" — standalone, fed by external email/PDF automation
+                                    // ⚠️ session 12: כמו "suites" — route קיים, Sidebar nav item הוסר
   "tasks"        → TaskBoard        // ArrivalImportPanel (sole import surface) mounted here
   "bot_config"   → BotConfigPanel   (admin only — guardPage)
   "bot_settings" → BotSettings      (admin only — guardPage)
@@ -588,6 +604,8 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
 | guests.room denormalization | ✅ Completed — migration 047 applied לDB החי | sync_suite_arrivals RPC כותב guests.room ישירות (לא רק suite_rooms) |
 | GuestsPage room dropdown | ✅ Completed | עובר מ-suite_rooms-derived ל-SUITE_REGISTRY ישיר — מבטל כפילויות, "Premium Day 1/2" קבועים |
 | AICopilot WhatsApp send — fail visible | ✅ Completed | `handleApprove` בודק את `{error}` מ-`whatsapp-send` invoke; בכשל — toast שגיאה, ה-alert לא נעלם, room_status/guests.status לא מתקדמים |
+| Sidebar decluttering (session 12) | ✅ Completed, committed (2c7b15d), pushed ל-main | "פירוט חדרים" (`suites`) ו"לוח ספא — אישור" (`spa_staging`) הוסרו מ-`allNavItems` ב-`App.js`'s `Sidebar`. ה-route+component עדיין קיימים (deep-link בלבד) — ראה §4. |
+| Universal AddGuestModal (עקרון #5, session 12) | ✅ Completed, committed (2c7b15d), pushed ל-main | `AddGuestModal.js` חולץ מ-GuestsPage.js (כל השדות, כולל `spa_time`/`treatment_count`/`order_number`) ומוזרק גם ל-GuestDashboard.js, שהחליף את הטופס המקוצר שלו (`AddGuestForm`) שלא היה לו `spa_time` — סוגר את פער ה-Single Source of Truth שתואר ב-Phase 6/§0.5. |
 
 ### 🟡 חלקי / דורש אימות
 
@@ -645,6 +663,15 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
 ---
 
 ### היסטוריית סשנים
+
+#### session 12 — Jun 20 2026 (UI cleanup — sidebar declutter + Universal AddGuestModal)
+- ✅ **Sidebar decluttering:** הוסרו שתי שורות מ-`allNavItems` ב-`App.js`'s `Sidebar` component — `{ id: "suites", ... }` ("פירוט חדרים") ו-`{ id: "spa_staging", ... }` ("לוח ספא — אישור"). ה-routes עצמם (ב-switch הראשי) וה-components (`SuitesDashboard.js`, `SpaStagingPanel.js`) **לא** נמחקו — לפי בקשת Mike, רק unhook מהניווט הפעיל. אם צריך גישה ל-deep-link בעתיד, אפשר עדיין לנווט אליהם פרוגרמטית (`setActivePage("suites")` וכו') — הם פשוט לא נגישים יותר מה-Sidebar.
+- ✅ **Universal AddGuestModal — תוקן פער Single Source of Truth (עקרון #5, §0):** היו שני טפסי "הוסף אורח" שונים — `GuestsPage.js` (המלא: name/phone/arrival_date/**spa_time**/treatment_count/order_number/room/status/requires_attention/needs_callback) ו-`GuestDashboard.js` (`AddGuestForm` מקומי, מקוצר — בלי `spa_time` בכלל). תוצאה בפועל: אורח שנוסף ידנית דרך GuestDashboard לא קיבל הודעות ספא אוטומטיות כי `spa_time` נשאר NULL — שום קוד לא דיווח על זה (לא "FAIL VISIBLE", פשוט שדה חסר בשקט).
+- ✅ נוצר `src/components/AddGuestModal.js` — חולץ במדויק מטופס ה-edit/add modal הקיים ב-`GuestsPage.js` (אותה JSX, אותה לוגיקת insert/update ל-`guests`, כולל ה-dropdown חדר מבוסס `SUITE_REGISTRY`/`SUITE_SECTIONS`). מקבל `guest` (`{}`=חדש, `{id,...}`=עריכה), `onClose`, `onSaved(savedRow)`, `showToast(type,msg)` — Component עצמו מבצע את כתיבת ה-Supabase (insert או update), לא רק UI.
+- ✅ `GuestsPage.js` — `editForm`/`editSaving`/`handleSaveEdit` הוסרו; ה-modal הענק (170+ שורות JSX) הוחלף ב-`<AddGuestModal guest={editGuest} onClose={...} onSaved={handleGuestSaved} showToast={showToast} />`. התנהגות זהה ב-100% לקודם (אומת ע"י diff לוגי, לא רק "זה נראה דומה").
+- ✅ `GuestDashboard.js` — `AddGuestForm` (הטופס המקוצר), `fmtPhone`, `handleAddGuest`, `showAdd`, `addBusy` הוסרו לחלוטין; הוחלפו ב-`addingGuest` state + `<AddGuestModal>` עם `handleGuestSaved` (merge+sort לפי arrival_date/name, תואם ל-sort הקודם). ⚠️ **שינוי התנהגות מכוון:** אורח שנוסף מ-GuestDashboard כיום לא מקבל `room_type`/`departure_date` (שדות שהיו בטופס הישן ולא קיימים בטופס המאוחד) — `room_type` יישאר `null` עד שינוקה/ימופה ע"י ייבוא; זה תוצר ישיר של איחוד לטופס אחד לפי בקשת Mike, לא באג.
+- ✅ `npm run build` — Compiled with warnings (אזהרה אחת קיימת מראש ולא קשורה: `ShiftsPage` unused ב-App.js, מתועדת כבר מ-session 8). גודל ה-bundle בפועל **קטן** ב-842B אחרי האיחוד (קוד כפול הוסר).
+- ✅ commit `2c7b15d` + `git push` ל-main (Vercel auto-deploy). **לא** הוכלל ב-commit הזה: עבודת ה-Resilient Import Agent הממתינה (`ArrivalImportPanel.js`/`ezgoParser.js`/`MappingReviewPanel.js`/`importMapper.js` וכו') — נשארת מושהית ב-working tree, ראה "פריטים פתוחים" למעלה. לא בוצע QA חי בדפדפן בסשן זה (אין session דפדפן מחובר) — Mike: לבדוק ב-Vercel preview ש-"➕ הוסף אורח" עובד גם ב-GuestDashboard וגם ב-GuestsPage, ושה-Sidebar אכן לא מציג את שתי הלשוניות שהוסרו.
 
 #### session 11 — Jun 20 2026 (Pipeline polish — cron safeguard, non-2xx root cause, retry-safe failures, Pipeline Monitor design)
 - ✅ **תוקן (Mike's explicit decision):** `whatsapp-cron/index.ts` — נוסף `!g.needs_callback` ל-`morning_welcome`+`morning_suite` (שניהם שולחים `dream_welcome_morning`). אורח עם needs_callback פתוח (למשל "לא,שינוי בתאריך") לא יקבל "בוקר טוב, מחכים לך!" יותר. `needs_callback` נוסף ל-SELECT.
