@@ -1,6 +1,6 @@
 # CLAUDE.md — Dream Island AI System
 > קובץ זה נקרא אוטומטית בכל שיחה. הוא מקור-האמת שלך. קרא אותו לפני כל פעולה.
-> **עדכון אחרון:** 2026-06-20 (session 12 — UI cleanup: הסרת "פירוט חדרים"/"לוח ספא" מה-Sidebar, איחוד טופס הוספת/עריכת אורח ל-AddGuestModal משותף)
+> **עדכון אחרון:** 2026-06-21 (session 14 — Cline regression audit: תוקן optional-placeholder contract ב-webhook, נמצא ותוקן באג `.catch()` לא-חוקי על Postgrest builder שגרם לשגיאת "שליחת אוטומציה", ונמצא ותוקן שורש "onboarding loop" — trigger חסר על auth.users)
 
 ---
 
@@ -623,6 +623,10 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
 | AICopilot WhatsApp send — fail visible | ✅ Completed | `handleApprove` בודק את `{error}` מ-`whatsapp-send` invoke; בכשל — toast שגיאה, ה-alert לא נעלם, room_status/guests.status לא מתקדמים |
 | Sidebar decluttering (session 12) | ✅ Completed, committed (2c7b15d), pushed ל-main | "פירוט חדרים" (`suites`) ו"לוח ספא — אישור" (`spa_staging`) הוסרו מ-`allNavItems` ב-`App.js`'s `Sidebar`. ה-route+component עדיין קיימים (deep-link בלבד) — ראה §4. |
 | Universal AddGuestModal (עקרון #5, session 12) | ✅ Completed, committed (2c7b15d), pushed ל-main | `AddGuestModal.js` חולץ מ-GuestsPage.js (כל השדות, כולל `spa_time`/`treatment_count`/`order_number`) ומוזרק גם ל-GuestDashboard.js, שהחליף את הטופס המקוצר שלו (`AddGuestForm`) שלא היה לו `spa_time` — סוגר את פער ה-Single Source of Truth שתואר ב-Phase 6/§0.5. |
+| AddGuestModal — `room_type` + `departure_date` (session 12 follow-up) | ✅ Completed | שדות שחסרו מהאיחוד הראשוני נוספו, עם validation שתאריך עזיבה לא לפני תאריך הגעה. |
+| webhook optional-placeholder regression (session 14) | ✅ Fixed, deployed | Cline שינה את `{{OPTIONAL_SPA_TEXT}}`/`{{SPA_LINE}}` ממשפט-משנה אופציונלי למשפט קשיח שתמיד מוחזר — בסתירה ל-docstring. הוחזר לחוזה המתועד. |
+| `.catch()` על Postgrest builder — "שגיאת שליחת אוטומציה" (session 14) | ✅ Fixed, deployed | באג ישן (commit a2e0cef, 15 ביוני) שנחשף ע"י תיקון session 11 (HTTP 200 + הודעת שגיאה מפורטת). 6 מופעים תוקנו ב-whatsapp-send + whatsapp-webhook. |
+| Onboarding Loop — trigger חסר על auth.users (session 14) | ✅ Fixed, deployed | `handle_new_auth_user()` הוגדרה 4 פעמים אך אף migration לא חיברה אותה ל-`auth.users`. migration 052 מוסיפה את ה-CREATE TRIGGER + backfill. `DepartmentOnboardingModal` עבר ל-upsert + banner שגיאה גלוי. `loadUserWithProfile`'s `.single()` → `.maybeSingle()`. |
 
 ### 🟡 חלקי / דורש אימות
 
@@ -680,6 +684,20 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
 ---
 
 ### היסטוריית סשנים
+
+#### session 14 — Jun 21 2026 (Cline regression audit — webhook contract fix, .catch() bug, onboarding loop root cause)
+> הקשר: Mike עשה כמה שינויים עם Cline (כלי AI אחר) כדי לתקן באג "spa_time חסר מהודעות". Cline דיווח "✅ פרוס" אבל גם "הוחזר לגרסה מקורית" עבור חלק מהקבצים — נדרש audit מלא להבין מה באמת רץ בפרודקשן לפני שמתקנים עוד דברים.
+
+- 🔍 **Audit מסקנה:** `whatsapp-send/index.ts` ו-`whatsapp-cron/index.ts` היו **נקיים** — אין uncommitted diff, וה-deploy timestamp האחרון של כל אחד תואם בדיוק לקומיט האחרון שנגע בו (session 11 / session 13 בהתאמה). ה-`SPA_TIME_FIX_SUMMARY.md` שCline השאיר (תיאר שינויים ב-cron SELECT + send PIPELINE_VARS) **לא שיקף מצב אמיתי** — הקובץ נמחק. רק `whatsapp-webhook/index.ts` היה עם שינוי לא-committed, וכבר היה פרוס (v70).
+- 🐛→✅ **רגרסיה ב-webhook נמצאה ותוקנה:** Cline שינה את `{{OPTIONAL_SPA_TEXT}}`/`{{SPA_LINE}}` ב-`resolvePlaceholders()` ממשפט-משנה אופציונלי (ריק כשאין ספא, "זורם" בתוך משפט שהמנהל כתב) למשפט שלם שמוחזר תמיד — **בסתירה ל-docstring של הפונקציה עצמה** שעדיין תיאר את ההתנהגות הישנה. תוקן בחזרה לחוזה המתועד; `buildSpaSentence()` נשאר רק לנתיב ה-fallback הקשיח (כשאין שורת DB לסקריפט). גם שוחזר משפט שאבד בטעות מ-`FALLBACK_SYSTEM_PROMPT`, וצומצם לוג דיאגנוסטי כפול שדמפ את כל אובייקט האורח (PII-noise) ללוג קיים אחד.
+- ✅ **`BotScriptEditor.js` תוקן (תיעוד, לא קוד):** ההערה שתיארה `{{SPA_TIME}}` כ-"מ-bookings.treatment_time" הייתה שגויה כבר כמה sessions — המקור האמיתי הוא `guests.spa_time`. נוסף גם תיעוד ל-`{{SPA_LINE}}`/`{{OPTIONAL_SPA_TEXT}}` שלא הוזכרו כלל בבאנר ה-UI — מנהל שעורך את שלב 2 רואה כעת את כל ה-placeholders הזמינים, כולל ההבדל בין "מוחק משפט שלם" ל"משפט-משנה אופציונלי".
+- 🐛→✅ **שורש "שגיאה בשליחת אוטומציה" (popup אדום, "Send to all") נמצא ותוקן — לא קשור ל-Cline בכלל:** `שגיאה: supabase.from(...).insert(...).catch is not a function`. ה-Postgrest query builder הוא PromiseLike (מימש `.then()` בלבד) ולא Promise מלא — שרשור `.catch()` ישירות עליו זורק TypeError במקום לבלוע את השגיאה. **באג קיים מאז commit a2e0cef (15 ביוני)** — לא משהו שCline הכניס. ה-WhatsApp עצמו תמיד הגיע בהצלחה; ה-throw קרה בצעד הלוגינג הלא-קריטי ("רשום ל-whatsapp_conversations") *אחרי* השליחה. **למה זה "נראה חדש":** session 11 (שלי) שינה את ה-outer catch של whatsapp-send מ-HTTP 400 גנרי ל-200+הודעת שגיאה מפורטת — וזה מה שחשף את הטקסט המדויק של ה-TypeError לפרונטאנד בפעם הראשונה. תוקן 6 מופעים (2 ב-`whatsapp-send`, 4 ב-`whatsapp-webhook`) ל-try/catch תקין (כולל IIFE ל-2 מקרי fire-and-forget). פרוס: שני ה-functions.
+- 🐛→✅ **שורש "Onboarding Loop" נמצא ותוקן (לא קשור ל-BotScriptEditor כמו שחשבנו בהתחלה):** `handle_new_auth_user()` הוגדרה מחדש 4 פעמים (migrations 002/003/004/014) אבל **אף migration לא הכילה את ה-`CREATE TRIGGER` שמחבר אותה בפועל ל-`auth.users`** — נבדק עם `grep` על כל תיקיית migrations, אין שום `CREATE TRIGGER ... ON auth.users` בהיסטוריה. תוצאה: משתמש חדש ב-Supabase Auth (כמו "אפק") לא קיבל שורת `profiles` בכלל. `DepartmentOnboardingModal.handleSave` עשה `UPDATE profiles WHERE id=?` על שורה שלא קיימת — Postgres מחזיר 0 שורות שהשתנו, **לא שגיאה** — אז הפרונטאנד חשב שהשמירה הצליחה. בכל F5, `loadUserWithProfile()` לא מצא שורה (שוב), `user.department` נשאר ריק, ומודאל הonboarding חזר — לופ אינסופי.
+  **תוקן:** migration 052 — `CREATE TRIGGER on_auth_user_created AFTER INSERT ON auth.users` (idempotent) + backfill לכל `auth.users` שעדיין חסרה לו שורת profiles. `DepartmentOnboardingModal.handleSave` — `update()`→`upsert()` (הגנה כפולה, גם אם התריגר ייכשל שוב בעתיד), נוסף banner שגיאה גלוי במודאל (לפני כן: `console.error` בלבד, אפס פידבק למשתמש). `loadUserWithProfile` — `.single()`→`.maybeSingle()` (קו אדום §9 שהוחמץ בעבר). `role` הושאר בכוונה מחוץ ל-upsert payload — DB default על insert, נשאר ללא שינוי על conflict, תואם להערה הקיימת "DB trigger + admin promote manages role".
+- ✅ `npm run build` נקי (פעמיים, אחרי כל קבוצת תיקונים) — רק האזהרה הקיימת מראש (`ShiftsPage`).
+- ✅ פרוס: `whatsapp-webhook` (פעמיים), `whatsapp-send`. `supabase db push` — migration 052 applied.
+- ✅ נמחק קובץ זבל מתאונת טרמינל (`"upabase functions deploy whatsapp-webhook --no-verify-jwt"` — הכיל בפועל dump של git diff, לא היה קובץ קוד) + 2 קבצי test payload זמניים + `SPA_TIME_FIX_SUMMARY.md` (הוחלף ע"י הערך הזה).
+- ⚠️ **שיעור מהסשן:** "האוטומציה הפסיקה לעבוד אחרי ש-Cline נגע בקוד" לא תמיד אומר שCline שבר אותה — שני מתוך שלוש התלונות (`.catch()` + onboarding loop) היו באגים ישנים שקדמו ל-Cline לחלוטין, רק *נחשפו* עכשיו. לפני שמתקנים "מה ש-AI אחר שינה" — קודם לוודא בפועל מה רץ היום (git diff + deploy timestamps + audit עצמאי), לא להניח מהסיכום שה-AI הקודם כתב על עצמו.
 
 #### session 12 — Jun 20 2026 (UI cleanup — sidebar declutter + Universal AddGuestModal)
 - ✅ **Sidebar decluttering:** הוסרו שתי שורות מ-`allNavItems` ב-`App.js`'s `Sidebar` component — `{ id: "suites", ... }` ("פירוט חדרים") ו-`{ id: "spa_staging", ... }` ("לוח ספא — אישור"). ה-routes עצמם (ב-switch הראשי) וה-components (`SuitesDashboard.js`, `SpaStagingPanel.js`) **לא** נמחקו — לפי בקשת Mike, רק unhook מהניווט הפעיל. אם צריך גישה ל-deep-link בעתיד, אפשר עדיין לנווט אליהם פרוגרמטית (`setActivePage("suites")` וכו') — הם פשוט לא נגישים יותר מה-Sidebar.
