@@ -16,6 +16,8 @@
 import { useState, useEffect, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import AddGuestModal from "./AddGuestModal";
+import GuestAttentionBadge from "./GuestAttentionBadge";
+import { STATUS_META } from "../utils/guestStatusMeta";
 
 // ── Date helpers (local time) ─────────────────────────────────────────────────
 function localISO(offsetDays = 0) {
@@ -40,6 +42,21 @@ function ArrivalBadge({ date }) {
   if (date === localISO(1))
     return <span style={{ ...base, background: "#E8F0FE", color: "#1A56DB" }}>מחר</span>;
   return <span style={{ ...base, background: "var(--ivory)", color: "var(--text-muted)" }}>{date}</span>;
+}
+
+function StatusBadge({ status }) {
+  // FAIL VISIBLE (CLAUDE.md §0.3): an unrecognized status must show as a
+  // visible warning, not silently fall back to a "looks fine" label.
+  const sm = STATUS_META[status] ?? { label: `⚠ ${status ?? "ללא סטטוס"}`, bg: "#FFF0EE", color: "#C0392B" };
+  return (
+    <span style={{
+      display: "inline-flex", alignItems: "center",
+      padding: "2px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700,
+      background: sm.bg, color: sm.color,
+    }}>
+      {sm.label}
+    </span>
+  );
 }
 
 function PipelineStage({ label, done }) {
@@ -162,7 +179,8 @@ export default function GuestDashboard({ user }) {
       .from("guests")
       .select(
         "id, name, phone, room, room_type, arrival_date, departure_date, status, " +
-        "msg_pre_arrival_sent, msg_room_ready_sent, msg_post_checkin_sent"
+        "msg_pre_arrival_sent, msg_room_ready_sent, msg_post_checkin_sent, " +
+        "requires_attention, guest_notes, attention_reason, arrival_confirmed, spa_time"
       )
       .order("arrival_date", { ascending: true })
       .order("name",         { ascending: true });
@@ -478,9 +496,20 @@ export default function GuestDashboard({ user }) {
                     />
                     <div style={{ fontWeight: 800, fontSize: 16, color: "var(--black)" }}>
                       {guest.name}
+                      {guest.arrival_confirmed && (
+                        <span style={{ fontSize: 10, marginRight: 6, background: "#E8F5EF", color: "#1A7A4A", padding: "2px 6px", borderRadius: 8, fontWeight: 700, verticalAlign: "middle" }}>✓ אישר הגעה</span>
+                      )}
+                      <GuestAttentionBadge
+                        guest={guest}
+                        showToast={showToast}
+                        onUpdated={(updated) =>
+                          setGuests((prev) => prev.map((g) => (g.id === updated.id ? { ...g, ...updated } : g)))
+                        }
+                      />
                     </div>
                   </div>
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <StatusBadge status={guest.status} />
                     <ArrivalBadge date={guest.arrival_date} />
                     <button
                       onClick={() => deleteGuest(guest)}
@@ -535,6 +564,11 @@ export default function GuestDashboard({ user }) {
                   {guest.departure_date && (
                     <span style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 500 }}>
                       עד {guest.departure_date}
+                    </span>
+                  )}
+                  {guest.spa_time && (
+                    <span style={{ fontSize: 13, color: "#7c3aed", fontWeight: 800 }}>
+                      💆 ספא {guest.spa_time}
                     </span>
                   )}
                   <RoomTypeBadge type={guest.room_type} />

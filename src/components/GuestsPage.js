@@ -6,13 +6,8 @@ import { useState, useEffect, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import { SUITE_REGISTRY } from "../data/suiteRegistry";
 import AddGuestModal from "./AddGuestModal";
-
-const STATUS_META = {
-  pending:    { label: "טרם נקלט",  bg: "#F5F5F5", color: "#888888" },
-  expected:   { label: "ממתין",     bg: "#FFF5E8", color: "#B5600A" },
-  room_ready: { label: "חדר מוכן",  bg: "#E8F5EF", color: "#1A7A4A" },
-  checked_in: { label: "צ'ק-אין",   bg: "#EEF4FF", color: "#2952A3" },
-};
+import GuestAttentionBadge from "./GuestAttentionBadge";
+import { STATUS_META } from "../utils/guestStatusMeta";
 
 export default function GuestsPage() {
   const [guests, setGuests]   = useState([]);
@@ -372,9 +367,13 @@ export default function GuestsPage() {
                         {g.arrival_confirmed && (
                           <span style={{ fontSize: 10, marginRight: 6, background: "#E8F5EF", color: "#1A7A4A", padding: "2px 6px", borderRadius: 8, fontWeight: 700, verticalAlign: "middle" }}>✓ אישר</span>
                         )}
-                        {g.requires_attention && (
-                          <span style={{ fontSize: 11, marginRight: 4, verticalAlign: "middle" }} title="דורש טיפול">🔴</span>
-                        )}
+                        <GuestAttentionBadge
+                          guest={g}
+                          showToast={showToast}
+                          onUpdated={(updated) =>
+                            setGuests((prev) => prev.map((x) => (x.id === updated.id ? { ...x, ...updated } : x)))
+                          }
+                        />
                       </td>
                       <td style={{ direction: "ltr", fontSize: 13 }}>{g.phone ?? "—"}</td>
                       <td>{g.room ?? roomByPhone[g.phone]?.roomName ?? "—"}</td>

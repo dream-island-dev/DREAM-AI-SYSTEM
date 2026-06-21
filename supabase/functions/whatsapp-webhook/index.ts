@@ -79,6 +79,7 @@ const FALLBACK_SYSTEM_PROMPT = `
 • אם האורח ממשיך נושא שנדון קודם — התייחס אליו ישירות, ללא הקדמות
 • דבר בגוף ראשון כנציג הצוות — "נדאג", "נסדר", "נשמח לעזור"
 • לעולם אל תכלול תגיות פנימיות כגון [תבנית:...] בתשובתך — הטקסט שלך נשלח ישירות לאורח.
+• אם האורח מעלה בקשה, הערה או דרישה ספציפית (למשל: בלונים ליום הולדת, ציוד מיוחד, בקשה לחדר) — אשר/י לו בחמימות שזה נרשם ויועבר לצוות. המערכת שומרת זאת אוטומטית בקובץ האורח — תפקידך רק לאשר זאת בתשובה, לא "לדאוג" לשמירה בעצמך.
 `.trim();
 
 // Module-level cache: shared across requests within the same function instance
@@ -87,7 +88,7 @@ let _cacheTime = 0;
 const CONFIG_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 // Cache for bot_settings (admin-controlled prompt override)
-let _botSettingsCache: { system_prompt: string; knowledge_base: string } | null = null;
+let _botSettingsCache: { system_prompt: string; knowledge_base: string; preferred_model: string | null } | null = null;
 let _botSettingsCacheTime = 0;
 
 // ── §1b  BOT SCRIPTS — loaded from bot_scripts table, cached 5 min ──────────
@@ -148,6 +149,15 @@ function resolvePlaceholders(
     ? `מתואם לכם טיפול בספא בשעה ${vars.spaTime}.\n`
     : "";
 
+  // DIAGNOSTIC: exact spa string this function received and computed, right
+  // before substitution — call-site logs (search "🩺 resolvePlaceholders input")
+  // already show whether the saved script contains the placeholder; this shows
+  // what the function itself does with the value once it gets here.
+  console.log(
+    `[webhook] 🩺 resolvePlaceholders() — spaTime:${JSON.stringify(vars.spaTime)}` +
+    ` spaLine:${JSON.stringify(spaLine)} optionalSpaText:${JSON.stringify(optionalSpaText)}`
+  );
+
   // Tolerant of internal whitespace ("{{ OPTIONAL_SPA_TEXT }}") and casing —
   // a script edited by hand via BotScriptEditor is exactly where a stray space
   // or wrong case would silently break a strict literal match, leaving the
@@ -197,8 +207,8 @@ async function fetchBotConfig(
 
 async function fetchBotSettings(
   supabaseClient: ReturnType<typeof createClient>
-): Promise<{ system_prompt: string; knowledge_base: string }> {
-  const empty = { system_prompt: "", knowledge_base: "" };
+): Promise<{ system_prompt: string; knowledge_base: string; preferred_model: string | null }> {
+  const empty = { system_prompt: "", knowledge_base: "", preferred_model: null };
   const now = Date.now();
   if (_botSettingsCache && now - _botSettingsCacheTime < CONFIG_TTL_MS) {
     return _botSettingsCache;
@@ -206,7 +216,7 @@ async function fetchBotSettings(
   try {
     const { data, error } = await supabaseClient
       .from("bot_settings")
-      .select("system_prompt, knowledge_base")
+      .select("system_prompt, knowledge_base, preferred_model")
       .eq("id", 1)
       .maybeSingle();
     if (error || !data) {
@@ -214,8 +224,9 @@ async function fetchBotSettings(
       return _botSettingsCache ?? empty;
     }
     _botSettingsCache = {
-      system_prompt:  ((data as Record<string, unknown>).system_prompt  as string) ?? "",
-      knowledge_base: ((data as Record<string, unknown>).knowledge_base as string) ?? "",
+      system_prompt:   ((data as Record<string, unknown>).system_prompt   as string) ?? "",
+      knowledge_base:  ((data as Record<string, unknown>).knowledge_base  as string) ?? "",
+      preferred_model: ((data as Record<string, unknown>).preferred_model as string | null) ?? null,
     };
     _botSettingsCacheTime = now;
     return _botSettingsCache;
@@ -223,6 +234,38 @@ async function fetchBotSettings(
     console.warn("[webhook] fetchBotSettings error:", (e as Error).message);
     return _botSettingsCache ?? empty;
   }
+}
+
+// ── §1d  DYNAMIC MODEL ROUTING — preferred_model A/B testing & cost control ──
+// Maps the admin-chosen bot_settings.preferred_model value to a concrete
+// routing decision. Reordering (not replacing) GEMINI_MODELS preserves the
+// existing 404-resilience chain underneath a cost/quality pick — and the
+// "claude" branch still falls through to the full Gemini chain on failure
+// (and vice versa) at the call site, so a stale/restricted ANTHROPIC_API_KEY
+// can never go silent for guests, even when Claude is the chosen default.
+function resolveModelRoute(
+  preferredModel: string | null,
+): { engine: "gemini" | "claude"; geminiOrder: string[] } {
+  const normalized = (preferredModel ?? "").trim();
+
+  if (normalized === "claude" || normalized === CLAUDE_MODEL) {
+    return { engine: "claude", geminiOrder: GEMINI_MODELS };
+  }
+
+  if (GEMINI_MODELS.includes(normalized)) {
+    return {
+      engine: "gemini",
+      geminiOrder: [normalized, ...GEMINI_MODELS.filter((m) => m !== normalized)],
+    };
+  }
+
+  // Empty (no override configured) or unrecognized (typo / deprecated model id).
+  // Default per Mike's decision: route to Claude first. Only warn for the
+  // typo case — an empty value is the normal "no override set" state, not an error.
+  if (normalized) {
+    console.warn(`[webhook] unknown preferred_model "${normalized}" — ignoring, defaulting to claude`);
+  }
+  return { engine: "claude", geminiOrder: GEMINI_MODELS };
 }
 
 function buildSystemPrompt(cfg: Record<string, string>): string {
@@ -269,6 +312,7 @@ ${persona}
 7. אם ידוע לך שלב האורח (לפני הגעה / במהלך שהות) — התאם את הטון בהתאם.
 ${faqRule ? `8. ${faqRule}` : ""}
 9. לעולם אל תכלול תגיות פנימיות כגון [תבנית:...] או [...] בתשובתך — הטקסט שלך נשלח ישירות לאורח.
+10. אם האורח מעלה בקשה, הערה או דרישה ספציפית (כגון בלונים ליום הולדת, ציוד מיוחד, בקשה לחדר) — אשר/י לו בחמימות שזה נרשם ויועבר לצוות. המערכת שומרת כל הודעה כזו אוטומטית בקובץ האורח — תפקידך רק לאשר זאת בתשובה באופן טבעי.
 `.trim();
 }
 
@@ -285,6 +329,7 @@ function buildGuestStageContext(
   const room     = guest.room        as string | null;
   const roomType = guest.room_type   as string | null;
   const confirmed = guest.arrival_confirmed as boolean | null;
+  const spaTime  = guest.spa_time    as string | null;
 
   let stage = "";
   if (arrDate) {
@@ -307,6 +352,7 @@ function buildGuestStageContext(
   if (room)       parts.push(`חדר: ${room}`);
   if (roomType === "suite") parts.push("סוג: סוויטה");
   if (confirmed)  parts.push("אישר הגעה: כן");
+  if (spaTime)    parts.push(`שעת טיפול ספא: ${spaTime}`);
   if (hasStage2)  parts.push("כבר קיבל הודעת אישור+ספא");
   if (hasStage3)  parts.push("כבר קיבל הודעת בוקר הגעה");
 
@@ -509,6 +555,7 @@ async function askGemini(
   guestName: string | null,
   history: Array<{ direction: string; message: string }>,
   systemPrompt: string,
+  modelOrder: string[] = GEMINI_MODELS,
 ): Promise<string> {
   const apiKey = Deno.env.get("GEMINI_API_KEY");
   if (!apiKey) throw new Error("GEMINI_API_KEY not set");
@@ -535,17 +582,17 @@ async function askGemini(
   // Final user turn — current message
   const currentTurn = {
     role: "user",
-    parts: [{ text: `${userMessage}\n\n(ענה בעברית, 2–4 משפטים, נימה פרמיום)` }],
+    parts: [{ text: `${userMessage}\n\n(ענה בעברית)` }],
   };
 
   const contents = [systemTurn, confirmTurn, ...historyTurns, currentTurn];
 
   const body = JSON.stringify({
     contents,
-    generationConfig: { maxOutputTokens: 400, temperature: 0.65, candidateCount: 1 },
+    generationConfig: { maxOutputTokens: 1000, temperature: 0.65, candidateCount: 1 },
   });
 
-  for (const model of GEMINI_MODELS) {
+  for (const model of modelOrder) {
     console.log(`[webhook] calling Gemini model="${model}" msgLen=${userMessage.length}`);
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
@@ -576,7 +623,7 @@ async function askGemini(
 
   // All hardcoded models failed → query the API to find whatever is currently available
   const discovered = await discoverGeminiModel(apiKey);
-  if (discovered && !GEMINI_MODELS.includes(discovered)) {
+  if (discovered && !modelOrder.includes(discovered)) {
     console.log(`[webhook] trying auto-discovered model="${discovered}"`);
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${discovered}:generateContent?key=${apiKey}`,
@@ -606,7 +653,7 @@ async function callClaude(
 
   const system = systemPrompt
     + (guestName ? `\n\nשם האורח/ת: ${guestName}. פנה/י אליו/ה בשמו/ה.` : "")
-    + "\n\nענה תמיד בעברית. 2–4 משפטים בלבד. נימה פרמיום.";
+    + "\n\nענה תמיד בעברית.";
 
   // Convert history to Claude alternating user/assistant format
   const rawMessages = [
@@ -633,7 +680,7 @@ async function callClaude(
   const anthropic = new Anthropic({ apiKey: key });
   const resp = await anthropic.messages.create({
     model:      CLAUDE_MODEL,
-    max_tokens: 800,
+    max_tokens: 1000,
     system,
     messages,
   });
@@ -929,7 +976,7 @@ serve(async (req: Request) => {
           .maybeSingle(),
         supabase
           .from("guests")
-          .select("id, name, arrival_confirmed, payment_amount, payment_link_url, msg_pre_arrival_2d_sent, needs_callback, requires_attention, arrival_date, room, room_type, spa_time")
+          .select("id, name, arrival_confirmed, payment_amount, payment_link_url, msg_pre_arrival_2d_sent, needs_callback, requires_attention, arrival_date, room, room_type, spa_time, status, guest_notes")
           .eq("phone", phone)
           .maybeSingle(),
       ]);
@@ -947,6 +994,12 @@ serve(async (req: Request) => {
         ` needs_callback:${guest?.needs_callback ?? "null"} spa_time:${JSON.stringify(guest?.spa_time)}` +
         ` isButton:${isButtonReply} btnTitle:"${buttonTitle}" sim:${sim}`
       );
+      // Explicit, grep-friendly lines on every message (not just faq/fallback) —
+      // scoped to just these two fields rather than the full guest object,
+      // which also carries payment_amount/payment_link_url (PII-noise reduced
+      // deliberately in session 14; see CLAUDE.md §10).
+      console.log(`[webhook] Found Spa Time: ${guest?.spa_time ?? "(none)"}`);
+      console.log(`[webhook] Guest Notes: ${guest?.guest_notes ?? "(none)"}`);
 
       // ── Human-handoff gate — thread claimed by staff, bot is silenced ─────
       // Set when guest clicks "לא,שינוי בתאריך" or types a date-change request.
@@ -1036,7 +1089,17 @@ serve(async (req: Request) => {
           buttonId.toLowerCase().includes("arriving") ||
           buttonId.toLowerCase().includes("yes_arrive");
         if (isArrivalConfirm) {
-          if (guestId) await supabase.from("guests").update({ arrival_confirmed: true }).eq("id", guestId);
+          // Promote pending → expected ("ממתין" in STATUS_META/GuestsPage.js) only
+          // from the pre-confirmation state — never revert a guest who is already
+          // further along (room_ready/checked_in) just because a stray confirmation
+          // text matched after the fact.
+          if (guestId) {
+            const { error: confirmErr } = await supabase.from("guests").update({
+              arrival_confirmed: true,
+              ...(guest?.status === "pending" ? { status: "expected" } : {}),
+            }).eq("id", guestId);
+            if (confirmErr) console.error(`[webhook] arrival_confirmed update FAILED phone:${phone}:`, confirmErr.message);
+          }
 
           const safeName    = name.trim() || "אורח יקר";
           const workshopUrl = Deno.env.get("WORKSHOP_SIGNUP_URL") ?? "";
@@ -1049,11 +1112,24 @@ serve(async (req: Request) => {
             // DIAGNOSTIC (session 10): pins down spa_time placeholder issues without
             // guessing — logs the exact DB value and whether the saved script text
             // contains the placeholder at all, so a future report has hard evidence.
+            const hasOptionalSpaText = /\{\{\s*OPTIONAL_SPA_TEXT\s*\}\}/i.test(stage2Script.message_text);
+            const hasSpaLine         = /\{\{\s*SPA_LINE\s*\}\}/i.test(stage2Script.message_text);
+            const hasSpaTimeLegacy   = /\{\{\s*SPA_TIME\s*\}\}/i.test(stage2Script.message_text);
             console.log(
               `[webhook] 🩺 resolvePlaceholders input — phone:${phone} spaTime:${JSON.stringify(spaTime)}` +
-              ` scriptHasOptionalSpaText:${/\{\{\s*OPTIONAL_SPA_TEXT\s*\}\}/i.test(stage2Script.message_text)}` +
-              ` scriptHasSpaLine:${/\{\{\s*SPA_LINE\s*\}\}/i.test(stage2Script.message_text)}`
+              ` scriptHasOptionalSpaText:${hasOptionalSpaText} scriptHasSpaLine:${hasSpaLine} scriptHasSpaTime:${hasSpaTimeLegacy}`
             );
+            // FAIL VISIBLE: a guest with a real spa booking whose saved script has
+            // no spa placeholder at all will never mention it, silently, regardless
+            // of DB data — this is the "Condition B with valid spa_time" report.
+            if (spaTime && !hasOptionalSpaText && !hasSpaLine && !hasSpaTimeLegacy) {
+              console.warn(
+                `[webhook] ⚠️ guest ${phone} has spa_time="${spaTime}" but the saved ` +
+                `stage_2_arrival script contains no spa placeholder ({{SPA_LINE}}/` +
+                `{{OPTIONAL_SPA_TEXT}}/{{SPA_TIME}}) — reply will never mention spa. ` +
+                `Check the script text in BotScriptEditor.`
+              );
+            }
             arrivalReply = resolvePlaceholders(stage2Script.message_text, {
               guestName: safeName, spaTime, workshopUrl,
             });
@@ -1101,6 +1177,7 @@ serve(async (req: Request) => {
               requires_attention:       true,
               requires_attention_since: new Date().toISOString(),
               needs_callback:           true,
+              attention_reason:         "date_change",
             }).eq("id", guestId);
           }
           // Alert row for staff dashboard — fire-and-forget, but wrapped so a
@@ -1132,6 +1209,7 @@ serve(async (req: Request) => {
           if (guestId) {
             await supabase.from("guests").update({
               needs_callback: true, requires_attention: true, requires_attention_since: new Date().toISOString(),
+              attention_reason: "human_callback",
             }).eq("id", guestId);
           }
           const callbackReply = scripts["callback_reply"]?.message_text?.trim()
@@ -1220,12 +1298,23 @@ serve(async (req: Request) => {
       }
 
       // ── Text confirmation detection (fallback for guests who type "כן" manually) ──
+      // Gate is lifecycle-based (not yet checked in / not cancelled), not on
+      // msg_pre_arrival_2d_sent — that flag only flips once whatsapp-cron's
+      // T-2 reminder fires, and CRON_ENABLED has never been turned on in this
+      // project (see CLAUDE.md §6 KILL SWITCH), so the old guard made this
+      // entire fallback path permanently dead in production.
       if (
         CONFIRMATION_RE.test(text.trim()) &&
-        guest?.msg_pre_arrival_2d_sent &&
-        !guest?.arrival_confirmed
+        !guest?.arrival_confirmed &&
+        guest?.status !== "checked_in" &&
+        guest?.status !== "cancelled"
       ) {
-        await supabase.from("guests").update({ arrival_confirmed: true }).eq("id", guestId);
+        // Same pending → expected guard as the button-tap path above.
+        const { error: confirmErr2 } = await supabase.from("guests").update({
+          arrival_confirmed: true,
+          ...(guest?.status === "pending" ? { status: "expected" } : {}),
+        }).eq("id", guestId);
+        if (confirmErr2) console.error(`[webhook] arrival_confirmed (text) update FAILED phone:${phone}:`, confirmErr2.message);
         await supabase.from("whatsapp_conversations").insert({
           phone, guest_id: guestId, direction: "inbound",
           message: text, wa_message_id: msgId, intent: "confirmation",
@@ -1240,11 +1329,22 @@ serve(async (req: Request) => {
         const stage2Script2 = scripts["stage_2_arrival"];
         let textArrivalReply: string;
         if (stage2Script2?.message_text?.trim()) {
+          const hasOptionalSpaText2 = /\{\{\s*OPTIONAL_SPA_TEXT\s*\}\}/i.test(stage2Script2.message_text);
+          const hasSpaLine2         = /\{\{\s*SPA_LINE\s*\}\}/i.test(stage2Script2.message_text);
+          const hasSpaTimeLegacy2   = /\{\{\s*SPA_TIME\s*\}\}/i.test(stage2Script2.message_text);
           console.log(
             `[webhook] 🩺 resolvePlaceholders input (text-confirm) — phone:${phone} spaTime:${JSON.stringify(spaTime2)}` +
-            ` scriptHasOptionalSpaText:${/\{\{\s*OPTIONAL_SPA_TEXT\s*\}\}/i.test(stage2Script2.message_text)}` +
-            ` scriptHasSpaLine:${/\{\{\s*SPA_LINE\s*\}\}/i.test(stage2Script2.message_text)}`
+            ` scriptHasOptionalSpaText:${hasOptionalSpaText2} scriptHasSpaLine:${hasSpaLine2} scriptHasSpaTime:${hasSpaTimeLegacy2}`
           );
+          // Same FAIL VISIBLE safety net as the button-tap path above.
+          if (spaTime2 && !hasOptionalSpaText2 && !hasSpaLine2 && !hasSpaTimeLegacy2) {
+            console.warn(
+              `[webhook] ⚠️ guest ${phone} has spa_time="${spaTime2}" but the saved ` +
+              `stage_2_arrival script contains no spa placeholder ({{SPA_LINE}}/` +
+              `{{OPTIONAL_SPA_TEXT}}/{{SPA_TIME}}) — reply will never mention spa. ` +
+              `Check the script text in BotScriptEditor.`
+            );
+          }
           textArrivalReply = resolvePlaceholders(stage2Script2.message_text, {
             guestName: safeName2, spaTime: spaTime2, workshopUrl: workshopUrl2,
           });
@@ -1301,6 +1401,7 @@ serve(async (req: Request) => {
             requires_attention:       true,
             requires_attention_since: new Date().toISOString(),
             needs_callback:           true,
+            attention_reason:         "date_change",
           }).eq("id", guestId);
         }
 
@@ -1427,19 +1528,58 @@ serve(async (req: Request) => {
         const enrichedPrompt = finalSystemPrompt
           + (guestCtx ? `\n\nפרטי האורח הנוכחי: ${guestCtx}` : "");
 
+        // Dynamic engine routing (A/B testing & cost optimization) — preferred
+        // engine is tried first, with the other engine kept as an automatic
+        // safety net on failure so a restricted/expired key never goes silent.
+        const route = resolveModelRoute(botSettings.preferred_model);
+        console.info(`[webhook] model route: engine=${route.engine} preferred="${botSettings.preferred_model ?? "(unset)"}"`);
+
         try {
-          reply = sanitizeReply(await askGemini(text, guestName, orderedHistory, enrichedPrompt));
+          reply = sanitizeReply(
+            route.engine === "claude"
+              ? await callClaude(text, guestName, orderedHistory, enrichedPrompt)
+              : await askGemini(text, guestName, orderedHistory, enrichedPrompt, route.geminiOrder)
+          );
         } catch (e) {
-          console.error("[webhook] Gemini failed → trying Claude:", (e as Error).message);
+          const fallbackEngine = route.engine === "claude" ? "gemini" : "claude";
+          console.error(`[webhook] ${route.engine} failed → trying ${fallbackEngine}:`, (e as Error).message);
           try {
-            reply = sanitizeReply(await callClaude(text, guestName, orderedHistory, enrichedPrompt));
+            reply = sanitizeReply(
+              route.engine === "claude"
+                ? await askGemini(text, guestName, orderedHistory, enrichedPrompt, route.geminiOrder)
+                : await callClaude(text, guestName, orderedHistory, enrichedPrompt)
+            );
           } catch (e2) {
-            console.error("[webhook] Claude also failed:", (e2 as Error).message);
+            console.error("[webhook] both engines failed:", (e2 as Error).message);
             reply = FALLBACK_REPLY;
           }
         }
       }
       // else "fallback" → FALLBACK_REPLY already set
+
+      // ── Capture uncategorized guest requests for staff visibility ─────────
+      // complaint/upsell already raise their own alert (flagGuestAlert / dedicated
+      // reply above) — this fires only for the faq/fallback catch-all, the exact
+      // gap where a real guest request (e.g. "we'd love balloons") got an AI
+      // reply but left zero trace on the guest's record. Append-only, non-blocking:
+      // a logging failure here must never affect the reply already being sent.
+      // .then() with a single callback (not a chained .catch()) is the safe
+      // pattern for this Postgrest builder — see whatsapp-send's BRANCH D note.
+      // Deliberately NOT gated on arrival_confirmed: a pre-arrival request
+      // ("balloons for a birthday") is the case staff most need lead time on —
+      // gating this on confirmed-arrival silently dropped exactly that case.
+      if (guestId && (intent === "faq" || intent === "fallback")) {
+        const stamp = new Date().toISOString().slice(0, 16).replace("T", " ");
+        const noteLine = `[${stamp}] ${text}`;
+        const newNotes = guest?.guest_notes ? `${guest.guest_notes}\n${noteLine}` : noteLine;
+        supabase
+          .from("guests")
+          .update({ guest_notes: newNotes, requires_attention: true, attention_reason: null })
+          .eq("id", guestId)
+          .then(({ error }: { error: { message: string } | null }) => {
+            if (error) console.error("[webhook] guest_notes capture error:", error.message);
+          });
+      }
 
       // ── Send WhatsApp reply ───────────────────────────────────────────────
       let outboundMsgId: string | null = null;

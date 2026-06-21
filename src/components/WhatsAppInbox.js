@@ -25,6 +25,8 @@ function groupByPhone(rows) {
       map.set(row.phone, {
         phone: row.phone,
         guestName: row.guest_name,
+        guestNotes: row.guest_notes ?? null,
+        spaTime: row.spa_time ?? null,
         messages: [],
         humanRequested: false,
         humanRequestType: null,
@@ -32,6 +34,10 @@ function groupByPhone(rows) {
     }
     const contact = map.get(row.phone);
     contact.messages.push(row);
+    // guest_notes is append-only and grows over time — always prefer the
+    // value carried by the most recently fetched row, not just the first.
+    if (row.guest_notes) contact.guestNotes = row.guest_notes;
+    if (row.spa_time) contact.spaTime = row.spa_time;
     // Flag contact if any inbound message is a human request
     if (row.human_requested && row.direction === "inbound") {
       contact.humanRequested = true;
@@ -1199,6 +1205,8 @@ export default function WhatsAppInbox() {
   const normalise = (r) => ({
     ...r,
     guest_name:         r.guests?.name ?? null,
+    guest_notes:        r.guests?.guest_notes ?? null,
+    spa_time:           r.guests?.spa_time ?? null,
     human_requested:    r.human_requested    ?? false,
     human_request_type: r.human_request_type ?? null,
   });
@@ -1207,7 +1215,7 @@ export default function WhatsAppInbox() {
   const fetchAll = useCallback(async () => {
     const { data, error: err } = await supabase
       .from("whatsapp_conversations")
-      .select("id, phone, direction, message, wa_message_id, created_at, human_requested, human_request_type, guests(name)")
+      .select("id, phone, direction, message, wa_message_id, created_at, human_requested, human_request_type, guests(name, guest_notes, spa_time)")
       .order("created_at", { ascending: true })
       .limit(2000);
 
@@ -1231,7 +1239,7 @@ export default function WhatsAppInbox() {
 
     const { data } = await supabase
       .from("whatsapp_conversations")
-      .select("id, phone, direction, message, wa_message_id, created_at, human_requested, human_request_type, guests(name)")
+      .select("id, phone, direction, message, wa_message_id, created_at, human_requested, human_request_type, guests(name, guest_notes, spa_time)")
       .gt("created_at", since)
       .order("created_at", { ascending: true })
       .limit(100);
@@ -1561,8 +1569,29 @@ export default function WhatsAppInbox() {
                     </div>
                   )}
                 </div>
-                <div style={{ fontSize: 11, opacity: 0.75 }}>{thread.length} {"הודעות"}</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  {activeContact?.spaTime && (
+                    <div style={{
+                      fontSize: 11, fontWeight: 700, background: "rgba(255,255,255,0.2)",
+                      padding: "3px 8px", borderRadius: 12,
+                    }}>
+                      💆 ספא {activeContact.spaTime}
+                    </div>
+                  )}
+                  <div style={{ fontSize: 11, opacity: 0.75 }}>{thread.length} {"הודעות"}</div>
+                </div>
               </div>
+
+              {/* Guest notes banner — visible the instant the thread opens, no extra click */}
+              {activeContact?.guestNotes && (
+                <div style={{
+                  padding: "8px 16px", background: "#FEF3C7", borderBottom: "1px solid #FDE68A",
+                  color: "#92400E", fontSize: 12, lineHeight: 1.6, whiteSpace: "pre-wrap",
+                  flexShrink: 0, maxHeight: 90, overflowY: "auto",
+                }}>
+                  <strong>📝 הערות אורח: </strong>{activeContact.guestNotes}
+                </div>
+              )}
 
               {/* Messages */}
               <div style={{
