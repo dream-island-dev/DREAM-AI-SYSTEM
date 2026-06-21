@@ -825,26 +825,39 @@ function DepartmentOnboardingModal({ user, onComplete }) {
   const [jobTitle,   setJobTitle]   = useState("");
   const [roleChoice, setRoleChoice] = useState(""); // 'manager' | 'staff'
   const [saving,     setSaving]     = useState(false);
+  const [error,      setError]      = useState("");
 
   const firstName = (user.name || "").split(" ")[0] || "עמית";
 
   const handleSave = async () => {
     if (!dept || !roleChoice) return;
     setSaving(true);
+    setError("");
     try {
       if (isSupabaseConfigured && supabase) {
-        const { error } = await supabase
+        // upsert, not update — a brand-new auth user may not have a profiles
+        // row yet (the on_auth_user_created trigger that's supposed to create
+        // one was missing from every migration until 052). update() would
+        // silently match zero rows with no error, and the onboarding modal
+        // would reappear on every refresh forever ("onboarding loop").
+        // role is intentionally omitted: on conflict it leaves the existing
+        // role untouched; on insert it falls back to the column DEFAULT
+        // ('staff') — DB trigger + admin promote manage role, not this modal.
+        const { error: saveErr } = await supabase
           .from("profiles")
-          .update({
+          .upsert({
+            id:         user.id,
+            name:       user.name,
+            email:      user.email,
             department: dept,
             job_title:  jobTitle.trim() || null,
-          })
-          .eq("id", user.id);
-        if (error) throw error;
+          });
+        if (saveErr) throw saveErr;
       }
       onComplete({ ...user, department: dept, job_title: jobTitle.trim(), role: roleChoice });
     } catch (e) {
       console.error("[onboarding] save failed:", e);
+      setError(e?.message || "שגיאה בשמירה — נסה שוב או פנה למנהל המערכת");
     }
     setSaving(false);
   };
@@ -993,6 +1006,14 @@ function DepartmentOnboardingModal({ user, onComplete }) {
               </button>
             ))}
           </div>
+          {error && (
+            <div style={{
+              background: "#FFF0EE", border: "1px solid #C0392B", borderRadius: 8,
+              padding: "10px 12px", marginBottom: 14, fontSize: 13, color: "#C0392B", textAlign: "right",
+            }}>
+              ⚠ {error}
+            </div>
+          )}
           <div style={{ display: "flex", gap: 10 }}>
             <button onClick={() => setStep(1)} style={{
               flex: 1, padding: "14px", borderRadius: 10, border: "1.5px solid var(--border)",
@@ -2019,7 +2040,7 @@ async function loadUserWithProfile(session, setUser) {
       .from("profiles")
       .select("role, name, department, status, avatar, avatar_text, must_change_password")
       .eq("id", base.id)
-      .single();
+      .maybeSingle();
     setUser({ ...base, ...(data ?? {}) });
   } catch {
     // No profile row yet — use base (trigger will create it shortly)
