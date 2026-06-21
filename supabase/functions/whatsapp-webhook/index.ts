@@ -171,9 +171,11 @@ function resolvePlaceholders(
     .replace(/\{\{\s*SPA_LINE\s*\}\}/gi, spaLine)
     .replace(/\{\{\s*OPTIONAL_SPA_TEXT\s*\}\}/gi, optionalSpaText);
 
-  // Legacy {{SPA_TIME}}: substitute or strip the containing sentence
+  // Legacy {{SPA_TIME}}: substitute a full sentence (not just the bare time
+  // value — that was the "15:00 with nothing around it" bug) or strip the
+  // containing sentence when absent.
   if (vars.spaTime) {
-    text = text.replace(/\{\{\s*SPA_TIME\s*\}\}/gi, vars.spaTime);
+    text = text.replace(/\{\{\s*SPA_TIME\s*\}\}/gi, `הטיפול שלכם בספא מתואם לשעה ${vars.spaTime}`);
   } else {
     text = text.replace(/[^\n.!?]*\{\{\s*SPA_TIME\s*\}\}[^\n.!?]*[.!?]?\s*/gi, "");
   }
@@ -191,7 +193,7 @@ function resolvePlaceholders(
       `[webhook] resolvePlaceholders() force-injecting spa sentence — template had no ` +
       `recognized spa placeholder for spaTime="${vars.spaTime}"`
     );
-    text = `${text.trim()}\n\nהטיפול שלכם בספא מוזמן לשעה ${vars.spaTime}.`;
+    text = `${text.trim()}\n\nהטיפול שלכם בספא מתואם לשעה ${vars.spaTime}.`;
   }
 
   return text.trim();
