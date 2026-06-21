@@ -979,11 +979,17 @@ serve(async (req: Request) => {
           }
           // fall through — button router or text-confirmation path runs below
         } else {
-          await supabase.from("whatsapp_conversations").insert({
-            phone, guest_id: guestId, direction: "inbound",
-            message: isButtonReply ? buttonTitle : text,
-            wa_message_id: msgId, intent: "human_handoff",
-          }).catch(() => {});
+          // Postgrest builder is PromiseLike (.then only) — not a full Promise,
+          // so .catch() chained directly on it throws "...insert(...).catch is
+          // not a function" instead of swallowing the error. Use try/catch.
+          try {
+            const { error: logErr } = await supabase.from("whatsapp_conversations").insert({
+              phone, guest_id: guestId, direction: "inbound",
+              message: isButtonReply ? buttonTitle : text,
+              wa_message_id: msgId, intent: "human_handoff",
+            });
+            if (logErr) console.warn("[webhook] human_handoff log error:", logErr.message);
+          } catch (e) { console.warn("[webhook] human_handoff log error:", (e as Error).message); }
           console.info(`[webhook] 🔕 thread in human-handoff (needs_callback) — silenced for ${phone}`);
           continue;
         }
@@ -1078,11 +1084,14 @@ serve(async (req: Request) => {
             const errMsg = (e as Error).message;
             const replyStatus = errMsg.startsWith("timeout_no_response") ? "timeout" : "failed";
             console.error(`[webhook] ❌ arrival reply ${replyStatus} to ${phone}:`, errMsg);
-            await supabase.from("notification_log").insert({
-              guest_id: guestId, recipient: phone,
-              trigger_type: "arrival_confirmed_reply", channel: "whatsapp",
-              status: replyStatus, payload: { error: errMsg, buttonTitle },
-            }).catch(() => {});
+            try {
+              const { error: logErr } = await supabase.from("notification_log").insert({
+                guest_id: guestId, recipient: phone,
+                trigger_type: "arrival_confirmed_reply", channel: "whatsapp",
+                status: replyStatus, payload: { error: errMsg, buttonTitle },
+              });
+              if (logErr) console.warn("[webhook] notification_log insert error:", logErr.message);
+            } catch (e) { console.warn("[webhook] notification_log insert error:", (e as Error).message); }
           }
 
         // ── "לא, שינוי בתאריך" — date change → ask + flag for staff ─────────
@@ -1094,11 +1103,15 @@ serve(async (req: Request) => {
               needs_callback:           true,
             }).eq("id", guestId);
           }
-          // Alert row for staff dashboard
-          supabase.from("guest_alerts").insert({
-            guest_id: guestId, phone, alert_type: "date_change_request",
-            message: `[כפתור: ${buttonTitle}]`, resolved: false,
-          }).catch((e: Error) => console.warn("[webhook] guest_alerts (button date_change) error:", e.message));
+          // Alert row for staff dashboard — fire-and-forget, but wrapped so a
+          // bare .catch() (invalid on the PromiseLike Postgrest builder) doesn't throw.
+          (async () => {
+            const { error } = await supabase.from("guest_alerts").insert({
+              guest_id: guestId, phone, alert_type: "date_change_request",
+              message: `[כפתור: ${buttonTitle}]`, resolved: false,
+            });
+            if (error) console.warn("[webhook] guest_alerts (button date_change) error:", error.message);
+          })().catch((e: Error) => console.warn("[webhook] guest_alerts (button date_change) error:", e.message));
           const dateChangeReply =
             "העברתי את בקשתך לצוות הסוויטות שלנו (אדיר ואפק), והם יצרו איתך קשר בהקדם. 🙏";
           try { await sendReply(phone, dateChangeReply); } catch (e) { console.error("[webhook] reply error:", (e as Error).message); }
@@ -1291,12 +1304,17 @@ serve(async (req: Request) => {
           }).eq("id", guestId);
         }
 
-        // Non-blocking alert row — visible on staff dashboard
-        supabase.from("guest_alerts").insert({
-          guest_id: guestId, phone,
-          alert_type: "date_change_request",
-          message: text, conversation_id: dcConvId, resolved: false,
-        }).catch((e: Error) => console.warn("[webhook] guest_alerts (date_change) error:", e.message));
+        // Non-blocking alert row — visible on staff dashboard. Wrapped in an
+        // async IIFE so a bare .catch() (invalid on the PromiseLike Postgrest
+        // builder) doesn't throw synchronously before this even fires.
+        (async () => {
+          const { error } = await supabase.from("guest_alerts").insert({
+            guest_id: guestId, phone,
+            alert_type: "date_change_request",
+            message: text, conversation_id: dcConvId, resolved: false,
+          });
+          if (error) console.warn("[webhook] guest_alerts (date_change) error:", error.message);
+        })().catch((e: Error) => console.warn("[webhook] guest_alerts (date_change) error:", e.message));
 
         const handoffMsg =
           "העברתי את בקשתך לצוות הסוויטות שלנו (אדיר ואפק), והם יצרו איתך קשר בהקדם. 🙏";

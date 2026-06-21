@@ -351,15 +351,24 @@ serve(async (req: Request) => {
         },
       });
 
-      // Log to conversation history so inbox shows the template message
+      // Log to conversation history so inbox shows the template message.
+      // Non-blocking by design — a logging failure must never break the broadcast.
+      // NOTE: the Postgrest query builder is PromiseLike (implements .then()) but
+      // does NOT implement .catch() — chaining .catch() directly on it throws
+      // "...insert(...).catch is not a function" instead of swallowing the error.
       if (status === "sent" || status === "simulated") {
-        await supabase.from("whatsapp_conversations").insert({
-          phone:         guest.phone as string,
-          guest_id:      guestId,
-          direction:     "outbound",
-          message:       `[תבנית: ${waTemplateName}]`,
-          wa_message_id: null,
-        }).catch(() => {}); // non-blocking: if fails, don't break the broadcast
+        try {
+          const { error: convErr } = await supabase.from("whatsapp_conversations").insert({
+            phone:         guest.phone as string,
+            guest_id:      guestId,
+            direction:     "outbound",
+            message:       `[תבנית: ${waTemplateName}]`,
+            wa_message_id: null,
+          });
+          if (convErr) console.warn("[whatsapp-send] broadcast conversation log failed (non-blocking):", convErr.message);
+        } catch (e) {
+          console.warn("[whatsapp-send] broadcast conversation log failed (non-blocking):", (e as Error).message);
+        }
       }
 
       return new Response(
@@ -529,15 +538,22 @@ serve(async (req: Request) => {
       payload: { template: tmplName, variables: tmplVars },
     });
 
-    // Log to conversation history so inbox shows it
+    // Log to conversation history so inbox shows it.
+    // Non-blocking by design — see broadcast branch above for why a bare
+    // .catch() chained directly on the query builder throws instead of swallowing.
     if (status === "sent" || status === "simulated") {
-      await supabase.from("whatsapp_conversations").insert({
-        phone: guest.phone as string,
-        guest_id: guestId,
-        direction: "outbound",
-        message: `[תבנית: ${tmplName}]`,
-        wa_message_id: null,
-      }).catch(() => {}); // non-blocking: if fails, don't break the pipeline
+      try {
+        const { error: convErr } = await supabase.from("whatsapp_conversations").insert({
+          phone: guest.phone as string,
+          guest_id: guestId,
+          direction: "outbound",
+          message: `[תבנית: ${tmplName}]`,
+          wa_message_id: null,
+        });
+        if (convErr) console.warn("[whatsapp-send] pipeline conversation log failed (non-blocking):", convErr.message);
+      } catch (e) {
+        console.warn("[whatsapp-send] pipeline conversation log failed (non-blocking):", (e as Error).message);
+      }
     }
 
     // Atomically stamp the pipeline flag — this is the SOLE writer of these flags.
