@@ -54,6 +54,18 @@ const GEMINI_MODELS: string[] = Deno.env.get("GEMINI_MODEL")
 // §1  DYNAMIC BOT CONFIG — loaded from bot_config table, cached 5 min
 // ══════════════════════════════════════════════════════════════════════════════
 
+// ── Dynamic Spa Sentence Builder ─────────────────────────────────────────────
+// Shared helper for Channel B (Interactive/Bot Script) — generates a complete
+// sentence that gracefully handles guests with/without spa appointments.
+// Same logic as whatsapp-send (Channel A), ensuring consistent messaging.
+function buildSpaSentence(spaTime: unknown): string {
+  const time = String(spaTime ?? "").trim();
+  if (time && time !== "null" && time !== "undefined") {
+    return `הטיפול שלך בספא מתוכנן לשעה ${time}.`;
+  }
+  return "נשמח לעמוד לרשותך בכל שאלה.";
+}
+
 // Fallback static prompt (used if DB is unavailable or bot_config not seeded)
 const FALLBACK_SYSTEM_PROMPT = `
 אתה "DREAM CONCIERGE" — הקונסיירז' הדיגיטלי הרשמי של Dream Island Resort & Spa.
@@ -131,7 +143,7 @@ function resolvePlaceholders(
     ? `מתואם לכם טיפול בספא בשעה ${vars.spaTime}. בנוסף, `
     : "";
 
-  // Legacy placeholder still supported
+  // Legacy placeholder still supported — same optional-inline-clause contract as SPA_LINE.
   const optionalSpaText = vars.spaTime
     ? `מתואם לכם טיפול בספא בשעה ${vars.spaTime}.\n`
     : "";
@@ -932,7 +944,7 @@ serve(async (req: Request) => {
       // ── DIAGNOSTIC: pre-flight state snapshot ────────────────────────────
       console.log(
         `[webhook] 🧭 pre-flight — phone:${phone} guestId:${guestId ?? "null"}` +
-        ` needs_callback:${guest?.needs_callback ?? "null"}` +
+        ` needs_callback:${guest?.needs_callback ?? "null"} spa_time:${JSON.stringify(guest?.spa_time)}` +
         ` isButton:${isButtonReply} btnTitle:"${buttonTitle}" sim:${sim}`
       );
 
@@ -1040,28 +1052,17 @@ serve(async (req: Request) => {
               guestName: safeName, spaTime, workshopUrl,
             });
           } else {
-            // Condition A — guest has a spa treatment booked
-            if (spaTime) {
-              const workshopLine = workshopUrl
-                ? `\n\n🎯 *לסדנאות שלנו — הרשמו מראש:*\n👉 ${workshopUrl}`
-                : "";
-              arrivalReply =
-                `מגיעים! 🎉 כבר מתרגשים מאד מהגעתכם, ${safeName}!\n\n` +
-                `הצוות שלנו ב-Dream Island מכין את הכל ומחכה לכם עם חיוך גדול 🌴\n\n` +
-                `🕐 *הטיפול שלך בספא:* ${spaTime}` +
-                workshopLine +
-                `\n\nיש לכם שאלות לפני ההגעה? על הצ׳ק-אין, החדר, הספא — אני כאן לכל שאלה 😊`;
-            // Condition B — no spa booking: zero mention of spa or treatment
-            } else {
-              const workshopLine = workshopUrl
-                ? `\n\n🎯 *לסדנאות שלנו — הרשמו מראש:*\n👉 ${workshopUrl}`
-                : "";
-              arrivalReply =
-                `מגיעים! 🎉 כבר מתרגשים מאד מהגעתכם, ${safeName}!\n\n` +
-                `הצוות שלנו ב-Dream Island מכין את הכל ומחכה לכם עם חיוך גדול 🌴` +
-                workshopLine +
-                `\n\nיש לכם שאלות לפני ההגעה? על הצ׳ק-אין, החדר — אני כאן לכל שאלה 😊`;
-            }
+            // Dynamic Sentence approach — single code path for both spa/no-spa cases
+            const spaSentence = buildSpaSentence(spaTime);
+            const workshopLine = workshopUrl
+              ? `\n\n🎯 *לסדנאות שלנו — הרשמו מראש:*\n👉 ${workshopUrl}`
+              : "";
+            arrivalReply =
+              `מגיעים! 🎉 כבר מתרגשים מאד מהגעתכם, ${safeName}!\n\n` +
+              `הצוות שלנו ב-Dream Island מכין את הכל ומחכה לכם עם חיוך גדול 🌴\n\n` +
+              spaSentence +
+              workshopLine +
+              `\n\nיש לכם שאלות לפני ההגעה? על הצ׳ק-אין, החדר — אני כאן לכל שאלה 😊`;
           }
 
           console.info(`[webhook] 🎉 arrival confirmed — phone:${phone} name="${safeName}"`);
@@ -1235,28 +1236,17 @@ serve(async (req: Request) => {
             guestName: safeName2, spaTime: spaTime2, workshopUrl: workshopUrl2,
           });
         } else {
-          // Condition A — guest has a spa treatment booked
-          if (spaTime2) {
-            const workshopLine2 = workshopUrl2
-              ? `\n\n🎯 *לסדנאות שלנו — הרשמו מראש:*\n👉 ${workshopUrl2}`
-              : "";
-            textArrivalReply =
-              `מגיעים! 🎉 כבר מתרגשים מאד מהגעתכם, ${safeName2}!\n\n` +
-              `הצוות שלנו ב-Dream Island מכין את הכל ומחכה לכם עם חיוך גדול 🌴\n\n` +
-              `🕐 *הטיפול שלך בספא:* ${spaTime2}` +
-              workshopLine2 +
-              `\n\nיש לכם שאלות לפני ההגעה? על הצ׳ק-אין, החדר, הספא — אני כאן לכל שאלה 😊`;
-          // Condition B — no spa booking: zero mention of spa or treatment
-          } else {
-            const workshopLine2 = workshopUrl2
-              ? `\n\n🎯 *לסדנאות שלנו — הרשמו מראש:*\n👉 ${workshopUrl2}`
-              : "";
-            textArrivalReply =
-              `מגיעים! 🎉 כבר מתרגשים מאד מהגעתכם, ${safeName2}!\n\n` +
-              `הצוות שלנו ב-Dream Island מכין את הכל ומחכה לכם עם חיוך גדול 🌴` +
-              workshopLine2 +
-              `\n\nיש לכם שאלות לפני ההגעה? על הצ׳ק-אין, החדר — אני כאן לכל שאלה 😊`;
-          }
+          // Dynamic Sentence approach — single code path for both spa/no-spa cases
+          const spaSentence2 = buildSpaSentence(spaTime2);
+          const workshopLine2 = workshopUrl2
+            ? `\n\n🎯 *לסדנאות שלנו — הרשמו מראש:*\n👉 ${workshopUrl2}`
+            : "";
+          textArrivalReply =
+            `מגיעים! 🎉 כבר מתרגשים מאד מהגעתכם, ${safeName2}!\n\n` +
+            `הצוות שלנו ב-Dream Island מכין את הכל ומחכה לכם עם חיוך גדול 🌴\n\n` +
+            spaSentence2 +
+            workshopLine2 +
+            `\n\nיש לכם שאלות לפני ההגעה? על הצ׳ק-אין, החדר — אני כאן לכל שאלה 😊`;
         }
 
         if (!sim) {

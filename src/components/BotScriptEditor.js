@@ -5,10 +5,15 @@
 // the AI system prompt (for ongoing conversations), and metadata flags.
 // Edge Functions (whatsapp-webhook, whatsapp-send) read this table at runtime.
 //
-// Placeholders resolved by Edge Functions:
-//   {{GUEST_NAME}}   — guest.name from guests table
-//   {{SPA_TIME}}     — bookings.treatment_time
-//   {{WORKSHOP_URL}} — WORKSHOP_SIGNUP_URL Supabase secret
+// Placeholders resolved by Edge Functions (see resolvePlaceholders() in
+// whatsapp-webhook/index.ts — all read from guests.spa_time, not bookings):
+//   {{GUEST_NAME}}        — guest.name from guests table
+//   {{SPA_TIME}}          — guests.spa_time, raw value; strips the whole
+//                           containing sentence if the guest has none booked
+//   {{SPA_LINE}}          — guests.spa_time as an inline optional clause
+//                           ("מתואם לכם טיפול בספא בשעה 14:00. בנוסף, " or "")
+//   {{OPTIONAL_SPA_TEXT}} — legacy alias of SPA_LINE, same optional-clause rule
+//   {{WORKSHOP_URL}}      — WORKSHOP_SIGNUP_URL Supabase secret
 
 import { useState, useEffect, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
@@ -153,10 +158,14 @@ export default function BotScriptEditor() {
               עורך סקריפטי הבוט
             </div>
             <div style={{ fontSize: 13, color: "var(--text-muted)", lineHeight: 1.6 }}>
-              כאן ניתן לערוך את ההודעות שהבוט שולח לאורחים. שינויים נכנסים לתוקף מיידית.{" "}
+              כאן ניתן לערוך את ההודעות שהבוט שולח לאורחים. שינויים נכנסים לתוקף בתוך עד 5 דקות (cache בצד השרת).{" "}
+              <br />
               Placeholders: <code style={{ background: "#F3F4F6", padding: "1px 4px", borderRadius: 3 }}>{"{{GUEST_NAME}}"}</code>{" "}
+              <code style={{ background: "#F3F4F6", padding: "1px 4px", borderRadius: 3 }}>{"{{WORKSHOP_URL}}"}</code>{" "}
               <code style={{ background: "#F3F4F6", padding: "1px 4px", borderRadius: 3 }}>{"{{SPA_TIME}}"}</code>{" "}
-              <code style={{ background: "#F3F4F6", padding: "1px 4px", borderRadius: 3 }}>{"{{WORKSHOP_URL}}"}</code>
+              (שעה גולמית — אם אין לאורח ספא, כל המשפט המכיל אותה יימחק){" "}
+              <code style={{ background: "#F3F4F6", padding: "1px 4px", borderRadius: 3 }}>{"{{SPA_LINE}}"}</code>{" "}
+              (משפט-משנה אופציונלי שמשתלב בטקסט — ריק אם אין ספא, כדי לערוך חופשי בלי לדאוג מה-ניסוח כשאין תור)
             </div>
           </div>
         </div>
