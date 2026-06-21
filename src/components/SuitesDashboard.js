@@ -190,6 +190,13 @@ export default function SuitesDashboard() {
               gridTemplateColumns: "repeat(auto-fill, minmax(250px, 1fr))", gap: 10 }}>
               {roomList.map((r) => {
                 const isIndividual = r.phone_source === "individual";
+                // phone_source is "individual" | "coordinator" in practice (ezgoParser.js),
+                // but FAIL VISIBLE (CLAUDE.md §0.3): a missing/unexpected value must show
+                // as a visible "אחר", not silently get labeled as a real category.
+                const sourceLabel =
+                  r.phone_source === "individual"  ? "פרטי" :
+                  r.phone_source === "coordinator" ? "עסקי" :
+                                                      "אחר";
                 return (
                   <div key={r.id} style={{
                     border: `1px solid ${isIndividual ? "rgba(22,163,74,0.3)" : "var(--border)"}`,
@@ -211,7 +218,7 @@ export default function SuitesDashboard() {
                       <span style={{ fontSize: 9, padding: "1px 6px", borderRadius: 8, fontWeight: 700,
                         background: isIndividual ? "#DCFCE7" : "#F1F5F9",
                         color: isIndividual ? "#15803D" : "#94A3B8", whiteSpace: "nowrap" }}>
-                        {isIndividual ? "פרטי" : "קואורד׳"}
+                        {sourceLabel}
                       </span>
                     </div>
 

@@ -1012,9 +1012,13 @@ serve(async (req: Request) => {
       const sim       = Deno.env.get("WHATSAPP_SIMULATION") === "true";
 
       // ── DIAGNOSTIC: pre-flight state snapshot ────────────────────────────
+      // status/arrival_confirmed added so a future "status stuck" report can
+      // be checked against hard evidence instead of re-deriving it by reading
+      // code again — this exact pair was reported stuck more than once.
       console.log(
         `[webhook] 🧭 pre-flight — phone:${phone} guestId:${guestId ?? "null"}` +
         ` needs_callback:${guest?.needs_callback ?? "null"} spa_time:${JSON.stringify(guest?.spa_time)}` +
+        ` status:${guest?.status ?? "null"} arrival_confirmed:${guest?.arrival_confirmed ?? "null"}` +
         ` isButton:${isButtonReply} btnTitle:"${buttonTitle}" sim:${sim}`
       );
       // Explicit, grep-friendly lines on every message (not just faq/fallback) —
@@ -1602,6 +1606,20 @@ serve(async (req: Request) => {
           .then(({ error }: { error: { message: string } | null }) => {
             if (error) console.error("[webhook] guest_notes capture error:", error.message);
           });
+
+        // ── Requests Board (guest_alerts) — same capture, structured for the
+        // staff dashboard. alert_type "request" distinguishes a plain ask
+        // (towels, balloons) from "complaint" (malfunction) — both feed the
+        // same board. IIFE + await, not a bare .catch() on the Postgrest
+        // builder (session 14 bug — that builder is PromiseLike, not a real
+        // Promise, so .catch() throws synchronously instead of catching).
+        (async () => {
+          const { error } = await supabase.from("guest_alerts").insert({
+            guest_id: guestId, phone, alert_type: "request",
+            message: text, conversation_id: conversationId, resolved: false,
+          });
+          if (error) console.warn("[webhook] guest_alerts (request) insert error:", error.message);
+        })().catch((e: Error) => console.warn("[webhook] guest_alerts (request) insert error:", e.message));
       }
 
       // ── Send WhatsApp reply ───────────────────────────────────────────────

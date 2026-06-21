@@ -20,6 +20,7 @@ import BotConfigPanel from "./components/BotConfigPanel";
 import BotSettings from "./components/BotSettings";
 import BotScriptEditor from "./components/BotScriptEditor";
 import RoomBoard from "./components/RoomBoard";
+import RequestsBoard from "./components/RequestsBoard";
 import PasswordChangeScreen from "./components/PasswordChangeScreen";
 import SpaStagingPanel from "./components/SpaStagingPanel";
 import AICopilot from "./components/AICopilot";
@@ -1051,6 +1052,7 @@ function Sidebar({ user, active, setActive, openCallsCount, onLogout, isAdmin, i
     { id: "wa_inbox",   icon: "💬", label: "DREAM BOT — שיחות",                     managerOnly: true },
     { id: "guests",     icon: "🛎️", label: "צ'ק-אין",                               managerOnly: true },
     { id: "room_board",   icon: "🏨", label: "לוח סוויטות",                            managerOnly: false },
+    { id: "requests_board", icon: "📋", label: "לוח בקשות",                            managerOnly: true },
     { id: "scheduler",   icon: "🪄", label: "מחולל משמרות",                           managerOnly: true },
     { id: "agent",      icon: "🤖", label: "הסוכן שלי" },
   ];
@@ -2280,6 +2282,7 @@ export default function App() {
     scheduler:  "🪄 מחולל משמרות",
     tasks:      "📋 לוח משימות",
     room_board:    "🏨 לוח סוויטות",
+    requests_board: "📋 לוח בקשות",
     bot_config:    "🤖 הגדרות Smart Concierge",
     bot_settings:  "🧠 מוח הבוט",
     bot_scripts:   "📝 עורך סקריפטי הבוט",
@@ -2440,6 +2443,8 @@ export default function App() {
         return <SpaStagingPanel />;
       case "room_board":
         return <RoomBoard />;
+      case "requests_board":
+        return <RequestsBoard user={user} />;
       case "suites":
         return <SuitesDashboard />;
       case "tasks":
