@@ -18,6 +18,18 @@ function formatTime(iso) {
   return d.toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit" });
 }
 
+// Canonicalize any phone format (+972506842439, 972506842439, local
+// 0506842439) to the bare 972XXXXXXXXX form Meta's webhook already sends
+// natively — without this, the same guest can split into two threads
+// depending on which write path produced the row (webhook vs guests.phone
+// vs a locally-formatted number), which is exactly the bug this fixes.
+function normalizePhone(raw) {
+  if (!raw) return raw;
+  let p = String(raw).replace(/\D/g, ""); // digits only — strips +, spaces, dashes
+  if (p.startsWith("0")) p = "972" + p.slice(1); // local 05XXXXXXXX → 9725XXXXXXXX
+  return p;
+}
+
 function groupByPhone(rows) {
   const map = new Map();
   for (const row of rows) {
@@ -1204,6 +1216,7 @@ export default function WhatsAppInbox() {
   // ── Shared row normaliser ─────────────────────────────────────────────────
   const normalise = (r) => ({
     ...r,
+    phone:              normalizePhone(r.phone),
     guest_name:         r.guests?.name ?? null,
     guest_notes:        r.guests?.guest_notes ?? null,
     spa_time:           r.guests?.spa_time ?? null,

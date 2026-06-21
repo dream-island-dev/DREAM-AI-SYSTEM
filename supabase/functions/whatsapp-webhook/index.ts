@@ -944,6 +944,17 @@ serve(async (req: Request) => {
       const msgId = String(msg.id   ?? "");
       const phone = from.startsWith("+") ? from : `+${from}`;
 
+      // Phone format variants — guests.phone SHOULD be E.164 ("+972...") per
+      // documented convention, but real-world data entry (manual add, CSV
+      // import) has produced local-format ("0...") rows too. Confirmed root
+      // cause of a live bug: a guest stored in the "wrong" format was
+      // invisible to a single-format lookup, so status/spa_time/guest_alerts
+      // all silently no-op'd because guestId never resolved. Match against
+      // every plausible stored variant instead of assuming one canonical one.
+      const phoneDigits   = phone.replace(/\D/g, "");                                            // "972XXXXXXXXX"
+      const phoneLocal    = phoneDigits.startsWith("972") ? "0" + phoneDigits.slice(3) : phoneDigits; // "0XXXXXXXXX"
+      const phoneVariants = [phone, phoneDigits, phoneLocal];                                     // ["+972...","972...","0..."]
+
       // ── DIAGNOSTIC: log every message type entering the loop ─────────────
       console.log(`[webhook] 🔍 msg type:"${msg.type}" from:${phone} id:${msgId.slice(-8)}`);
 
@@ -1000,7 +1011,7 @@ serve(async (req: Request) => {
         supabase
           .from("guests")
           .select("id, name, arrival_confirmed, payment_amount, payment_link_url, msg_pre_arrival_2d_sent, needs_callback, requires_attention, arrival_date, room, room_type, spa_time, status, guest_notes")
-          .eq("phone", phone)
+          .in("phone", phoneVariants)
           .maybeSingle(),
       ]);
       if (existing) {
@@ -1126,6 +1137,12 @@ serve(async (req: Request) => {
               ...(guest?.status === "pending" ? { status: "expected" } : {}),
             }).eq("id", guestId);
             if (confirmErr) console.error(`[webhook] arrival_confirmed update FAILED phone:${phone}:`, confirmErr.message);
+          } else {
+            // No guest row for this phone at all — status/spa_time can never
+            // update or appear, because there's nothing in `guests` to read
+            // from or write to. Not a routing bug: this is what happens when
+            // a phone number was never added via AddGuestModal/import.
+            console.warn(`[webhook] ⚠️ arrival confirm tapped but NO guest record exists for phone:${phone} — add this guest first (GuestsPage/GuestDashboard) for status sync or spa_time to do anything.`);
           }
 
           const safeName    = name.trim() || "אורח יקר";
@@ -1337,6 +1354,9 @@ serve(async (req: Request) => {
         guest?.status !== "cancelled"
       ) {
         // Same pending → expected guard as the button-tap path above.
+        if (!guestId) {
+          console.warn(`[webhook] ⚠️ typed confirmation matched but NO guest record exists for phone:${phone} — nothing to update.`);
+        }
         const { error: confirmErr2 } = await supabase.from("guests").update({
           arrival_confirmed: true,
           ...(guest?.status === "pending" ? { status: "expected" } : {}),
@@ -1618,8 +1638,10 @@ serve(async (req: Request) => {
             guest_id: guestId, phone, alert_type: "request",
             message: text, conversation_id: conversationId, resolved: false,
           });
-          if (error) console.warn("[webhook] guest_alerts (request) insert error:", error.message);
-        })().catch((e: Error) => console.warn("[webhook] guest_alerts (request) insert error:", e.message));
+          // Mike's explicit ask: this must scream in the logs, not warn quietly —
+          // a failed insert here means a guest request never reaches the Requests Board.
+          if (error) console.error("[webhook] 🚨 guest_alerts (request) insert FAILED:", error.message);
+        })().catch((e: Error) => console.error("[webhook] 🚨 guest_alerts (request) insert FAILED:", e.message));
       }
 
       // ── Send WhatsApp reply ───────────────────────────────────────────────
