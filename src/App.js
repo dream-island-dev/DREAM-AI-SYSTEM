@@ -24,6 +24,7 @@ import RequestsBoard from "./components/RequestsBoard";
 import PasswordChangeScreen from "./components/PasswordChangeScreen";
 import SpaStagingPanel from "./components/SpaStagingPanel";
 import AICopilot from "./components/AICopilot";
+import RequestsAlertWidget from "./components/RequestsAlertWidget";
 import SuitesDashboard from "./components/SuitesDashboard";
 
 // ============================================================
@@ -2622,6 +2623,9 @@ export default function App() {
            Role is NOT changed here; DB trigger + admin promote manages that. */}
       {/* AI Copilot — floating realtime widget for room-ready approval */}
       {user && <AICopilot user={user} />}
+
+      {/* Requests Board alert — floating realtime widget for guest_alerts */}
+      {user && <RequestsAlertWidget onNavigate={setActivePage} />}
 
       {user && !user.department && !isAdmin && (
         <DepartmentOnboardingModal
