@@ -1,6 +1,8 @@
 # CLAUDE.md — Dream Island AI System
 > קובץ זה נקרא אוטומטית בכל שיחה. הוא מקור-האמת שלך. קרא אותו לפני כל פעולה.
-> **עדכון אחרון:** 2026-06-21 (session 15 — תוקנה קיטוע תשובות AI, נוסף Dynamic Model Routing (`bot_settings.preferred_model`), תוקן gate שגוי שחסם לכידת `guest_notes` לאורחים שלא אישרו הגעה, ונוסף console.log פנימי ל-`resolvePlaceholders()` לאיתור spa_time)
+> **עדכון אחרון:** 2026-06-21 (session 16 — EZGO import stabilization sprint: תיקון sanitization לטלפון בינ"ל, date-picker דטרמיניסטי, כפתור "סמן כטופל" לבקשות מענה אנושי, סיווג 3-way room_type + מיפוי פיננסי ב-sync_suite_arrivals, וקומיט ראשון ל-Resilient Import Agent)
+>
+> ⚠️ **שים לב — ריבוי כלים עובדים על אותו repo במקביל.** בסשן הזה זוהו עדויות לעריכות חיות מ-Cline ו/או סשנים אחרים על הקבצים האלה *בזמן* שעבדתי עליהם (ראה session 16 למטה) — כולל קוד שהופיע בקובץ בלי שאני כתבתי אותו, וכותרת הסשן הזו עצמה שהוחלפה מתחת לרגליי. אם תבחין בהתנהגות לא עקבית או קוד שלא מוכר — ייתכן שזה לא "AI שמדמיין", אלא קונפליקט בין שתי עריכות מקבילות. מומלץ: לא להריץ Cline ו-Claude Code על אותו repo באותו זמן, או לפחות לתאם איזה כלי "בעלים" של איזה קובץ בכל רגע נתון.
 
 ---
 
@@ -690,6 +692,17 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
 ---
 
 ### היסטוריית סשנים
+
+#### session 16 — Jun 21 2026 (EZGO import stabilization sprint — phone/dates/dismiss-button/tier+financial mapping; first commit of Resilient Import Agent)
+> הקשר: Mike הוריד קובץ EZGO חדש (`24.6.csv`) וביקש ספרינט ייצוב של 4 פריטים על צינור הייבוא. ⚠️ **תוך כדי עבודה זוהו עדויות מוצקות לעריכה מקבילה על הקבצים האלה** (`ArrivalImportPanel.js` הכיל קוד `_todayISO()`/state `arrivalDate` שלא כתבתי בקריאה קודמת באותה שיחה, וכותרת הסשן הזה ב-CLAUDE.md הוחלפה ל"session 15" בין שתי קריאות שלי) — ראה אזהרה למעלה בראש הקובץ.
+
+- 🐛→✅ **Phone Sanitization:** `normalizeILMobile()` ב-`ezgoParser.js` טיפל רק בפורמט מקומי (10 ספרות עם 0 מוביל / 9 ספרות עם 5 מוביל). מספר בינלאומי עם רווחים כמו `"+972 54 651 8772"` (מ-`sTel1` בקובץ שהורד) הוחזר כ-`null` — האורח "Koby Bentata Goldenberg" היה מאבד את הטלפון שלו לחלוטין. נוסף branch ל-12-ספרות עם prefix "972".
+- ✅ **Deterministic Dates:** נוסף date-picker ב-`ArrivalImportPanel.js` (טאב "suites") — הערך שלו בזמן העלאת Doc 2 הוא מקור התאריך הבלעדי לכל הפרופילים, נכפה ב-`handleMappingApprove` ללא תלות במיפוי AI/ניחוש מקובץ. תאריך עזיבה ממשיך לזרום נכון מ-`_addNights()` הקיים (iNights) — לא נדרש שינוי שם.
+- ✅ **Human Intervention Dismissal:** כפתור "✓" נוסף לבאדג' "🔴 מבקש מענה אנושי" ב-`WhatsAppInbox.js`. מנקה גם `whatsapp_conversations.human_requested` (הבאדג') וגם `guests.needs_callback` (השער שמשתיק את הבוט בפועל) בלחיצה אחת — קודם דרשו שני מקומות שונים (תיבת הדואר + GuestsPage). עדכון אופטימי מקומי, כי ה-listener הקיים ל-UPDATE events לא תופס שינוי לשורה ישנה (הסינון שלו הוא `created_at > since`).
+- 🐛→✅ **Tier Isolation + Financial Mapping (`sync_suite_arrivals`, migrations 060+061):** `isDayGuest` זוהה נכון ב-`ezgoParser.js` אבל מעולם לא הגיע ל-RPC — כל אורח בילוי יומי שיובא דרך Suite CSV קיבל `room_type='standard'` במקום `'day_guest'`, ושבר את חלוקת הטאבים ב-`GuestDashboard.js`. תוקן ל-CASE תלת-כיווני. בנוסף, `cPrice`/`fcPrice` נחלצו ע"י הparser אבל הושמטו לפני שהגיעו ל-payload ל-RPC — מעולם לא נכתבו ל-`guests.payment_amount` (עמודה שכבר הייתה קיימת, עם COMMENT שתיאר את הכוונה המקורית "ILS amount from suite-arrivals Excel upload" — תכונה שתוכננה ולא הושלמה). נוסף סכום (סכום חדרי הפרופיל, ניתן לערוך בגריד) שזורם עד ל-RPC.
+- 📦 **קומיט ראשון ל-Resilient Import Agent.** `MappingReviewPanel.js`, `importMapper.js`, `suggest-import-mapping/index.ts`, ומיגרציה 049 היו פרוסים בפועל מ-session 9 אבל מעולם לא נכנסו ל-git (נשארו untracked) — ה-CRITICAL RULE של הספרינט הזה ("אל תשבור את הייבוא הקיים") קידם אותם רשמית ממצב "ניסיוני מושהה" ל"production". הוסר ה-branch הדיאגנוסטי הזמני (`if (debug)`) שתועד כממתין-להסרה ב-§10 לפני שהקובץ נפרס מחדש.
+- ✅ `npm run build` נקי (אזהרה אחת קיימת מראש, לא קשורה: `ShiftsPage`) + `npx supabase db push` (060, 061) + `npx supabase functions deploy suggest-import-mapping --no-verify-jwt`.
+- ⚠️ **לא בוצע QA חי בדפדפן** — האפליקציה דורשת Supabase Auth אמיתי (מנוסה בסשנים קודמים, נכשל ללא credentials). אומת קוד+build בלבד.
 
 #### session 15 — Jun 21 2026 (Truncated AI replies fix + Dynamic Model Routing + guest_notes capture gate + spa_time debug)
 > הקשר: Mike עיצב פרסונת AI עברית עשירה ופרמיומית מחדש ב-BotSettings, אבל הבוט המשיך לקטוע תשובות באמצע מילה ("אנו שמ..."). בנפרד, Mike רצה ארכיטקטורת ניתוב מודלים גמישה (Gemini/Claude) לבדיקות A/B ואופטימיזציית עלות. בהמשך אותו סשן, Live QA חשפה ששמירת "guest_notes" אוטומטית לא קרתה בפועל, ושעת ספא עדיין לא הופיעה בתשובות.
