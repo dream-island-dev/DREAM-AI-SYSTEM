@@ -2,9 +2,12 @@
 // Unified Import Hub — the SOLE import surface in the app (per session 7 consolidation).
 // Lives only inside TaskBoard. Two profiles:
 //
-//   "suites" — Doc 2 (Suite CSV) → aggregateGuestProfiles → editable grid (suite
-//              dropdown sourced from SUITE_REGISTRY) → sync_suite_arrivals RPC
-//              (guests + suite_rooms + bookings, with guests.room denormalized).
+//   "suites" — Doc 2 (any CSV/Excel of room arrivals) → headers sent to the
+//              suggest-import-mapping Edge Function (Resilient Import Agent,
+//              session 9) → MappingReviewPanel (admin reviews/edits/approves)
+//              → aggregateGuestProfiles(rows, approvedMapping) → editable grid
+//              (suite dropdown sourced from SUITE_REGISTRY) → sync_suite_arrivals
+//              RPC (guests + suite_rooms + bookings, with guests.room denormalized).
 //              Doc 1 (Daily Report Excel, optional) → parseComprehensiveReport →
 //              merges spa_time into the same grid before sync.
 //   "shifts" — any Excel → editable grid → export back to .xlsx (no DB write).
@@ -16,12 +19,20 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { supabase } from "../supabaseClient";
 import { EditableGrid, BulkEditBar, exportToExcel } from "./EditableGrid";
+import MappingReviewPanel from "./MappingReviewPanel";
 import { SUITE_REGISTRY } from "../data/suiteRegistry";
 import {
   aggregateGuestProfiles,
   profilesToArray,
   enrichProfilesFromExcel,
 } from "../utils/ezgoParser";
+import { SUITE_ARRIVALS_SCHEMA, buildMaskedSample } from "../utils/importMapper";
+
+// Sorted, joined header signature — matches import_mapping_memory.header_signature (migration 049).
+// Not a hash: exact string equality is enough here and avoids a client-side hash dependency.
+function _headerSignature(headers) {
+  return [...headers].sort().join("␟");
+}
 
 // ── Date / phone helpers ──────────────────────────────────────────────────────
 
@@ -160,13 +171,15 @@ function _cloneProfileMap(map) {
   return clone;
 }
 
-// ── Date fallback from filename ("18.6.26 סוויטות.csv" → "2026-06-18") ────────
-
-function _dateFromFilename(name) {
-  const dm = name.match(/(\d{1,2})[.\-_](\d{1,2})[.\-_](\d{2,4})/);
-  if (!dm) return null;
-  const y = dm[3].length === 2 ? `20${dm[3]}` : dm[3];
-  return `${y}-${dm[2].padStart(2, "0")}-${dm[1].padStart(2, "0")}`;
+// ── Deterministic arrival date — staff-controlled picker, NOT auto-guessed ───
+// Filename/header/metadata date-sniffing was removed deliberately: a guessed
+// date that's silently wrong is worse than requiring one explicit click.
+// The picker's value at the moment Doc 2 is dropped becomes the arrival date
+// for every profile in that import; iNights (already wired in handleSync via
+// _addNights) then derives the exact checkout date from it per-row.
+function _todayISO() {
+  const d = new Date();
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
 }
 
 // ── Shift-schedule Excel parser (ported from DataHub) ────────────────────────
@@ -187,6 +200,10 @@ function _profilesToGridRows(merged) {
     const singleRoom = (g.rooms ?? []).length === 1 ? g.rooms[0] : null;
     const isDay       = !!g.isDayGuest || !!singleRoom?.isDayGuest;
     const guess       = !isDay && singleRoom ? _bestGuessSuite(singleRoom.roomName) : "";
+    // Financial mapping: sum cPrice/fcPrice across this profile's rooms (usually
+    // just one). Staff can still override the total manually in the grid before
+    // sync — this is only the parsed starting value, not the final word.
+    const totalPrice  = (g.rooms ?? []).reduce((sum, r) => sum + (r.price || 0), 0);
     return {
       _id:          g.guestPhone || `row_${i}`,
       _profileIdx:  i,
@@ -195,7 +212,9 @@ function _profilesToGridRows(merged) {
       phoneSource:  g.phoneSource === "individual" ? "פרטי" : "קואורד׳",
       roomCount:    (g.rooms ?? []).length > 1 ? `${g.rooms.length} חדרים` : "",
       room:         (g.rooms ?? []).length > 1 ? "" : (isDay ? (singleRoom?.isDayGuest ? guess : "") : guess),
+      tier:         isDay ? "☀️ בילוי יומי" : "🏨 סוויטה",
       spa_time:     g.spa_time ?? "",
+      amount:       totalPrice || "",
       arrivalDate:  g.arrivalDate ?? "",
     };
   });
@@ -206,8 +225,10 @@ const SUITES_GRID_COLS = [
   { id: "guestPhone",  label: "טלפון",      editable: false, w: 120 },
   { id: "phoneSource", label: "מקור",       editable: false, w: 80  },
   { id: "roomCount",   label: "קבוצה",      editable: false, w: 70  },
+  { id: "tier",        label: "שכבה",       editable: false, w: 90  },
   { id: "room",        label: "🏨 חדר/סוויטה", editable: true, w: 190, gold: true, options: ROOM_OPTIONS },
   { id: "spa_time",    label: "שעת ספא",    editable: true,  w: 90  },
+  { id: "amount",      label: "💰 סכום (₪)", editable: true, w: 100 },
   { id: "arrivalDate", label: "הגעה",       editable: false, w: 100 },
 ];
 
@@ -261,6 +282,10 @@ export default function ArrivalImportPanel() {
   const [doc1Rec,  setDoc1Rec]  = useState(null);   // [] from Daily Report Excel
   const [doc2Name, setDoc2Name] = useState("");
   const [doc1Name, setDoc1Name] = useState("");
+  // Deterministic arrival date — staff sets this BEFORE dropping Doc 2; its
+  // value at upload time becomes every profile's arrival date (no filename
+  // or in-file date column is auto-parsed anymore).
+  const [arrivalDate, setArrivalDate] = useState(_todayISO());
   const [merged,   setMerged]   = useState(null);   // enriched profiles array (doc2 + doc1 join)
   const [gridRows, setGridRows] = useState([]);      // editable grid rows derived from merged
   const [selectedIds, setSelectedIds] = useState(new Set());
@@ -269,6 +294,13 @@ export default function ArrivalImportPanel() {
   const [toast,    setToast]    = useState(null);
   const doc2Ref = useRef();
   const doc1Ref = useRef();
+
+  // Resilient Import Agent — mapping review state (Doc 2 / Suite CSV only)
+  const [mappingStage, setMappingStage] = useState("idle"); // "idle" | "suggesting" | "review"
+  const [rawDoc2Rows,  setRawDoc2Rows]  = useState(null);   // parsed SheetJS rows, kept for re-processing after approval
+  const [doc2Fallback, setDoc2Fallback] = useState(null);   // arrivalDate picker snapshot, captured at upload time
+  const [aiSuggestion, setAiSuggestion] = useState(null);   // { mapping, defaults, recommendations, confidence, engine } | null
+  const [aiError,      setAiError]      = useState(null);   // string | null — shown, never hidden, when the AI call failed
 
   // Shifts profile state
   const [shiftRows,    setShiftRows]    = useState([]);
@@ -303,7 +335,9 @@ export default function ArrivalImportPanel() {
     setGridRows(_profilesToGridRows(merged));
   }, [merged]);
 
-  // ── Parse Doc 2: Suite CSV ──────────────────────────────────────────────
+  // ── Parse Doc 2: Suite CSV → AI-suggested column mapping → review screen ──
+  // The AI only proposes; aggregateGuestProfiles() runs unchanged once the
+  // admin approves a mapping in MappingReviewPanel (see handleMappingApprove).
   const handleDoc2 = useCallback(async (file) => {
     if (!file) return;
     setDoc2Name(file.name);
@@ -315,15 +349,108 @@ export default function ArrivalImportPanel() {
       const ws   = wb.Sheets[wb.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
 
-      const profileMap = aggregateGuestProfiles(rows, _dateFromFilename(file.name));
-      if (!profileMap.size) {
-        showToast("err", "לא נמצאו פרופילים — בדוק שהקובץ הוא ייצוא EZGO Suites CSV");
+      if (!rows.length) {
+        showToast("err", "הקובץ ריק");
         return;
       }
-      setDoc2Map(profileMap);
+
+      const headers = Object.keys(rows[0]);
+      setRawDoc2Rows(rows);
+      // Deterministic date: capture the date picker's state at upload time —
+      // no filename/header/metadata guessing. See _todayISO() comment above.
+      setDoc2Fallback(arrivalDate || _todayISO());
+      setMappingStage("suggesting");
+
+      // ── Mapping memory: skip the AI call when this exact header set was
+      // approved before. The review screen still always shows — this only
+      // saves a round-trip to Gemini, never the human approval step.
+      const signature = _headerSignature(headers);
+      let remembered = null;
+      if (supabase) {
+        const { data: mem } = await supabase
+          .from("import_mapping_memory")
+          .select("approved_mapping")
+          .eq("schema_key", "suite_arrivals")
+          .eq("header_signature", signature)
+          .maybeSingle();
+        if (mem?.approved_mapping) remembered = mem.approved_mapping;
+      }
+
+      if (remembered) {
+        setAiSuggestion({
+          mapping: remembered, defaults: {}, confidence: {}, engine: "memory",
+          recommendations: ["✓ זוהה כפורמט קובץ שאושר בעבר — מיפוי נטען מהזיכרון, יש לאשר מחדש"],
+        });
+        setAiError(null);
+      } else {
+        try {
+          const sample = buildMaskedSample(rows, headers, 3);
+          const { data, error } = await supabase.functions.invoke("suggest-import-mapping", {
+            body: { schemaKey: "suite_arrivals", headers, sampleRows: sample },
+          });
+          if (error) throw new Error(error.message);
+          if (!data?.ok) throw new Error(data?.error || "מיפוי AI נכשל");
+          setAiSuggestion(data);
+          setAiError(null);
+        } catch (e) {
+          setAiSuggestion(null);
+          setAiError(e.message);
+        }
+      }
+
+      setMappingStage("review");
     } catch (err) {
       showToast("err", "שגיאה בקריאת Suite CSV: " + err.message);
+      setMappingStage("idle");
     }
+  }, [arrivalDate]);
+
+  // ── Admin approved a mapping in the review screen — run the unchanged
+  // extraction/grid/RPC pipeline with it, and remember it for next time. ──
+  const handleMappingApprove = useCallback((finalMapping, appliedDefaults) => {
+    if (!rawDoc2Rows) return;
+    const profileMap = aggregateGuestProfiles(rawDoc2Rows, finalMapping, doc2Fallback);
+    if (appliedDefaults.arrivalDate) {
+      for (const profile of profileMap.values()) {
+        if (!profile.arrivalDate) profile.arrivalDate = appliedDefaults.arrivalDate;
+      }
+    }
+    // Deterministic dates: the staff-set picker (doc2Fallback, captured at upload
+    // time) is the ONLY arrival date source, full stop — even if the AI mapped some
+    // column to the "arrivalDate" role and it parsed to a real value. Force it here
+    // rather than relying on every upstream priority order to agree.
+    for (const profile of profileMap.values()) {
+      profile.arrivalDate = doc2Fallback;
+    }
+    if (!profileMap.size) {
+      showToast("err", "לא נמצאו פרופילים — בדוק את המיפוי או שהקובץ ריק");
+      setMappingStage("review");
+      return;
+    }
+    setDoc2Map(profileMap);
+    setMappingStage("idle");
+
+    // Best-effort — never blocks the import if this fails
+    if (supabase) {
+      const signature = _headerSignature(Object.keys(rawDoc2Rows[0] ?? {}));
+      supabase.from("import_mapping_memory")
+        .upsert(
+          { schema_key: "suite_arrivals", header_signature: signature, approved_mapping: finalMapping, last_used_at: new Date().toISOString() },
+          { onConflict: "schema_key,header_signature" },
+        )
+        .then(({ error }) => {
+          if (error) console.warn("[ArrivalImportPanel] failed to save mapping memory:", error.message);
+        });
+    }
+  }, [rawDoc2Rows, doc2Fallback]);
+
+  const handleMappingCancel = useCallback(() => {
+    setMappingStage("idle");
+    setRawDoc2Rows(null);
+    setDoc2Fallback(null);
+    setAiSuggestion(null);
+    setAiError(null);
+    setDoc2Name("");
   }, []);
 
   // ── Parse Doc 1: Comprehensive Daily Report Excel ───────────────────────
@@ -374,6 +501,11 @@ export default function ArrivalImportPanel() {
           .map((g, i) => {
             const edited = gridRows[i] ?? {};
             const nights = (g.rooms ?? []).reduce((mx, r) => Math.max(mx, r.nights || 0), 0);
+            // Financial mapping: staff's edited grid amount wins; otherwise the
+            // parsed cPrice/fcPrice total computed in _profilesToGridRows.
+            const editedAmount = edited.amount !== undefined && edited.amount !== ""
+              ? parseFloat(edited.amount) : null;
+            const computedAmount = (g.rooms ?? []).reduce((sum, r) => sum + (r.price || 0), 0);
             return {
               guestPhone:      g.guestPhone,
               guestName:       edited.guestName ?? g.guestName ?? "",
@@ -381,7 +513,11 @@ export default function ArrivalImportPanel() {
               departureDate:   _addNights(g.arrivalDate, nights),
               orderNumber:     [...(g.orderNumbers ?? [])][0] ?? null,
               hasSuite:        !!g.hasSuite,
+              // Daily Leisure Guests need their own room_type ('day_guest'), not
+              // 'standard' — otherwise GuestDashboard's tab bucketing misfiles them.
+              isDayGuest:      !!g.hasDayBooking,
               treatment_count: g.treatment_count ?? 0,
+              paymentAmount:   editedAmount ?? (computedAmount || null),
               nights,
             };
           });
@@ -432,6 +568,9 @@ export default function ArrivalImportPanel() {
           mode:   "suites",
           total:  rpcData?.guests ?? profiles.length,
           rooms:  rpcData?.rooms  ?? rooms.length,
+          // FAIL VISIBLE: the RPC already returns this count (rows with no resLineId/orderNumber
+          // never reached the DB) — it just wasn't surfaced anywhere before. Show it, don't hide it.
+          skippedRooms: rpcData?.skipped ?? 0,
           suites: merged.filter(g => g.hasSuite).length,
           days:   merged.filter(g => g.hasDayBooking && !g.hasSuite).length,
           spa:    gridRows.filter(r => r.spa_time).length,
@@ -490,6 +629,8 @@ export default function ArrivalImportPanel() {
     setDoc2Map(null); setDoc1Rec(null);
     setDoc2Name(""); setDoc1Name("");
     setMerged(null); setGridRows([]); setSelectedIds(new Set()); setResult(null);
+    setMappingStage("idle"); setRawDoc2Rows(null); setDoc2Fallback(null);
+    setAiSuggestion(null); setAiError(null);
   };
 
   // ── Shifts profile handlers ──────────────────────────────────────────────
@@ -541,6 +682,7 @@ export default function ArrivalImportPanel() {
         suites:     merged.filter(g => g.hasSuite).length,
         days:       merged.filter(g => g.hasDayBooking && !g.hasSuite).length,
         withSpa:    gridRows.filter(r => r.spa_time).length,
+        withAmount: gridRows.filter(r => r.amount).length,
         assigned:   gridRows.filter(r => r.room).length,
         individual: merged.filter(g => g.phoneSource === "individual").length,
       }
@@ -634,12 +776,36 @@ export default function ArrivalImportPanel() {
             </span>
           </div>
 
+          {/* Deterministic arrival date — staff-controlled, captured at the moment
+              Doc 2 is dropped. No filename/header/metadata date guessing. */}
+          <div style={{
+            display: "flex", alignItems: "center", gap: 10, marginBottom: 14,
+            padding: "10px 14px", borderRadius: 8,
+            background: "rgba(124,58,237,0.06)", border: "1px solid rgba(124,58,237,0.25)",
+          }}>
+            <label style={{ fontSize: 13, fontWeight: 800, color: "#7c3aed", whiteSpace: "nowrap" }}>
+              📅 תאריך הגעה לייבוא זה
+            </label>
+            <input
+              type="date"
+              value={arrivalDate}
+              onChange={e => setArrivalDate(e.target.value)}
+              style={{
+                padding: "7px 10px", borderRadius: 8, border: "1px solid rgba(124,58,237,0.4)",
+                fontSize: 14, fontFamily: "Heebo,sans-serif", direction: "ltr",
+              }}
+            />
+            <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+              חל על כל הפרופילים בקובץ Doc 2 — תאריך העזיבה יחושב אוטומטית לפי מספר הלילות (iNights)
+            </span>
+          </div>
+
           {/* Two drop zones */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }}>
             <DropZone
-              label="📋 Doc 2 — כניסות EZGO"
-              hint="CSV מ-EZGO (חדרים, שמות, טלפונים)"
-              loaded={hasDoc2}
+              label="📋 Doc 2 — כניסות אורחים"
+              hint="כל CSV/Excel — עמודות מזוהות אוטומטית"
+              loaded={hasDoc2 || mappingStage !== "idle"}
               fileName={doc2Name}
               onFile={handleDoc2}
               inputRef={doc2Ref}
@@ -655,6 +821,27 @@ export default function ArrivalImportPanel() {
             />
           </div>
 
+          {/* Resilient Import Agent — mapping suggestion + review gate */}
+          {mappingStage === "suggesting" && (
+            <div style={{
+              textAlign: "center", padding: "24px", color: "var(--text-muted)",
+              fontSize: 13, border: "1px dashed var(--border)", borderRadius: 10, marginBottom: 14,
+            }}>
+              🤖 מנתח כותרות עמודות ומציע מיפוי...
+            </div>
+          )}
+          {mappingStage === "review" && rawDoc2Rows && (
+            <MappingReviewPanel
+              schema={SUITE_ARRIVALS_SCHEMA}
+              headers={Object.keys(rawDoc2Rows[0] ?? {})}
+              sampleRow={rawDoc2Rows[0]}
+              aiSuggestion={aiSuggestion}
+              aiError={aiError}
+              onApprove={handleMappingApprove}
+              onCancel={handleMappingCancel}
+            />
+          )}
+
           {/* Stats bar */}
           {stats && (
             <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
@@ -665,6 +852,7 @@ export default function ArrivalImportPanel() {
                     { label: "סוויטות",     val: stats.suites,     c: "#b45309", bg: "#fef3c7" },
                     { label: "בילוי יומי",  val: stats.days,       c: "#0e7490", bg: "#ecfeff" },
                     { label: "עם ספא",      val: stats.withSpa,    c: "#16a34a", bg: "#f0fdf4" },
+                    { label: "עם סכום",     val: stats.withAmount, c: "#0369a1", bg: "#eff6ff" },
                     { label: "שויכו חדר",   val: stats.assigned,   c: "#92400e", bg: "#fef3c7" },
                     { label: "טלפון פרטי",  val: stats.individual, c: "#dc2626", bg: "#fef2f2" },
                   ].map(({ label, val, c, bg }) => (
@@ -810,6 +998,11 @@ export default function ArrivalImportPanel() {
                     🛏️ {result.rooms} חדרים
                     {result.spa > 0 && <> · 💆 {result.spa} עם שעת ספא</>}
                   </div>
+                  {result.skippedRooms > 0 && (
+                    <div style={{ fontSize: 12, color: "#92400E", marginTop: 6, fontWeight: 700 }}>
+                      ⚠ {result.skippedRooms} שורות חדר דולגו (חסר מספר הזמנה או מזהה שורה) — לא סונכרנו ל-DB
+                    </div>
+                  )}
                 </>
               ) : (
                 <div style={{ color: "#065f46" }}>

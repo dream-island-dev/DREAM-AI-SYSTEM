@@ -68,7 +68,7 @@ function groupByPhone(rows) {
 }
 
 // ── Contact list item ────────────────────────────────────────────────────────
-function ContactItem({ contact, isActive, onClick }) {
+function ContactItem({ contact, isActive, onClick, onDismiss }) {
   const last  = contact.messages[contact.messages.length - 1];
   const unread = contact.messages.filter(
     (m) => m.direction === "inbound" && !m._read
@@ -158,13 +158,23 @@ function ContactItem({ contact, isActive, onClick }) {
       )}
       {contact.humanRequested && (
         <div style={{
-          marginTop: 6, display: "inline-block",
+          marginTop: 6, display: "inline-flex", alignItems: "center", gap: 6,
           background: "#FEE2E2", color: "#DC2626",
           fontSize: 11, fontWeight: 700,
-          padding: "2px 8px", borderRadius: 10,
+          padding: "2px 4px 2px 8px", borderRadius: 10,
           border: "1px solid #FECACA",
         }}>
           {humanLabel}
+          <button
+            onClick={(e) => { e.stopPropagation(); onDismiss?.(); }}
+            title="סמן כטופל — בטל בקשת מענה אנושי"
+            style={{
+              width: 18, height: 18, borderRadius: "50%", border: "none",
+              background: "#DC2626", color: "#fff", cursor: "pointer",
+              fontSize: 11, fontWeight: 900, lineHeight: 1,
+              display: "flex", alignItems: "center", justifyContent: "center", padding: 0,
+            }}
+          >✓</button>
         </div>
       )}
     </div>
@@ -1270,6 +1280,41 @@ export default function WhatsAppInbox() {
     setLastUpdated(new Date());
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ── Dismiss human-intervention request ────────────────────────────────────
+  // Clears both layers in one click: the per-message `human_requested` flag
+  // that drives the red badge here, AND `guests.needs_callback` — the actual
+  // bot-silencing gate the webhook checks (previously this required a separate
+  // trip to GuestsPage; see CLAUDE.md §6). Tries all phone-format variants
+  // (+972/972/0-prefixed) since `whatsapp_conversations.phone` and
+  // `guests.phone` aren't guaranteed to share one format (session 15 root cause).
+  const dismissHumanRequest = useCallback(async (contact) => {
+    const bare = contact.phone; // normalizePhone() already applied — "972XXXXXXXXX"
+    const variants = [bare, `+${bare}`, `0${bare.slice(3)}`];
+    try {
+      const [{ error: convErr }, { error: guestErr }] = await Promise.all([
+        supabase.from("whatsapp_conversations")
+          .update({ human_requested: false })
+          .in("phone", variants)
+          .eq("human_requested", true),
+        supabase.from("guests")
+          .update({ needs_callback: false })
+          .in("phone", variants),
+      ]);
+      if (convErr) throw convErr;
+      if (guestErr) throw guestErr;
+
+      // Optimistic local clear — don't wait on the realtime round-trip
+      // (fetchSince() only re-fetches rows newer than the last poll, so an
+      // UPDATE to an old row's flag wouldn't otherwise be picked up here).
+      allMsgsRef.current = allMsgsRef.current.map((m) =>
+        m.phone === bare ? { ...m, human_requested: false } : m
+      );
+      setContacts(groupByPhone(allMsgsRef.current));
+    } catch (e) {
+      setError("שגיאה בסימון כטופל: " + (e?.message ?? e));
+    }
+  }, []);
+
   // ── Initial load + incremental polling fallback ───────────────────────────
   // fetchAll fires once; after that only fetchSince runs every POLL_MS (fallback).
   // Polling is ONLY a fallback when Realtime is unavailable — Realtime is primary.
@@ -1549,6 +1594,7 @@ export default function WhatsAppInbox() {
               contact={c}
               isActive={active === c.phone}
               onClick={() => setActive(c.phone)}
+              onDismiss={() => dismissHumanRequest(c)}
             />
           ))}
         </div>

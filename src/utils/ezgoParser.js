@@ -1,12 +1,24 @@
 // src/utils/ezgoParser.js
-// ── EZGO Guest Extraction & Golden Guest Profile Aggregation ─────────────────
+// ── Guest Extraction & Golden Guest Profile Aggregation ──────────────────────
 // Pure data transformation — zero Supabase calls, zero side effects.
-// Called from ArrivalImportPanel.js during the SUITE CSV import preview step.
+// Called from ArrivalImportPanel.js during the Suite CSV import preview step.
+//
+// Resilient Import Agent (session 9): extractGuestDetails()/aggregateGuestProfiles()
+// no longer assume EZGO's exact column names. They take a `columnMapping` object
+// — { orderNumber: "<actual header in this file>", resLineId: "...", remark: "...", ... } —
+// produced by an AI-suggested mapping that the admin reviews/edits in
+// MappingReviewPanel.js (see src/utils/importMapper.js for the role descriptor,
+// and supabase/functions/suggest-import-mapping/index.ts for the AI proposal call).
+// The cascades/classification logic below (phone priority, name extraction,
+// day-guest detection) is unchanged — only the raw `row.<literal>` lookups became
+// `row[columnMapping.<role>]` lookups, so a renamed/reordered source column no
+// longer breaks the import.
 //
 // Two-stage pipeline:
-//   Stage 1: extractGuestDetails(row)  — per-row, resolves TRUE identity
-//   Stage 2: aggregateGuestProfiles()  — merges all rows into keyed profile Map
-//   Stage 3: enrichProfilesFromExcel() — injects spa_time by order_number join
+//   Stage 1: extractGuestDetails(row, columnMapping)  — per-row, resolves TRUE identity
+//   Stage 2: aggregateGuestProfiles(rows, columnMapping) — merges all rows into keyed profile Map
+//   Stage 3: enrichProfilesFromExcel() — injects spa_time by order_number join (unchanged — operates
+//            on already-extracted values, never touches source column names)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // § REGEX
@@ -41,14 +53,19 @@ const DUMMY_DATE_RE = /^01[/.-]01[/.-](1900|1970|2001)/;
  * Normalizes any matched IL_MOBILE_RE capture to E.164 "+972XXXXXXXXX".
  *
  * EZGO sRemark phones always have a leading "0" (domestic format).
- * EZGO sTel1 phones OMIT the leading "0" (9 digits starting with "5").
- * Both cases are handled here.
+ * EZGO sTel1 phones OMIT the leading "0" (9 digits starting with "5") —
+ * but some exports (e.g. 24.6.csv) write sTel1 in international format
+ * with spaces and a leading "+" ("+972 54 651 8772"). Stripping every
+ * non-digit char up front (below) handles the spaces/hyphens/plus in one
+ * place; the three branches then just need to recognize the resulting
+ * digit-only sequence by length/prefix.
  */
 function normalizeILMobile(raw) {
   if (!raw) return null;
   const digits = raw.replace(/[^\d]/g, "");
-  if (digits.length === 10 && digits.startsWith("0")) return `+972${digits.slice(1)}`;
-  if (digits.length === 9 && digits.startsWith("5"))  return `+972${digits}`;
+  if (digits.length === 10 && digits.startsWith("0"))   return `+972${digits.slice(1)}`;
+  if (digits.length === 9  && digits.startsWith("5"))   return `+972${digits}`;
+  if (digits.length === 12 && digits.startsWith("972")) return `+${digits}`;
   return null;
 }
 
@@ -134,52 +151,61 @@ function parseDate(raw) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * extractGuestDetails(row, fallbackDate?)
+ * extractGuestDetails(row, columnMapping, fallbackDate?)
  *
- * Takes one raw EZGO SUITE CSV row (SheetJS object) and resolves the TRUE
- * guest identity using a priority cascade:
+ * Takes one raw CSV/Excel row (SheetJS object) and resolves the TRUE guest
+ * identity using a priority cascade:
  *
  *   Phone priority:
- *     1. sRemark phone          ← actual room occupant (individual)
- *     2. sOperationRemark phone ← secondary notes (occasional)
- *     3. sTel1                  ← booking coordinator (group) / direct for solo
+ *     1. remark phone          ← actual room occupant (individual)
+ *     2. opRemark phone        ← secondary notes (occasional)
+ *     3. coordPhone            ← booking coordinator (group) / direct for solo
  *
  *   Name priority:
- *     1. Name extracted from sRemark (before the phone)
- *     2. Name extracted from sOperationRemark
- *     3. sClientFullName / sGroupName (coordinator / booking name)
+ *     1. Name extracted from remark (before the phone)
+ *     2. Name extracted from opRemark
+ *     3. coordName (coordinator / booking name)
  *
  * Returns a GuestProfile object (no DB writes — pure transform).
  *
- * @param {object} row         - SheetJS-parsed EZGO CSV row
+ * @param {object} row          - SheetJS-parsed source row
+ * @param {object} columnMapping - { orderNumber, resLineId, roomName, suiteType,
+ *                                  coordName, coordPhone, remark, opRemark, adults,
+ *                                  children, nights, checkinTime, checkoutTime,
+ *                                  groupId, price, arrivalDate } → each value is the
+ *                                  actual header name in THIS file (or null/undefined
+ *                                  if that role has no matching column). Produced by
+ *                                  the admin-approved mapping from MappingReviewPanel.js.
  * @param {string} fallbackDate - ISO date from filename ("2026-06-18"), used
- *                               when dtCheckIn is absent or a dummy sentinel
+ *                               when the mapped arrival-date column is absent/empty
  */
-export function extractGuestDetails(row, fallbackDate = null) {
-  // ── Raw field extraction ─────────────────────────────────────────────────
-  const orderNumber  = String(row.iOrderId             ?? "").trim();
-  const resLineId    = String(row.iReservationsLineId   ?? "").trim(); // globally unique PMS ID
-  const seqLineId    = String(row.iResLineId            ?? "").trim(); // sequential within booking
-  const roomName     = String(row.sRoomName             ?? "").trim();
-  const suiteType    = String(row.sSubItemName          ?? "").trim();
+export function extractGuestDetails(row, columnMapping = {}, fallbackDate = null) {
+  // ── Raw field extraction — via the approved mapping, not a literal header name ──
+  const col = (role) => columnMapping[role];
+  const val = (role) => { const h = col(role); return h ? row[h] : undefined; };
+
+  const orderNumber  = String(val("orderNumber") ?? "").trim();
+  const resLineId    = String(val("resLineId")    ?? "").trim(); // globally unique PMS ID — upsert key
+  const roomName     = String(val("roomName")     ?? "").trim();
+  const suiteType    = String(val("suiteType")    ?? "").trim();
   // SheetJS defval:"" makes missing fields "", not null — use || (not ??) so the
   // fallback actually fires when the primary field is an empty string.
-  const coordNameRaw = String(row.sClientFullName || row.sGroupName || "").trim();
-  const coordPhoneRaw= String(row.sTel1           || "").trim();
-  const remark       = String(row.sRemark               ?? "").trim();
-  const opRemark     = String(row.sOperationRemark      ?? "").trim();
-  const adults       = parseInt(row.iAdults ?? "1") || 1;
-  const children     = parseInt(row.iChilds ?? "0") || 0;
-  const nights       = parseInt(row.iNights ?? "0") || 0;
-  const checkinTime  = String(row.sCheckInTime  ?? "").trim() || null;
-  const checkoutTime = String(row.sCheckOutTime ?? "").trim() || null;
-  const groupId      = parseInt(row.Group_Id    ?? "0");
-  const price        = parseFloat(row.cPrice    ?? "0") || 0;
+  const coordNameRaw = String(val("coordName")  || "").trim();
+  const coordPhoneRaw= String(val("coordPhone") || "").trim();
+  const remark       = String(val("remark")     ?? "").trim();
+  const opRemark     = String(val("opRemark")   ?? "").trim();
+  const adults       = parseInt(val("adults") ?? "1") || 1;
+  const children     = parseInt(val("children") ?? "0") || 0;
+  const nights       = parseInt(val("nights") ?? "0") || 0;
+  const checkinTime  = String(val("checkinTime")  ?? "").trim() || null;
+  const checkoutTime = String(val("checkoutTime") ?? "").trim() || null;
+  const groupId      = parseInt(val("groupId") ?? "0");
+  const price        = parseFloat(val("price") ?? "0") || 0;
 
   // ── Arrival date ─────────────────────────────────────────────────────────
-  const arrivalDate = parseDate(row.dtCheckIn) ?? fallbackDate;
+  const arrivalDate = parseDate(val("arrivalDate")) ?? fallbackDate;
 
-  // ── Coordinator phone (sTel1 — may be 9-digit without leading 0) ─────────
+  // ── Coordinator phone (source value may be 9-digit without leading 0) ────
   const coordE164 = normalizeILMobile(
     /^\d{9}$/.test(coordPhoneRaw) ? `0${coordPhoneRaw}` : coordPhoneRaw
   );
@@ -222,7 +248,6 @@ export function extractGuestDetails(row, fallbackDate = null) {
     // ── Identifiers ──────────────────────────────────────────────────────
     orderNumber,
     resLineId,          // globally unique per room — the safe upsert key
-    seqLineId,          // position within booking (iResLineId)
 
     // ── Room ─────────────────────────────────────────────────────────────
     roomName,           // "8", "21 סוויטה נגישה", "חבילת פרימיום בילוי יומי"
@@ -259,18 +284,19 @@ export function extractGuestDetails(row, fallbackDate = null) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * aggregateGuestProfiles(rows, fallbackDate?)
+ * aggregateGuestProfiles(rows, columnMapping, fallbackDate?)
  *
- * Processes ALL rows from the SUITE CSV and merges them into one unified
- * in-memory profile per TRUE phone number.
+ * Processes ALL rows from the source file into one profile PER ROW, keyed by
+ * row index (NOT by phone — see hotfix Sprint 3.4: row-index key guarantees
+ * 1 profile per CSV row, so two guests who happen to share a coordinator's
+ * phone never collapse into one profile and silently lose a row). Each
+ * profile's `rooms` array therefore always has exactly one entry at this
+ * stage — grouping multiple rows under one stay, if ever needed, is a
+ * decision for a future, explicit feature, not an implicit side effect here.
  *
- * Key merge rules:
- *   - Individual phone (from sRemark) ALWAYS gets its own separate profile.
- *   - Coordinator phone is used ONLY when no individual phone is found.
- *   - Multiple rooms under one coordinator phone are all grouped together.
- *   - orderNumbers is a Set so the Excel enrichment step can do a correct JOIN.
+ * orderNumbers is a Set so enrichProfilesFromExcel() can do a correct JOIN.
  *
- * Returns: Map<E164_or_fallbackKey, ConsolidatedProfile>
+ * Returns: Map<"row_<index>", ConsolidatedProfile>
  *
  * Example output for group booking 266932, room 8 occupant:
  * {
@@ -286,15 +312,18 @@ export function extractGuestDetails(row, fallbackDate = null) {
  *   spa_time:     null,           ← populated by enrichProfilesFromExcel()
  *   treatment_count: 0,
  * }
+ *
+ * @param {object} columnMapping - same shape as extractGuestDetails() expects;
+ *                                 threaded straight through to it for every row.
  */
-export function aggregateGuestProfiles(rows, fallbackDate = null) {
+export function aggregateGuestProfiles(rows, columnMapping = {}, fallbackDate = null) {
   const profiles = new Map();
 
   // Key = absolute row index — 1 CSV row = 1 profile, zero merging.
   // Phone duplication (two guests sharing a number, e.g. group members) must NOT
   // collapse rows — the DB upsert layer handles deduplication by phone at write time.
   rows.forEach((row, index) => {
-    const g = extractGuestDetails(row, fallbackDate);
+    const g = extractGuestDetails(row, columnMapping, fallbackDate);
     // Only skip completely blank rows (header artifacts, trailing newlines, etc.)
     if (!g.guestPhone && !g.guestName && !g.resLineId && !g.orderNumber) return;
 
