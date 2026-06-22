@@ -9,7 +9,11 @@
 //     body:      string   — template body text, use {{1}} {{2}} for variables
 //     header?:   string   — optional header text (TEXT type)
 //     footer?:   string   — optional footer text
-//   }
+//     buttons?:  Array<{ type: "QUICK_REPLY" | "URL" | "PHONE_NUMBER"; text: string; url?: string; phone_number?: string }>
+//                — optional, max 3 quick-reply buttons OR up to 2 URL/phone buttons mixed in
+//                  per Meta's template limits. Added for the Automation Control Center's
+//                  "Convert to Meta Template" action (interactive buttons on session messages
+//                  → equivalent BUTTONS component on the approved-template fallback).
 //
 // Returns: { ok: true, template: { id, status } } on success
 //
@@ -39,6 +43,7 @@ serve(async (req: Request) => {
       body:      string;
       header?:   string;
       footer?:   string;
+      buttons?:  Array<{ type: string; text: string; url?: string; phone_number?: string }>;
     };
 
     // Validate required fields
@@ -69,6 +74,26 @@ serve(async (req: Request) => {
 
     if (body.footer?.trim()) {
       components.push({ type: "FOOTER", text: body.footer.trim() });
+    }
+
+    if (body.buttons && body.buttons.length > 0) {
+      if (body.buttons.length > 3) {
+        throw new Error("עד 3 כפתורים בתבנית (מגבלת Meta)");
+      }
+      const builtButtons = body.buttons.map((b) => {
+        const type = (b.type ?? "QUICK_REPLY").toUpperCase();
+        if (!b.text?.trim()) throw new Error("לכל כפתור חייב להיות טקסט");
+        if (type === "URL") {
+          if (!b.url?.trim()) throw new Error("כפתור מסוג URL חייב לינק");
+          return { type: "URL", text: b.text.trim(), url: b.url.trim() };
+        }
+        if (type === "PHONE_NUMBER") {
+          if (!b.phone_number?.trim()) throw new Error("כפתור מסוג PHONE_NUMBER חייב מספר טלפון");
+          return { type: "PHONE_NUMBER", text: b.text.trim(), phone_number: b.phone_number.trim() };
+        }
+        return { type: "QUICK_REPLY", text: b.text.trim() };
+      });
+      components.push({ type: "BUTTONS", buttons: builtButtons });
     }
 
     const payload = {

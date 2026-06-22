@@ -18,10 +18,18 @@ const CORS = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+interface MetaButton {
+  type:         string;
+  text?:        string;
+  url?:         string;
+  phone_number?: string;
+}
+
 interface MetaComponent {
   type:    string;
   text?:   string;
   format?: string;
+  buttons?: MetaButton[];
 }
 
 interface MetaTemplate {
@@ -86,10 +94,11 @@ serve(async (req: Request) => {
     const json = await res.json() as { data?: MetaTemplate[] };
 
     const templates = (json.data ?? []).map((t) => {
-      const bodyComp   = t.components.find((c) => c.type === "BODY");
-      const headerComp = t.components.find((c) => c.type === "HEADER");
-      const footerComp = t.components.find((c) => c.type === "FOOTER");
-      const bodyText   = bodyComp?.text ?? "";
+      const bodyComp    = t.components.find((c) => c.type === "BODY");
+      const headerComp  = t.components.find((c) => c.type === "HEADER");
+      const footerComp  = t.components.find((c) => c.type === "FOOTER");
+      const buttonsComp = t.components.find((c) => c.type === "BUTTONS");
+      const bodyText    = bodyComp?.text ?? "";
       return {
         id:              t.id,
         name:            t.name,
@@ -101,6 +110,13 @@ serve(async (req: Request) => {
         footerText:      footerComp?.text ?? null,
         varCount:        countVars(bodyText),
         rejectedReason:  t.rejected_reason ?? null,
+        // Previously silently dropped — the Automation Control Center's
+        // Template Manager needs to display buttons that already exist on a
+        // template (e.g. dream_arrival_confirmation's Quick Replies, which
+        // were configured by hand in Meta Business Manager, outside this repo).
+        buttons: (buttonsComp?.buttons ?? []).map((b) => ({
+          type: b.type, text: b.text ?? "", url: b.url ?? null, phoneNumber: b.phone_number ?? null,
+        })),
       };
     });
 

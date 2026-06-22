@@ -21,6 +21,9 @@ export default function GuestsPage() {
   const [resetBusy, setResetBusy]       = useState(false);
   const [editGuest,     setEditGuest]    = useState(null);  // {} = new guest, {id,...} = existing
   const [roomByPhone,    setRoomByPhone]    = useState({});  // phone → { roomName, suiteType, isDayGuest } — fallback display only; the room dropdown itself uses SUITE_REGISTRY
+  // "🗂️ לקוחות עבר" filter — guests stays the single source of truth (no new
+  // table/component, DNA principle #5); just a client-side view toggle.
+  const [showPastGuests, setShowPastGuests] = useState(false);
 
   const showToast = (type, msg) => { setToast({ type, msg }); setTimeout(() => setToast(null), 3500); };
 
@@ -100,7 +103,14 @@ export default function GuestsPage() {
     setSelectedIds((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
   const toggleSelectAll = () =>
-    setSelectedIds((prev) => prev.size === guests.length ? new Set() : new Set(guests.map((g) => g.id)));
+    setSelectedIds((prev) => prev.size === displayGuests.length ? new Set() : new Set(displayGuests.map((g) => g.id)));
+
+  // ── Past Guests filter — mirrors the departure_date query style already
+  //    used in WhatsAppInbox.js for "still on property" checks. ───────────────
+  const todayISO = new Date().toISOString().slice(0, 10);
+  const displayGuests = guests.filter((g) =>
+    showPastGuests ? (g.departure_date && g.departure_date < todayISO) : (!g.departure_date || g.departure_date >= todayISO)
+  );
 
   // ── Safe spa reset — UPDATE only, never DELETE ───────────────────────────────
   const handleResetSpa = async () => {
@@ -291,7 +301,13 @@ export default function GuestsPage() {
       )}
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
-        <div style={{ fontSize: 13, color: "var(--text-muted)" }}>{guests.length} אורחים</div>
+        <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
+          <div style={{ fontSize: 13, color: "var(--text-muted)" }}>{displayGuests.length} אורחים</div>
+          <label style={{ fontSize: 13, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+            <input type="checkbox" checked={showPastGuests} onChange={(e) => { setShowPastGuests(e.target.checked); setSelectedIds(new Set()); }} style={{ accentColor: "var(--gold)" }} />
+            🗂️ הצג לקוחות עבר
+          </label>
+        </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           {selectedIds.size > 0 && (
             <button
@@ -329,18 +345,18 @@ export default function GuestsPage() {
 
       {loading ? (
         <div style={{ textAlign: "center", padding: 48, color: "var(--text-muted)" }}>טוען אורחים...</div>
-      ) : guests.length === 0 ? (
+      ) : displayGuests.length === 0 ? (
         <div style={{ textAlign: "center", padding: 48, color: "var(--text-muted)" }}>
-          אין אורחים עדיין — ייבא קובץ צ'ק-אין דרך "העלאת נתונים".
+          {showPastGuests ? "אין עדיין לקוחות עבר." : "אין אורחים עדיין — ייבא קובץ צ'ק-אין דרך \"העלאת נתונים\"."}
         </div>
       ) : (
         <div className="card">
-          <div style={{ overflowX: "auto" }}>
+          <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
             <table className="table" style={{ minWidth: 720 }}>
               <thead><tr>
                 <th style={{ width: 36 }}>
                   <input type="checkbox"
-                    checked={guests.length > 0 && selectedIds.size === guests.length}
+                    checked={displayGuests.length > 0 && selectedIds.size === displayGuests.length}
                     onChange={toggleSelectAll}
                     title="בחר הכל"
                     style={{ cursor: "pointer", accentColor: "var(--gold)" }} />
@@ -350,7 +366,7 @@ export default function GuestsPage() {
                 <th>סטטוס</th><th>פעולות</th>
               </tr></thead>
               <tbody>
-                {guests.map((g) => {
+                {displayGuests.map((g) => {
                   // Unknown status (e.g. a stray value written outside the app) must be visible,
                   // not silently masked as "ממתין" — that's exactly what hid the button bug.
                   const sm = STATUS_META[g.status] ?? { label: `⚠ ${g.status ?? "ללא סטטוס"}`, bg: "#FFF0EE", color: "#C0392B" };

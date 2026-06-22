@@ -1,0 +1,176 @@
+// supabase/functions/automation-queue/index.ts
+//
+// Read-only Live Queue + Pulse monitor for the Automation Control Center
+// (Phase 2). Computes, for every active automation_stages row × every
+// operationally-relevant guest, the predicted next-dispatch instant using
+// the EXACT SAME resolver whatsapp-cron will use once Phase 4 wires it up
+// (supabase/functions/_shared/automationSchedule.ts) — so what the admin
+// sees here can never silently drift from what actually fires.
+//
+// This function makes NO writes anywhere and does not send any message —
+// it is purely a projection over guests + automation_stages + notification_log.
+//
+// Returns:
+//   {
+//     ok: true,
+//     systemStatus: { cronEnabled, automationEnabled, simulation },
+//     queue: [{ guestId, guestName, room, stageKey, displayName, journeyPhase,
+//               nodeType, scheduledFor, dueNow, predictedChannel, status, skipReason }],
+//     attentionRequired: [{ guestId, guestName, phone, stageKey, status, sentAt, payload }],
+//   }
+
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import {
+  resolveStageSchedule,
+  type AutomationStage,
+  type GuestForSchedule,
+} from "../_shared/automationSchedule.ts";
+
+const CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
+
+const ymd = (d: Date) => d.toISOString().slice(0, 10);
+
+serve(async (req: Request) => {
+  if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
+
+  try {
+    const supabase = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+    );
+
+    const now = new Date();
+
+    // Same three kill-switches that gate the live functions — exposing them
+    // here is the entire "Pulse" feature, no new infra required.
+    const systemStatus = {
+      cronEnabled: Deno.env.get("CRON_ENABLED") === "true",
+      automationEnabled: Deno.env.get("AUTOMATION_ENABLED") === "true",
+      simulation:
+        Deno.env.get("WHATSAPP_SIMULATION") === "true" ||
+        !(Deno.env.get("META_WHATSAPP_TOKEN") ?? Deno.env.get("WHATSAPP_TOKEN")) ||
+        !(Deno.env.get("META_PHONE_NUMBER_ID") ?? Deno.env.get("WHATSAPP_PHONE_NUMBER_ID")),
+    };
+
+    const { data: stagesData, error: stagesErr } = await supabase
+      .from("automation_stages")
+      .select("*")
+      .eq("is_active", true)
+      .order("sequence_order");
+    if (stagesErr) throw new Error(`stages_lookup_error: ${stagesErr.message}`);
+    const stages = (stagesData ?? []) as AutomationStage[];
+
+    // Operationally-relevant window: guests whose arrival or departure is
+    // recent-past-to-future. Excludes long-departed guests (those live in
+    // the separate Past Guests view) — keeps this projection bounded.
+    const cutoff = ymd(new Date(now.getTime() - 3 * 24 * 3600 * 1000));
+    const { data: guestsData, error: guestsErr } = await supabase
+      .from("guests")
+      .select("*")
+      .or(`arrival_date.gte.${cutoff},departure_date.gte.${cutoff}`);
+    if (guestsErr) throw new Error(`guests_lookup_error: ${guestsErr.message}`);
+    const guests = (guestsData ?? []) as GuestForSchedule[];
+
+    const guestIds = guests.map((g) => g.id);
+    const stageKeys = stages.map((s) => s.stage_key);
+
+    // Last 7 days of notification_log for these guests/stages — gives the
+    // queue its actual sent/failed/timeout status instead of only a
+    // prediction, and feeds the separate "attentionRequired" list.
+    const sinceWindow = new Date(now.getTime() - 7 * 24 * 3600 * 1000).toISOString();
+    const { data: logRows, error: logErr } = await supabase
+      .from("notification_log")
+      .select("guest_id, trigger_type, status, sent_at, payload, recipient")
+      .in("guest_id", guestIds.length ? guestIds : [-1])
+      .in("trigger_type", stageKeys.length ? stageKeys : ["__none__"])
+      .gte("sent_at", sinceWindow)
+      .order("sent_at", { ascending: false });
+    if (logErr) throw new Error(`notification_log_lookup_error: ${logErr.message}`);
+
+    // Most recent log row per (guest_id, trigger_type) — rows are already
+    // ordered newest-first above.
+    const latestByKey = new Map<string, (typeof logRows)[number]>();
+    for (const row of logRows ?? []) {
+      const key = `${row.guest_id}::${row.trigger_type}`;
+      if (!latestByKey.has(key)) latestByKey.set(key, row);
+    }
+
+    const guestById = new Map(guests.map((g) => [g.id, g]));
+
+    const queue: Record<string, unknown>[] = [];
+    for (const stage of stages) {
+      for (const guest of guests) {
+        const result = resolveStageSchedule(stage, guest, now);
+        const logRow = latestByKey.get(`${guest.id}::${stage.stage_key}`);
+
+        // A guest already successfully handled for this stage, AND with
+        // nothing predicted in the future (event_immediate or date_passed),
+        // is just noise in a "what's coming up" view — omit it.
+        if (!logRow && result.scheduledFor === null && result.skipReason !== null) continue;
+
+        queue.push({
+          guestId: guest.id,
+          guestName: (guest as Record<string, unknown>).name ?? null,
+          room: (guest as Record<string, unknown>).room ?? null,
+          stageKey: stage.stage_key,
+          displayName: stage.display_name,
+          journeyPhase: stage.journey_phase,
+          nodeType: stage.node_type,
+          scheduledFor: result.scheduledFor ? result.scheduledFor.toISOString() : null,
+          dueNow: result.dueNow,
+          // "predicted" — the real channel decision happens at actual send
+          // time (Phase 4); this is a best-effort projection, not a promise.
+          predictedChannel:
+            stage.node_type === "session_message"
+              ? "session_message"
+              : stage.node_type === "meta_template"
+              ? "meta_template"
+              : (guest as Record<string, unknown>).wa_window_expires_at &&
+                  new Date((guest as Record<string, unknown>).wa_window_expires_at as string) > now
+                ? "session_message"
+                : "meta_template",
+          status: logRow?.status ?? (result.skipReason ? "skipped" : "pending"),
+          skipReason: logRow ? null : result.skipReason,
+          lastAttemptAt: logRow?.sent_at ?? null,
+        });
+      }
+    }
+
+    // Sort: due-now first, then soonest-scheduled, then no-prediction last.
+    queue.sort((a, b) => {
+      const aTime = a.scheduledFor ? new Date(a.scheduledFor as string).getTime() : Infinity;
+      const bTime = b.scheduledFor ? new Date(b.scheduledFor as string).getTime() : Infinity;
+      return aTime - bTime;
+    });
+
+    const attentionRequired = (logRows ?? [])
+      .filter((r) => r.status === "failed" || r.status === "timeout")
+      .map((r) => ({
+        guestId: r.guest_id,
+        guestName: (guestById.get(r.guest_id) as Record<string, unknown> | undefined)?.name ?? null,
+        phone: r.recipient,
+        stageKey: r.trigger_type,
+        status: r.status,
+        sentAt: r.sent_at,
+        payload: r.payload,
+      }));
+
+    return new Response(
+      JSON.stringify({ ok: true, systemStatus, queue, attentionRequired }),
+      { headers: { ...CORS, "Content-Type": "application/json" } },
+    );
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("[automation-queue] error:", msg);
+    // Same convention as the rest of the codebase: always 200, error in body
+    // (see whatsapp-send/get-wa-templates header comments for why).
+    return new Response(
+      JSON.stringify({ ok: false, error: msg }),
+      { status: 200, headers: { ...CORS, "Content-Type": "application/json" } },
+    );
+  }
+});

@@ -214,6 +214,59 @@ async function sendViaTemplate(
   }
 }
 
+// ── Meta WhatsApp interactive reply-buttons message (Phase 4 — hybrid fallback) ─
+// Used ONLY for session messages (inside the 24h free-text window) that have
+// quick_reply buttons configured via the Automation Control Center. Meta's
+// free-form "interactive" message type supports up to 3 reply buttons
+// (type:"reply"), title capped at 20 chars — there is no free-form "URL
+// button" equivalent (that only exists on approved templates). Any
+// interactive_buttons entries of type "url" are appended as a plain text
+// line instead of a tappable button — documented limitation, not a bug.
+async function sendInteractiveButtons(
+  to: string,
+  bodyText: string,
+  buttons: Array<{ type: string; label: string; url?: string }>,
+): Promise<void> {
+  const token   = Deno.env.get("META_WHATSAPP_TOKEN")    ?? Deno.env.get("WHATSAPP_TOKEN");
+  const phoneId = Deno.env.get("META_PHONE_NUMBER_ID")   ?? Deno.env.get("WHATSAPP_PHONE_NUMBER_ID");
+  if (!token || !phoneId) throw new Error("missing_meta_whatsapp_creds");
+
+  const urlLines = buttons
+    .filter((b) => b.type === "url" && b.url)
+    .map((b) => `🔗 ${b.label}: ${b.url}`);
+  const fullBody = urlLines.length > 0 ? `${bodyText}\n\n${urlLines.join("\n")}` : bodyText;
+
+  const replyButtons = buttons
+    .filter((b) => b.type === "quick_reply" && b.label?.trim())
+    .slice(0, 3)
+    .map((b, i) => ({ type: "reply", reply: { id: `btn_${i}`, title: b.label.trim().slice(0, 20) } }));
+
+  try {
+    const res = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(
+        replyButtons.length > 0
+          ? {
+              messaging_product: "whatsapp",
+              to,
+              type: "interactive",
+              interactive: { type: "button", body: { text: fullBody }, action: { buttons: replyButtons } },
+            }
+          : { messaging_product: "whatsapp", to, type: "text", text: { body: fullBody, preview_url: false } },
+      ),
+      signal: AbortSignal.timeout(25000),
+    });
+    if (!res.ok) {
+      const detail = (await res.text()).slice(0, 300);
+      throw new Error(`meta_interactive_${res.status}: ${detail}`);
+    }
+  } catch (e) {
+    if (_isAbortError(e)) throw new Error("timeout_no_response: Meta did not respond within 25s — message may have still been delivered");
+    throw e;
+  }
+}
+
 // Simulation: true when explicitly set OR when Meta credentials are absent.
 const isSimulation = (): boolean =>
   Deno.env.get("WHATSAPP_SIMULATION") === "true" ||
@@ -492,7 +545,26 @@ serve(async (req: Request) => {
     // BRANCH D: Pipeline triggers (idempotent via notification_log)
     // ─────────────────────────────────────────────────────────────────────────
     if (!guestId) throw new Error("guestId is required for guest triggers");
-    if (!(trigger in PIPELINE_TEMPLATE)) throw new Error("unknown trigger: " + trigger);
+
+    // Phase 4 (Automation Control Center): automation_stages (migration 065)
+    // is now consulted for template name / session-message / buttons routing.
+    // The original hardcoded PIPELINE_TEMPLATE/PIPELINE_VARS/GUEST_FLAG maps
+    // remain the fallback whenever a stage has no row — room_ready is the one
+    // pipeline trigger that is intentionally NOT in automation_stages (it's
+    // event-driven from the RoomBoard/AICopilot UI toggle, not a timeline
+    // stage), so it always falls through to the hardcoded map, unchanged.
+    // Same "DB overrides, hardcoded fallback" pattern already proven for
+    // bot_settings.system_prompt overriding FALLBACK_SYSTEM_PROMPT.
+    const { data: stageRow } = await supabase
+      .from("automation_stages")
+      .select("meta_template_name, session_message_script_key, interactive_buttons, guest_flag_column")
+      .eq("stage_key", trigger)
+      .eq("is_active", true)
+      .maybeSingle();
+
+    if (!(trigger in PIPELINE_TEMPLATE) && !stageRow?.meta_template_name) {
+      throw new Error("unknown trigger: " + trigger);
+    }
 
     // Idempotency: skip ONLY if a genuinely successful (or simulated) send already
     // exists for this guest+trigger. A prior "failed"/"timeout" row must NOT block
@@ -518,24 +590,84 @@ serve(async (req: Request) => {
     if (gErr)   throw new Error(`guest_lookup_error: ${gErr.message}`);
     if (!guest) throw new Error(`guest_not_found: no guest row for id=${JSON.stringify(guestId)}`);
 
-    const tmplName = PIPELINE_TEMPLATE[trigger];
-    const tmplVars = sanitizeTemplateVars(PIPELINE_VARS[trigger]?.(guest) ?? []);
-    let status = "simulated";
-    try {
-      if (!sim) {
-        await sendViaTemplate(guest.phone as string, tmplName, tmplVars);
-        status = "sent";
+    const tmplName = stageRow?.meta_template_name ?? PIPELINE_TEMPLATE[trigger];
+    const flagColumn = stageRow?.guest_flag_column ?? GUEST_FLAG[trigger];
+
+    // ── Hybrid fallback (req #4) ───────────────────────────────────────────
+    // Only attempted when a stage actually has a session message configured
+    // — true for none of them today (every automation_stages row seeded by
+    // migration 065 has session_message_script_key = NULL except the
+    // event-driven stage_2_arrival, which never reaches this branch). This
+    // makes the branch below provably a no-op until an admin opts a stage
+    // into a session message via the Automation Control Center UI — at
+    // which point it sends the rich free-text reply (+ buttons) instead of
+    // the Meta template ONLY if the guest's 24h window happens to be open.
+    let usedSessionMessage = false;
+    let sessionBody: string | null = null;
+    let sessionButtons: Array<{ type: string; label: string; url?: string }> = [];
+
+    if (stageRow?.session_message_script_key) {
+      const windowExpires = guest.wa_window_expires_at ? new Date(guest.wa_window_expires_at as string) : null;
+      const windowOpen = !!windowExpires && windowExpires.getTime() > Date.now();
+      if (windowOpen) {
+        const { data: scriptRow } = await supabase
+          .from("bot_scripts")
+          .select("message_text")
+          .eq("script_key", stageRow.session_message_script_key)
+          .maybeSingle();
+        const rawText = scriptRow?.message_text?.trim();
+        if (rawText) {
+          const guestName = (String(guest.name ?? "").trim()) || "אורח יקר";
+          // Scope-limited on purpose: PIPELINE_VARS today only ever passes the
+          // guest's name to pipeline templates, so {{GUEST_NAME}} is the only
+          // placeholder this path needs to support. If a future stage's
+          // session message needs richer placeholders (spa time, workshop
+          // url, etc.), port the relevant pieces of whatsapp-webhook's
+          // resolvePlaceholders() here rather than guessing at a generic shape.
+          sessionBody = rawText.replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, guestName);
+          sessionButtons = (stageRow.interactive_buttons ?? []) as typeof sessionButtons;
+          usedSessionMessage = true;
+        } else {
+          console.warn(`[whatsapp-send] stage "${trigger}" has session_message_script_key="${stageRow.session_message_script_key}" but bot_scripts has no text — falling back to Meta template`);
+        }
       }
-    } catch (e) {
-      const msg = (e as Error).message;
-      status = msg.startsWith("timeout_no_response") ? "timeout" : "failed";
-      console.error(`[whatsapp] pipeline send ${status}:`, msg);
+    }
+
+    let status = "simulated";
+    let sendError: string | null = null;
+    let tmplVars: string[] = [];
+
+    if (usedSessionMessage) {
+      try {
+        if (!sim) {
+          await sendInteractiveButtons(guest.phone as string, sessionBody!, sessionButtons);
+          status = "sent";
+        }
+      } catch (e) {
+        sendError = (e as Error).message;
+        status = sendError.startsWith("timeout_no_response") ? "timeout" : "failed";
+        console.error(`[whatsapp] pipeline session-message send ${status}:`, sendError);
+      }
+    } else {
+      tmplVars = sanitizeTemplateVars(PIPELINE_VARS[trigger]?.(guest) ?? []);
+      try {
+        if (!sim) {
+          await sendViaTemplate(guest.phone as string, tmplName, tmplVars);
+          status = "sent";
+        }
+      } catch (e) {
+        sendError = (e as Error).message;
+        status = sendError.startsWith("timeout_no_response") ? "timeout" : "failed";
+        console.error(`[whatsapp] pipeline send ${status}:`, sendError);
+      }
     }
 
     await supabase.from("notification_log").insert({
       guest_id: guestId, recipient: guest.phone, trigger_type: trigger,
       channel: "whatsapp", status,
-      payload: { template: tmplName, variables: tmplVars },
+      payload: usedSessionMessage
+        ? { channel: "session_message", scriptKey: stageRow!.session_message_script_key, ...(sendError ? { error: sendError } : {}) }
+        : { channel: "meta_template", template: tmplName, variables: tmplVars, ...(sendError ? { error: sendError } : {}) },
     });
 
     // Log to conversation history so inbox shows it.
@@ -547,7 +679,7 @@ serve(async (req: Request) => {
           phone: guest.phone as string,
           guest_id: guestId,
           direction: "outbound",
-          message: `[תבנית: ${tmplName}]`,
+          message: usedSessionMessage ? sessionBody! : `[תבנית: ${tmplName}]`,
           wa_message_id: null,
         });
         if (convErr) console.warn("[whatsapp-send] pipeline conversation log failed (non-blocking):", convErr.message);
@@ -559,15 +691,19 @@ serve(async (req: Request) => {
     // Atomically stamp the pipeline flag — this is the SOLE writer of these flags.
     // Only on a real success: stamping it on "failed"/"timeout" would mark a
     // message that may never have arrived as permanently "sent", with no retry.
-    if (GUEST_FLAG[trigger] && (status === "sent" || status === "simulated")) {
+    if (flagColumn && (status === "sent" || status === "simulated")) {
       await supabase
         .from("guests")
-        .update({ [GUEST_FLAG[trigger]]: true })
+        .update({ [flagColumn]: true })
         .eq("id", guestId);
     }
 
     return new Response(
-      JSON.stringify({ ok: true, simulation: sim, status, template: tmplName }),
+      JSON.stringify({
+        ok: true, simulation: sim, status,
+        channel: usedSessionMessage ? "session_message" : "meta_template",
+        ...(usedSessionMessage ? {} : { template: tmplName }),
+      }),
       { headers: { ...CORS, "Content-Type": "application/json" } }
     );
 

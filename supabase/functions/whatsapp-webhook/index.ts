@@ -69,8 +69,7 @@ function buildSpaSentence(spaTime: unknown): string {
 // Fallback static prompt (used if DB is unavailable or bot_config not seeded)
 const FALLBACK_SYSTEM_PROMPT = `
 אתה "DREAM CONCIERGE" — הקונסיירז' הדיגיטלי הרשמי של Dream Island Resort & Spa.
-פרמיום, יוקרתי, אמפתי ומקצועי ביותר — 5 כוכבים בכל משפט. עברית תקנית ואלגנטית בלבד.
-תשובות קצרות ומדויקות: 2–4 משפטים בלבד. אל תחשוף שאתה AI.
+פרמיום, יוקרתי, אמפתי ומקצועי ביותר — 5 כוכבים בכל משפט. עברית תקנית ואלגנטית בלבד. אל תחשוף שאתה AI.
 אם פרט אינו ידוע לך בכלל ולא מופיע ב"פרטי האורח" שצורפו לשיחה — הפנה לקבלה בנימוס.
 CRITICAL: אם האורח שואל על פרט אישי שלו (למשל שעת טיפול ספא, מספר חדר, תאריך הגעה)
 והפרט הזה כן מופיע ב"פרטי האורח" שצורפו לשיחה — ענה לו ישירות עם הערך המדויק.
@@ -82,7 +81,10 @@ CRITICAL: אם האורח שואל על פרט אישי שלו (למשל שעת 
 • אם האורח ממשיך נושא שנדון קודם — התייחס אליו ישירות, ללא הקדמות
 • דבר בגוף ראשון כנציג הצוות — "נדאג", "נסדר", "נשמח לעזור"
 • לעולם אל תכלול תגיות פנימיות כגון [תבנית:...] בתשובתך — הטקסט שלך נשלח ישירות לאורח.
-• אם האורח מעלה בקשה, הערה או דרישה ספציפית (למשל: בלונים ליום הולדת, ציוד מיוחד, בקשה לחדר) — אשר/י לו בחמימות שזה נרשם ויועבר לצוות. המערכת שומרת זאת אוטומטית בקובץ האורח — תפקידך רק לאשר זאת בתשובה, לא "לדאוג" לשמירה בעצמך.
+• אם האורח מעלה בקשה ספציפית וניתנת למימוש (למשל: יין, פרחים, בלונים ליום הולדת, ציוד מיוחד, בקשה לחדר) — תחילה החמא/י בטבעיות ובקצרה על הבחירה שלו/ה (למשל "בחירה נהדרת!"), ולאחר מכן ציין/י בבירור שהבקשה הועברה לצוות המלון ושיטפלו בה בהקדם. אל תמציא/י זמן טיפול משוער. המערכת שומרת ומעבירה את הבקשה אוטומטית — תפקידך רק לנסח את התשובה באופן טבעי.
+• השלמת מחשבה: בכל תשובה, תמיד השלימי מחשבה מלאה ומגובשת. לעולם אל תשאירי משפט באמצע ואל תיקטעי באופן פתאומי — כל הודעה מסתיימת באופן טבעי ומלוטש.
+• טון שיווקי וקולע: את קונסיירז' יוקרה. הימנעי מרשימות מייגעות או פסקאות ארוכות — מסרי מסר איכותי, ממוקד וקולע. אורך התשובה משתנה לפי הצורך — לא מספר משפטים קבוע — אבל היא תמיד תכלית ולא משתרכת.
+• הפניה חכמה: כשאורח/ת מבקש/ת פירוט מלא על השירותים — אל תפרטי הכל בצ'אט. צייני בקצרה את הקטגוריות המרכזיות (סוויטות יוקרה 👑, בילוי יומי מפנק 🏖️, PREMIUM DAY 1 🌟, PREMIUM DAY 2 ✨) והפני מיידית לקישור https://www.dream-island.co.il/orderonline/booking לפרטים מלאים.
 `.trim();
 
 // Module-level cache: shared across requests within the same function instance
@@ -337,7 +339,10 @@ ${persona}
 8. אם ידוע לך שלב האורח (לפני הגעה / במהלך שהות) — התאם את הטון בהתאם.
 ${faqRule ? `9. ${faqRule}` : ""}
 10. לעולם אל תכלול תגיות פנימיות כגון [תבנית:...] או [...] בתשובתך — הטקסט שלך נשלח ישירות לאורח.
-11. אם האורח מעלה בקשה, הערה או דרישה ספציפית (כגון בלונים ליום הולדת, ציוד מיוחד, בקשה לחדר) — אשר/י לו בחמימות שזה נרשם ויועבר לצוות. המערכת שומרת כל הודעה כזו אוטומטית בקובץ האורח — תפקידך רק לאשר זאת בתשובה באופן טבעי.
+11. אם האורח מעלה בקשה ספציפית וניתנת למימוש (כגון יין, פרחים, בלונים ליום הולדת, ציוד מיוחד, בקשה לחדר) — תחילה החמא/י בטבעיות ובקצרה על הבחירה שלו/ה (למשל "בחירה נהדרת!" או "טעם מצוין!"), ולאחר מכן ציין/י בבירור שהבקשה הועברה לצוות המלון ושיטפלו בה בהקדם. אל תמציא/י זמן טיפול משוער. המערכת שומרת ומעבירה את הבקשה אוטומטית — תפקידך רק לנסח את התשובה באופן טבעי.
+12. השלמת מחשבה: בכל תשובה, תמיד השלימי מחשבה מלאה ומגובשת. לעולם אל תשאירי משפט באמצע ואל תיקטעי באופן פתאומי — כל הודעה מסתיימת באופן טבעי ומלוטש.
+13. טון שיווקי וקולע: את קונסיירז' יוקרה. הימנעי מרשימות מייגעות או פסקאות ארוכות — מסרי מסר איכותי, ממוקד וקולע. אורך התשובה משתנה לפי הצורך — לא מספר משפטים קבוע — אבל היא תמיד תכלית ולא משתרכת.
+14. הפניה חכמה: כשאורח/ת מבקש/ת פירוט מלא על השירותים — אל תפרטי הכל בצ'אט. צייני בקצרה את הקטגוריות המרכזיות (סוויטות יוקרה 👑, בילוי יומי מפנק 🏖️, PREMIUM DAY 1 🌟, PREMIUM DAY 2 ✨) והפני מיידית לקישור https://www.dream-island.co.il/orderonline/booking לפרטים מלאים.
 `.trim();
 }
 
@@ -467,6 +472,25 @@ const HUMAN_GENERAL_PATTERNS: RegExp[] = [
 const DATE_CHANGE_RE =
   /שינוי\s*(ב)?תאריכ|שינוי\s*הזמנ|לשנות\s*(את\s*)?(ה)?תאריכ|לבטל|ביטול|לא\s*נוכל??\s*להגיע|לא\s*יכול(ים|ה)?\s*להגיע|לא\s*מגיעים|דחיי?ה|להדחות|בעיה\s*עם\s*(ה)?הזמנ/i;
 
+// ── Critical-event safety net (Phase 2 request-handling) ────────────────────
+// Deterministic backstop for the "faq" branch, which now expects the model to
+// call log_guest_request (see §5c below) when it spots an actionable request
+// or hot sales lead. Models occasionally skip the tool call even when
+// instructed to use it — this never-go-silent net force-logs to guest_alerts
+// when a critical keyword is present and the model didn't fire the tool, so a
+// real guest event (complaint escalation, manager request, price question we
+// must not answer ourselves — see CLAUDE.md "No Prices Rule") never vanishes
+// silently. Deliberately overlaps with classifyIntent's COMPLAINT_PATTERNS
+// ("תקלה") and detectHumanRequest's HUMAN_CHAT_PATTERNS ("נציג") — those paths
+// already log/flag through their own mechanisms, so this net being redundant
+// there is harmless; "מנהל"/"מחיר" are new keywords with no existing capture.
+const CRITICAL_FALLBACK_PATTERNS: RegExp[] = [
+  /תקלה/i,
+  /נציג/i,
+  /מנהל/i,
+  /מחיר/i,
+];
+
 function detectHumanRequest(text: string): { requested: boolean; type: string | null } {
   if (HUMAN_CALL_PATTERNS.some((p) => p.test(text))) return { requested: true, type: "call" };
   if (HUMAN_CHAT_PATTERNS.some((p) => p.test(text))) return { requested: true, type: "chat" };
@@ -573,6 +597,112 @@ async function discoverGeminiModel(apiKey: string): Promise<string | null> {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// §4b LOG_GUEST_REQUEST TOOL — Phase 2 request-handling (CLAUDE.md §0 "Tool
+//      Calling" sprint). Lets the model itself decide, per "faq"-intent
+//      message, whether the guest raised a specific fulfillable request
+//      (wine, flowers, towels...) or a hot sales lead (room upgrade, extra
+//      treatment) worth a staff ticket — vs. a plain question that shouldn't
+//      pollute the Requests Board (the gap in the old blanket-capture gate,
+//      which logged every single faq/fallback message as a "request").
+//
+// Defined once, wrapped per-provider below: Anthropic's input_schema (JSON
+// Schema) vs. Gemini's functionDeclarations.parameters (same JSON Schema
+// shape over the v1beta REST endpoint — NOT the protobuf Type-enum shape
+// used by Google's typed client SDKs, since we call the REST API directly).
+//
+// alert_type values map 1:1 onto RequestsBoard.js's existing TYPE_META keys
+// ("request" / "upsell_opportunity") — no frontend change needed.
+// ══════════════════════════════════════════════════════════════════════════════
+const LOG_REQUEST_TOOL_NAME = "log_guest_request";
+const LOG_REQUEST_TOOL_DESCRIPTION =
+  "Call this whenever the guest raises a specific, fulfillable request " +
+  "(e.g. wine, flowers, balloons, extra towels, room equipment) or expresses " +
+  "a hot sales lead (room upgrade, extra spa treatment, extending the stay). " +
+  "Do NOT call this for general informational questions (opening hours, " +
+  "WiFi, location, what's included) — only for something a staff member " +
+  "needs to actually go do something about.";
+
+const LOG_REQUEST_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    category: {
+      type: "string",
+      enum: ["request", "upsell_opportunity"],
+      description:
+        "'request' for a concrete fulfillable ask (item/service). " +
+        "'upsell_opportunity' for a sales lead (upgrade/extend/add-on interest).",
+    },
+    item_summary: {
+      type: "string",
+      description: "Short Hebrew summary of what the guest wants, 3-8 words.",
+    },
+  },
+  required: ["category", "item_summary"],
+};
+
+const CLAUDE_TOOLS = [{
+  name: LOG_REQUEST_TOOL_NAME,
+  description: LOG_REQUEST_TOOL_DESCRIPTION,
+  input_schema: LOG_REQUEST_JSON_SCHEMA,
+}];
+
+const GEMINI_TOOLS = [{
+  functionDeclarations: [{
+    name: LOG_REQUEST_TOOL_NAME,
+    description: LOG_REQUEST_TOOL_DESCRIPTION,
+    parameters: LOG_REQUEST_JSON_SCHEMA,
+  }],
+}];
+
+// Code-level only — deliberately NOT stored in bot_settings.system_prompt.
+// That field is Mike's human-edited business persona (BotSettings.js UI);
+// mixing mechanical "call this function" instructions into it risks an
+// innocent persona edit silently breaking tool invocation, with no way for
+// Mike to notice from the UI. Appended at call time instead, same pattern
+// already used for kbSuffix/guestCtx.
+const TOOL_USAGE_INSTRUCTIONS = `
+
+══ הנחיה טכנית (לא להציג לאורח) ══
+יש לך אפשרות לקרוא לפונקציה log_guest_request כשהאורח מעלה בקשה ספציפית
+וניתנת למימוש (יין, פרחים, בלונים, ציוד מיוחד, בקשה לחדר) או מביע עניין
+מכירתי חם (שדרוג חדר, הארכת שהות, טיפול נוסף). אל תקרא לפונקציה על שאלות
+מידע כלליות (שעות פתיחה, WiFi, מיקום).
+בכל פעם שאתה קורא לפונקציה — הוסף/י גם תשובה טבעית וחמה לאורח באותו תור:
+קודם החמא/י על הבחירה, ואז ציין/י בבירור שהבקשה הועברה לצוות. לעולם אל
+תכתוב שהבקשה "הועברה" אם לא קראת בפועל לפונקציה.`;
+
+// Both askGemini/callClaude now return this shape instead of a bare string,
+// so the call site can act on a tool invocation alongside the reply text.
+interface AiReplyResult {
+  text: string;
+  loggedRequest: { category: "request" | "upsell_opportunity"; summary: string } | null;
+}
+
+// Validates/coerces raw tool-call args — never trust model output blindly.
+// Unexpected category values fall back to "request" (the more conservative
+// bucket) but are logged so a drifting model prompt doesn't go unnoticed
+// (FAIL VISIBLE, CLAUDE.md §0.3) rather than being silently miscategorized.
+function _normalizeLoggedRequest(raw: unknown): AiReplyResult["loggedRequest"] {
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  const rawCategory = String(obj.category ?? "");
+  if (rawCategory !== "request" && rawCategory !== "upsell_opportunity") {
+    console.warn(`[webhook] ${LOG_REQUEST_TOOL_NAME} unexpected category "${rawCategory}" — defaulting to "request"`);
+  }
+  const category: "request" | "upsell_opportunity" = rawCategory === "upsell_opportunity" ? "upsell_opportunity" : "request";
+  const summary = typeof obj.item_summary === "string" && obj.item_summary.trim()
+    ? obj.item_summary.trim()
+    : "(לא צוין פירוט)";
+  return { category, summary };
+}
+
+// Guarantees the guest is never left with an empty reply if the model calls
+// the tool but — despite TOOL_USAGE_INSTRUCTIONS — omits accompanying text.
+function _buildToolOnlyReply(loggedRequest: NonNullable<AiReplyResult["loggedRequest"]>): string {
+  return `בחירה מצוינת! העברתי את הבקשה (${loggedRequest.summary}) לצוות שלנו, ויחזרו אליך בהקדם. 🙏`;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // §5  GEMINI — FAQ handler with conversation history context
 // ══════════════════════════════════════════════════════════════════════════════
 async function askGemini(
@@ -581,7 +711,7 @@ async function askGemini(
   history: Array<{ direction: string; message: string }>,
   systemPrompt: string,
   modelOrder: string[] = GEMINI_MODELS,
-): Promise<string> {
+): Promise<AiReplyResult> {
   const apiKey = Deno.env.get("GEMINI_API_KEY");
   if (!apiKey) throw new Error("GEMINI_API_KEY not set");
 
@@ -594,7 +724,7 @@ async function askGemini(
   // System instructions go into the first user turn to ensure they're always respected.
   const systemTurn = {
     role: "user",
-    parts: [{ text: systemPrompt + guestLine + "\nהבנת את התפקיד? ענה 'כן' בלבד." }],
+    parts: [{ text: systemPrompt + TOOL_USAGE_INSTRUCTIONS + guestLine + "\nהבנת את התפקיד? ענה 'כן' בלבד." }],
   };
   const confirmTurn = { role: "model", parts: [{ text: "כן" }] };
 
@@ -614,8 +744,24 @@ async function askGemini(
 
   const body = JSON.stringify({
     contents,
+    tools: GEMINI_TOOLS,
     generationConfig: { maxOutputTokens: 1000, temperature: 0.65, candidateCount: 1 },
   });
+
+  // Pulls both the spoken reply and a possible log_guest_request call out of
+  // one response. A part can be a thinking block, plain text, or a
+  // functionCall — all three can coexist in the same candidate.
+  function extractResult(data: Record<string, unknown>): AiReplyResult | null {
+    const candidates = data?.candidates as Array<Record<string, unknown>> | undefined;
+    const content = candidates?.[0]?.content as Record<string, unknown> | undefined;
+    const rawParts = (content?.parts ?? []) as Array<Record<string, unknown>>;
+    const realPart = rawParts.find(p => !p.thought && typeof p.text === "string" && (p.text as string).trim());
+    const fnPart = rawParts.find(p => (p.functionCall as Record<string, unknown> | undefined)?.name === LOG_REQUEST_TOOL_NAME);
+    const text = String(realPart?.text ?? "").trim();
+    const loggedRequest = fnPart ? _normalizeLoggedRequest((fnPart.functionCall as Record<string, unknown>)?.args) : null;
+    if (!text && !loggedRequest) return null;
+    return { text: text || (loggedRequest ? _buildToolOnlyReply(loggedRequest) : ""), loggedRequest };
+  }
 
   for (const model of modelOrder) {
     console.log(`[webhook] calling Gemini model="${model}" msgLen=${userMessage.length}`);
@@ -637,13 +783,13 @@ async function askGemini(
     }
 
     const data = await res.json();
-    // Skip thinking-mode parts (gemini-2.5 returns thought:true blocks before the real reply)
-    const rawParts = (data?.candidates?.[0]?.content?.parts ?? []) as Array<{ thought?: boolean; text?: string }>;
-    const realPart = rawParts.find(p => !p.thought && typeof p.text === "string");
-    const text = (realPart?.text ?? "").trim();
-    if (!text) throw new Error("gemini_empty_response");
+    const result = extractResult(data);
+    if (!result) throw new Error("gemini_empty_response");
+    if (result.loggedRequest) {
+      console.info(`[webhook] 🔧 Gemini called ${LOG_REQUEST_TOOL_NAME}:`, JSON.stringify(result.loggedRequest));
+    }
     console.log(`[webhook] Gemini OK model="${model}"`);
-    return text;
+    return result;
   }
 
   // All hardcoded models failed → query the API to find whatever is currently available
@@ -656,10 +802,14 @@ async function askGemini(
     );
     if (res.ok) {
       const data = await res.json();
-      const rawParts2 = (data?.candidates?.[0]?.content?.parts ?? []) as Array<{ thought?: boolean; text?: string }>;
-      const realPart2 = rawParts2.find(p => !p.thought && typeof p.text === "string");
-      const text = (realPart2?.text ?? "").trim();
-      if (text) { console.log(`[webhook] Gemini OK (discovered) model="${discovered}"`); return text; }
+      const result = extractResult(data);
+      if (result) {
+        if (result.loggedRequest) {
+          console.info(`[webhook] 🔧 Gemini (discovered) called ${LOG_REQUEST_TOOL_NAME}:`, JSON.stringify(result.loggedRequest));
+        }
+        console.log(`[webhook] Gemini OK (discovered) model="${discovered}"`);
+        return result;
+      }
     }
   }
 
@@ -672,11 +822,12 @@ async function callClaude(
   guestName: string | null,
   history: Array<{ direction: string; message: string }>,
   systemPrompt: string,
-): Promise<string> {
+): Promise<AiReplyResult> {
   const key = Deno.env.get("ANTHROPIC_API_KEY");
   if (!key) throw new Error("no_anthropic_key");
 
   const system = systemPrompt
+    + TOOL_USAGE_INSTRUCTIONS
     + (guestName ? `\n\nשם האורח/ת: ${guestName}. פנה/י אליו/ה בשמו/ה.` : "")
     + "\n\nענה תמיד בעברית.";
 
@@ -703,17 +854,36 @@ async function callClaude(
   );
 
   const anthropic = new Anthropic({ apiKey: key });
+  // tools cast via `as any`: the pinned SDK version's TS types may predate
+  // tool-use fields, but the Messages API itself (api-version 2023-06-01)
+  // accepts `tools` regardless of client-library vintage — this is a
+  // passthrough request-body field, not a client-side feature gate.
   const resp = await anthropic.messages.create({
     model:      CLAUDE_MODEL,
     max_tokens: 1000,
     system,
     messages,
-  });
+    tools: CLAUDE_TOOLS,
+  } as any);
 
-  const text = resp.content[0].type === "text" ? resp.content[0].text.trim() : "";
-  if (!text) throw new Error("claude_empty_response");
+  // Claude can return text and tool_use blocks side by side in one response —
+  // collect both rather than assuming content[0] is always plain text.
+  const blocks = resp.content as Array<Record<string, unknown>>;
+  const text = blocks
+    .filter(b => b.type === "text")
+    .map(b => String(b.text ?? "").trim())
+    .filter(Boolean)
+    .join("\n");
+  const toolBlock = blocks.find(b => b.type === "tool_use" && b.name === LOG_REQUEST_TOOL_NAME);
+  const loggedRequest = toolBlock ? _normalizeLoggedRequest(toolBlock.input) : null;
+  if (loggedRequest) {
+    console.info(`[webhook] 🔧 Claude called ${LOG_REQUEST_TOOL_NAME}:`, JSON.stringify(loggedRequest));
+  }
+
+  const finalText = text || (loggedRequest ? _buildToolOnlyReply(loggedRequest) : "");
+  if (!finalText) throw new Error("claude_empty_response");
   console.log(`[webhook] ✅ Claude OK (fallback) engine=${CLAUDE_MODEL}`);
-  return text;
+  return { text: finalText, loggedRequest };
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1040,6 +1210,25 @@ serve(async (req: Request) => {
       // deliberately in session 14; see CLAUDE.md §10).
       console.log(`[webhook] Found Spa Time: ${guest?.spa_time ?? "(none)"}`);
       console.log(`[webhook] Guest Notes: ${guest?.guest_notes ?? "(none)"}`);
+
+      // ── Wire up migration 033's wa_window_expires_at (documented since
+      //    that migration, never actually written until now) — every inbound
+      //    message (re)opens the 24h free-text session window, which
+      //    whatsapp-send's hybrid fallback (Phase 4) checks before deciding
+      //    session-message vs Meta-template for pipeline sends. Non-blocking:
+      //    a failure here must never delay/break the reply pipeline below.
+      // NOTE: PostgREST query builder implements .then() but not .catch() —
+      // chaining .catch() directly throws instead of swallowing (see
+      // whatsapp-send's BRANCH D for the same documented gotcha). Use .then(cb).
+      if (guestId) {
+        supabase
+          .from("guests")
+          .update({ wa_window_expires_at: new Date(Date.now() + 24 * 3600 * 1000).toISOString() })
+          .eq("id", guestId)
+          .then(({ error }: { error: { message: string } | null }) => {
+            if (error) console.warn("[webhook] wa_window_expires_at update failed (non-blocking):", error.message);
+          });
+      }
 
       // ── Human-handoff gate — thread claimed by staff, bot is silenced ─────
       // Set when guest clicks "לא,שינוי בתאריך" or types a date-change request.
@@ -1538,6 +1727,9 @@ serve(async (req: Request) => {
 
       // ── Route & generate reply ────────────────────────────────────────────
       let reply = scripts["fallback_reply"]?.message_text?.trim() || FALLBACK_REPLY;
+      // Set only inside the "faq" branch below when the model invokes
+      // log_guest_request — drives the conditional guest_alerts gate further down.
+      let toolLoggedRequest: AiReplyResult["loggedRequest"] = null;
 
       if (intent === "complaint") {
         // Use complaint_reply from BotScriptEditor if available, else fallback to hardcoded
@@ -1584,20 +1776,20 @@ serve(async (req: Request) => {
         console.info(`[webhook] model route: engine=${route.engine} preferred="${botSettings.preferred_model ?? "(unset)"}"`);
 
         try {
-          reply = sanitizeReply(
-            route.engine === "claude"
-              ? await callClaude(text, guestName, orderedHistory, enrichedPrompt)
-              : await askGemini(text, guestName, orderedHistory, enrichedPrompt, route.geminiOrder)
-          );
+          const result = route.engine === "claude"
+            ? await callClaude(text, guestName, orderedHistory, enrichedPrompt)
+            : await askGemini(text, guestName, orderedHistory, enrichedPrompt, route.geminiOrder);
+          reply = sanitizeReply(result.text);
+          toolLoggedRequest = result.loggedRequest;
         } catch (e) {
           const fallbackEngine = route.engine === "claude" ? "gemini" : "claude";
           console.error(`[webhook] ${route.engine} failed → trying ${fallbackEngine}:`, (e as Error).message);
           try {
-            reply = sanitizeReply(
-              route.engine === "claude"
-                ? await askGemini(text, guestName, orderedHistory, enrichedPrompt, route.geminiOrder)
-                : await callClaude(text, guestName, orderedHistory, enrichedPrompt)
-            );
+            const result = route.engine === "claude"
+              ? await askGemini(text, guestName, orderedHistory, enrichedPrompt, route.geminiOrder)
+              : await callClaude(text, guestName, orderedHistory, enrichedPrompt);
+            reply = sanitizeReply(result.text);
+            toolLoggedRequest = result.loggedRequest;
           } catch (e2) {
             console.error("[webhook] both engines failed:", (e2 as Error).message);
             reply = FALLBACK_REPLY;
@@ -1606,14 +1798,15 @@ serve(async (req: Request) => {
       }
       // else "fallback" → FALLBACK_REPLY already set
 
-      // ── Capture uncategorized guest requests for staff visibility ─────────
+      // ── guest_notes: blanket free-text history for every faq/fallback message ──
       // complaint/upsell already raise their own alert (flagGuestAlert / dedicated
-      // reply above) — this fires only for the faq/fallback catch-all, the exact
-      // gap where a real guest request (e.g. "we'd love balloons") got an AI
-      // reply but left zero trace on the guest's record. Append-only, non-blocking:
-      // a logging failure here must never affect the reply already being sent.
-      // .then() with a single callback (not a chained .catch()) is the safe
-      // pattern for this Postgrest builder — see whatsapp-send's BRANCH D note.
+      // reply above). This note log stays blanket on purpose — it's just an
+      // append-only per-guest history, not a staff-facing ticket, so there's no
+      // noise cost to capturing everything. (guest_alerts below is the selective
+      // one — see Phase 2 comment further down.) Non-blocking: a logging failure
+      // here must never affect the reply already being sent. .then() with a single
+      // callback (not a chained .catch()) is the safe pattern for this Postgrest
+      // builder — see whatsapp-send's BRANCH D note.
       // Deliberately NOT gated on arrival_confirmed: a pre-arrival request
       // ("balloons for a birthday") is the case staff most need lead time on —
       // gating this on confirmed-arrival silently dropped exactly that case.
@@ -1629,21 +1822,35 @@ serve(async (req: Request) => {
             if (error) console.error("[webhook] guest_notes capture error:", error.message);
           });
 
-        // ── Requests Board (guest_alerts) — same capture, structured for the
-        // staff dashboard. alert_type "request" distinguishes a plain ask
-        // (towels, balloons) from "complaint" (malfunction) — both feed the
-        // same board. IIFE + await, not a bare .catch() on the Postgrest
-        // builder (session 14 bug — that builder is PromiseLike, not a real
-        // Promise, so .catch() throws synchronously instead of catching).
-        (async () => {
-          const { error } = await supabase.from("guest_alerts").insert({
-            guest_id: guestId, phone, alert_type: "request",
-            message: text, conversation_id: conversationId, resolved: false,
-          });
-          // Mike's explicit ask: this must scream in the logs, not warn quietly —
-          // a failed insert here means a guest request never reaches the Requests Board.
-          if (error) console.error("[webhook] 🚨 guest_alerts (request) insert FAILED:", error.message);
-        })().catch((e: Error) => console.error("[webhook] 🚨 guest_alerts (request) insert FAILED:", e.message));
+        // ── Requests Board (guest_alerts) — Phase 2: no longer blanket-fires
+        // for every faq/fallback message (that was the original bug — a plain
+        // "what time is checkout?" landed on the staff dashboard exactly like
+        // "can we get a bottle of wine?"). Now conditional on either:
+        //   (a) the model actually invoked log_guest_request this turn, or
+        //   (b) the critical-keyword safety net (CRITICAL_FALLBACK_PATTERNS)
+        //       matched and the model didn't fire the tool — never-go-silent
+        //       backstop for תקלה/נציג/מנהל/מחיר.
+        // guest_notes above stays blanket (cheap free-text history, not a
+        // dashboard ticket) — only the staff-facing alert is now selective.
+        const criticalKeywordHit = intent === "faq" && !toolLoggedRequest && CRITICAL_FALLBACK_PATTERNS.some((p) => p.test(text));
+        if (toolLoggedRequest || criticalKeywordHit) {
+          const alertType = toolLoggedRequest?.category ?? "request";
+          if (criticalKeywordHit) {
+            console.info(`[webhook] 🛟 critical-keyword safety net fired (no tool call) — phone:${phone}`);
+          }
+          // IIFE + await, not a bare .catch() on the Postgrest builder
+          // (session 14 bug — that builder is PromiseLike, not a real
+          // Promise, so .catch() throws synchronously instead of catching).
+          (async () => {
+            const { error } = await supabase.from("guest_alerts").insert({
+              guest_id: guestId, phone, alert_type: alertType,
+              message: text, conversation_id: conversationId, resolved: false,
+            });
+            // Mike's explicit ask: this must scream in the logs, not warn quietly —
+            // a failed insert here means a guest request never reaches the Requests Board.
+            if (error) console.error("[webhook] 🚨 guest_alerts (request) insert FAILED:", error.message);
+          })().catch((e: Error) => console.error("[webhook] 🚨 guest_alerts (request) insert FAILED:", e.message));
+        }
       }
 
       // ── Send WhatsApp reply ───────────────────────────────────────────────

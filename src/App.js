@@ -19,6 +19,7 @@ import TaskBoard from "./components/TaskBoard";
 import BotConfigPanel from "./components/BotConfigPanel";
 import BotSettings from "./components/BotSettings";
 import BotScriptEditor from "./components/BotScriptEditor";
+import AutomationControlCenter from "./components/AutomationControlCenter";
 import RoomBoard from "./components/RoomBoard";
 import RequestsBoard from "./components/RequestsBoard";
 import PasswordChangeScreen from "./components/PasswordChangeScreen";
@@ -429,7 +430,11 @@ const css = `
   .logout-btn:hover { color: #ff8a80; background: rgba(255,107,107,0.08); }
 
   /* MAIN */
-  .main { margin-right: 240px; flex: 1; min-height: 100vh; }
+  /* min-width: 0 overrides the flex-item default of min-width:auto — without
+     it, any deeply-nested wide content (e.g. a table with minWidth set for
+     mobile horizontal scroll) pushes .main wider than the viewport instead
+     of scrolling inside its own overflow-x:auto wrapper. */
+  .main { margin-right: 240px; flex: 1; min-width: 0; min-height: 100vh; }
   .topbar {
     background: var(--card-bg); padding: 16px 28px;
     display: flex; align-items: center; justify-content: space-between;
@@ -437,6 +442,17 @@ const css = `
     position: sticky; top: 0; z-index: 50;
     box-shadow: 0 2px 12px rgba(0,0,0,0.05);
   }
+  /* Hamburger drawer trigger — hidden on desktop, shown only <=768px where
+     .sidebar is display:none and the 5-item mobile-bar doesn't cover admin
+     pages. Min 44px touch target. */
+  .hamburger-btn {
+    display: none; background: none; border: none; cursor: pointer;
+    font-size: 22px; line-height: 1; color: var(--black);
+    width: 44px; height: 44px; align-items: center; justify-content: center;
+    border-radius: 8px; flex-shrink: 0; margin-left: 8px;
+  }
+  .hamburger-btn:active { background: var(--ivory); }
+  .sidebar-mobile-backdrop { display: none; }
   .topbar-title { font-size: 19px; font-weight: 800; color: var(--black); font-family: 'Playfair Display', serif; }
   .topbar-date { font-size: 12px; color: var(--text-muted); background: var(--ivory); padding: 5px 12px; border-radius: 20px; border: 1px solid var(--border); }
   .content { padding: 28px; }
@@ -629,6 +645,7 @@ const css = `
     .sidebar { display: none; }
     .main { margin-right: 0; padding-bottom: 80px; }
     .mobile-bar { display: block; }
+    .hamburger-btn { display: flex; }
     .topbar { padding: 14px 18px; }
     .topbar-date { display: none; } /* free up room for the account control */
     .content { padding: 16px; }
@@ -637,6 +654,25 @@ const css = `
     .kanban { grid-template-columns: 1fr; }
     .dash-grid { grid-template-columns: 1fr; gap: 14px; }
     .table-scroll { overflow-x: auto; }
+
+    /* Hamburger drawer — .sidebar.sidebar-mobile-open overrides the plain
+       .sidebar display:none above via higher selector specificity (two
+       classes vs one), regardless of source order. */
+    .sidebar.sidebar-mobile-open {
+      display: flex; width: 80vw; max-width: 300px; min-width: 0;
+      box-shadow: -8px 0 30px rgba(0,0,0,0.35); z-index: 300;
+    }
+    .sidebar-mobile-backdrop.show {
+      display: block; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.5); z-index: 290;
+    }
+    /* Touch targets — comfortable thumb tapping for nav/buttons/inputs.
+       Scoped to interactive elements only — NOT table cells, which would
+       just bloat data-density for no reason. */
+    .nav-item, .logout-btn { min-height: 44px; padding: 12px 14px; font-size: 15px; }
+    .btn, button:not(.hamburger-btn) { min-height: 40px; }
+    input, select, textarea { font-size: 15px; min-height: 40px; }
+    input[type="checkbox"] { width: 20px; height: 20px; }
   }
 
   /* ────────────────────────────────────────────────────────────────────────
@@ -1036,7 +1072,7 @@ function DepartmentOnboardingModal({ user, onComplete }) {
   );
 }
 
-function Sidebar({ user, active, setActive, openCallsCount, onLogout, isAdmin, isSuperAdminUser }) {
+function Sidebar({ user, active, setActive, openCallsCount, onLogout, isAdmin, isSuperAdminUser, mobileOpen, onCloseMobile }) {
   // Managers, admins, and super-admins can see all nav items.
   // Staff (employees) see only: dashboard, shifts, and the AI agent.
   const isManagerOrAbove = isAdmin || isSuperAdminUser || user.role === "manager";
@@ -1068,7 +1104,13 @@ function Sidebar({ user, active, setActive, openCallsCount, onLogout, isAdmin, i
     : "👤 עובד";
 
   return (
-    <div className="sidebar">
+    <>
+      {/* Mobile drawer backdrop — only meaningful at <=768px, where .sidebar
+          itself becomes the slide-in drawer (see .sidebar-mobile-open CSS). */}
+      {mobileOpen && (
+        <div className="sidebar-mobile-backdrop show" onClick={onCloseMobile} />
+      )}
+      <div className={`sidebar${mobileOpen ? " sidebar-mobile-open" : ""}`}>
       <div className="sidebar-header">
         <div className="sidebar-brand">
           <span className="sidebar-brand-icon">🏝️</span>
@@ -1141,6 +1183,14 @@ function Sidebar({ user, active, setActive, openCallsCount, onLogout, isAdmin, i
               <span className="icon">📝</span>
               <span>סקריפטי הבוט</span>
             </button>
+            <button
+              className={`nav-item ${active === "automation_center" ? "active" : ""}`}
+              onClick={() => setActive("automation_center")}
+              style={{ color: active === "automation_center" ? "var(--gold)" : "rgba(201,169,110,0.6)" }}
+            >
+              <span className="icon">🎛️</span>
+              <span>בקרת אוטומציה</span>
+            </button>
             {/* User Management — owner (super-admin) only */}
             {isSuperAdminUser && (
               <button
@@ -1161,7 +1211,8 @@ function Sidebar({ user, active, setActive, openCallsCount, onLogout, isAdmin, i
           <span>🚪</span> התנתקות
         </button>
       </div>
-    </div>
+      </div>
+    </>
   );
 }
 
@@ -2135,6 +2186,12 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [isLoading, setIsLoading] = useState(true); // true until auth resolves
   const [activePage, setActivePage] = useState("dashboard");
+  // Hamburger drawer (mobile only, <=768px) — the desktop .sidebar is fully
+  // hidden at that width with no replacement way to reach admin-only pages
+  // (bot_scripts/automation_center/etc. aren't in the 5-item mobileNav bottom
+  // bar). Reuses the same <Sidebar> component as a slide-in overlay instead
+  // of duplicating nav logic.
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [employees, setEmployees, empLoading, refetchEmployees] = usePersistentState("employees", initialEmployees);
   const [shifts, setShifts, shiftLoading]       = usePersistentState("shifts", initialShifts);
   const [calls, setCalls, callsLoading]         = usePersistentState("service_calls", initialCalls);
@@ -2287,6 +2344,7 @@ export default function App() {
     bot_config:    "🤖 הגדרות Smart Concierge",
     bot_settings:  "🧠 מוח הבוט",
     bot_scripts:   "📝 עורך סקריפטי הבוט",
+    automation_center: "🎛️ בקרת אוטומציה",
     agent:      agentProfile ? `${agentProfile.display_name} 🤖` : "הסוכן שלי 🤖",
     admin:      "👑 ניהול מערכת",
     users_mgmt: "👥 ניהול משתמשים",
@@ -2465,6 +2523,11 @@ export default function App() {
           ["admin", "super_admin"],
           <BotScriptEditor />
         );
+      case "automation_center":
+        return guardPage(
+          ["admin", "super_admin"],
+          <AutomationControlCenter />
+        );
       case "users_mgmt":
         // only super_admin manages users
         return guardPage(
@@ -2492,14 +2555,23 @@ export default function App() {
           <Sidebar
             user={user}
             active={activePage}
-            setActive={setActivePage}
+            setActive={(id) => { setActivePage(id); setMobileMenuOpen(false); }}
             openCallsCount={openCallsCount}
             onLogout={handleLogout}
             isAdmin={isAdmin}
             isSuperAdminUser={isSuperAdminUser}
+            mobileOpen={mobileMenuOpen}
+            onCloseMobile={() => setMobileMenuOpen(false)}
           />
           <div className="main">
             <div className="topbar">
+              <button
+                className="hamburger-btn"
+                onClick={() => setMobileMenuOpen(true)}
+                aria-label="פתח תפריט ניווט"
+              >
+                ☰
+              </button>
               <div className="topbar-title">{pageTitle[activePage]}</div>
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                 <div className="topbar-date">{dateStr}</div>
