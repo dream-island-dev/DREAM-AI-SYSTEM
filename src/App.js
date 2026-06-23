@@ -2170,7 +2170,7 @@ export default function App() {
       case "broadcast":
         return <BroadcastDashboard user={user} />;
       case "wa_inbox":
-        return <WhatsAppInbox />;
+        return <WhatsAppInbox user={user} />;
       case "guests":
         return <GuestsPage />;
       case "scheduler":

@@ -67,7 +67,9 @@ function buildSpaSentence(spaTime: unknown): string {
   return "נשמח לעמוד לרשותך בכל שאלה.";
 }
 
-// Fallback static prompt (used if DB is unavailable or bot_config not seeded)
+// Fallback static prompt — used ONLY when DB is completely unavailable.
+// Contains NO hardcoded booking URLs, prices, or marketing CTAs —
+// those belong in bot_settings.system_prompt (the UI source of truth).
 const FALLBACK_SYSTEM_PROMPT = `
 אתה "DREAM CONCIERGE" — הקונסיירז' הדיגיטלי הרשמי של Dream Island Resort & Spa.
 פרמיום, יוקרתי, אמפתי ומקצועי ביותר — 5 כוכבים בכל משפט. עברית תקנית ואלגנטית בלבד. אל תחשוף שאתה AI.
@@ -82,10 +84,7 @@ CRITICAL: אם האורח שואל על פרט אישי שלו (למשל שעת 
 • אם האורח ממשיך נושא שנדון קודם — התייחס אליו ישירות, ללא הקדמות
 • דבר בגוף ראשון כנציג הצוות — "נדאג", "נסדר", "נשמח לעזור"
 • לעולם אל תכלול תגיות פנימיות כגון [תבנית:...] בתשובתך — הטקסט שלך נשלח ישירות לאורח.
-• אם האורח מעלה בקשה ספציפית וניתנת למימוש (למשל: יין, פרחים, בלונים ליום הולדת, ציוד מיוחד, בקשה לחדר) — תחילה החמא/י בטבעיות ובקצרה על הבחירה שלו/ה (למשל "בחירה נהדרת!"), ולאחר מכן ציין/י בבירור שהבקשה הועברה לצוות המלון ושיטפלו בה בהקדם. אל תמציא/י זמן טיפול משוער. המערכת שומרת ומעבירה את הבקשה אוטומטית — תפקידך רק לנסח את התשובה באופן טבעי.
-• השלמת מחשבה: בכל תשובה, תמיד השלימי מחשבה מלאה ומגובשת. לעולם אל תשאירי משפט באמצע ואל תיקטעי באופן פתאומי — כל הודעה מסתיימת באופן טבעי ומלוטש.
-• טון שיווקי וקולע: את קונסיירז' יוקרה. הימנעי מרשימות מייגעות או פסקאות ארוכות — מסרי מסר איכותי, ממוקד וקולע. אורך התשובה משתנה לפי הצורך — לא מספר משפטים קבוע — אבל היא תמיד תכלית ולא משתרכת.
-• הפניה חכמה: כשאורח/ת מבקש/ת פירוט מלא על השירותים — אל תפרטי הכל בצ'אט. צייני בקצרה את הקטגוריות המרכזיות (סוויטות יוקרה 👑, בילוי יומי מפנק 🏖️, PREMIUM DAY 1 🌟, PREMIUM DAY 2 ✨) והפני מיידית לקישור https://www.dream-island.co.il/orderonline/booking לפרטים מלאים.
+• השלם כל מחשבה עד סוף המשפט — לעולם אל תיקטע באמצע.
 `.trim();
 
 // Module-level cache: shared across requests within the same function instance
@@ -456,26 +455,34 @@ function resolveModelRoute(
   return { engine: "claude", geminiOrder: GEMINI_MODELS };
 }
 
+// buildSystemPrompt is the THIRD-priority fallback (after bot_settings.system_prompt
+// and bot_scripts.ongoing_concierge.ai_system_prompt). It reads ALL behavioral
+// content from bot_config rows — NO hardcoded marketing text or URLs are injected
+// here. If you want to change the bot's behavior, use BotSettings.js (UI source
+// of truth) or BotConfigPanel for individual config keys.
 function buildSystemPrompt(cfg: Record<string, string>): string {
   if (!Object.keys(cfg).length) return FALLBACK_SYSTEM_PROMPT;
 
   const botName    = cfg["bot_name"]        ?? "DREAM CONCIERGE";
-  const persona    = cfg["bot_personality"] ?? FALLBACK_SYSTEM_PROMPT;
-  const checkin    = cfg["hotel_checkin_time"]      ?? "15:00";
-  const checkout   = cfg["hotel_checkout_time"]     ?? "11:00";
-  const pool       = cfg["hotel_pool_hours"]        ?? "08:00–20:00";
-  const spa        = cfg["hotel_spa_hours"]         ?? "09:00–21:00";
-  const restaurant = cfg["hotel_restaurant_hours"]  ?? "07:00–22:00";
-  const wifi       = cfg["hotel_wifi"]              ?? "DreamIsland_Guest — סיסמה בקבלה";
-  const special    = cfg["hotel_special_services"]  ?? "";
-  const faqRule    = cfg["response_faq_rule"]       ?? "";
+  const persona    = cfg["bot_personality"] ?? "";
+  const checkin    = cfg["hotel_checkin_time"]     ?? "15:00";
+  const checkout   = cfg["hotel_checkout_time"]    ?? "11:00";
+  const pool       = cfg["hotel_pool_hours"]       ?? "08:00–20:00";
+  const spa        = cfg["hotel_spa_hours"]        ?? "09:00–21:00";
+  const restaurant = cfg["hotel_restaurant_hours"] ?? "07:00–22:00";
+  const fitness    = cfg["hotel_fitness_hours"]    ?? "";   // optional — set in BotConfigPanel
+  const bar        = cfg["hotel_bar_hours"]        ?? "";   // optional — set in BotConfigPanel
+  const wifi       = cfg["hotel_wifi"]             ?? "DreamIsland_Guest — סיסמה בקבלה";
+  const special    = cfg["hotel_special_services"] ?? "";
+  const bookingUrl = cfg["hotel_booking_url"]      || Deno.env.get("BOOKING_URL") || "";
+  // Custom behavioral rules set by admin in BotConfigPanel (config_key="response_rules").
+  // This is the DB-controlled replacement for any hardcoded instruction list.
+  const responseRules = cfg["response_rules"] ?? "";
+  const faqRule       = cfg["response_faq_rule"] ?? "";
 
   return `
 אתה "${botName}" — הקונסיירז' הדיגיטלי הרשמי של Dream Island Resort & Spa.
-
-══ אישיות ונימה ══
-${persona}
-• emoji אחד לכל היותר — רק אם מוסיף חמימות
+${persona ? `\n══ אישיות ונימה ══\n${persona}` : ""}
 
 ══ ידע הריזורט ══
 ▸ שעות:
@@ -483,30 +490,26 @@ ${persona}
   • בריכה: ${pool}
   • מסעדה: ${restaurant}
   • ספא: ${spa}
-  • חדר כושר: 06:00–23:00 | Lobby Bar: 11:00–01:00
+  ${fitness ? `• חדר כושר: ${fitness}` : ""}
+  ${bar ? `• בר: ${bar}` : ""}
 
 ▸ שירותים ומתקנים:
   • WiFi: ${wifi}
   • חניה: חינם לאורחים | שירות חדרים: 24/7
   ${special ? `• ${special}` : ""}
+  ${bookingUrl ? `• הזמנות ומידע מלא: ${bookingUrl}` : ""}
 
-══ הנחיות חשובות ══
+══ הנחיות בסיס ══
 1. לעולם אל תמציא מחירים, מספרי טלפון, או פרטים שאינם מפורשים.
-2. אם פרט אינו ידוע לך בכלל ולא מופיע ב"פרטי האורח הנוכחי" שצורפו לשיחה — הפנה לקבלה בנימוס.
-3. CRITICAL: אם האורח שואל על פרט אישי שלו (למשל שעת טיפול ספא, מספר חדר, תאריך הגעה) והפרט
-   הזה כן מופיע ב"פרטי האורח הנוכחי" שצורפו לשיחה — ענה לו ישירות עם הערך המדויק. אל תפנה אותו
-   לקבלה ואל תכתוב שאינך יודע כשהמידע נמצא לפניך.
-4. אל תחשוף שאתה AI — אתה "הקונסיירז' הדיגיטלי של Dream Island".
-5. אם האורח מציין שמחכה זמן רב לשירות / יש תקלה — אל תטפל, רק כתוב שהעברת לצוות.
-6. אל תפתח כל הודעה ב"שלום [שם]" — זה נראה רובוטי. המשך את השיחה בצורה אנושית וטבעית.
-7. קרא את היסטוריית השיחה ואל תחזור על מידע שכבר נמסר.
-8. אם ידוע לך שלב האורח (לפני הגעה / במהלך שהות) — התאם את הטון בהתאם.
+2. אם פרט אינו ידוע לך ולא מופיע ב"פרטי האורח הנוכחי" — הפנה לקבלה בנימוס.
+3. CRITICAL: אם האורח שואל על פרט אישי שלו והוא מופיע ב"פרטי האורח הנוכחי" — ענה ישירות עם הערך המדויק.
+4. אל תחשוף שאתה AI.
+5. אם יש תקלה / המתנה ארוכה — כתוב שהעברת לצוות, אל תטפל בעצמך.
+6. אל תפתח ב"שלום [שם]" — המשך את השיחה באופן אנושי וטבעי.
+7. קרא היסטוריית שיחה — אל תחזור על מידע שנמסר.
+8. לעולם אל תכלול תגיות כגון [תבנית:...] בתשובתך.
 ${faqRule ? `9. ${faqRule}` : ""}
-10. לעולם אל תכלול תגיות פנימיות כגון [תבנית:...] או [...] בתשובתך — הטקסט שלך נשלח ישירות לאורח.
-11. אם האורח מעלה בקשה ספציפית וניתנת למימוש (כגון יין, פרחים, בלונים ליום הולדת, ציוד מיוחד, בקשה לחדר) — תחילה החמא/י בטבעיות ובקצרה על הבחירה שלו/ה (למשל "בחירה נהדרת!" או "טעם מצוין!"), ולאחר מכן ציין/י בבירור שהבקשה הועברה לצוות המלון ושיטפלו בה בהקדם. אל תמציא/י זמן טיפול משוער. המערכת שומרת ומעבירה את הבקשה אוטומטית — תפקידך רק לנסח את התשובה באופן טבעי.
-12. השלמת מחשבה: בכל תשובה, תמיד השלימי מחשבה מלאה ומגובשת. לעולם אל תשאירי משפט באמצע ואל תיקטעי באופן פתאומי — כל הודעה מסתיימת באופן טבעי ומלוטש.
-13. טון שיווקי וקולע: את קונסיירז' יוקרה. הימנעי מרשימות מייגעות או פסקאות ארוכות — מסרי מסר איכותי, ממוקד וקולע. אורך התשובה משתנה לפי הצורך — לא מספר משפטים קבוע — אבל היא תמיד תכלית ולא משתרכת.
-14. הפניה חכמה: כשאורח/ת מבקש/ת פירוט מלא על השירותים — אל תפרטי הכל בצ'אט. צייני בקצרה את הקטגוריות המרכזיות (סוויטות יוקרה 👑, בילוי יומי מפנק 🏖️, PREMIUM DAY 1 🌟, PREMIUM DAY 2 ✨) והפני מיידית לקישור https://www.dream-island.co.il/orderonline/booking לפרטים מלאים.
+${responseRules ? `\n══ כללי שיחה נוספים (מה-UI) ══\n${responseRules}` : ""}
 `.trim();
 }
 
@@ -875,6 +878,7 @@ async function askGemini(
   history: Array<{ direction: string; message: string }>,
   systemPrompt: string,
   modelOrder: string[] = GEMINI_MODELS,
+  toolsEnabled = true,
 ): Promise<AiReplyResult> {
   const apiKey = Deno.env.get("GEMINI_API_KEY");
   if (!apiKey) throw new Error("GEMINI_API_KEY not set");
@@ -1130,16 +1134,58 @@ const SPA_MENU =
   "• עיסוי גב — 30 דק'\n\n" +
   "📞 להזמנה — שלחו לנו את שם הטיפול והשעה המועדפת ונתאם לכם. תמשיכו ליהנות! 🙏";
 
-/** Strip internal instruction tags the LLM may echo into its reply before sending to guest. */
+/**
+ * Strip chain-of-thought leakage and internal tags before the reply reaches the guest.
+ *
+ * Handles all known patterns:
+ *  • XML thinking blocks:  <thinking>…</thinking>
+ *  • Labeled text blocks:  THOUGHT: …\n\n  |  Reasoning: …\n\n  |  מחשבה: …\n\n
+ *  • Markdown headers:     **Thinking:** …\n\n
+ *  • Lone label lines:     THOUGHT: single line (not followed by blank line)
+ *  • Internal bracket tags: [תבנית:…]  |  [tag]
+ *  • Unresolved placeholders: {{GUEST_NAME}} etc. (safety net per CLAUDE.md §CORE #2)
+ */
 function sanitizeReply(text: string): string {
-  return text
-    // Remove explicit template-name markers like [תבנית: dream_arrival_confirmation]
+  let result = text;
+
+  // ── 1. XML-style thinking blocks (Claude extended-thinking / some Gemini variants) ──
+  result = result.replace(/<thinking>[\s\S]*?<\/thinking>\s*/gi, "");
+
+  // ── 2. Labeled multi-line thought blocks followed by a blank line ─────────────────
+  // Strips the entire block up to (and including) the separating blank line so the
+  // actual reply starts at the first non-thought paragraph.
+  // Covers: THOUGHT / Reasoning / Thinking / Analysis / COT / Plan / מחשבה / ניתוח / תכנון
+  result = result.replace(
+    /^(?:THOUGHT|Reasoning|Thinking|Analysis|COT|Plan|מחשבה|ניתוח|תכנון)\s*:[\s\S]*?(?=\n\n|$)/gim,
+    ""
+  );
+
+  // ── 3. Markdown bold-header thought blocks ("**Thinking:**\n…\n\n") ──────────────
+  result = result.replace(
+    /^\*\*(?:Thinking|Reasoning|Analysis|Thought|מחשבה)\*\*\s*:?[\s\S]*?(?=\n\n|$)/gim,
+    ""
+  );
+
+  // ── 4. Any remaining lone thought-label line (no blank line after) ───────────────
+  result = result.replace(
+    /^(?:THOUGHT|Reasoning|Thinking|COT|מחשבה)\s*:.*$/gim,
+    ""
+  );
+
+  // ── 5. Internal instruction tags ─────────────────────────────────────────────────
+  result = result
+    // Template-name markers: [תבנית: dream_arrival_confirmation]
     .replace(/\[תבנית[^\]]*\]/gi, "")
-    // Remove short bracketed tokens that match Hebrew/alphanumeric internal tags
+    // Short bracketed Hebrew/alphanumeric internal tags
     .replace(/\[[֐-׿\w\-_:]{2,60}\]/g, "")
+    // Safety net: any {{PLACEHOLDER}} that resolvePlaceholders() didn't substitute
+    // (e.g. a typo in BotScriptEditor) — strip rather than send raw to guest.
+    .replace(/\{\{[^}]+\}\}/g, "")
     // Collapse triple+ blank lines left after stripping
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+
+  return result;
 }
 
 
@@ -1180,6 +1226,22 @@ async function sendReply(to: string, body: string): Promise<string> {
     throw e;
   }
 }
+
+// ── Phone comparison helper (NOT the same as the phoneVariants list above) ──
+// Strips every non-digit and keeps only the last 9 — the invariant core of an
+// Israeli mobile number regardless of country/dialing-prefix noise (+972,
+// 972, 0, 00972) or manual-entry separators (spaces, dashes). Used as a
+// fallback equality check when the exact-string phoneVariants lookup below
+// misses a real match because guests.phone was stored in some other format.
+function normalizePhone(phoneStr: unknown): string {
+  return String(phoneStr ?? "").replace(/\D/g, "").slice(-9);
+}
+
+// Shared field list for both the fast-path and fallback guest lookups below —
+// `phone` is needed here (unlike before) because the fallback path compares it
+// in JS instead of letting Postgres filter on it server-side.
+const GUEST_LOOKUP_FIELDS =
+  "id, name, phone, arrival_confirmed, payment_amount, payment_link_url, msg_pre_arrival_2d_sent, needs_callback, requires_attention, arrival_date, room, room_type, spa_time, status, guest_notes";
 
 // ══════════════════════════════════════════════════════════════════════════════
 // §7  MAIN HANDLER
@@ -1233,6 +1295,22 @@ serve(async (req: Request) => {
   const changes = (entry?.changes   as Array<Record<string, unknown>>)?.[0];
   const value   = changes?.value    as Record<string, unknown> | undefined;
   const msgArr  = (value?.messages  as Array<Record<string, unknown>>) ?? [];
+
+  // ── WhatsApp push name (Smart Identity Resolution fallback) ─────────────────
+  // Meta's webhook envelope carries a sibling `contacts[]` array alongside
+  // `messages[]`, keyed by wa_id (digits-only, same format as msg.from). This
+  // is the guest's own WhatsApp profile display name — captured here once per
+  // payload so WhatsAppInbox.js can show a real name even before the phone is
+  // matched in `guests`. Never sent to the guest, never used for routing.
+  const contactsArr = (value?.contacts as Array<Record<string, unknown>>) ?? [];
+  const pushNameByWaId: Record<string, string> = {};
+  for (const c of contactsArr) {
+    const waId = String(c?.wa_id ?? "");
+    const profileName = (c?.profile as Record<string, unknown> | undefined)?.name;
+    if (waId && typeof profileName === "string" && profileName.trim()) {
+      pushNameByWaId[waId] = profileName.trim();
+    }
+  }
 
   console.log(`[webhook] payload parsed — messages:${msgArr.length} statuses:${((value?.statuses as unknown[]) ?? []).length}`);
 
@@ -1290,6 +1368,7 @@ serve(async (req: Request) => {
       const phoneDigits   = phone.replace(/\D/g, "");                                            // "972XXXXXXXXX"
       const phoneLocal    = phoneDigits.startsWith("972") ? "0" + phoneDigits.slice(3) : phoneDigits; // "0XXXXXXXXX"
       const phoneVariants = [phone, phoneDigits, phoneLocal];                                     // ["+972...","972...","0..."]
+      const pushName = pushNameByWaId[phoneDigits] ?? pushNameByWaId[from] ?? null;
 
       // ── DIAGNOSTIC: log every message type entering the loop ─────────────
       console.log(`[webhook] 🔍 msg type:"${msg.type}" from:${phone} id:${msgId.slice(-8)}`);
@@ -1368,7 +1447,8 @@ serve(async (req: Request) => {
       }
 
       // ── Dedup + guest lookup in parallel (saves ~300ms per message) ──────
-      const [{ data: existing }, { data: guest }] = await Promise.all([
+      // Guest lookup fast path: 3 known exact-format variants (+972/972/0...).
+      const [{ data: existing }, { data: guestFast }] = await Promise.all([
         supabase
           .from("whatsapp_conversations")
           .select("id")
@@ -1376,7 +1456,7 @@ serve(async (req: Request) => {
           .maybeSingle(),
         supabase
           .from("guests")
-          .select("id, name, arrival_confirmed, payment_amount, payment_link_url, msg_pre_arrival_2d_sent, needs_callback, requires_attention, arrival_date, room, room_type, spa_time, status, guest_notes")
+          .select(GUEST_LOOKUP_FIELDS)
           .in("phone", phoneVariants)
           .maybeSingle(),
       ]);
@@ -1384,6 +1464,30 @@ serve(async (req: Request) => {
         console.info("[webhook] dedup skip:", msgId);
         continue;
       }
+
+      // ── Fallback: last-9-digit match ──────────────────────────────────────
+      // Catches guests.phone formats the exact-string variants above don't
+      // anticipate (spaces/dashes from manual entry, "00972..." international
+      // dialing prefix, etc.) — this was the root cause of guests showing up
+      // as a bare phone number instead of their name in WhatsAppInbox.js.
+      // Table is small (one resort's guest list), so a single broader fetch
+      // here is cheap — and this whole handler already runs in the
+      // fire-and-forget background task, after Meta's HTTP response was sent.
+      let guest = guestFast;
+      if (!guest) {
+        const { data: guestCandidates } = await supabase
+          .from("guests")
+          .select(GUEST_LOOKUP_FIELDS)
+          .not("phone", "is", null);
+        const fallbackMatch = (guestCandidates ?? []).find(
+          (g) => normalizePhone((g as Record<string, unknown>).phone) === normalizePhone(phone)
+        );
+        if (fallbackMatch) {
+          guest = fallbackMatch;
+          console.info(`[webhook] 🔍 guest matched via last-9-digit fallback — phone:${phone} guestId:${(fallbackMatch as Record<string, unknown>).id}`);
+        }
+      }
+
       const guestId   = (guest?.id   as number)     ?? null;
       const guestName = (guest?.name as string|null) ?? null;
       const sim       = Deno.env.get("WHATSAPP_SIMULATION") === "true";
@@ -1462,7 +1566,7 @@ serve(async (req: Request) => {
             const { error: logErr } = await supabase.from("whatsapp_conversations").insert({
               phone, guest_id: guestId, direction: "inbound",
               message: isButtonReply ? buttonTitle : text,
-              wa_message_id: msgId, intent: "human_handoff",
+              wa_message_id: msgId, intent: "human_handoff", push_name: pushName,
             });
             if (logErr) console.warn("[webhook] human_handoff log error:", logErr.message);
           } catch (e) { console.warn("[webhook] human_handoff log error:", (e as Error).message); }
@@ -1485,7 +1589,7 @@ serve(async (req: Request) => {
 
         await supabase.from("whatsapp_conversations").insert({
           phone, guest_id: guestId, direction: "inbound",
-          message: buttonTitle, wa_message_id: msgId, intent: "button_reply",
+          message: buttonTitle, wa_message_id: msgId, intent: "button_reply", push_name: pushName,
           ...(isDateChangeButton ? { human_requested: true, human_request_type: "date_change" } : {}),
           ...(isCallbackButton   ? { human_requested: true, human_request_type: "callback" }    : {}),
         });
@@ -1767,7 +1871,7 @@ serve(async (req: Request) => {
         if (confirmErr2) console.error(`[webhook] arrival_confirmed (text) update FAILED phone:${phone}:`, confirmErr2.message);
         await supabase.from("whatsapp_conversations").insert({
           phone, guest_id: guestId, direction: "inbound",
-          message: text, wa_message_id: msgId, intent: "confirmation",
+          message: text, wa_message_id: msgId, intent: "confirmation", push_name: pushName,
         });
 
         // ── Stage 2 Pay — same payment-pending branch as the button-tap path
@@ -1850,7 +1954,7 @@ serve(async (req: Request) => {
           .insert({
             phone, guest_id: guestId, direction: "inbound",
             message: text, wa_message_id: msgId,
-            intent: "date_change_request",
+            intent: "date_change_request", push_name: pushName,
             human_requested: true, human_request_type: "date_change",
           })
           .select("id")
@@ -1937,6 +2041,7 @@ serve(async (req: Request) => {
           intent,
           human_requested:    humanReq.requested,
           human_request_type: humanReq.type,
+          push_name:          pushName,
         })
         .select("id")
         .maybeSingle();

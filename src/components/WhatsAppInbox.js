@@ -8,6 +8,95 @@ import { supabase, isSupabaseConfigured } from "../supabaseClient";
 
 const POLL_MS = 5000; // fallback polling interval (realtime is primary) — 5s safe minimum
 
+// ── Responsive hook — same convention as UserManagement.js's useIsMobile:
+// JS-based breakpoint detection (resize listener), not injected CSS media
+// queries, so layout-mode branching can live directly in render logic. ──────
+function useIsMobile(breakpoint = 768) {
+  const [mobile, setMobile] = useState(
+    typeof window !== "undefined" ? window.innerWidth < breakpoint : false
+  );
+  useEffect(() => {
+    const fn = () => setMobile(window.innerWidth < breakpoint);
+    window.addEventListener("resize", fn);
+    return () => window.removeEventListener("resize", fn);
+  }, [breakpoint]);
+  return mobile;
+}
+
+// ── i18n — UI chrome only (toolbar, labels, badges, placeholders). Message
+// content itself is never translated — guests write in Hebrew regardless of
+// which language the operator is viewing the inbox in. NewChatModal keeps its
+// existing Hebrew-only UI for now — localizing its template/bulk-send flows
+// is a separate, larger pass. ────────────────────────────────────────────────
+const T = {
+  he: {
+    dir: "rtl",
+    brand: "💬 DREAM BOT — תיבת שיחות",
+    live: "LIVE", connecting: "מתחבר...",
+    newChat: "✉️ חדש", botOn: "🤖 בוט פעיל", botOff: "😴 בוט כבוי",
+    newMsgs: (n) => `${n} חדשות`,
+    listCount: (n) => `${n} הודעות`,
+    syncing: "⏳ מסנכרן...",
+    emptyIcon: "📭", emptyBody: "אין שיחות עדיין",
+    pickChat: "בחר שיחה כדי לצפות בה",
+    back: "חזרה לרשימה",
+    aiLog: "🧠 יומן AI",
+    aiLogEmpty: "אין רישומי סיווג בשיחה הזו",
+    aiLogHint: "פנימי — לא מוצג לאורח",
+    quickBolt: "⚡",
+    quickRepliesTitle: "תגובות מהירות",
+    routeTitle: "ניתוב משימה לתפעול",
+    routeMaint: "🔧 תחזוקה", routeHouse: "🛏️ משק בית",
+    inputPh: "כתוב הודעה ידנית... (Enter לשליחה)",
+    archive: "ארכיון", resolve: "טופל",
+    identityDb: "תואם מהמערכת", identityWa: "פרופיל WhatsApp", identityPhone: "מספר בלבד",
+    spa: "ספא",
+    msgsCount: (n) => `${n} הודעות`,
+    langSwap: "EN",
+  },
+  en: {
+    dir: "ltr",
+    brand: "💬 DREAM BOT — Inbox",
+    live: "LIVE", connecting: "Connecting...",
+    newChat: "✉️ New", botOn: "🤖 Bot on", botOff: "😴 Bot off",
+    newMsgs: (n) => `${n} new`,
+    listCount: (n) => `${n} chats`,
+    syncing: "⏳ Syncing...",
+    emptyIcon: "📭", emptyBody: "No conversations yet",
+    pickChat: "Select a conversation to view it",
+    back: "Back to list",
+    aiLog: "🧠 AI log",
+    aiLogEmpty: "No classification events in this thread",
+    aiLogHint: "Internal — never shown to the guest",
+    quickBolt: "⚡",
+    quickRepliesTitle: "Quick replies",
+    routeTitle: "Route task to operations",
+    routeMaint: "🔧 Maintenance", routeHouse: "🛏️ Housekeeping",
+    inputPh: "Type a manual message... (Enter to send)",
+    archive: "Archive", resolve: "Resolved",
+    identityDb: "Matched in system", identityWa: "WhatsApp profile", identityPhone: "Phone only",
+    spa: "Spa",
+    msgsCount: (n) => `${n} messages`,
+    langSwap: "HE",
+  },
+};
+
+// Per-message `intent` (already written by whatsapp-webhook on every inbound
+// row) is the real, already-stored signal behind the AI log drawer — no new
+// logging table, no fabricated data.
+const INTENT_LABELS = {
+  he: {
+    faq: "שאלה כללית (FAQ)", fallback: "לא סווג / fallback",
+    button_reply: "לחיצת כפתור", confirmation: "אישור הגעה (טקסט)",
+    date_change_request: "בקשת שינוי תאריך", human_handoff: "הועבר לטיפול אנושי",
+  },
+  en: {
+    faq: "General question (FAQ)", fallback: "Unclassified / fallback",
+    button_reply: "Button tap", confirmation: "Arrival confirmation (typed)",
+    date_change_request: "Date-change request", human_handoff: "Handed off to staff",
+  },
+};
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 function formatTime(iso) {
   if (!iso) return "";
@@ -22,12 +111,25 @@ function formatTime(iso) {
 // 0506842439) to the bare 972XXXXXXXXX form Meta's webhook already sends
 // natively — without this, the same guest can split into two threads
 // depending on which write path produced the row (webhook vs guests.phone
-// vs a locally-formatted number), which is exactly the bug this fixes.
-function normalizePhone(raw) {
+// vs a locally-formatted number). This is the DIALABLE form — used as the
+// contact key, the wa.me link, and the `phone` sent to whatsapp-send — so it
+// must stay a full country-code-prefixed number, never just a comparison key.
+function canonicalizePhone(raw) {
   if (!raw) return raw;
   let p = String(raw).replace(/\D/g, ""); // digits only — strips +, spaces, dashes
   if (p.startsWith("0")) p = "972" + p.slice(1); // local 05XXXXXXXX → 9725XXXXXXXX
   return p;
+}
+
+// Comparison-only helper — NOT a replacement for canonicalizePhone() above and
+// never used to build a dialable number. Strips every non-digit and keeps
+// only the last 9 — the invariant core of an Israeli mobile number regardless
+// of country/dialing-prefix noise (+972, 972, 0, 00972) or manual-entry
+// separators (spaces, dashes). Used to match a guests.phone value (stored in
+// whatever format it was typed/imported in) against a WhatsApp-derived phone.
+function normalizePhone(phoneStr) {
+  if (!phoneStr) return "";
+  return String(phoneStr).replace(/\D/g, "").slice(-9);
 }
 
 function groupByPhone(rows) {
@@ -39,6 +141,8 @@ function groupByPhone(rows) {
         guestName: row.guest_name,
         guestNotes: row.guest_notes ?? null,
         spaTime: row.spa_time ?? null,
+        room: row.guest_room ?? null,
+        pushName: row.push_name ?? null,
         messages: [],
         humanRequested: false,
         humanRequestType: null,
@@ -50,6 +154,8 @@ function groupByPhone(rows) {
     // value carried by the most recently fetched row, not just the first.
     if (row.guest_notes) contact.guestNotes = row.guest_notes;
     if (row.spa_time) contact.spaTime = row.spa_time;
+    if (row.guest_room) contact.room = row.guest_room;
+    if (row.push_name) contact.pushName = row.push_name;
     // Flag contact if any inbound message is a human request
     if (row.human_requested && row.direction === "inbound") {
       contact.humanRequested = true;
@@ -67,8 +173,29 @@ function groupByPhone(rows) {
   });
 }
 
+// ── Identity resolution (Smart Guest Identity) ───────────────────────────────
+// Precedence: DB-matched guest name > WhatsApp profile push name > raw phone.
+function displayName(contact) {
+  return contact.guestName ?? contact.pushName ?? contact.phone;
+}
+function identityMeta(contact, t) {
+  if (contact.guestName) return { kind: "db",    label: t.identityDb,    bg: "#E1F5EE", fg: "#04342C" };
+  if (contact.pushName)  return { kind: "wa",    label: t.identityWa,    bg: "#FAEEDA", fg: "#412402" };
+  return                         { kind: "phone", label: t.identityPhone, bg: "#F1EFE8", fg: "#2C2C2A" };
+}
+// "Recently active" is a presence proxy derived from the last inbound message
+// timestamp — WhatsApp's webhook never reports true online/offline presence.
+function recentlyActive(contact) {
+  const last = contact.messages[contact.messages.length - 1];
+  if (!last?.created_at) return false;
+  return Date.now() - new Date(last.created_at).getTime() < 15 * 60 * 1000;
+}
+
 // ── Contact list item ────────────────────────────────────────────────────────
-function ContactItem({ contact, isActive, onClick, onDismiss }) {
+// Swipe-to-reveal (mobile only): pointer-drag past a 48px threshold reveals
+// Archive / Resolved actions behind the row, mirroring the approved mockup.
+// Works with touch AND mouse (pointer events), so no gesture library needed.
+function ContactItem({ contact, isActive, isMobile, t, dir, onClick, onDismiss, onArchive }) {
   const last  = contact.messages[contact.messages.length - 1];
   const unread = contact.messages.filter(
     (m) => m.direction === "inbound" && !m._read
@@ -78,133 +205,204 @@ function ContactItem({ contact, isActive, onClick, onDismiss }) {
   const humanLabel = contact.humanRequestType === "call"
     ? "🔴 מבקש שיחת טלפון"
     : "🔴 מבקש מענה אנושי";
+  const identity = identityMeta(contact, t);
+  const active   = recentlyActive(contact);
+
+  const [swiped, setSwiped] = useState(false);
+  const dragRef = useRef({ startX: 0, dragging: false });
+  const ACTIONS_W = 144;
+  const rtl = dir === "rtl";
+
+  function onPointerDown(e) {
+    if (!isMobile) return;
+    dragRef.current = { startX: e.clientX, dragging: true };
+    const onMove = (ev) => {
+      if (!dragRef.current.dragging) return;
+      const dx = ev.clientX - dragRef.current.startX;
+      if (Math.abs(dx) > 48) {
+        setSwiped(rtl ? dx < 0 : dx > 0);
+        cleanup();
+      }
+    };
+    const cleanup = () => {
+      dragRef.current.dragging = false;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", cleanup);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", cleanup);
+  }
 
   return (
-    <div
-      onClick={onClick}
-      style={{
-        padding: "12px 16px",
-        cursor: "pointer",
-        borderBottom: "1px solid #f0f0f0",
-        background: contact.humanRequested
-          ? (isActive ? "#ffdfdf" : "#FFF0F0")
-          : (isActive ? "#e8f4fd" : "white"),
-        borderRight: contact.humanRequested
-          ? "4px solid #ef4444"
-          : isActive ? "4px solid #25D366" : "4px solid transparent",
-        transition: "background 0.15s",
-      }}
-    >
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {/* Avatar */}
-          <div style={{
-            width: 40, height: 40, borderRadius: "50%",
-            background: contact.humanRequested ? "#ef4444" : "#25D366",
-            color: "white",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            fontWeight: 700, fontSize: 16, flexShrink: 0,
-          }}>
-            {(contact.guestName ?? contact.phone)?.[0]?.toUpperCase() ?? "?"}
-          </div>
-          <div>
-            <div style={{ fontWeight: 600, fontSize: 14, color: "#1a1a1a" }}>
-              {contact.guestName ?? contact.phone}
-            </div>
-            <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>
-              {contact.guestName ? contact.phone : ""}
-            </div>
-          </div>
-        </div>
-        {/* Right side: WA button + time + unread */}
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, flexShrink: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <a
-              href={`https://wa.me/${waPhone}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={(e) => e.stopPropagation()}
-              title="פתח שיחת וואטסאפ"
-              style={{
-                display: "flex", alignItems: "center", justifyContent: "center",
-                width: 26, height: 26, borderRadius: "50%",
-                background: "#25D366", color: "white",
-                fontSize: 13, textDecoration: "none", flexShrink: 0,
-              }}
-            >
-              💬
-            </a>
-            <div style={{ fontSize: 11, color: "#aaa" }}>{formatTime(last?.created_at)}</div>
-          </div>
-          {unread > 0 && (
-            <div style={{
-              background: "#25D366", color: "white",
-              borderRadius: 12, fontSize: 11, fontWeight: 700,
-              padding: "1px 7px", display: "inline-block",
-            }}>
-              {unread}
-            </div>
-          )}
-        </div>
-      </div>
-      {last && (
+    <div style={{ position: "relative", overflow: "hidden" }}>
+      {isMobile && (
         <div style={{
-          fontSize: 12, color: "#666", marginTop: 6,
-          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-          paddingRight: 48,
+          position: "absolute", [rtl ? "left" : "right"]: 0, top: 0, bottom: 0,
+          width: ACTIONS_W, display: "flex",
         }}>
-          {last.direction === "outbound" ? "✓ " : ""}{last.message}
-        </div>
-      )}
-      {contact.humanRequested && (
-        <div style={{
-          marginTop: 6, display: "inline-flex", alignItems: "center", gap: 6,
-          background: "#FEE2E2", color: "#DC2626",
-          fontSize: 11, fontWeight: 700,
-          padding: "2px 4px 2px 8px", borderRadius: 10,
-          border: "1px solid #FECACA",
-        }}>
-          {humanLabel}
           <button
-            onClick={(e) => { e.stopPropagation(); onDismiss?.(); }}
-            title="סמן כטופל — בטל בקשת מענה אנושי"
-            style={{
-              width: 18, height: 18, borderRadius: "50%", border: "none",
-              background: "#DC2626", color: "#fff", cursor: "pointer",
-              fontSize: 11, fontWeight: 900, lineHeight: 1,
-              display: "flex", alignItems: "center", justifyContent: "center", padding: 0,
-            }}
-          >✓</button>
+            onClick={(e) => { e.stopPropagation(); setSwiped(false); onArchive?.(); }}
+            style={{ flex: 1, border: "none", background: "#9CA3AF", color: "white", fontSize: 12, fontWeight: 700, minHeight: 48 }}
+          >{t.archive}</button>
+          <button
+            onClick={(e) => { e.stopPropagation(); setSwiped(false); onDismiss?.(); }}
+            style={{ flex: 1, border: "none", background: "#16A34A", color: "white", fontSize: 12, fontWeight: 700, minHeight: 48 }}
+          >{t.resolve}</button>
         </div>
       )}
+      <div
+        onClick={() => { if (swiped) { setSwiped(false); return; } onClick(); }}
+        onPointerDown={onPointerDown}
+        style={{
+          padding: "12px 16px",
+          minHeight: isMobile ? 64 : "auto",
+          cursor: "pointer",
+          borderBottom: "1px solid #f0f0f0",
+          background: contact.humanRequested
+            ? (isActive ? "#ffdfdf" : "#FFF0F0")
+            : (isActive ? "#e8f4fd" : "white"),
+          borderRight: !rtl ? undefined : contact.humanRequested
+            ? "4px solid #ef4444"
+            : isActive ? "4px solid #25D366" : "4px solid transparent",
+          borderLeft: rtl ? undefined : contact.humanRequested
+            ? "4px solid #ef4444"
+            : isActive ? "4px solid #25D366" : "4px solid transparent",
+          transform: swiped ? `translateX(${rtl ? -ACTIONS_W : ACTIONS_W}px)` : "translateX(0)",
+          transition: "transform 0.2s ease, background 0.15s",
+          touchAction: isMobile ? "pan-y" : "auto",
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {/* Avatar + presence dot */}
+            <div style={{ position: "relative", flexShrink: 0 }}>
+              <div style={{
+                width: 40, height: 40, borderRadius: "50%",
+                background: contact.humanRequested ? "#ef4444" : "#25D366",
+                color: "white",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontWeight: 700, fontSize: 16,
+              }}>
+                {displayName(contact)?.[0]?.toUpperCase() ?? "?"}
+              </div>
+              <span style={{
+                position: "absolute", bottom: -1, [rtl ? "left" : "right"]: -1,
+                width: 10, height: 10, borderRadius: "50%",
+                border: "2px solid white",
+                background: contact.humanRequested ? "#ef4444" : (active ? "#22C55E" : "#9CA3AF"),
+                animation: contact.humanRequested ? "wa-pulse 1.4s ease-in-out infinite" : "none",
+              }} />
+            </div>
+            <div>
+              <div style={{ fontWeight: 600, fontSize: 14, color: "#1a1a1a" }}>
+                {displayName(contact)}
+              </div>
+              <div style={{ fontSize: 12, color: "#888", marginTop: 2, direction: "ltr", textAlign: rtl ? "right" : "left" }}>
+                {contact.guestName || contact.pushName ? contact.phone : ""}
+              </div>
+              <span style={{
+                display: "inline-block", marginTop: 4,
+                background: identity.bg, color: identity.fg,
+                fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: 8,
+              }}>{identity.label}</span>
+            </div>
+          </div>
+          {/* Right side: WA button + time + unread */}
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, flexShrink: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <a
+                href={`https://wa.me/${waPhone}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                title="פתח שיחת וואטסאפ"
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  width: isMobile ? 32 : 26, height: isMobile ? 32 : 26, borderRadius: "50%",
+                  background: "#25D366", color: "white",
+                  fontSize: 13, textDecoration: "none", flexShrink: 0,
+                }}
+              >
+                💬
+              </a>
+              <div style={{ fontSize: 11, color: "#aaa" }}>{formatTime(last?.created_at)}</div>
+            </div>
+            {unread > 0 && (
+              <div style={{
+                background: "#25D366", color: "white",
+                borderRadius: 12, fontSize: 11, fontWeight: 700,
+                padding: "1px 7px", display: "inline-block",
+              }}>
+                {unread}
+              </div>
+            )}
+          </div>
+        </div>
+        {last && (
+          <div style={{
+            fontSize: 12, color: "#666", marginTop: 6,
+            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+            paddingRight: rtl ? 48 : 0, paddingLeft: rtl ? 0 : 48,
+          }}>
+            {last.direction === "outbound" ? "✓ " : ""}{last.message}
+          </div>
+        )}
+        {contact.humanRequested && (
+          <div style={{
+            marginTop: 6, display: "inline-flex", alignItems: "center", gap: 6,
+            background: "#FEE2E2", color: "#DC2626",
+            fontSize: 11, fontWeight: 700,
+            padding: "2px 4px 2px 8px", borderRadius: 10,
+            border: "1px solid #FECACA",
+          }}>
+            {humanLabel}
+            <button
+              onClick={(e) => { e.stopPropagation(); onDismiss?.(); }}
+              title="סמן כטופל — בטל בקשת מענה אנושי"
+              style={{
+                width: 18, height: 18, borderRadius: "50%", border: "none",
+                background: "#DC2626", color: "#fff", cursor: "pointer",
+                fontSize: 11, fontWeight: 900, lineHeight: 1,
+                display: "flex", alignItems: "center", justifyContent: "center", padding: 0,
+              }}
+            >✓</button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
 
 // ── Message bubble ────────────────────────────────────────────────────────────
-function Bubble({ msg }) {
+// Luxury-tone visual hierarchy: inbound guest messages stay crisp/light for
+// readability; outbound bot/staff replies use the resort's deep-slate/gold
+// palette (--black-soft, --gold-light) instead of WhatsApp stock green, so the
+// thread visually matches the rest of the app rather than looking like a
+// generic chat widget.
+function Bubble({ msg, dir }) {
   const isOut = msg.direction === "outbound";
+  const rtl = dir === "rtl";
   return (
     <div style={{
       display: "flex",
-      justifyContent: isOut ? "flex-start" : "flex-end",
+      justifyContent: isOut ? (rtl ? "flex-start" : "flex-end") : (rtl ? "flex-end" : "flex-start"),
       marginBottom: 4,
     }}>
       <div style={{
         maxWidth: "72%",
-        background: isOut ? "#dcf8c6" : "#ffffff",
+        background: isOut ? "var(--black-soft, #2C2C2C)" : "#ffffff",
         border: isOut ? "none" : "1.5px solid #c5d9f0",
         borderRadius: isOut ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
         boxShadow: isOut ? "0 1px 2px rgba(0,0,0,0.08)" : "0 1px 4px rgba(55,138,221,0.12)",
         padding: "8px 12px",
         fontSize: 14,
-        color: "#1a1a1a",
+        color: isOut ? "var(--ivory, #F5F0E8)" : "#1a1a1a",
         lineHeight: 1.5,
         wordBreak: "break-word",
       }}>
         {msg.message}
         <div style={{
-          fontSize: 10, color: "#aaa", marginTop: 4,
+          fontSize: 10, color: isOut ? "var(--gold-light, #E8C98A)" : "#aaa", marginTop: 4,
           textAlign: isOut ? "left" : "right",
         }}>
           {formatTime(msg.created_at)}
@@ -1204,7 +1402,7 @@ function NewChatModal({ onClose, onSent }) {
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
-export default function WhatsAppInbox() {
+export default function WhatsAppInbox({ user }) {
   const [contacts, setContacts]   = useState([]); // grouped by phone
   const [active, setActive]       = useState(null); // selected phone
   const [loading, setLoading]     = useState(true);
@@ -1218,27 +1416,61 @@ export default function WhatsAppInbox() {
   // ── Realtime connection status ────────────────────────────────────────────
   const [realtimeOk, setRealtimeOk]   = useState(false);
   const [lastUpdated, setLastUpdated] = useState(null);
+  // ── Mobile-first layout + i18n + AI log/quick-actions UI state ───────────
+  const isMobile = useIsMobile(768);
+  const [mobileScreen, setMobileScreen] = useState("list"); // "list" | "thread"
+  const [lang, setLang]           = useState("he");
+  const t                         = T[lang];
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [quickOpen, setQuickOpen]   = useState(false);
+  const [archivedPhones, setArchivedPhones] = useState(() => new Set());
+  const [routeToast, setRouteToast] = useState(null);
   const bottomRef  = useRef(null);
   const pollRef    = useRef(null);
   const allMsgsRef = useRef([]);   // raw flat messages — source of truth for merging
   const lastSeenAt = useRef(null); // ISO timestamp of last fetch — used by fetchSince
+  const guestPhoneMapRef = useRef(new Map()); // normalizePhone(guests.phone) → guests.name
 
   // ── Shared row normaliser ─────────────────────────────────────────────────
   const normalise = (r) => ({
     ...r,
-    phone:              normalizePhone(r.phone),
+    phone:              canonicalizePhone(r.phone),
     guest_name:         r.guests?.name ?? null,
     guest_notes:        r.guests?.guest_notes ?? null,
     spa_time:           r.guests?.spa_time ?? null,
+    guest_room:         r.guests?.room ?? null,
+    push_name:          r.push_name ?? null,
     human_requested:    r.human_requested    ?? false,
     human_request_type: r.human_request_type ?? null,
   });
+
+  // ── Client-side identity-resolution fallback ──────────────────────────────
+  // The webhook's guest_id join is the primary path for showing a real name
+  // (see whatsapp-webhook's GUEST_LOOKUP_FIELDS fallback). This is a second,
+  // independent safety net on the frontend: if a contact still has no
+  // guestName (guest_id never resolved — e.g. a historical row from before
+  // a guest was added, or a guests.phone format neither lookup anticipated),
+  // re-check it here against every guest's phone using the same last-9-digit
+  // comparison, so the UI self-heals without needing a backfill migration.
+  const resolveIdentityFallback = useCallback((contacts) => {
+    if (guestPhoneMapRef.current.size === 0) return contacts;
+    return contacts.map((c) => {
+      if (c.guestName) return c;
+      const matchedName = guestPhoneMapRef.current.get(normalizePhone(c.phone));
+      return matchedName ? { ...c, guestName: matchedName } : c;
+    });
+  }, []);
+
+  const applyGrouping = useCallback(
+    (rows) => resolveIdentityFallback(groupByPhone(rows)),
+    [resolveIdentityFallback]
+  );
 
   // ── Full fetch (initial load only) ────────────────────────────────────────
   const fetchAll = useCallback(async () => {
     const { data, error: err } = await supabase
       .from("whatsapp_conversations")
-      .select("id, phone, direction, message, wa_message_id, created_at, human_requested, human_request_type, guests(name, guest_notes, spa_time)")
+      .select("id, phone, direction, message, wa_message_id, created_at, intent, human_requested, human_request_type, push_name, guests(name, guest_notes, spa_time, room)")
       .order("created_at", { ascending: true })
       .limit(2000);
 
@@ -1247,7 +1479,7 @@ export default function WhatsAppInbox() {
     const flat = (data ?? []).map(normalise);
     allMsgsRef.current = flat;
     lastSeenAt.current = new Date().toISOString();
-    setContacts(groupByPhone(flat));
+    setContacts(applyGrouping(flat));
     setLastUpdated(new Date());
     setLoading(false);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -1262,7 +1494,7 @@ export default function WhatsAppInbox() {
 
     const { data } = await supabase
       .from("whatsapp_conversations")
-      .select("id, phone, direction, message, wa_message_id, created_at, human_requested, human_request_type, guests(name, guest_notes, spa_time)")
+      .select("id, phone, direction, message, wa_message_id, created_at, intent, human_requested, human_request_type, push_name, guests(name, guest_notes, spa_time, room)")
       .gt("created_at", since)
       .order("created_at", { ascending: true })
       .limit(100);
@@ -1276,7 +1508,7 @@ export default function WhatsAppInbox() {
       ...newFlat.filter((m) => !existingIds.has(m.id)),
     ];
     allMsgsRef.current = merged;
-    setContacts(groupByPhone(merged));
+    setContacts(applyGrouping(merged));
     setLastUpdated(new Date());
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1288,7 +1520,7 @@ export default function WhatsAppInbox() {
   // (+972/972/0-prefixed) since `whatsapp_conversations.phone` and
   // `guests.phone` aren't guaranteed to share one format (session 15 root cause).
   const dismissHumanRequest = useCallback(async (contact) => {
-    const bare = contact.phone; // normalizePhone() already applied — "972XXXXXXXXX"
+    const bare = contact.phone; // canonicalizePhone() already applied — "972XXXXXXXXX"
     const variants = [bare, `+${bare}`, `0${bare.slice(3)}`];
     try {
       const [{ error: convErr }, { error: guestErr }] = await Promise.all([
@@ -1309,11 +1541,82 @@ export default function WhatsAppInbox() {
       allMsgsRef.current = allMsgsRef.current.map((m) =>
         m.phone === bare ? { ...m, human_requested: false } : m
       );
-      setContacts(groupByPhone(allMsgsRef.current));
+      setContacts(applyGrouping(allMsgsRef.current));
     } catch (e) {
       setError("שגיאה בסימון כטופל: " + (e?.message ?? e));
     }
-  }, []);
+  }, [applyGrouping]);
+
+  // ── Open a contact — selects it, switches to thread screen on mobile, and
+  // marks its inbound messages read locally so the unread badge actually
+  // clears (previously `_read` was referenced by the badge logic but never
+  // set anywhere, so unread counts only ever grew). ─────────────────────────
+  const openContact = useCallback((phone) => {
+    setActive(phone);
+    if (isMobile) setMobileScreen("thread");
+    setDrawerOpen(false);
+    setQuickOpen(false);
+    allMsgsRef.current = allMsgsRef.current.map((m) =>
+      m.phone === phone && m.direction === "inbound" ? { ...m, _read: true } : m
+    );
+    setContacts(applyGrouping(allMsgsRef.current));
+  }, [isMobile, applyGrouping]);
+
+  // ── Route a guest conversation to Operations (Maintenance/Housekeeping) ──
+  // Inserts a real `tasks` row — same shape as whapi-webhook/staff-ops — so it
+  // shows up immediately on the Operations & Maintenance board under the same
+  // SLA tracking (sla-escalation-cron scans by sla_category/sla_deadline
+  // regardless of source). source='inbox_routed' keeps provenance honest:
+  // this is an operator action on the guest channel, not a parsed staff
+  // WhatsApp-group report.
+  async function routeTask(category, contact) {
+    if (!contact) return;
+    const isMaint     = category === "maintenance";
+    const slaCategory = isMaint ? "maintenance" : "guest_amenities";
+    const slaMinutes  = isMaint ? 30 : 15;
+    const lastInbound = [...contact.messages].reverse().find((m) => m.direction === "inbound");
+    const context      = lastInbound?.message?.slice(0, 280) || "";
+    const guestLabel   = displayName(contact);
+    try {
+      const { error: insErr } = await supabase.from("tasks").insert({
+        room_number:         contact.room ?? null,
+        department:           isMaint ? "תפעול" : "משק",
+        description:          `[מתיבת וואטסאפ — ${guestLabel}] ${context}`.trim(),
+        priority:             "normal",
+        status:               "open",
+        sla_category:         slaCategory,
+        sla_deadline:          new Date(Date.now() + slaMinutes * 60000).toISOString(),
+        source:               "inbox_routed",
+        reporter_profile_id:  user?.id ?? null,
+        reporter_raw_text:    lastInbound?.message ?? null,
+      });
+      if (insErr) throw insErr;
+      setRouteToast(isMaint ? "✅ נפתחה משימת תחזוקה בלוח התפעול" : "✅ נפתחה משימת משק בית בלוח התפעול");
+    } catch (e) {
+      setRouteToast("⚠️ שגיאה ביצירת משימה: " + (e?.message ?? e));
+    }
+    setQuickOpen(false);
+    setTimeout(() => setRouteToast(null), 3500);
+  }
+
+  // ── Populate the guest phone→name map once on mount, for the identity-
+  // resolution fallback above. Re-applies to already-loaded contacts in case
+  // this resolves after the first fetchAll already rendered them. ──────────
+  useEffect(() => {
+    supabase
+      .from("guests")
+      .select("name, phone")
+      .not("phone", "is", null)
+      .then(({ data }) => {
+        const map = new Map();
+        for (const g of data ?? []) {
+          const key = normalizePhone(g.phone);
+          if (key) map.set(key, g.name);
+        }
+        guestPhoneMapRef.current = map;
+        setContacts((prev) => resolveIdentityFallback(prev));
+      });
+  }, [resolveIdentityFallback]);
 
   // ── Initial load + incremental polling fallback ───────────────────────────
   // fetchAll fires once; after that only fetchSince runs every POLL_MS (fallback).
@@ -1486,15 +1789,293 @@ export default function WhatsAppInbox() {
   }
 
   // ── Derived state ──────────────────────────────────────────────────────────
-  const activeContact = contacts.find((c) => c.phone === active) ?? null;
-  const thread        = activeContact?.messages ?? [];
-  const unreadTotal   = contacts.reduce((sum, c) => {
+  const activeContact   = contacts.find((c) => c.phone === active) ?? null;
+  const thread          = activeContact?.messages ?? [];
+  const visibleContacts = contacts.filter((c) => !archivedPhones.has(c.phone));
+  const unreadTotal     = contacts.reduce((sum, c) => {
     return sum + c.messages.filter((m) => m.direction === "inbound" && !m._read).length;
   }, 0);
+  const aiLogEvents = thread.filter(
+    (m) => m.direction === "inbound" && m.intent && INTENT_LABELS[lang][m.intent]
+  );
+
+  // ── Contact list pane — shared between the desktop two-pane layout and the
+  // mobile "list" screen. ───────────────────────────────────────────────────
+  const listPane = (
+    <div style={{ height: "100%", overflowY: "auto", background: "#ffffff" }}>
+      <div style={{
+        padding: "10px 14px", borderBottom: "1px solid #f0f0f0",
+        display: "flex", justifyContent: "space-between", alignItems: "center",
+        background: "#F7F7F7", position: "sticky", top: 0, zIndex: 1,
+      }}>
+        <span style={{ fontWeight: 700, fontSize: 12, color: "#555" }}>
+          {t.listCount(visibleContacts.length)}
+        </span>
+        {loading && <span style={{ fontSize: 11, color: "#aaa" }}>{t.syncing}</span>}
+      </div>
+      {!loading && visibleContacts.length === 0 && (
+        <div style={{ padding: 24, textAlign: "center", color: "#aaa" }}>
+          <div style={{ fontSize: 32, marginBottom: 8 }}>{t.emptyIcon}</div>
+          <div style={{ fontSize: 13 }}>{t.emptyBody}</div>
+        </div>
+      )}
+      {visibleContacts.map((c) => (
+        <ContactItem
+          key={c.phone}
+          contact={c}
+          isActive={active === c.phone}
+          isMobile={isMobile}
+          t={t}
+          dir={t.dir}
+          onClick={() => openContact(c.phone)}
+          onDismiss={() => dismissHumanRequest(c)}
+          onArchive={() => setArchivedPhones((prev) => new Set(prev).add(c.phone))}
+        />
+      ))}
+    </div>
+  );
+
+  // ── Chat thread pane — shared between desktop and the mobile "thread"
+  // screen. Back button only renders on mobile (desktop never hides the list).
+  // ───────────────────────────────────────────────────────────────────────────
+  const threadPane = !active ? (
+    <div style={{
+      height: "100%", display: "flex", alignItems: "center", justifyContent: "center",
+      background: "#E5DDD5", color: "#666", flexDirection: "column", gap: 10,
+    }}>
+      <div style={{ fontSize: 52 }}>{"💬"}</div>
+      <div style={{ fontSize: 15 }}>{t.pickChat}</div>
+    </div>
+  ) : (
+    <div style={{ height: "100%", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      {/* Thread header */}
+      <div style={{
+        padding: "10px 16px", borderBottom: "1px solid #e0e0e0",
+        background: "#128C7E", color: "white",
+        display: "flex", alignItems: "center", gap: 10,
+        flexShrink: 0,
+      }}>
+        {isMobile && (
+          <button
+            onClick={() => setMobileScreen("list")}
+            aria-label={t.back}
+            style={{
+              background: "none", border: "none", color: "white", fontSize: 20,
+              cursor: "pointer", padding: 0, minWidth: 48, minHeight: 48,
+            }}
+          >
+            {t.dir === "rtl" ? "→" : "←"}
+          </button>
+        )}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontWeight: 700, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {displayName(activeContact)}
+          </div>
+          {(activeContact?.guestName || activeContact?.pushName) && (
+            <div style={{ fontSize: 11, opacity: 0.75, direction: "ltr", marginTop: 1 }}>
+              {active}
+            </div>
+          )}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+          {activeContact?.spaTime && (
+            <div style={{
+              fontSize: 11, fontWeight: 700, background: "rgba(255,255,255,0.2)",
+              padding: "3px 8px", borderRadius: 12, whiteSpace: "nowrap",
+            }}>
+              💆 {t.spa} {activeContact.spaTime}
+            </div>
+          )}
+          <button
+            onClick={() => setDrawerOpen((o) => !o)}
+            title={t.aiLogHint}
+            style={{
+              background: drawerOpen ? "rgba(255,255,255,0.25)" : "rgba(255,255,255,0.1)",
+              border: "1px solid rgba(255,255,255,0.35)", color: "white",
+              borderRadius: 8, fontSize: 11, fontWeight: 700, cursor: "pointer",
+              padding: "6px 10px", minHeight: isMobile ? 44 : "auto", whiteSpace: "nowrap",
+            }}
+          >
+            {t.aiLog}
+          </button>
+        </div>
+      </div>
+
+      {/* AI log drawer — internal classification metadata, fully isolated from
+          the guest-visible message stream below. Sourced entirely from the
+          `intent` field whatsapp-webhook already writes per inbound message;
+          no fabricated data, no new logging table. */}
+      {drawerOpen && (
+        <div style={{
+          background: "var(--black-soft, #2C2C2C)", color: "#C8C8C8",
+          padding: "10px 16px", borderBottom: "1px solid #444",
+          flexShrink: 0, maxHeight: 130, overflowY: "auto",
+        }}>
+          <div style={{ fontSize: 10, opacity: 0.65, marginBottom: 6 }}>{t.aiLogHint}</div>
+          {aiLogEvents.length === 0 ? (
+            <div style={{ fontSize: 12, fontFamily: "monospace" }}>{t.aiLogEmpty}</div>
+          ) : aiLogEvents.map((m) => (
+            <div key={m.id} style={{ fontSize: 12, fontFamily: "monospace", lineHeight: 1.7 }}>
+              {formatTime(m.created_at)} · {INTENT_LABELS[lang][m.intent]}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Guest notes banner — visible the instant the thread opens, no extra click */}
+      {activeContact?.guestNotes && (
+        <div style={{
+          padding: "8px 16px", background: "#FEF3C7", borderBottom: "1px solid #FDE68A",
+          color: "#92400E", fontSize: 12, lineHeight: 1.6, whiteSpace: "pre-wrap",
+          flexShrink: 0, maxHeight: 90, overflowY: "auto",
+        }}>
+          <strong>📝 הערות אורח: </strong>{activeContact.guestNotes}
+        </div>
+      )}
+
+      {/* Messages */}
+      <div style={{
+        flex: 1, overflowY: "auto", padding: "16px 20px",
+        background: "#E5DDD5", display: "flex", flexDirection: "column", gap: 4,
+      }}>
+        {thread.map((msg) => (
+          <Bubble key={msg.id} msg={msg} dir={t.dir} />
+        ))}
+        <div ref={bottomRef} />
+      </div>
+
+      {error && (
+        <div style={{ padding: "6px 16px", background: "#FFF0EE", color: "#C0392B", fontSize: 12, flexShrink: 0 }}>
+          {"⚠️"} {error}
+        </div>
+      )}
+
+      {/* Quick actions + reply input */}
+      <div style={{ position: "relative", flexShrink: 0 }}>
+        {quickOpen && (
+          <div style={{
+            position: "absolute", bottom: "100%", insetInlineStart: 14, insetInlineEnd: 14,
+            marginBottom: 6, background: "white", border: "1px solid #ddd", borderRadius: 14,
+            padding: 12, boxShadow: "0 -4px 16px rgba(0,0,0,0.12)",
+          }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#555", marginBottom: 6, textTransform: "uppercase" }}>
+              {t.quickRepliesTitle}
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+              {QUICK_PHRASES.map((ph, i) => (
+                <button
+                  key={i}
+                  onClick={() => {
+                    const personalised = activeContact?.guestName
+                      ? ph.text.replace("{{שם}}", activeContact.guestName)
+                      : ph.text;
+                    setReply(personalised);
+                    setQuickOpen(false);
+                  }}
+                  style={{
+                    padding: "6px 12px", borderRadius: 20, border: "1.5px solid #E0D5C5",
+                    background: "#FAFAFA", color: "#444", fontSize: 12, fontWeight: 600,
+                    cursor: "pointer", minHeight: isMobile ? 40 : "auto",
+                  }}
+                >
+                  {ph.label}
+                </button>
+              ))}
+            </div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#555", marginBottom: 6, textTransform: "uppercase" }}>
+              {t.routeTitle}
+            </div>
+            <div style={{ display: "flex", gap: 6 }}>
+              <button
+                onClick={() => routeTask("maintenance", activeContact)}
+                style={{
+                  flex: 1, padding: "8px 10px", borderRadius: 10, border: "1.5px solid #E0D5C5",
+                  background: "#FAFAFA", color: "#444", fontSize: 12, fontWeight: 700,
+                  cursor: "pointer", minHeight: isMobile ? 44 : "auto",
+                }}
+              >{t.routeMaint}</button>
+              <button
+                onClick={() => routeTask("housekeeping", activeContact)}
+                style={{
+                  flex: 1, padding: "8px 10px", borderRadius: 10, border: "1.5px solid #E0D5C5",
+                  background: "#FAFAFA", color: "#444", fontSize: 12, fontWeight: 700,
+                  cursor: "pointer", minHeight: isMobile ? 44 : "auto",
+                }}
+              >{t.routeHouse}</button>
+            </div>
+          </div>
+        )}
+
+        {routeToast && (
+          <div style={{
+            position: "absolute", bottom: "100%", insetInlineStart: 14, insetInlineEnd: 14,
+            marginBottom: 6, background: "#1F2937", color: "white",
+            fontSize: 12, fontWeight: 600, borderRadius: 10, padding: "8px 14px",
+          }}>
+            {routeToast}
+          </div>
+        )}
+
+        <div style={{
+          padding: "10px 14px", borderTop: "1px solid #e0e0e0",
+          background: "#F0F0F0", display: "flex", gap: 8, alignItems: "flex-end",
+        }}>
+          <button
+            onClick={() => setQuickOpen((o) => !o)}
+            aria-label={t.quickRepliesTitle}
+            style={{
+              background: quickOpen ? "#E0D5C5" : "white",
+              border: "1px solid #ddd", borderRadius: "50%",
+              width: isMobile ? 48 : 40, height: isMobile ? 48 : 40, fontSize: 17,
+              cursor: "pointer", flexShrink: 0, display: "flex",
+              alignItems: "center", justifyContent: "center",
+            }}
+          >
+            {t.quickBolt}
+          </button>
+          <textarea
+            value={reply}
+            onChange={(e) => setReply(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendManualReply(); }
+            }}
+            placeholder={t.inputPh}
+            rows={2}
+            style={{
+              flex: 1, resize: "none", borderRadius: 20,
+              border: "1px solid #ddd", padding: "10px 16px",
+              fontSize: 14, fontFamily: "Heebo, sans-serif",
+              outline: "none", lineHeight: 1.5, background: "white",
+              minHeight: isMobile ? 48 : "auto",
+            }}
+          />
+          <button
+            onClick={sendManualReply}
+            disabled={sending || !reply.trim()}
+            style={{
+              background: (sending || !reply.trim()) ? "#ccc" : "#25D366",
+              color: "white", border: "none", borderRadius: "50%",
+              width: isMobile ? 48 : 44, height: isMobile ? 48 : 44, fontSize: 20,
+              cursor: (sending || !reply.trim()) ? "not-allowed" : "pointer",
+              flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
+            }}
+          >
+            {sending ? "⏳" : "➤"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 
   // ── Render ─────────────────────────────────────────────────────────────────
+  // Mobile slide track is forced dir="ltr" so child order (list, thread) is a
+  // fixed physical layout regardless of UI language — only the translateX
+  // sign flips by t.dir, so "forward" always feels native to the active
+  // language (mirrors the approved mockup behaviour 1:1).
+  const slideOpenTransform = t.dir === "rtl" ? "translateX(50%)" : "translateX(-50%)";
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 80px)", overflow: "hidden", borderRadius: 12, border: "1px solid var(--border)", boxShadow: "0 4px 20px rgba(0,0,0,0.06)" }}>
+    <div dir={t.dir} style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 80px)", overflow: "hidden", borderRadius: 12, border: "1px solid var(--border)", boxShadow: "0 4px 20px rgba(0,0,0,0.06)" }}>
       <style>{`
         @keyframes wa-pulse {
           0%, 100% { opacity: 1; transform: scale(1); }
@@ -1506,23 +2087,25 @@ export default function WhatsAppInbox() {
       <div style={{
         display: "flex", alignItems: "center", justifyContent: "space-between",
         padding: "10px 16px", background: "#075E54", color: "white", flexShrink: 0,
-        borderRadius: "12px 12px 0 0",
+        borderRadius: "12px 12px 0 0", gap: 10,
       }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ fontWeight: 800, fontSize: 15 }}>{"💬 DREAM BOT — תיבת שיחות"}</span>
+        <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 6 : 10, minWidth: 0, overflow: "hidden" }}>
+          <span style={{ fontWeight: 800, fontSize: 15, whiteSpace: "nowrap" }}>
+            {isMobile ? "💬 DREAM BOT" : t.brand}
+          </span>
           {unreadTotal > 0 && (
             <span style={{
               background: "#25D366", color: "white", borderRadius: 20,
-              fontSize: 11, fontWeight: 800, padding: "2px 8px",
-            }}>{unreadTotal} {"חדשות"}</span>
+              fontSize: 11, fontWeight: 800, padding: "2px 8px", whiteSpace: "nowrap",
+            }}>{isMobile ? unreadTotal : t.newMsgs(unreadTotal)}</span>
           )}
           {/* ── LIVE indicator ── */}
           <span style={{
             display: "flex", alignItems: "center", gap: 5,
             background: realtimeOk ? "rgba(37,211,102,0.18)" : "rgba(255,255,255,0.10)",
             border: `1px solid ${realtimeOk ? "rgba(37,211,102,0.5)" : "rgba(255,255,255,0.25)"}`,
-            borderRadius: 20, padding: "3px 9px",
-            fontSize: 10, fontWeight: 700, letterSpacing: 0.5,
+            borderRadius: 20, padding: isMobile ? "3px 6px" : "3px 9px",
+            fontSize: 10, fontWeight: 700, letterSpacing: 0.5, whiteSpace: "nowrap",
             color: realtimeOk ? "#7EFFA0" : "rgba(255,255,255,0.55)",
           }}>
             <span style={{
@@ -1531,183 +2114,81 @@ export default function WhatsAppInbox() {
               display: "inline-block",
               animation: realtimeOk ? "wa-pulse 2s ease-in-out infinite" : "none",
             }} />
-            {realtimeOk ? "LIVE" : "מתחבר..."}
+            {!isMobile && (realtimeOk ? t.live : t.connecting)}
           </span>
-          {lastUpdated && (
-            <span style={{ fontSize: 10, opacity: 0.5 }}>
+          {lastUpdated && !isMobile && (
+            <span style={{ fontSize: 10, opacity: 0.5, whiteSpace: "nowrap" }}>
               {lastUpdated.toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
             </span>
           )}
         </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <div style={{ display: "flex", gap: isMobile ? 4 : 8, alignItems: "center", flexShrink: 0 }}>
+          <button
+            onClick={() => setLang((l) => (l === "he" ? "en" : "he"))}
+            title="EN / HE"
+            style={{
+              padding: isMobile ? "0" : "5px 12px", borderRadius: 20, fontSize: 12, fontWeight: 700,
+              border: "1.5px solid rgba(255,255,255,0.4)", background: "rgba(255,255,255,0.12)",
+              color: "white", cursor: "pointer",
+              width: isMobile ? 36 : "auto", height: isMobile ? 36 : "auto",
+            }}
+          >
+            {isMobile ? "🌐" : `🌐 ${t.langSwap}`}
+          </button>
           <button
             onClick={toggleBot}
             disabled={togglingBot}
+            title={botActive ? t.botOn : t.botOff}
             style={{
-              padding: "5px 14px", borderRadius: 20, fontSize: 12, fontWeight: 700,
+              padding: isMobile ? "0" : "5px 14px", borderRadius: 20, fontSize: 12, fontWeight: 700,
               border: "1.5px solid rgba(255,255,255,0.4)",
               background: botActive ? "rgba(37,211,102,0.25)" : "rgba(255,255,255,0.12)",
               color: "white", cursor: togglingBot ? "not-allowed" : "pointer",
+              width: isMobile ? 36 : "auto", height: isMobile ? 36 : "auto", whiteSpace: "nowrap",
             }}
           >
-            {togglingBot ? "⏳" : botActive ? "🤖 בוט פעיל" : "😴 בוט כבוי"}
+            {isMobile ? (togglingBot ? "⏳" : botActive ? "🤖" : "😴") : (togglingBot ? "⏳" : botActive ? t.botOn : t.botOff)}
           </button>
           <button
             onClick={() => setShowNewChat(true)}
+            title={t.newChat}
             style={{
-              padding: "5px 14px", borderRadius: 20, fontSize: 12, fontWeight: 700,
+              padding: isMobile ? "0" : "5px 14px", borderRadius: 20, fontSize: 12, fontWeight: 700,
               background: "white", color: "#075E54", border: "none", cursor: "pointer",
+              width: isMobile ? 36 : "auto", height: isMobile ? 36 : "auto",
             }}
           >
-            {"✉️ חדש"}
+            {isMobile ? "✉️" : t.newChat}
           </button>
         </div>
       </div>
 
       {/* Body */}
-      <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
-
-        {/* Right: contact list */}
-        <div style={{
-          width: 290, borderLeft: "1px solid #e0e0e0",
-          overflowY: "auto", background: "#ffffff", flexShrink: 0,
-        }}>
-          <div style={{
-            padding: "10px 14px", borderBottom: "1px solid #f0f0f0",
-            display: "flex", justifyContent: "space-between", alignItems: "center",
-            background: "#F7F7F7",
+      {isMobile ? (
+        <div style={{ flex: 1, overflow: "hidden" }}>
+          <div dir="ltr" style={{
+            display: "flex", width: "200%", height: "100%",
+            transform: mobileScreen === "thread" ? slideOpenTransform : "translateX(0%)",
+            transition: "transform 0.28s ease",
           }}>
-            <span style={{ fontWeight: 700, fontSize: 12, color: "#555" }}>
-              {contacts.length} {"הודעות"}
-            </span>
-            {loading && <span style={{ fontSize: 11, color: "#aaa" }}>{"⏳ מסנכרן..."}</span>}
+            <div style={{ width: "50%", flexShrink: 0, overflow: "hidden", borderInlineEnd: "1px solid #e0e0e0" }}>
+              {listPane}
+            </div>
+            <div style={{ width: "50%", flexShrink: 0, overflow: "hidden" }}>
+              {threadPane}
+            </div>
           </div>
-          {!loading && contacts.length === 0 && (
-            <div style={{ padding: 24, textAlign: "center", color: "#aaa" }}>
-              <div style={{ fontSize: 32, marginBottom: 8 }}>{"📭"}</div>
-              <div style={{ fontSize: 13 }}>{"אין שיחות עדיין"}</div>
-            </div>
-          )}
-          {contacts.map((c) => (
-            <ContactItem
-              key={c.phone}
-              contact={c}
-              isActive={active === c.phone}
-              onClick={() => setActive(c.phone)}
-              onDismiss={() => dismissHumanRequest(c)}
-            />
-          ))}
         </div>
-
-        {/* Left: chat thread */}
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-          {!active ? (
-            <div style={{
-              flex: 1, display: "flex", alignItems: "center", justifyContent: "center",
-              background: "#E5DDD5", color: "#666", flexDirection: "column", gap: 10,
-            }}>
-              <div style={{ fontSize: 52 }}>{"💬"}</div>
-              <div style={{ fontSize: 15 }}>{"בחר שיחה כדי לצפות בה"}</div>
-            </div>
-          ) : (
-            <>
-              {/* Thread header */}
-              <div style={{
-                padding: "10px 16px", borderBottom: "1px solid #e0e0e0",
-                background: "#128C7E", color: "white",
-                display: "flex", alignItems: "center", justifyContent: "space-between",
-                flexShrink: 0,
-              }}>
-                <div>
-                  <div style={{ fontWeight: 700, fontSize: 14 }}>
-                    {activeContact?.guestName ?? active}
-                  </div>
-                  {activeContact?.guestName && (
-                    <div style={{ fontSize: 11, opacity: 0.75, direction: "ltr", marginTop: 1 }}>
-                      {active}
-                    </div>
-                  )}
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  {activeContact?.spaTime && (
-                    <div style={{
-                      fontSize: 11, fontWeight: 700, background: "rgba(255,255,255,0.2)",
-                      padding: "3px 8px", borderRadius: 12,
-                    }}>
-                      💆 ספא {activeContact.spaTime}
-                    </div>
-                  )}
-                  <div style={{ fontSize: 11, opacity: 0.75 }}>{thread.length} {"הודעות"}</div>
-                </div>
-              </div>
-
-              {/* Guest notes banner — visible the instant the thread opens, no extra click */}
-              {activeContact?.guestNotes && (
-                <div style={{
-                  padding: "8px 16px", background: "#FEF3C7", borderBottom: "1px solid #FDE68A",
-                  color: "#92400E", fontSize: 12, lineHeight: 1.6, whiteSpace: "pre-wrap",
-                  flexShrink: 0, maxHeight: 90, overflowY: "auto",
-                }}>
-                  <strong>📝 הערות אורח: </strong>{activeContact.guestNotes}
-                </div>
-              )}
-
-              {/* Messages */}
-              <div style={{
-                flex: 1, overflowY: "auto", padding: "16px 20px",
-                background: "#E5DDD5", display: "flex", flexDirection: "column", gap: 4,
-              }}>
-                {thread.map((msg) => (
-                  <Bubble key={msg.id} msg={msg} />
-                ))}
-                <div ref={bottomRef} />
-              </div>
-
-              {error && (
-                <div style={{ padding: "6px 16px", background: "#FFF0EE", color: "#C0392B", fontSize: 12, flexShrink: 0 }}>
-                  {"⚠️"} {error}
-                </div>
-              )}
-
-              {/* Reply input */}
-              <div style={{
-                padding: "10px 14px", borderTop: "1px solid #e0e0e0",
-                background: "#F0F0F0", display: "flex", gap: 8, alignItems: "flex-end",
-                flexShrink: 0,
-              }}>
-                <textarea
-                  value={reply}
-                  onChange={(e) => setReply(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendManualReply(); }
-                  }}
-                  placeholder="כתוב הודעה ידנית... (Enter לשליחה)"
-                  rows={2}
-                  style={{
-                    flex: 1, resize: "none", borderRadius: 20,
-                    border: "1px solid #ddd", padding: "10px 16px",
-                    fontSize: 14, fontFamily: "Heebo, sans-serif",
-                    outline: "none", lineHeight: 1.5, background: "white",
-                  }}
-                />
-                <button
-                  onClick={sendManualReply}
-                  disabled={sending || !reply.trim()}
-                  style={{
-                    background: (sending || !reply.trim()) ? "#ccc" : "#25D366",
-                    color: "white", border: "none", borderRadius: "50%",
-                    width: 44, height: 44, fontSize: 20,
-                    cursor: (sending || !reply.trim()) ? "not-allowed" : "pointer",
-                    flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
-                  }}
-                >
-                  {sending ? "⏳" : "➤"}
-                </button>
-              </div>
-            </>
-          )}
+      ) : (
+        <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
+          <div style={{ width: 290, borderInlineEnd: "1px solid #e0e0e0", flexShrink: 0, overflow: "hidden" }}>
+            {listPane}
+          </div>
+          <div style={{ flex: 1, overflow: "hidden" }}>
+            {threadPane}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* New Chat Modal */}
       {showNewChat && (
