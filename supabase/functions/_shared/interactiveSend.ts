@@ -35,7 +35,7 @@ function _credsOrThrow(): { token: string; phoneId: string } {
 export async function sendInteractiveButtons(
   to: string,
   bodyText: string,
-  buttons: Array<{ type: string; label: string; url?: string }>,
+  buttons: Array<{ type: string; label: string; url?: string; id?: string }>,
 ): Promise<void> {
   const { token, phoneId } = _credsOrThrow();
 
@@ -44,10 +44,15 @@ export async function sendInteractiveButtons(
     .map((b) => `🔗 ${b.label}: ${b.url}`);
   const fullBody = urlLines.length > 0 ? `${bodyText}\n\n${urlLines.join("\n")}` : bodyText;
 
+  // `id` is optional — callers that don't pass one (every caller before the
+  // staff-ops board) keep getting the original positional `btn_${i}` id, so
+  // this is purely additive. staff-ops-webhook passes explicit
+  // ops_claim_{taskId}/ops_done_{taskId} ids so whatsapp-webhook's button
+  // router can tell which task a tap refers to.
   const replyButtons = buttons
     .filter((b) => b.type === "quick_reply" && b.label?.trim())
     .slice(0, 3)
-    .map((b, i) => ({ type: "reply", reply: { id: `btn_${i}`, title: b.label.trim().slice(0, 20) } }));
+    .map((b, i) => ({ type: "reply", reply: { id: b.id ?? `btn_${i}`, title: b.label.trim().slice(0, 20) } }));
 
   try {
     const res = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {

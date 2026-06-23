@@ -1,9 +1,19 @@
-// src/components/TaskBoard.js
-// In-App Task & Ticket Board — Dream Island
+// src/components/OperationsBoard.js
+// Operations & Maintenance Board — merges the old TaskBoard.js (real `tasks`
+// table) and the old "Service Calls" screen (real `service_calls` table,
+// migrated into `tasks` by migration 071) into one 3-state board.
 //
-// Manager view:  create tasks with camera/file image + room + department + priority
-// Employee view: see open tasks for their department + mark done
-// Storage: Supabase bucket "task_images"
+// Sources of incoming work, all landing in the same `tasks` table:
+//   • Manual — created here via the "New Task" form (source='manual')
+//   • WhatsApp staff report — relay-forwarded group message, parsed by
+//     staff-ops-webhook (source='whatsapp_staff')
+//   • Legacy — one-time backfill from the retired service_calls screen
+//     (source='legacy_service_call')
+//
+// Claim/done buttons here mirror the "🙋‍♂️ אני מטפל"/"✅ בוצע" WhatsApp
+// buttons staff-ops-webhook sends back to the reporter — this in-app path is
+// the RELIABLE primary one (WhatsApp delivery is best-effort, see that
+// function's header comment for why).
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
@@ -17,8 +27,24 @@ const PRIORITY_CONFIG = {
   low:    { label: "🟢 נמוך",  bg: "#F0FDF4", color: "#16A34A", border: "#BBF7D0" },
 };
 
-// ── Image preview helper ──────────────────────────────────────────────────────
-function ImageThumb({ url, alt = "תמונת משימה" }) {
+// Same minute thresholds as staff-ops-webhook/index.ts's SLA_THRESHOLDS —
+// deliberately duplicated, not imported (frontend can't import a Deno Edge
+// Function), same "zero shared code across the front/back boundary"
+// convention used throughout this codebase.
+const SLA_CATEGORY_OPTIONS = {
+  pest_control:    { label: "🐜 הדברה (10 דק')", minutes: 10 },
+  guest_amenities: { label: "🛏️ ציוד לאורח (15 דק')", minutes: 15 },
+  maintenance:     { label: "🔧 תחזוקה (30 דק')", minutes: 30 },
+};
+
+const SOURCE_META = {
+  manual:              { label: "🖊 ידני", color: "var(--text-muted)" },
+  whatsapp_staff:       { label: "📱 וואטסאפ", color: "#1A7A4A" },
+  legacy_service_call: { label: "🗄 היסטורי", color: "var(--text-muted)" },
+};
+
+// ── Image preview helper (unchanged from TaskBoard.js) ───────────────────────
+function ImageThumb({ url, alt = "תמונה" }) {
   const [open, setOpen] = useState(false);
   if (!url) return null;
   return (
@@ -47,7 +73,6 @@ function ImageThumb({ url, alt = "תמונת משימה" }) {
   );
 }
 
-// ── Upload image to Supabase Storage ─────────────────────────────────────────
 async function uploadTaskImage(file) {
   const ext  = file.name.split(".").pop() || "jpg";
   const path = `tasks/${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
@@ -60,10 +85,11 @@ async function uploadTaskImage(file) {
   return publicUrl;
 }
 
-// ── New Task Form (manager/admin) ─────────────────────────────────────────────
+// ── New Task Form (manager/admin) — now also lets a manual task opt into SLA
+// tracking, so it's not a second-class citizen next to WhatsApp-reported ones.
 function NewTaskForm({ user, managerDept, onCreated }) {
-  const [form, setForm]         = useState({
-    room_number: "", department: managerDept || "", description: "", priority: "normal",
+  const [form, setForm] = useState({
+    room_number: "", department: managerDept || "", description: "", priority: "normal", sla_category: "",
   });
   const [imgFile,  setImgFile]  = useState(null);
   const [imgPreview, setImgPreview] = useState(null);
@@ -89,6 +115,9 @@ function NewTaskForm({ user, managerDept, onCreated }) {
       let image_url = null;
       if (imgFile) image_url = await uploadTaskImage(imgFile);
 
+      const slaMeta = form.sla_category ? SLA_CATEGORY_OPTIONS[form.sla_category] : null;
+      const sla_deadline = slaMeta ? new Date(Date.now() + slaMeta.minutes * 60000).toISOString() : null;
+
       const { data, error: dbErr } = await supabase.from("tasks").insert([{
         room_number: form.room_number.trim() || null,
         department:  form.department,
@@ -97,11 +126,14 @@ function NewTaskForm({ user, managerDept, onCreated }) {
         image_url,
         status:      "open",
         created_by:  user?.id ?? null,
+        sla_category: form.sla_category || null,
+        sla_deadline,
+        source: "manual",
       }]).select().single();
 
       if (dbErr) throw new Error(dbErr.message);
       onCreated(data);
-      setForm({ room_number: "", department: managerDept || "", description: "", priority: "normal" });
+      setForm({ room_number: "", department: managerDept || "", description: "", priority: "normal", sla_category: "" });
       setImgFile(null); setImgPreview(null);
     } catch (e) { setError(e.message); }
     setSaving(false);
@@ -114,7 +146,6 @@ function NewTaskForm({ user, managerDept, onCreated }) {
       </div>
       <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 14 }}>
 
-        {/* Row 1: Room + Department + Priority */}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
           <div className="form-field" style={{ marginBottom: 0 }}>
             <label>מספר/שם חדר</label>
@@ -139,7 +170,14 @@ function NewTaskForm({ user, managerDept, onCreated }) {
           </div>
         </div>
 
-        {/* Row 2: Description */}
+        <div className="form-field" style={{ marginBottom: 0 }}>
+          <label>קטגוריית SLA (אופציונלי — קובע שעון יעד טיפול)</label>
+          <select value={form.sla_category} onChange={e => set("sla_category", e.target.value)}>
+            <option value="">ללא מעקב SLA</option>
+            {Object.entries(SLA_CATEGORY_OPTIONS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+          </select>
+        </div>
+
         <div className="form-field" style={{ marginBottom: 0 }}>
           <label>תיאור המשימה *</label>
           <textarea
@@ -150,7 +188,6 @@ function NewTaskForm({ user, managerDept, onCreated }) {
           />
         </div>
 
-        {/* Row 3: Image upload */}
         <div>
           <label style={{ fontSize: 13, fontWeight: 700, color: "var(--text-muted)", marginBottom: 8, display: "block" }}>
             📷 תמונה (אופציונלי)
@@ -215,38 +252,48 @@ function NewTaskForm({ user, managerDept, onCreated }) {
   );
 }
 
-// ── Task Card (employee & manager view) ───────────────────────────────────────
-function TaskCard({ task, onMarkDone, isMarkingDone }) {
+// ── Task Card — now 3-state (open/in_progress/done) with SLA badge ──────────
+function TaskCard({ task, onClaim, onMarkDone, isUpdating }) {
   const prio = PRIORITY_CONFIG[task.priority] ?? PRIORITY_CONFIG.normal;
   const isDone = task.status === "done";
+  const isInProgress = task.status === "in_progress";
+  const src = SOURCE_META[task.source] ?? SOURCE_META.manual;
+
+  const overdue = task.sla_deadline && !isDone && new Date(task.sla_deadline).getTime() < Date.now();
+  const slaMinutesLeft = task.sla_deadline
+    ? Math.round((new Date(task.sla_deadline).getTime() - Date.now()) / 60000)
+    : null;
 
   return (
     <div style={{
-      borderRadius: 14, border: `1px solid ${isDone ? "#D1FAE5" : prio.border}`,
+      borderRadius: 14,
+      border: `1px solid ${isDone ? "#D1FAE5" : overdue ? "#DC2626" : prio.border}`,
       background: isDone ? "#F0FDF4" : prio.bg,
       padding: "16px", opacity: isDone ? 0.75 : 1,
-      transition: "opacity 0.2s",
+      transition: "opacity 0.2s, border-color 0.2s",
+      animation: overdue ? "sla-breach-pulse 1.6s ease-in-out infinite" : "none",
     }}>
       {/* Header */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
-        <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10, flexWrap: "wrap", gap: 6 }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
           <span style={{
             fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 12,
-            background: isDone ? "#D1FAE5" : prio.bg,
-            color: isDone ? "#059669" : prio.color,
-            border: `1px solid ${isDone ? "#6EE7B7" : prio.border}`,
+            background: isDone ? "#D1FAE5" : isInProgress ? "#FEF3C7" : prio.bg,
+            color: isDone ? "#059669" : isInProgress ? "#B45309" : prio.color,
+            border: `1px solid ${isDone ? "#6EE7B7" : isInProgress ? "#FDE68A" : prio.border}`,
           }}>
-            {isDone ? "✅ בוצע" : prio.label}
+            {isDone ? "✅ בוצע" : isInProgress ? "🙋‍♂️ בטיפול" : prio.label}
           </span>
           {task.room_number && (
             <span style={{
-              marginRight: 8, fontSize: 11, color: "var(--text-muted)",
+              fontSize: 11, color: "var(--text-muted)",
               background: "var(--ivory)", padding: "2px 8px", borderRadius: 10,
               border: "1px solid var(--border)",
             }}>
               🚪 {task.room_number}
             </span>
           )}
+          <span style={{ fontSize: 11, fontWeight: 600, color: src.color }}>{src.label}</span>
         </div>
         <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
           {new Date(task.created_at).toLocaleString("he-IL", {
@@ -255,53 +302,72 @@ function TaskCard({ task, onMarkDone, isMarkingDone }) {
         </span>
       </div>
 
-      {/* Image */}
+      {/* SLA badge */}
+      {task.sla_deadline && !isDone && (
+        <div style={{
+          fontSize: 11, fontWeight: 700, marginBottom: 8,
+          color: overdue ? "#DC2626" : "var(--text-muted)",
+        }}>
+          {overdue ? `⏰ באיחור ${Math.abs(slaMinutesLeft)} דק' (${task.sla_category ?? ""})` : `⏱ עוד ${slaMinutesLeft} דק' (${task.sla_category ?? ""})`}
+        </div>
+      )}
+
       {task.image_url && (
         <div style={{ marginBottom: 10 }}>
           <ImageThumb url={task.image_url} />
         </div>
       )}
 
-      {/* Description */}
       <div style={{ fontSize: 15, fontWeight: 600, color: "var(--black)", marginBottom: 10, lineHeight: 1.5 }}>
         {task.description}
       </div>
 
-      {/* Department + action */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
         <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
           🏢 {task.department}
         </span>
-        {!isDone && (
-          <button
-            onClick={() => onMarkDone(task.id)}
-            disabled={isMarkingDone}
-            style={{
-              padding: "10px 22px", borderRadius: 10, border: "none",
-              background: isMarkingDone
-                ? "var(--border)"
-                : "linear-gradient(135deg, #16A34A, #15803D)",
-              color: "#fff", fontFamily: "Heebo, sans-serif",
-              fontSize: 15, fontWeight: 800, cursor: isMarkingDone ? "default" : "pointer",
-              boxShadow: "0 2px 8px rgba(22,163,74,0.3)",
-              transition: "all 0.15s",
-            }}
-          >
-            {isMarkingDone ? "⏳" : "בוצע ✅"}
-          </button>
-        )}
+        <div style={{ display: "flex", gap: 8 }}>
+          {!isDone && !isInProgress && (
+            <button
+              onClick={() => onClaim(task.id)}
+              disabled={isUpdating}
+              style={{
+                padding: "10px 18px", borderRadius: 10, border: "none",
+                background: isUpdating ? "var(--border)" : "linear-gradient(135deg, #D97706, #B45309)",
+                color: "#fff", fontFamily: "Heebo, sans-serif",
+                fontSize: 14, fontWeight: 800, cursor: isUpdating ? "default" : "pointer",
+              }}
+            >
+              🙋‍♂️ אני מטפל
+            </button>
+          )}
+          {!isDone && (
+            <button
+              onClick={() => onMarkDone(task.id)}
+              disabled={isUpdating}
+              style={{
+                padding: "10px 18px", borderRadius: 10, border: "none",
+                background: isUpdating ? "var(--border)" : "linear-gradient(135deg, #16A34A, #15803D)",
+                color: "#fff", fontFamily: "Heebo, sans-serif",
+                fontSize: 14, fontWeight: 800, cursor: isUpdating ? "default" : "pointer",
+              }}
+            >
+              {isUpdating ? "⏳" : "בוצע ✅"}
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
-// ── Main component ─────────────────────────────────────────────────────────────
-export default function TaskBoard({ user, isAdmin }) {
+// ── Main component ────────────────────────────────────────────────────────────
+export default function OperationsBoard({ user, isAdmin }) {
   const [tasks,       setTasks]       = useState([]);
   const [loading,     setLoading]     = useState(true);
-  const [markingId,   setMarkingId]   = useState(null);
+  const [updatingId,  setUpdatingId]  = useState(null);
   const [toast,       setToast]       = useState(null);
-  const [activeFilter, setActiveFilter] = useState("open"); // open | done | all
+  const [activeFilter, setActiveFilter] = useState("open"); // open | in_progress | done | all
   const managerDept = user?.department || "";
 
   const showToast = useCallback((type, msg) => {
@@ -309,11 +375,9 @@ export default function TaskBoard({ user, isAdmin }) {
     setTimeout(() => setToast(null), 4000);
   }, []);
 
-  // Determine if user can create tasks
   const canCreate = isAdmin || user?.role === "manager";
   const userDept  = user?.department || "";
 
-  // Fetch tasks
   const fetchTasks = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) { setLoading(false); return; }
     setLoading(true);
@@ -322,7 +386,6 @@ export default function TaskBoard({ user, isAdmin }) {
       .select("*")
       .order("created_at", { ascending: false });
 
-    // Staff sees only their department; managers see all
     if (!canCreate && userDept) {
       query = query.eq("department", userDept);
     }
@@ -335,9 +398,22 @@ export default function TaskBoard({ user, isAdmin }) {
 
   useEffect(() => { fetchTasks(); }, [fetchTasks]);
 
-  // Mark task as done
+  const claimTask = useCallback(async (taskId) => {
+    setUpdatingId(taskId);
+    const { error } = await supabase
+      .from("tasks")
+      .update({ status: "in_progress", claimed_by: user?.id ?? null, claimed_at: new Date().toISOString() })
+      .eq("id", taskId);
+    if (error) showToast("err", "שגיאה: " + error.message);
+    else {
+      setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: "in_progress" } : t));
+      showToast("ok", "🙋‍♂️ נרשמת כמטפל/ת!");
+    }
+    setUpdatingId(null);
+  }, [user?.id, showToast]);
+
   const markDone = useCallback(async (taskId) => {
-    setMarkingId(taskId);
+    setUpdatingId(taskId);
     const { error } = await supabase
       .from("tasks")
       .update({ status: "done", resolved_by: user?.id ?? null, resolved_at: new Date().toISOString() })
@@ -347,22 +423,26 @@ export default function TaskBoard({ user, isAdmin }) {
       setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: "done" } : t));
       showToast("ok", "✅ המשימה סומנה כבוצעה!");
     }
-    setMarkingId(null);
+    setUpdatingId(null);
   }, [user?.id, showToast]);
 
-  // Filtered tasks
   const filtered = tasks.filter(t =>
-    activeFilter === "all"  ? true :
-    activeFilter === "open" ? t.status === "open" :
-                              t.status === "done"
+    activeFilter === "all" ? true : t.status === activeFilter
   );
 
-  const openCount = tasks.filter(t => t.status === "open").length;
-  const doneCount = tasks.filter(t => t.status === "done").length;
+  const openCount       = tasks.filter(t => t.status === "open").length;
+  const inProgressCount = tasks.filter(t => t.status === "in_progress").length;
+  const doneCount       = tasks.filter(t => t.status === "done").length;
 
   return (
     <div>
-      {/* Toast */}
+      <style>{`
+        @keyframes sla-breach-pulse {
+          0%, 100% { box-shadow: 0 0 0 0 rgba(220,38,38,0); }
+          50%       { box-shadow: 0 0 0 6px rgba(220,38,38,0.25); }
+        }
+      `}</style>
+
       {toast && (
         <div style={{
           position: "fixed", top: 20, left: "50%", transform: "translateX(-50%)",
@@ -375,10 +455,8 @@ export default function TaskBoard({ user, isAdmin }) {
         }}>{toast.msg}</div>
       )}
 
-      {/* Daily arrival import — managers & admins only */}
       {canCreate && <ArrivalImportPanel />}
 
-      {/* New task form — managers & admins only */}
       {canCreate && (
         <NewTaskForm
           user={user}
@@ -390,12 +468,12 @@ export default function TaskBoard({ user, isAdmin }) {
         />
       )}
 
-      {/* Stats + filter tabs */}
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
         {[
-          { key: "open", label: `🔓 פתוחות (${openCount})` },
-          { key: "done", label: `✅ בוצעו (${doneCount})` },
-          { key: "all",  label: `📋 הכל (${tasks.length})` },
+          { key: "open",        label: `🔓 פתוחות (${openCount})` },
+          { key: "in_progress", label: `🙋‍♂️ בטיפול (${inProgressCount})` },
+          { key: "done",        label: `✅ בוצעו (${doneCount})` },
+          { key: "all",         label: `📋 הכל (${tasks.length})` },
         ].map(({ key, label }) => (
           <button
             key={key}
@@ -416,7 +494,6 @@ export default function TaskBoard({ user, isAdmin }) {
         </button>
       </div>
 
-      {/* Task list */}
       {loading ? (
         <div style={{ textAlign: "center", padding: 56, color: "var(--text-muted)", fontSize: 14 }}>
           ⏳ טוען משימות...
@@ -436,8 +513,9 @@ export default function TaskBoard({ user, isAdmin }) {
             <TaskCard
               key={task.id}
               task={task}
+              onClaim={claimTask}
               onMarkDone={markDone}
-              isMarkingDone={markingId === task.id}
+              isUpdating={updatingId === task.id}
             />
           ))}
         </div>

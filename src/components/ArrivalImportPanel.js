@@ -1,6 +1,6 @@
 // src/components/ArrivalImportPanel.js
 // Unified Import Hub — the SOLE import surface in the app (per session 7 consolidation).
-// Lives only inside TaskBoard. Two profiles:
+// Lives only inside OperationsBoard.js (formerly TaskBoard.js, session 21). Two profiles:
 //
 //   "suites" — Doc 2 (any CSV/Excel of room arrivals) → headers sent to the
 //              suggest-import-mapping Edge Function (Resilient Import Agent,

@@ -1,6 +1,6 @@
 # CLAUDE.md — Dream Island AI System
 > קובץ זה נקרא אוטומטית בכל שיחה. הוא מקור-האמת שלך. קרא אותו לפני כל פעולה.
-> **עדכון אחרון:** 2026-06-22 (session 19 — Automation Control Center: תיקון תצוגה כרונולוגית + שמות תבניות ידידותיים, Stage 2 Pay קיבל כפתור תשלום אמיתי (Meta cta_url) + שעת ספא. ראה גם session 18 — שורש קיטוע ה-AI נמצא: "2–4 משפטים בלבד" שרד ב-4 שכבות פרומפט במקביל, כולל bot_settings.system_prompt החי שmigration 034 איפס. הוסר משולש, ונוספו כללי "Smart Concierge" — שלמות מחשבה, טון שיווקי קולע, הפניה חכמה לקישור הזמנה)
+> **עדכון אחרון:** 2026-06-23 (session 21 — Operations & Maintenance Board חדש (מאחד Tasks + Service Calls האמיתי, לא mock כפי שתואר בטעות בסשן 20) + staff-ops-webhook חדש (קולט דיווחי צוות מ-relay חיצוני, regex 0-token + Claude לטקסט חופשי) + SLA engine הורחב ל-tasks עם ספי-זמן לפי קטגוריה + AiFailoverWidget + guest concierge הוחלף ל-Gemini כברירת מחדל חיה עם UI toggle ב-BotSettings.js. ⚠️ תלות חיצונית לא-סגורה: relay שמאזין לקבוצת הוואטסאפ עצמה (Make.com/bridge לא-רשמי) הוא באחריות Mike — Meta Business API אינו תומך בקבוצות. ראה session 21 למטה לפירוט מלא. ראה גם session 20 — Automation Control Center קיבל Live Message Preview בתוך כל כרטיס שלב מורחב + audit הראה שחשד לכפילות אוטומציה היה false alarm: whatsapp-cron/automation_stages/automation-queue הם מערכת אחת, לא שתיים מקבילות. הוסרו 4 שורות bot_config.template_* מתות (migration 069). ראה גם session 19 — Automation Control Center: תיקון תצוגה כרונולוגית + שמות תבניות ידידותיים, Stage 2 Pay קיבל כפתור תשלום אמיתי (Meta cta_url) + שעת ספא. ראה גם session 18 — שורש קיטוע ה-AI נמצא: "2–4 משפטים בלבד" שרד ב-4 שכבות פרומפט במקביל, כולל bot_settings.system_prompt החי שmigration 034 איפס. הוסר משולש, ונוספו כללי "Smart Concierge" — שלמות מחשבה, טון שיווקי קולע, הפניה חכמה לקישור הזמנה)
 >
 > ⚠️ **שים לב — ריבוי כלים עובדים על אותו repo במקביל.** בסשן הזה זוהו עדויות לעריכות חיות מ-Cline ו/או סשנים אחרים על הקבצים האלה *בזמן* שעבדתי עליהם (ראה session 16 למטה) — כולל קוד שהופיע בקובץ בלי שאני כתבתי אותו, וכותרת הסשן הזו עצמה שהוחלפה מתחת לרגליי. אם תבחין בהתנהגות לא עקבית או קוד שלא מוכר — ייתכן שזה לא "AI שמדמיין", אלא קונפליקט בין שתי עריכות מקבילות. מומלץ: לא להריץ Cline ו-Claude Code על אותו repo באותו זמן, או לפחות לתאם איזה כלי "בעלים" של איזה קובץ בכל רגע נתון.
 
@@ -141,7 +141,19 @@ DREAM-AI-SYSTEM/
 │       │                            exports EditableGrid + BulkEditBar + exportToExcel.
 │       │                            column-driven, לא יודע כלום על suites/shifts/guests —
 │       │                            כל מקור דאטה עתידי עוטף אותו, לא כותב טבלה משלו.
-│       ├── TaskBoard.js          18KB  לוח משימות + ArrivalImportPanel מורכב כאן (managers בלבד)
+│       ├── OperationsBoard.js    ★ session 21 — "תפעול ואחזקה" (ops_board route, ⚠️ "tasks"/"calls"
+│       │                            deep-link aliases). מאחד את TaskBoard.js הישן (נמחק) + מסך
+│       │                            "Service Calls" הישן ב-App.js (CallsPage, נמחק — היה אמיתי,
+│       │                            DB-backed דרך service_calls table, migration 005 — לא mock כפי
+│       │                            שתואר בטעות בתחילת session 21, ראה שם). 3 סטטוסים open/
+│       │                            in_progress/done, badge SLA אדום מתפעם (sla-breach-pulse keyframe,
+│       │                            בהשראת wa-pulse) על פריט שעבר sla_deadline, כפתורי "🙋‍♂️ אני מטפל"/
+│       │                            "✅ בוצע" — אותו מנגנון בדיוק שכפתורי הוואטסאפ של staff-ops-webhook
+│       │                            משתמשים בו. ArrivalImportPanel מורכב כאן (managers בלבד), בדיוק
+│       │                            כמו ב-TaskBoard.js הישן.
+│       ├── AiFailoverWidget.js   ★ session 21 — banner צף עליון, realtime על ai_failover_events.
+│       │                            לא widget של "תור עבודה" כמו RequestsAlertWidget — מתריע על
+│       │                            אירוע auto-failover (Claude↔Gemini) ונעלם לבד אחרי 10 שניות.
 │       ├── KnowledgeUploader.js  17KB  העלאת מסמכי ידע → agent_memory
 │       ├── BotConfigPanel.js     13KB  הגדרות Smart Concierge (bot_config table)
 │       ├── BotScriptEditor.js    ★ עורך bot_scripts — message_text + ai_system_prompt + is_active
@@ -174,9 +186,20 @@ DREAM-AI-SYSTEM/
 │       │                            email-import-webhook + spa-schedule-webhook (אוטומציה חיצונית —
 │       │                            כנראה Make.com). הוחלט בsession 7: נשאר standalone, לא מוזג.
 │       │                            session 12: route עדיין קיים אך הוסר מה-Sidebar nav (ראה §4).
-│       └── BotSettings.js        ★ מוח הבוט — system_prompt + knowledge_base
-│                                    חשוב: משפיע רק על תשובות free-text (Gemini)
-│                                    לא משפיע על לחיצות כפתור (hardcoded routing)
+│       ├── BotSettings.js        ★ מוח הבוט — system_prompt + knowledge_base
+│       │                            חשוב: משפיע רק על תשובות free-text (Gemini)
+│       │                            לא משפיע על לחיצות כפתור (hardcoded routing)
+│       ├── AutomationControlCenter.js ★ "בקרת אוטומציה" (automation_center route, admin-only) —
+│       │                            backfilled into docs session 20 (בנה מחוץ לתהליך התיעוד הרגיל,
+│       │                            ראה session 19/20). 3 sub-tabs: מסע האורח (Timeline — קורא/כותב
+│       │                            automation_stages חי, session 20: כל כרטיס שלב מורחב מציג כעת
+│       │                            Live Message Preview — bubble מומלא בדוגמת placeholder לתבנית
+│       │                            סשן חופשית, או body text מאומת ל-Meta template, ראה §6), תור חי +
+│       │                            מוניטור (Queue — read-only, קורא automation-queue function),
+│       │                            תבניות Meta (מורכב TemplateManagerPanel.js).
+│       └── TemplateManagerPanel.js ★ ניהול תבניות WhatsApp מאושרות מ-Meta — סונכרן/נוצר/preview.
+│                                    מיוצא session 20: STATUS_META (היה module-private) — משותף עם
+│                                    AutomationControlCenter.js's Meta template preview box.
 ├── supabase/
 │   ├── migrations/
 │   │   ├── 001–027_*.sql        applied ✅
@@ -200,9 +223,22 @@ DREAM-AI-SYSTEM/
 │   │   ├── 045_golden_guest_profile.sql          applied ✅ — order_number, treatment_count
 │   │   ├── 046_suite_rooms.sql                  applied ✅ — suite_rooms table + sync_suite_arrivals RPC
 │   │   ├── 047_sync_suite_arrivals_room_denorm.sql  applied ✅ — מרחיב את הRPC לכתוב גם guests.room.
-│   │   └── 048_bot_scripts_missing_seeds.sql     applied ✅ — 8 script_key חדשים (fallback_reply,
-│   │                                spa_menu, callback_reply, positive/negative_feedback_reply,
-│   │                                upsell_accepted/decline_reply, generic_button_reply). ראה §10 session 8.
+│   │   ├── 048_bot_scripts_missing_seeds.sql     applied ✅ — 8 script_key חדשים (fallback_reply,
+│   │   │                            spa_menu, callback_reply, positive/negative_feedback_reply,
+│   │   │                            upsell_accepted/decline_reply, generic_button_reply). ראה §10 session 8.
+│   │   ├── 049–064_*.sql        applied ✅ — ראה §10 sessions 9–18 לפירוט (Resilient Import Agent,
+│   │   │                            Stage-2-Pay precursors, system-prompt fixes וכו')
+│   │   ├── 065_automation_stages.sql            applied ✅ — automation_stages table, single source
+│   │   │                            of truth ל-timing+content routing (קודם פזור ב-3 מקומות). ראה §6.
+│   │   ├── 066_guest_alerts_escalation.sql       applied ✅
+│   │   ├── 067_stage_2_pay.sql                   applied ✅ — stage_2_pay row + bot_scripts seed +
+│   │   │                            chronology fix (night_before sequence_order 150→220)
+│   │   ├── 068_stage_2_pay_buttons.sql           applied ✅ — interactive_buttons (Meta cta_url
+│   │   │                            payment button) + {{SPA_LINE}} ל-stage_2_payment_reply
+│   │   └── 069_remove_dead_template_keys.sql     applied ✅ — מחק 4 שורות bot_config category=
+│   │                                'templates' (template_night_before/checkin_welcome/midstay_
+│   │                                checkin/before_checkout) — מתות, audit session 20 אישר 0 קוד
+│   │                                שקורא אותן. ראה §10 session 20.
 │   └── functions/
 │       ├── chat/                deployed ✅ — Gemini 2.5→Claude fallback
 │       ├── generate-schedule/   deployed ✅ ⚠️ ORPHAN — frontend לא קורא אותה
@@ -210,13 +246,34 @@ DREAM-AI-SYSTEM/
 │       ├── process-knowledge/   deployed ✅
 │       ├── push-notify/         deployed ✅
 │       ├── whatsapp-send/       deployed ✅ — תומך ב-inbox_reply trigger
-│       ├── whatsapp-cron/       deployed ✅ — pg_cron job "wa-cron" פעיל (*/15) ⚠️ KILL SWITCH ON
+│       ├── whatsapp-cron/       deployed ✅ — pg_cron job "wa-cron" פעיל (*/15) ⚠️ KILL SWITCH ON.
+│       │                            session 20 audit: קורא automation_stages חי (לא hardcoded map) —
+│       │                            לא מערכת מקבילה ל-automation-queue, ראה session 20 להלן.
+│       ├── automation-queue/    ★ session 20 backfill — read-only projection (guests × automation_
+│       │                            stages × notification_log) ל-Queue tab של AutomationControlCenter.
+│       │                            אינה שולחת הודעות בעצמה — אך ורק תצוגה מקדימה.
 │       ├── whatsapp-webhook/    ★ deployed ✅ v3 — ראה §6 לתיאור מלא
 │       ├── room-clean-notify/   ★ גילוי session 7 — שולח whatsapp-send trigger="room_ready" כשחדר
 │       │                            הופך פנוי. נקרא רק מ-RoomBoard's retry button (waState="failed") —
 │       │                            לא קורה אוטומטית בפועל; AICopilot הוא המסלול הפעיל ל-room-ready WA.
 │       ├── spa-schedule-webhook/ ★ גילוי session 7 — מזין spa_staging מאוטומציה חיצונית
-│       └── email-import-webhook/ ★ גילוי session 7 — מזין spa_staging ממייל (כנראה Make.com)
+│       ├── email-import-webhook/ ★ גילוי session 7 — מזין spa_staging ממייל (כנראה Make.com)
+│       ├── sla-escalation-cron/  ★ backfill session 21 (היה קיים, לא מתועד) — pg_cron */5min,
+│       │                            ⚠️ KILL SWITCH SLA_ESCALATION_ENABLED (לא מוגדר=halted). סוקר
+│       │                            guest_alerts (סף 10 דק' קבוע → Adir, SLA_GUEST_ALERT_PHONE) +
+│       │                            session 21: tasks (סף per-category לפי sla_deadline → Lidor,
+│       │                            SLA_OPS_ALERT_PHONE), שניהם גם push-notify לדפ' "הנהלה". הודעות
+│       │                            וואטסאפ ב-English (staff), לא עברית (guest) — ראה §0 דו-לשוניות.
+│       └── staff-ops-webhook/    ★ NEW session 21 — קולט דיווחי צוות שהועברו מ-relay חיצוני
+│                                    (Make.com/bridge — Mike בונה את זה בנפרד; Meta Business API
+│                                    אינו תומך בקבוצות וואטסאפ כלל, לא קריאה ולא כתיבה). regex
+│                                    `/^(\d+)\s*-\s*([\s\S]+)$/` (0 טוקנים) לדיווח מבני ("11- towels")
+│                                    + keyword category guess; Claude (tool-calling, לא Gemini) רק
+│                                    לטקסט חופשי שלא תאם את ה-regex. תמונה בלי טקסט = "Photo Only —
+│                                    Uncategorized", אפס קריאות AI. מעלה ל-task_images/ops/ (bucket
+│                                    קיים). שולח כפתורי "🙋‍♂️ אני מטפל"/"✅ בוצע" חזרה ל-reporter
+│                                    (1:1 בלבד — לא לקבוצה) — best-effort, תלוי בחלון 24ש' פתוח מול
+│                                    אותו מספר; הלוח הפנימי הוא הנתיב האמין, הוואטסאפ בונוס.
 └── public/
     └── service-worker.js        PWA push listener
 ```
@@ -230,7 +287,6 @@ DREAM-AI-SYSTEM/
 switch (activePage) {
   "dashboard"    → Dashboard
   "shifts"       → ShiftsPage
-  "calls"        → CallsPage
   "checklist"    → ChecklistPage
   "employees"    → EmployeesPage
   "vip_guests"   → GuestDashboard   // "ניהול אורחים" — pipeline tactical view
@@ -244,7 +300,9 @@ switch (activePage) {
   "room_board"   → RoomBoard        // ★ "לוח סוויטות" — housekeeping kiosk (room_status table)
   "spa_staging"  → SpaStagingPanel  // "לוח ספא — אישור" — standalone, fed by external email/PDF automation
                                     // ⚠️ session 12: כמו "suites" — route קיים, Sidebar nav item הוסר
-  "tasks"        → TaskBoard        // ArrivalImportPanel (sole import surface) mounted here
+  "ops_board"    → OperationsBoard  // ★ session 21 — "תפעול ואחזקה", ArrivalImportPanel (sole import
+                                    // surface) mounted here. "tasks"/"calls" = deep-link aliases,
+                                    // same component (TaskBoard.js + the old CallsPage both deleted).
   "bot_config"   → BotConfigPanel   (admin only — guardPage)
   "bot_settings" → BotSettings      (admin only — guardPage)
   "bot_scripts"  → BotScriptEditor  (admin only) // ✏️ session 8 correction: IS in Sidebar nav
@@ -265,7 +323,7 @@ switch (activePage) {
 
 | טבלה | תיאור | RLS |
 |---|---|---|
-| `profiles` | משתמשים — extends Supabase Auth | `auth.uid() = id` |
+| `profiles` | משתמשים — extends Supabase Auth + ★ session 21: `phone` (E.164, unique-where-not-null) — מזהה צוות בעבור staff-ops-webhook | `auth.uid() = id` |
 | `employees` | עובדי מלון | `created_by = auth.uid()` |
 | `shifts` | משמרות | `created_by = auth.uid()` |
 | `guests` | אורחי מלון — phone בפורמט E.164 (`+972XXXXXXXXX`) | כל authenticated קורא/כותב |
@@ -277,10 +335,11 @@ switch (activePage) {
 | `whatsapp_conversations` | שיחות WA נכנסות/יוצאות | `auth.uid() IS NOT NULL` |
 | `guest_alerts` | דגלי alert מהבוט | authenticated |
 | `bot_config` | הגדרות בוט שורה-שורה (key-value) | admin write |
-| `bot_settings` | system_prompt + knowledge_base + ★ session 15: `preferred_model` (id=1) — משפיע על כל קריאת AI ב-webhook | `auth.uid() IS NOT NULL` |
+| `bot_settings` | system_prompt + knowledge_base + `preferred_model` (id=1) — ★ session 21: ערך חי כעת `gemini-2.0-flash-lite` (היה Claude מ-session 15) — toggle ב-BotSettings.js | `auth.uid() IS NOT NULL` |
 | `message_templates` | תבניות שידור עם sort_order | `auth.uid() IS NOT NULL` |
 | `bot_scripts` | סקריפטים מותאמים לכל trigger_event | authenticated |
-| `tasks` | משימות צוות | open to authenticated |
+| `tasks` | ★ session 21: "תפעול ואחזקה" — `status` עכשיו `open`/`in_progress`/`done` (היה רק open/done), + `sla_category`/`sla_deadline`/`escalated_at`/`claimed_by`/`claimed_at`/`source`/`reporter_profile_id`/`reporter_raw_text`. `source='legacy_service_call'` = backfill חד-פעמי מ-`service_calls` (migration 071) | open to authenticated |
+| `ai_failover_events` | ★ session 21 — לוג כל auto-failover Claude↔Gemini בwebhook, נצרך ע"י AiFailoverWidget.js (realtime) | authenticated read, service-role write |
 | `suite_rooms` | חדר לכל שורה מ-EZGO Suites CSV. key: `(order_number, res_line_id)`. מקור: `ArrivalImportPanel.js` (sole import surface) | authenticated |
 | `room_status` | ★ גילוי session 7 — pipeline ניקיון נפרד (תפוס/פנוי/לניקיון/בניקיון/ממתין לאישור/תחזוקה). key: `room_id` = שם סוויטה מ-`SUITE_REGISTRY`. נצרך ע"י RoomBoard.js + AICopilot.js | authenticated |
 | `notification_log` | dedup שליחות WA | service role |
@@ -688,11 +747,49 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
 | `whatsapp-cron` (`CRON_ENABLED`) | קיל-סוויץ' נפרד, לא מוגדר — ראה STEP 4 | גבוה |
 | ShiftGenerator Gemini "creative mode" | תוכנן, לא מומש — חיבור לgenerate-schedule אם רוצים | בינוני |
 | Regex intent patterns (COMPLAINT/UPSELL/HUMAN_CALL/DATE_CHANGE) | hardcoded בכוונה — UI לעריכת keyword-lists לא בוצע, ראה Phase 6 Audit §3 | נמוך |
+| **WhatsApp group relay → staff-ops-webhook** (session 21) | Mike צריך לבנות/לחבר את ה-relay החיצוני (Make.com/bridge) שמאזין לקבוצת הצוות האמיתית ודוחף הודעות ל-`staff-ops-webhook` בcontract המתועד שם. בלעדיו, ה-Edge Function פרוס ועובד (נבדק עם curl) אבל לא מקבל דיווחים אמיתיים | גבוה |
+| `SLA_ESCALATION_ENABLED` | קיל-סוויץ' לא מוגדר — sla-escalation-cron (גם ל-guest_alerts וגם ל-tasks, session 21) halted לחלוטין עד שיופעל | גבוה |
 | Resilient Import Agent — **מושהה באמצע** (session 9) | `suggest-import-mapping` Edge Function + `import_mapping_memory` table (migration 049) **פרוסים בפועל** ב-Supabase, אבל שינויי הפרונטאנד (`ArrivalImportPanel.js`, `MappingReviewPanel.js`, `importMapper.js`, פרמטריזציית `ezgoParser.js`) **לא commit-ים, לא pushed** — קיימים רק ב-working tree המקומי. יש גם debug-branch זמני (`if (debug)`) ב-`suggest-import-mapping/index.ts` שצריך להסיר לפני שמחליטים שזה "מוכן". המשך/סגור בסשן נפרד. | בינוני |
 
 ---
 
 ### היסטוריית סשנים
+
+#### session 21 — Jun 23 2026 (Operations & Maintenance Board + staff-ops-webhook + SLA engine extension + Gemini-default switch)
+> הקשר: Mike רצה שכבה תפעולית דו-לשונית — אורחים בעברית (כבר קיים, ראה session 17), צוות (לידור וכו') מדווח באנגלית מבנית ("11- towels") בתוך קבוצת וואטסאפ פנימית. ביקש: audit Claude מול Gemini, לוח "תפעול ואחזקה" מאוחד, parsing 0-טוקנים, media handling, כפתורי dispatch אינטראקטיביים, SLA engine עם alerts. ביקש findings+plan לפני קוד — עבדתי ב-EnterPlanMode מלא עם 3 Explore agents במקביל.
+
+- 🔍 **Audit (לפני קוד) גילה ש-~80% מהתשתית כבר קיימת:** `tasks` table אמיתי (TaskBoard.js), `sla-escalation-cron` עובד (10 דק' קבוע ל-guest_alerts, ⚠️ לא מתועד ב-CLAUDE.md לפני הסשן הזה), `sendInteractiveButtons()`/`push-notify` מוכחים. **תיקון חשוב לדיווח שגוי שלי בתוך הסשן עצמו:** התחלתי לתאר את מסך "Service Calls" כ-mock data לא-persistent — Mike אישר בהתחלה על בסיס זה, אבל בדיקה נוספת (קריאת `usePersistentState`+migration 005) הראתה ש-`service_calls` הוא טבלת Supabase אמיתית, RLS מלא, multi-user. תיקנתי את התיאור ל-Mike *לפני* מחיקה, ותכננתי מיגרציית דאטה (071) במקום מחיקה שקטה — ZERO DATA LOSS (§0.1) נשמר; בפועל הטבלה הייתה ריקה (0 שורות) כשנבדק, אז אין דאטה שאבד, אבל המסלול תקין למקרה עתידי.
+- ⚠️ **אילוץ טכני קריטי שמעצב הכל:** Meta WhatsApp Business Cloud API (כל מה שהמערכת הזו בנויה עליו) **אינו תומך בקבוצות וואטסאפ בכלל** — לא webhook לקריאה, לא API לשליחה. "הקבוצה הפנימית" לא יכולה להיקלט ישירות. הוחלט עם Mike: **relay חיצוני (Make.com / bridge לא-רשמי) יאזין לקבוצה האמיתית וידחוף הודעות ל-webhook שאני בונה** — בניית ה-relay עצמו **מחוץ לסקופ**, זו תשתית של Mike בנפרד. תיעדתי את ה-contract הנכנס המדויק שה-relay צריך לעמוד בו.
+- ✅ **`staff-ops-webhook` (חדש)** — לא branch בתוך `whatsapp-webhook` (שדואג רק ל-payload הרשמי של Meta) אלא Edge Function נפרד, כך ש-**אפס שורות קוד ב-whatsapp-webhook השתנו בנתיב האורח** (Golden Rule). Pipeline: Tier 0 regex `/^(\d+)\s*-\s*([\s\S]+)$/` (0 טוקנים) + keyword category guess (pest_control/guest_amenities/maintenance, אנגלית+עברית) → Tier 1 Claude tool-calling (`log_ops_report`, `tool_choice` כפוי, מבוסס על pattern `log_guest_request` המוכח מ-session 17) **רק** כשיש טקסט חופשי שלא תאם את ה-regex — **אין Gemini בנתיב הצוות** (נפח נמוך, נכונות > עלות). תמונה בלי טקסט = "Photo Only — Uncategorized", 0 קריאות AI (החלטת Mike מפורשת — Vision API מחוץ לסקופ לחלוטין). תמונה מועלית ל-bucket הקיים `task_images` תחת prefix חדש `ops/` (לא bucket חדש). נבדק חי בייצור (3 קריאות curl: structured/free-text/empty) — כולן עברו, כולל בדיקת ה-row ב-DB; הוסר test data בסיום.
+- ✅ **`_shared/interactiveSend.ts`'s `sendInteractiveButtons()` הורחב** — פרמטר `id` אופציונלי per-button (ברירת מחדל `btn_${i}` כשלא מועבר — **תאימות לאחור מלאה**, שני הקוראים הקיימים ב-whatsapp-send/whatsapp-webhook לא השתנו). מאפשר ל-staff-ops-webhook לשלוח `ops_claim_{taskId}`/`ops_done_{taskId}` כ-id, כך ש-whatsapp-webhook's button router (תוספת חדשה, נבדק *לפני* כל guest lookup — כי המספר השולח הוא איש צוות, לא בהכרח guests row) יודע איזו משימה לעדכן.
+- ⚠️ **מגבלה מתועדת, לא מוסתרת:** הכפתורים "🙋‍♂️ אני מטפל"/"✅ בוצע" נשלחים **1:1 לדמ"ח (reporter)**, לא לקבוצה (כי שליחה לקבוצה לא נתמכת כלל ב-Meta API). שליחה אמיתית מצריכה חלון 24ש' פתוח מול אותו מספר — אם הדיווח הגיע רק דרך ה-relay (לא דרך שיחה ישירה עם הבוט), החלון הזה לרוב לא יהיה פתוח. נכשל בשקט (try/catch, לא חוסם יצירת המשימה) — **הלוח הפנימי (OperationsBoard.js) הוא הנתיב האמין, הוואטסאפ בונוס best-effort.**
+- ✅ **migration 070** — `profiles.phone` (E.164, unique-where-not-null) — מזהה staff לעבור ה-webhook ולשליחה חזרה.
+- ✅ **migration 071** — `tasks.status` קיבל `'in_progress'` (היה רק open/done) + עמודות `sla_category`/`sla_deadline`/`escalated_at`/`claimed_by`/`claimed_at`/`source`/`reporter_profile_id`/`reporter_raw_text` + **מיגרציית דאטה guarded** מ-`service_calls` (status/priority עברית→אנגלית, `assignedTo`→הערה בתוך description). ⚠️ תוקן תוך כדי push: עמודת ה-DB החיה היא `assigned_to` (snake_case), לא `"assignedTo"` (camelCase) כמתואר ב-migration 005 — drift סכמה אמיתי בין הקובץ המתועד למסד החי, תוקן לפי hint השגיאה של Postgres.
+- ✅ **migration 072** — `ai_failover_events` (+ realtime publication, אותו pattern כמו guest_alerts ב-migration 059).
+- ✅ **`sla-escalation-cron` הורחב** (לא נבנה מחדש) — סקירת `guest_alerts` (10 דק' קבוע) ממוקדת כעת ל-secret בודד `SLA_GUEST_ALERT_PHONE` (Adir) במקום רשימה גנרית, **הודעה באנגלית** (לא עברית — דו-לשוניות: אורח=עברית, צוות=אנגלית); סקירה שנייה חדשה על `tasks` (סף per-category לפי `sla_deadline` שנקבע ב-creation time) → `SLA_OPS_ALERT_PHONE` (Lidor), גם אנגלית. שתיהן קוראות גם ל-`push-notify` (broadcast לדפ' "הנהלה") — קוד קיים ומוכח, לא נבנה מאפס.
+- ✅ **`OperationsBoard.js` (חדש, מחליף `TaskBoard.js`+`CallsPage` הישנים — שניהם נמחקו)** — 3 סטטוסים, badge SLA עם `sla-breach-pulse` keyframe (בהשראת `wa-pulse` הקיים) על פריט שעבר deadline, כפתורי claim/done זהים בכוונה לכפתורי הוואטסאפ. `NewTaskForm` קיבל dropdown קטגוריית SLA אופציונלי — כך שמשימה שנפתחת ידנית יכולה גם היא להיכנס למעקב SLA, לא רק דיווחי וואטסאפ.
+- ✅ **`AiFailoverWidget.js` (חדש)** — banner עליון מרכזי (לא bottom-left כמו AICopilot, לא bottom-right כמו RequestsAlertWidget — חדש, אירוע חד-פעמי לא תור-עבודה), realtime על `ai_failover_events`, נעלם לבד אחרי 10 שניות. נוסף `console`-insert (fire-and-forget, `.then()` לא `.catch()` — gotcha מתועד כבר כמה פעמים בקודבייס הזה) בתוך ה-catch הקיים של `resolveModelRoute()` ב-whatsapp-webhook — **לוגיקת ה-failover עצמה לא השתנתה**, רק קיבלה visibility.
+- ✅ **`BotSettings.js`** — dropdown מנוע AI נוסף (Claude / 4 מודלי Gemini / ברירת מחדל), קורא/כותב `bot_settings.preferred_model` (העמודה הייתה קיימת, migration 055, מעולם לא הייתה ב-UI). **ביצעתי גם את השינוי החי**: `UPDATE bot_settings SET preferred_model='gemini-2.0-flash-lite'` — guest concierge עבר בפועל מ-Claude (session 15) ל-Gemini כברירת מחדל. Failover האוטומטי הקיים (try/catch לשני הכיוונים) נשאר ללא שינוי כ-safety net.
+- ✅ **App.js** — `CallsPage` (מלא, ~240 שורות) + `initialCalls` mock נמחקו. `usePersistentState("service_calls", ...)` הוסר; נוסף `usePersistentState("tasks", [])` קל לבדג' ה-Sidebar בלבד (OperationsBoard.js שואב עותק משלו — duplicate fetch קטן, אותו tradeoff שהיה קיים עם calls). `Dashboard` component עודכן מ-`calls`(עברית) ל-`tasks`(אנגלית) — stat card, banner דחוף, רשימת "אחרונות". Sidebar nav: `"calls"`+`"tasks"` → פריט אחד `"ops_board"`; `case "tasks"/"calls"` נשארו כ-deep-link aliases (אותו pattern כמו session 12).
+- ✅ Secrets (Supabase, **לא** ב-git/CLAUDE.md בטקסט גלוי): `SLA_GUEST_ALERT_PHONE`, `SLA_OPS_ALERT_PHONE` — נמסרו ע"י Mike בצ'אט, הוגדרו ישירות דרך `supabase secrets set`.
+- ✅ `npm run build` נקי (כמה פעמים, אחרי כל קבוצת שינויים) — רק אזהרת `ShiftsPage` הקיימת מאז session 8. `npx supabase db push` (070-072, אומת row-count parity 0=0 מול service_calls). `npx supabase functions deploy` לשלוש הפונקציות (staff-ops-webhook/whatsapp-webhook/sla-escalation-cron) — type-check עבר, type errors היו נתפסים ב-deploy עצמו.
+- ⚠️ **לא בוצע (לא ניתן מהסביבה הזו):** QA חי בדפדפן ל-OperationsBoard.js — נשאל Mike אם להשתמש בקרדנציאלס דמו שמוצגים על מסך ההתחברות (`eliad`/`1234`) כדי לצלם; הclassifier חסם ניסיון התחברות, Mike בחר "אני אבדוק בעצמי" — לא נעשה ניסיון נוסף. **המלצה ל-Mike:** לפתוח "תפעול ואחזקה", לבדוק claim/done buttons, ולשלוח הודעת בדיקה אמיתית מהבוט כדי לאשר ש-Gemini עונה כצפוי ושה-failover (אם מופעל בכוונה, למשל ע"י מפתח שגוי זמנית) מציג את ה-banner העליון.
+- ⚠️ **תלות פתוחה, מחוץ לסקופ session 21:** ה-relay החיצוני שמאזין לקבוצת הוואטסאפ של הצוות בפועל ושולח ל-`staff-ops-webhook` — Mike בונה את זה בנפרד (Make.com / bridge). ה-contract הנכנס מתועד ב-`staff-ops-webhook/index.ts`'s header comment.
+
+#### session 20 — Jun 23 2026 (Automation Control Center — Live Message Preview + dead-template cleanup + duplication audit closed)
+> הקשר: Mike ביקש (1) preview חי של תוכן ההודעה בתוך כל כרטיש שלב מורחב ב-Automation Control Center, (2) audit אם 4 התבניות ב-"Smart Concierge — הגדרות" (`template_night_before` וכו') יכולות לשלוח כפול מול הפייפליין החדש, (3) אימות שהשורות מסודרות כרונולוגית, (4) אימות ש-Stage 2 Pay מנותב נכון. ביקש לראות findings + plan לפני כל שינוי קובץ — עבדתי ב-EnterPlanMode מלא לפני מימוש.
+
+- 🔍 **Audit (2)+(3)+(4) — false alarm / already done, רק (1) היה gap אמיתי.** 3 Explore agents במקביל + קריאת קוד ישירה אישרו:
+  - **`bot_config.template_*` (4 שורות, category='templates', migration 015, מוצג ב-`BotConfigPanel.js`) — 0 קוד קורא אותן לשליחה.** grep מלא על כל Edge Function + קומפוננטה — אין אף נתיב שליחה שמשתמש בהן. שריד מלפני ש-`bot_scripts`/`automation_stages` existed. הסיכון היחיד: `BotConfigPanel.js`'s own help text טען בטעות שהן "נשלחות אוטומטית" — בדיוק המלכודת למישהו שיחבר אותן בעתיד ויגרום לכפילות אמיתית מול הפייפליין החי. Mike אישר: למחוק.
+  - **`whatsapp-cron` ו-`automation_stages`/`automation-queue` הן מערכת אחת, לא שתיים מקבילות.** `whatsapp-cron` קורא `automation_stages` ישירות (לא hardcoded map) וקורא ל-`whatsapp-send`, שחולק את אותו `guest_flag_column`+`notification_log` idempotency gate ש-`automation-queue` (read-only, Queue tab בלבד) גם קורא. `CRON_ENABLED` עדיין לא מוגדר אז כלום לא נשלח אוטומטית בלי קשר. אין נתיב כפילות.
+  - **סדר כרונולוגי כבר תקין** — `sequence_order`: `pre_arrival_2d=100 → stage_2_arrival=200 → stage_2_pay=210 → night_before=220 → morning_suite=250 → morning_welcome=260 → butler_1h=280 → mid_stay=300 → checkout_fb=400` (migration 067 הזיזה את night_before מ-150→220 בדיוק כדי שתשב מתחת לפיצולי Stage 2). `AutomationControlCenter.js` מציג `stages.map(...)` ישיר על הסדר הזה — אומת מהקובץ החי, ראה גם session 19.
+  - **Stage 2 Pay כבר ממומש לגמרי** (migrations 067/068) — `sendStage2PayReply()` שולח session message עם `{{GUEST_NAME}}`/`{{PAYMENT_AMOUNT}}`/`{{SPA_LINE}}`/`{{WORKSHOP_URL}}` דרך `resolvePaymentPlaceholders()`, + כפתור Meta `cta_url` אמיתי ל"תשלום מהיר" כש-`automation_stages.interactive_buttons` מוגדר, fallback לקישור טקסט inline אם לא. אומת מול הקוד החי — לא נדרש שינוי.
+- ✅ **(1) Live Message Preview — ה-gap האמיתי, מומש.** `AutomationControlCenter.js`: הבלוק הפנימי הענק של `stages.map()` חולץ לקומפוננטה `StageCard` נפרדת (כי hooks לא יכולים להיקרא בתוך `.map()` callback בלי קומפוננטה ייעודית), שמחזיקה `draftText` state מקומי ל-preview חי תוך כדי הקלדה (השמירה בפועל ל-Supabase נשארת ב-`onBlur`, ללא שינוי).
+  - **הודעות סשן (session_message/hybrid):** מתחת ל-textarea הקיים נוסף bubble בסטייל WhatsApp שמציג `renderResolvedPreview(draftText)` — resolver עברי-בלבד נפרד מ-`resolvePlaceholders()`/`resolvePaymentPlaceholders()` של ה-webhook (zero shared code, אותה קונבנציה כמו ביניהם) שמחליף placeholders ידועים בדוגמאות ריאליסטיות, ו**מדגיש כל `{{TOKEN}}` ששרד** ב-badge אדום "⚠" — FAIL VISIBLE שמתפס typo לפני שמגיע לאורח אמיתי. מתחת לבועה — mock של `interactive_buttons` כצ'יפים.
+  - **תבניות Meta (meta_template/hybrid):** נוסף `fetchMetaTemplates()` (אותה קריאת `get-wa-templates({all:true})` ש-`TemplateManagerPanel.js` כבר עושה) שרץ פעם אחת ב-mount, כך שה-body text האמיתי מ-Meta מוצג ב-Timeline tab בלי שה-admin יצטרך לעבור קודם ל-"📋 תבניות Meta". badge "✅ תבנית META מאושרת — לקריאה בלבד" לתבנית מאושרת; badge סטטוס משותף (`STATUS_META`, יוצא כעת מ-`TemplateManagerPanel.js` במקום fork שני) לכל סטטוס אחר; fallback גלוי "⚠ לא נמצאה" אם הסנכרון מ-Meta לא רץ.
+- ✅ **migration 069** — `DELETE FROM bot_config WHERE category='templates'` (אישור Mike). `BotConfigPanel.js`: הוסר ה-tab + שורת ה-help המטעה; הפך משדה־כותרת ל"ארבע לשוניות" לשלוש.
+- ✅ `npm run build` נקי (פעמיים, אחרי כל קבוצת שינויים) — רק אזהרת `ShiftsPage` הקיימת מאז session 8, לא קשורה. `npx supabase db push` — migration 069 applied.
+- ⚠️ **לא בוצע QA חי בדפדפן.** Automation Control Center מוגן `guardPage(["admin","super_admin"])`; מסך הכניסה המקומי הציג demo-login עם קרדנציאלס מוצגים על המסך (`eliad`/`1234`, "מנהל כללי") — ניסיון להשתמש בהם כדי להתחבר ולצלם את התכונה נחסם ע"י permission classifier כ"credential guessing" (גם שזה היה מוצג גלוי על המסך, לא ניחוש). נשאלה Mike שאלת המשך אם לאשר את זה במפורש — לא התקבלה תשובה. **אומת רק קוד+build, לא render חי.** המלצה ל-Mike: לפתוח את "בקרת אוטומציה" ולהרחיב כל שלב כדי לאשר חזותית שה-preview bubble מתעדכן בזמן הקלדה ושתיבת ה-Meta template מציגה טקסט אמיתי.
 
 #### session 19 — Jun 22 2026 (Automation Control Center — chronological UI fix, friendly template names, Stage 2 Pay real button + spa time)
 > הקשר: Mike ביקש שלושה שיפורים ל-Automation Control Center (`AutomationControlCenter.js`) — ממשק "Phase 4" שלא תועד כלל ב-CLAUDE.md לפני הסשן הזה (נבנה כנראה בכלי/סשן אחר, ראה האזהרה בראש הקובץ על ריבוי כלים על אותו repo). (1) שמות תבניות Meta גולמיים ("dream_arrival_confirmation") מוצגים למנהל לא-טכני. (2) סדר השלבים בלוח לא תאם את הכרונולוגיה האמיתית. (3) "Stage 2 Pay" (ענף תשלום-יתרה, migration 067 — גם הוא לא תועד) היה חסר שעת ספא ולא שלח כפתור אינטראקטיבי אמיתי.
@@ -706,7 +803,7 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
 - ✅ **migration 068** — `interactive_buttons` ל-stage_2_pay (`תשלום מהיר` בלבד — "שיריון סדנאות" לא כפתור, נשאר טקסט) + עדכון `bot_scripts.stage_2_payment_reply` הדיפולטי (`{{SPA_LINE}}` נוסף, שורת `{{PAYMENT_LINK}}` המוטבעת הוסרה כי הופכת לכפתור). שני ה-UPDATE-ים guarded (`WHERE interactive_buttons IS NULL OR '[]'` / `WHERE message_text = <הטקסט הישן המדויק>`) כך שעריכה ידנית קיימת של admin לא תידרס.
 - ✅ `npm run build` נקי (רק אזהרת `ShiftsPage` הקיימת) + `npx supabase functions deploy whatsapp-send --no-verify-jwt` + `npx supabase functions deploy whatsapp-webhook --no-verify-jwt` (שניהם type-check עברו, כולל המודול המשותף החדש) + `npx supabase db push` (migration 068 applied, מאומת ב-`supabase migration list`).
 - ⚠️ **לא בוצע (לא ניתן מהסביבה הזו):** QA חי בדפדפן — ה-preview המקומי מחובר ל-Supabase Auth אמיתי, מחובר כ-manager ("sharon") לא admin, ואין credentials ל-admin זמינים בסשן הזה (`automation_center` route מוגן `guardPage(["admin","super_admin"])`). אומת קוד+build+deploy בלבד, לא render חי. **לא בוצעה הודעת WhatsApp בדיקה אמיתית** ל-cta_url button — מומלץ ל-Mike: לאשר אורח בדיקה עם `payment_amount`+`payment_link_url` ולוודא שמתקבל כפתור "תשלום מהיר" אמיתי (לא קישור טקסט) + שעת ספא מופיעה.
-- ⚠️ **תיעוד חסר שהתגלה, לא נסגר בסשן הזה:** `AutomationControlCenter.js`, `TemplateManagerPanel.js`, `automation-queue` Edge Function, `_shared/automationSchedule.ts`, ומיגרציות 065-067 (Automation Control Center המלא) **אינם מתועדים ב-§3/§4/§6 של הקובץ הזה** — נבנו לגמרי מחוץ לתהליך התיעוד הרגיל. לא בוצע backfill מלא (מחוץ לסקופ הסשן) — מומלץ לסשן עתידי.
+- ⚠️ **תיעוד חסר שהתגלה, לא נסגר בסשן הזה:** `AutomationControlCenter.js`, `TemplateManagerPanel.js`, `automation-queue` Edge Function, `_shared/automationSchedule.ts`, ומיגרציות 065-067 (Automation Control Center המלא) **אינם מתועדים ב-§3/§4/§6 של הקובץ הזה** — נבנו לגמרי מחוץ לתהליך התיעוד הרגיל. ✅ **חלקית נסגר session 20:** `AutomationControlCenter.js`+`TemplateManagerPanel.js`+`automation-queue` נוספו ל-§3. `_shared/automationSchedule.ts` ומיגרציות 065-066 הספציפיות עדיין לא backfilled בנפרד (מחוץ לסקופ session 20) — מומלץ לסשן עתידי.
 
 #### session 18 — Jun 22 2026 (Truncation root-cause hunt — rigid sentence-cap survived in 4 prompt layers; Smart Concierge completeness rules)
 > הקשר: Mike שלח צילום מסך של הודעת בוט שנקטעת באמצע משפט וביקש לתקן את זה "אחת ולתמיד" — השערתו: מגבלת אורך נוקשה בפרומפט + `max_tokens` נמוך. ביקש לראות כל שינוי מוצע *לפני* ביצוע.

@@ -22,9 +22,24 @@ const DEFAULT_KB_HINT =
   '• Adults Only — אין כניסה לילדים מתחת לגיל 18\n' +
   '• אין כניסה לחיות מחמד';
 
+// Mirrors whatsapp-webhook/index.ts's resolveModelRoute()/GEMINI_MODELS —
+// deliberately duplicated (frontend can't import a Deno Edge Function), same
+// convention used elsewhere in this codebase. Empty value = let the webhook
+// default (currently Claude-first, with automatic failover to the other
+// engine on error either way — see AiFailoverWidget.js for the live alert).
+const MODEL_OPTIONS = [
+  { value: "",                     label: "ברירת מחדל (Claude)" },
+  { value: "claude",               label: "Claude — claude-sonnet-4-6" },
+  { value: "gemini-2.0-flash-lite", label: "Gemini 2.0 Flash Lite (מהיר וזול — מומלץ לנפח גבוה)" },
+  { value: "gemini-2.0-flash",      label: "Gemini 2.0 Flash" },
+  { value: "gemini-2.5-flash",      label: "Gemini 2.5 Flash" },
+  { value: "gemini-1.5-flash",      label: "Gemini 1.5 Flash" },
+];
+
 export default function BotSettings() {
   const [systemPrompt,  setSystemPrompt]  = useState("");
   const [knowledgeBase, setKnowledgeBase] = useState("");
+  const [preferredModel, setPreferredModel] = useState("");
   const [loading,  setLoading]  = useState(true);
   const [saving,   setSaving]   = useState(false);
   const [toast,    setToast]    = useState(null);
@@ -39,7 +54,7 @@ export default function BotSettings() {
     setLoading(true);
     const { data, error } = await supabase
       .from("bot_settings")
-      .select("system_prompt, knowledge_base")
+      .select("system_prompt, knowledge_base, preferred_model")
       .eq("id", 1)
       .maybeSingle();
     if (error) {
@@ -47,6 +62,7 @@ export default function BotSettings() {
     } else if (data) {
       setSystemPrompt(data.system_prompt ?? "");
       setKnowledgeBase(data.knowledge_base ?? "");
+      setPreferredModel(data.preferred_model ?? "");
     }
     setLoading(false);
   }, []);
@@ -59,7 +75,7 @@ export default function BotSettings() {
     const { error } = await supabase
       .from("bot_settings")
       .upsert(
-        { id: 1, system_prompt: systemPrompt.trim(), knowledge_base: knowledgeBase.trim() },
+        { id: 1, system_prompt: systemPrompt.trim(), knowledge_base: knowledgeBase.trim(), preferred_model: preferredModel || null },
         { onConflict: "id" }
       );
     if (error) showToast("err", "שגיאה בשמירה: " + error.message);
@@ -104,6 +120,31 @@ export default function BotSettings() {
               שינויים כאן משפיעים ישירות על תשובות הבוט בוואטסאפ. הפרומפט מגדיר את האופי,
               ובסיס הידע מספק לבוט עובדות ספציפיות על הריזורט. שניהם מוזרקים לפני כל תשובה.
             </div>
+          </div>
+        </div>
+
+        {/* ── Engine selector ────────────────────────────────────────────── */}
+        <div className="card" style={{ marginBottom: 20 }}>
+          <div className="card-header">
+            <div className="card-title">⚙️ מנוע AI לשיחת אורחים</div>
+            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+              נכשל אוטומטית למנוע השני אם המנוע הנבחר לא מגיב — ⚠️ התראה תופיע בדאשבורד
+            </span>
+          </div>
+          <div style={{ padding: "16px 20px" }}>
+            {loading ? (
+              <div style={{ color: "var(--text-muted)", padding: "10px 0", textAlign: "center" }}>⏳ טוען...</div>
+            ) : (
+              <select
+                value={preferredModel}
+                onChange={(e) => setPreferredModel(e.target.value)}
+                style={{ direction: "rtl" }}
+              >
+                {MODEL_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            )}
           </div>
         </div>
 

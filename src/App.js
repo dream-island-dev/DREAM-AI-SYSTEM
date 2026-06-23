@@ -15,7 +15,7 @@ import KnowledgeUploader from "./components/KnowledgeUploader";
 import GuestDashboard from "./components/GuestDashboard";
 import BroadcastDashboard from "./components/BroadcastDashboard";
 import WhatsAppInbox from "./components/WhatsAppInbox";
-import TaskBoard from "./components/TaskBoard";
+import OperationsBoard from "./components/OperationsBoard";
 import BotConfigPanel from "./components/BotConfigPanel";
 import BotSettings from "./components/BotSettings";
 import BotScriptEditor from "./components/BotScriptEditor";
@@ -26,6 +26,7 @@ import PasswordChangeScreen from "./components/PasswordChangeScreen";
 import SpaStagingPanel from "./components/SpaStagingPanel";
 import AICopilot from "./components/AICopilot";
 import RequestsAlertWidget from "./components/RequestsAlertWidget";
+import AiFailoverWidget from "./components/AiFailoverWidget";
 import SuitesDashboard from "./components/SuitesDashboard";
 
 // ============================================================
@@ -156,49 +157,6 @@ const initialShifts = [
     start: "00:00",
     end: "08:00",
     status: "הסתיים",
-  },
-];
-
-const initialCalls = [
-  {
-    id: 1,
-    title: "מזגן לא עובד בחדר 204",
-    description: "אורח מתלונן על חום",
-    priority: "גבוהה",
-    assignedTo: "אלון שפירא",
-    status: "פתוח",
-    createdAt: "09:15",
-    department: "תחזוקה",
-  },
-  {
-    id: 2,
-    title: "בקשת מגבות נוספות",
-    description: "חדר 310 ביקש 4 מגבות",
-    priority: "נמוכה",
-    assignedTo: "רון כץ",
-    status: "בטיפול",
-    createdAt: "10:30",
-    department: "ניקיון",
-  },
-  {
-    id: 3,
-    title: "בעיה בדלת חדר 118",
-    description: "מנעול לא נסגר כראוי",
-    priority: "דחופה",
-    assignedTo: "אלון שפירא",
-    status: "פתוח",
-    createdAt: "11:00",
-    department: "תחזוקה",
-  },
-  {
-    id: 4,
-    title: "אורח ביקש late checkout",
-    description: "חדר 205 ביקש עד 14:00",
-    priority: "בינונית",
-    assignedTo: "דנה מזרחי",
-    status: "טופל",
-    createdAt: "08:45",
-    department: "קבלה",
   },
 ];
 
@@ -1072,7 +1030,7 @@ function DepartmentOnboardingModal({ user, onComplete }) {
   );
 }
 
-function Sidebar({ user, active, setActive, openCallsCount, onLogout, isAdmin, isSuperAdminUser, mobileOpen, onCloseMobile }) {
+function Sidebar({ user, active, setActive, openOpsCount, onLogout, isAdmin, isSuperAdminUser, mobileOpen, onCloseMobile }) {
   // Managers, admins, and super-admins can see all nav items.
   // Staff (employees) see only: dashboard, shifts, and the AI agent.
   const isManagerOrAbove = isAdmin || isSuperAdminUser || user.role === "manager";
@@ -1081,9 +1039,8 @@ function Sidebar({ user, active, setActive, openCallsCount, onLogout, isAdmin, i
     { id: "dashboard",  icon: "📊", label: "דאשבורד" },
     { id: "shifts",     icon: "🕐", label: "משמרות" },
     { id: "employees",  icon: "👥", label: "עובדים",                                 managerOnly: true },
-    { id: "calls",      icon: "🔔", label: "קריאות שירות", badge: openCallsCount, managerOnly: true },
     { id: "checklist",  icon: "✅", label: "צ'קליסטים",                              managerOnly: true },
-    { id: "tasks",      icon: "📋", label: "לוח משימות",                             managerOnly: false },
+    { id: "ops_board",  icon: "🛠️", label: "תפעול ואחזקה", badge: openOpsCount,       managerOnly: false },
     { id: "vip_guests", icon: "🏨", label: "ניהול אורחים",                            managerOnly: true },
     { id: "broadcast",  icon: "📣", label: "שליחת הודעות",                           managerOnly: true },
     { id: "wa_inbox",   icon: "💬", label: "DREAM BOT — שיחות",                     managerOnly: true },
@@ -1216,13 +1173,13 @@ function Sidebar({ user, active, setActive, openCallsCount, onLogout, isAdmin, i
   );
 }
 
-function Dashboard({ shifts, calls, checklist, employees }) {
+function Dashboard({ shifts, tasks, checklist, employees }) {
   const onShift = shifts.filter(
     (s) => s.status === "פעיל" && s.date === todayStr
   );
-  const openCalls = calls.filter((c) => c.status === "פתוח");
-  const urgentCalls = calls.filter(
-    (c) => c.priority === "דחופה" && c.status !== "טופל"
+  const openTasks = tasks.filter((t) => t.status !== "done");
+  const urgentTasks = tasks.filter(
+    (t) => t.priority === "urgent" && t.status !== "done"
   );
   const doneChecks = checklist.filter((c) => c.done).length;
   const checkPct = checklist.length ? Math.round((doneChecks / checklist.length) * 100) : 0;
@@ -1239,12 +1196,12 @@ function Dashboard({ shifts, calls, checklist, employees }) {
           </div>
         </div>
         <div className="stat-card">
-          <div className="stat-icon">🔔</div>
-          <div className="stat-value">{openCalls.length}</div>
-          <div className="stat-label">קריאות פתוחות</div>
-          {urgentCalls.length > 0 && (
+          <div className="stat-icon">🛠️</div>
+          <div className="stat-value">{openTasks.length}</div>
+          <div className="stat-label">משימות פתוחות</div>
+          {urgentTasks.length > 0 && (
             <div className="stat-sub" style={{ color: "#e53935" }}>
-              {urgentCalls.length} דחופות!
+              {urgentTasks.length} דחופות!
             </div>
           )}
         </div>
@@ -1271,7 +1228,7 @@ function Dashboard({ shifts, calls, checklist, employees }) {
         </div>
       </div>
 
-      {urgentCalls.length > 0 && (
+      {urgentTasks.length > 0 && (
         <div
           style={{
             background: "linear-gradient(135deg, #FFF5F3, #FFF)",
@@ -1287,10 +1244,10 @@ function Dashboard({ shifts, calls, checklist, employees }) {
           <span style={{ fontSize: 24 }}>🚨</span>
           <div>
             <div style={{ fontWeight: 700, color: "#e53935", fontSize: 14 }}>
-              קריאות דחופות ממתינות לטיפול!
+              משימות דחופות ממתינות לטיפול!
             </div>
             <div style={{ fontSize: 13, color: "#8a9ab0", marginTop: 2 }}>
-              {urgentCalls.map((c) => c.title).join(" • ")}
+              {urgentTasks.map((t) => t.description).join(" • ")}
             </div>
           </div>
         </div>
@@ -1351,12 +1308,12 @@ function Dashboard({ shifts, calls, checklist, employees }) {
 
         <div className="card">
           <div className="card-header">
-            <div className="card-title">🔔 קריאות אחרונות</div>
+            <div className="card-title">🛠️ משימות אחרונות</div>
           </div>
           <div className="card-body">
-            {calls.slice(0, 4).map((c) => (
+            {tasks.slice(0, 4).map((t) => (
               <div
-                key={c.id}
+                key={t.id}
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -1367,9 +1324,9 @@ function Dashboard({ shifts, calls, checklist, employees }) {
               >
                 <span
                   className={`priority-dot dot-${
-                    c.priority === "דחופה"
+                    t.priority === "urgent"
                       ? "red"
-                      : c.priority === "גבוהה"
+                      : t.priority === "normal"
                       ? "orange"
                       : "green"
                   }`}
@@ -1391,22 +1348,22 @@ function Dashboard({ shifts, calls, checklist, employees }) {
                       whiteSpace: "nowrap",
                     }}
                   >
-                    {c.title}
+                    {t.description}
                   </div>
                   <div style={{ fontSize: 11, color: "#8a9ab0" }}>
-                    {c.assignedTo} · {c.createdAt}
+                    {t.department} · {new Date(t.created_at).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" })}
                   </div>
                 </div>
                 <span
                   className={`badge ${
-                    c.status === "טופל"
+                    t.status === "done"
                       ? "badge-green"
-                      : c.status === "בטיפול"
+                      : t.status === "in_progress"
                       ? "badge-orange"
                       : "badge-red"
                   }`}
                 >
-                  {c.status}
+                  {t.status === "done" ? "בוצע" : t.status === "in_progress" ? "בטיפול" : "פתוח"}
                 </span>
               </div>
             ))}
@@ -1613,250 +1570,6 @@ function ShiftsPage({ shifts, setShifts, employees }) {
               </button>
               <button className="btn btn-primary" onClick={addShift}>
                 שמור משמרת
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function CallsPage({ calls, setCalls, employees }) {
-  const [showModal, setShowModal] = useState(false);
-  const [form, setForm] = useState({
-    title: "",
-    description: "",
-    priority: "בינונית",
-    department: "קבלה",
-    assignedTo: "",
-  });
-
-  const columns = [
-    { id: "פתוח", label: "פתוח", color: "#e53935", bg: "#fff5f5" },
-    { id: "בטיפול", label: "בטיפול", color: "#f5a623", bg: "#fffbf0" },
-    { id: "טופל", label: "טופל", color: "#00a878", bg: "#f0fdf8" },
-  ];
-
-  const addCall = () => {
-    if (!form.title) return;
-    const now = new Date();
-    const timeStr = `${String(now.getHours()).padStart(2, "0")}:${String(
-      now.getMinutes()
-    ).padStart(2, "0")}`;
-    setCalls((prev) => [
-      ...prev,
-      { id: Date.now(), ...form, status: "פתוח", createdAt: timeStr },
-    ]);
-    setShowModal(false);
-    setForm({
-      title: "",
-      description: "",
-      priority: "בינונית",
-      department: "קבלה",
-      assignedTo: "",
-    });
-  };
-
-  const updateStatus = (id, status) =>
-    setCalls((prev) => prev.map((c) => (c.id === id ? { ...c, status } : c)));
-
-  const priorityBadge = {
-    דחופה: "badge-red",
-    גבוהה: "badge-orange",
-    בינונית: "badge-blue",
-    נמוכה: "badge-gray",
-  };
-
-  return (
-    <div>
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: 20,
-        }}
-      >
-        <div style={{ fontSize: 14, color: "#8a9ab0" }}>
-          {calls.filter((c) => c.status === "פתוח").length} קריאות פתוחות
-        </div>
-        <button className="btn btn-primary" onClick={() => setShowModal(true)}>
-          ＋ קריאה חדשה
-        </button>
-      </div>
-
-      <div className="kanban">
-        {columns.map((col) => (
-          <div
-            key={col.id}
-            className="kanban-col"
-            style={{ background: col.bg }}
-          >
-            <div className="kanban-col-title" style={{ color: col.color }}>
-              <span>
-                {col.id === "פתוח" ? "🔴" : col.id === "בטיפול" ? "🟡" : "🟢"}
-              </span>
-              {col.label}
-              <span
-                style={{
-                  background: col.color,
-                  color: "#fff",
-                  borderRadius: 10,
-                  padding: "1px 8px",
-                  fontSize: 11,
-                  fontWeight: 700,
-                }}
-              >
-                {calls.filter((c) => c.status === col.id).length}
-              </span>
-            </div>
-            {calls
-              .filter((c) => c.status === col.id)
-              .map((c) => (
-                <div key={c.id} className="kanban-card">
-                  <div
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "flex-start",
-                      marginBottom: 6,
-                    }}
-                  >
-                    <div className="kanban-card-title">{c.title}</div>
-                    <span className={`badge ${priorityBadge[c.priority]}`}>
-                      {c.priority}
-                    </span>
-                  </div>
-                  {c.description && (
-                    <div
-                      style={{
-                        fontSize: 12,
-                        color: "#6a8a9a",
-                        marginBottom: 8,
-                        lineHeight: 1.4,
-                      }}
-                    >
-                      {c.description}
-                    </div>
-                  )}
-                  <div className="kanban-card-meta">
-                    👤 {c.assignedTo || "לא הוקצה"} · 🏢 {c.department} · 🕐{" "}
-                    {c.createdAt}
-                  </div>
-                  <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
-                    {col.id !== "פתוח" && (
-                      <button
-                        className="btn btn-ghost btn-sm"
-                        onClick={() => updateStatus(c.id, "פתוח")}
-                      >
-                        פתח מחדש
-                      </button>
-                    )}
-                    {col.id === "פתוח" && (
-                      <button
-                        className="btn btn-sm"
-                        style={{ background: "#fff8e8", color: "#f5a623" }}
-                        onClick={() => updateStatus(c.id, "בטיפול")}
-                      >
-                        התחל טיפול
-                      </button>
-                    )}
-                    {col.id === "בטיפול" && (
-                      <button
-                        className="btn btn-sm"
-                        style={{ background: "#e8faf4", color: "#00a878" }}
-                        onClick={() => updateStatus(c.id, "טופל")}
-                      >
-                        סמן כטופל ✓
-                      </button>
-                    )}
-                  </div>
-                </div>
-              ))}
-          </div>
-        ))}
-      </div>
-
-      {showModal && (
-        <div className="modal-overlay" onClick={() => setShowModal(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-title">🔔 פתיחת קריאת שירות</div>
-            <div className="form-field">
-              <label>כותרת הקריאה</label>
-              <input
-                placeholder="לדוגמה: מזגן לא עובד בחדר 204"
-                value={form.title}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, title: e.target.value }))
-                }
-              />
-            </div>
-            <div className="form-field">
-              <label>תיאור</label>
-              <textarea
-                rows={3}
-                placeholder="פרטים נוספים..."
-                value={form.description}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, description: e.target.value }))
-                }
-              />
-            </div>
-            <div className="form-grid">
-              <div className="form-field">
-                <label>עדיפות</label>
-                <select
-                  value={form.priority}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, priority: e.target.value }))
-                  }
-                >
-                  <option>דחופה</option>
-                  <option>גבוהה</option>
-                  <option>בינונית</option>
-                  <option>נמוכה</option>
-                </select>
-              </div>
-              <div className="form-field">
-                <label>מחלקה</label>
-                <select
-                  value={form.department}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, department: e.target.value }))
-                  }
-                >
-                  {DEPARTMENTS.map((d) => (
-                    <option key={d}>{d}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-            <div className="form-field">
-              <label>הקצה לעובד</label>
-              <select
-                value={form.assignedTo}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, assignedTo: e.target.value }))
-                }
-              >
-                <option value="">בחר עובד...</option>
-                {employees.map((e) => (
-                  <option key={e.id}>{e.name}</option>
-                ))}
-              </select>
-            </div>
-            <div
-              style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}
-            >
-              <button
-                className="btn btn-ghost"
-                onClick={() => setShowModal(false)}
-              >
-                ביטול
-              </button>
-              <button className="btn btn-primary" onClick={addCall}>
-                פתח קריאה
               </button>
             </div>
           </div>
@@ -2113,7 +1826,7 @@ async function loadUserWithProfile(session, setUser) {
 //      so operational data survives a refresh (F5).
 //
 // Keeps the exact [data, setData] contract the page components expect,
-// so ShiftsPage / CallsPage / ChecklistPage / EmployeesPage are unchanged.
+// so ShiftsPage / ChecklistPage / EmployeesPage are unchanged.
 // In demo/offline mode (no Supabase) it behaves like plain useState.
 
 function usePersistentState(table, initialMock) {
@@ -2194,9 +1907,11 @@ export default function App() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [employees, setEmployees, empLoading, refetchEmployees] = usePersistentState("employees", initialEmployees);
   const [shifts, setShifts, shiftLoading]       = usePersistentState("shifts", initialShifts);
-  const [calls, setCalls, callsLoading]         = usePersistentState("service_calls", initialCalls);
   const [checklist, setChecklist, checkLoading] = usePersistentState("checklist_items", initialChecklists);
-  const opsLoading = empLoading || shiftLoading || callsLoading || checkLoading;
+  // Sidebar badge count only — OperationsBoard.js fetches its own copy for
+  // the actual board (same duplicate-fetch tradeoff the old calls badge had).
+  const [tasks] = usePersistentState("tasks", []);
+  const opsLoading = empLoading || shiftLoading || checkLoading;
   const [agentProfile, setAgentProfile] = useState(null);
   // Controls the settings/questionnaire modal overlay (keeps chat mounted underneath)
   const [showQuestionnaire, setShowQuestionnaire] = useState(false);
@@ -2227,16 +1942,14 @@ export default function App() {
   const seedDemoData = useCallback(() => {
     setEmployees(initialEmployees);
     setShifts(initialShifts);
-    setCalls(initialCalls);
     setChecklist(initialChecklists);
-  }, [setEmployees, setShifts, setCalls, setChecklist]);
+  }, [setEmployees, setShifts, setChecklist]);
 
   const clearAllData = useCallback(() => {
     setEmployees([]);
     setShifts([]);
-    setCalls([]);
     setChecklist([]);
-  }, [setEmployees, setShifts, setCalls, setChecklist]);
+  }, [setEmployees, setShifts, setChecklist]);
 
   // ── Logout (shared by Sidebar + Topbar) ──────────────────────────────────────
   // Also disables Google auto-select so the next login shows the account chooser
@@ -2325,12 +2038,11 @@ export default function App() {
     return () => { active = false; };
   }, [user]);
 
-  const openCallsCount = calls.filter((c) => c.status === "פתוח").length;
+  const openOpsCount = tasks.filter((t) => t.status !== "done").length;
 
   const pageTitle = {
     dashboard:  "דאשבורד ראשי 📊",
     shifts:     "סידור משמרות 🕐",
-    calls:      "קריאות שירות 🔔",
     checklist:  "צ'קליסטים יומיים ✅",
     employees:  "ניהול עובדים 👥",
     vip_guests: "🏨 ניהול אורחים",
@@ -2338,7 +2050,9 @@ export default function App() {
     wa_inbox:   "💬 DREAM BOT — תיבת שיחות",
     guests:     "🛎️ צ'ק-אין",
     scheduler:  "🪄 מחולל משמרות",
-    tasks:      "📋 לוח משימות",
+    ops_board:  "🛠️ תפעול ואחזקה",
+    tasks:      "🛠️ תפעול ואחזקה",
+    calls:      "🛠️ תפעול ואחזקה",
     room_board:    "🏨 לוח סוויטות",
     requests_board: "📋 לוח בקשות",
     bot_config:    "🤖 הגדרות Smart Concierge",
@@ -2412,7 +2126,7 @@ export default function App() {
 
   const renderPage = () => {
     // Mandatory loading state while operational data is fetched from Supabase.
-    const dataPages = ["dashboard", "shifts", "calls", "checklist", "employees"];
+    const dataPages = ["dashboard", "shifts", "checklist", "employees"];
     if (opsLoading && dataPages.includes(activePage)) {
       return (
         <div style={{ textAlign: "center", padding: 64, color: "var(--text-muted)" }}>
@@ -2430,7 +2144,7 @@ export default function App() {
         return (
           <Dashboard
             shifts={shifts}
-            calls={calls}
+            tasks={tasks}
             checklist={checklist}
             employees={employees}
           />
@@ -2442,10 +2156,6 @@ export default function App() {
             employees={employees}
             onNavigate={setActivePage}
           />
-        );
-      case "calls":
-        return (
-          <CallsPage calls={calls} setCalls={setCalls} employees={employees} />
         );
       case "checklist":
         return (
@@ -2506,8 +2216,12 @@ export default function App() {
         return <RequestsBoard user={user} />;
       case "suites":
         return <SuitesDashboard />;
+      // "tasks"/"calls" kept as deep-link aliases (same pattern as session
+      // 12's nav decluttering) — both old screens are merged into one board.
+      case "ops_board":
       case "tasks":
-        return <TaskBoard user={user} isAdmin={isAdmin} />;
+      case "calls":
+        return <OperationsBoard user={user} isAdmin={isAdmin} />;
       case "bot_config":
         return guardPage(
           ["admin", "super_admin"],
@@ -2542,7 +2256,7 @@ export default function App() {
   const mobileNav = [
     { id: "dashboard",  icon: "📊", label: "ראשי" },
     { id: "shifts",     icon: "🕐", label: "משמרות" },
-    { id: "tasks",      icon: "📋", label: "משימות" },
+    { id: "ops_board",  icon: "🛠️", label: "תפעול" },
     { id: "vip_guests", icon: "🏨", label: "סוויטות" },
     { id: "agent",      icon: "🤖", label: "סוכן" },
   ];
@@ -2556,7 +2270,7 @@ export default function App() {
             user={user}
             active={activePage}
             setActive={(id) => { setActivePage(id); setMobileMenuOpen(false); }}
-            openCallsCount={openCallsCount}
+            openOpsCount={openOpsCount}
             onLogout={handleLogout}
             isAdmin={isAdmin}
             isSuperAdminUser={isSuperAdminUser}
@@ -2665,7 +2379,7 @@ export default function App() {
               >
                 <span className="icon">{item.icon}</span>
                 <span className="label">{item.label}</span>
-                {item.id === "calls" && openCallsCount > 0 && (
+                {item.id === "ops_board" && openOpsCount > 0 && (
                   <span
                     style={{
                       position: "absolute",
@@ -2682,7 +2396,7 @@ export default function App() {
                       fontWeight: 700,
                     }}
                   >
-                    {openCallsCount}
+                    {openOpsCount}
                   </span>
                 )}
               </button>
@@ -2698,6 +2412,9 @@ export default function App() {
 
       {/* Requests Board alert — floating realtime widget for guest_alerts */}
       {user && <RequestsAlertWidget onNavigate={setActivePage} />}
+
+      {/* AI engine failover alert — floating realtime banner for ai_failover_events */}
+      {user && <AiFailoverWidget />}
 
       {user && !user.department && !isAdmin && (
         <DepartmentOnboardingModal

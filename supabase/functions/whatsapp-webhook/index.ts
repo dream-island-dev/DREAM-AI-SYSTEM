@@ -1337,6 +1337,36 @@ serve(async (req: Request) => {
 
       if (!text.trim()) continue;
 
+      // ── Ops board claim/done buttons — staff-ops-webhook sends these via
+      // sendInteractiveButtons() with custom ids ops_claim_{taskId}/
+      // ops_done_{taskId} (see _shared/interactiveSend.ts's optional `id`
+      // field, added alongside this). Handled here, BEFORE any guest lookup —
+      // the tapping phone belongs to a staff member, not necessarily a
+      // `guests` row, so none of the guest-specific gating below applies.
+      if (isButtonReply && (buttonId.startsWith("ops_claim_") || buttonId.startsWith("ops_done_"))) {
+        const taskId  = buttonId.replace(/^ops_(claim|done)_/, "");
+        const isClaim = buttonId.startsWith("ops_claim_");
+        const { data: staffProfile } = await supabase
+          .from("profiles")
+          .select("id")
+          .in("phone", phoneVariants)
+          .maybeSingle();
+        const patch = isClaim
+          ? { status: "in_progress", claimed_by: staffProfile?.id ?? null, claimed_at: new Date().toISOString() }
+          : { status: "done", resolved_by: staffProfile?.id ?? null, resolved_at: new Date().toISOString() };
+        const { error: opsErr } = await supabase.from("tasks").update(patch).eq("id", taskId);
+        if (opsErr) console.error(`[webhook] ops button update failed for task ${taskId}:`, opsErr.message);
+        const confirmText = opsErr
+          ? "⚠️ Couldn't update the task — please check the Operations Board."
+          : isClaim ? "🙋‍♂️ Got it — marked as you're handling this now." : "✅ Marked as done, thank you!";
+        try {
+          await sendReply(phone, confirmText);
+        } catch (e) {
+          console.error(`[webhook] failed to send ops confirmation to ${phone}:`, (e as Error).message);
+        }
+        continue;
+      }
+
       // ── Dedup + guest lookup in parallel (saves ~300ms per message) ──────
       const [{ data: existing }, { data: guest }] = await Promise.all([
         supabase
@@ -1977,6 +2007,16 @@ serve(async (req: Request) => {
         } catch (e) {
           const fallbackEngine = route.engine === "claude" ? "gemini" : "claude";
           console.error(`[webhook] ${route.engine} failed → trying ${fallbackEngine}:`, (e as Error).message);
+          // Visibility for AiFailoverWidget.js (dashboard banner) — fire-and-forget,
+          // never blocks the guest's reply on a logging failure. PostgREST's query
+          // builder has no .catch(), only .then() (same gotcha documented elsewhere
+          // in this file) — use .then(cb) instead of chaining .catch() directly.
+          supabase.from("ai_failover_events").insert([{
+            from_engine: route.engine, to_engine: fallbackEngine,
+            error_message: (e as Error).message, guest_phone: phone,
+          }]).then(({ error }: { error: { message: string } | null }) => {
+            if (error) console.warn("[webhook] ai_failover_events insert failed (non-blocking):", error.message);
+          });
           try {
             const result = route.engine === "claude"
               ? await askGemini(text, guestName, orderedHistory, enrichedPrompt, route.geminiOrder)
