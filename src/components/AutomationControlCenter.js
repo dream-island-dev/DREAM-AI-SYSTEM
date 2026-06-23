@@ -22,7 +22,7 @@
 // — its toggle is live.)
 import { useState, useEffect, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
-import TemplateManagerPanel from "./TemplateManagerPanel";
+import TemplateManagerPanel, { STATUS_META } from "./TemplateManagerPanel";
 
 const JOURNEY_PHASE_LABELS = {
   pre_arrival: "🌴 לפני ההגעה",
@@ -60,6 +60,303 @@ function timeInputValue(pgTime) {
   return pgTime ? String(pgTime).slice(0, 5) : "";
 }
 
+// ── Live preview helpers ─────────────────────────────────────────────────────
+// Frontend-only sample resolver for the manager-facing preview box below.
+// Deliberately separate from whatsapp-webhook/index.ts's resolvePlaceholders()/
+// resolvePaymentPlaceholders() — zero shared code, same convention those two
+// already use between each other — so nothing here can ever affect what a
+// real guest receives. Mirrors their exact SPA_LINE/OPTIONAL_SPA_TEXT/
+// SPA_TIME wording so the preview looks like the real thing.
+const SAMPLE_VALUES = {
+  GUEST_NAME: "דניאל כהן",
+  WORKSHOP_URL: "https://dream-island.co.il/workshops",
+  PAYMENT_LINK: "https://pay.dream-island.co.il/abc123",
+  PAYMENT_AMOUNT: "450",
+  GOOGLE_REVIEW_URL: "https://g.page/r/dream-island/review",
+};
+function resolveSampleText(template) {
+  if (!template) return "";
+  const sampleSpaTime = "14:00";
+  return template
+    .replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, SAMPLE_VALUES.GUEST_NAME)
+    .replace(/\{\{\s*WORKSHOP_URL\s*\}\}/gi, SAMPLE_VALUES.WORKSHOP_URL)
+    .replace(/\{\{\s*PAYMENT_LINK\s*\}\}/gi, SAMPLE_VALUES.PAYMENT_LINK)
+    .replace(/\{\{\s*PAYMENT_AMOUNT\s*\}\}/gi, SAMPLE_VALUES.PAYMENT_AMOUNT)
+    .replace(/\{\{\s*GOOGLE_REVIEW_URL\s*\}\}/gi, SAMPLE_VALUES.GOOGLE_REVIEW_URL)
+    .replace(/\{\{\s*SPA_LINE\s*\}\}/gi, `מתואם לכם טיפול בספא בשעה ${sampleSpaTime}. בנוסף, `)
+    .replace(/\{\{\s*OPTIONAL_SPA_TEXT\s*\}\}/gi, `מתואם לכם טיפול בספא בשעה ${sampleSpaTime}.\n`)
+    .replace(/\{\{\s*SPA_TIME\s*\}\}/gi, `הטיפול שלכם בספא מתואם לשעה ${sampleSpaTime}`);
+}
+
+// Highlights any {{TOKEN}} surviving resolveSampleText (typo or unsupported
+// placeholder) so an admin catches it before a real guest would receive it
+// raw — same FAIL VISIBLE convention as metaTemplateFriendly()'s "⚠ raw_name"
+// fallback above.
+function renderResolvedPreview(template) {
+  const resolved = resolveSampleText(template);
+  const parts = resolved.split(/(\{\{[^}]+\}\})/g);
+  return parts.map((part, i) =>
+    /^\{\{[^}]+\}\}$/.test(part) ? (
+      <span key={i} title="placeholder לא מוכר — ייתכן שיישלח גולמי לאורח" style={{
+        background: "#FFE5E5", color: "#C0392B", padding: "0 4px", borderRadius: 4, fontWeight: 700,
+      }}>⚠ {part}</span>
+    ) : (
+      <span key={i}>{part}</span>
+    )
+  );
+}
+
+function MessagePreviewBubble({ children }) {
+  return (
+    <div>
+      <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", marginBottom: 4 }}>
+        👁️ תצוגה מקדימה — כך האורח יראה את ההודעה (דוגמה)
+      </div>
+      <div style={{
+        background: "#DCF8C6", borderRadius: "10px 10px 10px 2px", padding: "10px 14px",
+        fontSize: 13, lineHeight: 1.7, direction: "rtl", whiteSpace: "pre-wrap", maxWidth: 420,
+        boxShadow: "0 1px 2px rgba(0,0,0,0.1)",
+      }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function ButtonChipsPreview({ buttons }) {
+  const visible = (buttons ?? []).filter((b) => b.label?.trim());
+  if (visible.length === 0) return null;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8, maxWidth: 420 }}>
+      {visible.map((b, i) => (
+        <div key={i} style={{
+          textAlign: "center", padding: "8px 12px", background: "#fff",
+          border: "1px solid var(--border)", borderRadius: 8, fontSize: 13, color: "#0a84ff",
+        }}>
+          {b.type === "url" ? "🔗" : "↩️"} {b.label}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Read-only Meta template body preview — same visual pattern as
+// TemplateManagerPanel.js's template list, reused via the shared STATUS_META
+// import rather than forking a second badge-color definition.
+function MetaTemplatePreviewBox({ stage, metaTemplatesByName }) {
+  const tmpl = metaTemplatesByName[stage.meta_template_name];
+  if (!tmpl) {
+    return (
+      <div style={{ fontSize: 12, color: "#C0392B", background: "#FFF0EE", borderRadius: 8, padding: "8px 12px", marginTop: 8 }}>
+        ⚠ לא נמצאה תבנית בשם זה ב-Meta — נסה לסנכרן בלשונית "תבניות Meta"
+      </div>
+    );
+  }
+  const st = STATUS_META[tmpl.status] ?? STATUS_META.PENDING;
+  const isApproved = tmpl.status === "APPROVED";
+  return (
+    <div style={{ marginTop: 8 }}>
+      <span style={{
+        fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 20,
+        background: isApproved ? "#E8F5EF" : st.bg,
+        color: isApproved ? "#1A7A4A" : st.color,
+        border: `1px solid ${isApproved ? "#1A7A4A" : st.border}`,
+      }}>
+        {isApproved ? "✅ תבנית META מאושרת — לקריאה בלבד" : st.label}
+      </span>
+      {tmpl.bodyText && (
+        <div style={{
+          fontSize: 12, color: "#444", background: "var(--ivory)", borderRadius: 8,
+          padding: "8px 12px", lineHeight: 1.6, maxHeight: 100, overflowY: "auto", marginTop: 6,
+          direction: tmpl.language === "he" || tmpl.language === "ar" ? "rtl" : "ltr",
+          textAlign: tmpl.language === "he" || tmpl.language === "ar" ? "right" : "left",
+        }}>
+          {tmpl.bodyText}
+        </div>
+      )}
+      {tmpl.buttons?.length > 0 && (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+          {tmpl.buttons.map((b, i) => (
+            <span key={i} style={{ fontSize: 11, padding: "2px 9px", borderRadius: 14, background: "#EFF6FF", color: "#1E40AF", border: "1px solid #93C5FD" }}>
+              {b.type === "URL" ? "🔗" : "↩️"} {b.text}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Extracted from the inline stages.map() body so the live-preview draft text
+// can have its own useState — hooks can't be called conditionally inside a
+// .map() callback, but a dedicated component per list item is exactly what
+// hooks rules expect.
+function StageCard({
+  stage, isOpen, onToggle, patchStage, scriptsByKey, saveSessionMessage,
+  availableScriptKeys, addButton, updateButton, removeButton, convertToTemplate,
+  metaTemplatesByName,
+}) {
+  const nt = NODE_TYPE_META[stage.node_type] ?? NODE_TYPE_META.hybrid;
+  const phaseLabel = JOURNEY_PHASE_LABELS[stage.journey_phase] ?? stage.journey_phase;
+  const savedScriptText = scriptsByKey[stage.session_message_script_key] ?? "";
+
+  // Local draft so the preview below updates live as the admin types, without
+  // changing when the actual Supabase write happens (still on blur, via
+  // saveSessionMessage — unchanged from before this feature existed).
+  const [draftText, setDraftText] = useState(savedScriptText);
+  useEffect(() => { setDraftText(savedScriptText); }, [stage.session_message_script_key, savedScriptText]);
+
+  return (
+    <div className="card" style={{ marginBottom: 12, opacity: stage.is_active ? 1 : 0.6, border: isOpen ? "1px solid var(--gold)" : undefined }}>
+      <div
+        style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 20px", cursor: "pointer", borderBottom: isOpen ? "1px solid var(--border)" : "none" }}
+        onClick={onToggle}
+      >
+        <span style={{ fontSize: 14, color: "var(--text-muted)", transform: isOpen ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.2s" }}>▶</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <span style={{ fontWeight: 700, fontSize: 14 }}>{stage.display_name}</span>
+            <span style={{ fontSize: 11, fontWeight: 700, padding: "3px 9px", borderRadius: 20, color: "#92702C", background: "rgba(201,169,110,0.15)" }}>{phaseLabel}</span>
+            <span style={{ fontSize: 11, fontWeight: 700, padding: "3px 9px", borderRadius: 20, color: nt.color, background: nt.bg }}>{nt.label}</span>
+          </div>
+        </div>
+        <div
+          onClick={(e) => { e.stopPropagation(); patchStage(stage, { is_active: !stage.is_active }); }}
+          style={{ width: 44, height: 24, borderRadius: 12, cursor: "pointer", background: stage.is_active ? "var(--gold)" : "#D1D5DB", position: "relative", flexShrink: 0 }}
+        >
+          <div style={{ position: "absolute", top: 3, borderRadius: "50%", width: 18, height: 18, background: "#fff", right: stage.is_active ? 3 : "auto", left: stage.is_active ? "auto" : 3, boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }} />
+        </div>
+      </div>
+
+      {isOpen && (
+        <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 16 }}>
+
+          {/* ── Timing ── */}
+          <div>
+            <label style={{ fontWeight: 600, fontSize: 13, marginBottom: 6, display: "block" }}>⏱ תזמון</label>
+            {stage.schedule_mode === "day_offset_with_time" && (
+              <div className="actr-timing-row" style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                  {stage.anchor_event === "departure_date" ? "יחסית לתאריך עזיבה" : "יחסית לתאריך הגעה"}
+                </span>
+                <input type="number" value={stage.day_offset ?? 0} style={{ width: 70 }}
+                  onChange={(e) => patchStage(stage, { day_offset: parseInt(e.target.value, 10) || 0 })} />
+                <span style={{ fontSize: 12, color: "var(--text-muted)" }}>ימים, משעה</span>
+                <input type="time" value={timeInputValue(stage.local_time)} style={{ width: 110 }}
+                  onChange={(e) => patchStage(stage, { local_time: e.target.value || null })} />
+                {stage.stage_key === "night_before" && (
+                  <>
+                    <span style={{ fontSize: 12, color: "var(--text-muted)" }}>עד שעה (שקט לילי)</span>
+                    <input type="time" value={timeInputValue(stage.local_time_end)} style={{ width: 110 }}
+                      onChange={(e) => patchStage(stage, { local_time_end: e.target.value || null })} />
+                  </>
+                )}
+                <span style={{ fontSize: 11, color: "var(--text-muted)" }}>(שעון ישראל)</span>
+              </div>
+            )}
+            {stage.schedule_mode === "hours_after_event" && (
+              <div className="actr-timing-row" style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                  {stage.offset_hours ?? 0} שעות אחרי {stage.anchor_event === "checkin_time" ? "צ׳ק-אין" : "אישור הגעה"}
+                </span>
+                <input type="number" value={stage.offset_hours ?? 0} style={{ width: 70 }}
+                  onChange={(e) => patchStage(stage, { offset_hours: parseInt(e.target.value, 10) || 0 })} />
+              </div>
+            )}
+            {stage.schedule_mode === "event_immediate" && (
+              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>מופעל אוטומטית בתגובה ישירה — אין תזמון יומי</span>
+            )}
+          </div>
+
+          {/* ── Applies to ── */}
+          <div className="form-field" style={{ marginBottom: 0 }}>
+            <label>חל על</label>
+            <select value={stage.applies_to} onChange={(e) => patchStage(stage, { applies_to: e.target.value })}>
+              {Object.entries(APPLIES_TO_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            </select>
+          </div>
+
+          {/* ── Session message (only for session_message/hybrid) ── */}
+          {stage.node_type !== "meta_template" && (
+            <div className="form-field" style={{ marginBottom: 0 }}>
+              <label>🟢 הודעת סשן (חופשית, בתוך חלון 24ש׳)</label>
+              <select
+                value={stage.session_message_script_key ?? ""}
+                onChange={(e) => patchStage(stage, { session_message_script_key: e.target.value || null })}
+                style={{ marginBottom: 8 }}
+              >
+                <option value="">— ללא (יפול ישר לתבנית Meta) —</option>
+                {availableScriptKeys.map((k) => <option key={k} value={k}>{k}</option>)}
+              </select>
+              {stage.session_message_script_key && (
+                <>
+                  <textarea
+                    rows={4}
+                    value={draftText}
+                    onChange={(e) => setDraftText(e.target.value)}
+                    onBlur={(e) => saveSessionMessage(stage.session_message_script_key, e.target.value)}
+                    style={{ direction: "rtl", fontFamily: "Heebo, sans-serif", lineHeight: 1.7, resize: "vertical", width: "100%" }}
+                  />
+                  <div style={{ marginTop: 10 }}>
+                    <MessagePreviewBubble>{renderResolvedPreview(draftText)}</MessagePreviewBubble>
+                    <ButtonChipsPreview buttons={stage.interactive_buttons} />
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* ── Meta template (read-only — edited in Meta Business Manager / Templates tab) ── */}
+          {stage.meta_template_name && (
+            <div className="form-field" style={{ marginBottom: 0 }}>
+              <label>🔵 תבנית Meta (Fallback)</label>
+              <div style={{ fontSize: 13 }}>{metaTemplateFriendly(stage.meta_template_name)}</div>
+              <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+                טכני: <code style={{ background: "#F3F4F6", padding: "2px 6px", borderRadius: 4 }}>{stage.meta_template_name}</code>
+                {" — ראה/ערוך בלשונית \"📋 תבניות Meta\""}
+              </div>
+              <MetaTemplatePreviewBox stage={stage} metaTemplatesByName={metaTemplatesByName} />
+            </div>
+          )}
+
+          {/* ── Interactive buttons (session-message side only) ── */}
+          {stage.node_type !== "meta_template" && (
+            <div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <label style={{ margin: 0, fontWeight: 600, fontSize: 13 }}>כפתורים אינטראקטיביים (עד 3)</label>
+                <button className="btn btn-ghost btn-sm" onClick={() => addButton(stage)} disabled={(stage.interactive_buttons ?? []).length >= 3}>➕ הוסף</button>
+              </div>
+              {(stage.interactive_buttons ?? []).map((b, idx) => (
+                <div key={idx} className="actr-btn-row" style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                  <select value={b.type} onChange={(e) => updateButton(stage, idx, { type: e.target.value })} style={{ width: 130 }}>
+                    <option value="quick_reply">תגובה מהירה</option>
+                    <option value="url">קישור</option>
+                  </select>
+                  <input type="text" placeholder="טקסט הכפתור" value={b.label}
+                    onChange={(e) => updateButton(stage, idx, { label: e.target.value })} style={{ flex: 1 }} />
+                  {b.type === "url" && (
+                    <input type="text" placeholder="https://..." value={b.url ?? ""}
+                      onChange={(e) => updateButton(stage, idx, { url: e.target.value })} style={{ flex: 1, direction: "ltr" }} />
+                  )}
+                  <button className="btn btn-ghost btn-sm" onClick={() => removeButton(stage, idx)} style={{ color: "#C0392B" }}>✕</button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {stage.meta_template_name && stage.node_type !== "meta_template" && (
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <button className="btn btn-primary btn-sm" onClick={() => convertToTemplate(stage)}>
+                🔁 המר לתבנית Meta
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function AutomationControlCenter() {
   const [subTab, setSubTab] = useState("timeline"); // timeline | queue | templates
   const [stages, setStages] = useState([]);
@@ -69,6 +366,7 @@ export default function AutomationControlCenter() {
   const [expanded, setExpanded] = useState(null);
   const [toast, setToast] = useState(null);
   const [templateDraft, setTemplateDraft] = useState(null);
+  const [metaTemplatesByName, setMetaTemplatesByName] = useState({});
 
   // ── Live queue state ──────────────────────────────────────────────────────
   const [queueData, setQueueData] = useState(null);
@@ -100,6 +398,25 @@ export default function AutomationControlCenter() {
   }, [showToast]);
 
   useEffect(() => { fetchStages(); }, [fetchStages]);
+
+  // Fetched once on mount (same get-wa-templates({all:true}) call
+  // TemplateManagerPanel.js makes) so the Timeline tab's Meta template
+  // preview box has body text available without requiring the admin to
+  // first visit the "📋 תבניות Meta" tab.
+  const fetchMetaTemplates = useCallback(async () => {
+    if (!isSupabaseConfigured || !supabase) return;
+    try {
+      const { data, error } = await supabase.functions.invoke("get-wa-templates", { body: { all: true } });
+      if (error) throw new Error(error.message);
+      const map = {};
+      (data?.templates ?? []).forEach((t) => { map[t.name] = t; });
+      setMetaTemplatesByName(map);
+    } catch (err) {
+      console.warn("[AutomationControlCenter] fetchMetaTemplates error:", err?.message ?? err);
+    }
+  }, []);
+
+  useEffect(() => { fetchMetaTemplates(); }, [fetchMetaTemplates]);
 
   const fetchQueue = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) return;
@@ -232,153 +549,24 @@ export default function AutomationControlCenter() {
             <div style={{ textAlign: "center", padding: 60, color: "var(--text-muted)" }}>⏳ טוען שלבים...</div>
           ) : (
             <div>
-              {stages.map((stage) => {
-                const isOpen = expanded === stage.id;
-                const nt = NODE_TYPE_META[stage.node_type] ?? NODE_TYPE_META.hybrid;
-                const phaseLabel = JOURNEY_PHASE_LABELS[stage.journey_phase] ?? stage.journey_phase;
-                return (
-                  <div key={stage.id} className="card" style={{ marginBottom: 12, opacity: stage.is_active ? 1 : 0.6, border: isOpen ? "1px solid var(--gold)" : undefined }}>
-                    <div
-                      style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 20px", cursor: "pointer", borderBottom: isOpen ? "1px solid var(--border)" : "none" }}
-                      onClick={() => setExpanded(isOpen ? null : stage.id)}
-                    >
-                      <span style={{ fontSize: 14, color: "var(--text-muted)", transform: isOpen ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.2s" }}>▶</span>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                          <span style={{ fontWeight: 700, fontSize: 14 }}>{stage.display_name}</span>
-                          <span style={{ fontSize: 11, fontWeight: 700, padding: "3px 9px", borderRadius: 20, color: "#92702C", background: "rgba(201,169,110,0.15)" }}>{phaseLabel}</span>
-                          <span style={{ fontSize: 11, fontWeight: 700, padding: "3px 9px", borderRadius: 20, color: nt.color, background: nt.bg }}>{nt.label}</span>
-                        </div>
-                      </div>
-                      <div
-                        onClick={(e) => { e.stopPropagation(); patchStage(stage, { is_active: !stage.is_active }); }}
-                        style={{ width: 44, height: 24, borderRadius: 12, cursor: "pointer", background: stage.is_active ? "var(--gold)" : "#D1D5DB", position: "relative", flexShrink: 0 }}
-                      >
-                        <div style={{ position: "absolute", top: 3, borderRadius: "50%", width: 18, height: 18, background: "#fff", right: stage.is_active ? 3 : "auto", left: stage.is_active ? "auto" : 3, boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }} />
-                      </div>
-                    </div>
-
-                        {isOpen && (
-                          <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 16 }}>
-
-                            {/* ── Timing ── */}
-                            <div>
-                              <label style={{ fontWeight: 600, fontSize: 13, marginBottom: 6, display: "block" }}>⏱ תזמון</label>
-                              {stage.schedule_mode === "day_offset_with_time" && (
-                                <div className="actr-timing-row" style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                                    {stage.anchor_event === "departure_date" ? "יחסית לתאריך עזיבה" : "יחסית לתאריך הגעה"}
-                                  </span>
-                                  <input type="number" value={stage.day_offset ?? 0} style={{ width: 70 }}
-                                    onChange={(e) => patchStage(stage, { day_offset: parseInt(e.target.value, 10) || 0 })} />
-                                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>ימים, משעה</span>
-                                  <input type="time" value={timeInputValue(stage.local_time)} style={{ width: 110 }}
-                                    onChange={(e) => patchStage(stage, { local_time: e.target.value || null })} />
-                                  {stage.stage_key === "night_before" && (
-                                    <>
-                                      <span style={{ fontSize: 12, color: "var(--text-muted)" }}>עד שעה (שקט לילי)</span>
-                                      <input type="time" value={timeInputValue(stage.local_time_end)} style={{ width: 110 }}
-                                        onChange={(e) => patchStage(stage, { local_time_end: e.target.value || null })} />
-                                    </>
-                                  )}
-                                  <span style={{ fontSize: 11, color: "var(--text-muted)" }}>(שעון ישראל)</span>
-                                </div>
-                              )}
-                              {stage.schedule_mode === "hours_after_event" && (
-                                <div className="actr-timing-row" style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                                    {stage.offset_hours ?? 0} שעות אחרי {stage.anchor_event === "checkin_time" ? "צ׳ק-אין" : "אישור הגעה"}
-                                  </span>
-                                  <input type="number" value={stage.offset_hours ?? 0} style={{ width: 70 }}
-                                    onChange={(e) => patchStage(stage, { offset_hours: parseInt(e.target.value, 10) || 0 })} />
-                                </div>
-                              )}
-                              {stage.schedule_mode === "event_immediate" && (
-                                <span style={{ fontSize: 12, color: "var(--text-muted)" }}>מופעל אוטומטית בתגובה ישירה — אין תזמון יומי</span>
-                              )}
-                            </div>
-
-                            {/* ── Applies to ── */}
-                            <div className="form-field" style={{ marginBottom: 0 }}>
-                              <label>חל על</label>
-                              <select value={stage.applies_to} onChange={(e) => patchStage(stage, { applies_to: e.target.value })}>
-                                {Object.entries(APPLIES_TO_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-                              </select>
-                            </div>
-
-                            {/* ── Session message (only for session_message/hybrid) ── */}
-                            {stage.node_type !== "meta_template" && (
-                              <div className="form-field" style={{ marginBottom: 0 }}>
-                                <label>🟢 הודעת סשן (חופשית, בתוך חלון 24ש׳)</label>
-                                <select
-                                  value={stage.session_message_script_key ?? ""}
-                                  onChange={(e) => patchStage(stage, { session_message_script_key: e.target.value || null })}
-                                  style={{ marginBottom: 8 }}
-                                >
-                                  <option value="">— ללא (יפול ישר לתבנית Meta) —</option>
-                                  {availableScriptKeys.map((k) => <option key={k} value={k}>{k}</option>)}
-                                </select>
-                                {stage.session_message_script_key && (
-                                  <textarea
-                                    rows={4}
-                                    defaultValue={scriptsByKey[stage.session_message_script_key] ?? ""}
-                                    onBlur={(e) => saveSessionMessage(stage.session_message_script_key, e.target.value)}
-                                    style={{ direction: "rtl", fontFamily: "Heebo, sans-serif", lineHeight: 1.7, resize: "vertical" }}
-                                  />
-                                )}
-                              </div>
-                            )}
-
-                            {/* ── Meta template (read-only — edited in Meta Business Manager / Templates tab) ── */}
-                            {stage.meta_template_name && (
-                              <div className="form-field" style={{ marginBottom: 0 }}>
-                                <label>🔵 תבנית Meta (Fallback)</label>
-                                <div style={{ fontSize: 13 }}>{metaTemplateFriendly(stage.meta_template_name)}</div>
-                                <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
-                                  טכני: <code style={{ background: "#F3F4F6", padding: "2px 6px", borderRadius: 4 }}>{stage.meta_template_name}</code>
-                                  {" — ראה/ערוך בלשונית \"📋 תבניות Meta\""}
-                                </div>
-                              </div>
-                            )}
-
-                            {/* ── Interactive buttons (session-message side only) ── */}
-                            {stage.node_type !== "meta_template" && (
-                              <div>
-                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                                  <label style={{ margin: 0, fontWeight: 600, fontSize: 13 }}>כפתורים אינטראקטיביים (עד 3)</label>
-                                  <button className="btn btn-ghost btn-sm" onClick={() => addButton(stage)} disabled={(stage.interactive_buttons ?? []).length >= 3}>➕ הוסף</button>
-                                </div>
-                                {(stage.interactive_buttons ?? []).map((b, idx) => (
-                                  <div key={idx} className="actr-btn-row" style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-                                    <select value={b.type} onChange={(e) => updateButton(stage, idx, { type: e.target.value })} style={{ width: 130 }}>
-                                      <option value="quick_reply">תגובה מהירה</option>
-                                      <option value="url">קישור</option>
-                                    </select>
-                                    <input type="text" placeholder="טקסט הכפתור" value={b.label}
-                                      onChange={(e) => updateButton(stage, idx, { label: e.target.value })} style={{ flex: 1 }} />
-                                    {b.type === "url" && (
-                                      <input type="text" placeholder="https://..." value={b.url ?? ""}
-                                        onChange={(e) => updateButton(stage, idx, { url: e.target.value })} style={{ flex: 1, direction: "ltr" }} />
-                                    )}
-                                    <button className="btn btn-ghost btn-sm" onClick={() => removeButton(stage, idx)} style={{ color: "#C0392B" }}>✕</button>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-
-                            {stage.meta_template_name && stage.node_type !== "meta_template" && (
-                              <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                                <button className="btn btn-primary btn-sm" onClick={() => convertToTemplate(stage)}>
-                                  🔁 המר לתבנית Meta
-                                </button>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
+              {stages.map((stage) => (
+                <StageCard
+                  key={stage.id}
+                  stage={stage}
+                  isOpen={expanded === stage.id}
+                  onToggle={() => setExpanded(expanded === stage.id ? null : stage.id)}
+                  patchStage={patchStage}
+                  scriptsByKey={scriptsByKey}
+                  saveSessionMessage={saveSessionMessage}
+                  availableScriptKeys={availableScriptKeys}
+                  addButton={addButton}
+                  updateButton={updateButton}
+                  removeButton={removeButton}
+                  convertToTemplate={convertToTemplate}
+                  metaTemplatesByName={metaTemplatesByName}
+                />
+              ))}
+            </div>
           )}
         </div>
       )}

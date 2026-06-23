@@ -3,7 +3,12 @@
 //
 // Admin/super_admin only.
 // Reads from / writes to the `bot_config` table in Supabase.
-// Organised into four tabs: Persona · Hotel Knowledge · Templates · Rules
+// Organised into three tabs: Persona · Hotel Knowledge · Rules
+//
+// A fourth "Templates" tab (4 rows: template_night_before/checkin_welcome/
+// midstay_checkin/before_checkout) was removed in migration 069 — confirmed
+// dead code (seeded in migration 015, never read by any send path; the real
+// pipeline is bot_scripts + automation_stages, see AutomationControlCenter.js).
 
 import { useState, useEffect, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
@@ -12,7 +17,6 @@ import { supabase, isSupabaseConfigured } from "../supabaseClient";
 const CATEGORIES = [
   { id: "persona",   icon: "🎭", label: "אישיות הבוט",       color: "#5B21B6" },
   { id: "knowledge", icon: "🏨", label: "ידע המלון",          color: "#0369A1" },
-  { id: "templates", icon: "💬", label: "תבניות הודעות",      color: "#047857" },
   { id: "rules",     icon: "📋", label: "כללי תגובה",         color: "#B45309" },
 ];
 
@@ -296,7 +300,6 @@ export default function BotConfigPanel({ user }) {
         <div>• שינויים בטבלה <code>bot_config</code> נטענים ע"י הבוט בכל שיחה חדשה.</div>
         <div>• <strong>אישיות</strong> — שם הבוט + טון הדיבור (5 כוכבים, עברית תקנית).</div>
         <div>• <strong>ידע</strong> — שעות, WiFi, מידע שהבוט צריך לדעת לענות עליו.</div>
-        <div>• <strong>תבניות</strong> — הודעות אוטומטיות שנשלחות לפי אירועים (צ'ק-אין וכו').</div>
         <div>• <strong>כללים</strong> — איך הבוט מגיב לתלונות, שדרוגים ומקרים מיוחדים.</div>
       </div>
     </div>

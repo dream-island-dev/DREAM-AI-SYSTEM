@@ -1,0 +1,21 @@
+-- =============================================================================
+-- 069_remove_dead_template_keys.sql
+-- Remove dormant bot_config 'templates' category — confirmed dead code.
+--
+-- WHY:
+--   bot_config seeded 4 rows (template_night_before, template_checkin_welcome,
+--   template_midstay_checkin, template_before_checkout) in migration 015, back
+--   before bot_scripts/automation_stages existed. Audit (session 20): grepped
+--   every Edge Function and component — zero code reads these keys for sending.
+--   They are display-only in BotConfigPanel.js's "תבניות הודעות" tab, and that
+--   tab's own help text falsely implied they were live automation, which is
+--   itself a risk: a future session could "fix" something by wiring them up,
+--   creating a real double-send against the bot_scripts/automation_stages
+--   pipeline that actually ships these same lifecycle moments today
+--   (night_before / stage_2_arrival / checkout_fb / mid_stay).
+--
+--   Confirmed via grep that category='templates' has exactly these 4 rows and
+--   nothing else — safe to drop the whole category.
+-- =============================================================================
+
+DELETE FROM public.bot_config WHERE category = 'templates';

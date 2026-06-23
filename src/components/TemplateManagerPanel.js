@@ -14,7 +14,10 @@ import { useState, useEffect, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import TemplateCreateForm from "./TemplateCreateForm";
 
-const STATUS_META = {
+// Exported so AutomationControlCenter.js's Timeline tab can reuse the exact
+// same status badge styling for its Meta template preview box, instead of
+// forking a second copy that could drift.
+export const STATUS_META = {
   APPROVED: { bg: "#E8F5EF", color: "#1A7A4A", border: "#1A7A4A", label: "✅ מאושרת" },
   PENDING:  { bg: "#FFF8E1", color: "#B5600A", border: "#F59E0B", label: "⏳ ממתינה" },
   REJECTED: { bg: "#FFF0EE", color: "#C0392B", border: "#C0392B", label: "❌ נדחתה" },
