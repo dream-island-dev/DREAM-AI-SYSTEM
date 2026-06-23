@@ -1,6 +1,6 @@
 # CLAUDE.md — Dream Island AI System
 > קובץ זה נקרא אוטומטית בכל שיחה. הוא מקור-האמת שלך. קרא אותו לפני כל פעולה.
-> **עדכון אחרון:** 2026-06-23 (session 21 — Operations & Maintenance Board חדש (מאחד Tasks + Service Calls האמיתי, לא mock כפי שתואר בטעות בסשן 20) + staff-ops-webhook חדש (קולט דיווחי צוות מ-relay חיצוני, regex 0-token + Claude לטקסט חופשי) + SLA engine הורחב ל-tasks עם ספי-זמן לפי קטגוריה + AiFailoverWidget + guest concierge הוחלף ל-Gemini כברירת מחדל חיה עם UI toggle ב-BotSettings.js. ⚠️ תלות חיצונית לא-סגורה: relay שמאזין לקבוצת הוואטסאפ עצמה (Make.com/bridge לא-רשמי) הוא באחריות Mike — Meta Business API אינו תומך בקבוצות. ראה session 21 למטה לפירוט מלא. ראה גם session 20 — Automation Control Center קיבל Live Message Preview בתוך כל כרטיס שלב מורחב + audit הראה שחשד לכפילות אוטומציה היה false alarm: whatsapp-cron/automation_stages/automation-queue הם מערכת אחת, לא שתיים מקבילות. הוסרו 4 שורות bot_config.template_* מתות (migration 069). ראה גם session 19 — Automation Control Center: תיקון תצוגה כרונולוגית + שמות תבניות ידידותיים, Stage 2 Pay קיבל כפתור תשלום אמיתי (Meta cta_url) + שעת ספא. ראה גם session 18 — שורש קיטוע ה-AI נמצא: "2–4 משפטים בלבד" שרד ב-4 שכבות פרומפט במקביל, כולל bot_settings.system_prompt החי שmigration 034 איפס. הוסר משולש, ונוספו כללי "Smart Concierge" — שלמות מחשבה, טון שיווקי קולע, הפניה חכמה לקישור הזמנה)
+> **עדכון אחרון:** 2026-06-23 (session 22 — XOS Core Sprint 1+2: מעבר ספק WhatsApp ל-**Whapi (whapi.cloud)** שתומך בקבוצות (שלא כמו Meta). `whapi-webhook` חדש: קולט הודעות קבוצת-תפעול → AI intent classification (Tier 0 regex 0-token + Tier 1 Claude forced-tool) שמבחין task תפעולי מ-chitchat (chitchat=שקט מוחלט) → יוצר `tasks` row + שולח כרטיס משימה אנגלי לאותה קבוצה עם כפתורי Accept/Complete. `task-action` חדש: callback token-guarded — GET מרנדר interstitial (0 mutation, מה שה-link-preview crawler רואה) עם כפתורי Lidor/Adir/Osnat לזיהוי, POST crawler-safe מבצע את ה-mutation + echo לקבוצה. migration 073: `tasks.action_token`+`source_message_id`. ✅ פרוס+חי+smoke-tested; WHAPI_TOKEN+WHAPI_GROUP_ID הוגדרו ואומתו (Whapi health=AUTH), ו-webhook ה-channel ב-Whapi הופנה ישירות ל-whapi-webhook (events: messages; ה-relay של Make.com הוסר — clean cut). מחליף את staff-ops-webhook (יציאה משירות אחרי אימות חי). **+ SLA escalation** שוכתב ופרוס+מופעל: pg_cron */1min, ops = strict 7-min "unassigned" (status='open' past created_at+7) → 🚨 Whapi group, `SLA_ESCALATION_ENABLED=true` (migration 074 grandfather מנע blast רטרואקטיבי). הכל פרוס+מופעל+committed ל-main. נשאר רק מבחן חי בקבוצה ע"י Mike מחר בבוקר. ראה session 22 למטה. ראה גם session 21 — Operations & Maintenance Board חדש (מאחד Tasks + Service Calls האמיתי, לא mock כפי שתואר בטעות בסשן 20) + staff-ops-webhook חדש (קולט דיווחי צוות מ-relay חיצוני, regex 0-token + Claude לטקסט חופשי) + SLA engine הורחב ל-tasks עם ספי-זמן לפי קטגוריה + AiFailoverWidget + guest concierge הוחלף ל-Gemini כברירת מחדל חיה עם UI toggle ב-BotSettings.js. ⚠️ תלות חיצונית לא-סגורה: relay שמאזין לקבוצת הוואטסאפ עצמה (Make.com/bridge לא-רשמי) הוא באחריות Mike — Meta Business API אינו תומך בקבוצות. ראה session 21 למטה לפירוט מלא. ראה גם session 20 — Automation Control Center קיבל Live Message Preview בתוך כל כרטיס שלב מורחב + audit הראה שחשד לכפילות אוטומציה היה false alarm: whatsapp-cron/automation_stages/automation-queue הם מערכת אחת, לא שתיים מקבילות. הוסרו 4 שורות bot_config.template_* מתות (migration 069). ראה גם session 19 — Automation Control Center: תיקון תצוגה כרונולוגית + שמות תבניות ידידותיים, Stage 2 Pay קיבל כפתור תשלום אמיתי (Meta cta_url) + שעת ספא. ראה גם session 18 — שורש קיטוע ה-AI נמצא: "2–4 משפטים בלבד" שרד ב-4 שכבות פרומפט במקביל, כולל bot_settings.system_prompt החי שmigration 034 איפס. הוסר משולש, ונוספו כללי "Smart Concierge" — שלמות מחשבה, טון שיווקי קולע, הפניה חכמה לקישור הזמנה)
 >
 > ⚠️ **שים לב — ריבוי כלים עובדים על אותו repo במקביל.** בסשן הזה זוהו עדויות לעריכות חיות מ-Cline ו/או סשנים אחרים על הקבצים האלה *בזמן* שעבדתי עליהם (ראה session 16 למטה) — כולל קוד שהופיע בקובץ בלי שאני כתבתי אותו, וכותרת הסשן הזו עצמה שהוחלפה מתחת לרגליי. אם תבחין בהתנהגות לא עקבית או קוד שלא מוכר — ייתכן שזה לא "AI שמדמיין", אלא קונפליקט בין שתי עריכות מקבילות. מומלץ: לא להריץ Cline ו-Claude Code על אותו repo באותו זמן, או לפחות לתאם איזה כלי "בעלים" של איזה קובץ בכל רגע נתון.
 
@@ -235,10 +235,17 @@ DREAM-AI-SYSTEM/
 │   │   │                            chronology fix (night_before sequence_order 150→220)
 │   │   ├── 068_stage_2_pay_buttons.sql           applied ✅ — interactive_buttons (Meta cta_url
 │   │   │                            payment button) + {{SPA_LINE}} ל-stage_2_payment_reply
-│   │   └── 069_remove_dead_template_keys.sql     applied ✅ — מחק 4 שורות bot_config category=
+│   │   ├── 069_remove_dead_template_keys.sql     applied ✅ — מחק 4 שורות bot_config category=
 │   │                                'templates' (template_night_before/checkin_welcome/midstay_
 │   │                                checkin/before_checkout) — מתות, audit session 20 אישר 0 קוד
 │   │                                שקורא אותן. ראה §10 session 20.
+│   │   ├── 070_profiles_phone.sql · 071_tasks_ops_board.sql · 072_ai_failover_events.sql  applied ✅ (session 21)
+│   │   ├── 073_tasks_action_token_idempotency.sql  applied ✅ — ★ session 22 (XOS Sprint 2):
+│   │                                tasks.action_token (סוד ל-URL של Accept/Complete) + source_message_id
+│   │                                (UNIQUE partial — ticket אחד לכל הודעת Whapi, idempotency). ראה §10 session 22.
+│   │   └── 074_sla_escalation_1min.sql  applied ✅ — ★ session 22: pg_cron 'sla-escalation' → */1min
+│   │                                (היה */5) + grandfather baseline (escalated_at=NOW() לכל task פתוח קיים
+│   │                                כדי לא לפוצץ את הקבוצה רטרואקטיבית בהפעלה). ראה §6/§10 session 22.
 │   └── functions/
 │       ├── chat/                deployed ✅ — Gemini 2.5→Claude fallback
 │       ├── generate-schedule/   deployed ✅ ⚠️ ORPHAN — frontend לא קורא אותה
@@ -258,13 +265,14 @@ DREAM-AI-SYSTEM/
 │       │                            לא קורה אוטומטית בפועל; AICopilot הוא המסלול הפעיל ל-room-ready WA.
 │       ├── spa-schedule-webhook/ ★ גילוי session 7 — מזין spa_staging מאוטומציה חיצונית
 │       ├── email-import-webhook/ ★ גילוי session 7 — מזין spa_staging ממייל (כנראה Make.com)
-│       ├── sla-escalation-cron/  ★ backfill session 21 (היה קיים, לא מתועד) — pg_cron */5min,
-│       │                            ⚠️ KILL SWITCH SLA_ESCALATION_ENABLED (לא מוגדר=halted). סוקר
-│       │                            guest_alerts (סף 10 דק' קבוע → Adir, SLA_GUEST_ALERT_PHONE) +
-│       │                            session 21: tasks (סף per-category לפי sla_deadline → Lidor,
-│       │                            SLA_OPS_ALERT_PHONE), שניהם גם push-notify לדפ' "הנהלה". הודעות
-│       │                            וואטסאפ ב-English (staff), לא עברית (guest) — ראה §0 דו-לשוניות.
-│       └── staff-ops-webhook/    ★ NEW session 21 — קולט דיווחי צוות שהועברו מ-relay חיצוני
+│       ├── sla-escalation-cron/  ★ session 21, ה-ops branch שוכתב session 22 — pg_cron */1min
+│       │                            (migration 074), ✅ KILL SWITCH SLA_ESCALATION_ENABLED=true (הופעל
+│       │                            session 22). סוקר guest_alerts (סף 10 דק' → Adir, SLA_GUEST_ALERT_PHONE,
+│       │                            Meta — ללא שינוי) + tasks: session 22 STRICT 7-min UNASSIGNED
+│       │                            (status='open' past created_at+SLA_UNASSIGNED_MINUTES=7, לא sla_deadline)
+│       │                            → 🚨 ל-Whapi ops group (SLA_ALERT_GROUP_ID→WHAPI_GROUP_ID), לא Meta;
+│       │                            mark-escalated רק בהצלחה (retry-on-fail). שניהם push-notify ל"הנהלה".
+│       ├── staff-ops-webhook/    ⚠️ session 22: הוחלף ע"י whapi-webhook (יציאה משירות אחרי אימות). NEW session 21 — קולט דיווחי צוות שהועברו מ-relay חיצוני
 │                                    (Make.com/bridge — Mike בונה את זה בנפרד; Meta Business API
 │                                    אינו תומך בקבוצות וואטסאפ כלל, לא קריאה ולא כתיבה). regex
 │                                    `/^(\d+)\s*-\s*([\s\S]+)$/` (0 טוקנים) לדיווח מבני ("11- towels")
@@ -274,6 +282,20 @@ DREAM-AI-SYSTEM/
 │                                    קיים). שולח כפתורי "🙋‍♂️ אני מטפל"/"✅ בוצע" חזרה ל-reporter
 │                                    (1:1 בלבד — לא לקבוצה) — best-effort, תלוי בחלון 24ש' פתוח מול
 │                                    אותו מספר; הלוח הפנימי הוא הנתיב האמין, הוואטסאפ בונוס.
+│       ├── whapi-webhook/        ★ NEW session 22 (XOS Sprint 1+2) — webhook נכנס מ-Whapi (whapi.cloud,
+│       │                            ספק שתומך בקבוצות, שלא כמו Meta). מסנן from_me/לא-קבוצה → dedup לפי
+│       │                            source_message_id (לפני ה-LLM) → intent classification (Tier 0 regex
+│       │                            "11- towels"/"ROOM 14 ..." 0-token, Tier 1 Claude forced-tool
+│       │                            task-vs-chitchat) → chitchat = שקט מוחלט, task = insert ל-tasks +
+│       │                            כרטיס אנגלי לקבוצה דרך _shared/whapiSend.ts (no_link_preview).
+│       │                            **מחליף את staff-ops-webhook.** Secrets: WHAPI_TOKEN (+WHAPI_GROUP_ID
+│       │                            אופציונלי ל-group-lock) — ⚠️ עדיין לא מוגדרים, ראה §10 session 22.
+│       └── task-action/          ★ NEW session 22 (XOS Sprint 2) — callback ל-Accept/Complete בכרטיס.
+│                                    GET = interstitial HTML (0 mutation — מה שה-crawler רואה) עם כפתורי
+│                                    Lidor/Adir/Osnat ("Confirm action as"); POST (tap אמיתי, crawler-safe)
+│                                    = מאמת action_token + actor → מעדכן status + claimed_by/resolved_by
+│                                    (resolve מ-profiles.phone) → echo אנגלי לקבוצה (WHAPI_GROUP_ID).
+│                                    deployed --no-verify-jwt (ה-token הוא ה-auth).
 └── public/
     └── service-worker.js        PWA push listener
 ```
@@ -338,7 +360,7 @@ switch (activePage) {
 | `bot_settings` | system_prompt + knowledge_base + `preferred_model` (id=1) — ★ session 21: ערך חי כעת `gemini-2.0-flash-lite` (היה Claude מ-session 15) — toggle ב-BotSettings.js | `auth.uid() IS NOT NULL` |
 | `message_templates` | תבניות שידור עם sort_order | `auth.uid() IS NOT NULL` |
 | `bot_scripts` | סקריפטים מותאמים לכל trigger_event | authenticated |
-| `tasks` | ★ session 21: "תפעול ואחזקה" — `status` עכשיו `open`/`in_progress`/`done` (היה רק open/done), + `sla_category`/`sla_deadline`/`escalated_at`/`claimed_by`/`claimed_at`/`source`/`reporter_profile_id`/`reporter_raw_text`. `source='legacy_service_call'` = backfill חד-פעמי מ-`service_calls` (migration 071) | open to authenticated |
+| `tasks` | ★ session 21: "תפעול ואחזקה" — `status` עכשיו `open`/`in_progress`/`done` (היה רק open/done), + `sla_category`/`sla_deadline`/`escalated_at`/`claimed_by`/`claimed_at`/`source`/`reporter_profile_id`/`reporter_raw_text`. `source='legacy_service_call'` = backfill חד-פעמי מ-`service_calls` (migration 071) + ★ session 22 (migration 073): `action_token` (סוד ל-URL של כפתורי Accept/Complete) + `source_message_id` (UNIQUE partial, webhook idempotency) | open to authenticated |
 | `ai_failover_events` | ★ session 21 — לוג כל auto-failover Claude↔Gemini בwebhook, נצרך ע"י AiFailoverWidget.js (realtime) | authenticated read, service-role write |
 | `suite_rooms` | חדר לכל שורה מ-EZGO Suites CSV. key: `(order_number, res_line_id)`. מקור: `ArrivalImportPanel.js` (sole import surface) | authenticated |
 | `room_status` | ★ גילוי session 7 — pipeline ניקיון נפרד (תפוס/פנוי/לניקיון/בניקיון/ממתין לאישור/תחזוקה). key: `room_id` = שם סוויטה מ-`SUITE_REGISTRY`. נצרך ע"י RoomBoard.js + AICopilot.js | authenticated |
@@ -747,13 +769,31 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
 | `whatsapp-cron` (`CRON_ENABLED`) | קיל-סוויץ' נפרד, לא מוגדר — ראה STEP 4 | גבוה |
 | ShiftGenerator Gemini "creative mode" | תוכנן, לא מומש — חיבור לgenerate-schedule אם רוצים | בינוני |
 | Regex intent patterns (COMPLAINT/UPSELL/HUMAN_CALL/DATE_CHANGE) | hardcoded בכוונה — UI לעריכת keyword-lists לא בוצע, ראה Phase 6 Audit §3 | נמוך |
-| **WhatsApp group relay → staff-ops-webhook** (session 21) | Mike צריך לבנות/לחבר את ה-relay החיצוני (Make.com/bridge) שמאזין לקבוצת הצוות האמיתית ודוחף הודעות ל-`staff-ops-webhook` בcontract המתועד שם. בלעדיו, ה-Edge Function פרוס ועובד (נבדק עם curl) אבל לא מקבל דיווחים אמיתיים | גבוה |
-| `SLA_ESCALATION_ENABLED` | קיל-סוויץ' לא מוגדר — sla-escalation-cron (גם ל-guest_alerts וגם ל-tasks, session 21) halted לחלוטין עד שיופעל | גבוה |
+| **Whapi live test** (session 22) | ✅ הושלם בסשן: `WHAPI_TOKEN`+`WHAPI_GROUP_ID` (`120363320093485583@g.us`) הוגדרו ואומתו (Whapi `/health`=AUTH, channel מחובר), webhook ה-channel הופנה (`PATCH /settings`) ל-`…/functions/v1/whapi-webhook` (events: messages; webhook ה-Make.com הוסר — clean cut). **נשאר רק:** מבחן חי בקבוצה ע"י Mike (`ROOM 14 towels` → כרטיס → Accept/Complete). `staff-ops-webhook` + ה-relay של Make.com מתים כעת (אין input) — להסיר רשמית אחרי אימות. | נמוך |
+| `SLA_ESCALATION_ENABLED` | ✅ הופעל session 22 (`=true`). sla-escalation-cron רץ */1min: ops = strict 7-min unassigned → Whapi group (grandfather baseline ב-migration 074 מנע blast רטרואקטיבי על backlog), guest_alerts = 10-min → Adir (Meta). ⚠️ ההפעלה הדליקה גם את escalation ה-guest_alerts (לא בוצע לו grandfather) — guest alerts ישנים שלא נפתרו עלולים להתריע ל-Adir. | — |
 | Resilient Import Agent — **מושהה באמצע** (session 9) | `suggest-import-mapping` Edge Function + `import_mapping_memory` table (migration 049) **פרוסים בפועל** ב-Supabase, אבל שינויי הפרונטאנד (`ArrivalImportPanel.js`, `MappingReviewPanel.js`, `importMapper.js`, פרמטריזציית `ezgoParser.js`) **לא commit-ים, לא pushed** — קיימים רק ב-working tree המקומי. יש גם debug-branch זמני (`if (debug)`) ב-`suggest-import-mapping/index.ts` שצריך להסיר לפני שמחליטים שזה "מוכן". המשך/סגור בסשן נפרד. | בינוני |
 
 ---
 
 ### היסטוריית סשנים
+
+#### session 22 — Jun 23 2026 (XOS Core — Whapi provider pivot: `whapi-webhook` + `task-action`, Sprint 1+2 shipped live)
+> הקשר: Mike הציג תוכנית-אב של 3 ספרינטים לשדרוג שכבת התפעול האנגלית. שינוי ארכיטקטוני מרכזי: מעבר מ-Meta Cloud API (שאינו תומך בקבוצות וואטסאפ — ראה session 21) ל-**Whapi (whapi.cloud)**, ספק לא-רשמי שמחובר לחשבון וואטסאפ אמיתי וכן קורא/כותב קבוצות ישירות. זה הופך את ה-relay החיצוני (Make.com/bridge) ש-session 21 תכננה סביב המגבלה — למיותר. עבדנו ספרינט-אחרי-ספרינט עם שער אישור מפורש בין כל שלב; Sprint 3 (Guest Portal) עדיין לא נכתב.
+
+- 🏗️ **החלטה ארכיטקטונית (אישור Mike): פונקציה חדשה `whapi-webhook`, לא ענף ב-whatsapp-webhook ולא fork של staff-ops-webhook.** whatsapp-webhook מדבר Meta envelope בלבד (נגיעה בו מסכנת את נתיב האורח — Golden Rule); staff-ops-webhook נבנה סביב contract relay מנורמל + שליחת Meta 1:1. Whapi מסיר את המגבלה לגמרי, אז הוא קיבל parser+sender ייעודיים. **whapi-webhook מחליף את staff-ops-webhook** — האחרון יוצא משירות אחרי אימות חי (לא נמחק עדיין — כדי לא לשבור נתיב קיים לפני שהחדש מאומת).
+- ✅ **Sprint 1 — intent classification + admin whitelist.** `whapi-webhook` קולט payload של Whapi (`messages[]`, `chat_id` שמסתיים ב-`@g.us`, `from`/`from_name`/`text.body`|`image.caption`), מסנן `from_me` (מניעת לולאות) ולא-קבוצות (+ `WHAPI_GROUP_ID` אופציונלי ל-lock). סיווג דו-שכבתי: Tier 0 regex 0-token (`11- towels` / `ROOM 14 towels` / `ROOM NUMBER 12 ...`) = task ודאי; Tier 1 Claude forced-tool (`classify_ops_message`, אותו pattern כמו staff-ops/session 17) מחזיר `is_task`+`room_number`+`task_description`. **chitchat (`is_task:false`) → terminate בשקט, אפס תשובה לקבוצה.** ADMIN_WHITELIST (Lidor 972504654306 / Adir 972546294885 / Osnat 972502278833) — מספרים פנימיים מאושרים, מסומן per-message ל-escalation/attribution.
+- ✅ **Whapi outbound — אומת מול docs חיים *לפני* wiring.** `_shared/whapiSend.ts` חדש (לצד `_shared/interactiveSend.ts` של Meta): `sendWhapiText(to, body, {noLinkPreview})` → `POST https://gate.whapi.cloud/messages/text`, `Authorization: Bearer WHAPI_TOKEN`, body `{to, body, no_link_preview?}`. אומת שדה-בשדה מול whapi.readme.io: `to` מקבל chat_id של קבוצה (`…@g.us`) ישירות, תשובת ההצלחה `{sent:true, message:{id}}`. אותן קונבנציות FAIL-VISIBLE כמו שאר ה-senders (25s timeout, `timeout_no_response` על abort). `no_link_preview:true` (שדה Whapi אמיתי) מונע מה-link-preview crawler לבצע pre-fetch של ה-URLs.
+- ✅ **Sprint 2 — same-group interactive workflow.** טאסק מסווג עכשיו: (a) **dedup** מול `source_message_id` *לפני* ה-LLM (re-delivery של Whapi = 0 טוקנים), (b) **insert** ל-`tasks` (status=open, source=whatsapp_staff, sla_category/sla_deadline בפריטי-זמן זהים ל-staff-ops כך ש-sla-escalation-cron סורק את שני המקורות אותו דבר, action_token, source_message_id), (c) **כרטיס אנגלי לאותה קבוצה** דרך `sendWhapiText(..., {noLinkPreview:true})`: `📌 New Task Opened: Suite N / 📋 Task / ⏰ Status: Pending / 🛠️ Accept URL / ✅ Complete URL`. שליחה כושלת אינה מאבדת את הטיקט (כבר נוצר) — try/catch + warn.
+- ✅ **`task-action` (חדש) — callback token-guarded + זיהוי דרך interstitial (פתרון Mike).** GET → מרנדר עמוד HTML ממותג (gold/ivory, mobile-first) **בלי mutation** (זה מה שה-link-preview crawler רואה — אף פעם לא מפעיל פעולה) עם "Confirm action as:" + כפתורי Lidor/Adir/Osnat כ-form POST. POST (tap אנושי אמיתי; crawler לא עושה POST) → מאמת `action_token` + actor → resolve actor→`profiles.phone`→UUID → מעדכן `status` + `claimed_by/claimed_at` (accept) או `resolved_by/resolved_at` (complete) → echo אנגלי לקבוצה (`WHAPI_GROUP_ID`) → עמוד הצלחה. שכבות הגנה: token לכל forge/guess, GET render-only, `no_link_preview` על השליחה, guard ל-task שכבר done. אם ל-actor אין `profiles` row — status מתעדכן, claimed_by/resolved_by נשאר null + warn (FAIL VISIBLE, לא חוסם — אישור Mike מפורש: "do not delay the push for seeding"). deployed `--no-verify-jwt` (ה-token הוא ה-auth).
+- ✅ **DB — migration 073 (lean, אישור Mike): בדיוק 2 עמודות** ל-`tasks`: `action_token` (סוד ל-URL) + `source_message_id` (UNIQUE partial index, idempotency). **לא** נוספו task_status/assigned_to — reuse של `status`(open/in_progress/done) + `claimed_by`/`resolved_by` (החלטת Mike "keep the DB lean"). check_in_date/nights/checkout **הוצאו** מ-scope ל-Sprint 3 (guests/bookings, שם הם שייכים).
+- ✅ **פרוס וחי בייצור:** `npx supabase db push` (073 applied), `functions deploy whapi-webhook` + `task-action` (שניהם bundled את whapiSend.ts, Deno type-check עבר). **Smoke tests** (side-effect-free, בכוונה ללא יצירת רשומות junk): ping ריק→`{ok:true,ignored:"no_messages"}`; chitchat→`{is_task:false,action:"ignored_chitchat"}` (Claude classify חי, 0 DB write, 0 send); task-action token שגוי→HTTP 403. כולם עברו.
+- ✅ **נסגר בתוך הסשן — secrets + webhook wired (clean cut מ-Make.com).** Mike מסר את הערכים באמצע: `WHAPI_TOKEN`+`WHAPI_GROUP_ID` (`120363320093485583@g.us`) הוגדרו דרך `supabase secrets set` (לא נחשפים ב-git/chat — §9), אומתו ב-`secrets list`, וה-token אומת read-only מול `gate.whapi.cloud/health` (status=AUTH, channel מחובר). נמצא ש-webhook ה-channel היה מופנה ל-Make.com (events: messages+statuses — ה-relay של session 21). לאחר אישור Mike (Option 1 — clean cut) בוצע `PATCH /settings` שהחליף אותו ב-`…/functions/v1/whapi-webhook` (events: messages); הפונקציות redeployed לרענון env. **נשאר רק מבחן חי בקבוצה ע"י Mike.** ה-relay של Make.com + staff-ops-webhook מתים כעת (אין input).
+- ⚠️ **תיעוד concurrent-edit:** `git status` הראה `M` לא-committed ב-`whatsapp-webhook/index.ts` שלא נגעתי בו בסשן הזה — עקבי לאזהרת ריבוי-הכלים בראש הקובץ. לא deployed/committed על ידי בסשן הזה.
+- ✅ **SLA Escalation — strict 7-min "unassigned", 1-min cron (אדפטציה, לא פונקציה חדשה).** התגלה ש-`sla-escalation-cron` כבר קיים (session 21) וכבר סורק tasks — אז שוכתב ה-ops branch בלבד במקום cron מקביל: scan `status='open'` (unassigned — task שנתפס ב-Accept מפסיק להסלים) past `created_at + SLA_UNASSIGNED_MINUTES` (default 7, **לא** `sla_deadline` שהוא 10/15/30 category-completion) → `🚨 SLA BREACH: Task for Suite X is unassigned after N minutes!` דרך `sendWhapiText` ל-`SLA_ALERT_GROUP_ID`→`WHAPI_GROUP_ID`. mark-escalated רק בהצלחת שליחה (retry-on-fail — שונה בכוונה מ-guest branch: breach קריטי שמתפספס גרוע מ-duplicate נדיר). guest_alerts branch לא נגעתי (Meta→Adir, 10-min).
+- ✅ **migration 074:** reschedule 'sla-escalation' */5→*/1 (אותו job, לא מקביל) + **grandfather baseline** (`UPDATE tasks SET escalated_at=NOW() WHERE status='open'`) כדי שהפעלה לא תפוצץ את הקבוצה רטרואקטיבית על backlog קיים — קריטי כי Mike לא נוכח (הפעלה בלילה).
+- ✅ **פרוס + מופעל (אישור Mike "fully enabled tonight"):** `db push` (074), `functions deploy sla-escalation-cron`, **`SLA_ESCALATION_ENABLED=true`** (kill switch ON). ה-cron רץ כל דקה מעכשיו. ⚠️ הפעלת ה-switch הדליקה גם את escalation ה-guest_alerts (session 21, Meta→Adir) — **לא בוצע לו grandfather**, אז guest alerts ישנים שלא נפתרו עלולים להתריע ל-Adir (blast-radius נמוך: אדם אחד, לא הקבוצה).
+- ✅ **commit נקי ל-main (session 22):** כל עבודת Sprint 1+2+SLA — `whapi-webhook/`, `task-action/`, `_shared/whapiSend.ts`, `sla-escalation-cron/` (mod), migrations 073+074, CLAUDE.md. **הוצא בכוונה:** ה-`M` הלא-קשור ב-`whatsapp-webhook/index.ts` (עריכת כלי אחר, לא שלי) + untracked לא-קשורים (`.claude/claude_bot.py`, `DREAM_CONCIERGE_SYSTEM_PROMPT.txt`). `git push` לא בוצע (Mike ביקש commit, לא push — מקומי על main).
+- ⚠️ **לא בוצע (לא ניתן מהסביבה):** מבחן חי אמיתי בקבוצת וואטסאפ — Mike מבצע מחר בבוקר. אומת build+deploy+smoke+token-health(AUTH)+webhook-wired בלבד.
 
 #### session 21 — Jun 23 2026 (Operations & Maintenance Board + staff-ops-webhook + SLA engine extension + Gemini-default switch)
 > הקשר: Mike רצה שכבה תפעולית דו-לשונית — אורחים בעברית (כבר קיים, ראה session 17), צוות (לידור וכו') מדווח באנגלית מבנית ("11- towels") בתוך קבוצת וואטסאפ פנימית. ביקש: audit Claude מול Gemini, לוח "תפעול ואחזקה" מאוחד, parsing 0-טוקנים, media handling, כפתורי dispatch אינטראקטיביים, SLA engine עם alerts. ביקש findings+plan לפני קוד — עבדתי ב-EnterPlanMode מלא עם 3 Explore agents במקביל.

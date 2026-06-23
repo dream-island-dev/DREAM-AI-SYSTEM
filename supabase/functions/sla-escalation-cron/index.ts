@@ -1,26 +1,32 @@
 // supabase/functions/sla-escalation-cron/index.ts
-// SLA escalation scanner (pg_cron, every 5 min — see migration 066).
+// SLA escalation scanner (pg_cron, every 1 min — see migration 074).
 //
-// Scans TWO boards for overdue items and notifies one named person per
-// board in English (dual-language framework: guests Hebrew, staff English):
-//   • guest_alerts (Guest Requests Board) — flat 10-min threshold, unchanged
-//     from the original design — notifies Adir (SLA_GUEST_ALERT_PHONE).
-//   • tasks (Operations & Maintenance Board) — per-category threshold via
-//     sla_deadline (10/15/30 min, set at creation time by staff-ops-webhook
-//     or NewTaskForm) — notifies Lidor (SLA_OPS_ALERT_PHONE).
+// Scans TWO boards for overdue items in English (dual-language framework:
+// guests Hebrew, staff English):
+//   • guest_alerts (Guest Requests Board) — flat 10-min threshold, unchanged —
+//     notifies Adir (SLA_GUEST_ALERT_PHONE) via Meta (whatsapp-send inbox_reply).
+//   • tasks (Operations & Maintenance Board) — STRICT "unassigned" SLA: any task
+//     still status='open' (nobody tapped Accept → in_progress) past
+//     SLA_UNASSIGNED_MINUTES (default 7) → 🚨 alert posted straight into the Whapi
+//     ops group (SLA_ALERT_GROUP_ID, falls back to WHAPI_GROUP_ID). A claimed
+//     task (in_progress) stops escalating. NOTE: this is intentionally driven off
+//     created_at + 7 min, NOT tasks.sla_deadline (which is the per-category
+//     10/15/30-min completion window set by whapi-webhook/NewTaskForm) — "strict
+//     7-minute unassigned" is a different, stricter rule than category completion.
 // Both also broadcast a push-notify alert to the "הנהלה" department so the
 // dashboard surfaces it, not just WhatsApp.
 //
-// Same dedicated kill switch as before: deploying this function does nothing
-// until SLA_ESCALATION_ENABLED=true is set explicitly in Supabase Secrets.
+// Same dedicated kill switch: deploying this does nothing until
+// SLA_ESCALATION_ENABLED=true is set explicitly in Supabase Secrets.
 //
-// Reuses whatsapp-send's existing "inbox_reply" trigger to actually deliver
-// the WhatsApp message — inbox_reply is the one trigger exempt from the
-// AUTOMATION_ENABLED gate (direct staff notification, not guest automation),
-// already deployed/proven safe. No new Meta API code needed here.
+// Delivery split: guest_alerts → whatsapp-send "inbox_reply" (Meta, the one
+// trigger exempt from AUTOMATION_ENABLED — direct staff notification). tasks →
+// Whapi straight into the ops group (_shared/whapiSend.ts) — the same channel
+// the Sprint-2 task cards use, so breaches land where the team already works.
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { sendWhapiText } from "../_shared/whapiSend.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -28,6 +34,7 @@ const CORS = {
 };
 
 const GUEST_ALERT_SLA_MINUTES = 10;
+const OPS_UNASSIGNED_SLA_MINUTES = Number(Deno.env.get("SLA_UNASSIGNED_MINUTES") ?? 7);
 const PUSH_DEPARTMENT = "הנהלה";
 
 async function notifyWhatsapp(supabaseUrl: string, anon: string, phone: string, message: string): Promise<boolean> {
@@ -75,9 +82,7 @@ serve(async (req: Request) => {
     const supabase = createClient(supabaseUrl, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
     const guestAlertPhone = Deno.env.get("SLA_GUEST_ALERT_PHONE") ?? "";
-    const opsAlertPhone   = Deno.env.get("SLA_OPS_ALERT_PHONE") ?? "";
     if (!guestAlertPhone) console.warn("[sla-escalation-cron] ⚠️ SLA_GUEST_ALERT_PHONE not set — overdue guest alerts will be marked escalated with nobody notified.");
-    if (!opsAlertPhone)   console.warn("[sla-escalation-cron] ⚠️ SLA_OPS_ALERT_PHONE not set — overdue ops tasks will be marked escalated with nobody notified.");
 
     // ════════════════════════════════════════════════════════════════════════
     // 1. Guest Requests Board — guest_alerts, flat 10-min threshold
@@ -119,39 +124,60 @@ serve(async (req: Request) => {
     }
 
     // ════════════════════════════════════════════════════════════════════════
-    // 2. Operations & Maintenance Board — tasks, per-category sla_deadline
+    // 2. Operations & Maintenance Board — STRICT unassigned-SLA escalation.
+    //    "Unassigned" = still status='open' (nobody tapped Accept → in_progress).
+    //    Window = created_at + SLA_UNASSIGNED_MINUTES (default 7). Alert goes
+    //    into the Whapi ops group (SLA_ALERT_GROUP_ID → WHAPI_GROUP_ID).
     // ════════════════════════════════════════════════════════════════════════
-    const nowIso = new Date().toISOString();
+    const opsThresholdIso = new Date(Date.now() - OPS_UNASSIGNED_SLA_MINUTES * 60 * 1000).toISOString();
     const { data: overdueTasks, error: tasksErr } = await supabase
       .from("tasks")
-      .select("id, room_number, department, description, sla_category, sla_deadline, created_at")
-      .neq("status", "done")
+      .select("id, room_number, description, created_at")
+      .eq("status", "open")                 // unassigned only — a claimed (in_progress) task stops escalating
       .is("escalated_at", null)
-      .not("sla_deadline", "is", null)
-      .lt("sla_deadline", nowIso);
+      .lt("created_at", opsThresholdIso);
     if (tasksErr) throw new Error(`tasks_lookup_error: ${tasksErr.message}`);
+
+    const alertGroupId = (Deno.env.get("SLA_ALERT_GROUP_ID") ?? Deno.env.get("WHAPI_GROUP_ID") ?? "").trim();
+    if ((overdueTasks ?? []).length > 0 && !alertGroupId) {
+      console.warn("[sla-escalation-cron] ⚠️ no SLA_ALERT_GROUP_ID/WHAPI_GROUP_ID set — ops breaches NOT marked escalated, will retry next run.");
+    }
 
     const opsResults: Array<{ taskId: string; notified: boolean }> = [];
     for (const task of overdueTasks ?? []) {
       const ageMinutes = Math.round((Date.now() - new Date(task.created_at as string).getTime()) / 60000);
       const englishText =
-        `⚠️ SLA BREACH — Operations task unresolved for ${ageMinutes} min (category: ${task.sla_category ?? "uncategorized"}).\n` +
-        `Room: ${task.room_number ?? "—"}\n` +
-        `Description: "${task.description}"\n` +
-        `Please check the Operations Board.`;
+        `🚨 SLA BREACH: Task for Suite ${task.room_number ?? "—"} is unassigned after ${ageMinutes} minutes!\n` +
+        `📋 ${task.description}\n` +
+        `Please tap "Accept" on the task card to claim it.`;
 
-      const notified = opsAlertPhone ? await notifyWhatsapp(supabaseUrl, anon, opsAlertPhone, englishText) : false;
+      let notified = false;
+      if (alertGroupId) {
+        try {
+          await sendWhapiText(alertGroupId, englishText, { noLinkPreview: true });
+          notified = true;
+        } catch (e) {
+          console.error(`[sla-escalation-cron] Whapi SLA alert failed for task ${task.id} (will retry next run):`, (e as Error).message);
+        }
+      }
 
-      const { error: markErr } = await supabase
-        .from("tasks")
-        .update({ escalated_at: new Date().toISOString() })
-        .eq("id", task.id);
-      if (markErr) console.error(`[sla-escalation-cron] failed to mark task ${task.id} escalated (will re-fire next run):`, markErr.message);
+      // Mark escalated ONLY after a successful alert. A transient Whapi failure
+      // (or missing group id) then retries next minute — cheap at 1-min cadence.
+      // This intentionally differs from the guest_alerts branch (mark-regardless):
+      // a missed CRITICAL ops breach is worse than a rare duplicate, and we must
+      // never silently mark every open task escalated on a misconfigured channel.
+      if (notified) {
+        const { error: markErr } = await supabase
+          .from("tasks")
+          .update({ escalated_at: new Date().toISOString() })
+          .eq("id", task.id);
+        if (markErr) console.error(`[sla-escalation-cron] failed to mark task ${task.id} escalated:`, markErr.message);
+      }
 
       opsResults.push({ taskId: task.id as string, notified });
     }
     if ((overdueTasks ?? []).length > 0) {
-      await pushAlert(supabaseUrl, anon, "⚠️ SLA Breach — Operations Task", `${(overdueTasks ?? []).length} operations task(s) past their SLA deadline.`);
+      await pushAlert(supabaseUrl, anon, "🚨 SLA Breach — Unassigned Task", `${(overdueTasks ?? []).length} task(s) unassigned past ${OPS_UNASSIGNED_SLA_MINUTES} min.`);
     }
 
     return new Response(
