@@ -31,6 +31,7 @@
 import { serve }        from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import Anthropic        from "https://esm.sh/@anthropic-ai/sdk@0.20.0";
+import { sendCtaUrlButton } from "../_shared/interactiveSend.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -199,6 +200,169 @@ function resolvePlaceholders(
   }
 
   return text.trim();
+}
+
+// ── Stage 2 Pay — payment/workshop placeholder resolver ─────────────────────
+// Deliberately separate from resolvePlaceholders() above: zero shared code,
+// so nothing here can affect the existing spa-time Stage 2 reply. Used only
+// by the new payment-pending branch in the arrival-confirmation paths below.
+// {{SPA_LINE}} reuses buildSpaSentence() — the exact helper stage_2_arrival
+// already relies on — rather than a second spa-text mechanism.
+function resolvePaymentPlaceholders(
+  template: string,
+  vars: { guestName: string; paymentAmount: string; paymentLink: string; workshopUrl: string; spaTime: string | null }
+): string {
+  return template
+    .replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, vars.guestName)
+    .replace(/\{\{\s*PAYMENT_AMOUNT\s*\}\}/gi, vars.paymentAmount)
+    .replace(/\{\{\s*PAYMENT_LINK\s*\}\}/gi, vars.paymentLink)
+    .replace(/\{\{\s*WORKSHOP_URL\s*\}\}/gi, vars.workshopUrl)
+    .replace(/\{\{\s*SPA_LINE\s*\}\}/gi, buildSpaSentence(vars.spaTime))
+    .trim();
+}
+
+// Hardcoded fallback — same convention as buildSpaSentence's fallback — used
+// only if the stage_2_payment_reply bot_scripts row is missing/empty.
+// hasButton controls whether the payment link is inlined as plain text or
+// left out in favor of the real WhatsApp button sendStage2PayReply() sends
+// alongside this text — the guest always gets ONE way to pay, never zero
+// (graceful fallback, CLAUDE.md §CORE GUARDRAILS #2) and never the same link
+// twice. The workshop link always stays inline, exactly as before.
+function buildPaymentReply(vars: {
+  guestName: string; paymentAmount: string; paymentLink: string; workshopUrl: string;
+  spaTime: string | null; hasButton: boolean;
+}): string {
+  const workshopLine = vars.workshopUrl ? `\n\n🎯 *לסדנאות שלנו — הרשמו מראש:*\n👉 ${vars.workshopUrl}` : "";
+  const paymentLine = vars.hasButton
+    ? `לפני ההגעה, נשארה יתרת תשלום בסך ${vars.paymentAmount} ₪ להסדרה — לחצו על הכפתור למטה כדי להסדיר בקליק אחד.`
+    : `לפני ההגעה, נשארה יתרת תשלום בסך ${vars.paymentAmount} ₪ להסדרה — ניתן לסגור את זה בקליק אחד כאן:\n👉 ${vars.paymentLink}`;
+  return (
+    `מגיעים! 🎉 כבר מתרגשים מאד מהגעתכם, ${vars.guestName}!\n\n` +
+    `הצוות שלנו ב-Dream Island מכין את הכל ומחכה לכם עם חיוך גדול 🌴\n\n` +
+    buildSpaSentence(vars.spaTime) +
+    `\n\n${paymentLine}` +
+    workshopLine +
+    `\n\nיש לכם שאלות לפני ההגעה? אני כאן לכל שאלה 😊`
+  );
+}
+
+// ── Automation Control Center — single-stage lookup, 5-min TTL cache ────────
+// Used today only for stage_key="stage_2_pay" — checks whether an admin has
+// toggled the auto-payment branch on/off, and (since the button feature)
+// which interactive_buttons are configured. Generic by stageKey so a future
+// event_immediate stage can reuse it without writing a new cache.
+interface AutomationStageRow {
+  is_active: boolean;
+  session_message_script_key: string | null;
+  interactive_buttons: Array<{ type: string; label: string; url?: string }> | null;
+}
+const _stageCache = new Map<string, { row: AutomationStageRow | null; time: number }>();
+
+async function fetchAutomationStage(
+  supabaseClient: ReturnType<typeof createClient>,
+  stageKey: string
+): Promise<AutomationStageRow | null> {
+  const now = Date.now();
+  const cached = _stageCache.get(stageKey);
+  if (cached && now - cached.time < CONFIG_TTL_MS) return cached.row;
+  try {
+    const { data } = await supabaseClient
+      .from("automation_stages")
+      .select("is_active, session_message_script_key, interactive_buttons")
+      .eq("stage_key", stageKey)
+      .maybeSingle();
+    const row = (data as AutomationStageRow | null) ?? null;
+    _stageCache.set(stageKey, { row, time: now });
+    return row;
+  } catch (e) {
+    console.warn(`[webhook] fetchAutomationStage(${stageKey}) error:`, (e as Error).message);
+    return cached?.row ?? null;
+  }
+}
+
+// Resolves the same {{PAYMENT_LINK}}/{{WORKSHOP_URL}} tokens inside a
+// configured button's URL template — mirrors resolvePaymentPlaceholders()
+// above but scoped to the one field a button needs.
+function resolveButtonUrl(urlTemplate: string, vars: { paymentLink: string; workshopUrl: string }): string {
+  return urlTemplate
+    .replace(/\{\{\s*PAYMENT_LINK\s*\}\}/gi, vars.paymentLink)
+    .replace(/\{\{\s*WORKSHOP_URL\s*\}\}/gi, vars.workshopUrl)
+    .trim();
+}
+
+// ── Stage 2 Pay — single send path shared by the button-tap and typed-
+// confirmation arrival-confirm branches below (previously two near-identical
+// copies with drifted behavior — one checked `sim` before sending and logged
+// failures to notification_log, the other didn't do either). Converged on
+// the safer behavior from both. The payment link becomes a real WhatsApp
+// button (Meta's cta_url interactive type) when automation_stages has a
+// configured button whose URL template references {{PAYMENT_LINK}} —
+// otherwise falls back to the original plain-text reply with the link
+// inlined, so clearing the buttons in the Control Center can never leave a
+// guest with no way to pay. The workshop link always stays inline, exactly
+// as before this change.
+async function sendStage2PayReply(
+  supabaseClient: ReturnType<typeof createClient>,
+  scripts: Record<string, BotScript>,
+  stage2Pay: AutomationStageRow | null,
+  phone: string,
+  guestId: number | string | null,
+  guest: Record<string, unknown> | null,
+  sim: boolean,
+  buttonTitle?: string,
+): Promise<void> {
+  const payName       = String(guest?.name ?? "").trim() || "אורח יקר";
+  const payWorkshopUrl = Deno.env.get("WORKSHOP_SIGNUP_URL") ?? "";
+  const payAmount      = String(guest?.payment_amount ?? "");
+  const payLink        = String(guest?.payment_link_url ?? "");
+  const spaTime        = (guest?.spa_time as string | null) ?? null;
+
+  const paymentButton = (stage2Pay?.interactive_buttons ?? []).find(
+    (b) => b.type === "url" && !!b.url && /\{\{\s*PAYMENT_LINK\s*\}\}/i.test(b.url)
+  );
+
+  const payScript    = scripts["stage_2_payment_reply"];
+  const paymentReply = payScript?.message_text?.trim()
+    ? resolvePaymentPlaceholders(payScript.message_text, {
+        guestName: payName, paymentAmount: payAmount, paymentLink: payLink, workshopUrl: payWorkshopUrl, spaTime,
+      })
+    : buildPaymentReply({
+        guestName: payName, paymentAmount: payAmount, paymentLink: payLink, workshopUrl: payWorkshopUrl,
+        spaTime, hasButton: !!paymentButton,
+      });
+
+  console.info(`[webhook] 💳 arrival confirmed (payment-pending) — phone:${phone} name="${payName}" button:${!!paymentButton}`);
+
+  if (sim) {
+    console.info(`[webhook] SIM — would send Stage 2 Pay reply to ${phone}, would not actually send.`);
+    return;
+  }
+
+  try {
+    if (paymentButton?.url) {
+      const resolvedUrl = resolveButtonUrl(paymentButton.url, { paymentLink: payLink, workshopUrl: payWorkshopUrl });
+      await sendCtaUrlButton(phone, paymentReply, paymentButton.label, resolvedUrl);
+    } else {
+      await sendReply(phone, paymentReply);
+    }
+    await supabaseClient.from("whatsapp_conversations").insert({
+      phone, guest_id: guestId, direction: "outbound",
+      message: paymentReply, wa_message_id: null,
+    });
+    console.info(`[webhook] ✅ payment reply sent to ${phone}`);
+  } catch (e) {
+    const errMsg = (e as Error).message;
+    const replyStatus = errMsg.startsWith("timeout_no_response") ? "timeout" : "failed";
+    console.error(`[webhook] ❌ payment reply ${replyStatus} to ${phone}:`, errMsg);
+    try {
+      const { error: logErr } = await supabaseClient.from("notification_log").insert({
+        guest_id: guestId, recipient: phone,
+        trigger_type: "stage_2_pay", channel: "whatsapp",
+        status: replyStatus, payload: { error: errMsg, ...(buttonTitle ? { buttonTitle } : {}) },
+      });
+      if (logErr) console.warn("[webhook] notification_log insert error:", logErr.message);
+    } catch (e) { console.warn("[webhook] notification_log insert error:", (e as Error).message); }
+  }
 }
 
 async function fetchBotConfig(
@@ -1301,7 +1465,11 @@ serve(async (req: Request) => {
         // ── "כן, מגיעים! ✨" — arrival confirmed → warm conversational reply ──
         // Strategy: tapping this button opens the 24h free-text window.
         // We reply with a natural message — no template needed.
-        // Payment link is sent later by staff via the GuestsPage 💳 button.
+        // Guests with a pending balance (payment_amount + payment_link_url set)
+        // get the payment/workshop message automatically instead — see the
+        // "Stage 2 Pay" branch right below, gated on the automation_stages
+        // toggle. Staff can still resend the payment link anytime via the
+        // GuestsPage 💳 button (unaffected, fully independent of this branch).
         //
         // Matching strategy: strip ALL non-Hebrew characters (emoji, spaces, punctuation)
         // so "כן, מגיעים! ✨" / "כן מגיעים" / "כן,מגיעים" all become "כןמגיעים".
@@ -1334,6 +1502,20 @@ serve(async (req: Request) => {
             // from or write to. Not a routing bug: this is what happens when
             // a phone number was never added via AddGuestModal/import.
             console.warn(`[webhook] ⚠️ arrival confirm tapped but NO guest record exists for phone:${phone} — add this guest first (GuestsPage/GuestDashboard) for status sync or spa_time to do anything.`);
+          }
+
+          // ── Stage 2 Pay — payment-pending guests get the payment/workshop
+          // reply INSTEAD OF the standard spa-time Stage 2 reply below. Gated
+          // on the automation_stages "stage_2_pay" toggle so an admin can turn
+          // this off and fall back to the always-safe standard reply. Guests
+          // with no pending balance fall straight through to Path A,
+          // unmodified.
+          const hasPendingPayment = !!(guest?.payment_amount && guest?.payment_link_url);
+          const stage2Pay = await fetchAutomationStage(supabase, "stage_2_pay");
+          if (hasPendingPayment && stage2Pay?.is_active === true) {
+            await sendStage2PayReply(supabase, scripts, stage2Pay, phone, guestId, guest, sim, buttonTitle);
+            console.info(`[webhook] ✅ button reply handled — "${buttonTitle}" phone:${phone}`);
+            continue; // skip Path A + normal intent routing
           }
 
           const safeName    = name.trim() || "אורח יקר";
@@ -1557,6 +1739,17 @@ serve(async (req: Request) => {
           phone, guest_id: guestId, direction: "inbound",
           message: text, wa_message_id: msgId, intent: "confirmation",
         });
+
+        // ── Stage 2 Pay — same payment-pending branch as the button-tap path
+        // above. Gated on the automation_stages "stage_2_pay" toggle; falls
+        // straight through to the unmodified standard reply below otherwise.
+        const hasPendingPaymentText = !!(guest?.payment_amount && guest?.payment_link_url);
+        const stage2PayText = await fetchAutomationStage(supabase, "stage_2_pay");
+        if (hasPendingPaymentText && stage2PayText?.is_active === true) {
+          await sendStage2PayReply(supabase, scripts, stage2PayText, phone, guestId, guest, sim);
+          console.info(`[webhook] ✅ pre-arrival confirmed (text, payment-pending) — phone:${phone} guest:${guestId}`);
+          continue; // skip Path A + normal intent routing
+        }
 
         // Same conversational strategy as the button handler — no template needed.
         // 24h window opens when the guest sends any message; reply with free text.

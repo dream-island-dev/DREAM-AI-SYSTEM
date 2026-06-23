@@ -37,6 +37,7 @@
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { sendInteractiveButtons } from "../_shared/interactiveSend.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -214,58 +215,10 @@ async function sendViaTemplate(
   }
 }
 
-// ── Meta WhatsApp interactive reply-buttons message (Phase 4 — hybrid fallback) ─
-// Used ONLY for session messages (inside the 24h free-text window) that have
-// quick_reply buttons configured via the Automation Control Center. Meta's
-// free-form "interactive" message type supports up to 3 reply buttons
-// (type:"reply"), title capped at 20 chars — there is no free-form "URL
-// button" equivalent (that only exists on approved templates). Any
-// interactive_buttons entries of type "url" are appended as a plain text
-// line instead of a tappable button — documented limitation, not a bug.
-async function sendInteractiveButtons(
-  to: string,
-  bodyText: string,
-  buttons: Array<{ type: string; label: string; url?: string }>,
-): Promise<void> {
-  const token   = Deno.env.get("META_WHATSAPP_TOKEN")    ?? Deno.env.get("WHATSAPP_TOKEN");
-  const phoneId = Deno.env.get("META_PHONE_NUMBER_ID")   ?? Deno.env.get("WHATSAPP_PHONE_NUMBER_ID");
-  if (!token || !phoneId) throw new Error("missing_meta_whatsapp_creds");
-
-  const urlLines = buttons
-    .filter((b) => b.type === "url" && b.url)
-    .map((b) => `🔗 ${b.label}: ${b.url}`);
-  const fullBody = urlLines.length > 0 ? `${bodyText}\n\n${urlLines.join("\n")}` : bodyText;
-
-  const replyButtons = buttons
-    .filter((b) => b.type === "quick_reply" && b.label?.trim())
-    .slice(0, 3)
-    .map((b, i) => ({ type: "reply", reply: { id: `btn_${i}`, title: b.label.trim().slice(0, 20) } }));
-
-  try {
-    const res = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify(
-        replyButtons.length > 0
-          ? {
-              messaging_product: "whatsapp",
-              to,
-              type: "interactive",
-              interactive: { type: "button", body: { text: fullBody }, action: { buttons: replyButtons } },
-            }
-          : { messaging_product: "whatsapp", to, type: "text", text: { body: fullBody, preview_url: false } },
-      ),
-      signal: AbortSignal.timeout(25000),
-    });
-    if (!res.ok) {
-      const detail = (await res.text()).slice(0, 300);
-      throw new Error(`meta_interactive_${res.status}: ${detail}`);
-    }
-  } catch (e) {
-    if (_isAbortError(e)) throw new Error("timeout_no_response: Meta did not respond within 25s — message may have still been delivered");
-    throw e;
-  }
-}
+// sendInteractiveButtons (Meta interactive reply-buttons message, Phase 4
+// hybrid fallback) now lives in ../_shared/interactiveSend.ts — shared with
+// whatsapp-webhook's Stage 2 Pay so both call the same code instead of two
+// copies that could drift. Imported above; behavior unchanged.
 
 // Simulation: true when explicitly set OR when Meta credentials are absent.
 const isSimulation = (): boolean =>

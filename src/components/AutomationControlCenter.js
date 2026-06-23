@@ -7,11 +7,19 @@
 // timeline diagram in BroadcastDashboard.js) into one editable space backed
 // by the automation_stages table (migration 065).
 //
-// IMPORTANT — this UI edits data, not behavior (yet). whatsapp-cron and
-// whatsapp-send are not wired to read automation_stages until Phase 4 (a
-// deliberately separate, carefully-staged change to the live guest pipeline
-// — see PROJECT context). Until then, editing a stage here changes what the
-// admin SEES, not what guests RECEIVE.
+// Phase 4 is LIVE: whatsapp-cron (timing — see its own header comment) and
+// whatsapp-send (template/session-message/buttons routing — see BRANCH D)
+// both already read from automation_stages for every stage except
+// room_ready (event-driven from the RoomBoard/AICopilot toggle, no row
+// here). Toggling is_active or editing timing/content here changes what
+// guests actually RECEIVE, not just what the admin sees.
+//
+// The one exception: stage_2_arrival is dispatched directly by
+// whatsapp-webhook/index.ts via its own hardcoded bot_scripts lookup and
+// never checks automation_stages.is_active — for that row only, the
+// toggle is still cosmetic today. (stage_2_pay, despite also being
+// event_immediate, DOES check automation_stages.is_active in the webhook
+// — its toggle is live.)
 import { useState, useEffect, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import TemplateManagerPanel from "./TemplateManagerPanel";
@@ -30,6 +38,23 @@ const NODE_TYPE_META = {
 };
 
 const APPLIES_TO_LABELS = { all: "כל האורחים", suite: "סוויטות בלבד", non_suite: "לא-סוויטות" };
+
+// Manager-facing description per Meta template — raw tokens like
+// "dream_arrival_confirmation" mean nothing to a non-technical resort
+// manager. FAIL VISIBLE fallback: an unmapped template shows "⚠ raw_name"
+// rather than disappearing, same convention as STATUS_META in GuestsPage.js.
+const META_TEMPLATE_FRIENDLY = {
+  dream_arrival_confirmation: "פנייה ראשונה — בקשת אישור הגעה (יומיים לפני ההגעה)",
+  dream_checkin_reminder_v2:  "תזכורת ערב לפני ההגעה",
+  dream_welcome_morning:      "ברכת בוקר ביום ההגעה",
+  dream_handover_agent_v2:    "העברה לסוכן האישי (שעה אחרי צ׳ק-אין)",
+  dream_mid_stay_check:       "בדיקת שלום באמצע השהות",
+  dream_checkout_feedback:    "בקשת משוב לאחר העזיבה",
+  dream_payment_and_workshops: "תשלום יתרה + הרשמה לסדנאות",
+};
+function metaTemplateFriendly(name) {
+  return META_TEMPLATE_FRIENDLY[name] ?? `⚠ ${name}`;
+}
 
 function timeInputValue(pgTime) {
   return pgTime ? String(pgTime).slice(0, 5) : "";
@@ -141,8 +166,10 @@ export default function AutomationControlCenter() {
     setSubTab("templates");
   };
 
-  const groupedByPhase = stages.reduce((acc, s) => {
-    (acc[s.journey_phase] ??= []).push(s);
+  // stage_key → display_name, reused by the Queue tab so it never shows a
+  // raw stage_key/trigger_type token to the manager.
+  const stageDisplayNames = stages.reduce((acc, s) => {
+    acc[s.stage_key] = s.display_name;
     return acc;
   }, {});
 
@@ -194,43 +221,42 @@ export default function AutomationControlCenter() {
             border: "1px solid var(--gold)", borderRadius: 12, padding: "14px 20px", marginBottom: 24,
             fontSize: 13, color: "var(--text-muted)", lineHeight: 1.6,
           }}>
-            ⚙️ עריכת תזמון/תוכן כאן משפיעה על מה שמוצג בלוח. ההפעלה בפועל מול האורחים (whatsapp-cron / whatsapp-send)
-            עדיין רצה לפי הקוד הקיים — חיבור השניים הוא שלב נפרד שדורש אישור מפורש לפני שינוי הצנרת החיה.
+            ⚙️ עריכת תזמון/תוכן כאן <strong>חיה</strong> — whatsapp-cron ו-whatsapp-send קוראים בפועל מהטבלה הזו ומחליטים לפיה
+            מתי ומה לשלוח לאורחים. הפעלה/כיבוי או שינוי שלב כאן משפיע ישירות על מה שהאורח מקבל בוואטסאפ, לא רק על מה שמוצג בלוח.
+            <br />
+            החריג היחיד: שלב "אישור הגעה" (Stage 2 Arrival) — whatsapp-webhook שולח אותו ישירות מ-bot_scripts ולא בודק את המתג כאן,
+            כך שעבור השלב הזה בלבד ההפעלה/כיבוי עדיין קוסמטית.
           </div>
 
           {loadingStages ? (
             <div style={{ textAlign: "center", padding: 60, color: "var(--text-muted)" }}>⏳ טוען שלבים...</div>
           ) : (
-            Object.entries(JOURNEY_PHASE_LABELS).map(([phase, phaseLabel]) => (
-              (groupedByPhase[phase] ?? []).length > 0 && (
-                <div key={phase} style={{ marginBottom: 28 }}>
-                  <div style={{ fontWeight: 800, fontSize: 14, color: "var(--gold-dark)", marginBottom: 10 }}>{phaseLabel}</div>
-                  {groupedByPhase[phase].map((stage) => {
-                    const isOpen = expanded === stage.id;
-                    const nt = NODE_TYPE_META[stage.node_type] ?? NODE_TYPE_META.hybrid;
-                    return (
-                      <div key={stage.id} className="card" style={{ marginBottom: 12, opacity: stage.is_active ? 1 : 0.6, border: isOpen ? "1px solid var(--gold)" : undefined }}>
-                        <div
-                          style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 20px", cursor: "pointer", borderBottom: isOpen ? "1px solid var(--border)" : "none" }}
-                          onClick={() => setExpanded(isOpen ? null : stage.id)}
-                        >
-                          <span style={{ fontSize: 14, color: "var(--text-muted)", transform: isOpen ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.2s" }}>▶</span>
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                              <span style={{ fontWeight: 700, fontSize: 14 }}>{stage.display_name}</span>
-                              <span style={{ fontSize: 11, fontWeight: 700, padding: "3px 9px", borderRadius: 20, color: nt.color, background: nt.bg }}>{nt.label}</span>
-                            </div>
-                            {stage.meta_template_name && (
-                              <code style={{ fontSize: 11, color: "var(--text-muted)" }}>{stage.meta_template_name}</code>
-                            )}
-                          </div>
-                          <div
-                            onClick={(e) => { e.stopPropagation(); patchStage(stage, { is_active: !stage.is_active }); }}
-                            style={{ width: 44, height: 24, borderRadius: 12, cursor: "pointer", background: stage.is_active ? "var(--gold)" : "#D1D5DB", position: "relative", flexShrink: 0 }}
-                          >
-                            <div style={{ position: "absolute", top: 3, borderRadius: "50%", width: 18, height: 18, background: "#fff", right: stage.is_active ? 3 : "auto", left: stage.is_active ? "auto" : 3, boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }} />
-                          </div>
+            <div>
+              {stages.map((stage) => {
+                const isOpen = expanded === stage.id;
+                const nt = NODE_TYPE_META[stage.node_type] ?? NODE_TYPE_META.hybrid;
+                const phaseLabel = JOURNEY_PHASE_LABELS[stage.journey_phase] ?? stage.journey_phase;
+                return (
+                  <div key={stage.id} className="card" style={{ marginBottom: 12, opacity: stage.is_active ? 1 : 0.6, border: isOpen ? "1px solid var(--gold)" : undefined }}>
+                    <div
+                      style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 20px", cursor: "pointer", borderBottom: isOpen ? "1px solid var(--border)" : "none" }}
+                      onClick={() => setExpanded(isOpen ? null : stage.id)}
+                    >
+                      <span style={{ fontSize: 14, color: "var(--text-muted)", transform: isOpen ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.2s" }}>▶</span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                          <span style={{ fontWeight: 700, fontSize: 14 }}>{stage.display_name}</span>
+                          <span style={{ fontSize: 11, fontWeight: 700, padding: "3px 9px", borderRadius: 20, color: "#92702C", background: "rgba(201,169,110,0.15)" }}>{phaseLabel}</span>
+                          <span style={{ fontSize: 11, fontWeight: 700, padding: "3px 9px", borderRadius: 20, color: nt.color, background: nt.bg }}>{nt.label}</span>
                         </div>
+                      </div>
+                      <div
+                        onClick={(e) => { e.stopPropagation(); patchStage(stage, { is_active: !stage.is_active }); }}
+                        style={{ width: 44, height: 24, borderRadius: 12, cursor: "pointer", background: stage.is_active ? "var(--gold)" : "#D1D5DB", position: "relative", flexShrink: 0 }}
+                      >
+                        <div style={{ position: "absolute", top: 3, borderRadius: "50%", width: 18, height: 18, background: "#fff", right: stage.is_active ? 3 : "auto", left: stage.is_active ? "auto" : 3, boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }} />
+                      </div>
+                    </div>
 
                         {isOpen && (
                           <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 16 }}>
@@ -307,12 +333,11 @@ export default function AutomationControlCenter() {
                             {stage.meta_template_name && (
                               <div className="form-field" style={{ marginBottom: 0 }}>
                                 <label>🔵 תבנית Meta (Fallback)</label>
-                                <code style={{ background: "#F3F4F6", padding: "6px 10px", borderRadius: 6, display: "inline-block", fontSize: 12 }}>
-                                  {stage.meta_template_name}
-                                </code>
-                                <span style={{ fontSize: 11, color: "var(--text-muted)", marginRight: 8 }}>
-                                  — ראה/ערוך בלשונית "📋 תבניות Meta"
-                                </span>
+                                <div style={{ fontSize: 13 }}>{metaTemplateFriendly(stage.meta_template_name)}</div>
+                                <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+                                  טכני: <code style={{ background: "#F3F4F6", padding: "2px 6px", borderRadius: 4 }}>{stage.meta_template_name}</code>
+                                  {" — ראה/ערוך בלשונית \"📋 תבניות Meta\""}
+                                </div>
                               </div>
                             )}
 
@@ -354,8 +379,6 @@ export default function AutomationControlCenter() {
                     );
                   })}
                 </div>
-              )
-            ))
           )}
         </div>
       )}
@@ -404,7 +427,7 @@ export default function AutomationControlCenter() {
                         {queueData.attentionRequired.map((r, i) => (
                           <tr key={i}>
                             <td>{r.guestName ?? r.phone ?? "—"}</td>
-                            <td>{r.stageKey}</td>
+                            <td>{stageDisplayNames[r.stageKey] ?? `⚠ ${r.stageKey}`}</td>
                             <td><span className="badge badge-red">{r.status === "timeout" ? "לא ודאי" : "נכשל"}</span></td>
                             <td style={{ fontSize: 12 }}>{r.sentAt ? new Date(r.sentAt).toLocaleString("he-IL") : "—"}</td>
                           </tr>
