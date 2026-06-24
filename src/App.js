@@ -21,6 +21,7 @@ import BotSettings from "./components/BotSettings";
 import BotScriptEditor from "./components/BotScriptEditor";
 import AutomationControlCenter from "./components/AutomationControlCenter";
 import RoomBoard from "./components/RoomBoard";
+import HousekeepingTabletView from "./components/HousekeepingTabletView";
 import RequestsBoard from "./components/RequestsBoard";
 import PasswordChangeScreen from "./components/PasswordChangeScreen";
 import SpaStagingPanel from "./components/SpaStagingPanel";
@@ -1046,6 +1047,7 @@ function Sidebar({ user, active, setActive, openOpsCount, onLogout, isAdmin, isS
     { id: "wa_inbox",   icon: "💬", label: "DREAM BOT — שיחות",                     managerOnly: true },
     { id: "guests",     icon: "🛎️", label: "צ'ק-אין",                               managerOnly: true },
     { id: "room_board",   icon: "🏨", label: "לוח סוויטות",                            managerOnly: false },
+    { id: "housekeeping_tablet", icon: "🧹", label: "לוח ניקיון (טאבלט)",              managerOnly: false },
     { id: "requests_board", icon: "📋", label: "לוח בקשות",                            managerOnly: true },
     { id: "scheduler",   icon: "🪄", label: "מחולל משמרות",                           managerOnly: true },
     { id: "agent",      icon: "🤖", label: "הסוכן שלי" },
@@ -2054,6 +2056,7 @@ export default function App() {
     tasks:      "🛠️ תפעול ואחזקה",
     calls:      "🛠️ תפעול ואחזקה",
     room_board:    "🏨 לוח סוויטות",
+    housekeeping_tablet: "🧹 לוח ניקיון (טאבלט)",
     requests_board: "📋 לוח בקשות",
     bot_config:    "🤖 הגדרות Smart Concierge",
     bot_settings:  "🧠 מוח הבוט",
@@ -2112,14 +2115,18 @@ export default function App() {
       </>
     );
 
-  // ── Cleaner kiosk — full-screen RoomBoard, no sidebar ──────────────────
+  // ── Cleaner kiosk — full-screen Housekeeping Tablet View, no sidebar ───
+  // Session 28: swapped from RoomBoard's 6-status kiosk mode to the
+  // dedicated 3-button fat-finger tablet view (HousekeepingTabletView.js).
+  // RoomBoard.js itself is untouched and still reachable by managers via
+  // the "room_board" nav route for the fuller תפוס/תחזוקה state machine.
   if (user.role === "cleaner")
     return (
       <>
         <style>{css}</style>
         <style>{`@keyframes di-spin { to { transform: rotate(360deg); } }`}</style>
         <div style={{ background: "var(--ivory)", minHeight: "100vh" }}>
-          <RoomBoard isKioskMode onLogout={handleLogout} />
+          <HousekeepingTabletView isKioskMode onLogout={handleLogout} />
         </div>
       </>
     );
@@ -2212,6 +2219,8 @@ export default function App() {
         return <SpaStagingPanel />;
       case "room_board":
         return <RoomBoard />;
+      case "housekeeping_tablet":
+        return <HousekeepingTabletView />;
       case "requests_board":
         return <RequestsBoard user={user} />;
       case "suites":

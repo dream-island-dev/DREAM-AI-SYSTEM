@@ -1,6 +1,6 @@
 # CLAUDE.md — Dream Island AI System
 > קובץ זה נקרא אוטומטית בכל שיחה. הוא מקור-האמת שלך. קרא אותו לפני כל פעולה.
-> **עדכון אחרון:** 2026-06-24 (session 27 — Staff card cleanup (reaction-only, no more Accept/Complete links) + reactor identity capture, manual-group room-prefix parsing, day-guest FOMO upsell engine, Linear Automation Flow Builder draft layer, guest profile drawer + RoomBoard live/upcoming badges. פירוט בתחתית §10 ובהיסטוריה המלאה ב-`claude_history.md`).
+> **עדכון אחרון:** 2026-06-24 (session 28 — Housekeeping Tablet View: דדיקייטד קיוסק 3-כפתורים fat-finger (`HousekeepingTabletView.js`) לתפקיד cleaner, מחליף את RoomBoard במסך המלא של ה-cleaner; חולק את טבלת room_status הקיימת ושומר על שער-האישור של AICopilot להודעת "חדר מוכן" לאורח. פירוט בתחתית §10 ובהיסטוריה המלאה ב-`claude_history.md`).
 >
 > 📚 **היסטוריית הסשנים המלאה (sessions 2–24) הועברה ל-[`claude_history.md`](claude_history.md)** כדי לשמור את הקובץ הזה קליל. שום מידע לא נמחק — רק הופרד. הקובץ הזה מחזיק את **רפרנס הארכיטקטורה החי** (§0–§13); הקובץ ההוא מחזיק את הנרטיב ההיסטורי. כשצריך הקשר מפורט על באג/החלטה ישנה — קרא שם.
 >
@@ -191,7 +191,7 @@ DREAM-AI-SYSTEM/
 │       │                            סטטוס חי מ-guests. ⚠️ לא להתבלבל עם RoomBoard ("לוח סוויטות")!
 │       │                            session 12: route עדיין קיים אך הוסר מה-Sidebar nav (לא נגיש
 │       │                            יותר ל-UI רגיל — ראה §4).
-│       ├── RoomBoard.js          ★ קיוסק ניקיון לתפקיד cleaner (+ ניהול דרך "room_board" route).
+│       ├── RoomBoard.js          ★ "לוח סוויטות" (room_board route, ניהול — managers/admins).
 │       │                            סטטוסים: תפוס/פנוי/לניקיון/בניקיון/ממתין לאישור/תחזוקה —
 │       │                            pipeline נפרד לחלוטין מ-guests.status. מקור: room_status table.
 │       │                            timer ניקיון חי, מודאל אישור, "ממתין לאישור" = מנוטרל ע"י AICopilot.
@@ -199,6 +199,27 @@ DREAM-AI-SYSTEM/
 │       │                            (status='checked_in', שם+תאריך עזיבה) מול 🔵 "הגעה קרובה"
 │       │                            (pending/expected/room_ready, שם+ETA+חלון ספא). שאילתת guests
 │       │                            הורחבה ל-'expected' + spa_time.
+│       │                            ⚠️ session 28: לא עוד מסך ה-cleaner — תפקיד "cleaner" קיבל מסך
+│       │                            מלא חדש, HousekeepingTabletView.js (למטה). הקומפוננטה הזו עדיין
+│       │                            קיימת ומלאה, נגישה ל-managers/admins דרך "room_board" nav item,
+│       │                            ל-תחזוקה/תפוס/ניהול 6-סטטוסים מלא ש-HousekeepingTabletView לא חושף.
+│       ├── HousekeepingTabletView.js ★ NEW (session 28) — "לוח ניקיון (טאבלט)" (housekeeping_tablet
+│       │                            route, + מסך מלא לתפקיד cleaner, ללא Sidebar). 3 כפתורי
+│       │                            fat-finger ענקיים מוערמים על כל כרטיס חדר — 🔴 מלוכלך / 🟡 בניקוי /
+│       │                            🟢 נקי — אופטימיסטי, ללא spinner חוסם, revert+toast רק על כשל DB
+│       │                            אמיתי. **חולק את room_status table** עם RoomBoard.js + AICopilot.js
+│       │                            (§0.5 Single Source of Truth — לא טבלה/וקבולרי סטטוס מקביל).
+│       │                            מיפוי כפתור→DB: 🔴→"לניקיון", 🟡→"בניקיון" (חותם cleaning_started_at),
+│       │                            🟢→**"ממתין לאישור"** (לא "פנוי" ישירות!) — כי AICopilot.js הוא זה
+│       │                            שמחזיק את שער האישור "ממתין לאישור"→"פנוי" (מנהל מאשר → WhatsApp
+│       │                            "החדר מוכן" לאורח → רק אז הסטטוס הופך פנוי + guest.status=checked_in).
+│       │                            כתיבת "פנוי" ישירות מהטאבלט הייתה עוקפת בשקט את הודעת האורח. מהצד
+│       │                            של חדר-הצוות "נקי" הוא "נקי" משתי הבחינות — כרטיס מציג רמז "🔔
+│       │                            ממתין לאישור מנהל" לשקיפות. חדרים בסטטוס שמחוץ למודל 3-הכפתורים
+│       │                            (תפוס/תחזוקה) עדיין מוצגים עם badge נייטרלי משלהם (FAIL VISIBLE,
+│       │                            §0.3) — לא מוסתרים. סטטיסטיקות בר עליון (סה"כ/מלוכלך/בניקוי/נקי) +
+│       │                            3 quick-filters. ללא timer/אישור-מודאל/בדגי אורח מפורטים כמו
+│       │                            RoomBoard — קיוסק ממוקד-מהירות בכוונה, נפרד.
 │       ├── AICopilot.js          ★ widget צף (פעמון 🔔, bottom-left) לכל manager/admin מחובר.
 │       │                            עוקב realtime אחרי room_status='ממתין לאישור' → מציג guest+spa_time
 │       │                            → "✓ אשר ושלח הודעה" שולח WhatsApp + מסמן room_status='פנוי'
@@ -410,7 +431,10 @@ switch (activePage) {
   "suites"       → SuitesDashboard  // "פירוט חדרים" — per-room grid from suite_rooms. ≠ room_board!
                                     // ⚠️ session 12: route עדיין קיים ב-switch, אבל ה-Sidebar nav item
                                     // הוסר (decluttering) — לא נגיש יותר דרך ה-UI הרגיל, ראה deep-link בלבד
-  "room_board"   → RoomBoard        // ★ "לוח סוויטות" — housekeeping kiosk (room_status table)
+  "room_board"   → RoomBoard        // ★ "לוח סוויטות" — manager 6-status board (room_status table)
+                                    // ⚠️ session 28: זה כבר לא מסך ה-cleaner — ראה housekeeping_tablet
+  "housekeeping_tablet" → HousekeepingTabletView  // ★ session 28 — "לוח ניקיון (טאבלט)", 3-button
+                                    // fat-finger kiosk. גם המסך המלא של תפקיד "cleaner" כעת (ראה למטה).
   "spa_staging"  → SpaStagingPanel  // "לוח ספא — אישור" — standalone, fed by external email/PDF automation
                                     // ⚠️ session 12: כמו "suites" — route קיים, Sidebar nav item הוסר
   "ops_board"    → OperationsBoard  // ★ session 21 — "תפעול ואחזקה", ArrivalImportPanel (sole import
@@ -427,7 +451,8 @@ switch (activePage) {
 }
 // ★ session 7: "upload" (DataUpload) ו-"data_hub" (DataHub) הוסרו — מוזגו ל-ArrivalImportPanel.
 // AICopilot מורכב גלובלית (לא דרך activePage) לכל user שאינו cleaner — ראה App.js:~2618.
-// תפקיד "cleaner": מקבל מסך מלא RoomBoard בלבד (ללא Sidebar) — ראה App.js:~2325.
+// תפקיד "cleaner": מקבל מסך מלא HousekeepingTabletView בלבד (ללא Sidebar) — ראה App.js:~2116.
+// ⚠️ session 28: היה RoomBoard עד session 27 — הוחלף, ראה §3/§10 session 28.
 ```
 
 ---
@@ -455,7 +480,7 @@ switch (activePage) {
 | `ai_failover_events` | ★ session 21 — לוג כל auto-failover Claude↔Gemini בwebhook, נצרך ע"י AiFailoverWidget.js (realtime) | authenticated read, service-role write |
 | `custom_automations` / `custom_automation_steps` | ★ NEW (session 27, migration 078) — שכבת טיוטה ל-Linear Automation Flow Builder (AutomationControlCenter.js's "✨ אוטומציה חדשה" tab): שם + תזמון הפעלה (`trigger_anchor_event`/`trigger_day_offset`/`trigger_local_time`) + שלבים מסודרים (`step_type` = `meta_template`/`free_text`). **לא** נקרא ע"י whatsapp-cron/whatsapp-send — שכבת תכנון בלבד, חיווט ל-runtime הוא צעד עתידי. נפרד בכוונה מ-`automation_stages` (migration 065, הצינור הקיים שכבר מחובר ל-runtime) | authenticated |
 | `suite_rooms` | חדר לכל שורה מ-EZGO Suites CSV. key: `(order_number, res_line_id)`. מקור: `ArrivalImportPanel.js` (sole import surface) | authenticated |
-| `room_status` | ★ גילוי session 7 — pipeline ניקיון נפרד (תפוס/פנוי/לניקיון/בניקיון/ממתין לאישור/תחזוקה). key: `room_id` = שם סוויטה מ-`SUITE_REGISTRY`. נצרך ע"י RoomBoard.js + AICopilot.js | authenticated |
+| `room_status` | ★ גילוי session 7 — pipeline ניקיון נפרד (תפוס/פנוי/לניקיון/בניקיון/ממתין לאישור/תחזוקה). key: `room_id` = שם סוויטה מ-`SUITE_REGISTRY`. נצרך ע"י RoomBoard.js + AICopilot.js + ★ session 28: HousekeepingTabletView.js (כותב רק 3 מתוך 6 הערכים — לניקיון/בניקיון/ממתין לאישור — דרך 3 הכפתורים שלו) | authenticated |
 | `notification_log` | dedup שליחות WA | service role |
 | `schedule_patterns` | דפוסי Excel שנלמדו | |
 | `push_subscriptions` | Web Push endpoints | `user_id = auth.uid()` |
@@ -917,6 +942,17 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
 - ✅ **אומת:** `npm run build` נקי (רק אזהרת `ShiftsPage` הקיימת, לא קשורה). `npx supabase db push` (078) ו-3 `functions deploy` (`whapi-webhook`/`whatsapp-webhook`/`task-action`) הצליחו, Deno type-check עבר בכולם.
 - ⚠️ **לא אומת חזותית חי** — אין דרך לדמות 👍🏼/הודעת קבוצה אמיתית או לפתוח את האפליקציה בדפדפן מתוך הסשן. Mike: מומלץ לבדוק בפועל — (1) הקלדת "Room 14 towels" בקבוצה → כרטיס עם source מתאים בלוח; (2) בקשת day-guest לשירות חדר ("תביאו מגבות") → reply בעברית עם upsell, לא כרטיס; (3) טאב "✨ אוטומציה חדשה" + שמירת אוטומציה לדוגמה; (4) פתיחת drawer פרופיל אורח מ-GuestDashboard; (5) RoomBoard badge ירוק/כחול על חדר עם אורח.
 - ⚠️ **לא נגעתי / מחוץ לסקופ:** הקבצים ה-untracked (`.claude/claude_bot.py`, `DREAM_CONCIERGE_SYSTEM_PROMPT.txt`, `migration 076`) — לא נכללו בקומיט, לא נבדקו.
+
+#### session 28 — Jun 24 2026 (Housekeeping Tablet View — fat-finger 3-status kiosk)
+> הקשר: דירקטיבת "STRICT SPRINT MODE" — שלושה ספרינטים בלתי-תלויים סביב מסך טאבלט חדש למשק-בית: (1) רינדור גריד חדרים עם 3 כפתורי fat-finger ענקיים, (2) כתיבה אופטימיסטית ללא spinner חוסם, (3) supervisor stats bar + quick filters. **הוחלט מראש לפני כתיבת קוד:** לא לפצל סטטוס/טבלה מקבילה ל-`room_status` הקיים (§0.5 Single Source of Truth) — ראה ממצא מרכזי למטה.
+
+- ✅ **Sprint 5.1+5.2 — `HousekeepingTabletView.js` חדש.** גריד שטוח (ללא חלוקת קומות/sections כמו RoomBoard — קיוסק ממוקד-מהירות בכוונה) של כל 26 הסוויטות מ-`SUITE_REGISTRY`. כל כרטיס חדר מציג 3 כפתורים ענקיים מוערמים (לא שלישית צמודה זה-לצד-זה — "spanning the full layout width" פורש כרוחב מלא של הכרטיס, fat-finger מקסימלי): 🔴 מלוכלך / 🟡 בניקוי / 🟢 נקי, עם הדגשה ויזואלית (border+bg+box-shadow) לכפתור התואם לסטטוס הנוכחי. כתיבה אופטימיסטית טהורה (`applyTransition()` helper משותף לשלושתם) — ה-state המקומי מתעדכן מיידית, אין שום spinner/disabled state חוסם (לפי הספרינט המפורש: "Do NOT block the UI"), וכשל DB אמיתי בלבד מבטל את ה-state חזרה + toast לא-חוסם.
+- ⚠️ **ממצא ארכיטקטוני מרכזי (לפני כתיבת קוד):** ל-`room_status` יש כבר 6 ערכי status (תפוס/פנוי/לניקיון/בניקיון/ממתין לאישור/תחזוקה), ו-`AICopilot.js` (widget צף קיים) מחזיק שער-אישור קריטי: הוא מקשיב ל-`status='ממתין לאישור'` ורק כש**מנהל** מאשר — נשלחת הודעת WhatsApp "החדר מוכן" לאורח המגיע, ואז (ורק אז) הסטטוס הופך ל-`'פנוי'` + `guests.status='checked_in'` (`AICopilot.js:79-126`). אם כפתור "🟢 נקי" היה כותב `'פנוי'` ישירות, האורח **לעולם לא היה מקבל הודעה** — regression שקט בליבת חוויית האורח. לכן: 🟢 נקי כותב `'ממתין לאישור'` (לא `'פנוי'`) — מבחינת חדר-הצוות זה "סיימתי, נקי" באופן מיידי; פנימית זו עדיין השלמה של אותו שלב-ביניים ש-RoomBoard's `handleCleanConfirm` כבר משתמש בו, רק בלי המודאל-אישור. הכרטיס מציג "🔔 ממתין לאישור מנהל" לשקיפות (FAIL VISIBLE, §0.3) כשזה המצב. 🔴 מלוכלך → `'לניקיון'`, 🟡 בניקוי → `'בניקיון'` (חותם `cleaning_started_at`, מפעיל טיימר חי בכרטיס) — שתי אלו ללא סיבוך, ישירות מקבילות לפעולות הקיימות ב-RoomBoard.
+- ✅ **Sprint 5.3 — Stats bar + filters.** בר עליון read-only עם 4 מדדים (סה"כ חדרים/מלוכלך/בניקוי/נקי, "נקי" סופר גם `'ממתין לאישור'` וגם `'פנוי'` כ-bucket אחד). שורת quick-filter נפרדת מתחת עם 3 כפתורי toggle בדיוק כמו שהתבקש: "הצג הכל" / "מלוכלך בלבד" / "בניקוי בלבד". חדרים בסטטוס מחוץ ל-3 הבאקטים (`תפוס`/`תחזוקה`) ממשיכים להיות מוצגים בגריד עם badge נייטרלי משלהם (🔒/🔧) — לא מוסתרים ולא נדחסים לבאקט שגוי.
+- ✅ **App.js wiring.** import חדש + nav item `housekeeping_tablet` (🧹, `managerOnly:false`, אחרי `room_board`) + `pageTitle` entry + `case` בסוויצ' הראשי. **תפקיד `cleaner`'s מסך מלא הוחלף** מ-`<RoomBoard isKioskMode .../>` ל-`<HousekeepingTabletView isKioskMode .../>` (`App.js:~2116`) — זו הפעם הראשונה שתפקיד ה-cleaner מקבל מסך אחר מ-RoomBoard. `RoomBoard.js` עצמו **לא נגעתי בו בכלל** — נשאר שלם, נגיש ל-managers/admins דרך nav route "room_board" הקיים, לשליטה מלאה ב-6 הסטטוסים (כולל תחזוקה/תפוס) שה-tablet view החדש לא חושף בכוונה.
+- ⚠️ **טרייד-אוף מתועד:** תפקיד cleaner לא יכול יותר לסמן חדר "תחזוקה" או לבצע "צ'ק-אין" ישירות מהמסך המלא שלו (RoomBoard's `פנוי→תחזוקה`/`פנוי→תפוס` actions) — הספרינט המפורש ביקש **בדיוק 3** כפתורים, לא 4. אם צוות ניקיון נתקל בצורך תחזוקה, יש לדווח למנהל (RoomBoard עדיין זמין למי שיש לו גישה ל-Sidebar).
+- ✅ **אומת:** `npm run build` נקי (רק אזהרת `ShiftsPage` הקיימת, לא קשורה). אין migration נדרש — `room_status` table+columns כולם כבר קיימים (029/036), אין Edge Function שנגעו בו.
+- ⚠️ **לא אומת חזותית חי** — אותו קיר Supabase Auth מקומי שדווח בסשנים קודמים (sessions 19–27). Mike: מומלץ לבדוק בפועל — (1) כניסה כ-user עם role='cleaner' → המסך המלא החדש; (2) tap על "🟡 בניקוי" ואז "🟢 נקי" בחדר → ודא ש-AICopilot's bell מציג alert עבורו (לא "פנוי" ישירות בלי אישור); (3) tap "מלוכלך בלבד"/"בניקוי בלבד" quick-filters.
 
 ---
 
