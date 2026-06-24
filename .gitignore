@@ -20,3 +20,6 @@ supabase/.temp/
 # Make.com blueprints — מכילים סיסמה, לא לגיט
 make-blueprint.json
 make-blueprint-spa.json
+
+# Personal Telegram remote-exec bot — hardcoded bot token + unrelated to this app, not for git
+.claude/claude_bot.py

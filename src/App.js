@@ -30,6 +30,7 @@ import AICopilot from "./components/AICopilot";
 import RequestsAlertWidget from "./components/RequestsAlertWidget";
 import AiFailoverWidget from "./components/AiFailoverWidget";
 import SuitesDashboard from "./components/SuitesDashboard";
+import DataSyncPage from "./components/DataSyncPage";
 import CMSGate from "./components/cms/CMSGate";
 import CMSSecurityPanel from "./components/cms/CMSSecurityPanel";
 
@@ -1122,6 +1123,14 @@ function Sidebar({ user, active, setActive, openOpsCount, onLogout, isAdmin, isS
               <span>ניהול מערכת</span>
             </button>
             <button
+              className={`nav-item ${active === "data_sync" ? "active" : ""}`}
+              onClick={() => setActive("data_sync")}
+              style={{ color: active === "data_sync" ? "var(--gold)" : "rgba(201,169,110,0.6)" }}
+            >
+              <span className="icon">📥</span>
+              <span>סנכרון נתונים</span>
+            </button>
+            <button
               className={`nav-item ${active === "bot_config" ? "active" : ""}`}
               onClick={() => setActive("bot_config")}
               style={{ color: active === "bot_config" ? "var(--gold)" : "rgba(201,169,110,0.6)" }}
@@ -2073,6 +2082,7 @@ export default function App() {
     bot_settings:  "🧠 מוח הבוט",
     bot_scripts:   "📝 עורך סקריפטי הבוט",
     automation_center: "🎛️ בקרת אוטומציה",
+    data_sync:  "📥 סנכרון נתונים",
     cms_security: "🔐 אבטחת CMS",
     agent:      agentProfile ? `${agentProfile.display_name} 🤖` : "הסוכן שלי 🤖",
     admin:      "👑 ניהול מערכת",
@@ -2275,6 +2285,11 @@ export default function App() {
         return guardPage(
           ["admin", "super_admin"],
           <AutomationControlCenter />
+        );
+      case "data_sync":
+        return guardPage(
+          ["admin", "super_admin"],
+          <DataSyncPage />
         );
       case "cms_security":
         return guardPage(

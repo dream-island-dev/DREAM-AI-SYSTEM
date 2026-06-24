@@ -3,13 +3,26 @@ import { createRoot } from "react-dom/client";
 
 import "./styles.css";
 import App from "./App";
+import GuestPortal from "./components/GuestPortal";
 
 const rootElement = document.getElementById("root");
 const root = createRoot(rootElement);
 
+// Guest Portal — public, password-less magic-link route (Pre-Arrival Guest
+// Portal session). Checked HERE, before <App/> ever mounts, so the entire
+// staff-auth hook chain (Supabase session listener, push-notification
+// subscription, etc.) never initializes for an unauthenticated guest opening
+// their own portal link. There's no react-router-dom in this project
+// (CLAUDE.md §2 — deliberate, no routing library) — this is the one public
+// surface, so a single window.location.pathname check is simpler and safer
+// than adding a routing library just for it. Vercel's CRA preset already
+// rewrites unknown paths to /index.html (no vercel.json needed), and CRA's
+// own dev server does the same via its built-in historyApiFallback.
+const portalMatch = window.location.pathname.match(/^\/portal\/([^/?#]+)/);
+
 root.render(
   <StrictMode>
-    <App />
+    {portalMatch ? <GuestPortal token={portalMatch[1]} /> : <App />}
   </StrictMode>
 );
 

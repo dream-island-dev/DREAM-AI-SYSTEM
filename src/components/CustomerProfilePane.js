@@ -29,6 +29,25 @@ function fmtDateHe(iso) {
 export default function CustomerProfilePane({ guest, onClose }) {
   const [checkoutTime, setCheckoutTime] = useState(null);
   const [loadingCheckout, setLoadingCheckout] = useState(true);
+  const [linkCopied, setLinkCopied] = useState(false);
+
+  // ── Copy the guest's magic-link Portal URL (GuestPortal.js, /portal/:token,
+  // Pre-Arrival Guest Portal session) — portal_token is the credential, NOT
+  // guest.phone, so this is the only place staff get the real shareable link.
+  async function copyPortalLink() {
+    if (!guest?.portal_token) return;
+    const url = `${window.location.origin}/portal/${guest.portal_token}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      setLinkCopied(true);
+      setTimeout(() => setLinkCopied(false), 2200);
+    } catch {
+      // Clipboard API can fail (permissions / non-secure context) — fall back
+      // to a visible prompt so staff can still copy it manually instead of
+      // the click silently doing nothing (FAIL VISIBLE).
+      window.prompt("העתיקו את הקישור לפורטל האורח:", url);
+    }
+  }
 
   useEffect(() => {
     let active = true;
@@ -58,7 +77,7 @@ export default function CustomerProfilePane({ guest, onClose }) {
     <div
       onClick={onClose}
       style={{
-        position: "fixed", inset: 0, zIndex: 9998,
+        position: "fixed", inset: 0, zIndex: 9998, direction: "ltr",
         background: "rgba(0,0,0,0.45)", display: "flex", justifyContent: "flex-end",
       }}
     >
@@ -90,10 +109,28 @@ export default function CustomerProfilePane({ guest, onClose }) {
         </div>
 
         {guest.room && (
-          <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 16 }}>
+          <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 12 }}>
             🚪 {guest.room}
           </div>
         )}
+
+        <button
+          onClick={copyPortalLink}
+          disabled={!guest.portal_token}
+          title={!guest.portal_token ? "אין קישור פורטל לאורח זה" : undefined}
+          style={{
+            display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+            width: "100%", padding: "9px 12px", borderRadius: 10, marginBottom: 16,
+            border: `1px solid ${linkCopied ? "#16A34A" : "var(--gold)"}`,
+            background: linkCopied ? "#ECFDF5" : "var(--ivory)",
+            color: linkCopied ? "#16A34A" : "var(--gold-dark)",
+            fontSize: 13, fontWeight: 700, fontFamily: "Heebo, sans-serif",
+            cursor: guest.portal_token ? "pointer" : "not-allowed",
+            opacity: guest.portal_token ? 1 : 0.5,
+          }}
+        >
+          {linkCopied ? "✓ הקישור הועתק" : "🔗 העתק קישור לפורטל האורח"}
+        </button>
 
         <div style={{
           display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 20,

@@ -1,8 +1,10 @@
 # CLAUDE.md — Dream Island AI System
 > קובץ זה נקרא אוטומטית בכל שיחה. הוא מקור-האמת שלך. קרא אותו לפני כל פעולה.
-> **עדכון אחרון:** 2026-06-24 (session 31 — CMS Security: AuthContext.js חדש (src/context/) + מודול src/components/cms/ — שער 2FA (TOTP, Supabase Auth MFA) + proactive session-refresh עצמאי מ-App.js's user state הקיים, עטוף מאחורי route חדש "אבטחת CMS" (admin/super_admin). פירוט בתחתית §10 + §7).
+> **עדכון אחרון:** 2026-06-25 (session 35 — Pre-Arrival Guest Portal & Static Photo Tour: עמוד אורח ציבורי וללא-סיסמה חדש לחלוטין (`GuestPortal.js`+`PhotoTour.js`, route `/portal/:token`) — Hero עם countdown לצ'ק-אין + itinerary (ספא/ארוחה) + scrollytelling photo-tour עם upsells בקליק-אחד שיוצרים `tasks` ומתריעים לקבוצת Whapi. ⚠️ סטייה מכוונת ומתועדת מהדירקטיבה: `/portal/:token` (UUID אקראי, migration 083) במקום `/portal/:phone` המקורי — טלפון אינו secret, לא בטוח כקרדנציאל לעמוד ציבורי. שני Edge Functions חדשים (`guest-portal-data`/`guest-portal-upsell`, service-role בלבד, RLS על guests לא נגע). נמצא ותוקן באג אמיתי תוך כדי בדיקה חיה (token לא-תקין דלף הודעת שגיאת Postgres גולמית). פירוט בתחתית §10 session 35).
 >
-> **עדכון קודם:** 2026-06-24 (session 30 — Housekeeping Tablet polish, Guest Status Guardrails & Automation UI Localization: AutomationControlCenter.js קיבל תרגום עברי ל-Stage 4 + dropdown raw-key + timing hint; משימה ידנית (OperationsBoard/ReceptionistView) משדרת כעת כרטיס לקבוצת Whapi בדיוק כמו דיווח וואטסאפ, ו-SLA escalation עבר מסף שטוח 7 דק' לסף דינמי לפי קטגוריה; תפקיד `receptionist` חדש (profiles.role) עם מסך מלא מוגבל לשני כלים בלבד; guest concierge חסם בקשות שירות מאורח-סוויטה שעדיין לא ביצע צ'ק-אין + Strict Hebrew Lock/Anti-Hallucination firewall נוסף כשכבה בלתי-תלויה במקור הפרומפט. פירוט בתחתית §10).
+> **עדכון קודם:** 2026-06-25 (session 34 — Smart Inbox AI Copilot & System Prompt Overhaul: thread quick-actions drawer הוחלף מ-static `{{שם}}` templates ל-on-demand AI suggestions ("✨ הצעות AI חכמות", Edge Function חדש `suggest-replies`, Gemini→Claude, נקרא רק בקליק — token-saving by design) + "תחזוקה/משק בית" עברו מ-instant-fire ל-picker תת-קטגוריות+free-text לפני dispatch ל-tasks. בנוסף: persona/tone overhaul ל-guest-facing bot (`whatsapp-webhook`). פירוט בתחתית §10 session 34).
+>
+> **עדכון קודם לכן:** 2026-06-25 (session 33 — WhatsApp Inbox Operations Control Room: WordPress-style guest editor + claim/assignment מתמשך + macros הקשריים + roster chips. migrations 081–082. ראה §10 session 33).
 >
 > 📚 **היסטוריית הסשנים המלאה (sessions 2–24) הועברה ל-[`claude_history.md`](claude_history.md)** כדי לשמור את הקובץ הזה קליל. שום מידע לא נמחק — רק הופרד. הקובץ הזה מחזיק את **רפרנס הארכיטקטורה החי** (§0–§13); הקובץ ההוא מחזיק את הנרטיב ההיסטורי. כשצריך הקשר מפורט על באג/החלטה ישנה — קרא שם.
 >
@@ -109,7 +111,16 @@ DREAM-AI-SYSTEM/
 │   ├── Chat.js                   ⚠️ ORPHAN 3.9KB — לא מיובא בשום מקום, ממתין למחיקה
 │   ├── supabaseClient.js         2.8KB — Supabase client + loadAgentProfile + saveLearningLog
 │   ├── googleAuth.js             1.5KB — initGoogleSignIn helper
-│   ├── index.js                  1.4KB — CRA entry point
+│   ├── index.js                  ★ session 35: CRA entry point — קודם רינדר ישיר של `<App/>`.
+│   │                                כעת בודק `window.location.pathname` תחילה: `/portal/:token` →
+│   │                                `<GuestPortal token/>` **במקום** `<App/>` — לפני שום hook
+│   │                                staff-auth (Supabase session listener וכו') מתחיל לרוץ. אין
+│   │                                react-router-dom בפרויקט (§2, בכוונה) — זה ה-route הציבורי
+│   │                                היחיד, אז בדיקת path בודדת כאן פשוטה ובטוחה יותר מהוספת
+│   │                                ספריית ניתוב. Vercel's CRA preset (אין vercel.json) +
+│   │                                webpack-dev-server's historyApiFallback כבר מגישים
+│   │                                index.html לכל path לא-מוכר — אומת ישירות (`fetch("/portal/x")`
+│   │                                → 200 + `<div id="root">`).
 │   ├── styles.css                162B  — minimal (real styles ב-App.js)
 │   ├── utils/
 │   │   ├── admin.js              2.2KB — isAdminUser(), isSuperAdmin(), loadDepartments()
@@ -138,15 +149,110 @@ DREAM-AI-SYSTEM/
 │       │                            session 12: "הוסף אורח" עובר עכשיו דרך AddGuestModal המשותף
 │       │                            (לא טופס מקומי מקוצר) — כך שגם אורח שנוסף מכאן מקבל spa_time.
 │       │                            ★ session 27: לחיצה על שם האורח פותחת CustomerProfilePane.
+│       │                            ★ session 33: ה-`guests` select המפורש (לא `*`) היה חסר
+│       │                            `meal_time`/`meal_location`/`treatment_count`/`order_number`/
+│       │                            `payment_amount`/`payment_link_url`/`needs_callback` — פער
+│       │                            Zero-Data-Loss אמיתי שקדם לסשן הזה (AddGuestModal שולח patch
+│       │                            מלא, לא diff, אז עריכת אורח מכאן אִפסה את השדות החסרים בשקט).
+│       │                            תוקן — כל השדות שAddGuestModal כותב נמצאים כעת ב-select.
 │       ├── CustomerProfilePane.js ★ NEW (session 27) — slide-out guest profile drawer. מציג סה"כ
 │       │                            לילות (מחושב arrival_date↔departure_date) + שעת צ'ק-אאוט
 │       │                            (suite_rooms.checkout_time לפי phone, fallback ל-"11:00" —
 │       │                            ערך ברירת המחדל הקיים ב-bot_config.hotel_checkout_time).
 │       │                            נפתח מ-GuestDashboard.js (לחיצה על שם אורח); read-only.
+│       │                            ★ session 33: תוקן באג RTL — ה-overlay החיצוני (`justifyContent:
+│       │                            "flex-end"`) ירש `direction:rtl` מ-`<html dir="rtl">` הגלובלי
+│       │                            (index.html), מה ש-flex-end הופך ללוגי (שמאל ב-RTL, לא ימין
+│       │                            פיזי) — הפאנל קוקע בפועל בשמאל המסך, לא בימין כמתועד/מיועד.
+│       │                            נוסף `direction:"ltr"` מפורש ל-overlay החיצוני בלבד (הפאנל
+│       │                            הפנימי שומר `direction:"rtl"` לטקסט). אותו תיקון בדיוק הוחל
+│       │                            במקביל ב-AddGuestModal.js's `dock="right"` החדש (למטה).
+│       │                            ★ session 35: כפתור "🔗 העתק קישור לפורטל האורח" — מעתיק
+│       │                            ל-clipboard את `${origin}/portal/${guest.portal_token}` (לא
+│       │                            phone — ראה §10 session 35 להסבר האבטחה). זו נקודת הגישה
+│       │                            היחידה לקבלת קישור פורטל אורח אמיתי כיום — fallback ל-
+│       │                            `window.prompt` אם clipboard API חסום (context לא-מאובטח).
+│       │                            דורש `portal_token` ב-select של GuestDashboard.js (נוסף).
+│       ├── GuestPortal.js        ★ NEW (session 35) — Pre-Arrival Guest Portal. עמוד **ציבורי,
+│       │                            ללא סיסמה, ללא קשר לכל לוגיקת ה-auth/Sidebar הקיימת**.
+│       │                            מורכב מ-`index.js` (ראה למעלה) ב-route `/portal/:token` —
+│       │                            `token` = `guests.portal_token` (UUID, migration 083), לא
+│       │                            phone. קורא ל-Edge Function `guest-portal-data` (service-role,
+│       │                            לא RLS) ומקבל subset בטוח של שדות (שם/חדר/תאריכים/ספא/ארוחה —
+│       │                            **לא** טלפון/תשלום/הערות-פנימיות/claimed_by). Hero עם countdown
+│       │                            חי (days/hours/minutes/seconds) לצ'ק-אין (`arrival_date` +
+│       │                            "15:00" קבוע — משקף את `bot_config.hotel_checkin_time`'s
+│       │                            ברירת המחדל, לא נטען בנפרד כדי לשמור על round-trip יחיד), עם
+│       │                            3 phases: `upcoming` (countdown)/`in_stay` (ברכת-נוכחות)/
+│       │                            `past` (תודה). פאנל itinerary (glass panel) מציג spa_time/
+│       │                            meal_time+meal_location — שורה מוצגת רק אם יש לה ערך (לא
+│       │                            "null" גולמי). מרכיב `PhotoTour` (למטה) ומנהל toast הצלחה/
+│       │                            שגיאה ל-upsells. פלטת "XOS" נפרדת בכוונה מ-`--gold`/`--ivory`
+│       │                            של האפליקציה הפנימית (§11) — `#0f172a`/`#09090b`/`#D4AF37`,
+│       │                            לפי הדירקטיבה. `<img src="/logo.png">` עם `onError` שמסתיר
+│       │                            את עצמו בשקט אם הקובץ לא קיים (⚠️ הוא **לא** קיים כיום ב-
+│       │                            public/ — רק icon-192/512.png) — לא שובר את הדף, רק חוסר
+│       │                            לוגו עד שיועלה קובץ אמיתי.
+│       ├── PhotoTour.js          ★ NEW (session 35) — scrollytelling virtual tour, ללא three.js/
+│       │                            ספריית 3D. כל "סצנה" = section בגובה `100vh` עם
+│       │                            IntersectionObserver (לא scroll-listener כבד) שמחליף opacity/
+│       │                            transform ב-CSS transition — crossfade דרך CSS, לא JS. רקע =
+│       │                            `linear-gradient(...), url(...)` — אם ה-JPG חסר (תמיד היום,
+│       │                            ראה למעלה) השכבה השנייה פשוט לא נצבעת והגרדיאנט נשאר, אז שום
+│       │                            סצנה לא נראית "שבורה" גם בלי תמונות אמיתיות. 4 סצנות קבועות
+│       │                            (`SCENES` קונסט) עם CTAs של upsell ב-2 מהן (ספא; יין+שמפניה).
+│       │                            קליק על CTA → `onUpsell(upsellLabel)` prop (מ-GuestPortal) →
+│       │                            `guest-portal-upsell`.
 │       ├── UserManagement.js     21KB  ניהול משתמשים
 │       ├── AgentChat.js          22KB  שיחה עם סוכן AI
 │       ├── AgentQuestionnaire.js 19KB  שאלון הגדרת סוכן
-│       ├── WhatsAppInbox.js      18KB  תיבת שיחות WA + bot toggle
+│       ├── WhatsAppInbox.js      ★ session 33 — "Operations Control Room". היה 18KB/תיבת שיחות
+│       │                            בלבד; קיבל בסשן זה: (1) **WordPress-style guest editor** —
+│       │                            כפתור ✏️ בכותרת ה-thread פותח AddGuestModal כ-drawer ימני
+│       │                            (`dock="right"`) דרך `openGuestEditor()` (fetch מלא לפי phone
+│       │                            variants, לא רק השדות החלקיים שה-join של תיבת השיחות נושא),
+│       │                            (2) **Claim/assignment מתמשך** — כפתור toggle יחיד בכותרת
+│       │                            (🙋 לא-משויך → 🔁 השתלטות → ✓ שלך, קליק נוסף = שחרור) כותב
+│       │                            ל-`guests.claimed_by`/`claimed_at` (migration 081); badge
+│       │                            "🔒 בטיפול: [שם]" ב-roster, נפתר משם profiles.id→name map
+│       │                            שנטען פעם אחת. כל סטטוס שיוך — ללא שער הרשאות (small-team
+│       │                            cooperative tool, כמו OperationsBoard's claim). (3) **Realtime
+│       │                            cross-tab sync** — channel חדש ונפרד (`wa-inbox-guests-rt`,
+│       │                            בכוונה לא מאוחד עם `wa-inbox-rt-v2` הקיים כדי לא לסכן את לוגיקת
+│       │                            ה-reconnect שלו) על `postgres_changes` UPDATE של `guests` —
+│       │                            claim/release/עריכה מטאב אחד מופיע בטאבים אחרים בלי רענון
+│       │                            (`applyGuestRowUpdate()`, פונקציה משותפת גם לשמירת ה-drawer
+│       │                            וגם ל-payload של ה-realtime — לא שני מסלולי patch שיכולים
+│       │                            להתפזר). דורש את `guests` ב-`supabase_realtime` publication
+│       │                            (migration 082, אותו failure mode מתועד כמו migration 059).
+│       │                            (4) **Contextual macros (No-Token Quick Replies)** —
+│       │                            `buildContextualMacros(activeContact)` מציגה כפתורי זהב מ-
+│       │                            `spa_time`/`meal_time`/`room` כש-`spa_time`/`meal_time`/`room`
+│       │                            קיימים — templating טהור, אפס קריאות LLM/טוקנים. (5) **Roster
+│       │                            chips** — `roomChipMeta()` קורא ל-`getSuiteSection()` הקיים
+│       │                            (suiteRegistry.js) להציג "🏨 [שם סוויטה]" צבוע-לפי-section, או
+│       │                            "☀️ בילוי יומי [1/2]" ל-Premium Day packages/room_type='day_guest'.
+│       │                            שלושת ה-badges (זהות/חדר/שיוך) עברו ל-flex row עם wrap כדי לא
+│       │                            להישבר ברוחב צר. ה-join הראשי (fetchAll+fetchSince) הורחב ל-
+│       │                            id/room_type/status/departure_date/meal_time/meal_location/
+│       │                            claimed_by/claimed_at — לא query נוסף, אותה קריאה קיימת.
+│       │                            ★ session 34: (6) **AI Suggestions (on-demand)** —
+│       │                            `QUICK_PHRASES` הסטטי (עם `{{שם}}` שדלף גולמי לכל מי שלא תאם
+│       │                            `activeContact.guestName`) **הוסר מ-drawer ה-thread** (נשאר
+│       │                            בשימוש ב-`NewChatModal` בלבד — שיווק לאורח-בלי-שיחה-פעילה, לא
+│       │                            מה שתועד כ"דמוי"). כפתור "✨ הצעות AI חכמות" → `generateAiSuggestions()`
+│       │                            → Edge Function חדש `suggest-replies` (Gemini→Claude, 3 הודעות
+│       │                            אחרונות + guestName/room) — **נקרא רק בקליק מפורש, לעולם לא
+│       │                            אוטומטית בבחירת שיחה** (token-saving by design, ראה §10 session 34).
+│       │                            macros הקשריים (4 למעלה) ממשיכים להופיע **בנוסף** לכפתור ה-AI,
+│       │                            לא הוחלפו — שניהם זמינים יחד. (7) **Smart Task Routing** —
+│       │                            "🔧/🛏️" לא עוד יורים `tasks` insert מיידי עם טקסט ההודעה הגולמי
+│       │                            של האורח; פותחים picker (`routeDraft` state) עם chips
+│       │                            תת-קטגוריה (`TASK_SUBCATEGORIES`) + שדה free-text — `routeTask()`
+│       │                            מקבל כעת `subCategoryLabel`/`note` ובונה מהם את ה-description,
+│       │                            עם נפילה לטקסט הגולמי רק אם שניהם ריקים. כפתור "🚀 שלח משימה"
+│       │                            מנוטרל (Disable Don't Hide, §0.2) עד שנבחר chip אחד לפחות
+│       │                            או הוזן free-text.
 │       ├── AdminPanel.js         18KB  לוח בקרה admin
 │       ├── ArrivalImportPanel.js ★ NEW (session 7) — Unified Import Hub, היחיד באפליקציה.
 │       │                            מורכב מתוך TaskBoard בלבד. 2 פרופילים:
@@ -154,6 +260,16 @@ DREAM-AI-SYSTEM/
 │       │                              (dropdown חדר מ-SUITE_REGISTRY) → sync_suite_arrivals RPC
 │       │                            "shifts" — כל Excel → EditableGrid → ייצוא חזרה (ללא DB write)
 │       │                            DataUpload.js + DataHub.js נמחקו (session 7) — מוזגו לתוכו.
+│       │                            ★ session 32: קיבל prop `defaultOpen` (ברירת מחדל false, לא
+│       │                            שובר את ההתנהגות הקיימת בתוך OperationsBoard) + restyle ל-
+│       │                            deep-dark/gold chrome (header/panel/tabs/banners) — ראה
+│       │                            DataSyncPage.js למטה ו-§10 session 32.
+│       ├── DataSyncPage.js      ★ NEW (session 32) — "סנכרון נתונים" (route עצמאי, admin/super_admin,
+│       │                            סיידבר אדמין). Thin wrapper בלבד: מרכיב כותרת luxury (dark+gold)
+│       │                            מעל `<ArrivalImportPanel defaultOpen />` הקיים. **לא** מנוע ייבוא
+│       │                            מקביל — אין כאן שום parsing/upsert logic. נוסף כדי שאדמין יוכל
+│       │                            להגיע לייבוא בלי לעבור דרך "תפעול ואחזקה"; ArrivalImportPanel
+│       │                            עדיין מורכב גם שם (OperationsBoard.js:483) ללא שינוי.
 │       ├── EditableGrid.js       ★ NEW (session 7) — Universal Editable Grid (עקרון #4, §0).
 │       │                            exports EditableGrid + BulkEditBar + exportToExcel.
 │       │                            column-driven, לא יודע כלום על suites/shifts/guests —
@@ -196,6 +312,12 @@ DREAM-AI-SYSTEM/
 │       │                            ("💳 תשלום"), שעצמו מוצג רק אחרי arrival_confirmed=true, כך
 │       │                            שלא ניתן היה להזין מחיר/קישור מוקדם — בדיוק כשStage 2 Pay
 │       │                            (אוטומטי, אירוע-מיידי) עלול לירות ולמצוא אותם ריקים.
+│       │                            ★ session 33: קיבל prop `dock` — `dock="right"` מרנדר אותו
+│       │                            כ-drawer ימני נגרר-פנימה (slide-in) במקום מודאל ממורכז, ברירת
+│       │                            המחדל (ללא prop) משאירה את שני הצרכנים הקיימים ללא שינוי. נוסף
+│       │                            textarea ל-`guest_notes` (migration 053 — היה append-only, בלי
+│       │                            עורך בשום מקום באפליקציה עד כה) + שדות `meal_time`/`meal_location`
+│       │                            (migration 081). נצרך עכשיו גם מ-WhatsAppInbox.js (ראה למטה).
 │       ├── SuitesDashboard.js    "פירוט חדרים" (suites route) — per-room grid מ-suite_rooms,
 │       │                            סטטוס חי מ-guests. ⚠️ לא להתבלבל עם RoomBoard ("לוח סוויטות")!
 │       │                            session 12: route עדיין קיים אך הוסר מה-Sidebar nav (לא נגיש
@@ -341,16 +463,60 @@ DREAM-AI-SYSTEM/
 │   │   │                            `tasks.guest_id` (FK→guests, SET NULL) + `tasks.whapi_message_id`
 │   │   │                            (UNIQUE partial — one card per task, resolved by the 👍🏼 reaction
 │   │   │                            listener). ראה §10 session 26.
-│   │   └── 078_session27_attribution_and_custom_automations.sql  applied ✅ — ★ session 27:
-│   │                                `tasks.resolved_by_phone`/`resolved_by_name` (raw Whapi identity,
-│   │                                FAIL VISIBLE fallback alongside the existing `resolved_by` profiles
-│   │                                FK) + `tasks.source` CHECK + `'manual_group'` (Room/חדר/סוויטה-
-│   │                                prefixed manual text in the ops group) + new tables
-│   │                                `custom_automations`/`custom_automation_steps` (Linear Automation
-│   │                                Flow Builder draft layer — not yet read by any cron/send path).
-│   │                                ראה §10 session 27.
+│   │   ├── 078_session27_attribution_and_custom_automations.sql  applied ✅ — ★ session 27:
+│   │   │                            `tasks.resolved_by_phone`/`resolved_by_name` (raw Whapi identity,
+│   │   │                            FAIL VISIBLE fallback alongside the existing `resolved_by` profiles
+│   │   │                            FK) + `tasks.source` CHECK + `'manual_group'` (Room/חדר/סוויטה-
+│   │   │                            prefixed manual text in the ops group) + new tables
+│   │   │                            `custom_automations`/`custom_automation_steps` (Linear Automation
+│   │   │                            Flow Builder draft layer — not yet read by any cron/send path).
+│   │   │                            ראה §10 session 27.
+│   │   ├── 079_session29_jacuzzi_and_room_ready.sql  applied ✅ — ★ session 29: `room_status.
+│   │   │                            jacuzzi_status`/`room_clean_status` (Smart Ready-Alert Gate). ראה §10 session 29.
+│   │   ├── 080_session30_stage4_rename_and_receptionist_role.sql  applied ✅ — ★ session 30:
+│   │   │                            `automation_stages.display_name` rename + `profiles.role` CHECK + `'receptionist'`.
+│   │   │                            ראה §10 session 30.
+│   │   ├── 081_guests_claim_and_meal_fields.sql  applied ✅ — ★ session 33: `guests.claimed_by`
+│   │   │                            (FK→profiles)/`claimed_at` (persisted conversation assignment,
+│   │   │                            WhatsAppInbox.js) + `guests.meal_time`/`meal_location` (same shape
+│   │   │                            as spa_time — manual fields feeding the new contextual macros).
+│   │   │                            ראה §10 session 33.
+│   │   ├── 082_guests_realtime_publication.sql  applied ✅ — ★ session 33: adds `guests` to the
+│   │   │                            `supabase_realtime` publication — same documented failure mode as
+│   │   │                            migration 059 (guest_alerts): without this, a postgres_changes
+│   │   │                            subscription on `guests` subscribes successfully but silently
+│   │   │                            never receives an event. ראה §10 session 33.
+│   │   └── 083_guest_portal_token_and_upsell_source.sql  applied ✅ — ★ session 35:
+│   │                                `guests.portal_token` (UUID, `gen_random_uuid()` default —
+│   │                                `uuid_generate_v4()`/uuid-ossp לא מופעל בפרויקט הזה למרות
+│   │                                שmigration 001 מפנה אליו, pgcrypto כן מופעל כברירת מחדל) +
+│   │                                `tasks_source_check` widened + `'portal_upsell'`. ראה §10 session 35.
 │   └── functions/
 │       ├── chat/                deployed ✅ — Gemini 2.5→Claude fallback
+│       ├── suggest-replies/     ★ NEW (session 34) — Smart Inbox AI Copilot. Stateless: לא קורא
+│       │                            DB בכלל (לא history, לא Drive RAG, לא memory — בכוונה לא
+│       │                            משותף עם chat/'s machinery, ראה הערת header בקובץ). מקבל
+│       │                            {messages (3 אחרונות, כבר טעונות בצד הלקוח), guestName, room}
+│       │                            מ-WhatsAppInbox.js, מחזיר {ok, suggestions:string[], engine}.
+│       │                            Gemini 2.5 Flash (responseMimeType:"application/json")→Claude.
+│       │                            `parseSuggestions()` עם 3 שכבות fallback parsing (JSON ישיר →
+│       │                            regex `{...}` → line-split) כך שתשובת מודל מעוצבת-לא-מושלם
+│       │                            (code fence וכו') לא קורסת. deployed --no-verify-jwt.
+│       ├── guest-portal-data/   ★ NEW (session 35) — fetch ל-GuestPortal.js הציבורי. service-role
+│       │                            בלבד (לא RLS) — מחפש לפי `guests.portal_token`, מחזיר select
+│       │                            ידני של שדות בטוחים בלבד (לא `select("*")`: לא phone/payment_*/
+│       │                            guest_notes/claimed_by). ★ נמצא תוך בדיקה חיה ותוקן: token
+│       │                            לא-בצורת-UUID (typo/קישור פגום) זרק שגיאת Postgres גולמית
+│       │                            ("invalid input syntax for type uuid") במקום guest_not_found
+│       │                            נקי — נוסף regex guard לפני השאילתה. ראה §10 session 35.
+│       ├── guest-portal-upsell/ ★ NEW (session 35) — In-Scroll One-Click Upsells. אותו token guard.
+│       │                            מאתר guest לפי portal_token → insert ל-`tasks`
+│       │                            (source='portal_upsell', migration 083) → כרטיס לקבוצת Whapi
+│       │                            (`_shared/whapiSend.ts`, אותו מנגנון בדיוק כמו
+│       │                            notify-manual-task) עם "👍🏼 to complete" — נפתר ע"י אותו
+│       │                            reaction-sweep listener (whapi-webhook) כמו כל task אחר.
+│       │                            כשל Whapi הוא best-effort — ה-task עדיין נוצר, toast ההצלחה
+│       │                            לאורח לא תלוי בו.
 │       ├── generate-schedule/   deployed ✅ ⚠️ ORPHAN — frontend לא קורא אותה
 │       ├── generate-agent-profile/ deployed ✅
 │       ├── process-knowledge/   deployed ✅
@@ -476,6 +642,10 @@ switch (activePage) {
   "ops_board"    → OperationsBoard  // ★ session 21 — "תפעול ואחזקה", ArrivalImportPanel (sole import
                                     // surface) mounted here. "tasks"/"calls" = deep-link aliases,
                                     // same component (TaskBoard.js + the old CallsPage both deleted).
+  "data_sync"    → DataSyncPage     // ★ NEW session 32 — admin/super_admin, guardPage. Thin wrapper —
+                                    // mounts the SAME ArrivalImportPanel instance type (defaultOpen),
+                                    // not a second import engine. ops_board's embed (line above)
+                                    // is untouched; this is just a second entry point to it.
   "bot_config"   → BotConfigPanel   (admin only — guardPage)
   "bot_settings" → BotSettings      (admin only — guardPage)
   "bot_scripts"  → BotScriptEditor  (admin only) // ✏️ session 8 correction: IS in Sidebar nav
@@ -515,7 +685,7 @@ switch (activePage) {
 | `bot_settings` | system_prompt + knowledge_base + `preferred_model` (id=1) — ★ session 21: ערך חי כעת `gemini-2.0-flash-lite` (היה Claude מ-session 15) — toggle ב-BotSettings.js | `auth.uid() IS NOT NULL` |
 | `message_templates` | תבניות שידור עם sort_order | `auth.uid() IS NOT NULL` |
 | `bot_scripts` | סקריפטים מותאמים לכל trigger_event | authenticated |
-| `tasks` | ★ session 21: "תפעול ואחזקה" — `status` עכשיו `open`/`in_progress`/`done` (היה רק open/done), + `sla_category`/`sla_deadline`/`escalated_at`/`claimed_by`/`claimed_at`/`source`/`reporter_profile_id`/`reporter_raw_text`. `source='legacy_service_call'` = backfill חד-פעמי מ-`service_calls` (migration 071) + ★ session 22 (migration 073): `action_token` (סוד ל-URL של כפתורי Accept/Complete) + `source_message_id` (UNIQUE partial, webhook idempotency) + ★ session 26 (migration 077): `source='guest_request'` (suite guest ask, מ-`log_guest_request`, ראה §10) + `guest_id` (FK→guests, SET NULL) + `whapi_message_id` (UNIQUE partial — כרטיס המשימה שבפועל נשלח לקבוצה; 👍🏼 reaction listener מתאים אליו) + ★ session 27 (migration 078): `source='manual_group'` (Room/חדר/סוויטה-prefixed manual text בקבוצת הצוות, ראה §10) + `resolved_by_phone`/`resolved_by_name` (תפיסת זהות גולמית מ-Whapi — נכתב גם כש-`resolved_by` ה-FK נשאר NULL כי לא נמצאה שורת profiles תואמת, FAIL VISIBLE) | open to authenticated |
+| `tasks` | ★ session 21: "תפעול ואחזקה" — `status` עכשיו `open`/`in_progress`/`done` (היה רק open/done), + `sla_category`/`sla_deadline`/`escalated_at`/`claimed_by`/`claimed_at`/`source`/`reporter_profile_id`/`reporter_raw_text`. `source='legacy_service_call'` = backfill חד-פעמי מ-`service_calls` (migration 071) + ★ session 22 (migration 073): `action_token` (סוד ל-URL של כפתורי Accept/Complete) + `source_message_id` (UNIQUE partial, webhook idempotency) + ★ session 26 (migration 077): `source='guest_request'` (suite guest ask, מ-`log_guest_request`, ראה §10) + `guest_id` (FK→guests, SET NULL) + `whapi_message_id` (UNIQUE partial — כרטיס המשימה שבפועל נשלח לקבוצה; 👍🏼 reaction listener מתאים אליו) + ★ session 27 (migration 078): `source='manual_group'` (Room/חדר/סוויטה-prefixed manual text בקבוצת הצוות, ראה §10) + `resolved_by_phone`/`resolved_by_name` (תפיסת זהות גולמית מ-Whapi — נכתב גם כש-`resolved_by` ה-FK נשאר NULL כי לא נמצאה שורת profiles תואמת, FAIL VISIBLE) + ★ session 35 (migration 083): `source='portal_upsell'` (קליק על upsell בפורטל האורח הציבורי, `guest-portal-upsell` Edge Function — ראה §10) | open to authenticated |
 | `ai_failover_events` | ★ session 21 — לוג כל auto-failover Claude↔Gemini בwebhook, נצרך ע"י AiFailoverWidget.js (realtime) | authenticated read, service-role write |
 | `custom_automations` / `custom_automation_steps` | ★ NEW (session 27, migration 078) — שכבת טיוטה ל-Linear Automation Flow Builder (AutomationControlCenter.js's "✨ אוטומציה חדשה" tab): שם + תזמון הפעלה (`trigger_anchor_event`/`trigger_day_offset`/`trigger_local_time`) + שלבים מסודרים (`step_type` = `meta_template`/`free_text`). **לא** נקרא ע"י whatsapp-cron/whatsapp-send — שכבת תכנון בלבד, חיווט ל-runtime הוא צעד עתידי. נפרד בכוונה מ-`automation_stages` (migration 065, הצינור הקיים שכבר מחובר ל-runtime) | authenticated |
 | `suite_rooms` | חדר לכל שורה מ-EZGO Suites CSV. key: `(order_number, res_line_id)`. מקור: `ArrivalImportPanel.js` (sole import surface) | authenticated |
@@ -581,6 +751,21 @@ msg_checkout_fb_sent      BOOL — checkout_fb (יום אחרי עזיבה)
 --    העמודה עדיין קיימת ב-DB (לא נמחקה, migration 045) אך אף קוד חי לא כותב לה
 --    יותר. Stage 3.5 נמחק כליל מ-automation_stages + whatsapp-send/-cron, ראה §10
 --    session 29. אל תניחו "כבר נשלח" אם תראו את העמודה הזו — היא קפואה לתמיד false.
+
+── WhatsApp Inbox Claim/Assignment + Meal Macros (migration 081, session 33) ──
+claimed_by    UUID — FK→profiles(id), SET NULL. מי מהצוות מטפל בשיחת האורח כרגע
+                (WhatsAppInbox.js claim/take-over button). NULL = לא משויך.
+claimed_at    TIMESTAMPTZ — חותמת claim/take-over אחרון. מתאפס יחד עם claimed_by בשחרור.
+meal_time     TEXT — שעת ארוחה ("19:30"), אותה קונבנציית עריכה כמו spa_time. מוזן ב-
+                AddGuestModal, נקרא ע"י WhatsAppInbox.js's buildContextualMacros().
+meal_location TEXT — חופשי, ללא registry קבוע (בשונה מ-room/SUITE_REGISTRY) — אין "רשימת
+                שולחנות" קיימת היום. אותה הערה.
+
+── Guest Portal magic-link (migration 083, session 35) ──
+portal_token  UUID NOT NULL UNIQUE — קרדנציאל ה-magic-link ל-GuestPortal.js הציבורי
+                (`/portal/:token`). **לא** phone — ראה migration 083 להסבר האבטחה המלא.
+                נוצר אוטומטית לכל guest (קיים+עתידי) דרך DEFAULT gen_random_uuid().
+                staff מקבלים את הקישור המלא דרך CustomerProfilePane.js's "🔗 העתק קישור".
 ```
 
 ---
@@ -686,6 +871,18 @@ webhook קורא: guests.spa_time (שדה TEXT)
 - **Gemini thought leak**: `rawParts.find(p => !p.thought && typeof p.text === "string")` — מדלג על `thought:true` parts
 - **sanitizeReply()**: מנקה `[תבנית:...]` ותגיות פנימיות לפני שליחה לאורח
 - **System prompt**: כולל כלל מפורש נגד echo של תגיות פנימיות
+
+#### Suffix-based Prompt Invariants — בלתי-תלויי-מקור
+שני suffixes מוצמדים **תמיד** ל-`enrichedPrompt` (אחרי `finalSystemPrompt`+`guestCtx`, בענף "faq"),
+ללא תלות איזה משלושת מקורות הפרומפט ניצח (bot_settings.system_prompt admin override / bot_scripts.
+ongoing_concierge / buildSystemPrompt(bot_config) fallback) — כלל שחי רק בתוך אחד משלושת המקורות
+משתתק ברגע שמקור אחר מנצח; suffix מוצמד בקוד הוא invariant אמיתי:
+- `STRICT_HEBREW_LOCK_SUFFIX` (session 30) — נעילת שפה עברית + אנטי-הזיה.
+- `LUXURY_CONCIERGE_PERSONA_SUFFIX` (★ session 34) — זהות+טון: "קונסיירז' של אחד מאתרי הנופש
+  היוקרתיים בישראל", "כמו מנהל/ת אירוח אנושי... לא נציג שירות רשמי/רובוטי", "קליל, חם, מעשי, מהיר".
+  לא חופף ל-STRICT_HEBREW_LOCK_SUFFIX בכוונה (זה כבר מכוסה שם) — רק ROLE/TONE. גם
+  `FALLBACK_SYSTEM_PROMPT` וגם `buildSystemPrompt()`'s שורת הפתיחה רוככו באותו רוח (לא רק ה-suffix)
+  כך שכל שלושת המקורות מתואמים זה לזה, לא רק נסמכים על ה-suffix לתיקון בדיעבד.
 
 #### Caches (module-level, 5 דקות TTL)
 - `_configCache` — bot_config table
@@ -1056,6 +1253,68 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
 - ⚠️ **החלטת סקופ מכוונת — לא עטפתי דפי אדמין קיימים.** עטיפת `AdminPanel`/`BotConfigPanel`/`BotSettings`/`UserManagement` הקיימים ב-`<CMSGate>` הייתה מסוכנת לבדוק בלי גישה ל-Supabase Dashboard בסשן הזה (קיר ה-Auth המקומי שחוסם QA חי כבר מ-sessions 19–30) — אם ל-super_admin/admin בפועל אין עדיין TOTP factor מוגדר וה-flow נתקע, זו נעילה אמיתית מהדפים התפעוליים שהם משתמשים בהם כל יום. במקום זאת: נוסף route חדש לחלוטין — **"🔐 אבטחת CMS"** (`cms_security`, admin/super_admin, `guardPage` הקיים) שמרכיב `<CMSGate><CMSSecurityPanel/></CMSGate>`. `CMSSecurityPanel.js` (חדש) מציג session info (email/AAL/תפוגה) + ניהול/הסרת התקני TOTP (`mfa.unenroll`) — עמוד-הוכחה אמיתי ועובד מקצה-לקצה, ללא שום רגרסיה אפשרית על routes קיימים. הרחבה לדפי אדמין נוספים (sprint 7.3+) מומלצת רק **אחרי** ש-Mike יאשר חי שהוא מצליח לעבור enroll+challenge בעצמו על המסך הזה.
 - ✅ **אומת:** `npm run build` נקי (רק אזהרת `ShiftsPage` הקיימת, לא קשורה). 5 קבצים חדשים (`AuthContext.js` + 4 קבצים תחת `src/components/cms/`), ללא migration (אין שינוי DB — Supabase Auth MFA API פעיל כברירת מחדל, לא דורש toggle בפרויקט), ללא Edge Function (כל הלוגיקה client-side מול Supabase Auth ישירות).
 - ⚠️ **לא אומת חזותית חי** — אותו קיר Supabase Auth מקומי שדווח בסשנים 19–30 (קרדנציאלס דמו על המסך נכשלים). **קריטי לבדוק בפועל לפני שמסמנים ✅:** (1) כניסה ל-"🔐 אבטחת CMS" עם משתמש admin → מסך CMSLogin (לא קופץ ישר ל-Panel); (2) הזנת סיסמה תקינה → אם אין TOTP מוגדר, QR מוצג ונסרק ע"י אפליקציית Authenticator אמיתית → קוד מאומת → Panel נטען; (3) רענון העמוד → session נשמר, אבל ה-AAL gate חוזר לבקש קוד (לא session.currentLevel נשאר aal2 בלי MFA אמיתי — צריך לאמת שזה ההתנהגות בפועל של Supabase, לא רק לפי תיעוד); (4) `extendSession`/`SessionExpiryModal` לא נבדק בפועל בלי לחכות לתפוגת token אמיתית (~1 שעה) — ניתן לבדוק מהיר יותר ע"י שינוי זמני של `REFRESH_LEAD_MS` ל-ערך גדול מ-3600s כדי לכפות כשל מהיר, ואז להחזיר.
+
+---
+
+#### session 32 — Jun 24 2026 (Data Sync sidebar exposure + luxury restyle of the existing import engine)
+> הקשר: דירקטיבת "SESSION 8: EZGO REPORT INGESTION ENGINE & SMART CSV PARSER" — ביקשה לבנות `DataImporter.js` חדש מאפס: שני dropzones ("דוח כניסות יומי"/"דוח תפעול יומי"), parsing עם PapaParse/xlsx, upsert ל-`guests` עם **טלפון כמפתח התנגשות**, וסטיילינג Tailwind ("bg-slate-900", "bg-[#D4AF37]", "rounded-2xl").
+
+> **ממצא מקדים, לפני כתיבת קוד — קריטי:** קראתי את `ArrivalImportPanel.js` + `ezgoParser.js` במלואם לפני כל שינוי. הדירקטיבה מתארת רכיב שכבר קיים, פרוס, ומתועד: `ArrivalImportPanel.js` (session 7) **הוא** "ה-SOLE import surface" — `DataUpload.js`/`DataHub.js` נמחקו בכוונה כדי שלא יהיו שני משטחי ייבוא. שלושת הפערים בין הדירקטיבה למה שקיים בפועל, ולמה לא בוצעו כפי שהתבקש מילה-במילה:
+> 1. **טלפון כמפתח התנגשות ל-suite arrivals** — `aggregateGuestProfiles()` (`ezgoParser.js:319-364`) משתמש בכוונה ב-row-index key, **לא** בטלפון, כי קואורדינטור הזמנה אחד (טלפון יחיד) מנהל לרוב כמה חדרים/אורחים — מפתח-טלפון קודם גרם לאיבוד שורות בשקט (hotfix 3.3/3.4, מתועד ב-§0.1). שינוי בכיוון הדירקטיבה היה מחזיר את הבאג הזה. (הנתיב הפשוט יותר — Daily Report בלבד, ללא suite rooms — **כן** משתמש כבר בטלפון כמפתח, `ArrivalImportPanel.js:582-619` PATH B, כי שם כל רשומה היא אורח-יחיד מזוהה. שום קוד לא שונה שם.)
+> 2. **Tailwind CSS** — לא מותקן/מוגדר בכלל ב-CRA הזה (`package.json` אומת — אין `tailwindcss`/`postcss`/`autoprefixer`). הוספת classes כאלה הייתה מרנדרת ללא עיצוב כלל בלי לבנות pipeline build נפרד — שינוי תשתית גדול ולא מבוקש בפועל.
+> 3. **`DataImporter.js` חדש, נפרד** — היה שובר את עקרון Universal Architecture (§0.4) ואת ההחלטה המתועדת מ-session 7 ("DataUpload.js + DataHub.js נמחקו — מוזגו ל-ArrivalImportPanel").
+>
+> הוצג למשתמש (Mike) סיכום של הממצא הזה לפני כתיבת קוד; הוא אישר גישה משולבת: לחשוף את `ArrivalImportPanel.js` הקיים כ-route עצמאי בסיידבר + לעשות לו restyle ללוקסוס כהה+זהב (לא Tailwind — עם משתני ה-CSS הקיימים של הפרויקט).
+
+- ✅ **חשיפת Sidebar (`App.js`).** כפתור אדמין חדש "📥 סנכרון נתונים" (`data_sync`, באותו pattern בדיוק כמו שאר כפתורי "👑 אדמין" — `guardPage(["admin","super_admin"])`) → `<DataSyncPage />` חדש. **לא הוסר** ה-mount הקיים בתוך `OperationsBoard.js:483` (`{canCreate && <ArrivalImportPanel />}`) — שתי נקודות-כניסה לאותו מנוע ייבוא, אפס לוגיקה כפולה.
+- ✅ **`DataSyncPage.js` חדש** — thin wrapper בלבד (אין parsing/DB calls כאן בכלל): כותרת luxury (אייקון בגרדיאנט זהב, כותרת Playfair Display, תת-כותרת מסבירה) מעל מסגרת `radial-gradient` כהה (`#1c1c1c`→`#0F0F0F`) עם border זהב + box-shadow רך, מרכיבה `<ArrivalImportPanel defaultOpen />`.
+- ✅ **`ArrivalImportPanel.js` — prop `defaultOpen` (ברירת מחדל `false`)** כדי שה-mount הקיים בתוך OperationsBoard (שלא מעביר את ה-prop) ימשיך להיות מכווץ-כברירת-מחדל כבעבר — אפס שינוי התנהגות שם. ה-mount החדש מ-DataSyncPage מעביר `defaultOpen` כי זה כל מטרת הדף.
+- ✅ **Restyle ל-deep-dark/gold (`ArrivalImportPanel.js`)** — ה-chrome של הפאנל עצמו (header מתקפל, מסגרת הפאנל הפתוח, ה-pills של הטאבים, באנרי המידע, כפתור הסנכרון/הזריקה) עברו מ-`var(--card-bg)`/`var(--ivory)` בהיר לגרדיאנטים כהים (`#1c1c1c`/`#161616`/`#0F0F0F`) עם גבול/טקסט `var(--gold)`/`var(--gold-light)` ו-box-shadow לזוהר רך — **ללא** משתני CSS חדשים, רק הפלטה הקיימת (§11). **בכוונה לא נגעתי** ב-DropZone/EditableGrid/טבלת התצוגה המקדימה/result panel/stat chips — אלו שומרים על הרקעים הבהירים הקיימים שלהם, כך שהתוצאה היא "מסגרת כהה+זהב מסביב לכרטיסים בהירים" — אותו pattern בדיוק כמו ה-Sidebar הכהה מול תוכן האפליקציה הבהיר (§11), לא דפוס חדש מומצא. תוקנו 5 מקטעי טקסט שהיו נשארים כהים-על-כהה (לא קריאים) בעקבות שינוי הרקע: hint עליון, hint תאריך-יבוא, "מנתח כותרות...", שם-קובץ/מס' שורות בטאב משמרות.
+- ✅ **אומת:** `npm run build` נקי (רק אזהרת `ShiftsPage` הקיימת, לא קשורה). ללא migration, ללא Edge Function — שינוי frontend בלבד.
+- ⚠️ **נסיון אימות חזותי חי — נחסם ע"י אותו קיר Auth מקומי שמתועד מ-session 19.** בניגוד לסשנים קודמים, הפעם כן הצלחתי להפעיל preview server ולהגיע למסך הלוגין (שמציג קרדנציאלס דמו: `eliad`/`1234` מנהל כללי, `shira@dreamisland.com`/`1234` ו-`yossi@dreamisland.com`/`1234` מנהלי מחלקה) — אבל שני הניסיונות (`eliad`+`shira@dreamisland.com`, שניהם עם `1234`) חזרו "שם משתמש או סיסמה שגויים". זה מאשר, לא סותר, את התיעוד מ-sessions 19–31: הקרדנציאלס המוצגים על המסך לא עובדים בסביבה המקומית הזו (כנראה Supabase Auth מקומי לא מסונכרן עם ה-mock users, או שאלו דורשים session ענן חי). Mike: מומלץ לבדוק בעצמך עם credentials אמיתיים — (1) "📥 סנכרון נתונים" מופיע בסיידבר האדמין; (2) לחיצה עליו פותחת את הפאנל פתוח-מראש (לא מכווץ) במסגרת כהה+זהב; (3) ה-mount הקיים בתוך "תפעול ואחזקה" עדיין נראה ועובד כשהיה (מכווץ כברירת מחדל).
+
+#### session 33 — Jun 25 2026 (WhatsApp Inbox → Operations Control Room: WordPress-style editor, persisted claim + realtime broadcast, contextual macros, roster chips)
+> הקשר: דירקטיבת "SESSION 9: MULTI-AGENT LIVE INBOX & WORDPRESS-STYLE CMS EDITOR" — ביקשה תחילה **תכנון בלבד** (audit + brief, ללא קוד) לארבע יכולות: עורך מטא-דאטה ידני בתוך תיבת השיחות, מצב נוכחות/שיוך לפי Supabase Presence, badge חדר/סוויטה ב-roster, ו-quick-reply panel הקשרי. הבריף אושר, ואז בוצע בארבעה ספרינטים על פני שתי הודעות-המשך (9.1–9.2, ואז 9.3–9.4) — לא בבת אחת.
+
+**ממצאי הבריף המקדים (לפני כל קוד):** נקרא `WhatsAppInbox.js` (2225 שורות), `AddGuestModal.js`, `CustomerProfilePane.js`, `suiteRegistry.js`, `AICopilot.js`, `OperationsBoard.js` במלואם. שלושה ממצאים שינו את התכנון מהדירקטיבה הגולמית: (1) **אין Supabase Presence בקודבייס כלל** (grep מאומת על כל `src/`) — "recently active" הוא proxy מבוסס last-message-timestamp, לא נוכחות אמיתית; (2) **אין `claimed_by`/`assignment_status` על `whatsapp_conversations` או `guests`** — הפאטרן הזה קיים רק על `tasks` (`OperationsBoard.js:427`); (3) **"שעות ארוחה" לא קיימות בסכימה בכלל** — רק `spa_time`/`treatment_time` קיימים, נדרשה מיגרציה לפני שניתן היה לבנות macro אמיתי במקום להמציא placeholder ריק (FAIL VISIBLE).
+
+**Sprint 9.1 — WordPress-style guest editor.** `AddGuestModal.js` קיבל prop `dock` — `dock="right"` מרנדר אותו כ-drawer ימני נגרר-פנימה (slide-in, `animation: agm-drawer-in`) במקום מודאל ממורכז; ברירת המחדל (ללא prop) משאירה את שני הצרכנים הקיימים (GuestsPage/GuestDashboard) ללא שינוי. נוסף textarea ל-`guest_notes` (migration 053 — היה append-only, בלי עורך בשום מקום באפליקציה עד כה) + שדות `meal_time`/`meal_location` חדשים. `WhatsAppInbox.js` קיבל כפתור ✏️ בכותרת ה-thread → `openGuestEditor()` שמביא את שורת ה-guest **המלאה** לפי phone variants (לא רק השדות החלקיים שה-join של תיבת השיחות נושא) — guest לא-קיים נופל ל-skeleton `{phone}` ש-AddGuestModal's `isEdit=!!guest.id` הקיים מטפל בו כ-"צור חדש" בלי שינוי קוד נוסף.
+
+**Sprint 9.2 — Persisted claim/assignment.** migration 081: `guests.claimed_by` (FK→profiles)/`claimed_at`. כפתור toggle יחיד בכותרת ה-thread (🙋 לא-משויך → 🔁 השתלטות על שיוך קיים → ✓ שלך; קליק נוסף = שחרור) — ללא שער הרשאות, אותו מודל אמון כמו claim הקיים ב-OperationsBoard (כלי team קטן, ה-badge הוא האות החברתי שמונע התנגשות, לא מנעול). Badge "🔒 בטיפול: [שם]" ב-roster, נפתר משם פרופיל via `profiles.id→name` map שנטען פעם אחת. **תיקון אגב קריטי בדרך:** `<html dir="rtl">` גלובלי (index.html:2 + App.js:267) — overlay חדש עם `justifyContent:"flex-end"` בלי `direction` מפורש יורש rtl, ו-flex-end הופך **לוגי** (שמאל ב-RTL, לא ימין פיזי) — תוקן ב-AddGuestModal עם `direction:"ltr"` מפורש על ה-overlay החיצוני בלבד. אותו באג זוהה (ותוקן ע"י Mike, באישור) ב-`CustomerProfilePane.js` הקיים מ-session 27 — לא היה מאומת חזותית מעולם.
+**תיקון אגב שני, חשוב יותר:** `GuestDashboard.js`'s `guests` select המפורש (לא `*`) היה חסר `treatment_count`/`order_number`/`payment_amount`/`payment_link_url`/`needs_callback` — פער Zero-Data-Loss אמיתי **שקדם לסשן הזה**: `AddGuestModal` שולח patch מלא בכל שמירה (לא diff), כך שעריכת אורח מ-GuestDashboard איפסה את השדות החסרים בשקט מאז ש-session 25 הוסיפה payment_amount/payment_link_url ל-modal בלי לעדכן את ה-select הזה. תוקן (+ נוספו meal_time/meal_location הנדרשים לסשן הזה).
+
+**Sprint 9.3 — Roster chips + Realtime broadcast.** `roomChipMeta()` קורא ל-`getSuiteSection()` הקיים (suiteRegistry.js, ללא מיפוי חדש) להציג "🏨 [שם סוויטה]" צבוע-לפי-section, או "☀️ בילוי יומי [1/2]" ל-Premium Day packages / `room_type==='day_guest'`. שלושת ה-badges (זהות/חדר/שיוך) עברו ל-flex row עם `flexWrap` כדי לא להישבר ברוחב צר. **Realtime:** channel **נפרד** (`wa-inbox-guests-rt`, בכוונה לא מאוחד עם `wa-inbox-rt-v2` הקיים כדי לא לסכן את לוגיקת ה-reconnect שלו) על `postgres_changes` UPDATE של `guests` — claim/release/עריכה מטאב אחד מופיע בטאבים אחרים בלי רענון. `applyGuestRowUpdate()` הוא helper משותף לשני הצרכנים (שמירת ה-drawer + payload ה-realtime) כדי ששני מסלולי ה-patch לא יתפזרו זה מזה. migration 082 מוסיפה את `guests` ל-`supabase_realtime` publication — **אותו failure mode מתועד כמו migration 059** (guest_alerts): בלי זה, ה-subscription נרשם בהצלחה ולעולם לא מקבל event, בלי שגיאה גלויה.
+
+**Sprint 9.4 — Contextual macros (No-Token Quick Replies).** `buildContextualMacros(activeContact)` מחליפה את `QUICK_PHRASES` הסטטי **בתוך ה-thread quick-actions drawer בלבד** (לא ב-`NewChatModal`, שמנהל `selectedGuest` נפרד ואין לו מושג "שיחה פעילה") — templating טהור מ-`spa_time`/`meal_time`/`meal_location`/`room` הכבר-טעונים בזיכרון, **אפס קריאות LLM/טוקנים**. עד 3 macros (ארוחה/ספא/חדר), כל אחד רק אם השדה המתאים קיים. נופל בחזרה לרשימת `QUICK_PHRASES` הגנרית כשלאורח אין שום מטא-דאטה שימושית (FAIL VISIBLE — לעולם לא drawer ריק/שבור). כפתורים הקשריים מסוגננים בזהב (`var(--gold)`/גרדיאנט) להבדיל ויזואלית מהפתקים הגנריים האפורים — גם הכותרת מתחלפת ל-"✨ הצעות לפי פרטי האורח".
+ה-join הראשי (`fetchAll`+`fetchSince`) הורחב פעם אחת ל-`id, room_type, status, departure_date, meal_time, meal_location, claimed_by, claimed_at` — אותה קריאה קיימת, לא query נוסף.
+
+- ✅ **אומת:** `npm run build` נקי על כל ארבעת הספרינטים (רק אזהרת `ShiftsPage` הקיימת, לא קשורה). `npx supabase db push` הריץ migrations 081 ו-082 בהצלחה (081 גם דחף את 076 שכבר היה pending — ראה למטה).
+- ℹ️ **ממצא לוואי על migration 076:** `supabase/migrations/076_wa_conversations_update_rls.sql` היה untracked ב-git (לא commit-ed) אבל ה-`db push` הראשון של הסשן הזה הציג רק את 081 כ-pending — כלומר 076 **כבר היה מיושם בפועל על ה-DB החי** קודם לכן (ledger המיגרציות של Supabase נפרד מ-git; "untracked" אומר רק שלא הועלה ל-version control, לא שלא רץ). אין צורך בפעולה נוספת.
+- ✅ **נסיון אימות חזותי חי — לראשונה עם preview server אמיתי שרץ (לא רק production build).** מולא טופס login עם `eliad`/`1234` ע"י Claude Preview MCP — נכשל עם "שם משתמש או סיסמה שגויים", זהה לכל הסשנים הקודמים (19–32). **בדיקה נוספת שלא בוצעה קודם:** `.env.local` נקרא ואומת מצביע על הפרויקט הנכון (`bunohsdggxyyzruubvcd`, תואם לתיעוד ב-§1) — כך ש"פרויקט Supabase שגוי" **נפסל** כסיבה. שגיאת הקונסול היחידה (`חסר REACT_APP_GOOGLE_CLIENT_ID`) היא רעש לא-קשור (Google OAuth, לא חוסם את נתיב הסיסמה). המסקנה נשארת זהה לכל סשן קודם: קרדנציאלס הדמו המוצגים על המסך אינם תואמים לחשבונות אמיתיים בסביבת ה-Auth המקומית הזו. Mike: מומלץ לבדוק בעצמך עם credentials אמיתיים — (1) ✏️ בכותרת thread פותח drawer ימני (לא שמאל!) עם כל שדות האורח כולל הערות/ארוחה; (2) כפתור 🙋/🔁/✓ בכותרת מתעד claim ומציג badge בroster; (3) פתיחת שני טאבים, claim בטאב אחד מופיע בטאב השני בלי רענון; (4) drawer הפעולות המהירות (⚡) מציג macros זהובים הקשריים לאורח עם spa_time/meal_time, ופתקים אפורים גנריים לאורח בלי מטא-דאטה; (5) badge חדר/בילוי-יומי ב-roster.
+
+#### session 34 — Jun 25 2026 (Smart Inbox AI Copilot & System Prompt Overhaul)
+> הקשר: דירקטיבת "SMART INBOX AI COPILOT & SYSTEM PROMPT OVERHAUL" — מצורף screenshot (`image_eb8f27.png`) של אזור "תגובות מהירות"/"ניתוב משימה" ב-thread quick-actions drawer, עם תלונה ש-"הכפתורים האלה 'מטומטמים'" — `{{שם}}` גולמי שדולף, ומשימות-תפעול שנשלחות מבלי שהצוות בפועל הגדיר מה הבעיה. שלושה ספרינטים: (1) AI reply generator on-demand, (2) smart task-routing picker, (3) overhaul לטון/זהות הבוט הפונה לאורחים.
+
+**ממצא מקדים:** התלונה על `{{שם}}` גולמי מתייחסת ל-`QUICK_PHRASES` (הרשימה הסטטית הגנרית, session 12) — לא ל-`buildContextualMacros()` (session 33, שכבר בונה את השם *לתוך* הטקסט בלי placeholder). הבאג המדויק: ה-fallback ל-`QUICK_PHRASES` ב-thread drawer קרה כש-`buildContextualMacros()` חזרה ריקה (אורח בלי spa_time/meal_time/room), ו-`ph.text.replace("{{שם}}", activeContact.guestName)` מדלג על ההחלפה כש-`guestName` הוא `null` (אורח שזוהה רק לפי pushName/טלפון) — אז הפלייסהולדר הגולמי דלף לתיבת הטיוטה. זה בדיוק התרחיש שה-screenshot תפס. "ניתוב משימה" אינו hardcoded במובן "towels קבוע בקוד" — `routeTask()` השתמש בטקסט ההודעה האחרונה *הגולמית* של האורח כתיאור המשימה (אם האורח כתב משהו על מגבות, זה מה שהגיע ללוח התפעול) — בלי שכבת-שיפוט של הצוות בדרך, מה שהדירקטיבה מפרשת בצדק כ"לא מוגדר כראוי".
+
+- ✅ **Sprint 1 — AI Reply Generator (`suggest-replies` Edge Function חדש + WhatsAppInbox.js).** Function חדש, stateless במלואו (אין history/Drive RAG/memory — לא משותף עם `chat/`'s machinery בכוונה, ראה §3/§6). מקבל 3 ההודעות האחרונות (כבר טעונות בזיכרון בצד הלקוח — `activeContact.messages.slice(-3)`, אין query נוסף) + guestName/room, Gemini 2.5 Flash (`responseMimeType:"application/json"`)→Claude fallback, מחזיר עד 3 הצעות תגובה קצרות. `parseSuggestions()` עם 3 שכבות הגנה (JSON ישיר → regex `{...}` → line-split) למקרה שהמודל לא מצליח לחזור ב-JSON נקי. ב-`WhatsAppInbox.js`: כפתור "✨ הצעות AI חכמות" קורא ל-`generateAiSuggestions()` **רק בקליק מפורש** — לא בבחירת שיחה, לא ב-`useEffect` (Token Saving כנדרש). תוצאות + שגיאות מתאפסות ב-`openContact()` כש-עוברים שיחה (לא דולפות הצעות מהשיחה הקודמת).
+- ✅ **Sprint 1 — הוסר ה-fallback ל-`{{שם}}` הגולמי.** `QUICK_PHRASES` **לא נמחק** (עדיין קיים ובשימוש ב-`NewChatModal` — שיווק לאורח-בלי-שיחה-פעילה, מושג שונה לחלוטין מ-"הצעת תגובה הקשרית לשיחה קיימת") אבל **כבר לא משמש כ-fallback** בתוך thread drawer — שם הוחלף לחלוטין ע"י כפתור ה-AI. `buildContextualMacros()` (session 33) ממשיכה להופיע **בנוסף**, לא הוחלפה — הן macros מיידיות-בחינם (spa/meal/room) שלא מתחרות עם הצעות AI הקשריות-לשיחה.
+- ✅ **Sprint 2 — Smart Task Routing.** `routeTask()` מקבל כעת `subCategoryLabel`/`note` במקום להרכיב את התיאור מהודעת האורח הגולמית. קליק על "🔧 תחזוקה"/"🛏️ משק בית" לא יורה משימה — פותח `routeDraft` state עם chips תת-קטגוריה (`TASK_SUBCATEGORIES`: תחזוקה→מזגן/תאורה/אינסטלציה, משק בית→מגבות/סידור חדר/שירותי נוחות) + שדה free-text ("פרטים נוספים") לתרחישי-קצה. כפתור "🚀 שלח משימה" מנוטרל (לא מוסתר — §0.2 Disable Don't Hide) עד שנבחר chip אחד לפחות או הוזן free-text; `description` הסופי בונה מ-`[subCategoryLabel] — [note]`, עם נפילה לטקסט הגולמי הישן רק אם שניהם ריקים (לא אמור לקרות, ה-UI חוסם זאת — שכבת בטיחות).
+- ✅ **Sprint 3 — Persona/Tone Overhaul (`whatsapp-webhook/index.ts`).** נוסף `LUXURY_CONCIERGE_PERSONA_SUFFIX` חדש — מוצמד **בלתי-תלוי-מקור** ל-`enrichedPrompt` (אותה שיטה בדיוק כמו `STRICT_HEBREW_LOCK_SUFFIX` מ-session 30, ראה §6 "Suffix-based Prompt Invariants" החדש), כך שדרישות ה-ROLE/TONE עומדות גם כש-`bot_settings.system_prompt` (admin override) הוא המקור המנצח. מכוון רק ל-ROLE+TONE — לא כפל את כללי השפה/אנטי-הזיה שכבר מכוסים ב-suffix הקיים. בנוסף, רוככו (לא רק ה-suffix) גם `FALLBACK_SYSTEM_PROMPT`'s שורת הפתיחה וגם `buildSystemPrompt()`'s שורת הפתיחה — משניהם "5 כוכבים בכל משפט" (רשמי) ל-"חם, קליל, כמו מנהל/ת אירוח אנושי — לא נציג שירות רשמי/רובוטי", כך שכל שלושת מקורות הפרומפט מתואמים זה לזה ולא רק נסמכים על ה-suffix לתיקון בדיעבד. ה-SAFETY requirement ("never invent data, hand off gracefully") **כבר היה מכוסה במלואו** ע"י rule #2 הקיים + משפט ה-handoff המדויק ב-`STRICT_HEBREW_LOCK_SUFFIX` — לא שוכפל, רק חוזק במשפט קצר נוסף ב-suffix החדש.
+- ✅ **אומת:** `npm run build` נקי (רק אזהרת `ShiftsPage` הקיימת, לא קשורה). `npx supabase functions deploy suggest-replies --no-verify-jwt` ו-`...deploy whatsapp-webhook --no-verify-jwt` הצליחו, Deno type-check עבר בשניהם. `npx supabase secrets list` אישר ש-`GEMINI_API_KEY`+`ANTHROPIC_API_KEY` שניהם מוגדרים בפרודקשן — ל-`suggest-replies` יש fallback אמיתי, לא רק תיאורטי. ללא migration — שינוי קוד בלבד (לא DB).
+- ⚠️ **לא אומת חזותית חי** — אותו קיר Auth מקומי שמתועד מ-session 19 (ואושר שוב ב-session 33). Mike: מומלץ לבדוק בעצמך — (1) פתיחת שיחה ללא spa_time/meal_time/room → drawer מציג רק כפתור "✨ הצעות AI חכמות" (לא רשימת ביטויים גנרית ישנה); קליק עליו מחזיר 3 הצעות אמיתיות מבוססות ההודעות האחרונות; (2) קליק "🔧 תחזוקה" פותח picker עם chips+free-text, כפתור "שלח משימה" מנוטרל עד שממלאים אחד מהשניים; (3) תשובת הבוט לאורח (whatsapp-webhook) נשמעת חמה/קלילה יותר ולא "תאגידית", עדיין בעברית בלבד ועדיין מתמודדת בעדינות עם שאלה שהמידע עליה לא קיים.
+
+#### session 35 — Jun 25 2026 (Pre-Arrival Guest Portal & Static Photo Tour)
+> הקשר: דירקטיבת "SESSION 10: PRE-ARRIVAL GUEST PORTAL & STATIC PHOTO TOUR" — מעבר ראשון בהיסטוריית הפרויקט מ-staff backend ל-guest frontend: עמוד ציבורי ללא-סיסמה לאורחים, עם hero+countdown, scrollytelling photo tour (ללא three.js), ו-upsells בקליק-אחד שמתריעים לצוות. שלושה ספרינטים: (1) Magic Link & Itinerary Hero, (2) Scrollytelling Virtual Tour, (3) In-Scroll One-Click Upsells.
+
+**ממצא מקדים, לפני כתיבת קוד — קריטי, סטייה מכוונת מהדירקטיבה:** הדירקטיבה ביקשה `/portal/:phone`. `guests.phone` הוא מספר טלפון אמיתי של אורח — לא secret, לא בלתי-ניחושי, ו-`guests.id` (BIGINT IDENTITY, סדרתי) גם לא. שימוש באחד מהם כקרדנציאל היחיד לעמוד ציבורי שחושף שם/חדר/תאריך-הגעה הוא חשיפת PII אמיתית (מישהו שמנחש/יודע מספר טלפון של אורח יכול לצפות בפרטים שלו). נבנה במקום זאת מנגנון magic-link אמיתי: `guests.portal_token` (UUID אקראי, migration 083) — ה-URL עצמו הוא הקרדנציאל, אותו מודל אבטחה כמו קישור איפוס-סיסמה. RLS על `guests` **לא נגע בו** (נשאר authenticated-only, migration 028) — שני ה-Edge Functions החדשים משתמשים ב-service-role key בלבד ומחזירים subset ידני נבחר-בקפידה, לא `select("*")`. הוצג למשתמש (Mike) ב-CLAUDE.md ובתשובת הסשן, לא נשאל מראש (FULL AUTO-PERMISSION MODE, אותה קונבנציה כמו session 32/33).
+
+- ✅ **Sprint 10.1 — Magic Link & Itinerary Hero.** migration 083: `guests.portal_token` (UUID UNIQUE NOT NULL, `gen_random_uuid()` default — `uuid_generate_v4()`/uuid-ossp נכשל בפועל בפוש, לא מופעל בפרויקט הזה למרות הפניה ב-migration 001; pgcrypto כן מופעל כברירת מחדל ב-Supabase, תוקן ל-`gen_random_uuid()`). Edge Function חדש `guest-portal-data` (service-role, לא RLS) מחזיר שם/חדר/room_type/תאריכים/spa_time/meal_time/meal_location/status בלבד. `index.js` בודק `window.location.pathname` **לפני** רינדור `<App/>` — `/portal/:token` מרכיב `<GuestPortal/>` במקום, כך שכל ה-hook chain של staff-auth לא רץ כלל לאורח לא-מאומת (אין react-router-dom בפרויקט בכוונה, §2 — route ציבורי בודד לא הצדיק ספריית ניתוב). `GuestPortal.js` קובע 3 stay-phases (`upcoming`/`in_stay`/`past`) לפי `arrival_date`/`departure_date` מול היום, עם countdown חי (days/hours/minutes/seconds, `setInterval` 1s) ל-`arrival_date`+"15:00" קבוע (משקף את `bot_config.hotel_checkin_time`'s ברירת המחדל המתועדת — לא נטען בנפרד כדי לשמור על round-trip ציבורי יחיד). פאנל itinerary glass מציג spa/meal רק כש-יש להם ערך.
+- ✅ **Sprint 10.2 — Scrollytelling Virtual Tour (`PhotoTour.js`).** ללא three.js/ספריית 3D, כמתואר. כל סצנה = section בגובה `100vh` עם `IntersectionObserver` (לא scroll-listener) שמפעיל CSS opacity/transform transitions — crossfade דרך CSS בלבד. רקע = `linear-gradient(...), url(...)` בשכבה אחת — תרגיל CSS נחמד: אם ה-JPG (שאף אחד מהם לא קיים היום ב-`public/images/`, רק paths placeholder לפי הדירקטיבה) נכשל ב-404, שכבת ה-url() פשוט לא נצבעת והגרדיאנט מתחתיה ממשיך להיראות שלם — שום סצנה לא "שבורה" גם בלי תמונות אמיתיות, ותתחזק אוטומטית כש-Mike יעלה תמונות אמיתיות לנתיבים האלה (`/images/entrance.jpg`/`spa.jpg`/`wine.jpg`/`suites.jpg`) — אפס שינוי קוד נדרש.
+- ✅ **Sprint 10.3 — In-Scroll One-Click Upsells.** Edge Function חדש `guest-portal-upsell` — אותו אימות token, insert ל-`tasks` (`source='portal_upsell'`, migration 083 — מקור נפרד בכוונה מ-`guest_request` כדי להבדיל "אורח לחץ upsell בפורטל" מ-"בקשה שנותבה משיחת וואטסאפ") + כרטיס לקבוצת Whapi (`_shared/whapiSend.ts`, אותה שיטה כמו `notify-manual-task`) שנפתר ע"י אותו reaction-sweep listener (👍🏼) כמו כל task אחר. כשל Whapi הוא best-effort — ה-task כבר נוצר, toast ההצלחה לאורח ("בקשתך הועברה בהצלחה ✨") לא תלוי בו.
+- ✅ **תוספת קישור — לא התבקשה במפורש אך נדרשת בשביל שהפיצ'ר יהיה שמיש בכלל:** `CustomerProfilePane.js` קיבל כפתור "🔗 העתק קישור לפורטל האורח" (clipboard copy, fallback ל-`window.prompt` אם ה-API חסום) — בלעדיו אין שום דרך לצוות לקבל את ה-URL בפועל לשלוח לאורח. דרש הוספת `portal_token` ל-select המפורש של `GuestDashboard.js` (אותו תבנית-תיקון כמו session 33/34).
+- ✅ **באג אמיתי נמצא ותוקן תוך כדי בדיקה חיה — לא רק תיאורטי.** עם preview server אמיתי (ראשונה שניתן לבדוק עמוד-ללא-login בפועל — קיר ה-Auth המקומי שחסם אימות בכל הסשנים הקודמים רלוונטי רק לעמודי staff, לא לעמוד ציבורי כזה!): ניווט אמיתי (קליק על `<a>` שהוזרק, לא `window.location.assign` שנחסם ע"י sandbox ה-preview) ל-`/portal/abc-test-123` חשף ש-`portal_token` הוא עמודת UUID — token לא-בצורת-UUID זרק שגיאת Postgres גולמית ("invalid input syntax for type uuid") שדלפה ללקוח כ-"שגיאה בטעינת הפרופיל" גנרי, במקום "לא מצאנו הזמנה" הנקי שצריך לחזור גם ל-token-מזויף-אבל-תקין-בצורתו וגם ל-token-לא-תקין-בצורתו. נוסף UUID regex guard לפני השאילתה בשני ה-Edge Functions (`guest-portal-data`+`guest-portal-upsell`) — אומת מחדש ישירות (fetch ל-functions endpoint) ששני המקרים מחזירים `guest_not_found` נקי, ושה-UI מציג את ההודעה הנכונה.
+- ⚠️ **גבול בדיקה מכוון — לא הוזרק guest מזויף לטבלת production.** ה-DB החי הזה משמש אורחים/בוטים אמיתיים; הוספת/מחיקת שורת בדיקה ב-`guests` (אפילו זמנית) נשקלה ונדחתה כסיכון לא-מוצדק (תהליכי אוטומציה תלויים ב-arrival_date/status, ראה §0 CORE BUSINESS LOGIC). מה שאומת: routing ציבורי מקצה-לקצה, שני מקרי שגיאה (token מזויף-בצורה ותקין-בצורה-אך-לא-קיים), הגעה ל-Edge Functions, ותיקון הבאג שנמצא. מה שלא אומת: ה-happy path האמיתי (hero עם countdown/itinerary אמיתיים מול guest קיים, ה-photo tour ויזואלית, זרימת upsell→task→Whapi מלאה). Mike: מומלץ לבדוק עם אורח אמיתי — (1) `CustomerProfilePane.js`'s "🔗 העתק קישור" על אורח קיים; (2) פתיחת הקישור בדפדפן רגיל (לא נדרש login!); (3) קליק על upsell ("🍷 הזמן סדנת יין" וכו') → toast הצלחה + בדיקה שכרטיס הגיע לקבוצת Whapi + task ב-OperationsBoard עם `source='portal_upsell'`.
 
 ---
 

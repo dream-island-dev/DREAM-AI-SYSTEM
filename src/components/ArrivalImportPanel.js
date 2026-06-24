@@ -273,8 +273,8 @@ function DropZone({ label, hint, loaded, fileName, onFile, inputRef, optional })
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function ArrivalImportPanel() {
-  const [open,     setOpen]     = useState(false);
+export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
+  const [open,     setOpen]     = useState(defaultOpen);
   const [tab,      setTab]      = useState("suites"); // "suites" | "shifts"
 
   // Suites profile state
@@ -717,32 +717,34 @@ export default function ArrivalImportPanel() {
         onClick={() => setOpen(o => !o)}
         style={{
           display: "flex", alignItems: "center", gap: 10,
-          padding: "12px 18px", cursor: "pointer", userSelect: "none",
-          background: "linear-gradient(135deg,rgba(201,169,110,0.15),rgba(201,169,110,0.04))",
+          padding: "14px 20px", cursor: "pointer", userSelect: "none",
+          background: "linear-gradient(135deg, #1c1c1c, #0F0F0F)",
           border: "1px solid var(--gold)",
-          borderRadius: open ? "12px 12px 0 0" : 12,
+          borderRadius: open ? "16px 16px 0 0" : 16,
+          boxShadow: "0 4px 22px rgba(201,169,110,0.18)",
           transition: "border-radius 0.15s",
         }}
       >
         <span style={{ fontSize: 18 }}>🗂️</span>
-        <span style={{ fontWeight: 800, fontSize: 15, color: "var(--gold-dark)", flex: 1 }}>
+        <span style={{ fontWeight: 800, fontSize: 15, color: "var(--gold-light)", flex: 1 }}>
           ייבוא נתונים — Data Hub
         </span>
         {tab === "suites" && stats && (
-          <span style={{ fontSize: 12, color: "var(--gold-dark)", fontWeight: 600 }}>
+          <span style={{ fontSize: 12, color: "var(--gold)", fontWeight: 600 }}>
             {stats.mode === "suites"
               ? `${stats.total} פרופילים · ${stats.assigned} שויכו חדר`
               : `${stats.total} אורחי ספא`}
           </span>
         )}
-        <span style={{ color: "var(--text-muted)", fontSize: 13 }}>{open ? "▲" : "▼"}</span>
+        <span style={{ color: "rgba(232,201,138,0.55)", fontSize: 13 }}>{open ? "▲" : "▼"}</span>
       </div>
 
       {open && (
         <div style={{
           border: "1px solid var(--gold)", borderTop: "none",
-          borderRadius: "0 0 12px 12px", padding: "18px 18px 20px",
-          background: "var(--card-bg)",
+          borderRadius: "0 0 16px 16px", padding: "20px 18px 22px",
+          background: "linear-gradient(160deg, #161616, #0F0F0F)",
+          boxShadow: "0 14px 40px rgba(0,0,0,0.35)",
         }}>
 
           {/* Profile tabs */}
@@ -754,8 +756,9 @@ export default function ArrivalImportPanel() {
               <button key={key} onClick={() => setTab(key)} style={{
                 padding: "8px 18px", borderRadius: 20, border: "none", cursor: "pointer",
                 fontFamily: "Heebo,sans-serif", fontSize: 13, fontWeight: 700,
-                background: tab === key ? "var(--gold)" : "var(--ivory)",
-                color:      tab === key ? "#0F0F0F"     : "var(--text-muted)",
+                background: tab === key ? "linear-gradient(135deg,var(--gold),var(--gold-dark))" : "rgba(255,255,255,0.06)",
+                color:      tab === key ? "#0F0F0F"     : "var(--gold-light)",
+                boxShadow:  tab === key ? "0 3px 14px rgba(201,169,110,0.3)" : "none",
                 transition: "all 0.15s",
               }}>{label}</button>
             ))}
@@ -765,13 +768,13 @@ export default function ArrivalImportPanel() {
 
           {/* Info banner */}
           <div style={{
-            background: "rgba(201,169,110,0.06)", border: "1px solid rgba(201,169,110,0.3)",
-            borderRadius: 8, padding: "10px 14px", marginBottom: 14,
-            fontSize: 12, color: "var(--gold-dark)", lineHeight: 1.8,
+            background: "rgba(201,169,110,0.08)", border: "1px solid rgba(201,169,110,0.3)",
+            borderRadius: 10, padding: "10px 14px", marginBottom: 14,
+            fontSize: 12, color: "var(--gold-light)", lineHeight: 1.8,
           }}>
             <strong>Doc 2 — דוח כניסות EZGO (CSV):</strong> ייבוא חדרים, אורחים, הזמנות<br />
             <strong>Doc 1 — דוח יומי מקיף (Excel):</strong> עדכון שעות ספא בלבד<br />
-            <span style={{ color: "var(--text-muted)", fontSize: 11 }}>
+            <span style={{ color: "rgba(232,201,138,0.55)", fontSize: 11 }}>
               ניתן להעלות כל דוח בנפרד ● ערוך שם/חדר/ספא בטבלה לפני הסנכרון ● שדות בוט חיים לא נדרסים
             </span>
           </div>
@@ -795,7 +798,7 @@ export default function ArrivalImportPanel() {
                 fontSize: 14, fontFamily: "Heebo,sans-serif", direction: "ltr",
               }}
             />
-            <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+            <span style={{ fontSize: 11, color: "rgba(196,181,253,0.75)" }}>
               חל על כל הפרופילים בקובץ Doc 2 — תאריך העזיבה יחושב אוטומטית לפי מספר הלילות (iNights)
             </span>
           </div>
@@ -824,8 +827,8 @@ export default function ArrivalImportPanel() {
           {/* Resilient Import Agent — mapping suggestion + review gate */}
           {mappingStage === "suggesting" && (
             <div style={{
-              textAlign: "center", padding: "24px", color: "var(--text-muted)",
-              fontSize: 13, border: "1px dashed var(--border)", borderRadius: 10, marginBottom: 14,
+              textAlign: "center", padding: "24px", color: "var(--gold-light)",
+              fontSize: 13, border: "1px dashed rgba(201,169,110,0.35)", borderRadius: 10, marginBottom: 14,
             }}>
               🤖 מנתח כותרות עמודות ומציע מיפוי...
             </div>
@@ -961,19 +964,20 @@ export default function ArrivalImportPanel() {
                 onClick={handleSync}
                 disabled={syncing}
                 style={{
-                  flex: 1, padding: "13px", borderRadius: 10, border: "none",
-                  background: syncing ? "var(--border)" : "linear-gradient(135deg,var(--gold),var(--gold-dark))",
-                  color: syncing ? "var(--text-muted)" : "#0F0F0F",
+                  flex: 1, padding: "13px", borderRadius: 12, border: "none",
+                  background: syncing ? "rgba(255,255,255,0.08)" : "linear-gradient(135deg,var(--gold),var(--gold-dark))",
+                  color: syncing ? "rgba(232,201,138,0.5)" : "#0F0F0F",
                   fontFamily: "Heebo, sans-serif", fontSize: 14, fontWeight: 800,
+                  boxShadow: syncing ? "none" : "0 6px 22px rgba(201,169,110,0.4)",
                   cursor: syncing ? "not-allowed" : "pointer", transition: "all 0.15s",
                 }}>
                 {syncLabel}
               </button>
               <button onClick={reset} style={{
-                padding: "13px 16px", borderRadius: 10,
-                border: "1px solid var(--border)", background: "var(--card-bg)",
+                padding: "13px 16px", borderRadius: 12,
+                border: "1px solid rgba(201,169,110,0.3)", background: "rgba(255,255,255,0.05)",
                 cursor: "pointer", fontFamily: "Heebo, sans-serif",
-                fontSize: 13, color: "var(--text-muted)",
+                fontSize: 13, color: "var(--gold-light)",
               }}>
                 ✕ נקה
               </button>
@@ -1037,9 +1041,9 @@ export default function ArrivalImportPanel() {
 
           {tab === "shifts" && (<>
             <div style={{
-              background: "rgba(201,169,110,0.06)", border: "1px solid rgba(201,169,110,0.3)",
-              borderRadius: 8, padding: "10px 14px", marginBottom: 14,
-              fontSize: 12, color: "var(--gold-dark)",
+              background: "rgba(201,169,110,0.08)", border: "1px solid rgba(201,169,110,0.3)",
+              borderRadius: 10, padding: "10px 14px", marginBottom: 14,
+              fontSize: 12, color: "var(--gold-light)",
             }}>
               כל קובץ Excel — ערוך בגריד וייצא חזרה. לא נכתב ל-DB.
             </div>
@@ -1056,8 +1060,8 @@ export default function ArrivalImportPanel() {
             ) : (
               <>
                 <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-                  <span style={{ fontWeight: 700, fontSize: 13 }}>{shiftFileName}</span>
-                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{shiftRows.length} שורות</span>
+                  <span style={{ fontWeight: 700, fontSize: 13, color: "var(--gold-light)" }}>{shiftFileName}</span>
+                  <span style={{ fontSize: 12, color: "rgba(232,201,138,0.55)" }}>{shiftRows.length} שורות</span>
                   <div style={{ marginRight: "auto", display: "flex", gap: 8 }}>
                     <button onClick={handleShiftExport} style={{
                       padding: "8px 16px", borderRadius: 8, border: "1.5px solid #1e40af",

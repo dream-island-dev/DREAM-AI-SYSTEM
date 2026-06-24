@@ -5,6 +5,8 @@
 
 import React, { useEffect, useState, useRef, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
+import AddGuestModal from "./AddGuestModal";
+import { getSuiteSection } from "../data/suiteRegistry";
 
 const POLL_MS = 5000; // fallback polling interval (realtime is primary) — 5s safe minimum
 
@@ -53,6 +55,23 @@ const T = {
     spa: "ספא",
     msgsCount: (n) => `${n} הודעות`,
     langSwap: "EN",
+    editGuest: "✏️ ערוך פרטי אורח",
+    contextualMacrosTitle: "✨ הצעות לפי פרטי האורח",
+    claimChat: "🙋 קח שיחה",
+    claimedByMe: "✓ בטיפולך",
+    takeOver: "🔁 העבר אליי",
+    release: "שחרר",
+    claimedBadge: (name) => `🔒 בטיפול: ${name}`,
+    aiSuggestTitle: "✨ הצעות AI חכמות",
+    aiSuggestButton: "✨ הצעות AI חכמות",
+    aiSuggestLoading: "⏳ חושב/ת...",
+    aiSuggestRetry: "🔄 הצעות נוספות",
+    aiSuggestErrorPrefix: "⚠️",
+    routeSubtitle: "בחר/י קטגוריה ו/או תאר/י את הבקשה",
+    routeNotePlaceholder: "פרטים נוספים (אופציונלי)...",
+    routeDispatch: "🚀 שלח משימה",
+    routeCancel: "ביטול",
+    routeBack: "← חזרה",
   },
   en: {
     dir: "ltr",
@@ -78,7 +97,42 @@ const T = {
     spa: "Spa",
     msgsCount: (n) => `${n} messages`,
     langSwap: "HE",
+    editGuest: "✏️ Edit guest",
+    contextualMacrosTitle: "✨ Suggested for this guest",
+    claimChat: "🙋 Claim chat",
+    claimedByMe: "✓ Yours",
+    takeOver: "🔁 Take over",
+    release: "Release",
+    claimedBadge: (name) => `🔒 Handling: ${name}`,
+    aiSuggestTitle: "✨ Smart AI Suggestions",
+    aiSuggestButton: "✨ Smart AI Suggestions",
+    aiSuggestLoading: "⏳ Thinking...",
+    aiSuggestRetry: "🔄 More suggestions",
+    aiSuggestErrorPrefix: "⚠️",
+    routeSubtitle: "Pick a category and/or describe the request",
+    routeNotePlaceholder: "Additional details (optional)...",
+    routeDispatch: "🚀 Dispatch task",
+    routeCancel: "Cancel",
+    routeBack: "← Back",
   },
+};
+
+// ── Task-routing sub-categories (Sprint 2 — Smart Task Routing) ──────────────
+// Replaces the old single-click "blast whatever the guest's last message
+// was" behavior — staff now picks a real category (and/or free text for edge
+// cases) before a task is dispatched, so OperationsBoard tickets are properly
+// defined instead of a raw guest message guess.
+const TASK_SUBCATEGORIES = {
+  maintenance: [
+    { id: "ac",       label: "❄️ מזגן" },
+    { id: "lights",   label: "💡 תאורה" },
+    { id: "plumbing", label: "🚰 אינסטלציה" },
+  ],
+  housekeeping: [
+    { id: "towels",      label: "🧺 מגבות" },
+    { id: "room_makeup", label: "🛏️ סידור חדר" },
+    { id: "amenities",   label: "🧴 שירותי נוחות" },
+  ],
 };
 
 // Per-message `intent` (already written by whatsapp-webhook on every inbound
@@ -132,16 +186,32 @@ function normalizePhone(phoneStr) {
   return String(phoneStr).replace(/\D/g, "").slice(-9);
 }
 
+// Every variant a guests.phone/whatsapp_conversations.phone value might be
+// stored in (E.164 "+972...", bare "972...", local "0...") — shared by every
+// write path below (claim/release/dismiss/editor fetch) since neither table
+// guarantees one canonical format (session 15 root cause, see CLAUDE.md §6).
+function phoneVariants(bare) {
+  return [bare, `+${bare}`, `0${bare.slice(3)}`];
+}
+
 function groupByPhone(rows) {
   const map = new Map();
   for (const row of rows) {
     if (!map.has(row.phone)) {
       map.set(row.phone, {
         phone: row.phone,
+        guestId: row.guest_id ?? null,
         guestName: row.guest_name,
         guestNotes: row.guest_notes ?? null,
         spaTime: row.spa_time ?? null,
         room: row.guest_room ?? null,
+        roomType: row.guest_room_type ?? null,
+        status: row.guest_status ?? null,
+        departureDate: row.guest_departure_date ?? null,
+        mealTime: row.guest_meal_time ?? null,
+        mealLocation: row.guest_meal_location ?? null,
+        claimedBy: row.guest_claimed_by ?? null,
+        claimedAt: row.guest_claimed_at ?? null,
         pushName: row.push_name ?? null,
         messages: [],
         humanRequested: false,
@@ -153,8 +223,20 @@ function groupByPhone(rows) {
     // guest_notes is append-only and grows over time — always prefer the
     // value carried by the most recently fetched row, not just the first.
     if (row.guest_notes) contact.guestNotes = row.guest_notes;
+    if (row.guest_id != null) contact.guestId = row.guest_id;
     if (row.spa_time) contact.spaTime = row.spa_time;
     if (row.guest_room) contact.room = row.guest_room;
+    if (row.guest_room_type) contact.roomType = row.guest_room_type;
+    if (row.guest_status) contact.status = row.guest_status;
+    if (row.guest_departure_date) contact.departureDate = row.guest_departure_date;
+    if (row.guest_meal_time) contact.mealTime = row.guest_meal_time;
+    if (row.guest_meal_location) contact.mealLocation = row.guest_meal_location;
+    // claimed_by/claimed_at must reflect the LATEST row even when the latest
+    // value is "cleared" (null) — unlike the append-only fields above, a
+    // release legitimately means "go back to unclaimed", so this can't use
+    // the same "only overwrite if truthy" guard.
+    contact.claimedBy = row.guest_claimed_by ?? null;
+    contact.claimedAt = row.guest_claimed_at ?? null;
     if (row.push_name) contact.pushName = row.push_name;
     // Flag contact if any inbound message is a human request
     if (row.human_requested && row.direction === "inbound") {
@@ -191,6 +273,24 @@ function recentlyActive(contact) {
   return Date.now() - new Date(last.created_at).getTime() < 15 * 60 * 1000;
 }
 
+// ── Roster room/suite chip — reuses suiteRegistry's SUITE_SECTIONS (the same
+// registry AddGuestModal's room dropdown and RoomBoard already key off of) so
+// the inbox roster never invents its own room→icon/color mapping. "Premium
+// Day 1/2" aren't in SUITE_REGISTRY (they're the two day-guest packages, not
+// physical suites — see suiteRegistry.js's header comment), so they're
+// special-cased before falling through to getSuiteSection(); room_type is
+// the last fallback for a day-guest with no room value set at all.
+function roomChipMeta(contact) {
+  if (contact.room === "Premium Day 1") return { icon: "☀️", label: "בילוי יומי 1", color: "#92400E" };
+  if (contact.room === "Premium Day 2") return { icon: "☀️", label: "בילוי יומי 2", color: "#92400E" };
+  if (contact.room) {
+    const sec = getSuiteSection(contact.room);
+    if (sec) return { icon: sec.icon, label: contact.room, color: sec.color };
+  }
+  if (contact.roomType === "day_guest") return { icon: "☀️", label: "בילוי יומי", color: "#92400E" };
+  return null;
+}
+
 // ── Contact list item ────────────────────────────────────────────────────────
 // Swipe-to-reveal (mobile only): pointer-drag past a 48px threshold reveals
 // Archive / Resolved actions behind the row, mirroring the approved mockup.
@@ -206,6 +306,7 @@ function ContactItem({ contact, isActive, isMobile, t, dir, onClick, onDismiss, 
     ? "🔴 מבקש שיחת טלפון"
     : "🔴 מבקש מענה אנושי";
   const identity = identityMeta(contact, t);
+  const roomChip = roomChipMeta(contact);
   const active   = recentlyActive(contact);
 
   const [swiped, setSwiped] = useState(false);
@@ -300,11 +401,28 @@ function ContactItem({ contact, isActive, isMobile, t, dir, onClick, onDismiss, 
               <div style={{ fontSize: 12, color: "#888", marginTop: 2, direction: "ltr", textAlign: rtl ? "right" : "left" }}>
                 {contact.guestName || contact.pushName ? contact.phone : ""}
               </div>
-              <span style={{
-                display: "inline-block", marginTop: 4,
-                background: identity.bg, color: identity.fg,
-                fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: 8,
-              }}>{identity.label}</span>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 4 }}>
+                <span style={{
+                  display: "inline-block",
+                  background: identity.bg, color: identity.fg,
+                  fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: 8,
+                }}>{identity.label}</span>
+                {roomChip && (
+                  <span style={{
+                    display: "inline-block",
+                    background: "#F7F5F0", color: roomChip.color,
+                    border: `1px solid ${roomChip.color}40`,
+                    fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: 8,
+                  }}>{roomChip.icon} {roomChip.label}</span>
+                )}
+                {contact.claimedBy && (
+                  <span style={{
+                    display: "inline-block",
+                    background: "#EDE9FE", color: "#5B21B6",
+                    fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: 8,
+                  }}>{t.claimedBadge(contact.claimedByName ?? "—")}</span>
+                )}
+              </div>
             </div>
           </div>
           {/* Right side: WA button + time + unread */}
@@ -422,6 +540,40 @@ const QUICK_PHRASES = [
   { label: "שאלון שביעות רצון ⭐", text: "שלום {{שם}}, תודה שבחרתם ב-Dream Island! נשמח לשמוע כיצד הייתה שהייתכם — דירוג קטן של 1–5 יסייע לנו להשתפר 🙏" },
   { label: "הצעה מיוחדת 🎁", text: "שלום {{שם}}, כאורחים מיוחדים שלנו — יש לנו הצעה בלעדית רק בשבילכם! צרו קשר ונספר לכם 😍" },
 ];
+
+// ── Contextual quick-reply macros (No-Token Quick Replies, Session 9 Sprint
+// 9.4) — pure string templating off metadata the inbox already has loaded
+// in memory (spaTime/mealTime/mealLocation/room), zero LLM calls. Used only
+// by the in-thread quick-actions drawer, NOT NewChatModal (which has its own
+// separately-managed selectedGuest and no "active conversation" concept).
+// Returns [] when the guest has no usable metadata at all — the caller falls
+// back to the generic QUICK_PHRASES list so the drawer never renders empty.
+function buildContextualMacros(contact) {
+  if (!contact) return [];
+  const name = displayName(contact);
+  const macros = [];
+  if (contact.mealTime) {
+    macros.push({
+      label: "🍽️ תזכורת ארוחה",
+      text: contact.mealLocation
+        ? `היי ${name}, ארוחתך ממתינה לך בשעה ${contact.mealTime} ב${contact.mealLocation} — נשמח לראותך! 🍽️`
+        : `היי ${name}, ארוחתך ממתינה לך בשעה ${contact.mealTime} — נשמח לראותך! 🍽️`,
+    });
+  }
+  if (contact.spaTime) {
+    macros.push({
+      label: "💆 תזכורת ספא",
+      text: `היי ${name}, תור הספא שלך נקבע לשעה ${contact.spaTime} — מחכים לך לפינוק! 💆`,
+    });
+  }
+  if (contact.room) {
+    macros.push({
+      label: "🚪 פרטי שיוך",
+      text: `היי ${name}, רק לוודא שהכל מושלם — אתם משוכנים ב${contact.room}. נשמח לדעת אם תצטרכו משהו 🚪`,
+    });
+  }
+  return macros.slice(0, 3);
+}
 
 // ── New Conversation Modal ────────────────────────────────────────────────────
 function NewChatModal({ onClose, onSent }) {
@@ -1447,23 +1599,42 @@ export default function WhatsAppInbox({ user }) {
   const [quickOpen, setQuickOpen]   = useState(false);
   const [archivedPhones, setArchivedPhones] = useState(() => new Set());
   const [routeToast, setRouteToast] = useState(null);
+  // ── WordPress-style guest editor drawer + claim/assignment state ─────────
+  const [editGuestTarget, setEditGuestTarget] = useState(null); // full guests row, or {phone} skeleton for "create new"
+  const [editGuestLoading, setEditGuestLoading] = useState(false);
+  const [claimBusy, setClaimBusy] = useState(false);
+  // ── Smart Inbox AI Copilot state (Sprint 1: on-demand AI suggestions;
+  // Sprint 2: task-routing sub-category picker) ─────────────────────────────
+  const [aiSuggestions, setAiSuggestions] = useState(null); // string[] | null — null = not generated yet
+  const [aiSuggesting, setAiSuggesting]   = useState(false);
+  const [aiSuggestError, setAiSuggestError] = useState(null);
+  const [routeDraft, setRouteDraft] = useState(null); // { category, subCategory, note } | null
   const bottomRef  = useRef(null);
   const pollRef    = useRef(null);
   const allMsgsRef = useRef([]);   // raw flat messages — source of truth for merging
   const lastSeenAt = useRef(null); // ISO timestamp of last fetch — used by fetchSince
   const guestPhoneMapRef = useRef(new Map()); // normalizePhone(guests.phone) → guests.name
+  const profilesMapRef   = useRef(new Map()); // profiles.id → profiles.name, for claimedBy display
 
   // ── Shared row normaliser ─────────────────────────────────────────────────
   const normalise = (r) => ({
     ...r,
-    phone:              canonicalizePhone(r.phone),
-    guest_name:         r.guests?.name ?? null,
-    guest_notes:        r.guests?.guest_notes ?? null,
-    spa_time:           r.guests?.spa_time ?? null,
-    guest_room:         r.guests?.room ?? null,
-    push_name:          r.push_name ?? null,
-    human_requested:    r.human_requested    ?? false,
-    human_request_type: r.human_request_type ?? null,
+    phone:                  canonicalizePhone(r.phone),
+    guest_id:               r.guests?.id ?? null,
+    guest_name:             r.guests?.name ?? null,
+    guest_notes:            r.guests?.guest_notes ?? null,
+    spa_time:               r.guests?.spa_time ?? null,
+    guest_room:             r.guests?.room ?? null,
+    guest_room_type:        r.guests?.room_type ?? null,
+    guest_status:           r.guests?.status ?? null,
+    guest_departure_date:   r.guests?.departure_date ?? null,
+    guest_meal_time:        r.guests?.meal_time ?? null,
+    guest_meal_location:    r.guests?.meal_location ?? null,
+    guest_claimed_by:       r.guests?.claimed_by ?? null,
+    guest_claimed_at:       r.guests?.claimed_at ?? null,
+    push_name:              r.push_name ?? null,
+    human_requested:        r.human_requested    ?? false,
+    human_request_type:    r.human_request_type ?? null,
   });
 
   // ── Client-side identity-resolution fallback ──────────────────────────────
@@ -1483,16 +1654,28 @@ export default function WhatsAppInbox({ user }) {
     });
   }, []);
 
+  // ── Resolve claimed_by (a profiles.id UUID) to a display name, the same
+  // "join client-side from a once-fetched map" approach as the identity
+  // fallback above — avoids a second nested FK alias in the main query.
+  const resolveClaimNames = useCallback((contacts) => {
+    if (profilesMapRef.current.size === 0) return contacts;
+    return contacts.map((c) => {
+      if (!c.claimedBy) return c;
+      const name = profilesMapRef.current.get(c.claimedBy);
+      return name ? { ...c, claimedByName: name } : c;
+    });
+  }, []);
+
   const applyGrouping = useCallback(
-    (rows) => resolveIdentityFallback(groupByPhone(rows)),
-    [resolveIdentityFallback]
+    (rows) => resolveClaimNames(resolveIdentityFallback(groupByPhone(rows))),
+    [resolveIdentityFallback, resolveClaimNames]
   );
 
   // ── Full fetch (initial load only) ────────────────────────────────────────
   const fetchAll = useCallback(async () => {
     const { data, error: err } = await supabase
       .from("whatsapp_conversations")
-      .select("id, phone, direction, message, wa_message_id, created_at, intent, human_requested, human_request_type, push_name, guests(name, guest_notes, spa_time, room)")
+      .select("id, phone, direction, message, wa_message_id, created_at, intent, human_requested, human_request_type, push_name, guests(id, name, guest_notes, spa_time, room, room_type, status, departure_date, meal_time, meal_location, claimed_by, claimed_at)")
       .order("created_at", { ascending: true })
       .limit(2000);
 
@@ -1516,7 +1699,7 @@ export default function WhatsAppInbox({ user }) {
 
     const { data } = await supabase
       .from("whatsapp_conversations")
-      .select("id, phone, direction, message, wa_message_id, created_at, intent, human_requested, human_request_type, push_name, guests(name, guest_notes, spa_time, room)")
+      .select("id, phone, direction, message, wa_message_id, created_at, intent, human_requested, human_request_type, push_name, guests(id, name, guest_notes, spa_time, room, room_type, status, departure_date, meal_time, meal_location, claimed_by, claimed_at)")
       .gt("created_at", since)
       .order("created_at", { ascending: true })
       .limit(100);
@@ -1543,7 +1726,7 @@ export default function WhatsAppInbox({ user }) {
   // `guests.phone` aren't guaranteed to share one format (session 15 root cause).
   const dismissHumanRequest = useCallback(async (contact) => {
     const bare = contact.phone; // canonicalizePhone() already applied — "972XXXXXXXXX"
-    const variants = [bare, `+${bare}`, `0${bare.slice(3)}`];
+    const variants = phoneVariants(bare);
     try {
       const [{ error: convErr }, { error: guestErr }] = await Promise.all([
         supabase.from("whatsapp_conversations")
@@ -1569,6 +1752,103 @@ export default function WhatsAppInbox({ user }) {
     }
   }, [applyGrouping]);
 
+  // ── Claim / take-over / release a guest's conversation ───────────────────
+  // Persists to guests.claimed_by/claimed_at (migration 081) so the
+  // assignment survives a page refresh — unlike the in-memory "recently
+  // active" proxy above, this is a real, queryable assignment. Any staff
+  // member can claim OR take over an existing claim (no permission gate —
+  // small-team cooperative tool, same trust model as OperationsBoard's
+  // claim button); the visible claimedByName badge is the social signal
+  // that prevents stepping on each other's replies, not a hard lock.
+  const setClaim = useCallback(async (contact, claim) => {
+    if (!contact || !user?.id) return;
+    const variants = phoneVariants(contact.phone);
+    setClaimBusy(true);
+    try {
+      const patch = claim
+        ? { claimed_by: user.id, claimed_at: new Date().toISOString() }
+        : { claimed_by: null, claimed_at: null };
+      const { error: err } = await supabase.from("guests").update(patch).in("phone", variants);
+      if (err) throw err;
+
+      allMsgsRef.current = allMsgsRef.current.map((m) =>
+        m.phone === contact.phone
+          ? { ...m, guest_claimed_by: patch.claimed_by, guest_claimed_at: patch.claimed_at }
+          : m
+      );
+      setContacts(applyGrouping(allMsgsRef.current));
+    } catch (e) {
+      setError("שגיאה בעדכון שיוך השיחה: " + (e?.message ?? e));
+    } finally {
+      setClaimBusy(false);
+    }
+  }, [applyGrouping, user]);
+
+  // ── Apply a full guests row (from the editor's onSaved, or a Realtime
+  // postgres_changes payload — both shapes match: id/name/phone/.../
+  // claimed_by/claimed_at) onto every matching local message row. Single
+  // shared patch function so the editor save path and the cross-tab
+  // Realtime listener below can't drift out of sync with each other.
+  const applyGuestRowUpdate = useCallback((g) => {
+    if (!g?.phone) return;
+    const targetPhone = canonicalizePhone(g.phone);
+    let touched = false;
+    allMsgsRef.current = allMsgsRef.current.map((m) => {
+      if (m.phone !== targetPhone) return m;
+      touched = true;
+      return {
+        ...m,
+        guest_id:             g.id ?? m.guest_id,
+        guest_name:           g.name ?? m.guest_name,
+        guest_notes:          g.guest_notes ?? null,
+        spa_time:             g.spa_time ?? null,
+        guest_room:           g.room ?? null,
+        guest_room_type:      g.room_type ?? null,
+        guest_status:         g.status ?? m.guest_status,
+        guest_departure_date: g.departure_date ?? null,
+        guest_meal_time:      g.meal_time ?? null,
+        guest_meal_location:  g.meal_location ?? null,
+        guest_claimed_by:     g.claimed_by ?? null,
+        guest_claimed_at:     g.claimed_at ?? null,
+      };
+    });
+    if (touched) setContacts(applyGrouping(allMsgsRef.current));
+  }, [applyGrouping]);
+
+  // ── WordPress-style guest editor — open ───────────────────────────────────
+  // Fetches the FULL guests row by phone (not just the handful of fields the
+  // inbox query already carries) so AddGuestModal gets the same complete
+  // record GuestsPage/GuestDashboard pass it. No guest row found for this
+  // phone → fall back to a {phone} skeleton, which AddGuestModal's existing
+  // isEdit=!!guest.id contract already treats as "create new" — so a
+  // not-yet-a-guest number can be turned into one from right here.
+  const openGuestEditor = useCallback(async (contact) => {
+    if (!contact) return;
+    setEditGuestLoading(true);
+    try {
+      const variants = phoneVariants(contact.phone);
+      const { data, error: err } = await supabase
+        .from("guests").select("*").in("phone", variants).limit(1).maybeSingle();
+      if (err) throw err;
+      setEditGuestTarget(data ?? { phone: contact.phone });
+    } catch (e) {
+      setError("שגיאה בטעינת פרטי אורח: " + (e?.message ?? e));
+    } finally {
+      setEditGuestLoading(false);
+    }
+  }, []);
+
+  // ── WordPress-style guest editor — save ───────────────────────────────────
+  // Optimistic local patch (same pattern as dismissHumanRequest/setClaim)
+  // instead of waiting for a realtime round-trip — whatsapp_conversations
+  // realtime only fires on conversation INSERT/UPDATE, never on a guests-only
+  // edit, so without this the drawer's own changes wouldn't appear until the
+  // next unrelated message refreshed the thread.
+  const handleGuestSaved = useCallback((saved) => {
+    if (saved) applyGuestRowUpdate(saved);
+    setEditGuestTarget(null);
+  }, [applyGuestRowUpdate]);
+
   // ── Open a contact — selects it, switches to thread screen on mobile, and
   // marks its inbound messages read locally so the unread badge actually
   // clears (previously `_read` was referenced by the badge logic but never
@@ -1578,6 +1858,11 @@ export default function WhatsAppInbox({ user }) {
     if (isMobile) setMobileScreen("thread");
     setDrawerOpen(false);
     setQuickOpen(false);
+    // AI suggestions + route draft are per-conversation — stale suggestions
+    // from whichever chat was open before must never leak into a new one.
+    setAiSuggestions(null);
+    setAiSuggestError(null);
+    setRouteDraft(null);
     allMsgsRef.current = allMsgsRef.current.map((m) =>
       m.phone === phone && m.direction === "inbound" ? { ...m, _read: true } : m
     );
@@ -1591,14 +1876,24 @@ export default function WhatsAppInbox({ user }) {
   // regardless of source). source='inbox_routed' keeps provenance honest:
   // this is an operator action on the guest channel, not a parsed staff
   // WhatsApp-group report.
-  async function routeTask(category, contact) {
+  //
+  // Sprint 2 — `subCategoryLabel`/`note` replace the old behavior of blasting
+  // the guest's raw last-inbound message as the task description with zero
+  // staff judgment in between (e.g. a guest typing "Could you maybe bring a
+  // couple of towels when you get a chance?" became the literal ticket text).
+  // Staff now picks a real category and/or types the actual ask before this
+  // fires — `description` falls back to the raw message only if the picker
+  // produced neither (shouldn't happen since dispatch is disabled until one
+  // of the two is filled, but keeps this function safe to call directly).
+  async function routeTask(category, contact, subCategoryLabel, note) {
     if (!contact) return;
     const isMaint     = category === "maintenance";
     const slaCategory = isMaint ? "maintenance" : "guest_amenities";
     const slaMinutes  = isMaint ? 30 : 15;
     const lastInbound = [...contact.messages].reverse().find((m) => m.direction === "inbound");
-    const context      = lastInbound?.message?.slice(0, 280) || "";
     const guestLabel   = displayName(contact);
+    const definedText = [subCategoryLabel, note?.trim()].filter(Boolean).join(" — ");
+    const context      = definedText || lastInbound?.message?.slice(0, 280) || "";
     try {
       const { error: insErr } = await supabase.from("tasks").insert({
         room_number:         contact.room ?? null,
@@ -1617,8 +1912,40 @@ export default function WhatsAppInbox({ user }) {
     } catch (e) {
       setRouteToast("⚠️ שגיאה ביצירת משימה: " + (e?.message ?? e));
     }
+    setRouteDraft(null);
     setQuickOpen(false);
     setTimeout(() => setRouteToast(null), 3500);
+  }
+
+  // ── On-demand AI reply suggestions (Sprint 1) ─────────────────────────────
+  // Only ever called from the "✨ הצעות AI חכמות" button's onClick — never
+  // automatically on chat selection (token-saving by design, per the brief).
+  // Sends only the last 3 messages of the ACTIVE thread, already loaded
+  // client-side — no extra DB read on the edge-function side.
+  async function generateAiSuggestions() {
+    if (!activeContact) return;
+    setAiSuggesting(true);
+    setAiSuggestError(null);
+    try {
+      const last3 = activeContact.messages.slice(-3).map((m) => ({
+        direction: m.direction,
+        text: m.message,
+      }));
+      const { data, error: fnErr } = await supabase.functions.invoke("suggest-replies", {
+        body: {
+          messages:  last3,
+          guestName: activeContact.guestName ?? activeContact.pushName ?? null,
+          room:      activeContact.room ?? null,
+        },
+      });
+      if (fnErr || !data?.ok) throw new Error(data?.error ?? fnErr?.message ?? "שגיאה ביצירת הצעות");
+      setAiSuggestions(Array.isArray(data.suggestions) ? data.suggestions.slice(0, 3) : []);
+    } catch (e) {
+      setAiSuggestError(e?.message ?? "שגיאה");
+      setAiSuggestions(null);
+    } finally {
+      setAiSuggesting(false);
+    }
   }
 
   // ── Populate the guest phone→name map once on mount, for the identity-
@@ -1639,6 +1966,20 @@ export default function WhatsAppInbox({ user }) {
         setContacts((prev) => resolveIdentityFallback(prev));
       });
   }, [resolveIdentityFallback]);
+
+  // ── Populate the profiles id→name map once on mount, for resolving
+  // guests.claimed_by (a UUID) to a readable name on the claim badge. ──────
+  useEffect(() => {
+    supabase
+      .from("profiles")
+      .select("id, name")
+      .then(({ data }) => {
+        const map = new Map();
+        for (const p of data ?? []) map.set(p.id, p.name);
+        profilesMapRef.current = map;
+        setContacts((prev) => resolveClaimNames(prev));
+      });
+  }, [resolveClaimNames]);
 
   // ── Initial load + incremental polling fallback ───────────────────────────
   // fetchAll fires once; after that only fetchSince runs every POLL_MS (fallback).
@@ -1757,6 +2098,32 @@ export default function WhatsAppInbox({ user }) {
     };
   }, [fetchSince]);
 
+  // ── Realtime subscription on `guests` — cross-tab claim/assignment sync ──
+  // Deliberately a SEPARATE channel from wa-inbox-rt-v2 above (not folded
+  // into the same .on() chain) so its reconnect logic stays untouched. A
+  // guests-only UPDATE (e.g. another manager's claim/release, or a save from
+  // the WordPress-style editor in a different tab) never inserts/updates a
+  // whatsapp_conversations row, so the existing channel would never see it —
+  // without this, claim state only ever synced on next refresh or unrelated
+  // new-message poll. payload.new carries the full updated row regardless of
+  // REPLICA IDENTITY (only `old`'s completeness depends on that), so
+  // applyGuestRowUpdate can treat it as authoritative.
+  // NOTE: requires `guests` to be added to the supabase_realtime publication
+  // (migration 082) — otherwise this subscribes successfully but silently
+  // never receives an event, the same failure mode migration 059 documented
+  // for guest_alerts.
+  useEffect(() => {
+    const ch = supabase
+      .channel("wa-inbox-guests-rt")
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "guests" },
+        (payload) => applyGuestRowUpdate(payload.new)
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [applyGuestRowUpdate]);
+
   // ── Re-fetch immediately when the browser tab becomes visible again ──────
   // Handles the common case where staff switch away and miss incoming messages.
   useEffect(() => {
@@ -1814,6 +2181,11 @@ export default function WhatsAppInbox({ user }) {
   const activeContact   = contacts.find((c) => c.phone === active) ?? null;
   const thread          = activeContact?.messages ?? [];
   const visibleContacts = contacts.filter((c) => !archivedPhones.has(c.phone));
+  // Contextual macros take over the quick-actions drawer when this guest has
+  // usable metadata; otherwise fall back to the generic list so the drawer
+  // never renders empty (Sprint 9.4, point 4).
+  const contextualMacros = buildContextualMacros(activeContact);
+  const isContextualQuickList = contextualMacros.length > 0;
   const unreadTotal     = contacts.reduce((sum, c) => {
     return sum + c.messages.filter((m) => m.direction === "inbound" && !m._read).length;
   }, 0);
@@ -1908,6 +2280,44 @@ export default function WhatsAppInbox({ user }) {
               💆 {t.spa} {activeContact.spaTime}
             </div>
           )}
+          {/* Claim / take-over — icon-only with a title tooltip to stay compact
+              on mobile (same header row already holds back-button+name+spa
+              chip+AI-log button). Never hidden/disabled per §0.2 — relabels
+              instead: 🙋 unclaimed → 🔁 take-over from someone else → ✓ yours. */}
+          {activeContact && (
+            <button
+              onClick={() => setClaim(activeContact, activeContact.claimedBy !== user?.id)}
+              disabled={claimBusy}
+              title={
+                activeContact.claimedBy === user?.id ? t.claimedByMe
+                : activeContact.claimedBy ? t.claimedBadge(activeContact.claimedByName ?? "—")
+                : t.claimChat
+              }
+              style={{
+                background: activeContact.claimedBy === user?.id ? "rgba(37,211,102,0.3)" : "rgba(255,255,255,0.1)",
+                border: "1px solid rgba(255,255,255,0.35)", color: "white",
+                borderRadius: 8, fontSize: 13, cursor: claimBusy ? "not-allowed" : "pointer",
+                padding: "6px 10px", minHeight: isMobile ? 44 : "auto", minWidth: isMobile ? 44 : "auto",
+                opacity: claimBusy ? 0.6 : 1,
+              }}
+            >
+              {claimBusy ? "⏳" : activeContact.claimedBy === user?.id ? "✓" : activeContact.claimedBy ? "🔁" : "🙋"}
+            </button>
+          )}
+          <button
+            onClick={() => activeContact && openGuestEditor(activeContact)}
+            disabled={editGuestLoading}
+            title={t.editGuest}
+            style={{
+              background: "rgba(255,255,255,0.1)",
+              border: "1px solid rgba(255,255,255,0.35)", color: "white",
+              borderRadius: 8, fontSize: 13, cursor: editGuestLoading ? "not-allowed" : "pointer",
+              padding: "6px 10px", minHeight: isMobile ? 44 : "auto", minWidth: isMobile ? 44 : "auto",
+              opacity: editGuestLoading ? 0.6 : 1,
+            }}
+          >
+            {editGuestLoading ? "⏳" : "✏️"}
+          </button>
           <button
             onClick={() => setDrawerOpen((o) => !o)}
             title={t.aiLogHint}
@@ -1979,52 +2389,186 @@ export default function WhatsAppInbox({ user }) {
             position: "absolute", bottom: "100%", insetInlineStart: 14, insetInlineEnd: 14,
             marginBottom: 6, background: "white", border: "1px solid #ddd", borderRadius: 14,
             padding: 12, boxShadow: "0 -4px 16px rgba(0,0,0,0.12)",
+            maxHeight: "70vh", overflowY: "auto",
           }}>
+            {/* Contextual macros — zero-token, data-driven (spa_time/meal_time/
+                room). Shown only when this guest actually has that metadata;
+                no longer falls back to the old generic QUICK_PHRASES list with
+                literal {{שם}} placeholders — that's what the AI button below replaces. */}
+            {isContextualQuickList && (
+              <>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#555", marginBottom: 6, textTransform: "uppercase" }}>
+                  {t.contextualMacrosTitle}
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+                  {contextualMacros.map((ph, i) => (
+                    <button
+                      key={i}
+                      onClick={() => { setReply(ph.text); setQuickOpen(false); }}
+                      style={{
+                        padding: "6px 12px", borderRadius: 20, border: "1.5px solid var(--gold,#C9A96E)",
+                        background: "linear-gradient(135deg, #FFF8E8, #FDF2D8)", color: "var(--gold-dark,#A8843A)",
+                        fontSize: 12, fontWeight: 700, cursor: "pointer", minHeight: isMobile ? 40 : "auto",
+                      }}
+                    >
+                      {ph.label}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {/* On-demand AI suggestions (Sprint 1) — never auto-generated on
+                chat selection, only on explicit click (token-saving by design). */}
             <div style={{ fontSize: 11, fontWeight: 700, color: "#555", marginBottom: 6, textTransform: "uppercase" }}>
-              {t.quickRepliesTitle}
+              {t.aiSuggestTitle}
             </div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
-              {QUICK_PHRASES.map((ph, i) => (
+            <div style={{ marginBottom: 10 }}>
+              {!aiSuggestions ? (
                 <button
-                  key={i}
-                  onClick={() => {
-                    const personalised = activeContact?.guestName
-                      ? ph.text.replace("{{שם}}", activeContact.guestName)
-                      : ph.text;
-                    setReply(personalised);
-                    setQuickOpen(false);
-                  }}
+                  onClick={generateAiSuggestions}
+                  disabled={aiSuggesting || !activeContact}
                   style={{
-                    padding: "6px 12px", borderRadius: 20, border: "1.5px solid #E0D5C5",
-                    background: "#FAFAFA", color: "#444", fontSize: 12, fontWeight: 600,
-                    cursor: "pointer", minHeight: isMobile ? 40 : "auto",
+                    padding: "8px 14px", borderRadius: 20, border: "1.5px solid var(--gold,#C9A96E)",
+                    background: aiSuggesting ? "#F3F0EA" : "linear-gradient(135deg, #FFF8E8, #FDF2D8)",
+                    color: "var(--gold-dark,#A8843A)", fontSize: 12, fontWeight: 700,
+                    cursor: aiSuggesting ? "not-allowed" : "pointer", minHeight: isMobile ? 40 : "auto",
                   }}
                 >
-                  {ph.label}
+                  {aiSuggesting ? t.aiSuggestLoading : t.aiSuggestButton}
                 </button>
-              ))}
+              ) : (
+                <>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {aiSuggestions.map((s, i) => (
+                      <button
+                        key={i}
+                        onClick={() => { setReply(s); setQuickOpen(false); }}
+                        style={{
+                          textAlign: "start", padding: "8px 12px", borderRadius: 12,
+                          border: "1.5px solid var(--gold,#C9A96E)",
+                          background: "linear-gradient(135deg, #FFF8E8, #FDF2D8)",
+                          color: "#3a2e10", fontSize: 12, fontWeight: 600, lineHeight: 1.5,
+                          cursor: "pointer", minHeight: isMobile ? 40 : "auto",
+                        }}
+                      >
+                        {s}
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    onClick={generateAiSuggestions}
+                    disabled={aiSuggesting}
+                    style={{
+                      marginTop: 6, padding: "5px 10px", borderRadius: 14, border: "1px solid #E0D5C5",
+                      background: "transparent", color: "#777", fontSize: 11, fontWeight: 600,
+                      cursor: aiSuggesting ? "not-allowed" : "pointer",
+                    }}
+                  >
+                    {aiSuggesting ? t.aiSuggestLoading : t.aiSuggestRetry}
+                  </button>
+                </>
+              )}
+              {aiSuggestError && (
+                <div style={{ marginTop: 6, fontSize: 11, color: "#C0392B" }}>
+                  {t.aiSuggestErrorPrefix} {aiSuggestError}
+                </div>
+              )}
             </div>
-            <div style={{ fontSize: 11, fontWeight: 700, color: "#555", marginBottom: 6, textTransform: "uppercase" }}>
-              {t.routeTitle}
-            </div>
-            <div style={{ display: "flex", gap: 6 }}>
-              <button
-                onClick={() => routeTask("maintenance", activeContact)}
-                style={{
-                  flex: 1, padding: "8px 10px", borderRadius: 10, border: "1.5px solid #E0D5C5",
-                  background: "#FAFAFA", color: "#444", fontSize: 12, fontWeight: 700,
-                  cursor: "pointer", minHeight: isMobile ? 44 : "auto",
-                }}
-              >{t.routeMaint}</button>
-              <button
-                onClick={() => routeTask("housekeeping", activeContact)}
-                style={{
-                  flex: 1, padding: "8px 10px", borderRadius: 10, border: "1.5px solid #E0D5C5",
-                  background: "#FAFAFA", color: "#444", fontSize: 12, fontWeight: 700,
-                  cursor: "pointer", minHeight: isMobile ? 44 : "auto",
-                }}
-              >{t.routeHouse}</button>
-            </div>
+
+            {/* Smart task routing (Sprint 2) — clicking a department no longer
+                instantly dispatches the guest's raw last message as the ticket;
+                it opens a sub-category + free-text picker first. */}
+            {!routeDraft ? (
+              <>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#555", marginBottom: 6, textTransform: "uppercase" }}>
+                  {t.routeTitle}
+                </div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button
+                    onClick={() => setRouteDraft({ category: "maintenance", subCategory: null, note: "" })}
+                    style={{
+                      flex: 1, padding: "8px 10px", borderRadius: 10, border: "1.5px solid #E0D5C5",
+                      background: "#FAFAFA", color: "#444", fontSize: 12, fontWeight: 700,
+                      cursor: "pointer", minHeight: isMobile ? 44 : "auto",
+                    }}
+                  >{t.routeMaint}</button>
+                  <button
+                    onClick={() => setRouteDraft({ category: "housekeeping", subCategory: null, note: "" })}
+                    style={{
+                      flex: 1, padding: "8px 10px", borderRadius: 10, border: "1.5px solid #E0D5C5",
+                      background: "#FAFAFA", color: "#444", fontSize: 12, fontWeight: 700,
+                      cursor: "pointer", minHeight: isMobile ? 44 : "auto",
+                    }}
+                  >{t.routeHouse}</button>
+                </div>
+              </>
+            ) : (
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#555", marginBottom: 4, textTransform: "uppercase" }}>
+                  {routeDraft.category === "maintenance" ? t.routeMaint : t.routeHouse}
+                </div>
+                <div style={{ fontSize: 11, color: "#888", marginBottom: 8 }}>{t.routeSubtitle}</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                  {TASK_SUBCATEGORIES[routeDraft.category].map((sc) => {
+                    const selected = routeDraft.subCategory === sc.id;
+                    return (
+                      <button
+                        key={sc.id}
+                        onClick={() => setRouteDraft((d) => ({ ...d, subCategory: selected ? null : sc.id }))}
+                        style={{
+                          padding: "6px 12px", borderRadius: 20, border: "1.5px solid",
+                          borderColor: selected ? "var(--gold,#C9A96E)" : "#E0D5C5",
+                          background: selected ? "linear-gradient(135deg, #FFF8E8, #FDF2D8)" : "#FAFAFA",
+                          color: selected ? "var(--gold-dark,#A8843A)" : "#444",
+                          fontSize: 12, fontWeight: 700, cursor: "pointer", minHeight: isMobile ? 40 : "auto",
+                        }}
+                      >
+                        {sc.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <input
+                  type="text"
+                  value={routeDraft.note}
+                  onChange={(e) => setRouteDraft((d) => ({ ...d, note: e.target.value }))}
+                  placeholder={t.routeNotePlaceholder}
+                  style={{
+                    width: "100%", boxSizing: "border-box", padding: "8px 12px", borderRadius: 10,
+                    border: "1px solid #ddd", fontSize: 13, fontFamily: "inherit", direction: "rtl",
+                    marginBottom: 8,
+                  }}
+                />
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button
+                    onClick={() => setRouteDraft(null)}
+                    style={{
+                      flex: 1, padding: "8px 10px", borderRadius: 10, border: "1px solid #E0D5C5",
+                      background: "transparent", color: "#777", fontSize: 12, fontWeight: 600,
+                      cursor: "pointer", minHeight: isMobile ? 44 : "auto",
+                    }}
+                  >{t.routeCancel}</button>
+                  <button
+                    onClick={() => routeTask(
+                      routeDraft.category, activeContact,
+                      routeDraft.subCategory ? TASK_SUBCATEGORIES[routeDraft.category].find((sc) => sc.id === routeDraft.subCategory)?.label : null,
+                      routeDraft.note
+                    )}
+                    disabled={!routeDraft.subCategory && !routeDraft.note.trim()}
+                    title={!routeDraft.subCategory && !routeDraft.note.trim() ? t.routeSubtitle : undefined}
+                    style={{
+                      flex: 2, padding: "8px 10px", borderRadius: 10, border: "none",
+                      background: (!routeDraft.subCategory && !routeDraft.note.trim()) ? "#E5E7EB" : "var(--gold,#C9A96E)",
+                      color: (!routeDraft.subCategory && !routeDraft.note.trim()) ? "#9CA3AF" : "#1A1A1A",
+                      fontSize: 12, fontWeight: 800,
+                      cursor: (!routeDraft.subCategory && !routeDraft.note.trim()) ? "not-allowed" : "pointer",
+                      minHeight: isMobile ? 44 : "auto",
+                    }}
+                  >{t.routeDispatch}</button>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -2217,6 +2761,24 @@ export default function WhatsAppInbox({ user }) {
         <NewChatModal
           onClose={() => setShowNewChat(false)}
           onSent={() => { setShowNewChat(false); setTimeout(fetchAll, 600); }}
+        />
+      )}
+
+      {/* WordPress-style guest editor — right-docked drawer so the thread
+          stays visible behind it (§ Session 9 Sprint 9.1). Reuses
+          AddGuestModal as the single source of truth for the guest form
+          (§0.4/§0.5) instead of a second parallel edit UI. */}
+      {editGuestTarget && (
+        <AddGuestModal
+          guest={editGuestTarget}
+          dock="right"
+          onClose={() => setEditGuestTarget(null)}
+          onSaved={handleGuestSaved}
+          showToast={(kind, msg) => {
+            if (kind === "err") { setError(msg); return; }
+            setRouteToast(msg);
+            setTimeout(() => setRouteToast(null), 3500);
+          }}
         />
       )}
     </div>

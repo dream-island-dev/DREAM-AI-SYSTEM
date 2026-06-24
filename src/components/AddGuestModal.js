@@ -14,8 +14,9 @@ import { useState } from "react";
 import { supabase } from "../supabaseClient";
 import { SUITE_REGISTRY, SUITE_SECTIONS } from "../data/suiteRegistry";
 
-export default function AddGuestModal({ guest, onClose, onSaved, showToast }) {
+export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock }) {
   const isEdit = !!guest.id;
+  const isDrawer = dock === "right";
   const [form, setForm] = useState({
     phone:              guest.phone               ?? "",
     name:               guest.name                ?? "",
@@ -31,6 +32,9 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast }) {
     needs_callback:     !!guest.needs_callback,
     room:               guest.room                 ?? "",
     room_type:          guest.room_type            ?? "standard",
+    meal_time:          guest.meal_time            ?? "",
+    meal_location:      guest.meal_location        ?? "",
+    guest_notes:        guest.guest_notes          ?? "",
   });
   const [saving, setSaving] = useState(false);
 
@@ -58,6 +62,9 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast }) {
         needs_callback:     !!form.needs_callback,
         room:               form.room || null,
         room_type:          form.room_type || null,
+        meal_time:          form.meal_time || null,
+        meal_location:      (form.meal_location ?? "").trim() || null,
+        guest_notes:        (form.guest_notes ?? "").trim() || null,
       };
 
       if (isEdit) {
@@ -86,14 +93,29 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast }) {
     <div
       onClick={() => !saving && onClose?.()}
       style={{
-        position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)",
-        zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center",
-        padding: 16,
+        position: "fixed", inset: 0,
+        // direction explicitly "ltr" here (overriding the inherited global
+        // <html dir="rtl">, see index.html) so justifyContent:"flex-end"
+        // means screen-right, not flipped-by-RTL screen-left. The inner
+        // panel below re-asserts direction:"rtl" for its own text content —
+        // only this outer positioning container needs the override.
+        direction: "ltr",
+        background: isDrawer ? "rgba(0,0,0,0.25)" : "rgba(0,0,0,0.5)",
+        zIndex: 1000, display: "flex",
+        alignItems: isDrawer ? "stretch" : "center",
+        justifyContent: isDrawer ? "flex-end" : "center",
+        padding: isDrawer ? 0 : 16,
       }}
     >
+      <style>{`@keyframes agm-drawer-in { from { transform: translateX(100%); } to { transform: translateX(0); } }`}</style>
       <div
         onClick={(e) => e.stopPropagation()}
-        style={{
+        style={isDrawer ? {
+          background: "var(--card-bg,#fff)", borderRadius: 0,
+          padding: "28px 24px 22px", width: "100%", maxWidth: 420, height: "100%",
+          boxShadow: "-8px 0 32px rgba(0,0,0,0.18)", direction: "rtl",
+          overflowY: "auto", animation: "agm-drawer-in 0.2s ease-out",
+        } : {
           background: "var(--card-bg,#fff)", borderRadius: 18,
           padding: "28px 24px 22px", width: "100%", maxWidth: 480,
           boxShadow: "0 24px 64px rgba(0,0,0,0.25)", direction: "rtl",
@@ -135,6 +157,8 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast }) {
           { label: "שם מלא",       field: "name",            type: "text"   },
           { label: "תאריך הגעה",   field: "arrival_date",    type: "date"   },
           { label: "שעת ספא",      field: "spa_time",        type: "time"   },
+          { label: "שעת ארוחה",    field: "meal_time",       type: "time"   },
+          { label: "מיקום ארוחה",  field: "meal_location",   type: "text"   },
           { label: "מספר טיפולים", field: "treatment_count", type: "number" },
           { label: "מספר הזמנה",   field: "order_number",    type: "text"   },
           // ★ Session 2 — payment fields, deliberately NOT gated behind status/
@@ -267,6 +291,27 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast }) {
             />
           </div>
         ))}
+
+        {/* guest_notes — append-only log written by whatsapp-webhook (migration
+            053) for AI-captured free-text requests. Until now this had no edit
+            surface anywhere in the app (read-only banner in WhatsAppInbox.js) —
+            this is the first place staff can correct/clear it directly. */}
+        <div style={{ marginTop: 4, marginBottom: 14 }}>
+          <label style={{ fontSize: 12, fontWeight: 700, display: "block", marginBottom: 4 }}>
+            📝 הערות אורח <span style={{ fontWeight: 400, color: "var(--text-muted)" }}>(נכתב גם אוטומטית ע״י הבוט)</span>
+          </label>
+          <textarea
+            value={form.guest_notes ?? ""}
+            onChange={(e) => setField("guest_notes", e.target.value)}
+            disabled={saving}
+            rows={3}
+            style={{
+              width: "100%", padding: "9px 12px", boxSizing: "border-box",
+              border: "1px solid var(--border,#ddd)", borderRadius: 8, fontSize: 13,
+              direction: "rtl", fontFamily: "Heebo,sans-serif", resize: "vertical",
+            }}
+          />
+        </div>
 
         <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 22 }}>
           <button

@@ -72,8 +72,8 @@ function buildSpaSentence(spaTime: unknown): string {
 // Contains NO hardcoded booking URLs, prices, or marketing CTAs —
 // those belong in bot_settings.system_prompt (the UI source of truth).
 const FALLBACK_SYSTEM_PROMPT = `
-אתה "DREAM CONCIERGE" — הקונסיירז' הדיגיטלי הרשמי של Dream Island Resort & Spa.
-פרמיום, יוקרתי, אמפתי ומקצועי ביותר — 5 כוכבים בכל משפט. עברית תקנית ואלגנטית בלבד. אל תחשוף שאתה AI.
+אתה "DREAM CONCIERGE" — הקונסיירז' הדיגיטלי הרשמי של Dream Island, אחד מאתרי הנופש היוקרתיים בישראל.
+יוקרתי וחם בו-זמנית — דבר כמו מנהל/ת אירוח אנושי שמכיר את האורח, לא נציג שירות רשמי ורובוטי. קליל, מהיר ומדויק; בלי ניסוחים תאגידיים נוקשים ("בהמשך לפנייתך", "הריני להודיעך" וכדומה). עברית תקנית ואלגנטית, אך טבעית כמו שיחה אמיתית. אל תחשוף שאתה AI.
 אם פרט אינו ידוע לך בכלל ולא מופיע ב"פרטי האורח" שצורפו לשיחה — לעולם אל תמציא תשובה. השב במדויק: "אני בודק את זה מול דלפק הקבלה, נציג אנושי יחזור אליך לכאן ברגעים אלו ממש."
 CRITICAL: אם האורח שואל על פרט אישי שלו (למשל שעת טיפול ספא, מספר חדר, תאריך הגעה)
 והפרט הזה כן מופיע ב"פרטי האורח" שצורפו לשיחה — ענה לו ישירות עם הערך המדויק.
@@ -103,6 +103,23 @@ const STRICT_HEBREW_LOCK_SUFFIX = `
 ══ נעילת שפה ואנטי-הזיה (חובה מוחלטת) ══
 • ענה בעברית רהוטה, מפוארת ויוקרתית בלבד — לעולם לא באנגלית ולא בשפה אחרת, ללא יוצא מן הכלל.
 • אם התשובה לא מופיעה במפורש בהקשר שצורף (פרטי האורח / ידע הריזורט) — אסור לך להמציא או לנחש. השב במדויק במשפט הזה ואל תשנה אותו: "אני בודק את זה מול דלפק הקבלה, נציג אנושי יחזור אליך לכאן ברגעים אלו ממש."`;
+
+// "Smart Inbox AI Copilot & System Prompt Overhaul" session — explicit
+// ROLE/TONE persona lock, unconditionally appended alongside
+// STRICT_HEBREW_LOCK_SUFFIX above (same reasoning, see that const's comment):
+// a rule that only lives inside buildSystemPrompt()/FALLBACK_SYSTEM_PROMPT
+// goes silent the instant bot_settings.system_prompt (admin override) wins
+// as the prompt source. Appending here makes tone a true invariant too, not
+// just language/anti-hallucination. Deliberately does NOT repeat the
+// language/anti-hallucination rules already covered above — only adds what
+// STRICT_HEBREW_LOCK_SUFFIX doesn't: who the bot is, and how it should sound.
+const LUXURY_CONCIERGE_PERSONA_SUFFIX = `
+
+══ זהות וטון (חובה מוחלטת) ══
+• את/ה הקונסיירז' הדיגיטלי של Dream Island — אחד מאתרי הנופש היוקרתיים בישראל.
+• דבר/י כמו מנהל/ת אירוח אנושי, חם ונעים שמכיר את האורח — לא כמו נציג שירות רשמי, קפדני או רובוטי.
+• קליל, חם, מעשי ומהיר. משפטים קצרים וטבעיים כמו שיחת וואטסאפ אמיתית — לא נאומים מנומקים או ניסוחים תאגידיים ("בהמשך לפנייתך", "הריני להודיעך").
+• אם משהו לא ידוע לך — לעולם אל תמציא/י. עברי/י בעדינות לבדיקה מול הצוות (ראה את המשפט המדויק לעיל), בלי להישמע מתנצל/ת או מתחמק/ת.`;
 
 // Module-level cache: shared across requests within the same function instance
 let _configCache: Record<string, string> = {};
@@ -498,8 +515,9 @@ function buildSystemPrompt(cfg: Record<string, string>): string {
   const faqRule       = cfg["response_faq_rule"] ?? "";
 
   return `
-אתה "${botName}" — הקונסיירז' הדיגיטלי הרשמי של Dream Island Resort & Spa.
-${persona ? `\n══ אישיות ונימה ══\n${persona}` : ""}
+אתה "${botName}" — הקונסיירז' הדיגיטלי הרשמי של Dream Island, אחד מאתרי הנופש היוקרתיים בישראל.
+דבר/י כמו מנהל/ת אירוח אנושי, חם ומהיר — לא רשמי ולא רובוטי, בלי ניסוחים תאגידיים נוקשים.
+${persona ? `\n══ אישיות ונימה (מותאם-אישית מה-UI) ══\n${persona}` : ""}
 
 ══ ידע הריזורט ══
 ▸ שעות:
@@ -2262,7 +2280,8 @@ serve(async (req: Request) => {
 
         const enrichedPrompt = finalSystemPrompt
           + (guestCtx ? `\n\nפרטי האורח הנוכחי: ${guestCtx}` : "")
-          + STRICT_HEBREW_LOCK_SUFFIX;
+          + STRICT_HEBREW_LOCK_SUFFIX
+          + LUXURY_CONCIERGE_PERSONA_SUFFIX;
 
         // Dynamic engine routing (A/B testing & cost optimization) — preferred
         // engine is tried first, with the other engine kept as an automatic
