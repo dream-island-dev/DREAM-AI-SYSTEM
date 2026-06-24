@@ -41,6 +41,7 @@ const SOURCE_META = {
   manual:              { label: "🖊 ידני", color: "var(--text-muted)" },
   whatsapp_staff:       { label: "📱 וואטסאפ", color: "#1A7A4A" },
   legacy_service_call: { label: "🗄 היסטורי", color: "var(--text-muted)" },
+  guest_request:       { label: "🛋️ בקשת אורח", color: "#A8843A" },
 };
 
 // ── Image preview helper (unchanged from TaskBoard.js) ───────────────────────

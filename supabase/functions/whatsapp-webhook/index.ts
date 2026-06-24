@@ -32,6 +32,7 @@ import { serve }        from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import Anthropic        from "https://esm.sh/@anthropic-ai/sdk@0.20.0";
 import { sendCtaUrlButton } from "../_shared/interactiveSend.ts";
+import { sendWhapiText }    from "../_shared/whapiSend.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -734,6 +735,79 @@ async function flagGuestAlert(
   console.info(
     `[webhook] 🚨 ALERT — phone:${phone} guest:${guestId ?? "unknown"} conv:${conversationId ?? "?"}`
   );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// §4b  DUAL-ROUTING TRIGGER — Session 26 Sprint 3.1. Bridges a guest's
+//      log_guest_request tool call straight into the staff ops Whapi group
+//      (the same `tasks` table + group the Ops & Maintenance Board already
+//      uses, CLAUDE.md §0.4 Universal Architecture — not a parallel ticket
+//      system). guest_alerts (flagGuestAlert's sibling insert at the call
+//      site) keeps logging every request to the dashboard regardless; this
+//      is purely an ADDITIONAL fast-path for suite guests so staff see it
+//      in WhatsApp without anyone opening the dashboard.
+//
+//      Suite-Only Profile Filter: day-guest ("בילוי יומי") and standard-room
+//      requests never call this — they stay dashboard-only by design (the
+//      ops group is a 24/7-reachable real-time channel; flooding it with
+//      every day-pass ask would erode its signal for the genuinely time-
+//      sensitive suite-guest case this exists for).
+//
+//      Non-blocking / best-effort: a Whapi failure here must never affect
+//      the guest's own reply (already sent by the time this runs) or the
+//      guest_alerts dashboard row (already inserted independently).
+// ══════════════════════════════════════════════════════════════════════════════
+async function routeGuestRequestToOpsGroup(
+  supabase: ReturnType<typeof createClient>,
+  args: { guestId: number; room: string | null; summary: string; rawText: string },
+): Promise<void> {
+  const groupId = Deno.env.get("WHAPI_GROUP_ID")?.trim();
+  if (!groupId) {
+    console.warn("[webhook] 🛋️ WHAPI_GROUP_ID unset — guest_request not routed to ops group (dashboard guest_alerts row still stands)");
+    return;
+  }
+
+  const roomLabel = args.room ?? "—";
+  // Card text stays English per the dual-language framework (CLAUDE.md
+  // sla-escalation-cron header: guests Hebrew, staff English) — item_summary
+  // itself is the model's short HEBREW extraction (LOG_REQUEST_JSON_SCHEMA),
+  // left untranslated on purpose: a guest's free-text ask ("יין אדום") read
+  // verbatim by staff is more reliable than a machine-translated paraphrase,
+  // and adding a translation call here is one more failure point for a
+  // 3-8 word string. Mixed-language card, deliberate.
+  const card = `🛋️ [${roomLabel}] Guest requested: ${args.summary}`;
+
+  const { data: task, error: insertErr } = await supabase
+    .from("tasks")
+    .insert([{
+      room_number: args.room,
+      department:  "תפעול",
+      description: args.summary,
+      priority:    "normal",
+      status:      "open",
+      source:      "guest_request",
+      guest_id:    args.guestId,
+      reporter_raw_text: args.rawText,
+      action_token: crypto.randomUUID(),
+    }])
+    .select("id")
+    .single();
+  if (insertErr || !task) {
+    console.error("[webhook] 🛋️ guest_request task insert error:", insertErr?.message);
+    return;
+  }
+
+  let msgId: string | null = null;
+  try {
+    msgId = await sendWhapiText(groupId, card, { noLinkPreview: true });
+  } catch (e) {
+    console.warn(`[webhook] 🛋️ guest_request task ${task.id} created but Whapi send failed:`, (e as Error).message);
+  }
+  if (msgId) {
+    const { error: updErr } = await supabase.from("tasks").update({ whapi_message_id: msgId }).eq("id", task.id);
+    if (updErr) console.warn(`[webhook] 🛋️ failed to store whapi_message_id for task ${task.id}:`, updErr.message);
+  }
+  console.info(`[webhook] 🛋️ guest_request task ${task.id} room=${roomLabel} routed to ops group (sent=${!!msgId})`);
 }
 
 // ── Gemini model auto-discovery (used only when all hardcoded models 404) ────
@@ -2236,6 +2310,20 @@ serve(async (req: Request) => {
             // a failed insert here means a guest request never reaches the Requests Board.
             if (error) console.error("[webhook] 🚨 guest_alerts (request) insert FAILED:", error.message);
           })().catch((e: Error) => console.error("[webhook] 🚨 guest_alerts (request) insert FAILED:", e.message));
+        }
+
+        // ── Dual-Routing Trigger (Session 26 Sprint 3.1) — Suite-Only Profile
+        // Filter. Gated on toolLoggedRequest specifically (an actual fulfillable
+        // ask/upsell lead), NOT criticalKeywordHit (that net also catches plain
+        // complaint/price mentions — not "go do something" requests, so it
+        // would over-notify the ops group). Day-guest/standard-room requests
+        // never reach here — they stop at the guest_alerts insert above.
+        const guestRoomType = (guest as Record<string, unknown> | null)?.room_type as string | null ?? null;
+        if (toolLoggedRequest && guestId && guestRoomType === "suite") {
+          const guestRoom = (guest as Record<string, unknown> | null)?.room as string | null ?? null;
+          routeGuestRequestToOpsGroup(supabase, {
+            guestId, room: guestRoom, summary: toolLoggedRequest.summary, rawText: text,
+          }).catch((e: Error) => console.error("[webhook] 🛋️ routeGuestRequestToOpsGroup error:", e.message));
         }
       }
 

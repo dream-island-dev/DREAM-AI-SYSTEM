@@ -58,7 +58,7 @@ button:active{transform:scale(.98)}.big{font-size:40px;margin:0 0 8px}
 </style></head><body><div class="card">${inner}</div></body></html>`;
 }
 
-const ACTION_LABEL: Record<string, string> = { accept: "Accept Task", complete: "Mark Completed" };
+const ACTION_LABEL: Record<string, string> = { accept: "Accept Task", complete: "Mark Completed", bump: "Bump Task" };
 
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok");
@@ -69,7 +69,7 @@ serve(async (req: Request) => {
   const token   = url.searchParams.get("token")  ?? "";
 
   try {
-    if (!id || (action !== "accept" && action !== "complete") || !token) {
+    if (!id || (action !== "accept" && action !== "complete" && action !== "bump") || !token) {
       return new Response(page("Invalid link", `<p class="big">⚠️</p><h1>Invalid link</h1>
         <p class="muted">This task link is missing or malformed.</p>`), { status: 400, headers: HTML });
     }
@@ -119,7 +119,29 @@ serve(async (req: Request) => {
       const { data: prof } = await supabase
         .from("profiles").select("id").in("phone", [phone, "+" + phone, local]).maybeSingle();
       const actorUuid = (prof?.id as string) ?? null;
-      if (!actorUuid) console.warn(`[task-action] no profiles row for ${actor} (${phone}) — status updated, ${action === "accept" ? "claimed_by" : "resolved_by"} left null`);
+      if (!actorUuid && action !== "bump") console.warn(`[task-action] no profiles row for ${actor} (${phone}) — status updated, ${action === "accept" ? "claimed_by" : "resolved_by"} left null`);
+
+      // ── Bump (Session 26 Sprint 3.3) — manager's reply to a personal SLA
+      // alert (sla-escalation-cron, source='guest_request' tasks). Pure
+      // re-notify: resends the request into the ops group in a louder format
+      // so it doesn't keep losing the scroll race. No status/claim mutation —
+      // resolution still only happens via the 👍🏼 reaction (whapi-webhook
+      // Sprint 2) or someone tapping Accept/Complete on a card that has them.
+      if (action === "bump") {
+        const groupId = Deno.env.get("WHAPI_GROUP_ID")?.trim();
+        const bumpText = `⚡ MANAGER BUMP: [${task.room_number ?? "—"}] - ${task.description} needed ASAP! ⚡`;
+        let sent = false;
+        if (groupId) {
+          try { await sendWhapiText(groupId, bumpText, { noLinkPreview: true }); sent = true; }
+          catch (e) { console.warn("[task-action] bump group send failed:", (e as Error).message); }
+        } else {
+          console.warn("[task-action] WHAPI_GROUP_ID unset — bump not sent");
+        }
+        const inner = sent
+          ? `<p class="big">⚡</p><h1>Task bumped</h1><p class="muted">Resent to the ops group by <b>${actor}</b></p>${taskBox}`
+          : `<p class="big">⚠️</p><h1>Bump failed to send</h1><p class="muted">Could not reach the ops group — check WHAPI_GROUP_ID / Whapi status.</p>${taskBox}`;
+        return new Response(page(sent ? "Task bumped" : "Bump failed", inner), { status: sent ? 200 : 502, headers: HTML });
+      }
 
       const now = new Date().toISOString();
       const patch = action === "accept"

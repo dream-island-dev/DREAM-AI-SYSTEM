@@ -1,6 +1,6 @@
 # CLAUDE.md — Dream Island AI System
 > קובץ זה נקרא אוטומטית בכל שיחה. הוא מקור-האמת שלך. קרא אותו לפני כל פעולה.
-> **עדכון אחרון:** 2026-06-24 (session 25 — 24-Hour Interaction Window Guard על `inbox_reply` + fallback ב-BRANCH D, "📜 מה נשלח" history tab חדש, ניתוק שדות תשלום מ-status ב-`AddGuestModal`. פירוט בתחתית §10 ובהיסטוריה המלאה ב-`claude_history.md`).
+> **עדכון אחרון:** 2026-06-24 (session 26 — Guest Concierge → Staff Ops bridge: suite-only `log_guest_request` routing ל-Whapi group, 👍🏼 reaction = task complete, manager 1:1 SLA alert + "Bump Task". פירוט בתחתית §10 ובהיסטוריה המלאה ב-`claude_history.md`).
 >
 > 📚 **היסטוריית הסשנים המלאה (sessions 2–24) הועברה ל-[`claude_history.md`](claude_history.md)** כדי לשמור את הקובץ הזה קליל. שום מידע לא נמחק — רק הופרד. הקובץ הזה מחזיק את **רפרנס הארכיטקטורה החי** (§0–§13); הקובץ ההוא מחזיק את הנרטיב ההיסטורי. כשצריך הקשר מפורט על באג/החלטה ישנה — קרא שם.
 >
@@ -254,11 +254,16 @@ DREAM-AI-SYSTEM/
 │   │   ├── 074_sla_escalation_1min.sql  applied ✅ — ★ session 22: pg_cron 'sla-escalation' → */1min
 │   │   │                            (היה */5) + grandfather baseline (escalated_at=NOW() לכל task פתוח קיים
 │   │   │                            כדי לא לפוצץ את הקבוצה רטרואקטיבית בהפעלה). ראה §6/§10 session 22.
-│   │   └── 075_inbox_push_name_and_routed_tasks.sql  applied ✅ — ★ session 23: `whatsapp_conversations.
-│   │                                push_name` (Meta contacts[].profile.name, Smart Identity Resolution
-│   │                                fallback) + `tasks.source` CHECK widened with `'inbox_routed'`
-│   │                                (WhatsAppInbox.js's "Route to Maintenance/Housekeeping" quick action).
-│   │                                ראה §10 session 23.
+│   │   ├── 075_inbox_push_name_and_routed_tasks.sql  applied ✅ — ★ session 23: `whatsapp_conversations.
+│   │   │                            push_name` (Meta contacts[].profile.name, Smart Identity Resolution
+│   │   │                            fallback) + `tasks.source` CHECK widened with `'inbox_routed'`
+│   │   │                            (WhatsAppInbox.js's "Route to Maintenance/Housekeeping" quick action).
+│   │   │                            ראה §10 session 23.
+│   │   └── 077_guest_request_routing_and_reactions.sql  applied ✅ — ★ session 26: `tasks.source`
+│   │                                CHECK + `'guest_request'` (suite-guest ask auto-routed to ops group) +
+│   │                                `tasks.guest_id` (FK→guests, SET NULL) + `tasks.whapi_message_id`
+│   │                                (UNIQUE partial — one card per task, resolved by the 👍🏼 reaction
+│   │                                listener). ראה §10 session 26.
 │   └── functions/
 │       ├── chat/                deployed ✅ — Gemini 2.5→Claude fallback
 │       ├── generate-schedule/   deployed ✅ ⚠️ ORPHAN — frontend לא קורא אותה
@@ -286,7 +291,8 @@ DREAM-AI-SYSTEM/
 │       │                            ה-eligibility gate שלו מחזיר scheduledFor:null ברגע ש-guest_flag_
 │       │                            column=true, בדיוק המקרה "כבר נשלח" שהטאב הזה קיים כדי להציג).
 │       │                            אינה שולחת הודעות, אינה כותבת DB.
-│       ├── whatsapp-webhook/    ★ deployed ✅ v3 — ראה §6 לתיאור מלא
+│       ├── whatsapp-webhook/    ★ deployed ✅ v3 — ראה §6 לתיאור מלא. ★ session 26: §4b
+│       │                            `routeGuestRequestToOpsGroup()` — Dual-Routing Trigger, ראה §10 session 26.
 │       ├── room-clean-notify/   ★ גילוי session 7 — שולח whatsapp-send trigger="room_ready" כשחדר
 │       │                            הופך פנוי. נקרא רק מ-RoomBoard's retry button (waState="failed") —
 │       │                            לא קורה אוטומטית בפועל; AICopilot הוא המסלול הפעיל ל-room-ready WA.
@@ -299,6 +305,11 @@ DREAM-AI-SYSTEM/
 │       │                            (status='open' past created_at+SLA_UNASSIGNED_MINUTES=7, לא sla_deadline)
 │       │                            → 🚨 ל-Whapi ops group (SLA_ALERT_GROUP_ID→WHAPI_GROUP_ID), לא Meta;
 │       │                            mark-escalated רק בהצלחה (retry-on-fail). שניהם push-notify ל"הנהלה".
+│       │                            ★ session 26: tasks עם source='guest_request' מקבלים נתיב נפרד —
+│       │                            DM אישי ל-SLA_OPS_ALERT_PHONE (secret שהוגדר session 21 אבל לא
+│       │                            נוצל בקוד עד עכשיו) עם קישור "⚡ Bump Task" (task-action?action=bump),
+│       │                            במקום הקבוצה. שאר ה-sources (whatsapp_staff/manual/inbox_routed/
+│       │                            legacy) ממשיכים להתנהג כקודם — group alert, ללא שינוי.
 │       ├── staff-ops-webhook/    ⚠️ session 22: הוחלף ע"י whapi-webhook (יציאה משירות אחרי אימות). NEW session 21 — קולט דיווחי צוות שהועברו מ-relay חיצוני
 │                                    (Make.com/bridge — Mike בונה את זה בנפרד; Meta Business API
 │                                    אינו תומך בקבוצות וואטסאפ כלל, לא קריאה ולא כתיבה). regex
@@ -315,14 +326,26 @@ DREAM-AI-SYSTEM/
 │       │                            "11- towels"/"ROOM 14 ..." 0-token, Tier 1 Claude forced-tool
 │       │                            task-vs-chitchat) → chitchat = שקט מוחלט, task = insert ל-tasks +
 │       │                            כרטיס אנגלי לקבוצה דרך _shared/whapiSend.ts (no_link_preview).
-│       │                            **מחליף את staff-ops-webhook.** Secrets: WHAPI_TOKEN (+WHAPI_GROUP_ID
-│       │                            אופציונלי ל-group-lock) — ⚠️ עדיין לא מוגדרים, ראה §10 session 22.
+│       │                            **מחליף את staff-ops-webhook.** Secrets: WHAPI_TOKEN + WHAPI_GROUP_ID
+│       │                            ✅ מוגדרים בפועל (אומת session 26 דרך `supabase secrets list` —
+│       │                            התיעוד הקודם כאן ש"עדיין לא מוגדרים" התייחס ל-session 22 ולא עודכן).
+│       │                            ★ session 26 (Sprint 2): reaction sweep חדש לפני לולאת ההודעות —
+│       │                            `extractReactions()` קולט `type:"action"`/`action.type:"reaction"`,
+│       │                            👍🏼 (כל גוון עור, codePointAt(0)===U+1F44D) על כרטיס משימה ← מאתר
+│       │                            task דרך `whapi_message_id` (עמודה חדשה, migration 077) ← `status:
+│       │                            "done"` + `resolved_by`/`resolved_at`. **No-Bloat: אין תגובה לקבוצה**
+│       │                            — הריאקציה עצמה היא האות החזותי. כל reaction אחרת מתעלמת בשקט.
+│       │                            כרטיס המשימה הקיים (staff report) שומר כעת גם הוא את `whapi_message_id`
+│       │                            שלו אחרי שליחה מוצלחת, כך שגם תיקיות "11- towels" נפתרות בריאקציה.
 │       └── task-action/          ★ NEW session 22 (XOS Sprint 2) — callback ל-Accept/Complete בכרטיס.
 │                                    GET = interstitial HTML (0 mutation — מה שה-crawler רואה) עם כפתורי
 │                                    Lidor/Adir/Osnat ("Confirm action as"); POST (tap אמיתי, crawler-safe)
 │                                    = מאמת action_token + actor → מעדכן status + claimed_by/resolved_by
 │                                    (resolve מ-profiles.phone) → echo אנגלי לקבוצה (WHAPI_GROUP_ID).
-│                                    deployed --no-verify-jwt (ה-token הוא ה-auth).
+│                                    deployed --no-verify-jwt (ה-token הוא ה-auth). ★ session 26 (Sprint
+│                                    3.3): action שלישי — `bump` — אין מוטציית status/claim, רק resend
+│                                    לקבוצה ("⚡ MANAGER BUMP: [room] - desc needed ASAP! ⚡"). זה היעד
+│                                    שקישור "Bump Task" ב-DM האישי מ-sla-escalation-cron מצביע עליו.
 └── public/
     └── service-worker.js        PWA push listener
 ```
@@ -387,7 +410,7 @@ switch (activePage) {
 | `bot_settings` | system_prompt + knowledge_base + `preferred_model` (id=1) — ★ session 21: ערך חי כעת `gemini-2.0-flash-lite` (היה Claude מ-session 15) — toggle ב-BotSettings.js | `auth.uid() IS NOT NULL` |
 | `message_templates` | תבניות שידור עם sort_order | `auth.uid() IS NOT NULL` |
 | `bot_scripts` | סקריפטים מותאמים לכל trigger_event | authenticated |
-| `tasks` | ★ session 21: "תפעול ואחזקה" — `status` עכשיו `open`/`in_progress`/`done` (היה רק open/done), + `sla_category`/`sla_deadline`/`escalated_at`/`claimed_by`/`claimed_at`/`source`/`reporter_profile_id`/`reporter_raw_text`. `source='legacy_service_call'` = backfill חד-פעמי מ-`service_calls` (migration 071) + ★ session 22 (migration 073): `action_token` (סוד ל-URL של כפתורי Accept/Complete) + `source_message_id` (UNIQUE partial, webhook idempotency) | open to authenticated |
+| `tasks` | ★ session 21: "תפעול ואחזקה" — `status` עכשיו `open`/`in_progress`/`done` (היה רק open/done), + `sla_category`/`sla_deadline`/`escalated_at`/`claimed_by`/`claimed_at`/`source`/`reporter_profile_id`/`reporter_raw_text`. `source='legacy_service_call'` = backfill חד-פעמי מ-`service_calls` (migration 071) + ★ session 22 (migration 073): `action_token` (סוד ל-URL של כפתורי Accept/Complete) + `source_message_id` (UNIQUE partial, webhook idempotency) + ★ session 26 (migration 077): `source='guest_request'` (suite guest ask, מ-`log_guest_request`, ראה §10) + `guest_id` (FK→guests, SET NULL) + `whapi_message_id` (UNIQUE partial — כרטיס המשימה שבפועל נשלח לקבוצה; 👍🏼 reaction listener מתאים אליו) | open to authenticated |
 | `ai_failover_events` | ★ session 21 — לוג כל auto-failover Claude↔Gemini בwebhook, נצרך ע"י AiFailoverWidget.js (realtime) | authenticated read, service-role write |
 | `suite_rooms` | חדר לכל שורה מ-EZGO Suites CSV. key: `(order_number, res_line_id)`. מקור: `ArrivalImportPanel.js` (sole import surface) | authenticated |
 | `room_status` | ★ גילוי session 7 — pipeline ניקיון נפרד (תפוס/פנוי/לניקיון/בניקיון/ממתין לאישור/תחזוקה). key: `room_id` = שם סוויטה מ-`SUITE_REGISTRY`. נצרך ע"י RoomBoard.js + AICopilot.js | authenticated |
@@ -801,7 +824,7 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
 | `whatsapp-cron` (`CRON_ENABLED`) | קיל-סוויץ' נפרד, לא מוגדר — ראה STEP 4 | גבוה |
 | ShiftGenerator Gemini "creative mode" | תוכנן, לא מומש — חיבור לgenerate-schedule אם רוצים | בינוני |
 | Regex intent patterns (COMPLAINT/UPSELL/HUMAN_CALL/DATE_CHANGE) | hardcoded בכוונה — UI לעריכת keyword-lists לא בוצע, ראה Phase 6 Audit §3 | נמוך |
-| **Whapi live test** (session 22) | ✅ הושלם בסשן: `WHAPI_TOKEN`+`WHAPI_GROUP_ID` (`120363320093485583@g.us`) הוגדרו ואומתו (Whapi `/health`=AUTH, channel מחובר), webhook ה-channel הופנה (`PATCH /settings`) ל-`…/functions/v1/whapi-webhook` (events: messages; webhook ה-Make.com הוסר — clean cut). **נשאר רק:** מבחן חי בקבוצה ע"י Mike (`ROOM 14 towels` → כרטיס → Accept/Complete). `staff-ops-webhook` + ה-relay של Make.com מתים כעת (אין input) — להסיר רשמית אחרי אימות. | נמוך |
+| **Whapi live test** (session 22) | ✅ הושלם בסשן: `WHAPI_TOKEN`+`WHAPI_GROUP_ID` (`120363320093485583@g.us`) הוגדרו ואומתו (Whapi `/health`=AUTH, channel מחובר), webhook ה-channel הופנה (`PATCH /settings`) ל-`…/functions/v1/whapi-webhook` (events: messages; webhook ה-Make.com הוסר — clean cut). **נשאר רק:** מבחן חי בקבוצה ע"י Mike (`ROOM 14 towels` → כרטיס → Accept/Complete). `staff-ops-webhook` + ה-relay של Make.com מתים כעת (אין input) — להסיר רשמית אחרי אימות. ⚠️ **session 26 הוסיפה שלושה זרמים שגם הם לא נבדקו חי:** (1) בקשת אורח-סוויטה אמיתית (`room_type='suite'`) → כרטיס בקבוצה, (2) 👍🏼 על כרטיס → נעלם כ-done בלוח, (3) `SLA_OPS_ALERT_PHONE` ל-DM + Bump (יש כעת תוכן ב-secret הזה לראשונה). לפי תיעוד Whapi חי (אומת WebFetch session 26) ריאקציה מגיעה תחת אותו `event.type:"messages"` כמו הודעת טקסט רגילה (`type:"action"` בתוך אותו מערך `messages[]`) — לא צריך הרחבת event subscription ב-channel, אבל עדיין לא נבדק בפועל מול הריאקציה האמיתית של WhatsApp (לדוגמה: יש כמה אמוג'י "thumbs up" ב-Unicode והאם WhatsApp client מסוים שולח variant אחר). | נמוך |
 | `SLA_ESCALATION_ENABLED` | ✅ הופעל session 22 (`=true`). sla-escalation-cron רץ */1min: ops = strict 7-min unassigned → Whapi group (grandfather baseline ב-migration 074 מנע blast רטרואקטיבי על backlog), guest_alerts = 10-min → Adir (Meta). ⚠️ ההפעלה הדליקה גם את escalation ה-guest_alerts (לא בוצע לו grandfather) — guest alerts ישנים שלא נפתרו עלולים להתריע ל-Adir. | — |
 | Resilient Import Agent — **מושהה באמצע** (session 9) | `suggest-import-mapping` Edge Function + `import_mapping_memory` table (migration 049) **פרוסים בפועל** ב-Supabase, אבל שינויי הפרונטאנד (`ArrivalImportPanel.js`, `MappingReviewPanel.js`, `importMapper.js`, פרמטריזציית `ezgoParser.js`) **לא commit-ים, לא pushed** — קיימים רק ב-working tree המקומי. יש גם debug-branch זמני (`if (debug)`) ב-`suggest-import-mapping/index.ts` שצריך להסיר לפני שמחליטים שזה "מוכן". המשך/סגור בסשן נפרד. | בינוני |
 
@@ -828,6 +851,17 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
 - ✅ **Sprint 3 — ניתוק שדות תשלום מ-status.** ממצא מרכזי: `payment_amount`/`payment_link_url` (migration 023) היו קיימים ב-DB אבל **לא** ב-`AddGuestModal.js` בכלל — הדרך היחידה למלא אותם הייתה popup נפרד ב-`GuestsPage.js` ("💳 תשלום") שמוצג רק אחרי `g.arrival_confirmed===true`. נוספו כשני שדות תמיד-גלויים ב-`AddGuestModal.js` (לא מותנים ב-status/arrival_confirmed) — מנהל יכול למלא אותם מרגע יצירת/עריכת אורח, כך ש-Stage 2 Pay (אירוע-מיידי, יורה כש-arrival_confirmed הופך true) ימצא אותם כבר ממולאים בלי תלות ב-popup הנפרד. ה-popup ב-GuestsPage.js נשאר כפי שהוא ללא שינוי — ממשיך לעבוד כ-fallback (אם השדות עדיין ריקים, נפתח אוטומטית; אם מולאו מראש ב-AddGuestModal, הכפתור שולח ישירות).
 - ⚠️ **לא אומת חזותית חי** — אותו קיר Supabase Auth מקומי מ-sessions 19–24. אומת build נקי (`npm run build`, רק אזהרת `ShiftsPage` הקיימת) + שני `functions deploy` הצליחו (Deno type-check עבר) בלבד.
 - ℹ️ **קומיט משולב:** ה-commit של הסשן הזה כולל גם את תיקון `MANUAL_TRIGGERS`/kill-switch ב-`whatsapp-send/index.ts` שנשאר uncommitted מ-session 24 (תועד שם כ"לא שלי" אך כתיקון שלם ומתועד, לא WIP) — שני הסשנים נגעו באותו קובץ; הקבצים ה-untracked האחרים (`.claude/claude_bot.py`, `DREAM_CONCIERGE_SYSTEM_PROMPT.txt`, `migration 076`) **לא** נכללו — מחוץ לסקופ, לא נבדקו.
+
+#### session 26 — Jun 24 2026 (Guest Concierge → Staff Ops bridge: dual-routing + 👍🏼 reactions + manager Bump)
+> הקשר: דירקטיבת "STRICT SPRINT MODE" — שלושה ספרינטים שקושרים לראשונה את ה-Guest Concierge (Bot 1, Meta/Gemini/Claude) לתוך ה-Staff Ops (Bot 2, Whapi): (1) ניתוב suite-only של `log_guest_request` לקבוצת הצוות, (2) reaction listener (👍🏼=הושלם), (3) SLA אישי למנהל + Bump. עקרון מנחה: להרחיב את ה-`tasks` table+pipeline הקיים (CLAUDE.md §0.4) ולא לבנות מערכת כרטיסים מקבילה לבקשות אורח.
+
+- ✅ **Sprint 1 — Dual-Routing Trigger + Suite-Only Gating.** `whatsapp-webhook/index.ts` §4b — `routeGuestRequestToOpsGroup()` נקראת רק כש-`toolLoggedRequest` קיים (קריאת tool אמיתית, **לא** `criticalKeywordHit` — אותו net תופס גם תלונה/מחיר גנריים, לא "תביאו לי X") **וגם** `guest.room_type === "suite"` (יום-אורח/standard נשארים dashboard-only, `guest_alerts` בלבד — ללא שינוי). יוצרת שורת `tasks` (`source='guest_request'`, `guest_id`, `action_token`) + שולחת כרטיס מינימלי לקבוצה (`🛋️ [room] Guest requested: summary` — בכוונה בלי כפתורי Accept/Complete, ראה Sprint 2) דרך `_shared/whapiSend.ts`, ושומרת את ה-message id שחזר (`whapi_message_id`). הטקסט נשאר אנגלי-עברי מעורב בכוונה — `item_summary` הוא חילוץ עברי קצר של המודל (`LOG_REQUEST_JSON_SCHEMA`) ולא מתורגם (תרגום מכונה ל-3-8 מילים = עוד נקודת כשל מבלי תועלת אמיתית).
+- ✅ **Sprint 2 — Reaction Listener.** אומת מול תיעוד Whapi חי (WebFetch, לא ניחוש): ריאקציה מגיעה כ-`messages[]` נפרד עם `type:"action"`/`action:{target,type:"reaction",emoji}` — **לא** שדה על ההודעה המקורית. `whapi-webhook/index.ts` — `extractReactions()`+`isThumbsUp()` (codePointAt(0)===U+1F44D, תופס את כל 6 גווני העור) רצים *לפני* לולאת ההודעות (0 עלות LLM). 👍🏼 על כרטיס מאתר `tasks` דרך `whapi_message_id` (UNIQUE, migration 077) → `status:"done"`+`resolved_by`/`resolved_at`. **No-Bloat Rule נאכף:** אין שום תגובה חזרה לקבוצה — בהצלחה או בלי-match. כרטיס ה-staff-report הקיים ("11- towels") עודכן לשמור גם הוא את `whapi_message_id` שלו אחרי שליחה — כך שה-reaction listener עובד על **שני** סוגי הכרטיסים, לא רק על guest_request.
+- ✅ **Sprint 3 — Manager SLA Alert + Bump.** `sla-escalation-cron/index.ts`'s ops-task scan עכשיו מפוצל לפי `source`: `guest_request` → DM אישי (לא קבוצה) דרך `sendWhapiText`. **ממצא:** `SLA_OPS_ALERT_PHONE` כבר היה מוגדר כ-secret מ-session 21 (לצד `SLA_GUEST_ALERT_PHONE`) אבל מעולם לא נוצל בקוד — סשן זה נתן לו תפקיד בפועל, במקום להמציא משתנה env חדש. ה-DM מכיל קישור "⚡ Bump Task" (`task-action?action=bump&token=...`). `task-action/index.ts` קיבל `action` שלישי — `bump`: GET = אותו interstitial crawler-safe קיים (שם תיקוף, ACTION_LABEL הורחב), POST = **אין מוטציית status/claim** — רק resend לקבוצה בפורמט קולני (`⚡ MANAGER BUMP: [room] - desc needed ASAP! ⚡`). פתרון בקשה עדיין קורה רק דרך 👍🏼 (Sprint 2) או Accept/Complete רגיל. שאר ה-sources (whatsapp_staff/manual/inbox_routed/legacy) ללא שינוי — group alert כבר קיים מ-session 22.
+- ✅ **`tasks_source_check` + `OperationsBoard.js`'s `SOURCE_META`** — נוסף `guest_request` (🛋️ בקשת אורח) כך שהלוח לא נופל ל-fallback "ידני" הגנרי על השורות החדשות (FAIL VISIBLE).
+- ✅ **אומת בפועל, לא רק build:** `npx supabase secrets list` הריץ במהלך הסשן ואישר ש-`WHAPI_TOKEN`+`WHAPI_GROUP_ID` **כן** מוגדרים בפרודקשן (תיקון לתיעוד שגוי מ-session 22 ב-§3 שטען "עדיין לא מוגדרים") — כלומר Sprint 1/2/3 לא רק deployed אלא בעלי group target אמיתי לבדיקה חיה. `npx supabase db push` (077) ו-4 `functions deploy` (`whatsapp-webhook`/`whapi-webhook`/`task-action`/`sla-escalation-cron`, ה-אחרון פעמיים — תיקון שם משתנה ה-env אחרי שהתגלה `SLA_OPS_ALERT_PHONE`) הצליחו, Deno type-check עבר. `npm run build` נקי (רק אזהרת `ShiftsPage` הקיימת).
+- ⚠️ **לא אומת חזותית חי** — אין דרך לדמות הקלקת 👍🏼 אמיתית בוואטסאפ/קבוצת Whapi אמיתית מתוך הסשן. Mike: מומלץ לבדוק בפועל — בקשת ספא של אורח-סוויטה אמיתי (room_type='suite') → כרטיס בקבוצה → 👍🏼 → נעלם מהלוח כ-done; וגם תרחיש ה-7-min/Bump (אפשר להוריד זמנית את `SLA_UNASSIGNED_MINUTES` ל-1 לבדיקה).
+- ⚠️ **לא נגעתי / מחוץ לסקופ:** הקבצים ה-untracked (`.claude/claude_bot.py`, `DREAM_CONCIERGE_SYSTEM_PROMPT.txt`, `migration 076`) — לא נכללו בקומיט, לא נבדקו.
 
 ---
 

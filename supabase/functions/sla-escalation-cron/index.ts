@@ -125,47 +125,81 @@ serve(async (req: Request) => {
 
     // ════════════════════════════════════════════════════════════════════════
     // 2. Operations & Maintenance Board — STRICT unassigned-SLA escalation.
-    //    "Unassigned" = still status='open' (nobody tapped Accept → in_progress).
-    //    Window = created_at + SLA_UNASSIGNED_MINUTES (default 7). Alert goes
-    //    into the Whapi ops group (SLA_ALERT_GROUP_ID → WHAPI_GROUP_ID).
+    //    "Unassigned" = still status='open' (nobody tapped Accept → in_progress,
+    //    or — for source='guest_request' — nobody reacted 👍🏼 yet, Session 26
+    //    Sprint 2/3). Window = created_at + SLA_UNASSIGNED_MINUTES (default 7).
+    //    Delivery branches by source:
+    //      • guest_request  → personal 1:1 Whapi DM to SLA_OPS_ALERT_PHONE, with
+    //        a "Bump Task" link (task-action?action=bump) — the luxury-tier
+    //        "someone with authority gets paged personally" path (Session 26
+    //        Sprint 3.3). Resolution still only happens via the 👍🏼 reaction.
+    //      • everything else (whatsapp_staff/manual/inbox_routed/legacy) →
+    //        unchanged group alert into the Whapi ops group
+    //        (SLA_ALERT_GROUP_ID → WHAPI_GROUP_ID).
     // ════════════════════════════════════════════════════════════════════════
     const opsThresholdIso = new Date(Date.now() - OPS_UNASSIGNED_SLA_MINUTES * 60 * 1000).toISOString();
     const { data: overdueTasks, error: tasksErr } = await supabase
       .from("tasks")
-      .select("id, room_number, description, created_at")
+      .select("id, room_number, description, created_at, source, action_token")
       .eq("status", "open")                 // unassigned only — a claimed (in_progress) task stops escalating
       .is("escalated_at", null)
       .lt("created_at", opsThresholdIso);
     if (tasksErr) throw new Error(`tasks_lookup_error: ${tasksErr.message}`);
 
-    const alertGroupId = (Deno.env.get("SLA_ALERT_GROUP_ID") ?? Deno.env.get("WHAPI_GROUP_ID") ?? "").trim();
-    if ((overdueTasks ?? []).length > 0 && !alertGroupId) {
+    const alertGroupId  = (Deno.env.get("SLA_ALERT_GROUP_ID") ?? Deno.env.get("WHAPI_GROUP_ID") ?? "").trim();
+    // SLA_OPS_ALERT_PHONE — provisioned back in session 21 alongside
+    // SLA_GUEST_ALERT_PHONE but never wired into code until now (Session 26
+    // Sprint 3.3 finally gives it a job: the personal-manager half of the
+    // guest_request escalation path).
+    const managerPhone  = (Deno.env.get("SLA_OPS_ALERT_PHONE") ?? "").trim();
+    const functionsBase = `${supabaseUrl}/functions/v1/task-action`;
+    if ((overdueTasks ?? []).some((t) => t.source !== "guest_request") && !alertGroupId) {
       console.warn("[sla-escalation-cron] ⚠️ no SLA_ALERT_GROUP_ID/WHAPI_GROUP_ID set — ops breaches NOT marked escalated, will retry next run.");
+    }
+    if ((overdueTasks ?? []).some((t) => t.source === "guest_request") && !managerPhone) {
+      console.warn("[sla-escalation-cron] ⚠️ SLA_OPS_ALERT_PHONE not set — guest-request breaches NOT marked escalated, will retry next run.");
     }
 
     const opsResults: Array<{ taskId: string; notified: boolean }> = [];
     for (const task of overdueTasks ?? []) {
       const ageMinutes = Math.round((Date.now() - new Date(task.created_at as string).getTime()) / 60000);
-      const englishText =
-        `🚨 SLA BREACH: Task for Suite ${task.room_number ?? "—"} is unassigned after ${ageMinutes} minutes!\n` +
-        `📋 ${task.description}\n` +
-        `Please tap "Accept" on the task card to claim it.`;
+      const isGuestRequest = task.source === "guest_request";
 
       let notified = false;
-      if (alertGroupId) {
-        try {
-          await sendWhapiText(alertGroupId, englishText, { noLinkPreview: true });
-          notified = true;
-        } catch (e) {
-          console.error(`[sla-escalation-cron] Whapi SLA alert failed for task ${task.id} (will retry next run):`, (e as Error).message);
+      if (isGuestRequest) {
+        if (managerPhone) {
+          const bumpUrl = `${functionsBase}?id=${task.id}&action=bump&token=${task.action_token}`;
+          const managerText =
+            `🚨 SLA ALERT: Room ${task.room_number ?? "—"} request (${task.description}) is UNRESOLVED for ${ageMinutes} minutes!\n` +
+            `⚡ Bump Task: ${bumpUrl}`;
+          try {
+            await sendWhapiText(managerPhone, managerText, { noLinkPreview: true });
+            notified = true;
+          } catch (e) {
+            console.error(`[sla-escalation-cron] manager SLA alert failed for guest-request task ${task.id} (will retry next run):`, (e as Error).message);
+          }
+        }
+      } else {
+        const englishText =
+          `🚨 SLA BREACH: Task for Suite ${task.room_number ?? "—"} is unassigned after ${ageMinutes} minutes!\n` +
+          `📋 ${task.description}\n` +
+          `Please tap "Accept" on the task card to claim it.`;
+        if (alertGroupId) {
+          try {
+            await sendWhapiText(alertGroupId, englishText, { noLinkPreview: true });
+            notified = true;
+          } catch (e) {
+            console.error(`[sla-escalation-cron] Whapi SLA alert failed for task ${task.id} (will retry next run):`, (e as Error).message);
+          }
         }
       }
 
       // Mark escalated ONLY after a successful alert. A transient Whapi failure
-      // (or missing group id) then retries next minute — cheap at 1-min cadence.
-      // This intentionally differs from the guest_alerts branch (mark-regardless):
-      // a missed CRITICAL ops breach is worse than a rare duplicate, and we must
-      // never silently mark every open task escalated on a misconfigured channel.
+      // (or missing group id / manager phone) then retries next minute — cheap
+      // at 1-min cadence. This intentionally differs from the guest_alerts
+      // branch (mark-regardless): a missed CRITICAL breach is worse than a
+      // rare duplicate, and we must never silently mark every open task
+      // escalated on a misconfigured channel.
       if (notified) {
         const { error: markErr } = await supabase
           .from("tasks")

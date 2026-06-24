@@ -173,6 +173,42 @@ function extractMessages(payload: Record<string, unknown>): IncomingMessage[] {
   });
 }
 
+// ── Whapi reaction extraction (Sprint 2, Session 26) ──────────────────────────
+// Whapi posts an emoji reaction as its own `messages[]` entry, NOT a field on
+// the original message: { type:"action", action:{ target, type:"reaction",
+// emoji } } (verified against live Whapi payload — see action.target = the
+// id of the message being reacted to). Kept as a separate extraction from
+// extractMessages() above — a reaction shares the raw envelope but nothing
+// about its IncomingMessage.text contract (no text, no classification).
+interface IncomingReaction {
+  id: string; fromMe: boolean; chatId: string; fromPhone: string; fromName: string;
+  targetMessageId: string; emoji: string;
+}
+function extractReactions(payload: Record<string, unknown>): IncomingReaction[] {
+  const raw = Array.isArray(payload?.messages) ? (payload.messages as Array<Record<string, unknown>>) : [];
+  return raw
+    .filter((m) => String(m?.type ?? "") === "action" && (m?.action as Record<string, unknown> | undefined)?.type === "reaction")
+    .map((m) => {
+      const action = (m.action ?? {}) as Record<string, unknown>;
+      return {
+        id:              String(m?.id ?? ""),
+        fromMe:          m?.from_me === true,
+        chatId:          String(m?.chat_id ?? ""),
+        fromPhone:       String(m?.from ?? "").replace(/\D/g, ""),
+        fromName:        String(m?.from_name ?? ""),
+        targetMessageId: String(action?.target ?? ""),
+        emoji:           String(action?.emoji ?? ""),
+      };
+    });
+}
+
+// 👍 in any skin tone is U+1F44D followed by an optional Fitzpatrick modifier
+// codepoint — checking codePointAt(0) catches all six variants in one test.
+const THUMBS_UP_CODEPOINT = 0x1f44d;
+function isThumbsUp(emoji: string): boolean {
+  return emoji.length > 0 && emoji.codePointAt(0) === THUMBS_UP_CODEPOINT;
+}
+
 // ── The structured English task card sent back into the group ────────────────
 function buildTaskCard(room: string | null, desc: string, acceptUrl: string, completeUrl: string): string {
   return [
@@ -201,6 +237,39 @@ serve(async (req: Request) => {
     const functionsBase = `${Deno.env.get("SUPABASE_URL")}/functions/v1/task-action`;
     const lockGroup = Deno.env.get("WHAPI_GROUP_ID")?.trim() || null;
     const results: Array<Record<string, unknown>> = [];
+
+    // ── Reaction sweep (Sprint 2, Session 26) — 👍🏼 on a task card = done.
+    // Processed before the text-message loop: zero LLM cost, fully independent
+    // of classification. Any other emoji is silently ignored (No-Bloat Rule —
+    // no group reply either way, success or no-op).
+    for (const r of extractReactions(payload)) {
+      if (r.fromMe)                            { results.push({ id: r.id, ignored: "from_me_reaction" });        continue; }
+      if (!r.chatId.endsWith("@g.us"))         { results.push({ id: r.id, ignored: "not_a_group_reaction" });    continue; }
+      if (lockGroup && r.chatId !== lockGroup) { results.push({ id: r.id, ignored: "other_group_reaction" });    continue; }
+      if (!isThumbsUp(r.emoji))                { results.push({ id: r.id, ignored: "non_thumbsup_reaction" });   continue; }
+      if (!r.targetMessageId)                  { results.push({ id: r.id, ignored: "no_target" });               continue; }
+
+      const { data: task } = await supabase
+        .from("tasks").select("id, status").eq("whapi_message_id", r.targetMessageId).maybeSingle();
+      if (!task)                   { results.push({ id: r.id, reaction: "thumbs_up", ignored: "no_matching_task" }); continue; }
+      if (task.status === "done") { results.push({ id: r.id, reaction: "thumbs_up", taskId: task.id, ignored: "already_done" }); continue; }
+
+      // Resolver attribution — same phone→profiles lookup pattern as task-action.ts.
+      const local = r.fromPhone.startsWith("972") ? "0" + r.fromPhone.slice(3) : r.fromPhone;
+      const { data: resolverProfile } = await supabase
+        .from("profiles").select("id").in("phone", [r.fromPhone, "+" + r.fromPhone, local]).maybeSingle();
+
+      const { error: doneErr } = await supabase
+        .from("tasks")
+        .update({ status: "done", resolved_by: resolverProfile?.id ?? null, resolved_at: new Date().toISOString() })
+        .eq("id", task.id);
+
+      if (doneErr) console.error(`[whapi-webhook] 👍 reaction resolve failed for task ${task.id}:`, doneErr.message);
+      else console.log(`[whapi-webhook] 👍 task ${task.id} resolved by reaction — from=${r.fromName || r.fromPhone}`);
+      // No-Bloat Rule: no confirmation text posted back into the group — the
+      // reaction itself is the team's visual signal. Silent DB mutation only.
+      results.push({ id: r.id, reaction: "thumbs_up", taskId: task.id, resolved: !doneErr });
+    }
 
     for (const msg of messages) {
       // ── Guards ────────────────────────────────────────────────────────────
@@ -277,11 +346,18 @@ serve(async (req: Request) => {
       // Reply into the SAME group. no_link_preview stops the crawler pre-fetch.
       // Non-blocking: the ticket already exists — a failed reply must not lose it.
       let replied = true;
+      let cardMsgId: string | null = null;
       try {
-        await sendWhapiText(msg.chatId, card, { noLinkPreview: true });
+        cardMsgId = await sendWhapiText(msg.chatId, card, { noLinkPreview: true });
       } catch (e) {
         replied = false;
         console.warn(`[whapi-webhook] task ${task.id} created but group reply failed:`, (e as Error).message);
+      }
+      // Persist the outbound card's message id — Sprint 2's reaction sweep
+      // above matches an inbound 👍🏼's action.target against this column.
+      if (cardMsgId) {
+        const { error: msgIdErr } = await supabase.from("tasks").update({ whapi_message_id: cardMsgId }).eq("id", task.id);
+        if (msgIdErr) console.warn(`[whapi-webhook] failed to store whapi_message_id for task ${task.id}:`, msgIdErr.message);
       }
 
       console.log(
