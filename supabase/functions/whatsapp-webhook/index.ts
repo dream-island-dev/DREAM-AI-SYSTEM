@@ -85,6 +85,7 @@ CRITICAL: אם האורח שואל על פרט אישי שלו (למשל שעת 
 • דבר בגוף ראשון כנציג הצוות — "נדאג", "נסדר", "נשמח לעזור"
 • לעולם אל תכלול תגיות פנימיות כגון [תבנית:...] בתשובתך — הטקסט שלך נשלח ישירות לאורח.
 • השלם כל מחשבה עד סוף המשפט — לעולם אל תיקטע באמצע.
+• פלוט אך ורק את התשובה הסופית בעברית. אסור לכלול חשיבה, ניתוח, הסבר על ההחלטה, או טקסט באנגלית כלשהו (כגון "According to..." / "the category...") — אלה נחשבים דליפה לאורח.
 `.trim();
 
 // Module-level cache: shared across requests within the same function instance
@@ -508,7 +509,8 @@ ${persona ? `\n══ אישיות ונימה ══\n${persona}` : ""}
 6. אל תפתח ב"שלום [שם]" — המשך את השיחה באופן אנושי וטבעי.
 7. קרא היסטוריית שיחה — אל תחזור על מידע שנמסר.
 8. לעולם אל תכלול תגיות כגון [תבנית:...] בתשובתך.
-${faqRule ? `9. ${faqRule}` : ""}
+9. פלוט אך ורק את התשובה הסופית בעברית — בלי חשיבה/ניתוח/הסבר ובלי טקסט באנגלית. כל "According to..."/"the category..." נחשב דליפה.
+${faqRule ? `10. ${faqRule}` : ""}
 ${responseRules ? `\n══ כללי שיחה נוספים (מה-UI) ══\n${responseRules}` : ""}
 `.trim();
 }
@@ -1149,7 +1151,9 @@ function sanitizeReply(text: string): string {
   let result = text;
 
   // ── 1. XML-style thinking blocks (Claude extended-thinking / some Gemini variants) ──
-  result = result.replace(/<thinking>[\s\S]*?<\/thinking>\s*/gi, "");
+  // Covers <thinking>…</thinking> AND <think>…</think>, plus any lone/unclosed tag.
+  result = result.replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>\s*/gi, "");
+  result = result.replace(/<\/?think(?:ing)?>/gi, "");
 
   // ── 2. Labeled multi-line thought blocks followed by a blank line ─────────────────
   // Strips the entire block up to (and including) the separating blank line so the
@@ -1171,6 +1175,39 @@ function sanitizeReply(text: string): string {
     /^(?:THOUGHT|Reasoning|Thinking|COT|מחשבה)\s*:.*$/gim,
     ""
   );
+
+  // ── 4b. Unlabeled English chain-of-thought preamble ──────────────────────────────
+  // The concierge persona ALWAYS replies in Hebrew. Some model outputs prepend raw
+  // reasoning with NO label or tag — e.g. "The user is in the pre-arrival stage. I
+  // should respond warmly..." — before the real Hebrew answer. Strip a LEADING run
+  // of lines that contain ZERO Hebrew and open with a reasoning cue, stopping at the
+  // first line that has Hebrew (the actual guest-facing reply) or isn't a cue.
+  // If EVERYTHING gets stripped (output was pure English reasoning), result becomes
+  // "" and sendReply()'s empty-guard substitutes a safe Hebrew line — never leak.
+  //
+  // Cue list is deliberately broad and includes the EXACT phrasings reported leaking
+  // into live guest chats (Session 24): "According to the instructions...",
+  // "category should be..." (the model reasoning aloud about the log_guest_request
+  // `category` tool argument), and "Let's break down the response:".
+  const COT_CUE = /^\s*(?:the\s+(?:user|guest|customer|client|category|response|reply|answer|message|intent|assistant|tone|request)\b|according\s+to\b|category\b|intent\b|output\b|response\s+should\b|i\s|i'|let'?s\b|let\s+me\b|first[,:]|now[,:]|okay\b|ok[,:]|so[,:]|well[,:]|based\s+on\b|since\b|given\b|considering\b|because\b|here'?s\b|here\s+is\b|in\s+this\s+case\b|as\s+an?\s+ai\b|we\s+(?:should|need|will|are)\b|they\s+(?:are|want|asked|asking|need)\b|this\s+(?:is|seems|appears|looks)\b|looking\s+at\b|to\s+(?:respond|reply|answer|address)\b|should\s+be\b|note[:]|reasoning\b|analysis\b|my\s+(?:response|reply|task|goal)\b|step\s+\d)/i;
+  const hasHebrew = (s: string) => /[֐-׿]/.test(s);
+  {
+    const lines = result.split("\n");
+    let i = 0;
+    while (i < lines.length) {
+      const ln = lines[i];
+      if (ln.trim() === "") { i++; continue; }                    // skip blank separators
+      if (!hasHebrew(ln) && COT_CUE.test(ln)) { i++; continue; }  // drop reasoning line
+      break;                                                       // first real reply line
+    }
+    if (i > 0) result = lines.slice(i).join("\n").trim();
+  }
+  // Same-line leak: text still OPENS with an English reasoning cue but has Hebrew
+  // later ("The user is X. שלום!") → cut everything before the first Hebrew letter.
+  if (COT_CUE.test(result) && hasHebrew(result)) {
+    const idx = result.search(/[֐-׿]/);
+    if (idx > 0) result = result.slice(idx).trim();
+  }
 
   // ── 5. Internal instruction tags ─────────────────────────────────────────────────
   result = result
@@ -1197,6 +1234,17 @@ async function sendReply(to: string, body: string): Promise<string> {
   const phoneId = Deno.env.get("META_PHONE_NUMBER_ID");
   if (!token || !phoneId) throw new Error("missing_meta_creds");
 
+  // ── FINAL CHOKEPOINT (Session 24, Sprint 1.3) ──────────────────────────────
+  // Every guest-facing free-text reply goes out through sendReply(). Sanitizing
+  // HERE (not only at the AI call sites) guarantees no chain-of-thought leak,
+  // <think> tag, or unresolved {{placeholder}} ever reaches a guest, regardless
+  // of which code path produced `body`. If sanitization removes everything (the
+  // model emitted pure English reasoning), fall back to a safe Hebrew line
+  // instead of sending an empty message.
+  const safeBody =
+    sanitizeReply(body).trim() ||
+    "מצטערים, נשמח לעזור 🙏 אפשר לנסח שוב? צוות Dream Island כאן בשבילכם.";
+
   try {
     const res = await fetch(
       `https://graph.facebook.com/v20.0/${phoneId}/messages`,
@@ -1210,7 +1258,7 @@ async function sendReply(to: string, body: string): Promise<string> {
           messaging_product: "whatsapp",
           to,
           type: "text",
-          text: { body, preview_url: false },
+          text: { body: safeBody, preview_url: false },
         }),
         signal: AbortSignal.timeout(25000),
       }
