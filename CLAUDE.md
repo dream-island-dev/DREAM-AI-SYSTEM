@@ -1,6 +1,8 @@
 # CLAUDE.md — Dream Island AI System
 > קובץ זה נקרא אוטומטית בכל שיחה. הוא מקור-האמת שלך. קרא אותו לפני כל פעולה.
-> **עדכון אחרון:** 2026-06-24 (session 30 — Housekeeping Tablet polish, Guest Status Guardrails & Automation UI Localization: AutomationControlCenter.js קיבל תרגום עברי ל-Stage 4 + dropdown raw-key + timing hint; משימה ידנית (OperationsBoard/ReceptionistView) משדרת כעת כרטיס לקבוצת Whapi בדיוק כמו דיווח וואטסאפ, ו-SLA escalation עבר מסף שטוח 7 דק' לסף דינמי לפי קטגוריה; תפקיד `receptionist` חדש (profiles.role) עם מסך מלא מוגבל לשני כלים בלבד; guest concierge חסם בקשות שירות מאורח-סוויטה שעדיין לא ביצע צ'ק-אין + Strict Hebrew Lock/Anti-Hallucination firewall נוסף כשכבה בלתי-תלויה במקור הפרומפט. פירוט בתחתית §10).
+> **עדכון אחרון:** 2026-06-24 (session 31 — CMS Security: AuthContext.js חדש (src/context/) + מודול src/components/cms/ — שער 2FA (TOTP, Supabase Auth MFA) + proactive session-refresh עצמאי מ-App.js's user state הקיים, עטוף מאחורי route חדש "אבטחת CMS" (admin/super_admin). פירוט בתחתית §10 + §7).
+>
+> **עדכון קודם:** 2026-06-24 (session 30 — Housekeeping Tablet polish, Guest Status Guardrails & Automation UI Localization: AutomationControlCenter.js קיבל תרגום עברי ל-Stage 4 + dropdown raw-key + timing hint; משימה ידנית (OperationsBoard/ReceptionistView) משדרת כעת כרטיס לקבוצת Whapi בדיוק כמו דיווח וואטסאפ, ו-SLA escalation עבר מסף שטוח 7 דק' לסף דינמי לפי קטגוריה; תפקיד `receptionist` חדש (profiles.role) עם מסך מלא מוגבל לשני כלים בלבד; guest concierge חסם בקשות שירות מאורח-סוויטה שעדיין לא ביצע צ'ק-אין + Strict Hebrew Lock/Anti-Hallucination firewall נוסף כשכבה בלתי-תלויה במקור הפרומפט. פירוט בתחתית §10).
 >
 > 📚 **היסטוריית הסשנים המלאה (sessions 2–24) הועברה ל-[`claude_history.md`](claude_history.md)** כדי לשמור את הקובץ הזה קליל. שום מידע לא נמחק — רק הופרד. הקובץ הזה מחזיק את **רפרנס הארכיטקטורה החי** (§0–§13); הקובץ ההוא מחזיק את הנרטיב ההיסטורי. כשצריך הקשר מפורט על באג/החלטה ישנה — קרא שם.
 >
@@ -120,6 +122,13 @@ DREAM-AI-SYSTEM/
 │   │                                names) + SUITE_SECTIONS (brand groupings). Single source for
 │   │                                every "assign a room" dropdown: ArrivalImportPanel, GuestsPage,
 │   │                                RoomBoard, AICopilot.
+│   ├── context/
+│   │   └── AuthContext.js       ★ NEW (session 31) — AuthProvider/useAuth: session+AAL state for the
+│   │                               CMS 2FA gate (§7). Independent of App.js's own `user` state — reads
+│   │                               the same shared Supabase session directly (one client, one session
+│   │                               per tab). Proactive token refresh (5 min before expiry) + a
+│   │                               sessionWarning flag consumed by SessionExpiryModal on silent-refresh
+│   │                               failure.
 │   └── components/
 │       ├── ShiftGenerator.js     58KB  מחולל משמרות — LOCAL ONLY, אין קריאת Edge Function
 │       ├── BroadcastDashboard.js 37KB  שידור WhatsApp — תבניות מ-DB (message_templates)
@@ -264,9 +273,18 @@ DREAM-AI-SYSTEM/
 │       │                            חופשי) → custom_automations/custom_automation_steps (migration
 │       │                            078). שכבת טיוטה בלבד — לא מחובר ל-runtime (whatsapp-cron/-send),
 │       │                            בכוונה נפרד מ-automation_stages (זה שכן מחובר).
-│       └── TemplateManagerPanel.js ★ ניהול תבניות WhatsApp מאושרות מ-Meta — סונכרן/נוצר/preview.
-│                                    מיוצא session 20: STATUS_META (היה module-private) — משותף עם
-│                                    AutomationControlCenter.js's Meta template preview box.
+│       ├── TemplateManagerPanel.js ★ ניהול תבניות WhatsApp מאושרות מ-Meta — סונכרן/נוצר/preview.
+│       │                            מיוצא session 20: STATUS_META (היה module-private) — משותף עם
+│       │                            AutomationControlCenter.js's Meta template preview box.
+│       └── cms/                  ★ NEW (session 31) — Admin CMS 2FA gate (§7), 5 קבצים שטוחים (אין
+│                                    קינון נוסף): CMSGate.js (עטיפה — דורש re-auth סיסמה+TOTP טרי
+│                                    לפני רינדור הילדים, מרכיב AuthProvider+CMSPrivateRoute) ·
+│                                    CMSLogin.js (מסך כניסה: סיסמה → הרשמת/אימות TOTP, מעוצב עם אותם
+│                                    .login-* classes הגלובליים מ-App.js) · CMSPrivateRoute.js (חוסם
+│                                    רינדור אלא אם session+aal2) · CMSSecurityPanel.js (מצב הפעלה +
+│                                    ניהול התקני Authenticator — העמוד הקונקרטי הראשון מאחורי השער,
+│                                    route חדש "cms_security") · SessionExpiryModal.js (התראה
+│                                    כש-refresh שקט נכשל). State עצמו ב-src/context/AuthContext.js.
 ├── supabase/
 │   ├── migrations/
 │   │   ├── 001–027_*.sql        applied ✅
@@ -465,6 +483,9 @@ switch (activePage) {
                                     // — earlier docs claiming it was nav-hidden were wrong
   "agent"        → AgentQuestionnaire / AgentChat
   "admin"        → AdminPanel       (admin only)
+  "cms_security" → CMSGate(CMSSecurityPanel)  // ★ NEW session 31 — admin/super_admin, then a SECOND
+                                    // gate inside: CMSGate requires a fresh password+TOTP (aal2)
+                                    // re-auth via CMSLogin before CMSSecurityPanel renders. See §7.
   "users_mgmt"   → UserManagement   (super_admin only)
 }
 // ★ session 7: "upload" (DataUpload) ו-"data_hub" (DataHub) הוסרו — מוזגו ל-ArrivalImportPanel.
@@ -762,6 +783,34 @@ guardPage(["admin", "super_admin"], <Component />)
 // בודק user.role ואז email-based fallback דרך isAdminUser() / isSuperAdminUser()
 ```
 
+### 🔐 CMS Security Layer — שכבת 2FA נוספת (session 31)
+> זו שכבה **שנייה ועצמאית**, מעל ה-`guardPage` הקיים — לא תחליף לו. `guardPage` בודק את `user.role`
+> (פרופיל האפליקציה, נטען מ-`profiles`); השכבה הזו בודקת את ה-Supabase Auth **session** עצמו ואת
+> ה-AAL (Authenticator Assurance Level) שלו. דף שעטוף ב-`<CMSGate>` חייב לעבור **את שניהם**.
+
+```javascript
+// src/context/AuthContext.js — AuthProvider/useAuth()
+//   session, loading, aal:{currentLevel,nextLevel}, isAal2, mfaRequired, sessionWarning
+//   signInWithPassword(email,pw), extendSession(), signOutCms(), refreshAal()
+// ⚠️ supabase הוא client singleton אחד — אין "session נפרד ל-CMS". signInWithPassword בתוך
+//    CMSLogin.js מאמת את אותו המשתמש שכבר מחובר לאפליקציה הראשית (re-auth/step-up), ולא יוצר
+//    זהות שנייה. אם יוזן אימייל/סיסמה של משתמש אחר — ה-session המשותף יוחלף לאותו משתמש בכל
+//    האפליקציה (לא רק ב-CMS) — זו תוצאה צפויה של client יחיד, לא באג.
+
+// src/components/cms/CMSGate.js — <AuthProvider><CMSPrivateRoute>{children}</CMSPrivateRoute></AuthProvider>
+// src/components/cms/CMSPrivateRoute.js — מרנדר children רק אם session && aal==="aal2", אחרת <CMSLogin/>
+// src/components/cms/CMSLogin.js — סיסמה (signInWithPassword) → supabase.auth.mfa: אם אין factor
+//    מאומת — enroll() (QR+secret) → challengeAndVerify(code); אם יש — challengeAndVerify(code) ישירות
+// src/components/cms/CMSSecurityPanel.js — מסך admin: session info + ניהול/הסרת התקני TOTP
+// src/components/cms/SessionExpiryModal.js — מוצג רק כש-proactive refresh (5 דק' לפני תפוגה,
+//    ב-AuthContext) נכשל בשקט — לא בכל תפוגה, ולא מציג מודאל מציק על כל גישה.
+
+// נקודת חיבור חיה היחידה כרגע: route "cms_security" (App.js switch) — guardPage(["admin","super_admin"])
+//    ואז <CMSGate><CMSSecurityPanel/></CMSGate>. AdminPanel/BotConfigPanel/BotSettings/UserManagement
+//    הקיימים **לא** נגעו בהם בכוונה — ראה §10 session 31 להסבר הסיכון (lockout) ולמה זו בדיקת-היתכנות
+//    יסודית לפני הרחבה לדפים תפעוליים קריטיים.
+```
+
 ### מחלקות ברירת מחדל (src/utils/admin.js — מקור האמת)
 ```javascript
 DEFAULT_DEPARTMENTS = ["תפעול", "משק", "קבלה", "ספא", 'מזמ"ש (F&B)', "הנהלה"]
@@ -996,6 +1045,17 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
 - ✅ **Sprint 5.5 — Pre-Check-In Guardrail + Strict Hebrew Lock (`whatsapp-webhook/index.ts`).** (1) gate חדש מיד אחרי ה-Day-Guest Upsell Gate הקיים: אורח-סוויטה עם `toolLoggedRequest` (קריאת `log_guest_request` אמיתית) ש-`guests.status !== 'checked_in'` מקבל את תשובת ה-fallback המדויקת שהתבקשה ("אני רואה את ההזמנה שלך לחדר X, פתיחת בקשות שירות זמינה מיד לאחר ביצוע הצ'ק-אין...") במקום שהבקשה תיפתח כטיקט — `toolLoggedRequest` מתאפס ל-null כך שגם רישום ה-guest_alerts וגם ה-Dual-Routing Trigger (session 26) לא יורים. **ממצא:** הבדיקה ממוקדת ב-`guestRoomType==="suite"` בלבד (אותו תנאי שה-Dual-Routing Trigger כבר משתמש בו) — לא שונה לאורחי יום/חדר סטנדרטי, ששם זרימת הניתוב כבר אחרת. (2) הוראת אנטי-הזיה/הפניה לקבלה הקיימת (`buildSystemPrompt`'s כלל 2 + `FALLBACK_SYSTEM_PROMPT`) עודכנה לנוסח המדויק שהתבקש. **חשוב מזה:** נוסף `STRICT_HEBREW_LOCK_SUFFIX` המוצמד **ללא תלות** למקור הפרומפט המנצח ב-`enrichedPrompt` (לא רק כש-`buildSystemPrompt(bot_config)` הוא המקור) — אותה לקח בדיוק מה-firewall של session 24 לדליפת chain-of-thought: כלל שחי רק בתוך `buildSystemPrompt`/`FALLBACK_SYSTEM_PROMPT` משתתק ברגע ש-`bot_settings.system_prompt` (override אדמין חי) הוא המקור שמנצח. ההצמדה הזו הופכת את הכלל לאינוריאנט אמיתי בלי תלות במקור.
 - ✅ **אומת:** `npm run build` נקי (רק אזהרת `ShiftsPage` הקיימת, לא קשורה). `npx supabase db push` (080) ו-3 `functions deploy` (`whatsapp-webhook`/`sla-escalation-cron`/`notify-manual-task` החדש) הצליחו, Deno type-check עבר בכולם. `whapi-webhook` **לא נגעתי בו** — אין שינוי קוד שם, ה-reaction listener שלו נשאר המקור היחיד שפותר משימות (כולל את אלו שנוצרו ע"י `notify-manual-task` החדש, דרך אותה עמודת `whapi_message_id`).
 - ⚠️ **לא אומת חזותית חי** — אותו קיר Supabase Auth מקומי שדווח בסשנים קודמים. Mike: מומלץ לבדוק בפועל — (1) פתיחת משימה ידנית מ-OperationsBoard → כרטיס מגיע לקבוצת Whapi, 👍🏼 סוגר אותה; (2) יצירת user עם role='receptionist' (UserManagement) → כניסה → מסך מלא עם שני הכלים בלבד; (3) הודעת שירות-חדר מאורח-סוויטה לפני צ'ק-אין → תשובת ה-fallback המדויקת, לא טיקט; (4) "Stage 4" מוצג כ"שיחות נימוסים" ב-AutomationControlCenter, וה-dropdown של הודעת סשן מציג טקסט עברי לא מפתחות גולמיים.
+
+#### session 31 — Jun 24 2026 (CMS Security: JWT Persistence + TOTP 2FA Gateway)
+> הקשר: דירקטיבת "FULL AUTO-PERMISSION MODE" — "SESSION 7: CMS SECURITY, 2FA & PERSISTENT TOKEN MANAGEMENT", שני ספרינטים: (1) רענון session פרואקטיבי + מודאל "ההפעלה עומדת לפוג", (2) שער 2FA (TOTP) למסך CMS. **הערת מספור:** הדירקטיבה תיארה את עצמה כ"Session 7" — המספור האמיתי של הפרויקט (ראה כותרת הקובץ) הוא session 31; לא בוצע "session 7" כפול, זו המשכיות ישירה של ההיסטוריה הקיימת.
+>
+> **ממצא מקדים, לפני כתיבת קוד:** הדירקטיבה דיברה על "the new standalone Admin CMS Panel" — אבל אין כזה דבר בקודבייס. זו אפליקציית SPA יחידה (`App.js`, ללא React Router, ניווט דרך `setActivePage`), עם "אדמין" שהוא סט של routes מוגני-תפקיד (`AdminPanel`/`BotConfigPanel`/`BotSettings`/`UserManagement` וכו', דרך `guardPage`). נבדק גם ש-`PasswordChangeScreen.js` הקיים (`must_change_password` flow) אומר שלמשתמשים *יש* כבר סיסמאות אמיתיות ב-Supabase Auth (לא רק Google OAuth) — כך ש-login מבוסס-סיסמה ל-CMS אינו סיכון-נעילה כפי שחששתי בהתחלה.
+
+- ✅ **Sprint 7.1 — Session Refresh (`src/context/AuthContext.js`, חדש).** `AuthProvider`/`useAuth()` — קורא session+subscribe ל-`onAuthStateChange` **באופן עצמאי** מ-App.js's הסטייט-הקיים (שני listeners על אותו client singleton, ללא קונפליקט). `scheduleRefresh()` מתזמן `setTimeout` ל-5 דק' לפני `session.expires_at`, קורא `supabase.auth.refreshSession()` בשקט; בכשל — `sessionWarning=true` (לא בכל תפוגה — רק כשניסיון הרענון השקט עצמו נכשל) שצורך אותו `SessionExpiryModal.js` ("ההתחברות המאובטחת עומדת לפוג" + כפתור "🔄 הארך הפעלה" → `extendSession()`; כשל שני → "חזרה למסך התחברות" → `signOutCms()`).
+- ✅ **Sprint 7.2 — TOTP 2FA Gateway.** `CMSLogin.js` — סיסמה (`signInWithPassword`, משתמש ב-Supabase Auth MFA API האמיתי, לא מומש בעצמו): אחרי session, `supabase.auth.mfa.listFactors()` — אם אין factor מאומת, `mfa.enroll({factorType:"totp"})` מציג QR (`totp.qr_code`, SVG data-URI) + secret ידני, ואז `mfa.challengeAndVerify({factorId,code})` להפעלה; אם יש factor קיים — דילוג ישר ל-challenge. עיצוב משתמש מחדש ב-classes הגלובליים `.login-bg/.login-card/.login-field/.login-btn/.login-error` הקיימים מ-`LoginPage` ב-App.js — אותו מראה "high-end" בלי CSS כפול. `CMSPrivateRoute.js` חוסם רינדור לחלוטין אלא אם `session && aal.currentLevel==="aal2"`. `CMSGate.js` מאחד `AuthProvider`+`CMSPrivateRoute` לעטיפה בקריאה אחת.
+- ⚠️ **החלטת סקופ מכוונת — לא עטפתי דפי אדמין קיימים.** עטיפת `AdminPanel`/`BotConfigPanel`/`BotSettings`/`UserManagement` הקיימים ב-`<CMSGate>` הייתה מסוכנת לבדוק בלי גישה ל-Supabase Dashboard בסשן הזה (קיר ה-Auth המקומי שחוסם QA חי כבר מ-sessions 19–30) — אם ל-super_admin/admin בפועל אין עדיין TOTP factor מוגדר וה-flow נתקע, זו נעילה אמיתית מהדפים התפעוליים שהם משתמשים בהם כל יום. במקום זאת: נוסף route חדש לחלוטין — **"🔐 אבטחת CMS"** (`cms_security`, admin/super_admin, `guardPage` הקיים) שמרכיב `<CMSGate><CMSSecurityPanel/></CMSGate>`. `CMSSecurityPanel.js` (חדש) מציג session info (email/AAL/תפוגה) + ניהול/הסרת התקני TOTP (`mfa.unenroll`) — עמוד-הוכחה אמיתי ועובד מקצה-לקצה, ללא שום רגרסיה אפשרית על routes קיימים. הרחבה לדפי אדמין נוספים (sprint 7.3+) מומלצת רק **אחרי** ש-Mike יאשר חי שהוא מצליח לעבור enroll+challenge בעצמו על המסך הזה.
+- ✅ **אומת:** `npm run build` נקי (רק אזהרת `ShiftsPage` הקיימת, לא קשורה). 5 קבצים חדשים (`AuthContext.js` + 4 קבצים תחת `src/components/cms/`), ללא migration (אין שינוי DB — Supabase Auth MFA API פעיל כברירת מחדל, לא דורש toggle בפרויקט), ללא Edge Function (כל הלוגיקה client-side מול Supabase Auth ישירות).
+- ⚠️ **לא אומת חזותית חי** — אותו קיר Supabase Auth מקומי שדווח בסשנים 19–30 (קרדנציאלס דמו על המסך נכשלים). **קריטי לבדוק בפועל לפני שמסמנים ✅:** (1) כניסה ל-"🔐 אבטחת CMS" עם משתמש admin → מסך CMSLogin (לא קופץ ישר ל-Panel); (2) הזנת סיסמה תקינה → אם אין TOTP מוגדר, QR מוצג ונסרק ע"י אפליקציית Authenticator אמיתית → קוד מאומת → Panel נטען; (3) רענון העמוד → session נשמר, אבל ה-AAL gate חוזר לבקש קוד (לא session.currentLevel נשאר aal2 בלי MFA אמיתי — צריך לאמת שזה ההתנהגות בפועל של Supabase, לא רק לפי תיעוד); (4) `extendSession`/`SessionExpiryModal` לא נבדק בפועל בלי לחכות לתפוגת token אמיתית (~1 שעה) — ניתן לבדוק מהיר יותר ע"י שינוי זמני של `REFRESH_LEAD_MS` ל-ערך גדול מ-3600s כדי לכפות כשל מהיר, ואז להחזיר.
 
 ---
 

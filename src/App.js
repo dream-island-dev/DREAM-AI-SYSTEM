@@ -30,6 +30,8 @@ import AICopilot from "./components/AICopilot";
 import RequestsAlertWidget from "./components/RequestsAlertWidget";
 import AiFailoverWidget from "./components/AiFailoverWidget";
 import SuitesDashboard from "./components/SuitesDashboard";
+import CMSGate from "./components/cms/CMSGate";
+import CMSSecurityPanel from "./components/cms/CMSSecurityPanel";
 
 // ============================================================
 // MOCK DATA - יוחלף ב-Supabase בגרסה האמיתית
@@ -1151,6 +1153,14 @@ function Sidebar({ user, active, setActive, openOpsCount, onLogout, isAdmin, isS
               <span className="icon">🎛️</span>
               <span>בקרת אוטומציה</span>
             </button>
+            <button
+              className={`nav-item ${active === "cms_security" ? "active" : ""}`}
+              onClick={() => setActive("cms_security")}
+              style={{ color: active === "cms_security" ? "var(--gold)" : "rgba(201,169,110,0.6)" }}
+            >
+              <span className="icon">🔐</span>
+              <span>אבטחת CMS</span>
+            </button>
             {/* User Management — owner (super-admin) only */}
             {isSuperAdminUser && (
               <button
@@ -2063,6 +2073,7 @@ export default function App() {
     bot_settings:  "🧠 מוח הבוט",
     bot_scripts:   "📝 עורך סקריפטי הבוט",
     automation_center: "🎛️ בקרת אוטומציה",
+    cms_security: "🔐 אבטחת CMS",
     agent:      agentProfile ? `${agentProfile.display_name} 🤖` : "הסוכן שלי 🤖",
     admin:      "👑 ניהול מערכת",
     users_mgmt: "👥 ניהול משתמשים",
@@ -2264,6 +2275,11 @@ export default function App() {
         return guardPage(
           ["admin", "super_admin"],
           <AutomationControlCenter />
+        );
+      case "cms_security":
+        return guardPage(
+          ["admin", "super_admin"],
+          <CMSGate><CMSSecurityPanel /></CMSGate>
         );
       case "users_mgmt":
         // only super_admin manages users
