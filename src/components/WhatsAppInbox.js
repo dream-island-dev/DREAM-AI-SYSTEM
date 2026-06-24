@@ -452,6 +452,7 @@ function NewChatModal({ onClose, onSent }) {
   const [bulkSending,   setBulkSending]   = useState(false);
   const [bulkProgress,  setBulkProgress]  = useState(null); // { done, total }
   const [bulkDone,      setBulkDone]      = useState(false);
+  const [bulkFailures,  setBulkFailures]  = useState([]); // [{ name, phone, reason }] — FAIL VISIBLE: bulk send used to swallow every per-recipient error silently
   const [showBulkList,  setShowBulkList]  = useState(false);
 
   // Template audience mode
@@ -481,8 +482,9 @@ function NewChatModal({ onClose, onSent }) {
     if (!bulkText.trim())        return setErr("נא לכתוב הודעה");
     if (bulkGuests.length === 0) return setErr("אין נמענים בסינון הנוכחי");
 
-    setBulkSending(true); setErr(null); setBulkDone(false);
+    setBulkSending(true); setErr(null); setBulkDone(false); setBulkFailures([]);
     let done = 0;
+    const failures = [];
     for (const g of bulkGuests) {
       setBulkProgress({ done, total: bulkGuests.length });
       const personalised = bulkText.replace(/{{שם}}/g, g.name ?? "").replace(/\{\{שם\}\}/g, g.name ?? "");
@@ -494,11 +496,19 @@ function NewChatModal({ onClose, onSent }) {
           await supabase.from("whatsapp_conversations").insert({
             phone: g.phone, direction: "outbound", message: personalised, wa_message_id: null,
           });
+        } else {
+          failures.push({
+            name: g.name, phone: g.phone,
+            reason: data?.status === "window_closed" ? "חלון 24ש׳ סגור" : (data?.error ?? error?.message ?? "שגיאה"),
+          });
         }
-      } catch (_) { /* skip failed individual sends */ }
+      } catch (e) {
+        failures.push({ name: g.name, phone: g.phone, reason: e?.message ?? "שגיאה" });
+      }
       done++;
       await sleep(650); // rate-limit: ~90 msgs/min
     }
+    setBulkFailures(failures);
     setBulkProgress({ done, total: bulkGuests.length });
     setBulkSending(false);
     setBulkDone(true);
@@ -1364,6 +1374,18 @@ function NewChatModal({ onClose, onSent }) {
               {err && (
                 <div style={{ background: "#FFF0EE", border: "1px solid #C0392B", borderRadius: 10, padding: "10px 14px", fontSize: 13, color: "#C0392B" }}>
                   {err}
+                </div>
+              )}
+
+              {bulkDone && bulkFailures.length > 0 && (
+                <div style={{ background: "#FFF5E8", border: "1px solid #B5600A", borderRadius: 10, padding: "10px 14px", fontSize: 13, color: "#B5600A" }}>
+                  ⚠️ {bulkFailures.length} מתוך {bulkGuests.length} לא נשלחו:
+                  <ul style={{ margin: "6px 0 0", paddingRight: 18 }}>
+                    {bulkFailures.slice(0, 8).map((f, i) => (
+                      <li key={i}>{f.name ?? f.phone} — {f.reason}</li>
+                    ))}
+                    {bulkFailures.length > 8 && <li>ועוד {bulkFailures.length - 8}...</li>}
+                  </ul>
                 </div>
               )}
 

@@ -1,6 +1,6 @@
 # CLAUDE.md — Dream Island AI System
 > קובץ זה נקרא אוטומטית בכל שיחה. הוא מקור-האמת שלך. קרא אותו לפני כל פעולה.
-> **עדכון אחרון:** 2026-06-24 (session 24 — Prompt-Leak Firewall ב-`whatsapp-webhook` + Mobile badge fix ב-`RequestsAlertWidget.js`. פירוט בתחתית §10 ובהיסטוריה המלאה ב-`claude_history.md`).
+> **עדכון אחרון:** 2026-06-24 (session 25 — 24-Hour Interaction Window Guard על `inbox_reply` + fallback ב-BRANCH D, "📜 מה נשלח" history tab חדש, ניתוק שדות תשלום מ-status ב-`AddGuestModal`. פירוט בתחתית §10 ובהיסטוריה המלאה ב-`claude_history.md`).
 >
 > 📚 **היסטוריית הסשנים המלאה (sessions 2–24) הועברה ל-[`claude_history.md`](claude_history.md)** כדי לשמור את הקובץ הזה קליל. שום מידע לא נמחק — רק הופרד. הקובץ הזה מחזיק את **רפרנס הארכיטקטורה החי** (§0–§13); הקובץ ההוא מחזיק את הנרטיב ההיסטורי. כשצריך הקשר מפורט על באג/החלטה ישנה — קרא שם.
 >
@@ -51,7 +51,7 @@
 
 3. **Template Awareness** — הודעות מעבר לחלון 24h של Meta חייבות תבנית מאושרת מראש.
    ℹ️ **אכוף-by-design לכל שליחה אוטומטית.** כל ה-triggers הפרואקטיביים (`PIPELINE_TEMPLATE` map + `payment_and_workshops` + `broadcast`, כולם ב-`whatsapp-send/index.ts`) עוברים תמיד דרך `sendViaTemplate` — בלי תלות אם זה בתוך/מעבר ל-24h, פשוט תמיד תבנית. זה שמרני יותר מהדרישה, לא רק תואם לה.
-   ⚠️ **לא נבדק אקטיבית בתשובות מנהל (`inbox_reply`).** מענה חופשי של מנהל מ-`WhatsAppInbox.js` (trigger `inbox_reply`) שולח free-text דרך `sendViaMeta` ללא בדיקת "מתי ההודעה האחרונה מהאורח" — אם המנהל עונה מעבר ל-24h, ה-Meta API עצמו ידחה את השליחה (לא raw send שמתעלם מהכלל), אבל המערכת לא מזהירה את המנהל *לפני* השליחה, רק נכשלת אחרי. ⚠️ זה גם תלוי בתיקון session 11 (status:200 + error מפורט) כדי שהמנהל בכלל יראה למה זה נכשל.
+   ✅ **session 25 — נסגר.** `inbox_reply` (BRANCH C, `whatsapp-send/index.ts`) בודק כעת `guests.wa_window_expires_at` *לפני* קריאת Meta — אם החלון סגור, מחזיר `{ok:false, status:"window_closed", error:"..."}` עברי וברור בלי לנסות לשלוח כלל (אותה תוצאה ש-Meta הייתה כופה בכל מקרה, רק מהר וברור יותר, FAIL VISIBLE §0.3). נאכף רק כש-`phone` תואם guest קיים — מספר לא-מוכר (אין שורת guest) שומר על ההתנהגות הקודמת. `WhatsAppInbox.js`'s שלושת נקודות הקריאה (bulk/handleSendFree/sendManualReply) כבר מציגות את `data.error` הגולמי, כך שההודעה החדשה עוברת כמו שהיא; ה-bulk loop גם קיבל סיכום כשלים גלוי (`bulkFailures`) במקום לבלוע שגיאות בשקט.
 
 ---
 
@@ -166,11 +166,17 @@ DREAM-AI-SYSTEM/
 │       │                            session 12: טופס ההוספה/עריכה המלא חולץ ל-AddGuestModal.js.
 │       ├── AddGuestModal.js      ★ NEW (session 12) — Universal Add/Edit Guest modal (עקרון #5,
 │       │                            §0). שדות: name/phone(חדש בלבד)/arrival_date/spa_time/
-│       │                            treatment_count/order_number/room(SUITE_REGISTRY)/status/
-│       │                            requires_attention/needs_callback. כותב/קורא guests ישירות
-│       │                            (insert חדש / update קיים). בשימוש ע"י GuestsPage.js +
-│       │                            GuestDashboard.js — single source of truth לטופס אורח,
-│       │                            כך ש-spa_time לא יחסר יותר לאורח שנוסף מ-GuestDashboard.
+│       │                            treatment_count/order_number/payment_amount/payment_link_url/
+│       │                            room(SUITE_REGISTRY)/status/requires_attention/needs_callback.
+│       │                            כותב/קורא guests ישירות (insert חדש / update קיים). בשימוש
+│       │                            ע"י GuestsPage.js + GuestDashboard.js — single source of truth
+│       │                            לטופס אורח, כך ש-spa_time לא יחסר יותר לאורח שנוסף מ-GuestDashboard.
+│       │                            ★ session 25: payment_amount/payment_link_url נוספו כשדות
+│       │                            תמיד-גלויים, לא מותנים ב-status/arrival_confirmed — לפני כן
+│       │                            הדרך היחידה למלא אותם הייתה ה-popup הנפרד ב-GuestsPage.js
+│       │                            ("💳 תשלום"), שעצמו מוצג רק אחרי arrival_confirmed=true, כך
+│       │                            שלא ניתן היה להזין מחיר/קישור מוקדם — בדיוק כשStage 2 Pay
+│       │                            (אוטומטי, אירוע-מיידי) עלול לירות ולמצוא אותם ריקים.
 │       ├── SuitesDashboard.js    "פירוט חדרים" (suites route) — per-room grid מ-suite_rooms,
 │       │                            סטטוס חי מ-guests. ⚠️ לא להתבלבל עם RoomBoard ("לוח סוויטות")!
 │       │                            session 12: route עדיין קיים אך הוסר מה-Sidebar nav (לא נגיש
@@ -259,13 +265,27 @@ DREAM-AI-SYSTEM/
 │       ├── generate-agent-profile/ deployed ✅
 │       ├── process-knowledge/   deployed ✅
 │       ├── push-notify/         deployed ✅
-│       ├── whatsapp-send/       deployed ✅ — תומך ב-inbox_reply trigger
+│       ├── whatsapp-send/       deployed ✅ — תומך ב-inbox_reply trigger. ★ session 25: 24-Hour
+│       │                            Interaction Window Guard — (1) inbox_reply בודק guests.
+│       │                            wa_window_expires_at *לפני* קריאת Meta ומחזיר status:
+│       │                            "window_closed" מיידי במקום לתת ל-Meta לדחות בלי הקשר; (2)
+│       │                            BRANCH D (pipeline hybrid) — אם sendInteractiveButtons נכשל,
+│       │                            fallback אוטומטי ל-sendViaTemplate באותה קריאה כך ששלב מתוזמן
+│       │                            לא נשאר בלי הודעה בכלל. ראה §10 session 25 + isWindowOpen() helper.
 │       ├── whatsapp-cron/       deployed ✅ — pg_cron job "wa-cron" פעיל (*/15) ⚠️ KILL SWITCH ON.
 │       │                            session 20 audit: קורא automation_stages חי (לא hardcoded map) —
 │       │                            לא מערכת מקבילה ל-automation-queue, ראה session 20 להלן.
 │       ├── automation-queue/    ★ session 20 backfill — read-only projection (guests × automation_
 │       │                            stages × notification_log) ל-Queue tab של AutomationControlCenter.
 │       │                            אינה שולחת הודעות בעצמה — אך ורק תצוגה מקדימה.
+│       ├── automation-history/  ★ NEW (session 25) — read-only היסטוריית ביצוע ("📜 מה נשלח" tab)
+│       │                            לAutomationControlCenter. פרויקציה שטוחה מעל notification_log
+│       │                            (הטבלה הקיימת היחידה, כבר מתעדת כל שליחה במערכת — מתוזמנת או
+│       │                            ידנית) join עם guests(name) + automation_stages(display_name).
+│       │                            "מועד מתוכנן" מחושב לוקלית (לא מ-resolveStageSchedule המשותף —
+│       │                            ה-eligibility gate שלו מחזיר scheduledFor:null ברגע ש-guest_flag_
+│       │                            column=true, בדיוק המקרה "כבר נשלח" שהטאב הזה קיים כדי להציג).
+│       │                            אינה שולחת הודעות, אינה כותבת DB.
 │       ├── whatsapp-webhook/    ★ deployed ✅ v3 — ראה §6 לתיאור מלא
 │       ├── room-clean-notify/   ★ גילוי session 7 — שולח whatsapp-send trigger="room_ready" כשחדר
 │       │                            הופך פנוי. נקרא רק מ-RoomBoard's retry button (waState="failed") —
@@ -415,6 +435,11 @@ spa_time            TEXT  — שעת ספא ("14:00") — כותב: ArrivalImpor
                             ★ זו העמודה שהwebhook קורא להצגת שעת ספא בהודעת אישור
 order_number        TEXT  — מזהה הזמנה מPMS ("266932") — כותב: ArrivalImportPanel
 treatment_count     INT   — סה"כ חריצי ספא שהוזמנו — כותב: ArrivalImportPanel
+payment_amount      NUMERIC — סכום לתשלום (₪) — migration 023. ★ session 25: כעת שדה תמיד-גלוי
+                            ב-AddGuestModal (לא רק ב-popup הנפרד "💳 תשלום" ב-GuestsPage שמוצג רק
+                            אחרי arrival_confirmed). נקרא ע"י sendStage2PayReply (whatsapp-webhook)
+                            כש-Stage 2 Pay יורה אוטומטית, וע"י BRANCH E (payment_and_workshops) ב-whatsapp-send.
+payment_link_url    TEXT  — קישור תשלום — migration 023. אותה הערה כמו payment_amount למעלה.
 
 ── Flag Guards (whatsapp-send כותב TRUE אחרי שליחה, cron בודק לפני שליחה) ──
 msg_pre_arrival_2d_sent   BOOL — pre_arrival_2d (T-2)
@@ -794,6 +819,15 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
 - ⚠️ **לא אומת חזותית חי** — אותו קיר Supabase Auth מקומי מ-sessions 19–23 (קרדנציאלס דמו על המסך נכשלים). אומת build נקי + deploy מצליח (Deno type-check עבר) בלבד.
 - ⚠️ **לא נגעתי / מחוץ לסקופ (נשאר ב-working tree):** `whatsapp-send/index.ts` (שינוי broadcast/`MANUAL_TRIGGERS` kill-switch מסשן "24" אחר, uncommitted — **לא** commit-תי אותו, לא שלי), והקבצים ה-untracked (`.claude/claude_bot.py`, `DREAM_CONCIERGE_SYSTEM_PROMPT.txt`, `migration 076`).
 - ✅ **CLAUDE.md token cleanup:** היסטוריית הסשנים (sessions 2–23, ~310 שורות) + ה-blockquote הנפוח בראש הקובץ הועברו ל-`claude_history.md` (archive, **לא** מחיקה). רפרנס הארכיטקטורה (§0–§13) נשאר כאן בכוונה — הוא ידע פעיל, לא היסטוריה.
+
+#### session 25 — Jun 24 2026 (24h Window Guard + Automation History + Payment field decoupling)
+> הקשר: דירקטיבת "STRICT SPRINT MODE" — שלושה ספרינטים: (1) 24-Hour Interaction Window Guard לאוטומציה, (2) "📜 מה נשלח" history tab, (3) ניתוק שדות תשלום מ-status. **לפני מימוש — נחקר הקוד הקיים לעומק** כדי לא לבנות מחדש מה שכבר קיים (ראה ממצא מרכזי בכל ספרינט).
+
+- ✅ **Sprint 1 — 24-Hour Interaction Window Guard.** ממצא מרכזי: המנגנון ה"היברידי" (session message בתוך חלון 24ש׳ / Meta template מחוצה לו) **כבר קיים ופעיל** מ-Phase 4 (`automation_stages.node_type='hybrid'` + `whatsapp-send`'s BRANCH D + ה-UI ב-AutomationControlCenter's Timeline tab לעריכת `session_message_script_key`) — אין צורך לבנות אותו מאפס. הפער האמיתי, המתועד כבר ב-§CORE BUSINESS LOGIC point 3 כ-⚠️ פתוח: **`inbox_reply` (BRANCH C) שלח free-text בלי לבדוק את החלון כלל** — אם מנהל ענה אחרי 24ש׳, Meta דחה את השליחה אחרי שניסינו, בלי אזהרה מוקדמת. תוקן: נוסף `isWindowOpen()` helper (`whatsapp-send/index.ts`) + בדיקה לפני קריאת Meta ב-BRANCH C — מחזיר `{ok:false, status:"window_closed", error:"..."}` עברי וברור ללא ניסיון שליחה כלל (נאכף רק כש-`phone` תואם guest קיים). בנוסף, חוסן BRANCH D: אם `sendInteractiveButtons` (נתיב session message) נכשל, fallback אוטומטי בתוך אותה קריאה ל-`sendViaTemplate` — כך ששלב מתוזמן (Stage 1/1.5/2/3/5) לא נשאר בלי הודעה כלל בגלל כשל חד-פעמי בנתיב הראשון; הכשל מתועד ב-`notification_log.payload.sessionMessageFailureNote` גם אם ה-fallback הצליח (FAIL VISIBLE). `WhatsAppInbox.js`: שלושת נקודות הקריאה ל-`inbox_reply` (bulk/handleSendFree/sendManualReply) כבר מציגות `data.error` גולמי — ההודעה החדשה עוברת ללא שינוי קוד נוסף; ה-bulk loop קיבל גם `bulkFailures` state + סיכום כשלים גלוי בסוף הריצה (לפני כן בלע שגיאות פר-נמען בשקט לחלוטין). פרוס בייצור (`functions deploy whatsapp-send`).
+- ✅ **Sprint 2 — "📜 מה נשלח" history tab.** ממצא מרכזי: `notification_log` כבר מתעד כל שליחה במערכת (status/payload/sent_at) — לא נדרש שינוי schema. נוסף Edge Function חדש `automation-history` (read-only, אינו שולח/כותב) שמצרף `notification_log` × `guests(name)` × `automation_stages(display_name)`, ומחשב "מועד מתוכנן" עם פונקציית תאריכים מקומית **שכפולה בכוונה** מ-`_shared/automationSchedule.ts` (לא import) — כי ה-eligibility gate של `resolveStageSchedule` המשותף מחזיר `scheduledFor:null` ברגע ש-`guest_flag_column=true`, בדיוק המקרה "כבר נשלח" שהטאב הזה קיים כדי להציג. טאב חדש ב-`AutomationControlCenter.js` (`subTab==="history"`) בסטיילינג תואם לטאב "תור חי" הקיים. פרוס בייצור (`functions deploy automation-history`).
+- ✅ **Sprint 3 — ניתוק שדות תשלום מ-status.** ממצא מרכזי: `payment_amount`/`payment_link_url` (migration 023) היו קיימים ב-DB אבל **לא** ב-`AddGuestModal.js` בכלל — הדרך היחידה למלא אותם הייתה popup נפרד ב-`GuestsPage.js` ("💳 תשלום") שמוצג רק אחרי `g.arrival_confirmed===true`. נוספו כשני שדות תמיד-גלויים ב-`AddGuestModal.js` (לא מותנים ב-status/arrival_confirmed) — מנהל יכול למלא אותם מרגע יצירת/עריכת אורח, כך ש-Stage 2 Pay (אירוע-מיידי, יורה כש-arrival_confirmed הופך true) ימצא אותם כבר ממולאים בלי תלות ב-popup הנפרד. ה-popup ב-GuestsPage.js נשאר כפי שהוא ללא שינוי — ממשיך לעבוד כ-fallback (אם השדות עדיין ריקים, נפתח אוטומטית; אם מולאו מראש ב-AddGuestModal, הכפתור שולח ישירות).
+- ⚠️ **לא אומת חזותית חי** — אותו קיר Supabase Auth מקומי מ-sessions 19–24. אומת build נקי (`npm run build`, רק אזהרת `ShiftsPage` הקיימת) + שני `functions deploy` הצליחו (Deno type-check עבר) בלבד.
+- ℹ️ **קומיט משולב:** ה-commit של הסשן הזה כולל גם את תיקון `MANUAL_TRIGGERS`/kill-switch ב-`whatsapp-send/index.ts` שנשאר uncommitted מ-session 24 (תועד שם כ"לא שלי" אך כתיקון שלם ומתועד, לא WIP) — שני הסשנים נגעו באותו קובץ; הקבצים ה-untracked האחרים (`.claude/claude_bot.py`, `DREAM_CONCIERGE_SYSTEM_PROMPT.txt`, `migration 076`) **לא** נכללו — מחוץ לסקופ, לא נבדקו.
 
 ---
 

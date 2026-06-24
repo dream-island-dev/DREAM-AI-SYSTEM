@@ -24,6 +24,8 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast }) {
     spa_time:           guest.spa_time             ?? "",
     treatment_count:    guest.treatment_count != null ? String(guest.treatment_count) : "",
     order_number:       guest.order_number         ?? "",
+    payment_amount:     guest.payment_amount != null ? String(guest.payment_amount) : "",
+    payment_link_url:   guest.payment_link_url     ?? "",
     status:             guest.status               ?? (isEdit ? "expected" : "pending"),
     requires_attention: !!guest.requires_attention,
     needs_callback:     !!guest.needs_callback,
@@ -49,6 +51,8 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast }) {
         spa_time:           form.spa_time       || null,
         treatment_count:    form.treatment_count !== "" ? parseInt(form.treatment_count, 10) : null,
         order_number:       (form.order_number ?? "").trim() || null,
+        payment_amount:     form.payment_amount !== "" ? parseFloat(form.payment_amount) : null,
+        payment_link_url:   (form.payment_link_url ?? "").trim() || null,
         status:             form.status,
         requires_attention: !!form.requires_attention,
         needs_callback:     !!form.needs_callback,
@@ -133,6 +137,13 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast }) {
           { label: "שעת ספא",      field: "spa_time",        type: "time"   },
           { label: "מספר טיפולים", field: "treatment_count", type: "number" },
           { label: "מספר הזמנה",   field: "order_number",    type: "text"   },
+          // ★ Session 2 — payment fields, deliberately NOT gated behind status/
+          // arrival_confirmed (DNA §0.5 single source of truth): a manager can
+          // set these the moment a booking is created, so they're already
+          // populated by the time Stage 2 Pay fires automatically on arrival
+          // confirmation, instead of requiring the separate GuestsPage popup.
+          { label: "מחיר לתשלום (₪)", field: "payment_amount",   type: "number" },
+          { label: "קישור תשלום",     field: "payment_link_url", type: "url"    },
         ].map(({ label, field, type }) => (
           <div key={field} style={{ marginBottom: 14 }}>
             <label style={{ fontSize: 12, fontWeight: 700, display: "block", marginBottom: 4 }}>{label}</label>

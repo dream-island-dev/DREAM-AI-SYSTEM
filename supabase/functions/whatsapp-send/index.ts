@@ -220,11 +220,41 @@ async function sendViaTemplate(
 // whatsapp-webhook's Stage 2 Pay so both call the same code instead of two
 // copies that could drift. Imported above; behavior unchanged.
 
+// ── 24-Hour Interaction Window Guard ──────────────────────────────────────────
+// Meta only accepts free-form session text (sendViaMeta/sendInteractiveButtons)
+// inside the 24h customer-service window opened by the guest's last inbound
+// message — guests.wa_window_expires_at is set to now()+24h by whatsapp-webhook
+// on every inbound message, so it IS the "last guest interaction" marker, just
+// stored pre-offset rather than raw. Outside that window Meta requires an
+// approved template (sendViaTemplate) — business-initiated free text is simply
+// rejected. Centralized here so both call sites (BRANCH C inbox_reply, BRANCH D
+// hybrid pipeline) make the identical decision instead of drifting.
+function isWindowOpen(expiresAt: unknown): boolean {
+  if (!expiresAt) return false;
+  return new Date(expiresAt as string).getTime() > Date.now();
+}
+
 // Simulation: true when explicitly set OR when Meta credentials are absent.
 const isSimulation = (): boolean =>
   Deno.env.get("WHATSAPP_SIMULATION") === "true" ||
   !(Deno.env.get("META_WHATSAPP_TOKEN")   ?? Deno.env.get("WHATSAPP_TOKEN")) ||
   !(Deno.env.get("META_PHONE_NUMBER_ID")  ?? Deno.env.get("WHATSAPP_PHONE_NUMBER_ID"));
+
+// ── Manual (human-initiated) triggers — always permitted ─────────────────────
+// The AUTOMATION_ENABLED kill switch exists to stop the system from messaging
+// guests AUTONOMOUSLY (the scheduled pipeline triggers driven by whatsapp-cron:
+// pre_arrival_2d / night_before / morning_* / mid_stay / checkout_fb / butler_1h
+// / room_ready). It must NOT block a human deliberately clicking "send" in a UI.
+//
+// Session 24 root cause: only `inbox_reply` was exempt, so the entire
+// "📣 שידור הודעות / Send Messages" tab (trigger `broadcast`) — and the manual
+// payment-link button (`payment_and_workshops`) — failed entirely whenever
+// AUTOMATION_ENABLED wasn't "true", while manual inbox replies worked. Both
+// `broadcast` and `payment_and_workshops` send ONLY pre-approved Meta templates
+// via sendViaTemplate(), which are valid OUTSIDE the 24h customer-service window
+// by definition — so there is no 24h-window risk in permitting them, and they
+// are explicit, throttled, manager-initiated actions (not autonomous blasts).
+const MANUAL_TRIGGERS = new Set(["inbox_reply", "broadcast", "payment_and_workshops"]);
 
 // ── Main handler ──────────────────────────────────────────────────────────────
 serve(async (req: Request) => {
@@ -243,12 +273,15 @@ serve(async (req: Request) => {
 
     if (!trigger) throw new Error("trigger is required");
 
-    // ── EMERGENCY KILL SWITCH ─────────────────────────────────────────────────
-    // inbox_reply is the ONLY permitted send — it is a manual staff action
-    // inside an already-open conversation. Everything else (pipeline triggers,
-    // broadcast campaigns, shift assignments, payment links) is blocked until
-    // AUTOMATION_ENABLED=true is set in Supabase Secrets.
-    if (trigger !== "inbox_reply" && Deno.env.get("AUTOMATION_ENABLED") !== "true") {
+    // ── KILL SWITCH — gates AUTONOMOUS sends only ─────────────────────────────
+    // Manual, human-initiated triggers (MANUAL_TRIGGERS: inbox_reply, broadcast,
+    // payment_and_workshops) are always allowed — they are deliberate staff
+    // clicks and (for broadcast/payment) use pre-approved Meta templates that
+    // are window-independent. Only the scheduled/autonomous pipeline triggers
+    // (and shift_assignment) stay blocked until AUTOMATION_ENABLED=true. The
+    // periodic cron has its own independent CRON_ENABLED gate, so enabling
+    // manual broadcasts here does NOT unleash the scheduled pipeline.
+    if (!MANUAL_TRIGGERS.has(trigger) && Deno.env.get("AUTOMATION_ENABLED") !== "true") {
       console.log(`[whatsapp-send] 🚫 HALTED — trigger "${trigger}" blocked. Set AUTOMATION_ENABLED=true in Supabase Secrets to re-enable.`);
       return new Response(
         JSON.stringify({ ok: false, halted: true, reason: "automation_disabled", trigger }),
@@ -405,6 +438,33 @@ serve(async (req: Request) => {
       if (!targetPhone) throw new Error("phone is required for inbox_reply");
       if (!inboxMsg)    throw new Error("message is required for inbox_reply");
 
+      // ── 24-Hour Interaction Window Guard ─────────────────────────────────
+      // inbox_reply sends raw free text — previously unchecked here, so a
+      // manager replying to a stale thread just hit a possibly-cryptic Meta
+      // rejection AFTER attempting the send (CLAUDE.md §CORE BUSINESS LOGIC
+      // point 3 flagged this as open). Checking first turns the same
+      // inevitable outcome (Meta would reject either way — free text outside
+      // the window is a hard Meta rule, not a preference we control) into a
+      // fast, clear, pre-send signal instead of an after-the-fact API error.
+      // Only enforced when the phone matches a known guest row; an untracked
+      // number (no guest record) keeps today's permissive behavior, since we
+      // have no window data to check.
+      const { data: windowGuest } = await supabase
+        .from("guests")
+        .select("wa_window_expires_at")
+        .eq("phone", targetPhone)
+        .maybeSingle();
+      if (windowGuest && !isWindowOpen(windowGuest.wa_window_expires_at)) {
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            status: "window_closed",
+            error: "window_closed: חלון 24 השעות סגור — האורח לא הגיב ב-24 השעות האחרונות, לא ניתן לשלוח הודעה חופשית. נדרשת תבנית מאושרת.",
+          }),
+          { headers: { ...CORS, "Content-Type": "application/json" } },
+        );
+      }
+
       let replyStatus = "simulated";
       let replyErr: string | null = null;
 
@@ -560,9 +620,7 @@ serve(async (req: Request) => {
     let sessionButtons: Array<{ type: string; label: string; url?: string }> = [];
 
     if (stageRow?.session_message_script_key) {
-      const windowExpires = guest.wa_window_expires_at ? new Date(guest.wa_window_expires_at as string) : null;
-      const windowOpen = !!windowExpires && windowExpires.getTime() > Date.now();
-      if (windowOpen) {
+      if (isWindowOpen(guest.wa_window_expires_at)) {
         const { data: scriptRow } = await supabase
           .from("bot_scripts")
           .select("message_text")
@@ -590,6 +648,8 @@ serve(async (req: Request) => {
     let sendError: string | null = null;
     let tmplVars: string[] = [];
 
+    let sessionFailureNote: string | null = null;
+
     if (usedSessionMessage) {
       try {
         if (!sim) {
@@ -597,11 +657,19 @@ serve(async (req: Request) => {
           status = "sent";
         }
       } catch (e) {
-        sendError = (e as Error).message;
-        status = sendError.startsWith("timeout_no_response") ? "timeout" : "failed";
-        console.error(`[whatsapp] pipeline session-message send ${status}:`, sendError);
+        // ── 24-Hour Interaction Window Guard — failure fallback ────────────
+        // A session-message attempt can fail for reasons unrelated to window
+        // state (transient Meta error, malformed button payload, etc.). This
+        // is a scheduled automation stage — leaving the guest with NO message
+        // at all defeats the whole pipeline. Retry once via the
+        // window-independent Meta template instead of just recording failure.
+        sessionFailureNote = (e as Error).message;
+        console.error(`[whatsapp] pipeline session-message send failed — falling back to Meta template:`, sessionFailureNote);
+        usedSessionMessage = false;
       }
-    } else {
+    }
+
+    if (!usedSessionMessage) {
       tmplVars = sanitizeTemplateVars(PIPELINE_VARS[trigger]?.(guest) ?? []);
       try {
         if (!sim) {
@@ -620,7 +688,14 @@ serve(async (req: Request) => {
       channel: "whatsapp", status,
       payload: usedSessionMessage
         ? { channel: "session_message", scriptKey: stageRow!.session_message_script_key, ...(sendError ? { error: sendError } : {}) }
-        : { channel: "meta_template", template: tmplName, variables: tmplVars, ...(sendError ? { error: sendError } : {}) },
+        : {
+            channel: "meta_template", template: tmplName, variables: tmplVars,
+            ...(sendError ? { error: sendError } : {}),
+            // Present whenever this template send is a fallback after a failed
+            // session-message attempt — even on eventual success, so the history
+            // log shows the stage didn't go out via its first-choice channel.
+            ...(sessionFailureNote ? { sessionMessageFailureNote: sessionFailureNote } : {}),
+          },
     });
 
     // Log to conversation history so inbox shows it.

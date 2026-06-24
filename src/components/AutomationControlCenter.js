@@ -358,7 +358,7 @@ function StageCard({
 }
 
 export default function AutomationControlCenter() {
-  const [subTab, setSubTab] = useState("timeline"); // timeline | queue | templates
+  const [subTab, setSubTab] = useState("timeline"); // timeline | queue | history | templates
   const [stages, setStages] = useState([]);
   const [scriptsByKey, setScriptsByKey] = useState({});
   const [availableScriptKeys, setAvailableScriptKeys] = useState([]);
@@ -435,6 +435,29 @@ export default function AutomationControlCenter() {
   }, []);
 
   useEffect(() => { if (subTab === "queue") fetchQueue(); }, [subTab, fetchQueue]);
+
+  // ── Execution history ("מה נשלח") ────────────────────────────────────────
+  const [historyData, setHistoryData] = useState(null);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [historyError, setHistoryError] = useState(null);
+
+  const fetchHistory = useCallback(async () => {
+    if (!isSupabaseConfigured || !supabase) return;
+    setLoadingHistory(true);
+    setHistoryError(null);
+    try {
+      const { data, error } = await supabase.functions.invoke("automation-history");
+      if (error) throw new Error(error.message);
+      if (!data?.ok) throw new Error(data?.error ?? "unknown error");
+      setHistoryData(data.history ?? []);
+    } catch (err) {
+      setHistoryError(err?.message ?? String(err));
+    } finally {
+      setLoadingHistory(false);
+    }
+  }, []);
+
+  useEffect(() => { if (subTab === "history") fetchHistory(); }, [subTab, fetchHistory]);
 
   const patchStage = async (stage, patch) => {
     setStages((prev) => prev.map((s) => (s.id === stage.id ? { ...s, ...patch } : s)));
@@ -519,6 +542,7 @@ export default function AutomationControlCenter() {
         {[
           { key: "timeline", label: "🗺️ מסע האורח" },
           { key: "queue",    label: "📡 תור חי + מוניטור" },
+          { key: "history",  label: "📜 מה נשלח" },
           { key: "templates", label: "📋 תבניות Meta" },
         ].map(({ key, label }) => (
           <button key={key} onClick={() => setSubTab(key)} style={{
@@ -662,6 +686,61 @@ export default function AutomationControlCenter() {
               </div>
             </>
           )}
+        </div>
+      )}
+
+      {subTab === "history" && (
+        <div>
+          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
+            <button className="btn btn-ghost btn-sm" onClick={fetchHistory} disabled={loadingHistory}>
+              {loadingHistory ? "⏳" : "↺"} רענון
+            </button>
+          </div>
+
+          {historyError && (
+            <div style={{ background: "#FFF0EE", border: "1px solid #C0392B", borderRadius: 10, padding: "12px 16px", marginBottom: 16, fontSize: 13, color: "#C0392B" }}>
+              שגיאה בטעינת ההיסטוריה: {historyError}
+            </div>
+          )}
+
+          <div className="card">
+            <div className="card-header"><div className="card-title">📜 מה נשלח — {historyData?.length ?? 0} שורות אחרונות</div></div>
+            {!historyData || historyData.length === 0 ? (
+              <div style={{ padding: 24, textAlign: "center", color: "var(--text-muted)", fontSize: 13 }}>
+                {loadingHistory ? "⏳ טוען..." : "אין עדיין היסטוריית שליחה"}
+              </div>
+            ) : (
+              <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+                <table className="table" style={{ minWidth: 720 }}>
+                  <thead>
+                    <tr>
+                      <th>אורח</th>
+                      <th>שלב</th>
+                      <th>מועד מתוכנן</th>
+                      <th>זמן שליחה בפועל</th>
+                      <th>סטטוס</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {historyData.map((h) => (
+                      <tr key={h.id}>
+                        <td style={{ fontWeight: 700 }}>{h.guestName ?? "—"}</td>
+                        <td>{h.stageDisplayName}</td>
+                        <td style={{ fontSize: 12 }}>{h.scheduledFor ? new Date(h.scheduledFor).toLocaleString("he-IL") : "מיידי / ידני"}</td>
+                        <td style={{ fontSize: 12 }}>{h.actualSentAt ? new Date(h.actualSentAt).toLocaleString("he-IL") : "—"}</td>
+                        <td>
+                          <span className={`badge ${h.status === "sent" || h.status === "simulated" ? "badge-green" : "badge-red"}`}>
+                            {h.status === "sent" ? "✅ נשלח" : h.status === "simulated" ? "✅ סימולציה" : h.status === "timeout" ? "❌ לא ודאי" : "❌ נכשל"}
+                          </span>
+                          {h.error && <div style={{ fontSize: 10, color: "#C0392B", marginTop: 2, maxWidth: 280 }}>{h.error}</div>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
