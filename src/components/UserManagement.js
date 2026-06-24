@@ -28,6 +28,8 @@ const ROLES = [
   { value: "admin",       label: "🔧 Admin" },
   { value: "manager",     label: "🏢 מנהל" },
   { value: "staff",       label: "👤 עובד" },
+  { value: "receptionist", label: "🛎️ פקיד/ת קבלה" },
+  { value: "cleaner",     label: "🧹 חדרנית/ת" },
 ];
 
 const ROLE_META = {
@@ -35,6 +37,8 @@ const ROLE_META = {
   admin:       { bg: "#F3F0FF",               color: "#5B21B6",          label: "🔧 Admin" },
   manager:     { bg: "#EEF4FF",               color: "#2952A3",          label: "🏢 מנהל" },
   staff:       { bg: "var(--ivory)",           color: "var(--text-muted)",label: "👤 עובד" },
+  receptionist:{ bg: "#FFF5E8",               color: "#B5600A",          label: "🛎️ פקיד/ת קבלה" },
+  cleaner:     { bg: "#E8F5EF",               color: "#1A7A4A",          label: "🧹 חדרנית/ת" },
 };
 
 const STATUS_META = {
@@ -267,9 +271,10 @@ function InviteForm({ onSubmit, onCancel, busy }) {
           </div>
           <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
             {[
-              { v: "staff",   l: "👤 עובד" },
-              { v: "manager", l: "🏢 מנהל" },
-              { v: "admin",   l: "🔧 Admin" },
+              { v: "staff",        l: "👤 עובד" },
+              { v: "receptionist", l: "🛎️ פקיד/ת קבלה" },
+              { v: "manager",      l: "🏢 מנהל" },
+              { v: "admin",        l: "🔧 Admin" },
             ].map(({ v, l }) => (
               <label key={v} style={{
                 display: "flex", alignItems: "center", gap: 6,

@@ -22,6 +22,7 @@ import BotScriptEditor from "./components/BotScriptEditor";
 import AutomationControlCenter from "./components/AutomationControlCenter";
 import RoomBoard from "./components/RoomBoard";
 import HousekeepingTabletView from "./components/HousekeepingTabletView";
+import ReceptionistView from "./components/ReceptionistView";
 import RequestsBoard from "./components/RequestsBoard";
 import PasswordChangeScreen from "./components/PasswordChangeScreen";
 import SpaStagingPanel from "./components/SpaStagingPanel";
@@ -2128,6 +2129,19 @@ export default function App() {
         <div style={{ background: "var(--ivory)", minHeight: "100vh" }}>
           <HousekeepingTabletView isKioskMode onLogout={handleLogout} />
         </div>
+      </>
+    );
+
+  // ── Receptionist kiosk — full-screen streamlined toolset, no sidebar ──
+  // Session 30 Sprint 5.4: same "role gets its own dedicated full-screen
+  // view instead of the full Sidebar+switch" pattern as the cleaner branch
+  // above — a receptionist sees exactly two tools (send guest message /
+  // open service call), never the admin/config panels.
+  if (user.role === "receptionist")
+    return (
+      <>
+        <style>{css}</style>
+        <ReceptionistView user={user} onLogout={handleLogout} />
       </>
     );
 

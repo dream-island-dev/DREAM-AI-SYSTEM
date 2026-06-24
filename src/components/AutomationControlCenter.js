@@ -39,6 +39,31 @@ const NODE_TYPE_META = {
 
 const APPLIES_TO_LABELS = { all: "כל האורחים", suite: "סוויטות בלבד", non_suite: "לא-סוויטות" };
 
+// Session 30 Sprint 5.1 — manager-facing translation for the raw bot_scripts
+// script_key tokens shown in the session-message dropdown. Same FAIL VISIBLE
+// fallback convention as metaTemplateFriendly() below: an untranslated key
+// still renders (prefixed "⚠") instead of silently showing the raw snake_case
+// token, so a future script_key added without an entry here is still usable,
+// just visibly unpolished rather than broken.
+const SCRIPT_KEY_FRIENDLY = {
+  stage_3_morning:          "הודעת בוקר (שלב 3)",
+  complaint_reply:          "מענה לתלונה",
+  negative_feedback_reply:  "מענה למשוב שלילי",
+  upsell_reply:             "הצעת שדרוג (Upsell)",
+  fallback_reply:           "מענה ברירת מחדל (Fallback)",
+  positive_feedback_reply:  "מענה למשוב חיובי",
+  upsell_accepted_reply:    "אישור קבלת שדרוג",
+  upsell_decline_reply:     "סירוב לשדרוג",
+  ongoing_concierge:        "שיח קונסיירג׳ שוטף",
+  stage_2_arrival:          "הודעת הגעה (שלב 2)",
+  callback_reply:           "מענה לבקשת חזרה טלפונית",
+  spa_menu:                 "תפריט טיפולי ספא",
+  stage_2_payment_reply:    "מענה לתשלום (שלב 2)",
+};
+function scriptKeyFriendly(key) {
+  return SCRIPT_KEY_FRIENDLY[key] ?? `⚠ ${key}`;
+}
+
 // Manager-facing description per Meta template — raw tokens like
 // "dream_arrival_confirmation" mean nothing to a non-technical resort
 // manager. FAIL VISIBLE fallback: an unmapped template shows "⚠ raw_name"
@@ -252,6 +277,9 @@ function StageCard({
                   </>
                 )}
                 <span style={{ fontSize: 11, color: "var(--text-muted)" }}>(שעון ישראל)</span>
+                <span style={{ fontSize: 11, color: "var(--text-muted)", fontStyle: "italic" }}>
+                  (0 = יום ההגעה/הנוכחות, מספר שלילי = ימים לפני ההגעה)
+                </span>
               </div>
             )}
             {stage.schedule_mode === "hours_after_event" && (
@@ -286,7 +314,7 @@ function StageCard({
                 style={{ marginBottom: 8 }}
               >
                 <option value="">— ללא (יפול ישר לתבנית Meta) —</option>
-                {availableScriptKeys.map((k) => <option key={k} value={k}>{k}</option>)}
+                {availableScriptKeys.map((k) => <option key={k} value={k}>{scriptKeyFriendly(k)}</option>)}
               </select>
               {stage.session_message_script_key && (
                 <>
@@ -478,6 +506,9 @@ function CustomAutomationBuilder({ metaTemplatesByName, showToast }) {
               <input type="time" value={localTime} style={{ width: 110 }}
                 onChange={(e) => setLocalTime(e.target.value)} />
               <span style={{ fontSize: 11, color: "var(--text-muted)" }}>(שעון ישראל)</span>
+              <span style={{ fontSize: 11, color: "var(--text-muted)", fontStyle: "italic" }}>
+                (0 = יום ההגעה/הנוכחות, מספר שלילי = ימים לפני ההגעה)
+              </span>
             </div>
           </div>
 

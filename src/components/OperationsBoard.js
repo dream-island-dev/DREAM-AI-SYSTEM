@@ -87,9 +87,13 @@ async function uploadTaskImage(file) {
   return publicUrl;
 }
 
-// ── New Task Form (manager/admin) — now also lets a manual task opt into SLA
-// tracking, so it's not a second-class citizen next to WhatsApp-reported ones.
-function NewTaskForm({ user, managerDept, onCreated }) {
+// ── New Task Form (manager/admin/receptionist) — now also lets a manual task
+// opt into SLA tracking, so it's not a second-class citizen next to
+// WhatsApp-reported ones. Exported (Session 30 Sprint 5.4) so
+// ReceptionistView.js's streamlined "פתח קריאת שירות" tool can reuse the
+// exact same form + DB-write + Whapi-notify path instead of forking a
+// second task-creation implementation (CLAUDE.md §0.4 Universal Architecture).
+export function NewTaskForm({ user, managerDept, onCreated }) {
   const [form, setForm] = useState({
     room_number: "", department: managerDept || "", description: "", priority: "normal", sla_category: "",
   });
@@ -137,6 +141,17 @@ function NewTaskForm({ user, managerDept, onCreated }) {
       onCreated(data);
       setForm({ room_number: "", department: managerDept || "", description: "", priority: "normal", sla_category: "" });
       setImgFile(null); setImgPreview(null);
+
+      // Session 30 Sprint 5.3 — announce the new manual task in the staff
+      // Whapi group, same as a WhatsApp-reported one. Fire-and-forget: the
+      // ticket already exists on the board regardless of whether the group
+      // card succeeds, so a Whapi hiccup must never block the form.
+      supabase.functions.invoke("notify-manual-task", { body: { taskId: data.id } })
+        .then(({ data: notifyData, error: notifyErr }) => {
+          if (notifyErr || notifyData?.ok === false) {
+            console.warn("[OperationsBoard] notify-manual-task failed (non-blocking):", notifyErr?.message ?? notifyData?.error);
+          }
+        });
     } catch (e) { setError(e.message); }
     setSaving(false);
   };

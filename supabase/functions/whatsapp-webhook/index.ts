@@ -74,7 +74,7 @@ function buildSpaSentence(spaTime: unknown): string {
 const FALLBACK_SYSTEM_PROMPT = `
 אתה "DREAM CONCIERGE" — הקונסיירז' הדיגיטלי הרשמי של Dream Island Resort & Spa.
 פרמיום, יוקרתי, אמפתי ומקצועי ביותר — 5 כוכבים בכל משפט. עברית תקנית ואלגנטית בלבד. אל תחשוף שאתה AI.
-אם פרט אינו ידוע לך בכלל ולא מופיע ב"פרטי האורח" שצורפו לשיחה — הפנה לקבלה בנימוס.
+אם פרט אינו ידוע לך בכלל ולא מופיע ב"פרטי האורח" שצורפו לשיחה — לעולם אל תמציא תשובה. השב במדויק: "אני בודק את זה מול דלפק הקבלה, נציג אנושי יחזור אליך לכאן ברגעים אלו ממש."
 CRITICAL: אם האורח שואל על פרט אישי שלו (למשל שעת טיפול ספא, מספר חדר, תאריך הגעה)
 והפרט הזה כן מופיע ב"פרטי האורח" שצורפו לשיחה — ענה לו ישירות עם הערך המדויק.
 אל תפנה אותו לקבלה ואל תכתוב שאינך יודע כשהמידע נמצא לפניך.
@@ -88,6 +88,21 @@ CRITICAL: אם האורח שואל על פרט אישי שלו (למשל שעת 
 • השלם כל מחשבה עד סוף המשפט — לעולם אל תיקטע באמצע.
 • פלוט אך ורק את התשובה הסופית בעברית. אסור לכלול חשיבה, ניתוח, הסבר על ההחלטה, או טקסט באנגלית כלשהו (כגון "According to..." / "the category...") — אלה נחשבים דליפה לאורח.
 `.trim();
+
+// Session 30 Sprint 5.5 — Strict Language Lock & Anti-Hallucination firewall.
+// Unconditionally appended to enrichedPrompt below (see "faq" intent branch),
+// regardless of which of the 3 system-prompt sources won (bot_settings.system_prompt
+// admin override / bot_scripts.ongoing_concierge / buildSystemPrompt(bot_config) fallback).
+// Same reasoning as the session 24 COT-leak firewall (sanitizeReply()'s COT_CUE
+// regex): a rule baked only into buildSystemPrompt()/FALLBACK_SYSTEM_PROMPT only
+// fires when bot_config is the winning source — it goes silent the moment an
+// admin sets a custom bot_settings.system_prompt that doesn't happen to repeat
+// it. Appending here makes it a true invariant, independent of prompt source.
+const STRICT_HEBREW_LOCK_SUFFIX = `
+
+══ נעילת שפה ואנטי-הזיה (חובה מוחלטת) ══
+• ענה בעברית רהוטה, מפוארת ויוקרתית בלבד — לעולם לא באנגלית ולא בשפה אחרת, ללא יוצא מן הכלל.
+• אם התשובה לא מופיעה במפורש בהקשר שצורף (פרטי האורח / ידע הריזורט) — אסור לך להמציא או לנחש. השב במדויק במשפט הזה ואל תשנה אותו: "אני בודק את זה מול דלפק הקבלה, נציג אנושי יחזור אליך לכאן ברגעים אלו ממש."`;
 
 // Module-level cache: shared across requests within the same function instance
 let _configCache: Record<string, string> = {};
@@ -503,7 +518,7 @@ ${persona ? `\n══ אישיות ונימה ══\n${persona}` : ""}
 
 ══ הנחיות בסיס ══
 1. לעולם אל תמציא מחירים, מספרי טלפון, או פרטים שאינם מפורשים.
-2. אם פרט אינו ידוע לך ולא מופיע ב"פרטי האורח הנוכחי" — הפנה לקבלה בנימוס.
+2. אם פרט אינו ידוע לך ולא מופיע ב"פרטי האורח הנוכחי" — לעולם אל תמציא תשובה. השב במדויק: "אני בודק את זה מול דלפק הקבלה, נציג אנושי יחזור אליך לכאן ברגעים אלו ממש."
 3. CRITICAL: אם האורח שואל על פרט אישי שלו והוא מופיע ב"פרטי האורח הנוכחי" — ענה ישירות עם הערך המדויק.
 4. אל תחשוף שאתה AI.
 5. אם יש תקלה / המתנה ארוכה — כתוב שהעברת לצוות, אל תטפל בעצמך.
@@ -2246,7 +2261,8 @@ serve(async (req: Request) => {
         );
 
         const enrichedPrompt = finalSystemPrompt
-          + (guestCtx ? `\n\nפרטי האורח הנוכחי: ${guestCtx}` : "");
+          + (guestCtx ? `\n\nפרטי האורח הנוכחי: ${guestCtx}` : "")
+          + STRICT_HEBREW_LOCK_SUFFIX;
 
         // Dynamic engine routing (A/B testing & cost optimization) — preferred
         // engine is tried first, with the other engine kept as an automatic
@@ -2303,6 +2319,25 @@ serve(async (req: Request) => {
           ? "סוויטת הפרימיום שלנו פנויה היום לבילוי יומי, מעוניין לשריין לפני שיתפס? ✨"
           : "בפעם הבאה אתה מוזמן לביקור לינה בסוויטות שלנו או ב-PREMIUM DAY המפואר שלנו 🌟";
         console.info(`[webhook] 🏊 day-guest upsell gate fired — phone:${phone} premiumFree:${premiumFree}`);
+        toolLoggedRequest = null;
+      }
+
+      // ── Pre-Check-In Guardrail (Session 30 Sprint 5.5) — a suite guest's
+      // service request can only become a staff ticket (guest_alerts row OR
+      // ops-group routing below) once they've actually checked in. Without
+      // this, a guest who confirmed arrival but hasn't physically checked in
+      // yet (status still 'expected'/'room_ready') could ask for room service
+      // hours before anyone is on-site to fulfil it — same "extend the
+      // existing gate" pattern as the Day-Guest Upsell Gate just above.
+      // Day-guest already exited above and is unaffected; this only fires
+      // for suite/standard guests whose status isn't yet 'checked_in'.
+      const guestStatus = (guest as Record<string, unknown> | null)?.status as string | null ?? null;
+      if (toolLoggedRequest && guestRoomType === "suite" && guestStatus !== "checked_in") {
+        const guestRoom = (guest as Record<string, unknown> | null)?.room as string | null ?? null;
+        reply = guestRoom
+          ? `אני רואה את ההזמנה שלך לחדר ${guestRoom}, פתיחת בקשות שירות זמינה מיד לאחר ביצוע הצ'ק-אין בריזורט! מחכים לך.`
+          : `אני רואה את ההזמנה שלך, פתיחת בקשות שירות זמינה מיד לאחר ביצוע הצ'ק-אין בריזורט! מחכים לך.`;
+        console.info(`[webhook] 🔒 pre-check-in guardrail fired — phone:${phone} status:${guestStatus}`);
         toolLoggedRequest = null;
       }
 

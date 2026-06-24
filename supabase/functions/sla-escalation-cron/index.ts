@@ -5,14 +5,20 @@
 // guests Hebrew, staff English):
 //   • guest_alerts (Guest Requests Board) — flat 10-min threshold, unchanged —
 //     notifies Adir (SLA_GUEST_ALERT_PHONE) via Meta (whatsapp-send inbox_reply).
-//   • tasks (Operations & Maintenance Board) — STRICT "unassigned" SLA: any task
-//     still status='open' (nobody tapped Accept → in_progress) past
-//     SLA_UNASSIGNED_MINUTES (default 7) → 🚨 alert posted straight into the Whapi
-//     ops group (SLA_ALERT_GROUP_ID, falls back to WHAPI_GROUP_ID). A claimed
-//     task (in_progress) stops escalating. NOTE: this is intentionally driven off
-//     created_at + 7 min, NOT tasks.sla_deadline (which is the per-category
-//     10/15/30-min completion window set by whapi-webhook/NewTaskForm) — "strict
-//     7-minute unassigned" is a different, stricter rule than category completion.
+//   • tasks (Operations & Maintenance Board) — "unassigned" SLA: any task still
+//     status='open' (nobody tapped Accept → in_progress) past its threshold →
+//     🚨 alert posted straight into the Whapi ops group (SLA_ALERT_GROUP_ID,
+//     falls back to WHAPI_GROUP_ID). A claimed task (in_progress) stops
+//     escalating. Session 30 Sprint 5.3b — DYNAMIC routing: the unassigned
+//     threshold is now read from the task's own sla_category (SLA_THRESHOLDS
+//     below — same 10/15/30-min values whapi-webhook/NewTaskForm already use
+//     for the completion deadline) when one was set at creation; a task with
+//     no category (e.g. a manual task where the admin left "ללא מעקב SLA")
+//     falls back to the flat SLA_UNASSIGNED_MINUTES default (7). Previously
+//     this was a SINGLE flat 7-min window for every task regardless of
+//     category — a pest-control report and a towel request escalated on the
+//     same clock, which under-served the categories configured for a tighter
+//     window (10 min) and over-alerted on slower ones (30 min).
 // Both also broadcast a push-notify alert to the "הנהלה" department so the
 // dashboard surfaces it, not just WhatsApp.
 //
@@ -36,6 +42,22 @@ const CORS = {
 const GUEST_ALERT_SLA_MINUTES = 10;
 const OPS_UNASSIGNED_SLA_MINUTES = Number(Deno.env.get("SLA_UNASSIGNED_MINUTES") ?? 7);
 const PUSH_DEPARTMENT = "הנהלה";
+
+// Same canonical category→minutes map as whapi-webhook/staff-ops-webhook's
+// SLA_THRESHOLDS — duplicated, not imported (this repo's established
+// "small constants duplicated across the front/back boundary" convention,
+// CLAUDE.md §3 OperationsBoard.js's SLA_CATEGORY_OPTIONS header comment).
+// Session 30 Sprint 5.3b: a task with one of these categories escalates on
+// ITS OWN window, not the flat OPS_UNASSIGNED_SLA_MINUTES fallback below.
+const SLA_CATEGORY_MINUTES: Record<string, number> = {
+  pest_control:    10,
+  guest_amenities: 15,
+  maintenance:      30,
+};
+function unassignedThresholdMinutes(slaCategory: string | null): number {
+  if (slaCategory && slaCategory in SLA_CATEGORY_MINUTES) return SLA_CATEGORY_MINUTES[slaCategory];
+  return OPS_UNASSIGNED_SLA_MINUTES;
+}
 
 async function notifyWhatsapp(supabaseUrl: string, anon: string, phone: string, message: string): Promise<boolean> {
   try {
@@ -137,14 +159,22 @@ serve(async (req: Request) => {
     //        unchanged group alert into the Whapi ops group
     //        (SLA_ALERT_GROUP_ID → WHAPI_GROUP_ID).
     // ════════════════════════════════════════════════════════════════════════
-    const opsThresholdIso = new Date(Date.now() - OPS_UNASSIGNED_SLA_MINUTES * 60 * 1000).toISOString();
-    const { data: overdueTasks, error: tasksErr } = await supabase
+    // Per-task threshold varies by sla_category now (see unassignedThresholdMinutes
+    // above), so the cutoff can no longer be expressed as a single SQL .lt() —
+    // fetch every still-open, not-yet-escalated task and filter in JS instead.
+    // Open+unassigned tasks are a small set at any given moment, so this is cheap.
+    const { data: candidateTasks, error: tasksErr } = await supabase
       .from("tasks")
-      .select("id, room_number, description, created_at, source, action_token")
+      .select("id, room_number, description, created_at, source, action_token, sla_category")
       .eq("status", "open")                 // unassigned only — a claimed (in_progress) task stops escalating
-      .is("escalated_at", null)
-      .lt("created_at", opsThresholdIso);
+      .is("escalated_at", null);
     if (tasksErr) throw new Error(`tasks_lookup_error: ${tasksErr.message}`);
+
+    const nowMs = Date.now();
+    const overdueTasks = (candidateTasks ?? []).filter((t) => {
+      const thresholdMin = unassignedThresholdMinutes(t.sla_category as string | null);
+      return nowMs - new Date(t.created_at as string).getTime() > thresholdMin * 60 * 1000;
+    });
 
     const alertGroupId  = (Deno.env.get("SLA_ALERT_GROUP_ID") ?? Deno.env.get("WHAPI_GROUP_ID") ?? "").trim();
     // SLA_OPS_ALERT_PHONE — provisioned back in session 21 alongside
@@ -211,7 +241,10 @@ serve(async (req: Request) => {
       opsResults.push({ taskId: task.id as string, notified });
     }
     if ((overdueTasks ?? []).length > 0) {
-      await pushAlert(supabaseUrl, anon, "🚨 SLA Breach — Unassigned Task", `${(overdueTasks ?? []).length} task(s) unassigned past ${OPS_UNASSIGNED_SLA_MINUTES} min.`);
+      // Per-task threshold now varies by category (Sprint 5.3b) — the summary
+      // can't quote one number for the whole batch, so it names the categories
+      // involved instead of a single flat minute count.
+      await pushAlert(supabaseUrl, anon, "🚨 SLA Breach — Unassigned Task", `${(overdueTasks ?? []).length} task(s) unassigned past their SLA window.`);
     }
 
     return new Response(
