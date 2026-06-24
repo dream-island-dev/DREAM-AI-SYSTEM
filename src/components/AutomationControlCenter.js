@@ -47,7 +47,7 @@ const META_TEMPLATE_FRIENDLY = {
   dream_arrival_confirmation: "פנייה ראשונה — בקשת אישור הגעה (יומיים לפני ההגעה)",
   dream_checkin_reminder_v2:  "תזכורת ערב לפני ההגעה",
   dream_welcome_morning:      "ברכת בוקר ביום ההגעה",
-  dream_handover_agent_v2:    "העברה לסוכן האישי (שעה אחרי צ׳ק-אין)",
+  dream_room_ready:           "מסירת מפתח — החדר מוכן (אישור מנהל)",
   dream_mid_stay_check:       "בדיקת שלום באמצע השהות",
   dream_checkout_feedback:    "בקשת משוב לאחר העזיבה",
   dream_payment_and_workshops: "תשלום יתרה + הרשמה לסדנאות",

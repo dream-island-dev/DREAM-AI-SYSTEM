@@ -2,14 +2,32 @@
 // Floating realtime widget: detects suites in "ממתין לאישור" status,
 // lets the manager approve → sends personalised WhatsApp + marks suite ready.
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
+
+const FAB = 56;                  // bell diameter (px) — used for drag clamping
+const POS_KEY = "aiCopilotPos";  // localStorage key for the dragged position ({ left, bottom })
 
 export default function AICopilot({ user }) {
   const [alerts,     setAlerts]     = useState([]);
   const [isOpen,     setIsOpen]     = useState(false);
   const [processing, setProcessing] = useState(null);
   const [toast,      setToast]      = useState(null);
+  const [newAlertId, setNewAlertId] = useState(null); // flashes the bell + that card briefly
+
+  // ── Draggable position (Sprint 5.3) — same pointer-events pattern as
+  // RequestsAlertWidget.js, mirrored for a left-anchored widget. Persists to
+  // localStorage so managers can move the bell clear of any touch target.
+  const [pos, setPos] = useState(null);
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(POS_KEY) || "null");
+      if (saved && typeof saved.left === "number" && typeof saved.bottom === "number") {
+        setPos(saved);
+      }
+    } catch { /* ignore malformed storage */ }
+  }, []);
+  const drag = useRef({ dragging: false, moved: false, startX: 0, startY: 0 });
 
   function showToast(msg, type = "ok") {
     setToast({ msg, type });
@@ -64,6 +82,8 @@ export default function AICopilot({ user }) {
               return [...prev, enriched];
             });
             setIsOpen(true); // auto-open on new alert
+            setNewAlertId(enriched._alertId);
+            setTimeout(() => setNewAlertId(id => (id === enriched._alertId ? null : id)), 4000);
           } else {
             // Status moved away — remove alert
             setAlerts(prev => prev.filter(a => a.room_id !== row.room_id));
@@ -75,29 +95,34 @@ export default function AICopilot({ user }) {
     return () => supabase.removeChannel(ch);
   }, [loadPending, enrichRoom]);
 
-  // Approve: send WA, mark suite ready, mark guest checked_in
+  // Approve: send the dedicated dream_room_ready WA template, mark suite
+  // ready, mark guest checked_in.
+  //
+  // Sprint 5.1/5.3 — previously composed free text and sent it via the
+  // inbox_reply trigger, which only works inside the guest's open 24h
+  // session window. Approving a room can legitimately happen hours after
+  // the guest's last message, so that path could fail right when it
+  // mattered most. Routing through trigger:"room_ready" instead uses the
+  // dedicated dream_room_ready Meta template (works outside the 24h window)
+  // and goes through whatsapp-send's idempotent BRANCH D — no risk of
+  // double-sending, and isolated from the scheduled morning_* templates.
   async function handleApprove(alert) {
     if (!supabase) return;
     setProcessing(alert._alertId);
     try {
       const { guest } = alert;
-      const spaLine = guest?.treatment_time
-        ? `${guest.treatment_type ?? "טיפול ספא"} בשעה ${guest.treatment_time}.\n`
-        : "";
-      const message =
-        `🏨 סוויטת ${alert.room_id} מוכנה ומחכה לכם!\n\n` +
-        spaLine +
-        `ברוכים הבאים לחוויה שלא תשכחו! 🌴\n` +
-        `הצוות שלנו כאן לכל בקשה.`;
 
       // Never fail silently: a swallowed WhatsApp error must not let the room/guest
       // state advance as if the guest was actually notified.
-      if (guest?.phone) {
-        const { error: waError } = await supabase.functions.invoke("whatsapp-send", {
-          body: { trigger: "inbox_reply", phone: guest.phone, message },
+      if (guest?.id) {
+        const { data, error: waError } = await supabase.functions.invoke("whatsapp-send", {
+          body: { trigger: "room_ready", guestId: guest.id },
         });
         if (waError) {
           throw new Error(`שליחת WhatsApp נכשלה (${waError.message}) — הסטטוס לא עודכן, אפשר לנסות שוב`);
+        }
+        if (data?.ok === false) {
+          throw new Error(`שליחת WhatsApp נכשלה (${data.error ?? "שגיאה לא ידועה"}) — הסטטוס לא עודכן, אפשר לנסות שוב`);
         }
       }
 
@@ -129,18 +154,62 @@ export default function AICopilot({ user }) {
     setAlerts(prev => prev.filter(a => a._alertId !== alertId));
   }
 
+  // ── Drag handlers (pointer events — touch + mouse, no library) — same
+  // tap-vs-drag disambiguation (6px threshold) as RequestsAlertWidget.js.
+  const onPointerDown = (e) => {
+    drag.current = { dragging: true, moved: false, startX: e.clientX, startY: e.clientY };
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  };
+  const onPointerMove = (e) => {
+    const d = drag.current;
+    if (!d.dragging) return;
+    if (!d.moved && (Math.abs(e.clientX - d.startX) > 6 || Math.abs(e.clientY - d.startY) > 6)) {
+      d.moved = true;
+    }
+    if (!d.moved) return;
+    const left   = Math.max(8, Math.min(window.innerWidth - FAB - 8, e.clientX - FAB / 2));
+    const bottom = Math.max(8, Math.min(window.innerHeight - FAB - 8, window.innerHeight - e.clientY - FAB / 2));
+    setPos({ left, bottom });
+  };
+  const onPointerUp = () => {
+    const d = drag.current;
+    d.dragging = false;
+    if (d.moved) {
+      setPos((cur) => {
+        if (cur) { try { localStorage.setItem(POS_KEY, JSON.stringify(cur)); } catch { /* ignore */ } }
+        return cur;
+      });
+    }
+  };
+  const handleBellClick = () => {
+    if (drag.current.moved) { drag.current.moved = false; return; }
+    setIsOpen(o => !o);
+  };
+
   if (!isSupabaseConfigured) return null;
 
   const hasPending = alerts.length > 0;
+  const hasNewAlert = newAlertId != null;
+
+  // Default anchor: bottom:24/left:24 (unchanged). A dragged position overrides it.
+  const anchor = pos
+    ? { left: `${pos.left}px`, bottom: `${pos.bottom}px` }
+    : { left: "24px", bottom: "24px" };
 
   return (
     <div style={{
       position: "fixed",
-      bottom: "24px",
-      left:   "24px",
+      ...anchor,
       zIndex: 1100,
       direction: "rtl",
+      touchAction: "none",
     }}>
+      <style>{`
+        @keyframes ai-copilot-flash {
+          0%, 100% { box-shadow: 0 0 0 0 rgba(226,75,74,0); }
+          50%       { box-shadow: 0 0 0 8px rgba(226,75,74,0.35); }
+        }
+      `}</style>
       {/* Toast */}
       {toast && (
         <div style={{
@@ -196,26 +265,19 @@ export default function AICopilot({ user }) {
             <div key={alert._alertId} style={{
               borderBottom: "1px solid var(--border, #E0D5C5)",
               padding:      "14px 16px",
+              borderRadius: alert._alertId === newAlertId ? "8px" : 0,
+              animation:    alert._alertId === newAlertId ? "ai-copilot-flash 0.9s ease-in-out 3" : "none",
             }}>
-              <div style={{ fontWeight: 700, fontSize: "16px", color: "var(--black, #1A1A1A)", marginBottom: "4px" }}>
-                🏨 {alert.room_id}
+              <div style={{ fontWeight: 700, fontSize: "15px", color: "var(--black, #1A1A1A)", marginBottom: "8px", lineHeight: 1.5 }}>
+                🏨 סוויטה {alert.room_id} מוכנה עבור {alert.guest?.name ?? "אורח לא ידוע"} — לחץ לאישור שליחת הודעה
               </div>
 
-              {alert.guest ? (
-                <>
-                  <div style={{ fontSize: "14px", color: "#555", marginBottom: "2px" }}>
-                    {alert.guest.name ?? "—"}
-                  </div>
-                  {alert.guest.treatment_time && (
-                    <div style={{ fontSize: "13px", color: "#A8843A", marginBottom: "10px" }}>
-                      🧖 {alert.guest.treatment_type ?? "ספא"} · {alert.guest.treatment_time}
-                    </div>
-                  )}
-                  {!alert.guest.treatment_time && (
-                    <div style={{ height: "10px" }} />
-                  )}
-                </>
-              ) : (
+              {alert.guest?.treatment_time && (
+                <div style={{ fontSize: "13px", color: "#A8843A", marginBottom: "10px" }}>
+                  🧖 {alert.guest.treatment_type ?? "ספא"} · {alert.guest.treatment_time}
+                </div>
+              )}
+              {!alert.guest && (
                 <div style={{ fontSize: "13px", color: "#888", marginBottom: "10px" }}>
                   לא נמצא אורח משויך לסוויטה זו
                 </div>
@@ -261,12 +323,16 @@ export default function AICopilot({ user }) {
         </div>
       )}
 
-      {/* Floating bell button */}
+      {/* Floating bell button — drag to move, tap to toggle the panel */}
       <button
-        onClick={() => setIsOpen(o => !o)}
+        onClick={handleBellClick}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        title="אישורי חדרים (אפשר לגרור)"
         style={{
-          width:        "56px",
-          height:       "56px",
+          width:        `${FAB}px`,
+          height:       `${FAB}px`,
           borderRadius: "50%",
           background:   hasPending ? "var(--gold, #C9A96E)" : "#E0D5C5",
           border:       "none",
@@ -280,6 +346,8 @@ export default function AICopilot({ user }) {
           justifyContent: "center",
           position:       "relative",
           transition:     "all 0.2s ease",
+          touchAction:    "none",
+          animation:      hasNewAlert ? "ai-copilot-flash 0.9s ease-in-out infinite" : "none",
         }}
       >
         🔔

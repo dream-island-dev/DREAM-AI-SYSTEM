@@ -130,6 +130,21 @@ const TEMPLATES: Template[] = [
       example: { body_text: [["ישראל ישראלי", "בישול ים-תיכוני", "מסעדת ארמונים", "11:00"]] } }],
   },
   {
+    // Session 29 — dedicated Room-Ready template (Sprint 5.1.3). Previously
+    // the manual "room ready" approval reused dream_welcome_morning, which
+    // is also the scheduled morning-of-arrival template — a guest could get
+    // the literal same wording twice from two unrelated triggers. This gives
+    // the manual key-handover moment its own isolated copy.
+    name: "dream_room_ready", category: "UTILITY", language: "he",
+    components: [{ type: "BODY",
+      text: "🔑 {{1}}, יש לנו בשורה — הסוויטה {{2}} שלך מוכנה ומחכה לך! אפשר לגשת לדלפק הקבלה לקבלת המפתח ולהתחיל את החוויה. מצפים לראותכם 🌴",
+      example: { body_text: [["ישראל ישראלי", "רובי 3"]] } }],
+  },
+  {
+    // ⚠️ No longer dispatched by any automated stage (Stage 3.5 purged session
+    // 29) — retained here only as the historical Meta registration record.
+    // Removing this entry would not "unregister" the template from Meta; it
+    // can still be sent manually (e.g. WhatsAppInbox broadcast picker).
     name: "dream_handover_agent_v2", category: "UTILITY", language: "he",
     components: [{ type: "BODY",
       text: "תודה על פנייתך, {{1}}. העברנו את בקשתך לאחד מהצוות שיחזור אליך בהקדם. דרים איילנד — תמיד לשירותך",

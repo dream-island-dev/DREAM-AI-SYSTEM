@@ -110,8 +110,6 @@ export function checkEligibility(
     if (guest.status !== "checked_in") return "not_checked_in";
     if (!guest.departure_date || guest.departure_date < ymd(now)) return "guest_already_departed";
   }
-  if (stage.stage_key === "butler_1h" && guest.status !== "checked_in") return "not_checked_in";
-
   return null;
 }
 

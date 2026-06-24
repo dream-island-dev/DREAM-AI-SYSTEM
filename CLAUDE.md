@@ -1,6 +1,6 @@
 # CLAUDE.md — Dream Island AI System
 > קובץ זה נקרא אוטומטית בכל שיחה. הוא מקור-האמת שלך. קרא אותו לפני כל פעולה.
-> **עדכון אחרון:** 2026-06-24 (session 28 — Housekeeping Tablet View: דדיקייטד קיוסק 3-כפתורים fat-finger (`HousekeepingTabletView.js`) לתפקיד cleaner, מחליף את RoomBoard במסך המלא של ה-cleaner; חולק את טבלת room_status הקיימת ושומר על שער-האישור של AICopilot להודעת "חדר מוכן" לאורח. פירוט בתחתית §10 ובהיסטוריה המלאה ב-`claude_history.md`).
+> **עדכון אחרון:** 2026-06-24 (session 29 — Sprint Timeline Realignment: Stage 3.5 (`butler_1h`) נמחק כליל מהציר האוטומטי; "חדר מוכן" קיבל תבנית Meta ייעודית `dream_room_ready` (נשלחה ל-Meta, סטטוס PENDING) במקום ל"שאול" את `dream_welcome_morning`; ג'קוזי קיבל מיני-pipeline משלו (`jacuzzi_status`/`room_clean_status`) בטאבלט הניקיון עם Smart Ready-Alert Gate ושכבת בילינגואל מלאה; פעמון ה-AICopilot הפך גריר (draggable, נשמר ב-localStorage). פירוט בתחתית §10 ובהיסטוריה המלאה ב-`claude_history.md`).
 >
 > 📚 **היסטוריית הסשנים המלאה (sessions 2–24) הועברה ל-[`claude_history.md`](claude_history.md)** כדי לשמור את הקובץ הזה קליל. שום מידע לא נמחק — רק הופרד. הקובץ הזה מחזיק את **רפרנס הארכיטקטורה החי** (§0–§13); הקובץ ההוא מחזיק את הנרטיב ההיסטורי. כשצריך הקשר מפורט על באג/החלטה ישנה — קרא שם.
 >
@@ -203,27 +203,45 @@ DREAM-AI-SYSTEM/
 │       │                            מלא חדש, HousekeepingTabletView.js (למטה). הקומפוננטה הזו עדיין
 │       │                            קיימת ומלאה, נגישה ל-managers/admins דרך "room_board" nav item,
 │       │                            ל-תחזוקה/תפוס/ניהול 6-סטטוסים מלא ש-HousekeepingTabletView לא חושף.
-│       ├── HousekeepingTabletView.js ★ NEW (session 28) — "לוח ניקיון (טאבלט)" (housekeeping_tablet
-│       │                            route, + מסך מלא לתפקיד cleaner, ללא Sidebar). 3 כפתורי
-│       │                            fat-finger ענקיים מוערמים על כל כרטיס חדר — 🔴 מלוכלך / 🟡 בניקוי /
-│       │                            🟢 נקי — אופטימיסטי, ללא spinner חוסם, revert+toast רק על כשל DB
-│       │                            אמיתי. **חולק את room_status table** עם RoomBoard.js + AICopilot.js
-│       │                            (§0.5 Single Source of Truth — לא טבלה/וקבולרי סטטוס מקביל).
-│       │                            מיפוי כפתור→DB: 🔴→"לניקיון", 🟡→"בניקיון" (חותם cleaning_started_at),
-│       │                            🟢→**"ממתין לאישור"** (לא "פנוי" ישירות!) — כי AICopilot.js הוא זה
-│       │                            שמחזיק את שער האישור "ממתין לאישור"→"פנוי" (מנהל מאשר → WhatsApp
-│       │                            "החדר מוכן" לאורח → רק אז הסטטוס הופך פנוי + guest.status=checked_in).
-│       │                            כתיבת "פנוי" ישירות מהטאבלט הייתה עוקפת בשקט את הודעת האורח. מהצד
-│       │                            של חדר-הצוות "נקי" הוא "נקי" משתי הבחינות — כרטיס מציג רמז "🔔
-│       │                            ממתין לאישור מנהל" לשקיפות. חדרים בסטטוס שמחוץ למודל 3-הכפתורים
-│       │                            (תפוס/תחזוקה) עדיין מוצגים עם badge נייטרלי משלהם (FAIL VISIBLE,
-│       │                            §0.3) — לא מוסתרים. סטטיסטיקות בר עליון (סה"כ/מלוכלך/בניקוי/נקי) +
-│       │                            3 quick-filters. ללא timer/אישור-מודאל/בדגי אורח מפורטים כמו
+│       ├── HousekeepingTabletView.js ★ (session 28, מורחב session 29) — "לוח ניקיון (טאבלט)"
+│       │                            (housekeeping_tablet route, + מסך מלא לתפקיד cleaner, ללא
+│       │                            Sidebar). 3 כפתורי fat-finger ענקיים מוערמים על כל כרטיס חדר —
+│       │                            🔴 מלוכלך/Dirty · 🟡 בניקוי/Cleaning · 🟢 נקי/Clean — אופטימיסטי,
+│       │                            ללא spinner חוסם, revert+toast רק על כשל DB אמיתי. **חולק את
+│       │                            room_status table** עם RoomBoard.js + AICopilot.js (§0.5 Single
+│       │                            Source of Truth). מיפוי כפתור→DB: 🔴→"לניקיון", 🟡→"בניקיון"
+│       │                            (חותם cleaning_started_at), 🟢→**room_clean_status="clean"**
+│       │                            (לא status="ממתין לאישור" ישירות!).
+│       │                            ★ session 29 — Smart Ready-Alert Gate + ג'קוזי: שתי עמודות חדשות
+│       │                            על room_status (migration 079) — `jacuzzi_status` (מיני-pipeline
+│       │                            עצמאי לג'קוזי הפרטי של הסוויטה) ו-`room_clean_status` (תופס את
+│       │                            תפיסת "🟢 נקי" בנפרד מ-`status` הראשי). כפתור רחב נוסף לג'קוזי —
+│       │                            🛁 ג'קוזי מלוכלך/Jacuzzi Dirty (אדום) ↔ ✨ ג'קוזי נקי ✅/Jacuzzi
+│       │                            Clean ✅ (טורקיז). `status` עובר ל-"ממתין לאישור" (= שער האישור
+│       │                            של AICopilot.js, ראה מטה) **רק כש-`room_clean_status`
+│       │                            וגם `jacuzzi_status` שניהם "clean"** — תיוג חדר/ג'קוזי אחד בלבד
+│       │                            משאיר את `status` כפי שהיה ומציג רמז "✓ מחכה ל-..." שקוף (FAIL
+│       │                            VISIBLE, §0.3) במקום להיראות כאילו הלחיצה לא עשתה כלום. 🔴 מאפס
+│       │                            את שניהם ל-"dirty" (מחזור ניקיון טרי). בילינגואל HE/EN בכל
+│       │                            הממשק (כותרת/סטטיסטיקות/פילטרים/badges/הינטים) — דרישת "צוות זר".
+│       │                            חדרים בסטטוס שמחוץ למודל (תפוס/תחזוקה) עדיין מוצגים עם badge
+│       │                            נייטרלי משלהם. ללא timer/אישור-מודאל/בדגי אורח מפורטים כמו
 │       │                            RoomBoard — קיוסק ממוקד-מהירות בכוונה, נפרד.
-│       ├── AICopilot.js          ★ widget צף (פעמון 🔔, bottom-left) לכל manager/admin מחובר.
-│       │                            עוקב realtime אחרי room_status='ממתין לאישור' → מציג guest+spa_time
-│       │                            → "✓ אשר ושלח הודעה" שולח WhatsApp + מסמן room_status='פנוי'
-│       │                            + guests.status='checked_in'. session 7: נבדק שגיאת WA לא נבלעת.
+│       ├── AICopilot.js          ★ widget צף (פעמון 🔔) לכל manager/admin מחובר. עוקב realtime אחרי
+│       │                            room_status='ממתין לאישור' → מציג guest+spa_time → "✓ אשר ושלח
+│       │                            הודעה" שולח WhatsApp + מסמן room_status='פנוי' + guests.status=
+│       │                            'checked_in'. session 7: נבדק שגיאת WA לא נבלעת.
+│       │                            ★ session 29: (1) `handleApprove` עבר מ-trigger:"inbox_reply"
+│       │                            (טקסט חופשי, עבד רק בתוך חלון 24ש' פתוח) ל-trigger:"room_ready"
+│       │                            — דרך BRANCH D האידמפוטנטי של whatsapp-send, עם תבנית Meta
+│       │                            ייעודית `dream_room_ready` (עובדת גם מחוץ לחלון). גם `data?.ok
+│       │                            === false` (לא רק שגיאת invoke טרנספורט) נבדק כעת — FAIL VISIBLE
+│       │                            אמיתי, היה חסר לפני. (2) הפעמון הפך **גריר** (pointer events,
+│       │                            סף 6px tap-vs-drag, אותו pattern כמו RequestsAlertWidget.js) —
+│       │                            מיקום נשמר ב-localStorage (`aiCopilotPos`). (3) כרטיס ההתראה
+│       │                            מציג כעת במפורש "סוויטה X מוכנה עבור [שם אורח] — לחץ לאישור
+│       │                            שליחת הודעה" + אנימציית "flash" קצרה (פעמון + כרטיס) כשמתקבלת
+│       │                            התראה חדשה.
 │       ├── SpaStagingPanel.js    "לוח ספא — אישור" (spa_staging route) — triage נפרד ל-spa_staging
 │       │                            table: matched/suspicious/no_booking + quick-add. מוזן ע"י
 │       │                            email-import-webhook + spa-schedule-webhook (אוטומציה חיצונית —
@@ -480,7 +498,7 @@ switch (activePage) {
 | `ai_failover_events` | ★ session 21 — לוג כל auto-failover Claude↔Gemini בwebhook, נצרך ע"י AiFailoverWidget.js (realtime) | authenticated read, service-role write |
 | `custom_automations` / `custom_automation_steps` | ★ NEW (session 27, migration 078) — שכבת טיוטה ל-Linear Automation Flow Builder (AutomationControlCenter.js's "✨ אוטומציה חדשה" tab): שם + תזמון הפעלה (`trigger_anchor_event`/`trigger_day_offset`/`trigger_local_time`) + שלבים מסודרים (`step_type` = `meta_template`/`free_text`). **לא** נקרא ע"י whatsapp-cron/whatsapp-send — שכבת תכנון בלבד, חיווט ל-runtime הוא צעד עתידי. נפרד בכוונה מ-`automation_stages` (migration 065, הצינור הקיים שכבר מחובר ל-runtime) | authenticated |
 | `suite_rooms` | חדר לכל שורה מ-EZGO Suites CSV. key: `(order_number, res_line_id)`. מקור: `ArrivalImportPanel.js` (sole import surface) | authenticated |
-| `room_status` | ★ גילוי session 7 — pipeline ניקיון נפרד (תפוס/פנוי/לניקיון/בניקיון/ממתין לאישור/תחזוקה). key: `room_id` = שם סוויטה מ-`SUITE_REGISTRY`. נצרך ע"י RoomBoard.js + AICopilot.js + ★ session 28: HousekeepingTabletView.js (כותב רק 3 מתוך 6 הערכים — לניקיון/בניקיון/ממתין לאישור — דרך 3 הכפתורים שלו) | authenticated |
+| `room_status` | ★ גילוי session 7 — pipeline ניקיון נפרד (תפוס/פנוי/לניקיון/בניקיון/ממתין לאישור/תחזוקה). key: `room_id` = שם סוויטה מ-`SUITE_REGISTRY`. נצרך ע"י RoomBoard.js + AICopilot.js + ★ session 28: HousekeepingTabletView.js (כותב 3 מתוך 6 הערכים — לניקיון/בניקיון/ממתין לאישור — דרך 3 הכפתורים שלו). ★ session 29 (migration 079): + `jacuzzi_status`/`room_clean_status` (TEXT, dirty/clean) — Smart Ready-Alert Gate, ראה HousekeepingTabletView.js למעלה | authenticated |
 | `notification_log` | dedup שליחות WA | service role |
 | `schedule_patterns` | דפוסי Excel שנלמדו | |
 | `push_subscriptions` | Web Push endpoints | `user_id = auth.uid()` |
@@ -536,9 +554,12 @@ msg_pre_arrival_2d_sent   BOOL — pre_arrival_2d (T-2)
 msg_pre_arrival_sent      BOOL — night_before (T-1)
 msg_morning_suite_sent    BOOL — morning_suite (ביום ההגעה לסוויטות)
 msg_morning_welcome_sent  BOOL — morning_welcome (ביום ההגעה לרגילים)
-msg_post_checkin_sent     BOOL — butler_1h (שעה אחרי צ'ק-אין)
 msg_mid_stay_sent         BOOL — mid_stay (יום שני)
 msg_checkout_fb_sent      BOOL — checkout_fb (יום אחרי עזיבה)
+-- ⚠️ session 29: msg_post_checkin_sent (butler_1h, "Stage 3.5") הוסר מהרשימה כאן —
+--    העמודה עדיין קיימת ב-DB (לא נמחקה, migration 045) אך אף קוד חי לא כותב לה
+--    יותר. Stage 3.5 נמחק כליל מ-automation_stages + whatsapp-send/-cron, ראה §10
+--    session 29. אל תניחו "כבר נשלח" אם תראו את העמודה הזו — היא קפואה לתמיד false.
 ```
 
 ---
@@ -843,8 +864,8 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
 
 | תחום | סטטוס | הערה |
 |---|---|---|
-| WhatsApp Automation — שכבת שליחה | חלקי | `AUTOMATION_ENABLED=true` הוגדר ב-Secrets → משפיע **רק** על `whatsapp-send` (שליחות יזומות: room_ready, payment_and_workshops; inbox_reply תמיד פטור). ⚠️ **לא** משפיע על ה-cron התקופתי — `whatsapp-cron` חסום בנפרד ע"י kill switch עצמאי (`CRON_ENABLED`, עדיין לא מוגדר). night_before/morning_welcome/morning_suite/butler_1h **לא ישלחו** עד שגם הוא יופעל. |
-| תבניות Meta מאושרות | לאמת | שמות נוכחיים בקוד (`whatsapp-send/index.ts:57-61`): `dream_arrival_confirmation` (T-2), `dream_checkin_reminder_v2` (T-1/night_before), `dream_welcome_morning` (יום הגעה — suite+standard). יש לאמת מול Meta Business Manager לפני הפעלת ה-cron. ⚠️ **שינוי טקסט עונתי** (session 11): כל שינוי בגוף הודעה של תבנית מאושרת (למשל "השמש בחוץ" → ניסוח חורפי ל-`dream_welcome_morning`) **דורש אישור Meta מחדש** — התבנית פעילה *מחוץ* לחלון 24 השעות, אז אי אפשר לסמוך על free-text. אל תניחו שהשינוי חי עד שהסטטוס ב-"📋 ניהול תבניות" חוזר ל-APPROVED. ראה הערה זהה ב-`whatsapp-send/index.ts` מעל `PIPELINE_TEMPLATE`. |
+| WhatsApp Automation — שכבת שליחה | חלקי | `AUTOMATION_ENABLED=true` הוגדר ב-Secrets → משפיע **רק** על `whatsapp-send` (שליחות יזומות: room_ready, payment_and_workshops; inbox_reply תמיד פטור). ⚠️ **לא** משפיע על ה-cron התקופתי — `whatsapp-cron` חסום בנפרד ע"י kill switch עצמאי (`CRON_ENABLED`, עדיין לא מוגדר). night_before/morning_welcome/morning_suite **לא ישלחו** עד שגם הוא יופעל. (butler_1h הוסר מהציר session 29 — אינו רלוונטי יותר לרשימה הזו.) |
+| תבניות Meta מאושרות | לאמת | שמות נוכחיים בקוד (`whatsapp-send/index.ts`): `dream_arrival_confirmation` (T-2), `dream_checkin_reminder_v2` (T-1/night_before), `dream_welcome_morning` (יום הגעה — suite+standard), **`dream_room_ready`** (★ session 29, חדש — מסירת מפתח ידנית מ-AICopilot. נשלח ל-Meta לאישור בסשן 29, סטטוס **PENDING** — ראה §10 session 29; **אל תניחו שהוא חי** עד שהסטטוס ב-"📋 ניהול תבניות" חוזר ל-APPROVED, אחרת לחיצת "אשר ושלח הודעה" תיכשל בצורה גלויה — toast שגיאה, room_status לא יתקדם, ראה AICopilot.js's FAIL VISIBLE check). יש לאמת מול Meta Business Manager לפני הפעלת ה-cron. ⚠️ **שינוי טקסט עונתי** (session 11): כל שינוי בגוף הודעה של תבנית מאושרת (למשל "השמש בחוץ" → ניסוח חורפי ל-`dream_welcome_morning`) **דורש אישור Meta מחדש** — התבנית פעילה *מחוץ* לחלון 24 השעות, אז אי אפשר לסמוך על free-text. ראה הערה זהה ב-`whatsapp-send/index.ts` מעל `PIPELINE_TEMPLATE`. ⚠️ **גילוי session 29:** הרצת `register-templates` חשפה ש-9 מתוך 16 התבניות הישנות (השיווקיות, לא ה-UTILITY הפעילות בpipeline) נכשלות כרגע ב-Meta עם השגיאה "New Hebrew content can't be added while the existing Hebrew content is being deleted. Try again in 17 days" — תהליך מחיקת-תוכן עברי כלשהו פתוח בחשבון ה-WhatsApp Business, לא נגרם ע"י סשן זה ולא ניתן לתיקון מקוד. אינו משפיע על pipeline הליבה (UTILITY templates כולם ALREADY_EXISTS/תקינים). |
 | SpaStagingPanel automation | ★ גילוי session 7 | מוזן ע"י `email-import-webhook` + `spa-schedule-webhook` — לא ברור באיזו פלטפורמת אוטומציה חיצונית (סביר Make.com) השרשור עצמו רץ. לא נחקר השרשור החיצוני, רק נקודות הקצה ב-Supabase. |
 | `log_guest_request` tool-calling (session 17) | פרוס, לא נבדק חי | מומש ל-Gemini+Claude, `guest_alerts` הפך לselective (ראה session 17 למטה). Deploy+build עברו נקי, אבל **לא נשלחה הודעת WhatsApp אמיתית** לאימות שהמודל בפועל קורא לכלי ושה-Requests Board מציג שורה נכונה. שלח/י הודעת בדיקה עם בקשה ספציפית (יין/פרחים) לפני שסומכים על זה בפרודקשן. |
 
@@ -953,6 +974,16 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
 - ⚠️ **טרייד-אוף מתועד:** תפקיד cleaner לא יכול יותר לסמן חדר "תחזוקה" או לבצע "צ'ק-אין" ישירות מהמסך המלא שלו (RoomBoard's `פנוי→תחזוקה`/`פנוי→תפוס` actions) — הספרינט המפורש ביקש **בדיוק 3** כפתורים, לא 4. אם צוות ניקיון נתקל בצורך תחזוקה, יש לדווח למנהל (RoomBoard עדיין זמין למי שיש לו גישה ל-Sidebar).
 - ✅ **אומת:** `npm run build` נקי (רק אזהרת `ShiftsPage` הקיימת, לא קשורה). אין migration נדרש — `room_status` table+columns כולם כבר קיימים (029/036), אין Edge Function שנגעו בו.
 - ⚠️ **לא אומת חזותית חי** — אותו קיר Supabase Auth מקומי שדווח בסשנים קודמים (sessions 19–27). Mike: מומלץ לבדוק בפועל — (1) כניסה כ-user עם role='cleaner' → המסך המלא החדש; (2) tap על "🟡 בניקוי" ואז "🟢 נקי" בחדר → ודא ש-AICopilot's bell מציג alert עבורו (לא "פנוי" ישירות בלי אישור); (3) tap "מלוכלך בלבד"/"בניקוי בלבד" quick-filters.
+
+#### session 29 — Jun 24 2026 (Sprint Timeline Realignment, Jacuzzi Status & Draggable Co-Pilot Hub)
+> הקשר: דירקטיבת "FULL AUTO-PERMISSION MODE" / "STRICT SPRINT MODE" — שלושה ספרינטים: (1) טיהור Stage 3.5 מהציר הכרונולוגי + ניתוק "חדר מוכן" מהודעת הבוקר המתוזמנת, (2) מיני-pipeline ג'קוזי + בילינגואל בטאבלט הניקיון, (3) פעמון AICopilot גריר + שער-התראה חכם שמחבר את שני הספרינטים.
+
+- ✅ **Sprint 5.1 — Purge Stage 3.5 + Dedicated Room-Ready Trigger.** `stage_key='butler_1h'` ("Stage 3.5 — העברת סוכן, שעה אחרי צ׳ק-אין", `automation_stages` migration 065) **נמחק** (DELETE, לא is_active=false — migration 079) כך שהוא נעלם גם מ-Timeline tab של AutomationControlCenter.js וגם מהסקאן החי של `whatsapp-cron` בבת אחת (שניהם קוראים את הטבלה הזו ישירות). כל ההפניות הקשורות הוסרו מ-`whatsapp-send/index.ts` (PIPELINE_TEMPLATE/PIPELINE_VARS/GUEST_FLAG + הערות כותרת), `whatsapp-cron/index.ts` (עמודת `msg_post_checkin_sent` הוצאה מה-SELECT המפורש), ו-`_shared/automationSchedule.ts` (eligibility check ייעודי). **ממצא מרכזי:** "חדר מוכן" (`room_ready` trigger) לא היה stage נפרד ב-automation_stages כלל (event-driven מה-UI) — הוא "שאל" את התבנית `dream_welcome_morning`, **אותה תבנית בדיוק** ששלב הבוקר המתוזמן (`morning_suite`/`morning_welcome`) שולח. כלומר אורח יכל קיבל את אותה ברכת-בוקר פעמיים משני triggers שונים. נוצרה תבנית Meta ייעודית `dream_room_ready` ("🔑 {{1}}, יש לנו בשורה — הסוויטה {{2}} שלך מוכנה...") — `PIPELINE_TEMPLATE.room_ready`/`PIPELINE_VARS.room_ready` עודכנו אליה. `register-templates/index.ts` קיבל את ההגדרה החדשה (+ הערת "no longer dispatched" מעל `dream_handover_agent_v2` הישן — נשאר ברשימה כרשומת-רישום היסטורית בלבד, מחיקתו לא "תבטל-רישום" אותו ב-Meta וממשיך לתמוך שליחה ידנית). `sync-wa-templates/index.ts` + `AutomationControlCenter.js`'s `META_TEMPLATE_FRIENDLY` קיבלו שמות תצוגה תואמים; `dream_handover_agent_v2`'s friendly-name הוסר מ-AutomationControlCenter (Stage 3.5 כבר לא שם).
+- ✅ **`register-templates` הופעל בפועל בסשן** (curl ישיר ל-Edge Function עם anon key, ה-CLI לא תומך ב-`functions invoke` בגרסה המותקנת) — `dream_room_ready` נשלח ל-Meta בהצלחה: `id:"2096632554541579", status:"PENDING"`. ⚠️ **אל תניחו שהוא חי** — `AICopilot.js`'s `handleApprove` ישלח אליו רק לאחר שה-Templates tab יראה APPROVED; עד אז כל לחיצת "אשר ושלח הודעה" תיכשל בצורה גלויה (toast שגיאה, `room_status` לא מתקדם) ולא בשקט. **גילוי לוואי לא-קשור:** 9 מתוך 16 התבניות השיווקיות הישנות נכשלו עם "New Hebrew content can't be added while the existing Hebrew content is being deleted. Try again in 17 days" — מגבלת Meta-side קיימת מראש על חשבון ה-WhatsApp Business, לא משהו שסשן זה גרם לו או יכול לתקן; כל תבניות ה-UTILITY הפעילות ב-pipeline הליבה (כולל את כל אלו ש-automation_stages/PIPELINE_TEMPLATE קוראים להן) חזרו ALREADY_EXISTS — תקינות.
+- ✅ **Sprint 5.2 — Jacuzzi mini-pipeline + Bilingual UI (`HousekeepingTabletView.js`).** migration 079 הוסיפה **שתי** עמודות ל-`room_status` (לא אחת בלבד כמתואר בספרינט המקורי) — `jacuzzi_status` (dirty/clean, כפי שהתבקש) **וגם** `room_clean_status` (dirty/clean, תוספת ארכיטקטונית נדרשת). **ממצא מרכזי:** הספרינט מתאר שער-AND ("BOTH X AND Y") — בלי עמודה נפרדת לתפוס את "הצד של החדר הסתיים" באופן עצמאי מ-`status` הקיים, לחיצה על "🟢 נקי" כשהג'קוזי עדיין מלוכלך לא הייתה משאירה שום עקבה לכך שהצד הזה כבר טופל (היה צריך לחזור ולהמציא state נוסף). `room_clean_status` סוגר את זה — `status` עצמו (העמודה הסמכותית ש-RoomBoard/AICopilot כבר מבינים) נשאר ללא שינוי עד שהשער נפתח. בילינגואל HE/EN הוחל על כל הממשק: כותרת, 4 אריחי הסטטיסטיקה, 3 כפתורי הפילטר, 3 כפתורי הסטטוס הראשיים, כפתור הג'קוזי, badges (כולל תפוס/תחזוקה), כל ההינטים השקופים, וה-toasts.
+- ✅ **Sprint 5.3 — Smart Ready-Alert Gate + Draggable AICopilot.** השער מיושם משני הכיוונים: `markClean()` (🟢) בודק את `jacuzzi_status` הנוכחי, ו-`toggleJacuzzi()` בודק את `room_clean_status` הנוכחי — מי שמהם "סוגר את הזוג" כותב את `status="ממתין לאישור"` (+ `cleaning_ended_at`/`last_clean_duration_sec` בפעם הראשונה שזה קורה). `AICopilot.js` עצמו **לא נזקק לשום שינוי בלוגיקת ה-gate** — הוא כבר מקשיב ל-`status='ממתין לאישור'` בלבד, וזה ממשיך להיות נכון בדיוק כשהשער נפתח. מה שכן השתנה ב-AICopilot.js: (1) `handleApprove` עבר מ-`trigger:"inbox_reply"` (היה שולח טקסט מורכב ידנית, עבד רק כש-24h session window פתוח — בעיית אמינות אמיתית כש"אישור חדר" קורה שעות אחרי ההודעה האחרונה של האורח) ל-`trigger:"room_ready"` (BRANCH D האידמפוטנטי, תבנית Meta, עובד גם מחוץ לחלון) — וגם תוקן לבדוק `data?.ok === false` בנוסף לשגיאת invoke טרנספורט (FAIL VISIBLE אמיתי, היה חסר). (2) פעמון + פאנל הפכו **גרירים** — pointer events עם סף 6px tap-vs-drag (אותו pattern בדיוק כמו `RequestsAlertWidget.js`'s drag, מותאם לעוגן שמאל-תחתון במקום ימין-תחתון), מיקום נשמר ב-`localStorage` key `aiCopilotPos`. (3) כרטיס ההתראה מציג כעת במפורש "🏨 סוויטה X מוכנה עבור [שם אורח] — לחץ לאישור שליחת הודעה" (לפני כן: כותרת חדר + שם אורח בשתי שורות נפרדות) + אנימציית "flash" (`@keyframes ai-copilot-flash`, אותה קונבנציה כמו `sla-breach-pulse`/`wa-pulse` הקיימים) על הפעמון ועל הכרטיס הספציפי כשמתקבלת התראה חדשה, נכבה אחרי 4 שניות.
+- ✅ **אומת:** `npm run build` נקי (רק אזהרת `ShiftsPage` הקיימת, לא קשורה). `npx supabase db push` (079) ו-5 `functions deploy` (`whatsapp-send`/`whatsapp-cron`/`register-templates`/`sync-wa-templates`/`whatsapp-webhook`) הצליחו, Deno type-check עבר בכולם.
+- ⚠️ **לא אומת חזותית חי** — אין דרך לדמות גרירת widget אמיתית או טאבלט אמיתי מתוך הסשן. Mike: מומלץ לבדוק בפועל — (1) גרירת פעמון ה-AICopilot למיקום אחר ברענון העמוד נשמר; (2) תיוג חדר "🟢 נקי" בלבד (ג'קוזי מלוכלך) → רמז "מחכה לג'קוזי" מופיע, status לא מתקדם → תיוג ג'קוזי "✨ נקי" → status הופך "ממתין לאישור" + AICopilot מתריע; (3) לחיצת "✓ אשר ושלח הודעה" לפני ש-`dream_room_ready` מאושר ב-Meta — אמורה להציג toast שגיאה גלוי בלי לקדם את הסטטוס (FAIL VISIBLE).
 
 ---
 

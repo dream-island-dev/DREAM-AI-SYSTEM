@@ -8,8 +8,8 @@
 //   morning_welcome  — day-of welcome for standard rooms (idempotent)
 //   mid_stay         — mid-stay check after first night (idempotent)
 //   checkout_fb      — feedback request day after departure (idempotent)
-//   butler_1h        — post check-in butler touch (idempotent)
-//   room_ready       — manual UI: room ready notification (idempotent)
+//   room_ready       — manual UI: room ready notification (idempotent) — dedicated
+//                      dream_room_ready template, isolated from morning_* alerts
 //   shift_assignment — staff schedule notification (not idempotent)
 //   broadcast        — manager-composed free-form message (not idempotent)
 //                      supports {{guest_name}}, {{room}}, {{room_type}} placeholders
@@ -30,7 +30,6 @@
 //   night_before     → guests.msg_pre_arrival_sent     = true
 //   morning_welcome  → guests.msg_morning_welcome_sent = true
 //   room_ready       → guests.msg_room_ready_sent      = true
-//   butler_1h        → guests.msg_post_checkin_sent    = true
 //   mid_stay         → guests.msg_mid_stay_sent        = true
 //   checkout_fb      → guests.msg_checkout_fb_sent     = true
 //   broadcast        → no pipeline flag (ad-hoc sends)
@@ -73,10 +72,12 @@ const PIPELINE_TEMPLATE: Record<string, string> = {
   night_before:    "dream_checkin_reminder_v2",     // T-1 night   → "מחר מגיעים" + contact number
   morning_suite:   "dream_welcome_morning",        // suite AM    → "בוקר אור, היום מגיעים"
   morning_welcome: "dream_welcome_morning",        // standard AM → same template
-  room_ready:      "dream_welcome_morning",        // manual UI   → morning welcome (idempotent)
+  room_ready:      "dream_room_ready",             // manual UI   → dedicated key-handover template
+                                                     // (Sprint 5.1 — was dream_welcome_morning, which
+                                                     // cross-fired the same wording as the scheduled
+                                                     // morning alert; now isolated)
   mid_stay:        "dream_mid_stay_check",         // day 2       → mid-stay check + Quick Reply buttons
   checkout_fb:     "dream_checkout_feedback",      // day after departure → feedback + Quick Reply buttons
-  butler_1h:       "dream_handover_agent_v2",       // 1h post check-in
 };
 
 // Variables passed as {{1}}, {{2}}, … to each pipeline template.
@@ -87,10 +88,9 @@ const PIPELINE_VARS: Record<string, (g: Record<string, unknown>) => string[]> = 
   night_before:    (g) => [String(g.name ?? ""), RESORT_CONTACT_PHONE],
   morning_suite:   (g) => [String(g.name ?? "")],
   morning_welcome: (g) => [String(g.name ?? "")],
-  room_ready:      (g) => [String(g.name ?? "")],
+  room_ready:      (g) => [String(g.name ?? ""), String(g.room ?? g.suite_name ?? "")],
   mid_stay:        (g) => [String(g.name ?? "")],
   checkout_fb:     (g) => [String(g.name ?? "")],
-  butler_1h:       (g) => [String(g.name ?? "")],
 };
 
 // Maps each pipeline trigger to the DB flag it atomically stamps.
@@ -100,7 +100,6 @@ const GUEST_FLAG: Record<string, string> = {
   morning_suite:   "msg_morning_suite_sent",
   morning_welcome: "msg_morning_welcome_sent",
   room_ready:      "msg_room_ready_sent",
-  butler_1h:       "msg_post_checkin_sent",
   mid_stay:        "msg_mid_stay_sent",
   checkout_fb:     "msg_checkout_fb_sent",
 };
@@ -243,8 +242,8 @@ const isSimulation = (): boolean =>
 // ── Manual (human-initiated) triggers — always permitted ─────────────────────
 // The AUTOMATION_ENABLED kill switch exists to stop the system from messaging
 // guests AUTONOMOUSLY (the scheduled pipeline triggers driven by whatsapp-cron:
-// pre_arrival_2d / night_before / morning_* / mid_stay / checkout_fb / butler_1h
-// / room_ready). It must NOT block a human deliberately clicking "send" in a UI.
+// pre_arrival_2d / night_before / morning_* / mid_stay / checkout_fb /
+// room_ready). It must NOT block a human deliberately clicking "send" in a UI.
 //
 // Session 24 root cause: only `inbox_reply` was exempt, so the entire
 // "📣 שידור הודעות / Send Messages" tab (trigger `broadcast`) — and the manual
