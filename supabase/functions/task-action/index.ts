@@ -144,9 +144,13 @@ serve(async (req: Request) => {
       }
 
       const now = new Date().toISOString();
+      // resolved_by_phone/resolved_by_name (migration 078) mirror the same raw-
+      // identity capture the whapi-webhook 👍🏼 reaction listener does — same
+      // columns, same "done" mutation point, so a task resolved via this legacy
+      // link path still renders attribution on the Ops Board.
       const patch = action === "accept"
         ? { status: "in_progress", claimed_by: actorUuid, claimed_at: now, updated_at: now }
-        : { status: "done",        resolved_by: actorUuid, resolved_at: now, updated_at: now };
+        : { status: "done", resolved_by: actorUuid, resolved_by_phone: phone, resolved_by_name: actor, resolved_at: now, updated_at: now };
 
       const { error: upErr } = await supabase.from("tasks").update(patch).eq("id", id);
       if (upErr) throw new Error(`task_update_failed: ${upErr.message}`);

@@ -775,7 +775,10 @@ async function routeGuestRequestToOpsGroup(
   // verbatim by staff is more reliable than a machine-translated paraphrase,
   // and adding a translation call here is one more failure point for a
   // 3-8 word string. Mixed-language card, deliberate.
-  const card = `🛋️ [${roomLabel}] Guest requested: ${args.summary}`;
+  // Session 27 Sprint 4.1: same reaction-only resolution hint as the staff-
+  // report card (whapi-webhook's buildTaskCard) — this card is resolved by
+  // the exact same 👍🏼 listener (whapi_message_id lookup), no separate link.
+  const card = `🛋️ [${roomLabel}] Guest requested: ${args.summary}\n👉 Please react with 👍🏼 to complete this task.`;
 
   const { data: task, error: insertErr } = await supabase
     .from("tasks")
@@ -808,6 +811,32 @@ async function routeGuestRequestToOpsGroup(
     if (updErr) console.warn(`[webhook] 🛋️ failed to store whapi_message_id for task ${task.id}:`, updErr.message);
   }
   console.info(`[webhook] 🛋️ guest_request task ${task.id} room=${roomLabel} routed to ops group (sent=${!!msgId})`);
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// §4c DAY-GUEST UPSELL GATE — Session 27 Sprint 4.3. "Premium Suite" maps onto
+//      the two real Premium Day inventory slots (guests.room IN 'Premium Day 1'
+//      / 'Premium Day 2' — AddGuestModal/ArrivalImportPanel's day-package
+//      values). It's the only "Premium ___" concept that actually exists in
+//      this schema — there is no literal "Premium Suite" row in
+//      src/data/suiteRegistry.js's 26 physical suites. Fails closed (treats a
+//      lookup error as "taken") — never oversell a slot the system isn't sure
+//      is free.
+// ══════════════════════════════════════════════════════════════════════════════
+async function isPremiumDaySlotAvailableToday(supabase: ReturnType<typeof createClient>): Promise<boolean> {
+  const today = new Date().toISOString().split("T")[0];
+  const { data, error } = await supabase
+    .from("guests")
+    .select("room")
+    .eq("arrival_date", today)
+    .neq("status", "cancelled")
+    .in("room", ["Premium Day 1", "Premium Day 2"]);
+  if (error) {
+    console.warn("[webhook] isPremiumDaySlotAvailableToday lookup failed — defaulting to 'taken' (fail-closed):", error.message);
+    return false;
+  }
+  const takenSlots = new Set((data ?? []).map((g) => g.room as string));
+  return takenSlots.size < 2;
 }
 
 // ── Gemini model auto-discovery (used only when all hardcoded models 404) ────
@@ -2258,6 +2287,25 @@ serve(async (req: Request) => {
       }
       // else "fallback" → FALLBACK_REPLY already set
 
+      // ── Day-Guest Upsell Gate (Session 27 Sprint 4.3) — a day-guest ("בילוי
+      // יומי") has no suite room service to fulfil, so a log_guest_request call
+      // from one never becomes an ops ticket. Instead of just refusing, this
+      // redirects the moment into a live-inventory upsell: check today's two
+      // Premium Day slots and offer the free one, or point at "next time" if
+      // both are taken. toolLoggedRequest is cleared so the blocks below (guest
+      // _alerts insert, Dual-Routing Trigger) never see it — day-guest requests
+      // stop here, by design (CLAUDE.md §0.4 — extend the existing gate, don't
+      // bolt on a parallel "day-guest ticket" path).
+      const guestRoomType = (guest as Record<string, unknown> | null)?.room_type as string | null ?? null;
+      if (toolLoggedRequest && guestRoomType === "day_guest") {
+        const premiumFree = await isPremiumDaySlotAvailableToday(supabase);
+        reply = premiumFree
+          ? "סוויטת הפרימיום שלנו פנויה היום לבילוי יומי, מעוניין לשריין לפני שיתפס? ✨"
+          : "בפעם הבאה אתה מוזמן לביקור לינה בסוויטות שלנו או ב-PREMIUM DAY המפואר שלנו 🌟";
+        console.info(`[webhook] 🏊 day-guest upsell gate fired — phone:${phone} premiumFree:${premiumFree}`);
+        toolLoggedRequest = null;
+      }
+
       // ── guest_notes: blanket free-text history for every faq/fallback message ──
       // complaint/upsell already raise their own alert (flagGuestAlert / dedicated
       // reply above). This note log stays blanket on purpose — it's just an
@@ -2317,8 +2365,9 @@ serve(async (req: Request) => {
         // ask/upsell lead), NOT criticalKeywordHit (that net also catches plain
         // complaint/price mentions — not "go do something" requests, so it
         // would over-notify the ops group). Day-guest/standard-room requests
-        // never reach here — they stop at the guest_alerts insert above.
-        const guestRoomType = (guest as Record<string, unknown> | null)?.room_type as string | null ?? null;
+        // never reach here — day-guest already exited via the Upsell Gate above
+        // (toolLoggedRequest cleared to null there), standard-room just fails
+        // this same check. guestRoomType is computed once, above, by that gate.
         if (toolLoggedRequest && guestId && guestRoomType === "suite") {
           const guestRoom = (guest as Record<string, unknown> | null)?.room as string | null ?? null;
           routeGuestRequestToOpsGroup(supabase, {

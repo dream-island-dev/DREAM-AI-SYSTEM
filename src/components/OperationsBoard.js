@@ -40,6 +40,7 @@ const SLA_CATEGORY_OPTIONS = {
 const SOURCE_META = {
   manual:              { label: "🖊 ידני", color: "var(--text-muted)" },
   whatsapp_staff:       { label: "📱 וואטסאפ", color: "#1A7A4A" },
+  manual_group:        { label: "✍️ קבוצת צוות", color: "#1A7A4A" },
   legacy_service_call: { label: "🗄 היסטורי", color: "var(--text-muted)" },
   guest_request:       { label: "🛋️ בקשת אורח", color: "#A8843A" },
 };
@@ -295,6 +296,11 @@ function TaskCard({ task, onClaim, onMarkDone, isUpdating }) {
             </span>
           )}
           <span style={{ fontSize: 11, fontWeight: 600, color: src.color }}>{src.label}</span>
+          {isDone && (task.resolved_by_name || task.resolved_by_phone) && (
+            <span style={{ fontSize: 11, color: "#059669", fontWeight: 600 }}>
+              ✔️ בוצע ע״י: {task.resolved_by_name || task.resolved_by_phone}
+            </span>
+          )}
         </div>
         <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
           {new Date(task.created_at).toLocaleString("he-IL", {
@@ -417,15 +423,18 @@ export default function OperationsBoard({ user, isAdmin }) {
     setUpdatingId(taskId);
     const { error } = await supabase
       .from("tasks")
-      .update({ status: "done", resolved_by: user?.id ?? null, resolved_at: new Date().toISOString() })
+      // resolved_by_name mirrors the WhatsApp-path attribution (migration 078)
+      // so "✔️ בוצע ע״י" renders for in-app-resolved tasks too, not only ones
+      // resolved via the 👍🏼 reaction.
+      .update({ status: "done", resolved_by: user?.id ?? null, resolved_by_name: user?.name ?? null, resolved_at: new Date().toISOString() })
       .eq("id", taskId);
     if (error) showToast("err", "שגיאה: " + error.message);
     else {
-      setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: "done" } : t));
+      setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: "done", resolved_by_name: user?.name ?? null } : t));
       showToast("ok", "✅ המשימה סומנה כבוצעה!");
     }
     setUpdatingId(null);
-  }, [user?.id, showToast]);
+  }, [user?.id, user?.name, showToast]);
 
   const filtered = tasks.filter(t =>
     activeFilter === "all" ? true : t.status === activeFilter

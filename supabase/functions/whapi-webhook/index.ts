@@ -210,13 +210,16 @@ function isThumbsUp(emoji: string): boolean {
 }
 
 // ── The structured English task card sent back into the group ────────────────
-function buildTaskCard(room: string | null, desc: string, acceptUrl: string, completeUrl: string): string {
+// Session 27 Sprint 4.1: the old Accept/Complete link-tap flow (task-action
+// GET/POST interstitial) is replaced by a single reaction gesture — no link,
+// no crawler-safety dance, just 👍🏼 on this card. task-action.ts itself stays
+// alive (the manager "Bump" action, sla-escalation-cron, still uses it).
+function buildTaskCard(room: string | null, desc: string): string {
   return [
     `📌 New Task Opened: Suite ${room ?? "—"}`,
     `📋 Task: ${desc}`,
     `⏰ Status: Pending`,
-    `🛠️ Click here to Accept Task: ${acceptUrl}`,
-    `✅ Click here to Mark Completed: ${completeUrl}`,
+    `👉 Please react with 👍🏼 to complete this task.`,
   ].join("\n");
 }
 
@@ -234,7 +237,6 @@ serve(async (req: Request) => {
     }
 
     const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
-    const functionsBase = `${Deno.env.get("SUPABASE_URL")}/functions/v1/task-action`;
     const lockGroup = Deno.env.get("WHAPI_GROUP_ID")?.trim() || null;
     const results: Array<Record<string, unknown>> = [];
 
@@ -255,13 +257,23 @@ serve(async (req: Request) => {
       if (task.status === "done") { results.push({ id: r.id, reaction: "thumbs_up", taskId: task.id, ignored: "already_done" }); continue; }
 
       // Resolver attribution — same phone→profiles lookup pattern as task-action.ts.
+      // resolved_by_phone/resolved_by_name (migration 078) capture the raw Whapi
+      // identity unconditionally — resolved_by (profiles FK) stays null when the
+      // reactor has no profiles row, but WHO resolved it must never disappear
+      // (FAIL VISIBLE, CLAUDE.md §0.3).
       const local = r.fromPhone.startsWith("972") ? "0" + r.fromPhone.slice(3) : r.fromPhone;
       const { data: resolverProfile } = await supabase
         .from("profiles").select("id").in("phone", [r.fromPhone, "+" + r.fromPhone, local]).maybeSingle();
 
       const { error: doneErr } = await supabase
         .from("tasks")
-        .update({ status: "done", resolved_by: resolverProfile?.id ?? null, resolved_at: new Date().toISOString() })
+        .update({
+          status: "done",
+          resolved_by: resolverProfile?.id ?? null,
+          resolved_by_phone: r.fromPhone || null,
+          resolved_by_name: r.fromName || null,
+          resolved_at: new Date().toISOString(),
+        })
         .eq("id", task.id);
 
       if (doneErr) console.error(`[whapi-webhook] 👍 reaction resolve failed for task ${task.id}:`, doneErr.message);
@@ -311,6 +323,11 @@ serve(async (req: Request) => {
       const slaCategory = guessSlaCategory(cls.task_description);
       const slaDeadline = new Date(Date.now() + (SLA_THRESHOLDS[slaCategory] ?? SLA_THRESHOLDS[DEFAULT_SLA_CATEGORY]) * 60000).toISOString();
       const actionToken = crypto.randomUUID();
+      // Session 27 Sprint 4.2 — a Room/חדר/סוויטה-prefixed manual message (Tier 0
+      // room_prefix parse) gets its own source so it's distinguishable on the Ops
+      // Board from the digit-dash shorthand and the AI-classified fallback, both
+      // of which stay 'whatsapp_staff'.
+      const taskSource = cls.tier === "room_prefix" ? "manual_group" : "whatsapp_staff";
 
       const { data: task, error: insertErr } = await supabase
         .from("tasks")
@@ -322,7 +339,7 @@ serve(async (req: Request) => {
           status:              "open",
           sla_category:        slaCategory,
           sla_deadline:        slaDeadline,
-          source:              "whatsapp_staff",
+          source:              taskSource,
           reporter_profile_id: reporterProfile?.id ?? null,
           reporter_raw_text:   msg.text,
           action_token:        actionToken,
@@ -339,9 +356,7 @@ serve(async (req: Request) => {
         continue;
       }
 
-      const acceptUrl   = `${functionsBase}?id=${task.id}&action=accept&token=${actionToken}`;
-      const completeUrl = `${functionsBase}?id=${task.id}&action=complete&token=${actionToken}`;
-      const card = buildTaskCard(cls.room_number, cls.task_description, acceptUrl, completeUrl);
+      const card = buildTaskCard(cls.room_number, cls.task_description);
 
       // Reply into the SAME group. no_link_preview stops the crawler pre-fetch.
       // Non-blocking: the ticket already exists — a failed reply must not lose it.
@@ -361,7 +376,7 @@ serve(async (req: Request) => {
       }
 
       console.log(
-        `[whapi-webhook] TASK #${task.id} — room=${cls.room_number ?? "?"} sla=${slaCategory} tier=${cls.tier} ` +
+        `[whapi-webhook] TASK #${task.id} — room=${cls.room_number ?? "?"} sla=${slaCategory} tier=${cls.tier} source=${taskSource} ` +
         `from=${msg.fromName || msg.fromPhone}${adminName ? `(admin:${adminName})` : ""} replied=${replied}`,
       );
       results.push({

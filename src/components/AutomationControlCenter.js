@@ -357,8 +357,202 @@ function StageCard({
   );
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// Linear Automation Flow Builder — Session 27 Sprint 4.4. Lightweight, separate
+// from the automation_stages timeline above: this is a draft layer (migration
+// 078's custom_automations/custom_automation_steps) for sketching an ad-hoc
+// multi-step sequence — name, trigger timing, ordered steps each either a Meta
+// template or free text. Not wired to whatsapp-cron/whatsapp-send — capturing
+// the design is the scope of this sprint, runtime dispatch is a future step.
+// ══════════════════════════════════════════════════════════════════════════════
+function blankStep() {
+  return { step_type: "free_text", meta_template_name: "", free_text: "" };
+}
+
+function CustomAutomationBuilder({ metaTemplatesByName, showToast }) {
+  const [automations, setAutomations] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [name, setName] = useState("");
+  const [anchorEvent, setAnchorEvent] = useState("arrival_date");
+  const [dayOffset, setDayOffset] = useState(0);
+  const [localTime, setLocalTime] = useState("09:00");
+  const [steps, setSteps] = useState([blankStep()]);
+
+  const approvedTemplateNames = Object.values(metaTemplatesByName)
+    .filter((t) => t.status === "APPROVED")
+    .map((t) => t.name);
+
+  const fetchAutomations = useCallback(async () => {
+    if (!isSupabaseConfigured || !supabase) { setLoading(false); return; }
+    setLoading(true);
+    const { data, error } = await supabase
+      .from("custom_automations")
+      .select("*, custom_automation_steps(*)")
+      .order("created_at", { ascending: false });
+    if (error) showToast("err", "שגיאה בטעינת אוטומציות: " + error.message);
+    else setAutomations(data ?? []);
+    setLoading(false);
+  }, [showToast]);
+
+  useEffect(() => { fetchAutomations(); }, [fetchAutomations]);
+
+  const addStep    = () => setSteps((prev) => [...prev, blankStep()]);
+  const updateStep = (idx, patch) => setSteps((prev) => prev.map((s, i) => (i === idx ? { ...s, ...patch } : s)));
+  const removeStep = (idx) => setSteps((prev) => prev.filter((_, i) => i !== idx));
+
+  const resetForm = () => {
+    setName(""); setAnchorEvent("arrival_date"); setDayOffset(0); setLocalTime("09:00");
+    setSteps([blankStep()]);
+  };
+
+  const handleSave = async () => {
+    if (!name.trim()) return showToast("err", "יש לתת שם לאוטומציה");
+    for (const s of steps) {
+      if (s.step_type === "meta_template" && !s.meta_template_name) return showToast("err", "יש לבחור תבנית Meta לכל שלב מסוג זה");
+      if (s.step_type === "free_text" && !s.free_text.trim()) return showToast("err", "יש למלא תוכן לכל שלב טקסט חופשי");
+    }
+    setSaving(true);
+    try {
+      const { data: automation, error: autoErr } = await supabase
+        .from("custom_automations")
+        .insert([{
+          name: name.trim(),
+          trigger_anchor_event: anchorEvent,
+          trigger_day_offset: dayOffset,
+          trigger_local_time: localTime || null,
+        }])
+        .select()
+        .single();
+      if (autoErr) throw new Error(autoErr.message);
+
+      const stepRows = steps.map((s, i) => ({
+        automation_id: automation.id,
+        step_order: i,
+        step_type: s.step_type,
+        meta_template_name: s.step_type === "meta_template" ? s.meta_template_name : null,
+        free_text: s.step_type === "free_text" ? s.free_text.trim() : null,
+      }));
+      const { error: stepsErr } = await supabase.from("custom_automation_steps").insert(stepRows);
+      if (stepsErr) throw new Error(stepsErr.message);
+
+      showToast("ok", `✅ האוטומציה "${name.trim()}" נשמרה`);
+      resetForm();
+      fetchAutomations();
+    } catch (e) {
+      showToast("err", "שגיאה בשמירה: " + e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async (id, automationName) => {
+    const { error } = await supabase.from("custom_automations").delete().eq("id", id);
+    if (error) showToast("err", "שגיאה במחיקה: " + error.message);
+    else {
+      showToast("ok", `🗑️ "${automationName}" נמחקה`);
+      setAutomations((prev) => prev.filter((a) => a.id !== id));
+    }
+  };
+
+  return (
+    <div style={{ maxWidth: 760 }}>
+      <div className="card" style={{ marginBottom: 24, borderColor: "var(--gold)" }}>
+        <div className="card-header"><div className="card-title">✨ יצירת אוטומציה חדשה</div></div>
+        <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 14 }}>
+          <div className="form-field" style={{ marginBottom: 0 }}>
+            <label>שם האוטומציה *</label>
+            <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="לדוגמה: רצף יום הולדת VIP" />
+          </div>
+
+          <div>
+            <label style={{ fontWeight: 600, fontSize: 13, marginBottom: 6, display: "block" }}>⏱ תזמון הפעלה</label>
+            <div className="actr-timing-row" style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+              <select value={anchorEvent} onChange={(e) => setAnchorEvent(e.target.value)}>
+                <option value="arrival_date">יחסית לתאריך הגעה</option>
+                <option value="departure_date">יחסית לתאריך עזיבה</option>
+              </select>
+              <input type="number" value={dayOffset} style={{ width: 70 }}
+                onChange={(e) => setDayOffset(parseInt(e.target.value, 10) || 0)} />
+              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>ימים, משעה</span>
+              <input type="time" value={localTime} style={{ width: 110 }}
+                onChange={(e) => setLocalTime(e.target.value)} />
+              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>(שעון ישראל)</span>
+            </div>
+          </div>
+
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <label style={{ margin: 0, fontWeight: 600, fontSize: 13 }}>שלבים (לפי סדר ריצה)</label>
+              <button className="btn btn-ghost btn-sm" onClick={addStep}>➕ הוסף שלב</button>
+            </div>
+            {steps.map((s, idx) => (
+              <div key={idx} style={{ border: "1px solid var(--border)", borderRadius: 10, padding: 12, marginBottom: 8 }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-muted)", minWidth: 22 }}>#{idx + 1}</span>
+                  <select value={s.step_type} onChange={(e) => updateStep(idx, { step_type: e.target.value })} style={{ flex: 1 }}>
+                    <option value="meta_template">🔵 תבנית Meta</option>
+                    <option value="free_text">🟢 טקסט חופשי</option>
+                  </select>
+                  <button
+                    className="btn btn-ghost btn-sm" onClick={() => removeStep(idx)}
+                    disabled={steps.length === 1} style={{ color: "#C0392B" }}
+                  >✕</button>
+                </div>
+                {s.step_type === "meta_template" ? (
+                  <select value={s.meta_template_name} onChange={(e) => updateStep(idx, { meta_template_name: e.target.value })}>
+                    <option value="">— בחר תבנית מאושרת —</option>
+                    {approvedTemplateNames.map((n) => <option key={n} value={n}>{n}</option>)}
+                  </select>
+                ) : (
+                  <textarea
+                    rows={3} value={s.free_text}
+                    onChange={(e) => updateStep(idx, { free_text: e.target.value })}
+                    placeholder="תוכן ההודעה החופשית..."
+                    style={{ direction: "rtl", width: "100%", resize: "vertical", fontFamily: "Heebo, sans-serif" }}
+                  />
+                )}
+              </div>
+            ))}
+          </div>
+
+          <button className="btn btn-primary" disabled={saving} onClick={handleSave} style={{ alignSelf: "flex-end", minWidth: 160 }}>
+            {saving ? "⏳ שומר..." : "💾 שמור אוטומציה"}
+          </button>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-header"><div className="card-title">📂 אוטומציות שמורות ({automations.length})</div></div>
+        {loading ? (
+          <div style={{ padding: 24, textAlign: "center", color: "var(--text-muted)" }}>⏳ טוען...</div>
+        ) : automations.length === 0 ? (
+          <div style={{ padding: 24, textAlign: "center", color: "var(--text-muted)", fontSize: 13 }}>
+            אין עדיין אוטומציות מותאמות שמורות
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column" }}>
+            {automations.map((a, i) => (
+              <div key={a.id} style={{ padding: "14px 20px", borderBottom: i < automations.length - 1 ? "1px solid var(--border)" : "none" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, flexWrap: "wrap", gap: 8 }}>
+                  <div style={{ fontWeight: 700, fontSize: 14 }}>{a.name}</div>
+                  <button className="btn btn-ghost btn-sm" onClick={() => handleDelete(a.id, a.name)} style={{ color: "#C0392B" }}>🗑️ מחק</button>
+                </div>
+                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                  {a.trigger_day_offset} ימים {a.trigger_anchor_event === "departure_date" ? "מתאריך עזיבה" : "מתאריך הגעה"}, בשעה {timeInputValue(a.trigger_local_time) || "—"}
+                  {" · "}{(a.custom_automation_steps ?? []).length} שלבים
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function AutomationControlCenter() {
-  const [subTab, setSubTab] = useState("timeline"); // timeline | queue | history | templates
+  const [subTab, setSubTab] = useState("timeline"); // timeline | queue | history | builder | templates
   const [stages, setStages] = useState([]);
   const [scriptsByKey, setScriptsByKey] = useState({});
   const [availableScriptKeys, setAvailableScriptKeys] = useState([]);
@@ -543,6 +737,7 @@ export default function AutomationControlCenter() {
           { key: "timeline", label: "🗺️ מסע האורח" },
           { key: "queue",    label: "📡 תור חי + מוניטור" },
           { key: "history",  label: "📜 מה נשלח" },
+          { key: "builder",  label: "✨ אוטומציה חדשה" },
           { key: "templates", label: "📋 תבניות Meta" },
         ].map(({ key, label }) => (
           <button key={key} onClick={() => setSubTab(key)} style={{
@@ -742,6 +937,10 @@ export default function AutomationControlCenter() {
             )}
           </div>
         </div>
+      )}
+
+      {subTab === "builder" && (
+        <CustomAutomationBuilder metaTemplatesByName={metaTemplatesByName} showToast={showToast} />
       )}
 
       {subTab === "templates" && (

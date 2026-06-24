@@ -17,6 +17,7 @@ import { useState, useEffect, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import AddGuestModal from "./AddGuestModal";
 import GuestAttentionBadge from "./GuestAttentionBadge";
+import CustomerProfilePane from "./CustomerProfilePane";
 import { STATUS_META } from "../utils/guestStatusMeta";
 
 // ── Date helpers (local time) ─────────────────────────────────────────────────
@@ -165,6 +166,7 @@ export default function GuestDashboard({ user }) {
   const [addingGuest, setAddingGuest] = useState(null);  // {} = add modal open, null = closed
   const [waModal,     setWaModal]     = useState(null);  // guest object or null
   const [selected,    setSelected]    = useState(new Set()); // checked guest IDs
+  const [profileGuest, setProfileGuest] = useState(null); // guest object or null — CustomerProfilePane
 
   const showToast = useCallback((type, msg) => {
     setToast({ type, msg });
@@ -439,6 +441,11 @@ export default function GuestDashboard({ user }) {
         />
       )}
 
+      {/* Guest profile slide-out — click a guest's name to open */}
+      {profileGuest && (
+        <CustomerProfilePane guest={profileGuest} onClose={() => setProfileGuest(null)} />
+      )}
+
       {/* Guest list */}
       {loading ? (
         <div style={{ textAlign: "center", padding: 56, color: "var(--text-muted)", fontSize: 14 }}>
@@ -495,7 +502,15 @@ export default function GuestDashboard({ user }) {
                       style={{ width: 16, height: 16, cursor: "pointer", accentColor: "#DC2626" }}
                     />
                     <div style={{ fontWeight: 800, fontSize: 16, color: "var(--black)" }}>
-                      {guest.name}
+                      <span
+                        onClick={() => setProfileGuest(guest)}
+                        title="הצג פרופיל אורח"
+                        style={{ cursor: "pointer", textDecoration: "underline", textDecorationColor: "transparent" }}
+                        onMouseEnter={(e) => (e.currentTarget.style.textDecorationColor = "var(--gold)")}
+                        onMouseLeave={(e) => (e.currentTarget.style.textDecorationColor = "transparent")}
+                      >
+                        {guest.name}
+                      </span>
                       {guest.arrival_confirmed && (
                         <span style={{ fontSize: 10, marginRight: 6, background: "#E8F5EF", color: "#1A7A4A", padding: "2px 6px", borderRadius: 8, fontWeight: 700, verticalAlign: "middle" }}>✓ אישר הגעה</span>
                       )}

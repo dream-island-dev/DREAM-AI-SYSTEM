@@ -141,8 +141,8 @@ export default function RoomBoard({ isKioskMode = false, onLogout }) {
         .select("room_id, status, cleaning_started_at, last_clean_duration_sec"),
       supabase
         .from("guests")
-        .select("id, name, room, suite_name, arrival_date, departure_date, status, phone")
-        .in("status", ["checked_in", "room_ready", "pending"]),
+        .select("id, name, room, suite_name, arrival_date, departure_date, status, phone, spa_time")
+        .in("status", ["checked_in", "room_ready", "pending", "expected"]),
     ]);
     if (statuses) {
       const map = {};
@@ -570,14 +570,36 @@ function RoomCard({ room, isUpdating, t, onUpdate, onCleanStart, onCleanDone, wa
       {/* Body: guest / timer / last-clean badge */}
       <div style={{ flex: 1 }}>
         {room.guest ? (
-          <>
-            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--black)", marginBottom: 2 }}>
-              👤 {room.guest.name}
+          room.guest.status === "checked_in" ? (
+            <div style={{
+              display: "inline-flex", flexDirection: "column", gap: 2,
+              background: "#EAF3DE", border: "1px solid #639922", borderRadius: 8,
+              padding: "6px 10px", marginBottom: 4,
+            }}>
+              <span style={{ fontSize: 11, fontWeight: 800, color: "#3B6D11" }}>🟢 אורח נוכחי</span>
+              <span style={{ fontSize: 13, fontWeight: 700, color: "var(--black)" }}>👤 {room.guest.name}</span>
+              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                עזיבה: {fmtDate(room.guest.departure_date) ?? "?"}
+              </span>
             </div>
-            <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-              {fmtDate(room.guest.arrival_date)} — {fmtDate(room.guest.departure_date) ?? "?"}
+          ) : (
+            <div style={{
+              display: "inline-flex", flexDirection: "column", gap: 2,
+              background: "#E6F1FB", border: "1px solid #378ADD", borderRadius: 8,
+              padding: "6px 10px", marginBottom: 4,
+            }}>
+              <span style={{ fontSize: 11, fontWeight: 800, color: "#185FA5" }}>🔵 הגעה קרובה</span>
+              <span style={{ fontSize: 13, fontWeight: 700, color: "var(--black)" }}>👤 {room.guest.name}</span>
+              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                צפי הגעה: {fmtDate(room.guest.arrival_date) ?? "?"}
+              </span>
+              {room.guest.spa_time && (
+                <span style={{ fontSize: 11, color: "#7c3aed", fontWeight: 700 }}>
+                  💆 ספא {room.guest.spa_time}
+                </span>
+              )}
             </div>
-          </>
+          )
         ) : (
           <div style={{ fontSize: 11, color: "#ccc" }}>{t.awaitingArrival}</div>
         )}
