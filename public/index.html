@@ -7,6 +7,16 @@
   <meta name="theme-color" content="#C9A96E">
   <meta name="description" content="Dream Island Resort Management System — מערכת ניהול מלון חכמה">
 
+  <!-- Web fonts — loaded here (not via App.js's injected <style>/@import) so
+       they're available immediately, including on the public Guest Portal
+       route (/portal/:token), which mounts instead of <App/> and therefore
+       never runs App.js's CSS injection at all. A <link> in <head> also lets
+       the browser fetch fonts in parallel with HTML parsing, which is faster
+       than an @import discovered only after JS renders a <style> tag. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700;800;900&family=Playfair+Display:wght@400;600;700&display=swap" rel="stylesheet">
+
   <!-- PWA manifest -->
   <link rel="manifest" href="/manifest.json" />
 

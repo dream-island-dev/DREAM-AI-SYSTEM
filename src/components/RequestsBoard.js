@@ -11,7 +11,10 @@ const TYPE_META = {
   complaint:           { label: "🔴 תקלה",          bg: "#FFF0EE", color: "#C0392B" },
   date_change_request: { label: "🗓️ שינוי תאריך",   bg: "#E8F0FE", color: "#1A56DB" },
   request:             { label: "📝 בקשה",           bg: "#FFF5E8", color: "#B5600A" },
-  upsell_opportunity:  { label: "💰 הזדמנות מכירה",  bg: "#E8F5EF", color: "#1A7A4A" },
+  // Currently written ONLY by guest-portal-upsell — relabeled from the
+  // original generic "💰 הזדמנות מכירה" so a portal request reads as exactly
+  // that, at a glance, even without using the source filter below.
+  upsell_opportunity:  { label: "🌴 בקשה מהפורטל",   bg: "#E8F5EF", color: "#1A7A4A" },
 };
 // FAIL VISIBLE (CLAUDE.md §0.3): an unrecognized alert_type must show as a
 // visible warning, not silently fall back to a "looks fine" label.
@@ -19,11 +22,27 @@ function typeMeta(alertType) {
   return TYPE_META[alertType] ?? { label: `⚠ ${alertType ?? "ללא סוג"}`, bg: "#F5F5F5", color: "#888888" };
 }
 
+function fmtTimestamp(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  const sameDay = d.toDateString() === new Date().toDateString();
+  return sameDay
+    ? d.toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" })
+    : d.toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit" }) + " " + d.toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" });
+}
+
 export default function RequestsBoard({ user }) {
   const [requests, setRequests] = useState([]);
   const [loading, setLoading]   = useState(true);
   const [toast, setToast]       = useState(null);
   const [showResolved, setShowResolved] = useState(false);
+  // "New Portal Requests" pane — Full Portal Integration session. Reuses this
+  // existing board + its realtime/resolve flow rather than a parallel
+  // dashboard: alert_type='upsell_opportunity' is currently written ONLY by
+  // guest-portal-upsell, so it's already a clean, unique key for "came from
+  // the Guest Portal" — no new column needed.
+  const [sourceFilter, setSourceFilter] = useState("all"); // "all" | "portal"
   const [resolvingReq, setResolvingReq] = useState(null); // the row being resolved
   const [noteText, setNoteText]         = useState("");
   const [saving, setSaving]             = useState(false);
@@ -66,8 +85,12 @@ export default function RequestsBoard({ user }) {
     setNoteText("");
   };
 
-  const visible = showResolved ? requests : requests.filter((r) => !r.resolved);
-  const pendingCount = requests.filter((r) => !r.resolved).length;
+  const bySource = sourceFilter === "portal"
+    ? requests.filter((r) => r.alert_type === "upsell_opportunity")
+    : requests;
+  const visible = showResolved ? bySource : bySource.filter((r) => !r.resolved);
+  const pendingCount = bySource.filter((r) => !r.resolved).length;
+  const portalPendingCount = requests.filter((r) => r.alert_type === "upsell_opportunity" && !r.resolved).length;
 
   return (
     <div>
@@ -140,6 +163,30 @@ export default function RequestsBoard({ user }) {
         </div>
       )}
 
+      {/* Source filter — "🌴 בקשות מהפורטל" isolates guest-portal-upsell rows
+          (alert_type='upsell_opportunity') into their own dedicated view,
+          without forking a second board/realtime subscription. */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+        {[
+          { id: "all", label: "הכל" },
+          { id: "portal", label: `🌴 בקשות מהפורטל${portalPendingCount > 0 ? ` (${portalPendingCount})` : ""}` },
+        ].map((f) => (
+          <button
+            key={f.id}
+            onClick={() => setSourceFilter(f.id)}
+            style={{
+              padding: "6px 14px", borderRadius: 20, fontSize: 12, fontWeight: 700,
+              border: `1.5px solid ${sourceFilter === f.id ? "var(--gold-dark)" : "var(--border)"}`,
+              background: sourceFilter === f.id ? "var(--gold)" : "transparent",
+              color: sourceFilter === f.id ? "#1A1A1A" : "var(--text-muted)",
+              cursor: "pointer", fontFamily: "inherit",
+            }}
+          >
+            {f.label}
+          </button>
+        ))}
+      </div>
+
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
         <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
           {pendingCount} {"בקשות פתוחות"}
@@ -172,7 +219,7 @@ export default function RequestsBoard({ user }) {
           <div style={{ overflowX: "auto" }}>
             <table className="table" style={{ minWidth: 720 }}>
               <thead><tr>
-                <th>אורח</th><th>חדר</th><th>סוג</th><th>בקשה</th><th>סטטוס</th><th>פעולות</th>
+                <th>אורח</th><th>חדר</th><th>סוג</th><th>בקשה</th><th>זמן</th><th>סטטוס</th><th>פעולות</th>
               </tr></thead>
               <tbody>
                 {visible.map((r) => {
@@ -194,6 +241,9 @@ export default function RequestsBoard({ user }) {
                             ✓ {r.resolution_notes}
                           </div>
                         )}
+                      </td>
+                      <td style={{ fontSize: 12, color: "var(--text-muted)", whiteSpace: "nowrap" }}>
+                        {fmtTimestamp(r.created_at)}
                       </td>
                       <td>
                         <span style={{

@@ -31,6 +31,7 @@ import RequestsAlertWidget from "./components/RequestsAlertWidget";
 import AiFailoverWidget from "./components/AiFailoverWidget";
 import SuitesDashboard from "./components/SuitesDashboard";
 import DataSyncPage from "./components/DataSyncPage";
+import PortalSettingsPanel from "./components/PortalSettingsPanel";
 import CMSGate from "./components/cms/CMSGate";
 import CMSSecurityPanel from "./components/cms/CMSSecurityPanel";
 
@@ -239,7 +240,10 @@ function decodeJwt(token) {
 // DREAM ISLAND BRAND COLORS
 // ============================================================
 const css = `
-  @import url('https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700;800;900&family=Playfair+Display:wght@400;600;700&display=swap');
+  /* Heebo/Playfair Display now loaded via a <link> in public/index.html
+     (not an @import here) — see that file's comment for why: this CSS
+     string only ever runs once App.js mounts, which the public Guest
+     Portal route (/portal/:token) never does. */
 
   @keyframes di-spin { to { transform: rotate(360deg); } }
   @keyframes slideUp {
@@ -1129,6 +1133,14 @@ function Sidebar({ user, active, setActive, openOpsCount, onLogout, isAdmin, isS
             >
               <span className="icon">📥</span>
               <span>סנכרון נתונים</span>
+            </button>
+            <button
+              className={`nav-item ${active === "portal_settings" ? "active" : ""}`}
+              onClick={() => setActive("portal_settings")}
+              style={{ color: active === "portal_settings" ? "var(--gold)" : "rgba(201,169,110,0.6)" }}
+            >
+              <span className="icon">🎨</span>
+              <span>הגדרות פורטל</span>
             </button>
             <button
               className={`nav-item ${active === "bot_config" ? "active" : ""}`}
@@ -2083,6 +2095,7 @@ export default function App() {
     bot_scripts:   "📝 עורך סקריפטי הבוט",
     automation_center: "🎛️ בקרת אוטומציה",
     data_sync:  "📥 סנכרון נתונים",
+    portal_settings: "🎨 הגדרות פורטל",
     cms_security: "🔐 אבטחת CMS",
     agent:      agentProfile ? `${agentProfile.display_name} 🤖` : "הסוכן שלי 🤖",
     admin:      "👑 ניהול מערכת",
@@ -2290,6 +2303,11 @@ export default function App() {
         return guardPage(
           ["admin", "super_admin"],
           <DataSyncPage />
+        );
+      case "portal_settings":
+        return guardPage(
+          ["admin", "super_admin"],
+          <PortalSettingsPanel />
         );
       case "cms_security":
         return guardPage(

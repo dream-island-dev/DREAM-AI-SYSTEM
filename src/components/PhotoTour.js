@@ -1,22 +1,45 @@
 // src/components/PhotoTour.js
-// Scrollytelling Virtual Tour — Sprint 10.2/10.3 (Pre-Arrival Guest Portal).
+// Scrollytelling Virtual Tour — "Luxury Resort UI Upgrade (Dream Island
+// XOS)" session. No three.js / heavy scroll libraries — each "scene" is a
+// plain full-viewport section observed by IntersectionObserver; CSS
+// transitions do the crossfade, slow Ken-Burns zoom, and glass-card reveal.
+// Background images are layered behind a brand-tinted gradient
+// (`linear-gradient(...), url(...)`) so a missing /images/*.jpg degrades to
+// a clean gradient instead of a broken-image hole — once a real photo lands
+// in public/images/, the same markup picks it up with no code change.
 //
-// No three.js / heavy scroll libraries — each "scene" is a plain full-viewport
-// section observed by IntersectionObserver; CSS opacity/transform transitions
-// do the crossfade + glass-card reveal. Background images are layered behind
-// a brand-tinted gradient (`linear-gradient(...), url(...)`) so a missing
-// /images/*.jpg (none are shipped yet — see CLAUDE.md §10) degrades to a
-// clean gradient instead of a broken-image hole; once real photography is
-// dropped into public/images/, the same markup picks it up with no code change.
+// Content (text/CTAs/image filenames) — "Dynamic CMS" session: live source
+// is the portal_scenes table (migration 084), publicly readable, edited via
+// the admin "🎨 הגדרות פורטל" panel (PortalSettingsPanel.js) with no deploy
+// needed. src/data/portalContent.js's PORTAL_SCENES is now ONLY the static
+// fallback — used as the initial paint (so there's never a blank/loading
+// flash) and the permanent fallback if the DB fetch fails or the table is
+// empty. This file has zero scene-specific content of its own either way.
 //
 // Dream Island "XOS" guest-facing palette — deliberately distinct from the
-// staff app's --gold/--ivory CSS variables (§11): deep dark + champagne gold,
-// per the directive's GLOBAL LUXURY BRANDING PROTOCOL.
+// staff app's --gold/--ivory CSS variables (§11): deep dark (#09090b) +
+// champagne gold (#D4AF37) + light-gray type, minimalist/architectural,
+// mirroring the tone of dream-island.co.il rather than a generic "luxury
+// template" look.
 import { useEffect, useRef, useState } from "react";
+import { supabase, isSupabaseConfigured } from "../supabaseClient";
+import { PORTAL_SCENES as STATIC_PORTAL_SCENES } from "../data/portalContent";
 
 const XOS_GOLD = "#D4AF37";
+const XOS_BLACK = "#09090b";
 
-function Scene({ image, gradient, title, body, ctas, onUpsell, busyLabel }) {
+// Cycled by scene index — varied tinting without per-scene config. Add more
+// entries here (not in portalContent.js) if you want more variety as scenes
+// are added; falls back to repeating this list if there are more scenes
+// than tints.
+const FALLBACK_TINTS = [
+  "linear-gradient(135deg, rgba(15,23,42,0.55), rgba(9,9,11,0.8))",
+  "linear-gradient(135deg, rgba(15,40,52,0.55), rgba(9,9,11,0.82))",
+  "linear-gradient(135deg, rgba(52,15,20,0.55), rgba(9,9,11,0.82))",
+  "linear-gradient(135deg, rgba(40,32,12,0.55), rgba(9,9,11,0.84))",
+];
+
+function Scene({ image, gradient, title, body, ctas, onUpsell, busyLabel, showScrollHint }) {
   const ref = useRef(null);
   const [visible, setVisible] = useState(false);
 
@@ -38,16 +61,17 @@ function Scene({ image, gradient, title, body, ctas, onUpsell, busyLabel }) {
         padding: "0 20px",
       }}
     >
-      {/* Background layer — gradient first so a 404'd image never leaves a
-          blank hole; image (if present) paints over it. */}
+      {/* Background layer — full-bleed, slow Ken-Burns creep while in view
+          (long transform transition, not a snap) — gradient first so a
+          404'd image never leaves a blank hole. */}
       <div
         style={{
           position: "absolute", inset: 0,
-          backgroundImage: `${gradient}, url(${image})`,
+          backgroundImage: `${gradient}, url("${image}")`,
           backgroundSize: "cover", backgroundPosition: "center",
-          opacity: visible ? 1 : 0.35,
-          transform: visible ? "scale(1)" : "scale(1.06)",
-          transition: "opacity 1.1s ease, transform 1.4s ease",
+          opacity: visible ? 1 : 0.3,
+          transform: visible ? "scale(1.12)" : "scale(1)",
+          transition: "opacity 1.4s ease, transform 9s cubic-bezier(0.16, 1, 0.3, 1)",
         }}
       />
 
@@ -55,47 +79,57 @@ function Scene({ image, gradient, title, body, ctas, onUpsell, busyLabel }) {
       <div
         style={{
           position: "relative", zIndex: 2, maxWidth: 420, width: "100%",
-          background: "rgba(15, 23, 42, 0.45)",
-          backdropFilter: "blur(18px)",
-          WebkitBackdropFilter: "blur(18px)",
-          border: `1px solid rgba(212,175,55,0.35)`,
-          borderRadius: 20,
-          padding: "28px 26px",
+          background: "rgba(9, 9, 11, 0.42)",
+          backdropFilter: "blur(15px)",
+          WebkitBackdropFilter: "blur(15px)",
+          border: `1px solid rgba(212,175,55,0.3)`,
+          borderRadius: 18,
+          padding: "30px 28px",
           textAlign: "center",
-          boxShadow: "0 20px 60px rgba(0,0,0,0.45)",
+          boxShadow: "0 20px 60px rgba(0,0,0,0.5)",
           opacity: visible ? 1 : 0,
           transform: visible ? "translateY(0)" : "translateY(28px)",
           transition: "opacity 0.9s ease 0.15s, transform 0.9s ease 0.15s",
         }}
       >
         <h2 style={{
-          margin: "0 0 10px", fontFamily: "Playfair Display, serif",
-          fontSize: 24, fontWeight: 700, color: XOS_GOLD, letterSpacing: 0.3,
+          margin: "0 0 12px", fontFamily: "Heebo, system-ui, sans-serif",
+          fontSize: 25, fontWeight: 800, color: XOS_GOLD, letterSpacing: 0.4,
         }}>
           {title}
         </h2>
-        <p style={{ margin: "0 0 18px", fontSize: 14, lineHeight: 1.7, color: "#E5E7EB" }}>
+        <p style={{
+          margin: "0 0 20px", fontFamily: "Heebo, system-ui, sans-serif",
+          fontSize: 14, lineHeight: 1.8, color: "#D1D5DB", fontWeight: 300,
+        }}>
           {body}
         </p>
         {ctas?.length > 0 && (
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {ctas.map((cta) => {
-              const isBusy = busyLabel === cta.upsellLabel;
+              const isLink = cta.actionType === "LINK";
+              const isBusy = !isLink && busyLabel === cta.upsellLabel;
               return (
                 <button
-                  key={cta.upsellLabel}
-                  onClick={() => onUpsell(cta.upsellLabel)}
-                  disabled={!!busyLabel}
+                  key={cta.label}
+                  className="dixos-cta"
+                  onClick={() => {
+                    if (isLink) {
+                      window.open(cta.buttonUrl, "_blank", "noopener,noreferrer");
+                    } else {
+                      onUpsell(cta.upsellLabel);
+                    }
+                  }}
+                  disabled={!isLink && !!busyLabel}
                   style={{
-                    padding: "12px 16px", borderRadius: 30, border: `1px solid ${XOS_GOLD}`,
+                    padding: "13px 16px", borderRadius: 30, border: `1px solid ${XOS_GOLD}`,
                     background: isBusy
                       ? "rgba(212,175,55,0.15)"
                       : "linear-gradient(135deg, rgba(212,175,55,0.92), rgba(180,140,30,0.92))",
                     color: isBusy ? XOS_GOLD : "#1a1505",
-                    fontFamily: "Heebo, sans-serif", fontSize: 14, fontWeight: 800,
-                    cursor: busyLabel ? "not-allowed" : "pointer",
-                    opacity: busyLabel && !isBusy ? 0.45 : 1,
-                    transition: "opacity 0.2s",
+                    fontFamily: "Heebo, system-ui, sans-serif", fontSize: 14, fontWeight: 700,
+                    cursor: (!isLink && busyLabel) ? "not-allowed" : "pointer",
+                    opacity: (!isLink && busyLabel && !isBusy) ? 0.45 : 1,
                   }}
                 >
                   {isBusy ? "⏳ שולח/ת..." : cta.label}
@@ -105,49 +139,86 @@ function Scene({ image, gradient, title, body, ctas, onUpsell, busyLabel }) {
           </div>
         )}
       </div>
+
+      {/* Scroll-down hint — first scene only, fades with scene visibility
+          like everything else here rather than lingering once scrolled past. */}
+      {showScrollHint && (
+        <div
+          style={{
+            position: "absolute", bottom: 36, left: "50%", transform: "translateX(-50%)",
+            zIndex: 2, opacity: visible ? 0.85 : 0, transition: "opacity 1s ease 0.6s",
+            display: "flex", flexDirection: "column", alignItems: "center", gap: 4,
+          }}
+        >
+          <span style={{ fontSize: 11, color: "#D1D5DB", letterSpacing: 1.5, fontFamily: "Heebo, system-ui, sans-serif" }}>
+            גלילה למטה
+          </span>
+          <span style={{ fontSize: 20, color: XOS_GOLD, animation: "dixos-bounce 1.8s ease-in-out infinite" }}>
+            ↓
+          </span>
+        </div>
+      )}
     </section>
   );
 }
 
-const SCENES = [
-  {
-    image: "/images/entrance.jpg",
-    gradient: "linear-gradient(135deg, rgba(15,23,42,0.55), rgba(9,9,11,0.75))",
-    title: "ברוכים הבאים ל-Dream Island",
-    body: "חופשה שתישאר עמכם הרבה אחרי שתחזרו הביתה — כל פרט תוכנן כדי שתרגישו בבית, ברמה של פנטהאוז.",
-    ctas: [],
-  },
-  {
-    image: "/images/spa.jpg",
-    gradient: "linear-gradient(135deg, rgba(15,40,52,0.55), rgba(9,9,11,0.78))",
-    title: "עולם המים והרוגע",
-    body: "טיפולי ספא, בריכות מפנקות ושעות של רוגע מוחלט — בדיוק כמו שמגיע לכם.",
-    ctas: [{ label: "💆 הזמן/י טיפול ספא", upsellLabel: "בקשת טיפול ספא" }],
-  },
-  {
-    image: "/images/wine.jpg",
-    gradient: "linear-gradient(135deg, rgba(52,15,20,0.55), rgba(9,9,11,0.78))",
-    title: "קולינריה ויין",
-    body: "ארוחות שף, סדנאות יין וטעימות בלתי-נשכחות — חוויה לחמשת החושים.",
-    ctas: [
-      { label: "🍷 הזמן/י סדנת יין", upsellLabel: "הזמנת סדנת יין" },
-      { label: "🍾 שמפניה לסוויטה", upsellLabel: "שמפניה לסוויטה" },
-    ],
-  },
-  {
-    image: "/images/suites.jpg",
-    gradient: "linear-gradient(135deg, rgba(40,32,12,0.55), rgba(9,9,11,0.8))",
-    title: "סוויטות יוקרה",
-    body: "כל סוויטה מעוצבת בקפידה לחוויית אירוח מושלמת — הבית-מחוץ-לבית שלכם.",
-    ctas: [],
-  },
-];
-
 export default function PhotoTour({ onUpsell, busyLabel }) {
+  // Starts with the static bundle as the initial paint (zero flash/loading
+  // spinner) — swapped for live DB content the moment it arrives, if it
+  // does. Never throws, never leaves the page blank: any failure (no
+  // Supabase, network error, empty table) just means this stays on the
+  // static fallback already on screen.
+  const [scenes, setScenes] = useState(STATIC_PORTAL_SCENES);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      if (!isSupabaseConfigured || !supabase) return;
+      try {
+        const { data, error } = await supabase
+          .from("portal_scenes")
+          .select("image, title, body, ctas")
+          .eq("is_active", true)
+          .order("sort_order");
+        if (!active || error || !data || data.length === 0) return;
+        setScenes(data.map((row) => ({
+          image: row.image, title: row.title, body: row.body, ctas: row.ctas ?? [],
+        })));
+      } catch {
+        // Network hiccup etc. — keep whatever's already rendered.
+      }
+    })();
+    return () => { active = false; };
+  }, []);
+
   return (
-    <div>
-      {SCENES.map((scene) => (
-        <Scene key={scene.title} {...scene} onUpsell={onUpsell} busyLabel={busyLabel} />
+    <div style={{ background: XOS_BLACK }}>
+      <style>{`
+        @keyframes dixos-bounce {
+          0%, 100% { transform: translateY(0); }
+          50%      { transform: translateY(8px); }
+        }
+        .dixos-cta {
+          transition: box-shadow 0.3s ease, transform 0.3s ease, opacity 0.2s ease;
+        }
+        .dixos-cta:hover:not(:disabled) {
+          box-shadow: 0 0 28px rgba(212,175,55,0.55);
+          transform: translateY(-2px);
+        }
+        .dixos-cta:active:not(:disabled) {
+          transform: translateY(0);
+        }
+      `}</style>
+      {scenes.map((scene, i) => (
+        <Scene
+          key={`${scene.title}-${i}`}
+          {...scene}
+          image={`/images/${scene.image}`}
+          gradient={FALLBACK_TINTS[i % FALLBACK_TINTS.length]}
+          onUpsell={onUpsell}
+          busyLabel={busyLabel}
+          showScrollHint={i === 0}
+        />
       ))}
     </div>
   );

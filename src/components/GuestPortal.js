@@ -61,7 +61,7 @@ function CountdownUnit({ value, label }) {
   return (
     <div style={{ textAlign: "center", minWidth: 56 }}>
       <div style={{
-        fontFamily: "Playfair Display, serif", fontSize: 30, fontWeight: 700,
+        fontFamily: "Heebo, system-ui, sans-serif", fontSize: 30, fontWeight: 800,
         color: XOS_GOLD, lineHeight: 1,
       }}>
         {String(value).padStart(2, "0")}
@@ -132,7 +132,10 @@ export default function GuestPortal({ token }) {
     try {
       const { data, error } = await supabase.functions.invoke("guest-portal-upsell", { body: { token, upsellLabel } });
       if (error || !data?.ok) throw new Error(data?.error ?? error?.message ?? "שגיאה");
-      showToast("בקשתך הועברה בהצלחה ✨ הצוות שלנו כבר בדרך");
+      // Exact phrasing requested in the "Full Portal Integration" session —
+      // deliberately doesn't promise someone is already on their way, since
+      // this lands as a guest_alerts row for staff to pick up at their own pace.
+      showToast("בקשתך התקבלה בהצלחה. נציג מנוסה יצור עמך קשר בהקדם.");
     } catch (e) {
       showToast("⚠️ לא הצלחנו לשלוח את הבקשה — נסו שוב או פנו לקבלה");
     } finally {
@@ -199,7 +202,7 @@ export default function GuestPortal({ token }) {
           onError={(e) => { e.target.style.display = "none"; }}
         />
         <div style={{
-          fontFamily: "Playfair Display, serif", fontSize: 13, letterSpacing: 2,
+          fontFamily: "Heebo, system-ui, sans-serif", fontSize: 13, letterSpacing: 2,
           color: "#9CA3AF", textTransform: "uppercase", marginBottom: 22,
         }}>
           Dream Island Resort &amp; Spa

@@ -2,28 +2,30 @@
 // Pre-Arrival Guest Portal — in-scroll one-click upsell dispatch.
 //
 // Validates the guest by `portal_token` (same credential as
-// guest-portal-data, service-role lookup), inserts a real `tasks` row
-// (source='portal_upsell', migration 083) so it lands on OperationsBoard
-// under the same SLA tracking as every other task source, and posts a card
-// to the staff Whapi ops group — same mechanism as notify-manual-task /
-// whapi-webhook's reaction-sweep, so a 👍🏼 on the card resolves it identically.
-// whapi_message_id is stored back on the task for that listener to match.
+// guest-portal-data, service-role lookup) and inserts a row into
+// `guest_alerts` with alert_type='upsell_opportunity' (migration 012 already
+// defined this exact type — never wired to a writer until now).
+//
+// REDESIGNED (was: tasks insert + Whapi group card) — a guest clicking
+// "order a wine workshop" is a sales lead for staff to act on at their own
+// pace, not an operational ticket that needs claiming/SLA-escalation into
+// the staff WhatsApp group the moment it's clicked. guest_alerts is the
+// right home: it already surfaces in-app via RequestsAlertWidget.js's 📋 FAB
+// (realtime badge + toast, visible from anywhere in the app) and
+// RequestsBoard.js's resolve-with-note flow — no WhatsApp group ping at all.
+// sla-escalation-cron's existing 10-min-unresolved → personal 1:1 ping to
+// the duty manager (SLA_GUEST_ALERT_PHONE, Meta) still applies here exactly
+// as it already does for every other guest_alerts row — that's a measured
+// "nobody looked at this in 10 minutes" nudge, not a group blast, so it's
+// kept as-is rather than suppressed.
 
-import { serve }         from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient }  from "https://esm.sh/@supabase/supabase-js@2";
-import { sendWhapiText } from "../_shared/whapiSend.ts";
+import { serve }        from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
-
-function buildUpsellCard(room: string | null, guestName: string, label: string): string {
-  return [
-    `🛎️ [GUEST PORTAL UPSELL] Suite ${room ?? "—"} (${guestName}): ${label}`,
-    `👉 Please react with 👍🏼 to complete this task.`,
-  ].join("\n");
-}
 
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
@@ -33,9 +35,11 @@ serve(async (req: Request) => {
     if (!token || typeof token !== "string") throw new Error("token required");
     if (!upsellLabel || typeof upsellLabel !== "string") throw new Error("upsellLabel required");
 
-    // Same UUID-shape guard as guest-portal-data — see that function's
-    // comment. Without it, a malformed token throws a raw Postgres type
-    // error instead of a clean guest_not_found.
+    // portal_token is a UUID column — a malformed token (typo, truncated
+    // link) throws a Postgres type error at query time, not a clean "0
+    // rows". Validate the shape first so that case returns the same
+    // guest_not_found a guest sees for a well-formed-but-unknown token,
+    // instead of leaking a raw DB error message to the client.
     const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     if (!UUID_RE.test(token)) {
       return new Response(
@@ -51,7 +55,7 @@ serve(async (req: Request) => {
 
     const { data: guest, error: guestErr } = await supabase
       .from("guests")
-      .select("id, name, room")
+      .select("id, name, phone, room")
       .eq("portal_token", token)
       .maybeSingle();
     if (guestErr) throw new Error(`lookup_error: ${guestErr.message}`);
@@ -62,43 +66,31 @@ serve(async (req: Request) => {
       );
     }
 
-    const guestLabel = guest.name ?? "אורח";
-    const { data: task, error: insErr } = await supabase
-      .from("tasks")
+    // guest_alerts.phone is NOT NULL (migration 012) — a guest row with no
+    // phone on file can't be alerted against; surface that clearly instead
+    // of a constraint-violation error from the insert below.
+    if (!guest.phone) {
+      return new Response(
+        JSON.stringify({ ok: false, error: "guest_has_no_phone" }),
+        { status: 200, headers: { ...CORS, "Content-Type": "application/json" } }
+      );
+    }
+
+    const { data: alert, error: insErr } = await supabase
+      .from("guest_alerts")
       .insert({
-        room_number:       guest.room ?? null,
-        department:        "מזמ\"ש (F&B)",
-        description:       `[פורטל אורח — ${guestLabel}] ${upsellLabel}`.trim(),
-        priority:          "normal",
-        status:            "open",
-        sla_category:      "guest_amenities",
-        sla_deadline:       new Date(Date.now() + 15 * 60000).toISOString(),
-        source:            "portal_upsell",
-        guest_id:          guest.id,
-        reporter_raw_text: upsellLabel,
+        guest_id:   guest.id,
+        phone:      guest.phone,
+        alert_type: "upsell_opportunity",
+        message:    `[פורטל אורח${guest.room ? " — " + guest.room : ""}] ${upsellLabel}`.trim(),
+        resolved:   false,
       })
       .select("id")
       .maybeSingle();
-    if (insErr) throw new Error(`task_insert_error: ${insErr.message}`);
-
-    const groupId = (Deno.env.get("WHAPI_GROUP_ID") ?? "").trim();
-    if (groupId && task?.id) {
-      try {
-        const card = buildUpsellCard(guest.room, guestLabel, upsellLabel);
-        const cardMsgId = await sendWhapiText(groupId, card, { noLinkPreview: true });
-        if (cardMsgId) {
-          await supabase.from("tasks").update({ whapi_message_id: cardMsgId }).eq("id", task.id);
-        }
-      } catch (e) {
-        // Best-effort — the task row is already created and visible on
-        // OperationsBoard even if the group ping fails; never block the
-        // guest's success toast on a Whapi hiccup.
-        console.error("[guest-portal-upsell] Whapi notify failed (non-blocking):", (e as Error).message);
-      }
-    }
+    if (insErr) throw new Error(`alert_insert_error: ${insErr.message}`);
 
     return new Response(
-      JSON.stringify({ ok: true, taskId: task?.id ?? null }),
+      JSON.stringify({ ok: true, alertId: alert?.id ?? null }),
       { headers: { ...CORS, "Content-Type": "application/json" } }
     );
   } catch (err: unknown) {

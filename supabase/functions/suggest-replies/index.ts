@@ -121,10 +121,33 @@ function parseSuggestions(raw: string): string[] {
     const match = stripped.match(/\{[\s\S]*\}/);
     if (match) result = tryParse(match[0]);
   }
+  // Claude (no JSON mode, unlike Gemini's responseMimeType:"application/json")
+  // sometimes emits a literal line break mid-sentence inside a string value —
+  // never valid JSON (must be \n-escaped). That throws on both attempts above
+  // and used to fall straight to the line-split below, which then split the
+  // broken JSON's own lines and surfaced a raw fragment (e.g. `{"suggestions":
+  // ["...`) as if it were a clean suggestion. Collapsing real newlines to
+  // spaces and retrying fixes the JSON without losing any suggestion text.
+  if (!result) {
+    const collapsed = stripped.replace(/\r?\n/g, " ").trim();
+    result = tryParse(collapsed);
+    if (!result) {
+      const match = collapsed.match(/\{[\s\S]*\}/);
+      if (match) result = tryParse(match[0]);
+    }
+  }
+  // Last resort: best-effort line-split for models that ignored the
+  // JSON-only instruction entirely and replied with a plain bulleted list.
   if (!result) {
     result = stripped.split("\n").map((l) => l.replace(/^[-*\d.)\s]+/, "").trim()).filter(Boolean).slice(0, 3);
   }
-  return result ?? [];
+
+  // FAIL VISIBLE, not fail-garbled: never surface a leftover JSON fragment as
+  // if it were a clean suggestion — if every attempt above still leaves
+  // JSON syntax in a "suggestion", drop it. The caller already turns an
+  // empty result into a clear Hebrew error message.
+  const looksLikeJsonLeak = (s: string) => /[{}[\]]|"suggestions"/.test(s);
+  return (result ?? []).filter((s) => s.trim() && !looksLikeJsonLeak(s));
 }
 
 serve(async (req: Request) => {
