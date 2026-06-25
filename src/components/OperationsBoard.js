@@ -18,6 +18,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import ArrivalImportPanel from "./ArrivalImportPanel";
+import { getGuestTimingBadge } from "../utils/guestTiming";
 
 const HOTEL_DEPARTMENTS = ["תפעול", "משק", "קבלה", "ספא", 'מזמ"ש (F&B)', "הנהלה"];
 
@@ -277,6 +278,7 @@ function TaskCard({ task, onClaim, onMarkDone, isUpdating }) {
   const isInProgress = task.status === "in_progress";
   const src = SOURCE_META[task.source] ?? SOURCE_META.manual;
 
+  const timingBadge = getGuestTimingBadge(task.guests);
   const overdue = task.sla_deadline && !isDone && new Date(task.sla_deadline).getTime() < Date.now();
   const slaMinutesLeft = task.sla_deadline
     ? Math.round((new Date(task.sla_deadline).getTime() - Date.now()) / 60000)
@@ -312,6 +314,15 @@ function TaskCard({ task, onClaim, onMarkDone, isUpdating }) {
             </span>
           )}
           <span style={{ fontSize: 11, fontWeight: 600, color: src.color }}>{src.label}</span>
+          {timingBadge && (
+            <span style={{
+              fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 12,
+              background: timingBadge.bg, color: timingBadge.color,
+              border: `1px solid ${timingBadge.border}`,
+            }}>
+              {timingBadge.label}
+            </span>
+          )}
           {isDone && (task.resolved_by_name || task.resolved_by_phone) && (
             <span style={{ fontSize: 11, color: "#059669", fontWeight: 600 }}>
               ✔️ בוצע ע״י: {task.resolved_by_name || task.resolved_by_phone}
@@ -404,9 +415,12 @@ export default function OperationsBoard({ user, isAdmin }) {
   const fetchTasks = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) { setLoading(false); return; }
     setLoading(true);
+    // guests(...) embed is for the future-arrival/in-house badge (TaskCard) —
+    // computed live off arrival_date/departure_date/status, not stored on the
+    // task row, so it never goes stale while a request sits open (§0.5).
     let query = supabase
       .from("tasks")
-      .select("*")
+      .select("*, guests(arrival_date, departure_date, status)")
       .order("created_at", { ascending: false });
 
     if (!canCreate && userDept) {

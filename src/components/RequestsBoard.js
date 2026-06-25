@@ -6,6 +6,7 @@
 // guests for name/room. No new table — see CLAUDE.md Task Board plan.
 import { useState, useEffect, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
+import { getGuestTimingBadge } from "../utils/guestTiming";
 
 const TYPE_META = {
   complaint:           { label: "🔴 תקלה",          bg: "#FFF0EE", color: "#C0392B" },
@@ -52,9 +53,12 @@ export default function RequestsBoard({ user }) {
   const fetchRequests = useCallback(async () => {
     setLoading(true);
     if (!isSupabaseConfigured || !supabase) { setLoading(false); return; }
+    // arrival_date/departure_date/status feed the live future-arrival/in-house
+    // badge below (getGuestTimingBadge) — computed at render time, not stored,
+    // so it can't drift from the guest's actual current state (CLAUDE.md §0.5).
     const { data, error } = await supabase
       .from("guest_alerts")
-      .select("*, guests(name, room)")
+      .select("*, guests(name, room, arrival_date, departure_date, status)")
       .order("resolved", { ascending: true })
       .order("created_at", { ascending: false });
     if (error) showToast("err", "שגיאה בטעינה: " + error.message);
@@ -219,15 +223,26 @@ export default function RequestsBoard({ user }) {
           <div style={{ overflowX: "auto" }}>
             <table className="table" style={{ minWidth: 720 }}>
               <thead><tr>
-                <th>אורח</th><th>חדר</th><th>סוג</th><th>בקשה</th><th>זמן</th><th>סטטוס</th><th>פעולות</th>
+                <th>אורח</th><th>חדר</th><th>תזמון</th><th>סוג</th><th>בקשה</th><th>זמן</th><th>סטטוס</th><th>פעולות</th>
               </tr></thead>
               <tbody>
                 {visible.map((r) => {
                   const tm = typeMeta(r.alert_type);
+                  const timingBadge = getGuestTimingBadge(r.guests);
                   return (
                     <tr key={r.id} style={{ opacity: r.resolved ? 0.6 : 1 }}>
                       <td style={{ fontWeight: 700 }}>{r.guests?.name || "—"}</td>
                       <td>{r.guests?.room || "—"}</td>
+                      <td>
+                        {timingBadge && (
+                          <span style={{
+                            padding: "3px 9px", borderRadius: 20, fontSize: 11, fontWeight: 700,
+                            whiteSpace: "nowrap",
+                            background: timingBadge.bg, color: timingBadge.color,
+                            border: `1px solid ${timingBadge.border}`,
+                          }}>{timingBadge.label}</span>
+                        )}
+                      </td>
                       <td>
                         <span style={{
                           padding: "3px 9px", borderRadius: 20, fontSize: 11, fontWeight: 700,

@@ -110,9 +110,13 @@ serve(async (req: Request) => {
     // 1. Guest Requests Board — guest_alerts, flat 10-min threshold
     // ════════════════════════════════════════════════════════════════════════
     const guestThresholdIso = new Date(Date.now() - GUEST_ALERT_SLA_MINUTES * 60 * 1000).toISOString();
+    // arrival_date/status added so the breach text can flag a not-yet-arrived
+    // guest (portal requests can land days before check-in) — same comparison
+    // as src/utils/guestTiming.js's isFutureArrival, duplicated here rather
+    // than imported (Deno functions don't import frontend modules in this repo).
     const { data: overdueAlerts, error: alertsErr } = await supabase
       .from("guest_alerts")
-      .select("id, phone, message, alert_type, created_at, guest_id, guests(name, room)")
+      .select("id, phone, message, alert_type, created_at, guest_id, guests(name, room, arrival_date, status)")
       .eq("resolved", false)
       .is("escalated_at", null)
       .lt("created_at", guestThresholdIso);
@@ -120,16 +124,28 @@ serve(async (req: Request) => {
 
     const guestResults: Array<{ alertId: number; notified: boolean }> = [];
     for (const alert of overdueAlerts ?? []) {
-      const guestLabel = (alert as Record<string, unknown>).guests
-        ? `${(alert as any).guests.name ?? "Guest"} (Room ${(alert as any).guests.room ?? "—"})`
+      const alertGuest = (alert as any).guests as { name?: string; room?: string; arrival_date?: string; status?: string } | null;
+      const guestLabel = alertGuest
+        ? `${alertGuest.name ?? "Guest"} (Room ${alertGuest.room ?? "—"})`
         : alert.phone;
+      // Same exact tag format as guest-portal-upsell/guest-portal-ops-request's
+      // futureArrivalTag() — "PORTAL CTAS & ADIR'S FUTURE CONTEXT" session —
+      // duplicated here rather than imported (Deno function boundary).
+      let arrivalNote = "";
+      if (alertGuest?.arrival_date && alertGuest.status !== "checked_in") {
+        const today = new Date(); today.setUTCHours(0, 0, 0, 0);
+        const arrival = new Date(`${alertGuest.arrival_date}T00:00:00Z`);
+        const daysAway = Math.round((arrival.getTime() - today.getTime()) / 86400000);
+        if (daysAway > 0) arrivalNote = `\n⚠️ בקשה עתידית לתאריך ${alertGuest.arrival_date} - בעוד ${daysAway} ימים`;
+      }
       const ageMinutes = Math.round((Date.now() - new Date(alert.created_at as string).getTime()) / 60000);
       const englishText =
         `⚠️ SLA BREACH — Guest request unresolved for ${ageMinutes} min (limit: ${GUEST_ALERT_SLA_MINUTES} min).\n` +
         `Guest: ${guestLabel}\n` +
         `Type: ${alert.alert_type}\n` +
         `Message: "${alert.message}"\n` +
-        `Please check the Requests Board.`;
+        `Please check the Requests Board.` +
+        arrivalNote;
 
       const notified = guestAlertPhone ? await notifyWhatsapp(supabaseUrl, anon, guestAlertPhone, englishText) : false;
 

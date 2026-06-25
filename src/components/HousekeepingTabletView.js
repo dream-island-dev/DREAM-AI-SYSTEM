@@ -84,23 +84,21 @@ function fmtDuration(sec) {
 
 export default function HousekeepingTabletView({ isKioskMode = false, onLogout }) {
   const [statusMap, setStatusMap] = useState({});
-  const [guests,    setGuests]    = useState([]);
   const [loading,   setLoading]   = useState(true);
   const [filter,    setFilter]    = useState("all"); // all | dirty | cleaning
   const [toast,     setToast]     = useState(null);
 
   // ── Fetch ───────────────────────────────────────────────────────────────
+  // No `guests` read here (session "RESTRICTED CLEANER ROLE" — migration 087
+  // blocks the cleaner role from the guests table entirely, customer PII).
+  // Occupancy awareness ("don't walk in on a guest") now comes purely from
+  // room_status.status === "תפוס" — the same column this view already reads,
+  // zero extra query, zero guest name/PII exposed.
   const fetchAll = useCallback(async () => {
     if (!supabase) return;
-    const [{ data: statuses }, { data: guestRows }] = await Promise.all([
-      supabase
-        .from("room_status")
-        .select("room_id, status, cleaning_started_at, last_clean_duration_sec, jacuzzi_status, room_clean_status"),
-      supabase
-        .from("guests")
-        .select("id, name, room, suite_name, status")
-        .in("status", ["checked_in", "room_ready", "pending", "expected"]),
-    ]);
+    const { data: statuses } = await supabase
+      .from("room_status")
+      .select("room_id, status, cleaning_started_at, last_clean_duration_sec, jacuzzi_status, room_clean_status");
     if (statuses) {
       const map = {};
       statuses.forEach(r => {
@@ -114,7 +112,6 @@ export default function HousekeepingTabletView({ isKioskMode = false, onLogout }
       });
       setStatusMap(map);
     }
-    setGuests(guestRows ?? []);
     setLoading(false);
   }, []);
 
@@ -126,7 +123,6 @@ export default function HousekeepingTabletView({ isKioskMode = false, onLogout }
     const ch = supabase
       .channel("housekeeping-tablet-rt")
       .on("postgres_changes", { event: "*", schema: "public", table: "room_status" }, fetchAll)
-      .on("postgres_changes", { event: "*", schema: "public", table: "guests" }, fetchAll)
       .subscribe();
     return () => supabase.removeChannel(ch);
   }, [fetchAll]);
@@ -221,9 +217,6 @@ export default function HousekeepingTabletView({ isKioskMode = false, onLogout }
     const rawStatus = entry.status ?? "פנוי";
     const roomCleanStatus = entry.roomCleanStatus ?? "dirty";
     const jacuzziStatus = entry.jacuzziStatus ?? "dirty";
-    const guest = guests.find(g =>
-      String(g.suite_name ?? "").trim() === id || String(g.room ?? "").trim() === id
-    ) ?? null;
     return {
       id,
       rawStatus,
@@ -232,9 +225,9 @@ export default function HousekeepingTabletView({ isKioskMode = false, onLogout }
       bucket: bucketOf(rawStatus, roomCleanStatus),
       cleaningStartedAt: entry.cleaningStartedAt ?? null,
       lastDuration: entry.lastDuration ?? null,
-      guest,
+      occupied: rawStatus === "תפוס",
     };
-  }), [statusMap, guests]);
+  }), [statusMap]);
 
   const counts = useMemo(() => ({
     total: rooms.length,
@@ -404,10 +397,13 @@ function RoomTabletCard({ room, onSetDirty, onStartCleaning, onMarkClean, onTogg
         </span>
       </div>
 
-      {/* Guest occupancy — minimal, just for cleaner awareness before entry */}
-      {room.guest && (
+      {/* Occupancy — name-free by design (cleaner role has no guests access,
+          migration 087); room_status itself already says "תפוס" when a
+          guest is on-site, which is all the "knock before entering" signal
+          this card needs. */}
+      {room.occupied && (
         <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-          👤 {room.guest.name}{room.guest.status === "checked_in" ? " (באתר / on-site)" : ""}
+          🔒 תפוס — יש אורח בחדר / Occupied
         </div>
       )}
 

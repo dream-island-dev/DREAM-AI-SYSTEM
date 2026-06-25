@@ -171,11 +171,17 @@ async function fetchBotScripts(
 // {{OPTIONAL_SPA_TEXT}} → legacy: "מתואם לכם טיפול בספא בשעה 14:00.\n" or "".
 // {{SPA_TIME}}          → raw time value, or strips containing sentence if absent.
 // {{GUEST_NAME}} / {{WORKSHOP_URL}} → direct substitution.
+// {{PORTAL_LINK}}       → guest's personal Pre-Arrival Portal magic-link
+//                          (session "Automation Recovery" follow-up). Same
+//                          graceful-fallback contract as SPA_TIME: substitutes
+//                          the real link when present, strips the whole
+//                          containing sentence when the guest has no
+//                          portal_token rather than ever sending a dead link.
 //
 // spaTime should be JUST the time value — "14:00" — not "טיפול 45 דקות בשעה 14:00".
 function resolvePlaceholders(
   template: string,
-  vars: { guestName: string; spaTime: string | null; workshopUrl: string }
+  vars: { guestName: string; spaTime: string | null; workshopUrl: string; portalLink?: string }
 ): string {
   // SPA_LINE: "מתואם לכם טיפול בספא בשעה HH:MM. בנוסף, " or "" when no booking.
   // The trailing "בנוסף, " connects naturally to whatever follows.
@@ -206,6 +212,26 @@ function resolvePlaceholders(
     .replace(/\{\{\s*WORKSHOP_URL\s*\}\}/gi, vars.workshopUrl)
     .replace(/\{\{\s*SPA_LINE\s*\}\}/gi, spaLine)
     .replace(/\{\{\s*OPTIONAL_SPA_TEXT\s*\}\}/gi, optionalSpaText);
+
+  // {{PORTAL_LINK}}: substitute the real link, or strip the containing
+  // sentence entirely if the guest has no portal_token — never leave a blank
+  // "click here: " dangling in the message (CORE BUSINESS LOGIC #2, Graceful
+  // Fallback). Should not happen in practice (migration 083 backfilled every
+  // existing guest with a generated UUID and new rows get one by default) —
+  // but trust the actual DB value at send time, not the schema guarantee.
+  // {{portal_url}} is an alias for the exact same value — "SYSTEM ARCHITECTURE,
+  // ZERO-REJECTION, ROOM MASKING & UX" session's directive named it that way;
+  // supporting both spellings means neither an already-saved script nor a
+  // newly-typed one breaks.
+  const PORTAL_PLACEHOLDER_RE = /\{\{\s*(?:PORTAL_LINK|portal_url)\s*\}\}/gi;
+  if (vars.portalLink) {
+    text = text.replace(PORTAL_PLACEHOLDER_RE, vars.portalLink);
+  } else {
+    if (PORTAL_PLACEHOLDER_RE.test(text)) {
+      console.warn("[webhook] resolvePlaceholders() — guest has no portal_token; stripped portal-link sentence rather than send a blank link.");
+    }
+    text = text.replace(/[^\n.!?]*\{\{\s*(?:PORTAL_LINK|portal_url)\s*\}\}[^\n.!?]*[.!?]?\s*/gi, "");
+  }
 
   // Legacy {{SPA_TIME}}: substitute a full sentence (not just the bare time
   // value — that was the "15:00 with nothing around it" bug) or strip the
@@ -563,6 +589,14 @@ function buildGuestStageContext(
   const roomType = guest.room_type   as string | null;
   const confirmed = guest.arrival_confirmed as boolean | null;
   const spaTime  = guest.spa_time    as string | null;
+  // Room Masking ("SYSTEM ARCHITECTURE, ZERO-REJECTION, ROOM MASKING & UX"
+  // session) — the specific suite name/number is operationally swappable
+  // until check-in actually happens, and disclosing it early removes that
+  // flexibility + leaks PII-adjacent info pre-arrival. The real room name is
+  // only injected into the AI's context once the guest is actually
+  // checked_in; before that, an explicit instruction-not-a-value placeholder
+  // prevents the model from ever fabricating a room name if asked.
+  const isCheckedIn = guest.status === "checked_in";
 
   let stage = "";
   if (arrDate) {
@@ -582,7 +616,11 @@ function buildGuestStageContext(
   const parts: string[] = [];
   if (stage)      parts.push(`שלב האורח: ${stage}`);
   if (arrDate)    parts.push(`תאריך הגעה: ${arrDate}`);
-  if (room)       parts.push(`חדר: ${room}`);
+  if (room && isCheckedIn) {
+    parts.push(`חדר: ${room}`);
+  } else if (room) {
+    parts.push("חדר: ייחשף בצ'ק-אין — לפני אז אסור לחשוף/להמציא שם חדר ספציפי, רק לציין שזו סוויטת יוקרה");
+  }
   if (roomType === "suite") parts.push("סוג: סוויטה");
   if (confirmed)  parts.push("אישר הגעה: כן");
   if (spaTime)    parts.push(`שעת טיפול ספא: ${spaTime}`);
@@ -1201,8 +1239,23 @@ async function callClaude(
  */
 const CONFIRMATION_RE = /^[\s🎉✨😊🙂🙏💫🌴]*(?:כן[,!\s.]*)?(?:מגיעים|אנחנו מגיעים|כן מגיעים|כן,מגיעים|כן! מגיעים|כן|אישור|yes|1|מאשר|מאשרת|כן תודה|כן אישור|אישורי|בסדר|ok|נראה מצוין|מצוין)[\s🎉✨😊🙂🙏💫🌴!.,]*$/iu;
 
-const WORKSHOP_SIGNUP_URL = Deno.env.get("WORKSHOP_SIGNUP_URL") ?? "go.oncehub.com/DreamIsland";
 const GOOGLE_REVIEW_URL   = Deno.env.get("GOOGLE_REVIEW_URL")   ?? "";
+
+// Same number as task-action.ts's ACTOR_PHONES.Adir, whapi-webhook's reverse
+// lookup map, and guest-portal-ops-request's ADIR_PHONE — duplicated, not
+// imported (Deno functions don't share modules across function boundaries
+// in this repo).
+const ADIR_PERSONAL_PHONE = "972546294885";
+
+// Pre-Arrival Guest Portal magic-link (migration 083, session 35) — base URL
+// for {{PORTAL_LINK}} below. Defaults to the documented live Vercel URL
+// (CLAUDE.md §1) so this works with zero secret configuration; override via
+// PORTAL_BASE_URL if the deployment URL ever changes.
+const PORTAL_BASE_URL = (Deno.env.get("PORTAL_BASE_URL") ?? "https://dream-ai-system.vercel.app").replace(/\/$/, "");
+function buildPortalLink(portalToken: unknown): string {
+  const token = String(portalToken ?? "").trim();
+  return token ? `${PORTAL_BASE_URL}/portal/${token}` : "";
+}
 
 // A timeout/abort means we never learned whether Meta processed the request —
 // not the same as Meta rejecting it. Tagged distinctly so callers (notification_log
@@ -1425,7 +1478,7 @@ function normalizePhone(phoneStr: unknown): string {
 // `phone` is needed here (unlike before) because the fallback path compares it
 // in JS instead of letting Postgres filter on it server-side.
 const GUEST_LOOKUP_FIELDS =
-  "id, name, phone, arrival_confirmed, payment_amount, payment_link_url, msg_pre_arrival_2d_sent, needs_callback, requires_attention, arrival_date, room, room_type, spa_time, status, guest_notes";
+  "id, name, phone, arrival_confirmed, payment_amount, payment_link_url, msg_pre_arrival_2d_sent, needs_callback, requires_attention, arrival_date, room, room_type, spa_time, status, guest_notes, portal_token";
 
 // ══════════════════════════════════════════════════════════════════════════════
 // §7  MAIN HANDLER
@@ -1837,8 +1890,13 @@ serve(async (req: Request) => {
           }
 
           const safeName    = name.trim() || "אורח יקר";
-          const workshopUrl = Deno.env.get("WORKSHOP_SIGNUP_URL") ?? "";
+          // ⚠️ No WORKSHOP_SIGNUP_URL/OnceHub here on purpose — "SYSTEM ARCHITECTURE,
+          // ZERO-REJECTION, ROOM MASKING & UX" session removed the static workshop
+          // link from Stage 2 entirely; the dynamic {{portal_url}}/{{PORTAL_LINK}}
+          // is the only link this reply injects now.
           const spaTime     = (guest?.spa_time as string | null) ?? null;
+          const portalLink  = buildPortalLink(guest?.portal_token);
+          if (!portalLink) console.warn(`[webhook] ⚠️ guest ${phone} (id:${guestId}) has no portal_token — Stage 2 reply will not include a portal link.`);
 
           // Use stage_2_arrival script from BotScriptEditor if available
           const stage2Script = scripts["stage_2_arrival"];
@@ -1866,19 +1924,19 @@ serve(async (req: Request) => {
               );
             }
             arrivalReply = resolvePlaceholders(stage2Script.message_text, {
-              guestName: safeName, spaTime, workshopUrl,
+              guestName: safeName, spaTime, workshopUrl: "", portalLink,
             });
           } else {
             // Dynamic Sentence approach — single code path for both spa/no-spa cases
             const spaSentence = buildSpaSentence(spaTime);
-            const workshopLine = workshopUrl
-              ? `\n\n🎯 *לסדנאות שלנו — הרשמו מראש:*\n👉 ${workshopUrl}`
+            const portalLine = portalLink
+              ? `\n\n✨ כל הפרטים שלך לפני ההגעה (ספא, ארוחות ועוד) מחכים כאן:\n👉 ${portalLink}`
               : "";
             arrivalReply =
               `מגיעים! 🎉 כבר מתרגשים מאד מהגעתכם, ${safeName}!\n\n` +
               `הצוות שלנו ב-Dream Island מכין את הכל ומחכה לכם עם חיוך גדול 🌴\n\n` +
               spaSentence +
-              workshopLine +
+              portalLine +
               `\n\nיש לכם שאלות לפני ההגעה? על הצ׳ק-אין, החדר — אני כאן לכל שאלה 😊`;
           }
 
@@ -2071,9 +2129,11 @@ serve(async (req: Request) => {
 
         // Same conversational strategy as the button handler — no template needed.
         // 24h window opens when the guest sends any message; reply with free text.
+        // ⚠️ No WORKSHOP_SIGNUP_URL/OnceHub here — see button-tap path above for why.
         const safeName2    = String(guest?.name ?? "").trim() || "אורח יקר";
-        const workshopUrl2 = Deno.env.get("WORKSHOP_SIGNUP_URL") ?? "";
         const spaTime2     = (guest?.spa_time as string | null) ?? null;
+        const portalLink2  = buildPortalLink(guest?.portal_token);
+        if (!portalLink2) console.warn(`[webhook] ⚠️ guest ${phone} (id:${guestId}) has no portal_token — Stage 2 (text-confirm) reply will not include a portal link.`);
 
         const stage2Script2 = scripts["stage_2_arrival"];
         let textArrivalReply: string;
@@ -2095,19 +2155,19 @@ serve(async (req: Request) => {
             );
           }
           textArrivalReply = resolvePlaceholders(stage2Script2.message_text, {
-            guestName: safeName2, spaTime: spaTime2, workshopUrl: workshopUrl2,
+            guestName: safeName2, spaTime: spaTime2, workshopUrl: "", portalLink: portalLink2,
           });
         } else {
           // Dynamic Sentence approach — single code path for both spa/no-spa cases
           const spaSentence2 = buildSpaSentence(spaTime2);
-          const workshopLine2 = workshopUrl2
-            ? `\n\n🎯 *לסדנאות שלנו — הרשמו מראש:*\n👉 ${workshopUrl2}`
+          const portalLine2 = portalLink2
+            ? `\n\n✨ כל הפרטים שלך לפני ההגעה (ספא, ארוחות ועוד) מחכים כאן:\n👉 ${portalLink2}`
             : "";
           textArrivalReply =
             `מגיעים! 🎉 כבר מתרגשים מאד מהגעתכם, ${safeName2}!\n\n` +
             `הצוות שלנו ב-Dream Island מכין את הכל ומחכה לכם עם חיוך גדול 🌴\n\n` +
             spaSentence2 +
-            workshopLine2 +
+            portalLine2 +
             `\n\nיש לכם שאלות לפני ההגעה? על הצ׳ק-אין, החדר — אני כאן לכל שאלה 😊`;
         }
 
@@ -2341,22 +2401,67 @@ serve(async (req: Request) => {
         toolLoggedRequest = null;
       }
 
-      // ── Pre-Check-In Guardrail (Session 30 Sprint 5.5) — a suite guest's
-      // service request can only become a staff ticket (guest_alerts row OR
-      // ops-group routing below) once they've actually checked in. Without
-      // this, a guest who confirmed arrival but hasn't physically checked in
-      // yet (status still 'expected'/'room_ready') could ask for room service
-      // hours before anyone is on-site to fulfil it — same "extend the
-      // existing gate" pattern as the Day-Guest Upsell Gate just above.
-      // Day-guest already exited above and is unaffected; this only fires
-      // for suite/standard guests whose status isn't yet 'checked_in'.
+      // ── Zero-Rejection Future-Guest Routing (replaces the Session 30 Sprint
+      // 5.5 "Pre-Check-In Guardrail") — "SYSTEM ARCHITECTURE, ZERO-REJECTION,
+      // ROOM MASKING & UX" session. The old guardrail told a suite guest who
+      // hadn't checked in yet that their request couldn't even be opened —
+      // a cold rejection, and it also leaked the literal room name
+      // (guestRoom) into a pre-check-in guest-facing message, which Room
+      // Masking (below) now forbids regardless. Replaced: the request is
+      // ALWAYS accepted gracefully and lands on the Requests Board
+      // (guest_alerts — a sales/heads-up lead reviewed at staff's own pace,
+      // NOT the Operations Board/tasks claim-and-SLA queue, since nobody is
+      // on-site yet to fulfil it) tagged with the guest's arrival date, plus
+      // a direct personal heads-up to Adir so the team isn't surprised later.
+      // Day-guest already exited above via its own Upsell Gate and never
+      // reaches here; this fires for suite/standard guests not yet
+      // 'checked_in'.
       const guestStatus = (guest as Record<string, unknown> | null)?.status as string | null ?? null;
-      if (toolLoggedRequest && guestRoomType === "suite" && guestStatus !== "checked_in") {
-        const guestRoom = (guest as Record<string, unknown> | null)?.room as string | null ?? null;
-        reply = guestRoom
-          ? `אני רואה את ההזמנה שלך לחדר ${guestRoom}, פתיחת בקשות שירות זמינה מיד לאחר ביצוע הצ'ק-אין בריזורט! מחכים לך.`
-          : `אני רואה את ההזמנה שלך, פתיחת בקשות שירות זמינה מיד לאחר ביצוע הצ'ק-אין בריזורט! מחכים לך.`;
-        console.info(`[webhook] 🔒 pre-check-in guardrail fired — phone:${phone} status:${guestStatus}`);
+      const guestArrivalDate = (guest as Record<string, unknown> | null)?.arrival_date as string | null ?? null;
+      if (toolLoggedRequest && guestRoomType !== "day_guest" && guestStatus !== "checked_in") {
+        // Same exact tag format/day-count math as guest-portal-upsell's and
+        // guest-portal-ops-request's futureArrivalTag() ("PORTAL CTAS & ADIR'S
+        // FUTURE CONTEXT" session) — duplicated, not imported (Deno function
+        // boundary). Self-review catch: an earlier version of this block
+        // tagged a same-day-but-not-yet-checked-in guest as "🟡 הגעה עתידית"
+        // too, which is misleading (they're arriving TODAY, just haven't
+        // walked in yet) — null here correctly means "no future tag", not
+        // "no message", the request still routes gracefully either way.
+        let futureTag: string | null = null;
+        if (guestArrivalDate) {
+          const today = new Date(); today.setUTCHours(0, 0, 0, 0);
+          const arrival = new Date(`${guestArrivalDate}T00:00:00Z`);
+          const daysAway = Math.round((arrival.getTime() - today.getTime()) / 86400000);
+          if (daysAway > 0) futureTag = `⚠️ בקשה עתידית לתאריך ${guestArrivalDate} - בעוד ${daysAway} ימים`;
+        }
+        const tagPrefix = futureTag ? `[${futureTag}] ` : "";
+        (async () => {
+          const { error } = await supabase.from("guest_alerts").insert({
+            guest_id: guestId, phone,
+            alert_type: toolLoggedRequest!.category ?? "request",
+            message: `${tagPrefix}${toolLoggedRequest!.summary ?? text}`,
+            conversation_id: conversationId, resolved: false,
+          });
+          if (error) console.error("[webhook] 🚨 guest_alerts (future-guest request) insert FAILED:", error.message);
+        })().catch((e: Error) => console.error("[webhook] 🚨 guest_alerts (future-guest request) insert FAILED:", e.message));
+
+        // Best-effort personal heads-up — Adir gets the real room (staff need
+        // it to plan; only GUEST-facing messages are masked, see Room Masking
+        // below), never blocks the guest's reply on a Whapi failure.
+        const guestRoomForAdir = (guest as Record<string, unknown> | null)?.room as string | null ?? "—";
+        sendWhapiText(
+          ADIR_PERSONAL_PHONE,
+          `🌴 PRE-CHECK-IN GUEST REQUEST — Suite ${guestRoomForAdir} (${(guest as Record<string, unknown> | null)?.name ?? "Guest"})\n` +
+          `${toolLoggedRequest.summary ?? text}` +
+          (futureTag ? `\n${futureTag}` : `\nArriving today, not checked in yet.`) +
+          `\nHeads-up only, check the Requests Board.`,
+          { noLinkPreview: true },
+        ).catch((e: Error) => console.warn("[webhook] future-guest Adir alert failed (non-blocking):", e.message));
+
+        reply =
+          "בשמחה רבה! העברתי את הבקשה המיוחדת שלך לצוות הריזורט כדי שנדאג שהכול יחכה לכם מוכן ומפנק " +
+          "בדיוק ברגע שתפתחו את דלת הסוויטה. נתראה בקרוב!🌸";
+        console.info(`[webhook] 🌴 future-guest request routed gracefully — phone:${phone} status:${guestStatus}`);
         toolLoggedRequest = null;
       }
 

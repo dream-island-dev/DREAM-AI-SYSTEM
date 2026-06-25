@@ -21,6 +21,24 @@
 
 import { serve }        from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { sendWhapiText } from "../_shared/whapiSend.ts";
+
+// Same number as task-action.ts's ACTOR_PHONES.Adir / guest-portal-ops-
+// request's ADIR_PHONE — duplicated, not imported (Deno function boundary).
+const ADIR_PHONE = "972546294885";
+
+// "PORTAL CTAS & ADIR'S FUTURE CONTEXT" session — exact tag format, shared
+// verbatim with guest-portal-ops-request so every portal-originated
+// request/task carries the same future-arrival context, whether it lands on
+// the Requests Board (here) or the Operations Board (guest-portal-ops-request).
+function futureArrivalTag(arrivalDateStr: string | null, status: string | null): string | null {
+  if (!arrivalDateStr || status === "checked_in") return null;
+  const today = new Date(); today.setUTCHours(0, 0, 0, 0);
+  const arrival = new Date(`${arrivalDateStr}T00:00:00Z`);
+  const daysAway = Math.round((arrival.getTime() - today.getTime()) / 86400000);
+  if (daysAway <= 0) return null; // today or already past — not a "future" arrival
+  return `⚠️ בקשה עתידית לתאריך ${arrivalDateStr} - בעוד ${daysAway} ימים`;
+}
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -55,7 +73,7 @@ serve(async (req: Request) => {
 
     const { data: guest, error: guestErr } = await supabase
       .from("guests")
-      .select("id, name, phone, room")
+      .select("id, name, phone, room, arrival_date, status")
       .eq("portal_token", token)
       .maybeSingle();
     if (guestErr) throw new Error(`lookup_error: ${guestErr.message}`);
@@ -76,18 +94,38 @@ serve(async (req: Request) => {
       );
     }
 
+    const tag = futureArrivalTag(guest.arrival_date as string | null, guest.status as string | null);
+    const message = `[פורטל אורח${guest.room ? " — " + guest.room : ""}]${tag ? " [" + tag + "]" : ""} ${upsellLabel}`.trim();
+
     const { data: alert, error: insErr } = await supabase
       .from("guest_alerts")
       .insert({
         guest_id:   guest.id,
         phone:      guest.phone,
         alert_type: "upsell_opportunity",
-        message:    `[פורטל אורח${guest.room ? " — " + guest.room : ""}] ${upsellLabel}`.trim(),
+        message,
         resolved:   false,
       })
       .select("id")
       .maybeSingle();
     if (insErr) throw new Error(`alert_insert_error: ${insErr.message}`);
+
+    // "PORTAL CTAS & ADIR'S FUTURE CONTEXT" session — Premium Day (and any
+    // other REQUEST-type CTA) now also gets an immediate personal heads-up to
+    // Adir, not just the existing 10-min-unresolved SLA escalation ping. Same
+    // exact date-context tag as the board entry, so the team never mistakes
+    // a days-away request for something needed today. Best-effort — a Whapi
+    // failure must never block the guest's success toast.
+    try {
+      const text =
+        `🌴 PORTAL REQUEST${guest.room ? " — Suite " + guest.room : ""} (${guest.name ?? "Guest"})\n` +
+        `${upsellLabel}` +
+        (tag ? `\n${tag}` : "") +
+        `\nPlease check the Requests Board.`;
+      await sendWhapiText(ADIR_PHONE, text, { noLinkPreview: true });
+    } catch (e) {
+      console.warn(`[guest-portal-upsell] alert ${alert?.id} created but Adir notify failed:`, (e as Error).message);
+    }
 
     return new Response(
       JSON.stringify({ ok: true, alertId: alert?.id ?? null }),

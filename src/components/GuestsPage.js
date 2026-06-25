@@ -7,6 +7,7 @@ import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import { SUITE_REGISTRY } from "../data/suiteRegistry";
 import AddGuestModal from "./AddGuestModal";
 import GuestAttentionBadge from "./GuestAttentionBadge";
+import CustomerProfilePane from "./CustomerProfilePane";
 import { STATUS_META } from "../utils/guestStatusMeta";
 
 export default function GuestsPage() {
@@ -14,6 +15,7 @@ export default function GuestsPage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy]       = useState(null);
   const [toast, setToast]     = useState(null);
+  const [profileGuest, setProfileGuest] = useState(null); // guest object or null — CustomerProfilePane
   const [badgeHover, setBadgeHover] = useState(null);
   const [paymentModal, setPaymentModal] = useState(null); // { id, name, phone, amount, link }
   const [paymentBusy, setPaymentBusy]   = useState(null); // guestId being sent
@@ -289,6 +291,12 @@ export default function GuestsPage() {
         />
       )}
 
+      {/* ── Read-only profile drawer (nights/checkout/portal link) — same
+          component + click pattern as GuestDashboard.js's "ניהול אורחים" ── */}
+      {profileGuest && (
+        <CustomerProfilePane guest={profileGuest} onClose={() => setProfileGuest(null)} />
+      )}
+
       {toast && (
         <div style={{
           position: "fixed", top: 20, left: "50%", transform: "translateX(-50%)", zIndex: 9999,
@@ -379,7 +387,15 @@ export default function GuestsPage() {
                           style={{ cursor: "pointer", accentColor: "var(--gold)" }} />
                       </td>
                       <td style={{ fontWeight: 700 }}>
-                        {g.name}
+                        <span
+                          onClick={() => setProfileGuest(g)}
+                          title="הצג פרופיל אורח"
+                          style={{ cursor: "pointer", textDecoration: "underline", textDecorationColor: "transparent" }}
+                          onMouseEnter={(e) => (e.currentTarget.style.textDecorationColor = "var(--gold)")}
+                          onMouseLeave={(e) => (e.currentTarget.style.textDecorationColor = "transparent")}
+                        >
+                          {g.name}
+                        </span>
                         {g.arrival_confirmed && (
                           <span style={{ fontSize: 10, marginRight: 6, background: "#E8F5EF", color: "#1A7A4A", padding: "2px 6px", borderRadius: 8, fontWeight: 700, verticalAlign: "middle" }}>✓ אישר</span>
                         )}

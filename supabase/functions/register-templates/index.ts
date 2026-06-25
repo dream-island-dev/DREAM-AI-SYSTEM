@@ -98,10 +98,21 @@ const TEMPLATES: Template[] = [
     ],
   },
   {
+    // ⚠️ REWRITTEN, NOT YET RESUBMITTED — "STAGE 2.5 UPDATE, SABBATH LOGIC"
+    // session. Was still PENDING with completely different (older) content
+    // when this changed (1 var = name, URL button to workshops) — this is
+    // the new exact wording from the directive, {{1}}=entry_time/{{2}}=
+    // check_in_time (Sabbath/Holiday-aware values, computed in whatsapp-send's
+    // resolveNightBeforeTimes()). Still MISSING the required image header
+    // (image_3cde8f.jpg isn't in the repo yet, and Meta header images need a
+    // separate resumable-upload call this codebase doesn't have yet either)
+    // — do NOT invoke register-templates for this entry until both exist,
+    // or Meta will approve a text-only version that then needs a second
+    // resubmission to add the image later.
     name: "dream_checkin_reminder_v2", category: "UTILITY", language: "he",
     components: [{ type: "BODY",
-      text: "שלום {{1}}, מחר מגיעים לדרים איילנד — מחכים לכם! המתחם פתוח מ-9:00, צ'ק אין לסוויטות מ-15:00. בואו מוקדם ותיהנו מהכל. לכל שאלה: {{2}} — נתראה מחר",
-      example: { body_text: [["ישראל ישראלי", "054-0000000"]] } }],
+      text: "היי מה שלומכם?🌸\nמצפים להגעה שלכם לדרים איילנד.\nמעדכנים שהכניסה למתחם תיהיה דרך הכניסה של dream suites🙏\nתגיעו לשער ותצלצלו בפעמון יפתחו לכם.\nממליצים להגיע מוכנים עם בגדי ים וכפכפים.\nכניסה למתחם החל מהשעה - {{1}}\nוקבלת החדרים החל משעה - {{2}}\nמחכים לכם\nצוות דרים איילנד🌸",
+      example: { body_text: [["12:00", "15:00"]] } }],
   },
 
   // ── Stage 4: On-property (UTILITY) ───────────────────────────────────────

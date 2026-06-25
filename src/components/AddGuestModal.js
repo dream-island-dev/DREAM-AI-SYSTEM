@@ -33,7 +33,11 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
     room:               guest.room                 ?? "",
     room_type:          guest.room_type            ?? "standard",
     meal_time:          guest.meal_time            ?? "",
-    meal_location:      guest.meal_location        ?? "",
+    // Default to Armonim for a NEW guest only — "ARMONIM RESTAURANT DEFAULT"
+    // session, saves reception repetitive typing. An existing guest whose
+    // meal_location is genuinely blank stays blank on edit (isEdit guard) —
+    // never silently overwrite a deliberate value while editing.
+    meal_location:      guest.meal_location        ?? (isEdit ? "" : "מסעדת ערמונים"),
     guest_notes:        guest.guest_notes          ?? "",
   });
   const [saving, setSaving] = useState(false);

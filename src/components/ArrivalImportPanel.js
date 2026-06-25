@@ -110,6 +110,23 @@ function _extractExtras(block, raw) {
   if (!block.spa_time || time < block.spa_time) block.spa_time = time;
 }
 
+// "EASYGO OPERATION FILE INGESTION" session — same comprehensive-report cell,
+// looking for an explicit meal-time mention instead of the spa count-time
+// shape _extractExtras matches. ⚠️ Not yet verified against a real EasyGo
+// export (none was available to test against this session) — this matches
+// the most likely Hebrew phrasings ("ארוחת ערב 19:30" / "ארוחה - 19:30" /
+// "ארוחת בוקר: 08:00") so a real report's meal line is captured rather than
+// silently dropped, but confirm against an actual file before fully trusting
+// it; if the real format differs, only this regex needs adjusting — the
+// meal_time/meal_location wiring below it is unaffected either way.
+function _extractMealTime(block, raw) {
+  const clean = String(raw).replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
+  const m = clean.match(/ארוחה[ת]?\s*(?:ערב|בוקר|צהריים)?\s*[-:]?\s*(\d{1,2}):(\d{2})/);
+  if (!m) return;
+  const time = m[1].padStart(2, "0") + ":" + m[2];
+  if (!block.meal_time || time < block.meal_time) block.meal_time = time;
+}
+
 function parseComprehensiveReport(rows) {
   let arrivalDate = null;
   let current     = null;
@@ -138,12 +155,13 @@ function parseComprehensiveReport(rows) {
         arrival_date:    arrivalDate,
         spa_time:        null,
         treatment_count: 0,
+        meal_time:       null,
       };
-      if (c2) _extractExtras(current, c2);
+      if (c2) { _extractExtras(current, c2); _extractMealTime(current, c2); }
       continue;
     }
     if (!current) continue;
-    if (c2) _extractExtras(current, c2);
+    if (c2) { _extractExtras(current, c2); _extractMealTime(current, c2); }
   }
   if (current) blocks.push(current);
 
@@ -156,6 +174,7 @@ function parseComprehensiveReport(rows) {
       const ex = byPhone[b.phone];
       ex.treatment_count += b.treatment_count;
       if (b.spa_time && (!ex.spa_time || b.spa_time < ex.spa_time)) ex.spa_time = b.spa_time;
+      if (b.meal_time && (!ex.meal_time || b.meal_time < ex.meal_time)) ex.meal_time = b.meal_time;
     }
   }
   return Object.values(byPhone);
@@ -214,6 +233,7 @@ function _profilesToGridRows(merged) {
       room:         (g.rooms ?? []).length > 1 ? "" : (isDay ? (singleRoom?.isDayGuest ? guess : "") : guess),
       tier:         isDay ? "☀️ בילוי יומי" : "🏨 סוויטה",
       spa_time:     g.spa_time ?? "",
+      meal_time:    g.meal_time ?? "",
       amount:       totalPrice || "",
       arrivalDate:  g.arrivalDate ?? "",
     };
@@ -228,6 +248,7 @@ const SUITES_GRID_COLS = [
   { id: "tier",        label: "שכבה",       editable: false, w: 90  },
   { id: "room",        label: "🏨 חדר/סוויטה", editable: true, w: 190, gold: true, options: ROOM_OPTIONS },
   { id: "spa_time",    label: "שעת ספא",    editable: true,  w: 90  },
+  { id: "meal_time",   label: "שעת ארוחה (ארמונים)", editable: true, w: 130 },
   { id: "amount",      label: "💰 סכום (₪)", editable: true, w: 100 },
   { id: "arrivalDate", label: "הגעה",       editable: false, w: 100 },
 ];
@@ -552,15 +573,20 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           .rpc("sync_suite_arrivals", { payload: { profiles, rooms } });
         if (rpcErr) throw new Error("sync_suite_arrivals: " + rpcErr.message);
 
-        // Inject spa_time where Doc 1 enrichment (or manual grid edit) provided it
+        // Inject spa_time/meal_time where Doc 1 enrichment (or manual grid edit)
+        // provided them. meal_time always binds to Armonim — "EASYGO OPERATION
+        // FILE INGESTION" session, the restaurant is the only dinner venue this
+        // pipeline books today, same as AddGuestModal's new-guest default.
         for (let i = 0; i < merged.length; i++) {
           const g = merged[i];
-          const edited  = gridRows[i] ?? {};
-          const spaTime = edited.spa_time || g.spa_time;
-          if (g.guestPhone && spaTime) {
-            await supabase.from("guests")
-              .update({ spa_time: spaTime, treatment_count: g.treatment_count ?? 0 })
-              .eq("phone", g.guestPhone);
+          const edited   = gridRows[i] ?? {};
+          const spaTime  = edited.spa_time  || g.spa_time;
+          const mealTime = edited.meal_time || g.meal_time;
+          if (g.guestPhone && (spaTime || mealTime)) {
+            const patch = { treatment_count: g.treatment_count ?? 0 };
+            if (spaTime)  patch.spa_time = spaTime;
+            if (mealTime) { patch.meal_time = mealTime; patch.meal_location = "מסעדת ערמונים"; }
+            await supabase.from("guests").update(patch).eq("phone", g.guestPhone);
           }
         }
 
@@ -594,6 +620,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
             if (existingPhones.has(rec.phone)) {
               const patch = {};
               if (rec.spa_time)        patch.spa_time        = rec.spa_time;
+              if (rec.meal_time)       { patch.meal_time = rec.meal_time; patch.meal_location = "מסעדת ערמונים"; }
               if (rec.treatment_count) patch.treatment_count = rec.treatment_count;
               if (rec.order_number)    patch.order_number    = rec.order_number;
               if (rec.arrival_date)    patch.arrival_date    = rec.arrival_date;
@@ -604,6 +631,8 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                 phone:           rec.phone,
                 name:            rec.guest_name ?? null,
                 spa_time:        rec.spa_time   ?? null,
+                meal_time:       rec.meal_time  ?? null,
+                meal_location:   rec.meal_time ? "מסעדת ערמונים" : null,
                 treatment_count: rec.treatment_count ?? 0,
                 order_number:    rec.order_number   ?? null,
                 arrival_date:    rec.arrival_date   ?? null,

@@ -57,8 +57,20 @@ serve(async (req: Request) => {
       );
     }
 
+    // Room Masking ("SYSTEM ARCHITECTURE, ZERO-REJECTION, ROOM MASKING & UX"
+    // session) — the specific suite name/number is operationally swappable
+    // until check-in actually happens; this portal is the public guest-
+    // facing surface, so it never reveals it before then. A suite guest
+    // still sees a generic "luxury suite" label rather than nothing — the
+    // directive's exact framing ("should only know they are booked into a
+    // luxury suite"), not a silent disappearance of the field.
+    const maskedGuest = { ...guest };
+    if (guest.status !== "checked_in") {
+      maskedGuest.room = guest.room_type === "suite" ? "סוויטת יוקרה" : null;
+    }
+
     return new Response(
-      JSON.stringify({ ok: true, guest }),
+      JSON.stringify({ ok: true, guest: maskedGuest }),
       { headers: { ...CORS, "Content-Type": "application/json" } }
     );
   } catch (err: unknown) {

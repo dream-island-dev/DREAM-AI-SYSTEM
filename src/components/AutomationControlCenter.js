@@ -59,6 +59,7 @@ const SCRIPT_KEY_FRIENDLY = {
   callback_reply:           "מענה לבקשת חזרה טלפונית",
   spa_menu:                 "תפריט טיפולי ספא",
   stage_2_payment_reply:    "מענה לתשלום (שלב 2)",
+  night_before_reminder:    "תזכורת ערב לפני — כניסה ושעות (שלב 2.5)",
 };
 function scriptKeyFriendly(key) {
   return SCRIPT_KEY_FRIENDLY[key] ?? `⚠ ${key}`;
@@ -231,6 +232,12 @@ function StageCard({
   const [draftText, setDraftText] = useState(savedScriptText);
   useEffect(() => { setDraftText(savedScriptText); }, [stage.session_message_script_key, savedScriptText]);
 
+  // Same deferred-save-on-blur pattern as draftText above, but this one
+  // patches automation_stages directly (session_message_image_url lives on
+  // that row, not in bot_scripts) — reuses patchStage, no new save helper.
+  const [draftImageUrl, setDraftImageUrl] = useState(stage.session_message_image_url ?? "");
+  useEffect(() => { setDraftImageUrl(stage.session_message_image_url ?? ""); }, [stage.session_message_image_url]);
+
   return (
     <div className="card" style={{ marginBottom: 12, opacity: stage.is_active ? 1 : 0.6, border: isOpen ? "1px solid var(--gold)" : undefined }}>
       <div
@@ -328,6 +335,22 @@ function StageCard({
                   <div style={{ marginTop: 10 }}>
                     <MessagePreviewBubble>{renderResolvedPreview(draftText)}</MessagePreviewBubble>
                     <ButtonChipsPreview buttons={stage.interactive_buttons} />
+                  </div>
+                  <div className="form-field" style={{ marginTop: 10, marginBottom: 0 }}>
+                    <label style={{ fontSize: 12 }}>🖼️ תמונה מצורפת (אופציונלי — נשלחת כ-image message, ללא כפתורים)</label>
+                    <input
+                      type="text"
+                      value={draftImageUrl}
+                      onChange={(e) => setDraftImageUrl(e.target.value)}
+                      onBlur={(e) => patchStage(stage, { session_message_image_url: e.target.value.trim() || null })}
+                      placeholder="https://dream-ai-system.vercel.app/images/..."
+                      style={{ direction: "ltr", fontFamily: "monospace", fontSize: 12 }}
+                    />
+                    {draftImageUrl && (
+                      <div style={{ marginTop: 6, fontSize: 11, color: "var(--text-muted)" }}>
+                        תצוגה מקדימה: <a href={draftImageUrl} target="_blank" rel="noreferrer">{draftImageUrl}</a>
+                      </div>
+                    )}
                   </div>
                 </>
               )}

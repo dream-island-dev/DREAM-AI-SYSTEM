@@ -36,7 +36,7 @@
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { sendInteractiveButtons } from "../_shared/interactiveSend.ts";
+import { sendInteractiveButtons, sendImageMessage } from "../_shared/interactiveSend.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -69,7 +69,16 @@ const WORKSHOP_SIGNUP_URL = Deno.env.get("WORKSHOP_SIGNUP_URL") ?? "dream-island
 // "📋 ניהול תבניות" tab. See CLAUDE.md §6 for the same note.
 const PIPELINE_TEMPLATE: Record<string, string> = {
   pre_arrival_2d:  "dream_arrival_confirmation",  // T-2 days    → confirmation + Quick Reply buttons
-  night_before:    "dream_checkin_reminder_v2",     // T-1 night   → "מחר מגיעים" + contact number
+  // "FINAL DEPLOYMENT & SPRINT COMMIT" session — Mike submitted dream_suite_
+  // reminder directly in Meta Business Manager (Stage 2.5's production
+  // template, "מה מחכה לי?" Dynamic URL button → guest portal). ⚠️ Could not
+  // independently verify this template exists in our connected WABA via
+  // get-wa-templates as of this session (see §10) — trusted as told, but
+  // confirm it shows APPROVED/PENDING in "📋 ניהול תבניות" before relying on
+  // it. dream_checkin_reminder_v2 itself flipped to APPROVED this session,
+  // still carrying its OLD content (OnceHub button) — unrelated to Stage 2.5,
+  // not touched here.
+  night_before:    "dream_suite_reminder",
   morning_suite:   "dream_welcome_morning",        // suite AM    → "בוקר אור, היום מגיעים"
   morning_welcome: "dream_welcome_morning",        // standard AM → same template
   room_ready:      "dream_room_ready",             // manual UI   → dedicated key-handover template
@@ -83,9 +92,12 @@ const PIPELINE_TEMPLATE: Record<string, string> = {
 // Variables passed as {{1}}, {{2}}, … to each pipeline template.
 // All values pass through sanitizeTemplateVars() at send time — these lambdas
 // produce raw values; sanitization is applied in BRANCH D before the API call.
+// night_before deliberately has NO entry here — its vars are Sabbath/Holiday-
+// dependent and computed async (resolveNightBeforeTimes() below, DB lookup),
+// which a synchronous (g) => string[] lambda can't do. BRANCH D special-cases
+// trigger==="night_before" and bypasses this map entirely for it.
 const PIPELINE_VARS: Record<string, (g: Record<string, unknown>) => string[]> = {
   pre_arrival_2d:  (g) => [String(g.name ?? "")],
-  night_before:    (g) => [String(g.name ?? ""), RESORT_CONTACT_PHONE],
   morning_suite:   (g) => [String(g.name ?? "")],
   morning_welcome: (g) => [String(g.name ?? "")],
   room_ready:      (g) => [String(g.name ?? ""), String(g.room ?? g.suite_name ?? "")],
@@ -103,6 +115,78 @@ const GUEST_FLAG: Record<string, string> = {
   mid_stay:        "msg_mid_stay_sent",
   checkout_fb:     "msg_checkout_fb_sent",
 };
+
+// ── Stage 2.5 (night_before) — Sabbath/Holiday-aware entry/check-in times ───
+// "STAGE 2.5 UPDATE, SABBATH LOGIC" session. bot_scripts row
+// 'night_before_reminder' carries {{entry_time}}/{{check_in_time}} — a
+// weekday-arriving guest gets the fixed 12:00/15:00 pair; a guest arriving on
+// a Saturday (יום שבת) or a date listed in bot_config.night_before_special_dates
+// gets the Shabbat pair instead. Computed here once per guest and threaded
+// into BOTH the session-message substitution and the Meta-template fallback
+// vars below, so the two channels can never disagree on the hours quoted.
+//
+// FAIL VISIBLE (CLAUDE.md §0.3): a Shabbat/holiday arrival with blank Shabbat
+// bot_config values throws rather than guessing — the caller treats this
+// exactly like any other send failure (status="failed", visible in Automation
+// History) instead of ever telling a real guest the wrong gate-opening time.
+let _knowledgeCache: Record<string, string> | null = null;
+let _knowledgeCacheTime = 0;
+const KNOWLEDGE_TTL_MS = 5 * 60 * 1000;
+
+async function fetchNightBeforeKnowledge(
+  supabaseClient: ReturnType<typeof createClient>
+): Promise<Record<string, string>> {
+  const now = Date.now();
+  if (_knowledgeCache && now - _knowledgeCacheTime < KNOWLEDGE_TTL_MS) return _knowledgeCache;
+  const keys = [
+    "night_before_entry_time_weekday", "night_before_checkin_time_weekday",
+    "night_before_entry_time_shabbat", "night_before_checkin_time_shabbat",
+    "night_before_special_dates",
+  ];
+  const { data } = await supabaseClient
+    .from("bot_config").select("config_key, config_value").in("config_key", keys);
+  const map: Record<string, string> = {};
+  for (const row of (data ?? []) as { config_key: string; config_value: string }[]) {
+    map[row.config_key] = row.config_value ?? "";
+  }
+  _knowledgeCache = map;
+  _knowledgeCacheTime = now;
+  return map;
+}
+
+// arrival_date is a DATE column ("YYYY-MM-DD") — parsed as UTC midnight so
+// getUTCDay() reads the calendar day Israel means, never a timezone-shifted
+// neighbor day from a local-time Date constructor.
+function isSpecialNightBeforeDay(arrivalDateStr: string, specialDatesCsv: string): boolean {
+  const d = new Date(`${arrivalDateStr}T00:00:00Z`);
+  if (d.getUTCDay() === 6) return true; // Saturday
+  const listed = specialDatesCsv.split(/[,\n]+/).map((s) => s.trim()).filter(Boolean);
+  return listed.includes(arrivalDateStr);
+}
+
+async function resolveNightBeforeTimes(
+  supabaseClient: ReturnType<typeof createClient>,
+  arrivalDateStr: string
+): Promise<{ entryTime: string; checkInTime: string }> {
+  const cfg = await fetchNightBeforeKnowledge(supabaseClient);
+  const special = isSpecialNightBeforeDay(arrivalDateStr, cfg["night_before_special_dates"] ?? "");
+  if (special) {
+    const entryTime = (cfg["night_before_entry_time_shabbat"] ?? "").trim();
+    const checkInTime = (cfg["night_before_checkin_time_shabbat"] ?? "").trim();
+    if (!entryTime || !checkInTime) {
+      throw new Error(
+        `night_before_shabbat_hours_missing: arrival_date=${arrivalDateStr} falls on Shabbat/holiday but ` +
+        `bot_config.night_before_entry_time_shabbat/night_before_checkin_time_shabbat is blank — fill them in ` +
+        `via BotConfigPanel ("ידע המלון") before this stage can send for this guest`
+      );
+    }
+    return { entryTime, checkInTime };
+  }
+  return {
+    entryTime: (cfg["night_before_entry_time_weekday"] ?? "").trim() || "12:00",
+    checkInTime: (cfg["night_before_checkin_time_weekday"] ?? "").trim() || "15:00",
+  };
+}
 
 // ── Template variable sanitizer — prevents Meta error 131008 (empty param) ────
 // Meta rejects any template variable that is an empty string or whitespace.
@@ -569,7 +653,7 @@ serve(async (req: Request) => {
     // bot_settings.system_prompt overriding FALLBACK_SYSTEM_PROMPT.
     const { data: stageRow } = await supabase
       .from("automation_stages")
-      .select("meta_template_name, session_message_script_key, interactive_buttons, guest_flag_column")
+      .select("meta_template_name, session_message_script_key, session_message_image_url, interactive_buttons, guest_flag_column")
       .eq("stage_key", trigger)
       .eq("is_active", true)
       .maybeSingle();
@@ -605,6 +689,22 @@ serve(async (req: Request) => {
     const tmplName = stageRow?.meta_template_name ?? PIPELINE_TEMPLATE[trigger];
     const flagColumn = stageRow?.guest_flag_column ?? GUEST_FLAG[trigger];
 
+    // ── Stage 2.5 (night_before) — resolve Sabbath/Holiday-aware times once,
+    // shared by both the session-message and Meta-template paths below. A
+    // resolver failure (blank Shabbat config on a Shabbat/holiday arrival)
+    // skips BOTH send attempts entirely rather than guessing — see the
+    // resolveNightBeforeTimes() header comment for why.
+    let nightBeforeTimes: { entryTime: string; checkInTime: string } | null = null;
+    let nightBeforeError: string | null = null;
+    if (trigger === "night_before") {
+      try {
+        nightBeforeTimes = await resolveNightBeforeTimes(supabase, String(guest.arrival_date ?? ""));
+      } catch (e) {
+        nightBeforeError = (e as Error).message;
+        console.error(`[whatsapp-send] night_before time resolution failed for guest ${guestId}:`, nightBeforeError);
+      }
+    }
+
     // ── Hybrid fallback (req #4) ───────────────────────────────────────────
     // Only attempted when a stage actually has a session message configured
     // — true for none of them today (every automation_stages row seeded by
@@ -617,8 +717,9 @@ serve(async (req: Request) => {
     let usedSessionMessage = false;
     let sessionBody: string | null = null;
     let sessionButtons: Array<{ type: string; label: string; url?: string }> = [];
+    let sessionImageUrl: string | null = null;
 
-    if (stageRow?.session_message_script_key) {
+    if (stageRow?.session_message_script_key && !nightBeforeError) {
       if (isWindowOpen(guest.wa_window_expires_at)) {
         const { data: scriptRow } = await supabase
           .from("bot_scripts")
@@ -629,13 +730,20 @@ serve(async (req: Request) => {
         if (rawText) {
           const guestName = (String(guest.name ?? "").trim()) || "אורח יקר";
           // Scope-limited on purpose: PIPELINE_VARS today only ever passes the
-          // guest's name to pipeline templates, so {{GUEST_NAME}} is the only
-          // placeholder this path needs to support. If a future stage's
-          // session message needs richer placeholders (spa time, workshop
-          // url, etc.), port the relevant pieces of whatsapp-webhook's
-          // resolvePlaceholders() here rather than guessing at a generic shape.
-          sessionBody = rawText.replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, guestName);
+          // guest's name to pipeline templates, so {{GUEST_NAME}} was the only
+          // placeholder this path needed to support — until night_before's
+          // {{entry_time}}/{{check_in_time}} (Stage 2.5 Sabbath logic). If a
+          // future stage needs yet another placeholder, extend this chain
+          // rather than guessing at a generic shape.
+          let body = rawText.replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, guestName);
+          if (nightBeforeTimes) {
+            body = body
+              .replace(/\{\{\s*entry_time\s*\}\}/gi, nightBeforeTimes.entryTime)
+              .replace(/\{\{\s*check_in_time\s*\}\}/gi, nightBeforeTimes.checkInTime);
+          }
+          sessionBody = body;
           sessionButtons = (stageRow.interactive_buttons ?? []) as typeof sessionButtons;
+          sessionImageUrl = stageRow.session_message_image_url ?? null;
           usedSessionMessage = true;
         } else {
           console.warn(`[whatsapp-send] stage "${trigger}" has session_message_script_key="${stageRow.session_message_script_key}" but bot_scripts has no text — falling back to Meta template`);
@@ -649,10 +757,20 @@ serve(async (req: Request) => {
 
     let sessionFailureNote: string | null = null;
 
-    if (usedSessionMessage) {
+    if (nightBeforeError) {
+      // Resolver already failed (blank Shabbat config on a Shabbat/holiday
+      // arrival) — neither channel has a trustworthy entry_time/check_in_time
+      // to send, so skip both attempts entirely instead of guessing.
+      status = "failed";
+      sendError = nightBeforeError;
+    } else if (usedSessionMessage) {
       try {
         if (!sim) {
-          await sendInteractiveButtons(guest.phone as string, sessionBody!, sessionButtons);
+          if (sessionImageUrl) {
+            await sendImageMessage(guest.phone as string, sessionImageUrl, sessionBody!);
+          } else {
+            await sendInteractiveButtons(guest.phone as string, sessionBody!, sessionButtons);
+          }
           status = "sent";
         }
       } catch (e) {
@@ -668,11 +786,32 @@ serve(async (req: Request) => {
       }
     }
 
-    if (!usedSessionMessage) {
-      tmplVars = sanitizeTemplateVars(PIPELINE_VARS[trigger]?.(guest) ?? []);
+    if (!nightBeforeError && !usedSessionMessage) {
+      // Mike's correction (post-deploy, confirmed against the live Meta
+      // template definition): dream_suite_reminder's body has THREE
+      // variables, not two — {{1}}=guest name, {{2}}=entry_time,
+      // {{3}}=check_in_time. sanitizeTemplateVars() already falls back
+      // index-0 to "אורח יקר" when the name is blank, same as every other
+      // pipeline template's {{1}}.
+      tmplVars = trigger === "night_before" && nightBeforeTimes
+        ? sanitizeTemplateVars([String(guest.name ?? ""), nightBeforeTimes.entryTime, nightBeforeTimes.checkInTime])
+        : sanitizeTemplateVars(PIPELINE_VARS[trigger]?.(guest) ?? []);
+      // "FINAL DEPLOYMENT & SPRINT COMMIT" session — night_before's Meta
+      // template button ("מה מחכה לי?") is a Dynamic URL button registered
+      // as https://dream-ai-system.vercel.app/portal/{{1}} in Meta Business
+      // Manager; Meta substitutes {{1}} with whatever suffix we pass here,
+      // exactly like dream_payment_and_workshops's payment-link button
+      // below. The suffix is the guest's own portal_token — never the guest
+      // name/phone (migration 083's whole point: the token IS the
+      // credential). undefined (not "") when missing, so sendViaTemplate's
+      // `!== undefined` check correctly omits the button component entirely
+      // rather than sending a button parameter that resolves to a dead link.
+      const portalButtonParam = trigger === "night_before"
+        ? (guest.portal_token as string | null ?? undefined)
+        : undefined;
       try {
         if (!sim) {
-          await sendViaTemplate(guest.phone as string, tmplName, tmplVars);
+          await sendViaTemplate(guest.phone as string, tmplName, tmplVars, "he", portalButtonParam);
           status = "sent";
         }
       } catch (e) {

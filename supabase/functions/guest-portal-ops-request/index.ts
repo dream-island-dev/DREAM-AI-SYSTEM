@@ -41,6 +41,18 @@ const CORS = {
 // SLA_CATEGORY_MINUTES duplication in sla-escalation-cron).
 const ADIR_PHONE = "972546294885";
 
+// "PORTAL CTAS & ADIR'S FUTURE CONTEXT" session — exact tag format, shared
+// verbatim with guest-portal-upsell so every portal-originated request/task
+// carries the same future-arrival context regardless of which board it lands on.
+function futureArrivalTag(arrivalDateStr: string | null, status: string | null): string | null {
+  if (!arrivalDateStr || status === "checked_in") return null;
+  const today = new Date(); today.setUTCHours(0, 0, 0, 0);
+  const arrival = new Date(`${arrivalDateStr}T00:00:00Z`);
+  const daysAway = Math.round((arrival.getTime() - today.getTime()) / 86400000);
+  if (daysAway <= 0) return null; // today or already past — not a "future" arrival
+  return `⚠️ בקשה עתידית לתאריך ${arrivalDateStr} - בעוד ${daysAway} ימים`;
+}
+
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
@@ -64,9 +76,13 @@ serve(async (req: Request) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
 
+    // arrival_date/status feed the future-arrival check below — a guest can
+    // open the portal and request room service days before they check in
+    // (the portal link works pre-arrival, see GuestPortal.js), so Adir's alert
+    // needs to say so rather than implying someone is on-site right now.
     const { data: guest, error: guestErr } = await supabase
       .from("guests")
-      .select("id, name, phone, room")
+      .select("id, name, phone, room, arrival_date, status")
       .eq("portal_token", token)
       .maybeSingle();
     if (guestErr) throw new Error(`lookup_error: ${guestErr.message}`);
@@ -78,6 +94,7 @@ serve(async (req: Request) => {
     }
 
     const roomLabel = guest.room ?? "—";
+    const tag = futureArrivalTag(guest.arrival_date as string | null, guest.status as string | null);
 
     const { data: task, error: insertErr } = await supabase
       .from("tasks")
@@ -87,7 +104,10 @@ serve(async (req: Request) => {
         // literal string as OperationsBoard.js's HOTEL_DEPARTMENTS so an
         // F&B-scoped manager's department filter picks this task up.
         department:  'מזמ"ש (F&B)',
-        description: `${upsellLabel}${guest.name ? " — " + guest.name : ""}`,
+        // Future-arrival tag embedded directly in the description (not just
+        // the live frontend badge) so it's visible to the receptionist
+        // wherever the raw text is read — board, export, or Adir's DM below.
+        description: `${tag ? tag + " — " : ""}${upsellLabel}${guest.name ? " — " + guest.name : ""}`,
         priority:    "normal",
         status:      "open",
         source:      "portal_room_service",
@@ -104,8 +124,9 @@ serve(async (req: Request) => {
     try {
       const text =
         `🍽️ ROOM SERVICE REQUEST — Suite ${roomLabel} (${guest.name ?? "Guest"})\n` +
-        `${upsellLabel}\n` +
-        `Please check the Operations Board to claim it.`;
+        `${upsellLabel}` +
+        (tag ? `\n${tag}` : "") +
+        `\nPlease check the Operations Board to claim it.`;
       await sendWhapiText(ADIR_PHONE, text, { noLinkPreview: true });
     } catch (e) {
       console.warn(`[guest-portal-ops-request] task ${task?.id} created but Adir alert failed:`, (e as Error).message);

@@ -356,6 +356,7 @@ export function aggregateGuestProfiles(rows, columnMapping = {}, fallbackDate = 
       treatment_count: 0,
       treatment_type:  null,
       meal_plan:       null,
+      meal_time:       null,
     });
   });
 
@@ -391,6 +392,7 @@ export function enrichProfilesFromExcel(profiles, excelRecords) {
       // Merge: keep earliest time, sum counts
       const ex = excelByOrder.get(rec.order_number);
       if (rec.spa_time && (!ex.spa_time || rec.spa_time < ex.spa_time)) ex.spa_time = rec.spa_time;
+      if (rec.meal_time && (!ex.meal_time || rec.meal_time < ex.meal_time)) ex.meal_time = rec.meal_time;
       ex.treatment_count = (ex.treatment_count ?? 0) + (rec.treatment_count ?? 0);
     }
   }
@@ -404,6 +406,15 @@ export function enrichProfilesFromExcel(profiles, excelRecords) {
       if (rec.spa_time) {
         if (!profile.spa_time || rec.spa_time < profile.spa_time) {
           profile.spa_time = rec.spa_time;
+        }
+      }
+      // Meal time: same earliest-wins rule, always bound to Armonim — "EASYGO
+      // OPERATION FILE INGESTION" session (the restaurant this pipeline books
+      // dinner reservations at today).
+      if (rec.meal_time) {
+        if (!profile.meal_time || rec.meal_time < profile.meal_time) {
+          profile.meal_time = rec.meal_time;
+          profile.meal_location = "מסעדת ערמונים";
         }
       }
       // Treatment count: accumulate across all orders

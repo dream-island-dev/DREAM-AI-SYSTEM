@@ -80,6 +80,45 @@ export async function sendInteractiveButtons(
   }
 }
 
+// ── Image + caption message (Stage 2.5 / night_before reminder) ────────────
+// Meta's "image" message type — a plain image with optional caption text.
+// Distinct from sendInteractiveButtons() above: that function's two shapes
+// (interactive-button / plain text) have no header-image slot at all, so a
+// stage that needs a picture with no buttons (today: just night_before) uses
+// this instead. If a future stage needs BOTH an image AND tappable buttons,
+// that's a real Meta interactive-message header — not handled here yet,
+// deliberately: no caller needs it today, guessing at the shape would be
+// exactly the "generic shape" anti-pattern this file's other functions
+// already warn against (see sendInteractiveButtons' header comment).
+export async function sendImageMessage(
+  to: string,
+  imageUrl: string,
+  caption: string,
+): Promise<void> {
+  const { token, phoneId } = _credsOrThrow();
+
+  try {
+    const res = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        to,
+        type: "image",
+        image: { link: imageUrl, caption },
+      }),
+      signal: AbortSignal.timeout(25000),
+    });
+    if (!res.ok) {
+      const detail = (await res.text()).slice(0, 300);
+      throw new Error(`meta_image_${res.status}: ${detail}`);
+    }
+  } catch (e) {
+    if (_isAbortError(e)) throw new Error("timeout_no_response: Meta did not respond within 25s — message may have still been delivered");
+    throw e;
+  }
+}
+
 // ── Single call-to-action URL button (Stage 2 Pay) ──────────────────────────
 // Meta's "cta_url" interactive type — the only free-form (non-template) way
 // to send a genuinely tappable URL button. Exactly one button per message;
