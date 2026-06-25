@@ -81,7 +81,7 @@ function guessSlaCategory(description: string): string {
 
 // ── Tier 0: zero-token deterministic task forms ──────────────────────────────
 const STRUCTURED_RE  = /^(\d+)\s*-\s*([\s\S]+)$/;
-const ROOM_PREFIX_RE = /^\s*(?:room|suite|חדר|סוויטה)\s*(?:number|no\.?|#|מספר)?\s*(\d+)\s*[-:.,]?\s*([\s\S]+)$/i;
+const ROOM_PREFIX_RE = /^\s*(?:room|rm\.?|suite|חדר|סוויטה)\s*(?:number|no\.?|#|מספר)?\s*(\d+)\s*[-:.,]?\s*([\s\S]+)$/i;
 
 interface Classification {
   is_task: boolean;
