@@ -9,16 +9,30 @@
 // identical — it's a safety net, not the editing surface.
 //
 // TO ADD/REMOVE A SCENE LIVE: use the "🎨 הגדרות פורטל" admin panel, not
-// this file. `ctas` shape: { label, actionType: "REQUEST"|"LINK",
-// upsellLabel? (REQUEST), buttonUrl? (LINK) }.
+// this file. `ctas` shape: { label, actionType: "REQUEST"|"OPS_REQUEST"|"LINK",
+// upsellLabel? (REQUEST/OPS_REQUEST), buttonUrl? (LINK) }.
+// REQUEST → guest_alerts (Requests Board, sales/reception — spa, suite
+// upgrade, padel, etc., picked up at staff's own pace).
+// OPS_REQUEST → tasks (Operations Board, physical/actionable — e.g. Armonim's
+// room-service request below) + a direct WhatsApp alert to the duty manager.
+// See CLAUDE.md "Enterprise Routing" for the full split rationale.
 //
 // Brand voice note: this copy is pulled from the actual resort website
 // (dream-island.co.il), not invented — "מתחם המים", "מסעדת ערמונים", "DREAM
 // SPA"/"SPA EVENU", "חווית בילוי יומי בריזורט", "מתחמי מנוחה פסטוריליים",
-// and the "26 סוויטות בוטיק" framing are the site's own terms. The one
-// exception is the Padel scene — no padel/sports copy exists on the site as
-// of this writing, so that text is a plain factual description, not a
-// sourced phrase (flagged to Mike as a "missing asset" — see CLAUDE.md §10).
+// "חדר יין... אזור ישיבה על גדות האגם ומתחם פנימי מרשים" (from /culinary,
+// verified live), and the "26 סוויטות בוטיק" framing are the site's own
+// terms. The one exception is the Padel scene — no padel/sports copy exists
+// on the site as of this writing, so that text is a plain factual
+// description, not a sourced phrase (flagged to Mike as a "missing asset" —
+// see CLAUDE.md §10).
+//
+// "Culinary UX Split" session: the wine.jpg scene used to carry Armonim-
+// restaurant copy under a wine-themed image/CTAs — confusing the two
+// concepts. Split into a wine-only scene + a dedicated Armonim scene
+// (armonim.jpg) that inherits the restaurant copy. dream-island.co.il has no
+// standalone digital menu page, so the restaurant's LINK button points at
+// /culinary (the real, closest page) rather than an invented /menu URL.
 export const PORTAL_SCENES = [
   {
     // Top-down drone shot of the whole estate — the file that was
@@ -48,13 +62,24 @@ export const PORTAL_SCENES = [
   },
   {
     image: "wine.jpg",
-    title: "אוכל הוא תשוקה ואהבה לחיים",
-    body: "מסעדת ערמונים מפליאה במנות מרתקות, ופוד-טראקים מפתיעים את האורחים בכל פינה באי.",
+    title: "חדר היין",
+    body: "חדר יין אינטימי, ישיבה על גדות האגם ומתחם פנימי מרשים — ולסדנאות טעימה מיוחדות לאוהבי יין.",
     ctas: [
       // Workshop signup has a real external booking platform — opens there.
-      { label: "🍷 נשמח לארח אתכם בסדנת יין", actionType: "LINK", buttonUrl: "https://go.oncehub.com/DreamIsland" },
-      // Champagne-to-suite is fulfilled by staff in person — stays a portal request, not a link.
-      { label: "🍾 שמפניה מחכה בסוויטה", actionType: "REQUEST", upsellLabel: "שמפניה לסוויטה" },
+      { label: "לכל הסדנאות שלנו", actionType: "LINK", buttonUrl: "https://go.oncehub.com/DreamIsland" },
+    ],
+  },
+  {
+    image: "armonim.jpg",
+    title: "מסעדת ערמונים",
+    body: "מסעדת ערמונים מפליאה במנות מרתקות, ופוד-טראקים מפתיעים את האורחים בכל פינה באי.",
+    ctas: [
+      // No standalone digital menu exists on the real site — /culinary is the
+      // closest real page about the restaurant (verified live).
+      { label: "לתפריט המסעדה", actionType: "LINK", buttonUrl: "https://www.dream-island.co.il/culinary" },
+      // Operational (Operations Board + direct manager alert), not a sales
+      // lead — see guest-portal-ops-request.
+      { label: "הזמנת שירות לחדר", actionType: "OPS_REQUEST", upsellLabel: "הזמנת שירות לחדר — ארמונים" },
     ],
   },
   {

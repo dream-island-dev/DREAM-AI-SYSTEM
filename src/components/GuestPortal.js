@@ -126,15 +126,24 @@ export default function GuestPortal({ token }) {
     toastTimer.current = setTimeout(() => setToast(null), 3800);
   }
 
-  async function handleUpsell(upsellLabel) {
+  // actionType routes to one of two Edge Functions, per the Operations-vs-
+  // Requests split (CLAUDE.md "Enterprise Routing"): REQUEST (default, sales/
+  // reception-facing — spa, suite upgrade, padel, etc.) → guest-portal-upsell
+  // → guest_alerts (Requests Board). OPS_REQUEST (physical/actionable — e.g.
+  // Armonim's "הזמנת שירות לחדר") → guest-portal-ops-request → tasks
+  // (Operations Board) + a direct WhatsApp alert to the duty manager.
+  async function handleAction(upsellLabel, actionType) {
     if (upsellBusy) return;
     setUpsellBusy(upsellLabel);
+    const fnName = actionType === "OPS_REQUEST" ? "guest-portal-ops-request" : "guest-portal-upsell";
     try {
-      const { data, error } = await supabase.functions.invoke("guest-portal-upsell", { body: { token, upsellLabel } });
+      const { data, error } = await supabase.functions.invoke(fnName, { body: { token, upsellLabel } });
       if (error || !data?.ok) throw new Error(data?.error ?? error?.message ?? "שגיאה");
       // Exact phrasing requested in the "Full Portal Integration" session —
       // deliberately doesn't promise someone is already on their way, since
-      // this lands as a guest_alerts row for staff to pick up at their own pace.
+      // this lands as a board row for staff to pick up (at their own pace for
+      // a request, or under SLA tracking for an ops task) rather than being
+      // fulfilled instantly by this call.
       showToast("בקשתך התקבלה בהצלחה. נציג מנוסה יצור עמך קשר בהקדם.");
     } catch (e) {
       showToast("⚠️ לא הצלחנו לשלוח את הבקשה — נסו שוב או פנו לקבלה");
@@ -275,7 +284,7 @@ export default function GuestPortal({ token }) {
       )}
 
       {/* ── Scrollytelling photo tour + in-scroll upsells ── */}
-      <PhotoTour onUpsell={handleUpsell} busyLabel={upsellBusy} />
+      <PhotoTour onUpsell={handleAction} busyLabel={upsellBusy} />
 
       {/* ── Luxury toast ── */}
       {toast && (

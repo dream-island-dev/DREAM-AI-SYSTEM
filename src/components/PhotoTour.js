@@ -117,7 +117,12 @@ function Scene({ image, gradient, title, body, ctas, onUpsell, busyLabel, showSc
                     if (isLink) {
                       window.open(cta.buttonUrl, "_blank", "noopener,noreferrer");
                     } else {
-                      onUpsell(cta.upsellLabel);
+                      // REQUEST → Requests Board (guest_alerts, sales/reception).
+                      // OPS_REQUEST → Operations Board (tasks, physical/actionable)
+                      // + a direct alert to the duty manager. actionType is passed
+                      // through so GuestPortal.js can call the right Edge Function —
+                      // see its handleAction().
+                      onUpsell(cta.upsellLabel, cta.actionType);
                     }
                   }}
                   disabled={!isLink && !!busyLabel}

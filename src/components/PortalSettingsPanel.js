@@ -10,8 +10,9 @@ import { useState, useEffect, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 
 const ACTION_TYPES = [
-  { value: "REQUEST", label: "בקשה פנימית (REQUEST) — ללוח הבקשות, ללא קישור" },
-  { value: "LINK",    label: "קישור חיצוני (LINK) — נפתח בלשונית חדשה" },
+  { value: "REQUEST",     label: "בקשה פנימית (REQUEST) — ללוח הבקשות, ללא קישור" },
+  { value: "OPS_REQUEST", label: "משימה תפעולית (OPS_REQUEST) — ללוח התפעול + התראת מנהל" },
+  { value: "LINK",        label: "קישור חיצוני (LINK) — נפתח בלשונית חדשה" },
 ];
 
 function emptyCta() {
@@ -63,7 +64,11 @@ function CtaEditor({ ctas, onChange }) {
             <input
               value={cta.upsellLabel ?? ""}
               onChange={(e) => updateCta(i, { upsellLabel: e.target.value })}
-              placeholder="טקסט הבקשה (יוצג ללוח הבקשות, לא לאורח)"
+              placeholder={
+                cta.actionType === "OPS_REQUEST"
+                  ? "תיאור המשימה (יוצג ללוח התפעול, לא לאורח)"
+                  : "טקסט הבקשה (יוצג ללוח הבקשות, לא לאורח)"
+              }
               style={{ flex: "1 1 220px", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--border)", fontSize: 13 }}
             />
           )}
