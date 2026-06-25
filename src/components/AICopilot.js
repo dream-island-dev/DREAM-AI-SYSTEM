@@ -34,16 +34,23 @@ export default function AICopilot({ user }) {
     setTimeout(() => setToast(null), 3500);
   }
 
-  // Enrich a room_status row with its matching guest record
+  // Enrich a room_status row with its matching guest record.
+  // `room` is the canonical field (ArrivalImportPanel/sync_suite_arrivals, CLAUDE.md
+  // §5) — `suite_name` is a pre-Golden-Profile legacy column nothing currently
+  // writes to, kept only as a fallback for old records (same room??suite_name
+  // priority already used by whatsapp-send/index.ts + RoomBoard.js). Previously
+  // this selected treatment_time/treatment_type, which don't exist on `guests`
+  // (they're bookings-table columns) — every call 400'd, so `guest` was always
+  // null and the approval flow below silently never messaged the guest.
   const enrichRoom = useCallback(async (roomRow) => {
     if (!supabase) return { ...roomRow, guest: null, _alertId: crypto.randomUUID() };
     const today = new Date().toISOString().slice(0, 10);
     const { data: guest } = await supabase
       .from("guests")
-      .select("id, name, phone, treatment_time, treatment_type, suite_name, status")
-      .eq("suite_name", roomRow.room_id)
+      .select("id, name, phone, spa_time, room, suite_name, status")
+      .or(`room.eq.${roomRow.room_id},suite_name.eq.${roomRow.room_id}`)
       .gte("arrival_date", today)
-      .neq("status", "checked_out")
+      .neq("status", "cancelled")
       .order("arrival_date", { ascending: true })
       .limit(1)
       .maybeSingle();
@@ -113,7 +120,9 @@ export default function AICopilot({ user }) {
       const { guest } = alert;
 
       // Never fail silently: a swallowed WhatsApp error must not let the room/guest
-      // state advance as if the guest was actually notified.
+      // state advance as if the guest was actually notified. Same principle applies
+      // when NO guest was matched at all (enrichRoom found nothing for this suite) —
+      // that must not look identical to "message sent" in the success toast below.
       if (guest?.id) {
         const { data, error: waError } = await supabase.functions.invoke("whatsapp-send", {
           body: { trigger: "room_ready", guestId: guest.id },
@@ -141,7 +150,12 @@ export default function AICopilot({ user }) {
       }
 
       setAlerts(prev => prev.filter(a => a._alertId !== alert._alertId));
-      showToast(`✓ ${alert.room_id} — אושר, הודעה נשלחה`);
+      showToast(
+        guest?.id
+          ? `✓ ${alert.room_id} — אושר, הודעה נשלחה`
+          : `⚠ ${alert.room_id} — הסוויטה סומנה כפנויה, אך לא נמצא אורח משויך ולא נשלחה הודעה`,
+        guest?.id ? "ok" : "err"
+      );
     } catch (e) {
       // Keep the alert in the list (don't dismiss) so the manager can retry.
       showToast((e)?.message ?? "שגיאה לא ידועה", "err");
@@ -272,9 +286,9 @@ export default function AICopilot({ user }) {
                 🏨 סוויטה {alert.room_id} מוכנה עבור {alert.guest?.name ?? "אורח לא ידוע"} — לחץ לאישור שליחת הודעה
               </div>
 
-              {alert.guest?.treatment_time && (
+              {alert.guest?.spa_time && (
                 <div style={{ fontSize: "13px", color: "#A8843A", marginBottom: "10px" }}>
-                  🧖 {alert.guest.treatment_type ?? "ספא"} · {alert.guest.treatment_time}
+                  🧖 ספא · {alert.guest.spa_time}
                 </div>
               )}
               {!alert.guest && (
