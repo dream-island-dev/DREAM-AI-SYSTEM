@@ -1209,6 +1209,14 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
 - ✅ **`bot_config` RLS gap (migration 089).** `bot_config_read` (migration 015) היה `FOR SELECT USING (true)` — קריא לחלוטין עם anon key, בלי session כלל, בשונה מ-`bot_settings`/`bot_scripts`/`guests` שדורשים `auth.uid() IS NOT NULL`. migration 087 (cleaner lockdown) לא סגרה את זה — היא חוסמת רק role='cleaner', אנונימי המשיך לעבור. migration 089 מחליפה את המדיניות לדרוש `auth.uid() IS NOT NULL`, תואם לכל שאר טבלאות הבוט.
 - ✅ אומת: `npm run build` נקי, `npx supabase db push` (088+089) הצליח.
 
+#### session 46 — 2026-06-26 (Dynamic Native Mentions ל-Whapi task cards)
+> הקשר: כרטיסי משימה ב-Whapi לא תייגו עובד ספציפי בכלל (פתוחים לכל הקבוצה, נפתרים ב-👍🏼). בקשה לתייג עובד מתאים-מחלקה עם native @mention אמיתי (push לעובד), לא קישור-טקסט שWhatsApp מרנדר כ-link כש-`+`/רווחים/מקפים נמצאים במחרוזת.
+
+- ✅ **`_shared/whapiSend.ts`** — `cleanPhoneForMention(phone)` (strips ל-digits-בלבד) + `sendWhapiText`'s `opts.mentions?: string[]` (מועבר ל-Whapi payload כ-`mentions:[...]`, מנוקה שוב defensively בתוך הפונקציה).
+- ✅ **`buildTaskCard`** (`whapi-webhook/index.ts`) + **`buildManualTaskCard`** (`notify-manual-task/index.ts`) — קיבלו פרמטר `assignedPhone` אופציונלי: כשקיים, מוסיפים שורת `👤 Assigned: @{digits}` (אותו משתנה מנוקה שמועבר גם ל-`mentions`, לא string מפורמט בנפרד) + מעבירים `mentions:[assignedPhone]` ל-`sendWhapiText`. כשאין worker תואם — הכרטיס נשאר זהה לקודם (no dead line), 👍🏼 reaction-sweep לא נגע.
+- ✅ **`findAssignedWorkerPhone(supabase, department)`** — חדש בשני הקבצים (מצב duplicated, לא import — קונבנציית הריפו לגבול Deno function). שואל `profiles` חי לפי `department` + `phone IS NOT NULL`, `limit(1)` — דינמי לחלוטין (כל עובד/מחלקה, לא מפה hardcoded של Lidor/Adir/Osnat), ⚠️ אין סיגנל זמינות/משמרת — "הטלפון הראשון שנמצא למחלקה" בלבד.
+- ✅ נפרס: `whapi-webhook` + `notify-manual-task`.
+
 ---
 
 ## 11. פלטת עיצוב

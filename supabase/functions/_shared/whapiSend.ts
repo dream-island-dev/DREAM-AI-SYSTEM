@@ -28,6 +28,15 @@ function _isAbortError(e: unknown): boolean {
   return e instanceof Error && (e.name === "AbortError" || e.name === "TimeoutError");
 }
 
+// Strips +, spaces, dashes, and anything else non-digit so a stored E.164
+// phone ("+972 50-472-1760") becomes the bare-digits form ("972504721760")
+// Whapi's native @mention binding requires — a "+"/space/dash anywhere in
+// the tag makes WhatsApp render it as plain clickable-link text instead of
+// a real mention (no push alert to the tagged worker).
+export function cleanPhoneForMention(phone: string): string {
+  return phone.replace(/\D/g, "");
+}
+
 function _whapiBase(): string {
   return (Deno.env.get("WHAPI_API_URL") ?? "https://gate.whapi.cloud").replace(/\/+$/, "");
 }
@@ -45,7 +54,7 @@ function _tokenOrThrow(): string {
 export async function sendWhapiText(
   to: string,
   body: string,
-  opts: { noLinkPreview?: boolean } = {},
+  opts: { noLinkPreview?: boolean; mentions?: string[] } = {},
 ): Promise<string | null> {
   const token = _tokenOrThrow();
   // `no_link_preview` is a real Whapi body field (verified against live docs).
@@ -55,6 +64,12 @@ export async function sendWhapiText(
   // this is belt-and-suspenders). Omitted by default → fully backward compatible.
   const payload: Record<string, unknown> = { to, body };
   if (opts.noLinkPreview) payload.no_link_preview = true;
+  // Native @mention binding (dynamic task-assignment tags). `mentions` must be
+  // the bare-digits phone(s) — cleaned defensively here too, so a caller that
+  // forgot to strip "+"/dashes still gets a working mention rather than a
+  // silently-dead one. The body text must ALSO contain "@<same digits>" —
+  // that's the caller's job (the digits are the only part Whapi matches on).
+  if (opts.mentions?.length) payload.mentions = opts.mentions.map(cleanPhoneForMention);
 
   try {
     const res = await fetch(`${_whapiBase()}/messages/text`, {

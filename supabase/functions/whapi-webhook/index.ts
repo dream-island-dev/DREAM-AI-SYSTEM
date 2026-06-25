@@ -32,7 +32,7 @@
 import { serve }         from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient }  from "https://esm.sh/@supabase/supabase-js@2";
 import Anthropic         from "https://esm.sh/@anthropic-ai/sdk@0.20.0";
-import { sendWhapiText } from "../_shared/whapiSend.ts";
+import { sendWhapiText, cleanPhoneForMention } from "../_shared/whapiSend.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -214,13 +214,45 @@ function isThumbsUp(emoji: string): boolean {
 // GET/POST interstitial) is replaced by a single reaction gesture — no link,
 // no crawler-safety dance, just 👍🏼 on this card. task-action.ts itself stays
 // alive (the manager "Bump" action, sla-escalation-cron, still uses it).
-function buildTaskCard(room: string | null, desc: string): string {
+// Session — Dynamic Native Mentions. `assignedPhone` (already-cleaned bare
+// digits, e.g. "972504721760") is optional: when no profiles row has a phone
+// for the task's department, the card renders exactly as before (no dead
+// "Assigned:" line). The "@<digits>" substring must appear verbatim in the
+// body — that's what Whapi's `mentions` array binds to — so it's built from
+// the SAME cleaned variable passed to sendWhapiText below, never a separately
+// formatted display string.
+function buildTaskCard(room: string | null, desc: string, assignedPhone: string | null): string {
   return [
     `📌 New Task Opened: Suite ${room ?? "—"}`,
     `📋 Task: ${desc}`,
     `⏰ Status: Pending`,
+    ...(assignedPhone ? [`👤 Assigned: @${assignedPhone}`] : []),
     `👉 Please react with 👍🏼 to complete this task.`,
   ].join("\n");
+}
+
+// Department → on-duty worker, looked up live from `profiles` (phone E.164,
+// migration 070) — fully dynamic, not a hardcoded name/phone map, so it picks
+// up any worker added/reassigned to a department without a code change. No
+// shift/availability signal exists yet, so this is "first phone on file for
+// the department" — best-effort, same FAIL VISIBLE convention as every other
+// lookup in this file: a miss just means the card has no assignee tag.
+async function findAssignedWorkerPhone(
+  supabase: ReturnType<typeof createClient>,
+  department: string,
+): Promise<string | null> {
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("phone")
+    .eq("department", department)
+    .not("phone", "is", null)
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    console.warn(`[whapi-webhook] assigned-worker lookup failed for department "${department}":`, error.message);
+    return null;
+  }
+  return (data?.phone as string | undefined) ?? null;
 }
 
 serve(async (req: Request) => {
@@ -328,12 +360,13 @@ serve(async (req: Request) => {
       // Board from the digit-dash shorthand and the AI-classified fallback, both
       // of which stay 'whatsapp_staff'.
       const taskSource = cls.tier === "room_prefix" ? "manual_group" : "whatsapp_staff";
+      const taskDepartment = (reporterProfile?.department as string) || "תפעול";
 
       const { data: task, error: insertErr } = await supabase
         .from("tasks")
         .insert([{
           room_number:         cls.room_number,
-          department:          (reporterProfile?.department as string) || "תפעול",
+          department:          taskDepartment,
           description:         cls.task_description,
           priority:            slaCategory === "pest_control" ? "urgent" : "normal",
           status:              "open",
@@ -356,14 +389,19 @@ serve(async (req: Request) => {
         continue;
       }
 
-      const card = buildTaskCard(cls.room_number, cls.task_description);
+      const rawAssignedPhone = await findAssignedWorkerPhone(supabase, taskDepartment);
+      const assignedPhone = rawAssignedPhone ? cleanPhoneForMention(rawAssignedPhone) : null;
+      const card = buildTaskCard(cls.room_number, cls.task_description, assignedPhone);
 
       // Reply into the SAME group. no_link_preview stops the crawler pre-fetch.
       // Non-blocking: the ticket already exists — a failed reply must not lose it.
       let replied = true;
       let cardMsgId: string | null = null;
       try {
-        cardMsgId = await sendWhapiText(msg.chatId, card, { noLinkPreview: true });
+        cardMsgId = await sendWhapiText(msg.chatId, card, {
+          noLinkPreview: true,
+          ...(assignedPhone ? { mentions: [assignedPhone] } : {}),
+        });
       } catch (e) {
         replied = false;
         console.warn(`[whapi-webhook] task ${task.id} created but group reply failed:`, (e as Error).message);

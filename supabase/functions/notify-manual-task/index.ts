@@ -18,7 +18,7 @@
 
 import { serve }         from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient }  from "https://esm.sh/@supabase/supabase-js@2";
-import { sendWhapiText } from "../_shared/whapiSend.ts";
+import { sendWhapiText, cleanPhoneForMention } from "../_shared/whapiSend.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -33,12 +33,40 @@ const CATEGORY_LABELS: Record<string, string> = {
   maintenance:      "Maintenance",
 };
 
-function buildManualTaskCard(room: string | null, desc: string, category: string | null): string {
+// Session — Dynamic Native Mentions, same contract as whapi-webhook's
+// buildTaskCard: `assignedPhone` is already-cleaned bare digits; omitted
+// entirely (no dead "Assigned:" line) when no profiles row has a phone for
+// the task's department.
+function buildManualTaskCard(room: string | null, desc: string, category: string | null, assignedPhone: string | null): string {
   const categoryLabel = category ? (CATEGORY_LABELS[category] ?? category) : "General";
   return [
     `🔧 [MANUAL TASK] Room ${room ?? "—"}: ${desc} (Category: ${categoryLabel})`,
+    ...(assignedPhone ? [`👤 Assigned: @${assignedPhone}`] : []),
     `👉 Please react with 👍🏼 to complete this task.`,
   ].join("\n");
+}
+
+// Same live department→phone lookup as whapi-webhook/index.ts's
+// findAssignedWorkerPhone — duplicated, not imported (Deno functions don't
+// share modules across function boundaries in this repo, CLAUDE.md
+// convention already used for SLA_CATEGORY_MINUTES etc.).
+async function findAssignedWorkerPhone(
+  supabase: ReturnType<typeof createClient>,
+  department: string | null,
+): Promise<string | null> {
+  if (!department) return null;
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("phone")
+    .eq("department", department)
+    .not("phone", "is", null)
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    console.warn(`[notify-manual-task] assigned-worker lookup failed for department "${department}":`, error.message);
+    return null;
+  }
+  return (data?.phone as string | undefined) ?? null;
 }
 
 serve(async (req: Request) => {
@@ -55,7 +83,7 @@ serve(async (req: Request) => {
 
     const { data: task, error: taskErr } = await supabase
       .from("tasks")
-      .select("id, room_number, description, sla_category, whapi_message_id")
+      .select("id, room_number, description, sla_category, department, whapi_message_id")
       .eq("id", taskId)
       .maybeSingle();
     if (taskErr) throw new Error(`task_lookup_error: ${taskErr.message}`);
@@ -71,11 +99,16 @@ serve(async (req: Request) => {
         { headers: { ...CORS, "Content-Type": "application/json" } });
     }
 
-    const card = buildManualTaskCard(task.room_number, task.description, task.sla_category);
+    const rawAssignedPhone = await findAssignedWorkerPhone(supabase, task.department);
+    const assignedPhone = rawAssignedPhone ? cleanPhoneForMention(rawAssignedPhone) : null;
+    const card = buildManualTaskCard(task.room_number, task.description, task.sla_category, assignedPhone);
 
     let cardMsgId: string | null = null;
     try {
-      cardMsgId = await sendWhapiText(groupId, card, { noLinkPreview: true });
+      cardMsgId = await sendWhapiText(groupId, card, {
+        noLinkPreview: true,
+        ...(assignedPhone ? { mentions: [assignedPhone] } : {}),
+      });
     } catch (e) {
       console.error(`[notify-manual-task] Whapi send failed for task ${taskId}:`, (e as Error).message);
       return new Response(JSON.stringify({ ok: true, notified: false, reason: (e as Error).message }),

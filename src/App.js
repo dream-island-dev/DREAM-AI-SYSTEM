@@ -302,7 +302,12 @@ const css = `
     font-family: 'Playfair Display', serif; letter-spacing: 0.5px;
   }
   .login-logo p { color: rgba(255,255,255,0.35); font-size: 12px; margin-top: 6px; letter-spacing: 2px; text-transform: uppercase; }
-  .login-divider { width: 40px; height: 1px; background: var(--gold); margin: 12px auto 0; opacity: 0.4; }
+  .login-logo-img {
+    display: block; width: 220px; max-width: 100%; margin: 0 auto;
+    border-radius: 16px;
+    box-shadow: 0 16px 40px rgba(0,0,0,0.55), 0 0 0 1px rgba(201,169,110,0.3), 0 0 36px rgba(201,169,110,0.14);
+  }
+  .login-divider { width: 40px; height: 1px; background: var(--gold); margin: 18px auto 0; opacity: 0.4; }
   .login-field { margin-bottom: 16px; }
   .login-field label { display: block; color: rgba(201,169,110,0.7); font-size: 12px; margin-bottom: 6px; font-weight: 600; letter-spacing: 0.5px; }
   .login-field input {
@@ -345,10 +350,11 @@ const css = `
     padding: 24px 20px 20px;
     border-bottom: 1px solid rgba(201,169,110,0.12);
   }
-  .sidebar-brand { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
-  .sidebar-brand-icon { font-size: 24px; }
-  .sidebar-logo { color: var(--gold-light); font-size: 15px; font-weight: 700; font-family: 'Playfair Display', serif; }
-  .sidebar-logo span { display: block; color: rgba(255,255,255,0.3); font-size: 10px; font-family: 'Heebo', sans-serif; letter-spacing: 1.5px; text-transform: uppercase; margin-top: 1px; }
+  .sidebar-brand { margin-bottom: 16px; }
+  .sidebar-brand-img {
+    display: block; width: 100%; border-radius: 10px;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.45), 0 0 0 1px rgba(201,169,110,0.25);
+  }
   .sidebar-user {
     display: flex; align-items: center; gap: 10px;
     background: rgba(201,169,110,0.08); border-radius: 10px;
@@ -744,9 +750,11 @@ function LoginPage({ onLogin }) {
     <div className="login-bg">
       <div className="login-card">
         <div className="login-logo">
-          <div className="island">🏝️</div>
-          <h1>Dream Island</h1>
-          <p>RESORT MANAGEMENT SYSTEM</p>
+          <img
+            src="/images/dream%20island.jpg"
+            alt="Dream Island Spa & Health Resort"
+            className="login-logo-img"
+          />
           <div className="login-divider" />
         </div>
 
@@ -1080,10 +1088,11 @@ function Sidebar({ user, active, setActive, openOpsCount, onLogout, isAdmin, isS
       <div className={`sidebar${mobileOpen ? " sidebar-mobile-open" : ""}`}>
       <div className="sidebar-header">
         <div className="sidebar-brand">
-          <span className="sidebar-brand-icon">🏝️</span>
-          <div className="sidebar-logo">
-            Dream Island <span>Resort Management</span>
-          </div>
+          <img
+            src="/images/dream%20island.jpg"
+            alt="Dream Island Spa & Health Resort"
+            className="sidebar-brand-img"
+          />
         </div>
         <div className="sidebar-user">
           <div className="avatar">{user.avatar}</div>
