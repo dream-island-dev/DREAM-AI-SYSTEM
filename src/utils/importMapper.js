@@ -48,6 +48,28 @@ export const INVENTORY_RENEWAL_SCHEMA = {
   restockColumn:   { label: "עמודת ׳להשלים/חסר׳ המחושבת בנוסחה הקיימת בקובץ (אם אין עמודת יעד נפרדת)", required: "optional", example: "18" },
 };
 
+// ── Schema descriptors — mirror suggest-import-mapping/index.ts SCHEMAS.voucher_provider_report
+// / SCHEMAS.voucher_easygo_report (Voucher Reconciliation Engine, migration 091).
+// Used only to render field labels/required-badges in MappingReviewPanel — the
+// actual mapping/parsing happens server-side in reconcile-vouchers/index.ts.
+export const VOUCHER_PROVIDER_SCHEMA = {
+  voucherNumber: { label: "מספר שובר/קופון",              required: "soft",     example: "HZ-4821-0007" },
+  guestName:     { label: "שם האורח כפי שמופיע בדוח הספק", required: "soft",     example: "ישראל ישראלי" },
+  packageType:   { label: "סוג חבילה/שובר",               required: "optional", example: "זוגי + שמפניה" },
+  amount:        { label: "סכום ששולם (₪)",               required: "optional", example: "450" },
+  purchaseDate:  { label: "תאריך רכישת השובר",            required: "optional", example: "10/06/2026" },
+};
+
+export const VOUCHER_EASYGO_SCHEMA = {
+  voucherNumber: { label: "מספר שובר כפי שמופיע בדוח השוברים של EasyGo", required: "soft",     example: "HZ-4821-00070192" },
+  guestName:     { label: "שם האורח",                                  required: "soft",     example: "ישראל ישראלי" },
+  phone:         { label: "טלפון האורח",                               required: "optional", example: "0525778390" },
+  orderNumber:   { label: "מספר הזמנה (PMS)",                          required: "optional", example: "266932" },
+  packageType:   { label: "סוג חבילה/שובר שהוזמן",                     required: "optional", example: "זוגי + שמפניה" },
+  amount:        { label: "סכום (₪)",                                 required: "optional", example: "450" },
+  arrivalDate:   { label: "תאריך הגעה",                                required: "optional", example: "18/06/2026" },
+};
+
 /**
  * deriveParLevel(currentQuantity, parLevel, restockColumn)
  * If the sheet had a visible target column, that value wins as-is. Otherwise,

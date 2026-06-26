@@ -99,6 +99,13 @@ const SAMPLE_VALUES = {
   PAYMENT_LINK: "https://pay.dream-island.co.il/abc123",
   PAYMENT_AMOUNT: "450",
   GOOGLE_REVIEW_URL: "https://g.page/r/dream-island/review",
+  // Stage 2.5 (night_before_reminder) — whatsapp-send's resolveNightBeforeTimes()
+  // picks weekday (12:00/15:00) vs Shabbat/holiday (bot_config-driven) hours per
+  // real guest arrival date. This preview has no guest/date behind it, so it
+  // always shows the weekday pair labeled as a sample — not a live render of
+  // either branch. Display-only; never read by the real sender.
+  ENTRY_TIME: "12:00 (יום חול — דוגמה)",
+  CHECK_IN_TIME: "15:00 (יום חול — דוגמה)",
 };
 function resolveSampleText(template) {
   if (!template) return "";
@@ -111,7 +118,9 @@ function resolveSampleText(template) {
     .replace(/\{\{\s*GOOGLE_REVIEW_URL\s*\}\}/gi, SAMPLE_VALUES.GOOGLE_REVIEW_URL)
     .replace(/\{\{\s*SPA_LINE\s*\}\}/gi, `מתואם לכם טיפול בספא בשעה ${sampleSpaTime}. בנוסף, `)
     .replace(/\{\{\s*OPTIONAL_SPA_TEXT\s*\}\}/gi, `מתואם לכם טיפול בספא בשעה ${sampleSpaTime}.\n`)
-    .replace(/\{\{\s*SPA_TIME\s*\}\}/gi, `הטיפול שלכם בספא מתואם לשעה ${sampleSpaTime}`);
+    .replace(/\{\{\s*SPA_TIME\s*\}\}/gi, `הטיפול שלכם בספא מתואם לשעה ${sampleSpaTime}`)
+    .replace(/\{\{\s*entry_time\s*\}\}/gi, SAMPLE_VALUES.ENTRY_TIME)
+    .replace(/\{\{\s*check_in_time\s*\}\}/gi, SAMPLE_VALUES.CHECK_IN_TIME);
 }
 
 // Highlights any {{TOKEN}} surviving resolveSampleText (typo or unsupported

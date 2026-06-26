@@ -80,14 +80,38 @@ const SCHEMAS: Record<string, Record<string, FieldSpec>> = {
     parLevel:       { label: "עמודת יעד/מלאי מינימלי, אם קיימת בקובץ כעמודה נפרדת",                  kind: "value", required: "optional", example: "60" },
     restockColumn:  { label: "עמודת ׳להשלים/חסר׳ המחושבת בנוסחה הקיימת בקובץ (אם אין עמודת יעד נפרדת)", kind: "value", required: "optional", example: "18" },
   },
+  // Voucher Reconciliation Engine (Yelena, session 49/migration 091) — the two
+  // import sides reconcile-vouchers/index.ts maps before writing to
+  // voucher_provider_reports / voucher_easygo_records. voucherNumber is
+  // "soft" not "hard": both target columns are nullable on purpose (an
+  // unparseable row is still inserted and surfaced as a reconciliation
+  // exception, never silently dropped — Zero Data Loss, CLAUDE.md §0.1).
+  voucher_provider_report: {
+    voucherNumber: { label: "מספר שובר/קופון",                          kind: "value", required: "soft",     example: "HZ-4821-0007" },
+    guestName:     { label: "שם האורח כפי שמופיע בדוח הספק",              kind: "value", required: "soft",     example: "ישראל ישראלי" },
+    packageType:   { label: "סוג חבילה/שובר",                           kind: "value", required: "optional", example: "זוגי + שמפניה" },
+    amount:        { label: "סכום ששולם (₪)",                          kind: "value", required: "optional", example: "450" },
+    purchaseDate:  { label: "תאריך רכישת השובר",                        kind: "value", required: "optional", example: "10/06/2026" },
+  },
+  voucher_easygo_report: {
+    voucherNumber: { label: "מספר שובר כפי שמופיע בדוח השוברים של EasyGo", kind: "value", required: "soft",     example: "HZ-4821-00070192" },
+    guestName:     { label: "שם האורח",                                 kind: "value", required: "soft",     example: "ישראל ישראלי" },
+    phone:         { label: "טלפון האורח",                              kind: "value", required: "optional", example: "0525778390" },
+    orderNumber:   { label: "מספר הזמנה (PMS)",                          kind: "value", required: "optional", example: "266932" },
+    packageType:   { label: "סוג חבילה/שובר שהוזמן",                     kind: "value", required: "optional", example: "זוגי + שמפניה" },
+    amount:        { label: "סכום (₪)",                                 kind: "value", required: "optional", example: "450" },
+    arrivalDate:   { label: "תאריך הגעה",                                kind: "value", required: "optional", example: "18/06/2026" },
+  },
 };
 
 // Short domain label per schema — used to frame the prompt correctly for
 // whichever document type is actually being mapped (was hardcoded to "hotel
 // guest bookings" before the inventory schema was added).
 const SCHEMA_DOMAIN_LABELS: Record<string, string> = {
-  suite_arrivals:    "הזמנות אורחים במלון",
-  inventory_renewal: "טפסי חידוש/ספירת מלאי",
+  suite_arrivals:           "הזמנות אורחים במלון",
+  inventory_renewal:        "טפסי חידוש/ספירת מלאי",
+  voucher_provider_report:  "דוחות שוברים מספקים חיצוניים (Hightech Zone / Dolce Vita / Pais Plus / Hever / Nofshonit)",
+  voucher_easygo_report:    "דוח השוברים של EasyGo (מה שהצוות הזמין בפועל)",
 };
 
 // ══════════════════════════════════════════════════════════════════════════════

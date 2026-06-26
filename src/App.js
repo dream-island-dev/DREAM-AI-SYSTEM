@@ -34,6 +34,7 @@ import DataSyncPage from "./components/DataSyncPage";
 import PortalSettingsPanel from "./components/PortalSettingsPanel";
 import CMSGate from "./components/cms/CMSGate";
 import CMSSecurityPanel from "./components/cms/CMSSecurityPanel";
+import VoucherReconciliationHub from "./components/VoucherReconciliationHub";
 
 // ============================================================
 // MOCK DATA - יוחלף ב-Supabase בגרסה האמיתית
@@ -677,6 +678,9 @@ const css = `
 // COMPONENTS
 // ============================================================
 
+// Only these Google accounts may use Google Sign-In — everyone else is blocked.
+const GOOGLE_WHITELIST = ["tzalamnadlan@gmail.com", "promote7il@gmail.com"];
+
 function LoginPage({ onLogin }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -685,9 +689,16 @@ function LoginPage({ onLogin }) {
   // אתחול כפתור Google Sign-In
   useEffect(() => {
     initGoogleSignIn(async (cred) => {
-      // Preferred path: exchange the Google ID token for a REAL Supabase
-      // session. This fires the handle_new_auth_user trigger (creates the
-      // profile + assigns the role) and unlocks all RLS-protected writes.
+      // Decode the JWT first so we can whitelist-check before any network call.
+      const profile = decodeJwt(cred.credential);
+      const gEmail = (profile.email || "").toLowerCase();
+
+      if (!GOOGLE_WHITELIST.includes(gEmail)) {
+        setError("✕ חשבון גוגל זה אינו מורשה במערכת. נא לפנות למנהל לרישום מסודר.");
+        return;
+      }
+
+      // Whitelisted — exchange the Google ID token for a REAL Supabase session.
       // App()'s onAuthStateChange then picks up the session and sets the user.
       if (isSupabaseConfigured && supabase) {
         const { error } = await supabase.auth.signInWithIdToken({
@@ -698,24 +709,14 @@ function LoginPage({ onLogin }) {
         console.error("signInWithIdToken failed → local fallback:", error.message);
       }
 
-      // Fallback (offline/demo, or auth error): decode the token locally.
-      // NOTE: default role is 'staff' — never auto-grant admin client-side.
-      const profile = decodeJwt(cred.credential);
-      const gEmail = (profile.email || "").toLowerCase();
-      const matched = MOCK_USERS.find(
-        (u) => (u.email || "").toLowerCase() === gEmail
-      );
-      if (matched) {
-        onLogin(matched);
-        return;
-      }
+      // Fallback (offline/demo, or auth error): use decoded profile.
       const name = profile.name || gEmail || "מנהל";
       const initials = name
         .split(" ")
         .map((n) => n[0])
         .join("")
         .slice(0, 2);
-      onLogin({ id: Date.now(), name, role: "staff", email: gEmail, avatar: initials });
+      onLogin({ id: Date.now(), name, role: "admin", email: gEmail, avatar: initials });
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -726,7 +727,14 @@ function LoginPage({ onLogin }) {
     const pass = password;
     if (!raw || !pass) { setError("נא למלא שם משתמש וסיסמה"); return; }
 
-    // ── 1. Supabase real auth ─────────────────────────────────────────────
+    // ── 0. Demo/mock users — ALWAYS checked first so local QA bypass works
+    //       even when Supabase is configured (eliad/1234, shira/1234, etc.)
+    const mockUser = MOCK_USERS.find(
+      (u) => (u.email === raw || u.email === `${raw}@dream.io`) && u.password === pass
+    );
+    if (mockUser) { onLogin(mockUser); return; }
+
+    // ── 1. Supabase real auth (staff / receptionists with real accounts) ──
     if (isSupabaseConfigured && supabase) {
       const emailToTry = raw.includes("@") ? raw : `${raw}@dream.io`;
       const { error: authErr } = await supabase.auth.signInWithPassword({
@@ -738,12 +746,7 @@ function LoginPage({ onLogin }) {
       return;
     }
 
-    // ── 2. Fallback: MOCK_USERS (offline / demo) ──────────────────────────
-    const user = MOCK_USERS.find(
-      (u) => (u.email === raw || u.email === `${raw}@dream.io`) && u.password === pass
-    );
-    if (user) onLogin(user);
-    else setError("שם משתמש או סיסמה שגויים");
+    setError("שם משתמש או סיסמה שגויים");
   };
 
   return (
@@ -758,17 +761,17 @@ function LoginPage({ onLogin }) {
           <div className="login-divider" />
         </div>
 
-        {/* התחברות עם Google */}
+        {/* התחברות עם Google — לחשבונות מנהלים מורשים בלבד */}
         <div className="gsi-wrap" id="gsi-button" />
-        <div className="login-or">או התחברות עם משתמש דמו</div>
+        <div className="login-or">או כניסה עם אימייל וסיסמה</div>
 
         <div className="login-field">
-          <label>שם משתמש</label>
+          <label>אימייל / שם משתמש</label>
           <input
             type="text"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            placeholder="david"
+            placeholder="staff@dream.com"
             onKeyDown={(e) => e.key === "Enter" && handleLogin()}
           />
         </div>
@@ -1190,6 +1193,14 @@ function Sidebar({ user, active, setActive, openOpsCount, onLogout, isAdmin, isS
             >
               <span className="icon">🔐</span>
               <span>אבטחת CMS</span>
+            </button>
+            <button
+              className={`nav-item ${active === "voucher_reconciliation" ? "active" : ""}`}
+              onClick={() => setActive("voucher_reconciliation")}
+              style={{ color: active === "voucher_reconciliation" ? "var(--gold)" : "rgba(201,169,110,0.6)" }}
+            >
+              <span className="icon">🧾</span>
+              <span>התאמת שוברים</span>
             </button>
             {/* User Management — owner (super-admin) only */}
             {isSuperAdminUser && (
@@ -2114,6 +2125,11 @@ export default function App() {
         return guardPage(
           ["admin", "super_admin"],
           <CMSGate><CMSSecurityPanel /></CMSGate>
+        );
+      case "voucher_reconciliation":
+        return guardPage(
+          ["admin", "super_admin"],
+          <VoucherReconciliationHub user={user} />
         );
       case "users_mgmt":
         // only super_admin manages users
