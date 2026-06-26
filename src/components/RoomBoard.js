@@ -412,8 +412,10 @@ export default function RoomBoard({ isKioskMode = false, onLogout }) {
         </div>
       </div>
 
-      {/* Stats bar — click to filter */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8, marginBottom: 16 }}>
+      {/* Stats bar — click to filter. auto-fit/minmax (not a fixed column count) so it
+          reflows on tablet widths instead of clipping — also fixes the 6-status/5-column
+          mismatch that left the 6th tile wrapping alone even on desktop. */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8, marginBottom: 16 }}>
         {STATUSES.map(st => (
           <div
             key={st}

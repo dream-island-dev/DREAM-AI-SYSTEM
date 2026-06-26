@@ -586,6 +586,7 @@ function NewChatModal({ onClose, onSent }) {
   const [waTemplates,   setWaTemplates]   = useState([]);
   const [dbTemplates,   setDbTemplates]   = useState([]);
   const [loadingTmpls,  setLoadingTmpls]  = useState(false);
+  const [tmplLoadError, setTmplLoadError] = useState(null);
   const [selectedTmpl,  setSelectedTmpl]  = useState(null);
   const [varValues,     setVarValues]     = useState([]);
 
@@ -614,6 +615,7 @@ function NewChatModal({ onClose, onSent }) {
   const [tmplBulkSending,    setTmplBulkSending]    = useState(false);
   const [tmplBulkProgress,   setTmplBulkProgress]   = useState(null);
   const [tmplBulkDone,       setTmplBulkDone]       = useState(false);
+  const [tmplBulkFailures,   setTmplBulkFailures]   = useState([]); // [{ name, phone, reason }] — same FAIL VISIBLE convention as bulkFailures
 
   // Load guests for bulk mode whenever filter changes
   useEffect(() => {
@@ -671,9 +673,16 @@ function NewChatModal({ onClose, onSent }) {
     if (!isSupabaseConfigured || !supabase) return;
     setLoadingTmpls(true);
 
+    setTmplLoadError(null);
     Promise.all([
-      supabase.functions.invoke("get-wa-templates").then(({ data }) => data?.templates ?? []),
-      supabase.from("message_templates").select("*").order("sort_order").then(({ data }) => data ?? []),
+      supabase.functions.invoke("get-wa-templates").then(({ data, error }) => {
+        if (error) throw new Error(`תבניות Meta: ${error.message ?? "שגיאה"}`);
+        return data?.templates ?? [];
+      }),
+      supabase.from("message_templates").select("*").order("sort_order").then(({ data, error }) => {
+        if (error) throw new Error(`תבניות שמורות: ${error.message}`);
+        return data ?? [];
+      }),
     ]).then(([wa, db]) => {
       // Only show APPROVED Meta templates; exclude hello_world (test-number only)
       const approvedWa = wa.filter(
@@ -683,6 +692,10 @@ function NewChatModal({ onClose, onSent }) {
       );
       setWaTemplates(approvedWa);
       setDbTemplates(db);
+    }).catch((e) => {
+      setTmplLoadError(e?.message || "טעינת התבניות נכשלה");
+      setWaTemplates([]);
+      setDbTemplates([]);
     }).finally(() => setLoadingTmpls(false));
   }, []);
 
@@ -787,6 +800,7 @@ function NewChatModal({ onClose, onSent }) {
     if (tmplAudienceGuests.length === 0) return setErr("אין נמענים בסינון הנוכחי");
 
     setTmplBulkSending(true); setErr(null); setTmplBulkDone(false);
+    const failures = [];
     let done = 0;
     for (const g of tmplAudienceGuests) {
       setTmplBulkProgress({ done, total: tmplAudienceGuests.length });
@@ -805,11 +819,16 @@ function NewChatModal({ onClose, onSent }) {
           await supabase.from("whatsapp_conversations").insert({
             phone: g.phone, direction: "outbound", message: `[תבנית: ${selectedTmpl.name}]`, wa_message_id: null,
           });
+        } else {
+          failures.push({ name: g.name, phone: g.phone, reason: data?.error || error?.message || "שגיאה" });
         }
-      } catch (_) {}
+      } catch (e) {
+        failures.push({ name: g.name, phone: g.phone, reason: e?.message ?? "שגיאה" });
+      }
       done++;
       await sleep(650);
     }
+    setTmplBulkFailures(failures);
     setTmplBulkProgress({ done, total: tmplAudienceGuests.length });
     setTmplBulkSending(false);
     setTmplBulkDone(true);
@@ -1192,6 +1211,13 @@ function NewChatModal({ onClose, onSent }) {
                 </div>
                 {loadingTmpls ? (
                   <div style={{ fontSize: 13, color: "#888", padding: "12px 0", textAlign: "center" }}>⏳ טוען תבניות...</div>
+                ) : tmplLoadError ? (
+                  <div style={{
+                    background: "#FCEBEB", border: "1px solid #E24B4A", color: "#8A2C2C",
+                    borderRadius: 8, padding: "10px 14px", fontSize: 13, textAlign: "center",
+                  }}>
+                    ⚠ {tmplLoadError}
+                  </div>
                 ) : allTmpls.length === 0 ? (
                   <div style={{ fontSize: 13, color: "#aaa", padding: "12px 0", textAlign: "center" }}>
                     לא נמצאו תבניות מאושרות.<br />
@@ -1340,6 +1366,18 @@ function NewChatModal({ onClose, onSent }) {
                       background: tmplBulkDone ? "#25D366" : "linear-gradient(90deg, #25D366, #128C7E)",
                     }} />
                   </div>
+                </div>
+              )}
+
+              {tmplBulkDone && tmplBulkFailures.length > 0 && (
+                <div style={{ background: "#FFF5E8", border: "1px solid #B5600A", borderRadius: 10, padding: "10px 14px", fontSize: 13, color: "#B5600A" }}>
+                  ⚠️ {tmplBulkFailures.length} מתוך {tmplAudienceGuests.length} לא נשלחו:
+                  <ul style={{ margin: "6px 0 0", paddingRight: 18 }}>
+                    {tmplBulkFailures.slice(0, 8).map((f, i) => (
+                      <li key={i}>{f.name ?? f.phone} — {f.reason}</li>
+                    ))}
+                    {tmplBulkFailures.length > 8 && <li>ועוד {tmplBulkFailures.length - 8}...</li>}
+                  </ul>
                 </div>
               )}
 

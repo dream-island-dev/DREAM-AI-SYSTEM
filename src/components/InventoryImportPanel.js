@@ -170,7 +170,7 @@ export default function InventoryImportPanel({ onOpenScheduler }) {
           { onConflict: "schema_key,header_signature" },
         )
         .then(({ error }) => {
-          if (error) console.warn("[InventoryImportPanel] failed to save mapping memory:", error.message);
+          if (error) showToast("err", "המיפוי לא נשמר לזיכרון (הייבוא הנוכחי לא נפגע, אך הייבוא הבא לא יציע אותו אוטומטית): " + error.message);
         });
     }
   }, [rawRows, showToast]);

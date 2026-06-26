@@ -283,8 +283,10 @@ export default function HousekeepingTabletView({ isKioskMode = false, onLogout }
         )}
       </div>
 
-      {/* Sprint 5.3 — supervisor stats bar (read-only counters) */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
+      {/* Sprint 5.3 — supervisor stats bar (read-only counters).
+          auto-fit/minmax (not a fixed 4-column count) so the bilingual labels
+          don't clip on a real tablet viewport — reflows to 2 columns instead. */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginBottom: 14 }}>
         <StatTile label='סה"כ חדרים / Total' value={counts.total}    color="var(--gold-dark)" />
         <StatTile label="מלוכלך / Dirty"     value={counts.dirty}    color={BUCKETS.dirty.border} />
         <StatTile label="בניקוי / Cleaning"  value={counts.cleaning} color={BUCKETS.cleaning.border} />

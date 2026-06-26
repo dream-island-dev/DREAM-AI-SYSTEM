@@ -660,9 +660,9 @@ export default function AutomationControlCenter() {
       (data?.templates ?? []).forEach((t) => { map[t.name] = t; });
       setMetaTemplatesByName(map);
     } catch (err) {
-      console.warn("[AutomationControlCenter] fetchMetaTemplates error:", err?.message ?? err);
+      showToast("err", "שגיאה בטעינת תבניות Meta — תצוגת התבנית בלוח הזמנים תהיה חסרה: " + (err?.message ?? err));
     }
-  }, []);
+  }, [showToast]);
 
   useEffect(() => { fetchMetaTemplates(); }, [fetchMetaTemplates]);
 

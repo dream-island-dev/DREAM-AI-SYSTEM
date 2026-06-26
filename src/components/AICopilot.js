@@ -29,6 +29,19 @@ export default function AICopilot({ user }) {
   }, []);
   const drag = useRef({ dragging: false, moved: false, startX: 0, startY: 0 });
 
+  // Default placement only — clears App.js's mobile-bar (.mobile-bar, shown
+  // <=768px, ~70px tall incl. padding) so the bell doesn't sit on top of the
+  // bottom nav on a phone/narrow tablet. A user-dragged `pos` is left exactly
+  // as they placed it — they already moved it clear of whatever mattered to them.
+  const [isNarrowViewport, setIsNarrowViewport] = useState(
+    () => typeof window !== "undefined" && window.innerWidth <= 768
+  );
+  useEffect(() => {
+    const onResize = () => setIsNarrowViewport(window.innerWidth <= 768);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
   function showToast(msg, type = "ok") {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 3500);
@@ -205,10 +218,12 @@ export default function AICopilot({ user }) {
   const hasPending = alerts.length > 0;
   const hasNewAlert = newAlertId != null;
 
-  // Default anchor: bottom:24/left:24 (unchanged). A dragged position overrides it.
+  // Default anchor: bottom:24/left:24, bumped to bottom:88px under the mobile
+  // bottom-nav breakpoint so it doesn't overlap App.js's .mobile-bar. A dragged
+  // position always overrides it, at any viewport width.
   const anchor = pos
     ? { left: `${pos.left}px`, bottom: `${pos.bottom}px` }
-    : { left: "24px", bottom: "24px" };
+    : { left: "24px", bottom: isNarrowViewport ? "88px" : "24px" };
 
   return (
     <div style={{

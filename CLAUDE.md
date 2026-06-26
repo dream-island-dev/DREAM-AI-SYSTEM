@@ -1,6 +1,6 @@
 # CLAUDE.md — Dream Island AI System
 > קובץ זה נקרא אוטומטית בכל שיחה. הוא מקור-האמת שלך. קרא אותו לפני כל פעולה.
-> **עדכון אחרון:** 2026-06-26 (session 48 — Voice/Audio Ticket Support: `whapi-webhook` מתמלל כעת הודעות קוליות (Gemini — Claude אין לו קלט אודיו) ומחזיר אותן לאותו צינור סיווג קיים בדיוק (Tier-0 regex/Tier-1 Claude) שמשמש טקסט מוקלד — בלי לוגיקה כפולה. ⚠️ נתפס ותוקן באותו סשן: deploy ראשון קרס (`BOOT_ERROR`) כי `std@0.168.0`'s מודול base64 מייצא `encode`, לא `encodeBase64` — נתפס ע"י smoke-test לפני שמשתמש אמיתי נחשף. לא נבדק תמלול אמיתי — דורש הודעה קולית מטלפון אמיתי. session 47 (Inventory Smart-Intake Module — ה"סוכן" הוחלף במודול חידוש-מלאי חכם, `/inv/:token`, migration 090) נשאר מתועד למטה. ראה §10 sessions 47–48 לפירוט מלא.).
+> **עדכון אחרון:** 2026-06-26 (session 52 — **RESORT_UI_MANIFEST.md** נוצר (root) כמקור-אמת נפרד ל-UI/UX philosophy + tab-readiness checklist, ואז **automated repair pass** סגר 7 מתוך הממצאים שהוא תיעד: silent/misleading error states ב-`AdminPanel.js`(×2)/`WhatsAppInbox.js`(×2)/`AutomationControlCenter.js`/`InventoryImportPanel.js` + tablet-grid layout gaps ב-`RoomBoard.js`/`HousekeepingTabletView.js`/`AICopilot.js`. `npm run build` נקי אחרי כל קובץ. CSS-variable drift (~150 hardcoded hex) ו-`AutomationControlCenter`'s tablet media-query נשארו **בכוונה** לא-מטופלים (out of scope, לפי הנחיית Mike). ראה §10 session 52 לפירוט מלא + §0 בהמשך לסשן 51 שנשאר מתועד למטה.)
 >
 > 📚 **היסטוריית הסשנים המלאה (sessions 2–44) הועברה ל-[`claude_history.md`](claude_history.md)** כדי לשמור את הקובץ הזה קליל. שום מידע לא נמחק — רק הופרד. הקובץ הזה מחזיק את **רפרנס הארכיטקטורה החי** (§0–§13); הקובץ ההוא מחזיק את הנרטיב ההיסטורי. כשצריך הקשר מפורט על באג/החלטה ישנה — קרא שם.
 >
@@ -439,6 +439,28 @@ DREAM-AI-SYSTEM/
 │       ├── TemplateManagerPanel.js ★ ניהול תבניות WhatsApp מאושרות מ-Meta — סונכרן/נוצר/preview.
 │       │                            מיוצא session 20: STATUS_META (היה module-private) — משותף עם
 │       │                            AutomationControlCenter.js's Meta template preview box.
+│       ├── VoucherReconciliationHub.js ★ NEW (session 51) — "התאמת שוברים" (route חדש
+│       │                            `voucher_reconciliation`, admin/super_admin, Sidebar אדמין).
+│       │                            shell עם 2 sub-tabs (אותו pattern כמו InventoryHub.js): "ייבוא
+│       │                            והתאמה" (VoucherImportPanel) / "דוח חריגים" (VoucherExceptionsBoard).
+│       │                            ה-UI הראשון למנוע ה-backend שנבנה ב-session 50.
+│       ├── VoucherImportPanel.js ★ NEW (session 51) — dropdown ספק (חי מ-`voucher_providers`) +
+│       │                            שני drag-and-drop zones (EasyGo/ספק) → `multipart/form-data`
+│       │                            אמיתי ל-Edge Function `reconcile-vouchers` החי. מטפל בשער
+│       │                            `needs_mapping_review`: מציג `MappingReviewPanel` (אותה
+│       │                            קומפוננטה כמו ArrivalImportPanel/InventoryImportPanel) לכל צד
+│       │                            שלא פוענח, ושולח מחדש אוטומטית עם המיפוי המאושר ברגע ששני
+│       │                            הצדדים אושרו. `VOUCHER_PROVIDER_SCHEMA`/`VOUCHER_EASYGO_SCHEMA`
+│       │                            נוספו ל-`importMapper.js` כראי לשני schema_key החדשים
+│       │                            (session 50) — רק תוויות עבריות לתצוגה, לא לוגיקת פרסור.
+│       ├── VoucherExceptionsBoard.js ★ NEW (session 51) — לוח טריאז' מעל
+│       │                            `voucher_reconciliation_results`. צ'יפים לפילטור לפי
+│       │                            `match_status` (ברירת מחדל מדגישה `missing_in_provider` —
+│       │                            הכיוון הפיננסי הקריטי, מוזמן ב-EasyGo בלי גיבוי ספק), כפתורי
+│       │                            "✓ אישור/☑ טופל/✕ דחייה" כותבים `review_status` ישירות דרך
+│       │                            ה-Supabase client (אותה קונבנציה כמו InventoryApprovalQueue.js).
+│       │                            ⚠️ **לא נבדק חזותית ע"י Claude** — login דמו חסום בסביבת
+│       │                            הפיתוח (ראה §10 session 51). Mike צריך login אמיתי לאישור.
 │       └── cms/                  ★ NEW (session 31) — Admin CMS 2FA gate (§7), 5 קבצים שטוחים (אין
 │                                    קינון נוסף): CMSGate.js (עטיפה — דורש re-auth סיסמה+TOTP טרי
 │                                    לפני רינדור הילדים, מרכיב AuthProvider+CMSPrivateRoute) ·
@@ -585,7 +607,38 @@ DREAM-AI-SYSTEM/
 │       │                            לעולם לא כותב ל-DB — `MappingReviewPanel.js` תמיד מציג לאישור
 │       │                            אנושי. ★ session 47: schema שני `inventory_renewal` נוסף
 │       │                            (היה רק `suite_arrivals`) + `SCHEMA_DOMAIN_LABELS` כדי שפתיח
-│       │                            הפרומפט לא יישאר hardcoded ל"הזמנות מלון" לקובץ מלאי.
+│       │                            הפרומפט לא יישאר hardcoded ל"הזמנות מלון" לקובץ מלאי. ★ session
+│       │                            50: שני schema_key נוספים — `voucher_provider_report`/
+│       │                            `voucher_easygo_report` (Voucher Reconciliation Engine,
+│       │                            `reconcile-vouchers` למטה הוא הצרכן היחיד שלהם כרגע).
+│       ├── reconcile-vouchers/      ★ NEW (session 50) — Voucher Reconciliation Engine, backend
+│       │                            processing. מקבל multipart/form-data: `easygoFile`/`providerFile`
+│       │                            (קבצי Excel/CSV) + `providerName` (טקסט, נגד `voucher_providers`
+│       │                            הקיים) + `providerMapping`/`easygoMapping` אופציונליים (JSON,
+│       │                            מיפוי שאדם כבר אישר). **שונה מכל שאר משטחי הייבוא בריפו** — כאן
+│       │                            ה-Edge Function עצמו (לא הפרונטאנד) קורא/כותב `import_mapping_memory`
+│       │                            ישירות (אותו אלגוריתם signature כמו `ArrivalImportPanel.js`'s
+│       │                            `_headerSignature` בדיוק — `[...headers].sort().join("␟")`), כי
+│       │                            אין עדיין מסך-סקירה לפיצ'ר הזה. סדר פתרון מיפוי: (1) מיפוי מפורש
+│       │                            בבקשה (כבר אושר ע"י אדם) → נשמר לזיכרון, (2) זיכרון קיים לפי
+│       │                            header_signature, (3) **אין** → קורא ל-`suggest-import-mapping`
+│       │                            (Gemini→Claude) להצעה, ומחזיר `{ok:true, status:"needs_mapping_review",
+│       │                            review:{...}}` **בלי לכתוב שום שורה ל-DB** — שער-אישור-אנושי
+│       │                            (migration 049's comment: "never skips the human gate") נשמר גם
+│       │                            כשאין מסך לקיים אותו עדיין. כששני הצדדים פתורים: כותב ל-
+│       │                            `voucher_provider_reports`/`voucher_easygo_records` (כל צד עם
+│       │                            `import_batch` UUID משלו, מיוצר כאן כדי שיועבר ישירות ל-RPC),
+│       │                            עמודות לא-ממופות נשארות ב-`raw_extras` (Zero Data Loss, §0.1),
+│       │                            ואז קורא ל-RPC `run_voucher_reconciliation(provider_batch,
+│       │                            easygo_batch)` ומחזיר את ה-JSONB שלו ללא שינוי + ספירות שורות.
+│       │                            דורש Bearer תקין (כלי צוות פנימי, **לא** פורטל ציבורי כמו
+│       │                            guest-portal-data/inventory-portal-submit — לכן בשונה מהם
+│       │                            *לא* מדלג על אימות). ✅ **נפרס לפרודקשן** (`--no-verify-jwt`,
+│       │                            כולל `suggest-import-mapping` המעודכן). ★ session 51: UI נבנה
+│       │                            (`VoucherReconciliationHub.js` למעלה) ושולח multipart אמיתי —
+│       │                            ⚠️ **עדיין לא נבדק חי מול קובצי ספק/EasyGo אמיתיים** (login דמו
+│       │                            חסם בדיקה חזותית ע"י Claude, ראה §10 session 51) — Mike צריך
+│       │                            להריץ ייבוא אמיתי דרך ה-UI.
 │       ├── inventory-portal-data/   ★ NEW (session 47) — מראה את guest-portal-data בדיוק: UUID
 │       │                            regex guard, service-role lookup לפי `inventory_portal_links.
 │       │                            token` **וגם** `is_active=true` (token מבוטל = "לא נמצא", לא
@@ -744,6 +797,10 @@ switch (activePage) {
   "cms_security" → CMSGate(CMSSecurityPanel)  // ★ NEW session 31 — admin/super_admin, then a SECOND
                                     // gate inside: CMSGate requires a fresh password+TOTP (aal2)
                                     // re-auth via CMSLogin before CMSSecurityPanel renders. See §7.
+  "voucher_reconciliation" → VoucherReconciliationHub  // ★ NEW session 51 — admin/super_admin,
+                                    // guardPage. "התאמת שוברים" — first UI surface for the Voucher
+                                    // Reconciliation Engine backend (sessions 49–50). Not yet
+                                    // click-tested live by Mike.
   "users_mgmt"   → UserManagement   (super_admin only)
 }
 // ★ session 7: "upload" (DataUpload) ו-"data_hub" (DataHub) הוסרו — מוזגו ל-ArrivalImportPanel.
@@ -785,6 +842,10 @@ switch (activePage) {
 | `inventory_portal_links` | ★ NEW (session 47) — קישור-קסם per location (`/inv/:token`), אותו מנגנון כמו `guests.portal_token` | authenticated |
 | `inventory_submissions` | ★ NEW (session 47) — דיווח יומי אחד מהעובדת, `status` pending/approved/rejected — שום דבר "חי" לפני אישור מנהל | authenticated |
 | `inventory_counts` | ★ NEW (session 47) — שורת פריט per submission. `restock_suggested` מחושב בשרת (`inventory-portal-submit`), לא מהלקוח | authenticated |
+| `voucher_providers` | ★ NEW (session 49, migration 091) — רישום ספקי שוברים חיצוניים (Hightech Zone/Dolce Vita/Pais Plus/Hever/Nofshonit, מזוּרעים) + `match_mode` (`exact`/`truncate_4`) — data-driven, לא hardcoded בקוד | authenticated |
+| `voucher_provider_reports` | ★ NEW (session 49, migration 091) — שורות מדוח הספק (מקור האמת למה שהאורח שילם עליו בפועל). `voucher_number` nullable בכוונה — שורה לא-קריאה עדיין נכנסת ומופיעה כ-`unparseable` exception, לא נעלמת (Zero Data Loss §0.1) | authenticated |
+| `voucher_easygo_records` | ★ NEW (session 49, migration 091) — שורות מ"דוח השוברים של EasyGo" (מה שהצוות בפועל הזמין). `provider_id` nullable — `run_voucher_reconciliation` מנסה כל ספק רלוונטי כשלא תויג | authenticated |
+| `voucher_reconciliation_results` | ★ NEW (session 49, migration 091) — תוצאת כל השוואה: `match_status` (matched/package_mismatch/duplicate_match/missing_in_easygo/missing_in_provider/unparseable) + `review_status` נפרד (pending/approved/rejected/resolved) — אותו דגם דו-סטטוס כמו `spa_staging`. **ללא DELETE policy בכוונה** (נתון פיננסי-אדג'ייסנט) | authenticated |
 
 ### פורמטי טלפון — חיוני להבנה
 ```
@@ -1217,6 +1278,8 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
 | תבניות Meta מאושרות | ⚠️ 2 מתוך 6 עדיין PENDING (אומת חי session 42, `get-wa-templates?all=true`) | **APPROVED:** `dream_arrival_confirmation` (T-2/pre_arrival_2d), `dream_mid_stay_check` (mid_stay), `dream_checkout_feedback` (checkout_fb), `dream_handover_agent_v2`, `dream_payment_and_workshops`. **PENDING (לא ניתן לשלוח עד אישור):** `dream_checkin_reminder_v2` (T-1/night_before), `dream_welcome_morning` (יום הגעה — suite+standard, ★ session 29) — שתיהן הושבתו ב-`automation_stages` כדי שה-cron לא ינסה לשלוח אליהן ויכשל בשקט מול Meta כל 15 דק'. **`dream_room_ready`** (★ session 29, מסירת מפתח ידנית מ-AICopilot) **גם הוא PENDING** — עדיין כך, לא השתנה מ-session 29 — **אל תניחו שהוא חי**, לחיצת "אשר ושלח הודעה" תיכשל בצורה גלויה (toast שגיאה, room_status לא יתקדם, AICopilot.js's FAIL VISIBLE check). יש גם `dream_room_ready1` PENDING (כפילות ישנה כנראה משליחה כפולה) ו-`suite_welcome_morning` PENDING (לא מוזכר בקוד החי בכלל — orphan registration). ⚠️ **שינוי טקסט עונתי** (session 11): כל שינוי בגוף הודעה של תבנית מאושרת **דורש אישור Meta מחדש**. ⚠️ **גילוי session 29 (עדיין רלוונטי):** 9 מתוך 16 התבניות השיווקיות הישנות נכשלות ב-Meta עם "New Hebrew content can't be added while the existing Hebrew content is being deleted" — אינו משפיע על pipeline הליבה. |
 | SpaStagingPanel automation | ★ גילוי session 7 | מוזן ע"י `email-import-webhook` + `spa-schedule-webhook` — לא ברור באיזו פלטפורמת אוטומציה חיצונית (סביר Make.com) השרשור עצמו רץ. לא נחקר השרשור החיצוני, רק נקודות הקצה ב-Supabase. |
 | `log_guest_request` tool-calling (session 17) | פרוס, לא נבדק חי | מומש ל-Gemini+Claude, `guest_alerts` הפך לselective (ראה session 17 למטה). Deploy+build עברו נקי, אבל **לא נשלחה הודעת WhatsApp אמיתית** לאימות שהמודל בפועל קורא לכלי ושה-Requests Board מציג שורה נכונה. שלח/י הודעת בדיקה עם בקשה ספציפית (יין/פרחים) לפני שסומכים על זה בפרודקשן. |
+| Voucher Reconciliation UI (session 51) | בנוי, לא נבדק חזותית | `VoucherReconciliationHub.js`/`VoucherImportPanel.js`/`VoucherExceptionsBoard.js` — `npm run build` נקי, dev server עלה נקי. login דמו (`eliad`/`1234`) נדחה ("שם משתמש או סיסמה שגויים") בסביבת הפיתוח הזו — לא ניתן היה לקליק-דרך אמיתי. **Mike צריך לעבור על "התאמת שוברים" עם login אמיתי** ולוודא את כל הזרימה: העלאה → שער מיפוי (אם רלוונטי) → תוצאות → דוח חריגים → פעולות אישור/דחייה. |
+| Voice AI Phone Receptionist (Sprint 3, session 51) | 📝 תכנון בלבד — אין קוד | אדריכלות אושרה ברמת-גובה (webhook חדש `voice-ai-webhook` + טבלת `voice_call_logs` + tools מוגבלים `lookup_guest`/`get_room_status`/`create_task`). **לא להתחיל לכתוב קוד** לפני ש-Mike מכריע: (1) Vapi/Retell/אחר — גייטד על בדיקת עברית STT/TTS חיה, לא מחיר/פיצ'רים, (2) האם ה-PBX של המלון תומך בהעברת שיחה פעילה למספר חיצוני, (3) רשימת השדות הבטוחים ל-`lookup_guest` (מה מתקשר לא-מאומת רשאי לשמוע על אורח/חדר). ראה §10 session 51 לפירוט המלא של התוכנית. |
 
 ### מפת דרכים — השלבים הבאים
 
@@ -1312,6 +1375,64 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
 - ✅ **כשל = תשובה גלויה לקבוצה, לא שקט.** בשונה מ-`classify_failed` הקיים (שלא עונה לקבוצה — ההודעה המוקלדת המקורית עדיין גלויה בצ'אט) — כשל תמלול **כן** עונה ("🎤 לא הצלחנו לתמלל...") כי הודעה קולית שנכשלת לא משאירה שום עקבה אחרת לשולח. גם guard על משך (`voice.seconds > 180` → "ארוך מ-3 דקות, נא להקליד" בלי לנסות בכלל לתמלל — נבדק לפני קריאת רשת).
 - ✅ **שקיפות מקור, בלי migration.** `reporter_raw_text` מקבל prefix `🎤 ` כשמקורו קולי; `buildTaskCard()` מקבל `fromVoice` ומוסיף שורת "🎤 Transcribed from voice:" לכרטיס בקבוצה — לא טבלה/עמודה חדשה.
 - ✅ נפרס: `whapi-webhook` (+ `_shared/whapiMedia.ts` חדש, `_shared/whapiSend.ts` מורחב). אומת חי: smoke-test (`curl`) על payload ריק (200 תקין) ועל הודעת voice סינתטית (`other_group` — מאשר ש-WHAPI_GROUP_ID נעול ושהחילוץ של type="voice" לא קורס). ⚠️ **לא נבדק:** תמלול אמיתי / יצירת task מקול אמיתי — דורש הודעה קולית אמיתית מטלפון אמיתי לקבוצה האמיתית (לא ניתן לדמות), Mike צריך לבדוק.
+
+#### session 49 — 2026-06-26 (Voucher Reconciliation Engine — schema only)
+> הקשר: יוזמה חדשה של Yelena — לאשש בין "דוח השוברים של EasyGo" (מה שהצוות בפועל הזמין) לבין דוחות ספק חיצוניים (Excel/PDF, מקור האמת למה שהאורח שילם עליו בפועל) ולתפוס פערים. כלל-יסוד: טראנקציה של 4 ספרות (מתעלמים מ-4 הספרות האחרונות במספר השובר **של EasyGo בלבד**) חלה רק על Hightech Zone/Dolce Vita/Pais Plus — כל ספק אחר (Hever/Nofshonit וכו') מחייב התאמה מדויקת ומלאה. **לא נגעתי ב-`ezgoParser.js`** — צינור נפרד לגמרי.
+
+- ✅ **migration 091** — 4 טבלאות חדשות: `voucher_providers` (רישום ספקים + `match_mode` data-driven, מזוּרע ל-5 הספקים שצוינו), `voucher_provider_reports` (שורות דוח-ספק, מקור-אמת), `voucher_easygo_records` (שורות דוח-EasyGo, מה שהוזמן), `voucher_reconciliation_results` (תוצאת כל השוואה — דגם דו-סטטוס `match_status`/`review_status` כמו `spa_staging`). RLS authenticated, **ללא DELETE policy על אף אחת מהארבע** (נתון פיננסי-אדג'ייסנט — היסטוריה לא נמחקת, ספק מבוטל ולא נמחק).
+- ✅ **`voucher_numbers_match()`** — הכלל מקודד כפונקציית SQL נטו, לא קוד אפליקציה: `truncate_4` חותך **4 התווים האחרונים מצד EasyGo בלבד** ומשווה לערך הספק; כל מצב לא-מוכר נופל ל-`exact` (fail-safe, לא fail-open).
+- ✅ **`run_voucher_reconciliation(provider_batch, easygo_batch)`** — RPC (מראה את `upsert_inventory_items`/`sync_suite_arrivals`) שעובר על כל השורות בשני ה-batches וכותב כל תוצאה (גם matched, לא רק exceptions) ל-`voucher_reconciliation_results` — כולל הכיוון `missing_in_provider` (הוזמן ב-EasyGo בלי גיבוי בדוח הספק) שהוא הכיוון החשוב פיננסית.
+- ✅ **Dynamic Onboarding — נמנע טבלת-זיכרון כפולה.** ההנחיה המקורית ביקשה לשמור מיפוי-עמודות שנלמד ב-`agent_memory` — נבדק ונדחה: `agent_memory`'s סכמה (`manager_id`/`rule_text`/`category`) מיועדת לחוקי AI-persona, לא למיפוי עמודות מבני. הוחלט להשתמש ב-`import_mapping_memory` הקיים (migration 049, `schema_key`+`header_signature`→`approved_mapping` JSONB) עם `schema_key` חדשים (`voucher_provider_report`/`voucher_easygo_report`) — בלי טבלה נוספת.
+- ⚠️ **שכבת DB בלבד — לא נבדק חי, אין עדיין Edge Function/UI.** לא נוספו entries ל-`suggest-import-mapping`'s `SCHEMAS`, לא נכתבה קומפוננטת ייבוא/לוח-בקרה, לא נבדק `run_voucher_reconciliation` מול דאטה אמיתי. נפרס ל-DB החי (`npx supabase db push`, אומת חי דרך `npx supabase migration list` — 091 מופיע בעמודות local+remote). **נשאר לסשן הבא:** Edge Function לייבוא (suggest-import-mapping schemas) + קומפוננטת UI (ייבוא + לוח-בקרה אישור חריגות) + בדיקה חיה מול קובצי ספק/EasyGo אמיתיים.
+  ✅ **session 50 — חלק ראשון נסגר:** ה-Edge Function (`reconcile-vouchers`) + שני schema entries ב-`suggest-import-mapping` נכתבו. **קומפוננטת UI ובדיקה חיה נשארות פתוחות** — ראה session 50 למטה.
+  ✅ **session 51 — קומפוננטת UI נכתבה** (ראה למטה) — **בדיקה חיה מול קובצי ספק/EasyGo אמיתיים נשארת הפריט היחיד הפתוח.**
+- ⚠️ **edge case ידוע, לא תוקן בכוונה:** אם שתי שורות מצד הספק חולקות בטעות את אותו מספר שובר, השורה השנייה תסומן `missing_in_easygo` (השובר התואם היחיד "נצרך" כבר ע"י הראשונה) במקום קטגוריה מדויקת יותר — עדיין גלוי לבדיקה אנושית, רק מתויג בצורה לא-מושלמת. תועד, לא טופל — מקרה נדיר.
+
+#### session 50 — 2026-06-26 (Voucher Reconciliation Engine — Edge Function)
+> הקשר: session 49 בנתה את שכבת ה-DB (migration 091) בלבד. הבקשה הפעם: ה-Edge Function שמקבל את שני הקבצים בפועל (multipart), פותר את מיפוי העמודות, כותב את השורות, ומריץ את ההתאמה.
+
+- ✅ **`reconcile-vouchers/index.ts`** (חדש) — מקבל multipart/form-data: `easygoFile`/`providerFile` + `providerName` (מאומת מול `voucher_providers` החי, case-insensitive) + `providerMapping`/`easygoMapping` אופציונליים. פרסור Excel/CSV עם `xlsx@0.18.5` (אותה גרסה בדיוק כמו `package.json`'s תלות בפרונטאנד) — אין תקדים קודם לפרסור Excel בתוך Edge Function בריפו הזה (כל מקום אחר מפרסר בדפדפן).
+- ✅ **`import_mapping_memory` נקרא/נכתב ישירות מתוך Edge Function — תקדים ראשון.** עד כה הטבלה הזו (migration 049) נקראה/נכתבה אך ורק מהפרונטאנד (`ArrivalImportPanel.js`'s `_headerSignature`/lookup/upsert) — `suggest-import-mapping` עצמו מעולם לא נגע בה, רק מציע mapping. הוחלט ש-`reconcile-vouchers` יבעל את הלוגיקה הזו (signature algorithm **זהה בדיוק** ל-`_headerSignature`: `[...headers].sort().join("␟")`) כי אין עדיין מסך-סקירה לפיצ'ר הזה — מישהו חייב לשאול את הזיכרון.
+- ✅ **שער-אישור-אנושי נשמר בלי מסך-סקירה.** סדר פתרון מיפוי לכל צד בנפרד: (1) מיפוי מפורש בבקשה (מניח שאדם אישר אותו — resubmission עתידי ממסך סקירה, או בדיקה ידנית) → נכתב ל-`import_mapping_memory`, (2) זיכרון קיים לפי signature, (3) שניהם חסרים → קורא ל-`suggest-import-mapping` (שקיבל 2 schema_key חדשים: `voucher_provider_report`/`voucher_easygo_report`) להצעה, ומחזיר `needs_mapping_review` **בלי לכתוב שום שורה** — migration 049's הערה המפורשת ("never skips the human gate") חלה גם כשאין UI מוכן עדיין לקיים אותה; ההחלטה הייתה לחסום ולא לכתוב mapping לא-נבדק לטבלת אישוש פיננסי, על חשבון זה שהcontract הזה לא ניתן לבדיקה מלאה עד שתיכתב קומפוננטת UI.
+- ✅ **Zero Data Loss על עמודות לא-ממופות.** כל header בקובץ שלא נכלל במיפוי הסופי נשמר ב-`raw_extras` JSONB של השורה (לא נעלם) — גם תאריך/סכום שלא הצליחו להתפענח (`_unparsed_purchaseDate`/`_unparsed_arrivalDate`) נשמרים שם במקום ליפול בשקט ל-NULL בלי עקבות.
+- ✅ **דורש Bearer תקין — לא פורטל ציבורי.** בשונה מ-`guest-portal-data`/`inventory-portal-submit` (פורטלים ציבוריים ללא סיסמה, service-role בלבד), זה כלי-צוות פנימי — מאמת `Authorization` מול `supabase.auth.getUser()` (אותו pattern בדיוק כמו `process-knowledge/index.ts`) לפני כל עיבוד, ומשתמש ב-`user.id` כ-`created_by` על כל שורה.
+- ✅ **נפרס לפרודקשן באותו סשן** — `npx supabase functions deploy reconcile-vouchers --no-verify-jwt` וגם `suggest-import-mapping` המעודכן (שתיהן, אחרי שזוהתה תלות-זמן-ריצה בין השתיים: ללא redeploy ל-suggest-import-mapping, ה-schema_key החדשים לא היו מוכרים לה בפרודקשן). נכתב ועבר רק בדיקת תקינות סטטית מקומית (אזון סוגריים/תחביר — אין Deno CLI מותקן בסביבת הפיתוח לבדיקת `tsc`/`deno check` מלאה); ה-`supabase functions deploy` עצמו הוא אימות התחביר האמיתי הראשון (קומפילציה מצליחה ב-Deno Deploy), אבל זה **לא** אימות לוגיקה — לא נשלחה אף בקשה אמיתית לפונקציה. **נשאר לסשן הבא:** קומפוננטת UI שמרכיבה את ה-multipart request + מסך סקירת מיפוי (לתרגם `needs_mapping_review`/`proposedMapping` למסך אנושי בפועל), ובדיקה חיה מול קובצי ספק/EasyGo אמיתיים.
+  ✅ **session 51 — קומפוננטת UI + מסך סקירת מיפוי נכתבו** (ראה למטה). **בדיקה חיה מול קובצי ספק/EasyGo אמיתיים נשארת הפריט היחיד הפתוח** מכל הרשימה הזו.
+
+#### session 51 — 2026-06-26 (Sprint 1 Voucher UI + Sprint 2 verification + Sprint 3 Voice AI planning)
+> הקשר: סשן "XOS High-Efficiency Sprint" עם 3 ספרינטים מוגדרים מראש על ידי Mike, כל אחד מבוצע/מאומת בנפרד עם stop-and-wait לאישור בין שלב לשלב.
+
+- ✅ **Sprint 1 — Voucher Reconciliation UI.** שלוש קומפוננטות חדשות מול ה-backend החי מ-session 50 (ראה §3 לפירוט מלא): `VoucherReconciliationHub.js` (shell, 2 sub-tabs), `VoucherImportPanel.js` (drag-and-drop, multipart אמיתי, שער `needs_mapping_review` עם `MappingReviewPanel`), `VoucherExceptionsBoard.js` (טריאז' עם פילטור/אישור-ישיר על `review_status`). route חדש `voucher_reconciliation` (admin/super_admin) + כפתור Sidebar "🧾 התאמת שוברים". `VOUCHER_PROVIDER_SCHEMA`/`VOUCHER_EASYGO_SCHEMA` נוספו ל-`importMapper.js`.
+- ✅ **אומת:** `npm run build` → `Compiled successfully.`, אפס warnings חדשים. dev server עלה נקי (`webpack compiled successfully`). ⚠️ **לא אומת חזותית ע"י Claude** — login דמו (`eliad`/`1234`) נדחה ("שם משתמש או סיסמה שגויים") בסביבת הפיתוח הזו — אותה מגבלה בדיוק כמו session 47 (Inventory Hub). Mike אישר שהוא יבדוק ידנית עם login אמיתי.
+- ✅ **Sprint 2 — אומת כ"כבר קיים", לא נכתב קוד.** WhatsApp Voice/Audio Ticket Support (`whapi-webhook` + `_shared/whapiMedia.ts`) כבר מומש במלואו ב-session 48 — נבדק בקריאת קוד (`Grep` על `transcribeVoice`/`fetchWhapiMedia`/`type === "voice"`) **לפני** שנכתבה שורת קוד אחת, נמנעה כפילות עבודה. Mike אישר וסימן Sprint 2 כ-COMPLETE.
+- 📝 **Sprint 3 — Voice AI Phone Receptionist (Vapi/Retell) — תוכנית ארכיטקטורה בלבד, אין קוד.** הבקשה: העברת שיחות מהקבלה לסוכן AI קולי שמדבר עם אורחים, שולף דאטה מ-Supabase, פותח משימות. תוכנית שנמסרה ל-Mike (ממתינה לאישור):
+  - **גשר טלפוניה — מחוץ ל-Supabase כליל.** הקבלה מעבירה (warm/cold transfer) למספר Twilio שעומד מאחורי Vapi/Retell. אין קוד Supabase כאן.
+  - **Edge Function אחד חדש, לא שניים** — `voice-ai-webhook` (מראה את `whapi-webhook`'s ניתוב-פנימי-לפי-payload-type, לא צינור מקביל): tool-calls סינכרוניים (latency-קריטי, DB-בלבד, אין קריאת LLM בלופ) + call-lifecycle events אסינכרוניים. אימות בסוד משותף (`VAPI_WEBHOOK_SECRET`) — **לא** Supabase Auth JWT (אין session לשיחת טלפון).
+  - **Tools מוגבלים, לא גישת טבלה גולמית** (אותו עיקרון כמו `guest-portal-data`'s safe-field list): `lookup_guest({phone?,room?,name?})` (לעולם לא payment/notes/claimed_by), `get_room_status({room})`, `create_task(...)` → `tasks.source='voice_call'` (אותו pattern של widening CHECK כמו כל source קודם) + Whapi ops group קיים, לא נתיב חדש.
+  - **טבלה חדשה אחת** — `voice_call_logs` (אותו תפקיד audit כמו `whatsapp_conversations`/`notification_log` לערוצים שלהם) — שיחה שלא זוהתה כאורח עדיין נרשמת (Zero Data Loss, §0.1).
+  - ⚠️ **3 הכרעות פתוחות ל-Mike לפני שנכתב קוד כלשהו:** (1) Vapi vs Retell vs אחר — **גייטד על בדיקת עברית חיה (STT/TTS)**, לא על מחיר/פיצ'רים. (2) האם ה-PBX של המלון בכלל תומך בהעברת שיחה פעילה למספר חיצוני. (3) רשימת השדות הבטוחים ל-`lookup_guest` — מה מתקשר לא-מאומת רשאי לשמוע על אורח/חדר.
+  - דיאגרמת ארכיטקטורה (telephony bridge ← outside Supabase → `voice-ai-webhook` → guests/tasks/room_status קיימים + `voice_call_logs` חדש → Whapi ops group קיים) הוצגה ויזואלית ל-Mike באותו סשן.
+
+#### session 52 — 2026-06-26 (RESORT_UI_MANIFEST.md + automated repair pass)
+> הקשר: Mike ביקש (כ"Senior UI/UX Resort Management Expert") מסמך מקור-אמת נפרד לפילוסופיית UI/UX + checklist מוכנוּת-לשבים, ואז סקירת תקינות גבוהה-רמה על הפרונטאנד. לאחר שהממצאים תועדו, Mike ביקש (ב"step away" אחד) repair pass אוטונומי על הממצאים, עם constraints מפורשים: לא לגעת ב-`ezgoParser.js`, לא לתקן עכשיו את ה-CSS-variable drift (~150 hardcoded hex), `npm run build` אחרי כל קובץ, commit+push בסוף.
+
+- ✅ **`RESORT_UI_MANIFEST.md`** (root, חדש) — §1 פילוסופיית UI/UX (הפרדה מוחלטת UI↔UX, Staff UX psychology — certainty/speed/silence/Red-Yellow-Green, Guest UX psychology — effortless/pampering/frictionless), §2 Tab Directory עם סטטוס מוכנות per-route (cross-referenced מול `App.js`'s switch statement בפועל, לא מהזיכרון), §3 ממצאי הסקירה החיה, §4 self-maintenance rule. מתחזק את עצמו — ראה למטה.
+- ✅ **שני Explore agents במקביל** סקרו (1) missing/weak error states מול עקרון FAIL VISIBLE (§0.3) ב-16 קומפוננטות admin/staff, (2) tablet/responsive risk + CSS-variable drift + console-warning patterns. הממצאים הגבוהים-severity אומתו ישירות (`Grep`) לפני שנכתבו ל-manifest — לא נלקחו כ-given מה-agent.
+- ✅ **6 תיקוני Fail Visible (כולם build-verified בנפרד):**
+  - `AdminPanel.js` StatsTab — `catch` הוסיף `error` state אמיתי (`e.message`) + banner אדום; לפני כן `stats=null` הציג "—" בכל הכרטיסים בלי שום אינדיקציה שזו כשל ולא "אין דאטה".
+  - `AdminPanel.js` ChatsTab — `.then(({data}))` בודק כעת גם `error`, מציג banner במקום רשימה ריקה זהה ל"אין שיחות עדיין".
+  - `WhatsAppInbox.js` — תיקון כפול: (1) `Promise.all` של template fetch (`get-wa-templates`+`message_templates`) בודק כעת `error` משני הצדדים → `tmplLoadError` state, banner נפרד מ-"לא נמצאו תבניות מאושרות" (היה אותו state בדיוק, אי אפשר היה להבדיל כשל מ-"אין תבניות"). (2) `handleSendTemplateAudience` — היה `catch (_) {}` גורף **וגם** אפס מעקב כשל ל-non-exception failures (`!data?.ok`); נוסף `tmplBulkFailures` (אותו pattern בדיוק כמו `bulkFailures` הקיים ב-free-text bulk send, session 25) שמדווח גם כשל-exception וגם תשובה-נקייה-אבל-לא-מוצלחת.
+  - `AutomationControlCenter.js` `fetchMetaTemplates` — `console.warn` → `showToast("err",...)` הקיים של הקומפוננטה (אותו toast שכל שאר fetchStages/saveSessionMessage כבר משתמשים בו — לא הומצא מנגנון חדש).
+  - `InventoryImportPanel.js` — מיפוי-זיכרון (`import_mapping_memory` upsert) שנכשל היה `console.warn`-בלבד; כעת `showToast("err",...)` עם טקסט שמבהיר שהייבוא הנוכחי לא נפגע (זה best-effort, לא חוסם) — רק שהייבוא הבא לא יציע את המיפוי אוטומטית.
+- ✅ **3 תיקוני tablet layout (כולם build-verified בנפרד):**
+  - `RoomBoard.js:416` — stat row `repeat(5, 1fr)` (ללא media query) → `repeat(auto-fit, minmax(120px, 1fr))`. **בונוס שהתגלה בדרך:** `STATUSES` מכיל 6 ערכים, לא 5 — הgrid הקשיח-ל-5-עמודות גרם לתפיסה השביעית/השישית לעבור לשורה נפרדת לבדה **גם בדסקטופ ברוחב מלא**, לא רק בטאבלט. התיקון סוגר את שתי הבעיות יחד.
+  - `HousekeepingTabletView.js:287` — אותו תיקון, `repeat(auto-fit, minmax(150px, 1fr))` (minmax רחב יותר כי התוויות דו-לשוניות HE/EN ארוכות יותר).
+  - `AICopilot.js` — נוסף `isNarrowViewport` state (`window.innerWidth<=768` + resize listener); ה-anchor הברירת-מחדל (לא-נגרר) מזנק מ-`bottom:24px` ל-`bottom:88px` כדי לפנות מקום מעל `.mobile-bar` הקבוע (`App.js`). מיקום שנגרר ע"י משתמש (`pos` ב-localStorage) **לא** נוגע בו — מי שגרר את הפעמון בעצמו כבר בחר מיקום מכוון, בכל רוחב מסך.
+- ⚠️ **נשאר פתוח בכוונה (out of scope, לפי הנחיית Mike):** CSS-variable drift (~150 hardcoded hex, הכי בולט ב-`BroadcastDashboard.js`/`ArrivalImportPanel.js`/`AutomationControlCenter.js`) ו-`AutomationControlCenter.js`'s `@media (max-width:640px)` החסר-כיסוי לטופסי ה-stage cards. שניהם מתועדים ב-`RESORT_UI_MANIFEST.md` §3 כ-backlog פתוח.
+- ✅ **`npm run build` הורץ אחרי כל קובץ בנפרד** (7 ריצות) — `Compiled successfully.` בכולן, אפס warnings חדשים.
+- ⚠️ **לא אומת חזותית** — נסיון `preview_start`+login דמו (`eliad`/`1234`) חזר על אותה שגיאה המתועדת מ-session 47/51 ("שם משתמש או סיסמה שגויים") — אין login עובד בסביבת הפיתוח הזו. כל 7 התיקונים מאחורי staff login; `npm run build` נקי הוא אימות-קומפילציה, **לא** אימות-לוגיקה-חזותית. Mike צריך לקליק-דרך עם login אמיתי.
+- ✅ **`RESORT_UI_MANIFEST.md` עודכן בעצמו** (לפי §4's self-maintenance rule שהוא עצמו קבע) — 7 השורות שתוקנו ב-§2/§3 עברו מ-🟡/ממצא-פתוח ל-✅/Fixed, עם הפניה לכאן.
+- ✅ **קבצים שהשתנו (לא כולל commit):** `RESORT_UI_MANIFEST.md` (חדש), `CLAUDE.md`, `src/components/AdminPanel.js`, `src/components/WhatsAppInbox.js`, `src/components/AutomationControlCenter.js`, `src/components/InventoryImportPanel.js`, `src/components/RoomBoard.js`, `src/components/HousekeepingTabletView.js`, `src/components/AICopilot.js`. ⚠️ **לא נגעתי** ב-`ezgoParser.js` (כפי שנדרש) וגם לא ב-3 קבצים שהיו `modified`/untracked בריפו **לפני** הסשן הזה (`src/App.js`, `src/utils/importMapper.js`, `supabase/functions/suggest-import-mapping/index.ts`, + 4 קבצי Voucher Reconciliation מ-session 51) — אלה נשארים pending-commit כפי שהיו, לא שולבו ב-commit הזה כדי לא לערבב שתי יחידות עבודה לא-קשורות.
 
 ---
 

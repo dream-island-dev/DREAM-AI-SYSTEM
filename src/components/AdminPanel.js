@@ -23,23 +23,30 @@ const TABS = [
 function StatsTab() {
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     async function fetchStats() {
       if (!supabase) { setLoading(false); return; }
+      setError(null);
       try {
         const [msgs, agents, sessions] = await Promise.all([
           supabase.from("chat_history").select("id", { count: "exact", head: true }),
           supabase.from("agent_profiles").select("id", { count: "exact", head: true }),
           supabase.from("chat_history").select("session_id"),
         ]);
+        const firstError = msgs.error || agents.error || sessions.error;
+        if (firstError) throw firstError;
         const uniqueSessions = new Set((sessions.data ?? []).map((r) => r.session_id)).size;
         setStats({
           totalMessages: msgs.count ?? 0,
           totalAgents:   agents.count ?? 0,
           totalSessions: uniqueSessions,
         });
-      } catch { setStats(null); }
+      } catch (e) {
+        setStats(null);
+        setError(e?.message || "שגיאה לא ידועה בטעינת הסטטיסטיקות");
+      }
       setLoading(false);
     }
     fetchStats();
@@ -61,6 +68,14 @@ function StatsTab() {
 
   return (
     <div>
+      {error && (
+        <div style={{
+          background: "#FCEBEB", border: "1px solid #E24B4A", color: "#8A2C2C",
+          borderRadius: 8, padding: "10px 14px", marginBottom: 16, fontSize: 13,
+        }}>
+          ⚠ טעינת הסטטיסטיקות נכשלה: {error}
+        </div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 16, marginBottom: 24 }}>
         {cards.map((c) => (
           <div key={c.label} className="stat-card">
@@ -175,6 +190,7 @@ function ChatsTab() {
   const [rows, setRows]       = useState([]);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState(null);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     if (!supabase) { setLoading(false); return; }
@@ -183,11 +199,23 @@ function ChatsTab() {
       .select("session_id, manager_id, agent_id, role, content, created_at")
       .order("created_at", { ascending: false })
       .limit(200)
-      .then(({ data }) => { setRows(data ?? []); setLoading(false); });
+      .then(({ data, error: fetchError }) => {
+        if (fetchError) { setError(fetchError.message); setRows([]); }
+        else { setError(null); setRows(data ?? []); }
+        setLoading(false);
+      });
   }, []);
 
   if (loading) return <div style={{ color: T.muted, padding: 20 }}>טוען שיחות...</div>;
   if (!supabase) return <div style={{ color: T.muted, padding: 20 }}>Supabase לא מחובר.</div>;
+  if (error) return (
+    <div style={{
+      background: "#FCEBEB", border: "1px solid #E24B4A", color: "#8A2C2C",
+      borderRadius: 8, padding: "10px 14px", fontSize: 13,
+    }}>
+      ⚠ טעינת השיחות נכשלה: {error}
+    </div>
+  );
 
   // Group by session
   const sessions = rows.reduce((acc, r) => {
