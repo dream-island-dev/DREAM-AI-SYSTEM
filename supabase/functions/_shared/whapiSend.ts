@@ -37,11 +37,14 @@ export function cleanPhoneForMention(phone: string): string {
   return phone.replace(/\D/g, "");
 }
 
-function _whapiBase(): string {
+// Exported (not just module-private) so _shared/whapiMedia.ts can reuse the
+// same base-URL/token resolution instead of duplicating it — both live in
+// _shared/, the one boundary in this repo where modules ARE shared.
+export function _whapiBase(): string {
   return (Deno.env.get("WHAPI_API_URL") ?? "https://gate.whapi.cloud").replace(/\/+$/, "");
 }
 
-function _tokenOrThrow(): string {
+export function _tokenOrThrow(): string {
   const token = Deno.env.get("WHAPI_TOKEN");
   if (!token) throw new Error("missing_whapi_token");
   return token;

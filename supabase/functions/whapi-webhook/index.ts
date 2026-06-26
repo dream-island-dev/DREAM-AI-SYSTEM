@@ -22,17 +22,28 @@
 //
 // WHAPI INBOUND SHAPE (logged raw below — verify against your channel):
 //   { "messages": [ { "id","from_me","type","chat_id"(…@g.us),"from",
-//                     "from_name","text":{"body"} | "image":{"caption"} } ] }
+//                     "from_name","text":{"body"} | "image":{"caption"} |
+//                     "voice":{"id","mime_type","seconds","link"?} } ] }
 //
-// Required secrets: WHAPI_TOKEN, ANTHROPIC_API_KEY, SUPABASE_URL,
-//   SUPABASE_SERVICE_ROLE_KEY. Optional: WHAPI_GROUP_ID (lock to one group;
-//   also used by task-action as the confirmation target), WHAPI_API_URL.
+// VOICE NOTES (added — Voice/Audio Ticket Support session): a "voice" message
+// has no text at all. It's downloaded by media id (GET /media/{id} — the
+// `voice.link` field is only present if the channel has Auto Download
+// enabled, not guaranteed, so this never depends on it — see
+// _shared/whapiMedia.ts), transcribed via Gemini (Claude has no audio input),
+// then fed into the exact same parseDeterministic()/classifyWithAi() pipeline
+// a typed message uses below.
+//
+// Required secrets: WHAPI_TOKEN, ANTHROPIC_API_KEY, GEMINI_API_KEY (voice
+//   transcription only), SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY. Optional:
+//   WHAPI_GROUP_ID (lock to one group; also used by task-action as the
+//   confirmation target), WHAPI_API_URL.
 // ══════════════════════════════════════════════════════════════════════════════
 
 import { serve }         from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient }  from "https://esm.sh/@supabase/supabase-js@2";
 import Anthropic         from "https://esm.sh/@anthropic-ai/sdk@0.20.0";
 import { sendWhapiText, cleanPhoneForMention } from "../_shared/whapiSend.ts";
+import { fetchWhapiMedia } from "../_shared/whapiMedia.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -150,9 +161,65 @@ async function classifyWithAi(text: string): Promise<Classification> {
   return { is_task, room_number, task_description, tier: "ai" };
 }
 
+// ── Voice-note transcription (Gemini only — Claude has no audio input) ───────
+// Mirrors process-knowledge/index.ts's exact inline_data multimodal request
+// shape (same model, same temperature:0 for deterministic output) — the only
+// difference is the mime type and a plain-transcription prompt instead of a
+// rule-extraction one. Output is plain text, fed straight back into the SAME
+// parseDeterministic()/classifyWithAi() pipeline a typed message uses — no
+// parallel classification logic for voice.
+const GEMINI_MODEL = "gemini-1.5-flash";
+const TRANSCRIBE_PROMPT =
+  "תמלל את הקובץ הקולי המצורף במדויק, מילה במילה. הצוות מדבר עברית, לעתים אנגלית. " +
+  "החזר טקסט פשוט בלבד — את התמלול עצמו, בלי הערות, בלי markdown, בלי תגי שפה.";
+
+async function transcribeVoice(apiKey: string, base64Audio: string, mimeType: string): Promise<string> {
+  const requestBody = {
+    contents: [{
+      role: "user",
+      parts: [
+        { text: TRANSCRIBE_PROMPT },
+        { inline_data: { mime_type: mimeType, data: base64Audio } },
+      ],
+    }],
+    generationConfig: { maxOutputTokens: 1024, temperature: 0.0 },
+  };
+
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(requestBody),
+      signal: AbortSignal.timeout(30_000), // audio decode can be slower than the text-mapping calls elsewhere in this repo
+    },
+  );
+
+  if (!res.ok) {
+    const errBody = await res.text();
+    throw new Error(`gemini_transcribe_${res.status}: ${errBody.slice(0, 300)}`);
+  }
+
+  const data = await res.json();
+  const text: string =
+    data?.candidates?.[0]?.content?.parts
+      ?.map((p: { text?: string }) => p.text ?? "")
+      .join("") ?? "";
+
+  if (!text.trim()) {
+    const finishReason = data?.candidates?.[0]?.finishReason;
+    throw new Error(finishReason === "SAFETY" ? "gemini_safety_filter" : "gemini_empty_transcription");
+  }
+  return text.trim();
+}
+
 // ── Whapi message extraction (defensive — shape varies by version) ───────────
+// voiceMediaId/voiceSeconds: a "voice" message has NO text at all — `text`
+// stays "" here (extraction is synchronous; transcription needs an async
+// Gemini call, done later in the main loop, see transcribeVoice() below).
 interface IncomingMessage {
   id: string; fromMe: boolean; chatId: string; fromPhone: string; fromName: string; text: string;
+  voiceMediaId: string | null; voiceMimeType: string | null; voiceSeconds: number | null;
 }
 function extractMessages(payload: Record<string, unknown>): IncomingMessage[] {
   const raw = Array.isArray(payload?.messages) ? (payload.messages as Array<Record<string, unknown>>) : [];
@@ -162,6 +229,7 @@ function extractMessages(payload: Record<string, unknown>): IncomingMessage[] {
       type === "text"  ? String((m?.text  as Record<string, unknown>)?.body    ?? "")
       : type === "image" ? String((m?.image as Record<string, unknown>)?.caption ?? "")
       : "";
+    const voice = type === "voice" ? (m?.voice as Record<string, unknown> | undefined) : undefined;
     return {
       id:        String(m?.id ?? ""),
       fromMe:    m?.from_me === true,
@@ -169,6 +237,9 @@ function extractMessages(payload: Record<string, unknown>): IncomingMessage[] {
       fromPhone: String(m?.from ?? "").replace(/\D/g, ""),
       fromName:  String(m?.from_name ?? ""),
       text:      textBody.trim(),
+      voiceMediaId:  voice?.id ? String(voice.id) : null,
+      voiceMimeType: voice?.mime_type ? String(voice.mime_type) : null,
+      voiceSeconds:  typeof voice?.seconds === "number" ? voice.seconds : null,
     };
   });
 }
@@ -221,9 +292,10 @@ function isThumbsUp(emoji: string): boolean {
 // body — that's what Whapi's `mentions` array binds to — so it's built from
 // the SAME cleaned variable passed to sendWhapiText below, never a separately
 // formatted display string.
-function buildTaskCard(room: string | null, desc: string, assignedPhone: string | null): string {
+function buildTaskCard(room: string | null, desc: string, assignedPhone: string | null, fromVoice = false): string {
   return [
     `📌 New Task Opened: Suite ${room ?? "—"}`,
+    ...(fromVoice ? [`🎤 Transcribed from voice:`] : []),
     `📋 Task: ${desc}`,
     `⏰ Status: Pending`,
     ...(assignedPhone ? [`👤 Assigned: @${assignedPhone}`] : []),
@@ -320,6 +392,35 @@ serve(async (req: Request) => {
       if (msg.fromMe)                  { results.push({ id: msg.id, ignored: "from_me" });     continue; } // never react to our own sends → no loops
       if (!msg.chatId.endsWith("@g.us")) { results.push({ id: msg.id, ignored: "not_a_group" }); continue; }
       if (lockGroup && msg.chatId !== lockGroup) { results.push({ id: msg.id, ignored: "other_group" }); continue; }
+
+      // ── Voice note → transcribe, then rejoin the SAME pipeline a typed
+      // message uses below (parseDeterministic/classifyWithAi never know the
+      // difference). Claude has no audio input, so this step is Gemini-only —
+      // a failure here has no same-call fallback, which is exactly why it
+      // replies in-group instead of silently dropping (a failed *text*
+      // classification still leaves the original message visible in the chat
+      // for a human to notice; a dropped voice note leaves nothing). ─────────
+      let fromVoice = false;
+      if (!msg.text && msg.voiceMediaId) {
+        if ((msg.voiceSeconds ?? 0) > 180) {
+          try { await sendWhapiText(msg.chatId, "🎤 ההודעה הקולית ארוכה מ-3 דקות — נא להקליד את הבקשה.", { noLinkPreview: true }); } catch {}
+          results.push({ id: msg.id, ignored: "voice_too_long" });
+          continue;
+        }
+        try {
+          const geminiKey = Deno.env.get("GEMINI_API_KEY");
+          if (!geminiKey) throw new Error("no_gemini_key");
+          const base64Audio = await fetchWhapiMedia(msg.voiceMediaId);
+          msg.text = await transcribeVoice(geminiKey, base64Audio, msg.voiceMimeType || "audio/ogg");
+          fromVoice = true;
+          console.log(`[whapi-webhook] 🎤 transcribed ${msg.id}: "${msg.text.slice(0, 120)}"`);
+        } catch (e) {
+          console.error(`[whapi-webhook] voice transcription failed for ${msg.id}:`, (e as Error).message);
+          try { await sendWhapiText(msg.chatId, "🎤 לא הצלחנו לתמלל את ההודעה הקולית — נא להקליד את הבקשה.", { noLinkPreview: true }); } catch {}
+          results.push({ id: msg.id, error: "voice_transcription_failed", detail: (e as Error).message });
+          continue;
+        }
+      }
       if (!msg.text)                   { results.push({ id: msg.id, ignored: "no_text" });     continue; }
 
       // ── Idempotency: one ticket per inbound message id. Checked BEFORE the
@@ -374,7 +475,7 @@ serve(async (req: Request) => {
           sla_deadline:        slaDeadline,
           source:              taskSource,
           reporter_profile_id: reporterProfile?.id ?? null,
-          reporter_raw_text:   msg.text,
+          reporter_raw_text:   fromVoice ? `🎤 ${msg.text}` : msg.text,
           action_token:        actionToken,
           source_message_id:   msg.id,
         }])
@@ -391,7 +492,7 @@ serve(async (req: Request) => {
 
       const rawAssignedPhone = await findAssignedWorkerPhone(supabase, taskDepartment);
       const assignedPhone = rawAssignedPhone ? cleanPhoneForMention(rawAssignedPhone) : null;
-      const card = buildTaskCard(cls.room_number, cls.task_description, assignedPhone);
+      const card = buildTaskCard(cls.room_number, cls.task_description, assignedPhone, fromVoice);
 
       // Reply into the SAME group. no_link_preview stops the crawler pre-fetch.
       // Non-blocking: the ticket already exists — a failed reply must not lose it.
@@ -415,11 +516,11 @@ serve(async (req: Request) => {
 
       console.log(
         `[whapi-webhook] TASK #${task.id} — room=${cls.room_number ?? "?"} sla=${slaCategory} tier=${cls.tier} source=${taskSource} ` +
-        `from=${msg.fromName || msg.fromPhone}${adminName ? `(admin:${adminName})` : ""} replied=${replied}`,
+        `from=${msg.fromName || msg.fromPhone}${adminName ? `(admin:${adminName})` : ""} replied=${replied}${fromVoice ? " fromVoice=true" : ""}`,
       );
       results.push({
         id: msg.id, is_task: true, taskId: task.id, room_number: cls.room_number,
-        task_description: cls.task_description, sla_category: slaCategory, tier: cls.tier, replied,
+        task_description: cls.task_description, sla_category: slaCategory, tier: cls.tier, replied, fromVoice,
       });
     }
 

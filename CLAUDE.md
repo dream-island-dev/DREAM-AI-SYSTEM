@@ -1,6 +1,6 @@
 # CLAUDE.md — Dream Island AI System
 > קובץ זה נקרא אוטומטית בכל שיחה. הוא מקור-האמת שלך. קרא אותו לפני כל פעולה.
-> **עדכון אחרון:** 2026-06-26 (session 47 — Inventory Smart-Intake Module: ה"סוכן" (AgentQuestionnaire/AgentChat) הוחלף ב-route "agent" במודול חידוש-מלאי חכם — זיהוי AI לקבצי אקסל (כולל נוסחאות-יעד קיימות, נקראות כערך גלוי לא כ-syntax), קישור-קסם יומי לעובד למלא מלאי מהטלפון בלי login (`/inv/:token`), ותור אישור-מנהל לפני שמשהו נכנס בפועל למערכת. הפיצ'ר הישן (קוד+דאטה) נשאר orphaned, לא נמחק — Mike אישר זאת מפורשות. migration 090 + 2 Edge Functions חדשים + הרחבת `suggest-import-mapping`. נבדק חי end-to-end מול ה-DB האמיתי (לא רק build) דרך `/inv/:token`; מסכי המנהל לא נבדקו ע"י Claude (חסרו credentials). ראה §10 session 47 לפירוט מלא.).
+> **עדכון אחרון:** 2026-06-26 (session 48 — Voice/Audio Ticket Support: `whapi-webhook` מתמלל כעת הודעות קוליות (Gemini — Claude אין לו קלט אודיו) ומחזיר אותן לאותו צינור סיווג קיים בדיוק (Tier-0 regex/Tier-1 Claude) שמשמש טקסט מוקלד — בלי לוגיקה כפולה. ⚠️ נתפס ותוקן באותו סשן: deploy ראשון קרס (`BOOT_ERROR`) כי `std@0.168.0`'s מודול base64 מייצא `encode`, לא `encodeBase64` — נתפס ע"י smoke-test לפני שמשתמש אמיתי נחשף. לא נבדק תמלול אמיתי — דורש הודעה קולית מטלפון אמיתי. session 47 (Inventory Smart-Intake Module — ה"סוכן" הוחלף במודול חידוש-מלאי חכם, `/inv/:token`, migration 090) נשאר מתועד למטה. ראה §10 sessions 47–48 לפירוט מלא.).
 >
 > 📚 **היסטוריית הסשנים המלאה (sessions 2–44) הועברה ל-[`claude_history.md`](claude_history.md)** כדי לשמור את הקובץ הזה קליל. שום מידע לא נמחק — רק הופרד. הקובץ הזה מחזיק את **רפרנס הארכיטקטורה החי** (§0–§13); הקובץ ההוא מחזיק את הנרטיב ההיסטורי. כשצריך הקשר מפורט על באג/החלטה ישנה — קרא שם.
 >
@@ -676,6 +676,13 @@ DREAM-AI-SYSTEM/
 │       │                            `resolved_by_name` (זהות גולמית, FAIL VISIBLE כש-`resolved_by`
 │       │                            ה-FK נשאר NULL). tier="room_prefix" (Room/חדר/סוויטה N ...) כותב
 │       │                            `source='manual_group'` במקום `'whatsapp_staff'`.
+│       │                            ★ session 48: הודעות `type:"voice"` מתומללות (Gemini, Claude אין לו
+│       │                            קלט אודיו) ואז עוברות באותו `parseDeterministic`/`classifyWithAi` —
+│       │                            ראה `_shared/whapiMedia.ts` למטה + §10 session 48 לפירוט מלא
+│       │                            (כולל BOOT_ERROR שנתפס ותוקן באותו סשן — import name שגוי).
+│       ├── _shared/whapiMedia.ts ★ NEW session 48 — `fetchWhapiMedia(mediaId)`: `GET /media/{id}` עם
+│       │                            WHAPI_TOKEN, מחזיר base64. `_whapiBase`/`_tokenOrThrow` מ-
+│       │                            `whapiSend.ts` הפכו ל-export כדי להישתף (לא לשכפל) בגבול `_shared/`.
 │       └── task-action/          ★ NEW session 22 (XOS Sprint 2) — callback ל-Accept/Complete בכרטיס.
 │                                    GET = interstitial HTML (0 mutation — מה שה-crawler רואה) עם כפתורי
 │                                    Lidor/Adir/Osnat ("Confirm action as"); POST (tap אמיתי, crawler-safe)
@@ -1293,6 +1300,18 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
 - ✅ **נבדק חי end-to-end מול ה-DB האמיתי** (לא רק build): נוצר link+items זמניים, מולא ונשלח דרך `/inv/:token` בפועל בדפדפן, אומת ש-`restock_suggested` חושב נכון (par_level − count) בצד השרת, אומת ש-link מבוטל **וגם** token פגום מחזירים שגיאה נקייה (לא raw DB error, לא קריסה) — כל הדאטה הזמני נמחק בסוף. ⚠️ **לא נבדק ע"י Claude:** המסכים בצד-מנהל (שלושת ה-sub-tabs של `InventoryHub`) דרך קליק בדפדפן בפועל — login דרש credentials אמיתיים שלא היו זמינים (משתמשי הדמו במסך ההתחברות לא עבדו, Google OAuth לא מוגדר בסביבת הפיתוח). Mike צריך לעבור על "ניהול מלאי" עם login אמיתי כדי לאשר את ה-UI בצד-מנהל.
 - ✅ **`npm run build` נקי** — אפס warnings חדשים. ⚠️ נמצא warning קיים-מראש לא-קשור (`ShiftsPage` unused ב-`App.js`, 204 שורות, אומת via `git stash` שקיים גם על main לפני הסשן) — סומן כ-follow-up נפרד, לא טופל כאן (מחוץ ל-scope).
 - ✅ Sidebar: `{ id:"agent" }` נשאר (routing לא השתנה) אבל `icon`/`label` עברו ל-`📦`/"ניהול מלאי" (דסקטופ) ו-"מלאי" (מובייל).
+
+#### session 48 — 2026-06-26 (Voice/Audio Ticket Support — whapi-webhook)
+> הקשר: בוט הקריאות (`whapi-webhook`) הבין רק טקסט מוקלד בקבוצה — הודעה קולית נפלה בשקט (`extractMessages` מחזיר `text:""` לכל type לא-מוכר, ה-guard `if(!msg.text)` מדלג ללא עקבות). הבקשה: מנהל מקליט הודעה קולית בוואטסאפ → הבוט מתמלל והופך לקריאה מבנית, בדיוק כמו טקסט מוקלד.
+
+- ✅ **מחקר חי (לא הנחה)** — payload נכנס של Whapi ל-voice: `{type:"voice", voice:{id, mime_type:"audio/ogg; codecs=opus", seconds, link?}}`. `voice.link` קיים **רק** אם "Auto Download" מופעל בערוץ (הגדרה לא מובטחת) — לכן **לא** נסמכים עליו; הורדה אמינה היא `GET https://gate.whapi.cloud/media/{id}` עם `Authorization: Bearer WHAPI_TOKEN`, מחזיר bytes גולמיים בגוף התגובה. Gemini's `inline_data` מקבל `audio/ogg` ישירות — אין צורך בהמרה. Claude/Anthropic **אין לו קלט אודיו בכלל** — תמלול הוא Gemini-only, בלי fallback לאותה קריאה.
+- ✅ **ארכיטקטורה: תמלול ואז חוזרים לצינור הקיים, לא צינור מקביל.** קול → הורדה → תמלול → הטקסט המתומלל עובר ב-`parseDeterministic() ?? classifyWithAi()` **הקיימים בדיוק** — הודעה קולית שאומרת "11 towels" פוגעת ב-Tier-0 regex אחרי תמלול, בלי שום פרומפט-חילוץ כפול.
+- ✅ **`_shared/whapiMedia.ts`** (חדש) — `fetchWhapiMedia(mediaId)`, מראה את conventions של `whapiSend.ts` (טיים-אאוט 25s, `_isAbortError`). `_whapiBase()`/`_tokenOrThrow()` ב-`whapiSend.ts` הפכו ל-`export` כדי שיחלקו (לא שכפול — שני הקבצים תחת `_shared/`, הגבול שבאמת משתף מודולים בריפו הזה).
+- ⚠️ **באג תפיסה-לב נתפס ותוקן באותו סשן:** deploy ראשון נכשל עם `BOOT_ERROR` (503) — `std@0.168.0/encoding/base64.ts` (הגרסה המוצמדת בכל הריפו) מייצא `encode`/`decode`, **לא** `encodeBase64`/`decodeBase64` (rename קרה בגרסת std מאוחרת יותר) — אומת ישירות מול המודול. **כל** whapi-webhook היה למטה (לא רק נתיב הקול) עד התיקון — נתפס ע"י smoke-test (`curl` ל-payload ריק) **לפני** שמשתמש אמיתי נחשף, redeploy תיקן. תזכורת: import שגוי בקובץ `_shared/` מפיל את כל הפונקציה ב-cold-start, לא רק את הפיצ'ר החדש.
+- ✅ **`transcribeVoice()`** (ב-`whapi-webhook/index.ts`) — מראה את `process-knowledge/index.ts`'s `inline_data` request shape בדיוק (`gemini-1.5-flash`, `temperature:0`), פרומפט תמלול-בלבד (עברית/אנגלית, מילה-במילה, בלי הערות).
+- ✅ **כשל = תשובה גלויה לקבוצה, לא שקט.** בשונה מ-`classify_failed` הקיים (שלא עונה לקבוצה — ההודעה המוקלדת המקורית עדיין גלויה בצ'אט) — כשל תמלול **כן** עונה ("🎤 לא הצלחנו לתמלל...") כי הודעה קולית שנכשלת לא משאירה שום עקבה אחרת לשולח. גם guard על משך (`voice.seconds > 180` → "ארוך מ-3 דקות, נא להקליד" בלי לנסות בכלל לתמלל — נבדק לפני קריאת רשת).
+- ✅ **שקיפות מקור, בלי migration.** `reporter_raw_text` מקבל prefix `🎤 ` כשמקורו קולי; `buildTaskCard()` מקבל `fromVoice` ומוסיף שורת "🎤 Transcribed from voice:" לכרטיס בקבוצה — לא טבלה/עמודה חדשה.
+- ✅ נפרס: `whapi-webhook` (+ `_shared/whapiMedia.ts` חדש, `_shared/whapiSend.ts` מורחב). אומת חי: smoke-test (`curl`) על payload ריק (200 תקין) ועל הודעת voice סינתטית (`other_group` — מאשר ש-WHAPI_GROUP_ID נעול ושהחילוץ של type="voice" לא קורס). ⚠️ **לא נבדק:** תמלול אמיתי / יצירת task מקול אמיתי — דורש הודעה קולית אמיתית מטלפון אמיתי לקבוצה האמיתית (לא ניתן לדמות), Mike צריך לבדוק.
 
 ---
 
