@@ -120,8 +120,8 @@ export default function BroadcastDashboard({ user }) {
 
   useEffect(() => { fetchGuests(); }, [fetchGuests]);
 
-  // ── Fetch approved WA templates from Meta (via edge function) ─────────────
-  useEffect(() => {
+  // ── Fetch approved WA templates from Meta — callable on mount and manual sync
+  const fetchTemplates = useCallback(() => {
     if (!isSupabaseConfigured || !supabase) return;
     setLoadingTemplates(true);
     setTemplateFetchError(null);
@@ -132,6 +132,7 @@ export default function BroadcastDashboard({ user }) {
           const msg = data?.error ?? error?.message ?? "unknown error";
           console.error("[BroadcastDashboard] get-wa-templates failed:", msg);
           setTemplateFetchError(msg);
+          showToast("err", `שגיאה בסנכרון תבניות: ${msg}`);
           return;
         }
         // Only approved, exclude hello_world (test-only template)
@@ -142,9 +143,12 @@ export default function BroadcastDashboard({ user }) {
               (w.status == null || String(w.status).toUpperCase() === "APPROVED")
           )
         );
+        showToast("ok", "✓ התבניות עודכנו בהצלחה");
       })
       .finally(() => setLoadingTemplates(false));
-  }, []);
+  }, [showToast]);
+
+  useEffect(() => { fetchTemplates(); }, [fetchTemplates]);
 
   // ── Supabase Realtime ─────────────────────────────────────────────────────
   useEffect(() => {
@@ -678,9 +682,25 @@ export default function BroadcastDashboard({ user }) {
 
                   {/* Template Cards */}
                   <div>
-                    <label style={{ fontSize: 12, fontWeight: 700, color: "var(--text-muted)", letterSpacing: 0.4, display: "block", marginBottom: 8 }}>
-                      בחר תבנית{loadingTemplates ? " ⏳" : ""}
-                    </label>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                      <label style={{ fontSize: 12, fontWeight: 700, color: "var(--text-muted)", letterSpacing: 0.4, margin: 0 }}>
+                        בחר תבנית{loadingTemplates ? " ⏳" : ""}
+                      </label>
+                      <button
+                        onClick={fetchTemplates}
+                        disabled={loadingTemplates}
+                        title="סנכרן תבניות מ-Meta"
+                        style={{
+                          background: "none", border: "1px solid var(--border)", borderRadius: 6,
+                          padding: "3px 10px", fontSize: 11, fontWeight: 700,
+                          cursor: loadingTemplates ? "not-allowed" : "pointer",
+                          color: loadingTemplates ? "var(--text-muted)" : "var(--gold-dark)",
+                          fontFamily: "Heebo, sans-serif", transition: "color 0.2s",
+                        }}
+                      >
+                        {loadingTemplates ? "⏳ מסנכרן..." : "🔄 סנכרן תבניות"}
+                      </button>
+                    </div>
                     {!loadingTemplates && waTemplates.length === 0 ? (
                       <div style={{ fontSize: 12, color: "#C0392B", padding: "10px 12px", borderRadius: 8, background: "#FFF0EE", border: "1px solid #C0392B" }}>
                         {templateFetchError

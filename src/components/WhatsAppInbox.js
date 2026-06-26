@@ -616,6 +616,7 @@ function NewChatModal({ onClose, onSent }) {
   const [tmplBulkProgress,   setTmplBulkProgress]   = useState(null);
   const [tmplBulkDone,       setTmplBulkDone]       = useState(false);
   const [tmplBulkFailures,   setTmplBulkFailures]   = useState([]); // [{ name, phone, reason }] — same FAIL VISIBLE convention as bulkFailures
+  const [tmplSyncOk,        setTmplSyncOk]        = useState(false); // brief "✓ עודכן" flash after manual sync
 
   // Load guests for bulk mode whenever filter changes
   useEffect(() => {
@@ -668,11 +669,10 @@ function NewChatModal({ onClose, onSent }) {
     setBulkDone(true);
   }
 
-  // Fetch WA templates + DB templates on mount
-  useEffect(() => {
+  // Fetch WA templates + DB templates — callable on mount and on manual sync
+  const fetchTemplates = useCallback(() => {
     if (!isSupabaseConfigured || !supabase) return;
     setLoadingTmpls(true);
-
     setTmplLoadError(null);
     Promise.all([
       supabase.functions.invoke("get-wa-templates").then(({ data, error }) => {
@@ -692,12 +692,16 @@ function NewChatModal({ onClose, onSent }) {
       );
       setWaTemplates(approvedWa);
       setDbTemplates(db);
+      setTmplSyncOk(true);
+      setTimeout(() => setTmplSyncOk(false), 2500);
     }).catch((e) => {
       setTmplLoadError(e?.message || "טעינת התבניות נכשלה");
       setWaTemplates([]);
       setDbTemplates([]);
     }).finally(() => setLoadingTmpls(false));
   }, []);
+
+  useEffect(() => { fetchTemplates(); }, [fetchTemplates]);
 
   // Search guests by name or phone
   useEffect(() => {
@@ -1206,8 +1210,24 @@ function NewChatModal({ onClose, onSent }) {
               )}
 
               <div>
-                <div style={{ fontSize: 12, fontWeight: 700, color: "#555", marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>
-                  📋 בחר תבנית
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "#555", textTransform: "uppercase", letterSpacing: 0.5 }}>
+                    📋 בחר תבנית
+                  </div>
+                  <button
+                    onClick={fetchTemplates}
+                    disabled={loadingTmpls}
+                    title="סנכרן תבניות מ-Meta"
+                    style={{
+                      background: "none", border: `1px solid ${loadingTmpls ? "#E5E7EB" : "#D1D5DB"}`,
+                      borderRadius: 6, padding: "3px 9px", fontSize: 11, fontWeight: 700,
+                      cursor: loadingTmpls ? "not-allowed" : "pointer",
+                      color: loadingTmpls ? "#9CA3AF" : tmplSyncOk ? "#1A7A4A" : "#075E54",
+                      fontFamily: "inherit", transition: "color 0.2s",
+                    }}
+                  >
+                    {loadingTmpls ? "⏳ מסנכרן..." : tmplSyncOk ? "✓ עודכן" : "🔄 סנכרן תבניות"}
+                  </button>
                 </div>
                 {loadingTmpls ? (
                   <div style={{ fontSize: 13, color: "#888", padding: "12px 0", textAlign: "center" }}>⏳ טוען תבניות...</div>
