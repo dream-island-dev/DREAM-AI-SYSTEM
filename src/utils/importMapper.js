@@ -34,6 +34,39 @@ export const SUITE_ARRIVALS_SCHEMA = {
   arrivalDate:  { label: "תאריך הגעה",                                        required: "soft",     defaultPolicy: "היום (כשאין עמודת תאריך כלל)", example: "2026-06-18" },
 };
 
+// ── Schema descriptor — mirrors suggest-import-mapping/index.ts SCHEMAS.inventory_renewal ──
+// parLevel/restockColumn are read as plain computed values, same as every
+// other column — no formula-syntax parsing. If only restockColumn is mapped
+// (no visible target column in the sheet), deriveParLevel() below recovers
+// the target via simple arithmetic instead of re-implementing the formula.
+export const INVENTORY_RENEWAL_SCHEMA = {
+  itemName:        { label: "שם הפריט (מגבות, סבון, מצעים וכו׳)",                                  required: "hard",     example: "מגבות חדר" },
+  currentQuantity: { label: "כמות נוכחית/שנספרה בפועל",                                           required: "hard",     example: "42" },
+  unit:            { label: "יחידת מידה",                                                        required: "optional", defaultPolicy: "יח׳", example: "בקבוקים" },
+  category:        { label: "קטגוריה (טקסטיל, אמבטיה, מתכלים...)",                                 required: "optional", defaultPolicy: "other", example: "אמבטיה" },
+  parLevel:        { label: "עמודת יעד/מלאי מינימלי, אם קיימת בקובץ כעמודה נפרדת",                   required: "optional", example: "60" },
+  restockColumn:   { label: "עמודת ׳להשלים/חסר׳ המחושבת בנוסחה הקיימת בקובץ (אם אין עמודת יעד נפרדת)", required: "optional", example: "18" },
+};
+
+/**
+ * deriveParLevel(currentQuantity, parLevel, restockColumn)
+ * If the sheet had a visible target column, that value wins as-is. Otherwise,
+ * if it only had a "to restock" column (itself a formula's output, already
+ * computed by Excel), the target is recovered by simple arithmetic: target =
+ * current + restock — no formula text is ever read or re-implemented.
+ * Returns null when neither column was mapped/present for this row.
+ */
+export function deriveParLevel(currentQuantity, parLevel, restockColumn) {
+  const cur = Number(currentQuantity);
+  if (parLevel !== "" && parLevel != null && !Number.isNaN(Number(parLevel))) {
+    return Number(parLevel);
+  }
+  if (restockColumn !== "" && restockColumn != null && !Number.isNaN(Number(restockColumn)) && !Number.isNaN(cur)) {
+    return cur + Number(restockColumn);
+  }
+  return null;
+}
+
 // ── Privacy: mask phone-shaped / long-numeric values before they leave the
 // browser for the AI suggestion call. The model only needs to recognize a
 // column's SHAPE ("this looks like a phone number"), not the real value —

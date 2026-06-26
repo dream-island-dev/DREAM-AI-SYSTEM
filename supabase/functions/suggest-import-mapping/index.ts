@@ -65,6 +65,29 @@ const SCHEMAS: Record<string, Record<string, FieldSpec>> = {
     price:        { label: "מחיר",                                          kind: "value",     required: "optional", defaultPolicy: "0", example: "1200" },
     arrivalDate:  { label: "תאריך הגעה",                                     kind: "value",     required: "soft",     defaultPolicy: "היום (כשאין עמודת תאריך כלל)", example: "2026-06-18" },
   },
+  // Inventory Smart-Intake Module — InventoryImportPanel.js's "חידוש מלאי" card.
+  // parLevel/restockColumn are read as PLAIN computed values, same as every
+  // other column here — no formula-syntax parsing needed. The sheet's own
+  // formula already produced these numbers; we just read them like any cell.
+  // If only restockColumn is mapped (no visible target column), the frontend
+  // derives parLevel = currentQuantity + restockColumn per row — arithmetic
+  // on visible numbers, not a re-implementation of the original formula.
+  inventory_renewal: {
+    itemName:       { label: "שם הפריט (מגבות, סבון, מצעים וכו׳)",                                 kind: "value", required: "hard",     example: "מגבות חדר" },
+    currentQuantity: { label: "כמות נוכחית/שנספרה בפועל",                                          kind: "value", required: "hard",     example: "42" },
+    unit:           { label: "יחידת מידה",                                                       kind: "value", required: "optional", defaultPolicy: "יח׳", example: "בקבוקים" },
+    category:       { label: "קטגוריה (טקסטיל, אמבטיה, מתכלים...)",                                kind: "value", required: "optional", defaultPolicy: "other", example: "אמבטיה" },
+    parLevel:       { label: "עמודת יעד/מלאי מינימלי, אם קיימת בקובץ כעמודה נפרדת",                  kind: "value", required: "optional", example: "60" },
+    restockColumn:  { label: "עמודת ׳להשלים/חסר׳ המחושבת בנוסחה הקיימת בקובץ (אם אין עמודת יעד נפרדת)", kind: "value", required: "optional", example: "18" },
+  },
+};
+
+// Short domain label per schema — used to frame the prompt correctly for
+// whichever document type is actually being mapped (was hardcoded to "hotel
+// guest bookings" before the inventory schema was added).
+const SCHEMA_DOMAIN_LABELS: Record<string, string> = {
+  suite_arrivals:    "הזמנות אורחים במלון",
+  inventory_renewal: "טפסי חידוש/ספירת מלאי",
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -74,6 +97,7 @@ function buildPrompt(
   schema: Record<string, FieldSpec>,
   headers: string[],
   sampleRows: Record<string, unknown>[],
+  domainLabel: string,
 ): string {
   const fieldList = Object.entries(schema)
     .map(([key, spec]) => {
@@ -87,7 +111,7 @@ function buildPrompt(
     `שורה ${i + 1}: ` + headers.map(h => `${JSON.stringify(h)}=${JSON.stringify(r[h] ?? "")}`).join(", ")
   ).join("\n") || "(לא התקבלו שורות דוגמה)";
 
-  return `אתה מנתח קבצי Excel/CSV של הזמנות מלון ומציע מיפוי עמודות למערכת ניהול אורחים.
+  return `אתה מנתח קבצי Excel/CSV של ${domainLabel} ומציע מיפוי עמודות למערכת ניהול.
 
 כותרות העמודות שזוהו בקובץ שהועלה (בדיוק כך, אותיות רגישות):
 ${headers.map(h => JSON.stringify(h)).join(", ")}
@@ -220,7 +244,8 @@ serve(async (req: Request) => {
     const schema = SCHEMAS[schemaKey];
     if (!schema) throw new Error(`unknown_schema_key: ${schemaKey}`);
 
-    const prompt = buildPrompt(schema, headers, Array.isArray(sampleRows) ? sampleRows : []);
+    const domainLabel = SCHEMA_DOMAIN_LABELS[schemaKey] ?? schemaKey;
+    const prompt = buildPrompt(schema, headers, Array.isArray(sampleRows) ? sampleRows : [], domainLabel);
 
     let raw: string;
     let engine: "gemini" | "claude";

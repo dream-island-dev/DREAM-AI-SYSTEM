@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { initGoogleSignIn } from "./googleAuth";
 import AgentQuestionnaire from "./components/AgentQuestionnaire";
-import AgentChat from "./components/AgentChat";
+import InventoryHub from "./components/InventoryHub";
 import AdminPanel from "./components/AdminPanel";
 import UserManagement from "./components/UserManagement";
 import GuestsPage from "./components/GuestsPage";
@@ -1066,7 +1066,7 @@ function Sidebar({ user, active, setActive, openOpsCount, onLogout, isAdmin, isS
     { id: "housekeeping_tablet", icon: "🧹", label: "לוח ניקיון (טאבלט)",              managerOnly: false },
     { id: "requests_board", icon: "📋", label: "לוח בקשות",                            managerOnly: true },
     { id: "scheduler",   icon: "🪄", label: "מחולל משמרות",                           managerOnly: true },
-    { id: "agent",      icon: "🤖", label: "הסוכן שלי" },
+    { id: "agent",      icon: "📦", label: "ניהול מלאי" },
   ];
 
   const navItems = allNavItems.filter(item => !item.managerOnly || isManagerOrAbove);
@@ -1417,211 +1417,6 @@ function Dashboard({ shifts, tasks, checklist, employees }) {
   );
 }
 
-function ShiftsPage({ shifts, setShifts, employees }) {
-  const [showModal, setShowModal] = useState(false);
-  const [form, setForm] = useState({
-    employeeId: "",
-    date: todayStr,
-    start: "08:00",
-    end: "16:00",
-    department: "",
-  });
-
-  const todayShifts = shifts.filter((s) => s.date === todayStr);
-
-  const statusColor = {
-    פעיל: "badge-green",
-    עתידי: "badge-blue",
-    הסתיים: "badge-gray",
-  };
-  const rowClass = {
-    פעיל: "shift-active",
-    עתידי: "shift-future",
-    הסתיים: "shift-done",
-  };
-
-  const addShift = () => {
-    const emp = employees.find((e) => e.id === parseInt(form.employeeId));
-    if (!emp) return;
-    const now = new Date();
-    const [sh, sm] = form.start.split(":").map(Number);
-    const [eh, em] = form.end.split(":").map(Number);
-    const startMin = sh * 60 + sm,
-      endMin = eh * 60 + em;
-    const curMin = now.getHours() * 60 + now.getMinutes();
-    const status =
-      form.date > todayStr
-        ? "עתידי"
-        : curMin < startMin
-        ? "עתידי"
-        : curMin > endMin
-        ? "הסתיים"
-        : "פעיל";
-    setShifts((prev) => [
-      ...prev,
-      {
-        id: Date.now(),
-        employeeId: emp.id,
-        employeeName: emp.name,
-        department: form.department || emp.department,
-        date: form.date,
-        start: form.start,
-        end: form.end,
-        status,
-      },
-    ]);
-    setShowModal(false);
-  };
-
-  return (
-    <div>
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: 20,
-        }}
-      >
-        <div>
-          <div style={{ fontSize: 14, color: "#8a9ab0" }}>
-            משמרות להיום – {todayShifts.length} רשומות
-          </div>
-        </div>
-        <button className="btn btn-primary" onClick={() => setShowModal(true)}>
-          ＋ הוסף משמרת
-        </button>
-      </div>
-
-      <div className="card">
-        <div className="card-body table-scroll">
-          <table className="table">
-            <thead>
-              <tr>
-                <th>עובד</th>
-                <th>מחלקה</th>
-                <th>תאריך</th>
-                <th>שעת התחלה</th>
-                <th>שעת סיום</th>
-                <th>סטטוס</th>
-              </tr>
-            </thead>
-            <tbody>
-              {shifts
-                .slice()
-                .sort((a, b) => (a.date > b.date ? -1 : 1))
-                .map((s) => (
-                  <tr key={s.id} className={rowClass[s.status] || ""}>
-                    <td style={{ fontWeight: 600 }}>{s.employeeName}</td>
-                    <td>
-                      <span className="badge badge-blue">{s.department}</span>
-                    </td>
-                    <td>{s.date}</td>
-                    <td>{s.start}</td>
-                    <td>{s.end}</td>
-                    <td>
-                      <span className={`badge ${statusColor[s.status]}`}>
-                        {s.status}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {showModal && (
-        <div className="modal-overlay" onClick={() => setShowModal(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-title">➕ הוספת משמרת חדשה</div>
-            <div className="form-field">
-              <label>עובד</label>
-              <select
-                value={form.employeeId}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, employeeId: e.target.value }))
-                }
-              >
-                <option value="">בחר עובד...</option>
-                {employees.map((e) => (
-                  <option key={e.id} value={e.id}>
-                    {e.name} – {e.department}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="form-grid">
-              <div className="form-field">
-                <label>תאריך</label>
-                <input
-                  type="date"
-                  value={form.date}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, date: e.target.value }))
-                  }
-                />
-              </div>
-              <div className="form-field">
-                <label>מחלקה</label>
-                <select
-                  value={form.department}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, department: e.target.value }))
-                  }
-                >
-                  <option value="">ברירת מחלקה</option>
-                  {DEPARTMENTS.map((d) => (
-                    <option key={d}>{d}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="form-field">
-                <label>שעת התחלה</label>
-                <input
-                  type="time"
-                  value={form.start}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, start: e.target.value }))
-                  }
-                />
-              </div>
-              <div className="form-field">
-                <label>שעת סיום</label>
-                <input
-                  type="time"
-                  value={form.end}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, end: e.target.value }))
-                  }
-                />
-              </div>
-            </div>
-            <div
-              style={{
-                display: "flex",
-                gap: 10,
-                justifyContent: "flex-end",
-                marginTop: 8,
-              }}
-            >
-              <button
-                className="btn btn-ghost"
-                onClick={() => setShowModal(false)}
-              >
-                ביטול
-              </button>
-              <button className="btn btn-primary" onClick={addShift}>
-                שמור משמרת
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
 function ChecklistPage({ checklist, setChecklist }) {
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState({
@@ -1869,7 +1664,7 @@ async function loadUserWithProfile(session, setUser) {
 //      so operational data survives a refresh (F5).
 //
 // Keeps the exact [data, setData] contract the page components expect,
-// so ShiftsPage / ChecklistPage / EmployeesPage are unchanged.
+// so ChecklistPage / EmployeesPage are unchanged.
 // In demo/offline mode (no Supabase) it behaves like plain useState.
 
 function usePersistentState(table, initialMock) {
@@ -1955,7 +1750,13 @@ export default function App() {
   // the actual board (same duplicate-fetch tradeoff the old calls badge had).
   const [tasks] = usePersistentState("tasks", []);
   const opsLoading = empLoading || shiftLoading || checkLoading;
-  const [agentProfile, setAgentProfile] = useState(null);
+  // agentProfile value itself is no longer read anywhere (the "agent" route now
+  // renders InventoryHub) — kept write-only since the background load effect
+  // below + the still-present (now unreachable) settings modal still call the
+  // setter. AgentQuestionnaire.js/AgentChat.js + their DB tables are left
+  // completely untouched, per the owner's explicit choice to orphan rather
+  // than delete that feature.
+  const [, setAgentProfile] = useState(null);
   // Controls the settings/questionnaire modal overlay (keeps chat mounted underneath)
   const [showQuestionnaire, setShowQuestionnaire] = useState(false);
   // Push notification state: 'unsupported'|'unsubscribed'|'subscribed'|'denied'|'loading'
@@ -2106,7 +1907,7 @@ export default function App() {
     data_sync:  "📥 סנכרון נתונים",
     portal_settings: "🎨 הגדרות פורטל",
     cms_security: "🔐 אבטחת CMS",
-    agent:      agentProfile ? `${agentProfile.display_name} 🤖` : "הסוכן שלי 🤖",
+    agent:      "📦 ניהול מלאי",
     admin:      "👑 ניהול מערכת",
     users_mgmt: "👥 ניהול משתמשים",
   };
@@ -2245,19 +2046,10 @@ export default function App() {
           />
         );
       case "agent":
-        if (!agentProfile) {
-          return (
-            <AgentQuestionnaire
-              user={user}
-              onComplete={(profile) => setAgentProfile(profile)}
-            />
-          );
-        }
         return (
-          <AgentChat
+          <InventoryHub
             user={user}
-            agentProfile={agentProfile}
-            onOpenSettings={() => setShowQuestionnaire(true)}
+            onOpenScheduler={() => setActivePage("scheduler")}
           />
         );
       case "admin":
@@ -2339,7 +2131,7 @@ export default function App() {
     { id: "shifts",     icon: "🕐", label: "משמרות" },
     { id: "ops_board",  icon: "🛠️", label: "תפעול" },
     { id: "vip_guests", icon: "🏨", label: "סוויטות" },
-    { id: "agent",      icon: "🤖", label: "סוכן" },
+    { id: "agent",      icon: "📦", label: "מלאי" },
   ];
 
   return (

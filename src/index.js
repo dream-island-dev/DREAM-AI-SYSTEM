@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 import App from "./App";
 import GuestPortal from "./components/GuestPortal";
+import InventoryPortal from "./components/InventoryPortal";
 
 const rootElement = document.getElementById("root");
 const root = createRoot(rootElement);
@@ -19,10 +20,19 @@ const root = createRoot(rootElement);
 // rewrites unknown paths to /index.html (no vercel.json needed), and CRA's
 // own dev server does the same via its built-in historyApiFallback.
 const portalMatch = window.location.pathname.match(/^\/portal\/([^/?#]+)/);
+// Inventory Smart-Intake Module — same no-auth-chain reasoning as the Guest
+// Portal above, for the employee's daily-fill phone screen.
+const inventoryMatch = window.location.pathname.match(/^\/inv\/([^/?#]+)/);
 
 root.render(
   <StrictMode>
-    {portalMatch ? <GuestPortal token={portalMatch[1]} /> : <App />}
+    {portalMatch ? (
+      <GuestPortal token={portalMatch[1]} />
+    ) : inventoryMatch ? (
+      <InventoryPortal token={inventoryMatch[1]} />
+    ) : (
+      <App />
+    )}
   </StrictMode>
 );
 

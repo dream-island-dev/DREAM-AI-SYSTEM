@@ -1,6 +1,6 @@
 # CLAUDE.md — Dream Island AI System
 > קובץ זה נקרא אוטומטית בכל שיחה. הוא מקור-האמת שלך. קרא אותו לפני כל פעולה.
-> **עדכון אחרון:** 2026-06-25 (session 45 — CTO Audit Patches: תוקנו 3 ממצאים מ-audit מקיף — (1) **Token Optimization** — נרטיב הסשנים 24–44 הועבר מ-CLAUDE.md ל-`claude_history.md` (לא נמחק, רק הופרד) לחיסכון משמעותי בטוקנים על כל שיחה עתידית; (2) **notification_log race condition** — ה-UNIQUE INDEX על `(guest_id, trigger_type)` (migration 006) חסם בשקט insert שני לאותו זוג אחרי כשל ראשון (כשל→הצלחה לא נרשם, Automation History הציג "נכשל" לשווא) — תוקן ב-migration 088, מצומצם ל-`WHERE status IN ('sent','simulated')`; (3) **bot_config RLS gap** — `bot_config_read` היה `USING (true)` ציבורי-לחלוטין (קריא גם בלי login, anon key) מאז migration 015 — תוקן ב-migration 089 לדרוש `auth.uid() IS NOT NULL`, תואם ל-`bot_settings`/`bot_scripts`/`guests`. ראה §10 session 45 לפירוט מלא.).
+> **עדכון אחרון:** 2026-06-26 (session 47 — Inventory Smart-Intake Module: ה"סוכן" (AgentQuestionnaire/AgentChat) הוחלף ב-route "agent" במודול חידוש-מלאי חכם — זיהוי AI לקבצי אקסל (כולל נוסחאות-יעד קיימות, נקראות כערך גלוי לא כ-syntax), קישור-קסם יומי לעובד למלא מלאי מהטלפון בלי login (`/inv/:token`), ותור אישור-מנהל לפני שמשהו נכנס בפועל למערכת. הפיצ'ר הישן (קוד+דאטה) נשאר orphaned, לא נמחק — Mike אישר זאת מפורשות. migration 090 + 2 Edge Functions חדשים + הרחבת `suggest-import-mapping`. נבדק חי end-to-end מול ה-DB האמיתי (לא רק build) דרך `/inv/:token`; מסכי המנהל לא נבדקו ע"י Claude (חסרו credentials). ראה §10 session 47 לפירוט מלא.).
 >
 > 📚 **היסטוריית הסשנים המלאה (sessions 2–44) הועברה ל-[`claude_history.md`](claude_history.md)** כדי לשמור את הקובץ הזה קליל. שום מידע לא נמחק — רק הופרד. הקובץ הזה מחזיק את **רפרנס הארכיטקטורה החי** (§0–§13); הקובץ ההוא מחזיק את הנרטיב ההיסטורי. כשצריך הקשר מפורט על באג/החלטה ישנה — קרא שם.
 >
@@ -209,8 +209,44 @@ DREAM-AI-SYSTEM/
 │       │                            קליק על CTA → `onUpsell(upsellLabel)` prop (מ-GuestPortal) →
 │       │                            `guest-portal-upsell`.
 │       ├── UserManagement.js     21KB  ניהול משתמשים
-│       ├── AgentChat.js          22KB  שיחה עם סוכן AI
-│       ├── AgentQuestionnaire.js 19KB  שאלון הגדרת סוכן
+│       ├── AgentChat.js          ⚠️ session 47 — ORPHANED. `case "agent"` ב-App.js לא מרכיב אותו
+│       │                            יותר (הוחלף ב-InventoryHub.js, ראה למטה) — קוד+דאטה נשארו
+│       │                            כמו שהם בכוונה (Mike אישר מפורשות), רק לא מקושרים יותר.
+│       ├── AgentQuestionnaire.js ⚠️ session 47 — עדיין מרכב, אבל רק בתוך מודאל "הגדרות הסוכן" שאין
+│       │                            יותר caller שפותח אותו (היה נפתח מ-AgentChat, שהוסר). בפועל
+│       │                            בלתי-נגיש, לא נמחק.
+│       ├── InventoryHub.js       ★ NEW (session 47) — מרכיב ב-`case "agent"` במקום ה-Agent הישן.
+│       │                            shell עם 3 sub-tabs (אותו pattern כמו AutomationControlCenter.js):
+│       │                            "ייבוא מסמך" (InventoryImportPanel) / "קישורים" (InventoryLinksPanel)
+│       │                            / "ממתינים לאישור" (InventoryApprovalQueue).
+│       ├── InventoryImportPanel.js ★ NEW (session 47) — 3 כרטיסי בחירת סוג מסמך (לא ניחוש אוטומטי —
+│       │                            Mike ביקש בחירה אנושית מפורשת). "חידוש מלאי": Excel/CSV →
+│       │                            suggest-import-mapping (schemaKey="inventory_renewal", הורחב
+│       │                            session זה) → MappingReviewPanel (קיים, ללא שינוי) → EditableGrid
+│       │                            לאישור → RPC `upsert_inventory_items`. `parLevel`/`restockColumn`
+│       │                            נקראים כערכים גלויים מהקובץ (לא formula syntax!) —
+│       │                            `deriveParLevel()` (importMapper.js) משלים יעד=כמות+השלמה כשיש
+│       │                            רק עמודת "להשלים". "סידור משמרות": deep-link ל-scheduler הקיים
+│       │                            (`onOpenScheduler` prop), לא מיושם כאן. "טופס חכם": stub מנוטרל
+│       │                            עם הסבר (Disable Don't Hide, §0.2) — מחוץ ל-scope המאושר.
+│       ├── InventoryLinksPanel.js ★ NEW (session 47) — ניהול `inventory_portal_links`: יצירה,
+│       │                            "צור קישור חדש" (deactivate+insert, לא mutate), קופי-קליפבורד +
+│       │                            WhatsApp share — אותו clipboard+prompt-fallback pattern כמו
+│       │                            CustomerProfilePane.js's כפתור קישור-פורטל-אורח.
+│       ├── InventoryApprovalQueue.js ★ NEW (session 47) — תור `inventory_submissions`: ממתין/הצג-גם-
+│       │                            טופלו (אותה קונבנציה כמו RequestsBoard.js), כל שורה ניתנת
+│       │                            להרחבה לפריטי `inventory_counts`, פעולות אשר/ערוך-לפני-אישור/דחה
+│       │                            (אותה קונבנציה כמו SpaStagingPanel.js) — pending/approved/rejected
+│       │                            כולם נשארים גלויים, אף אחד לא נעלם.
+│       ├── InventoryPortal.js    ★ NEW (session 47) — מסך ציבורי בלי login ב-`/inv/:token` (נבדק
+│       │                            ב-src/index.js *לפני* `<App/>`, אותו pattern כמו GuestPortal.js).
+│       │                            ⚠️ לא יכול להשתמש ב-CSS variables (`var(--gold)` וכו') — אלה
+│       │                            מוזרקות ע"י App.js עצמו ולא קיימות כש-route זה מרונדר *במקומו*;
+│       │                            אותה מגבלה בדיוק כמו GuestPortal.js, אבל בשונה מהפלטה הנפרדת
+│       │                            "XOS" של GuestPortal (לאורחים) — זה כלי לצוות, hardcoded לאותם
+│       │                            hex values כמו --gold הפנימי. כפתורי +/− גדולים לכל פריט,
+│       │                            "שלח לאישור" יוצר `inventory_submissions`+`inventory_counts` —
+│       │                            שום דבר לא נכנס ל"מלאי חי" בלי אישור מנהל.
 │       ├── WhatsAppInbox.js      ★ session 33 — "Operations Control Room". היה 18KB/תיבת שיחות
 │       │                            בלבד; קיבל בסשן זה: (1) **WordPress-style guest editor** —
 │       │                            כפתור ✏️ בכותרת ה-thread פותח AddGuestModal כ-drawer ימני
@@ -496,6 +532,10 @@ DREAM-AI-SYSTEM/
 │   │                                `uuid_generate_v4()`/uuid-ossp לא מופעל בפרויקט הזה למרות
 │   │                                שmigration 001 מפנה אליו, pgcrypto כן מופעל כברירת מחדל) +
 │   │                                `tasks_source_check` widened + `'portal_upsell'`. ראה §10 session 35.
+│   └── 090_inventory_module.sql                 applied ✅ — ★ session 47: 4 טבלאות חדשות
+│   │                                (`inventory_items`/`inventory_portal_links`/`inventory_submissions`/
+│   │                                `inventory_counts`, RLS authenticated) + RPC `upsert_inventory_items`
+│   │                                (מראה את `sync_suite_arrivals`/migration 046). ראה §10 session 47.
 │   └── functions/
 │       ├── chat/                deployed ✅ — Gemini 2.5→Claude fallback
 │       ├── suggest-replies/     ★ NEW (session 34) — Smart Inbox AI Copilot. Stateless: לא קורא
@@ -539,6 +579,23 @@ DREAM-AI-SYSTEM/
 │       │                            מסנן `chatId.endsWith("@g.us")` בלבד, כך שריאקציה על DM אישי
 │       │                            הייתה מתעלמת בשקט; הורחבה כוונה אחרת ל-session עתידי אם
 │       │                            יידרש. כשל Whapi הוא best-effort — ה-task עדיין נוצר.
+│       ├── suggest-import-mapping/ ★ "Resilient Import Agent" — מעולם לא קיבלה bullet משלה כאן עד
+│       │                            session 47 (תיעוד-gap ישן, התייחסות פרוזה בלבד ב-§10). AI מציע
+│       │                            מיפוי עמודות (Gemini→Claude) מול schema רשום ב-`SCHEMAS`,
+│       │                            לעולם לא כותב ל-DB — `MappingReviewPanel.js` תמיד מציג לאישור
+│       │                            אנושי. ★ session 47: schema שני `inventory_renewal` נוסף
+│       │                            (היה רק `suite_arrivals`) + `SCHEMA_DOMAIN_LABELS` כדי שפתיח
+│       │                            הפרומפט לא יישאר hardcoded ל"הזמנות מלון" לקובץ מלאי.
+│       ├── inventory-portal-data/   ★ NEW (session 47) — מראה את guest-portal-data בדיוק: UUID
+│       │                            regex guard, service-role lookup לפי `inventory_portal_links.
+│       │                            token` **וגם** `is_active=true` (token מבוטל = "לא נמצא", לא
+│       │                            שגיאה נפרדת). מחזיר location_name + items — לעולם לא par_level/
+│       │                            restock_suggested, העובדת רק מזינה כמות.
+│       ├── inventory-portal-submit/ ★ NEW (session 47) — מראה את guest-portal-ops-request: מאמת
+│       │                            token, יוצר `inventory_submissions` (pending) + `inventory_counts`
+│       │                            — `restock_suggested` מחושב **כאן בשרת** מ-`inventory_items.
+│       │                            par_level`, לעולם לא מהלקוח. התראת Whapi best-effort ל-Adir
+│       │                            (אותו מספר כמו guest-portal-ops-request) — כשל לא חוסם את ה-DB write.
 │       ├── generate-schedule/   deployed ✅ ⚠️ ORPHAN — frontend לא קורא אותה
 │       ├── generate-agent-profile/ deployed ✅
 │       ├── process-knowledge/   deployed ✅
@@ -673,7 +730,9 @@ switch (activePage) {
   "bot_scripts"  → BotScriptEditor  (admin only) // ✏️ session 8 correction: IS in Sidebar nav
                                     // (App.js:1114-1121, admin-only section, "📝 סקריפטי הבוט")
                                     // — earlier docs claiming it was nav-hidden were wrong
-  "agent"        → AgentQuestionnaire / AgentChat
+  "agent"        → InventoryHub      // ★ session 47 — repurposed from AgentQuestionnaire/AgentChat
+                                    // (left orphaned, not deleted — see §3). Sidebar icon/label
+                                    // updated to 📦/"ניהול מלאי", route id "agent" kept unchanged.
   "admin"        → AdminPanel       (admin only)
   "cms_security" → CMSGate(CMSSecurityPanel)  // ★ NEW session 31 — admin/super_admin, then a SECOND
                                     // gate inside: CMSGate requires a fresh password+TOTP (aal2)
@@ -715,6 +774,10 @@ switch (activePage) {
 | `notification_log` | dedup שליחות WA | service role |
 | `schedule_patterns` | דפוסי Excel שנלמדו | |
 | `push_subscriptions` | Web Push endpoints | `user_id = auth.uid()` |
+| `inventory_items` | ★ NEW (session 47) — קטלוג מלאי per `location_name`. `par_level` נקרא מהקובץ הקיים של המנהל (לא שדה-הקלדה חדש), `source_note` שקוף ל-מקור (FAIL VISIBLE) | authenticated |
+| `inventory_portal_links` | ★ NEW (session 47) — קישור-קסם per location (`/inv/:token`), אותו מנגנון כמו `guests.portal_token` | authenticated |
+| `inventory_submissions` | ★ NEW (session 47) — דיווח יומי אחד מהעובדת, `status` pending/approved/rejected — שום דבר "חי" לפני אישור מנהל | authenticated |
+| `inventory_counts` | ★ NEW (session 47) — שורת פריט per submission. `restock_suggested` מחושב בשרת (`inventory-portal-submit`), לא מהלקוח | authenticated |
 
 ### פורמטי טלפון — חיוני להבנה
 ```
@@ -1193,7 +1256,7 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
 | Regex intent patterns (COMPLAINT/UPSELL/HUMAN_CALL/DATE_CHANGE) | hardcoded בכוונה — UI לעריכת keyword-lists לא בוצע, ראה Phase 6 Audit §3 | נמוך |
 | **Whapi live test** (session 22) | ✅ הושלם בסשן: `WHAPI_TOKEN`+`WHAPI_GROUP_ID` (`120363320093485583@g.us`) הוגדרו ואומתו (Whapi `/health`=AUTH, channel מחובר), webhook ה-channel הופנה (`PATCH /settings`) ל-`…/functions/v1/whapi-webhook` (events: messages; webhook ה-Make.com הוסר — clean cut). **נשאר רק:** מבחן חי בקבוצה ע"י Mike (`ROOM 14 towels` → כרטיס → Accept/Complete). `staff-ops-webhook` + ה-relay של Make.com מתים כעת (אין input) — להסיר רשמית אחרי אימות. ⚠️ **session 26 הוסיפה שלושה זרמים שגם הם לא נבדקו חי:** (1) בקשת אורח-סוויטה אמיתית (`room_type='suite'`) → כרטיס בקבוצה, (2) 👍🏼 על כרטיס → נעלם כ-done בלוח, (3) `SLA_OPS_ALERT_PHONE` ל-DM + Bump (יש כעת תוכן ב-secret הזה לראשונה). לפי תיעוד Whapi חי (אומת WebFetch session 26) ריאקציה מגיעה תחת אותו `event.type:"messages"` כמו הודעת טקסט רגילה (`type:"action"` בתוך אותו מערך `messages[]`) — לא צריך הרחבת event subscription ב-channel, אבל עדיין לא נבדק בפועל מול הריאקציה האמיתית של WhatsApp (לדוגמה: יש כמה אמוג'י "thumbs up" ב-Unicode והאם WhatsApp client מסוים שולח variant אחר). | נמוך |
 | `SLA_ESCALATION_ENABLED` | ✅ הופעל session 22 (`=true`). sla-escalation-cron רץ */1min: ops = strict 7-min unassigned → Whapi group (grandfather baseline ב-migration 074 מנע blast רטרואקטיבי על backlog), guest_alerts = 10-min → Adir (Meta). ⚠️ ההפעלה הדליקה גם את escalation ה-guest_alerts (לא בוצע לו grandfather) — guest alerts ישנים שלא נפתרו עלולים להתריע ל-Adir. | — |
-| Resilient Import Agent — **מושהה באמצע** (session 9) | `suggest-import-mapping` Edge Function + `import_mapping_memory` table (migration 049) **פרוסים בפועל** ב-Supabase, אבל שינויי הפרונטאנד (`ArrivalImportPanel.js`, `MappingReviewPanel.js`, `importMapper.js`, פרמטריזציית `ezgoParser.js`) **לא commit-ים, לא pushed** — קיימים רק ב-working tree המקומי. יש גם debug-branch זמני (`if (debug)`) ב-`suggest-import-mapping/index.ts` שצריך להסיר לפני שמחליטים שזה "מוכן". המשך/סגור בסשן נפרד. | בינוני |
+| Resilient Import Agent — ✅ **תוקן תיעוד (session 47)** | השורה הקודמת כאן ("מושהה באמצע", session 9) הייתה **לא מדויקת** — אומת חי session 47: `ArrivalImportPanel.js`/`MappingReviewPanel.js`/`importMapper.js` **כבר committed, נקי** (`git status` ריק), אין debug-branch ב-`suggest-import-mapping/index.ts`. המנגנון פעיל ועובד היום עבור `suite_arrivals` **וגם** `inventory_renewal` (session 47, ראה §10) — לא "מושהה", רק לא תועד נכון. | — |
 
 ---
 
@@ -1216,6 +1279,20 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
 - ✅ **`buildTaskCard`** (`whapi-webhook/index.ts`) + **`buildManualTaskCard`** (`notify-manual-task/index.ts`) — קיבלו פרמטר `assignedPhone` אופציונלי: כשקיים, מוסיפים שורת `👤 Assigned: @{digits}` (אותו משתנה מנוקה שמועבר גם ל-`mentions`, לא string מפורמט בנפרד) + מעבירים `mentions:[assignedPhone]` ל-`sendWhapiText`. כשאין worker תואם — הכרטיס נשאר זהה לקודם (no dead line), 👍🏼 reaction-sweep לא נגע.
 - ✅ **`findAssignedWorkerPhone(supabase, department)`** — חדש בשני הקבצים (מצב duplicated, לא import — קונבנציית הריפו לגבול Deno function). שואל `profiles` חי לפי `department` + `phone IS NOT NULL`, `limit(1)` — דינמי לחלוטין (כל עובד/מחלקה, לא מפה hardcoded של Lidor/Adir/Osnat), ⚠️ אין סיגנל זמינות/משמרת — "הטלפון הראשון שנמצא למחלקה" בלבד.
 - ✅ נפרס: `whapi-webhook` + `notify-manual-task`.
+
+#### session 47 — 2026-06-26 (Inventory Smart-Intake Module — repurpose "agent" tab)
+> הקשר: ה"סוכן" (AgentQuestionnaire/AgentChat — צ'אט AI אישי per-manager) נחשב לא-רלוונטי. הבקשה: מודול חדש שמזהה ומייבא מסמכי חידוש מלאי (כולל קבצי אקסל עם נוסחאות קיימות), מאפשר למנהל ליצור קישור-קסם יומי לעובד למלא מלאי נוכחי מהטלפון בלי התחברות, ושום דבר לא נכנס בפועל למערכת בלי אישור מנהל. סוג המסמך נבחר ע"י המנהל (כרטיס מפורש), לא "קסם" שמנחש בלי לשאול.
+
+- ✅ **`AgentQuestionnaire.js`/`AgentChat.js` + `agent_profiles`/`agent_memory`/`agent_learning_logs` — הוחלט עם Mike (AskUserQuestion) להשאיר קוד+דאטה כמו שהם, רק לא מקושרים** (כמו `Chat.js`/`generate-schedule`) — לא נמחק שום קובץ/טבלה. ב-`App.js`: ה-state `agentProfile` נשאר (skip-destructure `const [, setAgentProfile]`, עדיין נטען ב-effect קיים) כי `setAgentProfile` עדיין נקרא מתוך מודאל ה"הגדרות" הישן (נשאר קיים אך הפך כעת לבלתי-נגיש בפועל — אין יותר caller ל-`setShowQuestionnaire(true)`). ה-import של `AgentChat` הוסר (הפך unused).
+- ✅ **migration 090** — 4 טבלאות חדשות: `inventory_items` (קטלוג per-location, `par_level` + `source_note` שקוף), `inventory_portal_links` (token UUID, מנגנון זהה ל-`guests.portal_token`/migration 083 — "צור קישור חדש" = deactivate+insert, לא mutate), `inventory_submissions` (status pending/approved/rejected), `inventory_counts` (שורה per item per submission, `restock_suggested` מחושב **בשרת**, לא מהלקוח). RLS authenticated לכולן (small-team convention). RPC חדש `upsert_inventory_items` (מראה את `sync_suite_arrivals`/migration 046).
+- ✅ **חישוב היעד מהקובץ הקיים — בלי לפרש syntax של נוסחה.** ההחלטה הסופית (אחרי כמה סבבי refinement עם Mike): `suggest-import-mapping`'s schema חדש `inventory_renewal` ממפה `parLevel` (עמודת יעד גלויה, אם קיימת) **או** `restockColumn` (עמודת "להשלים" גלויה, התוצאה המוכנה של הנוסחה הקיימת) — שניהם נקראים כערכים רגילים (`sheet_to_json`, לא `cellFormula`). אם רק `restockColumn` מופה, `deriveParLevel()` (`src/utils/importMapper.js`) משלים: `יעד = כמות_נוכחית + להשלים` — אריתמטיקה על מספרים גלויים, לא re-implementation של syntax אקסל. שקוף ב-`source_note` שנשמר per item.
+- ✅ **תשתית קיימת הורחבה, לא הומצאה מחדש** — `suggest-import-mapping`'s `SCHEMAS` registry קיבל entry `inventory_renewal` (+ `SCHEMA_DOMAIN_LABELS` כדי שפתיח הפרומפט לא יישאר hardcoded ל"הזמנות מלון" עבור קובץ מלאי). `import_mapping_memory` (migration 049, קיימת) עובדת ללא שינוי — מזכירה מיפוי שאושר בעבר לפי header signature, גם לסכימה החדשה.
+- ✅ **קומפוננטות חדשות** (כולן `src/components/`): `InventoryHub.js` (שלושת sub-tabs, shell בדיוק כמו `AutomationControlCenter.js`, מורכב ב-`case "agent"`), `InventoryImportPanel.js` (3 כרטיסי סוג — "חידוש מלאי" מלא, "סידור משמרות" deep-link ל-`scheduler` הקיים, "טופס חכם" stub מנוטרל עם הסבר — Disable Don't Hide, §0.2 — מחוץ ל-scope המאושר לסשן הזה), `InventoryLinksPanel.js` (יצירה/רוטציה/קופי, אותו clipboard+prompt-fallback pattern כמו `CustomerProfilePane.js`), `InventoryApprovalQueue.js` (תור ממתין/אשר/ערוך-לפני-אישור/דחה — אותה קונבנציה כמו `RequestsBoard.js`/`SpaStagingPanel.js`, pending/approved/rejected כולם נשארים גלויים).
+- ✅ **`InventoryPortal.js`** — מסך טלפון ציבורי בלי login, `/inv/:token` (נוסף ל-`src/index.js` באותה שיטה כמו `/portal/:token` הקיים — נבדק *לפני* `<App/>`). ⚠️ **לא יכול להשתמש ב-`var(--gold)` וכו'** — אותה מגבלה כמו `GuestPortal.js`: ה-CSS variables מוזרקות ע"י `App.js` עצמו, ולא קיימות כשהראוט הזה מרונדר *במקום* App. בשונה מ-`GuestPortal.js` (פלטת "XOS" שונה בכוונה לאורחים) — זה כלי **לצוות**, אז hardcoded לאותם hex values כמו `--gold` הפנימי, לא פלטה נפרדת.
+- ✅ **Edge Functions חדשים**: `inventory-portal-data` (מראה את `guest-portal-data` — UUID regex guard, service-role lookup לפי token **וגם** `is_active=true`), `inventory-portal-submit` (מראה את `guest-portal-ops-request` — מאמת token, יוצר submission+counts, `restock_suggested` מחושב כאן מ-`inventory_items.par_level`, התראת Whapi best-effort ל-Adir שלא חוסמת את ה-DB write בכשל).
+- ✅ **נבדק חי end-to-end מול ה-DB האמיתי** (לא רק build): נוצר link+items זמניים, מולא ונשלח דרך `/inv/:token` בפועל בדפדפן, אומת ש-`restock_suggested` חושב נכון (par_level − count) בצד השרת, אומת ש-link מבוטל **וגם** token פגום מחזירים שגיאה נקייה (לא raw DB error, לא קריסה) — כל הדאטה הזמני נמחק בסוף. ⚠️ **לא נבדק ע"י Claude:** המסכים בצד-מנהל (שלושת ה-sub-tabs של `InventoryHub`) דרך קליק בדפדפן בפועל — login דרש credentials אמיתיים שלא היו זמינים (משתמשי הדמו במסך ההתחברות לא עבדו, Google OAuth לא מוגדר בסביבת הפיתוח). Mike צריך לעבור על "ניהול מלאי" עם login אמיתי כדי לאשר את ה-UI בצד-מנהל.
+- ✅ **`npm run build` נקי** — אפס warnings חדשים. ⚠️ נמצא warning קיים-מראש לא-קשור (`ShiftsPage` unused ב-`App.js`, 204 שורות, אומת via `git stash` שקיים גם על main לפני הסשן) — סומן כ-follow-up נפרד, לא טופל כאן (מחוץ ל-scope).
+- ✅ Sidebar: `{ id:"agent" }` נשאר (routing לא השתנה) אבל `icon`/`label` עברו ל-`📦`/"ניהול מלאי" (דסקטופ) ו-"מלאי" (מובייל).
 
 ---
 
