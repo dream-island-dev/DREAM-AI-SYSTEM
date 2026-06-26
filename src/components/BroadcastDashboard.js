@@ -135,15 +135,17 @@ export default function BroadcastDashboard({ user }) {
           showToast("err", `שגיאה בסנכרון תבניות: ${msg}`);
           return;
         }
-        // The Edge Function already returns only APPROVED templates (server-side filter).
-        // We do NOT re-filter by status here to avoid silently dropping a template
-        // whose status string doesn't exactly match what we expect.
+        // ── DIAGNOSTIC: open browser console to see what the Edge Function actually returned
+        const rawEdge = data.templates ?? [];
+        console.log("[Broadcast] RAW FROM EDGE:", rawEdge.length, rawEdge.map(t => `${t.name}(${t.status})`));
+        // ── Merge: start with EVERY template the Edge Function returned.
         // Only exclude hello_world (Meta test-number placeholder — never a real send target).
+        // NO status re-filter — the Edge Function is the authority on which are APPROVED.
         // Templates with no row in `message_templates` DB show their raw Meta name as label
         // (see template card render below — no template is hidden due to a missing DB seed).
-        setWaTemplates(
-          (data.templates ?? []).filter((w) => w.name !== "hello_world")
-        );
+        const visible = rawEdge.filter((w) => w.name !== "hello_world");
+        console.log("[Broadcast] Final visible (after hello_world filter):", visible.length, visible.map(t => t.name));
+        setWaTemplates(visible);
         showToast("ok", "✓ התבניות עודכנו בהצלחה");
       })
       .finally(() => setLoadingTemplates(false));

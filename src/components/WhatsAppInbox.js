@@ -684,13 +684,16 @@ function NewChatModal({ onClose, onSent }) {
         return data ?? [];
       }),
     ]).then(([wa, db]) => {
-      // The Edge Function already returns only APPROVED templates (server-side filter).
-      // We do NOT re-filter by status here to avoid silently dropping a template
-      // whose status string doesn't exactly match what we expect.
+      // ── DIAGNOSTIC: open browser console to see what the Edge Function actually returned
+      console.log("[WA-Inbox] RAW FROM EDGE:", wa.length, wa.map(t => `${t.name}(${t.status})`));
+      console.log("[WA-Inbox] FROM DB message_templates:", db.length, db.map(t => t.wa_template_name));
+      // ── Merge: start with EVERY template the Edge Function returned.
       // Only exclude hello_world (Meta test-number placeholder — never a real send target).
+      // NO status re-filter — the Edge Function is the authority on which are APPROVED.
       // Templates with no row in `message_templates` DB are shown with their raw Meta name
-      // as the display label — no template is hidden due to a missing DB seed.
+      // (displayName fallback below) — no template is hidden due to a missing DB seed.
       const approvedWa = wa.filter((w) => w.name !== "hello_world");
+      console.log("[WA-Inbox] After hello_world filter:", approvedWa.length, approvedWa.map(t => t.name));
       setWaTemplates(approvedWa);
       setDbTemplates(db);
       setTmplSyncOk(true);
