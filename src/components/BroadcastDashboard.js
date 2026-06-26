@@ -135,13 +135,14 @@ export default function BroadcastDashboard({ user }) {
           showToast("err", `שגיאה בסנכרון תבניות: ${msg}`);
           return;
         }
-        // Only approved, exclude hello_world (test-only template)
+        // The Edge Function already returns only APPROVED templates (server-side filter).
+        // We do NOT re-filter by status here to avoid silently dropping a template
+        // whose status string doesn't exactly match what we expect.
+        // Only exclude hello_world (Meta test-number placeholder — never a real send target).
+        // Templates with no row in `message_templates` DB show their raw Meta name as label
+        // (see template card render below — no template is hidden due to a missing DB seed).
         setWaTemplates(
-          (data.templates ?? []).filter(
-            (w) =>
-              w.name !== "hello_world" &&
-              (w.status == null || String(w.status).toUpperCase() === "APPROVED")
-          )
+          (data.templates ?? []).filter((w) => w.name !== "hello_world")
         );
         showToast("ok", "✓ התבניות עודכנו בהצלחה");
       })

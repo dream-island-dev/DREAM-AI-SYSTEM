@@ -684,12 +684,13 @@ function NewChatModal({ onClose, onSent }) {
         return data ?? [];
       }),
     ]).then(([wa, db]) => {
-      // Only show APPROVED Meta templates; exclude hello_world (test-number only)
-      const approvedWa = wa.filter(
-        (w) =>
-          w.name !== "hello_world" &&
-          (w.status == null || String(w.status).toUpperCase() === "APPROVED")
-      );
+      // The Edge Function already returns only APPROVED templates (server-side filter).
+      // We do NOT re-filter by status here to avoid silently dropping a template
+      // whose status string doesn't exactly match what we expect.
+      // Only exclude hello_world (Meta test-number placeholder — never a real send target).
+      // Templates with no row in `message_templates` DB are shown with their raw Meta name
+      // as the display label — no template is hidden due to a missing DB seed.
+      const approvedWa = wa.filter((w) => w.name !== "hello_world");
       setWaTemplates(approvedWa);
       setDbTemplates(db);
       setTmplSyncOk(true);
