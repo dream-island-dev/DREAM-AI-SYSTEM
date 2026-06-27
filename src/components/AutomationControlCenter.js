@@ -724,6 +724,201 @@ function CustomAutomationBuilder({ metaTemplatesByName, showToast }) {
   );
 }
 
+// ── ManualDispatchModal ──────────────────────────────────────────────────────
+// Self-contained modal for staff to force-dispatch any automation stage for
+// any guest, bypassing cron scheduling and the idempotency guard.
+// Key design rules from the architecture plan:
+//   1. room_type-aware template bifurcation is enforced server-side — we only
+//      choose the STAGE and the CHANNEL, not the actual template name.
+//   2. Toast feedback shows the *specific* error returned by the API, not a
+//      generic message.
+//   3. Two-step confirm: preview → dispatch (no accidental sends).
+//   4. The flag column IS stamped on success so cron doesn't double-fire.
+const DAY_PASS_ALLOWED_FOR_MODAL = new Set(["pre_arrival_2d", "night_before_daypass", "morning_welcome", "checkout_fb"]);
+
+function ManualDispatchModal({ item, stages, onClose, onDispatched, showToast }) {
+  const isDayType = item.room_type === "day_guest" || item.room_type === "premium_day_guest";
+
+  // Filter to stages the backend will actually allow for this room_type.
+  const allowedStages = stages.filter((s) => {
+    if (isDayType) return DAY_PASS_ALLOWED_FOR_MODAL.has(s.stage_key);
+    // Suite guests: exclude the day-pass-specific stage.
+    return s.stage_key !== "night_before_daypass";
+  });
+
+  const [stageKey, setStageKey]   = useState(item.stageKey ?? (allowedStages[0]?.stage_key ?? ""));
+  const [channel, setChannel]     = useState("meta_template");
+  const [confirmed, setConfirmed] = useState(false);
+  const [sending, setSending]     = useState(false);
+  const [result, setResult]       = useState(null); // {ok, message}
+
+  const selectedStage   = stages.find((s) => s.stage_key === stageKey);
+  const hasScriptKey    = !!selectedStage?.session_message_script_key;
+  const predictedChannel = item.predictedChannel;
+
+  // When stage changes, revert to meta_template if session is not available.
+  useEffect(() => {
+    if (channel === "session_message" && !hasScriptKey) setChannel("meta_template");
+  }, [stageKey, hasScriptKey, channel]);
+
+  const handleDispatch = async () => {
+    if (!supabase) return;
+    setSending(true);
+    setResult(null);
+    try {
+      const { data, error } = await supabase.functions.invoke("whatsapp-send", {
+        body: { trigger: stageKey, guestId: item.guestId, force: true, force_channel: channel },
+      });
+      if (error) throw new Error(error.message);
+      if (data?.ok) {
+        const tmplPart = data?.template ? ` (${data.template})` : "";
+        const successMsg = `✅ ${item.guestName} — ${selectedStage?.display_name ?? stageKey}${tmplPart} — נשלח!`;
+        showToast("ok", successMsg);
+        setResult({ ok: true, message: successMsg });
+        onDispatched?.();
+      } else {
+        const apiMsg = data?.error ?? data?.reason ?? "שגיאה לא ידועה";
+        setResult({ ok: false, message: `❌ שגיאה: ${apiMsg}` });
+        showToast("err", `❌ ${item.guestName}: ${apiMsg}`);
+      }
+    } catch (e) {
+      const msg = (e?.message ?? String(e));
+      setResult({ ok: false, message: `❌ ${msg}` });
+      showToast("err", "שגיאה: " + msg);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const canDispatch = stageKey && item.guestId && !sending && !result?.ok;
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 10100,
+      display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
+    }}>
+      <div style={{
+        background: "#fff", borderRadius: 16, padding: "28px 32px",
+        maxWidth: 520, width: "100%", boxShadow: "0 20px 60px rgba(0,0,0,0.3)",
+        direction: "rtl", display: "flex", flexDirection: "column", gap: 18,
+      }}>
+        {/* Header */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontWeight: 800, fontSize: 17 }}>⚡ שגר ידני — Override</div>
+          <button className="btn btn-ghost btn-sm" onClick={onClose} style={{ fontSize: 18, padding: "2px 8px" }}>✕</button>
+        </div>
+
+        {/* Guest info */}
+        <div style={{ background: "rgba(201,169,110,0.1)", borderRadius: 10, padding: "10px 14px", fontSize: 13 }}>
+          <strong>{item.guestName}</strong>
+          {item.room && <span style={{ color: "var(--text-muted)", marginRight: 8 }}>· {item.room}</span>}
+          {isDayType && (
+            <span style={{ fontSize: 11, padding: "2px 7px", borderRadius: 12, background: "#FEF3C7", color: "#92400E", marginRight: 8 }}>
+              יום-כיף
+            </span>
+          )}
+        </div>
+
+        {/* Stage selector */}
+        <div className="form-field" style={{ marginBottom: 0 }}>
+          <label>שלב לשליחה</label>
+          <select value={stageKey} onChange={(e) => setStageKey(e.target.value)} disabled={sending}>
+            {allowedStages.length === 0 && <option value="">— אין שלבים זמינים —</option>}
+            {allowedStages.map((s) => (
+              <option key={s.stage_key} value={s.stage_key}>{s.display_name ?? s.stage_key}</option>
+            ))}
+          </select>
+        </div>
+
+        {/* Channel */}
+        <div>
+          <label style={{ fontWeight: 600, fontSize: 13, display: "block", marginBottom: 8 }}>ערוץ שליחה</label>
+          <div style={{ display: "flex", gap: 10 }}>
+            <button
+              onClick={() => setChannel("meta_template")}
+              disabled={sending}
+              style={{
+                flex: 1, padding: "8px 12px", borderRadius: 10, border: `2px solid ${channel === "meta_template" ? "var(--gold)" : "var(--border)"}`,
+                background: channel === "meta_template" ? "rgba(201,169,110,0.12)" : "#fff",
+                fontWeight: channel === "meta_template" ? 700 : 400, cursor: "pointer", fontSize: 13,
+              }}
+            >
+              🔵 Meta Template<br />
+              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>עובד תמיד (ללא חלון 24ש')</span>
+            </button>
+            <button
+              onClick={() => hasScriptKey && setChannel("session_message")}
+              disabled={sending || !hasScriptKey}
+              title={!hasScriptKey ? "שלב זה אינו מוגדר עם Bot Script" : undefined}
+              style={{
+                flex: 1, padding: "8px 12px", borderRadius: 10, border: `2px solid ${channel === "session_message" ? "#1A7A4A" : "var(--border)"}`,
+                background: channel === "session_message" ? "rgba(26,122,74,0.08)" : (hasScriptKey ? "#fff" : "#f5f5f5"),
+                fontWeight: channel === "session_message" ? 700 : 400,
+                cursor: hasScriptKey ? "pointer" : "not-allowed", fontSize: 13,
+                color: hasScriptKey ? "inherit" : "var(--text-muted)",
+              }}
+            >
+              🟢 Bot Script<br />
+              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                {hasScriptKey ? "מאלץ שליחה גם אם חלון סגור" : "לא זמין לשלב זה"}
+              </span>
+            </button>
+          </div>
+        </div>
+
+        {/* Confirmation step */}
+        {!confirmed && !result && (
+          <div style={{
+            background: "#FFF8E7", border: "1px solid #C9A96E", borderRadius: 10,
+            padding: "12px 14px", fontSize: 13,
+          }}>
+            <strong>⚠ שים לב:</strong> שגר ידני יתעלם מלו"ז ה-cron. דגל ה-pipeline יסומן לאחר שליחה מוצלחת — ה-cron לא ישלח פעם נוספת.
+          </div>
+        )}
+
+        {/* Result */}
+        {result && (
+          <div style={{
+            background: result.ok ? "#E8F5EF" : "#FFF0EE",
+            border: `1px solid ${result.ok ? "#1A7A4A" : "#C0392B"}`,
+            borderRadius: 10, padding: "12px 14px", fontSize: 13,
+            color: result.ok ? "#1A7A4A" : "#C0392B",
+          }}>
+            {result.message}
+          </div>
+        )}
+
+        {/* Action buttons */}
+        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+          <button className="btn btn-ghost" onClick={onClose}>{result?.ok ? "סגור" : "ביטול"}</button>
+          {!result?.ok && (
+            <>
+              {!confirmed ? (
+                <button
+                  className="btn btn-primary"
+                  onClick={() => setConfirmed(true)}
+                  disabled={!canDispatch}
+                >
+                  ⚡ אשר שגר ידני
+                </button>
+              ) : (
+                <button
+                  className="btn btn-primary"
+                  onClick={handleDispatch}
+                  disabled={!canDispatch}
+                  style={{ background: "#C0392B", borderColor: "#C0392B" }}
+                >
+                  {sending ? "⏳ שולח..." : "🚀 שגר עכשיו (מאושר)"}
+                </button>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function AutomationControlCenter() {
   const [subTab, setSubTab] = useState("timeline"); // timeline | queue | history | builder | templates
   const [stages, setStages] = useState([]);
@@ -748,6 +943,9 @@ export default function AutomationControlCenter() {
   const [dispatching, setDispatching] = useState(false);
   const [dispatchSummary, setDispatchSummary] = useState(null);
   const [showDispatchConfirm, setShowDispatchConfirm] = useState(false);
+
+  // ── Manual Dispatch / Override ───────────────────────────────────────────
+  const [manualDispatchItem, setManualDispatchItem] = useState(null);
 
   const showToast = useCallback((type, msg) => {
     setToast({ type, msg });
@@ -1079,6 +1277,20 @@ export default function AutomationControlCenter() {
 
         return (
           <div>
+            {/* ── Manual Dispatch Modal ── */}
+            {manualDispatchItem && (
+              <ManualDispatchModal
+                item={manualDispatchItem}
+                stages={stages}
+                showToast={showToast}
+                onClose={() => setManualDispatchItem(null)}
+                onDispatched={() => {
+                  setManualDispatchItem(null);
+                  fetchQueue();
+                }}
+              />
+            )}
+
             {/* ── Dispatch Confirmation Modal ── */}
             {showDispatchConfirm && (
               <div style={{
@@ -1349,6 +1561,7 @@ export default function AutomationControlCenter() {
                             <th>מועד משוער</th>
                             <th>ערוץ צפוי</th>
                             <th>סטטוס</th>
+                            <th style={{ width: 54, textAlign: "center" }}>⚡</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -1399,6 +1612,17 @@ export default function AutomationControlCenter() {
                                     {q.dueNow && q.status === "pending" ? "⚡ מוכן לשליחה" : q.status}
                                   </span>
                                   {q.skipReason && <div style={{ fontSize: 10, color: "var(--text-muted)" }}>{q.skipReason}</div>}
+                                </td>
+                                <td style={{ textAlign: "center" }}>
+                                  <button
+                                    className="btn btn-ghost btn-sm"
+                                    title={`שגר ידני עבור ${q.guestName ?? "אורח"} — עוקף לוח-זמנים`}
+                                    onClick={() => setManualDispatchItem(q)}
+                                    disabled={!q.guestId}
+                                    style={{ fontSize: 14, padding: "2px 7px", color: "var(--gold)", borderColor: "var(--gold)" }}
+                                  >
+                                    ⚡
+                                  </button>
                                 </td>
                               </tr>
                             );

@@ -412,13 +412,15 @@ serve(async (req: Request) => {
 
   try {
     const body = await req.json();
-    const { trigger, guestId, assignments, weekStart, waTemplateName, templateVariables } = body as {
+    const { trigger, guestId, assignments, weekStart, waTemplateName, templateVariables, force, force_channel } = body as {
       trigger:             string;
       guestId?:            string;
       assignments?:        Record<string, unknown[]>;
       weekStart?:          string;
       waTemplateName?:     string;    // approved WA template name
       templateVariables?:  string[];  // values for {{1}}, {{2}}, … in the template body
+      force?:              boolean;   // Manual override: skip kill-switch + idempotency guard
+      force_channel?:      "meta_template" | "session_message"; // Pin channel for manual dispatch
     };
 
     if (!trigger) throw new Error("trigger is required");
@@ -431,7 +433,7 @@ serve(async (req: Request) => {
     // (and shift_assignment) stay blocked until AUTOMATION_ENABLED=true. The
     // periodic cron has its own independent CRON_ENABLED gate, so enabling
     // manual broadcasts here does NOT unleash the scheduled pipeline.
-    if (!MANUAL_TRIGGERS.has(trigger) && Deno.env.get("AUTOMATION_ENABLED") !== "true") {
+    if (!MANUAL_TRIGGERS.has(trigger) && !force && Deno.env.get("AUTOMATION_ENABLED") !== "true") {
       console.log(`[whatsapp-send] 🚫 HALTED — trigger "${trigger}" blocked. Set AUTOMATION_ENABLED=true in Supabase Secrets to re-enable.`);
       return new Response(
         JSON.stringify({ ok: false, halted: true, reason: "automation_disabled", trigger }),
@@ -736,6 +738,10 @@ serve(async (req: Request) => {
     // .limit(1) instead of .maybeSingle(): retries can legitimately accumulate
     // multiple failed/timeout rows for the same guest+trigger, which maybeSingle()
     // would error on.
+    // force=true (manual override) bypasses this check entirely so staff can
+    // re-send a stage that was already delivered — idempotency is a cron concern,
+    // not a human one.
+    if (!force) {
     const { data: existingSent } = await supabase
       .from("notification_log").select("id")
       .eq("guest_id", guestId).eq("trigger_type", trigger)
@@ -746,6 +752,7 @@ serve(async (req: Request) => {
         JSON.stringify({ ok: true, skipped: true, reason: "already_sent" }),
         { headers: { ...CORS, "Content-Type": "application/json" } }
       );
+    }
     }
 
     const { data: guest, error: gErr } = await supabase
@@ -1240,8 +1247,15 @@ serve(async (req: Request) => {
     let sessionButtons: Array<{ type: string; label: string; url?: string }> = [];
     let sessionImageUrl: string | null = null;
 
-    if (stageRow?.session_message_script_key) {
-      if (isWindowOpen(guest.wa_window_expires_at)) {
+    // force_channel="meta_template" pins to template regardless of window state.
+    // force_channel="session_message" bypasses the isWindowOpen() guard so staff
+    // can send free-text to any guest on demand. Both are only honoured when
+    // force=true (manual dispatch from AutomationControlCenter).
+    const forceTemplatePath   = force && force_channel === "meta_template";
+    const forceSessionMessage = force && force_channel === "session_message";
+
+    if (!forceTemplatePath && stageRow?.session_message_script_key) {
+      if (forceSessionMessage || isWindowOpen(guest.wa_window_expires_at)) {
         const { data: scriptRow } = await supabase
           .from("bot_scripts")
           .select("message_text")
@@ -1337,14 +1351,12 @@ serve(async (req: Request) => {
       guest_id: guestId, recipient: guest.phone, trigger_type: trigger,
       channel: "whatsapp", status,
       payload: usedSessionMessage
-        ? { channel: "session_message", scriptKey: stageRow!.session_message_script_key, ...(sendError ? { error: sendError } : {}) }
+        ? { channel: "session_message", scriptKey: stageRow!.session_message_script_key, ...(sendError ? { error: sendError } : {}), ...(force ? { forced: true, force_channel } : {}) }
         : {
             channel: "meta_template", template: tmplName, variables: tmplVars,
             ...(sendError ? { error: sendError } : {}),
-            // Present whenever this template send is a fallback after a failed
-            // session-message attempt — even on eventual success, so the history
-            // log shows the stage didn't go out via its first-choice channel.
             ...(sessionFailureNote ? { sessionMessageFailureNote: sessionFailureNote } : {}),
+            ...(force ? { forced: true, force_channel } : {}),
           },
     });
 
