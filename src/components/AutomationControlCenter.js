@@ -895,7 +895,10 @@ export default function AutomationControlCenter() {
   // to dream_checkin_reminder_v2 instead of the suite template variants, so
   // day-pass guests receive an appropriate evening reminder. morning_*, mid_stay,
   // room_ready remain blocked (suite amenities only).
-  const DAY_PASS_ALLOWED_STAGES = new Set(["pre_arrival_2d", "night_before", "checkout_fb"]);
+  // Stage 2.5 split (migration 093): day-pass guests use 'night_before_daypass',
+  // not 'night_before' (which now applies to suite guests only).
+  // Stage 3 (morning_welcome) is now allowed for day-pass — bifurcated in whatsapp-send.
+  const DAY_PASS_ALLOWED_STAGES = new Set(["pre_arrival_2d", "night_before_daypass", "morning_welcome", "checkout_fb"]);
 
   // ── Bulk dispatch — same call as whatsapp-cron uses ──────────────────────
   const handleBulkDispatch = async (displayQueue) => {
@@ -1092,8 +1095,11 @@ export default function AutomationControlCenter() {
                     {queueSegment === "daypass" && (
                       <div style={{ marginTop: 8, fontSize: 12, color: "#7C3AED", background: "rgba(124,58,237,0.06)", borderRadius: 8, padding: "8px 12px", border: "1px solid #C4B5FD" }}>
                         🔒 אורחי יום-כיף — Stage 1 ו-Stage 2.5 ישתמשו בתבנית{" "}
-                        <code style={{ background: "#F3F4F6", padding: "1px 5px", borderRadius: 4 }}>dream_checkin_reminder_v2</code> אוטומטית.
-                        שלבים שאינם מורשים (בוקר, אמצע שהות, מסירת מפתח) יחסמו בשרת.
+                        <code style={{ background: "#F3F4F6", padding: "1px 5px", borderRadius: 4 }}>dream_checkin_reminder_v2</code>.
+                        Stage 3 (בוקר הגעה) ישתמש ב-{" "}
+                        <code style={{ background: "#F3F4F6", padding: "1px 5px", borderRadius: 4 }}>dream_welcome_morning</code>{" "}
+                        (או הודעה חופשית אם חלון 24ש' פתוח).
+                        שלבים שאינם מורשים (אמצע שהות, מסירת מפתח) יחסמו בשרת.
                       </div>
                     )}
                     <div style={{ marginTop: 8, fontSize: 12, color: "#92702C" }}>
@@ -1212,8 +1218,10 @@ export default function AutomationControlCenter() {
                 🔒 <strong>שער Day Pass פעיל</strong> — אורחי יום-כיף מקבלים שלושה שלבים בלבד:
                 אישור הגעה (Stage 1), תזכורת ערב לפני (Stage 2.5 ←{" "}
                 <code style={{ background: "rgba(124,58,237,0.1)", padding: "1px 5px", borderRadius: 4 }}>dream_checkin_reminder_v2</code>),
+                בוקר הגעה (Stage 3 ←{" "}
+                <code style={{ background: "rgba(124,58,237,0.1)", padding: "1px 5px", borderRadius: 4 }}>dream_welcome_morning</code>),
                 ומשוב (Stage 5).
-                שלבים אחרים (בוקר, אמצע שהות, מסירת מפתח) חסומים אוטומטית גם בממשק וגם בשרת.
+                שלבים אחרים (אמצע שהות, מסירת מפתח) חסומים אוטומטית גם בממשק וגם בשרת.
               </div>
             )}
 

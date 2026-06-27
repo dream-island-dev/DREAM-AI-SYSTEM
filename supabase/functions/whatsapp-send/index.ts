@@ -759,18 +759,21 @@ serve(async (req: Request) => {
     // but this is the canonical enforcement point (CLAUDE.md §0.1 Zero Data Loss —
     // a day-pass guest must never silently receive a suite welcome or mid-stay
     // message that references spa/suite amenities they don't have).
-    const DAY_PASS_ALLOWED_TRIGGERS = new Set(["pre_arrival_2d", "night_before", "checkout_fb"]);
+    // Stage 2.5 (night_before) is now split: suite guests receive 'night_before',
+    // day-pass guests receive 'night_before_daypass' (separate automation_stages row,
+    // migration 093). Stage 3 (morning_welcome) now applies to day-pass guests too.
+    const DAY_PASS_ALLOWED_TRIGGERS = new Set(["pre_arrival_2d", "night_before_daypass", "morning_welcome", "checkout_fb"]);
     if (guest.room_type === "day_guest" && !DAY_PASS_ALLOWED_TRIGGERS.has(trigger)) {
       console.warn(
         `[whatsapp-send] day_pass_stage_gate: trigger="${trigger}" blocked for ` +
-        `guest_id=${guestId} (room_type=day_guest) — allowed: pre_arrival_2d, night_before, checkout_fb`,
+        `guest_id=${guestId} (room_type=day_guest) — allowed: pre_arrival_2d, night_before_daypass, morning_welcome, checkout_fb`,
       );
       return new Response(
         JSON.stringify({
           ok: false,
           status: "blocked",
           reason: "day_pass_stage_gate",
-          error: `שלב "${trigger}" אינו מורשה לאורחי יום-כיף — מותרים: אישור הגעה, תזכורת ערב לפני, ומשוב`,
+          error: `שלב "${trigger}" אינו מורשה לאורחי יום-כיף — מותרים: אישור הגעה, תזכורת ערב לפני (בילוי יומי), בוקר הגעה, ומשוב`,
         }),
         { headers: { ...CORS, "Content-Type": "application/json" } },
       );
@@ -798,22 +801,23 @@ serve(async (req: Request) => {
     // ── Night-before 24-hour compliance engine ────────────────────────────────
     // Supersedes the old Shabbat-times resolver (resolveNightBeforeTimes).
     // Single responsibility: decide HOW to send the night_before stage message
-    // for this specific guest right now — free text or approved template, and
+    // for SUITE guests right now — free text or approved template, and
     // which template — then execute and return early, bypassing the generic
     // session_message/Meta-template hybrid below entirely.
     //
-    // Decision tree:
+    // ⚠ Day-pass guests are NOT handled here — they receive 'night_before_daypass'
+    // (a separate automation_stages row with applies_to='non_suite', migration 093)
+    // which routes through the generic BRANCH D path (session_message_script_key +
+    // meta_template_name='dream_checkin_reminder_v2'). Keeping them separate prevents
+    // any suite-specific logic from leaking into the day-pass branch.
+    //
+    // Decision tree (suite guests only):
     //   1. Query whatsapp_conversations for guest's last inbound timestamp.
     //   2. If within 24 hours  → channel = "text" (free-form, open session).
-    //      Same script key (night_before_reminder) for all guest types.
-    //   3. If > 24h OR null    → channel = "template" (safety gate: no inbound
-    //      record defaults to template, the most conservative choice).
-    //      Template routing — BIFURCATED by room_type:
-    //        day_guest (any day-pass variant):
-    //          → dream_checkin_reminder_v2  (flat, no Shabbat split required)
-    //        suite / standard:
-    //          Saturday  → night_before_suites_shabbat
-    //          Sun–Fri   → night_before_suites
+    //      Script key: night_before_reminder (editable in BotScriptEditor).
+    //   3. If > 24h OR null    → channel = "template".
+    //      Saturday  → night_before_suites_shabbat
+    //      Sun–Fri   → night_before_suites
     //      Variable mapping (HARDENED):
     //        {{1}} = guest name ONLY. {{2}} / {{3}} are REMOVED — the template
     //        body is now static; the Shabbat variant is a separate approved
@@ -862,19 +866,8 @@ serve(async (req: Request) => {
         const arrivalDateStr = String(guest.arrival_date ?? "");
         const arrivalDay = new Date(`${arrivalDateStr}T00:00:00Z`).getUTCDay();
         const isShabbat = arrivalDay === 6;
-        let templateName: string;
-        if (guest.room_type === "day_guest") {
-          // All day-pass variants (regular + Premium Day 1/2) share the same
-          // room_type. dream_checkin_reminder_v2 does not need a Shabbat split —
-          // the template language is appropriate for all arrival days.
-          templateName = "dream_checkin_reminder_v2";
-          console.log(
-            `[whatsapp-send] night_before day_pass_template: guest_id=${guestId}` +
-            ` → dream_checkin_reminder_v2 (room_type=day_guest)`,
-          );
-        } else {
-          templateName = isShabbat ? "night_before_suites_shabbat" : "night_before_suites";
-        }
+        // Suite guests only — day_guest guests use 'night_before_daypass' (migration 093).
+        const templateName = isShabbat ? "night_before_suites_shabbat" : "night_before_suites";
         // {{1}} = guest name ONLY. No entry/check-in time variables in these templates.
         const vars = sanitizeTemplateVars([guestName]);
         const buttonUrlParam = (guest.portal_token as string | null) ?? undefined;
@@ -982,6 +975,100 @@ serve(async (req: Request) => {
       );
     }
 
+    // ── Morning day-pass fast-path (Stage 3 — בוקר הגעה, בילוי יומי) ──────────
+    // Bifurcated from the suite morning fast-path below.  Day-pass guests at
+    // trigger=morning_welcome get a 24h-window check — free-text when the window
+    // is open, template (dream_welcome_morning) when it is closed.  Suite guests
+    // always receive an approved template (Shabbat-aware) via the block below.
+    //
+    // Uses isWindowOpen(wa_window_expires_at) — same as BRANCH D's session_message
+    // path — rather than a second DB query (getLastInboundTimestamp).  The guest
+    // row already carries wa_window_expires_at from the select("*") above.
+    if (trigger === "morning_welcome" && guest.room_type === "day_guest") {
+      const dpGuestName = sanitizeTemplateVars([String(guest.name ?? "")])[0];
+      const dpWindowOpen = isWindowOpen(guest.wa_window_expires_at);
+      let dpStatus = "simulated";
+      let dpError: string | null = null;
+      let dpChannel: "session_message" | "meta_template" = dpWindowOpen ? "session_message" : "meta_template";
+
+      try {
+        if (!sim) {
+          if (dpWindowOpen) {
+            // 24h session open — send the day-pass morning free-text script.
+            const { data: scriptRow } = await supabase
+              .from("bot_scripts")
+              .select("message_text")
+              .eq("script_key", "morning_daypass")
+              .maybeSingle();
+            const rawText = scriptRow?.message_text?.trim();
+            if (!rawText) {
+              // Script missing — fall through to template rather than silently drop.
+              dpChannel = "meta_template";
+              console.warn(
+                `[whatsapp-send] morning_welcome day_pass: bot_script 'morning_daypass' missing` +
+                ` — falling back to dream_welcome_morning template for guest_id=${guestId}`,
+              );
+              await sendViaTemplate(String(guest.phone), "dream_welcome_morning", [dpGuestName], "he",
+                (guest.portal_token as string | null) ?? undefined);
+            } else {
+              const body = rawText.replace(/\{\{GUEST_NAME\}\}/gi, dpGuestName);
+              await sendViaMeta(String(guest.phone), body);
+            }
+          } else {
+            await sendViaTemplate(String(guest.phone), "dream_welcome_morning", [dpGuestName], "he",
+              (guest.portal_token as string | null) ?? undefined);
+          }
+          dpStatus = "sent";
+        }
+      } catch (e) {
+        dpError = (e as Error).message;
+        dpStatus = dpError.startsWith("timeout_no_response") ? "timeout" : "failed";
+        console.error(`[whatsapp-send] morning_welcome day_pass ${dpStatus}:`, dpError);
+      }
+
+      await supabase.from("notification_log").insert({
+        guest_id:     guestId,
+        recipient:    guest.phone,
+        trigger_type: trigger,
+        channel:      "whatsapp",
+        status:       dpStatus,
+        payload:      {
+          channel:    dpChannel,
+          ...(dpChannel === "meta_template" ? { template: "dream_welcome_morning" } : { scriptKey: "morning_daypass" }),
+          ...(dpError ? { error: dpError } : {}),
+        },
+      });
+
+      if (dpStatus === "sent" || dpStatus === "simulated") {
+        try {
+          await supabase.from("whatsapp_conversations").insert({
+            phone:         String(guest.phone),
+            guest_id:      guestId,
+            direction:     "outbound",
+            message:       dpChannel === "session_message"
+              ? `[בוקר יום-כיף: חופשי]`
+              : `[תבנית: dream_welcome_morning]`,
+            wa_message_id: null,
+          });
+        } catch { /* best-effort */ }
+        if (flagColumn) {
+          await supabase.from("guests").update({ [flagColumn]: true }).eq("id", guestId);
+        }
+      }
+
+      return new Response(
+        JSON.stringify({
+          ok:         dpStatus === "sent" || dpStatus === "simulated",
+          simulation: sim,
+          status:     dpStatus,
+          channel:    dpChannel,
+          ...(dpChannel === "meta_template" ? { template: "dream_welcome_morning" } : {}),
+          ...(dpError ? { error: dpError } : {}),
+        }),
+        { headers: { ...CORS, "Content-Type": "application/json" } },
+      );
+    }
+
     // ── Morning-of dispatch — deterministic Shabbat routing ──────────────────
     // Mirrors the night_before fast-path above. The arrival_date UTC day-of-week
     // fully determines which approved Meta template is sent — no manual variable
@@ -1007,7 +1094,8 @@ serve(async (req: Request) => {
     //   rather than nothing at all. A weekday template failure is a real error
     //   and is NOT retried.
     //
-    // Applies to: morning_suite, morning_welcome.
+    // Applies to: morning_suite + morning_welcome for NON-day_guest guests.
+    // Day-pass guests (morning_welcome) are handled by the early-return above.
     // All other triggers fall through (morningDispatch stays null).
     type MorningDispatch = {
       primaryTemplate:  string;
