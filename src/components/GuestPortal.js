@@ -419,7 +419,7 @@ function ItineraryPanel({ guest }) {
 }
 
 // ── SUITE VIEW — full portal ──────────────────────────────────────────────────
-function SuiteView({ guest, phase, countdown, upsellItems, token, onToast, onUpsell, upsellBusy }) {
+function SuiteView({ guest, phase, countdown, upsellItems, token, onToast, onUpsell, upsellBusy, scenes }) {
   return (
     <>
       <PortalHero guest={guest} phase={phase} countdown={countdown} />
@@ -429,13 +429,13 @@ function SuiteView({ guest, phase, countdown, upsellItems, token, onToast, onUps
       <PreOrderModule token={token} items={upsellItems} onToast={onToast} />
 
       {/* Scrollytelling photo tour with legacy PhotoTour upsells */}
-      <PhotoTour onUpsell={onUpsell} busyLabel={upsellBusy} />
+      <PhotoTour onUpsell={onUpsell} busyLabel={upsellBusy} scenes={scenes} />
     </>
   );
 }
 
 // ── DAY-USE VIEW — focused (Spa / Meals / Activities) ────────────────────────
-function DayUseView({ guest, phase, countdown, upsellItems, token, onToast, onUpsell, upsellBusy }) {
+function DayUseView({ guest, phase, countdown, upsellItems, token, onToast, onUpsell, upsellBusy, scenes }) {
 
   return (
     <>
@@ -478,19 +478,20 @@ function DayUseView({ guest, phase, countdown, upsellItems, token, onToast, onUp
       <PreOrderModule token={token} items={upsellItems} onToast={onToast} />
 
       {/* Photo tour is shown for day-use too, but kept shorter contextually */}
-      <PhotoTour onUpsell={onUpsell} busyLabel={upsellBusy} />
+      <PhotoTour onUpsell={onUpsell} busyLabel={upsellBusy} scenes={scenes} />
     </>
   );
 }
 
 // ── Main exported component ───────────────────────────────────────────────────
 export default function GuestPortal({ token }) {
-  const [guest, setGuest]             = useState(null);
-  const [upsellItems, setUpsellItems] = useState([]);
-  const [loading, setLoading]         = useState(true);
-  const [loadError, setLoadError]     = useState(null);
-  const [upsellBusy, setUpsellBusy]   = useState(null);
-  const [toast, setToast]             = useState(null);
+  const [guest, setGuest]               = useState(null);
+  const [upsellItems, setUpsellItems]   = useState([]);
+  const [portalScenes, setPortalScenes] = useState([]);
+  const [loading, setLoading]           = useState(true);
+  const [loadError, setLoadError]       = useState(null);
+  const [upsellBusy, setUpsellBusy]     = useState(null);
+  const [toast, setToast]               = useState(null);
   const toastTimer = useRef(null);
 
   useEffect(() => {
@@ -513,6 +514,7 @@ export default function GuestPortal({ token }) {
         } else {
           setGuest(data.guest);
           setUpsellItems(Array.isArray(data.upsellItems) ? data.upsellItems : []);
+          setPortalScenes(Array.isArray(data.scenes) ? data.scenes : []);
         }
       } catch (e) {
         if (active) setLoadError(e?.message ?? "שגיאה בטעינה.");
@@ -618,6 +620,7 @@ export default function GuestPortal({ token }) {
           onToast={showToast}
           onUpsell={handlePhotoTourUpsell}
           upsellBusy={upsellBusy}
+          scenes={portalScenes}
         />
       ) : isDayUse ? (
         <DayUseView
@@ -629,6 +632,7 @@ export default function GuestPortal({ token }) {
           onToast={showToast}
           onUpsell={handlePhotoTourUpsell}
           upsellBusy={upsellBusy}
+          scenes={portalScenes}
         />
       ) : (
         /* Unknown room_type: safe default = SuiteView (shows more, not less) */
@@ -641,6 +645,7 @@ export default function GuestPortal({ token }) {
           onToast={showToast}
           onUpsell={handlePhotoTourUpsell}
           upsellBusy={upsellBusy}
+          scenes={portalScenes}
         />
       )}
 

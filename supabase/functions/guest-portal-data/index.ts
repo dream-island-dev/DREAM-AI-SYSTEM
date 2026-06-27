@@ -96,11 +96,52 @@ serve(async (req: Request) => {
       console.warn("[guest-portal-data] upsell_items fetch failed (non-blocking):", upsellErr.message);
     }
 
+    // ── Portal scenes — server-side filtered by guest's room_type ────────
+    // Two-level filtering (migration 098):
+    //   Level 1 — scene.visibility_settings @> {room_type}: entire scenes
+    //     where the guest's type isn't in the array are excluded from response.
+    //   Level 2 — cta.visibility: individual CTA objects within a scene may
+    //     carry an optional visibility: string[] field; CTAs whose list doesn't
+    //     include the guest's room_type are stripped server-side so the client
+    //     never receives buttons it's not entitled to.
+    // If room_type is unknown/null: send all scenes unfiltered (backward compat
+    // — guest sees more, not less; same rule as upsell_items above).
+    let scenesQuery = supabase
+      .from("portal_scenes")
+      .select("image, title, body, ctas, visibility_settings")
+      .eq("is_active", true)
+      .order("sort_order", { ascending: true });
+
+    if (guestRoomType) {
+      scenesQuery = scenesQuery.filter("visibility_settings", "cs", `{${guestRoomType}}`);
+    }
+
+    const { data: rawScenes, error: scenesErr } = await scenesQuery;
+
+    if (scenesErr) {
+      console.warn("[guest-portal-data] portal_scenes fetch failed (non-blocking):", scenesErr.message);
+    }
+
+    // Strip CTA-level restricted buttons from each scene
+    const scenes = (rawScenes ?? []).map((scene) => ({
+      image:  scene.image,
+      title:  scene.title,
+      body:   scene.body,
+      ctas:   ((scene.ctas as unknown[]) ?? []).filter((cta: unknown) => {
+        const c = cta as Record<string, unknown>;
+        if (!c.visibility) return true;                         // no restriction
+        if (!guestRoomType) return true;                        // unknown type → show all
+        const vis = c.visibility as string[];
+        return vis.includes(guestRoomType);
+      }),
+    }));
+
     return new Response(
       JSON.stringify({
         ok: true,
         guest: maskedGuest,
         upsellItems: upsellItems ?? [],
+        scenes,
       }),
       { headers: { ...CORS, "Content-Type": "application/json" } }
     );

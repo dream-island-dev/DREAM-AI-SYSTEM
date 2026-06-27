@@ -55,6 +55,27 @@ function CtaEditor({ ctas, onChange }) {
   const list = Array.isArray(ctas) ? ctas : [];
   function updateCta(i, patch) { onChange(list.map((c, idx) => (idx === i ? { ...c, ...patch } : c))); }
   function removeCta(i) { onChange(list.filter((_, idx) => idx !== i)); }
+
+  function toggleCtaVisibility(i, value) {
+    const current = Array.isArray(list[i].visibility) ? list[i].visibility : null;
+    if (!current) {
+      // No restriction yet → add restriction for all EXCEPT this value
+      updateCta(i, { visibility: ALL_ROOM_TYPES.filter((v) => v !== value) });
+      return;
+    }
+    const isChecked = current.includes(value);
+    const next = isChecked ? current.filter((v) => v !== value) : [...current, value];
+    // If all types checked → remove the visibility field entirely (= no restriction)
+    if (next.length === ALL_ROOM_TYPES.length) {
+      const { visibility: _omit, ...rest } = list[i];
+      onChange(list.map((c, idx) => (idx === i ? rest : c)));
+    } else if (next.length === 0) {
+      return; // Guard: can't uncheck all
+    } else {
+      updateCta(i, { visibility: next });
+    }
+  }
+
   return (
     <div style={{ marginTop: 10 }}>
       <label style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", display: "block", marginBottom: 6 }}>
@@ -101,6 +122,28 @@ function CtaEditor({ ctas, onChange }) {
             title="הסר כפתור"
             style={{ border: "none", background: "transparent", color: "#C0392B", cursor: "pointer", fontSize: 16, padding: "2px 6px" }}
           >✕</button>
+          {/* CTA-level visibility — who sees this button (no field = all types) */}
+          <div style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, paddingTop: 4 }}>
+            <span style={{ fontSize: 10, color: "var(--text-muted)", whiteSpace: "nowrap" }}>נראה עבור:</span>
+            {VISIBILITY_OPTIONS.map(({ value, label }) => {
+              const vis = cta.visibility;
+              const checked = !vis || vis.includes(value);
+              return (
+                <label key={value} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap", userSelect: "none" }}>
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    style={{ accentColor: "var(--gold)" }}
+                    onChange={() => toggleCtaVisibility(i, value)}
+                  />
+                  {label}
+                </label>
+              );
+            })}
+            {(!cta.visibility) && (
+              <span style={{ fontSize: 10, color: "var(--text-muted)" }}>👥 כולם</span>
+            )}
+          </div>
         </div>
       ))}
       {list.length < 2 && (
@@ -168,6 +211,46 @@ function SceneCard({ scene, onChange, onSave, onDelete, saving }) {
         />
       </div>
       <CtaEditor ctas={scene.ctas} onChange={(ctas) => set({ ctas })} />
+
+      {/* Scene-level visibility — which guest types see this entire scene */}
+      {(() => {
+        const currentVis = Array.isArray(scene.visibility_settings) && scene.visibility_settings.length > 0
+          ? scene.visibility_settings
+          : ALL_ROOM_TYPES;
+        return (
+          <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
+            <label style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", display: "block", marginBottom: 6 }}>
+              נראות הסצנה — מי רואה את הסצנה הזו
+            </label>
+            <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+              {VISIBILITY_OPTIONS.map(({ value, label }) => {
+                const checked = currentVis.includes(value);
+                return (
+                  <label key={value} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, cursor: "pointer", whiteSpace: "nowrap", userSelect: "none" }}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      style={{ accentColor: "var(--gold)", width: 15, height: 15 }}
+                      onChange={() => {
+                        const next = checked
+                          ? currentVis.filter((v) => v !== value)
+                          : [...currentVis, value];
+                        if (next.length === 0) return;
+                        set({ visibility_settings: next });
+                      }}
+                    />
+                    {label}
+                  </label>
+                );
+              })}
+              {currentVis.length === ALL_ROOM_TYPES.length && (
+                <span style={{ fontSize: 10, color: "var(--text-muted)" }}>👥 כל סוגי האורחים</span>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
         <button onClick={() => onDelete(scene.id)} className="btn btn-ghost btn-sm" style={{ color: "#C0392B" }}>🗑 מחק סצנה</button>
         <button onClick={() => onSave(scene)} disabled={saving} className="btn btn-sm" style={{ background: "var(--gold)", fontWeight: 700 }}>
@@ -200,9 +283,17 @@ function ScenesTab({ showToast }) {
 
   async function saveScene(scene) {
     setSavingId(scene.id);
+    const visSettings = Array.isArray(scene.visibility_settings) && scene.visibility_settings.length > 0
+      ? scene.visibility_settings
+      : ALL_ROOM_TYPES;
     const { error } = await supabase.from("portal_scenes").update({
-      sort_order: scene.sort_order, image: scene.image, title: scene.title,
-      body: scene.body, ctas: scene.ctas, is_active: scene.is_active,
+      sort_order:          scene.sort_order,
+      image:               scene.image,
+      title:               scene.title,
+      body:                scene.body,
+      ctas:                scene.ctas,
+      is_active:           scene.is_active,
+      visibility_settings: visSettings,
     }).eq("id", scene.id);
     setSavingId(null);
     if (error) showToast("err", "שגיאה בשמירה: " + error.message);

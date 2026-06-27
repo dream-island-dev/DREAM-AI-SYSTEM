@@ -167,15 +167,23 @@ function Scene({ image, gradient, title, body, ctas, onUpsell, busyLabel, showSc
   );
 }
 
-export default function PhotoTour({ onUpsell, busyLabel }) {
-  // Starts with the static bundle as the initial paint (zero flash/loading
-  // spinner) — swapped for live DB content the moment it arrives, if it
-  // does. Never throws, never leaves the page blank: any failure (no
-  // Supabase, network error, empty table) just means this stays on the
-  // static fallback already on screen.
-  const [scenes, setScenes] = useState(STATIC_PORTAL_SCENES);
+export default function PhotoTour({ onUpsell, busyLabel, scenes: scenesProp, upsellBusy }) {
+  // Two rendering paths:
+  //   1. scenesProp provided (from guest-portal-data, pre-filtered by room_type) →
+  //      use directly, no DB fetch. This is the live portal path.
+  //   2. scenesProp not provided (staff preview, legacy callers) →
+  //      fetch from portal_scenes directly as before. Falls back to static
+  //      PORTAL_SCENES if DB unreachable (never a blank portal).
+  const [scenes, setScenes] = useState(
+    scenesProp && scenesProp.length > 0 ? scenesProp : STATIC_PORTAL_SCENES
+  );
 
   useEffect(() => {
+    // Skip DB fetch entirely when the caller supplies pre-filtered scenes.
+    if (scenesProp && scenesProp.length > 0) {
+      setScenes(scenesProp);
+      return;
+    }
     let active = true;
     (async () => {
       if (!isSupabaseConfigured || !supabase) return;
@@ -194,7 +202,7 @@ export default function PhotoTour({ onUpsell, busyLabel }) {
       }
     })();
     return () => { active = false; };
-  }, []);
+  }, [scenesProp]);
 
   return (
     <div style={{ background: XOS_BLACK }}>
