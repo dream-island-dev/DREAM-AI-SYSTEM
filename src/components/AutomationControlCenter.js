@@ -70,13 +70,16 @@ function scriptKeyFriendly(key) {
 // manager. FAIL VISIBLE fallback: an unmapped template shows "⚠ raw_name"
 // rather than disappearing, same convention as STATUS_META in GuestsPage.js.
 const META_TEMPLATE_FRIENDLY = {
-  dream_arrival_confirmation: "פנייה ראשונה — בקשת אישור הגעה (יומיים לפני ההגעה)",
-  dream_checkin_reminder_v2:  "תזכורת ערב לפני ההגעה",
-  dream_welcome_morning:      "ברכת בוקר ביום ההגעה",
-  dream_room_ready:           "מסירת מפתח — החדר מוכן (אישור מנהל)",
-  dream_mid_stay_check:       "בדיקת שלום באמצע השהות",
-  dream_checkout_feedback:    "בקשת משוב לאחר העזיבה",
-  dream_payment_and_workshops: "תשלום יתרה + הרשמה לסדנאות",
+  dream_arrival_confirmation:    "פנייה ראשונה — בקשת אישור הגעה (יומיים לפני ההגעה)",
+  dream_checkin_reminder_v2:     "תזכורת ערב לפני ההגעה",
+  dream_welcome_morning:         "ברכת בוקר ביום ההגעה",
+  dream_room_ready:              "מסירת מפתח — החדר מוכן (אישור מנהל)",
+  dream_mid_stay_check:          "בדיקת שלום באמצע השהות",
+  dream_checkout_feedback:       "בקשת משוב לאחר העזיבה",
+  dream_payment_and_workshops:   "תשלום יתרה + הרשמה לסדנאות",
+  dream_suite_reminder:          "תזכורת סוויטה — IMAGE header",
+  night_before_suites:           "ערב לפני — סוויטות (יום חול)",
+  night_before_suites_shabbat:   "ערב לפני — סוויטות (שבת/חג)",
 };
 function metaTemplateFriendly(name) {
   return META_TEMPLATE_FRIENDLY[name] ?? `⚠ ${name}`;
@@ -107,6 +110,35 @@ const SAMPLE_VALUES = {
   ENTRY_TIME: "12:00 (יום חול — דוגמה)",
   CHECK_IN_TIME: "15:00 (יום חול — דוגמה)",
 };
+
+// Stage keys whose Meta template uses positional time-slot variables:
+//   {{1}} = guest name · {{2}} = entry time · {{3}} = check-in time
+// Matches whatsapp-send's PIPELINE_VARS entries for these three triggers
+// (session 56 — resolveDayTimings() was added to populate {{2}}/{{3}}).
+const ARRIVAL_TIME_STAGE_KEYS = new Set(["night_before", "morning_suite", "morning_welcome"]);
+
+// Compute Shabbat-aware {entryTime, checkInTime} from a DATE string.
+// Parses as UTC midnight — prevents the local-timezone GMT-shift that would
+// cause a Saturday date (stored as DATE in Postgres) to read as Friday in
+// UTC-negative zones. Mirrors whatsapp-send's resolveDayTimings() exactly:
+//   getUTCDay() === 6 (Saturday) → 15:00 / 18:00
+//   getUTCDay() 0–5  (Sun–Fri)  → 12:00 / 15:00
+// When no dateStr is supplied, falls back to the wall-clock day so the
+// preview is still useful without forcing the admin to pick a date first.
+function resolvePreviewTimings(dateStr) {
+  let isShabbat;
+  if (dateStr) {
+    const d = new Date(dateStr + "T00:00:00Z");
+    isShabbat = d.getUTCDay() === 6;
+  } else {
+    isShabbat = new Date().getDay() === 6;
+  }
+  return {
+    entryTime:   isShabbat ? "15:00" : "12:00",
+    checkInTime: isShabbat ? "18:00" : "15:00",
+    isShabbat,
+  };
+}
 function resolveSampleText(template) {
   if (!template) return "";
   const sampleSpaTime = "14:00";
@@ -178,7 +210,15 @@ function ButtonChipsPreview({ buttons }) {
 // Read-only Meta template body preview — same visual pattern as
 // TemplateManagerPanel.js's template list, reused via the shared STATUS_META
 // import rather than forking a second badge-color definition.
-function MetaTemplatePreviewBox({ stage, metaTemplatesByName }) {
+//
+// previewTimings (optional) — when supplied by StageCard's auto-fill handler,
+// resolves Meta positional variables in the displayed body:
+//   {{1}} → SAMPLE_VALUES.GUEST_NAME (always)
+//   {{2}} → previewTimings.entryTime  (arrival stages: 12:00 / 15:00 Shabbat)
+//   {{3}} → previewTimings.checkInTime (arrival stages: 15:00 / 18:00 Shabbat)
+// Without previewTimings the raw body text (with {{n}} tokens) is shown so the
+// admin can see what the template actually contains before choosing to fill it.
+function MetaTemplatePreviewBox({ stage, metaTemplatesByName, previewTimings }) {
   const tmpl = metaTemplatesByName[stage.meta_template_name];
   if (!tmpl) {
     return (
@@ -189,6 +229,21 @@ function MetaTemplatePreviewBox({ stage, metaTemplatesByName }) {
   }
   const st = STATUS_META[tmpl.status] ?? STATUS_META.PENDING;
   const isApproved = tmpl.status === "APPROVED";
+
+  // Resolve {{1}}/{{2}}/{{3}} only when the admin has clicked "Auto-fill".
+  // {{1}} is always guest name; {{2}}/{{3}} are time slots — correct mapping
+  // per whatsapp-send's PIPELINE_VARS (session 56). Previous wrong mapping
+  // (Room → {{2}}, Date → {{3}}) is eliminated by never substituting those.
+  const resolveMetaBodyPreview = (text) => {
+    if (!text || !previewTimings) return text;
+    return text
+      .replace(/\{\{1\}\}/g, SAMPLE_VALUES.GUEST_NAME)
+      .replace(/\{\{2\}\}/g, previewTimings.entryTime)
+      .replace(/\{\{3\}\}/g, previewTimings.checkInTime);
+  };
+
+  const displayBody = previewTimings ? resolveMetaBodyPreview(tmpl.bodyText) : tmpl.bodyText;
+
   return (
     <div style={{ marginTop: 8 }}>
       <span style={{
@@ -206,7 +261,7 @@ function MetaTemplatePreviewBox({ stage, metaTemplatesByName }) {
           direction: tmpl.language === "he" || tmpl.language === "ar" ? "rtl" : "ltr",
           textAlign: tmpl.language === "he" || tmpl.language === "ar" ? "right" : "left",
         }}>
-          {tmpl.bodyText}
+          {displayBody}
         </div>
       )}
       {tmpl.buttons?.length > 0 && (
@@ -246,6 +301,21 @@ function StageCard({
   // that row, not in bot_scripts) — reuses patchStage, no new save helper.
   const [draftImageUrl, setDraftImageUrl] = useState(stage.session_message_image_url ?? "");
   useEffect(() => { setDraftImageUrl(stage.session_message_image_url ?? ""); }, [stage.session_message_image_url]);
+
+  // Auto-fill state for arrival-stage Meta templates that carry time-slot
+  // variables {{2}}/{{3}}.  Scoped to this card instance so sibling expanded
+  // cards never interfere.  Starts null (no fill) so the raw {{n}} tokens are
+  // visible by default — admin opts in by clicking "✨ מלא אוטומטית".
+  const isArrivalTimeStage = ARRIVAL_TIME_STAGE_KEYS.has(stage.stage_key);
+  const [previewFillDate, setPreviewFillDate] = useState("");
+  const [previewTimings, setPreviewTimings] = useState(null);
+
+  const handleAutoFill = () => {
+    const dateStr = previewFillDate || new Date().toISOString().split("T")[0];
+    // Ensure input reflects the defaulted date so the UI is never out of sync
+    if (!previewFillDate) setPreviewFillDate(dateStr);
+    setPreviewTimings(resolvePreviewTimings(dateStr));
+  };
 
   return (
     <div className="card" style={{ marginBottom: 12, opacity: stage.is_active ? 1 : 0.6, border: isOpen ? "1px solid var(--gold)" : undefined }}>
@@ -366,18 +436,116 @@ function StageCard({
             </div>
           )}
 
-          {/* ── Meta template (read-only — edited in Meta Business Manager / Templates tab) ── */}
-          {stage.meta_template_name && (
-            <div className="form-field" style={{ marginBottom: 0 }}>
-              <label>🔵 תבנית Meta (Fallback)</label>
-              <div style={{ fontSize: 13 }}>{metaTemplateFriendly(stage.meta_template_name)}</div>
-              <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+          {/* ── Meta template selector — editable dropdown, saves to automation_stages.meta_template_name ── */}
+          {/* The 24h-window override happens in whatsapp-send (BRANCH D): if the guest's             */}
+          {/* wa_window_expires_at is still open, a session_message is sent instead of this template. */}
+          {/* This dropdown controls only the Meta-template fallback path (window closed / hybrid).   */}
+          <div className="form-field" style={{ marginBottom: 0 }}>
+            <label>🔵 תבנית Meta (Fallback)</label>
+            {(() => {
+              // Build option list: all templates from the live Meta fetch.
+              // Non-approved templates are kept so the current selection always
+              // appears in the list (FAIL VISIBLE — no silent disappearance).
+              const allOptions = Object.values(metaTemplatesByName).map((t) => ({
+                name: t.name,
+                approved: t.status === "APPROVED",
+              }));
+              // If the current value isn't in the live list (e.g. newly registered
+              // but not yet fetched), keep it visible as a PENDING fallback row.
+              const currentInList = allOptions.some((o) => o.name === stage.meta_template_name);
+              if (stage.meta_template_name && !currentInList) {
+                allOptions.push({ name: stage.meta_template_name, approved: false });
+              }
+              allOptions.sort((a, b) => (b.approved ? 1 : 0) - (a.approved ? 1 : 0) || a.name.localeCompare(b.name));
+              return (
+                <select
+                  value={stage.meta_template_name ?? ""}
+                  onChange={(e) => patchStage(stage, { meta_template_name: e.target.value || null })}
+                  style={{ marginBottom: 6 }}
+                >
+                  <option value="">— ללא תבנית Meta —</option>
+                  {allOptions.map((o) => (
+                    <option key={o.name} value={o.name}>
+                      {o.approved ? "✅" : "⏳"} {metaTemplateFriendly(o.name)}
+                      {" — "}{o.name}
+                    </option>
+                  ))}
+                </select>
+              );
+            })()}
+            {stage.meta_template_name && (
+              <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
                 טכני: <code style={{ background: "#F3F4F6", padding: "2px 6px", borderRadius: 4 }}>{stage.meta_template_name}</code>
-                {" — ראה/ערוך בלשונית \"📋 תבניות Meta\""}
+                {" — "}ערוך תוכן בלשונית &quot;📋 תבניות Meta&quot;
               </div>
-              <MetaTemplatePreviewBox stage={stage} metaTemplatesByName={metaTemplatesByName} />
-            </div>
-          )}
+            )}
+            {/* Auto-fill panel — arrival stages only (night_before / morning_suite /
+                morning_welcome).  Correct slot mapping per session 56:
+                  {{1}} = Guest Name (always)
+                  {{2}} = Entry time   — 12:00 Sun–Fri · 15:00 Shabbat
+                  {{3}} = Check-in time — 15:00 Sun–Fri · 18:00 Shabbat
+                Wrong mapping (Room → {{2}}, Date → {{3}}) is prevented by
+                resolvePreviewTimings() which never substitutes those fields. */}
+            {stage.meta_template_name && isArrivalTimeStage && (
+              <div style={{
+                marginTop: 10, padding: "10px 14px",
+                background: "rgba(201,169,110,0.08)", borderRadius: 8,
+                border: "1px solid var(--gold)",
+              }}>
+                <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>
+                  ✨ מילוי אוטומטי — {"{{2}}"} / {"{{3}}"} (שעות כניסה / צ׳ק-אין)
+                </div>
+                <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                  <label style={{ fontSize: 12, margin: 0, color: "var(--text-muted)", flexShrink: 0 }}>
+                    תאריך הגעה לדוגמה:
+                  </label>
+                  <input
+                    type="date"
+                    value={previewFillDate}
+                    onChange={(e) => {
+                      const d = e.target.value;
+                      setPreviewFillDate(d);
+                      if (d) setPreviewTimings(resolvePreviewTimings(d));
+                    }}
+                    style={{ fontSize: 12, padding: "4px 8px" }}
+                  />
+                  <button className="btn btn-ghost btn-sm" onClick={handleAutoFill}>
+                    ✨ מלא אוטומטית
+                  </button>
+                  {previewTimings && (
+                    <>
+                      <span style={{
+                        fontSize: 12, fontWeight: 600,
+                        color:      previewTimings.isShabbat ? "#7C3AED" : "#1A7A4A",
+                        background: previewTimings.isShabbat ? "#F3F0FF" : "#E8F5EF",
+                        padding: "3px 10px", borderRadius: 12,
+                      }}>
+                        {previewTimings.isShabbat ? "🕍 שבת" : "📅 יום חול"}
+                        {" — "}{"{{1}}"}: {SAMPLE_VALUES.GUEST_NAME}
+                        {" · "}{"{{2}}"}: {previewTimings.entryTime}
+                        {" · "}{"{{3}}"}: {previewTimings.checkInTime}
+                      </span>
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        style={{ color: "var(--text-muted)" }}
+                        onClick={() => { setPreviewTimings(null); setPreviewFillDate(""); }}
+                      >
+                        ✕ נקה
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {stage.meta_template_name && (
+              <MetaTemplatePreviewBox
+                stage={stage}
+                metaTemplatesByName={metaTemplatesByName}
+                previewTimings={previewTimings}
+              />
+            )}
+          </div>
 
           {/* ── Interactive buttons (session-message side only) ── */}
           {stage.node_type !== "meta_template" && (
@@ -629,6 +797,8 @@ export default function AutomationControlCenter() {
   const [queueData, setQueueData] = useState(null);
   const [loadingQueue, setLoadingQueue] = useState(false);
   const [queueError, setQueueError] = useState(null);
+  const [attentionOpen, setAttentionOpen] = useState(false);
+  const [dismissedAttentionKeys, setDismissedAttentionKeys] = useState(new Set());
 
   const showToast = useCallback((type, msg) => {
     setToast({ type, msg });
@@ -692,6 +862,10 @@ export default function AutomationControlCenter() {
   }, []);
 
   useEffect(() => { if (subTab === "queue") fetchQueue(); }, [subTab, fetchQueue]);
+
+  useEffect(() => {
+    if (queueData && queueData.attentionRequired.length > 0) setAttentionOpen(true);
+  }, [queueData]);
 
   // ── Execution history ("מה נשלח") ────────────────────────────────────────
   const [historyData, setHistoryData] = useState(null);
@@ -783,6 +957,10 @@ export default function AutomationControlCenter() {
           .actr-card-header { flex-wrap: wrap; }
         }
         .actr-touch-btn { min-height: 40px; padding: 10px 16px; }
+        .actr-scroll::-webkit-scrollbar { width: 6px; }
+        .actr-scroll::-webkit-scrollbar-track { background: var(--ivory); border-radius: 3px; }
+        .actr-scroll::-webkit-scrollbar-thumb { background: var(--gold); border-radius: 3px; }
+        .actr-scroll::-webkit-scrollbar-thumb:hover { background: var(--gold-dark); }
       `}</style>
       {toast && (
         <div style={{
@@ -884,29 +1062,75 @@ export default function AutomationControlCenter() {
                 )}
               </div>
 
-              {/* ── Attention required ── */}
-              <div className="card" style={{ marginBottom: 16 }}>
-                <div className="card-header"><div className="card-title">⚠ דורש טיפול ({queueData.attentionRequired.length})</div></div>
-                {queueData.attentionRequired.length === 0 ? (
-                  <div style={{ padding: 24, textAlign: "center", color: "var(--text-muted)", fontSize: 13 }}>אין כשלים ב-7 הימים האחרונים 🎉</div>
-                ) : (
-                  <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
-                    <table className="table" style={{ minWidth: 480 }}>
-                      <thead><tr><th>אורח</th><th>שלב</th><th>סטטוס</th><th>זמן</th></tr></thead>
-                      <tbody>
-                        {queueData.attentionRequired.map((r, i) => (
-                          <tr key={i}>
-                            <td>{r.guestName ?? r.phone ?? "—"}</td>
-                            <td>{stageDisplayNames[r.stageKey] ?? `⚠ ${r.stageKey}`}</td>
-                            <td><span className="badge badge-red">{r.status === "timeout" ? "לא ודאי" : "נכשל"}</span></td>
-                            <td style={{ fontSize: 12 }}>{r.sentAt ? new Date(r.sentAt).toLocaleString("he-IL") : "—"}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+              {/* ── Attention required (accordion, top-5, clear-all) ── */}
+              {(() => {
+                const visibleAttention = queueData.attentionRequired
+                  .filter((r) => !dismissedAttentionKeys.has(`${r.phone}_${r.stageKey}_${r.sentAt}`))
+                  .sort((a, b) => new Date(b.sentAt || 0) - new Date(a.sentAt || 0))
+                  .slice(0, 5);
+                const totalActive = queueData.attentionRequired.filter(
+                  (r) => !dismissedAttentionKeys.has(`${r.phone}_${r.stageKey}_${r.sentAt}`)
+                ).length;
+                const hasCritical = visibleAttention.length > 0;
+                const dismissAll = (e) => {
+                  e.stopPropagation();
+                  const keys = new Set(dismissedAttentionKeys);
+                  queueData.attentionRequired.forEach((r) => keys.add(`${r.phone}_${r.stageKey}_${r.sentAt}`));
+                  setDismissedAttentionKeys(keys);
+                  setAttentionOpen(false);
+                };
+                return (
+                  <div className="card" style={{ marginBottom: 16, border: hasCritical && attentionOpen ? "1px solid #C0392B" : undefined }}>
+                    <div
+                      className="card-header"
+                      style={{ cursor: "pointer", userSelect: "none" }}
+                      onClick={() => setAttentionOpen((o) => !o)}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", gap: 12 }}>
+                        <div className="card-title" style={{ color: hasCritical ? "#C0392B" : "#1A7A4A", display: "flex", alignItems: "center", gap: 8 }}>
+                          <span style={{ fontSize: 11, display: "inline-block", transform: attentionOpen ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.2s" }}>▶</span>
+                          {hasCritical ? "🔴" : "✅"} דורש טיפול
+                          <span style={{ fontSize: 12, fontWeight: 500, color: "var(--text-muted)" }}>
+                            ({hasCritical ? `${visibleAttention.length}${totalActive > 5 ? ` מוצגים מתוך ${totalActive}` : ""}` : "0"})
+                          </span>
+                        </div>
+                        {hasCritical && (
+                          <button
+                            className="btn btn-ghost btn-sm"
+                            style={{ color: "#C0392B", fontSize: 12, whiteSpace: "nowrap", flexShrink: 0 }}
+                            onClick={dismissAll}
+                          >
+                            ✕ ניקוי וסגירת הכל
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    {attentionOpen && (
+                      hasCritical ? (
+                        <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+                          <div className="actr-scroll" style={{ maxHeight: 260, overflowY: "auto" }}>
+                            <table className="table" style={{ minWidth: 480 }}>
+                              <thead><tr><th>אורח</th><th>שלב</th><th>סטטוס</th><th>זמן</th></tr></thead>
+                              <tbody>
+                                {visibleAttention.map((r, i) => (
+                                  <tr key={i}>
+                                    <td>{r.guestName ?? r.phone ?? "—"}</td>
+                                    <td>{stageDisplayNames[r.stageKey] ?? `⚠ ${r.stageKey}`}</td>
+                                    <td><span className="badge badge-red">{r.status === "timeout" ? "לא ודאי" : "נכשל"}</span></td>
+                                    <td style={{ fontSize: 12 }}>{r.sentAt ? new Date(r.sentAt).toLocaleString("he-IL") : "—"}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      ) : (
+                        <div style={{ padding: 24, textAlign: "center", color: "var(--text-muted)", fontSize: 13 }}>אין כשלים ב-7 הימים האחרונים 🎉</div>
+                      )
+                    )}
                   </div>
-                )}
-              </div>
+                );
+              })()}
 
               {/* ── Upcoming queue ── */}
               <div className="card">
