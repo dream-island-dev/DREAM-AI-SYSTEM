@@ -116,6 +116,7 @@ serve(async (req: Request) => {
           guestId: guest.id,
           guestName: (guest as Record<string, unknown>).name ?? null,
           room: (guest as Record<string, unknown>).room ?? null,
+          room_type: (guest as Record<string, unknown>).room_type ?? null,
           stageKey: stage.stage_key,
           displayName: stage.display_name,
           journeyPhase: stage.journey_phase,

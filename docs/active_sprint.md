@@ -82,11 +82,12 @@ Worst offenders: `BroadcastDashboard.js` (~63), `ArrivalImportPanel.js` (~44), `
 
 ---
 
-## ✅ Completed This Cycle (Sessions 52–56)
+## ✅ Completed This Cycle (Sessions 52–57)
 
 | Session | Work |
 |---|---|
-| 57 | Fully deterministic template routing: `morning_suite`/`morning_welcome` fast-path (Shabbat→`dream_welcome_morning_shabbat`, weekday→`dream_welcome_morning`), {{2}}/{{3}} removed, safety fallback. AutomationControlCenter auto-fill panel replaced with routing info panel. `whatsapp-send` deployed. |
+| 57 | **XOS Command Center Overhaul.** (1) `automation-queue` now emits `room_type` per queue item. (2) `whatsapp-send` BRANCH D: Day Pass Safety Gate — `room_type='day_guest'` + trigger ∉ `{pre_arrival_2d, checkout_fb}` → `{ ok:false, reason:"day_pass_stage_gate" }`, logged, never silently skipped. (3) `AutomationControlCenter.js` Queue tab: inner segment tabs [🏨 סוויטות / ☀️ יום-כיף], checkbox column + Select All header, sticky action bar, `handleBulkDispatch()` loop using exact same `whatsapp-send` call as cron (300ms throttle, idempotency + gate respected server-side), `DispatchSummaryModal` (sent/skipped/blocked/failed). `npm run build` clean; both Edge Functions deployed. |
+| 56 (prev) | Fully deterministic template routing: `morning_suite`/`morning_welcome` fast-path (Shabbat→`dream_welcome_morning_shabbat`, weekday→`dream_welcome_morning`), {{2}}/{{3}} removed, safety fallback. AutomationControlCenter auto-fill panel replaced with routing info panel. `whatsapp-send` deployed. |
 | 52 | `RESORT_UI_MANIFEST.md` created; 7 automated repair patches: 6× Fail Visible fixes (AdminPanel, WhatsAppInbox, AutomationControlCenter, InventoryImportPanel) + 3× tablet layout fixes (RoomBoard, HousekeepingTabletView, AICopilot) |
 | 53 | Real-time Meta template sync buttons added to WhatsAppInbox + BroadcastDashboard; `get-wa-templates` pagination bug fixed (templates now fetched across all pages, status filter moved server-side) |
 | 54 | `voucher_numbers_match()` bugfix (migration 092) — separator stripping before truncate_4; 8 inline self-tests in migration + 5-scenario E2E test SQL (`supabase/tests/`) |

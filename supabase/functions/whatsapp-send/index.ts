@@ -749,6 +749,32 @@ serve(async (req: Request) => {
     if (gErr)   throw new Error(`guest_lookup_error: ${gErr.message}`);
     if (!guest) throw new Error(`guest_not_found: no guest row for id=${JSON.stringify(guestId)}`);
 
+    // ── Day Pass Safety Gate ─────────────────────────────────────────────────
+    // Day Pass guests (room_type='day_guest') are entitled to Stage 1
+    // (pre_arrival_2d — arrival confirmation) and Stage 5 (checkout_fb —
+    // post-stay feedback) ONLY. Suite-specific stages (night_before, morning_*,
+    // mid_stay, room_ready) are blocked here as a server-side authoritative
+    // guard. The UI enforces the same rule for UX clarity but this is the
+    // canonical enforcement point (CLAUDE.md §0.1 Zero Data Loss — a day-pass
+    // guest must never silently receive a suite welcome or mid-stay message
+    // that references spa/suite amenities they don't have).
+    const DAY_PASS_ALLOWED_TRIGGERS = new Set(["pre_arrival_2d", "checkout_fb"]);
+    if (guest.room_type === "day_guest" && !DAY_PASS_ALLOWED_TRIGGERS.has(trigger)) {
+      console.warn(
+        `[whatsapp-send] day_pass_stage_gate: trigger="${trigger}" blocked for ` +
+        `guest_id=${guestId} (room_type=day_guest) — allowed: pre_arrival_2d, checkout_fb`,
+      );
+      return new Response(
+        JSON.stringify({
+          ok: false,
+          status: "blocked",
+          reason: "day_pass_stage_gate",
+          error: `שלב "${trigger}" אינו מורשה לאורחי יום-כיף — מותרים: אישור הגעה ומשוב בלבד`,
+        }),
+        { headers: { ...CORS, "Content-Type": "application/json" } },
+      );
+    }
+
     const tmplName = stageRow?.meta_template_name ?? PIPELINE_TEMPLATE[trigger];
     const flagColumn = stageRow?.guest_flag_column ?? GUEST_FLAG[trigger];
 

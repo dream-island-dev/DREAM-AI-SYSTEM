@@ -742,6 +742,12 @@ export default function AutomationControlCenter() {
   const [attentionOpen, setAttentionOpen] = useState(false);
   const [dismissedAttentionKeys, setDismissedAttentionKeys] = useState(new Set());
 
+  // ── Segment tabs + bulk dispatch ─────────────────────────────────────────
+  const [queueSegment, setQueueSegment] = useState("suite");   // "suite" | "daypass"
+  const [selectedItems, setSelectedItems] = useState(new Set());
+  const [dispatching, setDispatching] = useState(false);
+  const [dispatchSummary, setDispatchSummary] = useState(null);
+
   const showToast = useCallback((type, msg) => {
     setToast({ type, msg });
     setTimeout(() => setToast(null), 4000);
@@ -879,6 +885,62 @@ export default function AutomationControlCenter() {
     setSubTab("templates");
   };
 
+  // ── Day Pass stage whitelist — mirrors whatsapp-send's server-side gate ────
+  // Must stay in sync with DAY_PASS_ALLOWED_TRIGGERS in whatsapp-send/index.ts.
+  // Keeping this as a module-level const would hide the dependency; keeping it
+  // here makes the pairing with handleBulkDispatch obvious at review time.
+  const DAY_PASS_ALLOWED_STAGES = new Set(["pre_arrival_2d", "checkout_fb"]);
+
+  // ── Bulk dispatch — same call as whatsapp-cron uses ──────────────────────
+  const handleBulkDispatch = async (displayQueue) => {
+    if (!isSupabaseConfigured || !supabase) return;
+    setDispatching(true);
+    const results = [];
+
+    for (const itemKey of selectedItems) {
+      const item = displayQueue.find((q) => `${q.guestId}_${q.stageKey}` === itemKey);
+      if (!item) continue;
+
+      // Client-side Safety Gate — matches server guard in whatsapp-send BRANCH D.
+      if (item.room_type === "day_guest" && !DAY_PASS_ALLOWED_STAGES.has(item.stageKey)) {
+        results.push({ item, result: "blocked", reason: "day_pass_stage_gate" });
+        continue;
+      }
+
+      try {
+        const { data, error } = await supabase.functions.invoke("whatsapp-send", {
+          body: { trigger: item.stageKey, guestId: item.guestId },
+        });
+        if (error) {
+          results.push({ item, result: "error", error: error.message });
+        } else if (data?.skipped) {
+          results.push({ item, result: "skipped", reason: data.reason });
+        } else if (data?.ok) {
+          results.push({ item, result: "sent", simulation: data.simulation });
+        } else {
+          results.push({ item, result: "failed", error: data?.error ?? "unknown" });
+        }
+      } catch (e) {
+        results.push({ item, result: "error", error: e?.message ?? String(e) });
+      }
+
+      // 300ms throttle between sends — Meta rate-limit safety.
+      await new Promise((r) => setTimeout(r, 300));
+    }
+
+    setDispatching(false);
+    setSelectedItems(new Set());
+    setDispatchSummary({
+      total:   results.length,
+      sent:    results.filter((r) => r.result === "sent").length,
+      skipped: results.filter((r) => r.result === "skipped").length,
+      blocked: results.filter((r) => r.result === "blocked").length,
+      failed:  results.filter((r) => r.result === "failed" || r.result === "error").length,
+      details: results,
+    });
+    fetchQueue();
+  };
+
   // stage_key → display_name, reused by the Queue tab so it never shows a
   // raw stage_key/trigger_type token to the manager.
   const stageDisplayNames = stages.reduce((acc, s) => {
@@ -973,145 +1035,351 @@ export default function AutomationControlCenter() {
         </div>
       )}
 
-      {subTab === "queue" && (
-        <div>
-          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
-            <button className="btn btn-ghost btn-sm" onClick={fetchQueue} disabled={loadingQueue}>
-              {loadingQueue ? "⏳" : "↺"} רענון
-            </button>
-          </div>
+      {subTab === "queue" && (() => {
+        // ── Segment filtering ─────────────────────────────────────────────
+        const allQueue    = queueData?.queue ?? [];
+        const suiteQueue  = allQueue.filter((q) => q.room_type !== "day_guest");
+        const dayPassQueue = allQueue.filter((q) => q.room_type === "day_guest");
+        const displayQueue = (queueSegment === "daypass" ? dayPassQueue : suiteQueue).slice(0, 100);
 
-          {queueError && (
-            <div style={{ background: "#FFF0EE", border: "1px solid #C0392B", borderRadius: 10, padding: "12px 16px", marginBottom: 16, fontSize: 13, color: "#C0392B" }}>
-              שגיאה בטעינת התור: {queueError}
-            </div>
-          )}
+        // An item is dispatchable if it hasn't been successfully sent yet
+        // and has a valid guestId to call whatsapp-send with.
+        const isDispatchable = (q) =>
+          q.guestId && !["sent", "simulated", "skipped"].includes(q.status);
 
-          {queueData && (
-            <>
-              {/* ── Pulse ── */}
-              <div className="card" style={{ marginBottom: 16, padding: "16px 20px" }}>
-                <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 10 }}>💓 פעימת חיים</div>
-                <div style={{ display: "flex", gap: 20, flexWrap: "wrap", fontSize: 13 }}>
-                  <span>{queueData.systemStatus.cronEnabled ? "🟢" : "🔴"} CRON_ENABLED (תזמון אוטומטי)</span>
-                  <span>{queueData.systemStatus.automationEnabled ? "🟢" : "🔴"} AUTOMATION_ENABLED (שליחה כללית)</span>
-                  <span>{queueData.systemStatus.simulation ? "🟡 סימולציה" : "🟢 שליחה אמיתית"}</span>
-                </div>
-                {(!queueData.systemStatus.cronEnabled || !queueData.systemStatus.automationEnabled) && (
-                  <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 8 }}>
-                    ⚠ אחד או יותר ממפסקי החיים כבוי — האוטומציה האוטומטית (cron) לא תשלח הודעות בפועל כרגע. זהו המצב המתועד הנוכחי, לא תקלה.
-                  </div>
-                )}
-              </div>
+        const allDispatchableKeys = displayQueue
+          .filter(isDispatchable)
+          .map((q) => `${q.guestId}_${q.stageKey}`);
+        const allSelected = allDispatchableKeys.length > 0 &&
+          allDispatchableKeys.every((k) => selectedItems.has(k));
 
-              {/* ── Attention required (accordion, top-5, clear-all) ── */}
-              {(() => {
-                const visibleAttention = queueData.attentionRequired
-                  .filter((r) => !dismissedAttentionKeys.has(`${r.phone}_${r.stageKey}_${r.sentAt}`))
-                  .sort((a, b) => new Date(b.sentAt || 0) - new Date(a.sentAt || 0))
-                  .slice(0, 5);
-                const totalActive = queueData.attentionRequired.filter(
-                  (r) => !dismissedAttentionKeys.has(`${r.phone}_${r.stageKey}_${r.sentAt}`)
-                ).length;
-                const hasCritical = visibleAttention.length > 0;
-                const dismissAll = (e) => {
-                  e.stopPropagation();
-                  const keys = new Set(dismissedAttentionKeys);
-                  queueData.attentionRequired.forEach((r) => keys.add(`${r.phone}_${r.stageKey}_${r.sentAt}`));
-                  setDismissedAttentionKeys(keys);
-                  setAttentionOpen(false);
-                };
-                return (
-                  <div className="card" style={{ marginBottom: 16, border: hasCritical && attentionOpen ? "1px solid #C0392B" : undefined }}>
-                    <div
-                      className="card-header"
-                      style={{ cursor: "pointer", userSelect: "none" }}
-                      onClick={() => setAttentionOpen((o) => !o)}
-                    >
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", gap: 12 }}>
-                        <div className="card-title" style={{ color: hasCritical ? "#C0392B" : "#1A7A4A", display: "flex", alignItems: "center", gap: 8 }}>
-                          <span style={{ fontSize: 11, display: "inline-block", transform: attentionOpen ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.2s" }}>▶</span>
-                          {hasCritical ? "🔴" : "✅"} דורש טיפול
-                          <span style={{ fontSize: 12, fontWeight: 500, color: "var(--text-muted)" }}>
-                            ({hasCritical ? `${visibleAttention.length}${totalActive > 5 ? ` מוצגים מתוך ${totalActive}` : ""}` : "0"})
-                          </span>
-                        </div>
-                        {hasCritical && (
-                          <button
-                            className="btn btn-ghost btn-sm"
-                            style={{ color: "#C0392B", fontSize: 12, whiteSpace: "nowrap", flexShrink: 0 }}
-                            onClick={dismissAll}
-                          >
-                            ✕ ניקוי וסגירת הכל
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                    {attentionOpen && (
-                      hasCritical ? (
-                        <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
-                          <div className="actr-scroll" style={{ maxHeight: 260, overflowY: "auto" }}>
-                            <table className="table" style={{ minWidth: 480 }}>
-                              <thead><tr><th>אורח</th><th>שלב</th><th>סטטוס</th><th>זמן</th></tr></thead>
-                              <tbody>
-                                {visibleAttention.map((r, i) => (
-                                  <tr key={i}>
-                                    <td>{r.guestName ?? r.phone ?? "—"}</td>
-                                    <td>{stageDisplayNames[r.stageKey] ?? `⚠ ${r.stageKey}`}</td>
-                                    <td><span className="badge badge-red">{r.status === "timeout" ? "לא ודאי" : "נכשל"}</span></td>
-                                    <td style={{ fontSize: 12 }}>{r.sentAt ? new Date(r.sentAt).toLocaleString("he-IL") : "—"}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                        </div>
-                      ) : (
-                        <div style={{ padding: 24, textAlign: "center", color: "var(--text-muted)", fontSize: 13 }}>אין כשלים ב-7 הימים האחרונים 🎉</div>
-                      )
+        const toggleAll = () => {
+          if (allSelected) {
+            setSelectedItems(new Set());
+          } else {
+            setSelectedItems(new Set(allDispatchableKeys));
+          }
+        };
+        const toggleItem = (key) => {
+          setSelectedItems((prev) => {
+            const next = new Set(prev);
+            if (next.has(key)) next.delete(key); else next.add(key);
+            return next;
+          });
+        };
+
+        return (
+          <div>
+            {/* ── Dispatch Summary Modal ── */}
+            {dispatchSummary && (
+              <div style={{
+                position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 10000,
+                display: "flex", alignItems: "center", justifyContent: "center",
+              }}>
+                <div style={{
+                  background: "#fff", borderRadius: 16, padding: "28px 32px",
+                  maxWidth: 480, width: "90%", direction: "rtl", boxShadow: "0 12px 48px rgba(0,0,0,0.2)",
+                }}>
+                  <div style={{ fontWeight: 800, fontSize: 18, marginBottom: 20 }}>📊 תוצאות שליחה</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 14 }}>
+                    <div>📨 סה"כ בוצעו: <strong>{dispatchSummary.total}</strong></div>
+                    {dispatchSummary.sent > 0 && (
+                      <div style={{ color: "#1A7A4A" }}>✅ נשלחו בהצלחה: <strong>{dispatchSummary.sent}</strong></div>
+                    )}
+                    {dispatchSummary.skipped > 0 && (
+                      <div style={{ color: "#92702C" }}>↩️ כבר נשלחו (דולגו): <strong>{dispatchSummary.skipped}</strong></div>
+                    )}
+                    {dispatchSummary.blocked > 0 && (
+                      <div style={{ color: "#7C3AED" }}>🔒 חסומות (שער Day Pass): <strong>{dispatchSummary.blocked}</strong></div>
+                    )}
+                    {dispatchSummary.failed > 0 && (
+                      <div style={{ color: "#C0392B" }}>❌ נכשלו: <strong>{dispatchSummary.failed}</strong></div>
                     )}
                   </div>
-                );
-              })()}
-
-              {/* ── Upcoming queue ── */}
-              <div className="card">
-                <div className="card-header"><div className="card-title">📋 בתור — מי / מה / מתי ({queueData.queue.length})</div></div>
-                {queueData.queue.length === 0 ? (
-                  <div style={{ padding: 24, textAlign: "center", color: "var(--text-muted)", fontSize: 13 }}>אין פריטים בתור כרגע</div>
-                ) : (
-                  <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
-                    <table className="table" style={{ minWidth: 640 }}>
-                      <thead><tr><th>אורח</th><th>חדר</th><th>שלב</th><th>מועד משוער</th><th>ערוץ צפוי</th><th>סטטוס</th></tr></thead>
-                      <tbody>
-                        {queueData.queue.slice(0, 100).map((q, i) => (
-                          <tr key={i} style={{ background: q.dueNow ? "rgba(201,169,110,0.08)" : undefined }}>
-                            <td style={{ fontWeight: 700 }}>{q.guestName ?? "—"}</td>
-                            <td>{q.room ?? "—"}</td>
-                            <td>{q.displayName}</td>
-                            <td style={{ fontSize: 12 }}>{q.scheduledFor ? new Date(q.scheduledFor).toLocaleString("he-IL") : "—"}</td>
-                            <td>
-                              <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 12, background: q.predictedChannel === "session_message" ? "#E8F5EF" : "#E0F2FE", color: q.predictedChannel === "session_message" ? "#1A7A4A" : "#0369A1" }}>
-                                {q.predictedChannel === "session_message" ? "סשן" : "תבנית"}
-                              </span>
-                            </td>
-                            <td>
-                              <span className={`badge ${q.status === "sent" || q.status === "simulated" ? "badge-green" : q.status === "failed" || q.status === "timeout" ? "badge-red" : q.dueNow ? "badge-gold" : "badge-blue"}`}>
-                                {q.dueNow ? "מוכן לשליחה" : q.status}
-                              </span>
-                              {q.skipReason && <div style={{ fontSize: 10, color: "var(--text-muted)" }}>{q.skipReason}</div>}
-                            </td>
-                          </tr>
+                  {dispatchSummary.failed > 0 && (
+                    <div style={{ marginTop: 16, maxHeight: 180, overflowY: "auto" }}>
+                      {dispatchSummary.details
+                        .filter((r) => r.result === "failed" || r.result === "error")
+                        .map((r, i) => (
+                          <div key={i} style={{ fontSize: 11, color: "#C0392B", padding: "4px 0", borderBottom: "1px solid var(--border)" }}>
+                            {r.item.guestName ?? r.item.guestId} — {r.item.displayName}: {r.error ?? r.reason}
+                          </div>
                         ))}
-                      </tbody>
-                    </table>
+                    </div>
+                  )}
+                  <button
+                    className="btn btn-primary"
+                    style={{ marginTop: 24, width: "100%" }}
+                    onClick={() => setDispatchSummary(null)}
+                  >
+                    סגור
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 8, flexWrap: "wrap" }}>
+              {/* ── Segment tabs ── */}
+              <div style={{ display: "flex", gap: 4, background: "var(--ivory)", borderRadius: 8, padding: 3 }}>
+                {[
+                  { key: "suite",   label: `🏨 סוויטות (${suiteQueue.length})` },
+                  { key: "daypass", label: `☀️ יום-כיף (${dayPassQueue.length})` },
+                ].map(({ key, label }) => (
+                  <button
+                    key={key}
+                    onClick={() => { setQueueSegment(key); setSelectedItems(new Set()); }}
+                    style={{
+                      background: queueSegment === key ? "#fff" : "transparent",
+                      border: "none", cursor: "pointer",
+                      padding: "6px 14px", borderRadius: 6, fontSize: 13,
+                      fontWeight: queueSegment === key ? 700 : 500,
+                      color: queueSegment === key ? "var(--gold-dark)" : "var(--text-muted)",
+                      boxShadow: queueSegment === key ? "0 1px 4px rgba(0,0,0,0.1)" : "none",
+                      transition: "all 0.15s",
+                    }}
+                  >{label}</button>
+                ))}
+              </div>
+              <button className="btn btn-ghost btn-sm" onClick={fetchQueue} disabled={loadingQueue}>
+                {loadingQueue ? "⏳" : "↺"} רענון
+              </button>
+            </div>
+
+            {queueSegment === "daypass" && (
+              <div style={{
+                background: "rgba(124,58,237,0.06)", border: "1px solid #C4B5FD",
+                borderRadius: 10, padding: "10px 14px", marginBottom: 12, fontSize: 12, color: "#7C3AED",
+              }}>
+                🔒 <strong>שער Day Pass פעיל</strong> — אורחי יום-כיף מקבלים אישור הגעה ומשוב בלבד.
+                שלבים אחרים (לילה לפני, בוקר, אמצע שהות) חסומים אוטומטית גם בממשק וגם בשרת.
+              </div>
+            )}
+
+            {queueError && (
+              <div style={{ background: "#FFF0EE", border: "1px solid #C0392B", borderRadius: 10, padding: "12px 16px", marginBottom: 16, fontSize: 13, color: "#C0392B" }}>
+                שגיאה בטעינת התור: {queueError}
+              </div>
+            )}
+
+            {queueData && (
+              <>
+                {/* ── Pulse ── */}
+                <div className="card" style={{ marginBottom: 16, padding: "16px 20px" }}>
+                  <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 10 }}>💓 פעימת חיים</div>
+                  <div style={{ display: "flex", gap: 20, flexWrap: "wrap", fontSize: 13 }}>
+                    <span>{queueData.systemStatus.cronEnabled ? "🟢" : "🔴"} CRON_ENABLED (תזמון אוטומטי)</span>
+                    <span>{queueData.systemStatus.automationEnabled ? "🟢" : "🔴"} AUTOMATION_ENABLED (שליחה כללית)</span>
+                    <span>{queueData.systemStatus.simulation ? "🟡 סימולציה" : "🟢 שליחה אמיתית"}</span>
                   </div>
+                  {(!queueData.systemStatus.cronEnabled || !queueData.systemStatus.automationEnabled) && (
+                    <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 8 }}>
+                      ⚠ אחד או יותר ממפסקי החיים כבוי — האוטומציה האוטומטית (cron) לא תשלח הודעות בפועל כרגע. זהו המצב המתועד הנוכחי, לא תקלה.
+                    </div>
+                  )}
+                </div>
+
+                {/* ── Attention required (accordion, top-5, clear-all) ── */}
+                {(() => {
+                  const visibleAttention = queueData.attentionRequired
+                    .filter((r) => !dismissedAttentionKeys.has(`${r.phone}_${r.stageKey}_${r.sentAt}`))
+                    .sort((a, b) => new Date(b.sentAt || 0) - new Date(a.sentAt || 0))
+                    .slice(0, 5);
+                  const totalActive = queueData.attentionRequired.filter(
+                    (r) => !dismissedAttentionKeys.has(`${r.phone}_${r.stageKey}_${r.sentAt}`)
+                  ).length;
+                  const hasCritical = visibleAttention.length > 0;
+                  const dismissAll = (e) => {
+                    e.stopPropagation();
+                    const keys = new Set(dismissedAttentionKeys);
+                    queueData.attentionRequired.forEach((r) => keys.add(`${r.phone}_${r.stageKey}_${r.sentAt}`));
+                    setDismissedAttentionKeys(keys);
+                    setAttentionOpen(false);
+                  };
+                  return (
+                    <div className="card" style={{ marginBottom: 16, border: hasCritical && attentionOpen ? "1px solid #C0392B" : undefined }}>
+                      <div
+                        className="card-header"
+                        style={{ cursor: "pointer", userSelect: "none" }}
+                        onClick={() => setAttentionOpen((o) => !o)}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", gap: 12 }}>
+                          <div className="card-title" style={{ color: hasCritical ? "#C0392B" : "#1A7A4A", display: "flex", alignItems: "center", gap: 8 }}>
+                            <span style={{ fontSize: 11, display: "inline-block", transform: attentionOpen ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.2s" }}>▶</span>
+                            {hasCritical ? "🔴" : "✅"} דורש טיפול
+                            <span style={{ fontSize: 12, fontWeight: 500, color: "var(--text-muted)" }}>
+                              ({hasCritical ? `${visibleAttention.length}${totalActive > 5 ? ` מוצגים מתוך ${totalActive}` : ""}` : "0"})
+                            </span>
+                          </div>
+                          {hasCritical && (
+                            <button
+                              className="btn btn-ghost btn-sm"
+                              style={{ color: "#C0392B", fontSize: 12, whiteSpace: "nowrap", flexShrink: 0 }}
+                              onClick={dismissAll}
+                            >
+                              ✕ ניקוי וסגירת הכל
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      {attentionOpen && (
+                        hasCritical ? (
+                          <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+                            <div className="actr-scroll" style={{ maxHeight: 260, overflowY: "auto" }}>
+                              <table className="table" style={{ minWidth: 480 }}>
+                                <thead><tr><th>אורח</th><th>שלב</th><th>סטטוס</th><th>זמן</th></tr></thead>
+                                <tbody>
+                                  {visibleAttention.map((r, i) => (
+                                    <tr key={i}>
+                                      <td>{r.guestName ?? r.phone ?? "—"}</td>
+                                      <td>{stageDisplayNames[r.stageKey] ?? `⚠ ${r.stageKey}`}</td>
+                                      <td><span className="badge badge-red">{r.status === "timeout" ? "לא ודאי" : "נכשל"}</span></td>
+                                      <td style={{ fontSize: 12 }}>{r.sentAt ? new Date(r.sentAt).toLocaleString("he-IL") : "—"}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        ) : (
+                          <div style={{ padding: 24, textAlign: "center", color: "var(--text-muted)", fontSize: 13 }}>אין כשלים ב-7 הימים האחרונים 🎉</div>
+                        )
+                      )}
+                    </div>
+                  );
+                })()}
+
+                {/* ── Upcoming queue with checkboxes ── */}
+                <div className="card">
+                  <div className="card-header">
+                    <div className="card-title">
+                      📋 בתור — {queueSegment === "daypass" ? "יום-כיף" : "סוויטות"} ({displayQueue.length})
+                    </div>
+                  </div>
+                  {displayQueue.length === 0 ? (
+                    <div style={{ padding: 24, textAlign: "center", color: "var(--text-muted)", fontSize: 13 }}>
+                      אין פריטים בתור עבור קטגוריה זו כרגע
+                    </div>
+                  ) : (
+                    <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+                      <table className="table" style={{ minWidth: 680 }}>
+                        <thead>
+                          <tr>
+                            <th style={{ width: 38, textAlign: "center" }}>
+                              <input
+                                type="checkbox"
+                                checked={allSelected}
+                                onChange={toggleAll}
+                                title="בחר הכל / בטל הכל"
+                                style={{ cursor: "pointer", width: 16, height: 16 }}
+                              />
+                            </th>
+                            <th>אורח</th>
+                            <th>חדר</th>
+                            <th>שלב</th>
+                            <th>מועד משוער</th>
+                            <th>ערוץ צפוי</th>
+                            <th>סטטוס</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {displayQueue.map((q, i) => {
+                            const itemKey = `${q.guestId}_${q.stageKey}`;
+                            const canDispatch = isDispatchable(q);
+                            const isGated = q.room_type === "day_guest" && !DAY_PASS_ALLOWED_STAGES.has(q.stageKey);
+                            const isChecked = selectedItems.has(itemKey);
+                            return (
+                              <tr
+                                key={i}
+                                style={{
+                                  background: isChecked
+                                    ? "rgba(201,169,110,0.12)"
+                                    : q.dueNow
+                                    ? "rgba(201,169,110,0.05)"
+                                    : undefined,
+                                }}
+                              >
+                                <td style={{ textAlign: "center" }}>
+                                  {canDispatch && !isGated ? (
+                                    <input
+                                      type="checkbox"
+                                      checked={isChecked}
+                                      onChange={() => toggleItem(itemKey)}
+                                      style={{ cursor: "pointer", width: 16, height: 16 }}
+                                    />
+                                  ) : (
+                                    <span
+                                      title={isGated ? "חסום — שלב זה אינו מורשה לאורחי יום-כיף" : "כבר נשלח / לא זמין לשליחה"}
+                                      style={{ fontSize: 14, color: "var(--text-muted)", cursor: "not-allowed" }}
+                                    >
+                                      {isGated ? "🔒" : "—"}
+                                    </span>
+                                  )}
+                                </td>
+                                <td style={{ fontWeight: 700 }}>{q.guestName ?? "—"}</td>
+                                <td>{q.room ?? "—"}</td>
+                                <td>{q.displayName}</td>
+                                <td style={{ fontSize: 12 }}>{q.scheduledFor ? new Date(q.scheduledFor).toLocaleString("he-IL") : "—"}</td>
+                                <td>
+                                  <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 12, background: q.predictedChannel === "session_message" ? "#E8F5EF" : "#E0F2FE", color: q.predictedChannel === "session_message" ? "#1A7A4A" : "#0369A1" }}>
+                                    {q.predictedChannel === "session_message" ? "סשן" : "תבנית"}
+                                  </span>
+                                </td>
+                                <td>
+                                  <span className={`badge ${q.status === "sent" || q.status === "simulated" ? "badge-green" : q.status === "failed" || q.status === "timeout" ? "badge-red" : q.dueNow ? "badge-gold" : "badge-blue"}`}>
+                                    {q.dueNow && q.status === "pending" ? "⚡ מוכן לשליחה" : q.status}
+                                  </span>
+                                  {q.skipReason && <div style={{ fontSize: 10, color: "var(--text-muted)" }}>{q.skipReason}</div>}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+
+            {/* ── Sticky Bulk Action Bar — visible when items are selected ── */}
+            {selectedItems.size > 0 && (
+              <div style={{
+                position: "sticky", bottom: 0, zIndex: 200,
+                background: "#fff",
+                borderTop: "2px solid var(--gold)",
+                padding: "12px 20px",
+                display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap",
+                boxShadow: "0 -4px 20px rgba(0,0,0,0.1)",
+                borderRadius: "12px 12px 0 0",
+              }}>
+                <span style={{ fontWeight: 700, fontSize: 14 }}>
+                  ✅ {selectedItems.size} נבחרו
+                </span>
+                <button
+                  className="btn btn-primary"
+                  onClick={() => handleBulkDispatch(displayQueue)}
+                  disabled={dispatching}
+                  style={{ minWidth: 180 }}
+                >
+                  {dispatching ? "⏳ שולח..." : "🚀 Approve & Dispatch"}
+                </button>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setSelectedItems(new Set())}
+                  disabled={dispatching}
+                >
+                  ✕ ביטול בחירה
+                </button>
+                {dispatching && (
+                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                    שולח הודעות בהפרש 300ms — אל תסגור את הדף
+                  </span>
                 )}
               </div>
-            </>
-          )}
-        </div>
-      )}
+            )}
+          </div>
+        );
+      })()}
 
       {subTab === "history" && (
         <div>
