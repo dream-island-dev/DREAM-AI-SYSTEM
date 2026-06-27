@@ -1266,6 +1266,13 @@ function _isAbortError(e: unknown): boolean {
 }
 
 // buttonUrlParam: if set, passes a dynamic URL suffix to button index 0
+// Templates with a Media Header (IMAGE) require a `header` component —
+// Meta error without it: "Format mismatch, expected IMAGE, received UNKNOWN".
+const _TEMPLATE_IMAGE_HEADERS: Record<string, string> = {
+  dream_suite_reminder: "https://tzalamnadlan.co.il/wp-content/uploads/2026/default-resort.jpg",
+  night_before_suites:  "https://tzalamnadlan.co.il/wp-content/uploads/2026/default-resort.jpg",
+};
+
 async function sendTemplate(
   to: string,
   templateName: string,
@@ -1278,6 +1285,10 @@ async function sendTemplate(
   if (!token || !phoneId) throw new Error("missing_meta_creds");
 
   const components: unknown[] = [];
+  const headerImageUrl = _TEMPLATE_IMAGE_HEADERS[templateName];
+  if (headerImageUrl) {
+    components.push({ type: "header", parameters: [{ type: "image", image: { link: headerImageUrl } }] });
+  }
   if (vars.length > 0) {
     components.push({ type: "body", parameters: vars.map((v) => ({ type: "text", text: v })) });
   }

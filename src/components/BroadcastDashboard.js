@@ -20,6 +20,26 @@ import TemplateManagerPanel from "./TemplateManagerPanel";
 // Friendly label suggestions for template variables {{1}}, {{2}}, …
 const VAR_LABELS = ["שם אורח", "מספר חדר", "תאריך הגעה", "סוג חדר", "שעת הגעה"];
 
+// Templates whose {{2}}/{{3}} body slots are check-in time windows, NOT
+// free-text fields. Selecting one of these activates automatic per-guest
+// time injection so managers never accidentally type "Room 14" into a slot
+// that Meta is expecting "12:00". Same Shabbat logic as the Edge Function.
+const TIME_AWARE_TEMPLATES = new Set([
+  "dream_suite_reminder",
+  "night_before_suites",
+  "dream_welcome_morning",
+]);
+
+// Mirrors resolveDayTimings() in whatsapp-send/index.ts — kept in sync manually.
+// Uses UTC midnight parsing of a YYYY-MM-DD date string (same convention).
+function resolveDayTimings(arrivalDateStr) {
+  if (!arrivalDateStr) return { entryTime: "12:00", checkInTime: "15:00" };
+  const d = new Date(`${arrivalDateStr}T00:00:00Z`);
+  return d.getUTCDay() === 6
+    ? { entryTime: "15:00", checkInTime: "18:00" }
+    : { entryTime: "12:00", checkInTime: "15:00" };
+}
+
 // ── Arrival-window options ───────────────────────────────────────────────────
 const ARRIVAL_WINDOWS = [
   { value: "today",    label: "היום" },
@@ -55,6 +75,7 @@ export default function BroadcastDashboard({ user }) {
   const [selectedTemplate, setSelectedTemplate] = useState(null); // { name, bodyText, varCount }
   const [templateVarValues,setTemplateVarValues]= useState([]);   // string[] for {{1}}, {{2}}…
   const [autoVarGuestName, setAutoVarGuestName] = useState(false); // {{1}} auto-filled with guest.name per-guest
+  const [autoVarArrivalTimes, setAutoVarArrivalTimes] = useState(false); // {{2}}/{{3}} auto-computed from arrival_date day-of-week
   // Template list/sync/create-form logic now lives in TemplateManagerPanel.js
   // (shared with the Automation Control Center) — see "templates" tab render below.
 
@@ -224,7 +245,11 @@ export default function BroadcastDashboard({ user }) {
     const tmpl = waTemplates.find((t) => t.name === name) ?? null;
     setSelectedTemplate(tmpl);
     setTemplateVarValues(tmpl ? Array(tmpl.varCount).fill("") : []);
-    setAutoVarGuestName(false);
+    // For time-aware templates all variables are auto-computed; for others the
+    // manager fills them in manually (original behavior preserved).
+    const isTimeAware = tmpl ? TIME_AWARE_TEMPLATES.has(tmpl.name) : false;
+    setAutoVarGuestName(isTimeAware); // {{1}} = guest name auto for time-aware templates
+    setAutoVarArrivalTimes(isTimeAware); // {{2}}/{{3}} = times auto for time-aware templates
   }
 
   // ── Arrival automation selection ─────────────────────────────────────────
@@ -232,6 +257,7 @@ export default function BroadcastDashboard({ user }) {
     setSelectedTemplate(tmpl);
     setTemplateVarValues(tmpl.varCount > 0 ? Array(tmpl.varCount).fill("") : []);
     setAutoVarGuestName(tmpl.varCount > 0); // {{1}} = guest name, injected per-guest in send loop
+    setAutoVarArrivalTimes(TIME_AWARE_TEMPLATES.has(tmpl.name)); // time slots if applicable
     setSendMode("template");
   }
 
@@ -241,8 +267,13 @@ export default function BroadcastDashboard({ user }) {
       if (!selectedTemplate) return showToast("err", "נא לבחור תבנית הודעה");
       if (selectedTemplate._dbOnly)
         return showToast("err", "התבנית עדיין ממתינה לאישור Meta — לא ניתן לשלוח עדיין");
-      const valsToCheck = autoVarGuestName ? templateVarValues.slice(1) : templateVarValues;
-      if (selectedTemplate.varCount > 0 && valsToCheck.some((v) => !v.trim()))
+      // Validate only slots that are NOT auto-filled (name or times).
+      const requiredVals = templateVarValues.filter((_, idx) => {
+        if (autoVarGuestName && idx === 0) return false;
+        if (autoVarArrivalTimes && (idx === 1 || idx === 2)) return false;
+        return true;
+      });
+      if (selectedTemplate.varCount > 0 && requiredVals.some((v) => !v.trim()))
         return showToast("err", "נא למלא את כל שדות המשתנים");
     } else {
       if (!freeTextMsg.trim()) return showToast("err", "נא להקליד הודעה");
@@ -265,9 +296,19 @@ export default function BroadcastDashboard({ user }) {
 
       const guest = sendableGuests[i];
       try {
+        // Build per-guest variable array: start from manual inputs, then
+        // override auto-filled slots so the right value reaches Meta.
+        let perGuestVars = autoVarGuestName
+          ? [(String(guest.name ?? "").trim()) || "אורח יקר", ...templateVarValues.slice(1)]
+          : [...templateVarValues];
+        if (autoVarArrivalTimes) {
+          const t = resolveDayTimings(guest.arrival_date);
+          if (perGuestVars.length >= 2) perGuestVars[1] = t.entryTime;
+          if (perGuestVars.length >= 3) perGuestVars[2] = t.checkInTime;
+        }
         const { data, error } = await supabase.functions.invoke("whatsapp-send", {
           body: sendMode === "template"
-            ? { trigger: "broadcast", guestId: guest.id, waTemplateName: selectedTemplate.name, templateVariables: autoVarGuestName ? [(String(guest.name ?? "").trim()) || "אורח יקר", ...templateVarValues.slice(1)] : templateVarValues }
+            ? { trigger: "broadcast", guestId: guest.id, waTemplateName: selectedTemplate.name, templateVariables: perGuestVars }
             : { trigger: "inbox_reply", phone: guest.phone, message: freeTextMsg },
         });
         if (error) throw new Error(data?.error ?? error.message ?? "edge_function_error");
@@ -305,7 +346,7 @@ export default function BroadcastDashboard({ user }) {
           (errorCount > 0 ? `, ${errorCount} נכשלו` : "")
       );
     }
-  }, [sendMode, selectedTemplate, templateVarValues, autoVarGuestName, freeTextMsg, sendableGuests, showToast]);
+  }, [sendMode, selectedTemplate, templateVarValues, autoVarGuestName, autoVarArrivalTimes, freeTextMsg, sendableGuests, showToast]);
 
   const handleCancel = () => { abortRef.current = true; };
 
@@ -358,9 +399,17 @@ export default function BroadcastDashboard({ user }) {
     if (!guest.phone) return showToast("err", `ל${guest.name} אין מספר טלפון`);
     setSendingOneId(guest.id);
     try {
+      let singleVars = autoVarGuestName
+        ? [(String(guest.name ?? "").trim()) || "אורח יקר", ...templateVarValues.slice(1)]
+        : [...templateVarValues];
+      if (autoVarArrivalTimes) {
+        const t = resolveDayTimings(guest.arrival_date);
+        if (singleVars.length >= 2) singleVars[1] = t.entryTime;
+        if (singleVars.length >= 3) singleVars[2] = t.checkInTime;
+      }
       const { data, error } = await supabase.functions.invoke("whatsapp-send", {
         body: sendMode === "template"
-          ? { trigger: "broadcast", guestId: guest.id, waTemplateName: selectedTemplate.name, templateVariables: autoVarGuestName ? [String(guest.name ?? ""), ...templateVarValues.slice(1)] : templateVarValues }
+          ? { trigger: "broadcast", guestId: guest.id, waTemplateName: selectedTemplate.name, templateVariables: singleVars }
           : { trigger: "inbox_reply", phone: guest.phone, message: freeTextMsg },
       });
       if (error) throw new Error(data?.error ?? error.message ?? "edge_function_error");
@@ -376,20 +425,23 @@ export default function BroadcastDashboard({ user }) {
     } finally {
       setSendingOneId(null);
     }
-  }, [sendMode, selectedTemplate, templateVarValues, autoVarGuestName, freeTextMsg, showToast]);
+  }, [sendMode, selectedTemplate, templateVarValues, autoVarGuestName, autoVarArrivalTimes, freeTextMsg, showToast]);
 
   // ── Render ────────────────────────────────────────────────────────────────
   const pct = progress
     ? Math.round((progress.current / Math.max(progress.total, 1)) * 100)
     : 0;
 
+  const allManualVarsFilled = !selectedTemplate || selectedTemplate.varCount === 0
+    || templateVarValues.every((v, idx) => {
+        if (autoVarGuestName && idx === 0) return true;
+        if (autoVarArrivalTimes && (idx === 1 || idx === 2)) return true;
+        return v.trim().length > 0;
+      });
+
   const sendReady = sendableGuests.length > 0 && (
     sendMode === "template"
-      ? !!selectedTemplate && (selectedTemplate.varCount === 0 || (
-          autoVarGuestName
-            ? templateVarValues.slice(1).every((v) => v.trim())
-            : templateVarValues.every((v) => v.trim())
-        ))
+      ? !!selectedTemplate && allManualVarsFilled
       : freeTextMsg.trim().length > 0
   );
 
@@ -798,8 +850,12 @@ export default function BroadcastDashboard({ user }) {
                           </div>
                           {templateVarValues.map((val, idx) => {
                             const isAutoName = autoVarGuestName && idx === 0;
+                            const isAutoTime = autoVarArrivalTimes && (idx === 1 || idx === 2);
+                            const timeAwareLabels = ["שם אורח (אוטומטי)", "שעת כניסה (אוטומטי) ⏰", "שעת חדר מוכן (אוטומטי) ⏰"];
                             const arrivalLabels = ["שם אורח (אוטומטי)", "קישור לתשלום 💳", "קישור לסדנאות 📚"];
-                            const varLabel = autoVarGuestName
+                            const varLabel = autoVarArrivalTimes
+                              ? (timeAwareLabels[idx] ?? `משתנה ${idx + 1}`)
+                              : autoVarGuestName
                               ? (arrivalLabels[idx] ?? `משתנה ${idx + 1}`)
                               : (VAR_LABELS[idx] ?? `משתנה ${idx + 1}`);
                             return (
@@ -817,6 +873,13 @@ export default function BroadcastDashboard({ user }) {
                                 {isAutoName ? (
                                   <div style={{ fontSize: 11, color: "#1A7A4A", padding: "8px 12px", background: "#E8F5EF", borderRadius: 8, border: "1px solid #86EFAC" }}>
                                     ✅ שם האורח יוזן אוטומטית לפי כל אורח בקהל
+                                  </div>
+                                ) : isAutoTime ? (
+                                  <div style={{ fontSize: 11, color: "#1A7A4A", padding: "8px 12px", background: "#E8F5EF", borderRadius: 8, border: "1px solid #86EFAC" }}>
+                                    ✅ {idx === 1 ? "שעת כניסה" : "שעת חדר מוכן"} — מחושבת אוטומטית לפי יום ההגעה של האורח
+                                    <span style={{ display: "block", fontSize: 10, color: "#556B5F", marginTop: 3 }}>
+                                      ראשון–שישי: {idx === 1 ? '"12:00"' : '"15:00"'} &nbsp;|&nbsp; שבת: {idx === 1 ? '"15:00"' : '"18:00"'}
+                                    </span>
                                   </div>
                                 ) : (
                                   <input
