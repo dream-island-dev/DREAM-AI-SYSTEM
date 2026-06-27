@@ -762,10 +762,11 @@ serve(async (req: Request) => {
 
     // ── Day Pass Safety Gate ─────────────────────────────────────────────────
     // Day Pass guests (room_type='day_guest') are entitled to:
-    //   Stage 1   pre_arrival_2d  — arrival confirmation
-    //   Stage 2.5 night_before    — evening-before reminder (bifurcated template, see below)
-    //   Stage 5   checkout_fb     — post-stay feedback
-    // Suite-specific stages (morning_*, mid_stay, room_ready) remain blocked as a
+    //   Stage 1   pre_arrival_2d      — arrival confirmation
+    //   Stage 2.5 night_before_daypass — evening-before reminder (bifurcated template, see below)
+    //   Stage 3   morning_welcome     — morning-of arrival (bifurcated to day-pass fast-path below)
+    //   Stage 5   checkout_fb         — post-stay feedback
+    // Suite-specific stages (morning_suite, mid_stay, room_ready) remain blocked as a
     // server-side authoritative guard. The UI enforces the same rule for UX clarity
     // but this is the canonical enforcement point (CLAUDE.md §0.1 Zero Data Loss —
     // a day-pass guest must never silently receive a suite welcome or mid-stay

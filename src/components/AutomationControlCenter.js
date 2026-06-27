@@ -1427,7 +1427,7 @@ export default function AutomationControlCenter() {
                 background: "rgba(124,58,237,0.06)", border: "1px solid #C4B5FD",
                 borderRadius: 10, padding: "10px 14px", marginBottom: 12, fontSize: 12, color: "#7C3AED",
               }}>
-                🔒 <strong>שער Day Pass פעיל</strong> — אורחי יום-כיף מקבלים שלושה שלבים בלבד:
+                🔒 <strong>שער Day Pass פעיל</strong> — אורחי יום-כיף מקבלים ארבעה שלבים בלבד:
                 אישור הגעה (Stage 1), תזכורת ערב לפני (Stage 2.5 ←{" "}
                 <code style={{ background: "rgba(124,58,237,0.1)", padding: "1px 5px", borderRadius: 4 }}>dream_checkin_reminder_v2</code>),
                 בוקר הגעה (Stage 3 ←{" "}
