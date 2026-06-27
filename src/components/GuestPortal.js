@@ -1,38 +1,46 @@
 // src/components/GuestPortal.js
-// Pre-Arrival Guest Portal — Sprint 10.1 (Magic Link & Itinerary Hero).
+// Dynamic Experience Hub — Conditional Router + Pre-Order Module.
+// (session: "MASTER INTEGRATION: DYNAMIC UPSALE & EXPERIENCE HUB")
 //
-// Public, password-less, mobile-first. Mounted directly from index.js for
-// any /portal/:token URL — BEFORE <App/> — so the entire staff-auth hook
-// chain (Supabase session listener, push subscription, etc.) never runs for
-// an unauthenticated guest opening their own link. No react-router-dom in
-// this project (CLAUDE.md §2); this is the one public route, so a single
-// path check in index.js is simpler/safer than adding a routing library.
+// Conditional Router (server-authoritative):
+//   room_type === 'suite'     → SuiteView: full portal, all sections
+//   room_type === 'day_guest' → DayUseView: focused (Spa/Meals/Activities only)
+//   unknown room_type         → SuiteView (safe default — shows more, not less)
 //
-// SECURITY: `token` is the magic-link credential (guests.portal_token,
-// migration 083) — NOT the guest's phone number. See that migration's
-// comment for why /portal/:phone (as the directive literally asked for)
-// would have been a real PII-exposure bug.
+// Pre-Order Module:
+//   • upsell_items fetched server-side by guest-portal-data (filtered by room_type)
+//     — the client never receives items it isn't entitled to.
+//   • Checklist UI: quantity selector per item, grouped by category
+//   • Submit → guest-portal-order Edge Function → guest_orders + Whapi alert
 //
-// Dream Island "XOS" guest-facing palette — deliberately distinct from the
-// staff app's --gold/--ivory CSS variables (§11 of CLAUDE.md): deep dark
-// (#0f172a/#09090b) + champagne gold (#D4AF37), glassmorphism panels, per
-// the directive's GLOBAL LUXURY BRANDING PROTOCOL.
-import { useEffect, useState, useRef } from "react";
+// Public, password-less. Mounted from index.js for /portal/:token.
+// XOS palette: #0f172a / #09090b / #D4AF37 (distinct from staff-app CSS vars).
+
+import { useEffect, useState, useRef, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import PhotoTour from "./PhotoTour";
 
-const XOS_GOLD = "#D4AF37";
-const XOS_BG_TOP = "#0f172a";
+const XOS_GOLD    = "#D4AF37";
+const XOS_BG_TOP  = "#0f172a";
 const XOS_BG_BOTTOM = "#09090b";
+const XOS_GLASS   = "rgba(255,255,255,0.04)";
+const XOS_BORDER  = "rgba(212,175,55,0.2)";
+const XOS_MUTED   = "#9CA3AF";
+const XOS_TEXT    = "#F3F4F6";
 
-// Mirrors bot_config.hotel_checkin_time's seeded default ("15:00", migration
-// 015) — kept as a constant here rather than an extra fetch so the public
-// portal stays a single round-trip. If Mike changes the real check-in time
-// in BotConfigPanel, this countdown target won't auto-follow; low-stakes
-// drift for a "the room will likely be ready around then" estimate, not
-// worth a second public Edge Function call to avoid.
+// Mirrors bot_config.hotel_checkin_time seeded default
 const DEFAULT_CHECKIN_TIME = "15:00";
 
+// ── Category display config ───────────────────────────────────────────────────
+const CATEGORY_META = {
+  spa:      { icon: "💆", label: "ספא וטיפולים" },
+  food:     { icon: "🍽️", label: "אוכל ושתייה" },
+  amenity:  { icon: "🛁", label: "פינוקים לחדר" },
+  activity: { icon: "🎾", label: "פעילויות" },
+  general:  { icon: "✨", label: "נוספות" },
+};
+
+// ── Hooks ─────────────────────────────────────────────────────────────────────
 function useCountdown(targetIso) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -50,6 +58,7 @@ function useCountdown(targetIso) {
   return { days, hours, minutes, seconds, expired: false };
 }
 
+// ── Small presentational components ──────────────────────────────────────────
 function fmtDateHe(iso) {
   if (!iso) return "";
   const d = new Date(iso);
@@ -66,7 +75,7 @@ function CountdownUnit({ value, label }) {
       }}>
         {String(value).padStart(2, "0")}
       </div>
-      <div style={{ fontSize: 11, color: "#9CA3AF", marginTop: 4 }}>{label}</div>
+      <div style={{ fontSize: 11, color: XOS_MUTED, marginTop: 4 }}>{label}</div>
     </div>
   );
 }
@@ -76,23 +85,384 @@ function ItineraryRow({ icon, label, value }) {
   return (
     <div style={{
       display: "flex", alignItems: "center", gap: 12,
-      padding: "12px 16px", borderBottom: "1px solid rgba(212,175,55,0.15)",
+      padding: "12px 16px", borderBottom: `1px solid ${XOS_BORDER}`,
     }}>
       <span style={{ fontSize: 18 }}>{icon}</span>
       <div style={{ textAlign: "right", flex: 1 }}>
-        <div style={{ fontSize: 11, color: "#9CA3AF" }}>{label}</div>
-        <div style={{ fontSize: 14, color: "#F3F4F6", fontWeight: 600, marginTop: 2 }}>{value}</div>
+        <div style={{ fontSize: 11, color: XOS_MUTED }}>{label}</div>
+        <div style={{ fontSize: 14, color: XOS_TEXT, fontWeight: 600, marginTop: 2 }}>{value}</div>
       </div>
     </div>
   );
 }
 
+function GlassPanel({ title, children, style }) {
+  return (
+    <div style={{
+      maxWidth: 420, margin: "0 auto",
+      background: XOS_GLASS, backdropFilter: "blur(14px)",
+      WebkitBackdropFilter: "blur(14px)",
+      border: `1px solid ${XOS_BORDER}`, borderRadius: 18,
+      overflow: "hidden", ...style,
+    }}>
+      {title && (
+        <div style={{
+          padding: "12px 16px", fontSize: 12, fontWeight: 700, color: XOS_GOLD,
+          borderBottom: `1px solid ${XOS_BORDER}`, textAlign: "right",
+        }}>
+          {title}
+        </div>
+      )}
+      {children}
+    </div>
+  );
+}
+
+// ── Pre-Order Module ──────────────────────────────────────────────────────────
+// Groups upsell_items by category, renders a qty-stepper per item, and
+// submits to guest-portal-order edge function.
+function PreOrderModule({ token, items, onToast }) {
+  // cart: { [item_id]: { qty, notes } }
+  const [cart, setCart]       = useState({});
+  const [submitting, setSubmitting] = useState(false);
+  const [submitted, setSubmitted]   = useState(false);
+
+  const totalItems = Object.values(cart).filter(c => c.qty > 0).length;
+
+  function setQty(itemId, delta) {
+    setCart(prev => {
+      const cur = prev[itemId]?.qty ?? 0;
+      const next = Math.max(0, Math.min(10, cur + delta));
+      if (next === 0) {
+        const { [itemId]: _, ...rest } = prev;
+        return rest;
+      }
+      return { ...prev, [itemId]: { ...prev[itemId], qty: next } };
+    });
+  }
+
+  async function handleSubmit() {
+    if (submitting || totalItems === 0) return;
+    setSubmitting(true);
+    const cartPayload = Object.entries(cart)
+      .filter(([, v]) => v.qty > 0)
+      .map(([item_id, v]) => ({ item_id, quantity: v.qty, notes: v.notes }));
+    try {
+      const { data, error } = await supabase.functions.invoke("guest-portal-order", {
+        body: { token, cart: cartPayload },
+      });
+      if (error || !data?.ok) throw new Error(data?.error ?? error?.message ?? "שגיאה");
+      setSubmitted(true);
+      setCart({});
+      onToast("✅ הזמנתך התקבלה! נחזור אליך בהקדם לאישור.");
+    } catch (e) {
+      onToast("⚠️ לא הצלחנו לשלוח את ההזמנה — נסו שוב או פנו לקבלה");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (items.length === 0) return null;
+
+  // Group by category
+  const groups = {};
+  for (const item of items) {
+    const cat = item.category || "general";
+    if (!groups[cat]) groups[cat] = [];
+    groups[cat].push(item);
+  }
+
+  if (submitted) {
+    return (
+      <div style={{ padding: "0 16px 36px" }}>
+        <GlassPanel title="✅ ההזמנה שלכם התקבלה">
+          <div style={{ padding: "20px 16px", textAlign: "center", color: XOS_MUTED, fontSize: 13 }}>
+            נציג מנוסה יאשר את הפרטים ויצור עמכם קשר בהקדם. 🌴
+          </div>
+        </GlassPanel>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ padding: "0 16px 36px" }}>
+      <GlassPanel title="🛎️ הזמינו מראש — חווית הגעה מושלמת">
+        {Object.entries(groups).map(([cat, catItems]) => {
+          const meta = CATEGORY_META[cat] ?? CATEGORY_META.general;
+          return (
+            <div key={cat}>
+              {/* Category header */}
+              <div style={{
+                padding: "8px 16px", fontSize: 11, fontWeight: 700,
+                color: XOS_GOLD, borderBottom: `1px solid ${XOS_BORDER}`,
+                background: "rgba(212,175,55,0.06)", textAlign: "right",
+              }}>
+                {meta.icon} {meta.label}
+              </div>
+              {catItems.map(item => {
+                const qty = cart[item.id]?.qty ?? 0;
+                return (
+                  <div key={item.id} style={{
+                    display: "flex", alignItems: "center", gap: 10,
+                    padding: "12px 16px", borderBottom: `1px solid ${XOS_BORDER}`,
+                  }}>
+                    {/* Info */}
+                    <div style={{ flex: 1, textAlign: "right" }}>
+                      <div style={{ fontSize: 14, fontWeight: 600, color: XOS_TEXT }}>
+                        {item.name}
+                        {item.price && (
+                          <span style={{ fontSize: 12, color: XOS_GOLD, marginRight: 8 }}>
+                            ₪{item.price}
+                          </span>
+                        )}
+                      </div>
+                      {item.description && (
+                        <div style={{ fontSize: 11, color: XOS_MUTED, marginTop: 2, lineHeight: 1.5 }}>
+                          {item.description}
+                        </div>
+                      )}
+                    </div>
+                    {/* Qty stepper */}
+                    <div style={{ display: "flex", alignItems: "center", gap: 0, flexShrink: 0 }}>
+                      <button
+                        onClick={() => setQty(item.id, -1)}
+                        disabled={qty === 0}
+                        style={{
+                          width: 32, height: 32, borderRadius: "50%",
+                          border: `1px solid ${qty > 0 ? XOS_GOLD : XOS_BORDER}`,
+                          background: qty > 0 ? "rgba(212,175,55,0.15)" : "transparent",
+                          color: qty > 0 ? XOS_GOLD : XOS_MUTED,
+                          fontSize: 18, lineHeight: 1, cursor: qty > 0 ? "pointer" : "default",
+                          fontFamily: "inherit", display: "flex", alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                      >−</button>
+                      <div style={{
+                        minWidth: 28, textAlign: "center", fontSize: 15, fontWeight: 700,
+                        color: qty > 0 ? XOS_TEXT : XOS_MUTED,
+                      }}>
+                        {qty}
+                      </div>
+                      <button
+                        onClick={() => setQty(item.id, +1)}
+                        disabled={qty >= 10}
+                        style={{
+                          width: 32, height: 32, borderRadius: "50%",
+                          border: `1px solid ${XOS_GOLD}`,
+                          background: "rgba(212,175,55,0.15)",
+                          color: XOS_GOLD, fontSize: 18, lineHeight: 1, cursor: "pointer",
+                          fontFamily: "inherit", display: "flex", alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                      >+</button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })}
+
+        {/* Submit */}
+        <div style={{ padding: "16px" }}>
+          <button
+            onClick={handleSubmit}
+            disabled={totalItems === 0 || submitting}
+            title={totalItems === 0 ? "בחרו לפחות פריט אחד להזמנה" : ""}
+            style={{
+              width: "100%", padding: "14px", borderRadius: 12,
+              border: "none", cursor: totalItems > 0 && !submitting ? "pointer" : "not-allowed",
+              background: totalItems > 0
+                ? `linear-gradient(135deg, ${XOS_GOLD}, #B8960C)`
+                : "rgba(255,255,255,0.08)",
+              color: totalItems > 0 ? "#0f172a" : XOS_MUTED,
+              fontSize: 15, fontWeight: 700, fontFamily: "Heebo, sans-serif",
+              transition: "opacity 0.2s", opacity: submitting ? 0.7 : 1,
+            }}
+          >
+            {submitting
+              ? "שולחים…"
+              : totalItems > 0
+                ? `📨 שליחת הזמנה (${totalItems} פריט${totalItems > 1 ? "ים" : ""})`
+                : "בחרו פריטים מהרשימה"}
+          </button>
+          {totalItems === 0 && (
+            <div style={{ textAlign: "center", marginTop: 8, fontSize: 11, color: XOS_MUTED }}>
+              הכפתור יתאפשר לאחר שתבחרו לפחות פריט אחד
+            </div>
+          )}
+        </div>
+      </GlassPanel>
+    </div>
+  );
+}
+
+// ── Shared Hero (used by both views) ─────────────────────────────────────────
+function PortalHero({ guest, phase, countdown }) {
+  return (
+    <div style={{ padding: "36px 20px 28px", textAlign: "center" }}>
+      <img
+        src="/logo.png"
+        alt="Dream Island"
+        style={{ height: 52, marginBottom: 10, objectFit: "contain" }}
+        onError={(e) => { e.target.style.display = "none"; }}
+      />
+      <div style={{
+        fontFamily: "Heebo, system-ui, sans-serif", fontSize: 13, letterSpacing: 2,
+        color: XOS_MUTED, textTransform: "uppercase", marginBottom: 22,
+      }}>
+        Dream Island Resort &amp; Spa
+      </div>
+
+      <div style={{ fontSize: 22, fontWeight: 700, marginBottom: 6 }}>
+        {phase === "past"
+          ? `תודה שבחרתם בנו, ${guest.name}! 🙏`
+          : `שלום ${guest.name}, ברוכים הבאים! 🌴`}
+      </div>
+
+      {/* Room badge */}
+      {guest.room && (
+        <div style={{
+          display: "inline-block", marginTop: 4, padding: "6px 16px", borderRadius: 20,
+          background: "rgba(212,175,55,0.12)", border: `1px solid ${XOS_GOLD}55`,
+          color: XOS_GOLD, fontSize: 13, fontWeight: 700,
+        }}>
+          🏨 {guest.room}
+        </div>
+      )}
+
+      {/* Guest-type badge for day-use */}
+      {guest.room_type === "day_guest" && (
+        <div style={{
+          display: "inline-block", marginTop: 4, marginRight: guest.room ? 8 : 0,
+          padding: "5px 12px", borderRadius: 20,
+          background: "rgba(99,102,241,0.15)", border: "1px solid rgba(99,102,241,0.4)",
+          color: "#A5B4FC", fontSize: 12, fontWeight: 600,
+        }}>
+          ☀️ יום כיף
+        </div>
+      )}
+
+      {/* Countdown / phase message */}
+      {phase === "upcoming" && countdown && !countdown.expired && (
+        <div style={{ marginTop: 26 }}>
+          <div style={{ fontSize: 12, color: XOS_MUTED, marginBottom: 10 }}>
+            נשארו עד ההגעה שלכם ({fmtDateHe(guest.arrival_date)})
+          </div>
+          <div style={{ display: "flex", justifyContent: "center", gap: 18 }}>
+            <CountdownUnit value={countdown.days}    label="ימים" />
+            <CountdownUnit value={countdown.hours}   label="שעות" />
+            <CountdownUnit value={countdown.minutes} label="דקות" />
+            <CountdownUnit value={countdown.seconds} label="שניות" />
+          </div>
+        </div>
+      )}
+      {phase === "in_stay" && (
+        <div style={{ marginTop: 18, fontSize: 14, color: "#D1D5DB" }}>
+          ✨ אתם איתנו כרגע — מקווים שאתם נהנים בכל רגע!
+        </div>
+      )}
+      {phase === "past" && (
+        <div style={{ marginTop: 18, fontSize: 14, color: "#D1D5DB" }}>
+          מחכים לראותכם שוב בקרוב 💛
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Itinerary glass panel (suite + day-use) ───────────────────────────────────
+function ItineraryPanel({ guest }) {
+  if (!guest.spa_time && !guest.meal_time) return null;
+  return (
+    <div style={{ padding: "0 16px 36px" }}>
+      <GlassPanel title="📋 התוכנית שלכם">
+        <ItineraryRow icon="💆" label="ספא" value={guest.spa_time} />
+        <ItineraryRow
+          icon="🍽️"
+          label="ארוחה"
+          value={guest.meal_time
+            ? `${guest.meal_time}${guest.meal_location ? " · " + guest.meal_location : ""}`
+            : null}
+        />
+      </GlassPanel>
+    </div>
+  );
+}
+
+// ── SUITE VIEW — full portal ──────────────────────────────────────────────────
+function SuiteView({ guest, phase, countdown, upsellItems, token, onToast, onUpsell, upsellBusy }) {
+  return (
+    <>
+      <PortalHero guest={guest} phase={phase} countdown={countdown} />
+      <ItineraryPanel guest={guest} />
+
+      {/* Pre-Order module (DB-driven, suite + all items) */}
+      <PreOrderModule token={token} items={upsellItems} onToast={onToast} />
+
+      {/* Scrollytelling photo tour with legacy PhotoTour upsells */}
+      <PhotoTour onUpsell={onUpsell} busyLabel={upsellBusy} />
+    </>
+  );
+}
+
+// ── DAY-USE VIEW — focused (Spa / Meals / Activities) ────────────────────────
+function DayUseView({ guest, phase, countdown, upsellItems, token, onToast, onUpsell, upsellBusy }) {
+
+  return (
+    <>
+      <PortalHero guest={guest} phase={phase} countdown={countdown} />
+
+      {/* Day-use focused itinerary: only show spa + meal, no departure info */}
+      {(guest.spa_time || guest.meal_time) && (
+        <div style={{ padding: "0 16px 28px" }}>
+          <GlassPanel title="⚡ היום שלכם — בקצרה">
+            <ItineraryRow icon="💆" label="טיפול ספא" value={guest.spa_time} />
+            <ItineraryRow
+              icon="🍽️"
+              label="ארוחה"
+              value={guest.meal_time
+                ? `${guest.meal_time}${guest.meal_location ? " · " + guest.meal_location : ""}`
+                : null}
+            />
+          </GlassPanel>
+        </div>
+      )}
+
+      {/* Focused activity info panel */}
+      <div style={{ padding: "0 16px 20px" }}>
+        <GlassPanel title={null} style={{ padding: "16px" }}>
+          <div style={{ textAlign: "right" }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: XOS_GOLD, marginBottom: 10 }}>
+              ☀️ יום כיף — מה מחכה לכם?
+            </div>
+            <div style={{ fontSize: 13, color: XOS_TEXT, lineHeight: 1.8 }}>
+              {guest.spa_time && <div>💆 ספא & טיפולים מפנקים</div>}
+              <div>🍽️ ארוחה במסעדת הריזורט</div>
+              <div>🏊 בריכה ואזורי הרפיה</div>
+              <div>🎾 פעילויות ספורט ובידור</div>
+            </div>
+          </div>
+        </GlassPanel>
+      </div>
+
+      {/* Pre-Order module — only day_use + all items */}
+      <PreOrderModule token={token} items={upsellItems} onToast={onToast} />
+
+      {/* Photo tour is shown for day-use too, but kept shorter contextually */}
+      <PhotoTour onUpsell={onUpsell} busyLabel={upsellBusy} />
+    </>
+  );
+}
+
+// ── Main exported component ───────────────────────────────────────────────────
 export default function GuestPortal({ token }) {
-  const [guest, setGuest]       = useState(null);
-  const [loading, setLoading]   = useState(true);
-  const [loadError, setLoadError] = useState(null);
-  const [upsellBusy, setUpsellBusy] = useState(null);
-  const [toast, setToast]       = useState(null);
+  const [guest, setGuest]             = useState(null);
+  const [upsellItems, setUpsellItems] = useState([]);
+  const [loading, setLoading]         = useState(true);
+  const [loadError, setLoadError]     = useState(null);
+  const [upsellBusy, setUpsellBusy]   = useState(null);
+  const [toast, setToast]             = useState(null);
   const toastTimer = useRef(null);
 
   useEffect(() => {
@@ -107,9 +477,14 @@ export default function GuestPortal({ token }) {
         const { data, error } = await supabase.functions.invoke("guest-portal-data", { body: { token } });
         if (!active) return;
         if (error || !data?.ok) {
-          setLoadError(data?.error === "guest_not_found" ? "לא מצאנו הזמנה התואמת לקישור הזה." : "שגיאה בטעינת הפרופיל.");
+          setLoadError(
+            data?.error === "guest_not_found"
+              ? "לא מצאנו הזמנה התואמת לקישור הזה."
+              : "שגיאה בטעינת הפרופיל."
+          );
         } else {
           setGuest(data.guest);
+          setUpsellItems(Array.isArray(data.upsellItems) ? data.upsellItems : []);
         }
       } catch (e) {
         if (active) setLoadError(e?.message ?? "שגיאה בטעינה.");
@@ -120,59 +495,52 @@ export default function GuestPortal({ token }) {
     return () => { active = false; };
   }, [token]);
 
-  function showToast(message) {
+  const showToast = useCallback((message) => {
     setToast(message);
     clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(null), 3800);
-  }
+    toastTimer.current = setTimeout(() => setToast(null), 4200);
+  }, []);
 
-  // actionType routes to one of two Edge Functions, per the Operations-vs-
-  // Requests split (CLAUDE.md "Enterprise Routing"): REQUEST (default, sales/
-  // reception-facing — spa, suite upgrade, padel, etc.) → guest-portal-upsell
-  // → guest_alerts (Requests Board). OPS_REQUEST (physical/actionable — e.g.
-  // Armonim's "הזמנת שירות לחדר") → guest-portal-ops-request → tasks
-  // (Operations Board) + a direct WhatsApp alert to the duty manager.
-  async function handleAction(upsellLabel, actionType) {
+  // Legacy PhotoTour upsell handler — routes to guest_alerts (REQUEST type)
+  // via guest-portal-upsell (not guest-portal-order). Kept for backward compat
+  // with the scrollytelling CTAs defined in PhotoTour.js.
+  async function handlePhotoTourUpsell(upsellLabel, actionType) {
     if (upsellBusy) return;
     setUpsellBusy(upsellLabel);
     const fnName = actionType === "OPS_REQUEST" ? "guest-portal-ops-request" : "guest-portal-upsell";
     try {
       const { data, error } = await supabase.functions.invoke(fnName, { body: { token, upsellLabel } });
       if (error || !data?.ok) throw new Error(data?.error ?? error?.message ?? "שגיאה");
-      // Exact phrasing requested in the "Full Portal Integration" session —
-      // deliberately doesn't promise someone is already on their way, since
-      // this lands as a board row for staff to pick up (at their own pace for
-      // a request, or under SLA tracking for an ops task) rather than being
-      // fulfilled instantly by this call.
       showToast("בקשתך התקבלה בהצלחה. נציג מנוסה יצור עמך קשר בהקדם.");
-    } catch (e) {
+    } catch {
       showToast("⚠️ לא הצלחנו לשלוח את הבקשה — נסו שוב או פנו לקבלה");
     } finally {
       setUpsellBusy(null);
     }
   }
 
-  // ── Stay-phase logic — computed (and useCountdown called) BEFORE the
-  // loading/error early-returns below, unconditionally on every render, so
-  // this hook never violates the Rules of Hooks (guest is null during/after
-  // a failed load — every field access below is optional-chained for that). ──
+  // ── Stay-phase logic — computed BEFORE early-returns (hooks rule) ──────────
   const today = new Date().toISOString().slice(0, 10);
   let phase = "unknown";
-  if (guest?.departure_date && guest.departure_date < today)      phase = "past";
-  else if (guest?.arrival_date && guest.arrival_date > today)     phase = "upcoming";
-  else if (guest?.arrival_date)                                   phase = "in_stay";
+  if (guest?.departure_date && guest.departure_date < today)  phase = "past";
+  else if (guest?.arrival_date && guest.arrival_date > today) phase = "upcoming";
+  else if (guest?.arrival_date)                               phase = "in_stay";
 
-  const countdownTarget = phase === "upcoming" ? `${guest.arrival_date}T${DEFAULT_CHECKIN_TIME}:00` : null;
+  const countdownTarget = phase === "upcoming"
+    ? `${guest.arrival_date}T${DEFAULT_CHECKIN_TIME}:00`
+    : null;
   const countdown = useCountdown(countdownTarget);
 
+  // ── Shared page wrapper ────────────────────────────────────────────────────
   const pageStyle = {
     minHeight: "100vh",
     background: `linear-gradient(180deg, ${XOS_BG_TOP} 0%, ${XOS_BG_BOTTOM} 100%)`,
     fontFamily: "Heebo, sans-serif",
-    color: "#F3F4F6",
+    color: XOS_TEXT,
     direction: "rtl",
   };
 
+  // Loading state
   if (loading) {
     return (
       <div style={{ ...pageStyle, display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -186,13 +554,14 @@ export default function GuestPortal({ token }) {
     );
   }
 
+  // Error state (FAIL VISIBLE — never a blank white screen)
   if (loadError || !guest) {
     return (
       <div style={{ ...pageStyle, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
         <div style={{ textAlign: "center", maxWidth: 320 }}>
           <div style={{ fontSize: 40, marginBottom: 12 }}>🏝️</div>
           <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8, color: XOS_GOLD }}>Dream Island</div>
-          <div style={{ fontSize: 13, color: "#9CA3AF", lineHeight: 1.7 }}>
+          <div style={{ fontSize: 13, color: XOS_MUTED, lineHeight: 1.7 }}>
             {loadError ?? "הקישור אינו תקין או פג תוקף."}<br />לפרטים נוספים פנו לדלפק הקבלה.
           </div>
         </div>
@@ -200,93 +569,52 @@ export default function GuestPortal({ token }) {
     );
   }
 
+  // ── Conditional Router — server-authoritative, client executes ────────────
+  // guest.room_type is set by the server (guest-portal-data) and cannot be
+  // spoofed (the client has no way to change what room_type the server returned
+  // or which upsell_items were filtered-in for it).
+  const isSuite  = guest.room_type === "suite";
+  const isDayUse = guest.room_type === "day_guest";
+
   return (
     <div style={pageStyle}>
-      {/* ── Hero ── */}
-      <div style={{ padding: "36px 20px 28px", textAlign: "center" }}>
-        <img
-          src="/logo.png"
-          alt="Dream Island"
-          style={{ height: 52, marginBottom: 10, objectFit: "contain" }}
-          onError={(e) => { e.target.style.display = "none"; }}
+      {isSuite ? (
+        <SuiteView
+          guest={guest}
+          phase={phase}
+          countdown={countdown}
+          upsellItems={upsellItems}
+          token={token}
+          onToast={showToast}
+          onUpsell={handlePhotoTourUpsell}
+          upsellBusy={upsellBusy}
         />
-        <div style={{
-          fontFamily: "Heebo, system-ui, sans-serif", fontSize: 13, letterSpacing: 2,
-          color: "#9CA3AF", textTransform: "uppercase", marginBottom: 22,
-        }}>
-          Dream Island Resort &amp; Spa
-        </div>
-
-        <div style={{ fontSize: 22, fontWeight: 700, marginBottom: 6 }}>
-          {phase === "past" ? `תודה שבחרתם בנו, ${guest.name}! 🙏` : `שלום ${guest.name}, ברוכים הבאים! 🌴`}
-        </div>
-
-        {guest.room && (
-          <div style={{
-            display: "inline-block", marginTop: 4, padding: "6px 16px", borderRadius: 20,
-            background: "rgba(212,175,55,0.12)", border: `1px solid ${XOS_GOLD}55`,
-            color: XOS_GOLD, fontSize: 13, fontWeight: 700,
-          }}>
-            🏨 {guest.room}
-          </div>
-        )}
-
-        {/* Countdown / phase message */}
-        {phase === "upcoming" && countdown && !countdown.expired && (
-          <div style={{ marginTop: 26 }}>
-            <div style={{ fontSize: 12, color: "#9CA3AF", marginBottom: 10 }}>
-              נשארו עד ההגעה שלכם ({fmtDateHe(guest.arrival_date)})
-            </div>
-            <div style={{ display: "flex", justifyContent: "center", gap: 18 }}>
-              <CountdownUnit value={countdown.days} label="ימים" />
-              <CountdownUnit value={countdown.hours} label="שעות" />
-              <CountdownUnit value={countdown.minutes} label="דקות" />
-              <CountdownUnit value={countdown.seconds} label="שניות" />
-            </div>
-          </div>
-        )}
-        {phase === "in_stay" && (
-          <div style={{ marginTop: 18, fontSize: 14, color: "#D1D5DB" }}>
-            ✨ אתם איתנו כרגע — מקווים שאתם נהנים בכל רגע!
-          </div>
-        )}
-        {phase === "past" && (
-          <div style={{ marginTop: 18, fontSize: 14, color: "#D1D5DB" }}>
-            מחכים לראותכם שוב בקרוב 💛
-          </div>
-        )}
-      </div>
-
-      {/* ── Itinerary glass panel ── */}
-      {(guest.spa_time || guest.meal_time) && (
-        <div style={{ padding: "0 16px 36px" }}>
-          <div style={{
-            maxWidth: 420, margin: "0 auto",
-            background: "rgba(255,255,255,0.04)", backdropFilter: "blur(14px)",
-            WebkitBackdropFilter: "blur(14px)",
-            border: "1px solid rgba(212,175,55,0.2)", borderRadius: 18,
-            overflow: "hidden",
-          }}>
-            <div style={{
-              padding: "12px 16px", fontSize: 12, fontWeight: 700, color: XOS_GOLD,
-              borderBottom: "1px solid rgba(212,175,55,0.2)", textAlign: "right",
-            }}>
-              📋 התוכנית שלכם
-            </div>
-            <ItineraryRow icon="💆" label="ספא" value={guest.spa_time} />
-            <ItineraryRow
-              icon="🍽️"
-              label="ארוחה"
-              value={guest.meal_time ? `${guest.meal_time}${guest.meal_location ? " · " + guest.meal_location : ""}` : null}
-            />
-          </div>
-        </div>
+      ) : isDayUse ? (
+        <DayUseView
+          guest={guest}
+          phase={phase}
+          countdown={countdown}
+          upsellItems={upsellItems}
+          token={token}
+          onToast={showToast}
+          onUpsell={handlePhotoTourUpsell}
+          upsellBusy={upsellBusy}
+        />
+      ) : (
+        /* Unknown room_type: safe default = SuiteView (shows more, not less) */
+        <SuiteView
+          guest={guest}
+          phase={phase}
+          countdown={countdown}
+          upsellItems={upsellItems}
+          token={token}
+          onToast={showToast}
+          onUpsell={handlePhotoTourUpsell}
+          upsellBusy={upsellBusy}
+        />
       )}
 
-      {/* ── Scrollytelling photo tour + in-scroll upsells ── */}
-      <PhotoTour onUpsell={handleAction} busyLabel={upsellBusy} />
-
-      {/* ── Luxury toast ── */}
+      {/* Luxury toast — shared across all views */}
       {toast && (
         <div style={{
           position: "fixed", bottom: 24, insetInlineStart: 16, insetInlineEnd: 16,
@@ -295,7 +623,7 @@ export default function GuestPortal({ token }) {
           <div style={{
             maxWidth: 360, padding: "14px 22px", borderRadius: 16,
             background: "rgba(15,23,42,0.92)", backdropFilter: "blur(12px)",
-            border: `1px solid ${XOS_GOLD}66`, color: "#F3F4F6",
+            border: `1px solid ${XOS_GOLD}66`, color: XOS_TEXT,
             fontSize: 13, fontWeight: 600, textAlign: "center",
             boxShadow: "0 12px 40px rgba(0,0,0,0.5)",
           }}>

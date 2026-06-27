@@ -1173,7 +1173,12 @@ serve(async (req: Request) => {
       // fast-path above (early return) and never reach this code. The set is
       // kept for any future pipeline trigger that also needs a portal button.
       // night_before handles its own portalButtonParam in the fast-path above.
-      const PORTAL_BUTTON_TRIGGERS = new Set<string>([]);
+      //
+      // pre_arrival_2d is included so that BOTH suite guests and day_use guests
+      // receive their portal link in the T-2 confirmation — the portal renders
+      // the correct restricted/full view server-side based on room_type, so the
+      // same URL works for both guest types.
+      const PORTAL_BUTTON_TRIGGERS = new Set<string>(["pre_arrival_2d"]);
       const portalButtonParam = PORTAL_BUTTON_TRIGGERS.has(trigger)
         ? (guest.portal_token as string | null ?? undefined)
         : undefined;

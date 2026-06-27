@@ -69,8 +69,36 @@ serve(async (req: Request) => {
       maskedGuest.room = guest.room_type === "suite" ? "סוויטת יוקרה" : null;
     }
 
+    // ── Upsell items — server-side filtered by guest's room_type ─────────
+    // Audiences: 'all' → every guest; 'suite' → room_type='suite' only;
+    // 'day_use' → room_type='day_guest' only.
+    // This is the authoritative filter — the client never receives items it
+    // isn't entitled to. Parallel fetch inside the same request (single round-
+    // trip from the guest's perspective).
+    const guestRoomType: string = (guest.room_type as string) ?? "";
+    const audienceFilter: string[] = ["all"];
+    if (guestRoomType === "suite")     audienceFilter.push("suite");
+    if (guestRoomType === "day_guest") audienceFilter.push("day_use");
+
+    const { data: upsellItems, error: upsellErr } = await supabase
+      .from("upsell_items")
+      .select("id, name, description, price, category")
+      .eq("is_active", true)
+      .in("target_audience", audienceFilter)
+      .order("sort_order", { ascending: true });
+
+    if (upsellErr) {
+      // Non-fatal — portal still loads without upsell items (FAIL VISIBLE
+      // principle: portal doesn't crash; items section simply won't render).
+      console.warn("[guest-portal-data] upsell_items fetch failed (non-blocking):", upsellErr.message);
+    }
+
     return new Response(
-      JSON.stringify({ ok: true, guest: maskedGuest }),
+      JSON.stringify({
+        ok: true,
+        guest: maskedGuest,
+        upsellItems: upsellItems ?? [],
+      }),
       { headers: { ...CORS, "Content-Type": "application/json" } }
     );
   } catch (err: unknown) {

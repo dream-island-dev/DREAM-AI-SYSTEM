@@ -61,5 +61,5 @@ WHERE image = 'wine.jpg';
 INSERT INTO public.portal_scenes (sort_order, image, title, body, ctas)
 SELECT 45, 'armonim.jpg', 'מסעדת ערמונים',
   'מסעדת ערמונים מפליאה במנות מרתקות, ופוד-טראקים מפתיעים את האורחים בכל פינה באי.',
-  '[{"label": "לתפריט המסעדה", "actionType": "LINK", "buttonUrl": "https://www.dream-island.co.il/culinary"}, {"label": "הזמנת שירות לחדר", "actionType": "OPS_REQUEST", "upsellLabel": "הזמנת שירות לחדר — ארמונים"}]'::jsonb
+  '[{"label": "לתפריט המסעדה", "actionType": "LINK", "buttonUrl": "https://www.dream-island.co.il/culinary"}, {"label": "הזמנת שירות לחדר", "actionType": "OPS_REQUEST", "upsellLabel": "הזמנת שירות לחדר —ערמונים"}]'::jsonb
 WHERE NOT EXISTS (SELECT 1 FROM public.portal_scenes WHERE image = 'armonim.jpg');

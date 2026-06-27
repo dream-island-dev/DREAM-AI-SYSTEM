@@ -121,17 +121,29 @@ serve(async (req: Request) => {
 
     console.log(`[get-wa-templates] fetched ${allRaw.length} raw template(s) across ${pageCount} page(s) | fetchAll=${fetchAll}`);
 
+    // Log distinct raw statuses for diagnostics (visible in Supabase → Functions → Logs)
+    const rawStatuses = [...new Set(allRaw.map((t) => t.status))];
+    console.log(`[get-wa-templates] raw statuses seen: ${rawStatuses.join(", ")}`);
+
     const templates = allRaw.map((t) => {
       const bodyComp    = t.components.find((c) => c.type === "BODY");
       const headerComp  = t.components.find((c) => c.type === "HEADER");
       const footerComp  = t.components.find((c) => c.type === "FOOTER");
       const buttonsComp = t.components.find((c) => c.type === "BUTTONS");
       const bodyText    = bodyComp?.text ?? "";
+
+      // Normalize status: Meta Graph API returns "ACTIVE" for published/live templates
+      // in some API versions/regions — treat as equivalent to "APPROVED" so all
+      // downstream consumers (BroadcastDashboard, TemplateManagerPanel, AutomationControlCenter)
+      // that check `status === "APPROVED"` continue to work correctly.
+      const rawStatus    = String(t.status).toUpperCase();
+      const normalStatus = rawStatus === "ACTIVE" ? "APPROVED" : t.status;
+
       return {
         id:              t.id,
         name:            t.name,
         language:        t.language,
-        status:          t.status,
+        status:          normalStatus,
         category:        t.category ?? "MARKETING",
         bodyText,
         headerText:      headerComp?.text ?? null,
@@ -149,6 +161,7 @@ serve(async (req: Request) => {
     });
 
     // For the default (non-all) case, return only APPROVED templates.
+    // After normalization above, ACTIVE templates are already mapped to APPROVED.
     // The client already applies a second filter for defense-in-depth.
     const result = fetchAll
       ? templates
