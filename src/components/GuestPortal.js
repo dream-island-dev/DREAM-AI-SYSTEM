@@ -37,6 +37,7 @@ const CATEGORY_META = {
   food:     { icon: "🍽️", label: "אוכל ושתייה" },
   amenity:  { icon: "🛁", label: "פינוקים לחדר" },
   activity: { icon: "🎾", label: "פעילויות" },
+  workshop: { icon: "📚", label: "סדנאות" },
   general:  { icon: "✨", label: "נוספות" },
 };
 
@@ -164,7 +165,12 @@ function PreOrderModule({ token, items, onToast }) {
 
   if (items.length === 0) return null;
 
-  // Group by category
+  // Separate orderable items (qty stepper) from link items (external button).
+  // link_url items (e.g. workshops) are informational — they open an external
+  // page; they never go into the cart and are excluded from the submit button.
+  const orderableItems = items.filter((i) => !i.link_url);
+
+  // Group all items by category for display
   const groups = {};
   for (const item of items) {
     const cat = item.category || "general";
@@ -186,7 +192,7 @@ function PreOrderModule({ token, items, onToast }) {
 
   return (
     <div style={{ padding: "0 16px 36px" }}>
-      <GlassPanel title="🛎️ הזמינו מראש — חווית הגעה מושלמת">
+      <GlassPanel title="🛎️ שירותים ופינוקים">
         {Object.entries(groups).map(([cat, catItems]) => {
           const meta = CATEGORY_META[cat] ?? CATEGORY_META.general;
           return (
@@ -201,6 +207,7 @@ function PreOrderModule({ token, items, onToast }) {
               </div>
               {catItems.map(item => {
                 const qty = cart[item.id]?.qty ?? 0;
+                const hasLink = !!item.link_url;
                 return (
                   <div key={item.id} style={{
                     display: "flex", alignItems: "center", gap: 10,
@@ -222,40 +229,59 @@ function PreOrderModule({ token, items, onToast }) {
                         </div>
                       )}
                     </div>
-                    {/* Qty stepper */}
-                    <div style={{ display: "flex", alignItems: "center", gap: 0, flexShrink: 0 }}>
-                      <button
-                        onClick={() => setQty(item.id, -1)}
-                        disabled={qty === 0}
+
+                    {/* External link button (workshops) OR qty stepper (orderable items) */}
+                    {hasLink ? (
+                      <a
+                        href={item.link_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
                         style={{
-                          width: 32, height: 32, borderRadius: "50%",
-                          border: `1px solid ${qty > 0 ? XOS_GOLD : XOS_BORDER}`,
-                          background: qty > 0 ? "rgba(212,175,55,0.15)" : "transparent",
-                          color: qty > 0 ? XOS_GOLD : XOS_MUTED,
-                          fontSize: 18, lineHeight: 1, cursor: qty > 0 ? "pointer" : "default",
-                          fontFamily: "inherit", display: "flex", alignItems: "center",
-                          justifyContent: "center",
-                        }}
-                      >−</button>
-                      <div style={{
-                        minWidth: 28, textAlign: "center", fontSize: 15, fontWeight: 700,
-                        color: qty > 0 ? XOS_TEXT : XOS_MUTED,
-                      }}>
-                        {qty}
-                      </div>
-                      <button
-                        onClick={() => setQty(item.id, +1)}
-                        disabled={qty >= 10}
-                        style={{
-                          width: 32, height: 32, borderRadius: "50%",
+                          display: "inline-flex", alignItems: "center", gap: 5, flexShrink: 0,
+                          padding: "7px 13px", borderRadius: 20,
                           border: `1px solid ${XOS_GOLD}`,
-                          background: "rgba(212,175,55,0.15)",
-                          color: XOS_GOLD, fontSize: 18, lineHeight: 1, cursor: "pointer",
-                          fontFamily: "inherit", display: "flex", alignItems: "center",
-                          justifyContent: "center",
+                          background: "rgba(212,175,55,0.12)",
+                          color: XOS_GOLD, fontSize: 12, fontWeight: 700,
+                          textDecoration: "none", whiteSpace: "nowrap",
                         }}
-                      >+</button>
-                    </div>
+                      >
+                        📅 לפרטים
+                      </a>
+                    ) : (
+                      <div style={{ display: "flex", alignItems: "center", gap: 0, flexShrink: 0 }}>
+                        <button
+                          onClick={() => setQty(item.id, -1)}
+                          disabled={qty === 0}
+                          style={{
+                            width: 32, height: 32, borderRadius: "50%",
+                            border: `1px solid ${qty > 0 ? XOS_GOLD : XOS_BORDER}`,
+                            background: qty > 0 ? "rgba(212,175,55,0.15)" : "transparent",
+                            color: qty > 0 ? XOS_GOLD : XOS_MUTED,
+                            fontSize: 18, lineHeight: 1, cursor: qty > 0 ? "pointer" : "default",
+                            fontFamily: "inherit", display: "flex", alignItems: "center",
+                            justifyContent: "center",
+                          }}
+                        >−</button>
+                        <div style={{
+                          minWidth: 28, textAlign: "center", fontSize: 15, fontWeight: 700,
+                          color: qty > 0 ? XOS_TEXT : XOS_MUTED,
+                        }}>
+                          {qty}
+                        </div>
+                        <button
+                          onClick={() => setQty(item.id, +1)}
+                          disabled={qty >= 10}
+                          style={{
+                            width: 32, height: 32, borderRadius: "50%",
+                            border: `1px solid ${XOS_GOLD}`,
+                            background: "rgba(212,175,55,0.15)",
+                            color: XOS_GOLD, fontSize: 18, lineHeight: 1, cursor: "pointer",
+                            fontFamily: "inherit", display: "flex", alignItems: "center",
+                            justifyContent: "center",
+                          }}
+                        >+</button>
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -263,35 +289,37 @@ function PreOrderModule({ token, items, onToast }) {
           );
         })}
 
-        {/* Submit */}
-        <div style={{ padding: "16px" }}>
-          <button
-            onClick={handleSubmit}
-            disabled={totalItems === 0 || submitting}
-            title={totalItems === 0 ? "בחרו לפחות פריט אחד להזמנה" : ""}
-            style={{
-              width: "100%", padding: "14px", borderRadius: 12,
-              border: "none", cursor: totalItems > 0 && !submitting ? "pointer" : "not-allowed",
-              background: totalItems > 0
-                ? `linear-gradient(135deg, ${XOS_GOLD}, #B8960C)`
-                : "rgba(255,255,255,0.08)",
-              color: totalItems > 0 ? "#0f172a" : XOS_MUTED,
-              fontSize: 15, fontWeight: 700, fontFamily: "Heebo, sans-serif",
-              transition: "opacity 0.2s", opacity: submitting ? 0.7 : 1,
-            }}
-          >
-            {submitting
-              ? "שולחים…"
-              : totalItems > 0
-                ? `📨 שליחת הזמנה (${totalItems} פריט${totalItems > 1 ? "ים" : ""})`
-                : "בחרו פריטים מהרשימה"}
-          </button>
-          {totalItems === 0 && (
-            <div style={{ textAlign: "center", marginTop: 8, fontSize: 11, color: XOS_MUTED }}>
-              הכפתור יתאפשר לאחר שתבחרו לפחות פריט אחד
-            </div>
-          )}
-        </div>
+        {/* Submit — only shown when there are orderable (non-link) items */}
+        {orderableItems.length > 0 && (
+          <div style={{ padding: "16px" }}>
+            <button
+              onClick={handleSubmit}
+              disabled={totalItems === 0 || submitting}
+              title={totalItems === 0 ? "בחרו לפחות פריט אחד להזמנה" : ""}
+              style={{
+                width: "100%", padding: "14px", borderRadius: 12,
+                border: "none", cursor: totalItems > 0 && !submitting ? "pointer" : "not-allowed",
+                background: totalItems > 0
+                  ? `linear-gradient(135deg, ${XOS_GOLD}, #B8960C)`
+                  : "rgba(255,255,255,0.08)",
+                color: totalItems > 0 ? "#0f172a" : XOS_MUTED,
+                fontSize: 15, fontWeight: 700, fontFamily: "Heebo, sans-serif",
+                transition: "opacity 0.2s", opacity: submitting ? 0.7 : 1,
+              }}
+            >
+              {submitting
+                ? "שולחים…"
+                : totalItems > 0
+                  ? `📨 שליחת הזמנה (${totalItems} פריט${totalItems > 1 ? "ים" : ""})`
+                  : "בחרו פריטים מהרשימה"}
+            </button>
+            {totalItems === 0 && (
+              <div style={{ textAlign: "center", marginTop: 8, fontSize: 11, color: XOS_MUTED }}>
+                הכפתור יתאפשר לאחר שתבחרו לפחות פריט אחד
+              </div>
+            )}
+          </div>
+        )}
       </GlassPanel>
     </div>
   );

@@ -82,7 +82,7 @@ serve(async (req: Request) => {
 
     const { data: upsellItems, error: upsellErr } = await supabase
       .from("upsell_items")
-      .select("id, name, description, price, category")
+      .select("id, name, description, price, category, link_url")
       .eq("is_active", true)
       .in("target_audience", audienceFilter)
       .order("sort_order", { ascending: true });
