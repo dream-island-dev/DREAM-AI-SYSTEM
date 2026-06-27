@@ -89,6 +89,19 @@ const PIPELINE_TEMPLATE: Record<string, string> = {
   checkout_fb:     "dream_checkout_feedback",      // day after departure → feedback + Quick Reply buttons
 };
 
+// ── Synchronous day-of-week aware timing helper ───────────────────────────────
+// Used by morning_suite / morning_welcome templates whose {{2}}/{{3}} variables
+// carry the guest's arrival-time window. Identical Shabbat logic as
+// isSpecialNightBeforeDay() above but synchronous (no bot_config lookup needed
+// because the morning-of stage fires the day the guest arrives — only Saturday
+// vs weekday matters; custom holiday overrides are not evaluated here).
+function resolveDayTimings(arrivalDateStr: string): { entryTime: string; checkInTime: string } {
+  const d = new Date(`${arrivalDateStr}T00:00:00Z`);
+  return d.getUTCDay() === 6
+    ? { entryTime: "15:00", checkInTime: "18:00" }
+    : { entryTime: "12:00", checkInTime: "15:00" };
+}
+
 // Variables passed as {{1}}, {{2}}, … to each pipeline template.
 // All values pass through sanitizeTemplateVars() at send time — these lambdas
 // produce raw values; sanitization is applied in BRANCH D before the API call.
@@ -98,8 +111,14 @@ const PIPELINE_TEMPLATE: Record<string, string> = {
 // trigger==="night_before" and bypasses this map entirely for it.
 const PIPELINE_VARS: Record<string, (g: Record<string, unknown>) => string[]> = {
   pre_arrival_2d:  (g) => [String(g.name ?? "")],
-  morning_suite:   (g) => [String(g.name ?? "")],
-  morning_welcome: (g) => [String(g.name ?? "")],
+  morning_suite:   (g) => {
+    const t = resolveDayTimings(String(g.arrival_date ?? ""));
+    return [String(g.name ?? ""), t.entryTime, t.checkInTime];
+  },
+  morning_welcome: (g) => {
+    const t = resolveDayTimings(String(g.arrival_date ?? ""));
+    return [String(g.name ?? ""), t.entryTime, t.checkInTime];
+  },
   room_ready:      (g) => [String(g.name ?? ""), String(g.room ?? g.suite_name ?? "")],
   mid_stay:        (g) => [String(g.name ?? "")],
   checkout_fb:     (g) => [String(g.name ?? "")],
@@ -174,11 +193,15 @@ async function resolveNightBeforeTimes(
     const entryTime = (cfg["night_before_entry_time_shabbat"] ?? "").trim();
     const checkInTime = (cfg["night_before_checkin_time_shabbat"] ?? "").trim();
     if (!entryTime || !checkInTime) {
-      throw new Error(
-        `night_before_shabbat_hours_missing: arrival_date=${arrivalDateStr} falls on Shabbat/holiday but ` +
-        `bot_config.night_before_entry_time_shabbat/night_before_checkin_time_shabbat is blank — fill them in ` +
-        `via BotConfigPanel ("ידע המלון") before this stage can send for this guest`
+      // Graceful fallback instead of throwing — Shabbat/holiday guests still
+      // receive the message with standard Shabbat arrival hours rather than
+      // getting nothing. Set the bot_config keys to override these defaults.
+      console.warn(
+        `[whatsapp-send] night_before_shabbat_hours_config_missing for arrival_date=${arrivalDateStr} ` +
+        `— using hardcoded Shabbat fallbacks: entry=15:00, check-in=18:00. ` +
+        `Fill bot_config.night_before_entry_time_shabbat/night_before_checkin_time_shabbat via BotConfigPanel to customise.`
       );
+      return { entryTime: entryTime || "15:00", checkInTime: checkInTime || "18:00" };
     }
     return { entryTime, checkInTime };
   }
@@ -253,6 +276,15 @@ async function sendViaMeta(to: string, body: string): Promise<void> {
 // variables maps to {{1}}, {{2}}, ... body parameters in the template.
 // buttonUrlParam: dynamic suffix for the first URL button (index 0) — used by
 //   dream_payment_and_workshops whose payment link ends with /r/{{1}}.
+//
+// Templates with a Media Header (IMAGE) require a `header` component in the
+// components array — Meta rejects without it: "Format mismatch, expected IMAGE,
+// received UNKNOWN". This map is the single place to add / update header URLs
+// when new image-header templates are approved.
+const TEMPLATE_IMAGE_HEADERS: Record<string, string> = {
+  dream_suite_reminder: "https://tzalamnadlan.co.il/wp-content/uploads/2026/default-resort.jpg",
+};
+
 async function sendViaTemplate(
   to: string,
   templateName: string,
@@ -265,6 +297,10 @@ async function sendViaTemplate(
   if (!token || !phoneId) throw new Error("missing_meta_whatsapp_creds");
 
   const components: unknown[] = [];
+  const headerImageUrl = TEMPLATE_IMAGE_HEADERS[templateName];
+  if (headerImageUrl) {
+    components.push({ type: "header", parameters: [{ type: "image", image: { link: headerImageUrl } }] });
+  }
   if (variables.length > 0) {
     components.push({ type: "body", parameters: variables.map((v) => ({ type: "text", text: v })) });
   }
@@ -796,17 +832,19 @@ serve(async (req: Request) => {
       tmplVars = trigger === "night_before" && nightBeforeTimes
         ? sanitizeTemplateVars([String(guest.name ?? ""), nightBeforeTimes.entryTime, nightBeforeTimes.checkInTime])
         : sanitizeTemplateVars(PIPELINE_VARS[trigger]?.(guest) ?? []);
-      // "FINAL DEPLOYMENT & SPRINT COMMIT" session — night_before's Meta
-      // template button ("מה מחכה לי?") is a Dynamic URL button registered
-      // as https://dream-ai-system.vercel.app/portal/{{1}} in Meta Business
-      // Manager; Meta substitutes {{1}} with whatever suffix we pass here,
-      // exactly like dream_payment_and_workshops's payment-link button
-      // below. The suffix is the guest's own portal_token — never the guest
-      // name/phone (migration 083's whole point: the token IS the
-      // credential). undefined (not "") when missing, so sendViaTemplate's
-      // `!== undefined` check correctly omits the button component entirely
-      // rather than sending a button parameter that resolves to a dead link.
-      const portalButtonParam = trigger === "night_before"
+      // Dynamic URL button — the portal token is passed as the URL suffix for
+      // templates that include a "מה מחכה לי?" / "לפורטל שלי" button whose
+      // base URL is https://dream-ai-system.vercel.app/portal/ in Meta Business
+      // Manager. Meta substitutes the token value as the path suffix, exactly
+      // like dream_payment_and_workshops's payment-link button. The suffix is
+      // the guest's own portal_token (migration 083) — never name/phone.
+      // undefined (not "") when missing, so sendViaTemplate's `!== undefined`
+      // check correctly omits the button component entirely rather than sending
+      // a button parameter that resolves to a dead link.
+      // Applies to: night_before (dream_suite_reminder), morning_suite and
+      // morning_welcome (dream_welcome_morning) — all three carry a portal URL button.
+      const PORTAL_BUTTON_TRIGGERS = new Set(["night_before", "morning_suite", "morning_welcome"]);
+      const portalButtonParam = PORTAL_BUTTON_TRIGGERS.has(trigger)
         ? (guest.portal_token as string | null ?? undefined)
         : undefined;
       try {
