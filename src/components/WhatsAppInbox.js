@@ -288,6 +288,7 @@ function roomChipMeta(contact) {
     if (sec) return { icon: sec.icon, label: contact.room, color: sec.color };
   }
   if (contact.roomType === "day_guest") return { icon: "☀️", label: "בילוי יומי", color: "#92400E" };
+  if (contact.roomType === "premium_day_guest") return { icon: "⭐", label: "פרימיום יומי", color: "#92400E" };
   return null;
 }
 
@@ -626,7 +627,7 @@ function NewChatModal({ onClose, onSent }) {
     if (bulkFilter === "checked_in")      q = q.eq("status", "checked_in");
     else if (bulkFilter === "expected")   q = q.eq("status", "expected");
     else if (bulkFilter === "suite")      q = q.eq("room_type", "suite");
-    else if (bulkFilter === "day_guest")  q = q.eq("room_type", "day_guest");
+    else if (bulkFilter === "day_guest")  q = q.in("room_type", ["day_guest", "premium_day_guest"]);
     else if (bulkFilter === "checkout_today") q = q.eq("status", "checked_in").lte("departure_date", today);
     q.limit(200).then(({ data }) => setBulkGuests((data ?? []).filter((g) => g.phone)));
   }, [mode, bulkFilter]);
@@ -798,6 +799,7 @@ function NewChatModal({ onClose, onSent }) {
     else if (tmplAudienceFilter === "expected")   q = q.eq("status", "expected");
     else if (tmplAudienceFilter === "arriving_today") q = q.eq("arrival_date", today);
     else if (tmplAudienceFilter === "suite")      q = q.eq("room_type", "suite");
+    else if (tmplAudienceFilter === "day_guest")  q = q.in("room_type", ["day_guest", "premium_day_guest"]);
     else if (tmplAudienceFilter === "past")       q = q.eq("status", "checked_out");
     q.limit(200).then(({ data }) => setTmplAudienceGuests((data ?? []).filter((g) => g.phone)));
   }, [mode, tmplMode, tmplAudienceFilter]);

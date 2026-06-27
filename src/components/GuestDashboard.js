@@ -7,9 +7,10 @@
 //         כפתור "🏨 חדר מוכן" → pipeline (לינה בלבד)
 //
 // room_type logic:
-//   day_guest  = בילוי יומי (ללא מספר חדר — נגזר אוטומטית מהאקסל)
-//   standard   = חדר רגיל
-//   suite      = סוויטה / VIP
+//   day_guest         = בילוי יומי
+//   premium_day_guest = פרימיום בילוי יומי (Premium Day 1/2 packages)
+//   standard          = legacy value (no longer set by UI)
+//   suite             = סוויטה / VIP
 //
 // Auth: RLS — tactical manager sees own rows; GM/super_admin see all.
 
@@ -79,7 +80,13 @@ function RoomTypeBadge({ type }) {
       background: "rgba(37,99,235,0.08)", color: "#1D4ED8", border: "1px solid #BFDBFE",
     }}>🏊 בילוי יומי</span>
   );
-  const isSuite = /suite|סוויט|vip|penthouse/i.test(type ?? "");
+  if (type === "premium_day_guest") return (
+    <span style={{
+      fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 20,
+      background: "rgba(234,179,8,0.12)", color: "#92400E", border: "1px solid #FCD34D",
+    }}>⭐ פרימיום יומי</span>
+  );
+  const isSuite = type === "suite" || /suite|סוויט|vip|penthouse/i.test(type ?? "");
   return (
     <span style={{
       fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 20,
@@ -87,7 +94,7 @@ function RoomTypeBadge({ type }) {
       color:      isSuite ? "var(--gold-dark)"        : "var(--text-muted)",
       border:     `1px solid ${isSuite ? "var(--gold)" : "var(--border)"}`,
     }}>
-      {isSuite ? "👑 " : ""}{type || "standard"}
+      {isSuite ? "👑 " : "⚠ "}{type || "standard"}
     </span>
   );
 }
@@ -287,8 +294,10 @@ export default function GuestDashboard({ user }) {
   }, [selected, showToast]);
 
   // ── Tab filtering ─────────────────────────────────────────────────────────
-  const dayGuests   = guests.filter((g) => g.room_type === "day_guest");
-  const hotelGuests = guests.filter((g) => g.room_type !== "day_guest");
+  // isDayType: both regular and premium day-pass guests belong in the "יומי" tab.
+  const isDayType    = (g) => g.room_type === "day_guest" || g.room_type === "premium_day_guest";
+  const dayGuests   = guests.filter(isDayType);
+  const hotelGuests = guests.filter((g) => !isDayType(g));
   const tabGuests   = activeTab === "day_guest" ? dayGuests
                     : activeTab === "suite"     ? hotelGuests
                     :                              guests;
@@ -467,7 +476,7 @@ export default function GuestDashboard({ user }) {
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           {tabGuests.map((guest) => {
-            const isDayGuest = guest.room_type === "day_guest";
+            const isDayGuest = guest.room_type === "day_guest" || guest.room_type === "premium_day_guest";
             const isDeleting = deletingId === guest.id;
             const isLoadingPipeline = loadingId === guest.id;
             const isDone = guest.msg_room_ready_sent;

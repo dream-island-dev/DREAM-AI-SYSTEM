@@ -224,8 +224,8 @@ export default function BroadcastDashboard({ user }) {
         if (!g.arrival_date || g.arrival_date < today || g.arrival_date > cutoff) return false;
       }
     }
-    if (filterGuest === "suite"     && g.room_type === "day_guest") return false;
-    if (filterGuest === "day_guest" && g.room_type !== "day_guest") return false;
+    if (filterGuest === "suite"     && (g.room_type === "day_guest" || g.room_type === "premium_day_guest")) return false;
+    if (filterGuest === "day_guest" && g.room_type !== "day_guest" && g.room_type !== "premium_day_guest") return false;
     if (filterStatus !== "all" && g.status !== filterStatus) return false;
     if (filterDept !== "all") {
       if (deptMap[g.manager_id] !== filterDept) return false;
@@ -1142,6 +1142,8 @@ export default function BroadcastDashboard({ user }) {
                     <td>
                       {g.room_type === "suite"
                         ? <span style={{ color: "var(--gold-dark)", fontWeight: 700, fontSize: 12 }}>👑 סוויטה</span>
+                        : g.room_type === "premium_day_guest"
+                        ? <span style={{ color: "#92400E", fontWeight: 700, fontSize: 12 }}>⭐ פרימיום יומי</span>
                         : g.room_type === "day_guest"
                         ? <span style={{ color: "#1D4ED8", fontSize: 12 }}>🏊 יומי</span>
                         : <span style={{ color: "var(--text-muted)", fontSize: 12 }}>{g.room_type || "standard"}</span>

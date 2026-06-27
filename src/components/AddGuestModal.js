@@ -14,6 +14,24 @@ import { useState } from "react";
 import { supabase } from "../supabaseClient";
 import { SUITE_REGISTRY, SUITE_SECTIONS } from "../data/suiteRegistry";
 
+// ── Smart room_type inference ─────────────────────────────────────────────────
+// Deterministic mapping from the room <select> value to DB room_type.
+// Returns null when the value is blank (no auto-change) so a manager who
+// intentionally left room empty can still set room_type manually.
+const _SUITE_SET = new Set(SUITE_REGISTRY);
+function inferRoomType(roomValue) {
+  if (!roomValue) return null;
+  // "Premium Day 1" / "Premium Day 2" — English values set by ArrivalImportPanel
+  if (roomValue.includes("Premium")) return "premium_day_guest";
+  // Any room in the 26-suite registry → suite
+  if (_SUITE_SET.has(roomValue)) return "suite";
+  // Free-text fallback (manual typing): check Hebrew keywords
+  if (roomValue.includes("פרימיום")) return "premium_day_guest";
+  if (roomValue.includes("בילוי יומי")) return "day_guest";
+  // Unknown value — don't overwrite what the manager chose
+  return null;
+}
+
 export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock }) {
   const isEdit = !!guest.id;
   const isDrawer = dock === "right";
@@ -31,7 +49,7 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
     requires_attention: !!guest.requires_attention,
     needs_callback:     !!guest.needs_callback,
     room:               guest.room                 ?? "",
-    room_type:          guest.room_type            ?? "standard",
+    room_type:          guest.room_type            ?? "suite",
     meal_time:          guest.meal_time            ?? "",
     // Default to Armonim for a NEW guest only — "ARMONIM RESTAURANT DEFAULT"
     // session, saves reception repetitive typing. An existing guest whose
@@ -213,7 +231,15 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
           <label style={{ fontSize: 12, fontWeight: 700, display: "block", marginBottom: 4 }}>חדר / חבילה</label>
           <select
             value={form.room ?? ""}
-            onChange={(e) => setField("room", e.target.value)}
+            onChange={(e) => {
+              const newRoom = e.target.value;
+              const inferred = inferRoomType(newRoom);
+              setForm((p) => ({
+                ...p,
+                room: newRoom,
+                ...(inferred ? { room_type: inferred } : {}),
+              }));
+            }}
             disabled={saving}
             style={{
               width: "100%", padding: "9px 12px", border: "1px solid var(--border,#ddd)",
@@ -236,13 +262,15 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
           </select>
         </div>
 
-        {/* Room type — drives day_guest/standard/suite badges + tab bucketing
-            in GuestDashboard.js. Independent of the room/suite name above so
-            staff can still flag a guest as a day guest without clearing room. */}
+        {/* Room type — drives day_guest/premium_day_guest/suite badges + tab bucketing
+            in GuestDashboard.js. Auto-inferred when a room is selected above;
+            still fully editable so staff can correct an inference.
+            "standard" (legacy DB value) is not shown as a selectable option —
+            existing rows with that value display as ⚠ standard (FAIL VISIBLE §0.3). */}
         <div style={{ marginBottom: 14 }}>
           <label style={{ fontSize: 12, fontWeight: 700, display: "block", marginBottom: 4 }}>סוג שיוך</label>
           <select
-            value={form.room_type ?? "standard"}
+            value={form.room_type ?? "suite"}
             onChange={(e) => setField("room_type", e.target.value)}
             disabled={saving}
             style={{
@@ -252,8 +280,14 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
             }}
           >
             <option value="day_guest">🏊 בילוי יומי</option>
-            <option value="standard">🏨 חדר רגיל</option>
+            <option value="premium_day_guest">⭐ פרימיום בילוי יומי</option>
             <option value="suite">👑 סוויטה</option>
+            {/* Render legacy value only when the loaded guest actually has it,
+                so it appears in the dropdown instead of silently snapping to
+                the first option — FAIL VISIBLE §0.3. */}
+            {form.room_type === "standard" && (
+              <option value="standard">⚠ standard (ישן)</option>
+            )}
           </select>
         </div>
 

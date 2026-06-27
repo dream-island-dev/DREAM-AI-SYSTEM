@@ -911,7 +911,7 @@ export default function AutomationControlCenter() {
       if (!item) continue;
 
       // Client-side Safety Gate — matches server guard in whatsapp-send BRANCH D.
-      if (item.room_type === "day_guest" && !DAY_PASS_ALLOWED_STAGES.has(item.stageKey)) {
+      if ((item.room_type === "day_guest" || item.room_type === "premium_day_guest") && !DAY_PASS_ALLOWED_STAGES.has(item.stageKey)) {
         results.push({ item, result: "blocked", reason: "day_pass_stage_gate" });
         continue;
       }
@@ -1047,8 +1047,8 @@ export default function AutomationControlCenter() {
       {subTab === "queue" && (() => {
         // ── Segment filtering ─────────────────────────────────────────────
         const allQueue    = queueData?.queue ?? [];
-        const suiteQueue  = allQueue.filter((q) => q.room_type !== "day_guest");
-        const dayPassQueue = allQueue.filter((q) => q.room_type === "day_guest");
+        const suiteQueue  = allQueue.filter((q) => q.room_type !== "day_guest" && q.room_type !== "premium_day_guest");
+        const dayPassQueue = allQueue.filter((q) => q.room_type === "day_guest" || q.room_type === "premium_day_guest");
         const displayQueue = (queueSegment === "daypass" ? dayPassQueue : suiteQueue).slice(0, 100);
 
         // An item is dispatchable if it hasn't been successfully sent yet
@@ -1116,8 +1116,8 @@ export default function AutomationControlCenter() {
                         // We re-derive it here to avoid stale-closure issues.
                         const allQueue    = queueData?.queue ?? [];
                         const displayQ    = (queueSegment === "daypass"
-                          ? allQueue.filter((q) => q.room_type === "day_guest")
-                          : allQueue.filter((q) => q.room_type !== "day_guest")
+                          ? allQueue.filter((q) => q.room_type === "day_guest" || q.room_type === "premium_day_guest")
+                          : allQueue.filter((q) => q.room_type !== "day_guest" && q.room_type !== "premium_day_guest")
                         ).slice(0, 100);
                         handleBulkDispatch(displayQ);
                       }}
@@ -1355,7 +1355,7 @@ export default function AutomationControlCenter() {
                           {displayQueue.map((q, i) => {
                             const itemKey = `${q.guestId}_${q.stageKey}`;
                             const canDispatch = isDispatchable(q);
-                            const isGated = q.room_type === "day_guest" && !DAY_PASS_ALLOWED_STAGES.has(q.stageKey);
+                            const isGated = (q.room_type === "day_guest" || q.room_type === "premium_day_guest") && !DAY_PASS_ALLOWED_STAGES.has(q.stageKey);
                             const isChecked = selectedItems.has(itemKey);
                             return (
                               <tr

@@ -360,7 +360,7 @@ function PortalHero({ guest, phase, countdown }) {
       )}
 
       {/* Guest-type badge for day-use */}
-      {guest.room_type === "day_guest" && (
+      {(guest.room_type === "day_guest" || guest.room_type === "premium_day_guest") && (
         <div style={{
           display: "inline-block", marginTop: 4, marginRight: guest.room ? 8 : 0,
           padding: "5px 12px", borderRadius: 20,
@@ -602,7 +602,9 @@ export default function GuestPortal({ token }) {
   // spoofed (the client has no way to change what room_type the server returned
   // or which upsell_items were filtered-in for it).
   const isSuite  = guest.room_type === "suite";
-  const isDayUse = guest.room_type === "day_guest";
+  // Both regular and premium day-pass guests get the DayUseView (focused portal).
+  // Unknown room_type falls through to SuiteView (safe default — shows more).
+  const isDayUse = guest.room_type === "day_guest" || guest.room_type === "premium_day_guest";
 
   return (
     <div style={pageStyle}>
