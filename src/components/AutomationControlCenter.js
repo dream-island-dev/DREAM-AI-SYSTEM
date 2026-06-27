@@ -754,7 +754,6 @@ function ManualDispatchModal({ item, stages, onClose, onDispatched, showToast })
 
   const selectedStage   = stages.find((s) => s.stage_key === stageKey);
   const hasScriptKey    = !!selectedStage?.session_message_script_key;
-  const predictedChannel = item.predictedChannel;
 
   // When stage changes, revert to meta_template if session is not available.
   useEffect(() => {

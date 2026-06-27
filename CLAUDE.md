@@ -1,6 +1,6 @@
 # CLAUDE.md — Dream Island AI System
 > קובץ זה נקרא אוטומטית בכל שיחה. הוא מקור-האמת שלך. קרא אותו לפני כל פעולה.
-> **עדכון אחרון:** 2026-06-27 (session 56 — **Master template variable sync** (`dream_suite_reminder` + `dream_welcome_morning`). שלושה תיקונים ב-`whatsapp-send/index.ts`: (1) `morning_suite`/`morning_welcome` לא העבירו משתנים `{{2}}`/`{{3}}` כלל — נוסף `resolveDayTimings()` synchronous: ראשון–שישי → 12:00/15:00, שבת → 15:00/18:00, מוזרק ל-`PIPELINE_VARS` של שני הטריגרים. (2) `portalButtonParam` היה night_before בלבד — הורחב ל-`PORTAL_BUTTON_TRIGGERS = {night_before, morning_suite, morning_welcome}` כך שגם הודעות בוקר-ההגעה מזריקות את `portal_token` לכפתור ה-URL. (3) `resolveNightBeforeTimes()` זרק שגיאה כשמפתחות שבת ב-`bot_config` ריקים — הוחלף ב-warn + fallback 15:00/18:00 כך שאורח שמגיע בשבת מקבל הודעה במקום כלום. `npm run build` נקי, נפרס לפרודקשן, pushed (c75a919). ראה §10 session 56.)(session 55 — **Meta template IMAGE header fix.** `sendViaTemplate` (whatsapp-send) ו-`sendTemplate` (whatsapp-webhook) לא כללו את רכיב ה-`header` ב-components payload — Meta זרק "Format mismatch, expected IMAGE, received UNKNOWN" לכל תבנית עם Media Header כגון `dream_suite_reminder`. תיקון: `TEMPLATE_IMAGE_HEADERS` map חדש בכל פונקציה — mapping שם-תבנית → URL תמונה; אם קיים, רכיב header מוזרק ראשון לפני body/button. נפרס לפרודקשן. ראה §10 session 55. )(session 54 — **Voucher Reconciliation Engine — synthetic validation + `voucher_numbers_match()` bugfix.** Migration 092 תוקן באג בפונקציה: `truncate_4` mode השתמש ב-`left(v_easygo_norm, length-4)` שחתך 4 *תווים* אחרונים — כשיש מפריד (e.g. `'999888-4321'`) נשאר `'999888-'` (עם מקף) שלא תאם את `'999888'` של הספק. תיקון: שלב נרמול חדש `regexp_replace(..., '[^A-Z0-9]', '', 'g')` על שני הצדדים לפני הקטיעה — מיישר `'999888-4321'`→`'9998884321'`→`'999888'` ✅. 8 בדיקות inline ב-migration עצמו (`DO $$ ... $$`) אוכפות את הנכונות בזמן deploy. נוסף גם `supabase/tests/voucher_reconciliation_e2e_test.sql`: 5 תרחישים מלאים (INSERT→RPC→assert→ROLLBACK) שניתן להריץ ב-Supabase SQL Editor בכל עת. `exact` mode (Hever/Nofshonit) לא שונה — בדיקה B מוכיחה שמפריד גורם לאי-התאמה כצפוי. ראה §10 session 54 לפירוט.) (session 53 — **Real-time Meta template sync buttons** נוספו ל-`WhatsAppInbox.js` (NewChatModal) ו-`BroadcastDashboard.js`: כפתור "🔄 סנכרן תבניות" שמאפשר לסגל לרענן את רשימת התבניות המאושרות מ-Meta בלי לרענן את הדף. `fetchTemplates` חולץ ל-`useCallback` בשני הקבצים. `npm run build` נקי. committed+pushed (8251e4a). ראה §10 session 53 לפירוט.) (session 52 — **RESORT_UI_MANIFEST.md** נוצר (root) כמקור-אמת נפרד ל-UI/UX philosophy + tab-readiness checklist, ואז **automated repair pass** סגר 7 מתוך הממצאים שהוא תיעד: silent/misleading error states ב-`AdminPanel.js`(×2)/`WhatsAppInbox.js`(×2)/`AutomationControlCenter.js`/`InventoryImportPanel.js` + tablet-grid layout gaps ב-`RoomBoard.js`/`HousekeepingTabletView.js`/`AICopilot.js`. `npm run build` נקי אחרי כל קובץ. CSS-variable drift (~150 hardcoded hex) ו-`AutomationControlCenter`'s tablet media-query נשארו **בכוונה** לא-מטופלים (out of scope, לפי הנחיית Mike). ראה §10 session 52 לפירוט מלא + §0 בהמשך לסשן 51 שנשאר מתועד למטה.)
+> **עדכון אחרון:** 2026-06-28 (session 57 — **System Audit & Cleanup.** (1) Security purge: הוסרו `MOCK_USERS` array + admin bypass block מ-`App.js`, display table ו-prop מ-`AdminPanel.js`, hardcoded default password `"1234"` מ-`invite-user/index.ts` (replaced by enforced 8-char minimum). (2) Bug fix — `guest-portal-data`: PostgREST `cs` DB-level filter הוחלף בסינון JS דו-שלבי: Level 1 (scene visibility) → Level 2 (CTA visibility per kept scene) — תוקן באג שהפיל סצנות שלמות ל-day_guest במקום לסנן רק CTAs פנימיים. (3) Day-pass Stage 5 audit: `checkout_fb` כבר היה ב-`DAY_PASS_ALLOWED_TRIGGERS` ו-`DAY_PASS_ALLOWED_STAGES` — תוקן רק טקסט "שלושה שלבים בלבד" → "ארבעה שלבים" + comment בקוד. (4) Dead code: הוסר משתנה `predictedChannel` לא-בשימוש ב-`AutomationControlCenter.js` — build `Compiled successfully.` ללא warnings. ראה §10 session 57.)(session 56 — **Master template variable sync** (`dream_suite_reminder` + `dream_welcome_morning`). שלושה תיקונים ב-`whatsapp-send/index.ts`: (1) `morning_suite`/`morning_welcome` לא העבירו משתנים `{{2}}`/`{{3}}` כלל — נוסף `resolveDayTimings()` synchronous: ראשון–שישי → 12:00/15:00, שבת → 15:00/18:00, מוזרק ל-`PIPELINE_VARS` של שני הטריגרים. (2) `portalButtonParam` היה night_before בלבד — הורחב ל-`PORTAL_BUTTON_TRIGGERS = {night_before, morning_suite, morning_welcome}` כך שגם הודעות בוקר-ההגעה מזריקות את `portal_token` לכפתור ה-URL. (3) `resolveNightBeforeTimes()` זרק שגיאה כשמפתחות שבת ב-`bot_config` ריקים — הוחלף ב-warn + fallback 15:00/18:00 כך שאורח שמגיע בשבת מקבל הודעה במקום כלום. `npm run build` נקי, נפרס לפרודקשן, pushed (c75a919). ראה §10 session 56.)(session 55 — **Meta template IMAGE header fix.** `sendViaTemplate` (whatsapp-send) ו-`sendTemplate` (whatsapp-webhook) לא כללו את רכיב ה-`header` ב-components payload — Meta זרק "Format mismatch, expected IMAGE, received UNKNOWN" לכל תבנית עם Media Header כגון `dream_suite_reminder`. תיקון: `TEMPLATE_IMAGE_HEADERS` map חדש בכל פונקציה — mapping שם-תבנית → URL תמונה; אם קיים, רכיב header מוזרק ראשון לפני body/button. נפרס לפרודקשן. ראה §10 session 55. )(session 54 — **Voucher Reconciliation Engine — synthetic validation + `voucher_numbers_match()` bugfix.** Migration 092 תוקן באג בפונקציה: `truncate_4` mode השתמש ב-`left(v_easygo_norm, length-4)` שחתך 4 *תווים* אחרונים — כשיש מפריד (e.g. `'999888-4321'`) נשאר `'999888-'` (עם מקף) שלא תאם את `'999888'` של הספק. תיקון: שלב נרמול חדש `regexp_replace(..., '[^A-Z0-9]', '', 'g')` על שני הצדדים לפני הקטיעה — מיישר `'999888-4321'`→`'9998884321'`→`'999888'` ✅. 8 בדיקות inline ב-migration עצמו (`DO $$ ... $$`) אוכפות את הנכונות בזמן deploy. נוסף גם `supabase/tests/voucher_reconciliation_e2e_test.sql`: 5 תרחישים מלאים (INSERT→RPC→assert→ROLLBACK) שניתן להריץ ב-Supabase SQL Editor בכל עת. `exact` mode (Hever/Nofshonit) לא שונה — בדיקה B מוכיחה שמפריד גורם לאי-התאמה כצפוי. ראה §10 session 54 לפירוט.) (session 53 — **Real-time Meta template sync buttons** נוספו ל-`WhatsAppInbox.js` (NewChatModal) ו-`BroadcastDashboard.js`: כפתור "🔄 סנכרן תבניות" שמאפשר לסגל לרענן את רשימת התבניות המאושרות מ-Meta בלי לרענן את הדף. `fetchTemplates` חולץ ל-`useCallback` בשני הקבצים. `npm run build` נקי. committed+pushed (8251e4a). ראה §10 session 53 לפירוט.) (session 52 — **RESORT_UI_MANIFEST.md** נוצר (root) כמקור-אמת נפרד ל-UI/UX philosophy + tab-readiness checklist, ואז **automated repair pass** סגר 7 מתוך הממצאים שהוא תיעד: silent/misleading error states ב-`AdminPanel.js`(×2)/`WhatsAppInbox.js`(×2)/`AutomationControlCenter.js`/`InventoryImportPanel.js` + tablet-grid layout gaps ב-`RoomBoard.js`/`HousekeepingTabletView.js`/`AICopilot.js`. `npm run build` נקי אחרי כל קובץ. CSS-variable drift (~150 hardcoded hex) ו-`AutomationControlCenter`'s tablet media-query נשארו **בכוונה** לא-מטופלים (out of scope, לפי הנחיית Mike). ראה §10 session 52 לפירוט מלא + §0 בהמשך לסשן 51 שנשאר מתועד למטה.)
 >
 > 📚 **היסטוריית הסשנים המלאה (sessions 2–44) הועברה ל-[`claude_history.md`](claude_history.md)** כדי לשמור את הקובץ הזה קליל. שום מידע לא נמחק — רק הופרד. הקובץ הזה מחזיק את **רפרנס הארכיטקטורה החי** (§0–§13); הקובץ ההוא מחזיק את הנרטיב ההיסטורי. כשצריך הקשר מפורט על באג/החלטה ישנה — קרא שם.
 >
@@ -198,16 +198,29 @@ DREAM-AI-SYSTEM/
 │       │                            את עצמו בשקט אם הקובץ לא קיים (⚠️ הוא **לא** קיים כיום ב-
 │       │                            public/ — רק icon-192/512.png) — לא שובר את הדף, רק חוסר
 │       │                            לוגו עד שיועלה קובץ אמיתי.
+│       │                            ★ session 57: מקבל כעת `portalScenes` מ-`guest-portal-data`
+│       │                            (כבר מסוננות server-side לפי `room_type` של האורח, ראה
+│       │                            תיעוד `guest-portal-data` למטה) ומעביר אותן ל-`PhotoTour`
+│       │                            כ-`scenesProp`. ניהול הסצנות והCTAs בUI — ראה `PortalSettingsPanel.js`.
 │       ├── PhotoTour.js          ★ NEW (session 35) — scrollytelling virtual tour, ללא three.js/
 │       │                            ספריית 3D. כל "סצנה" = section בגובה `100vh` עם
 │       │                            IntersectionObserver (לא scroll-listener כבד) שמחליף opacity/
 │       │                            transform ב-CSS transition — crossfade דרך CSS, לא JS. רקע =
 │       │                            `linear-gradient(...), url(...)` — אם ה-JPG חסר (תמיד היום,
 │       │                            ראה למעלה) השכבה השנייה פשוט לא נצבעת והגרדיאנט נשאר, אז שום
-│       │                            סצנה לא נראית "שבורה" גם בלי תמונות אמיתיות. 4 סצנות קבועות
-│       │                            (`SCENES` קונסט) עם CTAs של upsell ב-2 מהן (ספא; יין+שמפניה).
-│       │                            קליק על CTA → `onUpsell(upsellLabel)` prop (מ-GuestPortal) →
-│       │                            `guest-portal-upsell`.
+│       │                            סצנה לא נראית "שבורה" גם בלי תמונות אמיתיות.
+│       │                            ★ session 57: קיבל prop `scenesProp` (מ-GuestPortal.js). כשהprop
+│       │                            קיים — משתמש בסצנות המסוננות-server-side ישירות (room_type-aware,
+│       │                            CTAs כבר מסוננות, ראה `guest-portal-data`). כשהprop חסר — fallback
+│       │                            ל-`SCENES` קונסט סטטי (4 סצנות) לתצוגות admin/offline. קליק CTA
+│       │                            → `onUpsell(upsellLabel)` prop (מ-GuestPortal) → `guest-portal-upsell`.
+│       ├── PortalSettingsPanel.js ★ NEW (session 57) — Admin panel לניהול פורטל האורח. מאפשר לצוות
+│       │                            לנהל `portal_scenes` (כותרת/גוף/תמונה/CTAs/`visibility_settings`/
+│       │                            `sort_order`/`is_active`) ו-`upsell_items` (שם/קטגוריה/מחיר/
+│       │                            `visibility_settings` — מחליף `target_audience` הישן). כל שדה
+│       │                            `visibility_settings` הוא `TEXT[]` — checkboxes per room_type
+│       │                            (`suite`/`day_guest`/`premium_day_guest`). שינויים נשמרים ב-DB
+│       │                            ומשתקפים מיד בפורטל (server-side filtering ב-`guest-portal-data`).
 │       ├── UserManagement.js     21KB  ניהול משתמשים
 │       ├── AgentChat.js          ⚠️ session 47 — ORPHANED. `case "agent"` ב-App.js לא מרכיב אותו
 │       │                            יותר (הוחלף ב-InventoryHub.js, ראה למטה) — קוד+דאטה נשארו
@@ -558,6 +571,19 @@ DREAM-AI-SYSTEM/
 │   │                                (`inventory_items`/`inventory_portal_links`/`inventory_submissions`/
 │   │                                `inventory_counts`, RLS authenticated) + RPC `upsert_inventory_items`
 │   │                                (מראה את `sync_suite_arrivals`/migration 046). ראה §10 session 47.
+│   ├── 091_voucher_reconciliation_engine.sql    applied ✅ — ★ session 49: 4 טבלאות שוברים + RPC + voucher_numbers_match().
+│   ├── 092_voucher_match_fix.sql                applied ✅ — ★ session 54: bugfix truncate_4 + 8 inline self-tests.
+│   ├── 093_upsell_items_and_guest_orders.sql    applied ✅ — upsell_items קטלוג + guest_orders.
+│   ├── 094_night_before_daypass_and_morning_daypass.sql applied ✅ — Stage 2.5 split: night_before_daypass + morning_daypass bot_script.
+│   ├── 095_upsell_items_link_url.sql            applied ✅ — upsell_items.link_url.
+│   ├── 096_premium_day_guest_room_type.sql      applied ✅ — room_type CHECK + 'premium_day_guest'.
+│   ├── 097_upsell_items_visibility_settings.sql applied ✅ — ★ session 57: visibility_settings TEXT[] מחליף target_audience
+│   │                                (backfill מ-target_audience, vocabulary translation suite/day_use→day_guest),
+│   │                                GIN index `idx_upsell_items_visibility`, inline self-test. ראה §10 session 57.
+│   └── 098_portal_scenes_visibility.sql         applied ✅ — ★ session 57: portal_scenes.visibility_settings TEXT[] +
+│                                   GIN index `idx_portal_scenes_visibility` + inline self-test.
+│                                   Level 1 scene visibility gate (filtered in JS, not DB — see guest-portal-data §3).
+│                                   Level 2 CTA visibility: per-cta `visibility` key in JSONB, no schema migration needed.
 │   └── functions/
 │       ├── chat/                deployed ✅ — Gemini 2.5→Claude fallback
 │       ├── suggest-replies/     ★ NEW (session 34) — Smart Inbox AI Copilot. Stateless: לא קורא
@@ -576,6 +602,18 @@ DREAM-AI-SYSTEM/
 │       │                            לא-בצורת-UUID (typo/קישור פגום) זרק שגיאת Postgres גולמית
 │       │                            ("invalid input syntax for type uuid") במקום guest_not_found
 │       │                            נקי — נוסף regex guard לפני השאילתה. ראה §10 session 35.
+│       │                            ★ session 57: Two-Level Portal Segmentation (server-authoritative).
+│       │                            `upsell_items` נשלפים עם DB-level filter `visibility_settings @>
+│       │                            ARRAY[guestRoomType]` (GIN index — migration 097). `portal_scenes`
+│       │                            נשלפים **ללא** DB filter (כל הסצנות הפעילות), ואז מסוננות ב-JS
+│       │                            בשני שלבים: **Level 1** — סינון סצנה (scene.visibility_settings
+│       │                            חייב לכלול `guestRoomType`; סצנה שנחסמת = `continue`, לא נכנסת
+│       │                            לתשובה כלל). **Level 2** — סינון CTA בתוך סצנה שעברה Level 1
+│       │                            (cta.visibility ריק = כל האורחים, אחרת רק room_types מפורשים).
+│       │                            ✅ הכיוון הזה (לא DB-level לסצנות) נכון: DB-level filter היה
+│       │                            מפיל סצנות שלמות לפני שCTAs בכלל נבדקו — הbאג המקורי.
+│       │                            ⚠️ אם `guestRoomType` לא ידוע/null: כל הסצנות וכל הCTAs עוברים
+│       │                            (backward compat — אורח רואה יותר, לא פחות).
 │       ├── guest-portal-upsell/ ★ NEW (session 35) — In-Scroll One-Click "REQUEST"-type Upsells.
 │       │                            אותו token guard. מאתר guest לפי portal_token → insert ל-
 │       │                            `guest_alerts` (alert_type='upsell_opportunity') — **תיעוד
@@ -846,6 +884,8 @@ switch (activePage) {
 | `voucher_provider_reports` | ★ NEW (session 49, migration 091) — שורות מדוח הספק (מקור האמת למה שהאורח שילם עליו בפועל). `voucher_number` nullable בכוונה — שורה לא-קריאה עדיין נכנסת ומופיעה כ-`unparseable` exception, לא נעלמת (Zero Data Loss §0.1) | authenticated |
 | `voucher_easygo_records` | ★ NEW (session 49, migration 091) — שורות מ"דוח השוברים של EasyGo" (מה שהצוות בפועל הזמין). `provider_id` nullable — `run_voucher_reconciliation` מנסה כל ספק רלוונטי כשלא תויג | authenticated |
 | `voucher_reconciliation_results` | ★ NEW (session 49, migration 091) — תוצאת כל השוואה: `match_status` (matched/package_mismatch/duplicate_match/missing_in_easygo/missing_in_provider/unparseable) + `review_status` נפרד (pending/approved/rejected/resolved) — אותו דגם דו-סטטוס כמו `spa_staging`. **ללא DELETE policy בכוונה** (נתון פיננסי-אדג'ייסנט) | authenticated |
+| `upsell_items` | ★ NEW (session 57, migration 093+097) — קטלוג פריטי upsell לפורטל האורח (ספא, פעילויות, F&B). `visibility_settings TEXT[]` (migration 097) — מחליף `target_audience` הישן (נשמר כ-legacy column, לא נמחק). ערכים חוקיים: `'suite'`/`'day_guest'`/`'premium_day_guest'`. DB-level filter `@>` (GIN index `idx_upsell_items_visibility`) משמש ב-`guest-portal-data`. | authenticated |
+| `portal_scenes` | ★ NEW (session 57, migration 098) — סצנות הscrolltelling של `PhotoTour.js`. `visibility_settings TEXT[]` — Level 1 gate (כל room_types ברירת מחדל = כולם רואים). `ctas JSONB[]` — כל CTA יכול לכלול `"visibility": ["suite"]` optional key (Level 2 gate). **מסוננות ב-JS, לא ב-DB** — ראה `guest-portal-data`. GIN index `idx_portal_scenes_visibility`. | public read (legacy + service_role on portal) |
 
 ### פורמטי טלפון — חיוני להבנה
 ```
@@ -1412,6 +1452,16 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
   - **טבלה חדשה אחת** — `voice_call_logs` (אותו תפקיד audit כמו `whatsapp_conversations`/`notification_log` לערוצים שלהם) — שיחה שלא זוהתה כאורח עדיין נרשמת (Zero Data Loss, §0.1).
   - ⚠️ **3 הכרעות פתוחות ל-Mike לפני שנכתב קוד כלשהו:** (1) Vapi vs Retell vs אחר — **גייטד על בדיקת עברית חיה (STT/TTS)**, לא על מחיר/פיצ'רים. (2) האם ה-PBX של המלון בכלל תומך בהעברת שיחה פעילה למספר חיצוני. (3) רשימת השדות הבטוחים ל-`lookup_guest` — מה מתקשר לא-מאומת רשאי לשמוע על אורח/חדר.
   - דיאגרמת ארכיטקטורה (telephony bridge ← outside Supabase → `voice-ai-webhook` → guests/tasks/room_status קיימים + `voice_call_logs` חדש → Whapi ops group קיים) הוצגה ויזואלית ל-Mike באותו סשן.
+
+#### session 57 — 2026-06-28 (System Audit & Cleanup — Security, Segmentation Bug, Dead Code, Docs)
+> הקשר: audit מקיף לאחר סיום ה-"Manual Dispatcher, Segmentation Engine, Security Purge, Feedback Routing" sprint — ארבעה ממצאים אמיתיים, כולם תוקנו בסשן זה.
+
+- ✅ **Security Purge.** (1) `App.js`: הוסרו `MOCK_USERS` array (42-69), ה-check block שבדק אותם לפני Supabase Auth ב-`handleLogin` (730-735), ו-JSX table שהציג credentials על מסך הlogin (792-822). (2) `AdminPanel.js`: הוסרה `mockUsers` prop + JSX table "משתמשי דמו (Mock)" מ-`UsersTab`. (3) `invite-user/index.ts`: הוסר default password `"1234"` — מוחלף באימות מפורש `password.length >= 8` עם שגיאה ברורה בכשל. כל שלושת ה-builds עברו נקיים.
+- ✅ **Bug fix — scene/CTA two-level segmentation (`guest-portal-data/index.ts`).** PostgREST `cs` (array-contains) filter ב-DB-level ל-`portal_scenes` הוסר. סיבת הבאג: ה-filter הוחל לפני שCTAs נבדקו בכלל — סצנה עם `visibility_settings=['suite','day_guest']` שהייתה **אמורה** לעבור ל-day_guest נפלה בגלל CTA פנימי שהיה restricted. **תיקון**: (1) Level 1 (scene visibility) — לולאה ב-JS: אם `scene.visibility_settings` לא כולל `guestRoomType` → `continue`. (2) Level 2 (CTA visibility) — filter על `ctas[]` של כל סצנה שעברה Level 1: CTA ללא `visibility` key = כולם רואים; CTA עם `visibility` = רק room_types ברשימה. הסצנה עצמה תמיד נשלחת אם עברה Level 1 — גם אם כל CTAs סוננו. `npm run build` נקי, `npx supabase functions deploy guest-portal-data --no-verify-jwt` נפרס.
+- ✅ **Day-pass Stage 5 audit.** `checkout_fb` כבר נמצא ב-`DAY_PASS_ALLOWED_TRIGGERS` (whatsapp-send) וב-`DAY_PASS_ALLOWED_STAGES` + `DAY_PASS_ALLOWED_FOR_MODAL` (AutomationControlCenter) — אין שינוי לוגי נדרש. תיקונים: (1) banner text "שלושה שלבים בלבד" → "ארבעה שלבים בלבד" (`AutomationControlCenter.js:1430`). (2) code comment ב-whatsapp-send (lines 764-768) עודכן לכלול Stage 3 (morning_welcome) שהיה חסר. committed+pushed (3585ea8).
+- ✅ **Dead code removal.** `predictedChannel` — משתנה שהוקצה ב-`ManualDispatchModal` (AutomationControlCenter.js:757) מ-`item.predictedChannel` אבל לא נוצל בפונקציה (JSX משתמש ב-`q.predictedChannel` ישירות, לא ב-local var). הוסר. Build עבר עם `Compiled successfully.` ואפס warnings.
+- ✅ **GIN index verification (migrations 097 + 098).** שני indexes אומתו בקריאת migration: `idx_upsell_items_visibility ON upsell_items USING GIN (visibility_settings)` (097) + `idx_portal_scenes_visibility ON portal_scenes USING GIN (visibility_settings)` (098). שניהם כוללים inline DO $$ self-tests שרצו בזמן ה-deploy ועברו.
+- ✅ **CLAUDE.md עודכן** — header, GuestPortal.js/PhotoTour.js/PortalSettingsPanel.js entries, guest-portal-data (two-level), migration list (091-098), DB tables (upsell_items/portal_scenes), session history.
 
 #### session 56 — 2026-06-27 (Master template variable sync — dream_suite_reminder + dream_welcome_morning)
 > הקשר: שלושה פערים בטעינת משתנים דינמיים לתבניות WhatsApp שנשלחות אוטומטית.
