@@ -51,6 +51,10 @@ const RESORT_CONTACT_PHONE = Deno.env.get("RESORT_CONTACT_PHONE") ?? "054-000000
 // Set WORKSHOP_SIGNUP_URL in Supabase Secrets once the user provides the link.
 const WORKSHOP_SIGNUP_URL = Deno.env.get("WORKSHOP_SIGNUP_URL") ?? "dream-island.co.il/workshops";
 
+// Guest portal base URL — used to expand {{portal_url}} in bot_script free-text bodies.
+// Matches the live Vercel deployment (CLAUDE.md §1 Live URL).
+const PORTAL_BASE_URL = "https://dream-ai-system.vercel.app";
+
 // ── Pipeline trigger → approved WA template name ─────────────────────────────
 // Each key maps to a template registered & approved in Meta WhatsApp Manager.
 //
@@ -899,7 +903,12 @@ serve(async (req: Request) => {
                 ` has no message_text — cannot send free-form night_before`
               );
             }
-            const textBody = rawText.replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, nightBeforeDispatch.guestName);
+            const nbPortalUrl = guest.portal_token
+              ? `${PORTAL_BASE_URL}/portal/${guest.portal_token as string}`
+              : "";
+            const textBody = rawText
+              .replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, nightBeforeDispatch.guestName)
+              .replace(/\{\{\s*portal_url\s*\}\}/gi, nbPortalUrl);
             await sendViaMeta(String(guest.phone), textBody);
           } else {
             // Template path: TEMPLATE_IMAGE_HEADERS guarantees the IMAGE header
@@ -1011,7 +1020,12 @@ serve(async (req: Request) => {
               await sendViaTemplate(String(guest.phone), "dream_welcome_morning", [dpGuestName], "he",
                 (guest.portal_token as string | null) ?? undefined);
             } else {
-              const body = rawText.replace(/\{\{GUEST_NAME\}\}/gi, dpGuestName);
+              const dpPortalUrl = guest.portal_token
+                ? `${PORTAL_BASE_URL}/portal/${guest.portal_token as string}`
+                : "";
+              const body = rawText
+                .replace(/\{\{GUEST_NAME\}\}/gi, dpGuestName)
+                .replace(/\{\{\s*portal_url\s*\}\}/gi, dpPortalUrl);
               await sendViaMeta(String(guest.phone), body);
             }
           } else {
@@ -1236,11 +1250,12 @@ serve(async (req: Request) => {
         const rawText = scriptRow?.message_text?.trim();
         if (rawText) {
           const guestName = (String(guest.name ?? "").trim()) || "אורח יקר";
-          // {{GUEST_NAME}} is the only named placeholder in session-message scripts.
-          // night_before is handled by its own fast-path above and never reaches
-          // this branch — the entry_time/check_in_time substitutions it used to
-          // perform here have been removed along with that path.
-          const body = rawText.replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, guestName);
+          const portalUrl = guest.portal_token
+            ? `${PORTAL_BASE_URL}/portal/${guest.portal_token as string}`
+            : "";
+          const body = rawText
+            .replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, guestName)
+            .replace(/\{\{\s*portal_url\s*\}\}/gi, portalUrl);
           sessionBody = body;
           sessionButtons = (stageRow.interactive_buttons ?? []) as typeof sessionButtons;
           sessionImageUrl = stageRow.session_message_image_url ?? null;
