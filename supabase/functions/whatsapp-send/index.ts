@@ -750,26 +750,27 @@ serve(async (req: Request) => {
     if (!guest) throw new Error(`guest_not_found: no guest row for id=${JSON.stringify(guestId)}`);
 
     // ── Day Pass Safety Gate ─────────────────────────────────────────────────
-    // Day Pass guests (room_type='day_guest') are entitled to Stage 1
-    // (pre_arrival_2d — arrival confirmation) and Stage 5 (checkout_fb —
-    // post-stay feedback) ONLY. Suite-specific stages (night_before, morning_*,
-    // mid_stay, room_ready) are blocked here as a server-side authoritative
-    // guard. The UI enforces the same rule for UX clarity but this is the
-    // canonical enforcement point (CLAUDE.md §0.1 Zero Data Loss — a day-pass
-    // guest must never silently receive a suite welcome or mid-stay message
-    // that references spa/suite amenities they don't have).
-    const DAY_PASS_ALLOWED_TRIGGERS = new Set(["pre_arrival_2d", "checkout_fb"]);
+    // Day Pass guests (room_type='day_guest') are entitled to:
+    //   Stage 1   pre_arrival_2d  — arrival confirmation
+    //   Stage 2.5 night_before    — evening-before reminder (bifurcated template, see below)
+    //   Stage 5   checkout_fb     — post-stay feedback
+    // Suite-specific stages (morning_*, mid_stay, room_ready) remain blocked as a
+    // server-side authoritative guard. The UI enforces the same rule for UX clarity
+    // but this is the canonical enforcement point (CLAUDE.md §0.1 Zero Data Loss —
+    // a day-pass guest must never silently receive a suite welcome or mid-stay
+    // message that references spa/suite amenities they don't have).
+    const DAY_PASS_ALLOWED_TRIGGERS = new Set(["pre_arrival_2d", "night_before", "checkout_fb"]);
     if (guest.room_type === "day_guest" && !DAY_PASS_ALLOWED_TRIGGERS.has(trigger)) {
       console.warn(
         `[whatsapp-send] day_pass_stage_gate: trigger="${trigger}" blocked for ` +
-        `guest_id=${guestId} (room_type=day_guest) — allowed: pre_arrival_2d, checkout_fb`,
+        `guest_id=${guestId} (room_type=day_guest) — allowed: pre_arrival_2d, night_before, checkout_fb`,
       );
       return new Response(
         JSON.stringify({
           ok: false,
           status: "blocked",
           reason: "day_pass_stage_gate",
-          error: `שלב "${trigger}" אינו מורשה לאורחי יום-כיף — מותרים: אישור הגעה ומשוב בלבד`,
+          error: `שלב "${trigger}" אינו מורשה לאורחי יום-כיף — מותרים: אישור הגעה, תזכורת ערב לפני, ומשוב`,
         }),
         { headers: { ...CORS, "Content-Type": "application/json" } },
       );
@@ -804,11 +805,15 @@ serve(async (req: Request) => {
     // Decision tree:
     //   1. Query whatsapp_conversations for guest's last inbound timestamp.
     //   2. If within 24 hours  → channel = "text" (free-form, open session).
+    //      Same script key (night_before_reminder) for all guest types.
     //   3. If > 24h OR null    → channel = "template" (safety gate: no inbound
     //      record defaults to template, the most conservative choice).
-    //      Template routing (Shabbat hard-coded into template body, NOT vars):
-    //        Saturday  → night_before_suites_shabbat
-    //        Sun–Fri   → night_before_suites
+    //      Template routing — BIFURCATED by room_type:
+    //        day_guest (any day-pass variant):
+    //          → dream_checkin_reminder_v2  (flat, no Shabbat split required)
+    //        suite / standard:
+    //          Saturday  → night_before_suites_shabbat
+    //          Sun–Fri   → night_before_suites
     //      Variable mapping (HARDENED):
     //        {{1}} = guest name ONLY. {{2}} / {{3}} are REMOVED — the template
     //        body is now static; the Shabbat variant is a separate approved
@@ -849,12 +854,27 @@ serve(async (req: Request) => {
         nightBeforeDispatch = { channel: "text", freeTextKey: "night_before_reminder", guestName };
       } else {
         // Outside window OR no prior inbound — use a static approved template.
-        // Shabbat routing: arrival_date is a DATE column, parse as UTC midnight
-        // to match Postgres semantics and prevent GMT-shift on the UTC day boundary.
+        // Bifurcated by room_type: day-pass guests get dream_checkin_reminder_v2
+        // (language appropriate for a day-pass visit, no suite/spa references).
+        // Suite guests get the Shabbat-aware pair as before.
+        // arrival_date is a DATE column — parse as UTC midnight to match Postgres
+        // semantics and prevent GMT-shift on the UTC day boundary.
         const arrivalDateStr = String(guest.arrival_date ?? "");
         const arrivalDay = new Date(`${arrivalDateStr}T00:00:00Z`).getUTCDay();
         const isShabbat = arrivalDay === 6;
-        const templateName = isShabbat ? "night_before_suites_shabbat" : "night_before_suites";
+        let templateName: string;
+        if (guest.room_type === "day_guest") {
+          // All day-pass variants (regular + Premium Day 1/2) share the same
+          // room_type. dream_checkin_reminder_v2 does not need a Shabbat split —
+          // the template language is appropriate for all arrival days.
+          templateName = "dream_checkin_reminder_v2";
+          console.log(
+            `[whatsapp-send] night_before day_pass_template: guest_id=${guestId}` +
+            ` → dream_checkin_reminder_v2 (room_type=day_guest)`,
+          );
+        } else {
+          templateName = isShabbat ? "night_before_suites_shabbat" : "night_before_suites";
+        }
         // {{1}} = guest name ONLY. No entry/check-in time variables in these templates.
         const vars = sanitizeTemplateVars([guestName]);
         const buttonUrlParam = (guest.portal_token as string | null) ?? undefined;
