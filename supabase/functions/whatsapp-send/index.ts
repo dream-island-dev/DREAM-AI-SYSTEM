@@ -111,14 +111,12 @@ function resolveDayTimings(arrivalDateStr: string): { entryTime: string; checkIn
 // trigger==="night_before" and bypasses this map entirely for it.
 const PIPELINE_VARS: Record<string, (g: Record<string, unknown>) => string[]> = {
   pre_arrival_2d:  (g) => [String(g.name ?? "")],
-  morning_suite:   (g) => {
-    const t = resolveDayTimings(String(g.arrival_date ?? ""));
-    return [String(g.name ?? ""), t.entryTime, t.checkInTime];
-  },
-  morning_welcome: (g) => {
-    const t = resolveDayTimings(String(g.arrival_date ?? ""));
-    return [String(g.name ?? ""), t.entryTime, t.checkInTime];
-  },
+  // {{1}} = guest name only. Entry/check-in times are now baked into each template's
+  // body text (separate weekday vs Shabbat approved templates). The morning fast-path
+  // below selects the correct template deterministically — this entry is a safety net
+  // for any code path that bypasses that fast-path (should never fire in practice).
+  morning_suite:   (g) => [String(g.name ?? "")],
+  morning_welcome: (g) => [String(g.name ?? "")],
   room_ready:      (g) => [String(g.name ?? ""), String(g.room ?? g.suite_name ?? "")],
   mid_stay:        (g) => [String(g.name ?? "")],
   checkout_fb:     (g) => [String(g.name ?? "")],
@@ -281,9 +279,14 @@ async function sendViaMeta(to: string, body: string): Promise<void> {
 // components array — Meta rejects without it: "Format mismatch, expected IMAGE,
 // received UNKNOWN". This map is the single place to add / update header URLs
 // when new image-header templates are approved.
+// Every template name that has an IMAGE-type header component must appear here.
+// Meta rejects the send with "Format mismatch, expected IMAGE, received UNKNOWN"
+// when the header component is absent. Add new image-header template names to
+// this map — sendViaTemplate() reads it and injects the header automatically.
 const TEMPLATE_IMAGE_HEADERS: Record<string, string> = {
-  dream_suite_reminder: "https://tzalamnadlan.co.il/wp-content/uploads/2026/default-resort.jpg",
-  night_before_suites:  "https://tzalamnadlan.co.il/wp-content/uploads/2026/default-resort.jpg",
+  dream_suite_reminder:        "https://tzalamnadlan.co.il/wp-content/uploads/2026/default-resort.jpg",
+  night_before_suites:         "https://tzalamnadlan.co.il/wp-content/uploads/2026/default-resort.jpg",
+  night_before_suites_shabbat: "https://tzalamnadlan.co.il/wp-content/uploads/2026/default-resort.jpg",
 };
 
 async function sendViaTemplate(
@@ -352,6 +355,29 @@ async function sendViaTemplate(
 function isWindowOpen(expiresAt: unknown): boolean {
   if (!expiresAt) return false;
   return new Date(expiresAt as string).getTime() > Date.now();
+}
+
+// ── Last inbound message timestamp — 24h compliance engine ────────────────────
+// Queries whatsapp_conversations for the most recent inbound message from a
+// given phone number. Returns null when there is no prior inbound record (new
+// guest who has never replied) OR when the query fails — both cases are treated
+// identically by the caller as "outside window" so the safe path (template send)
+// is always used. Using the raw timestamp (not the pre-computed
+// wa_window_expires_at column) makes the 24h math explicit and independent of
+// whether the webhook had a chance to stamp the guest row.
+async function getLastInboundTimestamp(
+  supabaseClient: ReturnType<typeof createClient>,
+  phone: string,
+): Promise<Date | null> {
+  const { data } = await supabaseClient
+    .from("whatsapp_conversations")
+    .select("created_at")
+    .eq("phone", phone)
+    .eq("direction", "inbound")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  return data?.created_at ? new Date(data.created_at as string) : null;
 }
 
 // Simulation: true when explicitly set OR when Meta credentials are absent.
@@ -726,20 +752,314 @@ serve(async (req: Request) => {
     const tmplName = stageRow?.meta_template_name ?? PIPELINE_TEMPLATE[trigger];
     const flagColumn = stageRow?.guest_flag_column ?? GUEST_FLAG[trigger];
 
-    // ── Stage 2.5 (night_before) — resolve Sabbath/Holiday-aware times once,
-    // shared by both the session-message and Meta-template paths below. A
-    // resolver failure (blank Shabbat config on a Shabbat/holiday arrival)
-    // skips BOTH send attempts entirely rather than guessing — see the
-    // resolveNightBeforeTimes() header comment for why.
-    let nightBeforeTimes: { entryTime: string; checkInTime: string } | null = null;
-    let nightBeforeError: string | null = null;
+    // ── Night-before 24-hour compliance engine ────────────────────────────────
+    // Supersedes the old Shabbat-times resolver (resolveNightBeforeTimes).
+    // Single responsibility: decide HOW to send the night_before stage message
+    // for this specific guest right now — free text or approved template, and
+    // which template — then execute and return early, bypassing the generic
+    // session_message/Meta-template hybrid below entirely.
+    //
+    // Decision tree:
+    //   1. Query whatsapp_conversations for guest's last inbound timestamp.
+    //   2. If within 24 hours  → channel = "text" (free-form, open session).
+    //   3. If > 24h OR null    → channel = "template" (safety gate: no inbound
+    //      record defaults to template, the most conservative choice).
+    //      Template routing (Shabbat hard-coded into template body, NOT vars):
+    //        Saturday  → night_before_suites_shabbat
+    //        Sun–Fri   → night_before_suites
+    //      Variable mapping (HARDENED):
+    //        {{1}} = guest name ONLY. {{2}} / {{3}} are REMOVED — the template
+    //        body is now static; the Shabbat variant is a separate approved
+    //        template, not a variable change. sanitizeTemplateVars() still
+    //        applies to prevent Meta error 131008 on a blank name.
+    //
+    // Only evaluated for trigger === "night_before"; all other triggers fall
+    // through to the existing session_message/Meta-template dispatch below.
+    type NightBeforeDispatch =
+      | { channel: "text";     freeTextKey: string;   guestName: string }
+      | { channel: "template"; templateName: string;  vars: string[];   buttonUrlParam?: string };
+    let nightBeforeDispatch: NightBeforeDispatch | null = null;
+
     if (trigger === "night_before") {
+      const guestName = sanitizeTemplateVars([String(guest.name ?? "")])[0];
+
+      // Query last inbound — fail-safe: any error or missing record is treated
+      // as null (→ template path).  Never throws out of this block.
+      let lastInbound: Date | null = null;
       try {
-        nightBeforeTimes = await resolveNightBeforeTimes(supabase, String(guest.arrival_date ?? ""));
+        lastInbound = await getLastInboundTimestamp(supabase, String(guest.phone ?? ""));
       } catch (e) {
-        nightBeforeError = (e as Error).message;
-        console.error(`[whatsapp-send] night_before time resolution failed for guest ${guestId}:`, nightBeforeError);
+        console.warn(
+          `[whatsapp-send] night_before: last_inbound_message query failed for guest ${guestId}` +
+          ` — defaulting to template (safe path):`,
+          (e as Error).message,
+        );
       }
+
+      const MS_24H = 24 * 60 * 60 * 1000;
+      const isWithin24h = lastInbound !== null && (Date.now() - lastInbound.getTime()) < MS_24H;
+
+      if (isWithin24h) {
+        // Guest has an open session — send the bot_script free-form body.
+        // The script key is the same one the session-message editor uses for
+        // this stage (night_before_reminder), so staff can still edit the copy
+        // in BotScriptEditor without touching this file.
+        nightBeforeDispatch = { channel: "text", freeTextKey: "night_before_reminder", guestName };
+      } else {
+        // Outside window OR no prior inbound — use a static approved template.
+        // Shabbat routing: arrival_date is a DATE column, parse as UTC midnight
+        // to match Postgres semantics and prevent GMT-shift on the UTC day boundary.
+        const arrivalDateStr = String(guest.arrival_date ?? "");
+        const arrivalDay = new Date(`${arrivalDateStr}T00:00:00Z`).getUTCDay();
+        const isShabbat = arrivalDay === 6;
+        const templateName = isShabbat ? "night_before_suites_shabbat" : "night_before_suites";
+        // {{1}} = guest name ONLY. No entry/check-in time variables in these templates.
+        const vars = sanitizeTemplateVars([guestName]);
+        const buttonUrlParam = (guest.portal_token as string | null) ?? undefined;
+        nightBeforeDispatch = { channel: "template", templateName, vars, buttonUrlParam };
+      }
+    }
+
+    // ── Night-before fast-path execution — early return ───────────────────────
+    // Handles the full send + log + flag-stamp for trigger === "night_before"
+    // and exits, bypassing the generic session_message/Meta-template hybrid
+    // below. Other triggers skip this block entirely (nightBeforeDispatch is null).
+    if (nightBeforeDispatch !== null) {
+      let nbStatus = "simulated";
+      let nbError: string | null = null;
+
+      try {
+        if (!sim) {
+          if (nightBeforeDispatch.channel === "text") {
+            // Retrieve the bot_script body and substitute {{GUEST_NAME}}.
+            const { data: scriptRow } = await supabase
+              .from("bot_scripts")
+              .select("message_text")
+              .eq("script_key", nightBeforeDispatch.freeTextKey)
+              .maybeSingle();
+            const rawText = scriptRow?.message_text?.trim();
+            if (!rawText) {
+              throw new Error(
+                `night_before_freetext_script_missing: script_key="${nightBeforeDispatch.freeTextKey}"` +
+                ` has no message_text — cannot send free-form night_before`
+              );
+            }
+            const textBody = rawText.replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, nightBeforeDispatch.guestName);
+            await sendViaMeta(String(guest.phone), textBody);
+          } else {
+            // Template path: TEMPLATE_IMAGE_HEADERS guarantees the IMAGE header
+            // component is injected for both night_before_suites variants, so
+            // Meta never returns "Format mismatch, expected IMAGE, received UNKNOWN".
+            await sendViaTemplate(
+              String(guest.phone),
+              nightBeforeDispatch.templateName,
+              nightBeforeDispatch.vars,
+              "he",
+              nightBeforeDispatch.buttonUrlParam,
+            );
+          }
+          nbStatus = "sent";
+        }
+      } catch (e) {
+        nbError = (e as Error).message;
+        nbStatus = nbError.startsWith("timeout_no_response") ? "timeout" : "failed";
+        console.error(`[whatsapp-send] night_before dispatch ${nbStatus}:`, nbError);
+      }
+
+      // Log outcome — same shape as the existing pipeline log below so
+      // Automation History renders it without special-casing.
+      await supabase.from("notification_log").insert({
+        guest_id:     guestId,
+        recipient:    guest.phone,
+        trigger_type: trigger,
+        channel:      "whatsapp",
+        status:       nbStatus,
+        payload: {
+          channel: nightBeforeDispatch.channel === "text" ? "session_message" : "meta_template",
+          ...(nightBeforeDispatch.channel === "text"
+            ? { scriptKey: nightBeforeDispatch.freeTextKey }
+            : { template: nightBeforeDispatch.templateName, variables: nightBeforeDispatch.vars }),
+          ...(nbError ? { error: nbError } : {}),
+        },
+      });
+
+      // Conversation thread (non-blocking).
+      if (nbStatus === "sent" || nbStatus === "simulated") {
+        try {
+          const { error: convErr } = await supabase.from("whatsapp_conversations").insert({
+            phone:         String(guest.phone),
+            guest_id:      guestId,
+            direction:     "outbound",
+            message:       nightBeforeDispatch.channel === "text"
+              ? `[סקריפט: ${nightBeforeDispatch.freeTextKey}]`
+              : `[תבנית: ${nightBeforeDispatch.templateName}]`,
+            wa_message_id: null,
+          });
+          if (convErr) console.warn("[whatsapp-send] night_before conv log failed (non-blocking):", convErr.message);
+        } catch (e) {
+          console.warn("[whatsapp-send] night_before conv log failed (non-blocking):", (e as Error).message);
+        }
+        // Stamp pipeline flag — sole writer, same as the generic path below.
+        if (flagColumn) {
+          await supabase.from("guests").update({ [flagColumn]: true }).eq("id", guestId);
+        }
+      }
+
+      return new Response(
+        JSON.stringify({
+          ok:         nbStatus === "sent" || nbStatus === "simulated",
+          simulation: sim,
+          status:     nbStatus,
+          channel:    nightBeforeDispatch.channel === "text" ? "session_message" : "meta_template",
+          ...(nightBeforeDispatch.channel === "template"
+            ? { template: nightBeforeDispatch.templateName }
+            : {}),
+          ...(nbError ? { error: nbError } : {}),
+        }),
+        { headers: { ...CORS, "Content-Type": "application/json" } },
+      );
+    }
+
+    // ── Morning-of dispatch — deterministic Shabbat routing ──────────────────
+    // Mirrors the night_before fast-path above. The arrival_date UTC day-of-week
+    // fully determines which approved Meta template is sent — no manual variable
+    // injection is required or permitted.
+    //
+    // Template routing:
+    //   Saturday (getUTCDay() === 6) → dream_welcome_morning_shabbat
+    //                                   (Shabbat entry/check-in times baked in)
+    //   Sunday–Friday               → dream_welcome_morning
+    //                                   (weekday times baked in)
+    //
+    // Variable mapping (HARDENED per task "Transition to Fully Deterministic"):
+    //   {{1}} = guest name ONLY.
+    //   {{2}} / {{3}} are NOT passed — they are no longer template variables;
+    //   the correct times live in the template body text itself. This eliminates
+    //   the variable-sync class of bugs (session 56) by design.
+    //
+    // Safety fallback:
+    //   If the Shabbat template send fails (PENDING, not yet approved, or any
+    //   Meta error) the function retries ONCE with the weekday template and logs
+    //   a warning. A guest with a Saturday arrival receives a message even before
+    //   the Shabbat template is approved — with slightly conservative wording
+    //   rather than nothing at all. A weekday template failure is a real error
+    //   and is NOT retried.
+    //
+    // Applies to: morning_suite, morning_welcome.
+    // All other triggers fall through (morningDispatch stays null).
+    type MorningDispatch = {
+      primaryTemplate:  string;
+      fallbackTemplate: string;
+      vars:             string[];
+      buttonUrlParam?:  string;
+    };
+    let morningDispatch: MorningDispatch | null = null;
+
+    if (trigger === "morning_suite" || trigger === "morning_welcome") {
+      const arrivalDateStr = String(guest.arrival_date ?? "");
+      const isShabbat = new Date(`${arrivalDateStr}T00:00:00Z`).getUTCDay() === 6;
+      const guestName = sanitizeTemplateVars([String(guest.name ?? "")])[0];
+
+      morningDispatch = {
+        primaryTemplate:  isShabbat ? "dream_welcome_morning_shabbat" : "dream_welcome_morning",
+        fallbackTemplate: "dream_welcome_morning",
+        vars:             [guestName],
+        buttonUrlParam:   (guest.portal_token as string | null) ?? undefined,
+      };
+    }
+
+    // ── Morning-of fast-path execution — early return ─────────────────────────
+    if (morningDispatch !== null) {
+      let mdStatus = "simulated";
+      let mdError: string | null = null;
+      let usedMorningTemplate = morningDispatch.primaryTemplate;
+
+      try {
+        if (!sim) {
+          try {
+            await sendViaTemplate(
+              String(guest.phone),
+              morningDispatch.primaryTemplate,
+              morningDispatch.vars,
+              "he",
+              morningDispatch.buttonUrlParam,
+            );
+          } catch (primaryErr) {
+            // Safety fallback: Shabbat template not yet approved or errored → use weekday.
+            // Only triggers when primary ≠ fallback (i.e., Shabbat routing was attempted).
+            // A weekday template failure is a real failure — no fallback for it.
+            if (morningDispatch.primaryTemplate !== morningDispatch.fallbackTemplate) {
+              console.warn(
+                `[whatsapp-send] morning dispatch: Shabbat template "${morningDispatch.primaryTemplate}"` +
+                ` failed — falling back to "${morningDispatch.fallbackTemplate}".` +
+                ` Primary error: ${(primaryErr as Error).message}`
+              );
+              usedMorningTemplate = morningDispatch.fallbackTemplate;
+              await sendViaTemplate(
+                String(guest.phone),
+                morningDispatch.fallbackTemplate,
+                morningDispatch.vars,
+                "he",
+                morningDispatch.buttonUrlParam,
+              );
+            } else {
+              throw primaryErr;
+            }
+          }
+          mdStatus = "sent";
+        }
+      } catch (e) {
+        mdError = (e as Error).message;
+        mdStatus = mdError.startsWith("timeout_no_response") ? "timeout" : "failed";
+        console.error(`[whatsapp-send] morning dispatch ${mdStatus}:`, mdError);
+      }
+
+      await supabase.from("notification_log").insert({
+        guest_id:     guestId,
+        recipient:    guest.phone,
+        trigger_type: trigger,
+        channel:      "whatsapp",
+        status:       mdStatus,
+        payload: {
+          channel:   "meta_template",
+          template:  usedMorningTemplate,
+          variables: morningDispatch.vars,
+          ...(usedMorningTemplate !== morningDispatch.primaryTemplate
+            ? { shabbatFallback: true, primaryAttempt: morningDispatch.primaryTemplate }
+            : {}),
+          ...(mdError ? { error: mdError } : {}),
+        },
+      });
+
+      if (mdStatus === "sent" || mdStatus === "simulated") {
+        try {
+          const { error: convErr } = await supabase.from("whatsapp_conversations").insert({
+            phone:         String(guest.phone),
+            guest_id:      guestId,
+            direction:     "outbound",
+            message:       `[תבנית: ${usedMorningTemplate}]`,
+            wa_message_id: null,
+          });
+          if (convErr) console.warn("[whatsapp-send] morning conv log failed (non-blocking):", convErr.message);
+        } catch (e) {
+          console.warn("[whatsapp-send] morning conv log failed (non-blocking):", (e as Error).message);
+        }
+        if (flagColumn) {
+          await supabase.from("guests").update({ [flagColumn]: true }).eq("id", guestId);
+        }
+      }
+
+      return new Response(
+        JSON.stringify({
+          ok:         mdStatus === "sent" || mdStatus === "simulated",
+          simulation: sim,
+          status:     mdStatus,
+          channel:    "meta_template",
+          template:   usedMorningTemplate,
+          ...(mdError ? { error: mdError } : {}),
+        }),
+        { headers: { ...CORS, "Content-Type": "application/json" } },
+      );
     }
 
     // ── Hybrid fallback (req #4) ───────────────────────────────────────────
@@ -756,7 +1076,7 @@ serve(async (req: Request) => {
     let sessionButtons: Array<{ type: string; label: string; url?: string }> = [];
     let sessionImageUrl: string | null = null;
 
-    if (stageRow?.session_message_script_key && !nightBeforeError) {
+    if (stageRow?.session_message_script_key) {
       if (isWindowOpen(guest.wa_window_expires_at)) {
         const { data: scriptRow } = await supabase
           .from("bot_scripts")
@@ -766,18 +1086,11 @@ serve(async (req: Request) => {
         const rawText = scriptRow?.message_text?.trim();
         if (rawText) {
           const guestName = (String(guest.name ?? "").trim()) || "אורח יקר";
-          // Scope-limited on purpose: PIPELINE_VARS today only ever passes the
-          // guest's name to pipeline templates, so {{GUEST_NAME}} was the only
-          // placeholder this path needed to support — until night_before's
-          // {{entry_time}}/{{check_in_time}} (Stage 2.5 Sabbath logic). If a
-          // future stage needs yet another placeholder, extend this chain
-          // rather than guessing at a generic shape.
-          let body = rawText.replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, guestName);
-          if (nightBeforeTimes) {
-            body = body
-              .replace(/\{\{\s*entry_time\s*\}\}/gi, nightBeforeTimes.entryTime)
-              .replace(/\{\{\s*check_in_time\s*\}\}/gi, nightBeforeTimes.checkInTime);
-          }
+          // {{GUEST_NAME}} is the only named placeholder in session-message scripts.
+          // night_before is handled by its own fast-path above and never reaches
+          // this branch — the entry_time/check_in_time substitutions it used to
+          // perform here have been removed along with that path.
+          const body = rawText.replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, guestName);
           sessionBody = body;
           sessionButtons = (stageRow.interactive_buttons ?? []) as typeof sessionButtons;
           sessionImageUrl = stageRow.session_message_image_url ?? null;
@@ -794,13 +1107,7 @@ serve(async (req: Request) => {
 
     let sessionFailureNote: string | null = null;
 
-    if (nightBeforeError) {
-      // Resolver already failed (blank Shabbat config on a Shabbat/holiday
-      // arrival) — neither channel has a trustworthy entry_time/check_in_time
-      // to send, so skip both attempts entirely instead of guessing.
-      status = "failed";
-      sendError = nightBeforeError;
-    } else if (usedSessionMessage) {
+    if (usedSessionMessage) {
       try {
         if (!sim) {
           if (sessionImageUrl) {
@@ -823,16 +1130,10 @@ serve(async (req: Request) => {
       }
     }
 
-    if (!nightBeforeError && !usedSessionMessage) {
-      // Mike's correction (post-deploy, confirmed against the live Meta
-      // template definition): dream_suite_reminder's body has THREE
-      // variables, not two — {{1}}=guest name, {{2}}=entry_time,
-      // {{3}}=check_in_time. sanitizeTemplateVars() already falls back
-      // index-0 to "אורח יקר" when the name is blank, same as every other
-      // pipeline template's {{1}}.
-      tmplVars = trigger === "night_before" && nightBeforeTimes
-        ? sanitizeTemplateVars([String(guest.name ?? ""), nightBeforeTimes.entryTime, nightBeforeTimes.checkInTime])
-        : sanitizeTemplateVars(PIPELINE_VARS[trigger]?.(guest) ?? []);
+    if (!usedSessionMessage) {
+      // All pipeline triggers except night_before (which has already returned
+      // via the fast-path above). {{1}}/{{2}}/… variables from PIPELINE_VARS.
+      tmplVars = sanitizeTemplateVars(PIPELINE_VARS[trigger]?.(guest) ?? []);
       // Dynamic URL button — the portal token is passed as the URL suffix for
       // templates that include a "מה מחכה לי?" / "לפורטל שלי" button whose
       // base URL is https://dream-ai-system.vercel.app/portal/ in Meta Business
@@ -842,9 +1143,11 @@ serve(async (req: Request) => {
       // undefined (not "") when missing, so sendViaTemplate's `!== undefined`
       // check correctly omits the button component entirely rather than sending
       // a button parameter that resolves to a dead link.
-      // Applies to: night_before (dream_suite_reminder), morning_suite and
-      // morning_welcome (dream_welcome_morning) — all three carry a portal URL button.
-      const PORTAL_BUTTON_TRIGGERS = new Set(["night_before", "morning_suite", "morning_welcome"]);
+      // NOTE: morning_suite / morning_welcome are now handled by the morning
+      // fast-path above (early return) and never reach this code. The set is
+      // kept for any future pipeline trigger that also needs a portal button.
+      // night_before handles its own portalButtonParam in the fast-path above.
+      const PORTAL_BUTTON_TRIGGERS = new Set<string>([]);
       const portalButtonParam = PORTAL_BUTTON_TRIGGERS.has(trigger)
         ? (guest.portal_token as string | null ?? undefined)
         : undefined;

@@ -111,34 +111,13 @@ const SAMPLE_VALUES = {
   CHECK_IN_TIME: "15:00 (יום חול — דוגמה)",
 };
 
-// Stage keys whose Meta template uses positional time-slot variables:
-//   {{1}} = guest name · {{2}} = entry time · {{3}} = check-in time
-// Matches whatsapp-send's PIPELINE_VARS entries for these three triggers
-// (session 56 — resolveDayTimings() was added to populate {{2}}/{{3}}).
-const ARRIVAL_TIME_STAGE_KEYS = new Set(["night_before", "morning_suite", "morning_welcome"]);
-
-// Compute Shabbat-aware {entryTime, checkInTime} from a DATE string.
-// Parses as UTC midnight — prevents the local-timezone GMT-shift that would
-// cause a Saturday date (stored as DATE in Postgres) to read as Friday in
-// UTC-negative zones. Mirrors whatsapp-send's resolveDayTimings() exactly:
-//   getUTCDay() === 6 (Saturday) → 15:00 / 18:00
-//   getUTCDay() 0–5  (Sun–Fri)  → 12:00 / 15:00
-// When no dateStr is supplied, falls back to the wall-clock day so the
-// preview is still useful without forcing the admin to pick a date first.
-function resolvePreviewTimings(dateStr) {
-  let isShabbat;
-  if (dateStr) {
-    const d = new Date(dateStr + "T00:00:00Z");
-    isShabbat = d.getUTCDay() === 6;
-  } else {
-    isShabbat = new Date().getDay() === 6;
-  }
-  return {
-    entryTime:   isShabbat ? "15:00" : "12:00",
-    checkInTime: isShabbat ? "18:00" : "15:00",
-    isShabbat,
-  };
-}
+// Stage keys that route their Meta template deterministically by arrival day-of-week.
+// These stages no longer use positional time variables {{2}}/{{3}} — the correct
+// entry/check-in times are baked directly into the approved template body text
+// (separate weekday vs Shabbat templates), so manual variable injection in the UI
+// is both unnecessary and misleading. The auto-fill panel is replaced by a
+// read-only routing info panel for these stage keys.
+const DETERMINISTIC_ROUTE_STAGE_KEYS = new Set(["night_before", "morning_suite", "morning_welcome"]);
 function resolveSampleText(template) {
   if (!template) return "";
   const sampleSpaTime = "14:00";
@@ -211,13 +190,10 @@ function ButtonChipsPreview({ buttons }) {
 // TemplateManagerPanel.js's template list, reused via the shared STATUS_META
 // import rather than forking a second badge-color definition.
 //
-// previewTimings (optional) — when supplied by StageCard's auto-fill handler,
-// resolves Meta positional variables in the displayed body:
-//   {{1}} → SAMPLE_VALUES.GUEST_NAME (always)
-//   {{2}} → previewTimings.entryTime  (arrival stages: 12:00 / 15:00 Shabbat)
-//   {{3}} → previewTimings.checkInTime (arrival stages: 15:00 / 18:00 Shabbat)
-// Without previewTimings the raw body text (with {{n}} tokens) is shown so the
-// admin can see what the template actually contains before choosing to fill it.
+// previewTimings is kept in the signature for forward-compatibility but is
+// always null — arrival stages now route deterministically (separate Shabbat/
+// weekday templates), so {{2}}/{{3}} no longer exist as template variables.
+// resolveMetaBodyPreview short-circuits on null and shows the raw body text.
 function MetaTemplatePreviewBox({ stage, metaTemplatesByName, previewTimings }) {
   const tmpl = metaTemplatesByName[stage.meta_template_name];
   if (!tmpl) {
@@ -302,20 +278,8 @@ function StageCard({
   const [draftImageUrl, setDraftImageUrl] = useState(stage.session_message_image_url ?? "");
   useEffect(() => { setDraftImageUrl(stage.session_message_image_url ?? ""); }, [stage.session_message_image_url]);
 
-  // Auto-fill state for arrival-stage Meta templates that carry time-slot
-  // variables {{2}}/{{3}}.  Scoped to this card instance so sibling expanded
-  // cards never interfere.  Starts null (no fill) so the raw {{n}} tokens are
-  // visible by default — admin opts in by clicking "✨ מלא אוטומטית".
-  const isArrivalTimeStage = ARRIVAL_TIME_STAGE_KEYS.has(stage.stage_key);
-  const [previewFillDate, setPreviewFillDate] = useState("");
-  const [previewTimings, setPreviewTimings] = useState(null);
-
-  const handleAutoFill = () => {
-    const dateStr = previewFillDate || new Date().toISOString().split("T")[0];
-    // Ensure input reflects the defaulted date so the UI is never out of sync
-    if (!previewFillDate) setPreviewFillDate(dateStr);
-    setPreviewTimings(resolvePreviewTimings(dateStr));
-  };
+  // Auto-fill state removed — arrival stages route deterministically via
+  // DETERMINISTIC_ROUTE_STAGE_KEYS; no manual {{2}}/{{3}} injection needed.
 
   return (
     <div className="card" style={{ marginBottom: 12, opacity: stage.is_active ? 1 : 0.6, border: isOpen ? "1px solid var(--gold)" : undefined }}>
@@ -479,61 +443,39 @@ function StageCard({
                 {" — "}ערוך תוכן בלשונית &quot;📋 תבניות Meta&quot;
               </div>
             )}
-            {/* Auto-fill panel — arrival stages only (night_before / morning_suite /
-                morning_welcome).  Correct slot mapping per session 56:
-                  {{1}} = Guest Name (always)
-                  {{2}} = Entry time   — 12:00 Sun–Fri · 15:00 Shabbat
-                  {{3}} = Check-in time — 15:00 Sun–Fri · 18:00 Shabbat
-                Wrong mapping (Room → {{2}}, Date → {{3}}) is prevented by
-                resolvePreviewTimings() which never substitutes those fields. */}
-            {stage.meta_template_name && isArrivalTimeStage && (
+            {/* Deterministic routing info — night_before / morning_suite / morning_welcome.
+                Template selection is automatic (arrival day-of-week → template name).
+                Variables {{2}}/{{3}} are removed; times are baked into the template body. */}
+            {stage.meta_template_name && DETERMINISTIC_ROUTE_STAGE_KEYS.has(stage.stage_key) && (
               <div style={{
                 marginTop: 10, padding: "10px 14px",
-                background: "rgba(201,169,110,0.08)", borderRadius: 8,
-                border: "1px solid var(--gold)",
+                background: "rgba(124,58,237,0.06)", borderRadius: 8,
+                border: "1px solid #C4B5FD",
               }}>
-                <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>
-                  ✨ מילוי אוטומטי — {"{{2}}"} / {"{{3}}"} (שעות כניסה / צ׳ק-אין)
+                <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6, color: "#7C3AED" }}>
+                  🗓️ ניתוב אוטומטי לפי יום הגעה — ללא הזנה ידנית
                 </div>
-                <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                  <label style={{ fontSize: 12, margin: 0, color: "var(--text-muted)", flexShrink: 0 }}>
-                    תאריך הגעה לדוגמה:
-                  </label>
-                  <input
-                    type="date"
-                    value={previewFillDate}
-                    onChange={(e) => {
-                      const d = e.target.value;
-                      setPreviewFillDate(d);
-                      if (d) setPreviewTimings(resolvePreviewTimings(d));
-                    }}
-                    style={{ fontSize: 12, padding: "4px 8px" }}
-                  />
-                  <button className="btn btn-ghost btn-sm" onClick={handleAutoFill}>
-                    ✨ מלא אוטומטית
-                  </button>
-                  {previewTimings && (
-                    <>
-                      <span style={{
-                        fontSize: 12, fontWeight: 600,
-                        color:      previewTimings.isShabbat ? "#7C3AED" : "#1A7A4A",
-                        background: previewTimings.isShabbat ? "#F3F0FF" : "#E8F5EF",
-                        padding: "3px 10px", borderRadius: 12,
-                      }}>
-                        {previewTimings.isShabbat ? "🕍 שבת" : "📅 יום חול"}
-                        {" — "}{"{{1}}"}: {SAMPLE_VALUES.GUEST_NAME}
-                        {" · "}{"{{2}}"}: {previewTimings.entryTime}
-                        {" · "}{"{{3}}"}: {previewTimings.checkInTime}
-                      </span>
-                      <button
-                        className="btn btn-ghost btn-sm"
-                        style={{ color: "var(--text-muted)" }}
-                        onClick={() => { setPreviewTimings(null); setPreviewFillDate(""); }}
-                      >
-                        ✕ נקה
-                      </button>
-                    </>
-                  )}
+                {stage.stage_key === "night_before" ? (
+                  <div style={{ fontSize: 11, color: "#555", lineHeight: 1.8 }}>
+                    📅 ראשון–שישי →{" "}
+                    <code style={{ background: "#F3F4F6", padding: "1px 5px", borderRadius: 4 }}>night_before_suites</code>
+                    <br />
+                    🕍 שבת →{" "}
+                    <code style={{ background: "#F3F4F6", padding: "1px 5px", borderRadius: 4 }}>night_before_suites_shabbat</code>
+                    <br />
+                    <span style={{ color: "var(--text-muted)" }}>🔓 חלון 24ש פתוח → סקריפט חופשי (BotScriptEditor)</span>
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 11, color: "#555", lineHeight: 1.8 }}>
+                    📅 ראשון–שישי →{" "}
+                    <code style={{ background: "#F3F4F6", padding: "1px 5px", borderRadius: 4 }}>dream_welcome_morning</code>
+                    <br />
+                    🕍 שבת →{" "}
+                    <code style={{ background: "#F3F4F6", padding: "1px 5px", borderRadius: 4 }}>dream_welcome_morning_shabbat</code>
+                  </div>
+                )}
+                <div style={{ fontSize: 11, color: "#92702C", marginTop: 6, fontStyle: "italic" }}>
+                  משתנים {"{{2}}"} / {"{{3}}"} הוסרו — השעות מוטמעות בגוף התבנית המאושרת.
                 </div>
               </div>
             )}
@@ -542,7 +484,7 @@ function StageCard({
               <MetaTemplatePreviewBox
                 stage={stage}
                 metaTemplatesByName={metaTemplatesByName}
-                previewTimings={previewTimings}
+                previewTimings={null}
               />
             )}
           </div>
