@@ -96,45 +96,65 @@ serve(async (req: Request) => {
       console.warn("[guest-portal-data] upsell_items fetch failed (non-blocking):", upsellErr.message);
     }
 
-    // ── Portal scenes — server-side filtered by guest's room_type ────────
-    // Two-level filtering (migration 098):
-    //   Level 1 — scene.visibility_settings @> {room_type}: entire scenes
-    //     where the guest's type isn't in the array are excluded from response.
-    //   Level 2 — cta.visibility: individual CTA objects within a scene may
-    //     carry an optional visibility: string[] field; CTAs whose list doesn't
-    //     include the guest's room_type are stripped server-side so the client
-    //     never receives buttons it's not entitled to.
-    // If room_type is unknown/null: send all scenes unfiltered (backward compat
-    // — guest sees more, not less; same rule as upsell_items above).
-    let scenesQuery = supabase
+    // ── Portal scenes — two-level visibility filtering ───────────────────
+    // Both levels are executed in JavaScript (not at the DB query level) so
+    // that Level 2 CTA filtering always runs *before* Level 1 scene dropping.
+    // Using a PostgREST array-contains filter at the DB level was the root
+    // cause of the bug: a scene whose `visibility_settings` correctly included
+    // `day_guest` was being dropped entirely because the `cs` filter was
+    // evaluated before the `ctas` array was ever inspected — the guest lost
+    // the whole scene instead of just the suite-only CTAs inside it.
+    //
+    // Fetching all active scenes and filtering in JS is safe: the portal has
+    // O(10) scenes, not thousands; the extra rows are negligible.
+    //
+    // If room_type is unknown/null: all scenes and all CTAs pass (backward
+    // compat — guest sees more, not less; same convention as upsell_items).
+    const scenesBaseQuery = supabase
       .from("portal_scenes")
       .select("image, title, body, ctas, visibility_settings")
       .eq("is_active", true)
       .order("sort_order", { ascending: true });
 
-    if (guestRoomType) {
-      scenesQuery = scenesQuery.filter("visibility_settings", "cs", `{${guestRoomType}}`);
-    }
-
-    const { data: rawScenes, error: scenesErr } = await scenesQuery;
+    const { data: rawScenes, error: scenesErr } = await scenesBaseQuery;
 
     if (scenesErr) {
       console.warn("[guest-portal-data] portal_scenes fetch failed (non-blocking):", scenesErr.message);
     }
 
-    // Strip CTA-level restricted buttons from each scene
-    const scenes = (rawScenes ?? []).map((scene) => ({
-      image:  scene.image,
-      title:  scene.title,
-      body:   scene.body,
-      ctas:   ((scene.ctas as unknown[]) ?? []).filter((cta: unknown) => {
+    // Level 1 + Level 2 in a single reduce so we never build an intermediate
+    // array of scenes with their full un-filtered CTA lists.
+    const scenes: Array<{ image: unknown; title: unknown; body: unknown; ctas: unknown[] }> = [];
+    for (const scene of rawScenes ?? []) {
+      // ── Level 1: scene visibility ──────────────────────────────────────────
+      // Keep scene if guest's room_type is in visibility_settings.
+      // Absent/empty visibility_settings → no restriction (backward compat).
+      const sceneviz = scene.visibility_settings as string[] | null | undefined;
+      const sceneVisible =
+        !guestRoomType          // unknown room_type → show all
+        || !sceneviz            // column null/undefined → no restriction
+        || sceneviz.length === 0  // empty array → no restriction
+        || sceneviz.includes(guestRoomType);
+
+      if (!sceneVisible) continue; // Level 1 gate
+
+      // ── Level 2: CTA visibility within the kept scene ─────────────────────
+      // Strip individual CTAs the guest isn't entitled to.
+      // Keep CTA if: no visibility field, empty array, or includes room_type.
+      // The scene itself is always kept — even if every CTA is stripped.
+      const filteredCtas = ((scene.ctas as unknown[]) ?? []).filter((cta: unknown) => {
         const c = cta as Record<string, unknown>;
-        if (!c.visibility) return true;                         // no restriction
-        if (!guestRoomType) return true;                        // unknown type → show all
-        const vis = c.visibility as string[];
-        return vis.includes(guestRoomType);
-      }),
-    }));
+        const vis = c.visibility as string[] | null | undefined;
+        return !vis || vis.length === 0 || !guestRoomType || vis.includes(guestRoomType);
+      });
+
+      scenes.push({
+        image: scene.image,
+        title: scene.title,
+        body:  scene.body,
+        ctas:  filteredCtas,
+      });
+    }
 
     return new Response(
       JSON.stringify({
