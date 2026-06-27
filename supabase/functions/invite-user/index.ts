@@ -10,7 +10,7 @@
 //
 // Body: {
 //   email: string, name: string,
-//   password?: string  (default "1234"),
+//   password: string  (required — no default),
 //   role?: "staff"|"manager"|"admin",
 //   department?: string|null
 // }
@@ -32,12 +32,13 @@ serve(async (req: Request) => {
     const body = await req.json() as Record<string, unknown>;
     const email      = String(body.email ?? "").trim().toLowerCase();
     const name       = String(body.name  ?? "").trim();
-    const password   = String(body.password   ?? "1234");
+    const password   = String(body.password   ?? "").trim();
     const role       = String(body.role       ?? "staff");
     const department = body.department ? String(body.department) : null;
 
     if (!email || !email.includes("@")) throw new Error("valid email is required");
     if (!name)                          throw new Error("name is required");
+    if (!password || password.length < 8) throw new Error("password is required and must be at least 8 characters");
     if (!ALLOWED_ROLES.includes(role))  throw new Error("invalid role: " + role);
 
     const admin = createClient(

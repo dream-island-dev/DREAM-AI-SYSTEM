@@ -279,7 +279,7 @@ function ChatsTab() {
 
 // ── Users tab ─────────────────────────────────────────────────────────────────
 
-function UsersTab({ mockUsers }) {
+function UsersTab() {
   const [dbUsers, setDbUsers] = useState([]);
 
   useEffect(() => {
@@ -315,30 +315,13 @@ function UsersTab({ mockUsers }) {
           </table>
         </div>
       )}
-
-      <div className="card">
-        <div className="card-header"><div className="card-title">🎭 משתמשי דמו (Mock)</div></div>
-        <table className="table">
-          <thead><tr><th>שם</th><th>אימייל</th><th>מחלקה</th><th>תפקיד</th></tr></thead>
-          <tbody>
-            {mockUsers.map((u) => (
-              <tr key={u.id}>
-                <td style={{ fontWeight: 600 }}>{u.name}</td>
-                <td style={{ direction: "ltr", fontSize: 12 }}>{u.email}</td>
-                <td>{u.department || "—"}</td>
-                <td>{roleBadge(u.role)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
     </div>
   );
 }
 
 // ── Main AdminPanel ───────────────────────────────────────────────────────────
 
-export default function AdminPanel({ user, mockUsers, canManageData, onSeedDemo, onClearData }) {
+export default function AdminPanel({ user, canManageData, onSeedDemo, onClearData }) {
   const [tab, setTab] = useState("stats");
 
   // The "data" tab (seed / clear demo data) is super-admin only.
@@ -382,7 +365,7 @@ export default function AdminPanel({ user, mockUsers, canManageData, onSeedDemo,
       {tab === "stats" && <StatsTab />}
       {tab === "depts" && <DeptsTab />}
       {tab === "chats" && <ChatsTab />}
-      {tab === "users" && <UsersTab mockUsers={mockUsers ?? []} />}
+      {tab === "users" && <UsersTab />}
       {tab === "data"  && <DataTab onSeedDemo={onSeedDemo} onClearData={onClearData} />}
     </div>
   );

@@ -37,37 +37,6 @@ import CMSSecurityPanel from "./components/cms/CMSSecurityPanel";
 import VoucherReconciliationHub from "./components/VoucherReconciliationHub";
 
 // ============================================================
-// MOCK DATA - יוחלף ב-Supabase בגרסה האמיתית
-// ============================================================
-const MOCK_USERS = [
-  {
-    id: 1,
-    name: "אליעד",
-    role: "admin",
-    email: "eliad",
-    password: "1234",
-    avatar: "אל",
-  },
-  {
-    id: 2,
-    name: "שירה לוי",
-    role: "manager",
-    email: "shira@dreamisland.com",
-    password: "1234",
-    avatar: "של",
-    department: "קבלה",
-  },
-  {
-    id: 3,
-    name: "יוסי אברהם",
-    role: "manager",
-    email: "yossi@dreamisland.com",
-    password: "1234",
-    avatar: "יא",
-    department: "מסעדה",
-  },
-];
-
 // Departments are editable by admin via AdminPanel — stored in localStorage
 const DEPARTMENTS = loadDepartments();
 
@@ -727,13 +696,6 @@ function LoginPage({ onLogin }) {
     const pass = password;
     if (!raw || !pass) { setError("נא למלא שם משתמש וסיסמה"); return; }
 
-    // ── 0. Demo/mock users — ALWAYS checked first so local QA bypass works
-    //       even when Supabase is configured (eliad/1234, shira/1234, etc.)
-    const mockUser = MOCK_USERS.find(
-      (u) => (u.email === raw || u.email === `${raw}@dream.io`) && u.password === pass
-    );
-    if (mockUser) { onLogin(mockUser); return; }
-
     // ── 1. Supabase real auth (staff / receptionists with real accounts) ──
     if (isSupabaseConfigured && supabase) {
       const emailToTry = raw.includes("@") ? raw : `${raw}@dream.io`;
@@ -789,37 +751,6 @@ function LoginPage({ onLogin }) {
           כניסה למערכת
         </button>
         {error && <div className="login-error">{error}</div>}
-        <div
-          style={{
-            marginTop: 20,
-            padding: 14,
-            background: "rgba(255,255,255,0.06)",
-            borderRadius: 10,
-          }}
-        >
-          <div
-            style={{
-              color: "rgba(255,255,255,0.5)",
-              fontSize: 11,
-              marginBottom: 6,
-            }}
-          >
-            משתמשי דמו:
-          </div>
-          {MOCK_USERS.map((u) => (
-            <div
-              key={u.id}
-              style={{
-                color: "rgba(255,255,255,0.35)",
-                fontSize: 11,
-                lineHeight: 1.8,
-              }}
-            >
-              {u.email} / 1234 (
-              {u.role === "admin" ? "מנהל כללי" : "מנהל מחלקה"})
-            </div>
-          ))}
-        </div>
       </div>
     </div>
   );
@@ -2069,7 +2000,6 @@ export default function App() {
           ["admin", "super_admin"],
           <AdminPanel
             user={user}
-            mockUsers={MOCK_USERS}
             canManageData={isSuperAdminUser}
             onSeedDemo={seedDemoData}
             onClearData={clearAllData}
