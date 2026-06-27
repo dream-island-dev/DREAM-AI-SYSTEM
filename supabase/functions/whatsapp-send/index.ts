@@ -775,7 +775,23 @@ serve(async (req: Request) => {
       );
     }
 
-    const tmplName = stageRow?.meta_template_name ?? PIPELINE_TEMPLATE[trigger];
+    // Day Pass Stage 1 template override — hardcoded router, highest priority.
+    // dream_checkin_reminder_v2 is the approved template for day-pass check-in
+    // confirmation. PIPELINE_TEMPLATE["pre_arrival_2d"] resolves to
+    // dream_arrival_confirmation (the suite/standard template), which references
+    // suite amenities (spa, room key handover) that a day-pass guest does not
+    // receive. This override fires AFTER the Day Pass Safety Gate above (ensuring
+    // it can only apply to an allowed trigger) and before the session-message /
+    // portal-button paths below, so every dispatch path for a day-pass
+    // pre_arrival_2d picks this template without exception.
+    let tmplName = stageRow?.meta_template_name ?? PIPELINE_TEMPLATE[trigger];
+    if (guest.room_type === "day_guest" && trigger === "pre_arrival_2d") {
+      tmplName = "dream_checkin_reminder_v2";
+      console.log(
+        `[whatsapp-send] day_pass_template_override: stage=pre_arrival_2d → ` +
+        `dream_checkin_reminder_v2 for guest_id=${guestId} (${String(guest.name ?? "?")})`,
+      );
+    }
     const flagColumn = stageRow?.guest_flag_column ?? GUEST_FLAG[trigger];
 
     // ── Night-before 24-hour compliance engine ────────────────────────────────

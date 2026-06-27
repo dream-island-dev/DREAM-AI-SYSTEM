@@ -747,6 +747,7 @@ export default function AutomationControlCenter() {
   const [selectedItems, setSelectedItems] = useState(new Set());
   const [dispatching, setDispatching] = useState(false);
   const [dispatchSummary, setDispatchSummary] = useState(null);
+  const [showDispatchConfirm, setShowDispatchConfirm] = useState(false);
 
   const showToast = useCallback((type, msg) => {
     setToast({ type, msg });
@@ -1070,6 +1071,58 @@ export default function AutomationControlCenter() {
 
         return (
           <div>
+            {/* ── Dispatch Confirmation Modal ── */}
+            {showDispatchConfirm && (
+              <div style={{
+                position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 10001,
+                display: "flex", alignItems: "center", justifyContent: "center",
+              }}>
+                <div style={{
+                  background: "#fff", borderRadius: 16, padding: "28px 32px",
+                  maxWidth: 440, width: "90%", direction: "rtl", boxShadow: "0 12px 48px rgba(0,0,0,0.25)",
+                }}>
+                  <div style={{ fontWeight: 800, fontSize: 18, marginBottom: 10 }}>🚀 אשר שגר הודעות</div>
+                  <div style={{ fontSize: 14, color: "#444", lineHeight: 1.7, marginBottom: 20 }}>
+                    עומד לשלוח <strong>{selectedItems.size} הודעות</strong> לאורחים שנבחרו.
+                    {queueSegment === "daypass" && (
+                      <div style={{ marginTop: 8, fontSize: 12, color: "#7C3AED", background: "rgba(124,58,237,0.06)", borderRadius: 8, padding: "8px 12px", border: "1px solid #C4B5FD" }}>
+                        🔒 אורחי יום-כיף — שלב 1 ישתמש בתבנית <code style={{ background: "#F3F4F6", padding: "1px 5px", borderRadius: 4 }}>dream_checkin_reminder_v2</code> אוטומטית.
+                        שלבים שאינם מורשים יחסמו בשרת.
+                      </div>
+                    )}
+                    <div style={{ marginTop: 8, fontSize: 12, color: "#92702C" }}>
+                      ⚠ פעולה זו אינה הפיכה. וודא שרשימת הנמענים נכונה לפני האישור.
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: 10, justifyContent: "flex-start" }}>
+                    <button
+                      className="btn btn-primary"
+                      style={{ minWidth: 140 }}
+                      onClick={() => {
+                        setShowDispatchConfirm(false);
+                        // displayQueue is captured from the outer IIFE scope via closure.
+                        // We re-derive it here to avoid stale-closure issues.
+                        const allQueue    = queueData?.queue ?? [];
+                        const displayQ    = (queueSegment === "daypass"
+                          ? allQueue.filter((q) => q.room_type === "day_guest")
+                          : allQueue.filter((q) => q.room_type !== "day_guest")
+                        ).slice(0, 100);
+                        handleBulkDispatch(displayQ);
+                      }}
+                    >
+                      🚀 אשר ושגר
+                    </button>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => setShowDispatchConfirm(false)}
+                    >
+                      ביטול
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* ── Dispatch Summary Modal ── */}
             {dispatchSummary && (
               <div style={{
@@ -1357,11 +1410,11 @@ export default function AutomationControlCenter() {
                 </span>
                 <button
                   className="btn btn-primary"
-                  onClick={() => handleBulkDispatch(displayQueue)}
+                  onClick={() => setShowDispatchConfirm(true)}
                   disabled={dispatching}
                   style={{ minWidth: 180 }}
                 >
-                  {dispatching ? "⏳ שולח..." : "🚀 Approve & Dispatch"}
+                  {dispatching ? "⏳ שולח..." : "🚀 אשר ושגר"}
                 </button>
                 <button
                   className="btn btn-ghost btn-sm"
