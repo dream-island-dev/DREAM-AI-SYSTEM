@@ -75,7 +75,7 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
         arrival_date:       form.arrival_date  || null,
         departure_date:     form.departure_date || null,
         spa_time:           form.spa_time       || null,
-        treatment_count:    form.treatment_count !== "" ? parseInt(form.treatment_count, 10) : null,
+        treatment_count:    form.treatment_count !== "" ? parseInt(form.treatment_count, 10) : 0,
         order_number:       (form.order_number ?? "").trim() || null,
         payment_amount:     form.payment_amount !== "" ? parseFloat(form.payment_amount) : null,
         payment_link_url:   (form.payment_link_url ?? "").trim() || null,
