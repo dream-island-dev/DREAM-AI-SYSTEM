@@ -249,7 +249,7 @@ function ScenesTab({ showToast }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// UPSELL CATALOG TAB — upsell_items CRUD (suite + day-pass)
+// UPSELL CATALOG TAB — upsell_items CRUD (unified, all audiences)
 // ─────────────────────────────────────────────────────────────────────────────
 const ALL_CATEGORIES = [
   { value: "spa",      label: "ספא וטיפולים",  icon: "💆" },
@@ -260,12 +260,33 @@ const ALL_CATEGORIES = [
   { value: "general",  label: "כללי",            icon: "✨" },
 ];
 
-// Day-pass never gets room service / food — those reference suite amenities.
-const DAYPASS_CATEGORIES = ALL_CATEGORIES.filter((c) => c.value !== "food");
+// visibility_settings vocabulary matches guests.room_type (migration 097)
+const VISIBILITY_OPTIONS = [
+  { value: "suite",             label: "🏨 סוויטות" },
+  { value: "day_guest",         label: "☀️ בילוי יומי" },
+  { value: "premium_day_guest", label: "⭐ פרימיום" },
+];
+const ALL_ROOM_TYPES = VISIBILITY_OPTIONS.map((o) => o.value);
 
-function ItemCard({ item, onChange, onSave, onDelete, saving, allowedCategories, audienceOptions }) {
+function ItemCard({ item, onChange, onSave, onDelete, saving }) {
   const set = (patch) => onChange(item.id, patch);
   const showLinkUrl = item.category === "workshop";
+
+  // Normalize visibility_settings — old rows may have null/undefined before
+  // migration 097 is applied (or if loaded before the DB push).
+  const currentVisibility = Array.isArray(item.visibility_settings) && item.visibility_settings.length > 0
+    ? item.visibility_settings
+    : ALL_ROOM_TYPES;
+
+  function toggleVisibility(value) {
+    const isChecked = currentVisibility.includes(value);
+    const next = isChecked
+      ? currentVisibility.filter((v) => v !== value)
+      : [...currentVisibility, value];
+    // Guard: at least one must remain checked
+    if (next.length === 0) return;
+    set({ visibility_settings: next });
+  }
 
   return (
     <div className="card" style={{ padding: 16, marginBottom: 12 }}>
@@ -317,8 +338,8 @@ function ItemCard({ item, onChange, onSave, onDelete, saving, allowedCategories,
         />
       </div>
 
-      {/* Row 3 — category + audience */}
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 10 }}>
+      {/* Row 3 — category + visibility */}
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 10, alignItems: "flex-start" }}>
         <div style={{ flex: "1 1 180px" }}>
           <label style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>קטגוריה</label>
           <select
@@ -326,22 +347,34 @@ function ItemCard({ item, onChange, onSave, onDelete, saving, allowedCategories,
             onChange={(e) => set({ category: e.target.value, link_url: e.target.value !== "workshop" ? null : item.link_url })}
             style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--border)", fontSize: 13 }}
           >
-            {allowedCategories.map((c) => (
+            {ALL_CATEGORIES.map((c) => (
               <option key={c.value} value={c.value}>{c.icon} {c.label}</option>
             ))}
           </select>
         </div>
-        <div style={{ flex: "1 1 180px" }}>
-          <label style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>נראה עבור</label>
-          <select
-            value={item.target_audience ?? audienceOptions[0].value}
-            onChange={(e) => set({ target_audience: e.target.value })}
-            style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--border)", fontSize: 13 }}
-          >
-            {audienceOptions.map((a) => (
-              <option key={a.value} value={a.value}>{a.label}</option>
-            ))}
-          </select>
+        <div style={{ flex: "2 1 260px" }}>
+          <label style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
+            נראות — מי רואה את הפריט הזה
+          </label>
+          <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+            {VISIBILITY_OPTIONS.map(({ value, label }) => {
+              const checked = currentVisibility.includes(value);
+              return (
+                <label key={value} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, cursor: "pointer", whiteSpace: "nowrap", userSelect: "none" }}>
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    style={{ accentColor: "var(--gold)", width: 15, height: 15 }}
+                    onChange={() => toggleVisibility(value)}
+                  />
+                  {label}
+                </label>
+              );
+            })}
+          </div>
+          {currentVisibility.length === ALL_ROOM_TYPES.length && (
+            <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 3 }}>👥 כל סוגי האורחים</div>
+          )}
         </div>
       </div>
 
@@ -374,27 +407,10 @@ function ItemCard({ item, onChange, onSave, onDelete, saving, allowedCategories,
   );
 }
 
-function UpsellCatalogTab({ audience, showToast }) {
-  // audience: "suites" | "daypass"
+function UpsellCatalogTab({ showToast }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [savingId, setSavingId] = useState(null);
-
-  const isDayPass = audience === "daypass";
-  const audienceFilter = isDayPass ? ["all", "day_use"] : ["all", "suite"];
-  const allowedCategories = isDayPass ? DAYPASS_CATEGORIES : ALL_CATEGORIES;
-  const defaultAudience = isDayPass ? "day_use" : "suite";
-
-  // target_audience options shown in the item editor
-  const audienceOptions = isDayPass
-    ? [
-        { value: "day_use", label: "☀️ בילוי יומי בלבד" },
-        { value: "all",     label: "👥 כל האורחים" },
-      ]
-    : [
-        { value: "suite",   label: "🏨 אורחי סוויטה בלבד" },
-        { value: "all",     label: "👥 כל האורחים" },
-      ];
 
   const fetchItems = useCallback(async () => {
     setLoading(true);
@@ -402,13 +418,11 @@ function UpsellCatalogTab({ audience, showToast }) {
     const { data, error } = await supabase
       .from("upsell_items")
       .select("*")
-      .in("target_audience", audienceFilter)
       .order("sort_order");
     if (error) showToast("err", "שגיאה בטעינה: " + error.message);
     else setItems(data ?? []);
     setLoading(false);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [audience, showToast]);
+  }, [showToast]);
 
   useEffect(() => { fetchItems(); }, [fetchItems]);
 
@@ -418,15 +432,18 @@ function UpsellCatalogTab({ audience, showToast }) {
 
   async function saveItem(item) {
     setSavingId(item.id);
+    const visSettings = Array.isArray(item.visibility_settings) && item.visibility_settings.length > 0
+      ? item.visibility_settings
+      : ALL_ROOM_TYPES;
     const { error } = await supabase.from("upsell_items").update({
-      name:             item.name,
-      description:      item.description,
-      price:            item.price,
-      category:         item.category,
-      target_audience:  item.target_audience,
-      sort_order:       item.sort_order,
-      is_active:        item.is_active,
-      link_url:         item.category === "workshop" ? (item.link_url ?? null) : null,
+      name:                item.name,
+      description:         item.description,
+      price:               item.price,
+      category:            item.category,
+      visibility_settings: visSettings,
+      sort_order:          item.sort_order,
+      is_active:           item.is_active,
+      link_url:            item.category === "workshop" ? (item.link_url ?? null) : null,
     }).eq("id", item.id);
     setSavingId(null);
     if (error) showToast("err", "שגיאה בשמירה: " + error.message);
@@ -438,14 +455,14 @@ function UpsellCatalogTab({ audience, showToast }) {
     const { data, error } = await supabase
       .from("upsell_items")
       .insert({
-        name:            "שירות חדש",
-        description:     "",
-        price:           null,
-        category:        isDayPass ? "activity" : "spa",
-        target_audience: defaultAudience,
-        sort_order:      nextOrder,
-        is_active:       false,
-        link_url:        null,
+        name:                "שירות חדש",
+        description:         "",
+        price:               null,
+        category:            "general",
+        visibility_settings: ALL_ROOM_TYPES,
+        sort_order:          nextOrder,
+        is_active:           false,
+        link_url:            null,
       })
       .select()
       .maybeSingle();
@@ -462,14 +479,11 @@ function UpsellCatalogTab({ audience, showToast }) {
     showToast("ok", "הפריט נמחק");
   }
 
-  const descriptionText = isDayPass
-    ? "שירותים ופינוקים שיוצעו לאורחי בילוי יומי בפורטל. קטגוריית \"אוכל\" אינה זמינה לבילוי יומי (שירות לחדר הוא שירות סוויטה בלבד). פריטי סדנאות כוללים קישור חיצוני — האורח לוחץ \"לפרטים\" ולא מזמין דרך הסל."
-    : "שירותים ופינוקים שיוצעו לאורחי סוויטה בפורטל. פריטים שסומנו \"כל האורחים\" יוצגו גם לאורחי בילוי יומי.";
-
   return (
     <div>
       <div style={{ marginBottom: 16, fontSize: 13, color: "var(--text-muted)", lineHeight: 1.6 }}>
-        {descriptionText}
+        כל שירותי הפורטל בתצוגה אחת. השתמש בתיבות הסימון "נראות" לשליטה מדויקת על אילו סוגי אורחים רואים כל פריט —
+        סוויטות, בילוי יומי, פרימיום, או כל השלושה. שינויים נשמרים ל-DB ומשפיעים על הפורטל מהרענון הבא.
       </div>
 
       {!isSupabaseConfigured && (
@@ -495,8 +509,6 @@ function UpsellCatalogTab({ audience, showToast }) {
               onSave={saveItem}
               onDelete={deleteItem}
               saving={savingId === item.id}
-              allowedCategories={allowedCategories}
-              audienceOptions={audienceOptions}
             />
           ))}
           <button onClick={addItem} className="btn btn-sm" style={{ background: "var(--gold)", fontWeight: 700 }}>
@@ -507,14 +519,12 @@ function UpsellCatalogTab({ audience, showToast }) {
     </div>
   );
 }
-
 // ─────────────────────────────────────────────────────────────────────────────
-// Main export — 3-tab shell
+// Main export — 2-tab shell
 // ─────────────────────────────────────────────────────────────────────────────
 const TABS = [
   { id: "scenes",  label: "📸 סצנות הפורטל" },
-  { id: "suites",  label: "🏨 סוויטות" },
-  { id: "daypass", label: "☀️ בילוי יומי" },
+  { id: "catalog", label: "📦 קטלוג שירותים" },
 ];
 
 export default function PortalSettingsPanel() {
@@ -550,8 +560,7 @@ export default function PortalSettingsPanel() {
       </div>
 
       {activeTab === "scenes"  && <ScenesTab showToast={showToast} />}
-      {activeTab === "suites"  && <UpsellCatalogTab audience="suites"  showToast={showToast} />}
-      {activeTab === "daypass" && <UpsellCatalogTab audience="daypass" showToast={showToast} />}
+      {activeTab === "catalog" && <UpsellCatalogTab showToast={showToast} />}
     </div>
   );
 }

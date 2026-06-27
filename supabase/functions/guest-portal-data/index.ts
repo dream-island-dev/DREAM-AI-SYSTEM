@@ -70,22 +70,25 @@ serve(async (req: Request) => {
     }
 
     // ── Upsell items — server-side filtered by guest's room_type ─────────
-    // Audiences: 'all' → every guest; 'suite' → room_type='suite' only;
-    // 'day_use' → room_type='day_guest' only.
-    // This is the authoritative filter — the client never receives items it
-    // isn't entitled to. Parallel fetch inside the same request (single round-
-    // trip from the guest's perspective).
+    // visibility_settings TEXT[] (migration 097) lists which room_type values
+    // can see each item. Filter: visibility_settings @> ARRAY[guestRoomType]
+    // (array-contains, GIN-indexed).
+    // Backward compat: if room_type is unknown/null, return all active items
+    // so a guest is never shown an empty portal due to a missing enum value.
     const guestRoomType: string = (guest.room_type as string) ?? "";
-    const audienceFilter: string[] = ["all"];
-    if (guestRoomType === "suite")     audienceFilter.push("suite");
-    if (guestRoomType === "day_guest") audienceFilter.push("day_use");
-
-    const { data: upsellItems, error: upsellErr } = await supabase
+    let itemsQuery = supabase
       .from("upsell_items")
       .select("id, name, description, price, category, link_url")
       .eq("is_active", true)
-      .in("target_audience", audienceFilter)
       .order("sort_order", { ascending: true });
+
+    if (guestRoomType) {
+      // PostgREST 'cs' operator = "array contains" — true when
+      // visibility_settings contains guestRoomType as an element.
+      itemsQuery = itemsQuery.filter("visibility_settings", "cs", `{${guestRoomType}}`);
+    }
+
+    const { data: upsellItems, error: upsellErr } = await itemsQuery;
 
     if (upsellErr) {
       // Non-fatal — portal still loads without upsell items (FAIL VISIBLE
