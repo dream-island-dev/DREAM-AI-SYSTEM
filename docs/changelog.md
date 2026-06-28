@@ -1,7 +1,10 @@
-# XOS Changelog
-> One-line entries appended after each code-modifying session. Format: `YYYY-MM-DD | file(s) | summary`
+2026-06-28 | src/components/GuestPortal.js | Removed duplicate concierge WA button from ItineraryPanel empty state ? SuiteQuickActions remains the single CTA.
 
----
+2026-06-28 | supabase/migrations/099_daypass_stage4_stage5_split.sql + automationSchedule.ts + whatsapp-cron/index.ts + AutomationControlCenter.js | Stage 4 restore: migration 099 pushed to prod (was local-only); mid_stay_daypass/checkout_fb_daypass rows + is_active=true; resolveStageSchedule returns scheduledFor even when skipReason set (queue monitor visibility); CORE_PIPELINE_STAGE_KEYS registry + Pulse UI missing-stage warning; cron mid_stay eval logging.
+
+2026-06-28 | supabase/functions/whatsapp-send/index.ts + AutomationControlCenter.js + src/utils/whatsapp.js | Stage 2.5 root fix: removed 24h free-text hijack ? cron/default always sends night_before_suites/_shabbat Meta template; session text only on manual force_channel=session_message; entry_time/check_in_time substitution in script path; frontend THREE_PARAM drift corrected.
+
+2026-06-28 | whatsapp-cron/index.ts + whatsapp-send/index.ts | Stage 2.5 debug: cron logs active_stages + night_before eligibility; whatsapp-send logs trigger/BRANCH_D/night_before routing; fix force_meta bypass + resolvePipelineTemplateName stale DB template.
 
 2026-06-28 | supabase/functions/_shared/metaPhone.ts + whatsapp-send/index.ts + _shared/interactiveSend.ts | Meta silent-delivery fix: sanitizeMetaRecipientPhone strips non-digits, 05?9725, applied to all Graph API `to` fields before fetch.
 

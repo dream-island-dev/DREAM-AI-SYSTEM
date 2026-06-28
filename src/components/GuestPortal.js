@@ -424,28 +424,13 @@ function ItineraryPanel({ guest }) {
           </>
         ) : (
           <div style={{ padding: "20px 16px", textAlign: "center" }}>
-            <div style={{ fontSize: 13, color: XOS_MUTED, lineHeight: 1.8, marginBottom: 18 }}>
+            <div style={{ fontSize: 13, color: XOS_MUTED, lineHeight: 1.8 }}>
               אין פעילויות מתוכננות כרגע.
               <br />
               דברו איתנו כדי לתאם טיפול ספא
               <br />
               או שולחן במסעדה.
             </div>
-            <a
-              href={CONCIERGE_WA}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{
-                display: "inline-flex", alignItems: "center", gap: 7,
-                padding: "10px 22px", borderRadius: 24,
-                background: "rgba(37,211,102,0.10)",
-                border: "1px solid rgba(37,211,102,0.30)",
-                color: "#4ADE80",
-                fontSize: 13, fontWeight: 700, textDecoration: "none",
-              }}
-            >
-              💬 שוחחו עם הקונסיירז' שלנו
-            </a>
           </div>
         )}
       </GlassPanel>
