@@ -392,7 +392,10 @@ export function enrichProfilesFromExcel(profiles, excelRecords) {
       // Merge: keep earliest time, sum counts
       const ex = excelByOrder.get(rec.order_number);
       if (rec.spa_time && (!ex.spa_time || rec.spa_time < ex.spa_time)) ex.spa_time = rec.spa_time;
-      if (rec.meal_time && (!ex.meal_time || rec.meal_time < ex.meal_time)) ex.meal_time = rec.meal_time;
+      if (rec.meal_time && (!ex.meal_time || rec.meal_time < ex.meal_time)) {
+        ex.meal_time = rec.meal_time;
+        if (rec.meal_location && !ex.meal_location) ex.meal_location = rec.meal_location;
+      }
       ex.treatment_count = (ex.treatment_count ?? 0) + (rec.treatment_count ?? 0);
     }
   }
@@ -414,7 +417,7 @@ export function enrichProfilesFromExcel(profiles, excelRecords) {
       if (rec.meal_time) {
         if (!profile.meal_time || rec.meal_time < profile.meal_time) {
           profile.meal_time = rec.meal_time;
-          profile.meal_location = "מסעדת ערמונים";
+          profile.meal_location = rec.meal_location || "מסעדת ערמונים";
         }
       }
       // Treatment count: accumulate across all orders

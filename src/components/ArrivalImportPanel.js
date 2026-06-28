@@ -213,6 +213,7 @@ function parseComprehensiveReport(rows, opts = {}) {
         spa_time:        null,
         treatment_count: 0,
         meal_time:       null,
+        meal_location:   null,
       };
       if (c2) { _extractExtras(current, c2, suiteSpaOnly); _extractMealTime(current, c2); }
       continue;
@@ -268,36 +269,79 @@ function _extractArrivalDateFromHtml(htmlText) {
 
 function parseHtmlDailyReport(htmlText) {
   const doc = new DOMParser().parseFromString(htmlText, "text/html");
-  const arrivalDate = _extractArrivalDateFromHtml(htmlText);
+  // Tier 1: target <TH> header cells (e.g. "יום: ג<BR>30/06/2026") — precise.
+  // Tier 2: fall back to raw-text regex for non-standard EasyGo variants.
+  let arrivalDate = null;
+  doc.querySelectorAll("th").forEach(th => {
+    if (arrivalDate) return;
+    const txt = _cellText(th);
+    const m = txt.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+    if (m) arrivalDate = `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+  });
+  if (!arrivalDate) arrivalDate = _extractArrivalDateFromHtml(htmlText);
   const pseudoRows = [];
+  // Per-phone board-basis defaults applied post-parse; explicit timed lines always win.
+  const boardDefaults = new Map(); // E.164 phone → { meal_time, meal_location }
 
   doc.querySelectorAll("table table tbody tr").forEach(tr => {
     const tds = tr.querySelectorAll(":scope > td");
     if (tds.length < 4) return;
 
     const orderRaw = _cellText(tds[0]);
-    const extras   = _cellText(tds[1]);
-    const meals    = _cellText(tds[3]);
+    const extras   = _cellText(tds[1]); // תוספות — spa appointments
+    const board    = _cellText(tds[2]); // Board basis: HB / BB / FB / RO
+    const meals    = _cellText(tds[3]); // ארוחות column
 
-    // Take only the first meaningful line from the order cell — the "<BR>1 חדרים..."
-    // line must not contaminate the phone regex.
+    // Take only the first meaningful line from the order cell.
     const orderLine = orderRaw.split(/\r?\n/).map(s => s.trim()).find(s => /^\d+:/.test(s));
     if (!orderLine) return;
 
-    // Combine extras (spa) and meals columns; each already split by \n via DOM walk.
-    const c2Parts = [extras, meals].filter(s => s && !/^[\s]*$/).join("\n");
+    // Map board basis code to default meal fields.
+    // Applied post-parse only when _extractMealTime finds no explicit timed line.
+    const bUpper = board.trim().toUpperCase();
+    let mealDefault = null;
+    if (/\bHB\b/.test(bUpper) || /ארוחת ערב/i.test(meals)) {
+      mealDefault = { meal_time: "19:00", meal_location: "ערב ובוקר" };
+    } else if (/\bFB\b/.test(bUpper)) {
+      mealDefault = { meal_time: "19:00", meal_location: "שלוש ארוחות" };
+    } else if (/\bBB\b/.test(bUpper)) {
+      mealDefault = { meal_time: "כלול", meal_location: "ארוחת בוקר" };
+    }
+    // RO or empty: mealDefault stays null — no meal fields set.
+    if (mealDefault) {
+      const pm   = orderLine.match(/\s+-\s+([+\d][\d\s\-+]{7,})\s*$/);
+      const e164 = pm ? _sanitizeE164(pm[1]) : null;
+      if (e164) boardDefaults.set(e164, mealDefault);
+    }
+
+    // Include board text so _extractMealTime can locate an explicit time in
+    // formats like "HB 19:30". Combine spa, board, meals columns.
+    const c2Parts = [extras, board, meals]
+      .filter(s => s && !/^\s*$/.test(s))
+      .join("\n");
     pseudoRows.push([null, orderLine, c2Parts || null]);
   });
 
-  // suiteSpaOnly:false — group-slot filter (_GROUP_SPA_RE) is already applied inside
-  // _extractExtras; requiring the "לאורחי הסוויטות" label is not needed and caused
-  // valid suite bookings that use slightly different wording to lose their spa_time.
+  // suiteSpaOnly:false — _GROUP_SPA_RE already filters group slots inside
+  // _extractExtras; requiring the "לאורחי הסוויטות" label caused valid suite
+  // bookings with slightly different wording to lose their spa_time.
   const records = parseComprehensiveReport(pseudoRows, { suiteSpaOnly: false });
   if (arrivalDate) {
     for (const r of records) {
       if (!r.arrival_date) r.arrival_date = arrivalDate;
     }
   }
+
+  // Apply board-basis defaults where _extractMealTime found no explicit timed line.
+  // Explicit times from the extras/meals columns always win.
+  for (const r of records) {
+    const def = r.phone ? boardDefaults.get(r.phone) : null;
+    if (def) {
+      if (!r.meal_time)     r.meal_time     = def.meal_time;
+      if (!r.meal_location) r.meal_location = def.meal_location;
+    }
+  }
+
   return records;
 }
 
@@ -655,6 +699,13 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
       if (isHtml) {
         const text = await file.text();
         records = parseHtmlDailyReport(text);
+        // Gap B: auto-populate the date picker from the TH-extracted date and show
+        // the FAIL VISIBLE banner so staff can verify before syncing.
+        const detectedDate = records.find(r => r.arrival_date)?.arrival_date;
+        if (detectedDate) {
+          setArrivalDate(detectedDate);
+          setAutoDateBanner({ date: detectedDate, source: "הדוח היומי (HTML)" });
+        }
       } else {
         const XLSX = await import("xlsx");
         const buf  = await file.arrayBuffer();
@@ -762,7 +813,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           if (g.guestPhone && (spaTime || mealTime)) {
             const patch = { treatment_count: g.treatment_count ?? 0 };
             if (spaTime)  patch.spa_time = spaTime;
-            if (mealTime) { patch.meal_time = mealTime; patch.meal_location = "מסעדת ערמונים"; }
+            if (mealTime) { patch.meal_time = mealTime; patch.meal_location = g.meal_location || "מסעדת ערמונים"; }
             await supabase.from("guests").update(patch)
               .eq("phone", g.guestPhone)
               .eq("arrival_date", g.arrivalDate);
@@ -799,7 +850,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
             if (existingPhones.has(rec.phone)) {
               const patch = {};
               if (rec.spa_time)        patch.spa_time        = rec.spa_time;
-              if (rec.meal_time)       { patch.meal_time = rec.meal_time; patch.meal_location = "מסעדת ערמונים"; }
+              if (rec.meal_time)       { patch.meal_time = rec.meal_time; patch.meal_location = rec.meal_location || "מסעדת ערמונים"; }
               if (rec.treatment_count) patch.treatment_count = rec.treatment_count;
               if (rec.order_number)    patch.order_number    = rec.order_number;
               if (rec.arrival_date)    patch.arrival_date    = rec.arrival_date;
@@ -811,7 +862,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                 name:            rec.guest_name ?? null,
                 spa_time:        rec.spa_time   ?? null,
                 meal_time:       rec.meal_time  ?? null,
-                meal_location:   rec.meal_time ? "מסעדת ערמונים" : null,
+                meal_location:   rec.meal_location || (rec.meal_time ? "מסעדת ערמונים" : null),
                 treatment_count: rec.treatment_count ?? 0,
                 order_number:    rec.order_number   ?? null,
                 arrival_date:    rec.arrival_date   ?? null,
