@@ -18,7 +18,29 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 
 const FAB = 56;                       // FAB diameter (px) — used for drag clamping
+const MARGIN = 8;                     // min inset from viewport edges while dragging
 const POS_KEY = "requestsWidgetPos";  // localStorage key for the dragged position
+const Z_INDEX = 10400;                // above sidebar/mobile chrome; below modal overlays (~9999+)
+
+function clampPos(p) {
+  const maxRight = window.innerWidth - FAB - MARGIN;
+  const maxBottom = window.innerHeight - FAB - MARGIN;
+  return {
+    right: Math.max(MARGIN, Math.min(maxRight, p.right)),
+    bottom: Math.max(MARGIN, Math.min(maxBottom, p.bottom)),
+  };
+}
+
+function isPosInBounds(p) {
+  if (!p || typeof p.right !== "number" || typeof p.bottom !== "number") return false;
+  const maxRight = window.innerWidth - FAB - MARGIN;
+  const maxBottom = window.innerHeight - FAB - MARGIN;
+  return p.right >= MARGIN && p.right <= maxRight && p.bottom >= MARGIN && p.bottom <= maxBottom;
+}
+
+function clearSavedPos() {
+  try { localStorage.removeItem(POS_KEY); } catch { /* ignore */ }
+}
 
 export default function RequestsAlertWidget({ onNavigate }) {
   const [pendingCount, setPendingCount] = useState(0);
@@ -29,7 +51,15 @@ export default function RequestsAlertWidget({ onNavigate }) {
     () => typeof window !== "undefined" && window.innerWidth < 768
   );
   useEffect(() => {
-    const onResize = () => setIsMobile(window.innerWidth < 768);
+    const onResize = () => {
+      setIsMobile(window.innerWidth < 768);
+      setPos((cur) => {
+        if (!cur) return null;
+        if (isPosInBounds(cur)) return cur;
+        clearSavedPos();
+        return null;
+      });
+    };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
@@ -40,9 +70,15 @@ export default function RequestsAlertWidget({ onNavigate }) {
     try {
       const saved = JSON.parse(localStorage.getItem(POS_KEY) || "null");
       if (saved && typeof saved.right === "number" && typeof saved.bottom === "number") {
-        setPos(saved);
+        if (isPosInBounds(saved)) {
+          setPos(saved);
+        } else {
+          clearSavedPos();
+        }
       }
-    } catch { /* ignore malformed storage */ }
+    } catch {
+      clearSavedPos();
+    }
   }, []);
 
   // dragging:  pointer is down
@@ -107,19 +143,20 @@ export default function RequestsAlertWidget({ onNavigate }) {
       d.moved = true;
     }
     if (!d.moved) return;
-    // Convert pointer position → right/bottom offsets, clamped inside the viewport.
-    const right = Math.max(8, Math.min(window.innerWidth - FAB - 8, window.innerWidth - e.clientX - FAB / 2));
-    const bottom = Math.max(8, Math.min(window.innerHeight - FAB - 8, window.innerHeight - e.clientY - FAB / 2));
-    setPos({ right, bottom });
+    setPos(clampPos({
+      right: window.innerWidth - e.clientX - FAB / 2,
+      bottom: window.innerHeight - e.clientY - FAB / 2,
+    }));
   };
   const onPointerUp = () => {
     const d = drag.current;
     d.dragging = false;
     if (d.moved) {
-      // Persist using the functional latest pos to avoid a stale closure value.
       setPos((cur) => {
-        if (cur) { try { localStorage.setItem(POS_KEY, JSON.stringify(cur)); } catch { /* ignore */ } }
-        return cur;
+        if (!cur) return cur;
+        const clamped = clampPos(cur);
+        try { localStorage.setItem(POS_KEY, JSON.stringify(clamped)); } catch { /* ignore */ }
+        return clamped;
       });
     }
   };
@@ -140,7 +177,7 @@ export default function RequestsAlertWidget({ onNavigate }) {
     : { right: isMobile ? "16px" : "24px", bottom: isMobile ? "96px" : "24px" };
 
   return (
-    <div style={{ position: "fixed", ...anchor, zIndex: 1100, direction: "rtl", touchAction: "none" }}>
+    <div style={{ position: "fixed", ...anchor, zIndex: Z_INDEX, direction: "rtl", touchAction: "none" }}>
       {toast && (
         <div
           onClick={() => onNavigate?.("requests_board")}

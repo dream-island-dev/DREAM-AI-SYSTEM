@@ -6,7 +6,29 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 
 const FAB = 56;                  // bell diameter (px) — used for drag clamping
+const MARGIN = 8;                // min inset from viewport edges while dragging
 const POS_KEY = "aiCopilotPos";  // localStorage key for the dragged position ({ left, bottom })
+const Z_INDEX = 10400;           // above sidebar/mobile chrome; below modal overlays (~9999+)
+
+function clampPos(p) {
+  const maxLeft = window.innerWidth - FAB - MARGIN;
+  const maxBottom = window.innerHeight - FAB - MARGIN;
+  return {
+    left: Math.max(MARGIN, Math.min(maxLeft, p.left)),
+    bottom: Math.max(MARGIN, Math.min(maxBottom, p.bottom)),
+  };
+}
+
+function isPosInBounds(p) {
+  if (!p || typeof p.left !== "number" || typeof p.bottom !== "number") return false;
+  const maxLeft = window.innerWidth - FAB - MARGIN;
+  const maxBottom = window.innerHeight - FAB - MARGIN;
+  return p.left >= MARGIN && p.left <= maxLeft && p.bottom >= MARGIN && p.bottom <= maxBottom;
+}
+
+function clearSavedPos() {
+  try { localStorage.removeItem(POS_KEY); } catch { /* ignore */ }
+}
 
 export default function AICopilot({ user }) {
   const [alerts,     setAlerts]     = useState([]);
@@ -23,9 +45,15 @@ export default function AICopilot({ user }) {
     try {
       const saved = JSON.parse(localStorage.getItem(POS_KEY) || "null");
       if (saved && typeof saved.left === "number" && typeof saved.bottom === "number") {
-        setPos(saved);
+        if (isPosInBounds(saved)) {
+          setPos(saved);
+        } else {
+          clearSavedPos();
+        }
       }
-    } catch { /* ignore malformed storage */ }
+    } catch {
+      clearSavedPos();
+    }
   }, []);
   const drag = useRef({ dragging: false, moved: false, startX: 0, startY: 0 });
 
@@ -37,7 +65,15 @@ export default function AICopilot({ user }) {
     () => typeof window !== "undefined" && window.innerWidth <= 768
   );
   useEffect(() => {
-    const onResize = () => setIsNarrowViewport(window.innerWidth <= 768);
+    const onResize = () => {
+      setIsNarrowViewport(window.innerWidth <= 768);
+      setPos((cur) => {
+        if (!cur) return null;
+        if (isPosInBounds(cur)) return cur;
+        clearSavedPos();
+        return null;
+      });
+    };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
@@ -194,17 +230,20 @@ export default function AICopilot({ user }) {
       d.moved = true;
     }
     if (!d.moved) return;
-    const left   = Math.max(8, Math.min(window.innerWidth - FAB - 8, e.clientX - FAB / 2));
-    const bottom = Math.max(8, Math.min(window.innerHeight - FAB - 8, window.innerHeight - e.clientY - FAB / 2));
-    setPos({ left, bottom });
+    setPos(clampPos({
+      left: e.clientX - FAB / 2,
+      bottom: window.innerHeight - e.clientY - FAB / 2,
+    }));
   };
   const onPointerUp = () => {
     const d = drag.current;
     d.dragging = false;
     if (d.moved) {
       setPos((cur) => {
-        if (cur) { try { localStorage.setItem(POS_KEY, JSON.stringify(cur)); } catch { /* ignore */ } }
-        return cur;
+        if (!cur) return cur;
+        const clamped = clampPos(cur);
+        try { localStorage.setItem(POS_KEY, JSON.stringify(clamped)); } catch { /* ignore */ }
+        return clamped;
       });
     }
   };
@@ -229,7 +268,7 @@ export default function AICopilot({ user }) {
     <div style={{
       position: "fixed",
       ...anchor,
-      zIndex: 1100,
+      zIndex: Z_INDEX,
       direction: "rtl",
       touchAction: "none",
     }}>
