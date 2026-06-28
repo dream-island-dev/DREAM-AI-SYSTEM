@@ -45,7 +45,7 @@ export default function SuitesDashboard() {
       if (phones.length) {
         const { data: gd } = await supabase
           .from("guests")
-          .select("id, phone, status, arrival_confirmed, spa_time, msg_room_ready_sent")
+          .select("id, phone, status, arrival_confirmed, spa_time, meal_time, msg_room_ready_sent")
           .in("phone", phones);
         const sm = {};
         for (const g of (gd ?? [])) sm[g.phone] = g;
@@ -300,6 +300,9 @@ export default function SuitesDashboard() {
                           )}
                           {gs.spa_time && (
                             <span style={{ fontSize: 9, color: "#7c3aed", fontWeight: 700 }}>💆 {gs.spa_time}</span>
+                          )}
+                          {gs.meal_time && (
+                            <span style={{ fontSize: 9, color: "#B45309", fontWeight: 700 }}>🍽️ {gs.meal_time}</span>
                           )}
                         </div>
                       );

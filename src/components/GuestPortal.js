@@ -418,7 +418,7 @@ function ItineraryPanel({ guest }) {
               icon="🍽️"
               label="ארוחה"
               value={guest.meal_time
-                ? `${guest.meal_time}${guest.meal_location ? " · " + guest.meal_location : ""}`
+                ? (guest.meal_location || "ארוחה כלולה")
                 : null}
             />
           </>
@@ -486,7 +486,7 @@ function DayUseView({ guest, phase, countdown, upsellItems, token, onToast, onUp
                 icon="🍽️"
                 label="ארוחה"
                 value={guest.meal_time
-                  ? `${guest.meal_time}${guest.meal_location ? " · " + guest.meal_location : ""}`
+                  ? (guest.meal_location || "ארוחה כלולה")
                   : null}
               />
             </>
