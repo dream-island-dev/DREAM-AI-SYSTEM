@@ -285,27 +285,31 @@ function parseHtmlDailyReport(htmlText) {
 
   doc.querySelectorAll("table table tbody tr").forEach(tr => {
     const tds = tr.querySelectorAll(":scope > td");
-    if (tds.length < 4) return;
+    // Require at least order-cell + extras-cell.
+    // EasyGo HTML exports vary between 3-column (order|extras|board+meals) and
+    // 4-column (order|extras|board|meals) layouts — do not hard-reject < 4.
+    if (tds.length < 2) return;
 
     const orderRaw = _cellText(tds[0]);
-    const extras   = _cellText(tds[1]); // תוספות — spa appointments
-    const board    = _cellText(tds[2]); // Board basis: HB / BB / FB / RO
-    const meals    = _cellText(tds[3]); // ארוחות column
+    const extras   = _cellText(tds[1]); // TD 1 — תוספות / spa appointments
+    // Defensive access: tolerate 3-column layouts where board and meals share TD 2.
+    const board    = tds.length > 2 ? _cellText(tds[2]) : ""; // Board basis: HB/FB/BB/RO
+    const meals    = tds.length > 3 ? _cellText(tds[3]) : ""; // ארוחות (may be absent)
 
     // Take only the first meaningful line from the order cell.
     const orderLine = orderRaw.split(/\r?\n/).map(s => s.trim()).find(s => /^\d+:/.test(s));
     if (!orderLine) return;
 
-    // Map board basis code to default meal fields.
-    // Applied post-parse only when _extractMealTime finds no explicit timed line.
-    const bUpper = board.trim().toUpperCase();
+    // Board basis → strict Hebrew meal-plan label, meal_time always null.
+    // NO time guessing — "19:00" defaults are forbidden (§3 strict meal rules).
+    const bUpper = (board + " " + meals).trim().toUpperCase();
     let mealDefault = null;
-    if (/\bHB\b/.test(bUpper) || /ארוחת ערב/i.test(meals)) {
-      mealDefault = { meal_time: "19:00", meal_location: "ערב ובוקר" };
-    } else if (/\bFB\b/.test(bUpper)) {
-      mealDefault = { meal_time: "19:00", meal_location: "שלוש ארוחות" };
+    if (/\bFB\b/.test(bUpper)) {
+      mealDefault = { meal_time: null, meal_location: "פנסיון מלא" };
+    } else if (/\bHB\b/.test(bUpper)) {
+      mealDefault = { meal_time: null, meal_location: "חצי פנסיון" };
     } else if (/\bBB\b/.test(bUpper)) {
-      mealDefault = { meal_time: "כלול", meal_location: "ארוחת בוקר" };
+      mealDefault = { meal_time: null, meal_location: "רק ארוחת בוקר" };
     }
     // RO or empty: mealDefault stays null — no meal fields set.
     if (mealDefault) {
@@ -314,12 +318,11 @@ function parseHtmlDailyReport(htmlText) {
       if (e164) boardDefaults.set(e164, mealDefault);
     }
 
-    // Include board text so _extractMealTime can locate an explicit time in
-    // formats like "HB 19:30". Combine spa, board, meals columns.
-    const c2Parts = [extras, board, meals]
-      .filter(s => s && !/^\s*$/.test(s))
-      .join("\n");
-    pseudoRows.push([null, orderLine, c2Parts || null]);
+    // Pass ONLY the extras (spa) column to parseComprehensiveReport.
+    // Board/meals columns are handled entirely by the boardDefaults map above —
+    // this prevents _extractMealTime from encountering HB/FB/BB keywords and
+    // guessing a time from them (strict meal rules, §3).
+    pseudoRows.push([null, orderLine, extras || null]);
   });
 
   // suiteSpaOnly:false — _GROUP_SPA_RE already filters group slots inside
@@ -332,13 +335,13 @@ function parseHtmlDailyReport(htmlText) {
     }
   }
 
-  // Apply board-basis defaults where _extractMealTime found no explicit timed line.
-  // Explicit times from the extras/meals columns always win.
+  // Apply board-basis meal plan label where not already set by an explicit timed line.
+  // ONLY meal_location is written from board basis — meal_time is NEVER written here
+  // (board basis codes carry no authoritative time, strict meal rules §3).
   for (const r of records) {
     const def = r.phone ? boardDefaults.get(r.phone) : null;
-    if (def) {
-      if (!r.meal_time)     r.meal_time     = def.meal_time;
-      if (!r.meal_location) r.meal_location = def.meal_location;
+    if (def && !r.meal_location && def.meal_location) {
+      r.meal_location = def.meal_location;
     }
   }
 
@@ -693,7 +696,10 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
       const looksHtmlByName = /\.html?$/i.test(file.name);
       const looksHtmlByMime = file.type === "text/html";
       const headSniff = await file.slice(0, 512).text().catch(() => "");
-      const looksHtmlByContent = /<!DOCTYPE\s+html|<html[\s>]|<table[\s>]/i.test(headSniff);
+      // trimStart() removes BOM (\uFEFF) and leading whitespace that EasyGo sometimes
+      // prepends to its HTML exports — without it, "<!DOCTYPE" wouldn't be at position 0
+      // and the check would miss fake-XLSX files that are actually HTML under the hood.
+      const looksHtmlByContent = /<!DOCTYPE\s+html|<html[\s>]|<table[\s>]/i.test(headSniff.trimStart());
       const isHtml = looksHtmlByName || looksHtmlByMime || looksHtmlByContent;
       let records;
       if (isHtml) {
@@ -801,19 +807,21 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           .rpc("sync_suite_arrivals", { payload: { profiles, rooms } });
         if (rpcErr) throw new Error("sync_suite_arrivals: " + rpcErr.message);
 
-        // Inject spa_time/meal_time where Doc 1 enrichment (or manual grid edit)
-        // provided them. meal_time always binds to Armonim — "EASYGO OPERATION
-        // FILE INGESTION" session, the restaurant is the only dinner venue this
-        // pipeline books today, same as AddGuestModal's new-guest default.
+        // Inject spa_time / meal_time / meal_location where Doc 1 enrichment (or
+        // manual grid edit) provided them. meal_location is written independently
+        // of meal_time: board-basis guests (HB/FB/BB) get a plan label ("חצי פנסיון"
+        // etc.) with no time — strict meal rules §3, no default "19:00" guessing.
         for (let i = 0; i < merged.length; i++) {
           const g = merged[i];
           const edited   = gridRows[i] ?? {};
           const spaTime  = edited.spa_time  || g.spa_time;
           const mealTime = edited.meal_time || g.meal_time;
-          if (g.guestPhone && (spaTime || mealTime)) {
+          const mealLoc  = g.meal_location;
+          if (g.guestPhone && (spaTime || mealTime || mealLoc)) {
             const patch = { treatment_count: g.treatment_count ?? 0 };
-            if (spaTime)  patch.spa_time = spaTime;
-            if (mealTime) { patch.meal_time = mealTime; patch.meal_location = g.meal_location || "מסעדת ערמונים"; }
+            if (spaTime)  patch.spa_time      = spaTime;
+            if (mealTime) patch.meal_time      = mealTime;
+            if (mealLoc)  patch.meal_location  = mealLoc;
             await supabase.from("guests").update(patch)
               .eq("phone", g.guestPhone)
               .eq("arrival_date", g.arrivalDate);
@@ -832,12 +840,14 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           spa:    gridRows.filter(r => r.spa_time).length,
         });
 
-      // ── PATH B: Daily Report only — upsert guests ────────────────────────
-      // If guest exists → update spa fields only (never touch status/needs_callback)
-      // If guest is new → INSERT full profile so they appear in guest management
+      // ── PATH B: Daily Report only — ENRICHMENT ONLY ─────────────────────
+      // Updates spa/meal fields on EXISTING guests only. Never inserts new rows.
+      // Guests must already exist from a Doc 2 (Suite CSV) import. This enforces
+      // the single-source-of-truth rule: the Suite CSV creates guest records,
+      // the Daily Report only enriches them (§4 — no duplicates).
       } else if (!hasDoc2 && hasDoc1) {
         const allPhones = doc1Rec.filter(r => r.phone).map(r => r.phone);
-        let updated = 0, created = 0, skipped = 0;
+        let updated = 0, skipped = 0;
 
         if (allPhones.length > 0) {
           const { data: existingRows } = await supabase
@@ -850,31 +860,25 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
             if (existingPhones.has(rec.phone)) {
               const patch = {};
               if (rec.spa_time)        patch.spa_time        = rec.spa_time;
-              if (rec.meal_time)       { patch.meal_time = rec.meal_time; patch.meal_location = rec.meal_location || "מסעדת ערמונים"; }
+              // meal_time and meal_location are independent: board-basis guests have
+              // meal_location ("חצי פנסיון" etc.) with meal_time=null — both must be
+              // written separately so plan labels reach the DB even without a time.
+              if (rec.meal_time)       patch.meal_time       = rec.meal_time;
+              if (rec.meal_location)   patch.meal_location   = rec.meal_location;
               if (rec.treatment_count) patch.treatment_count = rec.treatment_count;
               if (rec.order_number)    patch.order_number    = rec.order_number;
               if (rec.arrival_date)    patch.arrival_date    = rec.arrival_date;
               const { error } = await supabase.from("guests").update(patch).eq("phone", rec.phone);
               if (!error) updated++; else skipped++;
             } else {
-              const { error } = await supabase.from("guests").insert({
-                phone:           rec.phone,
-                name:            rec.guest_name ?? null,
-                spa_time:        rec.spa_time   ?? null,
-                meal_time:       rec.meal_time  ?? null,
-                meal_location:   rec.meal_location || (rec.meal_time ? "מסעדת ערמונים" : null),
-                treatment_count: rec.treatment_count ?? 0,
-                order_number:    rec.order_number   ?? null,
-                arrival_date:    rec.arrival_date   ?? null,
-                status:          "pending",
-              });
-              if (!error) created++; else skipped++;
+              // Guest not found — enrichment-only path, never insert.
+              skipped++;
             }
           }
         } else {
           skipped = doc1Rec.length;
         }
-        setResult({ mode: "spa", updated, created, skipped });
+        setResult({ mode: "spa", updated, skipped });
       }
 
     } catch (err) {
@@ -1300,19 +1304,14 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                 </>
               ) : (
                 <div style={{ color: "#065f46" }}>
-                  {result.created > 0 && (
-                    <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 4 }}>
-                      ✨ נוצרו {result.created} אורחים חדשים במערכת
-                    </div>
-                  )}
                   {result.updated > 0 && (
                     <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 4 }}>
-                      🔄 עודכנו {result.updated} אורחים קיימים (שעת ספא)
+                      🔄 עודכנו {result.updated} אורחים קיימים
                     </div>
                   )}
                   {result.skipped > 0 && (
                     <div style={{ fontSize: 12, color: "#1d7a5a", marginTop: 4 }}>
-                      {result.skipped} רשומות דולגו (ללא טלפון או שגיאה)
+                      {result.skipped} רשומות דולגו (ללא טלפון, לא נמצאו במערכת, או שגיאה)
                     </div>
                   )}
                 </div>

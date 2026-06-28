@@ -411,14 +411,17 @@ export function enrichProfilesFromExcel(profiles, excelRecords) {
           profile.spa_time = rec.spa_time;
         }
       }
-      // Meal time: same earliest-wins rule, always bound to Armonim — "EASYGO
-      // OPERATION FILE INGESTION" session (the restaurant this pipeline books
-      // dinner reservations at today).
-      if (rec.meal_time) {
-        if (!profile.meal_time || rec.meal_time < profile.meal_time) {
-          profile.meal_time = rec.meal_time;
-          profile.meal_location = rec.meal_location || "מסעדת ערמונים";
-        }
+      // meal_location and meal_time are propagated independently.
+      // Board-basis records (HB/FB/BB) carry a plan label ("חצי פנסיון" etc.)
+      // with meal_time=null — meal_location must reach the profile even when
+      // there is no associated time (strict meal rules §3, no time guessing).
+      if (rec.meal_location && !profile.meal_location) {
+        profile.meal_location = rec.meal_location;
+      }
+      // Explicit meal time: earliest-wins. Board-basis records have meal_time=null
+      // and therefore never overwrite a real timed entry.
+      if (rec.meal_time && (!profile.meal_time || rec.meal_time < profile.meal_time)) {
+        profile.meal_time = rec.meal_time;
       }
       // Treatment count: accumulate across all orders
       profile.treatment_count += (rec.treatment_count ?? 0);
