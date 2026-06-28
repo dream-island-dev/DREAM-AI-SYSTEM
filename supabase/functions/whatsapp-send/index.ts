@@ -237,14 +237,21 @@ function sanitizeTemplateVars(vars: string[]): string[] {
   });
 }
 
-// Meta body layout for Stage 2.5 suite templates (dream_suite_reminder +
-// night_before_suites[_shabbat]): {{1}}=guest name, {{2}}=resort entry time,
-// {{3}}=room check-in time. Passing fewer vars triggers Meta error #132000.
+// Meta body layout for dream_suite_reminder: {{1}}=name, {{2}}=entry, {{3}}=check-in.
+// night_before_suites[_shabbat] approved templates expect {{1}}=name only — times are
+// baked into the static template body (weekday vs Shabbat variants).
 const THREE_PARAM_TIMING_TEMPLATES = new Set([
   "dream_suite_reminder",
+]);
+
+const ONE_PARAM_NAME_TEMPLATES = new Set([
   "night_before_suites",
   "night_before_suites_shabbat",
 ]);
+
+function buildNameOnlyTemplateVars(guest: Record<string, unknown>): string[] {
+  return sanitizeTemplateVars([String(guest.name ?? "")]);
+}
 
 function buildThreeParamTimingVars(
   guest: Record<string, unknown>,
@@ -269,6 +276,9 @@ function ensureTemplateBodyVars(
   vars: string[],
   guest: Record<string, unknown>,
 ): string[] {
+  if (ONE_PARAM_NAME_TEMPLATES.has(templateName)) {
+    return buildNameOnlyTemplateVars(guest);
+  }
   if (THREE_PARAM_TIMING_TEMPLATES.has(templateName)) {
     const synced = syncTimingVarsForGuest(guest);
     if (vars.length >= 3) {
@@ -364,12 +374,9 @@ const TEMPLATE_IMAGE_HEADERS: Record<string, string> = {
 };
 
 // Only these approved templates have a dynamic URL button at index 0.
-// Injecting a URL button into QUICK_REPLY-only templates (e.g. dream_arrival_confirmation)
-// causes Meta "Format mismatch" rejections — the Stage 1 failure mode.
+// night_before_suites[_shabbat] have no button component — do not inject one.
 const TEMPLATE_HAS_DYNAMIC_URL_BUTTON = new Set([
   "dream_suite_reminder",
-  "night_before_suites",
-  "night_before_suites_shabbat",
   "dream_payment_and_workshops",
 ]);
 
@@ -421,6 +428,9 @@ function resolveTemplateVars(
   guest: Record<string, unknown>,
   templateName: string,
 ): string[] {
+  if (ONE_PARAM_NAME_TEMPLATES.has(templateName)) {
+    return buildNameOnlyTemplateVars(guest);
+  }
   if (THREE_PARAM_TIMING_TEMPLATES.has(templateName)) {
     return syncTimingVarsForGuest(guest);
   }
@@ -1055,11 +1065,8 @@ serve(async (req: Request) => {
     //   3. If > 24h OR null    → channel = "template".
     //      Saturday  → night_before_suites_shabbat
     //      Sun–Fri   → night_before_suites
-    //      Variable mapping (Meta #132000 — must be exactly 3 body params):
-    //        {{1}} = guest name, {{2}} = resort entry time, {{3}} = check-in time.
-    //        Shabbat/holiday hours from resolveNightBeforeTimes(); weekday from
-    //        bot_config with 12:00/15:00 fallbacks. sanitizeTemplateVars() pads
-    //        any missing slot so Meta never receives a mismatched param count.
+    //      Variable mapping: {{1}} = guest name only. Entry/check-in times are
+    //      static in the approved weekday vs Shabbat template bodies.
     //
     // Only evaluated for trigger === "night_before"; all other triggers fall
     // through to the existing session_message/Meta-template dispatch below.
@@ -1105,10 +1112,8 @@ serve(async (req: Request) => {
         const isShabbat = arrivalDay === 6;
         // Suite guests only — day_guest guests use 'night_before_daypass' (migration 093).
         const templateName = isShabbat ? "night_before_suites_shabbat" : "night_before_suites";
-        const { entryTime, checkInTime } = await resolveNightBeforeTimes(supabase, arrivalDateStr);
-        const vars = buildThreeParamTimingVars(guest, entryTime, checkInTime);
-        const buttonUrlParam = resolveDynamicUrlButtonParam(templateName, guest.portal_token);
-        nightBeforeDispatch = { channel: "template", templateName, vars, buttonUrlParam };
+        const vars = buildNameOnlyTemplateVars(guest);
+        nightBeforeDispatch = { channel: "template", templateName, vars };
       }
     }
 
@@ -1138,13 +1143,11 @@ serve(async (req: Request) => {
               const arrivalDateStr = String(guest.arrival_date ?? "");
               const isShabbatFb = new Date(`${arrivalDateStr}T00:00:00Z`).getUTCDay() === 6;
               const fbTemplate = isShabbatFb ? "night_before_suites_shabbat" : "night_before_suites";
-              const fbTimes = await resolveNightBeforeTimes(supabase, arrivalDateStr);
               await sendViaTemplate(
                 String(guest.phone),
                 fbTemplate,
-                buildThreeParamTimingVars(guest, fbTimes.entryTime, fbTimes.checkInTime),
+                buildNameOnlyTemplateVars(guest),
                 "he",
-                resolveDynamicUrlButtonParam(fbTemplate, guest.portal_token),
               );
             } else {
               const nbPortalUrl = guest.portal_token
@@ -1164,7 +1167,6 @@ serve(async (req: Request) => {
               nightBeforeDispatch.templateName,
               nightBeforeDispatch.vars,
               "he",
-              nightBeforeDispatch.buttonUrlParam,
             );
           }
           nbStatus = "sent";
