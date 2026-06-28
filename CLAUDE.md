@@ -100,6 +100,10 @@
 
 ## 3. מפת קבצים — מה קיים בפועל
 
+> **עדכון session 58 (2026-06-28):** Operational Dashboard Sync. (1) `GuestDashboard.js`: נוסף `editingGuest` state + כפתור ✏️ על כל כרטיס אורח — פותח `AddGuestModal` עם האורח הקיים (פריטי-ביצוע-זהים כמו ב-`GuestsPage.js`, עקרון SINGLE SOURCE OF TRUTH §0.5). (2) `GuestsPage.js` — אכיפת Bifurcation: `displayGuests` מסונן כעת ל-`isSuite(g)` בלבד — אורחי יום (`day_guest`/`premium_day_guest`) אינם מוצגים בטבלת הצ'ק-אין (הם ב-`GuestDashboard.js` tab "בילוי יומי"). Badge "👑 סוויטות בלבד" גלוי בכותרת. (3) `GuestsPage.js` — תיקון FAIL VISIBLE (§0.3): ה-`catch { /⁎ function may not be deployed yet ⁎/ }` ה-שקט ב-`setStatus()` לאחר Room Ready הוחלף בבדיקת `data?.ok` + toast שגיאה עם הסיבה האמיתית + toast הצלחה עם שם האורח. commit `5c602b2`, pushed ל-main, Vercel auto-deploy.
+
+
+
 ```
 DREAM-AI-SYSTEM/
 ├── src/
