@@ -72,17 +72,29 @@ export default function GuestsPage() {
     if (error) { showToast("err", "שגיאה: " + error.message); setBusy(null); return; }
     setGuests((prev) => prev.map((g) => (g.id === guest.id ? { ...g, ...patch } : g)));
 
-    // Room Ready → fire WhatsApp Trigger 3 (suites only) immediately.
-    // Safe before the function is deployed: failures are swallowed.
-    if (status === "room_ready" && guest.room_type === "suite") {
+    // Room Ready → fire WhatsApp room_ready trigger (suites only).
+    // Uses isSuite() so legacy guests without explicit room_type are covered.
+    if (status === "room_ready" && isSuite(guest)) {
       try {
-        await supabase.functions.invoke("whatsapp-send", {
+        const { data: waData, error: waError } = await supabase.functions.invoke("whatsapp-send", {
           body: { trigger: "room_ready", guestId: guest.id },
         });
-      } catch { /* function may not be deployed yet */ }
+        if (waError || !waData?.ok) {
+          const reason = waData?.error ?? waError?.message ?? "שגיאה לא ידועה";
+          showToast("err", `חדר סומן כמוכן — אך הודעת WA נכשלה: ${reason}`);
+          setBusy(null);
+          return;
+        }
+        showToast("ok", `✅ חדר מוכן + הודעת WA נשלחה ל${guest.name}${waData.simulation ? " (סימולציה)" : ""}`);
+      } catch (e) {
+        showToast("err", `חדר סומן כמוכן — אך הודעת WA נכשלה: ${e?.message ?? String(e)}`);
+        setBusy(null);
+        return;
+      }
+    } else {
+      const labels = { checked_in: "צ'ק-אין ✓", room_ready: "חדר מוכן ✓", expected: "הוחזר לממתין ↩" };
+      showToast("ok", labels[status] ?? "עודכן ✓");
     }
-    const labels = { checked_in: "צ'ק-אין ✓", room_ready: "חדר מוכן ✓", expected: "הוחזר לממתין ↩" };
-    showToast("ok", labels[status] ?? "עודכן ✓");
     setBusy(null);
   };
 
@@ -110,9 +122,15 @@ export default function GuestsPage() {
   // ── Past Guests filter — mirrors the departure_date query style already
   //    used in WhatsAppInbox.js for "still on property" checks. ───────────────
   const todayISO = new Date().toISOString().slice(0, 10);
-  const displayGuests = guests.filter((g) =>
-    showPastGuests ? (g.departure_date && g.departure_date < todayISO) : (!g.departure_date || g.departure_date >= todayISO)
-  );
+  // Bifurcation enforcement: CheckinTable shows suite guests ONLY.
+  // Day-pass guests (day_guest / premium_day_guest) use GuestDashboard's
+  // "בילוי יומי" tab — they never have a room-ready or check-in pipeline.
+  const displayGuests = guests.filter((g) => {
+    const activeWindow = showPastGuests
+      ? (g.departure_date && g.departure_date < todayISO)
+      : (!g.departure_date || g.departure_date >= todayISO);
+    return activeWindow && isSuite(g);
+  });
 
   // ── Safe spa reset — UPDATE only, never DELETE ───────────────────────────────
   const handleResetSpa = async () => {
@@ -311,6 +329,11 @@ export default function GuestsPage() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
         <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
           <div style={{ fontSize: 13, color: "var(--text-muted)" }}>{displayGuests.length} אורחים</div>
+          <span style={{
+            fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 20,
+            background: "rgba(201,169,110,0.15)", color: "var(--gold-dark)",
+            border: "1px solid var(--gold)",
+          }}>👑 סוויטות בלבד</span>
           <label style={{ fontSize: 13, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
             <input type="checkbox" checked={showPastGuests} onChange={(e) => { setShowPastGuests(e.target.checked); setSelectedIds(new Set()); }} style={{ accentColor: "var(--gold)" }} />
             🗂️ הצג לקוחות עבר
@@ -355,7 +378,9 @@ export default function GuestsPage() {
         <div style={{ textAlign: "center", padding: 48, color: "var(--text-muted)" }}>טוען אורחים...</div>
       ) : displayGuests.length === 0 ? (
         <div style={{ textAlign: "center", padding: 48, color: "var(--text-muted)" }}>
-          {showPastGuests ? "אין עדיין לקוחות עבר." : "אין אורחים עדיין — ייבא קובץ צ'ק-אין דרך \"העלאת נתונים\"."}
+          {showPastGuests
+            ? "אין אורחי סוויטות עבר."
+            : "אין אורחי סוויטות — ייבא קובץ הגעות דרך \"תפעול ואחזקה\" או הוסף אורח ידנית."}
         </div>
       ) : (
         <div className="card">

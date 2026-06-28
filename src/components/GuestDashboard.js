@@ -171,6 +171,7 @@ export default function GuestDashboard({ user }) {
 
   const [activeTab,   setActiveTab]   = useState("all"); // all | day_guest | suite
   const [addingGuest, setAddingGuest] = useState(null);  // {} = add modal open, null = closed
+  const [editingGuest, setEditingGuest] = useState(null); // existing guest object for edit, null = closed
   const [waModal,     setWaModal]     = useState(null);  // guest object or null
   const [selected,    setSelected]    = useState(new Set()); // checked guest IDs
   const [profileGuest, setProfileGuest] = useState(null); // guest object or null — CustomerProfilePane
@@ -452,6 +453,16 @@ export default function GuestDashboard({ user }) {
         />
       )}
 
+      {/* Edit guest modal — same AddGuestModal, receives existing guest object */}
+      {editingGuest && (
+        <AddGuestModal
+          guest={editingGuest}
+          onClose={() => setEditingGuest(null)}
+          onSaved={handleGuestSaved}
+          showToast={showToast}
+        />
+      )}
+
       {/* Guest profile slide-out — click a guest's name to open */}
       {profileGuest && (
         <CustomerProfilePane guest={profileGuest} onClose={() => setProfileGuest(null)} />
@@ -537,6 +548,18 @@ export default function GuestDashboard({ user }) {
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                     <StatusBadge status={guest.status} />
                     <ArrivalBadge date={guest.arrival_date} />
+                    <button
+                      onClick={() => setEditingGuest(guest)}
+                      disabled={isDeleting}
+                      title="ערוך פרטי אורח"
+                      style={{
+                        width: 28, height: 28, borderRadius: "50%",
+                        border: "1px solid var(--gold)", background: "var(--ivory)",
+                        cursor: "pointer", fontSize: 13, color: "var(--gold-dark)",
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        padding: 0,
+                      }}
+                    >✏️</button>
                     <button
                       onClick={() => deleteGuest(guest)}
                       disabled={isDeleting}
