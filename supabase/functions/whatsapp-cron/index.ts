@@ -15,6 +15,10 @@
 //
 // room_ready is NOT in automation_stages (event-driven from the RoomBoard/
 // AICopilot UI toggle) — it has no row here and is not part of this scan.
+//
+// Dispatch throttling: due items are sent sequentially (never Promise.all) with
+// INTER_SEND_DELAY_MS (2.5s) between each whatsapp-send call, grouped in batches
+// of DISPATCH_BATCH_SIZE for logging — burst protection against Meta rate limits.
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -29,6 +33,15 @@ const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
+
+/** Sends per batch — logged for observability; still sequential, not parallel. */
+const DISPATCH_BATCH_SIZE = 10;
+/** Pause between individual whatsapp-send calls (Meta burst rate-limit safety). */
+const INTER_SEND_DELAY_MS = 2500;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
@@ -109,9 +122,21 @@ serve(async (req: Request) => {
       }
     }
 
-    // Delegate each to whatsapp-send (idempotent there).
+    // Delegate each to whatsapp-send (idempotent there), throttled in batches.
     const results: any[] = [];
-    for (const d of due) {
+    const batchCount = Math.max(1, Math.ceil(due.length / DISPATCH_BATCH_SIZE));
+    console.log(
+      `[whatsapp-cron] dispatch_start queued=${due.length} batches=${batchCount} ` +
+      `batch_size=${DISPATCH_BATCH_SIZE} inter_send_delay_ms=${INTER_SEND_DELAY_MS}`,
+    );
+
+    for (let i = 0; i < due.length; i++) {
+      if (i > 0 && i % DISPATCH_BATCH_SIZE === 0) {
+        const batchNum = Math.floor(i / DISPATCH_BATCH_SIZE) + 1;
+        console.log(`[whatsapp-cron] dispatch_batch_start batch=${batchNum}/${batchCount} index=${i}`);
+      }
+
+      const d = due[i];
       try {
         const res = await fetch(`${supabaseUrl}/functions/v1/whatsapp-send`, {
           method: "POST",
@@ -121,6 +146,10 @@ serve(async (req: Request) => {
         results.push({ ...d, ok: res.ok });
       } catch (e) {
         results.push({ ...d, ok: false, error: (e as Error).message });
+      }
+
+      if (i < due.length - 1) {
+        await sleep(INTER_SEND_DELAY_MS);
       }
     }
 
@@ -141,7 +170,15 @@ serve(async (req: Request) => {
       } catch { /* best-effort — push failure must not break cron */ }
     }
 
-    return new Response(JSON.stringify({ ok: true, scanned: guests?.length ?? 0, fired: results.length, results }), {
+    return new Response(JSON.stringify({
+      ok: true,
+      scanned: guests?.length ?? 0,
+      fired: results.length,
+      throttled: due.length > 1,
+      dispatch_batch_size: DISPATCH_BATCH_SIZE,
+      inter_send_delay_ms: INTER_SEND_DELAY_MS,
+      results,
+    }), {
       headers: { ...CORS, "Content-Type": "application/json" },
     });
   } catch (err: any) {

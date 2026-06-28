@@ -1,3 +1,5 @@
+2026-06-28 | supabase/functions/whatsapp-cron/index.ts | Queue dispatch throttling: sequential batches (size 10) with 2.5s sleep between each whatsapp-send call to avoid Meta burst rate limits.
+
 2026-06-28 | src/components/GuestPortal.js | Removed duplicate concierge WA button from ItineraryPanel empty state ? SuiteQuickActions remains the single CTA.
 
 2026-06-28 | supabase/migrations/099_daypass_stage4_stage5_split.sql + automationSchedule.ts + whatsapp-cron/index.ts + AutomationControlCenter.js | Stage 4 restore: migration 099 pushed to prod (was local-only); mid_stay_daypass/checkout_fb_daypass rows + is_active=true; resolveStageSchedule returns scheduledFor even when skipReason set (queue monitor visibility); CORE_PIPELINE_STAGE_KEYS registry + Pulse UI missing-stage warning; cron mid_stay eval logging.
