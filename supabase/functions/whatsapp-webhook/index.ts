@@ -483,6 +483,56 @@ async function fetchBotSettings(
   }
 }
 
+// ── §1e  UNIFIED AI LEARNING — xos_ai_rules (migration 103) ───────────────────
+// Phase 3: append staff-taught rules into LLM system prompts (chat + routing).
+// Cached 5 min like bot_config; any failure returns "" so guest replies never block.
+let _learnedRulesCache: { text: string; at: number } | null = null;
+
+async function fetchLearnedRulesText(
+  supabaseClient: ReturnType<typeof createClient>,
+): Promise<string> {
+  const now = Date.now();
+  if (_learnedRulesCache && now - _learnedRulesCache.at < CONFIG_TTL_MS) {
+    return _learnedRulesCache.text;
+  }
+  try {
+    const { data, error } = await supabaseClient
+      .from("xos_ai_rules")
+      .select("module, rule_text")
+      .in("module", ["chat", "routing"])
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      console.warn("[webhook] xos_ai_rules fetch failed (non-blocking):", error.message);
+      return _learnedRulesCache?.text ?? "";
+    }
+
+    const rows = (data ?? []) as Array<{ module: string; rule_text: string }>;
+    const byModule: Record<string, string[]> = { chat: [], routing: [] };
+    for (const row of rows) {
+      const t = String(row.rule_text ?? "").trim();
+      if (!t) continue;
+      const mod = String(row.module ?? "").trim();
+      if (mod === "chat" || mod === "routing") byModule[mod].push(`- ${t}`);
+    }
+
+    const parts: string[] = [];
+    if (byModule.chat.length) {
+      parts.push(`══ כללים שנלמדו — צ'אט ══\n${byModule.chat.join("\n")}`);
+    }
+    if (byModule.routing.length) {
+      parts.push(`══ כללים שנלמדו — ניתוב ══\n${byModule.routing.join("\n")}`);
+    }
+
+    const text = parts.length ? `\n\n${parts.join("\n\n")}` : "";
+    _learnedRulesCache = { text, at: now };
+    return text;
+  } catch (e) {
+    console.warn("[webhook] xos_ai_rules fetch error (non-blocking):", (e as Error).message);
+    return _learnedRulesCache?.text ?? "";
+  }
+}
+
 // ── §1d  DYNAMIC MODEL ROUTING — preferred_model A/B testing & cost control ──
 // Maps the admin-chosen bot_settings.preferred_model value to a concrete
 // routing decision. Reordering (not replacing) GEMINI_MODELS preserves the
@@ -1671,10 +1721,11 @@ serve(async (req: Request) => {
     );
 
     // Load all config in parallel — each has its own 5-min cache
-    const [botConfig, botSettings, scripts] = await Promise.all([
+    const [botConfig, botSettings, scripts, learnedRulesText] = await Promise.all([
       fetchBotConfig(supabase),
       fetchBotSettings(supabase),
       fetchBotScripts(supabase),
+      fetchLearnedRulesText(supabase),
     ]);
 
     const systemPrompt = buildSystemPrompt(botConfig);
@@ -1695,7 +1746,8 @@ serve(async (req: Request) => {
         ? botSettings.system_prompt.trim() + kbSuffix
         : (ongoingScript?.ai_system_prompt?.trim()
             ? ongoingScript.ai_system_prompt.trim() + kbSuffix
-            : systemPrompt + kbSuffix);
+            : systemPrompt + kbSuffix)
+      + learnedRulesText;
 
     console.info(`[webhook] prompt source: ${
       botSettings.system_prompt?.trim() ? "bot_settings" :

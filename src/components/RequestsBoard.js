@@ -7,6 +7,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import { getGuestTimingBadge } from "../utils/guestTiming";
+import AILearningButton from "./AILearningButton";
 
 const TYPE_META = {
   complaint:           { label: "🔴 תקלה",          bg: "#FFF0EE", color: "#C0392B" },
@@ -196,6 +197,7 @@ export default function RequestsBoard({ user }) {
           {pendingCount} {"בקשות פתוחות"}
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <AILearningButton module="routing" />
           <label style={{ fontSize: 13, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
             <input type="checkbox" checked={showResolved} onChange={(e) => setShowResolved(e.target.checked)} style={{ accentColor: "var(--gold)" }} />
             הצג גם טופלו

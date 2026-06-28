@@ -1,4 +1,10 @@
-2026-06-28 | CLAUDE.md + .cursorrules | §12?§13 Deploy checklist mandatory at end of every code session; needs_callback docs synced (session 59).
+2026-06-29 | whatsapp-webhook/index.ts | Phase 3: fetch xos_ai_rules (chat+routing) with 5-min cache + try/catch; append learnedRulesText to finalSystemPrompt (flows to Gemini systemTurn + Claude system).
+
+2026-06-29 | WhatsAppInbox.js + RequestsBoard.js | Phase 2: AILearningButton integrated ? module=chat (DREAM BOT header) + module=routing (Requests Board action bar).
+
+2026-06-29 | migration 103 + AILearningButton.jsx | Unified AI Learning Phase 1: xos_ai_rules table (RLS + cleaner lockdown) + reusable capture button component (not yet integrated).
+
+2026-06-28 | CLAUDE.md + .cursorrules | ?12??13 Deploy checklist mandatory at end of every code session; needs_callback docs synced (session 59).
 
 2026-06-28 | src/components/AddGuestModal.js | needs_callback checkbox label: "????? ?????? ???? ??" (removed misleading "??? ????" copy).
 

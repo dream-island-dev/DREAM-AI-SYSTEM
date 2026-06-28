@@ -6,6 +6,7 @@
 import React, { useEffect, useState, useRef, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import AddGuestModal from "./AddGuestModal";
+import AILearningButton from "./AILearningButton";
 import { getSuiteSection } from "../data/suiteRegistry";
 
 const POLL_MS = 5000; // fallback polling interval (realtime is primary) — 5s safe minimum
@@ -2752,6 +2753,7 @@ export default function WhatsAppInbox({ user }) {
           )}
         </div>
         <div style={{ display: "flex", gap: isMobile ? 4 : 8, alignItems: "center", flexShrink: 0 }}>
+          <AILearningButton module="chat" />
           <button
             onClick={() => setLang((l) => (l === "he" ? "en" : "he"))}
             title="EN / HE"
