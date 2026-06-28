@@ -3,6 +3,8 @@
 
 ---
 
+2026-06-28 | src/components/ArrivalImportPanel.js | Auto-date detection (filename DD.MM.YY + first-cell fallback) pre-fills arrival picker with FAIL VISIBLE confirmation banner; expanded _extractMealTime with HB/Half Board, Dinner, ?????, evening-range (18:00?21:30) patterns + spa-line guard.
+
 2026-06-28 | src/components/ArrivalImportPanel.js | HTML parsing bugfix: _cellText DOM-walk converts <BR>?\n (was textContent, phone lost on suite rows); suiteSpaOnly?false (group filter by regex is enough); content-sniff HTML detection; meal_time column in spa preview table. Build clean.
 2026-06-28 | src/components/ArrivalImportPanel.js | Doc 1 HTML support: parseHtmlDailyReport for EZGO .htm exports (nested table ? parseComprehensiveReport); suiteSpaOnly filter (?????? ????????/????? ??????, skip group slots); multiline order-cell phone fix; meal window regex (?- HH:MM); DropZone accepts .htm/.html. npm run build clean.
 

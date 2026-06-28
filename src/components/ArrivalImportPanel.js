@@ -136,10 +136,40 @@ function _extractMealTime(block, raw) {
   for (const line of _splitReportLines(raw)) {
     const clean = line.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
     if (!clean) continue;
-    let m = clean.match(/ארוחה[ת]?\s*(?:ערב|בוקר|צהריים)?\s*[-:]?\s*(\d{1,2}):(\d{2})/);
+    // Skip spa appointment lines already consumed by _extractExtras ("N - HH:MM ...")
+    if (/^\d+\s*-\s*\d{1,2}:\d{2}/.test(clean)) continue;
+
+    let m = null;
+    // 1. ארוחה keyword (original)
+    m = clean.match(/ארוחה[ת]?\s*(?:ערב|בוקר|צהריים)?\s*[-:]?\s*(\d{1,2}):(\d{2})/);
+    // 2. ערב / צהריים + מ- prefix (original)
     if (!m && /(?:ערב|א\.?\s*ערב|צהריים|א\.?\s*צהריים)/i.test(clean)) {
       m = clean.match(/מ-?\s*(\d{1,2}):(\d{2})/);
     }
+    // 3. HB / Half Board keyword
+    if (!m && /\b(?:HB|Half[\s-]?Board)\b/i.test(clean)) {
+      m = clean.match(/(\d{1,2}):(\d{2})/);
+    }
+    // 4. Dinner keyword (English)
+    if (!m && /\bDinner\b/i.test(clean)) {
+      m = clean.match(/(\d{1,2}):(\d{2})/);
+    }
+    // 5. מסעדה (restaurant) keyword
+    if (!m && /מסעדה/.test(clean)) {
+      m = clean.match(/(\d{1,2}):(\d{2})/);
+    }
+    // 6. Evening time 18:00–21:30 with at least one meal-context word on the same line.
+    //    Conservative: bare evening times without context are NOT captured to avoid
+    //    false-positives from late check-ins or evening spa slots.
+    if (!m && /(?:ארוחה|ארוחת|dinner|HB|מסעדה|board|פנסיון|שולחן)/i.test(clean)) {
+      const eveM = clean.match(/\b(1[89]|2[01]):(\d{2})\b/);
+      if (eveM) {
+        const h = parseInt(eveM[1], 10);
+        const min = parseInt(eveM[2], 10);
+        if (!(h === 21 && min > 30)) m = eveM;
+      }
+    }
+
     if (!m) continue;
     const time = m[1].padStart(2, "0") + ":" + m[2];
     if (!block.meal_time || time < block.meal_time) block.meal_time = time;
@@ -281,15 +311,44 @@ function _cloneProfileMap(map) {
   return clone;
 }
 
-// ── Deterministic arrival date — staff-controlled picker, NOT auto-guessed ───
-// Filename/header/metadata date-sniffing was removed deliberately: a guessed
-// date that's silently wrong is worse than requiring one explicit click.
-// The picker's value at the moment Doc 2 is dropped becomes the arrival date
-// for every profile in that import; iNights (already wired in handleSync via
-// _addNights) then derives the exact checkout date from it per-row.
 function _todayISO() {
   const d = new Date();
   return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
+
+// ── Auto arrival-date detection — two-tier, pure functions ────────────────────
+// These only PRE-FILL the picker; the picker remains editable and staff
+// confirmation via a FAIL VISIBLE banner is required before any sync runs.
+
+// Tier 1: filename pattern DD.MM.YY[YY] — e.g. "30.6.26.xlsx" → "2026-06-30"
+function _detectDateFromFilename(filename) {
+  if (!filename) return null;
+  const m = filename.match(/(\d{1,2})[.\-_](\d{1,2})[.\-_](\d{2,4})/);
+  if (!m) return null;
+  const day   = parseInt(m[1], 10);
+  const month = parseInt(m[2], 10);
+  const yRaw  = parseInt(m[3], 10);
+  const year  = m[3].length === 2 ? 2000 + yRaw : yRaw;
+  if (day < 1 || day > 31 || month < 1 || month > 12) return null;
+  if (year < 2024 || year > 2030) return null;
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+// Tier 2: first 3 cells of first data row — e.g. cell value "2026-06-30"
+// or an Excel date serial > 40000. Validates via _parseDate + sanity range.
+function _detectDateFromFirstCells(firstRow) {
+  if (!firstRow) return null;
+  for (const v of Object.values(firstRow).slice(0, 3)) {
+    if (v === null || v === undefined || v === "") continue;
+    const s = String(v).trim();
+    if (!s || !/^\d/.test(s)) continue; // must start with a digit to be date-like
+    const parsed = _parseDate(v);
+    if (!parsed) continue;
+    // Sanity: within −30 to +730 days (allow up to 2 years future for pre-imports)
+    const diffDays = (new Date(parsed).getTime() - Date.now()) / 86400000;
+    if (diffDays >= -30 && diffDays <= 730) return parsed;
+  }
+  return null;
 }
 
 // ── Shift-schedule Excel parser (ported from DataHub) ────────────────────────
@@ -413,6 +472,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
   const [doc2Fallback, setDoc2Fallback] = useState(null);   // arrivalDate picker snapshot, captured at upload time
   const [aiSuggestion, setAiSuggestion] = useState(null);   // { mapping, defaults, recommendations, confidence, engine } | null
   const [aiError,      setAiError]      = useState(null);   // string | null — shown, never hidden, when the AI call failed
+  const [autoDateBanner, setAutoDateBanner] = useState(null); // { date, source } | null — FAIL VISIBLE auto-detect notice
 
   // Shifts profile state
   const [shiftRows,    setShiftRows]    = useState([]);
@@ -468,9 +528,22 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
 
       const headers = Object.keys(rows[0]);
       setRawDoc2Rows(rows);
-      // Deterministic date: capture the date picker's state at upload time —
-      // no filename/header/metadata guessing. See _todayISO() comment above.
-      setDoc2Fallback(arrivalDate || _todayISO());
+
+      // Auto-detect arrival date: filename (Tier 1) then first cells (Tier 2).
+      // If found, pre-fill the picker AND show a FAIL VISIBLE banner so staff
+      // can verify before syncing — the picker remains fully editable.
+      const detectedByName    = _detectDateFromFilename(file.name);
+      const detectedByContent = detectedByName ? null : _detectDateFromFirstCells(rows[0]);
+      const detectedDate      = detectedByName || detectedByContent;
+      if (detectedDate) {
+        setArrivalDate(detectedDate);
+        setAutoDateBanner({ date: detectedDate, source: detectedByName ? "שם הקובץ" : "תוכן הקובץ" });
+      } else {
+        setAutoDateBanner(null); // clear banner on re-upload without detection
+      }
+      // Snapshot for handleMappingApprove: use detected date if available,
+      // else whatever the picker currently holds.
+      setDoc2Fallback(detectedDate || arrivalDate || _todayISO());
       setMappingStage("suggesting");
 
       // ── Mapping memory: skip the AI call when this exact header set was
@@ -765,7 +838,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     setDoc2Name(""); setDoc1Name("");
     setMerged(null); setGridRows([]); setSelectedIds(new Set()); setResult(null);
     setMappingStage("idle"); setRawDoc2Rows(null); setDoc2Fallback(null);
-    setAiSuggestion(null); setAiError(null);
+    setAiSuggestion(null); setAiError(null); setAutoDateBanner(null);
   };
 
   // ── Shifts profile handlers ──────────────────────────────────────────────
@@ -914,10 +987,11 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
             </span>
           </div>
 
-          {/* Deterministic arrival date — staff-controlled, captured at the moment
-              Doc 2 is dropped. No filename/header/metadata date guessing. */}
+          {/* Arrival date picker — auto-filled from filename / first cell when detected;
+              editable at any time; its value at Doc 2 upload time becomes the snapshot
+              (doc2Fallback) that applies to every profile in that import. */}
           <div style={{
-            display: "flex", alignItems: "center", gap: 10, marginBottom: 14,
+            display: "flex", alignItems: "center", gap: 10, marginBottom: autoDateBanner ? 6 : 14,
             padding: "10px 14px", borderRadius: 8,
             background: "rgba(124,58,237,0.06)", border: "1px solid rgba(124,58,237,0.25)",
           }}>
@@ -927,7 +1001,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
             <input
               type="date"
               value={arrivalDate}
-              onChange={e => setArrivalDate(e.target.value)}
+              onChange={e => { setArrivalDate(e.target.value); setAutoDateBanner(null); }}
               style={{
                 padding: "7px 10px", borderRadius: 8, border: "1px solid rgba(124,58,237,0.4)",
                 fontSize: 14, fontFamily: "Heebo,sans-serif", direction: "ltr",
@@ -937,6 +1011,31 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
               חל על כל הפרופילים בקובץ Doc 2 — תאריך העזיבה יחושב אוטומטית לפי מספר הלילות (iNights)
             </span>
           </div>
+
+          {/* FAIL VISIBLE: auto-detected date banner — must be confirmed before sync */}
+          {autoDateBanner && (
+            <div style={{
+              display: "flex", alignItems: "center", gap: 8, marginBottom: 14,
+              padding: "9px 14px", borderRadius: 8,
+              background: "rgba(52,211,153,0.08)", border: "1px solid rgba(52,211,153,0.45)",
+              fontSize: 12,
+            }}>
+              <span style={{ fontSize: 16 }}>📅</span>
+              <span style={{ flex: 1, color: "#065f46", fontWeight: 700 }}>
+                תאריך זוהה אוטומטית מ{autoDateBanner.source}:{" "}
+                <strong style={{ fontFamily: "monospace" }}>{autoDateBanner.date}</strong>
+                {" "}— אמת ושנה לפי הצורך לפני הסנכרון
+              </span>
+              <button
+                onClick={() => setAutoDateBanner(null)}
+                title="סגור"
+                style={{
+                  background: "none", border: "none", cursor: "pointer",
+                  color: "#065f46", fontSize: 15, fontWeight: 700, padding: "0 4px", lineHeight: 1,
+                }}
+              >✕</button>
+            </div>
+          )}
 
           {/* Two drop zones */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }}>
