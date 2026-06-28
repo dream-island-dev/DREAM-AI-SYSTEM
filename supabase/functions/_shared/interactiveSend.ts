@@ -14,6 +14,8 @@
 // project (whatsapp-send, whatsapp-webhook) already keeps its own copy of
 // this exact 2-line helper rather than sharing it across Deno bundles.
 
+import { sanitizeMetaRecipientPhone } from "./metaPhone.ts";
+
 function _isAbortError(e: unknown): boolean {
   return e instanceof Error && (e.name === "AbortError" || e.name === "TimeoutError");
 }
@@ -38,6 +40,7 @@ export async function sendInteractiveButtons(
   buttons: Array<{ type: string; label: string; url?: string; id?: string }>,
 ): Promise<void> {
   const { token, phoneId } = _credsOrThrow();
+  const recipient = sanitizeMetaRecipientPhone(to);
 
   const urlLines = buttons
     .filter((b) => b.type === "url" && b.url)
@@ -62,11 +65,11 @@ export async function sendInteractiveButtons(
         replyButtons.length > 0
           ? {
               messaging_product: "whatsapp",
-              to,
+              to: recipient,
               type: "interactive",
               interactive: { type: "button", body: { text: fullBody }, action: { buttons: replyButtons } },
             }
-          : { messaging_product: "whatsapp", to, type: "text", text: { body: fullBody, preview_url: false } },
+          : { messaging_product: "whatsapp", to: recipient, type: "text", text: { body: fullBody, preview_url: false } },
       ),
       signal: AbortSignal.timeout(25000),
     });
@@ -96,6 +99,7 @@ export async function sendImageMessage(
   caption: string,
 ): Promise<void> {
   const { token, phoneId } = _credsOrThrow();
+  const recipient = sanitizeMetaRecipientPhone(to);
 
   try {
     const res = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
@@ -103,7 +107,7 @@ export async function sendImageMessage(
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         messaging_product: "whatsapp",
-        to,
+        to: recipient,
         type: "image",
         image: { link: imageUrl, caption },
       }),
@@ -133,6 +137,7 @@ export async function sendCtaUrlButton(
   url: string,
 ): Promise<void> {
   const { token, phoneId } = _credsOrThrow();
+  const recipient = sanitizeMetaRecipientPhone(to);
 
   try {
     const res = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
@@ -140,7 +145,7 @@ export async function sendCtaUrlButton(
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         messaging_product: "whatsapp",
-        to,
+        to: recipient,
         type: "interactive",
         interactive: {
           type: "cta_url",

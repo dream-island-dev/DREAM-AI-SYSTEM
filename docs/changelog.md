@@ -3,7 +3,7 @@
 
 ---
 
-2026-06-28 | supabase/functions/whatsapp-send/index.ts | Stage 2.5 button fix: night_before_suites[_shabbat] removed from TEMPLATE_HAS_DYNAMIC_URL_BUTTON; fast-path sendViaTemplate calls omit buttonUrlParam (no dynamic button on approved templates).
+2026-06-28 | supabase/functions/_shared/metaPhone.ts + whatsapp-send/index.ts + _shared/interactiveSend.ts | Meta silent-delivery fix: sanitizeMetaRecipientPhone strips non-digits, 05?9725, applied to all Graph API `to` fields before fetch.
 
 2026-06-28 | src/components/GuestPortal.js | SuiteQuickActions: persistent concierge WhatsApp CTA in SuiteView (CONCIERGE_WA) ? always visible even when itinerary has spa/meal data; meal_location logic untouched.
 

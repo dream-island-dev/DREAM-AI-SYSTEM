@@ -37,6 +37,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendInteractiveButtons, sendImageMessage } from "../_shared/interactiveSend.ts";
+import { sanitizeMetaRecipientPhone } from "../_shared/metaPhone.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -330,13 +331,15 @@ async function sendViaMeta(to: string, body: string): Promise<void> {
   const phoneId = Deno.env.get("META_PHONE_NUMBER_ID")   ?? Deno.env.get("WHATSAPP_PHONE_NUMBER_ID");
   if (!token || !phoneId) throw new Error("missing_meta_whatsapp_creds");
 
+  const recipient = sanitizeMetaRecipientPhone(to);
+
   try {
     const res = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         messaging_product: "whatsapp",
-        to,
+        to: recipient,
         type: "text",
         text: { body, preview_url: false },
       }),
@@ -390,7 +393,9 @@ function resolveDynamicUrlButtonParam(
 }
 
 function safeGuestPhone(phone: unknown): string {
-  return String(phone ?? "").trim();
+  const digits = String(phone ?? "").replace(/\D/g, "");
+  if (!digits) return "";
+  return sanitizeMetaRecipientPhone(phone);
 }
 
 function resolvePipelineTemplateName(
@@ -465,13 +470,15 @@ async function sendViaTemplate(
     components.push({ type: "button", sub_type: "url", index: 0, parameters: [{ type: "text", text: buttonUrlParam }] });
   }
 
+  const recipient = sanitizeMetaRecipientPhone(to);
+
   try {
     const res = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         messaging_product: "whatsapp",
-        to,
+        to: recipient,
         type: "template",
         template: {
           name: templateName,
