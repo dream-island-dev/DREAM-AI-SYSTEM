@@ -305,6 +305,72 @@ const TEMPLATE_IMAGE_HEADERS: Record<string, string> = {
   night_before_suites_shabbat: "https://tzalamnadlan.co.il/wp-content/uploads/2026/default-resort.jpg",
 };
 
+// Only these approved templates have a dynamic URL button at index 0.
+// Injecting a URL button into QUICK_REPLY-only templates (e.g. dream_arrival_confirmation)
+// causes Meta "Format mismatch" rejections — the Stage 1 failure mode.
+const TEMPLATE_HAS_DYNAMIC_URL_BUTTON = new Set([
+  "dream_suite_reminder",
+  "night_before_suites",
+  "night_before_suites_shabbat",
+  "dream_payment_and_workshops",
+]);
+
+function resolveDynamicUrlButtonParam(
+  templateName: string,
+  portalToken: unknown,
+): string | undefined {
+  if (!TEMPLATE_HAS_DYNAMIC_URL_BUTTON.has(templateName)) return undefined;
+  const token = String(portalToken ?? "").trim();
+  return token || undefined;
+}
+
+function safeGuestPhone(phone: unknown): string {
+  return String(phone ?? "").trim();
+}
+
+function resolvePipelineTemplateName(
+  trigger: string,
+  guest: Record<string, unknown>,
+  stageRow: { meta_template_name?: string | null } | null,
+): string {
+  const fromDb = stageRow?.meta_template_name?.trim();
+  const fromMap = PIPELINE_TEMPLATE[trigger]?.trim();
+
+  if (trigger === "pre_arrival_2d") {
+    if (guest.room_type === "day_guest") return "dream_checkin_reminder_v2";
+    return fromDb || fromMap || "dream_arrival_confirmation";
+  }
+
+  if (trigger === "morning_suite" || trigger === "morning_welcome") {
+    const arrivalDateStr = String(guest.arrival_date ?? "");
+    const isShabbat = new Date(`${arrivalDateStr}T00:00:00Z`).getUTCDay() === 6;
+    if (fromDb) return fromDb;
+    return isShabbat ? "suite_welcome_morning_shabbat" : (fromMap || "suite_welcome_morning");
+  }
+
+  if (trigger === "night_before") {
+    if (fromDb) return fromDb;
+    const arrivalDateStr = String(guest.arrival_date ?? "");
+    const isShabbat = new Date(`${arrivalDateStr}T00:00:00Z`).getUTCDay() === 6;
+    return isShabbat ? "night_before_suites_shabbat" : (fromMap || "night_before_suites");
+  }
+
+  return fromDb || fromMap || "";
+}
+
+function resolveTemplateVars(
+  trigger: string,
+  guest: Record<string, unknown>,
+  templateName: string,
+): string[] {
+  if (templateName === "dream_checkin_reminder_v2") {
+    return sanitizeTemplateVars([String(guest.name ?? ""), RESORT_CONTACT_PHONE]);
+  }
+  const fromPipeline = PIPELINE_VARS[trigger]?.(guest);
+  if (fromPipeline?.length) return sanitizeTemplateVars(fromPipeline);
+  return sanitizeTemplateVars([String(guest.name ?? "")]);
+}
+
 async function sendViaTemplate(
   to: string,
   templateName: string,
@@ -732,12 +798,16 @@ serve(async (req: Request) => {
     // stage), so it always falls through to the hardcoded map, unchanged.
     // Same "DB overrides, hardcoded fallback" pattern already proven for
     // bot_settings.system_prompt overriding FALLBACK_SYSTEM_PROMPT.
-    const { data: stageRow } = await supabase
+    // Manual override (force=true) reads inactive stages too — admin may test a paused stage.
+    let stageQuery = supabase
       .from("automation_stages")
       .select("meta_template_name, session_message_script_key, session_message_image_url, interactive_buttons, guest_flag_column")
-      .eq("stage_key", trigger)
-      .eq("is_active", true)
-      .maybeSingle();
+      .eq("stage_key", trigger);
+    if (!force) stageQuery = stageQuery.eq("is_active", true);
+    const { data: stageRow } = await stageQuery.maybeSingle();
+
+    const forceMetaTemplate   = force === true && force_channel === "meta_template";
+    const forceSessionMessage = force === true && force_channel === "session_message";
 
     if (!(trigger in PIPELINE_TEMPLATE) && !stageRow?.meta_template_name) {
       throw new Error("unknown trigger: " + trigger);
@@ -787,7 +857,7 @@ serve(async (req: Request) => {
     // day-pass guests receive 'night_before_daypass' (separate automation_stages row,
     // migration 093). Stage 3 (morning_welcome) now applies to day-pass guests too.
     const DAY_PASS_ALLOWED_TRIGGERS = new Set(["pre_arrival_2d", "night_before_daypass", "morning_welcome", "checkout_fb"]);
-    if (guest.room_type === "day_guest" && !DAY_PASS_ALLOWED_TRIGGERS.has(trigger)) {
+    if (!force && guest.room_type === "day_guest" && !DAY_PASS_ALLOWED_TRIGGERS.has(trigger)) {
       console.warn(
         `[whatsapp-send] day_pass_stage_gate: trigger="${trigger}" blocked for ` +
         `guest_id=${guestId} (room_type=day_guest) — allowed: pre_arrival_2d, night_before_daypass, morning_welcome, checkout_fb`,
@@ -812,15 +882,94 @@ serve(async (req: Request) => {
     // it can only apply to an allowed trigger) and before the session-message /
     // portal-button paths below, so every dispatch path for a day-pass
     // pre_arrival_2d picks this template without exception.
-    let tmplName = stageRow?.meta_template_name ?? PIPELINE_TEMPLATE[trigger];
+    let tmplName = resolvePipelineTemplateName(trigger, guest, stageRow);
     if (guest.room_type === "day_guest" && trigger === "pre_arrival_2d") {
-      tmplName = "dream_checkin_reminder_v2";
       console.log(
         `[whatsapp-send] day_pass_template_override: stage=pre_arrival_2d → ` +
         `dream_checkin_reminder_v2 for guest_id=${guestId} (${String(guest.name ?? "?")})`,
       );
     }
     const flagColumn = stageRow?.guest_flag_column ?? GUEST_FLAG[trigger];
+
+    // ── Manual override — force Meta template, bypass all window/session routing ─
+    // Staff test / override buttons must always attempt the approved template path
+    // immediately — no 24h checks, no session-message detours, no idempotency gates.
+    if (forceMetaTemplate) {
+      const targetPhone = safeGuestPhone(guest.phone);
+      if (!targetPhone) {
+        console.warn(`[whatsapp-send] force meta: guest_id=${guestId} has no phone`);
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            status: "failed",
+            error: `guest_no_phone: guest id=${guestId} (${String(guest.name ?? "?")}) has no phone on file`,
+          }),
+          { headers: { ...CORS, "Content-Type": "application/json" } },
+        );
+      }
+
+      const forcedTmpl = tmplName || resolvePipelineTemplateName(trigger, guest, stageRow);
+      const forcedVars = resolveTemplateVars(trigger, guest, forcedTmpl);
+      const forcedButton = resolveDynamicUrlButtonParam(forcedTmpl, guest.portal_token);
+
+      let fmStatus = "simulated";
+      let fmError: string | null = null;
+      try {
+        if (!sim) {
+          await sendViaTemplate(targetPhone, forcedTmpl, forcedVars, "he", forcedButton);
+          fmStatus = "sent";
+        }
+      } catch (e) {
+        fmError = (e as Error).message;
+        fmStatus = fmError.startsWith("timeout_no_response") ? "timeout"
+                 : isMetaTemplateError(fmError) ? "blocked_by_meta"
+                 : "failed";
+        console.error(`[whatsapp-send] force meta_template ${fmStatus}:`, fmError);
+      }
+
+      await supabase.from("notification_log").insert({
+        guest_id: guestId,
+        recipient: targetPhone,
+        trigger_type: trigger,
+        channel: "whatsapp",
+        status: fmStatus,
+        payload: {
+          channel: "meta_template",
+          template: forcedTmpl,
+          variables: forcedVars,
+          forced: true,
+          force_channel: "meta_template",
+          ...(fmError ? { error: fmError } : {}),
+        },
+      });
+
+      if (fmStatus === "sent" || fmStatus === "simulated") {
+        try {
+          await supabase.from("whatsapp_conversations").insert({
+            phone: targetPhone,
+            guest_id: guestId,
+            direction: "outbound",
+            message: `[תבנית: ${forcedTmpl}]`,
+            wa_message_id: null,
+          });
+        } catch { /* best-effort */ }
+        if (flagColumn) {
+          await supabase.from("guests").update({ [flagColumn]: true }).eq("id", guestId);
+        }
+      }
+
+      return new Response(
+        JSON.stringify({
+          ok: fmStatus === "sent" || fmStatus === "simulated",
+          simulation: sim,
+          status: fmStatus,
+          channel: "meta_template",
+          template: forcedTmpl,
+          ...(fmError ? { error: fmError } : {}),
+        }),
+        { headers: { ...CORS, "Content-Type": "application/json" } },
+      );
+    }
 
     // ── Night-before 24-hour compliance engine ────────────────────────────────
     // Supersedes the old Shabbat-times resolver (resolveNightBeforeTimes).
@@ -894,7 +1043,7 @@ serve(async (req: Request) => {
         const templateName = isShabbat ? "night_before_suites_shabbat" : "night_before_suites";
         // {{1}} = guest name ONLY. No entry/check-in time variables in these templates.
         const vars = sanitizeTemplateVars([guestName]);
-        const buttonUrlParam = (guest.portal_token as string | null) ?? undefined;
+        const buttonUrlParam = resolveDynamicUrlButtonParam(templateName, guest.portal_token);
         nightBeforeDispatch = { channel: "template", templateName, vars, buttonUrlParam };
       }
     }
@@ -918,18 +1067,29 @@ serve(async (req: Request) => {
               .maybeSingle();
             const rawText = scriptRow?.message_text?.trim();
             if (!rawText) {
-              throw new Error(
-                `night_before_freetext_script_missing: script_key="${nightBeforeDispatch.freeTextKey}"` +
-                ` has no message_text — cannot send free-form night_before`
+              console.warn(
+                `[whatsapp-send] night_before: bot_script "${nightBeforeDispatch.freeTextKey}" missing` +
+                ` — falling back to template for guest_id=${guestId}`,
               );
+              const arrivalDateStr = String(guest.arrival_date ?? "");
+              const isShabbatFb = new Date(`${arrivalDateStr}T00:00:00Z`).getUTCDay() === 6;
+              const fbTemplate = isShabbatFb ? "night_before_suites_shabbat" : "night_before_suites";
+              await sendViaTemplate(
+                String(guest.phone),
+                fbTemplate,
+                sanitizeTemplateVars([nightBeforeDispatch.guestName]),
+                "he",
+                resolveDynamicUrlButtonParam(fbTemplate, guest.portal_token),
+              );
+            } else {
+              const nbPortalUrl = guest.portal_token
+                ? `${PORTAL_BASE_URL}/portal/${guest.portal_token as string}`
+                : "";
+              const textBody = rawText
+                .replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, nightBeforeDispatch.guestName)
+                .replace(/\{\{\s*portal_url\s*\}\}/gi, nbPortalUrl);
+              await sendViaMeta(String(guest.phone), textBody);
             }
-            const nbPortalUrl = guest.portal_token
-              ? `${PORTAL_BASE_URL}/portal/${guest.portal_token as string}`
-              : "";
-            const textBody = rawText
-              .replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, nightBeforeDispatch.guestName)
-              .replace(/\{\{\s*portal_url\s*\}\}/gi, nbPortalUrl);
-            await sendViaMeta(String(guest.phone), textBody);
           } else {
             // Template path: TEMPLATE_IMAGE_HEADERS guarantees the IMAGE header
             // component is injected for both night_before_suites variants, so
@@ -1040,7 +1200,7 @@ serve(async (req: Request) => {
                 ` — falling back to suite_welcome_morning template for guest_id=${guestId}`,
               );
               await sendViaTemplate(String(guest.phone), "suite_welcome_morning", [dpGuestName], "he",
-                (guest.portal_token as string | null) ?? undefined);
+                resolveDynamicUrlButtonParam("suite_welcome_morning", guest.portal_token));
             } else {
               const dpPortalUrl = guest.portal_token
                 ? `${PORTAL_BASE_URL}/portal/${guest.portal_token as string}`
@@ -1052,7 +1212,7 @@ serve(async (req: Request) => {
             }
           } else {
             await sendViaTemplate(String(guest.phone), "suite_welcome_morning", [dpGuestName], "he",
-              (guest.portal_token as string | null) ?? undefined);
+              resolveDynamicUrlButtonParam("suite_welcome_morning", guest.portal_token));
           }
           dpStatus = "sent";
         }
@@ -1250,7 +1410,10 @@ serve(async (req: Request) => {
         primaryTemplate:  isShabbat ? "suite_welcome_morning_shabbat" : "suite_welcome_morning",
         fallbackTemplate: "suite_welcome_morning",
         vars:             [guestName],
-        buttonUrlParam:   (guest.portal_token as string | null) ?? undefined,
+        buttonUrlParam:   resolveDynamicUrlButtonParam(
+          isShabbat ? "suite_welcome_morning_shabbat" : "suite_welcome_morning",
+          guest.portal_token,
+        ),
       };
     }
 
@@ -1504,10 +1667,7 @@ serve(async (req: Request) => {
     // force_channel="session_message" bypasses the isWindowOpen() guard so staff
     // can send free-text to any guest on demand. Both are only honoured when
     // force=true (manual dispatch from AutomationControlCenter).
-    const forceTemplatePath   = force && force_channel === "meta_template";
-    const forceSessionMessage = force && force_channel === "session_message";
-
-    if (!forceTemplatePath && stageRow?.session_message_script_key) {
+    if (!forceMetaTemplate && stageRow?.session_message_script_key) {
       if (forceSessionMessage || isWindowOpen(guest.wa_window_expires_at)) {
         const { data: scriptRow } = await supabase
           .from("bot_scripts")
@@ -1565,29 +1725,9 @@ serve(async (req: Request) => {
     if (!usedSessionMessage) {
       // All pipeline triggers except night_before (which has already returned
       // via the fast-path above). {{1}}/{{2}}/… variables from PIPELINE_VARS.
-      tmplVars = sanitizeTemplateVars(PIPELINE_VARS[trigger]?.(guest) ?? []);
-      // Dynamic URL button — the portal token is passed as the URL suffix for
-      // templates that include a "מה מחכה לי?" / "לפורטל שלי" button whose
-      // base URL is https://dream-ai-system.vercel.app/portal/ in Meta Business
-      // Manager. Meta substitutes the token value as the path suffix, exactly
-      // like dream_payment_and_workshops's payment-link button. The suffix is
-      // the guest's own portal_token (migration 083) — never name/phone.
-      // undefined (not "") when missing, so sendViaTemplate's `!== undefined`
-      // check correctly omits the button component entirely rather than sending
-      // a button parameter that resolves to a dead link.
-      // NOTE: morning_suite / morning_welcome are now handled by the morning
-      // fast-path above (early return) and never reach this code. The set is
-      // kept for any future pipeline trigger that also needs a portal button.
-      // night_before handles its own portalButtonParam in the fast-path above.
-      //
-      // pre_arrival_2d is included so that BOTH suite guests and day_use guests
-      // receive their portal link in the T-2 confirmation — the portal renders
-      // the correct restricted/full view server-side based on room_type, so the
-      // same URL works for both guest types.
-      const PORTAL_BUTTON_TRIGGERS = new Set<string>(["pre_arrival_2d"]);
-      const portalButtonParam = PORTAL_BUTTON_TRIGGERS.has(trigger)
-        ? (guest.portal_token as string | null ?? undefined)
-        : undefined;
+      tmplVars = resolveTemplateVars(trigger, guest, tmplName);
+      // Dynamic URL button — only when the approved template actually defines one.
+      const portalButtonParam = resolveDynamicUrlButtonParam(tmplName, guest.portal_token);
       try {
         if (!sim) {
           await sendViaTemplate(guest.phone as string, tmplName, tmplVars, "he", portalButtonParam);
@@ -1645,9 +1785,12 @@ serve(async (req: Request) => {
 
     return new Response(
       JSON.stringify({
-        ok: true, simulation: sim, status,
+        ok: status === "sent" || status === "simulated",
+        simulation: sim,
+        status,
         channel: usedSessionMessage ? "session_message" : "meta_template",
         ...(usedSessionMessage ? {} : { template: tmplName }),
+        ...(sendError ? { error: sendError } : {}),
       }),
       { headers: { ...CORS, "Content-Type": "application/json" } }
     );
