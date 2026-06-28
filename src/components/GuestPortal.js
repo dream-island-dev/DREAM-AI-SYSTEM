@@ -33,7 +33,7 @@ const DEFAULT_CHECKIN_TIME = "15:00";
 
 // Hotel's WhatsApp concierge line — replace with the actual Meta Business number
 // (same format as other wa.me links in the codebase, e.g. "972546294885")
-const CONCIERGE_WA = "https://wa.me/972XXXXXXXXX";
+const CONCIERGE_WA = "https://wa.me/972553083521";
 
 // ── Category display config ───────────────────────────────────────────────────
 const CATEGORY_META = {
