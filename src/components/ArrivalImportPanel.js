@@ -8,8 +8,9 @@
 //              → aggregateGuestProfiles(rows, approvedMapping) → editable grid
 //              (suite dropdown sourced from SUITE_REGISTRY) → sync_suite_arrivals
 //              RPC (guests + suite_rooms + bookings, with guests.room denormalized).
-//              Doc 1 (Daily Report Excel, optional) → parseComprehensiveReport →
-//              merges spa_time into the same grid before sync.
+//              Doc 1 (Daily Report Excel or EZGO HTML, optional) →
+//              parseComprehensiveReport / parseHtmlDailyReport → merges spa_time
+//              + meal_time into the same grid before sync.
 //   "shifts" — any Excel → editable grid → export back to .xlsx (no DB write).
 //
 // SpaStagingPanel remains a separate, standalone tool — it solves a different
@@ -100,14 +101,26 @@ function _bestGuessSuite(roomName) {
 
 const _SOURCE_RE = /^(Hotel\s+WebSite|Booking\s+Collect|Booking\.com|Booking|Expedia|Hotels\.com)\s*-\s*/i;
 
-function _extractExtras(block, raw) {
-  const clean = String(raw).replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
-  const m = clean.match(/^(\d+)\s*-\s*(\d{1,2}):(\d{2})/);
-  if (!m) return;
-  const count = parseInt(m[1]);
-  const time  = m[2].padStart(2, "0") + ":" + m[3];
-  block.treatment_count += count;
-  if (!block.spa_time || time < block.spa_time) block.spa_time = time;
+const _SUITE_SPA_RE = /לאורחי הסוויטות|לשובר סוויטה|שובר סוויטה/i;
+const _GROUP_SPA_RE = /לקבוצות|קבוצות בלבד/i;
+
+function _splitReportLines(raw) {
+  return String(raw).split(/\r?\n|<BR\s*\/?>/gi);
+}
+
+function _extractExtras(block, raw, suiteSpaOnly = false) {
+  for (const line of _splitReportLines(raw)) {
+    const clean = line.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
+    if (!clean) continue;
+    const m = clean.match(/^(\d+)\s*-\s*(\d{1,2}):(\d{2})/);
+    if (!m) continue;
+    if (_GROUP_SPA_RE.test(clean)) continue;
+    if (suiteSpaOnly && !_SUITE_SPA_RE.test(clean)) continue;
+    const count = parseInt(m[1]);
+    const time  = m[2].padStart(2, "0") + ":" + m[3];
+    block.treatment_count += count;
+    if (!block.spa_time || time < block.spa_time) block.spa_time = time;
+  }
 }
 
 // "EASYGO OPERATION FILE INGESTION" session — same comprehensive-report cell,
@@ -120,14 +133,26 @@ function _extractExtras(block, raw) {
 // it; if the real format differs, only this regex needs adjusting — the
 // meal_time/meal_location wiring below it is unaffected either way.
 function _extractMealTime(block, raw) {
-  const clean = String(raw).replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
-  const m = clean.match(/ארוחה[ת]?\s*(?:ערב|בוקר|צהריים)?\s*[-:]?\s*(\d{1,2}):(\d{2})/);
-  if (!m) return;
-  const time = m[1].padStart(2, "0") + ":" + m[2];
-  if (!block.meal_time || time < block.meal_time) block.meal_time = time;
+  for (const line of _splitReportLines(raw)) {
+    const clean = line.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
+    if (!clean) continue;
+    let m = clean.match(/ארוחה[ת]?\s*(?:ערב|בוקר|צהריים)?\s*[-:]?\s*(\d{1,2}):(\d{2})/);
+    if (!m && /(?:ערב|א\.?\s*ערב|צהריים|א\.?\s*צהריים)/i.test(clean)) {
+      m = clean.match(/מ-?\s*(\d{1,2}):(\d{2})/);
+    }
+    if (!m) continue;
+    const time = m[1].padStart(2, "0") + ":" + m[2];
+    if (!block.meal_time || time < block.meal_time) block.meal_time = time;
+  }
 }
 
-function parseComprehensiveReport(rows) {
+function _orderLineFromCell(c1) {
+  const lines = String(c1).split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  return lines.find(s => /^\d+:/.test(s)) ?? String(c1).trim();
+}
+
+function parseComprehensiveReport(rows, opts = {}) {
+  const { suiteSpaOnly = false } = opts;
   let arrivalDate = null;
   let current     = null;
   const blocks    = [];
@@ -139,12 +164,14 @@ function parseComprehensiveReport(rows) {
       arrivalDate = _parseDate(c0);
     }
 
-    if (c1 && typeof c1 === "string" && /^\d+:/.test(c1)) {
+    const orderLine = c1 && typeof c1 === "string" ? _orderLineFromCell(c1) : null;
+
+    if (orderLine && /^\d+:/.test(orderLine)) {
       if (current) blocks.push(current);
-      const orderMatch = c1.match(/^(\d+):/);
-      const phoneMatch = c1.match(/\s+-\s+([+\d][\d\s\-+]{7,})\s*$/);
+      const orderMatch = orderLine.match(/^(\d+):/);
+      const phoneMatch = orderLine.match(/\s+-\s+([+\d][\d\s\-+]{7,})\s*$/);
       const phone      = phoneMatch ? _sanitizeE164(phoneMatch[1]) : null;
-      const afterId    = c1.replace(/^\d+:\s*/, "");
+      const afterId    = orderLine.replace(/^\d+:\s*/, "");
       const nameRaw    = phoneMatch
         ? afterId.slice(0, afterId.lastIndexOf(phoneMatch[0])).trim()
         : afterId.trim();
@@ -157,11 +184,11 @@ function parseComprehensiveReport(rows) {
         treatment_count: 0,
         meal_time:       null,
       };
-      if (c2) { _extractExtras(current, c2); _extractMealTime(current, c2); }
+      if (c2) { _extractExtras(current, c2, suiteSpaOnly); _extractMealTime(current, c2); }
       continue;
     }
     if (!current) continue;
-    if (c2) { _extractExtras(current, c2); _extractMealTime(current, c2); }
+    if (c2) { _extractExtras(current, c2, suiteSpaOnly); _extractMealTime(current, c2); }
   }
   if (current) blocks.push(current);
 
@@ -178,6 +205,50 @@ function parseComprehensiveReport(rows) {
     }
   }
   return Object.values(byPhone);
+}
+
+// EZGO exports the comprehensive daily report as HTML (.htm) with nested tables:
+// col0=order+phone, col1=extras/spa, col3=meals. Maps to parseComprehensiveReport
+// pseudo-rows; suiteSpaOnly skips group-package spa slots.
+function _cellText(el) {
+  if (!el) return "";
+  return (el.innerText || el.textContent || "").replace(/\u00a0/g, " ").trim();
+}
+
+function _extractArrivalDateFromHtml(htmlText) {
+  const dmY = htmlText.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (!dmY) return null;
+  const [, d, m, y] = dmY;
+  return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+}
+
+function parseHtmlDailyReport(htmlText) {
+  const doc = new DOMParser().parseFromString(htmlText, "text/html");
+  const arrivalDate = _extractArrivalDateFromHtml(htmlText);
+  const pseudoRows = [];
+
+  doc.querySelectorAll("table table tbody tr").forEach(tr => {
+    const tds = tr.querySelectorAll(":scope > td");
+    if (tds.length < 4) return;
+
+    const orderRaw = _cellText(tds[0]);
+    const extras   = _cellText(tds[1]).replace(/\s+/g, " ").trim();
+    const meals    = _cellText(tds[3]).replace(/\s+/g, " ").trim();
+
+    const orderLine = orderRaw.split(/\r?\n/).map(s => s.trim()).find(s => /^\d+:/.test(s));
+    if (!orderLine) return;
+
+    const c2Parts = [extras, meals].filter(s => s && !/^[\s\u00a0]*$/);
+    pseudoRows.push([null, orderLine, c2Parts.length ? c2Parts.join("\n") : null]);
+  });
+
+  const records = parseComprehensiveReport(pseudoRows, { suiteSpaOnly: true });
+  if (arrivalDate) {
+    for (const r of records) {
+      if (!r.arrival_date) r.arrival_date = arrivalDate;
+    }
+  }
+  return records;
 }
 
 // ── Profile Map cloner ────────────────────────────────────────────────────────
@@ -255,7 +326,7 @@ const SUITES_GRID_COLS = [
 
 // ── DropZone ─────────────────────────────────────────────────────────────────
 
-function DropZone({ label, hint, loaded, fileName, onFile, inputRef, optional }) {
+function DropZone({ label, hint, loaded, fileName, onFile, inputRef, optional, accept = ".xlsx,.xls,.csv" }) {
   const [dragging, setDragging] = useState(false);
   return (
     <div
@@ -277,7 +348,7 @@ function DropZone({ label, hint, loaded, fileName, onFile, inputRef, optional })
           padding: "1px 6px", borderRadius: 6,
         }}>אופציונלי</span>
       )}
-      <input ref={inputRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: "none" }}
+      <input ref={inputRef} type="file" accept={accept} style={{ display: "none" }}
         onChange={e => e.target.files?.[0] && onFile(e.target.files[0])} />
       <div style={{ fontSize: 24, marginBottom: 5 }}>{loaded ? "✅" : "📂"}</div>
       <div style={{ fontSize: 12, fontWeight: 700,
@@ -474,18 +545,25 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     setDoc2Name("");
   }, []);
 
-  // ── Parse Doc 1: Comprehensive Daily Report Excel ───────────────────────
+  // ── Parse Doc 1: Comprehensive Daily Report (Excel or EZGO HTML) ────────
   const handleDoc1 = useCallback(async (file) => {
     if (!file) return;
     setDoc1Name(file.name);
     setResult(null);
     try {
-      const XLSX = await import("xlsx");
-      const buf  = await file.arrayBuffer();
-      const wb   = XLSX.read(buf, { type: "array" });
-      const ws   = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(ws, { defval: null, header: 1 });
-      const records = parseComprehensiveReport(rows);
+      const isHtml = /\.html?$/i.test(file.name) || file.type === "text/html";
+      let records;
+      if (isHtml) {
+        const text = await file.text();
+        records = parseHtmlDailyReport(text);
+      } else {
+        const XLSX = await import("xlsx");
+        const buf  = await file.arrayBuffer();
+        const wb   = XLSX.read(buf, { type: "array" });
+        const ws   = wb.Sheets[wb.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(ws, { defval: null, header: 1 });
+        records = parseComprehensiveReport(rows);
+      }
       if (!records.length) {
         showToast("err", "לא נמצאו הזמנות בדוח — בדוק פורמט");
         return;
@@ -804,7 +882,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
             fontSize: 12, color: "var(--gold-light)", lineHeight: 1.8,
           }}>
             <strong>Doc 2 — דוח כניסות EZGO (CSV):</strong> ייבוא חדרים, אורחים, הזמנות<br />
-            <strong>Doc 1 — דוח יומי מקיף (Excel):</strong> עדכון שעות ספא בלבד<br />
+            <strong>Doc 1 — דוח יומי מקיף (Excel / HTML):</strong> עדכון שעות ספא + ארוחה<br />
             <span style={{ color: "rgba(232,201,138,0.55)", fontSize: 11 }}>
               ניתן להעלות כל דוח בנפרד ● ערוך שם/חדר/ספא בטבלה לפני הסנכרון ● שדות בוט חיים לא נדרסים
             </span>
@@ -846,11 +924,12 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
             />
             <DropZone
               label="📊 Doc 1 — דוח יומי מקיף"
-              hint="Excel — שעות ספא לפי הזמנה"
+              hint="Excel / HTML EZGO — שעות ספא וארוחה"
               loaded={hasDoc1}
               fileName={doc1Name}
               onFile={handleDoc1}
               inputRef={doc1Ref}
+              accept=".xlsx,.xls,.htm,.html"
               optional
             />
           </div>
