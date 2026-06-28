@@ -31,6 +31,10 @@ const XOS_TEXT    = "#F3F4F6";
 // Mirrors bot_config.hotel_checkin_time seeded default
 const DEFAULT_CHECKIN_TIME = "15:00";
 
+// Hotel's WhatsApp concierge line — replace with the actual Meta Business number
+// (same format as other wa.me links in the codebase, e.g. "972546294885")
+const CONCIERGE_WA = "https://wa.me/972XXXXXXXXX";
+
 // ── Category display config ───────────────────────────────────────────────────
 const CATEGORY_META = {
   spa:      { icon: "💆", label: "ספא וטיפולים" },
@@ -400,19 +404,50 @@ function PortalHero({ guest, phase, countdown }) {
 }
 
 // ── Itinerary glass panel (suite + day-use) ───────────────────────────────────
+// Always renders — shows a concierge CTA fallback instead of returning null when
+// no spa/meal data exists (FAIL VISIBLE §0.3: guest never sees a blank section).
 function ItineraryPanel({ guest }) {
-  if (!guest.spa_time && !guest.meal_time) return null;
+  const hasSchedule = !!(guest.spa_time || guest.meal_time);
   return (
     <div style={{ padding: "0 16px 36px" }}>
       <GlassPanel title="📋 התוכנית שלכם">
-        <ItineraryRow icon="💆" label="ספא" value={guest.spa_time} />
-        <ItineraryRow
-          icon="🍽️"
-          label="ארוחה"
-          value={guest.meal_time
-            ? `${guest.meal_time}${guest.meal_location ? " · " + guest.meal_location : ""}`
-            : null}
-        />
+        {hasSchedule ? (
+          <>
+            <ItineraryRow icon="💆" label="ספא" value={guest.spa_time} />
+            <ItineraryRow
+              icon="🍽️"
+              label="ארוחה"
+              value={guest.meal_time
+                ? `${guest.meal_time}${guest.meal_location ? " · " + guest.meal_location : ""}`
+                : null}
+            />
+          </>
+        ) : (
+          <div style={{ padding: "20px 16px", textAlign: "center" }}>
+            <div style={{ fontSize: 13, color: XOS_MUTED, lineHeight: 1.8, marginBottom: 18 }}>
+              אין פעילויות מתוכננות כרגע.
+              <br />
+              דברו איתנו כדי לתאם טיפול ספא
+              <br />
+              או שולחן במסעדה.
+            </div>
+            <a
+              href={CONCIERGE_WA}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                display: "inline-flex", alignItems: "center", gap: 7,
+                padding: "10px 22px", borderRadius: 24,
+                background: "rgba(37,211,102,0.10)",
+                border: "1px solid rgba(37,211,102,0.30)",
+                color: "#4ADE80",
+                fontSize: 13, fontWeight: 700, textDecoration: "none",
+              }}
+            >
+              💬 שוחחו עם הקונסיירז' שלנו
+            </a>
+          </div>
+        )}
       </GlassPanel>
     </div>
   );
@@ -441,21 +476,48 @@ function DayUseView({ guest, phase, countdown, upsellItems, token, onToast, onUp
     <>
       <PortalHero guest={guest} phase={phase} countdown={countdown} />
 
-      {/* Day-use focused itinerary: only show spa + meal, no departure info */}
-      {(guest.spa_time || guest.meal_time) && (
-        <div style={{ padding: "0 16px 28px" }}>
-          <GlassPanel title="⚡ היום שלכם — בקצרה">
-            <ItineraryRow icon="💆" label="טיפול ספא" value={guest.spa_time} />
-            <ItineraryRow
-              icon="🍽️"
-              label="ארוחה"
-              value={guest.meal_time
-                ? `${guest.meal_time}${guest.meal_location ? " · " + guest.meal_location : ""}`
-                : null}
-            />
-          </GlassPanel>
-        </div>
-      )}
+      {/* Day-use focused itinerary — always rendered; shows concierge CTA when empty */}
+      <div style={{ padding: "0 16px 28px" }}>
+        <GlassPanel title="⚡ היום שלכם — בקצרה">
+          {(guest.spa_time || guest.meal_time) ? (
+            <>
+              <ItineraryRow icon="💆" label="טיפול ספא" value={guest.spa_time} />
+              <ItineraryRow
+                icon="🍽️"
+                label="ארוחה"
+                value={guest.meal_time
+                  ? `${guest.meal_time}${guest.meal_location ? " · " + guest.meal_location : ""}`
+                  : null}
+              />
+            </>
+          ) : (
+            <div style={{ padding: "20px 16px", textAlign: "center" }}>
+              <div style={{ fontSize: 13, color: XOS_MUTED, lineHeight: 1.8, marginBottom: 18 }}>
+                אין פעילויות מתוכננות כרגע.
+                <br />
+                דברו איתנו כדי לתאם טיפול ספא
+                <br />
+                או שולחן במסעדה.
+              </div>
+              <a
+                href={CONCIERGE_WA}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: 7,
+                  padding: "10px 22px", borderRadius: 24,
+                  background: "rgba(37,211,102,0.10)",
+                  border: "1px solid rgba(37,211,102,0.30)",
+                  color: "#4ADE80",
+                  fontSize: 13, fontWeight: 700, textDecoration: "none",
+                }}
+              >
+                💬 שוחחו עם הקונסיירז' שלנו
+              </a>
+            </div>
+          )}
+        </GlassPanel>
+      </div>
 
       {/* Focused activity info panel */}
       <div style={{ padding: "0 16px 20px" }}>
@@ -550,7 +612,7 @@ export default function GuestPortal({ token }) {
   }
 
   // ── Stay-phase logic — computed BEFORE early-returns (hooks rule) ──────────
-  const today = new Date().toISOString().slice(0, 10);
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Jerusalem' });
   let phase = "unknown";
   if (guest?.departure_date && guest.departure_date < today)  phase = "past";
   else if (guest?.arrival_date && guest.arrival_date > today) phase = "upcoming";

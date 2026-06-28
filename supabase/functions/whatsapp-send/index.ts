@@ -85,10 +85,10 @@ const PIPELINE_TEMPLATE: Record<string, string> = {
   night_before:    "dream_suite_reminder",
   morning_suite:   "dream_welcome_morning",        // suite AM    → "בוקר אור, היום מגיעים"
   morning_welcome: "dream_welcome_morning",        // standard AM → same template
-  room_ready:      "dream_room_ready",             // manual UI   → dedicated key-handover template
-                                                     // (Sprint 5.1 — was dream_welcome_morning, which
-                                                     // cross-fired the same wording as the scheduled
-                                                     // morning alert; now isolated)
+  room_ready:      "dream_room_ready1",            // manual UI   → dedicated key-handover template
+                                                     // (dream_room_ready1 is the approved Meta name;
+                                                     // the fast-path below sends a free-text bot_script
+                                                     // when the 24h session is open instead)
   mid_stay:        "dream_mid_stay_check",         // day 2       → mid-stay check + Quick Reply buttons
   checkout_fb:     "dream_checkout_feedback",      // day after departure → feedback + Quick Reply buttons
 };
@@ -242,6 +242,18 @@ function shiftMsg(name: string, weekStart: string, shifts: Array<Record<string, 
 // when the message demonstrably arrived.
 function _isAbortError(e: unknown): boolean {
   return e instanceof Error && (e.name === "AbortError" || e.name === "TimeoutError");
+}
+
+// ── Meta template approval / not-found detector ───────────────────────────────
+// Meta returns HTTP 400 with error code 132001 when a template is not found or
+// is still PENDING approval. This is a recoverable, temporary state — NOT a
+// real dispatch failure. Detecting it lets the pipeline log "blocked_by_meta"
+// instead of "failed", keeping the guest flag un-stamped so the cron retries
+// automatically once the template is approved.
+// Source: Meta error JSON body embedded in the throw from sendViaTemplate,
+// e.g. "meta_http_400: {...\"code\":132001...}".
+function isMetaTemplateError(msg: string): boolean {
+  return /132001|template_not_found|template.*not.*approved|template.*pending/i.test(msg);
 }
 
 // ── Meta WhatsApp Cloud API (live) ────────────────────────────────────────────
@@ -934,7 +946,9 @@ serve(async (req: Request) => {
         }
       } catch (e) {
         nbError = (e as Error).message;
-        nbStatus = nbError.startsWith("timeout_no_response") ? "timeout" : "failed";
+        nbStatus = nbError.startsWith("timeout_no_response") ? "timeout"
+                 : isMetaTemplateError(nbError) ? "blocked_by_meta"
+                 : "failed";
         console.error(`[whatsapp-send] night_before dispatch ${nbStatus}:`, nbError);
       }
 
@@ -1044,7 +1058,9 @@ serve(async (req: Request) => {
         }
       } catch (e) {
         dpError = (e as Error).message;
-        dpStatus = dpError.startsWith("timeout_no_response") ? "timeout" : "failed";
+        dpStatus = dpError.startsWith("timeout_no_response") ? "timeout"
+                 : isMetaTemplateError(dpError) ? "blocked_by_meta"
+                 : "failed";
         console.error(`[whatsapp-send] morning_welcome day_pass ${dpStatus}:`, dpError);
       }
 
@@ -1088,6 +1104,104 @@ serve(async (req: Request) => {
           ...(dpError ? { error: dpError } : {}),
         }),
         { headers: { ...CORS, "Content-Type": "application/json" } },
+      );
+    }
+
+    // ── Morning-of 24h session optimization (suite guests) ───────────────────
+    // Parallel to the night_before text path: when a suite guest has an open
+    // 24h Meta session AND automation_stages has a session_message_script_key
+    // wired (migration 100: 'stage_3_morning'), send the richer free-text body
+    // instead of the approved Shabbat-aware template. Improves engagement when
+    // the channel is available. Template path remains the authoritative fallback
+    // for guests outside the window (most guests — this is a bonus optimization).
+    //
+    // Applies ONLY to morning_suite / morning_welcome for NON-day_guest guests.
+    // Day-pass guests are handled by the early-return above. Script missing or
+    // empty silently falls through to the deterministic Shabbat routing below —
+    // the guest always receives a message.
+    if ((trigger === "morning_suite" || trigger === "morning_welcome") &&
+        isWindowOpen(guest.wa_window_expires_at) &&
+        stageRow?.session_message_script_key) {
+      let mgScriptText: string | null = null;
+      try {
+        const { data: mgScript } = await supabase
+          .from("bot_scripts")
+          .select("message_text")
+          .eq("script_key", stageRow.session_message_script_key)
+          .maybeSingle();
+        mgScriptText = mgScript?.message_text?.trim() || null;
+      } catch (e) {
+        console.warn(
+          `[whatsapp-send] morning session-text: script fetch failed — falling through to template:`,
+          (e as Error).message,
+        );
+      }
+
+      if (mgScriptText) {
+        const mgGuestName = sanitizeTemplateVars([String(guest.name ?? "")])[0];
+        const mgPortalUrl = guest.portal_token
+          ? `${PORTAL_BASE_URL}/portal/${guest.portal_token as string}`
+          : "";
+        const mgBody = mgScriptText
+          .replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, mgGuestName)
+          .replace(/\{\{\s*portal_url\s*\}\}/gi, mgPortalUrl);
+
+        let mgStatus = "simulated";
+        let mgError: string | null = null;
+        try {
+          if (!sim) { await sendViaMeta(String(guest.phone), mgBody); mgStatus = "sent"; }
+        } catch (e) {
+          mgError = (e as Error).message;
+          mgStatus = mgError.startsWith("timeout_no_response") ? "timeout"
+                   : isMetaTemplateError(mgError) ? "blocked_by_meta"
+                   : "failed";
+          console.error(`[whatsapp-send] morning session-message ${mgStatus}:`, mgError);
+        }
+
+        await supabase.from("notification_log").insert({
+          guest_id:     guestId,
+          recipient:    guest.phone,
+          trigger_type: trigger,
+          channel:      "whatsapp",
+          status:       mgStatus,
+          payload: {
+            channel:   "session_message",
+            scriptKey: stageRow.session_message_script_key,
+            ...(mgError ? { error: mgError } : {}),
+          },
+        });
+
+        if (mgStatus === "sent" || mgStatus === "simulated") {
+          try {
+            await supabase.from("whatsapp_conversations").insert({
+              phone:         String(guest.phone),
+              guest_id:      guestId,
+              direction:     "outbound",
+              message:       `[בוקר הגעה: חופשי]`,
+              wa_message_id: null,
+            });
+          } catch { /* best-effort */ }
+          if (flagColumn) {
+            await supabase.from("guests").update({ [flagColumn]: true }).eq("id", guestId);
+          }
+        }
+
+        return new Response(
+          JSON.stringify({
+            ok:         mgStatus === "sent" || mgStatus === "simulated",
+            simulation: sim,
+            status:     mgStatus,
+            channel:    "session_message",
+            ...(mgError ? { error: mgError } : {}),
+          }),
+          { headers: { ...CORS, "Content-Type": "application/json" } },
+        );
+      }
+
+      // Script not found or empty — fall through to Shabbat-aware template path.
+      console.warn(
+        `[whatsapp-send] morning session-text: script_key="${stageRow.session_message_script_key}"` +
+        ` not found or empty for trigger="${trigger}" guest_id=${guestId} — falling through to template`,
       );
     }
 
@@ -1182,7 +1296,9 @@ serve(async (req: Request) => {
         }
       } catch (e) {
         mdError = (e as Error).message;
-        mdStatus = mdError.startsWith("timeout_no_response") ? "timeout" : "failed";
+        mdStatus = mdError.startsWith("timeout_no_response") ? "timeout"
+                 : isMetaTemplateError(mdError) ? "blocked_by_meta"
+                 : "failed";
         console.error(`[whatsapp-send] morning dispatch ${mdStatus}:`, mdError);
       }
 
@@ -1234,8 +1350,144 @@ serve(async (req: Request) => {
       );
     }
 
+    // ── Room Ready fast-path (session-aware, event-driven) ──────────────────
+    // Mirrors the night_before fast-path pattern.
+    //   24h session open  → free-text from bot_script "room_ready_reminder"
+    //   24h session closed → approved Meta template dream_room_ready1
+    // Template variables: {{1}} = guest name, {{2}} = suite / room name.
+    // This block always early-returns — the generic hybrid fallback below is
+    // never reached for trigger === "room_ready".
+    if (trigger === "room_ready") {
+      const rrGuestName = sanitizeTemplateVars([String(guest.name ?? "")])[0];
+      const rrRoomNameRaw = String(
+        (guest as Record<string, unknown>).room ??
+        (guest as Record<string, unknown>).suite_name ??
+        ""
+      ).trim();
+      const rrRoomName = rrRoomNameRaw || "-";
+
+      // Query last inbound — any error defaults to template (safe path).
+      let rrLastInbound: Date | null = null;
+      try {
+        rrLastInbound = await getLastInboundTimestamp(supabase, String(guest.phone ?? ""));
+      } catch (e) {
+        console.warn(
+          `[whatsapp-send] room_ready: last_inbound_message query failed for guest ${guestId}` +
+          ` — defaulting to template (safe path):`,
+          (e as Error).message,
+        );
+      }
+      const MS_24H = 24 * 60 * 60 * 1000;
+      const rrWithin24h = rrLastInbound !== null && (Date.now() - rrLastInbound.getTime()) < MS_24H;
+
+      type RoomReadyDispatch =
+        | { channel: "text";     freeTextKey: string; guestName: string; roomName: string }
+        | { channel: "template"; templateName: string; vars: string[] };
+
+      const rrDispatch: RoomReadyDispatch = rrWithin24h
+        ? { channel: "text", freeTextKey: "room_ready_reminder", guestName: rrGuestName, roomName: rrRoomName }
+        : { channel: "template", templateName: PIPELINE_TEMPLATE["room_ready"], vars: sanitizeTemplateVars([rrGuestName, rrRoomName]) };
+
+      let rrStatus = "simulated";
+      let rrError: string | null = null;
+
+      try {
+        if (!sim) {
+          if (rrDispatch.channel === "text") {
+            const { data: rrScript } = await supabase
+              .from("bot_scripts")
+              .select("message_text")
+              .eq("script_key", rrDispatch.freeTextKey)
+              .maybeSingle();
+            const rawText = rrScript?.message_text?.trim();
+            if (!rawText) {
+              // Script missing — fall back to template rather than dropping the message silently.
+              console.warn(
+                `[whatsapp-send] room_ready: bot_script "${rrDispatch.freeTextKey}" missing` +
+                ` — falling back to template for guest_id=${guestId}`,
+              );
+              await sendViaTemplate(
+                String(guest.phone),
+                PIPELINE_TEMPLATE["room_ready"],
+                sanitizeTemplateVars([rrGuestName, rrRoomName]),
+                "he",
+              );
+            } else {
+              const textBody = rawText
+                .replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, rrDispatch.guestName)
+                .replace(/\{\{\s*ROOM_NAME\s*\}\}/gi,   rrDispatch.roomName);
+              await sendViaMeta(String(guest.phone), textBody);
+            }
+          } else {
+            await sendViaTemplate(
+              String(guest.phone),
+              rrDispatch.templateName,
+              rrDispatch.vars,
+              "he",
+            );
+          }
+          rrStatus = "sent";
+        }
+      } catch (e) {
+        rrError = (e as Error).message;
+        rrStatus = rrError.startsWith("timeout_no_response") ? "timeout"
+                 : isMetaTemplateError(rrError) ? "blocked_by_meta"
+                 : "failed";
+        console.error(`[whatsapp-send] room_ready dispatch ${rrStatus}:`, rrError);
+      }
+
+      await supabase.from("notification_log").insert({
+        guest_id:     guestId,
+        recipient:    guest.phone,
+        trigger_type: trigger,
+        channel:      "whatsapp",
+        status:       rrStatus,
+        payload: {
+          channel: rrDispatch.channel === "text" ? "session_message" : "meta_template",
+          ...(rrDispatch.channel === "text"
+            ? { scriptKey: rrDispatch.freeTextKey }
+            : { template: rrDispatch.templateName, variables: rrDispatch.vars }),
+          ...(rrError ? { error: rrError } : {}),
+        },
+      });
+
+      if (rrStatus === "sent" || rrStatus === "simulated") {
+        try {
+          const { error: rrConvErr } = await supabase.from("whatsapp_conversations").insert({
+            phone:         String(guest.phone),
+            guest_id:      guestId,
+            direction:     "outbound",
+            message:       rrDispatch.channel === "text"
+              ? `[חדר מוכן: חופשי]`
+              : `[תבנית: ${rrDispatch.templateName}]`,
+            wa_message_id: null,
+          });
+          if (rrConvErr) console.warn("[whatsapp-send] room_ready conv log failed (non-blocking):", rrConvErr.message);
+        } catch (e) {
+          console.warn("[whatsapp-send] room_ready conv log failed (non-blocking):", (e as Error).message);
+        }
+        if (flagColumn) {
+          await supabase.from("guests").update({ [flagColumn]: true }).eq("id", guestId);
+        }
+      }
+
+      return new Response(
+        JSON.stringify({
+          ok:         rrStatus === "sent" || rrStatus === "simulated",
+          simulation: sim,
+          status:     rrStatus,
+          channel:    rrDispatch.channel === "text" ? "session_message" : "meta_template",
+          ...(rrDispatch.channel === "template"
+            ? { template: rrDispatch.templateName }
+            : {}),
+          ...(rrError ? { error: rrError } : {}),
+        }),
+        { headers: { ...CORS, "Content-Type": "application/json" } },
+      );
+    }
+
     // ── Hybrid fallback (req #4) ───────────────────────────────────────────
-    // Only attempted when a stage actually has a session message configured
+  // Only attempted when a stage actually has a session message configured
     // — true for none of them today (every automation_stages row seeded by
     // migration 065 has session_message_script_key = NULL except the
     // event-driven stage_2_arrival, which never reaches this branch). This
@@ -1343,7 +1595,9 @@ serve(async (req: Request) => {
         }
       } catch (e) {
         sendError = (e as Error).message;
-        status = sendError.startsWith("timeout_no_response") ? "timeout" : "failed";
+        status = sendError.startsWith("timeout_no_response") ? "timeout"
+               : isMetaTemplateError(sendError) ? "blocked_by_meta"
+               : "failed";
         console.error(`[whatsapp] pipeline send ${status}:`, sendError);
       }
     }

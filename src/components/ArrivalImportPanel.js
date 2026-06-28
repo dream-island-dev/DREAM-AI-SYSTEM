@@ -248,7 +248,7 @@ const SUITES_GRID_COLS = [
   { id: "tier",        label: "שכבה",       editable: false, w: 90  },
   { id: "room",        label: "🏨 חדר/סוויטה", editable: true, w: 190, gold: true, options: ROOM_OPTIONS },
   { id: "spa_time",    label: "שעת ספא",    editable: true,  w: 90  },
-  { id: "meal_time",   label: "שעת ארוחה (ארמונים)", editable: true, w: 130 },
+  { id: "meal_time",   label: "שעת ארוחה (ערמונים)", editable: true, w: 130 },
   { id: "amount",      label: "💰 סכום (₪)", editable: true, w: 100 },
   { id: "arrivalDate", label: "הגעה",       editable: false, w: 100 },
 ];
@@ -586,7 +586,9 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
             const patch = { treatment_count: g.treatment_count ?? 0 };
             if (spaTime)  patch.spa_time = spaTime;
             if (mealTime) { patch.meal_time = mealTime; patch.meal_location = "מסעדת ערמונים"; }
-            await supabase.from("guests").update(patch).eq("phone", g.guestPhone);
+            await supabase.from("guests").update(patch)
+              .eq("phone", g.guestPhone)
+              .eq("arrival_date", g.arrivalDate);
           }
         }
 

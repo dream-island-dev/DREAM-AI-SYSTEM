@@ -18,7 +18,8 @@ export default function SuitesDashboard() {
   const [rooms, setRooms]             = useState([]);
   const [loading, setLoading]         = useState(false);
   const [toast, setToast]             = useState(null);
-  const [guestStatus, setGuestStatus] = useState({}); // E.164 phone → { status, arrival_confirmed, spa_time }
+  const [guestStatus, setGuestStatus] = useState({}); // E.164 phone → { id, status, arrival_confirmed, spa_time, msg_room_ready_sent }
+  const [sendingWa, setSendingWa]     = useState(new Set()); // phones currently dispatching room_ready
 
   const showToast = (msg) => {
     setToast(msg);
@@ -44,7 +45,7 @@ export default function SuitesDashboard() {
       if (phones.length) {
         const { data: gd } = await supabase
           .from("guests")
-          .select("phone, status, arrival_confirmed, spa_time")
+          .select("id, phone, status, arrival_confirmed, spa_time, msg_room_ready_sent")
           .in("phone", phones);
         const sm = {};
         for (const g of (gd ?? [])) sm[g.phone] = g;
@@ -64,11 +65,41 @@ export default function SuitesDashboard() {
     return acc;
   }, {});
 
+  // TODAY is the authoritative guardrail for dispatch buttons — computed
+  // from UTC timestamp for consistency with arrival_date DATE column.
+  const today = new Date().toISOString().slice(0, 10);
+
   const copyPhone = (e164) => {
     if (!e164) return;
     const local = "0" + e164.slice(4);  // "+972501234567" → "0501234567"
     navigator.clipboard?.writeText(local).catch(() => {});
     showToast(`📋 ${local} הועתק`);
+  };
+
+  const sendRoomReady = async (phone, guestId) => {
+    if (!supabase) return;
+    setSendingWa((prev) => new Set([...prev, phone]));
+    try {
+      const { data, error } = await supabase.functions.invoke("whatsapp-send", {
+        body: { trigger: "room_ready", guestId },
+      });
+      if (error) throw new Error(error.message);
+      if (!data?.ok) throw new Error(data?.error ?? "שגיאה לא ידועה");
+      showToast("✅ הודעת 'חדר מוכן' נשלחה");
+      // Optimistically stamp the flag locally so the button flips to ✅ without a reload.
+      setGuestStatus((prev) => ({
+        ...prev,
+        [phone]: { ...prev[phone], msg_room_ready_sent: true },
+      }));
+    } catch (e) {
+      showToast(`❌ שליחה נכשלה: ${e.message}`);
+    } finally {
+      setSendingWa((prev) => {
+        const n = new Set(prev);
+        n.delete(phone);
+        return n;
+      });
+    }
   };
 
   const stats = {
@@ -270,6 +301,58 @@ export default function SuitesDashboard() {
                           {gs.spa_time && (
                             <span style={{ fontSize: 9, color: "#7c3aed", fontWeight: 700 }}>💆 {gs.spa_time}</span>
                           )}
+                        </div>
+                      );
+                    })()}
+
+                    {/* ── Room Ready dispatch button — Date guardrail (DNA §0.2 Disable Don't Hide) ── */}
+                    {r.guest_phone && (() => {
+                      const gs        = guestStatus[r.guest_phone];
+                      const isToday   = r.arrival_date === today;
+                      const hasGuest  = !!gs?.id;
+                      const sent      = !!gs?.msg_room_ready_sent;
+                      const sending   = sendingWa.has(r.guest_phone);
+                      const isDisabled = !isToday || !hasGuest || sent || sending;
+
+                      let tip = "";
+                      if (sent)          tip = "כבר נשלחה הודעת 'חדר מוכן' לאורח זה";
+                      else if (!isToday) tip = `שליחה חסומה — הגעת האורח מתוכננת ל-${r.arrival_date || "תאריך לא ידוע"}`;
+                      else if (!hasGuest) tip = "אורח לא נמצא בטבלת guests — לא ניתן לשלוח";
+
+                      return (
+                        <div style={{ marginTop: 9 }}>
+                          <button
+                            onClick={() => !isDisabled && sendRoomReady(r.guest_phone, gs.id)}
+                            disabled={isDisabled}
+                            title={tip}
+                            style={{
+                              width: "100%",
+                              padding: "7px 10px",
+                              borderRadius: 8,
+                              border: `1px solid ${
+                                sent    ? "#16A34A" :
+                                isDisabled ? "var(--border)" :
+                                "rgba(201,169,110,0.5)"
+                              }`,
+                              background: sent
+                                ? "rgba(22,163,74,0.07)"
+                                : isDisabled
+                                  ? "var(--ivory)"
+                                  : "rgba(201,169,110,0.08)",
+                              color: sent
+                                ? "#16A34A"
+                                : isDisabled
+                                  ? "var(--text-muted)"
+                                  : "var(--gold-dark)",
+                              fontFamily: "Heebo, sans-serif",
+                              fontSize: 12,
+                              fontWeight: 700,
+                              cursor: isDisabled ? "not-allowed" : "pointer",
+                              opacity: isDisabled && !sent ? 0.55 : 1,
+                              transition: "background 0.15s, opacity 0.15s",
+                            }}>
+                            {sending ? "⏳ שולח..." : sent ? "✅ חדר מוכן נשלח" : "📨 שלח חדר מוכן"}
+                          </button>
                         </div>
                       );
                     })()}
