@@ -857,7 +857,7 @@ function NewChatModal({ onClose, onSent }) {
   // Canonical send order — dream_arrival_confirmation must be index 0
   const TEMPLATE_ORDER = [
     "dream_arrival_confirmation",
-    "dream_welcome_morning",
+    "suite_welcome_morning",
     "dream_payment_and_workshops",
     "dream_mid_stay_check",
     "dream_checkout_feedback",

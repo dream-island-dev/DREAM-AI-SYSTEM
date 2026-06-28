@@ -27,7 +27,7 @@ const VAR_LABELS = ["שם אורח", "מספר חדר", "תאריך הגעה", "
 const TIME_AWARE_TEMPLATES = new Set([
   "dream_suite_reminder",
   "night_before_suites",
-  "dream_welcome_morning",
+  "suite_welcome_morning",
 ]);
 
 // Mirrors resolveDayTimings() in whatsapp-send/index.ts — kept in sync manually.

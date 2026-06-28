@@ -75,7 +75,8 @@ function scriptKeyFriendly(key) {
 const META_TEMPLATE_FRIENDLY = {
   dream_arrival_confirmation:    "פנייה ראשונה — בקשת אישור הגעה (יומיים לפני ההגעה)",
   dream_checkin_reminder_v2:     "תזכורת ערב לפני ההגעה",
-  dream_welcome_morning:         "ברכת בוקר ביום ההגעה",
+  suite_welcome_morning:         "ברכת בוקר ביום ההגעה",
+  suite_welcome_morning_shabbat: "ברכת בוקר ביום ההגעה (שבת)",
   dream_room_ready:              "מסירת מפתח — החדר מוכן (אישור מנהל)",
   dream_mid_stay_check:          "בדיקת שלום באמצע השהות",
   dream_checkout_feedback:       "בקשת משוב לאחר העזיבה",
@@ -471,10 +472,10 @@ function StageCard({
                 ) : (
                   <div style={{ fontSize: 11, color: "#555", lineHeight: 1.8 }}>
                     📅 ראשון–שישי →{" "}
-                    <code style={{ background: "#F3F4F6", padding: "1px 5px", borderRadius: 4 }}>dream_welcome_morning</code>
+                    <code style={{ background: "#F3F4F6", padding: "1px 5px", borderRadius: 4 }}>suite_welcome_morning</code>
                     <br />
                     🕍 שבת →{" "}
-                    <code style={{ background: "#F3F4F6", padding: "1px 5px", borderRadius: 4 }}>dream_welcome_morning_shabbat</code>
+                    <code style={{ background: "#F3F4F6", padding: "1px 5px", borderRadius: 4 }}>suite_welcome_morning_shabbat</code>
                   </div>
                 )}
                 <div style={{ fontSize: 11, color: "#92702C", marginTop: 6, fontStyle: "italic" }}>
@@ -1312,7 +1313,7 @@ export default function AutomationControlCenter() {
                         🔒 אורחי יום-כיף — Stage 1 ו-Stage 2.5 ישתמשו בתבנית{" "}
                         <code style={{ background: "#F3F4F6", padding: "1px 5px", borderRadius: 4 }}>dream_checkin_reminder_v2</code>.
                         Stage 3 (בוקר הגעה) ישתמש ב-{" "}
-                        <code style={{ background: "#F3F4F6", padding: "1px 5px", borderRadius: 4 }}>dream_welcome_morning</code>{" "}
+                        <code style={{ background: "#F3F4F6", padding: "1px 5px", borderRadius: 4 }}>suite_welcome_morning</code>{" "}
                         (או הודעה חופשית אם חלון 24ש' פתוח).
                         שלבים שאינם מורשים (אמצע שהות, מסירת מפתח) יחסמו בשרת.
                       </div>
@@ -1434,7 +1435,7 @@ export default function AutomationControlCenter() {
                 אישור הגעה (Stage 1), תזכורת ערב לפני (Stage 2.5 ←{" "}
                 <code style={{ background: "rgba(124,58,237,0.1)", padding: "1px 5px", borderRadius: 4 }}>dream_checkin_reminder_v2</code>),
                 בוקר הגעה (Stage 3 ←{" "}
-                <code style={{ background: "rgba(124,58,237,0.1)", padding: "1px 5px", borderRadius: 4 }}>dream_welcome_morning</code>),
+                <code style={{ background: "rgba(124,58,237,0.1)", padding: "1px 5px", borderRadius: 4 }}>suite_welcome_morning</code>),
                 ומשוב (Stage 5).
                 שלבים אחרים (אמצע שהות, מסירת מפתח) חסומים אוטומטית גם בממשק וגם בשרת.
               </div>

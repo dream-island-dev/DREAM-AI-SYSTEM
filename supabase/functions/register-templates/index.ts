@@ -56,7 +56,8 @@ const TEMPLATES: Template[] = [
   {
     name: "dream_special_occasion", category: "MARKETING", language: "he",
     components: [{ type: "BODY",
-      text: "שלום {{1}}, שמענו שיש לכם סיבה לחגוג! דרים איילנד היא המקום המושלם — סוויטות עם בריכה פרטית, ספא ומסעדת ארמונים. נכין עבורכם חוויה שלא תשכחו. לפרטים ולתיאום: {{2}} — שיהיה מזל טוב",
+      text: "שלום {{1}}, שמענו שיש לכם סיבה לחגוג! דרים איילנד היא המקום המושלם — סוויטות עם בריכה פרטית, ספא ומסעדת ערמונים
+    . נכין עבורכם חוויה שלא תשכחו. לפרטים ולתיאום: {{2}} — שיהיה מזל טוב",
       example: { body_text: [["ישראל ישראלי", "https://dream-island.co.il/events"]] } }],
   },
   {
@@ -117,7 +118,7 @@ const TEMPLATES: Template[] = [
 
   // ── Stage 4: On-property (UTILITY) ───────────────────────────────────────
   {
-    name: "dream_welcome_morning", category: "UTILITY", language: "he",
+    name: "suite_welcome_morning", category: "UTILITY", language: "he",
     components: [{ type: "BODY",
       text: "בוקר אור {{1}}! ✨ היום זה היום!\nהריזורט מוכן, השמש בחוץ, וכל הצוות שלנו כבר מחכה להעניק לכם חוויה בלתי נשכחת.\n\nכמה פרטים קטנים וחשובים לדרך:\n🌸 מתקני הריזורט, הבריכות והמתחמים פתוחים עבורכם כבר מהשעה 09:00 בבוקר.\n🔑 קבלת החדרים והסוויטות היא החל מהשעה 15:00.\n\nאם יש לכם שאלה כלשהי בדרך, אנחנו זמינים כאן בצ'אט. נסיעה טובה ובטוחה! 🚗❤️",
       example: { body_text: [["ישראל ישראלי"]] } }],
@@ -138,7 +139,8 @@ const TEMPLATES: Template[] = [
     name: "dream_workshop_reminder", category: "UTILITY", language: "he",
     components: [{ type: "BODY",
       text: "תזכורת מדרים איילנד, {{1}}! אתם רשומים לסדנת {{2}}. מיקום: {{3}} שעה: {{4}} — מצפים לכם",
-      example: { body_text: [["ישראל ישראלי", "בישול ים-תיכוני", "מסעדת ארמונים", "11:00"]] } }],
+      example: { body_text: [["ישראל ישראלי", "בישול ים-תיכוני", "מסעדת ערמונים", "11:00"]] } }],
+ 
   },
   {
     // Session 29 — dedicated Room-Ready template (Sprint 5.1.3). Previously

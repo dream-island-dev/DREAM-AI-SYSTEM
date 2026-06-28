@@ -453,12 +453,38 @@ function ItineraryPanel({ guest }) {
   );
 }
 
+// ── Suite quick actions — always visible (concierge WA) ───────────────────────
+function SuiteQuickActions() {
+  return (
+    <div style={{ padding: "0 16px 28px" }}>
+      <div style={{ maxWidth: 420, margin: "0 auto" }}>
+        <a
+          href={CONCIERGE_WA}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{
+            display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+            width: "100%", padding: "14px 22px", borderRadius: 14,
+            background: "rgba(37,211,102,0.10)",
+            border: "1px solid rgba(37,211,102,0.30)",
+            color: "#4ADE80",
+            fontSize: 14, fontWeight: 700, textDecoration: "none",
+          }}
+        >
+          💬 שוחחו עם הקונסיירז' שלנו
+        </a>
+      </div>
+    </div>
+  );
+}
+
 // ── SUITE VIEW — full portal ──────────────────────────────────────────────────
 function SuiteView({ guest, phase, countdown, upsellItems, token, onToast, onUpsell, upsellBusy, scenes }) {
   return (
     <>
       <PortalHero guest={guest} phase={phase} countdown={countdown} />
       <ItineraryPanel guest={guest} />
+      <SuiteQuickActions />
 
       {/* Pre-Order module (DB-driven, suite + all items) */}
       <PreOrderModule token={token} items={upsellItems} onToast={onToast} />

@@ -67,7 +67,7 @@ const PORTAL_BASE_URL = "https://dream-ai-system.vercel.app";
 // for a winter line — does NOT take effect until Meta RE-APPROVES the edited
 // template (hours, sometimes longer). Sending to an un-approved edit either
 // silently uses the OLD approved text or gets rejected outright. Any seasonal
-// wording change to dream_welcome_morning (or any template here) must go
+// wording change to suite_welcome_morning (or any template here) must go
 // through Meta Business Manager → WhatsApp Manager → edit + resubmit, and
 // should NOT be assumed live until its status shows APPROVED again in the
 // "📋 ניהול תבניות" tab. See CLAUDE.md §6 for the same note.
@@ -83,8 +83,8 @@ const PIPELINE_TEMPLATE: Record<string, string> = {
   // still carrying its OLD content (OnceHub button) — unrelated to Stage 2.5,
   // not touched here.
   night_before:    "dream_suite_reminder",
-  morning_suite:   "dream_welcome_morning",        // suite AM    → "בוקר אור, היום מגיעים"
-  morning_welcome: "dream_welcome_morning",        // standard AM → same template
+  morning_suite:   "suite_welcome_morning",        // suite AM    → "בוקר אור, היום מגיעים"
+  morning_welcome: "suite_welcome_morning",        // standard AM → same template
   room_ready:      "dream_room_ready1",            // manual UI   → dedicated key-handover template
                                                      // (dream_room_ready1 is the approved Meta name;
                                                      // the fast-path below sends a free-text bot_script
@@ -529,7 +529,7 @@ serve(async (req: Request) => {
       let sendError: string | null = null;
       try {
         if (!sim) {
-          await sendViaTemplate(guest.phone as string, waTemplateName, vars);
+          await sendViaTemplate(guest.phone as string, waTemplateName, vars, "he");
           status = "sent";
         }
       } catch (e) {
@@ -1009,7 +1009,7 @@ serve(async (req: Request) => {
     // ── Morning day-pass fast-path (Stage 3 — בוקר הגעה, בילוי יומי) ──────────
     // Bifurcated from the suite morning fast-path below.  Day-pass guests at
     // trigger=morning_welcome get a 24h-window check — free-text when the window
-    // is open, template (dream_welcome_morning) when it is closed.  Suite guests
+    // is open, template (suite_welcome_morning) when it is closed.  Suite guests
     // always receive an approved template (Shabbat-aware) via the block below.
     //
     // Uses isWindowOpen(wa_window_expires_at) — same as BRANCH D's session_message
@@ -1037,9 +1037,9 @@ serve(async (req: Request) => {
               dpChannel = "meta_template";
               console.warn(
                 `[whatsapp-send] morning_welcome day_pass: bot_script 'morning_daypass' missing` +
-                ` — falling back to dream_welcome_morning template for guest_id=${guestId}`,
+                ` — falling back to suite_welcome_morning template for guest_id=${guestId}`,
               );
-              await sendViaTemplate(String(guest.phone), "dream_welcome_morning", [dpGuestName], "he",
+              await sendViaTemplate(String(guest.phone), "suite_welcome_morning", [dpGuestName], "he",
                 (guest.portal_token as string | null) ?? undefined);
             } else {
               const dpPortalUrl = guest.portal_token
@@ -1051,7 +1051,7 @@ serve(async (req: Request) => {
               await sendViaMeta(String(guest.phone), body);
             }
           } else {
-            await sendViaTemplate(String(guest.phone), "dream_welcome_morning", [dpGuestName], "he",
+            await sendViaTemplate(String(guest.phone), "suite_welcome_morning", [dpGuestName], "he",
               (guest.portal_token as string | null) ?? undefined);
           }
           dpStatus = "sent";
@@ -1072,7 +1072,7 @@ serve(async (req: Request) => {
         status:       dpStatus,
         payload:      {
           channel:    dpChannel,
-          ...(dpChannel === "meta_template" ? { template: "dream_welcome_morning" } : { scriptKey: "morning_daypass" }),
+          ...(dpChannel === "meta_template" ? { template: "suite_welcome_morning" } : { scriptKey: "morning_daypass" }),
           ...(dpError ? { error: dpError } : {}),
         },
       });
@@ -1085,7 +1085,7 @@ serve(async (req: Request) => {
             direction:     "outbound",
             message:       dpChannel === "session_message"
               ? `[בוקר יום-כיף: חופשי]`
-              : `[תבנית: dream_welcome_morning]`,
+              : `[תבנית: suite_welcome_morning]`,
             wa_message_id: null,
           });
         } catch { /* best-effort */ }
@@ -1100,7 +1100,7 @@ serve(async (req: Request) => {
           simulation: sim,
           status:     dpStatus,
           channel:    dpChannel,
-          ...(dpChannel === "meta_template" ? { template: "dream_welcome_morning" } : {}),
+          ...(dpChannel === "meta_template" ? { template: "suite_welcome_morning" } : {}),
           ...(dpError ? { error: dpError } : {}),
         }),
         { headers: { ...CORS, "Content-Type": "application/json" } },
@@ -1211,9 +1211,9 @@ serve(async (req: Request) => {
     // injection is required or permitted.
     //
     // Template routing:
-    //   Saturday (getUTCDay() === 6) → dream_welcome_morning_shabbat
+    //   Saturday (getUTCDay() === 6) → suite_welcome_morning_shabbat
     //                                   (Shabbat entry/check-in times baked in)
-    //   Sunday–Friday               → dream_welcome_morning
+    //   Sunday–Friday               → suite_welcome_morning
     //                                   (weekday times baked in)
     //
     // Variable mapping (HARDENED per task "Transition to Fully Deterministic"):
@@ -1247,8 +1247,8 @@ serve(async (req: Request) => {
       const guestName = sanitizeTemplateVars([String(guest.name ?? "")])[0];
 
       morningDispatch = {
-        primaryTemplate:  isShabbat ? "dream_welcome_morning_shabbat" : "dream_welcome_morning",
-        fallbackTemplate: "dream_welcome_morning",
+        primaryTemplate:  isShabbat ? "suite_welcome_morning_shabbat" : "suite_welcome_morning",
+        fallbackTemplate: "suite_welcome_morning",
         vars:             [guestName],
         buttonUrlParam:   (guest.portal_token as string | null) ?? undefined,
       };

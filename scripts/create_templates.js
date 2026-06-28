@@ -95,7 +95,7 @@ const TEMPLATES = [
       text: "שלום {{1}}, חשבנו עליכם — " +
             "חבילות הספא של דרים איילנד מושלמות לבריחה קצרה. " +
             "Classic & More, Deluxe עם טיפול ספא, Special Dream זוגי עם ואטסו או חמאם. " +
-            "הכל כולל מסעדת ארמונים. לפרטים ולהזמנה: {{2}} — שמרו מקום",
+            "הכל כולל מסעדת ערמונים. לפרטים ולהזמנה: {{2}} — שמרו מקום",
       example: { body_text: [["ישראל ישראלי", "https://dream-island.co.il/spa"]] },
     }],
   },
@@ -105,7 +105,7 @@ const TEMPLATES = [
     components: [{
       type: "BODY",
       text: "שלום {{1}}, שמענו שיש לכם סיבה לחגוג! " +
-            "דרים איילנד היא המקום המושלם — סוויטות עם בריכה פרטית, ספא ומסעדת ארמונים. " +
+            "דרים איילנד היא המקום המושלם — סוויטות עם בריכה פרטית, ספא ומסעדת ערמונים. " +
             "נכין עבורכם חוויה שלא תשכחו. לפרטים ולתיאום: {{2}} — שיהיה מזל טוב",
       example: { body_text: [["ישראל ישראלי", "https://dream-island.co.il/events"]] },
     }],
@@ -129,7 +129,8 @@ const TEMPLATES = [
     components: [{
       type: "BODY",
       text: "שלום {{1}}, דרים איילנד מזמינה אתכם לחוויית יין ייחודית — " +
-            "יינות ישראליים מובחרים, אווירה קסומה, לצד בריכות, ספא ומסעדת ארמונים. " +
+            "יינות ישראליים מובחרים, אווירה קסומה, לצד בריכות, ספא ומסעדת ערמונים. " +
+       
             "ערב שלא תשכחו. לפרטים ולהזמנה: {{2}} — לחיים",
       example: { body_text: [["ישראל ישראלי", "https://dream-island.co.il/wine"]] },
     }],
@@ -213,7 +214,7 @@ const TEMPLATES = [
 
   {
     // Morning of arrival — all guest types. Replaces dream_morning_welcome + dream_arrival_tomorrow.
-    name: "dream_welcome_morning", category: "UTILITY", language: "he",
+    name: "suite_welcome_morning", category: "UTILITY", language: "he",
     components: [{
       type: "BODY",
       text: "בוקר אור {{1}}! ✨ היום זה היום!\n" +
@@ -257,7 +258,7 @@ const TEMPLATES = [
       type: "BODY",
       text: "תזכורת מדרים איילנד, {{1}}! " +
             "אתם רשומים לסדנת {{2}}. מיקום: {{3}} שעה: {{4}} — מצפים לכם",
-      example: { body_text: [["ישראל ישראלי", "בישול ים-תיכוני", "מסעדת ארמונים", "11:00"]] },
+      example: { body_text: [["ישראל ישראלי", "בישול ים-תיכוני", "מסעדת ערמונים", "11:00"]] },
     }],
   },
 
