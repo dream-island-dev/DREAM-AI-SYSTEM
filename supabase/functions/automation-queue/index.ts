@@ -149,7 +149,7 @@ serve(async (req: Request) => {
     });
 
     const attentionRequired = (logRows ?? [])
-      .filter((r) => r.status === "failed" || r.status === "timeout")
+      .filter((r) => r.status === "failed" || r.status === "timeout" || r.status === "blocked_by_meta")
       .map((r) => ({
         guestId: r.guest_id,
         guestName: (guestById.get(r.guest_id) as Record<string, unknown> | undefined)?.name ?? null,
