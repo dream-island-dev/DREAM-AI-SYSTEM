@@ -106,9 +106,18 @@ export function checkEligibility(
   if (stage.applies_to === "suite" && guest.room_type !== "suite") return "wrong_room_type";
   if (stage.applies_to === "non_suite" && guest.room_type === "suite") return "wrong_room_type";
 
-  if (stage.stage_key === "mid_stay") {
-    if (guest.status !== "checked_in") return "not_checked_in";
-    if (!guest.departure_date || guest.departure_date < ymd(now)) return "guest_already_departed";
+  if (stage.stage_key === "mid_stay" || stage.stage_key === "mid_stay_daypass") {
+    if (stage.stage_key === "mid_stay") {
+      if (guest.status !== "checked_in") return "not_checked_in";
+      if (!guest.departure_date || guest.departure_date < ymd(now)) return "guest_already_departed";
+    } else {
+      // Day-pass courtesy check — same-day visit; eligible once checked in or expected on arrival day.
+      const todayStr = ymd(now);
+      if (guest.arrival_date !== todayStr) return "not_arrival_day";
+      if (guest.status !== "checked_in" && guest.status !== "expected" && guest.status !== "room_ready") {
+        return "not_on_property";
+      }
+    }
   }
   return null;
 }

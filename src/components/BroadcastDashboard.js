@@ -16,29 +16,17 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import TemplateManagerPanel from "./TemplateManagerPanel";
+import {
+  THREE_PARAM_TIMING_TEMPLATES,
+  buildThreeParamTimingVarsFromGuest,
+} from "../utils/whatsapp.js";
 
 // Friendly label suggestions for template variables {{1}}, {{2}}, …
-const VAR_LABELS = ["שם אורח", "מספר חדר", "תאריך הגעה", "סוג חדר", "שעת הגעה"];
+const VAR_LABELS = ["שם אורח", "שעת כניסה למתחם", "שעת קבלת חדר", "תאריך הגעה", "סוג חדר"];
 
 // Templates whose {{2}}/{{3}} body slots are check-in time windows, NOT
-// free-text fields. Selecting one of these activates automatic per-guest
-// time injection so managers never accidentally type "Room 14" into a slot
-// that Meta is expecting "12:00". Same Shabbat logic as the Edge Function.
-const TIME_AWARE_TEMPLATES = new Set([
-  "dream_suite_reminder",
-  "night_before_suites",
-  "suite_welcome_morning",
-]);
-
-// Mirrors resolveDayTimings() in whatsapp-send/index.ts — kept in sync manually.
-// Uses UTC midnight parsing of a YYYY-MM-DD date string (same convention).
-function resolveDayTimings(arrivalDateStr) {
-  if (!arrivalDateStr) return { entryTime: "12:00", checkInTime: "15:00" };
-  const d = new Date(`${arrivalDateStr}T00:00:00Z`);
-  return d.getUTCDay() === 6
-    ? { entryTime: "15:00", checkInTime: "18:00" }
-    : { entryTime: "12:00", checkInTime: "15:00" };
-}
+// free-text fields. Selecting one activates automatic per-guest time injection.
+const TIME_AWARE_TEMPLATES = THREE_PARAM_TIMING_TEMPLATES;
 
 // ── Arrival-window options ───────────────────────────────────────────────────
 const ARRIVAL_WINDOWS = [
@@ -301,10 +289,8 @@ export default function BroadcastDashboard({ user }) {
         let perGuestVars = autoVarGuestName
           ? [(String(guest.name ?? "").trim()) || "אורח יקר", ...templateVarValues.slice(1)]
           : [...templateVarValues];
-        if (autoVarArrivalTimes) {
-          const t = resolveDayTimings(guest.arrival_date);
-          if (perGuestVars.length >= 2) perGuestVars[1] = t.entryTime;
-          if (perGuestVars.length >= 3) perGuestVars[2] = t.checkInTime;
+        if (autoVarArrivalTimes || TIME_AWARE_TEMPLATES.has(selectedTemplate.name)) {
+          perGuestVars = buildThreeParamTimingVarsFromGuest(guest);
         }
         const { data, error } = await supabase.functions.invoke("whatsapp-send", {
           body: sendMode === "template"
@@ -402,10 +388,8 @@ export default function BroadcastDashboard({ user }) {
       let singleVars = autoVarGuestName
         ? [(String(guest.name ?? "").trim()) || "אורח יקר", ...templateVarValues.slice(1)]
         : [...templateVarValues];
-      if (autoVarArrivalTimes) {
-        const t = resolveDayTimings(guest.arrival_date);
-        if (singleVars.length >= 2) singleVars[1] = t.entryTime;
-        if (singleVars.length >= 3) singleVars[2] = t.checkInTime;
+      if (autoVarArrivalTimes || (selectedTemplate && TIME_AWARE_TEMPLATES.has(selectedTemplate.name))) {
+        singleVars = buildThreeParamTimingVarsFromGuest(guest);
       }
       const { data, error } = await supabase.functions.invoke("whatsapp-send", {
         body: sendMode === "template"

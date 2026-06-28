@@ -89,8 +89,11 @@ const PIPELINE_TEMPLATE: Record<string, string> = {
                                                      // (dream_room_ready1 is the approved Meta name;
                                                      // the fast-path below sends a free-text bot_script
                                                      // when the 24h session is open instead)
-  mid_stay:        "dream_mid_stay_check",         // day 2       → mid-stay check + Quick Reply buttons
-  checkout_fb:     "dream_checkout_feedback",      // day after departure → feedback + Quick Reply buttons
+  mid_stay:            "dream_mid_stay_check",         // day 2       → mid-stay check + Quick Reply buttons
+  mid_stay_daypass:    "dream_mid_stay_check",         // day-pass same-day courtesy check
+  checkout_fb:         "dream_checkout_feedback",      // day after departure → feedback + Quick Reply buttons
+  checkout_fb_daypass: "dream_checkout_feedback",      // day-pass post-visit feedback
+  night_before_daypass: "dream_checkin_reminder_v2",   // day-pass T-1 evening reminder (BRANCH D hybrid)
 };
 
 // ── Synchronous day-of-week aware timing helper ───────────────────────────────
@@ -122,8 +125,11 @@ const PIPELINE_VARS: Record<string, (g: Record<string, unknown>) => string[]> = 
   morning_suite:   (g) => [String(g.name ?? "")],
   morning_welcome: (g) => [String(g.name ?? "")],
   room_ready:      (g) => [String(g.name ?? ""), String(g.room ?? g.suite_name ?? "")],
-  mid_stay:        (g) => [String(g.name ?? "")],
-  checkout_fb:     (g) => [String(g.name ?? "")],
+  mid_stay:            (g) => [String(g.name ?? "")],
+  mid_stay_daypass:    (g) => [String(g.name ?? "")],
+  checkout_fb:         (g) => [String(g.name ?? "")],
+  checkout_fb_daypass: (g) => [String(g.name ?? "")],
+  night_before_daypass: (g) => [String(g.name ?? "")],
 };
 
 // Maps each pipeline trigger to the DB flag it atomically stamps.
@@ -133,8 +139,11 @@ const GUEST_FLAG: Record<string, string> = {
   morning_suite:   "msg_morning_suite_sent",
   morning_welcome: "msg_morning_welcome_sent",
   room_ready:      "msg_room_ready_sent",
-  mid_stay:        "msg_mid_stay_sent",
-  checkout_fb:     "msg_checkout_fb_sent",
+  mid_stay:            "msg_mid_stay_sent",
+  mid_stay_daypass:    "msg_mid_stay_sent",
+  checkout_fb:         "msg_checkout_fb_sent",
+  checkout_fb_daypass: "msg_checkout_fb_sent",
+  night_before_daypass: "msg_pre_arrival_sent",
 };
 
 // ── Stage 2.5 (night_before) — Sabbath/Holiday-aware entry/check-in times ───
@@ -216,13 +225,62 @@ async function resolveNightBeforeTimes(
 // ── Template variable sanitizer — prevents Meta error 131008 (empty param) ────
 // Meta rejects any template variable that is an empty string or whitespace.
 // Position 0 is always the guest name → fallback to "אורח יקר".
-// All other positions fall back to "-" (a safe non-empty placeholder).
+// Positions 1–2 on timing templates fall back to weekday hours; others → "-".
 function sanitizeTemplateVars(vars: string[]): string[] {
   return vars.map((v, i) => {
     const t = String(v ?? "").trim();
     if (t) return t;
-    return i === 0 ? "אורח יקר" : "-";
+    if (i === 0) return "אורח יקר";
+    if (i === 1) return "12:00";
+    if (i === 2) return "15:00";
+    return "-";
   });
+}
+
+// Meta body layout for Stage 2.5 suite templates (dream_suite_reminder +
+// night_before_suites[_shabbat]): {{1}}=guest name, {{2}}=resort entry time,
+// {{3}}=room check-in time. Passing fewer vars triggers Meta error #132000.
+const THREE_PARAM_TIMING_TEMPLATES = new Set([
+  "dream_suite_reminder",
+  "night_before_suites",
+  "night_before_suites_shabbat",
+]);
+
+function buildThreeParamTimingVars(
+  guest: Record<string, unknown>,
+  entryTime: string,
+  checkInTime: string,
+): string[] {
+  return sanitizeTemplateVars([
+    String(guest.name ?? ""),
+    entryTime || "12:00",
+    checkInTime || "15:00",
+  ]);
+}
+
+function syncTimingVarsForGuest(guest: Record<string, unknown>): string[] {
+  const { entryTime, checkInTime } = resolveDayTimings(String(guest.arrival_date ?? ""));
+  return buildThreeParamTimingVars(guest, entryTime, checkInTime);
+}
+
+/** Pad or rebuild body vars so Meta always receives the expected param count */
+function ensureTemplateBodyVars(
+  templateName: string,
+  vars: string[],
+  guest: Record<string, unknown>,
+): string[] {
+  if (THREE_PARAM_TIMING_TEMPLATES.has(templateName)) {
+    const synced = syncTimingVarsForGuest(guest);
+    if (vars.length >= 3) {
+      return sanitizeTemplateVars([
+        vars[0] || synced[0],
+        vars[1] || synced[1],
+        vars[2] || synced[2],
+      ]);
+    }
+    return synced;
+  }
+  return sanitizeTemplateVars(vars);
 }
 
 // ── Staff shift assignment message ────────────────────────────────────────────
@@ -363,6 +421,9 @@ function resolveTemplateVars(
   guest: Record<string, unknown>,
   templateName: string,
 ): string[] {
+  if (THREE_PARAM_TIMING_TEMPLATES.has(templateName)) {
+    return syncTimingVarsForGuest(guest);
+  }
   if (templateName === "dream_checkin_reminder_v2") {
     return sanitizeTemplateVars([String(guest.name ?? ""), RESORT_CONTACT_PHONE]);
   }
@@ -589,7 +650,7 @@ serve(async (req: Request) => {
         );
       }
 
-      const vars = sanitizeTemplateVars(templateVariables ?? []);
+      const vars = ensureTemplateBodyVars(waTemplateName, templateVariables ?? [], guest);
 
       let status = "simulated";
       let sendError: string | null = null;
@@ -856,11 +917,14 @@ serve(async (req: Request) => {
     // Stage 2.5 (night_before) is now split: suite guests receive 'night_before',
     // day-pass guests receive 'night_before_daypass' (separate automation_stages row,
     // migration 093). Stage 3 (morning_welcome) now applies to day-pass guests too.
-    const DAY_PASS_ALLOWED_TRIGGERS = new Set(["pre_arrival_2d", "night_before_daypass", "morning_welcome", "checkout_fb"]);
-    if (!force && guest.room_type === "day_guest" && !DAY_PASS_ALLOWED_TRIGGERS.has(trigger)) {
+    const DAY_PASS_ALLOWED_TRIGGERS = new Set([
+      "pre_arrival_2d", "night_before_daypass", "morning_welcome",
+      "mid_stay_daypass", "checkout_fb_daypass",
+    ]);
+    if (!force && (guest.room_type === "day_guest" || guest.room_type === "premium_day_guest") && !DAY_PASS_ALLOWED_TRIGGERS.has(trigger)) {
       console.warn(
         `[whatsapp-send] day_pass_stage_gate: trigger="${trigger}" blocked for ` +
-        `guest_id=${guestId} (room_type=day_guest) — allowed: pre_arrival_2d, night_before_daypass, morning_welcome, checkout_fb`,
+        `guest_id=${guestId} (room_type=${guest.room_type}) — allowed: pre_arrival_2d, night_before_daypass, morning_welcome, mid_stay_daypass, checkout_fb_daypass`,
       );
       return new Response(
         JSON.stringify({
@@ -991,11 +1055,11 @@ serve(async (req: Request) => {
     //   3. If > 24h OR null    → channel = "template".
     //      Saturday  → night_before_suites_shabbat
     //      Sun–Fri   → night_before_suites
-    //      Variable mapping (HARDENED):
-    //        {{1}} = guest name ONLY. {{2}} / {{3}} are REMOVED — the template
-    //        body is now static; the Shabbat variant is a separate approved
-    //        template, not a variable change. sanitizeTemplateVars() still
-    //        applies to prevent Meta error 131008 on a blank name.
+    //      Variable mapping (Meta #132000 — must be exactly 3 body params):
+    //        {{1}} = guest name, {{2}} = resort entry time, {{3}} = check-in time.
+    //        Shabbat/holiday hours from resolveNightBeforeTimes(); weekday from
+    //        bot_config with 12:00/15:00 fallbacks. sanitizeTemplateVars() pads
+    //        any missing slot so Meta never receives a mismatched param count.
     //
     // Only evaluated for trigger === "night_before"; all other triggers fall
     // through to the existing session_message/Meta-template dispatch below.
@@ -1041,8 +1105,8 @@ serve(async (req: Request) => {
         const isShabbat = arrivalDay === 6;
         // Suite guests only — day_guest guests use 'night_before_daypass' (migration 093).
         const templateName = isShabbat ? "night_before_suites_shabbat" : "night_before_suites";
-        // {{1}} = guest name ONLY. No entry/check-in time variables in these templates.
-        const vars = sanitizeTemplateVars([guestName]);
+        const { entryTime, checkInTime } = await resolveNightBeforeTimes(supabase, arrivalDateStr);
+        const vars = buildThreeParamTimingVars(guest, entryTime, checkInTime);
         const buttonUrlParam = resolveDynamicUrlButtonParam(templateName, guest.portal_token);
         nightBeforeDispatch = { channel: "template", templateName, vars, buttonUrlParam };
       }
@@ -1074,10 +1138,11 @@ serve(async (req: Request) => {
               const arrivalDateStr = String(guest.arrival_date ?? "");
               const isShabbatFb = new Date(`${arrivalDateStr}T00:00:00Z`).getUTCDay() === 6;
               const fbTemplate = isShabbatFb ? "night_before_suites_shabbat" : "night_before_suites";
+              const fbTimes = await resolveNightBeforeTimes(supabase, arrivalDateStr);
               await sendViaTemplate(
                 String(guest.phone),
                 fbTemplate,
-                sanitizeTemplateVars([nightBeforeDispatch.guestName]),
+                buildThreeParamTimingVars(guest, fbTimes.entryTime, fbTimes.checkInTime),
                 "he",
                 resolveDynamicUrlButtonParam(fbTemplate, guest.portal_token),
               );
@@ -1175,7 +1240,7 @@ serve(async (req: Request) => {
     // Uses isWindowOpen(wa_window_expires_at) — same as BRANCH D's session_message
     // path — rather than a second DB query (getLastInboundTimestamp).  The guest
     // row already carries wa_window_expires_at from the select("*") above.
-    if (trigger === "morning_welcome" && guest.room_type === "day_guest") {
+    if (trigger === "morning_welcome" && (guest.room_type === "day_guest" || guest.room_type === "premium_day_guest")) {
       const dpGuestName = sanitizeTemplateVars([String(guest.name ?? "")])[0];
       const dpWindowOpen = isWindowOpen(guest.wa_window_expires_at);
       let dpStatus = "simulated";

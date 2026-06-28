@@ -1994,7 +1994,7 @@ serve(async (req: Request) => {
             if (error) console.warn("[webhook] guest_alerts (button date_change) error:", error.message);
           })().catch((e: Error) => console.warn("[webhook] guest_alerts (button date_change) error:", e.message));
           const dateChangeReply =
-            "העברתי את בקשתך לצוות הסוויטות שלנו (אדיר ואפק), והם יצרו איתך קשר בהקדם. 🙏";
+            "העברתי את בקשתך לצוות הסוויטות שלנו, בנתיים תכתוב לי באיזה תאריכים תרצו ואנחנו נבדוק זמינות עבורכם וניצור קשר בהקדם. 🙏";
           try { await sendReply(phone, dateChangeReply); } catch (e) { console.error("[webhook] reply error:", (e as Error).message); }
           await supabase.from("whatsapp_conversations").insert({
             phone, guest_id: guestId, direction: "outbound", message: dateChangeReply, wa_message_id: null, intent: "date_change_request",
@@ -2238,7 +2238,7 @@ serve(async (req: Request) => {
         })().catch((e: Error) => console.warn("[webhook] guest_alerts (date_change) error:", e.message));
 
         const handoffMsg =
-          "העברתי את בקשתך לצוות הסוויטות שלנו (אדיר ואפק), והם יצרו איתך קשר בהקדם. 🙏";
+          "העברתי את בקשתך לצוות הסוויטות שלנו, בנתיים תכתוב לי באיזה תאריכים תרצו ואנחנו נבדוק זמינות עבורכם וניצור קשר בהקדם. 🙏";
 
         if (!sim) {
           try {

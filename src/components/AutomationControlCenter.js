@@ -39,6 +39,29 @@ const NODE_TYPE_META = {
 
 const APPLIES_TO_LABELS = { all: "כל האורחים", suite: "סוויטות בלבד", non_suite: "לא-סוויטות" };
 
+// Pipeline grouping for Timeline tab — mirrors migration 094/099 bifurcation.
+const SHARED_STAGE_KEYS = new Set(["pre_arrival_2d", "stage_2_arrival", "stage_2_pay"]);
+const SUITE_PIPELINE_KEYS = new Set([
+  "night_before", "morning_suite", "mid_stay", "checkout_fb", "room_ready",
+]);
+const DAYPASS_PIPELINE_KEYS = new Set([
+  "night_before_daypass", "morning_welcome", "mid_stay_daypass", "checkout_fb_daypass",
+]);
+
+function classifyStagePipeline(stage) {
+  if (SHARED_STAGE_KEYS.has(stage.stage_key)) return "shared";
+  if (DAYPASS_PIPELINE_KEYS.has(stage.stage_key) || stage.applies_to === "non_suite") return "daypass";
+  if (SUITE_PIPELINE_KEYS.has(stage.stage_key) || stage.applies_to === "suite") return "suite";
+  return "other";
+}
+
+const PIPELINE_SECTION_META = {
+  shared:  { icon: "🔗", label: "שלבים משותפים (כל האורחים)", border: "var(--gold)",       bg: "rgba(201,169,110,0.08)" },
+  suite:   { icon: "🏨", label: "צינור סוויטות",              border: "#0369A1",           bg: "rgba(3,105,161,0.06)" },
+  daypass: { icon: "☀️", label: "צינור בילוי יומי",           border: "#7C3AED",           bg: "rgba(124,58,237,0.06)" },
+  other:   { icon: "⚙️", label: "שלבים נוספים",               border: "var(--border)",     bg: "rgba(0,0,0,0.02)" },
+};
+
 // Session 30 Sprint 5.1 — manager-facing translation for the raw bot_scripts
 // script_key tokens shown in the session-message dropdown. Same FAIL VISIBLE
 // fallback convention as metaTemplateFriendly() below: an untranslated key
@@ -62,7 +85,11 @@ const SCRIPT_KEY_FRIENDLY = {
   night_before_reminder:    "תזכורת ערב לפני — כניסה ושעות (שלב 2.5)",
   pre_arrival_2d:           "פנייה ראשונה — אישור הגעה (שלב 1 — טקסט חופשי)",
   mid_stay:                 "בדיקת שלום באמצע השהות (שלב 4 — טקסט חופשי)",
+  mid_stay_daypass:         "בדיקת שלום באמצע הביקור (שלב 4 — בילוי יומי)",
   checkout_fb:              "בקשת משוב לאחר העזיבה (שלב 5 — טקסט חופשי)",
+  checkout_fb_daypass:      "בקשת משוב לאחר הביקור (שלב 5 — בילוי יומי)",
+  night_before_daypass:     "תזכורת ערב לפני — בילוי יומי (שלב 2.5)",
+  morning_daypass:          "בוקר הגעה — בילוי יומי (שלב 3)",
 };
 function scriptKeyFriendly(key) {
   return SCRIPT_KEY_FRIENDLY[key] ?? `⚠ ${key}`;
@@ -738,7 +765,10 @@ function CustomAutomationBuilder({ metaTemplatesByName, showToast }) {
 //      generic message.
 //   3. Two-step confirm: preview → dispatch (no accidental sends).
 //   4. The flag column IS stamped on success so cron doesn't double-fire.
-const DAY_PASS_ALLOWED_FOR_MODAL = new Set(["pre_arrival_2d", "night_before_daypass", "morning_welcome", "checkout_fb"]);
+const DAY_PASS_ALLOWED_FOR_MODAL = new Set([
+  "pre_arrival_2d", "night_before_daypass", "morning_welcome",
+  "mid_stay_daypass", "checkout_fb_daypass",
+]);
 
 function ManualDispatchModal({ item, stages, onClose, onDispatched, showToast }) {
   const isDayType = item.room_type === "day_guest" || item.room_type === "premium_day_guest";
@@ -1100,7 +1130,10 @@ export default function AutomationControlCenter() {
   // Stage 2.5 split (migration 093): day-pass guests use 'night_before_daypass',
   // not 'night_before' (which now applies to suite guests only).
   // Stage 3 (morning_welcome) is now allowed for day-pass — bifurcated in whatsapp-send.
-  const DAY_PASS_ALLOWED_STAGES = new Set(["pre_arrival_2d", "night_before_daypass", "morning_welcome", "checkout_fb"]);
+  const DAY_PASS_ALLOWED_STAGES = new Set([
+    "pre_arrival_2d", "night_before_daypass", "morning_welcome",
+    "mid_stay_daypass", "checkout_fb_daypass",
+  ]);
 
   // ── Bulk dispatch — same call as whatsapp-cron uses ──────────────────────
   const handleBulkDispatch = async (displayQueue) => {
@@ -1224,23 +1257,57 @@ export default function AutomationControlCenter() {
             <div style={{ textAlign: "center", padding: 60, color: "var(--text-muted)" }}>⏳ טוען שלבים...</div>
           ) : (
             <div>
-              {stages.map((stage) => (
-                <StageCard
-                  key={stage.id}
-                  stage={stage}
-                  isOpen={expanded === stage.id}
-                  onToggle={() => setExpanded(expanded === stage.id ? null : stage.id)}
-                  patchStage={patchStage}
-                  scriptsByKey={scriptsByKey}
-                  saveSessionMessage={saveSessionMessage}
-                  availableScriptKeys={availableScriptKeys}
-                  addButton={addButton}
-                  updateButton={updateButton}
-                  removeButton={removeButton}
-                  convertToTemplate={convertToTemplate}
-                  metaTemplatesByName={metaTemplatesByName}
-                />
-              ))}
+              {["shared", "suite", "daypass", "other"].map((pipelineKey) => {
+                const sectionStages = stages.filter((s) => classifyStagePipeline(s) === pipelineKey);
+                if (sectionStages.length === 0) return null;
+                const meta = PIPELINE_SECTION_META[pipelineKey];
+                return (
+                  <div key={pipelineKey} style={{ marginBottom: 32 }}>
+                    <div style={{
+                      display: "flex", alignItems: "center", gap: 10,
+                      padding: "12px 16px", marginBottom: 12,
+                      borderRadius: 12,
+                      border: `2px solid ${meta.border}`,
+                      background: meta.bg,
+                    }}>
+                      <span style={{ fontSize: 20 }}>{meta.icon}</span>
+                      <div>
+                        <div style={{ fontWeight: 800, fontSize: 15, color: "var(--black)" }}>{meta.label}</div>
+                        {pipelineKey === "daypass" && (
+                          <div style={{ fontSize: 12, color: "#7C3AED", marginTop: 2 }}>
+                            שלבים 1–2 משותפים · 2.5–5 ייעודיים לבילוי יומי · שער שרת חוסם שלבי סוויטות
+                          </div>
+                        )}
+                        {pipelineKey === "suite" && (
+                          <div style={{ fontSize: 12, color: "#0369A1", marginTop: 2 }}>
+                            שלבים 1–2 משותפים · 2.5–5 ייעודיים לסוויטות · היברידי: סשן חופשי בתוך 24ש׳, תבנית Meta מחוץ לחלון
+                          </div>
+                        )}
+                      </div>
+                      <span style={{ marginRight: "auto", fontSize: 12, color: "var(--text-muted)" }}>
+                        {sectionStages.length} שלבים
+                      </span>
+                    </div>
+                    {sectionStages.map((stage) => (
+                      <StageCard
+                        key={stage.id}
+                        stage={stage}
+                        isOpen={expanded === stage.id}
+                        onToggle={() => setExpanded(expanded === stage.id ? null : stage.id)}
+                        patchStage={patchStage}
+                        scriptsByKey={scriptsByKey}
+                        saveSessionMessage={saveSessionMessage}
+                        availableScriptKeys={availableScriptKeys}
+                        addButton={addButton}
+                        updateButton={updateButton}
+                        removeButton={removeButton}
+                        convertToTemplate={convertToTemplate}
+                        metaTemplatesByName={metaTemplatesByName}
+                      />
+                    ))}
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
@@ -1431,13 +1498,16 @@ export default function AutomationControlCenter() {
                 background: "rgba(124,58,237,0.06)", border: "1px solid #C4B5FD",
                 borderRadius: 10, padding: "10px 14px", marginBottom: 12, fontSize: 12, color: "#7C3AED",
               }}>
-                🔒 <strong>שער Day Pass פעיל</strong> — אורחי יום-כיף מקבלים ארבעה שלבים בלבד:
+                🔒 <strong>שער Day Pass פעיל</strong> — אורחי יום-כיף מקבלים שישה שלבים:
                 אישור הגעה (Stage 1), תזכורת ערב לפני (Stage 2.5 ←{" "}
                 <code style={{ background: "rgba(124,58,237,0.1)", padding: "1px 5px", borderRadius: 4 }}>dream_checkin_reminder_v2</code>),
                 בוקר הגעה (Stage 3 ←{" "}
                 <code style={{ background: "rgba(124,58,237,0.1)", padding: "1px 5px", borderRadius: 4 }}>suite_welcome_morning</code>),
-                ומשוב (Stage 5).
-                שלבים אחרים (אמצע שהות, מסירת מפתח) חסומים אוטומטית גם בממשק וגם בשרת.
+                שיחות נימוסים (Stage 4 ←{" "}
+                <code style={{ background: "rgba(124,58,237,0.1)", padding: "1px 5px", borderRadius: 4 }}>dream_mid_stay_check</code>),
+                ומשוב (Stage 5 ←{" "}
+                <code style={{ background: "rgba(124,58,237,0.1)", padding: "1px 5px", borderRadius: 4 }}>dream_checkout_feedback</code>).
+                שלבי סוויטות (morning_suite, mid_stay, night_before וכו׳) חסומים אוטומטית גם בממשק וגם בשרת.
               </div>
             )}
 
