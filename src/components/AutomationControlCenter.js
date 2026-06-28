@@ -48,6 +48,15 @@ const DAYPASS_PIPELINE_KEYS = new Set([
   "night_before_daypass", "morning_welcome", "mid_stay_daypass", "checkout_fb_daypass",
 ]);
 
+// Must stay in sync with CORE_PIPELINE_STAGE_KEYS in automationSchedule.ts.
+const CORE_PIPELINE_STAGE_KEYS = [
+  "pre_arrival_2d",
+  "night_before", "night_before_daypass",
+  "morning_suite", "morning_welcome",
+  "mid_stay", "mid_stay_daypass",
+  "checkout_fb", "checkout_fb_daypass",
+];
+
 function classifyStagePipeline(stage) {
   if (SHARED_STAGE_KEYS.has(stage.stage_key)) return "shared";
   if (DAYPASS_PIPELINE_KEYS.has(stage.stage_key) || stage.applies_to === "non_suite") return "daypass";
@@ -494,7 +503,9 @@ function StageCard({
                     🕍 שבת →{" "}
                     <code style={{ background: "#F3F4F6", padding: "1px 5px", borderRadius: 4 }}>night_before_suites_shabbat</code>
                     <br />
-                    <span style={{ color: "var(--text-muted)" }}>🔓 חלון 24ש פתוח → סקריפט חופשי (BotScriptEditor)</span>
+                    <span style={{ color: "var(--text-muted)" }}>
+                      שליחה אוטומטית (cron) תמיד דרך תבנית Meta — גם בתוך חלון 24ש&apos;. סקריפט חופשי רק בשגר ידני → ערוץ Bot Script.
+                    </span>
                   </div>
                 ) : (
                   <div style={{ fontSize: 11, color: "#555", lineHeight: 1.8 }}>
@@ -770,14 +781,17 @@ const DAY_PASS_ALLOWED_FOR_MODAL = new Set([
   "mid_stay_daypass", "checkout_fb_daypass",
 ]);
 
+const DAYPASS_ONLY_STAGE_KEYS = new Set([
+  "night_before_daypass", "morning_welcome", "mid_stay_daypass", "checkout_fb_daypass",
+]);
+
 function ManualDispatchModal({ item, stages, onClose, onDispatched, showToast }) {
   const isDayType = item.room_type === "day_guest" || item.room_type === "premium_day_guest";
 
   // Filter to stages the backend will actually allow for this room_type.
   const allowedStages = stages.filter((s) => {
     if (isDayType) return DAY_PASS_ALLOWED_FOR_MODAL.has(s.stage_key);
-    // Suite guests: exclude the day-pass-specific stage.
-    return s.stage_key !== "night_before_daypass";
+    return !DAYPASS_ONLY_STAGE_KEYS.has(s.stage_key);
   });
 
   const [stageKey, setStageKey]   = useState(item.stageKey ?? (allowedStages[0]?.stage_key ?? ""));
@@ -1192,6 +1206,9 @@ export default function AutomationControlCenter() {
     return acc;
   }, {});
 
+  const activeStageKeys = stages.filter((s) => s.is_active).map((s) => s.stage_key);
+  const missingCoreStages = CORE_PIPELINE_STAGE_KEYS.filter((k) => !activeStageKeys.includes(k));
+
   return (
     <div>
       <style>{`
@@ -1527,6 +1544,22 @@ export default function AutomationControlCenter() {
                     <span>{queueData.systemStatus.automationEnabled ? "🟢" : "🔴"} AUTOMATION_ENABLED (שליחה כללית)</span>
                     <span>{queueData.systemStatus.simulation ? "🟡 סימולציה" : "🟢 שליחה אמיתית"}</span>
                   </div>
+                  <div style={{ marginTop: 10, fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
+                    <strong>שלבים פעילים ({activeStageKeys.length}):</strong>{" "}
+                    {activeStageKeys.length > 0 ? activeStageKeys.join(", ") : "—"}
+                  </div>
+                  {missingCoreStages.length > 0 && (
+                    <div style={{
+                      marginTop: 8, fontSize: 12, color: "#C0392B",
+                      background: "#FFF0EE", borderRadius: 8, padding: "8px 12px",
+                      border: "1px solid #C0392B",
+                    }}>
+                      ⚠ שלבי צינור חסרים/מושבתים: <code>{missingCoreStages.join(", ")}</code>
+                      {missingCoreStages.some((k) => k.includes("mid_stay") || k.includes("checkout_fb")) && (
+                        <span> — ודא ש-migration 099 הורץ (פיצול Stage 4/5 לסוויטות+יום-כיף).</span>
+                      )}
+                    </div>
+                  )}
                   {(!queueData.systemStatus.cronEnabled || !queueData.systemStatus.automationEnabled) && (
                     <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 8 }}>
                       ⚠ אחד או יותר ממפסקי החיים כבוי — האוטומציה האוטומטית (cron) לא תשלח הודעות בפועל כרגע. זהו המצב המתועד הנוכחי, לא תקלה.

@@ -1048,6 +1048,107 @@ function _buildToolOnlyReply(loggedRequest: NonNullable<AiReplyResult["loggedReq
 // ══════════════════════════════════════════════════════════════════════════════
 // §5  GEMINI — FAQ handler with conversation history context
 // ══════════════════════════════════════════════════════════════════════════════
+
+const GEMINI_FETCH_TIMEOUT_MS = 8000;
+// Retries before trying the next model or falling back to Claude — prefer burning
+// Google quota/credits over Anthropic on transient 429/503 bursts.
+const GEMINI_MAX_RETRIES = 3;
+const GEMINI_RETRY_BASE_MS = 1000;
+const GEMINI_RETRY_MAX_MS = 8000;
+
+function _sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function _isGeminiRetryableStatus(status: number): boolean {
+  return status === 429 || status === 408 || status === 500 || status === 502 || status === 503;
+}
+
+function _geminiRetryDelayMs(attempt: number, retryAfterHeader: string | null): number {
+  if (retryAfterHeader) {
+    const sec = Number(retryAfterHeader);
+    if (!Number.isNaN(sec) && sec > 0) return Math.min(sec * 1000, 30_000);
+  }
+  const exp = GEMINI_RETRY_BASE_MS * 2 ** attempt;
+  const jitter = Math.floor(Math.random() * 250);
+  return Math.min(exp + jitter, GEMINI_RETRY_MAX_MS);
+}
+
+function _isGeminiFetchTimeout(e: unknown): boolean {
+  const err = e as Error;
+  return err.name === "TimeoutError" || err.name === "AbortError"
+    || /timeout|aborted/i.test(err.message);
+}
+
+/** One generateContent call with exponential backoff on rate-limit / transient errors. */
+async function _geminiGenerateWithRetry(
+  apiKey: string,
+  model: string,
+  body: string,
+): Promise<
+  | { kind: "ok"; data: Record<string, unknown> }
+  | { kind: "not_found"; errBody: string }
+  | { kind: "fatal"; status: number; errBody: string }
+  | { kind: "retry_exhausted"; status: number; errBody: string }
+> {
+  let lastStatus = 0;
+  let lastErrBody = "";
+
+  for (let attempt = 0; attempt <= GEMINI_MAX_RETRIES; attempt++) {
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body,
+          signal: AbortSignal.timeout(GEMINI_FETCH_TIMEOUT_MS),
+        },
+      );
+
+      if (res.status === 404) {
+        const errBody = await res.text();
+        return { kind: "not_found", errBody };
+      }
+
+      if (!res.ok) {
+        const errBody = await res.text();
+        lastStatus = res.status;
+        lastErrBody = errBody;
+
+        if (_isGeminiRetryableStatus(res.status) && attempt < GEMINI_MAX_RETRIES) {
+          const delay = _geminiRetryDelayMs(attempt, res.headers.get("Retry-After"));
+          console.warn(
+            `[webhook] Gemini ${res.status} model="${model}" attempt ${attempt + 1}/${GEMINI_MAX_RETRIES + 1} — retry in ${delay}ms`,
+          );
+          await _sleep(delay);
+          continue;
+        }
+
+        if (_isGeminiRetryableStatus(res.status)) {
+          return { kind: "retry_exhausted", status: res.status, errBody };
+        }
+        return { kind: "fatal", status: res.status, errBody };
+      }
+
+      const data = await res.json();
+      return { kind: "ok", data };
+    } catch (e) {
+      if (_isGeminiFetchTimeout(e) && attempt < GEMINI_MAX_RETRIES) {
+        const delay = _geminiRetryDelayMs(attempt, null);
+        console.warn(
+          `[webhook] Gemini timeout model="${model}" attempt ${attempt + 1}/${GEMINI_MAX_RETRIES + 1} — retry in ${delay}ms`,
+        );
+        await _sleep(delay);
+        continue;
+      }
+      throw e;
+    }
+  }
+
+  return { kind: "retry_exhausted", status: lastStatus, errBody: lastErrBody };
+}
+
 async function askGemini(
   userMessage: string,
   guestName: string | null,
@@ -1109,25 +1210,26 @@ async function askGemini(
 
   for (const model of modelOrder) {
     console.log(`[webhook] calling Gemini model="${model}" msgLen=${userMessage.length}`);
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-      { method: "POST", headers: { "Content-Type": "application/json" }, body, signal: AbortSignal.timeout(8000) },
-    );
+    const outcome = await _geminiGenerateWithRetry(apiKey, model, body);
 
-    if (res.status === 404) {
-      const errBody = await res.text();
-      console.warn(`[webhook] Gemini model "${model}" not found — trying next. ${errBody.slice(0, 150)}`);
+    if (outcome.kind === "not_found") {
+      console.warn(`[webhook] Gemini model "${model}" not found — trying next. ${outcome.errBody.slice(0, 150)}`);
       continue;
     }
 
-    if (!res.ok) {
-      const errBody = await res.text();
-      console.error(`[webhook] Gemini ${res.status} model="${model}":`, errBody.slice(0, 400));
-      throw new Error(`gemini_${res.status}: ${errBody.slice(0, 200)}`);
+    if (outcome.kind === "fatal") {
+      console.error(`[webhook] Gemini ${outcome.status} model="${model}" (non-retryable):`, outcome.errBody.slice(0, 400));
+      throw new Error(`gemini_${outcome.status}: ${outcome.errBody.slice(0, 200)}`);
     }
 
-    const data = await res.json();
-    const result = extractResult(data);
+    if (outcome.kind === "retry_exhausted") {
+      console.warn(
+        `[webhook] Gemini ${outcome.status} model="${model}" — retries exhausted, trying next model. ${outcome.errBody.slice(0, 200)}`,
+      );
+      continue;
+    }
+
+    const result = extractResult(outcome.data);
     if (!result) throw new Error("gemini_empty_response");
     if (result.loggedRequest) {
       console.info(`[webhook] 🔧 Gemini called ${LOG_REQUEST_TOOL_NAME}:`, JSON.stringify(result.loggedRequest));
@@ -1140,13 +1242,9 @@ async function askGemini(
   const discovered = await discoverGeminiModel(apiKey);
   if (discovered && !modelOrder.includes(discovered)) {
     console.log(`[webhook] trying auto-discovered model="${discovered}"`);
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${discovered}:generateContent?key=${apiKey}`,
-      { method: "POST", headers: { "Content-Type": "application/json" }, body, signal: AbortSignal.timeout(8000) },
-    );
-    if (res.ok) {
-      const data = await res.json();
-      const result = extractResult(data);
+    const outcome = await _geminiGenerateWithRetry(apiKey, discovered, body);
+    if (outcome.kind === "ok") {
+      const result = extractResult(outcome.data);
       if (result) {
         if (result.loggedRequest) {
           console.info(`[webhook] 🔧 Gemini (discovered) called ${LOG_REQUEST_TOOL_NAME}:`, JSON.stringify(result.loggedRequest));
@@ -1154,6 +1252,9 @@ async function askGemini(
         console.log(`[webhook] Gemini OK (discovered) model="${discovered}"`);
         return result;
       }
+    } else if (outcome.kind === "fatal") {
+      console.error(`[webhook] Gemini (discovered) ${outcome.status}:`, outcome.errBody.slice(0, 400));
+      throw new Error(`gemini_${outcome.status}: ${outcome.errBody.slice(0, 200)}`);
     }
   }
 

@@ -4,8 +4,6 @@
 /** Meta body expects {{1}}=name, {{2}}=entry time, {{3}}=check-in time */
 export const THREE_PARAM_TIMING_TEMPLATES = new Set([
   "dream_suite_reminder",
-  "night_before_suites",
-  "night_before_suites_shabbat",
 ]);
 
 export function guestDisplayName(guest) {

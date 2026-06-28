@@ -332,23 +332,30 @@ async function sendViaMeta(to: string, body: string): Promise<void> {
   if (!token || !phoneId) throw new Error("missing_meta_whatsapp_creds");
 
   const recipient = sanitizeMetaRecipientPhone(to);
+  const payload = {
+    messaging_product: "whatsapp",
+    to: recipient,
+    type: "text",
+    text: { body, preview_url: false },
+  };
 
   try {
+    logMetaOutboundPayload(`free_text to=${maskPhoneForLog(recipient)}`, payload);
     const res = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        messaging_product: "whatsapp",
-        to: recipient,
-        type: "text",
-        text: { body, preview_url: false },
-      }),
+      body: JSON.stringify(payload),
       signal: AbortSignal.timeout(25000),
     });
+    const responseText = await res.text();
+    console.log(
+      `[whatsapp-send] Meta response free_text to=${maskPhoneForLog(recipient)} ` +
+      `http=${res.status} body=${responseText.slice(0, 500)}`,
+    );
     if (!res.ok) {
-      const detail = (await res.text()).slice(0, 300);
-      throw new Error(`meta_http_${res.status}: ${detail}`);
+      throw new Error(`meta_http_${res.status}: ${responseText.slice(0, 300)}`);
     }
+    assertMetaMessageAccepted(responseText, res.status, `free_text to=${maskPhoneForLog(recipient)}`);
   } catch (e) {
     if (_isAbortError(e)) throw new Error("timeout_no_response: Meta did not respond within 25s — message may have still been delivered");
     throw e;
@@ -398,6 +405,47 @@ function safeGuestPhone(phone: unknown): string {
   return sanitizeMetaRecipientPhone(phone);
 }
 
+/** Mask phone for logs — keep country prefix + last 4 digits only. */
+function maskPhoneForLog(phone: string): string {
+  const d = phone.replace(/\D/g, "");
+  if (d.length <= 6) return "***";
+  return `${d.slice(0, 3)}***${d.slice(-4)}`;
+}
+
+/** JSON-safe log string; never includes Authorization or other secrets. */
+function logMetaOutboundPayload(label: string, payload: Record<string, unknown>): void {
+  console.log(`[whatsapp-send] Meta outbound ${label}: ${JSON.stringify(payload)}`);
+}
+
+/** Meta may return HTTP 200 without messages[0].id — treat as failure (ghost send). */
+function assertMetaMessageAccepted(
+  responseText: string,
+  httpStatus: number,
+  context: string,
+): void {
+  let data: Record<string, unknown> = {};
+  try {
+    data = JSON.parse(responseText) as Record<string, unknown>;
+  } catch {
+    throw new Error(
+      `${context}: HTTP ${httpStatus} but response is not JSON — body=${responseText.slice(0, 300)}`,
+    );
+  }
+  const messages = data.messages as Array<{ id?: string }> | undefined;
+  const wamid = messages?.[0]?.id;
+  if (wamid) {
+    console.log(`[whatsapp-send] Meta accepted ${context} wamid=${wamid}`);
+    return;
+  }
+  const errObj = data.error as Record<string, unknown> | undefined;
+  const errMsg = errObj
+    ? String(errObj.message ?? errObj.error_user_msg ?? JSON.stringify(errObj))
+    : responseText.slice(0, 300);
+  throw new Error(
+    `${context}: HTTP ${httpStatus} but no messages[0].id (possible ghost send) — ${errMsg}`,
+  );
+}
+
 function resolvePipelineTemplateName(
   trigger: string,
   guest: Record<string, unknown>,
@@ -419,10 +467,11 @@ function resolvePipelineTemplateName(
   }
 
   if (trigger === "night_before") {
-    if (fromDb) return fromDb;
+    // Always route to the approved Shabbat-aware pair — ignore automation_stages.
+    // meta_template_name may still hold legacy dream_suite_reminder / dream_checkin_reminder_v2.
     const arrivalDateStr = String(guest.arrival_date ?? "");
     const isShabbat = new Date(`${arrivalDateStr}T00:00:00Z`).getUTCDay() === 6;
-    return isShabbat ? "night_before_suites_shabbat" : (fromMap || "night_before_suites");
+    return isShabbat ? "night_before_suites_shabbat" : "night_before_suites";
   }
 
   return fromDb || fromMap || "";
@@ -471,27 +520,47 @@ async function sendViaTemplate(
   }
 
   const recipient = sanitizeMetaRecipientPhone(to);
+  const payload = {
+    messaging_product: "whatsapp",
+    to: recipient,
+    type: "template",
+    template: {
+      name: templateName,
+      language: { code: langCode },
+      ...(components.length > 0 ? { components } : {}),
+    },
+  };
+
+  const isNightBeforeSuites =
+    templateName === "night_before_suites" || templateName === "night_before_suites_shabbat";
 
   try {
+    logMetaOutboundPayload(
+      `template="${templateName}" to=${maskPhoneForLog(recipient)}` +
+      (isNightBeforeSuites
+        ? ` [Stage2.5] bodyVars=${variables.length} hasHeader=${!!headerImageUrl} hasButton=${buttonUrlParam !== undefined}`
+        : ""),
+      payload,
+    );
     const res = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        messaging_product: "whatsapp",
-        to: recipient,
-        type: "template",
-        template: {
-          name: templateName,
-          language: { code: langCode },
-          ...(components.length > 0 ? { components } : {}),
-        },
-      }),
+      body: JSON.stringify(payload),
       signal: AbortSignal.timeout(25000),
     });
+    const responseText = await res.text();
+    console.log(
+      `[whatsapp-send] Meta response template="${templateName}" to=${maskPhoneForLog(recipient)} ` +
+      `http=${res.status} body=${responseText.slice(0, 500)}`,
+    );
     if (!res.ok) {
-      const detail = (await res.text()).slice(0, 300);
-      throw new Error(`meta_template_${res.status}: ${detail}`);
+      throw new Error(`meta_template_${res.status}: ${responseText.slice(0, 300)}`);
     }
+    assertMetaMessageAccepted(
+      responseText,
+      res.status,
+      `template="${templateName}" to=${maskPhoneForLog(recipient)}`,
+    );
   } catch (e) {
     if (_isAbortError(e)) throw new Error("timeout_no_response: Meta did not respond within 25s — message may have still been delivered");
     throw e;
@@ -580,6 +649,11 @@ serve(async (req: Request) => {
     };
 
     if (!trigger) throw new Error("trigger is required");
+
+    console.log(
+      `[whatsapp-send] invoked trigger="${trigger}" guestId=${guestId ?? "n/a"} force=${!!force}` +
+      (force_channel ? ` force_channel=${force_channel}` : ""),
+    );
 
     // ── KILL SWITCH — gates AUTONOMOUS sends only ─────────────────────────────
     // Manual, human-initiated triggers (MANUAL_TRIGGERS: inbox_reply, broadcast,
@@ -867,6 +941,8 @@ serve(async (req: Request) => {
     // ─────────────────────────────────────────────────────────────────────────
     if (!guestId) throw new Error("guestId is required for guest triggers");
 
+    console.log(`[whatsapp-send] BRANCH_D pipeline trigger="${trigger}" guestId=${guestId} force=${!!force}`);
+
     // Phase 4 (Automation Control Center): automation_stages (migration 065)
     // is now consulted for template name / session-message / buttons routing.
     // The original hardcoded PIPELINE_TEMPLATE/PIPELINE_VARS/GUEST_FLAG maps
@@ -908,6 +984,7 @@ serve(async (req: Request) => {
       .in("status", ["sent", "simulated"])
       .limit(1);
     if (existingSent && existingSent.length > 0) {
+      console.log(`[whatsapp-send] skipped trigger="${trigger}" guestId=${guestId} reason=already_sent`);
       return new Response(
         JSON.stringify({ ok: true, skipped: true, reason: "already_sent" }),
         { headers: { ...CORS, "Content-Type": "application/json" } }
@@ -972,10 +1049,10 @@ serve(async (req: Request) => {
     }
     const flagColumn = stageRow?.guest_flag_column ?? GUEST_FLAG[trigger];
 
-    // ── Manual override — force Meta template, bypass all window/session routing ─
-    // Staff test / override buttons must always attempt the approved template path
-    // immediately — no 24h checks, no session-message detours, no idempotency gates.
-    if (forceMetaTemplate) {
+    // Manual override — force Meta template, bypass all window/session routing ─
+    // night_before is excluded: Stage 2.5 has its own fast-path below that picks
+    // night_before_suites / _shabbat (not automation_stages.meta_template_name).
+    if (forceMetaTemplate && trigger !== "night_before") {
       const targetPhone = safeGuestPhone(guest.phone);
       if (!targetPhone) {
         console.warn(`[whatsapp-send] force meta: guest_id=${guestId} has no phone`);
@@ -1052,75 +1129,44 @@ serve(async (req: Request) => {
       );
     }
 
-    // ── Night-before 24-hour compliance engine ────────────────────────────────
-    // Supersedes the old Shabbat-times resolver (resolveNightBeforeTimes).
-    // Single responsibility: decide HOW to send the night_before stage message
-    // for SUITE guests right now — free text or approved template, and
-    // which template — then execute and return early, bypassing the generic
-    // session_message/Meta-template hybrid below entirely.
+    // ── Night-before dispatch (Stage 2.5 — suites only) ─────────────────────
+    // Day-pass guests use trigger 'night_before_daypass' (generic BRANCH D below).
     //
-    // ⚠ Day-pass guests are NOT handled here — they receive 'night_before_daypass'
-    // (a separate automation_stages row with applies_to='non_suite', migration 093)
-    // which routes through the generic BRANCH D path (session_message_script_key +
-    // meta_template_name='dream_checkin_reminder_v2'). Keeping them separate prevents
-    // any suite-specific logic from leaking into the day-pass branch.
-    //
-    // Decision tree (suite guests only):
-    //   1. Query whatsapp_conversations for guest's last inbound timestamp.
-    //   2. If within 24 hours  → channel = "text" (free-form, open session).
-    //      Script key: night_before_reminder (editable in BotScriptEditor).
-    //   3. If > 24h OR null    → channel = "template".
-    //      Saturday  → night_before_suites_shabbat
-    //      Sun–Fri   → night_before_suites
-    //      Variable mapping: {{1}} = guest name only. Entry/check-in times are
-    //      static in the approved weekday vs Shabbat template bodies.
-    //
-    // Only evaluated for trigger === "night_before"; all other triggers fall
-    // through to the existing session_message/Meta-template dispatch below.
+    // Routing rule (fixed 2026-06-28):
+    //   • Cron + default path → ALWAYS night_before_suites / _shabbat Meta template.
+    //     Stage 2.5 fires T-1 evening; guests who confirmed Stage 1 are almost always
+    //     still inside 24h — the old "session open → free text" branch meant
+    //     night_before_suites never reached the device while notification_log showed sent.
+    //   • force_channel=session_message (manual override only) → bot_script free text.
+    //   • force_channel=meta_template → same Meta template as cron (explicit staff choice).
     type NightBeforeDispatch =
       | { channel: "text";     freeTextKey: string;   guestName: string }
       | { channel: "template"; templateName: string;  vars: string[];   buttonUrlParam?: string };
     let nightBeforeDispatch: NightBeforeDispatch | null = null;
 
     if (trigger === "night_before") {
+      console.log(
+        `[whatsapp-send] night_before: entering Stage 2.5 dispatch guest_id=${guestId} ` +
+        `room_type=${guest.room_type ?? "null"} arrival=${guest.arrival_date ?? "null"} ` +
+        `msg_pre_arrival_sent=${String(guest.msg_pre_arrival_sent)} forceSession=${forceSessionMessage}`,
+      );
       const guestName = sanitizeTemplateVars([String(guest.name ?? "")])[0];
+      const arrivalDateStr = String(guest.arrival_date ?? "");
+      const isShabbat = new Date(`${arrivalDateStr}T00:00:00Z`).getUTCDay() === 6;
+      const templateName = isShabbat ? "night_before_suites_shabbat" : "night_before_suites";
+      const templateVars = buildNameOnlyTemplateVars(guest);
 
-      // Query last inbound — fail-safe: any error or missing record is treated
-      // as null (→ template path).  Never throws out of this block.
-      let lastInbound: Date | null = null;
-      try {
-        lastInbound = await getLastInboundTimestamp(supabase, String(guest.phone ?? ""));
-      } catch (e) {
-        console.warn(
-          `[whatsapp-send] night_before: last_inbound_message query failed for guest ${guestId}` +
-          ` — defaulting to template (safe path):`,
-          (e as Error).message,
-        );
-      }
-
-      const MS_24H = 24 * 60 * 60 * 1000;
-      const isWithin24h = lastInbound !== null && (Date.now() - lastInbound.getTime()) < MS_24H;
-
-      if (isWithin24h) {
-        // Guest has an open session — send the bot_script free-form body.
-        // The script key is the same one the session-message editor uses for
-        // this stage (night_before_reminder), so staff can still edit the copy
-        // in BotScriptEditor without touching this file.
+      if (forceSessionMessage) {
         nightBeforeDispatch = { channel: "text", freeTextKey: "night_before_reminder", guestName };
+        console.log(
+          `[whatsapp-send] night_before: route=force_session_message guest_id=${guestId} script=night_before_reminder`,
+        );
       } else {
-        // Outside window OR no prior inbound — use a static approved template.
-        // Bifurcated by room_type: day-pass guests get dream_checkin_reminder_v2
-        // (language appropriate for a day-pass visit, no suite/spa references).
-        // Suite guests get the Shabbat-aware pair as before.
-        // arrival_date is a DATE column — parse as UTC midnight to match Postgres
-        // semantics and prevent GMT-shift on the UTC day boundary.
-        const arrivalDateStr = String(guest.arrival_date ?? "");
-        const arrivalDay = new Date(`${arrivalDateStr}T00:00:00Z`).getUTCDay();
-        const isShabbat = arrivalDay === 6;
-        // Suite guests only — day_guest guests use 'night_before_daypass' (migration 093).
-        const templateName = isShabbat ? "night_before_suites_shabbat" : "night_before_suites";
-        const vars = buildNameOnlyTemplateVars(guest);
-        nightBeforeDispatch = { channel: "template", templateName, vars };
+        nightBeforeDispatch = { channel: "template", templateName, vars: templateVars };
+        console.log(
+          `[whatsapp-send] night_before: route=meta_template guest_id=${guestId} ` +
+          `template=${templateName} isShabbat=${isShabbat} vars=${JSON.stringify(templateVars)}`,
+        );
       }
     }
 
@@ -1129,6 +1175,11 @@ serve(async (req: Request) => {
     // and exits, bypassing the generic session_message/Meta-template hybrid
     // below. Other triggers skip this block entirely (nightBeforeDispatch is null).
     if (nightBeforeDispatch !== null) {
+      console.log(
+        `[whatsapp-send] night_before: executing dispatch guest_id=${guestId} ` +
+        `channel=${nightBeforeDispatch.channel}` +
+        (nightBeforeDispatch.channel === "template" ? ` template=${nightBeforeDispatch.templateName}` : ""),
+      );
       let nbStatus = "simulated";
       let nbError: string | null = null;
 
@@ -1157,11 +1208,14 @@ serve(async (req: Request) => {
                 "he",
               );
             } else {
+              const nbTimes = await resolveNightBeforeTimes(supabase, String(guest.arrival_date ?? ""));
               const nbPortalUrl = guest.portal_token
                 ? `${PORTAL_BASE_URL}/portal/${guest.portal_token as string}`
                 : "";
               const textBody = rawText
                 .replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, nightBeforeDispatch.guestName)
+                .replace(/\{\{\s*entry_time\s*\}\}/gi, nbTimes.entryTime)
+                .replace(/\{\{\s*check_in_time\s*\}\}/gi, nbTimes.checkInTime)
                 .replace(/\{\{\s*portal_url\s*\}\}/gi, nbPortalUrl);
               await sendViaMeta(String(guest.phone), textBody);
             }
@@ -1169,6 +1223,11 @@ serve(async (req: Request) => {
             // Template path: TEMPLATE_IMAGE_HEADERS guarantees the IMAGE header
             // component is injected for both night_before_suites variants, so
             // Meta never returns "Format mismatch, expected IMAGE, received UNKNOWN".
+            console.log(
+              `[whatsapp-send] night_before Stage2.5 pre-send: template=${nightBeforeDispatch.templateName} ` +
+              `vars=${JSON.stringify(nightBeforeDispatch.vars)} ` +
+              `phone=${maskPhoneForLog(safeGuestPhone(guest.phone))} sim=${sim}`,
+            );
             await sendViaTemplate(
               String(guest.phone),
               nightBeforeDispatch.templateName,

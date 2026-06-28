@@ -123,6 +123,50 @@ export function checkEligibility(
 }
 
 /**
+ * Pure date/time math for a stage — no eligibility guards.
+ * Used by automation-queue to show upcoming mid_stay (etc.) even when the
+ * guest is not checked_in yet (skipReason=not_checked_in) so Stage 4 never
+ * vanishes from the Live Monitor.
+ */
+export function computeScheduledInstant(
+  stage: AutomationStage,
+  guest: GuestForSchedule,
+  now: Date,
+): Date | null {
+  if (stage.schedule_mode === "event_immediate") return null;
+
+  if (stage.schedule_mode === "day_offset_with_time") {
+    const anchorDateStr = stage.anchor_event === "departure_date" ? guest.departure_date : guest.arrival_date;
+    if (!anchorDateStr) return null;
+    const anchorDate = new Date(`${anchorDateStr}T00:00:00.000Z`);
+    const targetDateStr = ymd(addDays(anchorDate, stage.day_offset ?? 0));
+    const floorUtcHour = stage.local_time ? parseLocalTimeToUtcHour(stage.local_time) : 0;
+    return utcHourToTimestamp(targetDateStr, floorUtcHour);
+  }
+
+  if (stage.schedule_mode === "hours_after_event") {
+    const anchorTs = stage.anchor_event === "checkin_time" ? guest.checkin_time : null;
+    if (!anchorTs) return null;
+    return new Date(new Date(anchorTs).getTime() + (stage.offset_hours ?? 0) * 3600 * 1000);
+  }
+
+  return null;
+}
+
+/** Stage keys the cron + Live Monitor must always surface when is_active. */
+export const CORE_PIPELINE_STAGE_KEYS = [
+  "pre_arrival_2d",
+  "night_before",
+  "night_before_daypass",
+  "morning_suite",
+  "morning_welcome",
+  "mid_stay",
+  "mid_stay_daypass",
+  "checkout_fb",
+  "checkout_fb_daypass",
+] as const;
+
+/**
  * Resolves the exact instant a stage is scheduled to fire for a guest, and
  * whether it is due right now. `now` is injected (not read internally) so
  * the same call produces identical results in whatsapp-cron and in the
@@ -135,7 +179,11 @@ export function resolveStageSchedule(
   now: Date,
 ): ScheduleResult {
   const skipReason = checkEligibility(stage, guest, now);
-  if (skipReason) return { scheduledFor: null, dueNow: false, skipReason };
+  const scheduledForPreview = computeScheduledInstant(stage, guest, now);
+
+  if (skipReason) {
+    return { scheduledFor: scheduledForPreview, dueNow: false, skipReason };
+  }
 
   if (stage.schedule_mode === "event_immediate") {
     // Dispatched synchronously elsewhere (e.g. whatsapp-webhook's direct
@@ -152,7 +200,7 @@ export function resolveStageSchedule(
     const targetDateStr = ymd(addDays(anchorDate, stage.day_offset ?? 0));
     const todayStr = ymd(now);
     const floorUtcHour = stage.local_time ? parseLocalTimeToUtcHour(stage.local_time) : 0;
-    const scheduledFor = utcHourToTimestamp(targetDateStr, floorUtcHour);
+    const scheduledFor = scheduledForPreview ?? utcHourToTimestamp(targetDateStr, floorUtcHour);
 
     if (targetDateStr !== todayStr) {
       return { scheduledFor, dueNow: false, skipReason: targetDateStr < todayStr ? "date_passed" : null };
@@ -176,7 +224,7 @@ export function resolveStageSchedule(
   if (stage.schedule_mode === "hours_after_event") {
     const anchorTs = stage.anchor_event === "checkin_time" ? guest.checkin_time : null;
     if (!anchorTs) return { scheduledFor: null, dueNow: false, skipReason: "missing_anchor_timestamp" };
-    const scheduledFor = new Date(new Date(anchorTs).getTime() + (stage.offset_hours ?? 0) * 3600 * 1000);
+    const scheduledFor = scheduledForPreview ?? new Date(new Date(anchorTs).getTime() + (stage.offset_hours ?? 0) * 3600 * 1000);
     return { scheduledFor, dueNow: scheduledFor.getTime() <= now.getTime(), skipReason: null };
   }
 

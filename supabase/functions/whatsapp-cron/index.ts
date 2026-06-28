@@ -20,6 +20,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   resolveStageSchedule,
+  CORE_PIPELINE_STAGE_KEYS,
   type AutomationStage,
   type GuestForSchedule,
 } from "../_shared/automationSchedule.ts";
@@ -66,11 +67,45 @@ serve(async (req: Request) => {
       .from("guests")
       .select("id, name, phone, arrival_date, departure_date, room_type, status, checkin_time, needs_callback, msg_pre_arrival_2d_sent, msg_pre_arrival_sent, msg_morning_suite_sent, msg_morning_welcome_sent, msg_mid_stay_sent, msg_checkout_fb_sent");
 
+    const activeStageKeys = stages.map((s) => s.stage_key);
+    console.log(`[whatsapp-cron] scan_start guests=${guests?.length ?? 0} active_stages=[${activeStageKeys.join(", ")}]`);
+
+    const missingCoreStages = CORE_PIPELINE_STAGE_KEYS.filter((k) => !activeStageKeys.includes(k));
+    if (missingCoreStages.length > 0) {
+      console.warn(
+        `[whatsapp-cron] core pipeline stages missing from active_stages: [${missingCoreStages.join(", ")}]. ` +
+        "Re-enable via: UPDATE automation_stages SET is_active=true WHERE stage_key IN ('" +
+        missingCoreStages.join("','") + "');",
+      );
+    }
+
+    if (!activeStageKeys.includes("night_before")) {
+      console.warn(
+        "[whatsapp-cron] night_before NOT in active_stages — Stage 2.5 (suites) will never dispatch. " +
+        "Re-enable: UPDATE automation_stages SET is_active=true WHERE stage_key='night_before';",
+      );
+    }
+
+    const NIGHT_BEFORE_STAGE_KEYS = new Set(["night_before", "night_before_daypass"]);
+    const MID_STAY_STAGE_KEYS = new Set(["mid_stay", "mid_stay_daypass"]);
     const due: { guestId: number; trigger: string }[] = [];
     for (const guest of (guests ?? []) as GuestForSchedule[]) {
       for (const stage of stages) {
         const result = resolveStageSchedule(stage, guest, now);
-        if (result.dueNow) due.push({ guestId: guest.id as number, trigger: stage.stage_key });
+        if (NIGHT_BEFORE_STAGE_KEYS.has(stage.stage_key) || MID_STAY_STAGE_KEYS.has(stage.stage_key)) {
+          const flagCol = stage.guest_flag_column;
+          const flagVal = flagCol ? guest[flagCol] : null;
+          console.log(
+            `[whatsapp-cron] stage_eval stage=${stage.stage_key} guest_id=${guest.id} ` +
+            `room_type=${guest.room_type ?? "null"} arrival=${guest.arrival_date ?? "null"} ` +
+            `applies_to=${stage.applies_to} ${flagCol ?? "flag"}=${String(flagVal)} ` +
+            `dueNow=${result.dueNow} skipReason=${result.skipReason ?? "none"}`,
+          );
+        }
+        if (result.dueNow) {
+          console.log(`[whatsapp-cron] QUEUED guest_id=${guest.id} trigger=${stage.stage_key}`);
+          due.push({ guestId: guest.id as number, trigger: stage.stage_key });
+        }
       }
     }
 
