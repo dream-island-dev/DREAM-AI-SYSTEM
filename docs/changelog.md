@@ -3,6 +3,7 @@
 
 ---
 
+2026-06-28 | src/components/ArrivalImportPanel.js | HTML parsing bugfix: _cellText DOM-walk converts <BR>?\n (was textContent, phone lost on suite rows); suiteSpaOnly?false (group filter by regex is enough); content-sniff HTML detection; meal_time column in spa preview table. Build clean.
 2026-06-28 | src/components/ArrivalImportPanel.js | Doc 1 HTML support: parseHtmlDailyReport for EZGO .htm exports (nested table ? parseComprehensiveReport); suiteSpaOnly filter (?????? ????????/????? ??????, skip group slots); multiline order-cell phone fix; meal window regex (?- HH:MM); DropZone accepts .htm/.html. npm run build clean.
 
 2026-06-28 | automation-queue/index.ts + src/components/AutomationControlCenter.js | Step 3 ? Blocked-by-Meta UI (Phase 2 dashboard): (1) automation-queue now includes blocked_by_meta rows in attentionRequired. (2) New orange "?? ????? ?????? Meta" accordion card in Live Queue tab ? shows guest/stage/template-name with badge-orange; explanatory banner "?????? ?????? ?????? ? ? Meta ??? ?????". (3) Queue table status badge handles blocked_by_meta ? badge-orange "?? ????? ??????". (4) History table status badge handles blocked_by_meta ? badge-orange "?? ????? ?????? Meta". (5) History tab filter chips: ??? / ? ???? / ?? ????? Meta / ? ????? ? active chip has bold border. (6) SCRIPT_KEY_FRIENDLY +3 entries for pre_arrival_2d/mid_stay/checkout_fb (migration 100 scripts). npm run build clean; automation-queue deployed.

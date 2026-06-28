@@ -209,10 +209,24 @@ function parseComprehensiveReport(rows, opts = {}) {
 
 // EZGO exports the comprehensive daily report as HTML (.htm) with nested tables:
 // col0=order+phone, col1=extras/spa, col3=meals. Maps to parseComprehensiveReport
-// pseudo-rows; suiteSpaOnly skips group-package spa slots.
+// pseudo-rows.
+
+// DOM walk that converts <BR> tags to "\n" — guarantees correct line splitting
+// regardless of whether DOMParser renders innerText for the document or not.
 function _cellText(el) {
   if (!el) return "";
-  return (el.innerText || el.textContent || "").replace(/\u00a0/g, " ").trim();
+  let text = "";
+  const walk = (node) => {
+    if (node.nodeType === 3) {
+      text += node.nodeValue || "";
+    } else if (node.nodeName === "BR") {
+      text += "\n";
+    } else {
+      for (const child of node.childNodes) walk(child);
+    }
+  };
+  walk(el);
+  return text.replace(/\u00a0/g, " ").trim();
 }
 
 function _extractArrivalDateFromHtml(htmlText) {
@@ -232,17 +246,23 @@ function parseHtmlDailyReport(htmlText) {
     if (tds.length < 4) return;
 
     const orderRaw = _cellText(tds[0]);
-    const extras   = _cellText(tds[1]).replace(/\s+/g, " ").trim();
-    const meals    = _cellText(tds[3]).replace(/\s+/g, " ").trim();
+    const extras   = _cellText(tds[1]);
+    const meals    = _cellText(tds[3]);
 
+    // Take only the first meaningful line from the order cell — the "<BR>1 חדרים..."
+    // line must not contaminate the phone regex.
     const orderLine = orderRaw.split(/\r?\n/).map(s => s.trim()).find(s => /^\d+:/.test(s));
     if (!orderLine) return;
 
-    const c2Parts = [extras, meals].filter(s => s && !/^[\s\u00a0]*$/);
-    pseudoRows.push([null, orderLine, c2Parts.length ? c2Parts.join("\n") : null]);
+    // Combine extras (spa) and meals columns; each already split by \n via DOM walk.
+    const c2Parts = [extras, meals].filter(s => s && !/^[\s]*$/).join("\n");
+    pseudoRows.push([null, orderLine, c2Parts || null]);
   });
 
-  const records = parseComprehensiveReport(pseudoRows, { suiteSpaOnly: true });
+  // suiteSpaOnly:false — group-slot filter (_GROUP_SPA_RE) is already applied inside
+  // _extractExtras; requiring the "לאורחי הסוויטות" label is not needed and caused
+  // valid suite bookings that use slightly different wording to lose their spa_time.
+  const records = parseComprehensiveReport(pseudoRows, { suiteSpaOnly: false });
   if (arrivalDate) {
     for (const r of records) {
       if (!r.arrival_date) r.arrival_date = arrivalDate;
@@ -551,7 +571,13 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     setDoc1Name(file.name);
     setResult(null);
     try {
-      const isHtml = /\.html?$/i.test(file.name) || file.type === "text/html";
+      // Detect HTML by extension, MIME type, or first bytes of file content.
+      // EZGO sometimes exports without an explicit .htm extension on Windows.
+      const looksHtmlByName = /\.html?$/i.test(file.name);
+      const looksHtmlByMime = file.type === "text/html";
+      const headSniff = await file.slice(0, 512).text().catch(() => "");
+      const looksHtmlByContent = /<!DOCTYPE\s+html|<html[\s>]|<table[\s>]/i.test(headSniff);
+      const isHtml = looksHtmlByName || looksHtmlByMime || looksHtmlByContent;
       let records;
       if (isHtml) {
         const text = await file.text();
@@ -1032,10 +1058,10 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                 עדכון שעות ספא בלבד — לא ייבאו חדרים
               </div>
               <div style={{ overflowX: "auto", maxHeight: 280 }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 400 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 480 }}>
                   <thead>
                     <tr style={{ background: "var(--ivory)" }}>
-                      {["הזמנה #", "שם", "שעת ספא", "# טיפולים"].map(h => (
+                      {["הזמנה #", "שם", "שעת ספא", "שעת ארוחה", "# טיפולים"].map(h => (
                         <th key={h} style={{
                           padding: "8px 12px", fontSize: 11, fontWeight: 700,
                           color: "var(--text-muted)", textAlign: "right",
@@ -1055,6 +1081,10 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                         <td style={{ padding: "8px 12px", fontSize: 13, fontWeight: 800,
                           color: r.spa_time ? "var(--gold-dark)" : "var(--text-muted)" }}>
                           {r.spa_time ?? "—"}
+                        </td>
+                        <td style={{ padding: "8px 12px", fontSize: 13, fontWeight: 800,
+                          color: r.meal_time ? "#1a7a4a" : "var(--text-muted)" }}>
+                          {r.meal_time ?? "—"}
                         </td>
                         <td style={{ padding: "8px 12px", fontSize: 12, textAlign: "center" }}>
                           {r.treatment_count > 0 ? r.treatment_count : "—"}
