@@ -1877,52 +1877,8 @@ serve(async (req: Request) => {
           });
       }
 
-      // ── Human-handoff gate — thread claimed by staff, bot is silenced ─────
-      // Set when guest clicks "לא,שינוי בתאריך" or types a date-change request.
-      //
-      // Override rule: arrival confirmations ALWAYS break the lock, whether the
-      // guest taps the button ("כן,מגיעים!") or types it ("כן", "מגיעים", etc.).
-      // Staff can also reset the flag manually from the GuestsPage dashboard.
-      if (guest?.needs_callback === true) {
-        const _heb = (s: string) => s.replace(/[^א-ת]/g, "");
-        const _th  = _heb(buttonTitle);
-        const _idl = buttonId.toLowerCase();
-
-        // Button-tap override: matches "כן,מגיעים!" and any known confirm variant
-        const isButtonConfirm = isButtonReply && (
-          (_th.includes("כן") && _th.includes("מגיעים")) ||
-          _th === "כןמגיעים" ||
-          _idl.includes("confirm") || _idl.includes("arriving") || _idl.includes("yes_arrive")
-        );
-        // Typed-text override: matches any affirmative in CONFIRMATION_RE
-        const isTypedConfirm  = !isButtonReply && CONFIRMATION_RE.test(text.trim());
-        const isArrivalOverride = isButtonConfirm || isTypedConfirm;
-
-        if (isArrivalOverride) {
-          // Clear the lock so normal routing handles the confirmation
-          if (guestId) {
-            const { error: cbErr } = await supabase
-              .from("guests").update({ needs_callback: false }).eq("id", guestId);
-            if (cbErr) console.warn("[webhook] needs_callback clear error:", cbErr.message);
-            else console.info(`[webhook] 🔓 needs_callback cleared for ${phone}`);
-          }
-          // fall through — button router or text-confirmation path runs below
-        } else {
-          // Postgrest builder is PromiseLike (.then only) — not a full Promise,
-          // so .catch() chained directly on it throws "...insert(...).catch is
-          // not a function" instead of swallowing the error. Use try/catch.
-          try {
-            const { error: logErr } = await supabase.from("whatsapp_conversations").insert({
-              phone, guest_id: guestId, direction: "inbound",
-              message: isButtonReply ? buttonTitle : text,
-              wa_message_id: msgId, intent: "human_handoff", push_name: pushName,
-            });
-            if (logErr) console.warn("[webhook] human_handoff log error:", logErr.message);
-          } catch (e) { console.warn("[webhook] human_handoff log error:", (e as Error).message); }
-          console.info(`[webhook] 🔕 thread in human-handoff (needs_callback) — silenced for ${phone}`);
-          continue;
-        }
-      }
+      // needs_callback is a staff UI alert flag only — it does NOT mute the bot.
+      // Staff clear it manually from WhatsAppInbox / AddGuestModal when handled.
 
       // ── Button reply router ───────────────────────────────────────────────
       // Handles taps on Quick Reply / URL buttons in approved templates.

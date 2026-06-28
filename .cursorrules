@@ -15,3 +15,4 @@ Execution Rules:
 
 Closing Protocol:
 - After modifying code, append a 1-line update to `/docs/changelog.md`.
+- End every session that changed code with a **Deploy checklist** for Mike (see CLAUDE.md §12–§13): what to `git push`, what to `supabase functions deploy`, what to `supabase db push` — list only functions/migrations actually touched.

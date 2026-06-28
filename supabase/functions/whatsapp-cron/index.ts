@@ -6,8 +6,8 @@
 // Phase 4 (Automation Control Center): timing now comes from the
 // automation_stages table (migration 065) via the shared resolver in
 // _shared/automationSchedule.ts, instead of a hardcoded day-offset/UTC-hour
-// if/else. Eligibility guards (cancelled/needs_callback/flag-already-sent/
-// room_type/status) are preserved exactly — only the NUMBERS (which day,
+// if/else. Eligibility guards (cancelled/flag-already-sent/room_type/status)
+// are preserved exactly — only the NUMBERS (which day,
 // which hour) moved from source code to an admin-editable table. Stages
 // with schedule_mode='event_immediate' (stage_2_arrival) are intentionally
 // excluded from this scan — they fire synchronously from whatsapp-webhook,

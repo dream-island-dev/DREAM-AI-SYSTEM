@@ -89,8 +89,8 @@ function utcHourToTimestamp(dateStr: string, utcHour: number): Date {
 
 /**
  * Stage-specific eligibility guards — ported 1:1 from whatsapp-cron's
- * existing per-trigger if/else conditions (cancelled/needs_callback/
- * flag-already-sent/room_type/status checks). Pure function of (stage, guest,
+ * existing per-trigger if/else conditions (cancelled/flag-already-sent/
+ * room_type/status checks). Pure function of (stage, guest,
  * now) — no I/O, easy to unit-test against real guest rows before Phase 4
  * ever touches the live dispatcher.
  */
@@ -100,7 +100,6 @@ export function checkEligibility(
   now: Date,
 ): string | null {
   if (guest.status === "cancelled") return "guest_cancelled";
-  if (guest.needs_callback) return "needs_callback_open";
   if (stage.guest_flag_column && guest[stage.guest_flag_column] === true) return "already_sent";
 
   if (stage.applies_to === "suite" && guest.room_type !== "suite") return "wrong_room_type";

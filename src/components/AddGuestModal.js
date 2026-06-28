@@ -313,7 +313,7 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
 
         {[
           { label: "דורש תשומת לב 🔴",              field: "requires_attention" },
-          { label: "הועבר לטיפול אנושי (בוט שותק)", field: "needs_callback"     },
+          { label: "ממתין לטיפול צוות 🔴",       field: "needs_callback"     },
         ].map(({ label, field }) => (
           <div key={field} style={{
             display: "flex", alignItems: "center", justifyContent: "space-between",

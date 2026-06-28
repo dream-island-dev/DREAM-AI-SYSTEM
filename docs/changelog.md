@@ -1,3 +1,9 @@
+2026-06-28 | CLAUDE.md + .cursorrules | §12?§13 Deploy checklist mandatory at end of every code session; needs_callback docs synced (session 59).
+
+2026-06-28 | src/components/AddGuestModal.js | needs_callback checkbox label: "????? ?????? ???? ??" (removed misleading "??? ????" copy).
+
+2026-06-28 | automationSchedule.ts + whatsapp-webhook/index.ts | Decouple needs_callback from bot logic: cron eligibility no longer skips guests with open callback; webhook no longer silences LLM/button routing when needs_callback=true (UI badges unchanged).
+
 2026-06-28 | supabase/functions/whatsapp-cron/index.ts | Queue dispatch throttling: sequential batches (size 10) with 2.5s sleep between each whatsapp-send call to avoid Meta burst rate limits.
 
 2026-06-28 | src/components/GuestPortal.js | Removed duplicate concierge WA button from ItineraryPanel empty state ? SuiteQuickActions remains the single CTA.

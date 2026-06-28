@@ -1783,10 +1783,9 @@ export default function WhatsAppInbox({ user }) {
 
   // ── Dismiss human-intervention request ────────────────────────────────────
   // Clears both layers in one click: the per-message `human_requested` flag
-  // that drives the red badge here, AND `guests.needs_callback` — the actual
-  // bot-silencing gate the webhook checks (previously this required a separate
-  // trip to GuestsPage; see CLAUDE.md §6). Tries all phone-format variants
-  // (+972/972/0-prefixed) since `whatsapp_conversations.phone` and
+  // that drives the red badge here, AND `guests.needs_callback` — the staff
+  // alert flag on the guest profile (UI-only; bot keeps replying). Tries all
+  // phone-format variants (+972/972/0-prefixed) since `whatsapp_conversations.phone` and
   // `guests.phone` aren't guaranteed to share one format (session 15 root cause).
   const dismissHumanRequest = useCallback(async (contact) => {
     const bare = contact.phone; // canonicalizePhone() already applied — "972XXXXXXXXX"
