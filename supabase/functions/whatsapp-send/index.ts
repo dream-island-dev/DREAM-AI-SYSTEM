@@ -326,18 +326,16 @@ function isMetaTemplateError(msg: string): boolean {
   return /132001|template_not_found|template.*not.*approved|template.*pending/i.test(msg);
 }
 
-// Only templates whose Meta definition includes a Media (IMAGE) header belong here.
-// night_before_suites / _shabbat are body-only ({{1}}=name) — injecting a header
-// component causes Meta to accept or reject unpredictably (silent drop in prod).
-// session_message_image_url applies to free-text session sends only, never here.
+// Templates whose Meta definition includes a Media (IMAGE) header — must inject
+// header component or Meta returns "Format mismatch, expected IMAGE, received UNKNOWN".
 const TEMPLATE_IMAGE_HEADER_DEFAULTS: Record<string, string> = {
-  dream_suite_reminder: "https://tzalamnadlan.co.il/wp-content/uploads/2026/default-resort.jpg",
+  dream_suite_reminder:        "https://tzalamnadlan.co.il/wp-content/uploads/2026/default-resort.jpg",
+  night_before_suites:         "https://tzalamnadlan.co.il/wp-content/uploads/2026/default-resort.jpg",
+  night_before_suites_shabbat: "https://tzalamnadlan.co.il/wp-content/uploads/2026/default-resort.jpg",
 };
 
 /** Confirmed text-only / no-header templates — never inject header components. */
 const TEMPLATE_NO_HEADER = new Set([
-  "night_before_suites",
-  "night_before_suites_shabbat",
   "suite_welcome_morning",
   "suite_welcome_morning_shabbat",
   "dream_arrival_confirmation",
@@ -559,7 +557,6 @@ async function sendViaMeta(to: string, body: string, imageUrl?: string | null): 
 // received UNKNOWN". See TEMPLATE_IMAGE_HEADER_DEFAULTS above (defined before payload builders).
 //
 // Only names in TEMPLATE_IMAGE_HEADER_DEFAULTS get a header component injected.
-// All other templates (incl. night_before_suites / _shabbat) send body-only.
 
 // Only these approved templates have a dynamic URL button at index 0.
 // night_before_suites[_shabbat] have no button component — do not inject one.
@@ -1498,8 +1495,7 @@ serve(async (req: Request) => {
               await sendViaMeta(String(guest.phone), textBody, stageRow?.session_message_image_url);
             }
           } else {
-            // Template path: body-only for night_before_suites variants (no IMAGE header).
-            // session_message_image_url is for the force_session_message free-text path only.
+            // Template path: IMAGE header from TEMPLATE_IMAGE_HEADER_DEFAULTS or session_message_image_url.
             console.log(
               `[whatsapp-send] night_before Stage2.5 pre-send: template=${nightBeforeDispatch.templateName} ` +
               `vars=${JSON.stringify(nightBeforeDispatch.vars)} ` +

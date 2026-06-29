@@ -1420,7 +1420,9 @@ function _isAbortError(e: unknown): boolean {
 // Templates with a Media Header (IMAGE) require a `header` component —
 // Meta error without it: "Format mismatch, expected IMAGE, received UNKNOWN".
 const _TEMPLATE_IMAGE_HEADERS: Record<string, string> = {
-  dream_suite_reminder: "https://tzalamnadlan.co.il/wp-content/uploads/2026/default-resort.jpg",
+  dream_suite_reminder:        "https://tzalamnadlan.co.il/wp-content/uploads/2026/default-resort.jpg",
+  night_before_suites:         "https://tzalamnadlan.co.il/wp-content/uploads/2026/default-resort.jpg",
+  night_before_suites_shabbat: "https://tzalamnadlan.co.il/wp-content/uploads/2026/default-resort.jpg",
 };
 
 async function sendTemplate(
