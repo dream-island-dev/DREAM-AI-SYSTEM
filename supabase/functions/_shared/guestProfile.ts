@@ -3,7 +3,6 @@
 
 const VIP_LABELS: Record<string, string> = {
   vip: "VIP",
-  vvip: "VVIP",
 };
 
 const OCCASION_LABELS: Record<string, string> = {
@@ -18,10 +17,7 @@ const DIETARY_LABELS: Record<string, string> = {
   vegetarian: "צמחוני",
   vegan: "טבעוני",
   gluten_free: "ללא גלוטן",
-  kosher_strict: "כשר מהדרין",
-  halal: "חלאל",
   allergy_nuts: "אלרגיה לאגוזים",
-  allergy_seafood: "אלרגיה לפירות ים",
   lactose_free: "ללא לקטוז",
 };
 
@@ -31,7 +27,6 @@ const ARRIVAL_LABELS: Record<string, string> = {
   accessibility: "נגישות",
   with_children: "עם ילדים",
   first_time: "ביקור ראשון",
-  shuttle_needed: "נדרש הסעה",
 };
 
 export function formatGuestProfileForAi(

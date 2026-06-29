@@ -6,7 +6,6 @@
 export const VIP_STATUSES = [
   { id: "standard", label: "רגיל" },
   { id: "vip",      label: "⭐ VIP" },
-  { id: "vvip",     label: "👑 VVIP" },
 ];
 
 export const OCCASION_TYPES = [
@@ -22,11 +21,7 @@ export const DIETARY_TAGS = [
   { id: "vegetarian",      label: "צמחוני" },
   { id: "vegan",           label: "טבעוני" },
   { id: "gluten_free",     label: "ללא גלוטן" },
-  { id: "kosher_strict",   label: "כשר מהדרין" },
-  { id: "halal",           label: "חלאל" },
   { id: "allergy_nuts",    label: "אלרגיה: אגוזים" },
-  { id: "allergy_seafood", label: "אלרגיה: פירות ים" },
-  { id: "lactose_free",    label: "ללא לקטוז" },
 ];
 
 export const ARRIVAL_CONTEXT_TAGS = [
@@ -35,7 +30,6 @@ export const ARRIVAL_CONTEXT_TAGS = [
   { id: "accessibility",   label: "נגישות / מוגבלות" },
   { id: "with_children",   label: "עם ילדים" },
   { id: "first_time",      label: "ביקור ראשון" },
-  { id: "shuttle_needed",  label: "נדרש הסעה" },
 ];
 
 const VIP_IDS = new Set(VIP_STATUSES.map((x) => x.id));
@@ -143,7 +137,6 @@ export function formatGuestProfileForAi(profile, arrivalTime) {
   const parts = [];
 
   if (p.vip_status === "vip") parts.push("VIP");
-  if (p.vip_status === "vvip") parts.push("VVIP");
 
   if (p.occasion.type !== "none") {
     let line = `אירוע: ${labelById(OCCASION_TYPES, p.occasion.type)}`;
