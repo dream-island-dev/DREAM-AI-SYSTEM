@@ -97,9 +97,15 @@ export async function sendImageMessage(
   to: string,
   imageUrl: string,
   caption: string,
-): Promise<void> {
+): Promise<string> {
   const { token, phoneId } = _credsOrThrow();
   const recipient = sanitizeMetaRecipientPhone(to);
+  const link = String(imageUrl ?? "").trim();
+  if (!link) throw new Error("meta_image_missing_link");
+
+  const image: Record<string, string> = { link };
+  const cap = String(caption ?? "").trim();
+  if (cap) image.caption = cap;
 
   try {
     const res = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
@@ -109,14 +115,15 @@ export async function sendImageMessage(
         messaging_product: "whatsapp",
         to: recipient,
         type: "image",
-        image: { link: imageUrl, caption },
+        image,
       }),
       signal: AbortSignal.timeout(25000),
     });
+    const detail = await res.text();
     if (!res.ok) {
-      const detail = (await res.text()).slice(0, 300);
-      throw new Error(`meta_image_${res.status}: ${detail}`);
+      throw new Error(`meta_image_${res.status}: ${detail.slice(0, 300)}`);
     }
+    return detail;
   } catch (e) {
     if (_isAbortError(e)) throw new Error("timeout_no_response: Meta did not respond within 25s — message may have still been delivered");
     throw e;

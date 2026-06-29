@@ -36,7 +36,7 @@
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { sendInteractiveButtons } from "../_shared/interactiveSend.ts";
+import { sendImageMessage, sendInteractiveButtons } from "../_shared/interactiveSend.ts";
 import { isArrivalTodayIsrael, israelTodayYmd } from "../_shared/israelDate.ts";
 import { sanitizeMetaRecipientPhone } from "../_shared/metaPhone.ts";
 
@@ -326,15 +326,35 @@ function isMetaTemplateError(msg: string): boolean {
   return /132001|template_not_found|template.*not.*approved|template.*pending/i.test(msg);
 }
 
-// Templates with a Media Header (IMAGE) require a `header` component in the
-// components array — Meta rejects without it: "Format mismatch, expected IMAGE,
-// received UNKNOWN". Add new image-header template names here; sendViaTemplate()
-// reads this map and injects the header automatically (overridable per-send via image_url).
-const TEMPLATE_IMAGE_HEADERS: Record<string, string> = {
-  dream_suite_reminder:        "https://tzalamnadlan.co.il/wp-content/uploads/2026/default-resort.jpg",
-  night_before_suites:         "https://tzalamnadlan.co.il/wp-content/uploads/2026/default-resort.jpg",
-  night_before_suites_shabbat: "https://tzalamnadlan.co.il/wp-content/uploads/2026/default-resort.jpg",
+// Only templates whose Meta definition includes a Media (IMAGE) header belong here.
+// night_before_suites / _shabbat are body-only ({{1}}=name) — injecting a header
+// component causes Meta to accept or reject unpredictably (silent drop in prod).
+// session_message_image_url applies to free-text session sends only, never here.
+const TEMPLATE_IMAGE_HEADER_DEFAULTS: Record<string, string> = {
+  dream_suite_reminder: "https://tzalamnadlan.co.il/wp-content/uploads/2026/default-resort.jpg",
 };
+
+/** Confirmed text-only / no-header templates — never inject header components. */
+const TEMPLATE_NO_HEADER = new Set([
+  "night_before_suites",
+  "night_before_suites_shabbat",
+  "suite_welcome_morning",
+  "suite_welcome_morning_shabbat",
+  "dream_arrival_confirmation",
+  "dream_checkin_reminder_v2",
+  "dream_mid_stay_check",
+  "dream_checkout_feedback",
+  "dream_payment_and_workshops",
+  "dream_room_ready",
+  "dream_room_ready1",
+  "dream_welcome_morning",
+  "dream_welcome_morning_shabbat",
+  "dream_handover_agent_v2",
+]);
+
+function templateExpectsImageHeader(templateName: string): boolean {
+  return Object.prototype.hasOwnProperty.call(TEMPLATE_IMAGE_HEADER_DEFAULTS, templateName);
+}
 
 // ── Meta payload builders — structural validation before every send ───────────
 function resolveTemplateHeaderImageUrl(
@@ -342,8 +362,17 @@ function resolveTemplateHeaderImageUrl(
   override?: string | null,
 ): string | undefined {
   const explicit = String(override ?? "").trim();
+  if (!templateExpectsImageHeader(templateName)) {
+    if (explicit) {
+      console.warn(
+        `[whatsapp-send] template="${templateName}": header image override ignored` +
+        ` — Meta template has no IMAGE header (session images use sendViaMeta only)`,
+      );
+    }
+    return undefined;
+  }
   if (explicit) return explicit;
-  return TEMPLATE_IMAGE_HEADERS[templateName];
+  return TEMPLATE_IMAGE_HEADER_DEFAULTS[templateName];
 }
 
 /** Build validated free-text or image+caption session payload for Meta API. */
@@ -362,11 +391,14 @@ function buildFreeTextPayload(
         ` — sending image without caption to=${maskPhoneForLog(recipient)}`,
       );
     }
+    // Meta Cloud API — image object must use `link` (or `id`), not a nested URL field.
+    const image: Record<string, string> = { link };
+    if (caption) image.caption = caption;
     return {
       messaging_product: "whatsapp",
       to: recipient,
       type: "image",
-      image: { link, ...(caption ? { caption } : {}) },
+      image,
     };
   }
 
@@ -395,10 +427,14 @@ function buildTemplateComponents(
       type: "header",
       parameters: [{ type: "image", image: { link: headerUrl } }],
     });
-  } else if (templateName in TEMPLATE_IMAGE_HEADERS) {
+  } else if (templateExpectsImageHeader(templateName)) {
     console.warn(
-      `[whatsapp-send] template="${templateName}": IMAGE header expected but no URL resolved` +
-      ` (check TEMPLATE_IMAGE_HEADERS or pass image_url)`,
+      `[whatsapp-send] template="${templateName}": IMAGE header required by Meta but no URL resolved` +
+      ` (check TEMPLATE_IMAGE_HEADER_DEFAULTS or pass image_url for IMAGE-header templates only)`,
+    );
+  } else if (TEMPLATE_NO_HEADER.has(templateName) && opts.headerImageUrl) {
+    console.warn(
+      `[whatsapp-send] template="${templateName}": headerImageUrl ignored — template is registered as no-header`,
     );
   }
 
@@ -456,13 +492,37 @@ function buildTemplateComponents(
 
 // ── Meta WhatsApp Cloud API (live) ────────────────────────────────────────────
 async function sendViaMeta(to: string, body: string, imageUrl?: string | null): Promise<void> {
+  const recipient = sanitizeMetaRecipientPhone(to);
+  const link = String(imageUrl ?? "").trim();
+  const caption = String(body ?? "").trim();
+
+  if (link) {
+    const kind = "session_image";
+    logMetaOutboundPayload(
+      `${kind} to=${maskPhoneForLog(recipient)}`,
+      buildFreeTextPayload(recipient, caption, link),
+    );
+    try {
+      const responseText = await sendImageMessage(recipient, link, caption);
+      console.log(
+        `[whatsapp-send] Meta response ${kind} to=${maskPhoneForLog(recipient)} body=${responseText.slice(0, 500)}`,
+      );
+      assertMetaMessageAccepted(responseText, 200, `${kind} to=${maskPhoneForLog(recipient)}`);
+    } catch (e) {
+      if (_isAbortError(e)) {
+        throw new Error("timeout_no_response: Meta did not respond within 25s — message may have still been delivered");
+      }
+      throw e;
+    }
+    return;
+  }
+
   const token   = Deno.env.get("META_WHATSAPP_TOKEN")    ?? Deno.env.get("WHATSAPP_TOKEN");
   const phoneId = Deno.env.get("META_PHONE_NUMBER_ID")   ?? Deno.env.get("WHATSAPP_PHONE_NUMBER_ID");
   if (!token || !phoneId) throw new Error("missing_meta_whatsapp_creds");
 
-  const recipient = sanitizeMetaRecipientPhone(to);
-  const payload = buildFreeTextPayload(recipient, body, imageUrl);
-  const kind = String(imageUrl ?? "").trim() ? "session_image" : "free_text";
+  const payload = buildFreeTextPayload(recipient, caption, null);
+  const kind = "free_text";
 
   try {
     logMetaOutboundPayload(`${kind} to=${maskPhoneForLog(recipient)}`, payload);
@@ -496,10 +556,10 @@ async function sendViaMeta(to: string, body: string, imageUrl?: string | null): 
 //
 // Templates with a Media Header (IMAGE) require a `header` component in the
 // components array — Meta rejects without it: "Format mismatch, expected IMAGE,
-// received UNKNOWN". See TEMPLATE_IMAGE_HEADERS above (defined before payload builders).
+// received UNKNOWN". See TEMPLATE_IMAGE_HEADER_DEFAULTS above (defined before payload builders).
 //
-// Every template name that has an IMAGE-type header component must appear in
-// TEMPLATE_IMAGE_HEADERS — sendViaTemplate() injects the header automatically.
+// Only names in TEMPLATE_IMAGE_HEADER_DEFAULTS get a header component injected.
+// All other templates (incl. night_before_suites / _shabbat) send body-only.
 
 // Only these approved templates have a dynamic URL button at index 0.
 // night_before_suites[_shabbat] have no button component — do not inject one.
@@ -1438,9 +1498,8 @@ serve(async (req: Request) => {
               await sendViaMeta(String(guest.phone), textBody, stageRow?.session_message_image_url);
             }
           } else {
-            // Template path: TEMPLATE_IMAGE_HEADERS guarantees the IMAGE header
-            // component is injected for both night_before_suites variants, so
-            // Meta never returns "Format mismatch, expected IMAGE, received UNKNOWN".
+            // Template path: body-only for night_before_suites variants (no IMAGE header).
+            // session_message_image_url is for the force_session_message free-text path only.
             console.log(
               `[whatsapp-send] night_before Stage2.5 pre-send: template=${nightBeforeDispatch.templateName} ` +
               `vars=${JSON.stringify(nightBeforeDispatch.vars)} ` +
@@ -2071,9 +2130,15 @@ serve(async (req: Request) => {
     if (usedSessionMessage) {
       try {
         if (!sim) {
-          if (sessionImageUrl) {
-            await sendViaMeta(guest.phone as string, sessionBody!, sessionImageUrl);
+          const trimmedImage = String(sessionImageUrl ?? "").trim();
+          if (trimmedImage) {
+            await sendViaMeta(guest.phone as string, sessionBody!, trimmedImage);
           } else {
+            if (sessionImageUrl) {
+              console.warn(
+                `[whatsapp-send] stage "${trigger}": session_message_image_url whitespace-only — sending text without image`,
+              );
+            }
             await sendInteractiveButtons(guest.phone as string, sessionBody!, sessionButtons);
           }
           status = "sent";
