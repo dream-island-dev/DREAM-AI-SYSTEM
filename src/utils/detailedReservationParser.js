@@ -105,11 +105,16 @@ export function cleanCsvCell(value) {
 /**
  * Fix common PMS export bug: Hebrew legal suffix בע"מ contains an unescaped `"` that
  * terminates the quoted name field early (e.g. אורמת מערכות בע"מ).
+ * Applied to the full file text before line-splitting so row boundaries stay intact.
  */
-function preprocessCsvLine(line) {
-  return String(line)
+function preprocessCsvText(text) {
+  return String(text ?? "")
     .replace(/בע"מ/g, 'בע""מ')
     .replace(/בע״מ/g, "בע״מ"); // geresh variant — keep as-is, no ASCII quote
+}
+
+function preprocessCsvLine(line) {
+  return preprocessCsvText(line);
 }
 
 /**
@@ -153,7 +158,7 @@ export function parseCsvLine(line) {
 
 /** Parse full CSV text into a matrix of clean string cells. */
 export function parseCsvText(text) {
-  const normalized = String(text ?? "").replace(/^\uFEFF/, "");
+  const normalized = preprocessCsvText(String(text ?? "").replace(/^\uFEFF/, ""));
   const rows = [];
   let line = "";
   let inQuotes = false;
@@ -178,7 +183,24 @@ export function parseCsvText(text) {
   return rows;
 }
 
-const EXPECTED_DETAILED_COLS = 22;
+/**
+ * Fixed 0-based column indices for the PMS "Detailed Reservation Report" export.
+ * Excel letters: I=8 … T=19 (board code usually in the second duplicate column).
+ */
+export const DETAILED_REPORT_COL = {
+  GUEST_NAME: 8,       // I — שם מלא
+  PHONE: 9,              // J — טלפון
+  ARRIVAL: 10,           // K — ת. הגעה / ת. התחלה
+  EXTRA_PHONE: 12,       // M — טלפון נוסף
+  ROOMS: 13,             // N — חדרים
+  NIGHTS: 14,            // O — לילות
+  PRICE_NUM: 15,         // P — מחיר (numeric)
+  PRICE_TOTAL: 17,         // R — מחיר / סה"כ (formatted ₪)
+  LEAD_SOURCE: 18,       // S — מקור הגעה
+  BOARD_CODE: 20,          // U — בסיס אירוח code (HB/BB) when duplicate headers exist
+  ORDER_NUMBER: 21,        // V — מס. הזמנה
+  RES_LINE_ID: 1,          // B — מס. לקוח
+};
 
 /** Detect SheetJS / naive reads that collapse each CSV line into a single cell. */
 function isCollapsedCsvRow(row) {
@@ -215,7 +237,8 @@ export function normalizeDetailedReservationMatrix(rawRows) {
 export function shouldParseDetailedReportAsText(fileName, headText = "") {
   if (/\.csv$/i.test(fileName || "")) return true;
   const head = String(headText).replace(/^\uFEFF/, "");
-  return head.includes("שם מלא") && (head.includes('"אתר"') || head.includes("מס. הזמנה"));
+  return head.includes("שם מלא") && (head.includes('"אתר"') || head.includes("מס. הזמנה")) &&
+    (head.includes("ת. התחלה") || head.includes("ת. הגעה"));
 }
 
 /**
@@ -244,15 +267,51 @@ function cell(row, idx) {
 export function isDetailedReservationFormat(headers) {
   if (!headers?.length) return false;
   const set = new Set(headers.map((h) => cleanCsvCell(h)));
+  const hasArrival =
+    set.has("ת. התחלה") || set.has("ת. הגעה") || set.has("תאריך הגעה");
   return (
     set.has("שם מלא") &&
     set.has("טלפון") &&
     set.has("מס. הזמנה") &&
-    set.has("ת. התחלה") &&
+    hasArrival &&
     set.has("חדרים") &&
     set.has("לילות") &&
     set.has("מקור הגעה")
   );
+}
+
+function resolveArrivalColIdx(headers) {
+  for (const name of ["ת. התחלה", "ת. הגעה", "תאריך הגעה"]) {
+    const i = headers.indexOf(name);
+    if (i >= 0) return i;
+  }
+  return DETAILED_REPORT_COL.ARRIVAL;
+}
+
+function resolveBoardCodeIdx(headers) {
+  const boardIdxs = headerIndices(headers, "בסיס אירוח");
+  if (boardIdxs.length > 1) return boardIdxs[1];
+  if (boardIdxs.length === 1) return boardIdxs[0];
+  return DETAILED_REPORT_COL.BOARD_CODE;
+}
+
+function resolvePriceIndices(headers) {
+  const priceIdxs = headerIndices(headers, "מחיר");
+  const totalIdx = headers.findIndex((h) => {
+    const t = cleanCsvCell(h);
+    return t === 'סה"כ' || t === "סהכ" || t === "סה״כ";
+  });
+  const price1Idx = priceIdxs[0] ?? DETAILED_REPORT_COL.PRICE_NUM;
+  const price2Idx =
+    totalIdx >= 0
+      ? totalIdx
+      : priceIdxs[1] ?? priceIdxs[0] ?? DETAILED_REPORT_COL.PRICE_TOTAL;
+  return { price1Idx, price2Idx };
+}
+
+function colIndex(headers, name, fallback) {
+  const i = headers.indexOf(name);
+  return i >= 0 ? i : fallback;
 }
 
 /**
@@ -275,16 +334,21 @@ export function parseDetailedReservationRows(rawRows) {
 
   const headers = matrix[0].map((h) => cleanCsvCell(h));
   if (!isDetailedReservationFormat(headers)) {
-    throw new Error("פורמט לא מזוהה — צפוי דוח הזמנות מפורט (שם מלא, טלפון, מס. הזמנה, ת. התחלה)");
+    throw new Error("פורמט לא מזוהה — צפוי דוח הזמנות מפורט (שם מלא, טלפון, מס. הזמנה, ת. הגעה/ת. התחלה)");
   }
 
-  const idx = (name) => headers.indexOf(name);
-  const priceIdxs = headerIndices(headers, "מחיר");
-  const boardIdxs = headerIndices(headers, "בסיס אירוח");
-  const price1Idx = priceIdxs[0] ?? -1;
-  const price2Idx = priceIdxs[1] ?? priceIdxs[0] ?? -1;
-  // Letter codes (HB/BB/…) usually sit in the second duplicate column.
-  const boardCodeIdx = boardIdxs.length > 1 ? boardIdxs[1] : boardIdxs[0] ?? -1;
+  const C = DETAILED_REPORT_COL;
+  const nameIdx = colIndex(headers, "שם מלא", C.GUEST_NAME);
+  const phoneIdx = colIndex(headers, "טלפון", C.PHONE);
+  const orderIdx = colIndex(headers, "מס. הזמנה", C.ORDER_NUMBER);
+  const resLineIdx = colIndex(headers, "מס. לקוח", C.RES_LINE_ID);
+  const arrivalIdx = resolveArrivalColIdx(headers);
+  const roomsIdx = colIndex(headers, "חדרים", C.ROOMS);
+  const nightsIdx = colIndex(headers, "לילות", C.NIGHTS);
+  const leadIdx = colIndex(headers, "מקור הגעה", C.LEAD_SOURCE);
+  const extraPhoneIdx = colIndex(headers, "טלפון נוסף", C.EXTRA_PHONE);
+  const boardCodeIdx = resolveBoardCodeIdx(headers);
+  const { price1Idx, price2Idx } = resolvePriceIndices(headers);
 
   const rows = [];
   const priceConflicts = [];
@@ -293,19 +357,22 @@ export function parseDetailedReservationRows(rawRows) {
     const row = matrix[ri];
     if (!row || row.every((c) => c == null || String(c).trim() === "")) continue;
 
-    if (row.length !== EXPECTED_DETAILED_COLS || isBrokenMergedNameCell(row[8])) {
-      continue;
-    }
+    const guestName = cleanCsvCell(cell(row, nameIdx));
+    const guestPhone = normalizePhone(cell(row, phoneIdx));
 
-    const guestName = cleanCsvCell(cell(row, idx("שם מלא")));
-    const guestPhone = normalizePhone(cell(row, idx("טלפון")));
-    const orderNumber = cleanCsvCell(cell(row, idx("מס. הזמנה")));
-    const resLineId = cleanCsvCell(cell(row, idx("מס. לקוח")));
-    const arrivalDate = parseDetailedArrivalDate(cell(row, idx("ת. התחלה")));
-    const roomsCount = parseInt(cleanCsvCell(cell(row, idx("חדרים"))), 10) || 0;
-    const nights = parseInt(cleanCsvCell(cell(row, idx("לילות"))), 10) || 0;
-    const leadSource = cleanCsvCell(cell(row, idx("מקור הגעה"))) || null;
-    const extraPhone = cleanCsvCell(cell(row, idx("טלפון נוסף")));
+    // Skip only rows with no identifiable guest — never filter by room count or nights.
+    if (!guestName && !guestPhone) continue;
+    if (isBrokenMergedNameCell(guestName)) continue;
+
+    const orderNumber = cleanCsvCell(cell(row, orderIdx));
+    const resLineId = cleanCsvCell(cell(row, resLineIdx));
+    const arrivalDate = parseDetailedArrivalDate(cell(row, arrivalIdx));
+    const roomsCount = parseInt(cleanCsvCell(cell(row, roomsIdx)), 10) || 0;
+    const nightsRaw = cleanCsvCell(cell(row, nightsIdx));
+    const nightsParsed = parseInt(nightsRaw, 10);
+    const nights = Number.isFinite(nightsParsed) && nightsParsed > 0 ? nightsParsed : 1;
+    const leadSource = cleanCsvCell(cell(row, leadIdx)) || null;
+    const extraPhone = cleanCsvCell(cell(row, extraPhoneIdx));
     const boardRaw = cell(row, boardCodeIdx);
     const mealLocation = translateBoardBasis(boardRaw);
 
@@ -332,10 +399,8 @@ export function parseDetailedReservationRows(rawRows) {
 
     const guestNotes = extraPhone ? `טלפון נוסף: ${extraPhone}` : null;
 
-    if (!guestName && !guestPhone && !orderNumber) continue;
-    if (isBrokenMergedNameCell(guestName)) continue;
-
-    const isDayGuest = nights === 0;
+    // Detailed reservation report rows are always premium suite guests.
+    const isDayGuest = false;
 
     rows.push({
       rowIndex: ri - 1,
@@ -381,7 +446,7 @@ export function detailedRowsToProfileMap(parsedRows) {
       rooms: [{
         resLineId: r.resLineId,
         orderNumber: r.orderNumber,
-        roomName: r.rooms_count > 0 ? String(r.rooms_count) : "",
+        roomName: "",
         suiteType: "",
         adults: 1,
         children: 0,
@@ -389,12 +454,12 @@ export function detailedRowsToProfileMap(parsedRows) {
         checkinTime: null,
         checkoutTime: null,
         price: r.price,
-        isDayGuest: r.isDayGuest,
+        isDayGuest: false,
       }],
 
       orderNumbers: r.orderNumber ? new Set([r.orderNumber]) : new Set(),
-      hasSuite: !r.isDayGuest && r.nights > 0,
-      hasDayBooking: r.isDayGuest,
+      hasSuite: true,
+      hasDayBooking: false,
       spa_time: null,
       treatment_count: 0,
       treatment_type: null,

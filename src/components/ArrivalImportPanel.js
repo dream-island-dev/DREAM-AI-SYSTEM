@@ -452,6 +452,36 @@ function _profilesToGridRows(merged) {
   });
 }
 
+function _detailedProfilesToGridRows(merged) {
+  return merged.map((g, i) => {
+    const totalPrice = (g.rooms ?? []).reduce((sum, r) => sum + (r.price || 0), 0);
+    const nights = (g.rooms ?? []).reduce((mx, r) => Math.max(mx, r.nights || 0), 0);
+    return {
+      _id:          g.guestPhone || `row_${i}`,
+      _profileIdx:  i,
+      guestName:    g.guestName ?? "",
+      guestPhone:   g.guestPhone ?? "",
+      arrivalDate:  g.arrivalDate ?? "",
+      amount:       totalPrice || "",
+      meal_location: g.meal_location ?? "",
+      rooms_count:  g.roomsQuantity ?? 0,
+      nights:       nights || "",
+      leadSource:   g.leadSource ?? "",
+    };
+  });
+}
+
+const DETAILED_GRID_COLS = [
+  { id: "guestName",     label: "שם אורח",      editable: true,  w: 150 },
+  { id: "guestPhone",    label: "טלפון",         editable: false, w: 120 },
+  { id: "arrivalDate",   label: "הגעה",          editable: false, w: 100 },
+  { id: "amount",        label: "💰 סכום (₪)",   editable: true,  w: 100 },
+  { id: "meal_location", label: "בסיס אירוח",    editable: false, w: 180 },
+  { id: "rooms_count",   label: "מספר חדרים",    editable: false, w: 90  },
+  { id: "nights",        label: "מספר לילות",    editable: false, w: 90  },
+  { id: "leadSource",    label: "מקור הגעה",     editable: false, w: 120 },
+];
+
 const SUITES_GRID_COLS = [
   { id: "guestName",   label: "שם אורח",   editable: true,  w: 150 },
   { id: "guestPhone",  label: "טלפון",      editable: false, w: 120 },
@@ -697,8 +727,12 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
   // Recompute grid rows whenever merged changes (fresh parse — discards manual edits)
   useEffect(() => {
     if (!merged) { setGridRows([]); return; }
-    setGridRows(_profilesToGridRows(merged));
-  }, [merged]);
+    setGridRows(
+      importSource === "detailed"
+        ? _detailedProfilesToGridRows(merged)
+        : _profilesToGridRows(merged)
+    );
+  }, [merged, importSource]);
 
   // ── Parse Doc 2: Suite CSV → AI-suggested column mapping → review screen ──
   // The AI only proposes; aggregateGuestProfiles() runs unchanged once the
@@ -916,7 +950,12 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           .filter(g => g.guestPhone)
           .map((g, i) => {
             const edited = gridRows[i] ?? {};
-            const nights = (g.rooms ?? []).reduce((mx, r) => Math.max(mx, r.nights || 0), 0);
+            const nightsFromGrid = parseInt(edited.nights, 10);
+            const nights = importSource === "detailed"
+              ? (Number.isFinite(nightsFromGrid) && nightsFromGrid > 0
+                ? nightsFromGrid
+                : (g.rooms ?? []).reduce((mx, r) => Math.max(mx, r.nights || 0), 0) || 1)
+              : (g.rooms ?? []).reduce((mx, r) => Math.max(mx, r.nights || 0), 0);
             // Financial mapping: staff's edited grid amount wins; otherwise the
             // parsed cPrice/fcPrice total computed in _profilesToGridRows.
             const editedAmount = edited.amount !== undefined && edited.amount !== ""
@@ -1113,9 +1152,11 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
       : `⚡ עדכן שעות ספא (${doc1Rec?.length ?? 0} אורחים)`;
 
   // ── Stats ─────────────────────────────────────────────────────────────────
+  const activeGridCols = importSource === "detailed" ? DETAILED_GRID_COLS : SUITES_GRID_COLS;
+
   const stats = (hasDoc2 && merged)
     ? {
-        mode:       "suites",
+        mode:       importSource === "detailed" ? "detailed" : "suites",
         total:      merged.length,
         suites:     merged.filter(g => g.hasSuite).length,
         days:       merged.filter(g => g.hasDayBooking && !g.hasSuite).length,
@@ -1123,6 +1164,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
         withAmount: gridRows.filter(r => r.amount).length,
         assigned:   gridRows.filter(r => r.room).length,
         individual: merged.filter(g => g.phoneSource === "individual").length,
+        withRooms:  gridRows.filter(r => Number(r.rooms_count) > 0).length,
       }
     : hasDoc1
       ? {
@@ -1344,7 +1386,23 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           {/* Stats bar */}
           {stats && (
             <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-              {stats.mode === "suites" ? (
+              {stats.mode === "detailed" ? (
+                <>
+                  {[
+                    { label: "פרופילים",   val: stats.total,      c: "#7c3aed", bg: "#f3f0ff" },
+                    { label: "עם סכום",    val: stats.withAmount, c: "#0369a1", bg: "#eff6ff" },
+                    { label: "עם חדרים",   val: stats.withRooms,  c: "#b45309", bg: "#fef3c7" },
+                  ].map(({ label, val, c, bg }) => (
+                    <div key={label} style={{
+                      background: bg, borderRadius: 8, padding: "6px 12px",
+                      border: `1px solid ${c}22`, display: "flex", alignItems: "baseline", gap: 5,
+                    }}>
+                      <span style={{ fontSize: 18, fontWeight: 900, color: c, lineHeight: 1 }}>{val}</span>
+                      <span style={{ fontSize: 11, color: c, fontWeight: 700 }}>{label}</span>
+                    </div>
+                  ))}
+                </>
+              ) : stats.mode === "suites" ? (
                 <>
                   {[
                     { label: "פרופילים",    val: stats.total,      c: "#7c3aed", bg: "#f3f0ff" },
@@ -1389,13 +1447,13 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
               {selectedIds.size > 0 && (
                 <BulkEditBar
                   count={selectedIds.size}
-                  columns={SUITES_GRID_COLS}
+                  columns={activeGridCols}
                   onReplace={handleGridReplace}
                   onClear={() => setSelectedIds(new Set())}
                 />
               )}
               <EditableGrid
-                columns={SUITES_GRID_COLS}
+                columns={activeGridCols}
                 rows={gridRows}
                 onRowsChange={setGridRows}
                 selectedIds={selectedIds}
