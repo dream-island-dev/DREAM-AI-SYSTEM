@@ -456,17 +456,20 @@ function _detailedProfilesToGridRows(merged) {
   return merged.map((g, i) => {
     const totalPrice = (g.rooms ?? []).reduce((sum, r) => sum + (r.price || 0), 0);
     const nights = (g.rooms ?? []).reduce((mx, r) => Math.max(mx, r.nights || 0), 0);
+    const orderNumber = [...(g.orderNumbers ?? [])][0] ?? "";
     return {
       _id:          g.guestPhone || `row_${i}`,
       _profileIdx:  i,
       guestName:    g.guestName ?? "",
       guestPhone:   g.guestPhone ?? "",
+      orderNumber,
       arrivalDate:  g.arrivalDate ?? "",
       amount:       totalPrice || "",
       meal_location: g.meal_location ?? "",
       rooms_count:  g.roomsQuantity ?? 0,
       nights:       nights || "",
       leadSource:   g.leadSource ?? "",
+      automationMuted: g.automationMuted ? "🔇 ללא אוטומציה" : "",
     };
   });
 }
@@ -474,12 +477,14 @@ function _detailedProfilesToGridRows(merged) {
 const DETAILED_GRID_COLS = [
   { id: "guestName",     label: "שם אורח",      editable: true,  w: 150 },
   { id: "guestPhone",    label: "טלפון",         editable: false, w: 120 },
+  { id: "orderNumber",   label: "מספר הזמנה",    editable: false, w: 100 },
   { id: "arrivalDate",   label: "הגעה",          editable: false, w: 100 },
   { id: "amount",        label: "💰 סכום (₪)",   editable: true,  w: 100 },
   { id: "meal_location", label: "בסיס אירוח",    editable: false, w: 180 },
   { id: "rooms_count",   label: "מספר חדרים",    editable: false, w: 90  },
   { id: "nights",        label: "מספר לילות",    editable: false, w: 90  },
   { id: "leadSource",    label: "מקור הגעה",     editable: false, w: 120 },
+  { id: "automationMuted", label: "אוטומציה",    editable: false, w: 95  },
 ];
 
 const SUITES_GRID_COLS = [
@@ -1165,6 +1170,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
         assigned:   gridRows.filter(r => r.room).length,
         individual: merged.filter(g => g.phoneSource === "individual").length,
         withRooms:  gridRows.filter(r => Number(r.rooms_count) > 0).length,
+        muted:      merged.filter(g => g.automationMuted).length,
       }
     : hasDoc1
       ? {
@@ -1392,6 +1398,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                     { label: "פרופילים",   val: stats.total,      c: "#7c3aed", bg: "#f3f0ff" },
                     { label: "עם סכום",    val: stats.withAmount, c: "#0369a1", bg: "#eff6ff" },
                     { label: "עם חדרים",   val: stats.withRooms,  c: "#b45309", bg: "#fef3c7" },
+                    { label: "ללא אוטומציה", val: stats.muted,    c: "#dc2626", bg: "#fef2f2" },
                   ].map(({ label, val, c, bg }) => (
                     <div key={label} style={{
                       background: bg, borderRadius: 8, padding: "6px 12px",

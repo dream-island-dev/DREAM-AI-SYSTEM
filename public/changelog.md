@@ -1,4 +1,4 @@
-2026-06-29 | whatsapp-send + AutomationControlCenter + public/images | Stage 2.5 override image → dreamislandsuite.jpg on Vercel CDN.
+2026-06-29 | detailedReservationParser.js + ArrivalImportPanel.js + GuestDashboard.js | מספר הזמנה in detailed grid; מחלקת מכירות mute surfaced; GuestDashboard «בחר לפי תאריך הגעה» bulk-select. Build clean.
 
 2026-06-29 | whatsapp-send/index.ts | Stage 2.5 force override: session_message always on manual Send Now — bypass window/Shabbat/Meta routing; fail visible on missing script.
 

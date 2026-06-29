@@ -184,6 +184,7 @@ export default function GuestDashboard({ user }) {
   const [editingGuest, setEditingGuest] = useState(null); // existing guest object for edit, null = closed
   const [waModal,     setWaModal]     = useState(null);  // guest object or null
   const [selected,    setSelected]    = useState(new Set()); // checked guest IDs
+  const [arrivalSelectDate, setArrivalSelectDate] = useState(localISO(0));
   const [profileGuest, setProfileGuest] = useState(null); // guest object or null — CustomerProfilePane
 
   const showToast = useCallback((type, msg) => {
@@ -318,6 +319,22 @@ export default function GuestDashboard({ user }) {
                     : activeTab === "suite"     ? hotelGuests
                     :                              guests;
 
+  const selectGuestsByArrivalDate = useCallback(() => {
+    if (!arrivalSelectDate) {
+      showToast("err", "בחר תאריך הגעה");
+      return;
+    }
+    const ids = tabGuests
+      .filter((g) => g.arrival_date === arrivalSelectDate)
+      .map((g) => g.id);
+    if (!ids.length) {
+      showToast("err", `לא נמצאו אורחים להגעה ב-${arrivalSelectDate}`);
+      return;
+    }
+    setSelected(new Set(ids));
+    showToast("ok", `נבחרו ${ids.length} אורחים להגעה ${arrivalSelectDate}`);
+  }, [arrivalSelectDate, tabGuests, showToast]);
+
   // ── Stats ─────────────────────────────────────────────────────────────────
   const todayCount     = guests.filter((g) => g.arrival_date === localISO(0)).length;
   const tomorrowCount  = guests.filter((g) => g.arrival_date === localISO(1)).length;
@@ -423,6 +440,34 @@ export default function GuestDashboard({ user }) {
             />
             בחר הכל
           </label>
+        )}
+
+        {/* Select all guests arriving on a specific date — then bulk-delete */}
+        {tabGuests.length > 0 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+            <input
+              type="date"
+              value={arrivalSelectDate}
+              onChange={(e) => setArrivalSelectDate(e.target.value)}
+              title="תאריך הגעה לבחירה מרובה"
+              style={{
+                padding: "6px 10px", borderRadius: 10, border: "1px solid var(--border)",
+                fontFamily: "Heebo, sans-serif", fontSize: 13, cursor: "pointer",
+              }}
+            />
+            <button
+              type="button"
+              onClick={selectGuestsByArrivalDate}
+              style={{
+                padding: "7px 14px", borderRadius: 20, cursor: "pointer",
+                fontFamily: "Heebo, sans-serif", fontSize: 13, fontWeight: 700,
+                border: "2px solid var(--gold)", background: "rgba(201,169,110,0.1)",
+                color: "var(--gold-dark)",
+              }}
+            >
+              📅 בחר לפי תאריך הגעה
+            </button>
+          </div>
         )}
 
         {/* Bulk delete — appears only when selection is active */}

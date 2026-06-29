@@ -1,4 +1,4 @@
-2026-06-29 | detailedReservationParser.js + ArrivalImportPanel.js | Detailed import: full-text בע\"מ preprocess (31/31 rows), remove 22-col filter, fixed column indices, all rows=suite; DETAILED_GRID_COLS (no שכבה). Build clean.
+2026-06-29 | detailedReservationParser.js + ArrivalImportPanel.js + GuestDashboard.js | מספר הזמנה in detailed grid; מחלקת מכירות mute surfaced; GuestDashboard «בחר לפי תאריך הגעה» bulk-select. Build clean.
 
 2026-06-29 | whatsapp-send/index.ts | Stage 2.5 force override: session_message always on manual Send Now — bypass window/Shabbat/Meta routing; fail visible on missing script.
 

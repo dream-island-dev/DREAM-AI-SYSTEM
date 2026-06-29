@@ -309,6 +309,14 @@ function resolvePriceIndices(headers) {
   return { price1Idx, price2Idx };
 }
 
+function resolveOrderNumberIdx(headers) {
+  for (const name of ["מס. הזמנה", "מספר הזמנה"]) {
+    const i = headers.indexOf(name);
+    if (i >= 0) return i;
+  }
+  return DETAILED_REPORT_COL.ORDER_NUMBER;
+}
+
 function colIndex(headers, name, fallback) {
   const i = headers.indexOf(name);
   return i >= 0 ? i : fallback;
@@ -340,7 +348,7 @@ export function parseDetailedReservationRows(rawRows) {
   const C = DETAILED_REPORT_COL;
   const nameIdx = colIndex(headers, "שם מלא", C.GUEST_NAME);
   const phoneIdx = colIndex(headers, "טלפון", C.PHONE);
-  const orderIdx = colIndex(headers, "מס. הזמנה", C.ORDER_NUMBER);
+  const orderIdx = resolveOrderNumberIdx(headers);
   const resLineIdx = colIndex(headers, "מס. לקוח", C.RES_LINE_ID);
   const arrivalIdx = resolveArrivalColIdx(headers);
   const roomsIdx = colIndex(headers, "חדרים", C.ROOMS);
@@ -417,6 +425,7 @@ export function parseDetailedReservationRows(rawRows) {
       price: resolvedPrice,
       priceConflict,
       isDayGuest,
+      // מחלקת מכירות → automation_muted=true via isAutomationMutedLeadSource (importMapper)
       automationMuted: isAutomationMutedLeadSource(leadSource),
       phoneSource: "individual",
     });
