@@ -1547,19 +1547,33 @@ serve(async (req: Request) => {
       const sessionScriptKey = stageRow?.session_message_script_key ?? "night_before_reminder";
       const windowOpen = isWindowOpen(guest.wa_window_expires_at);
       const isForceOverride = force === true;
-      const useSessionChannel =
-        forceSessionMessage
-        || (isForceOverride && windowOpen && !forceMetaTemplate)
-        || (windowOpen && !!sessionScriptKey && !forceMetaTemplate);
-      const sessionImage = useSessionChannel && isForceOverride && windowOpen
-        ? (resolveStageSessionImageUrl(stageRow, requestImageUrl) ?? NIGHT_BEFORE_OVERRIDE_SESSION_IMAGE)
-        : resolveStageSessionImageUrl(stageRow, requestImageUrl);
+
+      // ZERO-GUARD: manual force + open 24h window → session image+text immediately.
+      // Ignores force_channel=meta_template, room_type/applies_to, and schedule date delta.
+      const forceSessionImmediate = isForceOverride && windowOpen;
+
+      console.log("=== STAGE 2.5 FORCE ATTEMPT ===");
+      console.log("Guest:", guest.name, "Room Type:", guest.room_type, "Arrival:", guest.arrival_date);
       console.log(
-        `[whatsapp-send] night_before: entering Stage 2.5 dispatch guest_id=${guestId} ` +
+        `[whatsapp-send] night_before: Stage 2.5 dispatch guest_id=${guestId} ` +
         `room_type=${guest.room_type ?? "null"} arrival=${guest.arrival_date ?? "null"} ` +
         `msg_pre_arrival_sent=${String(guest.msg_pre_arrival_sent)} windowOpen=${windowOpen} ` +
-        `forceSession=${forceSessionMessage} forceMeta=${forceMetaTemplate} forceOverride=${isForceOverride} ` +
-        `session_image=${sessionImage ? "yes" : "no"}`,
+        `forceSessionImmediate=${forceSessionImmediate} force_channel=${force_channel ?? "auto"} ` +
+        `wa_window_expires_at=${guest.wa_window_expires_at ?? "null"}`,
+      );
+
+      const useSessionChannel =
+        forceSessionImmediate
+        || forceSessionMessage
+        || (windowOpen && !!sessionScriptKey && !forceMetaTemplate);
+
+      const sessionImage = forceSessionImmediate
+        ? (resolveStageSessionImageUrl(stageRow, requestImageUrl) ?? NIGHT_BEFORE_OVERRIDE_SESSION_IMAGE)
+        : resolveStageSessionImageUrl(stageRow, requestImageUrl);
+
+      console.log(
+        `[whatsapp-send] night_before: route_decision useSession=${useSessionChannel} ` +
+        `session_image=${sessionImage ? sessionImage.slice(0, 64) : "none"}`,
       );
       const guestName = sanitizeTemplateVars([String(guest.name ?? "")])[0];
       const arrivalDateStr = String(guest.arrival_date ?? "");
@@ -1600,10 +1614,12 @@ serve(async (req: Request) => {
       try {
         if (!sim) {
           if (nightBeforeDispatch.channel === "text") {
+            const nbWindowOpen = isWindowOpen(guest.wa_window_expires_at);
+            const nbForceSessionImmediate = force === true && nbWindowOpen;
             nbSessionImageUrl =
               nightBeforeDispatch.sessionImageUrl
               ?? resolveStageSessionImageUrl(stageRow, requestImageUrl)
-              ?? (force && isWindowOpen(guest.wa_window_expires_at) ? NIGHT_BEFORE_OVERRIDE_SESSION_IMAGE : undefined);
+              ?? (nbForceSessionImmediate ? NIGHT_BEFORE_OVERRIDE_SESSION_IMAGE : undefined);
             const { data: scriptRow } = await supabase
               .from("bot_scripts")
               .select("message_text")
@@ -1611,7 +1627,7 @@ serve(async (req: Request) => {
               .maybeSingle();
             const rawText = scriptRow?.message_text?.trim();
             if (!rawText) {
-              if (force && isWindowOpen(guest.wa_window_expires_at)) {
+              if (nbForceSessionImmediate) {
                 throw new Error(
                   "night_before_session_script_missing — הגדר טקסט ל-night_before_reminder ב-BotScriptEditor",
                 );
@@ -1717,6 +1733,7 @@ serve(async (req: Request) => {
         if (flagColumn) {
           await supabase.from("guests").update({ [flagColumn]: true }).eq("id", guestId);
         }
+        await markScheduledTaskDispatched(guestId, trigger);
       }
 
       return new Response(

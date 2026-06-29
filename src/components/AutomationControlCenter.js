@@ -812,7 +812,8 @@ async function invokeForcedDispatch({ guestId, stageKey, forceChannel, scheduled
       trigger: stageKey,
       guestId,
       force: true,
-      force_channel: forceChannel,
+      // night_before: omit force_channel — server picks session vs template from live wa_window_expires_at
+      ...(stageKey !== "night_before" && forceChannel ? { force_channel: forceChannel } : {}),
       manual_override: true,
       scheduled_for: scheduledFor ?? undefined,
       image_url: imageUrl ?? (stageKey === "night_before" ? NIGHT_BEFORE_OVERRIDE_IMAGE : undefined),
@@ -1212,9 +1213,10 @@ export default function AutomationControlCenter() {
 
   const runQueueSendNow = useCallback(async (item, scheduledFor) => {
     if (!supabase) return;
+    // night_before: no force_channel pin — whatsapp-send zero-guard uses live window + force=true
     const forceChannel =
-      item.stageKey === "night_before" && item.predictedChannel === "session_message"
-        ? "session_message"
+      item.stageKey === "night_before"
+        ? undefined
         : item.predictedChannel === "session_message"
           ? "session_message"
           : "meta_template";
@@ -2017,11 +2019,15 @@ export default function AutomationControlCenter() {
                                 </td>
                                 <td style={{ textAlign: "center" }}>
                                   <div style={{ display: "flex", gap: 4, justifyContent: "center", flexWrap: "wrap" }}>
-                                    {canDispatch && !isGated && (
+                                    {canDispatch && (
                                       <button
                                         type="button"
                                         className="btn btn-primary btn-sm"
-                                        title={`שלח עכשיו — ${q.displayName}`}
+                                        title={
+                                          isGated
+                                            ? `שלח עכשיו (עקיפת שער room_type) — ${q.displayName}`
+                                            : `שלח עכשיו — ${q.displayName}`
+                                        }
                                         onClick={() => requestQueueSendNow(q)}
                                         disabled={sendNowSending || !q.guestId}
                                         style={{ fontSize: 11, padding: "4px 8px" }}

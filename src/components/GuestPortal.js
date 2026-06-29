@@ -403,24 +403,61 @@ function PortalHero({ guest, phase, countdown }) {
   );
 }
 
+// ── Secure payment CTA — below itinerary, token-gated URL from guest-portal-data
+function SecurePaymentButton({ guest }) {
+  const url = (guest.payment_url ?? "").trim();
+  if (!url) return null;
+
+  const status = String(guest.payment_status ?? "").toLowerCase();
+  if (status === "paid") return null;
+
+  const balance = guest.payment_amount != null ? Number(guest.payment_amount) : null;
+  if (balance != null && !Number.isNaN(balance) && balance <= 0) return null;
+
+  return (
+    <div style={{ padding: "0 16px 20px" }}>
+      <div style={{ maxWidth: 420, margin: "0 auto" }}>
+        <a
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{
+            display: "flex", flexDirection: "column", alignItems: "center", gap: 5,
+            width: "100%", padding: "16px 22px", borderRadius: 14,
+            background: "linear-gradient(135deg, rgba(245,230,200,0.12), rgba(212,175,55,0.07))",
+            border: "1px solid rgba(212,175,55,0.32)",
+            color: "#F5E6C8",
+            fontSize: 14, fontWeight: 700, textDecoration: "none", textAlign: "center",
+            boxShadow: "0 4px 20px rgba(212,175,55,0.10)",
+          }}
+        >
+          <span>💳 להסדרת תשלום מאובטח לחץ כאן</span>
+          <span style={{ fontSize: 12, fontWeight: 600, color: XOS_GOLD, opacity: 0.92 }}>
+            הסדרת תשלום עבור האירוח
+            {balance != null && balance > 0
+              ? ` · ₪${balance.toLocaleString("he-IL")}`
+              : ""}
+          </span>
+        </a>
+      </div>
+    </div>
+  );
+}
+
 // ── Itinerary glass panel (suite + day-use) ───────────────────────────────────
 // Always renders — shows a concierge CTA fallback instead of returning null when
 // no spa/meal data exists (FAIL VISIBLE §0.3: guest never sees a blank section).
 function ItineraryPanel({ guest }) {
-  const hasSchedule = !!(guest.spa_time || guest.meal_time);
+  const mealPlan = (guest.meal_location ?? "").trim() || null;
+  const hasSchedule = !!(guest.spa_time || guest.meal_time || mealPlan);
   return (
     <div style={{ padding: "0 16px 36px" }}>
       <GlassPanel title="📋 התוכנית שלכם">
         {hasSchedule ? (
           <>
             <ItineraryRow icon="💆" label="ספא" value={guest.spa_time} />
-            <ItineraryRow
-              icon="🍽️"
-              label="ארוחה"
-              value={guest.meal_time
-                ? (guest.meal_location || "ארוחה כלולה")
-                : null}
-            />
+            <ItineraryRow icon="🍴" label="בסיס אירוח" value={mealPlan} />
+            <ItineraryRow icon="🍽️" label="ארוחה" value={guest.meal_time} />
           </>
         ) : (
           <div style={{ padding: "20px 16px", textAlign: "center" }}>
@@ -469,6 +506,7 @@ function SuiteView({ guest, phase, countdown, upsellItems, token, onToast, onUps
     <>
       <PortalHero guest={guest} phase={phase} countdown={countdown} />
       <ItineraryPanel guest={guest} />
+      <SecurePaymentButton guest={guest} />
       <SuiteQuickActions />
 
       {/* Pre-Order module (DB-driven, suite + all items) */}
@@ -490,16 +528,15 @@ function DayUseView({ guest, phase, countdown, upsellItems, token, onToast, onUp
       {/* Day-use focused itinerary — always rendered; shows concierge CTA when empty */}
       <div style={{ padding: "0 16px 28px" }}>
         <GlassPanel title="⚡ היום שלכם — בקצרה">
-          {(guest.spa_time || guest.meal_time) ? (
+          {(guest.spa_time || guest.meal_time || (guest.meal_location ?? "").trim()) ? (
             <>
               <ItineraryRow icon="💆" label="טיפול ספא" value={guest.spa_time} />
               <ItineraryRow
-                icon="🍽️"
-                label="ארוחה"
-                value={guest.meal_time
-                  ? (guest.meal_location || "ארוחה כלולה")
-                  : null}
+                icon="🍴"
+                label="בסיס אירוח"
+                value={(guest.meal_location ?? "").trim() || null}
               />
+              <ItineraryRow icon="🍽️" label="ארוחה" value={guest.meal_time} />
             </>
           ) : (
             <div style={{ padding: "20px 16px", textAlign: "center" }}>
@@ -529,6 +566,8 @@ function DayUseView({ guest, phase, countdown, upsellItems, token, onToast, onUp
           )}
         </GlassPanel>
       </div>
+
+      <SecurePaymentButton guest={guest} />
 
       {/* Focused activity info panel */}
       <div style={{ padding: "0 16px 20px" }}>

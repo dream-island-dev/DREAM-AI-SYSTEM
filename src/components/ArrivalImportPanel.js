@@ -28,6 +28,13 @@ import {
   enrichProfilesFromExcel,
 } from "../utils/ezgoParser";
 import { SUITE_ARRIVALS_SCHEMA, buildMaskedSample, detectSuiteArrivalsPreset } from "../utils/importMapper";
+import {
+  isDetailedReservationFormat,
+  parseDetailedReservationRows,
+  detailedRowsToProfileMap,
+  applyPriceResolutions,
+} from "../utils/detailedReservationParser";
+import PriceDiscrepancyModal from "./PriceDiscrepancyModal";
 
 // Sorted, joined header signature — matches import_mapping_memory.header_signature (migration 049).
 // Not a hash: exact string equality is enough here and avoids a client-side hash dependency.
@@ -420,6 +427,9 @@ function _profilesToGridRows(merged) {
     // just one). Staff can still override the total manually in the grid before
     // sync — this is only the parsed starting value, not the final word.
     const totalPrice  = (g.rooms ?? []).reduce((sum, r) => sum + (r.price || 0), 0);
+    const qtyLabel    = (g.roomsQuantity ?? 0) > 1
+      ? `${g.roomsQuantity} חדרים`
+      : (g.rooms ?? []).length > 1 ? `${g.rooms.length} חדרים` : "";
     return {
       _id:          g.guestPhone || `row_${i}`,
       _profileIdx:  i,
@@ -428,11 +438,12 @@ function _profilesToGridRows(merged) {
       phoneSource:  g.phoneSource === "individual" ? "פרטי" : "קואורד׳",
       leadSource:   g.leadSource ?? "",
       automationMuted: g.automationMuted ? "🔇 ללא אוטומציה" : "",
-      roomCount:    (g.rooms ?? []).length > 1 ? `${g.rooms.length} חדרים` : "",
+      roomCount:    qtyLabel,
       room:         (g.rooms ?? []).length > 1 ? "" : (isDay ? (singleRoom?.isDayGuest ? guess : "") : guess),
       tier:         isDay ? "☀️ בילוי יומי" : "🏨 סוויטה",
       spa_time:     g.spa_time ?? "",
       meal_time:    g.meal_time ?? "",
+      meal_location: g.meal_location ?? "",
       amount:       totalPrice || "",
       arrivalDate:  g.arrivalDate ?? "",
     };
@@ -450,6 +461,7 @@ const SUITES_GRID_COLS = [
   { id: "room",        label: "🏨 חדר/סוויטה", editable: true, w: 190, gold: true, options: ROOM_OPTIONS },
   { id: "spa_time",    label: "שעת ספא",    editable: true,  w: 90  },
   { id: "meal_time",   label: "שעת ארוחה (ערמונים)", editable: true, w: 130 },
+  { id: "meal_location", label: "בסיס אירוח", editable: false, w: 160 },
   { id: "amount",      label: "💰 סכום (₪)", editable: true, w: 100 },
   { id: "arrivalDate", label: "הגעה",       editable: false, w: 100 },
 ];
@@ -532,10 +544,117 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
   const [shiftFileName, setShiftFileName] = useState("");
   const shiftRef = useRef();
 
+  // Detailed reservation report — dedicated import path (no AI mapping)
+  const detailedRef = useRef();
+  const [importSource, setImportSource] = useState(null); // null | "detailed"
+  const [detailedFileName, setDetailedFileName] = useState("");
+  const [pendingDetailedRows, setPendingDetailedRows] = useState(null);
+  const [priceConflictQueue, setPriceConflictQueue] = useState(null);
+  const [priceConflictIdx, setPriceConflictIdx] = useState(0);
+  const [priceResolutions, setPriceResolutions] = useState({});
+
   const showToast = (type, msg) => {
     setToast({ type, msg });
     setTimeout(() => setToast(null), 4500);
   };
+
+  const _loadDetailedProfiles = useCallback((parsedRows, resolutions) => {
+    const resolved = applyPriceResolutions(parsedRows, resolutions);
+    resolved.forEach((r) => {
+      if (r.priceConflict) {
+        r.price = r.price ?? 0;
+      }
+    });
+    const map = detailedRowsToProfileMap(resolved);
+    if (!map.size) {
+      showToast("err", "לא נמצאו שורות תקפות בדוח");
+      return false;
+    }
+    setDoc2Map(map);
+    setImportSource("detailed");
+    setMappingStage("idle");
+    setRawDoc2Rows(null);
+    setAiSuggestion(null);
+    setAiError(null);
+    setPendingDetailedRows(null);
+    setPriceConflictQueue(null);
+    setPriceConflictIdx(0);
+    setPriceResolutions({});
+    const firstDate = resolved.find((r) => r.arrivalDate)?.arrivalDate;
+    if (firstDate) {
+      setArrivalDate(firstDate);
+      setAutoDateBanner({ date: firstDate, source: "דוח הזמנות מפורט (שורה ראשונה)" });
+    }
+    showToast("ok", `נטענו ${map.size} הזמנות מדוח מפורט — אמת בטבלה לפני סנכרון`);
+    return true;
+  }, []);
+
+  const handlePriceConflictChoice = useCallback((choice) => {
+    if (!priceConflictQueue?.length || !pendingDetailedRows) return;
+    const conflict = priceConflictQueue[priceConflictIdx];
+    const nextResolutions = { ...priceResolutions, [conflict.rowIndex]: choice };
+    const nextIdx = priceConflictIdx + 1;
+    if (nextIdx < priceConflictQueue.length) {
+      setPriceResolutions(nextResolutions);
+      setPriceConflictIdx(nextIdx);
+      return;
+    }
+    _loadDetailedProfiles(pendingDetailedRows, nextResolutions);
+  }, [priceConflictQueue, priceConflictIdx, pendingDetailedRows, priceResolutions, _loadDetailedProfiles]);
+
+  const handlePriceConflictCancel = useCallback(() => {
+    setPendingDetailedRows(null);
+    setPriceConflictQueue(null);
+    setPriceConflictIdx(0);
+    setPriceResolutions({});
+    setDetailedFileName("");
+  }, []);
+
+  const handleDetailedReservation = useCallback(async (file) => {
+    if (!file) return;
+    setDetailedFileName(file.name);
+    setDoc2Name("");
+    setResult(null);
+    setMappingStage("idle");
+    setRawDoc2Rows(null);
+    setImportSource(null);
+    try {
+      const XLSX = await import("xlsx");
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: "array", raw: false });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rawRows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+
+      if (!rawRows.length) {
+        showToast("err", "הקובץ ריק");
+        return;
+      }
+
+      const headers = rawRows[0].map((h) => String(h ?? "").trim());
+      if (!isDetailedReservationFormat(headers)) {
+        showToast("err", "קובץ לא מזוהה כדוח הזמנות מפורט — בדוק כותרות עמודות");
+        return;
+      }
+
+      const { rows, priceConflicts } = parseDetailedReservationRows(rawRows);
+      if (!rows.length) {
+        showToast("err", "לא נמצאו שורות נתונים בדוח");
+        return;
+      }
+
+      if (priceConflicts.length > 0) {
+        setPendingDetailedRows(rows);
+        setPriceConflictQueue(priceConflicts);
+        setPriceConflictIdx(0);
+        setPriceResolutions({});
+        return;
+      }
+
+      _loadDetailedProfiles(rows, {});
+    } catch (err) {
+      showToast("err", "שגיאה בקריאת דוח מפורט: " + err.message);
+    }
+  }, [_loadDetailedProfiles]);
 
   // Derived flags
   const hasDoc2 = !!doc2Map;
@@ -579,6 +698,14 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
 
       const headers = Object.keys(rows[0]);
       setRawDoc2Rows(rows);
+
+      if (isDetailedReservationFormat(headers)) {
+        showToast("err", "זהו דוח הזמנות מפורט — השתמש בכפתור «ייבוא דוח הזמנות מפורט» למטה");
+        setMappingStage("idle");
+        setRawDoc2Rows(null);
+        setDoc2Name("");
+        return;
+      }
 
       // Auto-detect arrival date: filename (Tier 1) then first cells (Tier 2).
       // If found, pre-fill the picker AND show a FAIL VISIBLE banner so staff
@@ -829,14 +956,21 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           const edited   = gridRows[i] ?? {};
           const spaTime  = edited.spa_time  || g.spa_time;
           const mealTime = edited.meal_time || g.meal_time;
-          const mealLoc  = g.meal_location;
-          if (g.guestPhone && (spaTime || mealTime || mealLoc)) {
+          const mealLoc  = edited.meal_location || g.meal_location;
+          const notes    = g.guest_notes;
+          if (g.guestPhone && (spaTime || mealTime || mealLoc || notes)) {
             const patch = { treatment_count: g.treatment_count ?? 0 };
             if (spaTime)  patch.spa_time      = spaTime;
             if (mealTime) patch.meal_time      = mealTime;
             if (mealLoc)  patch.meal_location  = mealLoc;
+            if (notes)    patch.guest_notes    = notes;
             await supabase.from("guests").update(patch)
               .eq("phone", g.guestPhone)
+              .eq("arrival_date", g.arrivalDate);
+          }
+          if (g.guestPhone && g.arrivalDate && (g.roomsQuantity ?? 0) > 0) {
+            await supabase.from("bookings").update({ room_count: g.roomsQuantity })
+              .eq("phone", g.guestPhone.replace(/^\+/, ""))
               .eq("arrival_date", g.arrivalDate);
           }
         }
@@ -909,6 +1043,9 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     setMerged(null); setGridRows([]); setSelectedIds(new Set()); setResult(null);
     setMappingStage("idle"); setRawDoc2Rows(null); setDoc2Fallback(null);
     setAiSuggestion(null); setAiError(null); setAutoDateBanner(null);
+    setImportSource(null); setDetailedFileName("");
+    setPendingDetailedRows(null); setPriceConflictQueue(null);
+    setPriceConflictIdx(0); setPriceResolutions({});
   };
 
   // ── Shifts profile handlers ──────────────────────────────────────────────
@@ -1113,7 +1250,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
               label="📋 Doc 2 — כניסות אורחים"
               hint="כל CSV/Excel — עמודות מזוהות אוטומטית"
               loaded={hasDoc2 || mappingStage !== "idle"}
-              fileName={doc2Name}
+              fileName={importSource === "detailed" ? detailedFileName : doc2Name}
               onFile={handleDoc2}
               inputRef={doc2Ref}
             />
@@ -1128,6 +1265,37 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
               optional
             />
           </div>
+
+          {/* Dedicated detailed reservation report — bypasses generic mapper */}
+          <div style={{ marginBottom: 14 }}>
+            <DropZone
+              label="📑 ייבוא דוח הזמנות מפורט"
+              hint="CSV/Excel PMS — תאריכי Excel, בסיס אירוח, פערי מחיר"
+              loaded={importSource === "detailed" && hasDoc2}
+              fileName={importSource === "detailed" ? detailedFileName : ""}
+              onFile={handleDetailedReservation}
+              inputRef={detailedRef}
+            />
+            {importSource === "detailed" && hasDoc2 && (
+              <div style={{
+                marginTop: 8, padding: "8px 12px", borderRadius: 8, fontSize: 11,
+                background: "rgba(124,58,237,0.08)", border: "1px solid rgba(124,58,237,0.3)",
+                color: "#5b21b6", fontWeight: 700,
+              }}>
+                מצב דוח מפורט — תאריך הגעה, בסיס אירוח ומחיר נלקחים מכל שורה בדוח (לא ממיפוי AI)
+              </div>
+            )}
+          </div>
+
+          {priceConflictQueue?.length > 0 && (
+            <PriceDiscrepancyModal
+              conflict={priceConflictQueue[priceConflictIdx]}
+              current={priceConflictIdx + 1}
+              total={priceConflictQueue.length}
+              onChoose={handlePriceConflictChoice}
+              onCancel={handlePriceConflictCancel}
+            />
+          )}
 
           {/* Resilient Import Agent — mapping suggestion + review gate */}
           {mappingStage === "suggesting" && (

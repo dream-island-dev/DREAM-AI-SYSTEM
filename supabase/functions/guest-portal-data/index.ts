@@ -6,9 +6,10 @@
 // SERVICE ROLE key, and returns only a hand-picked safe subset of columns.
 // `guests` RLS stays "authenticated only" (migration 028) — this function is
 // the only thing an unauthenticated guest-facing page is allowed to read
-// through, and it explicitly never selects phone, payment_amount,
-// payment_link_url, guest_notes, claimed_by, attention_reason,
-// needs_callback, requires_attention, or order_number.
+// through, and it explicitly never selects phone, guest_notes, claimed_by,
+// attention_reason, needs_callback, requires_attention, or order_number.
+// Payment: only direct_payment_url/payment_link_url + payment_amount are exposed
+// when balance > 0 — never staff-internal fields (ezgo_portal_url, etc.).
 
 import { serve }        from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -45,7 +46,7 @@ serve(async (req: Request) => {
 
     const { data: guest, error: err } = await supabase
       .from("guests")
-      .select("name, room, room_type, arrival_date, departure_date, spa_time, meal_time, meal_location, status")
+      .select("name, room, room_type, arrival_date, departure_date, spa_time, meal_time, meal_location, status, payment_amount, direct_payment_url, payment_link_url")
       .eq("portal_token", token)
       .maybeSingle();
 
@@ -68,6 +69,21 @@ serve(async (req: Request) => {
     if (guest.status !== "checked_in") {
       maskedGuest.room = guest.room_type === "suite" ? "סוויטת יוקרה" : null;
     }
+
+    // Secure checkout — expose payment link + balance only when guest owes money.
+    const payUrlRaw = String(
+      (guest.direct_payment_url as string | null) ||
+      (guest.payment_link_url as string | null) ||
+      "",
+    ).trim();
+    const payAmount = guest.payment_amount != null ? Number(guest.payment_amount) : null;
+    const balanceDue = payAmount != null && !Number.isNaN(payAmount) && payAmount > 0;
+    delete (maskedGuest as Record<string, unknown>).direct_payment_url;
+    delete (maskedGuest as Record<string, unknown>).payment_link_url;
+    (maskedGuest as Record<string, unknown>).payment_url =
+      balanceDue && payUrlRaw ? payUrlRaw : null;
+    (maskedGuest as Record<string, unknown>).payment_amount = balanceDue ? payAmount : null;
+    (maskedGuest as Record<string, unknown>).payment_status = balanceDue ? "pending" : "paid";
 
     // ── Upsell items — server-side filtered by guest's room_type ─────────
     // visibility_settings TEXT[] (migration 097) lists which room_type values

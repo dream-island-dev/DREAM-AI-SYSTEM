@@ -1,3 +1,9 @@
+2026-06-29 | GuestPortal.js + guest-portal-data | Secure payment CTA below itinerary (payment_url/balance/pending only); muted gold styling. Build clean.
+
+2026-06-29 | src/components/GuestPortal.js | ItineraryPanel + DayUseView: בסיס אירוח row (🍴 meal_location) directly under spa; conditional render; meal_time row separate.
+
+2026-06-29 | detailedReservationParser.js + PriceDiscrepancyModal.js + ArrivalImportPanel.js | Dedicated «ייבוא דוח הזמנות מפורט» import: Excel serial dates, board-basis→meal_location, dual-price conflict modal, טלפון נוסף→guest_notes, חדרים→roomsQuantity/bookings.room_count; bypasses AI mapper. Build clean.
+
 2026-06-29 | migration 106 + db history fix + AddGuestModal + whatsapp-send + AutomationControlCenter | Resolved duplicate migration 101 (renamed guest mute to 106, db push clean); lead_source/automation_muted on guest form; Stage 2.5 Send Now forces session+image when 24h window open.
 
 2026-06-29 | migration 101 + ezgoParser + ArrivalImportPanel + automationSchedule + whatsapp-cron/send/webhook | Advanced PMS CSV (מקור הגעה): lead_source + automation_muted on guests; מחלקת מכירות rows imported but pipeline/cron/stage_2_pay muzzled; preset mapping for 01.7.26-style exports.
@@ -69,3 +75,4 @@
 2026-06-28 | supabase/functions/whatsapp-webhook/index.ts | Gemini askGemini: exponential backoff (4 attempts, Retry-After aware) on 429/5xx/timeouts before next model or Claude failover ? whatsapp-send has no Gemini path.
 2026-06-28 | AICopilot.js + RequestsAlertWidget.js | Draggable FAB widgets: viewport clamp on drag, resize/out-of-bounds snap to default corner + clear stale localStorage, z-index 10400.
 2026-06-29 | migration 105 + _shared/paymentLinkGuard.ts + whatsapp-webhook/whatsapp-send + AutomationControlCenter | Stage 2 Pay guardrails: direct_payment_url validation, ezgo_portal_url async recovery flag, failed_missing_link/processing notification_log statuses, idempotency + 3s inline recovery, dream_payment_and_workshops button token fix.
+2026-06-29 | whatsapp-send/index.ts + AutomationControlCenter.js | Stage 2.5 zero-guard: force+open window always session image+text (ignores force_channel=meta_template); queue Send Now ungated + omits force_channel for night_before.
