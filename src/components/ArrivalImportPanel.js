@@ -27,7 +27,7 @@ import {
   profilesToArray,
   enrichProfilesFromExcel,
 } from "../utils/ezgoParser";
-import { SUITE_ARRIVALS_SCHEMA, buildMaskedSample } from "../utils/importMapper";
+import { SUITE_ARRIVALS_SCHEMA, buildMaskedSample, detectSuiteArrivalsPreset } from "../utils/importMapper";
 
 // Sorted, joined header signature — matches import_mapping_memory.header_signature (migration 049).
 // Not a hash: exact string equality is enough here and avoids a client-side hash dependency.
@@ -426,6 +426,8 @@ function _profilesToGridRows(merged) {
       guestName:    g.guestName ?? "",
       guestPhone:   g.guestPhone ?? "",
       phoneSource:  g.phoneSource === "individual" ? "פרטי" : "קואורד׳",
+      leadSource:   g.leadSource ?? "",
+      automationMuted: g.automationMuted ? "🔇 ללא אוטומציה" : "",
       roomCount:    (g.rooms ?? []).length > 1 ? `${g.rooms.length} חדרים` : "",
       room:         (g.rooms ?? []).length > 1 ? "" : (isDay ? (singleRoom?.isDayGuest ? guess : "") : guess),
       tier:         isDay ? "☀️ בילוי יומי" : "🏨 סוויטה",
@@ -441,6 +443,8 @@ const SUITES_GRID_COLS = [
   { id: "guestName",   label: "שם אורח",   editable: true,  w: 150 },
   { id: "guestPhone",  label: "טלפון",      editable: false, w: 120 },
   { id: "phoneSource", label: "מקור",       editable: false, w: 80  },
+  { id: "leadSource",  label: "מקור הגעה",  editable: false, w: 100 },
+  { id: "automationMuted", label: "אוטומציה", editable: false, w: 95 },
   { id: "roomCount",   label: "קבוצה",      editable: false, w: 70  },
   { id: "tier",        label: "שכבה",       editable: false, w: 90  },
   { id: "room",        label: "🏨 חדר/סוויטה", editable: true, w: 190, gold: true, options: ROOM_OPTIONS },
@@ -615,7 +619,14 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
         });
         setAiError(null);
       } else {
-        try {
+        const preset = detectSuiteArrivalsPreset(headers);
+        if (preset) {
+          setAiSuggestion({
+            mapping: preset, defaults: {}, confidence: {}, engine: "preset",
+            recommendations: ["✓ זוהה דוח PMS מתקדם (מקור הגעה / שם מלא / טלפון) — מיפוי מוכן מראש"],
+          });
+          setAiError(null);
+        } else try {
           const sample = buildMaskedSample(rows, headers, 3);
           const { data, error } = await supabase.functions.invoke("suggest-import-mapping", {
             body: { schemaKey: "suite_arrivals", headers, sampleRows: sample },
@@ -773,6 +784,8 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
               isDayGuest:      !!g.hasDayBooking,
               treatment_count: g.treatment_count ?? 0,
               paymentAmount:   editedAmount ?? (computedAmount || null),
+              leadSource:      g.leadSource ?? null,
+              automationMuted: !!g.automationMuted,
               nights,
             };
           });
@@ -828,6 +841,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           }
         }
 
+        const corporateMuted = merged.filter((g) => g.automationMuted).length;
         setResult({
           mode:   "suites",
           total:  rpcData?.guests ?? profiles.length,
@@ -838,6 +852,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           suites: merged.filter(g => g.hasSuite).length,
           days:   merged.filter(g => g.hasDayBooking && !g.hasSuite).length,
           spa:    gridRows.filter(r => r.spa_time).length,
+          corporateMuted,
         });
 
       // ── PATH B: Daily Report only — ENRICHMENT ONLY ─────────────────────
@@ -1288,7 +1303,10 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
               {result.mode === "suites" ? (
                 <>
                   <div style={{ fontWeight: 800, fontSize: 16, color: "#065f46", marginBottom: 6 }}>
-                    {result.total} אורחים יובאו בהצלחה
+                    יובאו {result.total} אורחים
+                    {result.corporateMuted > 0 && (
+                      <> ({result.corporateMuted} מכירות — ללא אוטומציה)</>
+                    )}
                   </div>
                   <div style={{ fontSize: 13, color: "#065f46", lineHeight: 1.9 }}>
                     🏨 {result.suites} סוויטות ·

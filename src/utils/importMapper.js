@@ -32,7 +32,43 @@ export const SUITE_ARRIVALS_SCHEMA = {
   groupId:      { label: "דגל בילוי-יומי (1 = אורח יומי, ללא לינה)",             required: "optional", defaultPolicy: "0", example: "0" },
   price:        { label: "מחיר",                                             required: "optional", defaultPolicy: "0", example: "1200" },
   arrivalDate:  { label: "תאריך הגעה",                                        required: "soft",     defaultPolicy: "היום (כשאין עמודת תאריך כלל)", example: "2026-06-18" },
+  leadSource:   { label: "מקור הגעה (Lead Source)",                           required: "optional", example: "מחלקת מכירות" },
+  guestPhone:   { label: "טלפון אורח (עמודה ישירה, ללא הערות)",                required: "optional", example: "0522468207" },
 };
+
+/** Lead source value that muzzles all pipeline/cron WhatsApp automation. */
+export const SALES_DEPT_LEAD_SOURCE = "מחלקת מכירות";
+
+export function isAutomationMutedLeadSource(leadSource) {
+  return String(leadSource ?? "").trim() === SALES_DEPT_LEAD_SOURCE;
+}
+
+/**
+ * Preset column mapping for the advanced PMS export (e.g. 01.7.26.csv):
+ * שם מלא, טלפון, מס. הזמנה, מס. לקוח, ת. התחלה, לילות, מקור הגעה.
+ * Returns null when headers do not match this shape.
+ */
+export function detectSuiteArrivalsPreset(headers) {
+  if (!headers?.length) return null;
+  const set = new Set(headers);
+  if (!set.has("מקור הגעה") || !set.has("שם מלא") || !set.has("טלפון")
+      || !set.has("מס. הזמנה") || !set.has("מס. לקוח") || !set.has("ת. התחלה")) {
+    return null;
+  }
+  const priceCol = headers.find((h) => h === "מחיר" || /^מחיר/.test(h)) ?? "מחיר";
+  return {
+    orderNumber: "מס. הזמנה",
+    resLineId:   "מס. לקוח",
+    coordName:   "שם מלא",
+    coordPhone:  "טלפון",
+    guestPhone:  "טלפון",
+    roomName:    "חדרים",
+    nights:      "לילות",
+    price:       priceCol,
+    arrivalDate: "ת. התחלה",
+    leadSource:  "מקור הגעה",
+  };
+}
 
 // ── Schema descriptor — mirrors suggest-import-mapping/index.ts SCHEMAS.inventory_renewal ──
 // parLevel/restockColumn are read as plain computed values, same as every

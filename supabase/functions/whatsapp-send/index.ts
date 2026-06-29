@@ -1381,6 +1381,14 @@ serve(async (req: Request) => {
     if (gErr)   throw new Error(`guest_lookup_error: ${gErr.message}`);
     if (!guest) throw new Error(`guest_not_found: no guest row for id=${JSON.stringify(guestId)}`);
 
+    if (!force && guest.automation_muted === true) {
+      console.log(`[whatsapp-send] skipped trigger="${trigger}" guestId=${guestId} reason=automation_muted`);
+      return new Response(
+        JSON.stringify({ ok: true, skipped: true, reason: "automation_muted" }),
+        { headers: { ...CORS, "Content-Type": "application/json" } },
+      );
+    }
+
     if (force === true || manual_override === true) {
       await cancelScheduledTaskForOverride(guestId, trigger);
     }

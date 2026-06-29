@@ -378,6 +378,10 @@ async function sendStage2PayReply(
   sim: boolean,
   buttonTitle?: string,
 ): Promise<void> {
+  if (guest?.automation_muted === true) {
+    console.info(`[webhook] 💳 Stage 2 Pay skipped — automation_muted guest_id=${guestId ?? "?"}`);
+    return;
+  }
   const payName        = String(guest?.name ?? "").trim() || "אורח יקר";
   const payWorkshopUrl = Deno.env.get("WORKSHOP_SIGNUP_URL") ?? "";
   const payAmount      = String(guest?.payment_amount ?? "");
@@ -1699,7 +1703,7 @@ function normalizePhone(phoneStr: unknown): string {
 // `phone` is needed here (unlike before) because the fallback path compares it
 // in JS instead of letting Postgres filter on it server-side.
 const GUEST_LOOKUP_FIELDS =
-  "id, name, phone, arrival_confirmed, payment_amount, payment_link_url, direct_payment_url, ezgo_portal_url, payment_link_resolution_pending, msg_pre_arrival_2d_sent, needs_callback, requires_attention, arrival_date, room, room_type, spa_time, status, guest_notes, portal_token";
+  "id, name, phone, arrival_confirmed, payment_amount, payment_link_url, direct_payment_url, ezgo_portal_url, payment_link_resolution_pending, msg_pre_arrival_2d_sent, needs_callback, requires_attention, arrival_date, room, room_type, spa_time, status, guest_notes, portal_token, automation_muted";
 
 // ══════════════════════════════════════════════════════════════════════════════
 // §7  MAIN HANDLER

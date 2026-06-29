@@ -64,6 +64,8 @@ const SCHEMAS: Record<string, Record<string, FieldSpec>> = {
     groupId:      { label: "דגל בילוי-יומי (1 = אורח יומי, ללא לינה)",          kind: "value",     required: "optional", defaultPolicy: "0", example: "0" },
     price:        { label: "מחיר",                                          kind: "value",     required: "optional", defaultPolicy: "0", example: "1200" },
     arrivalDate:  { label: "תאריך הגעה",                                     kind: "value",     required: "soft",     defaultPolicy: "היום (כשאין עמודת תאריך כלל)", example: "2026-06-18" },
+    leadSource:   { label: "מקור הגעה (Lead Source)",                        kind: "value",     required: "optional", example: "מחלקת מכירות" },
+    guestPhone:   { label: "טלפון אורח (עמודה ישירה, ללא הערות)",             kind: "value",     required: "optional", example: "0522468207" },
   },
   // Inventory Smart-Intake Module — InventoryImportPanel.js's "חידוש מלאי" card.
   // parLevel/restockColumn are read as PLAIN computed values, same as every

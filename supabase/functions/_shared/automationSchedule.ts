@@ -56,6 +56,7 @@ export interface GuestForSchedule {
   status: string | null;
   checkin_time: string | null;
   needs_callback: boolean | null;
+  automation_muted?: boolean | null;
   [flagColumn: string]: unknown;
 }
 
@@ -100,6 +101,7 @@ export function checkEligibility(
   now: Date,
 ): string | null {
   if (guest.status === "cancelled") return "guest_cancelled";
+  if (guest.automation_muted === true) return "automation_muted";
   if (stage.guest_flag_column && guest[stage.guest_flag_column] === true) return "already_sent";
 
   if (stage.applies_to === "suite" && guest.room_type !== "suite") return "wrong_room_type";

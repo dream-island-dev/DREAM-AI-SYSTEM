@@ -1,3 +1,5 @@
+2026-06-29 | migration 101 + ezgoParser + ArrivalImportPanel + automationSchedule + whatsapp-cron/send/webhook | Advanced PMS CSV (מקור הגעה): lead_source + automation_muted on guests; מחלקת מכירות rows imported but pipeline/cron/stage_2_pay muzzled; preset mapping for 01.7.26-style exports.
+
 2026-06-29 | whatsapp-send + interactiveSend | Stage 2.5 session images: resolveStageSessionImageUrl + sendStageSessionMessage helpers; cron/Send Now routes to session when 24h window open; image+caption via sendImageMessage with wamid assert + session_image_failed on Meta error.
 
 2026-06-29 | whatsapp-send + whatsapp-webhook | Re-added night_before_suites/_shabbat to TEMPLATE_IMAGE_HEADER_DEFAULTS (Meta requires IMAGE header); removed from TEMPLATE_NO_HEADER block list.
@@ -64,3 +66,4 @@
 2026-06-28 | supabase/functions/whatsapp-webhook/index.ts | dateChangeReply + typed date-change handoffMsg updated to Mike's new copy (availability ask before staff callback).
 2026-06-28 | supabase/functions/whatsapp-webhook/index.ts | Gemini askGemini: exponential backoff (4 attempts, Retry-After aware) on 429/5xx/timeouts before next model or Claude failover ? whatsapp-send has no Gemini path.
 2026-06-28 | AICopilot.js + RequestsAlertWidget.js | Draggable FAB widgets: viewport clamp on drag, resize/out-of-bounds snap to default corner + clear stale localStorage, z-index 10400.
+2026-06-29 | migration 105 + _shared/paymentLinkGuard.ts + whatsapp-webhook/whatsapp-send + AutomationControlCenter | Stage 2 Pay guardrails: direct_payment_url validation, ezgo_portal_url async recovery flag, failed_missing_link/processing notification_log statuses, idempotency + 3s inline recovery, dream_payment_and_workshops button token fix.

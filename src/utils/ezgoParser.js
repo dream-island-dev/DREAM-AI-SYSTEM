@@ -45,6 +45,13 @@ const SOURCE_RE = /^(Hotel\s+WebSite|Booking\s+Collect|Booking\.com|Booking|Expe
 // EZGO dummy date sentinel — "01/01/2001" means "no real date assigned"
 const DUMMY_DATE_RE = /^01[/.-]01[/.-](1900|1970|2001)/;
 
+// Sales-dept corporate bookings: stored in DB, pipeline automation disabled.
+const SALES_DEPT_LEAD_SOURCE = "מחלקת מכירות";
+
+function isAutomationMutedLeadSource(leadSource) {
+  return String(leadSource ?? "").trim() === SALES_DEPT_LEAD_SOURCE;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // § PHONE HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
@@ -192,6 +199,7 @@ export function extractGuestDetails(row, columnMapping = {}, fallbackDate = null
   // fallback actually fires when the primary field is an empty string.
   const coordNameRaw = String(val("coordName")  || "").trim();
   const coordPhoneRaw= String(val("coordPhone") || "").trim();
+  const directPhoneRaw = String(val("guestPhone") || "").trim();
   const remark       = String(val("remark")     ?? "").trim();
   const opRemark     = String(val("opRemark")   ?? "").trim();
   const adults       = parseInt(val("adults") ?? "1") || 1;
@@ -200,7 +208,10 @@ export function extractGuestDetails(row, columnMapping = {}, fallbackDate = null
   const checkinTime  = String(val("checkinTime")  ?? "").trim() || null;
   const checkoutTime = String(val("checkoutTime") ?? "").trim() || null;
   const groupId      = parseInt(val("groupId") ?? "0");
-  const price        = parseFloat(val("price") ?? "0") || 0;
+  const priceRaw     = val("price");
+  const price        = parseFloat(String(priceRaw ?? "").replace(/[^\d.-]/g, "")) || 0;
+  const leadSource   = String(val("leadSource") ?? "").trim() || null;
+  const automationMuted = isAutomationMutedLeadSource(leadSource);
 
   // ── Arrival date ─────────────────────────────────────────────────────────
   const arrivalDate = parseDate(val("arrivalDate")) ?? fallbackDate;
@@ -208,6 +219,9 @@ export function extractGuestDetails(row, columnMapping = {}, fallbackDate = null
   // ── Coordinator phone (source value may be 9-digit without leading 0) ────
   const coordE164 = normalizeILMobile(
     /^\d{9}$/.test(coordPhoneRaw) ? `0${coordPhoneRaw}` : coordPhoneRaw
+  );
+  const directE164 = normalizeILMobile(
+    /^\d{9}$/.test(directPhoneRaw) ? `0${directPhoneRaw}` : directPhoneRaw
   );
 
   // ── Phone priority cascade ────────────────────────────────────────────────
@@ -217,7 +231,10 @@ export function extractGuestDetails(row, columnMapping = {}, fallbackDate = null
   let guestPhone;
   let phoneSource; // "individual" | "coordinator"
 
-  if (remarkPhones.length > 0) {
+  if (directE164) {
+    guestPhone  = directE164;
+    phoneSource = "individual";
+  } else if (remarkPhones.length > 0) {
     guestPhone   = remarkPhones[0];
     phoneSource  = "individual";
   } else if (opRemarkPhones.length > 0) {
@@ -271,6 +288,10 @@ export function extractGuestDetails(row, columnMapping = {}, fallbackDate = null
     // ── Category ─────────────────────────────────────────────────────────
     isDayGuest,
     isGroupCoordinator,
+
+    // ── Lead source / automation muzzle (advanced PMS export) ────────────
+    leadSource,
+    automationMuted,
 
     // ── Raw originals (keep for diagnostics / future audit) ──────────────
     _remark:    remark    || null,
@@ -357,6 +378,8 @@ export function aggregateGuestProfiles(rows, columnMapping = {}, fallbackDate = 
       treatment_type:  null,
       meal_plan:       null,
       meal_time:       null,
+      leadSource:      g.leadSource ?? null,
+      automationMuted: !!g.automationMuted,
     });
   });
 
