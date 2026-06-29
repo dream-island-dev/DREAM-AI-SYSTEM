@@ -92,6 +92,140 @@ function normalizePhone(raw) {
   return c.length >= 9 ? c : null;
 }
 
+/** Strip wrapping quotes and unescape doubled quotes from a cell value. */
+export function cleanCsvCell(value) {
+  if (value == null) return "";
+  let s = String(value).trim();
+  if (s.startsWith('"') && s.endsWith('"') && s.length >= 2) {
+    s = s.slice(1, -1).replace(/""/g, '"');
+  }
+  return s.trim();
+}
+
+/**
+ * Fix common PMS export bug: Hebrew legal suffix בע"מ contains an unescaped `"` that
+ * terminates the quoted name field early (e.g. אורמת מערכות בע"מ).
+ */
+function preprocessCsvLine(line) {
+  return String(line)
+    .replace(/בע"מ/g, 'בע""מ')
+    .replace(/בע״מ/g, "בע״מ"); // geresh variant — keep as-is, no ASCII quote
+}
+
+/**
+ * RFC 4180-style CSV line parser — respects quoted fields and escaped `""`.
+ */
+export function parseCsvLine(line) {
+  const fields = [];
+  let field = "";
+  let inQuotes = false;
+  const s = preprocessCsvLine(line);
+
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (s[i + 1] === '"') {
+          field += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        field += c;
+      }
+      continue;
+    }
+    if (c === '"') {
+      inQuotes = true;
+      continue;
+    }
+    if (c === ",") {
+      fields.push(cleanCsvCell(field));
+      field = "";
+      continue;
+    }
+    field += c;
+  }
+  fields.push(cleanCsvCell(field));
+  return fields;
+}
+
+/** Parse full CSV text into a matrix of clean string cells. */
+export function parseCsvText(text) {
+  const normalized = String(text ?? "").replace(/^\uFEFF/, "");
+  const rows = [];
+  let line = "";
+  let inQuotes = false;
+
+  // Line split that respects quoted newlines (rare but safe).
+  for (let i = 0; i < normalized.length; i++) {
+    const c = normalized[i];
+    if (c === '"') {
+      inQuotes = !inQuotes;
+      line += c;
+      continue;
+    }
+    if (!inQuotes && (c === "\n" || (c === "\r" && normalized[i + 1] === "\n"))) {
+      if (c === "\r") i++;
+      if (line.trim()) rows.push(parseCsvLine(line));
+      line = "";
+      continue;
+    }
+    line += c;
+  }
+  if (line.trim()) rows.push(parseCsvLine(line));
+  return rows;
+}
+
+const EXPECTED_DETAILED_COLS = 22;
+
+/** Detect SheetJS / naive reads that collapse each CSV line into a single cell. */
+function isCollapsedCsvRow(row) {
+  if (!row || row.length !== 1) return false;
+  const s = String(row[0] ?? "");
+  return s.includes('","') || (s.includes(",") && s.startsWith('"'));
+}
+
+/** Name cell polluted by SheetJS mis-split (raw CSV fragments in one field). */
+function isBrokenMergedNameCell(value) {
+  const s = String(value ?? "");
+  return s.includes('","') || (/\d{2}\/\d{2}\/\d{4}/.test(s) && /05\d{8}/.test(s));
+}
+
+/**
+ * Normalize input from SheetJS header:1 OR raw text OR collapsed single-column rows.
+ */
+export function normalizeDetailedReservationMatrix(rawRows) {
+  if (!rawRows?.length) return [];
+
+  if (typeof rawRows === "string") {
+    return parseCsvText(rawRows);
+  }
+
+  if (isCollapsedCsvRow(rawRows[0]) || rawRows.every(isCollapsedCsvRow)) {
+    const text = rawRows.map((r) => String(r[0] ?? "")).join("\n");
+    return parseCsvText(text);
+  }
+
+  return rawRows.map((row) => (row || []).map((cell) => cleanCsvCell(cell)));
+}
+
+/** Use quote-safe text parser for .csv and CSV-shaped uploads (not SheetJS). */
+export function shouldParseDetailedReportAsText(fileName, headText = "") {
+  if (/\.csv$/i.test(fileName || "")) return true;
+  const head = String(headText).replace(/^\uFEFF/, "");
+  return head.includes("שם מלא") && (head.includes('"אתר"') || head.includes("מס. הזמנה"));
+}
+
+/**
+ * Preferred entry for .csv uploads — reads file text with quote-safe parser.
+ */
+export function parseDetailedReservationCsvText(text) {
+  const matrix = parseCsvText(text);
+  return parseDetailedReservationRows(matrix);
+}
+
 function headerIndices(headers, name) {
   return headers
     .map((h, i) => (String(h).trim() === name ? i : -1))
@@ -109,7 +243,7 @@ function cell(row, idx) {
  */
 export function isDetailedReservationFormat(headers) {
   if (!headers?.length) return false;
-  const set = new Set(headers.map((h) => String(h).trim()));
+  const set = new Set(headers.map((h) => cleanCsvCell(h)));
   return (
     set.has("שם מלא") &&
     set.has("טלפון") &&
@@ -134,7 +268,12 @@ export function parseDetailedReservationRows(rawRows) {
     return { rows: [], priceConflicts: [] };
   }
 
-  const headers = rawRows[0].map((h) => String(h ?? "").trim());
+  const matrix = normalizeDetailedReservationMatrix(rawRows);
+  if (!matrix.length) {
+    return { rows: [], priceConflicts: [] };
+  }
+
+  const headers = matrix[0].map((h) => cleanCsvCell(h));
   if (!isDetailedReservationFormat(headers)) {
     throw new Error("פורמט לא מזוהה — צפוי דוח הזמנות מפורט (שם מלא, טלפון, מס. הזמנה, ת. התחלה)");
   }
@@ -150,19 +289,23 @@ export function parseDetailedReservationRows(rawRows) {
   const rows = [];
   const priceConflicts = [];
 
-  for (let ri = 1; ri < rawRows.length; ri++) {
-    const row = rawRows[ri];
+  for (let ri = 1; ri < matrix.length; ri++) {
+    const row = matrix[ri];
     if (!row || row.every((c) => c == null || String(c).trim() === "")) continue;
 
-    const guestName = String(cell(row, idx("שם מלא"))).trim();
+    if (row.length !== EXPECTED_DETAILED_COLS || isBrokenMergedNameCell(row[8])) {
+      continue;
+    }
+
+    const guestName = cleanCsvCell(cell(row, idx("שם מלא")));
     const guestPhone = normalizePhone(cell(row, idx("טלפון")));
-    const orderNumber = String(cell(row, idx("מס. הזמנה"))).trim();
-    const resLineId = String(cell(row, idx("מס. לקוח"))).trim();
+    const orderNumber = cleanCsvCell(cell(row, idx("מס. הזמנה")));
+    const resLineId = cleanCsvCell(cell(row, idx("מס. לקוח")));
     const arrivalDate = parseDetailedArrivalDate(cell(row, idx("ת. התחלה")));
-    const roomsCount = parseInt(String(cell(row, idx("חדרים"))).trim(), 10) || 0;
-    const nights = parseInt(String(cell(row, idx("לילות"))).trim(), 10) || 0;
-    const leadSource = String(cell(row, idx("מקור הגעה"))).trim() || null;
-    const extraPhone = String(cell(row, idx("טלפון נוסף"))).trim();
+    const roomsCount = parseInt(cleanCsvCell(cell(row, idx("חדרים"))), 10) || 0;
+    const nights = parseInt(cleanCsvCell(cell(row, idx("לילות"))), 10) || 0;
+    const leadSource = cleanCsvCell(cell(row, idx("מקור הגעה"))) || null;
+    const extraPhone = cleanCsvCell(cell(row, idx("טלפון נוסף")));
     const boardRaw = cell(row, boardCodeIdx);
     const mealLocation = translateBoardBasis(boardRaw);
 
@@ -190,6 +333,7 @@ export function parseDetailedReservationRows(rawRows) {
     const guestNotes = extraPhone ? `טלפון נוסף: ${extraPhone}` : null;
 
     if (!guestName && !guestPhone && !orderNumber) continue;
+    if (isBrokenMergedNameCell(guestName)) continue;
 
     const isDayGuest = nights === 0;
 

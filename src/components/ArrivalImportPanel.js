@@ -31,6 +31,8 @@ import { SUITE_ARRIVALS_SCHEMA, buildMaskedSample, detectSuiteArrivalsPreset } f
 import {
   isDetailedReservationFormat,
   parseDetailedReservationRows,
+  parseDetailedReservationCsvText,
+  shouldParseDetailedReportAsText,
   detailedRowsToProfileMap,
   applyPriceResolutions,
 } from "../utils/detailedReservationParser";
@@ -619,8 +621,29 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     setRawDoc2Rows(null);
     setImportSource(null);
     try {
-      const XLSX = await import("xlsx");
       const buf = await file.arrayBuffer();
+      const headText = new TextDecoder("utf-8").decode(buf.slice(0, 512));
+      const useCsvText = shouldParseDetailedReportAsText(file.name, headText);
+
+      if (useCsvText) {
+        const text = new TextDecoder("utf-8").decode(buf);
+        const { rows, priceConflicts } = parseDetailedReservationCsvText(text);
+        if (!rows.length) {
+          showToast("err", "לא נמצאו שורות תקפות בדוח — בדוק פורמט CSV");
+          return;
+        }
+        if (priceConflicts.length > 0) {
+          setPendingDetailedRows(rows);
+          setPriceConflictQueue(priceConflicts);
+          setPriceConflictIdx(0);
+          setPriceResolutions({});
+          return;
+        }
+        _loadDetailedProfiles(rows, {});
+        return;
+      }
+
+      const XLSX = await import("xlsx");
       const wb = XLSX.read(buf, { type: "array", raw: false });
       const ws = wb.Sheets[wb.SheetNames[0]];
       const rawRows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });

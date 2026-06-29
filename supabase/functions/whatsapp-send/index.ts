@@ -493,7 +493,7 @@ function buildTemplateComponents(
   return components;
 }
 
-// Default session image for Stage 2.5 manual "Send Now" override (24h window open).
+// Default session image for Stage 2.5 manual "Send Now" override (force === true).
 const NIGHT_BEFORE_OVERRIDE_SESSION_IMAGE =
   "https://dream-ai-system.vercel.app/images/image_3cde8f.jpg";
 
@@ -1535,9 +1535,10 @@ serve(async (req: Request) => {
     // Day-pass guests use trigger 'night_before_daypass' (generic BRANCH D below).
     //
     // Routing rule (Stage 2.5 session images):
-    //   • 24h window open (most post-confirmation guests) OR force_channel=session_message
-    //     → bot_script free text + optional session_message_image_url (type:image + caption).
-    //   • Window closed / force_channel=meta_template → night_before_suites / _shabbat template.
+    //   • Manual force (force===true) → ALWAYS session_message; ignores window,
+    //     Shabbat/weekday Meta templates, and force_channel=meta_template.
+    //   • Auto: 24h window open OR force_channel=session_message → bot_script free text.
+    //   • Auto: window closed / force_channel=meta_template → night_before_suites / _shabbat.
     type NightBeforeDispatch =
       | { channel: "text";     freeTextKey: string;   guestName: string; sessionImageUrl?: string }
       | { channel: "template"; templateName: string;  vars: string[];   buttonUrlParam?: string };
@@ -1548,9 +1549,8 @@ serve(async (req: Request) => {
       const windowOpen = isWindowOpen(guest.wa_window_expires_at);
       const isForceOverride = force === true;
 
-      // ZERO-GUARD: manual force + open 24h window → session image+text immediately.
-      // Ignores force_channel=meta_template, room_type/applies_to, and schedule date delta.
-      const forceSessionImmediate = isForceOverride && windowOpen;
+      // EMERGENCY OVERRIDE: manual "שלח עכשיו" — total bypass of window + schedule gates.
+      const forceSessionImmediate = isForceOverride;
 
       console.log("=== STAGE 2.5 FORCE ATTEMPT ===");
       console.log("Guest:", guest.name, "Room Type:", guest.room_type, "Arrival:", guest.arrival_date);
@@ -1571,23 +1571,31 @@ serve(async (req: Request) => {
         ? (resolveStageSessionImageUrl(stageRow, requestImageUrl) ?? NIGHT_BEFORE_OVERRIDE_SESSION_IMAGE)
         : resolveStageSessionImageUrl(stageRow, requestImageUrl);
 
-      console.log(
-        `[whatsapp-send] night_before: route_decision useSession=${useSessionChannel} ` +
-        `session_image=${sessionImage ? sessionImage.slice(0, 64) : "none"}`,
-      );
       const guestName = sanitizeTemplateVars([String(guest.name ?? "")])[0];
-      const arrivalDateStr = String(guest.arrival_date ?? "");
-      const isShabbat = new Date(`${arrivalDateStr}T00:00:00Z`).getUTCDay() === 6;
-      const templateName = isShabbat ? "night_before_suites_shabbat" : "night_before_suites";
-      const templateVars = buildNameOnlyTemplateVars(guest);
 
-      if (useSessionChannel) {
+      if (forceSessionImmediate) {
+        // STRICT: session_message only — no Shabbat/weekday Meta evaluation.
+        nightBeforeDispatch = {
+          channel: "text",
+          freeTextKey: sessionScriptKey,
+          guestName,
+          sessionImageUrl: sessionImage,
+        };
+        console.log(
+          `[whatsapp-send] night_before: route=session_message FORCE guest_id=${guestId} ` +
+          `script=${sessionScriptKey} image=${sessionImage?.slice(0, 64) ?? "default"}`,
+        );
+      } else if (useSessionChannel) {
         nightBeforeDispatch = { channel: "text", freeTextKey: sessionScriptKey, guestName, sessionImageUrl: sessionImage };
         console.log(
           `[whatsapp-send] night_before: route=session_message guest_id=${guestId} ` +
           `script=${sessionScriptKey} has_image=${!!sessionImage}`,
         );
       } else {
+        const arrivalDateStr = String(guest.arrival_date ?? "");
+        const isShabbat = new Date(`${arrivalDateStr}T00:00:00Z`).getUTCDay() === 6;
+        const templateName = isShabbat ? "night_before_suites_shabbat" : "night_before_suites";
+        const templateVars = buildNameOnlyTemplateVars(guest);
         nightBeforeDispatch = { channel: "template", templateName, vars: templateVars };
         console.log(
           `[whatsapp-send] night_before: route=meta_template guest_id=${guestId} ` +
@@ -1614,8 +1622,7 @@ serve(async (req: Request) => {
       try {
         if (!sim) {
           if (nightBeforeDispatch.channel === "text") {
-            const nbWindowOpen = isWindowOpen(guest.wa_window_expires_at);
-            const nbForceSessionImmediate = force === true && nbWindowOpen;
+            const nbForceSessionImmediate = force === true;
             nbSessionImageUrl =
               nightBeforeDispatch.sessionImageUrl
               ?? resolveStageSessionImageUrl(stageRow, requestImageUrl)
@@ -1667,6 +1674,12 @@ serve(async (req: Request) => {
               );
             }
           } else {
+            if (force === true) {
+              throw new Error(
+                "night_before_force_meta_blocked — manual Send Now must use session_message only; " +
+                "check bot_scripts.night_before_reminder has message_text",
+              );
+            }
             // Template path: IMAGE header from TEMPLATE_IMAGE_HEADER_DEFAULTS or session_message_image_url.
             console.log(
               `[whatsapp-send] night_before Stage2.5 pre-send: template=${nightBeforeDispatch.templateName} ` +

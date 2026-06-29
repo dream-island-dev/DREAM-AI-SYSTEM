@@ -1,3 +1,7 @@
+2026-06-29 | whatsapp-send/index.ts | Stage 2.5 force override: session_message always on manual Send Now — bypass window/Shabbat/Meta routing; fail visible on missing script.
+
+2026-06-29 | detailedReservationParser.js + ArrivalImportPanel.js | CSV quote-safe parser (RFC4180 + בע\"מ fix); .csv read as text not SheetJS — fixes raw CSV dumped into guest name.
+
 2026-06-29 | GuestPortal.js + guest-portal-data | Secure payment CTA below itinerary (payment_url/balance/pending only); muted gold styling. Build clean.
 
 2026-06-29 | src/components/GuestPortal.js | ItineraryPanel + DayUseView: בסיס אירוח row (🍴 meal_location) directly under spa; conditional render; meal_time row separate.
