@@ -169,6 +169,10 @@ const T = {
     routeDispatch: "🚀 שלח משימה",
     routeCancel: "ביטול",
     routeBack: "← חזרה",
+    dismissAllAlerts: "ניקוי כל ההתראות",
+    dismissAllConfirm: "האם אתה בטוח שברצונך לאפס את כל התראות הקבלה?",
+    dismissAllDone: (n) => `✓ אופסו ${n} התראות`,
+    dismissAllNone: "אין התראות פעילות ברשימה",
   },
   en: {
     dir: "ltr",
@@ -211,6 +215,10 @@ const T = {
     routeDispatch: "🚀 Dispatch task",
     routeCancel: "Cancel",
     routeBack: "← Back",
+    dismissAllAlerts: "Clear all alerts",
+    dismissAllConfirm: "Clear all reception alerts in the current list?",
+    dismissAllDone: (n) => `✓ Cleared ${n} alert(s)`,
+    dismissAllNone: "No active alerts in list",
   },
 };
 
@@ -1799,6 +1807,7 @@ export default function WhatsAppInbox({ user }) {
   const [editGuestTarget, setEditGuestTarget] = useState(null); // full guests row, or {phone} skeleton for "create new"
   const [editGuestLoading, setEditGuestLoading] = useState(false);
   const [claimBusy, setClaimBusy] = useState(false);
+  const [dismissAllBusy, setDismissAllBusy] = useState(false);
   // ── Smart Inbox AI Copilot state (Sprint 1: on-demand AI suggestions;
   // Sprint 2: task-routing sub-category picker) ─────────────────────────────
   const [aiSuggestions, setAiSuggestions] = useState(null); // string[] | null — null = not generated yet
@@ -1980,6 +1989,41 @@ export default function WhatsAppInbox({ user }) {
       setError("שגיאה בסימון כטופל: " + (e?.message ?? e));
     }
   }, [applyGrouping]);
+
+  // ── Bulk dismiss — all human-request alerts in the visible roster ─────────
+  const dismissAllAlerts = useCallback(async (alertContacts) => {
+    if (!alertContacts.length) return;
+    if (!window.confirm(t.dismissAllConfirm)) return;
+
+    const alertPhones = new Set(alertContacts.map((c) => c.phone));
+    const allVariants = [...new Set(alertContacts.flatMap((c) => phoneVariants(c.phone)))];
+
+    setDismissAllBusy(true);
+    try {
+      const [{ error: convErr }, { error: guestErr }] = await Promise.all([
+        supabase.from("whatsapp_conversations")
+          .update({ human_requested: false })
+          .in("phone", allVariants)
+          .eq("human_requested", true),
+        supabase.from("guests")
+          .update({ needs_callback: false })
+          .in("phone", allVariants),
+      ]);
+      if (convErr) throw convErr;
+      if (guestErr) throw guestErr;
+
+      allMsgsRef.current = allMsgsRef.current.map((m) =>
+        alertPhones.has(m.phone) ? { ...m, human_requested: false } : m
+      );
+      setContacts(applyGrouping(allMsgsRef.current));
+      setRouteToast(t.dismissAllDone(alertContacts.length));
+      setTimeout(() => setRouteToast(null), 3500);
+    } catch (e) {
+      setError("שגיאה בניקוי התראות: " + (e?.message ?? e));
+    } finally {
+      setDismissAllBusy(false);
+    }
+  }, [applyGrouping, t]);
 
   // ── Claim / take-over / release a guest's conversation ───────────────────
   // Persists to guests.claimed_by/claimed_at (migration 081) so the
@@ -2456,6 +2500,7 @@ export default function WhatsAppInbox({ user }) {
 
   // ── Derived state ──────────────────────────────────────────────────────────
   const visibleContacts = contacts.filter((c) => !archivedPhones.has(c.phone));
+  const alertContacts = visibleContacts.filter((c) => c.humanRequested);
   // Contextual macros take over the quick-actions drawer when this guest has
   // usable metadata; otherwise fall back to the generic list so the drawer
   // never renders empty (Sprint 9.4, point 4).
@@ -2474,13 +2519,44 @@ export default function WhatsAppInbox({ user }) {
     <div style={{ height: "100%", overflowY: "auto", background: "#ffffff" }}>
       <div style={{
         padding: "10px 14px", borderBottom: "1px solid #f0f0f0",
-        display: "flex", justifyContent: "space-between", alignItems: "center",
-        background: "#F7F7F7", position: "sticky", top: 0, zIndex: 1,
+        display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8,
+        background: "#F7F7F7", position: "sticky", top: 0, zIndex: 1, flexWrap: "wrap",
       }}>
         <span style={{ fontWeight: 700, fontSize: 12, color: "#555" }}>
           {t.listCount(visibleContacts.length)}
         </span>
-        {loading && <span style={{ fontSize: 11, color: "#aaa" }}>{t.syncing}</span>}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginInlineStart: "auto" }}>
+          {loading && <span style={{ fontSize: 11, color: "#aaa" }}>{t.syncing}</span>}
+          <button
+            type="button"
+            onClick={() => dismissAllAlerts(alertContacts)}
+            disabled={dismissAllBusy || alertContacts.length === 0}
+            title={alertContacts.length === 0 ? t.dismissAllNone : t.dismissAllAlerts}
+            style={{
+              display: "inline-flex", alignItems: "center", gap: 5,
+              padding: "5px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700,
+              fontFamily: "Heebo, sans-serif",
+              background: alertContacts.length === 0 ? "#EEEAE3" : "var(--ivory, #F5F0E8)",
+              color: alertContacts.length === 0 ? "#9CA3AF" : "var(--gold-dark, #A8843A)",
+              border: `1px solid ${alertContacts.length === 0 ? "#E5E7EB" : "var(--border, #E0D5C5)"}`,
+              cursor: dismissAllBusy || alertContacts.length === 0 ? "not-allowed" : "pointer",
+              opacity: dismissAllBusy ? 0.7 : 1,
+              whiteSpace: "nowrap",
+              minHeight: isMobile ? 36 : "auto",
+            }}
+          >
+            {dismissAllBusy ? "⏳" : "✓"}
+            {t.dismissAllAlerts}
+            {alertContacts.length > 0 && !dismissAllBusy && (
+              <span style={{
+                background: "var(--gold, #C9A96E)", color: "#1A1A1A",
+                borderRadius: 10, padding: "0 6px", fontSize: 10, fontWeight: 800,
+              }}>
+                {alertContacts.length}
+              </span>
+            )}
+          </button>
+        </div>
       </div>
       {!loading && visibleContacts.length === 0 && (
         <div style={{ padding: 24, textAlign: "center", color: "#aaa" }}>
@@ -3025,6 +3101,15 @@ export default function WhatsAppInbox({ user }) {
           </button>
         </div>
       </div>
+
+      {routeToast && (
+        <div style={{
+          padding: "8px 16px", background: "#E8F5EF", color: "#065F46",
+          fontSize: 12, fontWeight: 700, flexShrink: 0, borderBottom: "1px solid #A7F3D0",
+        }}>
+          {routeToast}
+        </div>
+      )}
 
       {/* Body */}
       {isMobile ? (
