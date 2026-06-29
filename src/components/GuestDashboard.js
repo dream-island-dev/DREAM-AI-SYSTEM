@@ -535,7 +535,15 @@ export default function GuestDashboard({ user }) {
 
       {/* Guest profile slide-out — click a guest's name to open */}
       {profileGuest && (
-        <CustomerProfilePane guest={profileGuest} onClose={() => setProfileGuest(null)} />
+        <CustomerProfilePane
+          guest={profileGuest}
+          onClose={() => setProfileGuest(null)}
+          showToast={showToast}
+          onGuestUpdated={(updated) => {
+            setProfileGuest(updated);
+            setGuests((prev) => prev.map((g) => (g.id === updated.id ? { ...g, ...updated } : g)));
+          }}
+        />
       )}
 
       {/* Guest list */}

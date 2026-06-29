@@ -1,16 +1,15 @@
 // src/components/CustomerProfilePane.js
-// Slide-out guest profile drawer — Session 27 Sprint 4.5.2.
-// Read-only stay summary: total nights + official departure date/time.
-// Departure TIME isn't a guests column (departure_date is DATE-only) — the
-// real per-booking value lives on suite_rooms.checkout_time (EZGO import,
-// migration 046), looked up here by phone, same join pattern GuestsPage.js
-// already uses for room/suite_type. Falls back to bot_config's seeded
-// 'hotel_checkout_time' default ("11:00", migration 015) when no per-booking
-// row exists, instead of inventing a time that isn't in the data anywhere.
+// Slide-out guest drawer — stay summary + Smart Guest Profile (session 62/64).
 import { useState, useEffect } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
+import GuestAttentionBadge from "./GuestAttentionBadge";
+import GuestProfileModal from "./GuestProfileModal";
+import {
+  getProfileDisplayChips,
+  hasMeaningfulProfile,
+} from "../data/guestProfileSchema";
 
-const DEFAULT_CHECKOUT_TIME = "11:00"; // mirrors bot_config.hotel_checkout_time's seeded default
+const DEFAULT_CHECKOUT_TIME = "11:00";
 
 function nightsBetween(arrivalDate, departureDate) {
   if (!arrivalDate || !departureDate) return null;
@@ -26,25 +25,30 @@ function fmtDateHe(iso) {
   return d.toLocaleDateString("he-IL", { weekday: "long", day: "2-digit", month: "2-digit", year: "numeric" });
 }
 
-export default function CustomerProfilePane({ guest, onClose }) {
+export default function CustomerProfilePane({ guest, onClose, onGuestUpdated, showToast }) {
+  const [liveGuest, setLiveGuest] = useState(guest);
+  const [profileOpen, setProfileOpen] = useState(false);
   const [checkoutTime, setCheckoutTime] = useState(null);
   const [loadingCheckout, setLoadingCheckout] = useState(true);
   const [linkCopied, setLinkCopied] = useState(false);
 
-  // ── Copy the guest's magic-link Portal URL (GuestPortal.js, /portal/:token,
-  // Pre-Arrival Guest Portal session) — portal_token is the credential, NOT
-  // guest.phone, so this is the only place staff get the real shareable link.
+  useEffect(() => {
+    setLiveGuest(guest);
+  }, [guest]);
+
+  const handleGuestUpdated = (updated) => {
+    setLiveGuest(updated);
+    onGuestUpdated?.(updated);
+  };
+
   async function copyPortalLink() {
-    if (!guest?.portal_token) return;
-    const url = `${window.location.origin}/portal/${guest.portal_token}`;
+    if (!liveGuest?.portal_token) return;
+    const url = `${window.location.origin}/portal/${liveGuest.portal_token}`;
     try {
       await navigator.clipboard.writeText(url);
       setLinkCopied(true);
       setTimeout(() => setLinkCopied(false), 2200);
     } catch {
-      // Clipboard API can fail (permissions / non-secure context) — fall back
-      // to a visible prompt so staff can still copy it manually instead of
-      // the click silently doing nothing (FAIL VISIBLE).
       window.prompt("העתיקו את הקישור לפורטל האורח:", url);
     }
   }
@@ -53,11 +57,11 @@ export default function CustomerProfilePane({ guest, onClose }) {
     let active = true;
     (async () => {
       setLoadingCheckout(true);
-      if (isSupabaseConfigured && supabase && guest?.phone) {
+      if (isSupabaseConfigured && supabase && liveGuest?.phone) {
         const { data } = await supabase
           .from("suite_rooms")
           .select("checkout_time")
-          .eq("guest_phone", guest.phone)
+          .eq("guest_phone", liveGuest.phone)
           .not("checkout_time", "is", null)
           .limit(1)
           .maybeSingle();
@@ -66,12 +70,20 @@ export default function CustomerProfilePane({ guest, onClose }) {
       if (active) setLoadingCheckout(false);
     })();
     return () => { active = false; };
-  }, [guest?.phone]);
+  }, [liveGuest?.phone]);
 
-  if (!guest) return null;
+  if (!liveGuest) return null;
 
-  const nights = nightsBetween(guest.arrival_date, guest.departure_date);
+  const nights = nightsBetween(liveGuest.arrival_date, liveGuest.departure_date);
   const effectiveCheckoutTime = checkoutTime || DEFAULT_CHECKOUT_TIME;
+  const profileChips = getProfileDisplayChips(liveGuest.guest_profile, liveGuest.arrival_time);
+  const p = liveGuest.guest_profile && typeof liveGuest.guest_profile === "object"
+    ? liveGuest.guest_profile
+    : {};
+  const staffNote = typeof p.staff_note === "string" ? p.staff_note.trim() : "";
+  const dietaryNote = p.dietary?.note?.trim?.() ?? "";
+  const arrivalNote = p.arrival_context?.note?.trim?.() ?? "";
+  const occasionNote = p.occasion?.note?.trim?.() ?? "";
 
   return (
     <div
@@ -94,9 +106,22 @@ export default function CustomerProfilePane({ guest, onClose }) {
 
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18 }}>
           <div>
-            <div style={{ fontSize: 19, fontWeight: 800, color: "var(--black)" }}>{guest.name}</div>
-            {guest.phone && (
-              <div style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 2 }}>📞 {guest.phone}</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 19, fontWeight: 800, color: "var(--black)" }}>{liveGuest.name}</span>
+              <GuestAttentionBadge
+                guest={liveGuest}
+                onUpdated={handleGuestUpdated}
+                showToast={showToast}
+              />
+              {liveGuest.arrival_confirmed && (
+                <span style={{
+                  fontSize: 10, background: "#E8F5EF", color: "#1A7A4A",
+                  padding: "2px 6px", borderRadius: 8, fontWeight: 700,
+                }}>✓ אישר הגעה</span>
+              )}
+            </div>
+            {liveGuest.phone && (
+              <div style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 2 }}>📞 {liveGuest.phone}</div>
             )}
           </div>
           <button
@@ -108,16 +133,65 @@ export default function CustomerProfilePane({ guest, onClose }) {
           >✕</button>
         </div>
 
-        {guest.room && (
+        {liveGuest.room && (
           <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 12 }}>
-            🚪 {guest.room}
+            🚪 {liveGuest.room}
           </div>
         )}
 
+        {/* Smart Guest Profile — same data as red-alert modal */}
+        <div style={{
+          background: "var(--ivory)", borderRadius: 12, padding: "12px 14px",
+          marginBottom: 14, border: "1px solid var(--border)",
+        }}>
+          <div style={{
+            display: "flex", justifyContent: "space-between", alignItems: "center",
+            marginBottom: profileChips.length || staffNote ? 10 : 0,
+          }}>
+            <span style={{ fontSize: 12, fontWeight: 800, color: "var(--gold-dark)" }}>📋 פרופיל אורח</span>
+            <button
+              type="button"
+              onClick={() => setProfileOpen(true)}
+              style={{
+                padding: "4px 10px", borderRadius: 8, border: "1px solid var(--gold)",
+                background: "rgba(201,169,110,0.12)", color: "var(--gold-dark)",
+                fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "Heebo,sans-serif",
+              }}
+            >
+              {hasMeaningfulProfile(liveGuest.guest_profile) || liveGuest.arrival_time ? "✏️ ערוך" : "+ הוסף"}
+            </button>
+          </div>
+          {profileChips.length > 0 ? (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {profileChips.map((chip) => (
+                <span
+                  key={chip}
+                  style={{
+                    fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 20,
+                    background: "var(--card-bg)", border: "1px solid var(--gold)",
+                    color: "var(--gold-dark)",
+                  }}
+                >
+                  {chip}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <div style={{ fontSize: 12, color: "var(--text-muted)" }}>אין תגיות פרופיל — לחץ הוסף</div>
+          )}
+          {(staffNote || dietaryNote || arrivalNote || occasionNote) && (
+            <div style={{ marginTop: 10, fontSize: 12, color: "#444", lineHeight: 1.5 }}>
+              {[staffNote, dietaryNote, arrivalNote, occasionNote].filter(Boolean).map((line, i) => (
+                <div key={i} style={{ marginTop: i ? 4 : 0 }}>{line}</div>
+              ))}
+            </div>
+          )}
+        </div>
+
         <button
           onClick={copyPortalLink}
-          disabled={!guest.portal_token}
-          title={!guest.portal_token ? "אין קישור פורטל לאורח זה" : undefined}
+          disabled={!liveGuest.portal_token}
+          title={!liveGuest.portal_token ? "אין קישור פורטל לאורח זה" : undefined}
           style={{
             display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
             width: "100%", padding: "9px 12px", borderRadius: 10, marginBottom: 16,
@@ -125,8 +199,8 @@ export default function CustomerProfilePane({ guest, onClose }) {
             background: linkCopied ? "#ECFDF5" : "var(--ivory)",
             color: linkCopied ? "#16A34A" : "var(--gold-dark)",
             fontSize: 13, fontWeight: 700, fontFamily: "Heebo, sans-serif",
-            cursor: guest.portal_token ? "pointer" : "not-allowed",
-            opacity: guest.portal_token ? 1 : 0.5,
+            cursor: liveGuest.portal_token ? "pointer" : "not-allowed",
+            opacity: liveGuest.portal_token ? 1 : 0.5,
           }}
         >
           {linkCopied ? "✓ הקישור הועתק" : "🔗 העתק קישור לפורטל האורח"}
@@ -152,11 +226,11 @@ export default function CustomerProfilePane({ guest, onClose }) {
         <div style={{ borderTop: "1px solid var(--border)", paddingTop: 16, display: "flex", flexDirection: "column", gap: 10 }}>
           <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
             <span style={{ color: "var(--text-muted)" }}>תאריך הגעה</span>
-            <span style={{ fontWeight: 700 }}>{fmtDateHe(guest.arrival_date)}</span>
+            <span style={{ fontWeight: 700 }}>{fmtDateHe(liveGuest.arrival_date)}</span>
           </div>
           <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
             <span style={{ color: "var(--text-muted)" }}>תאריך עזיבה רשמי</span>
-            <span style={{ fontWeight: 700 }}>{fmtDateHe(guest.departure_date)}</span>
+            <span style={{ fontWeight: 700 }}>{fmtDateHe(liveGuest.departure_date)}</span>
           </div>
           {!checkoutTime && !loadingCheckout && (
             <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
@@ -165,6 +239,17 @@ export default function CustomerProfilePane({ guest, onClose }) {
           )}
         </div>
       </div>
+
+      {profileOpen && (
+        <GuestProfileModal
+          guest={liveGuest}
+          onClose={() => setProfileOpen(false)}
+          onUpdated={handleGuestUpdated}
+          showToast={showToast}
+          showMarkHandled={!!liveGuest.requires_attention}
+          heading="📋 פרופיל אורח חכם"
+        />
+      )}
     </div>
   );
 }

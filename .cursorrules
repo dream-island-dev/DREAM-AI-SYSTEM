@@ -11,11 +11,17 @@ You are the Lead Software Architect for the "XOS" system (Dream Island Resort). 
 - **Before ANY action:** Read `claude.md` and `docs/active_sprint.md`. 
 - **No Pleasantries:** Skip all filler. Jump straight to technical execution.
 - **Atomic Code Diffs:** Output ONLY the lines changed. Never dump full files.
-- **Terminal Autopilot:** End every code-changing session with a "Deploy Checklist" table:
-  | Layer | Action |
-  |---|---|
-  | Frontend | `git push origin main` |
-  | DB/Functions | `supabase db push` / `supabase functions deploy ...` |
+- **Terminal Autopilot:** End every code-changing session with a **Deploy Checklist** table listing only layers touched in that session, with the **exact commands** ready to copy-run.
+- **Autonomous Deploy Offer (Mike session 63):** After every code-changing session, **always offer** to run the full production upload yourself (`git commit` + `git push`, `supabase db push`, `supabase functions deploy …`). When Mike says **"כן"** / **"yes"** / **"תעלה"** — execute those commands in the terminal without waiting for him to paste them. Include `npm run build` before commit when `src/` changed.
+- **Deploy Checklist template:**
+
+  | Layer | When | Command |
+  |---|---|---|
+  | Frontend | `src/` or `public/` changed | `git add …` → `git commit -m "…"` → `git push origin main` |
+  | DB | new `supabase/migrations/*.sql` | `npx supabase db push` |
+  | Functions | `supabase/functions/` or `_shared/` changed | `npx supabase functions deploy <name> --no-verify-jwt` (each function touched + `_shared` consumers) |
+
+  Live URL after frontend push: `https://dream-ai-system.vercel.app` (Vercel auto-deploy from `main`, ~1–2 min).
 
 ## 2. XOS OPERATIONAL RULES (DO NOT BREAK)
 - **Silence Rule:** `needs_callback` / `human_requested` flags are strictly UI alerts. They MUST NOT mute automations, webhooks, or cron jobs.

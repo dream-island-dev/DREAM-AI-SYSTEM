@@ -1,3 +1,4 @@
+2026-06-30 | CustomerProfilePane.js | Smart profile chips + red alert badge + edit modal in guest name drawer (GuestsPage + GuestDashboard).
 2026-06-30 | guestProfileSchema + guestProfile.ts | Removed profile options: VVIP, shuttle_needed (kosher_strict/halal/seafood allergy already absent).
 2026-06-30 | WhatsAppInbox.js | Guest notes banner collapsed by default with ✕ dismiss; minHeight:0 on message scroll fixes overlap; slightly larger bubble text for readability.
 2026-06-29 | CLAUDE.md §4/§6/§7 | Doc sync: receptionist RBAC (full Sidebar + ops/inbox/vouchers/data_sync); Record-Only ETA pipeline + arrival_time; future suite routing to 120363429859248777@g.us + LLM English translation.

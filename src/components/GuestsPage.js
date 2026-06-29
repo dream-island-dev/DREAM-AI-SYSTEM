@@ -337,7 +337,15 @@ export default function GuestsPage() {
       {/* ── Read-only profile drawer (nights/checkout/portal link) — same
           component + click pattern as GuestDashboard.js's "ניהול אורחים" ── */}
       {profileGuest && (
-        <CustomerProfilePane guest={profileGuest} onClose={() => setProfileGuest(null)} />
+        <CustomerProfilePane
+          guest={profileGuest}
+          onClose={() => setProfileGuest(null)}
+          showToast={showToast}
+          onGuestUpdated={(updated) => {
+            setProfileGuest(updated);
+            setGuests((prev) => prev.map((x) => (x.id === updated.id ? { ...x, ...updated } : x)));
+          }}
+        />
       )}
 
       {toast && (

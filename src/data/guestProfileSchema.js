@@ -168,3 +168,24 @@ export function toggleTag(tags, tagId) {
   else set.add(tagId);
   return [...set];
 }
+
+/** Chip labels for read-only UI (CustomerProfilePane, list previews). */
+export function getProfileDisplayChips(profile, arrivalTime) {
+  const p = normalizeGuestProfile(profile);
+  const chips = [];
+
+  if (p.vip_status === "vip") chips.push(labelById(VIP_STATUSES, "vip"));
+
+  if (p.occasion.type !== "none") {
+    let chip = labelById(OCCASION_TYPES, p.occasion.type);
+    if (p.occasion.date) chip += ` ${p.occasion.date}`;
+    chips.push(chip);
+  }
+
+  p.dietary.tags.forEach((t) => chips.push(labelById(DIETARY_TAGS, t)));
+  p.arrival_context.tags.forEach((t) => chips.push(labelById(ARRIVAL_CONTEXT_TAGS, t)));
+
+  if (arrivalTime) chips.push(`🕐 ETA ${arrivalTime}`);
+
+  return chips;
+}
