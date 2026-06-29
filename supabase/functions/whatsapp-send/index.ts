@@ -62,6 +62,45 @@ const WORKSHOP_SIGNUP_URL = Deno.env.get("WORKSHOP_SIGNUP_URL") ?? "dream-island
 // Matches the live Vercel deployment (CLAUDE.md §1 Live URL).
 const PORTAL_BASE_URL = "https://dream-ai-system.vercel.app";
 
+/** Substitute Meta positional vars {{1}}, {{2}}, … into template body text. */
+function substituteMetaTemplateVars(body: string, vars: string[]): string {
+  let out = body;
+  vars.forEach((v, i) => {
+    out = out.replace(new RegExp(`\\{\\{\\s*${i + 1}\\s*\\}\\}`, "g"), v || "-");
+  });
+  return out;
+}
+
+function truncateConversationLog(text: string): string {
+  const t = text.trim();
+  return t.length > 4000 ? `${t.slice(0, 3997)}…` : t;
+}
+
+/** Resolve human-readable inbox log text for a Meta template send. */
+async function buildConversationLogFromTemplate(
+  supabase: ReturnType<typeof createClient>,
+  templateName: string,
+  vars: string[],
+): Promise<string> {
+  const { data: mt } = await supabase
+    .from("message_templates")
+    .select("content")
+    .eq("wa_template_name", templateName)
+    .maybeSingle();
+  let body = mt?.content?.trim() ?? "";
+  if (!body) {
+    const { data: bs } = await supabase
+      .from("bot_scripts")
+      .select("message_text")
+      .eq("meta_template_name", templateName)
+      .maybeSingle();
+    body = bs?.message_text?.trim() ?? "";
+  }
+  if (body) return truncateConversationLog(substituteMetaTemplateVars(body, vars));
+  const varsHint = vars.length ? ` (${vars.join(" | ")})` : "";
+  return truncateConversationLog(`📋 תבנית Meta: ${templateName}${varsHint}`);
+}
+
 // ── Pipeline trigger → approved WA template name ─────────────────────────────
 // Each key maps to a template registered & approved in Meta WhatsApp Manager.
 //
@@ -1142,11 +1181,12 @@ serve(async (req: Request) => {
       // "...insert(...).catch is not a function" instead of swallowing the error.
       if (status === "sent" || status === "simulated") {
         try {
+          const broadcastConvMsg = await buildConversationLogFromTemplate(supabase, waTemplateName, vars);
           const { error: convErr } = await supabase.from("whatsapp_conversations").insert({
             phone:         guest.phone as string,
             guest_id:      guestId,
             direction:     "outbound",
-            message:       `[תבנית: ${waTemplateName}]`,
+            message:       broadcastConvMsg,
             wa_message_id: null,
           });
           if (convErr) console.warn("[whatsapp-send] broadcast conversation log failed (non-blocking):", convErr.message);
@@ -1504,11 +1544,12 @@ serve(async (req: Request) => {
 
       if (fmStatus === "sent" || fmStatus === "simulated") {
         try {
+          const fmConvMsg = await buildConversationLogFromTemplate(supabase, forcedTmpl, forcedVars);
           await supabase.from("whatsapp_conversations").insert({
             phone: targetPhone,
             guest_id: guestId,
             direction: "outbound",
-            message: `[תבנית: ${forcedTmpl}]`,
+            message: fmConvMsg,
             wa_message_id: null,
           });
         } catch { /* best-effort */ }
@@ -1618,6 +1659,7 @@ serve(async (req: Request) => {
       let nbError: string | null = null;
       let nbSessionKind: string | null = null;
       let nbSessionImageUrl: string | undefined;
+      let nbConvMessage = "";
 
       try {
         if (!sim) {
@@ -1646,14 +1688,16 @@ serve(async (req: Request) => {
               const arrivalDateStr = String(guest.arrival_date ?? "");
               const isShabbatFb = new Date(`${arrivalDateStr}T00:00:00Z`).getUTCDay() === 6;
               const fbTemplate = isShabbatFb ? "night_before_suites_shabbat" : "night_before_suites";
+              const fbVars = buildNameOnlyTemplateVars(guest);
               await sendViaTemplate(
                 String(guest.phone),
                 fbTemplate,
-                buildNameOnlyTemplateVars(guest),
+                fbVars,
                 "he",
                 undefined,
                 nbSessionImageUrl,
               );
+              nbConvMessage = await buildConversationLogFromTemplate(supabase, fbTemplate, fbVars);
             } else {
               const nbTimes = await resolveNightBeforeTimes(supabase, String(guest.arrival_date ?? ""));
               const nbPortalUrl = guest.portal_token
@@ -1665,6 +1709,7 @@ serve(async (req: Request) => {
                 checkInTime: nbTimes.checkInTime,
                 portalUrl: nbPortalUrl,
               });
+              nbConvMessage = truncateConversationLog(textBody);
               nbSessionKind = await sendStageSessionMessage(
                 String(guest.phone),
                 textBody,
@@ -1693,6 +1738,11 @@ serve(async (req: Request) => {
               "he",
               undefined,
               stageRow?.session_message_image_url ?? requestImageUrl,
+            );
+            nbConvMessage = await buildConversationLogFromTemplate(
+              supabase,
+              nightBeforeDispatch.templateName,
+              nightBeforeDispatch.vars,
             );
           }
           nbStatus = "sent";
@@ -1733,9 +1783,7 @@ serve(async (req: Request) => {
             phone:         String(guest.phone),
             guest_id:      guestId,
             direction:     "outbound",
-            message:       nightBeforeDispatch.channel === "text"
-              ? `[סקריפט: ${nightBeforeDispatch.freeTextKey}]`
-              : `[תבנית: ${nightBeforeDispatch.templateName}]`,
+            message:       nbConvMessage || `[תבנית: ${nightBeforeDispatch.channel === "template" ? nightBeforeDispatch.templateName : nightBeforeDispatch.freeTextKey}]`,
             wa_message_id: null,
           });
           if (convErr) console.warn("[whatsapp-send] night_before conv log failed (non-blocking):", convErr.message);
@@ -1779,6 +1827,7 @@ serve(async (req: Request) => {
       let dpStatus = "simulated";
       let dpError: string | null = null;
       let dpChannel: "session_message" | "meta_template" = dpWindowOpen ? "session_message" : "meta_template";
+      let dpConvMessage = "";
 
       try {
         if (!sim) {
@@ -1799,6 +1848,7 @@ serve(async (req: Request) => {
               );
               await sendViaTemplate(String(guest.phone), "suite_welcome_morning", [dpGuestName], "he",
                 resolveDynamicUrlButtonParam("suite_welcome_morning", guest.portal_token));
+              dpConvMessage = await buildConversationLogFromTemplate(supabase, "suite_welcome_morning", [dpGuestName]);
             } else {
               const dpPortalUrl = guest.portal_token
                 ? `${PORTAL_BASE_URL}/portal/${guest.portal_token as string}`
@@ -1806,11 +1856,13 @@ serve(async (req: Request) => {
               const body = rawText
                 .replace(/\{\{GUEST_NAME\}\}/gi, dpGuestName)
                 .replace(/\{\{\s*portal_url\s*\}\}/gi, dpPortalUrl);
+              dpConvMessage = truncateConversationLog(body);
               await sendViaMeta(String(guest.phone), body, stageRow?.session_message_image_url);
             }
           } else {
             await sendViaTemplate(String(guest.phone), "suite_welcome_morning", [dpGuestName], "he",
               resolveDynamicUrlButtonParam("suite_welcome_morning", guest.portal_token));
+            dpConvMessage = await buildConversationLogFromTemplate(supabase, "suite_welcome_morning", [dpGuestName]);
           }
           dpStatus = "sent";
         }
@@ -1841,9 +1893,7 @@ serve(async (req: Request) => {
             phone:         String(guest.phone),
             guest_id:      guestId,
             direction:     "outbound",
-            message:       dpChannel === "session_message"
-              ? `[בוקר יום-כיף: חופשי]`
-              : `[תבנית: suite_welcome_morning]`,
+            message:       dpConvMessage || `[תבנית: suite_welcome_morning]`,
             wa_message_id: null,
           });
         } catch { /* best-effort */ }
@@ -1935,7 +1985,7 @@ serve(async (req: Request) => {
               phone:         String(guest.phone),
               guest_id:      guestId,
               direction:     "outbound",
-              message:       `[בוקר הגעה: חופשי]`,
+              message:       truncateConversationLog(mgBody),
               wa_message_id: null,
             });
           } catch { /* best-effort */ }
@@ -2082,11 +2132,16 @@ serve(async (req: Request) => {
 
       if (mdStatus === "sent" || mdStatus === "simulated") {
         try {
+          const mdConvMessage = await buildConversationLogFromTemplate(
+            supabase,
+            usedMorningTemplate,
+            morningDispatch.vars,
+          );
           const { error: convErr } = await supabase.from("whatsapp_conversations").insert({
             phone:         String(guest.phone),
             guest_id:      guestId,
             direction:     "outbound",
-            message:       `[תבנית: ${usedMorningTemplate}]`,
+            message:       mdConvMessage,
             wa_message_id: null,
           });
           if (convErr) console.warn("[whatsapp-send] morning conv log failed (non-blocking):", convErr.message);
@@ -2167,6 +2222,7 @@ serve(async (req: Request) => {
 
       let rrStatus = "simulated";
       let rrError: string | null = null;
+      let rrConvMessage = "";
 
       try {
         if (!sim) {
@@ -2183,16 +2239,23 @@ serve(async (req: Request) => {
                 `[whatsapp-send] room_ready: bot_script "${rrDispatch.freeTextKey}" missing` +
                 ` — falling back to template for guest_id=${guestId}`,
               );
+              const rrTmplVars = sanitizeTemplateVars([rrGuestName, rrRoomName]);
               await sendViaTemplate(
                 String(guest.phone),
                 PIPELINE_TEMPLATE["room_ready"],
-                sanitizeTemplateVars([rrGuestName, rrRoomName]),
+                rrTmplVars,
                 "he",
+              );
+              rrConvMessage = await buildConversationLogFromTemplate(
+                supabase,
+                PIPELINE_TEMPLATE["room_ready"],
+                rrTmplVars,
               );
             } else {
               const textBody = rawText
                 .replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, rrDispatch.guestName)
                 .replace(/\{\{\s*ROOM_NAME\s*\}\}/gi,   rrDispatch.roomName);
+              rrConvMessage = truncateConversationLog(textBody);
               await sendViaMeta(String(guest.phone), textBody, stageRow?.session_message_image_url);
             }
           } else {
@@ -2201,6 +2264,11 @@ serve(async (req: Request) => {
               rrDispatch.templateName,
               rrDispatch.vars,
               "he",
+            );
+            rrConvMessage = await buildConversationLogFromTemplate(
+              supabase,
+              rrDispatch.templateName,
+              rrDispatch.vars,
             );
           }
           rrStatus = "sent";
@@ -2234,9 +2302,7 @@ serve(async (req: Request) => {
             phone:         String(guest.phone),
             guest_id:      guestId,
             direction:     "outbound",
-            message:       rrDispatch.channel === "text"
-              ? `[חדר מוכן: חופשי]`
-              : `[תבנית: ${rrDispatch.templateName}]`,
+            message:       rrConvMessage || `[תבנית: ${rrDispatch.templateName}]`,
             wa_message_id: null,
           });
           if (rrConvErr) console.warn("[whatsapp-send] room_ready conv log failed (non-blocking):", rrConvErr.message);
@@ -2377,11 +2443,14 @@ serve(async (req: Request) => {
     // .catch() chained directly on the query builder throws instead of swallowing.
     if (status === "sent" || status === "simulated") {
       try {
+        const pipelineConvMsg = usedSessionMessage
+          ? truncateConversationLog(sessionBody!)
+          : await buildConversationLogFromTemplate(supabase, tmplName, tmplVars);
         const { error: convErr } = await supabase.from("whatsapp_conversations").insert({
           phone: guest.phone as string,
           guest_id: guestId,
           direction: "outbound",
-          message: usedSessionMessage ? sessionBody! : `[תבנית: ${tmplName}]`,
+          message: pipelineConvMsg,
           wa_message_id: null,
         });
         if (convErr) console.warn("[whatsapp-send] pipeline conversation log failed (non-blocking):", convErr.message);

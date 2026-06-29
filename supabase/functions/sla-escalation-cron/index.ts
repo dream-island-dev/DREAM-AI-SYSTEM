@@ -33,6 +33,10 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendWhapiText } from "../_shared/whapiSend.ts";
+import {
+  isFutureSuiteRoomServiceTask,
+  SUITES_ROOM_SERVICE_GROUP_ID,
+} from "../_shared/futureSuiteRoomServiceRouting.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -181,7 +185,7 @@ serve(async (req: Request) => {
     // Open+unassigned tasks are a small set at any given moment, so this is cheap.
     const { data: candidateTasks, error: tasksErr } = await supabase
       .from("tasks")
-      .select("id, room_number, description, created_at, source, action_token, sla_category")
+      .select("id, room_number, description, created_at, source, action_token, sla_category, department")
       .eq("status", "open")                 // unassigned only — a claimed (in_progress) task stops escalating
       .is("escalated_at", null);
     if (tasksErr) throw new Error(`tasks_lookup_error: ${tasksErr.message}`);
@@ -230,7 +234,21 @@ serve(async (req: Request) => {
           `🚨 SLA BREACH: Task for Suite ${task.room_number ?? "—"} is unassigned after ${ageMinutes} minutes!\n` +
           `📋 ${task.description}\n` +
           `Please tap "Accept" on the task card to claim it.`;
-        if (alertGroupId) {
+        const futureSuiteRoomService = isFutureSuiteRoomServiceTask({
+          source:      task.source as string | null,
+          department:  task.department as string | null,
+          description: task.description as string | null,
+        });
+        if (futureSuiteRoomService) {
+          // Future suite F&B / portal room-service — dedicated Suites group only,
+          // never the general ops Whapi group (Mike session 60).
+          try {
+            await sendWhapiText(SUITES_ROOM_SERVICE_GROUP_ID, englishText, { noLinkPreview: true });
+            notified = true;
+          } catch (e) {
+            console.error(`[sla-escalation-cron] suites-line SLA alert failed for task ${task.id} (will retry next run):`, (e as Error).message);
+          }
+        } else if (alertGroupId) {
           try {
             await sendWhapiText(alertGroupId, englishText, { noLinkPreview: true });
             notified = true;

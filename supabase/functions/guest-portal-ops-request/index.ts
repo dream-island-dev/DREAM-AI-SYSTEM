@@ -22,13 +22,18 @@
 // filter. So this function does NOT post a group card; it (a) creates the
 // task so the in-app board's claim/done flow — already documented as "the
 // RELIABLE primary path" in OperationsBoard.js's header comment — can resolve
-// it, and (b) sends Adir a personal notify-only DM. Wiring the personal DM
-// into the reaction-sweep too would mean widening that filter's scope, which
-// is a bigger, riskier change than this session asked for.
+// it, and (b) sends a personal notify-only DM — future suite room-service
+// requests go to the dedicated Suites management Whapi group, not Adir and
+// never the general ops Whapi group. In-house requests still go to Adir.
 
 import { serve }         from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient }  from "https://esm.sh/@supabase/supabase-js@2";
 import { sendWhapiText } from "../_shared/whapiSend.ts";
+import {
+  futureArrivalTag,
+  shouldRouteFutureSuiteRoomServiceToDedicatedPhone,
+  SUITES_ROOM_SERVICE_GROUP_ID,
+} from "../_shared/futureSuiteRoomServiceRouting.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -40,18 +45,6 @@ const CORS = {
 // modules across function boundaries in this repo; same convention as the
 // SLA_CATEGORY_MINUTES duplication in sla-escalation-cron).
 const ADIR_PHONE = "972546294885";
-
-// "PORTAL CTAS & ADIR'S FUTURE CONTEXT" session — exact tag format, shared
-// verbatim with guest-portal-upsell so every portal-originated request/task
-// carries the same future-arrival context regardless of which board it lands on.
-function futureArrivalTag(arrivalDateStr: string | null, status: string | null): string | null {
-  if (!arrivalDateStr || status === "checked_in") return null;
-  const today = new Date(); today.setUTCHours(0, 0, 0, 0);
-  const arrival = new Date(`${arrivalDateStr}T00:00:00Z`);
-  const daysAway = Math.round((arrival.getTime() - today.getTime()) / 86400000);
-  if (daysAway <= 0) return null; // today or already past — not a "future" arrival
-  return `⚠️ בקשה עתידית לתאריך ${arrivalDateStr} - בעוד ${daysAway} ימים`;
-}
 
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
@@ -82,7 +75,7 @@ serve(async (req: Request) => {
     // needs to say so rather than implying someone is on-site right now.
     const { data: guest, error: guestErr } = await supabase
       .from("guests")
-      .select("id, name, phone, room, arrival_date, status")
+      .select("id, name, phone, room, room_type, arrival_date, status")
       .eq("portal_token", token)
       .maybeSingle();
     if (guestErr) throw new Error(`lookup_error: ${guestErr.message}`);
@@ -121,15 +114,26 @@ serve(async (req: Request) => {
     // Best-effort personal alert to Adir — a Whapi failure must never block
     // the guest's success toast, the task row already exists and is visible
     // on the Operations Board regardless.
+    // Future suite room-service → dedicated Suites line; in-house / other → Adir.
+    const routeToSuites = shouldRouteFutureSuiteRoomServiceToDedicatedPhone({
+      arrivalDateStr: guest.arrival_date as string | null,
+      status:         guest.status as string | null,
+      department:     'מזמ"ש (F&B)',
+      labelOrDescription: upsellLabel,
+      roomType:       guest.room_type as string | null,
+      source:         "portal_room_service",
+    });
+    const notifyTo = routeToSuites ? SUITES_ROOM_SERVICE_GROUP_ID : ADIR_PHONE;
+
     try {
       const text =
         `🍽️ ROOM SERVICE REQUEST — Suite ${roomLabel} (${guest.name ?? "Guest"})\n` +
         `${upsellLabel}` +
         (tag ? `\n${tag}` : "") +
         `\nPlease check the Operations Board to claim it.`;
-      await sendWhapiText(ADIR_PHONE, text, { noLinkPreview: true });
+      await sendWhapiText(notifyTo, text, { noLinkPreview: true });
     } catch (e) {
-      console.warn(`[guest-portal-ops-request] task ${task?.id} created but Adir alert failed:`, (e as Error).message);
+      console.warn(`[guest-portal-ops-request] task ${task?.id} created but alert failed (${routeToSuites ? "suites" : "adir"}):`, (e as Error).message);
     }
 
     return new Response(
