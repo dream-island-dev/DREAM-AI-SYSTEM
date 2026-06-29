@@ -4,6 +4,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
+import { israelTodayStr, isArrivalToday } from "../utils/guestTiming";
 
 const FAB = 56;                  // bell diameter (px) — used for drag clamping
 const MARGIN = 8;                // min inset from viewport edges while dragging
@@ -92,18 +93,22 @@ export default function AICopilot({ user }) {
   // (they're bookings-table columns) — every call 400'd, so `guest` was always
   // null and the approval flow below silently never messaged the guest.
   const enrichRoom = useCallback(async (roomRow) => {
-    if (!supabase) return { ...roomRow, guest: null, _alertId: crypto.randomUUID() };
-    const today = new Date().toISOString().slice(0, 10);
+    const _alertId = crypto.randomUUID();
+    if (!supabase) return { ...roomRow, guest: null, isEligible: false, _alertId };
+
+    const todayIL = israelTodayStr();
     const { data: guest } = await supabase
       .from("guests")
-      .select("id, name, phone, spa_time, room, suite_name, status")
+      .select("id, name, phone, spa_time, room, suite_name, status, arrival_date")
       .or(`room.eq.${roomRow.room_id},suite_name.eq.${roomRow.room_id}`)
-      .gte("arrival_date", today)
+      .eq("arrival_date", todayIL)
       .neq("status", "cancelled")
       .order("arrival_date", { ascending: true })
       .limit(1)
       .maybeSingle();
-    return { ...roomRow, guest: guest ?? null, _alertId: crypto.randomUUID() };
+
+    const isEligible = isArrivalToday(guest?.arrival_date);
+    return { ...roomRow, guest: guest ?? null, isEligible, _alertId };
   }, []);
 
   // Initial load of any already-pending suites
@@ -115,7 +120,7 @@ export default function AICopilot({ user }) {
       .eq("status", "ממתין לאישור");
     if (data?.length) {
       const enriched = await Promise.all(data.map(enrichRoom));
-      setAlerts(enriched);
+      setAlerts(enriched.filter((a) => a.isEligible));
     }
   }, [enrichRoom]);
 
@@ -133,6 +138,7 @@ export default function AICopilot({ user }) {
           const row = payload.new;
           if (row.status === "ממתין לאישור") {
             const enriched = await enrichRoom(row);
+            if (!enriched.isEligible) return;
             setAlerts(prev => {
               if (prev.some(a => a.room_id === row.room_id)) return prev;
               return [...prev, enriched];
@@ -164,10 +170,20 @@ export default function AICopilot({ user }) {
   // double-sending, and isolated from the scheduled morning_* templates.
   async function handleApprove(alert) {
     if (!supabase) return;
+    const { guest } = alert;
+
+    if (!isArrivalToday(guest?.arrival_date)) {
+      showToast(
+        guest?.arrival_date
+          ? `לא ניתן לשלוח — הגעת האורח ב-${guest.arrival_date} (היום: ${israelTodayStr()})`
+          : `לא ניתן לשלוח — אין אורח עם הגעה היום לסוויטה ${alert.room_id}`,
+        "err"
+      );
+      return;
+    }
+
     setProcessing(alert._alertId);
     try {
-      const { guest } = alert;
-
       // Never fail silently: a swallowed WhatsApp error must not let the room/guest
       // state advance as if the guest was actually notified. Same principle applies
       // when NO guest was matched at all (enrichRoom found nothing for this suite) —

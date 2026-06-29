@@ -37,6 +37,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendInteractiveButtons, sendImageMessage } from "../_shared/interactiveSend.ts";
+import { isArrivalTodayIsrael, israelTodayYmd } from "../_shared/israelDate.ts";
 import { sanitizeMetaRecipientPhone } from "../_shared/metaPhone.ts";
 
 const CORS = {
@@ -1654,6 +1655,22 @@ serve(async (req: Request) => {
     // This block always early-returns — the generic hybrid fallback below is
     // never reached for trigger === "room_ready".
     if (trigger === "room_ready") {
+      const arrivalStr = String(guest.arrival_date ?? "");
+      if (!isArrivalTodayIsrael(arrivalStr)) {
+        const todayIL = israelTodayYmd();
+        console.warn(
+          `[whatsapp-send] room_ready blocked: arrival_date=${arrivalStr || "null"} today_IL=${todayIL} guestId=${guestId}`,
+        );
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            status: "blocked",
+            error: `room_ready רק ביום ההגעה (היום: ${todayIL}, הגעה: ${arrivalStr || "לא ידוע"})`,
+          }),
+          { headers: { ...CORS, "Content-Type": "application/json" } },
+        );
+      }
+
       const rrGuestName = sanitizeTemplateVars([String(guest.name ?? "")])[0];
       const rrRoomNameRaw = String(
         (guest as Record<string, unknown>).room ??

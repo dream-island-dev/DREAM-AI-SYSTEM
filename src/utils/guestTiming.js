@@ -8,6 +8,17 @@
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
+/** Calendar today in Israel (YYYY-MM-DD) — matches DATE columns as hotel-local days. */
+export function israelTodayStr() {
+  return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
+}
+
+/** True when guest.arrival_date is exactly today in Israel. */
+export function isArrivalToday(arrivalDateStr) {
+  if (!arrivalDateStr) return false;
+  return arrivalDateStr === israelTodayStr();
+}
+
 const fmtDate = (d) =>
   new Date(d).toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit" });
 
