@@ -8,6 +8,7 @@ import { useState, useEffect, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import { getGuestTimingBadge } from "../utils/guestTiming";
 import AILearningButton from "./AILearningButton";
+import UndoSnackbar from "./UndoSnackbar";
 
 const TYPE_META = {
   complaint:           { label: "🔴 תקלה",          bg: "#FFF0EE", color: "#C0392B" },
@@ -48,6 +49,7 @@ export default function RequestsBoard({ user }) {
   const [resolvingReq, setResolvingReq] = useState(null); // the row being resolved
   const [noteText, setNoteText]         = useState("");
   const [saving, setSaving]             = useState(false);
+  const [undoSnack, setUndoSnack]       = useState(null); // { id, prevRow }
 
   const showToast = (type, msg) => { setToast({ type, msg }); setTimeout(() => setToast(null), 3500); };
 
@@ -75,6 +77,7 @@ export default function RequestsBoard({ user }) {
   const confirmResolve = async () => {
     if (!resolvingReq) return;
     setSaving(true);
+    const prevRow = { ...resolvingReq };
     const patch = {
       resolved:         true,
       resolved_by:      user?.id ?? null,
@@ -85,9 +88,26 @@ export default function RequestsBoard({ user }) {
     setSaving(false);
     if (error) { showToast("err", "שגיאה: " + error.message); return; }
     setRequests((prev) => prev.map((r) => (r.id === resolvingReq.id ? { ...r, ...patch } : r)));
-    showToast("ok", "✅ סומן כטופל");
+    setUndoSnack({ id: resolvingReq.id, prevRow });
     setResolvingReq(null);
     setNoteText("");
+  };
+
+  const handleUndoResolve = async () => {
+    if (!undoSnack) return;
+    const revert = {
+      resolved: false,
+      resolved_by: null,
+      resolved_at: null,
+      resolution_notes: null,
+    };
+    const { error } = await supabase.from("guest_alerts").update(revert).eq("id", undoSnack.id);
+    if (error) {
+      showToast("err", "שגיאה בביטול: " + error.message);
+      return;
+    }
+    setRequests((prev) => prev.map((r) => (r.id === undoSnack.id ? { ...undoSnack.prevRow, ...revert } : r)));
+    setUndoSnack(null);
   };
 
   const bySource = sourceFilter === "portal"
@@ -99,16 +119,24 @@ export default function RequestsBoard({ user }) {
 
   return (
     <div>
-      {toast && (
+      {toast && toast.type === "err" && (
         <div style={{
           position: "fixed", top: 20, left: "50%", transform: "translateX(-50%)", zIndex: 9999,
           padding: "12px 24px", borderRadius: 10, fontWeight: 700, fontSize: 14,
           boxShadow: "0 8px 32px rgba(0,0,0,0.15)",
-          background: toast.type === "ok" ? "#E8F5EF" : "#FFF0EE",
-          color:      toast.type === "ok" ? "#1A7A4A" : "#C0392B",
-          border:     `1px solid ${toast.type === "ok" ? "#1A7A4A" : "#C0392B"}`,
+          background: "#FFF0EE",
+          color: "#C0392B",
+          border: "1px solid #C0392B",
         }}>{toast.msg}</div>
       )}
+
+      <UndoSnackbar
+        visible={!!undoSnack}
+        message="✓ סומן כטופל"
+        onUndo={handleUndoResolve}
+        onDismiss={() => setUndoSnack(null)}
+        durationMs={6000}
+      />
 
       {/* ── Resolve modal — request context + optional resolution note ──────── */}
       {resolvingReq && (

@@ -5,6 +5,8 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import { israelTodayStr, isArrivalToday } from "../utils/guestTiming";
+import QuietHoursGate from "./QuietHoursGate";
+import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
 
 const FAB = 56;                  // bell diameter (px) — used for drag clamping
 const MARGIN = 8;                // min inset from viewport edges while dragging
@@ -32,6 +34,14 @@ function clearSavedPos() {
 }
 
 export default function AICopilot({ user }) {
+  const {
+    quietActive,
+    overrideChecked,
+    setOverrideChecked,
+    ensureCanSend,
+    canSend,
+  } = useQuietHoursSend();
+
   const [alerts,     setAlerts]     = useState([]);
   const [isOpen,     setIsOpen]     = useState(false);
   const [processing, setProcessing] = useState(null);
@@ -189,6 +199,9 @@ export default function AICopilot({ user }) {
       // when NO guest was matched at all (enrichRoom found nothing for this suite) —
       // that must not look identical to "message sent" in the success toast below.
       if (guest?.id) {
+        if (!ensureCanSend()) {
+          throw new Error("שליחה חסומה בשעות שקט — סמן את האישור למטה");
+        }
         const { data, error: waError } = await supabase.functions.invoke("whatsapp-send", {
           body: { trigger: "room_ready", guestId: guest.id },
         });
@@ -344,6 +357,17 @@ export default function AICopilot({ user }) {
             >✕</button>
           </div>
 
+          {quietActive && (
+            <div style={{ padding: "10px 16px", borderBottom: "1px solid var(--border, #E0D5C5)" }}>
+              <QuietHoursGate
+                active={quietActive}
+                checked={overrideChecked}
+                onChange={setOverrideChecked}
+                compact
+              />
+            </div>
+          )}
+
           {/* Alert cards */}
           {alerts.map(alert => (
             <div key={alert._alertId} style={{
@@ -370,17 +394,18 @@ export default function AICopilot({ user }) {
               <div style={{ display: "flex", gap: "8px" }}>
                 <button
                   onClick={() => handleApprove(alert)}
-                  disabled={processing === alert._alertId}
+                  disabled={processing === alert._alertId || (alert.guest?.id && !canSend)}
+                  title={alert.guest?.id && !canSend ? "שליחה חסומה בשעות שקט" : undefined}
                   style={{
                     flex:       1,
-                    background: processing === alert._alertId ? "#ccc" : "var(--gold, #C9A96E)",
+                    background: processing === alert._alertId || (alert.guest?.id && !canSend) ? "#ccc" : "var(--gold, #C9A96E)",
                     color:      "#fff",
                     border:     "none",
                     borderRadius: "8px",
                     padding:    "8px 0",
                     fontWeight: 700,
                     fontSize:   "13px",
-                    cursor:     processing === alert._alertId ? "default" : "pointer",
+                    cursor:     processing === alert._alertId || (alert.guest?.id && !canSend) ? "default" : "pointer",
                     fontFamily: "inherit",
                     transition: "background 0.15s",
                   }}

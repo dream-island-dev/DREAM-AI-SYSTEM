@@ -19,7 +19,9 @@ import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import AddGuestModal from "./AddGuestModal";
 import GuestAttentionBadge from "./GuestAttentionBadge";
 import CustomerProfilePane from "./CustomerProfilePane";
+import QuietHoursGate from "./QuietHoursGate";
 import { STATUS_META } from "../utils/guestStatusMeta";
+import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
 
 // ── Date helpers (local time) ─────────────────────────────────────────────────
 function localISO(offsetDays = 0) {
@@ -162,6 +164,14 @@ function WAModal({ guest, onClose, onSend, isSending }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 export default function GuestDashboard({ user }) {
+  const {
+    quietActive,
+    overrideChecked,
+    setOverrideChecked,
+    ensureCanSend,
+    canSend,
+  } = useQuietHoursSend();
+
   const [guests,      setGuests]      = useState([]);
   const [loading,     setLoading]     = useState(true);
   const [toast,       setToast]       = useState(null);
@@ -208,6 +218,10 @@ export default function GuestDashboard({ user }) {
   // ── Mark Room Ready (pipeline — hotel guests only) ────────────────────────
   const markRoomReady = useCallback(async (guest) => {
     if (guest.msg_room_ready_sent || loadingId) return;
+    if (!ensureCanSend()) {
+      showToast("err", "שליחה חסומה בשעות שקט — סמן את האישור למעלה");
+      return;
+    }
     setLoadingId(guest.id);
     try {
       const { data, error } = await supabase.functions.invoke("whatsapp-send", {
@@ -224,12 +238,13 @@ export default function GuestDashboard({ user }) {
     } finally {
       setLoadingId(null);
     }
-  }, [loadingId, showToast]);
+  }, [loadingId, showToast, ensureCanSend]);
 
   // ── Send WA to a specific guest (free-text via inbox_reply) ─────────────
   const sendWAToGuest = useCallback(async (guest, message) => {
     if (!message?.trim()) return showToast("err", "נא להזין הודעה");
     if (!guest.phone)     return showToast("err", "לאורח זה אין מספר טלפון");
+    if (!ensureCanSend()) return showToast("err", "שליחה חסומה בשעות שקט — סמן את האישור למעלה");
     setSendingWAId(guest.id);
     try {
       const { data, error } = await supabase.functions.invoke("whatsapp-send", {
@@ -244,7 +259,7 @@ export default function GuestDashboard({ user }) {
     } finally {
       setSendingWAId(null);
     }
-  }, [showToast]);
+  }, [showToast, ensureCanSend]);
 
   // ── Delete guest ──────────────────────────────────────────────────────────
   const deleteGuest = useCallback(async (guest) => {
@@ -322,6 +337,16 @@ export default function GuestDashboard({ user }) {
           color:      toast.type === "ok" ? "#1A7A4A"  : "#C0392B",
           border: `1px solid ${toast.type === "ok" ? "#1A7A4A" : "#C0392B"}`,
         }}>{toast.msg}</div>
+      )}
+
+      {quietActive && (
+        <div style={{ marginBottom: 16 }}>
+          <QuietHoursGate
+            active={quietActive}
+            checked={overrideChecked}
+            onChange={setOverrideChecked}
+          />
+        </div>
       )}
 
       {/* WA compose modal */}
@@ -633,13 +658,14 @@ export default function GuestDashboard({ user }) {
                     </div>
                     <button
                       onClick={() => markRoomReady(guest)}
-                      disabled={isDone || isLoadingPipeline || (!!loadingId && !isLoadingPipeline)}
+                      disabled={isDone || isLoadingPipeline || (!!loadingId && !isLoadingPipeline) || !canSend}
+                      title={!canSend ? "שליחה חסומה בשעות שקט" : undefined}
                       style={{
                         width: "100%", padding: "12px 0", borderRadius: 10,
                         fontFamily: "Heebo, sans-serif", fontSize: 14, fontWeight: 700,
                         border: "none", transition: "opacity 0.2s, background 0.2s",
-                        cursor: (isDone || isLoadingPipeline) ? "default" : "pointer",
-                        opacity: (!!loadingId && !isLoadingPipeline && !isDone) ? 0.45 : 1,
+                        cursor: (isDone || isLoadingPipeline || !canSend) ? "default" : "pointer",
+                        opacity: (!!loadingId && !isLoadingPipeline && !isDone) || !canSend ? 0.45 : 1,
                         background: isDone
                           ? "#E8F5EF"
                           : isLoadingPipeline

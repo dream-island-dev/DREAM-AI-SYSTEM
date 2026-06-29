@@ -35,6 +35,7 @@ import PortalSettingsPanel from "./components/PortalSettingsPanel";
 import CMSGate from "./components/cms/CMSGate";
 import CMSSecurityPanel from "./components/cms/CMSSecurityPanel";
 import VoucherReconciliationHub from "./components/VoucherReconciliationHub";
+import AdminChangelogDashboard from "./components/AdminChangelogDashboard";
 
 // ============================================================
 // Departments are editable by admin via AdminPanel — stored in localStorage
@@ -1070,6 +1071,14 @@ function Sidebar({ user, active, setActive, openOpsCount, onLogout, isAdmin, isS
               <span>ניהול מערכת</span>
             </button>
             <button
+              className={`nav-item ${active === "admin_updates" ? "active" : ""}`}
+              onClick={() => setActive("admin_updates")}
+              style={{ color: active === "admin_updates" ? "var(--gold)" : "rgba(201,169,110,0.6)" }}
+            >
+              <span className="icon">📜</span>
+              <span>עדכוני מערכת</span>
+            </button>
+            <button
               className={`nav-item ${active === "data_sync" ? "active" : ""}`}
               onClick={() => setActive("data_sync")}
               style={{ color: active === "data_sync" ? "var(--gold)" : "rgba(201,169,110,0.6)" }}
@@ -1675,10 +1684,10 @@ function usePersistentState(table, initialMock) {
 // ============================================================
 // MAIN APP
 // ============================================================
-export default function App() {
+export default function App({ initialPage = "dashboard" }) {
   const [user, setUser] = useState(null);
   const [isLoading, setIsLoading] = useState(true); // true until auth resolves
-  const [activePage, setActivePage] = useState("dashboard");
+  const [activePage, setActivePage] = useState(initialPage);
   // Hamburger drawer (mobile only, <=768px) — the desktop .sidebar is fully
   // hidden at that width with no replacement way to reach admin-only pages
   // (bot_scripts/automation_center/etc. aren't in the 5-item mobileNav bottom
@@ -1851,6 +1860,7 @@ export default function App() {
     cms_security: "🔐 אבטחת CMS",
     agent:      "📦 ניהול מלאי",
     admin:      "👑 ניהול מערכת",
+    admin_updates: "📜 עדכוני מערכת",
     users_mgmt: "👥 ניהול משתמשים",
   };
 
@@ -2004,6 +2014,11 @@ export default function App() {
             onSeedDemo={seedDemoData}
             onClearData={clearAllData}
           />
+        );
+      case "admin_updates":
+        return guardPage(
+          ["admin", "super_admin"],
+          <AdminChangelogDashboard />
         );
       case "spa_staging":
         return <SpaStagingPanel />;

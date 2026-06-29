@@ -5,6 +5,8 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { supabase } from "../supabaseClient";
+import QuietHoursGate from "./QuietHoursGate";
+import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
 
 const GUEST_STATUS = {
   pending:    { label: "טרם נקלט", bg: "#F5F5F5", color: "#888888" },
@@ -14,6 +16,14 @@ const GUEST_STATUS = {
 };
 
 export default function SuitesDashboard() {
+  const {
+    quietActive,
+    overrideChecked,
+    setOverrideChecked,
+    ensureCanSend,
+    canSend,
+  } = useQuietHoursSend();
+
   const [date, setDate]               = useState(new Date().toISOString().slice(0, 10));
   const [rooms, setRooms]             = useState([]);
   const [loading, setLoading]         = useState(false);
@@ -78,6 +88,10 @@ export default function SuitesDashboard() {
 
   const sendRoomReady = async (phone, guestId) => {
     if (!supabase) return;
+    if (!ensureCanSend()) {
+      showToast("❌ שליחה חסומה בשעות שקט — סמן את האישור למעלה");
+      return;
+    }
     setSendingWa((prev) => new Set([...prev, phone]));
     try {
       const { data, error } = await supabase.functions.invoke("whatsapp-send", {
@@ -146,6 +160,16 @@ export default function SuitesDashboard() {
           </button>
         </div>
       </div>
+
+      {quietActive && (
+        <div style={{ marginBottom: 16 }}>
+          <QuietHoursGate
+            active={quietActive}
+            checked={overrideChecked}
+            onChange={setOverrideChecked}
+          />
+        </div>
+      )}
 
       {/* ── Loading ── */}
       {loading && (
@@ -315,10 +339,11 @@ export default function SuitesDashboard() {
                       const hasGuest  = !!gs?.id;
                       const sent      = !!gs?.msg_room_ready_sent;
                       const sending   = sendingWa.has(r.guest_phone);
-                      const isDisabled = !isToday || !hasGuest || sent || sending;
+                      const isDisabled = !isToday || !hasGuest || sent || sending || !canSend;
 
                       let tip = "";
                       if (sent)          tip = "כבר נשלחה הודעת 'חדר מוכן' לאורח זה";
+                      else if (!canSend) tip = "שליחה חסומה בשעות שקט — סמן את האישור למעלה";
                       else if (!isToday) tip = `שליחה חסומה — הגעת האורח מתוכננת ל-${r.arrival_date || "תאריך לא ידוע"}`;
                       else if (!hasGuest) tip = "אורח לא נמצא בטבלת guests — לא ניתן לשלוח";
 

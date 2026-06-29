@@ -10,11 +10,14 @@
     "mammoth": "^1.12.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "react-markdown": "^9.0.1",
     "react-scripts": "^5.0.0",
     "xlsx": "^0.18.5"
   },
   "scripts": {
+    "prestart": "node scripts/sync-changelog.js",
     "start": "react-scripts start",
+    "prebuild": "node scripts/sync-changelog.js",
     "build": "react-scripts build",
     "test": "react-scripts test --env=jsdom",
     "eject": "react-scripts eject"

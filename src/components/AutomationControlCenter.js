@@ -23,6 +23,8 @@
 import { useState, useEffect, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import TemplateManagerPanel, { STATUS_META } from "./TemplateManagerPanel";
+import QuietHoursGate from "./QuietHoursGate";
+import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
 
 const JOURNEY_PHASE_LABELS = {
   pre_arrival: "🌴 לפני ההגעה",
@@ -786,6 +788,14 @@ const DAYPASS_ONLY_STAGE_KEYS = new Set([
 ]);
 
 function ManualDispatchModal({ item, stages, onClose, onDispatched, showToast }) {
+  const {
+    quietActive,
+    overrideChecked,
+    setOverrideChecked,
+    ensureCanSend,
+    canSend,
+  } = useQuietHoursSend();
+
   const isDayType = item.room_type === "day_guest" || item.room_type === "premium_day_guest";
 
   // Filter to stages the backend will actually allow for this room_type.
@@ -810,6 +820,10 @@ function ManualDispatchModal({ item, stages, onClose, onDispatched, showToast })
 
   const handleDispatch = async () => {
     if (!supabase) return;
+    if (!ensureCanSend()) {
+      showToast("err", "שליחה חסומה בשעות שקט — סמן את האישור למטה");
+      return;
+    }
     setSending(true);
     setResult(null);
     try {
@@ -837,7 +851,7 @@ function ManualDispatchModal({ item, stages, onClose, onDispatched, showToast })
     }
   };
 
-  const canDispatch = stageKey && item.guestId && !sending && !result?.ok;
+  const canDispatch = stageKey && item.guestId && !sending && !result?.ok && canSend;
 
   return (
     <div style={{
@@ -922,6 +936,12 @@ function ManualDispatchModal({ item, stages, onClose, onDispatched, showToast })
             <strong>⚠ שים לב:</strong> שגר ידני יתעלם מלו"ז ה-cron. דגל ה-pipeline יסומן לאחר שליחה מוצלחת — ה-cron לא ישלח פעם נוספת.
           </div>
         )}
+
+        <QuietHoursGate
+          active={quietActive}
+          checked={overrideChecked}
+          onChange={setOverrideChecked}
+        />
 
         {/* Result */}
         {result && (

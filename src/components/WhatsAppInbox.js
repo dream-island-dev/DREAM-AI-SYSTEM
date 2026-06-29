@@ -7,7 +7,10 @@ import React, { useEffect, useState, useRef, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import AddGuestModal from "./AddGuestModal";
 import AILearningButton from "./AILearningButton";
+import HoldToConfirmButton from "./HoldToConfirmButton";
+import QuietHoursGate from "./QuietHoursGate";
 import { getSuiteSection } from "../data/suiteRegistry";
+import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
 
 const POLL_MS = 5000; // fallback polling interval (realtime is primary) — 5s safe minimum
 
@@ -579,6 +582,14 @@ function buildContextualMacros(contact) {
 
 // ── New Conversation Modal ────────────────────────────────────────────────────
 function NewChatModal({ onClose, onSent }) {
+  const {
+    quietActive,
+    overrideChecked,
+    setOverrideChecked,
+    ensureCanSend,
+    canSend,
+  } = useQuietHoursSend();
+
   const [mode,          setMode]          = useState("free"); // "free" | "template"
   const [guestSearch,   setGuestSearch]   = useState("");
   const [guestResults,  setGuestResults]  = useState([]);
@@ -638,6 +649,7 @@ function NewChatModal({ onClose, onSent }) {
   async function handleSendBulk() {
     if (!bulkText.trim())        return setErr("נא לכתוב הודעה");
     if (bulkGuests.length === 0) return setErr("אין נמענים בסינון הנוכחי");
+    if (!ensureCanSend())        return setErr("שליחה חסומה בשעות שקט — סמן את האישור למטה");
 
     setBulkSending(true); setErr(null); setBulkDone(false); setBulkFailures([]);
     let done = 0;
@@ -738,6 +750,7 @@ function NewChatModal({ onClose, onSent }) {
     if (!selectedGuest)       return setErr("נא לבחור אורח");
     if (!selectedGuest.phone) return setErr("לאורח זה אין מספר טלפון");
     if (!freeText.trim())     return setErr("נא לכתוב הודעה");
+    if (!ensureCanSend())     return setErr("שליחה חסומה בשעות שקט — סמן את האישור למטה");
 
     setSending(true); setErr(null);
     try {
@@ -764,6 +777,7 @@ function NewChatModal({ onClose, onSent }) {
     if (!selectedGuest)       return setErr("נא לבחור אורח");
     if (!selectedGuest.phone) return setErr("לאורח זה אין מספר טלפון");
     if (!selectedTmpl)        return setErr("נא לבחור תבנית");
+    if (!ensureCanSend())     return setErr("שליחה חסומה בשעות שקט — סמן את האישור למטה");
     if ((selectedTmpl.varCount ?? 0) > 0 && varValues.some((v) => !v.trim()))
       return setErr("נא למלא את כל שדות המשתנים");
 
@@ -809,6 +823,7 @@ function NewChatModal({ onClose, onSent }) {
   async function handleSendTemplateAudience() {
     if (!selectedTmpl)              return setErr("נא לבחור תבנית");
     if (tmplAudienceGuests.length === 0) return setErr("אין נמענים בסינון הנוכחי");
+    if (!ensureCanSend())           return setErr("שליחה חסומה בשעות שקט — סמן את האישור למטה");
 
     setTmplBulkSending(true); setErr(null); setTmplBulkDone(false);
     const failures = [];
@@ -919,6 +934,12 @@ function NewChatModal({ onClose, onSent }) {
         </div>
 
         <div style={{ padding: "20px 22px", display: "flex", flexDirection: "column", gap: 16 }}>
+
+          <QuietHoursGate
+            active={quietActive}
+            checked={overrideChecked}
+            onChange={setOverrideChecked}
+          />
 
           {/* ── Guest search (hidden when template audience mode) ── */}
           <div style={{ display: mode === "template" && tmplMode === "audience" ? "none" : "block" }}>
@@ -1133,15 +1154,15 @@ function NewChatModal({ onClose, onSent }) {
                 </div>
               )}
 
-              <button onClick={handleSendFree} disabled={sending || !selectedGuest || !freeText.trim()}
+              <button onClick={handleSendFree} disabled={sending || !selectedGuest || !freeText.trim() || !canSend}
                 style={{
                   width: "100%", padding: "14px", borderRadius: 12, border: "none",
-                  background: sending || !selectedGuest || !freeText.trim()
+                  background: sending || !selectedGuest || !freeText.trim() || !canSend
                     ? "#E5E7EB"
                     : "linear-gradient(135deg, #25D366 0%, #128C7E 100%)",
-                  color: sending || !selectedGuest || !freeText.trim() ? "#9CA3AF" : "white",
+                  color: sending || !selectedGuest || !freeText.trim() || !canSend ? "#9CA3AF" : "white",
                   fontFamily: "inherit", fontSize: 15, fontWeight: 800,
-                  cursor: sending || !selectedGuest || !freeText.trim() ? "not-allowed" : "pointer",
+                  cursor: sending || !selectedGuest || !freeText.trim() || !canSend ? "not-allowed" : "pointer",
                   transition: "all 0.2s", letterSpacing: 0.3,
                 }}
               >
@@ -1416,15 +1437,15 @@ function NewChatModal({ onClose, onSent }) {
                 }}>✅ סגור</button>
               ) : tmplMode === "audience" ? (
                 <button onClick={handleSendTemplateAudience}
-                  disabled={tmplBulkSending || !selectedTmpl || tmplAudienceGuests.length === 0}
+                  disabled={tmplBulkSending || !selectedTmpl || tmplAudienceGuests.length === 0 || !canSend}
                   style={{
                     width: "100%", padding: "14px", borderRadius: 12, border: "none",
-                    background: tmplBulkSending || !selectedTmpl || tmplAudienceGuests.length === 0
+                    background: tmplBulkSending || !selectedTmpl || tmplAudienceGuests.length === 0 || !canSend
                       ? "#E5E7EB"
                       : "linear-gradient(135deg, #128C7E 0%, #075E54 100%)",
-                    color: tmplBulkSending || !selectedTmpl || tmplAudienceGuests.length === 0 ? "#9CA3AF" : "white",
+                    color: tmplBulkSending || !selectedTmpl || tmplAudienceGuests.length === 0 || !canSend ? "#9CA3AF" : "white",
                     fontFamily: "inherit", fontSize: 15, fontWeight: 800,
-                    cursor: tmplBulkSending || !selectedTmpl || tmplAudienceGuests.length === 0 ? "not-allowed" : "pointer",
+                    cursor: tmplBulkSending || !selectedTmpl || tmplAudienceGuests.length === 0 || !canSend ? "not-allowed" : "pointer",
                     transition: "all 0.2s",
                   }}
                 >
@@ -1434,15 +1455,15 @@ function NewChatModal({ onClose, onSent }) {
                 </button>
               ) : (
                 <button onClick={handleSendTemplate}
-                  disabled={sending || !selectedGuest || !selectedTmpl}
+                  disabled={sending || !selectedGuest || !selectedTmpl || !canSend}
                   style={{
                     width: "100%", padding: "14px", borderRadius: 12, border: "none",
-                    background: sending || !selectedGuest || !selectedTmpl
+                    background: sending || !selectedGuest || !selectedTmpl || !canSend
                       ? "#E5E7EB"
                       : "linear-gradient(135deg, #25D366 0%, #128C7E 100%)",
-                    color: sending || !selectedGuest || !selectedTmpl ? "#9CA3AF" : "white",
+                    color: sending || !selectedGuest || !selectedTmpl || !canSend ? "#9CA3AF" : "white",
                     fontFamily: "inherit", fontSize: 15, fontWeight: 800,
-                    cursor: sending || !selectedGuest || !selectedTmpl ? "not-allowed" : "pointer",
+                    cursor: sending || !selectedGuest || !selectedTmpl || !canSend ? "not-allowed" : "pointer",
                     transition: "all 0.2s", letterSpacing: 0.3,
                   }}
                 >
@@ -1616,15 +1637,15 @@ function NewChatModal({ onClose, onSent }) {
                 </button>
               ) : (
                 <button onClick={handleSendBulk}
-                  disabled={bulkSending || !bulkText.trim() || bulkGuests.length === 0}
+                  disabled={bulkSending || !bulkText.trim() || bulkGuests.length === 0 || !canSend}
                   style={{
                     width: "100%", padding: "14px", borderRadius: 12, border: "none",
-                    background: bulkSending || !bulkText.trim() || bulkGuests.length === 0
+                    background: bulkSending || !bulkText.trim() || bulkGuests.length === 0 || !canSend
                       ? "#E5E7EB"
                       : "linear-gradient(135deg, #128C7E 0%, #075E54 100%)",
-                    color: bulkSending || !bulkText.trim() || bulkGuests.length === 0 ? "#9CA3AF" : "white",
+                    color: bulkSending || !bulkText.trim() || bulkGuests.length === 0 || !canSend ? "#9CA3AF" : "white",
                     fontFamily: "inherit", fontSize: 15, fontWeight: 800,
-                    cursor: bulkSending || !bulkText.trim() || bulkGuests.length === 0 ? "not-allowed" : "pointer",
+                    cursor: bulkSending || !bulkText.trim() || bulkGuests.length === 0 || !canSend ? "not-allowed" : "pointer",
                     transition: "all 0.2s",
                   }}
                 >
@@ -1642,6 +1663,14 @@ function NewChatModal({ onClose, onSent }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 export default function WhatsAppInbox({ user }) {
+  const {
+    quietActive,
+    overrideChecked,
+    setOverrideChecked,
+    ensureCanSend,
+    canSend,
+  } = useQuietHoursSend();
+
   const [contacts, setContacts]   = useState([]); // grouped by phone
   const [active, setActive]       = useState(null); // selected phone
   const [loading, setLoading]     = useState(true);
@@ -2221,6 +2250,10 @@ export default function WhatsAppInbox({ user }) {
   // ── Manual reply send ─────────────────────────────────────────────────────
   async function sendManualReply() {
     if (!reply.trim() || !active) return;
+    if (!ensureCanSend()) {
+      setError("שליחה חסומה בשעות שקט — סמן את האישור למטה");
+      return;
+    }
     setSending(true);
     setError(null);
     try {
@@ -2646,8 +2679,19 @@ export default function WhatsAppInbox({ user }) {
           </div>
         )}
 
+        {quietActive && (
+          <div style={{ padding: "8px 14px 0", background: "#F0F0F0" }}>
+            <QuietHoursGate
+              active={quietActive}
+              checked={overrideChecked}
+              onChange={setOverrideChecked}
+              compact
+            />
+          </div>
+        )}
+
         <div style={{
-          padding: "10px 14px", borderTop: "1px solid #e0e0e0",
+          padding: "10px 14px", borderTop: quietActive ? "none" : "1px solid #e0e0e0",
           background: "#F0F0F0", display: "flex", gap: 8, alignItems: "flex-end",
         }}>
           <button
@@ -2681,12 +2725,13 @@ export default function WhatsAppInbox({ user }) {
           />
           <button
             onClick={sendManualReply}
-            disabled={sending || !reply.trim()}
+            disabled={sending || !reply.trim() || !canSend}
+            title={!canSend ? "שליחה חסומה בשעות שקט" : undefined}
             style={{
-              background: (sending || !reply.trim()) ? "#ccc" : "#25D366",
+              background: (sending || !reply.trim() || !canSend) ? "#ccc" : "#25D366",
               color: "white", border: "none", borderRadius: "50%",
               width: isMobile ? 48 : 44, height: isMobile ? 48 : 44, fontSize: 20,
-              cursor: (sending || !reply.trim()) ? "not-allowed" : "pointer",
+              cursor: (sending || !reply.trim() || !canSend) ? "not-allowed" : "pointer",
               flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
             }}
           >
@@ -2766,20 +2811,22 @@ export default function WhatsAppInbox({ user }) {
           >
             {isMobile ? "🌐" : `🌐 ${t.langSwap}`}
           </button>
-          <button
-            onClick={toggleBot}
+          <HoldToConfirmButton
+            onConfirm={toggleBot}
             disabled={togglingBot}
             title={botActive ? t.botOn : t.botOff}
+            progressColor={botActive ? "rgba(220,38,38,0.35)" : "rgba(37,211,102,0.35)"}
             style={{
               padding: isMobile ? "0" : "5px 14px", borderRadius: 20, fontSize: 12, fontWeight: 700,
               border: "1.5px solid rgba(255,255,255,0.4)",
               background: botActive ? "rgba(37,211,102,0.25)" : "rgba(255,255,255,0.12)",
               color: "white", cursor: togglingBot ? "not-allowed" : "pointer",
               width: isMobile ? 36 : "auto", height: isMobile ? 36 : "auto", whiteSpace: "nowrap",
+              fontFamily: "Heebo, sans-serif",
             }}
           >
             {isMobile ? (togglingBot ? "⏳" : botActive ? "🤖" : "😴") : (togglingBot ? "⏳" : botActive ? t.botOn : t.botOff)}
-          </button>
+          </HoldToConfirmButton>
           <button
             onClick={() => setShowNewChat(true)}
             title={t.newChat}

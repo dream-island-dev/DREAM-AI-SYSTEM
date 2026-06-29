@@ -23,6 +23,7 @@ const portalMatch = window.location.pathname.match(/^\/portal\/([^/?#]+)/);
 // Inventory Smart-Intake Module — same no-auth-chain reasoning as the Guest
 // Portal above, for the employee's daily-fill phone screen.
 const inventoryMatch = window.location.pathname.match(/^\/inv\/([^/?#]+)/);
+const adminUpdatesPath = /^\/admin\/updates\/?$/.test(window.location.pathname);
 
 root.render(
   <StrictMode>
@@ -31,7 +32,7 @@ root.render(
     ) : inventoryMatch ? (
       <InventoryPortal token={inventoryMatch[1]} />
     ) : (
-      <App />
+      <App initialPage={adminUpdatesPath ? "admin_updates" : "dashboard"} />
     )}
   </StrictMode>
 );

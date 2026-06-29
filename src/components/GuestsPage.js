@@ -8,9 +8,19 @@ import { SUITE_REGISTRY } from "../data/suiteRegistry";
 import AddGuestModal from "./AddGuestModal";
 import GuestAttentionBadge from "./GuestAttentionBadge";
 import CustomerProfilePane from "./CustomerProfilePane";
+import QuietHoursGate from "./QuietHoursGate";
 import { STATUS_META } from "../utils/guestStatusMeta";
+import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
 
 export default function GuestsPage() {
+  const {
+    quietActive,
+    overrideChecked,
+    setOverrideChecked,
+    ensureCanSend,
+    canSend,
+  } = useQuietHoursSend();
+
   const [guests, setGuests]   = useState([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy]       = useState(null);
@@ -75,6 +85,11 @@ export default function GuestsPage() {
     // Room Ready → fire WhatsApp room_ready trigger (suites only).
     // Uses isSuite() so legacy guests without explicit room_type are covered.
     if (status === "room_ready" && isSuite(guest)) {
+      if (!ensureCanSend()) {
+        showToast("err", "חדר סומן כמוכן — אך שליחת WA חסומה בשעות שקט (סמן אישור למעלה)");
+        setBusy(null);
+        return;
+      }
       try {
         const { data: waData, error: waError } = await supabase.functions.invoke("whatsapp-send", {
           body: { trigger: "room_ready", guestId: guest.id },
@@ -235,6 +250,16 @@ export default function GuestsPage() {
 
   return (
     <div>
+      {quietActive && (
+        <div style={{ marginBottom: 16 }}>
+          <QuietHoursGate
+            active={quietActive}
+            checked={overrideChecked}
+            onChange={setOverrideChecked}
+          />
+        </div>
+      )}
+
       {/* ── Payment data modal ─────────────────────────────────────────────── */}
       {paymentModal && (
         <div
@@ -490,13 +515,17 @@ export default function GuestsPage() {
                               ✓ חדר מוכן
                             </button>
                           ) : (
-                            <button className="btn btn-sm" disabled={busy === g.id || roomMissing(g)}
+                            <button className="btn btn-sm" disabled={busy === g.id || roomMissing(g) || !canSend}
                               onClick={() => setStatus(g, "room_ready")}
-                              title={roomMissing(g) ? "יש לשבץ חדר לפני סימון כמוכן — לחץ ✏️ לעריכה" : undefined}
+                              title={
+                                !canSend ? "שליחה חסומה בשעות שקט — סמן אישור למעלה"
+                                  : roomMissing(g) ? "יש לשבץ חדר לפני סימון כמוכן — לחץ ✏️ לעריכה"
+                                  : undefined
+                              }
                               style={{
-                                background: roomMissing(g) ? "#F5F5F5" : "#E8F5EF",
-                                color:      roomMissing(g) ? "#AAAAAA" : "#1A7A4A",
-                                cursor:     roomMissing(g) ? "not-allowed" : "pointer",
+                                background: roomMissing(g) || !canSend ? "#F5F5F5" : "#E8F5EF",
+                                color:      roomMissing(g) || !canSend ? "#AAAAAA" : "#1A7A4A",
+                                cursor:     roomMissing(g) || !canSend ? "not-allowed" : "pointer",
                               }}>
                               ✓ חדר מוכן
                             </button>
