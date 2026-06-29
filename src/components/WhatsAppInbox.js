@@ -14,6 +14,99 @@ import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
 
 const POLL_MS = 5000; // fallback polling interval (realtime is primary) — 5s safe minimum
 
+function substituteTemplateVars(bodyText, varValues) {
+  if (!bodyText) return "";
+  let text = bodyText;
+  (varValues ?? []).forEach((v, i) => {
+    text = text.replace(new RegExp(`\\{\\{\\s*${i + 1}\\s*\\}\\}`, "g"), v || `{{${i + 1}}}`);
+  });
+  return text;
+}
+
+/** Mirror whatsapp-send resolveDayTimings — weekday vs Shabbat entry/check-in display. */
+function resolveDayTimings(arrivalDateStr) {
+  if (!arrivalDateStr) return { entryTime: "12:00", checkInTime: "15:00" };
+  const d = new Date(`${arrivalDateStr}T00:00:00Z`);
+  return d.getUTCDay() === 6
+    ? { entryTime: "15:00", checkInTime: "18:00" }
+    : { entryTime: "12:00", checkInTime: "15:00" };
+}
+
+function buildGuestResolveContext(contact) {
+  if (!contact) return {};
+  const guestName = contact.guestName || contact.pushName || "אורח";
+  const room = contact.room || "-";
+  const origin = typeof window !== "undefined" ? window.location.origin : "https://dream-ai-system.vercel.app";
+  const portalUrl = contact.portalToken ? `${origin}/portal/${contact.portalToken}` : "";
+  const { entryTime, checkInTime } = resolveDayTimings(contact.arrivalDate || "");
+  return { guestName, room, portalUrl, entryTime, checkInTime, spaTime: contact.spaTime || "" };
+}
+
+function expandScriptForDisplay(body, ctx = {}) {
+  if (!body) return "";
+  const name = ctx.guestName || "אורח";
+  const room = ctx.room || "-";
+  let text = body
+    .replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, name)
+    .replace(/\{\{\s*guest_name\s*\}\}/gi, name)
+    .replace(/\{\{\s*entry_time\s*\}\}/gi, ctx.entryTime ?? "")
+    .replace(/\{\{\s*check_in_time\s*\}\}/gi, ctx.checkInTime ?? "")
+    .replace(/\{\{\s*portal_url\s*\}\}/gi, ctx.portalUrl ?? "")
+    .replace(/\{\{\s*ROOM_NAME\s*\}\}/gi, room)
+    .replace(/\{\{\s*SUITE_NAME\s*\}\}/gi, room)
+    .replace(/\{\{\s*room\s*\}\}/gi, room);
+  if (ctx.spaTime) {
+    text = text
+      .replace(/\{\{\s*SPA_LINE\s*\}\}/gi, `🕐 הטיפול שלך בספא: ${ctx.spaTime}`)
+      .replace(/\{\{\s*OPTIONAL_SPA_TEXT\s*\}\}/gi, ` הטיפול שלך בספא מוזמן לשעה ${ctx.spaTime}.`)
+      .replace(/\{\{\s*SPA_TIME\s*\}\}/gi, ctx.spaTime);
+  } else {
+    text = text
+      .replace(/\{\{\s*SPA_LINE\s*\}\}/gi, "")
+      .replace(/\{\{\s*OPTIONAL_SPA_TEXT\s*\}\}/gi, "")
+      .replace(/\{\{\s*SPA_TIME\s*\}\}/gi, "");
+  }
+  return text.replace(/\{\{[^}]+\}\}/g, "").trim();
+}
+
+const LEGACY_SCRIPT_TAG_RE = /^\[סקריפט:\s*(.+?)\]$/;
+const LEGACY_TEMPLATE_TAG_RE = /^\[תבנית:\s*(.+?)\]$/;
+const LEGACY_BRACKET_SCRIPT_KEYS = {
+  "בוקר הגעה: חופשי": "stage_3_morning",
+  "בוקר יום-כיף: חופשי": "morning_daypass",
+  "חדר מוכן: חופשי": "room_ready_reminder",
+};
+
+/** Resolve legacy `[סקריפט:…]` / `[תבנית:…]` inbox rows to human-readable text. */
+function resolveInboxMessageText(raw, resolveCtx) {
+  if (!raw) return "";
+  const ctx = resolveCtx || {};
+  const scriptTag = raw.match(LEGACY_SCRIPT_TAG_RE);
+  if (scriptTag) {
+    const body = resolveCtx?.scriptsByKey?.get(scriptTag[1]);
+    if (body) return expandScriptForDisplay(body, ctx);
+    return raw;
+  }
+  const tmplTag = raw.match(LEGACY_TEMPLATE_TAG_RE);
+  if (tmplTag) {
+    const body = resolveCtx?.templatesByWaName?.get(tmplTag[1]);
+    if (body) {
+      const vars = [ctx.guestName || "אורח יקר", ctx.room || "-"].filter(Boolean);
+      return substituteTemplateVars(body, vars);
+    }
+    return raw;
+  }
+  const bracket = raw.match(/^\[(.+)\]$/);
+  if (bracket) {
+    const sk = LEGACY_BRACKET_SCRIPT_KEYS[bracket[1]];
+    if (sk) {
+      const body = resolveCtx?.scriptsByKey?.get(sk);
+      if (body) return expandScriptForDisplay(body, ctx);
+    }
+  }
+  return expandScriptForDisplay(raw, ctx);
+}
+
 // ── Responsive hook — same convention as UserManagement.js's useIsMobile:
 // JS-based breakpoint detection (resize listener), not injected CSS media
 // queries, so layout-mode branching can live directly in render logic. ──────
@@ -212,6 +305,8 @@ function groupByPhone(rows) {
         roomType: row.guest_room_type ?? null,
         status: row.guest_status ?? null,
         departureDate: row.guest_departure_date ?? null,
+        arrivalDate: row.guest_arrival_date ?? null,
+        portalToken: row.guest_portal_token ?? null,
         mealTime: row.guest_meal_time ?? null,
         mealLocation: row.guest_meal_location ?? null,
         claimedBy: row.guest_claimed_by ?? null,
@@ -233,6 +328,8 @@ function groupByPhone(rows) {
     if (row.guest_room_type) contact.roomType = row.guest_room_type;
     if (row.guest_status) contact.status = row.guest_status;
     if (row.guest_departure_date) contact.departureDate = row.guest_departure_date;
+    if (row.guest_arrival_date) contact.arrivalDate = row.guest_arrival_date;
+    if (row.guest_portal_token) contact.portalToken = row.guest_portal_token;
     if (row.guest_meal_time) contact.mealTime = row.guest_meal_time;
     if (row.guest_meal_location) contact.mealLocation = row.guest_meal_location;
     // claimed_by/claimed_at must reflect the LATEST row even when the latest
@@ -300,7 +397,7 @@ function roomChipMeta(contact) {
 // Swipe-to-reveal (mobile only): pointer-drag past a 48px threshold reveals
 // Archive / Resolved actions behind the row, mirroring the approved mockup.
 // Works with touch AND mouse (pointer events), so no gesture library needed.
-function ContactItem({ contact, isActive, isMobile, t, dir, onClick, onDismiss, onArchive }) {
+function ContactItem({ contact, isActive, isMobile, t, dir, onClick, onDismiss, onArchive, scriptsByKey, templatesByWaName }) {
   const last  = contact.messages[contact.messages.length - 1];
   const unread = contact.messages.filter(
     (m) => m.direction === "inbound" && !m._read
@@ -313,6 +410,7 @@ function ContactItem({ contact, isActive, isMobile, t, dir, onClick, onDismiss, 
   const identity = identityMeta(contact, t);
   const roomChip = roomChipMeta(contact);
   const active   = recentlyActive(contact);
+  const resolveCtx = { ...buildGuestResolveContext(contact), scriptsByKey, templatesByWaName };
 
   const [swiped, setSwiped] = useState(false);
   const dragRef = useRef({ startX: 0, dragging: false });
@@ -467,7 +565,8 @@ function ContactItem({ contact, isActive, isMobile, t, dir, onClick, onDismiss, 
             overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
             paddingRight: rtl ? 48 : 0, paddingLeft: rtl ? 0 : 48,
           }}>
-            {last.direction === "outbound" ? "✓ " : ""}{last.message}
+            {last.direction === "outbound" ? "✓ " : ""}
+            {resolveInboxMessageText(last.message, resolveCtx)}
           </div>
         )}
         {contact.humanRequested && (
@@ -502,9 +601,10 @@ function ContactItem({ contact, isActive, isMobile, t, dir, onClick, onDismiss, 
 // palette (--black-soft, --gold-light) instead of WhatsApp stock green, so the
 // thread visually matches the rest of the app rather than looking like a
 // generic chat widget.
-function Bubble({ msg, dir }) {
+function Bubble({ msg, dir, resolveCtx }) {
   const isOut = msg.direction === "outbound";
   const rtl = dir === "rtl";
+  const displayText = resolveInboxMessageText(msg.message, resolveCtx);
   return (
     <div style={{
       display: "flex",
@@ -522,8 +622,9 @@ function Bubble({ msg, dir }) {
         color: isOut ? "var(--ivory, #F5F0E8)" : "#1a1a1a",
         lineHeight: 1.5,
         wordBreak: "break-word",
+        whiteSpace: "pre-wrap",
       }}>
-        {msg.message}
+        {displayText}
         <div style={{
           fontSize: 10, color: isOut ? "var(--gold-light, #E8C98A)" : "#aaa", marginTop: 4,
           textAlign: isOut ? "left" : "right",
@@ -793,9 +894,10 @@ function NewChatModal({ onClose, onSent }) {
       });
       if (error || !data?.ok) throw new Error(data?.error ?? error?.message ?? "שגיאה בשליחה");
 
+      const tmplPreview = substituteTemplateVars(selectedTmpl.bodyText, varValues);
       await supabase.from("whatsapp_conversations").insert({
         phone: selectedGuest.phone, direction: "outbound",
-        message: `[תבנית: ${selectedTmpl.name}]`, wa_message_id: null,
+        message: tmplPreview || `[תבנית: ${selectedTmpl.name}]`, wa_message_id: null,
       });
       onSent(selectedGuest.phone, data.simulation);
     } catch (e) {
@@ -842,8 +944,10 @@ function NewChatModal({ onClose, onSent }) {
           body: { trigger: "broadcast", guestId: g.id, waTemplateName: selectedTmpl.name, templateVariables: autoVars },
         });
         if (!error && data?.ok) {
+          const tmplPreview = substituteTemplateVars(selectedTmpl.bodyText, autoVars);
           await supabase.from("whatsapp_conversations").insert({
-            phone: g.phone, direction: "outbound", message: `[תבנית: ${selectedTmpl.name}]`, wa_message_id: null,
+            phone: g.phone, direction: "outbound",
+            message: tmplPreview || `[תבנית: ${selectedTmpl.name}]`, wa_message_id: null,
           });
         } else {
           failures.push({ name: g.name, phone: g.phone, reason: data?.error || error?.message || "שגיאה" });
@@ -863,9 +967,7 @@ function NewChatModal({ onClose, onSent }) {
   // Build live preview text (template with vars substituted)
   function buildPreview() {
     if (!selectedTmpl?.bodyText) return null;
-    let text = selectedTmpl.bodyText;
-    varValues.forEach((v, i) => { text = text.replace(new RegExp(`\\{\\{${i + 1}\\}\\}`, "g"), v || `{{${i + 1}}}`); });
-    return text;
+    return substituteTemplateVars(selectedTmpl.bodyText, varValues);
   }
 
   const VAR_LABELS = ["שם אורח", "מספר חדר", "תאריך הגעה", "סוג חדר", "שעת הגעה"];
@@ -1703,6 +1805,8 @@ export default function WhatsAppInbox({ user }) {
   const [aiSuggesting, setAiSuggesting]   = useState(false);
   const [aiSuggestError, setAiSuggestError] = useState(null);
   const [routeDraft, setRouteDraft] = useState(null); // { category, subCategory, note } | null
+  const [scriptsByKey, setScriptsByKey] = useState(() => new Map());
+  const [templatesByWaName, setTemplatesByWaName] = useState(() => new Map());
   const bottomRef  = useRef(null);
   const pollRef    = useRef(null);
   const allMsgsRef = useRef([]);   // raw flat messages — source of truth for merging
@@ -1722,6 +1826,8 @@ export default function WhatsAppInbox({ user }) {
     guest_room_type:        r.guests?.room_type ?? null,
     guest_status:           r.guests?.status ?? null,
     guest_departure_date:   r.guests?.departure_date ?? null,
+    guest_arrival_date:     r.guests?.arrival_date ?? null,
+    guest_portal_token:     r.guests?.portal_token ?? null,
     guest_meal_time:        r.guests?.meal_time ?? null,
     guest_meal_location:    r.guests?.meal_location ?? null,
     guest_claimed_by:       r.guests?.claimed_by ?? null,
@@ -1765,11 +1871,30 @@ export default function WhatsAppInbox({ user }) {
     [resolveIdentityFallback, resolveClaimNames]
   );
 
+  // Merge new conversation rows instantly (Realtime INSERT or incremental poll).
+  const mergeIncomingRows = useCallback((rows) => {
+    if (!rows?.length) return false;
+    const incoming = rows.map((r) => normalise(r));
+    const existingIds = new Set(allMsgsRef.current.map((m) => m.id));
+    const toAdd = incoming.filter((m) => m.id && !existingIds.has(m.id));
+    if (!toAdd.length) return false;
+    const merged = [...allMsgsRef.current, ...toAdd];
+    allMsgsRef.current = merged;
+    for (const m of toAdd) {
+      if (m.created_at && (!lastSeenAt.current || m.created_at > lastSeenAt.current)) {
+        lastSeenAt.current = m.created_at;
+      }
+    }
+    setContacts(applyGrouping(merged));
+    setLastUpdated(new Date());
+    return true;
+  }, [applyGrouping]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Full fetch (initial load only) ────────────────────────────────────────
   const fetchAll = useCallback(async () => {
     const { data, error: err } = await supabase
       .from("whatsapp_conversations")
-      .select("id, phone, direction, message, wa_message_id, created_at, intent, human_requested, human_request_type, push_name, guests(id, name, guest_notes, spa_time, room, room_type, status, departure_date, meal_time, meal_location, claimed_by, claimed_at)")
+      .select("id, phone, direction, message, wa_message_id, created_at, intent, human_requested, human_request_type, push_name, guests(id, name, guest_notes, spa_time, room, room_type, status, arrival_date, departure_date, portal_token, meal_time, meal_location, claimed_by, claimed_at)")
       .order("created_at", { ascending: true })
       .limit(2000);
 
@@ -1777,7 +1902,10 @@ export default function WhatsAppInbox({ user }) {
 
     const flat = (data ?? []).map(normalise);
     allMsgsRef.current = flat;
-    lastSeenAt.current = new Date().toISOString();
+    // Watermark = latest row timestamp (not wall-clock) so rows inserted during
+    // fetchAll are not skipped by the next incremental poll.
+    const maxTs = flat.reduce((max, m) => (m.created_at > max ? m.created_at : max), "");
+    lastSeenAt.current = maxTs || new Date().toISOString();
     setContacts(applyGrouping(flat));
     setLastUpdated(new Date());
     setLoading(false);
@@ -1789,27 +1917,35 @@ export default function WhatsAppInbox({ user }) {
   const fetchSince = useCallback(async () => {
     if (!lastSeenAt.current) return; // wait for first fetchAll
     const since = lastSeenAt.current;
-    lastSeenAt.current = new Date().toISOString(); // advance window immediately
 
-    const { data } = await supabase
+    const { data, error: fetchErr } = await supabase
       .from("whatsapp_conversations")
-      .select("id, phone, direction, message, wa_message_id, created_at, intent, human_requested, human_request_type, push_name, guests(id, name, guest_notes, spa_time, room, room_type, status, departure_date, meal_time, meal_location, claimed_by, claimed_at)")
-      .gt("created_at", since)
+      .select("id, phone, direction, message, wa_message_id, created_at, intent, human_requested, human_request_type, push_name, guests(id, name, guest_notes, spa_time, room, room_type, status, arrival_date, departure_date, portal_token, meal_time, meal_location, claimed_by, claimed_at)")
+      .gte("created_at", since)
       .order("created_at", { ascending: true })
       .limit(100);
 
+    if (fetchErr) {
+      console.warn("[WA-inbox] fetchSince error:", fetchErr.message);
+      return;
+    }
     if (!data?.length) return;
 
     const newFlat = data.map(normalise);
     const existingIds = new Set(allMsgsRef.current.map((m) => m.id));
-    const merged = [
-      ...allMsgsRef.current,
-      ...newFlat.filter((m) => !existingIds.has(m.id)),
-    ];
+    const toAdd = newFlat.filter((m) => !existingIds.has(m.id));
+    if (!toAdd.length) return;
+
+    const merged = [...allMsgsRef.current, ...toAdd];
     allMsgsRef.current = merged;
+    for (const m of toAdd) {
+      if (m.created_at && m.created_at > lastSeenAt.current) {
+        lastSeenAt.current = m.created_at;
+      }
+    }
     setContacts(applyGrouping(merged));
     setLastUpdated(new Date());
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [applyGrouping]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Dismiss human-intervention request ────────────────────────────────────
   // Clears both layers in one click: the per-message `human_requested` flag
@@ -1899,6 +2035,8 @@ export default function WhatsAppInbox({ user }) {
         guest_room_type:      g.room_type ?? null,
         guest_status:         g.status ?? m.guest_status,
         guest_departure_date: g.departure_date ?? null,
+        guest_arrival_date:   g.arrival_date ?? null,
+        guest_portal_token:   g.portal_token ?? null,
         guest_meal_time:      g.meal_time ?? null,
         guest_meal_location:  g.meal_location ?? null,
         guest_claimed_by:     g.claimed_by ?? null,
@@ -2074,6 +2212,32 @@ export default function WhatsAppInbox({ user }) {
       });
   }, [resolveClaimNames]);
 
+  // ── Load script/template bodies for legacy tag resolution in thread bubbles ─
+  useEffect(() => {
+    if (!supabase) return;
+    supabase
+      .from("bot_scripts")
+      .select("script_key, message_text")
+      .then(({ data }) => {
+        const map = new Map();
+        for (const r of data ?? []) {
+          if (r.script_key && r.message_text) map.set(r.script_key, r.message_text);
+        }
+        setScriptsByKey(map);
+      });
+    supabase
+      .from("message_templates")
+      .select("wa_template_name, content")
+      .not("wa_template_name", "is", null)
+      .then(({ data }) => {
+        const map = new Map();
+        for (const r of data ?? []) {
+          if (r.wa_template_name && r.content) map.set(r.wa_template_name, r.content);
+        }
+        setTemplatesByWaName(map);
+      });
+  }, []);
+
   // ── Initial load + incremental polling fallback ───────────────────────────
   // fetchAll fires once; after that only fetchSince runs every POLL_MS (fallback).
   // Polling is ONLY a fallback when Realtime is unavailable — Realtime is primary.
@@ -2122,9 +2286,11 @@ export default function WhatsAppInbox({ user }) {
   // Listens to INSERT + UPDATE on whatsapp_conversations.
   // On any event → fetchSince() (incremental, not full refetch).
   // subscribe() callback tracks connection status for the LIVE indicator.
-  // NOTE: Requires Realtime enabled for whatsapp_conversations in Supabase:
-  //   Dashboard → Database → Replication → whatsapp_conversations ✓
+  // NOTE: requires `whatsapp_conversations` in supabase_realtime publication
+  // (migration 107) — otherwise this subscribes successfully but silently
+  // never receives an event (same failure mode as guests migration 082).
   useEffect(() => {
+    if (!isSupabaseConfigured || !supabase) return;
     let reconnectTimer = null;
     let intentionalCleanup = false;
 
@@ -2138,11 +2304,11 @@ export default function WhatsAppInbox({ user }) {
             event: "INSERT",
             schema: "public",
             table: "whatsapp_conversations",
-            filter: undefined,
           },
           (payload) => {
             console.log("[WA-inbox] ✅ Realtime INSERT received:", payload.new?.id, payload.new?.phone);
-            fetchSince();
+            const merged = mergeIncomingRows([payload.new]);
+            if (!merged) fetchSince();
           }
         )
         .on(
@@ -2151,11 +2317,15 @@ export default function WhatsAppInbox({ user }) {
             event: "UPDATE",
             schema: "public",
             table: "whatsapp_conversations",
-            filter: undefined,
           },
           (payload) => {
             console.log("[WA-inbox] ✅ Realtime UPDATE received:", payload.new?.id, payload.new?.phone);
-            fetchSince();
+            if (!payload.new?.id) return;
+            allMsgsRef.current = allMsgsRef.current.map((m) =>
+              m.id === payload.new.id ? { ...m, ...normalise(payload.new) } : m
+            );
+            setContacts(applyGrouping(allMsgsRef.current));
+            setLastUpdated(new Date());
           }
         )
         .subscribe((status, err) => {
@@ -2189,7 +2359,7 @@ export default function WhatsAppInbox({ user }) {
       clearTimeout(reconnectTimer);
       supabase.removeChannel(channel);
     };
-  }, [fetchSince]);
+  }, [fetchSince, mergeIncomingRows, applyGrouping]);
 
   // ── Realtime subscription on `guests` — cross-tab claim/assignment sync ──
   // Deliberately a SEPARATE channel from wa-inbox-rt-v2 above (not folded
@@ -2243,9 +2413,19 @@ export default function WhatsAppInbox({ user }) {
   }, [realtimeOk, fetchSince]);
 
   // ── Auto-scroll to bottom of thread ─────────────────────────────────────
+  // Moved below derived `thread` — scroll when active chat grows (realtime/poll).
+  const activeContact   = contacts.find((c) => c.phone === active) ?? null;
+  const thread          = activeContact?.messages ?? [];
+  const activeResolveCtx = {
+    ...buildGuestResolveContext(activeContact),
+    scriptsByKey,
+    templatesByWaName,
+  };
+
   useEffect(() => {
+    if (!active) return;
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [active, contacts]);
+  }, [active, thread.length, lastUpdated]);
 
   // ── Manual reply send ─────────────────────────────────────────────────────
   async function sendManualReply() {
@@ -2275,8 +2455,6 @@ export default function WhatsAppInbox({ user }) {
   }
 
   // ── Derived state ──────────────────────────────────────────────────────────
-  const activeContact   = contacts.find((c) => c.phone === active) ?? null;
-  const thread          = activeContact?.messages ?? [];
   const visibleContacts = contacts.filter((c) => !archivedPhones.has(c.phone));
   // Contextual macros take over the quick-actions drawer when this guest has
   // usable metadata; otherwise fall back to the generic list so the drawer
@@ -2318,6 +2496,8 @@ export default function WhatsAppInbox({ user }) {
           isMobile={isMobile}
           t={t}
           dir={t.dir}
+          scriptsByKey={scriptsByKey}
+          templatesByWaName={templatesByWaName}
           onClick={() => openContact(c.phone)}
           onDismiss={() => dismissHumanRequest(c)}
           onArchive={() => setArchivedPhones((prev) => new Set(prev).add(c.phone))}
@@ -2468,7 +2648,12 @@ export default function WhatsAppInbox({ user }) {
         background: "#E5DDD5", display: "flex", flexDirection: "column", gap: 4,
       }}>
         {thread.map((msg) => (
-          <Bubble key={msg.id} msg={msg} dir={t.dir} />
+          <Bubble
+            key={msg.id}
+            msg={msg}
+            dir={t.dir}
+            resolveCtx={activeResolveCtx}
+          />
         ))}
         <div ref={bottomRef} />
       </div>
