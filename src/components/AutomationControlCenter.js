@@ -804,7 +804,7 @@ async function lookupPendingScheduledTask(guestId, stageKey) {
 }
 
 const NIGHT_BEFORE_OVERRIDE_IMAGE =
-  "https://dream-ai-system.vercel.app/images/image_3cde8f.jpg";
+  "https://dream-ai-system.vercel.app/images/dreamislandsuite.jpg";
 
 async function invokeForcedDispatch({ guestId, stageKey, forceChannel, scheduledFor, imageUrl }) {
   return supabase.functions.invoke("whatsapp-send", {

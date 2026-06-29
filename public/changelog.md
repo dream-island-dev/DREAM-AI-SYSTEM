@@ -1,3 +1,5 @@
+2026-06-29 | whatsapp-send + AutomationControlCenter + public/images | Stage 2.5 override image → dreamislandsuite.jpg on Vercel CDN.
+
 2026-06-29 | whatsapp-send/index.ts | Stage 2.5 force override: session_message always on manual Send Now — bypass window/Shabbat/Meta routing; fail visible on missing script.
 
 2026-06-29 | detailedReservationParser.js + ArrivalImportPanel.js | CSV quote-safe parser (RFC4180 + בע\"מ fix); .csv read as text not SheetJS — fixes raw CSV dumped into guest name.

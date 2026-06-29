@@ -495,7 +495,7 @@ function buildTemplateComponents(
 
 // Default session image for Stage 2.5 manual "Send Now" override (force === true).
 const NIGHT_BEFORE_OVERRIDE_SESSION_IMAGE =
-  "https://dream-ai-system.vercel.app/images/image_3cde8f.jpg";
+  "https://dream-ai-system.vercel.app/images/dreamislandsuite.jpg";
 
 // ── Stage session message helpers (Stage 2.5 + hybrid pipeline) ───────────────
 type StageMediaRow = {
