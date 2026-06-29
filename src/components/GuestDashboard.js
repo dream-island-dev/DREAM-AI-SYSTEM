@@ -201,7 +201,7 @@ export default function GuestDashboard({ user }) {
       .select(
         "id, name, phone, room, room_type, arrival_date, departure_date, status, " +
         "msg_pre_arrival_sent, msg_room_ready_sent, msg_post_checkin_sent, " +
-        "requires_attention, guest_notes, attention_reason, arrival_confirmed, spa_time, " +
+        "requires_attention, guest_notes, guest_profile, arrival_time, attention_reason, arrival_confirmed, spa_time, " +
         "meal_time, meal_location, treatment_count, order_number, payment_amount, " +
         "payment_link_url, needs_callback, portal_token, lead_source, automation_muted"
       )

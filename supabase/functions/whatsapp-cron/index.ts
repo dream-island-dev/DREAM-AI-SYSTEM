@@ -76,6 +76,8 @@ serve(async (req: Request) => {
 
     // Same explicit column list as before this refactor — every flag column
     // any stage might reference, plus the resolver's anchor/eligibility fields.
+    // needs_callback is selected for observability only — NOT used in eligibility
+    // (checkEligibility in automationSchedule.ts; session 59 decouple).
     const { data: guests = [] } = await supabase
       .from("guests")
       .select("id, name, phone, arrival_date, departure_date, room_type, status, checkin_time, needs_callback, automation_muted, msg_pre_arrival_2d_sent, msg_pre_arrival_sent, msg_morning_suite_sent, msg_morning_welcome_sent, msg_mid_stay_sent, msg_checkout_fb_sent");

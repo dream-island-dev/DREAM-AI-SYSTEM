@@ -307,7 +307,6 @@ function groupByPhone(rows) {
         phone: row.phone,
         guestId: row.guest_id ?? null,
         guestName: row.guest_name,
-        guestNotes: row.guest_notes ?? null,
         spaTime: row.spa_time ?? null,
         room: row.guest_room ?? null,
         roomType: row.guest_room_type ?? null,
@@ -327,9 +326,6 @@ function groupByPhone(rows) {
     }
     const contact = map.get(row.phone);
     contact.messages.push(row);
-    // guest_notes is append-only and grows over time — always prefer the
-    // value carried by the most recently fetched row, not just the first.
-    if (row.guest_notes) contact.guestNotes = row.guest_notes;
     if (row.guest_id != null) contact.guestId = row.guest_id;
     if (row.spa_time) contact.spaTime = row.spa_time;
     if (row.guest_room) contact.room = row.guest_room;
@@ -620,15 +616,15 @@ function Bubble({ msg, dir, resolveCtx }) {
       marginBottom: 4,
     }}>
       <div style={{
-        maxWidth: "72%",
+        maxWidth: "78%",
         background: isOut ? "var(--black-soft, #2C2C2C)" : "#ffffff",
         border: isOut ? "none" : "1.5px solid #c5d9f0",
         borderRadius: isOut ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
         boxShadow: isOut ? "0 1px 2px rgba(0,0,0,0.08)" : "0 1px 4px rgba(55,138,221,0.12)",
-        padding: "8px 12px",
-        fontSize: 14,
+        padding: "10px 14px",
+        fontSize: 15,
         color: isOut ? "var(--ivory, #F5F0E8)" : "#1a1a1a",
-        lineHeight: 1.5,
+        lineHeight: 1.55,
         wordBreak: "break-word",
         whiteSpace: "pre-wrap",
       }}>
@@ -2707,21 +2703,10 @@ export default function WhatsAppInbox({ user }) {
         </div>
       )}
 
-      {/* Guest notes banner — visible the instant the thread opens, no extra click */}
-      {activeContact?.guestNotes && (
-        <div style={{
-          padding: "8px 16px", background: "#FEF3C7", borderBottom: "1px solid #FDE68A",
-          color: "#92400E", fontSize: 12, lineHeight: 1.6, whiteSpace: "pre-wrap",
-          flexShrink: 0, maxHeight: 90, overflowY: "auto",
-        }}>
-          <strong>📝 הערות אורח: </strong>{activeContact.guestNotes}
-        </div>
-      )}
-
       {/* Messages */}
       <div style={{
-        flex: 1, overflowY: "auto", padding: "16px 20px",
-        background: "#E5DDD5", display: "flex", flexDirection: "column", gap: 4,
+        flex: 1, minHeight: 0, overflowY: "auto", padding: "16px 20px",
+        background: "#E5DDD5", display: "flex", flexDirection: "column", gap: 6,
       }}>
         {thread.map((msg) => (
           <Bubble

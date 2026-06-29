@@ -1,6 +1,6 @@
 # CLAUDE.md — Dream Island AI System
 > קובץ זה נקרא אוטומטית בכל שיחה. הוא מקור-האמת שלך. קרא אותו לפני כל פעולה.
-> **עדכון אחרון:** 2026-06-28 (session 59 — **needs_callback decouple:** דגל UI בלבד, בוט+cron לא נחסמים; AddGuestModal "ממתין לטיפול צוות 🔴"; §12 Deploy checklist חובה. ראה §10 session 59.)(session 57 — **System Audit & Cleanup.** (1) Security purge: הוסרו `MOCK_USERS` array + admin bypass block מ-`App.js`, display table ו-prop מ-`AdminPanel.js`, hardcoded default password `"1234"` מ-`invite-user/index.ts` (replaced by enforced 8-char minimum). (2) Bug fix — `guest-portal-data`: PostgREST `cs` DB-level filter הוחלף בסינון JS דו-שלבי: Level 1 (scene visibility) → Level 2 (CTA visibility per kept scene) — תוקן באג שהפיל סצנות שלמות ל-day_guest במקום לסנן רק CTAs פנימיים. (3) Day-pass Stage 5 audit: `checkout_fb` כבר היה ב-`DAY_PASS_ALLOWED_TRIGGERS` ו-`DAY_PASS_ALLOWED_STAGES` — תוקן רק טקסט "שלושה שלבים בלבד" → "ארבעה שלבים" + comment בקוד. (4) Dead code: הוסר משתנה `predictedChannel` לא-בשימוש ב-`AutomationControlCenter.js` — build `Compiled successfully.` ללא warnings. ראה §10 session 57.)(session 56 — **Master template variable sync** (`dream_suite_reminder` + `dream_welcome_morning`). שלושה תיקונים ב-`whatsapp-send/index.ts`: (1) `morning_suite`/`morning_welcome` לא העבירו משתנים `{{2}}`/`{{3}}` כלל — נוסף `resolveDayTimings()` synchronous: ראשון–שישי → 12:00/15:00, שבת → 15:00/18:00, מוזרק ל-`PIPELINE_VARS` של שני הטריגרים. (2) `portalButtonParam` היה night_before בלבד — הורחב ל-`PORTAL_BUTTON_TRIGGERS = {night_before, morning_suite, morning_welcome}` כך שגם הודעות בוקר-ההגעה מזריקות את `portal_token` לכפתור ה-URL. (3) `resolveNightBeforeTimes()` זרק שגיאה כשמפתחות שבת ב-`bot_config` ריקים — הוחלף ב-warn + fallback 15:00/18:00 כך שאורח שמגיע בשבת מקבל הודעה במקום כלום. `npm run build` נקי, נפרס לפרודקשן, pushed (c75a919). ראה §10 session 56.)(session 55 — **Meta template IMAGE header fix.** `sendViaTemplate` (whatsapp-send) ו-`sendTemplate` (whatsapp-webhook) לא כללו את רכיב ה-`header` ב-components payload — Meta זרק "Format mismatch, expected IMAGE, received UNKNOWN" לכל תבנית עם Media Header כגון `dream_suite_reminder`. תיקון: `TEMPLATE_IMAGE_HEADERS` map חדש בכל פונקציה — mapping שם-תבנית → URL תמונה; אם קיים, רכיב header מוזרק ראשון לפני body/button. נפרס לפרודקשן. ראה §10 session 55. )(session 54 — **Voucher Reconciliation Engine — synthetic validation + `voucher_numbers_match()` bugfix.** Migration 092 תוקן באג בפונקציה: `truncate_4` mode השתמש ב-`left(v_easygo_norm, length-4)` שחתך 4 *תווים* אחרונים — כשיש מפריד (e.g. `'999888-4321'`) נשאר `'999888-'` (עם מקף) שלא תאם את `'999888'` של הספק. תיקון: שלב נרמול חדש `regexp_replace(..., '[^A-Z0-9]', '', 'g')` על שני הצדדים לפני הקטיעה — מיישר `'999888-4321'`→`'9998884321'`→`'999888'` ✅. 8 בדיקות inline ב-migration עצמו (`DO $$ ... $$`) אוכפות את הנכונות בזמן deploy. נוסף גם `supabase/tests/voucher_reconciliation_e2e_test.sql`: 5 תרחישים מלאים (INSERT→RPC→assert→ROLLBACK) שניתן להריץ ב-Supabase SQL Editor בכל עת. `exact` mode (Hever/Nofshonit) לא שונה — בדיקה B מוכיחה שמפריד גורם לאי-התאמה כצפוי. ראה §10 session 54 לפירוט.) (session 53 — **Real-time Meta template sync buttons** נוספו ל-`WhatsAppInbox.js` (NewChatModal) ו-`BroadcastDashboard.js`: כפתור "🔄 סנכרן תבניות" שמאפשר לסגל לרענן את רשימת התבניות המאושרות מ-Meta בלי לרענן את הדף. `fetchTemplates` חולץ ל-`useCallback` בשני הקבצים. `npm run build` נקי. committed+pushed (8251e4a). ראה §10 session 53 לפירוט.) (session 52 — **RESORT_UI_MANIFEST.md** נוצר (root) כמקור-אמת נפרד ל-UI/UX philosophy + tab-readiness checklist, ואז **automated repair pass** סגר 7 מתוך הממצאים שהוא תיעד: silent/misleading error states ב-`AdminPanel.js`(×2)/`WhatsAppInbox.js`(×2)/`AutomationControlCenter.js`/`InventoryImportPanel.js` + tablet-grid layout gaps ב-`RoomBoard.js`/`HousekeepingTabletView.js`/`AICopilot.js`. `npm run build` נקי אחרי כל קובץ. CSS-variable drift (~150 hardcoded hex) ו-`AutomationControlCenter`'s tablet media-query נשארו **בכוונה** לא-מטופלים (out of scope, לפי הנחיית Mike). ראה §10 session 52 לפירוט מלא + §0 בהמשך לסשן 51 שנשאר מתועד למטה.)
+> **עדכון אחרון:** 2026-06-30 (session 62 — **Smart Guest Profile:** `guests.guest_profile` JSONB (migration 109); `GuestProfileModal` + `guestProfileSchema.js`; `GuestAttentionBadge` → מודל מובנה (VIP/אירוע/תזונה/הגעה/ETA); `guest_notes` = לוג מערכת בלבד; inbox banner הוסר; webhook `buildGuestStageContext` קורא פרופיל.)(session 61 — **WhatsApp Inbox UX:** באנר `guest_notes` מקופל כברירת-מחדל + כפתור ✕; `minHeight:0` על אזור ההודעות תיקן חפיפה; בועות מעט גדולות יותר. ראה §3 `WhatsAppInbox.js`.)(session 60 — **Receptionist RBAC refresh** + **Record-Only ETA** + **Future Suite Management routing:** `receptionist` = full Sidebar (`auth.js` `canSeeNavItem`/`canAccessRoute`); `guests.arrival_time` (migration 108) record-only webhook path; future suite asks → `120363429859248777@g.us` + LLM Hebrew→English before Whapi. ראה §4/§6/§7.)(session 59 — **needs_callback decouple:** דגל UI בלבד, בוט+cron לא נחסמים; AddGuestModal "ממתין לטיפול צוות 🔴"; §12 Deploy checklist חובה. ראה §10 session 59.)(session 57 — **System Audit & Cleanup.** (1) Security purge: הוסרו `MOCK_USERS` array + admin bypass block מ-`App.js`, display table ו-prop מ-`AdminPanel.js`, hardcoded default password `"1234"` מ-`invite-user/index.ts` (replaced by enforced 8-char minimum). (2) Bug fix — `guest-portal-data`: PostgREST `cs` DB-level filter הוחלף בסינון JS דו-שלבי: Level 1 (scene visibility) → Level 2 (CTA visibility per kept scene) — תוקן באג שהפיל סצנות שלמות ל-day_guest במקום לסנן רק CTAs פנימיים. (3) Day-pass Stage 5 audit: `checkout_fb` כבר היה ב-`DAY_PASS_ALLOWED_TRIGGERS` ו-`DAY_PASS_ALLOWED_STAGES` — תוקן רק טקסט "שלושה שלבים בלבד" → "ארבעה שלבים" + comment בקוד. (4) Dead code: הוסר משתנה `predictedChannel` לא-בשימוש ב-`AutomationControlCenter.js` — build `Compiled successfully.` ללא warnings. ראה §10 session 57.)(session 56 — **Master template variable sync** (`dream_suite_reminder` + `dream_welcome_morning`). שלושה תיקונים ב-`whatsapp-send/index.ts`: (1) `morning_suite`/`morning_welcome` לא העבירו משתנים `{{2}}`/`{{3}}` כלל — נוסף `resolveDayTimings()` synchronous: ראשון–שישי → 12:00/15:00, שבת → 15:00/18:00, מוזרק ל-`PIPELINE_VARS` של שני הטריגרים. (2) `portalButtonParam` היה night_before בלבד — הורחב ל-`PORTAL_BUTTON_TRIGGERS = {night_before, morning_suite, morning_welcome}` כך שגם הודעות בוקר-ההגעה מזריקות את `portal_token` לכפתור ה-URL. (3) `resolveNightBeforeTimes()` זרק שגיאה כשמפתחות שבת ב-`bot_config` ריקים — הוחלף ב-warn + fallback 15:00/18:00 כך שאורח שמגיע בשבת מקבל הודעה במקום כלום. `npm run build` נקי, נפרס לפרודקשן, pushed (c75a919). ראה §10 session 56.)(session 55 — **Meta template IMAGE header fix.** `sendViaTemplate` (whatsapp-send) ו-`sendTemplate` (whatsapp-webhook) לא כללו את רכיב ה-`header` ב-components payload — Meta זרק "Format mismatch, expected IMAGE, received UNKNOWN" לכל תבנית עם Media Header כגון `dream_suite_reminder`. תיקון: `TEMPLATE_IMAGE_HEADERS` map חדש בכל פונקציה — mapping שם-תבנית → URL תמונה; אם קיים, רכיב header מוזרק ראשון לפני body/button. נפרס לפרודקשן. ראה §10 session 55. )(session 54 — **Voucher Reconciliation Engine — synthetic validation + `voucher_numbers_match()` bugfix.** Migration 092 תוקן באג בפונקציה: `truncate_4` mode השתמש ב-`left(v_easygo_norm, length-4)` שחתך 4 *תווים* אחרונים — כשיש מפריד (e.g. `'999888-4321'`) נשאר `'999888-'` (עם מקף) שלא תאם את `'999888'` של הספק. תיקון: שלב נרמול חדש `regexp_replace(..., '[^A-Z0-9]', '', 'g')` על שני הצדדים לפני הקטיעה — מיישר `'999888-4321'`→`'9998884321'`→`'999888'` ✅. 8 בדיקות inline ב-migration עצמו (`DO $$ ... $$`) אוכפות את הנכונות בזמן deploy. נוסף גם `supabase/tests/voucher_reconciliation_e2e_test.sql`: 5 תרחישים מלאים (INSERT→RPC→assert→ROLLBACK) שניתן להריץ ב-Supabase SQL Editor בכל עת. `exact` mode (Hever/Nofshonit) לא שונה — בדיקה B מוכיחה שמפריד גורם לאי-התאמה כצפוי. ראה §10 session 54 לפירוט.) (session 53 — **Real-time Meta template sync buttons** נוספו ל-`WhatsAppInbox.js` (NewChatModal) ו-`BroadcastDashboard.js`: כפתור "🔄 סנכרן תבניות" שמאפשר לסגל לרענן את רשימת התבניות המאושרות מ-Meta בלי לרענן את הדף. `fetchTemplates` חולץ ל-`useCallback` בשני הקבצים. `npm run build` נקי. committed+pushed (8251e4a). ראה §10 session 53 לפירוט.) (session 52 — **RESORT_UI_MANIFEST.md** נוצר (root) כמקור-אמת נפרד ל-UI/UX philosophy + tab-readiness checklist, ואז **automated repair pass** סגר 7 מתוך הממצאים שהוא תיעד: silent/misleading error states ב-`AdminPanel.js`(×2)/`WhatsAppInbox.js`(×2)/`AutomationControlCenter.js`/`InventoryImportPanel.js` + tablet-grid layout gaps ב-`RoomBoard.js`/`HousekeepingTabletView.js`/`AICopilot.js`. `npm run build` נקי אחרי כל קובץ. CSS-variable drift (~150 hardcoded hex) ו-`AutomationControlCenter`'s tablet media-query נשארו **בכוונה** לא-מטופלים (out of scope, לפי הנחיית Mike). ראה §10 session 52 לפירוט מלא + §0 בהמשך לסשן 51 שנשאר מתועד למטה.)
 >
 > 📚 **היסטוריית הסשנים המלאה (sessions 2–44) הועברה ל-[`claude_history.md`](claude_history.md)** כדי לשמור את הקובץ הזה קליל. שום מידע לא נמחק — רק הופרד. הקובץ הזה מחזיק את **רפרנס הארכיטקטורה החי** (§0–§13); הקובץ ההוא מחזיק את הנרטיב ההיסטורי. כשצריך הקשר מפורט על באג/החלטה ישנה — קרא שם.
 >
@@ -124,6 +124,9 @@ DREAM-AI-SYSTEM/
 │   ├── styles.css                162B  — minimal (real styles ב-App.js)
 │   ├── utils/
 │   │   ├── admin.js              2.2KB — isAdminUser(), isSuperAdmin(), loadDepartments()
+│   │   ├── auth.js               ★ NEW (session 60) — RBAC מרכזי: getRole(), canPerform(),
+│   │   │                            canSeeNavItem(), canAccessRoute(). מקור אמת ל-receptionist
+│   │   │                            gates + route guards ב-App.js guardPage.
 │   │   ├── pushNotifications.js  3.3KB — getPushState, subscribe/unsubscribe
 │   │   ├── ezgoParser.js         IL mobile regex + extractGuestDetails + aggregateGuestProfiles
 │   │   │                            Pure transform — zero Supabase calls. Called from ArrivalImportPanel.js.
@@ -588,6 +591,8 @@ DREAM-AI-SYSTEM/
 │                                   GIN index `idx_portal_scenes_visibility` + inline self-test.
 │                                   Level 1 scene visibility gate (filtered in JS, not DB — see guest-portal-data §3).
 │                                   Level 2 CTA visibility: per-cta `visibility` key in JSONB, no schema migration needed.
+│   └── 108_guest_arrival_time.sql               applied ✅ — ★ session 60: guests.arrival_time TEXT (HH:MM ETA).
+│   └── 109_guest_profile.sql                    ★ session 62: guests.guest_profile JSONB (VIP/occasion/dietary/arrival_context/staff_note).
 │   └── functions/
 │       ├── chat/                deployed ✅ — Gemini 2.5→Claude fallback
 │       ├── suggest-replies/     ★ NEW (session 34) — Smart Inbox AI Copilot. Stateless: לא קורא
@@ -778,6 +783,9 @@ DREAM-AI-SYSTEM/
 │       ├── _shared/whapiMedia.ts ★ NEW session 48 — `fetchWhapiMedia(mediaId)`: `GET /media/{id}` עם
 │       │                            WHAPI_TOKEN, מחזיר base64. `_whapiBase`/`_tokenOrThrow` מ-
 │       │                            `whapiSend.ts` הפכו ל-export כדי להישתף (לא לשכפל) בגבול `_shared/`.
+│       ├── _shared/futureSuiteRoomServiceRouting.ts ★ session 60 — `SUITES_ROOM_SERVICE_GROUP_ID`
+│       │                            (`120363429859248777@g.us`) + future-suite routing gate; נצרך ע"י
+│       │                            guest-portal-ops-request, sla-escalation-cron, whatsapp-webhook.
 │       └── task-action/          ★ NEW session 22 (XOS Sprint 2) — callback ל-Accept/Complete בכרטיס.
 │                                    GET = interstitial HTML (0 mutation — מה שה-crawler רואה) עם כפתורי
 │                                    Lidor/Adir/Osnat ("Confirm action as"); POST (tap אמיתי, crawler-safe)
@@ -823,10 +831,9 @@ switch (activePage) {
   "ops_board"    → OperationsBoard  // ★ session 21 — "תפעול ואחזקה", ArrivalImportPanel (sole import
                                     // surface) mounted here. "tasks"/"calls" = deep-link aliases,
                                     // same component (TaskBoard.js + the old CallsPage both deleted).
-  "data_sync"    → DataSyncPage     // ★ NEW session 32 — admin/super_admin, guardPage. Thin wrapper —
-                                    // mounts the SAME ArrivalImportPanel instance type (defaultOpen),
-                                    // not a second import engine. ops_board's embed (line above)
-                                    // is untouched; this is just a second entry point to it.
+  "data_sync"    → DataSyncPage     // ★ session 32 — admin/super_admin/receptionist (guardPage via
+                                    // auth.js ROUTE_ACCESS). Thin wrapper — mounts ArrivalImportPanel
+                                    // (defaultOpen), not a second import engine.
   "bot_config"   → BotConfigPanel   (admin only — guardPage)
   "bot_settings" → BotSettings      (admin only — guardPage)
   "bot_scripts"  → BotScriptEditor  (admin only) // ✏️ session 8 correction: IS in Sidebar nav
@@ -839,16 +846,23 @@ switch (activePage) {
   "cms_security" → CMSGate(CMSSecurityPanel)  // ★ NEW session 31 — admin/super_admin, then a SECOND
                                     // gate inside: CMSGate requires a fresh password+TOTP (aal2)
                                     // re-auth via CMSLogin before CMSSecurityPanel renders. See §7.
-  "voucher_reconciliation" → VoucherReconciliationHub  // ★ NEW session 51 — admin/super_admin,
-                                    // guardPage. "התאמת שוברים" — first UI surface for the Voucher
-                                    // Reconciliation Engine backend (sessions 49–50). Not yet
-                                    // click-tested live by Mike.
+  "voucher_reconciliation" → VoucherReconciliationHub  // ★ session 51 — admin/super_admin/receptionist
+                                    // (guardPage). "התאמת שוברים" — Voucher Reconciliation UI.
   "users_mgmt"   → UserManagement   (super_admin only)
 }
 // ★ session 7: "upload" (DataUpload) ו-"data_hub" (DataHub) הוסרו — מוזגו ל-ArrivalImportPanel.
 // AICopilot מורכב גלובלית (לא דרך activePage) לכל user שאינו cleaner — ראה App.js:~2618.
 // תפקיד "cleaner": מקבל מסך מלא HousekeepingTabletView בלבד (ללא Sidebar) — ראה App.js:~2116.
 // ⚠️ session 28: היה RoomBoard עד session 27 — הוחלף, ראה §3/§10 session 28.
+//
+// ★ receptionist ("פקיד/ת קבלה" / "קבלה") — session 30 DB role (migration 080); ★ session 60 RBAC:
+//   Full Sidebar shell (NOT the orphaned ReceptionistView.js kiosk). RBAC מקור: src/utils/auth.js.
+//   ✅ גישה: כל routes של staff + wa_inbox + data_sync + voucher_reconciliation + ops_board
+//      (ops_board.managerOnly=false; שלושת האחרים = receptionistOk:true ב-App.js Sidebar).
+//   ❌ חסום: admin, bot_config, bot_settings, bot_scripts, automation_center, portal_settings,
+//      cms_security, users_mgmt — guardPage מפנה ל-dashboard.
+//   ❌ seed/clear גלובלי של נתוני דמו (AdminPanel → טאב "נתונים") — super_admin בלבד.
+//   ✅ create_ops_task (OperationsBoard NewTaskForm) — receptionist כלול ב-PERMISSIONS.
 ```
 
 ---
@@ -925,6 +939,12 @@ attention_reason    TEXT  — ★ session 15 (migration 057): "date_change" | "h
                             נקרא ע"י GuestAttentionBadge.js (משותף ל-GuestsPage+GuestDashboard) כדי
                             להציג 🗓️/📞/🔴 מובחנים במקום נקודה אדומה גנרית אחת לכל הסיבות.
 arrival_confirmed   BOOL  — האורח אישר הגעה
+arrival_time        TEXT  — ★ migration 108: שעת הגעה משוערת (HH:MM) שאורח מדווח בוואטסאפ.
+                            נכתב ע"י webhook record-only path + ניתן לעריכה ב-GuestProfileModal.
+                            מלווה בשורת audit ב-guest_notes (`[timestamp] שעת הגעה: HH:MM`).
+guest_profile       JSONB — ★ migration 109: פרופיל חכם מובנה (VIP, אירוע, תזונה, הקשר הגעה,
+                            staff_note). נערך ב-GuestProfileModal; נקרא ע"י buildGuestStageContext.
+                            **לא** לוג מערכת — זה `guest_notes` (append-only, read-only בUI).
 status              TEXT  — 'pending' | 'expected' | 'room_ready' | 'checked_in'
                             ⚠️ pipeline תפעולי בלבד — לא לבלבל עם room_status.status (ניקיון)
 spa_time            TEXT  — שעת ספא ("14:00") — כותב: ArrivalImportPanel (Doc 1/grid)
@@ -1012,8 +1032,38 @@ bot_settings.system_prompt = AI persona בלבד
    e. DIAGNOSTIC pre-flight log: guestId, needs_callback, isButton
    f. Button router (אם isButtonReply)
    g. Text confirmation detection (CONFIRMATION_RE)
-   h. Date-change detection (DATE_CHANGE_RE)
-   i. Intent classification → Gemini/Claude
+   h. ★ Record-Only ETA extraction (migration 108) — לפני DATE_CHANGE_RE ולפני LLM:
+      `isRecordOnlyArrivalTimeUpdate()` + `extractArrivalTimeFromText()` (regex HH:MM /
+      "בשעה 15" / bare "15:30"). כותב `guests.arrival_time` + append ל-`guest_notes`;
+      שולח `RECORD_ONLY_ARRIVAL_REPLY` עברי קבוע; `continue` — **לא** `needs_callback`,
+      **לא** `guest_alerts`, **לא** `log_guest_request`, **לא** ops routing.
+      `DATE_CHANGE_RE` ו-`ARRIVAL_TIME_QUESTION_RE` חוסמים false-positive.
+   i. Date-change detection (DATE_CHANGE_RE)
+   j. Intent classification → Gemini/Claude
+```
+
+#### Record-Only ETA — כלל עסקי (אכוף בקוד)
+```
+אורח שמדווח שעת הגעה ("נגיע ב-15:30", "15:30") = שמירת נתונים בלבד.
+  ✅ guests.arrival_time + guest_notes audit line
+  ✅ תשובת אישור עברית שקטה לאורח
+  ❌ needs_callback / requires_attention / guest_alerts / tasks / Whapi staff cards
+מקור: whatsapp-webhook/index.ts (שלב h בפייפליין למעלה).
+log_guest_request system prompt מחריג עדכוני ETA — המודל לא אמור לפתוח טיקט על שעה בלבד.
+```
+
+#### Future Suite Management Routing + AI Translation
+```
+מודול משותף: _shared/futureSuiteRoomServiceRouting.ts
+קבוצת יעד: SUITES_ROOM_SERVICE_GROUP_ID = "120363429859248777@g.us" (Suites Management Whapi group)
+
+כש-shouldRouteFutureSuiteRoomServiceToDedicatedPhone() = true (הגעה עתידית + הקשר סוויטה/F&B):
+  נתיבים: guest-portal-ops-request, sla-escalation-cron, whatsapp-webhook suite log_guest_request
+  → כרטיסים לקבוצה זו (לא WHAPI_GROUP_ID הכללי / לא Adir DM).
+
+לפני שליחת Whapi: תיאור המשימה בעברית עובר שכבת תרגום LLM (Gemini) → אנגלית מקצועית לצוות.
+  אורח נשאר עברית; כרטיסי צוות באנגלית (אותו עיקרון dual-language כמו sla-escalation-cron).
+  כשל תרגום → fallback לעברית המקורית + לוג; insert ל-tasks לא נחסם.
 ```
 
 #### `needs_callback` — Staff Alert Flag (לא חוסם בוט, session 59)
@@ -1172,6 +1222,18 @@ ADMIN_EMAILS = ["promote7il@gmail.com"]        // גישה ל-AdminPanel, BotCon
 
 // manager — מנהל מחלקה
 // לא רואה: AdminPanel, UserManagement, BotConfigPanel, BotSettings
+
+// receptionist — ★ "פקיד/ת קבלה" / "קבלה" (migration 080; RBAC session 60, 2026-06-29).
+// מקור אמת: src/utils/auth.js (getRole / canPerform / canSeeNavItem / canAccessRoute).
+// UI: Sidebar מלא (כמו staff) — App.js canSeeNavItem(); תווית Sidebar "🛎️ פקיד/ת קבלה".
+// ✅ רואה: כל nav של staff + DREAM BOT שיחות (wa_inbox) + סנכרון נתונים (data_sync) +
+//    התאמת שוברים (voucher_reconciliation) + תפעול ואחזקה (ops_board) + שאר routes פתוחים.
+// ✅ יכול: create_ops_task (פתיחת משימה מ-OperationsBoard).
+// ❌ חסום: AdminPanel, bot_config, bot_settings, bot_scripts, automation_center,
+//    portal_settings, cms_security, users_mgmt — canAccessRoute → guardPage redirect.
+// ❌ seed/clear גלובלי (AdminPanel טאב "נתונים") — super_admin בלבד (canManageData).
+// הקצאה: UserManagement.js → role "🛎️ פקיד/ת קבלה".
+// ⚠️ ReceptionistView.js קיים אך ORPHAN — App.js לא מרנדר אותו יותר (session 60).
 
 // cleaner — ★ גילוי session 7 (migration 038). תפקיד נפרד, לא admin/manager/staff.
 // user.role === "cleaner" → מסך מלא RoomBoard, ללא Sidebar (App.js:~2325).
@@ -1454,6 +1516,30 @@ export async function saveLearningLog(log)         // Supabase → localStorage 
   - **טבלה חדשה אחת** — `voice_call_logs` (אותו תפקיד audit כמו `whatsapp_conversations`/`notification_log` לערוצים שלהם) — שיחה שלא זוהתה כאורח עדיין נרשמת (Zero Data Loss, §0.1).
   - ⚠️ **3 הכרעות פתוחות ל-Mike לפני שנכתב קוד כלשהו:** (1) Vapi vs Retell vs אחר — **גייטד על בדיקת עברית חיה (STT/TTS)**, לא על מחיר/פיצ'רים. (2) האם ה-PBX של המלון בכלל תומך בהעברת שיחה פעילה למספר חיצוני. (3) רשימת השדות הבטוחים ל-`lookup_guest` — מה מתקשר לא-מאומת רשאי לשמוע על אורח/חדר.
   - דיאגרמת ארכיטקטורה (telephony bridge ← outside Supabase → `voice-ai-webhook` → guests/tasks/room_status קיימים + `voice_call_logs` חדש → Whapi ops group קיים) הוצגה ויזואלית ל-Mike באותו סשן.
+
+#### session 62 — 2026-06-30 (Smart Guest Profile — structured JSONB + modal + AI)
+> הקשר: מעבר מ-`guest_notes` גולמי ב-UI לפרופיל מובנה; אייקון אדום נשאר כנקודת כניסה; inbox נקי.
+
+- ✅ **migration 109** — `guests.guest_profile JSONB NOT NULL DEFAULT '{}'`, GIN index `idx_guests_profile_gin`.
+- ✅ **`src/data/guestProfileSchema.js`** — תגיות VIP/אירוע/תזונה/הגעה, `normalizeGuestProfile`/`serializeGuestProfile`/`formatGuestProfileForAi`.
+- ✅ **`GuestProfileModal.js`** — מודל מובנה + `arrival_time` + היסטוריית מערכת מתקפלת (read-only `guest_notes`).
+- ✅ **`GuestAttentionBadge.js`** — אותו אייקון 🔴/🗓️/📞, פותח `GuestProfileModal`; "שמור וסמן כטופל".
+- ✅ **`AddGuestModal.js`** — הוסר עורך `guest_notes`; כפתור "📋 פרופיל אורח חכם" בעריכה.
+- ✅ **`WhatsAppInbox.js`** — באנר הערות הוסר לחלוטין.
+- ✅ **`whatsapp-webhook`** — `_shared/guestProfile.ts` + `buildGuestStageContext()` מזריק פרופיל (לא לוג audit).
+- ✅ `npm run build` נקי.
+
+#### session 61 — 2026-06-30 (WhatsApp Inbox — guest notes + scroll overlap fix)
+> הקשר: באנר `guest_notes` הצהוב חסם את ההודעות בשיחה (append-only audit log ארוך) ולא ניתן היה לסגור אותו.
+
+- ✅ **`WhatsAppInbox.js`** — הערות אורח מקופלות כברירת-מחדל (פס דק "לחץ להצגה"); כפתור ✕ לסגירה; `minHeight:0` על אזור ה-scroll תיקן באג flex שגרם לחפיפה; בועות הודעה מעט גדולות יותר (15px). `npm run build` נקי.
+
+#### session 60 — 2026-06-29 (Receptionist RBAC + Record-Only ETA + Suite Management routing)
+> הקשר: סנכרון תיעוד + לוגיקת בוט חיה — receptionist כתפקיד תפעולי מלא; עדכוני שעת הגעה בלי התראות צוות; בקשות סוויטה עתידיות לקבוצת ניהול עם תרגום אנגלי.
+
+- ✅ **Receptionist RBAC (`src/utils/auth.js` + `App.js`).** `receptionist` = Sidebar מלא; `receptionistOk` על wa_inbox/data_sync/vouchers; `canAccessRoute` ל-data_sync+voucher_reconciliation; `create_ops_task` ב-OperationsBoard. חסום: admin/bot_* /automation_center/cms/users_mgmt + seed/clear גלובלי (super_admin בלבד). `ReceptionistView.js` orphan.
+- ✅ **Record-Only ETA (migration 108 + `whatsapp-webhook`).** `guests.arrival_time` TEXT; regex extract → `arrival_time` + `guest_notes` audit; Hebrew ack; no needs_callback/alerts/ops.
+- ✅ **Future suite routing (`_shared/futureSuiteRoomServiceRouting.ts`).** `120363429859248777@g.us`; guest-portal-ops-request + sla-escalation-cron; LLM Hebrew→English לפני Whapi על נתיב זה.
 
 #### session 59 — 2026-06-28 (needs_callback decouple + deploy protocol)
 > הקשר: Mike — `needs_callback` היה מכבה את הבוט (cron + webhook) בזמן שצוות עדיין צריך את הדגל האדום ב-UI. הופרד: דגל התראה בלבד, בוט ממשיך.

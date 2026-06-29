@@ -41,6 +41,7 @@ import {
   PAYMENT_LINK_FAILURE_LABEL,
 } from "../_shared/paymentLinkGuard.ts";
 import { sendWhapiText }    from "../_shared/whapiSend.ts";
+import { formatGuestProfileForAi } from "../_shared/guestProfile.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -739,6 +740,12 @@ function buildGuestStageContext(
   if (hasStage2)  parts.push("כבר קיבל הודעת אישור+ספא");
   if (hasStage3)  parts.push("כבר קיבל הודעת בוקר הגעה");
 
+  const profileLine = formatGuestProfileForAi(
+    guest.guest_profile as Record<string, unknown> | null,
+    guest.arrival_time as string | null,
+  );
+  if (profileLine) parts.push(profileLine);
+
   return parts.length > 0 ? parts.join(" | ") : "";
 }
 
@@ -824,6 +831,60 @@ const HUMAN_GENERAL_PATTERNS: RegExp[] = [
 /** Date-change, cancellation, or booking issue → escalate to human staff, never AI */
 const DATE_CHANGE_RE =
   /שינוי\s*(ב)?תאריכ|שינוי\s*הזמנ|לשנות\s*(את\s*)?(ה)?תאריכ|לבטל|ביטול|לא\s*נוכל??\s*להגיע|לא\s*יכול(ים|ה)?\s*להגיע|לא\s*מגיעים|דחיי?ה|להדחות|בעיה\s*עם\s*(ה)?הזמנ/i;
+
+// ── Record-only arrival TIME (not date change) — no staff alerts ────────────
+const RECORD_ONLY_ARRIVAL_REPLY =
+  "תודה שעדכנתם, רשמתי לפניי את שעת ההגעה שלכם. מחכים לכם!";
+
+/** Guest asking when to arrive — FAQ, not a time update. */
+const ARRIVAL_TIME_QUESTION_RE =
+  /(?:מה|איזו|מתי|באיזה|כמה)\s+.{0,24}?(?:שעת?\s*ה?געה|נגיע|מגיע)|\?\s*$|what\s+time\s+(do|should|can)/i;
+
+/** Guest stating an estimated arrival time (not a date-change request). */
+const ARRIVAL_TIME_UPDATE_RE =
+  /שעת\s*הגעה|נגיע|ניגיע|מגיעים?|הגעה\s|צפו[ייה]\s*להגיע|מתוכנן|בסביבות|בערך|arriving\s+at/i;
+
+function extractArrivalTimeFromText(text: string): string | null {
+  const t = text.trim();
+
+  const colon = t.match(/(?:^|[^\d])(\d{1,2})\s*[:.׳·]\s*(\d{2})(?:\s|$|[^\d])/);
+  if (colon) {
+    const h = parseInt(colon[1], 10);
+    const m = parseInt(colon[2], 10);
+    if (h >= 0 && h <= 23 && m >= 0 && m <= 59) {
+      return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+    }
+  }
+
+  const hourWord = t.match(/(?:בשעה|ב[-–]?\s*|שעה\s+|at\s+)(\d{1,2})(?:\s|$|[^\d:])/i);
+  if (hourWord) {
+    const h = parseInt(hourWord[1], 10);
+    if (h >= 0 && h <= 23) return `${String(h).padStart(2, "0")}:00`;
+  }
+
+  const bare = t.match(/^(\d{1,2})\s*[:.׳·]\s*(\d{2})$/);
+  if (bare) {
+    const h = parseInt(bare[1], 10);
+    const m = parseInt(bare[2], 10);
+    if (h >= 0 && h <= 23 && m >= 0 && m <= 59) {
+      return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+    }
+  }
+
+  return null;
+}
+
+function isRecordOnlyArrivalTimeUpdate(text: string): boolean {
+  if (DATE_CHANGE_RE.test(text)) return false;
+  if (ARRIVAL_TIME_QUESTION_RE.test(text)) return false;
+  const time = extractArrivalTimeFromText(text);
+  if (!time) return false;
+  const trimmed = text.trim();
+  const isBareTimeReply =
+    trimmed.length <= 8 &&
+    !/[א-ת]{4,}/.test(trimmed.replace(/[\d:.׳·\s-–]/g, ""));
+  return ARRIVAL_TIME_UPDATE_RE.test(text) || isBareTimeReply;
+}
 
 // ── Critical-event safety net (Phase 2 request-handling) ────────────────────
 // Deterministic backstop for the "faq" branch, which now expects the model to
@@ -1074,8 +1135,9 @@ const LOG_REQUEST_TOOL_DESCRIPTION =
   "(e.g. wine, flowers, balloons, extra towels, room equipment) or expresses " +
   "a hot sales lead (room upgrade, extra spa treatment, extending the stay). " +
   "Do NOT call this for general informational questions (opening hours, " +
-  "WiFi, location, what's included) — only for something a staff member " +
-  "needs to actually go do something about.";
+  "WiFi, location, what's included) or when the guest only states their " +
+  "estimated arrival time (e.g. 'we will arrive at 14:00') — only for something " +
+  "a staff member needs to actually go do something about.";
 
 const LOG_REQUEST_JSON_SCHEMA = {
   type: "object",
@@ -1121,7 +1183,8 @@ const TOOL_USAGE_INSTRUCTIONS = `
 יש לך אפשרות לקרוא לפונקציה log_guest_request כשהאורח מעלה בקשה ספציפית
 וניתנת למימוש (יין, פרחים, בלונים, ציוד מיוחד, בקשה לחדר) או מביע עניין
 מכירתי חם (שדרוג חדר, הארכת שהות, טיפול נוסף). אל תקרא לפונקציה על שאלות
-מידע כלליות (שעות פתיחה, WiFi, מיקום).
+מידע כלליות (שעות פתיחה, WiFi, מיקום) ולא כשהאורח רק מעדכן שעת הגעה משוערת
+(למשל "נגיע בשעה 15:00") — זה נרשם אוטומטית בלי טיקט לצוות.
 בכל פעם שאתה קורא לפונקציה — הוסף/י גם תשובה טבעית וחמה לאורח באותו תור:
 קודם החמא/י על הבחירה, ואז ציין/י בבירור שהבקשה הועברה לצוות. לעולם אל
 תכתוב שהבקשה "הועברה" אם לא קראת בפועל לפונקציה.`;
@@ -1703,7 +1766,7 @@ function normalizePhone(phoneStr: unknown): string {
 // `phone` is needed here (unlike before) because the fallback path compares it
 // in JS instead of letting Postgres filter on it server-side.
 const GUEST_LOOKUP_FIELDS =
-  "id, name, phone, arrival_confirmed, payment_amount, payment_link_url, direct_payment_url, ezgo_portal_url, payment_link_resolution_pending, msg_pre_arrival_2d_sent, needs_callback, requires_attention, arrival_date, room, room_type, spa_time, status, guest_notes, portal_token, automation_muted";
+  "id, name, phone, arrival_confirmed, payment_amount, payment_link_url, direct_payment_url, ezgo_portal_url, payment_link_resolution_pending, msg_pre_arrival_2d_sent, needs_callback, requires_attention, arrival_date, arrival_time, room, room_type, spa_time, status, guest_notes, guest_profile, portal_token, automation_muted";
 
 // ══════════════════════════════════════════════════════════════════════════════
 // §7  MAIN HANDLER
@@ -2369,6 +2432,42 @@ serve(async (req: Request) => {
         }
 
         console.info(`[webhook] ✅ pre-arrival confirmed (text) — phone:${phone} guest:${guestId}`);
+        continue;
+      }
+
+      // ── Record-only arrival TIME update — no needs_callback / alerts / ops ──
+      if (!isButtonReply && guestId && isRecordOnlyArrivalTimeUpdate(text)) {
+        const arrivalTime = extractArrivalTimeFromText(text)!;
+        const stamp = new Date().toISOString().slice(0, 16).replace("T", " ");
+        const noteLine = `[${stamp}] שעת הגעה: ${arrivalTime}`;
+        const newNotes = guest?.guest_notes ? `${guest.guest_notes}\n${noteLine}` : noteLine;
+
+        const { error: atErr } = await supabase.from("guests").update({
+          arrival_time: arrivalTime,
+          guest_notes: newNotes,
+        }).eq("id", guestId);
+        if (atErr) console.error("[webhook] arrival_time record-only update FAILED:", atErr.message);
+
+        await supabase.from("whatsapp_conversations").insert({
+          phone, guest_id: guestId, direction: "inbound",
+          message: text, wa_message_id: msgId, intent: "arrival_time_update", push_name: pushName,
+        });
+
+        if (!sim) {
+          try {
+            await sendReply(phone, RECORD_ONLY_ARRIVAL_REPLY);
+            await supabase.from("whatsapp_conversations").insert({
+              phone, guest_id: guestId, direction: "outbound",
+              message: RECORD_ONLY_ARRIVAL_REPLY, wa_message_id: null, intent: "arrival_time_update",
+            });
+          } catch (e) {
+            console.error("[webhook] arrival_time reply failed:", (e as Error).message);
+          }
+        } else {
+          console.info(`[webhook] SIM — arrival_time record-only ${arrivalTime} from ${phone}`);
+        }
+
+        console.info(`[webhook] 🕐 arrival_time record-only — phone:${phone} time:${arrivalTime}`);
         continue;
       }
 

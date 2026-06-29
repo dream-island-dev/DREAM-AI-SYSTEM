@@ -13,6 +13,8 @@
 import { useState } from "react";
 import { supabase } from "../supabaseClient";
 import { SUITE_REGISTRY, SUITE_SECTIONS } from "../data/suiteRegistry";
+import GuestProfileModal from "./GuestProfileModal";
+import { hasMeaningfulProfile } from "../data/guestProfileSchema";
 
 // ── Smart room_type inference ─────────────────────────────────────────────────
 // Deterministic mapping from the room <select> value to DB room_type.
@@ -56,11 +58,12 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
     // meal_location is genuinely blank stays blank on edit (isEdit guard) —
     // never silently overwrite a deliberate value while editing.
     meal_location:      guest.meal_location        ?? (isEdit ? "" : "מסעדת ערמונים"),
-    guest_notes:        guest.guest_notes          ?? "",
     lead_source:        guest.lead_source          ?? "",
     automation_muted:   !!guest.automation_muted,
   });
   const [saving, setSaving] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [liveGuest, setLiveGuest] = useState(guest);
 
   const setField = (field, value) => setForm((p) => ({ ...p, [field]: value }));
 
@@ -88,7 +91,6 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
         room_type:          form.room_type || null,
         meal_time:          form.meal_time || null,
         meal_location:      (form.meal_location ?? "").trim() || null,
-        guest_notes:        (form.guest_notes ?? "").trim() || null,
         lead_source:        (form.lead_source ?? "").trim() || null,
         automation_muted:   !!form.automation_muted,
       };
@@ -366,26 +368,25 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
           />
         </div>
 
-        {/* guest_notes — append-only log written by whatsapp-webhook (migration
-            053) for AI-captured free-text requests. Until now this had no edit
-            surface anywhere in the app (read-only banner in WhatsAppInbox.js) —
-            this is the first place staff can correct/clear it directly. */}
-        <div style={{ marginTop: 4, marginBottom: 14 }}>
-          <label style={{ fontSize: 12, fontWeight: 700, display: "block", marginBottom: 4 }}>
-            📝 הערות אורח <span style={{ fontWeight: 400, color: "var(--text-muted)" }}>(נכתב גם אוטומטית ע״י הבוט)</span>
-          </label>
-          <textarea
-            value={form.guest_notes ?? ""}
-            onChange={(e) => setField("guest_notes", e.target.value)}
-            disabled={saving}
-            rows={3}
-            style={{
-              width: "100%", padding: "9px 12px", boxSizing: "border-box",
-              border: "1px solid var(--border,#ddd)", borderRadius: 8, fontSize: 13,
-              direction: "rtl", fontFamily: "Heebo,sans-serif", resize: "vertical",
-            }}
-          />
-        </div>
+        {isEdit && (
+          <div style={{ marginBottom: 14 }}>
+            <button
+              type="button"
+              onClick={() => setProfileOpen(true)}
+              disabled={saving}
+              title="פרופיל חכם — VIP, אירועים, תזונה, הגעה"
+              style={{
+                width: "100%", padding: "10px 14px", borderRadius: 10, cursor: "pointer",
+                border: "2px solid var(--gold)", background: "rgba(201,169,110,0.1)",
+                color: "var(--gold-dark)", fontWeight: 800, fontSize: 13,
+                fontFamily: "Heebo,sans-serif",
+              }}
+            >
+              📋 פרופיל אורח חכם
+              {hasMeaningfulProfile(liveGuest.guest_profile) ? " ✓" : ""}
+            </button>
+          </div>
+        )}
 
         <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 22 }}>
           <button
@@ -411,6 +412,18 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
           </button>
         </div>
       </div>
+      {profileOpen && isEdit && (
+        <GuestProfileModal
+          guest={liveGuest}
+          onClose={() => setProfileOpen(false)}
+          showMarkHandled={!!liveGuest.requires_attention}
+          onUpdated={(updated) => {
+            setLiveGuest(updated);
+            onSaved?.(updated);
+          }}
+          showToast={showToast}
+        />
+      )}
     </div>
   );
 }

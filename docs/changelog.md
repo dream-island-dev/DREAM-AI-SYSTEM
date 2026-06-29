@@ -1,3 +1,6 @@
+2026-06-30 | migration 109 + GuestProfileModal + guestProfileSchema | Smart Guest Profile JSONB on guests; red-alert opens structured modal (VIP/occasion/dietary/arrival); inbox notes banner removed; webhook AI reads guest_profile.
+2026-06-30 | WhatsAppInbox.js | Guest notes banner collapsed by default with ✕ dismiss; minHeight:0 on message scroll fixes overlap; slightly larger bubble text for readability.
+2026-06-29 | CLAUDE.md §4/§6/§7 | Doc sync: receptionist RBAC (full Sidebar + ops/inbox/vouchers/data_sync); Record-Only ETA pipeline + arrival_time; future suite routing to 120363429859248777@g.us + LLM English translation.
 2026-06-29 | whatsapp-webhook/index.ts + migration 108 | Record-only arrival time: regex extract HH:MM → guests.arrival_time + guest_notes audit; fixed Hebrew reply; no needs_callback/alerts/ops routing; log_guest_request prompt excludes ETA updates.
 2026-06-29 | auth.js + App.js + OperationsBoard.js | Receptionist RBAC: full sidebar (staff + wa_inbox/data_sync/vouchers/ops); admin routes still blocked; create_ops_task for receptionist.
 
