@@ -39,6 +39,11 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendImageMessage, sendInteractiveButtons } from "../_shared/interactiveSend.ts";
 import { isArrivalTodayIsrael, israelTodayYmd } from "../_shared/israelDate.ts";
 import { sanitizeMetaRecipientPhone } from "../_shared/metaPhone.ts";
+import {
+  guardPaymentLink,
+  logPaymentLinkFailure,
+  PAYMENT_LINK_FAILURE_LABEL,
+} from "../_shared/paymentLinkGuard.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -488,6 +493,88 @@ function buildTemplateComponents(
   return components;
 }
 
+// ── Stage session message helpers (Stage 2.5 + hybrid pipeline) ───────────────
+type StageMediaRow = {
+  session_message_image_url?: string | null;
+  session_message_script_key?: string | null;
+} | null;
+
+/** Image for session sends: automation_stages.session_message_image_url wins, then request body. */
+function resolveStageSessionImageUrl(
+  stageRow: StageMediaRow,
+  requestImageUrl?: string | null,
+): string | undefined {
+  const link = String(stageRow?.session_message_image_url ?? requestImageUrl ?? "").trim();
+  return link || undefined;
+}
+
+/** Expand bot_script placeholders for free-text session messages. */
+function expandSessionPlaceholders(
+  rawText: string,
+  guest: Record<string, unknown>,
+  extras: {
+    guestName: string;
+    entryTime?: string;
+    checkInTime?: string;
+    portalUrl?: string;
+  },
+): string {
+  const roomName = String(guest.room ?? guest.suite_name ?? "").trim() || "-";
+  return rawText
+    .replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, extras.guestName)
+    .replace(/\{\{\s*entry_time\s*\}\}/gi, extras.entryTime ?? "")
+    .replace(/\{\{\s*check_in_time\s*\}\}/gi, extras.checkInTime ?? "")
+    .replace(/\{\{\s*portal_url\s*\}\}/gi, extras.portalUrl ?? "")
+    .replace(/\{\{\s*ROOM_NAME\s*\}\}/gi, roomName)
+    .replace(/\{\{\s*SUITE_NAME\s*\}\}/gi, roomName)
+    .replace(/\{\{\s*room\s*\}\}/gi, roomName);
+}
+
+/**
+ * Dispatch a 24h session message. When imageUrl is set, always uses sendImageMessage
+ * (Meta type:image with caption inside image object). Throws on Meta failure — never
+ * silently falls back to text-only when an image URL was provided.
+ */
+async function sendStageSessionMessage(
+  to: string,
+  caption: string,
+  imageUrl: string | undefined,
+  buttons: Array<{ type: string; label: string; url?: string }>,
+  logContext: string,
+): Promise<"session_image" | "session_interactive" | "session_text"> {
+  const link = imageUrl?.trim();
+  const body = String(caption ?? "").trim();
+
+  if (link) {
+    console.log(
+      `[whatsapp-send] ${logContext}: session_image to=${maskPhoneForLog(safeGuestPhone(to))}` +
+      ` link=${link.slice(0, 96)} caption_chars=${body.length}`,
+    );
+    try {
+      await sendViaMeta(to, body, link);
+    } catch (e) {
+      const msg = (e as Error).message;
+      console.error(`[whatsapp-send] ${logContext}: session_image FAILED — ${msg}`);
+      throw new Error(`session_image_failed: ${msg}`);
+    }
+    return "session_image";
+  }
+
+  if (imageUrl !== undefined && imageUrl !== null && !link && String(imageUrl).length > 0) {
+    throw new Error(
+      `${logContext}: session_image_url_invalid — configured image URL is empty/whitespace`,
+    );
+  }
+
+  if (buttons.length > 0) {
+    await sendInteractiveButtons(to, body, buttons);
+    return "session_interactive";
+  }
+
+  await sendViaMeta(to, body, null);
+  return "session_text";
+}
+
 // ── Meta WhatsApp Cloud API (live) ────────────────────────────────────────────
 async function sendViaMeta(to: string, body: string, imageUrl?: string | null): Promise<void> {
   const recipient = sanitizeMetaRecipientPhone(to);
@@ -568,7 +655,12 @@ const TEMPLATE_HAS_DYNAMIC_URL_BUTTON = new Set([
 function resolveDynamicUrlButtonParam(
   templateName: string,
   portalToken: unknown,
+  paymentButtonToken?: string,
 ): string | undefined {
+  if (templateName === "dream_payment_and_workshops") {
+    const token = String(paymentButtonToken ?? "").trim();
+    return token || undefined;
+  }
   if (!TEMPLATE_HAS_DYNAMIC_URL_BUTTON.has(templateName)) return undefined;
   const token = String(portalToken ?? "").trim();
   return token || undefined;
@@ -1155,19 +1247,38 @@ serve(async (req: Request) => {
 
       const { data: guest, error: gErr } = await supabase
         .from("guests")
-        .select("id, name, phone, payment_amount, payment_link_url")
+        .select("id, name, phone, payment_amount, payment_link_url, direct_payment_url, ezgo_portal_url")
         .eq("id", guestId)
         .maybeSingle();
       if (gErr)   throw new Error(`guest_lookup_error: ${gErr.message}`);
       if (!guest) throw new Error(`guest_not_found: no guest row for id=${JSON.stringify(guestId)}`);
       if (!guest.phone) throw new Error("guest_no_phone");
-      if (!guest.payment_amount)   throw new Error("payment_amount_not_set");
-      if (!guest.payment_link_url) throw new Error("payment_link_url_not_set");
+      if (!guest.payment_amount) throw new Error("payment_amount_not_set");
+
+      const linkGuard = await guardPaymentLink(supabase, guest, guestId, {
+        allowInlineRecovery: true,
+      });
+
+      if (!linkGuard.ok) {
+        await logPaymentLinkFailure(supabase, guestId, String(guest.phone), "payment_and_workshops", {
+          reason: linkGuard.reason,
+          recoveryQueued: linkGuard.recoveryQueued,
+          manual: true,
+        });
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            status: "failed_missing_link",
+            error: PAYMENT_LINK_FAILURE_LABEL,
+            recoveryQueued: linkGuard.recoveryQueued,
+          }),
+          { headers: { ...CORS, "Content-Type": "application/json" } },
+        );
+      }
 
       const safeName = (String(guest.name ?? "").trim()) || "אורח יקר";
       const amount   = String(guest.payment_amount);
-      const fullUrl  = String(guest.payment_link_url);
-      const urlToken = fullUrl.split("/").pop() ?? fullUrl;
+      const urlToken = linkGuard.buttonToken;
 
       let status = "simulated";
       let sendError: string | null = null;
@@ -1194,7 +1305,13 @@ serve(async (req: Request) => {
         trigger_type: "payment_and_workshops",
         channel:      "whatsapp",
         status,
-        payload: { template: "dream_payment_and_workshops", amount, urlToken, ...(sendError ? { error: sendError } : {}) },
+        payload: {
+          template: "dream_payment_and_workshops",
+          amount,
+          urlToken,
+          paymentUrlValidated: true,
+          ...(sendError ? { error: sendError } : {}),
+        },
       });
 
       return new Response(
@@ -1405,23 +1522,25 @@ serve(async (req: Request) => {
     // ── Night-before dispatch (Stage 2.5 — suites only) ─────────────────────
     // Day-pass guests use trigger 'night_before_daypass' (generic BRANCH D below).
     //
-    // Routing rule (fixed 2026-06-28):
-    //   • Cron + default path → ALWAYS night_before_suites / _shabbat Meta template.
-    //     Stage 2.5 fires T-1 evening; guests who confirmed Stage 1 are almost always
-    //     still inside 24h — the old "session open → free text" branch meant
-    //     night_before_suites never reached the device while notification_log showed sent.
-    //   • force_channel=session_message (manual override only) → bot_script free text.
-    //   • force_channel=meta_template → same Meta template as cron (explicit staff choice).
+    // Routing rule (Stage 2.5 session images):
+    //   • 24h window open (most post-confirmation guests) OR force_channel=session_message
+    //     → bot_script free text + optional session_message_image_url (type:image + caption).
+    //   • Window closed / force_channel=meta_template → night_before_suites / _shabbat template.
     type NightBeforeDispatch =
       | { channel: "text";     freeTextKey: string;   guestName: string }
       | { channel: "template"; templateName: string;  vars: string[];   buttonUrlParam?: string };
     let nightBeforeDispatch: NightBeforeDispatch | null = null;
 
     if (trigger === "night_before") {
+      const sessionScriptKey = stageRow?.session_message_script_key ?? "night_before_reminder";
+      const windowOpen = isWindowOpen(guest.wa_window_expires_at);
+      const sessionImage = resolveStageSessionImageUrl(stageRow, requestImageUrl);
       console.log(
         `[whatsapp-send] night_before: entering Stage 2.5 dispatch guest_id=${guestId} ` +
         `room_type=${guest.room_type ?? "null"} arrival=${guest.arrival_date ?? "null"} ` +
-        `msg_pre_arrival_sent=${String(guest.msg_pre_arrival_sent)} forceSession=${forceSessionMessage}`,
+        `msg_pre_arrival_sent=${String(guest.msg_pre_arrival_sent)} windowOpen=${windowOpen} ` +
+        `forceSession=${forceSessionMessage} forceMeta=${forceMetaTemplate} ` +
+        `session_image=${sessionImage ? "yes" : "no"}`,
       );
       const guestName = sanitizeTemplateVars([String(guest.name ?? "")])[0];
       const arrivalDateStr = String(guest.arrival_date ?? "");
@@ -1429,10 +1548,14 @@ serve(async (req: Request) => {
       const templateName = isShabbat ? "night_before_suites_shabbat" : "night_before_suites";
       const templateVars = buildNameOnlyTemplateVars(guest);
 
-      if (forceSessionMessage) {
-        nightBeforeDispatch = { channel: "text", freeTextKey: "night_before_reminder", guestName };
+      const useSessionChannel =
+        forceSessionMessage || (windowOpen && !!sessionScriptKey && !forceMetaTemplate);
+
+      if (useSessionChannel) {
+        nightBeforeDispatch = { channel: "text", freeTextKey: sessionScriptKey, guestName };
         console.log(
-          `[whatsapp-send] night_before: route=force_session_message guest_id=${guestId} script=night_before_reminder`,
+          `[whatsapp-send] night_before: route=session_message guest_id=${guestId} ` +
+          `script=${sessionScriptKey} has_image=${!!sessionImage}`,
         );
       } else {
         nightBeforeDispatch = { channel: "template", templateName, vars: templateVars };
@@ -1455,11 +1578,13 @@ serve(async (req: Request) => {
       );
       let nbStatus = "simulated";
       let nbError: string | null = null;
+      let nbSessionKind: string | null = null;
+      let nbSessionImageUrl: string | undefined;
 
       try {
         if (!sim) {
           if (nightBeforeDispatch.channel === "text") {
-            // Retrieve the bot_script body and substitute {{GUEST_NAME}}.
+            nbSessionImageUrl = resolveStageSessionImageUrl(stageRow, requestImageUrl);
             const { data: scriptRow } = await supabase
               .from("bot_scripts")
               .select("message_text")
@@ -1480,19 +1605,26 @@ serve(async (req: Request) => {
                 buildNameOnlyTemplateVars(guest),
                 "he",
                 undefined,
-                stageRow?.session_message_image_url,
+                nbSessionImageUrl,
               );
             } else {
               const nbTimes = await resolveNightBeforeTimes(supabase, String(guest.arrival_date ?? ""));
               const nbPortalUrl = guest.portal_token
                 ? `${PORTAL_BASE_URL}/portal/${guest.portal_token as string}`
                 : "";
-              const textBody = rawText
-                .replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, nightBeforeDispatch.guestName)
-                .replace(/\{\{\s*entry_time\s*\}\}/gi, nbTimes.entryTime)
-                .replace(/\{\{\s*check_in_time\s*\}\}/gi, nbTimes.checkInTime)
-                .replace(/\{\{\s*portal_url\s*\}\}/gi, nbPortalUrl);
-              await sendViaMeta(String(guest.phone), textBody, stageRow?.session_message_image_url);
+              const textBody = expandSessionPlaceholders(rawText, guest, {
+                guestName: nightBeforeDispatch.guestName,
+                entryTime: nbTimes.entryTime,
+                checkInTime: nbTimes.checkInTime,
+                portalUrl: nbPortalUrl,
+              });
+              nbSessionKind = await sendStageSessionMessage(
+                String(guest.phone),
+                textBody,
+                nbSessionImageUrl,
+                [],
+                `night_before guest_id=${guestId}`,
+              );
             }
           } else {
             // Template path: IMAGE header from TEMPLATE_IMAGE_HEADER_DEFAULTS or session_message_image_url.
@@ -1531,7 +1663,11 @@ serve(async (req: Request) => {
         payload: {
           channel: nightBeforeDispatch.channel === "text" ? "session_message" : "meta_template",
           ...(nightBeforeDispatch.channel === "text"
-            ? { scriptKey: nightBeforeDispatch.freeTextKey }
+            ? {
+                scriptKey: nightBeforeDispatch.freeTextKey,
+                ...(nbSessionKind ? { sessionKind: nbSessionKind } : {}),
+                ...(nbSessionImageUrl ? { image_url: nbSessionImageUrl } : {}),
+              }
             : { template: nightBeforeDispatch.templateName, variables: nightBeforeDispatch.vars }),
           ...(nbError ? { error: nbError } : {}),
         },
@@ -2109,7 +2245,7 @@ serve(async (req: Request) => {
             .replace(/\{\{\s*portal_url\s*\}\}/gi, portalUrl);
           sessionBody = body;
           sessionButtons = (stageRow.interactive_buttons ?? []) as typeof sessionButtons;
-          sessionImageUrl = stageRow.session_message_image_url ?? null;
+          sessionImageUrl = resolveStageSessionImageUrl(stageRow, requestImageUrl) ?? null;
           usedSessionMessage = true;
         } else {
           console.warn(`[whatsapp-send] stage "${trigger}" has session_message_script_key="${stageRow.session_message_script_key}" but bot_scripts has no text — falling back to Meta template`);
@@ -2126,17 +2262,14 @@ serve(async (req: Request) => {
     if (usedSessionMessage) {
       try {
         if (!sim) {
-          const trimmedImage = String(sessionImageUrl ?? "").trim();
-          if (trimmedImage) {
-            await sendViaMeta(guest.phone as string, sessionBody!, trimmedImage);
-          } else {
-            if (sessionImageUrl) {
-              console.warn(
-                `[whatsapp-send] stage "${trigger}": session_message_image_url whitespace-only — sending text without image`,
-              );
-            }
-            await sendInteractiveButtons(guest.phone as string, sessionBody!, sessionButtons);
-          }
+          const sessionKind = await sendStageSessionMessage(
+            guest.phone as string,
+            sessionBody!,
+            sessionImageUrl ?? undefined,
+            sessionButtons,
+            `stage="${trigger}" guest_id=${guestId}`,
+          );
+          console.log(`[whatsapp-send] ${trigger}: session dispatch kind=${sessionKind}`);
           status = "sent";
         }
       } catch (e) {

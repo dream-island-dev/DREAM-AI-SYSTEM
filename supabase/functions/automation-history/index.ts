@@ -135,7 +135,13 @@ serve(async (req: Request) => {
         actualSentAt: row.sent_at,
         status: row.status,
         channel: (payload.channel as string | undefined) ?? null,
-        error: (payload.error as string | undefined) ?? (payload.sessionMessageFailureNote as string | undefined) ?? null,
+        error:
+          (payload.error as string | undefined)
+          ?? (payload.context === "Missing Payment Link"
+            ? "שיגור נכשל: חסר קישור תשלום ישיר"
+            : undefined)
+          ?? (payload.sessionMessageFailureNote as string | undefined)
+          ?? null,
       };
     });
 

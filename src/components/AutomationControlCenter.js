@@ -1875,6 +1875,54 @@ export default function AutomationControlCenter() {
                   );
                 })()}
 
+                {/* ── Missing payment link — Stage 2 Pay guardrail failures ── */}
+                {(() => {
+                  const missingLinkItems = queueData.attentionRequired.filter(
+                    (r) => r.status === "failed_missing_link",
+                  );
+                  if (missingLinkItems.length === 0) return null;
+                  return (
+                    <div className="card" style={{ marginBottom: 16, border: "1px solid #C0392B" }}>
+                      <div className="card-header">
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%" }}>
+                          <div className="card-title" style={{ color: "#C0392B", display: "flex", alignItems: "center", gap: 8 }}>
+                            ❌ חסר קישור תשלום ישיר
+                            <span style={{ fontSize: 12, fontWeight: 500, color: "var(--text-muted)" }}>
+                              ({missingLinkItems.length})
+                            </span>
+                          </div>
+                          <span className="badge badge-red">Stage 2 Pay</span>
+                        </div>
+                      </div>
+                      <div style={{ padding: "8px 16px 10px", background: "rgba(192,57,43,0.05)", fontSize: 12, color: "#7F8C8D", borderBottom: "1px solid rgba(192,57,43,0.2)" }}>
+                        שיגור נכשל: חסר קישור תשלום ישיר — עדכנו קישור תשלום באורח או הזינו ezgo_portal_url לשחזור אוטומטי.
+                      </div>
+                      <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+                        <table className="table" style={{ minWidth: 540 }}>
+                          <thead>
+                            <tr>
+                              <th>אורח</th>
+                              <th>שלב</th>
+                              <th>סטטוס</th>
+                              <th>זמן</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {missingLinkItems.map((r, i) => (
+                              <tr key={i}>
+                                <td style={{ fontWeight: 700 }}>{r.guestName ?? r.phone ?? "—"}</td>
+                                <td>{stageDisplayNames[r.stageKey] ?? `⚠ ${r.stageKey}`}</td>
+                                <td><span className="badge badge-red">שיגור נכשל: חסר קישור תשלום ישיר</span></td>
+                                <td style={{ fontSize: 12 }}>{r.sentAt ? new Date(r.sentAt).toLocaleString("he-IL") : "—"}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  );
+                })()}
+
                 {/* ── Upcoming queue with checkboxes ── */}
                 <div className="card">
                   <div className="card-header">
@@ -1953,8 +2001,10 @@ export default function AutomationControlCenter() {
                                   </span>
                                 </td>
                                 <td>
-                                  <span className={`badge ${q.status === "sent" || q.status === "simulated" ? "badge-green" : q.status === "failed" || q.status === "timeout" ? "badge-red" : q.status === "blocked_by_meta" ? "badge-orange" : q.dueNow ? "badge-gold" : "badge-blue"}`}>
-                                    {q.status === "blocked_by_meta" ? "🟠 ממתין לאישור" : q.dueNow && q.status === "pending" ? "⚡ מוכן לשליחה" : q.status}
+                                  <span className={`badge ${q.status === "sent" || q.status === "simulated" ? "badge-green" : q.status === "failed" || q.status === "timeout" || q.status === "failed_missing_link" ? "badge-red" : q.status === "blocked_by_meta" ? "badge-orange" : q.dueNow ? "badge-gold" : "badge-blue"}`}>
+                                    {q.status === "blocked_by_meta" ? "🟠 ממתין לאישור"
+                                      : q.status === "failed_missing_link" ? "❌ חסר קישור תשלום"
+                                      : q.dueNow && q.status === "pending" ? "⚡ מוכן לשליחה" : q.status}
                                   </span>
                                   {q.skipReason && <div style={{ fontSize: 10, color: "var(--text-muted)" }}>{q.skipReason}</div>}
                                 </td>
@@ -2099,7 +2149,10 @@ export default function AutomationControlCenter() {
                         .filter((h) => {
                           if (historyStatusFilter === "ok") return h.status === "sent" || h.status === "simulated";
                           if (historyStatusFilter === "blocked") return h.status === "blocked_by_meta";
-                          if (historyStatusFilter === "failed") return h.status === "failed" || h.status === "timeout";
+                          if (historyStatusFilter === "failed") {
+                            return h.status === "failed" || h.status === "timeout"
+                              || h.status === "failed_missing_link";
+                          }
                           return true;
                         })
                         .map((h) => (
@@ -2109,8 +2162,18 @@ export default function AutomationControlCenter() {
                             <td style={{ fontSize: 12 }}>{h.scheduledFor ? new Date(h.scheduledFor).toLocaleString("he-IL") : "מיידי / ידני"}</td>
                             <td style={{ fontSize: 12 }}>{h.actualSentAt ? new Date(h.actualSentAt).toLocaleString("he-IL") : "—"}</td>
                             <td>
-                              <span className={`badge ${h.status === "sent" || h.status === "simulated" ? "badge-green" : h.status === "blocked_by_meta" ? "badge-orange" : "badge-red"}`}>
-                                {h.status === "sent" ? "✅ נשלח" : h.status === "simulated" ? "✅ סימולציה" : h.status === "blocked_by_meta" ? "🟠 ממתין לאישור Meta" : h.status === "timeout" ? "❌ לא ודאי" : "❌ נכשל"}
+                              <span className={`badge ${
+                                h.status === "sent" || h.status === "simulated" ? "badge-green"
+                                : h.status === "blocked_by_meta" ? "badge-orange"
+                                : h.status === "failed_missing_link" ? "badge-red"
+                                : "badge-red"
+                              }`}>
+                                {h.status === "sent" ? "✅ נשלח"
+                                  : h.status === "simulated" ? "✅ סימולציה"
+                                  : h.status === "blocked_by_meta" ? "🟠 ממתין לאישור Meta"
+                                  : h.status === "failed_missing_link" ? "❌ חסר קישור תשלום"
+                                  : h.status === "timeout" ? "❌ לא ודאי"
+                                  : "❌ נכשל"}
                               </span>
                               {h.error && <div style={{ fontSize: 10, color: "#C0392B", marginTop: 2, maxWidth: 280 }}>{h.error}</div>}
                             </td>

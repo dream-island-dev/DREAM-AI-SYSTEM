@@ -32,6 +32,14 @@ import { serve }        from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import Anthropic        from "https://esm.sh/@anthropic-ai/sdk@0.20.0";
 import { sendCtaUrlButton } from "../_shared/interactiveSend.ts";
+import {
+  guardPaymentLink,
+  isStage2PayAlreadyDispatched,
+  isStage2PayInFlight,
+  logPaymentLinkFailure,
+  markStage2PayProcessing,
+  PAYMENT_LINK_FAILURE_LABEL,
+} from "../_shared/paymentLinkGuard.ts";
 import { sendWhapiText }    from "../_shared/whapiSend.ts";
 
 const CORS = {
@@ -370,11 +378,46 @@ async function sendStage2PayReply(
   sim: boolean,
   buttonTitle?: string,
 ): Promise<void> {
-  const payName       = String(guest?.name ?? "").trim() || "אורח יקר";
+  const payName        = String(guest?.name ?? "").trim() || "אורח יקר";
   const payWorkshopUrl = Deno.env.get("WORKSHOP_SIGNUP_URL") ?? "";
   const payAmount      = String(guest?.payment_amount ?? "");
-  const payLink        = String(guest?.payment_link_url ?? "");
   const spaTime        = (guest?.spa_time as string | null) ?? null;
+  const triggerType    = "stage_2_pay";
+
+  if (guestId != null) {
+    if (await isStage2PayAlreadyDispatched(supabaseClient, guestId, triggerType)) {
+      console.info(`[webhook] 💳 Stage 2 Pay skipped — already dispatched guest_id=${guestId}`);
+      return;
+    }
+    if (await isStage2PayInFlight(supabaseClient, guestId, triggerType)) {
+      console.info(`[webhook] 💳 Stage 2 Pay skipped — dispatch in flight guest_id=${guestId}`);
+      return;
+    }
+  }
+
+  const linkGuard = await guardPaymentLink(
+    supabaseClient,
+    guest ?? {},
+    guestId,
+    { allowInlineRecovery: true },
+  );
+
+  if (!linkGuard.ok) {
+    console.warn(
+      `[webhook] 💳 Stage 2 Pay aborted — ${linkGuard.reason} phone:${phone}` +
+      (linkGuard.recoveryQueued ? " (recovery queued)" : ""),
+    );
+    if (!sim) {
+      await logPaymentLinkFailure(supabaseClient, guestId, phone, triggerType, {
+        reason: linkGuard.reason,
+        recoveryQueued: linkGuard.recoveryQueued,
+        ...(buttonTitle ? { buttonTitle } : {}),
+      });
+    }
+    return;
+  }
+
+  const payLink = linkGuard.url;
 
   const paymentButton = (stage2Pay?.interactive_buttons ?? []).find(
     (b) => b.type === "url" && !!b.url && /\{\{\s*PAYMENT_LINK\s*\}\}/i.test(b.url)
@@ -397,9 +440,16 @@ async function sendStage2PayReply(
     return;
   }
 
+  if (guestId != null) {
+    await markStage2PayProcessing(supabaseClient, guestId, phone, triggerType);
+  }
+
   try {
     if (paymentButton?.url) {
       const resolvedUrl = resolveButtonUrl(paymentButton.url, { paymentLink: payLink, workshopUrl: payWorkshopUrl });
+      if (!resolvedUrl || resolvedUrl.includes("{{")) {
+        throw new Error("payment_button_url_unresolved");
+      }
       await sendCtaUrlButton(phone, paymentReply, paymentButton.label, resolvedUrl);
     } else {
       await sendReply(phone, paymentReply);
@@ -408,6 +458,13 @@ async function sendStage2PayReply(
       phone, guest_id: guestId, direction: "outbound",
       message: paymentReply, wa_message_id: null,
     });
+    const { error: logErr } = await supabaseClient.from("notification_log").insert({
+      guest_id: guestId, recipient: phone,
+      trigger_type: triggerType, channel: "whatsapp",
+      status: "sent",
+      payload: { channel: "session_message", paymentUrlValidated: true, ...(buttonTitle ? { buttonTitle } : {}) },
+    });
+    if (logErr) console.warn("[webhook] notification_log insert error:", logErr.message);
     console.info(`[webhook] ✅ payment reply sent to ${phone}`);
   } catch (e) {
     const errMsg = (e as Error).message;
@@ -416,11 +473,12 @@ async function sendStage2PayReply(
     try {
       const { error: logErr } = await supabaseClient.from("notification_log").insert({
         guest_id: guestId, recipient: phone,
-        trigger_type: "stage_2_pay", channel: "whatsapp",
-        status: replyStatus, payload: { error: errMsg, ...(buttonTitle ? { buttonTitle } : {}) },
+        trigger_type: triggerType, channel: "whatsapp",
+        status: replyStatus,
+        payload: { error: errMsg || PAYMENT_LINK_FAILURE_LABEL, ...(buttonTitle ? { buttonTitle } : {}) },
       });
       if (logErr) console.warn("[webhook] notification_log insert error:", logErr.message);
-    } catch (e) { console.warn("[webhook] notification_log insert error:", (e as Error).message); }
+    } catch (logEx) { console.warn("[webhook] notification_log insert error:", (logEx as Error).message); }
   }
 }
 
@@ -1641,7 +1699,7 @@ function normalizePhone(phoneStr: unknown): string {
 // `phone` is needed here (unlike before) because the fallback path compares it
 // in JS instead of letting Postgres filter on it server-side.
 const GUEST_LOOKUP_FIELDS =
-  "id, name, phone, arrival_confirmed, payment_amount, payment_link_url, msg_pre_arrival_2d_sent, needs_callback, requires_attention, arrival_date, room, room_type, spa_time, status, guest_notes, portal_token";
+  "id, name, phone, arrival_confirmed, payment_amount, payment_link_url, direct_payment_url, ezgo_portal_url, payment_link_resolution_pending, msg_pre_arrival_2d_sent, needs_callback, requires_attention, arrival_date, room, room_type, spa_time, status, guest_notes, portal_token";
 
 // ══════════════════════════════════════════════════════════════════════════════
 // §7  MAIN HANDLER
@@ -2002,7 +2060,7 @@ serve(async (req: Request) => {
           // this off and fall back to the always-safe standard reply. Guests
           // with no pending balance fall straight through to Path A,
           // unmodified.
-          const hasPendingPayment = !!(guest?.payment_amount && guest?.payment_link_url);
+          const hasPendingPayment = !!(guest?.payment_amount);
           const stage2Pay = await fetchAutomationStage(supabase, "stage_2_pay");
           if (hasPendingPayment && stage2Pay?.is_active === true) {
             await sendStage2PayReply(supabase, scripts, stage2Pay, phone, guestId, guest, sim, buttonTitle);
@@ -2240,7 +2298,7 @@ serve(async (req: Request) => {
         // ── Stage 2 Pay — same payment-pending branch as the button-tap path
         // above. Gated on the automation_stages "stage_2_pay" toggle; falls
         // straight through to the unmodified standard reply below otherwise.
-        const hasPendingPaymentText = !!(guest?.payment_amount && guest?.payment_link_url);
+        const hasPendingPaymentText = !!(guest?.payment_amount);
         const stage2PayText = await fetchAutomationStage(supabase, "stage_2_pay");
         if (hasPendingPaymentText && stage2PayText?.is_active === true) {
           await sendStage2PayReply(supabase, scripts, stage2PayText, phone, guestId, guest, sim);

@@ -198,14 +198,14 @@ export default function GuestsPage() {
 
   const handleSendPaymentTemplate = (g) => {
     if (!supabase) return;
-    if (!g.payment_amount || !g.payment_link_url) {
+    if (!g.payment_amount || !(g.direct_payment_url || g.payment_link_url)) {
       // Open modal to fill in missing payment data
       setPaymentModal({
         id:     g.id,
         name:   g.name,
         phone:  g.phone,
         amount: g.payment_amount ? String(g.payment_amount) : "",
-        link:   g.payment_link_url || "",
+        link:   g.direct_payment_url || g.payment_link_url || "",
       });
     } else {
       doSendPayment(g.id);
@@ -557,10 +557,10 @@ export default function GuestsPage() {
                               className="btn btn-sm"
                               disabled={paymentBusy === g.id || busy === g.id}
                               onClick={() => handleSendPaymentTemplate(g)}
-                              title={g.payment_link_url ? "שלח תבנית תשלום + סדנאות" : "הגדר קישור תשלום לפני שליחה"}
+                              title={(g.direct_payment_url || g.payment_link_url) ? "שלח תבנית תשלום + סדנאות" : "הגדר קישור תשלום לפני שליחה"}
                               style={{
-                                background: g.payment_link_url ? "#1B3A32" : "#FFF5E8",
-                                color:      g.payment_link_url ? "#fff"    : "#B5600A",
+                                background: (g.direct_payment_url || g.payment_link_url) ? "#1B3A32" : "#FFF5E8",
+                                color:      (g.direct_payment_url || g.payment_link_url) ? "#fff"    : "#B5600A",
                                 fontWeight: 700,
                               }}
                             >

@@ -123,6 +123,20 @@ export async function sendImageMessage(
     if (!res.ok) {
       throw new Error(`meta_image_${res.status}: ${detail.slice(0, 300)}`);
     }
+    let parsed: Record<string, unknown> = {};
+    try {
+      parsed = JSON.parse(detail) as Record<string, unknown>;
+    } catch {
+      throw new Error(`meta_image_invalid_json: ${detail.slice(0, 300)}`);
+    }
+    const wamid = (parsed.messages as Array<{ id?: string }> | undefined)?.[0]?.id;
+    if (!wamid) {
+      const errObj = parsed.error as Record<string, unknown> | undefined;
+      const errMsg = errObj
+        ? String(errObj.message ?? errObj.error_user_msg ?? JSON.stringify(errObj))
+        : detail.slice(0, 300);
+      throw new Error(`meta_image_no_wamid (ghost send): ${errMsg}`);
+    }
     return detail;
   } catch (e) {
     if (_isAbortError(e)) throw new Error("timeout_no_response: Meta did not respond within 25s — message may have still been delivered");
