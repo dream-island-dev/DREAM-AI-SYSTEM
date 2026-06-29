@@ -23,8 +23,11 @@
 import { useState, useEffect, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import TemplateManagerPanel, { STATUS_META } from "./TemplateManagerPanel";
+import TemplateTestPanel from "./TemplateTestPanel";
+import ScheduledOverrideConfirmModal from "./ScheduledOverrideConfirmModal";
 import QuietHoursGate from "./QuietHoursGate";
 import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
+import { isFutureScheduledQueueItem } from "../utils/israelTime";
 
 const JOURNEY_PHASE_LABELS = {
   pre_arrival: "🌴 לפני ההגעה",
@@ -787,6 +790,32 @@ const DAYPASS_ONLY_STAGE_KEYS = new Set([
   "night_before_daypass", "morning_welcome", "mid_stay_daypass", "checkout_fb_daypass",
 ]);
 
+async function lookupPendingScheduledTask(guestId, stageKey) {
+  if (!supabase || !guestId || !stageKey) return null;
+  const { data, error } = await supabase
+    .from("scheduled_tasks")
+    .select("id, scheduled_for")
+    .eq("guest_id", guestId)
+    .eq("stage_key", stageKey)
+    .eq("status", "pending")
+    .maybeSingle();
+  if (error) console.warn("[dispatch] scheduled_tasks lookup:", error.message);
+  return data;
+}
+
+async function invokeForcedDispatch({ guestId, stageKey, forceChannel, scheduledFor }) {
+  return supabase.functions.invoke("whatsapp-send", {
+    body: {
+      trigger: stageKey,
+      guestId,
+      force: true,
+      force_channel: forceChannel,
+      manual_override: true,
+      scheduled_for: scheduledFor ?? undefined,
+    },
+  });
+}
+
 function ManualDispatchModal({ item, stages, onClose, onDispatched, showToast }) {
   const {
     quietActive,
@@ -809,6 +838,8 @@ function ManualDispatchModal({ item, stages, onClose, onDispatched, showToast })
   const [confirmed, setConfirmed] = useState(false);
   const [sending, setSending]     = useState(false);
   const [result, setResult]       = useState(null); // {ok, message}
+  const [overrideConfirm, setOverrideConfirm] = useState(null);
+  const [dispatchError, setDispatchError] = useState(null);
 
   const selectedStage   = stages.find((s) => s.stage_key === stageKey);
   const hasScriptKey    = !!selectedStage?.session_message_script_key;
@@ -818,17 +849,17 @@ function ManualDispatchModal({ item, stages, onClose, onDispatched, showToast })
     if (channel === "session_message" && !hasScriptKey) setChannel("meta_template");
   }, [stageKey, hasScriptKey, channel]);
 
-  const handleDispatch = async () => {
+  const runDispatch = async (scheduledFor) => {
     if (!supabase) return;
-    if (!ensureCanSend()) {
-      showToast("err", "שליחה חסומה בשעות שקט — סמן את האישור למטה");
-      return;
-    }
     setSending(true);
     setResult(null);
+    setDispatchError(null);
     try {
-      const { data, error } = await supabase.functions.invoke("whatsapp-send", {
-        body: { trigger: stageKey, guestId: item.guestId, force: true, force_channel: channel },
+      const { data, error } = await invokeForcedDispatch({
+        guestId: item.guestId,
+        stageKey,
+        forceChannel: channel,
+        scheduledFor,
       });
       if (error) throw new Error(error.message);
       if (data?.ok) {
@@ -836,22 +867,59 @@ function ManualDispatchModal({ item, stages, onClose, onDispatched, showToast })
         const successMsg = `✅ ${item.guestName} — ${selectedStage?.display_name ?? stageKey}${tmplPart} — נשלח!`;
         showToast("ok", successMsg);
         setResult({ ok: true, message: successMsg });
+        setOverrideConfirm(null);
         onDispatched?.();
       } else {
         const apiMsg = data?.error ?? data?.reason ?? "שגיאה לא ידועה";
         setResult({ ok: false, message: `❌ שגיאה: ${apiMsg}` });
+        setDispatchError(apiMsg);
         showToast("err", `❌ ${item.guestName}: ${apiMsg}`);
       }
     } catch (e) {
       const msg = (e?.message ?? String(e));
       setResult({ ok: false, message: `❌ ${msg}` });
+      setDispatchError(msg);
       showToast("err", "שגיאה: " + msg);
     } finally {
       setSending(false);
     }
   };
 
+  const handleDispatch = async () => {
+    if (!supabase) return;
+    if (!ensureCanSend()) {
+      showToast("err", "שליחה חסומה בשעות שקט — סמן את האישור למטה");
+      return;
+    }
+    const dbPending = await lookupPendingScheduledTask(item.guestId, stageKey);
+    const scheduledFor = dbPending?.scheduled_for ?? item.scheduledFor;
+    const needsOverrideConfirm =
+      !!dbPending ||
+      isFutureScheduledQueueItem({ ...item, stageKey, scheduledFor, status: item.status ?? "pending" });
+    if (needsOverrideConfirm && scheduledFor) {
+      setOverrideConfirm({ scheduledFor });
+      return;
+    }
+    await runDispatch(scheduledFor);
+  };
+
   const canDispatch = stageKey && item.guestId && !sending && !result?.ok && canSend;
+
+  if (overrideConfirm) {
+    return (
+      <ScheduledOverrideConfirmModal
+        guestName={item.guestName}
+        stageLabel={selectedStage?.display_name ?? stageKey}
+        scheduledFor={overrideConfirm.scheduledFor}
+        sending={sending}
+        error={dispatchError}
+        onCancel={() => {
+          if (!sending) setOverrideConfirm(null);
+        }}
+        onConfirm={() => runDispatch(overrideConfirm.scheduledFor)}
+      />
+    );
+  }
 
   return (
     <div style={{
@@ -987,7 +1055,7 @@ function ManualDispatchModal({ item, stages, onClose, onDispatched, showToast })
 }
 
 export default function AutomationControlCenter() {
-  const [subTab, setSubTab] = useState("timeline"); // timeline | queue | history | builder | templates
+  const [subTab, setSubTab] = useState("timeline"); // timeline | queue | history | builder | preview | templates
   const [stages, setStages] = useState([]);
   const [scriptsByKey, setScriptsByKey] = useState({});
   const [availableScriptKeys, setAvailableScriptKeys] = useState([]);
@@ -1013,6 +1081,10 @@ export default function AutomationControlCenter() {
 
   // ── Manual Dispatch / Override ───────────────────────────────────────────
   const [manualDispatchItem, setManualDispatchItem] = useState(null);
+  const [sendNowConfirm, setSendNowConfirm] = useState(null);
+  const [sendNowSending, setSendNowSending] = useState(false);
+  const [sendNowError, setSendNowError] = useState(null);
+  const [staffTestPhone, setStaffTestPhone] = useState("");
 
   const showToast = useCallback((type, msg) => {
     setToast({ type, msg });
@@ -1068,6 +1140,22 @@ export default function AutomationControlCenter() {
       if (error) throw new Error(error.message);
       if (!data?.ok) throw new Error(data?.error ?? "unknown error");
       setQueueData(data);
+
+      const futureTasks = (data.queue ?? []).filter(
+        (q) => q.scheduledFor
+          && new Date(q.scheduledFor).getTime() > Date.now()
+          && !["sent", "simulated"].includes(q.status),
+      );
+      if (futureTasks.length > 0) {
+        const { error: syncErr } = await supabase.rpc("upsert_scheduled_tasks_batch", {
+          p_tasks: futureTasks.map((q) => ({
+            guest_id: q.guestId,
+            stage_key: q.stageKey,
+            scheduled_for: q.scheduledFor,
+          })),
+        });
+        if (syncErr) console.warn("[queue] scheduled_tasks sync:", syncErr.message);
+      }
     } catch (err) {
       setQueueError(err?.message ?? String(err));
     } finally {
@@ -1104,6 +1192,67 @@ export default function AutomationControlCenter() {
   }, []);
 
   useEffect(() => { if (subTab === "history") fetchHistory(); }, [subTab, fetchHistory]);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase) return;
+    supabase.auth.getUser().then(async ({ data: { user } }) => {
+      if (!user?.id) return;
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("phone")
+        .eq("id", user.id)
+        .maybeSingle();
+      if (profile?.phone) setStaffTestPhone(profile.phone);
+    });
+  }, []);
+
+  const runQueueSendNow = useCallback(async (item, scheduledFor) => {
+    if (!supabase) return;
+    const forceChannel = item.predictedChannel === "session_message"
+      ? "session_message"
+      : "meta_template";
+    setSendNowSending(true);
+    setSendNowError(null);
+    try {
+      const { data, error } = await invokeForcedDispatch({
+        guestId: item.guestId,
+        stageKey: item.stageKey,
+        forceChannel,
+        scheduledFor,
+      });
+      if (error) throw new Error(error.message);
+      if (data?.ok) {
+        showToast("ok", `✅ ${item.guestName} — ${item.displayName ?? item.stageKey} — נשלח עכשיו`);
+        setSendNowConfirm(null);
+        fetchQueue();
+      } else {
+        const apiMsg = data?.error ?? data?.reason ?? "שגיאה לא ידועה";
+        setSendNowError(apiMsg);
+        showToast("err", `❌ ${item.guestName}: ${apiMsg}`);
+      }
+    } catch (e) {
+      const msg = e?.message ?? String(e);
+      setSendNowError(msg);
+      showToast("err", "שגיאה: " + msg);
+    } finally {
+      setSendNowSending(false);
+    }
+  }, [showToast, fetchQueue]);
+
+  const requestQueueSendNow = useCallback(async (item) => {
+    if (!item?.guestId || !item?.stageKey) return;
+    const dbPending = await lookupPendingScheduledTask(item.guestId, item.stageKey);
+    const scheduledFor = dbPending?.scheduled_for ?? item.scheduledFor;
+    const needsConfirm =
+      !!dbPending ||
+      isFutureScheduledQueueItem({ ...item, scheduledFor });
+    if (needsConfirm && scheduledFor) {
+      setSendNowError(null);
+      setSendNowConfirm({ item, scheduledFor });
+      return;
+    }
+    await runQueueSendNow(item, scheduledFor);
+  }, [runQueueSendNow]);
 
   const patchStage = async (stage, patch) => {
     setStages((prev) => prev.map((s) => (s.id === stage.id ? { ...s, ...patch } : s)));
@@ -1264,6 +1413,7 @@ export default function AutomationControlCenter() {
           { key: "queue",    label: "📡 תור חי + מוניטור" },
           { key: "history",  label: "📜 מה נשלח" },
           { key: "builder",  label: "✨ אוטומציה חדשה" },
+          { key: "preview",  label: "🧪 בדיקת תבניות" },
           { key: "templates", label: "📋 תבניות Meta" },
         ].map(({ key, label }) => (
           <button key={key} onClick={() => setSubTab(key)} style={{
@@ -1396,6 +1546,20 @@ export default function AutomationControlCenter() {
                   setManualDispatchItem(null);
                   fetchQueue();
                 }}
+              />
+            )}
+
+            {sendNowConfirm && (
+              <ScheduledOverrideConfirmModal
+                guestName={sendNowConfirm.item.guestName}
+                stageLabel={sendNowConfirm.item.displayName ?? sendNowConfirm.item.stageKey}
+                scheduledFor={sendNowConfirm.scheduledFor}
+                sending={sendNowSending}
+                error={sendNowError}
+                onCancel={() => {
+                  if (!sendNowSending) setSendNowConfirm(null);
+                }}
+                onConfirm={() => runQueueSendNow(sendNowConfirm.item, sendNowConfirm.scheduledFor)}
               />
             )}
 
@@ -1742,7 +1906,7 @@ export default function AutomationControlCenter() {
                             <th>מועד משוער</th>
                             <th>ערוץ צפוי</th>
                             <th>סטטוס</th>
-                            <th style={{ width: 54, textAlign: "center" }}>⚡</th>
+                            <th style={{ minWidth: 100, textAlign: "center" }}>פעולות</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -1795,15 +1959,30 @@ export default function AutomationControlCenter() {
                                   {q.skipReason && <div style={{ fontSize: 10, color: "var(--text-muted)" }}>{q.skipReason}</div>}
                                 </td>
                                 <td style={{ textAlign: "center" }}>
-                                  <button
-                                    className="btn btn-ghost btn-sm"
-                                    title={`שגר ידני עבור ${q.guestName ?? "אורח"} — עוקף לוח-זמנים`}
-                                    onClick={() => setManualDispatchItem(q)}
-                                    disabled={!q.guestId}
-                                    style={{ fontSize: 14, padding: "2px 7px", color: "var(--gold)", borderColor: "var(--gold)" }}
-                                  >
-                                    ⚡
-                                  </button>
+                                  <div style={{ display: "flex", gap: 4, justifyContent: "center", flexWrap: "wrap" }}>
+                                    {canDispatch && !isGated && (
+                                      <button
+                                        type="button"
+                                        className="btn btn-primary btn-sm"
+                                        title={`שלח עכשיו — ${q.displayName}`}
+                                        onClick={() => requestQueueSendNow(q)}
+                                        disabled={sendNowSending || !q.guestId}
+                                        style={{ fontSize: 11, padding: "4px 8px" }}
+                                      >
+                                        שלח עכשיו
+                                      </button>
+                                    )}
+                                    <button
+                                      type="button"
+                                      className="btn btn-ghost btn-sm"
+                                      title={`שגר ידני עבור ${q.guestName ?? "אורח"} — עוקף לוח-זמנים`}
+                                      onClick={() => setManualDispatchItem(q)}
+                                      disabled={!q.guestId || sendNowSending}
+                                      style={{ fontSize: 14, padding: "2px 7px", color: "var(--gold)", borderColor: "var(--gold)" }}
+                                    >
+                                      ⚡
+                                    </button>
+                                  </div>
                                 </td>
                               </tr>
                             );
@@ -1948,6 +2127,14 @@ export default function AutomationControlCenter() {
 
       {subTab === "builder" && (
         <CustomAutomationBuilder metaTemplatesByName={metaTemplatesByName} showToast={showToast} />
+      )}
+
+      {subTab === "preview" && (
+        <TemplateTestPanel
+          metaTemplatesByName={metaTemplatesByName}
+          showToast={showToast}
+          defaultPhone={staffTestPhone}
+        />
       )}
 
       {subTab === "templates" && (

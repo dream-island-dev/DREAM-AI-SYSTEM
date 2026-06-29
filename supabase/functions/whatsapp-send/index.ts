@@ -36,7 +36,7 @@
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { sendInteractiveButtons, sendImageMessage } from "../_shared/interactiveSend.ts";
+import { sendInteractiveButtons } from "../_shared/interactiveSend.ts";
 import { isArrivalTodayIsrael, israelTodayYmd } from "../_shared/israelDate.ts";
 import { sanitizeMetaRecipientPhone } from "../_shared/metaPhone.ts";
 
@@ -326,22 +326,146 @@ function isMetaTemplateError(msg: string): boolean {
   return /132001|template_not_found|template.*not.*approved|template.*pending/i.test(msg);
 }
 
+// Templates with a Media Header (IMAGE) require a `header` component in the
+// components array — Meta rejects without it: "Format mismatch, expected IMAGE,
+// received UNKNOWN". Add new image-header template names here; sendViaTemplate()
+// reads this map and injects the header automatically (overridable per-send via image_url).
+const TEMPLATE_IMAGE_HEADERS: Record<string, string> = {
+  dream_suite_reminder:        "https://tzalamnadlan.co.il/wp-content/uploads/2026/default-resort.jpg",
+  night_before_suites:         "https://tzalamnadlan.co.il/wp-content/uploads/2026/default-resort.jpg",
+  night_before_suites_shabbat: "https://tzalamnadlan.co.il/wp-content/uploads/2026/default-resort.jpg",
+};
+
+// ── Meta payload builders — structural validation before every send ───────────
+function resolveTemplateHeaderImageUrl(
+  templateName: string,
+  override?: string | null,
+): string | undefined {
+  const explicit = String(override ?? "").trim();
+  if (explicit) return explicit;
+  return TEMPLATE_IMAGE_HEADERS[templateName];
+}
+
+/** Build validated free-text or image+caption session payload for Meta API. */
+function buildFreeTextPayload(
+  recipient: string,
+  body: string,
+  imageUrl?: string | null,
+): Record<string, unknown> {
+  const caption = String(body ?? "").trim();
+  const link = String(imageUrl ?? "").trim();
+
+  if (link) {
+    if (!caption) {
+      console.warn(
+        `[whatsapp-send] buildFreeTextPayload: image_url present but caption/body empty` +
+        ` — sending image without caption to=${maskPhoneForLog(recipient)}`,
+      );
+    }
+    return {
+      messaging_product: "whatsapp",
+      to: recipient,
+      type: "image",
+      image: { link, ...(caption ? { caption } : {}) },
+    };
+  }
+
+  if (!caption) {
+    console.warn(`[whatsapp-send] buildFreeTextPayload: empty body and no image_url — payload may be rejected`);
+  }
+  return {
+    messaging_product: "whatsapp",
+    to: recipient,
+    type: "text",
+    text: { body: caption || " ", preview_url: false },
+  };
+}
+
+/** Build Meta template.components[] with header/body/button validation. */
+function buildTemplateComponents(
+  templateName: string,
+  rawVars: string[],
+  opts: { buttonUrlParam?: string; headerImageUrl?: string | null } = {},
+): unknown[] {
+  const components: unknown[] = [];
+  const headerUrl = resolveTemplateHeaderImageUrl(templateName, opts.headerImageUrl);
+
+  if (headerUrl) {
+    components.push({
+      type: "header",
+      parameters: [{ type: "image", image: { link: headerUrl } }],
+    });
+  } else if (templateName in TEMPLATE_IMAGE_HEADERS) {
+    console.warn(
+      `[whatsapp-send] template="${templateName}": IMAGE header expected but no URL resolved` +
+      ` (check TEMPLATE_IMAGE_HEADERS or pass image_url)`,
+    );
+  }
+
+  let variables = sanitizeTemplateVars(rawVars.map((v) => String(v ?? "")));
+
+  if (ONE_PARAM_NAME_TEMPLATES.has(templateName) && variables.length < 1) {
+    console.warn(`[whatsapp-send] template="${templateName}": missing {{1}} — padding guest name fallback`);
+    variables = buildNameOnlyTemplateVars({ name: "" });
+  }
+  if (THREE_PARAM_TIMING_TEMPLATES.has(templateName) && variables.length < 3) {
+    console.warn(
+      `[whatsapp-send] template="${templateName}": expected 3 body params, got ${variables.length}` +
+      ` — padding timing fallbacks`,
+    );
+    while (variables.length < 3) {
+      variables.push(variables.length === 0 ? "אורח יקר" : variables.length === 1 ? "12:00" : "15:00");
+    }
+    variables = sanitizeTemplateVars(variables);
+  }
+
+  if (variables.length > 0) {
+    const bodyParams = variables.map((v, i) => {
+      const text = String(v ?? "").trim();
+      if (!text) {
+        console.warn(`[whatsapp-send] template="${templateName}": body param {{${i + 1}}} empty after sanitize`);
+      }
+      return {
+        type: "text",
+        text: text || (i === 0 ? "אורח יקר" : i === 1 ? "12:00" : i === 2 ? "15:00" : "-"),
+      };
+    });
+    components.push({ type: "body", parameters: bodyParams });
+  } else {
+    console.warn(
+      `[whatsapp-send] template="${templateName}": no body parameters in payload` +
+      ` — Meta may reject if template expects {{N}} placeholders`,
+    );
+  }
+
+  if (opts.buttonUrlParam !== undefined) {
+    const btnText = String(opts.buttonUrlParam ?? "").trim();
+    if (!btnText) {
+      console.warn(`[whatsapp-send] template="${templateName}": dynamic URL button param empty`);
+    }
+    components.push({
+      type: "button",
+      sub_type: "url",
+      index: 0,
+      parameters: [{ type: "text", text: btnText || "-" }],
+    });
+  }
+
+  return components;
+}
+
 // ── Meta WhatsApp Cloud API (live) ────────────────────────────────────────────
-async function sendViaMeta(to: string, body: string): Promise<void> {
+async function sendViaMeta(to: string, body: string, imageUrl?: string | null): Promise<void> {
   const token   = Deno.env.get("META_WHATSAPP_TOKEN")    ?? Deno.env.get("WHATSAPP_TOKEN");
   const phoneId = Deno.env.get("META_PHONE_NUMBER_ID")   ?? Deno.env.get("WHATSAPP_PHONE_NUMBER_ID");
   if (!token || !phoneId) throw new Error("missing_meta_whatsapp_creds");
 
   const recipient = sanitizeMetaRecipientPhone(to);
-  const payload = {
-    messaging_product: "whatsapp",
-    to: recipient,
-    type: "text",
-    text: { body, preview_url: false },
-  };
+  const payload = buildFreeTextPayload(recipient, body, imageUrl);
+  const kind = String(imageUrl ?? "").trim() ? "session_image" : "free_text";
 
   try {
-    logMetaOutboundPayload(`free_text to=${maskPhoneForLog(recipient)}`, payload);
+    logMetaOutboundPayload(`${kind} to=${maskPhoneForLog(recipient)}`, payload);
     const res = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
@@ -350,13 +474,13 @@ async function sendViaMeta(to: string, body: string): Promise<void> {
     });
     const responseText = await res.text();
     console.log(
-      `[whatsapp-send] Meta response free_text to=${maskPhoneForLog(recipient)} ` +
+      `[whatsapp-send] Meta response ${kind} to=${maskPhoneForLog(recipient)} ` +
       `http=${res.status} body=${responseText.slice(0, 500)}`,
     );
     if (!res.ok) {
       throw new Error(`meta_http_${res.status}: ${responseText.slice(0, 300)}`);
     }
-    assertMetaMessageAccepted(responseText, res.status, `free_text to=${maskPhoneForLog(recipient)}`);
+    assertMetaMessageAccepted(responseText, res.status, `${kind} to=${maskPhoneForLog(recipient)}`);
   } catch (e) {
     if (_isAbortError(e)) throw new Error("timeout_no_response: Meta did not respond within 25s — message may have still been delivered");
     throw e;
@@ -372,17 +496,10 @@ async function sendViaMeta(to: string, body: string): Promise<void> {
 //
 // Templates with a Media Header (IMAGE) require a `header` component in the
 // components array — Meta rejects without it: "Format mismatch, expected IMAGE,
-// received UNKNOWN". This map is the single place to add / update header URLs
-// when new image-header templates are approved.
-// Every template name that has an IMAGE-type header component must appear here.
-// Meta rejects the send with "Format mismatch, expected IMAGE, received UNKNOWN"
-// when the header component is absent. Add new image-header template names to
-// this map — sendViaTemplate() reads it and injects the header automatically.
-const TEMPLATE_IMAGE_HEADERS: Record<string, string> = {
-  dream_suite_reminder:        "https://tzalamnadlan.co.il/wp-content/uploads/2026/default-resort.jpg",
-  night_before_suites:         "https://tzalamnadlan.co.il/wp-content/uploads/2026/default-resort.jpg",
-  night_before_suites_shabbat: "https://tzalamnadlan.co.il/wp-content/uploads/2026/default-resort.jpg",
-};
+// received UNKNOWN". See TEMPLATE_IMAGE_HEADERS above (defined before payload builders).
+//
+// Every template name that has an IMAGE-type header component must appear in
+// TEMPLATE_IMAGE_HEADERS — sendViaTemplate() injects the header automatically.
 
 // Only these approved templates have a dynamic URL button at index 0.
 // night_before_suites[_shabbat] have no button component — do not inject one.
@@ -503,22 +620,20 @@ async function sendViaTemplate(
   variables: string[] = [],
   langCode = "he",
   buttonUrlParam?: string,
+  headerImageUrlOverride?: string | null,
 ): Promise<void> {
   const token   = Deno.env.get("META_WHATSAPP_TOKEN")  ?? Deno.env.get("WHATSAPP_TOKEN");
   const phoneId = Deno.env.get("META_PHONE_NUMBER_ID") ?? Deno.env.get("WHATSAPP_PHONE_NUMBER_ID");
   if (!token || !phoneId) throw new Error("missing_meta_whatsapp_creds");
 
-  const components: unknown[] = [];
-  const headerImageUrl = TEMPLATE_IMAGE_HEADERS[templateName];
-  if (headerImageUrl) {
-    components.push({ type: "header", parameters: [{ type: "image", image: { link: headerImageUrl } }] });
+  if (!templateName?.trim()) {
+    console.warn("[whatsapp-send] sendViaTemplate: templateName empty — send will fail");
   }
-  if (variables.length > 0) {
-    components.push({ type: "body", parameters: variables.map((v) => ({ type: "text", text: v })) });
-  }
-  if (buttonUrlParam !== undefined) {
-    components.push({ type: "button", sub_type: "url", index: 0, parameters: [{ type: "text", text: buttonUrlParam }] });
-  }
+
+  const components = buildTemplateComponents(templateName, variables, {
+    buttonUrlParam,
+    headerImageUrl: headerImageUrlOverride,
+  });
 
   const recipient = sanitizeMetaRecipientPhone(to);
   const payload = {
@@ -534,12 +649,14 @@ async function sendViaTemplate(
 
   const isNightBeforeSuites =
     templateName === "night_before_suites" || templateName === "night_before_suites_shabbat";
+  const resolvedHeader = resolveTemplateHeaderImageUrl(templateName, headerImageUrlOverride);
 
   try {
     logMetaOutboundPayload(
       `template="${templateName}" to=${maskPhoneForLog(recipient)}` +
       (isNightBeforeSuites
-        ? ` [Stage2.5] bodyVars=${variables.length} hasHeader=${!!headerImageUrl} hasButton=${buttonUrlParam !== undefined}`
+        ? ` [Stage2.5] bodyVars=${variables.length} hasHeader=${!!resolvedHeader}` +
+          ` hasButton=${buttonUrlParam !== undefined} components=${components.length}`
         : ""),
       payload,
     );
@@ -630,7 +747,7 @@ const isSimulation = (): boolean =>
 // via sendViaTemplate(), which are valid OUTSIDE the 24h customer-service window
 // by definition — so there is no 24h-window risk in permitting them, and they
 // are explicit, throttled, manager-initiated actions (not autonomous blasts).
-const MANUAL_TRIGGERS = new Set(["inbox_reply", "broadcast", "payment_and_workshops"]);
+const MANUAL_TRIGGERS = new Set(["inbox_reply", "broadcast", "payment_and_workshops", "template_test"]);
 
 // ── Main handler ──────────────────────────────────────────────────────────────
 serve(async (req: Request) => {
@@ -638,7 +755,7 @@ serve(async (req: Request) => {
 
   try {
     const body = await req.json();
-    const { trigger, guestId, assignments, weekStart, waTemplateName, templateVariables, force, force_channel } = body as {
+    const { trigger, guestId, assignments, weekStart, waTemplateName, templateVariables, force, force_channel, manual_override, scheduled_for, is_test, phone: testPhone, image_url: requestImageUrl } = body as {
       trigger:             string;
       guestId?:            string;
       assignments?:        Record<string, unknown[]>;
@@ -647,6 +764,11 @@ serve(async (req: Request) => {
       templateVariables?:  string[];  // values for {{1}}, {{2}}, … in the template body
       force?:              boolean;   // Manual override: skip kill-switch + idempotency guard
       force_channel?:      "meta_template" | "session_message"; // Pin channel for manual dispatch
+      manual_override?:    boolean;   // Staff Smart Override — logs context + cancels scheduled_tasks
+      scheduled_for?:      string;    // ISO — audit when cancelling a future cron slot
+      is_test?:            boolean;   // template_test isolation gate
+      phone?:              string;    // template_test target (E.164)
+      image_url?:          string;    // optional IMAGE header (templates) or session caption image
     };
 
     if (!trigger) throw new Error("trigger is required");
@@ -678,6 +800,93 @@ serve(async (req: Request) => {
     );
 
     const sim = isSimulation();
+
+    const overridePayloadExtras = (manual_override === true || force === true)
+      ? { context: "Manual Override", manual_override: true }
+      : {};
+
+    async function cancelScheduledTaskForOverride(gId: string | number, stageKey: string) {
+      if (!manual_override && !force) return;
+      const { error } = await supabase.rpc("cancel_scheduled_task_for_override", {
+        p_guest_id: gId,
+        p_stage_key: stageKey,
+        p_scheduled_for: scheduled_for ?? null,
+      });
+      if (error) console.warn("[whatsapp-send] cancel_scheduled_task_for_override:", error.message);
+    }
+
+    async function markScheduledTaskDispatched(gId: string | number, stageKey: string) {
+      if (!manual_override && !force) return;
+      const { error } = await supabase.rpc("mark_scheduled_task_dispatched", {
+        p_guest_id: gId,
+        p_stage_key: stageKey,
+      });
+      if (error) console.warn("[whatsapp-send] mark_scheduled_task_dispatched:", error.message);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // BRANCH T: Template test / preview — isolated, no guest pipeline mutation
+    // ─────────────────────────────────────────────────────────────────────────
+    if (trigger === "template_test") {
+      if (is_test !== true) {
+        throw new Error("template_test requires is_test:true");
+      }
+      if (!waTemplateName) throw new Error("waTemplateName is required for template_test");
+      const targetPhone = String(testPhone ?? "").trim();
+      if (!targetPhone) throw new Error("phone is required for template_test");
+
+      let vars = templateVariables ?? [];
+      if (guestId) {
+        const { data: guest, error: gErr } = await supabase
+          .from("guests").select("*").eq("id", guestId).maybeSingle();
+        if (gErr) throw new Error(`guest_lookup_error: ${gErr.message}`);
+        if (guest) {
+          vars = ensureTemplateBodyVars(waTemplateName, vars, guest);
+        }
+      }
+      if (!vars.length) {
+        vars = sanitizeTemplateVars(["אורח בדיקה"]);
+      }
+
+      let status = "simulated";
+      let sendError: string | null = null;
+      try {
+        if (!sim) {
+          await sendViaTemplate(targetPhone, waTemplateName, vars, "he", undefined, requestImageUrl);
+          status = "sent";
+        }
+      } catch (e) {
+        sendError = (e as Error).message;
+        status = sendError.startsWith("timeout_no_response") ? "timeout" : "failed";
+        console.error(`[whatsapp-send] template_test ${status}:`, sendError);
+      }
+
+      await supabase.from("notification_log").insert({
+        guest_id: guestId ?? null,
+        recipient: targetPhone,
+        trigger_type: "template_test",
+        channel: "whatsapp",
+        status,
+        payload: {
+          is_test: true,
+          context: "Test/Preview",
+          template: waTemplateName,
+          variables: vars,
+          ...(sendError ? { error: sendError } : {}),
+        },
+      });
+
+      return new Response(
+        JSON.stringify({
+          ok: status === "sent" || status === "simulated",
+          simulation: sim,
+          status,
+          template: waTemplateName,
+          ...(sendError ? { error: sendError } : {}),
+        }),
+        { headers: { ...CORS, "Content-Type": "application/json" } },
+      );
+    }
 
     // ─────────────────────────────────────────────────────────────────────────
     // BRANCH A: Staff shift assignment (no guest record)
@@ -748,7 +957,7 @@ serve(async (req: Request) => {
       let sendError: string | null = null;
       try {
         if (!sim) {
-          await sendViaTemplate(guest.phone as string, waTemplateName, vars, "he");
+          await sendViaTemplate(guest.phone as string, waTemplateName, vars, "he", undefined, requestImageUrl);
           status = "sent";
         }
       } catch (e) {
@@ -998,6 +1207,10 @@ serve(async (req: Request) => {
     if (gErr)   throw new Error(`guest_lookup_error: ${gErr.message}`);
     if (!guest) throw new Error(`guest_not_found: no guest row for id=${JSON.stringify(guestId)}`);
 
+    if (force === true || manual_override === true) {
+      await cancelScheduledTaskForOverride(guestId, trigger);
+    }
+
     // ── Day Pass Safety Gate ─────────────────────────────────────────────────
     // Day Pass guests (room_type='day_guest') are entitled to:
     //   Stage 1   pre_arrival_2d      — arrival confirmation
@@ -1075,7 +1288,7 @@ serve(async (req: Request) => {
       let fmError: string | null = null;
       try {
         if (!sim) {
-          await sendViaTemplate(targetPhone, forcedTmpl, forcedVars, "he", forcedButton);
+          await sendViaTemplate(targetPhone, forcedTmpl, forcedVars, "he", forcedButton, stageRow?.session_message_image_url ?? requestImageUrl);
           fmStatus = "sent";
         }
       } catch (e) {
@@ -1098,6 +1311,7 @@ serve(async (req: Request) => {
           variables: forcedVars,
           forced: true,
           force_channel: "meta_template",
+          ...overridePayloadExtras,
           ...(fmError ? { error: fmError } : {}),
         },
       });
@@ -1115,6 +1329,7 @@ serve(async (req: Request) => {
         if (flagColumn) {
           await supabase.from("guests").update({ [flagColumn]: true }).eq("id", guestId);
         }
+        await markScheduledTaskDispatched(guestId, trigger);
       }
 
       return new Response(
@@ -1207,6 +1422,8 @@ serve(async (req: Request) => {
                 fbTemplate,
                 buildNameOnlyTemplateVars(guest),
                 "he",
+                undefined,
+                stageRow?.session_message_image_url,
               );
             } else {
               const nbTimes = await resolveNightBeforeTimes(supabase, String(guest.arrival_date ?? ""));
@@ -1218,7 +1435,7 @@ serve(async (req: Request) => {
                 .replace(/\{\{\s*entry_time\s*\}\}/gi, nbTimes.entryTime)
                 .replace(/\{\{\s*check_in_time\s*\}\}/gi, nbTimes.checkInTime)
                 .replace(/\{\{\s*portal_url\s*\}\}/gi, nbPortalUrl);
-              await sendViaMeta(String(guest.phone), textBody);
+              await sendViaMeta(String(guest.phone), textBody, stageRow?.session_message_image_url);
             }
           } else {
             // Template path: TEMPLATE_IMAGE_HEADERS guarantees the IMAGE header
@@ -1234,6 +1451,8 @@ serve(async (req: Request) => {
               nightBeforeDispatch.templateName,
               nightBeforeDispatch.vars,
               "he",
+              undefined,
+              stageRow?.session_message_image_url ?? requestImageUrl,
             );
           }
           nbStatus = "sent";
@@ -1342,7 +1561,7 @@ serve(async (req: Request) => {
               const body = rawText
                 .replace(/\{\{GUEST_NAME\}\}/gi, dpGuestName)
                 .replace(/\{\{\s*portal_url\s*\}\}/gi, dpPortalUrl);
-              await sendViaMeta(String(guest.phone), body);
+              await sendViaMeta(String(guest.phone), body, stageRow?.session_message_image_url);
             }
           } else {
             await sendViaTemplate(String(guest.phone), "suite_welcome_morning", [dpGuestName], "he",
@@ -1443,7 +1662,7 @@ serve(async (req: Request) => {
         let mgStatus = "simulated";
         let mgError: string | null = null;
         try {
-          if (!sim) { await sendViaMeta(String(guest.phone), mgBody); mgStatus = "sent"; }
+          if (!sim) { await sendViaMeta(String(guest.phone), mgBody, stageRow?.session_message_image_url); mgStatus = "sent"; }
         } catch (e) {
           mgError = (e as Error).message;
           mgStatus = mgError.startsWith("timeout_no_response") ? "timeout"
@@ -1729,7 +1948,7 @@ serve(async (req: Request) => {
               const textBody = rawText
                 .replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, rrDispatch.guestName)
                 .replace(/\{\{\s*ROOM_NAME\s*\}\}/gi,   rrDispatch.roomName);
-              await sendViaMeta(String(guest.phone), textBody);
+              await sendViaMeta(String(guest.phone), textBody, stageRow?.session_message_image_url);
             }
           } else {
             await sendViaTemplate(
@@ -1853,7 +2072,7 @@ serve(async (req: Request) => {
       try {
         if (!sim) {
           if (sessionImageUrl) {
-            await sendImageMessage(guest.phone as string, sessionImageUrl, sessionBody!);
+            await sendViaMeta(guest.phone as string, sessionBody!, sessionImageUrl);
           } else {
             await sendInteractiveButtons(guest.phone as string, sessionBody!, sessionButtons);
           }
@@ -1880,7 +2099,7 @@ serve(async (req: Request) => {
       const portalButtonParam = resolveDynamicUrlButtonParam(tmplName, guest.portal_token);
       try {
         if (!sim) {
-          await sendViaTemplate(guest.phone as string, tmplName, tmplVars, "he", portalButtonParam);
+          await sendViaTemplate(guest.phone as string, tmplName, tmplVars, "he", portalButtonParam, stageRow?.session_message_image_url ?? requestImageUrl);
           status = "sent";
         }
       } catch (e) {
@@ -1896,12 +2115,12 @@ serve(async (req: Request) => {
       guest_id: guestId, recipient: guest.phone, trigger_type: trigger,
       channel: "whatsapp", status,
       payload: usedSessionMessage
-        ? { channel: "session_message", scriptKey: stageRow!.session_message_script_key, ...(sendError ? { error: sendError } : {}), ...(force ? { forced: true, force_channel } : {}) }
+        ? { channel: "session_message", scriptKey: stageRow!.session_message_script_key, ...(sendError ? { error: sendError } : {}), ...(force ? { forced: true, force_channel, ...overridePayloadExtras } : {}) }
         : {
             channel: "meta_template", template: tmplName, variables: tmplVars,
             ...(sendError ? { error: sendError } : {}),
             ...(sessionFailureNote ? { sessionMessageFailureNote: sessionFailureNote } : {}),
-            ...(force ? { forced: true, force_channel } : {}),
+            ...(force ? { forced: true, force_channel, ...overridePayloadExtras } : {}),
           },
     });
 
@@ -1931,6 +2150,9 @@ serve(async (req: Request) => {
         .from("guests")
         .update({ [flagColumn]: true })
         .eq("id", guestId);
+      if (force || manual_override) {
+        await markScheduledTaskDispatched(guestId, trigger);
+      }
     }
 
     return new Response(

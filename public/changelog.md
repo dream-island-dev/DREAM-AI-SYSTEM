@@ -1,3 +1,5 @@
+2026-06-29 | scheduled_tasks (104) + AutomationControlCenter + whatsapp-send template_test | Smart Dispatch Override: pending schedule warning modal (Israel time), שלח עכשיו + ⚡ force send with duplication guard (cancel scheduled_tasks + Manual Override log); isolated Meta template test tab (is_test:true).
+
 2026-06-29 | UndoSnackbar + HoldToConfirmButton + QuietHoursGate + AdminChangelogDashboard + App.js/index.js | Fail-safes: RequestsBoard 6s undo snackbar; WhatsAppInbox hold-1.5s bot toggle; quiet-hours gate (22:00–08:00 IL) on all manual WA sends; admin changelog timeline at admin_updates + /admin/updates deep link.
 
 
