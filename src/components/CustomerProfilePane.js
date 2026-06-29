@@ -11,6 +11,45 @@ import {
 
 const DEFAULT_CHECKOUT_TIME = "11:00";
 
+const ALERT_TYPE_META = {
+  complaint:           { label: "🔴 תקלה",        bg: "#FFF0EE", color: "#C0392B" },
+  date_change_request: { label: "🗓️ שינוי תאריך", bg: "#E8F0FE", color: "#1A56DB" },
+  request:             { label: "📝 בקשה",         bg: "#FFF5E8", color: "#B5600A" },
+  upsell_opportunity:  { label: "🌴 מהפורטל",     bg: "#E8F5EF", color: "#1A7A4A" },
+};
+
+function alertTypeMeta(alertType) {
+  return ALERT_TYPE_META[alertType] ?? {
+    label: `⚠ ${alertType ?? "ללא סוג"}`,
+    bg: "#F5F5F5",
+    color: "#888888",
+  };
+}
+
+function phoneLookupVariants(phone) {
+  if (!phone) return [];
+  const variants = new Set([phone]);
+  const digits = phone.replace(/\D/g, "");
+  if (digits) {
+    variants.add(digits);
+    variants.add(`+${digits}`);
+    if (digits.startsWith("972")) variants.add(`+${digits}`);
+    else if (digits.startsWith("0")) variants.add(`+972${digits.slice(1)}`);
+  }
+  if (phone.startsWith("+")) variants.add(phone.slice(1));
+  return [...variants];
+}
+
+function fmtAlertTime(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  const sameDay = d.toDateString() === new Date().toDateString();
+  return sameDay
+    ? d.toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" })
+    : `${d.toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit" })} ${d.toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" })}`;
+}
+
 function nightsBetween(arrivalDate, departureDate) {
   if (!arrivalDate || !departureDate) return null;
   const ms = new Date(departureDate).getTime() - new Date(arrivalDate).getTime();
@@ -31,6 +70,10 @@ export default function CustomerProfilePane({ guest, onClose, onGuestUpdated, sh
   const [checkoutTime, setCheckoutTime] = useState(null);
   const [loadingCheckout, setLoadingCheckout] = useState(true);
   const [linkCopied, setLinkCopied] = useState(false);
+  const [guestAlerts, setGuestAlerts] = useState([]);
+  const [loadingAlerts, setLoadingAlerts] = useState(false);
+  const [showResolvedAlerts, setShowResolvedAlerts] = useState(false);
+  const [auditOpen, setAuditOpen] = useState(false);
 
   useEffect(() => {
     setLiveGuest(guest);
@@ -72,6 +115,43 @@ export default function CustomerProfilePane({ guest, onClose, onGuestUpdated, sh
     return () => { active = false; };
   }, [liveGuest?.phone]);
 
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      if (!isSupabaseConfigured || !supabase || (!liveGuest?.id && !liveGuest?.phone)) {
+        if (active) { setGuestAlerts([]); setLoadingAlerts(false); }
+        return;
+      }
+      setLoadingAlerts(true);
+      const select = "id, alert_type, message, resolved, resolved_at, resolution_notes, created_at";
+      const variants = phoneLookupVariants(liveGuest.phone);
+      const byId = liveGuest.id
+        ? await supabase.from("guest_alerts").select(select).eq("guest_id", liveGuest.id).order("created_at", { ascending: false }).limit(25)
+        : { data: [], error: null };
+      const byPhone = variants.length
+        ? await supabase.from("guest_alerts").select(select).in("phone", variants).order("created_at", { ascending: false }).limit(25)
+        : { data: [], error: null };
+      if (!active) return;
+      if (byId.error || byPhone.error) {
+        console.warn("[CustomerProfilePane] guest_alerts:", byId.error?.message || byPhone.error?.message);
+        setGuestAlerts([]);
+      } else {
+        const seen = new Set();
+        const merged = [...(byId.data ?? []), ...(byPhone.data ?? [])]
+          .filter((row) => {
+            if (seen.has(row.id)) return false;
+            seen.add(row.id);
+            return true;
+          })
+          .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+          .slice(0, 25);
+        setGuestAlerts(merged);
+      }
+      setLoadingAlerts(false);
+    })();
+    return () => { active = false; };
+  }, [liveGuest?.id, liveGuest?.phone]);
+
   if (!liveGuest) return null;
 
   const nights = nightsBetween(liveGuest.arrival_date, liveGuest.departure_date);
@@ -84,6 +164,9 @@ export default function CustomerProfilePane({ guest, onClose, onGuestUpdated, sh
   const dietaryNote = p.dietary?.note?.trim?.() ?? "";
   const arrivalNote = p.arrival_context?.note?.trim?.() ?? "";
   const occasionNote = p.occasion?.note?.trim?.() ?? "";
+  const systemNotes = typeof liveGuest.guest_notes === "string" ? liveGuest.guest_notes.trim() : "";
+  const visibleAlerts = showResolvedAlerts ? guestAlerts : guestAlerts.filter((a) => !a.resolved);
+  const openAlertCount = guestAlerts.filter((a) => !a.resolved).length;
 
   return (
     <div
@@ -184,6 +267,118 @@ export default function CustomerProfilePane({ guest, onClose, onGuestUpdated, sh
               {[staffNote, dietaryNote, arrivalNote, occasionNote].filter(Boolean).map((line, i) => (
                 <div key={i} style={{ marginTop: i ? 4 : 0 }}>{line}</div>
               ))}
+            </div>
+          )}
+        </div>
+
+        {/* Guest context — bot/portal requests + system audit log */}
+        <div style={{
+          background: "var(--ivory)", borderRadius: 12, padding: "12px 14px",
+          marginBottom: 14, border: "1px solid var(--border)",
+        }}>
+          <div style={{
+            display: "flex", justifyContent: "space-between", alignItems: "center",
+            marginBottom: 10, flexWrap: "wrap", gap: 6,
+          }}>
+            <span style={{ fontSize: 12, fontWeight: 800, color: "var(--gold-dark)" }}>
+              💬 הערות ובקשות
+              {openAlertCount > 0 && (
+                <span style={{
+                  marginRight: 6, fontSize: 10, background: "#FFF0EE", color: "#C0392B",
+                  padding: "2px 7px", borderRadius: 10, fontWeight: 800,
+                }}>
+                  {openAlertCount} פתוחות
+                </span>
+              )}
+            </span>
+            {guestAlerts.some((a) => a.resolved) && (
+              <label style={{
+                fontSize: 10, color: "var(--text-muted)", display: "flex",
+                alignItems: "center", gap: 4, cursor: "pointer",
+              }}>
+                <input
+                  type="checkbox"
+                  checked={showResolvedAlerts}
+                  onChange={(e) => setShowResolvedAlerts(e.target.checked)}
+                  style={{ accentColor: "var(--gold)" }}
+                />
+                הצג גם טופלו
+              </label>
+            )}
+          </div>
+
+          {loadingAlerts ? (
+            <div style={{ fontSize: 12, color: "var(--text-muted)" }}>טוען בקשות…</div>
+          ) : visibleAlerts.length > 0 ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: systemNotes ? 12 : 0 }}>
+              {visibleAlerts.map((alert) => {
+                const tm = alertTypeMeta(alert.alert_type);
+                return (
+                  <div
+                    key={alert.id}
+                    style={{
+                      background: "var(--card-bg)", borderRadius: 10, padding: "10px 11px",
+                      border: `1px solid ${alert.resolved ? "var(--border)" : tm.color + "55"}`,
+                      opacity: alert.resolved ? 0.75 : 1,
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                      <span style={{
+                        fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 12,
+                        background: tm.bg, color: tm.color,
+                      }}>
+                        {tm.label}
+                      </span>
+                      <span style={{ fontSize: 10, color: "var(--text-muted)", whiteSpace: "nowrap" }}>
+                        {fmtAlertTime(alert.created_at)}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 12, color: "#333", lineHeight: 1.45, whiteSpace: "pre-wrap" }}>
+                      {alert.message}
+                    </div>
+                    {alert.resolved && alert.resolution_notes && (
+                      <div style={{ fontSize: 11, color: "#1A7A4A", marginTop: 6 }}>
+                        ✓ {alert.resolution_notes}
+                      </div>
+                    )}
+                    <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 4 }}>
+                      {alert.resolved ? "✓ טופל" : "ממתין לטיפול"}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: systemNotes ? 12 : 0 }}>
+              {guestAlerts.length > 0 && !showResolvedAlerts
+                ? "אין בקשות פתוחות — סמן «הצג גם טופלו» להיסטוריה"
+                : "אין בקשות מתועדות לאורח זה"}
+            </div>
+          )}
+
+          {systemNotes && (
+            <div style={{ borderTop: guestAlerts.length ? "1px solid var(--border)" : "none", paddingTop: guestAlerts.length ? 10 : 0 }}>
+              <button
+                type="button"
+                onClick={() => setAuditOpen((o) => !o)}
+                style={{
+                  background: "none", border: "none", padding: 0, cursor: "pointer",
+                  fontSize: 11, fontWeight: 700, color: "var(--text-muted)",
+                  fontFamily: "Heebo,sans-serif",
+                }}
+              >
+                {auditOpen ? "▼ הסתר לוג מערכת" : "▶ לוג מערכת (הערות אוטומטיות מהבוט)"}
+              </button>
+              {auditOpen && (
+                <div style={{
+                  marginTop: 8, whiteSpace: "pre-wrap", fontSize: 11, lineHeight: 1.5,
+                  background: "var(--card-bg)", borderRadius: 8, padding: 10,
+                  border: "1px solid var(--border)", maxHeight: 160, overflowY: "auto",
+                  color: "#555",
+                }}>
+                  {systemNotes}
+                </div>
+              )}
             </div>
           )}
         </div>
