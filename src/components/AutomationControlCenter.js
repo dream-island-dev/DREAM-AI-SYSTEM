@@ -803,7 +803,10 @@ async function lookupPendingScheduledTask(guestId, stageKey) {
   return data;
 }
 
-async function invokeForcedDispatch({ guestId, stageKey, forceChannel, scheduledFor }) {
+const NIGHT_BEFORE_OVERRIDE_IMAGE =
+  "https://dream-ai-system.vercel.app/images/image_3cde8f.jpg";
+
+async function invokeForcedDispatch({ guestId, stageKey, forceChannel, scheduledFor, imageUrl }) {
   return supabase.functions.invoke("whatsapp-send", {
     body: {
       trigger: stageKey,
@@ -812,6 +815,7 @@ async function invokeForcedDispatch({ guestId, stageKey, forceChannel, scheduled
       force_channel: forceChannel,
       manual_override: true,
       scheduled_for: scheduledFor ?? undefined,
+      image_url: imageUrl ?? (stageKey === "night_before" ? NIGHT_BEFORE_OVERRIDE_IMAGE : undefined),
     },
   });
 }
@@ -1208,9 +1212,12 @@ export default function AutomationControlCenter() {
 
   const runQueueSendNow = useCallback(async (item, scheduledFor) => {
     if (!supabase) return;
-    const forceChannel = item.predictedChannel === "session_message"
-      ? "session_message"
-      : "meta_template";
+    const forceChannel =
+      item.stageKey === "night_before" && item.predictedChannel === "session_message"
+        ? "session_message"
+        : item.predictedChannel === "session_message"
+          ? "session_message"
+          : "meta_template";
     setSendNowSending(true);
     setSendNowError(null);
     try {

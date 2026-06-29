@@ -57,6 +57,8 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
     // never silently overwrite a deliberate value while editing.
     meal_location:      guest.meal_location        ?? (isEdit ? "" : "מסעדת ערמונים"),
     guest_notes:        guest.guest_notes          ?? "",
+    lead_source:        guest.lead_source          ?? "",
+    automation_muted:   !!guest.automation_muted,
   });
   const [saving, setSaving] = useState(false);
 
@@ -87,6 +89,8 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
         meal_time:          form.meal_time || null,
         meal_location:      (form.meal_location ?? "").trim() || null,
         guest_notes:        (form.guest_notes ?? "").trim() || null,
+        lead_source:        (form.lead_source ?? "").trim() || null,
+        automation_muted:   !!form.automation_muted,
       };
 
       if (isEdit) {
@@ -329,6 +333,38 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
             />
           </div>
         ))}
+
+        <div style={{ marginBottom: 14 }}>
+          <label style={{ fontSize: 12, fontWeight: 700, display: "block", marginBottom: 4 }}>מקור הגעה (Lead Source)</label>
+          <input
+            type="text"
+            value={form.lead_source ?? ""}
+            onChange={(e) => setField("lead_source", e.target.value)}
+            disabled={saving}
+            placeholder="המלצה / שוברים / מחלקת מכירות"
+            style={{
+              width: "100%", padding: "9px 12px", boxSizing: "border-box",
+              border: "1px solid var(--border,#ddd)", borderRadius: 8, fontSize: 14,
+              direction: "rtl", fontFamily: "Heebo,sans-serif",
+            }}
+          />
+        </div>
+
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "10px 0", borderBottom: "1px solid var(--border,#eee)", marginBottom: 8,
+        }}>
+          <span style={{ fontSize: 13, fontWeight: 600 }} title="חוסם שליחות אוטומטיות (cron + pipeline) — אורח נשאר גלוי בלוח">
+            🔇 השתק אוטומציה (מכירות/ארגוני)
+          </span>
+          <input
+            type="checkbox"
+            checked={!!form.automation_muted}
+            onChange={(e) => setField("automation_muted", e.target.checked)}
+            disabled={saving}
+            style={{ width: 18, height: 18, cursor: "pointer", accentColor: "var(--gold)" }}
+          />
+        </div>
 
         {/* guest_notes — append-only log written by whatsapp-webhook (migration
             053) for AI-captured free-text requests. Until now this had no edit

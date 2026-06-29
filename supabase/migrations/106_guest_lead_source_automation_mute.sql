@@ -1,6 +1,7 @@
--- Migration 101: lead_source + automation_muted on guests (Sales Dept muzzle)
+-- Migration 106: lead_source + automation_muted on guests (Sales Dept muzzle)
+-- Renumbered from duplicate 101 — remote history already has 101 = room_ready_bot_script.
 -- Guests imported with lead_source = 'מחלקת מכירות' are stored for ops visibility
--- but must not receive cron/pipeline WhatsApp automation (session 60).
+-- but must not receive cron/pipeline WhatsApp automation.
 
 ALTER TABLE public.guests
   ADD COLUMN IF NOT EXISTS lead_source TEXT,

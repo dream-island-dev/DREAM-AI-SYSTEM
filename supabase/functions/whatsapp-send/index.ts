@@ -493,6 +493,10 @@ function buildTemplateComponents(
   return components;
 }
 
+// Default session image for Stage 2.5 manual "Send Now" override (24h window open).
+const NIGHT_BEFORE_OVERRIDE_SESSION_IMAGE =
+  "https://dream-ai-system.vercel.app/images/image_3cde8f.jpg";
+
 // ── Stage session message helpers (Stage 2.5 + hybrid pipeline) ───────────────
 type StageMediaRow = {
   session_message_image_url?: string | null;
@@ -1535,19 +1539,26 @@ serve(async (req: Request) => {
     //     → bot_script free text + optional session_message_image_url (type:image + caption).
     //   • Window closed / force_channel=meta_template → night_before_suites / _shabbat template.
     type NightBeforeDispatch =
-      | { channel: "text";     freeTextKey: string;   guestName: string }
+      | { channel: "text";     freeTextKey: string;   guestName: string; sessionImageUrl?: string }
       | { channel: "template"; templateName: string;  vars: string[];   buttonUrlParam?: string };
     let nightBeforeDispatch: NightBeforeDispatch | null = null;
 
     if (trigger === "night_before") {
       const sessionScriptKey = stageRow?.session_message_script_key ?? "night_before_reminder";
       const windowOpen = isWindowOpen(guest.wa_window_expires_at);
-      const sessionImage = resolveStageSessionImageUrl(stageRow, requestImageUrl);
+      const isForceOverride = force === true;
+      const useSessionChannel =
+        forceSessionMessage
+        || (isForceOverride && windowOpen && !forceMetaTemplate)
+        || (windowOpen && !!sessionScriptKey && !forceMetaTemplate);
+      const sessionImage = useSessionChannel && isForceOverride && windowOpen
+        ? (resolveStageSessionImageUrl(stageRow, requestImageUrl) ?? NIGHT_BEFORE_OVERRIDE_SESSION_IMAGE)
+        : resolveStageSessionImageUrl(stageRow, requestImageUrl);
       console.log(
         `[whatsapp-send] night_before: entering Stage 2.5 dispatch guest_id=${guestId} ` +
         `room_type=${guest.room_type ?? "null"} arrival=${guest.arrival_date ?? "null"} ` +
         `msg_pre_arrival_sent=${String(guest.msg_pre_arrival_sent)} windowOpen=${windowOpen} ` +
-        `forceSession=${forceSessionMessage} forceMeta=${forceMetaTemplate} ` +
+        `forceSession=${forceSessionMessage} forceMeta=${forceMetaTemplate} forceOverride=${isForceOverride} ` +
         `session_image=${sessionImage ? "yes" : "no"}`,
       );
       const guestName = sanitizeTemplateVars([String(guest.name ?? "")])[0];
@@ -1556,11 +1567,8 @@ serve(async (req: Request) => {
       const templateName = isShabbat ? "night_before_suites_shabbat" : "night_before_suites";
       const templateVars = buildNameOnlyTemplateVars(guest);
 
-      const useSessionChannel =
-        forceSessionMessage || (windowOpen && !!sessionScriptKey && !forceMetaTemplate);
-
       if (useSessionChannel) {
-        nightBeforeDispatch = { channel: "text", freeTextKey: sessionScriptKey, guestName };
+        nightBeforeDispatch = { channel: "text", freeTextKey: sessionScriptKey, guestName, sessionImageUrl: sessionImage };
         console.log(
           `[whatsapp-send] night_before: route=session_message guest_id=${guestId} ` +
           `script=${sessionScriptKey} has_image=${!!sessionImage}`,
@@ -1592,7 +1600,10 @@ serve(async (req: Request) => {
       try {
         if (!sim) {
           if (nightBeforeDispatch.channel === "text") {
-            nbSessionImageUrl = resolveStageSessionImageUrl(stageRow, requestImageUrl);
+            nbSessionImageUrl =
+              nightBeforeDispatch.sessionImageUrl
+              ?? resolveStageSessionImageUrl(stageRow, requestImageUrl)
+              ?? (force && isWindowOpen(guest.wa_window_expires_at) ? NIGHT_BEFORE_OVERRIDE_SESSION_IMAGE : undefined);
             const { data: scriptRow } = await supabase
               .from("bot_scripts")
               .select("message_text")
@@ -1600,6 +1611,11 @@ serve(async (req: Request) => {
               .maybeSingle();
             const rawText = scriptRow?.message_text?.trim();
             if (!rawText) {
+              if (force && isWindowOpen(guest.wa_window_expires_at)) {
+                throw new Error(
+                  "night_before_session_script_missing — הגדר טקסט ל-night_before_reminder ב-BotScriptEditor",
+                );
+              }
               console.warn(
                 `[whatsapp-send] night_before: bot_script "${nightBeforeDispatch.freeTextKey}" missing` +
                 ` — falling back to template for guest_id=${guestId}`,

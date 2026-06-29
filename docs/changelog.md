@@ -1,3 +1,5 @@
+2026-06-29 | migration 106 + db history fix + AddGuestModal + whatsapp-send + AutomationControlCenter | Resolved duplicate migration 101 (renamed guest mute to 106, db push clean); lead_source/automation_muted on guest form; Stage 2.5 Send Now forces session+image when 24h window open.
+
 2026-06-29 | migration 101 + ezgoParser + ArrivalImportPanel + automationSchedule + whatsapp-cron/send/webhook | Advanced PMS CSV (מקור הגעה): lead_source + automation_muted on guests; מחלקת מכירות rows imported but pipeline/cron/stage_2_pay muzzled; preset mapping for 01.7.26-style exports.
 
 2026-06-29 | whatsapp-send + interactiveSend | Stage 2.5 session images: resolveStageSessionImageUrl + sendStageSessionMessage helpers; cron/Send Now routes to session when 24h window open; image+caption via sendImageMessage with wamid assert + session_image_failed on Meta error.
