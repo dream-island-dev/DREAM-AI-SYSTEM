@@ -6,13 +6,18 @@
 import { isAdminUser, isSuperAdmin } from "./admin";
 
 // ── Role resolution ──────────────────────────────────────────────────────────
-// Priority: super_admin > admin > manager > staff
+// Priority: super_admin > admin > manager > receptionist > staff
 export function getRole(user) {
   if (!user) return "staff";
   if (isSuperAdmin(user)) return "super_admin";
   if (isAdminUser(user))  return "admin";
   if (user.role === "manager") return "manager";
+  if (user.role === "receptionist") return "receptionist";
   return "staff";
+}
+
+export function isReceptionist(user) {
+  return user?.role === "receptionist";
 }
 
 // ── Permissions matrix ───────────────────────────────────────────────────────
@@ -23,10 +28,47 @@ const PERMISSIONS = {
   manage_bot:       ["admin",   "super_admin"],
   view_admin_panel: ["admin",   "super_admin"],
   manage_users:     ["super_admin"],
+  create_ops_task:  ["manager", "admin", "super_admin", "receptionist"],
+  view_data_sync:   ["admin",   "super_admin", "receptionist"],
+  view_vouchers:    ["admin",   "super_admin", "receptionist"],
+};
+
+// ── Route guards (App.js switch / guardPage) ─────────────────────────────────
+const ROUTE_ACCESS = {
+  admin:                  ["admin", "super_admin"],
+  admin_updates:          ["admin", "super_admin"],
+  bot_config:             ["admin", "super_admin"],
+  bot_settings:           ["admin", "super_admin"],
+  bot_scripts:            ["admin", "super_admin"],
+  automation_center:      ["admin", "super_admin"],
+  portal_settings:        ["admin", "super_admin"],
+  cms_security:           ["admin", "super_admin"],
+  users_mgmt:             ["super_admin"],
+  data_sync:              ["admin", "super_admin", "receptionist"],
+  voucher_reconciliation: ["admin", "super_admin", "receptionist"],
 };
 
 // ── Main gate ────────────────────────────────────────────────────────────────
 export function canPerform(action, user) {
   const role = getRole(user);
   return (PERMISSIONS[action] ?? []).includes(role);
+}
+
+/** Sidebar nav visibility — staff sees open items; receptionist also gets receptionistOk. */
+export function canSeeNavItem(item, user) {
+  if (!user) return false;
+  if (isSuperAdmin(user) || isAdminUser(user) || user.role === "manager") return true;
+  if (user.role === "receptionist") {
+    return !item.managerOnly || item.receptionistOk === true;
+  }
+  return !item.managerOnly;
+}
+
+/** App.js guardPage helper — returns true when user may render the route. */
+export function canAccessRoute(routeId, user) {
+  if (!user) return false;
+  const allowed = ROUTE_ACCESS[routeId];
+  if (!allowed) return true;
+  const role = getRole(user);
+  return allowed.includes(role);
 }

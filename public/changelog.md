@@ -1,4 +1,4 @@
-2026-06-29 | detailedReservationParser.js + ArrivalImportPanel.js + GuestDashboard.js | מספר הזמנה in detailed grid; מחלקת מכירות mute surfaced; GuestDashboard «בחר לפי תאריך הגעה» bulk-select. Build clean.
+2026-06-29 | auth.js + App.js + OperationsBoard.js | Receptionist RBAC: full sidebar (staff + wa_inbox/data_sync/vouchers/ops); admin routes still blocked; create_ops_task for receptionist.
 
 2026-06-29 | whatsapp-send/index.ts | Stage 2.5 force override: session_message always on manual Send Now — bypass window/Shabbat/Meta routing; fail visible on missing script.
 
@@ -82,3 +82,5 @@
 2026-06-28 | AICopilot.js + RequestsAlertWidget.js | Draggable FAB widgets: viewport clamp on drag, resize/out-of-bounds snap to default corner + clear stale localStorage, z-index 10400.
 2026-06-29 | migration 105 + _shared/paymentLinkGuard.ts + whatsapp-webhook/whatsapp-send + AutomationControlCenter | Stage 2 Pay guardrails: direct_payment_url validation, ezgo_portal_url async recovery flag, failed_missing_link/processing notification_log statuses, idempotency + 3s inline recovery, dream_payment_and_workshops button token fix.
 2026-06-29 | whatsapp-send/index.ts + AutomationControlCenter.js | Stage 2.5 zero-guard: force+open window always session image+text (ignores force_channel=meta_template); queue Send Now ungated + omits force_channel for night_before.
+2026-06-29 | migration 107 + WhatsAppInbox.js + whatsapp-send/index.ts | Inbox realtime (whatsapp_conversations publication) + store/display actual sent text; legacy [סקריפט]/[תבנית] rows resolved in UI with guest placeholders; fetchSince gte watermark + thread auto-scroll.
+2026-06-29 | futureSuiteRoomServiceRouting.ts + guest-portal-ops-request + sla-escalation-cron | Future suite room-service alerts → Whapi group 120363429859248777@g.us (replaces 972504025317 DM).

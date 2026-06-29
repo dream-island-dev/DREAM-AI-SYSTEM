@@ -9,6 +9,7 @@ import ShiftGenerator from "./components/ShiftGenerator";
 import ShiftScheduleTab from "./components/ShiftScheduleTab";
 import EmployeesPage from "./components/EmployeesPage";
 import { isAdminUser, isSuperAdmin, loadDepartments } from "./utils/admin";
+import { canAccessRoute, canSeeNavItem } from "./utils/auth";
 import { supabase, isSupabaseConfigured, loadAgentProfile } from "./supabaseClient";
 import { getPushState, subscribeToPush, unsubscribeFromPush, syncSubscriptionToSupabase } from "./utils/pushNotifications";
 import KnowledgeUploader from "./components/KnowledgeUploader";
@@ -22,7 +23,6 @@ import BotScriptEditor from "./components/BotScriptEditor";
 import AutomationControlCenter from "./components/AutomationControlCenter";
 import RoomBoard from "./components/RoomBoard";
 import HousekeepingTabletView from "./components/HousekeepingTabletView";
-import ReceptionistView from "./components/ReceptionistView";
 import RequestsBoard from "./components/RequestsBoard";
 import PasswordChangeScreen from "./components/PasswordChangeScreen";
 import SpaStagingPanel from "./components/SpaStagingPanel";
@@ -983,10 +983,6 @@ function DepartmentOnboardingModal({ user, onComplete }) {
 }
 
 function Sidebar({ user, active, setActive, openOpsCount, onLogout, isAdmin, isSuperAdminUser, mobileOpen, onCloseMobile }) {
-  // Managers, admins, and super-admins can see all nav items.
-  // Staff (employees) see only: dashboard, shifts, and the AI agent.
-  const isManagerOrAbove = isAdmin || isSuperAdminUser || user.role === "manager";
-
   const allNavItems = [
     { id: "dashboard",  icon: "📊", label: "דאשבורד" },
     { id: "shifts",     icon: "🕐", label: "משמרות" },
@@ -995,22 +991,25 @@ function Sidebar({ user, active, setActive, openOpsCount, onLogout, isAdmin, isS
     { id: "ops_board",  icon: "🛠️", label: "תפעול ואחזקה", badge: openOpsCount,       managerOnly: false },
     { id: "vip_guests", icon: "🏨", label: "ניהול אורחים",                            managerOnly: true },
     { id: "broadcast",  icon: "📣", label: "שליחת הודעות",                           managerOnly: true },
-    { id: "wa_inbox",   icon: "💬", label: "DREAM BOT — שיחות",                     managerOnly: true },
+    { id: "wa_inbox",   icon: "💬", label: "DREAM BOT — שיחות",                     managerOnly: true, receptionistOk: true },
     { id: "guests",     icon: "🛎️", label: "צ'ק-אין",                               managerOnly: true },
     { id: "room_board",   icon: "🏨", label: "לוח סוויטות",                            managerOnly: false },
     { id: "housekeeping_tablet", icon: "🧹", label: "לוח ניקיון (טאבלט)",              managerOnly: false },
     { id: "requests_board", icon: "📋", label: "לוח בקשות",                            managerOnly: true },
     { id: "scheduler",   icon: "🪄", label: "מחולל משמרות",                           managerOnly: true },
     { id: "agent",      icon: "📦", label: "ניהול מלאי" },
+    { id: "data_sync",  icon: "📥", label: "סנכרון נתונים",                          managerOnly: true, receptionistOk: true },
+    { id: "voucher_reconciliation", icon: "🧾", label: "התאמת שוברים",               managerOnly: true, receptionistOk: true },
   ];
 
-  const navItems = allNavItems.filter(item => !item.managerOnly || isManagerOrAbove);
+  const navItems = allNavItems.filter(item => canSeeNavItem(item, user));
 
-  // User role label
   const roleLabel = isAdmin
     ? "👑 מנהל מערכת"
     : user.role === "manager"
     ? "🏢 מנהל מחלקה"
+    : user.role === "receptionist"
+    ? "🛎️ פקיד/ת קבלה"
     : "👤 עובד";
 
   return (
@@ -1079,14 +1078,6 @@ function Sidebar({ user, active, setActive, openOpsCount, onLogout, isAdmin, isS
               <span>עדכוני מערכת</span>
             </button>
             <button
-              className={`nav-item ${active === "data_sync" ? "active" : ""}`}
-              onClick={() => setActive("data_sync")}
-              style={{ color: active === "data_sync" ? "var(--gold)" : "rgba(201,169,110,0.6)" }}
-            >
-              <span className="icon">📥</span>
-              <span>סנכרון נתונים</span>
-            </button>
-            <button
               className={`nav-item ${active === "portal_settings" ? "active" : ""}`}
               onClick={() => setActive("portal_settings")}
               style={{ color: active === "portal_settings" ? "var(--gold)" : "rgba(201,169,110,0.6)" }}
@@ -1133,14 +1124,6 @@ function Sidebar({ user, active, setActive, openOpsCount, onLogout, isAdmin, isS
             >
               <span className="icon">🔐</span>
               <span>אבטחת CMS</span>
-            </button>
-            <button
-              className={`nav-item ${active === "voucher_reconciliation" ? "active" : ""}`}
-              onClick={() => setActive("voucher_reconciliation")}
-              style={{ color: active === "voucher_reconciliation" ? "var(--gold)" : "rgba(201,169,110,0.6)" }}
-            >
-              <span className="icon">🧾</span>
-              <span>התאמת שוברים</span>
             </button>
             {/* User Management — owner (super-admin) only */}
             {isSuperAdminUser && (
@@ -1721,15 +1704,12 @@ export default function App({ initialPage = "dashboard" }) {
    *  Checks the DB role first, then falls back to email-based detection so
    *  that admin emails (isAdmin / isSuperAdminUser) are never locked out even
    *  if the DB role hasn't been synced yet (e.g. first login race condition). */
-  const guardPage = useCallback((allowedRoles, component) => {
+  const guardPage = useCallback((routeId, component) => {
     if (!user) return null;
-    if (allowedRoles.includes(user.role))                        return component;
-    if (allowedRoles.includes("super_admin") && isSuperAdminUser) return component;
-    if (allowedRoles.includes("admin")       && isAdmin)          return component;
-    // Non-privileged user tried to access a restricted URL — bounce them out
+    if (canAccessRoute(routeId, user)) return component;
     setTimeout(() => setActivePage("dashboard"), 0);
     return null;
-  }, [user, isAdmin, isSuperAdminUser]);
+  }, [user]);
 
   // ── Demo-data controls (Admin panel) ────────────────────────────────────────
   // Reuse the persistent setters: setX(rows) upserts adds/changes, setX([])
@@ -1928,18 +1908,6 @@ export default function App({ initialPage = "dashboard" }) {
       </>
     );
 
-  // ── Receptionist kiosk — full-screen streamlined toolset, no sidebar ──
-  // Session 30 Sprint 5.4: same "role gets its own dedicated full-screen
-  // view instead of the full Sidebar+switch" pattern as the cleaner branch
-  // above — a receptionist sees exactly two tools (send guest message /
-  // open service call), never the admin/config panels.
-  if (user.role === "receptionist")
-    return (
-      <>
-        <style>{css}</style>
-        <ReceptionistView user={user} onLogout={handleLogout} />
-      </>
-    );
 
   const renderPage = () => {
     // Mandatory loading state while operational data is fetched from Supabase.
@@ -2005,9 +1973,8 @@ export default function App({ initialPage = "dashboard" }) {
           />
         );
       case "admin":
-        // admin + super_admin can access panel; staff/manager → redirected
         return guardPage(
-          ["admin", "super_admin"],
+          "admin",
           <AdminPanel
             user={user}
             canManageData={isSuperAdminUser}
@@ -2017,7 +1984,7 @@ export default function App({ initialPage = "dashboard" }) {
         );
       case "admin_updates":
         return guardPage(
-          ["admin", "super_admin"],
+          "admin_updates",
           <AdminChangelogDashboard />
         );
       case "spa_staging":
@@ -2038,48 +2005,47 @@ export default function App({ initialPage = "dashboard" }) {
         return <OperationsBoard user={user} isAdmin={isAdmin} />;
       case "bot_config":
         return guardPage(
-          ["admin", "super_admin"],
+          "bot_config",
           <BotConfigPanel user={user} />
         );
       case "bot_settings":
         return guardPage(
-          ["admin", "super_admin"],
+          "bot_settings",
           <BotSettings />
         );
       case "bot_scripts":
         return guardPage(
-          ["admin", "super_admin"],
+          "bot_scripts",
           <BotScriptEditor />
         );
       case "automation_center":
         return guardPage(
-          ["admin", "super_admin"],
+          "automation_center",
           <AutomationControlCenter />
         );
       case "data_sync":
         return guardPage(
-          ["admin", "super_admin"],
+          "data_sync",
           <DataSyncPage />
         );
       case "portal_settings":
         return guardPage(
-          ["admin", "super_admin"],
+          "portal_settings",
           <PortalSettingsPanel />
         );
       case "cms_security":
         return guardPage(
-          ["admin", "super_admin"],
+          "cms_security",
           <CMSGate><CMSSecurityPanel /></CMSGate>
         );
       case "voucher_reconciliation":
         return guardPage(
-          ["admin", "super_admin"],
+          "voucher_reconciliation",
           <VoucherReconciliationHub user={user} />
         );
       case "users_mgmt":
-        // only super_admin manages users
         return guardPage(
-          ["super_admin"],
+          "users_mgmt",
           <UserManagement currentUser={user} />
         );
       default:

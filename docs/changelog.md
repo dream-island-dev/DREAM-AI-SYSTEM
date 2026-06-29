@@ -1,4 +1,4 @@
-2026-06-29 | _shared/futureSuiteRoomServiceRouting + guest-portal-ops-request + sla-escalation-cron | Future suite F&B/portal room-service WhatsApp → 0504025317; ops group bypassed on SLA escalation.
+2026-06-29 | auth.js + App.js + OperationsBoard.js | Receptionist RBAC: full sidebar (staff + wa_inbox/data_sync/vouchers/ops); admin routes still blocked; create_ops_task for receptionist.
 
 2026-06-29 | whatsapp-send/index.ts | Stage 2.5 force override: session_message always on manual Send Now — bypass window/Shabbat/Meta routing; fail visible on missing script.
 

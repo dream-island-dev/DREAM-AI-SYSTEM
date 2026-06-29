@@ -17,6 +17,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
+import { canPerform } from "../utils/auth";
 import ArrivalImportPanel from "./ArrivalImportPanel";
 import { getGuestTimingBadge } from "../utils/guestTiming";
 
@@ -409,7 +410,7 @@ export default function OperationsBoard({ user, isAdmin }) {
     setTimeout(() => setToast(null), 4000);
   }, []);
 
-  const canCreate = isAdmin || user?.role === "manager";
+  const canCreate = canPerform("create_ops_task", user);
   const userDept  = user?.department || "";
 
   const fetchTasks = useCallback(async () => {
