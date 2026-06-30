@@ -1,6 +1,23 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-06-27 (session 56). Current goals, blockers, and next priorities.
+> Last updated: 2026-06-30 (session 74). Current goals, blockers, and next priorities.
 > Full session history → `CLAUDE.md` §10 + `claude_history.md`.
+> **Agent workflow** → `docs/xos_agent_playbook.md`
+
+---
+
+## 🟢 In Progress — Staff UI Upgrade (Mike session 74)
+
+**Goal:** Premium scannable staff UI ("Wow") — visual only, no logic/Hebrew label changes.
+
+| Phase | Target | Status |
+|---|---|---|
+| 0 | `App.js` design tokens + utility classes | ⏳ **NEXT** — desktop + `npm start` |
+| 1 | `WhatsAppInbox.js` roster + CTAs | Pending |
+| 2a | `Dashboard` KPI cards (`App.js`) | Pending |
+| 2b | `OperationsBoard.js` TaskCards + chips | Pending |
+| 3 | `HousekeepingTabletView.js` fat-finger | Pending |
+
+**Kickoff command for desktop agent:** `start phase 0` (see playbook §5.6)
 
 ---
 
