@@ -1,3 +1,4 @@
+2026-06-30 | ArrivalImportPanel.js | Doc 1 «ספא סוויטות בלבד»: פרסור שורות «לאורחי הסוויטות» בלבד; סנכרון לפי order_number+arrival_date לפרופיל קיים; מצב מלא נשאר זמין.
 2026-06-30 | ArrivalImportPanel.js + ezgoParser.js | Import grid defaults to spa-only rows with «הצג את כל האורחים» toggle; sync still uses full dataset via _profileIdx; enrichProfilesFromExcel phone fallback when order join misses.
 2026-06-30 | AutomationControlCenter.js | Queue tab: exclude sent/simulated/skipped from live queue; 🗑️ per-row + clear-all dismiss for blocked_by_meta (UI-only, no backend change).
 2026-06-30 | CustomerProfilePane.js | Guest drawer: guest_alerts requests + collapsible guest_notes system log under "הערות ובקשות".

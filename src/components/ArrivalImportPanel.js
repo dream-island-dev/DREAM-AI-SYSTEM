@@ -116,20 +116,36 @@ function _hasSpaTime(row) {
 const _SOURCE_RE = /^(Hotel\s+WebSite|Booking\s+Collect|Booking\.com|Booking|Expedia|Hotels\.com)\s*-\s*/i;
 
 const _SUITE_SPA_RE = /לאורחי הסוויטות|לשובר סוויטה|שובר סוויטה/i;
+// Strict label for «ספא סוויטות בלבד» sync — only lines that explicitly say לאורחי הסוויטות
+const _SUITE_GUEST_SPA_LABEL_RE = /לאורחי הסוויטות/;
 const _GROUP_SPA_RE = /לקבוצות|קבוצות בלבד/i;
+
+function _doc1ParseOpts(syncMode) {
+  if (syncMode === "suite_spa_only") {
+    return {
+      suiteSpaOnly: true,
+      strictSuiteLabel: true,
+      dedupeBy: "order",
+      spaRecordsOnly: true,
+    };
+  }
+  return { suiteSpaOnly: false, dedupeBy: "phone" };
+}
 
 function _splitReportLines(raw) {
   return String(raw).split(/\r?\n|<BR\s*\/?>/gi);
 }
 
-function _extractExtras(block, raw, suiteSpaOnly = false) {
+function _extractExtras(block, raw, extractOpts = {}) {
+  const { suiteSpaOnly = false, strictSuiteLabel = false } = extractOpts;
+  const suiteLabelRe = strictSuiteLabel ? _SUITE_GUEST_SPA_LABEL_RE : _SUITE_SPA_RE;
   for (const line of _splitReportLines(raw)) {
     const clean = line.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
     if (!clean) continue;
     const m = clean.match(/^(\d+)\s*-\s*(\d{1,2}):(\d{2})/);
     if (!m) continue;
     if (_GROUP_SPA_RE.test(clean)) continue;
-    if (suiteSpaOnly && !_SUITE_SPA_RE.test(clean)) continue;
+    if (suiteSpaOnly && !suiteLabelRe.test(clean)) continue;
     const count = parseInt(m[1]);
     const time  = m[2].padStart(2, "0") + ":" + m[3];
     block.treatment_count += count;
@@ -196,7 +212,13 @@ function _orderLineFromCell(c1) {
 }
 
 function parseComprehensiveReport(rows, opts = {}) {
-  const { suiteSpaOnly = false } = opts;
+  const {
+    suiteSpaOnly = false,
+    strictSuiteLabel = false,
+    dedupeBy = "phone",
+    spaRecordsOnly = false,
+  } = opts;
+  const extractOpts = { suiteSpaOnly, strictSuiteLabel };
   let arrivalDate = null;
   let current     = null;
   const blocks    = [];
@@ -229,25 +251,40 @@ function parseComprehensiveReport(rows, opts = {}) {
         meal_time:       null,
         meal_location:   null,
       };
-      if (c2) { _extractExtras(current, c2, suiteSpaOnly); _extractMealTime(current, c2); }
+      if (c2) { _extractExtras(current, c2, extractOpts); _extractMealTime(current, c2); }
       continue;
     }
     if (!current) continue;
-    if (c2) { _extractExtras(current, c2, suiteSpaOnly); _extractMealTime(current, c2); }
+    if (c2) { _extractExtras(current, c2, extractOpts); _extractMealTime(current, c2); }
   }
   if (current) blocks.push(current);
+
+  const _mergeBlock = (ex, b) => {
+    ex.treatment_count += b.treatment_count;
+    if (b.spa_time && (!ex.spa_time || b.spa_time < ex.spa_time)) ex.spa_time = b.spa_time;
+    if (b.meal_time && (!ex.meal_time || b.meal_time < ex.meal_time)) ex.meal_time = b.meal_time;
+    if (!ex.phone && b.phone) ex.phone = b.phone;
+    if (!ex.guest_name && b.guest_name) ex.guest_name = b.guest_name;
+  };
+
+  if (dedupeBy === "order") {
+    const byOrder = {};
+    for (const b of blocks) {
+      if (!b.order_number) continue;
+      if (spaRecordsOnly && !b.spa_time) continue;
+      if (!byOrder[b.order_number]) byOrder[b.order_number] = { ...b };
+      else _mergeBlock(byOrder[b.order_number], b);
+    }
+    return Object.values(byOrder);
+  }
 
   // Deduplicate by phone — accumulate treatment counts
   const byPhone = {};
   for (const b of blocks) {
     if (!b.phone) continue;
+    if (spaRecordsOnly && !b.spa_time) continue;
     if (!byPhone[b.phone]) { byPhone[b.phone] = { ...b }; }
-    else {
-      const ex = byPhone[b.phone];
-      ex.treatment_count += b.treatment_count;
-      if (b.spa_time && (!ex.spa_time || b.spa_time < ex.spa_time)) ex.spa_time = b.spa_time;
-      if (b.meal_time && (!ex.meal_time || b.meal_time < ex.meal_time)) ex.meal_time = b.meal_time;
-    }
+    else _mergeBlock(byPhone[b.phone], b);
   }
   return Object.values(byPhone);
 }
@@ -281,7 +318,7 @@ function _extractArrivalDateFromHtml(htmlText) {
   return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
 }
 
-function parseHtmlDailyReport(htmlText) {
+function parseHtmlDailyReport(htmlText, opts = {}) {
   const doc = new DOMParser().parseFromString(htmlText, "text/html");
   // Tier 1: target <TH> header cells (e.g. "יום: ג<BR>30/06/2026") — precise.
   // Tier 2: fall back to raw-text regex for non-standard EasyGo variants.
@@ -339,10 +376,7 @@ function parseHtmlDailyReport(htmlText) {
     pseudoRows.push([null, orderLine, extras || null]);
   });
 
-  // suiteSpaOnly:false — _GROUP_SPA_RE already filters group slots inside
-  // _extractExtras; requiring the "לאורחי הסוויטות" label caused valid suite
-  // bookings with slightly different wording to lose their spa_time.
-  const records = parseComprehensiveReport(pseudoRows, { suiteSpaOnly: false });
+  const records = parseComprehensiveReport(pseudoRows, opts);
   if (arrivalDate) {
     for (const r of records) {
       if (!r.arrival_date) r.arrival_date = arrivalDate;
@@ -360,6 +394,15 @@ function parseHtmlDailyReport(htmlText) {
   }
 
   return records;
+}
+
+function _buildDoc1Records(payload, syncMode) {
+  if (!payload) return [];
+  const opts = _doc1ParseOpts(syncMode);
+  if (payload.kind === "html") {
+    return parseHtmlDailyReport(payload.data, opts);
+  }
+  return parseComprehensiveReport(payload.data, opts);
 }
 
 // ── Profile Map cloner ────────────────────────────────────────────────────────
@@ -556,6 +599,8 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
   // Suites profile state
   const [doc2Map,  setDoc2Map]  = useState(null);   // Map<key, profile> from Suite CSV
   const [doc1Rec,  setDoc1Rec]  = useState(null);   // [] from Daily Report Excel
+  const [doc1SyncMode, setDoc1SyncMode] = useState("suite_spa_only"); // "full" | "suite_spa_only"
+  const [rawDoc1Payload, setRawDoc1Payload] = useState(null); // { kind, data } for re-parse on mode change
   const [doc2Name, setDoc2Name] = useState("");
   const [doc1Name, setDoc1Name] = useState("");
   // Deterministic arrival date — staff sets this BEFORE dropping Doc 2; its
@@ -724,6 +769,24 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
   const hasDoc2 = !!doc2Map;
   const hasDoc1 = !!(doc1Rec && doc1Rec.length > 0);
   const canSync = hasDoc2 || hasDoc1;
+
+  // Recompute Doc 1 records when sync mode or uploaded payload changes
+  useEffect(() => {
+    if (!rawDoc1Payload) {
+      setDoc1Rec(null);
+      return;
+    }
+    const records = _buildDoc1Records(rawDoc1Payload, doc1SyncMode);
+    if (!records.length) {
+      setDoc1Rec(null);
+      return;
+    }
+    setDoc1Rec(records);
+    const detectedDate = records.find((r) => r.arrival_date)?.arrival_date;
+    if (detectedDate) {
+      setArrivalDate((prev) => prev || detectedDate);
+    }
+  }, [rawDoc1Payload, doc1SyncMode]);
 
   // Recompute merged whenever Suite CSV or Daily Report changes
   useEffect(() => {
@@ -897,23 +960,24 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     setDoc1Name(file.name);
     setResult(null);
     try {
-      // Detect HTML by extension, MIME type, or first bytes of file content.
-      // EZGO sometimes exports without an explicit .htm extension on Windows.
       const looksHtmlByName = /\.html?$/i.test(file.name);
       const looksHtmlByMime = file.type === "text/html";
       const headSniff = await file.slice(0, 512).text().catch(() => "");
-      // trimStart() removes BOM (\uFEFF) and leading whitespace that EasyGo sometimes
-      // prepends to its HTML exports — without it, "<!DOCTYPE" wouldn't be at position 0
-      // and the check would miss fake-XLSX files that are actually HTML under the hood.
       const looksHtmlByContent = /<!DOCTYPE\s+html|<html[\s>]|<table[\s>]/i.test(headSniff.trimStart());
       const isHtml = looksHtmlByName || looksHtmlByMime || looksHtmlByContent;
-      let records;
+
+      const detectedByName = _detectDateFromFilename(file.name);
+      if (detectedByName) {
+        setArrivalDate(detectedByName);
+        setAutoDateBanner({ date: detectedByName, source: "שם הקובץ" });
+      }
+
+      let payload;
       if (isHtml) {
         const text = await file.text();
-        records = parseHtmlDailyReport(text);
-        // Gap B: auto-populate the date picker from the TH-extracted date and show
-        // the FAIL VISIBLE banner so staff can verify before syncing.
-        const detectedDate = records.find(r => r.arrival_date)?.arrival_date;
+        payload = { kind: "html", data: text };
+        const preview = parseHtmlDailyReport(text, _doc1ParseOpts(doc1SyncMode));
+        const detectedDate = preview.find((r) => r.arrival_date)?.arrival_date;
         if (detectedDate) {
           setArrivalDate(detectedDate);
           setAutoDateBanner({ date: detectedDate, source: "הדוח היומי (HTML)" });
@@ -924,17 +988,37 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
         const wb   = XLSX.read(buf, { type: "array" });
         const ws   = wb.Sheets[wb.SheetNames[0]];
         const rows = XLSX.utils.sheet_to_json(ws, { defval: null, header: 1 });
-        records = parseComprehensiveReport(rows);
+        payload = { kind: "rows", data: rows };
+        if (!detectedByName) {
+          const firstDateRow = rows.find((row) => Array.isArray(row) && typeof row[0] === "number" && row[0] > 40000);
+          if (firstDateRow) {
+            const detectedDate = _parseDate(firstDateRow[0]);
+            if (detectedDate) {
+              setArrivalDate(detectedDate);
+              setAutoDateBanner({ date: detectedDate, source: "תאריך בדוח (Excel)" });
+            }
+          }
+        }
       }
+
+      const records = _buildDoc1Records(payload, doc1SyncMode);
       if (!records.length) {
-        showToast("err", "לא נמצאו הזמנות בדוח — בדוק פורמט");
+        showToast("err", doc1SyncMode === "suite_spa_only"
+          ? "לא נמצאו שורות «לאורחי הסוויטות» עם שעת ספא בדוח"
+          : "לא נמצאו הזמנות בדוח — בדוק פורמט");
+        setRawDoc1Payload(null);
+        setDoc1Rec(null);
         return;
       }
-      setDoc1Rec(records);
+
+      setRawDoc1Payload(payload);
+      showToast("ok", doc1SyncMode === "suite_spa_only"
+        ? `זוהו ${records.length} הזמנות ספא לסוויטות (לאורחי הסוויטות)`
+        : `נטענו ${records.length} שורות מהדוח היומי`);
     } catch (err) {
       showToast("err", "שגיאה בקריאת הדוח: " + err.message);
     }
-  }, []);
+  }, [doc1SyncMode]);
 
   const displayGridRows = useMemo(() => {
     if (!showOnlyWithSpa || importSource === "detailed") return gridRows;
@@ -1092,6 +1176,55 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
       // the single-source-of-truth rule: the Suite CSV creates guest records,
       // the Daily Report only enriches them (§4 — no duplicates).
       } else if (!hasDoc2 && hasDoc1) {
+        if (doc1SyncMode === "suite_spa_only") {
+          const spaRecords = doc1Rec.filter((r) => r.spa_time && r.order_number);
+          if (!spaRecords.length) {
+            showToast("err", "אין הזמנות עם שעת ספא «לאורחי הסוויטות» לסנכרון");
+            return;
+          }
+          if (!arrivalDate) {
+            showToast("err", "יש לבחור תאריך הגעה לפני סנכרון ספא סוויטות");
+            return;
+          }
+
+          const orderNums = [...new Set(spaRecords.map((r) => r.order_number))];
+          const { data: existingRows, error: lookupErr } = await supabase
+            .from("guests")
+            .select("id, order_number, phone, name")
+            .in("order_number", orderNums)
+            .eq("arrival_date", arrivalDate);
+          if (lookupErr) throw new Error(lookupErr.message);
+
+          const byOrder = new Map((existingRows ?? []).map((g) => [g.order_number, g]));
+          let updated = 0;
+          let skipped = 0;
+          const notFoundOrders = [];
+
+          for (const rec of spaRecords) {
+            const guest = byOrder.get(rec.order_number);
+            if (!guest) {
+              skipped++;
+              notFoundOrders.push(rec.order_number);
+              continue;
+            }
+            const patch = {
+              spa_time: rec.spa_time,
+              treatment_count: rec.treatment_count ?? 0,
+            };
+            const { error } = await supabase.from("guests").update(patch).eq("id", guest.id);
+            if (!error) updated++;
+            else skipped++;
+          }
+
+          setResult({
+            mode:        "suite_spa",
+            updated,
+            skipped,
+            notFound:    [...new Set(notFoundOrders)],
+            total:       spaRecords.length,
+            arrivalDate,
+          });
+        } else {
         const allPhones = doc1Rec.filter(r => r.phone).map(r => r.phone);
         let updated = 0, skipped = 0;
 
@@ -1125,6 +1258,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           skipped = doc1Rec.length;
         }
         setResult({ mode: "spa", updated, skipped });
+        }
       }
 
     } catch (err) {
@@ -1135,8 +1269,9 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
   };
 
   const reset = () => {
-    setDoc2Map(null); setDoc1Rec(null);
+    setDoc2Map(null); setDoc1Rec(null); setRawDoc1Payload(null);
     setDoc2Name(""); setDoc1Name("");
+    setDoc1SyncMode("suite_spa_only");
     setMerged(null); setGridRows([]); setShowOnlyWithSpa(true); setSelectedIds(new Set()); setResult(null);
     setMappingStage("idle"); setRawDoc2Rows(null); setDoc2Fallback(null);
     setAiSuggestion(null); setAiError(null); setAutoDateBanner(null);
@@ -1184,7 +1319,9 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
       ? `⚡ ייבא ${merged?.length ?? 0} פרופילים + עדכן ספא`
     : hasDoc2
       ? `⚡ ייבא ${merged?.length ?? 0} פרופילים`
-      : `⚡ עדכן שעות ספא (${doc1Rec?.length ?? 0} אורחים)`;
+      : doc1SyncMode === "suite_spa_only"
+        ? `💆 סנכרן ספא סוויטות (${doc1Rec?.length ?? 0} הזמנות · לפי מס׳ הזמנה)`
+        : `⚡ עדכן שעות ספא (${doc1Rec?.length ?? 0} אורחים)`;
 
   // ── Stats ─────────────────────────────────────────────────────────────────
   const activeGridCols = importSource === "detailed" ? DETAILED_GRID_COLS : SUITES_GRID_COLS;
@@ -1204,7 +1341,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
       }
     : hasDoc1
       ? {
-          mode:    "spa",
+          mode:    doc1SyncMode === "suite_spa_only" ? "suite_spa" : "spa",
           total:   doc1Rec.length,
           withSpa: doc1Rec.filter(r => r.spa_time).length,
         }
@@ -1212,6 +1349,9 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
 
   const showSuiteGrid = hasDoc2 && merged && merged.length > 0 && !result;
   const showSpaPreview   = !hasDoc2 && hasDoc1 && !result;
+  const doc1PreviewHeaders = doc1SyncMode === "suite_spa_only"
+    ? ["הזמנה #", "שם", "שעת ספא", "# טיפולים"]
+    : ["הזמנה #", "שם", "שעת ספא", "שעת ארוחה", "# טיפולים"];
 
   return (
     <div style={{ marginBottom: 20 }}>
@@ -1249,7 +1389,9 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           <span style={{ fontSize: 12, color: "var(--gold)", fontWeight: 600 }}>
             {stats.mode === "suites"
               ? `${stats.total} פרופילים · ${stats.assigned} שויכו חדר`
-              : `${stats.total} אורחי ספא`}
+              : stats.mode === "suite_spa"
+                ? `${stats.total} הזמנות ספא לסוויטות`
+                : `${stats.total} אורחי ספא`}
           </span>
         )}
         <span style={{ color: "rgba(232,201,138,0.55)", fontSize: 13 }}>{open ? "▲" : "▼"}</span>
@@ -1289,7 +1431,8 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
             fontSize: 12, color: "var(--gold-light)", lineHeight: 1.8,
           }}>
             <strong>Doc 2 — דוח כניסות EZGO (CSV):</strong> ייבוא חדרים, אורחים, הזמנות<br />
-            <strong>Doc 1 — דוח יומי מקיף (Excel / HTML):</strong> עדכון שעות ספא + ארוחה<br />
+            <strong>Doc 1 — דוח יומי מקיף (Excel / HTML):</strong> עדכון שעות ספא (+ ארוחה במצב מלא)<br />
+            <strong>💆 ספא סוויטות בלבד (ברירת מחדל):</strong> שורות עם «לאורחי הסוויטות» בלבד · התאמה לפי <em>מספר הזמנה</em> + תאריך הגעה → עדכון פרופיל קיים<br />
             <span style={{ color: "rgba(232,201,138,0.55)", fontSize: 11 }}>
               ניתן להעלות כל דוח בנפרד ● ערוך שם/חדר/ספא בטבלה לפני הסנכרון ● שדות בוט חיים לא נדרסים
             </span>
@@ -1365,6 +1508,47 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
               accept=".xlsx,.xls,.htm,.html"
               optional
             />
+          </div>
+
+          {/* Doc 1 sync mode — suite spa only vs full enrichment */}
+          <div style={{
+            display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14,
+            padding: "10px 12px", borderRadius: 10,
+            background: "rgba(22,163,74,0.08)", border: "1px solid rgba(22,163,74,0.35)",
+          }}>
+            <span style={{ fontSize: 12, fontWeight: 800, color: "#166534", alignSelf: "center" }}>
+              מצב Doc 1:
+            </span>
+            {[
+              {
+                key: "suite_spa_only",
+                label: "💆 ספא סוויטות בלבד (לאורחי הסוויטות · מס׳ הזמנה)",
+              },
+              {
+                key: "full",
+                label: "📋 עדכון מלא (ספא + ארוחה · לפי טלפון)",
+              },
+            ].map(({ key, label }) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setDoc1SyncMode(key)}
+                style={{
+                  padding: "7px 14px", borderRadius: 20, cursor: "pointer",
+                  fontFamily: "Heebo,sans-serif", fontSize: 12, fontWeight: 700,
+                  border: doc1SyncMode === key ? "1px solid #16a34a" : "1px solid rgba(22,163,74,0.35)",
+                  background: doc1SyncMode === key ? "linear-gradient(135deg,#22c55e,#16a34a)" : "rgba(255,255,255,0.06)",
+                  color: doc1SyncMode === key ? "#fff" : "#86efac",
+                }}
+              >
+                {label}
+              </button>
+            ))}
+            {rawDoc1Payload && !hasDoc1 && (
+              <span style={{ fontSize: 11, color: "#b45309", fontWeight: 700, alignSelf: "center" }}>
+                ⚠ במצב הנוכחי לא נמצאו שורות מתאימות בקובץ שנטען
+              </span>
+            )}
           </div>
 
           {/* Dedicated detailed reservation report — bypasses generic mapper */}
@@ -1459,11 +1643,11 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                     </div>
                   ))}
                 </>
-              ) : (
+              ) : stats.mode === "spa" || stats.mode === "suite_spa" ? (
                 <>
                   {[
-                    { label: "הזמנות",  val: stats.total,   c: "#7c3aed", bg: "#f3f0ff" },
-                    { label: "עם ספא",  val: stats.withSpa, c: "#16a34a", bg: "#f0fdf4" },
+                    { label: stats.mode === "suite_spa" ? "הזמנות ספא" : "הזמנות", val: stats.total, c: "#7c3aed", bg: "#f3f0ff" },
+                    { label: "עם שעת ספא", val: stats.withSpa, c: "#16a34a", bg: "#f0fdf4" },
                   ].map(({ label, val, c, bg }) => (
                     <div key={label} style={{
                       background: bg, borderRadius: 8, padding: "6px 12px",
@@ -1474,7 +1658,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                     </div>
                   ))}
                 </>
-              )}
+              ) : null}
             </div>
           )}
 
@@ -1545,6 +1729,13 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
               }}>
                 <span>עדכון שעות ספא בלבד — לא ייבאו חדרים</span>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  {doc1SyncMode === "suite_spa_only" && (
+                    <span style={{ fontSize: 10, fontWeight: 700, color: "#166534" }}>
+                      לאורחי הסוויטות · לפי מס׳ הזמנה
+                    </span>
+                  )}
+                  {doc1SyncMode !== "suite_spa_only" && (
+                  <>
                   <button
                     type="button"
                     onClick={toggleSpaFilter}
@@ -1561,13 +1752,15 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                   <span style={{ fontSize: 10, fontWeight: 600 }}>
                     {displayDoc1Rec.length} / {doc1Rec.length}
                   </span>
+                  </>
+                  )}
                 </div>
               </div>
               <div style={{ overflowX: "auto", maxHeight: 280 }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 480 }}>
                   <thead>
                     <tr style={{ background: "var(--ivory)" }}>
-                      {["הזמנה #", "שם", "שעת ספא", "שעת ארוחה", "# טיפולים"].map(h => (
+                      {doc1PreviewHeaders.map(h => (
                         <th key={h} style={{
                           padding: "8px 12px", fontSize: 11, fontWeight: 700,
                           color: "var(--text-muted)", textAlign: "right",
@@ -1579,7 +1772,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                   <tbody>
                     {displayDoc1Rec.length === 0 && showOnlyWithSpa && (
                       <tr>
-                        <td colSpan={5} style={{
+                        <td colSpan={doc1PreviewHeaders.length} style={{
                           padding: "16px 12px", fontSize: 12, textAlign: "center",
                           color: "var(--text-muted)", fontWeight: 600,
                         }}>
@@ -1598,10 +1791,12 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                           color: r.spa_time ? "var(--gold-dark)" : "var(--text-muted)" }}>
                           {r.spa_time ?? "—"}
                         </td>
+                        {doc1SyncMode !== "suite_spa_only" && (
                         <td style={{ padding: "8px 12px", fontSize: 13, fontWeight: 800,
                           color: r.meal_time ? "#1a7a4a" : "var(--text-muted)" }}>
                           {r.meal_time ?? "—"}
                         </td>
+                        )}
                         <td style={{ padding: "8px 12px", fontSize: 12, textAlign: "center" }}>
                           {r.treatment_count > 0 ? r.treatment_count : "—"}
                         </td>
@@ -1667,6 +1862,22 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                     </div>
                   )}
                 </>
+              ) : result.mode === "suite_spa" ? (
+                <div style={{ color: "#065f46" }}>
+                  <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 6 }}>
+                    💆 עודכנו {result.updated} אורחי סוויטות (מס׳ הזמנה + תאריך {result.arrivalDate})
+                  </div>
+                  <div style={{ fontSize: 13, lineHeight: 1.8 }}>
+                    סה״כ {result.total} שורות «לאורחי הסוויטות» בדוח
+                    {result.skipped > 0 && <> · {result.skipped} דולגו</>}
+                  </div>
+                  {result.notFound?.length > 0 && (
+                    <div style={{ fontSize: 12, color: "#92400E", marginTop: 8, fontWeight: 700 }}>
+                      ⚠ לא נמצאו במערכת (בדוק תאריך הגעה / ייבוא Doc 2):{" "}
+                      {result.notFound.join(", ")}
+                    </div>
+                  )}
+                </div>
               ) : (
                 <div style={{ color: "#065f46" }}>
                   {result.updated > 0 && (
