@@ -65,6 +65,120 @@ const CORE_PIPELINE_STAGE_KEYS = [
 // Live Queue tab — completed rows belong in History only (UI projection filter).
 const QUEUE_FINALIZED_STATUSES = new Set(["sent", "simulated", "skipped"]);
 
+/** Permanent ineligibility — never show in live queue (matches automation-queue). */
+const QUEUE_HIDDEN_SKIP_REASONS = new Set([
+  "wrong_room_type",
+  "guest_cancelled",
+  "automation_muted",
+  "already_sent",
+  "guest_already_departed",
+  "missing_anchor_date",
+  "missing_anchor_timestamp",
+  "unknown_schedule_mode",
+  "date_passed",
+]);
+
+const SKIP_REASON_LABELS = {
+  not_checked_in: "ממתין לצ׳ק-אין",
+  not_arrival_day: "לא יום ההגעה",
+  not_on_property: "אורח לא בנכס",
+  quiet_hours_passed: "עבר חלון השעות",
+};
+
+function queueYmd(d = new Date()) {
+  return d.toISOString().slice(0, 10);
+}
+
+function isActiveQueueItem(q) {
+  if (QUEUE_FINALIZED_STATUSES.has(q.status)) {
+    if (q.status === "skipped") return false;
+  }
+  if (QUEUE_HIDDEN_SKIP_REASONS.has(q.skipReason)) return false;
+  return true;
+}
+
+function sortQueueItemsByStage(items, stages) {
+  const order = new Map(stages.map((s) => [s.stage_key, s.sequence_order ?? 999]));
+  return [...items].sort((a, b) => {
+    const oa = order.get(a.stageKey) ?? a.sequenceOrder ?? 999;
+    const ob = order.get(b.stageKey) ?? b.sequenceOrder ?? 999;
+    if (oa !== ob) return oa - ob;
+    const ta = a.scheduledFor ? new Date(a.scheduledFor).getTime() : Infinity;
+    const tb = b.scheduledFor ? new Date(b.scheduledFor).getTime() : Infinity;
+    return ta - tb;
+  });
+}
+
+function formatArrivalDayHeader(dateKey) {
+  if (!dateKey || dateKey === "__none__") return "⚠ ללא תאריך הגעה";
+  const todayKey = queueYmd();
+  const tomorrowKey = queueYmd(new Date(Date.now() + 86400000));
+  const label = new Date(`${dateKey}T12:00:00`).toLocaleDateString("he-IL", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+  });
+  if (dateKey === todayKey) return `היום · ${label}`;
+  if (dateKey === tomorrowKey) return `מחר · ${label}`;
+  return label;
+}
+
+function groupQueueByArrivalDay(items, stages) {
+  const dayMap = new Map();
+  for (const item of items) {
+    const dateKey = item.arrivalDate || "__none__";
+    if (!dayMap.has(dateKey)) dayMap.set(dateKey, new Map());
+    const guestMap = dayMap.get(dateKey);
+    if (!guestMap.has(item.guestId)) {
+      guestMap.set(item.guestId, {
+        guestId: item.guestId,
+        guestName: item.guestName,
+        room: item.room,
+        room_type: item.room_type,
+        arrivalDate: item.arrivalDate,
+        departureDate: item.departureDate,
+        items: [],
+      });
+    }
+    guestMap.get(item.guestId).items.push(item);
+  }
+
+  const todayKey = queueYmd();
+  return [...dayMap.entries()]
+    .sort(([a], [b]) => {
+      if (a === "__none__") return 1;
+      if (b === "__none__") return -1;
+      return a.localeCompare(b);
+    })
+    .map(([dateKey, guestMap]) => {
+      const guests = [...guestMap.values()].map((g) => ({
+        ...g,
+        items: sortQueueItemsByStage(g.items, stages),
+      }));
+      guests.sort((a, b) => (a.guestName ?? "").localeCompare(b.guestName ?? "", "he"));
+      const itemCount = guests.reduce((n, g) => n + g.items.length, 0);
+      return {
+        dateKey,
+        label: formatArrivalDayHeader(dateKey),
+        isPast: dateKey !== "__none__" && dateKey < todayKey,
+        isToday: dateKey === todayKey,
+        guests,
+        itemCount,
+      };
+    });
+}
+
+function queueStatusBadge(q) {
+  if (q.status === "blocked_by_meta") return { cls: "badge-orange", text: "🟠 ממתין לאישור" };
+  if (q.status === "failed_missing_link") return { cls: "badge-red", text: "❌ חסר קישור תשלום" };
+  if (q.dueNow && q.status === "pending") return { cls: "badge-gold", text: "⚡ מוכן לשליחה" };
+  if (q.skipReason && SKIP_REASON_LABELS[q.skipReason]) {
+    return { cls: "badge-blue", text: `🕐 ${SKIP_REASON_LABELS[q.skipReason]}` };
+  }
+  if (q.status === "failed" || q.status === "timeout") return { cls: "badge-red", text: q.status === "timeout" ? "לא ודאי" : "נכשל" };
+  return { cls: "badge-blue", text: "מתוזמן" };
+}
+
 function attentionItemKey(r) {
   return `${r.phone}_${r.stageKey}_${r.sentAt}`;
 }
@@ -1112,6 +1226,7 @@ export default function AutomationControlCenter() {
 
   // ── Segment tabs + bulk dispatch ─────────────────────────────────────────
   const [queueSegment, setQueueSegment] = useState("suite");   // "suite" | "daypass"
+  const [collapsedArrivalDays, setCollapsedArrivalDays] = useState(new Set());
   const [selectedItems, setSelectedItems] = useState(new Set());
   const [dispatching, setDispatching] = useState(false);
   const [dispatchSummary, setDispatchSummary] = useState(null);
@@ -1222,6 +1337,16 @@ export default function AutomationControlCenter() {
   useEffect(() => () => {
     if (queueSyncTimerRef.current) clearTimeout(queueSyncTimerRef.current);
   }, []);
+
+  useEffect(() => {
+    if (!queueData?.queue) return;
+    const todayKey = queueYmd();
+    const past = new Set();
+    for (const q of queueData.queue) {
+      if (q.arrivalDate && q.arrivalDate < todayKey) past.add(q.arrivalDate);
+    }
+    setCollapsedArrivalDays(past);
+  }, [queueData]);
 
   useEffect(() => {
     if (queueData && queueData.attentionRequired.length > 0) setAttentionOpen(true);
@@ -1568,16 +1693,27 @@ export default function AutomationControlCenter() {
 
       {subTab === "queue" && (() => {
         // ── Segment filtering ─────────────────────────────────────────────
-        const isActiveQueueItem = (q) => !QUEUE_FINALIZED_STATUSES.has(q.status);
-        const allQueue    = mergeQueueWithStages(queueData?.queue, stages).filter(isActiveQueueItem);
+        const isActiveQueueItemLocal = (q) => isActiveQueueItem(q);
+        const allQueue    = mergeQueueWithStages(queueData?.queue, stages).filter(isActiveQueueItemLocal);
         const suiteQueue  = allQueue.filter((q) => q.room_type !== "day_guest" && q.room_type !== "premium_day_guest");
         const dayPassQueue = allQueue.filter((q) => q.room_type === "day_guest" || q.room_type === "premium_day_guest");
-        const displayQueue = (queueSegment === "daypass" ? dayPassQueue : suiteQueue).slice(0, 100);
+        const displayQueue = queueSegment === "daypass" ? dayPassQueue : suiteQueue;
+        const arrivalDayGroups = groupQueueByArrivalDay(displayQueue, stages);
+
+        const toggleArrivalDay = (dateKey) => {
+          setCollapsedArrivalDays((prev) => {
+            const next = new Set(prev);
+            if (next.has(dateKey)) next.delete(dateKey); else next.add(dateKey);
+            return next;
+          });
+        };
 
         // An item is dispatchable if it hasn't been successfully sent yet
         // and has a valid guestId to call whatsapp-send with.
         const isDispatchable = (q) =>
-          q.guestId && !["sent", "simulated", "skipped"].includes(q.status);
+          q.guestId
+          && !["sent", "simulated", "skipped"].includes(q.status)
+          && !QUEUE_HIDDEN_SKIP_REASONS.has(q.skipReason);
 
         const allDispatchableKeys = displayQueue
           .filter(isDispatchable)
@@ -1665,7 +1801,7 @@ export default function AutomationControlCenter() {
                         setShowDispatchConfirm(false);
                         // displayQueue is captured from the outer IIFE scope via closure.
                         // We re-derive it here to avoid stale-closure issues.
-                        const displayQ    = (queueSegment === "daypass" ? dayPassQueue : suiteQueue).slice(0, 100);
+                        const displayQ = queueSegment === "daypass" ? dayPassQueue : suiteQueue;
                         handleBulkDispatch(displayQ);
                       }}
                     >
@@ -2037,129 +2173,207 @@ export default function AutomationControlCenter() {
                   );
                 })()}
 
-                {/* ── Upcoming queue with checkboxes ── */}
-                <div className="card">
-                  <div className="card-header">
-                    <div className="card-title">
-                      📋 בתור — {queueSegment === "daypass" ? "יום-כיף" : "סוויטות"} ({displayQueue.length})
-                    </div>
+                {/* ── Upcoming queue — grouped by arrival day ── */}
+                <div style={{ marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                  <div style={{ fontWeight: 800, fontSize: 15 }}>
+                    📋 תור לפי יום הגעה — {queueSegment === "daypass" ? "יום-כיף" : "סוויטות"}
+                    <span style={{ fontWeight: 500, fontSize: 13, color: "var(--text-muted)", marginRight: 8 }}>
+                      ({displayQueue.length} שלבים · {arrivalDayGroups.reduce((n, d) => n + d.guests.length, 0)} אורחים)
+                    </span>
                   </div>
-                  {displayQueue.length === 0 ? (
-                    <div style={{ padding: 24, textAlign: "center", color: "var(--text-muted)", fontSize: 13 }}>
-                      אין פריטים בתור עבור קטגוריה זו כרגע
-                    </div>
-                  ) : (
-                    <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
-                      <table className="table" style={{ minWidth: 680 }}>
-                        <thead>
-                          <tr>
-                            <th style={{ width: 38, textAlign: "center" }}>
-                              <input
-                                type="checkbox"
-                                checked={allSelected}
-                                onChange={toggleAll}
-                                title="בחר הכל / בטל הכל"
-                                style={{ cursor: "pointer", width: 16, height: 16 }}
-                              />
-                            </th>
-                            <th>אורח</th>
-                            <th>חדר</th>
-                            <th>שלב</th>
-                            <th>מועד משוער</th>
-                            <th>ערוץ צפוי</th>
-                            <th>סטטוס</th>
-                            <th style={{ minWidth: 100, textAlign: "center" }}>פעולות</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {displayQueue.map((q, i) => {
-                            const itemKey = `${q.guestId}_${q.stageKey}`;
-                            const canDispatch = isDispatchable(q);
-                            const isGated = (q.room_type === "day_guest" || q.room_type === "premium_day_guest") && !DAY_PASS_ALLOWED_STAGES.has(q.stageKey);
-                            const isChecked = selectedItems.has(itemKey);
-                            return (
-                              <tr
-                                key={i}
-                                style={{
-                                  background: isChecked
-                                    ? "rgba(201,169,110,0.12)"
-                                    : q.dueNow
-                                    ? "rgba(201,169,110,0.05)"
-                                    : undefined,
-                                }}
-                              >
-                                <td style={{ textAlign: "center" }}>
-                                  {canDispatch && !isGated ? (
-                                    <input
-                                      type="checkbox"
-                                      checked={isChecked}
-                                      onChange={() => toggleItem(itemKey)}
-                                      style={{ cursor: "pointer", width: 16, height: 16 }}
-                                    />
-                                  ) : (
-                                    <span
-                                      title={isGated ? "חסום — שלב זה אינו מורשה לאורחי יום-כיף" : "כבר נשלח / לא זמין לשליחה"}
-                                      style={{ fontSize: 14, color: "var(--text-muted)", cursor: "not-allowed" }}
-                                    >
-                                      {isGated ? "🔒" : "—"}
-                                    </span>
-                                  )}
-                                </td>
-                                <td style={{ fontWeight: 700 }}>{q.guestName ?? "—"}</td>
-                                <td>{q.room ?? "—"}</td>
-                                <td>{q.displayName}</td>
-                                <td style={{ fontSize: 12 }}>{q.scheduledFor ? new Date(q.scheduledFor).toLocaleString("he-IL") : "—"}</td>
-                                <td>
-                                  <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 12, background: q.predictedChannel === "session_message" ? "#E8F5EF" : "#E0F2FE", color: q.predictedChannel === "session_message" ? "#1A7A4A" : "#0369A1" }}>
-                                    {q.predictedChannel === "session_message" ? "סשן" : "תבנית"}
-                                  </span>
-                                </td>
-                                <td>
-                                  <span className={`badge ${q.status === "sent" || q.status === "simulated" ? "badge-green" : q.status === "failed" || q.status === "timeout" || q.status === "failed_missing_link" ? "badge-red" : q.status === "blocked_by_meta" ? "badge-orange" : q.dueNow ? "badge-gold" : "badge-blue"}`}>
-                                    {q.status === "blocked_by_meta" ? "🟠 ממתין לאישור"
-                                      : q.status === "failed_missing_link" ? "❌ חסר קישור תשלום"
-                                      : q.dueNow && q.status === "pending" ? "⚡ מוכן לשליחה" : q.status}
-                                  </span>
-                                  {q.skipReason && <div style={{ fontSize: 10, color: "var(--text-muted)" }}>{q.skipReason}</div>}
-                                </td>
-                                <td style={{ textAlign: "center" }}>
-                                  <div style={{ display: "flex", gap: 4, justifyContent: "center", flexWrap: "wrap" }}>
-                                    {canDispatch && (
-                                      <button
-                                        type="button"
-                                        className="btn btn-primary btn-sm"
-                                        title={
-                                          isGated
-                                            ? `שלח עכשיו (עקיפת שער room_type) — ${q.displayName}`
-                                            : `שלח עכשיו — ${q.displayName}`
-                                        }
-                                        onClick={() => requestQueueSendNow(q)}
-                                        disabled={sendNowSending || !q.guestId}
-                                        style={{ fontSize: 11, padding: "4px 8px" }}
-                                      >
-                                        שלח עכשיו
-                                      </button>
-                                    )}
-                                    <button
-                                      type="button"
-                                      className="btn btn-ghost btn-sm"
-                                      title={`שגר ידני עבור ${q.guestName ?? "אורח"} — עוקף לוח-זמנים`}
-                                      onClick={() => setManualDispatchItem(q)}
-                                      disabled={!q.guestId || sendNowSending}
-                                      style={{ fontSize: 14, padding: "2px 7px", color: "var(--gold)", borderColor: "var(--gold)" }}
-                                    >
-                                      ⚡
-                                    </button>
-                                  </div>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
+                  {displayQueue.length > 0 && (
+                    <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+                      <input
+                        type="checkbox"
+                        checked={allSelected}
+                        onChange={toggleAll}
+                        style={{ width: 16, height: 16 }}
+                      />
+                      בחר הכל לשיגור
+                    </label>
                   )}
                 </div>
+
+                {displayQueue.length === 0 ? (
+                  <div className="card" style={{ padding: 24, textAlign: "center", color: "var(--text-muted)", fontSize: 13 }}>
+                    אין פריטים בתור עבור קטגוריה זו כרגע
+                  </div>
+                ) : (
+                  arrivalDayGroups.map((day) => {
+                    const isCollapsed = collapsedArrivalDays.has(day.dateKey);
+                    const dayBorder = day.isToday
+                      ? "var(--gold)"
+                      : day.isPast
+                      ? "var(--border)"
+                      : queueSegment === "daypass"
+                      ? "#C4B5FD"
+                      : "#93C5FD";
+                    const dayBg = day.isToday
+                      ? "rgba(201,169,110,0.08)"
+                      : day.isPast
+                      ? "rgba(0,0,0,0.02)"
+                      : queueSegment === "daypass"
+                      ? "rgba(124,58,237,0.04)"
+                      : "rgba(3,105,161,0.04)";
+
+                    return (
+                      <div
+                        key={day.dateKey}
+                        className="card"
+                        style={{ marginBottom: 14, border: `2px solid ${dayBorder}`, overflow: "hidden" }}
+                      >
+                        <div
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => toggleArrivalDay(day.dateKey)}
+                          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") toggleArrivalDay(day.dateKey); }}
+                          style={{
+                            display: "flex", alignItems: "center", justifyContent: "space-between",
+                            padding: "12px 18px", cursor: "pointer", background: dayBg,
+                            borderBottom: isCollapsed ? "none" : `1px solid ${dayBorder}`,
+                          }}
+                        >
+                          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                            <span style={{
+                              fontSize: 11, display: "inline-block",
+                              transform: isCollapsed ? "rotate(0deg)" : "rotate(90deg)",
+                              transition: "transform 0.2s", color: "var(--text-muted)",
+                            }}>▶</span>
+                            <span style={{ fontWeight: 800, fontSize: 15 }}>📅 {day.label}</span>
+                            {day.isToday && <span className="badge badge-gold">היום</span>}
+                            {day.isPast && <span className="badge" style={{ background: "#eee", color: "#666" }}>עבר</span>}
+                          </div>
+                          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                            {day.guests.length} אורחים · {day.itemCount} שלבים
+                          </span>
+                        </div>
+
+                        {!isCollapsed && day.guests.map((guest) => (
+                          <div
+                            key={guest.guestId}
+                            style={{ borderBottom: "1px solid var(--border)", padding: "12px 16px 14px" }}
+                          >
+                            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
+                              <span style={{ fontWeight: 800, fontSize: 14 }}>{guest.guestName ?? "—"}</span>
+                              {guest.room && (
+                                <span style={{ fontSize: 12, padding: "2px 10px", borderRadius: 12, background: "var(--ivory)", border: "1px solid var(--border)" }}>
+                                  🏨 {guest.room}
+                                </span>
+                              )}
+                              {guest.departureDate && (
+                                <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                                  עזיבה: {new Date(`${guest.departureDate}T12:00:00`).toLocaleDateString("he-IL")}
+                                </span>
+                              )}
+                              <span style={{ marginRight: "auto", fontSize: 11, color: "var(--text-muted)" }}>
+                                {guest.items.length} שלבים פעילים
+                              </span>
+                            </div>
+
+                            <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+                              <table className="table" style={{ minWidth: 640, marginBottom: 0 }}>
+                                <thead>
+                                  <tr style={{ fontSize: 11 }}>
+                                    <th style={{ width: 32 }} />
+                                    <th>שלב</th>
+                                    <th>מועד משוער</th>
+                                    <th>ערוץ</th>
+                                    <th>סטטוס</th>
+                                    <th style={{ width: 110, textAlign: "center" }}>פעולות</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {guest.items.map((q) => {
+                                    const itemKey = `${q.guestId}_${q.stageKey}`;
+                                    const canDispatch = isDispatchable(q);
+                                    const isGated = (q.room_type === "day_guest" || q.room_type === "premium_day_guest")
+                                      && !DAY_PASS_ALLOWED_STAGES.has(q.stageKey);
+                                    const isChecked = selectedItems.has(itemKey);
+                                    const badge = queueStatusBadge(q);
+                                    return (
+                                      <tr
+                                        key={itemKey}
+                                        style={{
+                                          background: isChecked
+                                            ? "rgba(201,169,110,0.12)"
+                                            : q.dueNow
+                                            ? "rgba(201,169,110,0.06)"
+                                            : undefined,
+                                        }}
+                                      >
+                                        <td style={{ textAlign: "center" }}>
+                                          {canDispatch && !isGated ? (
+                                            <input
+                                              type="checkbox"
+                                              checked={isChecked}
+                                              onChange={() => toggleItem(itemKey)}
+                                              style={{ cursor: "pointer", width: 16, height: 16 }}
+                                            />
+                                          ) : (
+                                            <span title={isGated ? "חסום ליום-כיף" : "לא זמין לשליחה"} style={{ color: "var(--text-muted)" }}>
+                                              {isGated ? "🔒" : "—"}
+                                            </span>
+                                          )}
+                                        </td>
+                                        <td style={{ fontSize: 13, fontWeight: 600 }}>{q.displayName}</td>
+                                        <td style={{ fontSize: 12 }}>
+                                          {q.scheduledFor
+                                            ? new Date(q.scheduledFor).toLocaleString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })
+                                            : "—"}
+                                        </td>
+                                        <td>
+                                          <span style={{
+                                            fontSize: 10, padding: "2px 7px", borderRadius: 10,
+                                            background: q.predictedChannel === "session_message" ? "#E8F5EF" : "#E0F2FE",
+                                            color: q.predictedChannel === "session_message" ? "#1A7A4A" : "#0369A1",
+                                          }}>
+                                            {q.predictedChannel === "session_message" ? "סשן" : "תבנית"}
+                                          </span>
+                                        </td>
+                                        <td>
+                                          <span className={`badge ${badge.cls}`}>{badge.text}</span>
+                                          {q.skipReason && !SKIP_REASON_LABELS[q.skipReason] && (
+                                            <div style={{ fontSize: 10, color: "var(--text-muted)" }}>{q.skipReason}</div>
+                                          )}
+                                        </td>
+                                        <td style={{ textAlign: "center" }}>
+                                          <div style={{ display: "flex", gap: 4, justifyContent: "center" }}>
+                                            {canDispatch && (
+                                              <button
+                                                type="button"
+                                                className="btn btn-primary btn-sm"
+                                                title={`שלח עכשיו — ${q.displayName}`}
+                                                onClick={() => requestQueueSendNow(q)}
+                                                disabled={sendNowSending || !q.guestId}
+                                                style={{ fontSize: 10, padding: "3px 7px" }}
+                                              >
+                                                שלח
+                                              </button>
+                                            )}
+                                            <button
+                                              type="button"
+                                              className="btn btn-ghost btn-sm"
+                                              title="שגר ידני"
+                                              onClick={() => setManualDispatchItem(q)}
+                                              disabled={!q.guestId || sendNowSending}
+                                              style={{ fontSize: 13, padding: "2px 6px", color: "var(--gold)" }}
+                                            >
+                                              ⚡
+                                            </button>
+                                          </div>
+                                        </td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })
+                )}
               </>
             )}
 

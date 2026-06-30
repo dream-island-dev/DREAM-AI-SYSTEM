@@ -34,6 +34,19 @@ const CORS = {
 
 const ymd = (d: Date) => d.toISOString().slice(0, 10);
 
+/** Guests matching these reasons must never appear in the live queue preview. */
+const PERMANENT_SKIP_REASONS = new Set([
+  "wrong_room_type",
+  "guest_cancelled",
+  "automation_muted",
+  "already_sent",
+  "guest_already_departed",
+  "missing_anchor_date",
+  "missing_anchor_timestamp",
+  "unknown_schedule_mode",
+  "date_passed",
+]);
+
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
@@ -107,9 +120,8 @@ serve(async (req: Request) => {
         const result = resolveStageSchedule(stage, guest, now);
         const logRow = latestByKey.get(`${guest.id}::${stage.stage_key}`);
 
-        // A guest already successfully handled for this stage, AND with
-        // nothing predicted in the future (event_immediate or date_passed),
-        // is just noise in a "what's coming up" view — omit it.
+        // Omit rows that can never fire for this guest/stage combo.
+        if (!logRow && result.skipReason && PERMANENT_SKIP_REASONS.has(result.skipReason)) continue;
         if (!logRow && result.scheduledFor === null && result.skipReason !== null) continue;
 
         queue.push({
@@ -117,7 +129,10 @@ serve(async (req: Request) => {
           guestName: (guest as Record<string, unknown>).name ?? null,
           room: (guest as Record<string, unknown>).room ?? null,
           room_type: (guest as Record<string, unknown>).room_type ?? null,
+          arrivalDate: (guest as Record<string, unknown>).arrival_date ?? null,
+          departureDate: (guest as Record<string, unknown>).departure_date ?? null,
           stageKey: stage.stage_key,
+          sequenceOrder: stage.sequence_order ?? 999,
           displayName: stage.display_name,
           journeyPhase: stage.journey_phase,
           nodeType: stage.node_type,
@@ -134,7 +149,11 @@ serve(async (req: Request) => {
                   new Date((guest as Record<string, unknown>).wa_window_expires_at as string) > now
                 ? "session_message"
                 : "meta_template",
-          status: logRow?.status ?? (result.skipReason ? "skipped" : "pending"),
+          // Temporal guards (e.g. not_checked_in for Stage 4) stay "pending" so
+          // the Live Queue never hides a future-scheduled stage as "skipped".
+          status: logRow?.status ?? (
+            result.skipReason && PERMANENT_SKIP_REASONS.has(result.skipReason) ? "skipped" : "pending"
+          ),
           skipReason: logRow ? null : result.skipReason,
           lastAttemptAt: logRow?.sent_at ?? null,
         });
