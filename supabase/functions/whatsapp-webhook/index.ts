@@ -141,6 +141,12 @@ const IN_HOUSE_TONE_SUFFIX = `
 • דבר/י כאורח שכבר נמצא במלון: "הבקשה הועברה לצוות והם יביאו לכם לחדר בהקדם", "מיד מטפלים בזה", "הצוות בדרך אליכם".
 • אם מדובר במגבות/שמפו/מים/קפסולות/ניקיון — אשר/י שהצוות מספק לחדר, בלי לשאול מתי מגיעים.`;
 
+// Hermetic seal — appended last to every guest LLM context (Claude/Gemini).
+// Complements sanitizeReply(); does NOT modify bot_settings.system_prompt in DB.
+const ANTI_REASONING_LEAK_SUFFIX = `
+
+CRITICAL: You must NEVER output your thinking process, tags, JSON, or any English reasoning (THOUGHT blocks) to the user. Your output must strictly contain ONLY the direct, natural Hebrew response to the guest. If you feel the need to reason, do it internally; never let it escape into the final output text.`;
+
 // Rapid burst coalescing — two webhook invocations within ~2s share one LLM reply.
 const BURST_COALESCE_MS = 1800;
 const BURST_WINDOW_MS   = 5000;
@@ -562,16 +568,26 @@ async function fetchBotSettings(
 }
 
 // ── §1e  UNIFIED AI LEARNING — xos_ai_rules (migration 103) ───────────────────
-// Phase 3: append staff-taught rules into LLM system prompts (chat + routing).
-// Cached 5 min like bot_config; any failure returns "" so guest replies never block.
-let _learnedRulesCache: { text: string; at: number } | null = null;
+// chat rules → guest persona prompt; routing rules → tool/routing block only.
+// Cached 5 min like bot_config; any failure returns empty suffixes.
+interface LearnedRulesSuffixes {
+  chatSuffix: string;
+  routingSuffix: string;
+}
+let _learnedRulesCache: { data: LearnedRulesSuffixes; at: number } | null = null;
 
-async function fetchLearnedRulesText(
+const EMPTY_LEARNED_RULES: LearnedRulesSuffixes = { chatSuffix: "", routingSuffix: "" };
+
+function _formatLearnedBlock(title: string, bullets: string[]): string {
+  return bullets.length ? `\n\n${title}\n${bullets.join("\n")}` : "";
+}
+
+async function fetchLearnedRulesSuffixes(
   supabaseClient: ReturnType<typeof createClient>,
-): Promise<string> {
+): Promise<LearnedRulesSuffixes> {
   const now = Date.now();
   if (_learnedRulesCache && now - _learnedRulesCache.at < CONFIG_TTL_MS) {
-    return _learnedRulesCache.text;
+    return _learnedRulesCache.data;
   }
   try {
     const { data, error } = await supabaseClient
@@ -582,7 +598,7 @@ async function fetchLearnedRulesText(
 
     if (error) {
       console.warn("[webhook] xos_ai_rules fetch failed (non-blocking):", error.message);
-      return _learnedRulesCache?.text ?? "";
+      return _learnedRulesCache?.data ?? EMPTY_LEARNED_RULES;
     }
 
     const rows = (data ?? []) as Array<{ module: string; rule_text: string }>;
@@ -594,20 +610,15 @@ async function fetchLearnedRulesText(
       if (mod === "chat" || mod === "routing") byModule[mod].push(`- ${t}`);
     }
 
-    const parts: string[] = [];
-    if (byModule.chat.length) {
-      parts.push(`══ כללים שנלמדו — צ'אט ══\n${byModule.chat.join("\n")}`);
-    }
-    if (byModule.routing.length) {
-      parts.push(`══ כללים שנלמדו — ניתוב ══\n${byModule.routing.join("\n")}`);
-    }
-
-    const text = parts.length ? `\n\n${parts.join("\n\n")}` : "";
-    _learnedRulesCache = { text, at: now };
-    return text;
+    const suffixes: LearnedRulesSuffixes = {
+      chatSuffix: _formatLearnedBlock("══ כללים שנלמדו — צ'אט ══", byModule.chat),
+      routingSuffix: _formatLearnedBlock("══ כללים שנלמדו — ניתוב (פנימי) ══", byModule.routing),
+    };
+    _learnedRulesCache = { data: suffixes, at: now };
+    return suffixes;
   } catch (e) {
     console.warn("[webhook] xos_ai_rules fetch error (non-blocking):", (e as Error).message);
-    return _learnedRulesCache?.text ?? "";
+    return _learnedRulesCache?.data ?? EMPTY_LEARNED_RULES;
   }
 }
 
@@ -1446,6 +1457,7 @@ async function askGemini(
   systemPrompt: string,
   modelOrder: string[] = GEMINI_MODELS,
   toolsEnabled = true,
+  toolInstructionsSuffix = "",
 ): Promise<AiReplyResult> {
   const apiKey = Deno.env.get("GEMINI_API_KEY");
   if (!apiKey) throw new Error("GEMINI_API_KEY not set");
@@ -1459,7 +1471,7 @@ async function askGemini(
   // System instructions go into the first user turn to ensure they're always respected.
   const systemTurn = {
     role: "user",
-    parts: [{ text: systemPrompt + TOOL_USAGE_INSTRUCTIONS + guestLine + "\nהבנת את התפקיד? ענה 'כן' בלבד." }],
+    parts: [{ text: systemPrompt + TOOL_USAGE_INSTRUCTIONS + toolInstructionsSuffix + guestLine + "\nהבנת את התפקיד? ענה 'כן' בלבד." }],
   };
   const confirmTurn = { role: "model", parts: [{ text: "כן" }] };
 
@@ -1557,12 +1569,14 @@ async function callClaude(
   guestName: string | null,
   history: Array<{ direction: string; message: string }>,
   systemPrompt: string,
+  toolInstructionsSuffix = "",
 ): Promise<AiReplyResult> {
   const key = Deno.env.get("ANTHROPIC_API_KEY");
   if (!key) throw new Error("no_anthropic_key");
 
   const system = systemPrompt
     + TOOL_USAGE_INSTRUCTIONS
+    + toolInstructionsSuffix
     + (guestName ? `\n\nשם האורח/ת: ${guestName}. פנה/י אליו/ה בשמו/ה.` : "")
     + "\n\nענה תמיד בעברית.";
 
@@ -1814,6 +1828,11 @@ function sanitizeReply(text: string): string {
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 
+  // ── 6. Pure-English leak guard — concierge must reply in Hebrew only ─────────
+  if (result.length > 12 && !hasHebrew(result)) {
+    return "";
+  }
+
   return result;
 }
 
@@ -1962,11 +1981,11 @@ serve(async (req: Request) => {
     );
 
     // Load all config in parallel — each has its own 5-min cache
-    const [botConfig, botSettings, scripts, learnedRulesText] = await Promise.all([
+    const [botConfig, botSettings, scripts, learnedRules] = await Promise.all([
       fetchBotConfig(supabase),
       fetchBotSettings(supabase),
       fetchBotScripts(supabase),
-      fetchLearnedRulesText(supabase),
+      fetchLearnedRulesSuffixes(supabase),
     ]);
 
     const systemPrompt = buildSystemPrompt(botConfig);
@@ -1988,7 +2007,7 @@ serve(async (req: Request) => {
         : (ongoingScript?.ai_system_prompt?.trim()
             ? ongoingScript.ai_system_prompt.trim() + kbSuffix
             : systemPrompt + kbSuffix)
-      + learnedRulesText;
+      + learnedRules.chatSuffix;
 
     console.info(`[webhook] prompt source: ${
       botSettings.system_prompt?.trim() ? "bot_settings" :
@@ -2759,7 +2778,8 @@ serve(async (req: Request) => {
           + (guestCtx ? `\n\nפרטי האורח הנוכחי: ${guestCtx}` : "")
           + STRICT_HEBREW_LOCK_SUFFIX
           + LUXURY_CONCIERGE_PERSONA_SUFFIX
-          + (inRoomOverride ? IN_HOUSE_TONE_SUFFIX : "");
+          + (inRoomOverride ? IN_HOUSE_TONE_SUFFIX : "")
+          + ANTI_REASONING_LEAK_SUFFIX;
 
         // Dynamic engine routing (A/B testing & cost optimization) — preferred
         // engine is tried first, with the other engine kept as an automatic
@@ -2767,10 +2787,12 @@ serve(async (req: Request) => {
         const route = resolveModelRoute(botSettings.preferred_model);
         console.info(`[webhook] model route: engine=${route.engine} preferred="${botSettings.preferred_model ?? "(unset)"}"`);
 
+        const routingLearnedSuffix = learnedRules.routingSuffix;
+
         try {
           const result = route.engine === "claude"
-            ? await callClaude(effectiveText, guestName, orderedHistory, enrichedPrompt)
-            : await askGemini(effectiveText, guestName, orderedHistory, enrichedPrompt, route.geminiOrder);
+            ? await callClaude(effectiveText, guestName, orderedHistory, enrichedPrompt, routingLearnedSuffix)
+            : await askGemini(effectiveText, guestName, orderedHistory, enrichedPrompt, route.geminiOrder, true, routingLearnedSuffix);
           reply = sanitizeReply(result.text);
           toolLoggedRequest = result.loggedRequest;
         } catch (e) {
@@ -2788,8 +2810,8 @@ serve(async (req: Request) => {
           });
           try {
             const result = route.engine === "claude"
-              ? await askGemini(effectiveText, guestName, orderedHistory, enrichedPrompt, route.geminiOrder)
-              : await callClaude(effectiveText, guestName, orderedHistory, enrichedPrompt);
+              ? await askGemini(effectiveText, guestName, orderedHistory, enrichedPrompt, route.geminiOrder, true, routingLearnedSuffix)
+              : await callClaude(effectiveText, guestName, orderedHistory, enrichedPrompt, routingLearnedSuffix);
             reply = sanitizeReply(result.text);
             toolLoggedRequest = result.loggedRequest;
           } catch (e2) {

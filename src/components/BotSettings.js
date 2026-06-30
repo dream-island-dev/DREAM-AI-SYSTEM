@@ -36,11 +36,27 @@ const MODEL_OPTIONS = [
   { value: "gemini-1.5-flash",      label: "Gemini 1.5 Flash" },
 ];
 
+const MODULE_LABELS = {
+  chat: "צ'אט אורחים (DREAM BOT)",
+  routing: "ניתוב בקשות (Requests Board)",
+};
+
+function formatRuleDate(iso) {
+  if (!iso) return "";
+  try {
+    return new Date(iso).toLocaleString("he-IL", { dateStyle: "short", timeStyle: "short" });
+  } catch {
+    return iso;
+  }
+}
+
 export default function BotSettings() {
   const [systemPrompt,  setSystemPrompt]  = useState("");
   const [knowledgeBase, setKnowledgeBase] = useState("");
   const [preferredModel, setPreferredModel] = useState("");
+  const [learnedRules, setLearnedRules] = useState([]);
   const [loading,  setLoading]  = useState(true);
+  const [rulesLoading, setRulesLoading] = useState(true);
   const [saving,   setSaving]   = useState(false);
   const [toast,    setToast]    = useState(null);
 
@@ -67,7 +83,35 @@ export default function BotSettings() {
     setLoading(false);
   }, []);
 
+  const fetchLearnedRules = useCallback(async () => {
+    if (!isSupabaseConfigured || !supabase) {
+      setRulesLoading(false);
+      return;
+    }
+    setRulesLoading(true);
+    const { data, error } = await supabase
+      .from("xos_ai_rules")
+      .select("id, module, rule_text, created_at")
+      .in("module", ["chat", "routing"])
+      .order("created_at", { ascending: true });
+    if (error) {
+      showToast("err", "שגיאה בטעינת כללים שנלמדו: " + error.message);
+      setLearnedRules([]);
+    } else {
+      setLearnedRules(data ?? []);
+    }
+    setRulesLoading(false);
+  }, []);
+
   useEffect(() => { fetchSettings(); }, [fetchSettings]);
+  useEffect(() => { fetchLearnedRules(); }, [fetchLearnedRules]);
+
+  const rulesByModule = learnedRules.reduce((acc, row) => {
+    const mod = row.module ?? "other";
+    if (!acc[mod]) acc[mod] = [];
+    acc[mod].push(row);
+    return acc;
+  }, {});
 
   const handleSave = async () => {
     if (!isSupabaseConfigured || !supabase) return showToast("err", "Supabase לא מחובר");
@@ -234,6 +278,73 @@ export default function BotSettings() {
                 </div>
               </>
             )}
+          </div>
+        </div>
+
+        {/* ── Staff-taught rules (xos_ai_rules — read-only mirror of runtime injection) ── */}
+        <div className="card" style={{ marginBottom: 24 }}>
+          <div className="card-header">
+            <div className="card-title">🧠 כללים שנלמדו מהצוות</div>
+            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+              נשמרים מכפתור «למד את המערכת» ב-DREAM BOT / לוח בקשות — מוזרקים לבוט תוך ~5 דקות
+            </span>
+          </div>
+          <div style={{ padding: "16px 20px" }}>
+            {rulesLoading ? (
+              <div style={{ color: "var(--text-muted)", padding: "12px 0", textAlign: "center" }}>⏳ טוען כללים...</div>
+            ) : learnedRules.length === 0 ? (
+              <div style={{ fontSize: 13, color: "var(--text-muted)", lineHeight: 1.7 }}>
+                עדיין אין כללים שנשמרו. הצוות יכול להוסיף דרך «למד את המערכת» בתיבת DREAM BOT או בלוח הבקשות.
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+                {["chat", "routing"].map((mod) => {
+                  const rows = rulesByModule[mod] ?? [];
+                  if (!rows.length) return null;
+                  return (
+                    <div key={mod}>
+                      <div style={{ fontWeight: 800, fontSize: 14, color: "var(--gold-dark)", marginBottom: 10 }}>
+                        {MODULE_LABELS[mod] ?? mod}
+                        <span style={{ fontWeight: 500, color: "var(--text-muted)", marginRight: 8 }}>
+                          ({rows.length} כללים)
+                        </span>
+                      </div>
+                      <ul style={{ margin: 0, padding: "0 20px 0 0", listStyle: "none" }}>
+                        {rows.map((row) => (
+                          <li
+                            key={row.id}
+                            style={{
+                              marginBottom: 10,
+                              padding: "10px 14px",
+                              background: "var(--ivory)",
+                              borderRadius: 8,
+                              border: "1px solid var(--border)",
+                              fontSize: 13,
+                              lineHeight: 1.65,
+                            }}
+                          >
+                            <div>{row.rule_text}</div>
+                            <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>
+                              {formatRuleDate(row.created_at)}
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            <div style={{ marginTop: 16, display: "flex", justifyContent: "flex-end" }}>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={fetchLearnedRules}
+                disabled={rulesLoading}
+              >
+                ↺ רענן כללים
+              </button>
+            </div>
           </div>
         </div>
 
