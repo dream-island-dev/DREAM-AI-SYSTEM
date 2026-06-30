@@ -398,60 +398,77 @@ export function aggregateGuestProfiles(rows, columnMapping = {}, fallbackDate = 
  * (parsed by parseComprehensiveReport() in ArrivalImportPanel.js) into the in-memory
  * profiles built by aggregateGuestProfiles().
  *
- * JOIN strategy: profile.orderNumbers ∩ excelRecord.order_number
+ * JOIN strategy:
+ *   1. profile.orderNumbers ∩ excelRecord.order_number (primary)
+ *   2. profile.guestPhone ∩ excelRecord.phone when no order row matched (Doc 1 dedupes by phone)
  *   - One order may span multiple rooms → all those rooms get the same spa_time
  *   - When multiple Excel records match, keep earliest spa_time, sum treatment_count
  *
  * Mutates profiles Map in place. Returns the same Map.
  */
 export function enrichProfilesFromExcel(profiles, excelRecords) {
+  const applyExcelFields = (profile, rec) => {
+    if (rec.spa_time) {
+      if (!profile.spa_time || rec.spa_time < profile.spa_time) {
+        profile.spa_time = rec.spa_time;
+      }
+    }
+    if (rec.meal_location && !profile.meal_location) {
+      profile.meal_location = rec.meal_location;
+    }
+    if (rec.meal_time && (!profile.meal_time || rec.meal_time < profile.meal_time)) {
+      profile.meal_time = rec.meal_time;
+    }
+    profile.treatment_count += (rec.treatment_count ?? 0);
+    if (!profile.treatment_type && rec.treatment_type) {
+      profile.treatment_type = rec.treatment_type;
+    }
+  };
+
   // Index Excel by order_number for O(1) lookup
   const excelByOrder = new Map();
+  const excelByPhone = new Map();
   for (const rec of excelRecords) {
-    if (!rec.order_number) continue;
-    if (!excelByOrder.has(rec.order_number)) {
-      excelByOrder.set(rec.order_number, rec);
-    } else {
-      // Merge: keep earliest time, sum counts
-      const ex = excelByOrder.get(rec.order_number);
-      if (rec.spa_time && (!ex.spa_time || rec.spa_time < ex.spa_time)) ex.spa_time = rec.spa_time;
-      if (rec.meal_time && (!ex.meal_time || rec.meal_time < ex.meal_time)) {
-        ex.meal_time = rec.meal_time;
-        if (rec.meal_location && !ex.meal_location) ex.meal_location = rec.meal_location;
+    if (rec.order_number) {
+      if (!excelByOrder.has(rec.order_number)) {
+        excelByOrder.set(rec.order_number, rec);
+      } else {
+        const ex = excelByOrder.get(rec.order_number);
+        if (rec.spa_time && (!ex.spa_time || rec.spa_time < ex.spa_time)) ex.spa_time = rec.spa_time;
+        if (rec.meal_time && (!ex.meal_time || rec.meal_time < ex.meal_time)) {
+          ex.meal_time = rec.meal_time;
+          if (rec.meal_location && !ex.meal_location) ex.meal_location = rec.meal_location;
+        }
+        ex.treatment_count = (ex.treatment_count ?? 0) + (rec.treatment_count ?? 0);
       }
-      ex.treatment_count = (ex.treatment_count ?? 0) + (rec.treatment_count ?? 0);
+    }
+    if (rec.phone) {
+      if (!excelByPhone.has(rec.phone)) {
+        excelByPhone.set(rec.phone, rec);
+      } else {
+        const ex = excelByPhone.get(rec.phone);
+        if (rec.spa_time && (!ex.spa_time || rec.spa_time < ex.spa_time)) ex.spa_time = rec.spa_time;
+        if (rec.meal_time && (!ex.meal_time || rec.meal_time < ex.meal_time)) {
+          ex.meal_time = rec.meal_time;
+          if (rec.meal_location && !ex.meal_location) ex.meal_location = rec.meal_location;
+        }
+        ex.treatment_count = (ex.treatment_count ?? 0) + (rec.treatment_count ?? 0);
+      }
     }
   }
 
   for (const profile of profiles.values()) {
+    let matchedByOrder = false;
     for (const orderNum of profile.orderNumbers) {
       const rec = excelByOrder.get(orderNum);
       if (!rec) continue;
-
-      // Spa time: keep earliest
-      if (rec.spa_time) {
-        if (!profile.spa_time || rec.spa_time < profile.spa_time) {
-          profile.spa_time = rec.spa_time;
-        }
-      }
-      // meal_location and meal_time are propagated independently.
-      // Board-basis records (HB/FB/BB) carry a plan label ("חצי פנסיון" etc.)
-      // with meal_time=null — meal_location must reach the profile even when
-      // there is no associated time (strict meal rules §3, no time guessing).
-      if (rec.meal_location && !profile.meal_location) {
-        profile.meal_location = rec.meal_location;
-      }
-      // Explicit meal time: earliest-wins. Board-basis records have meal_time=null
-      // and therefore never overwrite a real timed entry.
-      if (rec.meal_time && (!profile.meal_time || rec.meal_time < profile.meal_time)) {
-        profile.meal_time = rec.meal_time;
-      }
-      // Treatment count: accumulate across all orders
-      profile.treatment_count += (rec.treatment_count ?? 0);
-      // Treatment type: take first found
-      if (!profile.treatment_type && rec.treatment_type) {
-        profile.treatment_type = rec.treatment_type;
-      }
+      matchedByOrder = true;
+      applyExcelFields(profile, rec);
+    }
+    // Phone fallback when order_number join missed (Doc 1 dedupes by phone)
+    if (!matchedByOrder && profile.guestPhone) {
+      const rec = excelByPhone.get(profile.guestPhone);
+      if (rec) applyExcelFields(profile, rec);
     }
   }
 

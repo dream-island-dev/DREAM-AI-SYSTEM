@@ -17,7 +17,7 @@
 // problem (triaging an external email/PDF automation against existing bookings)
 // and is intentionally NOT folded in here.
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { supabase } from "../supabaseClient";
 import { EditableGrid, BulkEditBar, exportToExcel } from "./EditableGrid";
 import MappingReviewPanel from "./MappingReviewPanel";
@@ -103,6 +103,11 @@ function _bestGuessSuite(roomName) {
   if (!num) return "";
   const matches = SUITE_REGISTRY.filter(s => s.endsWith(" " + num));
   return matches.length === 1 ? matches[0] : "";
+}
+
+function _hasSpaTime(row) {
+  const v = row?.spa_time;
+  return v != null && String(v).trim() !== "";
 }
 
 // ── Comprehensive Daily Report Parser (Doc 1) ─────────────────────────────────
@@ -559,6 +564,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
   const [arrivalDate, setArrivalDate] = useState(_todayISO());
   const [merged,   setMerged]   = useState(null);   // enriched profiles array (doc2 + doc1 join)
   const [gridRows, setGridRows] = useState([]);      // editable grid rows derived from merged
+  const [showOnlyWithSpa, setShowOnlyWithSpa] = useState(true); // default: spa-actionable rows only
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [syncing,  setSyncing]  = useState(false);
   const [result,   setResult]   = useState(null);
@@ -930,6 +936,29 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     }
   }, []);
 
+  const displayGridRows = useMemo(() => {
+    if (!showOnlyWithSpa || importSource === "detailed") return gridRows;
+    return gridRows.filter(_hasSpaTime);
+  }, [gridRows, showOnlyWithSpa, importSource]);
+
+  const displayDoc1Rec = useMemo(() => {
+    if (!doc1Rec) return [];
+    if (!showOnlyWithSpa) return doc1Rec;
+    return doc1Rec.filter(_hasSpaTime);
+  }, [doc1Rec, showOnlyWithSpa]);
+
+  const handleFilteredGridChange = useCallback((updatedRows) => {
+    setGridRows((prev) => {
+      const patch = new Map(updatedRows.map((r) => [r._id, r]));
+      return prev.map((r) => (patch.has(r._id) ? patch.get(r._id) : r));
+    });
+  }, []);
+
+  const toggleSpaFilter = useCallback(() => {
+    setShowOnlyWithSpa((v) => !v);
+    setSelectedIds(new Set());
+  }, []);
+
   // ── Bulk replace (suites grid) ───────────────────────────────────────────
   const handleGridReplace = (colId, search, replacement) => {
     setGridRows(prev => prev.map(r => {
@@ -951,10 +980,11 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
 
       // ── PATH A: Suite CSV loaded (rooms + guests + bookings) ─────────────
       if (hasDoc2 && merged) {
+        const gridByProfileIdx = new Map(gridRows.map((r) => [r._profileIdx, r]));
         const profiles = merged
           .filter(g => g.guestPhone)
           .map((g, i) => {
-            const edited = gridRows[i] ?? {};
+            const edited = gridByProfileIdx.get(i) ?? {};
             const nightsFromGrid = parseInt(edited.nights, 10);
             const nights = importSource === "detailed"
               ? (Number.isFinite(nightsFromGrid) && nightsFromGrid > 0
@@ -986,7 +1016,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
 
         const rooms = merged
           .flatMap((g, i) => {
-            const edited      = gridRows[i] ?? {};
+            const edited      = gridByProfileIdx.get(i) ?? {};
             const roomOverride = edited.room || "";
             return (g.rooms ?? []).map(r => ({
               resLineId:    r.resLineId,
@@ -1020,7 +1050,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
         // etc.) with no time — strict meal rules §3, no default "19:00" guessing.
         for (let i = 0; i < merged.length; i++) {
           const g = merged[i];
-          const edited   = gridRows[i] ?? {};
+          const edited   = gridByProfileIdx.get(i) ?? {};
           const spaTime  = edited.spa_time  || g.spa_time;
           const mealTime = edited.meal_time || g.meal_time;
           const mealLoc  = edited.meal_location || g.meal_location;
@@ -1107,7 +1137,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
   const reset = () => {
     setDoc2Map(null); setDoc1Rec(null);
     setDoc2Name(""); setDoc1Name("");
-    setMerged(null); setGridRows([]); setSelectedIds(new Set()); setResult(null);
+    setMerged(null); setGridRows([]); setShowOnlyWithSpa(true); setSelectedIds(new Set()); setResult(null);
     setMappingStage("idle"); setRawDoc2Rows(null); setDoc2Fallback(null);
     setAiSuggestion(null); setAiError(null); setAutoDateBanner(null);
     setImportSource(null); setDetailedFileName("");
@@ -1451,6 +1481,37 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           {/* Editable grid — Suite CSV profiles, room dropdown sourced from SUITE_REGISTRY */}
           {showSuiteGrid && (
             <div style={{ marginBottom: 14 }}>
+              {importSource !== "detailed" && (
+                <div style={{
+                  display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+                  marginBottom: 10, padding: "8px 12px",
+                  background: "rgba(201,169,110,0.08)", borderRadius: 10,
+                  border: "1px solid rgba(201,169,110,0.25)",
+                }}>
+                  <button
+                    type="button"
+                    onClick={toggleSpaFilter}
+                    title={showOnlyWithSpa
+                      ? "מציג רק אורחים עם שעת ספא — לחץ להצגת כל השורות"
+                      : "מציג את כל האורחים — לחץ לסינון ספא בלבד"}
+                    style={{
+                      padding: "6px 14px", borderRadius: 20, border: "1px solid var(--gold)",
+                      background: showOnlyWithSpa ? "rgba(201,169,110,0.15)" : "linear-gradient(135deg,var(--gold),var(--gold-dark))",
+                      color: showOnlyWithSpa ? "var(--gold-light)" : "#0F0F0F",
+                      fontFamily: "Heebo,sans-serif", fontSize: 12, fontWeight: 700,
+                      cursor: "pointer",
+                    }}
+                  >
+                    {showOnlyWithSpa ? "👁 הצג את כל האורחים" : "💆 הצג רק עם ספא"}
+                  </button>
+                  <span style={{ fontSize: 11, color: "var(--gold-light)", fontWeight: 600 }}>
+                    מוצגים {displayGridRows.length} מתוך {gridRows.length}
+                    {showOnlyWithSpa && displayGridRows.length < gridRows.length
+                      ? " · סנכרון ייבא את כל הפרופילים"
+                      : ""}
+                  </span>
+                </div>
+              )}
               {selectedIds.size > 0 && (
                 <BulkEditBar
                   count={selectedIds.size}
@@ -1461,8 +1522,8 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
               )}
               <EditableGrid
                 columns={activeGridCols}
-                rows={gridRows}
-                onRowsChange={setGridRows}
+                rows={displayGridRows}
+                onRowsChange={handleFilteredGridChange}
                 selectedIds={selectedIds}
                 onSelectionChange={setSelectedIds}
               />
@@ -1479,8 +1540,28 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                 padding: "8px 12px", background: "var(--ivory)",
                 fontSize: 11, fontWeight: 700, color: "var(--text-muted)",
                 borderBottom: "1px solid var(--border)",
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+                flexWrap: "wrap", gap: 8,
               }}>
-                עדכון שעות ספא בלבד — לא ייבאו חדרים
+                <span>עדכון שעות ספא בלבד — לא ייבאו חדרים</span>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <button
+                    type="button"
+                    onClick={toggleSpaFilter}
+                    style={{
+                      padding: "4px 12px", borderRadius: 16, border: "1px solid var(--gold-dark)",
+                      background: showOnlyWithSpa ? "rgba(201,169,110,0.12)" : "var(--gold)",
+                      color: showOnlyWithSpa ? "var(--gold-dark)" : "#fff",
+                      fontFamily: "Heebo,sans-serif", fontSize: 11, fontWeight: 700,
+                      cursor: "pointer",
+                    }}
+                  >
+                    {showOnlyWithSpa ? "👁 הצג את כל האורחים" : "💆 הצג רק עם ספא"}
+                  </button>
+                  <span style={{ fontSize: 10, fontWeight: 600 }}>
+                    {displayDoc1Rec.length} / {doc1Rec.length}
+                  </span>
+                </div>
               </div>
               <div style={{ overflowX: "auto", maxHeight: 280 }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 480 }}>
@@ -1496,7 +1577,17 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                     </tr>
                   </thead>
                   <tbody>
-                    {doc1Rec.slice(0, 80).map((r, i) => (
+                    {displayDoc1Rec.length === 0 && showOnlyWithSpa && (
+                      <tr>
+                        <td colSpan={5} style={{
+                          padding: "16px 12px", fontSize: 12, textAlign: "center",
+                          color: "var(--text-muted)", fontWeight: 600,
+                        }}>
+                          אין אורחים עם שעת ספא בדוח — לחץ «הצג את כל האורחים» לראות את כולם
+                        </td>
+                      </tr>
+                    )}
+                    {displayDoc1Rec.slice(0, 80).map((r, i) => (
                       <tr key={i} style={{
                         borderBottom: "1px solid var(--border)",
                         background: i % 2 === 0 ? "#fff" : "var(--ivory)",
