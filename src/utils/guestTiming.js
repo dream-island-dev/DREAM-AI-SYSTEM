@@ -6,6 +6,8 @@
 // Truth: guests.status/arrival_date is the golden profile, so a request that sits
 // open for a day shows the guest's CURRENT state, not a stale one.
 
+import { SUITE_REGISTRY } from "../data/suiteRegistry";
+
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
 /** Calendar today in Israel (YYYY-MM-DD) — matches DATE columns as hotel-local days. */
@@ -28,6 +30,32 @@ export function isGuestInResortToday(guest) {
   if (guest.arrival_date > today) return false;
   if (!guest.departure_date || guest.departure_date >= today) return true;
   return false;
+}
+
+/** Suite profile: explicit room_type or assigned room from SUITE_REGISTRY. */
+export function isSuiteGuestProfile({ room_type, room } = {}) {
+  if (room_type === "suite") return true;
+  if (room && SUITE_REGISTRY.includes(room)) return true;
+  return false;
+}
+
+/**
+ * Inbound message alert class for WhatsAppInbox sounds.
+ * @returns {"suite"|"off_resort"|null}
+ */
+export function classifyInboundMessageAlert(msg) {
+  if (!msg || msg.direction !== "inbound") return null;
+  if (isSuiteGuestProfile({ room_type: msg.guest_room_type, room: msg.guest_room })) {
+    return "suite";
+  }
+  if (!isGuestInResortToday({
+    arrival_date: msg.guest_arrival_date,
+    departure_date: msg.guest_departure_date,
+    status: msg.guest_status,
+  })) {
+    return "off_resort";
+  }
+  return null;
 }
 
 const fmtDate = (d) =>

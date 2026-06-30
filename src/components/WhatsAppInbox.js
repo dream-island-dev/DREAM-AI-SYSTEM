@@ -10,7 +10,12 @@ import AILearningButton from "./AILearningButton";
 import HoldToConfirmButton from "./HoldToConfirmButton";
 import QuietHoursGate from "./QuietHoursGate";
 import { getSuiteSection } from "../data/suiteRegistry";
-import { isGuestInResortToday } from "../utils/guestTiming";
+import { classifyInboundMessageAlert, isGuestInResortToday } from "../utils/guestTiming";
+import {
+  unlockInboxAlertAudio,
+  playSuiteGuestAlert,
+  playOffResortGuestAlert,
+} from "../utils/inboxAlertSounds";
 import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
 
 const IN_RESORT_ROSTER = {
@@ -1845,6 +1850,7 @@ export default function WhatsAppInbox({ user }) {
   const lastSeenAt = useRef(null); // ISO timestamp of last fetch — used by fetchSince
   const guestPhoneMapRef = useRef(new Map()); // normalizePhone(guests.phone) → guests.name
   const profilesMapRef   = useRef(new Map()); // profiles.id → profiles.name, for claimedBy display
+  const alertsReadyRef   = useRef(false); // skip sounds until initial fetchAll completes
 
   // ── Shared row normaliser ─────────────────────────────────────────────────
   const normalise = (r) => ({
@@ -1910,6 +1916,16 @@ export default function WhatsAppInbox({ user }) {
     const existingIds = new Set(allMsgsRef.current.map((m) => m.id));
     const toAdd = incoming.filter((m) => m.id && !existingIds.has(m.id));
     if (!toAdd.length) return false;
+    if (alertsReadyRef.current) {
+      let alertKind = null;
+      for (const m of toAdd) {
+        const k = classifyInboundMessageAlert(m);
+        if (k === "suite") { alertKind = "suite"; break; }
+        if (k === "off_resort") alertKind = "off_resort";
+      }
+      if (alertKind === "suite") playSuiteGuestAlert();
+      else if (alertKind === "off_resort") playOffResortGuestAlert();
+    }
     const merged = [...allMsgsRef.current, ...toAdd];
     allMsgsRef.current = merged;
     for (const m of toAdd) {
@@ -1941,6 +1957,7 @@ export default function WhatsAppInbox({ user }) {
     setContacts(applyGrouping(flat));
     setLastUpdated(new Date());
     setLoading(false);
+    alertsReadyRef.current = true;
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Incremental fetch — only rows newer than lastSeenAt ──────────────────
@@ -1961,23 +1978,8 @@ export default function WhatsAppInbox({ user }) {
       console.warn("[WA-inbox] fetchSince error:", fetchErr.message);
       return;
     }
-    if (!data?.length) return;
-
-    const newFlat = data.map(normalise);
-    const existingIds = new Set(allMsgsRef.current.map((m) => m.id));
-    const toAdd = newFlat.filter((m) => !existingIds.has(m.id));
-    if (!toAdd.length) return;
-
-    const merged = [...allMsgsRef.current, ...toAdd];
-    allMsgsRef.current = merged;
-    for (const m of toAdd) {
-      if (m.created_at && m.created_at > lastSeenAt.current) {
-        lastSeenAt.current = m.created_at;
-      }
-    }
-    setContacts(applyGrouping(merged));
-    setLastUpdated(new Date());
-  }, [applyGrouping]); // eslint-disable-line react-hooks/exhaustive-deps
+    mergeIncomingRows(data ?? []);
+  }, [mergeIncomingRows]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Dismiss human-intervention request ────────────────────────────────────
   // Clears both layers in one click: the per-message `human_requested` flag
@@ -2311,6 +2313,17 @@ export default function WhatsAppInbox({ user }) {
         }
         setTemplatesByWaName(map);
       });
+  }, []);
+
+  // Browser autoplay policy — unlock Web Audio on first staff interaction in this tab.
+  useEffect(() => {
+    const unlock = () => unlockInboxAlertAudio();
+    window.addEventListener("click", unlock, { once: true });
+    window.addEventListener("keydown", unlock, { once: true });
+    return () => {
+      window.removeEventListener("click", unlock);
+      window.removeEventListener("keydown", unlock);
+    };
   }, []);
 
   // ── Initial load + incremental polling fallback ───────────────────────────

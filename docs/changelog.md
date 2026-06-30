@@ -1,3 +1,4 @@
+2026-06-30 | WhatsAppInbox.js + inboxAlertSounds.js | צלילי התראה: אורח סוויטה (צליל גבוה) / לא נוכח בריזורט (צליל נמוך) על הודעה נכנסת חדשה.
 2026-06-30 | WhatsAppInbox.js + guestTiming.js | רשימת DREAM BOT: אורחים נוכחים בריזורט היום — רקע/שם/אווטאר סגול (`isGuestInResortToday`).
 2026-06-30 | WhatsAppInbox.js + notify-manual-task | ניתוב תחזוקה/משק בית מתיבת אורח → כרטיס Whapi לקבוצת התפעול (`[GUEST WA]`); אותו מנגנון כמו לוח תפעול.
 2026-06-30 | AutomationControlCenter.js | תור חי: בחירה מהירה לפי שלב בכל יום הגעה (סמן הכל שלב 4 וכו׳); שגר המוני בפעימות 2.5ש׳ (כמו cron).
