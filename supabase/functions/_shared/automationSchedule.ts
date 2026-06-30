@@ -235,3 +235,30 @@ export function resolveStageSchedule(
 
   return { scheduledFor: null, dueNow: false, skipReason: "unknown_schedule_mode" };
 }
+
+// ── In-room physical-presence signals (whatsapp-webhook keyword override) ───
+// Guest DB status may still be pending/expected while they are already in the
+// suite asking for towels — shared here so webhook + future cron gates stay aligned.
+
+export const PRE_ARRIVAL_GUEST_STATUSES = new Set(["pending", "expected"]);
+
+/** Meta / staff pipeline statuses that mean "not yet checked in" for override logic. */
+export function isPreArrivalGuestStatus(status: string | null | undefined): boolean {
+  return !!status && PRE_ARRIVAL_GUEST_STATUSES.has(status);
+}
+
+/** In-room amenity / housekeeping keywords — guest is physically in-suite. */
+export const IN_ROOM_KEYWORD_PATTERN =
+  /מגבות|שמפו|מים|קפסולות|לחדר|ניקיון|נייר|סדין/;
+
+export function messageSignalsInRoomPresence(text: string): boolean {
+  return IN_ROOM_KEYWORD_PATTERN.test(text);
+}
+
+/** True when pre-arrival DB status contradicts an obvious in-room request. */
+export function shouldApplyInRoomContextOverride(
+  text: string,
+  status: string | null | undefined,
+): boolean {
+  return isPreArrivalGuestStatus(status) && messageSignalsInRoomPresence(text);
+}

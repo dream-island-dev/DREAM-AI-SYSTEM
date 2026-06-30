@@ -42,6 +42,9 @@ import {
 } from "../_shared/paymentLinkGuard.ts";
 import { sendWhapiText }    from "../_shared/whapiSend.ts";
 import { formatGuestProfileForAi } from "../_shared/guestProfile.ts";
+import {
+  shouldApplyInRoomContextOverride,
+} from "../_shared/automationSchedule.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -129,6 +132,18 @@ const LUXURY_CONCIERGE_PERSONA_SUFFIX = `
 • דבר/י כמו מנהל/ת אירוח אנושי, חם ונעים שמכיר את האורח — לא כמו נציג שירות רשמי, קפדני או רובוטי.
 • קליל, חם, מעשי ומהיר. משפטים קצרים וטבעיים כמו שיחת וואטסאפ אמיתית — לא נאומים מנומקים או ניסוחים תאגידיים ("בהמשך לפנייתך", "הריני להודיעך").
 • אם משהו לא ידוע לך — לעולם אל תמציא/י. עברי/י בעדינות לבדיקה מול הצוות (ראה את המשפט המדויק לעיל), בלי להישמע מתנצל/ת או מתחמק/ת.`;
+
+// In-room keyword override — guest is physically in-suite but DB status lags.
+const IN_HOUSE_TONE_SUFFIX = `
+
+══ טון אורח בחדר (חובה מוחלטת) ══
+• האורח כבר נמצא בחדר/בסוויטה — אל תשתמש/י בניסוחי טרום-הגעה ("נתראה בקרוב", "כשתגיעו", "לפני ההגעה", "ביום ההגעה").
+• דבר/י כאורח שכבר נמצא במלון: "הבקשה הועברה לצוות והם יביאו לכם לחדר בהקדם", "מיד מטפלים בזה", "הצוות בדרך אליכם".
+• אם מדובר במגבות/שמפו/מים/קפסולות/ניקיון — אשר/י שהצוות מספק לחדר, בלי לשאול מתי מגיעים.`;
+
+// Rapid burst coalescing — two webhook invocations within ~2s share one LLM reply.
+const BURST_COALESCE_MS = 1800;
+const BURST_WINDOW_MS   = 5000;
 
 // Module-level cache: shared across requests within the same function instance
 let _configCache: Record<string, string> = {};
@@ -692,7 +707,8 @@ ${responseRules ? `\n══ כללי שיחה נוספים (מה-UI) ══\n${r
 // Tells the AI what stage the guest is in so it can adapt tone & content.
 function buildGuestStageContext(
   guest: Record<string, unknown> | null,
-  conversationHistory: Array<{ direction: string; message: string }>
+  conversationHistory: Array<{ direction: string; message: string }>,
+  opts?: { forceInHouse?: boolean },
 ): string {
   if (!guest) return "";
 
@@ -702,17 +718,13 @@ function buildGuestStageContext(
   const roomType = guest.room_type   as string | null;
   const confirmed = guest.arrival_confirmed as boolean | null;
   const spaTime  = guest.spa_time    as string | null;
-  // Room Masking ("SYSTEM ARCHITECTURE, ZERO-REJECTION, ROOM MASKING & UX"
-  // session) — the specific suite name/number is operationally swappable
-  // until check-in actually happens, and disclosing it early removes that
-  // flexibility + leaks PII-adjacent info pre-arrival. The real room name is
-  // only injected into the AI's context once the guest is actually
-  // checked_in; before that, an explicit instruction-not-a-value placeholder
-  // prevents the model from ever fabricating a room name if asked.
-  const isCheckedIn = guest.status === "checked_in";
+  const forceInHouse = opts?.forceInHouse === true;
+  const isCheckedIn = forceInHouse || guest.status === "checked_in";
 
   let stage = "";
-  if (arrDate) {
+  if (forceInHouse) {
+    stage = "בתוך השהות — האורח בחדר (זוהה לפי בקשת חדר/שירות)";
+  } else if (arrDate) {
     if (arrDate > today)       stage = "טרם הגעה";
     else if (arrDate === today) stage = "יום הגעה — האורח מגיע היום";
     else                        stage = "בתוך השהות";
@@ -747,6 +759,109 @@ function buildGuestStageContext(
   if (profileLine) parts.push(profileLine);
 
   return parts.length > 0 ? parts.join(" | ") : "";
+}
+
+function isUniqueViolation(error: { code?: string; message?: string } | null): boolean {
+  if (!error) return false;
+  return error.code === "23505" || /duplicate key|unique constraint/i.test(error.message ?? "");
+}
+
+/** Insert-first dedup claim — unique index on wa_message_id is the ledger of record. */
+async function claimInboundWaMessage(
+  supabase: ReturnType<typeof createClient>,
+  row: {
+    phone: string;
+    guest_id: number | null;
+    message: string;
+    wa_message_id: string;
+    push_name: string | null;
+    intent?: string;
+    human_requested?: boolean;
+    human_request_type?: string | null;
+  },
+): Promise<{ claimed: boolean; conversationId: number | null }> {
+  const { data, error } = await supabase
+    .from("whatsapp_conversations")
+    .insert({
+      phone: row.phone,
+      guest_id: row.guest_id,
+      direction: "inbound",
+      message: row.message,
+      wa_message_id: row.wa_message_id,
+      intent: row.intent ?? "received",
+      push_name: row.push_name,
+      ...(row.human_requested ? { human_requested: true, human_request_type: row.human_request_type } : {}),
+    })
+    .select("id")
+    .maybeSingle();
+
+  if (error) {
+    if (isUniqueViolation(error)) return { claimed: false, conversationId: null };
+    console.error("[webhook] claimInboundWaMessage failed:", error.message);
+    return { claimed: true, conversationId: null };
+  }
+  return { claimed: true, conversationId: (data?.id as number) ?? null };
+}
+
+async function patchClaimedInbound(
+  supabase: ReturnType<typeof createClient>,
+  conversationId: number | null,
+  waMessageId: string,
+  patch: Record<string, unknown>,
+): Promise<void> {
+  const q = conversationId
+    ? supabase.from("whatsapp_conversations").update(patch).eq("id", conversationId)
+    : supabase.from("whatsapp_conversations").update(patch).eq("wa_message_id", waMessageId);
+  const { error } = await q;
+  if (error) console.warn("[webhook] patchClaimedInbound failed:", error.message);
+}
+
+/** Leader of a rapid burst orchestrates one LLM reply; followers log only. */
+async function coalesceBurstIfLeader(
+  supabase: ReturnType<typeof createClient>,
+  phone: string,
+  msgId: string,
+): Promise<{ proceed: boolean; coalescedText: string }> {
+  await new Promise((r) => setTimeout(r, BURST_COALESCE_MS));
+
+  const since = new Date(Date.now() - BURST_WINDOW_MS).toISOString();
+  const { data: recentInbound } = await supabase
+    .from("whatsapp_conversations")
+    .select("message, wa_message_id, created_at")
+    .eq("phone", phone)
+    .eq("direction", "inbound")
+    .gte("created_at", since)
+    .order("created_at", { ascending: true });
+
+  const burst = (recentInbound ?? []) as Array<{ message: string; wa_message_id: string | null }>;
+  if (burst.length === 0) return { proceed: true, coalescedText: "" };
+
+  const leaderId = burst[0]?.wa_message_id;
+  if (leaderId && leaderId !== msgId) {
+    console.info(
+      `[webhook] burst delegate skip — msg:${msgId.slice(-8)} leader:${leaderId.slice(-8)}`,
+    );
+    return { proceed: false, coalescedText: "" };
+  }
+
+  const coalescedText = burst.map((b) => b.message).filter(Boolean).join("\n");
+  return { proceed: true, coalescedText };
+}
+
+function applyInRoomStatusOverride(
+  supabase: ReturnType<typeof createClient>,
+  guestId: number,
+  phone: string,
+): void {
+  supabase
+    .from("guests")
+    .update({ status: "checked_in" })
+    .eq("id", guestId)
+    .then(({ error }: { error: { message: string } | null }) => {
+      if (error) {
+        console.error(`[webhook] in-room status override FAILED phone:${phone}:`, error.message);
+      }
+    });
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1973,33 +2088,30 @@ serve(async (req: Request) => {
         continue;
       }
 
-      // ── Dedup + guest lookup in parallel (saves ~300ms per message) ──────
-      // Guest lookup fast path: 3 known exact-format variants (+972/972/0...).
-      const [{ data: existing }, { data: guestFast }] = await Promise.all([
-        supabase
-          .from("whatsapp_conversations")
-          .select("id")
-          .eq("wa_message_id", msgId)
-          .maybeSingle(),
-        supabase
-          .from("guests")
-          .select(GUEST_LOOKUP_FIELDS)
-          .in("phone", phoneVariants)
-          .maybeSingle(),
-      ]);
-      if (existing) {
-        console.info("[webhook] dedup skip:", msgId);
+      // ── Insert-first dedup claim (ledger before any slow path / LLM) ─────
+      const { claimed, conversationId: claimedConversationId } = await claimInboundWaMessage(
+        supabase,
+        {
+          phone,
+          guest_id: null,
+          message: text,
+          wa_message_id: msgId,
+          push_name: pushName,
+          intent: "received",
+        },
+      );
+      if (!claimed) {
+        console.info("[webhook] dedup skip (claim):", msgId);
         continue;
       }
 
-      // ── Fallback: last-9-digit match ──────────────────────────────────────
-      // Catches guests.phone formats the exact-string variants above don't
-      // anticipate (spaces/dashes from manual entry, "00972..." international
-      // dialing prefix, etc.) — this was the root cause of guests showing up
-      // as a bare phone number instead of their name in WhatsAppInbox.js.
-      // Table is small (one resort's guest list), so a single broader fetch
-      // here is cheap — and this whole handler already runs in the
-      // fire-and-forget background task, after Meta's HTTP response was sent.
+      // ── Guest lookup (fast path + last-9-digit fallback) ───────────────
+      const { data: guestFast } = await supabase
+        .from("guests")
+        .select(GUEST_LOOKUP_FIELDS)
+        .in("phone", phoneVariants)
+        .maybeSingle();
+
       let guest = guestFast;
       if (!guest) {
         const { data: guestCandidates } = await supabase
@@ -2018,6 +2130,20 @@ serve(async (req: Request) => {
       const guestId   = (guest?.id   as number)     ?? null;
       const guestName = (guest?.name as string|null) ?? null;
       const sim       = Deno.env.get("WHATSAPP_SIMULATION") === "true";
+      const guestStatusAtLookup = (guest?.status as string | null) ?? null;
+
+      if (claimedConversationId && guestId) {
+        patchClaimedInbound(supabase, claimedConversationId, msgId, { guest_id: guestId });
+      }
+
+      // ── In-room keyword override — DB status lags physical presence ─────
+      let inRoomOverride = false;
+      if (guestId && guest && shouldApplyInRoomContextOverride(text, guestStatusAtLookup)) {
+        inRoomOverride = true;
+        guest = { ...guest, status: "checked_in" };
+        applyInRoomStatusOverride(supabase, guestId, phone);
+        console.info(`[webhook] 🛏️ in-room keyword override → checked_in phone:${phone} guest:${guestId}`);
+      }
 
       // ── DIAGNOSTIC: pre-flight state snapshot ────────────────────────────
       // status/arrival_confirmed added so a future "status stuck" report can
@@ -2070,9 +2196,9 @@ serve(async (req: Request) => {
         const isDateChangeButton = buttonTitle.includes("שינוי בתאריך") || buttonTitle.includes("לא,");
         const isCallbackButton   = buttonTitle.includes("דברו איתי") || buttonTitle.includes("מענה אנושי");
 
-        await supabase.from("whatsapp_conversations").insert({
-          phone, guest_id: guestId, direction: "inbound",
-          message: buttonTitle, wa_message_id: msgId, intent: "button_reply", push_name: pushName,
+        await patchClaimedInbound(supabase, claimedConversationId, msgId, {
+          guest_id: guestId,
+          intent: "button_reply",
           ...(isDateChangeButton ? { human_requested: true, human_request_type: "date_change" } : {}),
           ...(isCallbackButton   ? { human_requested: true, human_request_type: "callback" }    : {}),
         });
@@ -2357,9 +2483,9 @@ serve(async (req: Request) => {
           ...(guest?.status === "pending" ? { status: "expected" } : {}),
         }).eq("id", guestId);
         if (confirmErr2) console.error(`[webhook] arrival_confirmed (text) update FAILED phone:${phone}:`, confirmErr2.message);
-        await supabase.from("whatsapp_conversations").insert({
-          phone, guest_id: guestId, direction: "inbound",
-          message: text, wa_message_id: msgId, intent: "confirmation", push_name: pushName,
+        await patchClaimedInbound(supabase, claimedConversationId, msgId, {
+          guest_id: guestId,
+          intent: "confirmation",
         });
 
         // ── Stage 2 Pay — same payment-pending branch as the button-tap path
@@ -2448,9 +2574,9 @@ serve(async (req: Request) => {
         }).eq("id", guestId);
         if (atErr) console.error("[webhook] arrival_time record-only update FAILED:", atErr.message);
 
-        await supabase.from("whatsapp_conversations").insert({
-          phone, guest_id: guestId, direction: "inbound",
-          message: text, wa_message_id: msgId, intent: "arrival_time_update", push_name: pushName,
+        await patchClaimedInbound(supabase, claimedConversationId, msgId, {
+          guest_id: guestId,
+          intent: "arrival_time_update",
         });
 
         if (!sim) {
@@ -2475,17 +2601,13 @@ serve(async (req: Request) => {
       // Guest says they can't make it, wants to change dates, or has a booking issue.
       // → Flag in DB, alert staff, send exact handoff message. No AI involved.
       if (DATE_CHANGE_RE.test(text)) {
-        const { data: dcSaved } = await supabase
-          .from("whatsapp_conversations")
-          .insert({
-            phone, guest_id: guestId, direction: "inbound",
-            message: text, wa_message_id: msgId,
-            intent: "date_change_request", push_name: pushName,
-            human_requested: true, human_request_type: "date_change",
-          })
-          .select("id")
-          .maybeSingle();
-        const dcConvId = (dcSaved?.id as number) ?? null;
+        await patchClaimedInbound(supabase, claimedConversationId, msgId, {
+          guest_id: guestId,
+          intent: "date_change_request",
+          human_requested: true,
+          human_request_type: "date_change",
+        });
+        const dcConvId = claimedConversationId;
 
         if (guestId) {
           await supabase.from("guests").update({
@@ -2526,6 +2648,26 @@ serve(async (req: Request) => {
         continue;
       }
 
+      // ── Rapid burst coalescing — one LLM reply per back-to-back cluster ──
+      const burst = await coalesceBurstIfLeader(supabase, phone, msgId);
+      if (!burst.proceed) continue;
+
+      let effectiveText = burst.coalescedText.trim() || text;
+      if (
+        !inRoomOverride && guestId && guest &&
+        shouldApplyInRoomContextOverride(effectiveText, guestStatusAtLookup)
+      ) {
+        inRoomOverride = true;
+        guest = { ...guest, status: "checked_in" };
+        applyInRoomStatusOverride(supabase, guestId, phone);
+        console.info(`[webhook] 🛏️ in-room keyword override (burst) → checked_in phone:${phone}`);
+      }
+      if (burst.coalescedText.trim() && burst.coalescedText.trim() !== text) {
+        console.info(
+          `[webhook] burst coalesced ${burst.coalescedText.split("\n").length} msgs — phone:${phone}`,
+        );
+      }
+
       // ── Load conversation history early — used for context in ALL intents ──
       // Fetch last 20 rows, filter out system markers, keep last 10 real turns.
       const { data: rawHistory } = await supabase
@@ -2543,35 +2685,27 @@ serve(async (req: Request) => {
         .reverse();
 
       // ── Classify intent (< 1 ms, no AI cost) ─────────────────────────────
-      const intent = classifyIntent(text);
+      const intent = classifyIntent(effectiveText);
 
       // ── Detect human-agent request ────────────────────────────────────────
-      const humanReq = detectHumanRequest(text);
+      const humanReq = detectHumanRequest(effectiveText);
       if (humanReq.requested) {
         console.info(`[webhook] 🙋 human_requested="${humanReq.type}" phone=${phone}`);
       }
 
       console.info(
-        `[webhook] ${phone} | intent="${intent}" | human_req=${humanReq.requested} | "${text.slice(0, 70)}"`
+        `[webhook] ${phone} | intent="${intent}" | human_req=${humanReq.requested} | "${effectiveText.slice(0, 70)}"`
       );
 
-      // ── Save inbound message with intent ─────────────────────────────────
-      const { data: savedMsg } = await supabase
-        .from("whatsapp_conversations")
-        .insert({
-          phone,
-          guest_id:           guestId,
-          direction:          "inbound",
-          message:            text,
-          wa_message_id:      msgId,
-          intent,
-          human_requested:    humanReq.requested,
-          human_request_type: humanReq.type,
-          push_name:          pushName,
-        })
-        .select("id")
-        .maybeSingle();
-      const conversationId = (savedMsg?.id as number) ?? null;
+      // ── Patch claimed inbound row with final intent (no second insert) ───
+      await patchClaimedInbound(supabase, claimedConversationId, msgId, {
+        guest_id: guestId,
+        intent,
+        human_requested: humanReq.requested,
+        human_request_type: humanReq.type,
+        ...(effectiveText !== text ? { message: effectiveText } : {}),
+      });
+      const conversationId = claimedConversationId;
 
       // ── Human-handover mode: message logged, no bot reply ─────────────────
       if (!botIsActive) {
@@ -2596,7 +2730,7 @@ serve(async (req: Request) => {
           reply = buildComplaintReply(guestName);
         }
         // Non-blocking DB alert — duty manager dashboard picks this up
-        flagGuestAlert(supabase, phone, guestId, text, conversationId)
+        flagGuestAlert(supabase, phone, guestId, effectiveText, conversationId)
           .catch((e: Error) =>
             console.error("[webhook] flagGuestAlert error:", e.message)
           );
@@ -2617,13 +2751,15 @@ serve(async (req: Request) => {
         // Build rich guest-stage context for personalised responses
         const guestCtx = buildGuestStageContext(
           guest as Record<string, unknown> | null,
-          orderedHistory
+          orderedHistory,
+          { forceInHouse: inRoomOverride },
         );
 
         const enrichedPrompt = finalSystemPrompt
           + (guestCtx ? `\n\nפרטי האורח הנוכחי: ${guestCtx}` : "")
           + STRICT_HEBREW_LOCK_SUFFIX
-          + LUXURY_CONCIERGE_PERSONA_SUFFIX;
+          + LUXURY_CONCIERGE_PERSONA_SUFFIX
+          + (inRoomOverride ? IN_HOUSE_TONE_SUFFIX : "");
 
         // Dynamic engine routing (A/B testing & cost optimization) — preferred
         // engine is tried first, with the other engine kept as an automatic
@@ -2633,8 +2769,8 @@ serve(async (req: Request) => {
 
         try {
           const result = route.engine === "claude"
-            ? await callClaude(text, guestName, orderedHistory, enrichedPrompt)
-            : await askGemini(text, guestName, orderedHistory, enrichedPrompt, route.geminiOrder);
+            ? await callClaude(effectiveText, guestName, orderedHistory, enrichedPrompt)
+            : await askGemini(effectiveText, guestName, orderedHistory, enrichedPrompt, route.geminiOrder);
           reply = sanitizeReply(result.text);
           toolLoggedRequest = result.loggedRequest;
         } catch (e) {
@@ -2652,8 +2788,8 @@ serve(async (req: Request) => {
           });
           try {
             const result = route.engine === "claude"
-              ? await askGemini(text, guestName, orderedHistory, enrichedPrompt, route.geminiOrder)
-              : await callClaude(text, guestName, orderedHistory, enrichedPrompt);
+              ? await askGemini(effectiveText, guestName, orderedHistory, enrichedPrompt, route.geminiOrder)
+              : await callClaude(effectiveText, guestName, orderedHistory, enrichedPrompt);
             reply = sanitizeReply(result.text);
             toolLoggedRequest = result.loggedRequest;
           } catch (e2) {
@@ -2721,7 +2857,7 @@ serve(async (req: Request) => {
           const { error } = await supabase.from("guest_alerts").insert({
             guest_id: guestId, phone,
             alert_type: toolLoggedRequest!.category ?? "request",
-            message: `${tagPrefix}${toolLoggedRequest!.summary ?? text}`,
+            message: `${tagPrefix}${toolLoggedRequest!.summary ?? effectiveText}`,
             conversation_id: conversationId, resolved: false,
           });
           if (error) console.error("[webhook] 🚨 guest_alerts (future-guest request) insert FAILED:", error.message);
@@ -2734,7 +2870,7 @@ serve(async (req: Request) => {
         sendWhapiText(
           ADIR_PERSONAL_PHONE,
           `🌴 PRE-CHECK-IN GUEST REQUEST — Suite ${guestRoomForAdir} (${(guest as Record<string, unknown> | null)?.name ?? "Guest"})\n` +
-          `${toolLoggedRequest.summary ?? text}` +
+          `${toolLoggedRequest.summary ?? effectiveText}` +
           (futureTag ? `\n${futureTag}` : `\nArriving today, not checked in yet.`) +
           `\nHeads-up only, check the Requests Board.`,
           { noLinkPreview: true },
@@ -2761,7 +2897,7 @@ serve(async (req: Request) => {
       // gating this on confirmed-arrival silently dropped exactly that case.
       if (guestId && (intent === "faq" || intent === "fallback")) {
         const stamp = new Date().toISOString().slice(0, 16).replace("T", " ");
-        const noteLine = `[${stamp}] ${text}`;
+        const noteLine = `[${stamp}] ${effectiveText}`;
         const newNotes = guest?.guest_notes ? `${guest.guest_notes}\n${noteLine}` : noteLine;
         supabase
           .from("guests")
@@ -2781,7 +2917,7 @@ serve(async (req: Request) => {
         //       backstop for תקלה/נציג/מנהל/מחיר.
         // guest_notes above stays blanket (cheap free-text history, not a
         // dashboard ticket) — only the staff-facing alert is now selective.
-        const criticalKeywordHit = intent === "faq" && !toolLoggedRequest && CRITICAL_FALLBACK_PATTERNS.some((p) => p.test(text));
+        const criticalKeywordHit = intent === "faq" && !toolLoggedRequest && CRITICAL_FALLBACK_PATTERNS.some((p) => p.test(effectiveText));
         if (toolLoggedRequest || criticalKeywordHit) {
           const alertType = toolLoggedRequest?.category ?? "request";
           if (criticalKeywordHit) {
@@ -2793,7 +2929,7 @@ serve(async (req: Request) => {
           (async () => {
             const { error } = await supabase.from("guest_alerts").insert({
               guest_id: guestId, phone, alert_type: alertType,
-              message: text, conversation_id: conversationId, resolved: false,
+              message: effectiveText, conversation_id: conversationId, resolved: false,
             });
             // Mike's explicit ask: this must scream in the logs, not warn quietly —
             // a failed insert here means a guest request never reaches the Requests Board.
@@ -2812,7 +2948,7 @@ serve(async (req: Request) => {
         if (toolLoggedRequest && guestId && guestRoomType === "suite") {
           const guestRoom = (guest as Record<string, unknown> | null)?.room as string | null ?? null;
           routeGuestRequestToOpsGroup(supabase, {
-            guestId, room: guestRoom, summary: toolLoggedRequest.summary, rawText: text,
+            guestId, room: guestRoom, summary: toolLoggedRequest.summary, rawText: effectiveText,
           }).catch((e: Error) => console.error("[webhook] 🛋️ routeGuestRequestToOpsGroup error:", e.message));
         }
       }
