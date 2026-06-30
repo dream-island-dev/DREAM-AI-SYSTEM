@@ -1,3 +1,4 @@
+2026-06-30 | OperationsBoard.js + migration 111 | תור חי Realtime על `tasks` — 👍🏼 בקבוצת Whapi מעביר משימה ל«בוצע» בלי רענון; `applyTaskRowUpdate` כמו Inbox.
 2026-06-30 | whatsapp-webhook + automationSchedule.ts | In-room keyword override (pending/expected→checked_in + in-house AI tone); insert-first wa_message_id dedup + burst coalescing (~1.8s) למניעת כפל תשובות.
 2026-06-30 | WhatsAppInbox.js + inboxAlertSounds.js | צלילי התראה: אורח סוויטה (צליל גבוה) / לא נוכח בריזורט (צליל נמוך) על הודעה נכנסת חדשה.
 2026-06-30 | WhatsAppInbox.js + guestTiming.js | רשימת DREAM BOT: אורחים נוכחים בריזורט היום — רקע/שם/אווטאר סגול (`isGuestInResortToday`).

@@ -436,6 +436,55 @@ export default function OperationsBoard({ user, isAdmin }) {
 
   useEffect(() => { fetchTasks(); }, [fetchTasks]);
 
+  // ── Apply a full tasks row (local claim/done, or Realtime postgres_changes
+  // from whapi-webhook 👍🏼 / another tab) onto the board list. Preserves the
+  // guests(...) embed from the initial fetch — Realtime payloads are flat rows.
+  const applyTaskRowUpdate = useCallback((row) => {
+    if (!row?.id) return;
+    if (!canCreate && userDept && row.department !== userDept) {
+      setTasks((prev) => prev.filter((t) => t.id !== row.id));
+      return;
+    }
+    setTasks((prev) => {
+      const idx = prev.findIndex((t) => t.id === row.id);
+      if (idx === -1) {
+        return [{ ...row, guests: row.guests ?? null }, ...prev];
+      }
+      const merged = { ...prev[idx], ...row, guests: row.guests ?? prev[idx].guests ?? null };
+      if (
+        merged.status === prev[idx].status
+        && merged.claimed_by === prev[idx].claimed_by
+        && merged.resolved_by_name === prev[idx].resolved_by_name
+        && merged.resolved_by_phone === prev[idx].resolved_by_phone
+        && merged.resolved_at === prev[idx].resolved_at
+        && merged.description === prev[idx].description
+      ) {
+        return prev;
+      }
+      return prev.map((t, i) => (i === idx ? merged : t));
+    });
+  }, [canCreate, userDept]);
+
+  // ── Live sync: Whapi 👍🏼 reaction → tasks.status='done' without refresh.
+  // NOTE: requires `tasks` in supabase_realtime (migration 111).
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase) return;
+    const ch = supabase
+      .channel("ops-board-tasks-rt")
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "tasks" },
+        (payload) => applyTaskRowUpdate(payload.new)
+      )
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "tasks" },
+        (payload) => applyTaskRowUpdate(payload.new)
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [applyTaskRowUpdate]);
+
   const claimTask = useCallback(async (taskId) => {
     setUpdatingId(taskId);
     const { error } = await supabase
@@ -444,11 +493,16 @@ export default function OperationsBoard({ user, isAdmin }) {
       .eq("id", taskId);
     if (error) showToast("err", "שגיאה: " + error.message);
     else {
-      setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: "in_progress" } : t));
+      applyTaskRowUpdate({
+        id: taskId,
+        status: "in_progress",
+        claimed_by: user?.id ?? null,
+        claimed_at: new Date().toISOString(),
+      });
       showToast("ok", "🙋‍♂️ נרשמת כמטפל/ת!");
     }
     setUpdatingId(null);
-  }, [user?.id, showToast]);
+  }, [user?.id, showToast, applyTaskRowUpdate]);
 
   const markDone = useCallback(async (taskId) => {
     setUpdatingId(taskId);
@@ -461,11 +515,17 @@ export default function OperationsBoard({ user, isAdmin }) {
       .eq("id", taskId);
     if (error) showToast("err", "שגיאה: " + error.message);
     else {
-      setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: "done", resolved_by_name: user?.name ?? null } : t));
+      applyTaskRowUpdate({
+        id: taskId,
+        status: "done",
+        resolved_by: user?.id ?? null,
+        resolved_by_name: user?.name ?? null,
+        resolved_at: new Date().toISOString(),
+      });
       showToast("ok", "✅ המשימה סומנה כבוצעה!");
     }
     setUpdatingId(null);
-  }, [user?.id, user?.name, showToast]);
+  }, [user?.id, user?.name, showToast, applyTaskRowUpdate]);
 
   const filtered = tasks.filter(t =>
     activeFilter === "all" ? true : t.status === activeFilter
