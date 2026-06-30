@@ -10,7 +10,16 @@ import AILearningButton from "./AILearningButton";
 import HoldToConfirmButton from "./HoldToConfirmButton";
 import QuietHoursGate from "./QuietHoursGate";
 import { getSuiteSection } from "../data/suiteRegistry";
+import { isGuestInResortToday } from "../utils/guestTiming";
 import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
+
+const IN_RESORT_ROSTER = {
+  rowBg: "#F5F3FF",
+  rowBgActive: "#EDE9FE",
+  name: "#6D28D9",
+  avatar: "#7C3AED",
+  border: "#7C3AED",
+};
 
 const POLL_MS = 5000; // fallback polling interval (realtime is primary) — 5s safe minimum
 
@@ -414,6 +423,11 @@ function ContactItem({ contact, isActive, isMobile, t, dir, onClick, onDismiss, 
   const identity = identityMeta(contact, t);
   const roomChip = roomChipMeta(contact);
   const active   = recentlyActive(contact);
+  const inResort = isGuestInResortToday({
+    arrival_date: contact.arrivalDate,
+    departure_date: contact.departureDate,
+    status: contact.status,
+  });
   const resolveCtx = { ...buildGuestResolveContext(contact), scriptsByKey, templatesByWaName };
 
   const [swiped, setSwiped] = useState(false);
@@ -468,13 +482,19 @@ function ContactItem({ contact, isActive, isMobile, t, dir, onClick, onDismiss, 
           borderBottom: "1px solid #f0f0f0",
           background: contact.humanRequested
             ? (isActive ? "#ffdfdf" : "#FFF0F0")
-            : (isActive ? "#e8f4fd" : "white"),
+            : inResort
+              ? (isActive ? IN_RESORT_ROSTER.rowBgActive : IN_RESORT_ROSTER.rowBg)
+              : (isActive ? "#e8f4fd" : "white"),
           borderRight: !rtl ? undefined : contact.humanRequested
             ? "4px solid #ef4444"
-            : isActive ? "4px solid #25D366" : "4px solid transparent",
+            : isActive
+              ? `4px solid ${inResort ? IN_RESORT_ROSTER.border : "#25D366"}`
+              : "4px solid transparent",
           borderLeft: rtl ? undefined : contact.humanRequested
             ? "4px solid #ef4444"
-            : isActive ? "4px solid #25D366" : "4px solid transparent",
+            : isActive
+              ? `4px solid ${inResort ? IN_RESORT_ROSTER.border : "#25D366"}`
+              : "4px solid transparent",
           transform: swiped ? `translateX(${rtl ? -ACTIONS_W : ACTIONS_W}px)` : "translateX(0)",
           transition: "transform 0.2s ease, background 0.15s",
           touchAction: isMobile ? "pan-y" : "auto",
@@ -486,7 +506,11 @@ function ContactItem({ contact, isActive, isMobile, t, dir, onClick, onDismiss, 
             <div style={{ position: "relative", flexShrink: 0 }}>
               <div style={{
                 width: 40, height: 40, borderRadius: "50%",
-                background: contact.humanRequested ? "#ef4444" : "#25D366",
+                background: contact.humanRequested
+                  ? "#ef4444"
+                  : inResort
+                    ? IN_RESORT_ROSTER.avatar
+                    : "#25D366",
                 color: "white",
                 display: "flex", alignItems: "center", justifyContent: "center",
                 fontWeight: 700, fontSize: 16,
@@ -502,7 +526,10 @@ function ContactItem({ contact, isActive, isMobile, t, dir, onClick, onDismiss, 
               }} />
             </div>
             <div>
-              <div style={{ fontWeight: 600, fontSize: 14, color: "#1a1a1a" }}>
+              <div style={{
+                fontWeight: 600, fontSize: 14,
+                color: inResort && !contact.humanRequested ? IN_RESORT_ROSTER.name : "#1a1a1a",
+              }}>
                 {displayName(contact)}
               </div>
               <div style={{ fontSize: 12, color: "#888", marginTop: 2, direction: "ltr", textAlign: rtl ? "right" : "left" }}>
@@ -2166,7 +2193,7 @@ export default function WhatsAppInbox({ user }) {
     const definedText = [subCategoryLabel, note?.trim()].filter(Boolean).join(" — ");
     const context      = definedText || lastInbound?.message?.slice(0, 280) || "";
     try {
-      const { error: insErr } = await supabase.from("tasks").insert({
+      const { data: taskRow, error: insErr } = await supabase.from("tasks").insert({
         room_number:         contact.room ?? null,
         department:           isMaint ? "תפעול" : "משק",
         description:          `[מתיבת וואטסאפ — ${guestLabel}] ${context}`.trim(),
@@ -2177,9 +2204,17 @@ export default function WhatsAppInbox({ user }) {
         source:               "inbox_routed",
         reporter_profile_id:  user?.id ?? null,
         reporter_raw_text:    lastInbound?.message ?? null,
-      });
+      }).select("id").single();
       if (insErr) throw insErr;
-      setRouteToast(isMaint ? "✅ נפתחה משימת תחזוקה בלוח התפעול" : "✅ נפתחה משימת משק בית בלוח התפעול");
+      setRouteToast(isMaint ? "✅ נפתחה משימת תחזוקה בלוח התפעול + נשלחה לקבוצה" : "✅ נפתחה משימת משק בית בלוח התפעול + נשלחה לקבוצה");
+      if (taskRow?.id) {
+        supabase.functions.invoke("notify-manual-task", { body: { taskId: taskRow.id } })
+          .then(({ data: notifyData, error: notifyErr }) => {
+            if (notifyErr || notifyData?.ok === false) {
+              console.warn("[WhatsAppInbox] notify-manual-task failed (non-blocking):", notifyErr?.message ?? notifyData?.error);
+            }
+          });
+      }
     } catch (e) {
       setRouteToast("⚠️ שגיאה ביצירת משימה: " + (e?.message ?? e));
     }

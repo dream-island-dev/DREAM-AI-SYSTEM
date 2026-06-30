@@ -19,6 +19,17 @@ export function isArrivalToday(arrivalDateStr) {
   return arrivalDateStr === israelTodayStr();
 }
 
+/** True when the guest's stay window includes today (in-resort), per golden profile dates+status. */
+export function isGuestInResortToday(guest) {
+  if (!guest?.arrival_date) return false;
+  if (guest.status === "cancelled") return false;
+  const today = todayStr();
+  if (guest.status === "checked_in") return true;
+  if (guest.arrival_date > today) return false;
+  if (!guest.departure_date || guest.departure_date >= today) return true;
+  return false;
+}
+
 const fmtDate = (d) =>
   new Date(d).toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit" });
 

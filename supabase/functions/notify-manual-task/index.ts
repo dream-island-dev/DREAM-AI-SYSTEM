@@ -1,16 +1,17 @@
 // supabase/functions/notify-manual-task/index.ts
 // Session 30 Sprint 5.3 — posts a Whapi card into the staff ops group for a
 // task created from the in-app "➕ פתח משימה חדשה" form (OperationsBoard.js's
-// NewTaskForm, source='manual') or the receptionist's streamlined equivalent
-// (ReceptionistView.js, same component). Until now ONLY tasks reported via
-// WhatsApp (whapi-webhook) got a group card — a manually-opened task sat
-// silently on the in-app board with nobody outside the dashboard aware of it.
+// NewTaskForm, source='manual'), WhatsAppInbox.js guest routing (source=
+// 'inbox_routed'), or the receptionist's streamlined equivalent
+// (ReceptionistView.js, same component). Until session 69 only manual + Whapi-
+// reported tasks got a group card — inbox_routed sat silently on the board.
 //
 // Card format kept deliberately distinct from buildTaskCard() in
-// whapi-webhook/index.ts ("📌 New Task Opened: Suite X") so a manual task is
-// visually identifiable in the group as staff-initiated, not guest/WhatsApp-
-// sourced — same English-in-group convention, same "👍🏼 to complete" closer so
-// the existing reaction-sweep listener (whapi-webhook) resolves it identically.
+// whapi-webhook/index.ts ("📌 New Task Opened: Suite X") so in-app tasks are
+// visually identifiable in the group — same English-in-group convention, same
+// "👍🏼 to complete" closer so the existing reaction-sweep listener
+// (whapi-webhook) resolves it identically. Prefix varies by tasks.source:
+// manual → [MANUAL TASK], inbox_routed → [GUEST WA] (WhatsAppInbox.js routing).
 //
 // whapi_message_id is stored back on the task row so that listener can match
 // the reaction to this exact task — same column, same mechanism as every
@@ -37,10 +38,17 @@ const CATEGORY_LABELS: Record<string, string> = {
 // buildTaskCard: `assignedPhone` is already-cleaned bare digits; omitted
 // entirely (no dead "Assigned:" line) when no profiles row has a phone for
 // the task's department.
-function buildManualTaskCard(room: string | null, desc: string, category: string | null, assignedPhone: string | null): string {
+function buildManualTaskCard(
+  room: string | null,
+  desc: string,
+  category: string | null,
+  assignedPhone: string | null,
+  source: string | null,
+): string {
   const categoryLabel = category ? (CATEGORY_LABELS[category] ?? category) : "General";
+  const prefix = source === "inbox_routed" ? "[GUEST WA]" : "[MANUAL TASK]";
   return [
-    `🔧 [MANUAL TASK] Room ${room ?? "—"}: ${desc} (Category: ${categoryLabel})`,
+    `🔧 ${prefix} Room ${room ?? "—"}: ${desc} (Category: ${categoryLabel})`,
     ...(assignedPhone ? [`👤 Assigned: @${assignedPhone}`] : []),
     `👉 Please react with 👍🏼 to complete this task.`,
   ].join("\n");
@@ -83,7 +91,7 @@ serve(async (req: Request) => {
 
     const { data: task, error: taskErr } = await supabase
       .from("tasks")
-      .select("id, room_number, description, sla_category, department, whapi_message_id")
+      .select("id, room_number, description, sla_category, department, source, whapi_message_id")
       .eq("id", taskId)
       .maybeSingle();
     if (taskErr) throw new Error(`task_lookup_error: ${taskErr.message}`);
@@ -101,7 +109,13 @@ serve(async (req: Request) => {
 
     const rawAssignedPhone = await findAssignedWorkerPhone(supabase, task.department);
     const assignedPhone = rawAssignedPhone ? cleanPhoneForMention(rawAssignedPhone) : null;
-    const card = buildManualTaskCard(task.room_number, task.description, task.sla_category, assignedPhone);
+    const card = buildManualTaskCard(
+      task.room_number,
+      task.description,
+      task.sla_category,
+      assignedPhone,
+      task.source as string | null,
+    );
 
     let cardMsgId: string | null = null;
     try {

@@ -1,3 +1,5 @@
+2026-06-30 | WhatsAppInbox.js + guestTiming.js | רשימת DREAM BOT: אורחים נוכחים בריזורט היום — רקע/שם/אווטאר סגול (`isGuestInResortToday`).
+2026-06-30 | WhatsAppInbox.js + notify-manual-task | ניתוב תחזוקה/משק בית מתיבת אורח → כרטיס Whapi לקבוצת התפעול (`[GUEST WA]`); אותו מנגנון כמו לוח תפעול.
 2026-06-30 | AutomationControlCenter.js | תור חי: בחירה מהירה לפי שלב בכל יום הגעה (סמן הכל שלב 4 וכו׳); שגר המוני בפעימות 2.5ש׳ (כמו cron).
 2026-06-30 | migration 110 + automationSchedule + AutomationControlCenter | Stage 4 `require_checked_in` toggle (default OFF for mid_stay); cron sends without check-in when disabled.
 2026-06-30 | AutomationControlCenter.js + automation-queue | תור חי לפי יום הגעה; תיקון Stage 4 (not_checked_in→pending); arrivalDate ב-API.
