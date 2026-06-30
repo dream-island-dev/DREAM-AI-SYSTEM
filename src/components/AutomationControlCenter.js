@@ -179,6 +179,56 @@ function queueStatusBadge(q) {
   return { cls: "badge-blue", text: "מתוזמן" };
 }
 
+/** Meta burst protection — mirrors whatsapp-cron INTER_SEND_DELAY_MS. */
+const BULK_SEND_PULSE_MS = 2500;
+
+const STAGE_SHORT_LABELS = {
+  pre_arrival_2d: "שלב 1",
+  stage_2_arrival: "שלב 2",
+  stage_2_pay: "שלב 2 Pay",
+  night_before: "שלב 2.5",
+  night_before_daypass: "שלב 2.5",
+  morning_suite: "שלב 3",
+  morning_welcome: "שלב 3",
+  morning_daypass: "שלב 3",
+  mid_stay: "שלב 4",
+  mid_stay_daypass: "שלב 4",
+  checkout_fb: "שלב 5",
+  checkout_fb_daypass: "שלב 5",
+};
+
+function shortStageLabel(displayName, stageKey) {
+  return STAGE_SHORT_LABELS[stageKey]
+    ?? displayName?.split(/[—–-]/)[0]?.trim()
+    ?? stageKey;
+}
+
+function isQueueItemGated(q, dayPassAllowedStages) {
+  return (q.room_type === "day_guest" || q.room_type === "premium_day_guest")
+    && !dayPassAllowedStages.has(q.stageKey);
+}
+
+/** Per-day chips: one entry per stage_key with dispatchable item keys. */
+function buildDayStageChips(day, isDispatchable, dayPassAllowedStages) {
+  const byStage = new Map();
+  for (const guest of day.guests) {
+    for (const q of guest.items) {
+      if (!isDispatchable(q) || isQueueItemGated(q, dayPassAllowedStages)) continue;
+      const itemKey = `${q.guestId}_${q.stageKey}`;
+      if (!byStage.has(q.stageKey)) {
+        byStage.set(q.stageKey, {
+          stageKey: q.stageKey,
+          displayName: q.displayName,
+          sequenceOrder: q.sequenceOrder ?? 999,
+          itemKeys: [],
+        });
+      }
+      byStage.get(q.stageKey).itemKeys.push(itemKey);
+    }
+  }
+  return [...byStage.values()].sort((a, b) => a.sequenceOrder - b.sequenceOrder);
+}
+
 function attentionItemKey(r) {
   return `${r.phone}_${r.stageKey}_${r.sentAt}`;
 }
@@ -1269,6 +1319,7 @@ export default function AutomationControlCenter() {
   const [collapsedArrivalDays, setCollapsedArrivalDays] = useState(new Set());
   const [selectedItems, setSelectedItems] = useState(new Set());
   const [dispatching, setDispatching] = useState(false);
+  const [dispatchProgress, setDispatchProgress] = useState(null);
   const [dispatchSummary, setDispatchSummary] = useState(null);
   const [showDispatchConfirm, setShowDispatchConfirm] = useState(false);
 
@@ -1551,8 +1602,13 @@ export default function AutomationControlCenter() {
     if (!isSupabaseConfigured || !supabase) return;
     setDispatching(true);
     const results = [];
+    const keysToSend = [...selectedItems].filter((itemKey) =>
+      displayQueue.some((q) => `${q.guestId}_${q.stageKey}` === itemKey),
+    );
 
-    for (const itemKey of selectedItems) {
+    for (let i = 0; i < keysToSend.length; i++) {
+      const itemKey = keysToSend[i];
+      setDispatchProgress({ current: i + 1, total: keysToSend.length });
       const item = displayQueue.find((q) => `${q.guestId}_${q.stageKey}` === itemKey);
       if (!item) continue;
 
@@ -1579,11 +1635,14 @@ export default function AutomationControlCenter() {
         results.push({ item, result: "error", error: e?.message ?? String(e) });
       }
 
-      // 300ms throttle between sends — Meta rate-limit safety.
-      await new Promise((r) => setTimeout(r, 300));
+      // Pulse between sends — same 2.5s cadence as whatsapp-cron (Meta rate-limit safety).
+      if (i < keysToSend.length - 1) {
+        await new Promise((r) => setTimeout(r, BULK_SEND_PULSE_MS));
+      }
     }
 
     setDispatching(false);
+    setDispatchProgress(null);
     setSelectedItems(new Set());
     setDispatchSummary({
       total:   results.length,
@@ -1775,6 +1834,29 @@ export default function AutomationControlCenter() {
             return next;
           });
         };
+        const toggleItemKeys = (keys, select) => {
+          setSelectedItems((prev) => {
+            const next = new Set(prev);
+            keys.forEach((k) => (select ? next.add(k) : next.delete(k)));
+            return next;
+          });
+        };
+        const toggleStageKeys = (itemKeys) => {
+          const allSel = itemKeys.length > 0 && itemKeys.every((k) => selectedItems.has(k));
+          toggleItemKeys(itemKeys, !allSel);
+        };
+
+        const stageChipStyle = (allSel, someSel) => ({
+          fontSize: 12,
+          padding: "5px 12px",
+          borderRadius: 20,
+          cursor: "pointer",
+          border: allSel ? "1px solid var(--gold-dark)" : someSel ? "1px dashed var(--gold)" : "1px solid var(--border)",
+          background: allSel ? "rgba(201,169,110,0.2)" : someSel ? "rgba(201,169,110,0.08)" : "#fff",
+          color: allSel ? "var(--gold-dark)" : "var(--black)",
+          fontWeight: allSel ? 700 : 500,
+          whiteSpace: "nowrap",
+        });
 
         return (
           <div>
@@ -1831,6 +1913,12 @@ export default function AutomationControlCenter() {
                     )}
                     <div style={{ marginTop: 8, fontSize: 12, color: "#92702C" }}>
                       ⚠ פעולה זו אינה הפיכה. וודא שרשימת הנמענים נכונה לפני האישור.
+                    </div>
+                    <div style={{ marginTop: 10, fontSize: 12, color: "#444", background: "var(--ivory)", borderRadius: 8, padding: "8px 12px", border: "1px solid var(--border)" }}>
+                      ⏱ שליחה בפעימות של {BULK_SEND_PULSE_MS / 1000} שניות בין הודעה להודעה (הגנה מפני חסימת Meta).
+                      {selectedItems.size > 1 && (
+                        <span> משך משוער: כ-{Math.ceil(((selectedItems.size - 1) * BULK_SEND_PULSE_MS) / 1000 / 60)} דק׳.</span>
+                      )}
                     </div>
                   </div>
                   <div style={{ display: "flex", gap: 10, justifyContent: "flex-start" }}>
@@ -2288,6 +2376,50 @@ export default function AutomationControlCenter() {
                           </span>
                         </div>
 
+                        {!isCollapsed && (() => {
+                          const stageChips = buildDayStageChips(day, isDispatchable, DAY_PASS_ALLOWED_STAGES);
+                          const dayKeys = stageChips.flatMap((s) => s.itemKeys);
+                          const allDaySel = dayKeys.length > 0 && dayKeys.every((k) => selectedItems.has(k));
+                          const someDaySel = !allDaySel && dayKeys.some((k) => selectedItems.has(k));
+                          if (stageChips.length === 0) return null;
+                          return (
+                            <div
+                              style={{ padding: "10px 16px", borderBottom: `1px solid ${dayBorder}`, background: "var(--ivory)" }}
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", marginBottom: 8 }}>
+                                בחירה מהירה לפי שלב
+                              </div>
+                              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+                                <button
+                                  type="button"
+                                  style={stageChipStyle(allDaySel, someDaySel)}
+                                  onClick={() => toggleStageKeys(dayKeys)}
+                                >
+                                  {allDaySel ? "✓" : someDaySel ? "◐" : "☐"}{" "}
+                                  כל היום ({dayKeys.length})
+                                </button>
+                                {stageChips.map(({ stageKey, displayName, itemKeys }) => {
+                                  const allSel = itemKeys.length > 0 && itemKeys.every((k) => selectedItems.has(k));
+                                  const someSel = !allSel && itemKeys.some((k) => selectedItems.has(k));
+                                  return (
+                                    <button
+                                      key={stageKey}
+                                      type="button"
+                                      style={stageChipStyle(allSel, someSel)}
+                                      onClick={() => toggleStageKeys(itemKeys)}
+                                      title={displayName}
+                                    >
+                                      {allSel ? "✓" : someSel ? "◐" : "☐"}{" "}
+                                      {shortStageLabel(displayName, stageKey)} ({itemKeys.length})
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          );
+                        })()}
+
                         {!isCollapsed && day.guests.map((guest) => (
                           <div
                             key={guest.guestId}
@@ -2437,7 +2569,11 @@ export default function AutomationControlCenter() {
                   disabled={dispatching}
                   style={{ minWidth: 180 }}
                 >
-                  {dispatching ? "⏳ שולח..." : "🚀 אשר ושגר"}
+                  {dispatching
+                    ? (dispatchProgress
+                      ? `⏳ שולח ${dispatchProgress.current}/${dispatchProgress.total}…`
+                      : "⏳ שולח...")
+                    : "🚀 אשר ושגר"}
                 </button>
                 <button
                   className="btn btn-ghost btn-sm"
@@ -2448,7 +2584,7 @@ export default function AutomationControlCenter() {
                 </button>
                 {dispatching && (
                   <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                    שולח הודעות בהפרש 300ms — אל תסגור את הדף
+                    פעימה של {BULK_SEND_PULSE_MS / 1000}ש׳ בין הודעות — אל תסגור את הדף
                   </span>
                 )}
               </div>
