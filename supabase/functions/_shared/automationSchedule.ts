@@ -43,6 +43,8 @@ export interface AutomationStage {
   interactive_buttons: InteractiveButton[];
   guest_flag_column: string | null;
   is_active: boolean;
+  /** Stage 4 (mid_stay): when false, skip checked_in eligibility gate. Default true. */
+  require_checked_in?: boolean;
 }
 
 // Only the guest fields the resolver actually reads. msg_*_sent flag columns
@@ -110,7 +112,8 @@ export function checkEligibility(
 
   if (stage.stage_key === "mid_stay" || stage.stage_key === "mid_stay_daypass") {
     if (stage.stage_key === "mid_stay") {
-      if (guest.status !== "checked_in") return "not_checked_in";
+      const requireCheckedIn = stage.require_checked_in !== false;
+      if (requireCheckedIn && guest.status !== "checked_in") return "not_checked_in";
       if (!guest.departure_date || guest.departure_date < ymd(now)) return "guest_already_departed";
     } else {
       // Day-pass courtesy check — same-day visit; eligible once checked in or expected on arrival day.

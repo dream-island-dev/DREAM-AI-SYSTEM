@@ -536,6 +536,46 @@ function StageCard({
             )}
           </div>
 
+          {/* ── Stage 4 check-in gate (mid_stay suites only) ── */}
+          {stage.stage_key === "mid_stay" && (() => {
+            const requireCheckedIn = stage.require_checked_in !== false;
+            return (
+              <div style={{
+                padding: "12px 14px", borderRadius: 10,
+                border: `1px solid ${requireCheckedIn ? "var(--border)" : "var(--gold)"}`,
+                background: requireCheckedIn ? "rgba(0,0,0,0.02)" : "rgba(201,169,110,0.08)",
+              }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>🛎️ דרוש צ׳ק-אין לפני שליחה (שלב 4)</div>
+                    <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.55 }}>
+                      {requireCheckedIn
+                        ? "פעיל — ההודעה תישלח רק לאורחים בסטטוס «צ׳ק-אין». מתאים כשהצוות מעדכן סטטוסים בזמן."
+                        : "כבוי — ההודעה תישלח לפי תזמון בלבד, גם בלי צ׳ק-אין. מתאים לתקופת הסנכרון עם הצוות."}
+                    </div>
+                  </div>
+                  <div
+                    role="switch"
+                    aria-checked={requireCheckedIn}
+                    title={requireCheckedIn ? "כבה — שלח לפי תזמון בלבד" : "הפעל — דרוש צ׳ק-אין"}
+                    onClick={(e) => { e.stopPropagation(); patchStage(stage, { require_checked_in: !requireCheckedIn }); }}
+                    style={{
+                      width: 44, height: 24, borderRadius: 12, cursor: "pointer", flexShrink: 0,
+                      background: requireCheckedIn ? "var(--gold)" : "#D1D5DB",
+                      position: "relative",
+                    }}
+                  >
+                    <div style={{
+                      position: "absolute", top: 3, borderRadius: "50%", width: 18, height: 18,
+                      background: "#fff", right: requireCheckedIn ? 3 : "auto", left: requireCheckedIn ? "auto" : 3,
+                      boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+                    }} />
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
           {/* ── Applies to ── */}
           <div className="form-field" style={{ marginBottom: 0 }}>
             <label>חל על</label>

@@ -1,3 +1,4 @@
+2026-06-30 | migration 110 + automationSchedule + AutomationControlCenter | Stage 4 `require_checked_in` toggle (default OFF for mid_stay); cron sends without check-in when disabled.
 2026-06-30 | AutomationControlCenter.js + automation-queue | תור חי לפי יום הגעה; תיקון Stage 4 (not_checked_in→pending); arrivalDate ב-API.
 2026-06-30 | ArrivalImportPanel.js | Doc 1 «ספא סוויטות בלבד»: פרסור שורות «לאורחי הסוויטות» בלבד; סנכרון לפי order_number+arrival_date לפרופיל קיים; מצב מלא נשאר זמין.
 2026-06-30 | ArrivalImportPanel.js + ezgoParser.js | Import grid defaults to spa-only rows with «הצג את כל האורחים» toggle; sync still uses full dataset via _profileIdx; enrichProfilesFromExcel phone fallback when order join misses.
