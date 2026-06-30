@@ -55,6 +55,9 @@ export default function BotSettings() {
   const [knowledgeBase, setKnowledgeBase] = useState("");
   const [preferredModel, setPreferredModel] = useState("");
   const [learnedRules, setLearnedRules] = useState([]);
+  const [editingRuleId, setEditingRuleId] = useState(null);
+  const [editingRuleText, setEditingRuleText] = useState("");
+  const [ruleBusyId, setRuleBusyId] = useState(null);
   const [loading,  setLoading]  = useState(true);
   const [rulesLoading, setRulesLoading] = useState(true);
   const [saving,   setSaving]   = useState(false);
@@ -112,6 +115,51 @@ export default function BotSettings() {
     acc[mod].push(row);
     return acc;
   }, {});
+
+  const cancelEditRule = () => {
+    setEditingRuleId(null);
+    setEditingRuleText("");
+  };
+
+  const startEditRule = (row) => {
+    setEditingRuleId(row.id);
+    setEditingRuleText(row.rule_text ?? "");
+  };
+
+  const handleSaveRule = async (id) => {
+    if (!isSupabaseConfigured || !supabase) return showToast("err", "Supabase לא מחובר");
+    const trimmed = editingRuleText.trim();
+    if (!trimmed) return showToast("err", "טקסט הכלל לא יכול להיות ריק");
+    setRuleBusyId(id);
+    const { error } = await supabase
+      .from("xos_ai_rules")
+      .update({ rule_text: trimmed })
+      .eq("id", id);
+    setRuleBusyId(null);
+    if (error) showToast("err", "שגיאה בעדכון: " + error.message);
+    else {
+      showToast("ok", "✓ הכלל עודכן — ייכנס לתוקף תוך ~5 דקות");
+      cancelEditRule();
+      fetchLearnedRules();
+    }
+  };
+
+  const handleDeleteRule = async (row) => {
+    if (!isSupabaseConfigured || !supabase) return showToast("err", "Supabase לא מחובר");
+    const preview = (row.rule_text ?? "").length > 120
+      ? `${row.rule_text.slice(0, 120)}…`
+      : row.rule_text;
+    if (!window.confirm(`למחוק את הכלל הזה?\n\n«${preview}»`)) return;
+    setRuleBusyId(`del-${row.id}`);
+    const { error } = await supabase.from("xos_ai_rules").delete().eq("id", row.id);
+    setRuleBusyId(null);
+    if (error) showToast("err", "שגיאה במחיקה: " + error.message);
+    else {
+      if (editingRuleId === row.id) cancelEditRule();
+      showToast("ok", "✓ הכלל נמחק");
+      fetchLearnedRules();
+    }
+  };
 
   const handleSave = async () => {
     if (!isSupabaseConfigured || !supabase) return showToast("err", "Supabase לא מחובר");
@@ -281,12 +329,12 @@ export default function BotSettings() {
           </div>
         </div>
 
-        {/* ── Staff-taught rules (xos_ai_rules — read-only mirror of runtime injection) ── */}
+        {/* ── Staff-taught rules (xos_ai_rules — view / edit / delete) ── */}
         <div className="card" style={{ marginBottom: 24 }}>
           <div className="card-header">
             <div className="card-title">🧠 כללים שנלמדו מהצוות</div>
             <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
-              נשמרים מכפתור «למד את המערכת» ב-DREAM BOT / לוח בקשות — מוזרקים לבוט תוך ~5 דקות
+              נשמרים מכפתור «למד את המערכת» — ניתן לערוך או למחוק כאן; שינויים בבוט תוך ~5 דקות
             </span>
           </div>
           <div style={{ padding: "16px 20px" }}>
@@ -310,7 +358,10 @@ export default function BotSettings() {
                         </span>
                       </div>
                       <ul style={{ margin: 0, padding: "0 20px 0 0", listStyle: "none" }}>
-                        {rows.map((row) => (
+                        {rows.map((row) => {
+                          const isEditing = editingRuleId === row.id;
+                          const isBusy = ruleBusyId === row.id || ruleBusyId === `del-${row.id}`;
+                          return (
                           <li
                             key={row.id}
                             style={{
@@ -318,17 +369,93 @@ export default function BotSettings() {
                               padding: "10px 14px",
                               background: "var(--ivory)",
                               borderRadius: 8,
-                              border: "1px solid var(--border)",
+                              border: isEditing ? "1.5px solid var(--gold)" : "1px solid var(--border)",
                               fontSize: 13,
                               lineHeight: 1.65,
                             }}
                           >
-                            <div>{row.rule_text}</div>
-                            <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>
-                              {formatRuleDate(row.created_at)}
-                            </div>
+                            {isEditing ? (
+                              <>
+                                <textarea
+                                  value={editingRuleText}
+                                  onChange={(e) => setEditingRuleText(e.target.value)}
+                                  rows={4}
+                                  disabled={isBusy}
+                                  style={{
+                                    width: "100%",
+                                    boxSizing: "border-box",
+                                    padding: "10px 12px",
+                                    borderRadius: 8,
+                                    border: "1px solid var(--border)",
+                                    fontFamily: "Heebo, sans-serif",
+                                    fontSize: 13,
+                                    lineHeight: 1.6,
+                                    resize: "vertical",
+                                    direction: "rtl",
+                                  }}
+                                />
+                                <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+                                  <button
+                                    type="button"
+                                    className="btn btn-primary btn-sm"
+                                    onClick={() => handleSaveRule(row.id)}
+                                    disabled={isBusy || !editingRuleText.trim()}
+                                  >
+                                    {ruleBusyId === row.id ? "שומר…" : "💾 שמור"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="btn btn-secondary btn-sm"
+                                    onClick={cancelEditRule}
+                                    disabled={isBusy}
+                                  >
+                                    ביטול
+                                  </button>
+                                </div>
+                              </>
+                            ) : (
+                              <>
+                                <div>{row.rule_text}</div>
+                                <div
+                                  style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "space-between",
+                                    gap: 10,
+                                    marginTop: 8,
+                                    flexWrap: "wrap",
+                                  }}
+                                >
+                                  <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                                    {formatRuleDate(row.created_at)}
+                                  </div>
+                                  <div style={{ display: "flex", gap: 6 }}>
+                                    <button
+                                      type="button"
+                                      className="btn btn-secondary btn-sm"
+                                      onClick={() => startEditRule(row)}
+                                      disabled={ruleBusyId != null}
+                                      title="ערוך את נוסח הכלל"
+                                    >
+                                      ✏️ ערוך
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="btn btn-secondary btn-sm"
+                                      onClick={() => handleDeleteRule(row)}
+                                      disabled={ruleBusyId != null}
+                                      title="מחק כלל לצמיתות"
+                                      style={{ color: "#9b1c1c" }}
+                                    >
+                                      {ruleBusyId === `del-${row.id}` ? "…" : "🗑️ מחק"}
+                                    </button>
+                                  </div>
+                                </div>
+                              </>
+                            )}
                           </li>
-                        ))}
+                          );
+                        })}
                       </ul>
                     </div>
                   );

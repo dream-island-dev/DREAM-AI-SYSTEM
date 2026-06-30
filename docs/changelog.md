@@ -1,3 +1,4 @@
+2026-06-30 | BotSettings.js + migration 112 | עריכה ומחיקה לכללים ב-`xos_ai_rules` (RLS UPDATE/DELETE + כפתורי ✏️/🗑️ במוח הבוט).
 2026-06-30 | BotSettings.js + whatsapp-webhook | כללים מ-«למד את המערכת» מוצגים במוח הבוט; chat/routing מופרדים; `ANTI_REASONING_LEAK_SUFFIX` + מגן עברית ב-sanitizeReply.
 2026-06-30 | OperationsBoard.js + migration 111 | תור חי Realtime על `tasks` — 👍🏼 בקבוצת Whapi מעביר משימה ל«בוצע» בלי רענון; `applyTaskRowUpdate` כמו Inbox.
 2026-06-30 | whatsapp-webhook + automationSchedule.ts | In-room keyword override (pending/expected→checked_in + in-house AI tone); insert-first wa_message_id dedup + burst coalescing (~1.8s) למניעת כפל תשובות.
