@@ -87,10 +87,38 @@ Deliver: small diff + deploy checklist + offer deploy
 | 768px | Tablet / mobile-bar breakpoint |
 | 1280px+ | DeX / large tablet (`App.js` has DeX media queries) |
 
-### 4.3 Real phone
-Use only for **final** touch/scroll/keyboard check — not every color tweak.
+### 4.3 Dual-surface rule (desktop Wow + mobile comfort)
+**Build on desktop. Ship for both.** Every UI phase has two acceptance gates:
 
-### 4.4 Production URLs
+| Surface | Goal | How we verify |
+|---|---|---|
+| **Desktop** (1280px+) | Premium, spacious, scannable KPIs | DevTools wide + DeX breakpoint |
+| **Mobile** (≤768px) | Thumb-safe, no overlap, keyboard OK | DevTools 390px + 768px **after each phase** |
+| **Real phone** | Touch + scroll + keyboard in production | Once per phase batch on Vercel URL |
+
+**Not optional:** Agent posts a **Mobile Checklist** (pass/fail per item) at the end of every UI phase before offering deploy.
+
+### 4.4 Mobile comfort standards (staff)
+- **Hit target:** min 44px staff / 48px comfort / 72px kiosk (cleaners) — use tokens from Phase 0.
+- **Thumb zone:** primary CTAs bottom-weighted on phone where possible (Inbox send, task actions).
+- **No overlap:** content `padding-bottom` clears `.mobile-bar` (~80px); floating widgets (AICopilot, alerts) above bar.
+- **RTL:** badges `white-space: nowrap` or controlled wrap — no clipped Hebrew.
+- **Keyboard:** reply inputs not hidden when mobile keyboard opens (Inbox `minHeight:0` pattern — preserve it).
+- **Disable don't hide:** same on mobile — muted buttons with `title`, never `display:none` on actions.
+
+### 4.5 Mobile-critical staff routes (priority order)
+1. `wa_inbox` — receptionists on phone
+2. `ops_board` — task claim/done on the move
+3. `guests` — check-in Slot 1/2
+4. `housekeeping_tablet` — cleaner kiosk
+5. `App.js` shell — `mobile-bar` (5 items) + hamburger drawer + `main` padding
+
+Guest surfaces (`/portal`, `/inv`) = **out of scope** for this pass.
+
+### 4.6 Real phone
+Use for **phase sign-off** on Vercel after push — not every color tweak during `npm start`.
+
+### 4.7 Production URLs
 - Frontend: `https://dream-ai-system.vercel.app` (auto from `main`)
 - Supabase: `bunohsdggxyyzruubvcd`
 
@@ -117,26 +145,47 @@ Approved strategy (session 73–74). **Execute in order. Do not skip Phase 0.**
 | OperationsBoard "table rows" | **Wrong** — vertical `TaskCard` cards, not HTML `<table>` |
 | AICopilot vs mobile-bar overlap | **Already fixed** session 52 — verify only unless regression |
 
-### 5.3 Phase plan
+### 5.3 Phase plan (desktop + mobile per phase)
 
-| Phase | Target | What changes |
-|---|---|---|
-| **0** | `App.js` `:root` + global CSS | Semantic tokens (`--shadow-soft`, `--border-subtle`, `--status-*`, hit-target sizes) + utility classes: `.staff-kpi-card`, `.inbox-roster-row`, `.ops-task-card`, `.hk-fat-btn` |
-| **1** | `WhatsAppInbox.js` | Roster spacing/borders; badge nowrap; primary CTAs (reply, שלח משימה, macros); migrate hex → vars incrementally (~222 hex today) |
-| **2a** | `App.js` `Dashboard` | Luxury KPI cards on `.stat-card` |
-| **2b** | `OperationsBoard.js` | Filter chips touch targets; `TaskCard` padding; unified `.badge-*` |
-| **3** | `HousekeepingTabletView.js` | `minHeight` 60→72px on pipeline + jacuzzi buttons; tokenize jacuzzi colors |
-| **3 verify** | `AICopilot.js` | Confirm `bottom: 88px` at ≤768px — fix only if broken |
+| Phase | Target | Desktop | Mobile (same phase) |
+|---|---|---|---|
+| **0** | `App.js` `:root` + global CSS | Tokens + utility classes | `--hit-target-*`, `--safe-bottom-nav`, mobile `@media` touch rules |
+| **1** | `WhatsAppInbox.js` | Roster polish, CTAs | Swipe row 48px, reply bar above keyboard, badge nowrap, `isMobile` targets |
+| **2a** | `App.js` `Dashboard` | Luxury `.stat-card` | `stat-grid` 2-col at 768px, readable values |
+| **2b** | `OperationsBoard.js` | TaskCard breathing room | Full-width cards, chip wrap, claim/done buttons ≥48px |
+| **3** | `HousekeepingTabletView.js` | — | 72px fat-finger + jacuzzi tokens (kiosk-first) |
+| **3v** | `AICopilot.js` | — | Verify `bottom:88px` ≤768px; no overlap with bar |
+| **4** | `App.js` shell + `GuestsPage.js` | Sidebar/hamburger polish | `mobile-bar` tap targets, drawer width, `guests` check-in on 390px |
+| **5** | Real device QA | — | Mike signs off on `dream-ai-system.vercel.app` at 390px for routes 1–5 |
 
-### 5.4 Optional Phase 4 (not started)
-- `GuestsPage.js` — check-in pipeline UI
-- `AutomationControlCenter.js` — if "שגר עכשיו" styling needed
+**After each phase:** agent posts Desktop OK + **Mobile Checklist** (§5.7) before `continue`.
 
-### 5.5 Out of scope for staff UI pass
+### 5.4 Optional Phase 6 (later)
+- `AutomationControlCenter.js` — tablet 768–1024px overflow (known gap in manifest §3.2)
+- `BroadcastDashboard.js` — hex cleanup
+
+### 5.5 Mobile Checklist template (agent fills every phase)
+
+```
+Phase N — Mobile @ 390px / 768px
+[ ] No horizontal scroll on primary content
+[ ] Primary CTA ≥44px tap height
+[ ] Bottom content not hidden under mobile-bar
+[ ] Floating widgets (AICopilot) clear of mobile-bar
+[ ] Hebrew badges readable, not clipped
+[ ] Disabled actions still visible (muted + title)
+[ ] npm run build clean
+```
+
+### 5.6 Out of scope for staff UI pass
 - `GuestPortal.js`, `PhotoTour.js` — separate guest palette by design
 - `InventoryPortal.js` — staff tool, hardcoded hex OK per manifest
 
-### 5.6 Phase kickoff prompt (English — give to desktop agent)
+### 5.7 Desktop session kickoff prompt (Mike copy-paste — FULL)
+
+See Mike's latest message or §11 — full handoff block maintained in playbook updates.
+
+### 5.8 Phase kickoff prompt (short)
 
 ```
 @CLAUDE.md @RESORT_UI_MANIFEST.md @docs/xos_agent_playbook.md
@@ -233,8 +282,13 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
+### 2026-06-30 — Session 74b (dual-surface UI)
+- **Desktop Wow + Mobile comfort:** same phase, two acceptance gates — DevTools 390/768/1280 every phase + Mobile Checklist before deploy.
+- **Phase 4 added:** App.js mobile shell (`mobile-bar`, hamburger) + `GuestsPage.js` check-in on phone.
+- **Phase 5:** real phone sign-off on Vercel per phase batch.
+
 ### 2026-06-30 — Session 74 (workflow + UI strategy)
-- **Desktop-first for UI:** `npm start` + DevTools beats phone iteration; phone = final QA only.
+- **Desktop-first for dev speed:** `npm start` + DevTools; real phone = phase sign-off on Vercel.
 - **Token split:** Mike → agent in English; agent → Mike in Hebrew; UI stays Hebrew in code.
 - **UI prompt corrections:** Dashboard KPIs ≠ OperationsBoard; "שגר עכשיו" ≠ Inbox; OpsBoard uses TaskCards not tables; AICopilot overlap already fixed s52.
 - **Phase 0 required:** WhatsAppInbox has ~222 hardcoded hex — add App.js tokens before component polish.
@@ -250,11 +304,48 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ---
 
-## 11. Current Recommended Next Action
+## 11. Desktop Session Kickoff — FULL PROMPT (Mike copy-paste)
 
-**Start UI Phase 0** on desktop with `npm start`, unless Mike picks another priority from `docs/active_sprint.md` (Meta templates PENDING, voucher/inventory click-through).
+```
+@CLAUDE.md @docs/active_sprint.md @docs/xos_agent_playbook.md @RESORT_UI_MANIFEST.md
+@src/App.js @.cursorrules
 
-Mike command to begin:
+# XOS Co-Pilot — Desktop session (dual-surface UI)
+
+Same agent as cloud. Read files above first.
+
+## Goal
+- **Desktop:** premium staff UI ("Wow") — clean, gold/ivory, scannable
+- **Mobile:** maximum comfort — fat taps, no overlap, RTL safe, keyboard OK
+- **Method:** build on desktop (`npm start`); verify 390px + 768px + 1280px every phase
+
+## Already on main (do not redo)
+- docs/xos_agent_playbook.md (dual-surface phases 0–5)
+- .cursorrules requires playbook read
+- Mike approves deploy: yes / כן / תעלה / yes deploy
+
+## Phase order (visual only — no logic, no Hebrew label changes)
+0 App.js tokens + mobile touch vars
+1 WhatsAppInbox (+ mobile: swipe, reply bar, badges)
+2a Dashboard KPI | 2b OperationsBoard
+3 HousekeepingTablet + AICopilot verify
+4 App.js mobile-bar/hamburger + GuestsPage
+5 Real phone QA on Vercel
+
+## First actions
+1. git pull
+2. npm start → localhost:3000
+3. Reply Hebrew ≤15 lines: confirm commit hash + npm running
+4. Post Phase 0 diagnostic (App.js lines only) — NO code yet
+5. Wait for: start phase 0
+
+## Per-phase deliverable
+- Atomic diff
+- Mobile Checklist (playbook §5.5) filled for that phase
+- npm run build clean
+- Deploy checklist + offer deploy
+
+Constraints: CSS vars, Disable-Don't-Hide, FAIL VISIBLE, no .env
 ```
-start phase 0
-```
+
+Mike after diagnostic: `start phase 0`

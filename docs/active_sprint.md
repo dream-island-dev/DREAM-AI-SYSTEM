@@ -15,9 +15,12 @@
 | 1 | `WhatsAppInbox.js` roster + CTAs | Pending |
 | 2a | `Dashboard` KPI cards (`App.js`) | Pending |
 | 2b | `OperationsBoard.js` TaskCards + chips | Pending |
-| 3 | `HousekeepingTabletView.js` fat-finger | Pending |
+| 3 | `HousekeepingTabletView.js` + AICopilot verify | Pending |
+| 4 | `App.js` mobile shell + `GuestsPage.js` | Pending |
+| 5 | Real phone QA on Vercel (390px routes) | Pending |
 
-**Kickoff command for desktop agent:** `start phase 0` (see playbook §5.6)
+**Dual-surface:** every phase = desktop polish + mobile checklist (390/768px) before deploy.  
+**Kickoff:** full prompt in `docs/xos_agent_playbook.md` §11, then `start phase 0`
 
 ---
 
