@@ -62,6 +62,13 @@ const CORE_PIPELINE_STAGE_KEYS = [
   "checkout_fb", "checkout_fb_daypass",
 ];
 
+// Live Queue tab — completed rows belong in History only (UI projection filter).
+const QUEUE_FINALIZED_STATUSES = new Set(["sent", "simulated", "skipped"]);
+
+function attentionItemKey(r) {
+  return `${r.phone}_${r.stageKey}_${r.sentAt}`;
+}
+
 function classifyStagePipeline(stage) {
   if (SHARED_STAGE_KEYS.has(stage.stage_key)) return "shared";
   if (DAYPASS_PIPELINE_KEYS.has(stage.stage_key) || stage.applies_to === "non_suite") return "daypass";
@@ -1096,6 +1103,14 @@ export default function AutomationControlCenter() {
     setTimeout(() => setToast(null), 4000);
   }, []);
 
+  const dismissAttentionItem = useCallback((key) => {
+    setDismissedAttentionKeys((prev) => {
+      const next = new Set(prev);
+      next.add(key);
+      return next;
+    });
+  }, []);
+
   const fetchStages = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) { setLoadingStages(false); return; }
     setLoadingStages(true);
@@ -1511,7 +1526,8 @@ export default function AutomationControlCenter() {
 
       {subTab === "queue" && (() => {
         // ── Segment filtering ─────────────────────────────────────────────
-        const allQueue    = queueData?.queue ?? [];
+        const isActiveQueueItem = (q) => !QUEUE_FINALIZED_STATUSES.has(q.status);
+        const allQueue    = (queueData?.queue ?? []).filter(isActiveQueueItem);
         const suiteQueue  = allQueue.filter((q) => q.room_type !== "day_guest" && q.room_type !== "premium_day_guest");
         const dayPassQueue = allQueue.filter((q) => q.room_type === "day_guest" || q.room_type === "premium_day_guest");
         const displayQueue = (queueSegment === "daypass" ? dayPassQueue : suiteQueue).slice(0, 100);
@@ -1607,11 +1623,7 @@ export default function AutomationControlCenter() {
                         setShowDispatchConfirm(false);
                         // displayQueue is captured from the outer IIFE scope via closure.
                         // We re-derive it here to avoid stale-closure issues.
-                        const allQueue    = queueData?.queue ?? [];
-                        const displayQ    = (queueSegment === "daypass"
-                          ? allQueue.filter((q) => q.room_type === "day_guest" || q.room_type === "premium_day_guest")
-                          : allQueue.filter((q) => q.room_type !== "day_guest" && q.room_type !== "premium_day_guest")
-                        ).slice(0, 100);
+                        const displayQ    = (queueSegment === "daypass" ? dayPassQueue : suiteQueue).slice(0, 100);
                         handleBulkDispatch(displayQ);
                       }}
                     >
@@ -1762,18 +1774,23 @@ export default function AutomationControlCenter() {
 
                 {/* ── Attention required (accordion, top-5, clear-all) ── */}
                 {(() => {
+                  const isCriticalAttention = (r) =>
+                    r.status === "failed" || r.status === "timeout";
                   const visibleAttention = queueData.attentionRequired
-                    .filter((r) => !dismissedAttentionKeys.has(`${r.phone}_${r.stageKey}_${r.sentAt}`))
+                    .filter(isCriticalAttention)
+                    .filter((r) => !dismissedAttentionKeys.has(attentionItemKey(r)))
                     .sort((a, b) => new Date(b.sentAt || 0) - new Date(a.sentAt || 0))
                     .slice(0, 5);
                   const totalActive = queueData.attentionRequired.filter(
-                    (r) => !dismissedAttentionKeys.has(`${r.phone}_${r.stageKey}_${r.sentAt}`)
+                    (r) => isCriticalAttention(r) && !dismissedAttentionKeys.has(attentionItemKey(r)),
                   ).length;
                   const hasCritical = visibleAttention.length > 0;
                   const dismissAll = (e) => {
                     e.stopPropagation();
                     const keys = new Set(dismissedAttentionKeys);
-                    queueData.attentionRequired.forEach((r) => keys.add(`${r.phone}_${r.stageKey}_${r.sentAt}`));
+                    queueData.attentionRequired
+                      .filter(isCriticalAttention)
+                      .forEach((r) => keys.add(attentionItemKey(r)));
                     setDismissedAttentionKeys(keys);
                     setAttentionOpen(false);
                   };
@@ -1833,20 +1850,39 @@ export default function AutomationControlCenter() {
                 {/* ── Blocked by Meta — template pending approval (orange, non-critical) ── */}
                 {(() => {
                   const blockedItems = queueData.attentionRequired.filter(
-                    (r) => r.status === "blocked_by_meta",
+                    (r) => r.status === "blocked_by_meta"
+                      && !dismissedAttentionKeys.has(attentionItemKey(r)),
                   );
                   if (blockedItems.length === 0) return null;
+                  const dismissAllBlocked = () => {
+                    const keys = new Set(dismissedAttentionKeys);
+                    queueData.attentionRequired
+                      .filter((r) => r.status === "blocked_by_meta")
+                      .forEach((r) => keys.add(attentionItemKey(r)));
+                    setDismissedAttentionKeys(keys);
+                  };
                   return (
                     <div className="card" style={{ marginBottom: 16, border: "1px solid #E67E22" }}>
                       <div className="card-header">
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", gap: 12 }}>
                           <div className="card-title" style={{ color: "#B5600A", display: "flex", alignItems: "center", gap: 8 }}>
                             🟠 ממתין לאישור Meta
                             <span style={{ fontSize: 12, fontWeight: 500, color: "var(--text-muted)" }}>
                               ({blockedItems.length})
                             </span>
                           </div>
-                          <span className="badge badge-orange">⏳ Pending</span>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+                            <span className="badge badge-orange">⏳ Pending</span>
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-sm"
+                              style={{ color: "#B5600A", fontSize: 12, whiteSpace: "nowrap" }}
+                              title="הסר את כל השורות מהתצוגה — לא משפיע על האוטומציה בשרת"
+                              onClick={dismissAllBlocked}
+                            >
+                              🗑️ נקה הכל
+                            </button>
+                          </div>
                         </div>
                       </div>
                       <div style={{ padding: "8px 16px 10px", background: "rgba(230,126,34,0.05)", fontSize: 12, color: "#7F8C8D", borderBottom: "1px solid rgba(230,126,34,0.2)" }}>
@@ -1861,11 +1897,14 @@ export default function AutomationControlCenter() {
                               <th>תבנית Meta</th>
                               <th>סטטוס</th>
                               <th>זמן</th>
+                              <th style={{ width: 56, textAlign: "center" }}>פעולות</th>
                             </tr>
                           </thead>
                           <tbody>
-                            {blockedItems.map((r, i) => (
-                              <tr key={i}>
+                            {blockedItems.map((r, i) => {
+                              const rowKey = attentionItemKey(r);
+                              return (
+                              <tr key={rowKey || i}>
                                 <td style={{ fontWeight: 700 }}>{r.guestName ?? r.phone ?? "—"}</td>
                                 <td>{stageDisplayNames[r.stageKey] ?? `⚠ ${r.stageKey}`}</td>
                                 <td style={{ fontSize: 11, fontFamily: "monospace", color: "#B5600A" }}>
@@ -1875,8 +1914,19 @@ export default function AutomationControlCenter() {
                                 <td style={{ fontSize: 11 }}>
                                   {r.sentAt ? new Date(r.sentAt).toLocaleString("he-IL") : "—"}
                                 </td>
+                                <td style={{ textAlign: "center" }}>
+                                  <button
+                                    type="button"
+                                    className="btn btn-ghost btn-sm"
+                                    title="הסר מהתצוגה — לא משפיע על האוטומציה בשרת"
+                                    onClick={() => dismissAttentionItem(rowKey)}
+                                    style={{ fontSize: 14, padding: "2px 8px", color: "#B5600A" }}
+                                  >
+                                    🗑️
+                                  </button>
+                                </td>
                               </tr>
-                            ))}
+                            );})}
                           </tbody>
                         </table>
                       </div>
