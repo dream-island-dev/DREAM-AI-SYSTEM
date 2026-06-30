@@ -20,7 +20,7 @@
 // toggle is still cosmetic today. (stage_2_pay, despite also being
 // event_immediate, DOES check automation_stages.is_active in the webhook
 // — its toggle is live.)
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import TemplateManagerPanel, { STATUS_META } from "./TemplateManagerPanel";
 import TemplateTestPanel from "./TemplateTestPanel";
@@ -67,6 +67,30 @@ const QUEUE_FINALIZED_STATUSES = new Set(["sent", "simulated", "skipped"]);
 
 function attentionItemKey(r) {
   return `${r.phone}_${r.stageKey}_${r.sentAt}`;
+}
+
+/** Stages whatsapp-cron + automation-queue actually schedule (not event_immediate). */
+function isCronScheduledStage(stage) {
+  return !!stage?.is_active && stage.schedule_mode !== "event_immediate";
+}
+
+/** Align Live Queue rows with current automation_stages (is_active + labels). */
+function mergeQueueWithStages(queue, stages) {
+  const activeCronKeys = new Set(
+    stages.filter(isCronScheduledStage).map((s) => s.stage_key),
+  );
+  const stageByKey = Object.fromEntries(stages.map((s) => [s.stage_key, s]));
+  return (queue ?? [])
+    .filter((q) => activeCronKeys.has(q.stageKey))
+    .map((q) => {
+      const stage = stageByKey[q.stageKey];
+      return {
+        ...q,
+        displayName: stage?.display_name ?? q.displayName,
+        journeyPhase: stage?.journey_phase ?? q.journeyPhase,
+        nodeType: stage?.node_type ?? q.nodeType,
+      };
+    });
 }
 
 function classifyStagePipeline(stage) {
@@ -1081,6 +1105,8 @@ export default function AutomationControlCenter() {
   const [queueData, setQueueData] = useState(null);
   const [loadingQueue, setLoadingQueue] = useState(false);
   const [queueError, setQueueError] = useState(null);
+  const [queueRefreshedAt, setQueueRefreshedAt] = useState(null);
+  const queueSyncTimerRef = useRef(null);
   const [attentionOpen, setAttentionOpen] = useState(false);
   const [dismissedAttentionKeys, setDismissedAttentionKeys] = useState(new Set());
 
@@ -1160,6 +1186,7 @@ export default function AutomationControlCenter() {
       if (error) throw new Error(error.message);
       if (!data?.ok) throw new Error(data?.error ?? "unknown error");
       setQueueData(data);
+      setQueueRefreshedAt(new Date());
 
       const futureTasks = (data.queue ?? []).filter(
         (q) => q.scheduledFor
@@ -1184,6 +1211,17 @@ export default function AutomationControlCenter() {
   }, []);
 
   useEffect(() => { if (subTab === "queue") fetchQueue(); }, [subTab, fetchQueue]);
+
+  const scheduleQueueRefresh = useCallback(() => {
+    if (queueSyncTimerRef.current) clearTimeout(queueSyncTimerRef.current);
+    queueSyncTimerRef.current = setTimeout(() => {
+      fetchQueue();
+    }, 600);
+  }, [fetchQueue]);
+
+  useEffect(() => () => {
+    if (queueSyncTimerRef.current) clearTimeout(queueSyncTimerRef.current);
+  }, []);
 
   useEffect(() => {
     if (queueData && queueData.attentionRequired.length > 0) setAttentionOpen(true);
@@ -1286,6 +1324,7 @@ export default function AutomationControlCenter() {
       fetchStages(); // revert to DB truth
     } else {
       showToast("ok", `✅ "${stage.display_name}" עודכן`);
+      scheduleQueueRefresh();
     }
   };
 
@@ -1399,8 +1438,11 @@ export default function AutomationControlCenter() {
     return acc;
   }, {});
 
-  const activeStageKeys = stages.filter((s) => s.is_active).map((s) => s.stage_key);
-  const missingCoreStages = CORE_PIPELINE_STAGE_KEYS.filter((k) => !activeStageKeys.includes(k));
+  const cronActiveStageKeys = stages.filter(isCronScheduledStage).map((s) => s.stage_key);
+  const eventImmediateStageKeys = stages
+    .filter((s) => s.is_active && s.schedule_mode === "event_immediate")
+    .map((s) => s.stage_key);
+  const missingCoreStages = CORE_PIPELINE_STAGE_KEYS.filter((k) => !cronActiveStageKeys.includes(k));
 
   return (
     <div>
@@ -1527,7 +1569,7 @@ export default function AutomationControlCenter() {
       {subTab === "queue" && (() => {
         // ── Segment filtering ─────────────────────────────────────────────
         const isActiveQueueItem = (q) => !QUEUE_FINALIZED_STATUSES.has(q.status);
-        const allQueue    = (queueData?.queue ?? []).filter(isActiveQueueItem);
+        const allQueue    = mergeQueueWithStages(queueData?.queue, stages).filter(isActiveQueueItem);
         const suiteQueue  = allQueue.filter((q) => q.room_type !== "day_guest" && q.room_type !== "premium_day_guest");
         const dayPassQueue = allQueue.filter((q) => q.room_type === "day_guest" || q.room_type === "premium_day_guest");
         const displayQueue = (queueSegment === "daypass" ? dayPassQueue : suiteQueue).slice(0, 100);
@@ -1710,9 +1752,16 @@ export default function AutomationControlCenter() {
                   >{label}</button>
                 ))}
               </div>
-              <button className="btn btn-ghost btn-sm" onClick={fetchQueue} disabled={loadingQueue}>
-                {loadingQueue ? "⏳" : "↺"} רענון
-              </button>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                {queueRefreshedAt && (
+                  <span style={{ fontSize: 11, color: "var(--text-muted)" }} title="מתעדכן אוטומטית אחרי שינוי במסע האורח">
+                    עודכן: {queueRefreshedAt.toLocaleTimeString("he-IL")}
+                  </span>
+                )}
+                <button className="btn btn-ghost btn-sm" onClick={fetchQueue} disabled={loadingQueue}>
+                  {loadingQueue ? "⏳" : "↺"} רענון
+                </button>
+              </div>
             </div>
 
             {queueSegment === "daypass" && (
@@ -1750,9 +1799,15 @@ export default function AutomationControlCenter() {
                     <span>{queueData.systemStatus.simulation ? "🟡 סימולציה" : "🟢 שליחה אמיתית"}</span>
                   </div>
                   <div style={{ marginTop: 10, fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
-                    <strong>שלבים פעילים ({activeStageKeys.length}):</strong>{" "}
-                    {activeStageKeys.length > 0 ? activeStageKeys.join(", ") : "—"}
+                    <strong>שלבים בתזמון cron ({cronActiveStageKeys.length}):</strong>{" "}
+                    {cronActiveStageKeys.length > 0 ? cronActiveStageKeys.join(", ") : "—"}
                   </div>
+                  {eventImmediateStageKeys.length > 0 && (
+                    <div style={{ marginTop: 6, fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
+                      <strong>שלבים מיידיים (webhook, לא בתור):</strong>{" "}
+                      {eventImmediateStageKeys.join(", ")}
+                    </div>
+                  )}
                   {missingCoreStages.length > 0 && (
                     <div style={{
                       marginTop: 8, fontSize: 12, color: "#C0392B",

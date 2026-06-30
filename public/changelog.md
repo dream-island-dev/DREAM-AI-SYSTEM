@@ -1,3 +1,4 @@
+2026-06-30 | AutomationControlCenter.js | Queue↔Timeline sync: auto-refresh queue after stage edits; filter queue by active cron stages; pulse splits cron vs event_immediate; last-refreshed timestamp.
 2026-06-30 | AutomationControlCenter.js | Queue tab: exclude sent/simulated/skipped from live queue; 🗑️ per-row + clear-all dismiss for blocked_by_meta (UI-only, no backend change).
 2026-06-30 | CustomerProfilePane.js | Guest drawer: guest_alerts requests + collapsible guest_notes system log under "הערות ובקשות".
 2026-06-30 | CustomerProfilePane.js | Smart profile chips + red alert badge + edit modal in guest name drawer (GuestsPage + GuestDashboard).
