@@ -105,6 +105,45 @@ function _bestGuessSuite(roomName) {
   return matches.length === 1 ? matches[0] : "";
 }
 
+/** Human-readable room label from parser fields — used for suite-assignment preview. */
+function _roomLabelFromParts(roomName, suiteType) {
+  const rn = String(roomName ?? "").trim();
+  const st = String(suiteType ?? "").trim();
+  if (st && rn && st.includes(rn)) return st;
+  if (st && rn) return `${rn} ${st}`.trim();
+  return st || rn;
+}
+
+/** Best display/sync value for room column — registry match when possible, else raw label. */
+function _formatRoomForGrid(g) {
+  const rooms = g.rooms ?? [];
+  if (!rooms.length) return "";
+  if (rooms.length > 1) {
+    const labels = rooms
+      .map((r) => {
+        const guess = !r.isDayGuest ? _bestGuessSuite(r.roomName) : "";
+        return guess || _roomLabelFromParts(r.roomName, r.suiteType);
+      })
+      .filter(Boolean);
+    return labels.join(" · ");
+  }
+  const r0 = rooms[0];
+  const isDay = !!g.isDayGuest || !!r0.isDayGuest;
+  if (!isDay) {
+    const guess = _bestGuessSuite(r0.roomName);
+    if (guess) return guess;
+    const byType = SUITE_REGISTRY.filter(
+      (s) => r0.suiteType && (s.includes(r0.suiteType) || r0.suiteType.includes(s)),
+    );
+    if (byType.length === 1) return byType[0];
+  }
+  return _roomLabelFromParts(r0.roomName, r0.suiteType);
+}
+
+function _gridRowId(g, i) {
+  return `p${i}_${g.guestPhone || "nophone"}`;
+}
+
 function _hasSpaTime(row) {
   const v = row?.spa_time;
   return v != null && String(v).trim() !== "";
@@ -468,10 +507,11 @@ async function parseShiftFile(arrayBuf) {
 // One row per guest profile. Multi-room (group) profiles show a read-only
 // "N rooms" count instead of a single editable room — picking a value there
 // still works and applies uniformly to that profile's rooms on sync.
-function _profilesToGridRows(merged) {
+function _profilesToGridRows(merged, { suiteAssignmentOnly = false } = {}) {
   return merged.map((g, i) => {
     const singleRoom = (g.rooms ?? []).length === 1 ? g.rooms[0] : null;
     const isDay       = !!g.isDayGuest || !!singleRoom?.isDayGuest;
+    const roomDisplay = _formatRoomForGrid(g);
     const guess       = !isDay && singleRoom ? _bestGuessSuite(singleRoom.roomName) : "";
     // Financial mapping: sum cPrice/fcPrice across this profile's rooms (usually
     // just one). Staff can still override the total manually in the grid before
@@ -481,7 +521,7 @@ function _profilesToGridRows(merged) {
       ? `${g.roomsQuantity} חדרים`
       : (g.rooms ?? []).length > 1 ? `${g.rooms.length} חדרים` : "";
     return {
-      _id:          g.guestPhone || `row_${i}`,
+      _id:          _gridRowId(g, i),
       _profileIdx:  i,
       guestName:    g.guestName ?? "",
       guestPhone:   g.guestPhone ?? "",
@@ -490,7 +530,9 @@ function _profilesToGridRows(merged) {
       leadSource:   g.leadSource ?? "",
       automationMuted: g.automationMuted ? "🔇 ללא אוטומציה" : "",
       roomCount:    qtyLabel,
-      room:         (g.rooms ?? []).length > 1 ? "" : (isDay ? (singleRoom?.isDayGuest ? guess : "") : guess),
+      room:         suiteAssignmentOnly
+        ? roomDisplay
+        : ((g.rooms ?? []).length > 1 ? "" : (isDay ? (singleRoom?.isDayGuest ? guess : "") : guess)),
       tier:         isDay ? "☀️ בילוי יומי" : "🏨 סוויטה",
       spa_time:     g.spa_time ?? "",
       meal_time:    g.meal_time ?? "",
@@ -507,7 +549,7 @@ function _detailedProfilesToGridRows(merged) {
     const nights = (g.rooms ?? []).reduce((mx, r) => Math.max(mx, r.nights || 0), 0);
     const orderNumber = [...(g.orderNumbers ?? [])][0] ?? "";
     return {
-      _id:          g.guestPhone || `row_${i}`,
+      _id:          _gridRowId(g, i),
       _profileIdx:  i,
       guestName:    g.guestName ?? "",
       guestPhone:   g.guestPhone ?? "",
@@ -684,9 +726,9 @@ const SUITES_GRID_COLS = [
 
 /** Focused preview columns for Doc 2 suite-assignment-only mode */
 const SUITE_ASSIGNMENT_GRID_COLS = [
-  { id: "guestName",   label: "שם אורח",       editable: true,  w: 170 },
+  { id: "guestName",   label: "שם אורח",       editable: true,  w: 180 },
   { id: "orderNumber", label: "מס׳ הזמנה",     editable: false, w: 110 },
-  { id: "room",        label: "🏨 חדר/סוויטה", editable: true,  w: 200, gold: true, options: ROOM_OPTIONS },
+  { id: "room",        label: "🏨 חדר/סוויטה", editable: true,  w: 220, gold: true },
   { id: "guestPhone",  label: "טלפון",         editable: false, w: 120 },
 ];
 
@@ -941,7 +983,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     if (doc2SyncMode === "suite_assignment_only" && importSource !== "detailed") {
       setShowOnlyWithSpa(false);
     }
-  }, [doc2SyncMode, importSource]);
+  }, [doc2SyncMode, importSource, merged]);
 
   // Recompute merged whenever Suite CSV or Daily Report changes
   useEffect(() => {
@@ -956,18 +998,21 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
   // Recompute grid rows whenever merged changes (fresh parse — discards manual edits)
   useEffect(() => {
     if (!merged) { setGridRows([]); return; }
+    const suiteOnly = doc2SyncMode === "suite_assignment_only" && importSource !== "detailed";
     setGridRows(
       importSource === "detailed"
         ? _detailedProfilesToGridRows(merged)
-        : _profilesToGridRows(merged)
+        : _profilesToGridRows(merged, { suiteAssignmentOnly: suiteOnly }),
     );
-  }, [merged, importSource]);
+  }, [merged, importSource, doc2SyncMode]);
 
   // ── Parse Doc 2: Suite CSV → AI-suggested column mapping → review screen ──
   // The AI only proposes; aggregateGuestProfiles() runs unchanged once the
   // admin approves a mapping in MappingReviewPanel (see handleMappingApprove).
   const handleDoc2 = useCallback(async (file) => {
     if (!file) return;
+    setImportSource(null);
+    setDetailedFileName("");
     setDoc2Name(file.name);
     setResult(null);
     try {
@@ -1084,6 +1129,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
       return;
     }
     setDoc2Map(profileMap);
+    setImportSource(null);
     setMappingStage("idle");
 
     // Best-effort — never blocks the import if this fails
@@ -2037,6 +2083,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                   onClear={() => setSelectedIds(new Set())}
                 />
               )}
+              <div style={{ color: "#1A1A1A" }}>
               <EditableGrid
                 columns={activeGridCols}
                 rows={displayGridRows}
@@ -2044,6 +2091,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                 selectedIds={selectedIds}
                 onSelectionChange={setSelectedIds}
               />
+              </div>
             </div>
           )}
 
