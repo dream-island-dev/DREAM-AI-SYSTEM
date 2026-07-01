@@ -24,6 +24,7 @@ import AutomationControlCenter from "./components/AutomationControlCenter";
 import RoomBoard from "./components/RoomBoard";
 import HousekeepingTabletView from "./components/HousekeepingTabletView";
 import RequestsBoard from "./components/RequestsBoard";
+import GuestFeedbackTabs from "./components/GuestFeedbackTabs";
 import PasswordChangeScreen from "./components/PasswordChangeScreen";
 import SpaStagingPanel from "./components/SpaStagingPanel";
 import AICopilot from "./components/AICopilot";
@@ -1163,6 +1164,7 @@ function Sidebar({ user, active, setActive, openOpsCount, onLogout, isAdmin, isS
     { id: "room_board",   icon: "🏨", label: "לוח סוויטות",                            managerOnly: false },
     { id: "housekeeping_tablet", icon: "🧹", label: "לוח ניקיון (טאבלט)",              managerOnly: false },
     { id: "requests_board", icon: "📋", label: "לוח בקשות",                            managerOnly: true },
+    { id: "feedback_dashboard", icon: "🌟", label: "משוב אורחים",                     managerOnly: true, receptionistOk: true },
     { id: "scheduler",   icon: "🪄", label: "מחולל משמרות",                           managerOnly: true },
     { id: "agent",      icon: "📦", label: "ניהול מלאי" },
     { id: "data_sync",  icon: "📥", label: "סנכרון נתונים",                          managerOnly: true, receptionistOk: true },
@@ -1980,6 +1982,7 @@ export default function App({ initialPage = "dashboard" }) {
     room_board:    "🏨 לוח סוויטות",
     housekeeping_tablet: "🧹 לוח ניקיון (טאבלט)",
     requests_board: "📋 לוח בקשות",
+    feedback_dashboard: "🌟 משוב אורחים",
     bot_config:    "🤖 הגדרות Smart Concierge",
     bot_settings:  "🧠 מוח הבוט",
     bot_scripts:   "📝 עורך סקריפטי הבוט",
@@ -2162,6 +2165,8 @@ export default function App({ initialPage = "dashboard" }) {
         return <HousekeepingTabletView />;
       case "requests_board":
         return <RequestsBoard user={user} onOpenDreamBotChat={openDreamBotChat} />;
+      case "feedback_dashboard":
+        return <GuestFeedbackTabs user={user} />;
       case "suites":
         return <SuitesDashboard />;
       // "tasks"/"calls" kept as deep-link aliases (same pattern as session

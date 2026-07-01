@@ -976,6 +976,88 @@ const UPSELL_PATTERNS: RegExp[] = [
   /upgrade(\s+my\s+room)?|better\s+room|larger\s+room|move\s+to\s+(a\s+)?suite/i,
 ];
 
+// ── Guest Feedback & Sentiment Dashboard — holistic stay/service reflections ──
+// Deliberately DISTINCT from COMPLAINT_PATTERNS above: those catch a specific
+// service-fault report ("the AC is broken") that belongs on the operational
+// Requests/Ops board. This catches a guest reflecting on the stay/experience
+// as a whole ("the stay was amazing", "we'll definitely come back") — that is
+// feedback/testimonial content, not an actionable fault, and clutters the ops
+// board without ever needing staff dispatch. Narrow vocabulary on purpose —
+// low overlap with maintenance-complaint wording keeps both classifiers clean.
+const REFLECTION_GATE_PATTERN =
+  /(ה)?שהות|(ה)?חופשה|(ה)?אירוח|(ה)?חוויה|(ה)?ביקור|(ה)?צוות\s*(היה|היו)|ממליצים|נחזור|(the\s*)?(stay|vacation|experience|visit)/i;
+
+/** Excludes plain questions about the stay ("when does the stay start?") from the reflection gate. */
+const REFLECTION_QUESTION_EXCLUSION = /^(?:מה|מתי|איך|למה|האם|כמה|איפה)\b/u;
+
+const POSITIVE_REFLECTION_PATTERNS: RegExp[] = [
+  /תודה\s*(רבה|ענקית|מהלב)?\s*על\s*(הכל|השהות|האירוח|החוויה|הכנסת\s*האורחים|הכנסת\s*אורחים)/i,
+  /(ה)?שהות\s*(שלנו\s*)?(הייתה|היתה)\s*(מדהימה|נהדרת|מושלמת|מעולה|פנטסטית|חלומית|מושקעת)/i,
+  /(ה)?(צוות|שירות)\s*(היה|היו)\s*(מדהים|נהדר|מעולה|מקצועי|אדיב|חם|קשוב)/i,
+  /ממליצים\s*(בחום|לכולם|מאוד)?/i,
+  /חוויה\s*(מדהימה|נהדרת|בלתי\s*נשכחת|מיוחדת)/i,
+  /נחזור\s*(בוודאות|בשמחה|בהחלט)|בטוח\s*נחזור/i,
+  /best\s*(hotel|stay|vacation|experience)|amazing\s*(stay|experience|service)|highly\s*recommend/i,
+];
+
+const NEGATIVE_REFLECTION_PATTERNS: RegExp[] = [
+  /(ה)?שהות\s*(שלנו\s*)?(הייתה|היתה)\s*(מאכזבת|גרועה|לא\s*טובה|לא\s*מספקת|לא\s*ברמה)/i,
+  /לא\s*(נחזור|נמליץ|נבוא\s*שוב)/i,
+  /(ה)?(צוות|שירות)\s*(היה|היו)\s*(גרוע|לא\s*מקצועי|לא\s*אדיב|מזלזל)/i,
+  /לא\s*היה\s*שווה\s*(את\s*)?ה(כסף|מחיר)/i,
+  /worst\s*(stay|experience|hotel|vacation)|disappointing\s*(stay|experience)|would\s*not\s*recommend/i,
+];
+
+/**
+ * Returns the sentiment of a holistic stay/service reflection, or null if the
+ * message isn't one (a plain FAQ, an operational ask, small talk, etc.).
+ * Severe complaints and every other Tier-0 intercept already ran and `continue`d
+ * before this is ever reached — this only sees what's left.
+ */
+function classifyGuestReflection(text: string): "positive" | "negative" | "neutral" | null {
+  const t = text.trim();
+  if (t.length < 6 || t.endsWith("?") || REFLECTION_QUESTION_EXCLUSION.test(t)) return null;
+  if (!REFLECTION_GATE_PATTERN.test(t)) return null;
+  if (POSITIVE_REFLECTION_PATTERNS.some((p) => p.test(t))) return "positive";
+  if (NEGATIVE_REFLECTION_PATTERNS.some((p) => p.test(t))) return "negative";
+  return "neutral";
+}
+
+/** Deterministic ack only — never the LLM, same reasoning as every other Tier-0 shield reply. */
+function buildReflectionReply(sentiment: "positive" | "negative" | "neutral"): string {
+  if (sentiment === "positive") {
+    const reviewUrl = GOOGLE_REVIEW_URL || "dream-island.co.il";
+    return `איזה כיף לשמוע! 🌟 שמחים מאוד שנהניתם. אם תרצו לשתף את החוויה שלכם עם עוד אורחים — זה יעשה לנו את היום:\n${reviewUrl}\nתודה רבה ומחכים לראותכם שוב! 💫`;
+  }
+  if (sentiment === "negative") {
+    return "תודה שסיפרתם לנו על כך. 🙏 אנחנו מצטערים שהיה חלק מהשהות שלא עמד בציפיות, והדברים חשובים לנו מאוד. הצוות שלנו יבחן את זה כדי שנשתפר.";
+  }
+  return "תודה רבה ששיתפתם אותנו! 🙏 נשמח תמיד לשמוע עוד על השהות שלכם.";
+}
+
+/** Non-blocking-safe insert into guest_feedback — never throws into the caller. */
+async function saveGuestFeedback(
+  supabase: ReturnType<typeof createClient>,
+  opts: {
+    guestId: number | null;
+    phone: string;
+    sentiment: "positive" | "negative" | "neutral";
+    text: string;
+    source: "freeform_reflection" | "post_stay_button" | "severe_complaint";
+  },
+): Promise<void> {
+  const { error } = await supabase.from("guest_feedback").insert({
+    guest_id:      opts.guestId,
+    phone:         opts.phone,
+    sentiment:     opts.sentiment,
+    feedback_text: opts.text,
+    source:        opts.source,
+  });
+  if (error) {
+    console.error("[webhook] 📝 guest_feedback insert FAILED:", error.message);
+  }
+}
+
 function classifyIntent(text: string): Intent {
   if (isSensitiveStayChangeRequest(text)) return "fallback"; // shield handles reply — never upsell/LLM enthusiasm
   if (isSensitiveFinancialRequest(text))  return "fallback"; // shield handles reply — never LLM/upsell on billing disputes
@@ -1454,6 +1536,14 @@ async function handleSevereComplaintKillSwitch(
   if (alertErr) {
     console.error("[webhook] 🚨 severe_complaint guest_alerts insert FAILED:", alertErr.message);
   }
+
+  // Existing rules unchanged (requires_attention + guest_alerts above) — this
+  // ALSO logs to the Guest Feedback & Sentiment Dashboard as negative, per
+  // explicit product requirement: a severe complaint is both an urgent staff
+  // alert AND a sentiment record.
+  await saveGuestFeedback(supabase, {
+    guestId, phone, sentiment: "negative", text, source: "severe_complaint",
+  });
 
   // Deterministic template only — never the LLM. Same source as the regular
   // "complaint" intent branch (BotScriptEditor's complaint_reply, editable by
@@ -2939,6 +3029,9 @@ Deno.serve(async (req: Request) => {
           await supabase.from("whatsapp_conversations").insert({
             phone, guest_id: guestId, direction: "outbound", message: feedbackReply, wa_message_id: null, intent: "button_reply",
           });
+          await saveGuestFeedback(supabase, {
+            guestId, phone, sentiment: "positive", text: buttonTitle, source: "post_stay_button",
+          });
 
         // ── "יש מקום לשיפור 💬" — negative feedback → collect + flag ────────
         } else if (buttonTitle.includes("לשיפור") || buttonTitle.includes("שיפור")) {
@@ -2950,6 +3043,9 @@ Deno.serve(async (req: Request) => {
           try { await sendReply(phone, improvReply); } catch (e) { console.error("[webhook] reply error:", (e as Error).message); }
           await supabase.from("whatsapp_conversations").insert({
             phone, guest_id: guestId, direction: "outbound", message: improvReply, wa_message_id: null, intent: "button_reply",
+          });
+          await saveGuestFeedback(supabase, {
+            guestId, phone, sentiment: "negative", text: buttonTitle, source: "post_stay_button",
           });
 
         // ── Therapy upsell — "Hot & Cold Restart" campaign positive replies ─
@@ -3375,6 +3471,45 @@ Deno.serve(async (req: Request) => {
         continue;
       }
 
+      // ── Guest feedback / sentiment reflection capture (free text) ─────────
+      // Holistic stay/service reflections — NOT service-fault complaints
+      // (those still flow through COMPLAINT_PATTERNS below, unchanged). Every
+      // other Tier-0 intercept (severe complaint, sensitive stay/financial,
+      // date-change, administrative/operational in-house) already had its
+      // chance above and would have `continue`d — only genuine review-style
+      // text reaches this point. Written to guest_feedback (Guest Feedback &
+      // Sentiment Dashboard) instead of tasks/guest_alerts, so a "the stay was
+      // amazing!" message stops showing up on the operational Requests board.
+      if (!isButtonReply) {
+        const reflectionSentiment = classifyGuestReflection(effectiveText);
+        if (reflectionSentiment) {
+          await saveGuestFeedback(supabase, {
+            guestId, phone, sentiment: reflectionSentiment,
+            text: effectiveText, source: "freeform_reflection",
+          });
+          await patchClaimedInbound(supabase, claimedConversationId, msgId, {
+            guest_id: guestId,
+            intent: "guest_feedback",
+          });
+          const reflectionReply = buildReflectionReply(reflectionSentiment);
+          if (!sim) {
+            try {
+              await sendReply(phone, reflectionReply);
+              await supabase.from("whatsapp_conversations").insert({
+                phone, guest_id: guestId, direction: "outbound",
+                message: reflectionReply, wa_message_id: null, intent: "guest_feedback",
+              });
+            } catch (e) {
+              console.error("[webhook] 📝 reflection reply failed:", (e as Error).message);
+            }
+          }
+          console.info(
+            `[webhook] 📝 guest reflection captured — sentiment:${reflectionSentiment} phone:${phone} guest:${guestId ?? "unknown"}`,
+          );
+          continue;
+        }
+      }
+
       // ── Load conversation history early — used for context in ALL intents ──
       // Fetch last 20 rows, filter out system markers, keep last 10 real turns.
       const { data: rawHistory } = await supabase
@@ -3712,6 +3847,9 @@ Deno.serve(async (req: Request) => {
           });
           if (error) console.error("[webhook] 🚨 pre_send severe_complaint guest_alerts insert FAILED:", error.message);
         })().catch((e: Error) => console.error("[webhook] 🚨 pre_send severe_complaint guest_alerts insert FAILED:", e.message));
+        saveGuestFeedback(supabase, {
+          guestId, phone, sentiment: "negative", text: effectiveText, source: "severe_complaint",
+        }).catch((e: Error) => console.error("[webhook] 🚨 pre_send severe_complaint guest_feedback insert FAILED:", e.message));
         console.info(
           `[webhook] 🚨 SEVERE_COMPLAINT mitigation — source:pre_send_guard, canned template sent — phone:${phone} guest:${guestId ?? "unknown"}`,
         );
