@@ -149,6 +149,61 @@ export const RECEPTION_CHECKLIST_TEMPLATE = [
 export const RECEPTION_CHECKLIST_FOOTER =
   'בסוף כל משמרת יש לוודא שכל המשימות בוצעו ונרשמו ע"י מי ולהשאיר את הדף על השולחן של ילנה.';
 
+export function templateRowKey(section, key) {
+  return `${section}:${key}`;
+}
+
+export function buildTemplateKeySet() {
+  return new Set(
+    RECEPTION_CHECKLIST_TEMPLATE.map((t) => templateRowKey(t.section, t.key)),
+  );
+}
+
+const OPERATOR_STORAGE_KEY = "reception_checklist_operator";
+
+export function readStoredOperatorName() {
+  try {
+    return localStorage.getItem(OPERATOR_STORAGE_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+export function writeStoredOperatorName(name) {
+  try {
+    localStorage.setItem(OPERATOR_STORAGE_KEY, name);
+  } catch {
+    /* ignore */
+  }
+}
+
+function suppressedStorageKey(date) {
+  return `reception_checklist_suppressed_${date}`;
+}
+
+export function readSuppressedTemplateKeys(date) {
+  try {
+    const raw = localStorage.getItem(suppressedStorageKey(date));
+    return new Set(raw ? JSON.parse(raw) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+export function writeSuppressedTemplateKeys(date, keys) {
+  try {
+    localStorage.setItem(suppressedStorageKey(date), JSON.stringify([...keys]));
+  } catch {
+    /* ignore */
+  }
+}
+
+export function addSuppressedTemplateKey(date, section, key) {
+  const set = readSuppressedTemplateKeys(date);
+  set.add(templateRowKey(section, key));
+  writeSuppressedTemplateKeys(date, set);
+}
+
 /** Israel shift date — rolls back before 04:00 (fresh morning boilerplate). */
 export function receptionChecklistShiftDate(now = new Date()) {
   const parts = new Intl.DateTimeFormat("en-CA", {

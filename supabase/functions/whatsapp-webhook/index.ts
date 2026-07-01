@@ -437,6 +437,10 @@ async function sendStage2PayReply(
     console.info(`[webhook] 💳 Stage 2 Pay skipped — automation_muted guest_id=${guestId ?? "?"}`);
     return;
   }
+  if (_suppressGuestRepliesStaffClaim || isStaffClaimMutingGuest(guest)) {
+    console.info(`[webhook] 💳 Stage 2 Pay skipped — staff claim active guest_id=${guestId ?? "?"}`);
+    return;
+  }
   const payName        = String(guest?.name ?? "").trim() || "אורח יקר";
   const payWorkshopUrl = Deno.env.get("WORKSHOP_SIGNUP_URL") ?? "";
   const payAmount      = String(guest?.payment_amount ?? "");
@@ -2136,6 +2140,10 @@ function sanitizeReply(text: string): string {
 // §6  META CLOUD API — send WhatsApp reply
 // ══════════════════════════════════════════════════════════════════════════════
 async function sendReply(to: string, body: string): Promise<string> {
+  if (_suppressGuestRepliesStaffClaim) {
+    console.info(`[webhook] 🔇 staff claim — sendReply suppressed to ${to}`);
+    return "";
+  }
   const token   = Deno.env.get("META_WHATSAPP_TOKEN");
   const phoneId = Deno.env.get("META_PHONE_NUMBER_ID");
   if (!token || !phoneId) throw new Error("missing_meta_creds");
@@ -2195,7 +2203,18 @@ function normalizePhone(phoneStr: unknown): string {
 // `phone` is needed here (unlike before) because the fallback path compares it
 // in JS instead of letting Postgres filter on it server-side.
 const GUEST_LOOKUP_FIELDS =
-  "id, name, phone, arrival_confirmed, payment_amount, payment_link_url, direct_payment_url, ezgo_portal_url, payment_link_resolution_pending, msg_pre_arrival_2d_sent, needs_callback, requires_attention, attention_reason, arrival_date, arrival_time, room, room_type, spa_time, status, guest_notes, guest_profile, portal_token, automation_muted";
+  "id, name, phone, arrival_confirmed, payment_amount, payment_link_url, direct_payment_url, ezgo_portal_url, payment_link_resolution_pending, msg_pre_arrival_2d_sent, needs_callback, requires_attention, attention_reason, arrival_date, arrival_time, room, room_type, spa_time, status, guest_notes, guest_profile, portal_token, automation_muted, claimed_by";
+
+/** Per-message loop: staff "קח שיחה" on guests.claimed_by → suppress all guest outbound. */
+let _suppressGuestRepliesStaffClaim = false;
+
+function setSuppressGuestRepliesStaffClaim(active: boolean): void {
+  _suppressGuestRepliesStaffClaim = active;
+}
+
+function isStaffClaimMutingGuest(guest: Record<string, unknown> | null | undefined): boolean {
+  return guest?.claimed_by != null && guest.claimed_by !== "";
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // §7  MAIN HANDLER
@@ -2310,6 +2329,7 @@ Deno.serve(async (req: Request) => {
     }`);
 
     for (const msg of msgArr) {
+      setSuppressGuestRepliesStaffClaim(false);
       const from  = String(msg.from ?? "");
       const msgId = String(msg.id   ?? "");
       const phone = from.startsWith("+") ? from : `+${from}`;
@@ -2459,6 +2479,12 @@ Deno.serve(async (req: Request) => {
         guest = { ...guest, status: "checked_in" };
         applyAutoCheckinPromotion(supabase, guestId, phone);
         console.info(`[webhook] 🕒 auto_checkin gateway → checked_in phone:${phone} guest:${guestId}`);
+      }
+
+      const staffClaimActive = isStaffClaimMutingGuest(guest as Record<string, unknown> | null);
+      setSuppressGuestRepliesStaffClaim(staffClaimActive);
+      if (staffClaimActive) {
+        console.info(`[webhook] 🔇 staff claim active — bot muted for guest_id=${guestId} phone:${phone}`);
       }
 
       if (claimedConversationId && guestId) {
@@ -3149,8 +3175,11 @@ Deno.serve(async (req: Request) => {
       const conversationId = claimedConversationId;
 
       // ── Human-handover mode: message logged, no bot reply ─────────────────
-      if (!botIsActive) {
-        console.info(`[webhook] 🤫 bot paused — inbound logged, skipping reply to ${phone}`);
+      if (!botIsActive || staffClaimActive) {
+        console.info(
+          `[webhook] 🤫 bot paused — inbound logged, skipping reply to ${phone}` +
+          (staffClaimActive ? " (staff claim)" : ""),
+        );
         continue;
       }
 

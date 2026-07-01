@@ -7,6 +7,12 @@ import {
   RECEPTION_CHECKLIST_TEMPLATE,
   RECEPTION_CHECKLIST_FOOTER,
   receptionChecklistShiftDate,
+  buildTemplateKeySet,
+  templateRowKey,
+  readStoredOperatorName,
+  writeStoredOperatorName,
+  readSuppressedTemplateKeys,
+  addSuppressedTemplateKey,
 } from "../utils/receptionChecklistTemplate";
 
 const CREAM = "#F5F0E8";
@@ -14,8 +20,8 @@ const CREAM_DARK = "#E8DFD0";
 const GOLD = "var(--gold)";
 const GOLD_DARK = "var(--gold-dark)";
 
-/** Operators seen on physical checklist — used for Elena signature matrix. */
-const RECEPTION_OPERATORS = ["אלונה", "שיראל", "אורן"];
+/** Quick-fill chips for reception staff (optional shortcuts). */
+const OPERATOR_QUICK_CHIPS = ["אלונה", "שיראל", "אורן"];
 
 export default function ReceptionChecklist({ user }) {
   const [auditDate, setAuditDate] = useState(() => receptionChecklistShiftDate());
@@ -26,10 +32,12 @@ export default function ReceptionChecklist({ user }) {
   const [openSections, setOpenSections] = useState(() =>
     Object.fromEntries(RECEPTION_CHECKLIST_SECTIONS.map((s) => [s.key, true])),
   );
+  const [operatorName, setOperatorName] = useState(() => readStoredOperatorName());
+  const [editingId, setEditingId] = useState(null);
+  const [editDraft, setEditDraft] = useState("");
 
   const liveShiftDate = receptionChecklistShiftDate();
   const isHistoricView = auditDate !== liveShiftDate;
-  const operatorName = user?.name || user?.email || "צוות";
 
   const showToast = (type, msg) => {
     setToast({ type, msg });
@@ -39,19 +47,36 @@ export default function ReceptionChecklist({ user }) {
   const ensureSeeded = useCallback(async (date) => {
     if (!supabase) return;
 
+    const templateKeys = buildTemplateKeySet();
+    const suppressed = readSuppressedTemplateKeys(date);
+
     const { data: existing, error: fetchErr } = await supabase
       .from("reception_checklist_entries")
       .select("id, section_key, task_key, task_label")
       .eq("checklist_date", date);
     if (fetchErr) throw fetchErr;
 
+    const orphanIds = (existing ?? [])
+      .filter((r) => !templateKeys.has(templateRowKey(r.section_key, r.task_key)))
+      .map((r) => r.id);
+    if (orphanIds.length > 0) {
+      const { error: delErr } = await supabase
+        .from("reception_checklist_entries")
+        .delete()
+        .in("id", orphanIds);
+      if (delErr) throw delErr;
+    }
+
     const existingKeys = new Set(
-      (existing ?? []).map((r) => `${r.section_key}:${r.task_key}`),
+      (existing ?? [])
+        .filter((r) => templateKeys.has(templateRowKey(r.section_key, r.task_key)))
+        .map((r) => templateRowKey(r.section_key, r.task_key)),
     );
 
-    const missing = RECEPTION_CHECKLIST_TEMPLATE.filter(
-      (t) => !existingKeys.has(`${t.section}:${t.key}`),
-    );
+    const missing = RECEPTION_CHECKLIST_TEMPLATE.filter((t) => {
+      const k = templateRowKey(t.section, t.key);
+      return !existingKeys.has(k) && !suppressed.has(k);
+    });
     if (missing.length > 0) {
       const payload = missing.map((t) => ({
         checklist_date: date,
@@ -65,26 +90,6 @@ export default function ReceptionChecklist({ user }) {
         .from("reception_checklist_entries")
         .insert(payload);
       if (insertErr) throw insertErr;
-    }
-
-    const labelFixes = (existing ?? []).filter((row) => {
-      const tpl = RECEPTION_CHECKLIST_TEMPLATE.find(
-        (t) => t.section === row.section_key && t.key === row.task_key,
-      );
-      return tpl && tpl.label !== row.task_label;
-    });
-    if (labelFixes.length > 0) {
-      await Promise.all(
-        labelFixes.map((row) => {
-          const tpl = RECEPTION_CHECKLIST_TEMPLATE.find(
-            (t) => t.section === row.section_key && t.key === row.task_key,
-          );
-          return supabase
-            .from("reception_checklist_entries")
-            .update({ task_label: tpl.label })
-            .eq("id", row.id);
-        }),
-      );
     }
   }, []);
 
@@ -158,16 +163,14 @@ export default function ReceptionChecklist({ user }) {
   }, [rows]);
 
   const operatorSignoffs = useMemo(() => {
-    const counts = Object.fromEntries(RECEPTION_OPERATORS.map((n) => [n, 0]));
-    let other = 0;
+    const counts = {};
     for (const r of rows) {
       if (!r.is_done || !r.completed_by_name) continue;
       const name = String(r.completed_by_name).trim();
-      const known = RECEPTION_OPERATORS.find((op) => name.includes(op));
-      if (known) counts[known] += 1;
-      else other += 1;
+      if (!name) continue;
+      counts[name] = (counts[name] || 0) + 1;
     }
-    return { counts, other };
+    return Object.entries(counts).sort((a, b) => b[1] - a[1]);
   }, [rows]);
 
   const recentSignoffs = useMemo(() => {
@@ -182,15 +185,23 @@ export default function ReceptionChecklist({ user }) {
 
   const toggleRow = async (row) => {
     if (!supabase || isHistoricView) return;
+    const signer = operatorName.trim();
     const rowKey = `${row.section_key}:${row.task_key}`;
     setBusyKey(rowKey);
     const nextDone = !row.is_done;
+
+    if (nextDone && !signer) {
+      showToast("err", "רשמו שם עובד בשדה «מי ביצע את המשימה» לפני סימון ✓");
+      setBusyKey(null);
+      return;
+    }
+
     const patch = nextDone
       ? {
           is_done: true,
           completed_at: new Date().toISOString(),
           completed_by: user?.id ?? null,
-          completed_by_name: operatorName,
+          completed_by_name: signer,
         }
       : {
           is_done: false,
@@ -209,6 +220,63 @@ export default function ReceptionChecklist({ user }) {
       setRows((prev) => prev.map((r) => (r.id === row.id ? { ...r, ...patch } : r)));
     }
     setBusyKey(null);
+  };
+
+  const startEdit = (row) => {
+    if (isHistoricView) return;
+    setEditingId(row.id);
+    setEditDraft(row.task_label || "");
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditDraft("");
+  };
+
+  const saveEdit = async (row) => {
+    const label = editDraft.trim();
+    if (!label) {
+      showToast("err", "טקסט המשימה לא יכול להיות ריק");
+      return;
+    }
+    if (!supabase || isHistoricView) return;
+    setBusyKey(`edit:${row.id}`);
+    const { error } = await supabase
+      .from("reception_checklist_entries")
+      .update({ task_label: label })
+      .eq("id", row.id);
+    if (error) {
+      showToast("err", "שגיאה בעדכון: " + error.message);
+    } else {
+      setRows((prev) => prev.map((r) => (r.id === row.id ? { ...r, task_label: label } : r)));
+      cancelEdit();
+      showToast("ok", "המשימה עודכנה");
+    }
+    setBusyKey(null);
+  };
+
+  const deleteRow = async (row) => {
+    if (!supabase || isHistoricView) return;
+    if (!window.confirm("למחוק את המשימה מהצ'קליסט של היום?")) return;
+    setBusyKey(`del:${row.id}`);
+    const { error } = await supabase
+      .from("reception_checklist_entries")
+      .delete()
+      .eq("id", row.id);
+    if (error) {
+      showToast("err", "שגיאה במחיקה: " + error.message);
+    } else {
+      addSuppressedTemplateKey(auditDate, row.section_key, row.task_key);
+      setRows((prev) => prev.filter((r) => r.id !== row.id));
+      if (editingId === row.id) cancelEdit();
+      showToast("ok", "המשימה נמחקה");
+    }
+    setBusyKey(null);
+  };
+
+  const handleOperatorChange = (value) => {
+    setOperatorName(value);
+    writeStoredOperatorName(value);
   };
 
   const formatAuditTime = (iso) => {
@@ -373,41 +441,32 @@ export default function ReceptionChecklist({ user }) {
           }}
         >
           <div style={{ fontSize: 12, fontWeight: 800, color: GOLD_DARK, marginBottom: 10 }}>
-            👤 מטריצת חתימות צוות
+            👤 מי ביצע את המשימה
           </div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
-            {RECEPTION_OPERATORS.map((name) => (
-              <div
-                key={name}
-                style={{
-                  minHeight: 44,
-                  padding: "8px 14px",
-                  borderRadius: 10,
-                  background: "#fff",
-                  border: `1px solid ${CREAM_DARK}`,
-                  fontSize: 13,
-                  fontWeight: 700,
-                }}
-              >
-                {name}: {operatorSignoffs.counts[name]} ✓
-              </div>
-            ))}
-            {operatorSignoffs.other > 0 && (
-              <div
-                style={{
-                  minHeight: 44,
-                  padding: "8px 14px",
-                  borderRadius: 10,
-                  background: "#fff",
-                  border: `1px solid ${CREAM_DARK}`,
-                  fontSize: 13,
-                  color: "var(--text-muted)",
-                }}
-              >
-                אחר: {operatorSignoffs.other} ✓
-              </div>
-            )}
-          </div>
+          {operatorSignoffs.length > 0 ? (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+              {operatorSignoffs.map(([name, count]) => (
+                <div
+                  key={name}
+                  style={{
+                    minHeight: 44,
+                    padding: "8px 14px",
+                    borderRadius: 10,
+                    background: "#fff",
+                    border: `1px solid ${CREAM_DARK}`,
+                    fontSize: 13,
+                    fontWeight: 700,
+                  }}
+                >
+                  {name}: {count} ✓
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 12 }}>
+              עדיין לא סומנו משימות במשמרת זו.
+            </div>
+          )}
           {recentSignoffs.length > 0 && (
             <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.7 }}>
               <div style={{ fontWeight: 700, color: "var(--black)", marginBottom: 4 }}>
@@ -452,6 +511,55 @@ export default function ReceptionChecklist({ user }) {
           }}
         >
           🔒 תצוגת ארכיון בלבד — לא ניתן לערוך משימות ממשמרת קודמת.
+        </div>
+      )}
+
+      {!isHistoricView && (
+        <div
+          style={{
+            background: "#fff",
+            border: `1px solid ${CREAM_DARK}`,
+            borderRadius: 12,
+            padding: "14px 18px",
+            marginBottom: 16,
+          }}
+        >
+          <label
+            htmlFor="reception-operator-name"
+            style={{ display: "block", fontSize: 14, fontWeight: 800, color: GOLD_DARK, marginBottom: 8 }}
+          >
+            מי ביצע את המשימה
+          </label>
+          <input
+            id="reception-operator-name"
+            type="text"
+            value={operatorName}
+            onChange={(e) => handleOperatorChange(e.target.value)}
+            placeholder="שם העובד/ת (חובה לפני סימון ✓)"
+            style={{
+              width: "100%",
+              maxWidth: 360,
+              padding: "10px 12px",
+              borderRadius: 8,
+              border: `1px solid ${operatorName.trim() ? CREAM_DARK : "#E8A0A0"}`,
+              fontFamily: "Heebo, sans-serif",
+              fontSize: 15,
+              minHeight: 44,
+            }}
+          />
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10 }}>
+            {OPERATOR_QUICK_CHIPS.map((chip) => (
+              <button
+                key={chip}
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => handleOperatorChange(chip)}
+                style={{ minHeight: 44 }}
+              >
+                {chip}
+              </button>
+            ))}
+          </div>
         </div>
       )}
 
@@ -547,7 +655,13 @@ export default function ReceptionChecklist({ user }) {
 
                   {items.map((row) => {
                     const rowKey = `${row.section_key}:${row.task_key}`;
-                    const disabled = isHistoricView || busyKey === rowKey;
+                    const isRowBusy =
+                      busyKey === rowKey ||
+                      busyKey === `edit:${row.id}` ||
+                      busyKey === `del:${row.id}`;
+                    const disabled = isHistoricView || isRowBusy;
+                    const isEditing = editingId === row.id;
+
                     return (
                       <div
                         key={row.id}
@@ -564,15 +678,17 @@ export default function ReceptionChecklist({ user }) {
                         <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
                           <button
                             type="button"
-                            disabled={disabled}
+                            disabled={disabled || isEditing}
                             onClick={() => toggleRow(row)}
                             aria-label={row.is_done ? "סומן" : "לא סומן"}
                             title={
                               isHistoricView
                                 ? "תצוגת ארכיון בלבד"
-                                : row.is_done
-                                  ? "לחץ לביטול סימון"
-                                  : "לחץ לסימון + חתימה"
+                                : !operatorName.trim() && !row.is_done
+                                  ? "רשמו שם עובד לפני סימון"
+                                  : row.is_done
+                                    ? "לחץ לביטול סימון"
+                                    : "לחץ לסימון + חתימה"
                             }
                             style={{
                               width: 46,
@@ -581,7 +697,7 @@ export default function ReceptionChecklist({ user }) {
                               borderRadius: 10,
                               border: `2px solid ${row.is_done ? GOLD_DARK : CREAM_DARK}`,
                               background: row.is_done ? GOLD : "#fff",
-                              cursor: disabled ? "not-allowed" : "pointer",
+                              cursor: disabled || isEditing ? "not-allowed" : "pointer",
                               display: "flex",
                               alignItems: "center",
                               justifyContent: "center",
@@ -593,17 +709,80 @@ export default function ReceptionChecklist({ user }) {
                             ✓
                           </button>
                           <div style={{ flex: 1, paddingTop: 4 }}>
-                            <div
-                              style={{
-                                fontSize: 15,
-                                fontWeight: row.is_done ? 600 : 700,
-                                textDecoration: row.is_done ? "line-through" : "none",
-                                color: row.is_done ? "var(--text-muted)" : "var(--black)",
-                                lineHeight: 1.45,
-                              }}
-                            >
-                              {row.task_label}
-                            </div>
+                            {isEditing ? (
+                              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                                <textarea
+                                  value={editDraft}
+                                  onChange={(e) => setEditDraft(e.target.value)}
+                                  rows={3}
+                                  style={{
+                                    width: "100%",
+                                    padding: "8px 10px",
+                                    borderRadius: 8,
+                                    border: `1px solid ${CREAM_DARK}`,
+                                    fontFamily: "Heebo, sans-serif",
+                                    fontSize: 14,
+                                    lineHeight: 1.45,
+                                    resize: "vertical",
+                                  }}
+                                />
+                                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                  <button
+                                    type="button"
+                                    className="btn btn-primary btn-sm"
+                                    disabled={isRowBusy}
+                                    onClick={() => saveEdit(row)}
+                                    style={{ minHeight: 44 }}
+                                  >
+                                    שמור
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="btn btn-ghost btn-sm"
+                                    onClick={cancelEdit}
+                                    style={{ minHeight: 44 }}
+                                  >
+                                    ביטול
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div
+                                style={{
+                                  fontSize: 15,
+                                  fontWeight: row.is_done ? 600 : 700,
+                                  textDecoration: row.is_done ? "line-through" : "none",
+                                  color: row.is_done ? "var(--text-muted)" : "var(--black)",
+                                  lineHeight: 1.45,
+                                }}
+                              >
+                                {row.task_label}
+                              </div>
+                            )}
+                            {!isHistoricView && !isEditing && (
+                              <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+                                <button
+                                  type="button"
+                                  className="btn btn-ghost btn-sm"
+                                  disabled={isRowBusy}
+                                  onClick={() => startEdit(row)}
+                                  title="עריכת טקסט המשימה"
+                                  style={{ minHeight: 44, padding: "4px 10px" }}
+                                >
+                                  ✏️ ערוך
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn btn-ghost btn-sm"
+                                  disabled={isRowBusy}
+                                  onClick={() => deleteRow(row)}
+                                  title="מחיקת המשימה מהיום"
+                                  style={{ minHeight: 44, padding: "4px 10px", color: "#C0392B" }}
+                                >
+                                  🗑️ מחק
+                                </button>
+                              </div>
+                            )}
                           </div>
                         </div>
 

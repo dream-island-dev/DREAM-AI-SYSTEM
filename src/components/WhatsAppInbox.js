@@ -172,10 +172,10 @@ const T = {
     langSwap: "EN",
     editGuest: "✏️ ערוך פרטי אורח",
     contextualMacrosTitle: "✨ הצעות לפי פרטי האורח",
-    claimChat: "🙋 קח שיחה",
-    claimedByMe: "✓ בטיפולך",
-    takeOver: "🔁 העבר אליי",
-    release: "שחרר",
+    claimChat: "🙋 קח שיחה (השתק בוט)",
+    claimedByMe: "✓ בטיפולך · בוט מושתק",
+    takeOver: "🔁 העבר אליי (השתק בוט)",
+    release: "שחרר שיחה (הפעל בוט)",
     claimedBadge: (name) => `🔒 בטיפול: ${name}`,
     aiSuggestTitle: "✨ הצעות AI חכמות",
     aiSuggestButton: "✨ הצעות AI חכמות",
@@ -218,10 +218,10 @@ const T = {
     langSwap: "HE",
     editGuest: "✏️ Edit guest",
     contextualMacrosTitle: "✨ Suggested for this guest",
-    claimChat: "🙋 Claim chat",
-    claimedByMe: "✓ Yours",
-    takeOver: "🔁 Take over",
-    release: "Release",
+    claimChat: "🙋 Claim chat (mute bot)",
+    claimedByMe: "✓ Yours · bot muted",
+    takeOver: "🔁 Take over (mute bot)",
+    release: "Release chat (unmute bot)",
     claimedBadge: (name) => `🔒 Handling: ${name}`,
     aiSuggestTitle: "✨ Smart AI Suggestions",
     aiSuggestButton: "✨ Smart AI Suggestions",
@@ -354,12 +354,13 @@ function groupByPhone(rows) {
     if (row.guest_portal_token) contact.portalToken = row.guest_portal_token;
     if (row.guest_meal_time) contact.mealTime = row.guest_meal_time;
     if (row.guest_meal_location) contact.mealLocation = row.guest_meal_location;
-    // claimed_by/claimed_at must reflect the LATEST row even when the latest
-    // value is "cleared" (null) — unlike the append-only fields above, a
-    // release legitimately means "go back to unclaimed", so this can't use
-    // the same "only overwrite if truthy" guard.
-    contact.claimedBy = row.guest_claimed_by ?? null;
-    contact.claimedAt = row.guest_claimed_at ?? null;
+    // claimed_by lives on guests — only overwrite when the join carried a value.
+    // New inbound rows sometimes arrive before guest_id is patched on the
+    // conversation row, which would null the join and falsely "release" claim.
+    if (row.guest_claimed_by != null) {
+      contact.claimedBy = row.guest_claimed_by;
+      contact.claimedAt = row.guest_claimed_at ?? null;
+    }
     if (row.push_name) contact.pushName = row.push_name;
     // Flag contact if any inbound message is a human request
     if (row.human_requested && row.direction === "inbound") {
@@ -1905,6 +1906,9 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
         status: matched.status ?? c.status ?? null,
         arrivalDate: matched.arrival_date ?? c.arrivalDate ?? null,
         departureDate: matched.departure_date ?? c.departureDate ?? null,
+        ...(matched.claimed_by != null
+          ? { claimedBy: matched.claimed_by, claimedAt: matched.claimed_at ?? null }
+          : {}),
       };
     });
   }, []);
@@ -1929,7 +1933,20 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
   // Merge new conversation rows instantly (Realtime INSERT or incremental poll).
   const mergeIncomingRows = useCallback((rows) => {
     if (!rows?.length) return false;
-    const incoming = rows.map((r) => normalise(r));
+    const incoming = rows.map((r) => {
+      const n = normalise(r);
+      if (!n.guest_claimed_by) {
+        for (let i = allMsgsRef.current.length - 1; i >= 0; i--) {
+          const prev = allMsgsRef.current[i];
+          if (prev.phone === n.phone && prev.guest_claimed_by) {
+            n.guest_claimed_by = prev.guest_claimed_by;
+            n.guest_claimed_at = prev.guest_claimed_at ?? null;
+            break;
+          }
+        }
+      }
+      return n;
+    });
     const existingIds = new Set(allMsgsRef.current.map((m) => m.id));
     const toAdd = incoming.filter((m) => m.id && !existingIds.has(m.id));
     if (!toAdd.length) return false;
@@ -2092,6 +2109,10 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
           : m
       );
       setContacts(applyGrouping(allMsgsRef.current));
+      if (claim) {
+        setRouteToast("🔇 הבוט מושתק לאורח זה — לחץ שוב לשחרור");
+        setTimeout(() => setRouteToast(null), 3500);
+      }
     } catch (e) {
       setError("שגיאה בעדכון שיוך השיחה: " + (e?.message ?? e));
     } finally {
@@ -2321,7 +2342,7 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
   useEffect(() => {
     supabase
       .from("guests")
-      .select("name, phone, status, arrival_date, departure_date")
+      .select("name, phone, status, arrival_date, departure_date, claimed_by, claimed_at")
       .not("phone", "is", null)
       .then(({ data }) => {
         const map = new Map();
@@ -2333,6 +2354,8 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
               status: g.status ?? null,
               arrival_date: g.arrival_date ?? null,
               departure_date: g.departure_date ?? null,
+              claimed_by: g.claimed_by ?? null,
+              claimed_at: g.claimed_at ?? null,
             });
           }
         }
@@ -2821,6 +2844,22 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
               {formatTime(m.created_at)} · {INTENT_LABELS[lang][m.intent]}
             </div>
           ))}
+        </div>
+      )}
+
+      {activeContact?.claimedBy && (
+        <div style={{
+          flexShrink: 0,
+          padding: "8px 16px",
+          background: activeContact.claimedBy === user?.id ? "rgba(37,211,102,0.15)" : "rgba(255,193,7,0.15)",
+          borderBottom: "1px solid rgba(0,0,0,0.08)",
+          fontSize: 13,
+          fontWeight: 700,
+          color: "var(--black)",
+        }}>
+          {activeContact.claimedBy === user?.id
+            ? "🔇 הבוט מושתק — את/ה מנהל/ת את השיחה. לחץ ✓ לשחרור והפעלת הבוט."
+            : `🔇 הבוט מושתק — ${activeContact.claimedByName ?? "צוות"} מטפל/ת בשיחה.`}
         </div>
       )}
 

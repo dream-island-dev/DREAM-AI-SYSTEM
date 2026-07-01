@@ -1,4 +1,5 @@
-2026-07-01 | guestCheckinMatrix + automationSchedule + whatsapp-cron/webhook + WhatsAppInbox | צ'ק-אין אוטומטי 15:00 (כולל room_ready); צ'ק-אאוט 11:00 ביום עזיבה; סגול DREAM BOT לפי סטטוס אפקטיבי.
+2026-07-01 | WhatsAppInbox.js + whatsapp-webhook | «קח שיחה» משתיק בוט לאורח ספציפי (guests.claimed_by); תיקון UI שאיפס claim בהודעה חדשה.
+2026-07-01 | ReceptionChecklist.jsx + receptionChecklistTemplate.js | צ'קליסט: עריכה/מחיקת משימות, ניקוי שורות ישנות, שדה «מי ביצע» (שם חופשי), מעקב לפי שמות בפועל.
 2026-07-01 | WhatsAppInbox.js + guestTiming.js | DREAM BOT סגול רק ל-status=checked_in; סטטוס מטבלת guests מנצח join ישן.
 2026-07-01 | ReceptionChecklist + receptionChecklistTemplate | צ'קליסט קבלה: 21 משימות verbatim מהטופס הפיזי, עמודת הערות דיגיטלית, מטריצת אלונה/שיראל/אורן, איפוס 04:00.
 2026-07-01 | GuestsPage.js + WhatsAppInbox.js | צ'ק-אין: מחיקה כללית לנבחרים (במקום איפוס ספא); DREAM BOT — סגול ל-checked_in מחוזק דרך מפת טלפון+סטטוס.
