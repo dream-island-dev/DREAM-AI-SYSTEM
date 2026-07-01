@@ -13,7 +13,7 @@
 |---|---|---|
 | 0 | `App.js` design tokens + utility classes | ✅ committed `b450b65` |
 | 1 | `WhatsAppInbox.js` roster + CTAs | ✅ committed `b450b65` — Vercel deploy |
-| 2a | `Dashboard` KPI cards (`App.js`) | 🟡 מקומי — ממתין commit (עם backend) |
+| 2a | `Dashboard` KPI cards (`App.js`) | 🟡 מקומי — KPI + dash-grid tokens, tablet 2×2 |
 | 2b | `OperationsBoard.js` TaskCards + chips | Pending |
 | 3 | `HousekeepingTabletView.js` + AICopilot verify | Pending |
 | 4 | `App.js` mobile shell + `GuestsPage.js` | Pending |

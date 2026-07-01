@@ -39,6 +39,13 @@ const CATEGORY_LABELS: Record<string, string> = {
   maintenance:      "Maintenance",
 };
 
+/** Whapi card translation — ops departments only; DB description stays Hebrew. */
+const FIELD_OPS_WHAPI_DEPARTMENTS = new Set([
+  "תפעול",
+  "משק",
+  "תפעול ואחזקה",
+]);
+
 // Session — Dynamic Native Mentions, same contract as whapi-webhook's
 // buildTaskCard: `assignedPhone` is already-cleaned bare digits; omitted
 // entirely (no dead "Assigned:" line) when no profiles row has a phone for
@@ -117,7 +124,10 @@ serve(async (req: Request) => {
 
     const rawDesc = String(task.description ?? "");
     let whapiDesc = rawDesc;
-    if (containsHebrew(rawDesc)) {
+    if (
+      FIELD_OPS_WHAPI_DEPARTMENTS.has(String(task.department ?? "")) &&
+      containsHebrew(rawDesc)
+    ) {
       whapiDesc = await translateTextForFieldOps(rawDesc, {
         room: task.room_number as string | null,
         style: "description_only",

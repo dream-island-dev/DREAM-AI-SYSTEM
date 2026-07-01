@@ -8,4 +8,5 @@ export const STATUS_META = {
   room_ready: { label: "חדר מוכן",  bg: "#E8F5EF", color: "#1A7A4A" },
   checked_in: { label: "צ'ק-אין",   bg: "#EEF4FF", color: "#2952A3" },
   cancelled:  { label: "❌ מבוטל",  bg: "#FFF0EE", color: "#C0392B" },
+  checked_out: { label: "עזב",      bg: "#F0F0F0", color: "#666666" },
 };

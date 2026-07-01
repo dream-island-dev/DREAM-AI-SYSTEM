@@ -36,6 +36,7 @@ import CMSGate from "./components/cms/CMSGate";
 import CMSSecurityPanel from "./components/cms/CMSSecurityPanel";
 import VoucherReconciliationHub from "./components/VoucherReconciliationHub";
 import AdminChangelogDashboard from "./components/AdminChangelogDashboard";
+import ReceptionChecklist from "./components/ReceptionChecklist";
 
 // ============================================================
 // Departments are editable by admin via AdminPanel — stored in localStorage
@@ -497,7 +498,12 @@ const css = `
   .stat-card--tasks::before { background: linear-gradient(90deg, var(--status-warning), var(--gold)); }
   .stat-card--checklist::before { background: linear-gradient(90deg, var(--status-success), var(--gold-light)); }
   .stat-card--depts::before { background: linear-gradient(90deg, var(--status-info), var(--gold)); }
-  .stat-icon { font-size: 28px; margin-bottom: var(--space-sm); line-height: 1; }
+  .stat-card--shifts::before { background: linear-gradient(90deg, var(--gold-dark), var(--gold-light)); }
+  .stat-card-header {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: var(--space-sm); margin-bottom: var(--space-sm);
+  }
+  .stat-icon { font-size: 28px; line-height: 1; flex-shrink: 0; }
   .stat-value {
     font-size: 32px; font-weight: 900; color: var(--black); line-height: 1;
     font-family: 'Playfair Display', serif; letter-spacing: -0.02em;
@@ -521,6 +527,29 @@ const css = `
   }
   .dashboard-urgent-title { font-weight: 700; color: var(--status-danger); font-size: 14px; }
   .dashboard-urgent-body { font-size: 13px; color: var(--text-muted); margin-top: 2px; line-height: 1.45; }
+
+  /* Dashboard lower panels — shifts + recent tasks */
+  .dash-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-lg); }
+  .dash-grid .card { margin-bottom: 0; }
+  .dash-grid .card-header {
+    background: linear-gradient(180deg, var(--ivory) 0%, var(--card-bg) 100%);
+    padding: 14px 20px;
+  }
+  .dash-list-row {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 20px; border-bottom: 1px solid var(--border);
+  }
+  .dash-list-row:last-child { border-bottom: none; }
+  .dash-empty-state {
+    padding: var(--space-lg); color: var(--text-muted);
+    text-align: center; font-size: 13px; line-height: 1.5;
+  }
+  .dash-row-main { flex: 1; min-width: 0; }
+  .dash-row-title { font-size: 13px; font-weight: 600; color: var(--text-main); }
+  .dash-row-title--clip {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .dash-row-sub { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 
   .card {
     background: var(--card-bg); border-radius: var(--radius-lg);
@@ -690,8 +719,7 @@ const css = `
   /* GOLD ACCENT LINE */
   .gold-line { width: 32px; height: 2px; background: var(--gold); border-radius: 2px; margin-bottom: 12px; }
 
-  /* DASHBOARD two-column section grid */
-  .dash-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  /* DASHBOARD two-column section grid — see .dash-grid rules above */
 
   @media (max-width: 768px) {
     .sidebar { display: none; }
@@ -707,7 +735,7 @@ const css = `
       margin-bottom: var(--space-md);
     }
     .stat-card { padding: var(--space-md); }
-    .stat-icon { font-size: 22px; margin-bottom: var(--space-xs); }
+    .stat-icon { font-size: 22px; }
     .stat-value { font-size: 26px; }
     .stat-label { font-size: 11px; }
     .stat-sub { font-size: 10px; }
@@ -739,6 +767,16 @@ const css = `
       font-size: 15px; min-height: var(--hit-target-staff);
     }
     input[type="checkbox"] { width: 20px; height: 20px; }
+  }
+
+  /* Tablet — KPI 2×2 grid between phone and DeX desktop */
+  @media (min-width: 769px) and (max-width: 1279px) {
+    .stat-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: var(--space-md);
+    }
+    .stat-value { font-size: 30px; }
+    .dash-grid { gap: var(--space-md); }
   }
 
   @media (max-width: 390px) {
@@ -1291,10 +1329,12 @@ function Dashboard({ shifts, tasks, checklist, employees }) {
   const checkPct = checklist.length ? Math.round((doneChecks / checklist.length) * 100) : 0;
 
   return (
-    <div>
+    <div className="dashboard-shell">
       <div className="stat-grid">
-        <div className="stat-card">
-          <div className="stat-icon">👨‍💼</div>
+        <div className="stat-card stat-card--shifts">
+          <div className="stat-card-header">
+            <div className="stat-icon">👨‍💼</div>
+          </div>
           <div className="stat-value">{onShift.length}</div>
           <div className="stat-label">במשמרת עכשיו</div>
           <div className="stat-sub stat-sub--success">
@@ -1302,7 +1342,9 @@ function Dashboard({ shifts, tasks, checklist, employees }) {
           </div>
         </div>
         <div className="stat-card stat-card--tasks">
-          <div className="stat-icon">🛠️</div>
+          <div className="stat-card-header">
+            <div className="stat-icon">🛠️</div>
+          </div>
           <div className="stat-value">{openTasks.length}</div>
           <div className="stat-label">משימות פתוחות</div>
           {urgentTasks.length > 0 && (
@@ -1312,7 +1354,9 @@ function Dashboard({ shifts, tasks, checklist, employees }) {
           )}
         </div>
         <div className="stat-card stat-card--checklist">
-          <div className="stat-icon">✅</div>
+          <div className="stat-card-header">
+            <div className="stat-icon">✅</div>
+          </div>
           <div className="stat-value">{checkPct}%</div>
           <div className="stat-label">צ'קליסט הושלם</div>
           <div style={{ marginTop: "var(--space-sm)" }}>
@@ -1325,7 +1369,9 @@ function Dashboard({ shifts, tasks, checklist, employees }) {
           </div>
         </div>
         <div className="stat-card stat-card--depts">
-          <div className="stat-icon">🏢</div>
+          <div className="stat-card-header">
+            <div className="stat-icon">🏢</div>
+          </div>
           <div className="stat-value">{DEPARTMENTS.length}</div>
           <div className="stat-label">מחלקות פעילות</div>
           <div className="stat-sub stat-sub--info">
@@ -1355,28 +1401,12 @@ function Dashboard({ shifts, tasks, checklist, employees }) {
           </div>
           <div className="card-body">
             {onShift.length === 0 ? (
-              <div
-                style={{
-                  padding: 20,
-                  color: "#8a9ab0",
-                  textAlign: "center",
-                  fontSize: 13,
-                }}
-              >
+              <div className="dash-empty-state">
                 אין משמרות פעילות כרגע
               </div>
             ) : (
               onShift.map((s) => (
-                <div
-                  key={s.id}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 12,
-                    padding: "12px 20px",
-                    borderBottom: "1px solid #f8fafc",
-                  }}
-                >
+                <div key={s.id} className="dash-list-row">
                   <div
                     className="avatar"
                     style={{ width: 32, height: 32, fontSize: 11 }}
@@ -1386,11 +1416,9 @@ function Dashboard({ shifts, tasks, checklist, employees }) {
                       .map((n) => n[0])
                       .join("")}
                   </div>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 13, fontWeight: 600 }}>
-                      {s.employeeName}
-                    </div>
-                    <div style={{ fontSize: 11, color: "#8a9ab0" }}>
+                  <div className="dash-row-main">
+                    <div className="dash-row-title">{s.employeeName}</div>
+                    <div className="dash-row-sub">
                       {s.department} · {s.start}–{s.end}
                     </div>
                   </div>
@@ -1406,62 +1434,49 @@ function Dashboard({ shifts, tasks, checklist, employees }) {
             <div className="card-title">🛠️ משימות אחרונות</div>
           </div>
           <div className="card-body">
-            {tasks.slice(0, 4).map((t) => (
-              <div
-                key={t.id}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 12,
-                  padding: "12px 20px",
-                  borderBottom: "1px solid #f8fafc",
-                }}
-              >
-                <span
-                  className={`priority-dot dot-${
-                    t.priority === "urgent"
-                      ? "red"
-                      : t.priority === "normal"
-                      ? "orange"
-                      : "green"
-                  }`}
-                  style={{
-                    width: 8,
-                    height: 8,
-                    borderRadius: "50%",
-                    display: "block",
-                    flexShrink: 0,
-                  }}
-                />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div
+            {tasks.length === 0 ? (
+              <div className="dash-empty-state">אין משימות להצגה</div>
+            ) : (
+              tasks.slice(0, 4).map((t) => (
+                <div key={t.id} className="dash-list-row">
+                  <span
+                    className={`priority-dot dot-${
+                      t.priority === "urgent"
+                        ? "red"
+                        : t.priority === "normal"
+                        ? "orange"
+                        : "green"
+                    }`}
                     style={{
-                      fontSize: 13,
-                      fontWeight: 600,
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
+                      width: 8,
+                      height: 8,
+                      borderRadius: "50%",
+                      display: "block",
+                      flexShrink: 0,
                     }}
+                  />
+                  <div className="dash-row-main">
+                    <div className="dash-row-title dash-row-title--clip">
+                      {t.description}
+                    </div>
+                    <div className="dash-row-sub">
+                      {t.department} · {new Date(t.created_at).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" })}
+                    </div>
+                  </div>
+                  <span
+                    className={`badge ${
+                      t.status === "done"
+                        ? "badge-green"
+                        : t.status === "in_progress"
+                        ? "badge-orange"
+                        : "badge-red"
+                    }`}
                   >
-                    {t.description}
-                  </div>
-                  <div style={{ fontSize: 11, color: "#8a9ab0" }}>
-                    {t.department} · {new Date(t.created_at).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" })}
-                  </div>
+                    {t.status === "done" ? "בוצע" : t.status === "in_progress" ? "בטיפול" : "פתוח"}
+                  </span>
                 </div>
-                <span
-                  className={`badge ${
-                    t.status === "done"
-                      ? "badge-green"
-                      : t.status === "in_progress"
-                      ? "badge-orange"
-                      : "badge-red"
-                  }`}
-                >
-                  {t.status === "done" ? "בוצע" : t.status === "in_progress" ? "בטיפול" : "פתוח"}
-                </span>
-              </div>
-            ))}
+              ))
+            )}
           </div>
         </div>
       </div>
@@ -1469,6 +1484,8 @@ function Dashboard({ shifts, tasks, checklist, employees }) {
   );
 }
 
+// Legacy local checklist UI — dashboard KPI still reads checklist_items from localStorage.
+// eslint-disable-next-line no-unused-vars
 function ChecklistPage({ checklist, setChecklist }) {
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState({
@@ -2069,9 +2086,7 @@ export default function App({ initialPage = "dashboard" }) {
           />
         );
       case "checklist":
-        return (
-          <ChecklistPage checklist={checklist} setChecklist={setChecklist} />
-        );
+        return <ReceptionChecklist user={user} />;
       case "employees":
         return (
           <EmployeesPage user={user} onNavigate={setActivePage} />

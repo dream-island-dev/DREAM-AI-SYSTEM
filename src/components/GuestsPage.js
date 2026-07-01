@@ -10,6 +10,14 @@ import GuestAttentionBadge from "./GuestAttentionBadge";
 import CustomerProfilePane from "./CustomerProfilePane";
 import QuietHoursGate from "./QuietHoursGate";
 import { STATUS_META } from "../utils/guestStatusMeta";
+import { israelTodayStr } from "../utils/guestTiming";
+import {
+  isActiveCheckinRosterGuest,
+  isPostStayArchiveGuest,
+  resolveEffectiveGuestStatus,
+  shouldAutoCheckoutGuest,
+  shouldAutoPromoteToCheckedIn,
+} from "../utils/guestCheckinMatrix";
 import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
 
 export default function GuestsPage() {
@@ -33,11 +41,38 @@ export default function GuestsPage() {
   const [resetBusy, setResetBusy]       = useState(false);
   const [editGuest,     setEditGuest]    = useState(null);  // {} = new guest, {id,...} = existing
   const [roomByPhone,    setRoomByPhone]    = useState({});  // phone → { roomName, suiteType, isDayGuest } — fallback display only; the room dropdown itself uses SUITE_REGISTRY
-  // "🗂️ לקוחות עבר" filter — guests stays the single source of truth (no new
-  // table/component, DNA principle #5); just a client-side view toggle.
+  // Post-stay archive vs active check-in roster (reception matrix).
   const [showPastGuests, setShowPastGuests] = useState(false);
 
   const showToast = (type, msg) => { setToast({ type, msg }); setTimeout(() => setToast(null), 3500); };
+
+  /** 15:00 auto check-in + departure-day checkout — mirrors whatsapp-cron. */
+  const applyReceptionMatrixSync = useCallback(async (guestList) => {
+    if (!supabase || !guestList?.length) return guestList;
+    const today = israelTodayStr();
+    const now = new Date();
+    let next = guestList;
+    let anyChanged = false;
+
+    for (const g of guestList) {
+      if (shouldAutoPromoteToCheckedIn(g, now)) {
+        const patch = { status: "checked_in", checkin_time: new Date().toISOString() };
+        const { error } = await supabase.from("guests").update(patch).eq("id", g.id);
+        if (!error) {
+          next = next.map((x) => (x.id === g.id ? { ...x, ...patch } : x));
+          anyChanged = true;
+        }
+      } else if (shouldAutoCheckoutGuest(g, today)) {
+        const patch = { status: "checked_out" };
+        const { error } = await supabase.from("guests").update(patch).eq("id", g.id);
+        if (!error) {
+          next = next.map((x) => (x.id === g.id ? { ...x, ...patch } : x));
+          anyChanged = true;
+        }
+      }
+    }
+    return anyChanged ? next : guestList;
+  }, []);
 
   const fetchGuests = useCallback(async () => {
     setLoading(true);
@@ -48,9 +83,12 @@ export default function GuestsPage() {
       .order("arrival_date", { ascending: true })
       .order("id", { ascending: true });
     if (error) showToast("err", "שגיאה: " + error.message);
-    else setGuests(data ?? []);
+    else {
+      const synced = await applyReceptionMatrixSync(data ?? []);
+      setGuests(synced);
+    }
     setLoading(false);
-  }, []);
+  }, [applyReceptionMatrixSync]);
 
   const fetchRooms = useCallback(async () => {
     if (!supabase) return;
@@ -71,6 +109,12 @@ export default function GuestsPage() {
   }, []);
 
   useEffect(() => { fetchGuests(); fetchRooms(); }, [fetchGuests, fetchRooms]);
+
+  // Re-evaluate 15:00 gateway + departure checkout every minute.
+  useEffect(() => {
+    const id = setInterval(() => { fetchGuests(); }, 60_000);
+    return () => clearInterval(id);
+  }, [fetchGuests]);
 
   const setStatus = async (guest, status) => {
     if (!supabase) return;
@@ -134,17 +178,12 @@ export default function GuestsPage() {
   const toggleSelectAll = () =>
     setSelectedIds((prev) => prev.size === displayGuests.length ? new Set() : new Set(displayGuests.map((g) => g.id)));
 
-  // ── Past Guests filter — mirrors the departure_date query style already
-  //    used in WhatsAppInbox.js for "still on property" checks. ───────────────
-  const todayISO = new Date().toISOString().slice(0, 10);
-  // Bifurcation enforcement: CheckinTable shows suite guests ONLY.
-  // Day-pass guests (day_guest / premium_day_guest) use GuestDashboard's
-  // "בילוי יומי" tab — they never have a room-ready or check-in pipeline.
+  // ── Reception matrix filters — active roster vs post-stay archive ─────────
+  const todayISO = israelTodayStr();
   const displayGuests = guests.filter((g) => {
-    const activeWindow = showPastGuests
-      ? (g.departure_date && g.departure_date < todayISO)
-      : (!g.departure_date || g.departure_date >= todayISO);
-    return activeWindow && isSuite(g);
+    if (!isSuite(g)) return false;
+    if (showPastGuests) return isPostStayArchiveGuest(g, todayISO);
+    return isActiveCheckinRosterGuest(g, new Date());
   });
 
   // ── Safe spa reset — UPDATE only, never DELETE ───────────────────────────────
@@ -369,7 +408,7 @@ export default function GuestsPage() {
           }}>👑 סוויטות בלבד</span>
           <label style={{ fontSize: 13, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
             <input type="checkbox" checked={showPastGuests} onChange={(e) => { setShowPastGuests(e.target.checked); setSelectedIds(new Set()); }} style={{ accentColor: "var(--gold)" }} />
-            🗂️ הצג לקוחות עבר
+            🗂️ אורחים לאחר שהות
           </label>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -412,8 +451,8 @@ export default function GuestsPage() {
       ) : displayGuests.length === 0 ? (
         <div style={{ textAlign: "center", padding: 48, color: "var(--text-muted)" }}>
           {showPastGuests
-            ? "אין אורחי סוויטות עבר."
-            : "אין אורחי סוויטות — ייבא קובץ הגעות דרך \"תפעול ואחזקה\" או הוסף אורח ידנית."}
+            ? "אין אורחי סוויטות בארכיון לאחר שהות."
+            : "אין אורחים פעילים להיום — ייבא הגעות דרך \"תפעול ואחזקה\" או הוסף אורח ידנית."}
         </div>
       ) : (
         <div className="card">
@@ -433,9 +472,9 @@ export default function GuestsPage() {
               </tr></thead>
               <tbody>
                 {displayGuests.map((g) => {
-                  // Unknown status (e.g. a stray value written outside the app) must be visible,
-                  // not silently masked as "ממתין" — that's exactly what hid the button bug.
-                  const sm = STATUS_META[g.status] ?? { label: `⚠ ${g.status ?? "ללא סטטוס"}`, bg: "#FFF0EE", color: "#C0392B" };
+                  const effectiveStatus = resolveEffectiveGuestStatus(g);
+                  const sm = STATUS_META[effectiveStatus] ?? STATUS_META[g.status] ?? { label: `⚠ ${g.status ?? "ללא סטטוס"}`, bg: "#FFF0EE", color: "#C0392B" };
+                  const rowStatus = g.status;
                   return (
                     <tr key={g.id} style={{ background: selectedIds.has(g.id) ? "rgba(201,169,110,0.07)" : undefined }}>
                       <td>
@@ -483,15 +522,15 @@ export default function GuestsPage() {
                       </td>
                       <td>
                         <span
-                          onClick={g.status === "checked_in" ? () => setStatus(g, "expected") : undefined}
-                          onMouseEnter={g.status === "checked_in" ? () => setBadgeHover(g.id) : undefined}
-                          onMouseLeave={g.status === "checked_in" ? () => setBadgeHover(null) : undefined}
-                          title={g.status === "checked_in" ? "לחץ לביטול צ'ק-אין" : undefined}
+                          onClick={rowStatus === "checked_in" ? () => setStatus(g, "expected") : undefined}
+                          onMouseEnter={rowStatus === "checked_in" ? () => setBadgeHover(g.id) : undefined}
+                          onMouseLeave={rowStatus === "checked_in" ? () => setBadgeHover(null) : undefined}
+                          title={rowStatus === "checked_in" ? "לחץ לביטול צ'ק-אין" : undefined}
                           style={{
                             padding: "4px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700,
                             background: badgeHover === g.id ? "#FFF0EE" : sm.bg,
                             color:      badgeHover === g.id ? "#C0392B" : sm.color,
-                            cursor: g.status === "checked_in" ? "pointer" : "default",
+                            cursor: rowStatus === "checked_in" ? "pointer" : "default",
                             transition: "background 0.15s, color 0.15s",
                             userSelect: "none",
                           }}
@@ -510,13 +549,13 @@ export default function GuestsPage() {
                             ✏️
                           </button>
                           {/* ── Slot 1: חדר מוכן — always rendered, never disappears ── */}
-                          {g.status === "room_ready" ? (
+                          {rowStatus === "room_ready" ? (
                             <button className="btn btn-sm" disabled={busy === g.id}
                               onClick={() => setStatus(g, "expected")}
                               style={{ background: "#FFF0EE", color: "#C0392B" }}>
                               ↩ בטל חדר מוכן
                             </button>
-                          ) : g.status === "checked_in" ? (
+                          ) : rowStatus === "checked_in" ? (
                             <button className="btn btn-sm" disabled
                               title="האורח כבר בצ'ק-אין"
                               style={{ background: "#F5F5F5", color: "#AAAAAA", cursor: "not-allowed" }}>
@@ -540,7 +579,7 @@ export default function GuestsPage() {
                           )}
 
                           {/* ── Slot 2: צ'ק-אין — always rendered, never disappears ── */}
-                          {g.status === "checked_in" ? (
+                          {rowStatus === "checked_in" ? (
                             <button className="btn btn-sm" disabled={busy === g.id}
                               onClick={() => setStatus(g, "expected")}
                               style={{ background: "#FFF5E8", color: "#B5600A", fontWeight: 700 }}>

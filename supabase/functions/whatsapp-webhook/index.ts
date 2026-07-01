@@ -26,6 +26,9 @@
 // Required Supabase secrets:
 //   META_WEBHOOK_VERIFY_TOKEN | META_WHATSAPP_TOKEN | META_PHONE_NUMBER_ID
 //   GEMINI_API_KEY | SUPABASE_URL | SUPABASE_SERVICE_ROLE_KEY
+//
+// Ops-group 👍 task completion: whapi-webhook (not this Meta guest webhook).
+// Dual lookup: tasks.whapi_message_id → tasks.source_message_id fallback.
 // ══════════════════════════════════════════════════════════════════════════════
 
 import { serve }        from "https://deno.land/std@0.168.0/http/server.ts";

@@ -1,4 +1,6 @@
-2026-07-01 | RequestsBoard + App + WhatsAppInbox | מגירת פרטי בקשה + כפתור «פתח שיחה ב-DREAM BOT» → ניווט ל-wa_inbox עם בחירת thread לפי phone. `whapi_message_id` (כרטיס בוט) או `source_message_id` (הודעת טריגר מקורית) → `status=done` + resolved_by_*; ללא migration.
+2026-07-01 | GuestsPage + guestCheckinMatrix + migration 114 | מטריצת צ'ק-אין: רשימה פעילה (הגעה היום / checked_in במהלך שהייה), ארכיון «אורחים לאחר שהות», auto 15:00+checkout, סטטוס checked_out.
+2026-07-01 | ReceptionChecklist.jsx + migration 114 | צ'קליסט קבלה יומי DB: 3 אקורדיונים, progress+date audit, operator+timestamp, reset 04:00 Israel.
+2026-07-01 | notify-manual-task + whatsapp-cron | תרגום EN ל-Whapi רק למחלקות תפעול/משק; auto_checkout ב-cron לפי departure_date.
 2026-07-01 | notify-manual-task + fieldOpsTranslation.ts | משימה ידנית/inbox_routed: תיאור עברית → Gemini EN לכרטיס Whapi בלבד; DB נשאר עברית. מודול משותף גם ל-guest_request ב-webhook.
 2026-07-01 | App.js Dashboard (Phase 2a UI) | Luxury stat-cards: gold top accent, Playfair values, semantic stat-sub tokens; 2-col grid @768px + 390px readable sizes; urgent banner tokens.
 2026-07-01 | src/App.js (Phase 0 UI) | Design tokens (:root status/spacing/shadow/hit-target) + utility classes (.u-touch-*, .u-badge-nowrap); mobile-bar safe-area; stat-card hover polish.

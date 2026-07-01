@@ -85,6 +85,18 @@ serve(async (req: Request) => {
           console.log(`[whatsapp-cron] auto_checkin promoted ${autoCheckinCount} guest(s) for ${todayIsrael}`);
         }
       }
+
+      const { data: checkedOut, error: checkoutErr } = await supabase
+        .from("guests")
+        .update({ status: "checked_out" })
+        .lt("departure_date", todayIsrael)
+        .in("status", ["checked_in", "room_ready", "expected", "pending"])
+        .select("id");
+      if (checkoutErr) {
+        console.error("[whatsapp-cron] auto_checkout update FAILED:", checkoutErr.message);
+      } else if ((checkedOut?.length ?? 0) > 0) {
+        console.log(`[whatsapp-cron] auto_checkout archived ${checkedOut!.length} guest(s) before ${todayIsrael}`);
+      }
     }
 
     const { data: stagesData, error: stagesErr } = await supabase
