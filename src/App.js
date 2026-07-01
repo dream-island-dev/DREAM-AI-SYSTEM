@@ -1795,6 +1795,14 @@ export default function App({ initialPage = "dashboard" }) {
   // bar). Reuses the same <Sidebar> component as a slide-in overlay instead
   // of duplicating nav logic.
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  // Deep-link from Requests Board (etc.) → open a specific WA thread in DREAM BOT.
+  const [inboxFocus, setInboxFocus] = useState(null); // { phone, guestName? } | null
+  const openDreamBotChat = useCallback(({ phone, guestName }) => {
+    if (!phone) return;
+    setInboxFocus({ phone, guestName: guestName ?? null });
+    setActivePage("wa_inbox");
+    setMobileMenuOpen(false);
+  }, []);
   const [employees, setEmployees, empLoading, refetchEmployees] = usePersistentState("employees", initialEmployees);
   const [shifts, setShifts, shiftLoading]       = usePersistentState("shifts", initialShifts);
   const [checklist, setChecklist, checkLoading] = usePersistentState("checklist_items", initialChecklists);
@@ -2073,7 +2081,14 @@ export default function App({ initialPage = "dashboard" }) {
       case "broadcast":
         return <BroadcastDashboard user={user} />;
       case "wa_inbox":
-        return <WhatsAppInbox user={user} />;
+        return (
+          <WhatsAppInbox
+            user={user}
+            focusPhone={inboxFocus?.phone ?? null}
+            focusGuestName={inboxFocus?.guestName ?? null}
+            onFocusConsumed={() => setInboxFocus(null)}
+          />
+        );
       case "guests":
         return <GuestsPage />;
       case "scheduler":
@@ -2112,7 +2127,7 @@ export default function App({ initialPage = "dashboard" }) {
       case "housekeeping_tablet":
         return <HousekeepingTabletView />;
       case "requests_board":
-        return <RequestsBoard user={user} />;
+        return <RequestsBoard user={user} onOpenDreamBotChat={openDreamBotChat} />;
       case "suites":
         return <SuitesDashboard />;
       // "tasks"/"calls" kept as deep-link aliases (same pattern as session

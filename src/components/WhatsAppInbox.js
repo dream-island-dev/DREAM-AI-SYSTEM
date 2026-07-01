@@ -1806,7 +1806,7 @@ function NewChatModal({ onClose, onSent }) {
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
-export default function WhatsAppInbox({ user }) {
+export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocusConsumed }) {
   const {
     quietActive,
     overrideChecked,
@@ -1857,6 +1857,8 @@ export default function WhatsAppInbox({ user }) {
   const guestPhoneMapRef = useRef(new Map()); // normalizePhone(guests.phone) → guests.name
   const profilesMapRef   = useRef(new Map()); // profiles.id → profiles.name, for claimedBy display
   const alertsReadyRef   = useRef(false); // skip sounds until initial fetchAll completes
+  const pendingFocusRef  = useRef(null);   // { phone, guestName? } — Requests Board deep-link
+  const [navGuestName, setNavGuestName]   = useState(null); // header hint until contact hydrates
 
   // ── Shared row normaliser ─────────────────────────────────────────────────
   const normalise = (r) => ({
@@ -2174,6 +2176,39 @@ export default function WhatsAppInbox({ user }) {
     );
     setContacts(applyGrouping(allMsgsRef.current));
   }, [isMobile, applyGrouping]);
+
+  // ── Deep-link focus (Requests Board → "פתח שיחה ב-DREAM BOT") ───────────
+  useEffect(() => {
+    if (!focusPhone) return;
+    pendingFocusRef.current = {
+      phone: canonicalizePhone(focusPhone),
+      guestName: focusGuestName ?? null,
+    };
+    onFocusConsumed?.();
+  }, [focusPhone, focusGuestName, onFocusConsumed]);
+
+  useEffect(() => {
+    const pending = pendingFocusRef.current;
+    if (!pending || loading) return;
+
+    const normTarget = normalizePhone(pending.phone);
+    const match = contacts.find(
+      (c) => c.phone === pending.phone || normalizePhone(c.phone) === normTarget,
+    );
+
+    if (match) {
+      openContact(match.phone);
+      pendingFocusRef.current = null;
+      if (pending.guestName && !match.guestName) setNavGuestName(pending.guestName);
+      return;
+    }
+
+    if (!loading) {
+      openContact(pending.phone);
+      if (pending.guestName) setNavGuestName(pending.guestName);
+      pendingFocusRef.current = null;
+    }
+  }, [contacts, loading, openContact]);
 
   // ── Route a guest conversation to Operations (Maintenance/Housekeeping) ──
   // Inserts a real `tasks` row — same shape as whapi-webhook/staff-ops — so it
@@ -2510,6 +2545,11 @@ export default function WhatsAppInbox({ user }) {
   // Moved below derived `thread` — scroll when active chat grows (realtime/poll).
   const activeContact   = contacts.find((c) => c.phone === active) ?? null;
   const thread          = activeContact?.messages ?? [];
+
+  useEffect(() => {
+    if (activeContact?.guestName) setNavGuestName(null);
+  }, [activeContact?.guestName]);
+
   const activeResolveCtx = {
     ...buildGuestResolveContext(activeContact),
     scriptsByKey,
@@ -2668,9 +2708,9 @@ export default function WhatsAppInbox({ user }) {
         )}
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 700, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {displayName(activeContact)}
+            {displayName(activeContact ?? (active ? { phone: active, guestName: navGuestName } : null))}
           </div>
-          {(activeContact?.guestName || activeContact?.pushName) && (
+          {(activeContact?.guestName || activeContact?.pushName || navGuestName) && (
             <div style={{ fontSize: 11, opacity: 0.75, direction: "ltr", marginTop: 1 }}>
               {active}
             </div>

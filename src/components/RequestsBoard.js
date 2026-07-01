@@ -35,7 +35,167 @@ function fmtTimestamp(iso) {
     : d.toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit" }) + " " + d.toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" });
 }
 
-export default function RequestsBoard({ user }) {
+function DreamBotChatButton({ phone, guestName, onOpenDreamBotChat, disabled }) {
+  const [hover, setHover] = useState(false);
+  if (!phone || !onOpenDreamBotChat) return null;
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => onOpenDreamBotChat({ phone, guestName })}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      title="מעבר מיידי לשיחת הוואטסאפ של האורח ב-DREAM BOT"
+      style={{
+        width: "100%",
+        minHeight: 44,
+        padding: "12px 16px",
+        borderRadius: 10,
+        border: `1.5px solid ${hover && !disabled ? "var(--gold-dark)" : "var(--border)"}`,
+        background: disabled
+          ? "var(--ivory)"
+          : hover
+            ? "linear-gradient(135deg, var(--gold-light, #E8C98A) 0%, var(--gold, #C9A96E) 100%)"
+            : "var(--ivory)",
+        color: disabled ? "var(--text-muted)" : "var(--black)",
+        fontFamily: "Heebo, sans-serif",
+        fontSize: 14,
+        fontWeight: 700,
+        cursor: disabled ? "not-allowed" : "pointer",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 8,
+        transition: "background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease",
+        boxShadow: hover && !disabled ? "0 4px 14px rgba(201,169,110,0.35)" : "none",
+      }}
+    >
+      <span style={{ fontSize: 18 }}>💬</span>
+      פתח שיחה ב-DREAM BOT
+    </button>
+  );
+}
+
+function RequestDetailDrawer({ req, onClose, onOpenResolve, onOpenDreamBotChat }) {
+  if (!req) return null;
+  const tm = typeMeta(req.alert_type);
+  const timingBadge = getGuestTimingBadge(req.guests);
+  const guestName = req.guests?.name || "אורח";
+  const canChat = Boolean(req.phone);
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed", inset: 0, zIndex: 9998, direction: "ltr",
+        background: "rgba(0,0,0,0.45)", display: "flex", justifyContent: "flex-end",
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: "100%", maxWidth: 400, height: "100%", background: "var(--card-bg)",
+          boxShadow: "-8px 0 32px rgba(0,0,0,0.18)", direction: "rtl", overflowY: "auto",
+          padding: "24px 22px", fontFamily: "Heebo, sans-serif",
+          animation: "req-drawer-slide-in 0.2s ease-out",
+        }}
+      >
+        <style>{`@keyframes req-drawer-slide-in { from { transform: translateX(100%); } to { transform: translateX(0); } }`}</style>
+
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18 }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 19, fontWeight: 800, color: "var(--black)" }}>{guestName}</div>
+            {req.guests?.room && (
+              <div style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 4 }}>🏨 {req.guests.room}</div>
+            )}
+            {req.phone && (
+              <div style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 2, direction: "ltr", textAlign: "right" }}>
+                📞 {req.phone}
+              </div>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="סגור"
+            style={{
+              minWidth: 44, minHeight: 44, border: "none", background: "var(--ivory)",
+              borderRadius: 10, cursor: "pointer", fontSize: 18, color: "var(--text-muted)",
+            }}
+          >
+            ✕
+          </button>
+        </div>
+
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
+          <span style={{
+            padding: "4px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700,
+            background: tm.bg, color: tm.color,
+          }}>{tm.label}</span>
+          {timingBadge && (
+            <span style={{
+              padding: "4px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700,
+              background: timingBadge.bg, color: timingBadge.color,
+              border: `1px solid ${timingBadge.border}`,
+            }}>{timingBadge.label}</span>
+          )}
+          <span style={{
+            padding: "4px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700,
+            background: req.resolved ? "#E8F5EF" : "#FFF5E8",
+            color: req.resolved ? "#1A7A4A" : "#B5600A",
+          }}>
+            {req.resolved ? "✓ בוצע" : "ממתין"}
+          </span>
+        </div>
+
+        <div style={{
+          whiteSpace: "pre-wrap", background: "var(--ivory)", borderRadius: 10,
+          padding: 14, fontSize: 14, color: "#333", marginBottom: 12,
+          border: "1px solid var(--border)", lineHeight: 1.55,
+        }}>
+          {req.message}
+        </div>
+
+        <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 20 }}>
+          התקבל: {fmtTimestamp(req.created_at)}
+        </div>
+
+        {req.resolved && req.resolution_notes && (
+          <div style={{
+            fontSize: 13, color: "#1A7A4A", background: "#E8F5EF",
+            borderRadius: 8, padding: 12, marginBottom: 16,
+          }}>
+            ✓ {req.resolution_notes}
+          </div>
+        )}
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 8 }}>
+          <DreamBotChatButton
+            phone={req.phone}
+            guestName={guestName}
+            onOpenDreamBotChat={onOpenDreamBotChat}
+            disabled={!canChat}
+          />
+          {!req.resolved && (
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => { onClose(); onOpenResolve(req); }}
+              style={{
+                minHeight: 44, background: "#E8F5EF", color: "#1A7A4A", fontWeight: 700,
+                width: "100%", borderRadius: 10,
+              }}
+            >
+              ✓ סמן כטופל
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function RequestsBoard({ user, onOpenDreamBotChat }) {
   const [requests, setRequests] = useState([]);
   const [loading, setLoading]   = useState(true);
   const [toast, setToast]       = useState(null);
@@ -50,6 +210,7 @@ export default function RequestsBoard({ user }) {
   const [noteText, setNoteText]         = useState("");
   const [saving, setSaving]             = useState(false);
   const [undoSnack, setUndoSnack]       = useState(null); // { id, prevRow }
+  const [detailReq, setDetailReq]       = useState(null); // right drawer — request context
 
   const showToast = (type, msg) => { setToast({ type, msg }); setTimeout(() => setToast(null), 3500); };
 
@@ -138,6 +299,16 @@ export default function RequestsBoard({ user }) {
         durationMs={6000}
       />
 
+      <RequestDetailDrawer
+        req={detailReq}
+        onClose={() => setDetailReq(null)}
+        onOpenResolve={openResolve}
+        onOpenDreamBotChat={(ctx) => {
+          setDetailReq(null);
+          onOpenDreamBotChat?.(ctx);
+        }}
+      />
+
       {/* ── Resolve modal — request context + optional resolution note ──────── */}
       {resolvingReq && (
         <div
@@ -158,6 +329,18 @@ export default function RequestsBoard({ user }) {
             <h3 style={{ margin: "0 0 12px", color: "var(--gold-dark)" }}>
               ✓ סמן כטופל — {resolvingReq.guests?.name || "אורח"}
             </h3>
+            {resolvingReq.phone && onOpenDreamBotChat && (
+              <div style={{ marginBottom: 12 }}>
+                <DreamBotChatButton
+                  phone={resolvingReq.phone}
+                  guestName={resolvingReq.guests?.name}
+                  onOpenDreamBotChat={(ctx) => {
+                    closeResolve();
+                    onOpenDreamBotChat(ctx);
+                  }}
+                />
+              </div>
+            )}
             <div style={{
               whiteSpace: "pre-wrap", background: "var(--ivory)", borderRadius: 8,
               padding: 12, fontSize: 14, color: "#333", marginBottom: 12,
@@ -261,7 +444,21 @@ export default function RequestsBoard({ user }) {
                   const timingBadge = getGuestTimingBadge(r.guests);
                   return (
                     <tr key={r.id} style={{ opacity: r.resolved ? 0.6 : 1 }}>
-                      <td style={{ fontWeight: 700 }}>{r.guests?.name || "—"}</td>
+                      <td style={{ fontWeight: 700 }}>
+                        <button
+                          type="button"
+                          onClick={() => setDetailReq(r)}
+                          title="פרטי בקשה"
+                          style={{
+                            background: "none", border: "none", padding: "6px 0",
+                            font: "inherit", fontWeight: 700, color: "var(--gold-dark)",
+                            cursor: "pointer", textDecoration: "underline",
+                            textUnderlineOffset: 3, minHeight: 44,
+                          }}
+                        >
+                          {r.guests?.name || "—"}
+                        </button>
+                      </td>
                       <td>{r.guests?.room || "—"}</td>
                       <td>
                         {timingBadge && (
