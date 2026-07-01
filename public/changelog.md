@@ -1,4 +1,4 @@
-2026-07-01 | GuestsPage + guestCheckinMatrix + GuestProfileModal + GuestDashboard | מטריצת PMS צ'ק-אין: סרגל היום/מחר/7 ימים/ארכיון, מיון משותף, הדגשת שורות, כפתור DREAM BOT בפרופיל, קישור מניהול אורחים.
+2026-07-01 | GuestPortal + guest-portal-data/spa-request + migration 115 + ReceptionChecklist | פורטל: הסתרת כפתור ספא כשיש spa_time / toggle גלובלי; תשובת Concierge Meta; צ'קליסט קבלה — מטריצת חתימות סיוון/שיראל/אלונה.
 2026-07-01 | guest-portal-spa-request + GuestPortal + whatsapp-webhook | בקשת ספא מהפורטל: requires_attention+guest_notes, Whapi DM קנוני לאורח, LLM guard מפני קישורי ספא.
 2026-07-01 | ArrivalImportPanel.js + detailedReservationParser.js | דוח מפורט: סינון עם/בלי חדרים, כפתור ייבוא דינמי (סוויטות/בילוי יומי), `profile_type`+`profile_batch_type` ב-payload.
 2026-07-01 | GuestsPage + guestCheckinMatrix + migration 114 | מטריצת צ'ק-אין: רשימה פעילה (הגעה היום / checked_in במהלך שהייה), ארכיון «אורחים לאחר שהות», auto 15:00+checkout, סטטוס checked_out.

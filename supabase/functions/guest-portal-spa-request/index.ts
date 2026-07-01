@@ -10,7 +10,7 @@ import { cleanPhoneForMention, sendWhapiText } from "../_shared/whapiSend.ts";
 export const PORTAL_SPA_ATTENTION_REASON = "בקשת טיפול בספא";
 
 export const PORTAL_SPA_GUEST_REPLY =
-  "ראינו שביקשת טיפול בספא, העברתי את הבקשה לצוות, אפשר גם לחייג למרכז ההזמנות שלנו - 08-6705600.";
+  "קיבלנו את הבקשה שלך לטיפול בספא, הפניה עברה לצוות ויצרו איתך קשר לתיאום בהתאם לזמינות";
 
 const PORTAL_SPA_AUDIT_LINE =
   "\n[System] האורח ביקש טיפול בספא דרך הפורטל האישי.";
@@ -53,7 +53,7 @@ serve(async (req: Request) => {
 
     const { data: guest, error: guestErr } = await supabase
       .from("guests")
-      .select("id, name, phone, room, arrival_date, status, guest_notes")
+      .select("id, name, phone, room, arrival_date, status, guest_notes, spa_time")
       .eq("portal_token", token)
       .maybeSingle();
     if (guestErr) throw new Error(`lookup_error: ${guestErr.message}`);
@@ -66,6 +66,26 @@ serve(async (req: Request) => {
     if (!guest.phone) {
       return new Response(
         JSON.stringify({ ok: false, error: "guest_has_no_phone" }),
+        { status: 200, headers: { ...CORS, "Content-Type": "application/json" } },
+      );
+    }
+
+    const { data: spaToggleRow } = await supabase
+      .from("system_settings")
+      .select("value_bool")
+      .eq("key", "enable_spa_request_button")
+      .maybeSingle();
+    if (spaToggleRow?.value_bool === false) {
+      return new Response(
+        JSON.stringify({ ok: false, error: "spa_request_disabled" }),
+        { status: 200, headers: { ...CORS, "Content-Type": "application/json" } },
+      );
+    }
+
+    const spaTime = String((guest.spa_time as string | null) ?? "").trim();
+    if (spaTime && spaTime !== "null" && spaTime !== "undefined") {
+      return new Response(
+        JSON.stringify({ ok: false, error: "spa_already_scheduled" }),
         { status: 200, headers: { ...CORS, "Content-Type": "application/json" } },
       );
     }
@@ -104,13 +124,40 @@ serve(async (req: Request) => {
       .maybeSingle();
     if (alertErr) console.warn("[guest-portal-spa-request] guest_alerts insert:", alertErr.message);
 
-    let whapiSent = false;
+    let conciergeReplySent = false;
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     try {
-      const digits = cleanPhoneForMention(guest.phone as string);
-      await sendWhapiText(digits, PORTAL_SPA_GUEST_REPLY, { noLinkPreview: true });
-      whapiSent = true;
+      const waRes = await fetch(`${supabaseUrl}/functions/v1/whatsapp-send`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${serviceKey}`,
+        },
+        body: JSON.stringify({
+          trigger: "inbox_reply",
+          phone: guest.phone,
+          message: PORTAL_SPA_GUEST_REPLY,
+        }),
+        signal: AbortSignal.timeout(28000),
+      });
+      const waData = await waRes.json().catch(() => ({}));
+      conciergeReplySent = waRes.ok && (waData as { ok?: boolean }).ok !== false;
+      if (!conciergeReplySent) {
+        console.warn("[guest-portal-spa-request] Meta concierge reply failed:", JSON.stringify(waData).slice(0, 300));
+      }
     } catch (e) {
-      console.warn("[guest-portal-spa-request] Whapi guest DM failed:", (e as Error).message);
+      console.warn("[guest-portal-spa-request] whatsapp-send invoke failed:", (e as Error).message);
+    }
+
+    if (!conciergeReplySent) {
+      try {
+        const digits = cleanPhoneForMention(guest.phone as string);
+        await sendWhapiText(digits, PORTAL_SPA_GUEST_REPLY, { noLinkPreview: true });
+        conciergeReplySent = true;
+      } catch (e) {
+        console.warn("[guest-portal-spa-request] Whapi guest DM fallback failed:", (e as Error).message);
+      }
     }
 
     try {
@@ -128,7 +175,7 @@ serve(async (req: Request) => {
       JSON.stringify({
         ok: true,
         alertId: alert?.id ?? null,
-        whapiSent,
+        conciergeReplySent,
         attentionReason: PORTAL_SPA_ATTENTION_REASON,
       }),
       { headers: { ...CORS, "Content-Type": "application/json" } },

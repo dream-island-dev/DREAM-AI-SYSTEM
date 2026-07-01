@@ -28,7 +28,9 @@
 //   GEMINI_API_KEY | SUPABASE_URL | SUPABASE_SERVICE_ROLE_KEY
 //
 // Ops-group 👍 task completion: whapi-webhook (not this Meta guest webhook).
-// Dual lookup: tasks.whapi_message_id → tasks.source_message_id fallback.
+// Dual lookup: bot card (tasks.whapi_message_id) → trigger text (tasks.source_message_id).
+// Field-ops Whapi cards: Hebrew stays in tasks.description — Gemini EN translation
+// only in outbound group payload (routeGuestRequestToOpsGroup + operational intercept).
 // ══════════════════════════════════════════════════════════════════════════════
 
 import { serve }        from "https://deno.land/std@0.168.0/http/server.ts";

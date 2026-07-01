@@ -471,7 +471,7 @@ function SecurePaymentButton({ guest }) {
 // ── Itinerary glass panel (suite + day-use) ───────────────────────────────────
 // Always renders — shows a concierge CTA fallback instead of returning null when
 // no spa/meal data exists (FAIL VISIBLE §0.3: guest never sees a blank section).
-function ItineraryPanel({ guest, onSpaRequest, spaBusy }) {
+function ItineraryPanel({ guest, onSpaRequest, spaBusy, showSpaRequest }) {
   const mealPlan = (guest.meal_location ?? "").trim() || null;
   const hasSchedule = !!(guest.spa_time || guest.meal_time || mealPlan);
   return (
@@ -494,9 +494,11 @@ function ItineraryPanel({ guest, onSpaRequest, spaBusy }) {
             </div>
           </div>
         )}
-        <div style={{ padding: "0 16px 16px" }}>
-          <SpaRequestButton onClick={onSpaRequest} busy={spaBusy} />
-        </div>
+        {showSpaRequest && (
+          <div style={{ padding: "0 16px 16px" }}>
+            <SpaRequestButton onClick={onSpaRequest} busy={spaBusy} />
+          </div>
+        )}
       </GlassPanel>
     </div>
   );
@@ -528,11 +530,11 @@ function SuiteQuickActions() {
 }
 
 // ── SUITE VIEW — full portal ──────────────────────────────────────────────────
-function SuiteView({ guest, phase, countdown, upsellItems, token, onToast, onUpsell, upsellBusy, onSpaRequest, spaBusy, scenes }) {
+function SuiteView({ guest, phase, countdown, upsellItems, token, onToast, onUpsell, upsellBusy, onSpaRequest, spaBusy, showSpaRequest, scenes }) {
   return (
     <>
       <PortalHero guest={guest} phase={phase} countdown={countdown} />
-      <ItineraryPanel guest={guest} onSpaRequest={onSpaRequest} spaBusy={spaBusy} />
+      <ItineraryPanel guest={guest} onSpaRequest={onSpaRequest} spaBusy={spaBusy} showSpaRequest={showSpaRequest} />
       <SecurePaymentButton guest={guest} />
       <SuiteQuickActions />
 
@@ -546,7 +548,7 @@ function SuiteView({ guest, phase, countdown, upsellItems, token, onToast, onUps
 }
 
 // ── DAY-USE VIEW — focused (Spa / Meals / Activities) ────────────────────────
-function DayUseView({ guest, phase, countdown, upsellItems, token, onToast, onUpsell, upsellBusy, onSpaRequest, spaBusy, scenes }) {
+function DayUseView({ guest, phase, countdown, upsellItems, token, onToast, onUpsell, upsellBusy, onSpaRequest, spaBusy, showSpaRequest, scenes }) {
 
   return (
     <>
@@ -591,9 +593,11 @@ function DayUseView({ guest, phase, countdown, upsellItems, token, onToast, onUp
               </a>
             </div>
           )}
-          <div style={{ padding: "0 16px 16px" }}>
-            <SpaRequestButton onClick={onSpaRequest} busy={spaBusy} />
-          </div>
+          {showSpaRequest && (
+            <div style={{ padding: "0 16px 16px" }}>
+              <SpaRequestButton onClick={onSpaRequest} busy={spaBusy} />
+            </div>
+          )}
         </GlassPanel>
       </div>
 
@@ -632,7 +636,8 @@ export default function GuestPortal({ token }) {
   const [portalScenes, setPortalScenes] = useState([]);
   const [loading, setLoading]           = useState(true);
   const [loadError, setLoadError]       = useState(null);
-  const [upsellBusy, setUpsellBusy]     = useState(null);
+  const [portalConfig, setPortalConfig]   = useState({ has_spa_booking: false, enable_spa_request_button: true });
+  const [upsellBusy, setUpsellBusy]       = useState(null);
   const [spaBusy, setSpaBusy]           = useState(false);
   const [toast, setToast]               = useState(null);
   const toastTimer = useRef(null);
@@ -658,6 +663,12 @@ export default function GuestPortal({ token }) {
           setGuest(data.guest);
           setUpsellItems(Array.isArray(data.upsellItems) ? data.upsellItems : []);
           setPortalScenes(Array.isArray(data.scenes) ? data.scenes : []);
+          if (data.portalConfig) {
+            setPortalConfig({
+              has_spa_booking: !!data.portalConfig.has_spa_booking,
+              enable_spa_request_button: data.portalConfig.enable_spa_request_button !== false,
+            });
+          }
         }
       } catch (e) {
         if (active) setLoadError(e?.message ?? "שגיאה בטעינה.");
@@ -675,7 +686,7 @@ export default function GuestPortal({ token }) {
   }, []);
 
   async function handleSpaRequest() {
-    if (spaBusy) return;
+    if (spaBusy || portalConfig.has_spa_booking || portalConfig.enable_spa_request_button === false) return;
     setSpaBusy(true);
     try {
       const { data, error } = await supabase.functions.invoke("guest-portal-spa-request", { body: { token } });
@@ -692,6 +703,7 @@ export default function GuestPortal({ token }) {
   async function handlePhotoTourUpsell(upsellLabel, actionType) {
     if (upsellBusy || spaBusy) return;
     if (actionType !== "OPS_REQUEST" && SPA_PORTAL_UPSELL_RE.test(upsellLabel ?? "")) {
+      if (portalConfig.has_spa_booking || portalConfig.enable_spa_request_button === false) return;
       await handleSpaRequest();
       return;
     }
@@ -719,6 +731,9 @@ export default function GuestPortal({ token }) {
     ? `${guest.arrival_date}T${DEFAULT_CHECKIN_TIME}:00`
     : null;
   const countdown = useCountdown(countdownTarget);
+
+  const showSpaRequest =
+    portalConfig.enable_spa_request_button !== false && !portalConfig.has_spa_booking;
 
   // ── Shared page wrapper ────────────────────────────────────────────────────
   const pageStyle = {
@@ -781,6 +796,7 @@ export default function GuestPortal({ token }) {
           upsellBusy={upsellBusy}
           onSpaRequest={handleSpaRequest}
           spaBusy={spaBusy}
+          showSpaRequest={showSpaRequest}
           scenes={portalScenes}
         />
       ) : isDayUse ? (
@@ -795,6 +811,7 @@ export default function GuestPortal({ token }) {
           upsellBusy={upsellBusy}
           onSpaRequest={handleSpaRequest}
           spaBusy={spaBusy}
+          showSpaRequest={showSpaRequest}
           scenes={portalScenes}
         />
       ) : (
@@ -810,6 +827,7 @@ export default function GuestPortal({ token }) {
           upsellBusy={upsellBusy}
           onSpaRequest={handleSpaRequest}
           spaBusy={spaBusy}
+          showSpaRequest={showSpaRequest}
           scenes={portalScenes}
         />
       )}

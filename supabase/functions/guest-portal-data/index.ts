@@ -50,6 +50,15 @@ serve(async (req: Request) => {
       .eq("portal_token", token)
       .maybeSingle();
 
+    const { data: spaToggleRow, error: spaToggleErr } = await supabase
+      .from("system_settings")
+      .select("value_bool")
+      .eq("key", "enable_spa_request_button")
+      .maybeSingle();
+    if (spaToggleErr) {
+      console.warn("[guest-portal-data] system_settings lookup failed (default enable):", spaToggleErr.message);
+    }
+
     if (err) throw new Error(`lookup_error: ${err.message}`);
     if (!guest) {
       return new Response(
@@ -172,12 +181,20 @@ serve(async (req: Request) => {
       });
     }
 
+    const spaTimeRaw = String((guest.spa_time as string | null) ?? "").trim();
+    const hasSpaBooking = !!(spaTimeRaw && spaTimeRaw !== "null" && spaTimeRaw !== "undefined");
+    const enableSpaRequestButton = spaToggleRow?.value_bool !== false;
+
     return new Response(
       JSON.stringify({
         ok: true,
         guest: maskedGuest,
         upsellItems: upsellItems ?? [],
         scenes,
+        portalConfig: {
+          has_spa_booking: hasSpaBooking,
+          enable_spa_request_button: enableSpaRequestButton,
+        },
       }),
       { headers: { ...CORS, "Content-Type": "application/json" } }
     );

@@ -13,6 +13,8 @@ const CREAM_DARK = "#E8DFD0";
 const GOLD = "var(--gold)";
 const GOLD_DARK = "var(--gold-dark)";
 
+const RECEPTION_OPERATORS = ["סיוון", "שיראל", "אלונה"];
+
 export default function ReceptionChecklist({ user }) {
   const [auditDate, setAuditDate] = useState(() => receptionChecklistShiftDate());
   const [rows, setRows] = useState([]);
@@ -102,6 +104,26 @@ export default function ReceptionChecklist({ user }) {
       if (map[r.section_key]) map[r.section_key].push(r);
     }
     return map;
+  }, [rows]);
+
+  const operatorSignoffs = useMemo(() => {
+    const counts = Object.fromEntries(RECEPTION_OPERATORS.map((n) => [n, 0]));
+    let other = 0;
+    for (const r of rows) {
+      if (!r.is_done || !r.completed_by_name) continue;
+      const name = String(r.completed_by_name).trim();
+      const known = RECEPTION_OPERATORS.find((op) => name.includes(op));
+      if (known) counts[known] += 1;
+      else other += 1;
+    }
+    return { counts, other };
+  }, [rows]);
+
+  const recentSignoffs = useMemo(() => {
+    return rows
+      .filter((r) => r.is_done && r.completed_at)
+      .sort((a, b) => new Date(b.completed_at) - new Date(a.completed_at))
+      .slice(0, 8);
   }, [rows]);
 
   const toggleSection = (key) =>
@@ -224,6 +246,53 @@ export default function ReceptionChecklist({ user }) {
               style={{ width: `${pct}%`, background: `linear-gradient(90deg, ${GOLD}, ${GOLD_DARK})`, borderRadius: 8 }}
             />
           </div>
+        </div>
+
+        <div style={{
+          marginTop: 18,
+          paddingTop: 16,
+          borderTop: `1px solid ${CREAM_DARK}`,
+        }}>
+          <div style={{ fontSize: 12, fontWeight: 800, color: GOLD_DARK, marginBottom: 10 }}>
+            👤 מעקב חתימות צוות (אלנה / מנהל)
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+            {RECEPTION_OPERATORS.map((name) => (
+              <div
+                key={name}
+                style={{
+                  minHeight: 44,
+                  padding: "8px 14px",
+                  borderRadius: 10,
+                  background: "#fff",
+                  border: `1px solid ${CREAM_DARK}`,
+                  fontSize: 13,
+                  fontWeight: 700,
+                }}
+              >
+                {name}: {operatorSignoffs.counts[name]} ✓
+              </div>
+            ))}
+            {operatorSignoffs.other > 0 && (
+              <div style={{
+                minHeight: 44, padding: "8px 14px", borderRadius: 10,
+                background: "#fff", border: `1px solid ${CREAM_DARK}`,
+                fontSize: 13, color: "var(--text-muted)",
+              }}>
+                אחר: {operatorSignoffs.other} ✓
+              </div>
+            )}
+          </div>
+          {recentSignoffs.length > 0 && (
+            <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.7 }}>
+              <div style={{ fontWeight: 700, color: "var(--black)", marginBottom: 4 }}>יומן אחרון:</div>
+              {recentSignoffs.map((r) => (
+                <div key={r.id}>
+                  {formatAuditTime(r.completed_at)} — {r.completed_by_name || "צוות"} · {r.task_label}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 

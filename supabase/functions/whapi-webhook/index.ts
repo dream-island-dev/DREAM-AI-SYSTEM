@@ -280,13 +280,14 @@ function isThumbsUp(emoji: string): boolean {
   return emoji.length > 0 && emoji.codePointAt(0) === THUMBS_UP_CODEPOINT;
 }
 
-/** Dual lookup: 👍 on bot card (whapi_message_id) OR on original staff text (source_message_id). */
+/** Dual lookup on reacted_message_id: bot card (whapi_message_id) then trigger (source_message_id). */
 async function findOpenTaskForReaction(
   supabase: ReturnType<typeof createClient>,
   reactedMessageId: string,
 ): Promise<{ id: string; status: string; matchedOn: "whapi_message_id" | "source_message_id" } | null> {
   const OPEN_STATUSES = ["open", "in_progress"] as const;
 
+  // Primary — 👍 on the bot task card (bot_message_id / whapi_message_id).
   const { data: byCard } = await supabase
     .from("tasks")
     .select("id, status")
@@ -295,6 +296,7 @@ async function findOpenTaskForReaction(
     .maybeSingle();
   if (byCard) return { ...byCard, matchedOn: "whapi_message_id" };
 
+  // Fallback — 👍 on the original staff/guest trigger message (original_trigger_message_id / source_message_id).
   const { data: byTrigger } = await supabase
     .from("tasks")
     .select("id, status")
@@ -321,7 +323,7 @@ async function resolveTaskByReaction(
       status: "done",
       resolved_by: resolverProfile?.id ?? null,
       resolved_by_phone: r.fromPhone || null,
-      resolved_by_name: r.fromName || null,
+      resolved_by_name: r.fromName || null, // completed_by_name audit (Whapi sender metadata)
       resolved_at: new Date().toISOString(),
     })
     .eq("id", taskId);
