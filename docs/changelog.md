@@ -1,3 +1,5 @@
+2026-07-01 | guest-portal-spa-request + GuestPortal + whatsapp-webhook | בקשת ספא מהפורטל: requires_attention+guest_notes, Whapi DM קנוני לאורח, LLM guard מפני קישורי ספא.
+2026-07-01 | ArrivalImportPanel.js + detailedReservationParser.js | דוח מפורט: סינון עם/בלי חדרים, כפתור ייבוא דינמי (סוויטות/בילוי יומי), `profile_type`+`profile_batch_type` ב-payload.
 2026-07-01 | GuestsPage + guestCheckinMatrix + migration 114 | מטריצת צ'ק-אין: רשימה פעילה (הגעה היום / checked_in במהלך שהייה), ארכיון «אורחים לאחר שהות», auto 15:00+checkout, סטטוס checked_out.
 2026-07-01 | ReceptionChecklist.jsx + migration 114 | צ'קליסט קבלה יומי DB: 3 אקורדיונים, progress+date audit, operator+timestamp, reset 04:00 Israel.
 2026-07-01 | notify-manual-task + whatsapp-cron | תרגום EN ל-Whapi רק למחלקות תפעול/משק; auto_checkout ב-cron לפי departure_date.

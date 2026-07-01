@@ -407,8 +407,7 @@ export function parseDetailedReservationRows(rawRows) {
 
     const guestNotes = extraPhone ? `טלפון נוסף: ${extraPhone}` : null;
 
-    // Detailed reservation report rows are always premium suite guests.
-    const isDayGuest = false;
+    const isDayGuest = roomsCount <= 0;
 
     rows.push({
       rowIndex: ri - 1,
@@ -441,13 +440,14 @@ export function detailedRowsToProfileMap(parsedRows) {
   const profiles = new Map();
 
   parsedRows.forEach((r, index) => {
+    const hasRooms = (r.rooms_count ?? 0) > 0;
     profiles.set(`row_${index}`, {
       guestPhone: r.guestPhone,
       coordPhone: null,
       guestName: r.guestName,
       phoneSource: r.phoneSource ?? "individual",
       arrivalDate: r.arrivalDate,
-      isDayGuest: r.isDayGuest,
+      isDayGuest: !hasRooms,
       roomsQuantity: r.rooms_count,
       meal_location: r.meal_location,
       guest_notes: r.guest_notes,
@@ -463,12 +463,12 @@ export function detailedRowsToProfileMap(parsedRows) {
         checkinTime: null,
         checkoutTime: null,
         price: r.price,
-        isDayGuest: false,
+        isDayGuest: !hasRooms,
       }],
 
       orderNumbers: r.orderNumber ? new Set([r.orderNumber]) : new Set(),
-      hasSuite: true,
-      hasDayBooking: false,
+      hasSuite: hasRooms,
+      hasDayBooking: !hasRooms,
       spa_time: null,
       treatment_count: 0,
       treatment_type: null,

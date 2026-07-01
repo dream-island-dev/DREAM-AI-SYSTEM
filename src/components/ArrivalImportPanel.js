@@ -522,6 +522,40 @@ function _detailedProfilesToGridRows(merged) {
   });
 }
 
+function _hasAssignedRoomsCount(val) {
+  const n = Number(val);
+  return Number.isFinite(n) && n > 0;
+}
+
+function _profileHasRooms(g) {
+  return (g.roomsQuantity ?? 0) > 0;
+}
+
+function _resolveDetailedProfileType(g, filterMode) {
+  if (filterMode === "suite") return "suite";
+  if (filterMode === "day_use") return "day_use";
+  return _profileHasRooms(g) ? "suite" : "day_use";
+}
+
+function _getSyncProfileIndices(merged, gridRows, { importSource, detailedRoomFilter, selectedIds }) {
+  const gridByIdx = new Map(gridRows.map((r) => [r._profileIdx, r]));
+  const indices = [];
+  for (let i = 0; i < merged.length; i++) {
+    const g = merged[i];
+    const row = gridByIdx.get(i);
+    const rowId = row?._id ?? `row_${i}`;
+    if (selectedIds.size > 0 && !selectedIds.has(rowId)) continue;
+    if (importSource === "detailed") {
+      const hasRooms = _profileHasRooms(g);
+      if (detailedRoomFilter === "suite" && !hasRooms) continue;
+      if (detailedRoomFilter === "day_use" && hasRooms) continue;
+    }
+    if (!g.guestPhone) continue;
+    indices.push(i);
+  }
+  return indices;
+}
+
 const DETAILED_GRID_COLS = [
   { id: "guestName",     label: "שם אורח",      editable: true,  w: 150 },
   { id: "guestPhone",    label: "טלפון",         editable: false, w: 120 },
@@ -610,6 +644,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
   const [merged,   setMerged]   = useState(null);   // enriched profiles array (doc2 + doc1 join)
   const [gridRows, setGridRows] = useState([]);      // editable grid rows derived from merged
   const [showOnlyWithSpa, setShowOnlyWithSpa] = useState(true); // default: spa-actionable rows only
+  const [detailedRoomFilter, setDetailedRoomFilter] = useState("all"); // "all" | "suite" | "day_use"
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [syncing,  setSyncing]  = useState(false);
   const [result,   setResult]   = useState(null);
@@ -1021,9 +1056,19 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
   }, [doc1SyncMode]);
 
   const displayGridRows = useMemo(() => {
-    if (!showOnlyWithSpa || importSource === "detailed") return gridRows;
-    return gridRows.filter(_hasSpaTime);
-  }, [gridRows, showOnlyWithSpa, importSource]);
+    let rows = gridRows;
+    if (showOnlyWithSpa && importSource !== "detailed") {
+      rows = rows.filter(_hasSpaTime);
+    }
+    if (importSource === "detailed") {
+      if (detailedRoomFilter === "suite") {
+        rows = rows.filter((r) => _hasAssignedRoomsCount(r.rooms_count));
+      } else if (detailedRoomFilter === "day_use") {
+        rows = rows.filter((r) => !_hasAssignedRoomsCount(r.rooms_count));
+      }
+    }
+    return rows;
+  }, [gridRows, showOnlyWithSpa, importSource, detailedRoomFilter]);
 
   const displayDoc1Rec = useMemo(() => {
     if (!doc1Rec) return [];
@@ -1040,6 +1085,11 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
 
   const toggleSpaFilter = useCallback(() => {
     setShowOnlyWithSpa((v) => !v);
+    setSelectedIds(new Set());
+  }, []);
+
+  const setDetailedRoomFilterAndClear = useCallback((mode) => {
+    setDetailedRoomFilter(mode);
     setSelectedIds(new Set());
   }, []);
 
@@ -1065,9 +1115,18 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
       // ── PATH A: Suite CSV loaded (rooms + guests + bookings) ─────────────
       if (hasDoc2 && merged) {
         const gridByProfileIdx = new Map(gridRows.map((r) => [r._profileIdx, r]));
-        const profiles = merged
-          .filter(g => g.guestPhone)
-          .map((g, i) => {
+        const syncIndices = _getSyncProfileIndices(merged, gridRows, {
+          importSource,
+          detailedRoomFilter,
+          selectedIds,
+        });
+        if (!syncIndices.length) {
+          showToast("err", "אין רשומות לייבוא לפי הסינון הנוכחי");
+          return;
+        }
+
+        const profiles = syncIndices.map((i) => {
+            const g = merged[i];
             const edited = gridByProfileIdx.get(i) ?? {};
             const nightsFromGrid = parseInt(edited.nights, 10);
             const nights = importSource === "detailed"
@@ -1075,21 +1134,22 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                 ? nightsFromGrid
                 : (g.rooms ?? []).reduce((mx, r) => Math.max(mx, r.nights || 0), 0) || 1)
               : (g.rooms ?? []).reduce((mx, r) => Math.max(mx, r.nights || 0), 0);
-            // Financial mapping: staff's edited grid amount wins; otherwise the
-            // parsed cPrice/fcPrice total computed in _profilesToGridRows.
             const editedAmount = edited.amount !== undefined && edited.amount !== ""
               ? parseFloat(edited.amount) : null;
             const computedAmount = (g.rooms ?? []).reduce((sum, r) => sum + (r.price || 0), 0);
+            const profileType = importSource === "detailed"
+              ? _resolveDetailedProfileType(g, detailedRoomFilter)
+              : (g.hasDayBooking ? "day_use" : "suite");
+            const isSuiteProfile = profileType === "suite";
             return {
               guestPhone:      g.guestPhone,
               guestName:       edited.guestName ?? g.guestName ?? "",
               arrivalDate:     g.arrivalDate ?? null,
               departureDate:   _addNights(g.arrivalDate, nights),
               orderNumber:     [...(g.orderNumbers ?? [])][0] ?? null,
-              hasSuite:        !!g.hasSuite,
-              // Daily Leisure Guests need their own room_type ('day_guest'), not
-              // 'standard' — otherwise GuestDashboard's tab bucketing misfiles them.
-              isDayGuest:      !!g.hasDayBooking,
+              hasSuite:        isSuiteProfile,
+              isDayGuest:      !isSuiteProfile,
+              profile_type:    profileType,
               treatment_count: g.treatment_count ?? 0,
               paymentAmount:   editedAmount ?? (computedAmount || null),
               leadSource:      g.leadSource ?? null,
@@ -1098,17 +1158,20 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
             };
           });
 
-        const rooms = merged
-          .flatMap((g, i) => {
+        const rooms = syncIndices
+          .flatMap((i) => {
+            const g = merged[i];
             const edited      = gridByProfileIdx.get(i) ?? {};
             const roomOverride = edited.room || "";
+            const profileType = importSource === "detailed"
+              ? _resolveDetailedProfileType(g, detailedRoomFilter)
+              : (g.hasDayBooking ? "day_use" : "suite");
+            const isDayGuestRoom = profileType === "day_use";
             return (g.rooms ?? []).map(r => ({
               resLineId:    r.resLineId,
               orderNumber:  r.orderNumber,
               roomName:     r.roomName,
               suiteType:    r.suiteType,
-              // Full SUITE_REGISTRY-style display string, used ONLY for the
-              // guests.room denormalization — never overwrites room_name/suite_type.
               roomDisplay:  roomOverride || _bestGuessSuite(r.roomName) || null,
               guestName:    edited.guestName ?? g.guestName ?? "",
               guestPhone:   g.guestPhone ?? null,
@@ -1119,20 +1182,26 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
               arrivalDate:  g.arrivalDate ?? null,
               checkinTime:  r.checkinTime ?? null,
               checkoutTime: r.checkoutTime ?? null,
-              isDayGuest:   !!r.isDayGuest,
+              isDayGuest:   isDayGuestRoom,
             }));
           })
           .filter(r => r.resLineId && r.orderNumber);
 
+        const batchProfileType = importSource === "detailed"
+          ? (detailedRoomFilter === "all" ? "mixed" : detailedRoomFilter)
+          : "mixed";
+
         const { data: rpcData, error: rpcErr } = await supabase
-          .rpc("sync_suite_arrivals", { payload: { profiles, rooms } });
+          .rpc("sync_suite_arrivals", {
+            payload: {
+              profiles,
+              rooms,
+              profile_batch_type: batchProfileType,
+            },
+          });
         if (rpcErr) throw new Error("sync_suite_arrivals: " + rpcErr.message);
 
-        // Inject spa_time / meal_time / meal_location where Doc 1 enrichment (or
-        // manual grid edit) provided them. meal_location is written independently
-        // of meal_time: board-basis guests (HB/FB/BB) get a plan label ("חצי פנסיון"
-        // etc.) with no time — strict meal rules §3, no default "19:00" guessing.
-        for (let i = 0; i < merged.length; i++) {
+        for (const i of syncIndices) {
           const g = merged[i];
           const edited   = gridByProfileIdx.get(i) ?? {};
           const spaTime  = edited.spa_time  || g.spa_time;
@@ -1156,18 +1225,18 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           }
         }
 
-        const corporateMuted = merged.filter((g) => g.automationMuted).length;
+        const syncedMerged = syncIndices.map((i) => merged[i]);
+        const corporateMuted = syncedMerged.filter((g) => g.automationMuted).length;
         setResult({
-          mode:   "suites",
+          mode:   importSource === "detailed" ? "detailed" : "suites",
           total:  rpcData?.guests ?? profiles.length,
           rooms:  rpcData?.rooms  ?? rooms.length,
-          // FAIL VISIBLE: the RPC already returns this count (rows with no resLineId/orderNumber
-          // never reached the DB) — it just wasn't surfaced anywhere before. Show it, don't hide it.
           skippedRooms: rpcData?.skipped ?? 0,
-          suites: merged.filter(g => g.hasSuite).length,
-          days:   merged.filter(g => g.hasDayBooking && !g.hasSuite).length,
-          spa:    gridRows.filter(r => r.spa_time).length,
+          suites: profiles.filter((p) => p.hasSuite).length,
+          days:   profiles.filter((p) => p.isDayGuest).length,
+          spa:    syncIndices.filter((i) => gridByProfileIdx.get(i)?.spa_time).length,
           corporateMuted,
+          batchType: batchProfileType,
         });
 
       // ── PATH B: Daily Report only — ENRICHMENT ONLY ─────────────────────
@@ -1272,7 +1341,8 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     setDoc2Map(null); setDoc1Rec(null); setRawDoc1Payload(null);
     setDoc2Name(""); setDoc1Name("");
     setDoc1SyncMode("suite_spa_only");
-    setMerged(null); setGridRows([]); setShowOnlyWithSpa(true); setSelectedIds(new Set()); setResult(null);
+    setMerged(null); setGridRows([]); setShowOnlyWithSpa(true);
+    setDetailedRoomFilter("all"); setSelectedIds(new Set()); setResult(null);
     setMappingStage("idle"); setRawDoc2Rows(null); setDoc2Fallback(null);
     setAiSuggestion(null); setAiError(null); setAutoDateBanner(null);
     setImportSource(null); setDetailedFileName("");
@@ -1312,13 +1382,28 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
       .catch(e => showToast("err", e.message));
   };
 
+  const syncTargetCount = useMemo(() => {
+    if (!merged?.length) return 0;
+    return _getSyncProfileIndices(merged, gridRows, {
+      importSource,
+      detailedRoomFilter,
+      selectedIds,
+    }).length;
+  }, [merged, gridRows, importSource, detailedRoomFilter, selectedIds]);
+
   // ── Sync button label ─────────────────────────────────────────────────────
   const syncLabel = syncing
     ? "⏳ מסנכרן..."
+    : importSource === "detailed" && hasDoc2
+      ? detailedRoomFilter === "suite"
+        ? `⚡ ייבא פרופילים כאורחי סוויטות (${syncTargetCount} רשומות)`
+        : detailedRoomFilter === "day_use"
+          ? `☀️ ייבא פרופילים כבילוי יומי (${syncTargetCount} רשומות)`
+          : `⚡ ייבא ${syncTargetCount} פרופילים`
     : (hasDoc2 && hasDoc1)
-      ? `⚡ ייבא ${merged?.length ?? 0} פרופילים + עדכן ספא`
+      ? `⚡ ייבא ${syncTargetCount} פרופילים + עדכן ספא`
     : hasDoc2
-      ? `⚡ ייבא ${merged?.length ?? 0} פרופילים`
+      ? `⚡ ייבא ${syncTargetCount} פרופילים`
       : doc1SyncMode === "suite_spa_only"
         ? `💆 סנכרן ספא סוויטות (${doc1Rec?.length ?? 0} הזמנות · לפי מס׳ הזמנה)`
         : `⚡ עדכן שעות ספא (${doc1Rec?.length ?? 0} אורחים)`;
@@ -1336,7 +1421,8 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
         withAmount: gridRows.filter(r => r.amount).length,
         assigned:   gridRows.filter(r => r.room).length,
         individual: merged.filter(g => g.phoneSource === "individual").length,
-        withRooms:  gridRows.filter(r => Number(r.rooms_count) > 0).length,
+        withRooms:  gridRows.filter(r => _hasAssignedRoomsCount(r.rooms_count)).length,
+        withoutRooms: gridRows.filter(r => !_hasAssignedRoomsCount(r.rooms_count)).length,
         muted:      merged.filter(g => g.automationMuted).length,
       }
     : hasDoc1
@@ -1611,7 +1697,8 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                   {[
                     { label: "פרופילים",   val: stats.total,      c: "#7c3aed", bg: "#f3f0ff" },
                     { label: "עם סכום",    val: stats.withAmount, c: "#0369a1", bg: "#eff6ff" },
-                    { label: "עם חדרים",   val: stats.withRooms,  c: "#b45309", bg: "#fef3c7" },
+                    { label: "עם חדרים",   val: stats.withRooms,    c: "#b45309", bg: "#fef3c7" },
+                    { label: "ללא חדרים",  val: stats.withoutRooms, c: "#0e7490", bg: "#ecfeff" },
                     { label: "ללא אוטומציה", val: stats.muted,    c: "#dc2626", bg: "#fef2f2" },
                   ].map(({ label, val, c, bg }) => (
                     <div key={label} style={{
@@ -1659,6 +1746,48 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                   ))}
                 </>
               ) : null}
+            </div>
+          )}
+
+          {/* Detailed report — suite vs day-use row filter */}
+          {stats?.mode === "detailed" && showSuiteGrid && (
+            <div style={{
+              display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
+              marginBottom: 12, padding: "8px 12px",
+              background: "rgba(124,58,237,0.06)", borderRadius: 10,
+              border: "1px solid rgba(124,58,237,0.2)",
+            }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: "#5b21b6", marginLeft: 4 }}>
+                סינון תצוגה:
+              </span>
+              {[
+                { key: "all", label: "הכל", count: stats.total },
+                { key: "suite", label: "אורחי סוויטות — עם חדרים", count: stats.withRooms },
+                { key: "day_use", label: "בילוי יומי — ללא חדרים", count: stats.withoutRooms },
+              ].map(({ key, label, count }) => {
+                const active = detailedRoomFilter === key;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setDetailedRoomFilterAndClear(key)}
+                    style={{
+                      padding: "6px 14px", borderRadius: 20,
+                      border: `1px solid ${active ? "#7c3aed" : "rgba(124,58,237,0.35)"}`,
+                      background: active ? "rgba(124,58,237,0.18)" : "rgba(255,255,255,0.04)",
+                      color: active ? "#5b21b6" : "var(--gold-light)",
+                      fontFamily: "Heebo,sans-serif", fontSize: 12, fontWeight: 700,
+                      cursor: "pointer",
+                    }}
+                  >
+                    {label} ({count})
+                  </button>
+                );
+              })}
+              <span style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 600 }}>
+                מוצגים {displayGridRows.length} מתוך {gridRows.length}
+                {selectedIds.size > 0 ? ` · נבחרו ${selectedIds.size}` : ""}
+              </span>
             </div>
           )}
 
@@ -1813,7 +1942,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
             <div style={{ display: "flex", gap: 10 }}>
               <button
                 onClick={handleSync}
-                disabled={syncing}
+                disabled={syncing || (hasDoc2 && syncTargetCount === 0)}
                 style={{
                   flex: 1, padding: "13px", borderRadius: 12, border: "none",
                   background: syncing ? "rgba(255,255,255,0.08)" : "linear-gradient(135deg,var(--gold),var(--gold-dark))",
@@ -1842,10 +1971,13 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
               borderRadius: 12, padding: "20px",
             }}>
               <div style={{ fontSize: 32, marginBottom: 10 }}>✅</div>
-              {result.mode === "suites" ? (
+              {result.mode === "suites" || result.mode === "detailed" ? (
                 <>
                   <div style={{ fontWeight: 800, fontSize: 16, color: "#065f46", marginBottom: 6 }}>
                     יובאו {result.total} אורחים
+                    {result.mode === "detailed" && result.batchType && result.batchType !== "mixed" && (
+                      <> ({result.batchType === "suite" ? "סוויטות" : "בילוי יומי"})</>
+                    )}
                     {result.corporateMuted > 0 && (
                       <> ({result.corporateMuted} מכירות — ללא אוטומציה)</>
                     )}

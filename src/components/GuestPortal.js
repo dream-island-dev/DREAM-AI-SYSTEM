@@ -12,6 +12,7 @@
 //     — the client never receives items it isn't entitled to.
 //   • Checklist UI: quantity selector per item, grouped by category
 //   • Submit → guest-portal-order Edge Function → guest_orders + Whapi alert
+//   • Spa request CTA → guest-portal-spa-request (guest flags + Whapi auto-reply)
 //
 // Public, password-less. Mounted from index.js for /portal/:token.
 // XOS palette: #0f172a / #09090b / #D4AF37 (distinct from staff-app CSS vars).
@@ -120,6 +121,29 @@ function GlassPanel({ title, children, style }) {
       )}
       {children}
     </div>
+  );
+}
+
+const SPA_PORTAL_UPSELL_RE = /בקשת טיפול|טיפול בספא/i;
+
+function SpaRequestButton({ onClick, busy }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={busy}
+      style={{
+        display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+        width: "100%", marginTop: 14, padding: "13px 20px", borderRadius: 14,
+        background: busy ? "rgba(212,175,55,0.08)" : "rgba(212,175,55,0.14)",
+        border: `1px solid ${XOS_GOLD}`,
+        color: busy ? XOS_MUTED : XOS_GOLD,
+        fontSize: 14, fontWeight: 700, fontFamily: "Heebo,sans-serif",
+        cursor: busy ? "not-allowed" : "pointer",
+      }}
+    >
+      {busy ? "⏳ שולחים את הבקשה…" : "💆 בקשת טיפול בספא"}
+    </button>
   );
 }
 
@@ -447,7 +471,7 @@ function SecurePaymentButton({ guest }) {
 // ── Itinerary glass panel (suite + day-use) ───────────────────────────────────
 // Always renders — shows a concierge CTA fallback instead of returning null when
 // no spa/meal data exists (FAIL VISIBLE §0.3: guest never sees a blank section).
-function ItineraryPanel({ guest }) {
+function ItineraryPanel({ guest, onSpaRequest, spaBusy }) {
   const mealPlan = (guest.meal_location ?? "").trim() || null;
   const hasSchedule = !!(guest.spa_time || guest.meal_time || mealPlan);
   return (
@@ -470,6 +494,9 @@ function ItineraryPanel({ guest }) {
             </div>
           </div>
         )}
+        <div style={{ padding: "0 16px 16px" }}>
+          <SpaRequestButton onClick={onSpaRequest} busy={spaBusy} />
+        </div>
       </GlassPanel>
     </div>
   );
@@ -501,11 +528,11 @@ function SuiteQuickActions() {
 }
 
 // ── SUITE VIEW — full portal ──────────────────────────────────────────────────
-function SuiteView({ guest, phase, countdown, upsellItems, token, onToast, onUpsell, upsellBusy, scenes }) {
+function SuiteView({ guest, phase, countdown, upsellItems, token, onToast, onUpsell, upsellBusy, onSpaRequest, spaBusy, scenes }) {
   return (
     <>
       <PortalHero guest={guest} phase={phase} countdown={countdown} />
-      <ItineraryPanel guest={guest} />
+      <ItineraryPanel guest={guest} onSpaRequest={onSpaRequest} spaBusy={spaBusy} />
       <SecurePaymentButton guest={guest} />
       <SuiteQuickActions />
 
@@ -519,7 +546,7 @@ function SuiteView({ guest, phase, countdown, upsellItems, token, onToast, onUps
 }
 
 // ── DAY-USE VIEW — focused (Spa / Meals / Activities) ────────────────────────
-function DayUseView({ guest, phase, countdown, upsellItems, token, onToast, onUpsell, upsellBusy, scenes }) {
+function DayUseView({ guest, phase, countdown, upsellItems, token, onToast, onUpsell, upsellBusy, onSpaRequest, spaBusy, scenes }) {
 
   return (
     <>
@@ -564,6 +591,9 @@ function DayUseView({ guest, phase, countdown, upsellItems, token, onToast, onUp
               </a>
             </div>
           )}
+          <div style={{ padding: "0 16px 16px" }}>
+            <SpaRequestButton onClick={onSpaRequest} busy={spaBusy} />
+          </div>
         </GlassPanel>
       </div>
 
@@ -603,6 +633,7 @@ export default function GuestPortal({ token }) {
   const [loading, setLoading]           = useState(true);
   const [loadError, setLoadError]       = useState(null);
   const [upsellBusy, setUpsellBusy]     = useState(null);
+  const [spaBusy, setSpaBusy]           = useState(false);
   const [toast, setToast]               = useState(null);
   const toastTimer = useRef(null);
 
@@ -643,11 +674,27 @@ export default function GuestPortal({ token }) {
     toastTimer.current = setTimeout(() => setToast(null), 4200);
   }, []);
 
-  // Legacy PhotoTour upsell handler — routes to guest_alerts (REQUEST type)
-  // via guest-portal-upsell (not guest-portal-order). Kept for backward compat
-  // with the scrollytelling CTAs defined in PhotoTour.js.
+  async function handleSpaRequest() {
+    if (spaBusy) return;
+    setSpaBusy(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("guest-portal-spa-request", { body: { token } });
+      if (error || !data?.ok) throw new Error(data?.error ?? error?.message ?? "שגיאה");
+      showToast("הבקשה נשלחה לצוות. ניצור איתכם קשר בהקדם.");
+    } catch {
+      showToast("⚠️ לא הצלחנו לשלוח את הבקשה — נסו שוב או התקשרו ל-08-6705600");
+    } finally {
+      setSpaBusy(false);
+    }
+  }
+
+  // Legacy PhotoTour upsell handler — routes spa REQUEST CTAs to guest-portal-spa-request.
   async function handlePhotoTourUpsell(upsellLabel, actionType) {
-    if (upsellBusy) return;
+    if (upsellBusy || spaBusy) return;
+    if (actionType !== "OPS_REQUEST" && SPA_PORTAL_UPSELL_RE.test(upsellLabel ?? "")) {
+      await handleSpaRequest();
+      return;
+    }
     setUpsellBusy(upsellLabel);
     const fnName = actionType === "OPS_REQUEST" ? "guest-portal-ops-request" : "guest-portal-upsell";
     try {
@@ -732,6 +779,8 @@ export default function GuestPortal({ token }) {
           onToast={showToast}
           onUpsell={handlePhotoTourUpsell}
           upsellBusy={upsellBusy}
+          onSpaRequest={handleSpaRequest}
+          spaBusy={spaBusy}
           scenes={portalScenes}
         />
       ) : isDayUse ? (
@@ -744,6 +793,8 @@ export default function GuestPortal({ token }) {
           onToast={showToast}
           onUpsell={handlePhotoTourUpsell}
           upsellBusy={upsellBusy}
+          onSpaRequest={handleSpaRequest}
+          spaBusy={spaBusy}
           scenes={portalScenes}
         />
       ) : (
@@ -757,6 +808,8 @@ export default function GuestPortal({ token }) {
           onToast={showToast}
           onUpsell={handlePhotoTourUpsell}
           upsellBusy={upsellBusy}
+          onSpaRequest={handleSpaRequest}
+          spaBusy={spaBusy}
           scenes={portalScenes}
         />
       )}

@@ -41,8 +41,8 @@ export function EditableGrid({ columns, rows, onRowsChange, selectedIds, onSelec
     onSelectionChange(next);
   };
 
-  const allSelected = rows.length > 0 && selectedIds.size === rows.length;
-  const partSelected = selectedIds.size > 0 && selectedIds.size < rows.length;
+  const allSelected = rows.length > 0 && rows.every((r) => selectedIds.has(r._id));
+  const partSelected = rows.some((r) => selectedIds.has(r._id)) && !allSelected;
 
   return (
     <div style={{

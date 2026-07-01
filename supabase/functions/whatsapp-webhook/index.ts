@@ -96,6 +96,22 @@ function buildSpaSentence(spaTime: unknown): string {
   return "נשמח לעמוד לרשותך בכל שאלה.";
 }
 
+// Portal spa request — guests.attention_reason set by guest-portal-spa-request.
+const PORTAL_SPA_ATTENTION_REASON = "בקשת טיפול בספא";
+
+function isPendingPortalSpaRequest(guest: Record<string, unknown> | null): boolean {
+  if (!guest || guest.requires_attention !== true) return false;
+  const reason = String(guest.attention_reason ?? "").trim();
+  return reason === PORTAL_SPA_ATTENTION_REASON || /טיפול בספא/.test(reason);
+}
+
+const PENDING_PORTAL_SPA_LLM_SUFFIX = [
+  "חשוב — בקשת ספא פעילה מהפורטל האישי: הצוות כבר קיבל את הבקשה.",
+  "אל תשלח קישורי הזמנת ספא, תפריט ספא, או אישורי תור.",
+  "אם האורח שואל על הספא, ציין בקצרה שהבקשה אצל הצוות ושאפשר להתקשר ל-08-6705600.",
+  "אל תפתח תהליך הזמנה חדש.",
+].join(" ");
+
 // Fallback static prompt — used ONLY when DB is completely unavailable.
 // Contains NO hardcoded booking URLs, prices, or marketing CTAs —
 // those belong in bot_settings.system_prompt (the UI source of truth).
@@ -776,6 +792,9 @@ function buildGuestStageContext(
   if (roomType === "suite") parts.push("סוג: סוויטה");
   if (confirmed)  parts.push("אישר הגעה: כן");
   if (spaTime)    parts.push(`שעת טיפול ספא: ${spaTime}`);
+  if (isPendingPortalSpaRequest(guest)) {
+    parts.push("בקשת טיפול ספא מהפורטל — ממתין לטיפול צוות (לא לשלוח קישורי הזמנה)");
+  }
   if (hasStage2)  parts.push("כבר קיבל הודעת אישור+ספא");
   if (hasStage3)  parts.push("כבר קיבל הודעת בוקר הגעה");
 
@@ -2175,7 +2194,7 @@ function normalizePhone(phoneStr: unknown): string {
 // `phone` is needed here (unlike before) because the fallback path compares it
 // in JS instead of letting Postgres filter on it server-side.
 const GUEST_LOOKUP_FIELDS =
-  "id, name, phone, arrival_confirmed, payment_amount, payment_link_url, direct_payment_url, ezgo_portal_url, payment_link_resolution_pending, msg_pre_arrival_2d_sent, needs_callback, requires_attention, arrival_date, arrival_time, room, room_type, spa_time, status, guest_notes, guest_profile, portal_token, automation_muted";
+  "id, name, phone, arrival_confirmed, payment_amount, payment_link_url, direct_payment_url, ezgo_portal_url, payment_link_resolution_pending, msg_pre_arrival_2d_sent, needs_callback, requires_attention, attention_reason, arrival_date, arrival_time, room, room_type, spa_time, status, guest_notes, guest_profile, portal_token, automation_muted";
 
 // ══════════════════════════════════════════════════════════════════════════════
 // §7  MAIN HANDLER
@@ -3156,6 +3175,10 @@ serve(async (req: Request) => {
           );
 
       } else if (intent === "upsell") {
+        if (guest && isPendingPortalSpaRequest(guest as Record<string, unknown>)) {
+          reply =
+            "ראינו שביקשת טיפול בספא, העברתי את הבקשה לצוות, אפשר גם לחייג למרכז ההזמנות שלנו - 08-6705600.";
+        } else {
         // Use upsell_reply from BotScriptEditor if available
         const upsellScript = scripts["upsell_reply"];
         if (upsellScript?.message_text?.trim()) {
@@ -3164,6 +3187,7 @@ serve(async (req: Request) => {
           });
         } else {
           reply = buildUpsellReply(guestName);
+        }
         }
 
       } else if (intent === "faq") {
@@ -3177,6 +3201,8 @@ serve(async (req: Request) => {
 
         const enrichedPrompt = finalSystemPrompt
           + (guestCtx ? `\n\nפרטי האורח הנוכחי: ${guestCtx}` : "")
+          + (guest && isPendingPortalSpaRequest(guest as Record<string, unknown>)
+            ? `\n\n${PENDING_PORTAL_SPA_LLM_SUFFIX}` : "")
           + STRICT_HEBREW_LOCK_SUFFIX
           + LUXURY_CONCIERGE_PERSONA_SUFFIX
           + (inRoomOverride ? IN_HOUSE_TONE_SUFFIX : "")

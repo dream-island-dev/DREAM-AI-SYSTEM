@@ -16,6 +16,7 @@ import {
 const ATTENTION_HEADINGS = {
   date_change:    "🗓️ ביקש/ה שינוי בתאריך",
   human_callback: "📞 ביקש/ה לדבר עם נציג",
+  "בקשת טיפול בספא": "💆 ביקש/ה טיפול בספא מהפורטל",
 };
 
 function Chip({ active, label, onClick, disabled }) {
