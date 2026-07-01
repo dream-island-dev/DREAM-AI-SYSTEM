@@ -56,6 +56,8 @@ import {
   buildAdministrativeDispatchReply,
   isSensitiveStayChangeRequest,
   CANONICAL_STAY_CHANGE_HANDOFF_MSG,
+  isSensitiveFinancialRequest,
+  CANONICAL_FINANCIAL_HANDOFF_MSG,
   isSevereComplaint,
   shouldAutoPromoteToCheckedIn,
   resolveEffectiveGuestStatus,
@@ -976,6 +978,7 @@ const UPSELL_PATTERNS: RegExp[] = [
 
 function classifyIntent(text: string): Intent {
   if (isSensitiveStayChangeRequest(text)) return "fallback"; // shield handles reply — never upsell/LLM enthusiasm
+  if (isSensitiveFinancialRequest(text))  return "fallback"; // shield handles reply — never LLM/upsell on billing disputes
   if (COMPLAINT_PATTERNS.some((p) => p.test(text))) return "complaint";
   if (UPSELL_PATTERNS.some((p) => p.test(text)))    return "upsell";
   if (text.trim().length >= 3)                       return "faq";
@@ -1401,9 +1404,10 @@ async function handleAdministrativeInHouseIntercept(
 
 // ══════════════════════════════════════════════════════════════════════════════
 // §4b.1b SEVERE COMPLAINT KILL-SWITCH — guest is furious / reports serious
-//        damage. No auto-reply of any kind (even the empathy complaint_reply
-//        script) — a canned line risks reading as tone-deaf. Flags the guest
-//        for a manager to reach out personally. Checked before every other
+//        damage. The LLM is never allowed to free-text a response here — the
+//        guest gets the fixed "תשובה לתלונה" (complaint_reply) BotScriptEditor
+//        template (same copy as an ordinary complaint), sent deterministically,
+//        while a manager is flagged in parallel. Checked before every other
 //        Tier-0 classifier so anger never gets routed into date-change/
 //        upsell/generic-complaint copy instead.
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1412,12 +1416,15 @@ async function handleSevereComplaintKillSwitch(
   opts: {
     phone: string;
     guestId: number | null;
+    guestName: string | null;
+    scripts: Record<string, BotScript>;
     text: string;
     msgId: string;
     claimedConversationId: number | null;
+    sim: boolean;
   },
 ): Promise<void> {
-  const { phone, guestId, text, msgId, claimedConversationId } = opts;
+  const { phone, guestId, guestName, scripts, text, msgId, claimedConversationId, sim } = opts;
 
   await patchClaimedInbound(supabase, claimedConversationId, msgId, {
     guest_id: guestId,
@@ -1448,11 +1455,34 @@ async function handleSevereComplaintKillSwitch(
     console.error("[webhook] 🚨 severe_complaint guest_alerts insert FAILED:", alertErr.message);
   }
 
-  // Deliberately no sendReply() call — silent to the guest by design (Mike's
-  // explicit rule 4). Loud in the logs so the suppression itself is FAIL
-  // VISIBLE to staff, not just to the dashboard badge.
+  // Deterministic template only — never the LLM. Same source as the regular
+  // "complaint" intent branch (BotScriptEditor's complaint_reply, editable by
+  // staff), so there is exactly one place that owns this copy.
+  const complaintScript = scripts["complaint_reply"];
+  const templateReply = complaintScript?.message_text?.trim()
+    ? resolvePlaceholders(complaintScript.message_text, {
+        guestName: guestName ?? "אורח יקר", spaTime: null, workshopUrl: "",
+      })
+    : buildComplaintReply(guestName);
+
+  if (!sim) {
+    try {
+      await sendReply(phone, templateReply);
+      await supabase.from("whatsapp_conversations").insert({
+        phone,
+        guest_id:      guestId,
+        direction:     "outbound",
+        message:       templateReply,
+        wa_message_id: null,
+        intent:        "severe_complaint",
+      });
+    } catch (e) {
+      console.error("[webhook] 🚨 severe_complaint reply failed:", (e as Error).message);
+    }
+  }
+
   console.info(
-    `[webhook] 🚨🔇 SEVERE_COMPLAINT kill-switch — reply suppressed, manager flagged — phone:${phone} guest:${guestId ?? "unknown"} text:"${text.slice(0, 80)}"`,
+    `[webhook] 🚨 SEVERE_COMPLAINT kill-switch — canned template sent, manager flagged — phone:${phone} guest:${guestId ?? "unknown"} text:"${text.slice(0, 80)}"`,
   );
 }
 
@@ -1537,6 +1567,93 @@ async function handleSensitiveStayChangeHandoff(
 
   console.info(
     `[webhook] 🛡️ SENSITIVE_STAY_CHANGE mitigation — source:${auditSource} phone:${phone} guest:${guestId ?? "unknown"} text:"${text.slice(0, 80)}"`,
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// §4b.2b SENSITIVE FINANCIAL SHIELD — billing dispute, double charge, refund
+//        ask. Same "never imply approval" reasoning as the stay-change shield
+//        above, but routed/worded separately: this is a money question, not a
+//        suite-team question, so it must not name the suite team or promise a
+//        specific resolution. Neutral handoff only, staff verifies the charge.
+// ══════════════════════════════════════════════════════════════════════════════
+async function handleSensitiveFinancialHandoff(
+  supabase: ReturnType<typeof createClient>,
+  opts: {
+    phone: string;
+    guestId: number | null;
+    guestRoom?: string | null;
+    text: string;
+    msgId: string;
+    claimedConversationId: number | null;
+    sim: boolean;
+    auditSource: string;
+  },
+): Promise<void> {
+  const { phone, guestId, guestRoom, text, msgId, claimedConversationId, sim, auditSource } = opts;
+
+  await patchClaimedInbound(supabase, claimedConversationId, msgId, {
+    guest_id: guestId,
+    intent: "sensitive_financial_request",
+    human_requested: true,
+    human_request_type: "financial_issue",
+  });
+
+  if (guestId) {
+    const { error: guestErr } = await supabase.from("guests").update({
+      requires_attention:       true,
+      requires_attention_since: new Date().toISOString(),
+      needs_callback:           true,
+      attention_reason:         "financial_issue",
+    }).eq("id", guestId);
+    if (guestErr) {
+      console.error("[webhook] 💳 sensitive_financial guest update FAILED:", guestErr.message);
+    }
+  }
+
+  (async () => {
+    const { error } = await supabase.from("guest_alerts").insert({
+      guest_id: guestId,
+      phone,
+      alert_type: "financial_issue",
+      message: text,
+      conversation_id: claimedConversationId,
+      resolved: false,
+    });
+    if (error) console.warn("[webhook] guest_alerts (sensitive_financial) error:", error.message);
+  })().catch((e: Error) =>
+    console.warn("[webhook] guest_alerts (sensitive_financial) error:", e.message)
+  );
+
+  if (guestId) {
+    logAdministrativeRequestTask(supabase, {
+      guestId,
+      room: guestRoom ?? null,
+      summary: "בקשה כספית / בעיית חיוב",
+      rawText: text,
+    }).catch((e: Error) =>
+      console.error("[webhook] 💳 sensitive_financial admin task error:", e.message)
+    );
+  }
+
+  if (!sim) {
+    try {
+      await sendReply(phone, CANONICAL_FINANCIAL_HANDOFF_MSG);
+      await supabase.from("whatsapp_conversations").insert({
+        phone,
+        guest_id:      guestId,
+        direction:     "outbound",
+        message:       CANONICAL_FINANCIAL_HANDOFF_MSG,
+        wa_message_id: null,
+        intent:        "sensitive_financial_request",
+      });
+    } catch (e) {
+      console.error("[webhook] 💳 sensitive_financial reply failed:", (e as Error).message);
+    }
+  }
+
+  console.info(
+    `[webhook] 💳 SENSITIVE_FINANCIAL mitigation — source:${auditSource} phone:${phone} guest:${guestId ?? "unknown"} text:"${text.slice(0, 80)}"`,
   );
 }
 
@@ -3027,10 +3144,11 @@ Deno.serve(async (req: Request) => {
 
       // ── Severe complaint kill-switch — checked first, before any other Tier-0
       // classifier or LLM. A furious/serious complaint must never be routed
-      // into date-change/upsell/generic-complaint copy — no auto-reply at all.
+      // into date-change/upsell/generic-complaint copy or free-text LLM output —
+      // only the fixed complaint_reply template goes out, no LLM generation.
       if (!isButtonReply && isSevereComplaint(text)) {
         await handleSevereComplaintKillSwitch(supabase, {
-          phone, guestId, text, msgId, claimedConversationId,
+          phone, guestId, guestName, scripts, text, msgId, claimedConversationId, sim,
         });
         continue;
       }
@@ -3039,6 +3157,22 @@ Deno.serve(async (req: Request) => {
       // Before DATE_CHANGE, upsell, and LLM — canonical neutral handoff only.
       if (!isButtonReply && isSensitiveStayChangeRequest(text)) {
         await handleSensitiveStayChangeHandoff(supabase, {
+          phone,
+          guestId,
+          guestRoom: (guest?.room as string | null) ?? null,
+          text,
+          msgId,
+          claimedConversationId,
+          sim,
+          auditSource: "tier0_pre_burst",
+        });
+        continue;
+      }
+
+      // ── Sensitive financial shield (billing dispute / double charge / refund) ──
+      // Before generic complaint copy and LLM — neutral handoff only, no promise.
+      if (!isButtonReply && isSensitiveFinancialRequest(text)) {
+        await handleSensitiveFinancialHandoff(supabase, {
           phone,
           guestId,
           guestRoom: (guest?.room as string | null) ?? null,
@@ -3165,7 +3299,7 @@ Deno.serve(async (req: Request) => {
       // ── Severe complaint kill-switch (post-burst fragmented asks) ──────────
       if (!isButtonReply && effectiveText !== text && isSevereComplaint(effectiveText)) {
         await handleSevereComplaintKillSwitch(supabase, {
-          phone, guestId, text: effectiveText, msgId, claimedConversationId,
+          phone, guestId, guestName, scripts, text: effectiveText, msgId, claimedConversationId, sim,
         });
         continue;
       }
@@ -3173,6 +3307,21 @@ Deno.serve(async (req: Request) => {
       // ── Sensitive stay-change shield (post-burst fragmented asks) ──────────
       if (!isButtonReply && effectiveText !== text && isSensitiveStayChangeRequest(effectiveText)) {
         await handleSensitiveStayChangeHandoff(supabase, {
+          phone,
+          guestId,
+          guestRoom: (guest?.room as string | null) ?? null,
+          text: effectiveText,
+          msgId,
+          claimedConversationId,
+          sim,
+          auditSource: "tier0_post_burst",
+        });
+        continue;
+      }
+
+      // ── Sensitive financial shield (post-burst fragmented asks) ────────────
+      if (!isButtonReply && effectiveText !== text && isSensitiveFinancialRequest(effectiveText)) {
+        await handleSensitiveFinancialHandoff(supabase, {
           phone,
           guestId,
           guestRoom: (guest?.room as string | null) ?? null,
@@ -3524,12 +3673,21 @@ Deno.serve(async (req: Request) => {
         }
       }
 
-      // ── Pre-send safety net — severe complaint must never get an auto-reply ──
-      // Same defense-in-depth reasoning as the sensitive-stay-change guard below:
-      // catches the rare case where a furious message slipped past the earlier
-      // Tier-0 check (e.g. arrived as a button reply, or only became "severe"
-      // once combined with burst-coalesced text after that check already ran).
+      // ── Pre-send safety nets — mutually exclusive, most severe first. Each
+      // catches the rare case where the signal slipped past the earlier Tier-0
+      // check (e.g. arrived as a button reply, or only became true once
+      // combined with burst-coalesced text after that check already ran).
+      // Severity order matters here — a message that is both a severe
+      // complaint AND mentions billing must get the complaint handling, not
+      // the financial one, so this is an if/else-if chain, not three ifs.
       if (isSevereComplaint(effectiveText)) {
+        // No LLM free text here — the fixed complaint_reply template only.
+        const complaintScript = scripts["complaint_reply"];
+        reply = complaintScript?.message_text?.trim()
+          ? resolvePlaceholders(complaintScript.message_text, {
+              guestName: guestName ?? "אורח יקר", spaTime: null, workshopUrl: "",
+            })
+          : buildComplaintReply(guestName);
         if (guestId) {
           supabase
             .from("guests")
@@ -3555,13 +3713,10 @@ Deno.serve(async (req: Request) => {
           if (error) console.error("[webhook] 🚨 pre_send severe_complaint guest_alerts insert FAILED:", error.message);
         })().catch((e: Error) => console.error("[webhook] 🚨 pre_send severe_complaint guest_alerts insert FAILED:", e.message));
         console.info(
-          `[webhook] 🚨🔇 SEVERE_COMPLAINT mitigation — source:pre_send_guard, reply suppressed — phone:${phone} guest:${guestId ?? "unknown"}`,
+          `[webhook] 🚨 SEVERE_COMPLAINT mitigation — source:pre_send_guard, canned template sent — phone:${phone} guest:${guestId ?? "unknown"}`,
         );
-        continue;
-      }
-
-      // ── Pre-send safety net — LLM/upsell must never imply stay-change approval ──
-      if (isSensitiveStayChangeRequest(effectiveText)) {
+      } else if (isSensitiveStayChangeRequest(effectiveText)) {
+        // ── LLM/upsell must never imply stay-change approval ──
         reply = CANONICAL_STAY_CHANGE_HANDOFF_MSG;
         if (guestId) {
           supabase
@@ -3581,6 +3736,28 @@ Deno.serve(async (req: Request) => {
         }
         console.info(
           `[webhook] 🛡️ SENSITIVE_STAY_CHANGE mitigation — source:pre_send_guard phone:${phone} guest:${guestId ?? "unknown"}`,
+        );
+      } else if (isSensitiveFinancialRequest(effectiveText)) {
+        // ── LLM/upsell must never imply a billing outcome ──
+        reply = CANONICAL_FINANCIAL_HANDOFF_MSG;
+        if (guestId) {
+          supabase
+            .from("guests")
+            .update({
+              requires_attention:       true,
+              requires_attention_since: new Date().toISOString(),
+              needs_callback:           true,
+              attention_reason:         "financial_issue",
+            })
+            .eq("id", guestId)
+            .then(({ error }: { error: { message: string } | null }) => {
+              if (error) {
+                console.error("[webhook] 💳 pre_send sensitive_financial guest update FAILED:", error.message);
+              }
+            });
+        }
+        console.info(
+          `[webhook] 💳 SENSITIVE_FINANCIAL mitigation — source:pre_send_guard phone:${phone} guest:${guestId ?? "unknown"}`,
         );
       }
 

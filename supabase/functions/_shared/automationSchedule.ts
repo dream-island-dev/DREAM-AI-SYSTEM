@@ -505,13 +505,28 @@ export function isSensitiveStayChangeRequest(text: string): boolean {
 export const CANONICAL_STAY_CHANGE_HANDOFF_MSG =
   "העברתי את בקשתך לצוות הסוויטות שלנו (אדיר ואפק), והם יצרו איתך קשר בהקדם. 🙏";
 
-// ── Severe-complaint kill-switch — furious/serious guest, no auto-reply ─────
-// Distinct from COMPLAINT_PATTERNS (whatsapp-webhook): those still get a
-// pre-written empathy reply, appropriate for "the AC is a bit loud" tier
-// complaints. This tier is for guests expressing real anger/damage/being
-// scoped as ruined — an auto-generated empathy line risks reading as tone-
-// deaf. No outbound message at all; requires_attention + dedicated reason
-// so a manager reaches out personally instead of the bot replying at all.
+// ── Sensitive financial / billing requests — never imply approval or a fixed
+// resolution; staff must verify the charge before anyone promises anything ──
+
+export const SENSITIVE_FINANCIAL_PATTERN =
+  /חיוב(?:\s*כפול|\s*שגוי|\s*שגויה|\s*יתר|\s*נוסף)?|חויבתי\s*(פעמיים|בטעות|יותר|שוב)|גביתם\s*(ממני\s*)?(יותר|בטעות|פעמיים)|טעות\s*בחיוב|החזר(?:\s*כספי)?|לקבל\s*(את\s*)?(ה)?כסף\s*(בחזרה|חזרה)|חשבונית\s*(שגויה|לא\s*נכונה|חסרה)|תשלום\s*כפול|עמלה\s*(לא\s*מובנת|מיותרת|שלא\s*ביקשתי)|לא\s*אמור(?:ה)?\s*לשלם|למה\s*(שילמתי|חויבתי)|refund|overcharg(?:ed|e)|charged\s*twice|double\s*charge|billing\s*(issue|error|dispute|problem)|wrong\s*(amount|charge)|invoice\s*(error|issue)|dispute\s*(the\s*)?charge|chargeback/i;
+
+export function isSensitiveFinancialRequest(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  return SENSITIVE_FINANCIAL_PATTERN.test(t);
+}
+
+/** Canonical staff handoff for billing/refund disputes — neutral, no promise of outcome. */
+export const CANONICAL_FINANCIAL_HANDOFF_MSG =
+  "העברתי את הבקשה שלך לצוות לבדיקה, ויחזרו אליך בהקדם. 🙏";
+
+// ── Severe-complaint kill-switch — furious/serious guest, LLM barred ────────
+// Distinct from COMPLAINT_PATTERNS (whatsapp-webhook): both tiers send the
+// same complaint_reply template, but this tier additionally guarantees the
+// LLM never free-texts a response — only the fixed template, deterministically
+// — plus requires_attention + a dedicated reason so a manager also reaches
+// out personally, not just the automated acknowledgment.
 export const SEVERE_COMPLAINT_PATTERN =
   /נהרס(?:ה|ו|תי|נו)?|הרסת(?:ם|י|ן)|אכזב(?:ה|תם|תי|נו)|גרוע(?:\s*(?:מאוד|ביותר|בצורה\s*חריגה))?|חבל\s*על\s*(?:ה)?כסף|מלוכלך(?:\s*(?:מאוד|ביותר|לגמרי))?|(?:איום\s*ונורא|נורא\s*ואיום)|בושה\s*(?:וחרפה)?|scandal(?:ous)?|disgusting|outraged|furious|worst\s*(?:hotel|experience|stay)/i;
 
