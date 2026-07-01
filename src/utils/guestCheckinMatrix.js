@@ -34,7 +34,9 @@ const STATUS_SORT_ORDER = {
 };
 
 export const AUTO_CHECKIN_LOCAL_HOUR = 15;
+export const AUTO_CHECKOUT_LOCAL_HOUR = 11;
 const AUTO_CHECKIN_ELIGIBLE = new Set(["pending", "expected", "room_ready"]);
+const AUTO_CHECKOUT_ELIGIBLE = new Set(["checked_in", "room_ready", "expected", "pending"]);
 
 export function israelLocalHour(now = new Date()) {
   return Number(
@@ -50,6 +52,10 @@ export function isPastAutoCheckinGateway(now = new Date()) {
   return israelLocalHour(now) >= AUTO_CHECKIN_LOCAL_HOUR;
 }
 
+export function isPastAutoCheckoutGateway(now = new Date()) {
+  return israelLocalHour(now) >= AUTO_CHECKOUT_LOCAL_HOUR;
+}
+
 export function shouldAutoPromoteToCheckedIn(guest, now = new Date()) {
   if (!guest?.arrival_date) return false;
   if (!isPastAutoCheckinGateway(now)) return false;
@@ -57,8 +63,9 @@ export function shouldAutoPromoteToCheckedIn(guest, now = new Date()) {
   return AUTO_CHECKIN_ELIGIBLE.has(guest.status);
 }
 
-/** Effective status for UI/routing — 15:00 gateway without waiting for cron. */
+/** Effective status for UI/routing — 15:00 check-in / 11:00 checkout on departure day. */
 export function resolveEffectiveGuestStatus(guest, now = new Date()) {
+  if (shouldAutoCheckoutGuest(guest, now)) return "checked_out";
   if (shouldAutoPromoteToCheckedIn(guest, now)) return "checked_in";
   return guest?.status ?? null;
 }
@@ -78,6 +85,7 @@ export function isActiveCheckinRosterGuest(guest, now = new Date()) {
   const today = israelTodayStr();
   const effective = resolveEffectiveGuestStatus(guest, now);
 
+  if (effective === "checked_out") return false;
   if (guest.departure_date && guest.departure_date < today) return false;
 
   if (effective === "checked_in") {
@@ -91,18 +99,23 @@ export function isActiveCheckinRosterGuest(guest, now = new Date()) {
   return false;
 }
 
-/** Post-stay archive tab — departed or checkout date passed. */
-export function isPostStayArchiveGuest(guest, today = israelTodayStr()) {
+/** Post-stay archive tab — departed or past 11:00 on departure day. */
+export function isPostStayArchiveGuest(guest, today = israelTodayStr(), now = new Date()) {
   if (!guest) return false;
   if (guest.status === "checked_out") return true;
+  if (shouldAutoCheckoutGuest(guest, now)) return true;
   if (guest.departure_date && guest.departure_date < today) return true;
   return false;
 }
 
-export function shouldAutoCheckoutGuest(guest, today = israelTodayStr()) {
-  if (!guest?.departure_date || guest.departure_date >= today) return false;
+export function shouldAutoCheckoutGuest(guest, now = new Date()) {
+  if (!guest?.departure_date) return false;
   if (guest.status === "checked_out" || guest.status === "cancelled") return false;
-  return ["checked_in", "room_ready", "expected", "pending"].includes(guest.status);
+  if (!AUTO_CHECKOUT_ELIGIBLE.has(guest.status)) return false;
+  const today = israelTodayStr();
+  if (guest.departure_date < today) return true;
+  if (guest.departure_date === today) return isPastAutoCheckoutGateway(now);
+  return false;
 }
 
 /** Map arrival_date → best צ'ק-אין timeline scope (GuestDashboard → GuestsPage). */

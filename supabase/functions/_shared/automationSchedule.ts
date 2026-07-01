@@ -17,7 +17,17 @@ export const ISRAEL_UTC_OFFSET_HOURS = 2;
 /** Israel-local hour (fixed UTC+2, no DST) when guests are auto-promoted to checked_in. */
 export const AUTO_CHECKIN_LOCAL_HOUR = 15;
 
-export const AUTO_CHECKIN_ELIGIBLE_STATUSES = new Set(["pending", "expected"]);
+/** Israel-local hour when guests are auto-archived to checked_out on departure day. */
+export const AUTO_CHECKOUT_LOCAL_HOUR = 11;
+
+export const AUTO_CHECKIN_ELIGIBLE_STATUSES = new Set(["pending", "expected", "room_ready"]);
+
+export const AUTO_CHECKOUT_ELIGIBLE_STATUSES = new Set([
+  "checked_in",
+  "room_ready",
+  "expected",
+  "pending",
+]);
 
 /** Operations Board department for front-desk / spa / stay-change admin tickets. */
 export const ADMIN_REQUESTS_DEPARTMENT = "קבלה/בקשות";
@@ -26,16 +36,25 @@ export const ADMIN_REQUESTS_DEPARTMENT = "קבלה/בקשות";
 export const FIELD_OPS_DEPARTMENT = "תפעול";
 
 export function israelYmd(now: Date): string {
-  const israelMs = now.getTime() + ISRAEL_UTC_OFFSET_HOURS * 3600 * 1000;
-  return new Date(israelMs).toISOString().slice(0, 10);
+  return now.toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
 }
 
 export function israelLocalHour(now: Date): number {
-  return ((now.getUTCHours() + ISRAEL_UTC_OFFSET_HOURS) % 24 + 24) % 24;
+  return Number(
+    now.toLocaleString("en-GB", {
+      timeZone: "Asia/Jerusalem",
+      hour: "numeric",
+      hour12: false,
+    }),
+  );
 }
 
 export function isPastAutoCheckinGateway(now: Date): boolean {
   return israelLocalHour(now) >= AUTO_CHECKIN_LOCAL_HOUR;
+}
+
+export function isPastAutoCheckoutGateway(now: Date): boolean {
+  return israelLocalHour(now) >= AUTO_CHECKOUT_LOCAL_HOUR;
 }
 
 export function isGuestArrivalToday(
@@ -54,11 +73,30 @@ export function shouldAutoPromoteToCheckedIn(
   return !!guest.status && AUTO_CHECKIN_ELIGIBLE_STATUSES.has(guest.status);
 }
 
-/** In-memory + routing status: auto check-in after 15:00 on arrival day. */
+/** Auto checkout: 11:00 Israel on departure_date, or catch-up when departure_date passed. */
+export function shouldAutoCheckoutGuest(
+  guest: { departure_date?: string | null; status?: string | null },
+  now: Date,
+): boolean {
+  if (!guest.departure_date) return false;
+  if (guest.status === "checked_out" || guest.status === "cancelled") return false;
+  if (!guest.status || !AUTO_CHECKOUT_ELIGIBLE_STATUSES.has(guest.status)) return false;
+  const today = israelYmd(now);
+  if (guest.departure_date < today) return true;
+  if (guest.departure_date === today) return isPastAutoCheckoutGateway(now);
+  return false;
+}
+
+/** In-memory + routing status: auto check-in after 15:00 / auto checkout after 11:00 on departure day. */
 export function resolveEffectiveGuestStatus(
-  guest: { status?: string | null; arrival_date?: string | null },
+  guest: {
+    status?: string | null;
+    arrival_date?: string | null;
+    departure_date?: string | null;
+  },
   now: Date,
 ): string | null {
+  if (shouldAutoCheckoutGuest(guest, now)) return "checked_out";
   if (shouldAutoPromoteToCheckedIn(guest, now)) return "checked_in";
   return guest.status ?? null;
 }

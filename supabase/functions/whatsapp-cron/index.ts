@@ -26,7 +26,10 @@ import {
   resolveStageSchedule,
   CORE_PIPELINE_STAGE_KEYS,
   isPastAutoCheckinGateway,
+  isPastAutoCheckoutGateway,
   israelYmd,
+  AUTO_CHECKIN_ELIGIBLE_STATUSES,
+  AUTO_CHECKOUT_ELIGIBLE_STATUSES,
   type AutomationStage,
   type GuestForSchedule,
 } from "../_shared/automationSchedule.ts";
@@ -66,16 +69,49 @@ serve(async (req: Request) => {
     const supabase = createClient(supabaseUrl, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
     const now = new Date();
+    const todayIsrael = israelYmd(now);
+    const checkinEligible = [...AUTO_CHECKIN_ELIGIBLE_STATUSES];
+    const checkoutEligible = [...AUTO_CHECKOUT_ELIGIBLE_STATUSES];
 
-    // ── 15:00 Israel auto check-in — pending/expected guests arriving today ──
+    // ── 11:00 Israel auto checkout — departure day (or catch-up if overdue) ──
+    let autoCheckoutCount = 0;
+    const { data: overdueCheckout, error: overdueErr } = await supabase
+      .from("guests")
+      .update({ status: "checked_out" })
+      .lt("departure_date", todayIsrael)
+      .in("status", checkoutEligible)
+      .select("id");
+    if (overdueErr) {
+      console.error("[whatsapp-cron] auto_checkout (overdue) FAILED:", overdueErr.message);
+    } else {
+      autoCheckoutCount += overdueCheckout?.length ?? 0;
+    }
+
+    if (isPastAutoCheckoutGateway(now)) {
+      const { data: todayCheckout, error: todayCheckoutErr } = await supabase
+        .from("guests")
+        .update({ status: "checked_out" })
+        .eq("departure_date", todayIsrael)
+        .in("status", checkoutEligible)
+        .select("id");
+      if (todayCheckoutErr) {
+        console.error("[whatsapp-cron] auto_checkout (today) FAILED:", todayCheckoutErr.message);
+      } else {
+        autoCheckoutCount += todayCheckout?.length ?? 0;
+      }
+    }
+    if (autoCheckoutCount > 0) {
+      console.log(`[whatsapp-cron] auto_checkout archived ${autoCheckoutCount} guest(s) (today=${todayIsrael})`);
+    }
+
+    // ── 15:00 Israel auto check-in — pending/expected/room_ready arriving today ──
     let autoCheckinCount = 0;
     if (isPastAutoCheckinGateway(now)) {
-      const todayIsrael = israelYmd(now);
       const { data: promoted, error: promoteErr } = await supabase
         .from("guests")
-        .update({ status: "checked_in" })
+        .update({ status: "checked_in", checkin_time: now.toISOString() })
         .eq("arrival_date", todayIsrael)
-        .in("status", ["pending", "expected"])
+        .in("status", checkinEligible)
         .select("id");
       if (promoteErr) {
         console.error("[whatsapp-cron] auto_checkin update FAILED:", promoteErr.message);
@@ -84,18 +120,6 @@ serve(async (req: Request) => {
         if (autoCheckinCount > 0) {
           console.log(`[whatsapp-cron] auto_checkin promoted ${autoCheckinCount} guest(s) for ${todayIsrael}`);
         }
-      }
-
-      const { data: checkedOut, error: checkoutErr } = await supabase
-        .from("guests")
-        .update({ status: "checked_out" })
-        .lt("departure_date", todayIsrael)
-        .in("status", ["checked_in", "room_ready", "expected", "pending"])
-        .select("id");
-      if (checkoutErr) {
-        console.error("[whatsapp-cron] auto_checkout update FAILED:", checkoutErr.message);
-      } else if ((checkedOut?.length ?? 0) > 0) {
-        console.log(`[whatsapp-cron] auto_checkout archived ${checkedOut!.length} guest(s) before ${todayIsrael}`);
       }
     }
 
@@ -210,6 +234,7 @@ serve(async (req: Request) => {
       ok: true,
       scanned: guests?.length ?? 0,
       auto_checkin_promoted: autoCheckinCount,
+      auto_checkout_archived: autoCheckoutCount,
       fired: results.length,
       throttled: due.length > 1,
       dispatch_batch_size: DISPATCH_BATCH_SIZE,

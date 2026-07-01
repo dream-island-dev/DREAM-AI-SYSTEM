@@ -10,7 +10,6 @@ import GuestAttentionBadge from "./GuestAttentionBadge";
 import CustomerProfilePane from "./CustomerProfilePane";
 import QuietHoursGate from "./QuietHoursGate";
 import { STATUS_META } from "../utils/guestStatusMeta";
-import { israelTodayStr } from "../utils/guestTiming";
 import {
   CHECKIN_TIMELINE_LABELS,
   CHECKIN_TIMELINE_SCOPES,
@@ -69,7 +68,6 @@ export default function GuestsPage({
   /** 15:00 auto check-in + departure-day checkout — mirrors whatsapp-cron. */
   const applyReceptionMatrixSync = useCallback(async (guestList) => {
     if (!supabase || !guestList?.length) return guestList;
-    const today = israelTodayStr();
     const now = new Date();
     let next = guestList;
     let anyChanged = false;
@@ -82,7 +80,7 @@ export default function GuestsPage({
           next = next.map((x) => (x.id === g.id ? { ...x, ...patch } : x));
           anyChanged = true;
         }
-      } else if (shouldAutoCheckoutGuest(g, today)) {
+      } else if (shouldAutoCheckoutGuest(g, now)) {
         const patch = { status: "checked_out" };
         const { error } = await supabase.from("guests").update(patch).eq("id", g.id);
         if (!error) {

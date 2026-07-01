@@ -10,7 +10,8 @@ import AILearningButton from "./AILearningButton";
 import HoldToConfirmButton from "./HoldToConfirmButton";
 import QuietHoursGate from "./QuietHoursGate";
 import { getSuiteSection } from "../data/suiteRegistry";
-import { classifyInboundMessageAlert, isGuestInResortToday } from "../utils/guestTiming";
+import { classifyInboundMessageAlert } from "../utils/guestTiming";
+import { resolveEffectiveGuestStatus } from "../utils/guestCheckinMatrix";
 import {
   unlockInboxAlertAudio,
   playSuiteGuestAlert,
@@ -18,6 +19,7 @@ import {
 } from "../utils/inboxAlertSounds";
 import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
 
+// In-resort roster chrome — only guests with guests.status = checked_in (strict).
 const IN_RESORT_ROSTER = {
   rowBg: "var(--status-purple-bg, #F3F0FF)",
   rowBgActive: "var(--status-purple-bg, #F3F0FF)",
@@ -430,11 +432,12 @@ function ContactItem({ contact, isActive, isMobile, t, dir, onClick, onDismiss, 
   const identity = identityMeta(contact, t);
   const roomChip = roomChipMeta(contact);
   const active   = recentlyActive(contact);
-  const inResort = isGuestInResortToday({
-    arrival_date: contact.arrivalDate,
-    departure_date: contact.departureDate,
-    status: contact.status,
-  });
+  const inResort =
+    resolveEffectiveGuestStatus({
+      status: contact.status,
+      arrival_date: contact.arrivalDate,
+      departure_date: contact.departureDate,
+    }) === "checked_in";
   const resolveCtx = { ...buildGuestResolveContext(contact), scriptsByKey, templatesByWaName };
 
   const [swiped, setSwiped] = useState(false);
@@ -1899,9 +1902,9 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
       return {
         ...c,
         guestName: c.guestName || matched.name,
-        status: c.status || matched.status || null,
-        arrivalDate: c.arrivalDate || matched.arrival_date || null,
-        departureDate: c.departureDate || matched.departure_date || null,
+        status: matched.status ?? c.status ?? null,
+        arrivalDate: matched.arrival_date ?? c.arrivalDate ?? null,
+        departureDate: matched.departure_date ?? c.departureDate ?? null,
       };
     });
   }, []);

@@ -40,6 +40,11 @@ export function isGuestInResortToday(guest) {
   return false;
 }
 
+/** DREAM BOT roster purple — strict checked_in only (not date-window / expected / room_ready). */
+export function isGuestCheckedInForRoster(guest) {
+  return guest?.status === "checked_in";
+}
+
 /** Suite profile: explicit room_type or assigned room from SUITE_REGISTRY. */
 export function isSuiteGuestProfile({ room_type, room } = {}) {
   if (room_type === "suite") return true;

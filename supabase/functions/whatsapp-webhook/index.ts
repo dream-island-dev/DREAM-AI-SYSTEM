@@ -919,9 +919,9 @@ function applyAutoCheckinPromotion(
 ): void {
   supabase
     .from("guests")
-    .update({ status: "checked_in" })
+    .update({ status: "checked_in", checkin_time: new Date().toISOString() })
     .eq("id", guestId)
-    .in("status", ["pending", "expected"])
+    .in("status", ["pending", "expected", "room_ready"])
     .then(({ error }: { error: { message: string } | null }) => {
       if (error) {
         console.error(`[webhook] auto_checkin promotion FAILED phone:${phone}:`, error.message);
@@ -2450,6 +2450,7 @@ serve(async (req: Request) => {
         {
           status: (guest?.status as string | null) ?? null,
           arrival_date: (guest?.arrival_date as string | null) ?? null,
+          departure_date: (guest?.departure_date as string | null) ?? null,
         },
         nowForGuest,
       );
