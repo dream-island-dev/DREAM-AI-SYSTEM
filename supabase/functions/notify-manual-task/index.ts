@@ -16,10 +16,15 @@
 // whapi_message_id is stored back on the task row so that listener can match
 // the reaction to this exact task — same column, same mechanism as every
 // other task source (CLAUDE.md §5 tasks table).
+//
+// Session 77c — Hebrew descriptions from NewTaskForm / inbox_routed are
+// translated via Gemini for the Whapi card only; tasks.description in DB
+// stays Hebrew for reception/board UI (same contract as guest_request routing).
 
 import { serve }         from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient }  from "https://esm.sh/@supabase/supabase-js@2";
 import { sendWhapiText, cleanPhoneForMention } from "../_shared/whapiSend.ts";
+import { containsHebrew, translateTextForFieldOps } from "../_shared/fieldOpsTranslation.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -109,9 +114,20 @@ serve(async (req: Request) => {
 
     const rawAssignedPhone = await findAssignedWorkerPhone(supabase, task.department);
     const assignedPhone = rawAssignedPhone ? cleanPhoneForMention(rawAssignedPhone) : null;
+
+    const rawDesc = String(task.description ?? "");
+    let whapiDesc = rawDesc;
+    if (containsHebrew(rawDesc)) {
+      whapiDesc = await translateTextForFieldOps(rawDesc, {
+        room: task.room_number as string | null,
+        style: "description_only",
+      });
+      console.log(`[notify-manual-task] Whapi description translated (task ${taskId}, DB unchanged)`);
+    }
+
     const card = buildManualTaskCard(
       task.room_number,
-      task.description,
+      whapiDesc,
       task.sla_category,
       assignedPhone,
       task.source as string | null,

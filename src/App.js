@@ -470,24 +470,57 @@ const css = `
   .content { padding: var(--space-lg); }
 
   /* CARDS */
-  .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: var(--space-md); margin-bottom: var(--space-lg); }
+  .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: var(--space-md); margin-bottom: var(--space-lg); }
   .stat-card {
     background: var(--card-bg); border-radius: var(--radius-lg);
     padding: var(--space-lg); box-shadow: var(--shadow-sm);
     border: 1px solid var(--border);
     position: relative; overflow: hidden;
-    transition: box-shadow var(--transition-base), transform var(--transition-base);
+    display: flex; flex-direction: column; min-width: 0;
+    transition: box-shadow var(--transition-base), transform var(--transition-base), border-color var(--transition-base);
   }
-  .stat-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); }
+  .stat-card:hover {
+    box-shadow: var(--shadow-md); transform: translateY(-1px);
+    border-color: rgba(201,169,110,0.35);
+  }
+  .stat-card::before {
+    content: ''; position: absolute; top: 0; right: 0; left: 0; height: 3px;
+    background: linear-gradient(90deg, var(--gold-dark), var(--gold));
+    opacity: 0.9;
+  }
   .stat-card::after {
-    content: ''; position: absolute; bottom: 0; right: 0;
-    width: 60px; height: 60px;
-    background: radial-gradient(circle, rgba(201,169,110,0.08) 0%, transparent 70%);
+    content: ''; position: absolute; bottom: 0; left: 0;
+    width: 72px; height: 72px;
+    background: radial-gradient(circle, rgba(201,169,110,0.1) 0%, transparent 70%);
+    pointer-events: none;
   }
-  .stat-icon { font-size: 26px; margin-bottom: 10px; }
-  .stat-value { font-size: 32px; font-weight: 900; color: var(--black); line-height: 1; }
-  .stat-label { font-size: 12px; color: var(--text-muted); margin-top: 4px; font-weight: 500; }
-  .stat-sub { font-size: 11px; margin-top: 6px; font-weight: 600; }
+  .stat-card--tasks::before { background: linear-gradient(90deg, var(--status-warning), var(--gold)); }
+  .stat-card--checklist::before { background: linear-gradient(90deg, var(--status-success), var(--gold-light)); }
+  .stat-card--depts::before { background: linear-gradient(90deg, var(--status-info), var(--gold)); }
+  .stat-icon { font-size: 28px; margin-bottom: var(--space-sm); line-height: 1; }
+  .stat-value {
+    font-size: 32px; font-weight: 900; color: var(--black); line-height: 1;
+    font-family: 'Playfair Display', serif; letter-spacing: -0.02em;
+  }
+  .stat-label {
+    font-size: 12px; color: var(--text-muted); margin-top: var(--space-xs);
+    font-weight: 600; line-height: 1.35;
+  }
+  .stat-sub { font-size: 11px; margin-top: var(--space-xs); font-weight: 600; line-height: 1.3; }
+  .stat-sub--success { color: var(--status-success); }
+  .stat-sub--danger { color: var(--status-danger); }
+  .stat-sub--info { color: var(--status-info); }
+  .dashboard-urgent {
+    background: linear-gradient(135deg, var(--status-danger-bg), var(--card-bg));
+    border: 1px solid var(--status-danger-bg);
+    border-radius: var(--radius-md);
+    padding: var(--space-md) var(--space-lg);
+    margin-bottom: var(--space-lg);
+    display: flex; align-items: flex-start; gap: var(--space-sm);
+    box-shadow: var(--shadow-xs);
+  }
+  .dashboard-urgent-title { font-weight: 700; color: var(--status-danger); font-size: 14px; }
+  .dashboard-urgent-body { font-size: 13px; color: var(--text-muted); margin-top: 2px; line-height: 1.45; }
 
   .card {
     background: var(--card-bg); border-radius: var(--radius-lg);
@@ -668,7 +701,16 @@ const css = `
     .topbar { padding: 14px 18px; }
     .topbar-date { display: none; } /* free up room for the account control */
     .content { padding: var(--space-md); }
-    .stat-grid { grid-template-columns: repeat(2, 1fr); gap: var(--space-md); }
+    .stat-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: var(--space-sm);
+      margin-bottom: var(--space-md);
+    }
+    .stat-card { padding: var(--space-md); }
+    .stat-icon { font-size: 22px; margin-bottom: var(--space-xs); }
+    .stat-value { font-size: 26px; }
+    .stat-label { font-size: 11px; }
+    .stat-sub { font-size: 10px; }
     .form-grid { grid-template-columns: 1fr; }
     .kanban { grid-template-columns: 1fr; }
     .dash-grid { grid-template-columns: 1fr; gap: 14px; }
@@ -697,6 +739,13 @@ const css = `
       font-size: 15px; min-height: var(--hit-target-staff);
     }
     input[type="checkbox"] { width: 20px; height: 20px; }
+  }
+
+  @media (max-width: 390px) {
+    .stat-grid { gap: var(--space-xs); }
+    .stat-card { padding: var(--space-sm) var(--space-md); }
+    .stat-value { font-size: 24px; }
+    .stat-icon { font-size: 20px; }
   }
 
   /* ────────────────────────────────────────────────────────────────────────
@@ -1248,25 +1297,25 @@ function Dashboard({ shifts, tasks, checklist, employees }) {
           <div className="stat-icon">👨‍💼</div>
           <div className="stat-value">{onShift.length}</div>
           <div className="stat-label">במשמרת עכשיו</div>
-          <div className="stat-sub" style={{ color: "#1A7A4A" }}>
+          <div className="stat-sub stat-sub--success">
             מתוך {employees.length} עובדים
           </div>
         </div>
-        <div className="stat-card">
+        <div className="stat-card stat-card--tasks">
           <div className="stat-icon">🛠️</div>
           <div className="stat-value">{openTasks.length}</div>
           <div className="stat-label">משימות פתוחות</div>
           {urgentTasks.length > 0 && (
-            <div className="stat-sub" style={{ color: "#e53935" }}>
+            <div className="stat-sub stat-sub--danger">
               {urgentTasks.length} דחופות!
             </div>
           )}
         </div>
-        <div className="stat-card">
+        <div className="stat-card stat-card--checklist">
           <div className="stat-icon">✅</div>
           <div className="stat-value">{checkPct}%</div>
           <div className="stat-label">צ'קליסט הושלם</div>
-          <div style={{ marginTop: 8 }}>
+          <div style={{ marginTop: "var(--space-sm)" }}>
             <div className="progress-bar">
               <div
                 className="progress-fill"
@@ -1275,35 +1324,24 @@ function Dashboard({ shifts, tasks, checklist, employees }) {
             </div>
           </div>
         </div>
-        <div className="stat-card">
+        <div className="stat-card stat-card--depts">
           <div className="stat-icon">🏢</div>
           <div className="stat-value">{DEPARTMENTS.length}</div>
           <div className="stat-label">מחלקות פעילות</div>
-          <div className="stat-sub" style={{ color: "#1a6cc8" }}>
+          <div className="stat-sub stat-sub--info">
             כולן תקינות
           </div>
         </div>
       </div>
 
       {urgentTasks.length > 0 && (
-        <div
-          style={{
-            background: "linear-gradient(135deg, #FFF5F3, #FFF)",
-            border: "1px solid #FECACA",
-            borderRadius: 12,
-            padding: "14px 18px",
-            marginBottom: 20,
-            display: "flex",
-            alignItems: "center",
-            gap: 12,
-          }}
-        >
-          <span style={{ fontSize: 24 }}>🚨</span>
-          <div>
-            <div style={{ fontWeight: 700, color: "#e53935", fontSize: 14 }}>
+        <div className="dashboard-urgent">
+          <span style={{ fontSize: 24, flexShrink: 0 }}>🚨</span>
+          <div style={{ minWidth: 0 }}>
+            <div className="dashboard-urgent-title">
               משימות דחופות ממתינות לטיפול!
             </div>
-            <div style={{ fontSize: 13, color: "#8a9ab0", marginTop: 2 }}>
+            <div className="dashboard-urgent-body">
               {urgentTasks.map((t) => t.description).join(" • ")}
             </div>
           </div>

@@ -11,9 +11,9 @@
 
 | Phase | Target | Status |
 |---|---|---|
-| 0 | `App.js` design tokens + utility classes | ✅ מקומי — ממתין commit |
-| 1 | `WhatsAppInbox.js` roster + CTAs | 🟡 **ממתין לאישור Mike** — desktop + 390px |
-| 2a | `Dashboard` KPI cards (`App.js`) | Pending |
+| 0 | `App.js` design tokens + utility classes | ✅ committed `b450b65` |
+| 1 | `WhatsAppInbox.js` roster + CTAs | ✅ committed `b450b65` — Vercel deploy |
+| 2a | `Dashboard` KPI cards (`App.js`) | 🟡 מקומי — ממתין commit (עם backend) |
 | 2b | `OperationsBoard.js` TaskCards + chips | Pending |
 | 3 | `HousekeepingTabletView.js` + AICopilot verify | Pending |
 | 4 | `App.js` mobile shell + `GuestsPage.js` | Pending |

@@ -1,4 +1,6 @@
-2026-07-01 | WhatsAppInbox.js (Phase 1 UI) | Roster+CTAs: Phase 0 tokens (purple in-resort, status badges, swipe 48px); reply bar sticky+safe-area; toolbar/thread touch ≥44px; ללא שינוי לוגיקה/עברית.
+2026-07-01 | whapi-webhook | Dual 👍 lookup: `whapi_message_id` (כרטיס בוט) או `source_message_id` (הודעת טריגר מקורית) → `status=done` + resolved_by_*; ללא migration.
+2026-07-01 | notify-manual-task + fieldOpsTranslation.ts | משימה ידנית/inbox_routed: תיאור עברית → Gemini EN לכרטיס Whapi בלבד; DB נשאר עברית. מודול משותף גם ל-guest_request ב-webhook.
+2026-07-01 | App.js Dashboard (Phase 2a UI) | Luxury stat-cards: gold top accent, Playfair values, semantic stat-sub tokens; 2-col grid @768px + 390px readable sizes; urgent banner tokens.
 2026-07-01 | src/App.js (Phase 0 UI) | Design tokens (:root status/spacing/shadow/hit-target) + utility classes (.u-touch-*, .u-badge-nowrap); mobile-bar safe-area; stat-card hover polish.
 2026-07-01 | whatsapp-webhook + whatsapp-cron + automationSchedule.ts | Unified routing matrix: auto check-in 15:00 (cron+webhook); תפעול→Whapi+תרגום EN; קבלה/בקשות→tasks בלבד (ספא/הארכה); מגן stay-change מעודכן (אדיר ואפק).
 2026-07-01 | whatsapp-webhook + automationSchedule.ts | מגן הארכת שהייה/late checkout: intercept לפני LLM/upsell, handoff ניטרלי לצוות הסוויטות, needs_callback+attention_reason=date_change.

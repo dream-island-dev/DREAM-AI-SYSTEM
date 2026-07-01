@@ -57,6 +57,7 @@ import {
   ADMIN_REQUESTS_DEPARTMENT,
   FIELD_OPS_DEPARTMENT,
 } from "../_shared/automationSchedule.ts";
+import { translateTextForFieldOps } from "../_shared/fieldOpsTranslation.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -1158,36 +1159,9 @@ async function translateGuestRequestForFieldOps(
   summaryHe: string,
 ): Promise<string> {
   const roomLabel = room ?? "—";
-  const fallback = `Room ${roomLabel} - ${summaryHe}`;
-  const apiKey = Deno.env.get("GEMINI_API_KEY");
-  if (!apiKey) return fallback;
-
-  const prompt =
-    `Translate this Hebrew in-suite hotel guest service request into one concise professional English line for field staff. ` +
-    `Format exactly: "Room ${roomLabel} - <request in English>". Output ONLY that single English line.\n\n` +
-    `Hebrew: ${rawText.trim() || summaryHe}`;
-
-  const body = JSON.stringify({
-    contents: [{ role: "user", parts: [{ text: prompt }] }],
-    generationConfig: { maxOutputTokens: 120, temperature: 0.2, candidateCount: 1 },
-  });
-
-  try {
-    for (const model of GEMINI_MODELS.slice(0, 2)) {
-      const outcome = await _geminiGenerateWithRetry(apiKey, model, body);
-      if (outcome.kind !== "ok") continue;
-      const candidates = outcome.data?.candidates as Array<Record<string, unknown>> | undefined;
-      const parts = (candidates?.[0]?.content as Record<string, unknown> | undefined)?.parts as
-        Array<Record<string, unknown>> | undefined;
-      const text = String(
-        parts?.find((p) => !p.thought && typeof p.text === "string")?.text ?? "",
-      ).trim();
-      if (text && !/[֐-׿]/.test(text)) return text.replace(/^["']|["']$/g, "");
-    }
-  } catch (e) {
-    console.warn("[webhook] translateGuestRequestForFieldOps failed:", (e as Error).message);
-  }
-  return fallback;
+  const src = (rawText.trim() || summaryHe).trim();
+  if (!src) return `Room ${roomLabel} - —`;
+  return translateTextForFieldOps(src, { room: roomLabel, style: "room_dash_line" });
 }
 
 async function routeGuestRequestToOpsGroup(
