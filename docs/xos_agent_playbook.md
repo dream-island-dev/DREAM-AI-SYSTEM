@@ -348,7 +348,31 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ---
 
-## 11. Desktop Session Kickoff — FULL PROMPT (Mike copy-paste)
+## 12. Mike Quick Card (print this — 4 commands only)
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  npm start רץ → פתח localhost:3000                      │
+│                                                         │
+│  הסוכן שינה משהו → אתה מסתכל בדפדפן → כותב:            │
+│                                                         │
+│    כן          = המשך לשלב הבא                          │
+│    תקן: …      = משהו לא נראה טוב                       │
+│    עצור        = תעצור                                  │
+│    תעלה        = דחוף לפרודקשן (Vercel)                 │
+│                                                         │
+│  אחרי תעלה → בדוק בטלפון → כן / תקן: …                  │
+└─────────────────────────────────────────────────────────┘
+```
+
+First message to agent (once per session):
+```
+@docs/xos_agent_playbook.md
+npm start running. show me each change in browser before next step.
+start phase 0
+```
+
+---
 
 ```
 @CLAUDE.md @docs/active_sprint.md @docs/xos_agent_playbook.md @RESORT_UI_MANIFEST.md
@@ -392,4 +416,62 @@ Same agent as cloud. Read files above first.
 Constraints: CSS vars, Disable-Don't-Hide, FAIL VISIBLE, no .env
 ```
 
-Mike after diagnostic: `start phase 0`
+## 11. Desktop Session Kickoff — ONE MESSAGE (Mike copy-paste this entire block)
+
+```
+@CLAUDE.md @docs/active_sprint.md @docs/xos_agent_playbook.md @RESORT_UI_MANIFEST.md
+@src/App.js @.cursorrules
+
+# XOS Co-Pilot — EXECUTE UI upgrade (Mike approval workflow)
+
+You are the same architect as cloud sessions. Read all @ files first.
+
+## Mike's workflow (NON-NEGOTIABLE — this is how we worked before and Mike loved it)
+
+1. Make ONE small visual change (or complete one clear step).
+2. Tell Mike in Hebrew (short):
+   - Open http://localhost:3000
+   - Which screen/tab to click (Hebrew nav name)
+   - Exactly what should look different
+   - Mobile: F12 → 390px if relevant
+3. STOP and WAIT. Do NOT make the next change until Mike replies.
+4. Mike approves with: כן / yes / המשך
+5. Only when a phase batch is done AND Mike is happy → ask:
+   "לבצע commit + push לפרודקשן?"
+6. Push ONLY when Mike says: כן / yes / תעלה / yes deploy
+7. Never push silently. Never skip the "where to look" step.
+
+Mike does NOT read code. Mike looks at the browser (npm start is running).
+
+## What we planned (execute in order)
+
+GOAL: Staff UI — desktop "Wow" + mobile comfort. Visual only.
+
+Phase 0: App.js — design tokens + utility classes + mobile hit-target vars
+Phase 1: WhatsAppInbox.js — roster, badges, CTAs (+ mobile swipe/reply bar)
+Phase 2a: Dashboard KPI cards (App.js ~1166-1204) — NOT OperationsBoard
+Phase 2b: OperationsBoard.js — TaskCards + filter chips (not a table)
+Phase 3: HousekeepingTabletView.js 72px buttons + verify AICopilot vs mobile-bar
+Phase 4: App.js mobile-bar/hamburger + GuestsPage.js on phone
+Phase 5: Mike tests on phone at dream-ai-system.vercel.app after deploy
+
+Rules: CSS variables only, Disable-Don't-Hide, no Hebrew label changes, no logic, no .env
+After each phase: Mobile Checklist (playbook §5.5) + npm run build before commit
+
+## Your FIRST reply (Hebrew, max 12 lines)
+
+1. Confirm git commit hash after pull
+2. Confirm npm start assumption
+3. Phase 0 diagnostic — list App.js lines you will touch
+4. Ask: "להתחיל שינוי ראשון?" — wait for כן
+
+Do NOT write code in the first reply unless Mike already said כן below.
+
+## Mike says now:
+
+כן — התחל Phase 0. אחרי כל שינוי תראה לי בדפדפן ותחכה לאישור לפני commit/push.
+```
+
+---
+
+## 11b. Legacy full prompt (reference)
