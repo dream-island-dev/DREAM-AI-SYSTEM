@@ -504,3 +504,19 @@ export function isSensitiveStayChangeRequest(text: string): boolean {
 /** Canonical staff handoff — MUST NOT vary; no enthusiastic approval language. */
 export const CANONICAL_STAY_CHANGE_HANDOFF_MSG =
   "העברתי את בקשתך לצוות הסוויטות שלנו (אדיר ואפק), והם יצרו איתך קשר בהקדם. 🙏";
+
+// ── Severe-complaint kill-switch — furious/serious guest, no auto-reply ─────
+// Distinct from COMPLAINT_PATTERNS (whatsapp-webhook): those still get a
+// pre-written empathy reply, appropriate for "the AC is a bit loud" tier
+// complaints. This tier is for guests expressing real anger/damage/being
+// scoped as ruined — an auto-generated empathy line risks reading as tone-
+// deaf. No outbound message at all; requires_attention + dedicated reason
+// so a manager reaches out personally instead of the bot replying at all.
+export const SEVERE_COMPLAINT_PATTERN =
+  /נהרס(?:ה|ו|תי|נו)?|הרסת(?:ם|י|ן)|אכזב(?:ה|תם|תי|נו)|גרוע(?:\s*(?:מאוד|ביותר|בצורה\s*חריגה))?|חבל\s*על\s*(?:ה)?כסף|מלוכלך(?:\s*(?:מאוד|ביותר|לגמרי))?|(?:איום\s*ונורא|נורא\s*ואיום)|בושה\s*(?:וחרפה)?|scandal(?:ous)?|disgusting|outraged|furious|worst\s*(?:hotel|experience|stay)/i;
+
+export function isSevereComplaint(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  return SEVERE_COMPLAINT_PATTERN.test(t);
+}

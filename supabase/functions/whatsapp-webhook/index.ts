@@ -56,6 +56,7 @@ import {
   buildAdministrativeDispatchReply,
   isSensitiveStayChangeRequest,
   CANONICAL_STAY_CHANGE_HANDOFF_MSG,
+  isSevereComplaint,
   shouldAutoPromoteToCheckedIn,
   resolveEffectiveGuestStatus,
   ADMIN_REQUESTS_DEPARTMENT,
@@ -178,7 +179,7 @@ const IN_HOUSE_TONE_SUFFIX = `
 // Complements sanitizeReply(); does NOT modify bot_settings.system_prompt in DB.
 const ANTI_REASONING_LEAK_SUFFIX = `
 
-CRITICAL: You must NEVER output your thinking process, tags, JSON, or any English reasoning (THOUGHT blocks) to the user. Your output must strictly contain ONLY the direct, natural Hebrew response to the guest. If you feel the need to reason, do it internally; never let it escape into the final output text.`;
+CRITICAL: Under no circumstances should you output your internal thinking, reasoning steps, variables, tags, markdown code blocks (\`\`\`), or English text to the user. Your output must strictly contain ONLY the natural, direct Hebrew response to the guest. If you feel the need to reason, do it internally; never let it escape into the final output text.`;
 
 // Rapid burst coalescing — two webhook invocations within ~2s share one LLM reply.
 const BURST_COALESCE_MS = 1800;
@@ -1399,6 +1400,63 @@ async function handleAdministrativeInHouseIntercept(
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// §4b.1b SEVERE COMPLAINT KILL-SWITCH — guest is furious / reports serious
+//        damage. No auto-reply of any kind (even the empathy complaint_reply
+//        script) — a canned line risks reading as tone-deaf. Flags the guest
+//        for a manager to reach out personally. Checked before every other
+//        Tier-0 classifier so anger never gets routed into date-change/
+//        upsell/generic-complaint copy instead.
+// ══════════════════════════════════════════════════════════════════════════════
+async function handleSevereComplaintKillSwitch(
+  supabase: ReturnType<typeof createClient>,
+  opts: {
+    phone: string;
+    guestId: number | null;
+    text: string;
+    msgId: string;
+    claimedConversationId: number | null;
+  },
+): Promise<void> {
+  const { phone, guestId, text, msgId, claimedConversationId } = opts;
+
+  await patchClaimedInbound(supabase, claimedConversationId, msgId, {
+    guest_id: guestId,
+    intent: "severe_complaint",
+  });
+
+  if (guestId) {
+    const { error: guestErr } = await supabase.from("guests").update({
+      requires_attention:       true,
+      requires_attention_since: new Date().toISOString(),
+      needs_callback:           true,
+      attention_reason:         "severe_complaint",
+    }).eq("id", guestId);
+    if (guestErr) {
+      console.error("[webhook] 🚨 severe_complaint guest update FAILED:", guestErr.message);
+    }
+  }
+
+  const { error: alertErr } = await supabase.from("guest_alerts").insert({
+    guest_id:        guestId,
+    phone,
+    alert_type:      "severe_complaint",
+    message:         text,
+    conversation_id: claimedConversationId,
+    resolved:        false,
+  });
+  if (alertErr) {
+    console.error("[webhook] 🚨 severe_complaint guest_alerts insert FAILED:", alertErr.message);
+  }
+
+  // Deliberately no sendReply() call — silent to the guest by design (Mike's
+  // explicit rule 4). Loud in the logs so the suppression itself is FAIL
+  // VISIBLE to staff, not just to the dashboard badge.
+  console.info(
+    `[webhook] 🚨🔇 SEVERE_COMPLAINT kill-switch — reply suppressed, manager flagged — phone:${phone} guest:${guestId ?? "unknown"} text:"${text.slice(0, 80)}"`,
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // §4b.2  SENSITIVE STAY-CHANGE SHIELD — late checkout / extension / early
 //        check-in / room change. Never imply approval; canonical staff handoff.
 // ══════════════════════════════════════════════════════════════════════════════
@@ -2144,6 +2202,21 @@ async function sendReply(to: string, body: string): Promise<string> {
     console.info(`[webhook] 🔇 staff claim — sendReply suppressed to ${to}`);
     return "";
   }
+
+  // ── HARD DROP guard (Mike's explicit rule) ─────────────────────────────────
+  // Distinct from sanitizeReply()'s normal leak-stripping below, which removes a
+  // thought block/preamble and still sends the cleaned-up remainder (or a safe
+  // Hebrew apology if nothing usable is left). A raw "THOUGHT"/"REASONING" label
+  // or a markdown code fence surviving all the way to this chokepoint means the
+  // generation itself was broken, not just prefixed with a stray leak line — in
+  // that case, send NOTHING at all rather than risk any fragment reaching the guest.
+  if (/```/.test(body) || /\b(?:THOUGHT|REASONING)\b/i.test(body)) {
+    console.error(
+      `[webhook] 🚨🔇 HARD DROP — raw reasoning marker or code fence detected in generated reply, message suppressed entirely (not sent) to ${to}`,
+    );
+    return "";
+  }
+
   const token   = Deno.env.get("META_WHATSAPP_TOKEN");
   const phoneId = Deno.env.get("META_PHONE_NUMBER_ID");
   if (!token || !phoneId) throw new Error("missing_meta_creds");
@@ -2952,6 +3025,16 @@ Deno.serve(async (req: Request) => {
         continue;
       }
 
+      // ── Severe complaint kill-switch — checked first, before any other Tier-0
+      // classifier or LLM. A furious/serious complaint must never be routed
+      // into date-change/upsell/generic-complaint copy — no auto-reply at all.
+      if (!isButtonReply && isSevereComplaint(text)) {
+        await handleSevereComplaintKillSwitch(supabase, {
+          phone, guestId, text, msgId, claimedConversationId,
+        });
+        continue;
+      }
+
       // ── Sensitive stay-change shield (late checkout / extension / room change) ──
       // Before DATE_CHANGE, upsell, and LLM — canonical neutral handoff only.
       if (!isButtonReply && isSensitiveStayChangeRequest(text)) {
@@ -3077,6 +3160,14 @@ Deno.serve(async (req: Request) => {
         console.info(
           `[webhook] burst coalesced ${burst.coalescedText.split("\n").length} msgs — phone:${phone}`,
         );
+      }
+
+      // ── Severe complaint kill-switch (post-burst fragmented asks) ──────────
+      if (!isButtonReply && effectiveText !== text && isSevereComplaint(effectiveText)) {
+        await handleSevereComplaintKillSwitch(supabase, {
+          phone, guestId, text: effectiveText, msgId, claimedConversationId,
+        });
+        continue;
       }
 
       // ── Sensitive stay-change shield (post-burst fragmented asks) ──────────
@@ -3431,6 +3522,42 @@ Deno.serve(async (req: Request) => {
             guestId, room: guestRoom, summary: toolLoggedRequest.summary, rawText: effectiveText,
           }).catch((e: Error) => console.error("[webhook] 🛋️ routeGuestRequestToOpsGroup error:", e.message));
         }
+      }
+
+      // ── Pre-send safety net — severe complaint must never get an auto-reply ──
+      // Same defense-in-depth reasoning as the sensitive-stay-change guard below:
+      // catches the rare case where a furious message slipped past the earlier
+      // Tier-0 check (e.g. arrived as a button reply, or only became "severe"
+      // once combined with burst-coalesced text after that check already ran).
+      if (isSevereComplaint(effectiveText)) {
+        if (guestId) {
+          supabase
+            .from("guests")
+            .update({
+              requires_attention:       true,
+              requires_attention_since: new Date().toISOString(),
+              needs_callback:           true,
+              attention_reason:         "severe_complaint",
+            })
+            .eq("id", guestId)
+            .then(({ error }: { error: { message: string } | null }) => {
+              if (error) {
+                console.error("[webhook] 🚨 pre_send severe_complaint guest update FAILED:", error.message);
+              }
+            });
+        }
+        (async () => {
+          const { error } = await supabase.from("guest_alerts").insert({
+            guest_id: guestId, phone,
+            alert_type: "severe_complaint",
+            message: effectiveText, conversation_id: conversationId, resolved: false,
+          });
+          if (error) console.error("[webhook] 🚨 pre_send severe_complaint guest_alerts insert FAILED:", error.message);
+        })().catch((e: Error) => console.error("[webhook] 🚨 pre_send severe_complaint guest_alerts insert FAILED:", e.message));
+        console.info(
+          `[webhook] 🚨🔇 SEVERE_COMPLAINT mitigation — source:pre_send_guard, reply suppressed — phone:${phone} guest:${guestId ?? "unknown"}`,
+        );
+        continue;
       }
 
       // ── Pre-send safety net — LLM/upsell must never imply stay-change approval ──

@@ -4,8 +4,9 @@ import { useState } from "react";
 import GuestProfileModal from "./GuestProfileModal";
 
 const REASON_META = {
-  date_change:    { icon: "🗓️", title: "ביקש/ה שינוי בתאריך הגעה — לחץ לפרופיל" },
-  human_callback: { icon: "📞", title: "ביקש/ה לדבר עם נציג — לחץ לפרופיל" },
+  date_change:      { icon: "🗓️", title: "ביקש/ה שינוי בתאריך הגעה — לחץ לפרופיל" },
+  human_callback:   { icon: "📞", title: "ביקש/ה לדבר עם נציג — לחץ לפרופיל" },
+  severe_complaint: { icon: "🚨", title: "ביקורת שלילית חריפה — דורש מנהל בדחיפות — לחץ לפרופיל" },
   "בקשת טיפול בספא": { icon: "💆", title: "ביקש/ה טיפול בספא מהפורטל — לחץ לפרופיל" },
 };
 
