@@ -1,3 +1,4 @@
+2026-07-01 | ArrivalImportPanel.js | תיקון גריד ריק במצב שיבוץ סוויטות — ביטול סינון ספא + עמודות שם/הזמנה/חדר.
 2026-07-01 | ArrivalImportPanel.js | Doc 2: מצב «עדכון שיבוץ סוויטות בלבד» — UI toggle + UPDATE ממוקד ל-room בלבד (התאמה order_number/שם).
 2026-07-01 | WhatsAppInbox.js + whatsapp-webhook | «קח שיחה» משתיק בוט לאורח ספציפי (guests.claimed_by); תיקון UI שאיפס claim בהודעה חדשה.
 2026-07-01 | ReceptionChecklist.jsx + receptionChecklistTemplate.js | צ'קליסט: עריכה/מחיקת משימות, ניקוי שורות ישנות, שדה «מי ביצע» (שם חופשי), מעקב לפי שמות בפועל.

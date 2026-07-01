@@ -682,6 +682,14 @@ const SUITES_GRID_COLS = [
   { id: "arrivalDate", label: "הגעה",       editable: false, w: 100 },
 ];
 
+/** Focused preview columns for Doc 2 suite-assignment-only mode */
+const SUITE_ASSIGNMENT_GRID_COLS = [
+  { id: "guestName",   label: "שם אורח",       editable: true,  w: 170 },
+  { id: "orderNumber", label: "מס׳ הזמנה",     editable: false, w: 110 },
+  { id: "room",        label: "🏨 חדר/סוויטה", editable: true,  w: 200, gold: true, options: ROOM_OPTIONS },
+  { id: "guestPhone",  label: "טלפון",         editable: false, w: 120 },
+];
+
 // ── DropZone ─────────────────────────────────────────────────────────────────
 
 function DropZone({ label, hint, loaded, fileName, onFile, inputRef, optional, accept = ".xlsx,.xls,.csv" }) {
@@ -928,6 +936,13 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     }
   }, [importSource, doc2SyncMode]);
 
+  // Suite-only mode: show all parsed rows (spa filter would hide room-assignment imports)
+  useEffect(() => {
+    if (doc2SyncMode === "suite_assignment_only" && importSource !== "detailed") {
+      setShowOnlyWithSpa(false);
+    }
+  }, [doc2SyncMode, importSource]);
+
   // Recompute merged whenever Suite CSV or Daily Report changes
   useEffect(() => {
     if (!doc2Map) { setMerged(null); return; }
@@ -1162,7 +1177,10 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
 
   const displayGridRows = useMemo(() => {
     let rows = gridRows;
-    if (showOnlyWithSpa && importSource !== "detailed") {
+    const spaFilterActive = showOnlyWithSpa
+      && importSource !== "detailed"
+      && doc2SyncMode !== "suite_assignment_only";
+    if (spaFilterActive) {
       rows = rows.filter(_hasSpaTime);
     }
     if (importSource === "detailed") {
@@ -1173,7 +1191,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
       }
     }
     return rows;
-  }, [gridRows, showOnlyWithSpa, importSource, detailedRoomFilter]);
+  }, [gridRows, showOnlyWithSpa, importSource, detailedRoomFilter, doc2SyncMode]);
 
   const displayDoc1Rec = useMemo(() => {
     if (!doc1Rec) return [];
@@ -1528,7 +1546,11 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
         : `⚡ עדכן שעות ספא (${doc1Rec?.length ?? 0} אורחים)`;
 
   // ── Stats ─────────────────────────────────────────────────────────────────
-  const activeGridCols = importSource === "detailed" ? DETAILED_GRID_COLS : SUITES_GRID_COLS;
+  const activeGridCols = importSource === "detailed"
+    ? DETAILED_GRID_COLS
+    : doc2SyncMode === "suite_assignment_only"
+      ? SUITE_ASSIGNMENT_GRID_COLS
+      : SUITES_GRID_COLS;
 
   const stats = (hasDoc2 && merged)
     ? {
@@ -1967,7 +1989,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           {/* Editable grid — Suite CSV profiles, room dropdown sourced from SUITE_REGISTRY */}
           {showSuiteGrid && (
             <div style={{ marginBottom: 14 }}>
-              {importSource !== "detailed" && (
+              {importSource !== "detailed" && doc2SyncMode !== "suite_assignment_only" && (
                 <div style={{
                   display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
                   marginBottom: 10, padding: "8px 12px",
@@ -1996,6 +2018,15 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                       ? " · סנכרון ייבא את כל הפרופילים"
                       : ""}
                   </span>
+                </div>
+              )}
+              {doc2SyncMode === "suite_assignment_only" && importSource !== "detailed" && (
+                <div style={{
+                  marginBottom: 10, padding: "8px 12px", borderRadius: 10,
+                  background: "rgba(201,169,110,0.1)", border: "1px solid rgba(201,169,110,0.35)",
+                  fontSize: 11, fontWeight: 700, color: "var(--gold-dark)",
+                }}>
+                  🏨 תצוגת שיבוץ: שם · מס׳ הזמנה · חדר/סוויטה — {displayGridRows.length} שורות
                 </div>
               )}
               {selectedIds.size > 0 && (
