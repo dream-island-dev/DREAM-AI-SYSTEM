@@ -1,3 +1,4 @@
+2026-07-01 | ReceptionChecklist + receptionChecklistTemplate | צ'קליסט קבלה: 21 משימות verbatim מהטופס הפיזי, עמודת הערות דיגיטלית, מטריצת אלונה/שיראל/אורן, איפוס 04:00.
 2026-07-01 | GuestsPage.js + WhatsAppInbox.js | צ'ק-אין: מחיקה כללית לנבחרים (במקום איפוס ספא); DREAM BOT — סגול ל-checked_in מחוזק דרך מפת טלפון+סטטוס.
 2026-07-01 | GuestPortal + guest-portal-data/spa-request + migration 115 + ReceptionChecklist | פורטל: הסתרת כפתור ספא כשיש spa_time / toggle גלובלי; תשובת Concierge Meta; צ'קליסט קבלה — מטריצת חתימות סיוון/שיראל/אלונה.
 2026-07-01 | guest-portal-spa-request + GuestPortal + whatsapp-webhook | בקשת ספא מהפורטל: requires_attention+guest_notes, Whapi DM קנוני לאורח, LLM guard מפני קישורי ספא.

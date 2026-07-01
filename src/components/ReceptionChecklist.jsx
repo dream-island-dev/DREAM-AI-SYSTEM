@@ -1,10 +1,11 @@
 // src/components/ReceptionChecklist.jsx
-// Reception daily digital checklist — DB-backed audit log per shift date.
+// Reception daily digital checklist — verbatim tasks + DB-backed operator audit per shift date.
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import {
   RECEPTION_CHECKLIST_SECTIONS,
   RECEPTION_CHECKLIST_TEMPLATE,
+  RECEPTION_CHECKLIST_FOOTER,
   receptionChecklistShiftDate,
 } from "../utils/receptionChecklistTemplate";
 
@@ -13,7 +14,8 @@ const CREAM_DARK = "#E8DFD0";
 const GOLD = "var(--gold)";
 const GOLD_DARK = "var(--gold-dark)";
 
-const RECEPTION_OPERATORS = ["סיוון", "שיראל", "אלונה"];
+/** Operators seen on physical checklist — used for Elena signature matrix. */
+const RECEPTION_OPERATORS = ["אלונה", "שיראל", "אורן"];
 
 export default function ReceptionChecklist({ user }) {
   const [auditDate, setAuditDate] = useState(() => receptionChecklistShiftDate());
@@ -36,54 +38,88 @@ export default function ReceptionChecklist({ user }) {
 
   const ensureSeeded = useCallback(async (date) => {
     if (!supabase) return;
-    const { count, error: countErr } = await supabase
-      .from("reception_checklist_entries")
-      .select("id", { count: "exact", head: true })
-      .eq("checklist_date", date);
-    if (countErr) throw countErr;
-    if ((count ?? 0) > 0) return;
 
-    const payload = RECEPTION_CHECKLIST_TEMPLATE.map((t) => ({
-      checklist_date: date,
-      section_key: t.section,
-      task_key: t.key,
-      task_label: t.label,
-      sort_order: t.sort,
-      is_done: false,
-    }));
-    const { error } = await supabase.from("reception_checklist_entries").insert(payload);
-    if (error) throw error;
+    const { data: existing, error: fetchErr } = await supabase
+      .from("reception_checklist_entries")
+      .select("id, section_key, task_key, task_label")
+      .eq("checklist_date", date);
+    if (fetchErr) throw fetchErr;
+
+    const existingKeys = new Set(
+      (existing ?? []).map((r) => `${r.section_key}:${r.task_key}`),
+    );
+
+    const missing = RECEPTION_CHECKLIST_TEMPLATE.filter(
+      (t) => !existingKeys.has(`${t.section}:${t.key}`),
+    );
+    if (missing.length > 0) {
+      const payload = missing.map((t) => ({
+        checklist_date: date,
+        section_key: t.section,
+        task_key: t.key,
+        task_label: t.label,
+        sort_order: t.sort,
+        is_done: false,
+      }));
+      const { error: insertErr } = await supabase
+        .from("reception_checklist_entries")
+        .insert(payload);
+      if (insertErr) throw insertErr;
+    }
+
+    const labelFixes = (existing ?? []).filter((row) => {
+      const tpl = RECEPTION_CHECKLIST_TEMPLATE.find(
+        (t) => t.section === row.section_key && t.key === row.task_key,
+      );
+      return tpl && tpl.label !== row.task_label;
+    });
+    if (labelFixes.length > 0) {
+      await Promise.all(
+        labelFixes.map((row) => {
+          const tpl = RECEPTION_CHECKLIST_TEMPLATE.find(
+            (t) => t.section === row.section_key && t.key === row.task_key,
+          );
+          return supabase
+            .from("reception_checklist_entries")
+            .update({ task_label: tpl.label })
+            .eq("id", row.id);
+        }),
+      );
+    }
   }, []);
 
-  const loadRows = useCallback(async (date) => {
-    if (!isSupabaseConfigured || !supabase) {
-      setRows([]);
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    try {
-      if (date === liveShiftDate) await ensureSeeded(date);
-      const { data, error } = await supabase
-        .from("reception_checklist_entries")
-        .select("*")
-        .eq("checklist_date", date)
-        .order("sort_order", { ascending: true });
-      if (error) throw error;
-      setRows(data ?? []);
-    } catch (e) {
-      showToast("err", "שגיאה בטעינת צ'קליסט: " + (e?.message ?? e));
-      setRows([]);
-    } finally {
-      setLoading(false);
-    }
-  }, [ensureSeeded, liveShiftDate]);
+  const loadRows = useCallback(
+    async (date) => {
+      if (!isSupabaseConfigured || !supabase) {
+        setRows([]);
+        setLoading(false);
+        return;
+      }
+      setLoading(true);
+      try {
+        if (date === liveShiftDate) await ensureSeeded(date);
+        const { data, error } = await supabase
+          .from("reception_checklist_entries")
+          .select("*")
+          .eq("checklist_date", date)
+          .order("sort_order", { ascending: true });
+        if (error) throw error;
+        setRows(data ?? []);
+      } catch (e) {
+        showToast("err", "שגיאה בטעינת צ'קליסט: " + (e?.message ?? e));
+        setRows([]);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [ensureSeeded, liveShiftDate],
+  );
 
   useEffect(() => {
     loadRows(auditDate);
   }, [auditDate, loadRows]);
 
-  // 04:00 shift rollover — refresh when Israel hour crosses into new shift day
+  // 04:00 Israel shift rollover — new date = fresh unchecked template on first seed
   useEffect(() => {
     const tick = () => {
       const next = receptionChecklistShiftDate();
@@ -96,6 +132,21 @@ export default function ReceptionChecklist({ user }) {
 
   const doneCount = rows.filter((r) => r.is_done).length;
   const pct = rows.length ? Math.round((doneCount / rows.length) * 100) : 0;
+
+  const sectionStats = useMemo(() => {
+    return RECEPTION_CHECKLIST_SECTIONS.map((section) => {
+      const items = rows.filter((r) => r.section_key === section.key);
+      const done = items.filter((i) => i.is_done).length;
+      const total = items.length;
+      return {
+        key: section.key,
+        label: section.label,
+        done,
+        total,
+        pct: total ? Math.round((done / total) * 100) : 0,
+      };
+    });
+  }, [rows]);
 
   const rowsBySection = useMemo(() => {
     const map = {};
@@ -175,40 +226,72 @@ export default function ReceptionChecklist({ user }) {
     }
   };
 
+  const formatDisplayDate = (ymd) => {
+    if (!ymd) return "";
+    const [y, m, d] = ymd.split("-");
+    return `${d}/${m}/${y.slice(2)}`;
+  };
+
   return (
     <div style={{ direction: "rtl" }}>
       {toast && (
-        <div style={{
-          position: "fixed", top: 20, left: "50%", transform: "translateX(-50%)", zIndex: 9999,
-          padding: "12px 24px", borderRadius: 10, fontWeight: 700, fontSize: 14,
-          background: toast.type === "ok" ? "#E8F5EF" : "#FFF0EE",
-          color: toast.type === "ok" ? "#1A7A4A" : "#C0392B",
-          border: `1px solid ${toast.type === "ok" ? "#1A7A4A" : "#C0392B"}`,
-        }}>
+        <div
+          style={{
+            position: "fixed",
+            top: 20,
+            left: "50%",
+            transform: "translateX(-50%)",
+            zIndex: 9999,
+            padding: "12px 24px",
+            borderRadius: 10,
+            fontWeight: 700,
+            fontSize: 14,
+            background: toast.type === "ok" ? "#E8F5EF" : "#FFF0EE",
+            color: toast.type === "ok" ? "#1A7A4A" : "#C0392B",
+            border: `1px solid ${toast.type === "ok" ? "#1A7A4A" : "#C0392B"}`,
+          }}
+        >
           {toast.msg}
         </div>
       )}
 
-      <div style={{
-        background: `linear-gradient(135deg, ${CREAM}, #fff)`,
-        border: `1px solid ${CREAM_DARK}`,
-        borderRadius: 14,
-        padding: "18px 20px",
-        marginBottom: 20,
-      }}>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 16, justifyContent: "space-between", alignItems: "flex-start" }}>
+      {/* ── Elena manager dashboard ── */}
+      <div
+        style={{
+          background: `linear-gradient(135deg, ${CREAM}, #fff)`,
+          border: `1px solid ${CREAM_DARK}`,
+          borderRadius: 14,
+          padding: "18px 20px",
+          marginBottom: 20,
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 16,
+            justifyContent: "space-between",
+            alignItems: "flex-start",
+          }}
+        >
           <div>
-            <div style={{ fontFamily: "Playfair Display, serif", fontSize: 22, fontWeight: 700, color: GOLD_DARK }}>
-              📋 צ'קליסט קבלה יומי
+            <div
+              style={{
+                fontFamily: "Playfair Display, serif",
+                fontSize: 22,
+                fontWeight: 700,
+                color: GOLD_DARK,
+              }}
+            >
+              צ'ק ליסט יומי לתאריך: {formatDisplayDate(auditDate)}
             </div>
             <div style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 4 }}>
-              משמרת: {auditDate}
-              {isHistoricView ? " (ארכיון)" : " (היום)"}
+              משמרת {isHistoricView ? "ארכיון" : "פעילה"} · איפוס אוטומטי 04:00 (ישראל)
             </div>
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 200 }}>
             <label style={{ fontSize: 12, fontWeight: 700, color: GOLD_DARK }}>
-              📅 ביקורת היסטורית
+              📅 ביקורת משמרות (ילנה)
             </label>
             <input
               type="date"
@@ -238,23 +321,59 @@ export default function ReceptionChecklist({ user }) {
 
         <div style={{ marginTop: 16 }}>
           <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>
-            {doneCount} / {rows.length} הושלמו ({pct}%)
+            סה"כ: {doneCount} / {rows.length} ({pct}%)
           </div>
-          <div className="progress-bar" style={{ height: 12, borderRadius: 8, background: CREAM_DARK }}>
+          <div
+            className="progress-bar"
+            style={{ height: 12, borderRadius: 8, background: CREAM_DARK }}
+          >
             <div
               className="progress-fill"
-              style={{ width: `${pct}%`, background: `linear-gradient(90deg, ${GOLD}, ${GOLD_DARK})`, borderRadius: 8 }}
+              style={{
+                width: `${pct}%`,
+                background: `linear-gradient(90deg, ${GOLD}, ${GOLD_DARK})`,
+                borderRadius: 8,
+              }}
             />
           </div>
         </div>
 
-        <div style={{
-          marginTop: 18,
-          paddingTop: 16,
-          borderTop: `1px solid ${CREAM_DARK}`,
-        }}>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+            gap: 10,
+            marginTop: 16,
+          }}
+        >
+          {sectionStats.map((s) => (
+            <div
+              key={s.key}
+              style={{
+                background: "#fff",
+                border: `1px solid ${CREAM_DARK}`,
+                borderRadius: 10,
+                padding: "10px 12px",
+                minHeight: 44,
+              }}
+            >
+              <div style={{ fontSize: 12, fontWeight: 800, color: GOLD_DARK }}>{s.label}</div>
+              <div style={{ fontSize: 13, marginTop: 4 }}>
+                {s.done}/{s.total} · {s.pct}%
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div
+          style={{
+            marginTop: 18,
+            paddingTop: 16,
+            borderTop: `1px solid ${CREAM_DARK}`,
+          }}
+        >
           <div style={{ fontSize: 12, fontWeight: 800, color: GOLD_DARK, marginBottom: 10 }}>
-            👤 מעקב חתימות צוות (אלנה / מנהל)
+            👤 מטריצת חתימות צוות
           </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
             {RECEPTION_OPERATORS.map((name) => (
@@ -274,21 +393,30 @@ export default function ReceptionChecklist({ user }) {
               </div>
             ))}
             {operatorSignoffs.other > 0 && (
-              <div style={{
-                minHeight: 44, padding: "8px 14px", borderRadius: 10,
-                background: "#fff", border: `1px solid ${CREAM_DARK}`,
-                fontSize: 13, color: "var(--text-muted)",
-              }}>
+              <div
+                style={{
+                  minHeight: 44,
+                  padding: "8px 14px",
+                  borderRadius: 10,
+                  background: "#fff",
+                  border: `1px solid ${CREAM_DARK}`,
+                  fontSize: 13,
+                  color: "var(--text-muted)",
+                }}
+              >
                 אחר: {operatorSignoffs.other} ✓
               </div>
             )}
           </div>
           {recentSignoffs.length > 0 && (
             <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.7 }}>
-              <div style={{ fontWeight: 700, color: "var(--black)", marginBottom: 4 }}>יומן אחרון:</div>
+              <div style={{ fontWeight: 700, color: "var(--black)", marginBottom: 4 }}>
+                יומן אחרון:
+              </div>
               {recentSignoffs.map((r) => (
                 <div key={r.id}>
-                  {formatAuditTime(r.completed_at)} — {r.completed_by_name || "צוות"} · {r.task_label}
+                  {formatAuditTime(r.completed_at)} — {r.completed_by_name || "צוות"} ·{" "}
+                  {r.task_label.length > 48 ? r.task_label.slice(0, 48) + "…" : r.task_label}
                 </div>
               ))}
             </div>
@@ -297,13 +425,40 @@ export default function ReceptionChecklist({ user }) {
       </div>
 
       {!isSupabaseConfigured && (
-        <div style={{ background: "#FFF5E8", border: "1px solid #F5A623", borderRadius: 10, padding: 12, marginBottom: 16, fontSize: 13 }}>
+        <div
+          style={{
+            background: "#FFF5E8",
+            border: "1px solid #F5A623",
+            borderRadius: 10,
+            padding: 12,
+            marginBottom: 16,
+            fontSize: 13,
+          }}
+        >
           Supabase לא מחובר — לא ניתן לשמור צ'קליסט.
         </div>
       )}
 
+      {isHistoricView && (
+        <div
+          style={{
+            background: "#F0F4FF",
+            border: "1px solid #B8C9E8",
+            borderRadius: 10,
+            padding: "10px 14px",
+            marginBottom: 16,
+            fontSize: 13,
+            fontWeight: 600,
+          }}
+        >
+          🔒 תצוגת ארכיון בלבד — לא ניתן לערוך משימות ממשמרת קודמת.
+        </div>
+      )}
+
       {loading ? (
-        <div style={{ textAlign: "center", padding: 48, color: "var(--text-muted)" }}>טוען צ'קליסט...</div>
+        <div style={{ textAlign: "center", padding: 48, color: "var(--text-muted)" }}>
+          טוען צ'קליסט...
+        </div>
       ) : rows.length === 0 ? (
         <div style={{ textAlign: "center", padding: 48, color: "var(--text-muted)" }}>
           אין רשומות לתאריך זה.
@@ -347,11 +502,24 @@ export default function ReceptionChecklist({ user }) {
                 <span style={{ fontSize: 16, fontWeight: 800, color: GOLD_DARK }}>
                   {section.label}
                 </span>
-                <span style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13, color: "var(--text-muted)" }}>
-                  <span>{sectionDone}/{items.length}</span>
+                <span
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    fontSize: 13,
+                    color: "var(--text-muted)",
+                  }}
+                >
+                  <span>
+                    {sectionDone}/{items.length}
+                  </span>
                   <span style={{ width: 64 }}>
                     <div className="progress-bar" style={{ height: 6 }}>
-                      <div className="progress-fill" style={{ width: `${sectionPct}%`, background: GOLD }} />
+                      <div
+                        className="progress-fill"
+                        style={{ width: `${sectionPct}%`, background: GOLD }}
+                      />
                     </div>
                   </span>
                   <span>{isOpen ? "▲" : "▼"}</span>
@@ -360,6 +528,23 @@ export default function ReceptionChecklist({ user }) {
 
               {isOpen && (
                 <div style={{ borderTop: `1px solid ${CREAM_DARK}`, background: "#fff" }}>
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "minmax(0, 1fr) minmax(120px, 180px)",
+                      gap: 8,
+                      padding: "10px 18px",
+                      background: CREAM,
+                      borderBottom: `1px solid ${CREAM_DARK}`,
+                      fontSize: 12,
+                      fontWeight: 800,
+                      color: GOLD_DARK,
+                    }}
+                  >
+                    <span>המטלה</span>
+                    <span>הערות</span>
+                  </div>
+
                   {items.map((row) => {
                     const rowKey = `${row.section_key}:${row.task_key}`;
                     const disabled = isHistoricView || busyKey === rowKey;
@@ -367,52 +552,90 @@ export default function ReceptionChecklist({ user }) {
                       <div
                         key={row.id}
                         style={{
-                          display: "flex",
+                          display: "grid",
+                          gridTemplateColumns: "minmax(0, 1fr) minmax(120px, 180px)",
+                          gap: 8,
                           alignItems: "flex-start",
-                          gap: 12,
                           padding: "12px 18px",
                           borderBottom: `1px solid ${CREAM}`,
                           minHeight: 48,
                         }}
                       >
-                        <button
-                          type="button"
-                          disabled={disabled}
-                          onClick={() => toggleRow(row)}
-                          aria-label={row.is_done ? "סומן" : "לא סומן"}
-                          title={isHistoricView ? "תצוגת ארכיון בלבד" : row.task_label}
+                        <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+                          <button
+                            type="button"
+                            disabled={disabled}
+                            onClick={() => toggleRow(row)}
+                            aria-label={row.is_done ? "סומן" : "לא סומן"}
+                            title={
+                              isHistoricView
+                                ? "תצוגת ארכיון בלבד"
+                                : row.is_done
+                                  ? "לחץ לביטול סימון"
+                                  : "לחץ לסימון + חתימה"
+                            }
+                            style={{
+                              width: 46,
+                              height: 46,
+                              minWidth: 46,
+                              borderRadius: 10,
+                              border: `2px solid ${row.is_done ? GOLD_DARK : CREAM_DARK}`,
+                              background: row.is_done ? GOLD : "#fff",
+                              cursor: disabled ? "not-allowed" : "pointer",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              fontSize: 20,
+                              color: row.is_done ? "#0F0F0F" : "transparent",
+                              flexShrink: 0,
+                            }}
+                          >
+                            ✓
+                          </button>
+                          <div style={{ flex: 1, paddingTop: 4 }}>
+                            <div
+                              style={{
+                                fontSize: 15,
+                                fontWeight: row.is_done ? 600 : 700,
+                                textDecoration: row.is_done ? "line-through" : "none",
+                                color: row.is_done ? "var(--text-muted)" : "var(--black)",
+                                lineHeight: 1.45,
+                              }}
+                            >
+                              {row.task_label}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div
                           style={{
-                            width: 46,
-                            height: 46,
-                            minWidth: 46,
-                            borderRadius: 10,
-                            border: `2px solid ${row.is_done ? GOLD_DARK : CREAM_DARK}`,
-                            background: row.is_done ? GOLD : "#fff",
-                            cursor: disabled ? "not-allowed" : "pointer",
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            fontSize: 20,
-                            color: row.is_done ? "#0F0F0F" : "transparent",
-                            flexShrink: 0,
+                            paddingTop: 8,
+                            minHeight: 44,
+                            fontSize: 13,
+                            fontWeight: 700,
+                            color: row.is_done ? GOLD_DARK : "var(--text-muted)",
+                            borderRight: `2px solid ${row.is_done ? GOLD : CREAM_DARK}`,
+                            paddingRight: 10,
                           }}
                         >
-                          ✓
-                        </button>
-                        <div style={{ flex: 1, paddingTop: 4 }}>
-                          <div style={{
-                            fontSize: 15,
-                            fontWeight: row.is_done ? 600 : 700,
-                            textDecoration: row.is_done ? "line-through" : "none",
-                            color: row.is_done ? "var(--text-muted)" : "var(--black)",
-                          }}>
-                            {row.task_label}
-                          </div>
-                          {row.is_done && row.completed_by_name && (
-                            <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}>
-                              ✓ {row.completed_by_name}
-                              {row.completed_at ? ` · ${formatAuditTime(row.completed_at)}` : ""}
-                            </div>
+                          {row.is_done && row.completed_by_name ? (
+                            <>
+                              <div>{row.completed_by_name} ✓</div>
+                              {row.completed_at && (
+                                <div
+                                  style={{
+                                    fontSize: 11,
+                                    fontWeight: 500,
+                                    color: "var(--text-muted)",
+                                    marginTop: 2,
+                                  }}
+                                >
+                                  {formatAuditTime(row.completed_at)}
+                                </div>
+                              )}
+                            </>
+                          ) : (
+                            <span style={{ fontWeight: 400, color: "#ccc" }}>—</span>
                           )}
                         </div>
                       </div>
@@ -424,6 +647,22 @@ export default function ReceptionChecklist({ user }) {
           );
         })
       )}
+
+      <div
+        style={{
+          marginTop: 24,
+          padding: "14px 18px",
+          background: CREAM,
+          border: `1px solid ${CREAM_DARK}`,
+          borderRadius: 10,
+          fontSize: 14,
+          fontWeight: 600,
+          color: "var(--black)",
+          lineHeight: 1.6,
+        }}
+      >
+        {RECEPTION_CHECKLIST_FOOTER}
+      </div>
     </div>
   );
 }
