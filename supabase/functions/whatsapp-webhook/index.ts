@@ -45,10 +45,17 @@ import { formatGuestProfileForAi } from "../_shared/guestProfile.ts";
 import {
   shouldApplyInRoomContextOverride,
   shouldInterceptOperationalInHouseRequest,
+  shouldInterceptAdministrativeInHouseRequest,
   buildOperationalRequestSummary,
   buildOperationalDispatchReply,
+  buildAdministrativeRequestSummary,
+  buildAdministrativeDispatchReply,
   isSensitiveStayChangeRequest,
   CANONICAL_STAY_CHANGE_HANDOFF_MSG,
+  shouldAutoPromoteToCheckedIn,
+  resolveEffectiveGuestStatus,
+  ADMIN_REQUESTS_DEPARTMENT,
+  FIELD_OPS_DEPARTMENT,
 } from "../_shared/automationSchedule.ts";
 
 const CORS = {
@@ -880,6 +887,23 @@ function applyInRoomStatusOverride(
     });
 }
 
+function applyAutoCheckinPromotion(
+  supabase: ReturnType<typeof createClient>,
+  guestId: number,
+  phone: string,
+): void {
+  supabase
+    .from("guests")
+    .update({ status: "checked_in" })
+    .eq("id", guestId)
+    .in("status", ["pending", "expected"])
+    .then(({ error }: { error: { message: string } | null }) => {
+      if (error) {
+        console.error(`[webhook] auto_checkin promotion FAILED phone:${phone}:`, error.message);
+      }
+    });
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // §2  INTENT CLASSIFICATION — keyword-based, zero-latency routing
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1128,6 +1152,44 @@ async function flagGuestAlert(
 //      the guest's own reply (already sent by the time this runs) or the
 //      guest_alerts dashboard row (already inserted independently).
 // ══════════════════════════════════════════════════════════════════════════════
+async function translateGuestRequestForFieldOps(
+  room: string | null,
+  rawText: string,
+  summaryHe: string,
+): Promise<string> {
+  const roomLabel = room ?? "—";
+  const fallback = `Room ${roomLabel} - ${summaryHe}`;
+  const apiKey = Deno.env.get("GEMINI_API_KEY");
+  if (!apiKey) return fallback;
+
+  const prompt =
+    `Translate this Hebrew in-suite hotel guest service request into one concise professional English line for field staff. ` +
+    `Format exactly: "Room ${roomLabel} - <request in English>". Output ONLY that single English line.\n\n` +
+    `Hebrew: ${rawText.trim() || summaryHe}`;
+
+  const body = JSON.stringify({
+    contents: [{ role: "user", parts: [{ text: prompt }] }],
+    generationConfig: { maxOutputTokens: 120, temperature: 0.2, candidateCount: 1 },
+  });
+
+  try {
+    for (const model of GEMINI_MODELS.slice(0, 2)) {
+      const outcome = await _geminiGenerateWithRetry(apiKey, model, body);
+      if (outcome.kind !== "ok") continue;
+      const candidates = outcome.data?.candidates as Array<Record<string, unknown>> | undefined;
+      const parts = (candidates?.[0]?.content as Record<string, unknown> | undefined)?.parts as
+        Array<Record<string, unknown>> | undefined;
+      const text = String(
+        parts?.find((p) => !p.thought && typeof p.text === "string")?.text ?? "",
+      ).trim();
+      if (text && !/[֐-׿]/.test(text)) return text.replace(/^["']|["']$/g, "");
+    }
+  } catch (e) {
+    console.warn("[webhook] translateGuestRequestForFieldOps failed:", (e as Error).message);
+  }
+  return fallback;
+}
+
 async function routeGuestRequestToOpsGroup(
   supabase: ReturnType<typeof createClient>,
   args: { guestId: number; room: string | null; summary: string; rawText: string },
@@ -1139,23 +1201,14 @@ async function routeGuestRequestToOpsGroup(
   }
 
   const roomLabel = args.room ?? "—";
-  // Card text stays English per the dual-language framework (CLAUDE.md
-  // sla-escalation-cron header: guests Hebrew, staff English) — item_summary
-  // itself is the model's short HEBREW extraction (LOG_REQUEST_JSON_SCHEMA),
-  // left untranslated on purpose: a guest's free-text ask ("יין אדום") read
-  // verbatim by staff is more reliable than a machine-translated paraphrase,
-  // and adding a translation call here is one more failure point for a
-  // 3-8 word string. Mixed-language card, deliberate.
-  // Session 27 Sprint 4.1: same reaction-only resolution hint as the staff-
-  // report card (whapi-webhook's buildTaskCard) — this card is resolved by
-  // the exact same 👍🏼 listener (whapi_message_id lookup), no separate link.
-  const card = `🛋️ [${roomLabel}] Guest requested: ${args.summary}\n👉 Please react with 👍🏼 to complete this task.`;
+  const englishLine = await translateGuestRequestForFieldOps(roomLabel, args.rawText, args.summary);
+  const card = `🔧 ${englishLine}\n👉 Please react with 👍🏼 to complete this task.`;
 
   const { data: task, error: insertErr } = await supabase
     .from("tasks")
     .insert([{
       room_number: args.room,
-      department:  "תפעול",
+      department:  FIELD_OPS_DEPARTMENT,
       description: args.summary,
       priority:    "normal",
       status:      "open",
@@ -1182,6 +1235,28 @@ async function routeGuestRequestToOpsGroup(
     if (updErr) console.warn(`[webhook] 🛋️ failed to store whapi_message_id for task ${task.id}:`, updErr.message);
   }
   console.info(`[webhook] 🛋️ guest_request task ${task.id} room=${roomLabel} routed to ops group (sent=${!!msgId})`);
+}
+
+async function logAdministrativeRequestTask(
+  supabase: ReturnType<typeof createClient>,
+  args: { guestId: number; room: string | null; summary: string; rawText: string },
+): Promise<void> {
+  const { error: insertErr } = await supabase.from("tasks").insert({
+    room_number:       args.room,
+    department:        ADMIN_REQUESTS_DEPARTMENT,
+    description:       args.summary,
+    priority:          "normal",
+    status:            "open",
+    source:            "guest_request",
+    guest_id:          args.guestId,
+    reporter_raw_text: args.rawText,
+    action_token:      crypto.randomUUID(),
+  });
+  if (insertErr) {
+    console.error("[webhook] 📋 admin request task insert error:", insertErr.message);
+    return;
+  }
+  console.info(`[webhook] 📋 admin request logged — guest:${args.guestId} dept:${ADMIN_REQUESTS_DEPARTMENT} summary:${args.summary}`);
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1255,6 +1330,74 @@ async function handleOperationalInHouseIntercept(
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// §4b.1a ADMINISTRATIVE IN-HOUSE ROUTING — spa / front-desk asks → tasks only
+//       (קבלה/בקשות), no Whapi field-ops group alert.
+// ══════════════════════════════════════════════════════════════════════════════
+async function handleAdministrativeInHouseIntercept(
+  supabase: ReturnType<typeof createClient>,
+  opts: {
+    phone: string;
+    guestId: number;
+    guest: Record<string, unknown>;
+    text: string;
+    msgId: string;
+    claimedConversationId: number | null;
+    sim: boolean;
+  },
+): Promise<void> {
+  const { phone, guestId, guest, text, msgId, claimedConversationId, sim } = opts;
+  const summary = buildAdministrativeRequestSummary(text);
+  const guestName = (guest.name as string | null) ?? null;
+  const guestRoom = (guest.room as string | null) ?? null;
+  const reply = buildAdministrativeDispatchReply(guestName);
+
+  await patchClaimedInbound(supabase, claimedConversationId, msgId, {
+    guest_id: guestId,
+    intent: "administrative_in_house_request",
+  });
+
+  const { error: guestErr } = await supabase.from("guests").update({
+    requires_attention:       true,
+    requires_attention_since: new Date().toISOString(),
+    attention_reason:         "request",
+  }).eq("id", guestId);
+  if (guestErr) {
+    console.error("[webhook] 📋 admin intercept guest update FAILED:", guestErr.message);
+  }
+
+  logAdministrativeRequestTask(supabase, {
+    guestId,
+    room: guestRoom,
+    summary,
+    rawText: text,
+  }).catch((e: Error) =>
+    console.error("[webhook] 📋 admin intercept logAdministrativeRequestTask error:", e.message)
+  );
+
+  if (!sim) {
+    try {
+      await sendReply(phone, reply);
+      await supabase.from("whatsapp_conversations").insert({
+        phone,
+        guest_id:      guestId,
+        direction:     "outbound",
+        message:       reply,
+        wa_message_id: null,
+        intent:        "administrative_in_house_request",
+      });
+    } catch (e) {
+      console.error("[webhook] 📋 admin intercept reply failed:", (e as Error).message);
+    }
+  } else {
+    console.info(`[webhook] SIM — administrative in-house intercept from ${phone}: ${summary}`);
+  }
+
+  console.info(
+    `[webhook] 📋 administrative in-house intercept — phone:${phone} guest:${guestId} summary:${summary}`,
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // §4b.2  SENSITIVE STAY-CHANGE SHIELD — late checkout / extension / early
 //        check-in / room change. Never imply approval; canonical staff handoff.
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1263,6 +1406,7 @@ async function handleSensitiveStayChangeHandoff(
   opts: {
     phone: string;
     guestId: number | null;
+    guestRoom?: string | null;
     text: string;
     msgId: string;
     claimedConversationId: number | null;
@@ -1270,7 +1414,7 @@ async function handleSensitiveStayChangeHandoff(
     auditSource: string;
   },
 ): Promise<void> {
-  const { phone, guestId, text, msgId, claimedConversationId, sim, auditSource } = opts;
+  const { phone, guestId, guestRoom, text, msgId, claimedConversationId, sim, auditSource } = opts;
 
   await patchClaimedInbound(supabase, claimedConversationId, msgId, {
     guest_id: guestId,
@@ -1304,6 +1448,17 @@ async function handleSensitiveStayChangeHandoff(
   })().catch((e: Error) =>
     console.warn("[webhook] guest_alerts (sensitive_stay_change) error:", e.message)
   );
+
+  if (guestId) {
+    logAdministrativeRequestTask(supabase, {
+      guestId,
+      room: guestRoom ?? null,
+      summary: "בקשת שינוי שהות / צק-אאוט",
+      rawText: text,
+    }).catch((e: Error) =>
+      console.error("[webhook] 🛡️ sensitive_stay_change admin task error:", e.message)
+    );
+  }
 
   if (!sim) {
     try {
@@ -2292,7 +2447,21 @@ serve(async (req: Request) => {
       const guestId   = (guest?.id   as number)     ?? null;
       const guestName = (guest?.name as string|null) ?? null;
       const sim       = Deno.env.get("WHATSAPP_SIMULATION") === "true";
-      const guestStatusAtLookup = (guest?.status as string | null) ?? null;
+      const nowForGuest = new Date();
+      const guestStatusAtLookup = resolveEffectiveGuestStatus(
+        {
+          status: (guest?.status as string | null) ?? null,
+          arrival_date: (guest?.arrival_date as string | null) ?? null,
+        },
+        nowForGuest,
+      );
+
+      // ── 15:00 Israel auto check-in — arrival today, still pending/expected ──
+      if (guestId && guest && shouldAutoPromoteToCheckedIn(guest as { status?: string; arrival_date?: string }, nowForGuest)) {
+        guest = { ...guest, status: "checked_in" };
+        applyAutoCheckinPromotion(supabase, guestId, phone);
+        console.info(`[webhook] 🕒 auto_checkin gateway → checked_in phone:${phone} guest:${guestId}`);
+      }
 
       if (claimedConversationId && guestId) {
         patchClaimedInbound(supabase, claimedConversationId, msgId, { guest_id: guestId });
@@ -2765,6 +2934,7 @@ serve(async (req: Request) => {
         await handleSensitiveStayChangeHandoff(supabase, {
           phone,
           guestId,
+          guestRoom: (guest?.room as string | null) ?? null,
           text,
           msgId,
           claimedConversationId,
@@ -2825,14 +2995,33 @@ serve(async (req: Request) => {
         continue;
       }
 
-      // ── Tier-0 operational in-house intercept (checked_in + amenity keyword) ──
-      // After dedup claim; before burst wait / LLM — zero token cost, instant dispatch.
-      const statusForOperational = (guest?.status as string | null) ?? guestStatusAtLookup;
+      // ── Tier-0 administrative in-house (spa / front desk) — tasks only ─────
+      const statusForRouting = (guest?.status as string | null) ?? guestStatusAtLookup;
       if (
         !isButtonReply &&
         guestId &&
         guest &&
-        shouldInterceptOperationalInHouseRequest(text, statusForOperational)
+        shouldInterceptAdministrativeInHouseRequest(text, statusForRouting)
+      ) {
+        await handleAdministrativeInHouseIntercept(supabase, {
+          phone,
+          guestId,
+          guest: guest as Record<string, unknown>,
+          text,
+          msgId,
+          claimedConversationId,
+          sim,
+        });
+        continue;
+      }
+
+      // ── Tier-0 operational in-house intercept (checked_in + amenity keyword) ──
+      // After dedup claim; before burst wait / LLM — zero token cost, instant dispatch.
+      if (
+        !isButtonReply &&
+        guestId &&
+        guest &&
+        shouldInterceptOperationalInHouseRequest(text, statusForRouting)
       ) {
         await handleOperationalInHouseIntercept(supabase, {
           phone,
@@ -2871,6 +3060,7 @@ serve(async (req: Request) => {
         await handleSensitiveStayChangeHandoff(supabase, {
           phone,
           guestId,
+          guestRoom: (guest?.room as string | null) ?? null,
           text: effectiveText,
           msgId,
           claimedConversationId,
@@ -2880,8 +3070,28 @@ serve(async (req: Request) => {
         continue;
       }
 
-      // ── Tier-0 operational intercept (post-burst) — fragmented multi-msg asks ──
+      // ── Tier-0 administrative intercept (post-burst) ─────────────────────
       const statusAfterBurst = (guest?.status as string | null) ?? guestStatusAtLookup;
+      if (
+        !isButtonReply &&
+        guestId &&
+        guest &&
+        effectiveText !== text &&
+        shouldInterceptAdministrativeInHouseRequest(effectiveText, statusAfterBurst)
+      ) {
+        await handleAdministrativeInHouseIntercept(supabase, {
+          phone,
+          guestId,
+          guest: guest as Record<string, unknown>,
+          text: effectiveText,
+          msgId,
+          claimedConversationId,
+          sim,
+        });
+        continue;
+      }
+
+      // ── Tier-0 operational intercept (post-burst) — fragmented multi-msg asks ──
       if (
         !isButtonReply &&
         guestId &&

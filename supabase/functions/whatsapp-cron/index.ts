@@ -25,6 +25,8 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   resolveStageSchedule,
   CORE_PIPELINE_STAGE_KEYS,
+  isPastAutoCheckinGateway,
+  israelYmd,
   type AutomationStage,
   type GuestForSchedule,
 } from "../_shared/automationSchedule.ts";
@@ -64,6 +66,26 @@ serve(async (req: Request) => {
     const supabase = createClient(supabaseUrl, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
     const now = new Date();
+
+    // ── 15:00 Israel auto check-in — pending/expected guests arriving today ──
+    let autoCheckinCount = 0;
+    if (isPastAutoCheckinGateway(now)) {
+      const todayIsrael = israelYmd(now);
+      const { data: promoted, error: promoteErr } = await supabase
+        .from("guests")
+        .update({ status: "checked_in" })
+        .eq("arrival_date", todayIsrael)
+        .in("status", ["pending", "expected"])
+        .select("id");
+      if (promoteErr) {
+        console.error("[whatsapp-cron] auto_checkin update FAILED:", promoteErr.message);
+      } else {
+        autoCheckinCount = promoted?.length ?? 0;
+        if (autoCheckinCount > 0) {
+          console.log(`[whatsapp-cron] auto_checkin promoted ${autoCheckinCount} guest(s) for ${todayIsrael}`);
+        }
+      }
+    }
 
     const { data: stagesData, error: stagesErr } = await supabase
       .from("automation_stages")
@@ -175,6 +197,7 @@ serve(async (req: Request) => {
     return new Response(JSON.stringify({
       ok: true,
       scanned: guests?.length ?? 0,
+      auto_checkin_promoted: autoCheckinCount,
       fired: results.length,
       throttled: due.length > 1,
       dispatch_batch_size: DISPATCH_BATCH_SIZE,

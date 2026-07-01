@@ -14,6 +14,55 @@
 
 export const ISRAEL_UTC_OFFSET_HOURS = 2;
 
+/** Israel-local hour (fixed UTC+2, no DST) when guests are auto-promoted to checked_in. */
+export const AUTO_CHECKIN_LOCAL_HOUR = 15;
+
+export const AUTO_CHECKIN_ELIGIBLE_STATUSES = new Set(["pending", "expected"]);
+
+/** Operations Board department for front-desk / spa / stay-change admin tickets. */
+export const ADMIN_REQUESTS_DEPARTMENT = "קבלה/בקשות";
+
+/** Field maintenance Whapi card department (Operations Board filter). */
+export const FIELD_OPS_DEPARTMENT = "תפעול";
+
+export function israelYmd(now: Date): string {
+  const israelMs = now.getTime() + ISRAEL_UTC_OFFSET_HOURS * 3600 * 1000;
+  return new Date(israelMs).toISOString().slice(0, 10);
+}
+
+export function israelLocalHour(now: Date): number {
+  return ((now.getUTCHours() + ISRAEL_UTC_OFFSET_HOURS) % 24 + 24) % 24;
+}
+
+export function isPastAutoCheckinGateway(now: Date): boolean {
+  return israelLocalHour(now) >= AUTO_CHECKIN_LOCAL_HOUR;
+}
+
+export function isGuestArrivalToday(
+  arrivalDate: string | null | undefined,
+  now: Date,
+): boolean {
+  return !!arrivalDate && arrivalDate === israelYmd(now);
+}
+
+export function shouldAutoPromoteToCheckedIn(
+  guest: { arrival_date?: string | null; status?: string | null },
+  now: Date,
+): boolean {
+  if (!isPastAutoCheckinGateway(now)) return false;
+  if (!isGuestArrivalToday(guest.arrival_date, now)) return false;
+  return !!guest.status && AUTO_CHECKIN_ELIGIBLE_STATUSES.has(guest.status);
+}
+
+/** In-memory + routing status: auto check-in after 15:00 on arrival day. */
+export function resolveEffectiveGuestStatus(
+  guest: { status?: string | null; arrival_date?: string | null },
+  now: Date,
+): string | null {
+  if (shouldAutoPromoteToCheckedIn(guest, now)) return "checked_in";
+  return guest.status ?? null;
+}
+
 export type ScheduleMode = "day_offset_with_time" | "hours_after_event" | "event_immediate";
 export type NodeType = "meta_template" | "session_message" | "hybrid";
 export type AnchorEvent = "arrival_date" | "departure_date" | "arrival_confirmed_at" | "checkin_time";
@@ -249,7 +298,7 @@ export function isPreArrivalGuestStatus(status: string | null | undefined): bool
 
 /** Tier-0 operational keywords — amenities, supplies, maintenance (in-suite). */
 export const OPERATIONAL_IN_HOUSE_KEYWORD_PATTERN =
-  /חלב|מים|קפה|מגבות|חלוקים|נייר|קפסולות|סבון|שמפו|שלט|מזגן|סתימה|אור|זבל|ניקיון|שירות\s*חדרים|לחדר|סדין/;
+  /חלב|מים|קפה|מגבות|חלוקים|נייר(?:\s*טואלט)?|קפסולות|סבון|שמפו|שלט|מזגן|טלויזיה|סתימה|אור(?:\s*שרוף)?|זבל|ניקיון|נמלי\s*אש|דבורים|צרעות|ג['']?וק|שירות\s*חדרים|לחדר|סדין/;
 
 /** @deprecated alias — same pattern as OPERATIONAL_IN_HOUSE_KEYWORD_PATTERN (session 76). */
 export const IN_ROOM_KEYWORD_PATTERN = OPERATIONAL_IN_HOUSE_KEYWORD_PATTERN;
@@ -268,7 +317,13 @@ const OPERATIONAL_NEED_LABELS: ReadonlyArray<{ pattern: RegExp; label: string }>
   { pattern: /שלט/u, label: "שלט" },
   { pattern: /מזגן/u, label: "מזגן" },
   { pattern: /סתימה/u, label: "סתימה" },
+  { pattern: /אור\s*שרוף/u, label: "אור שרוף" },
   { pattern: /אור/u, label: "אור" },
+  { pattern: /טלויזיה/u, label: "טלויזיה" },
+  { pattern: /נמלי\s*אש/u, label: "נמלי אש" },
+  { pattern: /דבורים/u, label: "דבורים" },
+  { pattern: /צרעות/u, label: "צרעות" },
+  { pattern: /ג['']?וק/u, label: "ג'וק" },
   { pattern: /זבל/u, label: "זבל" },
   { pattern: /ניקיון/u, label: "ניקיון" },
   { pattern: /סדין/u, label: "סדין" },
@@ -292,7 +347,7 @@ const OPERATIONAL_REQUEST_SIGNAL_PATTERN =
   /אפשר|אפשרו|בבקשה|צריך|צריכה|צריכים|חסר|חסרה|חסרים|תביאו|תביא|שלחו|מבקש|מבקשת|לא\s+עובד|לא\s+עובדת|תקלה|תקוע|תקועה|בעיה|נוכל\s+לקבל|אפשר\s+לקבל|יש\s+לכם|אשמח|נשמח\s+לקבל|דחוף|עזרה|עזרו|מישהו\s+יכול|העבר|העבירו/u;
 
 const STRONG_DISPATCH_KEYWORDS =
-  /חלב|מגבות|חלוקים|קפסולות|סבון|שמפו|סתימה|מזגן|זבל|ניקיון|שירות\s*חדרים|סדין|נייר/u;
+  /חלב|מגבות|חלוקים|קפסולות|סבון|שמפו|סתימה|מזגן|זבל|ניקיון|שירות\s*חדרים|סדין|נייר|טלויזיה|נמלי\s*אש|דבורים|צרעות|ג['']?וק|אור\s*שרוף/u;
 
 /**
  * Tier-0 discretion: keyword alone is not enough — must look like a real
@@ -352,17 +407,37 @@ export function buildOperationalRequestSummary(text: string): string {
   return "בקשת שירות בחדר";
 }
 
-/** Deterministic luxury concierge reply — no LLM, Hebrew only, dispatch-confirmed tone. */
+/** Deterministic field-ops reply — no LLM, no implied approval language. */
 export function buildOperationalDispatchReply(
-  requestSummary: string,
-  guestName?: string | null,
+  _requestSummary?: string,
+  _guestName?: string | null,
 ): string {
-  const need = requestSummary
-    .replace(/^בקשת\s+/u, "")
-    .replace(/\s+לחדר$/u, "")
-    .trim() || "הבקשה";
-  const prefix = guestName?.trim() ? `${guestName.trim()}, ` : "";
-  return `${prefix}בשמחה רבה. העברתי את הבקשה שלך ל${need} כבר עכשיו לצוות השירות. המשך שהייה מפנקת! 🌟`;
+  return "הבקשה הועברה ישירות לצוות השטח שלנו והם בדרך אליכם לחדר! המשך שהייה מפנקת! 🌟";
+}
+
+// ── Administrative in-house requests → קבלה/בקשות (tasks only, no Whapi ops) ──
+
+export const ADMINISTRATIVE_IN_HOUSE_PATTERN =
+  /בקשת\s*טיפול\s*(ב)?ספא|טיפול\s*(ב)?ספא|הזמנ(?:ה|ת)\s*טיפול|שינוי\s*(שעת\s*)?טיפול\s*ספא|לקבוע\s*טיפול|לשנות\s*טיפול\s*ספא/i;
+
+export function isAdministrativeInHouseRequest(text: string): boolean {
+  return ADMINISTRATIVE_IN_HOUSE_PATTERN.test(text.trim());
+}
+
+export function shouldInterceptAdministrativeInHouseRequest(
+  text: string,
+  status: string | null | undefined,
+): boolean {
+  return isCheckedInGuestStatus(status) && isAdministrativeInHouseRequest(text);
+}
+
+export function buildAdministrativeRequestSummary(text: string): string {
+  if (/ספא|טיפול/i.test(text)) return "בקשת טיפול בספא";
+  return "בקשה מנהלית";
+}
+
+export function buildAdministrativeDispatchReply(_guestName?: string | null): string {
+  return "הבקשתך הועברה לצוות הקבלה שלנו, והם יצרו איתך קשר בהקדם. 🙏";
 }
 
 /** True when pre-arrival DB status contradicts an obvious in-room request. */
@@ -390,4 +465,4 @@ export function isSensitiveStayChangeRequest(text: string): boolean {
 
 /** Canonical staff handoff — MUST NOT vary; no enthusiastic approval language. */
 export const CANONICAL_STAY_CHANGE_HANDOFF_MSG =
-  "העברתי את בקשתך לצוות הסוויטות שלנו, והם יצרו איתך קשר בהקדם. 🙏";
+  "העברתי את בקשתך לצוות הסוויטות שלנו (אדיר ואפק), והם יצרו איתך קשר בהקדם. 🙏";
