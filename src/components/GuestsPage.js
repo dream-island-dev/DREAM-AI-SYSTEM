@@ -50,7 +50,7 @@ export default function GuestsPage({
   const [paymentModal, setPaymentModal] = useState(null); // { id, name, phone, amount, link }
   const [paymentBusy, setPaymentBusy]   = useState(null); // guestId being sent
   const [selectedIds, setSelectedIds]   = useState(new Set()); // batch selection
-  const [resetBusy, setResetBusy]       = useState(false);
+  const [deleteBusy, setDeleteBusy]     = useState(false);
   const [editGuest,     setEditGuest]    = useState(null);  // {} = new guest, {id,...} = existing
   const [roomByPhone,    setRoomByPhone]    = useState({});  // phone → { roomName, suiteType, isDayGuest } — fallback display only; the room dropdown itself uses SUITE_REGISTRY
   // PMS timeline scope — today | tomorrow | week7 | archive
@@ -217,35 +217,22 @@ export default function GuestsPage({
     roomNameFor,
   );
 
-  // ── Safe spa reset — UPDATE only, never DELETE ───────────────────────────────
-  const handleResetSpa = async () => {
+  // ── Bulk delete selected guests (same pattern as GuestDashboard.js) ────────
+  const handleDeleteSelected = async () => {
     if (!selectedIds.size || !supabase) return;
     const ids = [...selectedIds];
-    if (!window.confirm(`לאפס נתוני ספא ל-${ids.length} אורחים שנבחרו?\n(הרשומות לא יימחקו, רק שעת הספא תתאפס)`)) return;
-    setResetBusy(true);
+    if (!window.confirm(`מחק ${ids.length} אורחים שנבחרו?\nפעולה זו לא ניתנת לביטול.`)) return;
+    setDeleteBusy(true);
     try {
-      const { error } = await supabase
-        .from("guests")
-        .update({ spa_time: null })
-        .in("id", ids);
+      const { error } = await supabase.from("guests").delete().in("id", ids);
       if (error) throw error;
-      // Best-effort: clear bookings table too (phone without + prefix)
-      const phones = guests
-        .filter((g) => selectedIds.has(g.id) && g.phone)
-        .map((g) => g.phone.replace(/^\+/, ""));
-      if (phones.length) {
-        await supabase
-          .from("bookings")
-          .update({ treatment_time: null, treatment_type: null })
-          .in("phone", phones);
-      }
-      setGuests((prev) => prev.map((g) => selectedIds.has(g.id) ? { ...g, spa_time: null } : g));
+      setGuests((prev) => prev.filter((g) => !ids.includes(g.id)));
       setSelectedIds(new Set());
-      showToast("ok", `✅ נתוני ספא אופסו ל-${ids.length} אורחים`);
+      showToast("ok", `🗑️ נמחקו ${ids.length} אורחים בהצלחה`);
     } catch (e) {
-      showToast("err", "שגיאה באיפוס: " + (e?.message ?? e));
+      showToast("err", "שגיאה במחיקה: " + (e?.message ?? e));
     } finally {
-      setResetBusy(false);
+      setDeleteBusy(false);
     }
   };
 
@@ -527,14 +514,14 @@ export default function GuestsPage({
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           {selectedIds.size > 0 && (
             <button
-              onClick={handleResetSpa}
-              disabled={resetBusy}
+              onClick={handleDeleteSelected}
+              disabled={deleteBusy}
               style={{
-                padding: "7px 14px", borderRadius: 8, border: "1px solid #C0392B",
-                background: resetBusy ? "var(--ivory)" : "#FFF0EE", color: "#C0392B",
-                fontFamily: "Heebo, sans-serif", fontSize: 13, fontWeight: 700, cursor: resetBusy ? "not-allowed" : "pointer",
+                padding: "7px 14px", borderRadius: 8, border: "2px solid #DC2626",
+                background: deleteBusy ? "var(--ivory)" : "#FEF2F2", color: "#DC2626",
+                fontFamily: "Heebo, sans-serif", fontSize: 13, fontWeight: 700, cursor: deleteBusy ? "not-allowed" : "pointer",
               }}>
-              {resetBusy ? "⏳ מאפס..." : `🗑️ מחיקת נתוני ספא שנבחרו (${selectedIds.size})`}
+              {deleteBusy ? "⏳ מוחק..." : `🗑️ מחק נבחרים (${selectedIds.size})`}
             </button>
           )}
           <button

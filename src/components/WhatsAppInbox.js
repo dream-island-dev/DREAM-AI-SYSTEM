@@ -1854,7 +1854,7 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
   const pollRef    = useRef(null);
   const allMsgsRef = useRef([]);   // raw flat messages — source of truth for merging
   const lastSeenAt = useRef(null); // ISO timestamp of last fetch — used by fetchSince
-  const guestPhoneMapRef = useRef(new Map()); // normalizePhone(guests.phone) → guests.name
+  const guestPhoneMapRef = useRef(new Map()); // normalizePhone(guests.phone) → guest profile slice
   const profilesMapRef   = useRef(new Map()); // profiles.id → profiles.name, for claimedBy display
   const alertsReadyRef   = useRef(false); // skip sounds until initial fetchAll completes
   const pendingFocusRef  = useRef(null);   // { phone, guestName? } — Requests Board deep-link
@@ -1894,9 +1894,15 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
   const resolveIdentityFallback = useCallback((contacts) => {
     if (guestPhoneMapRef.current.size === 0) return contacts;
     return contacts.map((c) => {
-      if (c.guestName) return c;
-      const matchedName = guestPhoneMapRef.current.get(normalizePhone(c.phone));
-      return matchedName ? { ...c, guestName: matchedName } : c;
+      const matched = guestPhoneMapRef.current.get(normalizePhone(c.phone));
+      if (!matched) return c;
+      return {
+        ...c,
+        guestName: c.guestName || matched.name,
+        status: c.status || matched.status || null,
+        arrivalDate: c.arrivalDate || matched.arrival_date || null,
+        departureDate: c.departureDate || matched.departure_date || null,
+      };
     });
   }, []);
 
@@ -2097,6 +2103,15 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
   // Realtime listener below can't drift out of sync with each other.
   const applyGuestRowUpdate = useCallback((g) => {
     if (!g?.phone) return;
+    const key = normalizePhone(g.phone);
+    if (key) {
+      guestPhoneMapRef.current.set(key, {
+        name: g.name,
+        status: g.status ?? null,
+        arrival_date: g.arrival_date ?? null,
+        departure_date: g.departure_date ?? null,
+      });
+    }
     const targetPhone = canonicalizePhone(g.phone);
     let touched = false;
     allMsgsRef.current = allMsgsRef.current.map((m) => {
@@ -2303,13 +2318,20 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
   useEffect(() => {
     supabase
       .from("guests")
-      .select("name, phone")
+      .select("name, phone, status, arrival_date, departure_date")
       .not("phone", "is", null)
       .then(({ data }) => {
         const map = new Map();
         for (const g of data ?? []) {
           const key = normalizePhone(g.phone);
-          if (key) map.set(key, g.name);
+          if (key) {
+            map.set(key, {
+              name: g.name,
+              status: g.status ?? null,
+              arrival_date: g.arrival_date ?? null,
+              departure_date: g.departure_date ?? null,
+            });
+          }
         }
         guestPhoneMapRef.current = map;
         setContacts((prev) => resolveIdentityFallback(prev));
