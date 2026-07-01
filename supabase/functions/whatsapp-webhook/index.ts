@@ -44,6 +44,11 @@ import { sendWhapiText }    from "../_shared/whapiSend.ts";
 import { formatGuestProfileForAi } from "../_shared/guestProfile.ts";
 import {
   shouldApplyInRoomContextOverride,
+  shouldInterceptOperationalInHouseRequest,
+  buildOperationalRequestSummary,
+  buildOperationalDispatchReply,
+  isSensitiveStayChangeRequest,
+  CANONICAL_STAY_CHANGE_HANDOFF_MSG,
 } from "../_shared/automationSchedule.ts";
 
 const CORS = {
@@ -905,23 +910,19 @@ const COMPLAINT_PATTERNS: RegExp[] = [
   /complaint|complain|problem|issue|horrible|disappointed|terrible/i,
 ];
 
-/** Upsell = day-pass→overnight, late checkout, room upgrade */
+/** Upsell = day-pass→overnight, room upgrade (NOT late checkout / extension — see sensitive stay shield) */
 const UPSELL_PATTERNS: RegExp[] = [
   // Hebrew
-  /ללון|לינה|לישון\s*(כאן|פה|איתכם)|להישאר\s*(הלילה|ללילה|עוד)/i,
-  /עוד\s*לילה|לילה\s*נוסף|להאריך\s*(את\s*)?(השהות|ההזמנה)/i,
-  /הארכ(ה|ת)\s*(ה)?(שהות|חדר|הזמנה)/i,
-  /לצ.?את\s*(יותר\s*)?מאוחר|צ.?ק.?אאוט\s*(מאוחר|מאוחרת|ב)/i,
+  /ללון|לינה|לישון\s*(כאן|פה|איתכם)/i,
   /לשדרג|שדרוג|חדר\s*(יותר\s*)?(גדול|טוב|יוקרתי)|לעבור\s*(ל)?סוויטה/i,
   /בילוי\s*יומי.*לינ|day\s*pass.*stay/i,
   // English
-  /stay\s*(over|the\s*night|overnight|an?\s*extra|longer)/i,
-  /extra\s*night|additional\s*night|extend\s*(my\s*)?(stay|booking)/i,
-  /late\s*check.?out|check\s*out\s*late/i,
+  /stay\s*(over|the\s*night|overnight)/i,
   /upgrade(\s+my\s+room)?|better\s+room|larger\s+room|move\s+to\s+(a\s+)?suite/i,
 ];
 
 function classifyIntent(text: string): Intent {
+  if (isSensitiveStayChangeRequest(text)) return "fallback"; // shield handles reply — never upsell/LLM enthusiasm
   if (COMPLAINT_PATTERNS.some((p) => p.test(text))) return "complaint";
   if (UPSELL_PATTERNS.some((p) => p.test(text)))    return "upsell";
   if (text.trim().length >= 3)                       return "faq";
@@ -1181,6 +1182,148 @@ async function routeGuestRequestToOpsGroup(
     if (updErr) console.warn(`[webhook] 🛋️ failed to store whapi_message_id for task ${task.id}:`, updErr.message);
   }
   console.info(`[webhook] 🛋️ guest_request task ${task.id} room=${roomLabel} routed to ops group (sent=${!!msgId})`);
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// §4b.1  IMMEDIATE OPERATIONAL ROUTING — Tier-0 keyword intercept for guests
+//        already checked_in. Runs after wa_message_id dedup, before burst/LLM.
+//        No LLM — deterministic luxury dispatch reply + tasks + guest flags.
+// ══════════════════════════════════════════════════════════════════════════════
+async function handleOperationalInHouseIntercept(
+  supabase: ReturnType<typeof createClient>,
+  opts: {
+    phone: string;
+    guestId: number;
+    guest: Record<string, unknown>;
+    text: string;
+    msgId: string;
+    claimedConversationId: number | null;
+    sim: boolean;
+  },
+): Promise<void> {
+  const { phone, guestId, guest, text, msgId, claimedConversationId, sim } = opts;
+  const summary = buildOperationalRequestSummary(text);
+  const guestName = (guest.name as string | null) ?? null;
+  const guestRoom = (guest.room as string | null) ?? null;
+  const reply = buildOperationalDispatchReply(summary, guestName);
+
+  await patchClaimedInbound(supabase, claimedConversationId, msgId, {
+    guest_id: guestId,
+    intent: "operational_in_house_request",
+  });
+
+  const { error: guestErr } = await supabase.from("guests").update({
+    requires_attention:       true,
+    requires_attention_since: new Date().toISOString(),
+    attention_reason:         summary,
+  }).eq("id", guestId);
+  if (guestErr) {
+    console.error("[webhook] 🛎️ operational intercept guest update FAILED:", guestErr.message);
+  }
+
+  // Operations Board (tasks) + Whapi ops group card — same path as log_guest_request.
+  routeGuestRequestToOpsGroup(supabase, {
+    guestId,
+    room: guestRoom,
+    summary,
+    rawText: text,
+  }).catch((e: Error) =>
+    console.error("[webhook] 🛎️ operational intercept routeGuestRequestToOpsGroup error:", e.message)
+  );
+
+  if (!sim) {
+    try {
+      await sendReply(phone, reply);
+      await supabase.from("whatsapp_conversations").insert({
+        phone,
+        guest_id:      guestId,
+        direction:     "outbound",
+        message:       reply,
+        wa_message_id: null,
+        intent:        "operational_in_house_request",
+      });
+    } catch (e) {
+      console.error("[webhook] 🛎️ operational intercept reply failed:", (e as Error).message);
+    }
+  } else {
+    console.info(`[webhook] SIM — operational in-house intercept from ${phone}: ${summary}`);
+  }
+
+  console.info(
+    `[webhook] 🛎️ operational in-house intercept — phone:${phone} guest:${guestId} summary:${summary}`,
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// §4b.2  SENSITIVE STAY-CHANGE SHIELD — late checkout / extension / early
+//        check-in / room change. Never imply approval; canonical staff handoff.
+// ══════════════════════════════════════════════════════════════════════════════
+async function handleSensitiveStayChangeHandoff(
+  supabase: ReturnType<typeof createClient>,
+  opts: {
+    phone: string;
+    guestId: number | null;
+    text: string;
+    msgId: string;
+    claimedConversationId: number | null;
+    sim: boolean;
+    auditSource: string;
+  },
+): Promise<void> {
+  const { phone, guestId, text, msgId, claimedConversationId, sim, auditSource } = opts;
+
+  await patchClaimedInbound(supabase, claimedConversationId, msgId, {
+    guest_id: guestId,
+    intent: "sensitive_stay_change_request",
+    human_requested: true,
+    human_request_type: "date_change",
+  });
+
+  if (guestId) {
+    const { error: guestErr } = await supabase.from("guests").update({
+      requires_attention:       true,
+      requires_attention_since: new Date().toISOString(),
+      needs_callback:           true,
+      attention_reason:         "date_change",
+    }).eq("id", guestId);
+    if (guestErr) {
+      console.error("[webhook] 🛡️ sensitive_stay_change guest update FAILED:", guestErr.message);
+    }
+  }
+
+  (async () => {
+    const { error } = await supabase.from("guest_alerts").insert({
+      guest_id: guestId,
+      phone,
+      alert_type: "date_change_request",
+      message: text,
+      conversation_id: claimedConversationId,
+      resolved: false,
+    });
+    if (error) console.warn("[webhook] guest_alerts (sensitive_stay_change) error:", error.message);
+  })().catch((e: Error) =>
+    console.warn("[webhook] guest_alerts (sensitive_stay_change) error:", e.message)
+  );
+
+  if (!sim) {
+    try {
+      await sendReply(phone, CANONICAL_STAY_CHANGE_HANDOFF_MSG);
+      await supabase.from("whatsapp_conversations").insert({
+        phone,
+        guest_id:      guestId,
+        direction:     "outbound",
+        message:       CANONICAL_STAY_CHANGE_HANDOFF_MSG,
+        wa_message_id: null,
+        intent:        "sensitive_stay_change_request",
+      });
+    } catch (e) {
+      console.error("[webhook] 🛡️ sensitive_stay_change reply failed:", (e as Error).message);
+    }
+  }
+
+  console.info(
+    `[webhook] 🛡️ SENSITIVE_STAY_CHANGE mitigation — source:${auditSource} phone:${phone} guest:${guestId ?? "unknown"} text:"${text.slice(0, 80)}"`,
+  );
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -2616,6 +2759,21 @@ serve(async (req: Request) => {
         continue;
       }
 
+      // ── Sensitive stay-change shield (late checkout / extension / room change) ──
+      // Before DATE_CHANGE, upsell, and LLM — canonical neutral handoff only.
+      if (!isButtonReply && isSensitiveStayChangeRequest(text)) {
+        await handleSensitiveStayChangeHandoff(supabase, {
+          phone,
+          guestId,
+          text,
+          msgId,
+          claimedConversationId,
+          sim,
+          auditSource: "tier0_pre_burst",
+        });
+        continue;
+      }
+
       // ── Date-change / cancellation request detection (typed text) ────────────
       // Guest says they can't make it, wants to change dates, or has a booking issue.
       // → Flag in DB, alert staff, send exact handoff message. No AI involved.
@@ -2667,6 +2825,27 @@ serve(async (req: Request) => {
         continue;
       }
 
+      // ── Tier-0 operational in-house intercept (checked_in + amenity keyword) ──
+      // After dedup claim; before burst wait / LLM — zero token cost, instant dispatch.
+      const statusForOperational = (guest?.status as string | null) ?? guestStatusAtLookup;
+      if (
+        !isButtonReply &&
+        guestId &&
+        guest &&
+        shouldInterceptOperationalInHouseRequest(text, statusForOperational)
+      ) {
+        await handleOperationalInHouseIntercept(supabase, {
+          phone,
+          guestId,
+          guest: guest as Record<string, unknown>,
+          text,
+          msgId,
+          claimedConversationId,
+          sim,
+        });
+        continue;
+      }
+
       // ── Rapid burst coalescing — one LLM reply per back-to-back cluster ──
       const burst = await coalesceBurstIfLeader(supabase, phone, msgId);
       if (!burst.proceed) continue;
@@ -2685,6 +2864,41 @@ serve(async (req: Request) => {
         console.info(
           `[webhook] burst coalesced ${burst.coalescedText.split("\n").length} msgs — phone:${phone}`,
         );
+      }
+
+      // ── Sensitive stay-change shield (post-burst fragmented asks) ──────────
+      if (!isButtonReply && effectiveText !== text && isSensitiveStayChangeRequest(effectiveText)) {
+        await handleSensitiveStayChangeHandoff(supabase, {
+          phone,
+          guestId,
+          text: effectiveText,
+          msgId,
+          claimedConversationId,
+          sim,
+          auditSource: "tier0_post_burst",
+        });
+        continue;
+      }
+
+      // ── Tier-0 operational intercept (post-burst) — fragmented multi-msg asks ──
+      const statusAfterBurst = (guest?.status as string | null) ?? guestStatusAtLookup;
+      if (
+        !isButtonReply &&
+        guestId &&
+        guest &&
+        effectiveText !== text &&
+        shouldInterceptOperationalInHouseRequest(effectiveText, statusAfterBurst)
+      ) {
+        await handleOperationalInHouseIntercept(supabase, {
+          phone,
+          guestId,
+          guest: guest as Record<string, unknown>,
+          text: effectiveText,
+          msgId,
+          claimedConversationId,
+          sim,
+        });
+        continue;
       }
 
       // ── Load conversation history early — used for context in ALL intents ──
@@ -2973,6 +3187,30 @@ serve(async (req: Request) => {
             guestId, room: guestRoom, summary: toolLoggedRequest.summary, rawText: effectiveText,
           }).catch((e: Error) => console.error("[webhook] 🛋️ routeGuestRequestToOpsGroup error:", e.message));
         }
+      }
+
+      // ── Pre-send safety net — LLM/upsell must never imply stay-change approval ──
+      if (isSensitiveStayChangeRequest(effectiveText)) {
+        reply = CANONICAL_STAY_CHANGE_HANDOFF_MSG;
+        if (guestId) {
+          supabase
+            .from("guests")
+            .update({
+              requires_attention:       true,
+              requires_attention_since: new Date().toISOString(),
+              needs_callback:           true,
+              attention_reason:         "date_change",
+            })
+            .eq("id", guestId)
+            .then(({ error }: { error: { message: string } | null }) => {
+              if (error) {
+                console.error("[webhook] 🛡️ pre_send sensitive_stay guest update FAILED:", error.message);
+              }
+            });
+        }
+        console.info(
+          `[webhook] 🛡️ SENSITIVE_STAY_CHANGE mitigation — source:pre_send_guard phone:${phone} guest:${guestId ?? "unknown"}`,
+        );
       }
 
       // ── Send WhatsApp reply ───────────────────────────────────────────────

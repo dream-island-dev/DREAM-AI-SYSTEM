@@ -1,3 +1,5 @@
+2026-07-01 | whatsapp-webhook + automationSchedule.ts | מגן הארכת שהייה/late checkout: intercept לפני LLM/upsell, handoff ניטרלי לצוות הסוויטות, needs_callback+attention_reason=date_change.
+2026-07-01 | whatsapp-webhook + automationSchedule.ts | Tier-0 operational intercept: אורח checked_in + מילות מפתח חדר → tasks (guest_request) + requires_attention בלי LLM; תשובת קונסיירז' דטרמיניסטית.
 2026-07-01 | HousekeepingTabletView.js + migration 113 + room-pending-approval-notify | לוח ניקיון: כשחדר+ג'קוזי נקיים → push להנהלה + realtime על room_status לפעמון AICopilot (אישור הודעה+צ'ק-אין).
 2026-06-30 | docs/xos_agent_playbook.md | §11 one-message handoff — Mike approval loop (see browser → כן → commit/push ask → תעלה).
 2026-06-30 | docs/xos_agent_playbook.md | §2.1 Mike Approval Loop + §12 Quick Card — agent waits after each change; Mike uses כן/תקן/עצור/תעלה only. desktop Wow + mobile comfort per phase; Phase 4 mobile shell+GuestsPage; Phase 5 real-phone QA; §11 full desktop kickoff prompt.

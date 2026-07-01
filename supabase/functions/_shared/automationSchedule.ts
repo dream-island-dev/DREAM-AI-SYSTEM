@@ -247,12 +247,122 @@ export function isPreArrivalGuestStatus(status: string | null | undefined): bool
   return !!status && PRE_ARRIVAL_GUEST_STATUSES.has(status);
 }
 
-/** In-room amenity / housekeeping keywords — guest is physically in-suite. */
-export const IN_ROOM_KEYWORD_PATTERN =
-  /מגבות|שמפו|מים|קפסולות|לחדר|ניקיון|נייר|סדין/;
+/** Tier-0 operational keywords — amenities, supplies, maintenance (in-suite). */
+export const OPERATIONAL_IN_HOUSE_KEYWORD_PATTERN =
+  /חלב|מים|קפה|מגבות|חלוקים|נייר|קפסולות|סבון|שמפו|שלט|מזגן|סתימה|אור|זבל|ניקיון|שירות\s*חדרים|לחדר|סדין/;
+
+/** @deprecated alias — same pattern as OPERATIONAL_IN_HOUSE_KEYWORD_PATTERN (session 76). */
+export const IN_ROOM_KEYWORD_PATTERN = OPERATIONAL_IN_HOUSE_KEYWORD_PATTERN;
+
+const OPERATIONAL_NEED_LABELS: ReadonlyArray<{ pattern: RegExp; label: string }> = [
+  { pattern: /שירות\s*חדרים/u, label: "שירות חדרים" },
+  { pattern: /חלב/u, label: "חלב" },
+  { pattern: /מים/u, label: "מים" },
+  { pattern: /קפה/u, label: "קפה" },
+  { pattern: /מגבות/u, label: "מגבות" },
+  { pattern: /חלוקים/u, label: "חלוקים" },
+  { pattern: /נייר/u, label: "נייר" },
+  { pattern: /קפסולות/u, label: "קפסולות" },
+  { pattern: /סבון/u, label: "סבון" },
+  { pattern: /שמפו/u, label: "שמפו" },
+  { pattern: /שלט/u, label: "שלט" },
+  { pattern: /מזגן/u, label: "מזגן" },
+  { pattern: /סתימה/u, label: "סתימה" },
+  { pattern: /אור/u, label: "אור" },
+  { pattern: /זבל/u, label: "זבל" },
+  { pattern: /ניקיון/u, label: "ניקיון" },
+  { pattern: /סדין/u, label: "סדין" },
+  { pattern: /לחדר/u, label: "שירות לחדר" },
+];
 
 export function messageSignalsInRoomPresence(text: string): boolean {
-  return IN_ROOM_KEYWORD_PATTERN.test(text);
+  return OPERATIONAL_IN_HOUSE_KEYWORD_PATTERN.test(text);
+}
+
+export function messageSignalsOperationalInHouseRequest(text: string): boolean {
+  return OPERATIONAL_IN_HOUSE_KEYWORD_PATTERN.test(text);
+}
+
+/** Informational FAQ — keyword present but not a dispatch-worthy ask. */
+const OPERATIONAL_FAQ_ONLY_PATTERN =
+  /^(?:מה|מתי|איפה|כמה|האם)\b|^(?:יש|אין)\s+(?:ספא|בריכה|מסעדה|חניה|אינטרנט|wifi|wi-fi)/iu;
+
+/** Guest is asking staff to do something — not just chatting about an amenity. */
+const OPERATIONAL_REQUEST_SIGNAL_PATTERN =
+  /אפשר|אפשרו|בבקשה|צריך|צריכה|צריכים|חסר|חסרה|חסרים|תביאו|תביא|שלחו|מבקש|מבקשת|לא\s+עובד|לא\s+עובדת|תקלה|תקוע|תקועה|בעיה|נוכל\s+לקבל|אפשר\s+לקבל|יש\s+לכם|אשמח|נשמח\s+לקבל|דחוף|עזרה|עזרו|מישהו\s+יכול|העבר|העבירו/u;
+
+const STRONG_DISPATCH_KEYWORDS =
+  /חלב|מגבות|חלוקים|קפסולות|סבון|שמפו|סתימה|מזגן|זבל|ניקיון|שירות\s*חדרים|סדין|נייר/u;
+
+/**
+ * Tier-0 discretion: keyword alone is not enough — must look like a real
+ * in-suite service ask (request signal or strong maintenance/supply keyword).
+ * Pure FAQ ("מתי יש ניקיון?") falls through to LLM instead.
+ */
+export function isActionableOperationalInHouseRequest(text: string): boolean {
+  const t = text.trim();
+  if (!t || !messageSignalsOperationalInHouseRequest(t)) return false;
+
+  const hasRequestSignal = OPERATIONAL_REQUEST_SIGNAL_PATTERN.test(t);
+  const looksLikeFaqOnly = OPERATIONAL_FAQ_ONLY_PATTERN.test(t) && !hasRequestSignal;
+
+  if (looksLikeFaqOnly) return false;
+
+  if (STRONG_DISPATCH_KEYWORDS.test(t)) {
+    return hasRequestSignal || /לחדר|לסוויטה|בחדר|בסוויטה/u.test(t) || /\?/.test(t);
+  }
+
+  if (/מים|קפה/u.test(t)) {
+    return hasRequestSignal || /לחדר|לסוויטה|בחדר/u.test(t);
+  }
+
+  if (/שלט|אור/u.test(t)) {
+    return /לא\s+עובד|תקלה|תקוע|בעיה|שלט|מאור|תאורה/u.test(t) && (hasRequestSignal || /לחדר|בחדר/u.test(t));
+  }
+
+  if (/לחדר/u.test(t)) {
+    return hasRequestSignal && STRONG_DISPATCH_KEYWORDS.test(t.replace(/לחדר/gu, ""));
+  }
+
+  return hasRequestSignal;
+}
+
+export function isCheckedInGuestStatus(status: string | null | undefined): boolean {
+  return status === "checked_in";
+}
+
+/** Tier-0 intercept: checked-in guest + actionable operational ask — skip LLM. */
+export function shouldInterceptOperationalInHouseRequest(
+  text: string,
+  status: string | null | undefined,
+): boolean {
+  return isCheckedInGuestStatus(status) && isActionableOperationalInHouseRequest(text);
+}
+
+/** True when staff should get tasks + Whapi card + requires_attention. */
+export function shouldDispatchOperationalInHouseAlert(text: string): boolean {
+  return isActionableOperationalInHouseRequest(text);
+}
+
+/** Staff-facing summary + guests.attention_reason (e.g. "בקשת חלב לחדר"). */
+export function buildOperationalRequestSummary(text: string): string {
+  for (const { pattern, label } of OPERATIONAL_NEED_LABELS) {
+    if (pattern.test(text)) return `בקשת ${label} לחדר`;
+  }
+  return "בקשת שירות בחדר";
+}
+
+/** Deterministic luxury concierge reply — no LLM, Hebrew only, dispatch-confirmed tone. */
+export function buildOperationalDispatchReply(
+  requestSummary: string,
+  guestName?: string | null,
+): string {
+  const need = requestSummary
+    .replace(/^בקשת\s+/u, "")
+    .replace(/\s+לחדר$/u, "")
+    .trim() || "הבקשה";
+  const prefix = guestName?.trim() ? `${guestName.trim()}, ` : "";
+  return `${prefix}בשמחה רבה. העברתי את הבקשה שלך ל${need} כבר עכשיו לצוות השירות. המשך שהייה מפנקת! 🌟`;
 }
 
 /** True when pre-arrival DB status contradicts an obvious in-room request. */
@@ -262,3 +372,22 @@ export function shouldApplyInRoomContextOverride(
 ): boolean {
   return isPreArrivalGuestStatus(status) && messageSignalsInRoomPresence(text);
 }
+
+// ── Sensitive stay / room-change requests — never imply approval (session 76b) ──
+
+/** Late checkout, extension, early check-in, room change — staff must confirm availability. */
+export const SENSITIVE_STAY_CHANGE_PATTERN =
+  /הארכ(ה|ת)\s*(של\s*)?(ה)?(שהייה|שהות|חדר|הזמנה)|עזיבה\s*מאוחרת|פינוי\s*מאוחר|צ.?ק.?אא?וט\s*מאוחר|צ.?ק.?אא?וט\s*מאוחרת|להישאר\s*עוד|עוד\s*יום|עוד\s*לילה|לילה\s*נוסף|להאריך\s*(את\s*)?(ה)?(שהות|ההזמנה|השהייה)|לצ.?את\s*(יותר\s*)?מאוחר|צ.?ק.?אין\s*מוקדם|הגעה\s*מוקדמת|כניסה\s*מוקדמת|שינוי\s*חדר|להחליף\s*חדר|חדר\s*אחר|early\s*check.?in|late\s*check.?out|extend\s*(my\s*)?(stay|booking)|extra\s*night|stay\s*longer/i;
+
+const SENSITIVE_STAY_FAQ_EXCLUSION =
+  /^(?:מה|מתי|איזו?\s*שעה|כמה|האם)\s+.{0,40}?(?:צ.?ק.?אא?וט|צ.?ק.?אין|שעת\s*(?:כניסה|עזיבה)|check.?out|check.?in)/iu;
+
+export function isSensitiveStayChangeRequest(text: string): boolean {
+  const t = text.trim();
+  if (!t || SENSITIVE_STAY_FAQ_EXCLUSION.test(t)) return false;
+  return SENSITIVE_STAY_CHANGE_PATTERN.test(t);
+}
+
+/** Canonical staff handoff — MUST NOT vary; no enthusiastic approval language. */
+export const CANONICAL_STAY_CHANGE_HANDOFF_MSG =
+  "העברתי את בקשתך לצוות הסוויטות שלנו, והם יצרו איתך קשר בהקדם. 🙏";
