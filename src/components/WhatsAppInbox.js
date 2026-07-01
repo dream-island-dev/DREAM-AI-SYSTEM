@@ -19,12 +19,14 @@ import {
 import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
 
 const IN_RESORT_ROSTER = {
-  rowBg: "#F5F3FF",
-  rowBgActive: "#EDE9FE",
-  name: "#6D28D9",
-  avatar: "#7C3AED",
-  border: "#7C3AED",
+  rowBg: "var(--status-purple-bg, #F3F0FF)",
+  rowBgActive: "var(--status-purple-bg, #F3F0FF)",
+  name: "var(--status-purple, #5B21B6)",
+  avatar: "var(--status-purple, #5B21B6)",
+  border: "var(--status-purple, #5B21B6)",
 };
+const HIT_STAFF = "var(--hit-target-staff, 44px)";
+const HIT_COMFORT = "var(--hit-target-comfort, 48px)";
 
 const POLL_MS = 5000; // fallback polling interval (realtime is primary) — 5s safe minimum
 
@@ -380,9 +382,9 @@ function displayName(contact) {
   return contact.guestName ?? contact.pushName ?? contact.phone;
 }
 function identityMeta(contact, t) {
-  if (contact.guestName) return { kind: "db",    label: t.identityDb,    bg: "#E1F5EE", fg: "#04342C" };
-  if (contact.pushName)  return { kind: "wa",    label: t.identityWa,    bg: "#FAEEDA", fg: "#412402" };
-  return                         { kind: "phone", label: t.identityPhone, bg: "#F1EFE8", fg: "#2C2C2A" };
+  if (contact.guestName) return { kind: "db",    label: t.identityDb,    bg: "var(--status-success-bg)", fg: "var(--status-success)" };
+  if (contact.pushName)  return { kind: "wa",    label: t.identityWa,    bg: "var(--status-warning-bg)", fg: "var(--status-warning)" };
+  return                         { kind: "phone", label: t.identityPhone, bg: "var(--ivory)", fg: "var(--black-soft)" };
 }
 // "Recently active" is a presence proxy derived from the last inbound message
 // timestamp — WhatsApp's webhook never reports true online/offline presence.
@@ -400,14 +402,14 @@ function recentlyActive(contact) {
 // special-cased before falling through to getSuiteSection(); room_type is
 // the last fallback for a day-guest with no room value set at all.
 function roomChipMeta(contact) {
-  if (contact.room === "Premium Day 1") return { icon: "☀️", label: "בילוי יומי 1", color: "#92400E" };
-  if (contact.room === "Premium Day 2") return { icon: "☀️", label: "בילוי יומי 2", color: "#92400E" };
+  if (contact.room === "Premium Day 1") return { icon: "☀️", label: "בילוי יומי 1", color: "var(--status-warning)" };
+  if (contact.room === "Premium Day 2") return { icon: "☀️", label: "בילוי יומי 2", color: "var(--status-warning)" };
   if (contact.room) {
     const sec = getSuiteSection(contact.room);
     if (sec) return { icon: sec.icon, label: contact.room, color: sec.color };
   }
-  if (contact.roomType === "day_guest") return { icon: "☀️", label: "בילוי יומי", color: "#92400E" };
-  if (contact.roomType === "premium_day_guest") return { icon: "⭐", label: "פרימיום יומי", color: "#92400E" };
+  if (contact.roomType === "day_guest") return { icon: "☀️", label: "בילוי יומי", color: "var(--status-warning)" };
+  if (contact.roomType === "premium_day_guest") return { icon: "⭐", label: "פרימיום יומי", color: "var(--status-warning)" };
   return null;
 }
 
@@ -469,11 +471,13 @@ function ContactItem({ contact, isActive, isMobile, t, dir, onClick, onDismiss, 
         }}>
           <button
             onClick={(e) => { e.stopPropagation(); setSwiped(false); onArchive?.(); }}
-            style={{ flex: 1, border: "none", background: "#9CA3AF", color: "white", fontSize: 12, fontWeight: 700, minHeight: 48 }}
+            className="u-touch-comfort"
+            style={{ flex: 1, border: "none", background: "var(--text-muted)", color: "white", fontSize: 12, fontWeight: 700 }}
           >{t.archive}</button>
           <button
             onClick={(e) => { e.stopPropagation(); setSwiped(false); onDismiss?.(); }}
-            style={{ flex: 1, border: "none", background: "#16A34A", color: "white", fontSize: 12, fontWeight: 700, minHeight: 48 }}
+            className="u-touch-comfort"
+            style={{ flex: 1, border: "none", background: "var(--status-success)", color: "white", fontSize: 12, fontWeight: 700 }}
           >{t.resolve}</button>
         </div>
       )}
@@ -481,24 +485,24 @@ function ContactItem({ contact, isActive, isMobile, t, dir, onClick, onDismiss, 
         onClick={() => { if (swiped) { setSwiped(false); return; } onClick(); }}
         onPointerDown={onPointerDown}
         style={{
-          padding: "12px 16px",
-          minHeight: isMobile ? 64 : "auto",
+          padding: "var(--space-sm) var(--space-md)",
+          minHeight: isMobile ? HIT_COMFORT : "auto",
           cursor: "pointer",
-          borderBottom: "1px solid #f0f0f0",
+          borderBottom: "1px solid var(--border)",
           background: contact.humanRequested
-            ? (isActive ? "#ffdfdf" : "#FFF0F0")
+            ? (isActive ? "var(--status-danger-bg)" : "var(--status-danger-bg)")
             : inResort
               ? (isActive ? IN_RESORT_ROSTER.rowBgActive : IN_RESORT_ROSTER.rowBg)
-              : (isActive ? "#e8f4fd" : "white"),
+              : (isActive ? "var(--status-info-bg)" : "var(--card-bg)"),
           borderRight: !rtl ? undefined : contact.humanRequested
-            ? "4px solid #ef4444"
+            ? "4px solid var(--status-danger)"
             : isActive
-              ? `4px solid ${inResort ? IN_RESORT_ROSTER.border : "#25D366"}`
+              ? `4px solid ${inResort ? IN_RESORT_ROSTER.border : "var(--whatsapp-green)"}`
               : "4px solid transparent",
           borderLeft: rtl ? undefined : contact.humanRequested
-            ? "4px solid #ef4444"
+            ? "4px solid var(--status-danger)"
             : isActive
-              ? `4px solid ${inResort ? IN_RESORT_ROSTER.border : "#25D366"}`
+              ? `4px solid ${inResort ? IN_RESORT_ROSTER.border : "var(--whatsapp-green)"}`
               : "4px solid transparent",
           transform: swiped ? `translateX(${rtl ? -ACTIONS_W : ACTIONS_W}px)` : "translateX(0)",
           transition: "transform 0.2s ease, background 0.15s",
@@ -512,10 +516,10 @@ function ContactItem({ contact, isActive, isMobile, t, dir, onClick, onDismiss, 
               <div style={{
                 width: 40, height: 40, borderRadius: "50%",
                 background: contact.humanRequested
-                  ? "#ef4444"
+                  ? "var(--status-danger)"
                   : inResort
                     ? IN_RESORT_ROSTER.avatar
-                    : "#25D366",
+                    : "var(--whatsapp-green)",
                 color: "white",
                 display: "flex", alignItems: "center", justifyContent: "center",
                 fontWeight: 700, fontSize: 16,
@@ -526,39 +530,39 @@ function ContactItem({ contact, isActive, isMobile, t, dir, onClick, onDismiss, 
                 position: "absolute", bottom: -1, [rtl ? "left" : "right"]: -1,
                 width: 10, height: 10, borderRadius: "50%",
                 border: "2px solid white",
-                background: contact.humanRequested ? "#ef4444" : (active ? "#22C55E" : "#9CA3AF"),
+                background: contact.humanRequested ? "var(--status-danger)" : (active ? "var(--status-success)" : "var(--text-muted)"),
                 animation: contact.humanRequested ? "wa-pulse 1.4s ease-in-out infinite" : "none",
               }} />
             </div>
             <div>
               <div style={{
                 fontWeight: 600, fontSize: 14,
-                color: inResort && !contact.humanRequested ? IN_RESORT_ROSTER.name : "#1a1a1a",
+                color: inResort && !contact.humanRequested ? IN_RESORT_ROSTER.name : "var(--text-main)",
               }}>
                 {displayName(contact)}
               </div>
-              <div style={{ fontSize: 12, color: "#888", marginTop: 2, direction: "ltr", textAlign: rtl ? "right" : "left" }}>
+              <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2, direction: "ltr", textAlign: rtl ? "right" : "left" }}>
                 {contact.guestName || contact.pushName ? contact.phone : ""}
               </div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 4 }}>
-                <span style={{
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--space-xs)", marginTop: "var(--space-xs)" }}>
+                <span className="u-badge-nowrap" style={{
                   display: "inline-block",
                   background: identity.bg, color: identity.fg,
-                  fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: 8,
+                  fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: "var(--radius-sm)",
                 }}>{identity.label}</span>
                 {roomChip && (
-                  <span style={{
+                  <span className="u-badge-nowrap" style={{
                     display: "inline-block",
-                    background: "#F7F5F0", color: roomChip.color,
+                    background: "var(--ivory)", color: roomChip.color,
                     border: `1px solid ${roomChip.color}40`,
-                    fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: 8,
+                    fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: "var(--radius-sm)",
                   }}>{roomChip.icon} {roomChip.label}</span>
                 )}
                 {contact.claimedBy && (
-                  <span style={{
+                  <span className="u-badge-nowrap" style={{
                     display: "inline-block",
-                    background: "#EDE9FE", color: "#5B21B6",
-                    fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: 8,
+                    background: "var(--status-purple-bg)", color: "var(--status-purple)",
+                    fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: "var(--radius-sm)",
                   }}>{t.claimedBadge(contact.claimedByName ?? "—")}</span>
                 )}
               </div>
@@ -573,21 +577,22 @@ function ContactItem({ contact, isActive, isMobile, t, dir, onClick, onDismiss, 
                 rel="noopener noreferrer"
                 onClick={(e) => e.stopPropagation()}
                 title="פתח שיחת וואטסאפ"
+                className={isMobile ? "u-touch-staff" : undefined}
                 style={{
                   display: "flex", alignItems: "center", justifyContent: "center",
-                  width: isMobile ? 32 : 26, height: isMobile ? 32 : 26, borderRadius: "50%",
-                  background: "#25D366", color: "white",
+                  width: isMobile ? HIT_STAFF : 26, height: isMobile ? HIT_STAFF : 26, borderRadius: "50%",
+                  background: "var(--whatsapp-green)", color: "white",
                   fontSize: 13, textDecoration: "none", flexShrink: 0,
                 }}
               >
                 💬
               </a>
-              <div style={{ fontSize: 11, color: "#aaa" }}>{formatTime(last?.created_at)}</div>
+              <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{formatTime(last?.created_at)}</div>
             </div>
             {unread > 0 && (
-              <div style={{
-                background: "#25D366", color: "white",
-                borderRadius: 12, fontSize: 11, fontWeight: 700,
+              <div className="u-badge-nowrap" style={{
+                background: "var(--whatsapp-green)", color: "white",
+                borderRadius: "var(--radius-md)", fontSize: 11, fontWeight: 700,
                 padding: "1px 7px", display: "inline-block",
               }}>
                 {unread}
@@ -596,9 +601,8 @@ function ContactItem({ contact, isActive, isMobile, t, dir, onClick, onDismiss, 
           </div>
         </div>
         {last && (
-          <div style={{
-            fontSize: 12, color: "#666", marginTop: 6,
-            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+          <div className="u-truncate" style={{
+            fontSize: 12, color: "var(--text-muted)", marginTop: "var(--space-sm)",
             paddingRight: rtl ? 48 : 0, paddingLeft: rtl ? 0 : 48,
           }}>
             {last.direction === "outbound" ? "✓ " : ""}
@@ -606,20 +610,22 @@ function ContactItem({ contact, isActive, isMobile, t, dir, onClick, onDismiss, 
           </div>
         )}
         {contact.humanRequested && (
-          <div style={{
-            marginTop: 6, display: "inline-flex", alignItems: "center", gap: 6,
-            background: "#FEE2E2", color: "#DC2626",
+          <div className="u-badge-nowrap" style={{
+            marginTop: "var(--space-sm)", display: "inline-flex", alignItems: "center", gap: 6,
+            background: "var(--status-danger-bg)", color: "var(--status-danger)",
             fontSize: 11, fontWeight: 700,
-            padding: "2px 4px 2px 8px", borderRadius: 10,
-            border: "1px solid #FECACA",
+            padding: "2px 4px 2px 8px", borderRadius: "var(--radius-md)",
+            border: "1px solid var(--status-danger-bg)",
           }}>
             {humanLabel}
             <button
               onClick={(e) => { e.stopPropagation(); onDismiss?.(); }}
               title="סמן כטופל — בטל בקשת מענה אנושי"
+              className={isMobile ? "u-touch-staff" : undefined}
               style={{
-                width: 18, height: 18, borderRadius: "50%", border: "none",
-                background: "#DC2626", color: "#fff", cursor: "pointer",
+                width: isMobile ? HIT_STAFF : 18, height: isMobile ? HIT_STAFF : 18,
+                borderRadius: "50%", border: "none",
+                background: "var(--status-danger)", color: "#fff", cursor: "pointer",
                 fontSize: 11, fontWeight: 900, lineHeight: 1,
                 display: "flex", alignItems: "center", justifyContent: "center", padding: 0,
               }}
@@ -2560,33 +2566,34 @@ export default function WhatsAppInbox({ user }) {
   // ── Contact list pane — shared between the desktop two-pane layout and the
   // mobile "list" screen. ───────────────────────────────────────────────────
   const listPane = (
-    <div style={{ height: "100%", overflowY: "auto", background: "#ffffff" }}>
+    <div style={{ height: "100%", overflowY: "auto", background: "var(--card-bg)" }}>
       <div style={{
-        padding: "10px 14px", borderBottom: "1px solid #f0f0f0",
-        display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8,
-        background: "#F7F7F7", position: "sticky", top: 0, zIndex: 1, flexWrap: "wrap",
+        padding: "var(--space-sm) var(--space-md)", borderBottom: "1px solid var(--border)",
+        display: "flex", justifyContent: "space-between", alignItems: "center", gap: "var(--space-sm)",
+        background: "var(--ivory)", position: "sticky", top: 0, zIndex: 1, flexWrap: "wrap",
       }}>
-        <span style={{ fontWeight: 700, fontSize: 12, color: "#555" }}>
+        <span style={{ fontWeight: 700, fontSize: 12, color: "var(--text-muted)" }}>
           {t.listCount(visibleContacts.length)}
         </span>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginInlineStart: "auto" }}>
-          {loading && <span style={{ fontSize: 11, color: "#aaa" }}>{t.syncing}</span>}
+        <div style={{ display: "flex", alignItems: "center", gap: "var(--space-sm)", marginInlineStart: "auto" }}>
+          {loading && <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{t.syncing}</span>}
           <button
             type="button"
             onClick={() => dismissAllAlerts(alertContacts)}
             disabled={dismissAllBusy || alertContacts.length === 0}
             title={alertContacts.length === 0 ? t.dismissAllNone : t.dismissAllAlerts}
+            className={isMobile ? "u-touch-staff" : "u-badge-nowrap"}
             style={{
               display: "inline-flex", alignItems: "center", gap: 5,
-              padding: "5px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700,
+              padding: "5px 10px", borderRadius: "var(--radius-pill)", fontSize: 11, fontWeight: 700,
               fontFamily: "Heebo, sans-serif",
-              background: alertContacts.length === 0 ? "#EEEAE3" : "var(--ivory, #F5F0E8)",
-              color: alertContacts.length === 0 ? "#9CA3AF" : "var(--gold-dark, #A8843A)",
-              border: `1px solid ${alertContacts.length === 0 ? "#E5E7EB" : "var(--border, #E0D5C5)"}`,
+              background: alertContacts.length === 0 ? "var(--ivory)" : "var(--ivory)",
+              color: alertContacts.length === 0 ? "var(--text-muted)" : "var(--gold-dark)",
+              border: `1px solid ${alertContacts.length === 0 ? "var(--border)" : "var(--border)"}`,
               cursor: dismissAllBusy || alertContacts.length === 0 ? "not-allowed" : "pointer",
               opacity: dismissAllBusy ? 0.7 : 1,
               whiteSpace: "nowrap",
-              minHeight: isMobile ? 36 : "auto",
+              minHeight: isMobile ? HIT_STAFF : "auto",
             }}
           >
             {dismissAllBusy ? "⏳" : "✓"}
@@ -2603,7 +2610,7 @@ export default function WhatsAppInbox({ user }) {
         </div>
       </div>
       {!loading && visibleContacts.length === 0 && (
-        <div style={{ padding: 24, textAlign: "center", color: "#aaa" }}>
+        <div style={{ padding: "var(--space-lg)", textAlign: "center", color: "var(--text-muted)" }}>
           <div style={{ fontSize: 32, marginBottom: 8 }}>{t.emptyIcon}</div>
           <div style={{ fontSize: 13 }}>{t.emptyBody}</div>
         </div>
@@ -2632,7 +2639,7 @@ export default function WhatsAppInbox({ user }) {
   const threadPane = !active ? (
     <div style={{
       height: "100%", display: "flex", alignItems: "center", justifyContent: "center",
-      background: "#E5DDD5", color: "#666", flexDirection: "column", gap: 10,
+      background: "var(--ivory)", color: "var(--text-muted)", flexDirection: "column", gap: "var(--space-sm)",
     }}>
       <div style={{ fontSize: 52 }}>{"💬"}</div>
       <div style={{ fontSize: 15 }}>{t.pickChat}</div>
@@ -2641,18 +2648,19 @@ export default function WhatsAppInbox({ user }) {
     <div style={{ height: "100%", display: "flex", flexDirection: "column", overflow: "hidden" }}>
       {/* Thread header */}
       <div style={{
-        padding: "10px 16px", borderBottom: "1px solid #e0e0e0",
-        background: "#128C7E", color: "white",
-        display: "flex", alignItems: "center", gap: 10,
+        padding: "var(--space-sm) var(--space-md)", borderBottom: "1px solid var(--border)",
+        background: "var(--whatsapp-green)", color: "white",
+        display: "flex", alignItems: "center", gap: "var(--space-sm)",
         flexShrink: 0,
       }}>
         {isMobile && (
           <button
             onClick={() => setMobileScreen("list")}
             aria-label={t.back}
+            className="u-touch-comfort"
             style={{
               background: "none", border: "none", color: "white", fontSize: 20,
-              cursor: "pointer", padding: 0, minWidth: 48, minHeight: 48,
+              cursor: "pointer", padding: 0,
             }}
           >
             {t.dir === "rtl" ? "→" : "←"}
@@ -2670,9 +2678,9 @@ export default function WhatsAppInbox({ user }) {
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
           {activeContact?.spaTime && (
-            <div style={{
+            <div className="u-badge-nowrap" style={{
               fontSize: 11, fontWeight: 700, background: "rgba(255,255,255,0.2)",
-              padding: "3px 8px", borderRadius: 12, whiteSpace: "nowrap",
+              padding: "3px 8px", borderRadius: "var(--radius-md)",
             }}>
               💆 {t.spa} {activeContact.spaTime}
             </div>
@@ -2693,8 +2701,8 @@ export default function WhatsAppInbox({ user }) {
               style={{
                 background: activeContact.claimedBy === user?.id ? "rgba(37,211,102,0.3)" : "rgba(255,255,255,0.1)",
                 border: "1px solid rgba(255,255,255,0.35)", color: "white",
-                borderRadius: 8, fontSize: 13, cursor: claimBusy ? "not-allowed" : "pointer",
-                padding: "6px 10px", minHeight: isMobile ? 44 : "auto", minWidth: isMobile ? 44 : "auto",
+                borderRadius: "var(--radius-sm)", fontSize: 13, cursor: claimBusy ? "not-allowed" : "pointer",
+                padding: "6px 10px", minHeight: isMobile ? HIT_STAFF : "auto", minWidth: isMobile ? HIT_STAFF : "auto",
                 opacity: claimBusy ? 0.6 : 1,
               }}
             >
@@ -2708,8 +2716,8 @@ export default function WhatsAppInbox({ user }) {
             style={{
               background: "rgba(255,255,255,0.1)",
               border: "1px solid rgba(255,255,255,0.35)", color: "white",
-              borderRadius: 8, fontSize: 13, cursor: editGuestLoading ? "not-allowed" : "pointer",
-              padding: "6px 10px", minHeight: isMobile ? 44 : "auto", minWidth: isMobile ? 44 : "auto",
+              borderRadius: "var(--radius-sm)", fontSize: 13, cursor: editGuestLoading ? "not-allowed" : "pointer",
+              padding: "6px 10px", minHeight: isMobile ? HIT_STAFF : "auto", minWidth: isMobile ? HIT_STAFF : "auto",
               opacity: editGuestLoading ? 0.6 : 1,
             }}
           >
@@ -2721,8 +2729,8 @@ export default function WhatsAppInbox({ user }) {
             style={{
               background: drawerOpen ? "rgba(255,255,255,0.25)" : "rgba(255,255,255,0.1)",
               border: "1px solid rgba(255,255,255,0.35)", color: "white",
-              borderRadius: 8, fontSize: 11, fontWeight: 700, cursor: "pointer",
-              padding: "6px 10px", minHeight: isMobile ? 44 : "auto", whiteSpace: "nowrap",
+              borderRadius: "var(--radius-sm)", fontSize: 11, fontWeight: 700, cursor: "pointer",
+              padding: "6px 10px", minHeight: isMobile ? HIT_STAFF : "auto", whiteSpace: "nowrap",
             }}
           >
             {t.aiLog}
@@ -2768,13 +2776,19 @@ export default function WhatsAppInbox({ user }) {
       </div>
 
       {error && (
-        <div style={{ padding: "6px 16px", background: "#FFF0EE", color: "#C0392B", fontSize: 12, flexShrink: 0 }}>
+        <div style={{ padding: "6px 16px", background: "var(--status-danger-bg)", color: "var(--status-danger)", fontSize: 12, flexShrink: 0 }}>
           {"⚠️"} {error}
         </div>
       )}
 
-      {/* Quick actions + reply input */}
-      <div style={{ position: "relative", flexShrink: 0 }}>
+      {/* Quick actions + reply input — sticky on mobile so bar stays above keyboard/safe area */}
+      <div style={{
+        position: "relative", flexShrink: 0,
+        ...(isMobile ? {
+          position: "sticky", bottom: 0, zIndex: 2,
+          paddingBottom: "max(env(safe-area-inset-bottom, 0px), var(--space-xs))",
+        } : {}),
+      }}>
         {quickOpen && (
           <div style={{
             position: "absolute", bottom: "100%", insetInlineStart: 14, insetInlineEnd: 14,
@@ -2799,7 +2813,7 @@ export default function WhatsAppInbox({ user }) {
                       style={{
                         padding: "6px 12px", borderRadius: 20, border: "1.5px solid var(--gold,#C9A96E)",
                         background: "linear-gradient(135deg, #FFF8E8, #FDF2D8)", color: "var(--gold-dark,#A8843A)",
-                        fontSize: 12, fontWeight: 700, cursor: "pointer", minHeight: isMobile ? 40 : "auto",
+                        fontSize: 12, fontWeight: 700, cursor: "pointer", minHeight: isMobile ? HIT_STAFF : "auto",
                       }}
                     >
                       {ph.label}
@@ -2823,7 +2837,7 @@ export default function WhatsAppInbox({ user }) {
                     padding: "8px 14px", borderRadius: 20, border: "1.5px solid var(--gold,#C9A96E)",
                     background: aiSuggesting ? "#F3F0EA" : "linear-gradient(135deg, #FFF8E8, #FDF2D8)",
                     color: "var(--gold-dark,#A8843A)", fontSize: 12, fontWeight: 700,
-                    cursor: aiSuggesting ? "not-allowed" : "pointer", minHeight: isMobile ? 40 : "auto",
+                    cursor: aiSuggesting ? "not-allowed" : "pointer", minHeight: isMobile ? HIT_STAFF : "auto",
                   }}
                 >
                   {aiSuggesting ? t.aiSuggestLoading : t.aiSuggestButton}
@@ -2840,7 +2854,7 @@ export default function WhatsAppInbox({ user }) {
                           border: "1.5px solid var(--gold,#C9A96E)",
                           background: "linear-gradient(135deg, #FFF8E8, #FDF2D8)",
                           color: "#3a2e10", fontSize: 12, fontWeight: 600, lineHeight: 1.5,
-                          cursor: "pointer", minHeight: isMobile ? 40 : "auto",
+                          cursor: "pointer", minHeight: isMobile ? HIT_STAFF : "auto",
                         }}
                       >
                         {s}
@@ -2881,7 +2895,7 @@ export default function WhatsAppInbox({ user }) {
                     style={{
                       flex: 1, padding: "8px 10px", borderRadius: 10, border: "1.5px solid #E0D5C5",
                       background: "#FAFAFA", color: "#444", fontSize: 12, fontWeight: 700,
-                      cursor: "pointer", minHeight: isMobile ? 44 : "auto",
+                      cursor: "pointer", minHeight: isMobile ? HIT_STAFF : "auto",
                     }}
                   >{t.routeMaint}</button>
                   <button
@@ -2889,7 +2903,7 @@ export default function WhatsAppInbox({ user }) {
                     style={{
                       flex: 1, padding: "8px 10px", borderRadius: 10, border: "1.5px solid #E0D5C5",
                       background: "#FAFAFA", color: "#444", fontSize: 12, fontWeight: 700,
-                      cursor: "pointer", minHeight: isMobile ? 44 : "auto",
+                      cursor: "pointer", minHeight: isMobile ? HIT_STAFF : "auto",
                     }}
                   >{t.routeHouse}</button>
                 </div>
@@ -2912,7 +2926,7 @@ export default function WhatsAppInbox({ user }) {
                           borderColor: selected ? "var(--gold,#C9A96E)" : "#E0D5C5",
                           background: selected ? "linear-gradient(135deg, #FFF8E8, #FDF2D8)" : "#FAFAFA",
                           color: selected ? "var(--gold-dark,#A8843A)" : "#444",
-                          fontSize: 12, fontWeight: 700, cursor: "pointer", minHeight: isMobile ? 40 : "auto",
+                          fontSize: 12, fontWeight: 700, cursor: "pointer", minHeight: isMobile ? HIT_STAFF : "auto",
                         }}
                       >
                         {sc.label}
@@ -2937,7 +2951,7 @@ export default function WhatsAppInbox({ user }) {
                     style={{
                       flex: 1, padding: "8px 10px", borderRadius: 10, border: "1px solid #E0D5C5",
                       background: "transparent", color: "#777", fontSize: 12, fontWeight: 600,
-                      cursor: "pointer", minHeight: isMobile ? 44 : "auto",
+                      cursor: "pointer", minHeight: isMobile ? HIT_STAFF : "auto",
                     }}
                   >{t.routeCancel}</button>
                   <button
@@ -2954,7 +2968,7 @@ export default function WhatsAppInbox({ user }) {
                       color: (!routeDraft.subCategory && !routeDraft.note.trim()) ? "#9CA3AF" : "#1A1A1A",
                       fontSize: 12, fontWeight: 800,
                       cursor: (!routeDraft.subCategory && !routeDraft.note.trim()) ? "not-allowed" : "pointer",
-                      minHeight: isMobile ? 44 : "auto",
+                      minHeight: isMobile ? HIT_STAFF : "auto",
                     }}
                   >{t.routeDispatch}</button>
                 </div>
@@ -2974,7 +2988,7 @@ export default function WhatsAppInbox({ user }) {
         )}
 
         {quietActive && (
-          <div style={{ padding: "8px 14px 0", background: "#F0F0F0" }}>
+          <div style={{ padding: "8px 14px 0", background: "var(--ivory)" }}>
             <QuietHoursGate
               active={quietActive}
               checked={overrideChecked}
@@ -2985,16 +2999,18 @@ export default function WhatsAppInbox({ user }) {
         )}
 
         <div style={{
-          padding: "10px 14px", borderTop: quietActive ? "none" : "1px solid #e0e0e0",
-          background: "#F0F0F0", display: "flex", gap: 8, alignItems: "flex-end",
+          padding: "var(--space-sm) var(--space-md)",
+          borderTop: quietActive ? "none" : "1px solid var(--border)",
+          background: "var(--ivory)", display: "flex", gap: "var(--space-sm)", alignItems: "flex-end",
         }}>
           <button
             onClick={() => setQuickOpen((o) => !o)}
             aria-label={t.quickRepliesTitle}
+            className={isMobile ? "u-touch-comfort" : undefined}
             style={{
-              background: quickOpen ? "#E0D5C5" : "white",
-              border: "1px solid #ddd", borderRadius: "50%",
-              width: isMobile ? 48 : 40, height: isMobile ? 48 : 40, fontSize: 17,
+              background: quickOpen ? "var(--border)" : "var(--card-bg)",
+              border: "1px solid var(--border)", borderRadius: "50%",
+              width: isMobile ? HIT_COMFORT : 40, height: isMobile ? HIT_COMFORT : 40, fontSize: 17,
               cursor: "pointer", flexShrink: 0, display: "flex",
               alignItems: "center", justifyContent: "center",
             }}
@@ -3010,23 +3026,25 @@ export default function WhatsAppInbox({ user }) {
             placeholder={t.inputPh}
             rows={2}
             style={{
-              flex: 1, resize: "none", borderRadius: 20,
-              border: "1px solid #ddd", padding: "10px 16px",
+              flex: 1, resize: "none", borderRadius: "var(--radius-pill)",
+              border: "1px solid var(--border)", padding: "10px 16px",
               fontSize: 14, fontFamily: "Heebo, sans-serif",
-              outline: "none", lineHeight: 1.5, background: "white",
-              minHeight: isMobile ? 48 : "auto",
+              outline: "none", lineHeight: 1.5, background: "var(--card-bg)",
+              minHeight: isMobile ? HIT_COMFORT : "auto",
             }}
           />
           <button
             onClick={sendManualReply}
             disabled={sending || !reply.trim() || !canSend}
             title={!canSend ? "שליחה חסומה בשעות שקט" : undefined}
+            className={isMobile ? "u-touch-comfort" : undefined}
             style={{
-              background: (sending || !reply.trim() || !canSend) ? "#ccc" : "#25D366",
+              background: (sending || !reply.trim() || !canSend) ? "var(--text-muted)" : "var(--whatsapp-green)",
               color: "white", border: "none", borderRadius: "50%",
-              width: isMobile ? 48 : 44, height: isMobile ? 48 : 44, fontSize: 20,
+              width: isMobile ? HIT_COMFORT : 44, height: isMobile ? HIT_COMFORT : 44, fontSize: 20,
               cursor: (sending || !reply.trim() || !canSend) ? "not-allowed" : "pointer",
               flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
+              opacity: (sending || !reply.trim() || !canSend) ? 0.5 : 1,
             }}
           >
             {sending ? "⏳" : "➤"}
@@ -3044,7 +3062,7 @@ export default function WhatsAppInbox({ user }) {
   const slideOpenTransform = t.dir === "rtl" ? "translateX(50%)" : "translateX(-50%)";
 
   return (
-    <div dir={t.dir} style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 80px)", overflow: "hidden", borderRadius: 12, border: "1px solid var(--border)", boxShadow: "0 4px 20px rgba(0,0,0,0.06)" }}>
+    <div dir={t.dir} style={{ display: "flex", flexDirection: "column", height: "calc(100vh - var(--safe-bottom-nav, 80px))", overflow: "hidden", borderRadius: "var(--radius-md)", border: "1px solid var(--border)", boxShadow: "var(--shadow-md)" }}>
       <style>{`
         @keyframes wa-pulse {
           0%, 100% { opacity: 1; transform: scale(1); }
@@ -3055,17 +3073,17 @@ export default function WhatsAppInbox({ user }) {
       {/* Toolbar */}
       <div style={{
         display: "flex", alignItems: "center", justifyContent: "space-between",
-        padding: "10px 16px", background: "#075E54", color: "white", flexShrink: 0,
-        borderRadius: "12px 12px 0 0", gap: 10,
+        padding: "var(--space-sm) var(--space-md)", background: "var(--whatsapp-green-dark)", color: "white", flexShrink: 0,
+        borderRadius: "var(--radius-md) var(--radius-md) 0 0", gap: "var(--space-sm)",
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 6 : 10, minWidth: 0, overflow: "hidden" }}>
           <span style={{ fontWeight: 800, fontSize: 15, whiteSpace: "nowrap" }}>
             {isMobile ? "💬 DREAM BOT" : t.brand}
           </span>
           {unreadTotal > 0 && (
-            <span style={{
-              background: "#25D366", color: "white", borderRadius: 20,
-              fontSize: 11, fontWeight: 800, padding: "2px 8px", whiteSpace: "nowrap",
+            <span className="u-badge-nowrap" style={{
+              background: "var(--whatsapp-green)", color: "white", borderRadius: "var(--radius-pill)",
+              fontSize: 11, fontWeight: 800, padding: "2px 8px",
             }}>{isMobile ? unreadTotal : t.newMsgs(unreadTotal)}</span>
           )}
           {/* ── LIVE indicator ── */}
@@ -3079,7 +3097,7 @@ export default function WhatsAppInbox({ user }) {
           }}>
             <span style={{
               width: 6, height: 6, borderRadius: "50%",
-              background: realtimeOk ? "#25D366" : "#f59e0b",
+              background: realtimeOk ? "var(--whatsapp-green)" : "var(--status-warning)",
               display: "inline-block",
               animation: realtimeOk ? "wa-pulse 2s ease-in-out infinite" : "none",
             }} />
@@ -3096,11 +3114,12 @@ export default function WhatsAppInbox({ user }) {
           <button
             onClick={() => setLang((l) => (l === "he" ? "en" : "he"))}
             title="EN / HE"
+            className={isMobile ? "u-touch-staff" : undefined}
             style={{
-              padding: isMobile ? "0" : "5px 12px", borderRadius: 20, fontSize: 12, fontWeight: 700,
+              padding: isMobile ? "0" : "5px 12px", borderRadius: "var(--radius-pill)", fontSize: 12, fontWeight: 700,
               border: "1.5px solid rgba(255,255,255,0.4)", background: "rgba(255,255,255,0.12)",
               color: "white", cursor: "pointer",
-              width: isMobile ? 36 : "auto", height: isMobile ? 36 : "auto",
+              width: isMobile ? HIT_STAFF : "auto", height: isMobile ? HIT_STAFF : "auto",
             }}
           >
             {isMobile ? "🌐" : `🌐 ${t.langSwap}`}
@@ -3111,11 +3130,11 @@ export default function WhatsAppInbox({ user }) {
             title={botActive ? t.botOn : t.botOff}
             progressColor={botActive ? "rgba(220,38,38,0.35)" : "rgba(37,211,102,0.35)"}
             style={{
-              padding: isMobile ? "0" : "5px 14px", borderRadius: 20, fontSize: 12, fontWeight: 700,
+              padding: isMobile ? "0" : "5px 14px", borderRadius: "var(--radius-pill)", fontSize: 12, fontWeight: 700,
               border: "1.5px solid rgba(255,255,255,0.4)",
               background: botActive ? "rgba(37,211,102,0.25)" : "rgba(255,255,255,0.12)",
               color: "white", cursor: togglingBot ? "not-allowed" : "pointer",
-              width: isMobile ? 36 : "auto", height: isMobile ? 36 : "auto", whiteSpace: "nowrap",
+              width: isMobile ? HIT_STAFF : "auto", height: isMobile ? HIT_STAFF : "auto", whiteSpace: "nowrap",
               fontFamily: "Heebo, sans-serif",
             }}
           >
@@ -3124,10 +3143,11 @@ export default function WhatsAppInbox({ user }) {
           <button
             onClick={() => setShowNewChat(true)}
             title={t.newChat}
+            className={isMobile ? "u-touch-staff" : undefined}
             style={{
-              padding: isMobile ? "0" : "5px 14px", borderRadius: 20, fontSize: 12, fontWeight: 700,
-              background: "white", color: "#075E54", border: "none", cursor: "pointer",
-              width: isMobile ? 36 : "auto", height: isMobile ? 36 : "auto",
+              padding: isMobile ? "0" : "5px 14px", borderRadius: "var(--radius-pill)", fontSize: 12, fontWeight: 700,
+              background: "white", color: "var(--whatsapp-green-dark)", border: "none", cursor: "pointer",
+              width: isMobile ? HIT_STAFF : "auto", height: isMobile ? HIT_STAFF : "auto",
             }}
           >
             {isMobile ? "✉️" : t.newChat}
@@ -3137,8 +3157,8 @@ export default function WhatsAppInbox({ user }) {
 
       {routeToast && (
         <div style={{
-          padding: "8px 16px", background: "#E8F5EF", color: "#065F46",
-          fontSize: 12, fontWeight: 700, flexShrink: 0, borderBottom: "1px solid #A7F3D0",
+          padding: "8px 16px", background: "var(--status-success-bg)", color: "var(--status-success)",
+          fontSize: 12, fontWeight: 700, flexShrink: 0, borderBottom: "1px solid var(--status-success-bg)",
         }}>
           {routeToast}
         </div>

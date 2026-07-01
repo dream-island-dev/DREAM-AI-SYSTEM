@@ -1,3 +1,5 @@
+2026-07-01 | WhatsAppInbox.js (Phase 1 UI) | Roster+CTAs: Phase 0 tokens (purple in-resort, status badges, swipe 48px); reply bar sticky+safe-area; toolbar/thread touch ≥44px; ללא שינוי לוגיקה/עברית.
+2026-07-01 | src/App.js (Phase 0 UI) | Design tokens (:root status/spacing/shadow/hit-target) + utility classes (.u-touch-*, .u-badge-nowrap); mobile-bar safe-area; stat-card hover polish.
 2026-07-01 | whatsapp-webhook + whatsapp-cron + automationSchedule.ts | Unified routing matrix: auto check-in 15:00 (cron+webhook); תפעול→Whapi+תרגום EN; קבלה/בקשות→tasks בלבד (ספא/הארכה); מגן stay-change מעודכן (אדיר ואפק).
 2026-07-01 | whatsapp-webhook + automationSchedule.ts | מגן הארכת שהייה/late checkout: intercept לפני LLM/upsell, handoff ניטרלי לצוות הסוויטות, needs_callback+attention_reason=date_change.
 2026-07-01 | whatsapp-webhook + automationSchedule.ts | Tier-0 operational intercept: אורח checked_in + מילות מפתח חדר → tasks (guest_request) + requires_attention בלי LLM; תשובת קונסיירז' דטרמיניסטית.

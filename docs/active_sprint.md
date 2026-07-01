@@ -11,8 +11,8 @@
 
 | Phase | Target | Status |
 |---|---|---|
-| 0 | `App.js` design tokens + utility classes | ⏳ **NEXT** — desktop + `npm start` |
-| 1 | `WhatsAppInbox.js` roster + CTAs | Pending |
+| 0 | `App.js` design tokens + utility classes | ✅ מקומי — ממתין commit |
+| 1 | `WhatsAppInbox.js` roster + CTAs | 🟡 **ממתין לאישור Mike** — desktop + 390px |
 | 2a | `Dashboard` KPI cards (`App.js`) | Pending |
 | 2b | `OperationsBoard.js` TaskCards + chips | Pending |
 | 3 | `HousekeepingTabletView.js` + AICopilot verify | Pending |
