@@ -34,6 +34,50 @@ Mike is a learning developer. The agent is **Lead Architect + executor**.
 
 **Agent writes code/docs/commits:** English.
 
+### 2.1 Mike Approval Loop (MANDATORY — how agent must behave)
+
+Mike works on **desktop with `npm start` running**. He must **see** every change in the browser before approving.
+
+**Agent MUST follow this loop — never skip steps:**
+
+```
+1. DO    → one small visual change (one phase step or one file chunk)
+2. SAY   → Hebrew, short: what changed + exactly where to look in browser
+3. WAIT  → do NOT start next change until Mike replies
+4. BUILD → npm run build only before commit (not after every tiny edit)
+5. PUSH  → only after Mike says yes deploy / תעלה — NEVER push without approval
+```
+
+**After each code edit, agent tells Mike:**
+
+| Tell Mike | Example |
+|---|---|
+| URL | `http://localhost:3000` |
+| Screen | e.g. "פתח DREAM BOT" / "תפעול ואחזקה" |
+| What to look for | e.g. "ריווח בין שורות ברשימת שיחות" |
+| Mobile (if touched) | "לחץ F12 → 390px width" |
+| Question | **"נראה טוב? כתוב כן להמשך"** |
+
+**Mike only needs 4 words (Hebrew or English):**
+
+| Mike writes | Agent does |
+|---|---|
+| `כן` / `yes` / `המשך` / `continue` | Next small change or next phase step |
+| `לא` / `fix: …` / `תקן: …` | Fix what Mike describes, then loop again |
+| `עצור` / `stop` | Stop, summarize state |
+| `תעלה` / `yes deploy` | commit + push (+ db/functions if needed) |
+
+**Agent must NOT:**
+- Do Phase 1 while Mike hasn't approved Phase 0 visually
+- `git push` without explicit `תעלה` / `yes deploy`
+- Dump long code in chat — Mike looks at **browser**, not code
+
+**First message of session (if Mike sent kickoff prompt):**
+1. Confirm `npm start` + git hash
+2. Post Phase 0 diagnostic only — **no code**
+3. Wait for `start phase 0` or `כן`
+4. After first code edit → tell Mike where to look → **wait**
+
 ---
 
 ## 3. Token-Efficient Communication
