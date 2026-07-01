@@ -34,7 +34,7 @@ function inferRoomType(roomValue) {
   return null;
 }
 
-export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock }) {
+export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock, onOpenDreamBotChat }) {
   const isEdit = !!guest.id;
   const isDrawer = dock === "right";
   const [form, setForm] = useState({
@@ -422,6 +422,7 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
             onSaved?.(updated);
           }}
           showToast={showToast}
+          onOpenDreamBotChat={onOpenDreamBotChat}
         />
       )}
     </div>

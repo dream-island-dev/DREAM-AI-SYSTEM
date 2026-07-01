@@ -21,6 +21,8 @@ import GuestAttentionBadge from "./GuestAttentionBadge";
 import CustomerProfilePane from "./CustomerProfilePane";
 import QuietHoursGate from "./QuietHoursGate";
 import { STATUS_META } from "../utils/guestStatusMeta";
+import { isSuiteGuestProfile } from "../utils/guestTiming";
+import { resolveTimelineScopeForArrival, sortCheckinRosterGuests } from "../utils/guestCheckinMatrix";
 import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
 
 // ── Date helpers (local time) ─────────────────────────────────────────────────
@@ -163,7 +165,7 @@ function WAModal({ guest, onClose, onSend, isSending }) {
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
-export default function GuestDashboard({ user }) {
+export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat }) {
   const {
     quietActive,
     overrideChecked,
@@ -315,9 +317,10 @@ export default function GuestDashboard({ user }) {
   const isDayType    = (g) => g.room_type === "day_guest" || g.room_type === "premium_day_guest";
   const dayGuests   = guests.filter(isDayType);
   const hotelGuests = guests.filter((g) => !isDayType(g));
-  const tabGuests   = activeTab === "day_guest" ? dayGuests
+  const tabGuestsRaw = activeTab === "day_guest" ? dayGuests
                     : activeTab === "suite"     ? hotelGuests
                     :                              guests;
+  const tabGuests = sortCheckinRosterGuests(tabGuestsRaw, new Date(), (g) => g.room || "");
 
   const selectGuestsByArrivalDate = useCallback(() => {
     if (!arrivalSelectDate) {
@@ -520,6 +523,7 @@ export default function GuestDashboard({ user }) {
           onClose={() => setAddingGuest(null)}
           onSaved={handleGuestSaved}
           showToast={showToast}
+          onOpenDreamBotChat={onOpenDreamBotChat}
         />
       )}
 
@@ -530,6 +534,7 @@ export default function GuestDashboard({ user }) {
           onClose={() => setEditingGuest(null)}
           onSaved={handleGuestSaved}
           showToast={showToast}
+          onOpenDreamBotChat={onOpenDreamBotChat}
         />
       )}
 
@@ -539,6 +544,8 @@ export default function GuestDashboard({ user }) {
           guest={profileGuest}
           onClose={() => setProfileGuest(null)}
           showToast={showToast}
+          onOpenCheckin={onOpenCheckin}
+          onOpenDreamBotChat={onOpenDreamBotChat}
           onGuestUpdated={(updated) => {
             setProfileGuest(updated);
             setGuests((prev) => prev.map((g) => (g.id === updated.id ? { ...g, ...updated } : g)));
@@ -617,15 +624,39 @@ export default function GuestDashboard({ user }) {
                       <GuestAttentionBadge
                         guest={guest}
                         showToast={showToast}
+                        onOpenDreamBotChat={onOpenDreamBotChat}
                         onUpdated={(updated) =>
                           setGuests((prev) => prev.map((g) => (g.id === updated.id ? { ...g, ...updated } : g)))
                         }
                       />
                     </div>
                   </div>
-                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                     <StatusBadge status={guest.status} />
                     <ArrivalBadge date={guest.arrival_date} />
+                    {isSuiteGuestProfile({ room_type: guest.room_type, room: guest.room }) && onOpenCheckin && (
+                      <button
+                        type="button"
+                        onClick={() => onOpenCheckin({
+                          timelineScope: resolveTimelineScopeForArrival(guest.arrival_date),
+                        })}
+                        title="מעבר ללשונית צ'ק-אין עם מסנן תאריך מתאים"
+                        style={{
+                          minHeight: 44,
+                          padding: "6px 12px",
+                          borderRadius: 10,
+                          border: "2px solid var(--gold)",
+                          background: "linear-gradient(135deg, var(--ivory), rgba(201,169,110,0.2))",
+                          color: "var(--gold-dark)",
+                          fontFamily: "Heebo, sans-serif",
+                          fontSize: 12,
+                          fontWeight: 800,
+                          cursor: "pointer",
+                        }}
+                      >
+                        🛎️ צ'ק-אין
+                      </button>
+                    )}
                     <button
                       onClick={() => setEditingGuest(guest)}
                       disabled={isDeleting}

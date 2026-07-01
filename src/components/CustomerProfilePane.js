@@ -8,6 +8,8 @@ import {
   getProfileDisplayChips,
   hasMeaningfulProfile,
 } from "../data/guestProfileSchema";
+import { isSuiteGuestProfile } from "../utils/guestTiming";
+import { resolveTimelineScopeForArrival } from "../utils/guestCheckinMatrix";
 
 const DEFAULT_CHECKOUT_TIME = "11:00";
 
@@ -64,7 +66,7 @@ function fmtDateHe(iso) {
   return d.toLocaleDateString("he-IL", { weekday: "long", day: "2-digit", month: "2-digit", year: "numeric" });
 }
 
-export default function CustomerProfilePane({ guest, onClose, onGuestUpdated, showToast }) {
+export default function CustomerProfilePane({ guest, onClose, onGuestUpdated, showToast, onOpenDreamBotChat, onOpenCheckin }) {
   const [liveGuest, setLiveGuest] = useState(guest);
   const [profileOpen, setProfileOpen] = useState(false);
   const [checkoutTime, setCheckoutTime] = useState(null);
@@ -195,6 +197,7 @@ export default function CustomerProfilePane({ guest, onClose, onGuestUpdated, sh
                 guest={liveGuest}
                 onUpdated={handleGuestUpdated}
                 showToast={showToast}
+                onOpenDreamBotChat={onOpenDreamBotChat}
               />
               {liveGuest.arrival_confirmed && (
                 <span style={{
@@ -383,6 +386,30 @@ export default function CustomerProfilePane({ guest, onClose, onGuestUpdated, sh
           )}
         </div>
 
+        {isSuiteGuestProfile({ room_type: liveGuest.room_type, room: liveGuest.room }) && onOpenCheckin && (
+          <button
+            type="button"
+            onClick={() => {
+              onOpenCheckin({
+                timelineScope: resolveTimelineScopeForArrival(liveGuest.arrival_date),
+              });
+              onClose?.();
+            }}
+            style={{
+              display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+              width: "100%", minHeight: 48, padding: "10px 12px", borderRadius: 10,
+              marginBottom: 10,
+              border: "2px solid var(--gold)",
+              background: "linear-gradient(135deg, var(--ivory), rgba(201,169,110,0.22))",
+              color: "var(--gold-dark)",
+              fontSize: 13, fontWeight: 800, fontFamily: "Heebo, sans-serif",
+              cursor: "pointer",
+            }}
+          >
+            🛎️ מעבר לצ'ק-אין
+          </button>
+        )}
+
         <button
           onClick={copyPortalLink}
           disabled={!liveGuest.portal_token}
@@ -443,6 +470,7 @@ export default function CustomerProfilePane({ guest, onClose, onGuestUpdated, sh
           showToast={showToast}
           showMarkHandled={!!liveGuest.requires_attention}
           heading="📋 פרופיל אורח חכם"
+          onOpenDreamBotChat={onOpenDreamBotChat}
         />
       )}
     </div>

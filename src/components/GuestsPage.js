@@ -12,15 +12,27 @@ import QuietHoursGate from "./QuietHoursGate";
 import { STATUS_META } from "../utils/guestStatusMeta";
 import { israelTodayStr } from "../utils/guestTiming";
 import {
-  isActiveCheckinRosterGuest,
-  isPostStayArchiveGuest,
+  CHECKIN_TIMELINE_LABELS,
+  CHECKIN_TIMELINE_SCOPES,
+  CHECKIN_TIMELINE_TODAY,
+  CHECKIN_TIMELINE_TOMORROW,
+  CHECKIN_TIMELINE_WEEK7,
+  CHECKIN_TIMELINE_ARCHIVE,
+  getCheckinRowHighlight,
+  matchesCheckinTimelineScope,
   resolveEffectiveGuestStatus,
   shouldAutoCheckoutGuest,
   shouldAutoPromoteToCheckedIn,
+  sortCheckinRosterGuests,
 } from "../utils/guestCheckinMatrix";
 import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
 
-export default function GuestsPage() {
+export default function GuestsPage({
+  initialTimelineScope = null,
+  onTimelineScopeConsumed,
+  onOpenDreamBotChat,
+  onOpenCheckin,
+}) {
   const {
     quietActive,
     overrideChecked,
@@ -41,8 +53,16 @@ export default function GuestsPage() {
   const [resetBusy, setResetBusy]       = useState(false);
   const [editGuest,     setEditGuest]    = useState(null);  // {} = new guest, {id,...} = existing
   const [roomByPhone,    setRoomByPhone]    = useState({});  // phone → { roomName, suiteType, isDayGuest } — fallback display only; the room dropdown itself uses SUITE_REGISTRY
-  // Post-stay archive vs active check-in roster (reception matrix).
-  const [showPastGuests, setShowPastGuests] = useState(false);
+  // PMS timeline scope — today | tomorrow | week7 | archive
+  const [timelineScope, setTimelineScope] = useState(
+    () => initialTimelineScope || CHECKIN_TIMELINE_TODAY,
+  );
+
+  useEffect(() => {
+    if (!initialTimelineScope) return;
+    setTimelineScope(initialTimelineScope);
+    onTimelineScopeConsumed?.();
+  }, [initialTimelineScope, onTimelineScopeConsumed]);
 
   const showToast = (type, msg) => { setToast({ type, msg }); setTimeout(() => setToast(null), 3500); };
 
@@ -178,13 +198,24 @@ export default function GuestsPage() {
   const toggleSelectAll = () =>
     setSelectedIds((prev) => prev.size === displayGuests.length ? new Set() : new Set(displayGuests.map((g) => g.id)));
 
-  // ── Reception matrix filters — active roster vs post-stay archive ─────────
-  const todayISO = israelTodayStr();
-  const displayGuests = guests.filter((g) => {
-    if (!isSuite(g)) return false;
-    if (showPastGuests) return isPostStayArchiveGuest(g, todayISO);
-    return isActiveCheckinRosterGuest(g, new Date());
-  });
+  const roomNameFor = useCallback(
+    (g) => g.room || roomByPhone[g.phone]?.roomName || "",
+    [roomByPhone],
+  );
+
+  // ── Reception matrix filters — PMS timeline scopes ─────────────────────
+  const suiteGuests = guests.filter((g) => isSuite(g));
+  const scopeCounts = Object.fromEntries(
+    CHECKIN_TIMELINE_SCOPES.map((scope) => [
+      scope,
+      suiteGuests.filter((g) => matchesCheckinTimelineScope(g, scope)).length,
+    ]),
+  );
+  const displayGuests = sortCheckinRosterGuests(
+    suiteGuests.filter((g) => matchesCheckinTimelineScope(g, timelineScope)),
+    new Date(),
+    roomNameFor,
+  );
 
   // ── Safe spa reset — UPDATE only, never DELETE ───────────────────────────────
   const handleResetSpa = async () => {
@@ -370,6 +401,7 @@ export default function GuestsPage() {
           onClose={() => setEditGuest(null)}
           onSaved={handleGuestSaved}
           showToast={showToast}
+          onOpenDreamBotChat={onOpenDreamBotChat}
         />
       )}
 
@@ -380,10 +412,12 @@ export default function GuestsPage() {
           guest={profileGuest}
           onClose={() => setProfileGuest(null)}
           showToast={showToast}
+          onOpenDreamBotChat={onOpenDreamBotChat}
           onGuestUpdated={(updated) => {
             setProfileGuest(updated);
             setGuests((prev) => prev.map((x) => (x.id === updated.id ? { ...x, ...updated } : x)));
           }}
+          onOpenCheckin={onOpenCheckin}
         />
       )}
 
@@ -398,18 +432,97 @@ export default function GuestsPage() {
         }}>{toast.msg}</div>
       )}
 
+      <div style={{ marginBottom: 14 }}>
+        <div
+          role="tablist"
+          aria-label="מסנן צ'ק-אין"
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 8,
+            padding: "10px 12px",
+            background: "var(--ivory, #F5F0E8)",
+            borderRadius: 12,
+            border: "1px solid var(--border, #E0D5C5)",
+          }}
+        >
+          {CHECKIN_TIMELINE_SCOPES.map((scope) => {
+            const active = timelineScope === scope;
+            const count = scopeCounts[scope] ?? 0;
+            return (
+              <button
+                key={scope}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => {
+                  setTimelineScope(scope);
+                  setSelectedIds(new Set());
+                }}
+                style={{
+                  minHeight: 44,
+                  padding: "8px 14px",
+                  borderRadius: 10,
+                  border: active ? "2px solid var(--gold, #C9A96E)" : "1.5px solid var(--border, #E0D5C5)",
+                  background: active
+                    ? "linear-gradient(135deg, rgba(201,169,110,0.28), rgba(232,201,138,0.35))"
+                    : "var(--card-bg, #fff)",
+                  color: active ? "var(--gold-dark, #A8843A)" : "var(--text-muted, #666)",
+                  fontFamily: "Heebo, sans-serif",
+                  fontSize: 13,
+                  fontWeight: active ? 800 : 600,
+                  cursor: "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 8,
+                  transition: "background 0.15s, border-color 0.15s",
+                }}
+              >
+                <span>{CHECKIN_TIMELINE_LABELS[scope]}</span>
+                <span
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 800,
+                    padding: "2px 8px",
+                    borderRadius: 20,
+                    background: active ? "rgba(15,15,15,0.08)" : "var(--ivory, #F5F0E8)",
+                    color: active ? "#0F0F0F" : "var(--text-muted)",
+                  }}
+                >
+                  {count}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        {timelineScope !== CHECKIN_TIMELINE_ARCHIVE && (
+          <div style={{ display: "flex", gap: 14, marginTop: 8, fontSize: 11, color: "var(--text-muted)", flexWrap: "wrap" }}>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+              <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#1A7A4A", display: "inline-block" }} />
+              בחדר (checked_in)
+            </span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+              <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#C9A96E", display: "inline-block" }} />
+              הגעה מתוכננת
+            </span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+              <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#2952A3", display: "inline-block" }} />
+              חדר מוכן
+            </span>
+          </div>
+        )}
+      </div>
+
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
-        <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
-          <div style={{ fontSize: 13, color: "var(--text-muted)" }}>{displayGuests.length} אורחים</div>
+        <div style={{ display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
+          <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
+            {displayGuests.length} אורחים · {CHECKIN_TIMELINE_LABELS[timelineScope]}
+          </div>
           <span style={{
             fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 20,
             background: "rgba(201,169,110,0.15)", color: "var(--gold-dark)",
             border: "1px solid var(--gold)",
           }}>👑 סוויטות בלבד</span>
-          <label style={{ fontSize: 13, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
-            <input type="checkbox" checked={showPastGuests} onChange={(e) => { setShowPastGuests(e.target.checked); setSelectedIds(new Set()); }} style={{ accentColor: "var(--gold)" }} />
-            🗂️ אורחים לאחר שהות
-          </label>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           {selectedIds.size > 0 && (
@@ -450,14 +563,18 @@ export default function GuestsPage() {
         <div style={{ textAlign: "center", padding: 48, color: "var(--text-muted)" }}>טוען אורחים...</div>
       ) : displayGuests.length === 0 ? (
         <div style={{ textAlign: "center", padding: 48, color: "var(--text-muted)" }}>
-          {showPastGuests
+          {timelineScope === CHECKIN_TIMELINE_ARCHIVE
             ? "אין אורחי סוויטות בארכיון לאחר שהות."
+            : timelineScope === CHECKIN_TIMELINE_TOMORROW
+            ? "אין הגעות מתוכננות למחר — בדוק ב«7 ימים קרובים» או ייבא הגעות."
+            : timelineScope === CHECKIN_TIMELINE_WEEK7
+            ? "אין הגעות מתוכננות ב-7 הימים הקרובים."
             : "אין אורחים פעילים להיום — ייבא הגעות דרך \"תפעול ואחזקה\" או הוסף אורח ידנית."}
         </div>
       ) : (
-        <div className="card">
-          <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
-            <table className="table" style={{ minWidth: 720 }}>
+        <div className="card" style={{ overflow: "hidden" }}>
+          <div style={{ width: "100%", overflowX: "hidden" }}>
+            <table className="table" style={{ width: "100%", tableLayout: "fixed" }}>
               <thead><tr>
                 <th style={{ width: 36 }}>
                   <input type="checkbox"
@@ -475,15 +592,39 @@ export default function GuestsPage() {
                   const effectiveStatus = resolveEffectiveGuestStatus(g);
                   const sm = STATUS_META[effectiveStatus] ?? STATUS_META[g.status] ?? { label: `⚠ ${g.status ?? "ללא סטטוס"}`, bg: "#FFF0EE", color: "#C0392B" };
                   const rowStatus = g.status;
+                  const rowHi = getCheckinRowHighlight(g);
+                  const rowBg = selectedIds.has(g.id)
+                    ? "rgba(201,169,110,0.12)"
+                    : rowHi.bg;
                   return (
-                    <tr key={g.id} style={{ background: selectedIds.has(g.id) ? "rgba(201,169,110,0.07)" : undefined }}>
+                    <tr
+                      key={g.id}
+                      title={rowHi.title ?? undefined}
+                      style={{ background: rowBg }}
+                    >
                       <td>
                         <input type="checkbox"
                           checked={selectedIds.has(g.id)}
                           onChange={() => toggleSelect(g.id)}
                           style={{ cursor: "pointer", accentColor: "var(--gold)" }} />
                       </td>
-                      <td style={{ fontWeight: 700 }}>
+                      <td style={{ fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {rowHi.dot && (
+                          <span
+                            aria-hidden
+                            title={rowHi.title ?? undefined}
+                            style={{
+                              display: "inline-block",
+                              width: 7,
+                              height: 7,
+                              borderRadius: "50%",
+                              background: rowHi.dot,
+                              marginLeft: 6,
+                              verticalAlign: "middle",
+                              flexShrink: 0,
+                            }}
+                          />
+                        )}
                         <span
                           onClick={() => setProfileGuest(g)}
                           title="הצג פרופיל אורח"
@@ -499,6 +640,7 @@ export default function GuestsPage() {
                         <GuestAttentionBadge
                           guest={g}
                           showToast={showToast}
+                          onOpenDreamBotChat={onOpenDreamBotChat}
                           onUpdated={(updated) =>
                             setGuests((prev) => prev.map((x) => (x.id === updated.id ? { ...x, ...updated } : x)))
                           }

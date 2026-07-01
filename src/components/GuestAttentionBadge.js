@@ -9,7 +9,7 @@ const REASON_META = {
   "בקשת טיפול בספא": { icon: "💆", title: "ביקש/ה טיפול בספא מהפורטל — לחץ לפרופיל" },
 };
 
-export default function GuestAttentionBadge({ guest, onUpdated, showToast }) {
+export default function GuestAttentionBadge({ guest, onUpdated, showToast, onOpenDreamBotChat }) {
   const [open, setOpen] = useState(false);
 
   if (!guest?.requires_attention) return null;
@@ -35,6 +35,7 @@ export default function GuestAttentionBadge({ guest, onUpdated, showToast }) {
           onUpdated={onUpdated}
           showToast={showToast}
           showMarkHandled
+          onOpenDreamBotChat={onOpenDreamBotChat}
         />
       )}
     </>

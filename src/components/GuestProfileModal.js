@@ -57,6 +57,7 @@ export default function GuestProfileModal({
   showToast,
   heading,
   showMarkHandled = !!guest?.requires_attention,
+  onOpenDreamBotChat,
 }) {
   const [profile, setProfile] = useState(() => normalizeGuestProfile(guest?.guest_profile));
   const [arrivalTime, setArrivalTime] = useState(guest?.arrival_time ?? "");
@@ -140,6 +141,40 @@ export default function GuestProfileModal({
           <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 16, direction: "ltr" }}>
             {guest.phone}
           </div>
+        )}
+
+        {guest.phone && onOpenDreamBotChat && (
+          <button
+            type="button"
+            onClick={() => {
+              onOpenDreamBotChat({ phone: guest.phone, guestName: guest.name });
+              onClose?.();
+            }}
+            disabled={saving}
+            style={{
+              width: "100%",
+              minHeight: 48,
+              marginBottom: 18,
+              padding: "12px 16px",
+              borderRadius: 10,
+              border: "2px solid var(--gold, #C9A96E)",
+              background: "linear-gradient(135deg, var(--ivory, #F5F0E8), rgba(201,169,110,0.22))",
+              color: "var(--gold-dark, #A8843A)",
+              fontFamily: "Heebo, sans-serif",
+              fontSize: 14,
+              fontWeight: 800,
+              cursor: saving ? "not-allowed" : "pointer",
+              transition: "background 0.15s, transform 0.1s",
+            }}
+            onMouseEnter={(e) => {
+              if (!saving) e.currentTarget.style.background = "linear-gradient(135deg, rgba(232,201,138,0.45), rgba(201,169,110,0.35))";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = "linear-gradient(135deg, var(--ivory, #F5F0E8), rgba(201,169,110,0.22))";
+            }}
+          >
+            💬 פתח שיחה ב-DREAM BOT
+          </button>
         )}
 
         <Section title="סטטוס VIP">

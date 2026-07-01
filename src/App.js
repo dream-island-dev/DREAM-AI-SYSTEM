@@ -1814,10 +1814,16 @@ export default function App({ initialPage = "dashboard" }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   // Deep-link from Requests Board (etc.) → open a specific WA thread in DREAM BOT.
   const [inboxFocus, setInboxFocus] = useState(null); // { phone, guestName? } | null
+  const [checkinFocus, setCheckinFocus] = useState(null); // { timelineScope } | null
   const openDreamBotChat = useCallback(({ phone, guestName }) => {
     if (!phone) return;
     setInboxFocus({ phone, guestName: guestName ?? null });
     setActivePage("wa_inbox");
+    setMobileMenuOpen(false);
+  }, []);
+  const openCheckinTab = useCallback(({ timelineScope = "today" } = {}) => {
+    setCheckinFocus({ timelineScope });
+    setActivePage("guests");
     setMobileMenuOpen(false);
   }, []);
   const [employees, setEmployees, empLoading, refetchEmployees] = usePersistentState("employees", initialEmployees);
@@ -2092,7 +2098,13 @@ export default function App({ initialPage = "dashboard" }) {
           <EmployeesPage user={user} onNavigate={setActivePage} />
         );
       case "vip_guests":
-        return <GuestDashboard user={user} />;
+        return (
+          <GuestDashboard
+            user={user}
+            onOpenCheckin={openCheckinTab}
+            onOpenDreamBotChat={openDreamBotChat}
+          />
+        );
       case "broadcast":
         return <BroadcastDashboard user={user} />;
       case "wa_inbox":
@@ -2105,7 +2117,14 @@ export default function App({ initialPage = "dashboard" }) {
           />
         );
       case "guests":
-        return <GuestsPage />;
+        return (
+          <GuestsPage
+            initialTimelineScope={checkinFocus?.timelineScope ?? null}
+            onTimelineScopeConsumed={() => setCheckinFocus(null)}
+            onOpenDreamBotChat={openDreamBotChat}
+            onOpenCheckin={openCheckinTab}
+          />
+        );
       case "scheduler":
         return (
           <ShiftGenerator

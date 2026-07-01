@@ -15,6 +15,14 @@ export function israelTodayStr() {
   return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
 }
 
+/** Israel-local calendar day offset from today (or from baseYmd). */
+export function israelDateOffsetStr(offsetDays, baseYmd = israelTodayStr()) {
+  const [y, m, d] = baseYmd.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + offsetDays);
+  return dt.toISOString().slice(0, 10);
+}
+
 /** True when guest.arrival_date is exactly today in Israel. */
 export function isArrivalToday(arrivalDateStr) {
   if (!arrivalDateStr) return false;
