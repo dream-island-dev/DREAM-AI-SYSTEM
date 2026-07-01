@@ -485,6 +485,7 @@ function _profilesToGridRows(merged) {
       _profileIdx:  i,
       guestName:    g.guestName ?? "",
       guestPhone:   g.guestPhone ?? "",
+      orderNumber:  [...(g.orderNumbers ?? [])][0] ?? "",
       phoneSource:  g.phoneSource === "individual" ? "פרטי" : "קואורד׳",
       leadSource:   g.leadSource ?? "",
       automationMuted: g.automationMuted ? "🔇 ללא אוטומציה" : "",
@@ -556,6 +557,101 @@ function _getSyncProfileIndices(merged, gridRows, { importSource, detailedRoomFi
   return indices;
 }
 
+/** Targeted room-only sync — match existing guests by order_number or name. */
+async function _executeSuiteAssignmentOnlySync(supabase, {
+  merged,
+  gridRows,
+  syncIndices,
+  arrivalDate,
+}) {
+  const gridByProfileIdx = new Map(gridRows.map((r) => [r._profileIdx, r]));
+  let updated = 0;
+  let skipped = 0;
+  const notFound = [];
+  const ambiguous = [];
+  const noRoom = [];
+
+  for (const i of syncIndices) {
+    const g = merged[i];
+    const edited = gridByProfileIdx.get(i) ?? {};
+    const room = String(edited.room ?? "").trim();
+    const guestName = String(edited.guestName ?? g.guestName ?? "").trim();
+    const orderNumber = String(
+      edited.orderNumber ?? [...(g.orderNumbers ?? [])][0] ?? "",
+    ).trim();
+    const profileArrival = g.arrivalDate ?? arrivalDate ?? null;
+
+    if (!room) {
+      skipped++;
+      noRoom.push(orderNumber || guestName || `שורה ${i + 1}`);
+      continue;
+    }
+
+    if (!orderNumber && !guestName) {
+      skipped++;
+      notFound.push(`שורה ${i + 1}`);
+      continue;
+    }
+
+    let guestRow = null;
+
+    if (orderNumber) {
+      let q = supabase
+        .from("guests")
+        .select("id, name, order_number, room")
+        .eq("order_number", orderNumber);
+      if (profileArrival) q = q.eq("arrival_date", profileArrival);
+      const { data, error } = await q.maybeSingle();
+      if (error) throw new Error(error.message);
+      guestRow = data;
+    }
+
+    if (!guestRow && guestName) {
+      let q = supabase
+        .from("guests")
+        .select("id, name, order_number, room")
+        .eq("name", guestName);
+      if (profileArrival) q = q.eq("arrival_date", profileArrival);
+      const { data, error } = await q.limit(2);
+      if (error) throw new Error(error.message);
+      if (data?.length === 1) guestRow = data[0];
+      else if ((data?.length ?? 0) > 1) {
+        skipped++;
+        ambiguous.push(guestName);
+        continue;
+      }
+    }
+
+    if (!guestRow) {
+      skipped++;
+      notFound.push(orderNumber || guestName);
+      continue;
+    }
+
+    if (guestRow.room === room) {
+      skipped++;
+      continue;
+    }
+
+    const { error: updErr } = await supabase
+      .from("guests")
+      .update({ room })
+      .eq("id", guestRow.id);
+    if (updErr) throw new Error(updErr.message);
+    updated++;
+  }
+
+  return {
+    updated,
+    skipped,
+    notFound: [...new Set(notFound)],
+    ambiguous: [...new Set(ambiguous)],
+    noRoom: [...new Set(noRoom)],
+    total: syncIndices.length,
+    arrivalDate,
+  };
+}
+
 const DETAILED_GRID_COLS = [
   { id: "guestName",     label: "שם אורח",      editable: true,  w: 150 },
   { id: "guestPhone",    label: "טלפון",         editable: false, w: 120 },
@@ -572,6 +668,7 @@ const DETAILED_GRID_COLS = [
 const SUITES_GRID_COLS = [
   { id: "guestName",   label: "שם אורח",   editable: true,  w: 150 },
   { id: "guestPhone",  label: "טלפון",      editable: false, w: 120 },
+  { id: "orderNumber", label: "מס׳ הזמנה",  editable: false, w: 100 },
   { id: "phoneSource", label: "מקור",       editable: false, w: 80  },
   { id: "leadSource",  label: "מקור הגעה",  editable: false, w: 100 },
   { id: "automationMuted", label: "אוטומציה", editable: false, w: 95 },
@@ -634,6 +731,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
   const [doc2Map,  setDoc2Map]  = useState(null);   // Map<key, profile> from Suite CSV
   const [doc1Rec,  setDoc1Rec]  = useState(null);   // [] from Daily Report Excel
   const [doc1SyncMode, setDoc1SyncMode] = useState("suite_spa_only"); // "full" | "suite_spa_only"
+  const [doc2SyncMode, setDoc2SyncMode] = useState("full"); // "full" | "suite_assignment_only"
   const [rawDoc1Payload, setRawDoc1Payload] = useState(null); // { kind, data } for re-parse on mode change
   const [doc2Name, setDoc2Name] = useState("");
   const [doc1Name, setDoc1Name] = useState("");
@@ -822,6 +920,13 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
       setArrivalDate((prev) => prev || detectedDate);
     }
   }, [rawDoc1Payload, doc1SyncMode]);
+
+  // Suite-assignment-only applies to standard Doc 2 grid (has room column), not detailed report
+  useEffect(() => {
+    if (importSource === "detailed" && doc2SyncMode === "suite_assignment_only") {
+      setDoc2SyncMode("full");
+    }
+  }, [importSource, doc2SyncMode]);
 
   // Recompute merged whenever Suite CSV or Daily Report changes
   useEffect(() => {
@@ -1125,6 +1230,17 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           return;
         }
 
+        if (doc2SyncMode === "suite_assignment_only" && importSource !== "detailed") {
+          const roomStats = await _executeSuiteAssignmentOnlySync(supabase, {
+            merged,
+            gridRows,
+            syncIndices,
+            arrivalDate,
+          });
+          setResult({ mode: "suite_room_only", ...roomStats });
+          return;
+        }
+
         const profiles = syncIndices.map((i) => {
             const g = merged[i];
             const edited = gridByProfileIdx.get(i) ?? {};
@@ -1341,6 +1457,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     setDoc2Map(null); setDoc1Rec(null); setRawDoc1Payload(null);
     setDoc2Name(""); setDoc1Name("");
     setDoc1SyncMode("suite_spa_only");
+    setDoc2SyncMode("full");
     setMerged(null); setGridRows([]); setShowOnlyWithSpa(true);
     setDetailedRoomFilter("all"); setSelectedIds(new Set()); setResult(null);
     setMappingStage("idle"); setRawDoc2Rows(null); setDoc2Fallback(null);
@@ -1403,7 +1520,9 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     : (hasDoc2 && hasDoc1)
       ? `⚡ ייבא ${syncTargetCount} פרופילים + עדכן ספא`
     : hasDoc2
-      ? `⚡ ייבא ${syncTargetCount} פרופילים`
+      ? doc2SyncMode === "suite_assignment_only"
+        ? `🏨 עדכן שיבוץ סוויטות בלבד (${syncTargetCount} רשומות)`
+        : `⚡ ייבא ${syncTargetCount} פרופילים`
       : doc1SyncMode === "suite_spa_only"
         ? `💆 סנכרן ספא סוויטות (${doc1Rec?.length ?? 0} הזמנות · לפי מס׳ הזמנה)`
         : `⚡ עדכן שעות ספא (${doc1Rec?.length ?? 0} אורחים)`;
@@ -1516,7 +1635,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
             borderRadius: 10, padding: "10px 14px", marginBottom: 14,
             fontSize: 12, color: "var(--gold-light)", lineHeight: 1.8,
           }}>
-            <strong>Doc 2 — דוח כניסות EZGO (CSV):</strong> ייבוא חדרים, אורחים, הזמנות<br />
+            <strong>Doc 2 — דוח כניסות EZGO (CSV):</strong> ייבוא חדרים, אורחים, הזמנות · או <strong>«שיבוץ סוויטות בלבד»</strong> לעדכון חדר בפרופיל קיים (מס׳ הזמנה / שם)<br />
             <strong>Doc 1 — דוח יומי מקיף (Excel / HTML):</strong> עדכון שעות ספא (+ ארוחה במצב מלא)<br />
             <strong>💆 ספא סוויטות בלבד (ברירת מחדל):</strong> שורות עם «לאורחי הסוויטות» בלבד · התאמה לפי <em>מספר הזמנה</em> + תאריך הגעה → עדכון פרופיל קיים<br />
             <span style={{ color: "rgba(232,201,138,0.55)", fontSize: 11 }}>
@@ -1576,14 +1695,68 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
 
           {/* Two drop zones */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }}>
-            <DropZone
-              label="📋 Doc 2 — כניסות אורחים"
-              hint="כל CSV/Excel — עמודות מזוהות אוטומטית"
-              loaded={hasDoc2 || mappingStage !== "idle"}
-              fileName={importSource === "detailed" ? detailedFileName : doc2Name}
-              onFile={handleDoc2}
-              inputRef={doc2Ref}
-            />
+            <div>
+              <DropZone
+                label="📋 Doc 2 — כניסות אורחים"
+                hint="כל CSV/Excel — עמודות מזוהות אוטומטית"
+                loaded={hasDoc2 || mappingStage !== "idle"}
+                fileName={importSource === "detailed" ? detailedFileName : doc2Name}
+                onFile={handleDoc2}
+                inputRef={doc2Ref}
+              />
+              {/* Doc 2 sync mode — full import vs room-only patch */}
+              <div style={{
+                display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10,
+                padding: "10px 12px", borderRadius: 10,
+                background: "rgba(201,169,110,0.1)", border: "1px solid rgba(201,169,110,0.4)",
+              }}>
+                <span style={{ fontSize: 12, fontWeight: 800, color: "var(--gold-dark)", alignSelf: "center" }}>
+                  מצב Doc 2:
+                </span>
+                {[
+                  {
+                    key: "full",
+                    label: "📋 ייבוא / עדכון מלא",
+                  },
+                  {
+                    key: "suite_assignment_only",
+                    label: "🏨 עדכון שיבוץ סוויטות בלבד",
+                    disabled: importSource === "detailed",
+                  },
+                ].map(({ key, label, disabled }) => (
+                  <button
+                    key={key}
+                    type="button"
+                    disabled={disabled}
+                    title={disabled ? "לא זמין בדוח הזמנות מפורט — השתמש ב-Doc 2 רגיל" : undefined}
+                    onClick={() => !disabled && setDoc2SyncMode(key)}
+                    style={{
+                      padding: "7px 14px", borderRadius: 20,
+                      cursor: disabled ? "not-allowed" : "pointer",
+                      fontFamily: "Heebo,sans-serif", fontSize: 12, fontWeight: 700,
+                      opacity: disabled ? 0.45 : 1,
+                      border: doc2SyncMode === key ? "1px solid var(--gold-dark)" : "1px solid rgba(201,169,110,0.35)",
+                      background: doc2SyncMode === key
+                        ? "linear-gradient(135deg,var(--gold),var(--gold-dark))"
+                        : "rgba(255,255,255,0.5)",
+                      color: doc2SyncMode === key ? "#0F0F0F" : "var(--gold-dark)",
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              {doc2SyncMode === "suite_assignment_only" && hasDoc2 && importSource !== "detailed" && (
+                <div style={{
+                  marginTop: 8, padding: "8px 12px", borderRadius: 8, fontSize: 11,
+                  background: "var(--ivory)", border: "1px solid var(--border)",
+                  color: "var(--black)", fontWeight: 600, lineHeight: 1.5,
+                }}>
+                  מעדכן רק את עמודת <strong>חדר/סוויטה</strong> לאורחים קיימים (התאמה לפי מס׳ הזמנה או שם).
+                  לא משנה טלפון, תאריכים או סטטוס צ׳ק-אין.
+                </div>
+              )}
+            </div>
             <DropZone
               label="📊 Doc 1 — דוח יומי מקיף"
               hint="Excel / HTML EZGO — שעות ספא וארוחה"
@@ -2007,6 +2180,34 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                     <div style={{ fontSize: 12, color: "#92400E", marginTop: 8, fontWeight: 700 }}>
                       ⚠ לא נמצאו במערכת (בדוק תאריך הגעה / ייבוא Doc 2):{" "}
                       {result.notFound.join(", ")}
+                    </div>
+                  )}
+                </div>
+              ) : result.mode === "suite_room_only" ? (
+                <div style={{ color: "#065f46" }}>
+                  <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 6 }}>
+                    🏨 עודכנו {result.updated} שיבוצי סוויטות
+                    {result.arrivalDate && <> (תאריך הגעה {result.arrivalDate})</>}
+                  </div>
+                  <div style={{ fontSize: 13, lineHeight: 1.8 }}>
+                    סה״כ {result.total} שורות בקובץ
+                    {result.skipped > 0 && <> · {result.skipped} דולגו</>}
+                  </div>
+                  {result.noRoom?.length > 0 && (
+                    <div style={{ fontSize: 12, color: "#92400E", marginTop: 8, fontWeight: 700 }}>
+                      ⚠ ללא חדר משויך בטבלה: {result.noRoom.slice(0, 8).join(", ")}
+                      {result.noRoom.length > 8 && ` +${result.noRoom.length - 8}`}
+                    </div>
+                  )}
+                  {result.ambiguous?.length > 0 && (
+                    <div style={{ fontSize: 12, color: "#92400E", marginTop: 8, fontWeight: 700 }}>
+                      ⚠ שם כפול במערכת (לא עודכן): {result.ambiguous.join(", ")}
+                    </div>
+                  )}
+                  {result.notFound?.length > 0 && (
+                    <div style={{ fontSize: 12, color: "#92400E", marginTop: 8, fontWeight: 700 }}>
+                      ⚠ לא נמצאו במערכת: {result.notFound.slice(0, 10).join(", ")}
+                      {result.notFound.length > 10 && ` +${result.notFound.length - 10}`}
                     </div>
                   )}
                 </div>
