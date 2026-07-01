@@ -136,7 +136,14 @@ export default function HousekeepingTabletView({ isKioskMode = false, onLogout }
   // UI flips instantly; the DB write happens silently in the background.
   // Only a real failure reverts the card + shows a toast — no spinner, no
   // blocking on the network roundtrip.
-  const applyTransition = useCallback(async (roomId, optimisticPatch, dbPayload, successMsg) => {
+  const notifyManagerPendingApproval = useCallback((roomId) => {
+    if (!supabase) return;
+    supabase.functions
+      .invoke("room-pending-approval-notify", { body: { room_id: roomId } })
+      .catch(() => { /* best-effort — AICopilot realtime is primary */ });
+  }, []);
+
+  const applyTransition = useCallback(async (roomId, optimisticPatch, dbPayload, successMsg, { notifyManager = false } = {}) => {
     if (!supabase) return;
     const prevEntry = statusMap[roomId];
     setStatusMap(prev => ({ ...prev, [roomId]: { ...(prev[roomId] ?? {}), ...optimisticPatch } }));
@@ -149,8 +156,9 @@ export default function HousekeepingTabletView({ isKioskMode = false, onLogout }
       showToast(`⚠️ ${roomId} — העדכון נכשל, בוטל / update failed, reverted (${error.message})`, "err");
     } else {
       showToast(successMsg);
+      if (notifyManager) notifyManagerPendingApproval(roomId);
     }
-  }, [statusMap]);
+  }, [statusMap, notifyManagerPendingApproval]);
 
   const setDirty = useCallback((roomId) => {
     applyTransition(
@@ -190,7 +198,8 @@ export default function HousekeepingTabletView({ isKioskMode = false, onLogout }
       },
       bothClean
         ? `${roomId} → 🟢 נקי — ממתין לאישור מנהל 🔔 / Pending approval`
-        : `${roomId} → 🟢 חדר נקי, מחכה לג'קוזי 🛁 / Room clean, jacuzzi pending`
+        : `${roomId} → 🟢 חדר נקי, מחכה לג'קוזי 🛁 / Room clean, jacuzzi pending`,
+      { notifyManager: bothClean }
     );
   }, [applyTransition]);
 
@@ -207,7 +216,8 @@ export default function HousekeepingTabletView({ isKioskMode = false, onLogout }
         ? `${roomId} → 🛁✓ ממתין לאישור מנהל 🔔 / Pending approval`
         : next === "clean"
           ? `${roomId} → ✨ ג'קוזי נקי / Jacuzzi clean`
-          : `${roomId} → 🛁 ג'קוזי מלוכלך / Jacuzzi dirty`
+          : `${roomId} → 🛁 ג'קוזי מלוכלך / Jacuzzi dirty`,
+      { notifyManager: bothClean }
     );
   }, [applyTransition]);
 

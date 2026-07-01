@@ -1,3 +1,7 @@
+2026-07-01 | HousekeepingTabletView.js + migration 113 + room-pending-approval-notify | לוח ניקיון: כשחדר+ג'קוזי נקיים → push להנהלה + realtime על room_status לפעמון AICopilot (אישור הודעה+צ'ק-אין).
+2026-06-30 | docs/xos_agent_playbook.md | §11 one-message handoff — Mike approval loop (see browser → כן → commit/push ask → תעלה).
+2026-06-30 | docs/xos_agent_playbook.md | §2.1 Mike Approval Loop + §12 Quick Card — agent waits after each change; Mike uses כן/תקן/עצור/תעלה only. desktop Wow + mobile comfort per phase; Phase 4 mobile shell+GuestsPage; Phase 5 real-phone QA; §11 full desktop kickoff prompt.
+2026-06-30 | docs/xos_agent_playbook.md + .cursorrules | מדריך סוכן חכם: תקשורת חסכונית בטוקנים, UI phases 0–3, desktop-first, פרוטוקול שדרוג אוטומטי של חוקים.
 2026-06-30 | BotSettings.js + migration 112 | עריכה ומחיקה לכללים ב-`xos_ai_rules` (RLS UPDATE/DELETE + כפתורי ✏️/🗑️ במוח הבוט).
 2026-06-30 | BotSettings.js + whatsapp-webhook | כללים מ-«למד את המערכת» מוצגים במוח הבוט; chat/routing מופרדים; `ANTI_REASONING_LEAK_SUFFIX` + מגן עברית ב-sanitizeReply.
 2026-06-30 | OperationsBoard.js + migration 111 | תור חי Realtime על `tasks` — 👍🏼 בקבוצת Whapi מעביר משימה ל«בוצע» בלי רענון; `applyTaskRowUpdate` כמו Inbox.
