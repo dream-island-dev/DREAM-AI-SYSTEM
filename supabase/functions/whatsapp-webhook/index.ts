@@ -33,7 +33,6 @@
 // only in outbound group payload (routeGuestRequestToOpsGroup + operational intercept).
 // ══════════════════════════════════════════════════════════════════════════════
 
-import { serve }        from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import Anthropic        from "https://esm.sh/@anthropic-ai/sdk@0.20.0";
 import { sendCtaUrlButton } from "../_shared/interactiveSend.ts";
@@ -2201,7 +2200,7 @@ const GUEST_LOOKUP_FIELDS =
 // ══════════════════════════════════════════════════════════════════════════════
 // §7  MAIN HANDLER
 // ══════════════════════════════════════════════════════════════════════════════
-serve(async (req: Request) => {
+Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
   // ── POST: log immediately so Supabase logs confirm Meta is calling us ────────

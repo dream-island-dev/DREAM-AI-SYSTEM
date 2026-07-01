@@ -19,7 +19,6 @@
 //     attentionRequired: [{ guestId, guestName, phone, stageKey, status, sentAt, payload }],
 //   }
 
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   resolveStageSchedule,
@@ -47,7 +46,7 @@ const PERMANENT_SKIP_REASONS = new Set([
   "date_passed",
 ]);
 
-serve(async (req: Request) => {
+Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
   try {

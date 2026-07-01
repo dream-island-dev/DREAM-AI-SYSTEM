@@ -20,7 +20,6 @@
 // INTER_SEND_DELAY_MS (2.5s) between each whatsapp-send call, grouped in batches
 // of DISPATCH_BATCH_SIZE for logging — burst protection against Meta rate limits.
 
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   resolveStageSchedule,
@@ -48,7 +47,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-serve(async (req: Request) => {
+Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
   // ── EMERGENCY KILL SWITCH ───────────────────────────────────────────────────
