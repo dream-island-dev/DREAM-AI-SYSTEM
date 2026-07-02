@@ -39,6 +39,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendImageMessage, sendInteractiveButtons } from "../_shared/interactiveSend.ts";
 import { isArrivalTodayIsrael, israelTodayYmd } from "../_shared/israelDate.ts";
 import { sanitizeMetaRecipientPhone } from "../_shared/metaPhone.ts";
+import { sendWhapiText } from "../_shared/whapiSend.ts";
 import {
   guardPaymentLink,
   logPaymentLinkFailure,
@@ -76,8 +77,61 @@ function truncateConversationLog(text: string): string {
   return t.length > 4000 ? `${t.slice(0, 3997)}…` : t;
 }
 
-/** Resolve human-readable inbox log text for a Meta template send. */
-async function buildConversationLogFromTemplate(
+/** Meta-approved body snapshots — inbox logging only (never sent to Meta). */
+const TEMPLATE_BODY_APPROVED: Record<string, string> = {
+  dream_arrival_confirmation:
+    "היי {{1}}! כבר ממש סופרים את הימים... 🥳\n" +
+    "רק רצינו לוודא שהכל כרגיל לקראת השהות שלכם אצלנו בריזורט בעוד יומיים. " +
+    "נשמח אם תאשרו לנו את הגעתכם כאן למטה:",
+  dream_checkin_reminder_v2:
+    "שלום {{1}}, מחר מגיעים לדרים איילנד — מחכים לכם! " +
+    "המתחם פתוח מ-9:00, צ'ק אין לסוויטות מ-15:00. " +
+    "בואו מוקדם ותיהנו מהכל. לכל שאלה: {{2}} — נתראה מחר",
+  dream_mid_stay_check:
+    "{{1}}, בוקר טוב! רצינו לוודא שהכל מושלם בשהות שלכם אצלנו.",
+  dream_checkout_feedback:
+    "{{1}}, תודה שהייתם איתנו! נשמח לשמוע איך הייתה החוויה.",
+  dream_payment_and_workshops:
+    "איזה כיף, אנחנו כבר מחכים לכם! 🥰\n" +
+    "כדי שהצ'ק-אין שלכם בריזורט יהיה מהיר, חלק וללא המתנה מיותרת בדלפק הקבלה, " +
+    "נשמח אם תסדירו את יתרת השהות על סך {{2}} ₪ בקישור המאובטח שלכם.",
+  dream_room_ready:
+    "{{1}}, החדר שלכם — {{2}} — מוכן! 🎉",
+};
+
+/** Quick Reply button labels baked into approved Meta templates (logging only). */
+const TEMPLATE_QUICK_REPLY_BUTTONS: Record<string, string[]> = {
+  dream_arrival_confirmation: ["כן, מגיעים! ✨", "לא, שינוי בתאריך 🗓️"],
+};
+
+type InteractiveButtonDef = { type: string; label?: string; url?: string };
+
+function getTemplateQuickReplyButtons(templateName: string): string[] {
+  return TEMPLATE_QUICK_REPLY_BUTTONS[templateName] ?? [];
+}
+
+function sessionButtonsToLabels(buttons: InteractiveButtonDef[]): string[] {
+  return buttons
+    .filter((b) => b?.type === "quick_reply" && String(b.label ?? "").trim())
+    .map((b) => String(b.label).trim());
+}
+
+/** Prefix [META]/[SESSION] + optional interactive-button footer for whatsapp_conversations. */
+function formatOutboundConversationLog(opts: {
+  channel: "meta_template" | "session_message";
+  body: string;
+  interactiveButtonLabels?: string[];
+}): string {
+  const tag = opts.channel === "meta_template" ? "[META]" : "[SESSION]";
+  const lines: string[] = [tag, truncateConversationLog(opts.body.trim())];
+  const labels = opts.interactiveButtonLabels?.filter(Boolean) ?? [];
+  if (labels.length > 0) {
+    lines.push(`[+ Interactive Buttons: ${labels.join(" | ")}]`);
+  }
+  return lines.join("\n");
+}
+
+async function resolveMetaTemplateBodyText(
   supabase: ReturnType<typeof createClient>,
   templateName: string,
   vars: string[],
@@ -88,17 +142,38 @@ async function buildConversationLogFromTemplate(
     .eq("wa_template_name", templateName)
     .maybeSingle();
   let body = mt?.content?.trim() ?? "";
-  if (!body) {
-    const { data: bs } = await supabase
-      .from("bot_scripts")
-      .select("message_text")
-      .eq("meta_template_name", templateName)
-      .maybeSingle();
-    body = bs?.message_text?.trim() ?? "";
+  if (!body && TEMPLATE_BODY_APPROVED[templateName]) {
+    body = TEMPLATE_BODY_APPROVED[templateName];
   }
-  if (body) return truncateConversationLog(substituteMetaTemplateVars(body, vars));
+  if (body) return substituteMetaTemplateVars(body, vars);
   const varsHint = vars.length ? ` (${vars.join(" | ")})` : "";
-  return truncateConversationLog(`📋 תבנית Meta: ${templateName}${varsHint}`);
+  return `📋 תבנית Meta: ${templateName}${varsHint}`;
+}
+
+function buildSessionConversationLog(
+  body: string,
+  interactiveButtons?: InteractiveButtonDef[],
+): string {
+  const labels = sessionButtonsToLabels(interactiveButtons ?? []);
+  return formatOutboundConversationLog({
+    channel: "session_message",
+    body,
+    interactiveButtonLabels: labels.length ? labels : undefined,
+  });
+}
+
+/** Resolve human-readable inbox log text for a Meta template send. */
+async function buildConversationLogFromTemplate(
+  supabase: ReturnType<typeof createClient>,
+  templateName: string,
+  vars: string[],
+): Promise<string> {
+  const body = await resolveMetaTemplateBodyText(supabase, templateName, vars);
+  return formatOutboundConversationLog({
+    channel: "meta_template",
+    body,
+    interactiveButtonLabels: getTemplateQuickReplyButtons(templateName),
+  });
 }
 
 // ── Pipeline trigger → approved WA template name ─────────────────────────────
@@ -743,6 +818,58 @@ function maskPhoneForLog(phone: string): string {
   return `${d.slice(0, 3)}***${d.slice(-4)}`;
 }
 
+const ADMIN_ALERT_PHONE_FALLBACK = "972546294885";
+
+/** Emergency Whapi DM to admin when a guest dispatch fails (bypasses Meta). */
+async function alertAdminDispatchFailure(params: {
+  guestName?: string | null;
+  guestPhone?: string | null;
+  dispatchType: "Template" | "Session";
+  errorMessage: string;
+}): Promise<void> {
+  const adminPhone = (
+    Deno.env.get("ADMIN_PHONE_NUMBER") ??
+    Deno.env.get("SLA_GUEST_ALERT_PHONE") ??
+    ADMIN_ALERT_PHONE_FALLBACK
+  ).replace(/\D/g, "");
+  if (!adminPhone) {
+    console.warn("[whatsapp-send] admin alert skipped — no ADMIN_PHONE_NUMBER configured");
+    return;
+  }
+  const guestLabel =
+    (params.guestName && String(params.guestName).trim()) ||
+    maskPhoneForLog(safeGuestPhone(params.guestPhone)) ||
+    "לא ידוע";
+  const errText = String(params.errorMessage ?? "שגיאה לא ידועה").slice(0, 500);
+  const alertBody =
+    `🚨 שגיאת מערכת: כשל בשליחת הודעה לאורח ${guestLabel}.\n` +
+    `סוג ההודעה: ${params.dispatchType}\n` +
+    `סיבת השגיאה: ${errText}`;
+  try {
+    await sendWhapiText(adminPhone, alertBody, { noLinkPreview: true });
+    console.log(`[whatsapp-send] admin dispatch failure alert sent to ${maskPhoneForLog(adminPhone)}`);
+  } catch (e) {
+    console.error("[whatsapp-send] admin dispatch alert failed (non-blocking):", (e as Error).message);
+  }
+}
+
+async function notifyAdminIfDispatchFailed(params: {
+  status: string;
+  error: string | null | undefined;
+  guestName?: string | null;
+  guestPhone?: string | null;
+  dispatchType: "Template" | "Session";
+}): Promise<void> {
+  if (!params.error) return;
+  if (params.status !== "failed" && params.status !== "blocked_by_meta") return;
+  await alertAdminDispatchFailure({
+    guestName: params.guestName,
+    guestPhone: params.guestPhone,
+    dispatchType: params.dispatchType,
+    errorMessage: params.error,
+  });
+}
+
 /** JSON-safe log string; never includes Authorization or other secrets. */
 function logMetaOutboundPayload(label: string, payload: Record<string, unknown>): void {
   console.log(`[whatsapp-send] Meta outbound ${label}: ${JSON.stringify(payload)}`);
@@ -1182,6 +1309,14 @@ serve(async (req: Request) => {
         console.error(`[whatsapp] broadcast send ${status}:`, sendError);
       }
 
+      await notifyAdminIfDispatchFailed({
+        status,
+        error: sendError,
+        guestName: guest.name as string,
+        guestPhone: guest.phone as string,
+        dispatchType: "Template",
+      });
+
       await supabase.from("notification_log").insert({
         guest_id:     guestId,
         recipient:    guest.phone,
@@ -1282,11 +1417,20 @@ serve(async (req: Request) => {
         replyStatus = "failed";
       }
 
+      await notifyAdminIfDispatchFailed({
+        status: replyStatus,
+        error: replyErr,
+        guestPhone: targetPhone,
+        dispatchType: "Session",
+      });
+
       // Insert outbound row so the inbox thread shows the message immediately
       await supabase.from("whatsapp_conversations").insert({
         phone:         targetPhone,
         direction:     "outbound",
-        message:       inboxMsg,
+        message:       replyStatus === "failed"
+          ? inboxMsg
+          : buildSessionConversationLog(inboxMsg),
         wa_message_id: null,
       });
 
@@ -1363,6 +1507,14 @@ serve(async (req: Request) => {
         console.error("[whatsapp] payment_and_workshops send failed:", sendError);
         status = "failed";
       }
+
+      await notifyAdminIfDispatchFailed({
+        status,
+        error: sendError,
+        guestName: guest.name as string,
+        guestPhone: guest.phone as string,
+        dispatchType: "Template",
+      });
 
       await supabase.from("notification_log").insert({
         guest_id:     guestId,
@@ -1562,6 +1714,14 @@ serve(async (req: Request) => {
         console.error(`[whatsapp-send] force meta_template ${fmStatus}:`, fmError);
       }
 
+      await notifyAdminIfDispatchFailed({
+        status: fmStatus,
+        error: fmError,
+        guestName: guest.name as string,
+        guestPhone: targetPhone,
+        dispatchType: "Template",
+      });
+
       await supabase.from("notification_log").insert({
         guest_id: guestId,
         recipient: targetPhone,
@@ -1746,7 +1906,10 @@ serve(async (req: Request) => {
                 checkInTime: nbTimes.checkInTime,
                 portalUrl: nbPortalUrl,
               });
-              nbConvMessage = truncateConversationLog(textBody);
+              nbConvMessage = buildSessionConversationLog(
+                textBody,
+                (stageRow?.interactive_buttons ?? []) as InteractiveButtonDef[],
+              );
               nbSessionKind = await sendStageSessionMessage(
                 String(guest.phone),
                 textBody,
@@ -1792,6 +1955,14 @@ serve(async (req: Request) => {
         console.error(`[whatsapp-send] night_before dispatch ${nbStatus}:`, nbError);
       }
 
+      await notifyAdminIfDispatchFailed({
+        status: nbStatus,
+        error: nbError,
+        guestName: guest.name as string,
+        guestPhone: guest.phone as string,
+        dispatchType: nightBeforeDispatch.channel === "text" ? "Session" : "Template",
+      });
+
       // Log outcome — same shape as the existing pipeline log below so
       // Automation History renders it without special-casing.
       await supabase.from("notification_log").insert({
@@ -1820,7 +1991,10 @@ serve(async (req: Request) => {
             phone:         String(guest.phone),
             guest_id:      guestId,
             direction:     "outbound",
-            message:       nbConvMessage || `[תבנית: ${nightBeforeDispatch.channel === "template" ? nightBeforeDispatch.templateName : nightBeforeDispatch.freeTextKey}]`,
+            message:       nbConvMessage || formatOutboundConversationLog({
+              channel: nightBeforeDispatch.channel === "text" ? "session_message" : "meta_template",
+              body: `[${nightBeforeDispatch.channel === "template" ? nightBeforeDispatch.templateName : nightBeforeDispatch.freeTextKey}]`,
+            }),
             wa_message_id: null,
           });
           if (convErr) console.warn("[whatsapp-send] night_before conv log failed (non-blocking):", convErr.message);
@@ -1893,7 +2067,10 @@ serve(async (req: Request) => {
               const body = rawText
                 .replace(/\{\{GUEST_NAME\}\}/gi, dpGuestName)
                 .replace(/\{\{\s*portal_url\s*\}\}/gi, dpPortalUrl);
-              dpConvMessage = truncateConversationLog(body);
+              dpConvMessage = buildSessionConversationLog(
+                body,
+                (stageRow?.interactive_buttons ?? []) as InteractiveButtonDef[],
+              );
               await sendViaMeta(String(guest.phone), body, stageRow?.session_message_image_url);
             }
           } else {
@@ -1910,6 +2087,14 @@ serve(async (req: Request) => {
                  : "failed";
         console.error(`[whatsapp-send] morning_welcome day_pass ${dpStatus}:`, dpError);
       }
+
+      await notifyAdminIfDispatchFailed({
+        status: dpStatus,
+        error: dpError,
+        guestName: guest.name as string,
+        guestPhone: guest.phone as string,
+        dispatchType: dpChannel === "session_message" ? "Session" : "Template",
+      });
 
       await supabase.from("notification_log").insert({
         guest_id:     guestId,
@@ -1930,7 +2115,10 @@ serve(async (req: Request) => {
             phone:         String(guest.phone),
             guest_id:      guestId,
             direction:     "outbound",
-            message:       dpConvMessage || `[תבנית: suite_welcome_morning]`,
+            message:       dpConvMessage || formatOutboundConversationLog({
+              channel: "meta_template",
+              body: "suite_welcome_morning",
+            }),
             wa_message_id: null,
           });
         } catch { /* best-effort */ }
@@ -2003,6 +2191,14 @@ serve(async (req: Request) => {
           console.error(`[whatsapp-send] morning session-message ${mgStatus}:`, mgError);
         }
 
+        await notifyAdminIfDispatchFailed({
+          status: mgStatus,
+          error: mgError,
+          guestName: guest.name as string,
+          guestPhone: guest.phone as string,
+          dispatchType: "Session",
+        });
+
         await supabase.from("notification_log").insert({
           guest_id:     guestId,
           recipient:    guest.phone,
@@ -2022,7 +2218,10 @@ serve(async (req: Request) => {
               phone:         String(guest.phone),
               guest_id:      guestId,
               direction:     "outbound",
-              message:       truncateConversationLog(mgBody),
+              message:       buildSessionConversationLog(
+                mgBody,
+                (stageRow?.interactive_buttons ?? []) as InteractiveButtonDef[],
+              ),
               wa_message_id: null,
             });
           } catch { /* best-effort */ }
@@ -2149,6 +2348,14 @@ serve(async (req: Request) => {
                  : "failed";
         console.error(`[whatsapp-send] morning dispatch ${mdStatus}:`, mdError);
       }
+
+      await notifyAdminIfDispatchFailed({
+        status: mdStatus,
+        error: mdError,
+        guestName: guest.name as string,
+        guestPhone: guest.phone as string,
+        dispatchType: "Template",
+      });
 
       await supabase.from("notification_log").insert({
         guest_id:     guestId,
@@ -2306,7 +2513,7 @@ serve(async (req: Request) => {
               const textBody = rawText
                 .replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, rrDispatch.guestName)
                 .replace(/\{\{\s*ROOM_NAME\s*\}\}/gi,   rrDispatch.roomName);
-              rrConvMessage = truncateConversationLog(textBody);
+              rrConvMessage = buildSessionConversationLog(textBody);
               await sendViaMeta(String(guest.phone), textBody, stageRow?.session_message_image_url);
             }
           } else {
@@ -2332,6 +2539,14 @@ serve(async (req: Request) => {
         console.error(`[whatsapp-send] room_ready dispatch ${rrStatus}:`, rrError);
       }
 
+      await notifyAdminIfDispatchFailed({
+        status: rrStatus,
+        error: rrError,
+        guestName: guest.name as string,
+        guestPhone: guest.phone as string,
+        dispatchType: rrDispatch.channel === "text" ? "Session" : "Template",
+      });
+
       await supabase.from("notification_log").insert({
         guest_id:     guestId,
         recipient:    guest.phone,
@@ -2353,7 +2568,10 @@ serve(async (req: Request) => {
             phone:         String(guest.phone),
             guest_id:      guestId,
             direction:     "outbound",
-            message:       rrConvMessage || `[תבנית: ${rrDispatch.templateName}]`,
+            message:       rrConvMessage || formatOutboundConversationLog({
+              channel: rrDispatch.channel === "text" ? "session_message" : "meta_template",
+              body: rrDispatch.channel === "template" ? rrDispatch.templateName : rrDispatch.freeTextKey,
+            }),
             wa_message_id: null,
           });
           if (rrConvErr) console.warn("[whatsapp-send] room_ready conv log failed (non-blocking):", rrConvErr.message);
@@ -2491,13 +2709,24 @@ serve(async (req: Request) => {
           },
     });
 
+    await notifyAdminIfDispatchFailed({
+      status,
+      error: sendError,
+      guestName: guest.name as string,
+      guestPhone: guest.phone as string,
+      dispatchType: usedSessionMessage ? "Session" : "Template",
+    });
+
     // Log to conversation history so inbox shows it.
     // Non-blocking by design — see broadcast branch above for why a bare
     // .catch() chained directly on the query builder throws instead of swallowing.
     if (status === "sent" || status === "simulated") {
       try {
         const pipelineConvMsg = usedSessionMessage
-          ? truncateConversationLog(sessionBody!)
+          ? buildSessionConversationLog(
+              sessionBody!,
+              sessionButtons as InteractiveButtonDef[],
+            )
           : await buildConversationLogFromTemplate(supabase, tmplName, tmplVars);
         const { error: convErr } = await supabase.from("whatsapp_conversations").insert({
           phone: guest.phone as string,

@@ -118,32 +118,63 @@ function expandScriptForDisplay(body, ctx = {}) {
 
 const LEGACY_SCRIPT_TAG_RE = /^\[סקריפט:\s*(.+?)\]$/;
 const LEGACY_TEMPLATE_TAG_RE = /^\[תבנית:\s*(.+?)\]$/;
+const DISPATCH_META_PREFIX = /^\[META\]\n?/;
+const DISPATCH_SESSION_PREFIX = /^\[SESSION\]\n?/;
+const INTERACTIVE_BUTTONS_SUFFIX = /\n?\[\+\s*Interactive Buttons(?::\s*([^\]]+))?\]\s*$/;
+
 const LEGACY_BRACKET_SCRIPT_KEYS = {
   "בוקר הגעה: חופשי": "stage_3_morning",
   "בוקר יום-כיף: חופשי": "morning_daypass",
   "חדר מוכן: חופשי": "room_ready_reminder",
 };
 
+/** Strip whatsapp-send dispatch tags — [META]/[SESSION] + interactive-button footer. */
+function parseOutboundDispatch(raw) {
+  if (!raw || typeof raw !== "string") {
+    return { channel: null, body: raw ?? "", hasInteractiveButtons: false, buttonLabels: null };
+  }
+  let body = raw;
+  let channel = null;
+  if (DISPATCH_META_PREFIX.test(body)) {
+    channel = "meta";
+    body = body.replace(DISPATCH_META_PREFIX, "");
+  } else if (DISPATCH_SESSION_PREFIX.test(body)) {
+    channel = "session";
+    body = body.replace(DISPATCH_SESSION_PREFIX, "");
+  }
+  let buttonLabels = null;
+  let hasInteractiveButtons = false;
+  const btnMatch = body.match(INTERACTIVE_BUTTONS_SUFFIX);
+  if (btnMatch) {
+    hasInteractiveButtons = true;
+    buttonLabels = btnMatch[1]?.trim() || null;
+    body = body.replace(INTERACTIVE_BUTTONS_SUFFIX, "").trimEnd();
+  }
+  return { channel, body, hasInteractiveButtons, buttonLabels };
+}
+
 /** Resolve legacy `[סקריפט:…]` / `[תבנית:…]` inbox rows to human-readable text. */
 function resolveInboxMessageText(raw, resolveCtx) {
   if (!raw) return "";
+  const { body: strippedBody } = parseOutboundDispatch(raw);
+  const text = strippedBody ?? raw;
   const ctx = resolveCtx || {};
-  const scriptTag = raw.match(LEGACY_SCRIPT_TAG_RE);
+  const scriptTag = text.match(LEGACY_SCRIPT_TAG_RE);
   if (scriptTag) {
     const body = resolveCtx?.scriptsByKey?.get(scriptTag[1]);
     if (body) return expandScriptForDisplay(body, ctx);
-    return raw;
+    return text;
   }
-  const tmplTag = raw.match(LEGACY_TEMPLATE_TAG_RE);
+  const tmplTag = text.match(LEGACY_TEMPLATE_TAG_RE);
   if (tmplTag) {
     const body = resolveCtx?.templatesByWaName?.get(tmplTag[1]);
     if (body) {
       const vars = [ctx.guestName || "אורח יקר", ctx.room || "-"].filter(Boolean);
       return substituteTemplateVars(body, vars);
     }
-    return raw;
+    return text;
   }
-  const bracket = raw.match(/^\[(.+)\]$/);
+  const bracket = text.match(/^\[(.+)\]$/);
   if (bracket) {
     const sk = LEGACY_BRACKET_SCRIPT_KEYS[bracket[1]];
     if (sk) {
@@ -151,7 +182,7 @@ function resolveInboxMessageText(raw, resolveCtx) {
       if (body) return expandScriptForDisplay(body, ctx);
     }
   }
-  return expandScriptForDisplay(raw, ctx);
+  return expandScriptForDisplay(text, ctx);
 }
 
 // ── Responsive hook — same convention as UserManagement.js's useIsMobile:
@@ -730,6 +761,7 @@ const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobil
 const Bubble = React.memo(function Bubble({ msg, dir, resolveCtx }) {
   const isOut = msg.direction === "outbound";
   const rtl = dir === "rtl";
+  const dispatchInfo = isOut ? parseOutboundDispatch(msg.message) : null;
   const displayText = resolveInboxMessageText(msg.message, resolveCtx);
   return (
     <div style={{
@@ -751,12 +783,34 @@ const Bubble = React.memo(function Bubble({ msg, dir, resolveCtx }) {
         whiteSpace: "pre-wrap",
       }}>
         {displayText}
+        {isOut && dispatchInfo?.hasInteractiveButtons && (
+          <div style={{
+            fontSize: 11,
+            color: "var(--gold-light, #E8C98A)",
+            marginTop: 8,
+            paddingTop: 6,
+            borderTop: "1px solid rgba(232,201,138,0.25)",
+            fontStyle: "italic",
+          }}>
+            [+ Interactive Buttons]{dispatchInfo.buttonLabels ? `: ${dispatchInfo.buttonLabels}` : ""}
+          </div>
+        )}
         <div style={{
           fontSize: 10, color: isOut ? "var(--gold-light, #E8C98A)" : "#aaa", marginTop: 4,
           textAlign: isOut ? "left" : "right",
+          display: "flex",
+          alignItems: "center",
+          gap: 4,
+          justifyContent: isOut ? "flex-start" : "flex-end",
         }}>
           {formatTime(msg.created_at)}
-          {isOut && <span style={{ marginRight: 4 }}>✓✓</span>}
+          {isOut && dispatchInfo?.channel === "meta" && (
+            <span title="נשלח דרך תבנית Meta" aria-label="Meta template">🔵</span>
+          )}
+          {isOut && dispatchInfo?.channel === "session" && (
+            <span title="נשלח כהודעת סשן (24ש')" aria-label="Session message">🟢</span>
+          )}
+          {isOut && <span>✓✓</span>}
         </div>
       </div>
     </div>

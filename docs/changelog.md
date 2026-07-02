@@ -1,4 +1,5 @@
-2026-07-02 | App.js | סיידבר: «לוח בקשות» הוזז מתחת לצ'קליסטים ומעל תפעול ואחזקה.
+2026-07-03 | whatsapp-send + WhatsAppInbox.js | Dispatch transparency: לוג `[META]`/`[SESSION]`+כפתורים ב-inbox; 🔵/🟢 ב-UI; התראת Whapi לאדמין על כשל שליחה.
+2026-07-02 | automationSchedule.ts + whatsapp-webhook | בקשת בלונים לחדר → לוח בקשות (guest_alerts) בלבד, לא תפעול; תשובה קבועה לקבלה+נציגת בלונים; secret אופציונלי BALLOON_VENDOR_PHONE.
 2026-07-02 | automationSchedule.ts + whatsapp-webhook | Allowlist + dispatch matrix: תפעול→Whapi EN+tasks; קבלה/בקשות→tasks; שאר→לוח בקשות/KB.
 2026-07-02 | whatsapp-send + migration 119 + whatsapp-cron + GuestsPage | Idempotency guard `room_ready_notified` — חסימת כפל הודעת «חדר מוכן»; איפוס ב-checked_out.
 2026-07-02 | HousekeepingTabletView.js + RoomBoard.js + migration 118 | Jacuzzi ping-pong: סטטוסים ממתין לג'קוזי/מוכן לפיניש, כפתורי קרא לג'קוזי+סיימתי פיניש, מסגרת cyan+pulse.

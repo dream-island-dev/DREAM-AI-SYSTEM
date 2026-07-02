@@ -58,6 +58,9 @@ import {
   buildOperationalDispatchReply,
   buildAdministrativeRequestSummary,
   buildAdministrativeDispatchReply,
+  shouldInterceptBalloonRoomRequest,
+  isBalloonRoomRequest,
+  buildBalloonRoomRequestReply,
   isSensitiveStayChangeRequest,
   CANONICAL_STAY_CHANGE_HANDOFF_MSG,
   isSensitiveFinancialRequest,
@@ -1466,6 +1469,76 @@ async function handleOperationalInHouseIntercept(
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// §4b.1b BALLOON ROOM REQUEST — Requests Board only (guest_alerts), never ops.
+//       Reception coordinates with external balloon vendor.
+// ══════════════════════════════════════════════════════════════════════════════
+async function handleBalloonRoomRequestIntercept(
+  supabase: ReturnType<typeof createClient>,
+  opts: {
+    phone: string;
+    guestId: number;
+    guest: Record<string, unknown>;
+    text: string;
+    msgId: string;
+    claimedConversationId: number | null;
+    sim: boolean;
+  },
+): Promise<void> {
+  const { phone, guestId, guest, text, msgId, claimedConversationId, sim } = opts;
+  const guestName = (guest.name as string | null) ?? null;
+  const guestRoom = (guest.room as string | null) ?? null;
+  const reply = buildBalloonRoomRequestReply(guestName);
+
+  await patchClaimedInbound(supabase, claimedConversationId, msgId, {
+    guest_id: guestId,
+    intent: "balloon_room_request",
+  });
+
+  const { error: alertErr } = await supabase.from("guest_alerts").insert({
+    guest_id:        guestId,
+    phone,
+    alert_type:      "request",
+    message:         `🎈 בקשת בלונים לחדר${guestRoom ? ` (${guestRoom})` : ""}: ${text}`,
+    conversation_id: claimedConversationId,
+    resolved:        false,
+  });
+  if (alertErr) {
+    console.error("[webhook] 🎈 balloon guest_alerts insert FAILED:", alertErr.message);
+  }
+
+  if (BALLOON_VENDOR_PHONE) {
+    sendWhapiText(
+      BALLOON_VENDOR_PHONE,
+      `🎈 בקשת בלונים לחדר\nסוויטה: ${guestRoom ?? "—"}\nאורח: ${guestName ?? "—"}\n${text}\n\n(הועבר מ-DREAM BOT — צוות הקבלה ישלים פרטים)`,
+      { noLinkPreview: true },
+    ).catch((e: Error) =>
+      console.warn("[webhook] 🎈 balloon vendor Whapi alert failed (non-blocking):", e.message)
+    );
+  }
+
+  if (!sim) {
+    try {
+      await sendReply(phone, reply);
+      await insertGuestOutboundIfNotMuted(supabase, {
+        phone,
+        guest_id:      guestId,
+        message:       reply,
+        wa_message_id: null,
+        intent:        "balloon_room_request",
+      });
+    } catch (e) {
+      console.error("[webhook] 🎈 balloon intercept reply failed:", (e as Error).message);
+    }
+  } else {
+    console.info(`[webhook] SIM — balloon room request from ${phone}`);
+  }
+
+  console.info(
+    `[webhook] 🎈 balloon room request — dispatch=requests_board phone:${phone} guest:${guestId} room:${guestRoom ?? "—"}`,
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // §4b.1a ADMINISTRATIVE IN-HOUSE ROUTING — spa / front-desk asks → tasks only
 //       (קבלה/בקשות), no Whapi field-ops group alert.
 // ══════════════════════════════════════════════════════════════════════════════
@@ -2273,6 +2346,8 @@ const GOOGLE_REVIEW_URL   = Deno.env.get("GOOGLE_REVIEW_URL")   ?? "";
 // imported (Deno functions don't share modules across function boundaries
 // in this repo).
 const ADIR_PERSONAL_PHONE = "972546294885";
+/** Optional — Supabase secret; reception's balloon-vendor contact for best-effort heads-up. */
+const BALLOON_VENDOR_PHONE = (Deno.env.get("BALLOON_VENDOR_PHONE") ?? "").trim();
 
 // Pre-Arrival Guest Portal magic-link (migration 083, session 35) — base URL
 // for {{PORTAL_LINK}} below. Defaults to the documented live Vercel URL
@@ -3440,8 +3515,27 @@ Deno.serve(async (req: Request) => {
         continue;
       }
 
-      // ── Tier-0 administrative in-house (spa / front desk) — tasks only ─────
+      // ── Tier-0 balloon room décor — Requests Board only (never field ops) ──
       const statusForRouting = (guest?.status as string | null) ?? guestStatusAtLookup;
+      if (
+        !isButtonReply &&
+        guestId &&
+        guest &&
+        shouldInterceptBalloonRoomRequest(text)
+      ) {
+        await handleBalloonRoomRequestIntercept(supabase, {
+          phone,
+          guestId,
+          guest: guest as Record<string, unknown>,
+          text,
+          msgId,
+          claimedConversationId,
+          sim,
+        });
+        continue;
+      }
+
+      // ── Tier-0 administrative in-house (spa / front desk) — tasks only ─────
       if (
         !isButtonReply &&
         guestId &&
@@ -3552,8 +3646,28 @@ Deno.serve(async (req: Request) => {
         continue;
       }
 
-      // ── Tier-0 administrative intercept (post-burst) ─────────────────────
+      // ── Tier-0 balloon intercept (post-burst) ─────────────────────────────
       const statusAfterBurst = (guest?.status as string | null) ?? guestStatusAtLookup;
+      if (
+        !isButtonReply &&
+        guestId &&
+        guest &&
+        effectiveText !== text &&
+        shouldInterceptBalloonRoomRequest(effectiveText)
+      ) {
+        await handleBalloonRoomRequestIntercept(supabase, {
+          phone,
+          guestId,
+          guest: guest as Record<string, unknown>,
+          text: effectiveText,
+          msgId,
+          claimedConversationId,
+          sim,
+        });
+        continue;
+      }
+
+      // ── Tier-0 administrative intercept (post-burst) ─────────────────────
       if (
         !isButtonReply &&
         guestId &&
@@ -3921,7 +4035,23 @@ Deno.serve(async (req: Request) => {
             });
             if (error) console.error("[webhook] 🚨 guest_alerts (request) insert FAILED:", error.message);
           })().catch((e: Error) => console.error("[webhook] 🚨 guest_alerts (request) insert FAILED:", e.message));
+        } else if (guestId && isBalloonRoomRequest(effectiveText)) {
+          console.info(`[webhook] 🎈 dispatch=requests_board (balloon LLM path) phone:${phone}`);
+          (async () => {
+            const guestRoom = (guest as Record<string, unknown> | null)?.room as string | null ?? null;
+            const { error } = await supabase.from("guest_alerts").insert({
+              guest_id: guestId, phone, alert_type: "request",
+              message: `🎈 בקשת בלונים לחדר${guestRoom ? ` (${guestRoom})` : ""}: ${effectiveText}`,
+              conversation_id: conversationId, resolved: false,
+            });
+            if (error) console.error("[webhook] 🎈 guest_alerts (balloon) insert FAILED:", error.message);
+          })().catch((e: Error) => console.error("[webhook] 🎈 guest_alerts (balloon) insert FAILED:", e.message));
         }
+      }
+
+      // ── Balloon room reply override — never imply field-ops dispatch ───────
+      if (isBalloonRoomRequest(effectiveText)) {
+        reply = buildBalloonRoomRequestReply(guestName);
       }
 
       // ── Pre-send safety nets — mutually exclusive, most severe first. Each

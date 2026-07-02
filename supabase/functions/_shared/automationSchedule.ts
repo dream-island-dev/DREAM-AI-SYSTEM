@@ -470,11 +470,40 @@ export function shouldDispatchOperationalInHouseAlert(text: string): boolean {
   return isAllowlistedPhysicalTaskRequest(text);
 }
 
+// ── In-room balloon décor — Requests Board only (never field-ops / tasks) ──
+
+export const BALLOON_ROOM_REQUEST_PATTERN = /בלון(?:ים)?|balloons?/iu;
+
+/** Balloon room décor ask — reception coordinates with external vendor. */
+export function isBalloonRoomRequest(text: string): boolean {
+  const t = text.trim();
+  if (!t || !BALLOON_ROOM_REQUEST_PATTERN.test(t)) return false;
+  if (isInformationalGuestQuery(t)) return false;
+  if (/^(?:מה|האם|כמה|איפה|היכן)\b/u.test(t) && !PHYSICAL_REQUEST_INTENT_PATTERN.test(t)) {
+    return false;
+  }
+  return true;
+}
+
+export function shouldInterceptBalloonRoomRequest(text: string): boolean {
+  return isBalloonRoomRequest(text);
+}
+
+/** Canonical guest reply — reception passes details to balloon vendor (not field ops). */
+export function buildBalloonRoomRequestReply(guestName?: string | null): string {
+  const salutation = guestName ? `${guestName}, ` : "";
+  return (
+    `${salutation}בחירה נהדרת! 🎈 ` +
+    `רשמתי את הבקשה. צוות הקבלה יעביר את הפרטים שלכם לנציגת הבלונים שלנו, ` +
+    `והיא תיצור איתכם קשר בהקדם לתיאום.`
+  );
+}
+
 /**
  * Single routing decision for guest free-text requests (after allowlist gate).
  * - operational_field_ops → tasks (dept=תפעול) + Whapi EN card (checked-in only)
  * - admin_reception_tasks → tasks (dept=קבלה/בקשות), no Whapi ops group
- * - requests_board → guest_alerts (pre-check-in physical, manager/price/human)
+ * - requests_board → guest_alerts (pre-check-in physical, manager/price/human, balloons)
  * - kb_only → LLM/KB answer only
  */
 export type GuestRequestDispatchRoute =
@@ -488,6 +517,7 @@ export function classifyGuestRequestDispatch(
   status: string | null | undefined,
 ): GuestRequestDispatchRoute {
   if (isInformationalGuestQuery(text)) return "kb_only";
+  if (isBalloonRoomRequest(text)) return "requests_board";
   if (isAdministrativeInHouseRequest(text)) {
     return isCheckedInGuestStatus(status) ? "admin_reception_tasks" : "requests_board";
   }
