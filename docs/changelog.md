@@ -1,3 +1,4 @@
+2026-07-02 | HousekeepingTabletView.js + RoomBoard.js + migration 118 | Jacuzzi ping-pong: סטטוסים ממתין לג'קוזי/מוכן לפיניש, כפתורי קרא לג'קוזי+סיימתי פיניש, מסגרת cyan+pulse.
 2026-07-01 | ArrivalImportPanel.js | תיקון תצוגת גריד שיבוץ: ביטול סינון ספא, טקסט כהה, מזהה שורה ייחודי, חדר גולמי מהקובץ.
 2026-07-01 | ArrivalImportPanel.js | תיקון גריד ריק במצב שיבוץ סוויטות — ביטול סינון ספא + עמודות שם/הזמנה/חדר.
 2026-07-01 | ArrivalImportPanel.js | Doc 2: מצב «עדכון שיבוץ סוויטות בלבד» — UI toggle + UPDATE ממוקד ל-room בלבד (התאמה order_number/שם).

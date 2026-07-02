@@ -18,11 +18,12 @@
 // AICopilot.js already owns the "ממתין לאישור" → "פנוי" handoff: a manager
 // taps Approve there, which sends the guest's dedicated room-ready WhatsApp
 // template and only then flips the room to פנוי + guest to checked_in.
-// Writing "פנוי" (or even "ממתין לאישור") straight from a single tap here —
-// before the jacuzzi is actually done — would let a half-finished suite
-// reach the manager's approval queue. So tapping 🟢 alone (jacuzzi still
-// dirty) just records "room side done" and shows a "waiting on jacuzzi"
-// hint; the gate fires from whichever of the two actions completes the pair.
+//
+// Session 84 — Jacuzzi ping-pong (3-step handoff for suites with jacuzzi):
+//   1. Room cleaner in בניקיון + jacuzzi dirty → "קרא לג'קוזי" → ממתין לג'קוזי
+//   2. Jacuzzi cleaner taps clean while ממתין לג'קוזי → מוכן לפיניש
+//   3. Room cleaner returns → "סיימתי פיניש — החדר נקי" → room_clean_status
+//      clean + jacuzzi already clean → ממתין לאישור (+ manager push notify)
 //
 // Rooms sitting in a status outside this 3-bucket model (תפוס/תחזוקה) are
 // still listed — FAIL VISIBLE (§0.3) — with their own neutral badge, rather
@@ -33,6 +34,10 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { supabase } from "../supabaseClient";
 import { SUITE_REGISTRY } from "../data/suiteRegistry";
+
+// Intermediate ping-pong statuses (stored as Hebrew in room_status.status)
+const STATUS_WAITING_JACUZZI = "ממתין לג'קוזי";
+const STATUS_READY_FINISH = "מוכן לפיניש";
 
 const BUCKETS = {
   dirty: {
@@ -46,6 +51,14 @@ const BUCKETS = {
   clean: {
     key: "clean", label: "נקי / Clean", emoji: "🟢", status: "ממתין לאישור",
     border: "#639922", bg: "#EAF3DE", text: "#3B6D11",
+  },
+  waiting_jacuzzi: {
+    key: "waiting_jacuzzi", label: "ממתין לג'קוזי / Waiting Jacuzzi", emoji: "💧",
+    border: "#22A8C9", bg: "#E8F7FC", text: "#0E7490",
+  },
+  ready_finish: {
+    key: "ready_finish", label: "מוכן לפיניש / Ready Finish", emoji: "🧹",
+    border: "#7C5CBF", bg: "#F3EEFC", text: "#5B3FA0",
   },
 };
 const BUCKET_ORDER = ["dirty", "cleaning", "clean"];
@@ -62,6 +75,8 @@ const OTHER_STATUS_META = {
 // status="בניקיון" in the DB while room_clean_status is already "clean",
 // pending the jacuzzi. That in-between moment must still show 🟢 highlighted.
 function bucketOf(rawStatus, roomCleanStatus) {
+  if (rawStatus === STATUS_WAITING_JACUZZI) return "waiting_jacuzzi";
+  if (rawStatus === STATUS_READY_FINISH) return "ready_finish";
   if (roomCleanStatus === "clean" || rawStatus === "ממתין לאישור" || rawStatus === "פנוי") return "clean";
   if (rawStatus === "בניקיון") return "cleaning";
   if (rawStatus === "לניקיון") return "dirty";
@@ -181,6 +196,37 @@ export default function HousekeepingTabletView({ isKioskMode = false, onLogout }
 
   // Sprint 5.3 — gated: only advances `status` to "ממתין לאישור" once the
   // jacuzzi is also already clean. Otherwise just records the room-side tap.
+  // Ping-pong step 1 — room cleaner calls jacuzzi staff (leaves floor temporarily).
+  const callJacuzzi = useCallback((roomId) => {
+    applyTransition(
+      roomId,
+      { status: STATUS_WAITING_JACUZZI },
+      { status: STATUS_WAITING_JACUZZI },
+      `${roomId} → 💧 ממתין לג'קוזי / Waiting for jacuzzi`
+    );
+  }, [applyTransition]);
+
+  // Ping-pong step 3 — room cleaner finishes floor after jacuzzi is done.
+  const finishRoomClean = useCallback((roomId, cleaningStartedAt) => {
+    const durationSec = cleaningStartedAt
+      ? Math.floor((Date.now() - new Date(cleaningStartedAt).getTime()) / 1000)
+      : null;
+    applyTransition(
+      roomId,
+      {
+        roomCleanStatus: "clean", status: "ממתין לאישור",
+        cleaningStartedAt: null, lastDuration: durationSec,
+      },
+      {
+        room_clean_status: "clean", status: "ממתין לאישור",
+        cleaning_ended_at: new Date().toISOString(), last_clean_duration_sec: durationSec,
+      },
+      `${roomId} → 🟢 נקי — ממתין לאישור מנהל 🔔 / Pending approval`,
+      { notifyManager: true }
+    );
+  }, [applyTransition]);
+
+  // Legacy / no-jacuzzi path: both sides clean in one tap when jacuzzi already clean.
   const markClean = useCallback((roomId, cleaningStartedAt, jacuzziStatus) => {
     const durationSec = cleaningStartedAt
       ? Math.floor((Date.now() - new Date(cleaningStartedAt).getTime()) / 1000)
@@ -203,10 +249,20 @@ export default function HousekeepingTabletView({ isKioskMode = false, onLogout }
     );
   }, [applyTransition]);
 
-  // Sprint 5.3 — wide jacuzzi toggle. Fires the same gate from the other
-  // direction when this is the second of the pair to become "clean".
-  const toggleJacuzzi = useCallback((roomId, jacuzziStatus, roomCleanStatus) => {
+  // Jacuzzi toggle — ping-pong step 2 when room is waiting for jacuzzi.
+  const toggleJacuzzi = useCallback((roomId, jacuzziStatus, roomCleanStatus, rawStatus) => {
     const next = jacuzziStatus === "clean" ? "dirty" : "clean";
+
+    if (next === "clean" && rawStatus === STATUS_WAITING_JACUZZI) {
+      applyTransition(
+        roomId,
+        { jacuzziStatus: "clean", status: STATUS_READY_FINISH },
+        { jacuzzi_status: "clean", status: STATUS_READY_FINISH },
+        `${roomId} → 🧹 מוכן לפיניש רצפה / Ready for floor finish`
+      );
+      return;
+    }
+
     const bothClean = next === "clean" && roomCleanStatus === "clean";
     applyTransition(
       roomId,
@@ -243,10 +299,16 @@ export default function HousekeepingTabletView({ isKioskMode = false, onLogout }
     total: rooms.length,
     dirty: rooms.filter(r => r.bucket === "dirty").length,
     cleaning: rooms.filter(r => r.bucket === "cleaning").length,
+    waitingJacuzzi: rooms.filter(r => r.bucket === "waiting_jacuzzi").length,
+    readyFinish: rooms.filter(r => r.bucket === "ready_finish").length,
     clean: rooms.filter(r => r.bucket === "clean").length,
   }), [rooms]);
 
-  const filtered = filter === "all" ? rooms : rooms.filter(r => r.bucket === filter);
+  const filtered = filter === "all"
+    ? rooms
+    : filter === "waiting_jacuzzi"
+      ? rooms.filter(r => r.bucket === "waiting_jacuzzi")
+      : rooms.filter(r => r.bucket === filter);
 
   if (loading) return (
     <div style={{ direction: "rtl", display: "flex", alignItems: "center", justifyContent: "center",
@@ -259,6 +321,16 @@ export default function HousekeepingTabletView({ isKioskMode = false, onLogout }
   return (
     <div style={{ direction: "rtl", padding: "20px 24px", fontFamily: "Heebo, sans-serif",
       background: "var(--ivory)", minHeight: "100%" }}>
+
+      <style>{`
+        @keyframes hk-ready-finish-pulse {
+          0%, 100% { box-shadow: 0 0 0 0 #7C5CBF44; border-color: #7C5CBF; }
+          50% { box-shadow: 0 0 0 8px #7C5CBF22; border-color: #9B7FD4; }
+        }
+        .hk-card-ready-finish {
+          animation: hk-ready-finish-pulse 2s ease-in-out infinite;
+        }
+      `}</style>
 
       {/* Toast */}
       {toast && (
@@ -300,6 +372,8 @@ export default function HousekeepingTabletView({ isKioskMode = false, onLogout }
         <StatTile label='סה"כ חדרים / Total' value={counts.total}    color="var(--gold-dark)" />
         <StatTile label="מלוכלך / Dirty"     value={counts.dirty}    color={BUCKETS.dirty.border} />
         <StatTile label="בניקוי / Cleaning"  value={counts.cleaning} color={BUCKETS.cleaning.border} />
+        <StatTile label="ממתין לג'קוזי / Jacuzzi" value={counts.waitingJacuzzi} color={BUCKETS.waiting_jacuzzi.border} />
+        <StatTile label="מוכן לפיניש / Finish" value={counts.readyFinish} color={BUCKETS.ready_finish.border} />
         <StatTile label="נקי / Clean"        value={counts.clean}    color={BUCKETS.clean.border} />
       </div>
 
@@ -309,6 +383,7 @@ export default function HousekeepingTabletView({ isKioskMode = false, onLogout }
           { key: "all",      label: `הצג הכל / Show All (${counts.total})` },
           { key: "dirty",    label: `מלוכלך בלבד / Dirty Only (${counts.dirty})` },
           { key: "cleaning", label: `בניקוי בלבד / Cleaning Only (${counts.cleaning})` },
+          { key: "waiting_jacuzzi", label: `ממתין לג'קוזי (${counts.waitingJacuzzi})` },
         ].map(f => {
           const active = filter === f.key;
           return (
@@ -345,6 +420,8 @@ export default function HousekeepingTabletView({ isKioskMode = false, onLogout }
             onSetDirty={setDirty}
             onStartCleaning={startCleaning}
             onMarkClean={markClean}
+            onCallJacuzzi={callJacuzzi}
+            onFinishRoom={finishRoomClean}
             onToggleJacuzzi={toggleJacuzzi}
           />
         ))}
@@ -372,14 +449,24 @@ function StatTile({ label, value, color }) {
   );
 }
 
-function RoomTabletCard({ room, onSetDirty, onStartCleaning, onMarkClean, onToggleJacuzzi }) {
+function RoomTabletCard({ room, onSetDirty, onStartCleaning, onMarkClean, onCallJacuzzi, onFinishRoom, onToggleJacuzzi }) {
   const [timerSec, setTimerSec] = useState(0);
   const meta = cardMeta(room);
   const jacuzziClean = room.jacuzziStatus === "clean";
+  const isWaitingJacuzzi = room.rawStatus === STATUS_WAITING_JACUZZI;
+  const isReadyFinish = room.rawStatus === STATUS_READY_FINISH;
+  const pingPongCallJacuzzi = room.bucket === "cleaning" && !jacuzziClean;
+  const cardClass = isReadyFinish ? "hk-card-ready-finish" : "";
+  const cardBorderColor = isWaitingJacuzzi
+    ? BUCKETS.waiting_jacuzzi.border
+    : isReadyFinish
+      ? BUCKETS.ready_finish.border
+      : meta.border;
 
-  // Per-card live cleaning timer — only while this room is mid-clean.
+  // Live timer while mid-clean or in ping-pong handoff (same cleaning session).
   useEffect(() => {
-    if (room.bucket !== "cleaning" || !room.cleaningStartedAt) {
+    const inProgress = ["cleaning", "waiting_jacuzzi", "ready_finish"].includes(room.bucket);
+    if (!inProgress || !room.cleaningStartedAt) {
       setTimerSec(0);
       return;
     }
@@ -390,11 +477,57 @@ function RoomTabletCard({ room, onSetDirty, onStartCleaning, onMarkClean, onTogg
     return () => clearInterval(id);
   }, [room.bucket, room.cleaningStartedAt]);
 
+  function cleanButtonLabel() {
+    if (isReadyFinish) return "✨ סיימתי פיניש — החדר נקי / Finish — Room Clean";
+    if (pingPongCallJacuzzi) return "📞 קרא לג'קוזי / Call Jacuzzi";
+    return BUCKETS.clean.label;
+  }
+
+  function cleanButtonStyle(active) {
+    if (isReadyFinish) {
+      return {
+        border: "2.5px solid #7C5CBF",
+        background: "#F3EEFC",
+        color: "#5B3FA0",
+        boxShadow: "0 2px 12px #7C5CBF44",
+      };
+    }
+    if (pingPongCallJacuzzi) {
+      return {
+        border: "2.5px solid #22A8C9",
+        background: "#E8F7FC",
+        color: "#0E7490",
+        boxShadow: "0 2px 12px #22A8C944",
+      };
+    }
+    const b = BUCKETS.clean;
+    return {
+      border: active ? `2.5px solid ${b.border}` : "1.5px solid var(--border)",
+      background: active ? b.bg : "var(--card-bg)",
+      color: active ? b.text : "var(--black)",
+      boxShadow: active ? `0 2px 10px ${b.border}33` : "none",
+    };
+  }
+
+  function handleCleanAction() {
+    if (isReadyFinish) {
+      onFinishRoom(room.id, room.cleaningStartedAt);
+      return;
+    }
+    if (pingPongCallJacuzzi) {
+      onCallJacuzzi(room.id);
+      return;
+    }
+    onMarkClean(room.id, room.cleaningStartedAt, room.jacuzziStatus);
+  }
+
   return (
-    <div style={{
+    <div
+      className={cardClass}
+      style={{
       background: "var(--card-bg)", borderRadius: 16,
-      border: "1px solid var(--border)",
-      borderRight: `5px solid ${meta.border}`,
+      border: isWaitingJacuzzi || isReadyFinish ? `2px solid ${cardBorderColor}` : "1px solid var(--border)",
+      borderRight: `5px solid ${cardBorderColor}`,
       padding: "16px 16px 18px",
       display: "flex", flexDirection: "column", gap: 10,
     }}>
@@ -420,7 +553,7 @@ function RoomTabletCard({ room, onSetDirty, onStartCleaning, onMarkClean, onTogg
       )}
 
       {/* Live cleaning timer */}
-      {room.bucket === "cleaning" && (
+      {["cleaning", "waiting_jacuzzi", "ready_finish"].includes(room.bucket) && room.cleaningStartedAt && (
         <div style={{
           display: "inline-flex", alignItems: "center", gap: 6, alignSelf: "flex-start",
           background: BUCKETS.cleaning.bg, borderRadius: 8, padding: "5px 10px",
@@ -444,7 +577,18 @@ function RoomTabletCard({ room, onSetDirty, onStartCleaning, onMarkClean, onTogg
           🔔 ממתין לאישור מנהל / Pending manager approval
         </div>
       )}
-      {room.roomCleanStatus === "clean" && !jacuzziClean && room.rawStatus !== "ממתין לאישור" && (
+      {isWaitingJacuzzi && (
+        <div style={{ fontSize: 12, color: "#0E7490", fontWeight: 700 }}>
+          💧 ממתין לצוות ג'קוזי — החדר פנוי לניקוי ג'קוזי / Waiting for jacuzzi crew
+        </div>
+      )}
+      {isReadyFinish && (
+        <div style={{ fontSize: 12, color: "#5B3FA0", fontWeight: 700 }}>
+          🧹✨ ג'קוזי נקי — חזור לסיים את הרצפה / Jacuzzi done — return to finish floor
+        </div>
+      )}
+      {room.roomCleanStatus === "clean" && !jacuzziClean && room.rawStatus !== "ממתין לאישור"
+        && !isWaitingJacuzzi && (
         <div style={{ fontSize: 12, color: "#8A6A00", fontWeight: 600 }}>
           ✓ חדר נקי — מחכה לג'קוזי 🛁 / Room clean — waiting on jacuzzi
         </div>
@@ -460,44 +604,55 @@ function RoomTabletCard({ room, onSetDirty, onStartCleaning, onMarkClean, onTogg
         {BUCKET_ORDER.map(key => {
           const b = BUCKETS[key];
           const active = room.bucket === key;
+          const isCleanBtn = key === "clean";
+          const cleanStyles = isCleanBtn ? cleanButtonStyle(active || pingPongCallJacuzzi || isReadyFinish) : null;
           return (
             <button
               key={key}
               onClick={() => {
                 if (key === "dirty")    onSetDirty(room.id);
                 if (key === "cleaning") onStartCleaning(room.id);
-                if (key === "clean")    onMarkClean(room.id, room.cleaningStartedAt, room.jacuzziStatus);
+                if (key === "clean")    handleCleanAction();
               }}
               style={{
                 width: "100%", minHeight: 60, borderRadius: 12,
-                fontSize: 16, fontWeight: 800, cursor: "pointer",
+                fontSize: isCleanBtn && (pingPongCallJacuzzi || isReadyFinish) ? 15 : 16,
+                fontWeight: 800, cursor: "pointer",
                 fontFamily: "Heebo, sans-serif", lineHeight: 1.3,
                 display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
-                border: active ? `2.5px solid ${b.border}` : "1.5px solid var(--border)",
-                background: active ? b.bg : "var(--card-bg)",
-                color: active ? b.text : "var(--black)",
-                boxShadow: active ? `0 2px 10px ${b.border}33` : "none",
+                ...(isCleanBtn ? cleanStyles : {
+                  border: active ? `2.5px solid ${b.border}` : "1.5px solid var(--border)",
+                  background: active ? b.bg : "var(--card-bg)",
+                  color: active ? b.text : "var(--black)",
+                  boxShadow: active ? `0 2px 10px ${b.border}33` : "none",
+                }),
                 transition: "background 0.12s, border-color 0.12s",
               }}
             >
-              <span style={{ fontSize: 20 }}>{b.emoji}</span>
-              {b.label}
+              <span style={{ fontSize: 20 }}>
+                {isCleanBtn && pingPongCallJacuzzi ? "📞" : isCleanBtn && isReadyFinish ? "✨" : b.emoji}
+              </span>
+              {isCleanBtn ? cleanButtonLabel() : b.label}
             </button>
           );
         })}
 
-        {/* Sprint 5.2 — dedicated jacuzzi toggle, independent mini-pipeline */}
+        {/* Jacuzzi toggle — highlighted for jacuzzi crew when room is waiting */}
         <button
-          onClick={() => onToggleJacuzzi(room.id, room.jacuzziStatus, room.roomCleanStatus)}
+          onClick={() => onToggleJacuzzi(room.id, room.jacuzziStatus, room.roomCleanStatus, room.rawStatus)}
           style={{
             width: "100%", minHeight: 60, borderRadius: 12, marginTop: 2,
             fontSize: 15, fontWeight: 800, cursor: "pointer",
             fontFamily: "Heebo, sans-serif", lineHeight: 1.3,
             display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
-            border: jacuzziClean ? "2.5px solid #0F9C8E" : "2.5px solid #E24B4A",
-            background: jacuzziClean ? "#E3FAF5" : "#FCEBEB",
-            color: jacuzziClean ? "#0F766E" : "#A32D2D",
-            boxShadow: jacuzziClean ? "0 2px 10px #0F9C8E33" : "0 2px 10px #E24B4A33",
+            border: jacuzziClean
+              ? "2.5px solid #0F9C8E"
+              : isWaitingJacuzzi
+                ? "3px solid #22A8C9"
+                : "2.5px solid #E24B4A",
+            background: jacuzziClean ? "#E3FAF5" : isWaitingJacuzzi ? "#D6F3FB" : "#FCEBEB",
+            color: jacuzziClean ? "#0F766E" : isWaitingJacuzzi ? "#0E7490" : "#A32D2D",
+            boxShadow: isWaitingJacuzzi && !jacuzziClean ? "0 0 0 4px #22A8C933" : jacuzziClean ? "0 2px 10px #0F9C8E33" : "0 2px 10px #E24B4A33",
             transition: "background 0.12s, border-color 0.12s",
           }}
         >

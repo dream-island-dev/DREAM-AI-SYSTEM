@@ -25,6 +25,8 @@ const STATUS_META = {
   פנוי:           { border: "#639922", bg: "#EAF3DE", text: "#3B6D11" },
   לניקיון:        { border: "#BA7517", bg: "#FAEEDA", text: "#854F0B" },
   בניקיון:        { border: "#378ADD", bg: "#E6F1FB", text: "#185FA5" },
+  "ממתין לג'קוזי": { border: "#22A8C9", bg: "#E8F7FC", text: "#0E7490" },
+  "מוכן לפיניש":   { border: "#7C5CBF", bg: "#F3EEFC", text: "#5B3FA0" },
   "ממתין לאישור": { border: "#E8AE0A", bg: "#FDF6DC", text: "#8A6A00" },
   תחזוקה:         { border: "#888780", bg: "#F1EFE8", text: "#5F5E5A" },
 };
@@ -34,6 +36,8 @@ const STATUS_ACTIONS = {
   תפוס:           [{ labelKey: "toClean",    next: "לניקיון", primary: false, fn: "update"        }],
   לניקיון:        [{ labelKey: "startClean", next: "בניקיון", primary: true,  fn: "start_clean"   }],
   בניקיון:        [{ labelKey: "markReady",  next: "פנוי",    primary: true,  fn: "confirm_clean" }],
+  "ממתין לג'קוזי": [],
+  "מוכן לפיניש":   [],
   "ממתין לאישור": [],  // managed by AICopilot — no cleaner actions
   פנוי: [
     { labelKey: "checkin", next: "תפוס",   primary: true,  fn: "update" },
@@ -54,7 +58,7 @@ const TR = {
     noRooms:         "אין חדרים בסטטוס זה",
     occupiedOf:      (n, total) => `${n}/${total} תפוסים`,
     availLabel:      (n) => `${n} פנויים`,
-    statusLabels:    { תפוס: "תפוס", פנוי: "פנוי", לניקיון: "לניקיון", בניקיון: "בניקיון", "ממתין לאישור": "ממתין לאישור", תחזוקה: "תחזוקה" },
+    statusLabels:    { תפוס: "תפוס", פנוי: "פנוי", לניקיון: "לניקיון", בניקיון: "בניקיון", "ממתין לג'קוזי": "ממתין לג'קוזי", "מוכן לפיניש": "מוכן לפיניש", "ממתין לאישור": "ממתין לאישור", תחזוקה: "תחזוקה" },
     actions: {
       toClean:    "→ לניקיון",
       startClean: "▶ התחל ניקיון",
@@ -82,7 +86,7 @@ const TR = {
     noRooms:         "No rooms with this status",
     occupiedOf:      (n, total) => `${n}/${total} occupied`,
     availLabel:      (n) => `${n} available`,
-    statusLabels:    { תפוס: "Occupied", פנוי: "Available", לניקיון: "For Cleaning", בניקיון: "Cleaning", "ממתין לאישור": "Pending Approval", תחזוקה: "Maintenance" },
+    statusLabels:    { תפוס: "Occupied", פנוי: "Available", לניקיון: "For Cleaning", בניקיון: "Cleaning", "ממתין לג'קוזי": "Waiting Jacuzzi", "מוכן לפיניש": "Ready Finish", "ממתין לאישור": "Pending Approval", תחזוקה: "Maintenance" },
     actions: {
       toClean:    "→ For Cleaning",
       startClean: "▶ Start Cleaning",
@@ -115,7 +119,7 @@ function fmtDate(iso) {
   return `${d.getDate()}/${d.getMonth() + 1}`;
 }
 
-const STATUSES = ["תפוס", "פנוי", "לניקיון", "בניקיון", "ממתין לאישור", "תחזוקה"];
+const STATUSES = ["תפוס", "פנוי", "לניקיון", "בניקיון", "ממתין לג'קוזי", "מוכן לפיניש", "ממתין לאישור", "תחזוקה"];
 
 // ── Main component ────────────────────────────────────────────────────────
 export default function RoomBoard({ isKioskMode = false, onLogout }) {
