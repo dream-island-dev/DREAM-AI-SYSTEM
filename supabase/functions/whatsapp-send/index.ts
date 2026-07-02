@@ -230,6 +230,14 @@ function resolveDayTimings(arrivalDateStr: string): { entryTime: string; checkIn
     : { entryTime: "12:00", checkInTime: "15:00" };
 }
 
+// Session-script path only — bot_scripts copy is weekday-default (15:00); no DB edit needed.
+function applySaturdayCheckInTimeOverride(messageText: string, arrivalDateStr: string): string {
+  if (!messageText || !arrivalDateStr) return messageText;
+  const d = new Date(`${arrivalDateStr}T00:00:00Z`);
+  if (Number.isNaN(d.getTime()) || d.getUTCDay() !== 6) return messageText;
+  return messageText.replace(/15:00/g, "18:00");
+}
+
 // Variables passed as {{1}}, {{2}}, … to each pipeline template.
 // All values pass through sanitizeTemplateVars() at send time — these lambdas
 // produce raw values; sanitization is applied in BRANCH D before the API call.
@@ -2631,9 +2639,12 @@ serve(async (req: Request) => {
           const portalUrl = guest.portal_token
             ? `${PORTAL_BASE_URL}/portal/${guest.portal_token as string}`
             : "";
-          const body = rawText
-            .replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, guestName)
-            .replace(/\{\{\s*portal_url\s*\}\}/gi, portalUrl);
+          const body = applySaturdayCheckInTimeOverride(
+            rawText
+              .replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, guestName)
+              .replace(/\{\{\s*portal_url\s*\}\}/gi, portalUrl),
+            String(guest.arrival_date ?? ""),
+          );
           sessionBody = body;
           sessionButtons = (stageRow.interactive_buttons ?? []) as typeof sessionButtons;
           sessionImageUrl = resolveStageSessionImageUrl(stageRow, requestImageUrl) ?? null;
