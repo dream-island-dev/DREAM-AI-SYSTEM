@@ -6,6 +6,7 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import AddGuestModal from "./AddGuestModal";
+import GuestContextDrawer from "./GuestContextDrawer";
 import AILearningButton from "./AILearningButton";
 import HoldToConfirmButton from "./HoldToConfirmButton";
 import QuietHoursGate from "./QuietHoursGate";
@@ -500,6 +501,7 @@ function contactItemPropsEqual(prev, next) {
   if (prev.onClick !== next.onClick) return false;
   if (prev.onDismiss !== next.onDismiss) return false;
   if (prev.onArchive !== next.onArchive) return false;
+  if (prev.onProfileClick !== next.onProfileClick) return false;
   const a = prev.contact, b = next.contact;
   if (a === b) return true;
   if (a.phone !== b.phone) return false;
@@ -526,7 +528,7 @@ function contactItemPropsEqual(prev, next) {
   return aUnread === bUnread;
 }
 
-const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobile, t, dir, onClick, onDismiss, onArchive, scriptsByKey, templatesByWaName }) {
+const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobile, t, dir, onClick, onProfileClick, onDismiss, onArchive, scriptsByKey, templatesByWaName }) {
   const last  = contact.messages[contact.messages.length - 1];
   const unread = contact.messages.filter(
     (m) => m.direction === "inbound" && !m._read
@@ -621,36 +623,50 @@ const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobil
       >
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            {/* Avatar + presence dot */}
-            <div style={{ position: "relative", flexShrink: 0 }}>
-              <div style={{
-                width: 40, height: 40, borderRadius: "50%",
-                background: contact.humanRequested
-                  ? "var(--status-danger)"
-                  : inResort
-                    ? IN_RESORT_ROSTER.avatar
-                    : "var(--whatsapp-green)",
-                color: "white",
-                display: "flex", alignItems: "center", justifyContent: "center",
-                fontWeight: 700, fontSize: 16,
-              }}>
-                {displayName(contact)?.[0]?.toUpperCase() ?? "?"}
+            {/* Avatar + name — click opens GuestContextDrawer (row click still opens thread) */}
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={(e) => { e.stopPropagation(); onProfileClick?.(contact); }}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); onProfileClick?.(contact); } }}
+              title="פתח פרופיל אורח 360°"
+              style={{
+                display: "flex", alignItems: "center", gap: 8,
+                cursor: "pointer", flexShrink: 0, minWidth: 0,
+              }}
+            >
+              <div style={{ position: "relative", flexShrink: 0 }}>
+                <div style={{
+                  width: 40, height: 40, borderRadius: "50%",
+                  background: contact.humanRequested
+                    ? "var(--status-danger)"
+                    : inResort
+                      ? IN_RESORT_ROSTER.avatar
+                      : "var(--whatsapp-green)",
+                  color: "white",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontWeight: 700, fontSize: 16,
+                }}>
+                  {displayName(contact)?.[0]?.toUpperCase() ?? "?"}
+                </div>
+                <span style={{
+                  position: "absolute", bottom: -1, [rtl ? "left" : "right"]: -1,
+                  width: 10, height: 10, borderRadius: "50%",
+                  border: "2px solid white",
+                  background: contact.humanRequested ? "var(--status-danger)" : (active ? "var(--status-success)" : "var(--text-muted)"),
+                  animation: contact.humanRequested ? "wa-pulse 1.4s ease-in-out infinite" : "none",
+                }} />
               </div>
-              <span style={{
-                position: "absolute", bottom: -1, [rtl ? "left" : "right"]: -1,
-                width: 10, height: 10, borderRadius: "50%",
-                border: "2px solid white",
-                background: contact.humanRequested ? "var(--status-danger)" : (active ? "var(--status-success)" : "var(--text-muted)"),
-                animation: contact.humanRequested ? "wa-pulse 1.4s ease-in-out infinite" : "none",
-              }} />
-            </div>
-            <div>
-              <div style={{
-                fontWeight: 600, fontSize: 14,
-                color: inResort && !contact.humanRequested ? IN_RESORT_ROSTER.name : "var(--text-main)",
-              }}>
-                {displayName(contact)}
-              </div>
+              <div style={{ minWidth: 0 }}>
+                <div
+                  className="u-guest-name-link"
+                  style={{
+                    fontWeight: 600, fontSize: 14,
+                    color: inResort && !contact.humanRequested ? IN_RESORT_ROSTER.name : "var(--text-main)",
+                  }}
+                >
+                  {displayName(contact)}
+                </div>
               <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2, direction: "ltr", textAlign: rtl ? "right" : "left" }}>
                 {contact.guestName || contact.pushName ? contact.phone : ""}
               </div>
@@ -676,6 +692,7 @@ const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobil
                   }}>{t.claimedBadge(contact.claimedByName ?? "—")}</span>
                 )}
               </div>
+            </div>
             </div>
           </div>
           {/* Right side: WA button + time + unread */}
@@ -2022,6 +2039,7 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
   // ── WordPress-style guest editor drawer + claim/assignment state ─────────
   const [editGuestTarget, setEditGuestTarget] = useState(null); // full guests row, or {phone} skeleton for "create new"
   const [editGuestLoading, setEditGuestLoading] = useState(false);
+  const [selectedGuestProfile, setSelectedGuestProfile] = useState(null); // contact slice → GuestContextDrawer
   const [claimBusy, setClaimBusy] = useState(false);
   const [dismissAllBusy, setDismissAllBusy] = useState(false);
   // ── Smart Inbox AI Copilot state (Sprint 1: on-demand AI suggestions;
@@ -2466,6 +2484,12 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
     });
     if (touched) setContacts(applyGrouping(allMsgsRef.current));
   }, [applyGrouping]);
+
+  // ── Guest 360° context drawer — roster name/avatar click ─────────────────
+  const openGuestContextDrawer = useCallback((contact) => {
+    if (!contact) return;
+    setSelectedGuestProfile(contact);
+  }, []);
 
   // ── WordPress-style guest editor — open ───────────────────────────────────
   // Fetches the FULL guests row by phone (not just the handful of fields the
@@ -3067,6 +3091,7 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
               scriptsByKey={scriptsByKey}
               templatesByWaName={templatesByWaName}
               onClick={openContact}
+              onProfileClick={openGuestContextDrawer}
               onDismiss={dismissHumanRequest}
               onArchive={archiveContact}
             />
@@ -3558,6 +3583,7 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
           animation: wa-shimmer 1.4s ease-in-out infinite;
           border-radius: 6px;
         }
+        .u-guest-name-link:hover { text-decoration: underline; }
       `}</style>
 
       {/* Toolbar */}
@@ -3704,6 +3730,18 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
             setRouteToast(msg);
             setTimeout(() => setRouteToast(null), 3500);
           }}
+        />
+      )}
+
+      {selectedGuestProfile && (
+        <GuestContextDrawer
+          contact={selectedGuestProfile}
+          user={user}
+          claimedByName={selectedGuestProfile.claimedByName ?? null}
+          claimBusy={claimBusy}
+          onClose={() => setSelectedGuestProfile(null)}
+          onGuestUpdated={applyGuestRowUpdate}
+          onToggleClaim={setClaim}
         />
       )}
     </div>
