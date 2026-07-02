@@ -29,7 +29,7 @@
 //   pre_arrival_2d   → guests.msg_pre_arrival_2d_sent  = true
 //   night_before     → guests.msg_pre_arrival_sent     = true
 //   morning_welcome  → guests.msg_morning_welcome_sent = true
-//   room_ready       → guests.msg_room_ready_sent      = true
+//   room_ready       → guests.room_ready_notified + msg_room_ready_sent = true
 //   mid_stay         → guests.msg_mid_stay_sent        = true
 //   checkout_fb      → guests.msg_checkout_fb_sent     = true
 //   broadcast        → no pipeline flag (ad-hoc sends)
@@ -2174,6 +2174,16 @@ serve(async (req: Request) => {
     // This block always early-returns — the generic hybrid fallback below is
     // never reached for trigger === "room_ready".
     if (trigger === "room_ready") {
+      if (!force && (guest as Record<string, unknown>).room_ready_notified === true) {
+        console.log(
+          "[Idempotency Safeguard]: Guest already notified for this stay. Skipping duplicate WhatsApp message.",
+        );
+        return new Response(
+          JSON.stringify({ ok: true, skipped: true, reason: "room_ready_notified" }),
+          { headers: { ...CORS, "Content-Type": "application/json" } },
+        );
+      }
+
       const arrivalStr = String(guest.arrival_date ?? "");
       if (!isArrivalTodayIsrael(arrivalStr)) {
         const todayIL = israelTodayYmd();
@@ -2309,9 +2319,10 @@ serve(async (req: Request) => {
         } catch (e) {
           console.warn("[whatsapp-send] room_ready conv log failed (non-blocking):", (e as Error).message);
         }
-        if (flagColumn) {
-          await supabase.from("guests").update({ [flagColumn]: true }).eq("id", guestId);
-        }
+        await supabase.from("guests").update({
+          room_ready_notified: true,
+          ...(flagColumn ? { [flagColumn]: true } : {}),
+        }).eq("id", guestId);
       }
 
       return new Response(

@@ -81,7 +81,7 @@ export default function GuestsPage({
           anyChanged = true;
         }
       } else if (shouldAutoCheckoutGuest(g, now)) {
-        const patch = { status: "checked_out" };
+        const patch = { status: "checked_out", room_ready_notified: false, msg_room_ready_sent: false };
         const { error } = await supabase.from("guests").update(patch).eq("id", g.id);
         if (!error) {
           next = next.map((x) => (x.id === g.id ? { ...x, ...patch } : x));

@@ -31,6 +31,8 @@
 // buttons stay live on every card regardless (no disabled state — the spec
 // calls for zero-click, not "disable, don't hide").
 
+// Session 84c — Live staff tracking: assignment picker on start, names on card until final clean.
+
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { supabase } from "../supabaseClient";
 import { SUITE_REGISTRY } from "../data/suiteRegistry";
@@ -62,6 +64,9 @@ const BUCKETS = {
   },
 };
 const BUCKET_ORDER = ["dirty", "cleaning", "clean"];
+
+const STAFF_CLEARED_OPTIMISTIC = { currentCleanerName: null, currentJacuzziName: null };
+const STAFF_CLEARED_DB = { current_cleaner_name: null, current_jacuzzi_name: null };
 
 // Known statuses that exist in room_status but fall outside the 3-button
 // model — shown with their own neutral badge instead of "⚠ unknown".
@@ -97,11 +102,70 @@ function fmtDuration(sec) {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
+function staffForRole(staffList, kind) {
+  return staffList.filter(s => {
+    if (!s.is_active) return false;
+    if (kind === "room") return s.role === "room_cleaner" || s.role === "both";
+    return s.role === "jacuzzi" || s.role === "both";
+  });
+}
+
+function StaffAssignModal({ title, staffOptions, onPick, onCancel }) {
+  return (
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 10000, background: "rgba(0,0,0,0.45)",
+      display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
+    }}>
+      <div style={{
+        direction: "rtl", background: "var(--card-bg)", borderRadius: 16, padding: "22px 20px",
+        maxWidth: 360, width: "100%", boxShadow: "0 12px 40px rgba(0,0,0,0.25)",
+        fontFamily: "Heebo, sans-serif",
+      }}>
+        <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 14, color: "var(--black)" }}>{title}</div>
+        {staffOptions.length === 0 ? (
+          <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 16, lineHeight: 1.6 }}>
+            ⚠ אין עובדים פעילים ברשימה. מנהל מערכת → צוות ניקיון.
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
+            {staffOptions.map(s => (
+              <button
+                key={s.id}
+                type="button"
+                onClick={() => onPick(s.name)}
+                style={{
+                  width: "100%", minHeight: 52, borderRadius: 10, border: "1.5px solid var(--border)",
+                  background: "var(--ivory)", fontSize: 16, fontWeight: 700, cursor: "pointer",
+                  fontFamily: "inherit",
+                }}
+              >
+                {s.name}
+              </button>
+            ))}
+          </div>
+        )}
+        <button
+          type="button"
+          onClick={onCancel}
+          style={{
+            width: "100%", padding: "10px", borderRadius: 10, border: "1px solid var(--border)",
+            background: "transparent", cursor: "pointer", fontFamily: "inherit", fontWeight: 600,
+          }}
+        >
+          ביטול / Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function HousekeepingTabletView({ isKioskMode = false, onLogout }) {
   const [statusMap, setStatusMap] = useState({});
+  const [staffList, setStaffList]   = useState([]);
   const [loading,   setLoading]   = useState(true);
   const [filter,    setFilter]    = useState("all"); // all | dirty | cleaning
   const [toast,     setToast]     = useState(null);
+  const [assignPick, setAssignPick] = useState(null); // { roomId, kind: 'room'|'jacuzzi' }
 
   // ── Fetch ───────────────────────────────────────────────────────────────
   // No `guests` read here (session "RESTRICTED CLEANER ROLE" — migration 087
@@ -111,9 +175,16 @@ export default function HousekeepingTabletView({ isKioskMode = false, onLogout }
   // zero extra query, zero guest name/PII exposed.
   const fetchAll = useCallback(async () => {
     if (!supabase) return;
-    const { data: statuses } = await supabase
-      .from("room_status")
-      .select("room_id, status, cleaning_started_at, last_clean_duration_sec, jacuzzi_status, room_clean_status");
+    const [{ data: statuses }, { data: staff }] = await Promise.all([
+      supabase
+        .from("room_status")
+        .select("room_id, status, cleaning_started_at, last_clean_duration_sec, jacuzzi_status, room_clean_status, current_cleaner_name, current_jacuzzi_name"),
+      supabase
+        .from("staff_members")
+        .select("id, name, role, is_active")
+        .eq("is_active", true)
+        .order("name"),
+    ]);
     if (statuses) {
       const map = {};
       statuses.forEach(r => {
@@ -123,10 +194,13 @@ export default function HousekeepingTabletView({ isKioskMode = false, onLogout }
           lastDuration: r.last_clean_duration_sec,
           jacuzziStatus: r.jacuzzi_status ?? "dirty",
           roomCleanStatus: r.room_clean_status ?? "dirty",
+          currentCleanerName: r.current_cleaner_name ?? null,
+          currentJacuzziName: r.current_jacuzzi_name ?? null,
         };
       });
       setStatusMap(map);
     }
+    if (staff) setStaffList(staff);
     setLoading(false);
   }, []);
 
@@ -178,21 +252,41 @@ export default function HousekeepingTabletView({ isKioskMode = false, onLogout }
   const setDirty = useCallback((roomId) => {
     applyTransition(
       roomId,
-      { status: "לניקיון", roomCleanStatus: "dirty", jacuzziStatus: "dirty", cleaningStartedAt: null, lastDuration: null },
-      { status: "לניקיון", room_clean_status: "dirty", jacuzzi_status: "dirty" },
+      {
+        status: "לניקיון", roomCleanStatus: "dirty", jacuzziStatus: "dirty",
+        cleaningStartedAt: null, lastDuration: null, ...STAFF_CLEARED_OPTIMISTIC,
+      },
+      { status: "לניקיון", room_clean_status: "dirty", jacuzzi_status: "dirty", ...STAFF_CLEARED_DB },
       `${roomId} → 🔴 מלוכלך / Dirty`
     );
   }, [applyTransition]);
 
-  const startCleaning = useCallback((roomId) => {
+  const startCleaningWithStaff = useCallback((roomId, staffName) => {
     const startedAt = new Date().toISOString();
     applyTransition(
       roomId,
-      { status: "בניקיון", cleaningStartedAt: startedAt },
-      { status: "בניקיון", cleaning_started_at: startedAt },
-      `${roomId} → 🟡 בניקוי / Cleaning`
+      { status: "בניקיון", cleaningStartedAt: startedAt, currentCleanerName: staffName },
+      { status: "בניקיון", cleaning_started_at: startedAt, current_cleaner_name: staffName },
+      `${roomId} → 🟡 ${staffName} מנקה / Cleaning`
     );
   }, [applyTransition]);
+
+  const requestStartCleaning = useCallback((roomId) => {
+    setAssignPick({ roomId, kind: "room" });
+  }, []);
+
+  const startJacuzziWithStaff = useCallback((roomId, staffName) => {
+    applyTransition(
+      roomId,
+      { currentJacuzziName: staffName },
+      { current_jacuzzi_name: staffName },
+      `${roomId} → 🛁 ${staffName} מנקה ג'קוזי / Jacuzzi started`
+    );
+  }, [applyTransition]);
+
+  const requestStartJacuzzi = useCallback((roomId) => {
+    setAssignPick({ roomId, kind: "jacuzzi" });
+  }, []);
 
   // Sprint 5.3 — gated: only advances `status` to "ממתין לאישור" once the
   // jacuzzi is also already clean. Otherwise just records the room-side tap.
@@ -215,11 +309,12 @@ export default function HousekeepingTabletView({ isKioskMode = false, onLogout }
       roomId,
       {
         roomCleanStatus: "clean", status: "ממתין לאישור",
-        cleaningStartedAt: null, lastDuration: durationSec,
+        cleaningStartedAt: null, lastDuration: durationSec, ...STAFF_CLEARED_OPTIMISTIC,
       },
       {
         room_clean_status: "clean", status: "ממתין לאישור",
         cleaning_ended_at: new Date().toISOString(), last_clean_duration_sec: durationSec,
+        ...STAFF_CLEARED_DB,
       },
       `${roomId} → 🟢 נקי — ממתין לאישור מנהל 🔔 / Pending approval`,
       { notifyManager: true }
@@ -236,11 +331,11 @@ export default function HousekeepingTabletView({ isKioskMode = false, onLogout }
       roomId,
       {
         roomCleanStatus: "clean", cleaningStartedAt: null, lastDuration: durationSec,
-        ...(bothClean ? { status: "ממתין לאישור" } : {}),
+        ...(bothClean ? { status: "ממתין לאישור", ...STAFF_CLEARED_OPTIMISTIC } : {}),
       },
       {
         room_clean_status: "clean", cleaning_ended_at: new Date().toISOString(), last_clean_duration_sec: durationSec,
-        ...(bothClean ? { status: "ממתין לאישור" } : {}),
+        ...(bothClean ? { status: "ממתין לאישור", ...STAFF_CLEARED_DB } : {}),
       },
       bothClean
         ? `${roomId} → 🟢 נקי — ממתין לאישור מנהל 🔔 / Pending approval`
@@ -253,6 +348,16 @@ export default function HousekeepingTabletView({ isKioskMode = false, onLogout }
   const toggleJacuzzi = useCallback((roomId, jacuzziStatus, roomCleanStatus, rawStatus) => {
     const next = jacuzziStatus === "clean" ? "dirty" : "clean";
 
+    if (next === "dirty") {
+      applyTransition(
+        roomId,
+        { jacuzziStatus: "dirty", currentJacuzziName: null },
+        { jacuzzi_status: "dirty", current_jacuzzi_name: null },
+        `${roomId} → 🛁 ג'קוזי מלוכלך / Jacuzzi dirty`
+      );
+      return;
+    }
+
     if (next === "clean" && rawStatus === STATUS_WAITING_JACUZZI) {
       applyTransition(
         roomId,
@@ -263,11 +368,17 @@ export default function HousekeepingTabletView({ isKioskMode = false, onLogout }
       return;
     }
 
-    const bothClean = next === "clean" && roomCleanStatus === "clean";
+    const bothClean = roomCleanStatus === "clean";
     applyTransition(
       roomId,
-      { jacuzziStatus: next, ...(bothClean ? { status: "ממתין לאישור" } : {}) },
-      { jacuzzi_status: next, ...(bothClean ? { status: "ממתין לאישור" } : {}) },
+      {
+        jacuzziStatus: "clean",
+        ...(bothClean ? { status: "ממתין לאישור", ...STAFF_CLEARED_OPTIMISTIC } : {}),
+      },
+      {
+        jacuzzi_status: "clean",
+        ...(bothClean ? { status: "ממתין לאישור", ...STAFF_CLEARED_DB } : {}),
+      },
       bothClean
         ? `${roomId} → 🛁✓ ממתין לאישור מנהל 🔔 / Pending approval`
         : next === "clean"
@@ -291,6 +402,8 @@ export default function HousekeepingTabletView({ isKioskMode = false, onLogout }
       bucket: bucketOf(rawStatus, roomCleanStatus),
       cleaningStartedAt: entry.cleaningStartedAt ?? null,
       lastDuration: entry.lastDuration ?? null,
+      currentCleanerName: entry.currentCleanerName ?? null,
+      currentJacuzziName: entry.currentJacuzziName ?? null,
       occupied: rawStatus === "תפוס",
     };
   }), [statusMap]);
@@ -331,6 +444,21 @@ export default function HousekeepingTabletView({ isKioskMode = false, onLogout }
           animation: hk-ready-finish-pulse 2s ease-in-out infinite;
         }
       `}</style>
+
+      {assignPick && (
+        <StaffAssignModal
+          title={assignPick.kind === "room"
+            ? "התחל ניקיון — בחר/י שם / Start cleaning — pick name"
+            : "התחל ג'קוזי — בחר/י שם / Start jacuzzi — pick name"}
+          staffOptions={staffForRole(staffList, assignPick.kind)}
+          onPick={(name) => {
+            if (assignPick.kind === "room") startCleaningWithStaff(assignPick.roomId, name);
+            else startJacuzziWithStaff(assignPick.roomId, name);
+            setAssignPick(null);
+          }}
+          onCancel={() => setAssignPick(null)}
+        />
+      )}
 
       {/* Toast */}
       {toast && (
@@ -418,10 +546,11 @@ export default function HousekeepingTabletView({ isKioskMode = false, onLogout }
             key={room.id}
             room={room}
             onSetDirty={setDirty}
-            onStartCleaning={startCleaning}
+            onRequestStartCleaning={requestStartCleaning}
             onMarkClean={markClean}
             onCallJacuzzi={callJacuzzi}
             onFinishRoom={finishRoomClean}
+            onRequestStartJacuzzi={requestStartJacuzzi}
             onToggleJacuzzi={toggleJacuzzi}
           />
         ))}
@@ -449,7 +578,10 @@ function StatTile({ label, value, color }) {
   );
 }
 
-function RoomTabletCard({ room, onSetDirty, onStartCleaning, onMarkClean, onCallJacuzzi, onFinishRoom, onToggleJacuzzi }) {
+function RoomTabletCard({
+  room, onSetDirty, onRequestStartCleaning, onMarkClean, onCallJacuzzi,
+  onFinishRoom, onRequestStartJacuzzi, onToggleJacuzzi,
+}) {
   const [timerSec, setTimerSec] = useState(0);
   const meta = cardMeta(room);
   const jacuzziClean = room.jacuzziStatus === "clean";
@@ -552,6 +684,23 @@ function RoomTabletCard({ room, onSetDirty, onStartCleaning, onMarkClean, onCall
         </div>
       )}
 
+      {room.currentCleanerName && (
+        <div style={{
+          fontSize: 14, fontWeight: 800, color: BUCKETS.cleaning.text,
+          background: BUCKETS.cleaning.bg, borderRadius: 8, padding: "8px 12px",
+        }}>
+          {room.currentCleanerName} מנקה עכשיו סוויטה
+        </div>
+      )}
+      {room.currentJacuzziName && !jacuzziClean && (
+        <div style={{
+          fontSize: 14, fontWeight: 800, color: "#0E7490",
+          background: "#E8F7FC", borderRadius: 8, padding: "8px 12px",
+        }}>
+          {room.currentJacuzziName} מנקה עכשיו ג'קוזי
+        </div>
+      )}
+
       {/* Live cleaning timer */}
       {["cleaning", "waiting_jacuzzi", "ready_finish"].includes(room.bucket) && room.cleaningStartedAt && (
         <div style={{
@@ -605,14 +754,21 @@ function RoomTabletCard({ room, onSetDirty, onStartCleaning, onMarkClean, onCall
           const b = BUCKETS[key];
           const active = room.bucket === key;
           const isCleanBtn = key === "clean";
+          const isCleaningBtn = key === "cleaning";
+          const cleaningLabel = active
+            ? b.label
+            : "התחל ניקיון / Start Cleaning";
           const cleanStyles = isCleanBtn ? cleanButtonStyle(active || pingPongCallJacuzzi || isReadyFinish) : null;
           return (
             <button
               key={key}
               onClick={() => {
-                if (key === "dirty")    onSetDirty(room.id);
-                if (key === "cleaning") onStartCleaning(room.id);
-                if (key === "clean")    handleCleanAction();
+                if (key === "dirty") onSetDirty(room.id);
+                if (key === "cleaning") {
+                  if (room.bucket === "cleaning" || room.bucket === "waiting_jacuzzi" || room.bucket === "ready_finish") return;
+                  onRequestStartCleaning(room.id);
+                }
+                if (key === "clean") handleCleanAction();
               }}
               style={{
                 width: "100%", minHeight: 60, borderRadius: 12,
@@ -632,14 +788,20 @@ function RoomTabletCard({ room, onSetDirty, onStartCleaning, onMarkClean, onCall
               <span style={{ fontSize: 20 }}>
                 {isCleanBtn && pingPongCallJacuzzi ? "📞" : isCleanBtn && isReadyFinish ? "✨" : b.emoji}
               </span>
-              {isCleanBtn ? cleanButtonLabel() : b.label}
+              {isCleanBtn ? cleanButtonLabel() : isCleaningBtn ? cleaningLabel : b.label}
             </button>
           );
         })}
 
-        {/* Jacuzzi toggle — highlighted for jacuzzi crew when room is waiting */}
+        {/* Jacuzzi — start (name picker) or complete toggle */}
         <button
-          onClick={() => onToggleJacuzzi(room.id, room.jacuzziStatus, room.roomCleanStatus, room.rawStatus)}
+          onClick={() => {
+            if (!jacuzziClean && !room.currentJacuzziName) {
+              onRequestStartJacuzzi(room.id);
+              return;
+            }
+            onToggleJacuzzi(room.id, room.jacuzziStatus, room.roomCleanStatus, room.rawStatus);
+          }}
           style={{
             width: "100%", minHeight: 60, borderRadius: 12, marginTop: 2,
             fontSize: 15, fontWeight: 800, cursor: "pointer",
@@ -658,8 +820,10 @@ function RoomTabletCard({ room, onSetDirty, onStartCleaning, onMarkClean, onCall
         >
           {jacuzziClean ? (
             <>✨ ג'קוזי נקי ✅ / Jacuzzi Clean ✅</>
+          ) : room.currentJacuzziName ? (
+            <>✨ סיום ג'קוזי / Finish Jacuzzi</>
           ) : (
-            <>🛁 ג'קוזי מלוכלך / Jacuzzi Dirty</>
+            <>🛁 התחל ג'קוזי / Start Jacuzzi</>
           )}
         </button>
       </div>

@@ -76,7 +76,7 @@ Deno.serve(async (req: Request) => {
     let autoCheckoutCount = 0;
     const { data: overdueCheckout, error: overdueErr } = await supabase
       .from("guests")
-      .update({ status: "checked_out" })
+      .update({ status: "checked_out", room_ready_notified: false, msg_room_ready_sent: false })
       .lt("departure_date", todayIsrael)
       .in("status", checkoutEligible)
       .select("id");
@@ -89,7 +89,7 @@ Deno.serve(async (req: Request) => {
     if (isPastAutoCheckoutGateway(now)) {
       const { data: todayCheckout, error: todayCheckoutErr } = await supabase
         .from("guests")
-        .update({ status: "checked_out" })
+        .update({ status: "checked_out", room_ready_notified: false, msg_room_ready_sent: false })
         .eq("departure_date", todayIsrael)
         .in("status", checkoutEligible)
         .select("id");

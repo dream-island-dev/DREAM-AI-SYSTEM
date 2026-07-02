@@ -1,7 +1,7 @@
 // src/components/AdminPanel.js
 // Admin-only management interface. Owner: tzalamnadlan@gmail.com (super_admin).
 // Features: system stats, departments CRUD, all chat history, user list.
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { supabase } from "../supabaseClient";
 import { loadDepartments, saveDepartments, DEFAULT_DEPARTMENTS } from "../utils/admin";
 
@@ -14,6 +14,7 @@ const T = {
 const TABS = [
   { id: "stats",   icon: "📊", label: "סטטיסטיקות" },
   { id: "depts",   icon: "🏢", label: "מחלקות" },
+  { id: "staff",   icon: "🧹", label: "צוות ניקיון" },
   { id: "chats",   icon: "💬", label: "שיחות" },
   { id: "users",   icon: "👥", label: "משתמשים" },
 ];
@@ -177,6 +178,169 @@ function DeptsTab() {
               style={{ flex: 1, padding: "12px 14px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontFamily: "Heebo, sans-serif", fontSize: 14, outline: "none" }}
             />
             <button className="btn btn-primary" onClick={add} disabled={!newDept.trim()}>הוסף</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Housekeeping staff roster tab ─────────────────────────────────────────────
+
+const STAFF_ROLE_LABELS = {
+  room_cleaner: "ניקוי חדר",
+  jacuzzi: "ג'קוזי",
+  both: "שניהם",
+};
+
+function StaffTab() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [form, setForm] = useState({ name: "", role: "both" });
+  const [editId, setEditId] = useState(null);
+  const [editForm, setEditForm] = useState({ name: "", role: "both", is_active: true });
+
+  const load = useCallback(async () => {
+    if (!supabase) { setLoading(false); return; }
+    setError(null);
+    const { data, error: fetchErr } = await supabase
+      .from("staff_members")
+      .select("id, name, role, is_active, created_at")
+      .order("name");
+    if (fetchErr) setError(fetchErr.message);
+    else setRows(data ?? []);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function addStaff() {
+    const name = form.name.trim();
+    if (!name || !supabase) return;
+    const { error: insertErr } = await supabase.from("staff_members").insert({
+      name, role: form.role, is_active: true, updated_at: new Date().toISOString(),
+    });
+    if (insertErr) { setError(insertErr.message); return; }
+    setForm({ name: "", role: "both" });
+    load();
+  }
+
+  async function saveEdit() {
+    if (!editId || !supabase) return;
+    const name = editForm.name.trim();
+    if (!name) return;
+    const { error: updErr } = await supabase.from("staff_members").update({
+      name, role: editForm.role, is_active: editForm.is_active,
+      updated_at: new Date().toISOString(),
+    }).eq("id", editId);
+    if (updErr) { setError(updErr.message); return; }
+    setEditId(null);
+    load();
+  }
+
+  async function removeStaff(row) {
+    if (!window.confirm(`להסיר את "${row.name}" מהרשימה? (יושבת — is_active=false)`)) return;
+    if (!supabase) return;
+    const { error: updErr } = await supabase.from("staff_members").update({
+      is_active: false, updated_at: new Date().toISOString(),
+    }).eq("id", row.id);
+    if (updErr) setError(updErr.message);
+    else load();
+  }
+
+  if (loading) return <div style={{ color: T.muted, padding: 20 }}>טוען צוות...</div>;
+  if (!supabase) return <div style={{ color: T.muted, padding: 20 }}>Supabase לא מחובר.</div>;
+
+  return (
+    <div>
+      {error && (
+        <div style={{
+          background: "#FCEBEB", border: "1px solid #E24B4A", color: "#8A2C2C",
+          borderRadius: 8, padding: "10px 14px", marginBottom: 16, fontSize: 13,
+        }}>
+          ⚠ {error}
+        </div>
+      )}
+
+      <div className="card" style={{ marginBottom: 20 }}>
+        <div className="card-header">
+          <div className="card-title">🧹 צוות ניקיון פעיל ({rows.filter(r => r.is_active).length})</div>
+        </div>
+        <div className="card-body" style={{ padding: 0 }}>
+          {rows.filter(r => r.is_active).length === 0 && (
+            <div style={{ padding: 20, color: T.muted, fontSize: 13 }}>אין עובדים פעילים — הוסף למטה.</div>
+          )}
+          {rows.filter(r => r.is_active).map((row) => (
+            <div key={row.id} style={{
+              display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8,
+              padding: "12px 20px", borderBottom: `1px solid ${T.border}`,
+            }}>
+              {editId === row.id ? (
+                <>
+                  <input
+                    value={editForm.name}
+                    onChange={(e) => setEditForm(f => ({ ...f, name: e.target.value }))}
+                    style={{ flex: 1, minWidth: 120, padding: "8px 10px", borderRadius: 8, border: `1px solid ${T.border}`, fontFamily: "inherit" }}
+                  />
+                  <select
+                    value={editForm.role}
+                    onChange={(e) => setEditForm(f => ({ ...f, role: e.target.value }))}
+                    style={{ padding: "8px 10px", borderRadius: 8, border: `1px solid ${T.border}`, fontFamily: "inherit" }}
+                  >
+                    {Object.entries(STAFF_ROLE_LABELS).map(([k, lbl]) => (
+                      <option key={k} value={k}>{lbl}</option>
+                    ))}
+                  </select>
+                  <button className="btn btn-primary btn-sm" onClick={saveEdit}>שמור</button>
+                  <button className="btn btn-ghost btn-sm" onClick={() => setEditId(null)}>ביטול</button>
+                </>
+              ) : (
+                <>
+                  <div>
+                    <span style={{ fontWeight: 700, fontSize: 15 }}>{row.name}</span>
+                    <span style={{ marginRight: 10, fontSize: 12, color: T.muted }}>
+                      · {STAFF_ROLE_LABELS[row.role] ?? row.role}
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button className="btn btn-ghost btn-sm" onClick={() => {
+                      setEditId(row.id);
+                      setEditForm({ name: row.name, role: row.role, is_active: row.is_active });
+                    }}>✏️ ערוך</button>
+                    <button className="btn btn-danger btn-sm" onClick={() => removeStaff(row)}>🗑️ הסר</button>
+                  </div>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="card">
+        <div style={{ padding: 20 }}>
+          <div className="card-title" style={{ marginBottom: 12 }}>➕ הוסף עובד/ת ניקיון</div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <input
+              value={form.name}
+              onChange={(e) => setForm(f => ({ ...f, name: e.target.value }))}
+              onKeyDown={(e) => e.key === "Enter" && addStaff()}
+              placeholder="שם מלא..."
+              style={{ flex: 1, minWidth: 160, padding: "12px 14px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontFamily: "inherit", fontSize: 14 }}
+            />
+            <select
+              value={form.role}
+              onChange={(e) => setForm(f => ({ ...f, role: e.target.value }))}
+              style={{ padding: "12px 14px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontFamily: "inherit", fontSize: 14 }}
+            >
+              {Object.entries(STAFF_ROLE_LABELS).map(([k, lbl]) => (
+                <option key={k} value={k}>{lbl}</option>
+              ))}
+            </select>
+            <button className="btn btn-primary" onClick={addStaff} disabled={!form.name.trim()}>הוסף</button>
+          </div>
+          <div style={{ fontSize: 12, color: T.muted, marginTop: 10 }}>
+            הרשימה מופיעה בלוח הניקיון (טאבלט) בבחירת «התחל ניקוי» / «התחל ג'קוזי».
           </div>
         </div>
       </div>
@@ -364,6 +528,7 @@ export default function AdminPanel({ user, canManageData, onSeedDemo, onClearDat
 
       {tab === "stats" && <StatsTab />}
       {tab === "depts" && <DeptsTab />}
+      {tab === "staff" && <StaffTab />}
       {tab === "chats" && <ChatsTab />}
       {tab === "users" && <UsersTab />}
       {tab === "data"  && <DataTab onSeedDemo={onSeedDemo} onClearData={onClearData} />}
