@@ -334,38 +334,62 @@ export function isPreArrivalGuestStatus(status: string | null | undefined): bool
   return !!status && PRE_ARRIVAL_GUEST_STATUSES.has(status);
 }
 
-/** Tier-0 operational keywords — amenities, supplies, maintenance (in-suite). */
+/**
+ * Broad keyword hint (in-room tone / legacy). Task dispatch uses the strict
+ * allowlist below — never this pattern alone.
+ */
 export const OPERATIONAL_IN_HOUSE_KEYWORD_PATTERN =
-  /חלב|מים|קפה|מגבות|חלוקים|נייר(?:\s*טואלט)?|קפסולות|סבון|שמפו|שלט|מזגן|טלויזיה|סתימה|אור(?:\s*שרוף)?|זבל|ניקיון|נמלי\s*אש|דבורים|צרעות|ג['']?וק|שירות\s*חדרים|לחדר|סדין/;
+  /חלב|מים|קפה|מגבות|חלוקים|נייר(?:\s*טואלט)?|קפסולות|סבון|שמפו|שלט|מזגן|טלו(?:ו)?יז(?:יה|יון)|סתימה|אור(?:\s*שבור)?|זבל|ניקיון|לחדר|סדין|כרית|שמיכ(?:ה|ות)/;
 
 /** @deprecated alias — same pattern as OPERATIONAL_IN_HOUSE_KEYWORD_PATTERN (session 76). */
 export const IN_ROOM_KEYWORD_PATTERN = OPERATIONAL_IN_HOUSE_KEYWORD_PATTERN;
 
+/** Informational / FAQ — KB+LLM only; must never open ops tasks. */
+export const INFORMATIONAL_GUEST_QUERY_PATTERN =
+  /(?:^|[\s,.!?])(?:מה|מתי|איפה|היכן|כמה|האם|איז(?:ה|ו)|מי)\b|(?:ה(?:יתה|יה)\s+פעם|פעם\s+ה(?:יתה|יה))|(?:ממוקמת|ממוקם|איפה\s+(?:ה(?:יא|וא)|נמצא)|היכן\s+(?:ה(?:יא|וא)|נמצא))|(?:שעות(?:\s*פתיחה)?|עד\s+מתי|checkout|צ.?ק.?אא?וט|בר(?:יכה|\s)?|עמד(?:ת|ה)|ברד|slushie|wifi|wi-fi|אינטרנט|מסעד(?:ה|ת)|חניה)/iu;
+
+/** Guest wants physical action — not merely asking for information. */
+export const PHYSICAL_REQUEST_INTENT_PATTERN =
+  /אפשר|אפשרו|בבקשה|צר[י]כ[הים]?|חסר|חסרה|תביאו|תביא|שלחו|שלח|מבקש|מבקשת|נוכל\s+לקבל|אפשר\s+לקבל|אשמח|דחוף|עזרו|עזרה|העבר|העבירו|עוד\s+(?:של|מ)|תוסיפו|need|please\s+(?:send|bring)|can\s+(?:i|we)\s+get/u;
+
+/** Allowlist cat. 1 — concrete in-room amenity delivery. */
+const ALLOWLIST_AMENITY_PATTERN =
+  /(?:חלב|קפה|מגבות|שמפו|סבון|נייר(?:\s*טואלט)?|חלוק(?:ים)?|כרית(?:ות)?|שמיכ(?:ה|ות)?|קפסולות)/u;
+
+const ALLOWLIST_BOTTLED_WATER_PATTERN =
+  /(?:בבקשה\s+)?(?:עוד\s+)?מים(?:\s+(?:לחדר|בחדר|לסוויטה|בסוויטה|קר(?:ים|ות)|מינר(?:ל|al)))?/u;
+
+/** Allowlist cat. 2 — maintenance / broken infrastructure. */
+const ALLOWLIST_MAINTENANCE_PATTERN =
+  /מזגן(?:\s*(?:לא\s+עובד|לא\s+מקרר|תקול|מקולקל))?|(?:טלו(?:ו)?יז(?:יה|יון)|שלט(?:\s*ט(?:לו(?:ו)?יז)?)?)(?:\s*(?:לא\s+עובד|תקוע|שבור))?|סתימה|(?:אין|לא\s+)מים\s+חמים|זרם\s+חלש|אור\s*שבור|כספת\s*נעולה|דלת\s*לא\s*נפתח(?:ת)?|(?:לא\s+עובד(?:ת)?|תקלה|תקוע(?:ה)?|שבור(?:ה)?)/u;
+
+/** Allowlist cat. 3 — cleaning / physical labor. */
+const ALLOWLIST_CLEANING_PATTERN =
+  /(?:ניקיון\s+חדר|לפנות\s+זבל|להחליף\s+מצעים|החלפת\s+מצעים|שטיפת\s+רצפה|פינוי\s+זבל)/u;
+
 const OPERATIONAL_NEED_LABELS: ReadonlyArray<{ pattern: RegExp; label: string }> = [
-  { pattern: /שירות\s*חדרים/u, label: "שירות חדרים" },
   { pattern: /חלב/u, label: "חלב" },
-  { pattern: /מים/u, label: "מים" },
-  { pattern: /קפה/u, label: "קפה" },
   { pattern: /מגבות/u, label: "מגבות" },
-  { pattern: /חלוקים/u, label: "חלוקים" },
-  { pattern: /נייר/u, label: "נייר" },
+  { pattern: /קפה/u, label: "קפה" },
+  { pattern: /מים/u, label: "מים" },
   { pattern: /קפסולות/u, label: "קפסולות" },
   { pattern: /סבון/u, label: "סבון" },
   { pattern: /שמפו/u, label: "שמפו" },
-  { pattern: /שלט/u, label: "שלט" },
+  { pattern: /נייר/u, label: "נייר טואלט" },
+  { pattern: /חלוק/u, label: "חלוק" },
+  { pattern: /כרית/u, label: "כרית" },
+  { pattern: /שמיכ/u, label: "שמיכה" },
   { pattern: /מזגן/u, label: "מזגן" },
+  { pattern: /טלו(?:ו)?יז/u, label: "טלויזיה" },
+  { pattern: /שלט/u, label: "שלט" },
   { pattern: /סתימה/u, label: "סתימה" },
-  { pattern: /אור\s*שרוף/u, label: "אור שרוף" },
-  { pattern: /אור/u, label: "אור" },
-  { pattern: /טלויזיה/u, label: "טלויזיה" },
-  { pattern: /נמלי\s*אש/u, label: "נמלי אש" },
-  { pattern: /דבורים/u, label: "דבורים" },
-  { pattern: /צרעות/u, label: "צרעות" },
-  { pattern: /ג['']?וק/u, label: "ג'וק" },
-  { pattern: /זבל/u, label: "זבל" },
-  { pattern: /ניקיון/u, label: "ניקיון" },
-  { pattern: /סדין/u, label: "סדין" },
-  { pattern: /לחדר/u, label: "שירות לחדר" },
+  { pattern: /אור\s*שבור/u, label: "אור שבור" },
+  { pattern: /כספת/u, label: "כספת" },
+  { pattern: /דלת/u, label: "דלת" },
+  { pattern: /ניקיון/u, label: "ניקיון חדר" },
+  { pattern: /זבל/u, label: "פינוי זבל" },
+  { pattern: /מצע/u, label: "החלפת מצעים" },
+  { pattern: /רצפה/u, label: "שטיפת רצפה" },
 ];
 
 export function messageSignalsInRoomPresence(text: string): boolean {
@@ -373,51 +397,50 @@ export function messageSignalsInRoomPresence(text: string): boolean {
 }
 
 export function messageSignalsOperationalInHouseRequest(text: string): boolean {
-  return OPERATIONAL_IN_HOUSE_KEYWORD_PATTERN.test(text);
+  return isAllowlistedPhysicalTaskRequest(text);
 }
 
-/** Informational FAQ — keyword present but not a dispatch-worthy ask. */
-const OPERATIONAL_FAQ_ONLY_PATTERN =
-  /^(?:מה|מתי|איפה|כמה|האם)\b|^(?:יש|אין)\s+(?:ספא|בריכה|מסעדה|חניה|אינטרנט|wifi|wi-fi)/iu;
-
-/** Guest is asking staff to do something — not just chatting about an amenity. */
-const OPERATIONAL_REQUEST_SIGNAL_PATTERN =
-  /אפשר|אפשרו|בבקשה|צריך|צריכה|צריכים|חסר|חסרה|חסרים|תביאו|תביא|שלחו|מבקש|מבקשת|לא\s+עובד|לא\s+עובדת|תקלה|תקוע|תקועה|בעיה|נוכל\s+לקבל|אפשר\s+לקבל|יש\s+לכם|אשמח|נשמח\s+לקבל|דחוף|עזרה|עזרו|מישהו\s+יכול|העבר|העבירו/u;
-
-const STRONG_DISPATCH_KEYWORDS =
-  /חלב|מגבות|חלוקים|קפסולות|סבון|שמפו|סתימה|מזגן|זבל|ניקיון|שירות\s*חדרים|סדין|נייר|טלויזיה|נמלי\s*אש|דבורים|צרעות|ג['']?וק|אור\s*שרוף/u;
+/** True when the guest is asking for info (hours, location, etc.) — not a dispatch. */
+export function isInformationalGuestQuery(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  if (INFORMATIONAL_GUEST_QUERY_PATTERN.test(t)) return true;
+  if (/\?\s*$/.test(t) && !PHYSICAL_REQUEST_INTENT_PATTERN.test(t) && !ALLOWLIST_MAINTENANCE_PATTERN.test(t)) {
+    return true;
+  }
+  return false;
+}
 
 /**
- * Tier-0 discretion: keyword alone is not enough — must look like a real
- * in-suite service ask (request signal or strong maintenance/supply keyword).
- * Pure FAQ ("מתי יש ניקיון?") falls through to LLM instead.
+ * Strict allowlist — ops task / Whapi card ONLY for these three categories.
+ * Everything else (FAQ, locations, hours) → LLM/KB only.
  */
-export function isActionableOperationalInHouseRequest(text: string): boolean {
+export function isAllowlistedPhysicalTaskRequest(text: string): boolean {
   const t = text.trim();
-  if (!t || !messageSignalsOperationalInHouseRequest(t)) return false;
+  if (!t || isInformationalGuestQuery(t)) return false;
 
-  const hasRequestSignal = OPERATIONAL_REQUEST_SIGNAL_PATTERN.test(t);
-  const looksLikeFaqOnly = OPERATIONAL_FAQ_ONLY_PATTERN.test(t) && !hasRequestSignal;
-
-  if (looksLikeFaqOnly) return false;
-
-  if (STRONG_DISPATCH_KEYWORDS.test(t)) {
-    return hasRequestSignal || /לחדר|לסוויטה|בחדר|בסוויטה/u.test(t) || /\?/.test(t);
+  if (ALLOWLIST_MAINTENANCE_PATTERN.test(t)) {
+    if (/^(?:מתי|איפה|היכן|מה|כמה|האם)\b/u.test(t) && !/(?:לא\s+עובד|תקול|שבור|סתימה|תקוע)/u.test(t)) {
+      return false;
+    }
+    return true;
   }
 
-  if (/מים|קפה/u.test(t)) {
-    return hasRequestSignal || /לחדר|לסוויטה|בחדר/u.test(t);
+  if (ALLOWLIST_CLEANING_PATTERN.test(t)) {
+    return PHYSICAL_REQUEST_INTENT_PATTERN.test(t) || /(?:לחדר|לסוויטה|בחדר|בסוויטה)/u.test(t);
   }
 
-  if (/שלט|אור/u.test(t)) {
-    return /לא\s+עובד|תקלה|תקוע|בעיה|שלט|מאור|תאורה/u.test(t) && (hasRequestSignal || /לחדר|בחדר/u.test(t));
+  if (ALLOWLIST_AMENITY_PATTERN.test(t) || ALLOWLIST_BOTTLED_WATER_PATTERN.test(t)) {
+    return PHYSICAL_REQUEST_INTENT_PATTERN.test(t)
+      || /(?:לחדר|לסוויטה|בחדר|בסוויטה|עוד\s+)/u.test(t);
   }
 
-  if (/לחדר/u.test(t)) {
-    return hasRequestSignal && STRONG_DISPATCH_KEYWORDS.test(t.replace(/לחדר/gu, ""));
-  }
+  return false;
+}
 
-  return hasRequestSignal;
+/** @deprecated use isAllowlistedPhysicalTaskRequest */
+export function isActionableOperationalInHouseRequest(text: string): boolean {
+  return isAllowlistedPhysicalTaskRequest(text);
 }
 
 export function isCheckedInGuestStatus(status: string | null | undefined): boolean {
@@ -434,7 +457,40 @@ export function shouldInterceptOperationalInHouseRequest(
 
 /** True when staff should get tasks + Whapi card + requires_attention. */
 export function shouldDispatchOperationalInHouseAlert(text: string): boolean {
-  return isActionableOperationalInHouseRequest(text);
+  return isAllowlistedPhysicalTaskRequest(text);
+}
+
+/**
+ * Single routing decision for guest free-text requests (after allowlist gate).
+ * - operational_field_ops → tasks (dept=תפעול) + Whapi EN card (checked-in only)
+ * - admin_reception_tasks → tasks (dept=קבלה/בקשות), no Whapi ops group
+ * - requests_board → guest_alerts (pre-check-in physical, manager/price/human)
+ * - kb_only → LLM/KB answer only
+ */
+export type GuestRequestDispatchRoute =
+  | "kb_only"
+  | "operational_field_ops"
+  | "admin_reception_tasks"
+  | "requests_board";
+
+export function classifyGuestRequestDispatch(
+  text: string,
+  status: string | null | undefined,
+): GuestRequestDispatchRoute {
+  if (isInformationalGuestQuery(text)) return "kb_only";
+  if (isAdministrativeInHouseRequest(text)) {
+    return isCheckedInGuestStatus(status) ? "admin_reception_tasks" : "requests_board";
+  }
+  if (isAllowlistedPhysicalTaskRequest(text)) {
+    return isCheckedInGuestStatus(status) ? "operational_field_ops" : "requests_board";
+  }
+  return "kb_only";
+}
+
+/** Requests Board (guest_alerts) — human/price/manager or pre-check-in escalation. */
+export function isRequestsBoardEscalation(text: string): boolean {
+  return /(?:מנהל|מחיר|נציג)/u.test(text)
+    || (/תקלה/u.test(text) && isAllowlistedPhysicalTaskRequest(text));
 }
 
 /** Staff-facing summary + guests.attention_reason (e.g. "בקשת חלב לחדר"). */
@@ -483,7 +539,9 @@ export function shouldApplyInRoomContextOverride(
   text: string,
   status: string | null | undefined,
 ): boolean {
-  return isPreArrivalGuestStatus(status) && messageSignalsInRoomPresence(text);
+  if (!isPreArrivalGuestStatus(status)) return false;
+  if (isInformationalGuestQuery(text)) return false;
+  return isAllowlistedPhysicalTaskRequest(text);
 }
 
 // ── Sensitive stay / room-change requests — never imply approval (session 76b) ──

@@ -50,6 +50,10 @@ import {
   shouldApplyInRoomContextOverride,
   shouldInterceptOperationalInHouseRequest,
   shouldInterceptAdministrativeInHouseRequest,
+  isAdministrativeInHouseRequest,
+  isAllowlistedPhysicalTaskRequest,
+  classifyGuestRequestDispatch,
+  isRequestsBoardEscalation,
   buildOperationalRequestSummary,
   buildOperationalDispatchReply,
   buildAdministrativeRequestSummary,
@@ -1152,25 +1156,8 @@ function isRecordOnlyArrivalTimeUpdate(text: string): boolean {
 }
 
 // ── Critical-event safety net (Phase 2 request-handling) ────────────────────
-// Deterministic backstop for the "faq" branch, which now expects the model to
-// call log_guest_request (see §5c below) when it spots an actionable request
-// or hot sales lead. Models occasionally skip the tool call even when
-// instructed to use it — this never-go-silent net force-logs to guest_alerts
-// when a critical keyword is present and the model didn't fire the tool, so a
-// real guest event (complaint escalation, manager request, price question we
-// must not answer ourselves — see CLAUDE.md "No Prices Rule") never vanishes
-// silently. Deliberately overlaps with classifyIntent's COMPLAINT_PATTERNS
-// ("תקלה") and detectHumanRequest's HUMAN_CHAT_PATTERNS ("נציג") — those paths
-// already log/flag through their own mechanisms, so this net being redundant
-// there is harmless; "מנהל"/"מחיר" are new keywords with no existing capture.
-const CRITICAL_FALLBACK_PATTERNS: RegExp[] = [
-  /תקלה/i,
-  /נציג/i,
-  /מנהל/i,
-  /מחיר/i,
-];
-
-function detectHumanRequest(text: string): { requested: boolean; type: string | null } {
+// Deterministic backstop for the "faq" branch when the model skips log_guest_request
+// on critical human/price/manager keywords — see criticalKeywordHit below (allowlist-gated).(text: string): { requested: boolean; type: string | null } {
   if (HUMAN_CALL_PATTERNS.some((p) => p.test(text))) return { requested: true, type: "call" };
   if (HUMAN_CHAT_PATTERNS.some((p) => p.test(text))) return { requested: true, type: "chat" };
   if (HUMAN_GENERAL_PATTERNS.some((p) => p.test(text))) {
@@ -1412,7 +1399,7 @@ async function handleOperationalInHouseIntercept(
   }
 
   console.info(
-    `[webhook] 🛎️ operational in-house intercept — phone:${phone} guest:${guestId} summary:${summary}`,
+    `[webhook] 🛎️ operational in-house intercept — dispatch=operational_field_ops phone:${phone} guest:${guestId} summary:${summary}`,
   );
 }
 
@@ -1821,13 +1808,14 @@ async function discoverGeminiModel(apiKey: string): Promise<string | null> {
 // ══════════════════════════════════════════════════════════════════════════════
 const LOG_REQUEST_TOOL_NAME = "log_guest_request";
 const LOG_REQUEST_TOOL_DESCRIPTION =
-  "Call this whenever the guest raises a specific, fulfillable request " +
-  "(e.g. wine, flowers, balloons, extra towels, room equipment) or expresses " +
-  "a hot sales lead (room upgrade, extra spa treatment, extending the stay). " +
-  "Do NOT call this for general informational questions (opening hours, " +
-  "WiFi, location, what's included) or when the guest only states their " +
-  "estimated arrival time (e.g. 'we will arrive at 14:00') — only for something " +
-  "a staff member needs to actually go do something about.";
+  "Call ONLY when the guest asks for a physical in-room action that matches " +
+  "one of these allowlisted categories: (1) amenity delivery to the room " +
+  "(milk, water, coffee, towels, shampoo, soap, toilet paper, robe, pillow, " +
+  "blanket, capsules); (2) broken in-room infrastructure (AC not working/cooling, " +
+  "TV, remote, clog, no hot water, weak flow, broken light, safe locked, door stuck); " +
+  "(3) cleaning labor (room clean, trash removal, linen change, floor wash). " +
+  "NEVER call for informational questions (where/when/how/hours/location of bar, " +
+  "pool, slushie machine, spa, checkout time, WiFi). Those are answered in chat only.";
 
 const LOG_REQUEST_JSON_SCHEMA = {
   type: "object",
@@ -1870,14 +1858,26 @@ const GEMINI_TOOLS = [{
 const TOOL_USAGE_INSTRUCTIONS = `
 
 ══ הנחיה טכנית (לא להציג לאורח) ══
-יש לך אפשרות לקרוא לפונקציה log_guest_request כשהאורח מעלה בקשה ספציפית
-וניתנת למימוש (יין, פרחים, בלונים, ציוד מיוחד, בקשה לחדר) או מביע עניין
-מכירתי חם (שדרוג חדר, הארכת שהות, טיפול נוסף). אל תקרא לפונקציה על שאלות
-מידע כלליות (שעות פתיחה, WiFi, מיקום) ולא כשהאורח רק מעדכן שעת הגעה משוערת
-(למשל "נגיע בשעה 15:00") — זה נרשם אוטומטית בלי טיקט לצוות.
-בכל פעם שאתה קורא לפונקציה — הוסף/י גם תשובה טבעית וחמה לאורח באותו תור:
-קודם החמא/י על הבחירה, ואז ציין/י בבירור שהבקשה הועברה לצוות. לעולם אל
-תכתוב שהבקשה "הועברה" אם לא קראת בפועל לפונקציה.`;
+קרא ל-log_guest_request רק על בקשה פיזית מותרת: (1) ציוד/מזון לחדר — חלב, מים, קפה,
+מגבות, שמפו, סבון, נייר, חלוק, כרית, שמיכה, קפסולות; (2) תקלה/תחזוקה בחדר — מזגן,
+טלויזיה, שלט, סתימה, אין מים חמים, אור שבור, כספת, דלת; (3) ניקיון — ניקיון חדר,
+פינוי זבל, החלפת מצעים, שטיפת רצפה.
+אסור לקרוא לפונקציה על שאלות מידע (איפה/מתי/שעות/מיקום בר/בריכה/עמדת ברד/צק-אאוט/WiFi).
+אל תקרא כשהאורח רק מעדכן שעת הגעה.
+אם קראת — הוסף/י גם תשובה חמה; אל תכתוב שהבקשה "הועברה" בלי קריאה לפונקציה.`;
+
+/** Server-side gate — model tool calls cannot bypass the physical-task allowlist. */
+function filterToolLoggedRequest(
+  rawText: string,
+  logged: AiReplyResult["loggedRequest"],
+): AiReplyResult["loggedRequest"] {
+  if (!logged) return null;
+  if (isAllowlistedPhysicalTaskRequest(rawText)) return logged;
+  console.info(
+    `[webhook] log_guest_request suppressed (not on physical allowlist) — summary:"${logged.summary}" text:"${rawText.slice(0, 80)}"`,
+  );
+  return null;
+}
 
 // Both askGemini/callClaude now return this shape instead of a bare string,
 // so the call site can act on a tool invocation alongside the reply text.
@@ -3627,7 +3627,7 @@ Deno.serve(async (req: Request) => {
             ? await callClaude(effectiveText, guestName, orderedHistory, enrichedPrompt, routingLearnedSuffix)
             : await askGemini(effectiveText, guestName, orderedHistory, enrichedPrompt, route.geminiOrder, true, routingLearnedSuffix);
           reply = sanitizeReply(result.text);
-          toolLoggedRequest = result.loggedRequest;
+          toolLoggedRequest = filterToolLoggedRequest(effectiveText, result.loggedRequest);
         } catch (e) {
           const fallbackEngine = route.engine === "claude" ? "gemini" : "claude";
           console.error(`[webhook] ${route.engine} failed → trying ${fallbackEngine}:`, (e as Error).message);
@@ -3646,7 +3646,7 @@ Deno.serve(async (req: Request) => {
               ? await askGemini(effectiveText, guestName, orderedHistory, enrichedPrompt, route.geminiOrder, true, routingLearnedSuffix)
               : await callClaude(effectiveText, guestName, orderedHistory, enrichedPrompt, routingLearnedSuffix);
             reply = sanitizeReply(result.text);
-            toolLoggedRequest = result.loggedRequest;
+            toolLoggedRequest = filterToolLoggedRequest(effectiveText, result.loggedRequest);
           } catch (e2) {
             console.error("[webhook] both engines failed:", (e2 as Error).message);
             reply = FALLBACK_REPLY;
@@ -3756,55 +3756,50 @@ Deno.serve(async (req: Request) => {
         const newNotes = guest?.guest_notes ? `${guest.guest_notes}\n${noteLine}` : noteLine;
         supabase
           .from("guests")
-          .update({ guest_notes: newNotes, requires_attention: true, attention_reason: null })
+          .update({ guest_notes: newNotes })
           .eq("id", guestId)
           .then(({ error }: { error: { message: string } | null }) => {
             if (error) console.error("[webhook] guest_notes capture error:", error.message);
           });
 
-        // ── Requests Board (guest_alerts) — Phase 2: no longer blanket-fires
-        // for every faq/fallback message (that was the original bug — a plain
-        // "what time is checkout?" landed on the staff dashboard exactly like
-        // "can we get a bottle of wine?"). Now conditional on either:
-        //   (a) the model actually invoked log_guest_request this turn, or
-        //   (b) the critical-keyword safety net (CRITICAL_FALLBACK_PATTERNS)
-        //       matched and the model didn't fire the tool — never-go-silent
-        //       backstop for תקלה/נציג/מנהל/מחיר.
-        // guest_notes above stays blanket (cheap free-text history, not a
-        // dashboard ticket) — only the staff-facing alert is now selective.
-        const criticalKeywordHit = intent === "faq" && !toolLoggedRequest && CRITICAL_FALLBACK_PATTERNS.some((p) => p.test(effectiveText));
-        if (toolLoggedRequest || criticalKeywordHit) {
-          const alertType = toolLoggedRequest?.category ?? "request";
-          if (criticalKeywordHit) {
-            console.info(`[webhook] 🛟 critical-keyword safety net fired (no tool call) — phone:${phone}`);
-          }
-          // IIFE + await, not a bare .catch() on the Postgrest builder
-          // (session 14 bug — that builder is PromiseLike, not a real
-          // Promise, so .catch() throws synchronously instead of catching).
-          (async () => {
-            const { error } = await supabase.from("guest_alerts").insert({
-              guest_id: guestId, phone, alert_type: alertType,
-              message: effectiveText, conversation_id: conversationId, resolved: false,
-            });
-            // Mike's explicit ask: this must scream in the logs, not warn quietly —
-            // a failed insert here means a guest request never reaches the Requests Board.
-            if (error) console.error("[webhook] 🚨 guest_alerts (request) insert FAILED:", error.message);
-          })().catch((e: Error) => console.error("[webhook] 🚨 guest_alerts (request) insert FAILED:", e.message));
-        }
+        // ── Dispatch matrix (allowlist-gated):
+        //   operational_field_ops → Whapi EN + Operations Board (tasks/תפעול)
+        //   requests_board → guest_alerts only (pre-check-in / manager / price)
+        //   kb_only → no staff ticket (FAQ answered in chat)
+        const dispatchRoute = classifyGuestRequestDispatch(effectiveText, guestStatus);
+        const criticalKeywordHit = intent === "faq" && !toolLoggedRequest
+          && isRequestsBoardEscalation(effectiveText);
 
-        // ── Dual-Routing Trigger (Session 26 Sprint 3.1) — Suite-Only Profile
-        // Filter. Gated on toolLoggedRequest specifically (an actual fulfillable
-        // ask/upsell lead), NOT criticalKeywordHit (that net also catches plain
-        // complaint/price mentions — not "go do something" requests, so it
-        // would over-notify the ops group). Day-guest/standard-room requests
-        // never reach here — day-guest already exited via the Upsell Gate above
-        // (toolLoggedRequest cleared to null there), standard-room just fails
-        // this same check. guestRoomType is computed once, above, by that gate.
-        if (toolLoggedRequest && guestId && guestRoomType === "suite") {
+        if (toolLoggedRequest && guestId && dispatchRoute === "operational_field_ops") {
           const guestRoom = (guest as Record<string, unknown> | null)?.room as string | null ?? null;
           routeGuestRequestToOpsGroup(supabase, {
             guestId, room: guestRoom, summary: toolLoggedRequest.summary, rawText: effectiveText,
           }).catch((e: Error) => console.error("[webhook] 🛋️ routeGuestRequestToOpsGroup error:", e.message));
+          console.info(
+            `[webhook] dispatch=operational_field_ops (LLM path) phone:${phone} guest:${guestId} room:${guestRoom ?? "—"}`,
+          );
+        } else if (
+          guestId
+          && dispatchRoute === "admin_reception_tasks"
+          && isAdministrativeInHouseRequest(effectiveText)
+        ) {
+          const guestRoom = (guest as Record<string, unknown> | null)?.room as string | null ?? null;
+          logAdministrativeRequestTask(supabase, {
+            guestId,
+            room: guestRoom,
+            summary: buildAdministrativeRequestSummary(effectiveText),
+            rawText: effectiveText,
+          }).catch((e: Error) => console.error("[webhook] 📋 admin LLM-path task error:", e.message));
+          console.info(`[webhook] dispatch=admin_reception_tasks phone:${phone} guest:${guestId}`);
+        } else if (criticalKeywordHit) {
+          console.info(`[webhook] 🛟 dispatch=requests_board (critical keyword) phone:${phone}`);
+          (async () => {
+            const { error } = await supabase.from("guest_alerts").insert({
+              guest_id: guestId, phone, alert_type: "request",
+              message: effectiveText, conversation_id: conversationId, resolved: false,
+            });
+            if (error) console.error("[webhook] 🚨 guest_alerts (request) insert FAILED:", error.message);
+          })().catch((e: Error) => console.error("[webhook] 🚨 guest_alerts (request) insert FAILED:", e.message));
         }
       }
 
