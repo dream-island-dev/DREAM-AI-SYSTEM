@@ -95,21 +95,14 @@ export default function AICopilot({ user }) {
   }
 
   // Enrich a room_status row with its matching guest record.
-  // `room` is the canonical field (ArrivalImportPanel/sync_suite_arrivals, CLAUDE.md
-  // §5) — `suite_name` is a pre-Golden-Profile legacy column nothing currently
-  // writes to, kept only as a fallback for old records (same room??suite_name
-  // priority already used by whatsapp-send/index.ts + RoomBoard.js). Previously
-  // this selected treatment_time/treatment_type, which don't exist on `guests`
-  // (they're bookings-table columns) — every call 400'd, so `guest` was always
-  // null and the approval flow below silently never messaged the guest.
   const enrichRoom = useCallback(async (roomRow) => {
     const _alertId = crypto.randomUUID();
-    if (!supabase) return { ...roomRow, guest: null, isEligible: false, _alertId };
+    if (!supabase) return { ...roomRow, guest: null, isEligible: false, alreadyNotified: false, _alertId };
 
     const todayIL = israelTodayStr();
     const { data: guest } = await supabase
       .from("guests")
-      .select("id, name, phone, spa_time, room, suite_name, status, arrival_date")
+      .select("id, name, phone, spa_time, room, suite_name, status, arrival_date, room_ready_notified, msg_room_ready_sent")
       .or(`room.eq.${roomRow.room_id},suite_name.eq.${roomRow.room_id}`)
       .eq("arrival_date", todayIL)
       .neq("status", "cancelled")
@@ -118,7 +111,18 @@ export default function AICopilot({ user }) {
       .maybeSingle();
 
     const isEligible = isArrivalToday(guest?.arrival_date);
-    return { ...roomRow, guest: guest ?? null, isEligible, _alertId };
+    const alreadyNotified = !!(guest?.room_ready_notified || guest?.msg_room_ready_sent);
+
+    // Stale gate — room_ready already sent from SuitesDashboard / prior approve.
+    if (alreadyNotified && isEligible) {
+      await supabase
+        .from("room_status")
+        .update({ status: "פנוי", updated_at: new Date().toISOString() })
+        .eq("room_id", roomRow.room_id)
+        .eq("status", "ממתין לאישור");
+    }
+
+    return { ...roomRow, guest: guest ?? null, isEligible, alreadyNotified, _alertId };
   }, []);
 
   // Initial load of any already-pending suites
@@ -130,7 +134,7 @@ export default function AICopilot({ user }) {
       .eq("status", "ממתין לאישור");
     if (data?.length) {
       const enriched = await Promise.all(data.map(enrichRoom));
-      setAlerts(enriched.filter((a) => a.isEligible));
+      setAlerts(enriched.filter((a) => a.isEligible && !a.alreadyNotified));
     }
   }, [enrichRoom]);
 
@@ -148,7 +152,7 @@ export default function AICopilot({ user }) {
           const row = payload.new;
           if (row.status === "ממתין לאישור") {
             const enriched = await enrichRoom(row);
-            if (!enriched.isEligible) return;
+            if (!enriched.isEligible || enriched.alreadyNotified) return;
             setAlerts(prev => {
               if (prev.some(a => a.room_id === row.room_id)) return prev;
               return [...prev, enriched];
@@ -210,6 +214,9 @@ export default function AICopilot({ user }) {
         }
         if (data?.ok === false) {
           throw new Error(`שליחת WhatsApp נכשלה (${data.error ?? "שגיאה לא ידועה"}) — הסטטוס לא עודכן, אפשר לנסות שוב`);
+        }
+        if (data?.skipped && data?.reason === "room_ready_notified") {
+          showToast(`ℹ ${alert.room_id} — ההודעה כבר נשלחה קודם, מסיר מהרשימה`, "ok");
         }
       }
 

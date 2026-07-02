@@ -370,6 +370,27 @@ function isMetaTemplateError(msg: string): boolean {
   return /132001|template_not_found|template.*not.*approved|template.*pending/i.test(msg);
 }
 
+/** Clears AICopilot «ממתין לאישור» gate once room_ready was sent (or idempotent skip). */
+async function clearPendingRoomApprovalGate(
+  supabase: ReturnType<typeof createClient>,
+  roomId: string,
+): Promise<void> {
+  const trimmed = String(roomId ?? "").trim();
+  if (!trimmed) return;
+  const { error } = await supabase
+    .from("room_status")
+    .update({ status: "פנוי", updated_at: new Date().toISOString() })
+    .eq("room_id", trimmed)
+    .eq("status", "ממתין לאישור");
+  if (error) {
+    console.warn("[whatsapp-send] clearPendingRoomApprovalGate failed:", trimmed, error.message);
+  }
+}
+
+function guestRoomIdForApprovalGate(guest: Record<string, unknown>): string {
+  return String(guest.room ?? guest.suite_name ?? "").trim();
+}
+
 // Templates whose Meta definition includes a Media (IMAGE) header — must inject
 // header component or Meta returns "Format mismatch, expected IMAGE, received UNKNOWN".
 const TEMPLATE_IMAGE_HEADER_DEFAULTS: Record<string, string> = {
@@ -2178,6 +2199,10 @@ serve(async (req: Request) => {
         console.log(
           "[Idempotency Safeguard]: Guest already notified for this stay. Skipping duplicate WhatsApp message.",
         );
+        await clearPendingRoomApprovalGate(
+          supabase,
+          guestRoomIdForApprovalGate(guest as Record<string, unknown>),
+        );
         return new Response(
           JSON.stringify({ ok: true, skipped: true, reason: "room_ready_notified" }),
           { headers: { ...CORS, "Content-Type": "application/json" } },
@@ -2323,6 +2348,7 @@ serve(async (req: Request) => {
           room_ready_notified: true,
           ...(flagColumn ? { [flagColumn]: true } : {}),
         }).eq("id", guestId);
+        await clearPendingRoomApprovalGate(supabase, rrRoomNameRaw);
       }
 
       return new Response(

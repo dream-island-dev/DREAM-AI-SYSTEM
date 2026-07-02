@@ -1,4 +1,5 @@
-2026-07-02 | HousekeepingTabletView.js + AdminPanel.js + migration 120 | Live staff tracking: `staff_members` CRUD באדמין, בחירת שם ב«התחל ניקיון»/«התחל ג'קוזי», תצוגה חיה על כרטיס, איפוס במעבר ל«ממתין לאישור».
+2026-07-02 | AICopilot.js + whatsapp-send | תיקון התראות «ממתין לאישור» כפולות: סינון לפי room_ready_notified/msg_room_ready_sent + ניקוי room_status ל«פנוי» אחרי שליחה.
+2026-07-02 | automationSchedule.ts + whatsapp-webhook | Allowlist + dispatch matrix: תפעול→Whapi EN+tasks; קבלה/בקשות→tasks; שאר→לוח בקשות/KB.
 2026-07-02 | whatsapp-send + migration 119 + whatsapp-cron + GuestsPage | Idempotency guard `room_ready_notified` — חסימת כפל הודעת «חדר מוכן»; איפוס ב-checked_out.
 2026-07-02 | HousekeepingTabletView.js + RoomBoard.js + migration 118 | Jacuzzi ping-pong: סטטוסים ממתין לג'קוזי/מוכן לפיניש, כפתורי קרא לג'קוזי+סיימתי פיניש, מסגרת cyan+pulse.
 2026-07-01 | ArrivalImportPanel.js | תיקון תצוגת גריד שיבוץ: ביטול סינון ספא, טקסט כהה, מזהה שורה ייחודי, חדר גולמי מהקובץ.
