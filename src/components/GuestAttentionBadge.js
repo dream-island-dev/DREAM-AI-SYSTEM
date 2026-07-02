@@ -9,6 +9,7 @@ const REASON_META = {
   severe_complaint: { icon: "🚨", title: "ביקורת שלילית חריפה — דורש מנהל בדחיפות — לחץ לפרופיל" },
   financial_issue:  { icon: "💳", title: "בקשה כספית / בעיית חיוב — לחץ לפרופיל" },
   "בקשת טיפול בספא": { icon: "💆", title: "ביקש/ה טיפול בספא מהפורטל — לחץ לפרופיל" },
+  "שאלה מורכבת לצוות": { icon: "🤔", title: "הבוט לא היה בטוח בתשובה — שאלה ממתינה למענה אנושי — לחץ לפרופיל" },
 };
 
 export default function GuestAttentionBadge({ guest, onUpdated, showToast, onOpenDreamBotChat }) {

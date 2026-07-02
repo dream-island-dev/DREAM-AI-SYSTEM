@@ -63,6 +63,7 @@ import {
   isSensitiveFinancialRequest,
   CANONICAL_FINANCIAL_HANDOFF_MSG,
   isSevereComplaint,
+  isLowValueCourtesyMessage,
   shouldAutoPromoteToCheckedIn,
   resolveEffectiveGuestStatus,
   ADMIN_REQUESTS_DEPARTMENT,
@@ -120,13 +121,25 @@ const PENDING_PORTAL_SPA_LLM_SUFFIX = [
   "אל תפתח תהליך הזמנה חדש.",
 ].join(" ");
 
+// ── Layer 2.2 (Defensive Shield) — canonical model-declared "I don't know"
+// sentinel. The LLM is instructed (both suffix sources below) to output this
+// EXACT sentence, verbatim, whenever it cannot answer from the attached
+// context — never a guess. The webhook then detects this literal string on
+// the outgoing reply (see the "faq" intent branch) and swaps the behavior
+// from "send it to the guest" to "quiet red-alert, staff takes over" —
+// mathematically enforced in code, not just requested of the model. A single
+// source here guarantees the detector and the two prompt sources that emit
+// it can never drift out of sync.
+const LOW_CONFIDENCE_HANDOFF_SENTENCE =
+  "אני בודק את זה מול דלפק הקבלה, נציג אנושי יחזור אליך לכאן ברגעים אלו ממש.";
+
 // Fallback static prompt — used ONLY when DB is completely unavailable.
 // Contains NO hardcoded booking URLs, prices, or marketing CTAs —
 // those belong in bot_settings.system_prompt (the UI source of truth).
 const FALLBACK_SYSTEM_PROMPT = `
 אתה "DREAM CONCIERGE" — הקונסיירז' הדיגיטלי הרשמי של Dream Island, אחד מאתרי הנופש היוקרתיים בישראל.
 יוקרתי וחם בו-זמנית — דבר כמו מנהל/ת אירוח אנושי שמכיר את האורח, לא נציג שירות רשמי ורובוטי. קליל, מהיר ומדויק; בלי ניסוחים תאגידיים נוקשים ("בהמשך לפנייתך", "הריני להודיעך" וכדומה). עברית תקנית ואלגנטית, אך טבעית כמו שיחה אמיתית. אל תחשוף שאתה AI.
-אם פרט אינו ידוע לך בכלל ולא מופיע ב"פרטי האורח" שצורפו לשיחה — לעולם אל תמציא תשובה. השב במדויק: "אני בודק את זה מול דלפק הקבלה, נציג אנושי יחזור אליך לכאן ברגעים אלו ממש."
+אם פרט אינו ידוע לך בכלל ולא מופיע ב"פרטי האורח" שצורפו לשיחה — לעולם אל תמציא תשובה. השב במדויק: "${LOW_CONFIDENCE_HANDOFF_SENTENCE}"
 CRITICAL: אם האורח שואל על פרט אישי שלו (למשל שעת טיפול ספא, מספר חדר, תאריך הגעה)
 והפרט הזה כן מופיע ב"פרטי האורח" שצורפו לשיחה — ענה לו ישירות עם הערך המדויק.
 אל תפנה אותו לקבלה ואל תכתוב שאינך יודע כשהמידע נמצא לפניך.
@@ -154,7 +167,7 @@ const STRICT_HEBREW_LOCK_SUFFIX = `
 
 ══ נעילת שפה ואנטי-הזיה (חובה מוחלטת) ══
 • ענה בעברית רהוטה, מפוארת ויוקרתית בלבד — לעולם לא באנגלית ולא בשפה אחרת, ללא יוצא מן הכלל.
-• אם התשובה לא מופיעה במפורש בהקשר שצורף (פרטי האורח / ידע הריזורט) — אסור לך להמציא או לנחש. השב במדויק במשפט הזה ואל תשנה אותו: "אני בודק את זה מול דלפק הקבלה, נציג אנושי יחזור אליך לכאן ברגעים אלו ממש."`;
+• אם התשובה לא מופיעה במפורש בהקשר שצורף (פרטי האורח / ידע הריזורט) — אסור לך להמציא או לנחש. השב במדויק במשפט הזה ואל תשנה אותו: "${LOW_CONFIDENCE_HANDOFF_SENTENCE}"`;
 
 // "Smart Inbox AI Copilot & System Prompt Overhaul" session — explicit
 // ROLE/TONE persona lock, unconditionally appended alongside
@@ -1333,6 +1346,33 @@ async function logAdministrativeRequestTask(
     return;
   }
   console.info(`[webhook] 📋 admin request logged — guest:${args.guestId} dept:${ADMIN_REQUESTS_DEPARTMENT} summary:${args.summary}`);
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// §4a  DEFENSIVE SHIELD — Layer 2.1: emoji/courtesy-only pass. A message that
+//      is nothing but an emoji ("👍", "🙏🏼") or a one-word courtesy closer
+//      ("תודה", "אוקי", "סגור") carries zero routing intent — sending the
+//      fallback/apology script on these makes the bot look robotic and
+//      spammy. Conversation metadata is still logged, but NO reply goes out —
+//      silence is the correct human reaction to "thanks 🙏", exactly like a
+//      staff member would react. Runs before every other Tier-0 classifier
+//      and before the LLM — zero token/latency cost.
+// ══════════════════════════════════════════════════════════════════════════════
+async function handleCourtesyAck(
+  supabase: ReturnType<typeof createClient>,
+  opts: {
+    phone: string;
+    guestId: number | null;
+    msgId: string;
+    claimedConversationId: number | null;
+  },
+): Promise<void> {
+  const { phone, guestId, msgId, claimedConversationId } = opts;
+  await patchClaimedInbound(supabase, claimedConversationId, msgId, {
+    guest_id: guestId,
+    intent: "courtesy_ack",
+  });
+  console.info(`[webhook] 🤫 courtesy/emoji-only message — silent exit, no fallback sent — phone:${phone}`);
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -3240,6 +3280,14 @@ Deno.serve(async (req: Request) => {
         continue;
       }
 
+      // ── Defensive Shield — emoji/courtesy-only pass (Layer 2.1) ────────────
+      // Checked before every other Tier-0 classifier — a pure "👍"/"תודה" never
+      // needs date-change/complaint/operational routing or the LLM.
+      if (!isButtonReply && isLowValueCourtesyMessage(text)) {
+        await handleCourtesyAck(supabase, { phone, guestId, msgId, claimedConversationId });
+        continue;
+      }
+
       // ── Severe complaint kill-switch — checked first, before any other Tier-0
       // classifier or LLM. A furious/serious complaint must never be routed
       // into date-change/upsell/generic-complaint copy or free-text LLM output —
@@ -3392,6 +3440,12 @@ Deno.serve(async (req: Request) => {
         console.info(
           `[webhook] burst coalesced ${burst.coalescedText.split("\n").length} msgs — phone:${phone}`,
         );
+      }
+
+      // ── Defensive Shield — emoji/courtesy-only pass (post-burst) ───────────
+      if (!isButtonReply && effectiveText !== text && isLowValueCourtesyMessage(effectiveText)) {
+        await handleCourtesyAck(supabase, { phone, guestId, msgId, claimedConversationId });
+        continue;
       }
 
       // ── Severe complaint kill-switch (post-burst fragmented asks) ──────────
@@ -3896,27 +3950,56 @@ Deno.serve(async (req: Request) => {
         );
       }
 
-      // ── Send WhatsApp reply ───────────────────────────────────────────────
-      let outboundMsgId: string | null = null;
-      try {
-        outboundMsgId = await sendReply(phone, reply);
-      } catch (e) {
-        console.error("[webhook] sendReply error:", (e as Error).message);
+      // ── Defensive Shield — Layer 2.2: quiet red-alert on low-confidence FAQ
+      // miss. `reply` still equals the model's literal LOW_CONFIDENCE_HANDOFF_
+      // SENTENCE only if nothing downstream (pre-send safety nets / upsell
+      // gates above) overwrote it with a more specific reply — self-correcting
+      // by construction, no separate flag to keep in sync. Instead of sending
+      // the "I'm checking with reception" filler (which starts to look dumb
+      // repeated across many misses), go silent and let staff pick it up from
+      // the red-alert badge.
+      const isLowConfidenceFaqMiss = reply.includes(LOW_CONFIDENCE_HANDOFF_SENTENCE);
+      if (isLowConfidenceFaqMiss && guestId) {
+        supabase
+          .from("guests")
+          .update({
+            requires_attention:       true,
+            requires_attention_since: new Date().toISOString(),
+            attention_reason:         "שאלה מורכבת לצוות",
+          })
+          .eq("id", guestId)
+          .then(({ error }: { error: { message: string } | null }) => {
+            if (error) console.error("[webhook] 🤔 low-confidence FAQ guest update FAILED:", error.message);
+          });
       }
 
-      // ── Save outbound message ─────────────────────────────────────────────
-      await supabase.from("whatsapp_conversations").insert({
-        phone,
-        guest_id:      guestId,
-        direction:     "outbound",
-        message:       reply,
-        wa_message_id: outboundMsgId,
-        intent,                        // mirror intent for inbox filtering
-      });
+      if (isLowConfidenceFaqMiss) {
+        console.info(
+          `[webhook] 🔕 Defensive Shield — low-confidence FAQ miss, reply suppressed, staff flagged — phone:${phone} guest:${guestId ?? "unknown"}`,
+        );
+      } else {
+        // ── Send WhatsApp reply ─────────────────────────────────────────────
+        let outboundMsgId: string | null = null;
+        try {
+          outboundMsgId = await sendReply(phone, reply);
+        } catch (e) {
+          console.error("[webhook] sendReply error:", (e as Error).message);
+        }
 
-      console.info(
-        `[webhook] ✅ replied (${intent}) to ${phone} | msgId=${outboundMsgId}`
-      );
+        // ── Save outbound message ───────────────────────────────────────────
+        await supabase.from("whatsapp_conversations").insert({
+          phone,
+          guest_id:      guestId,
+          direction:     "outbound",
+          message:       reply,
+          wa_message_id: outboundMsgId,
+          intent,                        // mirror intent for inbox filtering
+        });
+
+        console.info(
+          `[webhook] ✅ replied (${intent}) to ${phone} | msgId=${outboundMsgId}`
+        );
+      }
     }
   };
 

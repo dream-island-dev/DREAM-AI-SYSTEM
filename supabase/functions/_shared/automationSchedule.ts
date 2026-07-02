@@ -593,3 +593,30 @@ export function isSevereComplaint(text: string): boolean {
   if (!t) return false;
   return SEVERE_COMPLAINT_PATTERN.test(t);
 }
+
+// ── Defensive Shield — emoji/courtesy-only pass (Layer 2.1) ─────────────────
+// A message that is nothing but an emoji ("👍", "🙏🏼") or a one-word courtesy
+// closer ("תודה", "אוקי", "סגור") carries zero routing intent — sending the
+// fallback/apology script on these makes the bot look robotic and spammy.
+// Deliberately narrow: any additional substantive text after the courtesy
+// word (e.g. "תודה על העזרה עם המזגן") must NOT match, so it still reaches
+// the normal Tier-0/LLM pipeline unchanged.
+
+/** Trimmed string is nothing but emoji/pictographic characters + whitespace. */
+export const EMOJI_ONLY_PATTERN =
+  /^[\s\p{Extended_Pictographic}‍️☀-➿]+$/u;
+
+/**
+ * One of a fixed set of courtesy closers, optionally followed only by
+ * punctuation/whitespace/emoji — never by more Hebrew/English words, which
+ * would signal a real (if short) message rather than a closer.
+ */
+export const COURTESY_ONLY_PATTERN =
+  /^(?:תודה(?:\s*רבה)?|תודה\s*לך|הבנתי|הבנת|סגור|סבבה|בסדר(?:\s*גמור)?|היי+|הי|שלום|אוקיי?|יא?ל+ה|מעולה|נהדר|great|awesome|perfect|cool|thanks?(?:\s*a\s*lot)?|thank\s*you|thx|ty|ok(?:ay)?|got\s*it|understood|sounds?\s*good)[\s!.,?~*'"‍️]*[\p{Extended_Pictographic}☀-➿]*[\s!.,?~*'"]*$/iu;
+
+export function isLowValueCourtesyMessage(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  if (EMOJI_ONLY_PATTERN.test(t)) return true;
+  return COURTESY_ONLY_PATTERN.test(t);
+}
