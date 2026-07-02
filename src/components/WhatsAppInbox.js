@@ -3,7 +3,7 @@
 // Two-panel UI: contact list (right) + message thread (left, RTL)
 // Real-time updates via Supabase Realtime
 
-import React, { useEffect, useState, useRef, useCallback } from "react";
+import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import AddGuestModal from "./AddGuestModal";
 import AILearningButton from "./AILearningButton";
@@ -31,6 +31,35 @@ const HIT_STAFF = "var(--hit-target-staff, 44px)";
 const HIT_COMFORT = "var(--hit-target-comfort, 48px)";
 
 const POLL_MS = 5000; // fallback polling interval (realtime is primary) — 5s safe minimum
+
+// ── Performance tuning (Sprint: Inbox render/fetch speed) ────────────────────
+// INITIAL_FETCH_LIMIT bounds the first paint to a recent-activity window
+// instead of the whole table — see fetchAll() below for why the previous
+// ascending+limit(2000) query was actually fetching the OLDEST 2000 rows,
+// not the newest, once total row count passed 2000.
+const INITIAL_FETCH_LIMIT  = 400;  // recent-window rows for fast first paint
+const OLDER_BATCH_LIMIT    = 400;  // additional rows per "load older" click
+const THREAD_HISTORY_LIMIT = 1500; // full-history cap for a single opened contact
+
+// Columns actually consumed downstream (normalise()/groupByPhone()) — guest_notes
+// used to be selected on every message row but was never read past normalise(),
+// pure dead payload multiplied across every row in every fetch.
+const CONVERSATION_SELECT =
+  "id, phone, direction, message, wa_message_id, created_at, intent, human_requested, human_request_type, push_name, " +
+  "guests(id, name, spa_time, room, room_type, status, arrival_date, departure_date, portal_token, meal_time, meal_location, claimed_by, claimed_at)";
+
+// Module-level (outside the component) — survives WhatsAppInbox unmount/remount
+// within the same tab session. App.js has no router (see CLAUDE.md §4): switching
+// pages unmounts this component entirely, so without this every tab-away/back
+// re-ran fetchAll() from scratch. Intentionally memory-only (no localStorage) —
+// cleared on a hard refresh so stale guest data never survives a reload.
+const inboxMemoryCache = {
+  messages: null,        // flat allMsgsRef equivalent
+  lastSeenAt: null,
+  oldestSeenAt: null,
+  hasMoreOlder: false,
+  hydratedPhones: null,  // array (Set serialized) of phones with full history loaded
+};
 
 function substituteTemplateVars(bodyText, varValues) {
   if (!bodyText) return "";
@@ -191,6 +220,8 @@ const T = {
     dismissAllConfirm: "האם אתה בטוח שברצונך לאפס את כל התראות הקבלה?",
     dismissAllDone: (n) => `✓ אופסו ${n} התראות`,
     dismissAllNone: "אין התראות פעילות ברשימה",
+    loadOlder: "טען שיחות ישנות יותר ⬇",
+    loadOlderBusy: "⏳ טוען שיחות ישנות…",
   },
   en: {
     dir: "ltr",
@@ -237,6 +268,8 @@ const T = {
     dismissAllConfirm: "Clear all reception alerts in the current list?",
     dismissAllDone: (n) => `✓ Cleared ${n} alert(s)`,
     dismissAllNone: "No active alerts in list",
+    loadOlder: "Load older conversations ⬇",
+    loadOlderBusy: "⏳ Loading older…",
   },
 };
 
@@ -420,7 +453,49 @@ function roomChipMeta(contact) {
 // Swipe-to-reveal (mobile only): pointer-drag past a 48px threshold reveals
 // Archive / Resolved actions behind the row, mirroring the approved mockup.
 // Works with touch AND mouse (pointer events), so no gesture library needed.
-function ContactItem({ contact, isActive, isMobile, t, dir, onClick, onDismiss, onArchive, scriptsByKey, templatesByWaName }) {
+// Custom equality for React.memo below — groupByPhone() rebuilds a fresh
+// `contact` object (and a fresh `messages` array) on every regroup regardless
+// of whether THIS contact's data actually changed, so a plain reference
+// comparison would never let memo bail out. This compares the fields the row
+// actually renders instead, so a new message for guest A doesn't force a
+// re-render of every other row in the roster.
+function contactItemPropsEqual(prev, next) {
+  if (prev.isActive !== next.isActive) return false;
+  if (prev.isMobile !== next.isMobile) return false;
+  if (prev.t !== next.t) return false;
+  if (prev.dir !== next.dir) return false;
+  if (prev.scriptsByKey !== next.scriptsByKey) return false;
+  if (prev.templatesByWaName !== next.templatesByWaName) return false;
+  if (prev.onClick !== next.onClick) return false;
+  if (prev.onDismiss !== next.onDismiss) return false;
+  if (prev.onArchive !== next.onArchive) return false;
+  const a = prev.contact, b = next.contact;
+  if (a === b) return true;
+  if (a.phone !== b.phone) return false;
+  if (a.guestName !== b.guestName) return false;
+  if (a.pushName !== b.pushName) return false;
+  if (a.status !== b.status) return false;
+  if (a.room !== b.room) return false;
+  if (a.roomType !== b.roomType) return false;
+  if (a.arrivalDate !== b.arrivalDate) return false;
+  if (a.departureDate !== b.departureDate) return false;
+  if (a.claimedBy !== b.claimedBy) return false;
+  if (a.claimedByName !== b.claimedByName) return false;
+  if (a.humanRequested !== b.humanRequested) return false;
+  if (a.humanRequestType !== b.humanRequestType) return false;
+  if (a.messages.length !== b.messages.length) return false;
+  const aLast = a.messages[a.messages.length - 1];
+  const bLast = b.messages[b.messages.length - 1];
+  if (aLast?.id !== bLast?.id) return false;
+  // Unread count can change (openContact marks earlier inbound rows read)
+  // without touching array length or the last message id — check directly.
+  let aUnread = 0, bUnread = 0;
+  for (const m of a.messages) if (m.direction === "inbound" && !m._read) aUnread++;
+  for (const m of b.messages) if (m.direction === "inbound" && !m._read) bUnread++;
+  return aUnread === bUnread;
+}
+
+const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobile, t, dir, onClick, onDismiss, onArchive, scriptsByKey, templatesByWaName }) {
   const last  = contact.messages[contact.messages.length - 1];
   const unread = contact.messages.filter(
     (m) => m.direction === "inbound" && !m._read
@@ -474,19 +549,19 @@ function ContactItem({ contact, isActive, isMobile, t, dir, onClick, onDismiss, 
           width: ACTIONS_W, display: "flex",
         }}>
           <button
-            onClick={(e) => { e.stopPropagation(); setSwiped(false); onArchive?.(); }}
+            onClick={(e) => { e.stopPropagation(); setSwiped(false); onArchive?.(contact.phone); }}
             className="u-touch-comfort"
             style={{ flex: 1, border: "none", background: "var(--text-muted)", color: "white", fontSize: 12, fontWeight: 700 }}
           >{t.archive}</button>
           <button
-            onClick={(e) => { e.stopPropagation(); setSwiped(false); onDismiss?.(); }}
+            onClick={(e) => { e.stopPropagation(); setSwiped(false); onDismiss?.(contact); }}
             className="u-touch-comfort"
             style={{ flex: 1, border: "none", background: "var(--status-success)", color: "white", fontSize: 12, fontWeight: 700 }}
           >{t.resolve}</button>
         </div>
       )}
       <div
-        onClick={() => { if (swiped) { setSwiped(false); return; } onClick(); }}
+        onClick={() => { if (swiped) { setSwiped(false); return; } onClick(contact.phone); }}
         onPointerDown={onPointerDown}
         style={{
           padding: "var(--space-sm) var(--space-md)",
@@ -623,7 +698,7 @@ function ContactItem({ contact, isActive, isMobile, t, dir, onClick, onDismiss, 
           }}>
             {humanLabel}
             <button
-              onClick={(e) => { e.stopPropagation(); onDismiss?.(); }}
+              onClick={(e) => { e.stopPropagation(); onDismiss?.(contact); }}
               title="סמן כטופל — בטל בקשת מענה אנושי"
               className={isMobile ? "u-touch-staff" : undefined}
               style={{
@@ -639,7 +714,7 @@ function ContactItem({ contact, isActive, isMobile, t, dir, onClick, onDismiss, 
       </div>
     </div>
   );
-}
+}, contactItemPropsEqual);
 
 // ── Message bubble ────────────────────────────────────────────────────────────
 // Luxury-tone visual hierarchy: inbound guest messages stay crisp/light for
@@ -647,7 +722,12 @@ function ContactItem({ contact, isActive, isMobile, t, dir, onClick, onDismiss, 
 // palette (--black-soft, --gold-light) instead of WhatsApp stock green, so the
 // thread visually matches the rest of the app rather than looking like a
 // generic chat widget.
-function Bubble({ msg, dir, resolveCtx }) {
+// React.memo (default shallow-compare) is effective here because `msg` row
+// objects keep referential identity across regroups (groupByPhone pushes the
+// same row reference, not a clone) and `resolveCtx` is memoized on primitives
+// below (see activeResolveCtx) — so a bubble only re-renders when its own
+// message, direction, or resolved guest context actually changed.
+const Bubble = React.memo(function Bubble({ msg, dir, resolveCtx }) {
   const isOut = msg.direction === "outbound";
   const rtl = dir === "rtl";
   const displayText = resolveInboxMessageText(msg.message, resolveCtx);
@@ -679,6 +759,50 @@ function Bubble({ msg, dir, resolveCtx }) {
           {isOut && <span style={{ marginRight: 4 }}>✓✓</span>}
         </div>
       </div>
+    </div>
+  );
+});
+
+// ── Skeleton loaders (perceived-performance during initial fetch) ───────────
+// Shimmer bars use the resort's own cream/ivory palette (--border/--ivory)
+// rather than generic grey, so the loading state still reads as "this app",
+// not a stock placeholder. Keyframes live in the <style> block at render time
+// (.wa-skel-bar / @keyframes wa-shimmer), shared by both skeletons below.
+function RosterSkeleton() {
+  return (
+    <div aria-hidden="true">
+      {Array.from({ length: 6 }).map((_, i) => (
+        <div key={i} style={{
+          display: "flex", alignItems: "center", gap: 10,
+          padding: "var(--space-sm) var(--space-md)", borderBottom: "1px solid var(--border)",
+        }}>
+          <div className="wa-skel-bar" style={{ width: 40, height: 40, borderRadius: "50%", flexShrink: 0 }} />
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 6 }}>
+            <div className="wa-skel-bar" style={{ width: "50%", height: 12 }} />
+            <div className="wa-skel-bar" style={{ width: "75%", height: 10 }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ThreadSkeleton({ dir }) {
+  const rtl = dir === "rtl";
+  const rows = [
+    { out: false, w: "55%" }, { out: true, w: "38%" }, { out: false, w: "65%" },
+    { out: false, w: "32%" }, { out: true, w: "48%" }, { out: false, w: "42%" },
+  ];
+  return (
+    <div aria-hidden="true" style={{ display: "flex", flexDirection: "column", gap: 10, padding: "4px 0" }}>
+      {rows.map((r, i) => (
+        <div key={i} style={{
+          display: "flex",
+          justifyContent: r.out ? (rtl ? "flex-start" : "flex-end") : (rtl ? "flex-end" : "flex-start"),
+        }}>
+          <div className="wa-skel-bar" style={{ width: r.w, maxWidth: "78%", height: 34, borderRadius: 18 }} />
+        </div>
+      ))}
     </div>
   );
 }
@@ -1864,13 +1988,19 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
   const pendingFocusRef  = useRef(null);   // { phone, guestName? } — Requests Board deep-link
   const [navGuestName, setNavGuestName]   = useState(null); // header hint until contact hydrates
 
+  // ── Pagination / on-demand history state (perf sprint) ───────────────────
+  const oldestSeenAtRef  = useRef(null);        // ISO of the oldest row currently in allMsgsRef — "load older" watermark
+  const hydratedPhonesRef = useRef(new Set());  // phones whose full history has already been fetched via fetchThreadHistory
+  const [hasMoreOlder, setHasMoreOlder] = useState(false);
+  const [loadingOlder,  setLoadingOlder]  = useState(false);
+  const [loadingThread, setLoadingThread] = useState(false);
+
   // ── Shared row normaliser ─────────────────────────────────────────────────
   const normalise = (r) => ({
     ...r,
     phone:                  canonicalizePhone(r.phone),
     guest_id:               r.guests?.id ?? null,
     guest_name:             r.guests?.name ?? null,
-    guest_notes:            r.guests?.guest_notes ?? null,
     spa_time:               r.guests?.spa_time ?? null,
     guest_room:             r.guests?.room ?? null,
     guest_room_type:        r.guests?.room_type ?? null,
@@ -1973,21 +2103,35 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
   }, [applyGrouping]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Full fetch (initial load only) ────────────────────────────────────────
+  // Recency-windowed, NOT the whole table: previously this ordered ascending
+  // + limit(2000), which fetches the OLDEST 2000 rows — once the table passed
+  // 2000 total messages, brand-new guest activity would never appear on first
+  // paint at all (fetchSince would eventually crawl forward to it, ~100
+  // rows/poll-tick, but that could take minutes). Ordering by created_at DESC
+  // and reversing in memory fixes correctness AND shrinks the payload —
+  // recommend an index on (created_at DESC) alone (see migration 122) since
+  // the existing indexes are all phone/guest_id-prefixed composites that
+  // don't help a table-wide recency scan.
   const fetchAll = useCallback(async () => {
     const { data, error: err } = await supabase
       .from("whatsapp_conversations")
-      .select("id, phone, direction, message, wa_message_id, created_at, intent, human_requested, human_request_type, push_name, guests(id, name, guest_notes, spa_time, room, room_type, status, arrival_date, departure_date, portal_token, meal_time, meal_location, claimed_by, claimed_at)")
-      .order("created_at", { ascending: true })
-      .limit(2000);
+      .select(CONVERSATION_SELECT)
+      .order("created_at", { ascending: false })
+      .limit(INITIAL_FETCH_LIMIT);
 
     if (err) { setError(err.message); return; }
 
-    const flat = (data ?? []).map(normalise);
+    const rows = data ?? [];
+    const flat = rows.map(normalise).reverse(); // back to ascending — every downstream consumer expects oldest→newest
     allMsgsRef.current = flat;
     // Watermark = latest row timestamp (not wall-clock) so rows inserted during
     // fetchAll are not skipped by the next incremental poll.
     const maxTs = flat.reduce((max, m) => (m.created_at > max ? m.created_at : max), "");
     lastSeenAt.current = maxTs || new Date().toISOString();
+    oldestSeenAtRef.current = flat.length ? flat[0].created_at : null;
+    // Got a full page → there's likely older history beyond the window (heuristic,
+    // not exact — worst case the "load older" button does one extra empty fetch).
+    setHasMoreOlder(rows.length === INITIAL_FETCH_LIMIT);
     setContacts(applyGrouping(flat));
     setLastUpdated(new Date());
     setLoading(false);
@@ -2003,7 +2147,7 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
 
     const { data, error: fetchErr } = await supabase
       .from("whatsapp_conversations")
-      .select("id, phone, direction, message, wa_message_id, created_at, intent, human_requested, human_request_type, push_name, guests(id, name, guest_notes, spa_time, room, room_type, status, arrival_date, departure_date, portal_token, meal_time, meal_location, claimed_by, claimed_at)")
+      .select(CONVERSATION_SELECT)
       .gte("created_at", since)
       .order("created_at", { ascending: true })
       .limit(100);
@@ -2014,6 +2158,83 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
     }
     mergeIncomingRows(data ?? []);
   }, [mergeIncomingRows]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Load older conversations — pagination for the recency-windowed initial
+  // fetch above. Pulls the next OLDER_BATCH_LIMIT rows before oldestSeenAtRef
+  // and prepends them (ascending order preserved). Nothing is ever silently
+  // hidden: staff who need to reach further back than the fast-load window
+  // have an explicit, visible affordance — "New Chat" guest search is also
+  // unaffected since it queries `guests` directly, not this windowed pool.
+  const fetchOlder = useCallback(async () => {
+    if (!oldestSeenAtRef.current || loadingOlder) return;
+    setLoadingOlder(true);
+    try {
+      const { data, error: err } = await supabase
+        .from("whatsapp_conversations")
+        .select(CONVERSATION_SELECT)
+        .lt("created_at", oldestSeenAtRef.current)
+        .order("created_at", { ascending: false })
+        .limit(OLDER_BATCH_LIMIT);
+
+      if (err) { setError(err.message); return; }
+
+      const rows = data ?? [];
+      const older = rows.map(normalise).reverse();
+      setHasMoreOlder(rows.length === OLDER_BATCH_LIMIT);
+      if (older.length) {
+        oldestSeenAtRef.current = older[0].created_at;
+        const merged = [...older, ...allMsgsRef.current];
+        allMsgsRef.current = merged;
+        setContacts(applyGrouping(merged));
+      }
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, [loadingOlder, applyGrouping]);
+
+  // ── Full history for a single opened contact ──────────────────────────────
+  // The recency-windowed fetchAll/fetchOlder pool may not contain a guest's
+  // entire conversation history. When staff actually open a thread, hydrate it
+  // fully (bounded, single-phone query — cheap regardless of table size) so
+  // the visible thread is never silently truncated. Runs once per phone per
+  // session (hydratedPhonesRef) — cheap to skip on repeat clicks.
+  const fetchThreadHistory = useCallback(async (phone) => {
+    if (!phone || hydratedPhonesRef.current.has(phone)) return;
+    hydratedPhonesRef.current.add(phone); // mark eagerly — avoid duplicate concurrent fetches on rapid re-click
+    setLoadingThread(true);
+    try {
+      const { data, error: err } = await supabase
+        .from("whatsapp_conversations")
+        .select(CONVERSATION_SELECT)
+        .in("phone", phoneVariants(phone))
+        .order("created_at", { ascending: true })
+        .limit(THREAD_HISTORY_LIMIT);
+
+      if (err) {
+        console.warn("[WA-inbox] fetchThreadHistory error:", err.message);
+        return;
+      }
+      const rows = (data ?? []).map(normalise);
+      const existingIds = new Set(allMsgsRef.current.map((m) => m.id));
+      const toAdd = rows.filter((m) => m.id && !existingIds.has(m.id));
+      if (!toAdd.length) return;
+      const merged = [...allMsgsRef.current, ...toAdd].sort((a, b) =>
+        a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0
+      );
+      allMsgsRef.current = merged;
+      setContacts(applyGrouping(merged));
+    } finally {
+      setLoadingThread(false);
+    }
+  }, [applyGrouping]);
+
+  // ── Archive a contact locally ─────────────────────────────────────────────
+  // Stable useCallback reference (not an inline arrow per roster row) so
+  // ContactItem's React.memo comparator above can actually treat this prop as
+  // unchanged across renders — see contactItemPropsEqual.
+  const archiveContact = useCallback((phone) => {
+    setArchivedPhones((prev) => new Set(prev).add(phone));
+  }, []);
 
   // ── Dismiss human-intervention request ────────────────────────────────────
   // Clears both layers in one click: the per-message `human_requested` flag
@@ -2244,7 +2465,8 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
       m.phone === phone && m.direction === "inbound" ? { ...m, _read: true } : m
     );
     setContacts(applyGrouping(allMsgsRef.current));
-  }, [isMobile, applyGrouping]);
+    fetchThreadHistory(phone); // background hydrate — full history may exceed the fast-load window
+  }, [isMobile, applyGrouping, fetchThreadHistory]);
 
   // ── Deep-link focus (Requests Board → "פתח שיחה ב-DREAM BOT") ───────────
   useEffect(() => {
@@ -2449,22 +2671,59 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
   // fetchAll fires once; after that only fetchSince runs every POLL_MS (fallback).
   // Polling is ONLY a fallback when Realtime is unavailable — Realtime is primary.
   // This keeps the payload tiny (≤100 rows) on every tick.
+  //
+  // Cache-restore fast path: if a previous mount already populated
+  // inboxMemoryCache (staff switched tabs and came back), paint instantly from
+  // memory instead of blanking to a loading state, then silently revalidate
+  // via fetchSince() — same "instant from memory, quietly re-validate" contract
+  // fetchSince already has for the polling/Realtime path, just triggered once
+  // more on remount to catch anything that arrived while unmounted.
   useEffect(() => {
-    console.log("[WA-inbox] Initial load: calling fetchAll()...");
-    fetchAll().then(() => {
-      console.log(`[WA-inbox] ✓ fetchAll complete — starting fallback polling every ${POLL_MS}ms`);
+    function startPolling() {
       pollRef.current = setInterval(() => {
         console.log("[WA-inbox] 📋 Polling tick (fallback)");
         fetchSince();
       }, POLL_MS);
-    });
+    }
+
+    if (inboxMemoryCache.messages) {
+      console.log(`[WA-inbox] Restoring ${inboxMemoryCache.messages.length} cached rows — instant paint, revalidating in background`);
+      allMsgsRef.current = inboxMemoryCache.messages;
+      lastSeenAt.current = inboxMemoryCache.lastSeenAt;
+      oldestSeenAtRef.current = inboxMemoryCache.oldestSeenAt;
+      hydratedPhonesRef.current = new Set(inboxMemoryCache.hydratedPhones ?? []);
+      setHasMoreOlder(inboxMemoryCache.hasMoreOlder);
+      setContacts(applyGrouping(allMsgsRef.current));
+      setLastUpdated(new Date());
+      setLoading(false);
+      alertsReadyRef.current = true;
+      fetchSince().then(startPolling);
+    } else {
+      console.log("[WA-inbox] Initial load: calling fetchAll()...");
+      fetchAll().then(() => {
+        console.log(`[WA-inbox] ✓ fetchAll complete — starting fallback polling every ${POLL_MS}ms`);
+        startPolling();
+      });
+    }
     return () => {
       if (pollRef.current) {
         clearInterval(pollRef.current);
         console.log("[WA-inbox] Cleared fallback polling on unmount");
       }
     };
-  }, [fetchAll, fetchSince]);
+  }, [fetchAll, fetchSince, applyGrouping]);
+
+  // ── Write-through to the module-level cross-mount cache ──────────────────
+  // Runs after every contacts update regardless of which mutation caused it
+  // (fetch/merge/claim/dismiss/guest-edit all funnel through setContacts) —
+  // centralizing here avoids touching every individual mutation call site.
+  useEffect(() => {
+    inboxMemoryCache.messages = allMsgsRef.current;
+    inboxMemoryCache.lastSeenAt = lastSeenAt.current;
+    inboxMemoryCache.oldestSeenAt = oldestSeenAtRef.current;
+    inboxMemoryCache.hasMoreOlder = hasMoreOlder;
+    inboxMemoryCache.hydratedPhones = [...hydratedPhonesRef.current];
+  }, [contacts, hasMoreOlder]);
 
   // ── Fetch bot active status from bot_config ───────────────────────────────
   useEffect(() => {
@@ -2628,11 +2887,17 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
     if (activeContact?.guestName) setNavGuestName(null);
   }, [activeContact?.guestName]);
 
-  const activeResolveCtx = {
+  // Memoized on the specific primitive fields buildGuestResolveContext() reads
+  // (not on `activeContact` itself, which groupByPhone rebuilds as a fresh
+  // object on every regroup — including regroups triggered by an unrelated
+  // guest's new message). This keeps resolveCtx's identity stable across
+  // those unrelated updates, which is what lets React.memo(Bubble) above
+  // actually skip re-rendering the whole open thread on every merge.
+  const activeResolveCtx = useMemo(() => ({
     ...buildGuestResolveContext(activeContact),
     scriptsByKey,
     templatesByWaName,
-  };
+  }), [activeContact?.guestName, activeContact?.pushName, activeContact?.room, activeContact?.portalToken, activeContact?.arrivalDate, activeContact?.spaTime, scriptsByKey, templatesByWaName]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!active) return;
@@ -2727,27 +2992,48 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
           </button>
         </div>
       </div>
-      {!loading && visibleContacts.length === 0 && (
-        <div style={{ padding: "var(--space-lg)", textAlign: "center", color: "var(--text-muted)" }}>
-          <div style={{ fontSize: 32, marginBottom: 8 }}>{t.emptyIcon}</div>
-          <div style={{ fontSize: 13 }}>{t.emptyBody}</div>
-        </div>
+      {loading && visibleContacts.length === 0 ? (
+        <RosterSkeleton />
+      ) : (
+        <>
+          {visibleContacts.length === 0 && (
+            <div style={{ padding: "var(--space-lg)", textAlign: "center", color: "var(--text-muted)" }}>
+              <div style={{ fontSize: 32, marginBottom: 8 }}>{t.emptyIcon}</div>
+              <div style={{ fontSize: 13 }}>{t.emptyBody}</div>
+            </div>
+          )}
+          {visibleContacts.map((c) => (
+            <ContactItem
+              key={c.phone}
+              contact={c}
+              isActive={active === c.phone}
+              isMobile={isMobile}
+              t={t}
+              dir={t.dir}
+              scriptsByKey={scriptsByKey}
+              templatesByWaName={templatesByWaName}
+              onClick={openContact}
+              onDismiss={dismissHumanRequest}
+              onArchive={archiveContact}
+            />
+          ))}
+          {hasMoreOlder && (
+            <button
+              type="button"
+              onClick={fetchOlder}
+              disabled={loadingOlder}
+              style={{
+                display: "block", width: "100%", padding: "var(--space-sm)",
+                background: "var(--ivory)", border: "none", borderTop: "1px solid var(--border)",
+                color: "var(--gold-dark, #A8843A)", fontSize: 12, fontWeight: 700,
+                cursor: loadingOlder ? "not-allowed" : "pointer", opacity: loadingOlder ? 0.7 : 1,
+              }}
+            >
+              {loadingOlder ? t.loadOlderBusy : t.loadOlder}
+            </button>
+          )}
+        </>
       )}
-      {visibleContacts.map((c) => (
-        <ContactItem
-          key={c.phone}
-          contact={c}
-          isActive={active === c.phone}
-          isMobile={isMobile}
-          t={t}
-          dir={t.dir}
-          scriptsByKey={scriptsByKey}
-          templatesByWaName={templatesByWaName}
-          onClick={() => openContact(c.phone)}
-          onDismiss={() => dismissHumanRequest(c)}
-          onArchive={() => setArchivedPhones((prev) => new Set(prev).add(c.phone))}
-        />
-      ))}
     </div>
   );
 
@@ -2898,15 +3184,21 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
         flex: 1, minHeight: 0, overflowY: "auto", padding: "16px 20px",
         background: "#E5DDD5", display: "flex", flexDirection: "column", gap: 6,
       }}>
-        {thread.map((msg) => (
-          <Bubble
-            key={msg.id}
-            msg={msg}
-            dir={t.dir}
-            resolveCtx={activeResolveCtx}
-          />
-        ))}
-        <div ref={bottomRef} />
+        {loadingThread && thread.length === 0 ? (
+          <ThreadSkeleton dir={t.dir} />
+        ) : (
+          <>
+            {thread.map((msg) => (
+              <Bubble
+                key={msg.id}
+                msg={msg}
+                dir={t.dir}
+                resolveCtx={activeResolveCtx}
+              />
+            ))}
+            <div ref={bottomRef} />
+          </>
+        )}
       </div>
 
       {error && (
@@ -3201,6 +3493,16 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
         @keyframes wa-pulse {
           0%, 100% { opacity: 1; transform: scale(1); }
           50%       { opacity: 0.5; transform: scale(1.4); }
+        }
+        @keyframes wa-shimmer {
+          0%   { background-position: 100% 50%; }
+          100% { background-position: 0% 50%; }
+        }
+        .wa-skel-bar {
+          background: linear-gradient(90deg, var(--border) 25%, var(--ivory) 50%, var(--border) 75%);
+          background-size: 400% 100%;
+          animation: wa-shimmer 1.4s ease-in-out infinite;
+          border-radius: 6px;
         }
       `}</style>
 
