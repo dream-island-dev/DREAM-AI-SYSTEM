@@ -2336,8 +2336,17 @@ async function callClaude(
 
 /** Matches affirmative replies to the pre-arrival confirmation request.
  *  Handles typed variants: "כן", "כן מגיעים", "מגיעים!", "אנחנו מגיעים", etc.
+ *  ⚠️ Deliberately EXCLUDES generic courtesy/acknowledgement words ("בסדר", "ok",
+ *  "מצוין", "נראה מצוין", bare "1") — those were removed after a production bug
+ *  where a pre-arrival guest replying "בסדר"/"מצוין" to an UNRELATED message
+ *  (e.g. a spa/portal note) was misread as arrival confirmation and triggered
+ *  the arrival-confirmed reply (which mentions spa_time). Those words are
+ *  exactly the vocabulary of COURTESY_ONLY_PATTERN (_shared/automationSchedule.ts)
+ *  — see also the reordered Defensive Shield check below, which now runs
+ *  BEFORE this block so any future overlap fails safe (silence) instead of
+ *  fails loud (a misdirected confirmation reply).
  */
-const CONFIRMATION_RE = /^[\s🎉✨😊🙂🙏💫🌴]*(?:כן[,!\s.]*)?(?:מגיעים|אנחנו מגיעים|כן מגיעים|כן,מגיעים|כן! מגיעים|כן|אישור|yes|1|מאשר|מאשרת|כן תודה|כן אישור|אישורי|בסדר|ok|נראה מצוין|מצוין)[\s🎉✨😊🙂🙏💫🌴!.,]*$/iu;
+const CONFIRMATION_RE = /^[\s🎉✨😊🙂🙏💫🌴]*(?:כן[,!\s.]*)?(?:מגיעים|אנחנו מגיעים|כן מגיעים|כן,מגיעים|כן! מגיעים|כן|אישור|yes|מאשר|מאשרת|כן תודה|כן אישור|אישורי)[\s🎉✨😊🙂🙏💫🌴!.,]*$/iu;
 
 const GOOGLE_REVIEW_URL   = Deno.env.get("GOOGLE_REVIEW_URL")   ?? "";
 
@@ -3281,6 +3290,20 @@ Deno.serve(async (req: Request) => {
         continue; // skip normal intent routing
       }
 
+      // ── Defensive Shield — emoji/courtesy-only pass (Layer 2.1) ────────────
+      // Checked before EVERY other Tier-0 classifier, including the typed
+      // arrival-confirmation fallback right below — a pure "👍"/"תודה"/"בסדר"
+      // never needs date-change/complaint/operational/confirmation routing or
+      // the LLM. This ordering is load-bearing: a production bug shipped when
+      // this check ran AFTER the confirmation-text block (see CONFIRMATION_RE
+      // comment above) — a guest's unrelated "בסדר"/"מצוין" reply was swept
+      // into "arrival confirmed" and triggered the spa-mentioning confirmation
+      // reply. Keep this first so any future regex overlap fails safe (silence).
+      if (!isButtonReply && isLowValueCourtesyMessage(text)) {
+        await handleCourtesyAck(supabase, { phone, guestId, msgId, claimedConversationId });
+        continue;
+      }
+
       // ── Text confirmation detection (fallback for guests who type "כן" manually) ──
       // Gate is lifecycle-based (not yet checked in / not cancelled), not on
       // msg_pre_arrival_2d_sent — that flag only flips once whatsapp-cron's
@@ -3411,14 +3434,6 @@ Deno.serve(async (req: Request) => {
         }
 
         console.info(`[webhook] 🕐 arrival_time record-only — phone:${phone} time:${arrivalTime}`);
-        continue;
-      }
-
-      // ── Defensive Shield — emoji/courtesy-only pass (Layer 2.1) ────────────
-      // Checked before every other Tier-0 classifier — a pure "👍"/"תודה" never
-      // needs date-change/complaint/operational routing or the LLM.
-      if (!isButtonReply && isLowValueCourtesyMessage(text)) {
-        await handleCourtesyAck(supabase, { phone, guestId, msgId, claimedConversationId });
         continue;
       }
 
