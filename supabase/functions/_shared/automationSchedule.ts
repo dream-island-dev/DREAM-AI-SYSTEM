@@ -146,7 +146,16 @@ export interface GuestForSchedule {
   checkin_time: string | null;
   needs_callback: boolean | null;
   automation_muted?: boolean | null;
+  /** WhatsAppInbox "קח שיחה" — staff-owned thread; blocks autonomous cron sends. */
+  claimed_by?: string | null;
   [flagColumn: string]: unknown;
+}
+
+/** True when DREAM BOT staff-claim mute is active on this guest row. */
+export function isGuestStaffClaimActive(
+  guest: { claimed_by?: unknown } | null | undefined,
+): boolean {
+  return guest?.claimed_by != null && guest.claimed_by !== "";
 }
 
 export interface ScheduleResult {
@@ -192,6 +201,7 @@ export function checkEligibility(
   if (guest.status === "cancelled") return "guest_cancelled";
   // needs_callback is a staff UI alert only — intentionally NOT checked here (session 59).
   if (guest.automation_muted === true) return "automation_muted";
+  if (isGuestStaffClaimActive(guest)) return "staff_claim_active";
   if (stage.guest_flag_column && guest[stage.guest_flag_column] === true) return "already_sent";
 
   if (stage.applies_to === "suite" && guest.room_type !== "suite") return "wrong_room_type";

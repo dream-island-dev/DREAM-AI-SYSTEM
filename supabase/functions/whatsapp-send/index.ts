@@ -1454,6 +1454,22 @@ serve(async (req: Request) => {
       );
     }
 
+    // Staff "קח שיחה" — block autonomous pipeline/cron triggers only; manual
+    // inbox/broadcast and deliberate room_ready approval still allowed.
+    const STAFF_CLAIM_AUTOMATION_EXEMPT = new Set([...MANUAL_TRIGGERS, "room_ready"]);
+    if (
+      !force &&
+      guest.claimed_by != null &&
+      guest.claimed_by !== "" &&
+      !STAFF_CLAIM_AUTOMATION_EXEMPT.has(trigger)
+    ) {
+      console.log(`[whatsapp-send] skipped trigger="${trigger}" guestId=${guestId} reason=staff_claim_active`);
+      return new Response(
+        JSON.stringify({ ok: true, skipped: true, reason: "staff_claim_active" }),
+        { headers: { ...CORS, "Content-Type": "application/json" } },
+      );
+    }
+
     if (force === true || manual_override === true) {
       await cancelScheduledTaskForOverride(guestId, trigger);
     }

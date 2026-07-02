@@ -2100,8 +2100,19 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
       const patch = claim
         ? { claimed_by: user.id, claimed_at: new Date().toISOString() }
         : { claimed_by: null, claimed_at: null };
-      const { error: err } = await supabase.from("guests").update(patch).in("phone", variants);
+      const { data: updatedRows, error: err } = await supabase
+        .from("guests")
+        .update(patch)
+        .in("phone", variants)
+        .select("id");
       if (err) throw err;
+      if (!updatedRows?.length) {
+        throw new Error(
+          claim
+            ? "לא נמצא פרופיל אורח לטלפון הזה — לא ניתן להשתיק את הבוט. הוסף/י את האורח תחילה."
+            : "לא נמצא פרופיל אורח לטלפון הזה — לא ניתן לשחרר שיוך.",
+        );
+      }
 
       allMsgsRef.current = allMsgsRef.current.map((m) =>
         m.phone === contact.phone

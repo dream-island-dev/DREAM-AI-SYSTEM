@@ -457,6 +457,9 @@ async function sendStage2PayReply(
     console.info(`[webhook] 💳 Stage 2 Pay skipped — automation_muted guest_id=${guestId ?? "?"}`);
     return;
   }
+  if (guestId != null) {
+    await refreshStaffClaimMuteFromDb(supabaseClient, guestId);
+  }
   if (_suppressGuestRepliesStaffClaim || isStaffClaimMutingGuest(guest)) {
     console.info(`[webhook] 💳 Stage 2 Pay skipped — staff claim active guest_id=${guestId ?? "?"}`);
     return;
@@ -529,6 +532,10 @@ async function sendStage2PayReply(
 
   try {
     if (paymentButton?.url) {
+      if (_suppressGuestRepliesStaffClaim) {
+        console.info(`[webhook] 💳 Stage 2 Pay CTA suppressed — staff claim active guest_id=${guestId ?? "?"}`);
+        return;
+      }
       const resolvedUrl = resolveButtonUrl(paymentButton.url, { paymentLink: payLink, workshopUrl: payWorkshopUrl });
       if (!resolvedUrl || resolvedUrl.includes("{{")) {
         throw new Error("payment_button_url_unresolved");
@@ -537,9 +544,12 @@ async function sendStage2PayReply(
     } else {
       await sendReply(phone, paymentReply);
     }
-    await supabaseClient.from("whatsapp_conversations").insert({
-      phone, guest_id: guestId, direction: "outbound",
-      message: paymentReply, wa_message_id: null,
+    if (_suppressGuestRepliesStaffClaim) {
+      console.info(`[webhook] 💳 Stage 2 Pay outbound skipped — staff claim active guest_id=${guestId ?? "?"}`);
+      return;
+    }
+    await insertGuestOutboundIfNotMuted(supabaseClient, {
+      phone, guest_id: guestId as number | null, message: paymentReply, wa_message_id: null, intent: "stage_2_pay",
     });
     const { error: logErr } = await supabaseClient.from("notification_log").insert({
       guest_id: guestId, recipient: phone,
@@ -1425,10 +1435,9 @@ async function handleOperationalInHouseIntercept(
   if (!sim) {
     try {
       await sendReply(phone, reply);
-      await supabase.from("whatsapp_conversations").insert({
+      await insertGuestOutboundIfNotMuted(supabase, {
         phone,
         guest_id:      guestId,
-        direction:     "outbound",
         message:       reply,
         wa_message_id: null,
         intent:        "operational_in_house_request",
@@ -1493,10 +1502,9 @@ async function handleAdministrativeInHouseIntercept(
   if (!sim) {
     try {
       await sendReply(phone, reply);
-      await supabase.from("whatsapp_conversations").insert({
+      await insertGuestOutboundIfNotMuted(supabase, {
         phone,
         guest_id:      guestId,
-        direction:     "outbound",
         message:       reply,
         wa_message_id: null,
         intent:        "administrative_in_house_request",
@@ -1587,10 +1595,9 @@ async function handleSevereComplaintKillSwitch(
   if (!sim) {
     try {
       await sendReply(phone, templateReply);
-      await supabase.from("whatsapp_conversations").insert({
+      await insertGuestOutboundIfNotMuted(supabase, {
         phone,
         guest_id:      guestId,
-        direction:     "outbound",
         message:       templateReply,
         wa_message_id: null,
         intent:        "severe_complaint",
@@ -1671,10 +1678,9 @@ async function handleSensitiveStayChangeHandoff(
   if (!sim) {
     try {
       await sendReply(phone, CANONICAL_STAY_CHANGE_HANDOFF_MSG);
-      await supabase.from("whatsapp_conversations").insert({
+      await insertGuestOutboundIfNotMuted(supabase, {
         phone,
         guest_id:      guestId,
-        direction:     "outbound",
         message:       CANONICAL_STAY_CHANGE_HANDOFF_MSG,
         wa_message_id: null,
         intent:        "sensitive_stay_change_request",
@@ -1758,10 +1764,9 @@ async function handleSensitiveFinancialHandoff(
   if (!sim) {
     try {
       await sendReply(phone, CANONICAL_FINANCIAL_HANDOFF_MSG);
-      await supabase.from("whatsapp_conversations").insert({
+      await insertGuestOutboundIfNotMuted(supabase, {
         phone,
         guest_id:      guestId,
-        direction:     "outbound",
         message:       CANONICAL_FINANCIAL_HANDOFF_MSG,
         wa_message_id: null,
         intent:        "sensitive_financial_request",
@@ -2538,6 +2543,52 @@ function isStaffClaimMutingGuest(guest: Record<string, unknown> | null | undefin
   return guest?.claimed_by != null && guest.claimed_by !== "";
 }
 
+/** Re-read guests.claimed_by after burst wait — closes staff-claim race window. */
+async function refreshStaffClaimMuteFromDb(
+  supabase: ReturnType<typeof createClient>,
+  guestId: number | string | null,
+): Promise<boolean> {
+  if (guestId == null) {
+    setSuppressGuestRepliesStaffClaim(false);
+    return false;
+  }
+  const { data, error } = await supabase
+    .from("guests")
+    .select("claimed_by")
+    .eq("id", guestId)
+    .maybeSingle();
+  if (error) {
+    console.warn("[webhook] claimed_by re-fetch failed:", error.message);
+    return _suppressGuestRepliesStaffClaim;
+  }
+  const active = isStaffClaimMutingGuest(data as Record<string, unknown> | null);
+  setSuppressGuestRepliesStaffClaim(active);
+  if (active) {
+    console.info(`[webhook] 🔇 staff claim active (re-fetch) guest_id=${guestId}`);
+  }
+  return active;
+}
+
+type GuestOutboundRow = {
+  phone: string;
+  guest_id: number | null;
+  message: string;
+  wa_message_id: string | null;
+  intent: string;
+};
+
+/** Skip inbox ghost rows when staff-claim mute suppressed the actual Meta send. */
+async function insertGuestOutboundIfNotMuted(
+  supabase: ReturnType<typeof createClient>,
+  row: GuestOutboundRow,
+): Promise<void> {
+  if (_suppressGuestRepliesStaffClaim) return;
+  await supabase.from("whatsapp_conversations").insert({
+    ...row,
+    direction: "outbound",
+  });
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // §7  MAIN HANDLER
 // ══════════════════════════════════════════════════════════════════════════════
@@ -2993,9 +3044,8 @@ Deno.serve(async (req: Request) => {
 
           try {
             await sendReply(phone, arrivalReply);
-            await supabase.from("whatsapp_conversations").insert({
-              phone, guest_id: guestId, direction: "outbound",
-              message: arrivalReply, wa_message_id: null,
+            await insertGuestOutboundIfNotMuted(supabase, {
+              phone, guest_id: guestId, message: arrivalReply, wa_message_id: null, intent: "arrival_confirmed",
             });
             console.info(`[webhook] ✅ arrival reply sent to ${phone}`);
           } catch (e) {
@@ -3034,16 +3084,16 @@ Deno.serve(async (req: Request) => {
           const dateChangeReply =
             "העברתי את בקשתך לצוות הסוויטות שלנו, בנתיים תכתוב לי באיזה תאריכים תרצו ואנחנו נבדוק זמינות עבורכם וניצור קשר בהקדם. 🙏";
           try { await sendReply(phone, dateChangeReply); } catch (e) { console.error("[webhook] reply error:", (e as Error).message); }
-          await supabase.from("whatsapp_conversations").insert({
-            phone, guest_id: guestId, direction: "outbound", message: dateChangeReply, wa_message_id: null, intent: "date_change_request",
+          await insertGuestOutboundIfNotMuted(supabase, {
+            phone, guest_id: guestId, message: dateChangeReply, wa_message_id: null, intent: "date_change_request",
           });
 
         // ── "ספא וטיפולים 📜" — send spa menu as free text ──────────────────
         } else if (buttonTitle.includes("ספא") || buttonTitle.includes("טיפולים")) {
           const spaMenuText = scripts["spa_menu"]?.message_text?.trim() || SPA_MENU;
           try { await sendReply(phone, spaMenuText); } catch (e) { console.error("[webhook] spa menu send error:", (e as Error).message); }
-          await supabase.from("whatsapp_conversations").insert({
-            phone, guest_id: guestId, direction: "outbound", message: "[תפריט ספא]", wa_message_id: null, intent: "button_reply",
+          await insertGuestOutboundIfNotMuted(supabase, {
+            phone, guest_id: guestId, message: "[תפריט ספא]", wa_message_id: null, intent: "button_reply",
           });
 
         // ── "דברו איתי 📞" — callback requested → alert staff ───────────────
@@ -3057,8 +3107,8 @@ Deno.serve(async (req: Request) => {
           const callbackReply = scripts["callback_reply"]?.message_text?.trim()
             || "קיבלנו! 🙏 אחד מהצוות שלנו יצור אתכם קשר בהקדם. תמשיכו ליהנות!";
           try { await sendReply(phone, callbackReply); } catch (e) { console.error("[webhook] reply error:", (e as Error).message); }
-          await supabase.from("whatsapp_conversations").insert({
-            phone, guest_id: guestId, direction: "outbound", message: callbackReply, wa_message_id: null, intent: "button_reply",
+          await insertGuestOutboundIfNotMuted(supabase, {
+            phone, guest_id: guestId, message: callbackReply, wa_message_id: null, intent: "button_reply",
           });
 
         // ── "היה מושלם! ✨" — positive feedback → send Google review link ────
@@ -3068,8 +3118,8 @@ Deno.serve(async (req: Request) => {
             ? scripts["positive_feedback_reply"]!.message_text!.replace(/\{\{\s*GOOGLE_REVIEW_URL\s*\}\}/gi, reviewUrl)
             : `שמחנו מאוד לשמוע! 🌟 אם תרצו לשתף את החוויה שלכם — זה יאיר לנו את היום:\n${reviewUrl}\nתודה ענקית ומחכים לכם בפעם הבאה! 💫`;
           try { await sendReply(phone, feedbackReply); } catch (e) { console.error("[webhook] reply error:", (e as Error).message); }
-          await supabase.from("whatsapp_conversations").insert({
-            phone, guest_id: guestId, direction: "outbound", message: feedbackReply, wa_message_id: null, intent: "button_reply",
+          await insertGuestOutboundIfNotMuted(supabase, {
+            phone, guest_id: guestId, message: feedbackReply, wa_message_id: null, intent: "button_reply",
           });
           await saveGuestFeedback(supabase, {
             guestId, phone, sentiment: "positive", text: buttonTitle, source: "post_stay_button",
@@ -3083,8 +3133,8 @@ Deno.serve(async (req: Request) => {
           const improvReply = scripts["negative_feedback_reply"]?.message_text?.trim()
             || "תודה על הכנות — זה חשוב לנו מאוד. 🙏 מה היה אפשר לשפר? כתבו לנו כאן ונשתפר.";
           try { await sendReply(phone, improvReply); } catch (e) { console.error("[webhook] reply error:", (e as Error).message); }
-          await supabase.from("whatsapp_conversations").insert({
-            phone, guest_id: guestId, direction: "outbound", message: improvReply, wa_message_id: null, intent: "button_reply",
+          await insertGuestOutboundIfNotMuted(supabase, {
+            phone, guest_id: guestId, message: improvReply, wa_message_id: null, intent: "button_reply",
           });
           await saveGuestFeedback(supabase, {
             guestId, phone, sentiment: "negative", text: buttonTitle, source: "post_stay_button",
@@ -3111,8 +3161,8 @@ Deno.serve(async (req: Request) => {
               else console.info("[webhook] ✅ upsell_interest flagged for", bookingPhoneUpsell);
             });
           try { await sendReply(phone, upsellPositiveReply); } catch (e) { console.error("[webhook] upsell reply error:", (e as Error).message); }
-          await supabase.from("whatsapp_conversations").insert({
-            phone, guest_id: guestId, direction: "outbound",
+          await insertGuestOutboundIfNotMuted(supabase, {
+            phone, guest_id: guestId,
             message: upsellPositiveReply, wa_message_id: null, intent: "button_reply",
           });
 
@@ -3125,8 +3175,8 @@ Deno.serve(async (req: Request) => {
             scripts["upsell_decline_reply"]?.message_text?.trim() ||
             "הכל בסדר גמור! אנחנו כאן לכל דבר אחר שתצטרכו לקראת החופשה. 🌴";
           try { await sendReply(phone, declineReply); } catch (e) { console.error("[webhook] decline reply error:", (e as Error).message); }
-          await supabase.from("whatsapp_conversations").insert({
-            phone, guest_id: guestId, direction: "outbound",
+          await insertGuestOutboundIfNotMuted(supabase, {
+            phone, guest_id: guestId,
             message: declineReply, wa_message_id: null, intent: "button_reply",
           });
 
@@ -3136,8 +3186,8 @@ Deno.serve(async (req: Request) => {
           const genericReply = scripts["generic_button_reply"]?.message_text?.trim()
             || "תודה! 😊 קיבלנו את בחירתך. האם יש משהו נוסף שנוכל לעשות עבורכם?";
           try { await sendReply(phone, genericReply); } catch (e) { console.error("[webhook] generic button reply error:", (e as Error).message); }
-          await supabase.from("whatsapp_conversations").insert({
-            phone, guest_id: guestId, direction: "outbound", message: genericReply, wa_message_id: null, intent: "button_reply",
+          await insertGuestOutboundIfNotMuted(supabase, {
+            phone, guest_id: guestId, message: genericReply, wa_message_id: null, intent: "button_reply",
           });
         }
 
@@ -3229,9 +3279,8 @@ Deno.serve(async (req: Request) => {
         if (!sim) {
           try {
             await sendReply(phone, textArrivalReply);
-            await supabase.from("whatsapp_conversations").insert({
-              phone, guest_id: guestId, direction: "outbound",
-              message: textArrivalReply, wa_message_id: null,
+            await insertGuestOutboundIfNotMuted(supabase, {
+              phone, guest_id: guestId, message: textArrivalReply, wa_message_id: null, intent: "confirmation",
             });
           } catch (e) {
             console.error("[webhook] text confirmation reply failed:", (e as Error).message);
@@ -3265,9 +3314,8 @@ Deno.serve(async (req: Request) => {
         if (!sim) {
           try {
             await sendReply(phone, RECORD_ONLY_ARRIVAL_REPLY);
-            await supabase.from("whatsapp_conversations").insert({
-              phone, guest_id: guestId, direction: "outbound",
-              message: RECORD_ONLY_ARRIVAL_REPLY, wa_message_id: null, intent: "arrival_time_update",
+            await insertGuestOutboundIfNotMuted(supabase, {
+              phone, guest_id: guestId, message: RECORD_ONLY_ARRIVAL_REPLY, wa_message_id: null, intent: "arrival_time_update",
             });
           } catch (e) {
             console.error("[webhook] arrival_time reply failed:", (e as Error).message);
@@ -3370,9 +3418,8 @@ Deno.serve(async (req: Request) => {
         if (!sim) {
           try {
             await sendReply(phone, handoffMsg);
-            await supabase.from("whatsapp_conversations").insert({
-              phone, guest_id: guestId, direction: "outbound",
-              message: handoffMsg, wa_message_id: null, intent: "date_change_request",
+            await insertGuestOutboundIfNotMuted(supabase, {
+              phone, guest_id: guestId, message: handoffMsg, wa_message_id: null, intent: "date_change_request",
             });
           } catch (e) {
             console.error("[webhook] date_change reply failed:", (e as Error).message);
@@ -3425,6 +3472,14 @@ Deno.serve(async (req: Request) => {
       // ── Rapid burst coalescing — one LLM reply per back-to-back cluster ──
       const burst = await coalesceBurstIfLeader(supabase, phone, msgId);
       if (!burst.proceed) continue;
+
+      // ── Post-burst staff-claim re-fetch (closes 1.8s race with Inbox mute) ──
+      if (guestId && await refreshStaffClaimMuteFromDb(supabase, guestId)) {
+        console.info(
+          `[webhook] 🔇 staff claim active — post-burst early exit phone:${phone} guest:${guestId}`,
+        );
+        continue;
+      }
 
       let effectiveText = burst.coalescedText.trim() || text;
       if (
@@ -3551,9 +3606,8 @@ Deno.serve(async (req: Request) => {
           if (!sim) {
             try {
               await sendReply(phone, reflectionReply);
-              await supabase.from("whatsapp_conversations").insert({
-                phone, guest_id: guestId, direction: "outbound",
-                message: reflectionReply, wa_message_id: null, intent: "guest_feedback",
+              await insertGuestOutboundIfNotMuted(supabase, {
+                phone, guest_id: guestId, message: reflectionReply, wa_message_id: null, intent: "guest_feedback",
               });
             } catch (e) {
               console.error("[webhook] 📝 reflection reply failed:", (e as Error).message);
@@ -3987,18 +4041,19 @@ Deno.serve(async (req: Request) => {
         }
 
         // ── Save outbound message ───────────────────────────────────────────
-        await supabase.from("whatsapp_conversations").insert({
+        await insertGuestOutboundIfNotMuted(supabase, {
           phone,
           guest_id:      guestId,
-          direction:     "outbound",
           message:       reply,
           wa_message_id: outboundMsgId,
-          intent,                        // mirror intent for inbox filtering
+          intent,
         });
 
-        console.info(
-          `[webhook] ✅ replied (${intent}) to ${phone} | msgId=${outboundMsgId}`
-        );
+        if (!_suppressGuestRepliesStaffClaim) {
+          console.info(
+            `[webhook] ✅ replied (${intent}) to ${phone} | msgId=${outboundMsgId}`
+          );
+        }
       }
     }
   };

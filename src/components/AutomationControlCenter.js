@@ -83,6 +83,7 @@ const SKIP_REASON_LABELS = {
   not_arrival_day: "לא יום ההגעה",
   not_on_property: "אורח לא בנכס",
   quiet_hours_passed: "עבר חלון השעות",
+  staff_claim_active: "שיחה בטיפול צוות",
 };
 
 function queueYmd(d = new Date()) {
