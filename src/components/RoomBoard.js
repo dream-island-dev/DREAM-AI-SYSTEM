@@ -8,6 +8,11 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { supabase } from "../supabaseClient";
 import { SUITE_REGISTRY, SUITE_SECTIONS } from "../data/suiteRegistry";
+import {
+  performSuiteCheckIn,
+  skipApprovalAndCheckIn,
+  releaseApprovalGateOnly,
+} from "../utils/suiteCheckinSync";
 
 // ── Suite definitions — driven by the physical registry (26 suites) ───────
 const SUITES = SUITE_REGISTRY.map(name => {
@@ -38,9 +43,12 @@ const STATUS_ACTIONS = {
   בניקיון:        [{ labelKey: "markReady",  next: "פנוי",    primary: true,  fn: "confirm_clean" }],
   "ממתין לג'קוזי": [],
   "מוכן לפיניש":   [],
-  "ממתין לאישור": [],  // managed by AICopilot — no cleaner actions
+  "ממתין לאישור": [
+    { labelKey: "checkinNoMsg", next: "תפוס", primary: true,  fn: "skip_check_in" },
+    { labelKey: "releaseGate",  next: "פנוי", primary: false, fn: "release_gate"  },
+  ],
   פנוי: [
-    { labelKey: "checkin", next: "תפוס",   primary: true,  fn: "update" },
+    { labelKey: "checkin", next: "תפוס",   primary: true,  fn: "check_in"      },
     { labelKey: "maint",   next: "תחזוקה", primary: false, fn: "update" },
   ],
   תחזוקה: [{ labelKey: "doneReady", next: "פנוי", primary: true, fn: "update" }],
@@ -64,6 +72,8 @@ const TR = {
       startClean: "▶ התחל ניקיון",
       markReady:  "✓ סיים",
       checkin:    "צ'ק-אין",
+      checkinNoMsg: "צ'ק-אין בלי הודעה",
+      releaseGate: "סגור שער",
       maint:      "תחזוקה",
       doneReady:  "✓ פנוי",
     },
@@ -74,6 +84,10 @@ const TR = {
     cleanedIn:       (dur) => `נוקתה ב-${dur}`,
     toastUpdate:     (id, st) => `סוויטה ${id} → ${st}`,
     toastCleanStart: (id) => `סוויטה ${id} — ניקיון התחיל`,
+    toastCheckIn:    (id) => `סוויטה ${id} — צ'ק-אין מסונכרן ✓`,
+    toastCheckInWarn:(id) => `סוויטה ${id} → תפוס (אין אורח משויך — קבלה לא עודכנה)`,
+    toastSkipGate:   (id) => `סוויטה ${id} — צ'ק-אין בלי הודעה ✓`,
+    toastReleaseGate:(id) => `סוויטה ${id} — שער אישור נסגר`,
     toastCleanDone:  (id) => `סוויטה ${id} — ממתין לאישור מנהל 🔔`,
   },
   en: {
@@ -92,6 +106,8 @@ const TR = {
       startClean: "▶ Start Cleaning",
       markReady:  "✓ Mark Ready",
       checkin:    "Check-in",
+      checkinNoMsg: "Check-in (no msg)",
+      releaseGate: "Close gate",
       maint:      "Maintenance",
       doneReady:  "✓ Available",
     },
@@ -102,6 +118,10 @@ const TR = {
     cleanedIn:       (dur) => `Cleaned in ${dur}`,
     toastUpdate:     (id, st) => `Room ${id} → ${st}`,
     toastCleanStart: (id) => `Room ${id} — Cleaning started`,
+    toastCheckIn:    (id) => `Room ${id} — synced check-in ✓`,
+    toastCheckInWarn:(id) => `Room ${id} → occupied (no guest linked)`,
+    toastSkipGate:   (id) => `Room ${id} — check-in without message ✓`,
+    toastReleaseGate:(id) => `Room ${id} — approval gate closed`,
     toastCleanDone:  (id) => `Room ${id} — Ready for guest ✓`,
   },
 };
@@ -213,6 +233,72 @@ export default function RoomBoard({ isKioskMode = false, onLogout }) {
       showToast("שגיאה: " + error.message, "err");
     } else {
       showToast(t.toastUpdate(roomId, t.statusLabels[nextStatus] ?? nextStatus));
+    }
+    setUpdating(null);
+  }
+
+  // ── Synced check-in (guests + room_status) ─────────────────────────────
+  async function handleCheckIn(room, { skipMessage = false } = {}) {
+    if (!supabase) return;
+    const roomId = room.id;
+    const prevEntry = statusMap[roomId];
+    setUpdating(roomId);
+
+    if (room.guest?.id) {
+      const result = skipMessage
+        ? await skipApprovalAndCheckIn(supabase, room.guest, roomId)
+        : await performSuiteCheckIn(supabase, room.guest, { roomId });
+
+      if (!result.ok) {
+        showToast("שגיאה: " + result.error, "err");
+        setUpdating(null);
+        return;
+      }
+
+      setStatusMap(prev => ({
+        ...prev,
+        [roomId]: { ...(prev[roomId] ?? {}), status: "תפוס" },
+      }));
+      setGuests(prev => prev.map(g =>
+        g.id === room.guest.id ? { ...g, ...result.guestPatch } : g
+      ));
+      showToast(skipMessage ? t.toastSkipGate(roomId) : t.toastCheckIn(roomId));
+    } else if (skipMessage) {
+      showToast("אין אורח משויך — לא ניתן לבצע צ'ק-אין", "err");
+    } else {
+      setStatusMap(prev => ({
+        ...prev,
+        [roomId]: { ...(prev[roomId] ?? {}), status: "תפוס" },
+      }));
+      const { error } = await supabase.from("room_status").upsert(
+        { room_id: roomId, status: "תפוס", updated_at: new Date().toISOString() },
+        { onConflict: "room_id" },
+      );
+      if (error) {
+        setStatusMap(prev => ({ ...prev, [roomId]: prevEntry ?? {} }));
+        showToast("שגיאה: " + error.message, "err");
+      } else {
+        showToast(t.toastCheckInWarn(roomId), "err");
+      }
+    }
+    setUpdating(null);
+  }
+
+  async function handleReleaseGate(roomId) {
+    if (!supabase) return;
+    const prevEntry = statusMap[roomId];
+    setStatusMap(prev => ({
+      ...prev,
+      [roomId]: { ...(prev[roomId] ?? {}), status: "פנוי" },
+    }));
+    setUpdating(roomId);
+
+    const result = await releaseApprovalGateOnly(supabase, roomId);
+    if (!result.ok) {
+      setStatusMap(prev => ({ ...prev, [roomId]: prevEntry ?? {} }));
+      showToast("שגיאה: " + result.error, "err");
+    } else {
+      showToast(t.toastReleaseGate(roomId));
     }
     setUpdating(null);
   }
@@ -499,6 +585,8 @@ export default function RoomBoard({ isKioskMode = false, onLogout }) {
                   isUpdating={updating === room.id}
                   t={t}
                   onUpdate={updateStatus}
+                  onCheckIn={handleCheckIn}
+                  onReleaseGate={handleReleaseGate}
                   onCleanStart={handleCleanStart}
                   onCleanDone={handleCleanDoneRequest}
                   waState={notifyState[room.id] ?? null}
@@ -520,7 +608,7 @@ export default function RoomBoard({ isKioskMode = false, onLogout }) {
 }
 
 // ── RoomCard — self-contained timer, 52px touch buttons ──────────────────
-function RoomCard({ room, isUpdating, t, onUpdate, onCleanStart, onCleanDone, waState, onRetryNotify }) {
+function RoomCard({ room, isUpdating, t, onUpdate, onCheckIn, onReleaseGate, onCleanStart, onCleanDone, waState, onRetryNotify }) {
   const [hovered,  setHovered]  = useState(null);
   const [timerSec, setTimerSec] = useState(0);
 
@@ -543,6 +631,9 @@ function RoomCard({ room, isUpdating, t, onUpdate, onCleanStart, onCleanDone, wa
   function handleAction(action) {
     if (action.fn === "start_clean")   return onCleanStart(room.id);
     if (action.fn === "confirm_clean") return onCleanDone(room);
+    if (action.fn === "check_in")      return onCheckIn(room);
+    if (action.fn === "skip_check_in") return onCheckIn(room, { skipMessage: true });
+    if (action.fn === "release_gate")  return onReleaseGate(room.id);
     onUpdate(room.id, action.next);
   }
 

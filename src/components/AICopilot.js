@@ -7,6 +7,11 @@ import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import { israelTodayStr, isArrivalToday } from "../utils/guestTiming";
 import QuietHoursGate from "./QuietHoursGate";
 import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
+import {
+  markGuestRoomReadyAfterNotify,
+  skipApprovalAndCheckIn,
+  releaseApprovalGateOnly,
+} from "../utils/suiteCheckinSync";
 
 const FAB = 56;                  // bell diameter (px) — used for drag clamping
 const MARGIN = 8;                // min inset from viewport edges while dragging
@@ -171,17 +176,7 @@ export default function AICopilot({ user }) {
     return () => supabase.removeChannel(ch);
   }, [loadPending, enrichRoom]);
 
-  // Approve: send the dedicated dream_room_ready WA template, mark suite
-  // ready, mark guest checked_in.
-  //
-  // Sprint 5.1/5.3 — previously composed free text and sent it via the
-  // inbox_reply trigger, which only works inside the guest's open 24h
-  // session window. Approving a room can legitimately happen hours after
-  // the guest's last message, so that path could fail right when it
-  // mattered most. Routing through trigger:"room_ready" instead uses the
-  // dedicated dream_room_ready Meta template (works outside the 24h window)
-  // and goes through whatsapp-send's idempotent BRANCH D — no risk of
-  // double-sending, and isolated from the scheduled morning_* templates.
+  // Approve: send dream_room_ready WA → guest room_ready + room פנוי (not checked_in).
   async function handleApprove(alert) {
     if (!supabase) return;
     const { guest } = alert;
@@ -220,25 +215,23 @@ export default function AICopilot({ user }) {
         }
       }
 
-      // Mark suite ready
-      const { error: roomErr } = await supabase.from("room_status").upsert(
-        { room_id: alert.room_id, status: "פנוי", updated_at: new Date().toISOString() },
-        { onConflict: "room_id" }
-      );
-      if (roomErr) throw new Error("עדכון סטטוס חדר נכשל: " + roomErr.message);
-
-      // Mark guest checked_in
+      // whatsapp-send clears ממתין לאישור → פנוי; mark guest room_ready (not checked_in).
       if (guest?.id) {
-        const { error: guestErr } = await supabase
-          .from("guests").update({ status: "checked_in" }).eq("id", guest.id);
-        if (guestErr) throw new Error("עדכון סטטוס אורח נכשל: " + guestErr.message);
+        const readyResult = await markGuestRoomReadyAfterNotify(supabase, guest.id);
+        if (!readyResult.ok) throw new Error("עדכון סטטוס אורח נכשל: " + readyResult.error);
+      } else {
+        const { error: roomErr } = await supabase.from("room_status").upsert(
+          { room_id: alert.room_id, status: "פנוי", updated_at: new Date().toISOString() },
+          { onConflict: "room_id" },
+        );
+        if (roomErr) throw new Error("עדכון סטטוס חדר נכשל: " + roomErr.message);
       }
 
       setAlerts(prev => prev.filter(a => a._alertId !== alert._alertId));
       showToast(
         guest?.id
-          ? `✓ ${alert.room_id} — אושר, הודעה נשלחה`
-          : `⚠ ${alert.room_id} — הסוויטה סומנה כפנויה, אך לא נמצא אורח משויך ולא נשלחה הודעה`,
+          ? `✓ ${alert.room_id} — הודעה נשלחה, חדר מוכן (ממתין לצ'ק-אין)`
+          : `⚠ ${alert.room_id} — שער נסגר, לא נמצא אורח משויך`,
         guest?.id ? "ok" : "err"
       );
     } catch (e) {
@@ -249,8 +242,38 @@ export default function AICopilot({ user }) {
     }
   }
 
-  function handleDismiss(alertId) {
-    setAlerts(prev => prev.filter(a => a._alertId !== alertId));
+  async function handleSkipCheckIn(alert) {
+    if (!supabase) return;
+    if (!alert.guest?.id) {
+      showToast(`אין אורח משויך לסוויטה ${alert.room_id} — לא ניתן לבצע צ'ק-אין`, "err");
+      return;
+    }
+    setProcessing(alert._alertId);
+    try {
+      const result = await skipApprovalAndCheckIn(supabase, alert.guest, alert.room_id);
+      if (!result.ok) throw new Error(result.error);
+      setAlerts(prev => prev.filter(a => a._alertId !== alert._alertId));
+      showToast(`✓ ${alert.room_id} — צ'ק-אין בלי הודעה (מסונכרן)`, "ok");
+    } catch (e) {
+      showToast((e)?.message ?? "שגיאה לא ידועה", "err");
+    } finally {
+      setProcessing(null);
+    }
+  }
+
+  async function handleReleaseGate(alert) {
+    if (!supabase) return;
+    setProcessing(alert._alertId);
+    try {
+      const result = await releaseApprovalGateOnly(supabase, alert.room_id);
+      if (!result.ok) throw new Error(result.error);
+      setAlerts(prev => prev.filter(a => a._alertId !== alert._alertId));
+      showToast(`✓ ${alert.room_id} — שער אישור נסגר (ללא צ'ק-אין)`, "ok");
+    } catch (e) {
+      showToast((e)?.message ?? "שגיאה לא ידועה", "err");
+    } finally {
+      setProcessing(null);
+    }
   }
 
   // ── Drag handlers (pointer events — touch + mouse, no library) — same
@@ -398,41 +421,63 @@ export default function AICopilot({ user }) {
                 </div>
               )}
 
-              <div style={{ display: "flex", gap: "8px" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <button
+                    onClick={() => handleApprove(alert)}
+                    disabled={processing === alert._alertId || (alert.guest?.id && !canSend)}
+                    title={alert.guest?.id && !canSend ? "שליחה חסומה בשעות שקט" : undefined}
+                    style={{
+                      flex:       1,
+                      background: processing === alert._alertId || (alert.guest?.id && !canSend) ? "#ccc" : "var(--gold, #C9A96E)",
+                      color:      "#fff",
+                      border:     "none",
+                      borderRadius: "8px",
+                      padding:    "8px 0",
+                      fontWeight: 700,
+                      fontSize:   "13px",
+                      cursor:     processing === alert._alertId || (alert.guest?.id && !canSend) ? "default" : "pointer",
+                      fontFamily: "inherit",
+                      transition: "background 0.15s",
+                    }}
+                  >
+                    {processing === alert._alertId ? "שולח..." : "✓ אשר ושלח הודעה"}
+                  </button>
+                  <button
+                    onClick={() => handleSkipCheckIn(alert)}
+                    disabled={processing === alert._alertId || !alert.guest?.id}
+                    title={!alert.guest?.id ? "אין אורח משויך" : undefined}
+                    style={{
+                      flex:       1,
+                      background: processing === alert._alertId || !alert.guest?.id ? "#eee" : "#EEF4FF",
+                      color:      processing === alert._alertId || !alert.guest?.id ? "#aaa" : "#2952A3",
+                      border:     "1px solid #BFDBFE",
+                      borderRadius: "8px",
+                      padding:    "8px 0",
+                      fontWeight: 700,
+                      fontSize:   "13px",
+                      cursor:     processing === alert._alertId || !alert.guest?.id ? "default" : "pointer",
+                      fontFamily: "inherit",
+                    }}
+                  >
+                    צ'ק-אין בלי הודעה
+                  </button>
+                </div>
                 <button
-                  onClick={() => handleApprove(alert)}
-                  disabled={processing === alert._alertId || (alert.guest?.id && !canSend)}
-                  title={alert.guest?.id && !canSend ? "שליחה חסומה בשעות שקט" : undefined}
-                  style={{
-                    flex:       1,
-                    background: processing === alert._alertId || (alert.guest?.id && !canSend) ? "#ccc" : "var(--gold, #C9A96E)",
-                    color:      "#fff",
-                    border:     "none",
-                    borderRadius: "8px",
-                    padding:    "8px 0",
-                    fontWeight: 700,
-                    fontSize:   "13px",
-                    cursor:     processing === alert._alertId || (alert.guest?.id && !canSend) ? "default" : "pointer",
-                    fontFamily: "inherit",
-                    transition: "background 0.15s",
-                  }}
-                >
-                  {processing === alert._alertId ? "שולח..." : "✓ אשר ושלח הודעה"}
-                </button>
-                <button
-                  onClick={() => handleDismiss(alert._alertId)}
+                  onClick={() => handleReleaseGate(alert)}
                   disabled={processing === alert._alertId}
                   style={{
+                    width:        "100%",
                     background:   "none",
                     border:       "1px solid var(--border, #E0D5C5)",
                     borderRadius: "8px",
-                    padding:      "8px 12px",
-                    fontSize:     "13px",
-                    cursor:       "pointer",
+                    padding:      "7px 12px",
+                    fontSize:     "12px",
+                    cursor:       processing === alert._alertId ? "default" : "pointer",
                     color:        "#888",
                     fontFamily:   "inherit",
                   }}
-                >התעלם</button>
+                >סגור שער בלבד (ללא צ'ק-אין)</button>
               </div>
             </div>
           ))}

@@ -25,6 +25,10 @@ import {
   sortCheckinRosterGuests,
 } from "../utils/guestCheckinMatrix";
 import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
+import {
+  performSuiteCheckIn,
+  performSuiteCheckInRevert,
+} from "../utils/suiteCheckinSync";
 
 export default function GuestsPage({
   initialTimelineScope = null,
@@ -74,10 +78,9 @@ export default function GuestsPage({
 
     for (const g of guestList) {
       if (shouldAutoPromoteToCheckedIn(g, now)) {
-        const patch = { status: "checked_in", checkin_time: new Date().toISOString() };
-        const { error } = await supabase.from("guests").update(patch).eq("id", g.id);
-        if (!error) {
-          next = next.map((x) => (x.id === g.id ? { ...x, ...patch } : x));
+        const result = await performSuiteCheckIn(supabase, g);
+        if (result.ok) {
+          next = next.map((x) => (x.id === g.id ? { ...x, ...result.guestPatch } : x));
           anyChanged = true;
         }
       } else if (shouldAutoCheckoutGuest(g, now)) {
@@ -128,6 +131,15 @@ export default function GuestsPage({
 
   useEffect(() => { fetchGuests(); fetchRooms(); }, [fetchGuests, fetchRooms]);
 
+  useEffect(() => {
+    if (!supabase) return;
+    const ch = supabase
+      .channel("guests-page-rt")
+      .on("postgres_changes", { event: "*", schema: "public", table: "guests" }, fetchGuests)
+      .subscribe();
+    return () => supabase.removeChannel(ch);
+  }, [fetchGuests]);
+
   // Re-evaluate 15:00 gateway + departure checkout every minute.
   useEffect(() => {
     const id = setInterval(() => { fetchGuests(); }, 60_000);
@@ -137,9 +149,37 @@ export default function GuestsPage({
   const setStatus = async (guest, status) => {
     if (!supabase) return;
     setBusy(guest.id);
+
+    if (status === "checked_in") {
+      const result = await performSuiteCheckIn(supabase, guest);
+      if (!result.ok) {
+        showToast("err", "שגיאה: " + result.error);
+        setBusy(null);
+        return;
+      }
+      setGuests((prev) => prev.map((g) => (g.id === guest.id ? { ...g, ...result.guestPatch } : g)));
+      showToast("ok", result.noRoomLinked
+        ? "צ'ק-אין ✓ (לא שובץ חדר בלוח סוויטות)"
+        : "צ'ק-אין ✓ — מסונכרן ללוח סוויטות");
+      setBusy(null);
+      return;
+    }
+
+    if (status === "expected" && guest.status === "checked_in") {
+      const result = await performSuiteCheckInRevert(supabase, guest);
+      if (!result.ok) {
+        showToast("err", "שגיאה: " + result.error);
+        setBusy(null);
+        return;
+      }
+      setGuests((prev) => prev.map((g) => (g.id === guest.id ? { ...g, ...result.guestPatch } : g)));
+      showToast("ok", result.revertStatus === "room_ready" ? "הוחזר לחדר מוכן ↩" : "הוחזר לממתין ↩");
+      setBusy(null);
+      return;
+    }
+
     const patch = { status };
-    if (status === "checked_in") patch.checkin_time = new Date().toISOString();
-    if (status === "expected")   patch.checkin_time = null; // clear on revert
+    if (status === "expected") patch.checkin_time = null;
     const { error } = await supabase.from("guests").update(patch).eq("id", guest.id);
     if (error) { showToast("err", "שגיאה: " + error.message); setBusy(null); return; }
     setGuests((prev) => prev.map((g) => (g.id === guest.id ? { ...g, ...patch } : g)));
