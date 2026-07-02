@@ -1157,7 +1157,9 @@ function isRecordOnlyArrivalTimeUpdate(text: string): boolean {
 
 // ── Critical-event safety net (Phase 2 request-handling) ────────────────────
 // Deterministic backstop for the "faq" branch when the model skips log_guest_request
-// on critical human/price/manager keywords — see criticalKeywordHit below (allowlist-gated).(text: string): { requested: boolean; type: string | null } {
+// on critical human/price/manager keywords — see criticalKeywordHit below (allowlist-gated).
+
+function detectHumanRequest(text: string): { requested: boolean; type: string | null } {
   if (HUMAN_CALL_PATTERNS.some((p) => p.test(text))) return { requested: true, type: "call" };
   if (HUMAN_CHAT_PATTERNS.some((p) => p.test(text))) return { requested: true, type: "chat" };
   if (HUMAN_GENERAL_PATTERNS.some((p) => p.test(text))) {
