@@ -34,6 +34,7 @@ import {
   shouldRouteFutureSuiteRoomServiceToDedicatedPhone,
   SUITES_ROOM_SERVICE_GROUP_ID,
 } from "../_shared/futureSuiteRoomServiceRouting.ts";
+import { resolveRouting } from "../_shared/routingConfig.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -123,7 +124,19 @@ serve(async (req: Request) => {
       roomType:       guest.room_type as string | null,
       source:         "portal_room_service",
     });
-    const notifyTo = routeToSuites ? SUITES_ROOM_SERVICE_GROUP_ID : ADIR_PHONE;
+    // routing_config (migration 121) — Room Service is a GUEST REQUESTS-channel
+    // intent (enable_sla=false by seed default). If an admin has configured a
+    // dedicated group for 'portal_room_service' via RoutingControlCenter.js,
+    // that wins over the future/in-house Suites-vs-Adir split below — the whole
+    // point of the dedicated "בקשות אורחים" channel is that Room Service always
+    // lands there, regardless of arrival timing. Unconfigured (null) falls back
+    // to the exact pre-existing behavior.
+    const routing = await resolveRouting(supabase, "portal_room_service", {
+      destination_board: "requests",
+      whatsapp_group_id: null,
+      enable_sla: false,
+    });
+    const notifyTo = routing.whatsapp_group_id || (routeToSuites ? SUITES_ROOM_SERVICE_GROUP_ID : ADIR_PHONE);
 
     try {
       const text =

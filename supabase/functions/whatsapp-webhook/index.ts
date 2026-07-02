@@ -70,6 +70,7 @@ import {
   FIELD_OPS_DEPARTMENT,
 } from "../_shared/automationSchedule.ts";
 import { translateTextForFieldOps } from "../_shared/fieldOpsTranslation.ts";
+import { resolveRouting, taskIntentType } from "../_shared/routingConfig.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -1293,7 +1294,17 @@ async function routeGuestRequestToOpsGroup(
   supabase: ReturnType<typeof createClient>,
   args: { guestId: number; room: string | null; summary: string; rawText: string },
 ): Promise<void> {
-  const groupId = Deno.env.get("WHAPI_GROUP_ID")?.trim();
+  // Physical in-room asks (towels/water/AC/etc, source='guest_request') are the
+  // OPERATIONS channel by definition — routing_config (migration 121) lets an
+  // admin repoint the destination group without a redeploy; falls back to the
+  // env var when unconfigured, so behavior is unchanged until someone edits it
+  // in RoutingControlCenter.js.
+  const routing = await resolveRouting(supabase, taskIntentType("guest_request"), {
+    destination_board: "operations",
+    whatsapp_group_id: null,
+    enable_sla: true,
+  });
+  const groupId = routing.whatsapp_group_id || Deno.env.get("WHAPI_GROUP_ID")?.trim();
   if (!groupId) {
     console.warn("[webhook] 🛋️ WHAPI_GROUP_ID unset — guest_request not routed to ops group (dashboard guest_alerts row still stands)");
     return;

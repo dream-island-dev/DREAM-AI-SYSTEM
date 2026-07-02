@@ -46,6 +46,7 @@ const ROUTE_ACCESS = {
   users_mgmt:             ["super_admin"],
   data_sync:              ["admin", "super_admin", "receptionist"],
   voucher_reconciliation: ["admin", "super_admin", "receptionist"],
+  routing_control_center: ["admin", "super_admin"],
 };
 
 // ── Main gate ────────────────────────────────────────────────────────────────

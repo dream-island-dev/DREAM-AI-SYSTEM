@@ -2107,11 +2107,30 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
         .select("id");
       if (err) throw err;
       if (!updatedRows?.length) {
-        throw new Error(
-          claim
-            ? "לא נמצא פרופיל אורח לטלפון הזה — לא ניתן להשתיק את הבוט. הוסף/י את האורח תחילה."
-            : "לא נמצא פרופיל אורח לטלפון הזה — לא ניתן לשחרר שיוך.",
-        );
+        if (!claim) {
+          // Releasing a claim on a phone with no guests row at all is a true
+          // no-op — nothing to release. Only "קח שיחה" (claim=true) must
+          // never fail silently/loudly for a not-yet-a-guest number.
+          throw new Error("לא נמצא פרופיל אורח לטלפון הזה — אין שיוך לשחרר.");
+        }
+        // Auto-create-stub bugfix (Mike directive): a staff member clicking
+        // "קח שיחה" on a phone with no guests row must have the claim saved
+        // immediately, not fail — insert a minimal stub row (name/phone +
+        // the claim itself) rather than throwing. The guest editor (✏️)
+        // already treats any row as fully editable afterward, so nothing
+        // here is final — staff can fill in the rest right away.
+        const stubName = contact.guestName || contact.pushName || `אורח ${contact.phone}`;
+        const { data: created, error: insErr } = await supabase
+          .from("guests")
+          .insert({
+            name: stubName,
+            phone: `+${contact.phone}`,
+            claimed_by: patch.claimed_by,
+            claimed_at: patch.claimed_at,
+          })
+          .select("id");
+        if (insErr) throw insErr;
+        if (!created?.length) throw new Error("יצירת פרופיל אורח נכשלה — לא ניתן להשתיק את הבוט.");
       }
 
       allMsgsRef.current = allMsgsRef.current.map((m) =>

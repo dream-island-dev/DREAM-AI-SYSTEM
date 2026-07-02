@@ -37,6 +37,11 @@ import {
   isFutureSuiteRoomServiceTask,
   SUITES_ROOM_SERVICE_GROUP_ID,
 } from "../_shared/futureSuiteRoomServiceRouting.ts";
+import {
+  resolveRouting,
+  taskIntentType,
+  alertIntentType,
+} from "../_shared/routingConfig.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -128,6 +133,17 @@ serve(async (req: Request) => {
 
     const guestResults: Array<{ alertId: number; notified: boolean }> = [];
     for (const alert of overdueAlerts ?? []) {
+      // Guest Requests channel gate (migration 121, routing_config): spa /
+      // upsell asks (alert_request / alert_upsell_opportunity) default to
+      // enable_sla=false — a future order shouldn't page Adir on a rigid
+      // 10-min clock the same way a genuine callback/complaint does.
+      const alertRouting = await resolveRouting(
+        supabase,
+        alertIntentType(alert.alert_type as string | null | undefined),
+        { destination_board: "requests", whatsapp_group_id: null, enable_sla: true },
+      );
+      if (!alertRouting.enable_sla) continue;
+
       const alertGuest = (alert as any).guests as { name?: string; room?: string; arrival_date?: string; status?: string } | null;
       const guestLabel = alertGuest
         ? `${alertGuest.name ?? "Guest"} (Room ${alertGuest.room ?? "—"})`
@@ -161,8 +177,8 @@ serve(async (req: Request) => {
 
       guestResults.push({ alertId: alert.id as number, notified });
     }
-    if ((overdueAlerts ?? []).length > 0) {
-      await pushAlert(supabaseUrl, anon, "⚠️ SLA Breach — Guest Request", `${(overdueAlerts ?? []).length} guest request(s) unresolved past ${GUEST_ALERT_SLA_MINUTES} min.`);
+    if (guestResults.length > 0) {
+      await pushAlert(supabaseUrl, anon, "⚠️ SLA Breach — Guest Request", `${guestResults.length} guest request(s) unresolved past ${GUEST_ALERT_SLA_MINUTES} min.`);
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -191,10 +207,26 @@ serve(async (req: Request) => {
     if (tasksErr) throw new Error(`tasks_lookup_error: ${tasksErr.message}`);
 
     const nowMs = Date.now();
-    const overdueTasks = (candidateTasks ?? []).filter((t) => {
+    const overdueByAge = (candidateTasks ?? []).filter((t) => {
       const thresholdMin = unassignedThresholdMinutes(t.sla_category as string | null);
       return nowMs - new Date(t.created_at as string).getTime() > thresholdMin * 60 * 1000;
     });
+
+    // Guest Requests channel gate (migration 121, routing_config): a task whose
+    // source maps to an intent_type with enable_sla=false (e.g. portal_room_service)
+    // is a future guest order, not a physical field task — it must never generate
+    // an "SLA BREACH" card, no matter how long it sits unassigned. This is the
+    // fix for the "בקשות אורחים" group getting both the request card AND a
+    // follow-up breach card for the same Room Service tap.
+    const overdueTasks: typeof overdueByAge = [];
+    for (const t of overdueByAge) {
+      const routing = await resolveRouting(
+        supabase,
+        taskIntentType(t.source as string | null | undefined),
+        { destination_board: "operations", whatsapp_group_id: null, enable_sla: true },
+      );
+      if (routing.enable_sla) overdueTasks.push(t);
+    }
 
     const alertGroupId  = (Deno.env.get("SLA_ALERT_GROUP_ID") ?? Deno.env.get("WHAPI_GROUP_ID") ?? "").trim();
     // SLA_OPS_ALERT_PHONE — provisioned back in session 21 alongside
@@ -239,18 +271,20 @@ serve(async (req: Request) => {
           department:  task.department as string | null,
           description: task.description as string | null,
         });
-        if (futureSuiteRoomService) {
-          // Future suite F&B / portal room-service — dedicated Suites group only,
-          // never the general ops Whapi group (Mike session 60).
+        // routing_config's whatsapp_group_id (if an admin has configured one via
+        // RoutingControlCenter.js) wins over the hardcoded Suites/ops fallback —
+        // lets Mike repoint any intent_type at a specific group without a redeploy.
+        const taskRouting = await resolveRouting(
+          supabase,
+          taskIntentType(task.source as string | null | undefined),
+          { destination_board: "operations", whatsapp_group_id: null, enable_sla: true },
+        );
+        const targetGroupId =
+          taskRouting.whatsapp_group_id ||
+          (futureSuiteRoomService ? SUITES_ROOM_SERVICE_GROUP_ID : alertGroupId);
+        if (targetGroupId) {
           try {
-            await sendWhapiText(SUITES_ROOM_SERVICE_GROUP_ID, englishText, { noLinkPreview: true });
-            notified = true;
-          } catch (e) {
-            console.error(`[sla-escalation-cron] suites-line SLA alert failed for task ${task.id} (will retry next run):`, (e as Error).message);
-          }
-        } else if (alertGroupId) {
-          try {
-            await sendWhapiText(alertGroupId, englishText, { noLinkPreview: true });
+            await sendWhapiText(targetGroupId, englishText, { noLinkPreview: true });
             notified = true;
           } catch (e) {
             console.error(`[sla-escalation-cron] Whapi SLA alert failed for task ${task.id} (will retry next run):`, (e as Error).message);

@@ -36,6 +36,7 @@ import PortalSettingsPanel from "./components/PortalSettingsPanel";
 import CMSGate from "./components/cms/CMSGate";
 import CMSSecurityPanel from "./components/cms/CMSSecurityPanel";
 import VoucherReconciliationHub from "./components/VoucherReconciliationHub";
+import RoutingControlCenter from "./components/RoutingControlCenter";
 import AdminChangelogDashboard from "./components/AdminChangelogDashboard";
 import ReceptionChecklist from "./components/ReceptionChecklist";
 
@@ -1287,6 +1288,14 @@ function Sidebar({ user, active, setActive, openOpsCount, onLogout, isAdmin, isS
               <span>בקרת אוטומציה</span>
             </button>
             <button
+              className={`nav-item ${active === "routing_control_center" ? "active" : ""}`}
+              onClick={() => setActive("routing_control_center")}
+              style={{ color: active === "routing_control_center" ? "var(--gold)" : "rgba(201,169,110,0.6)" }}
+            >
+              <span className="icon">🔀</span>
+              <span>מרכז ניתוב</span>
+            </button>
+            <button
               className={`nav-item ${active === "cms_security" ? "active" : ""}`}
               onClick={() => setActive("cms_security")}
               style={{ color: active === "cms_security" ? "var(--gold)" : "rgba(201,169,110,0.6)" }}
@@ -1987,6 +1996,7 @@ export default function App({ initialPage = "dashboard" }) {
     bot_settings:  "🧠 מוח הבוט",
     bot_scripts:   "📝 עורך סקריפטי הבוט",
     automation_center: "🎛️ בקרת אוטומציה",
+    routing_control_center: "🔀 מרכז ניתוב",
     data_sync:  "📥 סנכרון נתונים",
     portal_settings: "🎨 הגדרות פורטל",
     cms_security: "🔐 אבטחת CMS",
@@ -2214,6 +2224,11 @@ export default function App({ initialPage = "dashboard" }) {
         return guardPage(
           "voucher_reconciliation",
           <VoucherReconciliationHub user={user} />
+        );
+      case "routing_control_center":
+        return guardPage(
+          "routing_control_center",
+          <RoutingControlCenter />
         );
       case "users_mgmt":
         return guardPage(
