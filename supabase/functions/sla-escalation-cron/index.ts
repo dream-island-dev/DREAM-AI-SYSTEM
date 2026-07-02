@@ -33,6 +33,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendWhapiText } from "../_shared/whapiSend.ts";
+import { containsHebrew, translateTextForFieldOps } from "../_shared/fieldOpsTranslation.ts";
 import {
   isFutureSuiteRoomServiceTask,
   SUITES_ROOM_SERVICE_GROUP_ID,
@@ -262,9 +263,21 @@ serve(async (req: Request) => {
           }
         }
       } else {
+        // Ops-group card translation only — tasks.description in the DB (already
+        // written by whapi-webhook/notify-manual-task) stays untouched. A task
+        // whose description is already English (Tier-1 AI classification, or a
+        // department already covered by notify-manual-task's translation) skips
+        // the call entirely via containsHebrew().
+        let breachDescription = String(task.description ?? "");
+        if (containsHebrew(breachDescription)) {
+          breachDescription = await translateTextForFieldOps(breachDescription, {
+            room: task.room_number as string | null,
+            style: "description_only",
+          });
+        }
         const englishText =
           `🚨 SLA BREACH: Task for Suite ${task.room_number ?? "—"} is unassigned after ${ageMinutes} minutes!\n` +
-          `📋 ${task.description}\n` +
+          `📋 ${breachDescription}\n` +
           `Please tap "Accept" on the task card to claim it.`;
         const futureSuiteRoomService = isFutureSuiteRoomServiceTask({
           source:      task.source as string | null,

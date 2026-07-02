@@ -29,6 +29,7 @@
 import { serve }        from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendWhapiText } from "../_shared/whapiSend.ts";
+import { containsHebrew, translateTextForFieldOps } from "../_shared/fieldOpsTranslation.ts";
 
 // name → authorized internal phone (reverse of whapi-webhook's ADMIN_WHITELIST).
 const STAFF: Record<string, string> = {
@@ -129,7 +130,16 @@ serve(async (req: Request) => {
       // Sprint 2) or someone tapping Accept/Complete on a card that has them.
       if (action === "bump") {
         const groupId = Deno.env.get("WHAPI_GROUP_ID")?.trim();
-        const bumpText = `⚡ MANAGER BUMP: [${task.room_number ?? "—"}] - ${task.description} needed ASAP! ⚡`;
+        // Ops-group text translation only — tasks.description in the DB is
+        // untouched; same containsHebrew-gated pattern as notify-manual-task.
+        let bumpDescription = String(task.description ?? "");
+        if (containsHebrew(bumpDescription)) {
+          bumpDescription = await translateTextForFieldOps(bumpDescription, {
+            room: task.room_number as string | null,
+            style: "description_only",
+          });
+        }
+        const bumpText = `⚡ MANAGER BUMP: [${task.room_number ?? "—"}] - ${bumpDescription} needed ASAP! ⚡`;
         let sent = false;
         if (groupId) {
           try { await sendWhapiText(groupId, bumpText, { noLinkPreview: true }); sent = true; }
@@ -159,7 +169,14 @@ serve(async (req: Request) => {
       const verb = action === "accept" ? "accepted" : "completed";
       const emoji = action === "accept" ? "✅" : "✔️";
       const statusWord = action === "accept" ? "In Progress" : "Done";
-      const echo = `${emoji} ${roomLabel} — "${task.description}" ${verb} by ${actor} · Status: ${statusWord}`;
+      let echoDescription = String(task.description ?? "");
+      if (containsHebrew(echoDescription)) {
+        echoDescription = await translateTextForFieldOps(echoDescription, {
+          room: task.room_number as string | null,
+          style: "description_only",
+        });
+      }
+      const echo = `${emoji} ${roomLabel} — "${echoDescription}" ${verb} by ${actor} · Status: ${statusWord}`;
       const groupId = Deno.env.get("WHAPI_GROUP_ID")?.trim();
       if (groupId) {
         try { await sendWhapiText(groupId, echo, { noLinkPreview: true }); }

@@ -44,6 +44,7 @@ import { createClient }  from "https://esm.sh/@supabase/supabase-js@2";
 import Anthropic         from "https://esm.sh/@anthropic-ai/sdk@0.20.0";
 import { sendWhapiText, cleanPhoneForMention } from "../_shared/whapiSend.ts";
 import { fetchWhapiMedia } from "../_shared/whapiMedia.ts";
+import { containsHebrew, translateTextForFieldOps } from "../_shared/fieldOpsTranslation.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -539,7 +540,20 @@ serve(async (req: Request) => {
 
       const rawAssignedPhone = await findAssignedWorkerPhone(supabase, taskDepartment);
       const assignedPhone = rawAssignedPhone ? cleanPhoneForMention(rawAssignedPhone) : null;
-      const card = buildTaskCard(cls.room_number, cls.task_description, assignedPhone, fromVoice);
+
+      // Whapi card translation only — tasks.description (already written above,
+      // `cls.task_description`) stays in whatever language it was reported in
+      // for the DB/board UI. classifyWithAi() already forces English (its tool
+      // schema demands it), so this only ever fires for a Tier-0 regex report
+      // ("11- מגבות" / "חדר 5 מזגן לא עובד") that never touched an LLM.
+      let cardDescription = cls.task_description;
+      if (containsHebrew(cardDescription)) {
+        cardDescription = await translateTextForFieldOps(cardDescription, {
+          room: cls.room_number,
+          style: "description_only",
+        });
+      }
+      const card = buildTaskCard(cls.room_number, cardDescription, assignedPhone, fromVoice);
 
       // Reply into the SAME group. no_link_preview stops the crawler pre-fetch.
       // Non-blocking: the ticket already exists — a failed reply must not lose it.
