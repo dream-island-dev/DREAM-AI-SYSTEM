@@ -253,18 +253,20 @@ const PIPELINE_TEMPLATE: Record<string, string> = {
 // because the morning-of stage fires the day the guest arrives — only Saturday
 // vs weekday matters; custom holiday overrides are not evaluated here).
 function resolveDayTimings(arrivalDateStr: string): { entryTime: string; checkInTime: string } {
-  const d = new Date(`${arrivalDateStr}T00:00:00Z`);
-  return d.getUTCDay() === 6
+  return isShabbatArrivalDate(arrivalDateStr)
     ? { entryTime: "15:00", checkInTime: "18:00" }
     : { entryTime: "12:00", checkInTime: "15:00" };
 }
 
-// Session-script path only — bot_scripts copy is weekday-default (15:00); no DB edit needed.
+// Session-script safety net — bot_scripts may still carry weekday-default 12:00/15:00 literals.
 function applySaturdayCheckInTimeOverride(messageText: string, arrivalDateStr: string): string {
   if (!messageText || !arrivalDateStr) return messageText;
-  const d = new Date(`${arrivalDateStr}T00:00:00Z`);
-  if (Number.isNaN(d.getTime()) || d.getUTCDay() !== 6) return messageText;
-  return messageText.replace(/15:00/g, "18:00");
+  if (!isShabbatArrivalDate(arrivalDateStr)) return messageText;
+  // Order matters: park weekday entry (12:00) before promoting check-in 15:00→18:00.
+  return messageText
+    .replace(/12:00/g, "__NB_ENTRY_WD__")
+    .replace(/15:00/g, "18:00")
+    .replace(/__NB_ENTRY_WD__/g, "15:00");
 }
 
 // Variables passed as {{1}}, {{2}}, … to each pipeline template.
@@ -342,22 +344,36 @@ async function fetchNightBeforeKnowledge(
   return map;
 }
 
-// arrival_date is a DATE column ("YYYY-MM-DD") — parsed as UTC midnight so
-// getUTCDay() reads the calendar day Israel means, never a timezone-shifted
-// neighbor day from a local-time Date constructor.
-function isSpecialNightBeforeDay(arrivalDateStr: string, specialDatesCsv: string): boolean {
-  const d = new Date(`${arrivalDateStr}T00:00:00Z`);
+// arrival_date is a DATE column ("YYYY-MM-DD") — noon UTC avoids DST edge cases.
+function normalizeArrivalDateYmd(raw: unknown): string {
+  const s = String(raw ?? "").trim();
+  if (!s) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  if (/^\d{4}-\d{2}-\d{2}T/.test(s)) return s.slice(0, 10);
+  return s;
+}
+
+function isShabbatArrivalDate(arrivalDateStr: string, specialDatesCsv = ""): boolean {
+  const ymd = normalizeArrivalDateYmd(arrivalDateStr);
+  if (!ymd) return false;
+  const d = new Date(`${ymd}T12:00:00Z`);
+  if (Number.isNaN(d.getTime())) return false;
   if (d.getUTCDay() === 6) return true; // Saturday
   const listed = specialDatesCsv.split(/[,\n]+/).map((s) => s.trim()).filter(Boolean);
-  return listed.includes(arrivalDateStr);
+  return listed.includes(ymd);
+}
+
+function isSpecialNightBeforeDay(arrivalDateStr: string, specialDatesCsv: string): boolean {
+  return isShabbatArrivalDate(arrivalDateStr, specialDatesCsv);
 }
 
 async function resolveNightBeforeTimes(
   supabaseClient: ReturnType<typeof createClient>,
   arrivalDateStr: string
 ): Promise<{ entryTime: string; checkInTime: string }> {
+  const ymd = normalizeArrivalDateYmd(arrivalDateStr);
   const cfg = await fetchNightBeforeKnowledge(supabaseClient);
-  const special = isSpecialNightBeforeDay(arrivalDateStr, cfg["night_before_special_dates"] ?? "");
+  const special = isSpecialNightBeforeDay(ymd, cfg["night_before_special_dates"] ?? "");
   if (special) {
     const entryTime = (cfg["night_before_entry_time_shabbat"] ?? "").trim();
     const checkInTime = (cfg["night_before_checkin_time_shabbat"] ?? "").trim();
@@ -424,7 +440,7 @@ function buildThreeParamTimingVars(
 }
 
 function syncTimingVarsForGuest(guest: Record<string, unknown>): string[] {
-  const { entryTime, checkInTime } = resolveDayTimings(String(guest.arrival_date ?? ""));
+  const { entryTime, checkInTime } = resolveDayTimings(normalizeArrivalDateYmd(guest.arrival_date));
   return buildThreeParamTimingVars(guest, entryTime, checkInTime);
 }
 
@@ -965,8 +981,7 @@ function resolvePipelineTemplateName(
   }
 
   if (trigger === "morning_suite" || trigger === "morning_welcome") {
-    const arrivalDateStr = String(guest.arrival_date ?? "");
-    const isShabbat = new Date(`${arrivalDateStr}T00:00:00Z`).getUTCDay() === 6;
+    const isShabbat = isShabbatArrivalDate(String(guest.arrival_date ?? ""));
     if (fromDb) return fromDb;
     return isShabbat ? "suite_welcome_morning_shabbat" : (fromMap || "suite_welcome_morning");
   }
@@ -974,8 +989,7 @@ function resolvePipelineTemplateName(
   if (trigger === "night_before") {
     // Always route to the approved Shabbat-aware pair — ignore automation_stages.
     // meta_template_name may still hold legacy dream_suite_reminder / dream_checkin_reminder_v2.
-    const arrivalDateStr = String(guest.arrival_date ?? "");
-    const isShabbat = new Date(`${arrivalDateStr}T00:00:00Z`).getUTCDay() === 6;
+    const isShabbat = isShabbatArrivalDate(String(guest.arrival_date ?? ""));
     return isShabbat ? "night_before_suites_shabbat" : "night_before_suites";
   }
 
@@ -1982,11 +1996,12 @@ serve(async (req: Request) => {
     // ── Night-before dispatch (Stage 2.5 — suites only) ─────────────────────
     // Day-pass guests use trigger 'night_before_daypass' (generic BRANCH D below).
     //
-    // Routing rule (Stage 2.5 session images):
-    //   • Manual force (force===true) → ALWAYS session_message; ignores window,
-    //     Shabbat/weekday Meta templates, and force_channel=meta_template.
-    //   • Auto: 24h window open OR force_channel=session_message → bot_script free text.
-    //   • Auto: window closed / force_channel=meta_template → night_before_suites / _shabbat.
+    // Routing rule (Stage 2.5):
+    //   • Manual force (force===true) → session_message (unless force_channel=meta_template).
+    //   • Autonomous cron/default → ALWAYS Meta template night_before_suites / _shabbat.
+    //     Never hijack to session text just because the 24h window is open — that path
+    //     bypasses the Shabbat-approved static template bodies and caused 15:00 on Saturdays.
+    //   • Manual force_channel=session_message → bot_script free text (with Shabbat times).
     type NightBeforeDispatch =
       | { channel: "text";     freeTextKey: string;   guestName: string; sessionImageUrl?: string }
       | { channel: "template"; templateName: string;  vars: string[];   buttonUrlParam?: string };
@@ -2012,8 +2027,7 @@ serve(async (req: Request) => {
 
       const useSessionChannel =
         forceSessionImmediate
-        || forceSessionMessage
-        || (windowOpen && !!sessionScriptKey && !forceMetaTemplate);
+        || (force === true && forceSessionMessage);
 
       const sessionImage = forceSessionImmediate
         ? (resolveStageSessionImageUrl(stageRow, requestImageUrl) ?? NIGHT_BEFORE_OVERRIDE_SESSION_IMAGE)
@@ -2040,14 +2054,15 @@ serve(async (req: Request) => {
           `script=${sessionScriptKey} has_image=${!!sessionImage}`,
         );
       } else {
-        const arrivalDateStr = String(guest.arrival_date ?? "");
-        const isShabbat = new Date(`${arrivalDateStr}T00:00:00Z`).getUTCDay() === 6;
+        const arrivalDateStr = normalizeArrivalDateYmd(guest.arrival_date);
+        const isShabbat = isShabbatArrivalDate(arrivalDateStr);
         const templateName = isShabbat ? "night_before_suites_shabbat" : "night_before_suites";
         const templateVars = buildNameOnlyTemplateVars(guest);
         nightBeforeDispatch = { channel: "template", templateName, vars: templateVars };
         console.log(
           `[whatsapp-send] night_before: route=meta_template guest_id=${guestId} ` +
-          `template=${templateName} isShabbat=${isShabbat} vars=${JSON.stringify(templateVars)}`,
+          `arrival=${arrivalDateStr} template=${templateName} isShabbat=${isShabbat} ` +
+          `vars=${JSON.stringify(templateVars)}`,
         );
       }
     }
@@ -2092,8 +2107,8 @@ serve(async (req: Request) => {
                 `[whatsapp-send] night_before: bot_script "${nightBeforeDispatch.freeTextKey}" missing` +
                 ` — falling back to template for guest_id=${guestId}`,
               );
-              const arrivalDateStr = String(guest.arrival_date ?? "");
-              const isShabbatFb = new Date(`${arrivalDateStr}T00:00:00Z`).getUTCDay() === 6;
+              const arrivalDateStr = normalizeArrivalDateYmd(guest.arrival_date);
+              const isShabbatFb = isShabbatArrivalDate(arrivalDateStr);
               const fbTemplate = isShabbatFb ? "night_before_suites_shabbat" : "night_before_suites";
               const fbVars = buildNameOnlyTemplateVars(guest);
               const fbDispatched = await sendViaTemplate(
@@ -2110,16 +2125,20 @@ serve(async (req: Request) => {
                 fbDispatched.variables,
               );
             } else {
-              const nbTimes = await resolveNightBeforeTimes(supabase, String(guest.arrival_date ?? ""));
+              const arrivalYmd = normalizeArrivalDateYmd(guest.arrival_date);
+              const nbTimes = await resolveNightBeforeTimes(supabase, arrivalYmd);
               const nbPortalUrl = guest.portal_token
                 ? `${PORTAL_BASE_URL}/portal/${guest.portal_token as string}`
                 : "";
-              const textBody = expandSessionPlaceholders(rawText, guest, {
-                guestName: nightBeforeDispatch.guestName,
-                entryTime: nbTimes.entryTime,
-                checkInTime: nbTimes.checkInTime,
-                portalUrl: nbPortalUrl,
-              });
+              const textBody = applySaturdayCheckInTimeOverride(
+                expandSessionPlaceholders(rawText, guest, {
+                  guestName: nightBeforeDispatch.guestName,
+                  entryTime: nbTimes.entryTime,
+                  checkInTime: nbTimes.checkInTime,
+                  portalUrl: nbPortalUrl,
+                }),
+                arrivalYmd,
+              );
               nbConvMessage = buildSessionConversationLog(
                 textBody,
                 (stageRow?.interactive_buttons ?? []) as InteractiveButtonDef[],
@@ -2512,8 +2531,8 @@ serve(async (req: Request) => {
     let morningDispatch: MorningDispatch | null = null;
 
     if (trigger === "morning_suite" || trigger === "morning_welcome") {
-      const arrivalDateStr = String(guest.arrival_date ?? "");
-      const isShabbat = new Date(`${arrivalDateStr}T00:00:00Z`).getUTCDay() === 6;
+      const arrivalDateStr = normalizeArrivalDateYmd(guest.arrival_date);
+      const isShabbat = isShabbatArrivalDate(arrivalDateStr);
       const guestName = sanitizeTemplateVars([String(guest.name ?? "")])[0];
 
       morningDispatch = {
