@@ -70,6 +70,39 @@ export function detectSuiteArrivalsPreset(headers) {
   };
 }
 
+/**
+ * Preset column mapping for the raw EZGO Suites Arrivals export ("Suite
+ * CSV") — the iOrderId/sTel1/sRemark/sClientFullName/sSubItemName/sRoomName/
+ * iResLineId column shape. Returns null when headers do not match this shape.
+ *
+ * guestPhone is deliberately NOT mapped here: sTel1 is the booking
+ * COORDINATOR's phone (shared across every room in a group booking), not the
+ * individual occupant's — ezgoParser.js's extractGuestDetails() resolves the
+ * true individual phone from `remark` first (its remark-first phone
+ * cascade). Mapping sTel1 to guestPhone would let a mapped "direct" phone
+ * short-circuit that remark resolution and route messages to the
+ * coordinator instead of the actual guest.
+ */
+export function detectEzgoArrivalsPreset(headers) {
+  if (!headers?.length) return null;
+  const set = new Set(headers);
+  const required = ["iOrderId", "sTel1", "sRemark", "sClientFullName", "sSubItemName", "sRoomName", "iResLineId"];
+  if (!required.every((h) => set.has(h))) return null;
+  return {
+    orderNumber: "iOrderId",
+    resLineId:   "iResLineId",
+    coordName:   "sClientFullName",
+    coordPhone:  "sTel1",
+    // guestPhone: intentionally omitted — see docstring above.
+    remark:      "sRemark",
+    suiteType:   "sSubItemName",
+    roomName:    "sRoomName",
+    groupId:     "Group_Id",
+    nights:      "iNights",
+    price:       "cPrice",
+  };
+}
+
 // ── Schema descriptor — mirrors suggest-import-mapping/index.ts SCHEMAS.inventory_renewal ──
 // parLevel/restockColumn are read as plain computed values, same as every
 // other column — no formula-syntax parsing. If only restockColumn is mapped
