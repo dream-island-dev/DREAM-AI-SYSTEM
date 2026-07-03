@@ -195,6 +195,44 @@ function pickOccupantNameFromPrefix(namePart) {
   return trimRemarkNameNoise(raw);
 }
 
+function remarkHasEmbeddedPhone(text) {
+  if (!text || typeof text !== "string") return false;
+  IL_MOBILE_RE.lastIndex = 0;
+  const found = IL_MOBILE_RE.test(text);
+  IL_MOBILE_RE.lastIndex = 0;
+  return found;
+}
+
+/**
+ * sRemark with occupant name but phone only in another column (sTel1).
+ * "נילי הללי" / "Eric Yosef Cohen" — not a name source when remark also has a phone
+ * (extractNameFromRemark handles that path).
+ */
+export function extractNameFromRemarkWithoutPhone(remark) {
+  if (!remark?.trim() || remarkHasEmbeddedPhone(remark)) return null;
+  const cleaned = pickOccupantNameFromPrefix(remark);
+  if (!cleaned || isCorporateMuteCoordName(cleaned)) return null;
+  if (!/^[\u0590-\u05FFa-zA-Z\s'"/+-]+$/.test(cleaned)) return null;
+  if (_isSuspiciousGuestName(cleaned)) return null;
+  const words = cleaned.split(/\s+/).filter(Boolean);
+  if (!words.length || words.length > 5) return null;
+  return cleaned;
+}
+
+// Shared with ArrivalImportPanel — keep in sync (imported there for badge checks).
+function _isSuspiciousGuestName(name) {
+  const s = String(name ?? "");
+  if (!s) return false;
+  return (
+    s.includes('","')
+    || s.length > 120
+    || /₪/.test(s)
+    || /,\s*,/.test(s)
+    || /\d+\s*בחדר/.test(s)
+    || /\s+תשלום\b/.test(s)
+  );
+}
+
 export function extractNameFromRemark(remark) {
   if (!remark || typeof remark !== "string") return null;
   const s = remark.trim();
@@ -342,13 +380,25 @@ export function extractGuestDetails(row, columnMapping = {}, fallbackDate = null
   // documented it to be.
   const remarkPhones   = extractPhonesFromText(remark);
   const opRemarkPhones = extractPhonesFromText(opRemark);
-  const remarkNameCandidate = extractNameFromRemark(remark);
+  const remarkNameCandidate =
+    extractNameFromRemark(remark)
+    ?? extractNameFromRemarkWithoutPhone(remark)
+    ?? extractNameFromRemark(opRemark)
+    ?? extractNameFromRemarkWithoutPhone(opRemark);
 
   let guestPhone;
   let phoneSource; // "individual" | "coordinator"
 
   if (remarkPhones.length > 0 && remarkNameCandidate) {
     guestPhone   = remarkPhones[0];
+    phoneSource  = "individual";
+  } else if (remarkNameCandidate && directE164 && !isDummyPhone(directE164)) {
+    // Name in sRemark, mobile in mapped guestPhone column (not embedded in remark text).
+    guestPhone   = directE164;
+    phoneSource  = "individual";
+  } else if (remarkNameCandidate && coordE164 && !isDummyPhone(coordE164)) {
+    // Common EZGO shape: "נילי הללי" in sRemark, 05x in sTel1 — same occupant.
+    guestPhone   = coordE164;
     phoneSource  = "individual";
   } else if (directE164 && !isDummyPhone(directE164)) {
     guestPhone  = directE164;

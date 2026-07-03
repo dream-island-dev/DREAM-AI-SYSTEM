@@ -1,7 +1,7 @@
 // src/utils/ezgoParser.test.js
 // Sprint 1 regression tests — the remark-first phone bug and its neighbors.
 
-import { extractGuestDetails, extractMealTimeFromRemark, extractNameFromRemark } from "./ezgoParser";
+import { extractGuestDetails, extractMealTimeFromRemark, extractNameFromRemark, extractNameFromRemarkWithoutPhone } from "./ezgoParser";
 
 const ARRIVALS_MAPPING = {
   orderNumber: "Order",
@@ -250,5 +250,24 @@ describe("ezgoParser — Sprint 1 fixes", () => {
     expect(row.guestName).toBe("רינת עקיבא");
     expect(row.guestName).not.toContain('","');
     expect(row.guestPhone).toBe("+972506919808");
+  });
+
+  test("name-only remark + phone in sTel1 column → occupant profile", () => {
+    expect(extractNameFromRemarkWithoutPhone("נילי הללי")).toBe("נילי הללי");
+    expect(extractNameFromRemarkWithoutPhone("Eric Yosef Cohen")).toBe("Eric Yosef Cohen");
+
+    const row = extractGuestDetails(
+      {
+        Order: "262071",
+        ResLine: "rl-nili",
+        Remark: "נילי הללי",
+        CoordName: "פרטי",
+        CoordPhone: "0524549965",
+      },
+      ARRIVALS_MAPPING,
+    );
+    expect(row.guestName).toBe("נילי הללי");
+    expect(row.guestPhone).toBe("+972524549965");
+    expect(row.phoneSource).toBe("individual");
   });
 });

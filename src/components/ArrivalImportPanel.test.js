@@ -44,7 +44,7 @@ describe("_getSyncProfileIndices — Sprint 3 DB-match gating", () => {
       [1, "new"],
     ]);
 
-    const { indices } = _getSyncProfileIndices(merged, gridRows, {
+    const { indices, skippedNoPhone } = _getSyncProfileIndices(merged, gridRows, {
       importSource: null,
       detailedRoomFilter: "all",
       selectedIds: new Set(),
@@ -52,6 +52,8 @@ describe("_getSyncProfileIndices — Sprint 3 DB-match gating", () => {
     });
 
     expect(indices).toEqual([1]);
+    expect(skippedNoPhone).toHaveLength(1);
+    expect(skippedNoPhone[0].guestName).toBeTruthy();
   });
 
   test("conflict rows are NOT skipped — they sync, but are reported separately", () => {

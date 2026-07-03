@@ -548,6 +548,7 @@ function _profileToDetailedInput(g) {
 
 const UMBRELLA_BADGE_LABEL = "⛔ מטריית קבוצה";
 const SUSPICIOUS_NAME_BADGE_LABEL = "⚠ שם חשוד";
+const NO_PHONE_BADGE_LABEL = "📵 אין טלפון";
 
 const DB_MATCH_BADGE_LABEL = {
   unimportable: UMBRELLA_BADGE_LABEL,
@@ -628,7 +629,7 @@ function _profilesToGridRows(merged, { suiteAssignmentOnly = false, badgeByIdx =
       meal_location: g.meal_location ?? "",
       amount:       totalPrice || "",
       arrivalDate:  g.arrivalDate ?? "",
-      importBadge:  _composeImportBadge(g.guestName, badgeByIdx?.get(i)),
+      importBadge:  _composeImportBadge(g.guestName, badgeByIdx?.get(i), g.guestPhone),
     };
   });
 }
@@ -636,8 +637,9 @@ function _profilesToGridRows(merged, { suiteAssignmentOnly = false, badgeByIdx =
 // Suspicious-name flag always wins visibility (data-quality issue takes
 // priority over a DB-match status) — both are shown together when present so
 // neither is hidden.
-function _composeImportBadge(guestName, dbBadge) {
+function _composeImportBadge(guestName, dbBadge, guestPhone) {
   const parts = [];
+  if (!guestPhone) parts.push(NO_PHONE_BADGE_LABEL);
   if (_isSuspiciousGuestName(guestName)) parts.push(SUSPICIOUS_NAME_BADGE_LABEL);
   if (dbBadge) parts.push(dbBadge);
   return parts.join(" · ");
@@ -661,7 +663,7 @@ function _detailedProfilesToGridRows(merged, badgeByIdx = null) {
       nights:       nights || "",
       leadSource:   g.leadSource ?? "",
       automationMuted: g.automationMuted ? "🔇 ללא אוטומציה" : "",
-      importBadge:  badgeByIdx?.get(i) ?? "",
+      importBadge:  _composeImportBadge(g.guestName, badgeByIdx?.get(i), g.guestPhone),
     };
   });
 }
@@ -693,24 +695,36 @@ export function _getSyncProfileIndices(merged, gridRows, { importSource, detaile
   const gridByIdx = new Map(gridRows.map((r) => [r._profileIdx, r]));
   const indices = [];
   const conflicts = [];
+  const skippedNoPhone = [];
   let skippedUnimportable = 0;
+  let skippedDeselected = 0;
   for (let i = 0; i < merged.length; i++) {
     const g = merged[i];
     const row = gridByIdx.get(i);
     const rowId = row?._id ?? `row_${i}`;
-    if (selectedIds.size > 0 && !selectedIds.has(rowId)) continue;
+    if (selectedIds.size > 0 && !selectedIds.has(rowId)) {
+      skippedDeselected++;
+      continue;
+    }
     if (importSource === "detailed") {
       const hasRooms = _profileHasRooms(g);
       if (detailedRoomFilter === "suite" && !hasRooms) continue;
       if (detailedRoomFilter === "day_use" && hasRooms) continue;
     }
-    if (!g.guestPhone) continue;
     const dbStatus = dbMatchByIdx?.get(i) ?? null;
     if (dbStatus === "unimportable") { skippedUnimportable++; continue; }
+    if (!g.guestPhone) {
+      skippedNoPhone.push({
+        idx: i,
+        guestName: String(row?.guestName ?? g.guestName ?? "").trim() || `שורה ${i + 1}`,
+        orderNumber: String(row?.orderNumber ?? [...(g.orderNumbers ?? [])][0] ?? "").trim(),
+      });
+      continue;
+    }
     if (dbStatus === "conflict") conflicts.push(i);
     indices.push(i);
   }
-  return { indices, conflicts, skippedUnimportable };
+  return { indices, conflicts, skippedUnimportable, skippedNoPhone, skippedDeselected };
 }
 
 /** Targeted room-only sync — match existing guests by order_number or name. */
@@ -1507,7 +1521,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
       // ── PATH A: Suite CSV loaded (rooms + guests + bookings) ─────────────
       if (hasDoc2 && merged) {
         const gridByProfileIdx = new Map(gridRows.map((r) => [r._profileIdx, r]));
-        const { indices: syncIndices, conflicts, skippedUnimportable } = _getSyncProfileIndices(merged, gridRows, {
+        const { indices: syncIndices, conflicts, skippedUnimportable, skippedNoPhone, skippedDeselected } = _getSyncProfileIndices(merged, gridRows, {
           importSource,
           detailedRoomFilter,
           selectedIds,
@@ -1663,6 +1677,8 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           corporateMuted,
           batchType: batchProfileType,
           skippedUnimportable,
+          skippedNoPhone,
+          skippedDeselected,
           conflictCount: conflicts.length,
           conflictNames: conflicts.map((i) =>
             gridByProfileIdx.get(i)?.guestName || mergedCandidates[i]?.guestName || `שורה ${i + 1}`),
@@ -1820,6 +1836,23 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
       selectedIds,
       dbMatchByIdx,
     }).indices.length;
+  }, [merged, gridRows, importSource, detailedRoomFilter, selectedIds, dbMatchByIdx]);
+
+  const syncEligibility = useMemo(() => {
+    if (!merged?.length) return null;
+    const r = _getSyncProfileIndices(merged, gridRows, {
+      importSource,
+      detailedRoomFilter,
+      selectedIds,
+      dbMatchByIdx,
+    });
+    return {
+      total: merged.length,
+      ready: r.indices.length,
+      skippedNoPhone: r.skippedNoPhone,
+      skippedUnimportable: r.skippedUnimportable,
+      skippedDeselected: r.skippedDeselected,
+    };
   }, [merged, gridRows, importSource, detailedRoomFilter, selectedIds, dbMatchByIdx]);
 
   // ── Sync button label ─────────────────────────────────────────────────────
@@ -2325,6 +2358,37 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                   🏨 תצוגת שיבוץ: שם · מס׳ הזמנה · חדר/סוויטה — {displayGridRows.length} שורות
                 </div>
               )}
+              {syncEligibility && syncEligibility.total > 0 && (
+                <div style={{
+                  marginBottom: 10, padding: "8px 12px", borderRadius: 10,
+                  background: syncEligibility.ready < syncEligibility.total
+                    ? "rgba(245,158,11,0.12)" : "rgba(16,185,129,0.08)",
+                  border: `1px solid ${syncEligibility.ready < syncEligibility.total
+                    ? "rgba(245,158,11,0.45)" : "rgba(16,185,129,0.35)"}`,
+                  fontSize: 11, fontWeight: 700,
+                  color: syncEligibility.ready < syncEligibility.total ? "#92400E" : "#065f46",
+                  lineHeight: 1.7,
+                }}>
+                  📊 בקובץ {syncEligibility.total} שורות · מוכנות לייבוא: {syncEligibility.ready}
+                  {syncEligibility.skippedNoPhone.length > 0 && (
+                    <> · 📵 {syncEligibility.skippedNoPhone.length} ללא טלפון</>
+                  )}
+                  {syncEligibility.skippedUnimportable > 0 && (
+                    <> · ⛔ {syncEligibility.skippedUnimportable} מטריית קבוצה</>
+                  )}
+                  {syncEligibility.skippedDeselected > 0 && (
+                    <> · {syncEligibility.skippedDeselected} לא נבחרו</>
+                  )}
+                  {syncEligibility.skippedNoPhone.length > 0 && (
+                    <div style={{ fontWeight: 600, marginTop: 4 }}>
+                      ללא טלפון: {syncEligibility.skippedNoPhone.slice(0, 6).map((r) => r.guestName).join(", ")}
+                      {syncEligibility.skippedNoPhone.length > 6
+                        ? ` +${syncEligibility.skippedNoPhone.length - 6}` : ""}
+                      {" "}— הוסף מספר בהערות או בעמודת טלפון
+                    </div>
+                  )}
+                </div>
+              )}
               {selectedIds.size > 0 && (
                 <BulkEditBar
                   count={selectedIds.size}
@@ -2498,6 +2562,18 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                   {result.skippedUnimportable > 0 && (
                     <div style={{ fontSize: 12, color: "#92400E", marginTop: 6, fontWeight: 700 }}>
                       ⛔ {result.skippedUnimportable} שורות «מטריית קבוצה» דולגו אוטומטית — לא סונכרנו ל-DB
+                    </div>
+                  )}
+                  {result.skippedNoPhone?.length > 0 && (
+                    <div style={{ fontSize: 12, color: "#92400E", marginTop: 6, fontWeight: 700 }}>
+                      📵 {result.skippedNoPhone.length} ללא טלפון — לא סונכרנו (בדוק הערות / עמודת טלפון):{" "}
+                      {result.skippedNoPhone.slice(0, 8).map((r) => r.guestName).join(", ")}
+                      {result.skippedNoPhone.length > 8 && ` +${result.skippedNoPhone.length - 8}`}
+                    </div>
+                  )}
+                  {result.skippedDeselected > 0 && (
+                    <div style={{ fontSize: 12, color: "#64748b", marginTop: 6 }}>
+                      {result.skippedDeselected} שורות לא נבחרו בטבלה (סינון ידני)
                     </div>
                   )}
                   {result.conflictCount > 0 && (

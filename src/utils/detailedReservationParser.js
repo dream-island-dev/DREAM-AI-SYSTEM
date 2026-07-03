@@ -104,14 +104,15 @@ export function cleanCsvCell(value) {
 }
 
 /**
- * Fix common PMS export bug: Hebrew legal suffix בע"מ contains an unescaped `"` that
- * terminates the quoted name field early (e.g. אורמת מערכות בע"מ).
+ * Fix common PMS export bugs: unescaped `"` inside quoted fields —
+ * Hebrew legal suffix בע"מ (company names) and ש"ח (price in sRemark).
  * Applied to the full file text before line-splitting so row boundaries stay intact.
  */
 function preprocessCsvText(text) {
   return String(text ?? "")
     .replace(/בע"מ/g, 'בע""מ')
-    .replace(/בע״מ/g, "בע״מ"); // geresh variant — keep as-is, no ASCII quote
+    .replace(/בע״מ/g, "בע״מ") // geresh variant — keep as-is, no ASCII quote
+    .replace(/ש"ח/g, 'ש""ח'); // EZGO sRemark price suffix (e.g. "1000 ש"ח תשלום")
 }
 
 function preprocessCsvLine(line) {

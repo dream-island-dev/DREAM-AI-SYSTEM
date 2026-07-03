@@ -92,4 +92,15 @@ describe("detailedReservationParser — csvTextToRowObjects", () => {
   test("empty text returns an empty array, not a throw", () => {
     expect(csvTextToRowObjects("")).toEqual([]);
   });
+
+  test("unescaped ש\"ח inside a quoted sRemark does not truncate the file", () => {
+    const text =
+      'iOrderId,sTel1,sRemark\n' +
+      '262071,111,"רינת עקיבא 3 בחדר תוספת ל 3 פרטי 1000 ש"ח תשלום ביום ההגעה"\n' +
+      "277797,0545679149,\n";
+    const rows = csvTextToRowObjects(text);
+    expect(rows).toHaveLength(2);
+    expect(rows[0].sRemark).toContain("1000 ש\"ח");
+    expect(rows[1].iOrderId).toBe("277797");
+  });
 });

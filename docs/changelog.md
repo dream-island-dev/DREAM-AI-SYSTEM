@@ -1,3 +1,4 @@
+2026-07-04 | ezgoParser + ArrivalImportPanel + detailedReservationParser | ייבוא Doc 2: שם בהערה+טלפון בעמודה; 📵 שקיפות לפני סנכרון; תיקון CSV ש"ח (24 שורות במקום 7).
 2026-07-04 | ezgoParser.js + ArrivalImportPanel.js | חילוץ חכם מהערות: שם+טלפון מ-sRemark (חיתוך בחדר/שח/₪, אורח ליד טלפון ב-/+, דמה 111); ⚠ שם חשוד.
 2026-07-04 | ezgoParser.js + guestImportIntelligence.js | קבוצות מוניציפליות: טלפון מזמין דמה (111) לא נכנס לפרופיל — זהות מההערות; שורות לא נחסמות כ-⛔ umbrella; automationMuted נשאר.
 2026-07-03 | ArrivalImportPanel + suiteRegistry + guestImportIntelligence + migration 125 | סנכרון Doc 2 מדויק: שיוך סוויטה מ-roomName+suiteType, 🔄/⚠ בלי false conflict, room scoped ל-arrival_date.
