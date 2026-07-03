@@ -6,7 +6,7 @@
 // Detailed Reservation Report's own row flag (isUmbrellaGroupRow) and its
 // classifyDbMatch() outcome, not the shared rule itself.
 
-import { parseDetailedReservationRows } from "./detailedReservationParser";
+import { parseDetailedReservationRows, csvTextToRowObjects } from "./detailedReservationParser";
 import { classifyDbMatch } from "./guestImportIntelligence";
 
 const HEADERS = ["שם מלא", "טלפון", "מס. הזמנה", "ת. הגעה", "חדרים", "לילות", "מקור הגעה"];
@@ -60,5 +60,36 @@ describe("detailedReservationParser — umbrella group row detection (Sprint 2)"
 
     expect(rows).toHaveLength(1); // present + flagged, not silently removed
     expect(rows[0].isUmbrellaGroupRow).toBe(true);
+  });
+});
+
+// ── XOS Task 1: csvTextToRowObjects — quote-aware CSV → header-keyed rows ──
+// Used by ArrivalImportPanel.js's handleDoc2 for raw EZGO Suites .csv uploads
+// instead of SheetJS's own CSV auto-parse, which can mis-split a row when a
+// free-text field (e.g. sRemark) embeds an unescaped comma/quote.
+describe("detailedReservationParser — csvTextToRowObjects", () => {
+  test("parses a well-formed CSV into header-keyed row objects", () => {
+    const text = "iOrderId,sTel1,sRemark\n266932,0501112222,מרדכי 050-7774904\n";
+    const rows = csvTextToRowObjects(text);
+    expect(rows).toEqual([
+      { iOrderId: "266932", sTel1: "0501112222", sRemark: "מרדכי 050-7774904" },
+    ]);
+  });
+
+  test("a quoted field containing a comma stays intact in a single column (the bug this fixes)", () => {
+    // The exact failure mode: sRemark holds a comma-laden fragment quoted per
+    // RFC4180 — a naive/SheetJS split on bare commas would bleed this across
+    // extra columns; the quote-aware parser keeps it as one field.
+    const text =
+      'iOrderId,sTel1,sRemark,sClientFullName\n' +
+      '266933,0506919808,"רינת עקיבא 3 בחדר, גוש 12, עיריית תל אביב 0506919808",רינת עקיבא\n';
+    const rows = csvTextToRowObjects(text);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].sRemark).toBe("רינת עקיבא 3 בחדר, גוש 12, עיריית תל אביב 0506919808");
+    expect(rows[0].sClientFullName).toBe("רינת עקיבא");
+  });
+
+  test("empty text returns an empty array, not a throw", () => {
+    expect(csvTextToRowObjects("")).toEqual([]);
   });
 });

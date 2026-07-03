@@ -36,6 +36,7 @@ import {
   shouldParseDetailedReportAsText,
   detailedRowsToProfileMap,
   applyPriceResolutions,
+  csvTextToRowObjects,
 } from "../utils/detailedReservationParser";
 import PriceDiscrepancyModal from "./PriceDiscrepancyModal";
 
@@ -552,6 +553,7 @@ function _profileToDetailedInput(g) {
 }
 
 const UMBRELLA_BADGE_LABEL = "⛔ מטריית קבוצה";
+const SUSPICIOUS_NAME_BADGE_LABEL = "⚠ שם חשוד";
 
 const DB_MATCH_BADGE_LABEL = {
   unimportable: UMBRELLA_BADGE_LABEL,
@@ -559,6 +561,18 @@ const DB_MATCH_BADGE_LABEL = {
   existing: "🔄 קיים",
   conflict: "⚠ התנגשות",
 };
+
+// FAIL VISIBLE (§0.3) safety net — a mis-split CSV row (quote/comma bleed
+// from a free-text field like sRemark) can still leak raw CSV fragments into
+// guestName even after csvTextToRowObjects + extractNameFromRemark's own
+// cleanup (see ezgoParser.js). Never silently accept a garbled name — flag
+// the row so staff catches it before syncing instead of writing junk to
+// guests.name.
+export function _isSuspiciousGuestName(name) {
+  const s = String(name ?? "");
+  if (!s) return false;
+  return s.includes('","') || s.length > 120;
+}
 
 // ── Guest Import Intelligence — Sprint 3: DB-match lookup ──────────────────
 // Looks up a candidate's existing `guests` row from the pre-fetched Map (keyed
@@ -616,9 +630,19 @@ function _profilesToGridRows(merged, { suiteAssignmentOnly = false, badgeByIdx =
       meal_location: g.meal_location ?? "",
       amount:       totalPrice || "",
       arrivalDate:  g.arrivalDate ?? "",
-      importBadge:  badgeByIdx?.get(i) ?? "",
+      importBadge:  _composeImportBadge(g.guestName, badgeByIdx?.get(i)),
     };
   });
+}
+
+// Suspicious-name flag always wins visibility (data-quality issue takes
+// priority over a DB-match status) — both are shown together when present so
+// neither is hidden.
+function _composeImportBadge(guestName, dbBadge) {
+  const parts = [];
+  if (_isSuspiciousGuestName(guestName)) parts.push(SUSPICIOUS_NAME_BADGE_LABEL);
+  if (dbBadge) parts.push(dbBadge);
+  return parts.join(" · ");
 }
 
 function _detailedProfilesToGridRows(merged, badgeByIdx = null) {
@@ -1182,11 +1206,25 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     setDoc2Name(file.name);
     setResult(null);
     try {
-      const XLSX = await import("xlsx");
-      const buf  = await file.arrayBuffer();
-      const wb   = XLSX.read(buf, { type: "array", raw: false });
-      const ws   = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
+      const buf = await file.arrayBuffer();
+      // .csv → quote-aware text parser (not SheetJS's own CSV auto-parse): a
+      // free-text field like EZGO's sRemark can contain an unescaped comma or
+      // quote, which makes SheetJS mis-split the row and bleed raw CSV
+      // fragments (e.g. `","6","11"...,"עיריית תל אביב"`) into guestName.
+      // parseCsvText/csvTextToRowObjects handle RFC4180 quoting properly —
+      // see detailedReservationParser.js (already used for the "detailed
+      // reservation report" import mode for the same reason).
+      const isCsv = /\.csv$/i.test(file.name);
+      let rows;
+      if (isCsv) {
+        const text = new TextDecoder("utf-8").decode(buf);
+        rows = csvTextToRowObjects(text);
+      } else {
+        const XLSX = await import("xlsx");
+        const wb   = XLSX.read(buf, { type: "array", raw: false });
+        const ws   = wb.Sheets[wb.SheetNames[0]];
+        rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
+      }
 
       if (!rows.length) {
         showToast("err", "הקובץ ריק");

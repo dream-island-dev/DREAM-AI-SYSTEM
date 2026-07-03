@@ -4,7 +4,7 @@
 // classifyDbMatch, see guestImportIntelligence.js) now gates which rows
 // actually reach the sync_suite_arrivals RPC.
 
-import { _getSyncProfileIndices } from "./ArrivalImportPanel";
+import { _getSyncProfileIndices, _isSuspiciousGuestName } from "./ArrivalImportPanel";
 
 function _row(i, { guestPhone = "+972500000000" } = {}) {
   return { _profileIdx: i, guestPhone };
@@ -106,5 +106,30 @@ describe("_getSyncProfileIndices — Sprint 3 DB-match gating", () => {
     expect(indices).toEqual([0, 1]);
     expect(skippedUnimportable).toBe(0);
     expect(conflicts).toEqual([]);
+  });
+});
+
+// ── XOS Task 1: _isSuspiciousGuestName — FAIL VISIBLE safety net ───────────
+// Flags a guestName that still carries a CSV mis-split artifact or is
+// implausibly long, even after csvTextToRowObjects (read-time fix) and
+// extractNameFromRemark's own defensive cleanup (ezgoParser.js) — a last
+// layer so a garbled row is never synced silently (§0.3).
+describe("_isSuspiciousGuestName", () => {
+  test("flags a name still containing the CSV mis-split artifact", () => {
+    expect(_isSuspiciousGuestName('רינת עקיבא","6","11","עיריית תל אביב"')).toBe(true);
+  });
+
+  test("flags an implausibly long name (>120 chars)", () => {
+    expect(_isSuspiciousGuestName("א".repeat(121))).toBe(true);
+  });
+
+  test("does not flag a normal guest name", () => {
+    expect(_isSuspiciousGuestName("רינת עקיבא")).toBe(false);
+  });
+
+  test("does not flag empty/null/undefined", () => {
+    expect(_isSuspiciousGuestName("")).toBe(false);
+    expect(_isSuspiciousGuestName(null)).toBe(false);
+    expect(_isSuspiciousGuestName(undefined)).toBe(false);
   });
 });

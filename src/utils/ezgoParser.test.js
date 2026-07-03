@@ -1,7 +1,7 @@
 // src/utils/ezgoParser.test.js
 // Sprint 1 regression tests — the remark-first phone bug and its neighbors.
 
-import { extractGuestDetails, extractMealTimeFromRemark } from "./ezgoParser";
+import { extractGuestDetails, extractMealTimeFromRemark, extractNameFromRemark } from "./ezgoParser";
 
 const ARRIVALS_MAPPING = {
   orderNumber: "Order",
@@ -164,5 +164,40 @@ describe("ezgoParser — Sprint 1 fixes", () => {
       ARRIVALS_MAPPING,
     );
     expect(row.automationMuted).toBe(true);
+  });
+
+  // ── XOS Task 1: CSV mis-split defensive cleanup ────────────────────────────
+  // A raw EZGO Suites CSV row whose sRemark contains an unescaped comma/quote
+  // can get mis-split by a naive CSV reader, bleeding leftover CSV fragments
+  // (","6","11"...,"עיריית תל אביב") in front of the phone number. The
+  // primary fix is quote-aware parsing at read time (csvTextToRowObjects in
+  // ArrivalImportPanel.js/detailedReservationParser.js) — this is the
+  // secondary, defense-in-depth layer inside extractNameFromRemark itself.
+  test("extractNameFromRemark: cuts at the first CSV mis-split artifact instead of keeping the leaked junk", () => {
+    const mangled = 'רינת עקיבא 3 בחדר","6","11","גוש 12","עיריית תל אביב",0506919808';
+    expect(extractNameFromRemark(mangled)).toBe("רינת עקיבא 3 בחדר");
+  });
+
+  test("extractNameFromRemark: caps name length as a hard backstop when no artifact pattern matches", () => {
+    const longJunk = "א".repeat(150);
+    const mangled = `${longJunk} 0501234567`;
+    const result = extractNameFromRemark(mangled);
+    expect(result.length).toBeLessThanOrEqual(80);
+  });
+
+  test("extractGuestDetails: mis-split CSV remark resolves to the clean name prefix, not the raw junk", () => {
+    const row = extractGuestDetails(
+      {
+        Order: "300309",
+        ResLine: "rl-V",
+        Remark: 'רינת עקיבא 3 בחדר","6","11","גוש 12","עיריית תל אביב",0506919808',
+        CoordName: "רינת עקיבא",
+        CoordPhone: "0506919808",
+      },
+      ARRIVALS_MAPPING,
+    );
+    expect(row.guestName).toBe("רינת עקיבא 3 בחדר");
+    expect(row.guestName).not.toContain('","');
+    expect(row.guestPhone).toBe("+972506919808");
   });
 });

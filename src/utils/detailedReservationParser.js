@@ -185,6 +185,26 @@ export function parseCsvText(text) {
 }
 
 /**
+ * Parse CSV text into an array of row objects keyed by the header row — the
+ * same output shape as XLSX.utils.sheet_to_json(ws, {defval:""}). Quote-aware
+ * (parseCsvText/parseCsvLine above), so a free-text column that embeds raw
+ * commas/quotes (e.g. EZGO's sRemark) cannot bleed into neighboring columns
+ * the way SheetJS's own CSV auto-parse sometimes does. Use this for any
+ * .csv upload whose columns are unique (no duplicate-header disambiguation
+ * needed — for that, see normalizeDetailedReservationMatrix instead).
+ */
+export function csvTextToRowObjects(text) {
+  const matrix = parseCsvText(text);
+  if (!matrix.length) return [];
+  const headers = matrix[0].map((h) => String(h ?? "").trim());
+  return matrix.slice(1).map((row) => {
+    const obj = {};
+    headers.forEach((h, i) => { obj[h] = row[i] ?? ""; });
+    return obj;
+  });
+}
+
+/**
  * Fixed 0-based column indices for the PMS "Detailed Reservation Report" export.
  * Excel letters: I=8 … T=19 (board code usually in the second duplicate column).
  */

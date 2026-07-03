@@ -125,7 +125,19 @@ export function extractPhonesFromText(text) {
  *   2. Take everything BEFORE that match position
  *   3. Strip trailing separators (" - ", " / ", " + ", space)
  *   4. Clean internal multi-slash sequences to a single " / "
+ *
+ * Defensive cleanup (XOS Task 1): a mis-split CSV row can leak raw fragments
+ * ahead of the real name — e.g. `רינת עקיבא 3 בחדר","6","11","גוש 12","עיריית
+ * תל אביב",0506919808` when a free-text field like sRemark contains an
+ * unescaped comma/quote that a naive CSV reader mis-splits across columns.
+ * `","` is the telltale artifact of that mis-split (a quoted-field boundary
+ * landing mid-string) — cut there so the leaked junk never becomes the guest
+ * name, and cap length as a hard backstop against anything else that slips
+ * through un-flagged.
  */
+const CSV_ARTIFACT_RE_INDEX = '","';
+const MAX_REMARK_NAME_LEN = 80;
+
 export function extractNameFromRemark(remark) {
   if (!remark || typeof remark !== "string") return null;
   const s = remark.trim();
@@ -138,9 +150,12 @@ export function extractNameFromRemark(remark) {
     return null; // sRemark without a phone is NOT a name source
   }
 
-  const namePart = s.slice(0, phoneMatch.index);
-  // Strip trailing noise: dashes, slashes, plus signs, spaces
-  const clean = namePart.replace(/[\s\-+/|,;]+$/, "").trim();
+  let namePart = s.slice(0, phoneMatch.index);
+  const artifactIdx = namePart.indexOf(CSV_ARTIFACT_RE_INDEX);
+  if (artifactIdx >= 0) namePart = namePart.slice(0, artifactIdx);
+  // Strip trailing noise: dashes, slashes, plus signs, spaces, stray quotes
+  let clean = namePart.replace(/[\s\-+/|,;"]+$/, "").trim();
+  if (clean.length > MAX_REMARK_NAME_LEN) clean = clean.slice(0, MAX_REMARK_NAME_LEN).trim();
   return clean || null;
 }
 
