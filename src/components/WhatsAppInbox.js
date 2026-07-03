@@ -255,6 +255,13 @@ const T = {
     dismissAllNone: "אין התראות פעילות ברשימה",
     loadOlder: "טען שיחות ישנות יותר ⬇",
     loadOlderBusy: "⏳ טוען שיחות ישנות…",
+    searchPh: "חיפוש לפי שם, טלפון או חדר…",
+    filterAll: "הכל",
+    filterAlerts: "🔴 התראות",
+    filterInResort: "🟢 בריזורט",
+    moreMenu: "עוד",
+    threadMore: "פעולות",
+    closeSheet: "סגור",
   },
   en: {
     dir: "ltr",
@@ -303,6 +310,13 @@ const T = {
     dismissAllNone: "No active alerts in list",
     loadOlder: "Load older conversations ⬇",
     loadOlderBusy: "⏳ Loading older…",
+    searchPh: "Search name, phone, or room…",
+    filterAll: "All",
+    filterAlerts: "🔴 Alerts",
+    filterInResort: "🟢 In resort",
+    moreMenu: "More",
+    threadMore: "Actions",
+    closeSheet: "Close",
   },
 };
 
@@ -890,7 +904,7 @@ const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobil
 // same row reference, not a clone) and `resolveCtx` is memoized on primitives
 // below (see activeResolveCtx) — so a bubble only re-renders when its own
 // message, direction, or resolved guest context actually changed.
-const Bubble = React.memo(function Bubble({ msg, dir, resolveCtx }) {
+const Bubble = React.memo(function Bubble({ msg, dir, resolveCtx, isMobile }) {
   const isOut = msg.direction === "outbound";
   const rtl = dir === "rtl";
   const dispatchInfo = isOut ? parseOutboundDispatch(msg.message) : null;
@@ -902,7 +916,7 @@ const Bubble = React.memo(function Bubble({ msg, dir, resolveCtx }) {
       marginBottom: 4,
     }}>
       <div style={{
-        maxWidth: "78%",
+        maxWidth: isMobile ? "88%" : "78%",
         background: isOut ? "var(--black-soft, #2C2C2C)" : "#ffffff",
         border: isOut ? "none" : "1.5px solid #c5d9f0",
         borderRadius: isOut ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
@@ -2150,6 +2164,10 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
   const t                         = T[lang];
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [quickOpen, setQuickOpen]   = useState(false);
+  const [rosterSearch, setRosterSearch] = useState("");
+  const [rosterFilter, setRosterFilter] = useState("all"); // all | alerts | in_resort
+  const [mobileToolbarOpen, setMobileToolbarOpen] = useState(false);
+  const [mobileThreadMenuOpen, setMobileThreadMenuOpen] = useState(false);
   const [archivedPhones, setArchivedPhones] = useState(() => new Set());
   const [routeToast, setRouteToast] = useState(null);
   // ── WordPress-style guest editor drawer + claim/assignment state ─────────
@@ -2661,6 +2679,13 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
     setContacts(applyGrouping(allMsgsRef.current));
     fetchThreadHistory(phone); // background hydrate — full history may exceed the fast-load window
   }, [isMobile, applyGrouping, fetchThreadHistory]);
+
+  useEffect(() => {
+    if (mobileScreen === "list") {
+      setMobileThreadMenuOpen(false);
+      setQuickOpen(false);
+    }
+  }, [mobileScreen]);
 
   // ── Deep-link focus (Requests Board → "פתח שיחה ב-DREAM BOT") ───────────
   useEffect(() => {
@@ -3188,6 +3213,30 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
   // ── Derived state ──────────────────────────────────────────────────────────
   const visibleContacts = contacts.filter((c) => !archivedPhones.has(c.phone));
   const alertContacts = visibleContacts.filter((c) => c.humanRequested);
+  const displayContacts = useMemo(() => {
+    let list = visibleContacts;
+    const q = rosterSearch.trim().toLowerCase();
+    if (q) {
+      const qDigits = q.replace(/\D/g, "");
+      list = list.filter((c) => {
+        const hay = [c.guestName, c.pushName, c.room, c.phone].filter(Boolean).join(" ").toLowerCase();
+        const phoneDigits = (c.phone || "").replace(/\D/g, "");
+        return hay.includes(q) || (qDigits.length >= 3 && phoneDigits.includes(qDigits));
+      });
+    }
+    if (rosterFilter === "alerts") {
+      list = list.filter((c) => c.humanRequested);
+    } else if (rosterFilter === "in_resort") {
+      list = list.filter((c) =>
+        resolveEffectiveGuestStatus({
+          status: c.status,
+          arrival_date: c.arrivalDate,
+          departure_date: c.departureDate,
+        }) === "checked_in"
+      );
+    }
+    return list;
+  }, [visibleContacts, rosterSearch, rosterFilter]);
   // Contextual macros take over the quick-actions drawer when this guest has
   // usable metadata; otherwise fall back to the generic list so the drawer
   // never renders empty (Sprint 9.4, point 4).
@@ -3210,7 +3259,10 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
         background: "var(--ivory)", position: "sticky", top: 0, zIndex: 1, flexWrap: "wrap",
       }}>
         <span style={{ fontWeight: 700, fontSize: 12, color: "var(--text-muted)" }}>
-          {t.listCount(visibleContacts.length)}
+          {t.listCount(displayContacts.length)}
+          {(rosterSearch.trim() || rosterFilter !== "all") && displayContacts.length !== visibleContacts.length && (
+            <span style={{ opacity: 0.75 }}> / {visibleContacts.length}</span>
+          )}
         </span>
         <div style={{ display: "flex", alignItems: "center", gap: "var(--space-sm)", marginInlineStart: "auto" }}>
           {loading && <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{t.syncing}</span>}
@@ -3246,17 +3298,57 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
           </button>
         </div>
       </div>
+      {isMobile && (
+        <div style={{
+          padding: "8px var(--space-md) 10px",
+          borderBottom: "1px solid var(--border)",
+          background: "var(--ivory)",
+          position: "sticky",
+          top: 44,
+          zIndex: 1,
+        }}>
+          <input
+            type="search"
+            value={rosterSearch}
+            onChange={(e) => setRosterSearch(e.target.value)}
+            placeholder={t.searchPh}
+            aria-label={t.searchPh}
+            className="wa-roster-search"
+          />
+          <div style={{ display: "flex", gap: 6, marginTop: 8, overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+            {[
+              { id: "all", label: t.filterAll },
+              { id: "alerts", label: t.filterAlerts },
+              { id: "in_resort", label: t.filterInResort },
+            ].map((chip) => (
+              <button
+                key={chip.id}
+                type="button"
+                onClick={() => setRosterFilter(chip.id)}
+                className={`wa-filter-chip${rosterFilter === chip.id ? " wa-filter-chip--active" : ""}`}
+              >
+                {chip.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       {loading && visibleContacts.length === 0 ? (
         <RosterSkeleton />
       ) : (
         <>
+          {displayContacts.length === 0 && visibleContacts.length > 0 && (
+            <div style={{ padding: "var(--space-lg)", textAlign: "center", color: "var(--text-muted)" }}>
+              <div style={{ fontSize: 13 }}>{t.searchPh}</div>
+            </div>
+          )}
           {visibleContacts.length === 0 && (
             <div style={{ padding: "var(--space-lg)", textAlign: "center", color: "var(--text-muted)" }}>
               <div style={{ fontSize: 32, marginBottom: 8 }}>{t.emptyIcon}</div>
               <div style={{ fontSize: 13 }}>{t.emptyBody}</div>
             </div>
           )}
-          {visibleContacts.map((c) => (
+          {displayContacts.map((c) => (
             <ContactItem
               key={c.phone}
               contact={c}
@@ -3363,13 +3455,18 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
             ) : null;
           })()}
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-          {activeContact?.spaTime && (
+        <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 4 : 8, flexShrink: 0, position: "relative" }}>
+          {activeContact?.spaTime && !isMobile && (
             <div className="u-badge-nowrap" style={{
               fontSize: 11, fontWeight: 700, background: "rgba(255,255,255,0.2)",
               padding: "3px 8px", borderRadius: "var(--radius-md)",
             }}>
               💆 {t.spa} {activeContact.spaTime}
+            </div>
+          )}
+          {activeContact?.spaTime && isMobile && (
+            <div style={{ fontSize: 10, opacity: 0.85, whiteSpace: "nowrap" }}>
+              💆 {activeContact.spaTime}
             </div>
           )}
           {/* Claim / take-over — icon-only with a title tooltip to stay compact
@@ -3396,32 +3493,93 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
               {claimBusy ? "⏳" : activeContact.claimedBy === user?.id ? "✓" : activeContact.claimedBy ? "🔁" : "🙋"}
             </button>
           )}
-          <button
-            onClick={() => activeContact && openGuestEditor(activeContact)}
-            disabled={editGuestLoading}
-            title={t.editGuest}
-            style={{
-              background: "rgba(255,255,255,0.1)",
-              border: "1px solid rgba(255,255,255,0.35)", color: "white",
-              borderRadius: "var(--radius-sm)", fontSize: 13, cursor: editGuestLoading ? "not-allowed" : "pointer",
-              padding: "6px 10px", minHeight: isMobile ? HIT_STAFF : "auto", minWidth: isMobile ? HIT_STAFF : "auto",
-              opacity: editGuestLoading ? 0.6 : 1,
-            }}
-          >
-            {editGuestLoading ? "⏳" : "✏️"}
-          </button>
-          <button
-            onClick={() => setDrawerOpen((o) => !o)}
-            title={t.aiLogHint}
-            style={{
-              background: drawerOpen ? "rgba(255,255,255,0.25)" : "rgba(255,255,255,0.1)",
-              border: "1px solid rgba(255,255,255,0.35)", color: "white",
-              borderRadius: "var(--radius-sm)", fontSize: 11, fontWeight: 700, cursor: "pointer",
-              padding: "6px 10px", minHeight: isMobile ? HIT_STAFF : "auto", whiteSpace: "nowrap",
-            }}
-          >
-            {t.aiLog}
-          </button>
+          {!isMobile && (
+            <>
+              <button
+                onClick={() => activeContact && openGuestEditor(activeContact)}
+                disabled={editGuestLoading}
+                title={t.editGuest}
+                style={{
+                  background: "rgba(255,255,255,0.1)",
+                  border: "1px solid rgba(255,255,255,0.35)", color: "white",
+                  borderRadius: "var(--radius-sm)", fontSize: 13, cursor: editGuestLoading ? "not-allowed" : "pointer",
+                  padding: "6px 10px", minHeight: isMobile ? HIT_STAFF : "auto", minWidth: isMobile ? HIT_STAFF : "auto",
+                  opacity: editGuestLoading ? 0.6 : 1,
+                }}
+              >
+                {editGuestLoading ? "⏳" : "✏️"}
+              </button>
+              <button
+                onClick={() => setDrawerOpen((o) => !o)}
+                title={t.aiLogHint}
+                style={{
+                  background: drawerOpen ? "rgba(255,255,255,0.25)" : "rgba(255,255,255,0.1)",
+                  border: "1px solid rgba(255,255,255,0.35)", color: "white",
+                  borderRadius: "var(--radius-sm)", fontSize: 11, fontWeight: 700, cursor: "pointer",
+                  padding: "6px 10px", minHeight: isMobile ? HIT_STAFF : "auto", whiteSpace: "nowrap",
+                }}
+              >
+                {t.aiLog}
+              </button>
+            </>
+          )}
+          {isMobile && (
+            <>
+              <button
+                type="button"
+                onClick={() => setMobileThreadMenuOpen((o) => !o)}
+                aria-label={t.threadMore}
+                aria-expanded={mobileThreadMenuOpen}
+                className="u-touch-staff"
+                style={{
+                  background: mobileThreadMenuOpen ? "rgba(255,255,255,0.25)" : "rgba(255,255,255,0.1)",
+                  border: "1px solid rgba(255,255,255,0.35)", color: "white",
+                  borderRadius: "var(--radius-sm)", fontSize: 18, cursor: "pointer",
+                  width: HIT_STAFF, height: HIT_STAFF, padding: 0,
+                }}
+              >
+                ⋮
+              </button>
+              {mobileThreadMenuOpen && (
+                <>
+                  <div
+                    role="presentation"
+                    onClick={() => setMobileThreadMenuOpen(false)}
+                    style={{ position: "fixed", inset: 0, zIndex: 40, background: "transparent" }}
+                  />
+                  <div style={{
+                    position: "absolute",
+                    top: "calc(100% + 6px)",
+                    insetInlineEnd: 0,
+                    zIndex: 41,
+                    minWidth: 200,
+                    background: "white",
+                    color: "var(--black)",
+                    borderRadius: 12,
+                    boxShadow: "0 8px 28px rgba(0,0,0,0.18)",
+                    border: "1px solid var(--border)",
+                    overflow: "hidden",
+                  }}>
+                    <button
+                      type="button"
+                      onClick={() => { activeContact && openGuestEditor(activeContact); setMobileThreadMenuOpen(false); }}
+                      disabled={editGuestLoading}
+                      className="wa-thread-menu-item"
+                    >
+                      {editGuestLoading ? "⏳" : t.editGuest}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setDrawerOpen((o) => !o); setMobileThreadMenuOpen(false); }}
+                      className="wa-thread-menu-item"
+                    >
+                      {t.aiLog}
+                    </button>
+                  </div>
+                </>
+              )}
+            </>
+          )}
         </div>
       </div>
 
@@ -3464,7 +3622,8 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
 
       {/* Messages */}
       <div style={{
-        flex: 1, minHeight: 0, overflowY: "auto", padding: "16px 20px",
+        flex: 1, minHeight: 0, overflowY: "auto",
+        padding: isMobile ? "12px 10px" : "16px 20px",
         background: "#E5DDD5", display: "flex", flexDirection: "column", gap: 6,
       }}>
         {loadingThread && thread.length === 0 ? (
@@ -3477,6 +3636,7 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
                 msg={msg}
                 dir={t.dir}
                 resolveCtx={activeResolveCtx}
+                isMobile={isMobile}
               />
             ))}
             <div ref={bottomRef} />
@@ -3499,12 +3659,64 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
         } : {}),
       }}>
         {quickOpen && (
-          <div style={{
-            position: "absolute", bottom: "100%", insetInlineStart: 14, insetInlineEnd: 14,
-            marginBottom: 6, background: "white", border: "1px solid #ddd", borderRadius: 14,
-            padding: 12, boxShadow: "0 -4px 16px rgba(0,0,0,0.12)",
-            maxHeight: "70vh", overflowY: "auto",
-          }}>
+          <>
+            {isMobile && (
+              <div
+                role="presentation"
+                onClick={() => setQuickOpen(false)}
+                style={{
+                  position: "fixed", inset: 0, zIndex: 48,
+                  background: "rgba(0,0,0,0.45)",
+                }}
+              />
+            )}
+            <div style={{
+              ...(isMobile ? {
+                position: "fixed",
+                bottom: 0,
+                left: 0,
+                right: 0,
+                zIndex: 49,
+                borderRadius: "16px 16px 0 0",
+                padding: "14px 16px max(env(safe-area-inset-bottom, 0px), 14px)",
+                maxHeight: "78vh",
+                boxShadow: "0 -8px 32px rgba(0,0,0,0.2)",
+                border: "none",
+              } : {
+                position: "absolute",
+                bottom: "100%",
+                insetInlineStart: 14,
+                insetInlineEnd: 14,
+                marginBottom: 6,
+                maxHeight: "70vh",
+                boxShadow: "0 -4px 16px rgba(0,0,0,0.12)",
+                border: "1px solid #ddd",
+                borderRadius: 14,
+                padding: 12,
+              }),
+              background: "white",
+              overflowY: "auto",
+            }}>
+            {isMobile && (
+              <div style={{
+                display: "flex", justifyContent: "space-between", alignItems: "center",
+                marginBottom: 12, paddingBottom: 10, borderBottom: "1px solid var(--border)",
+              }}>
+                <span style={{ fontWeight: 800, fontSize: 15, color: "var(--black)" }}>{t.quickRepliesTitle}</span>
+                <button
+                  type="button"
+                  onClick={() => setQuickOpen(false)}
+                  aria-label={t.closeSheet}
+                  className="u-touch-staff"
+                  style={{
+                    border: "1px solid var(--border)", background: "var(--ivory)",
+                    borderRadius: "50%", width: HIT_STAFF, height: HIT_STAFF, fontSize: 16, cursor: "pointer",
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
+            )}
             {/* Manual Portal Link Dispatch — always visible (Disable Don't Hide,
                 CLAUDE.md §0.2), disabled with an explanatory title when this
                 thread isn't linked to a guests row. One click, no textarea —
@@ -3723,6 +3935,7 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
               </div>
             )}
           </div>
+          </>
         )}
 
         {routeToast && (
@@ -3746,10 +3959,14 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
           </div>
         )}
 
-        <div style={{
-          padding: "var(--space-sm) var(--space-md)",
+        <div
+          className={isMobile ? "wa-mobile-composer" : undefined}
+          style={{
+          padding: isMobile ? "10px 12px" : "var(--space-sm) var(--space-md)",
+          paddingBottom: isMobile ? "max(env(safe-area-inset-bottom, 0px), 10px)" : undefined,
           borderTop: quietActive ? "none" : "1px solid var(--border)",
-          background: "var(--ivory)", display: "flex", gap: "var(--space-sm)", alignItems: "flex-end",
+          background: isMobile ? "#f0f2f5" : "var(--ivory)",
+          display: "flex", gap: "var(--space-sm)", alignItems: "flex-end",
         }}>
           <button
             onClick={() => setQuickOpen((o) => !o)}
@@ -3774,11 +3991,12 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
             placeholder={t.inputPh}
             rows={2}
             style={{
-              flex: 1, resize: "none", borderRadius: "var(--radius-pill)",
-              border: "1px solid var(--border)", padding: "10px 16px",
-              fontSize: 14, fontFamily: "Heebo, sans-serif",
+              flex: 1, resize: "none", borderRadius: isMobile ? 22 : "var(--radius-pill)",
+              border: "1px solid var(--border)", padding: isMobile ? "12px 16px" : "10px 16px",
+              fontSize: isMobile ? 16 : 14, fontFamily: "Heebo, sans-serif",
               outline: "none", lineHeight: 1.5, background: "var(--card-bg)",
               minHeight: isMobile ? HIT_COMFORT : "auto",
+              boxShadow: isMobile ? "0 1px 2px rgba(0,0,0,0.06)" : "none",
             }}
           />
           <button
@@ -3809,8 +4027,25 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
   // language (mirrors the approved mockup behaviour 1:1).
   const slideOpenTransform = t.dir === "rtl" ? "translateX(50%)" : "translateX(-50%)";
 
+  const MOBILE_TOOLBAR_BTN = {
+    border: "1.5px solid rgba(255,255,255,0.4)",
+    background: "rgba(255,255,255,0.12)",
+    color: "white",
+    cursor: "pointer",
+  };
+
   return (
-    <div dir={t.dir} style={{ display: "flex", flexDirection: "column", height: "calc(100vh - var(--safe-bottom-nav, 80px))", overflow: "hidden", borderRadius: "var(--radius-md)", border: "1px solid var(--border)", boxShadow: "var(--shadow-md)" }}>
+    <div dir={t.dir} style={{
+      display: "flex",
+      flexDirection: "column",
+      height: isMobile ? "100%" : "calc(100vh - var(--safe-bottom-nav, 80px))",
+      flex: isMobile ? 1 : undefined,
+      minHeight: isMobile ? 0 : undefined,
+      overflow: "hidden",
+      borderRadius: isMobile ? 0 : "var(--radius-md)",
+      border: isMobile ? "none" : "1px solid var(--border)",
+      boxShadow: isMobile ? "none" : "var(--shadow-md)",
+    }}>
       <style>{`
         @keyframes wa-pulse {
           0%, 100% { opacity: 1; transform: scale(1); }
@@ -3827,13 +4062,93 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
           border-radius: 6px;
         }
         .u-guest-name-link:hover { text-decoration: underline; }
+        .wa-roster-search {
+          width: 100%;
+          box-sizing: border-box;
+          padding: 12px 14px;
+          border-radius: 22px;
+          border: 1px solid var(--border);
+          background: var(--card-bg);
+          font-size: 16px;
+          font-family: Heebo, sans-serif;
+          min-height: var(--hit-target-staff, 44px);
+          outline: none;
+        }
+        .wa-roster-search:focus {
+          border-color: var(--whatsapp-green, #25D366);
+          box-shadow: 0 0 0 2px rgba(37, 211, 102, 0.2);
+        }
+        .wa-filter-chip {
+          flex-shrink: 0;
+          min-height: var(--hit-target-staff, 44px);
+          padding: 0 14px;
+          border-radius: 22px;
+          border: 1.5px solid var(--border);
+          background: var(--card-bg);
+          color: var(--text-muted);
+          font-size: 13px;
+          font-weight: 700;
+          font-family: Heebo, sans-serif;
+          cursor: pointer;
+          white-space: nowrap;
+        }
+        .wa-filter-chip--active {
+          border-color: var(--whatsapp-green-dark, #128C7E);
+          background: rgba(37, 211, 102, 0.12);
+          color: var(--whatsapp-green-dark, #128C7E);
+        }
+        .wa-mobile-composer {
+          box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.08);
+        }
+        .wa-thread-menu-item {
+          display: block;
+          width: 100%;
+          text-align: start;
+          padding: 14px 16px;
+          min-height: var(--hit-target-staff, 44px);
+          border: none;
+          background: white;
+          font-size: 14px;
+          font-weight: 600;
+          font-family: Heebo, sans-serif;
+          cursor: pointer;
+          color: var(--black);
+        }
+        .wa-thread-menu-item:not(:last-child) {
+          border-bottom: 1px solid var(--border);
+        }
+        .wa-thread-menu-item:active {
+          background: var(--ivory);
+        }
+        .wa-toolbar-menu-item {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          width: 100%;
+          text-align: start;
+          padding: 14px 16px;
+          min-height: var(--hit-target-staff, 44px);
+          border: none;
+          background: white;
+          font-size: 14px;
+          font-weight: 600;
+          font-family: Heebo, sans-serif;
+          cursor: pointer;
+          color: var(--black);
+        }
+        .wa-toolbar-menu-item:not(:last-child) {
+          border-bottom: 1px solid var(--border);
+        }
       `}</style>
 
       {/* Toolbar */}
       <div style={{
         display: "flex", alignItems: "center", justifyContent: "space-between",
-        padding: "var(--space-sm) var(--space-md)", background: "var(--whatsapp-green-dark)", color: "white", flexShrink: 0,
-        borderRadius: "var(--radius-md) var(--radius-md) 0 0", gap: "var(--space-sm)",
+        padding: isMobile ? "10px 12px" : "var(--space-sm) var(--space-md)",
+        background: "var(--whatsapp-green-dark)", color: "white", flexShrink: 0,
+        borderRadius: isMobile ? 0 : "var(--radius-md) var(--radius-md) 0 0",
+        gap: "var(--space-sm)",
+        position: "relative",
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 6 : 10, minWidth: 0, overflow: "hidden" }}>
           <span style={{ fontWeight: 800, fontSize: 15, whiteSpace: "nowrap" }}>
@@ -3868,8 +4183,107 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
             </span>
           )}
         </div>
-        <div style={{ display: "flex", gap: isMobile ? 4 : 8, alignItems: "center", flexShrink: 0 }}>
-          <AILearningButton module="chat" />
+        <div style={{ display: "flex", gap: isMobile ? 6 : 8, alignItems: "center", flexShrink: 0, position: "relative" }}>
+          {!isMobile && <AILearningButton module="chat" />}
+          {isMobile && (
+            <>
+              <HoldToConfirmButton
+                onConfirm={toggleBot}
+                disabled={togglingBot}
+                title={botActive ? t.botOn : t.botOff}
+                progressColor={botActive ? "rgba(220,38,38,0.35)" : "rgba(37,211,102,0.35)"}
+                style={{
+                  ...MOBILE_TOOLBAR_BTN,
+                  borderRadius: "50%",
+                  width: HIT_STAFF, height: HIT_STAFF, padding: 0,
+                  background: botActive ? "rgba(37,211,102,0.25)" : "rgba(255,255,255,0.12)",
+                  fontFamily: "Heebo, sans-serif",
+                }}
+              >
+                {togglingBot ? "⏳" : botActive ? "🤖" : "😴"}
+              </HoldToConfirmButton>
+              <button
+                onClick={() => setShowNewChat(true)}
+                title={t.newChat}
+                aria-label={t.newChat}
+                className="u-touch-staff"
+                style={{
+                  ...MOBILE_TOOLBAR_BTN,
+                  borderRadius: "50%",
+                  width: HIT_STAFF, height: HIT_STAFF, padding: 0,
+                  background: "white", color: "var(--whatsapp-green-dark)", border: "none",
+                }}
+              >
+                ✉️
+              </button>
+              <button
+                type="button"
+                onClick={() => setMobileToolbarOpen((o) => !o)}
+                aria-label={t.moreMenu}
+                aria-expanded={mobileToolbarOpen}
+                className="u-touch-staff"
+                style={{
+                  ...MOBILE_TOOLBAR_BTN,
+                  borderRadius: "50%",
+                  width: HIT_STAFF, height: HIT_STAFF, padding: 0, fontSize: 20,
+                }}
+              >
+                ⋮
+              </button>
+              {mobileToolbarOpen && (
+                <>
+                  <div
+                    role="presentation"
+                    onClick={() => setMobileToolbarOpen(false)}
+                    style={{ position: "fixed", inset: 0, zIndex: 45, background: "transparent" }}
+                  />
+                  <div style={{
+                    position: "absolute",
+                    top: "calc(100% + 8px)",
+                    insetInlineEnd: 0,
+                    zIndex: 46,
+                    minWidth: 240,
+                    background: "white",
+                    borderRadius: 12,
+                    boxShadow: "0 8px 28px rgba(0,0,0,0.2)",
+                    border: "1px solid var(--border)",
+                    overflow: "hidden",
+                  }}>
+                    <div style={{ padding: "8px 12px" }}>
+                      <AILearningButton
+                        module="chat"
+                        toolbarStyle={{
+                          width: "100%",
+                          minHeight: HIT_STAFF,
+                          borderRadius: 10,
+                          border: "1px solid var(--border)",
+                          background: "var(--ivory)",
+                          color: "var(--black)",
+                          justifyContent: "center",
+                        }}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      className="wa-toolbar-menu-item"
+                      onClick={() => { setShowMobileQr(true); setMobileToolbarOpen(false); }}
+                    >
+                      📱 סרוק לפתיחה בטלפון
+                    </button>
+                    <button
+                      type="button"
+                      className="wa-toolbar-menu-item"
+                      onClick={() => { setLang((l) => (l === "he" ? "en" : "he")); setMobileToolbarOpen(false); }}
+                    >
+                      🌐 {lang === "he" ? "English" : "עברית"}
+                    </button>
+                  </div>
+                </>
+              )}
+            </>
+          )}
+          {!isMobile && (
+            <>
           <button
             onClick={() => setShowMobileQr(true)}
             title="סרוק לפתיחת Inbox בטלפון"
@@ -3924,6 +4338,8 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
           >
             {isMobile ? "✉️" : t.newChat}
           </button>
+            </>
+          )}
         </div>
       </div>
 

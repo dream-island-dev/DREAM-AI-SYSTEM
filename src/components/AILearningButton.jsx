@@ -16,7 +16,7 @@ function moduleLabel(module) {
   return MODULE_LABELS[module] ?? module;
 }
 
-export default function AILearningButton({ module }) {
+export default function AILearningButton({ module, iconOnly = false, toolbarStyle = null, className = "" }) {
   const [open, setOpen] = useState(false);
   const [ruleText, setRuleText] = useState("");
   const [saving, setSaving] = useState(false);
@@ -84,22 +84,31 @@ export default function AILearningButton({ module }) {
     <>
       <button
         type="button"
-        className="btn btn-secondary btn-sm"
+        className={`btn btn-secondary btn-sm${className ? ` ${className}` : ""}`}
         onClick={handleOpen}
         disabled={!canOpen}
         title={disabledReason ?? `למד כלל חדש למודול ${moduleLabel(module)}`}
         style={{
           display: "inline-flex",
           alignItems: "center",
-          gap: 6,
-          fontSize: 13,
+          justifyContent: "center",
+          gap: iconOnly ? 0 : 6,
+          fontSize: iconOnly ? 18 : 13,
           fontWeight: 600,
           opacity: canOpen ? 1 : 0.55,
           cursor: canOpen ? "pointer" : "not-allowed",
+          ...(iconOnly ? {
+            width: "var(--hit-target-staff, 44px)",
+            height: "var(--hit-target-staff, 44px)",
+            padding: 0,
+            borderRadius: "50%",
+            flexShrink: 0,
+          } : {}),
+          ...toolbarStyle,
         }}
       >
         <span aria-hidden="true">🧠</span>
-        למד את המערכת
+        {!iconOnly && " למד את המערכת"}
       </button>
 
       {open && (

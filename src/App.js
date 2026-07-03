@@ -732,6 +732,21 @@ const css = `
     .topbar { padding: 14px 18px; }
     .topbar-date { display: none; } /* free up room for the account control */
     .content { padding: var(--space-md); }
+    /* DREAM BOT Inbox — full-bleed on phone (no wasted padding / double chrome) */
+    .content.content--wa-inbox {
+      padding: 0;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      overflow: hidden;
+    }
+    .topbar.topbar--wa-inbox .topbar-title { display: none; }
+    .main.main--wa-inbox {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
     .stat-grid {
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: var(--space-sm);
@@ -2278,8 +2293,8 @@ export default function App({ initialPage = "dashboard" }) {
             mobileOpen={mobileMenuOpen}
             onCloseMobile={() => setMobileMenuOpen(false)}
           />
-          <div className="main">
-            <div className="topbar">
+          <div className={`main${activePage === "wa_inbox" ? " main--wa-inbox" : ""}`}>
+            <div className={`topbar${activePage === "wa_inbox" ? " topbar--wa-inbox" : ""}`}>
               <button
                 className="hamburger-btn"
                 onClick={() => setMobileMenuOpen(true)}
@@ -2364,7 +2379,7 @@ export default function App({ initialPage = "dashboard" }) {
                 </div>
               </div>
             </div>
-            <div className="content">{renderPage()}</div>
+            <div className={`content${activePage === "wa_inbox" ? " content--wa-inbox" : ""}`}>{renderPage()}</div>
           </div>
         </div>
         {/* Mobile nav */}
