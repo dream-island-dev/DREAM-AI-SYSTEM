@@ -88,7 +88,7 @@ export function detectEzgoArrivalsPreset(headers) {
   const set = new Set(headers);
   const required = ["iOrderId", "sTel1", "sRemark", "sClientFullName", "sSubItemName", "sRoomName", "iResLineId"];
   if (!required.every((h) => set.has(h))) return null;
-  return {
+  const mapping = {
     orderNumber: "iOrderId",
     resLineId:   "iResLineId",
     coordName:   "sClientFullName",
@@ -101,6 +101,86 @@ export function detectEzgoArrivalsPreset(headers) {
     nights:      "iNights",
     price:       "cPrice",
   };
+  if (set.has("sCheckInTime"))  mapping.checkinTime  = "sCheckInTime";
+  if (set.has("sCheckOutTime")) mapping.checkoutTime = "sCheckOutTime";
+  return mapping;
+}
+
+/** Fields staff may type a session default for in MappingReviewPanel. */
+const TIME_DEFAULT_FIELDS = new Set(["checkinTime", "checkoutTime"]);
+
+const ROOM_LEVEL_DEFAULT_FIELDS = new Set([
+  "checkinTime", "checkoutTime", "adults", "children", "nights", "price", "groupId",
+]);
+
+export function isDefaultEditableField(fieldKey, spec) {
+  if (TIME_DEFAULT_FIELDS.has(fieldKey)) return true;
+  if (spec?.defaultPolicy != null && spec.defaultPolicy !== "") return true;
+  return false;
+}
+
+export function isTimeDefaultField(fieldKey) {
+  return TIME_DEFAULT_FIELDS.has(fieldKey);
+}
+
+export function isEmptyImportCell(value) {
+  const s = String(value ?? "").trim();
+  return !s || s === "-" || s === "—";
+}
+
+/** HH:MM (24h), optional leading zero on hour. */
+export function isValidHmTime(value) {
+  const s = String(value ?? "").trim();
+  if (!s) return false;
+  const m = s.match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return false;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  return h >= 0 && h <= 23 && min >= 0 && min <= 59;
+}
+
+/**
+ * parseMappingMemory — backward-compatible loader for import_mapping_memory.
+ * v1: flat mapping object. v2: { v:2, mapping, fieldDefaults }.
+ */
+export function parseMappingMemory(stored) {
+  if (!stored || typeof stored !== "object" || Array.isArray(stored)) {
+    return { mapping: {}, fieldDefaults: {} };
+  }
+  if (stored.v === 2) {
+    return {
+      mapping: stored.mapping ?? {},
+      fieldDefaults: stored.fieldDefaults ?? {},
+    };
+  }
+  return { mapping: stored, fieldDefaults: {} };
+}
+
+/** Pack mapping + optional session defaults for DB memory (v2 when defaults exist). */
+export function packMappingMemory(mapping, fieldDefaults) {
+  const fd = Object.fromEntries(
+    Object.entries(fieldDefaults ?? {}).filter(([, v]) => !isEmptyImportCell(v)),
+  );
+  if (!Object.keys(fd).length) return mapping;
+  return { v: 2, mapping, fieldDefaults: fd };
+}
+
+/**
+ * applyFieldDefaultsToProfiles — fill empty parsed cells only (never overwrite).
+ * Room-level fields (checkin/checkout/adults/…) live on profile.rooms[].
+ */
+export function applyFieldDefaultsToProfiles(profileMap, appliedDefaults) {
+  if (!profileMap?.size || !appliedDefaults) return;
+  for (const profile of profileMap.values()) {
+    for (const room of profile.rooms ?? []) {
+      for (const [key, rawVal] of Object.entries(appliedDefaults)) {
+        if (key === "arrivalDate" || !ROOM_LEVEL_DEFAULT_FIELDS.has(key)) continue;
+        const val = String(rawVal ?? "").trim();
+        if (!val) continue;
+        if (isEmptyImportCell(room[key])) room[key] = val;
+      }
+    }
+  }
 }
 
 // ── Schema descriptor — mirrors suggest-import-mapping/index.ts SCHEMAS.inventory_renewal ──

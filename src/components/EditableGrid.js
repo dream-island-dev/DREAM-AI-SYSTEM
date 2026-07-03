@@ -11,7 +11,10 @@ export function EditableGrid({ columns, rows, onRowsChange, selectedIds, onSelec
   const [editingCell, setEditingCell] = useState(null); // { ri, colId }
 
   const startEdit = (ri, colId) => {
-    if (!columns.find(c => c.id === colId)?.editable) return;
+    const col = columns.find(c => c.id === colId);
+    if (!col?.editable) return;
+    const row = rows[ri];
+    if (col.cellEditable && row && !col.cellEditable(row)) return;
     setEditingCell({ ri, colId });
   };
 
@@ -95,17 +98,18 @@ export function EditableGrid({ columns, rows, onRowsChange, selectedIds, onSelec
                 {columns.map(col => {
                   const isEditing = editingCell?.ri === ri && editingCell?.colId === col.id;
                   const val       = row[col.id] ?? "";
+                  const canEdit   = col.editable && (!col.cellEditable || col.cellEditable(row));
 
                   return (
                     <td key={col.id}
-                      onClick={() => !isEditing && startEdit(ri, col.id)}
+                      onClick={() => !isEditing && canEdit && startEdit(ri, col.id)}
                       style={{
                         padding:     isEditing ? 0 : "7px 12px",
                         borderBottom: "1px solid var(--border)",
                         minWidth:    col.w ?? 100,
                         background:  col.gold ? "rgba(201,169,110,0.06)" : undefined,
                         borderLeft:  col.gold ? "2px solid rgba(201,169,110,0.4)" : undefined,
-                        cursor:      col.editable ? "text" : "default",
+                        cursor:      canEdit ? "text" : "default",
                         position:    "relative",
                       }}>
                       {isEditing ? (

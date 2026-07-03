@@ -1,4 +1,4 @@
-2026-07-03 | WhatsAppInbox.js + GuestContextDrawer.js + migration 123 | Guest 360° drawer — לחיצה על שם/אווטאר ברשימה פותחת מגירת הקשר (שהייה, השתקת בוט/אוטומציה, סימון צבע, הערות פנימיות, 5 משימות אחרונות).
+2026-07-03 | ArrivalImportPanel + MappingReviewPanel + importMapper | Doc 2: CSV quote-aware parse + ⚠ שם שבור; ברירות מחדל במיפוי (15:00/11:00 לריקות בלבד) + זיכרון v2.
 2026-07-03 | whatsapp-send | Session scripts: `applySaturdayCheckInTimeOverride` — הגעה בשבת מחליף 15:00→18:00 בטקסט bot_scripts בזמן שליחה (ללא שינוי DB).
 2026-07-03 | whatsapp-send + WhatsAppInbox.js | Dispatch transparency: לוג `[META]`/`[SESSION]`+כפתורים ב-inbox; 🔵/🟢 ב-UI; התראת Whapi לאדמין על כשל שליחה.
 2026-07-02 | automationSchedule.ts + whatsapp-webhook | בקשת בלונים לחדר → לוח בקשות (guest_alerts) בלבד, לא תפעול; תשובה קבועה לקבלה+נציגת בלונים; secret אופציונלי BALLOON_VENDOR_PHONE.

@@ -1,0 +1,65 @@
+import {
+  applyFieldDefaultsToProfiles,
+  parseMappingMemory,
+  packMappingMemory,
+  isEmptyImportCell,
+  isValidHmTime,
+  isDefaultEditableField,
+  SUITE_ARRIVALS_SCHEMA,
+} from "./importMapper";
+
+describe("importMapper — field defaults", () => {
+  test("isEmptyImportCell treats dash placeholders as empty", () => {
+    expect(isEmptyImportCell(null)).toBe(true);
+    expect(isEmptyImportCell("-")).toBe(true);
+    expect(isEmptyImportCell("—")).toBe(true);
+    expect(isEmptyImportCell("15:00")).toBe(false);
+  });
+
+  test("isValidHmTime accepts HH:MM 24h", () => {
+    expect(isValidHmTime("15:00")).toBe(true);
+    expect(isValidHmTime("9:30")).toBe(true);
+    expect(isValidHmTime("25:00")).toBe(false);
+    expect(isValidHmTime("abc")).toBe(false);
+  });
+
+  test("isDefaultEditableField — times + defaultPolicy fields only", () => {
+    expect(isDefaultEditableField("checkinTime", SUITE_ARRIVALS_SCHEMA.checkinTime)).toBe(true);
+    expect(isDefaultEditableField("remark", SUITE_ARRIVALS_SCHEMA.remark)).toBe(false);
+    expect(isDefaultEditableField("adults", SUITE_ARRIVALS_SCHEMA.adults)).toBe(true);
+  });
+
+  test("applyFieldDefaultsToProfiles fills empty room cells only", () => {
+    const profileMap = new Map([
+      ["row_0", {
+        rooms: [
+          { checkinTime: null, checkoutTime: "10:00", adults: 2 },
+        ],
+      }],
+    ]);
+    applyFieldDefaultsToProfiles(profileMap, {
+      checkinTime: "15:00",
+      checkoutTime: "11:00",
+    });
+    const room = profileMap.get("row_0").rooms[0];
+    expect(room.checkinTime).toBe("15:00");
+    expect(room.checkoutTime).toBe("10:00");
+  });
+
+  test("parseMappingMemory + packMappingMemory v2 round-trip", () => {
+    const mapping = { remark: "sRemark", orderNumber: "iOrderId" };
+    const fieldDefaults = { checkinTime: "15:00", checkoutTime: "11:00" };
+    const packed = packMappingMemory(mapping, fieldDefaults);
+    expect(packed.v).toBe(2);
+    const parsed = parseMappingMemory(packed);
+    expect(parsed.mapping).toEqual(mapping);
+    expect(parsed.fieldDefaults).toEqual(fieldDefaults);
+  });
+
+  test("parseMappingMemory v1 flat mapping backward compat", () => {
+    const flat = { remark: "sRemark" };
+    const parsed = parseMappingMemory(flat);
+    expect(parsed.mapping).toEqual(flat);
+    expect(parsed.fieldDefaults).toEqual({});
+  });
+});

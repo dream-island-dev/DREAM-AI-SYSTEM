@@ -28,7 +28,7 @@ import {
   enrichProfilesFromExcel,
 } from "../utils/ezgoParser";
 import { mergeCandidates, classifyDbMatch } from "../utils/guestImportIntelligence";
-import { SUITE_ARRIVALS_SCHEMA, buildMaskedSample, detectSuiteArrivalsPreset, detectEzgoArrivalsPreset } from "../utils/importMapper";
+import { SUITE_ARRIVALS_SCHEMA, buildMaskedSample, detectSuiteArrivalsPreset, detectEzgoArrivalsPreset, applyFieldDefaultsToProfiles, parseMappingMemory, packMappingMemory } from "../utils/importMapper";
 import {
   isDetailedReservationFormat,
   parseDetailedReservationRows,
@@ -1263,7 +1263,8 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
       // approved before. The review screen still always shows — this only
       // saves a round-trip to Gemini, never the human approval step.
       const signature = _headerSignature(headers);
-      let remembered = null;
+      let rememberedMapping = null;
+      let rememberedFieldDefaults = {};
       if (supabase) {
         const { data: mem } = await supabase
           .from("import_mapping_memory")
@@ -1271,12 +1272,19 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           .eq("schema_key", "suite_arrivals")
           .eq("header_signature", signature)
           .maybeSingle();
-        if (mem?.approved_mapping) remembered = mem.approved_mapping;
+        if (mem?.approved_mapping) {
+          const parsed = parseMappingMemory(mem.approved_mapping);
+          rememberedMapping = parsed.mapping;
+          rememberedFieldDefaults = parsed.fieldDefaults;
+        }
       }
 
-      if (remembered) {
+      if (rememberedMapping) {
         setAiSuggestion({
-          mapping: remembered, defaults: {}, confidence: {}, engine: "memory",
+          mapping: rememberedMapping,
+          defaults: {},
+          fieldDefaults: rememberedFieldDefaults,
+          confidence: {}, engine: "memory",
           recommendations: ["✓ זוהה כפורמט קובץ שאושר בעבר — מיפוי נטען מהזיכרון, יש לאשר מחדש"],
         });
         setAiError(null);
@@ -1322,6 +1330,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
   const handleMappingApprove = useCallback((finalMapping, appliedDefaults) => {
     if (!rawDoc2Rows) return;
     const profileMap = aggregateGuestProfiles(rawDoc2Rows, finalMapping, doc2Fallback);
+    applyFieldDefaultsToProfiles(profileMap, appliedDefaults);
     if (appliedDefaults.arrivalDate) {
       for (const profile of profileMap.values()) {
         if (!profile.arrivalDate) profile.arrivalDate = appliedDefaults.arrivalDate;
@@ -1348,7 +1357,12 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
       const signature = _headerSignature(Object.keys(rawDoc2Rows[0] ?? {}));
       supabase.from("import_mapping_memory")
         .upsert(
-          { schema_key: "suite_arrivals", header_signature: signature, approved_mapping: finalMapping, last_used_at: new Date().toISOString() },
+          {
+            schema_key: "suite_arrivals",
+            header_signature: signature,
+            approved_mapping: packMappingMemory(finalMapping, appliedDefaults),
+            last_used_at: new Date().toISOString(),
+          },
           { onConflict: "schema_key,header_signature" },
         )
         .then(({ error }) => {
