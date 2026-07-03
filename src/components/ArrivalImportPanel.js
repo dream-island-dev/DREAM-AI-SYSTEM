@@ -504,13 +504,13 @@ async function parseShiftFile(arrayBuf) {
   return raw.map(row => ({ _id: crypto.randomUUID(), ...row }));
 }
 
-// ── Guest Import Intelligence — Sprint 2 read-only merge layer ──────────────
-// Adapters that convert an already-aggregated profile (aggregateGuestProfiles/
+// ── Guest Import Intelligence — adapters ────────────────────────────────────
+// Convert an already-aggregated profile (aggregateGuestProfiles/
 // detailedRowsToProfileMap output, post profilesToArray()) back into the
 // per-row shape mergeCandidates() expects for its "arrivals"/"detailed"
-// inputs. Used ONLY to classify each row for display (umbrella/unimportable
-// badge, see importBadgeByIdx below) — the sync RPC below is untouched
-// (Sprint 3 will wire the merge layer into the actual write path).
+// inputs. Since Sprint 3, the resulting candidates (mergedCandidates, below in
+// the component) are the source of truth handleSync() reads for identity/meal/
+// spa/lead-source/automation fields — not display-only anymore.
 function _profileToArrivalsInput(g) {
   const room = (g.rooms ?? [])[0] ?? {};
   return {
@@ -552,6 +552,33 @@ function _profileToDetailedInput(g) {
 }
 
 const UMBRELLA_BADGE_LABEL = "⛔ מטריית קבוצה";
+
+const DB_MATCH_BADGE_LABEL = {
+  unimportable: UMBRELLA_BADGE_LABEL,
+  new:      "🆕 חדש",
+  existing: "🔄 קיים",
+  conflict: "⚠ התנגשות",
+};
+
+// ── Guest Import Intelligence — Sprint 3: DB-match lookup ──────────────────
+// Looks up a candidate's existing `guests` row from the pre-fetched Map (keyed
+// phone+arrival_date, and order_number+arrival_date as a fallback join — see
+// the prefetch effect below). Scoped by arrival_date on both keys so a repeat
+// guest's PRIOR stay never masquerades as "existing" for a new one — `guests`
+// has no global phone uniqueness (migration 046's key is phone+arrival_date+
+// guest_index), so an unscoped phone-only Map would false-positive on returning guests.
+function _findExistingGuestRow(map, candidate) {
+  if (!candidate || !map?.size) return null;
+  if (candidate.guestPhone && candidate.arrivalDate) {
+    const row = map.get(`${candidate.guestPhone}::${candidate.arrivalDate}`);
+    if (row) return row;
+  }
+  if (candidate.orderNumber && candidate.arrivalDate) {
+    const row = map.get(`order:${candidate.orderNumber}::${candidate.arrivalDate}`);
+    if (row) return row;
+  }
+  return null;
+}
 
 // ── Suite-CSV profiles → flat grid rows ──────────────────────────────────────
 // One row per guest profile. Multi-room (group) profiles show a read-only
@@ -632,9 +659,19 @@ function _resolveDetailedProfileType(g, filterMode) {
   return _profileHasRooms(g) ? "suite" : "day_use";
 }
 
-function _getSyncProfileIndices(merged, gridRows, { importSource, detailedRoomFilter, selectedIds }) {
+// Sprint 3: dbMatchByIdx (Map<profileIdx, "new"|"existing"|"conflict"|"unimportable">,
+// from classifyDbMatch — see the mergedCandidates/dbMatchByIdx memos above in the
+// component) gates which rows actually reach the RPC. "unimportable" rows (umbrella/
+// corporate group bookings, or rows with neither phone nor name) are Disable-Don't-
+// Hide (§0.2): they stay visible in the grid with their badge, they just never sync.
+// "conflict" rows (phone/order matches an existing guest but name/room/date differs)
+// are NOT skipped — they sync like any other match, but the caller surfaces the
+// conflict count so staff can review after the fact (FAIL VISIBLE, §0.3).
+export function _getSyncProfileIndices(merged, gridRows, { importSource, detailedRoomFilter, selectedIds, dbMatchByIdx }) {
   const gridByIdx = new Map(gridRows.map((r) => [r._profileIdx, r]));
   const indices = [];
+  const conflicts = [];
+  let skippedUnimportable = 0;
   for (let i = 0; i < merged.length; i++) {
     const g = merged[i];
     const row = gridByIdx.get(i);
@@ -646,9 +683,12 @@ function _getSyncProfileIndices(merged, gridRows, { importSource, detailedRoomFi
       if (detailedRoomFilter === "day_use" && hasRooms) continue;
     }
     if (!g.guestPhone) continue;
+    const dbStatus = dbMatchByIdx?.get(i) ?? null;
+    if (dbStatus === "unimportable") { skippedUnimportable++; continue; }
+    if (dbStatus === "conflict") conflicts.push(i);
     indices.push(i);
   }
-  return indices;
+  return { indices, conflicts, skippedUnimportable };
 }
 
 /** Targeted room-only sync — match existing guests by order_number or name. */
@@ -1049,13 +1089,15 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     setMerged(profilesToArray(mapCopy));
   }, [doc2Map, doc1Rec]);
 
-  // ── Guest Import Intelligence — Sprint 2 read-only merge layer ────────────
-  // Runs mergeCandidates() purely for DISPLAY classification (umbrella/
-  // unimportable badge in the grid) — does NOT feed handleSync()/the RPC
-  // below. Index i lines up 1:1 with `merged`/gridRows._profileIdx because
-  // both adapter arrays are built by mapping `merged` in the same order, and
-  // mergeCandidates() pushes exactly one candidate per arrivals/detailed
-  // input row (see guestImportIntelligence.js's per-loop push order).
+  // ── Guest Import Intelligence — Sprint 3: wired into the real sync path ───
+  // mergeCandidates() output is now the source of truth handleSync() reads for
+  // guestPhone/guestName/meal/spa/leadSource/automationMuted (see the profiles/
+  // rooms builders + post-RPC patch loop below) — not just a display-only
+  // classification layer anymore (that was Sprint 2). Index i lines up 1:1
+  // with `merged`/gridRows._profileIdx because both adapter arrays are built
+  // by mapping `merged` in the same order, and mergeCandidates() pushes
+  // exactly one candidate per arrivals/detailed input row (see
+  // guestImportIntelligence.js's per-loop push order).
   const mergedCandidates = useMemo(() => {
     if (!merged || !merged.length) return [];
     return importSource === "detailed"
@@ -1063,13 +1105,61 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
       : mergeCandidates({ arrivals: merged.map(_profileToArrivalsInput), ops: doc1Rec ?? [] });
   }, [merged, doc1Rec, importSource]);
 
-  const importBadgeByIdx = useMemo(() => {
+  // ── Sprint 3: DB prefetch for classifyDbMatch (new/existing/conflict) ──────
+  // Batch-fetches every `guests` row for the arrival date(s) present in this
+  // session's candidates — one query, not one per row. Keyed by phone+date AND
+  // order_number+date (see _findExistingGuestRow) so classifyDbMatch can
+  // resolve either join without a second round-trip.
+  const [existingGuestsMap, setExistingGuestsMap] = useState(new Map());
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!supabase || !mergedCandidates.length) {
+      setExistingGuestsMap(new Map());
+      return;
+    }
+    const dates = [...new Set(mergedCandidates.map((c) => c.arrivalDate).filter(Boolean))];
+    if (!dates.length) {
+      setExistingGuestsMap(new Map());
+      return;
+    }
+    (async () => {
+      const { data, error } = await supabase
+        .from("guests")
+        .select("id, phone, name, room, order_number, arrival_date")
+        .in("arrival_date", dates);
+      if (cancelled) return;
+      if (error) {
+        console.warn("[ArrivalImportPanel] existing-guest prefetch failed:", error.message);
+        setExistingGuestsMap(new Map());
+        return;
+      }
+      const map = new Map();
+      (data ?? []).forEach((row) => {
+        if (row.phone) map.set(`${row.phone}::${row.arrival_date}`, row);
+        if (row.order_number) map.set(`order:${row.order_number}::${row.arrival_date}`, row);
+      });
+      setExistingGuestsMap(map);
+    })();
+    return () => { cancelled = true; };
+  }, [mergedCandidates]);
+
+  const dbMatchByIdx = useMemo(() => {
     const map = new Map();
     mergedCandidates.forEach((c, i) => {
-      if (classifyDbMatch(c, null) === "unimportable") map.set(i, UMBRELLA_BADGE_LABEL);
+      map.set(i, classifyDbMatch(c, _findExistingGuestRow(existingGuestsMap, c)));
     });
     return map;
-  }, [mergedCandidates]);
+  }, [mergedCandidates, existingGuestsMap]);
+
+  const importBadgeByIdx = useMemo(() => {
+    const map = new Map();
+    dbMatchByIdx.forEach((status, i) => {
+      const label = DB_MATCH_BADGE_LABEL[status];
+      if (label) map.set(i, label);
+    });
+    return map;
+  }, [dbMatchByIdx]);
 
   // Recompute grid rows whenever merged changes (fresh parse — discards manual edits)
   useEffect(() => {
@@ -1367,13 +1457,16 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
       // ── PATH A: Suite CSV loaded (rooms + guests + bookings) ─────────────
       if (hasDoc2 && merged) {
         const gridByProfileIdx = new Map(gridRows.map((r) => [r._profileIdx, r]));
-        const syncIndices = _getSyncProfileIndices(merged, gridRows, {
+        const { indices: syncIndices, conflicts, skippedUnimportable } = _getSyncProfileIndices(merged, gridRows, {
           importSource,
           detailedRoomFilter,
           selectedIds,
+          dbMatchByIdx,
         });
         if (!syncIndices.length) {
-          showToast("err", "אין רשומות לייבוא לפי הסינון הנוכחי");
+          showToast("err", skippedUnimportable > 0
+            ? `כל ${skippedUnimportable} הרשומות בסינון הנוכחי סווגו כ"מטריית קבוצה" (⛔) ולא יובאו`
+            : "אין רשומות לייבוא לפי הסינון הנוכחי");
           return;
         }
 
@@ -1388,35 +1481,44 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           return;
         }
 
+        // Sprint 3: mergedCandidates[i] (Guest Import Intelligence merge — remark >
+        // ops > detailed identity, ops-sourced spa/meal, detailed/arrivals price+
+        // nights+leadSource+automationMuted per FIELD_SOURCE_PRIORITY) is the source
+        // of truth here, not the raw per-source profile alone. `g` (merged[i]) is
+        // still consulted for fields the candidate model doesn't carry — the
+        // per-room breakdown (g.rooms/resLineId/coordPhone) is arrivals-only detail
+        // that classifyDbMatch/mergeCandidates never needed to model.
         const profiles = syncIndices.map((i) => {
             const g = merged[i];
+            const c = mergedCandidates[i];
             const edited = gridByProfileIdx.get(i) ?? {};
             const nightsFromGrid = parseInt(edited.nights, 10);
             const nights = importSource === "detailed"
               ? (Number.isFinite(nightsFromGrid) && nightsFromGrid > 0
                 ? nightsFromGrid
-                : (g.rooms ?? []).reduce((mx, r) => Math.max(mx, r.nights || 0), 0) || 1)
-              : (g.rooms ?? []).reduce((mx, r) => Math.max(mx, r.nights || 0), 0);
+                : (c.nights || (g.rooms ?? []).reduce((mx, r) => Math.max(mx, r.nights || 0), 0)) || 1)
+              : (c.nights ?? (g.rooms ?? []).reduce((mx, r) => Math.max(mx, r.nights || 0), 0));
             const editedAmount = edited.amount !== undefined && edited.amount !== ""
               ? parseFloat(edited.amount) : null;
-            const computedAmount = (g.rooms ?? []).reduce((sum, r) => sum + (r.price || 0), 0);
+            const computedAmount = c.price ?? (g.rooms ?? []).reduce((sum, r) => sum + (r.price || 0), 0);
             const profileType = importSource === "detailed"
               ? _resolveDetailedProfileType(g, detailedRoomFilter)
               : (g.hasDayBooking ? "day_use" : "suite");
             const isSuiteProfile = profileType === "suite";
+            const profileArrivalDate = c.arrivalDate ?? g.arrivalDate ?? null;
             return {
-              guestPhone:      g.guestPhone,
-              guestName:       edited.guestName ?? g.guestName ?? "",
-              arrivalDate:     g.arrivalDate ?? null,
-              departureDate:   _addNights(g.arrivalDate, nights),
-              orderNumber:     [...(g.orderNumbers ?? [])][0] ?? null,
+              guestPhone:      c.guestPhone ?? g.guestPhone,
+              guestName:       edited.guestName ?? c.guestName ?? g.guestName ?? "",
+              arrivalDate:     profileArrivalDate,
+              departureDate:   _addNights(profileArrivalDate, nights),
+              orderNumber:     c.orderNumber ?? [...(g.orderNumbers ?? [])][0] ?? null,
               hasSuite:        isSuiteProfile,
               isDayGuest:      !isSuiteProfile,
               profile_type:    profileType,
-              treatment_count: g.treatment_count ?? 0,
+              treatment_count: c.treatment_count ?? g.treatment_count ?? 0,
               paymentAmount:   editedAmount ?? (computedAmount || null),
-              leadSource:      g.leadSource ?? null,
-              automationMuted: !!g.automationMuted,
+              leadSource:      c.leadSource ?? g.leadSource ?? null,
+              automationMuted: !!(c.automationMuted ?? g.automationMuted),
               nights,
             };
           });
@@ -1424,6 +1526,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
         const rooms = syncIndices
           .flatMap((i) => {
             const g = merged[i];
+            const c = mergedCandidates[i];
             const edited      = gridByProfileIdx.get(i) ?? {};
             const roomOverride = edited.room || "";
             const profileType = importSource === "detailed"
@@ -1436,13 +1539,13 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
               roomName:     r.roomName,
               suiteType:    r.suiteType,
               roomDisplay:  roomOverride || _bestGuessSuite(r.roomName) || null,
-              guestName:    edited.guestName ?? g.guestName ?? "",
-              guestPhone:   g.guestPhone ?? null,
+              guestName:    edited.guestName ?? c.guestName ?? g.guestName ?? "",
+              guestPhone:   c.guestPhone ?? g.guestPhone ?? null,
               coordPhone:   g.coordPhone ?? null,
               phoneSource:  g.phoneSource,
               adults:       r.adults,
               nights:       r.nights,
-              arrivalDate:  g.arrivalDate ?? null,
+              arrivalDate:  c.arrivalDate ?? g.arrivalDate ?? null,
               checkinTime:  r.checkinTime ?? null,
               checkoutTime: r.checkoutTime ?? null,
               isDayGuest:   isDayGuestRoom,
@@ -1466,25 +1569,28 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
 
         for (const i of syncIndices) {
           const g = merged[i];
+          const c = mergedCandidates[i];
           const edited   = gridByProfileIdx.get(i) ?? {};
-          const spaTime  = edited.spa_time  || g.spa_time;
-          const mealTime = edited.meal_time || g.meal_time;
-          const mealLoc  = edited.meal_location || g.meal_location;
+          const guestPhone      = c.guestPhone ?? g.guestPhone;
+          const profileArrivalDate = c.arrivalDate ?? g.arrivalDate;
+          const spaTime  = edited.spa_time  || c.spa_time  || g.spa_time;
+          const mealTime = edited.meal_time || c.meal_time || g.meal_time;
+          const mealLoc  = edited.meal_location || c.meal_location || g.meal_location;
           const notes    = g.guest_notes;
-          if (g.guestPhone && (spaTime || mealTime || mealLoc || notes)) {
-            const patch = { treatment_count: g.treatment_count ?? 0 };
+          if (guestPhone && (spaTime || mealTime || mealLoc || notes)) {
+            const patch = { treatment_count: c.treatment_count ?? g.treatment_count ?? 0 };
             if (spaTime)  patch.spa_time      = spaTime;
             if (mealTime) patch.meal_time      = mealTime;
             if (mealLoc)  patch.meal_location  = mealLoc;
             if (notes)    patch.guest_notes    = notes;
             await supabase.from("guests").update(patch)
-              .eq("phone", g.guestPhone)
-              .eq("arrival_date", g.arrivalDate);
+              .eq("phone", guestPhone)
+              .eq("arrival_date", profileArrivalDate);
           }
-          if (g.guestPhone && g.arrivalDate && (g.roomsQuantity ?? 0) > 0) {
+          if (guestPhone && profileArrivalDate && (g.roomsQuantity ?? 0) > 0) {
             await supabase.from("bookings").update({ room_count: g.roomsQuantity })
-              .eq("phone", g.guestPhone.replace(/^\+/, ""))
-              .eq("arrival_date", g.arrivalDate);
+              .eq("phone", guestPhone.replace(/^\+/, ""))
+              .eq("arrival_date", profileArrivalDate);
           }
         }
 
@@ -1500,6 +1606,10 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           spa:    syncIndices.filter((i) => gridByProfileIdx.get(i)?.spa_time).length,
           corporateMuted,
           batchType: batchProfileType,
+          skippedUnimportable,
+          conflictCount: conflicts.length,
+          conflictNames: conflicts.map((i) =>
+            gridByProfileIdx.get(i)?.guestName || mergedCandidates[i]?.guestName || `שורה ${i + 1}`),
         });
 
       // ── PATH B: Daily Report only — ENRICHMENT ONLY ─────────────────────
@@ -1652,8 +1762,9 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
       importSource,
       detailedRoomFilter,
       selectedIds,
-    }).length;
-  }, [merged, gridRows, importSource, detailedRoomFilter, selectedIds]);
+      dbMatchByIdx,
+    }).indices.length;
+  }, [merged, gridRows, importSource, detailedRoomFilter, selectedIds, dbMatchByIdx]);
 
   // ── Sync button label ─────────────────────────────────────────────────────
   const syncLabel = syncing
@@ -2326,6 +2437,18 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                   {result.skippedRooms > 0 && (
                     <div style={{ fontSize: 12, color: "#92400E", marginTop: 6, fontWeight: 700 }}>
                       ⚠ {result.skippedRooms} שורות חדר דולגו (חסר מספר הזמנה או מזהה שורה) — לא סונכרנו ל-DB
+                    </div>
+                  )}
+                  {result.skippedUnimportable > 0 && (
+                    <div style={{ fontSize: 12, color: "#92400E", marginTop: 6, fontWeight: 700 }}>
+                      ⛔ {result.skippedUnimportable} שורות «מטריית קבוצה» דולגו אוטומטית — לא סונכרנו ל-DB
+                    </div>
+                  )}
+                  {result.conflictCount > 0 && (
+                    <div style={{ fontSize: 12, color: "#92400E", marginTop: 6, fontWeight: 700 }}>
+                      ⚠ {result.conflictCount} רשומות עם התנגשות מול הקיים ב-DB (שם/חדר/תאריך שונה) יובאו בכל זאת — בדוק:{" "}
+                      {result.conflictNames.slice(0, 8).join(", ")}
+                      {result.conflictNames.length > 8 && ` +${result.conflictNames.length - 8}`}
                     </div>
                   )}
                 </>

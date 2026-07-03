@@ -156,4 +156,86 @@ describe("Guest Import Intelligence — golden cases", () => {
     const [candidate] = mergeCandidates({ arrivals: [row] });
     expect(candidate.meal_time).toBe(null);
   });
+
+  // Sprint 3: classifyDbMatch with a real existingGuestRow (not null) — the DB
+  // prefetch join ArrivalImportPanel.js runs before sync (see _findExistingGuestRow).
+  test("classifyDbMatch: matching phone, identical name/room/date → existing", () => {
+    const candidate = {
+      guestName: "מרדכי",
+      guestPhone: "+972507774904",
+      _rawPhone: "+972507774904",
+      orderNumber: "300100",
+      room: "וילה 1",
+      arrivalDate: "2026-06-30",
+      roomsCount: 1,
+    };
+    const existingGuestRow = {
+      phone: "+972507774904",
+      name: "מרדכי",
+      room: "וילה 1",
+      order_number: "300100",
+      arrival_date: "2026-06-30",
+    };
+    expect(classifyDbMatch(candidate, existingGuestRow)).toBe("existing");
+  });
+
+  test("classifyDbMatch: matching phone but a different name on file → conflict", () => {
+    const candidate = {
+      guestName: "מרדכי כהן",
+      guestPhone: "+972507774904",
+      _rawPhone: "+972507774904",
+      orderNumber: "300100",
+      room: null,
+      arrivalDate: "2026-06-30",
+      roomsCount: 1,
+    };
+    const existingGuestRow = {
+      phone: "+972507774904",
+      name: "מרדכי לוי", // different surname on file
+      room: null,
+      order_number: "300100",
+      arrival_date: "2026-06-30",
+    };
+    expect(classifyDbMatch(candidate, existingGuestRow)).toBe("conflict");
+  });
+
+  test("classifyDbMatch: matching order_number but a different room on file → conflict", () => {
+    const candidate = {
+      guestName: "גבריאל",
+      guestPhone: "+972526691991",
+      _rawPhone: "+972526691991",
+      orderNumber: "300100",
+      room: "וילה 2",
+      arrivalDate: "2026-06-30",
+      roomsCount: 1,
+    };
+    const existingGuestRow = {
+      phone: null,
+      name: "גבריאל",
+      room: "וילה 5", // room reassigned on file since last import
+      order_number: "300100",
+      arrival_date: "2026-06-30",
+    };
+    expect(classifyDbMatch(candidate, existingGuestRow)).toBe("conflict");
+  });
+
+  test("classifyDbMatch: no phone/order overlap with the existing row → new (not existing/conflict)", () => {
+    const candidate = {
+      guestName: "אורח אחר",
+      guestPhone: "+972500000002",
+      _rawPhone: "+972500000002",
+      orderNumber: "999999",
+      room: null,
+      arrivalDate: "2026-06-30",
+      roomsCount: 1,
+    };
+    const existingGuestRow = {
+      phone: "+972507774904",
+      name: "מרדכי",
+      room: null,
+      order_number: "300100",
+      arrival_date: "2026-06-30",
+    };
+    expect(classifyDbMatch(candidate, existingGuestRow)).toBe("new");
+  });
 });
