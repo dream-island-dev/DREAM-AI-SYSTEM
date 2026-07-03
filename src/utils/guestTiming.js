@@ -71,6 +71,91 @@ export function classifyInboundMessageAlert(msg) {
   return null;
 }
 
+/** Calendar-day difference (toYmd − fromYmd) in whole days. */
+export function israelDaysBetween(fromYmd, toYmd) {
+  if (!fromYmd || !toYmd) return null;
+  const [fy, fm, fd] = fromYmd.split("-").map(Number);
+  const [ty, tm, td] = toYmd.split("-").map(Number);
+  const fromMs = Date.UTC(fy, fm - 1, fd);
+  const toMs = Date.UTC(ty, tm - 1, td);
+  return Math.round((toMs - fromMs) / 86400000);
+}
+
+/**
+ * Roster/thread chip for DB-matched guests — relative arrival ("היום", "מחר", …).
+ * @returns {{ label: string, bg: string, fg: string } | null}
+ */
+export function getGuestArrivalRosterLabel(guest, lang = "he") {
+  const en = lang === "en";
+  if (!guest?.arrival_date) {
+    return {
+      label: en ? "📅 No arrival date" : "📅 ללא תאריך הגעה",
+      bg: "var(--status-success-bg)",
+      fg: "var(--status-success)",
+    };
+  }
+
+  const today = israelTodayStr();
+  const { arrival_date: arrival, departure_date: departure, status } = guest;
+
+  const inStay =
+    status === "checked_in" ||
+    (arrival <= today && (!departure || departure >= today));
+
+  if (inStay && arrival <= today) {
+    return {
+      label: en ? "🟢 In resort" : "🟢 בריזורט",
+      bg: "#F0FDF4",
+      fg: "#15803D",
+    };
+  }
+
+  if (departure && departure < today) {
+    return {
+      label: en ? "⚪ After stay" : "⚪ אחרי עזיבה",
+      bg: "var(--ivory)",
+      fg: "var(--text-muted)",
+    };
+  }
+
+  const diff = israelDaysBetween(today, arrival);
+  if (diff == null) return null;
+
+  if (diff <= 0) {
+    return {
+      label: en ? "📅 Today" : "📅 היום",
+      bg: "#FFFBEB",
+      fg: "#B45309",
+    };
+  }
+  if (diff === 1) {
+    return {
+      label: en ? "📅 Tomorrow" : "📅 מחר",
+      bg: "#FFFBEB",
+      fg: "#B45309",
+    };
+  }
+  if (diff === 2) {
+    return {
+      label: en ? "📅 In 2 days" : "📅 עוד יומיים",
+      bg: "#FFFBEB",
+      fg: "#B45309",
+    };
+  }
+  if (diff === 3) {
+    return {
+      label: en ? "📅 In 3 days" : "📅 עוד 3 ימים",
+      bg: "#FFFBEB",
+      fg: "#B45309",
+    };
+  }
+  return {
+    label: en ? `📅 In ${diff} days` : `📅 עוד ${diff} ימים`,
+    bg: "#FFFBEB",
+    fg: "#B45309",
+  };
+}
+
 const fmtDate = (d) =>
   new Date(d).toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit" });
 

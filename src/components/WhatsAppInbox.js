@@ -11,7 +11,7 @@ import AILearningButton from "./AILearningButton";
 import HoldToConfirmButton from "./HoldToConfirmButton";
 import QuietHoursGate from "./QuietHoursGate";
 import { getSuiteSection } from "../data/suiteRegistry";
-import { classifyInboundMessageAlert } from "../utils/guestTiming";
+import { classifyInboundMessageAlert, getGuestArrivalRosterLabel } from "../utils/guestTiming";
 import { resolveEffectiveGuestStatus } from "../utils/guestCheckinMatrix";
 import {
   unlockInboxAlertAudio,
@@ -542,8 +542,25 @@ function groupByPhone(rows) {
 function displayName(contact) {
   return contact.guestName ?? contact.pushName ?? contact.phone;
 }
-function identityMeta(contact, t) {
-  if (contact.guestName) return { kind: "db",    label: t.identityDb,    bg: "var(--status-success-bg)", fg: "var(--status-success)" };
+function identityMeta(contact, lang) {
+  if (contact.guestName) {
+    const chip = getGuestArrivalRosterLabel(
+      {
+        arrival_date: contact.arrivalDate,
+        departure_date: contact.departureDate,
+        status: resolveEffectiveGuestStatus({
+          status: contact.status,
+          arrival_date: contact.arrivalDate,
+          departure_date: contact.departureDate,
+        }),
+      },
+      lang,
+    );
+    if (chip) {
+      return { kind: "db", label: chip.label, bg: chip.bg, fg: chip.fg };
+    }
+  }
+  const t = T[lang] ?? T.he;
   if (contact.pushName)  return { kind: "wa",    label: t.identityWa,    bg: "var(--status-warning-bg)", fg: "var(--status-warning)" };
   return                         { kind: "phone", label: t.identityPhone, bg: "var(--ivory)", fg: "var(--black-soft)" };
 }
@@ -621,7 +638,7 @@ function contactItemPropsEqual(prev, next) {
   return aUnread === bUnread;
 }
 
-const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobile, t, dir, onClick, onProfileClick, onDismiss, onArchive, scriptsByKey, templatesByWaName }) {
+const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobile, t, lang, dir, onClick, onProfileClick, onDismiss, onArchive, scriptsByKey, templatesByWaName }) {
   const last  = contact.messages[contact.messages.length - 1];
   const unread = contact.messages.filter(
     (m) => m.direction === "inbound" && !m._read
@@ -636,7 +653,7 @@ const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobil
     : contact.humanRequestType === "guest_alert"
       ? "🔴 בקשה חדשה בלוח הבקשות"
       : "🔴 מבקש מענה אנושי";
-  const identity = identityMeta(contact, t);
+  const identity = identityMeta(contact, lang);
   const roomChip = roomChipMeta(contact);
   const active   = recentlyActive(contact);
   const inResort =
@@ -3246,6 +3263,7 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
               isActive={active === c.phone}
               isMobile={isMobile}
               t={t}
+              lang={lang}
               dir={t.dir}
               scriptsByKey={scriptsByKey}
               templatesByWaName={templatesByWaName}
@@ -3317,6 +3335,33 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
               {active}
             </div>
           )}
+          {activeContact?.guestName && activeContact.arrivalDate && (() => {
+            const chip = getGuestArrivalRosterLabel(
+              {
+                arrival_date: activeContact.arrivalDate,
+                departure_date: activeContact.departureDate,
+                status: resolveEffectiveGuestStatus({
+                  status: activeContact.status,
+                  arrival_date: activeContact.arrivalDate,
+                  departure_date: activeContact.departureDate,
+                }),
+              },
+              lang,
+            );
+            return chip ? (
+              <div
+                className="u-badge-nowrap"
+                style={{
+                  display: "inline-block", marginTop: 4,
+                  fontSize: 10, fontWeight: 700,
+                  background: "rgba(255,255,255,0.2)", color: "white",
+                  padding: "2px 7px", borderRadius: "var(--radius-sm)",
+                }}
+              >
+                {chip.label}
+              </div>
+            ) : null;
+          })()}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
           {activeContact?.spaTime && (
