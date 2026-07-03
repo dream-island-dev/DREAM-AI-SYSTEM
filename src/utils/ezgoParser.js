@@ -152,6 +152,49 @@ export function extractPhonesFromText(text) {
 const CSV_ARTIFACT_RE_INDEX = '","';
 const MAX_REMARK_NAME_LEN = 80;
 
+// Free-text sRemark often carries room/payment notes after the occupant name.
+// Cut at the first noise boundary so "רינת עקיבא 3 בחדר תוספת…" → "רינת עקיבא".
+const REMARK_NAME_NOISE_RES = [
+  /","/,
+  /,\s*,/,
+  /₪/,
+  /\s+\d+\s*בחדר/,
+  /\s+בחדר\b/,
+  /\s+תוספת\b/,
+  /\s+פרטי\b/,
+  /\s+\d+\s*שח/,
+  /\s+תשלום\b/,
+  /\s+ביום\b/,
+];
+
+function trimRemarkNameNoise(text) {
+  let s = String(text ?? "").trim();
+  if (!s) return "";
+
+  for (const re of REMARK_NAME_NOISE_RES) {
+    const m = re.exec(s);
+    if (m && m.index > 0) s = s.slice(0, m.index).trim();
+  }
+
+  s = s.replace(/[\s\-+/|,;"]+$/, "").trim();
+
+  // "Name 3 …" / "Name 1000 …" — digit after words is room/qty/price, not part of name.
+  const digitCut = s.match(/^(.+?)\s+\d/);
+  if (digitCut) s = digitCut[1].trim();
+
+  return s;
+}
+
+/** When sRemark lists several people ("א / ב - phone"), keep the segment beside the phone. */
+function pickOccupantNameFromPrefix(namePart) {
+  const segments = String(namePart ?? "")
+    .split(/\s*[/+]\s*/)
+    .map((x) => x.trim())
+    .filter(Boolean);
+  const raw = segments.length > 1 ? segments[segments.length - 1] : String(namePart ?? "");
+  return trimRemarkNameNoise(raw);
+}
+
 export function extractNameFromRemark(remark) {
   if (!remark || typeof remark !== "string") return null;
   const s = remark.trim();
@@ -167,8 +210,7 @@ export function extractNameFromRemark(remark) {
   let namePart = s.slice(0, phoneMatch.index);
   const artifactIdx = namePart.indexOf(CSV_ARTIFACT_RE_INDEX);
   if (artifactIdx >= 0) namePart = namePart.slice(0, artifactIdx);
-  // Strip trailing noise: dashes, slashes, plus signs, spaces, stray quotes
-  let clean = namePart.replace(/[\s\-+/|,;"]+$/, "").trim();
+  let clean = pickOccupantNameFromPrefix(namePart);
   if (clean.length > MAX_REMARK_NAME_LEN) clean = clean.slice(0, MAX_REMARK_NAME_LEN).trim();
   return clean || null;
 }

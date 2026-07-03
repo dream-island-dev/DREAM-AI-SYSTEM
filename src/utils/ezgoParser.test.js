@@ -196,7 +196,37 @@ describe("ezgoParser — Sprint 1 fixes", () => {
   // secondary, defense-in-depth layer inside extractNameFromRemark itself.
   test("extractNameFromRemark: cuts at the first CSV mis-split artifact instead of keeping the leaked junk", () => {
     const mangled = 'רינת עקיבא 3 בחדר","6","11","גוש 12","עיריית תל אביב",0506919808';
-    expect(extractNameFromRemark(mangled)).toBe("רינת עקיבא 3 בחדר");
+    expect(extractNameFromRemark(mangled)).toBe("רינת עקיבא");
+  });
+
+  test("extractNameFromRemark: loose comma bleed (no quote artifact) still resolves to occupant name only", () => {
+    const mangled =
+      "רינת עקיבא 3 בחדר תוספת ל 3 פרטי 1000 שח תשלום ביום ההגעה, ,11,6, ,₪, ,0,3,0,0506919808";
+    expect(extractNameFromRemark(mangled)).toBe("רינת עקיבא");
+  });
+
+  test("extractNameFromRemark: multi-guest slash/plus — name adjacent to phone wins", () => {
+    expect(extractNameFromRemark("יוסי יוסף / איגור גרינבאום - 0526651629")).toBe("איגור גרינבאום");
+    expect(extractNameFromRemark("מוחמד עדילה/ ראמי עדילה052-5778390")).toBe("ראמי עדילה");
+    expect(extractNameFromRemark("ארז לבנון+ חגיי קריק 0526651633")).toBe("חגיי קריק");
+  });
+
+  test("extractGuestDetails: remark is full identity when coordinator phone is dummy", () => {
+    const row = extractGuestDetails(
+      {
+        Order: "262071",
+        ResLine: "rl-rinat",
+        Remark:
+          "רינת עקיבא 3 בחדר תוספת ל 3 פרטי 1000 שח תשלום ביום ההגעה, ,11,6, ,₪, ,0,3,0,0506919808",
+        CoordName: "עיריית תל אביב",
+        CoordPhone: "111",
+      },
+      ARRIVALS_MAPPING,
+    );
+    expect(row.guestName).toBe("רינת עקיבא");
+    expect(row.guestPhone).toBe("+972506919808");
+    expect(row.phoneSource).toBe("individual");
+    expect(row.automationMuted).toBe(true);
   });
 
   test("extractNameFromRemark: caps name length as a hard backstop when no artifact pattern matches", () => {
@@ -217,7 +247,7 @@ describe("ezgoParser — Sprint 1 fixes", () => {
       },
       ARRIVALS_MAPPING,
     );
-    expect(row.guestName).toBe("רינת עקיבא 3 בחדר");
+    expect(row.guestName).toBe("רינת עקיבא");
     expect(row.guestName).not.toContain('","');
     expect(row.guestPhone).toBe("+972506919808");
   });

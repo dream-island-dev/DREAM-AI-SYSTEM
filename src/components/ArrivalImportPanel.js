@@ -565,7 +565,14 @@ const DB_MATCH_BADGE_LABEL = {
 export function _isSuspiciousGuestName(name) {
   const s = String(name ?? "");
   if (!s) return false;
-  return s.includes('","') || s.length > 120;
+  return (
+    s.includes('","')
+    || s.length > 120
+    || /₪/.test(s)
+    || /,\s*,/.test(s)
+    || /\d+\s*בחדר/.test(s)
+    || /\s+תשלום\b/.test(s)
+  );
 }
 
 // ── Guest Import Intelligence — Sprint 3: DB-match lookup ──────────────────
