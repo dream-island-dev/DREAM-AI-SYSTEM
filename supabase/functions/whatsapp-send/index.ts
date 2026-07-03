@@ -2257,26 +2257,22 @@ serve(async (req: Request) => {
     }
 
     // ── Morning day-pass fast-path (Stage 3 — בוקר הגעה, בילוי יומי) ──────────
-    // Bifurcated from the suite morning fast-path below.  Day-pass guests at
-    // trigger=morning_welcome get a 24h-window check — free-text when the window
-    // is open, template (suite_welcome_morning) when it is closed.  Suite guests
-    // always receive an approved template (Shabbat-aware) via the block below.
-    //
-    // Uses isWindowOpen(wa_window_expires_at) — same as BRANCH D's session_message
-    // path — rather than a second DB query (getLastInboundTimestamp).  The guest
-    // row already carries wa_window_expires_at from the select("*") above.
+    // Autonomous cron → Shabbat-aware Meta template (same as suites).
+    // Session morning_daypass only on manual force (force===true).
     if (trigger === "morning_welcome" && (guest.room_type === "day_guest" || guest.room_type === "premium_day_guest")) {
       const dpGuestName = sanitizeTemplateVars([String(guest.name ?? "")])[0];
-      const dpWindowOpen = isWindowOpen(guest.wa_window_expires_at);
+      const dpArrivalYmd = normalizeArrivalDateYmd(guest.arrival_date);
+      const dpIsShabbat = isShabbatArrivalDate(dpArrivalYmd);
+      const dpTemplate = dpIsShabbat ? "suite_welcome_morning_shabbat" : "suite_welcome_morning";
+      const dpUseSession = force === true && !forceMetaTemplate;
       let dpStatus = "simulated";
       let dpError: string | null = null;
-      let dpChannel: "session_message" | "meta_template" = dpWindowOpen ? "session_message" : "meta_template";
+      let dpChannel: "session_message" | "meta_template" = dpUseSession ? "session_message" : "meta_template";
       let dpConvMessage = "";
 
       try {
         if (!sim) {
-          if (dpWindowOpen) {
-            // 24h session open — send the day-pass morning free-text script.
+          if (dpUseSession) {
             const { data: scriptRow } = await supabase
               .from("bot_scripts")
               .select("message_text")
@@ -2284,14 +2280,15 @@ serve(async (req: Request) => {
               .maybeSingle();
             const rawText = scriptRow?.message_text?.trim();
             if (!rawText) {
-              // Script missing — fall through to template rather than silently drop.
               dpChannel = "meta_template";
               console.warn(
                 `[whatsapp-send] morning_welcome day_pass: bot_script 'morning_daypass' missing` +
-                ` — falling back to suite_welcome_morning template for guest_id=${guestId}`,
+                ` — falling back to ${dpTemplate} for guest_id=${guestId}`,
               );
-              const dpFbDispatched = await sendViaTemplate(String(guest.phone), "suite_welcome_morning", [dpGuestName], "he",
-                resolveDynamicUrlButtonParam("suite_welcome_morning", guest.portal_token));
+              const dpFbDispatched = await sendViaTemplate(
+                String(guest.phone), dpTemplate, [dpGuestName], "he",
+                resolveDynamicUrlButtonParam(dpTemplate, guest.portal_token),
+              );
               dpConvMessage = await buildConversationLogFromTemplate(
                 supabase,
                 dpFbDispatched.templateName,
@@ -2301,9 +2298,12 @@ serve(async (req: Request) => {
               const dpPortalUrl = guest.portal_token
                 ? `${PORTAL_BASE_URL}/portal/${guest.portal_token as string}`
                 : "";
-              const body = rawText
-                .replace(/\{\{GUEST_NAME\}\}/gi, dpGuestName)
-                .replace(/\{\{\s*portal_url\s*\}\}/gi, dpPortalUrl);
+              const body = applySaturdayCheckInTimeOverride(
+                rawText
+                  .replace(/\{\{GUEST_NAME\}\}/gi, dpGuestName)
+                  .replace(/\{\{\s*portal_url\s*\}\}/gi, dpPortalUrl),
+                dpArrivalYmd,
+              );
               dpConvMessage = buildSessionConversationLog(
                 body,
                 (stageRow?.interactive_buttons ?? []) as InteractiveButtonDef[],
@@ -2311,8 +2311,14 @@ serve(async (req: Request) => {
               await sendViaMeta(String(guest.phone), body, stageRow?.session_message_image_url);
             }
           } else {
-            const dpTmplDispatched = await sendViaTemplate(String(guest.phone), "suite_welcome_morning", [dpGuestName], "he",
-              resolveDynamicUrlButtonParam("suite_welcome_morning", guest.portal_token));
+            console.log(
+              `[whatsapp-send] morning_welcome day_pass: route=meta_template guest_id=${guestId} ` +
+              `arrival=${dpArrivalYmd} template=${dpTemplate} isShabbat=${dpIsShabbat}`,
+            );
+            const dpTmplDispatched = await sendViaTemplate(
+              String(guest.phone), dpTemplate, [dpGuestName], "he",
+              resolveDynamicUrlButtonParam(dpTemplate, guest.portal_token),
+            );
             dpConvMessage = await buildConversationLogFromTemplate(
               supabase,
               dpTmplDispatched.templateName,
@@ -2345,7 +2351,7 @@ serve(async (req: Request) => {
         status:       dpStatus,
         payload:      {
           channel:    dpChannel,
-          ...(dpChannel === "meta_template" ? { template: "suite_welcome_morning" } : { scriptKey: "morning_daypass" }),
+          ...(dpChannel === "meta_template" ? { template: dpTemplate } : { scriptKey: "morning_daypass" }),
           ...(dpError ? { error: dpError } : {}),
         },
       });
@@ -2362,7 +2368,7 @@ serve(async (req: Request) => {
             direction:     "outbound",
             message:       dpConvMessage || formatOutboundConversationLog({
               channel: dpChannel === "session_message" ? "session_message" : "meta_template",
-              body: dpChannel === "session_message" ? "morning_daypass" : "suite_welcome_morning",
+              body: dpChannel === "session_message" ? "morning_daypass" : dpTemplate,
             }),
             wa_message_id: null,
           });
@@ -2378,27 +2384,23 @@ serve(async (req: Request) => {
           simulation: sim,
           status:     dpStatus,
           channel:    dpChannel,
-          ...(dpChannel === "meta_template" ? { template: "suite_welcome_morning" } : {}),
+          ...(dpChannel === "meta_template" ? { template: dpTemplate } : {}),
           ...(dpError ? { error: dpError } : {}),
         }),
         { headers: { ...CORS, "Content-Type": "application/json" } },
       );
     }
 
-    // ── Morning-of 24h session optimization (suite guests) ───────────────────
-    // Parallel to the night_before text path: when a suite guest has an open
-    // 24h Meta session AND automation_stages has a session_message_script_key
-    // wired (migration 100: 'stage_3_morning'), send the richer free-text body
-    // instead of the approved Shabbat-aware template. Improves engagement when
-    // the channel is available. Template path remains the authoritative fallback
-    // for guests outside the window (most guests — this is a bonus optimization).
+    // ── Morning-of session path (suite guests — manual override only) ────────
+    // Autonomous cron → Shabbat-aware Meta templates below (suite_welcome_morning /
+    // suite_welcome_morning_shabbat). Never hijack to session text because the 24h
+    // window is open — stage_3_morning carries weekday 15:00 check-in literals.
     //
-    // Applies ONLY to morning_suite / morning_welcome for NON-day_guest guests.
-    // Day-pass guests are handled by the early-return above. Script missing or
-    // empty silently falls through to the deterministic Shabbat routing below —
-    // the guest always receives a message.
+    // Session free-text only when staff explicitly forces (force===true).
+    const useMorningSession = force === true && !forceMetaTemplate;
+
     if ((trigger === "morning_suite" || trigger === "morning_welcome") &&
-        isWindowOpen(guest.wa_window_expires_at) &&
+        useMorningSession &&
         stageRow?.session_message_script_key) {
       let mgScriptText: string | null = null;
       try {
@@ -2417,12 +2419,16 @@ serve(async (req: Request) => {
 
       if (mgScriptText) {
         const mgGuestName = sanitizeTemplateVars([String(guest.name ?? "")])[0];
+        const mgArrivalYmd = normalizeArrivalDateYmd(guest.arrival_date);
         const mgPortalUrl = guest.portal_token
           ? `${PORTAL_BASE_URL}/portal/${guest.portal_token as string}`
           : "";
-        const mgBody = mgScriptText
-          .replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, mgGuestName)
-          .replace(/\{\{\s*portal_url\s*\}\}/gi, mgPortalUrl);
+        const mgBody = applySaturdayCheckInTimeOverride(
+          mgScriptText
+            .replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, mgGuestName)
+            .replace(/\{\{\s*portal_url\s*\}\}/gi, mgPortalUrl),
+          mgArrivalYmd,
+        );
 
         let mgStatus = "simulated";
         let mgError: string | null = null;
@@ -2512,12 +2518,9 @@ serve(async (req: Request) => {
     //   the variable-sync class of bugs (session 56) by design.
     //
     // Safety fallback:
-    //   If the Shabbat template send fails (PENDING, not yet approved, or any
-    //   Meta error) the function retries ONCE with the weekday template and logs
-    //   a warning. A guest with a Saturday arrival receives a message even before
-    //   the Shabbat template is approved — with slightly conservative wording
-    //   rather than nothing at all. A weekday template failure is a real error
-    //   and is NOT retried.
+    //   If the Shabbat template send fails, retry ONCE with the session script
+    //   (stage_3_morning) + applySaturdayCheckInTimeOverride — never the weekday
+    //   Meta template (that would quote 15:00 check-in on a Saturday arrival).
     //
     // Applies to: morning_suite + morning_welcome for NON-day_guest guests.
     // Day-pass guests (morning_welcome) are handled by the early-return above.
@@ -2557,9 +2560,14 @@ serve(async (req: Request) => {
       // never from `usedMorningTemplate` alone, so a future edit to the
       // fallback bookkeeping above can't silently desync the inbox log again.
       let mdDispatched: DispatchedTemplate | null = null;
+      let mdSessionFallbackBody: string | null = null;
 
       try {
         if (!sim) {
+          console.log(
+            `[whatsapp-send] morning Stage3 pre-send: guest_id=${guestId} ` +
+            `template=${morningDispatch.primaryTemplate} vars=${JSON.stringify(morningDispatch.vars)}`,
+          );
           try {
             mdDispatched = await sendViaTemplate(
               String(guest.phone),
@@ -2569,23 +2577,38 @@ serve(async (req: Request) => {
               morningDispatch.buttonUrlParam,
             );
           } catch (primaryErr) {
-            // Safety fallback: Shabbat template not yet approved or errored → use weekday.
-            // Only triggers when primary ≠ fallback (i.e., Shabbat routing was attempted).
-            // A weekday template failure is a real failure — no fallback for it.
+            // Shabbat template not yet approved or errored → session script with
+            // Shabbat time override (never weekday Meta — wrong 15:00 on Saturday).
             if (morningDispatch.primaryTemplate !== morningDispatch.fallbackTemplate) {
+              const scriptKey = stageRow?.session_message_script_key ?? "stage_3_morning";
+              const { data: fbScript } = await supabase
+                .from("bot_scripts")
+                .select("message_text")
+                .eq("script_key", scriptKey)
+                .maybeSingle();
+              const fbRaw = fbScript?.message_text?.trim();
+              if (!fbRaw) throw primaryErr;
+              const arrivalYmd = normalizeArrivalDateYmd(guest.arrival_date);
+              const fbPortal = guest.portal_token
+                ? `${PORTAL_BASE_URL}/portal/${guest.portal_token as string}`
+                : "";
+              mdSessionFallbackBody = applySaturdayCheckInTimeOverride(
+                fbRaw
+                  .replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, morningDispatch.vars[0])
+                  .replace(/\{\{\s*portal_url\s*\}\}/gi, fbPortal),
+                arrivalYmd,
+              );
               console.warn(
                 `[whatsapp-send] morning dispatch: Shabbat template "${morningDispatch.primaryTemplate}"` +
-                ` failed — falling back to "${morningDispatch.fallbackTemplate}".` +
-                ` Primary error: ${(primaryErr as Error).message}`
+                ` failed — session fallback (${scriptKey}) with Shabbat time override.` +
+                ` Primary error: ${(primaryErr as Error).message}`,
               );
-              usedMorningTemplate = morningDispatch.fallbackTemplate;
-              mdDispatched = await sendViaTemplate(
+              await sendViaMeta(
                 String(guest.phone),
-                morningDispatch.fallbackTemplate,
-                morningDispatch.vars,
-                "he",
-                morningDispatch.buttonUrlParam,
+                mdSessionFallbackBody,
+                stageRow?.session_message_image_url,
               );
+              usedMorningTemplate = `${scriptKey}_session_shabbat_fallback`;
             } else {
               throw primaryErr;
             }
@@ -2615,11 +2638,11 @@ serve(async (req: Request) => {
         channel:      "whatsapp",
         status:       mdStatus,
         payload: {
-          channel:   "meta_template",
+          channel:   mdSessionFallbackBody ? "session_message" : "meta_template",
           template:  mdDispatched?.templateName ?? usedMorningTemplate,
           variables: mdDispatched?.variables ?? morningDispatch.vars,
-          ...(usedMorningTemplate !== morningDispatch.primaryTemplate
-            ? { shabbatFallback: true, primaryAttempt: morningDispatch.primaryTemplate }
+          ...(mdSessionFallbackBody
+            ? { shabbatSessionFallback: true, primaryAttempt: morningDispatch.primaryTemplate }
             : {}),
           ...(mdError ? { error: mdError } : {}),
         },
@@ -2627,11 +2650,16 @@ serve(async (req: Request) => {
 
       if (mdStatus === "sent" || mdStatus === "simulated") {
         try {
-          const mdConvMessage = await buildConversationLogFromTemplate(
-            supabase,
-            mdDispatched?.templateName ?? usedMorningTemplate,
-            mdDispatched?.variables ?? morningDispatch.vars,
-          );
+          const mdConvMessage = mdSessionFallbackBody
+            ? buildSessionConversationLog(
+                mdSessionFallbackBody,
+                (stageRow?.interactive_buttons ?? []) as InteractiveButtonDef[],
+              )
+            : await buildConversationLogFromTemplate(
+                supabase,
+                mdDispatched?.templateName ?? usedMorningTemplate,
+                mdDispatched?.variables ?? morningDispatch.vars,
+              );
           const { error: convErr } = await supabase.from("whatsapp_conversations").insert({
             phone:         String(guest.phone),
             guest_id:      guestId,
@@ -2653,7 +2681,7 @@ serve(async (req: Request) => {
           ok:         mdStatus === "sent" || mdStatus === "simulated",
           simulation: sim,
           status:     mdStatus,
-          channel:    "meta_template",
+          channel:    mdSessionFallbackBody ? "session_message" : "meta_template",
           template:   usedMorningTemplate,
           ...(mdError ? { error: mdError } : {}),
         }),

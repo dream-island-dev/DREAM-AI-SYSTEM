@@ -1,3 +1,4 @@
+2026-07-04 | whatsapp-send | Stage 3 בוקר הגעה שבת: cron תמיד suite_welcome_morning/_shabbat (לא session בגלל חלון 24ש'); day-pass אותו דבר; fallback שבת→session עם override (לא תבנית חול).
 2026-07-04 | whatsapp-send + migration 126 | Stage 2.5 שבת: cron תמיד שולח night_before_suites/_shabbat (לא session בגלל חלון 24ש'); isShabbatArrivalDate מרכזי; שעות שבת 15:00/18:00 ב-bot_config.
 2026-07-04 | ezgoParser.js | ייבוא Doc 2: זהות מ-sRemark רק כש-sClientFullName כפול בקובץ; שורה יחידה=עמודה בלבד (תיקון «יום הולדת» כשם).
 2026-07-04 | ezgoParser + ArrivalImportPanel + detailedReservationParser | ייבוא Doc 2: שם בהערה+טלפון בעמודה; 📵 שקיפות לפני סנכרון; תיקון CSV ש"ח (24 שורות במקום 7).
