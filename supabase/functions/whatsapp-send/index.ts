@@ -33,6 +33,24 @@
 //   mid_stay         → guests.msg_mid_stay_sent        = true
 //   checkout_fb      → guests.msg_checkout_fb_sent     = true
 //   broadcast        → no pipeline flag (ad-hoc sends)
+//
+// Outbound logging invariant (whatsapp_conversations WYSIWYG guarantee):
+//   Every branch dispatches over exactly one channel — a Meta template
+//   (sendViaTemplate) or a free-text 24h session message (sendViaMeta /
+//   sendStageSessionMessage / sendInteractiveButtons) — and the row written
+//   to whatsapp_conversations MUST describe that same channel with the same
+//   literal content, never a name-based guess or a copy tracked separately
+//   from the actual send call. sendViaTemplate returns a DispatchedTemplate
+//   ({templateName, variables} — the exact pair embedded in the accepted
+//   Meta payload, post any internal padding/fallback correction); every call
+//   site threads that return value into buildConversationLogFromTemplate
+//   instead of re-using the pre-send template name/vars it happened to have
+//   lying around. Session sends already log the literal string handed to the
+//   Meta call, so no reconstruction step exists there to drift. The [META]/
+//   [SESSION] prefix (formatOutboundConversationLog) is likewise always
+//   derived from the branch that actually executed (e.g. usedSessionMessage,
+//   nightBeforeDispatch.channel, dpChannel, rrDispatch.channel) — never from
+//   the stage's initial/intended configuration.
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -162,7 +180,18 @@ function buildSessionConversationLog(
   });
 }
 
-/** Resolve human-readable inbox log text for a Meta template send. */
+/**
+ * Resolve human-readable inbox log text for a Meta template send.
+ *
+ * `templateName`/`vars` MUST be the literal DispatchedTemplate returned by
+ * sendViaTemplate() for the send this call is logging — not the caller's
+ * pre-send intent. Meta's API never echoes back the rendered body text, so
+ * this reconstructs it locally (message_templates.content, falling back to
+ * TEMPLATE_BODY_APPROVED) against the EXACT template name + variables that
+ * were embedded in the accepted payload. Passing anything else re-introduces
+ * the class of bug where the inbox shows a different message than what the
+ * guest actually received.
+ */
 async function buildConversationLogFromTemplate(
   supabase: ReturnType<typeof createClient>,
   templateName: string,
@@ -559,12 +588,22 @@ function buildFreeTextPayload(
   };
 }
 
-/** Build Meta template.components[] with header/body/button validation. */
+/**
+ * Build Meta template.components[] with header/body/button validation.
+ *
+ * Returns BOTH the components array sent to Meta AND `resolvedVars` — the
+ * exact body variables actually embedded in that payload after all padding/
+ * fallback logic below. `resolvedVars` is the single source of truth for
+ * conversation-log reconstruction (see sendViaTemplate) so the inbox log can
+ * never diverge from what Meta actually received, even in the padding edge
+ * cases this function silently corrects (e.g. a caller passing fewer vars
+ * than a template requires).
+ */
 function buildTemplateComponents(
   templateName: string,
   rawVars: string[],
   opts: { buttonUrlParam?: string; headerImageUrl?: string | null } = {},
-): unknown[] {
+): { components: unknown[]; resolvedVars: string[] } {
   const components: unknown[] = [];
   const headerUrl = resolveTemplateHeaderImageUrl(templateName, opts.headerImageUrl);
 
@@ -633,7 +672,7 @@ function buildTemplateComponents(
     });
   }
 
-  return components;
+  return { components, resolvedVars: variables };
 }
 
 // Default session image for Stage 2.5 manual "Send Now" override (force === true).
@@ -962,6 +1001,16 @@ function resolveTemplateVars(
   return sanitizeTemplateVars([String(guest.name ?? "")]);
 }
 
+/**
+ * Dispatched-template descriptor — the literal {templateName, variables} pair
+ * embedded in the Meta payload that was actually POSTed. Callers MUST use
+ * this return value (never a separately-tracked copy of the name/vars they
+ * intended to send) when building the whatsapp_conversations log entry —
+ * see buildConversationLogFromTemplate. This is the ABSOLUTE SOURCE OF TRUTH
+ * invariant: what Meta received is exactly what gets logged.
+ */
+type DispatchedTemplate = { templateName: string; variables: string[] };
+
 async function sendViaTemplate(
   to: string,
   templateName: string,
@@ -969,7 +1018,7 @@ async function sendViaTemplate(
   langCode = "he",
   buttonUrlParam?: string,
   headerImageUrlOverride?: string | null,
-): Promise<void> {
+): Promise<DispatchedTemplate> {
   const token   = Deno.env.get("META_WHATSAPP_TOKEN")  ?? Deno.env.get("WHATSAPP_TOKEN");
   const phoneId = Deno.env.get("META_PHONE_NUMBER_ID") ?? Deno.env.get("WHATSAPP_PHONE_NUMBER_ID");
   if (!token || !phoneId) throw new Error("missing_meta_whatsapp_creds");
@@ -978,7 +1027,7 @@ async function sendViaTemplate(
     console.warn("[whatsapp-send] sendViaTemplate: templateName empty — send will fail");
   }
 
-  const components = buildTemplateComponents(templateName, variables, {
+  const { components, resolvedVars } = buildTemplateComponents(templateName, variables, {
     buttonUrlParam,
     headerImageUrl: headerImageUrlOverride,
   });
@@ -1027,6 +1076,7 @@ async function sendViaTemplate(
       res.status,
       `template="${templateName}" to=${maskPhoneForLog(recipient)}`,
     );
+    return { templateName, variables: resolvedVars };
   } catch (e) {
     if (_isAbortError(e)) throw new Error("timeout_no_response: Meta did not respond within 25s — message may have still been delivered");
     throw e;
@@ -1303,9 +1353,14 @@ serve(async (req: Request) => {
 
       let status = "simulated";
       let sendError: string | null = null;
+      // Populated ONLY on a real, confirmed Meta dispatch — the literal
+      // {templateName, variables} pair embedded in the payload Meta accepted.
+      // Never fall back to `waTemplateName`/`vars` for logging: those are the
+      // caller's INTENT, not proof of what was actually transmitted.
+      let dispatched: DispatchedTemplate | null = null;
       try {
         if (!sim) {
-          await sendViaTemplate(guest.phone as string, waTemplateName, vars, "he", undefined, requestImageUrl);
+          dispatched = await sendViaTemplate(guest.phone as string, waTemplateName, vars, "he", undefined, requestImageUrl);
           status = "sent";
         }
       } catch (e) {
@@ -1332,8 +1387,8 @@ serve(async (req: Request) => {
         channel:      "whatsapp",
         status,
         payload: {
-          template:  waTemplateName,
-          variables: vars,
+          template:  dispatched?.templateName ?? waTemplateName,
+          variables: dispatched?.variables ?? vars,
           ...(sendError ? { error: sendError } : {}),
         },
       });
@@ -1345,7 +1400,15 @@ serve(async (req: Request) => {
       // "...insert(...).catch is not a function" instead of swallowing the error.
       if (status === "sent" || status === "simulated") {
         try {
-          const broadcastConvMsg = await buildConversationLogFromTemplate(supabase, waTemplateName, vars);
+          // Simulation mode never calls sendViaTemplate, so `dispatched` stays
+          // null there — the caller's intended template/vars are the only
+          // truth available. A real send always has `dispatched` populated;
+          // it is what actually left for Meta and is what gets logged.
+          const broadcastConvMsg = await buildConversationLogFromTemplate(
+            supabase,
+            dispatched?.templateName ?? waTemplateName,
+            dispatched?.variables ?? vars,
+          );
           const { error: convErr } = await supabase.from("whatsapp_conversations").insert({
             phone:         guest.phone as string,
             guest_id:      guestId,
@@ -1709,9 +1772,10 @@ serve(async (req: Request) => {
 
       let fmStatus = "simulated";
       let fmError: string | null = null;
+      let fmDispatched: DispatchedTemplate | null = null;
       try {
         if (!sim) {
-          await sendViaTemplate(targetPhone, forcedTmpl, forcedVars, "he", forcedButton, stageRow?.session_message_image_url ?? requestImageUrl);
+          fmDispatched = await sendViaTemplate(targetPhone, forcedTmpl, forcedVars, "he", forcedButton, stageRow?.session_message_image_url ?? requestImageUrl);
           fmStatus = "sent";
         }
       } catch (e) {
@@ -1738,8 +1802,8 @@ serve(async (req: Request) => {
         status: fmStatus,
         payload: {
           channel: "meta_template",
-          template: forcedTmpl,
-          variables: forcedVars,
+          template: fmDispatched?.templateName ?? forcedTmpl,
+          variables: fmDispatched?.variables ?? forcedVars,
           forced: true,
           force_channel: "meta_template",
           ...overridePayloadExtras,
@@ -1749,7 +1813,11 @@ serve(async (req: Request) => {
 
       if (fmStatus === "sent" || fmStatus === "simulated") {
         try {
-          const fmConvMsg = await buildConversationLogFromTemplate(supabase, forcedTmpl, forcedVars);
+          const fmConvMsg = await buildConversationLogFromTemplate(
+            supabase,
+            fmDispatched?.templateName ?? forcedTmpl,
+            fmDispatched?.variables ?? forcedVars,
+          );
           await supabase.from("whatsapp_conversations").insert({
             phone: targetPhone,
             guest_id: guestId,
@@ -1894,7 +1962,7 @@ serve(async (req: Request) => {
               const isShabbatFb = new Date(`${arrivalDateStr}T00:00:00Z`).getUTCDay() === 6;
               const fbTemplate = isShabbatFb ? "night_before_suites_shabbat" : "night_before_suites";
               const fbVars = buildNameOnlyTemplateVars(guest);
-              await sendViaTemplate(
+              const fbDispatched = await sendViaTemplate(
                 String(guest.phone),
                 fbTemplate,
                 fbVars,
@@ -1902,7 +1970,11 @@ serve(async (req: Request) => {
                 undefined,
                 nbSessionImageUrl,
               );
-              nbConvMessage = await buildConversationLogFromTemplate(supabase, fbTemplate, fbVars);
+              nbConvMessage = await buildConversationLogFromTemplate(
+                supabase,
+                fbDispatched.templateName,
+                fbDispatched.variables,
+              );
             } else {
               const nbTimes = await resolveNightBeforeTimes(supabase, String(guest.arrival_date ?? ""));
               const nbPortalUrl = guest.portal_token
@@ -1939,7 +2011,7 @@ serve(async (req: Request) => {
               `vars=${JSON.stringify(nightBeforeDispatch.vars)} ` +
               `phone=${maskPhoneForLog(safeGuestPhone(guest.phone))} sim=${sim}`,
             );
-            await sendViaTemplate(
+            const nbTmplDispatched = await sendViaTemplate(
               String(guest.phone),
               nightBeforeDispatch.templateName,
               nightBeforeDispatch.vars,
@@ -1949,8 +2021,8 @@ serve(async (req: Request) => {
             );
             nbConvMessage = await buildConversationLogFromTemplate(
               supabase,
-              nightBeforeDispatch.templateName,
-              nightBeforeDispatch.vars,
+              nbTmplDispatched.templateName,
+              nbTmplDispatched.variables,
             );
           }
           nbStatus = "sent";
@@ -2065,9 +2137,13 @@ serve(async (req: Request) => {
                 `[whatsapp-send] morning_welcome day_pass: bot_script 'morning_daypass' missing` +
                 ` — falling back to suite_welcome_morning template for guest_id=${guestId}`,
               );
-              await sendViaTemplate(String(guest.phone), "suite_welcome_morning", [dpGuestName], "he",
+              const dpFbDispatched = await sendViaTemplate(String(guest.phone), "suite_welcome_morning", [dpGuestName], "he",
                 resolveDynamicUrlButtonParam("suite_welcome_morning", guest.portal_token));
-              dpConvMessage = await buildConversationLogFromTemplate(supabase, "suite_welcome_morning", [dpGuestName]);
+              dpConvMessage = await buildConversationLogFromTemplate(
+                supabase,
+                dpFbDispatched.templateName,
+                dpFbDispatched.variables,
+              );
             } else {
               const dpPortalUrl = guest.portal_token
                 ? `${PORTAL_BASE_URL}/portal/${guest.portal_token as string}`
@@ -2082,9 +2158,13 @@ serve(async (req: Request) => {
               await sendViaMeta(String(guest.phone), body, stageRow?.session_message_image_url);
             }
           } else {
-            await sendViaTemplate(String(guest.phone), "suite_welcome_morning", [dpGuestName], "he",
+            const dpTmplDispatched = await sendViaTemplate(String(guest.phone), "suite_welcome_morning", [dpGuestName], "he",
               resolveDynamicUrlButtonParam("suite_welcome_morning", guest.portal_token));
-            dpConvMessage = await buildConversationLogFromTemplate(supabase, "suite_welcome_morning", [dpGuestName]);
+            dpConvMessage = await buildConversationLogFromTemplate(
+              supabase,
+              dpTmplDispatched.templateName,
+              dpTmplDispatched.variables,
+            );
           }
           dpStatus = "sent";
         }
@@ -2119,13 +2199,17 @@ serve(async (req: Request) => {
 
       if (dpStatus === "sent" || dpStatus === "simulated") {
         try {
+          // Fallback only fires in simulation mode (dpConvMessage stays "" since
+          // the real send/log-build block above never ran). Even then, the
+          // fallback MUST reflect `dpChannel` — the channel actually selected —
+          // not a hardcoded "meta_template" that can silently disagree with it.
           await supabase.from("whatsapp_conversations").insert({
             phone:         String(guest.phone),
             guest_id:      guestId,
             direction:     "outbound",
             message:       dpConvMessage || formatOutboundConversationLog({
-              channel: "meta_template",
-              body: "suite_welcome_morning",
+              channel: dpChannel === "session_message" ? "session_message" : "meta_template",
+              body: dpChannel === "session_message" ? "morning_daypass" : "suite_welcome_morning",
             }),
             wa_message_id: null,
           });
@@ -2314,11 +2398,17 @@ serve(async (req: Request) => {
       let mdStatus = "simulated";
       let mdError: string | null = null;
       let usedMorningTemplate = morningDispatch.primaryTemplate;
+      // Populated with the LITERAL {templateName, variables} Meta accepted —
+      // whichever attempt (primary Shabbat template or weekday fallback)
+      // actually succeeded. The conversation log below is built from this,
+      // never from `usedMorningTemplate` alone, so a future edit to the
+      // fallback bookkeeping above can't silently desync the inbox log again.
+      let mdDispatched: DispatchedTemplate | null = null;
 
       try {
         if (!sim) {
           try {
-            await sendViaTemplate(
+            mdDispatched = await sendViaTemplate(
               String(guest.phone),
               morningDispatch.primaryTemplate,
               morningDispatch.vars,
@@ -2336,7 +2426,7 @@ serve(async (req: Request) => {
                 ` Primary error: ${(primaryErr as Error).message}`
               );
               usedMorningTemplate = morningDispatch.fallbackTemplate;
-              await sendViaTemplate(
+              mdDispatched = await sendViaTemplate(
                 String(guest.phone),
                 morningDispatch.fallbackTemplate,
                 morningDispatch.vars,
@@ -2373,8 +2463,8 @@ serve(async (req: Request) => {
         status:       mdStatus,
         payload: {
           channel:   "meta_template",
-          template:  usedMorningTemplate,
-          variables: morningDispatch.vars,
+          template:  mdDispatched?.templateName ?? usedMorningTemplate,
+          variables: mdDispatched?.variables ?? morningDispatch.vars,
           ...(usedMorningTemplate !== morningDispatch.primaryTemplate
             ? { shabbatFallback: true, primaryAttempt: morningDispatch.primaryTemplate }
             : {}),
@@ -2386,8 +2476,8 @@ serve(async (req: Request) => {
         try {
           const mdConvMessage = await buildConversationLogFromTemplate(
             supabase,
-            usedMorningTemplate,
-            morningDispatch.vars,
+            mdDispatched?.templateName ?? usedMorningTemplate,
+            mdDispatched?.variables ?? morningDispatch.vars,
           );
           const { error: convErr } = await supabase.from("whatsapp_conversations").insert({
             phone:         String(guest.phone),
@@ -2506,7 +2596,7 @@ serve(async (req: Request) => {
                 ` — falling back to template for guest_id=${guestId}`,
               );
               const rrTmplVars = sanitizeTemplateVars([rrGuestName, rrRoomName]);
-              await sendViaTemplate(
+              const rrFbDispatched = await sendViaTemplate(
                 String(guest.phone),
                 PIPELINE_TEMPLATE["room_ready"],
                 rrTmplVars,
@@ -2514,8 +2604,8 @@ serve(async (req: Request) => {
               );
               rrConvMessage = await buildConversationLogFromTemplate(
                 supabase,
-                PIPELINE_TEMPLATE["room_ready"],
-                rrTmplVars,
+                rrFbDispatched.templateName,
+                rrFbDispatched.variables,
               );
             } else {
               const textBody = rawText
@@ -2525,7 +2615,7 @@ serve(async (req: Request) => {
               await sendViaMeta(String(guest.phone), textBody, stageRow?.session_message_image_url);
             }
           } else {
-            await sendViaTemplate(
+            const rrTmplDispatched = await sendViaTemplate(
               String(guest.phone),
               rrDispatch.templateName,
               rrDispatch.vars,
@@ -2533,8 +2623,8 @@ serve(async (req: Request) => {
             );
             rrConvMessage = await buildConversationLogFromTemplate(
               supabase,
-              rrDispatch.templateName,
-              rrDispatch.vars,
+              rrTmplDispatched.templateName,
+              rrTmplDispatched.variables,
             );
           }
           rrStatus = "sent";
@@ -2687,6 +2777,14 @@ serve(async (req: Request) => {
       }
     }
 
+    // Populated ONLY on a real, confirmed Meta dispatch — the literal
+    // {templateName, variables} pair embedded in the payload Meta accepted.
+    // Both the notification_log payload and the conversation-thread log
+    // below read from this, never from `tmplName`/`tmplVars` directly, so
+    // there is no path for a padded/corrected variable set (see
+    // buildTemplateComponents) to diverge from what gets logged.
+    let templateDispatched: DispatchedTemplate | null = null;
+
     if (!usedSessionMessage) {
       // All pipeline triggers except night_before (which has already returned
       // via the fast-path above). {{1}}/{{2}}/… variables from PIPELINE_VARS.
@@ -2695,7 +2793,7 @@ serve(async (req: Request) => {
       const portalButtonParam = resolveDynamicUrlButtonParam(tmplName, guest.portal_token);
       try {
         if (!sim) {
-          await sendViaTemplate(guest.phone as string, tmplName, tmplVars, "he", portalButtonParam, stageRow?.session_message_image_url ?? requestImageUrl);
+          templateDispatched = await sendViaTemplate(guest.phone as string, tmplName, tmplVars, "he", portalButtonParam, stageRow?.session_message_image_url ?? requestImageUrl);
           status = "sent";
         }
       } catch (e) {
@@ -2713,7 +2811,9 @@ serve(async (req: Request) => {
       payload: usedSessionMessage
         ? { channel: "session_message", scriptKey: stageRow!.session_message_script_key, ...(sendError ? { error: sendError } : {}), ...(force ? { forced: true, force_channel, ...overridePayloadExtras } : {}) }
         : {
-            channel: "meta_template", template: tmplName, variables: tmplVars,
+            channel: "meta_template",
+            template: templateDispatched?.templateName ?? tmplName,
+            variables: templateDispatched?.variables ?? tmplVars,
             ...(sendError ? { error: sendError } : {}),
             ...(sessionFailureNote ? { sessionMessageFailureNote: sessionFailureNote } : {}),
             ...(force ? { forced: true, force_channel, ...overridePayloadExtras } : {}),
@@ -2738,7 +2838,11 @@ serve(async (req: Request) => {
               sessionBody!,
               sessionButtons as InteractiveButtonDef[],
             )
-          : await buildConversationLogFromTemplate(supabase, tmplName, tmplVars);
+          : await buildConversationLogFromTemplate(
+              supabase,
+              templateDispatched?.templateName ?? tmplName,
+              templateDispatched?.variables ?? tmplVars,
+            );
         const { error: convErr } = await supabase.from("whatsapp_conversations").insert({
           phone: guest.phone as string,
           guest_id: guestId,

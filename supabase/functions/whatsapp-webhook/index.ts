@@ -354,17 +354,54 @@ function resolvePlaceholders(
 // by the new payment-pending branch in the arrival-confirmation paths below.
 // {{SPA_LINE}} reuses buildSpaSentence() — the exact helper stage_2_arrival
 // already relies on — rather than a second spa-text mechanism.
+//
+// ── FAIL VISIBLE FIX (split-brain leak, CLAUDE.md §CORE #2) ─────────────────
+// This resolver previously handled GUEST_NAME/PAYMENT_AMOUNT/PAYMENT_LINK/
+// WORKSHOP_URL/SPA_LINE only — it silently had NO substitution at all for
+// {{SPA_TIME}}, {{OPTIONAL_SPA_TEXT}}, or {{PORTAL_LINK}}/{{portal_url}},
+// even though those are the exact standard placeholder vocabulary documented
+// for stage_2_arrival (resolvePlaceholders() above) and staff naturally reuse
+// the same tokens when editing stage_2_payment_reply in BotScriptEditor. A
+// script using them would leave the tokens literally unresolved in
+// `paymentReply` — and because sendStage2PayReply() sometimes dispatches via
+// sendCtaUrlButton()/sendInteractiveButtons() (interactiveSend.ts), which
+// (unlike sendReply()) never ran the raw text through sanitizeReply()'s final
+// {{...}} safety net, the guest could receive the literal broken tokens
+// verbatim. Brought to parity with resolvePlaceholders()'s graceful-fallback
+// contract: substitute the real value when present, strip the containing
+// sentence when absent — never leave a raw token in the outgoing text.
 function resolvePaymentPlaceholders(
   template: string,
-  vars: { guestName: string; paymentAmount: string; paymentLink: string; workshopUrl: string; spaTime: string | null }
+  vars: {
+    guestName: string; paymentAmount: string; paymentLink: string; workshopUrl: string;
+    spaTime: string | null; portalLink?: string;
+  }
 ): string {
-  return template
+  let text = template
     .replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, vars.guestName)
     .replace(/\{\{\s*PAYMENT_AMOUNT\s*\}\}/gi, vars.paymentAmount)
     .replace(/\{\{\s*PAYMENT_LINK\s*\}\}/gi, vars.paymentLink)
     .replace(/\{\{\s*WORKSHOP_URL\s*\}\}/gi, vars.workshopUrl)
     .replace(/\{\{\s*SPA_LINE\s*\}\}/gi, buildSpaSentence(vars.spaTime))
-    .trim();
+    .replace(/\{\{\s*OPTIONAL_SPA_TEXT\s*\}\}/gi, vars.spaTime ? `מתואם לכם טיפול בספא בשעה ${vars.spaTime}.\n` : "");
+
+  if (vars.spaTime) {
+    text = text.replace(/\{\{\s*SPA_TIME\s*\}\}/gi, `הטיפול שלכם בספא מתואם לשעה ${vars.spaTime}`);
+  } else {
+    text = text.replace(/[^\n.!?]*\{\{\s*SPA_TIME\s*\}\}[^\n.!?]*[.!?]?\s*/gi, "");
+  }
+
+  const PORTAL_PLACEHOLDER_RE = /\{\{\s*(?:PORTAL_LINK|portal_url)\s*\}\}/gi;
+  if (vars.portalLink) {
+    text = text.replace(PORTAL_PLACEHOLDER_RE, vars.portalLink);
+  } else {
+    if (PORTAL_PLACEHOLDER_RE.test(text)) {
+      console.warn("[webhook] resolvePaymentPlaceholders() — guest has no portal_token; stripped portal-link sentence rather than send a blank link.");
+    }
+    text = text.replace(/[^\n.!?]*\{\{\s*(?:PORTAL_LINK|portal_url)\s*\}\}[^\n.!?]*[.!?]?\s*/gi, "");
+  }
+
+  return text.trim();
 }
 
 // Hardcoded fallback — same convention as buildSpaSentence's fallback — used
@@ -472,6 +509,7 @@ async function sendStage2PayReply(
   const payWorkshopUrl = Deno.env.get("WORKSHOP_SIGNUP_URL") ?? "";
   const payAmount      = String(guest?.payment_amount ?? "");
   const spaTime        = (guest?.spa_time as string | null) ?? null;
+  const payPortalLink  = buildPortalLink(guest?.portal_token);
   const triggerType    = "stage_2_pay";
 
   if (guestId != null) {
@@ -517,6 +555,7 @@ async function sendStage2PayReply(
   const paymentReply = payScript?.message_text?.trim()
     ? resolvePaymentPlaceholders(payScript.message_text, {
         guestName: payName, paymentAmount: payAmount, paymentLink: payLink, workshopUrl: payWorkshopUrl, spaTime,
+        portalLink: payPortalLink,
       })
     : buildPaymentReply({
         guestName: payName, paymentAmount: payAmount, paymentLink: payLink, workshopUrl: payWorkshopUrl,
@@ -534,6 +573,16 @@ async function sendStage2PayReply(
     await markStage2PayProcessing(supabaseClient, guestId, phone, triggerType);
   }
 
+  // Single source of truth (FAIL VISIBLE fix, split-brain leak) — sanitizeReply()
+  // is the same final chokepoint sendReply() applies to every other guest-facing
+  // reply in this file; running it here too means whichever channel actually
+  // dispatches (sendCtaUrlButton's own strip below, or sendReply's internal one)
+  // and the whatsapp_conversations log below both read from this ONE resolved
+  // string — never a raw pre-sanitize copy for one and a cleaned copy for the
+  // other. Falls back to the raw text only in the extreme case sanitizeReply()
+  // strips everything (never observed with real payment-reply content).
+  const finalPaymentReply = sanitizeReply(paymentReply).trim() || paymentReply;
+
   try {
     if (paymentButton?.url) {
       if (_suppressGuestRepliesStaffClaim) {
@@ -544,16 +593,16 @@ async function sendStage2PayReply(
       if (!resolvedUrl || resolvedUrl.includes("{{")) {
         throw new Error("payment_button_url_unresolved");
       }
-      await sendCtaUrlButton(phone, paymentReply, paymentButton.label, resolvedUrl);
+      await sendCtaUrlButton(phone, finalPaymentReply, paymentButton.label, resolvedUrl);
     } else {
-      await sendReply(phone, paymentReply);
+      await sendReply(phone, finalPaymentReply);
     }
     if (_suppressGuestRepliesStaffClaim) {
       console.info(`[webhook] 💳 Stage 2 Pay outbound skipped — staff claim active guest_id=${guestId ?? "?"}`);
       return;
     }
     await insertGuestOutboundIfNotMuted(supabaseClient, {
-      phone, guest_id: guestId as number | null, message: paymentReply, wa_message_id: null, intent: "stage_2_pay",
+      phone, guest_id: guestId as number | null, message: finalPaymentReply, wa_message_id: null, intent: "stage_2_pay",
     });
     const { error: logErr } = await supabaseClient.from("notification_log").insert({
       guest_id: guestId, recipient: phone,

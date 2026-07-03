@@ -20,6 +20,22 @@ function _isAbortError(e: unknown): boolean {
   return e instanceof Error && (e.name === "AbortError" || e.name === "TimeoutError");
 }
 
+// ── Output Leakage Wall safety net (FAIL VISIBLE, CLAUDE.md §CORE #2) ───────
+// whatsapp-webhook's sendReply() runs every guest-facing free-text body through
+// sanitizeReply() as a final chokepoint — its last step strips any {{PLACEHOLDER}}
+// that an upstream resolver missed, so a typo'd/unhandled token never reaches a
+// guest verbatim. sendInteractiveButtons()/sendCtaUrlButton() below are the ONLY
+// two Meta-sending functions in this codebase that bypass that chokepoint — they
+// POST bodyText straight to Meta with zero cleanup. A resolver gap upstream (e.g.
+// a bot_scripts row using a placeholder the caller's resolve function doesn't
+// handle) would leak the raw token to the guest through this path specifically,
+// while sendReply()-based paths would have silently stripped it. Duplicated here
+// (not imported) for the same reason _isAbortError is duplicated above — this
+// file is shared across Deno bundles and keeps its own copy of small helpers.
+function _stripUnresolvedPlaceholders(text: string): string {
+  return text.replace(/\{\{[^}]+\}\}/g, "").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 function _credsOrThrow(): { token: string; phoneId: string } {
   const token   = Deno.env.get("META_WHATSAPP_TOKEN")  ?? Deno.env.get("WHATSAPP_TOKEN");
   const phoneId = Deno.env.get("META_PHONE_NUMBER_ID") ?? Deno.env.get("WHATSAPP_PHONE_NUMBER_ID");
@@ -41,11 +57,12 @@ export async function sendInteractiveButtons(
 ): Promise<void> {
   const { token, phoneId } = _credsOrThrow();
   const recipient = sanitizeMetaRecipientPhone(to);
+  const safeBodyText = _stripUnresolvedPlaceholders(bodyText);
 
   const urlLines = buttons
     .filter((b) => b.type === "url" && b.url)
     .map((b) => `🔗 ${b.label}: ${b.url}`);
-  const fullBody = urlLines.length > 0 ? `${bodyText}\n\n${urlLines.join("\n")}` : bodyText;
+  const fullBody = urlLines.length > 0 ? `${safeBodyText}\n\n${urlLines.join("\n")}` : safeBodyText;
 
   // `id` is optional — callers that don't pass one (every caller before the
   // staff-ops board) keep getting the original positional `btn_${i}` id, so
@@ -159,6 +176,7 @@ export async function sendCtaUrlButton(
 ): Promise<void> {
   const { token, phoneId } = _credsOrThrow();
   const recipient = sanitizeMetaRecipientPhone(to);
+  const safeBodyText = _stripUnresolvedPlaceholders(bodyText);
 
   try {
     const res = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
@@ -170,7 +188,7 @@ export async function sendCtaUrlButton(
         type: "interactive",
         interactive: {
           type: "cta_url",
-          body: { text: bodyText },
+          body: { text: safeBodyText },
           action: {
             name: "cta_url",
             parameters: { display_text: buttonLabel.trim().slice(0, 20), url },
