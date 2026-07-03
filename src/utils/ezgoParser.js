@@ -52,6 +52,21 @@ function isAutomationMutedLeadSource(leadSource) {
   return String(leadSource ?? "").trim() === SALES_DEPT_LEAD_SOURCE;
 }
 
+// Corporate/institutional coordinator names that mute automation even when no
+// lead_source column is mapped at all — a municipal/bank/corporate group
+// booking must never get automated WhatsApp pipeline messages, regardless of
+// whether an individual occupant was resolved from the remark for this
+// specific row. Deliberately duplicated (not imported) from
+// guestImportIntelligence.js's isCorporateName/CORPORATE_NAME_PREFIXES — that
+// file already imports from THIS one (extractPhonesFromText/
+// extractNameFromRemark), so a reverse import here would create an import
+// cycle between the two modules. Keep both lists in sync by hand.
+const CORPORATE_MUTE_NAME_RE = /עיריית|עיירית|עירייה|עיריה|מחלקת מכירות|בנק לאומי/;
+
+function isCorporateMuteCoordName(name) {
+  return CORPORATE_MUTE_NAME_RE.test(String(name ?? ""));
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // § PHONE HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
@@ -127,6 +142,26 @@ export function extractNameFromRemark(remark) {
   // Strip trailing noise: dashes, slashes, plus signs, spaces
   const clean = namePart.replace(/[\s\-+/|,;]+$/, "").trim();
   return clean || null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// § MEAL TIME HELPER
+// ─────────────────────────────────────────────────────────────────────────────
+
+// EZGO remark meal-time shorthand: "א. ערב 19:30" ("ארוחת ערב" = dinner,
+// abbreviated). Only the dinner-slot abbreviation observed in real exports so
+// far — extend this regex if a breakfast/lunch shorthand ever shows up too.
+const MEAL_TIME_REMARK_RE = /א\.?\s*ערב\s*(\d{1,2}:\d{2})/;
+
+/**
+ * Extracts a meal time embedded in an EZGO remark/opRemark string, e.g.
+ * "א. ערב 19:30" → "19:30". Returns null when the shorthand is absent — this
+ * is a best-effort enrichment, not every remark carries one.
+ */
+export function extractMealTimeFromRemark(remark) {
+  if (!remark || typeof remark !== "string") return null;
+  const m = remark.match(MEAL_TIME_REMARK_RE);
+  return m ? m[1] : null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -211,7 +246,7 @@ export function extractGuestDetails(row, columnMapping = {}, fallbackDate = null
   const priceRaw     = val("price");
   const price        = parseFloat(String(priceRaw ?? "").replace(/[^\d.-]/g, "")) || 0;
   const leadSource   = String(val("leadSource") ?? "").trim() || null;
-  const automationMuted = isAutomationMutedLeadSource(leadSource);
+  const automationMuted = isAutomationMutedLeadSource(leadSource) || isCorporateMuteCoordName(coordNameRaw);
 
   // ── Arrival date ─────────────────────────────────────────────────────────
   const arrivalDate = parseDate(val("arrivalDate")) ?? fallbackDate;
@@ -225,13 +260,26 @@ export function extractGuestDetails(row, columnMapping = {}, fallbackDate = null
   );
 
   // ── Phone priority cascade ────────────────────────────────────────────────
+  // Remark-first (Guest Import Intelligence Sprint 1 fix): a remark phone
+  // paired with a resolvable name is the ACTUAL room occupant — it must win
+  // over a mapped "direct" guestPhone column. In the real EZGO export that
+  // direct column is sTel1, the booking COORDINATOR's phone (shared across
+  // every room in a group booking) — letting it short-circuit remark
+  // resolution silently routed every individual's WhatsApp messages to the
+  // group organizer instead of the actual guest. This restores remark as the
+  // true identity source this function's own docstring above always
+  // documented it to be.
   const remarkPhones   = extractPhonesFromText(remark);
   const opRemarkPhones = extractPhonesFromText(opRemark);
+  const remarkNameCandidate = extractNameFromRemark(remark);
 
   let guestPhone;
   let phoneSource; // "individual" | "coordinator"
 
-  if (directE164) {
+  if (remarkPhones.length > 0 && remarkNameCandidate) {
+    guestPhone   = remarkPhones[0];
+    phoneSource  = "individual";
+  } else if (directE164) {
     guestPhone  = directE164;
     phoneSource = "individual";
   } else if (remarkPhones.length > 0) {
@@ -246,9 +294,12 @@ export function extractGuestDetails(row, columnMapping = {}, fallbackDate = null
   }
 
   // ── Name priority cascade ─────────────────────────────────────────────────
-  const remarkName    = extractNameFromRemark(remark) ?? extractNameFromRemark(opRemark);
+  const remarkName    = remarkNameCandidate ?? extractNameFromRemark(opRemark);
   const coordName     = coordNameRaw.replace(SOURCE_RE, "").trim() || null;
   const guestName     = remarkName ?? coordName;
+
+  // ── Meal time (best-effort, remark shorthand only) ────────────────────────
+  const mealTime = extractMealTimeFromRemark(remark) ?? extractMealTimeFromRemark(opRemark);
 
   // ── Category detection ────────────────────────────────────────────────────
   const isDayGuest = (
@@ -284,6 +335,7 @@ export function extractGuestDetails(row, columnMapping = {}, fallbackDate = null
     checkinTime,        // "10:00" or null
     checkoutTime,       // "19:00" or null
     price,
+    mealTime,           // "19:30" from remark shorthand ("א. ערב HH:MM"), or null
 
     // ── Category ─────────────────────────────────────────────────────────
     isDayGuest,

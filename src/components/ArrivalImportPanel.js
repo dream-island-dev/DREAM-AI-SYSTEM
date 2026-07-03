@@ -27,7 +27,8 @@ import {
   profilesToArray,
   enrichProfilesFromExcel,
 } from "../utils/ezgoParser";
-import { SUITE_ARRIVALS_SCHEMA, buildMaskedSample, detectSuiteArrivalsPreset } from "../utils/importMapper";
+import { mergeCandidates, classifyDbMatch } from "../utils/guestImportIntelligence";
+import { SUITE_ARRIVALS_SCHEMA, buildMaskedSample, detectSuiteArrivalsPreset, detectEzgoArrivalsPreset } from "../utils/importMapper";
 import {
   isDetailedReservationFormat,
   parseDetailedReservationRows,
@@ -503,11 +504,60 @@ async function parseShiftFile(arrayBuf) {
   return raw.map(row => ({ _id: crypto.randomUUID(), ...row }));
 }
 
+// ── Guest Import Intelligence — Sprint 2 read-only merge layer ──────────────
+// Adapters that convert an already-aggregated profile (aggregateGuestProfiles/
+// detailedRowsToProfileMap output, post profilesToArray()) back into the
+// per-row shape mergeCandidates() expects for its "arrivals"/"detailed"
+// inputs. Used ONLY to classify each row for display (umbrella/unimportable
+// badge, see importBadgeByIdx below) — the sync RPC below is untouched
+// (Sprint 3 will wire the merge layer into the actual write path).
+function _profileToArrivalsInput(g) {
+  const room = (g.rooms ?? [])[0] ?? {};
+  return {
+    orderNumber:  [...(g.orderNumbers ?? [])][0] ?? "",
+    resLineId:    room.resLineId ?? "",
+    roomName:     room.roomName ?? "",
+    suiteType:    room.suiteType ?? "",
+    guestName:    g.guestName ?? null,
+    guestPhone:   g.guestPhone ?? null,
+    coordPhone:   g.coordPhone ?? null,
+    phoneSource:  g.phoneSource ?? null,
+    arrivalDate:  g.arrivalDate ?? null,
+    price:        (g.rooms ?? []).reduce((sum, r) => sum + (r.price || 0), 0),
+    nights:       room.nights ?? 0,
+    roomsCount:   g.roomsQuantity ?? (g.rooms ?? []).length ?? 1,
+    isDayGuest:   !!g.isDayGuest,
+    leadSource:   g.leadSource ?? null,
+    automationMuted: !!g.automationMuted,
+    mealTime:     g.meal_time ?? null,
+  };
+}
+
+function _profileToDetailedInput(g) {
+  const room = (g.rooms ?? [])[0] ?? {};
+  return {
+    orderNumber:  [...(g.orderNumbers ?? [])][0] ?? "",
+    resLineId:    room.resLineId ?? "",
+    guestName:    g.guestName ?? null,
+    guestPhone:   g.guestPhone ?? null,
+    arrivalDate:  g.arrivalDate ?? null,
+    price:        (g.rooms ?? []).reduce((sum, r) => sum + (r.price || 0), 0),
+    nights:       room.nights ?? 0,
+    rooms_count:  g.roomsQuantity ?? (g.rooms ?? []).length ?? 0,
+    meal_location: g.meal_location ?? null,
+    leadSource:   g.leadSource ?? null,
+    automationMuted: !!g.automationMuted,
+    isDayGuest:   !!g.isDayGuest,
+  };
+}
+
+const UMBRELLA_BADGE_LABEL = "⛔ מטריית קבוצה";
+
 // ── Suite-CSV profiles → flat grid rows ──────────────────────────────────────
 // One row per guest profile. Multi-room (group) profiles show a read-only
 // "N rooms" count instead of a single editable room — picking a value there
 // still works and applies uniformly to that profile's rooms on sync.
-function _profilesToGridRows(merged, { suiteAssignmentOnly = false } = {}) {
+function _profilesToGridRows(merged, { suiteAssignmentOnly = false, badgeByIdx = null } = {}) {
   return merged.map((g, i) => {
     const singleRoom = (g.rooms ?? []).length === 1 ? g.rooms[0] : null;
     const isDay       = !!g.isDayGuest || !!singleRoom?.isDayGuest;
@@ -539,11 +589,12 @@ function _profilesToGridRows(merged, { suiteAssignmentOnly = false } = {}) {
       meal_location: g.meal_location ?? "",
       amount:       totalPrice || "",
       arrivalDate:  g.arrivalDate ?? "",
+      importBadge:  badgeByIdx?.get(i) ?? "",
     };
   });
 }
 
-function _detailedProfilesToGridRows(merged) {
+function _detailedProfilesToGridRows(merged, badgeByIdx = null) {
   return merged.map((g, i) => {
     const totalPrice = (g.rooms ?? []).reduce((sum, r) => sum + (r.price || 0), 0);
     const nights = (g.rooms ?? []).reduce((mx, r) => Math.max(mx, r.nights || 0), 0);
@@ -561,6 +612,7 @@ function _detailedProfilesToGridRows(merged) {
       nights:       nights || "",
       leadSource:   g.leadSource ?? "",
       automationMuted: g.automationMuted ? "🔇 ללא אוטומציה" : "",
+      importBadge:  badgeByIdx?.get(i) ?? "",
     };
   });
 }
@@ -705,6 +757,7 @@ const DETAILED_GRID_COLS = [
   { id: "nights",        label: "מספר לילות",    editable: false, w: 90  },
   { id: "leadSource",    label: "מקור הגעה",     editable: false, w: 120 },
   { id: "automationMuted", label: "אוטומציה",    editable: false, w: 95  },
+  { id: "importBadge",  label: "סטטוס ייבוא",   editable: false, w: 130 },
 ];
 
 const SUITES_GRID_COLS = [
@@ -722,6 +775,7 @@ const SUITES_GRID_COLS = [
   { id: "meal_location", label: "בסיס אירוח", editable: false, w: 160 },
   { id: "amount",      label: "💰 סכום (₪)", editable: true, w: 100 },
   { id: "arrivalDate", label: "הגעה",       editable: false, w: 100 },
+  { id: "importBadge", label: "סטטוס ייבוא", editable: false, w: 130 },
 ];
 
 /** Focused preview columns for Doc 2 suite-assignment-only mode */
@@ -995,16 +1049,38 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     setMerged(profilesToArray(mapCopy));
   }, [doc2Map, doc1Rec]);
 
+  // ── Guest Import Intelligence — Sprint 2 read-only merge layer ────────────
+  // Runs mergeCandidates() purely for DISPLAY classification (umbrella/
+  // unimportable badge in the grid) — does NOT feed handleSync()/the RPC
+  // below. Index i lines up 1:1 with `merged`/gridRows._profileIdx because
+  // both adapter arrays are built by mapping `merged` in the same order, and
+  // mergeCandidates() pushes exactly one candidate per arrivals/detailed
+  // input row (see guestImportIntelligence.js's per-loop push order).
+  const mergedCandidates = useMemo(() => {
+    if (!merged || !merged.length) return [];
+    return importSource === "detailed"
+      ? mergeCandidates({ detailed: merged.map(_profileToDetailedInput), ops: doc1Rec ?? [] })
+      : mergeCandidates({ arrivals: merged.map(_profileToArrivalsInput), ops: doc1Rec ?? [] });
+  }, [merged, doc1Rec, importSource]);
+
+  const importBadgeByIdx = useMemo(() => {
+    const map = new Map();
+    mergedCandidates.forEach((c, i) => {
+      if (classifyDbMatch(c, null) === "unimportable") map.set(i, UMBRELLA_BADGE_LABEL);
+    });
+    return map;
+  }, [mergedCandidates]);
+
   // Recompute grid rows whenever merged changes (fresh parse — discards manual edits)
   useEffect(() => {
     if (!merged) { setGridRows([]); return; }
     const suiteOnly = doc2SyncMode === "suite_assignment_only" && importSource !== "detailed";
     setGridRows(
       importSource === "detailed"
-        ? _detailedProfilesToGridRows(merged)
-        : _profilesToGridRows(merged, { suiteAssignmentOnly: suiteOnly }),
+        ? _detailedProfilesToGridRows(merged, importBadgeByIdx)
+        : _profilesToGridRows(merged, { suiteAssignmentOnly: suiteOnly, badgeByIdx: importBadgeByIdx }),
     );
-  }, [merged, importSource, doc2SyncMode]);
+  }, [merged, importSource, doc2SyncMode, importBadgeByIdx]);
 
   // ── Parse Doc 2: Suite CSV → AI-suggested column mapping → review screen ──
   // The AI only proposes; aggregateGuestProfiles() runs unchanged once the
@@ -1077,11 +1153,18 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
         });
         setAiError(null);
       } else {
-        const preset = detectSuiteArrivalsPreset(headers);
+        // EZGO's own raw Suites CSV shape checked first — it's the primary
+        // source this panel is named for. detectSuiteArrivalsPreset (the
+        // separate "advanced PMS export" shape) uses a disjoint header set,
+        // so checking order between them doesn't matter for correctness.
+        const ezgoPreset = detectEzgoArrivalsPreset(headers);
+        const preset = ezgoPreset || detectSuiteArrivalsPreset(headers);
         if (preset) {
           setAiSuggestion({
             mapping: preset, defaults: {}, confidence: {}, engine: "preset",
-            recommendations: ["✓ זוהה דוח PMS מתקדם (מקור הגעה / שם מלא / טלפון) — מיפוי מוכן מראש"],
+            recommendations: [ezgoPreset
+              ? "✓ זוהה קובץ EZGO Suites CSV גולמי (iOrderId/sTel1/sRemark) — מיפוי מוכן מראש"
+              : "✓ זוהה דוח PMS מתקדם (מקור הגעה / שם מלא / טלפון) — מיפוי מוכן מראש"],
           });
           setAiError(null);
         } else try {

@@ -3,6 +3,7 @@
 // Pure transform — no Supabase calls. Wired from ArrivalImportPanel.js only.
 
 import { isAutomationMutedLeadSource } from "./importMapper";
+import { isUmbrellaRow } from "./guestImportIntelligence";
 
 /** Excel 1900 date system — day 1 = 1899-12-30 UTC (Windows / SheetJS convention). */
 const EXCEL_EPOCH_OFFSET = 25569;
@@ -409,6 +410,18 @@ export function parseDetailedReservationRows(rawRows) {
 
     const isDayGuest = roomsCount <= 0;
 
+    // Municipal/corporate "umbrella" group booking — placeholder phone AND
+    // (many rooms OR a corporate-looking name), same rule Guest Import
+    // Intelligence (guestImportIntelligence.js) applies to the other two
+    // import sources. Zero Data Loss (§0.1): the row is NOT dropped here —
+    // it's kept and flagged so the sync layer can skip/route it for human
+    // review instead of silently importing a coordinator as a guest.
+    const isUmbrellaGroupRow = isUmbrellaRow({
+      phone: guestPhone,
+      roomsCount,
+      name: guestName,
+    });
+
     rows.push({
       rowIndex: ri - 1,
       guestName,
@@ -424,6 +437,7 @@ export function parseDetailedReservationRows(rawRows) {
       price: resolvedPrice,
       priceConflict,
       isDayGuest,
+      isUmbrellaGroupRow,
       // מחלקת מכירות → automation_muted=true via isAutomationMutedLeadSource (importMapper)
       automationMuted: isAutomationMutedLeadSource(leadSource),
       phoneSource: "individual",
@@ -476,6 +490,7 @@ export function detailedRowsToProfileMap(parsedRows) {
       meal_time: null,
       leadSource: r.leadSource,
       automationMuted: r.automationMuted,
+      isUmbrellaGroupRow: !!r.isUmbrellaGroupRow,
     });
   });
 

@@ -117,4 +117,43 @@ describe("Guest Import Intelligence — golden cases", () => {
     expect(candidates[0].orderNumber).toBe("266046");
     expect(classifyDbMatch(candidates[0], null)).toBe("new");
   });
+
+  test("isCorporateName: 'עיירית' typo variant recognized alongside the correct 'עיריית' spelling (Sprint 2)", () => {
+    expect(isCorporateName("עיירית")).toBe(true);
+    expect(isCorporateName("עיירית תל אביב - ענבר")).toBe(true);
+  });
+
+  test("mergeCandidates: arrivals meal_time wired from extractGuestDetails' mealTime (Sprint 2)", () => {
+    const row = extractGuestDetails(
+      {
+        Order: "300400",
+        ResLine: "rl-Meal",
+        Remark: "דני כהן 052-9998877 א. ערב 20:30",
+        CoordName: "דני כהן",
+        CoordPhone: "0529998877",
+      },
+      ARRIVALS_MAPPING,
+    );
+    expect(row.mealTime).toBe("20:30");
+
+    const [candidate] = mergeCandidates({ arrivals: [row] });
+    expect(candidate.meal_time).toBe("20:30");
+  });
+
+  test("mergeCandidates: arrivals with no remark meal shorthand still meal_time=null (unchanged default)", () => {
+    const row = extractGuestDetails(
+      {
+        Order: "300401",
+        ResLine: "rl-NoMeal",
+        Remark: "משה לוי 052-1231234",
+        CoordName: "משה לוי",
+        CoordPhone: "0521231234",
+      },
+      ARRIVALS_MAPPING,
+    );
+    expect(row.mealTime).toBe(null);
+
+    const [candidate] = mergeCandidates({ arrivals: [row] });
+    expect(candidate.meal_time).toBe(null);
+  });
 });

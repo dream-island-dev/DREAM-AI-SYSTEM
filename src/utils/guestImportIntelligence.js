@@ -112,7 +112,7 @@ export function isDummyPhone(phone) {
 // companies, schools, government offices. A booking coordinator named this
 // way is a group organizer, not an individual guest.
 const CORPORATE_NAME_PREFIXES = [
-  "עיריית", "עירייה", "עיריה",
+  "עיריית", "עיירית", "עירייה", "עיריה",
   "עמותת", "עמותה",
   "חברת", "חברה",
   "מועצה מקומית", "מועצת", "מועצה",
@@ -120,6 +120,7 @@ const CORPORATE_NAME_PREFIXES = [
   "בית ספר", "ביה\"ס",
   "ארגון",
   "מוסד",
+  "בנק לאומי",
 ];
 
 /** True when `name` starts with a recognized corporate/institutional prefix. */
@@ -301,7 +302,11 @@ export function mergeCandidates({ arrivals = [], ops = [], detailed = [] } = {})
       arrivalDate: row.arrivalDate ?? null,
       spa_time: null,
       treatment_count: 0,
-      meal_time: null,
+      // ezgoParser.js's extractGuestDetails() best-effort remark-shorthand
+      // extraction ("א. ערב 19:30") — a real value here beats the null every
+      // other source starts from; the ops enrichment loop below can still
+      // overwrite it (earliest-wins merge) when a Doc1 record also carries one.
+      meal_time: row.mealTime ?? null,
       meal_location: null,
       price: row.price ?? null,
       nights: row.nights ?? null,
