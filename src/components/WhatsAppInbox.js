@@ -4021,11 +4021,11 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
   );
 
   // ── Render ─────────────────────────────────────────────────────────────────
-  // Mobile slide track is forced dir="ltr" so child order (list, thread) is a
-  // fixed physical layout regardless of UI language — only the translateX
-  // sign flips by t.dir, so "forward" always feels native to the active
-  // language (mirrors the approved mockup behaviour 1:1).
-  const slideOpenTransform = t.dir === "rtl" ? "translateX(50%)" : "translateX(-50%)";
+  // Mobile slide track is always physical LTR ([list][thread] left→right).
+  // Do NOT flip translateX by UI language — RTL ancestors make overflow:hidden
+  // clip from the wrong edge (blank list in Hebrew). Clip wrapper also gets
+  // direction:ltr below.
+  const slideOpenTransform = "translateX(-50%)";
 
   const MOBILE_TOOLBAR_BTN = {
     border: "1.5px solid rgba(255,255,255,0.4)",
@@ -4354,11 +4354,12 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
 
       {/* Body */}
       {isMobile ? (
-        <div style={{ flex: 1, overflow: "hidden" }}>
+        <div style={{ flex: 1, overflow: "hidden", direction: "ltr", minHeight: 0 }}>
           <div dir="ltr" style={{
             display: "flex", width: "200%", height: "100%",
             transform: mobileScreen === "thread" ? slideOpenTransform : "translateX(0%)",
             transition: "transform 0.28s ease",
+            willChange: "transform",
           }}>
             <div style={{ width: "50%", flexShrink: 0, overflow: "hidden", borderInlineEnd: "1px solid #e0e0e0" }}>
               {listPane}

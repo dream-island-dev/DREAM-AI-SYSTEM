@@ -1,4 +1,4 @@
-2026-07-04 | WhatsAppInbox.js + App.js + AILearningButton.jsx | מובייל DREAM BOT: מסך מלא (full-bleed), חיפוש+סינון ברשימה, תפריט ⋮ בכותרת, bottom sheet לפעולות מהירות, composer בסגנון WA.
+2026-07-04 | WhatsAppInbox.js | תיקון מובייל עברית: overflow+RTL הציג חצי ריק — clip wrapper ב-LTR, slide תמיד translateX(-50%).
 2026-07-04 | WhatsAppInbox + guestTiming.js | רשימת שיחות: במקום «תואם מהמערכת» — תגית הגעה יחסית (היום/מחר/עוד יומיים/בריזורט); גם בכותרת השיחה.
 2026-07-04 | WhatsAppInbox.js + whatsapp-send | כפתור 🔁 «שלח שוב הודעת הגעה (שלב 2)» בפעולות מהירות; manual_script+stage_2_arrival עם resolveStage2ArrivalPlaceholders מלא (שם/ספא/פורטל).
 2026-07-04 | whatsapp-webhook | Stage 2 fix: «כן מגיעים» תמיד שולח stage_2_arrival (לא LLM/ספא) — הוסר gate על arrival_confirmed; handleStage2ArrivalConfirmation משותף; post-burst intercept.
