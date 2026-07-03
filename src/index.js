@@ -5,6 +5,7 @@ import "./styles.css";
 import App from "./App";
 import GuestPortal from "./components/GuestPortal";
 import InventoryPortal from "./components/InventoryPortal";
+import { captureStaffDeepLinkFromUrl } from "./utils/staffDeepLink";
 
 const rootElement = document.getElementById("root");
 const root = createRoot(rootElement);
@@ -24,6 +25,10 @@ const portalMatch = window.location.pathname.match(/^\/portal\/([^/?#]+)/);
 // Portal above, for the employee's daily-fill phone screen.
 const inventoryMatch = window.location.pathname.match(/^\/inv\/([^/?#]+)/);
 const adminUpdatesPath = /^\/admin\/updates\/?$/.test(window.location.pathname);
+
+if (!portalMatch && !inventoryMatch) {
+  captureStaffDeepLinkFromUrl();
+}
 
 root.render(
   <StrictMode>

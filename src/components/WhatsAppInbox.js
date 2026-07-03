@@ -19,6 +19,7 @@ import {
   playOffResortGuestAlert,
 } from "../utils/inboxAlertSounds";
 import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
+import { buildStaffDeepLink, qrCodeImageUrl } from "../utils/staffDeepLink";
 
 // In-resort roster chrome — only guests with guests.status = checked_in (strict).
 const IN_RESORT_ROSTER = {
@@ -343,10 +344,102 @@ const INTENT_LABELS = {
 function formatTime(iso) {
   if (!iso) return "";
   const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
   const now = new Date();
+  const time = d.toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" });
   const isToday = d.toDateString() === now.toDateString();
-  if (isToday) return d.toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" });
-  return d.toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit" });
+  if (isToday) return time;
+  const date = d.toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit" });
+  return `${date} ${time}`;
+}
+
+function formatTimeTitle(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleString("he-IL", {
+    day: "2-digit", month: "2-digit", year: "numeric",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  });
+}
+
+function InboxMobileQrModal({ onClose, focusPhone }) {
+  const url = useMemo(
+    () => buildStaffDeepLink({ page: "wa_inbox", phone: focusPhone || null }),
+    [focusPhone]
+  );
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2500);
+    } catch {
+      window.prompt("העתק את הקישור:", url);
+    }
+  };
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="פתיחת Inbox בטלפון"
+      onClick={onClose}
+      style={{
+        position: "fixed", inset: 0, zIndex: 10000,
+        background: "rgba(0,0,0,0.55)", display: "flex",
+        alignItems: "center", justifyContent: "center", padding: 16,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: "var(--card-bg, #fff)", borderRadius: 12,
+          padding: "20px 24px", maxWidth: 340, width: "100%",
+          textAlign: "center", direction: "rtl",
+          border: "1px solid var(--border)", boxShadow: "var(--shadow-md)",
+        }}
+      >
+        <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 8 }}>📱 פתיחה מהירה בטלפון</div>
+        <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 16, lineHeight: 1.5 }}>
+          סרקו את הקוד במצלמת הטלפון — אחרי התחברות Google נפתח DREAM BOT Inbox
+          {focusPhone ? " בשיחה הנוכחית" : ""}.
+        </div>
+        <img
+          src={qrCodeImageUrl(url, 220)}
+          alt="QR לפתיחת Inbox"
+          width={220}
+          height={220}
+          style={{ display: "block", margin: "0 auto 12px", borderRadius: 8 }}
+        />
+        <div style={{
+          fontSize: 11, color: "var(--text-muted)", wordBreak: "break-all",
+          marginBottom: 12, direction: "ltr", textAlign: "center",
+        }}>
+          {url}
+        </div>
+        <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={handleCopy}
+            style={{ minHeight: 44, padding: "8px 16px" }}
+          >
+            {copied ? "✓ הועתק" : "🔗 העתק קישור"}
+          </button>
+          <button
+            type="button"
+            className="btn"
+            onClick={onClose}
+            style={{ minHeight: 44, padding: "8px 16px" }}
+          >
+            סגור
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // Canonicalize any phone format (+972506842439, 972506842439, local
@@ -719,7 +812,7 @@ const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobil
               >
                 💬
               </a>
-              <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{formatTime(last?.created_at)}</div>
+              <div style={{ fontSize: 11, color: "var(--text-muted)" }} title={formatTimeTitle(last?.created_at)}>{formatTime(last?.created_at)}</div>
             </div>
             {unread > 0 && (
               <div className="u-badge-nowrap" style={{
@@ -825,7 +918,7 @@ const Bubble = React.memo(function Bubble({ msg, dir, resolveCtx }) {
           gap: 4,
           justifyContent: isOut ? "flex-start" : "flex-end",
         }}>
-          {formatTime(msg.created_at)}
+          <span title={formatTimeTitle(msg.created_at)}>{formatTime(msg.created_at)}</span>
           {isOut && dispatchInfo?.channel === "meta" && (
             <span title="נשלח דרך תבנית Meta" aria-label="Meta template">🔵</span>
           )}
@@ -2026,6 +2119,7 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
   const [reply, setReply]         = useState("");
   const [error, setError]         = useState(null);
   const [showNewChat, setShowNewChat] = useState(false);
+  const [showMobileQr, setShowMobileQr] = useState(false);
   // ── Bot active / human-handover toggle ───────────────────────────────────
   const [botActive, setBotActive]     = useState(true);
   const [togglingBot, setTogglingBot] = useState(false);
@@ -3687,6 +3781,19 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
         <div style={{ display: "flex", gap: isMobile ? 4 : 8, alignItems: "center", flexShrink: 0 }}>
           <AILearningButton module="chat" />
           <button
+            onClick={() => setShowMobileQr(true)}
+            title="סרוק לפתיחת Inbox בטלפון"
+            className={isMobile ? "u-touch-staff" : undefined}
+            style={{
+              padding: isMobile ? "0" : "5px 12px", borderRadius: "var(--radius-pill)", fontSize: 12, fontWeight: 700,
+              border: "1.5px solid rgba(255,255,255,0.4)", background: "rgba(255,255,255,0.12)",
+              color: "white", cursor: "pointer",
+              width: isMobile ? HIT_STAFF : "auto", height: isMobile ? HIT_STAFF : "auto",
+            }}
+          >
+            {isMobile ? "📱" : "📱 טלפון"}
+          </button>
+          <button
             onClick={() => setLang((l) => (l === "he" ? "en" : "he"))}
             title="EN / HE"
             className={isMobile ? "u-touch-staff" : undefined}
@@ -3801,6 +3908,13 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
           onClose={() => setSelectedGuestProfile(null)}
           onGuestUpdated={applyGuestRowUpdate}
           onToggleClaim={setClaim}
+        />
+      )}
+
+      {showMobileQr && (
+        <InboxMobileQrModal
+          focusPhone={activeContact?.phone ?? null}
+          onClose={() => setShowMobileQr(false)}
         />
       )}
     </div>

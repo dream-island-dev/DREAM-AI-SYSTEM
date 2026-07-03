@@ -10,6 +10,7 @@ import ShiftScheduleTab from "./components/ShiftScheduleTab";
 import EmployeesPage from "./components/EmployeesPage";
 import { isAdminUser, isSuperAdmin, loadDepartments } from "./utils/admin";
 import { canAccessRoute, canSeeNavItem } from "./utils/auth";
+import { consumeStaffDeepLink } from "./utils/staffDeepLink";
 import { supabase, isSupabaseConfigured, loadAgentProfile } from "./supabaseClient";
 import { getPushState, subscribeToPush, unsubscribeFromPush, syncSubscriptionToSupabase } from "./utils/pushNotifications";
 import KnowledgeUploader from "./components/KnowledgeUploader";
@@ -1921,6 +1922,19 @@ export default function App({ initialPage = "dashboard" }) {
     );
     return () => subscription.unsubscribe();
   }, []);
+
+  // QR / URL deep link (?page=wa_inbox) — captured in index.js before login.
+  useEffect(() => {
+    if (!user || isLoading) return;
+    const pending = consumeStaffDeepLink();
+    if (!pending?.page) return;
+    if (!canAccessRoute(pending.page, user)) return;
+    if (pending.phone) {
+      setInboxFocus({ phone: pending.phone, guestName: pending.guestName ?? null });
+    }
+    setActivePage(pending.page);
+    setMobileMenuOpen(false);
+  }, [user, isLoading]);
 
   // ── Push state: initialise when user logs in, clear on logout ───────────────
   useEffect(() => {
