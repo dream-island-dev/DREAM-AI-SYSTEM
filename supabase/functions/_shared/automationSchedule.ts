@@ -586,9 +586,17 @@ export function shouldApplyInRoomContextOverride(
 
 // ── Sensitive stay / room-change requests — never imply approval (session 76b) ──
 
-/** Late checkout, extension, early check-in, room change — staff must confirm availability. */
+/**
+ * Late checkout, extension, early check-in, room change — staff must confirm availability.
+ * ★ session 96 fix: "חדר"/"מוקדם" and "לצאת"/"מאוחר" now match with a word-gap (`[\s\S]{0,25}`)
+ * instead of requiring direct adjacency (`\s*`) — real guest phrasing like "לקבל את החדר
+ * יותר מוקדם" (get the room earlier) or "לצאת מהחדר מאוחר יותר" (leave the room later)
+ * separates the two keywords with other words, so the old adjacency-only version missed
+ * them entirely and let the request fall through to the free-text LLM branch, where guest
+ * context (spa booking time) could bias the model onto an unrelated topic. See §10 session 96.
+ */
 export const SENSITIVE_STAY_CHANGE_PATTERN =
-  /הארכ(ה|ת)\s*(של\s*)?(ה)?(שהייה|שהות|חדר|הזמנה)|עזיבה\s*מאוחרת|פינוי\s*מאוחר|צ.?ק.?אא?וט\s*מאוחר|צ.?ק.?אא?וט\s*מאוחרת|להישאר\s*עוד|עוד\s*יום|עוד\s*לילה|לילה\s*נוסף|להאריך\s*(את\s*)?(ה)?(שהות|ההזמנה|השהייה)|לצ.?את\s*(יותר\s*)?מאוחר|צ.?ק.?אין\s*מוקדם|הגעה\s*מוקדמת|כניסה\s*מוקדמת|שינוי\s*חדר|להחליף\s*חדר|חדר\s*אחר|early\s*check.?in|late\s*check.?out|extend\s*(my\s*)?(stay|booking)|extra\s*night|stay\s*longer/i;
+  /הארכ(ה|ת)\s*(של\s*)?(ה)?(שהייה|שהות|חדר|הזמנה)|עזיבה\s*מאוחרת|פינוי\s*מאוחר|צ.?ק.?אא?וט\s*מאוחר|צ.?ק.?אא?וט\s*מאוחרת|להישאר\s*עוד|עוד\s*יום|עוד\s*לילה|לילה\s*נוסף|להאריך\s*(את\s*)?(ה)?(שהות|ההזמנה|השהייה)|לצ.?את[\s\S]{0,20}מאוחר|צ.?ק.?אין\s*מוקדם|הגעה\s*מוקדמת|כניסה\s*מוקדמת|חדר[\s\S]{0,25}מוקדם|מוקדם[\s\S]{0,25}חדר|להיכנס\s*(לחדר\s*)?מוקדם|שינוי\s*חדר|להחליף\s*חדר|חדר\s*אחר|early\s*check.?in|late\s*check.?out|extend\s*(my\s*)?(stay|booking)|extra\s*night|stay\s*longer/i;
 
 const SENSITIVE_STAY_FAQ_EXCLUSION =
   /^(?:מה|מתי|איזו?\s*שעה|כמה|האם)\s+.{0,40}?(?:צ.?ק.?אא?וט|צ.?ק.?אין|שעת\s*(?:כניסה|עזיבה)|check.?out|check.?in)/iu;
