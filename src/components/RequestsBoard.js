@@ -25,6 +25,16 @@ function typeMeta(alertType) {
   return TYPE_META[alertType] ?? { label: `⚠ ${alertType ?? "ללא סוג"}`, bg: "#F5F5F5", color: "#888888" };
 }
 
+// Same variant set WhatsAppInbox.js's dismissHumanRequest() matches against —
+// guest_alerts.phone and whatsapp_conversations.phone aren't guaranteed to
+// share one format (session 15 root cause, CLAUDE.md §6).
+function phoneVariants(raw) {
+  const digits = (raw ?? "").replace(/\D/g, "");
+  if (!digits) return [];
+  const noPlus = digits.startsWith("972") ? digits : `972${digits.replace(/^0/, "")}`;
+  return [...new Set([`+${noPlus}`, noPlus, `0${noPlus.slice(3)}`])];
+}
+
 function fmtTimestamp(iso) {
   if (!iso) return "—";
   const d = new Date(iso);
@@ -252,6 +262,23 @@ export default function RequestsBoard({ user, onOpenDreamBotChat }) {
     setUndoSnack({ id: resolvingReq.id, prevRow });
     setResolvingReq(null);
     setNoteText("");
+
+    // Global Red Alert (CLAUDE.md Task 2) — clear the mirrored Inbox flag now
+    // that the underlying request is resolved here. Scoped to
+    // human_request_type='guest_alert' so an unrelated genuine callback/
+    // date-change flag on the same guest is never silently cleared alongside it.
+    const variants = phoneVariants(resolvingReq.phone);
+    if (variants.length) {
+      supabase
+        .from("whatsapp_conversations")
+        .update({ human_requested: false })
+        .in("phone", variants)
+        .eq("human_requested", true)
+        .eq("human_request_type", "guest_alert")
+        .then(({ error: clearErr }) => {
+          if (clearErr) console.warn("[RequestsBoard] inbox red-alert clear failed:", clearErr.message);
+        });
+    }
   };
 
   const handleUndoResolve = async () => {

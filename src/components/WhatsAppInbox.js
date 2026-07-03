@@ -535,9 +535,14 @@ const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobil
   ).length;
 
   const waPhone = contact.phone.replace(/^\+/, "");
+  // "guest_alert" — Global Red Alert (any guest_alerts/Requests Board insert,
+  // see _shared/inboxRedAlert.ts) — distinct label from an explicit callback
+  // ask so staff can tell at a glance which kind of red flag this is.
   const humanLabel = contact.humanRequestType === "call"
     ? "🔴 מבקש שיחת טלפון"
-    : "🔴 מבקש מענה אנושי";
+    : contact.humanRequestType === "guest_alert"
+      ? "🔴 בקשה חדשה בלוח הבקשות"
+      : "🔴 מבקש מענה אנושי";
   const identity = identityMeta(contact, t);
   const roomChip = roomChipMeta(contact);
   const active   = recentlyActive(contact);

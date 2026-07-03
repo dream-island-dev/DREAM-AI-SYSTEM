@@ -6,6 +6,7 @@
 import { serve }        from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { cleanPhoneForMention, sendWhapiText } from "../_shared/whapiSend.ts";
+import { triggerInboxRedAlert } from "../_shared/inboxRedAlert.ts";
 
 export const PORTAL_SPA_ATTENTION_REASON = "בקשת טיפול בספא";
 
@@ -123,6 +124,12 @@ serve(async (req: Request) => {
       .select("id")
       .maybeSingle();
     if (alertErr) console.warn("[guest-portal-spa-request] guest_alerts insert:", alertErr.message);
+
+    triggerInboxRedAlert(supabase, {
+      guestId: guest.id as number,
+      phone:   guest.phone as string,
+      summary: PORTAL_SPA_ATTENTION_REASON,
+    }).catch((e: Error) => console.warn("[guest-portal-spa-request] red-alert flag failed:", e.message));
 
     let conciergeReplySent = false;
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;

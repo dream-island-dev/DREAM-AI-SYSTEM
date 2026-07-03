@@ -22,6 +22,7 @@
 import { serve }        from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendWhapiText } from "../_shared/whapiSend.ts";
+import { triggerInboxRedAlert } from "../_shared/inboxRedAlert.ts";
 
 // Same number as task-action.ts's ACTOR_PHONES.Adir / guest-portal-ops-
 // request's ADIR_PHONE — duplicated, not imported (Deno function boundary).
@@ -109,6 +110,11 @@ serve(async (req: Request) => {
       .select("id")
       .maybeSingle();
     if (insErr) throw new Error(`alert_insert_error: ${insErr.message}`);
+
+    // Global Red Alert (CLAUDE.md Task 2) — best-effort, never blocks the
+    // guest's success toast.
+    triggerInboxRedAlert(supabase, { guestId: guest.id as number, phone: guest.phone as string, summary: upsellLabel })
+      .catch((e: Error) => console.warn(`[guest-portal-upsell] red-alert flag failed:`, e.message));
 
     // "PORTAL CTAS & ADIR'S FUTURE CONTEXT" session — Premium Day (and any
     // other REQUEST-type CTA) now also gets an immediate personal heads-up to

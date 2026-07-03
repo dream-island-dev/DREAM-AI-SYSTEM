@@ -74,6 +74,7 @@ import {
 } from "../_shared/automationSchedule.ts";
 import { translateTextForFieldOps } from "../_shared/fieldOpsTranslation.ts";
 import { resolveRouting, taskIntentType } from "../_shared/routingConfig.ts";
+import { triggerInboxRedAlert } from "../_shared/inboxRedAlert.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -1306,6 +1307,13 @@ async function flagGuestAlert(
     }
   }
 
+  // c) Global Red Alert (guest_alerts → Inbox) — every request that lands on
+  // the Requests Board also flags red in DREAM BOT Inbox, not just complaints
+  // routed here through the same call. Best-effort, mirrors (b) above.
+  triggerInboxRedAlert(supabase, { guestId, phone, conversationId }).catch((e: Error) =>
+    console.warn("[webhook] flagGuestAlert red-alert flag failed:", e.message)
+  );
+
   console.info(
     `[webhook] 🚨 ALERT — phone:${phone} guest:${guestId ?? "unknown"} conv:${conversationId ?? "?"}`
   );
@@ -1555,6 +1563,10 @@ async function handleBalloonRoomRequestIntercept(
     console.error("[webhook] 🎈 balloon guest_alerts insert FAILED:", alertErr.message);
   }
 
+  triggerInboxRedAlert(supabase, { guestId, phone, conversationId: claimedConversationId }).catch(
+    (e: Error) => console.warn("[webhook] 🎈 balloon red-alert flag failed:", e.message),
+  );
+
   if (BALLOON_VENDOR_PHONE) {
     sendWhapiText(
       BALLOON_VENDOR_PHONE,
@@ -1706,6 +1718,10 @@ async function handleSevereComplaintKillSwitch(
   if (alertErr) {
     console.error("[webhook] 🚨 severe_complaint guest_alerts insert FAILED:", alertErr.message);
   }
+
+  triggerInboxRedAlert(supabase, { guestId, phone, conversationId: claimedConversationId }).catch(
+    (e: Error) => console.warn("[webhook] 🚨 severe_complaint red-alert flag failed:", e.message),
+  );
 
   // Existing rules unchanged (requires_attention + guest_alerts above) — this
   // ALSO logs to the Guest Feedback & Sentiment Dashboard as negative, per
