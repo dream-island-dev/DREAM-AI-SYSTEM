@@ -3114,6 +3114,33 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
     }
   }
 
+  // ── Resend Stage 2 Arrival (staff correction) ─────────────────────────────
+  async function sendResendStage2Arrival() {
+    if (!active) return;
+    if (!activeContact?.guestId) {
+      setError("לא ניתן לשלוח שלב 2 — השיחה הזו אינה משויכת לרשומת אורח (guests)");
+      return;
+    }
+    if (!ensureCanSend()) {
+      setError("שליחה חסומה בשעות שקט — סמן את האישור למטה");
+      return;
+    }
+    setSending(true);
+    setError(null);
+    try {
+      const { data, error: fnErr } = await supabase.functions.invoke("whatsapp-send", {
+        body: { trigger: "manual_script", guestId: activeContact.guestId, scriptKey: "stage_2_arrival" },
+      });
+      if (fnErr || !data?.ok) throw new Error(fnErr?.message ?? data?.error ?? "שגיאה בשליחת הודעת הגעה (שלב 2)");
+      setQuickOpen(false);
+      await fetchSince();
+    } catch (err) {
+      setError(err?.message ?? "שגיאה בשליחת הודעת הגעה (שלב 2)");
+    } finally {
+      setSending(false);
+    }
+  }
+
   // ── Manual reply send ─────────────────────────────────────────────────────
   async function sendManualReply() {
     if (!reply.trim() || !active) return;
@@ -3437,7 +3464,7 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
                 CLAUDE.md §0.2), disabled with an explanatory title when this
                 thread isn't linked to a guests row. One click, no textarea —
                 server resolves {{GUEST_NAME}}/{{portal_url}} and sends immediately. */}
-            <div style={{ marginBottom: 10 }}>
+            <div style={{ marginBottom: 10, display: "flex", flexWrap: "wrap", gap: 8 }}>
               <button
                 onClick={sendManualPortalLink}
                 disabled={sending || !activeContact?.guestId}
@@ -3451,6 +3478,24 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
                 }}
               >
                 🔗 שלח קישור לפורטל האורחים
+              </button>
+              <button
+                onClick={sendResendStage2Arrival}
+                disabled={sending || !activeContact?.guestId}
+                title={
+                  !activeContact?.guestId
+                    ? "השיחה הזו אינה משויכת לרשומת אורח (guests)"
+                    : "שולח את סקריפט stage_2_arrival מ-BotScriptEditor (שם, ספא, פורטל) — דורש חלון 24ש' פתוח"
+                }
+                style={{
+                  padding: "8px 14px", borderRadius: 20, border: "1.5px solid var(--gold,#C9A96E)",
+                  background: !activeContact?.guestId ? "#F3F0EA" : "linear-gradient(135deg, #FFF8E8, #FDF2D8)",
+                  color: "var(--gold-dark,#A8843A)", fontSize: 12, fontWeight: 700,
+                  cursor: (sending || !activeContact?.guestId) ? "not-allowed" : "pointer",
+                  minHeight: isMobile ? HIT_STAFF : "auto",
+                }}
+              >
+                🔁 שלח שוב הודעת הגעה (שלב 2)
               </button>
             </div>
 

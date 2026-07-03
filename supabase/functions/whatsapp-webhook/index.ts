@@ -629,6 +629,136 @@ async function sendStage2PayReply(
   }
 }
 
+// ── Stage 2 Arrival — single send path for button / typed / post-burst confirm ──
+async function handleStage2ArrivalConfirmation(
+  supabaseClient: ReturnType<typeof createClient>,
+  ctx: {
+    scripts: Record<string, BotScript>;
+    phone: string;
+    guestId: number | null;
+    guest: Record<string, unknown> | null;
+    sim: boolean;
+    source: "button" | "text" | "burst";
+    buttonTitle?: string;
+    claimedConversationId?: number | null;
+    msgId?: string;
+  },
+): Promise<void> {
+  const {
+    scripts, phone, guestId, guest, sim, source, buttonTitle,
+    claimedConversationId, msgId,
+  } = ctx;
+
+  if (!canGuestConfirmArrival(guest)) {
+    console.info(
+      `[webhook] arrival confirm skipped — lifecycle blocked phone:${phone} status:${guest?.status ?? "null"}`,
+    );
+    return;
+  }
+
+  if (guestId) {
+    const { error: confirmErr } = await supabaseClient.from("guests").update({
+      arrival_confirmed: true,
+      ...(guest?.status === "pending" ? { status: "expected" } : {}),
+    }).eq("id", guestId);
+    if (confirmErr) {
+      console.error(`[webhook] arrival_confirmed update FAILED phone:${phone}:`, confirmErr.message);
+    }
+  } else {
+    console.warn(
+      `[webhook] ⚠️ arrival confirm (${source}) but NO guest record for phone:${phone} — add guest for status/spa sync.`,
+    );
+  }
+
+  if (claimedConversationId != null || msgId) {
+    await patchClaimedInbound(supabaseClient, claimedConversationId ?? null, msgId ?? "", {
+      guest_id: guestId,
+      intent: source === "button" ? "button_reply" : "confirmation",
+    });
+  }
+
+  const hasPendingPayment = !!(guest?.payment_amount);
+  const stage2Pay = await fetchAutomationStage(supabaseClient, "stage_2_pay");
+  if (hasPendingPayment && stage2Pay?.is_active === true) {
+    await sendStage2PayReply(
+      supabaseClient, scripts, stage2Pay, phone, guestId, guest, sim, buttonTitle,
+    );
+    console.info(`[webhook] ✅ arrival confirmed (${source}, payment-pending) — phone:${phone}`);
+    return;
+  }
+
+  const safeName = String(guest?.name ?? "").trim() || "אורח יקר";
+  const spaTime = (guest?.spa_time as string | null) ?? null;
+  const portalLink = buildPortalLink(guest?.portal_token);
+  if (!portalLink) {
+    console.warn(
+      `[webhook] ⚠️ guest ${phone} (id:${guestId}) has no portal_token — Stage 2 reply will not include a portal link.`,
+    );
+  }
+
+  const stage2Script = scripts["stage_2_arrival"];
+  let arrivalReply: string;
+  if (stage2Script?.message_text?.trim()) {
+    const hasOptionalSpaText = /\{\{\s*OPTIONAL_SPA_TEXT\s*\}\}/i.test(stage2Script.message_text);
+    const hasSpaLine = /\{\{\s*SPA_LINE\s*\}\}/i.test(stage2Script.message_text);
+    const hasSpaTimeLegacy = /\{\{\s*SPA_TIME\s*\}\}/i.test(stage2Script.message_text);
+    console.log(
+      `[webhook] 🩺 resolvePlaceholders input (${source}) — phone:${phone} spaTime:${JSON.stringify(spaTime)}` +
+      ` scriptHasOptionalSpaText:${hasOptionalSpaText} scriptHasSpaLine:${hasSpaLine} scriptHasSpaTime:${hasSpaTimeLegacy}`,
+    );
+    if (spaTime && !hasOptionalSpaText && !hasSpaLine && !hasSpaTimeLegacy) {
+      console.warn(
+        `[webhook] ⚠️ guest ${phone} has spa_time="${spaTime}" but stage_2_arrival has no spa placeholder — check BotScriptEditor.`,
+      );
+    }
+    arrivalReply = resolvePlaceholders(stage2Script.message_text, {
+      guestName: safeName, spaTime, workshopUrl: "", portalLink,
+    });
+  } else {
+    const spaSentence = buildSpaSentence(spaTime);
+    const portalLine = portalLink
+      ? `\n\n✨ כל הפרטים שלך לפני ההגעה (ספא, ארוחות ועוד) מחכים כאן:\n👉 ${portalLink}`
+      : "";
+    arrivalReply =
+      `מגיעים! 🎉 כבר מתרגשים מאד מהגעתכם, ${safeName}!\n\n` +
+      `הצוות שלנו ב-Dream Island מכין את הכל ומחכה לכם עם חיוך גדול 🌴\n\n` +
+      spaSentence +
+      portalLine +
+      `\n\nיש לכם שאלות לפני ההגעה? על הצ׳ק-אין, החדר — אני כאן לכל שאלה 😊`;
+  }
+
+  console.info(`[webhook] 🎉 arrival confirmed (${source}) — phone:${phone} name="${safeName}"`);
+
+  if (sim) {
+    console.info(`[webhook] SIM — would send Stage 2 arrival reply to ${phone}`);
+    return;
+  }
+
+  const outboundIntent = source === "button" ? "arrival_confirmed" : "confirmation";
+  try {
+    await sendReply(phone, arrivalReply);
+    await insertGuestOutboundIfNotMuted(supabaseClient, {
+      phone, guest_id: guestId, message: arrivalReply, wa_message_id: null, intent: outboundIntent,
+    });
+    console.info(`[webhook] ✅ arrival reply sent to ${phone}`);
+  } catch (e) {
+    const errMsg = (e as Error).message;
+    const replyStatus = errMsg.startsWith("timeout_no_response") ? "timeout" : "failed";
+    console.error(`[webhook] ❌ arrival reply ${replyStatus} to ${phone}:`, errMsg);
+    try {
+      const { error: logErr } = await supabaseClient.from("notification_log").insert({
+        guest_id: guestId, recipient: phone,
+        trigger_type: "arrival_confirmed_reply", channel: "whatsapp",
+        status: replyStatus,
+        payload: { error: errMsg, source, ...(buttonTitle ? { buttonTitle } : {}) },
+      });
+      if (logErr) console.warn("[webhook] notification_log insert error:", logErr.message);
+    } catch (logEx) {
+      console.warn("[webhook] notification_log insert error:", (logEx as Error).message);
+    }
+  }
+}
+
 async function fetchBotConfig(
   supabaseClient: ReturnType<typeof createClient>
 ): Promise<Record<string, string>> {
@@ -2413,6 +2543,55 @@ async function callClaude(
  */
 const CONFIRMATION_RE = /^[\s🎉✨😊🙂🙏💫🌴]*(?:כן[,!\s.]*)?(?:מגיעים|אנחנו מגיעים|כן מגיעים|כן,מגיעים|כן! מגיעים|כן|אישור|yes|מאשר|מאשרת|כן תודה|כן אישור|אישורי)[\s🎉✨😊🙂🙏💫🌴!.,]*$/iu;
 
+function hebrewOnlyLetters(s: string): string {
+  return s.replace(/[^א-ת]/g, "");
+}
+
+/** Unified matcher for button taps + typed "כן מגיעים" variants (Meta emoji/punctuation tolerant). */
+function isArrivalConfirmationMessage(
+  raw: string,
+  opts?: { buttonTitle?: string; buttonId?: string },
+): boolean {
+  const text = raw.trim();
+  if (text && CONFIRMATION_RE.test(text)) return true;
+
+  const titleHeb = hebrewOnlyLetters(opts?.buttonTitle ?? text);
+  const idHeb = hebrewOnlyLetters(opts?.buttonId ?? "");
+  if (
+    titleHeb &&
+    ((titleHeb.includes("כן") && titleHeb.includes("מגיעים")) ||
+      titleHeb === "כןמגיעים" ||
+      titleHeb === "מגיעים")
+  ) {
+    return true;
+  }
+  if (
+    idHeb.includes("כןמגיעים") ||
+    (opts?.buttonId ?? "").toLowerCase().includes("confirm") ||
+    (opts?.buttonId ?? "").toLowerCase().includes("arriving") ||
+    (opts?.buttonId ?? "").toLowerCase().includes("yes_arrive")
+  ) {
+    return true;
+  }
+  if (text) {
+    const heb = hebrewOnlyLetters(text);
+    if (
+      (heb.includes("כן") && heb.includes("מגיעים")) ||
+      heb === "כןמגיעים" ||
+      heb === "מגיעים"
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function canGuestConfirmArrival(guest: Record<string, unknown> | null): boolean {
+  if (!guest) return true;
+  const status = String(guest.status ?? "");
+  return status !== "checked_in" && status !== "cancelled";
+}
+
 const GOOGLE_REVIEW_URL   = Deno.env.get("GOOGLE_REVIEW_URL")   ?? "";
 
 // Same number as task-action.ts's ACTOR_PHONES.Adir, whapi-webhook's reverse
@@ -3091,136 +3270,21 @@ Deno.serve(async (req: Request) => {
           ...(isCallbackButton   ? { human_requested: true, human_request_type: "callback" }    : {}),
         });
 
-        const name = String(guest?.name ?? "");
-
-        // ── "כן, מגיעים! ✨" — arrival confirmed → warm conversational reply ──
-        // Strategy: tapping this button opens the 24h free-text window.
-        // We reply with a natural message — no template needed.
-        // Guests with a pending balance (payment_amount + payment_link_url set)
-        // get the payment/workshop message automatically instead — see the
-        // "Stage 2 Pay" branch right below, gated on the automation_stages
-        // toggle. Staff can still resend the payment link anytime via the
-        // GuestsPage 💳 button (unaffected, fully independent of this branch).
-        //
-        // Matching strategy: strip ALL non-Hebrew characters (emoji, spaces, punctuation)
-        // so "כן, מגיעים! ✨" / "כן מגיעים" / "כן,מגיעים" all become "כןמגיעים".
-        const hebrewOnly = (s: string) => s.replace(/[^א-ת]/g, "");
-        const titleHeb   = hebrewOnly(buttonTitle);
-        const idHeb      = hebrewOnly(buttonId);
-        const isArrivalConfirm =
-          // Hebrew text: must contain both "כן" and "מגיעים" (or just "מגיעים")
-          (titleHeb.includes("כן") && titleHeb.includes("מגיעים")) ||
-          titleHeb === "כןמגיעים" ||
-          // Some Meta templates use a known button ID
-          idHeb.includes("כןמגיעים") ||
-          buttonId.toLowerCase().includes("confirm") ||
-          buttonId.toLowerCase().includes("arriving") ||
-          buttonId.toLowerCase().includes("yes_arrive");
-        if (isArrivalConfirm) {
-          // Promote pending → expected ("ממתין" in STATUS_META/GuestsPage.js) only
-          // from the pre-confirmation state — never revert a guest who is already
-          // further along (room_ready/checked_in) just because a stray confirmation
-          // text matched after the fact.
-          if (guestId) {
-            const { error: confirmErr } = await supabase.from("guests").update({
-              arrival_confirmed: true,
-              ...(guest?.status === "pending" ? { status: "expected" } : {}),
-            }).eq("id", guestId);
-            if (confirmErr) console.error(`[webhook] arrival_confirmed update FAILED phone:${phone}:`, confirmErr.message);
-          } else {
-            // No guest row for this phone at all — status/spa_time can never
-            // update or appear, because there's nothing in `guests` to read
-            // from or write to. Not a routing bug: this is what happens when
-            // a phone number was never added via AddGuestModal/import.
-            console.warn(`[webhook] ⚠️ arrival confirm tapped but NO guest record exists for phone:${phone} — add this guest first (GuestsPage/GuestDashboard) for status sync or spa_time to do anything.`);
-          }
-
-          // ── Stage 2 Pay — payment-pending guests get the payment/workshop
-          // reply INSTEAD OF the standard spa-time Stage 2 reply below. Gated
-          // on the automation_stages "stage_2_pay" toggle so an admin can turn
-          // this off and fall back to the always-safe standard reply. Guests
-          // with no pending balance fall straight through to Path A,
-          // unmodified.
-          const hasPendingPayment = !!(guest?.payment_amount);
-          const stage2Pay = await fetchAutomationStage(supabase, "stage_2_pay");
-          if (hasPendingPayment && stage2Pay?.is_active === true) {
-            await sendStage2PayReply(supabase, scripts, stage2Pay, phone, guestId, guest, sim, buttonTitle);
-            console.info(`[webhook] ✅ button reply handled — "${buttonTitle}" phone:${phone}`);
-            continue; // skip Path A + normal intent routing
-          }
-
-          const safeName    = name.trim() || "אורח יקר";
-          // ⚠️ No WORKSHOP_SIGNUP_URL/OnceHub here on purpose — "SYSTEM ARCHITECTURE,
-          // ZERO-REJECTION, ROOM MASKING & UX" session removed the static workshop
-          // link from Stage 2 entirely; the dynamic {{portal_url}}/{{PORTAL_LINK}}
-          // is the only link this reply injects now.
-          const spaTime     = (guest?.spa_time as string | null) ?? null;
-          const portalLink  = buildPortalLink(guest?.portal_token);
-          if (!portalLink) console.warn(`[webhook] ⚠️ guest ${phone} (id:${guestId}) has no portal_token — Stage 2 reply will not include a portal link.`);
-
-          // Use stage_2_arrival script from BotScriptEditor if available
-          const stage2Script = scripts["stage_2_arrival"];
-          let arrivalReply: string;
-          if (stage2Script?.message_text?.trim()) {
-            // DIAGNOSTIC (session 10): pins down spa_time placeholder issues without
-            // guessing — logs the exact DB value and whether the saved script text
-            // contains the placeholder at all, so a future report has hard evidence.
-            const hasOptionalSpaText = /\{\{\s*OPTIONAL_SPA_TEXT\s*\}\}/i.test(stage2Script.message_text);
-            const hasSpaLine         = /\{\{\s*SPA_LINE\s*\}\}/i.test(stage2Script.message_text);
-            const hasSpaTimeLegacy   = /\{\{\s*SPA_TIME\s*\}\}/i.test(stage2Script.message_text);
-            console.log(
-              `[webhook] 🩺 resolvePlaceholders input — phone:${phone} spaTime:${JSON.stringify(spaTime)}` +
-              ` scriptHasOptionalSpaText:${hasOptionalSpaText} scriptHasSpaLine:${hasSpaLine} scriptHasSpaTime:${hasSpaTimeLegacy}`
-            );
-            // FAIL VISIBLE: a guest with a real spa booking whose saved script has
-            // no spa placeholder at all will never mention it, silently, regardless
-            // of DB data — this is the "Condition B with valid spa_time" report.
-            if (spaTime && !hasOptionalSpaText && !hasSpaLine && !hasSpaTimeLegacy) {
-              console.warn(
-                `[webhook] ⚠️ guest ${phone} has spa_time="${spaTime}" but the saved ` +
-                `stage_2_arrival script contains no spa placeholder ({{SPA_LINE}}/` +
-                `{{OPTIONAL_SPA_TEXT}}/{{SPA_TIME}}) — reply will never mention spa. ` +
-                `Check the script text in BotScriptEditor.`
-              );
-            }
-            arrivalReply = resolvePlaceholders(stage2Script.message_text, {
-              guestName: safeName, spaTime, workshopUrl: "", portalLink,
-            });
-          } else {
-            // Dynamic Sentence approach — single code path for both spa/no-spa cases
-            const spaSentence = buildSpaSentence(spaTime);
-            const portalLine = portalLink
-              ? `\n\n✨ כל הפרטים שלך לפני ההגעה (ספא, ארוחות ועוד) מחכים כאן:\n👉 ${portalLink}`
-              : "";
-            arrivalReply =
-              `מגיעים! 🎉 כבר מתרגשים מאד מהגעתכם, ${safeName}!\n\n` +
-              `הצוות שלנו ב-Dream Island מכין את הכל ומחכה לכם עם חיוך גדול 🌴\n\n` +
-              spaSentence +
-              portalLine +
-              `\n\nיש לכם שאלות לפני ההגעה? על הצ׳ק-אין, החדר — אני כאן לכל שאלה 😊`;
-          }
-
-          console.info(`[webhook] 🎉 arrival confirmed — phone:${phone} name="${safeName}"`);
-
-          try {
-            await sendReply(phone, arrivalReply);
-            await insertGuestOutboundIfNotMuted(supabase, {
-              phone, guest_id: guestId, message: arrivalReply, wa_message_id: null, intent: "arrival_confirmed",
-            });
-            console.info(`[webhook] ✅ arrival reply sent to ${phone}`);
-          } catch (e) {
-            const errMsg = (e as Error).message;
-            const replyStatus = errMsg.startsWith("timeout_no_response") ? "timeout" : "failed";
-            console.error(`[webhook] ❌ arrival reply ${replyStatus} to ${phone}:`, errMsg);
-            try {
-              const { error: logErr } = await supabase.from("notification_log").insert({
-                guest_id: guestId, recipient: phone,
-                trigger_type: "arrival_confirmed_reply", channel: "whatsapp",
-                status: replyStatus, payload: { error: errMsg, buttonTitle },
-              });
-              if (logErr) console.warn("[webhook] notification_log insert error:", logErr.message);
-            } catch (e) { console.warn("[webhook] notification_log insert error:", (e as Error).message); }
-          }
+        // ── "כן, מגיעים! ✨" — arrival confirmed → stage_2_arrival script ──
+        if (isArrivalConfirmationMessage(buttonTitle, { buttonTitle, buttonId })) {
+          await handleStage2ArrivalConfirmation(supabase, {
+            scripts,
+            phone,
+            guestId,
+            guest: guest as Record<string, unknown> | null,
+            sim,
+            source: "button",
+            buttonTitle,
+            claimedConversationId,
+            msgId,
+          });
+          console.info(`[webhook] ✅ button reply handled — "${buttonTitle}" phone:${phone}`);
+          continue;
 
         // ── "לא, שינוי בתאריך" — date change → ask + flag for staff ─────────
         } else if (buttonTitle.includes("שינוי בתאריך") || buttonTitle.includes("לא,")) {
@@ -3370,99 +3434,24 @@ Deno.serve(async (req: Request) => {
       }
 
       // ── Text confirmation detection (fallback for guests who type "כן" manually) ──
-      // Gate is lifecycle-based (not yet checked in / not cancelled), not on
-      // msg_pre_arrival_2d_sent — that flag only flips once whatsapp-cron's
-      // T-2 reminder fires, and CRON_ENABLED has never been turned on in this
-      // project (see CLAUDE.md §6 KILL SWITCH), so the old guard made this
-      // entire fallback path permanently dead in production.
+      // NOT gated on arrival_confirmed — a prior confirm may have set the DB flag
+      // without delivering Stage 2 (staff-claim mute, send failure, manual toggle).
+      // Arrival confirm always beats LLM/portal-spa context for pre-check-in guests.
       if (
-        CONFIRMATION_RE.test(text.trim()) &&
-        !guest?.arrival_confirmed &&
-        guest?.status !== "checked_in" &&
-        guest?.status !== "cancelled"
+        !isButtonReply &&
+        canGuestConfirmArrival(guest as Record<string, unknown> | null) &&
+        isArrivalConfirmationMessage(text)
       ) {
-        // Same pending → expected guard as the button-tap path above.
-        if (!guestId) {
-          console.warn(`[webhook] ⚠️ typed confirmation matched but NO guest record exists for phone:${phone} — nothing to update.`);
-        }
-        const { error: confirmErr2 } = await supabase.from("guests").update({
-          arrival_confirmed: true,
-          ...(guest?.status === "pending" ? { status: "expected" } : {}),
-        }).eq("id", guestId);
-        if (confirmErr2) console.error(`[webhook] arrival_confirmed (text) update FAILED phone:${phone}:`, confirmErr2.message);
-        await patchClaimedInbound(supabase, claimedConversationId, msgId, {
-          guest_id: guestId,
-          intent: "confirmation",
+        await handleStage2ArrivalConfirmation(supabase, {
+          scripts,
+          phone,
+          guestId,
+          guest: guest as Record<string, unknown> | null,
+          sim,
+          source: "text",
+          claimedConversationId,
+          msgId,
         });
-
-        // ── Stage 2 Pay — same payment-pending branch as the button-tap path
-        // above. Gated on the automation_stages "stage_2_pay" toggle; falls
-        // straight through to the unmodified standard reply below otherwise.
-        const hasPendingPaymentText = !!(guest?.payment_amount);
-        const stage2PayText = await fetchAutomationStage(supabase, "stage_2_pay");
-        if (hasPendingPaymentText && stage2PayText?.is_active === true) {
-          await sendStage2PayReply(supabase, scripts, stage2PayText, phone, guestId, guest, sim);
-          console.info(`[webhook] ✅ pre-arrival confirmed (text, payment-pending) — phone:${phone} guest:${guestId}`);
-          continue; // skip Path A + normal intent routing
-        }
-
-        // Same conversational strategy as the button handler — no template needed.
-        // 24h window opens when the guest sends any message; reply with free text.
-        // ⚠️ No WORKSHOP_SIGNUP_URL/OnceHub here — see button-tap path above for why.
-        const safeName2    = String(guest?.name ?? "").trim() || "אורח יקר";
-        const spaTime2     = (guest?.spa_time as string | null) ?? null;
-        const portalLink2  = buildPortalLink(guest?.portal_token);
-        if (!portalLink2) console.warn(`[webhook] ⚠️ guest ${phone} (id:${guestId}) has no portal_token — Stage 2 (text-confirm) reply will not include a portal link.`);
-
-        const stage2Script2 = scripts["stage_2_arrival"];
-        let textArrivalReply: string;
-        if (stage2Script2?.message_text?.trim()) {
-          const hasOptionalSpaText2 = /\{\{\s*OPTIONAL_SPA_TEXT\s*\}\}/i.test(stage2Script2.message_text);
-          const hasSpaLine2         = /\{\{\s*SPA_LINE\s*\}\}/i.test(stage2Script2.message_text);
-          const hasSpaTimeLegacy2   = /\{\{\s*SPA_TIME\s*\}\}/i.test(stage2Script2.message_text);
-          console.log(
-            `[webhook] 🩺 resolvePlaceholders input (text-confirm) — phone:${phone} spaTime:${JSON.stringify(spaTime2)}` +
-            ` scriptHasOptionalSpaText:${hasOptionalSpaText2} scriptHasSpaLine:${hasSpaLine2} scriptHasSpaTime:${hasSpaTimeLegacy2}`
-          );
-          // Same FAIL VISIBLE safety net as the button-tap path above.
-          if (spaTime2 && !hasOptionalSpaText2 && !hasSpaLine2 && !hasSpaTimeLegacy2) {
-            console.warn(
-              `[webhook] ⚠️ guest ${phone} has spa_time="${spaTime2}" but the saved ` +
-              `stage_2_arrival script contains no spa placeholder ({{SPA_LINE}}/` +
-              `{{OPTIONAL_SPA_TEXT}}/{{SPA_TIME}}) — reply will never mention spa. ` +
-              `Check the script text in BotScriptEditor.`
-            );
-          }
-          textArrivalReply = resolvePlaceholders(stage2Script2.message_text, {
-            guestName: safeName2, spaTime: spaTime2, workshopUrl: "", portalLink: portalLink2,
-          });
-        } else {
-          // Dynamic Sentence approach — single code path for both spa/no-spa cases
-          const spaSentence2 = buildSpaSentence(spaTime2);
-          const portalLine2 = portalLink2
-            ? `\n\n✨ כל הפרטים שלך לפני ההגעה (ספא, ארוחות ועוד) מחכים כאן:\n👉 ${portalLink2}`
-            : "";
-          textArrivalReply =
-            `מגיעים! 🎉 כבר מתרגשים מאד מהגעתכם, ${safeName2}!\n\n` +
-            `הצוות שלנו ב-Dream Island מכין את הכל ומחכה לכם עם חיוך גדול 🌴\n\n` +
-            spaSentence2 +
-            portalLine2 +
-            `\n\nיש לכם שאלות לפני ההגעה? על הצ׳ק-אין, החדר — אני כאן לכל שאלה 😊`;
-        }
-
-        if (!sim) {
-          try {
-            await sendReply(phone, textArrivalReply);
-            await insertGuestOutboundIfNotMuted(supabase, {
-              phone, guest_id: guestId, message: textArrivalReply, wa_message_id: null, intent: "confirmation",
-            });
-          } catch (e) {
-            console.error("[webhook] text confirmation reply failed:", (e as Error).message);
-          }
-        } else {
-          console.info(`[webhook] SIM — text confirmation from ${phone}, would reply conversationally`);
-        }
-
         console.info(`[webhook] ✅ pre-arrival confirmed (text) — phone:${phone} guest:${guestId}`);
         continue;
       }
@@ -3680,6 +3669,28 @@ Deno.serve(async (req: Request) => {
         console.info(
           `[webhook] burst coalesced ${burst.coalescedText.split("\n").length} msgs — phone:${phone}`,
         );
+      }
+
+      // ── Arrival confirmation (post-burst) — must beat LLM when portal-spa flag
+      // is active; pre-burst path may have been skipped if arrival_confirmed was
+      // already true from a prior partial confirm.
+      if (
+        !isButtonReply &&
+        canGuestConfirmArrival(guest as Record<string, unknown> | null) &&
+        isArrivalConfirmationMessage(effectiveText)
+      ) {
+        await handleStage2ArrivalConfirmation(supabase, {
+          scripts,
+          phone,
+          guestId,
+          guest: guest as Record<string, unknown> | null,
+          sim,
+          source: "burst",
+          claimedConversationId,
+          msgId,
+        });
+        console.info(`[webhook] ✅ pre-arrival confirmed (post-burst) — phone:${phone} guest:${guestId}`);
+        continue;
       }
 
       // ── Defensive Shield — emoji/courtesy-only pass (post-burst) ───────────

@@ -1191,6 +1191,47 @@ function resolveManualScriptPlaceholders(
   return text.replace(/\{\{[^}]+\}\}/g, "").replace(/\n{3,}/g, "\n\n").trim();
 }
 
+// Full stage_2_arrival contract — mirrors whatsapp-webhook resolvePlaceholders()
+// (GUEST_NAME, SPA_LINE, OPTIONAL_SPA_TEXT, SPA_TIME, PORTAL_LINK/portal_url).
+// Used when staff resends Stage 2 from WhatsApp Inbox (manual_script stage_2_arrival).
+function resolveStage2ArrivalPlaceholders(
+  template: string,
+  vars: { guestName: string; spaTime: string | null; portalLink: string },
+): string {
+  const spaLine = vars.spaTime
+    ? `מתואם לכם טיפול בספא בשעה ${vars.spaTime}. בנוסף, `
+    : "";
+  const optionalSpaText = vars.spaTime
+    ? `מתואם לכם טיפול בספא בשעה ${vars.spaTime}.\n`
+    : "";
+
+  let text = template
+    .replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, vars.guestName)
+    .replace(/\{\{\s*WORKSHOP_URL\s*\}\}/gi, "")
+    .replace(/\{\{\s*SPA_LINE\s*\}\}/gi, spaLine)
+    .replace(/\{\{\s*OPTIONAL_SPA_TEXT\s*\}\}/gi, optionalSpaText);
+
+  const PORTAL_PLACEHOLDER_RE = /\{\{\s*(?:PORTAL_LINK|portal_url)\s*\}\}/gi;
+  if (vars.portalLink) {
+    text = text.replace(PORTAL_PLACEHOLDER_RE, vars.portalLink);
+  } else {
+    text = text.replace(/[^\n.!?]*\{\{\s*(?:PORTAL_LINK|portal_url)\s*\}\}[^\n.!?]*[.!?]?\s*/gi, "");
+  }
+
+  if (vars.spaTime) {
+    text = text.replace(/\{\{\s*SPA_TIME\s*\}\}/gi, `הטיפול שלכם בספא מתואם לשעה ${vars.spaTime}`);
+  } else {
+    text = text.replace(/[^\n.!?]*\{\{\s*SPA_TIME\s*\}\}[^\n.!?]*[.!?]?\s*/gi, "");
+  }
+
+  const hadSpaPlaceholder = /\{\{\s*(?:SPA_LINE|OPTIONAL_SPA_TEXT|SPA_TIME)\s*\}\}/i.test(template);
+  if (vars.spaTime && !hadSpaPlaceholder) {
+    text = `${text.trim()}\n\nהטיפול שלכם בספא מתואם לשעה ${vars.spaTime}.`;
+  }
+
+  return text.replace(/\{\{[^}]+\}\}/g, "").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 // ── Main handler ──────────────────────────────────────────────────────────────
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
@@ -1670,7 +1711,7 @@ serve(async (req: Request) => {
 
       const { data: guest, error: gErr } = await supabase
         .from("guests")
-        .select("id, name, phone, portal_token, wa_window_expires_at")
+        .select("id, name, phone, portal_token, wa_window_expires_at, spa_time")
         .eq("id", guestId)
         .maybeSingle();
       if (gErr)   throw new Error(`guest_lookup_error: ${gErr.message}`);
@@ -1709,13 +1750,14 @@ serve(async (req: Request) => {
       const portalLink = guest.portal_token
         ? `${PORTAL_BASE_URL}/portal/${guest.portal_token as string}`
         : "";
+      const spaTime = (guest.spa_time as string | null)?.trim() || null;
+      const isStage2Arrival = scriptKey === "stage_2_arrival";
       if (!portalLink && /\{\{\s*(?:PORTAL_LINK|portal_url)\s*\}\}/i.test(scriptRow.message_text)) {
         console.warn(`[whatsapp-send] manual_script "${scriptKey}" — guest ${guestId} has no portal_token; stripped portal-link sentence rather than send a blank link.`);
       }
-      const manualReply = resolveManualScriptPlaceholders(scriptRow.message_text, {
-        guestName: safeName,
-        portalLink,
-      });
+      const manualReply = isStage2Arrival
+        ? resolveStage2ArrivalPlaceholders(scriptRow.message_text, { guestName: safeName, spaTime, portalLink })
+        : resolveManualScriptPlaceholders(scriptRow.message_text, { guestName: safeName, portalLink });
 
       let status = "simulated";
       let sendError: string | null = null;

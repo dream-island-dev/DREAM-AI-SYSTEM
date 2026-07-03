@@ -1,3 +1,5 @@
+2026-07-04 | WhatsAppInbox.js + whatsapp-send | כפתור 🔁 «שלח שוב הודעת הגעה (שלב 2)» בפעולות מהירות; manual_script+stage_2_arrival עם resolveStage2ArrivalPlaceholders מלא (שם/ספא/פורטל).
+2026-07-04 | whatsapp-webhook | Stage 2 fix: «כן מגיעים» תמיד שולח stage_2_arrival (לא LLM/ספא) — הוסר gate על arrival_confirmed; handleStage2ArrivalConfirmation משותף; post-burst intercept.
 2026-07-04 | WhatsAppInbox.js + staffDeepLink.js + App.js + index.js | Inbox: שעה מדויקת בכל בועה (תאריך+שעה אחרי היום); כפתור 📱 QR לפתיחה מהירה בטלפון; deep link ?page=wa_inbox אחרי login.
 2026-07-04 | whatsapp-send | Stage 3 בוקר הגעה שבת: cron תמיד suite_welcome_morning/_shabbat (לא session בגלל חלון 24ש'); day-pass אותו דבר; fallback שבת→session עם override (לא תבנית חול).
 2026-07-04 | whatsapp-send + migration 126 | Stage 2.5 שבת: cron תמיד שולח night_before_suites/_shabbat (לא session בגלל חלון 24ש'); isShabbatArrivalDate מרכזי; שעות שבת 15:00/18:00 ב-bot_config.
