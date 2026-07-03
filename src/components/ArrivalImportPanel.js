@@ -21,7 +21,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { supabase } from "../supabaseClient";
 import { EditableGrid, BulkEditBar, exportToExcel } from "./EditableGrid";
 import MappingReviewPanel from "./MappingReviewPanel";
-import { SUITE_REGISTRY } from "../data/suiteRegistry";
+import { SUITE_REGISTRY, resolveSuiteFromEzgoFields } from "../data/suiteRegistry";
 import {
   aggregateGuestProfiles,
   profilesToArray,
@@ -96,15 +96,9 @@ const ROOM_OPTIONS = [
   ...SUITE_REGISTRY.map(s => ({ value: s, label: s })),
 ];
 
-// Best-effort match: ezgoParser extracts a bare room number ("8"); find the
-// SUITE_REGISTRY entry that ends with it so the grid can prefill a guess.
-// Left blank (forcing a manual pick) when ambiguous — Fail Visible over guessing wrong.
-function _bestGuessSuite(roomName) {
-  if (!roomName) return "";
-  const num = String(roomName).match(/\d+/)?.[0];
-  if (!num) return "";
-  const matches = SUITE_REGISTRY.filter(s => s.endsWith(" " + num));
-  return matches.length === 1 ? matches[0] : "";
+// Best-effort match — delegates to suiteRegistry (number + suiteType brand).
+function _bestGuessSuite(roomName, suiteType = "", isDayGuest = false) {
+  return resolveSuiteFromEzgoFields(roomName, suiteType, isDayGuest);
 }
 
 /** Human-readable room label from parser fields — used for suite-assignment preview. */
@@ -123,7 +117,7 @@ function _formatRoomForGrid(g) {
   if (rooms.length > 1) {
     const labels = rooms
       .map((r) => {
-        const guess = !r.isDayGuest ? _bestGuessSuite(r.roomName) : "";
+        const guess = _bestGuessSuite(r.roomName, r.suiteType, r.isDayGuest);
         return guess || _roomLabelFromParts(r.roomName, r.suiteType);
       })
       .filter(Boolean);
@@ -131,15 +125,15 @@ function _formatRoomForGrid(g) {
   }
   const r0 = rooms[0];
   const isDay = !!g.isDayGuest || !!r0.isDayGuest;
-  if (!isDay) {
-    const guess = _bestGuessSuite(r0.roomName);
-    if (guess) return guess;
-    const byType = SUITE_REGISTRY.filter(
-      (s) => r0.suiteType && (s.includes(r0.suiteType) || r0.suiteType.includes(s)),
-    );
-    if (byType.length === 1) return byType[0];
-  }
+  const guess = _bestGuessSuite(r0.roomName, r0.suiteType, isDay);
+  if (guess) return guess;
   return _roomLabelFromParts(r0.roomName, r0.suiteType);
+}
+
+/** Canonical room for grid column + sync — staff edit in grid wins at sync time. */
+function _resolveProfileRoomDisplay(g, editedRoom = "") {
+  if (String(editedRoom ?? "").trim()) return String(editedRoom).trim();
+  return _formatRoomForGrid(g);
 }
 
 function _gridRowId(g, i) {
@@ -603,10 +597,7 @@ function _profilesToGridRows(merged, { suiteAssignmentOnly = false, badgeByIdx =
     const singleRoom = (g.rooms ?? []).length === 1 ? g.rooms[0] : null;
     const isDay       = !!g.isDayGuest || !!singleRoom?.isDayGuest;
     const roomDisplay = _formatRoomForGrid(g);
-    const guess       = !isDay && singleRoom ? _bestGuessSuite(singleRoom.roomName) : "";
-    // Financial mapping: sum cPrice/fcPrice across this profile's rooms (usually
-    // just one). Staff can still override the total manually in the grid before
-    // sync — this is only the parsed starting value, not the final word.
+    // Financial mapping:
     const totalPrice  = (g.rooms ?? []).reduce((sum, r) => sum + (r.price || 0), 0);
     const qtyLabel    = (g.roomsQuantity ?? 0) > 1
       ? `${g.roomsQuantity} חדרים`
@@ -623,7 +614,7 @@ function _profilesToGridRows(merged, { suiteAssignmentOnly = false, badgeByIdx =
       roomCount:    qtyLabel,
       room:         suiteAssignmentOnly
         ? roomDisplay
-        : ((g.rooms ?? []).length > 1 ? "" : (isDay ? (singleRoom?.isDayGuest ? guess : "") : guess)),
+        : ((g.rooms ?? []).length > 1 ? "" : roomDisplay),
       tier:         isDay ? "☀️ בילוי יומי" : "🏨 סוויטה",
       spa_time:     g.spa_time ?? "",
       meal_time:    g.meal_time ?? "",
@@ -1590,7 +1581,9 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
               orderNumber:  r.orderNumber,
               roomName:     r.roomName,
               suiteType:    r.suiteType,
-              roomDisplay:  roomOverride || _bestGuessSuite(r.roomName) || null,
+              roomDisplay:  roomOverride
+                || _bestGuessSuite(r.roomName, r.suiteType, isDayGuestRoom)
+                || null,
               guestName:    edited.guestName ?? c.guestName ?? g.guestName ?? "",
               guestPhone:   c.guestPhone ?? g.guestPhone ?? null,
               coordPhone:   g.coordPhone ?? null,
@@ -1625,16 +1618,20 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           const edited   = gridByProfileIdx.get(i) ?? {};
           const guestPhone      = c.guestPhone ?? g.guestPhone;
           const profileArrivalDate = c.arrivalDate ?? g.arrivalDate;
+          const roomDisplay = _resolveProfileRoomDisplay(g, edited.room);
           const spaTime  = edited.spa_time  || c.spa_time  || g.spa_time;
           const mealTime = edited.meal_time || c.meal_time || g.meal_time;
           const mealLoc  = edited.meal_location || c.meal_location || g.meal_location;
           const notes    = g.guest_notes;
-          if (guestPhone && (spaTime || mealTime || mealLoc || notes)) {
-            const patch = { treatment_count: c.treatment_count ?? g.treatment_count ?? 0 };
-            if (spaTime)  patch.spa_time      = spaTime;
-            if (mealTime) patch.meal_time      = mealTime;
-            if (mealLoc)  patch.meal_location  = mealLoc;
-            if (notes)    patch.guest_notes    = notes;
+          const patch = {};
+          const tc = c.treatment_count ?? g.treatment_count;
+          if (tc != null && tc > 0) patch.treatment_count = tc;
+          if (spaTime)  patch.spa_time      = spaTime;
+          if (mealTime) patch.meal_time      = mealTime;
+          if (mealLoc)  patch.meal_location  = mealLoc;
+          if (notes)    patch.guest_notes    = notes;
+          if (roomDisplay) patch.room = roomDisplay;
+          if (guestPhone && profileArrivalDate && Object.keys(patch).length > 0) {
             await supabase.from("guests").update(patch)
               .eq("phone", guestPhone)
               .eq("arrival_date", profileArrivalDate);

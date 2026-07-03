@@ -29,3 +29,65 @@ export function getSuiteSection(suiteName) {
     sec.prefix.some(p => suiteName.startsWith(p))
   ) ?? null;
 }
+
+export const PREMIUM_DAY_ROOMS = ["Premium Day 1", "Premium Day 2"];
+
+/** Strip Hebrew "סוויטת" prefix for brand matching against registry names. */
+function _suiteBrandKey(name) {
+  return String(name ?? "").trim().replace(/^סוויטת\s+/i, "");
+}
+
+/**
+ * Resolve EZGO roomName ("8") + suiteType ("סוויטת אמטיסט") to a canonical
+ * SUITE_REGISTRY / Premium Day value for grid prefill + sync + DB-match.
+ * Returns "" when ambiguous — staff must pick (Fail Visible).
+ */
+export function resolveSuiteFromEzgoFields(roomName, suiteType, isDayGuest = false) {
+  const rn = String(roomName ?? "").trim();
+  const st = String(suiteType ?? "").trim();
+
+  if (isDayGuest || /premium\s*day|day\s*guest|בילוי.*יומי/i.test(st)) {
+    if (/premium\s*day\s*2|פרימיום.*2|day\s*2/i.test(st)) return "Premium Day 2";
+    if (/premium\s*day|פרימיום|day\s*guest|בילוי.*יומי/i.test(st)) return "Premium Day 1";
+    return "";
+  }
+
+  const num = rn.match(/\d+/)?.[0];
+  if (num) {
+    const byNum = SUITE_REGISTRY.filter((s) => s.endsWith(" " + num));
+    if (byNum.length === 1) return byNum[0];
+    if (st) {
+      const brand = _suiteBrandKey(st);
+      const narrowed = byNum.filter((s) => s.includes(brand) || brand.includes(s.replace(/ \d+$/, "")));
+      if (narrowed.length === 1) return narrowed[0];
+    }
+  }
+
+  if (st) {
+    const brand = _suiteBrandKey(st);
+    const byType = SUITE_REGISTRY.filter(
+      (s) => s.includes(brand) || brand.includes(s.replace(/ \d+$/, "")),
+    );
+    if (byType.length === 1) return byType[0];
+  }
+
+  return "";
+}
+
+/**
+ * Compare incoming CSV room vs stored guests.room without false conflicts
+ * when one side is a bare number ("8") and the other is canonical ("אמטיסט 8").
+ */
+export function roomsCanonicallyMatch(incoming, stored) {
+  const a = String(incoming ?? "").trim();
+  const b = String(stored ?? "").trim();
+  if (!a || !b) return true;
+  if (a === b) return true;
+  const numA = a.match(/(\d+)\s*$/)?.[1] ?? a.match(/^(\d+)$/)?.[1];
+  const numB = b.match(/(\d+)\s*$/)?.[1];
+  if (numA && numB && numA === numB) return true;
+  const canonA = resolveSuiteFromEzgoFields(a, "", false) || a;
+  const canonB = resolveSuiteFromEzgoFields(b, "", false) || b;
+  if (canonA && canonB && canonA === canonB) return true;
+  return false;
+}

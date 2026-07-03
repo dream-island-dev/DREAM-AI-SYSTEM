@@ -1,4 +1,4 @@
-// src/utils/guestImportIntelligence.js
+import { roomsCanonicallyMatch, resolveSuiteFromEzgoFields } from "../data/suiteRegistry";
 // ── Guest Import Intelligence Layer — canonical contract (Sprint 0) ──────────
 // Pure data transformation — zero Supabase calls, zero side effects, zero DOM.
 //
@@ -298,6 +298,8 @@ export function mergeCandidates({ arrivals = [], ops = [], detailed = [] } = {})
       phoneSource: row.phoneSource ?? null,
       orderNumber,
       resLineId: row.resLineId || null,
+      roomName: row.roomName || null,
+      suiteType: row.suiteType || null,
       room: row.roomName || row.suiteType || null,
       arrivalDate: row.arrivalDate ?? null,
       spa_time: null,
@@ -468,8 +470,15 @@ export function classifyDbMatch(candidate, existingGuestRow) {
     !!candidate.guestName && !!existingGuestRow.name &&
     candidate.guestName.trim() !== String(existingGuestRow.name).trim();
   const roomConflict =
-    !!candidate.room && !!existingGuestRow.room &&
-    candidate.room.trim() !== String(existingGuestRow.room).trim();
+    !!existingGuestRow.room &&
+    !roomsCanonicallyMatch(
+      resolveSuiteFromEzgoFields(
+        candidate.roomName ?? candidate.room,
+        candidate.suiteType ?? "",
+        candidate.isDayGuest,
+      ) || candidate.room,
+      existingGuestRow.room,
+    );
   const dateConflict =
     !!candidate.arrivalDate && !!existingGuestRow.arrival_date &&
     candidate.arrivalDate !== existingGuestRow.arrival_date;

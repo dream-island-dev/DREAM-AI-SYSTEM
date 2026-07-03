@@ -1,4 +1,4 @@
-2026-07-03 | ArrivalImportPanel + MappingReviewPanel + importMapper | Doc 2: CSV quote-aware parse + ⚠ שם שבור; ברירות מחדל במיפוי (15:00/11:00 לריקות בלבד) + זיכרון v2.
+2026-07-03 | ArrivalImportPanel + suiteRegistry + guestImportIntelligence + migration 125 | סנכרון Doc 2 מדויק: שיוך סוויטה מ-roomName+suiteType, 🔄/⚠ בלי false conflict, room scoped ל-arrival_date.
 2026-07-03 | whatsapp-send | Session scripts: `applySaturdayCheckInTimeOverride` — הגעה בשבת מחליף 15:00→18:00 בטקסט bot_scripts בזמן שליחה (ללא שינוי DB).
 2026-07-03 | whatsapp-send + WhatsAppInbox.js | Dispatch transparency: לוג `[META]`/`[SESSION]`+כפתורים ב-inbox; 🔵/🟢 ב-UI; התראת Whapi לאדמין על כשל שליחה.
 2026-07-02 | automationSchedule.ts + whatsapp-webhook | בקשת בלונים לחדר → לוח בקשות (guest_alerts) בלבד, לא תפעול; תשובה קבועה לקבלה+נציגת בלונים; secret אופציונלי BALLOON_VENDOR_PHONE.

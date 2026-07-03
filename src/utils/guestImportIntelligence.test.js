@@ -205,18 +205,44 @@ describe("Guest Import Intelligence — golden cases", () => {
       guestPhone: "+972526691991",
       _rawPhone: "+972526691991",
       orderNumber: "300100",
+      roomName: "וילה 2",
+      suiteType: "",
       room: "וילה 2",
+      isDayGuest: false,
       arrivalDate: "2026-06-30",
       roomsCount: 1,
     };
     const existingGuestRow = {
       phone: null,
       name: "גבריאל",
-      room: "וילה 5", // room reassigned on file since last import
+      room: "וילה 5",
       order_number: "300100",
       arrival_date: "2026-06-30",
     };
     expect(classifyDbMatch(candidate, existingGuestRow)).toBe("conflict");
+  });
+
+  test("classifyDbMatch: EZGO bare room number vs canonical guests.room → existing (not conflict)", () => {
+    const candidate = {
+      guestName: "מרדכי",
+      guestPhone: "+972507774904",
+      _rawPhone: "+972507774904",
+      orderNumber: "300100",
+      roomName: "8",
+      suiteType: "סוויטת אמטיסט",
+      room: "8",
+      isDayGuest: false,
+      arrivalDate: "2026-06-30",
+      roomsCount: 1,
+    };
+    const existingGuestRow = {
+      phone: "+972507774904",
+      name: "מרדכי",
+      room: "אמטיסט 8",
+      order_number: "300100",
+      arrival_date: "2026-06-30",
+    };
+    expect(classifyDbMatch(candidate, existingGuestRow)).toBe("existing");
   });
 
   test("classifyDbMatch: no phone/order overlap with the existing row → new (not existing/conflict)", () => {
