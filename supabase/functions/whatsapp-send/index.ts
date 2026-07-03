@@ -1145,7 +1145,37 @@ const isSimulation = (): boolean =>
 // via sendViaTemplate(), which are valid OUTSIDE the 24h customer-service window
 // by definition — so there is no 24h-window risk in permitting them, and they
 // are explicit, throttled, manager-initiated actions (not autonomous blasts).
-const MANUAL_TRIGGERS = new Set(["inbox_reply", "broadcast", "payment_and_workshops", "template_test"]);
+const MANUAL_TRIGGERS = new Set(["inbox_reply", "broadcast", "payment_and_workshops", "template_test", "manual_script"]);
+
+// ── Manual script placeholder resolver ───────────────────────────────────────
+// Deliberately minimal — this is NOT the full resolvePlaceholders() contract
+// from whatsapp-webhook (SPA_LINE/OPTIONAL_SPA_TEXT/etc.), only the two tokens
+// a staff-triggered, on-demand bot_scripts row actually needs today
+// (manual_portal_link). {{PORTAL_LINK}} accepted as an alias for {{portal_url}}
+// for consistency with resolvePlaceholders()'s naming tolerance. Same
+// graceful-fallback contract as every other placeholder resolver in this
+// codebase: substitute the real value when present, strip the containing
+// sentence when absent — never leave a raw {{...}} or a dead blank link in
+// the outgoing text.
+function resolveManualScriptPlaceholders(
+  template: string,
+  vars: { guestName: string; portalLink: string }
+): string {
+  let text = template.replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, vars.guestName);
+
+  const PORTAL_PLACEHOLDER_RE = /\{\{\s*(?:PORTAL_LINK|portal_url)\s*\}\}/gi;
+  if (vars.portalLink) {
+    text = text.replace(PORTAL_PLACEHOLDER_RE, vars.portalLink);
+  } else {
+    text = text.replace(/[^\n.!?]*\{\{\s*(?:PORTAL_LINK|portal_url)\s*\}\}[^\n.!?]*[.!?]?\s*/gi, "");
+  }
+
+  // Safety net — same final chokepoint as every guest-facing sender in this
+  // codebase (whatsapp-webhook's sanitizeReply(), interactiveSend.ts's
+  // _stripUnresolvedPlaceholders()): never let an unhandled/typo'd token
+  // through to the guest raw.
+  return text.replace(/\{\{[^}]+\}\}/g, "").replace(/\n{3,}/g, "\n\n").trim();
+}
 
 // ── Main handler ──────────────────────────────────────────────────────────────
 serve(async (req: Request) => {
@@ -1604,6 +1634,110 @@ serve(async (req: Request) => {
 
       return new Response(
         JSON.stringify({ ok: status !== "failed", simulation: sim, status, ...(sendError ? { error: sendError } : {}) }),
+        { headers: { ...CORS, "Content-Type": "application/json" } },
+      );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // BRANCH F: manual_script — staff-selected bot_scripts row, on-demand
+    //   "Manual Portal Link Dispatch" — lets staff fire any standalone
+    //   (trigger_event='manual') bot_scripts row at a specific guest from the
+    //   WhatsApp Inbox, independent of automation_stages/cron lifecycle gating.
+    //   Sent as a free-text 24h session message (Meta template alternative not
+    //   needed — resolves the same {{GUEST_NAME}}/{{portal_url}} placeholders
+    //   the automated stage_2_arrival flow uses). Not idempotent — staff may
+    //   deliberately resend (e.g. guest lost the link, asked again).
+    // ─────────────────────────────────────────────────────────────────────────
+    if (trigger === "manual_script") {
+      const b = body as Record<string, unknown>;
+      const scriptKey = (b.scriptKey as string | undefined)?.trim();
+      if (!guestId)   throw new Error("guestId is required for manual_script");
+      if (!scriptKey) throw new Error("scriptKey is required for manual_script");
+
+      const { data: guest, error: gErr } = await supabase
+        .from("guests")
+        .select("id, name, phone, portal_token, wa_window_expires_at")
+        .eq("id", guestId)
+        .maybeSingle();
+      if (gErr)   throw new Error(`guest_lookup_error: ${gErr.message}`);
+      if (!guest) throw new Error(`guest_not_found: no guest row for id=${JSON.stringify(guestId)}`);
+      if (!guest.phone) throw new Error(`guest_no_phone: guest id=${guestId} (${guest.name ?? "?"}) has no phone on file`);
+
+      const { data: scriptRow, error: sErr } = await supabase
+        .from("bot_scripts")
+        .select("message_text, is_active")
+        .eq("script_key", scriptKey)
+        .maybeSingle();
+      if (sErr) throw new Error(`script_lookup_error: ${sErr.message}`);
+      if (!scriptRow?.message_text?.trim()) {
+        throw new Error(`script_not_found: no bot_scripts row (or empty message_text) for script_key="${scriptKey}"`);
+      }
+      if (scriptRow.is_active === false) {
+        throw new Error(`script_inactive: bot_scripts row "${scriptKey}" is disabled — enable it in BotScriptEditor first`);
+      }
+
+      // Same 24h Interaction Window Guard as BRANCH C (inbox_reply) — this is
+      // free text, not an approved Meta template, so Meta rejects it outside
+      // the window regardless. Fail fast with a clear reason instead of an
+      // after-the-fact Meta error.
+      if (!isWindowOpen(guest.wa_window_expires_at)) {
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            status: "window_closed",
+            error: "window_closed: חלון 24 השעות סגור — האורח לא הגיב ב-24 השעות האחרונות, לא ניתן לשלוח הודעה חופשית. נדרשת תבנית מאושרת.",
+          }),
+          { headers: { ...CORS, "Content-Type": "application/json" } },
+        );
+      }
+
+      const safeName   = (String(guest.name ?? "").trim()) || "אורח יקר";
+      const portalLink = guest.portal_token
+        ? `${PORTAL_BASE_URL}/portal/${guest.portal_token as string}`
+        : "";
+      if (!portalLink && /\{\{\s*(?:PORTAL_LINK|portal_url)\s*\}\}/i.test(scriptRow.message_text)) {
+        console.warn(`[whatsapp-send] manual_script "${scriptKey}" — guest ${guestId} has no portal_token; stripped portal-link sentence rather than send a blank link.`);
+      }
+      const manualReply = resolveManualScriptPlaceholders(scriptRow.message_text, {
+        guestName: safeName,
+        portalLink,
+      });
+
+      let status = "simulated";
+      let sendError: string | null = null;
+      try {
+        if (!sim) { await sendViaMeta(String(guest.phone), manualReply); status = "sent"; }
+      } catch (e) {
+        sendError = (e as Error).message;
+        console.error(`[whatsapp-send] manual_script "${scriptKey}" send failed:`, sendError);
+        status = sendError.startsWith("timeout_no_response") ? "timeout" : "failed";
+      }
+
+      await notifyAdminIfDispatchFailed({
+        status,
+        error: sendError,
+        guestName: guest.name as string,
+        guestPhone: guest.phone as string,
+        dispatchType: "Session",
+      });
+
+      await supabase.from("whatsapp_conversations").insert({
+        phone:         guest.phone,
+        guest_id:      guestId,
+        direction:     "outbound",
+        message:       status === "failed" ? manualReply : buildSessionConversationLog(manualReply),
+        wa_message_id: null,
+      });
+
+      await supabase.from("notification_log").insert({
+        guest_id: guestId, recipient: guest.phone,
+        trigger_type: "manual_script", channel: "whatsapp",
+        status,
+        payload: { channel: "session_message", scriptKey, manual: true, ...(sendError ? { error: sendError } : {}) },
+      });
+
+      return new Response(
+        JSON.stringify({ ok: status === "sent" || status === "simulated", simulation: sim, status, ...(sendError ? { error: sendError } : {}) }),
         { headers: { ...CORS, "Content-Type": "application/json" } },
       );
     }

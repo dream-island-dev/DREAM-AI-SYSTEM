@@ -2982,6 +2982,39 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [active, thread.length, lastUpdated]);
 
+  // ── Manual Portal Link Dispatch ───────────────────────────────────────────
+  // One-click, staff-initiated send of the standalone `manual_portal_link`
+  // bot_scripts row (migration 124) — independent of automation_stages/cron.
+  // {{GUEST_NAME}}/{{portal_url}} are resolved server-side (whatsapp-send
+  // BRANCH F: manual_script), exactly like the automated stage_2_arrival flow
+  // — never built client-side, so there's a single source of truth for the
+  // portal URL (PORTAL_BASE_URL lives only in the Edge Function).
+  async function sendManualPortalLink() {
+    if (!active) return;
+    if (!activeContact?.guestId) {
+      setError("לא ניתן לשלוח קישור פורטל — השיחה הזו אינה משויכת לרשומת אורח (guests)");
+      return;
+    }
+    if (!ensureCanSend()) {
+      setError("שליחה חסומה בשעות שקט — סמן את האישור למטה");
+      return;
+    }
+    setSending(true);
+    setError(null);
+    try {
+      const { data, error: fnErr } = await supabase.functions.invoke("whatsapp-send", {
+        body: { trigger: "manual_script", guestId: activeContact.guestId, scriptKey: "manual_portal_link" },
+      });
+      if (fnErr || !data?.ok) throw new Error(fnErr?.message ?? data?.error ?? "שגיאה בשליחת קישור הפורטל");
+      setQuickOpen(false);
+      await fetchSince();
+    } catch (err) {
+      setError(err?.message ?? "שגיאה בשליחת קישור הפורטל");
+    } finally {
+      setSending(false);
+    }
+  }
+
   // ── Manual reply send ─────────────────────────────────────────────────────
   async function sendManualReply() {
     if (!reply.trim() || !active) return;
@@ -3301,6 +3334,27 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
             padding: 12, boxShadow: "0 -4px 16px rgba(0,0,0,0.12)",
             maxHeight: "70vh", overflowY: "auto",
           }}>
+            {/* Manual Portal Link Dispatch — always visible (Disable Don't Hide,
+                CLAUDE.md §0.2), disabled with an explanatory title when this
+                thread isn't linked to a guests row. One click, no textarea —
+                server resolves {{GUEST_NAME}}/{{portal_url}} and sends immediately. */}
+            <div style={{ marginBottom: 10 }}>
+              <button
+                onClick={sendManualPortalLink}
+                disabled={sending || !activeContact?.guestId}
+                title={!activeContact?.guestId ? "השיחה הזו אינה משויכת לרשומת אורח (guests)" : undefined}
+                style={{
+                  padding: "8px 14px", borderRadius: 20, border: "1.5px solid var(--gold,#C9A96E)",
+                  background: !activeContact?.guestId ? "#F3F0EA" : "linear-gradient(135deg, #FFF8E8, #FDF2D8)",
+                  color: "var(--gold-dark,#A8843A)", fontSize: 12, fontWeight: 700,
+                  cursor: (sending || !activeContact?.guestId) ? "not-allowed" : "pointer",
+                  minHeight: isMobile ? HIT_STAFF : "auto",
+                }}
+              >
+                🔗 שלח קישור לפורטל האורחים
+              </button>
+            </div>
+
             {/* Contextual macros — zero-token, data-driven (spa_time/meal_time/
                 room). Shown only when this guest actually has that metadata;
                 no longer falls back to the old generic QUICK_PHRASES list with
