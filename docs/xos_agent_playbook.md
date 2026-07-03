@@ -326,6 +326,9 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
+### 2026-07-04 — Session 101 (EZGO remark identity gate)
+- **sRemark is NOT always the guest name.** Only when the same `sClientFullName` appears on 2+ rows in one import file (municipal/group bookings) does `aggregateGuestProfiles` set `coordNameDuplicated` and pull name+phone from remarks. Solo rows use column name + `sTel1` only — ops phrases in remarks (birthday, meal notes) must never become `guestName`.
+
 ### 2026-06-30 — Session 74b (dual-surface UI)
 - **Desktop Wow + Mobile comfort:** same phase, two acceptance gates — DevTools 390/768/1280 every phase + Mobile Checklist before deploy.
 - **Phase 4 added:** App.js mobile shell (`mobile-bar`, hamburger) + `GuestsPage.js` check-in on phone.

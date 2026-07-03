@@ -21,6 +21,9 @@ const ARRIVALS_MAPPING = {
   coordPhone: "CoordPhone",
 };
 
+/** Same sClientFullName on 2+ rows in a real file — remark holds occupant identity. */
+const GROUP_ROW_OPTS = { coordNameDuplicated: true };
+
 describe("Guest Import Intelligence — golden cases", () => {
   test("case 1: municipality group row A — remark phone wins over coordinator phone", () => {
     const rowA = extractGuestDetails(
@@ -32,6 +35,8 @@ describe("Guest Import Intelligence — golden cases", () => {
         CoordPhone: "0548045722",
       },
       ARRIVALS_MAPPING,
+      null,
+      GROUP_ROW_OPTS,
     );
 
     expect(rowA.guestPhone).toBe("+972507774904");
@@ -63,6 +68,8 @@ describe("Guest Import Intelligence — golden cases", () => {
         CoordPhone: "0548045722",
       },
       ARRIVALS_MAPPING,
+      null,
+      GROUP_ROW_OPTS,
     );
     const rowB = extractGuestDetails(
       {
@@ -73,6 +80,8 @@ describe("Guest Import Intelligence — golden cases", () => {
         CoordPhone: "0548045722",
       },
       ARRIVALS_MAPPING,
+      null,
+      GROUP_ROW_OPTS,
     );
 
     expect(rowB.guestPhone).toBe("+972526691991");
@@ -114,6 +123,8 @@ describe("Guest Import Intelligence — golden cases", () => {
         CoordPhone: "111",
       },
       ARRIVALS_MAPPING,
+      null,
+      GROUP_ROW_OPTS,
     );
     const rowB = extractGuestDetails(
       {
@@ -124,6 +135,8 @@ describe("Guest Import Intelligence — golden cases", () => {
         CoordPhone: "111",
       },
       ARRIVALS_MAPPING,
+      null,
+      GROUP_ROW_OPTS,
     );
 
     expect(rowA.guestPhone).toBe("+972507774904");

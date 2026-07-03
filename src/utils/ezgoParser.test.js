@@ -30,6 +30,8 @@ describe("ezgoParser — Sprint 1 fixes", () => {
         GuestPhone: "0501112222", // same coordinator number, mapped as "direct"
       },
       ARRIVALS_MAPPING,
+      null,
+      { coordNameDuplicated: true },
     );
 
     expect(row.guestPhone).toBe("+972521234567");
@@ -50,6 +52,8 @@ describe("ezgoParser — Sprint 1 fixes", () => {
         GuestPhone: "111",
       },
       ARRIVALS_MAPPING,
+      null,
+      { coordNameDuplicated: true },
     );
 
     expect(row.guestPhone).toBe("+972507774904");
@@ -90,7 +94,7 @@ describe("ezgoParser — Sprint 1 fixes", () => {
     );
 
     expect(row.guestPhone).toBe("+972521231234");
-    expect(row.phoneSource).toBe("coordinator");
+    expect(row.phoneSource).toBe("individual");
   });
 
   test("automationMuted: corporate coordinator name mutes even without a lead_source column", () => {
@@ -116,10 +120,10 @@ describe("ezgoParser — Sprint 1 fixes", () => {
       },
       ARRIVALS_MAPPING,
     );
-    // Even though an individual WAS resolved from the remark, the booking is
-    // still a muted corporate group booking — mute must not depend on
-    // phoneSource.
+    // Solo corporate row — occupant in remark is ignored; coord name+phone win.
     expect(bank.phoneSource).toBe("individual");
+    expect(bank.guestName).toBe("בנק לאומי סניף מרכז");
+    expect(bank.guestPhone).toBe("+972548045722");
     expect(bank.automationMuted).toBe(true);
 
     const realGuest = extractGuestDetails(
@@ -148,6 +152,23 @@ describe("ezgoParser — Sprint 1 fixes", () => {
       ARRIVALS_MAPPING,
     );
     expect(row.automationMuted).toBe(true);
+  });
+
+  test("solo row: ops phrase in remark is NOT used as guest name", () => {
+    const row = extractGuestDetails(
+      {
+        Order: "300310",
+        ResLine: "rl-bday",
+        Remark: "חוגגים יום הולדת לפנק",
+        CoordName: "שמרית אדרי",
+        CoordPhone: "0521234567",
+        GuestPhone: "0521234567",
+      },
+      ARRIVALS_MAPPING,
+    );
+    expect(row.guestName).toBe("שמרית אדרי");
+    expect(row.guestName).not.toContain("יום הולדת");
+    expect(row.guestPhone).toBe("+972521234567");
   });
 
   test("extractMealTimeFromRemark: dinner shorthand extraction", () => {
@@ -222,6 +243,8 @@ describe("ezgoParser — Sprint 1 fixes", () => {
         CoordPhone: "111",
       },
       ARRIVALS_MAPPING,
+      null,
+      { coordNameDuplicated: true },
     );
     expect(row.guestName).toBe("רינת עקיבא");
     expect(row.guestPhone).toBe("+972506919808");
@@ -236,7 +259,7 @@ describe("ezgoParser — Sprint 1 fixes", () => {
     expect(result.length).toBeLessThanOrEqual(80);
   });
 
-  test("extractGuestDetails: mis-split CSV remark resolves to the clean name prefix, not the raw junk", () => {
+  test("extractGuestDetails: mis-split CSV remark on solo row uses coord column, not remark junk", () => {
     const row = extractGuestDetails(
       {
         Order: "300309",
@@ -252,7 +275,7 @@ describe("ezgoParser — Sprint 1 fixes", () => {
     expect(row.guestPhone).toBe("+972506919808");
   });
 
-  test("name-only remark + phone in sTel1 column → occupant profile", () => {
+  test("name-only remark + phone in sTel1 column → occupant profile (duplicate coord only)", () => {
     expect(extractNameFromRemarkWithoutPhone("נילי הללי")).toBe("נילי הללי");
     expect(extractNameFromRemarkWithoutPhone("Eric Yosef Cohen")).toBe("Eric Yosef Cohen");
 
@@ -261,10 +284,12 @@ describe("ezgoParser — Sprint 1 fixes", () => {
         Order: "262071",
         ResLine: "rl-nili",
         Remark: "נילי הללי",
-        CoordName: "פרטי",
+        CoordName: "עיריית תל אביב",
         CoordPhone: "0524549965",
       },
       ARRIVALS_MAPPING,
+      null,
+      { coordNameDuplicated: true },
     );
     expect(row.guestName).toBe("נילי הללי");
     expect(row.guestPhone).toBe("+972524549965");

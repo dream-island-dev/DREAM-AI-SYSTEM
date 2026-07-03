@@ -307,15 +307,16 @@ function parseDate(raw) {
  * Takes one raw CSV/Excel row (SheetJS object) and resolves the TRUE guest
  * identity using a priority cascade:
  *
- *   Phone priority:
+ *   Phone priority (when coordNameDuplicated):
  *     1. remark phone          ← actual room occupant (individual)
- *     2. opRemark phone        ← secondary notes (occasional)
- *     3. coordPhone            ← booking coordinator (group) / direct for solo
+ *     2. opRemark phone
+ *     3. coordPhone / guestPhone column
+ *   Phone priority (solo row): guestPhone / coordPhone column only.
  *
- *   Name priority:
- *     1. Name extracted from remark (before the phone)
- *     2. Name extracted from opRemark
- *     3. coordName (coordinator / booking name)
+ *   Name priority (when coordNameDuplicated):
+ *     1. Name from remark (with or without embedded phone)
+ *     2. coordName fallback
+ *   Name priority (solo row): coordName (sClientFullName) only.
  *
  * Returns a GuestProfile object (no DB writes — pure transform).
  *
@@ -329,8 +330,13 @@ function parseDate(raw) {
  *                                  the admin-approved mapping from MappingReviewPanel.js.
  * @param {string} fallbackDate - ISO date from filename ("2026-06-18"), used
  *                               when the mapped arrival-date column is absent/empty
+ * @param {{ coordNameDuplicated?: boolean }} [options] - when true, sRemark is the
+ *   occupant identity source (name+phone). Default false: use coordName/sTel1 only;
+ *   remarks still enrich meal_time etc. Set by aggregateGuestProfiles when the same
+ *   sClientFullName appears on more than one row (group / municipal bookings).
  */
-export function extractGuestDetails(row, columnMapping = {}, fallbackDate = null) {
+export function extractGuestDetails(row, columnMapping = {}, fallbackDate = null, options = {}) {
+  const { coordNameDuplicated = false } = options;
   // ── Raw field extraction — via the approved mapping, not a literal header name ──
   const col = (role) => columnMapping[role];
   const val = (role) => { const h = col(role); return h ? row[h] : undefined; };
@@ -368,59 +374,67 @@ export function extractGuestDetails(row, columnMapping = {}, fallbackDate = null
     /^\d{9}$/.test(directPhoneRaw) ? `0${directPhoneRaw}` : directPhoneRaw
   );
 
-  // ── Phone priority cascade ────────────────────────────────────────────────
-  // Remark-first (Guest Import Intelligence Sprint 1 fix): a remark phone
-  // paired with a resolvable name is the ACTUAL room occupant — it must win
-  // over a mapped "direct" guestPhone column. In the real EZGO export that
-  // direct column is sTel1, the booking COORDINATOR's phone (shared across
-  // every room in a group booking) — letting it short-circuit remark
-  // resolution silently routed every individual's WhatsApp messages to the
-  // group organizer instead of the actual guest. This restores remark as the
-  // true identity source this function's own docstring above always
-  // documented it to be.
+  const coordName = coordNameRaw.replace(SOURCE_RE, "").trim() || null;
+  const useRemarkIdentity = coordNameDuplicated;
+
   const remarkPhones   = extractPhonesFromText(remark);
   const opRemarkPhones = extractPhonesFromText(opRemark);
-  const remarkNameCandidate =
-    extractNameFromRemark(remark)
-    ?? extractNameFromRemarkWithoutPhone(remark)
-    ?? extractNameFromRemark(opRemark)
-    ?? extractNameFromRemarkWithoutPhone(opRemark);
+  const remarkNameCandidate = useRemarkIdentity
+    ? (
+      extractNameFromRemark(remark)
+      ?? extractNameFromRemarkWithoutPhone(remark)
+      ?? extractNameFromRemark(opRemark)
+      ?? extractNameFromRemarkWithoutPhone(opRemark)
+    )
+    : null;
 
   let guestPhone;
   let phoneSource; // "individual" | "coordinator"
 
-  if (remarkPhones.length > 0 && remarkNameCandidate) {
-    guestPhone   = remarkPhones[0];
-    phoneSource  = "individual";
-  } else if (remarkNameCandidate && directE164 && !isDummyPhone(directE164)) {
-    // Name in sRemark, mobile in mapped guestPhone column (not embedded in remark text).
-    guestPhone   = directE164;
-    phoneSource  = "individual";
-  } else if (remarkNameCandidate && coordE164 && !isDummyPhone(coordE164)) {
-    // Common EZGO shape: "נילי הללי" in sRemark, 05x in sTel1 — same occupant.
-    guestPhone   = coordE164;
-    phoneSource  = "individual";
-  } else if (directE164 && !isDummyPhone(directE164)) {
-    guestPhone  = directE164;
-    phoneSource = "individual";
-  } else if (remarkPhones.length > 0) {
-    guestPhone   = remarkPhones[0];
-    phoneSource  = "individual";
-  } else if (opRemarkPhones.length > 0) {
-    guestPhone   = opRemarkPhones[0];
-    phoneSource  = "individual";
-  } else if (coordE164 && !isDummyPhone(coordE164)) {
-    guestPhone   = coordE164;
-    phoneSource  = "coordinator";
+  if (useRemarkIdentity) {
+    // Group / duplicate coordinator rows — occupant lives in sRemark.
+    if (remarkPhones.length > 0 && remarkNameCandidate) {
+      guestPhone   = remarkPhones[0];
+      phoneSource  = "individual";
+    } else if (remarkNameCandidate && directE164 && !isDummyPhone(directE164)) {
+      guestPhone   = directE164;
+      phoneSource  = "individual";
+    } else if (remarkNameCandidate && coordE164 && !isDummyPhone(coordE164)) {
+      guestPhone   = coordE164;
+      phoneSource  = "individual";
+    } else if (directE164 && !isDummyPhone(directE164)) {
+      guestPhone  = directE164;
+      phoneSource = "individual";
+    } else if (remarkPhones.length > 0) {
+      guestPhone   = remarkPhones[0];
+      phoneSource  = "individual";
+    } else if (opRemarkPhones.length > 0) {
+      guestPhone   = opRemarkPhones[0];
+      phoneSource  = "individual";
+    } else if (coordE164 && !isDummyPhone(coordE164)) {
+      guestPhone   = coordE164;
+      phoneSource  = "coordinator";
+    } else {
+      guestPhone   = null;
+      phoneSource  = null;
+    }
   } else {
-    guestPhone   = null;
-    phoneSource  = null;
+    // Solo row — sClientFullName + sTel1 only; sRemark is ops notes (birthday, etc.).
+    if (directE164 && !isDummyPhone(directE164)) {
+      guestPhone  = directE164;
+      phoneSource = "individual";
+    } else if (coordE164 && !isDummyPhone(coordE164)) {
+      guestPhone  = coordE164;
+      phoneSource = "individual";
+    } else {
+      guestPhone  = null;
+      phoneSource = null;
+    }
   }
 
-  // ── Name priority cascade ─────────────────────────────────────────────────
-  const remarkName    = remarkNameCandidate ?? extractNameFromRemark(opRemark);
-  const coordName     = coordNameRaw.replace(SOURCE_RE, "").trim() || null;
-  const guestName     = remarkName ?? coordName;
+  const guestName = useRemarkIdentity
+    ? (remarkNameCandidate ?? coordName)
+    : coordName;
 
   // ── Meal time (best-effort, remark shorthand only) ────────────────────────
   const mealTime = extractMealTimeFromRemark(remark) ?? extractMealTimeFromRemark(opRemark);
@@ -514,14 +528,38 @@ export function extractGuestDetails(row, columnMapping = {}, fallbackDate = null
  * @param {object} columnMapping - same shape as extractGuestDetails() expects;
  *                                 threaded straight through to it for every row.
  */
+/** sClientFullName values that appear on 2+ rows → remark holds per-room occupant. */
+function duplicateCoordNameKeys(rows, columnMapping) {
+  const coordCol = columnMapping.coordName;
+  if (!coordCol) return new Set();
+  const counts = new Map();
+  for (const row of rows) {
+    const raw = String(row[coordCol] ?? "").replace(SOURCE_RE, "").trim();
+    if (!raw) continue;
+    counts.set(raw, (counts.get(raw) || 0) + 1);
+  }
+  const dupes = new Set();
+  for (const [name, n] of counts) {
+    if (n > 1) dupes.add(name);
+  }
+  return dupes;
+}
+
 export function aggregateGuestProfiles(rows, columnMapping = {}, fallbackDate = null) {
   const profiles = new Map();
+  const duplicateCoordNames = duplicateCoordNameKeys(rows, columnMapping);
+  const coordCol = columnMapping.coordName;
 
   // Key = absolute row index — 1 CSV row = 1 profile, zero merging.
   // Phone duplication (two guests sharing a number, e.g. group members) must NOT
   // collapse rows — the DB upsert layer handles deduplication by phone at write time.
   rows.forEach((row, index) => {
-    const g = extractGuestDetails(row, columnMapping, fallbackDate);
+    let coordNameDuplicated = false;
+    if (coordCol) {
+      const raw = String(row[coordCol] ?? "").replace(SOURCE_RE, "").trim();
+      coordNameDuplicated = !!raw && duplicateCoordNames.has(raw);
+    }
+    const g = extractGuestDetails(row, columnMapping, fallbackDate, { coordNameDuplicated });
     // Only skip completely blank rows (header artifacts, trailing newlines, etc.)
     if (!g.guestPhone && !g.guestName && !g.resLineId && !g.orderNumber) return;
 
