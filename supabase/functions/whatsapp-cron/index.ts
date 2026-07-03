@@ -137,7 +137,7 @@ Deno.serve(async (req: Request) => {
     // (checkEligibility in automationSchedule.ts; session 59 decouple).
     const { data: guests = [] } = await supabase
       .from("guests")
-      .select("id, name, phone, arrival_date, departure_date, room_type, status, checkin_time, needs_callback, automation_muted, claimed_by, msg_pre_arrival_2d_sent, msg_pre_arrival_sent, msg_morning_suite_sent, msg_morning_welcome_sent, msg_mid_stay_sent, msg_checkout_fb_sent");
+      .select("id, name, phone, arrival_date, departure_date, room_type, status, checkin_time, needs_callback, automation_muted, claimed_by, arrival_confirmed, arrival_confirmed_at, msg_stage_2_arrival_sent, msg_pre_arrival_2d_sent, msg_pre_arrival_sent, msg_morning_suite_sent, msg_morning_welcome_sent, msg_mid_stay_sent, msg_checkout_fb_sent");
 
     const activeStageKeys = stages.map((s) => s.stage_key);
     console.log(`[whatsapp-cron] scan_start guests=${guests?.length ?? 0} active_stages=[${activeStageKeys.join(", ")}]`);

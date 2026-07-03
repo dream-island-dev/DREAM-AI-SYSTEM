@@ -1,3 +1,4 @@
+2026-07-04 | migration 127 + automationSchedule + whatsapp-* + ACC | Stage 2 בתור חי: hours_after_event מ-arrival_confirmed_at; msg_stage_2_arrival_sent; cron+שגר מאסיבי; offset_hours במסע האורח.
 2026-07-04 | WhatsAppInbox.js + whatsapp-send | כפתור 🔁 «שלח שוב הודעת הגעה (שלב 2)» בפעולות מהירות; manual_script+stage_2_arrival עם resolveStage2ArrivalPlaceholders מלא (שם/ספא/פורטל).
 2026-07-04 | whatsapp-webhook | Stage 2 fix: «כן מגיעים» תמיד שולח stage_2_arrival (לא LLM/ספא) — הוסר gate על arrival_confirmed; handleStage2ArrivalConfirmation משותף; post-burst intercept.
 2026-07-04 | WhatsAppInbox.js + staffDeepLink.js + App.js + index.js | Inbox: שעה מדויקת בכל בועה (תאריך+שעה אחרי היום); כפתור 📱 QR לפתיחה מהירה בטלפון; deep link ?page=wa_inbox אחרי login.

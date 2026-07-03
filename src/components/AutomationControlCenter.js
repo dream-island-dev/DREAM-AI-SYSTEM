@@ -14,12 +14,10 @@
 // here). Toggling is_active or editing timing/content here changes what
 // guests actually RECEIVE, not just what the admin sees.
 //
-// The one exception: stage_2_arrival is dispatched directly by
-// whatsapp-webhook/index.ts via its own hardcoded bot_scripts lookup and
-// never checks automation_stages.is_active — for that row only, the
-// toggle is still cosmetic today. (stage_2_pay, despite also being
-// event_immediate, DOES check automation_stages.is_active in the webhook
-// — its toggle is live.)
+// The one exception (legacy): stage_2_arrival was event_immediate-only until
+// migration 127 — it is now hours_after_event and appears in the Live Queue.
+// whatsapp-webhook still sends immediately on «כן מגיעים» when offset_hours=0;
+// cron + ACC bulk dispatch cover scheduled sends and webhook failures.
 import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import TemplateManagerPanel, { STATUS_META } from "./TemplateManagerPanel";
@@ -84,6 +82,7 @@ const SKIP_REASON_LABELS = {
   not_on_property: "אורח לא בנכס",
   quiet_hours_passed: "עבר חלון השעות",
   staff_claim_active: "שיחה בטיפול צוות",
+  awaiting_confirmation: "ממתין לאישור הגעה",
 };
 
 function queueYmd(d = new Date()) {
@@ -1018,7 +1017,7 @@ function CustomAutomationBuilder({ metaTemplatesByName, showToast }) {
 //   3. Two-step confirm: preview → dispatch (no accidental sends).
 //   4. The flag column IS stamped on success so cron doesn't double-fire.
 const DAY_PASS_ALLOWED_FOR_MODAL = new Set([
-  "pre_arrival_2d", "night_before_daypass", "morning_welcome",
+  "pre_arrival_2d", "stage_2_arrival", "night_before_daypass", "morning_welcome",
   "mid_stay_daypass", "checkout_fb_daypass",
 ]);
 
@@ -1727,8 +1726,7 @@ export default function AutomationControlCenter() {
             ⚙️ עריכת תזמון/תוכן כאן <strong>חיה</strong> — whatsapp-cron ו-whatsapp-send קוראים בפועל מהטבלה הזו ומחליטים לפיה
             מתי ומה לשלוח לאורחים. הפעלה/כיבוי או שינוי שלב כאן משפיע ישירות על מה שהאורח מקבל בוואטסאפ, לא רק על מה שמוצג בלוח.
             <br />
-            החריג היחיד: שלב "אישור הגעה" (Stage 2 Arrival) — whatsapp-webhook שולח אותו ישירות מ-bot_scripts ולא בודק את המתג כאן,
-            כך שעבור השלב הזה בלבד ההפעלה/כיבוי עדיין קוסמטית.
+            שלב 2 (אישור הגעה): נשלח מיד כשהאורח לוחץ «כן מגיעים» (אם <code>offset_hours=0</code>), מופיע גם ב<strong>תור חי</strong> לאורחים שאישרו וטרם קיבלו — ניתן לשגר ידנית/מאסיבית משם.
           </div>
 
           {loadingStages ? (

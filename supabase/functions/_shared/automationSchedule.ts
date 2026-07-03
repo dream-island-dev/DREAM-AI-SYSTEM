@@ -144,11 +144,30 @@ export interface GuestForSchedule {
   room_type: string | null;
   status: string | null;
   checkin_time: string | null;
+  /** Set by webhook on «כן מגיעים» — anchor for stage_2_arrival schedule. */
+  arrival_confirmed?: boolean | null;
+  arrival_confirmed_at?: string | null;
   needs_callback: boolean | null;
   automation_muted?: boolean | null;
   /** WhatsAppInbox "קח שיחה" — staff-owned thread; blocks autonomous cron sends. */
   claimed_by?: string | null;
   [flagColumn: string]: unknown;
+}
+
+/** Resolve stage_2_arrival anchor — legacy rows may lack arrival_confirmed_at. */
+export function resolveArrivalConfirmedAnchor(
+  guest: GuestForSchedule,
+): string | null {
+  if (guest.arrival_confirmed_at) return guest.arrival_confirmed_at;
+  if (!guest.arrival_confirmed) return null;
+  // Legacy confirm without timestamp — treat as due on arrival day morning (Israel).
+  if (guest.arrival_date) {
+    return utcHourToTimestamp(
+      guest.arrival_date,
+      parseLocalTimeToUtcHour("08:00"),
+    ).toISOString();
+  }
+  return null;
 }
 
 /** True when DREAM BOT staff-claim mute is active on this guest row. */
@@ -207,6 +226,15 @@ export function checkEligibility(
   if (stage.applies_to === "suite" && guest.room_type !== "suite") return "wrong_room_type";
   if (stage.applies_to === "non_suite" && guest.room_type === "suite") return "wrong_room_type";
 
+  if (stage.stage_key === "stage_2_arrival") {
+    if (!guest.arrival_confirmed && !guest.arrival_confirmed_at) {
+      return "awaiting_confirmation";
+    }
+    if (!resolveArrivalConfirmedAnchor(guest)) {
+      return "missing_anchor_timestamp";
+    }
+  }
+
   if (stage.stage_key === "mid_stay" || stage.stage_key === "mid_stay_daypass") {
     if (stage.stage_key === "mid_stay") {
       const requireCheckedIn = stage.require_checked_in !== false;
@@ -247,7 +275,11 @@ export function computeScheduledInstant(
   }
 
   if (stage.schedule_mode === "hours_after_event") {
-    const anchorTs = stage.anchor_event === "checkin_time" ? guest.checkin_time : null;
+    const anchorTs = stage.anchor_event === "checkin_time"
+      ? guest.checkin_time
+      : stage.anchor_event === "arrival_confirmed_at"
+      ? resolveArrivalConfirmedAnchor(guest)
+      : null;
     if (!anchorTs) return null;
     return new Date(new Date(anchorTs).getTime() + (stage.offset_hours ?? 0) * 3600 * 1000);
   }
@@ -288,9 +320,7 @@ export function resolveStageSchedule(
   }
 
   if (stage.schedule_mode === "event_immediate") {
-    // Dispatched synchronously elsewhere (e.g. whatsapp-webhook's direct
-    // reply to a guest's "כן, מגיעים!") — never polled by cron, so there is
-    // no future instant to predict.
+    // Legacy rows only — stage_2_arrival moved to hours_after_event (migration 127).
     return { scheduledFor: null, dueNow: false, skipReason: null };
   }
 
@@ -324,7 +354,11 @@ export function resolveStageSchedule(
   }
 
   if (stage.schedule_mode === "hours_after_event") {
-    const anchorTs = stage.anchor_event === "checkin_time" ? guest.checkin_time : null;
+    const anchorTs = stage.anchor_event === "checkin_time"
+      ? guest.checkin_time
+      : stage.anchor_event === "arrival_confirmed_at"
+      ? resolveArrivalConfirmedAnchor(guest)
+      : null;
     if (!anchorTs) return { scheduledFor: null, dueNow: false, skipReason: "missing_anchor_timestamp" };
     const scheduledFor = scheduledForPreview ?? new Date(new Date(anchorTs).getTime() + (stage.offset_hours ?? 0) * 3600 * 1000);
     return { scheduledFor, dueNow: scheduledFor.getTime() <= now.getTime(), skipReason: null };

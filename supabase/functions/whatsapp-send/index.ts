@@ -304,6 +304,7 @@ const GUEST_FLAG: Record<string, string> = {
   checkout_fb:         "msg_checkout_fb_sent",
   checkout_fb_daypass: "msg_checkout_fb_sent",
   night_before_daypass: "msg_pre_arrival_sent",
+  stage_2_arrival:     "msg_stage_2_arrival_sent",
 };
 
 // ── Stage 2.5 (night_before) — Sabbath/Holiday-aware entry/check-in times ───
@@ -1825,7 +1826,7 @@ serve(async (req: Request) => {
     const forceMetaTemplate   = force === true && force_channel === "meta_template";
     const forceSessionMessage = force === true && force_channel === "session_message";
 
-    if (!(trigger in PIPELINE_TEMPLATE) && !stageRow?.meta_template_name) {
+    if (!(trigger in PIPELINE_TEMPLATE) && !stageRow?.meta_template_name && !stageRow?.session_message_script_key) {
       throw new Error("unknown trigger: " + trigger);
     }
 
@@ -1902,20 +1903,20 @@ serve(async (req: Request) => {
     // day-pass guests receive 'night_before_daypass' (separate automation_stages row,
     // migration 093). Stage 3 (morning_welcome) now applies to day-pass guests too.
     const DAY_PASS_ALLOWED_TRIGGERS = new Set([
-      "pre_arrival_2d", "night_before_daypass", "morning_welcome",
+      "pre_arrival_2d", "stage_2_arrival", "night_before_daypass", "morning_welcome",
       "mid_stay_daypass", "checkout_fb_daypass",
     ]);
     if (!force && (guest.room_type === "day_guest" || guest.room_type === "premium_day_guest") && !DAY_PASS_ALLOWED_TRIGGERS.has(trigger)) {
       console.warn(
         `[whatsapp-send] day_pass_stage_gate: trigger="${trigger}" blocked for ` +
-        `guest_id=${guestId} (room_type=${guest.room_type}) — allowed: pre_arrival_2d, night_before_daypass, morning_welcome, mid_stay_daypass, checkout_fb_daypass`,
+        `guest_id=${guestId} (room_type=${guest.room_type}) — allowed: pre_arrival_2d, stage_2_arrival, night_before_daypass, morning_welcome, mid_stay_daypass, checkout_fb_daypass`,
       );
       return new Response(
         JSON.stringify({
           ok: false,
           status: "blocked",
           reason: "day_pass_stage_gate",
-          error: `שלב "${trigger}" אינו מורשה לאורחי יום-כיף — מותרים: אישור הגעה, תזכורת ערב לפני (בילוי יומי), בוקר הגעה, ומשוב`,
+          error: `שלב "${trigger}" אינו מורשה לאורחי יום-כיף — מותרים: אישור הגעה, שלב 2, תזכורת ערב לפני (בילוי יומי), בוקר הגעה, ומשוב`,
         }),
         { headers: { ...CORS, "Content-Type": "application/json" } },
       );
@@ -1938,6 +1939,93 @@ serve(async (req: Request) => {
       );
     }
     const flagColumn = stageRow?.guest_flag_column ?? GUEST_FLAG[trigger];
+
+    // ── Stage 2 Arrival — rich session message only (no Meta template) ────────
+    if (trigger === "stage_2_arrival") {
+      const targetPhone = safeGuestPhone(guest.phone);
+      if (!targetPhone) {
+        return new Response(
+          JSON.stringify({
+            ok: false, status: "failed",
+            error: `guest_no_phone: guest id=${guestId} (${String(guest.name ?? "?")}) has no phone on file`,
+          }),
+          { headers: { ...CORS, "Content-Type": "application/json" } },
+        );
+      }
+
+      if (!force && !forceSessionMessage && !isWindowOpen(guest.wa_window_expires_at)) {
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            status: "window_closed",
+            error: "חלון 24 השעות סגור — לא ניתן לשלוח הודעת הגעה (שלב 2) עד שהאורח ישלח הודעה.",
+          }),
+          { headers: { ...CORS, "Content-Type": "application/json" } },
+        );
+      }
+
+      const scriptKey = stageRow?.session_message_script_key ?? "stage_2_arrival";
+      const { data: scriptRow } = await supabase
+        .from("bot_scripts")
+        .select("message_text")
+        .eq("script_key", scriptKey)
+        .maybeSingle();
+      const rawText = scriptRow?.message_text?.trim();
+      if (!rawText) throw new Error(`stage_2_arrival: bot_scripts.${scriptKey} missing or empty`);
+
+      const guestName = (String(guest.name ?? "").trim()) || "אורח יקר";
+      const portalLink = guest.portal_token
+        ? `${PORTAL_BASE_URL}/portal/${guest.portal_token as string}`
+        : "";
+      const body = resolveStage2ArrivalPlaceholders(rawText, {
+        guestName,
+        spaTime: (guest.spa_time as string | null) ?? null,
+        portalLink,
+      });
+
+      let s2Status = "simulated";
+      let s2Error: string | null = null;
+      try {
+        if (!sim) {
+          await sendStageSessionMessage(
+            targetPhone, body, undefined, [],
+            `stage_2_arrival guest_id=${guestId}`,
+          );
+          s2Status = "sent";
+        }
+      } catch (e) {
+        s2Error = (e as Error).message;
+        s2Status = s2Error.startsWith("timeout_no_response") ? "timeout" : "failed";
+        console.error(`[whatsapp-send] stage_2_arrival ${s2Status}:`, s2Error);
+      }
+
+      await supabase.from("notification_log").insert({
+        guest_id: guestId,
+        recipient: targetPhone,
+        trigger_type: "stage_2_arrival",
+        channel: "whatsapp",
+        status: s2Status,
+        payload: s2Error ? { error: s2Error, force: !!force } : { force: !!force },
+      });
+
+      if (s2Status === "sent" || s2Status === "simulated") {
+        await supabase.from("guests").update({ msg_stage_2_arrival_sent: true }).eq("id", guestId);
+        if (force || manual_override) {
+          await markScheduledTaskDispatched(guestId, trigger);
+        }
+      }
+
+      return new Response(
+        JSON.stringify({
+          ok: s2Status === "sent" || s2Status === "simulated",
+          simulation: sim,
+          status: s2Status,
+          channel: "session_message",
+          ...(s2Error ? { error: s2Error } : {}),
+        }),
+        { headers: { ...CORS, "Content-Type": "application/json" } },
+      );
+    }
 
     // Manual override — force Meta template, bypass all window/session routing ─
     // night_before is excluded: Stage 2.5 has its own fast-path below that picks

@@ -439,6 +439,7 @@ interface AutomationStageRow {
   is_active: boolean;
   session_message_script_key: string | null;
   interactive_buttons: Array<{ type: string; label: string; url?: string }> | null;
+  offset_hours?: number | null;
 }
 const _stageCache = new Map<string, { row: AutomationStageRow | null; time: number }>();
 
@@ -452,7 +453,7 @@ async function fetchAutomationStage(
   try {
     const { data } = await supabaseClient
       .from("automation_stages")
-      .select("is_active, session_message_script_key, interactive_buttons")
+      .select("is_active, session_message_script_key, interactive_buttons, offset_hours")
       .eq("stage_key", stageKey)
       .maybeSingle();
     const row = (data as AutomationStageRow | null) ?? null;
@@ -657,12 +658,17 @@ async function handleStage2ArrivalConfirmation(
   }
 
   if (guestId) {
+    const confirmedAt = new Date().toISOString();
     const { error: confirmErr } = await supabaseClient.from("guests").update({
       arrival_confirmed: true,
+      arrival_confirmed_at: confirmedAt,
       ...(guest?.status === "pending" ? { status: "expected" } : {}),
     }).eq("id", guestId);
     if (confirmErr) {
       console.error(`[webhook] arrival_confirmed update FAILED phone:${phone}:`, confirmErr.message);
+    } else if (guest) {
+      guest.arrival_confirmed = true;
+      guest.arrival_confirmed_at = confirmedAt;
     }
   } else {
     console.warn(
@@ -678,12 +684,26 @@ async function handleStage2ArrivalConfirmation(
   }
 
   const hasPendingPayment = !!(guest?.payment_amount);
+  const stage2Arrival = await fetchAutomationStage(supabaseClient, "stage_2_arrival");
   const stage2Pay = await fetchAutomationStage(supabaseClient, "stage_2_pay");
   if (hasPendingPayment && stage2Pay?.is_active === true) {
     await sendStage2PayReply(
       supabaseClient, scripts, stage2Pay, phone, guestId, guest, sim, buttonTitle,
     );
     console.info(`[webhook] ✅ arrival confirmed (${source}, payment-pending) — phone:${phone}`);
+    return;
+  }
+
+  if (stage2Arrival?.is_active === false) {
+    console.info(`[webhook] stage_2_arrival paused in automation_stages — confirm saved, no reply phone:${phone}`);
+    return;
+  }
+
+  const deferHours = stage2Arrival?.offset_hours ?? 0;
+  if (deferHours > 0) {
+    console.info(
+      `[webhook] stage_2_arrival deferred ${deferHours}h after confirm — cron will dispatch phone:${phone}`,
+    );
     return;
   }
 
@@ -740,6 +760,20 @@ async function handleStage2ArrivalConfirmation(
     await insertGuestOutboundIfNotMuted(supabaseClient, {
       phone, guest_id: guestId, message: arrivalReply, wa_message_id: null, intent: outboundIntent,
     });
+    if (guestId) {
+      await supabaseClient.from("guests").update({ msg_stage_2_arrival_sent: true }).eq("id", guestId);
+      try {
+        const { error: logErr } = await supabaseClient.from("notification_log").insert({
+          guest_id: guestId, recipient: phone,
+          trigger_type: "stage_2_arrival", channel: "whatsapp",
+          status: "sent",
+          payload: { source, ...(buttonTitle ? { buttonTitle } : {}) },
+        });
+        if (logErr) console.warn("[webhook] notification_log stage_2_arrival:", logErr.message);
+      } catch (logEx) {
+        console.warn("[webhook] notification_log stage_2_arrival:", (logEx as Error).message);
+      }
+    }
     console.info(`[webhook] ✅ arrival reply sent to ${phone}`);
   } catch (e) {
     const errMsg = (e as Error).message;
@@ -748,7 +782,7 @@ async function handleStage2ArrivalConfirmation(
     try {
       const { error: logErr } = await supabaseClient.from("notification_log").insert({
         guest_id: guestId, recipient: phone,
-        trigger_type: "arrival_confirmed_reply", channel: "whatsapp",
+        trigger_type: "stage_2_arrival", channel: "whatsapp",
         status: replyStatus,
         payload: { error: errMsg, source, ...(buttonTitle ? { buttonTitle } : {}) },
       });
