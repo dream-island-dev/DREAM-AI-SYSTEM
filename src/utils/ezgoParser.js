@@ -91,6 +91,20 @@ function normalizeILMobile(raw) {
   return null;
 }
 
+const REPEATED_DIGIT_RE = /^(\d)\1+$/;
+
+/**
+ * Placeholder coordinator phones ("111", "000…") — not real guest numbers.
+ * Shared with guestImportIntelligence.js (umbrella vs importable row).
+ */
+export function isDummyPhone(phone) {
+  if (phone == null || phone === "") return true;
+  const digits = String(phone).replace(/\D/g, "");
+  if (digits.length < 7) return true;
+  if (REPEATED_DIGIT_RE.test(digits)) return true;
+  return false;
+}
+
 /**
  * Extracts every valid Israeli mobile number from arbitrary text.
  * Returns an array of E.164 strings, deduped.
@@ -294,7 +308,7 @@ export function extractGuestDetails(row, columnMapping = {}, fallbackDate = null
   if (remarkPhones.length > 0 && remarkNameCandidate) {
     guestPhone   = remarkPhones[0];
     phoneSource  = "individual";
-  } else if (directE164) {
+  } else if (directE164 && !isDummyPhone(directE164)) {
     guestPhone  = directE164;
     phoneSource = "individual";
   } else if (remarkPhones.length > 0) {
@@ -303,9 +317,12 @@ export function extractGuestDetails(row, columnMapping = {}, fallbackDate = null
   } else if (opRemarkPhones.length > 0) {
     guestPhone   = opRemarkPhones[0];
     phoneSource  = "individual";
-  } else {
+  } else if (coordE164 && !isDummyPhone(coordE164)) {
     guestPhone   = coordE164;
     phoneSource  = "coordinator";
+  } else {
+    guestPhone   = null;
+    phoneSource  = null;
   }
 
   // ── Name priority cascade ─────────────────────────────────────────────────
@@ -340,6 +357,7 @@ export function extractGuestDetails(row, columnMapping = {}, fallbackDate = null
     guestName,          // actual occupant name or coordinator name
     guestPhone,         // E.164 — individual occupant or coordinator fallback
     coordPhone: coordE164,
+    coordPhoneRaw: coordPhoneRaw || null,
     phoneSource,        // "individual" | "coordinator"
 
     // ── Booking details ───────────────────────────────────────────────────

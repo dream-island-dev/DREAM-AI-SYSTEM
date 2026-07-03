@@ -29,7 +29,7 @@ import { roomsCanonicallyMatch, resolveSuiteFromEzgoFields } from "../data/suite
 // Sprint 0 scope: build the contract + pure helpers. ArrivalImportPanel.js
 // and ezgoParser.js are NOT wired to this file yet — that is a later sprint.
 
-import { extractPhonesFromText, extractNameFromRemark } from "./ezgoParser";
+import { extractPhonesFromText, extractNameFromRemark, isDummyPhone } from "./ezgoParser";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // § TYPES (JSDoc only — this codebase has no TypeScript on the frontend)
@@ -91,22 +91,8 @@ export const FIELD_SOURCE_PRIORITY = {
 // § DUMMY / CORPORATE / UMBRELLA DETECTION
 // ─────────────────────────────────────────────────────────────────────────────
 
-const REPEATED_DIGIT_RE = /^(\d)\1+$/;
-
-/**
- * True when `phone` is missing, too short, or an obviously-repeated
- * placeholder digit sequence — the kind of value municipal/corporate group
- * bookings use in a phone column instead of a real guest number ("111",
- * "0000000000", etc). Deliberately generous: a false "dummy" just routes a
- * row to human review (unimportable), it never silently drops real data.
- */
-export function isDummyPhone(phone) {
-  if (phone == null || phone === "") return true;
-  const digits = String(phone).replace(/\D/g, "");
-  if (digits.length < 7) return true;
-  if (REPEATED_DIGIT_RE.test(digits)) return true;
-  return false;
-}
+/** Re-exported from ezgoParser.js — single source for placeholder phone detection. */
+export { isDummyPhone } from "./ezgoParser";
 
 // Hebrew institutional/corporate name prefixes — municipalities, nonprofits,
 // companies, schools, government offices. A booking coordinator named this
@@ -276,25 +262,18 @@ export function mergeCandidates({ arrivals = [], ops = [], detailed = [] } = {})
   // ── 1. Arrivals — the authoritative, Zero-Data-Loss source. One candidate
   // per row, never collapsed with a sibling row sharing an order number (a
   // group booking's individual occupants must stay distinct — mirrors
-  // ezgoParser.js's row-index-keyed aggregation). roomsCount defaults to how
-  // many arrivals rows share this order, but an explicit row.roomsCount
-  // (e.g. a summary row's own "rooms" column) always wins — that is what a
-  // municipal umbrella booking looks like: one row, an explicit room count. ──
-  const roomsByOrder = new Map();
-  for (const row of arrivals) {
-    const orderNumber = row.orderNumber || null;
-    if (orderNumber) roomsByOrder.set(orderNumber, (roomsByOrder.get(orderNumber) ?? 0) + 1);
-  }
-
+  // ezgoParser.js's row-index-keyed aggregation). roomsCount is per-row only
+  // (default 1): inflating by sibling count under the same order made every
+  // municipal occupant look like an "umbrella" row and blocked import. ──
   const candidates = [];
 
   for (const row of arrivals) {
     const orderNumber = row.orderNumber || null;
-    const roomsCount = row.roomsCount ?? (orderNumber ? roomsByOrder.get(orderNumber) : 1) ?? 1;
+    const roomsCount = row.roomsCount ?? row.rooms_count ?? 1;
     const candidate = {
       guestName: row.guestName ?? null,
       guestPhone: row.guestPhone ?? null,
-      _rawPhone: row.guestPhone ?? row.coordPhone ?? null,
+      _rawPhone: row.coordPhoneRaw ?? row.coordPhone ?? row.guestPhone ?? null,
       phoneSource: row.phoneSource ?? null,
       orderNumber,
       resLineId: row.resLineId || null,
@@ -451,7 +430,10 @@ export function mergeCandidates({ arrivals = [], ops = [], detailed = [] } = {})
 export function classifyDbMatch(candidate, existingGuestRow) {
   if (!candidate) return "unimportable";
 
-  const umbrella = isUmbrellaRow({
+  const hasResolvableGuest =
+    !!candidate.guestPhone && !isDummyPhone(candidate.guestPhone) && !!candidate.guestName;
+
+  const umbrella = !hasResolvableGuest && isUmbrellaRow({
     phone: candidate._rawPhone ?? candidate.guestPhone,
     roomsCount: candidate.roomsCount,
     name: candidate.guestName,

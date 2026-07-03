@@ -39,6 +39,27 @@ describe("ezgoParser — Sprint 1 fixes", () => {
     expect(row.coordPhone).toBe("+972501112222"); // coordinator phone still preserved separately
   });
 
+  test("dummy coordinator phone (111) is ignored — remark name+phone is the guest profile", () => {
+    const row = extractGuestDetails(
+      {
+        Order: "300350",
+        ResLine: "rl-Z",
+        Remark: "מרדכי 050-7774904",
+        CoordName: "עיריית תל אביב",
+        CoordPhone: "111",
+        GuestPhone: "111",
+      },
+      ARRIVALS_MAPPING,
+    );
+
+    expect(row.guestPhone).toBe("+972507774904");
+    expect(row.guestName).toBe("מרדכי");
+    expect(row.phoneSource).toBe("individual");
+    expect(row.coordPhone).toBeNull();
+    expect(row.coordPhoneRaw).toBe("111");
+    expect(row.automationMuted).toBe(true);
+  });
+
   test("direct guestPhone still wins when remark has no phone at all", () => {
     const row = extractGuestDetails(
       {

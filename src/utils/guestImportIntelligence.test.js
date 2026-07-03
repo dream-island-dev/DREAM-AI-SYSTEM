@@ -104,6 +104,40 @@ describe("Guest Import Intelligence — golden cases", () => {
     expect(classifyDbMatch(umbrellaCandidate, null)).toBe("unimportable");
   });
 
+  test("case 3b: dummy coordinator (111) + remark name/phone — each occupant importable, automation muted", () => {
+    const rowA = extractGuestDetails(
+      {
+        Order: "300300",
+        ResLine: "rl-1",
+        Remark: "מרדכי 050-7774904",
+        CoordName: "עיריית תל אביב",
+        CoordPhone: "111",
+      },
+      ARRIVALS_MAPPING,
+    );
+    const rowB = extractGuestDetails(
+      {
+        Order: "300300",
+        ResLine: "rl-2",
+        Remark: "גבריאל 052-6691991",
+        CoordName: "עיריית תל אביב",
+        CoordPhone: "111",
+      },
+      ARRIVALS_MAPPING,
+    );
+
+    expect(rowA.guestPhone).toBe("+972507774904");
+    expect(rowA.guestName).toBe("מרדכי");
+    expect(rowA.automationMuted).toBe(true);
+    expect(rowB.guestPhone).toBe("+972526691991");
+
+    const candidates = mergeCandidates({ arrivals: [rowA, rowB] });
+    expect(candidates).toHaveLength(2);
+    expect(candidates.every((c) => c.roomsCount === 1)).toBe(true);
+    expect(candidates.every((c) => classifyDbMatch(c, null) === "new")).toBe(true);
+    expect(candidates.every((c) => c.automationMuted)).toBe(true);
+  });
+
   test("case 4: ops header line — dummy phone, unresolvable corporate name → not a profile", () => {
     const candidates = mergeCandidates({ ops: ["262070: עיריית - 111"] });
     expect(candidates).toHaveLength(0);
