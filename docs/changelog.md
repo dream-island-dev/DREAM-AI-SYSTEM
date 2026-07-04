@@ -1,4 +1,4 @@
-2026-07-04 | whatsapp-send + _shared/metaTemplateLog + migration 130 | Inbox WYSIWYG שלב 1: גופי תבניות מלאים (night_before_suites/_shabbat, dream_suite_reminder, suite_welcome_morning*) + fallback Meta API; כפתורי QR בלוג.
+2026-07-04 | whatsapp-send + _shared/metaTemplateLog + migration 130 | Inbox WYSIWYG שלב 1 deployed: גופי תבניות מלאים (night_before_suites/_shabbat וכו') + fallback Meta API; migration 130 תיקון wa_template_name column.
 2026-07-04 | whatsapp-send + whatsapp-webhook + migration 129 | אוטומציה: cron תמיד Meta template (לא bot_scripts בגלל חלון 24ש'); mid_stay ללא «בוקר טוב»+חלון 10–12; Stage 2 רק מ-bot_scripts (בלי fallback מומצא).
 2026-07-04 | automationSchedule.ts + whatsapp-webhook | חיזוק מגן תשובה קטועה בשעות כניסה: `looksLikeCheckInHoursReply`+`resolveTruncatedReplyFallback` ב-sendReply chokepoint; Tier-0 מורחב; 4 בדיקות `checkInPolicyFaq.test.js`.
 2026-07-04 | WhatsAppInbox.js + guestTiming.js | Inbox: unread רק כשאין מענה אחרי inbound; פילטר «אחרי עזיבה» מפריד אורחים שעזבו מהרשימה הראשית.
