@@ -694,104 +694,102 @@ async function handleStage2ArrivalConfirmation(
   const hasPendingPayment = !!(guest?.payment_amount);
   const stage2Arrival = await fetchAutomationStage(supabaseClient, "stage_2_arrival");
   const stage2Pay = await fetchAutomationStage(supabaseClient, "stage_2_pay");
+
+  if (stage2Arrival?.is_active === false) {
+    console.info(`[webhook] stage_2_arrival paused in automation_stages — confirm saved, no arrival reply phone:${phone}`);
+  } else {
+    // Interactive «כן מגיעים» always fires Stage 2 immediately — offset_hours is
+    // for cron/ACC catch-up only (guests who confirmed but never got the message).
+    const deferHours = stage2Arrival?.offset_hours ?? 0;
+    if (deferHours > 0) {
+      console.info(
+        `[webhook] stage_2_arrival offset_hours=${deferHours} ignored on live confirm — sending now phone:${phone}`,
+      );
+    }
+
+    const safeName = String(guest?.name ?? "").trim() || "אורח יקר";
+    const spaTime = (guest?.spa_time as string | null) ?? null;
+    const portalLink = buildPortalLink(guest?.portal_token);
+    if (!portalLink) {
+      console.warn(
+        `[webhook] ⚠️ guest ${phone} (id:${guestId}) has no portal_token — Stage 2 reply will not include a portal link.`,
+      );
+    }
+
+    const stage2Script = scripts["stage_2_arrival"];
+    if (!stage2Script?.message_text?.trim()) {
+      console.error(
+        `[webhook] stage_2_arrival: bot_scripts.message_text missing/empty — ` +
+        `refusing invented fallback phone:${phone} (edit in BotScriptEditor)`,
+      );
+    } else {
+      const hasOptionalSpaText = /\{\{\s*OPTIONAL_SPA_TEXT\s*\}\}/i.test(stage2Script.message_text);
+      const hasSpaLine = /\{\{\s*SPA_LINE\s*\}\}/i.test(stage2Script.message_text);
+      const hasSpaTimeLegacy = /\{\{\s*SPA_TIME\s*\}\}/i.test(stage2Script.message_text);
+      console.log(
+        `[webhook] 🩺 resolvePlaceholders input (${source}) — phone:${phone} spaTime:${JSON.stringify(spaTime)}` +
+        ` scriptHasOptionalSpaText:${hasOptionalSpaText} scriptHasSpaLine:${hasSpaLine} scriptHasSpaTime:${hasSpaTimeLegacy}`,
+      );
+      if (spaTime && !hasOptionalSpaText && !hasSpaLine && !hasSpaTimeLegacy) {
+        console.warn(
+          `[webhook] ⚠️ guest ${phone} has spa_time="${spaTime}" but stage_2_arrival has no spa placeholder — check BotScriptEditor.`,
+        );
+      }
+      const arrivalReply = resolvePlaceholders(stage2Script.message_text, {
+        guestName: safeName, spaTime, workshopUrl: "", portalLink,
+      });
+
+      console.info(`[webhook] 🎉 arrival confirmed (${source}) — phone:${phone} name="${safeName}"`);
+
+      if (sim) {
+        console.info(`[webhook] SIM — would send Stage 2 arrival reply to ${phone}`);
+      } else {
+        const outboundIntent = source === "button" ? "arrival_confirmed" : "confirmation";
+        try {
+          await sendReply(phone, arrivalReply);
+          await insertGuestOutboundIfNotMuted(supabaseClient, {
+            phone, guest_id: guestId, message: arrivalReply, wa_message_id: null, intent: outboundIntent,
+          });
+          if (guestId) {
+            await supabaseClient.from("guests").update({ msg_stage_2_arrival_sent: true }).eq("id", guestId);
+            try {
+              const { error: logErr } = await supabaseClient.from("notification_log").insert({
+                guest_id: guestId, recipient: phone,
+                trigger_type: "stage_2_arrival", channel: "whatsapp",
+                status: "sent",
+                payload: { source, ...(buttonTitle ? { buttonTitle } : {}) },
+              });
+              if (logErr) console.warn("[webhook] notification_log stage_2_arrival:", logErr.message);
+            } catch (logEx) {
+              console.warn("[webhook] notification_log stage_2_arrival:", (logEx as Error).message);
+            }
+          }
+          console.info(`[webhook] ✅ arrival reply sent to ${phone}`);
+        } catch (e) {
+          const errMsg = (e as Error).message;
+          const replyStatus = errMsg.startsWith("timeout_no_response") ? "timeout" : "failed";
+          console.error(`[webhook] ❌ arrival reply ${replyStatus} to ${phone}:`, errMsg);
+          try {
+            const { error: logErr } = await supabaseClient.from("notification_log").insert({
+              guest_id: guestId, recipient: phone,
+              trigger_type: "stage_2_arrival", channel: "whatsapp",
+              status: replyStatus,
+              payload: { error: errMsg, source, ...(buttonTitle ? { buttonTitle } : {}) },
+            });
+            if (logErr) console.warn("[webhook] notification_log insert error:", logErr.message);
+          } catch (logEx) {
+            console.warn("[webhook] notification_log insert error:", (logEx as Error).message);
+          }
+        }
+      }
+    }
+  }
+
   if (hasPendingPayment && stage2Pay?.is_active === true) {
     await sendStage2PayReply(
       supabaseClient, scripts, stage2Pay, phone, guestId, guest, sim, buttonTitle,
     );
-    console.info(`[webhook] ✅ arrival confirmed (${source}, payment-pending) — phone:${phone}`);
-    return;
-  }
-
-  if (stage2Arrival?.is_active === false) {
-    console.info(`[webhook] stage_2_arrival paused in automation_stages — confirm saved, no reply phone:${phone}`);
-    return;
-  }
-
-  const deferHours = stage2Arrival?.offset_hours ?? 0;
-  if (deferHours > 0) {
-    console.info(
-      `[webhook] stage_2_arrival deferred ${deferHours}h after confirm — cron will dispatch phone:${phone}`,
-    );
-    return;
-  }
-
-  const safeName = String(guest?.name ?? "").trim() || "אורח יקר";
-  const spaTime = (guest?.spa_time as string | null) ?? null;
-  const portalLink = buildPortalLink(guest?.portal_token);
-  if (!portalLink) {
-    console.warn(
-      `[webhook] ⚠️ guest ${phone} (id:${guestId}) has no portal_token — Stage 2 reply will not include a portal link.`,
-    );
-  }
-
-  const stage2Script = scripts["stage_2_arrival"];
-  if (!stage2Script?.message_text?.trim()) {
-    console.error(
-      `[webhook] stage_2_arrival: bot_scripts.message_text missing/empty — ` +
-      `refusing invented fallback phone:${phone} (edit in BotScriptEditor)`,
-    );
-    return;
-  }
-
-  const hasOptionalSpaText = /\{\{\s*OPTIONAL_SPA_TEXT\s*\}\}/i.test(stage2Script.message_text);
-  const hasSpaLine = /\{\{\s*SPA_LINE\s*\}\}/i.test(stage2Script.message_text);
-  const hasSpaTimeLegacy = /\{\{\s*SPA_TIME\s*\}\}/i.test(stage2Script.message_text);
-  console.log(
-    `[webhook] 🩺 resolvePlaceholders input (${source}) — phone:${phone} spaTime:${JSON.stringify(spaTime)}` +
-    ` scriptHasOptionalSpaText:${hasOptionalSpaText} scriptHasSpaLine:${hasSpaLine} scriptHasSpaTime:${hasSpaTimeLegacy}`,
-  );
-  if (spaTime && !hasOptionalSpaText && !hasSpaLine && !hasSpaTimeLegacy) {
-    console.warn(
-      `[webhook] ⚠️ guest ${phone} has spa_time="${spaTime}" but stage_2_arrival has no spa placeholder — check BotScriptEditor.`,
-    );
-  }
-  const arrivalReply = resolvePlaceholders(stage2Script.message_text, {
-    guestName: safeName, spaTime, workshopUrl: "", portalLink,
-  });
-
-  console.info(`[webhook] 🎉 arrival confirmed (${source}) — phone:${phone} name="${safeName}"`);
-
-  if (sim) {
-    console.info(`[webhook] SIM — would send Stage 2 arrival reply to ${phone}`);
-    return;
-  }
-
-  const outboundIntent = source === "button" ? "arrival_confirmed" : "confirmation";
-  try {
-    await sendReply(phone, arrivalReply);
-    await insertGuestOutboundIfNotMuted(supabaseClient, {
-      phone, guest_id: guestId, message: arrivalReply, wa_message_id: null, intent: outboundIntent,
-    });
-    if (guestId) {
-      await supabaseClient.from("guests").update({ msg_stage_2_arrival_sent: true }).eq("id", guestId);
-      try {
-        const { error: logErr } = await supabaseClient.from("notification_log").insert({
-          guest_id: guestId, recipient: phone,
-          trigger_type: "stage_2_arrival", channel: "whatsapp",
-          status: "sent",
-          payload: { source, ...(buttonTitle ? { buttonTitle } : {}) },
-        });
-        if (logErr) console.warn("[webhook] notification_log stage_2_arrival:", logErr.message);
-      } catch (logEx) {
-        console.warn("[webhook] notification_log stage_2_arrival:", (logEx as Error).message);
-      }
-    }
-    console.info(`[webhook] ✅ arrival reply sent to ${phone}`);
-  } catch (e) {
-    const errMsg = (e as Error).message;
-    const replyStatus = errMsg.startsWith("timeout_no_response") ? "timeout" : "failed";
-    console.error(`[webhook] ❌ arrival reply ${replyStatus} to ${phone}:`, errMsg);
-    try {
-      const { error: logErr } = await supabaseClient.from("notification_log").insert({
-        guest_id: guestId, recipient: phone,
-        trigger_type: "stage_2_arrival", channel: "whatsapp",
-        status: replyStatus,
-        payload: { error: errMsg, source, ...(buttonTitle ? { buttonTitle } : {}) },
-      });
-      if (logErr) console.warn("[webhook] notification_log insert error:", logErr.message);
-    } catch (logEx) {
-      console.warn("[webhook] notification_log insert error:", (logEx as Error).message);
-    }
+    console.info(`[webhook] ✅ arrival confirmed (${source}, payment follow-up) — phone:${phone}`);
   }
 }
 

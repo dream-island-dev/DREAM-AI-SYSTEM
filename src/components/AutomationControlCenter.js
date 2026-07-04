@@ -16,8 +16,8 @@
 //
 // The one exception (legacy): stage_2_arrival was event_immediate-only until
 // migration 127 — it is now hours_after_event and appears in the Live Queue.
-// whatsapp-webhook still sends immediately on «כן מגיעים» when offset_hours=0;
-// cron + ACC bulk dispatch cover scheduled sends and webhook failures.
+// whatsapp-webhook still sends immediately on «כן מגיעים» regardless of offset_hours;
+// offset_hours applies to cron/ACC catch-up for guests who confirmed but never received Stage 2.
 import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import TemplateManagerPanel, { STATUS_META } from "./TemplateManagerPanel";
@@ -1747,7 +1747,7 @@ export default function AutomationControlCenter() {
             ⚙️ עריכת תזמון/תוכן כאן <strong>חיה</strong> — whatsapp-cron ו-whatsapp-send קוראים בפועל מהטבלה הזו ומחליטים לפיה
             מתי ומה לשלוח לאורחים. הפעלה/כיבוי או שינוי שלב כאן משפיע ישירות על מה שהאורח מקבל בוואטסאפ, לא רק על מה שמוצג בלוח.
             <br />
-            שלב 2 (אישור הגעה): נשלח מיד כשהאורח לוחץ «כן מגיעים» (אם <code>offset_hours=0</code>), מופיע גם ב<strong>תור חי</strong> לאורחים שאישרו וטרם קיבלו — ניתן לשגר ידנית/מאסיבית משם.
+            שלב 2 (אישור הגעה): נשלח מיד כשהאורח לוחץ «כן מגיעים», מופיע גם ב<strong>תור חי</strong> לאורחים שאישרו וטרם קיבלו — ניתן לשגר ידנית/מאסיבית משם. <code>offset_hours</code> משפיע רק על תזמון cron/תור (גיבוי), לא על לחיצת האורח.
           </div>
 
           {loadingStages ? (
