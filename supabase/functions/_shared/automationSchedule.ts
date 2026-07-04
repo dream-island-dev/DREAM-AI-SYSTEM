@@ -35,6 +35,54 @@ export const ADMIN_REQUESTS_DEPARTMENT = "קבלה/בקשות";
 /** Field maintenance Whapi card department (Operations Board filter). */
 export const FIELD_OPS_DEPARTMENT = "תפעול";
 
+/** Amenity / HK delivery (towels, shampoo, water) — Operations Board filter. */
+export const HOUSEKEEPING_OPS_DEPARTMENT = "משק";
+
+/** SLA minutes for guest_request tasks — mirrors whapi-webhook/staff-ops-webhook. */
+export const GUEST_OPS_SLA_THRESHOLDS: Readonly<Record<string, number>> = {
+  pest_control: 10,
+  guest_amenities: 15,
+  maintenance: 30,
+};
+
+const GUEST_OPS_DEFAULT_SLA_CATEGORY = "maintenance";
+
+const GUEST_OPS_PEST_KEYWORDS = [
+  "bug", "ant", "ants", "cockroach", "roach", "mouse", "mice", "rat", "rats",
+  "insect", "pest", "wasp", "spider",
+  "חרק", "נמלה", "נמלים", "ג'וק", "עכבר", "עכברים", "חולדה",
+];
+
+const GUEST_OPS_AMENITY_KEYWORDS = [
+  "towel", "towels", "pillow", "pillows", "soap", "shampoo", "amenities",
+  "minibar", "slipper", "slippers", "blanket", "sheet", "sheets", "water",
+  "מגבת", "מגבות", "כרית", "כריות", "סבון", "שמפו", "מצעים", "שמיכה", "מים", "חלב", "קפה",
+];
+
+export interface GuestOpsEligibilityInput {
+  status?: string | null;
+  arrival_date?: string | null;
+  departure_date?: string | null;
+}
+
+/** On-property or arrival-day guest — eligible for field-ops dispatch (not just checked_in). */
+export function isGuestEligibleForInHouseOpsDispatch(
+  guest: GuestOpsEligibilityInput,
+  now: Date,
+): boolean {
+  const status = guest.status ?? null;
+  if (status === "checked_in") return true;
+  if (status === "cancelled" || status === "checked_out") return false;
+
+  const today = israelYmd(now);
+  const arrival = guest.arrival_date ?? null;
+  const departure = guest.departure_date ?? null;
+  if (!arrival || arrival > today) return false;
+  if (departure && departure < today) return false;
+
+  return status === "room_ready" || status === "expected" || status === "pending";
+}
+
 export function israelYmd(now: Date): string {
   return now.toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
 }
@@ -290,6 +338,7 @@ export function computeScheduledInstant(
 /** Stage keys the cron + Live Monitor must always surface when is_active. */
 export const CORE_PIPELINE_STAGE_KEYS = [
   "pre_arrival_2d",
+  "stage_2_arrival",
   "night_before",
   "night_before_daypass",
   "morning_suite",
@@ -320,7 +369,12 @@ export function resolveStageSchedule(
   }
 
   if (stage.schedule_mode === "event_immediate") {
-    // Legacy rows only — stage_2_arrival moved to hours_after_event (migration 127).
+    // Legacy rows — stage_2_arrival moved to hours_after_event (migration 127).
+    if (stage.stage_key === "stage_2_arrival") {
+      const anchor = resolveArrivalConfirmedAnchor(guest);
+      const scheduledFor = anchor ? new Date(anchor) : null;
+      return { scheduledFor, dueNow: true, skipReason: null };
+    }
     return { scheduledFor: null, dueNow: false, skipReason: null };
   }
 
@@ -487,16 +541,41 @@ export function isActionableOperationalInHouseRequest(text: string): boolean {
   return isAllowlistedPhysicalTaskRequest(text);
 }
 
+/** Classify guest in-room ask for sla-escalation-cron (same buckets as staff reports). */
+export function guessGuestOpsSlaCategory(text: string): string {
+  const lower = text.toLowerCase();
+  if (GUEST_OPS_PEST_KEYWORDS.some((k) => lower.includes(k))) return "pest_control";
+  if (GUEST_OPS_AMENITY_KEYWORDS.some((k) => lower.includes(k))) return "guest_amenities";
+  return GUEST_OPS_DEFAULT_SLA_CATEGORY;
+}
+
+export function buildGuestOpsSlaDeadline(category: string, now: Date = new Date()): string {
+  const minutes = GUEST_OPS_SLA_THRESHOLDS[category] ?? GUEST_OPS_SLA_THRESHOLDS.maintenance;
+  return new Date(now.getTime() + minutes * 60_000).toISOString();
+}
+
+/** Amenities/HK → משק; broken infrastructure → תפעול. */
+export function resolveGuestOpsDepartment(text: string): string {
+  const t = text.trim();
+  if (ALLOWLIST_MAINTENANCE_PATTERN.test(t)) return FIELD_OPS_DEPARTMENT;
+  if (ALLOWLIST_CLEANING_PATTERN.test(t)) return HOUSEKEEPING_OPS_DEPARTMENT;
+  if (ALLOWLIST_AMENITY_PATTERN.test(t) || ALLOWLIST_BOTTLED_WATER_PATTERN.test(t)) {
+    return HOUSEKEEPING_OPS_DEPARTMENT;
+  }
+  return FIELD_OPS_DEPARTMENT;
+}
+
 export function isCheckedInGuestStatus(status: string | null | undefined): boolean {
   return status === "checked_in";
 }
 
-/** Tier-0 intercept: checked-in guest + actionable operational ask — skip LLM. */
+/** Tier-0 intercept: in-house guest + actionable operational ask — skip LLM. */
 export function shouldInterceptOperationalInHouseRequest(
   text: string,
-  status: string | null | undefined,
+  guest: GuestOpsEligibilityInput,
+  now: Date = new Date(),
 ): boolean {
-  return isCheckedInGuestStatus(status) && isActionableOperationalInHouseRequest(text);
+  return isGuestEligibleForInHouseOpsDispatch(guest, now) && isActionableOperationalInHouseRequest(text);
 }
 
 /** True when staff should get tasks + Whapi card + requires_attention. */
@@ -548,15 +627,17 @@ export type GuestRequestDispatchRoute =
 
 export function classifyGuestRequestDispatch(
   text: string,
-  status: string | null | undefined,
+  guest: GuestOpsEligibilityInput,
+  now: Date = new Date(),
 ): GuestRequestDispatchRoute {
+  const status = guest.status ?? null;
   if (isInformationalGuestQuery(text)) return "kb_only";
   if (isBalloonRoomRequest(text)) return "requests_board";
   if (isAdministrativeInHouseRequest(text)) {
     return isCheckedInGuestStatus(status) ? "admin_reception_tasks" : "requests_board";
   }
   if (isAllowlistedPhysicalTaskRequest(text)) {
-    return isCheckedInGuestStatus(status) ? "operational_field_ops" : "requests_board";
+    return isGuestEligibleForInHouseOpsDispatch(guest, now) ? "operational_field_ops" : "requests_board";
   }
   return "kb_only";
 }

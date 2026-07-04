@@ -326,6 +326,12 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
+### 2026-07-04 — Session 109 (guest_request → Whapi ops card completeness)
+- **Whapi card without suite = `guests.room` null** at intercept time — fix: `_shared/guestRoomResolve.ts` falls back to `suite_rooms` by phone + `resolveSuiteFromEzgoFields`; best-effort backfill `guests.room`. Card uses `Room אמטיסט 8 - …`, never bare `Room —`.
+- **guest_request tasks had no SLA** — now `sla_category` + `sla_deadline` (15m amenities / 30m maintenance), same buckets as `whapi-webhook` staff reports; `sla-escalation-cron` picks them up.
+- **Dept split:** amenities/HK → `משק`; maintenance → `תפעול` via `resolveGuestOpsDepartment()`.
+- **Tier-0 + LLM dispatch** expanded: `isGuestEligibleForInHouseOpsDispatch` = checked_in OR on-property arrival day (`expected`/`room_ready`/`pending`), not only post-15:00 `checked_in`. Future-guest `guest_alerts` block skips when eligible.
+
 ### 2026-07-04 — Session 108 (Shabbat arrival hours — entry always 12:00)
 - **כניסה למתחם = 12:00 תמיד** (חול + שבת). **קבלת חדרים/סוויטות** = 15:00 חול / 18:00 שבת בלבד.
 - `applySaturdayCheckInTimeOverride` היה ממיר 12:00→15:00 בשבת (באג שגרם להודעת בוקר עם כניסה 15:00) — עכשיו רק 15:00→18:00 לצ׳ק-אין.

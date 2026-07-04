@@ -70,9 +70,13 @@ import {
   shouldAutoPromoteToCheckedIn,
   resolveEffectiveGuestStatus,
   ADMIN_REQUESTS_DEPARTMENT,
-  FIELD_OPS_DEPARTMENT,
+  isGuestEligibleForInHouseOpsDispatch,
+  guessGuestOpsSlaCategory,
+  buildGuestOpsSlaDeadline,
+  resolveGuestOpsDepartment,
 } from "../_shared/automationSchedule.ts";
 import { translateTextForFieldOps } from "../_shared/fieldOpsTranslation.ts";
+import { resolveGuestRoomLabel } from "../_shared/guestRoomResolve.ts";
 import { resolveRouting, taskIntentType } from "../_shared/routingConfig.ts";
 import { triggerInboxRedAlert } from "../_shared/inboxRedAlert.ts";
 
@@ -1516,13 +1520,15 @@ async function translateGuestRequestForFieldOps(
 
 async function routeGuestRequestToOpsGroup(
   supabase: ReturnType<typeof createClient>,
-  args: { guestId: number; room: string | null; summary: string; rawText: string },
+  args: {
+    guestId: number;
+    phone: string;
+    guestName?: string | null;
+    room: string | null;
+    summary: string;
+    rawText: string;
+  },
 ): Promise<void> {
-  // Physical in-room asks (towels/water/AC/etc, source='guest_request') are the
-  // OPERATIONS channel by definition — routing_config (migration 121) lets an
-  // admin repoint the destination group without a redeploy; falls back to the
-  // env var when unconfigured, so behavior is unchanged until someone edits it
-  // in RoutingControlCenter.js.
   const routing = await resolveRouting(supabase, taskIntentType("guest_request"), {
     destination_board: "operations",
     whatsapp_group_id: null,
@@ -1530,26 +1536,41 @@ async function routeGuestRequestToOpsGroup(
   });
   const groupId = routing.whatsapp_group_id || Deno.env.get("WHAPI_GROUP_ID")?.trim();
   if (!groupId) {
-    console.warn("[webhook] 🛋️ WHAPI_GROUP_ID unset — guest_request not routed to ops group (dashboard guest_alerts row still stands)");
+    console.warn("[webhook] 🛋️ WHAPI_GROUP_ID unset — guest_request not routed to ops group");
     return;
   }
 
-  const roomLabel = args.room ?? "—";
+  const resolvedRoom = await resolveGuestRoomLabel(supabase, {
+    guestId: args.guestId,
+    phone: args.phone,
+    roomHint: args.room,
+    guestName: args.guestName,
+  });
+  const roomForDb = resolvedRoom.startsWith("TBD") ? null : resolvedRoom;
+  const roomLabel = resolvedRoom;
+
+  const department = resolveGuestOpsDepartment(args.rawText);
+  const slaCategory = guessGuestOpsSlaCategory(args.rawText);
+  const slaDeadline = buildGuestOpsSlaDeadline(slaCategory);
+  const priority = slaCategory === "pest_control" ? "urgent" : "normal";
+
   const englishLine = await translateGuestRequestForFieldOps(roomLabel, args.rawText, args.summary);
   const card = `🔧 ${englishLine}\n👉 Please react with 👍🏼 to complete this task.`;
 
   const { data: task, error: insertErr } = await supabase
     .from("tasks")
     .insert([{
-      room_number: args.room,
-      department:  FIELD_OPS_DEPARTMENT,
-      description: args.summary,
-      priority:    "normal",
-      status:      "open",
-      source:      "guest_request",
-      guest_id:    args.guestId,
-      reporter_raw_text: args.rawText,
-      action_token: crypto.randomUUID(),
+      room_number:         roomForDb,
+      department,
+      description:         args.summary,
+      priority,
+      status:              "open",
+      source:              "guest_request",
+      guest_id:            args.guestId,
+      reporter_raw_text:   args.rawText,
+      action_token:        crypto.randomUUID(),
+      sla_category:        slaCategory,
+      sla_deadline:        slaDeadline,
     }])
     .select("id")
     .single();
@@ -1568,7 +1589,9 @@ async function routeGuestRequestToOpsGroup(
     const { error: updErr } = await supabase.from("tasks").update({ whapi_message_id: msgId }).eq("id", task.id);
     if (updErr) console.warn(`[webhook] 🛋️ failed to store whapi_message_id for task ${task.id}:`, updErr.message);
   }
-  console.info(`[webhook] 🛋️ guest_request task ${task.id} room=${roomLabel} routed to ops group (sent=${!!msgId})`);
+  console.info(
+    `[webhook] 🛋️ guest_request task ${task.id} room=${roomLabel} dept=${department} sla=${slaCategory} routed (sent=${!!msgId})`,
+  );
 }
 
 async function logAdministrativeRequestTask(
@@ -1660,6 +1683,8 @@ async function handleOperationalInHouseIntercept(
   // Operations Board (tasks) + Whapi ops group card — same path as log_guest_request.
   routeGuestRequestToOpsGroup(supabase, {
     guestId,
+    phone,
+    guestName,
     room: guestRoom,
     summary,
     rawText: text,
@@ -2903,7 +2928,18 @@ function normalizePhone(phoneStr: unknown): string {
 // `phone` is needed here (unlike before) because the fallback path compares it
 // in JS instead of letting Postgres filter on it server-side.
 const GUEST_LOOKUP_FIELDS =
-  "id, name, phone, arrival_confirmed, payment_amount, payment_link_url, direct_payment_url, ezgo_portal_url, payment_link_resolution_pending, msg_pre_arrival_2d_sent, needs_callback, requires_attention, attention_reason, arrival_date, arrival_time, room, room_type, spa_time, status, guest_notes, guest_profile, portal_token, automation_muted, claimed_by";
+  "id, name, phone, arrival_confirmed, payment_amount, payment_link_url, direct_payment_url, ezgo_portal_url, payment_link_resolution_pending, msg_pre_arrival_2d_sent, needs_callback, requires_attention, attention_reason, arrival_date, departure_date, arrival_time, room, room_type, spa_time, status, guest_notes, guest_profile, portal_token, automation_muted, claimed_by";
+
+function guestOpsEligibility(
+  guest: Record<string, unknown> | null | undefined,
+  statusOverride?: string | null,
+) {
+  return {
+    status: statusOverride ?? (guest?.status as string | null) ?? null,
+    arrival_date: (guest?.arrival_date as string | null) ?? null,
+    departure_date: (guest?.departure_date as string | null) ?? null,
+  };
+}
 
 /** Per-message loop: staff "קח שיחה" on guests.claimed_by → suppress all guest outbound. */
 let _suppressGuestRepliesStaffClaim = false;
@@ -3657,13 +3693,13 @@ Deno.serve(async (req: Request) => {
         continue;
       }
 
-      // ── Tier-0 operational in-house intercept (checked_in + amenity keyword) ──
+      // ── Tier-0 operational in-house intercept (in-house guest + amenity keyword) ──
       // After dedup claim; before burst wait / LLM — zero token cost, instant dispatch.
       if (
         !isButtonReply &&
         guestId &&
         guest &&
-        shouldInterceptOperationalInHouseRequest(text, statusForRouting)
+        shouldInterceptOperationalInHouseRequest(text, guestOpsEligibility(guest as Record<string, unknown>, statusForRouting), nowForGuest)
       ) {
         await handleOperationalInHouseIntercept(supabase, {
           phone,
@@ -3818,7 +3854,11 @@ Deno.serve(async (req: Request) => {
         guestId &&
         guest &&
         effectiveText !== text &&
-        shouldInterceptOperationalInHouseRequest(effectiveText, statusAfterBurst)
+        shouldInterceptOperationalInHouseRequest(
+          effectiveText,
+          guestOpsEligibility(guest as Record<string, unknown>, statusAfterBurst),
+          nowForGuest,
+        )
       ) {
         await handleOperationalInHouseIntercept(supabase, {
           phone,
@@ -4051,7 +4091,12 @@ Deno.serve(async (req: Request) => {
       // 'checked_in'.
       const guestStatus = (guest as Record<string, unknown> | null)?.status as string | null ?? null;
       const guestArrivalDate = (guest as Record<string, unknown> | null)?.arrival_date as string | null ?? null;
-      if (toolLoggedRequest && guestRoomType !== "day_guest" && guestStatus !== "checked_in") {
+      const guestOpsCtx = guestOpsEligibility(guest as Record<string, unknown> | null);
+      if (
+        toolLoggedRequest
+        && guestRoomType !== "day_guest"
+        && !isGuestEligibleForInHouseOpsDispatch(guestOpsCtx, nowForGuest)
+      ) {
         // Same exact tag format/day-count math as guest-portal-upsell's and
         // guest-portal-ops-request's futureArrivalTag() ("PORTAL CTAS & ADIR'S
         // FUTURE CONTEXT" session) — duplicated, not imported (Deno function
@@ -4126,14 +4171,19 @@ Deno.serve(async (req: Request) => {
         //   operational_field_ops → Whapi EN + Operations Board (tasks/תפעול)
         //   requests_board → guest_alerts only (pre-check-in / manager / price)
         //   kb_only → no staff ticket (FAQ answered in chat)
-        const dispatchRoute = classifyGuestRequestDispatch(effectiveText, guestStatus);
+        const dispatchRoute = classifyGuestRequestDispatch(effectiveText, guestOpsCtx, nowForGuest);
         const criticalKeywordHit = intent === "faq" && !toolLoggedRequest
           && isRequestsBoardEscalation(effectiveText);
 
         if (toolLoggedRequest && guestId && dispatchRoute === "operational_field_ops") {
           const guestRoom = (guest as Record<string, unknown> | null)?.room as string | null ?? null;
           routeGuestRequestToOpsGroup(supabase, {
-            guestId, room: guestRoom, summary: toolLoggedRequest.summary, rawText: effectiveText,
+            guestId,
+            phone,
+            guestName,
+            room: guestRoom,
+            summary: toolLoggedRequest.summary,
+            rawText: effectiveText,
           }).catch((e: Error) => console.error("[webhook] 🛋️ routeGuestRequestToOpsGroup error:", e.message));
           console.info(
             `[webhook] dispatch=operational_field_ops (LLM path) phone:${phone} guest:${guestId} room:${guestRoom ?? "—"}`,

@@ -1,3 +1,5 @@
+2026-07-04 | automation-queue + AutomationControlCenter + automationSchedule | תור חי: שלב 2 (stage_2_arrival) גלוי בין שלב 1 ל-2.5 — «ממתין לאישור הגעה» לפני כן, מיידי אחרי; תיקון סינון event_immediate + awaiting_confirmation.
+2026-07-04 | whatsapp-webhook + automationSchedule + guestRoomResolve | בקשות אורח (guest_request): פתרון חדר מ-guests/suite_rooms לכרטיס Whapi; SLA (15ד amenities / 30ד maintenance); פיצול משק/תפעול; Tier-0+LLM גם ביום הגעה (לא רק checked_in).
 2026-07-04 | WhatsAppInbox.js + App.js | מובייל DREAM BOT: ניווט stack (רשימה או שיחה מלאה) במקום slide שבור ב-RTL; כפתור חזרה; הסתרת toolbar+תפריט תחתון בשיחה.
 2026-07-04 | WhatsAppInbox.js | תיקון מובייל עברית: overflow+RTL הציג חצי ריק — clip wrapper ב-LTR, slide תמיד translateX(-50%).
 2026-07-04 | WhatsAppInbox + guestTiming.js | רשימת שיחות: במקום «תואם מהמערכת» — תגית הגעה יחסית (היום/מחר/עוד יומיים/בריזורט); גם בכותרת השיחה.

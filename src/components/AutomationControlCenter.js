@@ -54,6 +54,7 @@ const DAYPASS_PIPELINE_KEYS = new Set([
 // Must stay in sync with CORE_PIPELINE_STAGE_KEYS in automationSchedule.ts.
 const CORE_PIPELINE_STAGE_KEYS = [
   "pre_arrival_2d",
+  "stage_2_arrival",
   "night_before", "night_before_daypass",
   "morning_suite", "morning_welcome",
   "mid_stay", "mid_stay_daypass",
@@ -168,6 +169,17 @@ function groupQueueByArrivalDay(items, stages) {
     });
 }
 
+function formatQueueScheduleCell(q) {
+  if (q.scheduledFor) {
+    return new Date(q.scheduledFor).toLocaleString("he-IL", {
+      day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit",
+    });
+  }
+  if (q.skipReason === "awaiting_confirmation") return "מיד לאחר אישור הגעה";
+  if (q.stageKey === "stage_2_arrival" && q.dueNow) return "מיידי (אחרי אישור)";
+  return "—";
+}
+
 function queueStatusBadge(q) {
   if (q.status === "blocked_by_meta") return { cls: "badge-orange", text: "🟠 ממתין לאישור" };
   if (q.status === "failed_missing_link") return { cls: "badge-red", text: "❌ חסר קישור תשלום" };
@@ -233,15 +245,24 @@ function attentionItemKey(r) {
   return `${r.phone}_${r.stageKey}_${r.sentAt}`;
 }
 
-/** Stages whatsapp-cron + automation-queue actually schedule (not event_immediate). */
+/** Stages whatsapp-cron polls (excludes legacy event_immediate). */
 function isCronScheduledStage(stage) {
   return !!stage?.is_active && stage.schedule_mode !== "event_immediate";
+}
+
+/** Live Queue visibility — cron stages + Stage 2 (immediate on «כן מגיעים»). */
+const QUEUE_ALWAYS_VISIBLE_STAGE_KEYS = new Set(["stage_2_arrival", "stage_2_pay"]);
+
+function isQueueVisibleStage(stage) {
+  if (!stage?.is_active) return false;
+  if (QUEUE_ALWAYS_VISIBLE_STAGE_KEYS.has(stage.stage_key)) return true;
+  return stage.schedule_mode !== "event_immediate";
 }
 
 /** Align Live Queue rows with current automation_stages (is_active + labels). */
 function mergeQueueWithStages(queue, stages) {
   const activeCronKeys = new Set(
-    stages.filter(isCronScheduledStage).map((s) => s.stage_key),
+    stages.filter(isQueueVisibleStage).map((s) => s.stage_key),
   );
   const stageByKey = Object.fromEntries(stages.map((s) => [s.stage_key, s]));
   return (queue ?? [])
@@ -1811,7 +1832,8 @@ export default function AutomationControlCenter() {
         const isDispatchable = (q) =>
           q.guestId
           && !["sent", "simulated", "skipped"].includes(q.status)
-          && !QUEUE_HIDDEN_SKIP_REASONS.has(q.skipReason);
+          && !QUEUE_HIDDEN_SKIP_REASONS.has(q.skipReason)
+          && q.skipReason !== "awaiting_confirmation";
 
         const allDispatchableKeys = displayQueue
           .filter(isDispatchable)
@@ -2488,9 +2510,7 @@ export default function AutomationControlCenter() {
                                         </td>
                                         <td style={{ fontSize: 13, fontWeight: 600 }}>{q.displayName}</td>
                                         <td style={{ fontSize: 12 }}>
-                                          {q.scheduledFor
-                                            ? new Date(q.scheduledFor).toLocaleString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })
-                                            : "—"}
+                                          {formatQueueScheduleCell(q)}
                                         </td>
                                         <td>
                                           <span style={{

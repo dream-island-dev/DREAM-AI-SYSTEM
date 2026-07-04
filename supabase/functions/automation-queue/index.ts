@@ -46,6 +46,16 @@ const PERMANENT_SKIP_REASONS = new Set([
   "date_passed",
 ]);
 
+/** Temporal guards — show in Live Queue (like Stage 4 not_checked_in), never omit. */
+const QUEUE_PREVIEW_VISIBLE_SKIP_REASONS = new Set([
+  "awaiting_confirmation",
+  "not_checked_in",
+  "not_arrival_day",
+  "not_on_property",
+  "quiet_hours_passed",
+  "staff_claim_active",
+]);
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
@@ -121,7 +131,12 @@ Deno.serve(async (req: Request) => {
 
         // Omit rows that can never fire for this guest/stage combo.
         if (!logRow && result.skipReason && PERMANENT_SKIP_REASONS.has(result.skipReason)) continue;
-        if (!logRow && result.scheduledFor === null && result.skipReason !== null) continue;
+        if (
+          !logRow
+          && result.scheduledFor === null
+          && result.skipReason !== null
+          && !QUEUE_PREVIEW_VISIBLE_SKIP_REASONS.has(result.skipReason)
+        ) continue;
 
         queue.push({
           guestId: guest.id,
