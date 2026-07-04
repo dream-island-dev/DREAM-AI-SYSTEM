@@ -1,3 +1,4 @@
+2026-07-05 | merge 544fdef deployed | push main + db push 132/133 + functions whatsapp-webhook/send/guest-portal-data; Stage 2 מיידי+spa_date מאוחדים.
 2026-07-05 | spa_date sync (portal+automation+WA) | סנכרון מלא: `_shared/spaSchedule.ts` ב-webhook/send/portal-data; placeholders `{{SPA_*}}` עם תאריך+שעה; פורטל+Inbox+ייבוא EZGO ממלאים `spa_date` מ-arrival_date; migration 131_guests_spa_date.
 2026-07-05 | AddGuestModal + israeliTime.js | פרופיל אורח: תאריך טיפול ספא (`spa_date`) + בוחר שעות 24ש' ישראלי (dropdown 07:00–22:00); תצוגה משולבת ב-GuestsPage/GuestDashboard/GuestContextDrawer.
 2026-07-04 | ArrivalImportPanel + AutomationControlCenter + migration 132 | ייבוא opt-in: ברירת מחדל «ללא וואטסאפ»; עמודת אוטומציה בגריד; migration 132 שומר automation_muted ב-reimport; ACC תור חי — פאנל הפעלה מרוכזת לאורחים מושתקים.
