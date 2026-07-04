@@ -106,7 +106,10 @@ const TEMPLATE_BODY_APPROVED: Record<string, string> = {
     "המתחם פתוח מ-9:00, צ'ק אין לסוויטות מ-15:00. " +
     "בואו מוקדם ותיהנו מהכל. לכל שאלה: {{2}} — נתראה מחר",
   dream_mid_stay_check:
-    "{{1}}, בוקר טוב! רצינו לוודא שהכל מושלם בשהות שלכם אצלנו.",
+    "היי {{1}}, הזמן עף כשנהנים... 🤍\n" +
+    "רק רצינו לעצור לרגע ולוודא שאתם נרגעים, נהנים ומנצלים את כל הטוב שיש לדרים איילנד להציע.\n\n" +
+    "אם חסר לכם משהו בסוויטה, או אם יש כל דבר שנוכל לעשות כדי להפוך את השהות שלכם לעוד יותר מושלמת — " +
+    "פשוט תכתבו לנו כאן תגובה חופשית, או לחצו על הכפתור למטה ונציג יצור איתכם קשר מיד. תמשיכו ליהנות! ✨",
   dream_checkout_feedback:
     "{{1}}, תודה שהייתם איתנו! נשמח לשמוע איך הייתה החוויה.",
   dream_payment_and_workshops:
@@ -3023,14 +3026,11 @@ serve(async (req: Request) => {
     }
 
     // ── Hybrid fallback (req #4) ───────────────────────────────────────────
-  // Only attempted when a stage actually has a session message configured
-    // — true for none of them today (every automation_stages row seeded by
-    // migration 065 has session_message_script_key = NULL except the
-    // event-driven stage_2_arrival, which never reaches this branch). This
-    // makes the branch below provably a no-op until an admin opts a stage
-    // into a session message via the Automation Control Center UI — at
-    // which point it sends the rich free-text reply (+ buttons) instead of
-    // the Meta template ONLY if the guest's 24h window happens to be open.
+    // Session free-text ONLY on manual staff dispatch (force / manual_override).
+    // Autonomous cron MUST always use the approved Meta template — never hijack
+    // to bot_scripts just because wa_window_expires_at is open (same rule as
+    // night_before session 102 and morning_suite session 102b).
+    const isManualPipelineDispatch = force === true || manual_override === true;
     let usedSessionMessage = false;
     let sessionBody: string | null = null;
     let sessionButtons: Array<{ type: string; label: string; url?: string }> = [];
@@ -3040,8 +3040,8 @@ serve(async (req: Request) => {
     // force_channel="session_message" bypasses the isWindowOpen() guard so staff
     // can send free-text to any guest on demand. Both are only honoured when
     // force=true (manual dispatch from AutomationControlCenter).
-    if (!forceMetaTemplate && stageRow?.session_message_script_key) {
-      if (forceSessionMessage || isWindowOpen(guest.wa_window_expires_at)) {
+    if (isManualPipelineDispatch && !forceMetaTemplate && stageRow?.session_message_script_key) {
+      if (forceSessionMessage || force === true || isWindowOpen(guest.wa_window_expires_at)) {
         const { data: scriptRow } = await supabase
           .from("bot_scripts")
           .select("message_text")

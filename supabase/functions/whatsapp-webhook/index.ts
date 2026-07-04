@@ -724,35 +724,29 @@ async function handleStage2ArrivalConfirmation(
   }
 
   const stage2Script = scripts["stage_2_arrival"];
-  let arrivalReply: string;
-  if (stage2Script?.message_text?.trim()) {
-    const hasOptionalSpaText = /\{\{\s*OPTIONAL_SPA_TEXT\s*\}\}/i.test(stage2Script.message_text);
-    const hasSpaLine = /\{\{\s*SPA_LINE\s*\}\}/i.test(stage2Script.message_text);
-    const hasSpaTimeLegacy = /\{\{\s*SPA_TIME\s*\}\}/i.test(stage2Script.message_text);
-    console.log(
-      `[webhook] 🩺 resolvePlaceholders input (${source}) — phone:${phone} spaTime:${JSON.stringify(spaTime)}` +
-      ` scriptHasOptionalSpaText:${hasOptionalSpaText} scriptHasSpaLine:${hasSpaLine} scriptHasSpaTime:${hasSpaTimeLegacy}`,
+  if (!stage2Script?.message_text?.trim()) {
+    console.error(
+      `[webhook] stage_2_arrival: bot_scripts.message_text missing/empty — ` +
+      `refusing invented fallback phone:${phone} (edit in BotScriptEditor)`,
     );
-    if (spaTime && !hasOptionalSpaText && !hasSpaLine && !hasSpaTimeLegacy) {
-      console.warn(
-        `[webhook] ⚠️ guest ${phone} has spa_time="${spaTime}" but stage_2_arrival has no spa placeholder — check BotScriptEditor.`,
-      );
-    }
-    arrivalReply = resolvePlaceholders(stage2Script.message_text, {
-      guestName: safeName, spaTime, workshopUrl: "", portalLink,
-    });
-  } else {
-    const spaSentence = buildSpaSentence(spaTime);
-    const portalLine = portalLink
-      ? `\n\n✨ כל הפרטים שלך לפני ההגעה (ספא, ארוחות ועוד) מחכים כאן:\n👉 ${portalLink}`
-      : "";
-    arrivalReply =
-      `מגיעים! 🎉 כבר מתרגשים מאד מהגעתכם, ${safeName}!\n\n` +
-      `הצוות שלנו ב-Dream Island מכין את הכל ומחכה לכם עם חיוך גדול 🌴\n\n` +
-      spaSentence +
-      portalLine +
-      `\n\nיש לכם שאלות לפני ההגעה? על הצ׳ק-אין, החדר — אני כאן לכל שאלה 😊`;
+    return;
   }
+
+  const hasOptionalSpaText = /\{\{\s*OPTIONAL_SPA_TEXT\s*\}\}/i.test(stage2Script.message_text);
+  const hasSpaLine = /\{\{\s*SPA_LINE\s*\}\}/i.test(stage2Script.message_text);
+  const hasSpaTimeLegacy = /\{\{\s*SPA_TIME\s*\}\}/i.test(stage2Script.message_text);
+  console.log(
+    `[webhook] 🩺 resolvePlaceholders input (${source}) — phone:${phone} spaTime:${JSON.stringify(spaTime)}` +
+    ` scriptHasOptionalSpaText:${hasOptionalSpaText} scriptHasSpaLine:${hasSpaLine} scriptHasSpaTime:${hasSpaTimeLegacy}`,
+  );
+  if (spaTime && !hasOptionalSpaText && !hasSpaLine && !hasSpaTimeLegacy) {
+    console.warn(
+      `[webhook] ⚠️ guest ${phone} has spa_time="${spaTime}" but stage_2_arrival has no spa placeholder — check BotScriptEditor.`,
+    );
+  }
+  const arrivalReply = resolvePlaceholders(stage2Script.message_text, {
+    guestName: safeName, spaTime, workshopUrl: "", portalLink,
+  });
 
   console.info(`[webhook] 🎉 arrival confirmed (${source}) — phone:${phone} name="${safeName}"`);
 

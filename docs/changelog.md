@@ -1,4 +1,4 @@
-2026-07-04 | WhatsAppInbox.js + guestTiming.js | Inbox: unread רק כשאין מענה אחרי inbound; פילטר «אחרי עזיבה» מפריד אורחים שעזבו מהרשימה הראשית.
+2026-07-04 | whatsapp-send + whatsapp-webhook + migration 129 | אוטומציה: cron תמיד Meta template (לא bot_scripts בגלל חלון 24ש'); mid_stay ללא «בוקר טוב»+חלון 10–12; Stage 2 רק מ-bot_scripts (בלי fallback מומצא).
 2026-07-04 | whatsapp-webhook + automationSchedule.ts | Tier-0 שאלות שעות כניסה/חדר (`isCheckInPolicyQuestion`+`buildCheckInPolicyReply`); מגן תשובה קטועה (`isReplyObviouslyTruncated`); Gemini מחבר כל חלקי טקסט; `buildSystemPrompt` כולל כניסה 12:00+שבת 18:00.
 2026-07-04 | GuestsPage.js + App.js + BotConfigPanel.js + whatsapp-send | מובייל צ'ק-אין: כרטיסי אורח במקום טבלה שבורה; overflow גלובלי; פאנל שעות כניסה חול/שבת/חג בהגדרות בוט; resolveDayTimings מ-bot_config.
 2026-07-04 | WhatsAppInbox.js | הוסר צבע סגול לשורות «בריזורט» ברשימת DREAM BOT — נשארה תגית 🟢 בריזורט בלבד.
