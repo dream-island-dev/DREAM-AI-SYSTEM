@@ -259,10 +259,36 @@ const RESORT_ENTRY_TIME = "12:00";
 const WEEKDAY_CHECKIN_TIME = "15:00";
 const SHABBAT_CHECKIN_TIME = "18:00";
 
+function resolveArrivalTimingsFromCfg(
+  cfg: Record<string, string>,
+  arrivalDateStr: string,
+): { entryTime: string; checkInTime: string } {
+  const ymd = normalizeArrivalDateYmd(arrivalDateStr);
+  const special = isSpecialNightBeforeDay(ymd, cfg["night_before_special_dates"] ?? "");
+  if (special) {
+    const entryTime = (cfg["night_before_entry_time_shabbat"] ?? "").trim();
+    const checkInTime = (cfg["night_before_checkin_time_shabbat"] ?? "").trim();
+    if (!entryTime || !checkInTime) {
+      console.warn(
+        `[whatsapp-send] shabbat_hours_config_missing for arrival_date=${arrivalDateStr} ` +
+        `— using fallbacks entry=${RESORT_ENTRY_TIME} check-in=${SHABBAT_CHECKIN_TIME}. ` +
+        `Set bot_config night_before_*_shabbat via BotConfigPanel.`,
+      );
+      return {
+        entryTime: entryTime || RESORT_ENTRY_TIME,
+        checkInTime: checkInTime || SHABBAT_CHECKIN_TIME,
+      };
+    }
+    return { entryTime, checkInTime };
+  }
+  return {
+    entryTime: (cfg["night_before_entry_time_weekday"] ?? "").trim() || RESORT_ENTRY_TIME,
+    checkInTime: (cfg["night_before_checkin_time_weekday"] ?? "").trim() || WEEKDAY_CHECKIN_TIME,
+  };
+}
+
 function resolveDayTimings(arrivalDateStr: string): { entryTime: string; checkInTime: string } {
-  return isShabbatArrivalDate(arrivalDateStr)
-    ? { entryTime: RESORT_ENTRY_TIME, checkInTime: SHABBAT_CHECKIN_TIME }
-    : { entryTime: RESORT_ENTRY_TIME, checkInTime: WEEKDAY_CHECKIN_TIME };
+  return resolveArrivalTimingsFromCfg(_knowledgeCache ?? {}, arrivalDateStr);
 }
 
 // Session-script safety net — bot_scripts may carry weekday check-in (15:00) literals.
@@ -376,32 +402,8 @@ async function resolveNightBeforeTimes(
   supabaseClient: ReturnType<typeof createClient>,
   arrivalDateStr: string
 ): Promise<{ entryTime: string; checkInTime: string }> {
-  const ymd = normalizeArrivalDateYmd(arrivalDateStr);
   const cfg = await fetchNightBeforeKnowledge(supabaseClient);
-  const special = isSpecialNightBeforeDay(ymd, cfg["night_before_special_dates"] ?? "");
-  if (special) {
-    const entryTime = (cfg["night_before_entry_time_shabbat"] ?? "").trim();
-    const checkInTime = (cfg["night_before_checkin_time_shabbat"] ?? "").trim();
-    if (!entryTime || !checkInTime) {
-      // Graceful fallback instead of throwing — Shabbat/holiday guests still
-      // receive the message with standard Shabbat arrival hours rather than
-      // getting nothing. Set the bot_config keys to override these defaults.
-      console.warn(
-        `[whatsapp-send] night_before_shabbat_hours_config_missing for arrival_date=${arrivalDateStr} ` +
-        `— using hardcoded Shabbat fallbacks: entry=${RESORT_ENTRY_TIME}, check-in=${SHABBAT_CHECKIN_TIME}. ` +
-        `Fill bot_config.night_before_entry_time_shabbat/night_before_checkin_time_shabbat via BotConfigPanel to customise.`
-      );
-      return {
-        entryTime: entryTime || RESORT_ENTRY_TIME,
-        checkInTime: checkInTime || SHABBAT_CHECKIN_TIME,
-      };
-    }
-    return { entryTime, checkInTime };
-  }
-  return {
-    entryTime: (cfg["night_before_entry_time_weekday"] ?? "").trim() || RESORT_ENTRY_TIME,
-    checkInTime: (cfg["night_before_checkin_time_weekday"] ?? "").trim() || WEEKDAY_CHECKIN_TIME,
-  };
+  return resolveArrivalTimingsFromCfg(cfg, arrivalDateStr);
 }
 
 // ── Template variable sanitizer — prevents Meta error 131008 (empty param) ────
@@ -1866,6 +1868,10 @@ serve(async (req: Request) => {
       .from("guests").select("*").eq("id", guestId).maybeSingle();
     if (gErr)   throw new Error(`guest_lookup_error: ${gErr.message}`);
     if (!guest) throw new Error(`guest_not_found: no guest row for id=${JSON.stringify(guestId)}`);
+
+    if (["night_before", "morning_suite", "morning_welcome", "night_before_daypass", "morning_daypass"].includes(trigger)) {
+      await fetchNightBeforeKnowledge(supabase);
+    }
 
     if (!force && guest.automation_muted === true) {
       console.log(`[whatsapp-send] skipped trigger="${trigger}" guestId=${guestId} reason=automation_muted`);

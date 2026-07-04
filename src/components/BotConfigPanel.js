@@ -20,6 +20,59 @@ const CATEGORIES = [
   { id: "rules",     icon: "📋", label: "כללי תגובה",         color: "#B45309" },
 ];
 
+/** Stage 2.5 / morning automation — editable here, read by whatsapp-send. */
+const ARRIVAL_HOURS_KEYS = [
+  "night_before_entry_time_weekday",
+  "night_before_checkin_time_weekday",
+  "night_before_entry_time_shabbat",
+  "night_before_checkin_time_shabbat",
+  "night_before_special_dates",
+];
+
+function ArrivalHoursPanel({ items, onChange }) {
+  const byKey = Object.fromEntries(items.map((i) => [i.config_key, i]));
+  const field = (key, placeholder) => {
+    const item = byKey[key];
+    if (!item) return null;
+    return (
+      <ConfigRow key={key} item={item} onChange={onChange} placeholder={placeholder} />
+    );
+  };
+  return (
+    <div style={{
+      marginBottom: 28, padding: "18px 20px",
+      background: "linear-gradient(135deg, rgba(3,105,161,0.06), rgba(201,169,110,0.08))",
+      border: "2px solid rgba(3,105,161,0.25)",
+      borderRadius: 14,
+    }}>
+      <div style={{ fontWeight: 800, fontSize: 15, color: "#0369A1", marginBottom: 6 }}>
+        🕐 שעות כניסה — אוטומציה (חול / שבת / חג)
+      </div>
+      <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.7, marginBottom: 16 }}>
+        משמש שלב 2.5 (ערב לפני) ובוקר הגעה. שבת = יום שבת לפי תאריך ההגעה, או תאריכים ברשימת החגים.
+        פורמט שעה: <strong>HH:MM</strong> (למשל 15:00).
+      </div>
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+        gap: "0 20px",
+      }}>
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 800, color: "var(--gold-dark)", marginBottom: 10 }}>יום חול</div>
+          {field("night_before_entry_time_weekday", "12:00")}
+          {field("night_before_checkin_time_weekday", "15:00")}
+        </div>
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 800, color: "var(--gold-dark)", marginBottom: 10 }}>שבת / חג</div>
+          {field("night_before_entry_time_shabbat", "12:00")}
+          {field("night_before_checkin_time_shabbat", "18:00")}
+        </div>
+      </div>
+      {field("night_before_special_dates", "2026-04-13, 2026-09-22")}
+    </div>
+  );
+}
+
 // ── Helper: textarea auto-height ────────────────────────────────────────────
 function AutoTextarea({ value, onChange, rows = 3, placeholder }) {
   return (
@@ -42,8 +95,9 @@ function AutoTextarea({ value, onChange, rows = 3, placeholder }) {
 }
 
 // ── Config field row ─────────────────────────────────────────────────────────
-function ConfigRow({ item, onChange }) {
+function ConfigRow({ item, onChange, placeholder }) {
   const isLong = (item.config_value || "").length > 80;
+  const ph = placeholder ?? `ערך עבור ${item.label || item.config_key}...`;
   return (
     <div style={{ marginBottom: 20 }}>
       <label style={{
@@ -58,14 +112,14 @@ function ConfigRow({ item, onChange }) {
           value={item.config_value}
           rows={4}
           onChange={e => onChange(item.config_key, e.target.value)}
-          placeholder={`ערך עבור ${item.label || item.config_key}...`}
+          placeholder={ph}
         />
       ) : (
         <input
           type="text"
           value={item.config_value}
           onChange={e => onChange(item.config_key, e.target.value)}
-          placeholder={`ערך עבור ${item.label || item.config_key}...`}
+          placeholder={ph}
           style={{
             width: "100%", padding: "12px 14px",
             border: "1.5px solid var(--border)", borderRadius: 8,
@@ -161,6 +215,8 @@ export default function BotConfigPanel({ user }) {
 
   // ── Filtered items for active tab ─────────────────────────────────────────
   const tabItems = Object.values(config).filter(item => item.category === activeTab);
+  const arrivalHourItems = tabItems.filter((i) => ARRIVAL_HOURS_KEYS.includes(i.config_key));
+  const knowledgeWithoutHours = tabItems.filter((i) => !ARRIVAL_HOURS_KEYS.includes(i.config_key));
   const activeCat = CATEGORIES.find(c => c.id === activeTab);
 
   return (
@@ -263,9 +319,14 @@ export default function BotConfigPanel({ user }) {
               <span style={{ fontSize: 12 }}>הרץ מיגרציה 015 בדאשבורד Supabase כדי לאכלס את טבלת bot_config</span>
             </div>
           ) : (
-            tabItems.map(item => (
-              <ConfigRow key={item.config_key} item={item} onChange={handleChange} />
-            ))
+            <>
+              {activeTab === "knowledge" && arrivalHourItems.length > 0 && (
+                <ArrivalHoursPanel items={arrivalHourItems} onChange={handleChange} />
+              )}
+              {(activeTab === "knowledge" ? knowledgeWithoutHours : tabItems).map(item => (
+                <ConfigRow key={item.config_key} item={item} onChange={handleChange} />
+              ))}
+            </>
           )}
         </div>
       </div>
@@ -299,7 +360,7 @@ export default function BotConfigPanel({ user }) {
         <div style={{ fontWeight: 800, marginBottom: 6 }}>💡 איך זה עובד?</div>
         <div>• שינויים בטבלה <code>bot_config</code> נטענים ע"י הבוט בכל שיחה חדשה.</div>
         <div>• <strong>אישיות</strong> — שם הבוט + טון הדיבור (5 כוכבים, עברית תקנית).</div>
-        <div>• <strong>ידע</strong> — שעות, WiFi, מידע שהבוט צריך לדעת לענות עליו.</div>
+        <div>• <strong>ידע</strong> — שעות כניסה (חול/שבת), WiFi, מידע שהבוט צריך לדעת לענות עליו.</div>
         <div>• <strong>כללים</strong> — איך הבוט מגיב לתלונות, שדרוגים ומקרים מיוחדים.</div>
       </div>
     </div>

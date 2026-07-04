@@ -471,7 +471,50 @@ const css = `
   .sidebar-mobile-backdrop { display: none; }
   .topbar-title { font-size: 19px; font-weight: 800; color: var(--black); font-family: 'Playfair Display', serif; }
   .topbar-date { font-size: 12px; color: var(--text-muted); background: var(--ivory); padding: 5px 12px; border-radius: 20px; border: 1px solid var(--border); }
-  .content { padding: var(--space-lg); }
+  .content {
+    padding: var(--space-lg);
+    max-width: 100%;
+    box-sizing: border-box;
+    overflow-x: hidden;
+  }
+
+  /* Check-in roster — desktop table scroll; mobile card stack (GuestsPage.js) */
+  .checkin-table-wrap {
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .checkin-table-wrap .table { min-width: 880px; }
+  .checkin-guest-cards { display: none; }
+  .checkin-guest-card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-md);
+    box-shadow: var(--shadow-sm);
+  }
+  .checkin-guest-card-header {
+    display: flex; align-items: flex-start; gap: 10px;
+    margin-bottom: 10px; min-width: 0;
+  }
+  .checkin-guest-card-meta {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 12px;
+    font-size: 13px;
+    margin-bottom: 12px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .checkin-guest-card-meta dt {
+    font-size: 10px; font-weight: 700; color: var(--text-muted);
+    margin: 0 0 2px;
+  }
+  .checkin-guest-card-meta dd { margin: 0; font-weight: 600; min-width: 0; word-break: break-word; }
+  .checkin-guest-card-actions {
+    display: flex; flex-wrap: wrap; gap: 8px;
+  }
+  .checkin-guest-card-actions .btn { flex: 1 1 calc(50% - 4px); min-width: 0; justify-content: center; }
 
   /* CARDS */
   .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: var(--space-md); margin-bottom: var(--space-lg); }
@@ -762,7 +805,15 @@ const css = `
     .form-grid { grid-template-columns: 1fr; }
     .kanban { grid-template-columns: 1fr; }
     .dash-grid { grid-template-columns: 1fr; gap: 14px; }
-    .table-scroll { overflow-x: auto; }
+    .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .layout { overflow-x: hidden; max-width: 100vw; }
+    .app { overflow-x: hidden; max-width: 100vw; }
+    .checkin-table-wrap { display: none !important; }
+    .checkin-guest-cards {
+      display: flex; flex-direction: column; gap: 12px;
+      width: 100%; max-width: 100%;
+    }
+    .checkin-guest-card-actions .btn { flex: 1 1 100%; min-height: var(--hit-target-comfort); }
 
     /* Hamburger drawer — .sidebar.sidebar-mobile-open overrides the plain
        .sidebar display:none above via higher selector specificity (two

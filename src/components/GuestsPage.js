@@ -343,8 +343,105 @@ export default function GuestsPage({
     }
   };
 
+  /** Shared action buttons — desktop table + mobile cards (Disable Don't Hide §0.2). */
+  const renderGuestActions = (g, rowStatus) => (
+    <>
+      <button
+        className="btn btn-sm"
+        onClick={() => openEdit(g)}
+        title="ערוך פרופיל אורח"
+        style={{ background: "var(--ivory)", color: "var(--gold-dark)", fontWeight: 700, border: "1px solid var(--gold)" }}>
+        ✏️
+      </button>
+      {rowStatus === "room_ready" ? (
+        <button className="btn btn-sm" disabled={busy === g.id}
+          onClick={() => setStatus(g, "expected")}
+          style={{ background: "#FFF0EE", color: "#C0392B" }}>
+          ↩ בטל חדר מוכן
+        </button>
+      ) : rowStatus === "checked_in" ? (
+        <button className="btn btn-sm" disabled
+          title="האורח כבר בצ'ק-אין"
+          style={{ background: "#F5F5F5", color: "#AAAAAA", cursor: "not-allowed" }}>
+          ✓ חדר מוכן
+        </button>
+      ) : (
+        <button className="btn btn-sm" disabled={busy === g.id || roomMissing(g) || !canSend}
+          onClick={() => setStatus(g, "room_ready")}
+          title={
+            !canSend ? "שליחה חסומה בשעות שקט — סמן אישור למעלה"
+              : roomMissing(g) ? "יש לשבץ חדר לפני סימון כמוכן — לחץ ✏️ לעריכה"
+              : undefined
+          }
+          style={{
+            background: roomMissing(g) || !canSend ? "#F5F5F5" : "#E8F5EF",
+            color:      roomMissing(g) || !canSend ? "#AAAAAA" : "#1A7A4A",
+            cursor:     roomMissing(g) || !canSend ? "not-allowed" : "pointer",
+          }}>
+          ✓ חדר מוכן
+        </button>
+      )}
+      {rowStatus === "checked_in" ? (
+        <button className="btn btn-sm" disabled={busy === g.id}
+          onClick={() => setStatus(g, "expected")}
+          style={{ background: "#FFF5E8", color: "#B5600A", fontWeight: 700 }}>
+          ↩ בטל צ'ק-אין
+        </button>
+      ) : (
+        <button className="btn btn-sm" disabled={busy === g.id || roomMissing(g)}
+          onClick={() => setStatus(g, "checked_in")}
+          title={roomMissing(g) ? "יש לשבץ חדר לפני צ'ק-אין — לחץ ✏️ לעריכה" : undefined}
+          style={{
+            background: roomMissing(g) ? "#F5F5F5" : "#EEF4FF",
+            color:      roomMissing(g) ? "#AAAAAA" : "#2952A3",
+            cursor:     roomMissing(g) ? "not-allowed" : "pointer",
+          }}>
+          🛎️ צ'ק-אין
+        </button>
+      )}
+      {g.arrival_confirmed && (
+        <button
+          className="btn btn-sm"
+          disabled={paymentBusy === g.id || busy === g.id}
+          onClick={() => handleSendPaymentTemplate(g)}
+          title={(g.direct_payment_url || g.payment_link_url) ? "שלח תבנית תשלום + סדנאות" : "הגדר קישור תשלום לפני שליחה"}
+          style={{
+            background: (g.direct_payment_url || g.payment_link_url) ? "#1B3A32" : "#FFF5E8",
+            color:      (g.direct_payment_url || g.payment_link_url) ? "#fff"    : "#B5600A",
+            fontWeight: 700,
+          }}
+        >
+          {paymentBusy === g.id ? "⏳" : "💳 תשלום"}
+        </button>
+      )}
+      {busy === g.id && (
+        <span style={{ fontSize: 12, color: "var(--text-muted)", alignSelf: "center" }}>⏳</span>
+      )}
+    </>
+  );
+
+  const renderGuestStatusBadge = (g, sm, rowStatus) => (
+    <span
+      onClick={rowStatus === "checked_in" ? () => setStatus(g, "expected") : undefined}
+      onMouseEnter={rowStatus === "checked_in" ? () => setBadgeHover(g.id) : undefined}
+      onMouseLeave={rowStatus === "checked_in" ? () => setBadgeHover(null) : undefined}
+      title={rowStatus === "checked_in" ? "לחץ לביטול צ'ק-אין" : undefined}
+      style={{
+        padding: "4px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700,
+        background: badgeHover === g.id ? "#FFF0EE" : sm.bg,
+        color:      badgeHover === g.id ? "#C0392B" : sm.color,
+        cursor: rowStatus === "checked_in" ? "pointer" : "default",
+        transition: "background 0.15s, color 0.15s",
+        userSelect: "none",
+        display: "inline-block",
+      }}
+    >
+      {badgeHover === g.id ? "↩ בטל" : sm.label}
+    </span>
+  );
+
   return (
-    <div>
+    <div className="checkin-page">
       {quietActive && (
         <div style={{ marginBottom: 16 }}>
           <QuietHoursGate
@@ -597,9 +694,9 @@ export default function GuestsPage({
             : "אין אורחים פעילים להיום — ייבא הגעות דרך \"תפעול ואחזקה\" או הוסף אורח ידנית."}
         </div>
       ) : (
-        <div className="card" style={{ overflow: "hidden" }}>
-          <div style={{ width: "100%", overflowX: "hidden" }}>
-            <table className="table" style={{ width: "100%", tableLayout: "fixed" }}>
+        <div className="card" style={{ overflow: "hidden", padding: 0 }}>
+          <div className="checkin-table-wrap table-scroll">
+            <table className="table" style={{ width: "100%", minWidth: 880 }}>
               <thead><tr>
                 <th style={{ width: 36 }}>
                   <input type="checkbox"
@@ -688,103 +785,11 @@ export default function GuestsPage({
                         {g.spa_time || "—"}
                       </td>
                       <td>
-                        <span
-                          onClick={rowStatus === "checked_in" ? () => setStatus(g, "expected") : undefined}
-                          onMouseEnter={rowStatus === "checked_in" ? () => setBadgeHover(g.id) : undefined}
-                          onMouseLeave={rowStatus === "checked_in" ? () => setBadgeHover(null) : undefined}
-                          title={rowStatus === "checked_in" ? "לחץ לביטול צ'ק-אין" : undefined}
-                          style={{
-                            padding: "4px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700,
-                            background: badgeHover === g.id ? "#FFF0EE" : sm.bg,
-                            color:      badgeHover === g.id ? "#C0392B" : sm.color,
-                            cursor: rowStatus === "checked_in" ? "pointer" : "default",
-                            transition: "background 0.15s, color 0.15s",
-                            userSelect: "none",
-                          }}
-                        >
-                          {badgeHover === g.id ? "↩ בטל" : sm.label}
-                        </span>
+                        {renderGuestStatusBadge(g, sm, rowStatus)}
                       </td>
                       <td>
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                          {/* ── Edit profile ── */}
-                          <button
-                            className="btn btn-sm"
-                            onClick={() => openEdit(g)}
-                            title="ערוך פרופיל אורח"
-                            style={{ background: "var(--ivory)", color: "var(--gold-dark)", fontWeight: 700, border: "1px solid var(--gold)" }}>
-                            ✏️
-                          </button>
-                          {/* ── Slot 1: חדר מוכן — always rendered, never disappears ── */}
-                          {rowStatus === "room_ready" ? (
-                            <button className="btn btn-sm" disabled={busy === g.id}
-                              onClick={() => setStatus(g, "expected")}
-                              style={{ background: "#FFF0EE", color: "#C0392B" }}>
-                              ↩ בטל חדר מוכן
-                            </button>
-                          ) : rowStatus === "checked_in" ? (
-                            <button className="btn btn-sm" disabled
-                              title="האורח כבר בצ'ק-אין"
-                              style={{ background: "#F5F5F5", color: "#AAAAAA", cursor: "not-allowed" }}>
-                              ✓ חדר מוכן
-                            </button>
-                          ) : (
-                            <button className="btn btn-sm" disabled={busy === g.id || roomMissing(g) || !canSend}
-                              onClick={() => setStatus(g, "room_ready")}
-                              title={
-                                !canSend ? "שליחה חסומה בשעות שקט — סמן אישור למעלה"
-                                  : roomMissing(g) ? "יש לשבץ חדר לפני סימון כמוכן — לחץ ✏️ לעריכה"
-                                  : undefined
-                              }
-                              style={{
-                                background: roomMissing(g) || !canSend ? "#F5F5F5" : "#E8F5EF",
-                                color:      roomMissing(g) || !canSend ? "#AAAAAA" : "#1A7A4A",
-                                cursor:     roomMissing(g) || !canSend ? "not-allowed" : "pointer",
-                              }}>
-                              ✓ חדר מוכן
-                            </button>
-                          )}
-
-                          {/* ── Slot 2: צ'ק-אין — always rendered, never disappears ── */}
-                          {rowStatus === "checked_in" ? (
-                            <button className="btn btn-sm" disabled={busy === g.id}
-                              onClick={() => setStatus(g, "expected")}
-                              style={{ background: "#FFF5E8", color: "#B5600A", fontWeight: 700 }}>
-                              ↩ בטל צ'ק-אין
-                            </button>
-                          ) : (
-                            <button className="btn btn-sm" disabled={busy === g.id || roomMissing(g)}
-                              onClick={() => setStatus(g, "checked_in")}
-                              title={roomMissing(g) ? "יש לשבץ חדר לפני צ'ק-אין — לחץ ✏️ לעריכה" : undefined}
-                              style={{
-                                background: roomMissing(g) ? "#F5F5F5" : "#EEF4FF",
-                                color:      roomMissing(g) ? "#AAAAAA" : "#2952A3",
-                                cursor:     roomMissing(g) ? "not-allowed" : "pointer",
-                              }}>
-                              🛎️ צ'ק-אין
-                            </button>
-                          )}
-
-                          {/* Payment button — visible once guest confirmed arrival */}
-                          {g.arrival_confirmed && (
-                            <button
-                              className="btn btn-sm"
-                              disabled={paymentBusy === g.id || busy === g.id}
-                              onClick={() => handleSendPaymentTemplate(g)}
-                              title={(g.direct_payment_url || g.payment_link_url) ? "שלח תבנית תשלום + סדנאות" : "הגדר קישור תשלום לפני שליחה"}
-                              style={{
-                                background: (g.direct_payment_url || g.payment_link_url) ? "#1B3A32" : "#FFF5E8",
-                                color:      (g.direct_payment_url || g.payment_link_url) ? "#fff"    : "#B5600A",
-                                fontWeight: 700,
-                              }}
-                            >
-                              {paymentBusy === g.id ? "⏳" : "💳 תשלום"}
-                            </button>
-                          )}
-
-                          {busy === g.id && (
-                            <span style={{ fontSize: 12, color: "var(--text-muted)", alignSelf: "center" }}>⏳</span>
-                          )}
+                          {renderGuestActions(g, rowStatus)}
                         </div>
                       </td>
                     </tr>
@@ -792,6 +797,92 @@ export default function GuestsPage({
                 })}
               </tbody>
             </table>
+          </div>
+
+          <div className="checkin-guest-cards">
+            {displayGuests.map((g) => {
+              const effectiveStatus = resolveEffectiveGuestStatus(g);
+              const sm = STATUS_META[effectiveStatus] ?? STATUS_META[g.status] ?? { label: `⚠ ${g.status ?? "ללא סטטוס"}`, bg: "#FFF0EE", color: "#C0392B" };
+              const rowStatus = g.status;
+              const rowHi = getCheckinRowHighlight(g);
+              const rowBg = selectedIds.has(g.id) ? "rgba(201,169,110,0.12)" : rowHi.bg;
+              return (
+                <article
+                  key={g.id}
+                  className="checkin-guest-card"
+                  title={rowHi.title ?? undefined}
+                  style={{ background: rowBg }}
+                >
+                  <div className="checkin-guest-card-header">
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.has(g.id)}
+                      onChange={() => toggleSelect(g.id)}
+                      style={{ cursor: "pointer", accentColor: "var(--gold)", marginTop: 4, flexShrink: 0 }}
+                      aria-label={`בחר ${g.name}`}
+                    />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, marginBottom: 6 }}>
+                        {rowHi.dot && (
+                          <span
+                            aria-hidden
+                            style={{
+                              width: 8, height: 8, borderRadius: "50%",
+                              background: rowHi.dot, flexShrink: 0,
+                            }}
+                          />
+                        )}
+                        <span
+                          onClick={() => setProfileGuest(g)}
+                          style={{ fontWeight: 800, fontSize: 16, cursor: "pointer" }}
+                        >
+                          {g.name}
+                        </span>
+                        {g.arrival_confirmed && (
+                          <span style={{ fontSize: 10, background: "#E8F5EF", color: "#1A7A4A", padding: "2px 6px", borderRadius: 8, fontWeight: 700 }}>✓ אישר</span>
+                        )}
+                        {renderGuestStatusBadge(g, sm, rowStatus)}
+                      </div>
+                      <GuestAttentionBadge
+                        guest={g}
+                        showToast={showToast}
+                        onOpenDreamBotChat={onOpenDreamBotChat}
+                        onUpdated={(updated) =>
+                          setGuests((prev) => prev.map((x) => (x.id === updated.id ? { ...x, ...updated } : x)))
+                        }
+                      />
+                    </div>
+                  </div>
+                  <dl className="checkin-guest-card-meta">
+                    <div>
+                      <dt>טלפון</dt>
+                      <dd style={{ direction: "ltr", textAlign: "right" }}>{g.phone ?? "—"}</dd>
+                    </div>
+                    <div>
+                      <dt>חדר</dt>
+                      <dd>{g.room ?? roomByPhone[g.phone]?.roomName ?? "—"}</dd>
+                    </div>
+                    <div>
+                      <dt>סוג</dt>
+                      <dd>{isSuite(g) ? "👑 סוויטה" : "סטנדרט"}</dd>
+                    </div>
+                    <div>
+                      <dt>הגעה</dt>
+                      <dd>{g.arrival_date ?? "—"}</dd>
+                    </div>
+                    <div>
+                      <dt>ספא</dt>
+                      <dd style={{ color: g.spa_time ? "#7c3aed" : "var(--text-muted)", fontWeight: g.spa_time ? 800 : 400 }}>
+                        {g.spa_time || "—"}
+                      </dd>
+                    </div>
+                  </dl>
+                  <div className="checkin-guest-card-actions">
+                    {renderGuestActions(g, rowStatus)}
+                  </div>
+                </article>
+              );
+            })}
           </div>
         </div>
       )}
