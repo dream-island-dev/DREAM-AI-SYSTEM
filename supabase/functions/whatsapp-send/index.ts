@@ -252,21 +252,25 @@ const PIPELINE_TEMPLATE: Record<string, string> = {
 // isSpecialNightBeforeDay() above but synchronous (no bot_config lookup needed
 // because the morning-of stage fires the day the guest arrives — only Saturday
 // vs weekday matters; custom holiday overrides are not evaluated here).
+// Resort arrival hours — single source of truth within this function bundle.
+// כניסה למתחם: 12:00 every day (weekday + Shabbat).
+// קבלת חדרים/סוויטות: 15:00 weekday, 18:00 Shabbat arrival.
+const RESORT_ENTRY_TIME = "12:00";
+const WEEKDAY_CHECKIN_TIME = "15:00";
+const SHABBAT_CHECKIN_TIME = "18:00";
+
 function resolveDayTimings(arrivalDateStr: string): { entryTime: string; checkInTime: string } {
   return isShabbatArrivalDate(arrivalDateStr)
-    ? { entryTime: "15:00", checkInTime: "18:00" }
-    : { entryTime: "12:00", checkInTime: "15:00" };
+    ? { entryTime: RESORT_ENTRY_TIME, checkInTime: SHABBAT_CHECKIN_TIME }
+    : { entryTime: RESORT_ENTRY_TIME, checkInTime: WEEKDAY_CHECKIN_TIME };
 }
 
-// Session-script safety net — bot_scripts may still carry weekday-default 12:00/15:00 literals.
+// Session-script safety net — bot_scripts may carry weekday check-in (15:00) literals.
 function applySaturdayCheckInTimeOverride(messageText: string, arrivalDateStr: string): string {
   if (!messageText || !arrivalDateStr) return messageText;
   if (!isShabbatArrivalDate(arrivalDateStr)) return messageText;
-  // Order matters: park weekday entry (12:00) before promoting check-in 15:00→18:00.
-  return messageText
-    .replace(/12:00/g, "__NB_ENTRY_WD__")
-    .replace(/15:00/g, "18:00")
-    .replace(/__NB_ENTRY_WD__/g, "15:00");
+  // Entry stays 12:00 — only promote weekday room check-in 15:00 → 18:00.
+  return messageText.replace(/15:00/g, SHABBAT_CHECKIN_TIME);
 }
 
 // Variables passed as {{1}}, {{2}}, … to each pipeline template.
@@ -384,16 +388,19 @@ async function resolveNightBeforeTimes(
       // getting nothing. Set the bot_config keys to override these defaults.
       console.warn(
         `[whatsapp-send] night_before_shabbat_hours_config_missing for arrival_date=${arrivalDateStr} ` +
-        `— using hardcoded Shabbat fallbacks: entry=15:00, check-in=18:00. ` +
+        `— using hardcoded Shabbat fallbacks: entry=${RESORT_ENTRY_TIME}, check-in=${SHABBAT_CHECKIN_TIME}. ` +
         `Fill bot_config.night_before_entry_time_shabbat/night_before_checkin_time_shabbat via BotConfigPanel to customise.`
       );
-      return { entryTime: entryTime || "15:00", checkInTime: checkInTime || "18:00" };
+      return {
+        entryTime: entryTime || RESORT_ENTRY_TIME,
+        checkInTime: checkInTime || SHABBAT_CHECKIN_TIME,
+      };
     }
     return { entryTime, checkInTime };
   }
   return {
-    entryTime: (cfg["night_before_entry_time_weekday"] ?? "").trim() || "12:00",
-    checkInTime: (cfg["night_before_checkin_time_weekday"] ?? "").trim() || "15:00",
+    entryTime: (cfg["night_before_entry_time_weekday"] ?? "").trim() || RESORT_ENTRY_TIME,
+    checkInTime: (cfg["night_before_checkin_time_weekday"] ?? "").trim() || WEEKDAY_CHECKIN_TIME,
   };
 }
 

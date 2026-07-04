@@ -862,7 +862,7 @@ export default function BroadcastDashboard({ user }) {
                                   <div style={{ fontSize: 11, color: "#1A7A4A", padding: "8px 12px", background: "#E8F5EF", borderRadius: 8, border: "1px solid #86EFAC" }}>
                                     ✅ {idx === 1 ? "שעת כניסה" : "שעת חדר מוכן"} — מחושבת אוטומטית לפי יום ההגעה של האורח
                                     <span style={{ display: "block", fontSize: 10, color: "#556B5F", marginTop: 3 }}>
-                                      ראשון–שישי: {idx === 1 ? '"12:00"' : '"15:00"'} &nbsp;|&nbsp; שבת: {idx === 1 ? '"15:00"' : '"18:00"'}
+                                      ראשון–שישי: {idx === 1 ? '"12:00"' : '"15:00"'} &nbsp;|&nbsp; שבת: {idx === 1 ? '"12:00"' : '"18:00"'}
                                     </span>
                                   </div>
                                 ) : (

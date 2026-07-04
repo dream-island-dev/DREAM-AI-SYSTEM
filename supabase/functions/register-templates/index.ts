@@ -124,6 +124,12 @@ const TEMPLATES: Template[] = [
       example: { body_text: [["ישראל ישראלי"]] } }],
   },
   {
+    name: "suite_welcome_morning_shabbat", category: "UTILITY", language: "he",
+    components: [{ type: "BODY",
+      text: "בוקר אור {{1}}! ✨ היום זה היום!\nהריזורט מוכן, השמש בחוץ, וכל הצוות שלנו כבר מחכה להעניק לכם חוויה בלתי נשכחת.\n\nכמה פרטים קטנים וחשובים לדרך:\n🌸 כניסה למתחם החל מהשעה 12:00.\n🔑 קבלת החדרים והסוויטות היא החל מהשעה 18:00.\n\nאם יש לכם שאלה כלשהי בדרך, אנחנו זמינים כאן בצ'אט. נסיעה טובה ובטוחה! 🚗❤️",
+      example: { body_text: [["ישראל ישראלי"]] } }],
+  },
+  {
     name: "dream_mid_stay_check", category: "UTILITY", language: "he",
     components: [
       { type: "BODY",

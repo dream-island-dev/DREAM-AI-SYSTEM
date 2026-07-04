@@ -326,6 +326,11 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
+### 2026-07-04 — Session 108 (Shabbat arrival hours — entry always 12:00)
+- **כניסה למתחם = 12:00 תמיד** (חול + שבת). **קבלת חדרים/סוויטות** = 15:00 חול / 18:00 שבת בלבד.
+- `applySaturdayCheckInTimeOverride` היה ממיר 12:00→15:00 בשבת (באג שגרם להודעת בוקר עם כניסה 15:00) — עכשיו רק 15:00→18:00 לצ׳ק-אין.
+- migration 128 מתקן `bot_config.night_before_entry_time_shabbat` מ-15:00 ל-12:00 (טעות migration 126).
+
 ### 2026-07-04 — Session 102b (Stage 3 morning Shabbat routing)
 - **Same rule as Stage 2.5:** autonomous `morning_suite`/`morning_welcome` → `suite_welcome_morning` / `suite_welcome_morning_shabbat` Meta templates only. No `stage_3_morning` session hijack on open 24h window. Day-pass `morning_welcome` aligned. Shabbat template failure → session script + `applySaturdayCheckInTimeOverride`, **not** weekday Meta (15:00 leak).
 

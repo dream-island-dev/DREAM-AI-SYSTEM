@@ -72,12 +72,12 @@ function substituteTemplateVars(bodyText, varValues) {
   return text;
 }
 
-/** Mirror whatsapp-send resolveDayTimings — weekday vs Shabbat entry/check-in display. */
+/** Mirror whatsapp-send resolveDayTimings — entry 12:00 always; check-in 15:00 / Shabbat 18:00. */
 function resolveDayTimings(arrivalDateStr) {
   if (!arrivalDateStr) return { entryTime: "12:00", checkInTime: "15:00" };
   const d = new Date(`${arrivalDateStr}T00:00:00Z`);
   return d.getUTCDay() === 6
-    ? { entryTime: "15:00", checkInTime: "18:00" }
+    ? { entryTime: "12:00", checkInTime: "18:00" }
     : { entryTime: "12:00", checkInTime: "15:00" };
 }
 
@@ -219,6 +219,7 @@ const T = {
     emptyIcon: "📭", emptyBody: "אין שיחות עדיין",
     pickChat: "בחר שיחה כדי לצפות בה",
     back: "חזרה לרשימה",
+    backShort: "חזרה",
     aiLog: "🧠 יומן AI",
     aiLogEmpty: "אין רישומי סיווג בשיחה הזו",
     aiLogHint: "פנימי — לא מוצג לאורח",
@@ -274,6 +275,7 @@ const T = {
     emptyIcon: "📭", emptyBody: "No conversations yet",
     pickChat: "Select a conversation to view it",
     back: "Back to list",
+    backShort: "Back",
     aiLog: "🧠 AI log",
     aiLogEmpty: "No classification events in this thread",
     aiLogHint: "Internal — never shown to the guest",
@@ -2665,7 +2667,11 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
   // set anywhere, so unread counts only ever grew). ─────────────────────────
   const openContact = useCallback((phone) => {
     setActive(phone);
-    if (isMobile) setMobileScreen("thread");
+    if (isMobile) {
+      setMobileScreen("thread");
+      setMobileToolbarOpen(false);
+      setMobileThreadMenuOpen(false);
+    }
     setDrawerOpen(false);
     setQuickOpen(false);
     // AI suggestions + route draft are per-conversation — stale suggestions
@@ -2686,6 +2692,27 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
       setQuickOpen(false);
     }
   }, [mobileScreen]);
+
+  const goBackToList = useCallback(() => {
+    setMobileScreen("list");
+    setMobileThreadMenuOpen(false);
+    setQuickOpen(false);
+    setDrawerOpen(false);
+  }, []);
+
+  useEffect(() => {
+    if (isMobile && mobileScreen === "thread" && !active) {
+      setMobileScreen("list");
+    }
+  }, [isMobile, mobileScreen, active]);
+
+  // Full-screen thread on phone — hide bottom nav (WhatsApp-style)
+  useEffect(() => {
+    if (!isMobile) return undefined;
+    const onThread = mobileScreen === "thread";
+    document.body.classList.toggle("wa-inbox-mobile-thread", onThread);
+    return () => { document.body.classList.remove("wa-inbox-mobile-thread"); };
+  }, [isMobile, mobileScreen]);
 
   // ── Deep-link focus (Requests Board → "פתח שיחה ב-DREAM BOT") ───────────
   useEffect(() => {
@@ -3120,8 +3147,12 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
 
   useEffect(() => {
     if (!active) return;
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [active, thread.length, lastUpdated]);
+    const behavior = isMobile && mobileScreen === "thread" ? "auto" : "smooth";
+    const id = requestAnimationFrame(() => {
+      bottomRef.current?.scrollIntoView({ behavior });
+    });
+    return () => cancelAnimationFrame(id);
+  }, [active, thread.length, lastUpdated, isMobile, mobileScreen]);
 
   // ── Manual Portal Link Dispatch ───────────────────────────────────────────
   // One-click, staff-initiated send of the standalone `manual_portal_link`
@@ -3397,64 +3428,49 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
       <div style={{ fontSize: 15 }}>{t.pickChat}</div>
     </div>
   ) : (
-    <div style={{ height: "100%", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+    <div style={{ height: "100%", minHeight: 0, flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
       {/* Thread header */}
       <div style={{
-        padding: "var(--space-sm) var(--space-md)", borderBottom: "1px solid var(--border)",
+        padding: isMobile ? "8px 10px" : "var(--space-sm) var(--space-md)",
+        borderBottom: "1px solid var(--border)",
         background: "var(--whatsapp-green)", color: "white",
-        display: "flex", alignItems: "center", gap: "var(--space-sm)",
+        display: "flex", flexDirection: isMobile ? "column" : "row",
+        alignItems: isMobile ? "stretch" : "center",
+        gap: isMobile ? 6 : "var(--space-sm)",
         flexShrink: 0,
       }}>
+        <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 8 : "var(--space-sm)", minWidth: 0 }}>
         {isMobile && (
           <button
-            onClick={() => setMobileScreen("list")}
+            type="button"
+            onClick={goBackToList}
             aria-label={t.back}
-            className="u-touch-comfort"
-            style={{
-              background: "none", border: "none", color: "white", fontSize: 20,
-              cursor: "pointer", padding: 0,
-            }}
+            className="u-touch-comfort wa-mobile-back"
           >
-            {t.dir === "rtl" ? "→" : "←"}
+            <span className="wa-mobile-back-icon" aria-hidden="true">{t.dir === "rtl" ? "›" : "‹"}</span>
+            <span className="wa-mobile-back-label">{t.backShort}</span>
           </button>
         )}
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontWeight: 700, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        <button
+          type="button"
+          onClick={() => activeContact && openGuestContextDrawer(activeContact)}
+          disabled={!activeContact}
+          title={activeContact ? displayName(activeContact) : active}
+          style={{
+            flex: 1, minWidth: 0, background: "none", border: "none", color: "inherit",
+            cursor: activeContact ? "pointer" : "default", textAlign: "start", padding: 0,
+            fontFamily: "inherit",
+          }}
+        >
+          <div style={{ fontWeight: 700, fontSize: isMobile ? 16 : 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {displayName(activeContact ?? (active ? { phone: active, guestName: navGuestName } : null))}
           </div>
           {(activeContact?.guestName || activeContact?.pushName || navGuestName) && (
-            <div style={{ fontSize: 11, opacity: 0.75, direction: "ltr", marginTop: 1 }}>
+            <div style={{ fontSize: 11, opacity: 0.75, direction: "ltr", marginTop: 1, textAlign: "start" }}>
               {active}
             </div>
           )}
-          {activeContact?.guestName && activeContact.arrivalDate && (() => {
-            const chip = getGuestArrivalRosterLabel(
-              {
-                arrival_date: activeContact.arrivalDate,
-                departure_date: activeContact.departureDate,
-                status: resolveEffectiveGuestStatus({
-                  status: activeContact.status,
-                  arrival_date: activeContact.arrivalDate,
-                  departure_date: activeContact.departureDate,
-                }),
-              },
-              lang,
-            );
-            return chip ? (
-              <div
-                className="u-badge-nowrap"
-                style={{
-                  display: "inline-block", marginTop: 4,
-                  fontSize: 10, fontWeight: 700,
-                  background: "rgba(255,255,255,0.2)", color: "white",
-                  padding: "2px 7px", borderRadius: "var(--radius-sm)",
-                }}
-              >
-                {chip.label}
-              </div>
-            ) : null;
-          })()}
-        </div>
+        </button>
         <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 4 : 8, flexShrink: 0, position: "relative" }}>
           {activeContact?.spaTime && !isMobile && (
             <div className="u-badge-nowrap" style={{
@@ -3462,11 +3478,6 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
               padding: "3px 8px", borderRadius: "var(--radius-md)",
             }}>
               💆 {t.spa} {activeContact.spaTime}
-            </div>
-          )}
-          {activeContact?.spaTime && isMobile && (
-            <div style={{ fontSize: 10, opacity: 0.85, whiteSpace: "nowrap" }}>
-              💆 {activeContact.spaTime}
             </div>
           )}
           {/* Claim / take-over — icon-only with a title tooltip to stay compact
@@ -3581,6 +3592,47 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
             </>
           )}
         </div>
+        </div>
+        {activeContact?.guestName && activeContact.arrivalDate && (() => {
+          const chip = getGuestArrivalRosterLabel(
+            {
+              arrival_date: activeContact.arrivalDate,
+              departure_date: activeContact.departureDate,
+              status: resolveEffectiveGuestStatus({
+                status: activeContact.status,
+                arrival_date: activeContact.arrivalDate,
+                departure_date: activeContact.departureDate,
+              }),
+            },
+            lang,
+          );
+          if (!chip && !(isMobile && activeContact.spaTime)) return null;
+          return (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+              {chip && (
+                <span
+                  className="u-badge-nowrap"
+                  style={{
+                    fontSize: 10, fontWeight: 700,
+                    background: "rgba(255,255,255,0.2)", color: "white",
+                    padding: "3px 8px", borderRadius: "var(--radius-sm)",
+                  }}
+                >
+                  {chip.label}
+                </span>
+              )}
+              {isMobile && activeContact.spaTime && (
+                <span className="u-badge-nowrap" style={{
+                  fontSize: 10, fontWeight: 700,
+                  background: "rgba(255,255,255,0.2)", color: "white",
+                  padding: "3px 8px", borderRadius: "var(--radius-sm)",
+                }}>
+                  💆 {activeContact.spaTime}
+                </span>
+              )}
+            </div>
+          );
+        })()}
       </div>
 
       {/* AI log drawer — internal classification metadata, fully isolated from
@@ -3650,12 +3702,11 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
         </div>
       )}
 
-      {/* Quick actions + reply input — sticky on mobile so bar stays above keyboard/safe area */}
+      {/* Quick actions + reply input — pinned at bottom via flex column */}
       <div style={{
         position: "relative", flexShrink: 0,
         ...(isMobile ? {
-          position: "sticky", bottom: 0, zIndex: 2,
-          paddingBottom: "max(env(safe-area-inset-bottom, 0px), var(--space-xs))",
+          paddingBottom: "max(env(safe-area-inset-bottom, 0px), 8px)",
         } : {}),
       }}>
         {quickOpen && (
@@ -4021,12 +4072,6 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
   );
 
   // ── Render ─────────────────────────────────────────────────────────────────
-  // Mobile slide track is always physical LTR ([list][thread] left→right).
-  // Do NOT flip translateX by UI language — RTL ancestors make overflow:hidden
-  // clip from the wrong edge (blank list in Hebrew). Clip wrapper also gets
-  // direction:ltr below.
-  const slideOpenTransform = "translateX(-50%)";
-
   const MOBILE_TOOLBAR_BTN = {
     border: "1.5px solid rgba(255,255,255,0.4)",
     background: "rgba(255,255,255,0.12)",
@@ -4139,9 +4184,56 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
         .wa-toolbar-menu-item:not(:last-child) {
           border-bottom: 1px solid var(--border);
         }
+        .wa-mobile-pane {
+          flex: 1;
+          min-height: 0;
+          overflow: hidden;
+          display: flex;
+          flex-direction: column;
+        }
+        .wa-mobile-pane--thread {
+          animation: wa-mobile-pane-in 0.22s ease-out;
+        }
+        @keyframes wa-mobile-pane-in {
+          from { opacity: 0.85; transform: translateX(16px); }
+          to { opacity: 1; transform: translateX(0); }
+        }
+        [dir="rtl"] .wa-mobile-pane--thread {
+          animation-name: wa-mobile-pane-in-rtl;
+        }
+        @keyframes wa-mobile-pane-in-rtl {
+          from { opacity: 0.85; transform: translateX(-16px); }
+          to { opacity: 1; transform: translateX(0); }
+        }
+        .wa-mobile-back {
+          display: inline-flex;
+          align-items: center;
+          gap: 2px;
+          min-height: var(--hit-target-comfort, 48px);
+          min-width: var(--hit-target-comfort, 48px);
+          padding: 0 8px;
+          margin: 0;
+          border: none;
+          background: rgba(255,255,255,0.12);
+          border-radius: 10px;
+          color: white;
+          cursor: pointer;
+          flex-shrink: 0;
+          font-family: Heebo, sans-serif;
+        }
+        .wa-mobile-back-icon {
+          font-size: 22px;
+          line-height: 1;
+          font-weight: 700;
+        }
+        .wa-mobile-back-label {
+          font-size: 13px;
+          font-weight: 700;
+        }
       `}</style>
 
-      {/* Toolbar */}
+      {/* Toolbar — hidden on mobile thread (full-screen chat, WhatsApp-style) */}
+      {!(isMobile && mobileScreen === "thread") && (
       <div style={{
         display: "flex", alignItems: "center", justifyContent: "space-between",
         padding: isMobile ? "10px 12px" : "var(--space-sm) var(--space-md)",
@@ -4342,6 +4434,7 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
           )}
         </div>
       </div>
+      )}
 
       {routeToast && (
         <div style={{
@@ -4352,23 +4445,17 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
         </div>
       )}
 
-      {/* Body */}
+      {/* Body — mobile: stack navigation (list OR thread), not side-by-side slide */}
       {isMobile ? (
-        <div style={{ flex: 1, overflow: "hidden", direction: "ltr", minHeight: 0 }}>
-          <div dir="ltr" style={{
-            display: "flex", width: "200%", height: "100%",
-            transform: mobileScreen === "thread" ? slideOpenTransform : "translateX(0%)",
-            transition: "transform 0.28s ease",
-            willChange: "transform",
-          }}>
-            <div style={{ width: "50%", flexShrink: 0, overflow: "hidden", borderInlineEnd: "1px solid #e0e0e0" }}>
-              {listPane}
-            </div>
-            <div style={{ width: "50%", flexShrink: 0, overflow: "hidden" }}>
-              {threadPane}
-            </div>
+        mobileScreen === "list" ? (
+          <div className="wa-mobile-pane">
+            {listPane}
           </div>
-        </div>
+        ) : (
+          <div dir={t.dir} className="wa-mobile-pane wa-mobile-pane--thread">
+            {threadPane}
+          </div>
+        )
       ) : (
         <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
           <div style={{ width: 290, borderInlineEnd: "1px solid #e0e0e0", flexShrink: 0, overflow: "hidden" }}>

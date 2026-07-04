@@ -1,9 +1,10 @@
+2026-07-04 | WhatsAppInbox.js + App.js | מובייל DREAM BOT: ניווט stack (רשימה או שיחה מלאה) במקום slide שבור ב-RTL; כפתור חזרה; הסתרת toolbar+תפריט תחתון בשיחה.
 2026-07-04 | WhatsAppInbox.js | תיקון מובייל עברית: overflow+RTL הציג חצי ריק — clip wrapper ב-LTR, slide תמיד translateX(-50%).
 2026-07-04 | WhatsAppInbox + guestTiming.js | רשימת שיחות: במקום «תואם מהמערכת» — תגית הגעה יחסית (היום/מחר/עוד יומיים/בריזורט); גם בכותרת השיחה.
 2026-07-04 | WhatsAppInbox.js + whatsapp-send | כפתור 🔁 «שלח שוב הודעת הגעה (שלב 2)» בפעולות מהירות; manual_script+stage_2_arrival עם resolveStage2ArrivalPlaceholders מלא (שם/ספא/פורטל).
 2026-07-04 | whatsapp-webhook | Stage 2 fix: «כן מגיעים» תמיד שולח stage_2_arrival (לא LLM/ספא) — הוסר gate על arrival_confirmed; handleStage2ArrivalConfirmation משותף; post-burst intercept.
 2026-07-04 | WhatsAppInbox.js + staffDeepLink.js + App.js + index.js | Inbox: שעה מדויקת בכל בועה (תאריך+שעה אחרי היום); כפתור 📱 QR לפתיחה מהירה בטלפון; deep link ?page=wa_inbox אחרי login.
-2026-07-04 | whatsapp-send | Stage 3 בוקר הגעה שבת: cron תמיד suite_welcome_morning/_shabbat (לא session בגלל חלון 24ש'); day-pass אותו דבר; fallback שבת→session עם override (לא תבנית חול).
+2026-07-04 | whatsapp-send + migration 128 | שעות הגעה: כניסה למתחם תמיד 12:00 (גם שבת); צ׳ק-אין 15:00 חול / 18:00 שבת; תיקון applySaturdayCheckInTimeOverride שלא הפך 12:00→15:00.
 2026-07-04 | whatsapp-send + migration 126 | Stage 2.5 שבת: cron תמיד שולח night_before_suites/_shabbat (לא session בגלל חלון 24ש'); isShabbatArrivalDate מרכזי; שעות שבת 15:00/18:00 ב-bot_config.
 2026-07-04 | ezgoParser.js | ייבוא Doc 2: זהות מ-sRemark רק כש-sClientFullName כפול בקובץ; שורה יחידה=עמודה בלבד (תיקון «יום הולדת» כשם).
 2026-07-04 | ezgoParser + ArrivalImportPanel + detailedReservationParser | ייבוא Doc 2: שם בהערה+טלפון בעמודה; 📵 שקיפות לפני סנכרון; תיקון CSV ש"ח (24 שורות במקום 7).
