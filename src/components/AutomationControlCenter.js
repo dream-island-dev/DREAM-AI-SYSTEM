@@ -16,8 +16,8 @@
 //
 // The one exception (legacy): stage_2_arrival was event_immediate-only until
 // migration 127 — it is now hours_after_event and appears in the Live Queue.
-// whatsapp-webhook still sends immediately on «כן מגיעים» when offset_hours=0;
-// cron + ACC bulk dispatch cover scheduled sends and webhook failures.
+// whatsapp-webhook still sends immediately on «כן מגיעים» regardless of offset_hours;
+// offset_hours applies to cron/ACC catch-up for guests who confirmed but never received Stage 2.
 import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import TemplateManagerPanel, { STATUS_META } from "./TemplateManagerPanel";
@@ -1344,6 +1344,14 @@ export default function AutomationControlCenter() {
   const [dispatchSummary, setDispatchSummary] = useState(null);
   const [showDispatchConfirm, setShowDispatchConfirm] = useState(false);
 
+  // ── Opt-in automation: bulk unmute after import ───────────────────────────
+  const [mutedGuests, setMutedGuests] = useState([]);
+  const [loadingMutedGuests, setLoadingMutedGuests] = useState(false);
+  const [mutedGuestsError, setMutedGuestsError] = useState(null);
+  const [selectedMutedGuestIds, setSelectedMutedGuestIds] = useState(new Set());
+  const [unmutingGuests, setUnmutingGuests] = useState(false);
+  const [mutedPanelOpen, setMutedPanelOpen] = useState(true);
+
   // ── Manual Dispatch / Override ───────────────────────────────────────────
   const [manualDispatchItem, setManualDispatchItem] = useState(null);
   const [sendNowConfirm, setSendNowConfirm] = useState(null);
@@ -1437,14 +1445,81 @@ export default function AutomationControlCenter() {
     }
   }, []);
 
-  useEffect(() => { if (subTab === "queue") fetchQueue(); }, [subTab, fetchQueue]);
+  const fetchMutedGuests = useCallback(async () => {
+    if (!isSupabaseConfigured || !supabase) return;
+    setLoadingMutedGuests(true);
+    setMutedGuestsError(null);
+    try {
+      const todayKey = queueYmd();
+      const { data, error } = await supabase
+        .from("guests")
+        .select("id, name, phone, room, arrival_date, room_type, status")
+        .eq("automation_muted", true)
+        .gte("arrival_date", todayKey)
+        .neq("status", "cancelled")
+        .order("arrival_date", { ascending: true })
+        .limit(200);
+      if (error) throw error;
+      setMutedGuests(data ?? []);
+      setSelectedMutedGuestIds(new Set());
+    } catch (err) {
+      setMutedGuestsError(err?.message ?? String(err));
+      setMutedGuests([]);
+    } finally {
+      setLoadingMutedGuests(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (subTab === "queue") {
+      fetchQueue();
+      fetchMutedGuests();
+    }
+  }, [subTab, fetchQueue, fetchMutedGuests]);
 
   const scheduleQueueRefresh = useCallback(() => {
     if (queueSyncTimerRef.current) clearTimeout(queueSyncTimerRef.current);
     queueSyncTimerRef.current = setTimeout(() => {
       fetchQueue();
+      fetchMutedGuests();
     }, 600);
-  }, [fetchQueue]);
+  }, [fetchQueue, fetchMutedGuests]);
+
+  const toggleMutedGuest = useCallback((guestId) => {
+    setSelectedMutedGuestIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(guestId)) next.delete(guestId); else next.add(guestId);
+      return next;
+    });
+  }, []);
+
+  const toggleAllMutedGuests = useCallback(() => {
+    setSelectedMutedGuestIds((prev) => {
+      if (mutedGuests.length > 0 && mutedGuests.every((g) => prev.has(g.id))) {
+        return new Set();
+      }
+      return new Set(mutedGuests.map((g) => g.id));
+    });
+  }, [mutedGuests]);
+
+  const handleBulkUnmuteGuests = useCallback(async () => {
+    if (!supabase || selectedMutedGuestIds.size === 0) return;
+    setUnmutingGuests(true);
+    try {
+      const ids = [...selectedMutedGuestIds];
+      const { error } = await supabase
+        .from("guests")
+        .update({ automation_muted: false })
+        .in("id", ids);
+      if (error) throw error;
+      showToast("ok", `✓ הופעלה אוטומציה ל-${ids.length} אורחים`);
+      await Promise.all([fetchMutedGuests(), fetchQueue()]);
+    } catch (err) {
+      showToast("err", "שגיאה בהפעלת אוטומציה: " + (err?.message ?? err));
+    } finally {
+      setUnmutingGuests(false);
+    }
+  }, [selectedMutedGuestIds, fetchMutedGuests, fetchQueue, showToast]);
 
   useEffect(() => () => {
     if (queueSyncTimerRef.current) clearTimeout(queueSyncTimerRef.current);
@@ -1747,7 +1822,7 @@ export default function AutomationControlCenter() {
             ⚙️ עריכת תזמון/תוכן כאן <strong>חיה</strong> — whatsapp-cron ו-whatsapp-send קוראים בפועל מהטבלה הזו ומחליטים לפיה
             מתי ומה לשלוח לאורחים. הפעלה/כיבוי או שינוי שלב כאן משפיע ישירות על מה שהאורח מקבל בוואטסאפ, לא רק על מה שמוצג בלוח.
             <br />
-            שלב 2 (אישור הגעה): נשלח מיד כשהאורח לוחץ «כן מגיעים» (אם <code>offset_hours=0</code>), מופיע גם ב<strong>תור חי</strong> לאורחים שאישרו וטרם קיבלו — ניתן לשגר ידנית/מאסיבית משם.
+            שלב 2 (אישור הגעה): נשלח מיד כשהאורח לוחץ «כן מגיעים», מופיע גם ב<strong>תור חי</strong> לאורחים שאישרו וטרם קיבלו — ניתן לשגר ידנית/מאסיבית משם. <code>offset_hours</code> משפיע רק על תזמון cron/תור (גיבוי), לא על לחיצת האורח.
           </div>
 
           {loadingStages ? (
@@ -2012,6 +2087,111 @@ export default function AutomationControlCenter() {
                     סגור
                   </button>
                 </div>
+              </div>
+            )}
+
+            {/* ── Opt-in automation: bulk approve muted imports ── */}
+            {(loadingMutedGuests || mutedGuestsError || mutedGuests.length > 0) && (
+              <div style={{
+                marginBottom: 16, borderRadius: 12, overflow: "hidden",
+                border: "2px solid #F59E0B", background: "rgba(245,158,11,0.08)",
+              }}>
+                <button
+                  type="button"
+                  onClick={() => setMutedPanelOpen((o) => !o)}
+                  style={{
+                    width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between",
+                    padding: "12px 16px", border: "none", cursor: "pointer",
+                    background: "rgba(245,158,11,0.15)", fontFamily: "Heebo,sans-serif",
+                    textAlign: "right",
+                  }}
+                >
+                  <span style={{ fontWeight: 800, fontSize: 14, color: "#92400E" }}>
+                    🔇 אורחים מושתקים (ייבוא opt-in)
+                    {!loadingMutedGuests && mutedGuests.length > 0 && (
+                      <span style={{ fontWeight: 600, marginRight: 8 }}>({mutedGuests.length})</span>
+                    )}
+                  </span>
+                  <span style={{ fontSize: 12, color: "#92400E" }}>{mutedPanelOpen ? "▲" : "▼"}</span>
+                </button>
+                {mutedPanelOpen && (
+                  <div style={{ padding: "12px 16px 16px" }}>
+                    {loadingMutedGuests && (
+                      <div style={{ fontSize: 13, color: "var(--text-muted)" }}>⏳ טוען רשימת מושתקים...</div>
+                    )}
+                    {mutedGuestsError && (
+                      <div style={{ fontSize: 13, color: "#C0392B", fontWeight: 700 }}>
+                        ⚠ {mutedGuestsError}
+                      </div>
+                    )}
+                    {!loadingMutedGuests && !mutedGuestsError && mutedGuests.length === 0 && (
+                      <div style={{ fontSize: 13, color: "#065f46" }}>✓ אין אורחים עתידיים עם אוטומציה מושתקת</div>
+                    )}
+                    {!loadingMutedGuests && mutedGuests.length > 0 && (
+                      <>
+                        <p style={{ fontSize: 12, color: "#78350F", margin: "0 0 10px", lineHeight: 1.5 }}>
+                          אורחים שיובאו עם «ייבוא ללא וואטסאפ» — סמן והפעל אוטומציה לפני שליחה מהתור.
+                        </p>
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10, alignItems: "center" }}>
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-sm actr-touch-btn"
+                            onClick={toggleAllMutedGuests}
+                            disabled={unmutingGuests}
+                          >
+                            {mutedGuests.every((g) => selectedMutedGuestIds.has(g.id)) ? "☐ בטל הכל" : "☑ בחר הכל"}
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-primary actr-touch-btn"
+                            disabled={unmutingGuests || selectedMutedGuestIds.size === 0}
+                            title={selectedMutedGuestIds.size === 0 ? "בחר לפחות אורח אחד" : ""}
+                            onClick={handleBulkUnmuteGuests}
+                          >
+                            {unmutingGuests ? "⏳ מפעיל..." : `✅ הפעל אוטומציה (${selectedMutedGuestIds.size})`}
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-sm actr-touch-btn"
+                            onClick={fetchMutedGuests}
+                            disabled={unmutingGuests || loadingMutedGuests}
+                          >
+                            🔄 רענן
+                          </button>
+                        </div>
+                        <div style={{
+                          maxHeight: 220, overflowY: "auto", border: "1px solid rgba(245,158,11,0.35)",
+                          borderRadius: 8, background: "#fff",
+                        }}>
+                          {mutedGuests.map((g) => (
+                            <label
+                              key={g.id}
+                              style={{
+                                display: "flex", alignItems: "center", gap: 10, padding: "8px 12px",
+                                borderBottom: "1px solid var(--border)", cursor: "pointer", fontSize: 13,
+                              }}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={selectedMutedGuestIds.has(g.id)}
+                                onChange={() => toggleMutedGuest(g.id)}
+                                disabled={unmutingGuests}
+                                style={{ width: 18, height: 18, accentColor: "var(--gold)" }}
+                              />
+                              <span style={{ flex: 1, fontWeight: 600 }}>{g.name || "—"}</span>
+                              <span style={{ color: "var(--text-muted)", fontSize: 12 }}>
+                                {g.arrival_date ? new Date(`${g.arrival_date}T12:00:00`).toLocaleDateString("he-IL") : "—"}
+                              </span>
+                              <span style={{ color: "var(--text-muted)", fontSize: 12, maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis" }}>
+                                {g.room || "—"}
+                              </span>
+                            </label>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 

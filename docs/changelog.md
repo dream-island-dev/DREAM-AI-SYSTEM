@@ -1,5 +1,7 @@
-2026-07-05 | spa_date sync (portal+automation+WA) | סנכרון מלא: `_shared/spaSchedule.ts` ב-webhook/send/portal-data; placeholders `{{SPA_*}}` עם תאריך+שעה; פורטל+Inbox+ייבוא EZGO ממלאים `spa_date` מ-arrival_date; migration 131.
-2026-07-05 | AddGuestModal + migration 131 + israeliTime.js | פרופיל אורח: תאריך טיפול ספא (`spa_date`) + בוחר שעות 24ש' ישראלי (dropdown 07:00–22:00); תצוגה משולבת ב-GuestsPage/GuestDashboard/GuestContextDrawer.
+2026-07-05 | spa_date sync (portal+automation+WA) | סנכרון מלא: `_shared/spaSchedule.ts` ב-webhook/send/portal-data; placeholders `{{SPA_*}}` עם תאריך+שעה; פורטל+Inbox+ייבוא EZGO ממלאים `spa_date` מ-arrival_date; migration 131_guests_spa_date.
+2026-07-05 | AddGuestModal + israeliTime.js | פרופיל אורח: תאריך טיפול ספא (`spa_date`) + בוחר שעות 24ש' ישראלי (dropdown 07:00–22:00); תצוגה משולבת ב-GuestsPage/GuestDashboard/GuestContextDrawer.
+2026-07-04 | ArrivalImportPanel + AutomationControlCenter + migration 132 | ייבוא opt-in: ברירת מחדל «ללא וואטסאפ»; עמודת אוטומציה בגריד; migration 132 שומר automation_muted ב-reimport; ACC תור חי — פאנל הפעלה מרוכזת לאורחים מושתקים.
+2026-07-04 | whatsapp-webhook + migration 133 | Stage 2 מיידי אחרי «כן מגיעים»: webhook מתעלם מ-offset_hours בלחיצה חיה; stage_2_arrival לפני stage_2_pay; migration 133 מאפס offset_hours.
 2026-07-04 | whatsapp-send + _shared/metaTemplateLog + migration 130 | Inbox WYSIWYG שלב 1 deployed: גופי תבניות מלאים (night_before_suites/_shabbat וכו') + fallback Meta API; migration 130 תיקון wa_template_name column.
 2026-07-04 | whatsapp-send + whatsapp-webhook + migration 129 | אוטומציה: cron תמיד Meta template (לא bot_scripts בגלל חלון 24ש'); mid_stay ללא «בוקר טוב»+חלון 10–12; Stage 2 רק מ-bot_scripts (בלי fallback מומצא).
 2026-07-04 | automationSchedule.ts + whatsapp-webhook | חיזוק מגן תשובה קטועה בשעות כניסה: `looksLikeCheckInHoursReply`+`resolveTruncatedReplyFallback` ב-sendReply chokepoint; Tier-0 מורחב; 4 בדיקות `checkInPolicyFaq.test.js`.

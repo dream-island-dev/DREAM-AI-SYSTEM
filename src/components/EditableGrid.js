@@ -158,9 +158,11 @@ export function EditableGrid({ columns, rows, onRowsChange, selectedIds, onSelec
                           direction: col.id === "phone" || col.id === "guestPhone" ? "ltr" : undefined,
                           textAlign: col.id === "phone" || col.id === "guestPhone" ? "right" : undefined,
                         }}>
-                          {(col.id === "phone" || col.id === "guestPhone") && val
-                            ? String(val).replace(/^\+?972/, "0")
-                            : (val || "—")}
+                          {col.options
+                            ? (col.options.find((o) => String(o.value ?? o) === String(val))?.label ?? (val || "—"))
+                            : (col.id === "phone" || col.id === "guestPhone") && val
+                              ? String(val).replace(/^\+?972/, "0")
+                              : (val || "—")}
                         </span>
                       )}
                     </td>
