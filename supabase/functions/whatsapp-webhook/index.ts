@@ -83,6 +83,16 @@ import { translateTextForFieldOps } from "../_shared/fieldOpsTranslation.ts";
 import { resolveGuestRoomLabel } from "../_shared/guestRoomResolve.ts";
 import { resolveRouting, taskIntentType } from "../_shared/routingConfig.ts";
 import { triggerInboxRedAlert } from "../_shared/inboxRedAlert.ts";
+import {
+  buildOptionalSpaText,
+  buildSpaLine,
+  buildSpaSentence,
+  buildSpaTimeSentence,
+  hasSpaBooking,
+  normalizeHmTime,
+  normalizeSpaDateYmd,
+  formatSpaScheduleDisplay,
+} from "../_shared/spaSchedule.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -106,19 +116,7 @@ const GEMINI_MODELS: string[] = Deno.env.get("GEMINI_MODEL")
 // §1  DYNAMIC BOT CONFIG — loaded from bot_config table, cached 5 min
 // ══════════════════════════════════════════════════════════════════════════════
 
-// ── Dynamic Spa Sentence Builder ─────────────────────────────────────────────
-// Shared helper for Channel B (Interactive/Bot Script) — generates a complete
-// sentence that gracefully handles guests with/without spa appointments.
-// Same logic as whatsapp-send (Channel A), ensuring consistent messaging.
-function buildSpaSentence(spaTime: unknown): string {
-  const time = String(spaTime ?? "").trim();
-  if (time && time !== "null" && time !== "undefined") {
-    return `הטיפול שלך בספא מתוכנן לשעה ${time}.`;
-  }
-  return "נשמח לעמוד לרשותך בכל שאלה.";
-}
-
-// Portal spa request — guests.attention_reason set by guest-portal-spa-request.
+// ── Portal spa request — guests.attention_reason set by guest-portal-spa-request.
 const PORTAL_SPA_ATTENTION_REASON = "בקשת טיפול בספא";
 
 function isPendingPortalSpaRequest(guest: Record<string, unknown> | null): boolean {
@@ -275,34 +273,35 @@ async function fetchBotScripts(
 //                          portal_token rather than ever sending a dead link.
 //
 // spaTime should be JUST the time value — "14:00" — not "טיפול 45 דקות בשעה 14:00".
+function spaVarsFromGuest(guest: Record<string, unknown> | null): {
+  spaTime: string | null;
+  spaDate: string | null;
+} {
+  const spaTime = normalizeHmTime(guest?.spa_time) || null;
+  const spaDate = normalizeSpaDateYmd(guest?.spa_date) || null;
+  return { spaTime, spaDate };
+}
+
 function resolvePlaceholders(
   template: string,
-  vars: { guestName: string; spaTime: string | null; workshopUrl: string; portalLink?: string }
+  vars: {
+    guestName: string;
+    spaTime: string | null;
+    spaDate?: string | null;
+    workshopUrl: string;
+    portalLink?: string;
+  },
 ): string {
-  // SPA_LINE: "מתואם לכם טיפול בספא בשעה HH:MM. בנוסף, " or "" when no booking.
-  // The trailing "בנוסף, " connects naturally to whatever follows.
-  const spaLine = vars.spaTime
-    ? `מתואם לכם טיפול בספא בשעה ${vars.spaTime}. בנוסף, `
-    : "";
+  const spaDate = vars.spaDate ?? null;
+  const spaTime = vars.spaTime;
+  const spaLine = buildSpaLine(spaDate, spaTime);
+  const optionalSpaText = buildOptionalSpaText(spaDate, spaTime);
 
-  // Legacy placeholder still supported — same optional-inline-clause contract as SPA_LINE.
-  const optionalSpaText = vars.spaTime
-    ? `מתואם לכם טיפול בספא בשעה ${vars.spaTime}.\n`
-    : "";
-
-  // DIAGNOSTIC: exact spa string this function received and computed, right
-  // before substitution — call-site logs (search "🩺 resolvePlaceholders input")
-  // already show whether the saved script contains the placeholder; this shows
-  // what the function itself does with the value once it gets here.
   console.log(
-    `[webhook] 🩺 resolvePlaceholders() — spaTime:${JSON.stringify(vars.spaTime)}` +
-    ` spaLine:${JSON.stringify(spaLine)} optionalSpaText:${JSON.stringify(optionalSpaText)}`
+    `[webhook] 🩺 resolvePlaceholders() — spaDate:${JSON.stringify(spaDate)} spaTime:${JSON.stringify(spaTime)}` +
+    ` spaLine:${JSON.stringify(spaLine)} optionalSpaText:${JSON.stringify(optionalSpaText)}`,
   );
 
-  // Tolerant of internal whitespace ("{{ OPTIONAL_SPA_TEXT }}") and casing —
-  // a script edited by hand via BotScriptEditor is exactly where a stray space
-  // or wrong case would silently break a strict literal match, leaving the
-  // placeholder text either unreplaced or (worse) silently treated as "absent".
   let text = template
     .replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, vars.guestName)
     .replace(/\{\{\s*WORKSHOP_URL\s*\}\}/gi, vars.workshopUrl)
@@ -329,29 +328,20 @@ function resolvePlaceholders(
     text = text.replace(/[^\n.!?]*\{\{\s*(?:PORTAL_LINK|portal_url)\s*\}\}[^\n.!?]*[.!?]?\s*/gi, "");
   }
 
-  // Legacy {{SPA_TIME}}: substitute a full sentence (not just the bare time
-  // value — that was the "15:00 with nothing around it" bug) or strip the
-  // containing sentence when absent.
-  if (vars.spaTime) {
-    text = text.replace(/\{\{\s*SPA_TIME\s*\}\}/gi, `הטיפול שלכם בספא מתואם לשעה ${vars.spaTime}`);
+  if (hasSpaBooking(spaDate, spaTime)) {
+    const spaSentence = buildSpaTimeSentence(spaDate, spaTime).replace(/\.$/, "");
+    text = text.replace(/\{\{\s*SPA_TIME\s*\}\}/gi, spaSentence);
   } else {
     text = text.replace(/[^\n.!?]*\{\{\s*SPA_TIME\s*\}\}[^\n.!?]*[.!?]?\s*/gi, "");
   }
 
-  // FORCED INJECTION (Mike's explicit requirement): a real spa booking must
-  // never depend on whether the saved bot_scripts text happens to contain a
-  // recognized placeholder. If none of {{SPA_LINE}}/{{OPTIONAL_SPA_TEXT}}/
-  // {{SPA_TIME}} were present in the template to absorb it, append the
-  // sentence deterministically rather than silently dropping it. Gated on
-  // "template had nothing to substitute" so a script that DOES use one of
-  // the placeholders correctly never gets a duplicate mention appended.
   const hadSpaPlaceholder = /\{\{\s*(?:SPA_LINE|OPTIONAL_SPA_TEXT|SPA_TIME)\s*\}\}/i.test(template);
-  if (vars.spaTime && !hadSpaPlaceholder) {
+  if (hasSpaBooking(spaDate, spaTime) && !hadSpaPlaceholder) {
     console.warn(
       `[webhook] resolvePlaceholders() force-injecting spa sentence — template had no ` +
-      `recognized spa placeholder for spaTime="${vars.spaTime}"`
+      `recognized spa placeholder spaDate="${spaDate}" spaTime="${spaTime}"`,
     );
-    text = `${text.trim()}\n\nהטיפול שלכם בספא מתואם לשעה ${vars.spaTime}.`;
+    text = `${text.trim()}\n\n${buildSpaTimeSentence(spaDate, spaTime)}`;
   }
 
   return text.trim();
@@ -383,19 +373,22 @@ function resolvePaymentPlaceholders(
   template: string,
   vars: {
     guestName: string; paymentAmount: string; paymentLink: string; workshopUrl: string;
-    spaTime: string | null; portalLink?: string;
-  }
+    spaTime: string | null; spaDate?: string | null; portalLink?: string;
+  },
 ): string {
+  const spaDate = vars.spaDate ?? null;
+  const spaTime = vars.spaTime;
   let text = template
     .replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, vars.guestName)
     .replace(/\{\{\s*PAYMENT_AMOUNT\s*\}\}/gi, vars.paymentAmount)
     .replace(/\{\{\s*PAYMENT_LINK\s*\}\}/gi, vars.paymentLink)
     .replace(/\{\{\s*WORKSHOP_URL\s*\}\}/gi, vars.workshopUrl)
-    .replace(/\{\{\s*SPA_LINE\s*\}\}/gi, buildSpaSentence(vars.spaTime))
-    .replace(/\{\{\s*OPTIONAL_SPA_TEXT\s*\}\}/gi, vars.spaTime ? `מתואם לכם טיפול בספא בשעה ${vars.spaTime}.\n` : "");
+    .replace(/\{\{\s*SPA_LINE\s*\}\}/gi, buildSpaLine(spaDate, spaTime))
+    .replace(/\{\{\s*OPTIONAL_SPA_TEXT\s*\}\}/gi, buildOptionalSpaText(spaDate, spaTime));
 
-  if (vars.spaTime) {
-    text = text.replace(/\{\{\s*SPA_TIME\s*\}\}/gi, `הטיפול שלכם בספא מתואם לשעה ${vars.spaTime}`);
+  if (hasSpaBooking(spaDate, spaTime)) {
+    const spaSentence = buildSpaTimeSentence(spaDate, spaTime).replace(/\.$/, "");
+    text = text.replace(/\{\{\s*SPA_TIME\s*\}\}/gi, spaSentence);
   } else {
     text = text.replace(/[^\n.!?]*\{\{\s*SPA_TIME\s*\}\}[^\n.!?]*[.!?]?\s*/gi, "");
   }
@@ -422,7 +415,7 @@ function resolvePaymentPlaceholders(
 // twice. The workshop link always stays inline, exactly as before.
 function buildPaymentReply(vars: {
   guestName: string; paymentAmount: string; paymentLink: string; workshopUrl: string;
-  spaTime: string | null; hasButton: boolean;
+  spaTime: string | null; spaDate?: string | null; hasButton: boolean;
 }): string {
   const workshopLine = vars.workshopUrl ? `\n\n🎯 *לסדנאות שלנו — הרשמו מראש:*\n👉 ${vars.workshopUrl}` : "";
   const paymentLine = vars.hasButton
@@ -431,7 +424,7 @@ function buildPaymentReply(vars: {
   return (
     `מגיעים! 🎉 כבר מתרגשים מאד מהגעתכם, ${vars.guestName}!\n\n` +
     `הצוות שלנו ב-Dream Island מכין את הכל ומחכה לכם עם חיוך גדול 🌴\n\n` +
-    buildSpaSentence(vars.spaTime) +
+    buildSpaSentence(vars.spaDate ?? null, vars.spaTime) +
     `\n\n${paymentLine}` +
     workshopLine +
     `\n\nיש לכם שאלות לפני ההגעה? אני כאן לכל שאלה 😊`
@@ -518,7 +511,7 @@ async function sendStage2PayReply(
   const payName        = String(guest?.name ?? "").trim() || "אורח יקר";
   const payWorkshopUrl = Deno.env.get("WORKSHOP_SIGNUP_URL") ?? "";
   const payAmount      = String(guest?.payment_amount ?? "");
-  const spaTime        = (guest?.spa_time as string | null) ?? null;
+  const { spaTime, spaDate } = spaVarsFromGuest(guest);
   const payPortalLink  = buildPortalLink(guest?.portal_token);
   const triggerType    = "stage_2_pay";
 
@@ -565,11 +558,11 @@ async function sendStage2PayReply(
   const paymentReply = payScript?.message_text?.trim()
     ? resolvePaymentPlaceholders(payScript.message_text, {
         guestName: payName, paymentAmount: payAmount, paymentLink: payLink, workshopUrl: payWorkshopUrl, spaTime,
-        portalLink: payPortalLink,
+        spaDate, portalLink: payPortalLink,
       })
     : buildPaymentReply({
         guestName: payName, paymentAmount: payAmount, paymentLink: payLink, workshopUrl: payWorkshopUrl,
-        spaTime, hasButton: !!paymentButton,
+        spaTime, spaDate, hasButton: !!paymentButton,
       });
 
   console.info(`[webhook] 💳 arrival confirmed (payment-pending) — phone:${phone} name="${payName}" button:${!!paymentButton}`);
@@ -716,7 +709,7 @@ async function handleStage2ArrivalConfirmation(
   }
 
   const safeName = String(guest?.name ?? "").trim() || "אורח יקר";
-  const spaTime = (guest?.spa_time as string | null) ?? null;
+  const { spaTime, spaDate } = spaVarsFromGuest(guest);
   const portalLink = buildPortalLink(guest?.portal_token);
   if (!portalLink) {
     console.warn(
@@ -746,7 +739,7 @@ async function handleStage2ArrivalConfirmation(
     );
   }
   const arrivalReply = resolvePlaceholders(stage2Script.message_text, {
-    guestName: safeName, spaTime, workshopUrl: "", portalLink,
+    guestName: safeName, spaTime, spaDate, workshopUrl: "", portalLink,
   });
 
   console.info(`[webhook] 🎉 arrival confirmed (${source}) — phone:${phone} name="${safeName}"`);
@@ -1021,6 +1014,7 @@ function buildGuestStageContext(
   const roomType = guest.room_type   as string | null;
   const confirmed = guest.arrival_confirmed as boolean | null;
   const spaTime  = guest.spa_time    as string | null;
+  const spaDate  = guest.spa_date    as string | null;
   const forceInHouse = opts?.forceInHouse === true;
   const isCheckedIn = forceInHouse || guest.status === "checked_in";
 
@@ -1051,7 +1045,10 @@ function buildGuestStageContext(
   }
   if (roomType === "suite") parts.push("סוג: סוויטה");
   if (confirmed)  parts.push("אישר הגעה: כן");
-  if (spaTime)    parts.push(`שעת טיפול ספא: ${spaTime}`);
+  if (spaTime || spaDate) {
+    const sched = formatSpaScheduleDisplay(spaDate, spaTime);
+    if (sched) parts.push(`טיפול ספא: ${sched}`);
+  }
   if (isPendingPortalSpaRequest(guest)) {
     parts.push("בקשת טיפול ספא מהפורטל — ממתין לטיפול צוות (לא לשלוח קישורי הזמנה)");
   }
@@ -2990,7 +2987,7 @@ function normalizePhone(phoneStr: unknown): string {
 // `phone` is needed here (unlike before) because the fallback path compares it
 // in JS instead of letting Postgres filter on it server-side.
 const GUEST_LOOKUP_FIELDS =
-  "id, name, phone, arrival_confirmed, payment_amount, payment_link_url, direct_payment_url, ezgo_portal_url, payment_link_resolution_pending, msg_pre_arrival_2d_sent, needs_callback, requires_attention, attention_reason, arrival_date, departure_date, arrival_time, room, room_type, spa_time, status, guest_notes, guest_profile, portal_token, automation_muted, claimed_by";
+  "id, name, phone, arrival_confirmed, payment_amount, payment_link_url, direct_payment_url, ezgo_portal_url, payment_link_resolution_pending, msg_pre_arrival_2d_sent, needs_callback, requires_attention, attention_reason, arrival_date, departure_date, arrival_time, room, room_type, spa_time, spa_date, status, guest_notes, guest_profile, portal_token, automation_muted, claimed_by";
 
 function guestOpsEligibility(
   guest: Record<string, unknown> | null | undefined,

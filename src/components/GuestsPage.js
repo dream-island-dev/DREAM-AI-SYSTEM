@@ -25,6 +25,7 @@ import {
   sortCheckinRosterGuests,
 } from "../utils/guestCheckinMatrix";
 import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
+import { formatSpaSchedule } from "../utils/israeliTime";
 import {
   performSuiteCheckIn,
   performSuiteCheckInRevert,
@@ -779,10 +780,10 @@ export default function GuestsPage({
                       </td>
                       <td style={{ fontSize: 13 }}>{g.arrival_date ?? "—"}</td>
                       <td style={{
-                        fontSize: 13, fontWeight: g.spa_time ? 800 : 400,
-                        color: g.spa_time ? "#7c3aed" : "var(--text-muted)",
+                        fontSize: 13, fontWeight: (g.spa_time || g.spa_date) ? 800 : 400,
+                        color: (g.spa_time || g.spa_date) ? "#7c3aed" : "var(--text-muted)",
                       }}>
-                        {g.spa_time || "—"}
+                        {formatSpaSchedule(g.spa_date, g.spa_time) || "—"}
                       </td>
                       <td>
                         {renderGuestStatusBadge(g, sm, rowStatus)}
@@ -872,8 +873,11 @@ export default function GuestsPage({
                     </div>
                     <div>
                       <dt>ספא</dt>
-                      <dd style={{ color: g.spa_time ? "#7c3aed" : "var(--text-muted)", fontWeight: g.spa_time ? 800 : 400 }}>
-                        {g.spa_time || "—"}
+                      <dd style={{
+                        color: (g.spa_time || g.spa_date) ? "#7c3aed" : "var(--text-muted)",
+                        fontWeight: (g.spa_time || g.spa_date) ? 800 : 400,
+                      }}>
+                        {formatSpaSchedule(g.spa_date, g.spa_time) || "—"}
                       </dd>
                     </div>
                   </dl>

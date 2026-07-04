@@ -68,6 +68,14 @@ import {
   getTemplateQuickReplyButtons,
   resolveMetaTemplateBodyText,
 } from "../_shared/metaTemplateLog.ts";
+import {
+  buildOptionalSpaText,
+  buildSpaLine,
+  buildSpaTimeSentence,
+  hasSpaBooking,
+  normalizeHmTime,
+  normalizeSpaDateYmd,
+} from "../_shared/spaSchedule.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -1152,14 +1160,12 @@ function resolveManualScriptPlaceholders(
 // Used when staff resends Stage 2 from WhatsApp Inbox (manual_script stage_2_arrival).
 function resolveStage2ArrivalPlaceholders(
   template: string,
-  vars: { guestName: string; spaTime: string | null; portalLink: string },
+  vars: { guestName: string; spaTime: string | null; spaDate?: string | null; portalLink: string },
 ): string {
-  const spaLine = vars.spaTime
-    ? `מתואם לכם טיפול בספא בשעה ${vars.spaTime}. בנוסף, `
-    : "";
-  const optionalSpaText = vars.spaTime
-    ? `מתואם לכם טיפול בספא בשעה ${vars.spaTime}.\n`
-    : "";
+  const spaDate = vars.spaDate ?? null;
+  const spaTime = vars.spaTime;
+  const spaLine = buildSpaLine(spaDate, spaTime);
+  const optionalSpaText = buildOptionalSpaText(spaDate, spaTime);
 
   let text = template
     .replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, vars.guestName)
@@ -1174,15 +1180,16 @@ function resolveStage2ArrivalPlaceholders(
     text = text.replace(/[^\n.!?]*\{\{\s*(?:PORTAL_LINK|portal_url)\s*\}\}[^\n.!?]*[.!?]?\s*/gi, "");
   }
 
-  if (vars.spaTime) {
-    text = text.replace(/\{\{\s*SPA_TIME\s*\}\}/gi, `הטיפול שלכם בספא מתואם לשעה ${vars.spaTime}`);
+  if (hasSpaBooking(spaDate, spaTime)) {
+    const spaSentence = buildSpaTimeSentence(spaDate, spaTime).replace(/\.$/, "");
+    text = text.replace(/\{\{\s*SPA_TIME\s*\}\}/gi, spaSentence);
   } else {
     text = text.replace(/[^\n.!?]*\{\{\s*SPA_TIME\s*\}\}[^\n.!?]*[.!?]?\s*/gi, "");
   }
 
   const hadSpaPlaceholder = /\{\{\s*(?:SPA_LINE|OPTIONAL_SPA_TEXT|SPA_TIME)\s*\}\}/i.test(template);
-  if (vars.spaTime && !hadSpaPlaceholder) {
-    text = `${text.trim()}\n\nהטיפול שלכם בספא מתואם לשעה ${vars.spaTime}.`;
+  if (hasSpaBooking(spaDate, spaTime) && !hadSpaPlaceholder) {
+    text = `${text.trim()}\n\n${buildSpaTimeSentence(spaDate, spaTime)}`;
   }
 
   return text.replace(/\{\{[^}]+\}\}/g, "").replace(/\n{3,}/g, "\n\n").trim();
@@ -1667,7 +1674,7 @@ serve(async (req: Request) => {
 
       const { data: guest, error: gErr } = await supabase
         .from("guests")
-        .select("id, name, phone, portal_token, wa_window_expires_at, spa_time")
+        .select("id, name, phone, portal_token, wa_window_expires_at, spa_time, spa_date")
         .eq("id", guestId)
         .maybeSingle();
       if (gErr)   throw new Error(`guest_lookup_error: ${gErr.message}`);
@@ -1706,13 +1713,14 @@ serve(async (req: Request) => {
       const portalLink = guest.portal_token
         ? `${PORTAL_BASE_URL}/portal/${guest.portal_token as string}`
         : "";
-      const spaTime = (guest.spa_time as string | null)?.trim() || null;
+      const spaTime = normalizeHmTime(guest.spa_time) || null;
+      const spaDate = normalizeSpaDateYmd(guest.spa_date) || null;
       const isStage2Arrival = scriptKey === "stage_2_arrival";
       if (!portalLink && /\{\{\s*(?:PORTAL_LINK|portal_url)\s*\}\}/i.test(scriptRow.message_text)) {
         console.warn(`[whatsapp-send] manual_script "${scriptKey}" — guest ${guestId} has no portal_token; stripped portal-link sentence rather than send a blank link.`);
       }
       const manualReply = isStage2Arrival
-        ? resolveStage2ArrivalPlaceholders(scriptRow.message_text, { guestName: safeName, spaTime, portalLink })
+        ? resolveStage2ArrivalPlaceholders(scriptRow.message_text, { guestName: safeName, spaTime, spaDate, portalLink })
         : resolveManualScriptPlaceholders(scriptRow.message_text, { guestName: safeName, portalLink });
 
       let status = "simulated";
@@ -1938,7 +1946,8 @@ serve(async (req: Request) => {
         : "";
       const body = resolveStage2ArrivalPlaceholders(rawText, {
         guestName,
-        spaTime: (guest.spa_time as string | null) ?? null,
+        spaTime: normalizeHmTime(guest.spa_time) || null,
+        spaDate: normalizeSpaDateYmd(guest.spa_date) || null,
         portalLink,
       });
 

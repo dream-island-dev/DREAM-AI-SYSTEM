@@ -14,6 +14,7 @@ import { useState } from "react";
 import { supabase } from "../supabaseClient";
 import { SUITE_REGISTRY, SUITE_SECTIONS } from "../data/suiteRegistry";
 import GuestProfileModal from "./GuestProfileModal";
+import IsraeliTimeSelect from "./IsraeliTimeSelect";
 import { hasMeaningfulProfile } from "../data/guestProfileSchema";
 
 // ── Smart room_type inference ─────────────────────────────────────────────────
@@ -42,6 +43,7 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
     name:               guest.name                ?? "",
     arrival_date:       guest.arrival_date         ?? "",
     departure_date:     guest.departure_date       ?? "",
+    spa_date:           guest.spa_date             ?? "",
     spa_time:           guest.spa_time             ?? "",
     treatment_count:    guest.treatment_count != null ? String(guest.treatment_count) : "",
     order_number:       guest.order_number         ?? "",
@@ -75,11 +77,15 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
     }
     setSaving(true);
     try {
+      let spaDate = form.spa_date || null;
+      const spaTime = form.spa_time || null;
+      if (spaTime && !spaDate && form.arrival_date) spaDate = form.arrival_date;
       const patch = {
         name:               form.name.trim() || null,
         arrival_date:       form.arrival_date  || null,
         departure_date:     form.departure_date || null,
-        spa_time:           form.spa_time       || null,
+        spa_date:           spaDate,
+        spa_time:           spaTime,
         treatment_count:    form.treatment_count !== "" ? parseInt(form.treatment_count, 10) : 0,
         order_number:       (form.order_number ?? "").trim() || null,
         payment_amount:     form.payment_amount !== "" ? parseFloat(form.payment_amount) : null,
@@ -184,7 +190,6 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
         {[
           { label: "שם מלא",       field: "name",            type: "text"   },
           { label: "תאריך הגעה",   field: "arrival_date",    type: "date"   },
-          { label: "שעת ספא",      field: "spa_time",        type: "time"   },
           { label: "שעת ארוחה",    field: "meal_time",       type: "time"   },
           { label: "מיקום ארוחה",  field: "meal_location",   type: "text"   },
           { label: "מספר טיפולים", field: "treatment_count", type: "number" },
@@ -212,6 +217,43 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
             />
           </div>
         ))}
+
+        {/* Spa — date + 24h time (Israeli, no AM/PM) */}
+        <div style={{
+          marginBottom: 14, padding: "12px 14px", borderRadius: 10,
+          background: "rgba(124,58,237,0.06)", border: "1px solid rgba(124,58,237,0.22)",
+        }}>
+          <div style={{ fontSize: 12, fontWeight: 800, color: "#7c3aed", marginBottom: 10 }}>
+            💆 טיפול ספא
+          </div>
+          <label style={{ fontSize: 12, fontWeight: 700, display: "block", marginBottom: 4 }}>
+            תאריך טיפול
+          </label>
+          <input
+            type="date"
+            value={form.spa_date ?? ""}
+            min={form.arrival_date || undefined}
+            max={form.departure_date || undefined}
+            onChange={(e) => setField("spa_date", e.target.value)}
+            disabled={saving}
+            style={{
+              width: "100%", padding: "9px 12px", boxSizing: "border-box", marginBottom: 10,
+              border: "1px solid var(--border,#ddd)", borderRadius: 8, fontSize: 14,
+              direction: "ltr", fontFamily: "Heebo,sans-serif",
+            }}
+          />
+          <label style={{ fontSize: 12, fontWeight: 700, display: "block", marginBottom: 4 }}>
+            שעת טיפול (24 שעות)
+          </label>
+          <IsraeliTimeSelect
+            value={form.spa_time}
+            onChange={(v) => setField("spa_time", v)}
+            disabled={saving}
+          />
+          <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 6, lineHeight: 1.4 }}>
+            פורמט ישראלי — למשל 14:30 (בלי AM/PM). ברירת מחדל: 07:00–22:00, צעדים של 15 דקות.
+          </div>
+        </div>
 
         {/* Departure date — kept separate from the generic text-field list so it
             can enforce a min of the arrival date. */}

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { supabase } from "../supabaseClient";
 import { getGuestTimingBadge } from "../utils/guestTiming";
+import { formatSpaSchedule } from "../utils/israeliTime";
 
 const COLOR_FLAGS = [
   { value: "", label: "ללא סימון", bg: "var(--ivory)", fg: "var(--text-muted)" },
@@ -79,7 +80,7 @@ export default function GuestContextDrawer({
         .select(
           "id, name, phone, room, room_type, status, arrival_date, departure_date, " +
           "claimed_by, claimed_at, automation_muted, staff_color_label, internal_notes, " +
-          "spa_time, meal_time, arrival_time, needs_callback, requires_attention"
+          "spa_time, spa_date, meal_time, arrival_time, needs_callback, requires_attention"
         )
         .in("phone", variants)
         .limit(1)
@@ -298,10 +299,10 @@ export default function GuestContextDrawer({
                         <strong>⚠ {guest?.status ?? "לא ידוע"}</strong>
                       )}
                     </div>
-                    {guest?.spa_time && (
+                    {(guest?.spa_time || guest?.spa_date) && (
                       <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
                         <span style={{ color: "var(--text-muted)" }}>ספא</span>
-                        <strong>{guest.spa_time}</strong>
+                        <strong>{formatSpaSchedule(guest.spa_date, guest.spa_time) ?? "—"}</strong>
                       </div>
                     )}
                   </div>

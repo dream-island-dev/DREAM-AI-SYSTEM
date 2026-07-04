@@ -1,3 +1,4 @@
+2026-07-05 | AddGuestModal + migration 131 + israeliTime.js | פרופיל אורח: תאריך טיפול ספא (`spa_date`) + בוחר שעות 24ש' ישראלי (dropdown 07:00–22:00); תצוגה משולבת ב-GuestsPage/GuestDashboard/GuestContextDrawer.
 2026-07-04 | whatsapp-send + _shared/metaTemplateLog + migration 130 | Inbox WYSIWYG שלב 1 deployed: גופי תבניות מלאים (night_before_suites/_shabbat וכו') + fallback Meta API; migration 130 תיקון wa_template_name column.
 2026-07-04 | whatsapp-send + whatsapp-webhook + migration 129 | אוטומציה: cron תמיד Meta template (לא bot_scripts בגלל חלון 24ש'); mid_stay ללא «בוקר טוב»+חלון 10–12; Stage 2 רק מ-bot_scripts (בלי fallback מומצא).
 2026-07-04 | automationSchedule.ts + whatsapp-webhook | חיזוק מגן תשובה קטועה בשעות כניסה: `looksLikeCheckInHoursReply`+`resolveTruncatedReplyFallback` ב-sendReply chokepoint; Tier-0 מורחב; 4 בדיקות `checkInPolicyFaq.test.js`.

@@ -13,6 +13,7 @@
 
 import { serve }        from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { formatSpaScheduleDisplay, hasSpaBooking } from "../_shared/spaSchedule.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -46,7 +47,7 @@ serve(async (req: Request) => {
 
     const { data: guest, error: err } = await supabase
       .from("guests")
-      .select("name, room, room_type, arrival_date, departure_date, spa_time, meal_time, meal_location, status, payment_amount, direct_payment_url, payment_link_url")
+      .select("name, room, room_type, arrival_date, departure_date, spa_time, spa_date, meal_time, meal_location, status, payment_amount, direct_payment_url, payment_link_url")
       .eq("portal_token", token)
       .maybeSingle();
 
@@ -182,7 +183,10 @@ serve(async (req: Request) => {
     }
 
     const spaTimeRaw = String((guest.spa_time as string | null) ?? "").trim();
-    const hasSpaBooking = !!(spaTimeRaw && spaTimeRaw !== "null" && spaTimeRaw !== "undefined");
+    const spaDateRaw = String((guest.spa_date as string | null) ?? "").trim().slice(0, 10);
+    const hasSpaBookingFlag = hasSpaBooking(spaDateRaw, spaTimeRaw);
+    const spaScheduleDisplay = formatSpaScheduleDisplay(spaDateRaw, spaTimeRaw);
+    (maskedGuest as Record<string, unknown>).spa_schedule_display = spaScheduleDisplay;
     const enableSpaRequestButton = spaToggleRow?.value_bool !== false;
 
     return new Response(
@@ -192,7 +196,7 @@ serve(async (req: Request) => {
         upsellItems: upsellItems ?? [],
         scenes,
         portalConfig: {
-          has_spa_booking: hasSpaBooking,
+          has_spa_booking: hasSpaBookingFlag,
           enable_spa_request_button: enableSpaRequestButton,
         },
       }),

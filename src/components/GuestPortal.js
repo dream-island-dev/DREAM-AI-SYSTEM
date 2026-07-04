@@ -20,6 +20,7 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import PhotoTour from "./PhotoTour";
+import { formatSpaSchedule } from "../utils/israeliTime";
 
 const XOS_GOLD    = "#D4AF37";
 const XOS_BG_TOP  = "#0f172a";
@@ -468,18 +469,26 @@ function SecurePaymentButton({ guest }) {
   );
 }
 
+function spaItineraryLabel(guest) {
+  return formatSpaSchedule(guest.spa_date, guest.spa_time)
+    || guest.spa_schedule_display
+    || guest.spa_time
+    || null;
+}
+
 // ── Itinerary glass panel (suite + day-use) ───────────────────────────────────
 // Always renders — shows a concierge CTA fallback instead of returning null when
 // no spa/meal data exists (FAIL VISIBLE §0.3: guest never sees a blank section).
 function ItineraryPanel({ guest, onSpaRequest, spaBusy, showSpaRequest }) {
   const mealPlan = (guest.meal_location ?? "").trim() || null;
-  const hasSchedule = !!(guest.spa_time || guest.meal_time || mealPlan);
+  const spaLabel = spaItineraryLabel(guest);
+  const hasSchedule = !!(spaLabel || guest.meal_time || mealPlan);
   return (
     <div style={{ padding: "0 16px 36px" }}>
       <GlassPanel title="📋 התוכנית שלכם">
         {hasSchedule ? (
           <>
-            <ItineraryRow icon="💆" label="ספא" value={guest.spa_time} />
+            <ItineraryRow icon="💆" label="ספא" value={spaLabel} />
             <ItineraryRow icon="🍴" label="בסיס אירוח" value={mealPlan} />
             <ItineraryRow icon="🍽️" label="ארוחה" value={guest.meal_time} />
           </>
@@ -557,9 +566,9 @@ function DayUseView({ guest, phase, countdown, upsellItems, token, onToast, onUp
       {/* Day-use focused itinerary — always rendered; shows concierge CTA when empty */}
       <div style={{ padding: "0 16px 28px" }}>
         <GlassPanel title="⚡ היום שלכם — בקצרה">
-          {(guest.spa_time || guest.meal_time || (guest.meal_location ?? "").trim()) ? (
+          {(guest.spa_time || guest.spa_date || guest.meal_time || (guest.meal_location ?? "").trim()) ? (
             <>
-              <ItineraryRow icon="💆" label="טיפול ספא" value={guest.spa_time} />
+              <ItineraryRow icon="💆" label="טיפול ספא" value={spaItineraryLabel(guest)} />
               <ItineraryRow
                 icon="🍴"
                 label="בסיס אירוח"
@@ -611,7 +620,7 @@ function DayUseView({ guest, phase, countdown, upsellItems, token, onToast, onUp
               ☀️ יום כיף — מה מחכה לכם?
             </div>
             <div style={{ fontSize: 13, color: XOS_TEXT, lineHeight: 1.8 }}>
-              {guest.spa_time && <div>💆 ספא & טיפולים מפנקים</div>}
+              {(guest.spa_time || guest.spa_date) && <div>💆 ספא & טיפולים מפנקים</div>}
               <div>🍽️ ארוחה במסעדת הריזורט</div>
               <div>🏊 בריכה ואזורי הרפיה</div>
               <div>🎾 פעילויות ספורט ובידור</div>

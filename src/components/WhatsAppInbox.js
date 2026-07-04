@@ -20,6 +20,7 @@ import {
 } from "../utils/inboxAlertSounds";
 import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
 import { buildStaffDeepLink, qrCodeImageUrl } from "../utils/staffDeepLink";
+import { buildSpaWhenPhrase, formatSpaSchedule } from "../utils/israeliTime";
 
 const HIT_STAFF = "var(--hit-target-staff, 44px)";
 const HIT_COMFORT = "var(--hit-target-comfort, 48px)";
@@ -40,7 +41,7 @@ const THREAD_HISTORY_LIMIT = 1500; // full-history cap for a single opened conta
 // pure dead payload multiplied across every row in every fetch.
 const CONVERSATION_SELECT =
   "id, phone, direction, message, wa_message_id, created_at, intent, human_requested, human_request_type, push_name, " +
-  "guests(id, name, spa_time, room, room_type, status, arrival_date, departure_date, portal_token, meal_time, meal_location, claimed_by, claimed_at)";
+  "guests(id, name, spa_time, spa_date, room, room_type, status, arrival_date, departure_date, portal_token, meal_time, meal_location, claimed_by, claimed_at)";
 
 // Module-level (outside the component) — survives WhatsAppInbox unmount/remount
 // within the same tab session. App.js has no router (see CLAUDE.md §4): switching
@@ -80,7 +81,7 @@ function buildGuestResolveContext(contact) {
   const origin = typeof window !== "undefined" ? window.location.origin : "https://dream-ai-system.vercel.app";
   const portalUrl = contact.portalToken ? `${origin}/portal/${contact.portalToken}` : "";
   const { entryTime, checkInTime } = resolveDayTimings(contact.arrivalDate || "");
-  return { guestName, room, portalUrl, entryTime, checkInTime, spaTime: contact.spaTime || "" };
+  return { guestName, room, portalUrl, entryTime, checkInTime, spaTime: contact.spaTime || "", spaDate: contact.spaDate || "", spaSchedule: formatSpaSchedule(contact.spaDate, contact.spaTime) || "" };
 }
 
 function expandScriptForDisplay(body, ctx = {}) {
@@ -96,11 +97,13 @@ function expandScriptForDisplay(body, ctx = {}) {
     .replace(/\{\{\s*ROOM_NAME\s*\}\}/gi, room)
     .replace(/\{\{\s*SUITE_NAME\s*\}\}/gi, room)
     .replace(/\{\{\s*room\s*\}\}/gi, room);
-  if (ctx.spaTime) {
+  if (ctx.spaTime || ctx.spaDate) {
+    const when = buildSpaWhenPhrase(ctx.spaDate, ctx.spaTime);
+    const spaDisplay = ctx.spaSchedule || ctx.spaTime;
     text = text
-      .replace(/\{\{\s*SPA_LINE\s*\}\}/gi, `🕐 הטיפול שלך בספא: ${ctx.spaTime}`)
-      .replace(/\{\{\s*OPTIONAL_SPA_TEXT\s*\}\}/gi, ` הטיפול שלך בספא מוזמן לשעה ${ctx.spaTime}.`)
-      .replace(/\{\{\s*SPA_TIME\s*\}\}/gi, ctx.spaTime);
+      .replace(/\{\{\s*SPA_LINE\s*\}\}/gi, when ? `🕐 הטיפול שלך בספא ${when}` : "")
+      .replace(/\{\{\s*OPTIONAL_SPA_TEXT\s*\}\}/gi, when ? ` הטיפול שלך בספא מוזמן ${when}.` : "")
+      .replace(/\{\{\s*SPA_TIME\s*\}\}/gi, spaDisplay);
   } else {
     text = text
       .replace(/\{\{\s*SPA_LINE\s*\}\}/gi, "")
@@ -518,6 +521,7 @@ function groupByPhone(rows) {
         guestId: row.guest_id ?? null,
         guestName: row.guest_name,
         spaTime: row.spa_time ?? null,
+        spaDate: row.spa_date ?? null,
         room: row.guest_room ?? null,
         roomType: row.guest_room_type ?? null,
         status: row.guest_status ?? null,
@@ -538,6 +542,7 @@ function groupByPhone(rows) {
     contact.messages.push(row);
     if (row.guest_id != null) contact.guestId = row.guest_id;
     if (row.spa_time) contact.spaTime = row.spa_time;
+    if (row.spa_date) contact.spaDate = row.spa_date;
     if (row.guest_room) contact.room = row.guest_room;
     if (row.guest_room_type) contact.roomType = row.guest_room_type;
     if (row.guest_status) contact.status = row.guest_status;
@@ -1040,10 +1045,13 @@ function buildContextualMacros(contact) {
         : `היי ${name}, ארוחתך ממתינה לך בשעה ${contact.mealTime} — נשמח לראותך! 🍽️`,
     });
   }
-  if (contact.spaTime) {
+  if (contact.spaTime || contact.spaDate) {
+    const when = buildSpaWhenPhrase(contact.spaDate, contact.spaTime);
     macros.push({
       label: "💆 תזכורת ספא",
-      text: `היי ${name}, תור הספא שלך נקבע לשעה ${contact.spaTime} — מחכים לך לפינוק! 💆`,
+      text: when
+        ? `היי ${name}, תור הספא שלך נקבע ${when} — מחכים לך לפינוק! 💆`
+        : `היי ${name}, תור הספא שלך נקבע — מחכים לך לפינוק! 💆`,
     });
   }
   if (contact.room) {
@@ -2212,6 +2220,7 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
     guest_id:               r.guests?.id ?? null,
     guest_name:             r.guests?.name ?? null,
     spa_time:               r.guests?.spa_time ?? null,
+    spa_date:               r.guests?.spa_date ?? null,
     guest_room:             r.guests?.room ?? null,
     guest_room_type:        r.guests?.room_type ?? null,
     guest_status:           r.guests?.status ?? null,
@@ -2615,6 +2624,7 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
         guest_name:           g.name ?? m.guest_name,
         guest_notes:          g.guest_notes ?? null,
         spa_time:             g.spa_time ?? null,
+        spa_date:             g.spa_date ?? null,
         guest_room:           g.room ?? null,
         guest_room_type:      g.room_type ?? null,
         guest_status:         g.status ?? m.guest_status,
@@ -3152,7 +3162,7 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
     ...buildGuestResolveContext(activeContact),
     scriptsByKey,
     templatesByWaName,
-  }), [activeContact?.guestName, activeContact?.pushName, activeContact?.room, activeContact?.portalToken, activeContact?.arrivalDate, activeContact?.spaTime, scriptsByKey, templatesByWaName]); // eslint-disable-line react-hooks/exhaustive-deps
+  }), [activeContact?.guestName, activeContact?.pushName, activeContact?.room, activeContact?.portalToken, activeContact?.arrivalDate, activeContact?.spaTime, activeContact?.spaDate, scriptsByKey, templatesByWaName]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!active) return;
@@ -3506,12 +3516,12 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
           )}
         </button>
         <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 4 : 8, flexShrink: 0, position: "relative" }}>
-          {activeContact?.spaTime && !isMobile && (
+          {(activeContact?.spaTime || activeContact?.spaDate) && !isMobile && (
             <div className="u-badge-nowrap" style={{
               fontSize: 11, fontWeight: 700, background: "rgba(255,255,255,0.2)",
               padding: "3px 8px", borderRadius: "var(--radius-md)",
             }}>
-              💆 {t.spa} {activeContact.spaTime}
+              💆 {t.spa} {formatSpaSchedule(activeContact.spaDate, activeContact.spaTime) || activeContact.spaTime}
             </div>
           )}
           {/* Claim / take-over — icon-only with a title tooltip to stay compact
@@ -3640,7 +3650,7 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
             },
             lang,
           );
-          if (!chip && !(isMobile && activeContact.spaTime)) return null;
+          if (!chip && !(isMobile && (activeContact.spaTime || activeContact.spaDate))) return null;
           return (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
               {chip && (
@@ -3655,13 +3665,13 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
                   {chip.label}
                 </span>
               )}
-              {isMobile && activeContact.spaTime && (
+              {isMobile && (activeContact.spaTime || activeContact.spaDate) && (
                 <span className="u-badge-nowrap" style={{
                   fontSize: 10, fontWeight: 700,
                   background: "rgba(255,255,255,0.2)", color: "white",
                   padding: "3px 8px", borderRadius: "var(--radius-sm)",
                 }}>
-                  💆 {activeContact.spaTime}
+                  💆 {formatSpaSchedule(activeContact.spaDate, activeContact.spaTime) || activeContact.spaTime}
                 </span>
               )}
             </div>

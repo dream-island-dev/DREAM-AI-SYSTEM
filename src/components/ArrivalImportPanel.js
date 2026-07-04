@@ -1647,7 +1647,10 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           const patch = {};
           const tc = c.treatment_count ?? g.treatment_count;
           if (tc != null && tc > 0) patch.treatment_count = tc;
-          if (spaTime)  patch.spa_time      = spaTime;
+          if (spaTime) {
+            patch.spa_time = spaTime;
+            if (profileArrivalDate) patch.spa_date = profileArrivalDate;
+          }
           if (mealTime) patch.meal_time      = mealTime;
           if (mealLoc)  patch.meal_location  = mealLoc;
           if (notes)    patch.guest_notes    = notes;
@@ -1752,7 +1755,10 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
 
             if (existingPhones.has(rec.phone)) {
               const patch = {};
-              if (rec.spa_time)        patch.spa_time        = rec.spa_time;
+              if (rec.spa_time) {
+                patch.spa_time = rec.spa_time;
+                if (rec.arrival_date) patch.spa_date = rec.arrival_date;
+              }
               // meal_time and meal_location are independent: board-basis guests have
               // meal_location ("חצי פנסיון" etc.) with meal_time=null — both must be
               // written separately so plan labels reach the DB even without a time.

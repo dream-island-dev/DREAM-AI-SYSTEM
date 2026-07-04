@@ -23,6 +23,7 @@ import QuietHoursGate from "./QuietHoursGate";
 import { STATUS_META } from "../utils/guestStatusMeta";
 import { isSuiteGuestProfile } from "../utils/guestTiming";
 import { resolveTimelineScopeForArrival, sortCheckinRosterGuests } from "../utils/guestCheckinMatrix";
+import { formatSpaSchedule } from "../utils/israeliTime";
 import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
 
 // ── Date helpers (local time) ─────────────────────────────────────────────────
@@ -203,7 +204,7 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
       .select(
         "id, name, phone, room, room_type, arrival_date, departure_date, status, " +
         "msg_pre_arrival_sent, msg_room_ready_sent, msg_post_checkin_sent, " +
-        "requires_attention, guest_notes, guest_profile, arrival_time, attention_reason, arrival_confirmed, spa_time, " +
+        "requires_attention, guest_notes, guest_profile, arrival_time, attention_reason, arrival_confirmed, spa_time, spa_date, " +
         "meal_time, meal_location, treatment_count, order_number, payment_amount, " +
         "payment_link_url, needs_callback, portal_token, lead_source, automation_muted"
       )
@@ -724,9 +725,9 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
                       עד {guest.departure_date}
                     </span>
                   )}
-                  {guest.spa_time && (
+                  {(guest.spa_time || guest.spa_date) && (
                     <span style={{ fontSize: 13, color: "#7c3aed", fontWeight: 800 }}>
-                      💆 ספא {guest.spa_time}
+                      💆 ספא {formatSpaSchedule(guest.spa_date, guest.spa_time)}
                     </span>
                   )}
                   <RoomTypeBadge type={guest.room_type} />
