@@ -21,14 +21,6 @@ import {
 import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
 import { buildStaffDeepLink, qrCodeImageUrl } from "../utils/staffDeepLink";
 
-// In-resort roster chrome — only guests with guests.status = checked_in (strict).
-const IN_RESORT_ROSTER = {
-  rowBg: "var(--status-purple-bg, #F3F0FF)",
-  rowBgActive: "var(--status-purple-bg, #F3F0FF)",
-  name: "var(--status-purple, #5B21B6)",
-  avatar: "var(--status-purple, #5B21B6)",
-  border: "var(--status-purple, #5B21B6)",
-};
 const HIT_STAFF = "var(--hit-target-staff, 44px)";
 const HIT_COMFORT = "var(--hit-target-comfort, 48px)";
 
@@ -672,12 +664,6 @@ const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobil
   const identity = identityMeta(contact, lang);
   const roomChip = roomChipMeta(contact);
   const active   = recentlyActive(contact);
-  const inResort =
-    resolveEffectiveGuestStatus({
-      status: contact.status,
-      arrival_date: contact.arrivalDate,
-      departure_date: contact.departureDate,
-    }) === "checked_in";
   const resolveCtx = { ...buildGuestResolveContext(contact), scriptsByKey, templatesByWaName };
 
   const [swiped, setSwiped] = useState(false);
@@ -733,19 +719,17 @@ const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobil
           cursor: "pointer",
           borderBottom: "1px solid var(--border)",
           background: contact.humanRequested
-            ? (isActive ? "var(--status-danger-bg)" : "var(--status-danger-bg)")
-            : inResort
-              ? (isActive ? IN_RESORT_ROSTER.rowBgActive : IN_RESORT_ROSTER.rowBg)
-              : (isActive ? "var(--status-info-bg)" : "var(--card-bg)"),
+            ? "var(--status-danger-bg)"
+            : (isActive ? "var(--status-info-bg)" : "var(--card-bg)"),
           borderRight: !rtl ? undefined : contact.humanRequested
             ? "4px solid var(--status-danger)"
             : isActive
-              ? `4px solid ${inResort ? IN_RESORT_ROSTER.border : "var(--whatsapp-green)"}`
+              ? "4px solid var(--whatsapp-green)"
               : "4px solid transparent",
           borderLeft: rtl ? undefined : contact.humanRequested
             ? "4px solid var(--status-danger)"
             : isActive
-              ? `4px solid ${inResort ? IN_RESORT_ROSTER.border : "var(--whatsapp-green)"}`
+              ? "4px solid var(--whatsapp-green)"
               : "4px solid transparent",
           transform: swiped ? `translateX(${rtl ? -ACTIONS_W : ACTIONS_W}px)` : "translateX(0)",
           transition: "transform 0.2s ease, background 0.15s",
@@ -771,9 +755,7 @@ const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobil
                   width: 40, height: 40, borderRadius: "50%",
                   background: contact.humanRequested
                     ? "var(--status-danger)"
-                    : inResort
-                      ? IN_RESORT_ROSTER.avatar
-                      : "var(--whatsapp-green)",
+                    : "var(--whatsapp-green)",
                   color: "white",
                   display: "flex", alignItems: "center", justifyContent: "center",
                   fontWeight: 700, fontSize: 16,
@@ -793,7 +775,7 @@ const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobil
                   className="u-guest-name-link"
                   style={{
                     fontWeight: 600, fontSize: 14,
-                    color: inResort && !contact.humanRequested ? IN_RESORT_ROSTER.name : "var(--text-main)",
+                    color: "var(--text-main)",
                   }}
                 >
                   {displayName(contact)}
