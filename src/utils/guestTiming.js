@@ -180,6 +180,15 @@ export function getGuestTimingBadge(guest) {
   return { label: "⚪ אורח לאחר עזיבה", bg: "var(--ivory)", color: "var(--text-muted)", border: "var(--border)" };
 }
 
+/** Guest has left the resort — hide from default inbox roster (separate filter). */
+export function isGuestDeparted(guest) {
+  if (!guest) return false;
+  if (guest.status === "checked_out" || guest.status === "cancelled") return true;
+  const today = israelTodayStr();
+  if (guest.departure_date && guest.departure_date < today) return true;
+  return false;
+}
+
 // Frontend-only — Deno Edge Functions can't import across the function
 // boundary in this repo (CLAUDE.md convention), so guest-portal-ops-request/
 // sla-escalation-cron duplicate the same future-arrival check locally rather

@@ -11,7 +11,7 @@ import AILearningButton from "./AILearningButton";
 import HoldToConfirmButton from "./HoldToConfirmButton";
 import QuietHoursGate from "./QuietHoursGate";
 import { getSuiteSection } from "../data/suiteRegistry";
-import { classifyInboundMessageAlert, getGuestArrivalRosterLabel } from "../utils/guestTiming";
+import { classifyInboundMessageAlert, getGuestArrivalRosterLabel, isGuestDeparted } from "../utils/guestTiming";
 import { resolveEffectiveGuestStatus } from "../utils/guestCheckinMatrix";
 import {
   unlockInboxAlertAudio,
@@ -252,6 +252,8 @@ const T = {
     filterAll: "הכל",
     filterAlerts: "🔴 התראות",
     filterInResort: "🟢 בריזורט",
+    filterDeparted: "⚪ אחרי עזיבה",
+    rosterAllDeparted: "כל השיחות הן אורחים שעזבו — לחץ «אחרי עזיבה»",
     moreMenu: "עוד",
     threadMore: "פעולות",
     closeSheet: "סגור",
@@ -308,6 +310,8 @@ const T = {
     filterAll: "All",
     filterAlerts: "🔴 Alerts",
     filterInResort: "🟢 In resort",
+    filterDeparted: "⚪ After stay",
+    rosterAllDeparted: "All chats are past guests — tap «After stay»",
     moreMenu: "More",
     threadMore: "Actions",
     closeSheet: "Close",
@@ -483,6 +487,28 @@ function phoneVariants(bare) {
   return [bare, `+${bare}`, `0${bare.slice(3)}`];
 }
 
+/** Inbound is unread only when staff hasn't opened the thread AND no outbound reply exists after it. */
+function countUnreadInbound(messages) {
+  if (!messages?.length) return 0;
+  let n = 0;
+  for (const m of messages) {
+    if (m.direction !== "inbound" || m._read) continue;
+    const answered = messages.some(
+      (o) => o.direction === "outbound" && o.created_at > m.created_at,
+    );
+    if (!answered) n++;
+  }
+  return n;
+}
+
+function contactDeparted(contact) {
+  return isGuestDeparted({
+    arrival_date: contact.arrivalDate,
+    departure_date: contact.departureDate,
+    status: contact.status,
+  });
+}
+
 function groupByPhone(rows) {
   const map = new Map();
   for (const row of rows) {
@@ -638,19 +664,13 @@ function contactItemPropsEqual(prev, next) {
   const aLast = a.messages[a.messages.length - 1];
   const bLast = b.messages[b.messages.length - 1];
   if (aLast?.id !== bLast?.id) return false;
-  // Unread count can change (openContact marks earlier inbound rows read)
-  // without touching array length or the last message id — check directly.
-  let aUnread = 0, bUnread = 0;
-  for (const m of a.messages) if (m.direction === "inbound" && !m._read) aUnread++;
-  for (const m of b.messages) if (m.direction === "inbound" && !m._read) bUnread++;
-  return aUnread === bUnread;
+  // Unread count can change (openContact / outbound reply) without touching last id.
+  return countUnreadInbound(a.messages) === countUnreadInbound(b.messages);
 }
 
 const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobile, t, lang, dir, onClick, onProfileClick, onDismiss, onArchive, scriptsByKey, templatesByWaName }) {
   const last  = contact.messages[contact.messages.length - 1];
-  const unread = contact.messages.filter(
-    (m) => m.direction === "inbound" && !m._read
-  ).length;
+  const unread = countUnreadInbound(contact.messages);
 
   const waPhone = contact.phone.replace(/^\+/, "");
   // "guest_alert" — Global Red Alert (any guest_alerts/Requests Board insert,
@@ -2250,6 +2270,13 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
     [resolveIdentityFallback, resolveClaimNames]
   );
 
+  const markPhoneInboundRead = useCallback((phone) => {
+    allMsgsRef.current = allMsgsRef.current.map((m) =>
+      m.phone === phone && m.direction === "inbound" ? { ...m, _read: true } : m
+    );
+    setContacts(applyGrouping(allMsgsRef.current));
+  }, [applyGrouping]);
+
   // Merge new conversation rows instantly (Realtime INSERT or incremental poll).
   const mergeIncomingRows = useCallback((rows) => {
     if (!rows?.length) return false;
@@ -3161,6 +3188,7 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
       });
       if (fnErr || !data?.ok) throw new Error(fnErr?.message ?? data?.error ?? "שגיאה בשליחת קישור הפורטל");
       setQuickOpen(false);
+      markPhoneInboundRead(active);
       await fetchSince();
     } catch (err) {
       setError(err?.message ?? "שגיאה בשליחת קישור הפורטל");
@@ -3188,6 +3216,7 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
       });
       if (fnErr || !data?.ok) throw new Error(fnErr?.message ?? data?.error ?? "שגיאה בשליחת הודעת הגעה (שלב 2)");
       setQuickOpen(false);
+      markPhoneInboundRead(active);
       await fetchSince();
     } catch (err) {
       setError(err?.message ?? "שגיאה בשליחת הודעת הגעה (שלב 2)");
@@ -3215,6 +3244,7 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
       });
       if (fnErr || !data?.ok) throw new Error(fnErr?.message ?? data?.error ?? "שגיאה בשליחה");
       setReply("");
+      markPhoneInboundRead(active);
       await fetchSince();
     } catch (err) {
       setError(err?.message ?? "שגיאה בשליחה");
@@ -3225,9 +3255,13 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
 
   // ── Derived state ──────────────────────────────────────────────────────────
   const visibleContacts = contacts.filter((c) => !archivedPhones.has(c.phone));
-  const alertContacts = visibleContacts.filter((c) => c.humanRequested);
+  const activeRosterContacts = visibleContacts.filter((c) => !contactDeparted(c));
+  const departedContacts = visibleContacts.filter((c) => contactDeparted(c));
+  const alertContacts = activeRosterContacts.filter((c) => c.humanRequested);
+  const rosterSource =
+    rosterFilter === "departed" ? departedContacts : activeRosterContacts;
   const displayContacts = useMemo(() => {
-    let list = visibleContacts;
+    let list = rosterSource;
     const q = rosterSearch.trim().toLowerCase();
     if (q) {
       const qDigits = q.replace(/\D/g, "");
@@ -3249,15 +3283,16 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
       );
     }
     return list;
-  }, [visibleContacts, rosterSearch, rosterFilter]);
+  }, [rosterSource, rosterSearch, rosterFilter]);
   // Contextual macros take over the quick-actions drawer when this guest has
   // usable metadata; otherwise fall back to the generic list so the drawer
   // never renders empty (Sprint 9.4, point 4).
   const contextualMacros = buildContextualMacros(activeContact);
   const isContextualQuickList = contextualMacros.length > 0;
-  const unreadTotal     = contacts.reduce((sum, c) => {
-    return sum + c.messages.filter((m) => m.direction === "inbound" && !m._read).length;
-  }, 0);
+  const unreadTotal = activeRosterContacts.reduce(
+    (sum, c) => sum + countUnreadInbound(c.messages),
+    0,
+  );
   const aiLogEvents = thread.filter(
     (m) => m.direction === "inbound" && m.intent && INTENT_LABELS[lang][m.intent]
   );
@@ -3273,8 +3308,11 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
       }}>
         <span style={{ fontWeight: 700, fontSize: 12, color: "var(--text-muted)" }}>
           {t.listCount(displayContacts.length)}
-          {(rosterSearch.trim() || rosterFilter !== "all") && displayContacts.length !== visibleContacts.length && (
-            <span style={{ opacity: 0.75 }}> / {visibleContacts.length}</span>
+          {(rosterSearch.trim() || rosterFilter !== "all") && displayContacts.length !== rosterSource.length && (
+            <span style={{ opacity: 0.75 }}> / {rosterSource.length}</span>
+          )}
+          {rosterFilter === "all" && departedContacts.length > 0 && (
+            <span style={{ opacity: 0.75 }}> · {departedContacts.length} {t.filterDeparted.replace(/^⚪\s*/, "")}</span>
           )}
         </span>
         <div style={{ display: "flex", alignItems: "center", gap: "var(--space-sm)", marginInlineStart: "auto" }}>
@@ -3333,6 +3371,7 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
               { id: "all", label: t.filterAll },
               { id: "alerts", label: t.filterAlerts },
               { id: "in_resort", label: t.filterInResort },
+              { id: "departed", label: `${t.filterDeparted}${departedContacts.length ? ` (${departedContacts.length})` : ""}` },
             ].map((chip) => (
               <button
                 key={chip.id}
@@ -3350,12 +3389,25 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
         <RosterSkeleton />
       ) : (
         <>
-          {displayContacts.length === 0 && visibleContacts.length > 0 && (
+          {displayContacts.length === 0 && rosterSource.length > 0 && (
             <div style={{ padding: "var(--space-lg)", textAlign: "center", color: "var(--text-muted)" }}>
               <div style={{ fontSize: 13 }}>{t.searchPh}</div>
             </div>
           )}
-          {visibleContacts.length === 0 && (
+          {displayContacts.length === 0 && rosterSource.length === 0 && visibleContacts.length > 0 && rosterFilter === "all" && (
+            <div style={{ padding: "var(--space-lg)", textAlign: "center", color: "var(--text-muted)" }}>
+              <div style={{ fontSize: 13 }}>{t.rosterAllDeparted}</div>
+              <button
+                type="button"
+                onClick={() => setRosterFilter("departed")}
+                className="wa-filter-chip wa-filter-chip--active"
+                style={{ marginTop: 12 }}
+              >
+                {t.filterDeparted}
+              </button>
+            </div>
+          )}
+          {rosterSource.length === 0 && visibleContacts.length === 0 && (
             <div style={{ padding: "var(--space-lg)", textAlign: "center", color: "var(--text-muted)" }}>
               <div style={{ fontSize: 32, marginBottom: 8 }}>{t.emptyIcon}</div>
               <div style={{ fontSize: 13 }}>{t.emptyBody}</div>

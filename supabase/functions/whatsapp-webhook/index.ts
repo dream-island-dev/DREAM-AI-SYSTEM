@@ -67,6 +67,9 @@ import {
   CANONICAL_FINANCIAL_HANDOFF_MSG,
   isSevereComplaint,
   isLowValueCourtesyMessage,
+  isCheckInPolicyQuestion,
+  buildCheckInPolicyReply,
+  isReplyObviouslyTruncated,
   shouldAutoPromoteToCheckedIn,
   resolveEffectiveGuestStatus,
   ADMIN_REQUESTS_DEPARTMENT,
@@ -954,6 +957,9 @@ function buildSystemPrompt(cfg: Record<string, string>): string {
   const botName    = cfg["bot_name"]        ?? "DREAM CONCIERGE";
   const persona    = cfg["bot_personality"] ?? "";
   const checkin    = cfg["hotel_checkin_time"]     ?? "15:00";
+  const entryTime  = (cfg["night_before_entry_time_weekday"] ?? "").trim() || "12:00";
+  const checkinWeekday = (cfg["night_before_checkin_time_weekday"] ?? "").trim() || checkin;
+  const checkinShabbat = (cfg["night_before_checkin_time_shabbat"] ?? "").trim() || "18:00";
   const checkout   = cfg["hotel_checkout_time"]    ?? "11:00";
   const pool       = cfg["hotel_pool_hours"]       ?? "08:00–20:00";
   const spa        = cfg["hotel_spa_hours"]        ?? "09:00–21:00";
@@ -975,7 +981,9 @@ ${persona ? `\n══ אישיות ונימה (מותאם-אישית מה-UI) �
 
 ══ ידע הריזורט ══
 ▸ שעות:
-  • צ'ק-אין: ${checkin} | צ'ק-אאוט: ${checkout}
+  • כניסה למתחם: ${entryTime} (כל יום)
+  • קבלת חדר/סוויטה: ימי חול ${checkinWeekday} | שבתות וחגים ${checkinShabbat}
+  • צ'ק-אאוט: ${checkout}
   • בריכה: ${pool}
   • מסעדה: ${restaurant}
   • ספא: ${spa}
@@ -1641,6 +1649,40 @@ async function handleCourtesyAck(
     intent: "courtesy_ack",
   });
   console.info(`[webhook] 🤫 courtesy/emoji-only message — silent exit, no fallback sent — phone:${phone}`);
+}
+
+/** Tier-0 — check-in / entry policy FAQ. Zero LLM tokens; complete hours from bot_config. */
+async function handleCheckInPolicyFaq(
+  supabase: ReturnType<typeof createClient>,
+  opts: {
+    phone: string;
+    guestId: number | null;
+    guest: Record<string, unknown> | null;
+    msgId: string;
+    claimedConversationId: number | null;
+    sim: boolean;
+    cfg: Record<string, string>;
+  },
+): Promise<void> {
+  const { phone, guestId, guest, msgId, claimedConversationId, sim, cfg } = opts;
+  const reply = buildCheckInPolicyReply(cfg, (guest?.arrival_date as string) ?? null);
+  await patchClaimedInbound(supabase, claimedConversationId, msgId, {
+    guest_id: guestId,
+    intent: "check_in_policy_faq",
+  });
+  if (!sim) {
+    try {
+      await sendReply(phone, reply);
+      await insertGuestOutboundIfNotMuted(supabase, {
+        phone, guest_id: guestId, message: reply, wa_message_id: null, intent: "check_in_policy_faq",
+      });
+    } catch (e) {
+      console.error("[webhook] check_in_policy_faq reply failed:", (e as Error).message);
+    }
+  } else {
+    console.info(`[webhook] SIM — check_in_policy_faq to ${phone}`);
+  }
+  console.info(`[webhook] ✅ check-in policy FAQ (Tier-0) — phone:${phone}`);
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -2449,11 +2491,20 @@ async function askGemini(
   // functionCall — all three can coexist in the same candidate.
   function extractResult(data: Record<string, unknown>): AiReplyResult | null {
     const candidates = data?.candidates as Array<Record<string, unknown>> | undefined;
+    const finishReason = candidates?.[0]?.finishReason as string | undefined;
+    if (finishReason === "MAX_TOKENS") {
+      console.warn("[webhook] Gemini finishReason=MAX_TOKENS — reply may be truncated");
+    }
     const content = candidates?.[0]?.content as Record<string, unknown> | undefined;
     const rawParts = (content?.parts ?? []) as Array<Record<string, unknown>>;
-    const realPart = rawParts.find(p => !p.thought && typeof p.text === "string" && (p.text as string).trim());
+    // Join ALL non-thought text parts — some models split the Hebrew answer across
+    // multiple parts; taking only rawParts.find() dropped the Shabbat-time tail.
+    const text = rawParts
+      .filter((p) => !p.thought && typeof p.text === "string" && String(p.text).trim())
+      .map((p) => String(p.text).trim())
+      .join("\n")
+      .trim();
     const fnPart = rawParts.find(p => (p.functionCall as Record<string, unknown> | undefined)?.name === LOG_REQUEST_TOOL_NAME);
-    const text = String(realPart?.text ?? "").trim();
     const loggedRequest = fnPart ? _normalizeLoggedRequest((fnPart.functionCall as Record<string, unknown>)?.args) : null;
     if (!text && !loggedRequest) return null;
     return { text: text || (loggedRequest ? _buildToolOnlyReply(loggedRequest) : ""), loggedRequest };
@@ -3561,6 +3612,20 @@ Deno.serve(async (req: Request) => {
         continue;
       }
 
+      // ── Check-in / entry policy FAQ — Tier-0, before LLM (complete hours) ──
+      if (!isButtonReply && isCheckInPolicyQuestion(text)) {
+        await handleCheckInPolicyFaq(supabase, {
+          phone,
+          guestId,
+          guest: guest as Record<string, unknown> | null,
+          msgId,
+          claimedConversationId,
+          sim,
+          cfg: botConfig,
+        });
+        continue;
+      }
+
       // ── Severe complaint kill-switch — checked first, before any other Tier-0
       // classifier or LLM. A furious/serious complaint must never be routed
       // into date-change/upsell/generic-complaint copy or free-text LLM output —
@@ -3766,6 +3831,20 @@ Deno.serve(async (req: Request) => {
       // ── Defensive Shield — emoji/courtesy-only pass (post-burst) ───────────
       if (!isButtonReply && effectiveText !== text && isLowValueCourtesyMessage(effectiveText)) {
         await handleCourtesyAck(supabase, { phone, guestId, msgId, claimedConversationId });
+        continue;
+      }
+
+      // ── Check-in policy FAQ (post-burst) ───────────────────────────────────
+      if (!isButtonReply && effectiveText !== text && isCheckInPolicyQuestion(effectiveText)) {
+        await handleCheckInPolicyFaq(supabase, {
+          phone,
+          guestId,
+          guest: guest as Record<string, unknown> | null,
+          msgId,
+          claimedConversationId,
+          sim,
+          cfg: botConfig,
+        });
         continue;
       }
 
@@ -4320,14 +4399,16 @@ Deno.serve(async (req: Request) => {
         );
       }
 
-      // ── Defensive Shield — Layer 2.2: quiet red-alert on low-confidence FAQ
-      // miss. `reply` still equals the model's literal LOW_CONFIDENCE_HANDOFF_
-      // SENTENCE only if nothing downstream (pre-send safety nets / upsell
-      // gates above) overwrote it with a more specific reply — self-correcting
-      // by construction, no separate flag to keep in sync. Instead of sending
-      // the "I'm checking with reception" filler (which starts to look dumb
-      // repeated across many misses), go silent and let staff pick it up from
-      // the red-alert badge.
+      // ── Truncation guard — never send a reply cut mid-sentence to the guest ──
+      if (isReplyObviouslyTruncated(reply)) {
+        console.warn(
+          `[webhook] 🛡️ truncated reply guard — phone:${phone} tail:"${reply.slice(-50)}"`,
+        );
+        reply = isCheckInPolicyQuestion(effectiveText)
+          ? buildCheckInPolicyReply(botConfig, (guest?.arrival_date as string) ?? null)
+          : FALLBACK_REPLY;
+      }
+
       const isLowConfidenceFaqMiss = reply.includes(LOW_CONFIDENCE_HANDOFF_SENTENCE);
       if (isLowConfidenceFaqMiss && guestId) {
         supabase

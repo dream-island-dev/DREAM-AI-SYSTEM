@@ -714,7 +714,8 @@ export const SENSITIVE_STAY_CHANGE_PATTERN =
   /הארכ(ה|ת)\s*(של\s*)?(ה)?(שהייה|שהות|חדר|הזמנה)|עזיבה\s*מאוחרת|פינוי\s*מאוחר|צ.?ק.?אא?וט\s*מאוחר|צ.?ק.?אא?וט\s*מאוחרת|להישאר\s*עוד|עוד\s*יום|עוד\s*לילה|לילה\s*נוסף|להאריך\s*(את\s*)?(ה)?(שהות|ההזמנה|השהייה)|לצ.?את[\s\S]{0,20}מאוחר|צ.?ק.?אין\s*מוקדם|הגעה\s*מוקדמת|כניסה\s*מוקדמת|חדר[\s\S]{0,25}מוקדם|מוקדם[\s\S]{0,25}חדר|להיכנס\s*(לחדר\s*)?מוקדם|שינוי\s*חדר|להחליף\s*חדר|חדר\s*אחר|early\s*check.?in|late\s*check.?out|extend\s*(my\s*)?(stay|booking)|extra\s*night|stay\s*longer/i;
 
 const SENSITIVE_STAY_FAQ_EXCLUSION =
-  /^(?:מה|מתי|איזו?\s*שעה|כמה|האם)\s+.{0,40}?(?:צ.?ק.?אא?וט|צ.?ק.?אין|שעת\s*(?:כניסה|עזיבה)|check.?out|check.?in)/iu;
+  /^(?:מה|מתי|איזו?\s*שעה|כמה|האם)\s+.{0,50}?(?:צ.?ק.?אא?וט|צ.?ק.?אין|שעת\s*(?:כניסה|עזיבה)|כניסה|הכנס|להיכנס|חדר|check.?out|check.?in)/iu
+  | /^שעות?\s*(?:ה)?כניסה/iu;
 
 export function isSensitiveStayChangeRequest(text: string): boolean {
   const t = text.trim();
@@ -725,6 +726,51 @@ export function isSensitiveStayChangeRequest(text: string): boolean {
 /** Canonical staff handoff — MUST NOT vary; no enthusiastic approval language. */
 export const CANONICAL_STAY_CHANGE_HANDOFF_MSG =
   "העברתי את בקשתך לצוות הסוויטות שלנו (אדיר ואפק), והם יצרו איתך קשר בהקדם. 🙏";
+
+// ── Check-in / entry policy FAQ — Tier-0 deterministic reply (no LLM) ────────
+// Catches "האם ניתן להכנס לחדר בשעה 12?" and similar — must NOT fall through to
+// LLM with incomplete bot_config knowledge (only hotel_checkin_time=15:00).
+
+export const CHECK_IN_POLICY_QUESTION_PATTERN =
+  /(?:מה|מתי|איזו?\s*שעה|כמה|האם)\s+[\s\S]{0,60}?(?:צ.?ק.?אין|צ.?ק.?אא?וט|שעת?\s*(?:כניסה|עזיבה)|כניסה\s*(?:ל)?חדר|להיכנס\s*לחדר|הכנס\w*\s*לחדר|check.?in|check.?out)|שעות?\s*(?:ה)?כניסה|קבלת\s*חדר|מועד\s*כניסה/i;
+
+export function isCheckInPolicyQuestion(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  return CHECK_IN_POLICY_QUESTION_PATTERN.test(t);
+}
+
+/** Complete resort entry + room check-in times from bot_config (BotConfigPanel keys). */
+export function buildCheckInPolicyReply(
+  cfg: Record<string, string>,
+  _arrivalDateStr?: string | null,
+): string {
+  const entryTime = (cfg["night_before_entry_time_weekday"] ?? "").trim() || "12:00";
+  const checkinWeekday =
+    (cfg["night_before_checkin_time_weekday"] ?? "").trim()
+    || (cfg["hotel_checkin_time"] ?? "").trim()
+    || "15:00";
+  const checkinShabbat =
+    (cfg["night_before_checkin_time_shabbat"] ?? "").trim() || "18:00";
+  const checkout = (cfg["hotel_checkout_time"] ?? "").trim() || "11:00";
+
+  return (
+    `שמח לעזור 🙏\n` +
+    `כניסה למתחם: מהשעה ${entryTime} (כל יום).\n` +
+    `קבלת חדר/סוויטה: ימי חול מהשעה ${checkinWeekday}, שבתות וחגים מהשעה ${checkinShabbat}.\n` +
+    `צ'ק-אאוט: עד ${checkout}.\n\n` +
+    `אם תרצו לנסות להיכנס לחדר לפני השעה הרשמית — נבדוק מול הצוות לפי תפוסה. פשוט כתבו לנו.`
+  );
+}
+
+/** Detect LLM replies cut mid-sentence before they reach the guest. */
+export function isReplyObviouslyTruncated(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.length < 25) return false;
+  if (/(?:^|[\s,])מה$|החל\s+מה$|ובשבתות\s+וחגים\s+החל\s+מה$/u.test(t)) return true;
+  if (t.length > 70 && !/[.!?…🙏✅)\u201d\u2019"']$/.test(t)) return true;
+  return false;
+}
 
 // ── Sensitive financial / billing requests — never imply approval or a fixed
 // resolution; staff must verify the charge before anyone promises anything ──

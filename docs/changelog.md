@@ -1,3 +1,5 @@
+2026-07-04 | WhatsAppInbox.js + guestTiming.js | Inbox: unread רק כשאין מענה אחרי inbound; פילטר «אחרי עזיבה» מפריד אורחים שעזבו מהרשימה הראשית.
+2026-07-04 | whatsapp-webhook + automationSchedule.ts | Tier-0 שאלות שעות כניסה/חדר (`isCheckInPolicyQuestion`+`buildCheckInPolicyReply`); מגן תשובה קטועה (`isReplyObviouslyTruncated`); Gemini מחבר כל חלקי טקסט; `buildSystemPrompt` כולל כניסה 12:00+שבת 18:00.
 2026-07-04 | GuestsPage.js + App.js + BotConfigPanel.js + whatsapp-send | מובייל צ'ק-אין: כרטיסי אורח במקום טבלה שבורה; overflow גלובלי; פאנל שעות כניסה חול/שבת/חג בהגדרות בוט; resolveDayTimings מ-bot_config.
 2026-07-04 | WhatsAppInbox.js | הוסר צבע סגול לשורות «בריזורט» ברשימת DREAM BOT — נשארה תגית 🟢 בריזורט בלבד.
 2026-07-04 | automation-queue + AutomationControlCenter + automationSchedule | תור חי: שלב 2 (stage_2_arrival) גלוי בין שלב 1 ל-2.5 — «ממתין לאישור הגעה» לפני כן, מיידי אחרי; תיקון סינון event_immediate + awaiting_confirmation.
