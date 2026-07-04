@@ -1,3 +1,4 @@
+2026-07-04 | ArrivalImportPanel + AutomationControlCenter + migration 132 | ייבוא opt-in: ברירת מחדל «ללא וואטסאפ»; עמודת אוטומציה בגריד; migration 132 שומר automation_muted ב-reimport; ACC תור חי — פאנל הפעלה מרוכזת לאורחים מושתקים.
 2026-07-04 | whatsapp-webhook + migration 131 | Stage 2 מיידי אחרי «כן מגיעים»: webhook מתעלם מ-offset_hours בלחיצה חיה; stage_2_arrival לפני stage_2_pay; migration 131 מאפס offset_hours.
 2026-07-04 | whatsapp-send + _shared/metaTemplateLog + migration 130 | Inbox WYSIWYG שלב 1 deployed: גופי תבניות מלאים (night_before_suites/_shabbat וכו') + fallback Meta API; migration 130 תיקון wa_template_name column.
 2026-07-04 | whatsapp-send + whatsapp-webhook + migration 129 | אוטומציה: cron תמיד Meta template (לא bot_scripts בגלל חלון 24ש'); mid_stay ללא «בוקר טוב»+חלון 10–12; Stage 2 רק מ-bot_scripts (בלי fallback מומצא).
