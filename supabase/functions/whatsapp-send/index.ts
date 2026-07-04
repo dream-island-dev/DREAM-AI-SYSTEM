@@ -64,6 +64,11 @@ import {
   PAYMENT_LINK_FAILURE_LABEL,
 } from "../_shared/paymentLinkGuard.ts";
 
+import {
+  getTemplateQuickReplyButtons,
+  resolveMetaTemplateBodyText,
+} from "../_shared/metaTemplateLog.ts";
+
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -81,55 +86,12 @@ const WORKSHOP_SIGNUP_URL = Deno.env.get("WORKSHOP_SIGNUP_URL") ?? "dream-island
 // Matches the live Vercel deployment (CLAUDE.md §1 Live URL).
 const PORTAL_BASE_URL = "https://dream-ai-system.vercel.app";
 
-/** Substitute Meta positional vars {{1}}, {{2}}, … into template body text. */
-function substituteMetaTemplateVars(body: string, vars: string[]): string {
-  let out = body;
-  vars.forEach((v, i) => {
-    out = out.replace(new RegExp(`\\{\\{\\s*${i + 1}\\s*\\}\\}`, "g"), v || "-");
-  });
-  return out;
-}
-
 function truncateConversationLog(text: string): string {
   const t = text.trim();
   return t.length > 4000 ? `${t.slice(0, 3997)}…` : t;
 }
 
-/** Meta-approved body snapshots — inbox logging only (never sent to Meta). */
-const TEMPLATE_BODY_APPROVED: Record<string, string> = {
-  dream_arrival_confirmation:
-    "היי {{1}}! כבר ממש סופרים את הימים... 🥳\n" +
-    "רק רצינו לוודא שהכל כרגיל לקראת השהות שלכם אצלנו בריזורט בעוד יומיים. " +
-    "נשמח אם תאשרו לנו את הגעתכם כאן למטה:",
-  dream_checkin_reminder_v2:
-    "שלום {{1}}, מחר מגיעים לדרים איילנד — מחכים לכם! " +
-    "המתחם פתוח מ-9:00, צ'ק אין לסוויטות מ-15:00. " +
-    "בואו מוקדם ותיהנו מהכל. לכל שאלה: {{2}} — נתראה מחר",
-  dream_mid_stay_check:
-    "היי {{1}}, הזמן עף כשנהנים... 🤍\n" +
-    "רק רצינו לעצור לרגע ולוודא שאתם נרגעים, נהנים ומנצלים את כל הטוב שיש לדרים איילנד להציע.\n\n" +
-    "אם חסר לכם משהו בסוויטה, או אם יש כל דבר שנוכל לעשות כדי להפוך את השהות שלכם לעוד יותר מושלמת — " +
-    "פשוט תכתבו לנו כאן תגובה חופשית, או לחצו על הכפתור למטה ונציג יצור איתכם קשר מיד. תמשיכו ליהנות! ✨",
-  dream_checkout_feedback:
-    "{{1}}, תודה שהייתם איתנו! נשמח לשמוע איך הייתה החוויה.",
-  dream_payment_and_workshops:
-    "איזה כיף, אנחנו כבר מחכים לכם! 🥰\n" +
-    "כדי שהצ'ק-אין שלכם בריזורט יהיה מהיר, חלק וללא המתנה מיותרת בדלפק הקבלה, " +
-    "נשמח אם תסדירו את יתרת השהות על סך {{2}} ₪ בקישור המאובטח שלכם.",
-  dream_room_ready:
-    "{{1}}, החדר שלכם — {{2}} — מוכן! 🎉",
-};
-
-/** Quick Reply button labels baked into approved Meta templates (logging only). */
-const TEMPLATE_QUICK_REPLY_BUTTONS: Record<string, string[]> = {
-  dream_arrival_confirmation: ["כן, מגיעים! ✨", "לא, שינוי בתאריך 🗓️"],
-};
-
 type InteractiveButtonDef = { type: string; label?: string; url?: string };
-
-function getTemplateQuickReplyButtons(templateName: string): string[] {
-  return TEMPLATE_QUICK_REPLY_BUTTONS[templateName] ?? [];
-}
 
 function sessionButtonsToLabels(buttons: InteractiveButtonDef[]): string[] {
   return buttons
@@ -150,25 +112,6 @@ function formatOutboundConversationLog(opts: {
     lines.push(`[+ Interactive Buttons: ${labels.join(" | ")}]`);
   }
   return lines.join("\n");
-}
-
-async function resolveMetaTemplateBodyText(
-  supabase: ReturnType<typeof createClient>,
-  templateName: string,
-  vars: string[],
-): Promise<string> {
-  const { data: mt } = await supabase
-    .from("message_templates")
-    .select("content")
-    .eq("wa_template_name", templateName)
-    .maybeSingle();
-  let body = mt?.content?.trim() ?? "";
-  if (!body && TEMPLATE_BODY_APPROVED[templateName]) {
-    body = TEMPLATE_BODY_APPROVED[templateName];
-  }
-  if (body) return substituteMetaTemplateVars(body, vars);
-  const varsHint = vars.length ? ` (${vars.join(" | ")})` : "";
-  return `📋 תבנית Meta: ${templateName}${varsHint}`;
 }
 
 function buildSessionConversationLog(
