@@ -1,3 +1,4 @@
+2026-07-04 | automationSchedule.ts + whatsapp-webhook | חיזוק מגן תשובה קטועה בשעות כניסה: `looksLikeCheckInHoursReply`+`resolveTruncatedReplyFallback` ב-sendReply chokepoint; Tier-0 מורחב; 4 בדיקות `checkInPolicyFaq.test.js`.
 2026-07-04 | WhatsAppInbox.js + guestTiming.js | Inbox: unread רק כשאין מענה אחרי inbound; פילטר «אחרי עזיבה» מפריד אורחים שעזבו מהרשימה הראשית.
 2026-07-04 | whatsapp-webhook + automationSchedule.ts | Tier-0 שאלות שעות כניסה/חדר (`isCheckInPolicyQuestion`+`buildCheckInPolicyReply`); מגן תשובה קטועה (`isReplyObviouslyTruncated`); Gemini מחבר כל חלקי טקסט; `buildSystemPrompt` כולל כניסה 12:00+שבת 18:00.
 2026-07-04 | GuestsPage.js + App.js + BotConfigPanel.js + whatsapp-send | מובייל צ'ק-אין: כרטיסי אורח במקום טבלה שבורה; overflow גלובלי; פאנל שעות כניסה חול/שבת/חג בהגדרות בוט; resolveDayTimings מ-bot_config.

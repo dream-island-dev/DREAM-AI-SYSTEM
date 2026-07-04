@@ -70,6 +70,7 @@ import {
   isCheckInPolicyQuestion,
   buildCheckInPolicyReply,
   isReplyObviouslyTruncated,
+  resolveTruncatedReplyFallback,
   shouldAutoPromoteToCheckedIn,
   resolveEffectiveGuestStatus,
   ADMIN_REQUESTS_DEPARTMENT,
@@ -2931,9 +2932,25 @@ async function sendReply(to: string, body: string): Promise<string> {
   // of which code path produced `body`. If sanitization removes everything (the
   // model emitted pure English reasoning), fall back to a safe Hebrew line
   // instead of sending an empty message.
-  const safeBody =
-    sanitizeReply(body).trim() ||
+  const emptyFallback =
     "מצטערים, נשמח לעזור 🙏 אפשר לנסח שוב? צוות Dream Island כאן בשבילכם.";
+  const safeBodyRaw = sanitizeReply(body).trim() || emptyFallback;
+
+  const safeBody = isReplyObviouslyTruncated(safeBodyRaw)
+    ? resolveTruncatedReplyFallback(
+        safeBodyRaw,
+        "",
+        _configCache,
+        null,
+        emptyFallback,
+      )
+    : safeBodyRaw;
+
+  if (safeBody !== safeBodyRaw) {
+    console.warn(
+      `[webhook] 🛡️ sendReply truncation guard — replaced tail:"${safeBodyRaw.slice(-50)}"`,
+    );
+  }
 
   try {
     const res = await fetch(
@@ -4106,6 +4123,18 @@ Deno.serve(async (req: Request) => {
             ? await callClaude(effectiveText, guestName, orderedHistory, enrichedPrompt, routingLearnedSuffix)
             : await askGemini(effectiveText, guestName, orderedHistory, enrichedPrompt, route.geminiOrder, true, routingLearnedSuffix);
           reply = sanitizeReply(result.text);
+          if (isReplyObviouslyTruncated(reply)) {
+            console.warn(
+              `[webhook] 🛡️ FAQ engine truncated — substituting check-in policy reply — phone:${phone}`,
+            );
+            reply = resolveTruncatedReplyFallback(
+              reply,
+              effectiveText,
+              botConfig,
+              (guest?.arrival_date as string) ?? null,
+              FALLBACK_REPLY,
+            );
+          }
           toolLoggedRequest = filterToolLoggedRequest(effectiveText, result.loggedRequest);
         } catch (e) {
           const fallbackEngine = route.engine === "claude" ? "gemini" : "claude";
@@ -4125,6 +4154,18 @@ Deno.serve(async (req: Request) => {
               ? await askGemini(effectiveText, guestName, orderedHistory, enrichedPrompt, route.geminiOrder, true, routingLearnedSuffix)
               : await callClaude(effectiveText, guestName, orderedHistory, enrichedPrompt, routingLearnedSuffix);
             reply = sanitizeReply(result.text);
+            if (isReplyObviouslyTruncated(reply)) {
+              console.warn(
+                `[webhook] 🛡️ FAQ failover truncated — substituting check-in policy reply — phone:${phone}`,
+              );
+              reply = resolveTruncatedReplyFallback(
+                reply,
+                effectiveText,
+                botConfig,
+                (guest?.arrival_date as string) ?? null,
+                FALLBACK_REPLY,
+              );
+            }
             toolLoggedRequest = filterToolLoggedRequest(effectiveText, result.loggedRequest);
           } catch (e2) {
             console.error("[webhook] both engines failed:", (e2 as Error).message);
@@ -4404,9 +4445,13 @@ Deno.serve(async (req: Request) => {
         console.warn(
           `[webhook] 🛡️ truncated reply guard — phone:${phone} tail:"${reply.slice(-50)}"`,
         );
-        reply = isCheckInPolicyQuestion(effectiveText)
-          ? buildCheckInPolicyReply(botConfig, (guest?.arrival_date as string) ?? null)
-          : FALLBACK_REPLY;
+        reply = resolveTruncatedReplyFallback(
+          reply,
+          effectiveText,
+          botConfig,
+          (guest?.arrival_date as string) ?? null,
+          FALLBACK_REPLY,
+        );
       }
 
       const isLowConfidenceFaqMiss = reply.includes(LOW_CONFIDENCE_HANDOFF_SENTENCE);

@@ -732,7 +732,17 @@ export const CANONICAL_STAY_CHANGE_HANDOFF_MSG =
 // LLM with incomplete bot_config knowledge (only hotel_checkin_time=15:00).
 
 export const CHECK_IN_POLICY_QUESTION_PATTERN =
-  /(?:מה|מתי|איזו?\s*שעה|כמה|האם)\s+[\s\S]{0,60}?(?:צ.?ק.?אין|צ.?ק.?אא?וט|שעת?\s*(?:כניסה|עזיבה)|כניסה\s*(?:ל)?חדר|להיכנס\s*לחדר|הכנס\w*\s*לחדר|check.?in|check.?out)|שעות?\s*(?:ה)?כניסה|קבלת\s*חדר|מועד\s*כניסה/i;
+  /(?:מה|מתי|איזו?\s*שעה|כמה|האם)\s+[\s\S]{0,60}?(?:צ.?ק.?אין|צ.?ק.?אא?וט|שעת?\s*(?:כניסה|עזיבה)|כניסה\s*(?:ל)?חדר|להיכנס\s*לחדר|הכנס\w*\s*לחדר|check.?in|check.?out)|שעות?\s*(?:ה)?כניסה|קבלת\s*חדר|מועד\s*כניסה|(?:אפשר|ניתן|מותר)\s+[\s\S]{0,40}?(?:להיכנס|כניסה|לחדר)|מתי\s+(?:מקבלים|נותנים|מוסרים)\s*(?:את\s*)?החדר|מה\s+שעות/i;
+
+/** LLM replies about resort entry hours — used when truncation guard fires on reply text. */
+export const CHECK_IN_HOURS_REPLY_PATTERN =
+  /שעות?\s*(?:ה)?כניסה|כניסה\s*ל(?:חדר|מתחם)|קבלת\s*חדר|ימי\s*חול|שבתות\s*וחגים|החל\s*מהשעה/i;
+
+export function looksLikeCheckInHoursReply(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  return CHECK_IN_HOURS_REPLY_PATTERN.test(t);
+}
 
 export function isCheckInPolicyQuestion(text: string): boolean {
   const t = text.trim();
@@ -767,9 +777,25 @@ export function buildCheckInPolicyReply(
 export function isReplyObviouslyTruncated(text: string): boolean {
   const t = text.trim();
   if (!t || t.length < 25) return false;
-  if (/(?:^|[\s,])מה$|החל\s+מה$|ובשבתות\s+וחגים\s+החל\s+מה$/u.test(t)) return true;
+  if (/(?:^|[\s,])מה$|החל\s+מה$|ובשבתות\s+וחגים\s+החל\s+מה$|בימי\s+חול,?\s+ובשבתות\s+וחגים\s+החל\s+מה$/u.test(t)) {
+    return true;
+  }
   if (t.length > 70 && !/[.!?…🙏✅)\u201d\u2019"']$/.test(t)) return true;
   return false;
+}
+
+/** Pick a complete replacement when a truncated reply must not reach the guest. */
+export function resolveTruncatedReplyFallback(
+  replyText: string,
+  guestText: string,
+  cfg: Record<string, string>,
+  arrivalDateStr?: string | null,
+  genericFallback: string,
+): string {
+  if (isCheckInPolicyQuestion(guestText) || looksLikeCheckInHoursReply(replyText)) {
+    return buildCheckInPolicyReply(cfg, arrivalDateStr);
+  }
+  return genericFallback;
 }
 
 // ── Sensitive financial / billing requests — never imply approval or a fixed
