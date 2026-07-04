@@ -3,6 +3,14 @@
 -- Meta templates so whatsapp_conversations logs show real body text, not
 -- "📋 תבנית Meta: <name>" placeholders.
 
+ALTER TABLE public.message_templates
+  ADD COLUMN IF NOT EXISTS wa_template_name TEXT;
+
+ALTER TABLE public.message_templates
+  DROP CONSTRAINT IF EXISTS message_templates_wa_template_name_key;
+ALTER TABLE public.message_templates
+  ADD CONSTRAINT message_templates_wa_template_name_key UNIQUE (wa_template_name);
+
 INSERT INTO public.message_templates (label, content, sort_order, wa_template_name)
 VALUES
 (
