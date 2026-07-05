@@ -205,7 +205,7 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
         "id, name, phone, room, room_type, arrival_date, departure_date, status, " +
         "msg_pre_arrival_sent, msg_room_ready_sent, msg_post_checkin_sent, " +
         "requires_attention, guest_notes, guest_profile, arrival_time, attention_reason, arrival_confirmed, spa_time, spa_date, " +
-        "meal_time, meal_location, treatment_count, order_number, payment_amount, " +
+        "meal_time, meal_location, meal_plan, breakfast_time, lunch_time, dinner_time, treatment_count, order_number, payment_amount, " +
         "payment_link_url, needs_callback, portal_token, lead_source, automation_muted"
       )
       .order("arrival_date", { ascending: true })

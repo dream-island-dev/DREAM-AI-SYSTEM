@@ -1,3 +1,4 @@
+2026-07-05 | GuestProfileModal + stay meals + portal | פרופיל אורח: סוג הזמנה (פרטי/קבוצה), ריכוז חדרים מ-suite_rooms, פנסיון (חצי/מלא/ערב)+שעות ארוחה; migration 136; פורטל אורח מציג meals_itinerary; 82 tests.
 2026-07-05 | import multi-room display+sync dedupe | עמודת «קבוצה»: `חדר 1 מ־2`/`חדר 2 מ־2` (לא «2 חדרים»×2); סנכרון: profile אחד לכל הזמנה+טלפון+תאריך; `room_count` לפי מספר שורות; 76 tests.
 2026-07-05 | import multi-room same guest | `isSameBookingGuest` — אותה הזמנה+טלפון+תאריך: חדר שני לא ⚠ conflict; תגית «🔄 קיים · 2 חדרים»+עמודת קבוצה.
 2026-07-05 | import order-aware sync (migration 134) | `sync_suite_arrivals` מתאים אורח לפי order+date+phone → order יחיד → phone+date; `buildExistingGuestsLookup`/`findExistingGuestRow`; 73 tests.

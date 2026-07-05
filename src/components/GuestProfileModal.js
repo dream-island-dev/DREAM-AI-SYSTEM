@@ -1,7 +1,6 @@
-// src/components/GuestProfileModal.js
-// Structured Smart Guest Profile editor — VIP, occasion, dietary, arrival context.
+// Structured Smart Guest Profile editor — VIP, occasion, dietary, stay & meals.
 // Opened from GuestAttentionBadge (red alert) or AddGuestModal (edit flow).
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../supabaseClient";
 import {
   VIP_STATUSES,
@@ -12,6 +11,23 @@ import {
   serializeGuestProfile,
   toggleTag,
 } from "../data/guestProfileSchema";
+import {
+  MEAL_PLANS,
+  BOOKING_TYPES,
+  MEAL_SLOTS_BY_PLAN,
+  MEAL_SLOT_LABELS,
+  normalizeMealPlan,
+  mealTimesFromGuest,
+  applyLegacyMealColumns,
+} from "../data/stayMealsSchema";
+import IsraeliTimeSelect from "./IsraeliTimeSelect";
+import { formatSpaSchedule } from "../utils/israeliTime";
+import {
+  inferBookingTypeFromGuest,
+  bookingTypeLabel,
+  fetchGuestSuiteRooms,
+  formatSuiteRoomLine,
+} from "../utils/guestStaySummary";
 
 const ATTENTION_HEADINGS = {
   date_change:    "🗓️ ביקש/ה שינוי בתאריך",
@@ -61,8 +77,36 @@ export default function GuestProfileModal({
 }) {
   const [profile, setProfile] = useState(() => normalizeGuestProfile(guest?.guest_profile));
   const [arrivalTime, setArrivalTime] = useState(guest?.arrival_time ?? "");
+  const [mealPlan, setMealPlan] = useState(() => normalizeMealPlan(guest?.meal_plan));
+  const [mealLocation, setMealLocation] = useState(guest?.meal_location ?? "מסעדת ערמונים");
+  const [mealTimes, setMealTimes] = useState(() => mealTimesFromGuest(guest));
+  const [suiteRooms, setSuiteRooms] = useState([]);
+  const [roomsLoading, setRoomsLoading] = useState(false);
   const [auditOpen, setAuditOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  const resolvedBookingType = useMemo(
+    () => inferBookingTypeFromGuest({ ...guest, guest_profile: profile }),
+    [guest, profile],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!supabase || !guest?.id) {
+        setSuiteRooms([]);
+        return;
+      }
+      setRoomsLoading(true);
+      const rows = await fetchGuestSuiteRooms(supabase, guest);
+      if (!cancelled) {
+        setSuiteRooms(rows);
+        setRoomsLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- refetch only when identity keys change
+  }, [guest?.id, guest?.order_number, guest?.arrival_date, guest?.phone]);
 
   if (!guest?.id) return null;
 
@@ -85,6 +129,9 @@ export default function GuestProfileModal({
       } else if (path.startsWith("arrival_context.")) {
         const key = path.split(".")[1];
         next.arrival_context = { ...next.arrival_context, [key]: value };
+      } else if (path.startsWith("stay.")) {
+        const key = path.split(".")[1];
+        next.stay = { ...next.stay, [key]: value };
       }
       return next;
     });
@@ -96,6 +143,7 @@ export default function GuestProfileModal({
     const patch = {
       guest_profile: serializeGuestProfile(profile),
       arrival_time: (arrivalTime ?? "").trim() || null,
+      ...applyLegacyMealColumns(mealPlan, mealTimes, mealLocation),
     };
     if (markHandled) {
       patch.requires_attention = false;
@@ -129,7 +177,7 @@ export default function GuestProfileModal({
         onClick={(e) => e.stopPropagation()}
         style={{
           background: "var(--card-bg)", borderRadius: 14, padding: "22px 24px",
-          maxWidth: 520, width: "100%", maxHeight: "92vh", overflowY: "auto",
+          maxWidth: 560, width: "100%", maxHeight: "92vh", overflowY: "auto",
           direction: "rtl", textAlign: "right",
           boxShadow: "0 12px 40px rgba(0,0,0,0.22)",
         }}
@@ -176,6 +224,128 @@ export default function GuestProfileModal({
             💬 פתח שיחה ב-DREAM BOT
           </button>
         )}
+
+        <Section title="סיכום שהייה">
+          <div style={{
+            padding: "12px 14px", borderRadius: 10, marginBottom: 10,
+            background: "var(--ivory,#F5F0E8)", border: "1px solid var(--border,#E0D5C5)",
+          }}>
+            <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>
+              {bookingTypeLabel(resolvedBookingType)}
+              {profile.stay.booking_type === "auto" && guest?.guest_notes && (
+                <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", marginRight: 8 }}>
+                  (זוהה מהערות)
+                </span>
+              )}
+            </div>
+            {guest?.order_number && (
+              <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>
+                הזמנה #{guest.order_number}
+                {guest.arrival_date ? ` · הגעה ${guest.arrival_date}` : ""}
+              </div>
+            )}
+            {guest?.room && suiteRooms.length <= 1 && (
+              <div style={{ fontSize: 12 }}>🛏️ {guest.room}</div>
+            )}
+            {roomsLoading && (
+              <div style={{ fontSize: 11, color: "var(--text-muted)" }}>טוען חדרים…</div>
+            )}
+            {!roomsLoading && suiteRooms.length > 1 && (
+              <div style={{ marginTop: 6 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "var(--gold-dark)", marginBottom: 4 }}>
+                  {suiteRooms.length} חדרים בהזמנה
+                </div>
+                {suiteRooms.map((row) => (
+                  <div key={row.res_line_id} style={{ fontSize: 12, padding: "4px 0", borderTop: "1px solid var(--border)" }}>
+                    🛏️ {formatSuiteRoomLine(row)}
+                  </div>
+                ))}
+              </div>
+            )}
+            {!roomsLoading && suiteRooms.length === 1 && (
+              <div style={{ fontSize: 12, marginTop: 4 }}>🛏️ {formatSuiteRoomLine(suiteRooms[0])}</div>
+            )}
+            {formatSpaSchedule(guest?.spa_date, guest?.spa_time) && (
+              <div style={{ fontSize: 12, marginTop: 6 }}>💆 {formatSpaSchedule(guest.spa_date, guest.spa_time)}</div>
+            )}
+          </div>
+
+          <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 6 }}>סוג הזמנה (ידני)</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
+            {BOOKING_TYPES.map(({ id, label }) => (
+              <Chip
+                key={id}
+                label={label}
+                active={profile.stay.booking_type === id}
+                disabled={saving}
+                onClick={() => setProfileField("stay.booking_type", id)}
+              />
+            ))}
+          </div>
+          {resolvedBookingType === "group" && guest?.guest_notes && (
+            <div style={{
+              fontSize: 11, lineHeight: 1.5, padding: 10, borderRadius: 8,
+              background: "#FFFBEB", border: "1px solid #FDE68A", color: "#92400E",
+            }}>
+              <strong>פרטי אורח מהערות:</strong>
+              <div style={{ marginTop: 4, whiteSpace: "pre-wrap" }}>{guest.guest_notes}</div>
+            </div>
+          )}
+        </Section>
+
+        <Section title="פנסיון וארוחות">
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+            {MEAL_PLANS.map(({ id, label }) => (
+              <Chip
+                key={id}
+                label={label}
+                active={mealPlan === id}
+                disabled={saving}
+                onClick={() => setMealPlan(id)}
+              />
+            ))}
+          </div>
+          <label style={{ fontSize: 11, fontWeight: 700, display: "block", marginBottom: 4 }}>
+            מיקום ארוחות
+          </label>
+          <input
+            type="text"
+            value={mealLocation}
+            onChange={(e) => setMealLocation(e.target.value)}
+            disabled={saving}
+            placeholder="מסעדת ערמונים"
+            style={{
+              width: "100%", padding: "8px 10px", marginBottom: 12, boxSizing: "border-box",
+              border: "1px solid var(--border)", borderRadius: 8,
+            }}
+          />
+          {(MEAL_SLOTS_BY_PLAN[mealPlan] ?? []).map((slot) => (
+            <div key={slot} style={{ marginBottom: 10 }}>
+              <label style={{ fontSize: 11, fontWeight: 700, display: "block", marginBottom: 4 }}>
+                {MEAL_SLOT_LABELS[slot]}
+              </label>
+              <IsraeliTimeSelect
+                value={mealTimes[slot]}
+                onChange={(v) => setMealTimes((prev) => ({ ...prev, [slot]: v }))}
+                disabled={saving}
+                emptyLabel="ללא שעה"
+              />
+            </div>
+          ))}
+          {mealPlan === "none" && (
+            <div style={{ marginBottom: 8 }}>
+              <label style={{ fontSize: 11, fontWeight: 700, display: "block", marginBottom: 4 }}>
+                שעת ארוחה (כללי)
+              </label>
+              <IsraeliTimeSelect
+                value={mealTimes.dinner}
+                onChange={(v) => setMealTimes((prev) => ({ ...prev, dinner: v }))}
+                disabled={saving}
+                emptyLabel="ללא שעה"
+              />
+            </div>
+          )}
+        </Section>
 
         <Section title="סטטוס VIP">
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>

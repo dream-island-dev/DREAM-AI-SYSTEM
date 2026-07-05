@@ -16,6 +16,13 @@ import { SUITE_REGISTRY, SUITE_SECTIONS } from "../data/suiteRegistry";
 import GuestProfileModal from "./GuestProfileModal";
 import IsraeliTimeSelect from "./IsraeliTimeSelect";
 import { hasMeaningfulProfile } from "../data/guestProfileSchema";
+import {
+  MEAL_PLANS,
+  MEAL_SLOTS_BY_PLAN,
+  MEAL_SLOT_LABELS,
+  normalizeMealPlan,
+  applyLegacyMealColumns,
+} from "../data/stayMealsSchema";
 
 // ── Smart room_type inference ─────────────────────────────────────────────────
 // Deterministic mapping from the room <select> value to DB room_type.
@@ -55,6 +62,10 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
     room:               guest.room                 ?? "",
     room_type:          guest.room_type            ?? "suite",
     meal_time:          guest.meal_time            ?? "",
+    meal_plan:          normalizeMealPlan(guest.meal_plan),
+    breakfast_time:     guest.breakfast_time       ?? "",
+    lunch_time:         guest.lunch_time           ?? "",
+    dinner_time:        guest.dinner_time          ?? guest.meal_time ?? "",
     // Default to Armonim for a NEW guest only — "ARMONIM RESTAURANT DEFAULT"
     // session, saves reception repetitive typing. An existing guest whose
     // meal_location is genuinely blank stays blank on edit (isEdit guard) —
@@ -95,9 +106,16 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
         needs_callback:     !!form.needs_callback,
         room:               form.room || null,
         room_type:          form.room_type || null,
-        meal_time:          form.meal_time || null,
-        meal_location:      (form.meal_location ?? "").trim() || null,
         lead_source:        (form.lead_source ?? "").trim() || null,
+        ...applyLegacyMealColumns(
+          form.meal_plan,
+          {
+            breakfast: form.breakfast_time,
+            lunch: form.lunch_time,
+            dinner: form.dinner_time,
+          },
+          form.meal_location,
+        ),
         automation_muted:   !!form.automation_muted,
       };
 
@@ -190,8 +208,6 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
         {[
           { label: "שם מלא",       field: "name",            type: "text"   },
           { label: "תאריך הגעה",   field: "arrival_date",    type: "date"   },
-          { label: "שעת ארוחה",    field: "meal_time",       type: "time"   },
-          { label: "מיקום ארוחה",  field: "meal_location",   type: "text"   },
           { label: "מספר טיפולים", field: "treatment_count", type: "number" },
           { label: "מספר הזמנה",   field: "order_number",    type: "text"   },
           // ★ Session 2 — payment fields, deliberately NOT gated behind status/
@@ -253,6 +269,74 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
           <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 6, lineHeight: 1.4 }}>
             פורמט ישראלי — למשל 14:30 (בלי AM/PM). ברירת מחדל: 07:00–22:00, צעדים של 15 דקות.
           </div>
+        </div>
+
+        {/* Meals — board basis + per-meal times */}
+        <div style={{
+          marginBottom: 14, padding: "12px 14px", borderRadius: 10,
+          background: "rgba(180,83,9,0.06)", border: "1px solid rgba(180,83,9,0.22)",
+        }}>
+          <div style={{ fontSize: 12, fontWeight: 800, color: "#b45309", marginBottom: 10 }}>
+            🍽️ פנסיון וארוחות
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+            {MEAL_PLANS.map(({ id, label }) => (
+              <button
+                key={id}
+                type="button"
+                disabled={saving}
+                onClick={() => setField("meal_plan", id)}
+                style={{
+                  padding: "5px 10px", borderRadius: 16, fontSize: 11, fontWeight: 700,
+                  cursor: saving ? "not-allowed" : "pointer", fontFamily: "Heebo,sans-serif",
+                  border: form.meal_plan === id ? "2px solid #b45309" : "1.5px solid #ddd",
+                  background: form.meal_plan === id ? "rgba(180,83,9,0.15)" : "#fff",
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <label style={{ fontSize: 12, fontWeight: 700, display: "block", marginBottom: 4 }}>
+            מיקום ארוחות
+          </label>
+          <input
+            type="text"
+            value={form.meal_location ?? ""}
+            onChange={(e) => setField("meal_location", e.target.value)}
+            disabled={saving}
+            placeholder="מסעדת ערמונים"
+            style={{
+              width: "100%", padding: "9px 12px", boxSizing: "border-box", marginBottom: 10,
+              border: "1px solid var(--border,#ddd)", borderRadius: 8, fontSize: 14,
+            }}
+          />
+          {(MEAL_SLOTS_BY_PLAN[form.meal_plan] ?? []).map((slot) => (
+            <div key={slot} style={{ marginBottom: 8 }}>
+              <label style={{ fontSize: 12, fontWeight: 700, display: "block", marginBottom: 4 }}>
+                {MEAL_SLOT_LABELS[slot]}
+              </label>
+              <IsraeliTimeSelect
+                value={form[`${slot}_time`]}
+                onChange={(v) => setField(`${slot}_time`, v)}
+                disabled={saving}
+                emptyLabel="ללא שעה"
+              />
+            </div>
+          ))}
+          {form.meal_plan === "none" && (
+            <div>
+              <label style={{ fontSize: 12, fontWeight: 700, display: "block", marginBottom: 4 }}>
+                שעת ארוחה
+              </label>
+              <IsraeliTimeSelect
+                value={form.dinner_time}
+                onChange={(v) => setField("dinner_time", v)}
+                disabled={saving}
+                emptyLabel="ללא שעה"
+              />
+            </div>
+          )}
         </div>
 
         {/* Departure date — kept separate from the generic text-field list so it

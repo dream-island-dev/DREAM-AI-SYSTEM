@@ -480,17 +480,25 @@ function spaItineraryLabel(guest) {
 // Always renders — shows a concierge CTA fallback instead of returning null when
 // no spa/meal data exists (FAIL VISIBLE §0.3: guest never sees a blank section).
 function ItineraryPanel({ guest, onSpaRequest, spaBusy, showSpaRequest }) {
-  const mealPlan = (guest.meal_location ?? "").trim() || null;
   const spaLabel = spaItineraryLabel(guest);
-  const hasSchedule = !!(spaLabel || guest.meal_time || mealPlan);
+  const mealRows = Array.isArray(guest.meals_itinerary) ? guest.meals_itinerary : [];
+  const hasSchedule = !!(spaLabel || mealRows.length > 0 || guest.meal_time || (guest.meal_location ?? "").trim());
   return (
     <div style={{ padding: "0 16px 36px" }}>
       <GlassPanel title="📋 התוכנית שלכם">
         {hasSchedule ? (
           <>
-            <ItineraryRow icon="💆" label="ספא" value={spaLabel} />
-            <ItineraryRow icon="🍴" label="בסיס אירוח" value={mealPlan} />
-            <ItineraryRow icon="🍽️" label="ארוחה" value={guest.meal_time} />
+            {spaLabel && <ItineraryRow icon="💆" label="ספא" value={spaLabel} />}
+            {mealRows.length > 0
+              ? mealRows.map((row, i) => (
+                <ItineraryRow key={`${row.label}-${i}`} icon={row.icon} label={row.label} value={row.value} />
+              ))
+              : (
+                <>
+                  <ItineraryRow icon="🍴" label="בסיס אירוח" value={(guest.meal_location ?? "").trim() || null} />
+                  <ItineraryRow icon="🍽️" label="ארוחה" value={guest.meal_time} />
+                </>
+              )}
           </>
         ) : (
           <div style={{ padding: "20px 16px", textAlign: "center" }}>
@@ -566,15 +574,23 @@ function DayUseView({ guest, phase, countdown, upsellItems, token, onToast, onUp
       {/* Day-use focused itinerary — always rendered; shows concierge CTA when empty */}
       <div style={{ padding: "0 16px 28px" }}>
         <GlassPanel title="⚡ היום שלכם — בקצרה">
-          {(guest.spa_time || guest.spa_date || guest.meal_time || (guest.meal_location ?? "").trim()) ? (
+          {(guest.spa_time || guest.spa_date || (Array.isArray(guest.meals_itinerary) && guest.meals_itinerary.length) || guest.meal_time || (guest.meal_location ?? "").trim()) ? (
             <>
               <ItineraryRow icon="💆" label="טיפול ספא" value={spaItineraryLabel(guest)} />
-              <ItineraryRow
-                icon="🍴"
-                label="בסיס אירוח"
-                value={(guest.meal_location ?? "").trim() || null}
-              />
-              <ItineraryRow icon="🍽️" label="ארוחה" value={guest.meal_time} />
+              {Array.isArray(guest.meals_itinerary) && guest.meals_itinerary.length > 0
+                ? guest.meals_itinerary.map((row, i) => (
+                  <ItineraryRow key={`${row.label}-${i}`} icon={row.icon} label={row.label} value={row.value} />
+                ))
+                : (
+                  <>
+                    <ItineraryRow
+                      icon="🍴"
+                      label="בסיס אירוח"
+                      value={(guest.meal_location ?? "").trim() || null}
+                    />
+                    <ItineraryRow icon="🍽️" label="ארוחה" value={guest.meal_time} />
+                  </>
+                )}
             </>
           ) : (
             <div style={{ padding: "20px 16px", textAlign: "center" }}>

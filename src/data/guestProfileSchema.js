@@ -1,5 +1,5 @@
 // src/data/guestProfileSchema.js
-// Single source of truth for Smart Guest Profile tag IDs + UI labels (frontend).
+import { normalizeStayProfile, serializeStayProfile } from "./stayMealsSchema";
 // Tag IDs are stable English keys — mirrored in supabase/functions/_shared/guestProfile.ts
 // for whatsapp-webhook AI context formatting.
 
@@ -44,6 +44,7 @@ export function emptyGuestProfile() {
     dietary: { tags: [], note: "" },
     arrival_context: { tags: [], note: "" },
     staff_note: "",
+    stay: { booking_type: "auto" },
   };
 }
 
@@ -80,6 +81,8 @@ export function normalizeGuestProfile(raw) {
 
   if (typeof raw.staff_note === "string") base.staff_note = raw.staff_note;
 
+  base.stay = normalizeStayProfile(raw.stay);
+
   return base;
 }
 
@@ -111,6 +114,9 @@ export function serializeGuestProfile(formProfile) {
   }
 
   if (p.staff_note.trim()) out.staff_note = p.staff_note.trim();
+
+  const staySer = serializeStayProfile(p.stay);
+  if (Object.keys(staySer).length) out.stay = staySer;
 
   return out;
 }
