@@ -1,7 +1,6 @@
--- 134_sync_suite_arrivals_order_aware_match.sql
--- Re-import sync: match existing guests by order_number+arrival_date (primary),
--- then phone+arrival_date; update in place instead of creating duplicates.
--- Preserves migration 132 behavior: automation_muted not overwritten on UPDATE.
+-- 135_sync_suite_arrivals_guest_id_bigint_fix.sql
+-- Hotfix: migration 134 declared v_guest_id UUID but guests.id is BIGINT —
+-- SELECT id INTO v_guest_id failed with "invalid input syntax for type uuid: 3334".
 
 CREATE OR REPLACE FUNCTION public.sync_suite_arrivals(payload JSONB)
 RETURNS JSONB
@@ -53,7 +52,6 @@ BEGIN
     v_guest_id := NULL;
     v_guest_index := 1;
 
-    -- Tier 1: order + arrival + phone (strongest cross-report key)
     IF v_order IS NOT NULL AND v_date IS NOT NULL THEN
       SELECT id, guest_index INTO v_guest_id, v_guest_index
       FROM public.guests
@@ -63,7 +61,6 @@ BEGIN
       LIMIT 1;
     END IF;
 
-    -- Tier 2: order + arrival when exactly one guest on that order (phone correction)
     IF v_guest_id IS NULL AND v_order IS NOT NULL AND v_date IS NOT NULL THEN
       SELECT COUNT(*) INTO v_order_count
       FROM public.guests
@@ -77,7 +74,6 @@ BEGIN
       END IF;
     END IF;
 
-    -- Tier 3: phone + arrival, disambiguate by order when multiple slots exist
     IF v_guest_id IS NULL AND v_date IS NOT NULL THEN
       IF v_order IS NOT NULL THEN
         SELECT id, guest_index INTO v_guest_id, v_guest_index
@@ -103,7 +99,6 @@ BEGIN
       END IF;
     END IF;
 
-    -- Tier 4: new row — next guest_index when phone+date already occupied by another order
     IF v_guest_id IS NULL AND v_date IS NOT NULL THEN
       SELECT COALESCE(MAX(guest_index), 0) + 1 INTO v_guest_index
       FROM public.guests
@@ -123,7 +118,6 @@ BEGIN
         payment_amount   = COALESCE(v_payment, payment_amount),
         lead_source      = COALESCE(v_lead_source, lead_source)
       WHERE id = v_guest_id;
-      -- automation_muted intentionally NOT updated — staff controls via ACC/Inbox
     ELSE
       INSERT INTO public.guests (
         phone, name, arrival_date, departure_date,

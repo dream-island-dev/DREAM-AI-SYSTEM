@@ -1,3 +1,4 @@
+2026-07-05 | sync_suite_arrivals hotfix (migration 135) | `v_guest_id` UUID→BIGINT — תיקון «invalid input syntax for type uuid: 3334» בסנכרון ייבוא.
 2026-07-05 | import multi-room display+sync dedupe | עמודת «קבוצה»: `חדר 1 מ־2`/`חדר 2 מ־2` (לא «2 חדרים»×2); סנכרון: profile אחד לכל הזמנה+טלפון+תאריך; `room_count` לפי מספר שורות; 76 tests.
 2026-07-05 | import multi-room same guest | `isSameBookingGuest` — אותה הזמנה+טלפון+תאריך: חדר שני לא ⚠ conflict; תגית «🔄 קיים · 2 חדרים»+עמודת קבוצה.
 2026-07-05 | import order-aware sync (migration 134) | `sync_suite_arrivals` מתאים אורח לפי order+date+phone → order יחיד → phone+date; `buildExistingGuestsLookup`/`findExistingGuestRow`; 73 tests.
