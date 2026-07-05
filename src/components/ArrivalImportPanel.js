@@ -27,7 +27,7 @@ import {
   profilesToArray,
   enrichProfilesFromExcel,
 } from "../utils/ezgoParser";
-import { mergeCandidates, classifyDbMatch, buildExistingGuestsLookup, findExistingGuestRow, buildMultiRoomLineCounts, multiRoomLineCountForCandidate } from "../utils/guestImportIntelligence";
+import { mergeCandidates, classifyDbMatch, buildExistingGuestsLookup, findExistingGuestRow, buildMultiRoomLineIndexMap, formatMultiRoomLineLabel, bookingGuestKey } from "../utils/guestImportIntelligence";
 import { SUITE_ARRIVALS_SCHEMA, buildMaskedSample, detectSuiteArrivalsPreset, detectEzgoArrivalsPreset, applyFieldDefaultsToProfiles, parseMappingMemory, packMappingMemory } from "../utils/importMapper";
 import {
   isDetailedReservationFormat,
@@ -602,7 +602,7 @@ function _scopeGuestRowQuery(query, { guestPhone, profileArrivalDate, orderNumbe
 // One row per guest profile. Multi-room (group) profiles show a read-only
 // "N rooms" count instead of a single editable room — picking a value there
 // still works and applies uniformly to that profile's rooms on sync.
-function _profilesToGridRows(merged, { suiteAssignmentOnly = false, badgeByIdx = null, existingGuestsLookup = null, dbMatchByIdx = null, multiRoomLineCounts = null, importWithoutAutomation = true } = {}) {
+function _profilesToGridRows(merged, { suiteAssignmentOnly = false, badgeByIdx = null, existingGuestsLookup = null, dbMatchByIdx = null, multiRoomLineIndexMap = null, importWithoutAutomation = true } = {}) {
   return merged.map((g, i) => {
     const singleRoom = (g.rooms ?? []).length === 1 ? g.rooms[0] : null;
     const isDay       = !!g.isDayGuest || !!singleRoom?.isDayGuest;
@@ -611,17 +611,13 @@ function _profilesToGridRows(merged, { suiteAssignmentOnly = false, badgeByIdx =
     const candidate = { guestPhone: g.guestPhone, arrivalDate: g.arrivalDate, orderNumber };
     const existingRow = existingGuestsLookup ? findExistingGuestRow(existingGuestsLookup, candidate) : null;
     const dbStatus = dbMatchByIdx?.get(i) ?? null;
-    const siblingRooms = multiRoomLineCountForCandidate(
-      { ...candidate, orderNumber },
-      multiRoomLineCounts,
-    );
+    const multiRoomLabel = formatMultiRoomLineLabel(multiRoomLineIndexMap, i);
     // Financial mapping:
     const totalPrice  = (g.rooms ?? []).reduce((sum, r) => sum + (r.price || 0), 0);
-    const qtyLabel    = siblingRooms > 1
-      ? `${siblingRooms} חדרים`
-      : (g.roomsQuantity ?? 0) > 1
-      ? `${g.roomsQuantity} חדרים`
-      : (g.rooms ?? []).length > 1 ? `${g.rooms.length} חדרים` : "";
+    const qtyLabel    = multiRoomLabel
+      || ((g.roomsQuantity ?? 0) > 1
+        ? `${g.roomsQuantity} חדרים`
+        : (g.rooms ?? []).length > 1 ? `${g.rooms.length} חדרים` : "");
     return {
       _id:          _gridRowId(g, i),
       _profileIdx:  i,
@@ -1217,8 +1213,8 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     return () => { cancelled = true; };
   }, [mergedCandidates]);
 
-  const multiRoomLineCounts = useMemo(
-    () => buildMultiRoomLineCounts(mergedCandidates),
+  const multiRoomLineIndexMap = useMemo(
+    () => buildMultiRoomLineIndexMap(mergedCandidates),
     [mergedCandidates],
   );
 
@@ -1233,16 +1229,11 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
   const importBadgeByIdx = useMemo(() => {
     const map = new Map();
     dbMatchByIdx.forEach((status, i) => {
-      let label = DB_MATCH_BADGE_LABEL[status];
-      if (!label) return;
-      const siblings = multiRoomLineCountForCandidate(mergedCandidates[i], multiRoomLineCounts);
-      if (siblings > 1 && status !== "unimportable" && status !== "conflict") {
-        label = `${label} · ${siblings} חדרים`;
-      }
-      map.set(i, label);
+      const label = DB_MATCH_BADGE_LABEL[status];
+      if (label) map.set(i, label);
     });
     return map;
-  }, [dbMatchByIdx, mergedCandidates, multiRoomLineCounts]);
+  }, [dbMatchByIdx]);
 
   // Recompute grid rows when merged/db badges/import opt-in changes.
   // Manual cell edits live in gridRows state until the next full recompute.
@@ -1252,9 +1243,9 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     setGridRows(
       importSource === "detailed"
         ? _detailedProfilesToGridRows(merged, { badgeByIdx: importBadgeByIdx, existingGuestsLookup, dbMatchByIdx, importWithoutAutomation })
-        : _profilesToGridRows(merged, { suiteAssignmentOnly: suiteOnly, badgeByIdx: importBadgeByIdx, existingGuestsLookup, dbMatchByIdx, multiRoomLineCounts, importWithoutAutomation }),
+        : _profilesToGridRows(merged, { suiteAssignmentOnly: suiteOnly, badgeByIdx: importBadgeByIdx, existingGuestsLookup, dbMatchByIdx, multiRoomLineIndexMap, importWithoutAutomation }),
     );
-  }, [merged, importSource, doc2SyncMode, importBadgeByIdx, existingGuestsLookup, dbMatchByIdx, multiRoomLineCounts, importWithoutAutomation]);
+  }, [merged, importSource, doc2SyncMode, importBadgeByIdx, existingGuestsLookup, dbMatchByIdx, multiRoomLineIndexMap, importWithoutAutomation]);
 
   // ── Parse Doc 2: Suite CSV → AI-suggested column mapping → review screen ──
   // The AI only proposes; aggregateGuestProfiles() runs unchanged once the
@@ -1600,7 +1591,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
         // still consulted for fields the candidate model doesn't carry — the
         // per-room breakdown (g.rooms/resLineId/coordPhone) is arrivals-only detail
         // that classifyDbMatch/mergeCandidates never needed to model.
-        const profiles = syncIndices.map((i) => {
+        const rawProfiles = syncIndices.map((i) => {
             const g = merged[i];
             const c = mergedCandidates[i];
             const edited = gridByProfileIdx.get(i) ?? {};
@@ -1640,6 +1631,42 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
               nights,
             };
           });
+
+        // One guests row per booking — N CSV room lines → 1 profile + N suite_rooms
+        const profiles = [];
+        const profileSlotByKey = new Map();
+        for (const profile of rawProfiles) {
+          const key = bookingGuestKey(profile);
+          if (!key) {
+            profiles.push(profile);
+            continue;
+          }
+          if (!profileSlotByKey.has(key)) {
+            profileSlotByKey.set(key, profiles.length);
+            profiles.push({ ...profile });
+            continue;
+          }
+          const slot = profiles[profileSlotByKey.get(key)];
+          slot.treatment_count = (slot.treatment_count || 0) + (profile.treatment_count || 0);
+          if (profile.paymentAmount != null) {
+            slot.paymentAmount = (slot.paymentAmount || 0) + Number(profile.paymentAmount);
+          }
+          if ((profile.nights || 0) > (slot.nights || 0)) slot.nights = profile.nights;
+        }
+
+        const indicesByGuestKey = new Map();
+        for (const i of syncIndices) {
+          const g = merged[i];
+          const c = mergedCandidates[i];
+          const key = bookingGuestKey({
+            orderNumber: c.orderNumber ?? [...(g.orderNumbers ?? [])][0] ?? null,
+            arrivalDate: c.arrivalDate ?? g.arrivalDate,
+            guestPhone: c.guestPhone ?? g.guestPhone,
+          });
+          if (!key) continue;
+          if (!indicesByGuestKey.has(key)) indicesByGuestKey.set(key, []);
+          indicesByGuestKey.get(key).push(i);
+        }
 
         const rooms = syncIndices
           .flatMap((i) => {
@@ -1687,29 +1714,43 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           });
         if (rpcErr) throw new Error("sync_suite_arrivals: " + rpcErr.message);
 
-        for (const i of syncIndices) {
-          const g = merged[i];
-          const c = mergedCandidates[i];
-          const edited   = gridByProfileIdx.get(i) ?? {};
-          const guestPhone      = c.guestPhone ?? g.guestPhone;
-          const profileArrivalDate = c.arrivalDate ?? g.arrivalDate;
-          const orderNumber     = c.orderNumber ?? [...(g.orderNumbers ?? [])][0] ?? null;
-          const roomDisplay = _resolveProfileRoomDisplay(g, edited.room);
-          const spaTime  = edited.spa_time  || c.spa_time  || g.spa_time;
-          const mealTime = edited.meal_time || c.meal_time || g.meal_time;
-          const mealLoc  = edited.meal_location || c.meal_location || g.meal_location;
-          const notes    = g.guest_notes;
+        for (const [, indices] of indicesByGuestKey) {
           const patch = {};
-          const tc = c.treatment_count ?? g.treatment_count;
-          if (tc != null && tc > 0) patch.treatment_count = tc;
-          if (spaTime) {
-            patch.spa_time = spaTime;
-            if (profileArrivalDate) patch.spa_date = profileArrivalDate;
+          let guestPhone;
+          let profileArrivalDate;
+          let orderNumber;
+          let lastRoom;
+          let treatmentSum = 0;
+          let notesMerged = "";
+
+          for (const i of indices) {
+            const g = merged[i];
+            const c = mergedCandidates[i];
+            const edited = gridByProfileIdx.get(i) ?? {};
+            guestPhone = c.guestPhone ?? g.guestPhone;
+            profileArrivalDate = c.arrivalDate ?? g.arrivalDate;
+            orderNumber = c.orderNumber ?? [...(g.orderNumbers ?? [])][0] ?? null;
+            const roomDisplay = _resolveProfileRoomDisplay(g, edited.room);
+            if (roomDisplay) lastRoom = roomDisplay;
+            const spaTime = edited.spa_time || c.spa_time || g.spa_time;
+            const mealTime = edited.meal_time || c.meal_time || g.meal_time;
+            const mealLoc = edited.meal_location || c.meal_location || g.meal_location;
+            const notes = g.guest_notes;
+            const tc = c.treatment_count ?? g.treatment_count;
+            if (tc != null && tc > 0) treatmentSum += tc;
+            if (spaTime) {
+              patch.spa_time = spaTime;
+              if (profileArrivalDate) patch.spa_date = profileArrivalDate;
+            }
+            if (mealTime) patch.meal_time = mealTime;
+            if (mealLoc) patch.meal_location = mealLoc;
+            if (notes) notesMerged = notesMerged ? `${notesMerged}\n${notes}` : notes;
           }
-          if (mealTime) patch.meal_time      = mealTime;
-          if (mealLoc)  patch.meal_location  = mealLoc;
-          if (notes)    patch.guest_notes    = notes;
-          if (roomDisplay) patch.room = roomDisplay;
+
+          if (treatmentSum > 0) patch.treatment_count = treatmentSum;
+          if (lastRoom) patch.room = lastRoom;
+          if (notesMerged) patch.guest_notes = notesMerged;
+
           if (guestPhone && profileArrivalDate && Object.keys(patch).length > 0) {
             const scoped = _scopeGuestRowQuery(
               supabase.from("guests").update(patch),
@@ -1717,8 +1758,12 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
             );
             if (scoped) await scoped;
           }
-          if (guestPhone && profileArrivalDate && (g.roomsQuantity ?? 0) > 0) {
-            await supabase.from("bookings").update({ room_count: g.roomsQuantity })
+          if (guestPhone && profileArrivalDate) {
+            const roomLineCount = indices.length;
+            const qtyFromProfile = merged[indices[0]]?.roomsQuantity;
+            await supabase.from("bookings").update({
+              room_count: (qtyFromProfile > 0 ? qtyFromProfile : roomLineCount),
+            })
               .eq("phone", guestPhone.replace(/^\+/, ""))
               .eq("arrival_date", profileArrivalDate);
           }
@@ -1727,9 +1772,10 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
         const syncedMerged = syncIndices.map((i) => merged[i]);
         const importMuted = profiles.filter((p) => p.automationMuted).length;
         const corporateMuted = syncedMerged.filter((g) => g.automationMuted).length;
+        const uniqueGuestCount = indicesByGuestKey.size || profiles.length;
         setResult({
           mode:   importSource === "detailed" ? "detailed" : "suites",
-          total:  rpcData?.guests ?? profiles.length,
+          total:  uniqueGuestCount,
           rooms:  rpcData?.rooms  ?? rooms.length,
           skippedRooms: rpcData?.skipped ?? 0,
           suites: profiles.filter((p) => p.hasSuite).length,

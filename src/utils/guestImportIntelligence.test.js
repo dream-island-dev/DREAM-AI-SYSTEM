@@ -15,6 +15,8 @@ import {
   findExistingGuestRow,
   isSameBookingGuest,
   buildMultiRoomLineCounts,
+  buildMultiRoomLineIndexMap,
+  formatMultiRoomLineLabel,
 } from "./guestImportIntelligence";
 
 const ARRIVALS_MAPPING = {
@@ -407,5 +409,17 @@ describe("Guest Import Intelligence — golden cases", () => {
       { orderNumber: "266932", arrivalDate: "2026-07-10", guestPhone: "+972501234567" },
     ]);
     expect(counts.get("266932::2026-07-10::+972501234567")).toBe(2);
+  });
+
+  test("buildMultiRoomLineIndexMap: per-line labels חדר 1 מ־2 / חדר 2 מ־2", () => {
+    const candidates = [
+      { orderNumber: "266932", arrivalDate: "2026-07-10", guestPhone: "+972501234567" },
+      { orderNumber: "266932", arrivalDate: "2026-07-10", guestPhone: "+972501234567" },
+      { orderNumber: "266933", arrivalDate: "2026-07-10", guestPhone: "+972509999999" },
+    ];
+    const indexMap = buildMultiRoomLineIndexMap(candidates);
+    expect(formatMultiRoomLineLabel(indexMap, 0)).toBe("חדר 1 מ־2");
+    expect(formatMultiRoomLineLabel(indexMap, 1)).toBe("חדר 2 מ־2");
+    expect(formatMultiRoomLineLabel(indexMap, 2)).toBe("");
   });
 });

@@ -505,12 +505,18 @@ export function isSameBookingGuest(candidate, existingGuestRow) {
   return phoneMatches && orderMatches && dateMatches;
 }
 
-/** Count import lines per order+arrival+phone (2+ = multi-room same guest). */
+/** Stable key for one guest booking (order + arrival + phone). */
+export function bookingGuestKey(candidate) {
+  if (!candidate?.orderNumber || !candidate.arrivalDate || !candidate.guestPhone) return null;
+  return `${candidate.orderNumber}::${candidate.arrivalDate}::${candidate.guestPhone}`;
+}
+
+/** Count import lines per booking guest (internal). */
 export function buildMultiRoomLineCounts(candidates = []) {
   const counts = new Map();
   for (const c of candidates) {
-    if (!c?.orderNumber || !c.arrivalDate || !c.guestPhone) continue;
-    const k = `${c.orderNumber}::${c.arrivalDate}::${c.guestPhone}`;
+    const k = bookingGuestKey(c);
+    if (!k) continue;
     counts.set(k, (counts.get(k) || 0) + 1);
   }
   return counts;
@@ -518,10 +524,36 @@ export function buildMultiRoomLineCounts(candidates = []) {
 
 export function multiRoomLineCountForCandidate(candidate, lineCounts) {
   if (!candidate || !lineCounts?.size) return 0;
-  if (!candidate.orderNumber || !candidate.arrivalDate || !candidate.guestPhone) return 0;
-  return lineCounts.get(
-    `${candidate.orderNumber}::${candidate.arrivalDate}::${candidate.guestPhone}`,
-  ) || 0;
+  const k = bookingGuestKey(candidate);
+  return k ? (lineCounts.get(k) || 0) : 0;
+}
+
+/**
+ * Per CSV line position within a multi-room booking — {position, total} by profile index.
+ * Row 1 → חדר 1 מ־2, row 2 → חדר 2 מ־2 (not "2 חדרים" on every row).
+ */
+export function buildMultiRoomLineIndexMap(candidates = []) {
+  const groups = new Map();
+  candidates.forEach((c, i) => {
+    const k = bookingGuestKey(c);
+    if (!k) return;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(i);
+  });
+  const indexMap = new Map();
+  for (const indices of groups.values()) {
+    const total = indices.length;
+    indices.forEach((idx, pos) => {
+      indexMap.set(idx, { position: pos + 1, total });
+    });
+  }
+  return indexMap;
+}
+
+export function formatMultiRoomLineLabel(indexMap, profileIdx) {
+  const info = indexMap?.get(profileIdx);
+  if (!info || info.total <= 1) return "";
+  return `חדר ${info.position} מ־${info.total}`;
 }
 
 /**
