@@ -65,7 +65,20 @@ Deno.serve(async (req: Request) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
     );
 
-    const now = new Date();
+    const now = await (async () => {
+      if (req.method === "POST") {
+        try {
+          const body = await req.json();
+          if (body?.previewAt) {
+            const parsed = new Date(body.previewAt);
+            if (!Number.isNaN(parsed.getTime())) return parsed;
+          }
+        } catch {
+          /* empty body — use live clock */
+        }
+      }
+      return new Date();
+    })();
 
     // Same three kill-switches that gate the live functions — exposing them
     // here is the entire "Pulse" feature, no new infra required.
@@ -76,6 +89,7 @@ Deno.serve(async (req: Request) => {
         Deno.env.get("WHATSAPP_SIMULATION") === "true" ||
         !(Deno.env.get("META_WHATSAPP_TOKEN") ?? Deno.env.get("WHATSAPP_TOKEN")) ||
         !(Deno.env.get("META_PHONE_NUMBER_ID") ?? Deno.env.get("WHATSAPP_PHONE_NUMBER_ID")),
+      previewAt: now.toISOString(),
     };
 
     const { data: stagesData, error: stagesErr } = await supabase

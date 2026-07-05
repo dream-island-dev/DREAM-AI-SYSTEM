@@ -1411,6 +1411,7 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
   const [loadingQueue, setLoadingQueue] = useState(false);
   const [queueError, setQueueError] = useState(null);
   const [queueRefreshedAt, setQueueRefreshedAt] = useState(null);
+  const [queuePreviewDate, setQueuePreviewDate] = useState(""); // YYYY-MM-DD — empty = live clock
   const queueSyncTimerRef = useRef(null);
   const [attentionOpen, setAttentionOpen] = useState(false);
   const [dismissedAttentionKeys, setDismissedAttentionKeys] = useState(new Set());
@@ -1497,7 +1498,10 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
     setLoadingQueue(true);
     setQueueError(null);
     try {
-      const { data, error } = await supabase.functions.invoke("automation-queue");
+      const body = queuePreviewDate
+        ? { previewAt: `${queuePreviewDate}T12:00:00.000Z` }
+        : undefined;
+      const { data, error } = await supabase.functions.invoke("automation-queue", { body });
       if (error) throw new Error(error.message);
       if (!data?.ok) throw new Error(data?.error ?? "unknown error");
       setQueueData(data);
@@ -1523,7 +1527,7 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
     } finally {
       setLoadingQueue(false);
     }
-  }, []);
+  }, [queuePreviewDate]);
 
   const fetchMutedGuests = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) return;
@@ -1555,7 +1559,7 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
       fetchQueue();
       fetchMutedGuests();
     }
-  }, [subTab, fetchQueue, fetchMutedGuests]);
+  }, [subTab, fetchQueue, fetchMutedGuests, queuePreviewDate]);
 
   const scheduleQueueRefresh = useCallback(() => {
     if (queueSyncTimerRef.current) clearTimeout(queueSyncTimerRef.current);
@@ -2314,6 +2318,33 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                 ))}
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <label style={{ fontSize: 11, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 6 }}>
+                  תצוגת יום:
+                  <input
+                    type="date"
+                    value={queuePreviewDate}
+                    onChange={(e) => setQueuePreviewDate(e.target.value)}
+                    style={{
+                      padding: "4px 8px", borderRadius: 6, border: "1px solid var(--border)",
+                      fontFamily: "Heebo, sans-serif", fontSize: 12,
+                    }}
+                  />
+                  {queuePreviewDate && (
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => { setQueuePreviewDate(""); }}
+                      title="חזור לשעון חי"
+                    >
+                      חי
+                    </button>
+                  )}
+                </label>
+                {queueData?.systemStatus?.previewAt && queuePreviewDate && (
+                  <span style={{ fontSize: 10, color: "var(--gold-dark)" }} title="מדמה את אותו resolver כמו cron">
+                    סימולציה: {new Date(queueData.systemStatus.previewAt).toLocaleDateString("he-IL")}
+                  </span>
+                )}
                 {queueRefreshedAt && (
                   <span style={{ fontSize: 11, color: "var(--text-muted)" }} title="מתעדכן אוטומטית אחרי שינוי במסע האורח">
                     עודכן: {queueRefreshedAt.toLocaleTimeString("he-IL")}

@@ -2338,7 +2338,14 @@ function NewChatModal({ onClose, onSent }) {
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
-export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocusConsumed }) {
+export default function WhatsAppInbox({
+  user,
+  focusPhone,
+  focusGuestName,
+  onFocusConsumed,
+  initialRosterFilter,
+  onRosterFilterConsumed,
+}) {
   const {
     quietActive,
     overrideChecked,
@@ -3001,6 +3008,13 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
     };
     onFocusConsumed?.();
   }, [focusPhone, focusGuestName, onFocusConsumed]);
+
+  useEffect(() => {
+    if (!initialRosterFilter) return;
+    setRosterFilter(initialRosterFilter);
+    setMobileScreen("list");
+    onRosterFilterConsumed?.();
+  }, [initialRosterFilter, onRosterFilterConsumed]);
 
   useEffect(() => {
     const pending = pendingFocusRef.current;

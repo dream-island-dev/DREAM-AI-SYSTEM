@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { supabase } from "../supabaseClient";
 import { getGuestTimingBadge } from "../utils/guestTiming";
 import { formatSpaSchedule } from "../utils/israeliTime";
+import GuestJourneyTimeline from "./GuestJourneyTimeline";
 
 const COLOR_FLAGS = [
   { value: "", label: "ללא סימון", bg: "var(--ivory)", fg: "var(--text-muted)" },
@@ -63,6 +64,7 @@ export default function GuestContextDrawer({
   const [muteSaving, setMuteSaving] = useState(false);
   const [colorSaving, setColorSaving] = useState(false);
   const [toast, setToast] = useState(null);
+  const [queueRows, setQueueRows] = useState([]);
 
   const showToast = useCallback((msg, isErr = false) => {
     setToast({ msg, isErr });
@@ -80,7 +82,9 @@ export default function GuestContextDrawer({
         .select(
           "id, name, phone, room, room_type, status, arrival_date, departure_date, " +
           "claimed_by, claimed_at, automation_muted, staff_color_label, internal_notes, " +
-          "spa_time, spa_date, meal_time, arrival_time, needs_callback, requires_attention"
+          "spa_time, spa_date, meal_time, arrival_time, needs_callback, requires_attention, " +
+          "msg_pre_arrival_2d_sent, msg_stage_2_arrival_sent, msg_pre_arrival_sent, " +
+          "msg_morning_suite_sent, msg_morning_welcome_sent, msg_mid_stay_sent, msg_checkout_fb_sent"
         )
         .in("phone", variants)
         .limit(1)
@@ -101,6 +105,18 @@ export default function GuestContextDrawer({
       };
       setGuest(row);
       setInternalNotes(row.internal_notes ?? "");
+
+      setQueueRows([]);
+      if (row.id && supabase) {
+        try {
+          const { data: qData } = await supabase.functions.invoke("automation-queue");
+          if (qData?.ok && Array.isArray(qData.queue)) {
+            setQueueRows(qData.queue.filter((q) => q.guestId === row.id));
+          }
+        } catch {
+          /* queue preview optional */
+        }
+      }
 
       let taskRows = [];
       const phoneBare = (contact.phone ?? "").replace(/^\+/, "");
@@ -306,6 +322,15 @@ export default function GuestContextDrawer({
                       </div>
                     )}
                   </div>
+                </div>
+              </Section>
+
+              <Section title="מסע האורח (אוטומציה)">
+                <div style={{
+                  background: "var(--ivory)", borderRadius: 12, padding: 14,
+                  border: "1px solid var(--border)",
+                }}>
+                  <GuestJourneyTimeline guest={guest} queueRows={queueRows} compact />
                 </div>
               </Section>
 

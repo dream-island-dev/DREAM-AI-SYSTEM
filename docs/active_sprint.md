@@ -1,5 +1,5 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-06-30 (session 74). Current goals, blockers, and next priorities.
+> Last updated: 2026-07-05 (session 124). Current goals, blockers, and next priorities.
 > Full session history → `CLAUDE.md` §10 + `claude_history.md`.
 > **Agent workflow** → `docs/xos_agent_playbook.md`
 
@@ -14,10 +14,11 @@
 | 0 | `App.js` design tokens + utility classes | ✅ committed `b450b65` |
 | 1 | `WhatsAppInbox.js` roster + CTAs | ✅ committed `b450b65` — Vercel deploy |
 | 2a | `Dashboard` KPI cards (`App.js`) | 🟡 מקומי — KPI + dash-grid tokens, tablet 2×2 |
-| 2b | `OperationsBoard.js` TaskCards + chips | Pending |
+| 2b | `OperationsBoard.js` TaskCards + chips | ✅ session 124 — SLA+💬 שיחה+dept icons+touch targets |
 | 3 | `HousekeepingTabletView.js` + AICopilot verify | Pending |
-| 4 | `App.js` mobile shell + `GuestsPage.js` | Pending |
+| 4 | `App.js` mobile shell + `GuestsPage.js` | 🟡 חלקי — ResortPulseBar responsive; GuestsPage unchanged |
 | 5 | Real phone QA on Vercel (390px routes) | Pending |
+| **124** | Resort Pulse + Cmd+K + Journey timeline + ACC day preview | ✅ מקומי — 107 tests, build נקי |
 
 **Dual-surface:** every phase = desktop polish + mobile checklist (390/768px) before deploy.  
 **Kickoff:** full prompt in `docs/xos_agent_playbook.md` §11, then `start phase 0`

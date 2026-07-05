@@ -273,7 +273,16 @@ export function NewTaskForm({ user, managerDept, onCreated }) {
 }
 
 // ── Task Card — now 3-state (open/in_progress/done) with SLA badge ──────────
-function TaskCard({ task, onClaim, onMarkDone, isUpdating }) {
+const DEPT_ICONS = {
+  "תפעול": "🔧",
+  "משק": "📦",
+  "קבלה": "🛎️",
+  "ספא": "💆",
+  'מזמ"ש (F&B)': "🍽️",
+  "הנהלה": "👔",
+};
+
+function TaskCard({ task, onClaim, onMarkDone, isUpdating, onOpenDreamBotChat }) {
   const prio = PRIORITY_CONFIG[task.priority] ?? PRIORITY_CONFIG.normal;
   const isDone = task.status === "done";
   const isInProgress = task.status === "in_progress";
@@ -286,7 +295,7 @@ function TaskCard({ task, onClaim, onMarkDone, isUpdating }) {
     : null;
 
   return (
-    <div style={{
+    <div className="ops-task-card" style={{
       borderRadius: 14,
       border: `1px solid ${isDone ? "#D1FAE5" : overdue ? "#DC2626" : prio.border}`,
       background: isDone ? "#F0FDF4" : prio.bg,
@@ -359,11 +368,31 @@ function TaskCard({ task, onClaim, onMarkDone, isUpdating }) {
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
         <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
-          🏢 {task.department}
+          {DEPT_ICONS[task.department] ?? "🏢"} {task.department}
         </span>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {task.guests?.phone && onOpenDreamBotChat && (
+            <button
+              type="button"
+              className="u-touch-comfort"
+              onClick={() => onOpenDreamBotChat({
+                phone: task.guests.phone.replace(/^\+/, ""),
+                guestName: task.guests.name ?? null,
+              })}
+              title="פתח שיחת WhatsApp עם האורח"
+              style={{
+                padding: "10px 14px", borderRadius: 10,
+                border: "1px solid var(--border)", background: "var(--ivory)",
+                fontFamily: "Heebo, sans-serif", fontSize: 13, fontWeight: 700,
+                cursor: "pointer", color: "var(--gold-dark)",
+              }}
+            >
+              💬 שיחה
+            </button>
+          )}
           {!isDone && !isInProgress && (
             <button
+              className="u-touch-comfort"
               onClick={() => onClaim(task.id)}
               disabled={isUpdating}
               style={{
@@ -378,6 +407,7 @@ function TaskCard({ task, onClaim, onMarkDone, isUpdating }) {
           )}
           {!isDone && (
             <button
+              className="u-touch-comfort"
               onClick={() => onMarkDone(task.id)}
               disabled={isUpdating}
               style={{
@@ -397,7 +427,7 @@ function TaskCard({ task, onClaim, onMarkDone, isUpdating }) {
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
-export default function OperationsBoard({ user, isAdmin }) {
+export default function OperationsBoard({ user, isAdmin, onOpenDreamBotChat }) {
   const [tasks,       setTasks]       = useState([]);
   const [loading,     setLoading]     = useState(true);
   const [updatingId,  setUpdatingId]  = useState(null);
@@ -421,7 +451,7 @@ export default function OperationsBoard({ user, isAdmin }) {
     // task row, so it never goes stale while a request sits open (§0.5).
     let query = supabase
       .from("tasks")
-      .select("*, guests(arrival_date, departure_date, status)")
+      .select("*, guests(arrival_date, departure_date, status, phone, name)")
       .order("created_at", { ascending: false });
 
     if (!canCreate && userDept) {
@@ -617,6 +647,7 @@ export default function OperationsBoard({ user, isAdmin }) {
               onClaim={claimTask}
               onMarkDone={markDone}
               isUpdating={updatingId === task.id}
+              onOpenDreamBotChat={onOpenDreamBotChat}
             />
           ))}
         </div>

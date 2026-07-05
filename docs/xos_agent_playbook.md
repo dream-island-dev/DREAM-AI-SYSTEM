@@ -326,6 +326,12 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
+### 2026-07-05 — Session 124 (Unified Ops UI + ACC day preview)
+- **Resort Pulse = client projection** — `computeResortPulse` משתמש ב-`classifyInboxRosterSegment` (אותו מקור כמו Inbox) כדי שלא יהיו מונים סותרים בין Pulse לרשימת שיחות.
+- **ACC day simulator** — `automation-queue` מקבל `POST { previewAt }` ומחזיר `systemStatus.previewAt`; אותו `resolveStageSchedule` כמו cron — לא סימולציה נפרדת בפרונט.
+- **Journey timeline** — `buildGuestJourneyFromFlags` (msg_* ב-guests) + `mergeQueueIntoJourney` (skipReason מ-queue) ב-`GuestContextDrawer` — שני מקורות, UI אחד.
+- **Cmd+K** — `openDreamBotChat` חייב לאפשר פתיחת Inbox בלי `phone` (ניווט בלבד).
+
 ### 2026-07-05 — Session 123 (checkout_fb sent to future guest — lifecycle gate)
 - **שורש:** `checkout_fb` (תבנית «השערים נסגרו…») נשען רק על `departure_date`+`day_offset` — בלי לוודא ש-`arrival_date` עבר, שהאורח צ'ק-אין, או שתאריכי שהות תקינים. פרופיל עם `departure_date` שגוי (או לפני `arrival_date`) יכול לקבל שלב 5 לפני ההגעה.
 - **תיקון:** `_shared/pipelineLifecycle.ts` — `assertPipelineLifecycleForTrigger`: post-stay דורש `arrival_date ≤ היום`, `departure_date < היום`, סטטוס לא `pending`/`expected`; in-stay/morning חסומים לעתידיים; `invalid_stay_dates` כשעזיבה לפני הגעה. `checkEligibility`+`whatsapp-send` BRANCH D+cron `loadGuestByIdForPipeline` (מאפשר `checked_out` רק ל-post-stay).

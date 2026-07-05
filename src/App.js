@@ -9,7 +9,7 @@ import ShiftGenerator from "./components/ShiftGenerator";
 import ShiftScheduleTab from "./components/ShiftScheduleTab";
 import EmployeesPage from "./components/EmployeesPage";
 import { isAdminUser, isSuperAdmin, loadDepartments } from "./utils/admin";
-import { canAccessRoute, canSeeNavItem } from "./utils/auth";
+import { canAccessRoute, canSeeNavItem, filterNavItemsForUser } from "./utils/auth";
 import { consumeStaffDeepLink } from "./utils/staffDeepLink";
 import { saveCheckinFilter } from "./utils/checkinFilterStorage";
 import { supabase, isSupabaseConfigured, loadAgentProfile } from "./supabaseClient";
@@ -38,6 +38,8 @@ import PortalSettingsPanel from "./components/PortalSettingsPanel";
 import CMSGate from "./components/cms/CMSGate";
 import CMSSecurityPanel from "./components/cms/CMSSecurityPanel";
 import VoucherReconciliationHub from "./components/VoucherReconciliationHub";
+import ResortPulseBar from "./components/ResortPulseBar";
+import GlobalCommandPalette from "./components/GlobalCommandPalette";
 import RoutingControlCenter from "./components/RoutingControlCenter";
 import AdminChangelogDashboard from "./components/AdminChangelogDashboard";
 import ReceptionChecklist from "./components/ReceptionChecklist";
@@ -309,6 +311,74 @@ const css = `
   .u-shadow-sm { box-shadow: var(--shadow-sm); }
   .u-shadow-md { box-shadow: var(--shadow-md); }
   .u-muted-action { opacity: 0.45; cursor: not-allowed; }
+
+  /* ── Resort Pulse + Command Palette (session 124) ── */
+  .resort-pulse-bar {
+    display: flex; align-items: center; gap: var(--space-sm); flex-wrap: wrap;
+    padding: 8px var(--space-md); background: var(--card-bg);
+    border-bottom: 1px solid var(--border);
+  }
+  .resort-pulse-bar__title { font-size: 11px; font-weight: 800; color: var(--text-muted); white-space: nowrap; }
+  .resort-pulse-bar__chips { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; }
+  .resort-pulse-bar__refresh {
+    border: 1px solid var(--border); background: var(--ivory); border-radius: 8px;
+    padding: 4px 8px; cursor: pointer; font-size: 14px;
+  }
+  .resort-pulse-bar__err { font-size: 11px; color: #DC2626; }
+  .resort-pulse-chip {
+    display: flex; align-items: center; gap: 6px; padding: 6px 10px;
+    border-radius: 999px; border: 1px solid var(--border); background: var(--ivory);
+    cursor: pointer; font-family: Heebo, sans-serif; transition: var(--transition-fast);
+  }
+  .resort-pulse-chip:hover { border-color: var(--gold); box-shadow: var(--shadow-gold); }
+  .resort-pulse-chip--alert { border-color: #FCA5A5; background: #FEF2F2; }
+  .resort-pulse-chip__emoji { font-size: 14px; }
+  .resort-pulse-chip__value { font-weight: 800; font-size: 14px; color: var(--black); }
+  .resort-pulse-chip__label { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+
+  .cmd-palette-overlay {
+    position: fixed; inset: 0; z-index: 2000;
+    background: rgba(0,0,0,0.45); backdrop-filter: blur(3px);
+    display: flex; align-items: flex-start; justify-content: center; padding-top: 12vh;
+  }
+  .cmd-palette {
+    width: min(560px, 94vw); background: var(--card-bg); border-radius: 14px;
+    box-shadow: var(--shadow-lg); overflow: hidden; direction: rtl;
+  }
+  .cmd-palette__input {
+    width: 100%; border: none; border-bottom: 1px solid var(--border);
+    padding: 16px 18px; font-size: 16px; font-family: Heebo, sans-serif;
+    outline: none; background: var(--ivory);
+  }
+  .cmd-palette__list { list-style: none; max-height: 50vh; overflow-y: auto; margin: 0; padding: 6px; }
+  .cmd-palette__item {
+    width: 100%; text-align: right; border: none; background: transparent;
+    padding: 10px 12px; border-radius: 8px; cursor: pointer;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+    font-family: Heebo, sans-serif; font-size: 14px;
+  }
+  .cmd-palette__item--active { background: rgba(201,169,110,0.15); }
+  .cmd-palette__item-label { flex: 1; font-weight: 600; color: var(--black); }
+  .cmd-palette__sub { font-size: 11px; color: var(--text-muted); direction: ltr; }
+  .cmd-palette__badge { font-size: 10px; font-weight: 700; }
+  .cmd-palette__empty { padding: 16px; text-align: center; color: var(--text-muted); font-size: 13px; }
+  .cmd-palette__hint { padding: 8px 18px; font-size: 12px; color: var(--text-muted); }
+  .cmd-palette__footer {
+    padding: 8px 14px; font-size: 10px; color: var(--text-muted);
+    border-top: 1px solid var(--border); background: var(--ivory);
+  }
+  .topbar-cmd-btn {
+    border: 1px solid var(--border); background: var(--card-bg); border-radius: 8px;
+    padding: 5px 10px; cursor: pointer; font-size: 12px; font-weight: 700;
+    color: var(--text-muted); font-family: Heebo, sans-serif; white-space: nowrap;
+  }
+  .topbar-cmd-btn:hover { border-color: var(--gold); color: var(--gold-dark); }
+
+  @media (max-width: 768px) {
+    .resort-pulse-chip__label { display: none; }
+    .resort-pulse-bar__title { display: none; }
+    .topbar-cmd-btn span.cmd-kbd { display: none; }
+  }
 
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: 'Heebo', sans-serif; direction: rtl; }
@@ -1242,7 +1312,10 @@ function Sidebar({ user, active, setActive, openOpsCount, onLogout, isAdmin, isS
     { id: "voucher_reconciliation", icon: "🧾", label: "התאמת שוברים",               managerOnly: true, receptionistOk: true },
   ];
 
-  const navItems = allNavItems.filter(item => canSeeNavItem(item, user));
+  const navItems = filterNavItemsForUser(
+    allNavItems.filter((item) => canSeeNavItem(item, user)),
+    user,
+  );
 
   const roleLabel = isAdmin
     ? "👑 מנהל מערכת"
@@ -1895,10 +1968,11 @@ export default function App({ initialPage = "dashboard" }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   // Deep-link from Requests Board (etc.) → open a specific WA thread in DREAM BOT.
   const [inboxFocus, setInboxFocus] = useState(null); // { phone, guestName? } | null
+  const [inboxRosterFocus, setInboxRosterFocus] = useState(null); // roster filter chip id | null
   const [checkinFocus, setCheckinFocus] = useState(null); // { timelineScope, customArrivalDate? } | null
-  const openDreamBotChat = useCallback(({ phone, guestName }) => {
-    if (!phone) return;
-    setInboxFocus({ phone, guestName: guestName ?? null });
+  const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false);
+  const openDreamBotChat = useCallback(({ phone, guestName } = {}) => {
+    if (phone) setInboxFocus({ phone, guestName: guestName ?? null });
     setActivePage("wa_inbox");
     setMobileMenuOpen(false);
   }, []);
@@ -1908,6 +1982,45 @@ export default function App({ initialPage = "dashboard" }) {
     setActivePage("guests");
     setMobileMenuOpen(false);
   }, []);
+
+  const handlePulseAction = useCallback((action) => {
+    switch (action) {
+      case "arrivals_today":
+      case "departing_today":
+        openCheckinTab({ timelineScope: "today" });
+        break;
+      case "in_resort":
+        setInboxRosterFocus("in_resort");
+        setActivePage("wa_inbox");
+        setMobileMenuOpen(false);
+        break;
+      case "attention":
+        setInboxRosterFocus("alerts");
+        setActivePage("wa_inbox");
+        setMobileMenuOpen(false);
+        break;
+      case "automation":
+        if (canAccessRoute("automation_center", user)) {
+          setActivePage("automation_center");
+          setMobileMenuOpen(false);
+        }
+        break;
+      default:
+        break;
+    }
+  }, [openCheckinTab, user]);
+
+  useEffect(() => {
+    if (!user) return;
+    const onKey = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setCmdPaletteOpen(true);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [user]);
   const [employees, setEmployees, empLoading, refetchEmployees] = usePersistentState("employees", initialEmployees);
   const [shifts, setShifts, shiftLoading]       = usePersistentState("shifts", initialShifts);
   const [checklist, setChecklist, checkLoading] = usePersistentState("checklist_items", initialChecklists);
@@ -2211,6 +2324,8 @@ export default function App({ initialPage = "dashboard" }) {
             focusPhone={inboxFocus?.phone ?? null}
             focusGuestName={inboxFocus?.guestName ?? null}
             onFocusConsumed={() => setInboxFocus(null)}
+            initialRosterFilter={inboxRosterFocus}
+            onRosterFilterConsumed={() => setInboxRosterFocus(null)}
           />
         );
       case "guests":
@@ -2269,7 +2384,7 @@ export default function App({ initialPage = "dashboard" }) {
       case "ops_board":
       case "tasks":
       case "calls":
-        return <OperationsBoard user={user} isAdmin={isAdmin} />;
+        return <OperationsBoard user={user} isAdmin={isAdmin} onOpenDreamBotChat={openDreamBotChat} />;
       case "bot_config":
         return guardPage(
           "bot_config",
@@ -2360,6 +2475,14 @@ export default function App({ initialPage = "dashboard" }) {
               </button>
               <div className="topbar-title">{pageTitle[activePage]}</div>
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <button
+                  type="button"
+                  className="topbar-cmd-btn u-touch-staff"
+                  onClick={() => setCmdPaletteOpen(true)}
+                  title="חיפוש גלובלי (Ctrl+K)"
+                >
+                  🔍 <span className="cmd-kbd">Ctrl+K</span>
+                </button>
                 <div className="topbar-date">{dateStr}</div>
 
                 {/* ── Push notification bell ────────────────────────── */}
@@ -2435,6 +2558,9 @@ export default function App({ initialPage = "dashboard" }) {
                 </div>
               </div>
             </div>
+            {user?.role !== "cleaner" && activePage !== "housekeeping_tablet" && (
+              <ResortPulseBar onAction={handlePulseAction} />
+            )}
             <div className={`content${activePage === "wa_inbox" ? " content--wa-inbox" : ""}`}>{renderPage()}</div>
           </div>
         </div>
@@ -2487,6 +2613,17 @@ export default function App({ initialPage = "dashboard" }) {
 
       {/* AI engine failover alert — floating realtime banner for ai_failover_events */}
       {user && <AiFailoverWidget />}
+
+      <GlobalCommandPalette
+        open={cmdPaletteOpen}
+        onClose={() => setCmdPaletteOpen(false)}
+        onOpenInbox={openDreamBotChat}
+        onOpenGuests={() => openCheckinTab({ timelineScope: "today" })}
+        onOpenGuestManage={() => { setActivePage("vip_guests"); setMobileMenuOpen(false); }}
+        onOpenAutomation={() => {
+          if (canAccessRoute("automation_center", user)) setActivePage("automation_center");
+        }}
+      />
 
       {user && !user.department && !isAdmin && (
         <DepartmentOnboardingModal

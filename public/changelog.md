@@ -1,3 +1,4 @@
+2026-07-05 | Unified Ops UI sprint (session 124) | ResortPulseBar+GlobalCommandPalette(Ctrl+K)+GuestJourneyTimeline ב-GuestContextDrawer; receptionist nav מצומצם; OperationsBoard כפתור 💬 שיחה+SLA; ACC תצוגת יום (`previewAt` ב-automation-queue); 107 tests.
 2026-07-05 | checkout_fb lifecycle gate (hotfix) | `_shared/pipelineLifecycle.ts`+`checkEligibility`+whatsapp-send/cron: שלב 5 חסום לעתידיים/no-show/תאריכים שבורים; checked_out מותר ל-post-stay; 7 tests.
 2026-07-05 | Guest delete full system sync | RPC `delete_guest_profile` (141)+`guests` REPLICA IDENTITY FULL (142); `_shared/guestOutboundGuard.ts` חוסם שליחה ללא אורח פעיל; Inbox תג «לא רשום»+באנר; 96 tests.
 2026-07-05 | Inbox guest-delete sync | WhatsAppInbox: realtime DELETE/INSERT על guests; `syncInboxContactWithGuestMap` מנקה פרופיל שנמחק; groupByPhone last-message-wins; 9 tests.

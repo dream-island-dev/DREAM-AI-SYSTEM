@@ -20,6 +20,24 @@ export function isReceptionist(user) {
   return user?.role === "receptionist";
 }
 
+/** Receptionist-focused sidebar — core front-desk routes only. */
+export const RECEPTIONIST_FOCUS_NAV_IDS = new Set([
+  "dashboard",
+  "wa_inbox",
+  "guests",
+  "vip_guests",
+  "requests_board",
+  "ops_board",
+  "feedback_dashboard",
+  "data_sync",
+  "voucher_reconciliation",
+]);
+
+export function filterNavItemsForUser(items, user) {
+  if (!isReceptionist(user)) return items;
+  return items.filter((item) => RECEPTIONIST_FOCUS_NAV_IDS.has(item.id));
+}
+
 // ── Permissions matrix ───────────────────────────────────────────────────────
 const PERMISSIONS = {
   add_employee:     ["manager", "admin", "super_admin"],
