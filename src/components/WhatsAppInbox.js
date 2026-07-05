@@ -113,6 +113,45 @@ function expandScriptForDisplay(body, ctx = {}) {
   return text.replace(/\{\{[^}]+\}\}/g, "").trim();
 }
 
+/** Approved Meta body fallback — mirrors _shared/metaTemplateLog.ts dream_room_ready1. */
+const ROOM_READY_TEMPLATE_FALLBACK =
+  "🔑 {{1}}, יש לנו בשורה — הסוויטה {{2}} שלך מוכנה ומחכה לך! " +
+  "אפשר לגשת לדלפק הקבלה לקבלת המפתח ולהתחיל את החוויה. מצפים לראותכם 🌴";
+
+const ROOM_READY_WA_NAMES = ["dream_room_ready1", "dream_room_ready"];
+
+/** Same 24h rule as whatsapp-send room_ready fast-path (last inbound in thread). */
+function isSessionWindowOpenForContact(contact) {
+  if (!contact?.messages?.length) return false;
+  let lastInboundAt = null;
+  for (const m of contact.messages) {
+    if (m.direction !== "inbound" || !m.created_at) continue;
+    if (!lastInboundAt || m.created_at > lastInboundAt) lastInboundAt = m.created_at;
+  }
+  if (!lastInboundAt) return false;
+  const ts = new Date(lastInboundAt).getTime();
+  return Number.isFinite(ts) && Date.now() - ts < 24 * 3600 * 1000;
+}
+
+/** Pre-fill text for Inbox «חדר מוכן» — session script if window open, else Meta template body. */
+function resolveRoomReadyDraftMessage(contact, scriptsByKey, templatesByWaName) {
+  const ctx = buildGuestResolveContext(contact);
+  const guestName = ctx.guestName || "אורח יקר";
+  const room = ctx.room && ctx.room !== "-" ? ctx.room : "הסוויטה שלכם";
+
+  if (isSessionWindowOpenForContact(contact)) {
+    const script = scriptsByKey?.get("room_ready_reminder");
+    if (script?.trim()) return expandScriptForDisplay(script, ctx);
+  }
+
+  for (const name of ROOM_READY_WA_NAMES) {
+    const body = templatesByWaName?.get(name);
+    if (body?.trim()) return substituteTemplateVars(body, [guestName, room]);
+  }
+
+  return substituteTemplateVars(ROOM_READY_TEMPLATE_FALLBACK, [guestName, room]);
+}
+
 const LEGACY_SCRIPT_TAG_RE = /^\[סקריפט:\s*(.+?)\]$/;
 const LEGACY_TEMPLATE_TAG_RE = /^\[תבנית:\s*(.+?)\]$/;
 const DISPATCH_META_PREFIX = /^\[META\]\n?/;
@@ -2197,6 +2236,7 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
   const [scriptsByKey, setScriptsByKey] = useState(() => new Map());
   const [templatesByWaName, setTemplatesByWaName] = useState(() => new Map());
   const bottomRef  = useRef(null);
+  const replyRef   = useRef(null);
   const pollRef    = useRef(null);
   const allMsgsRef = useRef([]);   // raw flat messages — source of truth for merging
   const lastSeenAt = useRef(null); // ISO timestamp of last fetch — used by fetchSince
@@ -3235,6 +3275,24 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
     }
   }
 
+  // ── Room Ready — pre-fill editable reply (staff reviews before inbox_reply send) ─
+  function preloadRoomReadyMessage() {
+    if (!active) return;
+    if (!activeContact?.guestId) {
+      setError("לא ניתן לטעון הודעת חדר מוכן — השיחה אינה משויכת לרשומת אורח (guests)");
+      return;
+    }
+    const text = resolveRoomReadyDraftMessage(activeContact, scriptsByKey, templatesByWaName);
+    if (!text?.trim()) {
+      setError("לא נמצא תוכן להודעת חדר מוכן — בדוק BotScriptEditor / תבניות Meta");
+      return;
+    }
+    setReply(text);
+    setQuickOpen(false);
+    setError(null);
+    requestAnimationFrame(() => replyRef.current?.focus());
+  }
+
   // ── Manual reply send ─────────────────────────────────────────────────────
   async function sendManualReply() {
     if (!reply.trim() || !active) return;
@@ -3849,6 +3907,26 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
               >
                 🔁 שלח שוב הודעת הגעה (שלב 2)
               </button>
+              <button
+                onClick={preloadRoomReadyMessage}
+                disabled={!activeContact?.guestId}
+                title={
+                  !activeContact?.guestId
+                    ? "השיחה הזו אינה משויכת לרשומת אורח (guests)"
+                    : isSessionWindowOpenForContact(activeContact)
+                      ? "טוען סקריפט room_ready_reminder לעריכה — שליחה ידנית מהתיבה למטה"
+                      : "טוען תבנית dream_room_ready לעריכה — שליחה ידנית מהתיבה למטה"
+                }
+                style={{
+                  padding: "8px 14px", borderRadius: 20, border: "1.5px solid var(--gold,#C9A96E)",
+                  background: !activeContact?.guestId ? "#F3F0EA" : "linear-gradient(135deg, #E8F5EF, #D4EDDA)",
+                  color: !activeContact?.guestId ? "var(--text-muted)" : "#1A7A4A", fontSize: 12, fontWeight: 700,
+                  cursor: !activeContact?.guestId ? "not-allowed" : "pointer",
+                  minHeight: isMobile ? HIT_STAFF : "auto",
+                }}
+              >
+                🛎️ חדר מוכן
+              </button>
             </div>
 
             {/* Contextual macros — zero-token, data-driven (spa_time/meal_time/
@@ -4078,6 +4156,7 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
             {t.quickBolt}
           </button>
           <textarea
+            ref={replyRef}
             value={reply}
             onChange={(e) => setReply(e.target.value)}
             onKeyDown={(e) => {
