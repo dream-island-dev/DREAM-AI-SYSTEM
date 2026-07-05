@@ -326,6 +326,11 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
+### 2026-07-05 — Session 123 (checkout_fb sent to future guest — lifecycle gate)
+- **שורש:** `checkout_fb` (תבנית «השערים נסגרו…») נשען רק על `departure_date`+`day_offset` — בלי לוודא ש-`arrival_date` עבר, שהאורח צ'ק-אין, או שתאריכי שהות תקינים. פרופיל עם `departure_date` שגוי (או לפני `arrival_date`) יכול לקבל שלב 5 לפני ההגעה.
+- **תיקון:** `_shared/pipelineLifecycle.ts` — `assertPipelineLifecycleForTrigger`: post-stay דורש `arrival_date ≤ היום`, `departure_date < היום`, סטטוס לא `pending`/`expected`; in-stay/morning חסומים לעתידיים; `invalid_stay_dates` כשעזיבה לפני הגעה. `checkEligibility`+`whatsapp-send` BRANCH D+cron `loadGuestByIdForPipeline` (מאפשר `checked_out` רק ל-post-stay).
+- **QA:** בדוק אורח עתידי עם תאריך עזיבה שגוי ב-ACC Queue — שלב 5 צריך `skipReason=guest_not_arrived` / `invalid_stay_dates`, לא «מוכן לשליחה».
+
 ### 2026-07-05 — Session 122 (Guest delete → full system sync)
 - **מחיקת אורח = hard DELETE דרך RPC בלבד** — `delete_guest_profile` (141) מבטל `scheduled_tasks` pending ואז `DELETE guests`; `GuestDashboard`/`GuestsPage` לא קוראים יותר `.delete()` ישיר.
 - **Inbox stale «מחר»** — `groupByPhone`+`inboxMemoryCache` שמרו `arrivalDate` אחרי מחיקה; תיקון: `syncInboxContactWithGuestMap`+`classifyInboxContactSegment` (בלי `guestId` → `no_date`, לא «מחר»); realtime DELETE מנקה cache.

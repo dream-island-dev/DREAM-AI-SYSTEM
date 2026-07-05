@@ -34,7 +34,7 @@ import {
   type GuestForSchedule,
 } from "../_shared/automationSchedule.ts";
 import { reconcileMissedArrivalConfirmations } from "../_shared/arrivalConfirmation.ts";
-import { loadActiveGuestById } from "../_shared/guestOutboundGuard.ts";
+import { loadGuestByIdForPipeline } from "../_shared/guestOutboundGuard.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -279,9 +279,9 @@ Deno.serve(async (req: Request) => {
       }
 
       const d = due[i];
-      const liveGuest = await loadActiveGuestById(supabase, d.guestId);
+      const liveGuest = await loadGuestByIdForPipeline(supabase, d.guestId, d.trigger);
       if (!liveGuest) {
-        console.warn(`[whatsapp-cron] skip dispatch — guest ${d.guestId} deleted or inactive`);
+        console.warn(`[whatsapp-cron] skip dispatch — guest ${d.guestId} deleted or inactive (trigger=${d.trigger})`);
         results.push({ ...d, ok: false, skipped: true, reason: "guest_not_active" });
         if (i < due.length - 1) await sleep(INTER_SEND_DELAY_MS);
         continue;

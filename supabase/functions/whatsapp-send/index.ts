@@ -86,6 +86,7 @@ import {
   GUEST_NOT_ACTIVE_HE,
   loadActiveGuestByPhone,
 } from "../_shared/guestOutboundGuard.ts";
+import { assertPipelineLifecycleForTrigger } from "../_shared/pipelineLifecycle.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -1846,11 +1847,24 @@ serve(async (req: Request) => {
     if (gErr)   throw new Error(`guest_lookup_error: ${gErr.message}`);
     if (!guest) throw new Error(`guest_not_found: no guest row for id=${JSON.stringify(guestId)}`);
 
-    const pipelineInactive = !force ? assertGuestEligibleForAutomation(guest) : null;
+    const pipelineInactive = !force ? assertGuestEligibleForAutomation(guest, trigger) : null;
     if (pipelineInactive) {
       console.log(`[whatsapp-send] skipped trigger="${trigger}" guestId=${guestId} reason=${pipelineInactive}`);
       return new Response(
         JSON.stringify({ ok: true, skipped: true, reason: pipelineInactive }),
+        { headers: { ...CORS, "Content-Type": "application/json" } },
+      );
+    }
+
+    const lifecycleBlock = !force ? assertPipelineLifecycleForTrigger(trigger, guest) : null;
+    if (lifecycleBlock) {
+      console.warn(
+        `[whatsapp-send] lifecycle_gate: trigger="${trigger}" guestId=${guestId} ` +
+        `arrival=${guest.arrival_date ?? "null"} departure=${guest.departure_date ?? "null"} ` +
+        `status=${guest.status ?? "null"} reason=${lifecycleBlock}`,
+      );
+      return new Response(
+        JSON.stringify({ ok: true, skipped: true, reason: lifecycleBlock }),
         { headers: { ...CORS, "Content-Type": "application/json" } },
       );
     }

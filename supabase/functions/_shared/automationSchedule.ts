@@ -12,6 +12,8 @@
 // hour-threshold table this replaces. The fixed Israel UTC+2 offset (no DST)
 // is preserved exactly as today's code computes it — not "fixed" here.
 
+import { assertPipelineLifecycleForTrigger } from "./pipelineLifecycle.ts";
+
 export const ISRAEL_UTC_OFFSET_HOURS = 2;
 
 /** Israel-local hour (fixed UTC+2, no DST) when guests are auto-promoted to checked_in. */
@@ -289,7 +291,10 @@ export function checkEligibility(
   now: Date,
 ): string | null {
   if (guest.status === "cancelled") return "guest_cancelled";
-  if (guest.status === "checked_out") return "guest_checked_out";
+  // Post-stay feedback fires after checkout — checked_out is expected, not a block.
+  const postStayStage =
+    stage.stage_key === "checkout_fb" || stage.stage_key === "checkout_fb_daypass";
+  if (!postStayStage && guest.status === "checked_out") return "guest_checked_out";
   // needs_callback is a staff UI alert only — intentionally NOT checked here (session 59).
   if (guest.automation_muted === true) return "automation_muted";
   if (isGuestStaffClaimActive(guest)) return "staff_claim_active";
@@ -297,6 +302,9 @@ export function checkEligibility(
 
   if (stage.applies_to === "suite" && guest.room_type !== "suite") return "wrong_room_type";
   if (stage.applies_to === "non_suite" && guest.room_type === "suite") return "wrong_room_type";
+
+  const lifecycleBlock = assertPipelineLifecycleForTrigger(stage.stage_key, guest, now);
+  if (lifecycleBlock) return lifecycleBlock;
 
   if (stage.stage_key === "stage_2_arrival") {
     if (!guest.arrival_confirmed && !guest.arrival_confirmed_at) {

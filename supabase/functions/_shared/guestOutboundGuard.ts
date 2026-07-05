@@ -2,6 +2,7 @@
 // Used by whatsapp-send, whatsapp-webhook, whatsapp-cron (race re-check).
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { isPostStayPipelineTrigger } from "./pipelineLifecycle.ts";
 
 export const INACTIVE_GUEST_STATUSES = new Set(["cancelled", "checked_out"]);
 
@@ -36,10 +37,13 @@ export function isGuestActiveForOutbound(
 /** Returns skip reason or null when guest may receive automation outbound. */
 export function assertGuestEligibleForAutomation(
   guest: { status?: string | null } | null | undefined,
+  trigger?: string,
 ): string | null {
   if (!guest) return "guest_not_found";
   if (guest.status === "cancelled") return "guest_cancelled";
-  if (guest.status === "checked_out") return "guest_checked_out";
+  if (guest.status === "checked_out" && !isPostStayPipelineTrigger(trigger ?? "")) {
+    return "guest_checked_out";
+  }
   return null;
 }
 
@@ -60,6 +64,27 @@ export async function loadActiveGuestById(
     return null;
   }
   if (!data || !isGuestActiveForOutbound(data)) return null;
+  return data as ActiveGuestRow;
+}
+
+/** Post-stay pipeline may target guests already archived as checked_out. */
+export async function loadGuestByIdForPipeline(
+  supabase: SupabaseClient,
+  guestId: number | string,
+  trigger: string,
+): Promise<ActiveGuestRow | null> {
+  const { data, error } = await supabase
+    .from("guests")
+    .select(ACTIVE_GUEST_SELECT)
+    .eq("id", guestId)
+    .maybeSingle();
+  if (error) {
+    console.warn("[guestOutboundGuard] loadGuestByIdForPipeline error:", error.message);
+    return null;
+  }
+  if (!data) return null;
+  if (data.status === "cancelled") return null;
+  if (data.status === "checked_out" && !isPostStayPipelineTrigger(trigger)) return null;
   return data as ActiveGuestRow;
 }
 
