@@ -1,3 +1,6 @@
+2026-07-05 | Guest delete full system sync | RPC `delete_guest_profile` (141)+`guests` REPLICA IDENTITY FULL (142); `_shared/guestOutboundGuard.ts` חוסם שליחה ללא אורח פעיל; Inbox תג «לא רשום»+באנר; 96 tests.
+2026-07-05 | Inbox guest-delete sync | WhatsAppInbox: realtime DELETE/INSERT על guests; `syncInboxContactWithGuestMap` מנקה פרופיל שנמחק; groupByPhone last-message-wins; 9 tests.
+2026-07-05 | Inbox supervision + roster segments | WhatsAppInbox: כפתור «רענן היסטוריה»+מונה X/Y הודעות ב-DB; סינון/מיון (בריזורט/מחר/יומיים/עתיד/בטיפול/לא נקרא)+קיבוץ לפי סקשן; `classifyInboxRosterSegment` ב-guestTiming; 7 tests.
 2026-07-05 | Arrival confirm reconcile (נתי גולן fix) | `_shared/arrivalConfirmation.ts`: matcher מחוזק (bold/emoji), lookup suffix; webhook catch-up בדדופ-skip; cron backfill מ-inbox לפני Stage 2 reconcile; 4 tests.
 2026-07-05 | Shared guest date filter (Task 4) | `CheckinTimelineFilterBar`+`useCheckinTimelineFilter`+sessionStorage sync — אותו מסנן (היום/מחר/7 ימים/ארכיון+תאריך מדויק) ב«ניהול אורחים» ו«צ'ק-אין»; `applyCheckinRosterFilter` ב-guestCheckinMatrix.
 2026-07-05 | Inbox room-ready quick action (Task 3) | WhatsAppInbox כפתור «🛎️ חדר מוכן» — ממלא textarea מ-room_ready_reminder (חלון פתוח) או dream_room_ready1 לפני שליחה ידנית.

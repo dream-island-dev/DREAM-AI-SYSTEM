@@ -11,7 +11,16 @@ import AILearningButton from "./AILearningButton";
 import HoldToConfirmButton from "./HoldToConfirmButton";
 import QuietHoursGate from "./QuietHoursGate";
 import { getSuiteSection } from "../data/suiteRegistry";
-import { classifyInboundMessageAlert, getGuestArrivalRosterLabel, isGuestDeparted } from "../utils/guestTiming";
+import {
+  classifyInboundMessageAlert,
+  classifyInboxContactSegment,
+  getGuestArrivalRosterLabel,
+  getInboxRosterSegmentMeta,
+  INBOX_ROSTER_SEGMENT_ORDER,
+  isGuestDeparted,
+  rosterGuestFields,
+  syncInboxContactWithGuestMap,
+} from "../utils/guestTiming";
 import { resolveEffectiveGuestStatus } from "../utils/guestCheckinMatrix";
 import {
   unlockInboxAlertAudio,
@@ -264,6 +273,9 @@ const T = {
     inputPh: "כתוב הודעה ידנית... (Enter לשליחה)",
     archive: "ארכיון", resolve: "טופל",
     identityDb: "תואם מהמערכת", identityWa: "פרופיל WhatsApp", identityPhone: "מספר בלבד",
+    identityUnlinked: "⚠ לא רשום במערכת",
+    guestDeletedBanner: "פרופיל אורח נמחק — השיחה נשמרת להיסטוריה בלבד",
+    editGuestNoProfile: "אין פרופיל אורח פעיל — הוסף אורח מניהול אורחים / צ'ק-אין",
     spa: "ספא",
     msgsCount: (n) => `${n} הודעות`,
     langSwap: "EN",
@@ -295,7 +307,21 @@ const T = {
     filterAlerts: "🔴 התראות",
     filterInResort: "🟢 בריזורט",
     filterDeparted: "⚪ אחרי עזיבה",
+    filterTomorrow: "📅 מחר",
+    filterIn2Days: "📅 יומיים",
+    filterFuture: "📅 עתיד",
+    filterClaimed: "🔒 בטיפול",
+    filterUnread: "💬 לא נקרא",
+    sortActivity: "פעילות",
+    sortArrival: "הגעה",
+    sortName: "שם",
+    rosterGroupedHint: "מקובץ לפי סוג אורח",
     rosterAllDeparted: "כל השיחות הן אורחים שעזבו — לחץ «אחרי עזיבה»",
+    threadRefresh: "🔄 רענן היסטוריה",
+    threadRefreshBusy: "⏳ מסנכרן…",
+    threadMsgCount: (shown, total) =>
+      total != null ? `${shown} / ${total} הודעות ב-DB` : `${shown} הודעות`,
+    threadSyncGap: "ייתכן שחסרות הודעות — לחץ רענן",
     moreMenu: "עוד",
     threadMore: "פעולות",
     closeSheet: "סגור",
@@ -322,6 +348,9 @@ const T = {
     inputPh: "Type a manual message... (Enter to send)",
     archive: "Archive", resolve: "Resolved",
     identityDb: "Matched in system", identityWa: "WhatsApp profile", identityPhone: "Phone only",
+    identityUnlinked: "⚠ Not in roster",
+    guestDeletedBanner: "Guest profile deleted — thread kept for history only",
+    editGuestNoProfile: "No active guest profile — add from Guests / Check-in",
     spa: "Spa",
     msgsCount: (n) => `${n} messages`,
     langSwap: "HE",
@@ -353,7 +382,21 @@ const T = {
     filterAlerts: "🔴 Alerts",
     filterInResort: "🟢 In resort",
     filterDeparted: "⚪ After stay",
+    filterTomorrow: "📅 Tomorrow",
+    filterIn2Days: "📅 2 days",
+    filterFuture: "📅 Future",
+    filterClaimed: "🔒 Claimed",
+    filterUnread: "💬 Unread",
+    sortActivity: "Activity",
+    sortArrival: "Arrival",
+    sortName: "Name",
+    rosterGroupedHint: "Grouped by guest type",
     rosterAllDeparted: "All chats are past guests — tap «After stay»",
+    threadRefresh: "🔄 Refresh history",
+    threadRefreshBusy: "⏳ Syncing…",
+    threadMsgCount: (shown, total) =>
+      total != null ? `${shown} / ${total} messages in DB` : `${shown} messages`,
+    threadSyncGap: "Messages may be missing — tap refresh",
     moreMenu: "More",
     threadMore: "Actions",
     closeSheet: "Close",
@@ -529,6 +572,58 @@ function phoneVariants(bare) {
   return [bare, `+${bare}`, `0${bare.slice(3)}`];
 }
 
+/** Strip denormalized guests join fields from a flat message row. */
+function clearGuestFieldsFromMessage(m) {
+  return {
+    ...m,
+    guest_id: null,
+    guest_name: null,
+    spa_time: null,
+    spa_date: null,
+    guest_room: null,
+    guest_room_type: null,
+    guest_status: null,
+    guest_departure_date: null,
+    guest_arrival_date: null,
+    guest_portal_token: null,
+    guest_meal_time: null,
+    guest_meal_location: null,
+    guest_claimed_by: null,
+    guest_claimed_at: null,
+  };
+}
+
+/** Strip deleted-guest denormalized fields from module-level inbox cache. */
+function purgeInboxMemoryCacheForGuest(guestId, phone) {
+  if (!inboxMemoryCache.messages?.length) return;
+  const targetPhone = phone ? canonicalizePhone(phone) : null;
+  inboxMemoryCache.messages = inboxMemoryCache.messages.map((m) => {
+    const byId = guestId && m.guest_id === guestId;
+    const byPhone = targetPhone && m.phone === targetPhone;
+    if (!byId && !byPhone) return m;
+    return clearGuestFieldsFromMessage(m);
+  });
+}
+
+/** Apply guests join fields from one message row onto a grouped contact (last row wins). */
+function applyGuestProfileFromMessageRow(contact, row) {
+  if (!row) return;
+  contact.guestId = row.guest_id ?? null;
+  contact.guestName = row.guest_name ?? null;
+  contact.spaTime = row.spa_time ?? null;
+  contact.spaDate = row.spa_date ?? null;
+  contact.room = row.guest_room ?? null;
+  contact.roomType = row.guest_room_type ?? null;
+  contact.status = row.guest_status ?? null;
+  contact.departureDate = row.guest_departure_date ?? null;
+  contact.arrivalDate = row.guest_arrival_date ?? null;
+  contact.portalToken = row.guest_portal_token ?? null;
+  contact.mealTime = row.guest_meal_time ?? null;
+  contact.mealLocation = row.guest_meal_location ?? null;
+  contact.claimedBy = row.guest_claimed_by ?? null;
+  contact.claimedAt = row.guest_claimed_at ?? null;
+}
+
 /** Inbound is unread only when staff hasn't opened the thread AND no outbound reply exists after it. */
 function countUnreadInbound(messages) {
   if (!messages?.length) return 0;
@@ -544,11 +639,72 @@ function countUnreadInbound(messages) {
 }
 
 function contactDeparted(contact) {
-  return isGuestDeparted({
-    arrival_date: contact.arrivalDate,
-    departure_date: contact.departureDate,
-    status: contact.status,
+  return isGuestDeparted(rosterGuestFields(contact));
+}
+
+function contactMatchesRosterFilter(contact, rosterFilter) {
+  if (rosterFilter === "all") return true;
+  if (rosterFilter === "alerts") return !!contact.humanRequested;
+  if (rosterFilter === "claimed") return !!contact.claimedBy;
+  if (rosterFilter === "unread") return countUnreadInbound(contact.messages) > 0;
+  const seg = classifyInboxContactSegment(contact);
+  if (rosterFilter === "in_resort") return seg === "in_resort";
+  if (rosterFilter === "tomorrow") return seg === "tomorrow";
+  if (rosterFilter === "in_2_days") return seg === "in_2_days";
+  if (rosterFilter === "future") return seg === "future";
+  return true;
+}
+
+function sortRosterContacts(contacts, sortMode) {
+  const arr = [...contacts];
+  if (sortMode === "name") {
+    return arr.sort((a, b) =>
+      (displayName(a) || "").localeCompare(displayName(b) || "", "he"),
+    );
+  }
+  if (sortMode === "arrival") {
+    return arr.sort((a, b) => {
+      const da = a.arrivalDate || "9999-99-99";
+      const db = b.arrivalDate || "9999-99-99";
+      if (da !== db) return da.localeCompare(db);
+      const aLast = a.messages[a.messages.length - 1]?.created_at ?? "";
+      const bLast = b.messages[b.messages.length - 1]?.created_at ?? "";
+      return bLast.localeCompare(aLast);
+    });
+  }
+  return arr.sort((a, b) => {
+    if (a.humanRequested !== b.humanRequested) return a.humanRequested ? -1 : 1;
+    const ua = countUnreadInbound(a.messages);
+    const ub = countUnreadInbound(b.messages);
+    if (ua !== ub) return ub - ua;
+    const aLast = a.messages[a.messages.length - 1]?.created_at ?? "";
+    const bLast = b.messages[b.messages.length - 1]?.created_at ?? "";
+    return bLast.localeCompare(aLast);
   });
+}
+
+function buildGroupedRosterSections(contacts, sortMode, lang) {
+  const alerts = contacts.filter((c) => c.humanRequested);
+  const rest = contacts.filter((c) => !c.humanRequested);
+  const sections = [];
+  if (alerts.length) {
+    const meta = getInboxRosterSegmentMeta("alerts", lang);
+    sections.push({
+      key: "alerts",
+      ...meta,
+      contacts: sortRosterContacts(alerts, sortMode),
+    });
+  }
+  for (const seg of INBOX_ROSTER_SEGMENT_ORDER) {
+    const inSeg = rest.filter((c) => classifyInboxContactSegment(c) === seg);
+    if (!inSeg.length) continue;
+    sections.push({
+      key: seg,
+      ...getInboxRosterSegmentMeta(seg, lang),
+      contacts: sortRosterContacts(inSeg, sortMode),
+    });
+  }
+  return sections;
 }
 
 function groupByPhone(rows) {
@@ -579,24 +735,6 @@ function groupByPhone(rows) {
     }
     const contact = map.get(row.phone);
     contact.messages.push(row);
-    if (row.guest_id != null) contact.guestId = row.guest_id;
-    if (row.spa_time) contact.spaTime = row.spa_time;
-    if (row.spa_date) contact.spaDate = row.spa_date;
-    if (row.guest_room) contact.room = row.guest_room;
-    if (row.guest_room_type) contact.roomType = row.guest_room_type;
-    if (row.guest_status) contact.status = row.guest_status;
-    if (row.guest_departure_date) contact.departureDate = row.guest_departure_date;
-    if (row.guest_arrival_date) contact.arrivalDate = row.guest_arrival_date;
-    if (row.guest_portal_token) contact.portalToken = row.guest_portal_token;
-    if (row.guest_meal_time) contact.mealTime = row.guest_meal_time;
-    if (row.guest_meal_location) contact.mealLocation = row.guest_meal_location;
-    // claimed_by lives on guests — only overwrite when the join carried a value.
-    // New inbound rows sometimes arrive before guest_id is patched on the
-    // conversation row, which would null the join and falsely "release" claim.
-    if (row.guest_claimed_by != null) {
-      contact.claimedBy = row.guest_claimed_by;
-      contact.claimedAt = row.guest_claimed_at ?? null;
-    }
     if (row.push_name) contact.pushName = row.push_name;
     // Flag contact if any inbound message is a human request
     if (row.human_requested && row.direction === "inbound") {
@@ -605,6 +743,12 @@ function groupByPhone(rows) {
         contact.humanRequestType = row.human_request_type;
       }
     }
+  }
+  // Guest profile: last message wins (avoids stale join data from older rows
+  // after guests row is deleted — ON DELETE SET NULL only affects new fetches).
+  for (const contact of map.values()) {
+    const last = contact.messages[contact.messages.length - 1];
+    applyGuestProfileFromMessageRow(contact, last);
   }
   // Human-requested contacts first, then by latest message desc
   return [...map.values()].sort((a, b) => {
@@ -621,6 +765,15 @@ function displayName(contact) {
   return contact.guestName ?? contact.pushName ?? contact.phone;
 }
 function identityMeta(contact, lang) {
+  const t = T[lang] ?? T.he;
+  if (!contact.guestId) {
+    return {
+      kind: "unlinked",
+      label: t.identityUnlinked,
+      bg: "var(--status-warning-bg)",
+      fg: "var(--status-warning)",
+    };
+  }
   if (contact.guestName) {
     const chip = getGuestArrivalRosterLabel(
       {
@@ -638,7 +791,6 @@ function identityMeta(contact, lang) {
       return { kind: "db", label: chip.label, bg: chip.bg, fg: chip.fg };
     }
   }
-  const t = T[lang] ?? T.he;
   if (contact.pushName)  return { kind: "wa",    label: t.identityWa,    bg: "var(--status-warning-bg)", fg: "var(--status-warning)" };
   return                         { kind: "phone", label: t.identityPhone, bg: "var(--ivory)", fg: "var(--black-soft)" };
 }
@@ -693,6 +845,7 @@ function contactItemPropsEqual(prev, next) {
   const a = prev.contact, b = next.contact;
   if (a === b) return true;
   if (a.phone !== b.phone) return false;
+  if (a.guestId !== b.guestId) return false;
   if (a.guestName !== b.guestName) return false;
   if (a.pushName !== b.pushName) return false;
   if (a.status !== b.status) return false;
@@ -2216,7 +2369,8 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [quickOpen, setQuickOpen]   = useState(false);
   const [rosterSearch, setRosterSearch] = useState("");
-  const [rosterFilter, setRosterFilter] = useState("all"); // all | alerts | in_resort
+  const [rosterFilter, setRosterFilter] = useState("all");
+  const [rosterSort, setRosterSort] = useState("activity"); // activity | arrival | name
   const [mobileToolbarOpen, setMobileToolbarOpen] = useState(false);
   const [mobileThreadMenuOpen, setMobileThreadMenuOpen] = useState(false);
   const [archivedPhones, setArchivedPhones] = useState(() => new Set());
@@ -2241,6 +2395,7 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
   const allMsgsRef = useRef([]);   // raw flat messages — source of truth for merging
   const lastSeenAt = useRef(null); // ISO timestamp of last fetch — used by fetchSince
   const guestPhoneMapRef = useRef(new Map()); // normalizePhone(guests.phone) → guest profile slice
+  const guestMapReadyRef = useRef(false); // true after initial guests fetch — avoids stripping before load
   const profilesMapRef   = useRef(new Map()); // profiles.id → profiles.name, for claimedBy display
   const alertsReadyRef   = useRef(false); // skip sounds until initial fetchAll completes
   const pendingFocusRef  = useRef(null);   // { phone, guestName? } — Requests Board deep-link
@@ -2252,6 +2407,8 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
   const [hasMoreOlder, setHasMoreOlder] = useState(false);
   const [loadingOlder,  setLoadingOlder]  = useState(false);
   const [loadingThread, setLoadingThread] = useState(false);
+  const [threadDbCount, setThreadDbCount] = useState(null);
+  const [threadRefreshBusy, setThreadRefreshBusy] = useState(false);
 
   // ── Shared row normaliser ─────────────────────────────────────────────────
   const normalise = (r) => ({
@@ -2285,20 +2442,10 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
   // re-check it here against every guest's phone using the same last-9-digit
   // comparison, so the UI self-heals without needing a backfill migration.
   const resolveIdentityFallback = useCallback((contacts) => {
-    if (guestPhoneMapRef.current.size === 0) return contacts;
+    if (!guestMapReadyRef.current) return contacts;
     return contacts.map((c) => {
       const matched = guestPhoneMapRef.current.get(normalizePhone(c.phone));
-      if (!matched) return c;
-      return {
-        ...c,
-        guestName: c.guestName || matched.name,
-        status: matched.status ?? c.status ?? null,
-        arrivalDate: matched.arrival_date ?? c.arrivalDate ?? null,
-        departureDate: matched.departure_date ?? c.departureDate ?? null,
-        ...(matched.claimed_by != null
-          ? { claimedBy: matched.claimed_by, claimedAt: matched.claimed_at ?? null }
-          : {}),
-      };
+      return syncInboxContactWithGuestMap(c, matched);
     });
   }, []);
 
@@ -2464,9 +2611,11 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
   // fully (bounded, single-phone query — cheap regardless of table size) so
   // the visible thread is never silently truncated. Runs once per phone per
   // session (hydratedPhonesRef) — cheap to skip on repeat clicks.
-  const fetchThreadHistory = useCallback(async (phone) => {
-    if (!phone || hydratedPhonesRef.current.has(phone)) return;
-    hydratedPhonesRef.current.add(phone); // mark eagerly — avoid duplicate concurrent fetches on rapid re-click
+  const fetchThreadHistory = useCallback(async (phone, { force = false } = {}) => {
+    if (!phone) return;
+    if (!force && hydratedPhonesRef.current.has(phone)) return;
+    if (force) hydratedPhonesRef.current.delete(phone);
+    hydratedPhonesRef.current.add(phone);
     setLoadingThread(true);
     try {
       const { data, error: err } = await supabase
@@ -2481,11 +2630,20 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
         return;
       }
       const rows = (data ?? []).map(normalise);
+      if (force) {
+        const others = allMsgsRef.current.filter((m) => m.phone !== phone);
+        const merged = [...others, ...rows].sort((a, b) =>
+          a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0,
+        );
+        allMsgsRef.current = merged;
+        setContacts(applyGrouping(merged));
+        return;
+      }
       const existingIds = new Set(allMsgsRef.current.map((m) => m.id));
       const toAdd = rows.filter((m) => m.id && !existingIds.has(m.id));
       if (!toAdd.length) return;
       const merged = [...allMsgsRef.current, ...toAdd].sort((a, b) =>
-        a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0
+        a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0,
       );
       allMsgsRef.current = merged;
       setContacts(applyGrouping(merged));
@@ -2493,6 +2651,36 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
       setLoadingThread(false);
     }
   }, [applyGrouping]);
+
+  const fetchThreadDbCount = useCallback(async (phone) => {
+    if (!phone) {
+      setThreadDbCount(null);
+      return;
+    }
+    const { count, error: err } = await supabase
+      .from("whatsapp_conversations")
+      .select("id", { count: "exact", head: true })
+      .in("phone", phoneVariants(phone));
+    if (err) {
+      console.warn("[WA-inbox] fetchThreadDbCount error:", err.message);
+      return;
+    }
+    setThreadDbCount(count ?? null);
+  }, []);
+
+  const refreshActiveThread = useCallback(async () => {
+    if (!active) return;
+    setThreadRefreshBusy(true);
+    try {
+      await Promise.all([
+        fetchThreadHistory(active, { force: true }),
+        fetchThreadDbCount(active),
+      ]);
+      setLastUpdated(new Date());
+    } finally {
+      setThreadRefreshBusy(false);
+    }
+  }, [active, fetchThreadHistory, fetchThreadDbCount]);
 
   // ── Archive a contact locally ─────────────────────────────────────────────
   // Stable useCallback reference (not an inline arrow per roster row) so
@@ -2647,10 +2835,13 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
     const key = normalizePhone(g.phone);
     if (key) {
       guestPhoneMapRef.current.set(key, {
+        id: g.id ?? null,
         name: g.name,
         status: g.status ?? null,
         arrival_date: g.arrival_date ?? null,
         departure_date: g.departure_date ?? null,
+        claimed_by: g.claimed_by ?? null,
+        claimed_at: g.claimed_at ?? null,
       });
     }
     const targetPhone = canonicalizePhone(g.phone);
@@ -2676,6 +2867,33 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
         guest_claimed_by:     g.claimed_by ?? null,
         guest_claimed_at:     g.claimed_at ?? null,
       };
+    });
+    if (touched) setContacts(applyGrouping(allMsgsRef.current));
+  }, [applyGrouping]);
+
+  // Cross-tab sync when a guest profile is deleted from GuestsPage / GuestDashboard.
+  const applyGuestRowDelete = useCallback((deleted) => {
+    const guestId = deleted?.id;
+    if (!guestId && !deleted?.phone) return;
+
+    if (deleted.phone) {
+      guestPhoneMapRef.current.delete(normalizePhone(deleted.phone));
+    } else {
+      for (const [key, val] of guestPhoneMapRef.current.entries()) {
+        if (val.id === guestId) guestPhoneMapRef.current.delete(key);
+      }
+    }
+
+    const targetPhone = deleted.phone ? canonicalizePhone(deleted.phone) : null;
+    purgeInboxMemoryCacheForGuest(guestId, targetPhone);
+
+    let touched = false;
+    allMsgsRef.current = allMsgsRef.current.map((m) => {
+      const byId = guestId && m.guest_id === guestId;
+      const byPhone = targetPhone && m.phone === targetPhone;
+      if (!byId && !byPhone) return m;
+      touched = true;
+      return clearGuestFieldsFromMessage(m);
     });
     if (touched) setContacts(applyGrouping(allMsgsRef.current));
   }, [applyGrouping]);
@@ -2742,8 +2960,9 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
       m.phone === phone && m.direction === "inbound" ? { ...m, _read: true } : m
     );
     setContacts(applyGrouping(allMsgsRef.current));
-    fetchThreadHistory(phone); // background hydrate — full history may exceed the fast-load window
-  }, [isMobile, applyGrouping, fetchThreadHistory]);
+    fetchThreadHistory(phone);
+    fetchThreadDbCount(phone);
+  }, [isMobile, applyGrouping, fetchThreadHistory, fetchThreadDbCount]);
 
   useEffect(() => {
     if (mobileScreen === "list") {
@@ -2899,7 +3118,7 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
   useEffect(() => {
     supabase
       .from("guests")
-      .select("name, phone, status, arrival_date, departure_date, claimed_by, claimed_at")
+      .select("id, name, phone, status, arrival_date, departure_date, claimed_by, claimed_at")
       .not("phone", "is", null)
       .then(({ data }) => {
         const map = new Map();
@@ -2907,6 +3126,7 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
           const key = normalizePhone(g.phone);
           if (key) {
             map.set(key, {
+              id: g.id,
               name: g.name,
               status: g.status ?? null,
               arrival_date: g.arrival_date ?? null,
@@ -2917,6 +3137,7 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
           }
         }
         guestPhoneMapRef.current = map;
+        guestMapReadyRef.current = true;
         setContacts((prev) => resolveIdentityFallback(prev));
       });
   }, [resolveIdentityFallback]);
@@ -3154,9 +3375,19 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
         { event: "UPDATE", schema: "public", table: "guests" },
         (payload) => applyGuestRowUpdate(payload.new)
       )
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "guests" },
+        (payload) => applyGuestRowUpdate(payload.new)
+      )
+      .on(
+        "postgres_changes",
+        { event: "DELETE", schema: "public", table: "guests" },
+        (payload) => applyGuestRowDelete(payload.old)
+      )
       .subscribe();
     return () => { supabase.removeChannel(ch); };
-  }, [applyGuestRowUpdate]);
+  }, [applyGuestRowUpdate, applyGuestRowDelete]);
 
   // ── Re-fetch immediately when the browser tab becomes visible again ──────
   // Handles the common case where staff switch away and miss incoming messages.
@@ -3187,6 +3418,11 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
   // Moved below derived `thread` — scroll when active chat grows (realtime/poll).
   const activeContact   = contacts.find((c) => c.phone === active) ?? null;
   const thread          = activeContact?.messages ?? [];
+
+  useEffect(() => {
+    if (active) fetchThreadDbCount(active);
+    else setThreadDbCount(null);
+  }, [active, thread.length, lastUpdated, fetchThreadDbCount]);
 
   useEffect(() => {
     if (activeContact?.guestName) setNavGuestName(null);
@@ -3339,19 +3575,35 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
         return hay.includes(q) || (qDigits.length >= 3 && phoneDigits.includes(qDigits));
       });
     }
-    if (rosterFilter === "alerts") {
-      list = list.filter((c) => c.humanRequested);
-    } else if (rosterFilter === "in_resort") {
-      list = list.filter((c) =>
-        resolveEffectiveGuestStatus({
-          status: c.status,
-          arrival_date: c.arrivalDate,
-          departure_date: c.departureDate,
-        }) === "checked_in"
-      );
-    }
-    return list;
-  }, [rosterSource, rosterSearch, rosterFilter]);
+    list = list.filter((c) => contactMatchesRosterFilter(c, rosterFilter));
+    return sortRosterContacts(list, rosterSort);
+  }, [rosterSource, rosterSearch, rosterFilter, rosterSort]);
+
+  const rosterGroupedSections = useMemo(() => {
+    if (rosterFilter !== "all" || rosterSearch.trim()) return null;
+    return buildGroupedRosterSections(displayContacts, rosterSort, lang);
+  }, [displayContacts, rosterFilter, rosterSearch, rosterSort, lang]);
+
+  const rosterFilterChips = useMemo(() => [
+    { id: "all", label: t.filterAll },
+    { id: "alerts", label: t.filterAlerts, badge: alertContacts.length },
+    { id: "in_resort", label: t.filterInResort },
+    { id: "tomorrow", label: t.filterTomorrow },
+    { id: "in_2_days", label: t.filterIn2Days },
+    { id: "future", label: t.filterFuture },
+    { id: "claimed", label: t.filterClaimed },
+    { id: "unread", label: t.filterUnread },
+    {
+      id: "departed",
+      label: `${t.filterDeparted}${departedContacts.length ? ` (${departedContacts.length})` : ""}`,
+    },
+  ], [t, alertContacts.length, departedContacts.length]);
+
+  const rosterSortChips = useMemo(() => [
+    { id: "activity", label: t.sortActivity },
+    { id: "arrival", label: t.sortArrival },
+    { id: "name", label: t.sortName },
+  ], [t]);
   // Contextual macros take over the quick-actions drawer when this guest has
   // usable metadata; otherwise fall back to the generic list so the drawer
   // never renders empty (Sprint 9.4, point 4).
@@ -3435,12 +3687,7 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
             className="wa-roster-search"
           />
           <div style={{ display: "flex", gap: 6, marginTop: 8, overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
-            {[
-              { id: "all", label: t.filterAll },
-              { id: "alerts", label: t.filterAlerts },
-              { id: "in_resort", label: t.filterInResort },
-              { id: "departed", label: `${t.filterDeparted}${departedContacts.length ? ` (${departedContacts.length})` : ""}` },
-            ].map((chip) => (
+            {rosterFilterChips.map((chip) => (
               <button
                 key={chip.id}
                 type="button"
@@ -3448,9 +3695,86 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
                 className={`wa-filter-chip${rosterFilter === chip.id ? " wa-filter-chip--active" : ""}`}
               >
                 {chip.label}
+                {chip.badge > 0 && rosterFilter !== chip.id && (
+                  <span style={{
+                    marginInlineStart: 4, background: "var(--gold)", color: "#1A1A1A",
+                    borderRadius: 8, padding: "0 5px", fontSize: 9, fontWeight: 800,
+                  }}>
+                    {chip.badge}
+                  </span>
+                )}
               </button>
             ))}
           </div>
+          {rosterFilter === "all" && !rosterSearch.trim() && (
+            <div style={{ display: "flex", gap: 6, marginTop: 6, alignItems: "center", flexWrap: "wrap" }}>
+              <span style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 600 }}>{t.rosterGroupedHint}</span>
+              {rosterSortChips.map((chip) => (
+                <button
+                  key={chip.id}
+                  type="button"
+                  onClick={() => setRosterSort(chip.id)}
+                  className={`wa-sort-chip${rosterSort === chip.id ? " wa-sort-chip--active" : ""}`}
+                >
+                  {chip.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      {!isMobile && (
+        <div style={{
+          padding: "8px var(--space-md) 10px",
+          borderBottom: "1px solid var(--border)",
+          background: "var(--ivory)",
+          position: "sticky",
+          top: 41,
+          zIndex: 1,
+        }}>
+          <input
+            type="search"
+            value={rosterSearch}
+            onChange={(e) => setRosterSearch(e.target.value)}
+            placeholder={t.searchPh}
+            aria-label={t.searchPh}
+            className="wa-roster-search"
+          />
+          <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+            {rosterFilterChips.map((chip) => (
+              <button
+                key={chip.id}
+                type="button"
+                onClick={() => setRosterFilter(chip.id)}
+                className={`wa-filter-chip${rosterFilter === chip.id ? " wa-filter-chip--active" : ""}`}
+              >
+                {chip.label}
+                {chip.badge > 0 && rosterFilter !== chip.id && (
+                  <span style={{
+                    marginInlineStart: 4, background: "var(--gold)", color: "#1A1A1A",
+                    borderRadius: 8, padding: "0 5px", fontSize: 9, fontWeight: 800,
+                  }}>
+                    {chip.badge}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+          {rosterFilter === "all" && !rosterSearch.trim() && (
+            <div style={{ display: "flex", gap: 6, marginTop: 6, alignItems: "center" }}>
+              <span style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 600 }}>{t.rosterGroupedHint}</span>
+              {rosterSortChips.map((chip) => (
+                <button
+                  key={chip.id}
+                  type="button"
+                  onClick={() => setRosterSort(chip.id)}
+                  className={`wa-sort-chip${rosterSort === chip.id ? " wa-sort-chip--active" : ""}`}
+                >
+                  {chip.label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
       {loading && visibleContacts.length === 0 ? (
@@ -3460,6 +3784,12 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
           {displayContacts.length === 0 && rosterSource.length > 0 && (
             <div style={{ padding: "var(--space-lg)", textAlign: "center", color: "var(--text-muted)" }}>
               <div style={{ fontSize: 13 }}>{t.searchPh}</div>
+            </div>
+          )}
+          {rosterSource.length === 0 && visibleContacts.length === 0 && (
+            <div style={{ padding: "var(--space-lg)", textAlign: "center", color: "var(--text-muted)" }}>
+              <div style={{ fontSize: 32, marginBottom: 8 }}>{t.emptyIcon}</div>
+              <div style={{ fontSize: 13 }}>{t.emptyBody}</div>
             </div>
           )}
           {displayContacts.length === 0 && rosterSource.length === 0 && visibleContacts.length > 0 && rosterFilter === "all" && (
@@ -3475,29 +3805,58 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
               </button>
             </div>
           )}
-          {rosterSource.length === 0 && visibleContacts.length === 0 && (
-            <div style={{ padding: "var(--space-lg)", textAlign: "center", color: "var(--text-muted)" }}>
-              <div style={{ fontSize: 32, marginBottom: 8 }}>{t.emptyIcon}</div>
-              <div style={{ fontSize: 13 }}>{t.emptyBody}</div>
-            </div>
+          {rosterGroupedSections ? (
+            rosterGroupedSections.map((section) => (
+              <div key={section.key}>
+                <div
+                  className="wa-roster-section-header"
+                  style={{
+                    background: section.bg,
+                    color: section.fg,
+                    borderBottom: "1px solid var(--border)",
+                  }}
+                >
+                  <span>{section.label}</span>
+                  <span style={{ opacity: 0.75, fontWeight: 600 }}>({section.contacts.length})</span>
+                </div>
+                {section.contacts.map((c) => (
+                  <ContactItem
+                    key={c.phone}
+                    contact={c}
+                    isActive={active === c.phone}
+                    isMobile={isMobile}
+                    t={t}
+                    lang={lang}
+                    dir={t.dir}
+                    scriptsByKey={scriptsByKey}
+                    templatesByWaName={templatesByWaName}
+                    onClick={openContact}
+                    onProfileClick={openGuestContextDrawer}
+                    onDismiss={dismissHumanRequest}
+                    onArchive={archiveContact}
+                  />
+                ))}
+              </div>
+            ))
+          ) : (
+            displayContacts.map((c) => (
+              <ContactItem
+                key={c.phone}
+                contact={c}
+                isActive={active === c.phone}
+                isMobile={isMobile}
+                t={t}
+                lang={lang}
+                dir={t.dir}
+                scriptsByKey={scriptsByKey}
+                templatesByWaName={templatesByWaName}
+                onClick={openContact}
+                onProfileClick={openGuestContextDrawer}
+                onDismiss={dismissHumanRequest}
+                onArchive={archiveContact}
+              />
+            ))
           )}
-          {displayContacts.map((c) => (
-            <ContactItem
-              key={c.phone}
-              contact={c}
-              isActive={active === c.phone}
-              isMobile={isMobile}
-              t={t}
-              lang={lang}
-              dir={t.dir}
-              scriptsByKey={scriptsByKey}
-              templatesByWaName={templatesByWaName}
-              onClick={openContact}
-              onProfileClick={openGuestContextDrawer}
-              onDismiss={dismissHumanRequest}
-              onArchive={archiveContact}
-            />
-          ))}
           {hasMoreOlder && (
             <button
               type="button"
@@ -3609,15 +3968,16 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
           {!isMobile && (
             <>
               <button
-                onClick={() => activeContact && openGuestEditor(activeContact)}
-                disabled={editGuestLoading}
-                title={t.editGuest}
+                onClick={() => activeContact?.guestId && openGuestEditor(activeContact)}
+                disabled={editGuestLoading || !activeContact?.guestId}
+                title={!activeContact?.guestId ? t.editGuestNoProfile : t.editGuest}
                 style={{
                   background: "rgba(255,255,255,0.1)",
                   border: "1px solid rgba(255,255,255,0.35)", color: "white",
-                  borderRadius: "var(--radius-sm)", fontSize: 13, cursor: editGuestLoading ? "not-allowed" : "pointer",
+                  borderRadius: "var(--radius-sm)", fontSize: 13,
+                  cursor: (editGuestLoading || !activeContact?.guestId) ? "not-allowed" : "pointer",
                   padding: "6px 10px", minHeight: isMobile ? HIT_STAFF : "auto", minWidth: isMobile ? HIT_STAFF : "auto",
-                  opacity: editGuestLoading ? 0.6 : 1,
+                  opacity: (editGuestLoading || !activeContact?.guestId) ? 0.5 : 1,
                 }}
               >
                 {editGuestLoading ? "⏳" : "✏️"}
@@ -3675,9 +4035,11 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
                   }}>
                     <button
                       type="button"
-                      onClick={() => { activeContact && openGuestEditor(activeContact); setMobileThreadMenuOpen(false); }}
-                      disabled={editGuestLoading}
+                      onClick={() => { if (activeContact?.guestId) { openGuestEditor(activeContact); setMobileThreadMenuOpen(false); } }}
+                      disabled={editGuestLoading || !activeContact?.guestId}
+                      title={!activeContact?.guestId ? t.editGuestNoProfile : undefined}
                       className="wa-thread-menu-item"
+                      style={!activeContact?.guestId ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
                     >
                       {editGuestLoading ? "⏳" : t.editGuest}
                     </button>
@@ -3695,7 +4057,7 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
           )}
         </div>
         </div>
-        {activeContact?.guestName && activeContact.arrivalDate && (() => {
+        {activeContact?.guestId && activeContact?.guestName && activeContact.arrivalDate && (() => {
           const chip = getGuestArrivalRosterLabel(
             {
               arrival_date: activeContact.arrivalDate,
@@ -3758,6 +4120,20 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
         </div>
       )}
 
+      {activeContact && !activeContact.guestId && (
+        <div style={{
+          flexShrink: 0,
+          padding: "8px 16px",
+          background: "rgba(255,193,7,0.2)",
+          borderBottom: "1px solid rgba(255,193,7,0.45)",
+          fontSize: 13,
+          fontWeight: 700,
+          color: "var(--black)",
+        }}>
+          ⚠ {t.guestDeletedBanner}
+        </div>
+      )}
+
       {activeContact?.claimedBy && (
         <div style={{
           flexShrink: 0,
@@ -3773,6 +4149,39 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
             : `🔇 הבוט מושתק — ${activeContact.claimedByName ?? "צוות"} מטפל/ת בשיחה.`}
         </div>
       )}
+
+      <div style={{
+        flexShrink: 0,
+        padding: "6px 14px",
+        background: "rgba(0,0,0,0.06)",
+        borderBottom: "1px solid rgba(0,0,0,0.06)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 10,
+        flexWrap: "wrap",
+      }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)" }}>
+          {t.threadMsgCount(thread.length, threadDbCount)}
+          {threadDbCount != null && thread.length < threadDbCount && (
+            <span style={{ color: "var(--status-warning, #B45309)", marginInlineStart: 8 }}>
+              ⚠️ {t.threadSyncGap}
+            </span>
+          )}
+          {loadingThread && (
+            <span style={{ marginInlineStart: 8, opacity: 0.7 }}>{t.syncing}</span>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={refreshActiveThread}
+          disabled={threadRefreshBusy || loadingThread}
+          title={t.threadRefresh}
+          className="wa-thread-refresh-btn"
+        >
+          {threadRefreshBusy || loadingThread ? t.threadRefreshBusy : t.threadRefresh}
+        </button>
+      </div>
 
       {/* Messages */}
       <div style={{
@@ -4264,6 +4673,50 @@ export default function WhatsAppInbox({ user, focusPhone, focusGuestName, onFocu
           border-color: var(--whatsapp-green-dark, #128C7E);
           background: rgba(37, 211, 102, 0.12);
           color: var(--whatsapp-green-dark, #128C7E);
+        }
+        .wa-sort-chip {
+          border: 1px solid var(--border);
+          background: white;
+          border-radius: 14px;
+          padding: 3px 10px;
+          font-size: 10px;
+          font-weight: 700;
+          font-family: Heebo, sans-serif;
+          cursor: pointer;
+          color: var(--text-muted);
+          white-space: nowrap;
+        }
+        .wa-sort-chip--active {
+          background: var(--ivory);
+          color: var(--gold-dark);
+          border-color: var(--gold);
+        }
+        .wa-roster-section-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+          padding: 8px 14px;
+          font-size: 11px;
+          font-weight: 800;
+          letter-spacing: 0.3px;
+        }
+        .wa-thread-refresh-btn {
+          border: 1px solid var(--border);
+          background: white;
+          border-radius: 8px;
+          padding: 5px 12px;
+          font-size: 11px;
+          font-weight: 700;
+          font-family: Heebo, sans-serif;
+          cursor: pointer;
+          color: var(--gold-dark);
+          white-space: nowrap;
+          min-height: var(--hit-target-staff, 44px);
+        }
+        .wa-thread-refresh-btn:disabled {
+          opacity: 0.6;
+          cursor: not-allowed;
         }
         .wa-mobile-composer {
           box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.08);

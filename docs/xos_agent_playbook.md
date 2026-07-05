@@ -326,6 +326,12 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
+### 2026-07-05 — Session 122 (Guest delete → full system sync)
+- **מחיקת אורח = hard DELETE דרך RPC בלבד** — `delete_guest_profile` (141) מבטל `scheduled_tasks` pending ואז `DELETE guests`; `GuestDashboard`/`GuestsPage` לא קוראים יותר `.delete()` ישיר.
+- **Inbox stale «מחר»** — `groupByPhone`+`inboxMemoryCache` שמרו `arrivalDate` אחרי מחיקה; תיקון: `syncInboxContactWithGuestMap`+`classifyInboxContactSegment` (בלי `guestId` → `no_date`, לא «מחר»); realtime DELETE מנקה cache.
+- **שליחה ללא אורח** — `guestOutboundGuard.ts`: חסום `cancelled`/`checked_out`/מחוק; `inbox_reply` דורש שורת guests פעילה; webhook Stage2+LLM auto-reply מדולגים; cron re-check לפני dispatch.
+- **REPLICA IDENTITY FULL** על `guests` (142) — `payload.old.phone` ב-DELETE ל-Inbox realtime.
+
 ### 2026-07-04 — Session 109 (guest_request → Whapi ops card completeness)
 - **Whapi card without suite = `guests.room` null** at intercept time — fix: `_shared/guestRoomResolve.ts` falls back to `suite_rooms` by phone + `resolveSuiteFromEzgoFields`; best-effort backfill `guests.room`. Card uses `Room אמטיסט 8 - …`, never bare `Room —`.
 - **guest_request tasks had no SLA** — now `sla_category` + `sla_deadline` (15m amenities / 30m maintenance), same buckets as `whapi-webhook` staff reports; `sla-escalation-cron` picks them up.

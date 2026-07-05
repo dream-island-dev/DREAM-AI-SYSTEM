@@ -262,8 +262,12 @@ export default function GuestsPage({
     if (!window.confirm(`מחק ${ids.length} אורחים שנבחרו?\nפעולה זו לא ניתנת לביטול.`)) return;
     setDeleteBusy(true);
     try {
-      const { error } = await supabase.from("guests").delete().in("id", ids);
-      if (error) throw error;
+      let failed = 0;
+      for (const id of ids) {
+        const { data, error } = await supabase.rpc("delete_guest_profile", { p_guest_id: id });
+        if (error || !data?.ok) failed++;
+      }
+      if (failed) throw new Error(`נכשלה מחיקה של ${failed} אורחים`);
       setGuests((prev) => prev.filter((g) => !ids.includes(g.id)));
       setSelectedIds(new Set());
       showToast("ok", `🗑️ נמחקו ${ids.length} אורחים בהצלחה`);

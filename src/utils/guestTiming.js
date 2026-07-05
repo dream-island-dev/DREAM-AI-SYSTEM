@@ -189,6 +189,118 @@ export function isGuestDeparted(guest) {
   return false;
 }
 
+/** Normalize inbox contact / guests row to { arrival_date, departure_date, status }. */
+export function rosterGuestFields(contact) {
+  if (!contact) return { arrival_date: null, departure_date: null, status: null };
+  return {
+    arrival_date: contact.arrival_date ?? contact.arrivalDate ?? null,
+    departure_date: contact.departure_date ?? contact.departureDate ?? null,
+    status: contact.status ?? null,
+  };
+}
+
+/**
+ * Inbox roster segment for filtering + grouped sections (Israel calendar).
+ * @returns {"departed"|"no_date"|"in_resort"|"tomorrow"|"in_2_days"|"future"}
+ */
+export function classifyInboxRosterSegment(guest) {
+  const g = rosterGuestFields(guest);
+  if (isGuestDeparted(g)) return "departed";
+  if (!g.arrival_date) return "no_date";
+  if (isGuestInResortToday(g)) return "in_resort";
+
+  const diff = israelDaysBetween(israelTodayStr(), g.arrival_date);
+  if (diff === 1) return "tomorrow";
+  if (diff === 2) return "in_2_days";
+  return "future";
+}
+
+/**
+ * Inbox roster segment — requires an active guests row (guestId).
+ * Stale arrival_date on a deleted profile must not land in "מחר".
+ */
+export function classifyInboxContactSegment(contact) {
+  const guestId = contact?.guestId ?? contact?.guest_id ?? null;
+  if (!guestId) {
+    const g = rosterGuestFields(contact);
+    if (isGuestDeparted(g)) return "departed";
+    return "no_date";
+  }
+  return classifyInboxRosterSegment(contact);
+}
+
+/** Display order for grouped inbox roster (excludes departed — separate tab). */
+export const INBOX_ROSTER_SEGMENT_ORDER = [
+  "in_resort",
+  "tomorrow",
+  "in_2_days",
+  "future",
+  "no_date",
+];
+
+const INBOX_SEGMENT_META = {
+  he: {
+    in_resort: { label: "🟢 בריזורט", bg: "#F0FDF4", fg: "#15803D" },
+    tomorrow: { label: "📅 מחר", bg: "#FFFBEB", fg: "#B45309" },
+    in_2_days: { label: "📅 עוד יומיים", bg: "#FFFBEB", fg: "#B45309" },
+    future: { label: "📅 הגעה עתידית", bg: "#FFFBEB", fg: "#B45309" },
+    no_date: { label: "📅 ללא תאריך הגעה", bg: "var(--ivory)", fg: "var(--text-muted)" },
+    alerts: { label: "🔴 דורש תשומת לב", bg: "#FEF2F2", fg: "#B91C1C" },
+  },
+  en: {
+    in_resort: { label: "🟢 In resort", bg: "#F0FDF4", fg: "#15803D" },
+    tomorrow: { label: "📅 Tomorrow", bg: "#FFFBEB", fg: "#B45309" },
+    in_2_days: { label: "📅 In 2 days", bg: "#FFFBEB", fg: "#B45309" },
+    future: { label: "📅 Future arrival", bg: "#FFFBEB", fg: "#B45309" },
+    no_date: { label: "📅 No arrival date", bg: "var(--ivory)", fg: "var(--text-muted)" },
+    alerts: { label: "🔴 Needs attention", bg: "#FEF2F2", fg: "#B91C1C" },
+  },
+};
+
+export function getInboxRosterSegmentMeta(segment, lang = "he") {
+  const pack = INBOX_SEGMENT_META[lang === "en" ? "en" : "he"];
+  return pack[segment] ?? { label: segment, bg: "var(--ivory)", fg: "var(--text-muted)" };
+}
+
+/**
+ * Align an inbox roster contact with the live guests phone map.
+ * When the guest row was deleted (no map entry), strip DB profile fields so stale
+ * denormalized data from old whatsapp_conversations rows cannot show "מחר" etc.
+ */
+export function syncInboxContactWithGuestMap(contact, guestEntry) {
+  if (!contact) return contact;
+  if (!guestEntry) {
+    return {
+      ...contact,
+      guestId: null,
+      guestName: null,
+      spaTime: null,
+      spaDate: null,
+      room: null,
+      roomType: null,
+      status: null,
+      departureDate: null,
+      arrivalDate: null,
+      portalToken: null,
+      mealTime: null,
+      mealLocation: null,
+      claimedBy: null,
+      claimedAt: null,
+    };
+  }
+  return {
+    ...contact,
+    guestId: guestEntry.id ?? contact.guestId ?? null,
+    guestName: contact.guestName || guestEntry.name,
+    status: guestEntry.status ?? contact.status ?? null,
+    arrivalDate: guestEntry.arrival_date ?? contact.arrivalDate ?? null,
+    departureDate: guestEntry.departure_date ?? contact.departureDate ?? null,
+    ...(guestEntry.claimed_by != null
+      ? { claimedBy: guestEntry.claimed_by, claimedAt: guestEntry.claimed_at ?? null }
+      : {}),
+  };
+}
+
 // Frontend-only — Deno Edge Functions can't import across the function
 // boundary in this repo (CLAUDE.md convention), so guest-portal-ops-request/
 // sla-escalation-cron duplicate the same future-arrival check locally rather

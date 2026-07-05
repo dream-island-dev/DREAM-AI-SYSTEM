@@ -289,6 +289,7 @@ export function checkEligibility(
   now: Date,
 ): string | null {
   if (guest.status === "cancelled") return "guest_cancelled";
+  if (guest.status === "checked_out") return "guest_checked_out";
   // needs_callback is a staff UI alert only — intentionally NOT checked here (session 59).
   if (guest.automation_muted === true) return "automation_muted";
   if (isGuestStaffClaimActive(guest)) return "staff_claim_active";

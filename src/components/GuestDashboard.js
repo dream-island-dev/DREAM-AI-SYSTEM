@@ -283,8 +283,9 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
   const deleteGuest = useCallback(async (guest) => {
     if (!window.confirm(`מחק את "${guest.name}"?`)) return;
     setDeletingId(guest.id);
-    const { error } = await supabase.from("guests").delete().eq("id", guest.id);
+    const { data, error } = await supabase.rpc("delete_guest_profile", { p_guest_id: guest.id });
     if (error) showToast("err", "שגיאה במחיקה: " + error.message);
+    else if (!data?.ok) showToast("err", "שגיאה במחיקה: " + (data?.error ?? "לא ידוע"));
     else {
       setGuests((prev) => prev.filter((g) => g.id !== guest.id));
       showToast("ok", `🗑️ ${guest.name} נמחק`);
@@ -320,8 +321,12 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
     if (!selected.size) return;
     if (!window.confirm(`מחק ${selected.size} אורחים? פעולה זו לא ניתנת לביטול.`)) return;
     const ids = [...selected];
-    const { error } = await supabase.from("guests").delete().in("id", ids);
-    if (error) { showToast("err", "שגיאה: " + error.message); return; }
+    let failed = 0;
+    for (const id of ids) {
+      const { data, error } = await supabase.rpc("delete_guest_profile", { p_guest_id: id });
+      if (error || !data?.ok) failed++;
+    }
+    if (failed) { showToast("err", `שגיאה במחיקת ${failed} אורחים`); return; }
     setGuests((prev) => prev.filter((g) => !ids.includes(g.id)));
     setSelected(new Set());
     showToast("ok", `🗑️ נמחקו ${ids.length} אורחים בהצלחה`);

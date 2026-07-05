@@ -34,6 +34,7 @@ import {
   type GuestForSchedule,
 } from "../_shared/automationSchedule.ts";
 import { reconcileMissedArrivalConfirmations } from "../_shared/arrivalConfirmation.ts";
+import { loadActiveGuestById } from "../_shared/guestOutboundGuard.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -242,7 +243,7 @@ Deno.serve(async (req: Request) => {
       }
 
       for (const guest of guestsList) {
-        if (guest.status === "cancelled" || guest.automation_muted === true) continue;
+        if (guest.status === "cancelled" || guest.status === "checked_out" || guest.automation_muted === true) continue;
         if (!guest.arrival_confirmed && !guest.arrival_confirmed_at) continue;
         if (isGuestStaffClaimActive(guest)) continue;
         const gId = guest.id as number;
@@ -278,6 +279,13 @@ Deno.serve(async (req: Request) => {
       }
 
       const d = due[i];
+      const liveGuest = await loadActiveGuestById(supabase, d.guestId);
+      if (!liveGuest) {
+        console.warn(`[whatsapp-cron] skip dispatch — guest ${d.guestId} deleted or inactive`);
+        results.push({ ...d, ok: false, skipped: true, reason: "guest_not_active" });
+        if (i < due.length - 1) await sleep(INTER_SEND_DELAY_MS);
+        continue;
+      }
       try {
         const res = await fetch(`${supabaseUrl}/functions/v1/whatsapp-send`, {
           method: "POST",

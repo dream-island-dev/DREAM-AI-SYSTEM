@@ -102,6 +102,10 @@ import {
   isArrivalConfirmationMessage,
   lookupGuestByPhone,
 } from "../_shared/arrivalConfirmation.ts";
+import {
+  assertGuestEligibleForAutomation,
+  isGuestActiveForOutbound,
+} from "../_shared/guestOutboundGuard.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -715,6 +719,16 @@ async function handleStage2ArrivalConfirmation(
       guest_id: guestId,
       intent: source === "button" ? "button_reply" : "confirmation",
     });
+  }
+
+  const stage2Inactive = assertGuestEligibleForAutomation(
+    guest as { status?: string | null } | null,
+  );
+  if (!guestId || stage2Inactive) {
+    console.warn(
+      `[webhook] stage_2_arrival outbound blocked phone:${phone} reason:${stage2Inactive ?? "guest_not_found"}`,
+    );
+    return;
   }
 
   const hasPendingPayment = !!(guest?.payment_amount);
@@ -4563,6 +4577,10 @@ Deno.serve(async (req: Request) => {
       if (isLowConfidenceFaqMiss) {
         console.info(
           `[webhook] 🔕 Defensive Shield — low-confidence FAQ miss, reply suppressed, staff flagged — phone:${phone} guest:${guestId ?? "unknown"}`,
+        );
+      } else if (!guestId || !isGuestActiveForOutbound(guest as Record<string, unknown> | null)) {
+        console.info(
+          `[webhook] 🔕 no active guest — auto-reply suppressed (inbound logged) — phone:${phone}`,
         );
       } else {
         // ── Send WhatsApp reply ─────────────────────────────────────────────

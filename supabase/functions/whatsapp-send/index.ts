@@ -81,6 +81,11 @@ import {
   duplicateBlockedResponseBody,
   logDuplicateBlocked,
 } from "../_shared/automationDuplicateGuard.ts";
+import {
+  assertGuestEligibleForAutomation,
+  GUEST_NOT_ACTIVE_HE,
+  loadActiveGuestByPhone,
+} from "../_shared/guestOutboundGuard.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -1392,6 +1397,14 @@ serve(async (req: Request) => {
       if (!guest)  throw new Error(`guest_not_found: no guest row for id=${JSON.stringify(guestId)}`);
       if (!guest.phone) throw new Error(`guest_no_phone: guest id=${guestId} (${guest.name ?? "?"}) has no phone on file`);
 
+      const broadcastInactive = assertGuestEligibleForAutomation(guest);
+      if (broadcastInactive) {
+        return new Response(
+          JSON.stringify({ ok: false, status: "guest_not_active", reason: broadcastInactive, error: GUEST_NOT_ACTIVE_HE }),
+          { headers: { ...CORS, "Content-Type": "application/json" } },
+        );
+      }
+
       // Anti-loop guard: arrival confirmation is a one-time pipeline step.
       // If the guest already confirmed, skip silently — prevents re-sending when
       // a manager clicks "שלח לכולם" again after a guest tapped "כן, מגיעים!".
@@ -1504,6 +1517,18 @@ serve(async (req: Request) => {
       if (!targetPhone) throw new Error("phone is required for inbox_reply");
       if (!inboxMsg)    throw new Error("message is required for inbox_reply");
 
+      const activeGuest = await loadActiveGuestByPhone(supabase, targetPhone);
+      if (!activeGuest) {
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            status: "guest_not_active",
+            error: GUEST_NOT_ACTIVE_HE,
+          }),
+          { headers: { ...CORS, "Content-Type": "application/json" } },
+        );
+      }
+
       // ── 24-Hour Interaction Window Guard ─────────────────────────────────
       // inbox_reply sends raw free text — previously unchecked here, so a
       // manager replying to a stale thread just hit a possibly-cryptic Meta
@@ -1518,7 +1543,7 @@ serve(async (req: Request) => {
       const { data: windowGuest } = await supabase
         .from("guests")
         .select("wa_window_expires_at")
-        .eq("phone", targetPhone)
+        .eq("id", activeGuest.id)
         .maybeSingle();
       if (windowGuest && !isWindowOpen(windowGuest.wa_window_expires_at)) {
         return new Response(
@@ -1552,6 +1577,7 @@ serve(async (req: Request) => {
       // Insert outbound row so the inbox thread shows the message immediately
       await supabase.from("whatsapp_conversations").insert({
         phone:         targetPhone,
+        guest_id:      activeGuest.id,
         direction:     "outbound",
         message:       replyStatus === "failed"
           ? inboxMsg
@@ -1587,6 +1613,14 @@ serve(async (req: Request) => {
       if (gErr)   throw new Error(`guest_lookup_error: ${gErr.message}`);
       if (!guest) throw new Error(`guest_not_found: no guest row for id=${JSON.stringify(guestId)}`);
       if (!guest.phone) throw new Error("guest_no_phone");
+
+      const payInactive = assertGuestEligibleForAutomation(guest);
+      if (payInactive) {
+        return new Response(
+          JSON.stringify({ ok: false, status: "guest_not_active", reason: payInactive, error: GUEST_NOT_ACTIVE_HE }),
+          { headers: { ...CORS, "Content-Type": "application/json" } },
+        );
+      }
       if (!guest.payment_amount) throw new Error("payment_amount_not_set");
 
       const linkGuard = await guardPaymentLink(supabase, guest, guestId, {
@@ -1686,6 +1720,14 @@ serve(async (req: Request) => {
       if (gErr)   throw new Error(`guest_lookup_error: ${gErr.message}`);
       if (!guest) throw new Error(`guest_not_found: no guest row for id=${JSON.stringify(guestId)}`);
       if (!guest.phone) throw new Error(`guest_no_phone: guest id=${guestId} (${guest.name ?? "?"}) has no phone on file`);
+
+      const manualInactive = assertGuestEligibleForAutomation(guest);
+      if (manualInactive) {
+        return new Response(
+          JSON.stringify({ ok: false, status: "guest_not_active", reason: manualInactive, error: GUEST_NOT_ACTIVE_HE }),
+          { headers: { ...CORS, "Content-Type": "application/json" } },
+        );
+      }
 
       const { data: scriptRow, error: sErr } = await supabase
         .from("bot_scripts")
@@ -1803,6 +1845,15 @@ serve(async (req: Request) => {
       .from("guests").select("*").eq("id", guestId).maybeSingle();
     if (gErr)   throw new Error(`guest_lookup_error: ${gErr.message}`);
     if (!guest) throw new Error(`guest_not_found: no guest row for id=${JSON.stringify(guestId)}`);
+
+    const pipelineInactive = !force ? assertGuestEligibleForAutomation(guest) : null;
+    if (pipelineInactive) {
+      console.log(`[whatsapp-send] skipped trigger="${trigger}" guestId=${guestId} reason=${pipelineInactive}`);
+      return new Response(
+        JSON.stringify({ ok: true, skipped: true, reason: pipelineInactive }),
+        { headers: { ...CORS, "Content-Type": "application/json" } },
+      );
+    }
 
     if (["night_before", "morning_suite", "morning_welcome", "night_before_daypass", "morning_daypass"].includes(trigger)) {
       await fetchNightBeforeKnowledge(supabase);
@@ -3135,6 +3186,14 @@ serve(async (req: Request) => {
     // .catch() chained directly on the query builder throws instead of swallowing.
     if (status === "sent" || status === "simulated") {
       try {
+        const { data: liveGuest } = await supabase
+          .from("guests")
+          .select("id, phone")
+          .eq("id", guestId)
+          .maybeSingle();
+        const logGuestId = liveGuest?.id ?? null;
+        const logPhone = (liveGuest?.phone as string | undefined) ?? (guest.phone as string);
+
         const pipelineConvMsg = usedSessionMessage
           ? buildSessionConversationLog(
               sessionBody!,
@@ -3146,15 +3205,40 @@ serve(async (req: Request) => {
               templateDispatched?.variables ?? tmplVars,
             );
         const { error: convErr } = await supabase.from("whatsapp_conversations").insert({
-          phone: guest.phone as string,
-          guest_id: guestId,
+          phone: logPhone,
+          guest_id: logGuestId,
           direction: "outbound",
           message: pipelineConvMsg,
           wa_message_id: null,
         });
-        if (convErr) console.warn("[whatsapp-send] pipeline conversation log failed (non-blocking):", convErr.message);
+        if (convErr) {
+          console.error("[whatsapp-send] pipeline conversation log FAILED:", convErr.message);
+          await supabase.from("notification_log").insert({
+            guest_id: logGuestId ?? guestId,
+            recipient: logPhone,
+            trigger_type: trigger,
+            channel: "whatsapp",
+            status: "failed",
+            payload: {
+              log_failure: true,
+              conv_error: convErr.message,
+              original_status: status,
+            },
+          });
+        }
       } catch (e) {
-        console.warn("[whatsapp-send] pipeline conversation log failed (non-blocking):", (e as Error).message);
+        const errMsg = (e as Error).message;
+        console.error("[whatsapp-send] pipeline conversation log FAILED:", errMsg);
+        try {
+          await supabase.from("notification_log").insert({
+            guest_id: guestId,
+            recipient: guest.phone as string,
+            trigger_type: trigger,
+            channel: "whatsapp",
+            status: "failed",
+            payload: { log_failure: true, conv_error: errMsg, original_status: status },
+          });
+        } catch { /* best-effort audit row */ }
       }
     }
 
