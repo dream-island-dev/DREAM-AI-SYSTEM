@@ -23,3 +23,8 @@ make-blueprint-spa.json
 
 # Personal Telegram remote-exec bot — hardcoded bot token + unrelated to this app, not for git
 .claude/claude_bot.py
+
+# Claude Code local settings — logs approved shell commands verbatim, which can
+# include tokens/secrets typed during a session (e.g. curl with Bearer header).
+# Never commit — local-machine only.
+.claude/settings.local.json

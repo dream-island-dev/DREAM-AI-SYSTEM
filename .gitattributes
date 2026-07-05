@@ -1,0 +1,12 @@
+# Normalize all text files to LF in the repo, regardless of the editor/OS
+# that last saved them. Prevents whole-file CRLF<->LF diffs that bury real
+# changes (seen 2026-07-05: ~30 files showed as "modified" with matching
+# insertion/deletion counts — pure line-ending churn, no content change).
+* text=auto eol=lf
+
+# Binary files — never touch line endings
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.pdf binary
