@@ -11,6 +11,8 @@ import {
   resolveIdentity,
   mergeCandidates,
   classifyDbMatch,
+  buildExistingGuestsLookup,
+  findExistingGuestRow,
 } from "./guestImportIntelligence";
 
 const ARRIVALS_MAPPING = {
@@ -310,5 +312,66 @@ describe("Guest Import Intelligence — golden cases", () => {
       arrival_date: "2026-06-30",
     };
     expect(classifyDbMatch(candidate, existingGuestRow)).toBe("new");
+  });
+
+  test("findExistingGuestRow: order+date+phone tier-1 match", () => {
+    const lookup = buildExistingGuestsLookup([
+      {
+        phone: "+972501111111",
+        order_number: "266932",
+        arrival_date: "2026-07-10",
+        guest_index: 1,
+        name: "אורח",
+      },
+    ]);
+    const hit = findExistingGuestRow(lookup, {
+      guestPhone: "+972501111111",
+      orderNumber: "266932",
+      arrivalDate: "2026-07-10",
+    });
+    expect(hit?.order_number).toBe("266932");
+  });
+
+  test("findExistingGuestRow: unique order+date when phone corrected in file", () => {
+    const lookup = buildExistingGuestsLookup([
+      {
+        phone: "+972501111111",
+        order_number: "266932",
+        arrival_date: "2026-07-10",
+        guest_index: 1,
+        name: "אורח",
+      },
+    ]);
+    const hit = findExistingGuestRow(lookup, {
+      guestPhone: "+972502222222",
+      orderNumber: "266932",
+      arrivalDate: "2026-07-10",
+    });
+    expect(hit?.phone).toBe("+972501111111");
+  });
+
+  test("findExistingGuestRow: two guests same order — disambiguate by phone", () => {
+    const lookup = buildExistingGuestsLookup([
+      {
+        phone: "+972501111111",
+        order_number: "300100",
+        arrival_date: "2026-06-30",
+        guest_index: 1,
+        name: "מרדכי",
+      },
+      {
+        phone: "+972526691991",
+        order_number: "300100",
+        arrival_date: "2026-06-30",
+        guest_index: 1,
+        name: "גבריאל",
+      },
+    ]);
+    const hit = findExistingGuestRow(lookup, {
+      guestPhone: "+972526691991",
+      orderNumber: "300100",
+      arrivalDate: "2026-06-30",
+    });
+    expect(hit?.name).toBe("גבריאל");
   });
 });

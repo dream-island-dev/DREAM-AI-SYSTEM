@@ -27,7 +27,7 @@ import {
   profilesToArray,
   enrichProfilesFromExcel,
 } from "../utils/ezgoParser";
-import { mergeCandidates, classifyDbMatch } from "../utils/guestImportIntelligence";
+import { mergeCandidates, classifyDbMatch, buildExistingGuestsLookup, findExistingGuestRow } from "../utils/guestImportIntelligence";
 import { SUITE_ARRIVALS_SCHEMA, buildMaskedSample, detectSuiteArrivalsPreset, detectEzgoArrivalsPreset, applyFieldDefaultsToProfiles, parseMappingMemory, packMappingMemory } from "../utils/importMapper";
 import {
   isDetailedReservationFormat,
@@ -577,21 +577,23 @@ export function _isSuspiciousGuestName(name) {
 }
 
 // ── Guest Import Intelligence — Sprint 3: DB-match lookup ──────────────────
-// Looks up a candidate's existing `guests` row from the pre-fetched Map (keyed
-// phone+arrival_date, and order_number+arrival_date as a fallback join — see
-// the prefetch effect below). Scoped by arrival_date on both keys so a repeat
-// guest's PRIOR stay never masquerades as "existing" for a new one — `guests`
-// has no global phone uniqueness (migration 046's key is phone+arrival_date+
-// guest_index), so an unscoped phone-only Map would false-positive on returning guests.
-function _findExistingGuestRow(map, candidate) {
-  if (!candidate || !map?.size) return null;
-  if (candidate.guestPhone && candidate.arrivalDate) {
-    const row = map.get(`${candidate.guestPhone}::${candidate.arrivalDate}`);
-    if (row) return row;
+// Prefetch builds indexes via buildExistingGuestsLookup(); findExistingGuestRow
+// mirrors sync_suite_arrivals tier-1/2/3 (order+date+phone → unique order → phone).
+
+function _emptyGuestsLookup() {
+  return buildExistingGuestsLookup([]);
+}
+
+/** Scope guests UPDATE to the same row sync_suite_arrivals would target. */
+function _scopeGuestRowQuery(query, { guestPhone, profileArrivalDate, orderNumber }) {
+  if (orderNumber && profileArrivalDate && guestPhone) {
+    return query
+      .eq("order_number", orderNumber)
+      .eq("arrival_date", profileArrivalDate)
+      .eq("phone", guestPhone);
   }
-  if (candidate.orderNumber && candidate.arrivalDate) {
-    const row = map.get(`order:${candidate.orderNumber}::${candidate.arrivalDate}`);
-    if (row) return row;
+  if (guestPhone && profileArrivalDate) {
+    return query.eq("phone", guestPhone).eq("arrival_date", profileArrivalDate);
   }
   return null;
 }
@@ -600,13 +602,13 @@ function _findExistingGuestRow(map, candidate) {
 // One row per guest profile. Multi-room (group) profiles show a read-only
 // "N rooms" count instead of a single editable room — picking a value there
 // still works and applies uniformly to that profile's rooms on sync.
-function _profilesToGridRows(merged, { suiteAssignmentOnly = false, badgeByIdx = null, existingGuestsMap = null, dbMatchByIdx = null, importWithoutAutomation = true } = {}) {
+function _profilesToGridRows(merged, { suiteAssignmentOnly = false, badgeByIdx = null, existingGuestsLookup = null, dbMatchByIdx = null, importWithoutAutomation = true } = {}) {
   return merged.map((g, i) => {
     const singleRoom = (g.rooms ?? []).length === 1 ? g.rooms[0] : null;
     const isDay       = !!g.isDayGuest || !!singleRoom?.isDayGuest;
     const roomDisplay = _formatRoomForGrid(g);
     const candidate = { guestPhone: g.guestPhone, arrivalDate: g.arrivalDate, orderNumber: [...(g.orderNumbers ?? [])][0] ?? "" };
-    const existingRow = existingGuestsMap ? _findExistingGuestRow(existingGuestsMap, candidate) : null;
+    const existingRow = existingGuestsLookup ? findExistingGuestRow(existingGuestsLookup, candidate) : null;
     const dbStatus = dbMatchByIdx?.get(i) ?? null;
     // Financial mapping:
     const totalPrice  = (g.rooms ?? []).reduce((sum, r) => sum + (r.price || 0), 0);
@@ -648,13 +650,13 @@ function _composeImportBadge(guestName, dbBadge, guestPhone) {
   return parts.join(" · ");
 }
 
-function _detailedProfilesToGridRows(merged, { badgeByIdx = null, existingGuestsMap = null, dbMatchByIdx = null, importWithoutAutomation = true } = {}) {
+function _detailedProfilesToGridRows(merged, { badgeByIdx = null, existingGuestsLookup = null, dbMatchByIdx = null, importWithoutAutomation = true } = {}) {
   return merged.map((g, i) => {
     const totalPrice = (g.rooms ?? []).reduce((sum, r) => sum + (r.price || 0), 0);
     const nights = (g.rooms ?? []).reduce((mx, r) => Math.max(mx, r.nights || 0), 0);
     const orderNumber = [...(g.orderNumbers ?? [])][0] ?? "";
     const candidate = { guestPhone: g.guestPhone, arrivalDate: g.arrivalDate, orderNumber };
-    const existingRow = existingGuestsMap ? _findExistingGuestRow(existingGuestsMap, candidate) : null;
+    const existingRow = existingGuestsLookup ? findExistingGuestRow(existingGuestsLookup, candidate) : null;
     const dbStatus = dbMatchByIdx?.get(i) ?? null;
     return {
       _id:          _gridRowId(g, i),
@@ -1179,40 +1181,31 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
   }, [merged, doc1Rec, importSource]);
 
   // ── Sprint 3: DB prefetch for classifyDbMatch (new/existing/conflict) ──────
-  // Batch-fetches every `guests` row for the arrival date(s) present in this
-  // session's candidates — one query, not one per row. Keyed by phone+date AND
-  // order_number+date (see _findExistingGuestRow) so classifyDbMatch can
-  // resolve either join without a second round-trip.
-  const [existingGuestsMap, setExistingGuestsMap] = useState(new Map());
+  const [existingGuestsLookup, setExistingGuestsLookup] = useState(_emptyGuestsLookup);
 
   useEffect(() => {
     let cancelled = false;
     if (!supabase || !mergedCandidates.length) {
-      setExistingGuestsMap(new Map());
+      setExistingGuestsLookup(_emptyGuestsLookup());
       return;
     }
     const dates = [...new Set(mergedCandidates.map((c) => c.arrivalDate).filter(Boolean))];
     if (!dates.length) {
-      setExistingGuestsMap(new Map());
+      setExistingGuestsLookup(_emptyGuestsLookup());
       return;
     }
     (async () => {
       const { data, error } = await supabase
         .from("guests")
-        .select("id, phone, name, room, order_number, arrival_date, automation_muted")
+        .select("id, phone, name, room, order_number, arrival_date, automation_muted, guest_index")
         .in("arrival_date", dates);
       if (cancelled) return;
       if (error) {
         console.warn("[ArrivalImportPanel] existing-guest prefetch failed:", error.message);
-        setExistingGuestsMap(new Map());
+        setExistingGuestsLookup(_emptyGuestsLookup());
         return;
       }
-      const map = new Map();
-      (data ?? []).forEach((row) => {
-        if (row.phone) map.set(`${row.phone}::${row.arrival_date}`, row);
-        if (row.order_number) map.set(`order:${row.order_number}::${row.arrival_date}`, row);
-      });
-      setExistingGuestsMap(map);
+      setExistingGuestsLookup(buildExistingGuestsLookup(data ?? []));
     })();
     return () => { cancelled = true; };
   }, [mergedCandidates]);
@@ -1220,10 +1213,10 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
   const dbMatchByIdx = useMemo(() => {
     const map = new Map();
     mergedCandidates.forEach((c, i) => {
-      map.set(i, classifyDbMatch(c, _findExistingGuestRow(existingGuestsMap, c)));
+      map.set(i, classifyDbMatch(c, findExistingGuestRow(existingGuestsLookup, c)));
     });
     return map;
-  }, [mergedCandidates, existingGuestsMap]);
+  }, [mergedCandidates, existingGuestsLookup]);
 
   const importBadgeByIdx = useMemo(() => {
     const map = new Map();
@@ -1241,10 +1234,10 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     const suiteOnly = doc2SyncMode === "suite_assignment_only" && importSource !== "detailed";
     setGridRows(
       importSource === "detailed"
-        ? _detailedProfilesToGridRows(merged, { badgeByIdx: importBadgeByIdx, existingGuestsMap, dbMatchByIdx, importWithoutAutomation })
-        : _profilesToGridRows(merged, { suiteAssignmentOnly: suiteOnly, badgeByIdx: importBadgeByIdx, existingGuestsMap, dbMatchByIdx, importWithoutAutomation }),
+        ? _detailedProfilesToGridRows(merged, { badgeByIdx: importBadgeByIdx, existingGuestsLookup, dbMatchByIdx, importWithoutAutomation })
+        : _profilesToGridRows(merged, { suiteAssignmentOnly: suiteOnly, badgeByIdx: importBadgeByIdx, existingGuestsLookup, dbMatchByIdx, importWithoutAutomation }),
     );
-  }, [merged, importSource, doc2SyncMode, importBadgeByIdx, existingGuestsMap, dbMatchByIdx, importWithoutAutomation]);
+  }, [merged, importSource, doc2SyncMode, importBadgeByIdx, existingGuestsLookup, dbMatchByIdx, importWithoutAutomation]);
 
   // ── Parse Doc 2: Suite CSV → AI-suggested column mapping → review screen ──
   // The AI only proposes; aggregateGuestProfiles() runs unchanged once the
@@ -1683,6 +1676,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           const edited   = gridByProfileIdx.get(i) ?? {};
           const guestPhone      = c.guestPhone ?? g.guestPhone;
           const profileArrivalDate = c.arrivalDate ?? g.arrivalDate;
+          const orderNumber     = c.orderNumber ?? [...(g.orderNumbers ?? [])][0] ?? null;
           const roomDisplay = _resolveProfileRoomDisplay(g, edited.room);
           const spaTime  = edited.spa_time  || c.spa_time  || g.spa_time;
           const mealTime = edited.meal_time || c.meal_time || g.meal_time;
@@ -1700,9 +1694,11 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           if (notes)    patch.guest_notes    = notes;
           if (roomDisplay) patch.room = roomDisplay;
           if (guestPhone && profileArrivalDate && Object.keys(patch).length > 0) {
-            await supabase.from("guests").update(patch)
-              .eq("phone", guestPhone)
-              .eq("arrival_date", profileArrivalDate);
+            const scoped = _scopeGuestRowQuery(
+              supabase.from("guests").update(patch),
+              { guestPhone, profileArrivalDate, orderNumber },
+            );
+            if (scoped) await scoped;
           }
           if (guestPhone && profileArrivalDate && (g.roomsQuantity ?? 0) > 0) {
             await supabase.from("bookings").update({ room_count: g.roomsQuantity })

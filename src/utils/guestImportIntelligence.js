@@ -421,6 +421,75 @@ export function mergeCandidates({ arrivals = [], ops = [], detailed = [] } = {})
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
+ * Build lookup indexes from prefetched `guests` rows for cross-report matching.
+ * @param {Array<{phone?:string, order_number?:string, arrival_date?:string, guest_index?:number}>} rows
+ */
+export function buildExistingGuestsLookup(rows = []) {
+  const byPhoneDate = new Map();
+  const byOrderDatePhone = new Map();
+  const byOrderDate = new Map();
+
+  for (const row of rows) {
+    if (row.phone && row.arrival_date) {
+      const k = `${row.phone}::${row.arrival_date}`;
+      if (!byPhoneDate.has(k)) byPhoneDate.set(k, []);
+      byPhoneDate.get(k).push(row);
+    }
+    if (row.order_number && row.arrival_date && row.phone) {
+      byOrderDatePhone.set(
+        `${row.order_number}::${row.arrival_date}::${row.phone}`,
+        row,
+      );
+    }
+    if (row.order_number && row.arrival_date) {
+      const k = `${row.order_number}::${row.arrival_date}`;
+      if (!byOrderDate.has(k)) byOrderDate.set(k, []);
+      byOrderDate.get(k).push(row);
+    }
+  }
+  return { byPhoneDate, byOrderDatePhone, byOrderDate };
+}
+
+/**
+ * Resolve an existing `guests` row for a candidate — mirrors sync_suite_arrivals
+ * tier-1/2/3 matching (order+date+phone → unique order+date → phone+date+order).
+ * @param {ReturnType<typeof buildExistingGuestsLookup>} lookup
+ * @param {{guestPhone?:string|null, orderNumber?:string|null, arrivalDate?:string|null}} candidate
+ */
+export function findExistingGuestRow(lookup, candidate) {
+  if (!candidate || !lookup) return null;
+  const { byPhoneDate, byOrderDatePhone, byOrderDate } = lookup;
+
+  const order = candidate.orderNumber ?? null;
+  const phone = candidate.guestPhone ?? null;
+  const date = candidate.arrivalDate ?? null;
+
+  if (order && phone && date) {
+    const hit = byOrderDatePhone.get(`${order}::${date}::${phone}`);
+    if (hit) return hit;
+  }
+  if (order && date) {
+    const rows = byOrderDate.get(`${order}::${date}`);
+    if (rows?.length === 1) return rows[0];
+    if (rows?.length > 1 && phone) {
+      const hit = rows.find((r) => r.phone === phone);
+      if (hit) return hit;
+    }
+  }
+  if (phone && date) {
+    const rows = byPhoneDate.get(`${phone}::${date}`);
+    if (!rows?.length) return null;
+    if (order) {
+      const hit = rows.find((r) => r.order_number === order);
+      if (hit) return hit;
+    }
+    if (rows.length === 1) return rows[0];
+    return rows.find((r) => (r.guest_index ?? 1) === 1) ?? rows[0];
+  }
+  return null;
+}
+
+/**
  * classifyDbMatch(candidate, existingGuestRow)
  *
  * @param {GuestImportCandidate} candidate
