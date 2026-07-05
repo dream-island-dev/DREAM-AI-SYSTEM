@@ -3693,8 +3693,17 @@ export default function WhatsAppInbox({
 
   // ── Derived state ──────────────────────────────────────────────────────────
   const visibleContacts = contacts.filter((c) => !archivedPhones.has(c.phone));
-  const activeRosterContacts = visibleContacts.filter((c) => !contactDeparted(c));
-  const departedContacts = visibleContacts.filter((c) => contactDeparted(c));
+  // A departed guest who messages back (new inbound, unread) must still surface in
+  // the main "all" roster — not silently buried in the "אחרי עזיבה" tab nobody
+  // checks by default (Disable Don't Hide, CLAUDE.md §0.2). It lands in the pinned
+  // "🔵 הודעות חדשות" section (buildGroupedRosterSections below) like anyone else's
+  // unread message. Only a departed contact with zero unread stays departed-only.
+  const activeRosterContacts = visibleContacts.filter(
+    (c) => !contactDeparted(c) || countUnreadInbound(c.messages) > 0,
+  );
+  const departedContacts = visibleContacts.filter(
+    (c) => contactDeparted(c) && countUnreadInbound(c.messages) === 0,
+  );
   const alertContacts = activeRosterContacts.filter((c) => c.humanRequested);
   const rosterSource =
     rosterFilter === "departed" ? departedContacts : activeRosterContacts;
@@ -3883,7 +3892,7 @@ export default function WhatsAppInbox({
       )}
       {!isMobile && (
         <div style={{
-          padding: "8px var(--space-md) 10px",
+          padding: "6px var(--space-md) 8px",
           borderBottom: "1px solid var(--border)",
           background: "var(--ivory)",
           position: "sticky",
@@ -3896,15 +3905,15 @@ export default function WhatsAppInbox({
             onChange={(e) => setRosterSearch(e.target.value)}
             placeholder={t.searchPh}
             aria-label={t.searchPh}
-            className="wa-roster-search"
+            className="wa-roster-search wa-roster-search--compact"
           />
-          <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "nowrap", overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
             {rosterFilterChips.map((chip) => (
               <button
                 key={chip.id}
                 type="button"
                 onClick={() => setRosterFilter(chip.id)}
-                className={`wa-filter-chip${rosterFilter === chip.id ? " wa-filter-chip--active" : ""}`}
+                className={`wa-filter-chip wa-filter-chip--compact${rosterFilter === chip.id ? " wa-filter-chip--active" : ""}`}
               >
                 {chip.label}
                 {chip.badge > 0 && rosterFilter !== chip.id && (
@@ -3919,8 +3928,8 @@ export default function WhatsAppInbox({
             ))}
           </div>
           {rosterFilter === "all" && !rosterSearch.trim() && (
-            <div style={{ display: "flex", gap: 6, marginTop: 6, alignItems: "center" }}>
-              <span style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 600 }}>{t.rosterGroupedHint}</span>
+            <div style={{ display: "flex", gap: 6, marginTop: 5, alignItems: "center", flexWrap: "nowrap", overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+              <span style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 600, flexShrink: 0 }}>{t.rosterGroupedHint}</span>
               {rosterSortChips.map((chip) => (
                 <button
                   key={chip.id}
@@ -4818,6 +4827,12 @@ export default function WhatsAppInbox({
           border-color: var(--whatsapp-green, #25D366);
           box-shadow: 0 0 0 2px rgba(37, 211, 102, 0.2);
         }
+        /* Desktop only (see !isMobile branch) — mobile keeps the 44px touch target above untouched. */
+        .wa-roster-search--compact {
+          padding: 6px 12px;
+          font-size: 13px;
+          min-height: 32px;
+        }
         .wa-filter-chip {
           flex-shrink: 0;
           min-height: var(--hit-target-staff, 44px);
@@ -4836,6 +4851,12 @@ export default function WhatsAppInbox({
           border-color: var(--whatsapp-green-dark, #128C7E);
           background: rgba(37, 211, 102, 0.12);
           color: var(--whatsapp-green-dark, #128C7E);
+        }
+        /* Desktop only (see !isMobile branch) — mobile keeps the 44px touch target above untouched. */
+        .wa-filter-chip--compact {
+          min-height: 32px;
+          padding: 0 10px;
+          font-size: 11px;
         }
         .wa-sort-chip {
           border: 1px solid var(--border);
