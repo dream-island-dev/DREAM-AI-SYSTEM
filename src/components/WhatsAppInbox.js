@@ -2626,7 +2626,7 @@ export default function WhatsAppInbox({
       .order("created_at", { ascending: false })
       .limit(INITIAL_FETCH_LIMIT);
 
-    if (err) { setError(err.message); return; }
+    if (err) { setError(err.message); setLoading(false); return; }
 
     const rows = data ?? [];
     const flat = rows.map(normalise).reverse(); // back to ascending — every downstream consumer expects oldest→newest
@@ -2647,9 +2647,8 @@ export default function WhatsAppInbox({
 
   // ── Incremental fetch — only rows newer than lastSeenAt ──────────────────
   // Used by: polling interval + Realtime callback.
-  // Fetches at most 100 newest rows strictly after the watermark (gt, not gte —
-  // gte re-fetched the boundary row every tick and could stall catch-up when
-  // many rows share the same second). DESC + reverse keeps the newest burst.
+  // Fetches at most 100 newest rows at/after the watermark (gte + id dedup in
+  // mergeIncomingRows — gt alone can skip rows that share the boundary second).
   const fetchSince = useCallback(async () => {
     if (!lastSeenAt.current || !supabase) return; // wait for first fetchAll
     const since = lastSeenAt.current;
@@ -2657,12 +2656,13 @@ export default function WhatsAppInbox({
     const { data, error: fetchErr } = await supabase
       .from("whatsapp_conversations")
       .select(CONVERSATION_SELECT)
-      .gt("created_at", since)
+      .gte("created_at", since)
       .order("created_at", { ascending: false })
       .limit(100);
 
     if (fetchErr) {
       console.warn("[WA-inbox] fetchSince error:", fetchErr.message);
+      setError(fetchErr.message);
       return;
     }
     const rows = data ?? [];
@@ -3301,7 +3301,7 @@ export default function WhatsAppInbox({
     }
 
     if (inboxMemoryCache.messages) {
-      console.log(`[WA-inbox] Restoring ${inboxMemoryCache.messages.length} cached rows — instant paint, revalidating in background`);
+      console.log(`[WA-inbox] Restoring ${inboxMemoryCache.messages.length} cached rows — instant paint, full revalidate next`);
       allMsgsRef.current = inboxMemoryCache.messages;
       lastSeenAt.current = inboxMemoryCache.lastSeenAt;
       oldestSeenAtRef.current = inboxMemoryCache.oldestSeenAt;
@@ -3311,14 +3311,15 @@ export default function WhatsAppInbox({
       setLastUpdated(new Date());
       setLoading(false);
       alertsReadyRef.current = true;
-      fetchSince().then(startPolling);
-    } else {
-      console.log("[WA-inbox] Initial load: calling fetchAll()...");
-      fetchAll().then(() => {
-        console.log(`[WA-inbox] ✓ fetchAll complete — starting fallback polling every ${POLL_MS}ms`);
-        startPolling();
-      });
     }
+    // Always fetchAll on mount — cache is paint-only; skipping fetchAll left stale
+    // watermarks and missed new rows after tab switches (session 124e).
+    console.log("[WA-inbox] Mount revalidate: fetchAll() + polling...");
+    fetchAll().then(() => {
+      fetchSince();
+      console.log(`[WA-inbox] ✓ fetchAll complete — fallback polling every ${POLL_MS}ms`);
+      startPolling();
+    });
     return () => {
       if (pollRef.current) {
         clearInterval(pollRef.current);
@@ -3496,11 +3497,11 @@ export default function WhatsAppInbox({
       return;
     }
     const timer = setTimeout(() => {
-      console.warn("[WA-inbox] ⚠️ Realtime not connected for 3s — triggering emergency sync...");
-      fetchSince();
+      console.warn("[WA-inbox] ⚠️ Realtime not connected for 3s — emergency fetchAll + fetchSince...");
+      fetchAll().then(() => fetchSince());
     }, 3000);
     return () => clearTimeout(timer);
-  }, [realtimeOk, fetchSince]);
+  }, [realtimeOk, fetchAll, fetchSince]);
 
   // ── Auto-scroll to bottom of thread ─────────────────────────────────────
   // Moved below derived `thread` — scroll when active chat grows (realtime/poll).

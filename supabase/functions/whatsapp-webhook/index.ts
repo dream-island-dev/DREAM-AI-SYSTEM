@@ -1197,7 +1197,13 @@ async function claimInboundWaMessage(
 
   if (error) {
     if (isUniqueViolation(error)) return { claimed: false, conversationId: null };
-    console.error("[webhook] claimInboundWaMessage failed:", error.message);
+    console.error(
+      "[webhook] claimInboundWaMessage failed:",
+      error.code,
+      error.message,
+      error.details ?? "",
+      error.hint ?? "",
+    );
     // FAIL VISIBLE — do not continue the guest pipeline when the inbox ledger
     // row was never written (staff would see bot reply but empty Inbox thread).
     return { claimed: false, conversationId: null };
@@ -3156,10 +3162,19 @@ async function insertGuestOutboundIfNotMuted(
   row: GuestOutboundRow,
 ): Promise<void> {
   if (_suppressGuestRepliesStaffClaim) return;
-  await supabase.from("whatsapp_conversations").insert({
+  const { error } = await supabase.from("whatsapp_conversations").insert({
     ...row,
     direction: "outbound",
   });
+  if (error) {
+    console.error(
+      "[webhook] insertGuestOutboundIfNotMuted failed:",
+      error.code,
+      error.message,
+      "intent:",
+      row.intent,
+    );
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
