@@ -33,6 +33,7 @@ import {
   type AutomationStage,
   type GuestForSchedule,
 } from "../_shared/automationSchedule.ts";
+import { reconcileMissedArrivalConfirmations } from "../_shared/arrivalConfirmation.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -136,12 +137,26 @@ Deno.serve(async (req: Request) => {
     // any stage might reference, plus the resolver's anchor/eligibility fields.
     // needs_callback is selected for observability only — NOT used in eligibility
     // (checkEligibility in automationSchedule.ts; session 59 decouple).
-    const { data: guests = [] } = await supabase
-      .from("guests")
-      .select("id, name, phone, arrival_date, departure_date, room_type, status, checkin_time, needs_callback, automation_muted, claimed_by, arrival_confirmed, arrival_confirmed_at, msg_stage_2_arrival_sent, msg_pre_arrival_2d_sent, msg_pre_arrival_sent, msg_morning_suite_sent, msg_morning_welcome_sent, msg_mid_stay_sent, msg_checkout_fb_sent");
+    const GUEST_SELECT =
+      "id, name, phone, arrival_date, departure_date, room_type, status, checkin_time, needs_callback, automation_muted, claimed_by, arrival_confirmed, arrival_confirmed_at, msg_stage_2_arrival_sent, msg_pre_arrival_2d_sent, msg_pre_arrival_sent, msg_morning_suite_sent, msg_morning_welcome_sent, msg_mid_stay_sent, msg_checkout_fb_sent";
+
+    const { data: guests = [] } = await supabase.from("guests").select(GUEST_SELECT);
+
+    let guestsList = (guests ?? []) as GuestForSchedule[];
+
+    const missedConfirmFixed = await reconcileMissedArrivalConfirmations(supabase, guestsList);
+    if (missedConfirmFixed > 0) {
+      console.log(`[whatsapp-cron] arrival_confirm_reconcile fixed=${missedConfirmFixed}`);
+      const { data: refreshed, error: refreshErr } = await supabase.from("guests").select(GUEST_SELECT);
+      if (refreshErr) {
+        console.warn("[whatsapp-cron] guest refresh after confirm reconcile failed:", refreshErr.message);
+      } else {
+        guestsList = (refreshed ?? []) as GuestForSchedule[];
+      }
+    }
 
     const activeStageKeys = stages.map((s) => s.stage_key);
-    console.log(`[whatsapp-cron] scan_start guests=${guests?.length ?? 0} active_stages=[${activeStageKeys.join(", ")}]`);
+    console.log(`[whatsapp-cron] scan_start guests=${guestsList.length} active_stages=[${activeStageKeys.join(", ")}]`);
 
     const missingCoreStages = CORE_PIPELINE_STAGE_KEYS.filter((k) => !activeStageKeys.includes(k));
     if (missingCoreStages.length > 0) {
@@ -164,7 +179,7 @@ Deno.serve(async (req: Request) => {
     const MORNING_STAGE_KEYS = new Set(["morning_suite", "morning_welcome"]);
     type DueItem = { guestId: number; trigger: string; pipeline_reconcile?: boolean };
     const due: DueItem[] = [];
-    for (const guest of (guests ?? []) as GuestForSchedule[]) {
+    for (const guest of guestsList) {
       for (const stage of stages) {
         const result = resolveStageSchedule(stage, guest, now);
         if (
@@ -209,7 +224,7 @@ Deno.serve(async (req: Request) => {
       const dueKey = (gId: number, tr: string) =>
         due.some((d) => d.guestId === gId && d.trigger === tr);
 
-      const confirmedGuestIds = ((guests ?? []) as GuestForSchedule[])
+      const confirmedGuestIds = guestsList
         .filter((g) => g.arrival_confirmed || g.arrival_confirmed_at)
         .map((g) => g.id as number);
 
@@ -226,7 +241,7 @@ Deno.serve(async (req: Request) => {
         }
       }
 
-      for (const guest of (guests ?? []) as GuestForSchedule[]) {
+      for (const guest of guestsList) {
         if (guest.status === "cancelled" || guest.automation_muted === true) continue;
         if (!guest.arrival_confirmed && !guest.arrival_confirmed_at) continue;
         if (isGuestStaffClaimActive(guest)) continue;

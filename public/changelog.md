@@ -1,3 +1,8 @@
+2026-07-05 | Arrival confirm reconcile (נתי גולן fix) | `_shared/arrivalConfirmation.ts`: matcher מחוזק (bold/emoji), lookup suffix; webhook catch-up בדדופ-skip; cron backfill מ-inbox לפני Stage 2 reconcile; 4 tests.
+2026-07-05 | Shared guest date filter (Task 4) | `CheckinTimelineFilterBar`+`useCheckinTimelineFilter`+sessionStorage sync — אותו מסנן (היום/מחר/7 ימים/ארכיון+תאריך מדויק) ב«ניהול אורחים» ו«צ'ק-אין»; `applyCheckinRosterFilter` ב-guestCheckinMatrix.
+2026-07-05 | Inbox room-ready quick action (Task 3) | WhatsAppInbox כפתור «🛎️ חדר מוכן» — ממלא textarea מ-room_ready_reminder (חלון פתוח) או dream_room_ready1 לפני שליחה ידנית.
+2026-07-05 | Automation duplicate shield (Task 2) | migration 139 `duplicate_blocked` ב-notification_log; `_shared/automationDuplicateGuard.ts`; whatsapp-send/webhook חוסמים+מתעדים כפילויות; ACC פאנל+היסטוריה+שגר המוני.
+2026-07-05 | Queue→Inbox deep link + Stage 2 hotfix | ACC תור חי: שם אורח לחיץ→wa_inbox; badges אימות שליחה (notification_log); webhook: intercept «כן מגיעים» לפני auto-checkin, lookup טלפון multi-row, fallback whatsapp-send pipeline; deployed c05a001.
 2026-07-05 | Stage 2 false-flag backfill | migration 138 מאפס msg_stage_2_arrival_sent כשאין notification_log מוצלח; cron reconcile בודק לוג ולא רק דגל.
 2026-07-05 | morning_suite timing + Stage 2 reconcile | תזמון ישראל ב-automationSchedule; migration 137 מחזיר morning_suite ל-06:00 אם הוגדר 15:00; cron מסנכרן arrival_confirmed→stage_2; webhook מעדכן wa_window לפני שליחה.
 2026-07-05 | whatsapp-webhook Stage 2 staff-claim fix | אישור «כן מגיעים» שולח Stage 2 גם כש-claimed_by פעיל; `msg_stage_2_arrival_sent` רק אחרי Meta send אמיתי; post-burst confirm לפני staff exit.

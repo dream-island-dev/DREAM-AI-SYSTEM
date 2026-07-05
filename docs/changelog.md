@@ -1,3 +1,4 @@
+2026-07-05 | Arrival confirm reconcile (נתי גולן fix) | `_shared/arrivalConfirmation.ts`: matcher מחוזק (bold/emoji), lookup suffix; webhook catch-up בדדופ-skip; cron backfill מ-inbox לפני Stage 2 reconcile; 4 tests.
 2026-07-05 | Shared guest date filter (Task 4) | `CheckinTimelineFilterBar`+`useCheckinTimelineFilter`+sessionStorage sync — אותו מסנן (היום/מחר/7 ימים/ארכיון+תאריך מדויק) ב«ניהול אורחים» ו«צ'ק-אין»; `applyCheckinRosterFilter` ב-guestCheckinMatrix.
 2026-07-05 | Inbox room-ready quick action (Task 3) | WhatsAppInbox כפתור «🛎️ חדר מוכן» — ממלא textarea מ-room_ready_reminder (חלון פתוח) או dream_room_ready1 לפני שליחה ידנית.
 2026-07-05 | Automation duplicate shield (Task 2) | migration 139 `duplicate_blocked` ב-notification_log; `_shared/automationDuplicateGuard.ts`; whatsapp-send/webhook חוסמים+מתעדים כפילויות; ACC פאנל+היסטוריה+שגר המוני.

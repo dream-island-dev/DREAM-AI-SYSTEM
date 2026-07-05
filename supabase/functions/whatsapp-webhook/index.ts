@@ -97,6 +97,11 @@ import {
   checkPipelineDuplicate,
   logDuplicateBlocked,
 } from "../_shared/automationDuplicateGuard.ts";
+import {
+  buildPhoneVariants,
+  isArrivalConfirmationMessage,
+  lookupGuestByPhone,
+} from "../_shared/arrivalConfirmation.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -2721,51 +2726,6 @@ async function callClaude(
  *  BEFORE this block so any future overlap fails safe (silence) instead of
  *  fails loud (a misdirected confirmation reply).
  */
-const CONFIRMATION_RE = /^[\s🎉✨😊🙂🙏💫🌴]*(?:כן[,!\s.]*)?(?:מגיעים|אנחנו מגיעים|כן מגיעים|כן,מגיעים|כן! מגיעים|כן|אישור|yes|מאשר|מאשרת|כן תודה|כן אישור|אישורי)[\s🎉✨😊🙂🙏💫🌴!.,]*$/iu;
-
-function hebrewOnlyLetters(s: string): string {
-  return s.replace(/[^א-ת]/g, "");
-}
-
-/** Unified matcher for button taps + typed "כן מגיעים" variants (Meta emoji/punctuation tolerant). */
-function isArrivalConfirmationMessage(
-  raw: string,
-  opts?: { buttonTitle?: string; buttonId?: string },
-): boolean {
-  const text = raw.trim();
-  if (text && CONFIRMATION_RE.test(text)) return true;
-
-  const titleHeb = hebrewOnlyLetters(opts?.buttonTitle ?? text);
-  const idHeb = hebrewOnlyLetters(opts?.buttonId ?? "");
-  if (
-    titleHeb &&
-    ((titleHeb.includes("כן") && titleHeb.includes("מגיעים")) ||
-      titleHeb === "כןמגיעים" ||
-      titleHeb === "מגיעים")
-  ) {
-    return true;
-  }
-  if (
-    idHeb.includes("כןמגיעים") ||
-    (opts?.buttonId ?? "").toLowerCase().includes("confirm") ||
-    (opts?.buttonId ?? "").toLowerCase().includes("arriving") ||
-    (opts?.buttonId ?? "").toLowerCase().includes("yes_arrive")
-  ) {
-    return true;
-  }
-  if (text) {
-    const heb = hebrewOnlyLetters(text);
-    if (
-      (heb.includes("כן") && heb.includes("מגיעים")) ||
-      heb === "כןמגיעים" ||
-      heb === "מגיעים"
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
 function canGuestConfirmArrival(guest: Record<string, unknown> | null): boolean {
   if (!guest) return true;
   if (String(guest.status ?? "") === "cancelled") return false;
@@ -3091,66 +3051,6 @@ async function sendReply(to: string, body: string): Promise<string> {
   }
 }
 
-// ── Phone comparison helper (NOT the same as the phoneVariants list above) ──
-// Strips every non-digit and keeps only the last 9 — the invariant core of an
-// Israeli mobile number regardless of country/dialing-prefix noise (+972,
-// 972, 0, 00972) or manual-entry separators (spaces, dashes). Used as a
-// fallback equality check when the exact-string phoneVariants lookup below
-// misses a real match because guests.phone was stored in some other format.
-function normalizePhone(phoneStr: unknown): string {
-  return String(phoneStr ?? "").replace(/\D/g, "").slice(-9);
-}
-
-// Shared field list for both the fast-path and fallback guest lookups below —
-// `phone` is needed here (unlike before) because the fallback path compares it
-// in JS instead of letting Postgres filter on it server-side.
-const GUEST_LOOKUP_FIELDS =
-  "id, name, phone, arrival_confirmed, arrival_confirmed_at, msg_stage_2_arrival_sent, wa_window_expires_at, payment_amount, payment_link_url, direct_payment_url, ezgo_portal_url, payment_link_resolution_pending, msg_pre_arrival_2d_sent, needs_callback, requires_attention, attention_reason, arrival_date, departure_date, arrival_time, room, room_type, spa_time, spa_date, status, guest_notes, guest_profile, portal_token, automation_muted, claimed_by";
-
-async function lookupGuestByPhone(
-  supabaseClient: ReturnType<typeof createClient>,
-  phoneVariants: string[],
-  phone: string,
-): Promise<Record<string, unknown> | null> {
-  const { data: exactRows, error: exactErr } = await supabaseClient
-    .from("guests")
-    .select(GUEST_LOOKUP_FIELDS)
-    .in("phone", phoneVariants)
-    .order("arrival_date", { ascending: false });
-
-  if (exactErr) console.warn("[webhook] guest lookup error:", exactErr.message);
-
-  const rows = (exactRows ?? []) as Record<string, unknown>[];
-  if (rows.length === 1) return rows[0];
-  if (rows.length > 1) {
-    const todayYmd = new Date().toISOString().slice(0, 10);
-    const active = rows.filter((g) => g.status !== "cancelled");
-    const pool = active.length ? active : rows;
-    const upcoming = pool
-      .filter((g) => typeof g.arrival_date === "string" && String(g.arrival_date) >= todayYmd)
-      .sort((a, b) => String(a.arrival_date).localeCompare(String(b.arrival_date)));
-    const pick = upcoming[0] ?? pool[0];
-    console.warn(
-      `[webhook] ⚠️ duplicate phone ${phone} — picked guest id=${pick.id} arrival=${pick.arrival_date}`,
-    );
-    return pick;
-  }
-
-  const { data: guestCandidates } = await supabaseClient
-    .from("guests")
-    .select(GUEST_LOOKUP_FIELDS)
-    .not("phone", "is", null);
-  const fallbackMatch = (guestCandidates ?? []).find(
-    (g) => normalizePhone((g as Record<string, unknown>).phone) === normalizePhone(phone),
-  );
-  if (fallbackMatch) {
-    console.info(
-      `[webhook] 🔍 guest matched via last-9-digit fallback — phone:${phone} guestId:${(fallbackMatch as Record<string, unknown>).id}`,
-    );
-  }
-  return (fallbackMatch as Record<string, unknown>) ?? null;
-}
-
 /** whatsapp-send stage_2_arrival — same path as cron reconcile (window bypass via pipeline_reconcile). */
 async function dispatchStage2ViaPipeline(
   guestId: number,
@@ -3362,18 +3262,8 @@ Deno.serve(async (req: Request) => {
       setSuppressGuestRepliesStaffClaim(false);
       const from  = String(msg.from ?? "");
       const msgId = String(msg.id   ?? "");
-      const phone = from.startsWith("+") ? from : `+${from}`;
-
-      // Phone format variants — guests.phone SHOULD be E.164 ("+972...") per
-      // documented convention, but real-world data entry (manual add, CSV
-      // import) has produced local-format ("0...") rows too. Confirmed root
-      // cause of a live bug: a guest stored in the "wrong" format was
-      // invisible to a single-format lookup, so status/spa_time/guest_alerts
-      // all silently no-op'd because guestId never resolved. Match against
-      // every plausible stored variant instead of assuming one canonical one.
-      const phoneDigits   = phone.replace(/\D/g, "");                                            // "972XXXXXXXXX"
-      const phoneLocal    = phoneDigits.startsWith("972") ? "0" + phoneDigits.slice(3) : phoneDigits; // "0XXXXXXXXX"
-      const phoneVariants = [phone, phoneDigits, phoneLocal];                                     // ["+972...","972...","0..."]
+      const { phone, variants: phoneVariants } = buildPhoneVariants(from);
+      const phoneDigits = phone.replace(/\D/g, "");
       const pushName = pushNameByWaId[phoneDigits] ?? pushNameByWaId[from] ?? null;
 
       // ── DIAGNOSTIC: log every message type entering the loop ─────────────
@@ -3464,13 +3354,35 @@ Deno.serve(async (req: Request) => {
           intent: "received",
         },
       );
+      // ── Guest lookup (multi-row safe + last-9-digit suffix) ────────────
+      let guest = await lookupGuestByPhone(supabase, phoneVariants, phone);
+
       if (!claimed) {
         console.info("[webhook] dedup skip (claim):", msgId);
+        const isConfirmDedup = isButtonReply
+          ? isArrivalConfirmationMessage(buttonTitle, { buttonTitle, buttonId })
+          : isArrivalConfirmationMessage(text);
+        if (isConfirmDedup) {
+          const guestIdDedup = (guest?.id as number) ?? null;
+          if (guestIdDedup && canGuestConfirmArrival(guest as Record<string, unknown> | null)) {
+            await handleStage2ArrivalConfirmation(supabase, {
+              scripts,
+              phone,
+              guestId: guestIdDedup,
+              guest: guest as Record<string, unknown> | null,
+              sim: Deno.env.get("WHATSAPP_SIMULATION") === "true",
+              source: isButtonReply ? "button" : "text",
+              buttonTitle: isButtonReply ? buttonTitle : undefined,
+              claimedConversationId: null,
+              msgId,
+            });
+            console.info(`[webhook] dedup-skip confirmation catch-up guest:${guestIdDedup} phone:${phone}`);
+          } else if (!guestIdDedup) {
+            console.warn(`[webhook] dedup-skip confirmation text but NO guest — phone:${phone} text:"${text}"`);
+          }
+        }
         continue;
       }
-
-      // ── Guest lookup (multi-row safe + last-9-digit fallback) ──────────
-      let guest = await lookupGuestByPhone(supabase, phoneVariants, phone);
 
       const guestId   = (guest?.id   as number)     ?? null;
       const guestName = (guest?.name as string|null) ?? null;
