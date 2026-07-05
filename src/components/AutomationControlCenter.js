@@ -191,6 +191,7 @@ function formatQueueAttemptAt(iso) {
 function queueStatusBadge(q) {
   if (q.status === "sent") return { cls: "badge-green", text: "✅ נשלח" };
   if (q.status === "simulated") return { cls: "badge-green", text: "✅ סימולציה" };
+  if (q.status === "duplicate_blocked") return { cls: "badge-orange", text: "🔁 כפילות נחסמה" };
   if (q.status === "blocked_by_meta") return { cls: "badge-orange", text: "🟠 ממתין לאישור" };
   if (q.status === "failed_missing_link") return { cls: "badge-red", text: "❌ חסר קישור תשלום" };
   if (q.dueNow && q.status === "pending") return { cls: "badge-gold", text: "⚡ מוכן לשליחה" };
@@ -206,7 +207,7 @@ function queueDeliveryProofLine(q) {
   const at = formatQueueAttemptAt(q.lastAttemptAt);
   if (!at) return null;
   if (q.status === "sent" || q.status === "simulated") return `אושר ב־${at}`;
-  if (q.status === "failed" || q.status === "timeout" || q.status === "blocked_by_meta") {
+  if (q.status === "failed" || q.status === "timeout" || q.status === "blocked_by_meta" || q.status === "duplicate_blocked") {
     return `ניסיון אחרון: ${at}`;
   }
   return null;
@@ -1675,7 +1676,15 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
       });
       if (error) throw new Error(error.message);
       if (data?.ok) {
-        showToast("ok", `✅ ${item.guestName} — ${item.displayName ?? item.stageKey} — נשלח עכשיו`);
+        if (data?.skipped) {
+          if (data?.status === "duplicate_blocked") {
+            showToast("err", `🔁 ${item.guestName} — שלב כבר נשלח (כפילות נחסמה ונרשמה בהיסטוריה)`);
+          } else {
+            showToast("ok", `↩️ ${item.guestName} — ${item.displayName ?? item.stageKey} — דולג (${data.reason ?? "כבר נשלח"})`);
+          }
+        } else {
+          showToast("ok", `✅ ${item.guestName} — ${item.displayName ?? item.stageKey} — נשלח עכשיו`);
+        }
         setSendNowConfirm(null);
         fetchQueue();
       } else {
@@ -1800,7 +1809,11 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
         if (error) {
           results.push({ item, result: "error", error: error.message });
         } else if (data?.skipped) {
-          results.push({ item, result: "skipped", reason: data.reason });
+          if (data?.status === "duplicate_blocked") {
+            results.push({ item, result: "duplicate", reason: data.reason ?? "duplicate_blocked" });
+          } else {
+            results.push({ item, result: "skipped", reason: data.reason });
+          }
         } else if (data?.ok) {
           results.push({ item, result: "sent", simulation: data.simulation });
         } else {
@@ -1823,6 +1836,7 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
       total:   results.length,
       sent:    results.filter((r) => r.result === "sent").length,
       skipped: results.filter((r) => r.result === "skipped").length,
+      duplicates: results.filter((r) => r.result === "duplicate").length,
       blocked: results.filter((r) => r.result === "blocked").length,
       failed:  results.filter((r) => r.result === "failed" || r.result === "error").length,
       details: results,
@@ -2139,6 +2153,9 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                     )}
                     {dispatchSummary.skipped > 0 && (
                       <div style={{ color: "#92702C" }}>↩️ כבר נשלחו (דולגו): <strong>{dispatchSummary.skipped}</strong></div>
+                    )}
+                    {dispatchSummary.duplicates > 0 && (
+                      <div style={{ color: "#7C3AED" }}>🔁 כפילויות נחסמו: <strong>{dispatchSummary.duplicates}</strong></div>
                     )}
                     {dispatchSummary.blocked > 0 && (
                       <div style={{ color: "#7C3AED" }}>🔒 חסומות (שער Day Pass): <strong>{dispatchSummary.blocked}</strong></div>
@@ -2538,6 +2555,82 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                                 </td>
                               </tr>
                             );})}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* ── Duplicate blocked — automation shield (informational) ── */}
+                {(() => {
+                  const duplicateItems = queueData.attentionRequired.filter(
+                    (r) => r.status === "duplicate_blocked"
+                      && !dismissedAttentionKeys.has(attentionItemKey(r)),
+                  );
+                  if (duplicateItems.length === 0) return null;
+                  const dismissAllDup = () => {
+                    const keys = new Set(dismissedAttentionKeys);
+                    queueData.attentionRequired
+                      .filter((r) => r.status === "duplicate_blocked")
+                      .forEach((r) => keys.add(attentionItemKey(r)));
+                    setDismissedAttentionKeys(keys);
+                  };
+                  return (
+                    <div className="card" style={{ marginBottom: 16, border: "1px solid #7C3AED" }}>
+                      <div className="card-header">
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", gap: 12 }}>
+                          <div className="card-title" style={{ color: "#5B21B6", display: "flex", alignItems: "center", gap: 8 }}>
+                            🔁 כפילויות נחסמו
+                            <span style={{ fontSize: 12, fontWeight: 500, color: "var(--text-muted)" }}>
+                              ({duplicateItems.length})
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-sm"
+                            style={{ color: "#5B21B6", fontSize: 12, whiteSpace: "nowrap" }}
+                            title="הסר מהתצוגה — לא משפיע על האוטומציה"
+                            onClick={dismissAllDup}
+                          >
+                            🗑️ נקה הכל
+                          </button>
+                        </div>
+                      </div>
+                      <div style={{ padding: "8px 16px 10px", background: "rgba(124,58,237,0.05)", fontSize: 12, color: "#7F8C8D", borderBottom: "1px solid rgba(124,58,237,0.2)" }}>
+                        מגן האוטומציה זיהה ניסיון לשלוח שוב שלב שכבר נשלח בהצלחה — ההודעה לא יצאה לאורח. רשומה בטאב «מה נשלח».
+                      </div>
+                      <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+                        <table className="table" style={{ minWidth: 480 }}>
+                          <thead><tr><th>אורח</th><th>שלב</th><th>זמן</th><th style={{ width: 56 }} /></tr></thead>
+                          <tbody>
+                            {duplicateItems.map((r, i) => {
+                              const rowKey = attentionItemKey(r);
+                              return (
+                                <tr key={rowKey || i}>
+                                  <td>
+                                    <QueueGuestInboxLink
+                                      guestName={r.guestName ?? r.phone ?? "—"}
+                                      phone={r.phone}
+                                      onOpenDreamBotChat={onOpenDreamBotChat}
+                                    />
+                                  </td>
+                                  <td>{stageDisplayNames[r.stageKey] ?? `⚠ ${r.stageKey}`}</td>
+                                  <td style={{ fontSize: 11 }}>{r.sentAt ? new Date(r.sentAt).toLocaleString("he-IL") : "—"}</td>
+                                  <td>
+                                    <button
+                                      type="button"
+                                      className="btn btn-ghost btn-sm"
+                                      title="הסר מהתצוגה"
+                                      onClick={() => dismissAttentionItem(rowKey)}
+                                      style={{ fontSize: 14, padding: "2px 8px", color: "#5B21B6" }}
+                                    >
+                                      🗑️
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
                           </tbody>
                         </table>
                       </div>
@@ -2950,6 +3043,7 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                     { key: "all",     label: "הכל" },
                     { key: "ok",      label: "✅ נשלח" },
                     { key: "blocked", label: "🟠 ממתין Meta" },
+                    { key: "duplicate", label: "🔁 כפילות נחסמה" },
                     { key: "failed",  label: "❌ כשלים" },
                   ].map(({ key, label }) => (
                     <button
@@ -2986,6 +3080,7 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                         .filter((h) => {
                           if (historyStatusFilter === "ok") return h.status === "sent" || h.status === "simulated";
                           if (historyStatusFilter === "blocked") return h.status === "blocked_by_meta";
+                          if (historyStatusFilter === "duplicate") return h.status === "duplicate_blocked";
                           if (historyStatusFilter === "failed") {
                             return h.status === "failed" || h.status === "timeout"
                               || h.status === "failed_missing_link";
@@ -3001,12 +3096,14 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                             <td>
                               <span className={`badge ${
                                 h.status === "sent" || h.status === "simulated" ? "badge-green"
+                                : h.status === "duplicate_blocked" ? "badge-orange"
                                 : h.status === "blocked_by_meta" ? "badge-orange"
                                 : h.status === "failed_missing_link" ? "badge-red"
                                 : "badge-red"
                               }`}>
                                 {h.status === "sent" ? "✅ נשלח"
                                   : h.status === "simulated" ? "✅ סימולציה"
+                                  : h.status === "duplicate_blocked" ? "🔁 כפילות נחסמה"
                                   : h.status === "blocked_by_meta" ? "🟠 ממתין לאישור Meta"
                                   : h.status === "failed_missing_link" ? "❌ חסר קישור תשלום"
                                   : h.status === "timeout" ? "❌ לא ודאי"

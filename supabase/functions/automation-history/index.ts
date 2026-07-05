@@ -137,6 +137,7 @@ serve(async (req: Request) => {
         channel: (payload.channel as string | undefined) ?? null,
         error:
           (payload.error as string | undefined)
+          ?? (payload.message as string | undefined)
           ?? (payload.context === "Missing Payment Link"
             ? "שיגור נכשל: חסר קישור תשלום ישיר"
             : undefined)

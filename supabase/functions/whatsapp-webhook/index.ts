@@ -93,6 +93,10 @@ import {
   normalizeSpaDateYmd,
   formatSpaScheduleDisplay,
 } from "../_shared/spaSchedule.ts";
+import {
+  checkPipelineDuplicate,
+  logDuplicateBlocked,
+} from "../_shared/automationDuplicateGuard.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -652,6 +656,22 @@ async function handleStage2ArrivalConfirmation(
   } = ctx;
 
   if (!canGuestConfirmArrival(guest)) {
+    if (guestId && !sim) {
+      const dup = await checkPipelineDuplicate(supabaseClient, {
+        guestId,
+        triggerType: "stage_2_arrival",
+      });
+      if (dup.blocked) {
+        await logDuplicateBlocked(supabaseClient, {
+          guestId,
+          recipient: phone,
+          triggerType: "stage_2_arrival",
+          reason: dup.reason,
+          priorSentAt: dup.priorSentAt,
+          source: `webhook_confirm_repeat_${source}`,
+        });
+      }
+    }
     console.info(
       `[webhook] arrival confirm skipped — pipeline already complete phone:${phone} status:${guest?.status ?? "null"}`,
     );
@@ -747,6 +767,28 @@ async function handleStage2ArrivalConfirmation(
       } else {
         const outboundIntent = source === "button" ? "arrival_confirmed" : "confirmation";
         let sentOk = false;
+        let skipStage2Duplicate = false;
+
+        if (guestId) {
+          const dup = await checkPipelineDuplicate(supabaseClient, {
+            guestId,
+            triggerType: "stage_2_arrival",
+          });
+          if (dup.blocked) {
+            await logDuplicateBlocked(supabaseClient, {
+              guestId,
+              recipient: phone,
+              triggerType: "stage_2_arrival",
+              reason: dup.reason,
+              priorSentAt: dup.priorSentAt,
+              source: `webhook_stage2_${source}`,
+            });
+            console.info(`[webhook] stage_2 duplicate_blocked on live ${source} phone:${phone}`);
+            skipStage2Duplicate = true;
+          }
+        }
+
+        if (!skipStage2Duplicate) {
         // Pipeline Stage 2 must deliver on guest confirm — staff-claim mute blocks
         // bot/LLM only, not this scheduled arrival reply (cron catch-up relies on
         // msg_stage_2_arrival_sent staying false when Meta send did not happen).
@@ -811,6 +853,7 @@ async function handleStage2ArrivalConfirmation(
             console.error(`[webhook] ❌ stage_2 pipeline fallback failed guest_id=${guestId}:`, fallback.error);
           }
         }
+        } // !skipStage2Duplicate
       }
     }
   }

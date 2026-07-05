@@ -76,6 +76,11 @@ import {
   normalizeHmTime,
   normalizeSpaDateYmd,
 } from "../_shared/spaSchedule.ts";
+import {
+  checkPipelineDuplicate,
+  duplicateBlockedResponseBody,
+  logDuplicateBlocked,
+} from "../_shared/automationDuplicateGuard.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -1794,31 +1799,6 @@ serve(async (req: Request) => {
       throw new Error("unknown trigger: " + trigger);
     }
 
-    // Idempotency: skip ONLY if a genuinely successful (or simulated) send already
-    // exists for this guest+trigger. A prior "failed"/"timeout" row must NOT block
-    // a retry — that was the exact bug that made a failed pipeline send permanent
-    // (flagged session 9, fixed here together with the GUEST_FLAG gate below).
-    // .limit(1) instead of .maybeSingle(): retries can legitimately accumulate
-    // multiple failed/timeout rows for the same guest+trigger, which maybeSingle()
-    // would error on.
-    // force=true (manual override) bypasses this check entirely so staff can
-    // re-send a stage that was already delivered — idempotency is a cron concern,
-    // not a human one.
-    if (!force) {
-    const { data: existingSent } = await supabase
-      .from("notification_log").select("id")
-      .eq("guest_id", guestId).eq("trigger_type", trigger)
-      .in("status", ["sent", "simulated"])
-      .limit(1);
-    if (existingSent && existingSent.length > 0) {
-      console.log(`[whatsapp-send] skipped trigger="${trigger}" guestId=${guestId} reason=already_sent`);
-      return new Response(
-        JSON.stringify({ ok: true, skipped: true, reason: "already_sent" }),
-        { headers: { ...CORS, "Content-Type": "application/json" } }
-      );
-    }
-    }
-
     const { data: guest, error: gErr } = await supabase
       .from("guests").select("*").eq("id", guestId).maybeSingle();
     if (gErr)   throw new Error(`guest_lookup_error: ${gErr.message}`);
@@ -1908,6 +1888,32 @@ serve(async (req: Request) => {
       );
     }
     const flagColumn = stageRow?.guest_flag_column ?? GUEST_FLAG[trigger];
+
+    // Duplicate shield — after guest load so we have phone for logging.
+    // force=true bypasses (staff deliberate re-send from ACC).
+    const dupCheck = await checkPipelineDuplicate(supabase, {
+      guestId,
+      triggerType: trigger,
+      force: force === true,
+    });
+    if (dupCheck.blocked) {
+      const recipient = safeGuestPhone(guest.phone) ?? String(guest.phone ?? "");
+      await logDuplicateBlocked(supabase, {
+        guestId,
+        recipient,
+        triggerType: trigger,
+        reason: dupCheck.reason,
+        priorSentAt: dupCheck.priorSentAt,
+        source: "whatsapp-send",
+      });
+      console.log(
+        `[whatsapp-send] duplicate_blocked trigger="${trigger}" guestId=${guestId} prior=${dupCheck.priorSentAt ?? "?"}`,
+      );
+      return new Response(
+        JSON.stringify(duplicateBlockedResponseBody(dupCheck)),
+        { headers: { ...CORS, "Content-Type": "application/json" } },
+      );
+    }
 
     // ── Stage 2 Arrival — rich session message only (no Meta template) ────────
     if (trigger === "stage_2_arrival") {
@@ -2802,17 +2808,31 @@ serve(async (req: Request) => {
     // never reached for trigger === "room_ready".
     if (trigger === "room_ready") {
       if (!force && (guest as Record<string, unknown>).room_ready_notified === true) {
-        console.log(
-          "[Idempotency Safeguard]: Guest already notified for this stay. Skipping duplicate WhatsApp message.",
-        );
-        await clearPendingRoomApprovalGate(
-          supabase,
-          guestRoomIdForApprovalGate(guest as Record<string, unknown>),
-        );
-        return new Response(
-          JSON.stringify({ ok: true, skipped: true, reason: "room_ready_notified" }),
-          { headers: { ...CORS, "Content-Type": "application/json" } },
-        );
+        const rrDup = await checkPipelineDuplicate(supabase, {
+          guestId,
+          triggerType: "room_ready",
+          force: false,
+        });
+        if (rrDup.blocked) {
+          const rrPhone = safeGuestPhone(guest.phone) ?? String(guest.phone ?? "");
+          await logDuplicateBlocked(supabase, {
+            guestId,
+            recipient: rrPhone,
+            triggerType: "room_ready",
+            reason: rrDup.reason,
+            priorSentAt: rrDup.priorSentAt,
+            source: "whatsapp-send_room_ready",
+          });
+          await clearPendingRoomApprovalGate(
+            supabase,
+            guestRoomIdForApprovalGate(guest as Record<string, unknown>),
+          );
+          return new Response(
+            JSON.stringify(duplicateBlockedResponseBody(rrDup, { reason: "room_ready_notified" })),
+            { headers: { ...CORS, "Content-Type": "application/json" } },
+          );
+        }
+        // Flag set without a successful log — allow repair send (split-brain).
       }
 
       const arrivalStr = String(guest.arrival_date ?? "");

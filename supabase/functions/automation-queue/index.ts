@@ -185,7 +185,7 @@ Deno.serve(async (req: Request) => {
     const attentionRequired = (logRows ?? [])
       .filter((r) =>
         r.status === "failed" || r.status === "timeout" || r.status === "blocked_by_meta"
-        || r.status === "failed_missing_link"
+        || r.status === "failed_missing_link" || r.status === "duplicate_blocked"
       )
       .map((r) => ({
         guestId: r.guest_id,
