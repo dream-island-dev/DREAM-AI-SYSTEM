@@ -1,3 +1,4 @@
+2026-07-06 | Inbox live sync fix | `fetchSince` gt+DESC; `id` מנורמל; כפתור «🔄 רענן רשימה»; webhook לא ממשיך כש-INSERT ל-whatsapp_conversations נכשל.
 2026-07-05 | Inbox guest profile sync hardening | מפת `guests` חיה = מקור אמת יחיד; ניקוי שדות רפאים ב-cache+הודעות; תג «לא רשום» במקום «מחר» לאורח שנמחק; 111 tests.
 2026-07-05 | Inbox departed badge fix | `getGuestArrivalRosterLabel`+`getGuestTimingBadge`: עזיבה מנצחת `checked_in` ישן — תג «⚪ אחרי עזיבה» במקום «🟢 בריזורט»; 110 tests.
 2026-07-05 | Resort Pulse attention sync fix | «דורש טיפול» = `human_requested` פעיל ב-Inbox (לא דגלי guests ישנים); realtime על whatsapp_conversations.

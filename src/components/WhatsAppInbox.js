@@ -317,6 +317,8 @@ const T = {
     sortName: "שם",
     rosterGroupedHint: "מקובץ לפי סוג אורח",
     rosterAllDeparted: "כל השיחות הן אורחים שעזבו — לחץ «אחרי עזיבה»",
+    rosterRefresh: "🔄 רענן רשימה",
+    rosterRefreshBusy: "⏳ מסנכרן…",
     threadRefresh: "🔄 רענן היסטוריה",
     threadRefreshBusy: "⏳ מסנכרן…",
     threadMsgCount: (shown, total) =>
@@ -392,6 +394,8 @@ const T = {
     sortName: "Name",
     rosterGroupedHint: "Grouped by guest type",
     rosterAllDeparted: "All chats are past guests — tap «After stay»",
+    rosterRefresh: "🔄 Refresh list",
+    rosterRefreshBusy: "⏳ Syncing…",
     threadRefresh: "🔄 Refresh history",
     threadRefreshBusy: "⏳ Syncing…",
     threadMsgCount: (shown, total) =>
@@ -2474,10 +2478,12 @@ export default function WhatsAppInbox({
   const [loadingThread, setLoadingThread] = useState(false);
   const [threadDbCount, setThreadDbCount] = useState(null);
   const [threadRefreshBusy, setThreadRefreshBusy] = useState(false);
+  const [rosterRefreshBusy, setRosterRefreshBusy] = useState(false);
 
   // ── Shared row normaliser ─────────────────────────────────────────────────
   const normalise = (r) => ({
     ...r,
+    id:                     r.id != null ? Number(r.id) : r.id,
     phone:                  canonicalizePhone(r.phone),
     guest_id:               r.guests?.id ?? null,
     guest_name:             r.guests?.name ?? null,
@@ -2609,6 +2615,11 @@ export default function WhatsAppInbox({
   // the existing indexes are all phone/guest_id-prefixed composites that
   // don't help a table-wide recency scan.
   const fetchAll = useCallback(async () => {
+    if (!supabase) {
+      setError("Supabase לא מוגדר — בדוק REACT_APP_SUPABASE_URL");
+      setLoading(false);
+      return;
+    }
     const { data, error: err } = await supabase
       .from("whatsapp_conversations")
       .select(CONVERSATION_SELECT)
@@ -2636,24 +2647,42 @@ export default function WhatsAppInbox({
 
   // ── Incremental fetch — only rows newer than lastSeenAt ──────────────────
   // Used by: polling interval + Realtime callback.
-  // Fetches at most 100 new rows, merges by ID (no duplicates), regroups.
+  // Fetches at most 100 newest rows strictly after the watermark (gt, not gte —
+  // gte re-fetched the boundary row every tick and could stall catch-up when
+  // many rows share the same second). DESC + reverse keeps the newest burst.
   const fetchSince = useCallback(async () => {
-    if (!lastSeenAt.current) return; // wait for first fetchAll
+    if (!lastSeenAt.current || !supabase) return; // wait for first fetchAll
     const since = lastSeenAt.current;
 
     const { data, error: fetchErr } = await supabase
       .from("whatsapp_conversations")
       .select(CONVERSATION_SELECT)
-      .gte("created_at", since)
-      .order("created_at", { ascending: true })
+      .gt("created_at", since)
+      .order("created_at", { ascending: false })
       .limit(100);
 
     if (fetchErr) {
       console.warn("[WA-inbox] fetchSince error:", fetchErr.message);
       return;
     }
-    mergeIncomingRows(data ?? []);
+    const rows = data ?? [];
+    mergeIncomingRows(rows.length ? [...rows].reverse() : rows);
   }, [mergeIncomingRows]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Force full roster re-fetch (clears session cache + reloads recent window).
+  const refreshRoster = useCallback(async () => {
+    if (!supabase) return;
+    setRosterRefreshBusy(true);
+    setError(null);
+    try {
+      inboxMemoryCache.messages = null;
+      inboxMemoryCache.lastSeenAt = null;
+      await fetchAll();
+      await fetchSince();
+    } finally {
+      setRosterRefreshBusy(false);
+    }
+  }, [fetchAll, fetchSince]);
 
   // ── Load older conversations — pagination for the recency-windowed initial
   // fetch above. Pulls the next OLDER_BATCH_LIMIT rows before oldestSeenAtRef
@@ -3695,7 +3724,31 @@ export default function WhatsAppInbox({
           )}
         </span>
         <div style={{ display: "flex", alignItems: "center", gap: "var(--space-sm)", marginInlineStart: "auto" }}>
-          {loading && <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{t.syncing}</span>}
+          {(loading || rosterRefreshBusy) && (
+            <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{t.rosterRefreshBusy}</span>
+          )}
+          <button
+            type="button"
+            onClick={refreshRoster}
+            disabled={rosterRefreshBusy || loading}
+            title={t.rosterRefresh}
+            className={isMobile ? "u-touch-staff" : "u-badge-nowrap"}
+            style={{
+              display: "inline-flex", alignItems: "center", gap: 5,
+              padding: "5px 10px", borderRadius: "var(--radius-pill)", fontSize: 11, fontWeight: 700,
+              fontFamily: "Heebo, sans-serif",
+              background: "var(--ivory)",
+              color: "var(--gold-dark)",
+              border: "1px solid var(--border)",
+              cursor: rosterRefreshBusy || loading ? "not-allowed" : "pointer",
+              opacity: rosterRefreshBusy ? 0.7 : 1,
+              whiteSpace: "nowrap",
+              minHeight: isMobile ? HIT_STAFF : "auto",
+            }}
+          >
+            {rosterRefreshBusy ? "⏳" : "🔄"}
+            {!isMobile && t.rosterRefresh}
+          </button>
           <button
             type="button"
             onClick={() => dismissAllAlerts(alertContacts)}

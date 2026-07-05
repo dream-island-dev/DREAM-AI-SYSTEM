@@ -1198,7 +1198,9 @@ async function claimInboundWaMessage(
   if (error) {
     if (isUniqueViolation(error)) return { claimed: false, conversationId: null };
     console.error("[webhook] claimInboundWaMessage failed:", error.message);
-    return { claimed: true, conversationId: null };
+    // FAIL VISIBLE — do not continue the guest pipeline when the inbox ledger
+    // row was never written (staff would see bot reply but empty Inbox thread).
+    return { claimed: false, conversationId: null };
   }
   return { claimed: true, conversationId: (data?.id as number) ?? null };
 }
