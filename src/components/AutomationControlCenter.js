@@ -134,6 +134,7 @@ function groupQueueByArrivalDay(items, stages) {
       guestMap.set(item.guestId, {
         guestId: item.guestId,
         guestName: item.guestName,
+        phone: item.phone ?? null,
         room: item.room,
         room_type: item.room_type,
         arrivalDate: item.arrivalDate,
@@ -180,7 +181,16 @@ function formatQueueScheduleCell(q) {
   return "—";
 }
 
+function formatQueueAttemptAt(iso) {
+  if (!iso) return null;
+  return new Date(iso).toLocaleString("he-IL", {
+    day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit",
+  });
+}
+
 function queueStatusBadge(q) {
+  if (q.status === "sent") return { cls: "badge-green", text: "✅ נשלח" };
+  if (q.status === "simulated") return { cls: "badge-green", text: "✅ סימולציה" };
   if (q.status === "blocked_by_meta") return { cls: "badge-orange", text: "🟠 ממתין לאישור" };
   if (q.status === "failed_missing_link") return { cls: "badge-red", text: "❌ חסר קישור תשלום" };
   if (q.dueNow && q.status === "pending") return { cls: "badge-gold", text: "⚡ מוכן לשליחה" };
@@ -189,6 +199,32 @@ function queueStatusBadge(q) {
   }
   if (q.status === "failed" || q.status === "timeout") return { cls: "badge-red", text: q.status === "timeout" ? "לא ודאי" : "נכשל" };
   return { cls: "badge-blue", text: "מתוזמן" };
+}
+
+/** At-a-glance delivery proof under the status badge (notification_log.sent_at). */
+function queueDeliveryProofLine(q) {
+  const at = formatQueueAttemptAt(q.lastAttemptAt);
+  if (!at) return null;
+  if (q.status === "sent" || q.status === "simulated") return `אושר ב־${at}`;
+  if (q.status === "failed" || q.status === "timeout" || q.status === "blocked_by_meta") {
+    return `ניסיון אחרון: ${at}`;
+  }
+  return null;
+}
+
+/** Guest-level rollup — one badge for the whole automation journey row. */
+function summarizeGuestQueueHealth(items) {
+  let sent = 0;
+  let failed = 0;
+  let blocked = 0;
+  let dueNow = 0;
+  for (const q of items) {
+    if (q.status === "sent" || q.status === "simulated") sent += 1;
+    else if (q.status === "failed" || q.status === "timeout" || q.status === "failed_missing_link") failed += 1;
+    else if (q.status === "blocked_by_meta") blocked += 1;
+    else if (q.dueNow && q.status === "pending") dueNow += 1;
+  }
+  return { sent, failed, blocked, dueNow };
 }
 
 /** Meta burst protection — mirrors whatsapp-cron INTER_SEND_DELAY_MS. */
@@ -1315,7 +1351,50 @@ function ManualDispatchModal({ item, stages, onClose, onDispatched, showToast })
   );
 }
 
-export default function AutomationControlCenter() {
+function QueueGuestInboxLink({ guestName, phone, onOpenDreamBotChat }) {
+  const hasPhone = Boolean(phone);
+  const canOpen = hasPhone && typeof onOpenDreamBotChat === "function";
+  const title = canOpen
+    ? "פתח שיחת DREAM BOT עם האורח"
+    : hasPhone
+      ? "אין הרשאה לפתיחת שיחה"
+      : "אין מספר טלפון לשיחה — עדכן בפרופיל האורח";
+
+  if (!canOpen) {
+    return (
+      <span
+        style={{ fontWeight: 800, fontSize: 14, color: "var(--text-muted)", cursor: "not-allowed" }}
+        title={title}
+      >
+        {guestName ?? "—"}
+      </span>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => onOpenDreamBotChat({ phone, guestName })}
+      title={title}
+      style={{
+        fontWeight: 800,
+        fontSize: 14,
+        padding: 0,
+        border: "none",
+        background: "none",
+        color: "var(--gold-dark)",
+        cursor: "pointer",
+        textDecoration: "underline",
+        textUnderlineOffset: 3,
+        fontFamily: "inherit",
+      }}
+    >
+      💬 {guestName ?? "—"}
+    </button>
+  );
+}
+
+export default function AutomationControlCenter({ onOpenDreamBotChat }) {
   const [subTab, setSubTab] = useState("timeline"); // timeline | queue | history | builder | preview | templates
   const [stages, setStages] = useState([]);
   const [scriptsByKey, setScriptsByKey] = useState({});
@@ -2349,7 +2428,13 @@ export default function AutomationControlCenter() {
                                 <tbody>
                                   {visibleAttention.map((r, i) => (
                                     <tr key={i}>
-                                      <td>{r.guestName ?? r.phone ?? "—"}</td>
+                                      <td>
+                                        <QueueGuestInboxLink
+                                          guestName={r.guestName ?? r.phone ?? "—"}
+                                          phone={r.phone}
+                                          onOpenDreamBotChat={onOpenDreamBotChat}
+                                        />
+                                      </td>
                                       <td>{stageDisplayNames[r.stageKey] ?? `⚠ ${r.stageKey}`}</td>
                                       <td><span className="badge badge-red">{r.status === "timeout" ? "לא ודאי" : "נכשל"}</span></td>
                                       <td style={{ fontSize: 12 }}>{r.sentAt ? new Date(r.sentAt).toLocaleString("he-IL") : "—"}</td>
@@ -2425,7 +2510,13 @@ export default function AutomationControlCenter() {
                               const rowKey = attentionItemKey(r);
                               return (
                               <tr key={rowKey || i}>
-                                <td style={{ fontWeight: 700 }}>{r.guestName ?? r.phone ?? "—"}</td>
+                                <td>
+                                  <QueueGuestInboxLink
+                                    guestName={r.guestName ?? r.phone ?? "—"}
+                                    phone={r.phone}
+                                    onOpenDreamBotChat={onOpenDreamBotChat}
+                                  />
+                                </td>
                                 <td>{stageDisplayNames[r.stageKey] ?? `⚠ ${r.stageKey}`}</td>
                                 <td style={{ fontSize: 11, fontFamily: "monospace", color: "#B5600A" }}>
                                   {r.payload?.template ?? "—"}
@@ -2489,7 +2580,13 @@ export default function AutomationControlCenter() {
                           <tbody>
                             {missingLinkItems.map((r, i) => (
                               <tr key={i}>
-                                <td style={{ fontWeight: 700 }}>{r.guestName ?? r.phone ?? "—"}</td>
+                                <td>
+                                  <QueueGuestInboxLink
+                                    guestName={r.guestName ?? r.phone ?? "—"}
+                                    phone={r.phone}
+                                    onOpenDreamBotChat={onOpenDreamBotChat}
+                                  />
+                                </td>
                                 <td>{stageDisplayNames[r.stageKey] ?? `⚠ ${r.stageKey}`}</td>
                                 <td><span className="badge badge-red">שיגור נכשל: חסר קישור תשלום ישיר</span></td>
                                 <td style={{ fontSize: 12 }}>{r.sentAt ? new Date(r.sentAt).toLocaleString("he-IL") : "—"}</td>
@@ -2621,13 +2718,39 @@ export default function AutomationControlCenter() {
                           );
                         })()}
 
-                        {!isCollapsed && day.guests.map((guest) => (
+                        {!isCollapsed && day.guests.map((guest) => {
+                          const health = summarizeGuestQueueHealth(guest.items);
+                          return (
                           <div
                             key={guest.guestId}
                             style={{ borderBottom: "1px solid var(--border)", padding: "12px 16px 14px" }}
                           >
                             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
-                              <span style={{ fontWeight: 800, fontSize: 14 }}>{guest.guestName ?? "—"}</span>
+                              <QueueGuestInboxLink
+                                guestName={guest.guestName}
+                                phone={guest.phone}
+                                onOpenDreamBotChat={onOpenDreamBotChat}
+                              />
+                              {health.sent > 0 && (
+                                <span className="badge badge-green" title="שלבים שנשלחו בהצלחה (notification_log)">
+                                  ✅ {health.sent} נשלחו
+                                </span>
+                              )}
+                              {health.failed > 0 && (
+                                <span className="badge badge-red" title="שלבים שנכשלו או בסטטוס לא ודאי">
+                                  ❌ {health.failed} כשל
+                                </span>
+                              )}
+                              {health.blocked > 0 && (
+                                <span className="badge badge-orange" title="חסום ע״י Meta — תבנית ממתינה לאישור">
+                                  🟠 {health.blocked} Meta
+                                </span>
+                              )}
+                              {health.dueNow > 0 && health.failed === 0 && (
+                                <span className="badge badge-gold" title="שלבים שמוכנים לשליחה עכשיו">
+                                  ⚡ {health.dueNow} מוכן
+                                </span>
+                              )}
                               {guest.room && (
                                 <span style={{ fontSize: 12, padding: "2px 10px", borderRadius: 12, background: "var(--ivory)", border: "1px solid var(--border)" }}>
                                   🏨 {guest.room}
@@ -2663,6 +2786,7 @@ export default function AutomationControlCenter() {
                                       && !DAY_PASS_ALLOWED_STAGES.has(q.stageKey);
                                     const isChecked = selectedItems.has(itemKey);
                                     const badge = queueStatusBadge(q);
+                                    const proofLine = queueDeliveryProofLine(q);
                                     return (
                                       <tr
                                         key={itemKey}
@@ -2703,6 +2827,11 @@ export default function AutomationControlCenter() {
                                         </td>
                                         <td>
                                           <span className={`badge ${badge.cls}`}>{badge.text}</span>
+                                          {proofLine && (
+                                            <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 3 }} title="מבוסס notification_log">
+                                              {proofLine}
+                                            </div>
+                                          )}
                                           {q.skipReason && !SKIP_REASON_LABELS[q.skipReason] && (
                                             <div style={{ fontSize: 10, color: "var(--text-muted)" }}>{q.skipReason}</div>
                                           )}
@@ -2740,7 +2869,8 @@ export default function AutomationControlCenter() {
                               </table>
                             </div>
                           </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     );
                   })

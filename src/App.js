@@ -2285,7 +2285,7 @@ export default function App({ initialPage = "dashboard" }) {
       case "automation_center":
         return guardPage(
           "automation_center",
-          <AutomationControlCenter />
+          <AutomationControlCenter onOpenDreamBotChat={openDreamBotChat} />
         );
       case "data_sync":
         return guardPage(

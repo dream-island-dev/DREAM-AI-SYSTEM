@@ -14,7 +14,7 @@
 //   {
 //     ok: true,
 //     systemStatus: { cronEnabled, automationEnabled, simulation },
-//     queue: [{ guestId, guestName, room, stageKey, displayName, journeyPhase,
+//     queue: [{ guestId, guestName, phone, room, stageKey, displayName, journeyPhase,
 //               nodeType, scheduledFor, dueNow, predictedChannel, status, skipReason }],
 //     attentionRequired: [{ guestId, guestName, phone, stageKey, status, sentAt, payload }],
 //   }
@@ -141,6 +141,7 @@ Deno.serve(async (req: Request) => {
         queue.push({
           guestId: guest.id,
           guestName: (guest as Record<string, unknown>).name ?? null,
+          phone: (guest as Record<string, unknown>).phone ?? null,
           room: (guest as Record<string, unknown>).room ?? null,
           room_type: (guest as Record<string, unknown>).room_type ?? null,
           arrivalDate: (guest as Record<string, unknown>).arrival_date ?? null,

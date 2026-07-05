@@ -653,8 +653,13 @@ async function handleStage2ArrivalConfirmation(
 
   if (!canGuestConfirmArrival(guest)) {
     console.info(
-      `[webhook] arrival confirm skipped — lifecycle blocked phone:${phone} status:${guest?.status ?? "null"}`,
+      `[webhook] arrival confirm skipped — pipeline already complete phone:${phone} status:${guest?.status ?? "null"}`,
     );
+    return;
+  }
+
+  if (guest?.arrival_confirmed === true && guest?.msg_stage_2_arrival_sent === true) {
+    console.info(`[webhook] arrival pipeline complete — skip duplicate confirm phone:${phone}`);
     return;
   }
 
@@ -741,6 +746,7 @@ async function handleStage2ArrivalConfirmation(
         console.info(`[webhook] SIM — would send Stage 2 arrival reply to ${phone}`);
       } else {
         const outboundIntent = source === "button" ? "arrival_confirmed" : "confirmation";
+        let sentOk = false;
         // Pipeline Stage 2 must deliver on guest confirm — staff-claim mute blocks
         // bot/LLM only, not this scheduled arrival reply (cron catch-up relies on
         // msg_stage_2_arrival_sent staying false when Meta send did not happen).
@@ -750,7 +756,7 @@ async function handleStage2ArrivalConfirmation(
           const waId = await sendReply(phone, arrivalReply);
           if (!waId) {
             console.warn(
-              `[webhook] ⚠️ stage_2_arrival suppressed/empty — phone:${phone} (msg_stage_2_arrival_sent unchanged)`,
+              `[webhook] ⚠️ stage_2_arrival sendReply empty — phone:${phone} (will try pipeline fallback)`,
             );
           } else {
             await insertGuestOutboundIfNotMuted(supabaseClient, {
@@ -775,6 +781,7 @@ async function handleStage2ArrivalConfirmation(
               }
             }
             console.info(`[webhook] ✅ arrival reply sent to ${phone}`);
+            sentOk = true;
           }
         } catch (e) {
           const errMsg = (e as Error).message;
@@ -793,6 +800,16 @@ async function handleStage2ArrivalConfirmation(
           }
         } finally {
           setSuppressGuestRepliesStaffClaim(prevStaffMute);
+        }
+
+        if (!sentOk && guestId) {
+          console.warn(`[webhook] stage_2 webhook path missed — invoking whatsapp-send pipeline guest_id=${guestId}`);
+          const fallback = await dispatchStage2ViaPipeline(guestId);
+          if (fallback.ok) {
+            console.info(`[webhook] ✅ stage_2 pipeline fallback ok guest_id=${guestId} status:${fallback.status}`);
+          } else {
+            console.error(`[webhook] ❌ stage_2 pipeline fallback failed guest_id=${guestId}:`, fallback.error);
+          }
         }
       }
     }
@@ -2708,8 +2725,48 @@ function isArrivalConfirmationMessage(
 
 function canGuestConfirmArrival(guest: Record<string, unknown> | null): boolean {
   if (!guest) return true;
-  const status = String(guest.status ?? "");
-  return status !== "checked_in" && status !== "cancelled";
+  if (String(guest.status ?? "") === "cancelled") return false;
+  // Allow catch-up when confirm landed but Stage 2 never delivered (staff-claim / send failure).
+  if (guest.arrival_confirmed === true && guest.msg_stage_2_arrival_sent === true) return false;
+  return true;
+}
+
+/** Early intercept — runs before auto-checkin / staff-mute can skew routing. */
+async function tryArrivalConfirmationIntercept(
+  supabaseClient: ReturnType<typeof createClient>,
+  ctx: {
+    scripts: Record<string, BotScript>;
+    phone: string;
+    guestId: number | null;
+    guest: Record<string, unknown> | null;
+    sim: boolean;
+    isButtonReply: boolean;
+    buttonTitle: string;
+    buttonId: string;
+    text: string;
+    claimedConversationId: number | null;
+    msgId: string;
+    lane: "early" | "text" | "burst" | "button";
+  },
+): Promise<boolean> {
+  const isConfirm = ctx.isButtonReply
+    ? isArrivalConfirmationMessage(ctx.buttonTitle, { buttonTitle: ctx.buttonTitle, buttonId: ctx.buttonId })
+    : isArrivalConfirmationMessage(ctx.text);
+  if (!isConfirm || !canGuestConfirmArrival(ctx.guest)) return false;
+
+  await handleStage2ArrivalConfirmation(supabaseClient, {
+    scripts: ctx.scripts,
+    phone: ctx.phone,
+    guestId: ctx.guestId,
+    guest: ctx.guest,
+    sim: ctx.sim,
+    source: ctx.isButtonReply ? "button" : (ctx.lane === "burst" ? "burst" : "text"),
+    buttonTitle: ctx.isButtonReply ? ctx.buttonTitle : undefined,
+    claimedConversationId: ctx.claimedConversationId,
+    msgId: ctx.msgId,
+  });
+  console.info(`[webhook] ✅ arrival confirmed (${ctx.lane}) — phone:${ctx.phone} guest:${ctx.guestId}`);
+  return true;
 }
 
 const GOOGLE_REVIEW_URL   = Deno.env.get("GOOGLE_REVIEW_URL")   ?? "";
@@ -3005,7 +3062,78 @@ function normalizePhone(phoneStr: unknown): string {
 // `phone` is needed here (unlike before) because the fallback path compares it
 // in JS instead of letting Postgres filter on it server-side.
 const GUEST_LOOKUP_FIELDS =
-  "id, name, phone, arrival_confirmed, payment_amount, payment_link_url, direct_payment_url, ezgo_portal_url, payment_link_resolution_pending, msg_pre_arrival_2d_sent, needs_callback, requires_attention, attention_reason, arrival_date, departure_date, arrival_time, room, room_type, spa_time, spa_date, status, guest_notes, guest_profile, portal_token, automation_muted, claimed_by";
+  "id, name, phone, arrival_confirmed, arrival_confirmed_at, msg_stage_2_arrival_sent, wa_window_expires_at, payment_amount, payment_link_url, direct_payment_url, ezgo_portal_url, payment_link_resolution_pending, msg_pre_arrival_2d_sent, needs_callback, requires_attention, attention_reason, arrival_date, departure_date, arrival_time, room, room_type, spa_time, spa_date, status, guest_notes, guest_profile, portal_token, automation_muted, claimed_by";
+
+async function lookupGuestByPhone(
+  supabaseClient: ReturnType<typeof createClient>,
+  phoneVariants: string[],
+  phone: string,
+): Promise<Record<string, unknown> | null> {
+  const { data: exactRows, error: exactErr } = await supabaseClient
+    .from("guests")
+    .select(GUEST_LOOKUP_FIELDS)
+    .in("phone", phoneVariants)
+    .order("arrival_date", { ascending: false });
+
+  if (exactErr) console.warn("[webhook] guest lookup error:", exactErr.message);
+
+  const rows = (exactRows ?? []) as Record<string, unknown>[];
+  if (rows.length === 1) return rows[0];
+  if (rows.length > 1) {
+    const todayYmd = new Date().toISOString().slice(0, 10);
+    const active = rows.filter((g) => g.status !== "cancelled");
+    const pool = active.length ? active : rows;
+    const upcoming = pool
+      .filter((g) => typeof g.arrival_date === "string" && String(g.arrival_date) >= todayYmd)
+      .sort((a, b) => String(a.arrival_date).localeCompare(String(b.arrival_date)));
+    const pick = upcoming[0] ?? pool[0];
+    console.warn(
+      `[webhook] ⚠️ duplicate phone ${phone} — picked guest id=${pick.id} arrival=${pick.arrival_date}`,
+    );
+    return pick;
+  }
+
+  const { data: guestCandidates } = await supabaseClient
+    .from("guests")
+    .select(GUEST_LOOKUP_FIELDS)
+    .not("phone", "is", null);
+  const fallbackMatch = (guestCandidates ?? []).find(
+    (g) => normalizePhone((g as Record<string, unknown>).phone) === normalizePhone(phone),
+  );
+  if (fallbackMatch) {
+    console.info(
+      `[webhook] 🔍 guest matched via last-9-digit fallback — phone:${phone} guestId:${(fallbackMatch as Record<string, unknown>).id}`,
+    );
+  }
+  return (fallbackMatch as Record<string, unknown>) ?? null;
+}
+
+/** whatsapp-send stage_2_arrival — same path as cron reconcile (window bypass via pipeline_reconcile). */
+async function dispatchStage2ViaPipeline(
+  guestId: number,
+): Promise<{ ok: boolean; status?: string; error?: string }> {
+  const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+  try {
+    const res = await fetch(`${supabaseUrl}/functions/v1/whatsapp-send`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${serviceKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ trigger: "stage_2_arrival", guestId, pipeline_reconcile: true }),
+      signal: AbortSignal.timeout(28000),
+    });
+    const data = await res.json() as Record<string, unknown>;
+    return {
+      ok: data.ok === true,
+      status: data.status ? String(data.status) : undefined,
+      error: data.error ? String(data.error) : undefined,
+    };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
 
 function guestOpsEligibility(
   guest: Record<string, unknown> | null | undefined,
@@ -3298,31 +3426,31 @@ Deno.serve(async (req: Request) => {
         continue;
       }
 
-      // ── Guest lookup (fast path + last-9-digit fallback) ───────────────
-      const { data: guestFast } = await supabase
-        .from("guests")
-        .select(GUEST_LOOKUP_FIELDS)
-        .in("phone", phoneVariants)
-        .maybeSingle();
-
-      let guest = guestFast;
-      if (!guest) {
-        const { data: guestCandidates } = await supabase
-          .from("guests")
-          .select(GUEST_LOOKUP_FIELDS)
-          .not("phone", "is", null);
-        const fallbackMatch = (guestCandidates ?? []).find(
-          (g) => normalizePhone((g as Record<string, unknown>).phone) === normalizePhone(phone)
-        );
-        if (fallbackMatch) {
-          guest = fallbackMatch;
-          console.info(`[webhook] 🔍 guest matched via last-9-digit fallback — phone:${phone} guestId:${(fallbackMatch as Record<string, unknown>).id}`);
-        }
-      }
+      // ── Guest lookup (multi-row safe + last-9-digit fallback) ──────────
+      let guest = await lookupGuestByPhone(supabase, phoneVariants, phone);
 
       const guestId   = (guest?.id   as number)     ?? null;
       const guestName = (guest?.name as string|null) ?? null;
       const sim       = Deno.env.get("WHATSAPP_SIMULATION") === "true";
+
+      // ── Stage 2 on «כן מגיעים» — BEFORE auto-checkin / staff-mute / LLM ──
+      if (await tryArrivalConfirmationIntercept(supabase, {
+        scripts,
+        phone,
+        guestId,
+        guest: guest as Record<string, unknown> | null,
+        sim,
+        isButtonReply,
+        buttonTitle,
+        buttonId,
+        text,
+        claimedConversationId,
+        msgId,
+        lane: "early",
+      })) {
+        continue;
+      }
+
       const nowForGuest = new Date();
       const guestStatusAtLookup = resolveEffectiveGuestStatus(
         {
