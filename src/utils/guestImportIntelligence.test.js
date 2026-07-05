@@ -13,6 +13,8 @@ import {
   classifyDbMatch,
   buildExistingGuestsLookup,
   findExistingGuestRow,
+  isSameBookingGuest,
+  buildMultiRoomLineCounts,
 } from "./guestImportIntelligence";
 
 const ARRIVALS_MAPPING = {
@@ -373,5 +375,37 @@ describe("Guest Import Intelligence — golden cases", () => {
       arrivalDate: "2026-06-30",
     });
     expect(hit?.name).toBe("גבריאל");
+  });
+
+  test("classifyDbMatch: same order+phone+date, different room line → existing (multi-room)", () => {
+    const existingGuestRow = {
+      phone: "+972501234567",
+      name: "נוי ברנע",
+      room: "אמטיסט 12",
+      order_number: "266932",
+      arrival_date: "2026-07-10",
+    };
+    const secondRoomLine = {
+      guestName: "נוי ברנע",
+      guestPhone: "+972501234567",
+      _rawPhone: "+972501234567",
+      orderNumber: "266932",
+      roomName: "8",
+      suiteType: "סוויטת אמטיסט",
+      room: "8",
+      isDayGuest: false,
+      arrivalDate: "2026-07-10",
+      roomsCount: 1,
+    };
+    expect(isSameBookingGuest(secondRoomLine, existingGuestRow)).toBe(true);
+    expect(classifyDbMatch(secondRoomLine, existingGuestRow)).toBe("existing");
+  });
+
+  test("buildMultiRoomLineCounts: two CSV lines same order+phone → 2", () => {
+    const counts = buildMultiRoomLineCounts([
+      { orderNumber: "266932", arrivalDate: "2026-07-10", guestPhone: "+972501234567" },
+      { orderNumber: "266932", arrivalDate: "2026-07-10", guestPhone: "+972501234567" },
+    ]);
+    expect(counts.get("266932::2026-07-10::+972501234567")).toBe(2);
   });
 });

@@ -27,7 +27,7 @@ import {
   profilesToArray,
   enrichProfilesFromExcel,
 } from "../utils/ezgoParser";
-import { mergeCandidates, classifyDbMatch, buildExistingGuestsLookup, findExistingGuestRow } from "../utils/guestImportIntelligence";
+import { mergeCandidates, classifyDbMatch, buildExistingGuestsLookup, findExistingGuestRow, buildMultiRoomLineCounts, multiRoomLineCountForCandidate } from "../utils/guestImportIntelligence";
 import { SUITE_ARRIVALS_SCHEMA, buildMaskedSample, detectSuiteArrivalsPreset, detectEzgoArrivalsPreset, applyFieldDefaultsToProfiles, parseMappingMemory, packMappingMemory } from "../utils/importMapper";
 import {
   isDetailedReservationFormat,
@@ -602,17 +602,24 @@ function _scopeGuestRowQuery(query, { guestPhone, profileArrivalDate, orderNumbe
 // One row per guest profile. Multi-room (group) profiles show a read-only
 // "N rooms" count instead of a single editable room — picking a value there
 // still works and applies uniformly to that profile's rooms on sync.
-function _profilesToGridRows(merged, { suiteAssignmentOnly = false, badgeByIdx = null, existingGuestsLookup = null, dbMatchByIdx = null, importWithoutAutomation = true } = {}) {
+function _profilesToGridRows(merged, { suiteAssignmentOnly = false, badgeByIdx = null, existingGuestsLookup = null, dbMatchByIdx = null, multiRoomLineCounts = null, importWithoutAutomation = true } = {}) {
   return merged.map((g, i) => {
     const singleRoom = (g.rooms ?? []).length === 1 ? g.rooms[0] : null;
     const isDay       = !!g.isDayGuest || !!singleRoom?.isDayGuest;
     const roomDisplay = _formatRoomForGrid(g);
-    const candidate = { guestPhone: g.guestPhone, arrivalDate: g.arrivalDate, orderNumber: [...(g.orderNumbers ?? [])][0] ?? "" };
+    const orderNumber = [...(g.orderNumbers ?? [])][0] ?? "";
+    const candidate = { guestPhone: g.guestPhone, arrivalDate: g.arrivalDate, orderNumber };
     const existingRow = existingGuestsLookup ? findExistingGuestRow(existingGuestsLookup, candidate) : null;
     const dbStatus = dbMatchByIdx?.get(i) ?? null;
+    const siblingRooms = multiRoomLineCountForCandidate(
+      { ...candidate, orderNumber },
+      multiRoomLineCounts,
+    );
     // Financial mapping:
     const totalPrice  = (g.rooms ?? []).reduce((sum, r) => sum + (r.price || 0), 0);
-    const qtyLabel    = (g.roomsQuantity ?? 0) > 1
+    const qtyLabel    = siblingRooms > 1
+      ? `${siblingRooms} חדרים`
+      : (g.roomsQuantity ?? 0) > 1
       ? `${g.roomsQuantity} חדרים`
       : (g.rooms ?? []).length > 1 ? `${g.rooms.length} חדרים` : "";
     return {
@@ -620,7 +627,7 @@ function _profilesToGridRows(merged, { suiteAssignmentOnly = false, badgeByIdx =
       _profileIdx:  i,
       guestName:    g.guestName ?? "",
       guestPhone:   g.guestPhone ?? "",
-      orderNumber:  [...(g.orderNumbers ?? [])][0] ?? "",
+      orderNumber,
       phoneSource:  g.phoneSource === "individual" ? "פרטי" : "קואורד׳",
       leadSource:   g.leadSource ?? "",
       automationMuted: _resolveGridAutomationMuted(g, existingRow, dbStatus, importWithoutAutomation),
@@ -1210,6 +1217,11 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     return () => { cancelled = true; };
   }, [mergedCandidates]);
 
+  const multiRoomLineCounts = useMemo(
+    () => buildMultiRoomLineCounts(mergedCandidates),
+    [mergedCandidates],
+  );
+
   const dbMatchByIdx = useMemo(() => {
     const map = new Map();
     mergedCandidates.forEach((c, i) => {
@@ -1221,11 +1233,16 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
   const importBadgeByIdx = useMemo(() => {
     const map = new Map();
     dbMatchByIdx.forEach((status, i) => {
-      const label = DB_MATCH_BADGE_LABEL[status];
-      if (label) map.set(i, label);
+      let label = DB_MATCH_BADGE_LABEL[status];
+      if (!label) return;
+      const siblings = multiRoomLineCountForCandidate(mergedCandidates[i], multiRoomLineCounts);
+      if (siblings > 1 && status !== "unimportable" && status !== "conflict") {
+        label = `${label} · ${siblings} חדרים`;
+      }
+      map.set(i, label);
     });
     return map;
-  }, [dbMatchByIdx]);
+  }, [dbMatchByIdx, mergedCandidates, multiRoomLineCounts]);
 
   // Recompute grid rows when merged/db badges/import opt-in changes.
   // Manual cell edits live in gridRows state until the next full recompute.
@@ -1235,9 +1252,9 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     setGridRows(
       importSource === "detailed"
         ? _detailedProfilesToGridRows(merged, { badgeByIdx: importBadgeByIdx, existingGuestsLookup, dbMatchByIdx, importWithoutAutomation })
-        : _profilesToGridRows(merged, { suiteAssignmentOnly: suiteOnly, badgeByIdx: importBadgeByIdx, existingGuestsLookup, dbMatchByIdx, importWithoutAutomation }),
+        : _profilesToGridRows(merged, { suiteAssignmentOnly: suiteOnly, badgeByIdx: importBadgeByIdx, existingGuestsLookup, dbMatchByIdx, multiRoomLineCounts, importWithoutAutomation }),
     );
-  }, [merged, importSource, doc2SyncMode, importBadgeByIdx, existingGuestsLookup, dbMatchByIdx, importWithoutAutomation]);
+  }, [merged, importSource, doc2SyncMode, importBadgeByIdx, existingGuestsLookup, dbMatchByIdx, multiRoomLineCounts, importWithoutAutomation]);
 
   // ── Parse Doc 2: Suite CSV → AI-suggested column mapping → review screen ──
   // The AI only proposes; aggregateGuestProfiles() runs unchanged once the

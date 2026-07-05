@@ -490,6 +490,41 @@ export function findExistingGuestRow(lookup, candidate) {
 }
 
 /**
+ * True when candidate and DB row are the same booking guest (order+phone+date).
+ * Room may differ per CSV line — guests.room is denormalized; suite_rooms is truth.
+ */
+export function isSameBookingGuest(candidate, existingGuestRow) {
+  if (!candidate || !existingGuestRow) return false;
+  const phoneMatches = !!candidate.guestPhone && candidate.guestPhone === existingGuestRow.phone;
+  const orderMatches =
+    !!candidate.orderNumber && candidate.orderNumber === existingGuestRow.order_number;
+  const dateMatches =
+    !!candidate.arrivalDate &&
+    !!existingGuestRow.arrival_date &&
+    candidate.arrivalDate === existingGuestRow.arrival_date;
+  return phoneMatches && orderMatches && dateMatches;
+}
+
+/** Count import lines per order+arrival+phone (2+ = multi-room same guest). */
+export function buildMultiRoomLineCounts(candidates = []) {
+  const counts = new Map();
+  for (const c of candidates) {
+    if (!c?.orderNumber || !c.arrivalDate || !c.guestPhone) continue;
+    const k = `${c.orderNumber}::${c.arrivalDate}::${c.guestPhone}`;
+    counts.set(k, (counts.get(k) || 0) + 1);
+  }
+  return counts;
+}
+
+export function multiRoomLineCountForCandidate(candidate, lineCounts) {
+  if (!candidate || !lineCounts?.size) return 0;
+  if (!candidate.orderNumber || !candidate.arrivalDate || !candidate.guestPhone) return 0;
+  return lineCounts.get(
+    `${candidate.orderNumber}::${candidate.arrivalDate}::${candidate.guestPhone}`,
+  ) || 0;
+}
+
+/**
  * classifyDbMatch(candidate, existingGuestRow)
  *
  * @param {GuestImportCandidate} candidate
@@ -520,16 +555,19 @@ export function classifyDbMatch(candidate, existingGuestRow) {
   const nameConflict =
     !!candidate.guestName && !!existingGuestRow.name &&
     candidate.guestName.trim() !== String(existingGuestRow.name).trim();
+
+  const sameBookingGuest = isSameBookingGuest(candidate, existingGuestRow);
+  const candidateRoom =
+    resolveSuiteFromEzgoFields(
+      candidate.roomName ?? candidate.room,
+      candidate.suiteType ?? "",
+      candidate.isDayGuest,
+    ) || candidate.room;
   const roomConflict =
+    !sameBookingGuest &&
     !!existingGuestRow.room &&
-    !roomsCanonicallyMatch(
-      resolveSuiteFromEzgoFields(
-        candidate.roomName ?? candidate.room,
-        candidate.suiteType ?? "",
-        candidate.isDayGuest,
-      ) || candidate.room,
-      existingGuestRow.room,
-    );
+    !roomsCanonicallyMatch(candidateRoom, existingGuestRow.room);
+
   const dateConflict =
     !!candidate.arrivalDate && !!existingGuestRow.arrival_date &&
     candidate.arrivalDate !== existingGuestRow.arrival_date;

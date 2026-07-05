@@ -1,3 +1,4 @@
+2026-07-05 | import multi-room same guest | `isSameBookingGuest` — אותה הזמנה+טלפון+תאריך: חדר שני לא ⚠ conflict; תגית «🔄 קיים · 2 חדרים»+עמודת קבוצה.
 2026-07-05 | import order-aware sync (migration 134) | `sync_suite_arrivals` מתאים אורח לפי order+date+phone → order יחיד → phone+date; `buildExistingGuestsLookup`/`findExistingGuestRow`; 73 tests.
 2026-07-05 | merge 544fdef deployed | push main + db push 132/133 + functions whatsapp-webhook/send/guest-portal-data; Stage 2 מיידי+spa_date מאוחדים.
 2026-07-05 | spa_date sync (portal+automation+WA) | סנכרון מלא: `_shared/spaSchedule.ts` ב-webhook/send/portal-data; placeholders `{{SPA_*}}` עם תאריך+שעה; פורטל+Inbox+ייבוא EZGO ממלאים `spa_date` מ-arrival_date; migration 131_guests_spa_date.
