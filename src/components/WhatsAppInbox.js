@@ -318,6 +318,9 @@ const T = {
     rosterGroupedHint: "מקובץ לפי סוג אורח",
     rosterAllDeparted: "כל השיחות הן אורחים שעזבו — לחץ «אחרי עזיבה»",
     rosterRefresh: "🔄 רענן רשימה",
+    dbLatest: "אחרון ב-DB",
+    dbEmpty: "אין הודעות ב-DB",
+    webhookWarn: "⚠️ אין תנועה חדשה? ודא ש-Meta Webhook מחובר (שדה messages) לכתובת Supabase.",
     rosterRefreshBusy: "⏳ מסנכרן…",
     threadRefresh: "🔄 רענן היסטוריה",
     threadRefreshBusy: "⏳ מסנכרן…",
@@ -395,6 +398,9 @@ const T = {
     rosterGroupedHint: "Grouped by guest type",
     rosterAllDeparted: "All chats are past guests — tap «After stay»",
     rosterRefresh: "🔄 Refresh list",
+    dbLatest: "Last in DB",
+    dbEmpty: "No messages in DB",
+    webhookWarn: "⚠️ No new traffic? Verify Meta Webhook (messages field) points to Supabase.",
     rosterRefreshBusy: "⏳ Syncing…",
     threadRefresh: "🔄 Refresh history",
     threadRefreshBusy: "⏳ Syncing…",
@@ -2429,6 +2435,7 @@ export default function WhatsAppInbox({
   // ── Realtime connection status ────────────────────────────────────────────
   const [realtimeOk, setRealtimeOk]   = useState(false);
   const [lastUpdated, setLastUpdated] = useState(null);
+  const [dbLatestAt, setDbLatestAt] = useState(null);
   // ── Mobile-first layout + i18n + AI log/quick-actions UI state ───────────
   const isMobile = useIsMobile(768);
   const [mobileScreen, setMobileScreen] = useState("list"); // "list" | "thread"
@@ -2602,7 +2609,22 @@ export default function WhatsAppInbox({
     setContacts(applyGrouping(merged));
     setLastUpdated(new Date());
     return true;
-  }, [applyGrouping]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [applyGrouping]);
+
+  const fetchDbLatest = useCallback(async () => {
+    if (!supabase) return;
+    const { data, error: err } = await supabase
+      .from("whatsapp_conversations")
+      .select("created_at")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (err) {
+      console.warn("[WA-inbox] fetchDbLatest error:", err.message);
+      return;
+    }
+    setDbLatestAt(data?.created_at ?? null);
+  }, []);
 
   // ── Full fetch (initial load only) ────────────────────────────────────────
   // Recency-windowed, NOT the whole table: previously this ordered ascending
@@ -2643,7 +2665,8 @@ export default function WhatsAppInbox({
     setLastUpdated(new Date());
     setLoading(false);
     alertsReadyRef.current = true;
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    await fetchDbLatest();
+  }, [fetchDbLatest]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Incremental fetch — only rows newer than lastSeenAt ──────────────────
   // Used by: polling interval + Realtime callback.
@@ -2679,10 +2702,11 @@ export default function WhatsAppInbox({
       inboxMemoryCache.lastSeenAt = null;
       await fetchAll();
       await fetchSince();
+      await fetchDbLatest();
     } finally {
       setRosterRefreshBusy(false);
     }
-  }, [fetchAll, fetchSince]);
+  }, [fetchAll, fetchSince, fetchDbLatest]);
 
   // ── Load older conversations — pagination for the recency-windowed initial
   // fetch above. Pulls the next OLDER_BATCH_LIMIT rows before oldestSeenAtRef
@@ -4325,6 +4349,11 @@ export default function WhatsAppInbox({
           {"⚠️"} {error}
         </div>
       )}
+      {!realtimeOk && !loading && (
+        <div style={{ padding: "6px 16px", background: "rgba(255,193,7,0.12)", color: "var(--status-warning)", fontSize: 11, flexShrink: 0 }}>
+          {t.webhookWarn}
+        </div>
+      )}
 
       {/* Quick actions + reply input — pinned at bottom via flex column */}
       <div style={{
@@ -4961,6 +4990,11 @@ export default function WhatsAppInbox({
           {lastUpdated && !isMobile && (
             <span style={{ fontSize: 10, opacity: 0.5, whiteSpace: "nowrap" }}>
               {lastUpdated.toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+            </span>
+          )}
+          {dbLatestAt && !isMobile && (
+            <span style={{ fontSize: 10, opacity: 0.45, whiteSpace: "nowrap" }} title={dbLatestAt}>
+              {t.dbLatest}: {new Date(dbLatestAt).toLocaleString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
             </span>
           )}
         </div>

@@ -106,6 +106,7 @@ import {
   assertGuestEligibleForAutomation,
   isGuestActiveForOutbound,
 } from "../_shared/guestOutboundGuard.ts";
+import { sanitizeMetaRecipientPhone } from "../_shared/metaPhone.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -2842,6 +2843,8 @@ async function sendTemplate(
   const phoneId = Deno.env.get("META_PHONE_NUMBER_ID");
   if (!token || !phoneId) throw new Error("missing_meta_creds");
 
+  const recipient = sanitizeMetaRecipientPhone(to);
+
   const components: unknown[] = [];
   const headerImageUrl = _TEMPLATE_IMAGE_HEADERS[templateName];
   if (headerImageUrl) {
@@ -2861,7 +2864,7 @@ async function sendTemplate(
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         messaging_product: "whatsapp",
-        to,
+        to: recipient,
         type: "template",
         template: {
           name: templateName,
@@ -3043,6 +3046,8 @@ async function sendReply(to: string, body: string): Promise<string> {
     );
   }
 
+  const recipient = sanitizeMetaRecipientPhone(to);
+
   try {
     const res = await fetch(
       `https://graph.facebook.com/v20.0/${phoneId}/messages`,
@@ -3054,7 +3059,7 @@ async function sendReply(to: string, body: string): Promise<string> {
         },
         body: JSON.stringify({
           messaging_product: "whatsapp",
-          to,
+          to: recipient,
           type: "text",
           text: { body: safeBody, preview_url: false },
         }),
@@ -3205,6 +3210,25 @@ Deno.serve(async (req: Request) => {
       console.log("[webhook] ✅ Meta verification OK");
       return new Response(challenge ?? "ok", { status: 200 });
     }
+    // Staff diagnostic — same verify token as Meta handshake (no secrets exposed).
+    if (url.searchParams.get("diag") === "1" && token === expected) {
+      const body = {
+        ok: true,
+        webhook_url: `${Deno.env.get("SUPABASE_URL") ?? ""}/functions/v1/whatsapp-webhook`,
+        secrets: {
+          META_WEBHOOK_VERIFY_TOKEN: !!expected,
+          META_WHATSAPP_TOKEN: !!(Deno.env.get("META_WHATSAPP_TOKEN") ?? Deno.env.get("WHATSAPP_TOKEN")),
+          META_PHONE_NUMBER_ID: !!Deno.env.get("META_PHONE_NUMBER_ID"),
+          SUPABASE_SERVICE_ROLE_KEY: !!Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"),
+          GEMINI_API_KEY: !!Deno.env.get("GEMINI_API_KEY"),
+        },
+        hint: "Meta Business Manager → WhatsApp → Configuration → Webhook: subscribe to messages field.",
+      };
+      return new Response(JSON.stringify(body, null, 2), {
+        status: 200,
+        headers: { ...CORS, "Content-Type": "application/json" },
+      });
+    }
     console.warn("[webhook] ❌ Meta verification FAILED — token mismatch");
     return new Response("Forbidden", { status: 403 });
   }
@@ -3247,13 +3271,29 @@ Deno.serve(async (req: Request) => {
   }
 
   console.log(`[webhook] payload parsed — messages:${msgArr.length} statuses:${((value?.statuses as unknown[]) ?? []).length}`);
+  if (msgArr.length === 0) {
+    console.warn("[webhook] ⚠️ POST with zero messages — Meta may be sending status-only pings; guest traffic will not appear in Inbox.");
+  }
+
+  const UNSUPPORTED_INBOX_LABEL: Record<string, string> = {
+    audio: "🎤 הודעה קולית",
+    image: "📷 תמונה",
+    video: "🎬 וידאו",
+    sticker: "🎨 מדבקה",
+    document: "📎 מסמך",
+    location: "📍 מיקום",
+    contacts: "👤 איש קשר",
+  };
 
   // ── Fire-and-forget — return 200 immediately, process in background ─────────
   const processAsync = async () => {
-    const supabase = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
-    );
+    const supabaseUrl = Deno.env.get("SUPABASE_URL");
+    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    if (!supabaseUrl || !serviceKey) {
+      console.error("[webhook] FATAL: missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY — cannot log Inbox or reply");
+      return;
+    }
+    const supabase = createClient(supabaseUrl, serviceKey);
 
     // Load all config in parallel — each has its own 5-min cache
     const [botConfig, botSettings, scripts, learnedRules] = await Promise.all([
@@ -3337,8 +3377,28 @@ Deno.serve(async (req: Request) => {
         text        = buttonTitle;
         console.log(`[webhook] 🔘 template button title:"${buttonTitle}" payload:"${buttonId}"`);
       } else {
-        console.log(`[webhook] ⏭️ msg type "${msg.type}" — skipped`);
-        continue; // skip images, audio, stickers, etc.
+        console.log(`[webhook] ⏭️ msg type "${msg.type}" — inbox log only`);
+        const { phone, variants: phoneVariants } = buildPhoneVariants(from);
+        const phoneDigits = phone.replace(/\D/g, "");
+        const pushName = pushNameByWaId[phoneDigits] ?? pushNameByWaId[from] ?? null;
+        const label = UNSUPPORTED_INBOX_LABEL[String(msg.type)] ?? `📩 הודעה (${String(msg.type)})`;
+        const { claimed, conversationId } = await claimInboundWaMessage(supabase, {
+          phone,
+          guest_id: null,
+          message: label,
+          wa_message_id: msgId,
+          push_name: pushName,
+          intent: "received",
+        });
+        if (!claimed) {
+          console.info("[webhook] dedup skip (unsupported type):", msgId);
+        } else {
+          const guest = await lookupGuestByPhone(supabase, phoneVariants, phone);
+          if (guest?.id) {
+            await patchClaimedInbound(supabase, conversationId, msgId, { guest_id: guest.id as number });
+          }
+        }
+        continue;
       }
 
       if (!text.trim()) continue;
