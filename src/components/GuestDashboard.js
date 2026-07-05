@@ -14,15 +14,22 @@
 //
 // Auth: RLS — tactical manager sees own rows; GM/super_admin see all.
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import AddGuestModal from "./AddGuestModal";
 import GuestAttentionBadge from "./GuestAttentionBadge";
 import CustomerProfilePane from "./CustomerProfilePane";
 import QuietHoursGate from "./QuietHoursGate";
+import CheckinTimelineFilterBar from "./CheckinTimelineFilterBar";
 import { STATUS_META } from "../utils/guestStatusMeta";
 import { isSuiteGuestProfile } from "../utils/guestTiming";
-import { resolveTimelineScopeForArrival, sortCheckinRosterGuests } from "../utils/guestCheckinMatrix";
+import {
+  applyCheckinRosterFilter,
+  countCheckinScopeTotals,
+  resolveTimelineScopeForArrival,
+  sortCheckinRosterGuests,
+} from "../utils/guestCheckinMatrix";
+import { useCheckinTimelineFilter } from "../hooks/useCheckinTimelineFilter";
 import { formatSpaSchedule } from "../utils/israeliTime";
 import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
 
@@ -187,8 +194,15 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
   const [editingGuest, setEditingGuest] = useState(null); // existing guest object for edit, null = closed
   const [waModal,     setWaModal]     = useState(null);  // guest object or null
   const [selected,    setSelected]    = useState(new Set()); // checked guest IDs
-  const [arrivalSelectDate, setArrivalSelectDate] = useState(localISO(0));
   const [profileGuest, setProfileGuest] = useState(null); // guest object or null — CustomerProfilePane
+
+  const {
+    timelineScope,
+    customArrivalDate,
+    setTimelineScope,
+    setCustomArrivalDate,
+    filterLabel,
+  } = useCheckinTimelineFilter();
 
   const showToast = useCallback((type, msg) => {
     setToast({ type, msg });
@@ -321,23 +335,26 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
   const tabGuestsRaw = activeTab === "day_guest" ? dayGuests
                     : activeTab === "suite"     ? hotelGuests
                     :                              guests;
-  const tabGuests = sortCheckinRosterGuests(tabGuestsRaw, new Date(), (g) => g.room || "");
+  const scopeCounts = useMemo(() => countCheckinScopeTotals(tabGuestsRaw), [tabGuestsRaw]);
+  const filteredTabGuests = applyCheckinRosterFilter(tabGuestsRaw, {
+    scope: timelineScope,
+    customArrivalDate,
+  });
+  const tabGuests = sortCheckinRosterGuests(filteredTabGuests, new Date(), (g) => g.room || "");
 
   const selectGuestsByArrivalDate = useCallback(() => {
-    if (!arrivalSelectDate) {
-      showToast("err", "בחר תאריך הגעה");
+    if (!customArrivalDate) {
+      showToast("err", "בחר תאריך הגעה במסנן למעלה");
       return;
     }
-    const ids = tabGuests
-      .filter((g) => g.arrival_date === arrivalSelectDate)
-      .map((g) => g.id);
+    const ids = tabGuests.map((g) => g.id);
     if (!ids.length) {
-      showToast("err", `לא נמצאו אורחים להגעה ב-${arrivalSelectDate}`);
+      showToast("err", `לא נמצאו אורחים להגעה ב-${customArrivalDate}`);
       return;
     }
     setSelected(new Set(ids));
-    showToast("ok", `נבחרו ${ids.length} אורחים להגעה ${arrivalSelectDate}`);
-  }, [arrivalSelectDate, tabGuests, showToast]);
+    showToast("ok", `נבחרו ${ids.length} אורחים להגעה ${customArrivalDate}`);
+  }, [customArrivalDate, tabGuests, showToast]);
 
   // ── Stats ─────────────────────────────────────────────────────────────────
   const todayCount     = guests.filter((g) => g.arrival_date === localISO(0)).length;
@@ -400,6 +417,27 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
         ))}
       </div>
 
+      <CheckinTimelineFilterBar
+        timelineScope={timelineScope}
+        customArrivalDate={customArrivalDate}
+        onScopeChange={(scope) => {
+          setTimelineScope(scope);
+          setSelected(new Set());
+        }}
+        onCustomDateChange={(date) => {
+          setCustomArrivalDate(date);
+          setSelected(new Set());
+        }}
+        scopeCounts={scopeCounts}
+        showLegend={false}
+        onSelectAllForDate={selectGuestsByArrivalDate}
+        selectAllDisabled={tabGuests.length === 0}
+      />
+
+      <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12 }}>
+        {tabGuests.length} אורחים · {filterLabel}
+      </div>
+
       {/* Header row: tabs + add + refresh */}
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
         {/* Tabs */}
@@ -444,34 +482,6 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
             />
             בחר הכל
           </label>
-        )}
-
-        {/* Select all guests arriving on a specific date — then bulk-delete */}
-        {tabGuests.length > 0 && (
-          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-            <input
-              type="date"
-              value={arrivalSelectDate}
-              onChange={(e) => setArrivalSelectDate(e.target.value)}
-              title="תאריך הגעה לבחירה מרובה"
-              style={{
-                padding: "6px 10px", borderRadius: 10, border: "1px solid var(--border)",
-                fontFamily: "Heebo, sans-serif", fontSize: 13, cursor: "pointer",
-              }}
-            />
-            <button
-              type="button"
-              onClick={selectGuestsByArrivalDate}
-              style={{
-                padding: "7px 14px", borderRadius: 20, cursor: "pointer",
-                fontFamily: "Heebo, sans-serif", fontSize: 13, fontWeight: 700,
-                border: "2px solid var(--gold)", background: "rgba(201,169,110,0.1)",
-                color: "var(--gold-dark)",
-              }}
-            >
-              📅 בחר לפי תאריך הגעה
-            </button>
-          </div>
         )}
 
         {/* Bulk delete — appears only when selection is active */}
@@ -640,6 +650,7 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
                         type="button"
                         onClick={() => onOpenCheckin({
                           timelineScope: resolveTimelineScopeForArrival(guest.arrival_date),
+                          customArrivalDate: guest.arrival_date,
                         })}
                         title="מעבר ללשונית צ'ק-אין עם מסנן תאריך מתאים"
                         style={{

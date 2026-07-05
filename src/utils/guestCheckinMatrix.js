@@ -126,6 +126,33 @@ export function resolveTimelineScopeForArrival(arrivalDate, today = israelTodayS
   return CHECKIN_TIMELINE_WEEK7;
 }
 
+/** Exact arrival_date match (excludes cancelled). */
+export function matchesCustomArrivalDate(guest, ymd) {
+  if (!guest || !ymd || guest.status === "cancelled") return false;
+  return guest.arrival_date === ymd;
+}
+
+/**
+ * Unified roster filter — custom arrival date wins over timeline scope chip.
+ */
+export function applyCheckinRosterFilter(guests, { scope, customArrivalDate, now = new Date() } = {}) {
+  if (!Array.isArray(guests)) return [];
+  if (customArrivalDate) {
+    return guests.filter((g) => matchesCustomArrivalDate(g, customArrivalDate));
+  }
+  return guests.filter((g) => matchesCheckinTimelineScope(g, scope, now));
+}
+
+/** Per-scope counts for filter bar badges. */
+export function countCheckinScopeTotals(guests, now = new Date()) {
+  return Object.fromEntries(
+    CHECKIN_TIMELINE_SCOPES.map((scope) => [
+      scope,
+      (guests || []).filter((g) => matchesCheckinTimelineScope(g, scope, now)).length,
+    ]),
+  );
+}
+
 /** PMS timeline filter — today / tomorrow / 7-day forward / post-stay archive. */
 export function matchesCheckinTimelineScope(guest, scope, now = new Date()) {
   if (!guest || guest.status === "cancelled") return false;

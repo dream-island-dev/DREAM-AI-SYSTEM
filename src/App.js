@@ -11,6 +11,7 @@ import EmployeesPage from "./components/EmployeesPage";
 import { isAdminUser, isSuperAdmin, loadDepartments } from "./utils/admin";
 import { canAccessRoute, canSeeNavItem } from "./utils/auth";
 import { consumeStaffDeepLink } from "./utils/staffDeepLink";
+import { saveCheckinFilter } from "./utils/checkinFilterStorage";
 import { supabase, isSupabaseConfigured, loadAgentProfile } from "./supabaseClient";
 import { getPushState, subscribeToPush, unsubscribeFromPush, syncSubscriptionToSupabase } from "./utils/pushNotifications";
 import KnowledgeUploader from "./components/KnowledgeUploader";
@@ -1894,15 +1895,16 @@ export default function App({ initialPage = "dashboard" }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   // Deep-link from Requests Board (etc.) → open a specific WA thread in DREAM BOT.
   const [inboxFocus, setInboxFocus] = useState(null); // { phone, guestName? } | null
-  const [checkinFocus, setCheckinFocus] = useState(null); // { timelineScope } | null
+  const [checkinFocus, setCheckinFocus] = useState(null); // { timelineScope, customArrivalDate? } | null
   const openDreamBotChat = useCallback(({ phone, guestName }) => {
     if (!phone) return;
     setInboxFocus({ phone, guestName: guestName ?? null });
     setActivePage("wa_inbox");
     setMobileMenuOpen(false);
   }, []);
-  const openCheckinTab = useCallback(({ timelineScope = "today" } = {}) => {
-    setCheckinFocus({ timelineScope });
+  const openCheckinTab = useCallback(({ timelineScope = "today", customArrivalDate = null } = {}) => {
+    saveCheckinFilter({ scope: timelineScope, customDate: customArrivalDate });
+    setCheckinFocus({ timelineScope, customArrivalDate });
     setActivePage("guests");
     setMobileMenuOpen(false);
   }, []);
@@ -2215,6 +2217,7 @@ export default function App({ initialPage = "dashboard" }) {
         return (
           <GuestsPage
             initialTimelineScope={checkinFocus?.timelineScope ?? null}
+            initialCustomArrivalDate={checkinFocus?.customArrivalDate ?? null}
             onTimelineScopeConsumed={() => setCheckinFocus(null)}
             onOpenDreamBotChat={openDreamBotChat}
             onOpenCheckin={openCheckinTab}

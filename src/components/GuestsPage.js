@@ -10,15 +10,15 @@ import GuestAttentionBadge from "./GuestAttentionBadge";
 import CustomerProfilePane from "./CustomerProfilePane";
 import QuietHoursGate from "./QuietHoursGate";
 import { STATUS_META } from "../utils/guestStatusMeta";
+import CheckinTimelineFilterBar from "./CheckinTimelineFilterBar";
+import { useCheckinTimelineFilter } from "../hooks/useCheckinTimelineFilter";
 import {
-  CHECKIN_TIMELINE_LABELS,
-  CHECKIN_TIMELINE_SCOPES,
-  CHECKIN_TIMELINE_TODAY,
+  CHECKIN_TIMELINE_ARCHIVE,
   CHECKIN_TIMELINE_TOMORROW,
   CHECKIN_TIMELINE_WEEK7,
-  CHECKIN_TIMELINE_ARCHIVE,
+  applyCheckinRosterFilter,
+  countCheckinScopeTotals,
   getCheckinRowHighlight,
-  matchesCheckinTimelineScope,
   resolveEffectiveGuestStatus,
   shouldAutoCheckoutGuest,
   shouldAutoPromoteToCheckedIn,
@@ -33,6 +33,7 @@ import {
 
 export default function GuestsPage({
   initialTimelineScope = null,
+  initialCustomArrivalDate = null,
   onTimelineScopeConsumed,
   onOpenDreamBotChat,
   onOpenCheckin,
@@ -57,16 +58,19 @@ export default function GuestsPage({
   const [deleteBusy, setDeleteBusy]     = useState(false);
   const [editGuest,     setEditGuest]    = useState(null);  // {} = new guest, {id,...} = existing
   const [roomByPhone,    setRoomByPhone]    = useState({});  // phone → { roomName, suiteType, isDayGuest } — fallback display only; the room dropdown itself uses SUITE_REGISTRY
-  // PMS timeline scope — today | tomorrow | week7 | archive
-  const [timelineScope, setTimelineScope] = useState(
-    () => initialTimelineScope || CHECKIN_TIMELINE_TODAY,
-  );
 
-  useEffect(() => {
-    if (!initialTimelineScope) return;
-    setTimelineScope(initialTimelineScope);
-    onTimelineScopeConsumed?.();
-  }, [initialTimelineScope, onTimelineScopeConsumed]);
+  const {
+    timelineScope,
+    customArrivalDate,
+    setTimelineScope,
+    setCustomArrivalDate,
+    filterLabel,
+    isCustomDateActive,
+  } = useCheckinTimelineFilter({
+    initialScope: initialTimelineScope,
+    initialCustomDate: initialCustomArrivalDate,
+    onInitialConsumed: onTimelineScopeConsumed,
+  });
 
   const showToast = (type, msg) => { setToast({ type, msg }); setTimeout(() => setToast(null), 3500); };
 
@@ -244,14 +248,9 @@ export default function GuestsPage({
 
   // ── Reception matrix filters — PMS timeline scopes ─────────────────────
   const suiteGuests = guests.filter((g) => isSuite(g));
-  const scopeCounts = Object.fromEntries(
-    CHECKIN_TIMELINE_SCOPES.map((scope) => [
-      scope,
-      suiteGuests.filter((g) => matchesCheckinTimelineScope(g, scope)).length,
-    ]),
-  );
+  const scopeCounts = countCheckinScopeTotals(suiteGuests);
   const displayGuests = sortCheckinRosterGuests(
-    suiteGuests.filter((g) => matchesCheckinTimelineScope(g, timelineScope)),
+    applyCheckinRosterFilter(suiteGuests, { scope: timelineScope, customArrivalDate }),
     new Date(),
     roomNameFor,
   );
@@ -555,91 +554,25 @@ export default function GuestsPage({
         }}>{toast.msg}</div>
       )}
 
-      <div style={{ marginBottom: 14 }}>
-        <div
-          role="tablist"
-          aria-label="מסנן צ'ק-אין"
-          style={{
-            display: "flex",
-            flexWrap: "wrap",
-            gap: 8,
-            padding: "10px 12px",
-            background: "var(--ivory, #F5F0E8)",
-            borderRadius: 12,
-            border: "1px solid var(--border, #E0D5C5)",
-          }}
-        >
-          {CHECKIN_TIMELINE_SCOPES.map((scope) => {
-            const active = timelineScope === scope;
-            const count = scopeCounts[scope] ?? 0;
-            return (
-              <button
-                key={scope}
-                type="button"
-                role="tab"
-                aria-selected={active}
-                onClick={() => {
-                  setTimelineScope(scope);
-                  setSelectedIds(new Set());
-                }}
-                style={{
-                  minHeight: 44,
-                  padding: "8px 14px",
-                  borderRadius: 10,
-                  border: active ? "2px solid var(--gold, #C9A96E)" : "1.5px solid var(--border, #E0D5C5)",
-                  background: active
-                    ? "linear-gradient(135deg, rgba(201,169,110,0.28), rgba(232,201,138,0.35))"
-                    : "var(--card-bg, #fff)",
-                  color: active ? "var(--gold-dark, #A8843A)" : "var(--text-muted, #666)",
-                  fontFamily: "Heebo, sans-serif",
-                  fontSize: 13,
-                  fontWeight: active ? 800 : 600,
-                  cursor: "pointer",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 8,
-                  transition: "background 0.15s, border-color 0.15s",
-                }}
-              >
-                <span>{CHECKIN_TIMELINE_LABELS[scope]}</span>
-                <span
-                  style={{
-                    fontSize: 11,
-                    fontWeight: 800,
-                    padding: "2px 8px",
-                    borderRadius: 20,
-                    background: active ? "rgba(15,15,15,0.08)" : "var(--ivory, #F5F0E8)",
-                    color: active ? "#0F0F0F" : "var(--text-muted)",
-                  }}
-                >
-                  {count}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-        {timelineScope !== CHECKIN_TIMELINE_ARCHIVE && (
-          <div style={{ display: "flex", gap: 14, marginTop: 8, fontSize: 11, color: "var(--text-muted)", flexWrap: "wrap" }}>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
-              <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#1A7A4A", display: "inline-block" }} />
-              בחדר (checked_in)
-            </span>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
-              <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#C9A96E", display: "inline-block" }} />
-              הגעה מתוכננת
-            </span>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
-              <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#2952A3", display: "inline-block" }} />
-              חדר מוכן
-            </span>
-          </div>
-        )}
-      </div>
+      <CheckinTimelineFilterBar
+        timelineScope={timelineScope}
+        customArrivalDate={customArrivalDate}
+        onScopeChange={(scope) => {
+          setTimelineScope(scope);
+          setSelectedIds(new Set());
+        }}
+        onCustomDateChange={(date) => {
+          setCustomArrivalDate(date);
+          setSelectedIds(new Set());
+        }}
+        scopeCounts={scopeCounts}
+        showLegend
+      />
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
         <div style={{ display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
           <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
-            {displayGuests.length} אורחים · {CHECKIN_TIMELINE_LABELS[timelineScope]}
+            {displayGuests.length} אורחים · {filterLabel}
           </div>
           <span style={{
             fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 20,
@@ -686,7 +619,9 @@ export default function GuestsPage({
         <div style={{ textAlign: "center", padding: 48, color: "var(--text-muted)" }}>טוען אורחים...</div>
       ) : displayGuests.length === 0 ? (
         <div style={{ textAlign: "center", padding: 48, color: "var(--text-muted)" }}>
-          {timelineScope === CHECKIN_TIMELINE_ARCHIVE
+          {isCustomDateActive
+            ? `אין אורחי סוויטות עם הגעה ב-${filterLabel.replace("הגעה ", "")}.`
+            : timelineScope === CHECKIN_TIMELINE_ARCHIVE
             ? "אין אורחי סוויטות בארכיון לאחר שהות."
             : timelineScope === CHECKIN_TIMELINE_TOMORROW
             ? "אין הגעות מתוכננות למחר — בדוק ב«7 ימים קרובים» או ייבא הגעות."
