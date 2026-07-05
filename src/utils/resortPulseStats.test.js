@@ -1,4 +1,8 @@
-import { computeResortPulse } from "./resortPulseStats";
+import {
+  buildGuestsByPhoneKey,
+  computeResortPulse,
+  countActiveInboxAlerts,
+} from "./resortPulseStats";
 import { israelTodayStr } from "./guestTiming";
 
 describe("computeResortPulse", () => {
@@ -15,11 +19,25 @@ describe("computeResortPulse", () => {
     expect(stats.inResort).toBeGreaterThanOrEqual(1);
   });
 
-  it("counts attention flags", () => {
-    const stats = computeResortPulse([
-      { status: "expected", needs_callback: true, arrival_date: "2099-01-01" },
-      { status: "expected", requires_attention: true, arrival_date: "2099-01-02" },
-    ]);
+  it("uses inboxAlertsCount extra — not stale guest flags", () => {
+    const stats = computeResortPulse(
+      [{ status: "expected", needs_callback: true, arrival_date: "2099-01-01", phone: "+972501111111" }],
+      { inboxAlertsCount: 2 },
+    );
     expect(stats.needsAttention).toBe(2);
+  });
+});
+
+describe("countActiveInboxAlerts", () => {
+  it("excludes departed guests with stale human_requested", () => {
+    const guests = buildGuestsByPhoneKey([
+      { phone: "+972501234567", status: "checked_out", departure_date: "2020-01-01" },
+      { phone: "+972509876543", status: "checked_in", departure_date: "2099-12-31" },
+    ]);
+    const count = countActiveInboxAlerts(
+      ["+972501234567", "+972509876543", "+972509876543"],
+      guests,
+    );
+    expect(count).toBe(1);
   });
 });

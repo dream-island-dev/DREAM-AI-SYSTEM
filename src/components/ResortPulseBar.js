@@ -1,10 +1,10 @@
 // Sticky operational pulse — arrivals / in-resort / attention / automation health.
 import { useCallback, useEffect, useState } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
-import { computeResortPulse } from "../utils/resortPulseStats";
+import { computeResortPulse, buildGuestsByPhoneKey, countActiveInboxAlerts } from "../utils/resortPulseStats";
 
 const GUEST_SELECT =
-  "status, arrival_date, departure_date, requires_attention, needs_callback";
+  "phone, status, arrival_date, departure_date";
 
 export default function ResortPulseBar({ onAction, className = "" }) {
   const [stats, setStats] = useState(null);
@@ -14,8 +14,22 @@ export default function ResortPulseBar({ onAction, className = "" }) {
   const refresh = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) return;
     try {
-      const { data: guests, error } = await supabase.from("guests").select(GUEST_SELECT);
-      if (error) throw error;
+      const [guestsRes, alertsRes] = await Promise.all([
+        supabase.from("guests").select(GUEST_SELECT),
+        supabase
+          .from("whatsapp_conversations")
+          .select("phone")
+          .eq("human_requested", true)
+          .eq("direction", "inbound"),
+      ]);
+      if (guestsRes.error) throw guestsRes.error;
+      if (alertsRes.error) throw alertsRes.error;
+
+      const guests = guestsRes.data ?? [];
+      const inboxAlertsCount = countActiveInboxAlerts(
+        (alertsRes.data ?? []).map((r) => r.phone),
+        buildGuestsByPhoneKey(guests),
+      );
 
       let blocked = 0;
       try {
@@ -28,7 +42,7 @@ export default function ResortPulseBar({ onAction, className = "" }) {
       }
 
       setBlockedAutomation(blocked);
-      setStats(computeResortPulse(guests ?? [], { blockedAutomation: blocked }));
+      setStats(computeResortPulse(guests, { blockedAutomation: blocked, inboxAlertsCount }));
       setLoadError(null);
     } catch (e) {
       setLoadError(e?.message ?? String(e));
@@ -40,13 +54,18 @@ export default function ResortPulseBar({ onAction, className = "" }) {
     const iv = setInterval(refresh, 60_000);
     if (!isSupabaseConfigured || !supabase) return () => clearInterval(iv);
 
-    const ch = supabase
+    const chGuests = supabase
       .channel("resort-pulse-guests")
       .on("postgres_changes", { event: "*", schema: "public", table: "guests" }, () => refresh())
       .subscribe();
+    const chWa = supabase
+      .channel("resort-pulse-wa-alerts")
+      .on("postgres_changes", { event: "*", schema: "public", table: "whatsapp_conversations" }, () => refresh())
+      .subscribe();
     return () => {
       clearInterval(iv);
-      supabase.removeChannel(ch);
+      supabase.removeChannel(chGuests);
+      supabase.removeChannel(chWa);
     };
   }, [refresh]);
 
