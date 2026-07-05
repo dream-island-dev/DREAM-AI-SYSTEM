@@ -93,6 +93,15 @@ export function getGuestArrivalRosterLabel(guest, lang = "he") {
   const today = israelTodayStr();
   const { arrival_date: arrival, departure_date: departure, status } = guest;
 
+  // Departed must win over checked_in / inStay — stale status must not show «בריזורט».
+  if (isGuestDeparted(guest)) {
+    return {
+      label: en ? "⚪ After stay" : "⚪ אחרי עזיבה",
+      bg: "var(--ivory)",
+      fg: "var(--text-muted)",
+    };
+  }
+
   const inStay =
     status === "checked_in" ||
     (arrival <= today && (!departure || departure >= today));
@@ -102,14 +111,6 @@ export function getGuestArrivalRosterLabel(guest, lang = "he") {
       label: en ? "🟢 In resort" : "🟢 בריזורט",
       bg: "#F0FDF4",
       fg: "#15803D",
-    };
-  }
-
-  if (departure && departure < today) {
-    return {
-      label: en ? "⚪ After stay" : "⚪ אחרי עזיבה",
-      bg: "var(--ivory)",
-      fg: "var(--text-muted)",
     };
   }
 
@@ -161,6 +162,10 @@ export function getGuestTimingBadge(guest) {
   if (!guest || !guest.arrival_date) return null;
   const today = todayStr();
 
+  if (isGuestDeparted(guest)) {
+    return { label: "⚪ אורח לאחר עזיבה", bg: "var(--ivory)", color: "var(--text-muted)", border: "var(--border)" };
+  }
+
   if (guest.status === "checked_in") {
     return { label: "🟢 אורח בריזורט", bg: "#F0FDF4", color: "#15803D", border: "#BBF7D0" };
   }
@@ -175,8 +180,6 @@ export function getGuestTimingBadge(guest) {
   if (!guest.departure_date || guest.departure_date >= today) {
     return { label: "🟢 אורח בריזורט", bg: "#F0FDF4", color: "#15803D", border: "#BBF7D0" };
   }
-  // Departed — not one of the two states asked for, but staying silent here
-  // would let a stale post-checkout request look like a live one (Fail Visible).
   return { label: "⚪ אורח לאחר עזיבה", bg: "var(--ivory)", color: "var(--text-muted)", border: "var(--border)" };
 }
 
@@ -266,10 +269,11 @@ export function getInboxRosterSegmentMeta(segment, lang = "he") {
  * Align an inbox roster contact with the live guests phone map.
  * When the guest row was deleted (no map entry), strip DB profile fields so stale
  * denormalized data from old whatsapp_conversations rows cannot show "מחר" etc.
+ * When a live row exists — map is the only source of truth (no merge with stale contact).
  */
 export function syncInboxContactWithGuestMap(contact, guestEntry) {
   if (!contact) return contact;
-  if (!guestEntry) {
+  if (!guestEntry?.id) {
     return {
       ...contact,
       guestId: null,
@@ -290,14 +294,20 @@ export function syncInboxContactWithGuestMap(contact, guestEntry) {
   }
   return {
     ...contact,
-    guestId: guestEntry.id ?? contact.guestId ?? null,
-    guestName: contact.guestName || guestEntry.name,
-    status: guestEntry.status ?? contact.status ?? null,
-    arrivalDate: guestEntry.arrival_date ?? contact.arrivalDate ?? null,
-    departureDate: guestEntry.departure_date ?? contact.departureDate ?? null,
-    ...(guestEntry.claimed_by != null
-      ? { claimedBy: guestEntry.claimed_by, claimedAt: guestEntry.claimed_at ?? null }
-      : {}),
+    guestId: guestEntry.id,
+    guestName: guestEntry.name ?? null,
+    status: guestEntry.status ?? null,
+    arrivalDate: guestEntry.arrival_date ?? null,
+    departureDate: guestEntry.departure_date ?? null,
+    room: guestEntry.room ?? null,
+    roomType: guestEntry.room_type ?? null,
+    spaTime: guestEntry.spa_time ?? null,
+    spaDate: guestEntry.spa_date ?? null,
+    portalToken: guestEntry.portal_token ?? null,
+    mealTime: guestEntry.meal_time ?? null,
+    mealLocation: guestEntry.meal_location ?? null,
+    claimedBy: guestEntry.claimed_by ?? null,
+    claimedAt: guestEntry.claimed_at ?? null,
   };
 }
 

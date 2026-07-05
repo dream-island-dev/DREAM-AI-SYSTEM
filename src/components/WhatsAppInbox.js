@@ -572,6 +572,63 @@ function phoneVariants(bare) {
   return [bare, `+${bare}`, `0${bare.slice(3)}`];
 }
 
+/** Build a map-entry slice from a guests row (phone map + id map). */
+function toGuestMapEntry(g) {
+  if (!g?.id) return null;
+  return {
+    id: g.id,
+    name: g.name ?? null,
+    status: g.status ?? null,
+    arrival_date: g.arrival_date ?? null,
+    departure_date: g.departure_date ?? null,
+    room: g.room ?? null,
+    room_type: g.room_type ?? null,
+    spa_time: g.spa_time ?? null,
+    spa_date: g.spa_date ?? null,
+    portal_token: g.portal_token ?? null,
+    meal_time: g.meal_time ?? null,
+    meal_location: g.meal_location ?? null,
+    claimed_by: g.claimed_by ?? null,
+    claimed_at: g.claimed_at ?? null,
+  };
+}
+
+/** Apply live guests map onto one flat message row (or strip when unregistered). */
+function reconcileMessageWithGuestMap(row, phoneMap) {
+  const guest = phoneMap.get(normalizePhone(row.phone));
+  if (!guest?.id) return clearGuestFieldsFromMessage(row);
+  return {
+    ...row,
+    guest_id: guest.id,
+    guest_name: guest.name,
+    spa_time: guest.spa_time,
+    spa_date: guest.spa_date,
+    guest_room: guest.room,
+    guest_room_type: guest.room_type,
+    guest_status: guest.status,
+    guest_departure_date: guest.departure_date,
+    guest_arrival_date: guest.arrival_date,
+    guest_portal_token: guest.portal_token,
+    guest_meal_time: guest.meal_time,
+    guest_meal_location: guest.meal_location,
+    guest_claimed_by: guest.claimed_by,
+    guest_claimed_at: guest.claimed_at,
+  };
+}
+
+function buildGuestMapsFromRows(rows) {
+  const phoneMap = new Map();
+  const idMap = new Map();
+  for (const g of rows ?? []) {
+    const entry = toGuestMapEntry(g);
+    if (!entry) continue;
+    idMap.set(entry.id, entry);
+    const key = normalizePhone(g.phone);
+    if (key) phoneMap.set(key, entry);
+  }
+  return { phoneMap, idMap };
+}
+
 /** Strip denormalized guests join fields from a flat message row. */
 function clearGuestFieldsFromMessage(m) {
   return {
@@ -2402,6 +2459,7 @@ export default function WhatsAppInbox({
   const allMsgsRef = useRef([]);   // raw flat messages — source of truth for merging
   const lastSeenAt = useRef(null); // ISO timestamp of last fetch — used by fetchSince
   const guestPhoneMapRef = useRef(new Map()); // normalizePhone(guests.phone) → guest profile slice
+  const guestIdMapRef = useRef(new Map()); // guests.id → same slice (phone-mismatch fallback)
   const guestMapReadyRef = useRef(false); // true after initial guests fetch — avoids stripping before load
   const profilesMapRef   = useRef(new Map()); // profiles.id → profiles.name, for claimedBy display
   const alertsReadyRef   = useRef(false); // skip sounds until initial fetchAll completes
@@ -2448,12 +2506,27 @@ export default function WhatsAppInbox({
   // a guest was added, or a guests.phone format neither lookup anticipated),
   // re-check it here against every guest's phone using the same last-9-digit
   // comparison, so the UI self-heals without needing a backfill migration.
+  const resolveGuestEntryForContact = useCallback((contact) => {
+    const byPhone = guestPhoneMapRef.current.get(normalizePhone(contact.phone));
+    if (byPhone?.id) return byPhone;
+    const guestId = contact.guestId ?? contact.guest_id ?? null;
+    if (guestId) {
+      const byId = guestIdMapRef.current.get(guestId);
+      if (byId?.id) return byId;
+    }
+    return null;
+  }, []);
+
   const resolveIdentityFallback = useCallback((contacts) => {
     if (!guestMapReadyRef.current) return contacts;
-    return contacts.map((c) => {
-      const matched = guestPhoneMapRef.current.get(normalizePhone(c.phone));
-      return syncInboxContactWithGuestMap(c, matched);
-    });
+    return contacts.map((c) =>
+      syncInboxContactWithGuestMap(c, resolveGuestEntryForContact(c)),
+    );
+  }, [resolveGuestEntryForContact]);
+
+  const reconcileRowsWithGuestMap = useCallback((rows) => {
+    if (!guestMapReadyRef.current || !rows?.length) return rows;
+    return rows.map((r) => reconcileMessageWithGuestMap(r, guestPhoneMapRef.current));
   }, []);
 
   // ── Resolve claimed_by (a profiles.id UUID) to a display name, the same
@@ -2469,8 +2542,11 @@ export default function WhatsAppInbox({
   }, []);
 
   const applyGrouping = useCallback(
-    (rows) => resolveClaimNames(resolveIdentityFallback(groupByPhone(rows))),
-    [resolveIdentityFallback, resolveClaimNames]
+    (rows) => {
+      const reconciled = reconcileRowsWithGuestMap(rows);
+      return resolveClaimNames(resolveIdentityFallback(groupByPhone(reconciled)));
+    },
+    [resolveIdentityFallback, resolveClaimNames, reconcileRowsWithGuestMap],
   );
 
   const markPhoneInboundRead = useCallback((phone) => {
@@ -2839,41 +2915,18 @@ export default function WhatsAppInbox({
   // Realtime listener below can't drift out of sync with each other.
   const applyGuestRowUpdate = useCallback((g) => {
     if (!g?.phone) return;
+    const entry = toGuestMapEntry(g);
+    if (!entry) return;
     const key = normalizePhone(g.phone);
-    if (key) {
-      guestPhoneMapRef.current.set(key, {
-        id: g.id ?? null,
-        name: g.name,
-        status: g.status ?? null,
-        arrival_date: g.arrival_date ?? null,
-        departure_date: g.departure_date ?? null,
-        claimed_by: g.claimed_by ?? null,
-        claimed_at: g.claimed_at ?? null,
-      });
-    }
+    if (key) guestPhoneMapRef.current.set(key, entry);
+    guestIdMapRef.current.set(entry.id, entry);
+
     const targetPhone = canonicalizePhone(g.phone);
     let touched = false;
     allMsgsRef.current = allMsgsRef.current.map((m) => {
       if (m.phone !== targetPhone) return m;
       touched = true;
-      return {
-        ...m,
-        guest_id:             g.id ?? m.guest_id,
-        guest_name:           g.name ?? m.guest_name,
-        guest_notes:          g.guest_notes ?? null,
-        spa_time:             g.spa_time ?? null,
-        spa_date:             g.spa_date ?? null,
-        guest_room:           g.room ?? null,
-        guest_room_type:      g.room_type ?? null,
-        guest_status:         g.status ?? m.guest_status,
-        guest_departure_date: g.departure_date ?? null,
-        guest_arrival_date:   g.arrival_date ?? null,
-        guest_portal_token:   g.portal_token ?? null,
-        guest_meal_time:      g.meal_time ?? null,
-        guest_meal_location:  g.meal_location ?? null,
-        guest_claimed_by:     g.claimed_by ?? null,
-        guest_claimed_at:     g.claimed_at ?? null,
-      };
+      return reconcileMessageWithGuestMap(m, guestPhoneMapRef.current);
     });
     if (touched) setContacts(applyGrouping(allMsgsRef.current));
   }, [applyGrouping]);
@@ -2890,6 +2943,7 @@ export default function WhatsAppInbox({
         if (val.id === guestId) guestPhoneMapRef.current.delete(key);
       }
     }
+    if (guestId) guestIdMapRef.current.delete(guestId);
 
     const targetPhone = deleted.phone ? canonicalizePhone(deleted.phone) : null;
     purgeInboxMemoryCacheForGuest(guestId, targetPhone);
@@ -3132,29 +3186,20 @@ export default function WhatsAppInbox({
   useEffect(() => {
     supabase
       .from("guests")
-      .select("id, name, phone, status, arrival_date, departure_date, claimed_by, claimed_at")
+      .select(
+        "id, name, phone, status, arrival_date, departure_date, room, room_type, " +
+        "spa_time, spa_date, portal_token, meal_time, meal_location, claimed_by, claimed_at",
+      )
       .not("phone", "is", null)
       .then(({ data }) => {
-        const map = new Map();
-        for (const g of data ?? []) {
-          const key = normalizePhone(g.phone);
-          if (key) {
-            map.set(key, {
-              id: g.id,
-              name: g.name,
-              status: g.status ?? null,
-              arrival_date: g.arrival_date ?? null,
-              departure_date: g.departure_date ?? null,
-              claimed_by: g.claimed_by ?? null,
-              claimed_at: g.claimed_at ?? null,
-            });
-          }
-        }
-        guestPhoneMapRef.current = map;
+        const { phoneMap, idMap } = buildGuestMapsFromRows(data);
+        guestPhoneMapRef.current = phoneMap;
+        guestIdMapRef.current = idMap;
         guestMapReadyRef.current = true;
-        setContacts((prev) => resolveIdentityFallback(prev));
+        allMsgsRef.current = reconcileRowsWithGuestMap(allMsgsRef.current);
+        setContacts(applyGrouping(allMsgsRef.current));
       });
-  }, [resolveIdentityFallback]);
+  }, [resolveIdentityFallback, reconcileRowsWithGuestMap, applyGrouping]);
 
   // ── Populate the profiles id→name map once on mount, for resolving
   // guests.claimed_by (a UUID) to a readable name on the claim badge. ──────

@@ -1,6 +1,8 @@
 import {
   classifyInboxContactSegment,
   classifyInboxRosterSegment,
+  getGuestArrivalRosterLabel,
+  getGuestTimingBadge,
   israelTodayStr,
   israelDateOffsetStr,
   rosterGuestFields,
@@ -123,11 +125,63 @@ describe("syncInboxContactWithGuestMap", () => {
       guestName: "ירדנה",
       guestId: 3334,
       arrivalDate: tomorrow,
+      room: "רובי 14",
       status: "expected",
       messages: [],
     };
     const stripped = syncInboxContactWithGuestMap(stale, null);
     expect(classifyInboxContactSegment(stripped)).toBe("no_date");
+    expect(stripped.room).toBeNull();
     expect(classifyInboxContactSegment(stale)).toBe("tomorrow");
+  });
+
+  test("live map overwrites stale room and dates — no merge with ghost contact", () => {
+    const stale = {
+      phone: "972522484041",
+      guestName: "ירדנה",
+      guestId: 3334,
+      arrivalDate: tomorrow,
+      room: "רובי 14",
+      status: "expected",
+      messages: [],
+    };
+    const live = {
+      id: 100,
+      name: "אורח אחר",
+      arrival_date: israelDateOffsetStr(5),
+      departure_date: null,
+      status: "expected",
+      room: "אמטיסט 8",
+      room_type: "suite",
+    };
+    const synced = syncInboxContactWithGuestMap(stale, live);
+    expect(synced.guestId).toBe(100);
+    expect(synced.guestName).toBe("אורח אחר");
+    expect(synced.room).toBe("אמטיסט 8");
+    expect(synced.arrivalDate).toBe(israelDateOffsetStr(5));
+    expect(classifyInboxContactSegment(synced)).toBe("future");
+  });
+});
+
+describe("getGuestArrivalRosterLabel — departed vs stale checked_in", () => {
+  const yesterday = israelDateOffsetStr(-1);
+  const weekAgo = israelDateOffsetStr(-7);
+
+  test("checked_in + past departure shows אחרי עזיבה not בריזורט", () => {
+    const guest = {
+      arrival_date: weekAgo,
+      departure_date: yesterday,
+      status: "checked_in",
+    };
+    expect(getGuestArrivalRosterLabel(guest).label).toBe("⚪ אחרי עזיבה");
+  });
+
+  test("getGuestTimingBadge matches for stale checked_in after checkout", () => {
+    const guest = {
+      arrival_date: weekAgo,
+      departure_date: yesterday,
+      status: "checked_in",
+    };
+    expect(getGuestTimingBadge(guest).label).toBe("⚪ אורח לאחר עזיבה");
   });
 });
