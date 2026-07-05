@@ -189,9 +189,14 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    // ── Stage 2 reconciliation: ✓ אישר (arrival_confirmed) but Stage 2 never sent ──
-    const stage2InPipeline = stages.some((s) => s.stage_key === "stage_2_arrival") ||
-      activeStageKeys.includes("stage_2_arrival");
+    // ── Stage 2 reconciliation: ✓ אישר but Stage 2 never actually sent ──
+    // stage_2_arrival is event_immediate — excluded from `stages` scan above; check row directly.
+    const { data: stage2StageRow } = await supabase
+      .from("automation_stages")
+      .select("is_active")
+      .eq("stage_key", "stage_2_arrival")
+      .maybeSingle();
+    const stage2InPipeline = stage2StageRow?.is_active !== false;
     let stage2ReconcileQueued = 0;
     if (stage2InPipeline) {
       await supabase
@@ -204,16 +209,39 @@ Deno.serve(async (req: Request) => {
       const dueKey = (gId: number, tr: string) =>
         due.some((d) => d.guestId === gId && d.trigger === tr);
 
+      const confirmedGuestIds = ((guests ?? []) as GuestForSchedule[])
+        .filter((g) => g.arrival_confirmed || g.arrival_confirmed_at)
+        .map((g) => g.id as number);
+
+      const stage2ActuallySent = new Set<number>();
+      if (confirmedGuestIds.length > 0) {
+        const { data: sentLogs } = await supabase
+          .from("notification_log")
+          .select("guest_id")
+          .in("guest_id", confirmedGuestIds)
+          .eq("trigger_type", "stage_2_arrival")
+          .in("status", ["sent", "simulated"]);
+        for (const row of sentLogs ?? []) {
+          if (row.guest_id != null) stage2ActuallySent.add(row.guest_id as number);
+        }
+      }
+
       for (const guest of (guests ?? []) as GuestForSchedule[]) {
         if (guest.status === "cancelled" || guest.automation_muted === true) continue;
         if (!guest.arrival_confirmed && !guest.arrival_confirmed_at) continue;
-        if (guest.msg_stage_2_arrival_sent === true) continue;
         if (isGuestStaffClaimActive(guest)) continue;
         const gId = guest.id as number;
+        if (stage2ActuallySent.has(gId)) continue;
         if (dueKey(gId, "stage_2_arrival")) continue;
+
+        if (guest.msg_stage_2_arrival_sent === true) {
+          await supabase.from("guests").update({ msg_stage_2_arrival_sent: false }).eq("id", gId);
+          console.log(`[whatsapp-cron] stage_2_reconcile reset false-positive flag guest_id=${gId}`);
+        }
+
         console.log(
           `[whatsapp-cron] stage_2_reconcile QUEUED guest_id=${gId} ` +
-          `arrival_confirmed=${guest.arrival_confirmed} msg_stage_2_arrival_sent=false`,
+          `arrival_confirmed=${guest.arrival_confirmed} no_successful_notification_log`,
         );
         due.push({ guestId: gId, trigger: "stage_2_arrival", pipeline_reconcile: true });
         stage2ReconcileQueued++;

@@ -1,3 +1,4 @@
+2026-07-05 | Stage 2 false-flag backfill | migration 138 מאפס msg_stage_2_arrival_sent כשאין notification_log מוצלח; cron reconcile בודק לוג ולא רק דגל.
 2026-07-05 | morning_suite timing + Stage 2 reconcile | תזמון ישראל ב-automationSchedule; migration 137 מחזיר morning_suite ל-06:00 אם הוגדר 15:00; cron מסנכרן arrival_confirmed→stage_2; webhook מעדכן wa_window לפני שליחה.
 2026-07-05 | whatsapp-webhook Stage 2 staff-claim fix | אישור «כן מגיעים» שולח Stage 2 גם כש-claimed_by פעיל; `msg_stage_2_arrival_sent` רק אחרי Meta send אמיתי; post-burst confirm לפני staff exit.
 2026-07-05 | GuestProfileModal + stay meals + portal | פרופיל אורח: סוג הזמנה (פרטי/קבוצה), ריכוז חדרים מ-suite_rooms, פנסיון (חצי/מלא/ערב)+שעות ארוחה; migration 136; פורטל אורח מציג meals_itinerary; 82 tests.
