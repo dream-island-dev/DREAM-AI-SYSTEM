@@ -1,3 +1,5 @@
+2026-07-05 | morning_suite timing + Stage 2 reconcile | תזמון ישראל ב-automationSchedule; migration 137 מחזיר morning_suite ל-06:00 אם הוגדר 15:00; cron מסנכרן arrival_confirmed→stage_2; webhook מעדכן wa_window לפני שליחה.
+2026-07-05 | whatsapp-webhook Stage 2 staff-claim fix | אישור «כן מגיעים» שולח Stage 2 גם כש-claimed_by פעיל; `msg_stage_2_arrival_sent` רק אחרי Meta send אמיתי; post-burst confirm לפני staff exit.
 2026-07-05 | GuestProfileModal + stay meals + portal | פרופיל אורח: סוג הזמנה (פרטי/קבוצה), ריכוז חדרים מ-suite_rooms, פנסיון (חצי/מלא/ערב)+שעות ארוחה; migration 136; פורטל אורח מציג meals_itinerary; 82 tests.
 2026-07-05 | import multi-room display+sync dedupe | עמודת «קבוצה»: `חדר 1 מ־2`/`חדר 2 מ־2` (לא «2 חדרים»×2); סנכרון: profile אחד לכל הזמנה+טלפון+תאריך; `room_count` לפי מספר שורות; 76 tests.
 2026-07-05 | import multi-room same guest | `isSameBookingGuest` — אותה הזמנה+טלפון+תאריך: חדר שני לא ⚠ conflict; תגית «🔄 קיים · 2 חדרים»+עמודת קבוצה.

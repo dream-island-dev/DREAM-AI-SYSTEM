@@ -244,13 +244,36 @@ function addDays(d: Date, days: number): Date {
 }
 
 function parseLocalTimeToUtcHour(localTime: string): number {
-  const h = parseInt(localTime.split(":")[0], 10);
+  const h = parseLocalHour(localTime);
   return h - ISRAEL_UTC_OFFSET_HOURS;
+}
+
+/** Israel-local hour from automation_stages.local_time ("HH:MM" / "HH:MM:SS"). */
+export function parseLocalHour(localTime: string): number {
+  const h = parseInt(localTime.trim().split(":")[0], 10);
+  return Number.isFinite(h) ? h : 0;
 }
 
 function utcHourToTimestamp(dateStr: string, utcHour: number): Date {
   const normalized = ((utcHour % 24) + 24) % 24;
   return new Date(`${dateStr}T${String(normalized).padStart(2, "0")}:00:00.000Z`);
+}
+
+/** Calendar YMD + day offset without timezone drift on the anchor DATE string. */
+function targetYmdFromAnchor(anchorDateStr: string, dayOffset: number): string {
+  const anchorDate = new Date(`${anchorDateStr}T12:00:00.000Z`);
+  return ymd(addDays(anchorDate, dayOffset ?? 0));
+}
+
+function isDueByIsraelLocalClock(
+  now: Date,
+  floorLocalHour: number,
+  ceilLocalHour: number | null,
+): boolean {
+  const hour = israelLocalHour(now);
+  if (hour < floorLocalHour) return false;
+  if (ceilLocalHour !== null && hour > ceilLocalHour) return false;
+  return true;
 }
 
 /**
@@ -316,8 +339,7 @@ export function computeScheduledInstant(
   if (stage.schedule_mode === "day_offset_with_time") {
     const anchorDateStr = stage.anchor_event === "departure_date" ? guest.departure_date : guest.arrival_date;
     if (!anchorDateStr) return null;
-    const anchorDate = new Date(`${anchorDateStr}T00:00:00.000Z`);
-    const targetDateStr = ymd(addDays(anchorDate, stage.day_offset ?? 0));
+    const targetDateStr = targetYmdFromAnchor(anchorDateStr, stage.day_offset ?? 0);
     const floorUtcHour = stage.local_time ? parseLocalTimeToUtcHour(stage.local_time) : 0;
     return utcHourToTimestamp(targetDateStr, floorUtcHour);
   }
@@ -382,9 +404,8 @@ export function resolveStageSchedule(
     const anchorDateStr = stage.anchor_event === "departure_date" ? guest.departure_date : guest.arrival_date;
     if (!anchorDateStr) return { scheduledFor: null, dueNow: false, skipReason: "missing_anchor_date" };
 
-    const anchorDate = new Date(`${anchorDateStr}T00:00:00.000Z`);
-    const targetDateStr = ymd(addDays(anchorDate, stage.day_offset ?? 0));
-    const todayStr = ymd(now);
+    const targetDateStr = targetYmdFromAnchor(anchorDateStr, stage.day_offset ?? 0);
+    const todayStr = israelYmd(now);
     const floorUtcHour = stage.local_time ? parseLocalTimeToUtcHour(stage.local_time) : 0;
     const scheduledFor = scheduledForPreview ?? utcHourToTimestamp(targetDateStr, floorUtcHour);
 
@@ -398,12 +419,16 @@ export function resolveStageSchedule(
       return { scheduledFor: now, dueNow: true, skipReason: null };
     }
 
-    const hourUTC = now.getUTCHours();
-    const floorUTC = floorUtcHour;
-    const ceilUTC = stage.local_time_end ? parseLocalTimeToUtcHour(stage.local_time_end) : null;
+    const floorLocal = parseLocalHour(stage.local_time);
+    const ceilLocal = stage.local_time_end ? parseLocalHour(stage.local_time_end) : null;
 
-    if (hourUTC < floorUTC) return { scheduledFor, dueNow: false, skipReason: null };
-    if (ceilUTC !== null && hourUTC > ceilUTC) return { scheduledFor, dueNow: false, skipReason: "quiet_hours_passed" };
+    if (!isDueByIsraelLocalClock(now, floorLocal, ceilLocal)) {
+      const hour = israelLocalHour(now);
+      if (hour < floorLocal) {
+        return { scheduledFor, dueNow: false, skipReason: null };
+      }
+      return { scheduledFor, dueNow: false, skipReason: "quiet_hours_passed" };
+    }
     return { scheduledFor, dueNow: true, skipReason: null };
   }
 

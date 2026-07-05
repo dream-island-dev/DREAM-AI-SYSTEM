@@ -660,9 +660,11 @@ async function handleStage2ArrivalConfirmation(
 
   if (guestId) {
     const confirmedAt = new Date().toISOString();
+    const windowExpires = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
     const { error: confirmErr } = await supabaseClient.from("guests").update({
       arrival_confirmed: true,
       arrival_confirmed_at: confirmedAt,
+      wa_window_expires_at: windowExpires,
       ...(guest?.status === "pending" ? { status: "expected" } : {}),
     }).eq("id", guestId);
     if (confirmErr) {
@@ -670,6 +672,7 @@ async function handleStage2ArrivalConfirmation(
     } else if (guest) {
       guest.arrival_confirmed = true;
       guest.arrival_confirmed_at = confirmedAt;
+      guest.wa_window_expires_at = windowExpires;
     }
   } else {
     console.warn(
@@ -738,26 +741,41 @@ async function handleStage2ArrivalConfirmation(
         console.info(`[webhook] SIM — would send Stage 2 arrival reply to ${phone}`);
       } else {
         const outboundIntent = source === "button" ? "arrival_confirmed" : "confirmation";
+        // Pipeline Stage 2 must deliver on guest confirm — staff-claim mute blocks
+        // bot/LLM only, not this scheduled arrival reply (cron catch-up relies on
+        // msg_stage_2_arrival_sent staying false when Meta send did not happen).
+        const prevStaffMute = _suppressGuestRepliesStaffClaim;
+        setSuppressGuestRepliesStaffClaim(false);
         try {
-          await sendReply(phone, arrivalReply);
-          await insertGuestOutboundIfNotMuted(supabaseClient, {
-            phone, guest_id: guestId, message: arrivalReply, wa_message_id: null, intent: outboundIntent,
-          });
-          if (guestId) {
-            await supabaseClient.from("guests").update({ msg_stage_2_arrival_sent: true }).eq("id", guestId);
-            try {
-              const { error: logErr } = await supabaseClient.from("notification_log").insert({
-                guest_id: guestId, recipient: phone,
-                trigger_type: "stage_2_arrival", channel: "whatsapp",
-                status: "sent",
-                payload: { source, ...(buttonTitle ? { buttonTitle } : {}) },
-              });
-              if (logErr) console.warn("[webhook] notification_log stage_2_arrival:", logErr.message);
-            } catch (logEx) {
-              console.warn("[webhook] notification_log stage_2_arrival:", (logEx as Error).message);
+          const waId = await sendReply(phone, arrivalReply);
+          if (!waId) {
+            console.warn(
+              `[webhook] ⚠️ stage_2_arrival suppressed/empty — phone:${phone} (msg_stage_2_arrival_sent unchanged)`,
+            );
+          } else {
+            await insertGuestOutboundIfNotMuted(supabaseClient, {
+              phone,
+              guest_id: guestId,
+              message: arrivalReply,
+              wa_message_id: waId === "unknown" ? null : waId,
+              intent: outboundIntent,
+            });
+            if (guestId) {
+              await supabaseClient.from("guests").update({ msg_stage_2_arrival_sent: true }).eq("id", guestId);
+              try {
+                const { error: logErr } = await supabaseClient.from("notification_log").insert({
+                  guest_id: guestId, recipient: phone,
+                  trigger_type: "stage_2_arrival", channel: "whatsapp",
+                  status: "sent",
+                  payload: { source, ...(buttonTitle ? { buttonTitle } : {}) },
+                });
+                if (logErr) console.warn("[webhook] notification_log stage_2_arrival:", logErr.message);
+              } catch (logEx) {
+                console.warn("[webhook] notification_log stage_2_arrival:", (logEx as Error).message);
+              }
             }
+            console.info(`[webhook] ✅ arrival reply sent to ${phone}`);
           }
-          console.info(`[webhook] ✅ arrival reply sent to ${phone}`);
         } catch (e) {
           const errMsg = (e as Error).message;
           const replyStatus = errMsg.startsWith("timeout_no_response") ? "timeout" : "failed";
@@ -773,6 +791,8 @@ async function handleStage2ArrivalConfirmation(
           } catch (logEx) {
             console.warn("[webhook] notification_log insert error:", (logEx as Error).message);
           }
+        } finally {
+          setSuppressGuestRepliesStaffClaim(prevStaffMute);
         }
       }
     }
@@ -3788,14 +3808,6 @@ Deno.serve(async (req: Request) => {
       const burst = await coalesceBurstIfLeader(supabase, phone, msgId);
       if (!burst.proceed) continue;
 
-      // ── Post-burst staff-claim re-fetch (closes 1.8s race with Inbox mute) ──
-      if (guestId && await refreshStaffClaimMuteFromDb(supabase, guestId)) {
-        console.info(
-          `[webhook] 🔇 staff claim active — post-burst early exit phone:${phone} guest:${guestId}`,
-        );
-        continue;
-      }
-
       let effectiveText = burst.coalescedText.trim() || text;
       if (
         !inRoomOverride && guestId && guest &&
@@ -3812,9 +3824,8 @@ Deno.serve(async (req: Request) => {
         );
       }
 
-      // ── Arrival confirmation (post-burst) — must beat LLM when portal-spa flag
-      // is active; pre-burst path may have been skipped if arrival_confirmed was
-      // already true from a prior partial confirm.
+      // ── Arrival confirmation (post-burst) — before staff-claim LLM exit ──
+      // Pipeline Stage 2 must fire even when Inbox "קח שיחה" is active.
       if (
         !isButtonReply &&
         canGuestConfirmArrival(guest as Record<string, unknown> | null) &&
@@ -3831,6 +3842,14 @@ Deno.serve(async (req: Request) => {
           msgId,
         });
         console.info(`[webhook] ✅ pre-arrival confirmed (post-burst) — phone:${phone} guest:${guestId}`);
+        continue;
+      }
+
+      // ── Post-burst staff-claim re-fetch (closes 1.8s race with Inbox mute) ──
+      if (guestId && await refreshStaffClaimMuteFromDb(supabase, guestId)) {
+        console.info(
+          `[webhook] 🔇 staff claim active — post-burst early exit phone:${phone} guest:${guestId}`,
+        );
         continue;
       }
 

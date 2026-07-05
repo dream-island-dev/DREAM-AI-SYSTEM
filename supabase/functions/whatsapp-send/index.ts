@@ -1201,7 +1201,7 @@ serve(async (req: Request) => {
 
   try {
     const body = await req.json();
-    const { trigger, guestId, assignments, weekStart, waTemplateName, templateVariables, force, force_channel, manual_override, scheduled_for, is_test, phone: testPhone, image_url: requestImageUrl } = body as {
+    const { trigger, guestId, assignments, weekStart, waTemplateName, templateVariables, force, force_channel, manual_override, scheduled_for, is_test, phone: testPhone, image_url: requestImageUrl, pipeline_reconcile } = body as {
       trigger:             string;
       guestId?:            string;
       assignments?:        Record<string, unknown[]>;
@@ -1215,6 +1215,7 @@ serve(async (req: Request) => {
       is_test?:            boolean;   // template_test isolation gate
       phone?:              string;    // template_test target (E.164)
       image_url?:          string;    // optional IMAGE header (templates) or session caption image
+      pipeline_reconcile?: boolean;   // cron catch-up for arrival_confirmed guests missing Stage 2
     };
 
     if (!trigger) throw new Error("trigger is required");
@@ -1840,6 +1841,7 @@ serve(async (req: Request) => {
     const STAFF_CLAIM_AUTOMATION_EXEMPT = new Set([...MANUAL_TRIGGERS, "room_ready"]);
     if (
       !force &&
+      !pipeline_reconcile &&
       guest.claimed_by != null &&
       guest.claimed_by !== "" &&
       !STAFF_CLAIM_AUTOMATION_EXEMPT.has(trigger)
@@ -1920,7 +1922,11 @@ serve(async (req: Request) => {
         );
       }
 
-      if (!force && !forceSessionMessage && !isWindowOpen(guest.wa_window_expires_at)) {
+      const confirmFresh = !!guest.arrival_confirmed_at &&
+        (Date.now() - new Date(guest.arrival_confirmed_at as string).getTime()) < 48 * 3600 * 1000;
+      const windowOk = isWindowOpen(guest.wa_window_expires_at) || confirmFresh || pipeline_reconcile === true;
+
+      if (!force && !forceSessionMessage && !windowOk) {
         return new Response(
           JSON.stringify({
             ok: false,

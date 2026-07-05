@@ -27,6 +27,7 @@ import {
   isPastAutoCheckinGateway,
   isPastAutoCheckoutGateway,
   israelYmd,
+  isGuestStaffClaimActive,
   AUTO_CHECKIN_ELIGIBLE_STATUSES,
   AUTO_CHECKOUT_ELIGIBLE_STATUSES,
   type AutomationStage,
@@ -160,16 +161,23 @@ Deno.serve(async (req: Request) => {
 
     const NIGHT_BEFORE_STAGE_KEYS = new Set(["night_before", "night_before_daypass"]);
     const MID_STAY_STAGE_KEYS = new Set(["mid_stay", "mid_stay_daypass"]);
-    const due: { guestId: number; trigger: string }[] = [];
+    const MORNING_STAGE_KEYS = new Set(["morning_suite", "morning_welcome"]);
+    type DueItem = { guestId: number; trigger: string; pipeline_reconcile?: boolean };
+    const due: DueItem[] = [];
     for (const guest of (guests ?? []) as GuestForSchedule[]) {
       for (const stage of stages) {
         const result = resolveStageSchedule(stage, guest, now);
-        if (NIGHT_BEFORE_STAGE_KEYS.has(stage.stage_key) || MID_STAY_STAGE_KEYS.has(stage.stage_key)) {
+        if (
+          NIGHT_BEFORE_STAGE_KEYS.has(stage.stage_key) ||
+          MID_STAY_STAGE_KEYS.has(stage.stage_key) ||
+          MORNING_STAGE_KEYS.has(stage.stage_key)
+        ) {
           const flagCol = stage.guest_flag_column;
           const flagVal = flagCol ? guest[flagCol] : null;
           console.log(
             `[whatsapp-cron] stage_eval stage=${stage.stage_key} guest_id=${guest.id} ` +
             `room_type=${guest.room_type ?? "null"} arrival=${guest.arrival_date ?? "null"} ` +
+            `local_time=${stage.local_time ?? "null"} israel_hour=${new Date().toLocaleString("en-GB", { timeZone: "Asia/Jerusalem", hour: "numeric", hour12: false })} ` +
             `applies_to=${stage.applies_to} ${flagCol ?? "flag"}=${String(flagVal)} ` +
             `dueNow=${result.dueNow} skipReason=${result.skipReason ?? "none"}`,
           );
@@ -178,6 +186,37 @@ Deno.serve(async (req: Request) => {
           console.log(`[whatsapp-cron] QUEUED guest_id=${guest.id} trigger=${stage.stage_key}`);
           due.push({ guestId: guest.id as number, trigger: stage.stage_key });
         }
+      }
+    }
+
+    // ── Stage 2 reconciliation: ✓ אישר (arrival_confirmed) but Stage 2 never sent ──
+    const stage2InPipeline = stages.some((s) => s.stage_key === "stage_2_arrival") ||
+      activeStageKeys.includes("stage_2_arrival");
+    let stage2ReconcileQueued = 0;
+    if (stage2InPipeline) {
+      await supabase
+        .from("guests")
+        .update({ arrival_confirmed_at: new Date().toISOString() })
+        .eq("arrival_confirmed", true)
+        .is("arrival_confirmed_at", null)
+        .eq("msg_stage_2_arrival_sent", false);
+
+      const dueKey = (gId: number, tr: string) =>
+        due.some((d) => d.guestId === gId && d.trigger === tr);
+
+      for (const guest of (guests ?? []) as GuestForSchedule[]) {
+        if (guest.status === "cancelled" || guest.automation_muted === true) continue;
+        if (!guest.arrival_confirmed && !guest.arrival_confirmed_at) continue;
+        if (guest.msg_stage_2_arrival_sent === true) continue;
+        if (isGuestStaffClaimActive(guest)) continue;
+        const gId = guest.id as number;
+        if (dueKey(gId, "stage_2_arrival")) continue;
+        console.log(
+          `[whatsapp-cron] stage_2_reconcile QUEUED guest_id=${gId} ` +
+          `arrival_confirmed=${guest.arrival_confirmed} msg_stage_2_arrival_sent=false`,
+        );
+        due.push({ guestId: gId, trigger: "stage_2_arrival", pipeline_reconcile: true });
+        stage2ReconcileQueued++;
       }
     }
 
@@ -235,6 +274,7 @@ Deno.serve(async (req: Request) => {
       auto_checkin_promoted: autoCheckinCount,
       auto_checkout_archived: autoCheckoutCount,
       fired: results.length,
+      stage2_reconcile_queued: stage2ReconcileQueued,
       throttled: due.length > 1,
       dispatch_batch_size: DISPATCH_BATCH_SIZE,
       inter_send_delay_ms: INTER_SEND_DELAY_MS,
