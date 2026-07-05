@@ -748,12 +748,22 @@ export const SENSITIVE_STAY_CHANGE_PATTERN =
   /הארכ(ה|ת)\s*(של\s*)?(ה)?(שהייה|שהות|חדר|הזמנה)|עזיבה\s*מאוחרת|פינוי\s*מאוחר|צ.?ק.?אא?וט\s*מאוחר|צ.?ק.?אא?וט\s*מאוחרת|להישאר\s*עוד|עוד\s*יום|עוד\s*לילה|לילה\s*נוסף|להאריך\s*(את\s*)?(ה)?(שהות|ההזמנה|השהייה)|לצ.?את[\s\S]{0,20}מאוחר|צ.?ק.?אין\s*מוקדם|הגעה\s*מוקדמת|כניסה\s*מוקדמת|חדר[\s\S]{0,25}מוקדם|מוקדם[\s\S]{0,25}חדר|להיכנס\s*(לחדר\s*)?מוקדם|שינוי\s*חדר|להחליף\s*חדר|חדר\s*אחר|early\s*check.?in|late\s*check.?out|extend\s*(my\s*)?(stay|booking)|extra\s*night|stay\s*longer/i;
 
 const SENSITIVE_STAY_FAQ_EXCLUSION =
-  /^(?:מה|מתי|איזו?\s*שעה|כמה|האם)\s+.{0,50}?(?:צ.?ק.?אא?וט|צ.?ק.?אין|שעת\s*(?:כניסה|עזיבה)|כניסה|הכנס|להיכנס|חדר|check.?out|check.?in)/iu
-  | /^שעות?\s*(?:ה)?כניסה/iu;
+  /^(?:מה|מתי|איזו?\s*שעה|כמה|האם)\s+.{0,50}?(?:צ.?ק.?אא?וט|צ.?ק.?אין|שעת\s*(?:כניסה|עזיבה)|כניסה|הכנס|להיכנס|חדר|check.?out|check.?in)/iu;
+const SENSITIVE_STAY_FAQ_EXCLUSION_HOURS = /^שעות?\s*(?:ה)?כניסה/iu;
 
 export function isSensitiveStayChangeRequest(text: string): boolean {
   const t = text.trim();
-  if (!t || SENSITIVE_STAY_FAQ_EXCLUSION.test(t)) return false;
+  if (!t) return false;
+  // BUG FIX (2026-07-06, P0): these two regexes were previously joined with the
+  // bitwise `|` operator (`regexA | regexB`) instead of a logical OR of two
+  // `.test()` calls. `RegExp | RegExp` coerces both operands to numbers (NaN),
+  // and `NaN | NaN` evaluates to `0` — so this constant silently became the
+  // *number* 0, not a RegExp. Every call to `.test()` on it threw
+  // "SENSITIVE_STAY_FAQ_EXCLUSION.test is not a function", and since this
+  // function runs on every non-button inbound message before the burst/LLM
+  // step, the exception aborted per-message processing before any reply was
+  // ever sent — this was the root cause of the bot going completely silent.
+  if (SENSITIVE_STAY_FAQ_EXCLUSION.test(t) || SENSITIVE_STAY_FAQ_EXCLUSION_HOURS.test(t)) return false;
   return SENSITIVE_STAY_CHANGE_PATTERN.test(t);
 }
 

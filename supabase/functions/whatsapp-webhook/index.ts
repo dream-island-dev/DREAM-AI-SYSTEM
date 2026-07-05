@@ -104,7 +104,6 @@ import {
 } from "../_shared/arrivalConfirmation.ts";
 import {
   assertGuestEligibleForAutomation,
-  isGuestActiveForOutbound,
 } from "../_shared/guestOutboundGuard.ts";
 import { sanitizeMetaRecipientPhone } from "../_shared/metaPhone.ts";
 
@@ -3496,7 +3495,14 @@ Deno.serve(async (req: Request) => {
       })) {
         continue;
       }
-
+      // ── Defensive Shield: this per-message body (Tier-0 intercepts, burst
+      // coalescing, intent classification, LLM call, send) had no top-level
+      // try/catch — any thrown exception silently killed the reply for this
+      // guest with zero trace (no DB row, no visible error) since processAsync
+      // itself isn't awaited by the caller. Wrapping it means a future bug
+      // here degrades to "no reply + a logged reason" instead of "no reply +
+      // total silence" (FAIL VISIBLE, CLAUDE.md §0.3).
+      try {
       const nowForGuest = new Date();
       const guestStatusAtLookup = resolveEffectiveGuestStatus(
         {
@@ -4655,9 +4661,14 @@ Deno.serve(async (req: Request) => {
         console.info(
           `[webhook] 🔕 Defensive Shield — low-confidence FAQ miss, reply suppressed, staff flagged — phone:${phone} guest:${guestId ?? "unknown"}`,
         );
-      } else if (!guestId || !isGuestActiveForOutbound(guest as Record<string, unknown> | null)) {
+      } else if (guest && (guest as Record<string, unknown>).status === "cancelled") {
+        // Zero-Spam Policy (§CORE BUSINESS LOGIC): cancelled guests never receive bot messages.
+        // NOTE: guestId===null (unregistered number) and status==="checked_out" must still get a
+        // reply — isGuestActiveForOutbound() is for scheduled/automation outbound only (cron,
+        // stage sends); applying it here silenced the bot for every unknown contact and every
+        // post-stay guest who messaged back. Regression introduced in f00bae6 (2026-07-05).
         console.info(
-          `[webhook] 🔕 no active guest — auto-reply suppressed (inbound logged) — phone:${phone}`,
+          `[webhook] 🔕 cancelled guest — auto-reply suppressed (inbound logged) — phone:${phone}`,
         );
       } else {
         // ── Send WhatsApp reply ─────────────────────────────────────────────
@@ -4683,12 +4694,38 @@ Deno.serve(async (req: Request) => {
           );
         }
       }
+      } catch (e) {
+        const errMsg = (e as Error)?.message ?? String(e);
+        console.error(`[webhook] 🛡️ per-message processing EXCEPTION phone:${phone}:`, errMsg, (e as Error)?.stack);
+        try {
+          await supabase.from("whatsapp_conversations").insert({
+            phone, direction: "outbound",
+            message: `[SYSTEM] ⚠️ שגיאה פנימית בעיבוד ההודעה — הצוות טופל, לא נשלחה תשובה אוטומטית. (${errMsg.slice(0, 200)})`,
+            intent: null,
+          });
+        } catch (_e2) { /* best-effort — never let logging failure mask the original error */ }
+      }
     }
   };
 
-  processAsync().catch((e) =>
+  // "Fire-and-forget" is not actually guaranteed on the Supabase/Deno Deploy
+  // isolate model — once the HTTP Response below is returned, the runtime may
+  // freeze/terminate the isolate before an un-awaited async task finishes.
+  // processAsync() routinely takes 2-5s+ (BURST_COALESCE_MS=1800 alone, plus
+  // the Gemini/Claude round-trip) — comfortably longer than the best-effort
+  // grace period, so replies were being silently cut off after the inbound
+  // insert (which resolves fast) but before sendReply() ran. EdgeRuntime.
+  // waitUntil() is the documented Supabase mechanism to keep the isolate
+  // alive until the given promise settles, without delaying the response
+  // Meta receives. Falls back to the old un-awaited call if the runtime
+  // (e.g. local `supabase functions serve`) doesn't expose it.
+  const backgroundTask = processAsync().catch((e) =>
     console.error("[webhook] processAsync error:", e)
   );
+  const edgeRuntime = (globalThis as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } }).EdgeRuntime;
+  if (typeof edgeRuntime?.waitUntil === "function") {
+    edgeRuntime.waitUntil(backgroundTask);
+  }
 
   // Respond to Meta within 20 s window
   return new Response(JSON.stringify({ ok: true }), {
