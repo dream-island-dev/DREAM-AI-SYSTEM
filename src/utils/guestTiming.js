@@ -243,6 +243,7 @@ export const INBOX_ROSTER_SEGMENT_ORDER = [
 
 const INBOX_SEGMENT_META = {
   he: {
+    unread: { label: "🔵 הודעות חדשות", bg: "#EFF6FF", fg: "#1D4ED8" },
     in_resort: { label: "🟢 בריזורט", bg: "#F0FDF4", fg: "#15803D" },
     tomorrow: { label: "📅 מחר", bg: "#FFFBEB", fg: "#B45309" },
     in_2_days: { label: "📅 עוד יומיים", bg: "#FFFBEB", fg: "#B45309" },
@@ -251,6 +252,7 @@ const INBOX_SEGMENT_META = {
     alerts: { label: "🔴 דורש תשומת לב", bg: "#FEF2F2", fg: "#B91C1C" },
   },
   en: {
+    unread: { label: "🔵 New messages", bg: "#EFF6FF", fg: "#1D4ED8" },
     in_resort: { label: "🟢 In resort", bg: "#F0FDF4", fg: "#15803D" },
     tomorrow: { label: "📅 Tomorrow", bg: "#FFFBEB", fg: "#B45309" },
     in_2_days: { label: "📅 In 2 days", bg: "#FFFBEB", fg: "#B45309" },

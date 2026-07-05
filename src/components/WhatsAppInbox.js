@@ -750,10 +750,31 @@ function sortRosterContacts(contacts, sortMode) {
   });
 }
 
+/**
+ * Unread conversations always pin to the very top of the "all" grouped view —
+ * like a regular chat app — instead of staying buried inside whichever
+ * arrival-timing section they'd otherwise fall into (a contact with an unread
+ * message but a "future arrival" segment used to show up below "in resort",
+ * not at the top of the screen). Pulled out here, before alerts/segments are
+ * computed, so the same contact never renders twice.
+ */
 function buildGroupedRosterSections(contacts, sortMode, lang) {
-  const alerts = contacts.filter((c) => c.humanRequested);
-  const rest = contacts.filter((c) => !c.humanRequested);
+  const unread = contacts.filter((c) => countUnreadInbound(c.messages) > 0);
+  const unreadPhones = new Set(unread.map((c) => c.phone));
+  const remaining = contacts.filter((c) => !unreadPhones.has(c.phone));
+
+  const alerts = remaining.filter((c) => c.humanRequested);
+  const rest = remaining.filter((c) => !c.humanRequested);
   const sections = [];
+  if (unread.length) {
+    sections.push({
+      key: "unread",
+      ...getInboxRosterSegmentMeta("unread", lang),
+      // Always most-recent-unread-first, regardless of the chosen sort chip —
+      // "unread" as a bucket only makes sense ordered by recency.
+      contacts: sortRosterContacts(unread, "activity"),
+    });
+  }
   if (alerts.length) {
     const meta = getInboxRosterSegmentMeta("alerts", lang);
     sections.push({
