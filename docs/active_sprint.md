@@ -1,7 +1,21 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-05 (session 124). Current goals, blockers, and next priorities.
+> Last updated: 2026-07-06 (session 125). Current goals, blockers, and next priorities.
 > Full session history → `CLAUDE.md` §10 + `claude_history.md`.
 > **Agent workflow** → `docs/xos_agent_playbook.md`
+
+---
+
+## 🟢 In Progress — P0/P1/P2 Incident + Inbox Sprint (session 125)
+
+| Phase | Target | Status |
+|---|---|---|
+| P0-A | Suite vs day-pass routing guard (`_shared/suiteNames.ts`, effective classification everywhere + ⚠ conflict badges) | ✅ deployed session 125 |
+| P0-B | WhatsApp reactions FAIL VISIBLE in Inbox (webhook `reaction` branch, log-only) | ✅ deployed session 125 |
+| P1-C | Inbox real-time verify (migration 107 publication, LIVE indicator behavior) | Pending |
+| P1-D | Roster sort + stable thread (additive fetchThreadHistory, scroll preserve, phone-variant dedup) — **open question to Mike:** keep unread-pinned-on-top (19262d6) or strict latest-desc? | Pending |
+| P2 E–H | Guest↔Inbox nav, duplicate_blocked toasts, template-draft preload refactor, date-filter sync to Inbox chips | Pending |
+
+**Post-deploy QA (Mike):** run the conflict-audit SQL (CLAUDE.md session 125) for today's arrivals; send a real ❤️ reaction to a bot message → readable line in DREAM BOT שיחות.
 
 ---
 

@@ -25,6 +25,10 @@ import {
   type AutomationStage,
   type GuestForSchedule,
 } from "../_shared/automationSchedule.ts";
+import {
+  hasSuiteRoomTypeConflict,
+  isEffectiveSuiteGuest,
+} from "../_shared/suiteNames.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -158,6 +162,11 @@ Deno.serve(async (req: Request) => {
           phone: (guest as Record<string, unknown>).phone ?? null,
           room: (guest as Record<string, unknown>).room ?? null,
           room_type: (guest as Record<string, unknown>).room_type ?? null,
+          // Effective routing truth (suiteNames.ts) — the ACC chips/gates must
+          // segment by THIS, not raw room_type, to match cron/send routing.
+          effectiveSuite: isEffectiveSuiteGuest(guest),
+          // FAIL VISIBLE: suite room + day-pass room_type — ⚠ badge in ACC.
+          roomTypeConflict: hasSuiteRoomTypeConflict(guest),
           arrivalDate: (guest as Record<string, unknown>).arrival_date ?? null,
           departureDate: (guest as Record<string, unknown>).departure_date ?? null,
           stageKey: stage.stage_key,

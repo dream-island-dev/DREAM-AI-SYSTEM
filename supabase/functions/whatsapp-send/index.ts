@@ -87,6 +87,12 @@ import {
   loadActiveGuestByPhone,
 } from "../_shared/guestOutboundGuard.ts";
 import { assertPipelineLifecycleForTrigger } from "../_shared/pipelineLifecycle.ts";
+import {
+  hasSuiteRoomTypeConflict,
+  isCanonicalSuiteRoom,
+  isEffectiveDayPassGuest,
+  isEffectiveSuiteGuest,
+} from "../_shared/suiteNames.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -951,7 +957,11 @@ function resolvePipelineTemplateName(
   const fromMap = PIPELINE_TEMPLATE[trigger]?.trim();
 
   if (trigger === "pre_arrival_2d") {
-    if (guest.room_type === "day_guest") return "dream_checkin_reminder_v2";
+    // Suite-room guard: a mis-tagged day_guest occupying a real suite gets the
+    // suite/standard confirmation template, not the day-pass one (P0, s125).
+    if (guest.room_type === "day_guest" && !isCanonicalSuiteRoom(guest.room)) {
+      return "dream_checkin_reminder_v2";
+    }
     return fromDb || fromMap || "dream_arrival_confirmation";
   }
 
@@ -1847,6 +1857,15 @@ serve(async (req: Request) => {
     if (gErr)   throw new Error(`guest_lookup_error: ${gErr.message}`);
     if (!guest) throw new Error(`guest_not_found: no guest row for id=${JSON.stringify(guestId)}`);
 
+    // FAIL VISIBLE (P0, session 125): suite room + day-pass room_type is a data
+    // conflict — routing below treats this guest as SUITE (suiteNames.ts).
+    if (hasSuiteRoomTypeConflict(guest)) {
+      console.warn(
+        `[whatsapp-send] room_type_conflict: guest_id=${guestId} room="${guest.room}" ` +
+        `is a canonical suite but room_type=${guest.room_type} — routing as SUITE`,
+      );
+    }
+
     const pipelineInactive = !force ? assertGuestEligibleForAutomation(guest, trigger) : null;
     if (pipelineInactive) {
       console.log(`[whatsapp-send] skipped trigger="${trigger}" guestId=${guestId} reason=${pipelineInactive}`);
@@ -1920,7 +1939,9 @@ serve(async (req: Request) => {
       "pre_arrival_2d", "stage_2_arrival", "night_before_daypass", "morning_welcome",
       "mid_stay_daypass", "checkout_fb_daypass",
     ]);
-    if (!force && (guest.room_type === "day_guest" || guest.room_type === "premium_day_guest") && !DAY_PASS_ALLOWED_TRIGGERS.has(trigger)) {
+    // isEffectiveDayPassGuest (not raw room_type): a suite-room guest mis-tagged
+    // day_guest must NOT be run through day-pass restrictions (P0, session 125).
+    if (!force && isEffectiveDayPassGuest(guest) && !DAY_PASS_ALLOWED_TRIGGERS.has(trigger)) {
       console.warn(
         `[whatsapp-send] day_pass_stage_gate: trigger="${trigger}" blocked for ` +
         `guest_id=${guestId} (room_type=${guest.room_type}) — allowed: pre_arrival_2d, stage_2_arrival, night_before_daypass, morning_welcome, mid_stay_daypass, checkout_fb_daypass`,
@@ -1936,6 +1957,30 @@ serve(async (req: Request) => {
       );
     }
 
+    // ── Suite Safety Gate (mirror of the Day Pass gate above) ───────────────
+    // A true suite guest (room_type='suite' OR canonical suite room) must never
+    // receive day-pass-only stages — this is the server-authoritative backstop
+    // for the misrouting incident (suite guest got morning_daypass content).
+    const DAYPASS_ONLY_TRIGGERS = new Set([
+      "night_before_daypass", "morning_daypass", "mid_stay_daypass", "checkout_fb_daypass",
+    ]);
+    if (!force && isEffectiveSuiteGuest(guest) && DAYPASS_ONLY_TRIGGERS.has(trigger)) {
+      console.warn(
+        `[whatsapp-send] suite_daypass_stage_gate: trigger="${trigger}" blocked for ` +
+        `guest_id=${guestId} (room="${guest.room ?? ""}" room_type=${guest.room_type}) — ` +
+        `suite guests use the suite counterpart stage`,
+      );
+      return new Response(
+        JSON.stringify({
+          ok: false,
+          status: "blocked",
+          reason: "suite_daypass_stage_gate",
+          error: `שלב "${trigger}" הוא שלב יום-כיף — האורח משויך לסוויטה (${guest.room ?? guest.room_type ?? ""}) ולכן חסום. השתמש בשלב הסוויטות המקביל.`,
+        }),
+        { headers: { ...CORS, "Content-Type": "application/json" } },
+      );
+    }
+
     // Day Pass Stage 1 template override — hardcoded router, highest priority.
     // dream_checkin_reminder_v2 is the approved template for day-pass check-in
     // confirmation. PIPELINE_TEMPLATE["pre_arrival_2d"] resolves to
@@ -1946,7 +1991,7 @@ serve(async (req: Request) => {
     // portal-button paths below, so every dispatch path for a day-pass
     // pre_arrival_2d picks this template without exception.
     let tmplName = resolvePipelineTemplateName(trigger, guest, stageRow);
-    if (guest.room_type === "day_guest" && trigger === "pre_arrival_2d") {
+    if (guest.room_type === "day_guest" && !isCanonicalSuiteRoom(guest.room) && trigger === "pre_arrival_2d") {
       console.log(
         `[whatsapp-send] day_pass_template_override: stage=pre_arrival_2d → ` +
         `dream_checkin_reminder_v2 for guest_id=${guestId} (${String(guest.name ?? "?")})`,
@@ -2434,7 +2479,9 @@ serve(async (req: Request) => {
     // ── Morning day-pass fast-path (Stage 3 — בוקר הגעה, בילוי יומי) ──────────
     // Autonomous cron → Shabbat-aware Meta template (same as suites).
     // Session morning_daypass only on manual force (force===true).
-    if (trigger === "morning_welcome" && (guest.room_type === "day_guest" || guest.room_type === "premium_day_guest")) {
+    // isEffectiveDayPassGuest — a suite-room guest mis-tagged day_guest falls
+    // through to the generic (suite-template) morning path below (P0, s125).
+    if (trigger === "morning_welcome" && isEffectiveDayPassGuest(guest)) {
       const dpGuestName = sanitizeTemplateVars([String(guest.name ?? "")])[0];
       const dpArrivalYmd = normalizeArrivalDateYmd(guest.arrival_date);
       const dpIsShabbat = isShabbatArrivalDate(dpArrivalYmd);

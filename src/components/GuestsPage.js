@@ -5,6 +5,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import { SUITE_REGISTRY } from "../data/suiteRegistry";
+import { hasSuiteRoomTypeConflict } from "../utils/guestTiming";
 import AddGuestModal from "./AddGuestModal";
 import GuestAttentionBadge from "./GuestAttentionBadge";
 import CustomerProfilePane from "./CustomerProfilePane";
@@ -716,6 +717,15 @@ export default function GuestsPage({
                           background: isSuite(g) ? "rgba(201,169,110,0.2)" : "var(--ivory)",
                           color: isSuite(g) ? "var(--gold-dark)" : "var(--text-muted)",
                         }}>{isSuite(g) ? "👑 סוויטה" : "סטנדרט"}</span>
+                        {hasSuiteRoomTypeConflict(g) && (
+                          <span
+                            className="badge badge-orange"
+                            title="סתירת סיווג: החדר הוא סוויטה אך סוג האורח מסומן יום-כיף — האוטומציה מנתבת כסוויטה. לחץ ✏️ ותקן את סוג החדר."
+                            style={{ marginRight: 6, whiteSpace: "nowrap" }}
+                          >
+                            ⚠ סתירת סיווג
+                          </span>
+                        )}
                       </td>
                       <td style={{ fontSize: 13 }}>{g.arrival_date ?? "—"}</td>
                       <td style={{

@@ -48,6 +48,17 @@ export function isSuiteGuestProfile({ room_type, room } = {}) {
 }
 
 /**
+ * FAIL VISIBLE (§0.3, session 125 P0): room says suite but room_type says
+ * day-pass — the split-brain that misrouted suite guests to day-pass WhatsApp
+ * content. The server (suiteNames.ts) routes such guests as SUITE; this badge
+ * tells staff the row needs fixing (edit guest → room_type).
+ */
+export function hasSuiteRoomTypeConflict({ room_type, room } = {}) {
+  if (room_type !== "day_guest" && room_type !== "premium_day_guest") return false;
+  return !!room && SUITE_REGISTRY.includes(room);
+}
+
+/**
  * Inbound message alert class for WhatsAppInbox sounds.
  * @returns {"suite"|"off_resort"|null}
  */

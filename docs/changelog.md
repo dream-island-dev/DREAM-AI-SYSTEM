@@ -1,3 +1,4 @@
+2026-07-06 | P0 suite/day-pass routing guard + Inbox reactions (session 125) | `_shared/suiteNames.ts` — חדר-סוויטה מנצח `room_type` שגוי ב-`checkEligibility`+whatsapp-send (שער `suite_daypass_stage_gate` חדש); ACC/queue מפיצים `effectiveSuite`+`roomTypeConflict`; באדג' «⚠ סתירת סיווג» ב-GuestsPage/GuestDashboard/ACC; webhook — reaction נרשם כ«❤️ תגובה על ההודעה: «snippet»» (log-only); 117 tests.
 2026-07-06 | Webhook pipeline hardening | `sendReply`/`sendTemplate` → `sanitizeMetaRecipientPhone`; ingest non-text ל-Inbox; GET `?diag=1`; Inbox מציג «אחרון ב-DB»+אזהרת Meta.
 2026-07-06 | Inbox mount revalidate + intent widen | mount תמיד `fetchAll` (cache=paint בלבד); `fetchSince` gte; emergency `fetchAll` בלי Realtime; migration 143 intent; webhook insert error logs.
 2026-07-06 | Inbox live sync fix | `fetchSince` gt+DESC; `id` מנורמל; כפתור «🔄 רענן רשימה»; webhook לא ממשיך כש-INSERT ל-whatsapp_conversations נכשל.

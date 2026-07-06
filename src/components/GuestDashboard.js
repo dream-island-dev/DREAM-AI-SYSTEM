@@ -22,7 +22,7 @@ import CustomerProfilePane from "./CustomerProfilePane";
 import QuietHoursGate from "./QuietHoursGate";
 import CheckinTimelineFilterBar from "./CheckinTimelineFilterBar";
 import { STATUS_META } from "../utils/guestStatusMeta";
-import { isSuiteGuestProfile } from "../utils/guestTiming";
+import { isSuiteGuestProfile, hasSuiteRoomTypeConflict } from "../utils/guestTiming";
 import {
   applyCheckinRosterFilter,
   countCheckinScopeTotals,
@@ -747,6 +747,15 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
                     </span>
                   )}
                   <RoomTypeBadge type={guest.room_type} />
+                  {hasSuiteRoomTypeConflict(guest) && (
+                    <span
+                      className="badge badge-orange"
+                      title="סתירת סיווג: החדר הוא סוויטה אך סוג האורח מסומן יום-כיף — האוטומציה מנתבת כסוויטה. לחץ ✏️ ותקן את סוג החדר."
+                      style={{ whiteSpace: "nowrap" }}
+                    >
+                      ⚠ סתירת סיווג
+                    </span>
+                  )}
                 </div>
 
                 {/* Hotel guests only: pipeline + room ready button */}

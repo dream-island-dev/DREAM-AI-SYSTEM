@@ -3,11 +3,49 @@ import {
   classifyInboxRosterSegment,
   getGuestArrivalRosterLabel,
   getGuestTimingBadge,
+  hasSuiteRoomTypeConflict,
+  isSuiteGuestProfile,
   israelTodayStr,
   israelDateOffsetStr,
   rosterGuestFields,
   syncInboxContactWithGuestMap,
 } from "./guestTiming";
+
+// ── Suite vs day-pass split-brain (session 125 P0) ─────────────────────────
+// A guest synced with a real suite room but room_type='day_guest' received
+// day-pass automation content. These tests pin the effective classification
+// (suite room wins) + the FAIL VISIBLE conflict flag.
+describe("hasSuiteRoomTypeConflict / effective suite classification", () => {
+  test("suite room + day_guest room_type = conflict (the incident)", () => {
+    const g = { room: "אמטיסט 8", room_type: "day_guest" };
+    expect(hasSuiteRoomTypeConflict(g)).toBe(true);
+    // Effective classification routes as suite — matches server suiteNames.ts.
+    expect(isSuiteGuestProfile(g)).toBe(true);
+  });
+
+  test("suite room + premium_day_guest room_type = conflict", () => {
+    expect(hasSuiteRoomTypeConflict({ room: "רובי 14", room_type: "premium_day_guest" })).toBe(true);
+  });
+
+  test("true day-pass guest (Premium Day room) = no conflict", () => {
+    const g = { room: "Premium Day 1", room_type: "day_guest" };
+    expect(hasSuiteRoomTypeConflict(g)).toBe(false);
+    expect(isSuiteGuestProfile(g)).toBe(false);
+  });
+
+  test("consistent suite guest = no conflict", () => {
+    expect(hasSuiteRoomTypeConflict({ room: "אמטיסט 8", room_type: "suite" })).toBe(false);
+  });
+
+  test("day_guest without a room = no conflict", () => {
+    expect(hasSuiteRoomTypeConflict({ room: null, room_type: "day_guest" })).toBe(false);
+    expect(hasSuiteRoomTypeConflict({})).toBe(false);
+  });
+
+  test("standard room_type never flags conflict", () => {
+    expect(hasSuiteRoomTypeConflict({ room: "אמטיסט 8", room_type: "standard" })).toBe(false);
+  });
+});
 
 describe("classifyInboxRosterSegment", () => {
   const today = israelTodayStr();

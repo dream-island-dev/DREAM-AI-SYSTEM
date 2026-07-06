@@ -13,6 +13,7 @@
 // is preserved exactly as today's code computes it — not "fixed" here.
 
 import { assertPipelineLifecycleForTrigger } from "./pipelineLifecycle.ts";
+import { isEffectiveSuiteGuest } from "./suiteNames.ts";
 
 export const ISRAEL_UTC_OFFSET_HOURS = 2;
 
@@ -192,6 +193,9 @@ export interface GuestForSchedule {
   arrival_date: string | null;
   departure_date: string | null;
   room_type: string | null;
+  /** Assigned room — feeds effective suite classification (suiteNames.ts):
+   * a canonical suite room overrides a mis-tagged day_guest room_type. */
+  room?: string | null;
   status: string | null;
   checkin_time: string | null;
   /** Set by webhook on «כן מגיעים» — anchor for stage_2_arrival schedule. */
@@ -300,8 +304,12 @@ export function checkEligibility(
   if (isGuestStaffClaimActive(guest)) return "staff_claim_active";
   if (stage.guest_flag_column && guest[stage.guest_flag_column] === true) return "already_sent";
 
-  if (stage.applies_to === "suite" && guest.room_type !== "suite") return "wrong_room_type";
-  if (stage.applies_to === "non_suite" && guest.room_type === "suite") return "wrong_room_type";
+  // Effective classification (P0, session 125): room_type OR canonical suite
+  // room name — a suite-room guest mis-tagged day_guest routes as SUITE, never
+  // to day-pass stages (and vice-versa). Same truth as the UI's isSuite().
+  const effectiveSuite = isEffectiveSuiteGuest(guest);
+  if (stage.applies_to === "suite" && !effectiveSuite) return "wrong_room_type";
+  if (stage.applies_to === "non_suite" && effectiveSuite) return "wrong_room_type";
 
   const lifecycleBlock = assertPipelineLifecycleForTrigger(stage.stage_key, guest, now);
   if (lifecycleBlock) return lifecycleBlock;

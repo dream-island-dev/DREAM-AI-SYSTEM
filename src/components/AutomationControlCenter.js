@@ -137,6 +137,8 @@ function groupQueueByArrivalDay(items, stages) {
         phone: item.phone ?? null,
         room: item.room,
         room_type: item.room_type,
+        effectiveSuite: item.effectiveSuite,
+        roomTypeConflict: item.roomTypeConflict,
         arrivalDate: item.arrivalDate,
         departureDate: item.departureDate,
         items: [],
@@ -252,9 +254,33 @@ function shortStageLabel(displayName, stageKey) {
     ?? stageKey;
 }
 
+/**
+ * Effective day-pass classification for a queue item/guest group — MUST match
+ * server routing (suiteNames.ts / automation-queue's effectiveSuite): a guest
+ * whose room is a real suite routes as SUITE even if room_type says day_guest
+ * (session 125 P0). Falls back to raw room_type when effectiveSuite is absent
+ * (older cached queue payloads).
+ */
+function isDayPassQueueItem(q) {
+  if (q?.effectiveSuite === true) return false;
+  return q?.room_type === "day_guest" || q?.room_type === "premium_day_guest";
+}
+
 function isQueueItemGated(q, dayPassAllowedStages) {
-  return (q.room_type === "day_guest" || q.room_type === "premium_day_guest")
-    && !dayPassAllowedStages.has(q.stageKey);
+  return isDayPassQueueItem(q) && !dayPassAllowedStages.has(q.stageKey);
+}
+
+/** ⚠ FAIL VISIBLE — suite room + day-pass room_type (server routes as suite). */
+function RoomTypeConflictBadge({ compact = false }) {
+  return (
+    <span
+      className="badge badge-orange"
+      title="סתירת סיווג: החדר הוא סוויטה אך סוג האורח מסומן יום-כיף — השרת מנתב כסוויטה. ערוך את האורח ותקן את סוג החדר."
+      style={{ whiteSpace: "nowrap" }}
+    >
+      ⚠ {compact ? "סתירה" : "סתירת סיווג"}
+    </span>
+  );
 }
 
 /** Per-day chips: one entry per stage_key with dispatchable item keys. */
@@ -1123,7 +1149,8 @@ function ManualDispatchModal({ item, stages, onClose, onDispatched, showToast })
     canSend,
   } = useQuietHoursSend();
 
-  const isDayType = item.room_type === "day_guest" || item.room_type === "premium_day_guest";
+  // Effective classification — matches server routing (suite room wins).
+  const isDayType = isDayPassQueueItem(item);
 
   // Filter to stages the backend will actually allow for this room_type.
   const allowedStages = stages.filter((s) => {
@@ -1801,7 +1828,7 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
       if (!item) continue;
 
       // Client-side Safety Gate — matches server guard in whatsapp-send BRANCH D.
-      if ((item.room_type === "day_guest" || item.room_type === "premium_day_guest") && !DAY_PASS_ALLOWED_STAGES.has(item.stageKey)) {
+      if (isQueueItemGated(item, DAY_PASS_ALLOWED_STAGES)) {
         results.push({ item, result: "blocked", reason: "day_pass_stage_gate" });
         continue;
       }
@@ -1986,8 +2013,10 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
         // ── Segment filtering ─────────────────────────────────────────────
         const isActiveQueueItemLocal = (q) => isActiveQueueItem(q);
         const allQueue    = mergeQueueWithStages(queueData?.queue, stages).filter(isActiveQueueItemLocal);
-        const suiteQueue  = allQueue.filter((q) => q.room_type !== "day_guest" && q.room_type !== "premium_day_guest");
-        const dayPassQueue = allQueue.filter((q) => q.room_type === "day_guest" || q.room_type === "premium_day_guest");
+        // Effective segmentation — a conflicted guest (suite room, day-pass
+        // room_type) appears under 🏨 סוויטות, matching real cron routing.
+        const suiteQueue  = allQueue.filter((q) => !isDayPassQueueItem(q));
+        const dayPassQueue = allQueue.filter((q) => isDayPassQueueItem(q));
         const displayQueue = queueSegment === "daypass" ? dayPassQueue : suiteQueue;
         const arrivalDayGroups = groupQueueByArrivalDay(displayQueue, stages);
 
@@ -2880,6 +2909,7 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                                   🏨 {guest.room}
                                 </span>
                               )}
+                              {guest.roomTypeConflict && <RoomTypeConflictBadge />}
                               {guest.departureDate && (
                                 <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
                                   עזיבה: {new Date(`${guest.departureDate}T12:00:00`).toLocaleDateString("he-IL")}
@@ -2906,8 +2936,7 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                                   {guest.items.map((q) => {
                                     const itemKey = `${q.guestId}_${q.stageKey}`;
                                     const canDispatch = isDispatchable(q);
-                                    const isGated = (q.room_type === "day_guest" || q.room_type === "premium_day_guest")
-                                      && !DAY_PASS_ALLOWED_STAGES.has(q.stageKey);
+                                    const isGated = isQueueItemGated(q, DAY_PASS_ALLOWED_STAGES);
                                     const isChecked = selectedItems.has(itemKey);
                                     const badge = queueStatusBadge(q);
                                     const proofLine = queueDeliveryProofLine(q);

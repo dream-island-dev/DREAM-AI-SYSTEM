@@ -3375,6 +3375,64 @@ Deno.serve(async (req: Request) => {
         buttonId    = (btn?.payload as string) ?? "";
         text        = buttonTitle;
         console.log(`[webhook] 🔘 template button title:"${buttonTitle}" payload:"${buttonId}"`);
+      } else if (msg.type === "reaction") {
+        // ── Guest emoji reaction (P0, session 125) — FAIL VISIBLE, log-only ──
+        // Meta payload: { type:"reaction", reaction:{ message_id, emoji } }.
+        // emoji is ABSENT/empty when the guest removes a reaction. Previously
+        // this fell into the generic catch-all below and logged an opaque
+        // "📩 הודעה (reaction)" — emoji discarded, no target message. Staff
+        // must see WHICH emoji on WHICH message. Never triggers the bot/LLM —
+        // `continue` before any routing, exactly like other unsupported types.
+        const reactionObj = msg.reaction as Record<string, unknown> | undefined;
+        const emoji = String(reactionObj?.emoji ?? "").trim();
+        const targetWaId = String(reactionObj?.message_id ?? "");
+
+        // Best-effort: quote a snippet of the reacted-to message from our own
+        // conversation log (both directions are logged with wa_message_id).
+        let snippet = "";
+        if (targetWaId) {
+          try {
+            const { data: targetRow } = await supabase
+              .from("whatsapp_conversations")
+              .select("message, direction, created_at")
+              .eq("wa_message_id", targetWaId)
+              .maybeSingle();
+            if (targetRow?.message) {
+              const clean = String(targetRow.message).replace(/\s+/g, " ").trim();
+              snippet = clean.length > 60 ? clean.slice(0, 57) + "…" : clean;
+            }
+          } catch (e) {
+            console.warn("[webhook] reaction target lookup failed (non-blocking):", (e as Error).message);
+          }
+        }
+
+        const inboxText = emoji
+          ? (snippet
+              ? `${emoji} תגובה על ההודעה: «${snippet}»`
+              : `${emoji} תגובה על הודעה קודמת`)
+          : (snippet
+              ? `הוסרה תגובה מההודעה: «${snippet}»`
+              : "הוסרה תגובה מהודעה קודמת");
+
+        console.log(`[webhook] ${emoji ? "💟" : "🚫"} reaction from:${phone} emoji:"${emoji}" target:${targetWaId.slice(-10)}`);
+
+        const { claimed, conversationId } = await claimInboundWaMessage(supabase, {
+          phone,
+          guest_id: null,
+          message: inboxText,
+          wa_message_id: msgId,
+          push_name: pushName,
+          intent: "received",
+        });
+        if (!claimed) {
+          console.info("[webhook] dedup skip (reaction):", msgId);
+        } else {
+          const guest = await lookupGuestByPhone(supabase, phoneVariants, phone);
+          if (guest?.id) {
+            await patchClaimedInbound(supabase, conversationId, msgId, { guest_id: guest.id as number });
+          }
+        }
+        continue;
       } else {
         console.log(`[webhook] ⏭️ msg type "${msg.type}" — inbox log only`);
         const { phone, variants: phoneVariants } = buildPhoneVariants(from);
