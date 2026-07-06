@@ -76,12 +76,29 @@ Deno.serve(async (req: Request) => {
     const checkoutEligible = [...AUTO_CHECKOUT_ELIGIBLE_STATUSES];
 
     // ── 11:00 Israel auto checkout — departure day (or catch-up if overdue) ──
+    // QA audit fix (2026-07-06): AUTO_CHECKOUT_LOCAL_HOUR (11:00) mirrors the
+    // SUITE/standard checkout time — it must never apply to day-pass guests,
+    // whose arrival_date === departure_date by definition (same-day visit,
+    // see automationSchedule.ts's "Day-pass courtesy check" comment). Without
+    // this exclusion, a day-pass guest still `pending`/`expected` at 11:00, or
+    // even already `checked_in` and physically on-site all afternoon, was
+    // silently archived as `checked_out` — permanently blocking every
+    // remaining pipeline stage (checkEligibility's blanket guest_checked_out
+    // skip) AND blocking in-visit operational request routing
+    // (isGuestEligibleForInHouseOpsDispatch returns false for checked_out).
+    // room_type IS NULL rows are also excluded from this update as a side
+    // effect of the NOT IN's SQL NULL semantics — acceptable: every guest
+    // written by this app gets an explicit room_type (migration 096 CHECK
+    // constraint enumerates day_guest/premium_day_guest/standard/suite), so a
+    // NULL row is itself a data gap that should get manual attention rather
+    // than silent auto-archival.
     let autoCheckoutCount = 0;
     const { data: overdueCheckout, error: overdueErr } = await supabase
       .from("guests")
       .update({ status: "checked_out", room_ready_notified: false, msg_room_ready_sent: false })
       .lt("departure_date", todayIsrael)
       .in("status", checkoutEligible)
+      .not("room_type", "in", "(day_guest,premium_day_guest)")
       .select("id");
     if (overdueErr) {
       console.error("[whatsapp-cron] auto_checkout (overdue) FAILED:", overdueErr.message);
@@ -95,6 +112,7 @@ Deno.serve(async (req: Request) => {
         .update({ status: "checked_out", room_ready_notified: false, msg_room_ready_sent: false })
         .eq("departure_date", todayIsrael)
         .in("status", checkoutEligible)
+        .not("room_type", "in", "(day_guest,premium_day_guest)")
         .select("id");
       if (todayCheckoutErr) {
         console.error("[whatsapp-cron] auto_checkout (today) FAILED:", todayCheckoutErr.message);
@@ -229,38 +247,58 @@ Deno.serve(async (req: Request) => {
         .filter((g) => g.arrival_confirmed || g.arrival_confirmed_at)
         .map((g) => g.id as number);
 
+      // QA audit fix (2026-07-06): this lookup used to be read without checking
+      // `error` — a failed query left `stage2ActuallySent` empty, which the loop
+      // below read as "NOBODY has received Stage 2 yet", causing it to reset
+      // msg_stage_2_arrival_sent=false and re-queue EVERY confirmed guest for a
+      // fresh send on incomplete/wrong data. Fail closed instead: on lookup
+      // failure, skip the whole reconcile pass this tick (no flag resets, no
+      // re-queues) and retry on the next cron tick (~15 min later) once the
+      // table is readable again.
       const stage2ActuallySent = new Set<number>();
+      let stage2LogLookupFailed = false;
       if (confirmedGuestIds.length > 0) {
-        const { data: sentLogs } = await supabase
+        const { data: sentLogs, error: sentLogsErr } = await supabase
           .from("notification_log")
           .select("guest_id")
           .in("guest_id", confirmedGuestIds)
           .eq("trigger_type", "stage_2_arrival")
           .in("status", ["sent", "simulated"]);
-        for (const row of sentLogs ?? []) {
-          if (row.guest_id != null) stage2ActuallySent.add(row.guest_id as number);
+        if (sentLogsErr) {
+          stage2LogLookupFailed = true;
+          console.error(
+            "[whatsapp-cron] stage_2_reconcile ABORTED — notification_log lookup failed; " +
+            "refusing to reset flags or re-queue sends on incomplete data:",
+            sentLogsErr.message,
+          );
+        } else {
+          for (const row of sentLogs ?? []) {
+            if (row.guest_id != null) stage2ActuallySent.add(row.guest_id as number);
+          }
         }
       }
 
-      for (const guest of guestsList) {
-        if (guest.status === "cancelled" || guest.status === "checked_out" || guest.automation_muted === true) continue;
-        if (!guest.arrival_confirmed && !guest.arrival_confirmed_at) continue;
-        if (isGuestStaffClaimActive(guest)) continue;
-        const gId = guest.id as number;
-        if (stage2ActuallySent.has(gId)) continue;
-        if (dueKey(gId, "stage_2_arrival")) continue;
+      if (!stage2LogLookupFailed) {
+        for (const guest of guestsList) {
+          if (guest.status === "cancelled" || guest.status === "checked_out" || guest.automation_muted === true) continue;
+          if (!guest.arrival_confirmed && !guest.arrival_confirmed_at) continue;
+          if (isGuestStaffClaimActive(guest)) continue;
+          const gId = guest.id as number;
+          if (stage2ActuallySent.has(gId)) continue;
+          if (dueKey(gId, "stage_2_arrival")) continue;
 
-        if (guest.msg_stage_2_arrival_sent === true) {
-          await supabase.from("guests").update({ msg_stage_2_arrival_sent: false }).eq("id", gId);
-          console.log(`[whatsapp-cron] stage_2_reconcile reset false-positive flag guest_id=${gId}`);
+          if (guest.msg_stage_2_arrival_sent === true) {
+            await supabase.from("guests").update({ msg_stage_2_arrival_sent: false }).eq("id", gId);
+            console.log(`[whatsapp-cron] stage_2_reconcile reset false-positive flag guest_id=${gId}`);
+          }
+
+          console.log(
+            `[whatsapp-cron] stage_2_reconcile QUEUED guest_id=${gId} ` +
+            `arrival_confirmed=${guest.arrival_confirmed} no_successful_notification_log`,
+          );
+          due.push({ guestId: gId, trigger: "stage_2_arrival", pipeline_reconcile: true });
+          stage2ReconcileQueued++;
         }
-
-        console.log(
-          `[whatsapp-cron] stage_2_reconcile QUEUED guest_id=${gId} ` +
-          `arrival_confirmed=${guest.arrival_confirmed} no_successful_notification_log`,
-        );
-        due.push({ guestId: gId, trigger: "stage_2_arrival", pipeline_reconcile: true });
-        stage2ReconcileQueued++;
       }
     }
 

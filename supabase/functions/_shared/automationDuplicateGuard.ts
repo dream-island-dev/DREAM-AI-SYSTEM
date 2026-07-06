@@ -4,7 +4,7 @@
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-export type DuplicateBlockReason = "already_sent";
+export type DuplicateBlockReason = "already_sent" | "lookup_failed";
 
 export type DuplicateCheckResult =
   | { blocked: false }
@@ -35,8 +35,15 @@ export async function checkPipelineDuplicate(
     .limit(1);
 
   if (error) {
-    console.warn("[automationDuplicateGuard] log lookup failed:", error.message);
-    return { blocked: false };
+    // QA audit fix (2026-07-06): this used to fail OPEN (return not-blocked),
+    // which — combined with whatsapp-cron's Stage 2 reconcile pass reading the
+    // exact same table — meant a single transient notification_log read
+    // failure could disable BOTH duplicate-send safety nets at once and let a
+    // real Meta send go out twice. Fail closed: an unreadable log means we
+    // cannot prove this wasn't already sent, so block for now and let the
+    // next cron tick / manual retry re-check once the table is readable again.
+    console.warn("[automationDuplicateGuard] log lookup failed — failing CLOSED (blocking send):", error.message);
+    return { blocked: true, reason: "lookup_failed" };
   }
 
   if (sentRows && sentRows.length > 0) {
@@ -73,7 +80,12 @@ export async function logDuplicateBlocked(
       reason: opts.reason,
       prior_sent_at: opts.priorSentAt ?? null,
       source: opts.source ?? "pipeline_guard",
-      message: "ניסיון שליחה כפולה נחסם — האורח כבר קיבל את השלב הזה.",
+      // FAIL VISIBLE: "already_sent" is a confirmed prior send; "lookup_failed"
+      // is an unconfirmed precautionary block (couldn't read notification_log)
+      // — these must not share the same "guest already received this" wording.
+      message: opts.reason === "lookup_failed"
+        ? "השליחה נחסמה כי לא ניתן היה לוודא בבטחה שהשלב לא נשלח כבר (שגיאת קריאה זמנית ב-notification_log)."
+        : "ניסיון שליחה כפולה נחסם — האורח כבר קיבל את השלב הזה.",
     },
   });
   if (error) {
@@ -95,7 +107,9 @@ export function duplicateBlockedResponseBody(
     duplicate_reason: dup.reason,
     prior_sent_at: dup.priorSentAt ?? null,
     duplicate_logged: true,
-    error: "שלב זה כבר נשלח לאורח — ניסיון כפול נחסם.",
+    error: dup.reason === "lookup_failed"
+      ? "לא ניתן היה לוודא שהשלב לא נשלח כבר (שגיאת בדיקה זמנית) — השליחה נחסמה למניעת כפילות ותנוסה שוב באוטומציה הבאה."
+      : "שלב זה כבר נשלח לאורח — ניסיון כפול נחסם.",
     ...extra,
   };
 }

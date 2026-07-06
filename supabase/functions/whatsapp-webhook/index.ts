@@ -3536,6 +3536,21 @@ Deno.serve(async (req: Request) => {
       const guestName = (guest?.name as string|null) ?? null;
       const sim       = Deno.env.get("WHATSAPP_SIMULATION") === "true";
 
+      // ── Defensive Shield: this per-message body (Tier-0 intercepts, burst
+      // coalescing, intent classification, LLM call, send) had no top-level
+      // try/catch — any thrown exception silently killed the reply for this
+      // guest with zero trace (no DB row, no visible error) since processAsync
+      // itself isn't awaited by the caller. Wrapping it means a future bug
+      // here degrades to "no reply + a logged reason" instead of "no reply +
+      // total silence" (FAIL VISIBLE, CLAUDE.md §0.3).
+      // QA audit fix (2026-07-06): the boundary used to start AFTER the early
+      // arrival-confirmation intercept below — an exception inside
+      // handleStage2ArrivalConfirmation() (template resolution, Meta send,
+      // pipeline fallback) could escape this per-message try/catch entirely,
+      // aborting the `for (const msg of msgArr)` loop and silently dropping
+      // every OTHER message in the same Meta webhook delivery, not just this
+      // guest's. Moved earlier so that path is covered too.
+      try {
       // ── Stage 2 on «כן מגיעים» — BEFORE auto-checkin / staff-mute / LLM ──
       if (await tryArrivalConfirmationIntercept(supabase, {
         scripts,
@@ -3553,14 +3568,6 @@ Deno.serve(async (req: Request) => {
       })) {
         continue;
       }
-      // ── Defensive Shield: this per-message body (Tier-0 intercepts, burst
-      // coalescing, intent classification, LLM call, send) had no top-level
-      // try/catch — any thrown exception silently killed the reply for this
-      // guest with zero trace (no DB row, no visible error) since processAsync
-      // itself isn't awaited by the caller. Wrapping it means a future bug
-      // here degrades to "no reply + a logged reason" instead of "no reply +
-      // total silence" (FAIL VISIBLE, CLAUDE.md §0.3).
-      try {
       const nowForGuest = new Date();
       const guestStatusAtLookup = resolveEffectiveGuestStatus(
         {
