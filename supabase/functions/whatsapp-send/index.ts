@@ -93,6 +93,7 @@ import {
   isEffectiveDayPassGuest,
   isEffectiveSuiteGuest,
 } from "../_shared/suiteNames.ts";
+import { assertMetaMessageAccepted } from "../_shared/metaWamid.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -724,7 +725,7 @@ async function sendStageSessionMessage(
   imageUrl: string | undefined,
   buttons: Array<{ type: string; label: string; url?: string }>,
   logContext: string,
-): Promise<"session_image" | "session_interactive" | "session_text"> {
+): Promise<{ kind: "session_image" | "session_interactive" | "session_text"; wamid: string | null }> {
   const link = imageUrl?.trim();
   const body = String(caption ?? "").trim();
 
@@ -734,13 +735,13 @@ async function sendStageSessionMessage(
       ` link=${link.slice(0, 96)} caption_chars=${body.length}`,
     );
     try {
-      await sendViaMeta(to, body, link);
+      const wamid = await sendViaMeta(to, body, link);
+      return { kind: "session_image", wamid };
     } catch (e) {
       const msg = (e as Error).message;
       console.error(`[whatsapp-send] ${logContext}: session_image FAILED — ${msg}`);
       throw new Error(`session_image_failed: ${msg}`);
     }
-    return "session_image";
   }
 
   if (imageUrl !== undefined && imageUrl !== null && !link && String(imageUrl).length > 0) {
@@ -750,16 +751,16 @@ async function sendStageSessionMessage(
   }
 
   if (buttons.length > 0) {
-    await sendInteractiveButtons(to, body, buttons);
-    return "session_interactive";
+    const wamid = await sendInteractiveButtons(to, body, buttons);
+    return { kind: "session_interactive", wamid };
   }
 
-  await sendViaMeta(to, body, null);
-  return "session_text";
+  const wamid = await sendViaMeta(to, body, null);
+  return { kind: "session_text", wamid };
 }
 
 // ── Meta WhatsApp Cloud API (live) ────────────────────────────────────────────
-async function sendViaMeta(to: string, body: string, imageUrl?: string | null): Promise<void> {
+async function sendViaMeta(to: string, body: string, imageUrl?: string | null): Promise<string | null> {
   const recipient = sanitizeMetaRecipientPhone(to);
   const link = String(imageUrl ?? "").trim();
   const caption = String(body ?? "").trim();
@@ -771,18 +772,17 @@ async function sendViaMeta(to: string, body: string, imageUrl?: string | null): 
       buildFreeTextPayload(recipient, caption, link),
     );
     try {
-      const responseText = await sendImageMessage(recipient, link, caption);
+      const wamid = await sendImageMessage(recipient, link, caption);
       console.log(
-        `[whatsapp-send] Meta response ${kind} to=${maskPhoneForLog(recipient)} body=${responseText.slice(0, 500)}`,
+        `[whatsapp-send] Meta response ${kind} to=${maskPhoneForLog(recipient)} wamid=${wamid}`,
       );
-      assertMetaMessageAccepted(responseText, 200, `${kind} to=${maskPhoneForLog(recipient)}`);
+      return wamid;
     } catch (e) {
       if (_isAbortError(e)) {
         throw new Error("timeout_no_response: Meta did not respond within 25s — message may have still been delivered");
       }
       throw e;
     }
-    return;
   }
 
   const token   = Deno.env.get("META_WHATSAPP_TOKEN")    ?? Deno.env.get("WHATSAPP_TOKEN");
@@ -808,7 +808,7 @@ async function sendViaMeta(to: string, body: string, imageUrl?: string | null): 
     if (!res.ok) {
       throw new Error(`meta_http_${res.status}: ${responseText.slice(0, 300)}`);
     }
-    assertMetaMessageAccepted(responseText, res.status, `${kind} to=${maskPhoneForLog(recipient)}`);
+    return assertMetaMessageAccepted(responseText, res.status, `${kind} to=${maskPhoneForLog(recipient)}`);
   } catch (e) {
     if (_isAbortError(e)) throw new Error("timeout_no_response: Meta did not respond within 25s — message may have still been delivered");
     throw e;
@@ -920,33 +920,7 @@ function logMetaOutboundPayload(label: string, payload: Record<string, unknown>)
 }
 
 /** Meta may return HTTP 200 without messages[0].id — treat as failure (ghost send). */
-function assertMetaMessageAccepted(
-  responseText: string,
-  httpStatus: number,
-  context: string,
-): void {
-  let data: Record<string, unknown> = {};
-  try {
-    data = JSON.parse(responseText) as Record<string, unknown>;
-  } catch {
-    throw new Error(
-      `${context}: HTTP ${httpStatus} but response is not JSON — body=${responseText.slice(0, 300)}`,
-    );
-  }
-  const messages = data.messages as Array<{ id?: string }> | undefined;
-  const wamid = messages?.[0]?.id;
-  if (wamid) {
-    console.log(`[whatsapp-send] Meta accepted ${context} wamid=${wamid}`);
-    return;
-  }
-  const errObj = data.error as Record<string, unknown> | undefined;
-  const errMsg = errObj
-    ? String(errObj.message ?? errObj.error_user_msg ?? JSON.stringify(errObj))
-    : responseText.slice(0, 300);
-  throw new Error(
-    `${context}: HTTP ${httpStatus} but no messages[0].id (possible ghost send) — ${errMsg}`,
-  );
-}
+// assertMetaMessageAccepted lives in ../_shared/metaWamid.ts
 
 function resolvePipelineTemplateName(
   trigger: string,
@@ -1008,7 +982,7 @@ function resolveTemplateVars(
  * see buildConversationLogFromTemplate. This is the ABSOLUTE SOURCE OF TRUTH
  * invariant: what Meta received is exactly what gets logged.
  */
-type DispatchedTemplate = { templateName: string; variables: string[] };
+type DispatchedTemplate = { templateName: string; variables: string[]; wamid: string | null };
 
 async function sendViaTemplate(
   to: string,
@@ -1070,12 +1044,12 @@ async function sendViaTemplate(
     if (!res.ok) {
       throw new Error(`meta_template_${res.status}: ${responseText.slice(0, 300)}`);
     }
-    assertMetaMessageAccepted(
+    const wamid = assertMetaMessageAccepted(
       responseText,
       res.status,
       `template="${templateName}" to=${maskPhoneForLog(recipient)}`,
     );
-    return { templateName, variables: resolvedVars };
+    return { templateName, variables: resolvedVars, wamid };
   } catch (e) {
     if (_isAbortError(e)) throw new Error("timeout_no_response: Meta did not respond within 25s — message may have still been delivered");
     throw e;
@@ -1492,9 +1466,8 @@ serve(async (req: Request) => {
             guest_id:      guestId,
             direction:     "outbound",
             message:       broadcastConvMsg,
-            wa_message_id: null,
+            wa_message_id: dispatched?.wamid ?? null,
           });
-          if (convErr) console.warn("[whatsapp-send] broadcast conversation log failed (non-blocking):", convErr.message);
         } catch (e) {
           console.warn("[whatsapp-send] broadcast conversation log failed (non-blocking):", (e as Error).message);
         }
@@ -1559,9 +1532,13 @@ serve(async (req: Request) => {
 
       let replyStatus = "simulated";
       let replyErr: string | null = null;
+      let replyWamid: string | null = null;
 
       try {
-        if (!sim) { await sendViaMeta(targetPhone, inboxMsg); replyStatus = "sent"; }
+        if (!sim) {
+          replyWamid = await sendViaMeta(targetPhone, inboxMsg);
+          replyStatus = "sent";
+        }
       } catch (e) {
         replyErr = (e as Error).message;
         console.error("[whatsapp] inbox_reply send failed:", replyErr);
@@ -1583,7 +1560,7 @@ serve(async (req: Request) => {
         message:       replyStatus === "failed"
           ? inboxMsg
           : buildSessionConversationLog(inboxMsg),
-        wa_message_id: null,
+        wa_message_id: replyWamid,
       });
 
       return new Response(
@@ -2172,7 +2149,7 @@ serve(async (req: Request) => {
             guest_id: guestId,
             direction: "outbound",
             message: fmConvMsg,
-            wa_message_id: null,
+            wa_message_id: fmDispatched?.wamid ?? null,
           });
         } catch { /* best-effort */ }
         if (flagColumn) {
@@ -3145,18 +3122,20 @@ serve(async (req: Request) => {
     let tmplVars: string[] = [];
 
     let sessionFailureNote: string | null = null;
+    let dispatchedWamid: string | null = null;
 
     if (usedSessionMessage) {
       try {
         if (!sim) {
-          const sessionKind = await sendStageSessionMessage(
+          const sessionResult = await sendStageSessionMessage(
             guest.phone as string,
             sessionBody!,
             sessionImageUrl ?? undefined,
             sessionButtons,
             `stage="${trigger}" guest_id=${guestId}`,
           );
-          console.log(`[whatsapp-send] ${trigger}: session dispatch kind=${sessionKind}`);
+          dispatchedWamid = sessionResult.wamid;
+          console.log(`[whatsapp-send] ${trigger}: session dispatch kind=${sessionResult.kind}`);
           status = "sent";
         }
       } catch (e) {
@@ -3189,6 +3168,7 @@ serve(async (req: Request) => {
       try {
         if (!sim) {
           templateDispatched = await sendViaTemplate(guest.phone as string, tmplName, tmplVars, "he", portalButtonParam, stageRow?.session_message_image_url ?? requestImageUrl);
+          dispatchedWamid = templateDispatched.wamid;
           status = "sent";
         }
       } catch (e) {
@@ -3251,7 +3231,7 @@ serve(async (req: Request) => {
           guest_id: logGuestId,
           direction: "outbound",
           message: pipelineConvMsg,
-          wa_message_id: null,
+          wa_message_id: dispatchedWamid,
         });
         if (convErr) {
           console.error("[whatsapp-send] pipeline conversation log FAILED:", convErr.message);

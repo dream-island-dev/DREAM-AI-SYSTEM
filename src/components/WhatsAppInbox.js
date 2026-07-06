@@ -22,6 +22,11 @@ import {
   syncInboxContactWithGuestMap,
 } from "../utils/guestTiming";
 import {
+  formatGuestReactionLabel,
+  isGuestReactionRow,
+  parseGuestReactionMessage,
+} from "../utils/inboxReactions";
+import {
   CHECKIN_TIMELINE_TODAY,
   CHECKIN_TIMELINE_TOMORROW,
   resolveEffectiveGuestStatus,
@@ -237,6 +242,12 @@ function resolveInboxMessageText(raw, resolveCtx) {
     }
   }
   return expandScriptForDisplay(text, ctx);
+}
+
+function resolveInboxRowDisplayText(msg, resolveCtx) {
+  const reaction = parseGuestReactionMessage(msg?.message, msg?.intent);
+  if (reaction) return formatGuestReactionLabel(reaction);
+  return resolveInboxMessageText(msg?.message, resolveCtx);
 }
 
 // ── Responsive hook — same convention as UserManagement.js's useIsMobile:
@@ -707,7 +718,7 @@ function countUnreadInbound(messages) {
   if (!messages?.length) return 0;
   let n = 0;
   for (const m of messages) {
-    if (m.direction !== "inbound" || m._read) continue;
+    if (m.direction !== "inbound" || m._read || isGuestReactionRow(m)) continue;
     const answered = messages.some(
       (o) => o.direction === "outbound" && o.created_at > m.created_at,
     );
@@ -1169,7 +1180,7 @@ const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobil
             paddingRight: rtl ? 48 : 0, paddingLeft: rtl ? 0 : 48,
           }}>
             {last.direction === "outbound" ? "✓ " : ""}
-            {resolveInboxMessageText(last.message, resolveCtx)}
+            {resolveInboxRowDisplayText(last, resolveCtx)}
           </div>
         )}
         {contact.humanRequested && (
@@ -1214,8 +1225,47 @@ const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobil
 const Bubble = React.memo(function Bubble({ msg, dir, resolveCtx, isMobile }) {
   const isOut = msg.direction === "outbound";
   const rtl = dir === "rtl";
+  const reaction = !isOut ? parseGuestReactionMessage(msg.message, msg.intent) : null;
   const dispatchInfo = isOut ? parseOutboundDispatch(msg.message) : null;
-  const displayText = resolveInboxMessageText(msg.message, resolveCtx);
+  const displayText = reaction
+    ? formatGuestReactionLabel(reaction)
+    : resolveInboxMessageText(msg.message, resolveCtx);
+
+  if (reaction) {
+    return (
+      <div style={{
+        display: "flex",
+        justifyContent: rtl ? "flex-end" : "flex-start",
+        marginBottom: 4,
+      }}>
+        <div
+          title={reaction.snippet ? `תגובה להודעה: ${reaction.snippet}` : "תגובת אמוג'י"}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+            maxWidth: isMobile ? "88%" : "78%",
+            padding: "6px 12px",
+            borderRadius: 999,
+            background: "rgba(55, 138, 221, 0.08)",
+            border: "1px dashed #9ec5ef",
+            fontSize: 13,
+            color: "#4a6a8a",
+            lineHeight: 1.4,
+          }}
+        >
+          <span style={{ fontSize: reaction.emoji ? 18 : 14, lineHeight: 1 }}>
+            {reaction.emoji || (reaction.kind === "remove" ? "➖" : "💬")}
+          </span>
+          <span>{displayText}</span>
+          <span style={{ fontSize: 10, color: "#9aa8b5", marginInlineStart: 4 }}>
+            {formatTime(msg.created_at)}
+          </span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{
       display: "flex",

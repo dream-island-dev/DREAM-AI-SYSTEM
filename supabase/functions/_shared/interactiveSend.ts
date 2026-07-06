@@ -15,6 +15,7 @@
 // this exact 2-line helper rather than sharing it across Deno bundles.
 
 import { sanitizeMetaRecipientPhone } from "./metaPhone.ts";
+import { assertMetaMessageAccepted } from "./metaWamid.ts";
 
 function _isAbortError(e: unknown): boolean {
   return e instanceof Error && (e.name === "AbortError" || e.name === "TimeoutError");
@@ -54,7 +55,7 @@ export async function sendInteractiveButtons(
   to: string,
   bodyText: string,
   buttons: Array<{ type: string; label: string; url?: string; id?: string }>,
-): Promise<void> {
+): Promise<string | null> {
   const { token, phoneId } = _credsOrThrow();
   const recipient = sanitizeMetaRecipientPhone(to);
   const safeBodyText = _stripUnresolvedPlaceholders(bodyText);
@@ -90,10 +91,11 @@ export async function sendInteractiveButtons(
       ),
       signal: AbortSignal.timeout(25000),
     });
+    const detail = await res.text();
     if (!res.ok) {
-      const detail = (await res.text()).slice(0, 300);
-      throw new Error(`meta_interactive_${res.status}: ${detail}`);
+      throw new Error(`meta_interactive_${res.status}: ${detail.slice(0, 300)}`);
     }
+    return assertMetaMessageAccepted(detail, res.status, `interactive to=${recipient}`);
   } catch (e) {
     if (_isAbortError(e)) throw new Error("timeout_no_response: Meta did not respond within 25s — message may have still been delivered");
     throw e;
@@ -146,15 +148,7 @@ export async function sendImageMessage(
     } catch {
       throw new Error(`meta_image_invalid_json: ${detail.slice(0, 300)}`);
     }
-    const wamid = (parsed.messages as Array<{ id?: string }> | undefined)?.[0]?.id;
-    if (!wamid) {
-      const errObj = parsed.error as Record<string, unknown> | undefined;
-      const errMsg = errObj
-        ? String(errObj.message ?? errObj.error_user_msg ?? JSON.stringify(errObj))
-        : detail.slice(0, 300);
-      throw new Error(`meta_image_no_wamid (ghost send): ${errMsg}`);
-    }
-    return detail;
+    return assertMetaMessageAccepted(detail, res.status, `image to=${recipient}`);
   } catch (e) {
     if (_isAbortError(e)) throw new Error("timeout_no_response: Meta did not respond within 25s — message may have still been delivered");
     throw e;
@@ -173,7 +167,7 @@ export async function sendCtaUrlButton(
   bodyText: string,
   buttonLabel: string,
   url: string,
-): Promise<void> {
+): Promise<string> {
   const { token, phoneId } = _credsOrThrow();
   const recipient = sanitizeMetaRecipientPhone(to);
   const safeBodyText = _stripUnresolvedPlaceholders(bodyText);
@@ -197,10 +191,11 @@ export async function sendCtaUrlButton(
       }),
       signal: AbortSignal.timeout(25000),
     });
+    const detail = await res.text();
     if (!res.ok) {
-      const detail = (await res.text()).slice(0, 300);
-      throw new Error(`meta_cta_url_${res.status}: ${detail}`);
+      throw new Error(`meta_cta_url_${res.status}: ${detail.slice(0, 300)}`);
     }
+    return assertMetaMessageAccepted(detail, res.status, `cta_url to=${recipient}`);
   } catch (e) {
     if (_isAbortError(e)) throw new Error("timeout_no_response: Meta did not respond within 25s — message may have still been delivered");
     throw e;

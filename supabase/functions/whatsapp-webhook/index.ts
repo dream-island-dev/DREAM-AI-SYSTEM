@@ -3176,6 +3176,55 @@ type GuestOutboundRow = {
   intent: string;
 };
 
+/** Strip dispatch tags before quoting a message in a reaction snippet. */
+function stripInboxMessageForSnippet(raw: string): string {
+  let t = String(raw ?? "").replace(/\s+/g, " ").trim();
+  t = t.replace(/^\[META\]\s*/i, "").replace(/^\[SESSION\]\s*/i, "");
+  t = t.replace(/\n\[\+ Interactive Buttons\][\s\S]*$/i, "");
+  return t;
+}
+
+function capReactionSnippet(raw: string): string {
+  const clean = stripInboxMessageForSnippet(raw);
+  return clean.length > 60 ? clean.slice(0, 57) + "…" : clean;
+}
+
+/** Resolve quoted text for a guest emoji reaction — exact wamid, then latest outbound. */
+async function resolveReactionTargetSnippet(
+  supabase: ReturnType<typeof createClient>,
+  targetWaId: string,
+  phone: string,
+): Promise<string> {
+  if (targetWaId) {
+    try {
+      const { data: targetRow } = await supabase
+        .from("whatsapp_conversations")
+        .select("message")
+        .eq("wa_message_id", targetWaId)
+        .maybeSingle();
+      if (targetRow?.message) return capReactionSnippet(String(targetRow.message));
+    } catch (e) {
+      console.warn("[webhook] reaction target lookup failed (non-blocking):", (e as Error).message);
+    }
+  }
+
+  try {
+    const { data: recentOut } = await supabase
+      .from("whatsapp_conversations")
+      .select("message")
+      .eq("phone", phone)
+      .eq("direction", "outbound")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (recentOut?.message) return capReactionSnippet(String(recentOut.message));
+  } catch (e) {
+    console.warn("[webhook] reaction outbound fallback failed (non-blocking):", (e as Error).message);
+  }
+
+  return "";
+}
+
 /** Skip inbox ghost rows when staff-claim mute suppressed the actual Meta send. */
 async function insertGuestOutboundIfNotMuted(
   supabase: ReturnType<typeof createClient>,
@@ -3403,24 +3452,7 @@ Deno.serve(async (req: Request) => {
         const emoji = String(reactionObj?.emoji ?? "").trim();
         const targetWaId = String(reactionObj?.message_id ?? "");
 
-        // Best-effort: quote a snippet of the reacted-to message from our own
-        // conversation log (both directions are logged with wa_message_id).
-        let snippet = "";
-        if (targetWaId) {
-          try {
-            const { data: targetRow } = await supabase
-              .from("whatsapp_conversations")
-              .select("message, direction, created_at")
-              .eq("wa_message_id", targetWaId)
-              .maybeSingle();
-            if (targetRow?.message) {
-              const clean = String(targetRow.message).replace(/\s+/g, " ").trim();
-              snippet = clean.length > 60 ? clean.slice(0, 57) + "…" : clean;
-            }
-          } catch (e) {
-            console.warn("[webhook] reaction target lookup failed (non-blocking):", (e as Error).message);
-          }
-        }
+        const snippet = await resolveReactionTargetSnippet(supabase, targetWaId, phone);
 
         const inboxText = emoji
           ? (snippet
@@ -3430,7 +3462,10 @@ Deno.serve(async (req: Request) => {
               ? `הוסרה תגובה מההודעה: «${snippet}»`
               : "הוסרה תגובה מהודעה קודמת");
 
-        console.log(`[webhook] ${emoji ? "💟" : "🚫"} reaction from:${phone} emoji:"${emoji}" target:${targetWaId.slice(-10)}`);
+        console.log(
+          `[webhook] ${emoji ? "💟" : "🚫"} reaction from:${phone} emoji:"${emoji}"` +
+          ` target:${targetWaId.slice(-10)} snippet:${snippet ? "yes" : "no"}`,
+        );
 
         const { claimed, conversationId } = await claimInboundWaMessage(supabase, {
           phone,
@@ -3438,7 +3473,7 @@ Deno.serve(async (req: Request) => {
           message: inboxText,
           wa_message_id: msgId,
           push_name: pushName,
-          intent: "received",
+          intent: "guest_reaction",
         });
         if (!claimed) {
           console.info("[webhook] dedup skip (reaction):", msgId);
