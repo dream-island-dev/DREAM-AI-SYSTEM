@@ -17,6 +17,9 @@ import {
   buildMultiRoomLineCounts,
   buildMultiRoomLineIndexMap,
   formatMultiRoomLineLabel,
+  getDbMatchDiffLabels,
+  buildEnrichGuestPatch,
+  pickEnrichValue,
 } from "./guestImportIntelligence";
 
 const ARRIVALS_MAPPING = {
@@ -421,5 +424,26 @@ describe("Guest Import Intelligence — golden cases", () => {
     expect(formatMultiRoomLineLabel(indexMap, 0)).toBe("חדר 1 מ־2");
     expect(formatMultiRoomLineLabel(indexMap, 1)).toBe("חדר 2 מ־2");
     expect(formatMultiRoomLineLabel(indexMap, 2)).toBe("");
+  });
+
+  test("getDbMatchDiffLabels: name mismatch → שם", () => {
+    const labels = getDbMatchDiffLabels(
+      { guestPhone: "+972501234567", orderNumber: "100", guestName: "דני", arrivalDate: "2026-07-10" },
+      { phone: "+972501234567", order_number: "100", name: "משה", arrival_date: "2026-07-10", room: "אמטיסט 8" },
+    );
+    expect(labels).toEqual(["שם"]);
+  });
+
+  test("buildEnrichGuestPatch: fills empty DB fields only", () => {
+    const patch = buildEnrichGuestPatch(
+      { spa_time: "14:00", room: "וילה 1", name: "דני" },
+      { spa_time: null, room: "אמטיסט 8", name: "משה כהן" },
+    );
+    expect(patch).toEqual({ spa_time: "14:00" });
+  });
+
+  test("pickEnrichValue: skips when DB already has value", () => {
+    expect(pickEnrichValue("14:00", "15:00")).toBeUndefined();
+    expect(pickEnrichValue("14:00", "")).toBe("14:00");
   });
 });

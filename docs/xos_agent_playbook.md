@@ -326,6 +326,10 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
+### 2026-07-07 — Session 129 (Import enrich mode)
+- **`enrichOnly` ב-RPC** — `sync_suite_arrivals` (migration 146): פרופיל קיים מקבל רק שדות ריקים; INSERT חדש במלואו. `enrichOnly=false` = התנהגות 144 (ייבוא מלא).
+- **UI** — מצב Doc 2 ברירת-מחדל «השלמת פרופיל»; עמודת «הבדל מול DB» ל-⚠ (שם/חדר/תאריך); `buildEnrichGuestPatch` לספא/ארוחה אחרי RPC.
+
 ### 2026-07-06 — Session 128 (Inbox guest emoji reactions)
 - **Meta `type:"reaction"` ≠ טקסט מהאורח** — webhook יוצר שורת log סינתטית; ב-Inbox חייב `intent=guest_reaction` + chip UI (לא בועה inbound לבנה).
 - **Snippet lookup דורש `wa_message_id` על outbound** — רוב השורות היו `null`; `_shared/metaWamid.ts` + שמירת wamid ב-`inbox_reply`/broadcast/pipeline. הודעות ישנות: fallback ל-outbound אחרון לאותו טלפון.

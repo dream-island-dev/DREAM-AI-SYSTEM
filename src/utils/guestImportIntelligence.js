@@ -606,3 +606,95 @@ export function classifyDbMatch(candidate, existingGuestRow) {
 
   return (nameConflict || roomConflict || dateConflict) ? "conflict" : "existing";
 }
+
+/** True when a DB/import scalar is empty — safe to fill from the other side. */
+export function isEmptyImportDbValue(val) {
+  if (val == null) return true;
+  if (typeof val === "string") return val.trim() === "";
+  return false;
+}
+
+/**
+ * Enrich-only: return import value only when DB field is empty; otherwise skip.
+ * @returns {*|undefined} value to write, or undefined to leave DB unchanged
+ */
+export function pickEnrichValue(importVal, dbVal) {
+  if (isEmptyImportDbValue(importVal)) return undefined;
+  if (isEmptyImportDbValue(dbVal)) return importVal;
+  return undefined;
+}
+
+/** Enrich-only for counts — treat 0/null as empty on DB side. */
+export function pickEnrichCount(importVal, dbVal) {
+  const n = Number(importVal);
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  const existing = Number(dbVal);
+  if (!Number.isFinite(existing) || existing <= 0) return n;
+  return undefined;
+}
+
+/**
+ * Human-readable diff labels for ⚠ התנגשות rows (FAIL VISIBLE in grid).
+ * @returns {string[]} e.g. ["שם", "חדר"]
+ */
+export function getDbMatchDiffLabels(candidate, existingGuestRow) {
+  if (!candidate || !existingGuestRow) return [];
+
+  const phoneMatches = !!candidate.guestPhone && candidate.guestPhone === existingGuestRow.phone;
+  const orderMatches =
+    !!candidate.orderNumber && candidate.orderNumber === existingGuestRow.order_number;
+  if (!phoneMatches && !orderMatches) return [];
+
+  const labels = [];
+  if (
+    candidate.guestName && existingGuestRow.name &&
+    candidate.guestName.trim() !== String(existingGuestRow.name).trim()
+  ) {
+    labels.push("שם");
+  }
+
+  if (
+    !isSameBookingGuest(candidate, existingGuestRow) &&
+    existingGuestRow.room
+  ) {
+    const candidateRoom =
+      resolveSuiteFromEzgoFields(
+        candidate.roomName ?? candidate.room,
+        candidate.suiteType ?? "",
+        candidate.isDayGuest,
+      ) || candidate.room;
+    if (candidateRoom && !roomsCanonicallyMatch(candidateRoom, existingGuestRow.room)) {
+      labels.push("חדר");
+    }
+  }
+
+  if (
+    candidate.arrivalDate && existingGuestRow.arrival_date &&
+    candidate.arrivalDate !== existingGuestRow.arrival_date
+  ) {
+    labels.push("תאריך");
+  }
+
+  return labels;
+}
+
+/**
+ * Build a guests PATCH that only fills empty DB fields (enrich mode).
+ * @param {Record<string, unknown>} importFields
+ * @param {Record<string, unknown>|null} existingRow
+ */
+export function buildEnrichGuestPatch(importFields, existingRow) {
+  if (!existingRow) return {};
+  const patch = {};
+  for (const [key, importVal] of Object.entries(importFields)) {
+    if (importVal === undefined) continue;
+    let picked;
+    if (key === "treatment_count") {
+      picked = pickEnrichCount(importVal, existingRow[key]);
+    } else {
+      picked = pickEnrichValue(importVal, existingRow[key]);
+    }
+    if (picked !== undefined) patch[key] = picked;
+  }
+  return patch;
+}

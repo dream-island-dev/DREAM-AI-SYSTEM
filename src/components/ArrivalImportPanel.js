@@ -27,7 +27,7 @@ import {
   profilesToArray,
   enrichProfilesFromExcel,
 } from "../utils/ezgoParser";
-import { mergeCandidates, classifyDbMatch, buildExistingGuestsLookup, findExistingGuestRow, buildMultiRoomLineIndexMap, formatMultiRoomLineLabel, bookingGuestKey } from "../utils/guestImportIntelligence";
+import { mergeCandidates, classifyDbMatch, buildExistingGuestsLookup, findExistingGuestRow, buildMultiRoomLineIndexMap, formatMultiRoomLineLabel, bookingGuestKey, getDbMatchDiffLabels, buildEnrichGuestPatch } from "../utils/guestImportIntelligence";
 import { SUITE_ARRIVALS_SCHEMA, buildMaskedSample, detectSuiteArrivalsPreset, detectEzgoArrivalsPreset, applyFieldDefaultsToProfiles, parseMappingMemory, packMappingMemory } from "../utils/importMapper";
 import {
   isDetailedReservationFormat,
@@ -602,7 +602,7 @@ function _scopeGuestRowQuery(query, { guestPhone, profileArrivalDate, orderNumbe
 // One row per guest profile. Multi-room (group) profiles show a read-only
 // "N rooms" count instead of a single editable room — picking a value there
 // still works and applies uniformly to that profile's rooms on sync.
-function _profilesToGridRows(merged, { suiteAssignmentOnly = false, badgeByIdx = null, existingGuestsLookup = null, dbMatchByIdx = null, multiRoomLineIndexMap = null, importWithoutAutomation = true } = {}) {
+function _profilesToGridRows(merged, { suiteAssignmentOnly = false, badgeByIdx = null, existingGuestsLookup = null, dbMatchByIdx = null, dbDiffByIdx = null, multiRoomLineIndexMap = null, importWithoutAutomation = true } = {}) {
   return merged.map((g, i) => {
     const singleRoom = (g.rooms ?? []).length === 1 ? g.rooms[0] : null;
     const isDay       = !!g.isDayGuest || !!singleRoom?.isDayGuest;
@@ -638,6 +638,7 @@ function _profilesToGridRows(merged, { suiteAssignmentOnly = false, badgeByIdx =
       amount:       totalPrice || "",
       arrivalDate:  g.arrivalDate ?? "",
       importBadge:  _composeImportBadge(g.guestName, badgeByIdx?.get(i), g.guestPhone),
+      dbDiff:       dbDiffByIdx?.get(i) ?? "",
     };
   });
 }
@@ -653,7 +654,7 @@ function _composeImportBadge(guestName, dbBadge, guestPhone) {
   return parts.join(" · ");
 }
 
-function _detailedProfilesToGridRows(merged, { badgeByIdx = null, existingGuestsLookup = null, dbMatchByIdx = null, importWithoutAutomation = true } = {}) {
+function _detailedProfilesToGridRows(merged, { badgeByIdx = null, existingGuestsLookup = null, dbMatchByIdx = null, dbDiffByIdx = null, importWithoutAutomation = true } = {}) {
   return merged.map((g, i) => {
     const totalPrice = (g.rooms ?? []).reduce((sum, r) => sum + (r.price || 0), 0);
     const nights = (g.rooms ?? []).reduce((mx, r) => Math.max(mx, r.nights || 0), 0);
@@ -675,6 +676,7 @@ function _detailedProfilesToGridRows(merged, { badgeByIdx = null, existingGuests
       leadSource:   g.leadSource ?? "",
       automationMuted: _resolveGridAutomationMuted(g, existingRow, dbStatus, importWithoutAutomation),
       importBadge:  _composeImportBadge(g.guestName, badgeByIdx?.get(i), g.guestPhone),
+      dbDiff:       dbDiffByIdx?.get(i) ?? "",
     };
   });
 }
@@ -875,6 +877,7 @@ const DETAILED_GRID_COLS = [
   { id: "leadSource",    label: "מקור הגעה",     editable: false, w: 120 },
   { id: "automationMuted", label: "אוטומציה",    editable: true,  w: 110, options: AUTOMATION_MUTE_OPTIONS },
   { id: "importBadge",  label: "סטטוס ייבוא",   editable: false, w: 130 },
+  { id: "dbDiff",       label: "הבדל מול DB",   editable: false, w: 120 },
 ];
 
 const SUITES_GRID_COLS = [
@@ -893,6 +896,7 @@ const SUITES_GRID_COLS = [
   { id: "amount",      label: "💰 סכום (₪)", editable: true, w: 100 },
   { id: "arrivalDate", label: "הגעה",       editable: false, w: 100 },
   { id: "importBadge", label: "סטטוס ייבוא", editable: false, w: 130 },
+  { id: "dbDiff",      label: "הבדל מול DB", editable: false, w: 120 },
 ];
 
 /** Focused preview columns for Doc 2 suite-assignment-only mode */
@@ -952,7 +956,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
   const [doc2Map,  setDoc2Map]  = useState(null);   // Map<key, profile> from Suite CSV
   const [doc1Rec,  setDoc1Rec]  = useState(null);   // [] from Daily Report Excel
   const [doc1SyncMode, setDoc1SyncMode] = useState("suite_spa_only"); // "full" | "suite_spa_only"
-  const [doc2SyncMode, setDoc2SyncMode] = useState("full"); // "full" | "suite_assignment_only"
+  const [doc2SyncMode, setDoc2SyncMode] = useState("enrich"); // "enrich" | "full" | "suite_assignment_only"
   const [rawDoc1Payload, setRawDoc1Payload] = useState(null); // { kind, data } for re-parse on mode change
   const [doc2Name, setDoc2Name] = useState("");
   const [doc1Name, setDoc1Name] = useState("");
@@ -1146,7 +1150,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
   // Suite-assignment-only applies to standard Doc 2 grid (has room column), not detailed report
   useEffect(() => {
     if (importSource === "detailed" && doc2SyncMode === "suite_assignment_only") {
-      setDoc2SyncMode("full");
+      setDoc2SyncMode("enrich");
     }
   }, [importSource, doc2SyncMode]);
 
@@ -1200,7 +1204,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     (async () => {
       const { data, error } = await supabase
         .from("guests")
-        .select("id, phone, name, room, order_number, arrival_date, automation_muted, guest_index")
+        .select("id, phone, name, room, order_number, arrival_date, automation_muted, guest_index, spa_time, meal_time, meal_location, treatment_count, payment_amount, lead_source, departure_date")
         .in("arrival_date", dates);
       if (cancelled) return;
       if (error) {
@@ -1235,6 +1239,17 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     return map;
   }, [dbMatchByIdx]);
 
+  const dbDiffByIdx = useMemo(() => {
+    const map = new Map();
+    mergedCandidates.forEach((c, i) => {
+      if (dbMatchByIdx.get(i) !== "conflict") return;
+      const existingRow = findExistingGuestRow(existingGuestsLookup, c);
+      const labels = getDbMatchDiffLabels(c, existingRow);
+      if (labels.length) map.set(i, labels.join(" · "));
+    });
+    return map;
+  }, [mergedCandidates, existingGuestsLookup, dbMatchByIdx]);
+
   // Recompute grid rows when merged/db badges/import opt-in changes.
   // Manual cell edits live in gridRows state until the next full recompute.
   useEffect(() => {
@@ -1242,10 +1257,10 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     const suiteOnly = doc2SyncMode === "suite_assignment_only" && importSource !== "detailed";
     setGridRows(
       importSource === "detailed"
-        ? _detailedProfilesToGridRows(merged, { badgeByIdx: importBadgeByIdx, existingGuestsLookup, dbMatchByIdx, importWithoutAutomation })
-        : _profilesToGridRows(merged, { suiteAssignmentOnly: suiteOnly, badgeByIdx: importBadgeByIdx, existingGuestsLookup, dbMatchByIdx, multiRoomLineIndexMap, importWithoutAutomation }),
+        ? _detailedProfilesToGridRows(merged, { badgeByIdx: importBadgeByIdx, existingGuestsLookup, dbMatchByIdx, dbDiffByIdx, importWithoutAutomation })
+        : _profilesToGridRows(merged, { suiteAssignmentOnly: suiteOnly, badgeByIdx: importBadgeByIdx, existingGuestsLookup, dbMatchByIdx, dbDiffByIdx, multiRoomLineIndexMap, importWithoutAutomation }),
     );
-  }, [merged, importSource, doc2SyncMode, importBadgeByIdx, existingGuestsLookup, dbMatchByIdx, multiRoomLineIndexMap, importWithoutAutomation]);
+  }, [merged, importSource, doc2SyncMode, importBadgeByIdx, existingGuestsLookup, dbMatchByIdx, dbDiffByIdx, multiRoomLineIndexMap, importWithoutAutomation]);
 
   // ── Parse Doc 2: Suite CSV → AI-suggested column mapping → review screen ──
   // The AI only proposes; aggregateGuestProfiles() runs unchanged once the
@@ -1704,18 +1719,21 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           ? (detailedRoomFilter === "all" ? "mixed" : detailedRoomFilter)
           : "mixed";
 
+        const enrichOnly = doc2SyncMode === "enrich";
+
         const { data: rpcData, error: rpcErr } = await supabase
           .rpc("sync_suite_arrivals", {
             payload: {
               profiles,
               rooms,
               profile_batch_type: batchProfileType,
+              enrichOnly,
             },
           });
         if (rpcErr) throw new Error("sync_suite_arrivals: " + rpcErr.message);
 
         for (const [, indices] of indicesByGuestKey) {
-          const patch = {};
+          let patch = {};
           let guestPhone;
           let profileArrivalDate;
           let orderNumber;
@@ -1751,6 +1769,17 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           if (lastRoom) patch.room = lastRoom;
           if (notesMerged) patch.guest_notes = notesMerged;
 
+          const primaryIdx = indices[0];
+          const primaryDbStatus = dbMatchByIdx.get(primaryIdx) ?? null;
+          const existingRow = findExistingGuestRow(existingGuestsLookup, {
+            guestPhone,
+            arrivalDate: profileArrivalDate,
+            orderNumber,
+          });
+          if (enrichOnly && existingRow && primaryDbStatus !== "new") {
+            patch = buildEnrichGuestPatch(patch, existingRow);
+          }
+
           if (guestPhone && profileArrivalDate && Object.keys(patch).length > 0) {
             const scoped = _scopeGuestRowQuery(
               supabase.from("guests").update(patch),
@@ -1773,8 +1802,16 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
         const importMuted = profiles.filter((p) => p.automationMuted).length;
         const corporateMuted = syncedMerged.filter((g) => g.automationMuted).length;
         const uniqueGuestCount = indicesByGuestKey.size || profiles.length;
+        const newCount = syncIndices.filter((i) => dbMatchByIdx.get(i) === "new").length;
+        const enrichedCount = syncIndices.filter((i) => {
+          const s = dbMatchByIdx.get(i);
+          return s === "existing" || s === "conflict";
+        }).length;
         setResult({
           mode:   importSource === "detailed" ? "detailed" : "suites",
+          enrichOnly,
+          newCount,
+          enrichedCount,
           total:  uniqueGuestCount,
           rooms:  rpcData?.rooms  ?? rooms.length,
           skippedRooms: rpcData?.skipped ?? 0,
@@ -1981,7 +2018,9 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     : hasDoc2
       ? doc2SyncMode === "suite_assignment_only"
         ? `🏨 עדכן שיבוץ סוויטות בלבד (${syncTargetCount} רשומות)`
-        : `⚡ ייבא ${syncTargetCount} פרופילים`
+        : doc2SyncMode === "enrich"
+          ? `📥 השלם נתונים חסרים / צור חדש (${syncTargetCount} רשומות)`
+          : `⚡ ייבא ${syncTargetCount} פרופילים`
       : doc1SyncMode === "suite_spa_only"
         ? `💆 סנכרן ספא סוויטות (${doc1Rec?.length ?? 0} הזמנות · לפי מס׳ הזמנה)`
         : `⚡ עדכן שעות ספא (${doc1Rec?.length ?? 0} אורחים)`;
@@ -2178,6 +2217,10 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                 </span>
                 {[
                   {
+                    key: "enrich",
+                    label: "📥 השלמת פרופיל (מומלץ)",
+                  },
+                  {
                     key: "full",
                     label: "📋 ייבוא / עדכון מלא",
                   },
@@ -2209,6 +2252,16 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                   </button>
                 ))}
               </div>
+              {doc2SyncMode === "enrich" && hasDoc2 && (
+                <div style={{
+                  marginTop: 8, padding: "8px 12px", borderRadius: 8, fontSize: 11,
+                  background: "var(--ivory)", border: "1px solid var(--border)",
+                  color: "var(--black)", fontWeight: 600, lineHeight: 1.5,
+                }}>
+                  ממלא רק שדות <strong>ריקים</strong> בפרופיל קיים (שם/חדר/ספא/ארוחה וכו׳) — לא דורס נתונים שכבר שמורים.
+                  אורח חדש (🆕) נוצר במלואו. שורות ⚠ התנגשות מסומנות בעמודת «הבדל מול DB».
+                </div>
+              )}
               {doc2SyncMode === "suite_assignment_only" && hasDoc2 && importSource !== "detailed" && (
                 <div style={{
                   marginTop: 8, padding: "8px 12px", borderRadius: 8, fontSize: 11,
@@ -2682,7 +2735,16 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
               {result.mode === "suites" || result.mode === "detailed" ? (
                 <>
                   <div style={{ fontWeight: 800, fontSize: 16, color: "#065f46", marginBottom: 6 }}>
-                    יובאו {result.total} אורחים
+                    {result.enrichOnly ? (
+                      <>
+                        📥 השלמת פרופיל — 🆕 {result.newCount ?? 0} חדשים
+                        {(result.enrichedCount ?? 0) > 0 && (
+                          <> · {result.enrichedCount} קיימים (חסר בלבד)</>
+                        )}
+                      </>
+                    ) : (
+                      <>יובאו {result.total} אורחים</>
+                    )}
                     {result.mode === "detailed" && result.batchType && result.batchType !== "mixed" && (
                       <> ({result.batchType === "suite" ? "סוויטות" : "בילוי יומי"})</>
                     )}
@@ -2728,7 +2790,11 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                   )}
                   {result.conflictCount > 0 && (
                     <div style={{ fontSize: 12, color: "#92400E", marginTop: 6, fontWeight: 700 }}>
-                      ⚠ {result.conflictCount} רשומות עם התנגשות מול הקיים ב-DB (שם/חדר/תאריך שונה) יובאו בכל זאת — בדוק:{" "}
+                      ⚠ {result.conflictCount} רשומות עם התנגשות מול הקיים ב-DB (שם/חדר/תאריך שונה)
+                      {result.enrichOnly
+                        ? " — נשמרו ערכי DB; מולאו רק שדות ריקים"
+                        : " — יובאו בכל זאת, בדוק"}
+                      {" — "}
                       {result.conflictNames.slice(0, 8).join(", ")}
                       {result.conflictNames.length > 8 && ` +${result.conflictNames.length - 8}`}
                     </div>
