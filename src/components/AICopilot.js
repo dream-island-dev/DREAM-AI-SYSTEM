@@ -197,6 +197,9 @@ export default function AICopilot({ user }) {
       // state advance as if the guest was actually notified. Same principle applies
       // when NO guest was matched at all (enrichRoom found nothing for this suite) —
       // that must not look identical to "message sent" in the success toast below.
+      // Anti-duplication transparency (session 125 P2-F): a skipped/duplicate
+      // send must never read as a fresh "הודעה נשלחה" in the final toast.
+      let waSkipNote = null;
       if (guest?.id) {
         if (!ensureCanSend()) {
           throw new Error("שליחה חסומה בשעות שקט — סמן את האישור למטה");
@@ -211,7 +214,11 @@ export default function AICopilot({ user }) {
           throw new Error(`שליחת WhatsApp נכשלה (${data.error ?? "שגיאה לא ידועה"}) — הסטטוס לא עודכן, אפשר לנסות שוב`);
         }
         if (data?.skipped && data?.reason === "room_ready_notified") {
-          showToast(`ℹ ${alert.room_id} — ההודעה כבר נשלחה קודם, מסיר מהרשימה`, "ok");
+          waSkipNote = "ההודעה כבר נשלחה קודם";
+        } else if (data?.skipped && data?.status === "duplicate_blocked") {
+          waSkipNote = "נחסם כפול — ההודעה כבר נשלחה לאורח בעבר";
+        } else if (data?.skipped) {
+          waSkipNote = `השליחה דולגה (${data.reason ?? "ללא סיבה"})`;
         }
       }
 
@@ -230,7 +237,9 @@ export default function AICopilot({ user }) {
       setAlerts(prev => prev.filter(a => a._alertId !== alert._alertId));
       showToast(
         guest?.id
-          ? `✓ ${alert.room_id} — הודעה נשלחה, חדר מוכן (ממתין לצ'ק-אין)`
+          ? (waSkipNote
+              ? `ℹ ${alert.room_id} — ${waSkipNote}; חדר מוכן (ממתין לצ'ק-אין)`
+              : `✓ ${alert.room_id} — הודעה נשלחה, חדר מוכן (ממתין לצ'ק-אין)`)
           : `⚠ ${alert.room_id} — שער נסגר, לא נמצא אורח משויך`,
         guest?.id ? "ok" : "err"
       );

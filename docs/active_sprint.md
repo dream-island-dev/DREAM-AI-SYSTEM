@@ -11,9 +11,12 @@
 |---|---|---|
 | P0-A | Suite vs day-pass routing guard (`_shared/suiteNames.ts`, effective classification everywhere + ⚠ conflict badges) | ✅ deployed session 125 |
 | P0-B | WhatsApp reactions FAIL VISIBLE in Inbox (webhook `reaction` branch, log-only) | ✅ deployed session 125 |
-| P1-C | Inbox real-time verify (migration 107 publication, LIVE indicator behavior) | Pending |
-| P1-D | Roster sort + stable thread (additive fetchThreadHistory, scroll preserve, phone-variant dedup) — **open question to Mike:** keep unread-pinned-on-top (19262d6) or strict latest-desc? | Pending |
-| P2 E–H | Guest↔Inbox nav, duplicate_blocked toasts, template-draft preload refactor, date-filter sync to Inbox chips | Pending |
+| P1-C | Inbox real-time verify — migration 107 publication ✓ applied, LIVE indicator ✓ exists, live reception proven (inbound answered in 5s post-deploy) | ✅ verified session 125 |
+| P1-D | Roster sort «פעילות» (Mike's call — unread pinning removed), `mergeThreadRows` additive-only (force-refresh no longer drops newest messages on long threads), scroll preserved on unrelated roster merges | ✅ deployed session 125 |
+| P2-E | Guest name click (GuestsPage/GuestDashboard) → DREAM BOT chat; 👤 icon keeps profile pane | ✅ deployed session 125 |
+| P2-F | duplicate_blocked toasts — AICopilot + SuitesDashboard (ACC already covered) | ✅ deployed session 125 |
+| P2-G | Portal-link + Stage-2 buttons now preload editable draft (human-in-the-loop, preloadRoomReadyMessage pattern) — no direct dispatch | ✅ deployed session 125 |
+| P2-H | Check-in date filter (sessionStorage) ↔ Inbox roster chips (היום↔בריזורט, מחר↔מחר) | ✅ deployed session 125 |
 
 **Post-deploy QA (Mike):** run the conflict-audit SQL (CLAUDE.md session 125) for today's arrivals; send a real ❤️ reaction to a bot message → readable line in DREAM BOT שיחות.
 

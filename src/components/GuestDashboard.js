@@ -626,14 +626,29 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
                     />
                     <div style={{ fontWeight: 800, fontSize: 16, color: "var(--black)" }}>
                       <span
-                        onClick={() => setProfileGuest(guest)}
-                        title="הצג פרופיל אורח"
+                        onClick={() =>
+                          guest.phone && onOpenDreamBotChat
+                            ? onOpenDreamBotChat({ phone: guest.phone, guestName: guest.name })
+                            : setProfileGuest(guest)
+                        }
+                        title={guest.phone && onOpenDreamBotChat ? "פתח שיחה ב-DREAM BOT" : "הצג פרופיל אורח"}
                         style={{ cursor: "pointer", textDecoration: "underline", textDecorationColor: "transparent" }}
                         onMouseEnter={(e) => (e.currentTarget.style.textDecorationColor = "var(--gold)")}
                         onMouseLeave={(e) => (e.currentTarget.style.textDecorationColor = "transparent")}
                       >
                         {guest.name}
                       </span>
+                      <button
+                        type="button"
+                        onClick={() => setProfileGuest(guest)}
+                        title="הצג פרופיל אורח"
+                        style={{
+                          border: "none", background: "transparent", cursor: "pointer",
+                          fontSize: 13, padding: "0 4px", verticalAlign: "middle", opacity: 0.75,
+                        }}
+                      >
+                        👤
+                      </button>
                       {guest.arrival_confirmed && (
                         <span style={{ fontSize: 10, marginRight: 6, background: "#E8F5EF", color: "#1A7A4A", padding: "2px 6px", borderRadius: 8, fontWeight: 700, verticalAlign: "middle" }}>✓ אישר הגעה</span>
                       )}

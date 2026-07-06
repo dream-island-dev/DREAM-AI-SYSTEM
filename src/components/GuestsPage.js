@@ -689,14 +689,29 @@ export default function GuestsPage({
                           />
                         )}
                         <span
-                          onClick={() => setProfileGuest(g)}
-                          title="הצג פרופיל אורח"
+                          onClick={() =>
+                            g.phone && onOpenDreamBotChat
+                              ? onOpenDreamBotChat({ phone: g.phone, guestName: g.name })
+                              : setProfileGuest(g)
+                          }
+                          title={g.phone && onOpenDreamBotChat ? "פתח שיחה ב-DREAM BOT" : "הצג פרופיל אורח"}
                           style={{ cursor: "pointer", textDecoration: "underline", textDecorationColor: "transparent" }}
                           onMouseEnter={(e) => (e.currentTarget.style.textDecorationColor = "var(--gold)")}
                           onMouseLeave={(e) => (e.currentTarget.style.textDecorationColor = "transparent")}
                         >
                           {g.name}
                         </span>
+                        <button
+                          type="button"
+                          onClick={() => setProfileGuest(g)}
+                          title="הצג פרופיל אורח"
+                          style={{
+                            border: "none", background: "transparent", cursor: "pointer",
+                            fontSize: 13, padding: "0 4px", verticalAlign: "middle", opacity: 0.75,
+                          }}
+                        >
+                          👤
+                        </button>
                         {g.arrival_confirmed && (
                           <span style={{ fontSize: 10, marginRight: 6, background: "#E8F5EF", color: "#1A7A4A", padding: "2px 6px", borderRadius: 8, fontWeight: 700, verticalAlign: "middle" }}>✓ אישר</span>
                         )}

@@ -99,7 +99,15 @@ export default function SuitesDashboard() {
       });
       if (error) throw new Error(error.message);
       if (!data?.ok) throw new Error(data?.error ?? "שגיאה לא ידועה");
-      showToast("✅ הודעת 'חדר מוכן' נשלחה");
+      // Anti-duplication guard — a skipped send must never masquerade as a
+      // fresh "sent" success toast (FAIL VISIBLE §0.3).
+      if (data?.skipped && data?.status === "duplicate_blocked") {
+        showToast("ℹ️ נחסם כפול — הודעת 'חדר מוכן' כבר נשלחה לאורח בעבר");
+      } else if (data?.skipped) {
+        showToast(`ℹ️ השליחה דולגה (${data.reason ?? "ללא סיבה"})`);
+      } else {
+        showToast("✅ הודעת 'חדר מוכן' נשלחה");
+      }
       // Optimistically stamp the flag locally so the button flips to ✅ without a reload.
       setGuestStatus((prev) => ({
         ...prev,

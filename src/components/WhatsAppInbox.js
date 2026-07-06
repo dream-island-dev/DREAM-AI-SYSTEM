@@ -21,7 +21,16 @@ import {
   rosterGuestFields,
   syncInboxContactWithGuestMap,
 } from "../utils/guestTiming";
-import { resolveEffectiveGuestStatus } from "../utils/guestCheckinMatrix";
+import {
+  CHECKIN_TIMELINE_TODAY,
+  CHECKIN_TIMELINE_TOMORROW,
+  resolveEffectiveGuestStatus,
+} from "../utils/guestCheckinMatrix";
+import {
+  CHECKIN_FILTER_STORAGE_KEY,
+  loadCheckinFilter,
+  saveCheckinFilter,
+} from "../utils/checkinFilterStorage";
 import {
   unlockInboxAlertAudio,
   playSuiteGuestAlert,
@@ -2472,7 +2481,28 @@ export default function WhatsAppInbox({
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [quickOpen, setQuickOpen]   = useState(false);
   const [rosterSearch, setRosterSearch] = useState("");
-  const [rosterFilter, setRosterFilter] = useState("all");
+  // Session 125 P2-H — one timeline, three surfaces: the צ'ק-אין/ניהול-אורחים
+  // date filter (sessionStorage, useCheckinTimelineFilter) seeds the roster
+  // chip here (today→בריזורט, tomorrow→מחר) and chip clicks write it back.
+  // Only an EXPLICITLY saved scope seeds the filter — a fresh session keeps
+  // the "all" default so no conversation is ever hidden by surprise.
+  const [rosterFilter, setRosterFilterState] = useState(() => {
+    try {
+      if (typeof sessionStorage !== "undefined" && sessionStorage.getItem(CHECKIN_FILTER_STORAGE_KEY)) {
+        const { scope, customDate } = loadCheckinFilter();
+        if (!customDate) {
+          if (scope === CHECKIN_TIMELINE_TODAY) return "in_resort";
+          if (scope === CHECKIN_TIMELINE_TOMORROW) return "tomorrow";
+        }
+      }
+    } catch { /* private mode — keep default */ }
+    return "all";
+  });
+  const setRosterFilter = useCallback((id) => {
+    setRosterFilterState(id);
+    if (id === "in_resort") saveCheckinFilter({ scope: CHECKIN_TIMELINE_TODAY, customDate: null });
+    else if (id === "tomorrow") saveCheckinFilter({ scope: CHECKIN_TIMELINE_TOMORROW, customDate: null });
+  }, []);
   const [rosterSort, setRosterSort] = useState("activity"); // activity | arrival | name
   const [mobileToolbarOpen, setMobileToolbarOpen] = useState(false);
   const [mobileThreadMenuOpen, setMobileThreadMenuOpen] = useState(false);
@@ -3146,7 +3176,7 @@ export default function WhatsAppInbox({
     setRosterFilter(initialRosterFilter);
     setMobileScreen("list");
     onRosterFilterConsumed?.();
-  }, [initialRosterFilter, onRosterFilterConsumed]);
+  }, [initialRosterFilter, onRosterFilterConsumed, setRosterFilter]);
 
   useEffect(() => {
     const pending = pendingFocusRef.current;
@@ -3596,66 +3626,61 @@ export default function WhatsAppInbox({
     return () => cancelAnimationFrame(id);
   }, [active, thread.length, isMobile, mobileScreen]);
 
-  // ── Manual Portal Link Dispatch ───────────────────────────────────────────
-  // One-click, staff-initiated send of the standalone `manual_portal_link`
-  // bot_scripts row (migration 124) — independent of automation_stages/cron.
-  // {{GUEST_NAME}}/{{portal_url}} are resolved server-side (whatsapp-send
-  // BRANCH F: manual_script), exactly like the automated stage_2_arrival flow
-  // — never built client-side, so there's a single source of truth for the
-  // portal URL (PORTAL_BASE_URL lives only in the Edge Function).
-  async function sendManualPortalLink() {
+  // ── Portal link — pre-fill editable reply (session 125 P2-G) ─────────────
+  // Human-in-the-loop: was a one-click direct dispatch (whatsapp-send BRANCH F
+  // manual_script). Now follows the preloadRoomReadyMessage pattern — the
+  // resolved text lands in the reply textarea for staff review, and the actual
+  // send goes through the regular שלח button (inbox_reply, same 24h-window
+  // guard the manual_script path enforced).
+  function preloadPortalLinkMessage() {
     if (!active) return;
     if (!activeContact?.guestId) {
-      setError("לא ניתן לשלוח קישור פורטל — השיחה הזו אינה משויכת לרשומת אורח (guests)");
+      setError("לא ניתן לטעון קישור פורטל — השיחה הזו אינה משויכת לרשומת אורח (guests)");
       return;
     }
-    if (!ensureCanSend()) {
-      setError("שליחה חסומה בשעות שקט — סמן את האישור למטה");
+    const ctx = buildGuestResolveContext(activeContact);
+    if (!ctx.portalUrl) {
+      setError("לאורח הזה אין portal_token — לא ניתן לבנות קישור פורטל");
       return;
     }
-    setSending(true);
+    const script = scriptsByKey?.get("manual_portal_link");
+    const text = script?.trim()
+      ? expandScriptForDisplay(script, ctx)
+      : `${ctx.guestName}, הנה הקישור האישי לפורטל האורחים שלכם:\n${ctx.portalUrl}`;
+    if (!text?.trim()) {
+      setError("לא נמצא תוכן לקישור פורטל — בדוק את סקריפט manual_portal_link ב-BotScriptEditor");
+      return;
+    }
+    setReply(text);
+    setQuickOpen(false);
     setError(null);
-    try {
-      const { data, error: fnErr } = await supabase.functions.invoke("whatsapp-send", {
-        body: { trigger: "manual_script", guestId: activeContact.guestId, scriptKey: "manual_portal_link" },
-      });
-      if (fnErr || !data?.ok) throw new Error(fnErr?.message ?? data?.error ?? "שגיאה בשליחת קישור הפורטל");
-      setQuickOpen(false);
-      markPhoneInboundRead(active);
-      await fetchSince();
-    } catch (err) {
-      setError(err?.message ?? "שגיאה בשליחת קישור הפורטל");
-    } finally {
-      setSending(false);
-    }
+    requestAnimationFrame(() => replyRef.current?.focus());
   }
 
-  // ── Resend Stage 2 Arrival (staff correction) ─────────────────────────────
-  async function sendResendStage2Arrival() {
+  // ── Stage 2 arrival — pre-fill editable reply (session 125 P2-G) ──────────
+  // Same human-in-the-loop refactor: loads the stage_2_arrival bot_scripts
+  // body resolved with this guest's context into the textarea instead of
+  // firing whatsapp-send directly on click.
+  function preloadStage2ArrivalMessage() {
     if (!active) return;
     if (!activeContact?.guestId) {
-      setError("לא ניתן לשלוח שלב 2 — השיחה הזו אינה משויכת לרשומת אורח (guests)");
+      setError("לא ניתן לטעון שלב 2 — השיחה הזו אינה משויכת לרשומת אורח (guests)");
       return;
     }
-    if (!ensureCanSend()) {
-      setError("שליחה חסומה בשעות שקט — סמן את האישור למטה");
+    const script = scriptsByKey?.get("stage_2_arrival");
+    if (!script?.trim()) {
+      setError("לא נמצא סקריפט stage_2_arrival — בדוק ב-BotScriptEditor");
       return;
     }
-    setSending(true);
+    const text = expandScriptForDisplay(script, buildGuestResolveContext(activeContact));
+    if (!text?.trim()) {
+      setError("סקריפט stage_2_arrival ריק אחרי מילוי משתנים — בדוק ב-BotScriptEditor");
+      return;
+    }
+    setReply(text);
+    setQuickOpen(false);
     setError(null);
-    try {
-      const { data, error: fnErr } = await supabase.functions.invoke("whatsapp-send", {
-        body: { trigger: "manual_script", guestId: activeContact.guestId, scriptKey: "stage_2_arrival" },
-      });
-      if (fnErr || !data?.ok) throw new Error(fnErr?.message ?? data?.error ?? "שגיאה בשליחת הודעת הגעה (שלב 2)");
-      setQuickOpen(false);
-      markPhoneInboundRead(active);
-      await fetchSince();
-    } catch (err) {
-      setError(err?.message ?? "שגיאה בשליחת הודעת הגעה (שלב 2)");
-    } finally {
-      setSending(false);
-    }
+    requestAnimationFrame(() => replyRef.current?.focus());
   }
 
   // ── Room Ready — pre-fill editable reply (staff reviews before inbox_reply send) ─
@@ -4469,15 +4494,20 @@ export default function WhatsAppInbox({
                 </button>
               </div>
             )}
-            {/* Manual Portal Link Dispatch — always visible (Disable Don't Hide,
-                CLAUDE.md §0.2), disabled with an explanatory title when this
-                thread isn't linked to a guests row. One click, no textarea —
-                server resolves {{GUEST_NAME}}/{{portal_url}} and sends immediately. */}
+            {/* Template drafts — always visible (Disable Don't Hide, CLAUDE.md
+                §0.2), disabled with an explanatory title when this thread isn't
+                linked to a guests row. Session 125 P2-G: these load an editable
+                draft into the reply box (human-in-the-loop) — nothing is sent
+                until staff hits שלח. */}
             <div style={{ marginBottom: 10, display: "flex", flexWrap: "wrap", gap: 8 }}>
               <button
-                onClick={sendManualPortalLink}
+                onClick={preloadPortalLinkMessage}
                 disabled={sending || !activeContact?.guestId}
-                title={!activeContact?.guestId ? "השיחה הזו אינה משויכת לרשומת אורח (guests)" : undefined}
+                title={
+                  !activeContact?.guestId
+                    ? "השיחה הזו אינה משויכת לרשומת אורח (guests)"
+                    : "טוען את הודעת קישור הפורטל לעריכה — שליחה ידנית מהתיבה למטה"
+                }
                 style={{
                   padding: "8px 14px", borderRadius: 20, border: "1.5px solid var(--gold,#C9A96E)",
                   background: !activeContact?.guestId ? "#F3F0EA" : "linear-gradient(135deg, #FFF8E8, #FDF2D8)",
@@ -4489,12 +4519,12 @@ export default function WhatsAppInbox({
                 🔗 שלח קישור לפורטל האורחים
               </button>
               <button
-                onClick={sendResendStage2Arrival}
+                onClick={preloadStage2ArrivalMessage}
                 disabled={sending || !activeContact?.guestId}
                 title={
                   !activeContact?.guestId
                     ? "השיחה הזו אינה משויכת לרשומת אורח (guests)"
-                    : "שולח את סקריפט stage_2_arrival מ-BotScriptEditor (שם, ספא, פורטל) — דורש חלון 24ש' פתוח"
+                    : "טוען את סקריפט stage_2_arrival (שם, ספא, פורטל) לעריכה — שליחה ידנית מהתיבה למטה"
                 }
                 style={{
                   padding: "8px 14px", borderRadius: 20, border: "1.5px solid var(--gold,#C9A96E)",
