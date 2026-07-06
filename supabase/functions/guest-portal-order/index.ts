@@ -7,10 +7,14 @@
 //
 // Security notes:
 //   • guest_type (room_type) enforcement is server-side only — the client sends
-//     item_id references; this function cross-checks each item's target_audience
-//     against the guest's actual room_type from DB. A spoofed item_id for a
-//     suite-only item submitted by a day_use guest is silently dropped (not an
-//     error — the item simply wasn't available to them).
+//     item_id references; this function cross-checks each item's visibility_settings
+//     (migration 097 — same array-contains check guest-portal-data.ts uses; the
+//     legacy target_audience column is no longer read here, mirroring the fix
+//     already applied elsewhere: it could never represent premium_day_guest,
+//     and drifts from visibility_settings since PortalSettingsPanel.js only
+//     writes the latter) against the guest's actual room_type from DB. A
+//     spoofed item_id for a suite-only item submitted by a day_guest is
+//     silently dropped (not an error — the item simply wasn't available to them).
 //   • Quantity is capped at 10 per item — prevents runaway cart from a buggy
 //     client.
 //   • portal_token UUID format is validated before any DB query (same guard as
@@ -83,7 +87,7 @@ serve(async (req: Request) => {
 
     const { data: itemRows, error: itemsErr } = await supabase
       .from("upsell_items")
-      .select("id, name, price, target_audience, is_active")
+      .select("id, name, price, visibility_settings, is_active")
       .in("id", rawItemIds);
     if (itemsErr) throw new Error(`items_lookup_error: ${itemsErr.message}`);
 
@@ -92,11 +96,10 @@ serve(async (req: Request) => {
       (itemRows ?? []).map((r: Record<string, unknown>) => [r.id as string, r]),
     );
 
-    // Determine which audiences are valid for this guest's room_type
+    // Guest's room_type — matched against each item's visibility_settings
+    // below (array-contains). Unknown/null room_type → no restriction, same
+    // backward-compat convention as guest-portal-data.ts.
     const guestRoomType = (guest.room_type as string | null) ?? "";
-    const validAudiences = new Set<string>(["all"]);
-    if (guestRoomType === "suite")     validAudiences.add("suite");
-    if (guestRoomType === "day_guest") validAudiences.add("day_use");
 
     // Filter cart to only items that exist, are active, and target this guest
     const validCartItems: CartItem[] = [];
@@ -106,10 +109,12 @@ serve(async (req: Request) => {
       const item = itemMap.get(entry?.item_id);
       if (!item) { droppedItems.push(entry?.item_id ?? "?"); continue; }
       if (!item.is_active) { droppedItems.push(item.id as string); continue; }
-      if (!validAudiences.has(item.target_audience as string)) {
+      const vis = item.visibility_settings as string[] | null | undefined;
+      const allowed = !guestRoomType || !vis || vis.length === 0 || vis.includes(guestRoomType);
+      if (!allowed) {
         // Server-side authoritative: drop silently (not an error — the item
         // wasn't shown to this guest type to begin with; this guards against
-        // a manipulated request from a day_use guest asking for suite-only items)
+        // a manipulated request from a day_guest asking for suite-only items)
         droppedItems.push(item.id as string);
         continue;
       }
