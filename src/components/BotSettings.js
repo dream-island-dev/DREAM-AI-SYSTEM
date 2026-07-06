@@ -28,8 +28,9 @@ const DEFAULT_KB_HINT =
 // default (currently Claude-first, with automatic failover to the other
 // engine on error either way — see AiFailoverWidget.js for the live alert).
 const MODEL_OPTIONS = [
-  { value: "",                     label: "ברירת מחדל (Claude)" },
+  { value: "",                     label: "ברירת מחדל (Claude — claude-sonnet-4-6)" },
   { value: "claude",               label: "Claude — claude-sonnet-4-6" },
+  { value: "claude-haiku",         label: "Claude Haiku — claude-haiku-4-5 (מהיר וזול, ניסיוני)" },
   { value: "gemini-2.0-flash-lite", label: "Gemini 2.0 Flash Lite (מהיר וזול — מומלץ לנפח גבוה)" },
   { value: "gemini-2.0-flash",      label: "Gemini 2.0 Flash" },
   { value: "gemini-2.5-flash",      label: "Gemini 2.5 Flash" },

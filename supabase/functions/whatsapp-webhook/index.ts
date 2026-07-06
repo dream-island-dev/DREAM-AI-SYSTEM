@@ -112,7 +112,13 @@ const CORS = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-const CLAUDE_MODEL = "claude-sonnet-4-6"; // final fallback when all Gemini models fail
+const CLAUDE_MODEL = "claude-sonnet-4-6"; // default Claude engine; final fallback when all Gemini models fail
+// Faster/cheaper Claude option, selectable via bot_settings.preferred_model="claude-haiku"
+// (BotSettings.js MODEL_OPTIONS). Exact ID not yet confirmed against this project's
+// ANTHROPIC_API_KEY (restricted key — most model names 404, see CLAUDE.md §2); if it
+// 404s, the existing engine-level failover in the main handler (Claude→Gemini on any
+// callClaude() throw) already covers it — the guest never goes silent either way.
+const CLAUDE_MODEL_HAIKU = "claude-haiku-4-5";
 
 // Ordered fallback list — fastest/most reliable first, falls through on 404.
 // Override ALL by setting the GEMINI_MODEL Supabase secret.
@@ -1008,27 +1014,36 @@ async function fetchLearnedRulesSuffixes(
 // can never go silent for guests, even when Claude is the chosen default.
 function resolveModelRoute(
   preferredModel: string | null,
-): { engine: "gemini" | "claude"; geminiOrder: string[] } {
+): { engine: "gemini" | "claude"; geminiOrder: string[]; claudeModel: string } {
   const normalized = (preferredModel ?? "").trim();
 
+  // Explicit Haiku pick — only when selected by name, never a default. Accepts
+  // both the short UI value ("claude-haiku") and the raw model id, same pattern
+  // as the "claude"/CLAUDE_MODEL pair below.
+  if (normalized === "claude-haiku" || normalized === CLAUDE_MODEL_HAIKU) {
+    return { engine: "claude", geminiOrder: GEMINI_MODELS, claudeModel: CLAUDE_MODEL_HAIKU };
+  }
+
   if (normalized === "claude" || normalized === CLAUDE_MODEL) {
-    return { engine: "claude", geminiOrder: GEMINI_MODELS };
+    return { engine: "claude", geminiOrder: GEMINI_MODELS, claudeModel: CLAUDE_MODEL };
   }
 
   if (GEMINI_MODELS.includes(normalized)) {
     return {
       engine: "gemini",
       geminiOrder: [normalized, ...GEMINI_MODELS.filter((m) => m !== normalized)],
+      claudeModel: CLAUDE_MODEL,
     };
   }
 
   // Empty (no override configured) or unrecognized (typo / deprecated model id).
-  // Default per Mike's decision: route to Claude first. Only warn for the
-  // typo case — an empty value is the normal "no override set" state, not an error.
+  // Default per Mike's decision: route to Claude (Sonnet) first. Only warn for
+  // the typo case — an empty value is the normal "no override set" state, not
+  // an error.
   if (normalized) {
     console.warn(`[webhook] unknown preferred_model "${normalized}" — ignoring, defaulting to claude`);
   }
-  return { engine: "claude", geminiOrder: GEMINI_MODELS };
+  return { engine: "claude", geminiOrder: GEMINI_MODELS, claudeModel: CLAUDE_MODEL };
 }
 
 // buildSystemPrompt is the THIRD-priority fallback (after bot_settings.system_prompt
@@ -2667,6 +2682,7 @@ async function callClaude(
   history: Array<{ direction: string; message: string }>,
   systemPrompt: string,
   toolInstructionsSuffix = "",
+  modelId: string = CLAUDE_MODEL,
 ): Promise<AiReplyResult> {
   const key = Deno.env.get("ANTHROPIC_API_KEY");
   if (!key) throw new Error("no_anthropic_key");
@@ -2705,7 +2721,7 @@ async function callClaude(
   // accepts `tools` regardless of client-library vintage — this is a
   // passthrough request-body field, not a client-side feature gate.
   const resp = await anthropic.messages.create({
-    model:      CLAUDE_MODEL,
+    model:      modelId,
     max_tokens: 1000,
     system,
     messages,
@@ -2728,7 +2744,7 @@ async function callClaude(
 
   const finalText = text || (loggedRequest ? _buildToolOnlyReply(loggedRequest) : "");
   if (!finalText) throw new Error("claude_empty_response");
-  console.log(`[webhook] ✅ Claude OK (fallback) engine=${CLAUDE_MODEL}`);
+  console.log(`[webhook] ✅ Claude OK (fallback) engine=${modelId}`);
   return { text: finalText, loggedRequest };
 }
 
@@ -4373,7 +4389,7 @@ Deno.serve(async (req: Request) => {
 
         try {
           const result = route.engine === "claude"
-            ? await callClaude(effectiveText, guestName, orderedHistory, enrichedPrompt, routingLearnedSuffix)
+            ? await callClaude(effectiveText, guestName, orderedHistory, enrichedPrompt, routingLearnedSuffix, route.claudeModel)
             : await askGemini(effectiveText, guestName, orderedHistory, enrichedPrompt, route.geminiOrder, true, routingLearnedSuffix);
           reply = sanitizeReply(result.text);
           if (isReplyObviouslyTruncated(reply)) {
@@ -4405,7 +4421,7 @@ Deno.serve(async (req: Request) => {
           try {
             const result = route.engine === "claude"
               ? await askGemini(effectiveText, guestName, orderedHistory, enrichedPrompt, route.geminiOrder, true, routingLearnedSuffix)
-              : await callClaude(effectiveText, guestName, orderedHistory, enrichedPrompt, routingLearnedSuffix);
+              : await callClaude(effectiveText, guestName, orderedHistory, enrichedPrompt, routingLearnedSuffix, route.claudeModel);
             reply = sanitizeReply(result.text);
             if (isReplyObviouslyTruncated(reply)) {
               console.warn(
