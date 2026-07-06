@@ -84,7 +84,7 @@ import {
 import {
   assertGuestEligibleForAutomation,
   GUEST_NOT_ACTIVE_HE,
-  loadActiveGuestByPhone,
+  loadGuestByPhoneForStaffReply,
 } from "../_shared/guestOutboundGuard.ts";
 import { assertPipelineLifecycleForTrigger } from "../_shared/pipelineLifecycle.ts";
 import {
@@ -1528,17 +1528,12 @@ serve(async (req: Request) => {
       if (!targetPhone) throw new Error("phone is required for inbox_reply");
       if (!inboxMsg)    throw new Error("message is required for inbox_reply");
 
-      const activeGuest = await loadActiveGuestByPhone(supabase, targetPhone);
-      if (!activeGuest) {
-        return new Response(
-          JSON.stringify({
-            ok: false,
-            status: "guest_not_active",
-            error: GUEST_NOT_ACTIVE_HE,
-          }),
-          { headers: { ...CORS, "Content-Type": "application/json" } },
-        );
-      }
+      // Staff must always be able to reply to any phone with an active WA
+      // thread — guest status (checked_out, cancelled) is never a gate here,
+      // only automation/cron is. A phone matching no guests row at all is
+      // also allowed through (staffGuest stays null; logged with guest_id:
+      // null below) — conversation history is the contract, not the profile.
+      const staffGuest = await loadGuestByPhoneForStaffReply(supabase, targetPhone);
 
       // ── 24-Hour Interaction Window Guard ─────────────────────────────────
       // inbox_reply sends raw free text — previously unchecked here, so a
@@ -1551,12 +1546,7 @@ serve(async (req: Request) => {
       // Only enforced when the phone matches a known guest row; an untracked
       // number (no guest record) keeps today's permissive behavior, since we
       // have no window data to check.
-      const { data: windowGuest } = await supabase
-        .from("guests")
-        .select("wa_window_expires_at")
-        .eq("id", activeGuest.id)
-        .maybeSingle();
-      if (windowGuest && !isWindowOpen(windowGuest.wa_window_expires_at)) {
+      if (staffGuest && !isWindowOpen(staffGuest.wa_window_expires_at)) {
         return new Response(
           JSON.stringify({
             ok: false,
@@ -1588,7 +1578,7 @@ serve(async (req: Request) => {
       // Insert outbound row so the inbox thread shows the message immediately
       await supabase.from("whatsapp_conversations").insert({
         phone:         targetPhone,
-        guest_id:      activeGuest.id,
+        guest_id:      staffGuest?.id ?? null,
         direction:     "outbound",
         message:       replyStatus === "failed"
           ? inboxMsg
@@ -1625,13 +1615,9 @@ serve(async (req: Request) => {
       if (!guest) throw new Error(`guest_not_found: no guest row for id=${JSON.stringify(guestId)}`);
       if (!guest.phone) throw new Error("guest_no_phone");
 
-      const payInactive = assertGuestEligibleForAutomation(guest);
-      if (payInactive) {
-        return new Response(
-          JSON.stringify({ ok: false, status: "guest_not_active", reason: payInactive, error: GUEST_NOT_ACTIVE_HE }),
-          { headers: { ...CORS, "Content-Type": "application/json" } },
-        );
-      }
+      // Staff-initiated single-guest send — guest status (checked_out,
+      // cancelled) is never a gate here; staff may need to collect a late
+      // charge after departure. Only automation/cron enforces status.
       if (!guest.payment_amount) throw new Error("payment_amount_not_set");
 
       const linkGuard = await guardPaymentLink(supabase, guest, guestId, {
@@ -1732,13 +1718,8 @@ serve(async (req: Request) => {
       if (!guest) throw new Error(`guest_not_found: no guest row for id=${JSON.stringify(guestId)}`);
       if (!guest.phone) throw new Error(`guest_no_phone: guest id=${guestId} (${guest.name ?? "?"}) has no phone on file`);
 
-      const manualInactive = assertGuestEligibleForAutomation(guest);
-      if (manualInactive) {
-        return new Response(
-          JSON.stringify({ ok: false, status: "guest_not_active", reason: manualInactive, error: GUEST_NOT_ACTIVE_HE }),
-          { headers: { ...CORS, "Content-Type": "application/json" } },
-        );
-      }
+      // Staff-initiated single-guest send — guest status (checked_out,
+      // cancelled) is never a gate here. Only automation/cron enforces status.
 
       const { data: scriptRow, error: sErr } = await supabase
         .from("bot_scripts")

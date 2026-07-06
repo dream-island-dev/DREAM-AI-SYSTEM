@@ -108,5 +108,38 @@ export async function loadActiveGuestByPhone(
   return data as ActiveGuestRow;
 }
 
+/**
+ * Staff-initiated single-guest sends (inbox_reply, manual_script,
+ * payment_and_workshops) must never be gated by guest status — only
+ * automation (cron/pipeline) and the bot's own auto-reply enforce
+ * INACTIVE_GUEST_STATUSES. Returns whichever guest row matches the phone
+ * (any status), or null if none exists at all.
+ *
+ * .order().limit(1) instead of .maybeSingle(): guests has no global phone
+ * uniqueness (a returning guest has one row per past stay), so a phone
+ * match can be >1 row — .maybeSingle() would error on that and the caller
+ * would see the same "no active guest" message as a true miss.
+ */
+export async function loadGuestByPhoneForStaffReply(
+  supabase: SupabaseClient,
+  phone: string,
+): Promise<ActiveGuestRow | null> {
+  const variants = phoneLookupVariants(phone);
+  if (!variants.length) return null;
+
+  const { data, error } = await supabase
+    .from("guests")
+    .select(`${ACTIVE_GUEST_SELECT}, arrival_date`)
+    .in("phone", variants)
+    .order("arrival_date", { ascending: false, nullsFirst: false })
+    .order("id", { ascending: false })
+    .limit(1);
+  if (error) {
+    console.warn("[guestOutboundGuard] loadGuestByPhoneForStaffReply error:", error.message);
+    return null;
+  }
+  return (data?.[0] as ActiveGuestRow | undefined) ?? null;
+}
+
 export const GUEST_NOT_ACTIVE_HE =
   "אין פרופיל אורח פעיל במערכת — לא ניתן לשלוח הודעה (האורח נמחק או סומן כמבוטל/עזב).";
