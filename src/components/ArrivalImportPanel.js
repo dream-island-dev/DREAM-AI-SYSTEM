@@ -704,7 +704,7 @@ function _resolveDetailedProfileType(g, filterMode) {
 // "conflict" rows (phone/order matches an existing guest but name/room/date differs)
 // are NOT skipped — they sync like any other match, but the caller surfaces the
 // conflict count so staff can review after the fact (FAIL VISIBLE, §0.3).
-export function _getSyncProfileIndices(merged, gridRows, { importSource, detailedRoomFilter, selectedIds, dbMatchByIdx }) {
+export function _getSyncProfileIndices(merged, gridRows, { importSource, detailedRoomFilter, selectedIds, dbMatchByIdx, mergedCandidates }) {
   const gridByIdx = new Map(gridRows.map((r) => [r._profileIdx, r]));
   const indices = [];
   const conflicts = [];
@@ -713,6 +713,7 @@ export function _getSyncProfileIndices(merged, gridRows, { importSource, detaile
   let skippedDeselected = 0;
   for (let i = 0; i < merged.length; i++) {
     const g = merged[i];
+    const c = mergedCandidates?.[i];
     const row = gridByIdx.get(i);
     const rowId = row?._id ?? `row_${i}`;
     if (selectedIds.size > 0 && !selectedIds.has(rowId)) {
@@ -726,11 +727,12 @@ export function _getSyncProfileIndices(merged, gridRows, { importSource, detaile
     }
     const dbStatus = dbMatchByIdx?.get(i) ?? null;
     if (dbStatus === "unimportable") { skippedUnimportable++; continue; }
-    if (!g.guestPhone) {
+    const guestPhone = c?.guestPhone ?? g.guestPhone ?? row?.guestPhone;
+    if (!guestPhone) {
       skippedNoPhone.push({
         idx: i,
-        guestName: String(row?.guestName ?? g.guestName ?? "").trim() || `שורה ${i + 1}`,
-        orderNumber: String(row?.orderNumber ?? [...(g.orderNumbers ?? [])][0] ?? "").trim(),
+        guestName: String(row?.guestName ?? c?.guestName ?? g.guestName ?? "").trim() || `שורה ${i + 1}`,
+        orderNumber: String(row?.orderNumber ?? c?.orderNumber ?? [...(g.orderNumbers ?? [])][0] ?? "").trim(),
       });
       continue;
     }
@@ -1580,6 +1582,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           detailedRoomFilter,
           selectedIds,
           dbMatchByIdx,
+          mergedCandidates,
         });
         if (!syncIndices.length) {
           showToast("err", skippedUnimportable > 0
@@ -1771,6 +1774,9 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
 
           const primaryIdx = indices[0];
           const primaryDbStatus = dbMatchByIdx.get(primaryIdx) ?? null;
+          const primaryG = merged[primaryIdx];
+          const primaryC = mergedCandidates[primaryIdx];
+          const primaryEdited = gridByProfileIdx.get(primaryIdx) ?? {};
           const existingRow = findExistingGuestRow(existingGuestsLookup, {
             guestPhone,
             arrivalDate: profileArrivalDate,
@@ -1778,6 +1784,16 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           });
           if (enrichOnly && existingRow && primaryDbStatus !== "new") {
             patch = buildEnrichGuestPatch(patch, existingRow);
+          }
+          const wantMuted = _parseGridAutomationMuted(
+            primaryEdited.automationMuted,
+            primaryC,
+            primaryG,
+            primaryDbStatus,
+            importWithoutAutomation,
+          );
+          if (wantMuted && !existingRow?.automation_muted) {
+            patch.automation_muted = true;
           }
 
           if (guestPhone && profileArrivalDate && Object.keys(patch).length > 0) {
@@ -1984,8 +2000,9 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
       detailedRoomFilter,
       selectedIds,
       dbMatchByIdx,
+      mergedCandidates,
     }).indices.length;
-  }, [merged, gridRows, importSource, detailedRoomFilter, selectedIds, dbMatchByIdx]);
+  }, [merged, gridRows, importSource, detailedRoomFilter, selectedIds, dbMatchByIdx, mergedCandidates]);
 
   const syncEligibility = useMemo(() => {
     if (!merged?.length) return null;
@@ -1994,6 +2011,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
       detailedRoomFilter,
       selectedIds,
       dbMatchByIdx,
+      mergedCandidates,
     });
     return {
       total: merged.length,
@@ -2002,7 +2020,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
       skippedUnimportable: r.skippedUnimportable,
       skippedDeselected: r.skippedDeselected,
     };
-  }, [merged, gridRows, importSource, detailedRoomFilter, selectedIds, dbMatchByIdx]);
+  }, [merged, gridRows, importSource, detailedRoomFilter, selectedIds, dbMatchByIdx, mergedCandidates]);
 
   // ── Sync button label ─────────────────────────────────────────────────────
   const syncLabel = syncing

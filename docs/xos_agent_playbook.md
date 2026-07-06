@@ -326,6 +326,12 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
+### 2026-07-07 — Session 130 (Group remark occupants import)
+- **שורש:** `sync_suite_arrivals` Tier-2 (order יחיד → עדכון אורח) דרס אורח-קבוצה שני באותה הזמנה — רק האחרון נשאר ב-DB (עיריית/הערות).
+- **תיקון migration 147:** Tier-2 לא מתאים כש-`name`+`phone` שונים מאורח יחיד קיים על אותה הזמנה; INSERT נפרד לכל דייר מהערות.
+- **`automation_muted` one-way:** ייבוא עם `automationMuted=true` מדליק mute (INSERT+UPDATE); לא מכבה unmute ידני של צוות.
+- **Frontend:** `_getSyncProfileIndices` משתמש ב-`mergedCandidates[i].guestPhone` כ-fallback.
+
 ### 2026-07-07 — Session 129 (Import enrich mode)
 - **`enrichOnly` ב-RPC** — `sync_suite_arrivals` (migration 146): פרופיל קיים מקבל רק שדות ריקים; INSERT חדש במלואו. `enrichOnly=false` = התנהגות 144 (ייבוא מלא).
 - **UI** — מצב Doc 2 ברירת-מחדל «השלמת פרופיל»; עמודת «הבדל מול DB» ל-⚠ (שם/חדר/תאריך); `buildEnrichGuestPatch` לספא/ארוחה אחרי RPC.

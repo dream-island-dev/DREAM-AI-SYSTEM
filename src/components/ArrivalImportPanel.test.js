@@ -56,6 +56,24 @@ describe("_getSyncProfileIndices — Sprint 3 DB-match gating", () => {
     expect(skippedNoPhone[0].guestName).toBeTruthy();
   });
 
+  test("uses mergedCandidates guestPhone when merged profile phone is missing", () => {
+    const merged = [_row(0, { guestPhone: null })];
+    const gridRows = merged.map((_, i) => _gridRow(i));
+    const mergedCandidates = [{ guestPhone: "+972507774904", guestName: "מרדכי" }];
+    const dbMatchByIdx = new Map([[0, "new"]]);
+
+    const { indices, skippedNoPhone } = _getSyncProfileIndices(merged, gridRows, {
+      importSource: null,
+      detailedRoomFilter: "all",
+      selectedIds: new Set(),
+      dbMatchByIdx,
+      mergedCandidates,
+    });
+
+    expect(indices).toEqual([0]);
+    expect(skippedNoPhone).toHaveLength(0);
+  });
+
   test("conflict rows are NOT skipped — they sync, but are reported separately", () => {
     const merged = [_row(0), _row(1)];
     const gridRows = merged.map((_, i) => _gridRow(i));
