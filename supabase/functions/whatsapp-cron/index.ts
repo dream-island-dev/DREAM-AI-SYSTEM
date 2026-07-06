@@ -23,6 +23,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   resolveStageSchedule,
+  checkEligibility,
   CORE_PIPELINE_STAGE_KEYS,
   isPastAutoCheckinGateway,
   isPastAutoCheckoutGateway,
@@ -196,10 +197,26 @@ Deno.serve(async (req: Request) => {
     const NIGHT_BEFORE_STAGE_KEYS = new Set(["night_before", "night_before_daypass"]);
     const MID_STAY_STAGE_KEYS = new Set(["mid_stay", "mid_stay_daypass"]);
     const MORNING_STAGE_KEYS = new Set(["morning_suite", "morning_welcome"]);
-    type DueItem = { guestId: number; trigger: string; pipeline_reconcile?: boolean };
+    type DueItem = { guestId: number; trigger: string; pipeline_reconcile?: boolean; staffScheduled?: boolean };
+
+    const { data: staffSchedRows, error: staffSchedErr } = await supabase
+      .from("scheduled_tasks")
+      .select("guest_id, stage_key, scheduled_for")
+      .eq("status", "pending")
+      .eq("staff_scheduled", true);
+    if (staffSchedErr) {
+      console.warn("[whatsapp-cron] scheduled_tasks staff lookup failed:", staffSchedErr.message);
+    }
+    const staffScheduleByKey = new Map<string, string>();
+    for (const row of staffSchedRows ?? []) {
+      staffScheduleByKey.set(`${row.guest_id}::${row.stage_key}`, row.scheduled_for as string);
+    }
+
     const due: DueItem[] = [];
     for (const guest of guestsList) {
       for (const stage of stages) {
+        const staffKey = `${guest.id}::${stage.stage_key}`;
+        const staffSchedIso = staffScheduleByKey.get(staffKey);
         const result = resolveStageSchedule(stage, guest, now);
         if (
           NIGHT_BEFORE_STAGE_KEYS.has(stage.stage_key) ||
@@ -215,6 +232,20 @@ Deno.serve(async (req: Request) => {
             `applies_to=${stage.applies_to} ${flagCol ?? "flag"}=${String(flagVal)} ` +
             `dueNow=${result.dueNow} skipReason=${result.skipReason ?? "none"}`,
           );
+        }
+        if (staffSchedIso) {
+          const schedMs = new Date(staffSchedIso).getTime();
+          if (schedMs > now.getTime()) {
+            continue;
+          }
+          const skipReason = checkEligibility(stage, guest, now);
+          if (!skipReason) {
+            console.log(
+              `[whatsapp-cron] staff_schedule QUEUED guest_id=${guest.id} trigger=${stage.stage_key} at=${staffSchedIso}`,
+            );
+            due.push({ guestId: guest.id as number, trigger: stage.stage_key, staffScheduled: true });
+          }
+          continue;
         }
         if (result.dueNow) {
           console.log(`[whatsapp-cron] QUEUED guest_id=${guest.id} trigger=${stage.stage_key}`);
@@ -330,7 +361,20 @@ Deno.serve(async (req: Request) => {
           headers: { "Content-Type": "application/json", apikey: anon, Authorization: `Bearer ${anon}` },
           body: JSON.stringify(d),
         });
-        results.push({ ...d, ok: res.ok });
+        const resOk = res.ok;
+        results.push({ ...d, ok: resOk });
+        if (resOk && d.staffScheduled) {
+          const { error: markErr } = await supabase.rpc("mark_scheduled_task_dispatched", {
+            p_guest_id: d.guestId,
+            p_stage_key: d.trigger,
+          });
+          if (markErr) {
+            console.warn(
+              `[whatsapp-cron] mark_scheduled_task_dispatched guest=${d.guestId} stage=${d.trigger}:`,
+              markErr.message,
+            );
+          }
+        }
       } catch (e) {
         results.push({ ...d, ok: false, error: (e as Error).message });
       }

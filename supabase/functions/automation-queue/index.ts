@@ -141,6 +141,21 @@ Deno.serve(async (req: Request) => {
 
     const guestById = new Map(guests.map((g) => [g.id, g]));
 
+    const { data: schedRows, error: schedErr } = await supabase
+      .from("scheduled_tasks")
+      .select("guest_id, stage_key, scheduled_for, staff_scheduled")
+      .eq("status", "pending")
+      .in("guest_id", guestIds.length ? guestIds : [-1]);
+    if (schedErr) throw new Error(`scheduled_tasks_lookup_error: ${schedErr.message}`);
+
+    const pendingScheduleByKey = new Map<string, { scheduled_for: string; staff_scheduled: boolean }>();
+    for (const row of schedRows ?? []) {
+      pendingScheduleByKey.set(`${row.guest_id}::${row.stage_key}`, {
+        scheduled_for: row.scheduled_for as string,
+        staff_scheduled: row.staff_scheduled === true,
+      });
+    }
+
     const queue: Record<string, unknown>[] = [];
     for (const stage of stages) {
       for (const guest of guests) {
@@ -155,6 +170,22 @@ Deno.serve(async (req: Request) => {
           && result.skipReason !== null
           && !QUEUE_PREVIEW_VISIBLE_SKIP_REASONS.has(result.skipReason)
         ) continue;
+
+        const pendingSched = pendingScheduleByKey.get(`${guest.id}::${stage.stage_key}`);
+        let scheduledForIso = result.scheduledFor ? result.scheduledFor.toISOString() : null;
+        let dueNow = result.dueNow;
+        let staffScheduled = false;
+
+        if (pendingSched) {
+          scheduledForIso = pendingSched.scheduled_for;
+          staffScheduled = pendingSched.staff_scheduled;
+          if (staffScheduled) {
+            const timeDue = new Date(pendingSched.scheduled_for).getTime() <= now.getTime();
+            dueNow = timeDue
+              && !logRow
+              && (!result.skipReason || QUEUE_PREVIEW_VISIBLE_SKIP_REASONS.has(result.skipReason));
+          }
+        }
 
         queue.push({
           guestId: guest.id,
@@ -174,8 +205,9 @@ Deno.serve(async (req: Request) => {
           displayName: stage.display_name,
           journeyPhase: stage.journey_phase,
           nodeType: stage.node_type,
-          scheduledFor: result.scheduledFor ? result.scheduledFor.toISOString() : null,
-          dueNow: result.dueNow,
+          scheduledFor: scheduledForIso,
+          dueNow,
+          staffScheduled,
           // "predicted" — the real channel decision happens at actual send
           // time (Phase 4); this is a best-effort projection, not a promise.
           predictedChannel:

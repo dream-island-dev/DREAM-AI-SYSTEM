@@ -23,9 +23,10 @@ import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import TemplateManagerPanel, { STATUS_META } from "./TemplateManagerPanel";
 import TemplateTestPanel from "./TemplateTestPanel";
 import ScheduledOverrideConfirmModal from "./ScheduledOverrideConfirmModal";
+import QueueBulkScheduleModal from "./QueueBulkScheduleModal";
 import QuietHoursGate from "./QuietHoursGate";
 import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
-import { isFutureScheduledQueueItem } from "../utils/israelTime";
+import { formatIsraelDateTime, isFutureScheduledQueueItem } from "../utils/israelTime";
 
 const JOURNEY_PHASE_LABELS = {
   pre_arrival: "🌴 לפני ההגעה",
@@ -174,9 +175,17 @@ function groupQueueByArrivalDay(items, stages) {
 
 function formatQueueScheduleCell(q) {
   if (q.scheduledFor) {
-    return new Date(q.scheduledFor).toLocaleString("he-IL", {
+    const when = new Date(q.scheduledFor).toLocaleString("he-IL", {
       day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit",
     });
+    if (q.staffScheduled && isFutureScheduledQueueItem(q)) {
+      return (
+        <span title={`תזמון צוות: ${formatIsraelDateTime(q.scheduledFor)}`}>
+          📅 {when}
+        </span>
+      );
+    }
+    return when;
   }
   if (q.skipReason === "awaiting_confirmation") return "מיד לאחר אישור הגעה";
   if (q.stageKey === "stage_2_arrival" && q.dueNow) return "מיידי (אחרי אישור)";
@@ -197,6 +206,7 @@ function queueStatusBadge(q) {
   if (q.status === "blocked_by_meta") return { cls: "badge-orange", text: "🟠 ממתין לאישור" };
   if (q.status === "failed_missing_link") return { cls: "badge-red", text: "❌ חסר קישור תשלום" };
   if (q.dueNow && q.status === "pending") return { cls: "badge-gold", text: "⚡ מוכן לשליחה" };
+  if (q.staffScheduled && isFutureScheduledQueueItem(q)) return { cls: "badge-blue", text: "📅 מתוזמן" };
   if (q.skipReason && SKIP_REASON_LABELS[q.skipReason]) {
     return { cls: "badge-blue", text: `🕐 ${SKIP_REASON_LABELS[q.skipReason]}` };
   }
@@ -1451,6 +1461,9 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
   const [dispatchProgress, setDispatchProgress] = useState(null);
   const [dispatchSummary, setDispatchSummary] = useState(null);
   const [showDispatchConfirm, setShowDispatchConfirm] = useState(false);
+  const [showScheduleModal, setShowScheduleModal] = useState(false);
+  const [scheduling, setScheduling] = useState(false);
+  const [scheduleError, setScheduleError] = useState(null);
 
   // ── Opt-in automation: bulk unmute after import ───────────────────────────
   const [mutedGuests, setMutedGuests] = useState([]);
@@ -1536,6 +1549,7 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
 
       const futureTasks = (data.queue ?? []).filter(
         (q) => q.scheduledFor
+          && !q.staffScheduled
           && new Date(q.scheduledFor).getTime() > Date.now()
           && !["sent", "simulated"].includes(q.status),
       );
@@ -1875,6 +1889,27 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
     fetchQueue();
   };
 
+  const handleBulkSchedule = async (payload) => {
+    if (!supabase || !payload?.length) return;
+    setScheduling(true);
+    setScheduleError(null);
+    try {
+      const { data, error } = await supabase.rpc("staff_schedule_tasks_batch", { p_tasks: payload });
+      if (error) throw error;
+      const count = typeof data === "number" ? data : payload.length;
+      showToast("ok", `📅 נשמר תזמון ל-${count} הודעות — ה-cron ישלח בזמן`);
+      setShowScheduleModal(false);
+      setSelectedItems(new Set());
+      fetchQueue();
+    } catch (err) {
+      const msg = err?.message ?? String(err);
+      setScheduleError(msg);
+      showToast("err", "שגיאה בשמירת תזמון: " + msg);
+    } finally {
+      setScheduling(false);
+    }
+  };
+
   // stage_key → display_name, reused by the Queue tab so it never shows a
   // raw stage_key/trigger_type token to the manager.
   const stageDisplayNames = stages.reduce((acc, s) => {
@@ -2093,6 +2128,22 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                   setManualDispatchItem(null);
                   fetchQueue();
                 }}
+              />
+            )}
+
+            {showScheduleModal && (
+              <QueueBulkScheduleModal
+                items={displayQueue.filter((q) => selectedItems.has(`${q.guestId}_${q.stageKey}`))}
+                dayLabels={Object.fromEntries(arrivalDayGroups.map((d) => [d.dateKey, d.label]))}
+                saving={scheduling}
+                error={scheduleError}
+                onClose={() => {
+                  if (!scheduling) {
+                    setShowScheduleModal(false);
+                    setScheduleError(null);
+                  }
+                }}
+                onConfirm={handleBulkSchedule}
               />
             )}
 
@@ -3047,8 +3098,20 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                 </span>
                 <button
                   className="btn btn-primary"
+                  onClick={() => {
+                    setScheduleError(null);
+                    setShowScheduleModal(true);
+                  }}
+                  disabled={dispatching || scheduling}
+                  style={{ minWidth: 150, background: "var(--gold-dark)", borderColor: "var(--gold-dark)" }}
+                  title="שמור שעות שליחה — ה-cron ישלח אוטומטית"
+                >
+                  📅 תזמן שליחה
+                </button>
+                <button
+                  className="btn btn-primary"
                   onClick={() => setShowDispatchConfirm(true)}
-                  disabled={dispatching}
+                  disabled={dispatching || scheduling}
                   style={{ minWidth: 180 }}
                 >
                   {dispatching
@@ -3060,7 +3123,7 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                 <button
                   className="btn btn-ghost btn-sm"
                   onClick={() => setSelectedItems(new Set())}
-                  disabled={dispatching}
+                  disabled={dispatching || scheduling}
                 >
                   ✕ ביטול בחירה
                 </button>
