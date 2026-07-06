@@ -739,11 +739,10 @@ function sortRosterContacts(contacts, sortMode) {
       return bLast.localeCompare(aLast);
     });
   }
+  // Strict latest-message-desc — WhatsApp convention (Mike, session 125:
+  // «פעילות»). Unread/alert state surfaces via badges, the 🚨 section and the
+  // «לא נקרא»/«התראות» filter chips — never by reordering recency.
   return arr.sort((a, b) => {
-    if (a.humanRequested !== b.humanRequested) return a.humanRequested ? -1 : 1;
-    const ua = countUnreadInbound(a.messages);
-    const ub = countUnreadInbound(b.messages);
-    if (ua !== ub) return ub - ua;
     const aLast = a.messages[a.messages.length - 1]?.created_at ?? "";
     const bLast = b.messages[b.messages.length - 1]?.created_at ?? "";
     return bLast.localeCompare(aLast);
@@ -751,30 +750,16 @@ function sortRosterContacts(contacts, sortMode) {
 }
 
 /**
- * Unread conversations always pin to the very top of the "all" grouped view —
- * like a regular chat app — instead of staying buried inside whichever
- * arrival-timing section they'd otherwise fall into (a contact with an unread
- * message but a "future arrival" segment used to show up below "in resort",
- * not at the top of the screen). Pulled out here, before alerts/segments are
- * computed, so the same contact never renders twice.
+ * Grouped "all" view — alerts section first (staff-requested escalations),
+ * then arrival-timing segments, each strictly latest-message-desc.
+ * Session 125: the unread-pinned-to-top bucket (19262d6) was removed by
+ * Mike's decision («פעילות») — pure WhatsApp recency order; unread state
+ * still shows via the count badge + the «לא נקרא» filter chip.
  */
 function buildGroupedRosterSections(contacts, sortMode, lang) {
-  const unread = contacts.filter((c) => countUnreadInbound(c.messages) > 0);
-  const unreadPhones = new Set(unread.map((c) => c.phone));
-  const remaining = contacts.filter((c) => !unreadPhones.has(c.phone));
-
-  const alerts = remaining.filter((c) => c.humanRequested);
-  const rest = remaining.filter((c) => !c.humanRequested);
+  const alerts = contacts.filter((c) => c.humanRequested);
+  const rest = contacts.filter((c) => !c.humanRequested);
   const sections = [];
-  if (unread.length) {
-    sections.push({
-      key: "unread",
-      ...getInboxRosterSegmentMeta("unread", lang),
-      // Always most-recent-unread-first, regardless of the chosen sort chip —
-      // "unread" as a bucket only makes sense ordered by recency.
-      contacts: sortRosterContacts(unread, "activity"),
-    });
-  }
   if (alerts.length) {
     const meta = getInboxRosterSegmentMeta("alerts", lang);
     sections.push({
@@ -795,7 +780,30 @@ function buildGroupedRosterSections(contacts, sortMode, lang) {
   return sections;
 }
 
-function groupByPhone(rows) {
+/**
+ * Additive thread merge (session 125 P1-D) — NEVER removes or replaces local
+ * rows with a smaller fetched window: opening a thread / «🔄 רענן היסטוריה»
+ * must never lose visible messages. Rows matched by id take the fresh DB
+ * fields but keep the local `_read` flag (so refreshing doesn't resurrect
+ * unread badges); local rows missing from the fetched window stay untouched.
+ * Exported for unit tests.
+ */
+export function mergeThreadRows(existingAll, fetchedRows) {
+  const byId = new Map();
+  for (const r of fetchedRows ?? []) if (r.id) byId.set(r.id, r);
+  const merged = (existingAll ?? []).map((m) => {
+    const fresh = m.id ? byId.get(m.id) : undefined;
+    if (!fresh) return m;
+    byId.delete(m.id);
+    return { ...fresh, _read: m._read ?? fresh._read };
+  });
+  if (byId.size) merged.push(...byId.values());
+  return merged.sort((a, b) =>
+    a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0,
+  );
+}
+
+export function groupByPhone(rows) {
   const map = new Map();
   for (const row of rows) {
     if (!map.has(row.phone)) {
@@ -838,9 +846,8 @@ function groupByPhone(rows) {
     const last = contact.messages[contact.messages.length - 1];
     applyGuestProfileFromMessageRow(contact, last);
   }
-  // Human-requested contacts first, then by latest message desc
+  // Strict latest-message-desc (WhatsApp order — session 125 «פעילות»).
   return [...map.values()].sort((a, b) => {
-    if (a.humanRequested !== b.humanRequested) return a.humanRequested ? -1 : 1;
     const aLast = a.messages[a.messages.length - 1]?.created_at ?? "";
     const bLast = b.messages[b.messages.length - 1]?.created_at ?? "";
     return bLast.localeCompare(aLast);
@@ -2486,6 +2493,11 @@ export default function WhatsAppInbox({
   const [scriptsByKey, setScriptsByKey] = useState(() => new Map());
   const [templatesByWaName, setTemplatesByWaName] = useState(() => new Map());
   const bottomRef  = useRef(null);
+  // Scroll preservation (session 125 P1-D): auto-scroll to bottom only when
+  // the staffer is already near the bottom (or just opened the thread) — a
+  // realtime append must not yank the view while reading older history.
+  const nearBottomRef = useRef(true);
+  const prevActiveScrollRef = useRef(null);
   const replyRef   = useRef(null);
   const pollRef    = useRef(null);
   const allMsgsRef = useRef([]);   // raw flat messages — source of truth for merging
@@ -2775,33 +2787,25 @@ export default function WhatsAppInbox({
     hydratedPhonesRef.current.add(phone);
     setLoadingThread(true);
     try {
+      // DESC + limit = the NEWEST rows (session 125 P1-D). Ascending+limit
+      // returned the OLDEST N — on a thread longer than the cap, the force
+      // path then REPLACED the local rows with that old window, silently
+      // dropping the newest messages from the visible thread.
       const { data, error: err } = await supabase
         .from("whatsapp_conversations")
         .select(CONVERSATION_SELECT)
         .in("phone", phoneVariants(phone))
-        .order("created_at", { ascending: true })
+        .order("created_at", { ascending: false })
         .limit(THREAD_HISTORY_LIMIT);
 
       if (err) {
         console.warn("[WA-inbox] fetchThreadHistory error:", err.message);
         return;
       }
-      const rows = (data ?? []).map(normalise);
-      if (force) {
-        const others = allMsgsRef.current.filter((m) => m.phone !== phone);
-        const merged = [...others, ...rows].sort((a, b) =>
-          a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0,
-        );
-        allMsgsRef.current = merged;
-        setContacts(applyGrouping(merged));
-        return;
-      }
-      const existingIds = new Set(allMsgsRef.current.map((m) => m.id));
-      const toAdd = rows.filter((m) => m.id && !existingIds.has(m.id));
-      if (!toAdd.length) return;
-      const merged = [...allMsgsRef.current, ...toAdd].sort((a, b) =>
-        a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0,
-      );
+      const rows = (data ?? []).map(normalise).reverse(); // back to ascending
+      // Additive merge for BOTH paths — force only bypasses the hydrate-skip.
+      // mergeThreadRows never drops local rows and preserves _read flags.
+      const merged = mergeThreadRows(allMsgsRef.current, rows);
       allMsgsRef.current = merged;
       setContacts(applyGrouping(merged));
     } finally {
@@ -3574,14 +3578,23 @@ export default function WhatsAppInbox({
     templatesByWaName,
   }), [activeContact?.guestName, activeContact?.pushName, activeContact?.room, activeContact?.portalToken, activeContact?.arrivalDate, activeContact?.spaTime, activeContact?.spaDate, scriptsByKey, templatesByWaName]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Session 125 P1-D: `lastUpdated` removed from deps — it changes on EVERY
+  // roster merge (any contact), which yanked the open thread to the bottom
+  // while reading history. thread.length covers new messages in THIS thread,
+  // and even then we only auto-scroll when the reader is already near the
+  // bottom (WhatsApp behavior). Opening/switching a thread always scrolls.
   useEffect(() => {
     if (!active) return;
-    const behavior = isMobile && mobileScreen === "thread" ? "auto" : "smooth";
+    const activeChanged = prevActiveScrollRef.current !== active;
+    prevActiveScrollRef.current = active;
+    if (activeChanged) nearBottomRef.current = true;
+    if (!nearBottomRef.current) return;
+    const behavior = activeChanged || (isMobile && mobileScreen === "thread") ? "auto" : "smooth";
     const id = requestAnimationFrame(() => {
       bottomRef.current?.scrollIntoView({ behavior });
     });
     return () => cancelAnimationFrame(id);
-  }, [active, thread.length, lastUpdated, isMobile, mobileScreen]);
+  }, [active, thread.length, isMobile, mobileScreen]);
 
   // ── Manual Portal Link Dispatch ───────────────────────────────────────────
   // One-click, staff-initiated send of the standalone `manual_portal_link`
@@ -4351,7 +4364,12 @@ export default function WhatsAppInbox({
       </div>
 
       {/* Messages */}
-      <div style={{
+      <div
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          nearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+        }}
+        style={{
         flex: 1, minHeight: 0, overflowY: "auto",
         padding: isMobile ? "12px 10px" : "16px 20px",
         background: "#E5DDD5", display: "flex", flexDirection: "column", gap: 6,
