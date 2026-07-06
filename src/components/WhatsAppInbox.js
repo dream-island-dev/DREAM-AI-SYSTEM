@@ -311,7 +311,8 @@ const T = {
     dismissAllNone: "אין התראות פעילות ברשימה",
     loadOlder: "טען שיחות ישנות יותר ⬇",
     loadOlderBusy: "⏳ טוען שיחות ישנות…",
-    searchPh: "חיפוש לפי שם, טלפון או חדר…",
+    searchPh: "חיפוש לפי שם, טלפון, חדר או תוכן הודעה…",
+    dbSearching: "🔎 מחפש גם בהיסטוריה המלאה…",
     filterAll: "הכל",
     filterAlerts: "🔴 התראות",
     filterInResort: "🟢 בריזורט",
@@ -391,7 +392,8 @@ const T = {
     dismissAllNone: "No active alerts in list",
     loadOlder: "Load older conversations ⬇",
     loadOlderBusy: "⏳ Loading older…",
-    searchPh: "Search name, phone, or room…",
+    searchPh: "Search name, phone, room, or message content…",
+    dbSearching: "🔎 Searching full history too…",
     filterAll: "All",
     filterAlerts: "🔴 Alerts",
     filterInResort: "🟢 In resort",
@@ -2481,6 +2483,7 @@ export default function WhatsAppInbox({
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [quickOpen, setQuickOpen]   = useState(false);
   const [rosterSearch, setRosterSearch] = useState("");
+  const [dbSearchBusy, setDbSearchBusy] = useState(false); // full-inbox DB search in flight (see effect below)
   // Session 125 P2-H — one timeline, three surfaces: the צ'ק-אין/ניהול-אורחים
   // date filter (sessionStorage, useCheckinTimelineFilter) seeds the roster
   // chip here (today→בריזורט, tomorrow→מחר) and chip clicks write it back.
@@ -2872,6 +2875,70 @@ export default function WhatsAppInbox({
       setThreadRefreshBusy(false);
     }
   }, [active, fetchThreadHistory, fetchThreadDbCount]);
+
+  // ── Full-inbox search (message content + guests not yet loaded) ──────────
+  // displayContacts' rosterSearch filter (below) only matches contacts already
+  // sitting in `contacts` — whatever fetchAll's recency window (newest 400
+  // rows resort-wide) plus any thread a staffer has actually opened this
+  // session pulled in. A guest who hasn't been active recently, or a keyword
+  // only ever said in an old message, would never surface — search looked
+  // "complete" but was silently scoped to what happened to already be in
+  // memory. This debounced pass queries the DB directly — message content
+  // ILIKE across the whole table, plus guests name/phone/room — so search
+  // actually reaches every conversation ever recorded. Matches reuse
+  // fetchThreadHistory (same additive merge, same THREAD_HISTORY_LIMIT cap)
+  // so a newly-found guest's full thread is pulled in exactly like opening it
+  // by hand, not just a bare preview row.
+  useEffect(() => {
+    const q = rosterSearch.trim();
+    if (!supabase || q.length < 2) { setDbSearchBusy(false); return undefined; }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setDbSearchBusy(true);
+      try {
+        const digits = q.replace(/\D/g, "");
+        const [msgRes, guestRes] = await Promise.all([
+          supabase
+            .from("whatsapp_conversations")
+            .select(CONVERSATION_SELECT)
+            .ilike("message", `%${q}%`)
+            .order("created_at", { ascending: false })
+            .limit(150),
+          supabase
+            .from("guests")
+            .select("phone")
+            .or(
+              [`name.ilike.%${q}%`, `room.ilike.%${q}%`, digits.length >= 3 ? `phone.ilike.%${digits}%` : null]
+                .filter(Boolean)
+                .join(","),
+            )
+            .limit(30),
+        ]);
+        if (cancelled) return;
+
+        const msgRows = (msgRes.data ?? []).map(normalise).reverse();
+        if (msgRows.length) {
+          allMsgsRef.current = mergeThreadRows(allMsgsRef.current, msgRows);
+        }
+
+        const localPhones = new Set(allMsgsRef.current.map((m) => m.phone));
+        const newPhones = [...new Set((guestRes.data ?? []).map((g) => canonicalizePhone(g.phone)))]
+          .filter((p) => p && !localPhones.has(p))
+          .slice(0, 10); // bounded — a broad query shouldn't fire unbounded thread fetches
+
+        if (newPhones.length) {
+          await Promise.all(newPhones.map((p) => fetchThreadHistory(p)));
+        } else if (msgRows.length) {
+          setContacts(applyGrouping(allMsgsRef.current));
+        }
+      } catch (e) {
+        console.warn("[WA-inbox] full-inbox search error:", e?.message ?? e);
+      } finally {
+        if (!cancelled) setDbSearchBusy(false);
+      }
+    }, 400);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [rosterSearch, applyGrouping, fetchThreadHistory]);
 
   // ── Archive a contact locally ─────────────────────────────────────────────
   // Stable useCallback reference (not an inline arrow per roster row) so
@@ -3710,6 +3777,13 @@ export default function WhatsAppInbox({
     }
     setSending(true);
     setError(null);
+    // WhatsApp-style own-send scroll: nearBottomRef normally guards against an
+    // incoming realtime/poll update yanking the view while staff reads older
+    // history further up — but that guard must not also swallow the staffer's
+    // OWN reply landing below the fold with no visible feedback that it sent.
+    // Set eagerly (before the network round-trip) so it's already true by the
+    // time fetchSince()/realtime merges the new outbound row in below.
+    nearBottomRef.current = true;
     try {
       const { data, error: fnErr } = await supabase.functions.invoke("whatsapp-send", {
         body: {
@@ -3891,6 +3965,9 @@ export default function WhatsAppInbox({
             aria-label={t.searchPh}
             className="wa-roster-search"
           />
+          {dbSearchBusy && (
+            <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 4 }}>{t.dbSearching}</div>
+          )}
           <div style={{ display: "flex", gap: 6, marginTop: 8, overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
             {rosterFilterChips.map((chip) => (
               <button
@@ -3945,6 +4022,9 @@ export default function WhatsAppInbox({
             aria-label={t.searchPh}
             className="wa-roster-search wa-roster-search--compact"
           />
+          {dbSearchBusy && (
+            <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 4 }}>{t.dbSearching}</div>
+          )}
           <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "nowrap", overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
             {rosterFilterChips.map((chip) => (
               <button
