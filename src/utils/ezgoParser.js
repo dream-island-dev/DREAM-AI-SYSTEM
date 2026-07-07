@@ -67,6 +67,43 @@ function isCorporateMuteCoordName(name) {
   return CORPORATE_MUTE_NAME_RE.test(String(name ?? ""));
 }
 
+/** Remark occupant: group booking row with name+phone parsed from sRemark. */
+export function isRemarkGroupOccupant({
+  useRemarkIdentity,
+  phoneSource,
+  guestPhone,
+  remarkNameCandidate,
+}) {
+  return !!(
+    useRemarkIdentity
+    && phoneSource === "individual"
+    && guestPhone
+    && !isDummyPhone(guestPhone)
+    && remarkNameCandidate
+  );
+}
+
+/**
+ * Import-time automation tier for sync_suite_arrivals.automation_scope.
+ * Municipal coordinators (עיריית…) without remark occupant → muted.
+ * Remark occupants → courtesy_only (Stage 4 cron only).
+ */
+export function resolveImportAutomationScope({
+  leadSource,
+  coordNameRaw,
+  useRemarkIdentity,
+  phoneSource,
+  guestPhone,
+  remarkNameCandidate,
+}) {
+  if (isAutomationMutedLeadSource(leadSource)) return "muted";
+  if (isRemarkGroupOccupant({ useRemarkIdentity, phoneSource, guestPhone, remarkNameCandidate })) {
+    return "courtesy_only";
+  }
+  if (isCorporateMuteCoordName(coordNameRaw)) return "muted";
+  return "full";
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // § PHONE HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
@@ -361,7 +398,6 @@ export function extractGuestDetails(row, columnMapping = {}, fallbackDate = null
   const priceRaw     = val("price");
   const price        = parseFloat(String(priceRaw ?? "").replace(/[^\d.-]/g, "")) || 0;
   const leadSource   = String(val("leadSource") ?? "").trim() || null;
-  const automationMuted = isAutomationMutedLeadSource(leadSource) || isCorporateMuteCoordName(coordNameRaw);
 
   // ── Arrival date ─────────────────────────────────────────────────────────
   const arrivalDate = parseDate(val("arrivalDate")) ?? fallbackDate;
@@ -436,6 +472,22 @@ export function extractGuestDetails(row, columnMapping = {}, fallbackDate = null
     ? (remarkNameCandidate ?? coordName)
     : coordName;
 
+  const isRemarkGroupOccupantRow = isRemarkGroupOccupant({
+    useRemarkIdentity,
+    phoneSource,
+    guestPhone,
+    remarkNameCandidate,
+  });
+  const automationScope = resolveImportAutomationScope({
+    leadSource,
+    coordNameRaw,
+    useRemarkIdentity,
+    phoneSource,
+    guestPhone,
+    remarkNameCandidate,
+  });
+  const automationMuted = automationScope === "muted";
+
   // ── Meal time (best-effort, remark shorthand only) ────────────────────────
   const mealTime = extractMealTimeFromRemark(remark) ?? extractMealTimeFromRemark(opRemark);
 
@@ -480,9 +532,11 @@ export function extractGuestDetails(row, columnMapping = {}, fallbackDate = null
     isDayGuest,
     isGroupCoordinator,
 
-    // ── Lead source / automation muzzle (advanced PMS export) ────────────
+    // ── Lead source / automation scope (advanced PMS export) ────────────────
     leadSource,
+    automationScope,
     automationMuted,
+    isRemarkGroupOccupant: isRemarkGroupOccupantRow,
 
     // ── Raw originals (keep for diagnostics / future audit) ──────────────
     _remark:    remark    || null,
@@ -594,7 +648,9 @@ export function aggregateGuestProfiles(rows, columnMapping = {}, fallbackDate = 
       meal_plan:       null,
       meal_time:       null,
       leadSource:      g.leadSource ?? null,
+      automationScope: g.automationScope ?? "full",
       automationMuted: !!g.automationMuted,
+      isRemarkGroupOccupant: !!g.isRemarkGroupOccupant,
     });
   });
 

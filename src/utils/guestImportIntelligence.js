@@ -59,6 +59,8 @@ import { extractPhonesFromText, extractNameFromRemark, isDummyPhone } from "./ez
  * @property {boolean}     isDayGuest
  * @property {string|null} leadSource
  * @property {boolean}     automationMuted
+ * @property {string}      automationScope  - full | courtesy_only | muted
+ * @property {boolean}     isRemarkGroupOccupant
  * @property {Object}      _sources         - which raw source(s) contributed, e.g. { arrivals:true, ops:true }
  * @property {Object}      _fieldOrigins    - diagnostic: which source last won each merged field
  */
@@ -85,6 +87,7 @@ export const FIELD_SOURCE_PRIORITY = {
   nights: ["detailed", "arrivals"],
   lead_source: ["detailed", "arrivals"],
   automation_muted: ["detailed", "arrivals"],
+  automation_scope: ["detailed", "arrivals"],
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -239,6 +242,8 @@ function _detailedInputToFragment(row) {
     meal_location: row.meal_location ?? null,
     leadSource: row.leadSource ?? null,
     automationMuted: !!row.automationMuted,
+    automationScope: row.automationScope ?? (row.automationMuted ? "muted" : "full"),
+    isRemarkGroupOccupant: !!row.isRemarkGroupOccupant,
     isDayGuest: !!row.isDayGuest,
   };
 }
@@ -295,6 +300,8 @@ export function mergeCandidates({ arrivals = [], ops = [], detailed = [] } = {})
       isDayGuest: !!row.isDayGuest,
       leadSource: row.leadSource ?? null,
       automationMuted: !!row.automationMuted,
+      automationScope: row.automationScope ?? (row.automationMuted ? "muted" : "full"),
+      isRemarkGroupOccupant: !!row.isRemarkGroupOccupant,
       _sources: { arrivals: true },
       _fieldOrigins: { identity: "remark" },
     };
@@ -358,6 +365,8 @@ export function mergeCandidates({ arrivals = [], ops = [], detailed = [] } = {})
         isDayGuest: false,
         leadSource: null,
         automationMuted: false,
+        automationScope: "full",
+        isRemarkGroupOccupant: false,
         _sources: { ops: true },
         _fieldOrigins: { identity: "ops" },
       });
@@ -383,6 +392,7 @@ export function mergeCandidates({ arrivals = [], ops = [], detailed = [] } = {})
         if (frag.leadSource) {
           c.leadSource = frag.leadSource;
           c.automationMuted = frag.automationMuted;
+          c.automationScope = frag.automationScope;
         }
         c._sources.detailed = true;
       }
@@ -408,6 +418,8 @@ export function mergeCandidates({ arrivals = [], ops = [], detailed = [] } = {})
       isDayGuest: frag.isDayGuest,
       leadSource: frag.leadSource,
       automationMuted: frag.automationMuted,
+      automationScope: frag.automationScope,
+      isRemarkGroupOccupant: false,
       _sources: { detailed: true },
       _fieldOrigins: { identity: "detailed" },
     });

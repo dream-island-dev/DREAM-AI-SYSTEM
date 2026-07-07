@@ -125,7 +125,7 @@ describe("Guest Import Intelligence — golden cases", () => {
     expect(classifyDbMatch(umbrellaCandidate, null)).toBe("unimportable");
   });
 
-  test("case 3b: dummy coordinator (111) + remark name/phone — each occupant importable, automation muted", () => {
+  test("case 3b: dummy coordinator (111) + remark name/phone — each occupant importable, courtesy automation", () => {
     const rowA = extractGuestDetails(
       {
         Order: "300300",
@@ -153,14 +153,15 @@ describe("Guest Import Intelligence — golden cases", () => {
 
     expect(rowA.guestPhone).toBe("+972507774904");
     expect(rowA.guestName).toBe("מרדכי");
-    expect(rowA.automationMuted).toBe(true);
+    expect(rowA.automationScope).toBe("courtesy_only");
+    expect(rowA.automationMuted).toBe(false);
     expect(rowB.guestPhone).toBe("+972526691991");
 
     const candidates = mergeCandidates({ arrivals: [rowA, rowB] });
     expect(candidates).toHaveLength(2);
     expect(candidates.every((c) => c.roomsCount === 1)).toBe(true);
     expect(candidates.every((c) => classifyDbMatch(c, null) === "new")).toBe(true);
-    expect(candidates.every((c) => c.automationMuted)).toBe(true);
+    expect(candidates.every((c) => c.automationScope === "courtesy_only")).toBe(true);
   });
 
   test("case 4: ops header line — dummy phone, unresolvable corporate name → not a profile", () => {

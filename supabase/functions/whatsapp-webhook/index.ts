@@ -41,6 +41,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import Anthropic        from "https://esm.sh/@anthropic-ai/sdk@0.20.0";
 import { sendCtaUrlButton } from "../_shared/interactiveSend.ts";
+import { persistGuestWaMedia } from "../_shared/metaMedia.ts";
 import {
   guardPaymentLink,
   isStage2PayAlreadyDispatched,
@@ -83,6 +84,7 @@ import {
   guessGuestOpsSlaCategory,
   resolveGuestOpsDepartment,
   extractAllowlistedRequestLines,
+  resolveAutomationScope,
 } from "../_shared/automationSchedule.ts";
 import { resolveGuestRoomLabel } from "../_shared/guestRoomResolve.ts";
 import { triggerInboxRedAlert } from "../_shared/inboxRedAlert.ts";
@@ -523,8 +525,8 @@ async function sendStage2PayReply(
   sim: boolean,
   buttonTitle?: string,
 ): Promise<void> {
-  if (guest?.automation_muted === true) {
-    console.info(`[webhook] 💳 Stage 2 Pay skipped — automation_muted guest_id=${guestId ?? "?"}`);
+  if (resolveAutomationScope(guest) !== "full") {
+    console.info(`[webhook] 💳 Stage 2 Pay skipped — automation_scope=${resolveAutomationScope(guest)} guest_id=${guestId ?? "?"}`);
     return;
   }
   if (guestId != null) {
@@ -1200,6 +1202,10 @@ async function claimInboundWaMessage(
     intent?: string;
     human_requested?: boolean;
     human_request_type?: string | null;
+    message_type?: string;
+    media_url?: string | null;
+    media_mime?: string | null;
+    media_caption?: string | null;
   },
 ): Promise<{ claimed: boolean; conversationId: number | null }> {
   const { data, error } = await supabase
@@ -1212,6 +1218,10 @@ async function claimInboundWaMessage(
       wa_message_id: row.wa_message_id,
       intent: row.intent ?? "received",
       push_name: row.push_name,
+      ...(row.message_type ? { message_type: row.message_type } : {}),
+      ...(row.media_url ? { media_url: row.media_url } : {}),
+      ...(row.media_mime ? { media_mime: row.media_mime } : {}),
+      ...(row.media_caption ? { media_caption: row.media_caption } : {}),
       ...(row.human_requested ? { human_requested: true, human_request_type: row.human_request_type } : {}),
     })
     .select("id")
@@ -3461,11 +3471,55 @@ Deno.serve(async (req: Request) => {
           }
         }
         continue;
+      } else if (msg.type === "image") {
+        const imageObj = msg.image as Record<string, unknown> | undefined;
+        const mediaId = String(imageObj?.id ?? "");
+        const caption = String(imageObj?.caption ?? "").trim();
+        const inboxLabel = UNSUPPORTED_INBOX_LABEL.image;
+        const inboxText = caption || inboxLabel;
+
+        let mediaUrl: string | null = null;
+        let mediaMime: string | null = null;
+        if (mediaId) {
+          const persisted = await persistGuestWaMedia(supabase, {
+            mediaId,
+            phone,
+            waMessageId: msgId,
+          });
+          mediaUrl = persisted.url;
+          mediaMime = persisted.mime;
+        } else {
+          console.warn("[webhook] image message missing media id:", msgId);
+        }
+
+        console.log(
+          `[webhook] 📷 image from:${phone} id:${msgId.slice(-8)}` +
+          ` stored:${mediaUrl ? "yes" : "no"} caption:${caption ? "yes" : "no"}`,
+        );
+
+        const { claimed, conversationId } = await claimInboundWaMessage(supabase, {
+          phone,
+          guest_id: null,
+          message: inboxText,
+          wa_message_id: msgId,
+          push_name: pushName,
+          intent: "media_received",
+          message_type: "image",
+          media_url: mediaUrl,
+          media_mime: mediaMime,
+          media_caption: caption || null,
+        });
+        if (!claimed) {
+          console.info("[webhook] dedup skip (image):", msgId);
+        } else {
+          const guest = await lookupGuestByPhone(supabase, phoneVariants, phone);
+          if (guest?.id) {
+            await patchClaimedInbound(supabase, conversationId, msgId, { guest_id: guest.id as number });
+          }
+        }
+        continue;
       } else {
         console.log(`[webhook] ⏭️ msg type "${msg.type}" — inbox log only`);
-        const { phone, variants: phoneVariants } = buildPhoneVariants(from);
-        const phoneDigits = phone.replace(/\D/g, "");
-        const pushName = pushNameByWaId[phoneDigits] ?? pushNameByWaId[from] ?? null;
         const label = UNSUPPORTED_INBOX_LABEL[String(msg.type)] ?? `📩 הודעה (${String(msg.type)})`;
         const { claimed, conversationId } = await claimInboundWaMessage(supabase, {
           phone,

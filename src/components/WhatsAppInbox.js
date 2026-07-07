@@ -70,6 +70,7 @@ const THREAD_HISTORY_LIMIT = 1500; // full-history cap for a single opened conta
 // pure dead payload multiplied across every row in every fetch.
 const CONVERSATION_SELECT =
   "id, phone, direction, message, wa_message_id, created_at, intent, human_requested, human_request_type, push_name, " +
+  "message_type, media_url, media_mime, media_caption, " +
   "guests(id, name, spa_time, spa_date, room, room_type, status, arrival_date, departure_date, portal_token, meal_time, meal_location, claimed_by, claimed_at)";
 
 // Module-level (outside the component) — survives WhatsAppInbox unmount/remount
@@ -351,7 +352,8 @@ const T = {
     rosterRefresh: "🔄 רענן רשימה",
     dbLatest: "אחרון ב-DB",
     dbEmpty: "אין הודעות ב-DB",
-    webhookWarn: "⚠️ אין תנועה חדשה? ודא ש-Meta Webhook מחובר (שדה messages) לכתובת Supabase.",
+    imageNotStored: "תמונה (לא נשמרה)",
+    imageOpen: "לחץ להגדלה",
     rosterRefreshBusy: "⏳ מסנכרן…",
     threadRefresh: "🔄 רענן היסטוריה",
     threadRefreshBusy: "⏳ מסנכרן…",
@@ -436,6 +438,8 @@ const T = {
     rosterRefresh: "🔄 Refresh list",
     dbLatest: "Last in DB",
     dbEmpty: "No messages in DB",
+    imageNotStored: "Image (not stored)",
+    imageOpen: "Tap to enlarge",
     webhookWarn: "⚠️ No new traffic? Verify Meta Webhook (messages field) points to Supabase.",
     rosterRefreshBusy: "⏳ Syncing…",
     threadRefresh: "🔄 Refresh history",
@@ -1199,11 +1203,14 @@ const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobil
 // same row reference, not a clone) and `resolveCtx` is memoized on primitives
 // below (see activeResolveCtx) — so a bubble only re-renders when its own
 // message, direction, or resolved guest context actually changed.
-const Bubble = React.memo(function Bubble({ msg, dir, resolveCtx, isMobile }) {
+const Bubble = React.memo(function Bubble({ msg, dir, resolveCtx, isMobile, onImageOpen, t }) {
   const isOut = msg.direction === "outbound";
   const rtl = dir === "rtl";
   const reaction = !isOut ? parseGuestReactionMessage(msg.message, msg.intent) : null;
   const dispatchInfo = isOut ? parseOutboundDispatch(msg.message) : null;
+  const isImageMsg = msg.message_type === "image";
+  const imageCaption = (msg.media_caption || "").trim()
+    || (isImageMsg && msg.message && msg.message !== "📷 תמונה" ? msg.message : "");
   const displayText = reaction
     ? formatGuestReactionLabel(reaction)
     : resolveInboxMessageText(msg.message, resolveCtx);
@@ -1238,6 +1245,83 @@ const Bubble = React.memo(function Bubble({ msg, dir, resolveCtx, isMobile }) {
           <span style={{ fontSize: 10, color: "#9aa8b5", marginInlineStart: 4 }}>
             {formatTime(msg.created_at)}
           </span>
+        </div>
+      </div>
+    );
+  }
+
+  if (isImageMsg) {
+    return (
+      <div style={{
+        display: "flex",
+        justifyContent: isOut ? (rtl ? "flex-start" : "flex-end") : (rtl ? "flex-end" : "flex-start"),
+        marginBottom: 4,
+      }}>
+        <div style={{
+          maxWidth: isMobile ? "88%" : "78%",
+          background: isOut ? "var(--black-soft, #2C2C2C)" : "#ffffff",
+          border: isOut ? "none" : "1.5px solid #c5d9f0",
+          borderRadius: isOut ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
+          boxShadow: isOut ? "0 1px 2px rgba(0,0,0,0.08)" : "0 1px 4px rgba(55,138,221,0.12)",
+          padding: "8px",
+          color: isOut ? "var(--ivory, #F5F0E8)" : "#1a1a1a",
+        }}>
+          {msg.media_url ? (
+            <button
+              type="button"
+              onClick={() => onImageOpen?.(msg.media_url)}
+              title={t.imageOpen}
+              style={{
+                display: "block",
+                padding: 0,
+                border: "none",
+                background: "transparent",
+                cursor: "pointer",
+                borderRadius: 10,
+                overflow: "hidden",
+                maxWidth: "100%",
+              }}
+            >
+              <img
+                src={msg.media_url}
+                alt=""
+                loading="lazy"
+                style={{
+                  display: "block",
+                  maxWidth: "100%",
+                  maxHeight: 280,
+                  borderRadius: 10,
+                  objectFit: "cover",
+                }}
+              />
+            </button>
+          ) : (
+            <div style={{
+              padding: "12px 14px",
+              fontSize: 14,
+              color: "#6b7280",
+              fontStyle: "italic",
+            }}>
+              📷 {t.imageNotStored}
+            </div>
+          )}
+          {imageCaption && (
+            <div style={{
+              padding: msg.media_url ? "8px 6px 2px" : "4px 6px 2px",
+              fontSize: 14,
+              lineHeight: 1.5,
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+            }}>
+              {imageCaption}
+            </div>
+          )}
+          <div style={{
+            fontSize: 10, color: isOut ? "var(--gold-light, #E8C98A)" : "#aaa", marginTop: 4,
+            textAlign: isOut ? "left" : "right",
+          }}>
+            <span title={formatTimeTitle(msg.created_at)}>{formatTime(msg.created_at)}</span>
+          </div>
         </div>
       </div>
     );
@@ -2538,6 +2622,7 @@ export default function WhatsAppInbox({
   const [mobileThreadMenuOpen, setMobileThreadMenuOpen] = useState(false);
   const [archivedPhones, setArchivedPhones] = useState(() => new Set());
   const [routeToast, setRouteToast] = useState(null);
+  const [imageLightbox, setImageLightbox] = useState(null);
   // ── WordPress-style guest editor drawer + claim/assignment state ─────────
   const [editGuestTarget, setEditGuestTarget] = useState(null); // full guests row, or {phone} skeleton for "create new"
   const [editGuestLoading, setEditGuestLoading] = useState(false);
@@ -4603,6 +4688,8 @@ export default function WhatsAppInbox({
                 dir={t.dir}
                 resolveCtx={activeResolveCtx}
                 isMobile={isMobile}
+                onImageOpen={setImageLightbox}
+                t={t}
               />
             ))}
             <div ref={bottomRef} />
@@ -5533,6 +5620,28 @@ export default function WhatsAppInbox({
           focusPhone={activeContact?.phone ?? null}
           onClose={() => setShowMobileQr(false)}
         />
+      )}
+
+      {imageLightbox && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setImageLightbox(null)}
+          onKeyDown={(e) => { if (e.key === "Escape") setImageLightbox(null); }}
+          style={{
+            position: "fixed", inset: 0, zIndex: 10000,
+            background: "rgba(0,0,0,0.88)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            padding: 16, cursor: "zoom-out",
+          }}
+        >
+          <img
+            src={imageLightbox}
+            alt=""
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: 8 }}
+          />
+        </div>
       )}
     </div>
   );

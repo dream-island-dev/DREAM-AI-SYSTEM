@@ -42,6 +42,7 @@ const PERMANENT_SKIP_REASONS = new Set([
   "wrong_room_type",
   "guest_cancelled",
   "automation_muted",
+  "automation_courtesy_only",
   "already_sent",
   "guest_already_departed",
   "missing_anchor_date",

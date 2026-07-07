@@ -1,7 +1,14 @@
 // src/utils/ezgoParser.test.js
 // Sprint 1 regression tests — the remark-first phone bug and its neighbors.
 
-import { extractGuestDetails, extractMealTimeFromRemark, extractNameFromRemark, extractNameFromRemarkWithoutPhone } from "./ezgoParser";
+import {
+  extractGuestDetails,
+  extractMealTimeFromRemark,
+  extractNameFromRemark,
+  extractNameFromRemarkWithoutPhone,
+  isRemarkGroupOccupant,
+  resolveImportAutomationScope,
+} from "./ezgoParser";
 
 const ARRIVALS_MAPPING = {
   orderNumber: "Order",
@@ -61,7 +68,9 @@ describe("ezgoParser — Sprint 1 fixes", () => {
     expect(row.phoneSource).toBe("individual");
     expect(row.coordPhone).toBeNull();
     expect(row.coordPhoneRaw).toBe("111");
-    expect(row.automationMuted).toBe(true);
+    expect(row.automationScope).toBe("courtesy_only");
+    expect(row.automationMuted).toBe(false);
+    expect(row.isRemarkGroupOccupant).toBe(true);
   });
 
   test("direct guestPhone still wins when remark has no phone at all", () => {
@@ -249,7 +258,9 @@ describe("ezgoParser — Sprint 1 fixes", () => {
     expect(row.guestName).toBe("רינת עקיבא");
     expect(row.guestPhone).toBe("+972506919808");
     expect(row.phoneSource).toBe("individual");
-    expect(row.automationMuted).toBe(true);
+    expect(row.isRemarkGroupOccupant).toBe(true);
+    expect(row.automationScope).toBe("courtesy_only");
+    expect(row.automationMuted).toBe(false);
   });
 
   test("extractNameFromRemark: caps name length as a hard backstop when no artifact pattern matches", () => {
@@ -294,5 +305,53 @@ describe("ezgoParser — Sprint 1 fixes", () => {
     expect(row.guestName).toBe("נילי הללי");
     expect(row.guestPhone).toBe("+972524549965");
     expect(row.phoneSource).toBe("individual");
+    expect(row.automationScope).toBe("courtesy_only");
+    expect(row.isRemarkGroupOccupant).toBe(true);
+  });
+
+  test("municipal coordinator without remark occupant stays muted (רכז עירייה)", () => {
+    const row = extractGuestDetails(
+      {
+        Order: "400001",
+        ResLine: "rl-coord",
+        Remark: "קבוצת חוגגים",
+        CoordName: "עיריית תל אביב",
+        CoordPhone: "0501234567",
+      },
+      ARRIVALS_MAPPING,
+    );
+    expect(row.guestName).toBe("עיריית תל אביב");
+    expect(row.phoneSource).toBe("individual");
+    expect(row.isRemarkGroupOccupant).toBe(false);
+    expect(row.automationScope).toBe("muted");
+    expect(row.automationMuted).toBe(true);
+  });
+
+  test("resolveImportAutomationScope: remark occupant vs coordinator", () => {
+    expect(
+      resolveImportAutomationScope({
+        useRemarkIdentity: true,
+        phoneSource: "individual",
+        guestPhone: "+972501234567",
+        remarkNameCandidate: "דנה כהן",
+      }),
+    ).toBe("courtesy_only");
+    expect(
+      isRemarkGroupOccupant({
+        useRemarkIdentity: true,
+        phoneSource: "individual",
+        guestPhone: "+972501234567",
+        remarkNameCandidate: "דנה כהן",
+      }),
+    ).toBe(true);
+    expect(
+      resolveImportAutomationScope({
+        coordNameRaw: "עיריית תל אביב",
+        useRemarkIdentity: false,
+        phoneSource: "individual",
+        guestPhone: "+972501234567",
+        remarkNameCandidate: null,
+      }),
+    ).toBe("muted");
   });
 });

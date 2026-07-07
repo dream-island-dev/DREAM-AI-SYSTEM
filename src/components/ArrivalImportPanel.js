@@ -686,7 +686,8 @@ function _profileToArrivalsInput(g) {
     roomsCount:   g.roomsQuantity ?? (g.rooms ?? []).length ?? 1,
     isDayGuest:   !!g.isDayGuest,
     leadSource:   g.leadSource ?? null,
-    automationMuted: !!g.automationMuted,
+    automationScope: g.automationScope ?? "full",
+    automationMuted: g.automationScope === "muted" || !!g.automationMuted,
     mealTime:     g.meal_time ?? null,
   };
 }
@@ -704,7 +705,8 @@ function _profileToDetailedInput(g) {
     rooms_count:  g.roomsQuantity ?? (g.rooms ?? []).length ?? 0,
     meal_location: g.meal_location ?? null,
     leadSource:   g.leadSource ?? null,
-    automationMuted: !!g.automationMuted,
+    automationScope: g.automationScope ?? "full",
+    automationMuted: g.automationScope === "muted" || !!g.automationMuted,
     isDayGuest:   !!g.isDayGuest,
   };
 }
@@ -765,7 +767,7 @@ function _scopeGuestRowQuery(query, { guestPhone, profileArrivalDate, orderNumbe
 // One row per guest profile. Multi-room (group) profiles show a read-only
 // "N rooms" count instead of a single editable room — picking a value there
 // still works and applies uniformly to that profile's rooms on sync.
-function _profilesToGridRows(merged, { suiteAssignmentOnly = false, badgeByIdx = null, existingGuestsLookup = null, dbMatchByIdx = null, dbDiffByIdx = null, multiRoomLineIndexMap = null, syncActionByIdx = null, importWithoutAutomation = true } = {}) {
+function _profilesToGridRows(merged, { suiteAssignmentOnly = false, badgeByIdx = null, existingGuestsLookup = null, dbMatchByIdx = null, dbDiffByIdx = null, multiRoomLineIndexMap = null, syncActionByIdx = null, importWithoutAutomation = true, groupCourtesyAutomation = true } = {}) {
   return merged.map((g, i) => {
     const singleRoom = (g.rooms ?? []).length === 1 ? g.rooms[0] : null;
     const isDay       = !!g.isDayGuest || !!singleRoom?.isDayGuest;
@@ -788,7 +790,7 @@ function _profilesToGridRows(merged, { suiteAssignmentOnly = false, badgeByIdx =
       orderNumber,
       phoneSource:  g.phoneSource === "individual" ? "פרטי" : "קואורד׳",
       leadSource:   g.leadSource ?? "",
-      automationMuted: _resolveGridAutomationMuted(g, existingRow, dbStatus, importWithoutAutomation),
+      automationScope: _resolveGridAutomationScope(g, existingRow, dbStatus, importWithoutAutomation, groupCourtesyAutomation),
       roomCount:    qtyLabel,
       room:         roomDisplay,
       tier:         isDay ? "☀️ בילוי יומי" : "🏨 סוויטה",
@@ -815,7 +817,7 @@ function _composeImportBadge(guestName, dbBadge, guestPhone) {
   return parts.join(" · ");
 }
 
-function _detailedProfilesToGridRows(merged, { badgeByIdx = null, existingGuestsLookup = null, dbMatchByIdx = null, dbDiffByIdx = null, importWithoutAutomation = true } = {}) {
+function _detailedProfilesToGridRows(merged, { badgeByIdx = null, existingGuestsLookup = null, dbMatchByIdx = null, dbDiffByIdx = null, importWithoutAutomation = true, groupCourtesyAutomation = true } = {}) {
   return merged.map((g, i) => {
     const totalPrice = (g.rooms ?? []).reduce((sum, r) => sum + (r.price || 0), 0);
     const nights = (g.rooms ?? []).reduce((mx, r) => Math.max(mx, r.nights || 0), 0);
@@ -835,7 +837,7 @@ function _detailedProfilesToGridRows(merged, { badgeByIdx = null, existingGuests
       rooms_count:  g.roomsQuantity ?? 0,
       nights:       nights || "",
       leadSource:   g.leadSource ?? "",
-      automationMuted: _resolveGridAutomationMuted(g, existingRow, dbStatus, importWithoutAutomation),
+      automationScope: _resolveGridAutomationScope(g, existingRow, dbStatus, importWithoutAutomation, groupCourtesyAutomation),
       importBadge:  _composeImportBadge(g.guestName, badgeByIdx?.get(i), g.guestPhone),
       dbDiff:       dbDiffByIdx?.get(i) ?? "",
     };
@@ -904,34 +906,58 @@ export function _getSyncProfileIndices(merged, gridRows, { importSource, detaile
 }
 
 /** Targeted room-only sync — match existing guests by order_number or name. */
-const AUTOMATION_MUTE_OPTIONS = [
-  { value: "true", label: "🔇 מושתק" },
-  { value: "false", label: "✅ פעיל" },
+const AUTOMATION_SCOPE_OPTIONS = [
+  { value: "full", label: "✅ מלא" },
+  { value: "courtesy_only", label: "🔔 נימוסים (שלב 4)" },
+  { value: "muted", label: "🔇 מושתק" },
 ];
 
-function _isGridAutomationMutedVal(val) {
-  return val === true || val === "true" || val === "muted" || val === "🔇 ללא אוטומציה";
+const VALID_AUTOMATION_SCOPES = new Set(["full", "courtesy_only", "muted"]);
+
+function _normalizeAutomationScope(val) {
+  if (VALID_AUTOMATION_SCOPES.has(val)) return val;
+  if (val === true || val === "true" || val === "muted" || val === "🔇 ללא אוטומציה") return "muted";
+  if (val === "courtesy" || val === "🔔 נימוסים") return "courtesy_only";
+  if (val === false || val === "false" || val === "active" || val === "✅ פעיל") return "full";
+  return null;
 }
 
-function _isGridAutomationActiveVal(val) {
-  return val === false || val === "false" || val === "active" || val === "✅ פעיל";
+/** Grid default — remark group occupants → courtesy_only when toggle on. */
+function _resolveGridAutomationScope(g, existingRow, dbStatus, importWithoutAutomation, groupCourtesyAutomation) {
+  if (existingRow?.automation_scope && VALID_AUTOMATION_SCOPES.has(existingRow.automation_scope)) {
+    return existingRow.automation_scope;
+  }
+  if (existingRow?.automation_muted === true) return "muted";
+  const fromProfile = _normalizeAutomationScope(g.automationScope);
+  if (fromProfile) {
+    if (fromProfile === "courtesy_only" && !groupCourtesyAutomation) return "muted";
+    return fromProfile;
+  }
+  if (g.isRemarkGroupOccupant && groupCourtesyAutomation) return "courtesy_only";
+  if (g.automationMuted) return "muted";
+  if (dbStatus === "new" && importWithoutAutomation) return "muted";
+  return "full";
 }
 
-/** Grid default before staff edits — new imports start muted when opt-in toggle is on. */
-function _resolveGridAutomationMuted(g, existingRow, dbStatus, importWithoutAutomation) {
-  if (existingRow?.automation_muted === true) return "true";
-  if (g.automationMuted) return "true";
-  if (dbStatus === "new" && importWithoutAutomation) return "true";
-  return "false";
+/** Payload for sync_suite_arrivals — scope drives automation_muted in RPC. */
+function _parseGridAutomationScope(editedVal, c, g, dbStatus, importWithoutAutomation, groupCourtesyAutomation) {
+  const edited = _normalizeAutomationScope(editedVal);
+  if (edited) return edited;
+  const fromCandidate = _normalizeAutomationScope(c.automationScope ?? g.automationScope);
+  if (fromCandidate) {
+    if (fromCandidate === "courtesy_only" && !groupCourtesyAutomation) return "muted";
+    return fromCandidate;
+  }
+  if (g.isRemarkGroupOccupant || c.isRemarkGroupOccupant) {
+    return groupCourtesyAutomation ? "courtesy_only" : "muted";
+  }
+  if (!!(c.automationMuted ?? g.automationMuted)) return "muted";
+  if (dbStatus === "new" && importWithoutAutomation) return "muted";
+  return "full";
 }
 
-/** Payload for sync_suite_arrivals INSERT (UPDATE preserves DB mute — migration 132). */
-function _parseGridAutomationMuted(editedVal, c, g, dbStatus, importWithoutAutomation) {
-  if (_isGridAutomationMutedVal(editedVal)) return true;
-  if (_isGridAutomationActiveVal(editedVal)) return false;
-  if (!!(c.automationMuted ?? g.automationMuted)) return true;
-  if (dbStatus === "new" && importWithoutAutomation) return true;
-  return false;
+function _scopeToAutomationMuted(scope) {
+  return scope === "muted";
 }
 
 const DETAILED_GRID_COLS = [
@@ -944,7 +970,7 @@ const DETAILED_GRID_COLS = [
   { id: "rooms_count",   label: "מספר חדרים",    editable: false, w: 90  },
   { id: "nights",        label: "מספר לילות",    editable: false, w: 90  },
   { id: "leadSource",    label: "מקור הגעה",     editable: false, w: 120 },
-  { id: "automationMuted", label: "אוטומציה",    editable: true,  w: 110, options: AUTOMATION_MUTE_OPTIONS },
+  { id: "automationScope", label: "אוטומציה",    editable: true,  w: 130, options: AUTOMATION_SCOPE_OPTIONS },
   { id: "importBadge",  label: "סטטוס ייבוא",   editable: false, w: 130 },
   { id: "dbDiff",       label: "הבדל מול DB",   editable: false, w: 120 },
 ];
@@ -955,7 +981,7 @@ const SUITES_GRID_COLS = [
   { id: "orderNumber", label: "מס׳ הזמנה",  editable: false, w: 100 },
   { id: "phoneSource", label: "מקור",       editable: false, w: 80  },
   { id: "leadSource",  label: "מקור הגעה",  editable: false, w: 100 },
-  { id: "automationMuted", label: "אוטומציה", editable: true, w: 110, options: AUTOMATION_MUTE_OPTIONS },
+  { id: "automationScope", label: "אוטומציה", editable: true, w: 130, options: AUTOMATION_SCOPE_OPTIONS },
   { id: "roomCount",   label: "קבוצה",      editable: false, w: 70  },
   { id: "tier",        label: "שכבה",       editable: false, w: 90  },
   { id: "room",        label: "🏨 חדר/סוויטה", editable: true, w: 190, gold: true, options: ROOM_OPTIONS },
@@ -1043,6 +1069,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
   const [detailedRoomFilter, setDetailedRoomFilter] = useState("all"); // "all" | "suite" | "day_use"
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [importWithoutAutomation, setImportWithoutAutomation] = useState(true);
+  const [groupCourtesyAutomation, setGroupCourtesyAutomation] = useState(true);
   const [syncing,  setSyncing]  = useState(false);
   const [result,   setResult]   = useState(null);
   const [toast,    setToast]    = useState(null);
@@ -1277,7 +1304,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     (async () => {
       const { data, error } = await supabase
         .from("guests")
-        .select("id, phone, name, room, order_number, arrival_date, automation_muted, guest_index, spa_time, meal_time, meal_location, treatment_count, payment_amount, lead_source, departure_date")
+        .select("id, phone, name, room, order_number, arrival_date, automation_muted, automation_scope, guest_index, spa_time, meal_time, meal_location, treatment_count, payment_amount, lead_source, departure_date")
         .in("arrival_date", dates);
       if (cancelled) return;
       if (error) {
@@ -1364,10 +1391,10 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     const suiteOnly = doc2SyncMode === "suite_assignment_only" && importSource !== "detailed";
     setGridRows(
       importSource === "detailed"
-        ? _detailedProfilesToGridRows(merged, { badgeByIdx: importBadgeByIdx, existingGuestsLookup, dbMatchByIdx, dbDiffByIdx, importWithoutAutomation })
-        : _profilesToGridRows(merged, { suiteAssignmentOnly: suiteOnly, badgeByIdx: importBadgeByIdx, existingGuestsLookup, dbMatchByIdx, dbDiffByIdx, multiRoomLineIndexMap, syncActionByIdx, importWithoutAutomation }),
+        ? _detailedProfilesToGridRows(merged, { badgeByIdx: importBadgeByIdx, existingGuestsLookup, dbMatchByIdx, dbDiffByIdx, importWithoutAutomation, groupCourtesyAutomation })
+        : _profilesToGridRows(merged, { suiteAssignmentOnly: suiteOnly, badgeByIdx: importBadgeByIdx, existingGuestsLookup, dbMatchByIdx, dbDiffByIdx, multiRoomLineIndexMap, syncActionByIdx, importWithoutAutomation, groupCourtesyAutomation }),
     );
-  }, [merged, importSource, doc2SyncMode, importBadgeByIdx, existingGuestsLookup, dbMatchByIdx, dbDiffByIdx, multiRoomLineIndexMap, syncActionByIdx, importWithoutAutomation]);
+  }, [merged, importSource, doc2SyncMode, importBadgeByIdx, existingGuestsLookup, dbMatchByIdx, dbDiffByIdx, multiRoomLineIndexMap, syncActionByIdx, importWithoutAutomation, groupCourtesyAutomation]);
 
   // ── Parse Doc 2: Suite CSV → AI-suggested column mapping → review screen ──
   // The AI only proposes; aggregateGuestProfiles() runs unchanged once the
@@ -1774,13 +1801,22 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
               treatment_count: c.treatment_count ?? g.treatment_count ?? 0,
               paymentAmount:   editedAmount ?? (computedAmount || null),
               leadSource:      c.leadSource ?? g.leadSource ?? null,
-              automationMuted: _parseGridAutomationMuted(
-                edited.automationMuted,
+              automationScope: _parseGridAutomationScope(
+                edited.automationScope,
                 c,
                 g,
                 dbMatchByIdx.get(i) ?? null,
                 importWithoutAutomation,
+                groupCourtesyAutomation,
               ),
+              automationMuted: _scopeToAutomationMuted(_parseGridAutomationScope(
+                edited.automationScope,
+                c,
+                g,
+                dbMatchByIdx.get(i) ?? null,
+                importWithoutAutomation,
+                groupCourtesyAutomation,
+              )),
               nights,
             };
           });
@@ -1893,15 +1929,17 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           } else if (patch.room) {
             roomsFilledCount++;
           }
-          const wantMuted = _parseGridAutomationMuted(
-            primaryEdited.automationMuted,
+          const resolvedScope = _parseGridAutomationScope(
+            primaryEdited.automationScope,
             primaryC,
             primaryG,
             primaryDbStatus,
             importWithoutAutomation,
+            groupCourtesyAutomation,
           );
-          if (wantMuted && !existingRow?.automation_muted) {
-            patch.automation_muted = true;
+          if (resolvedScope !== "full" && existingRow?.automation_scope !== resolvedScope) {
+            patch.automation_scope = resolvedScope;
+            patch.automation_muted = resolvedScope === "muted";
           }
 
           if (guestPhone && profileArrivalDate && Object.keys(patch).length > 0) {
@@ -1923,8 +1961,9 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
         }
 
         const syncedMerged = syncIndices.map((i) => merged[i]);
-        const importMuted = profiles.filter((p) => p.automationMuted).length;
-        const corporateMuted = syncedMerged.filter((g) => g.automationMuted).length;
+        const importCourtesy = profiles.filter((p) => p.automationScope === "courtesy_only").length;
+        const importMuted = profiles.filter((p) => p.automationScope === "muted").length;
+        const groupOccupants = syncedMerged.filter((g) => g.isRemarkGroupOccupant).length;
         const uniqueGuestCount = indicesByGuestKey.size || profiles.length;
         const newCount = syncIndices.filter((i) => dbMatchByIdx.get(i) === "new").length;
         const enrichedCount = syncIndices.filter((i) => {
@@ -1945,7 +1984,8 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           suites: profiles.filter((p) => p.hasSuite).length,
           days:   profiles.filter((p) => p.isDayGuest).length,
           spa:    syncIndices.filter((i) => gridByProfileIdx.get(i)?.spa_time).length,
-          corporateMuted,
+          corporateMuted: groupOccupants,
+          importCourtesy,
           importMuted,
           batchType: batchProfileType,
           skippedUnimportable,
@@ -2174,7 +2214,8 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
         individual: merged.filter(g => g.phoneSource === "individual").length,
         withRooms:  gridRows.filter(r => _hasAssignedRoomsCount(r.rooms_count)).length,
         withoutRooms: gridRows.filter(r => !_hasAssignedRoomsCount(r.rooms_count)).length,
-        muted:      merged.filter(g => g.automationMuted).length,
+        courtesy:   gridRows.filter(r => r.automationScope === "courtesy_only").length,
+        muted:      gridRows.filter(r => r.automationScope === "muted").length,
       }
     : hasDoc1
       ? {
@@ -2519,7 +2560,8 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                     { label: "עם סכום",    val: stats.withAmount, c: "#0369a1", bg: "#eff6ff" },
                     { label: "עם חדרים",   val: stats.withRooms,    c: "#b45309", bg: "#fef3c7" },
                     { label: "ללא חדרים",  val: stats.withoutRooms, c: "#0e7490", bg: "#ecfeff" },
-                    { label: "ללא אוטומציה", val: stats.muted,    c: "#dc2626", bg: "#fef2f2" },
+                    { label: "🔔 נימוסים", val: stats.courtesy ?? 0, c: "#7c3aed", bg: "#f3f0ff" },
+                    { label: "🔇 מושתקים", val: stats.muted,    c: "#dc2626", bg: "#fef2f2" },
                   ].map(({ label, val, c, bg }) => (
                     <div key={label} style={{
                       background: bg, borderRadius: 8, padding: "6px 12px",
@@ -2540,6 +2582,8 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                     { label: "עם סכום",     val: stats.withAmount, c: "#0369a1", bg: "#eff6ff" },
                     { label: "שויכו חדר",   val: stats.assigned,   c: "#92400e", bg: "#fef3c7" },
                     { label: "טלפון פרטי",  val: stats.individual, c: "#dc2626", bg: "#fef2f2" },
+                    { label: "🔔 נימוסים",   val: stats.courtesy,   c: "#7c3aed", bg: "#f3f0ff" },
+                    { label: "🔇 מושתקים",   val: stats.muted,    c: "#6b7280", bg: "#f3f4f6" },
                   ].map(({ label, val, c, bg }) => (
                     <div key={label} style={{
                       background: bg, borderRadius: 8, padding: "6px 12px",
@@ -2813,6 +2857,34 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
             <>
               <div style={{
                 marginBottom: 12, padding: "14px 16px", borderRadius: 12,
+                border: groupCourtesyAutomation ? "2px solid #7C3AED" : "1px solid var(--border)",
+                background: groupCourtesyAutomation ? "rgba(124,58,237,0.08)" : "rgba(255,255,255,0.04)",
+              }}>
+                <label style={{
+                  display: "flex", alignItems: "flex-start", gap: 12, cursor: "pointer",
+                  fontFamily: "Heebo,sans-serif", marginBottom: 10,
+                }}>
+                  <input
+                    type="checkbox"
+                    checked={groupCourtesyAutomation}
+                    onChange={(e) => setGroupCourtesyAutomation(e.target.checked)}
+                    style={{ width: 20, height: 20, marginTop: 2, accentColor: "#7C3AED", cursor: "pointer" }}
+                  />
+                  <span>
+                    <strong style={{ fontSize: 14, color: groupCourtesyAutomation ? "#5B21B6" : "var(--black)" }}>
+                      🔔 אוטומציית נימוסים לדיירי קבוצה (שלב 4)
+                    </strong>
+                    <span style={{ display: "block", fontSize: 12, color: "var(--text-muted)", marginTop: 4, lineHeight: 1.5 }}>
+                      דיירים עם שם+טלפון מההערות (עיריות/קבוצות) מקבלים רק בדיקת שלום באמצע השהייה + חדר מוכן מהפעמון.
+                      {gridRows.filter((r) => r.automationScope === "courtesy_only").length > 0 && (
+                        <> כרגע <strong>{gridRows.filter((r) => r.automationScope === "courtesy_only").length}</strong> שורות מסומנות כנימוסים.</>
+                      )}
+                    </span>
+                  </span>
+                </label>
+              </div>
+              <div style={{
+                marginBottom: 12, padding: "14px 16px", borderRadius: 12,
                 border: importWithoutAutomation ? "2px solid #F59E0B" : "1px solid var(--border)",
                 background: importWithoutAutomation ? "rgba(245,158,11,0.12)" : "rgba(255,255,255,0.04)",
               }}>
@@ -2828,12 +2900,12 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                   />
                   <span>
                     <strong style={{ fontSize: 14, color: importWithoutAutomation ? "#92400E" : "var(--black)" }}>
-                      🔇 ייבוא ללא וואטסאפ (מומלץ)
+                      🔇 ייבוא ללא וואטסאפ (אורחים רגילים)
                     </strong>
                     <span style={{ display: "block", fontSize: 12, color: "var(--text-muted)", marginTop: 4, lineHeight: 1.5 }}>
-                      אורחים חדשים נכנסים עם אוטומציה מושתקת — אפשר להפעיל אחר כך מ«בקרת אוטומציה → תור חי».
-                      {gridRows.filter((r) => r.automationMuted === "true").length > 0 && (
-                        <> כרגע <strong>{gridRows.filter((r) => r.automationMuted === "true").length}</strong> שורות מסומנות כמושתקות.</>
+                      אורחים חדשים שאינם דיירי קבוצה נכנסים מושתקים — אפשר לשנות בעמודת «אוטומציה» או מ«בקרת אוטומציה».
+                      {gridRows.filter((r) => r.automationScope === "muted").length > 0 && (
+                        <> כרגע <strong>{gridRows.filter((r) => r.automationScope === "muted").length}</strong> שורות מושתקות.</>
                       )}
                     </span>
                   </span>
@@ -2889,12 +2961,20 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                       <> ({result.batchType === "suite" ? "סוויטות" : "בילוי יומי"})</>
                     )}
                     {result.corporateMuted > 0 && (
-                      <> ({result.corporateMuted} מכירות — ללא אוטומציה)</>
+                      <> · 👥 {result.corporateMuted} דיירי קבוצה</>
+                    )}
+                    {result.importCourtesy > 0 && (
+                      <> · 🔔 {result.importCourtesy} נימוסים (שלב 4)</>
                     )}
                     {result.importMuted > 0 && (
-                      <> · 🔇 {result.importMuted} עם אוטומציה מושתקת</>
+                      <> · 🔇 {result.importMuted} מושתקים</>
                     )}
                   </div>
+                  {result.importCourtesy > 0 && (
+                    <div style={{ fontSize: 12, color: "#5B21B6", marginTop: 6, fontWeight: 700 }}>
+                      🔔 {result.importCourtesy} דיירי קבוצה יקבלו רק בדיקת שלום (שלב 4) + חדר מוכן מהפעמון.
+                    </div>
+                  )}
                   {result.importMuted > 0 && (
                     <div style={{ fontSize: 12, color: "#92400E", marginTop: 6, fontWeight: 700 }}>
                       🔇 {result.importMuted} אורחים יובאו עם אוטומציה מושתקת — הפעל מ«בקרת אוטומציה → תור חי» לפני שליחה.

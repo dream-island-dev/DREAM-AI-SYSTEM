@@ -29,6 +29,7 @@ import {
   isPastAutoCheckoutGateway,
   israelYmd,
   isGuestStaffClaimActive,
+  resolveAutomationScope,
   AUTO_CHECKIN_ELIGIBLE_STATUSES,
   AUTO_CHECKOUT_ELIGIBLE_STATUSES,
   type AutomationStage,
@@ -158,7 +159,7 @@ Deno.serve(async (req: Request) => {
     // needs_callback is selected for observability only — NOT used in eligibility
     // (checkEligibility in automationSchedule.ts; session 59 decouple).
     const GUEST_SELECT =
-      "id, name, phone, arrival_date, departure_date, room, room_type, status, checkin_time, needs_callback, automation_muted, claimed_by, arrival_confirmed, arrival_confirmed_at, msg_stage_2_arrival_sent, msg_pre_arrival_2d_sent, msg_pre_arrival_sent, msg_morning_suite_sent, msg_morning_welcome_sent, msg_mid_stay_sent, msg_checkout_fb_sent";
+      "id, name, phone, arrival_date, departure_date, room, room_type, status, checkin_time, needs_callback, automation_muted, automation_scope, claimed_by, arrival_confirmed, arrival_confirmed_at, msg_stage_2_arrival_sent, msg_pre_arrival_2d_sent, msg_pre_arrival_sent, msg_morning_suite_sent, msg_morning_welcome_sent, msg_mid_stay_sent, msg_checkout_fb_sent";
 
     const { data: guests = [] } = await supabase.from("guests").select(GUEST_SELECT);
 
@@ -311,7 +312,8 @@ Deno.serve(async (req: Request) => {
 
       if (!stage2LogLookupFailed) {
         for (const guest of guestsList) {
-          if (guest.status === "cancelled" || guest.status === "checked_out" || guest.automation_muted === true) continue;
+          if (guest.status === "cancelled" || guest.status === "checked_out") continue;
+          if (resolveAutomationScope(guest) !== "full") continue;
           if (!guest.arrival_confirmed && !guest.arrival_confirmed_at) continue;
           if (isGuestStaffClaimActive(guest)) continue;
           const gId = guest.id as number;

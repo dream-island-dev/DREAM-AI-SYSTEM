@@ -14,6 +14,7 @@ export type ActiveGuestRow = {
   wa_window_expires_at?: string | null;
   portal_token?: string | null;
   automation_muted?: boolean | null;
+  automation_scope?: string | null;
   claimed_by?: string | null;
 };
 
@@ -48,7 +49,7 @@ export function assertGuestEligibleForAutomation(
 }
 
 const ACTIVE_GUEST_SELECT =
-  "id, phone, status, name, wa_window_expires_at, portal_token, automation_muted, claimed_by";
+  "id, phone, status, name, wa_window_expires_at, portal_token, automation_muted, automation_scope, claimed_by";
 
 export async function loadActiveGuestById(
   supabase: SupabaseClient,

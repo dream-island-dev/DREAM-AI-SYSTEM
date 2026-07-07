@@ -203,6 +203,8 @@ export interface GuestForSchedule {
   arrival_confirmed_at?: string | null;
   needs_callback: boolean | null;
   automation_muted?: boolean | null;
+  /** full | courtesy_only (mid_stay only) | muted — migration 154. */
+  automation_scope?: string | null;
   /** WhatsAppInbox "קח שיחה" — staff-owned thread; blocks autonomous cron sends. */
   claimed_by?: string | null;
   [flagColumn: string]: unknown;
@@ -222,6 +224,49 @@ export function resolveArrivalConfirmedAnchor(
     ).toISOString();
   }
   return null;
+}
+
+export type AutomationScope = "full" | "courtesy_only" | "muted";
+
+/** Stage 4 courtesy check — the only cron stages for courtesy_only guests. */
+export const COURTESY_ONLY_STAGE_KEYS = new Set([
+  "mid_stay",
+  "mid_stay_daypass",
+]);
+
+export function resolveAutomationScope(
+  guest: { automation_scope?: string | null; automation_muted?: boolean | null } | null | undefined,
+): AutomationScope {
+  const raw = guest?.automation_scope;
+  if (raw === "courtesy_only" || raw === "muted" || raw === "full") return raw;
+  if (guest?.automation_muted === true) return "muted";
+  return "full";
+}
+
+/** Cron stage eligibility — room_ready is manual/AICopilot, not a stage row. */
+export function getAutomationScopeStageSkipReason(
+  guest: { automation_scope?: string | null; automation_muted?: boolean | null },
+  stageKey: string,
+): string | null {
+  const scope = resolveAutomationScope(guest);
+  if (scope === "full") return null;
+  if (scope === "muted") return "automation_muted";
+  if (COURTESY_ONLY_STAGE_KEYS.has(stageKey)) return null;
+  return "automation_courtesy_only";
+}
+
+/** whatsapp-send pipeline trigger guard (exempt = manual + room_ready). */
+export function getAutomationScopeTriggerBlockReason(
+  guest: { automation_scope?: string | null; automation_muted?: boolean | null },
+  trigger: string,
+  exemptTriggers: ReadonlySet<string>,
+): string | null {
+  const scope = resolveAutomationScope(guest);
+  if (scope === "full") return null;
+  if (exemptTriggers.has(trigger)) return null;
+  if (scope === "muted") return "automation_muted";
+  if (COURTESY_ONLY_STAGE_KEYS.has(trigger)) return null;
+  return "automation_courtesy_only";
 }
 
 /** True when DREAM BOT staff-claim mute is active on this guest row. */
@@ -300,7 +345,8 @@ export function checkEligibility(
     stage.stage_key === "checkout_fb" || stage.stage_key === "checkout_fb_daypass";
   if (!postStayStage && guest.status === "checked_out") return "guest_checked_out";
   // needs_callback is a staff UI alert only — intentionally NOT checked here (session 59).
-  if (guest.automation_muted === true) return "automation_muted";
+  const scopeSkip = getAutomationScopeStageSkipReason(guest, stage.stage_key);
+  if (scopeSkip) return scopeSkip;
   if (isGuestStaffClaimActive(guest)) return "staff_claim_active";
   if (stage.guest_flag_column && guest[stage.guest_flag_column] === true) return "already_sent";
 
