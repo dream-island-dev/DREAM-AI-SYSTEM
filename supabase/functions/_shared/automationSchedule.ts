@@ -1011,3 +1011,22 @@ export function isLowValueCourtesyMessage(text: string): boolean {
   if (EMOJI_ONLY_PATTERN.test(t)) return true;
   return COURTESY_ONLY_PATTERN.test(t);
 }
+
+// ── Defensive Shield — guest's own WhatsApp Business away-message (Layer 2.2) ──
+// Some guests' own phone numbers are themselves WhatsApp Business accounts
+// (small-business owners). Messaging them can trigger THEIR OWN automated
+// away-message reply back to us — Meta's Cloud API has no way to flag this as
+// automated, it arrives indistinguishable from a normal inbound text. Left
+// unhandled, this was falling through to intent classification → LLM, which
+// produced confusing, off-topic replies to what is structurally an
+// out-of-office notice, not a real guest reply. Detected by phrasing
+// structure (business-hours + unavailability framing), not by hardcoding any
+// one guest's business name — this is not guest-specific.
+export const AUTO_AWAY_MESSAGE_PATTERN =
+  /(מחוץ\s*ל?שעות\s*(הפעילות|העבודה|קבלת\s*הקהל)|שעות\s*(ה)?מענה\s*(בהודעות)?|הודעת\s*היעדרות|out[\s-]*of[\s-]*office|away\s*message|currently\s*unavailable\s*and\s*will|outside\s*(of\s*)?(our\s*)?(business|office)\s*hours)/iu;
+
+export function isAutoAwayMessage(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  return AUTO_AWAY_MESSAGE_PATTERN.test(t);
+}

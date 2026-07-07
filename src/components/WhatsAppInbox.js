@@ -484,12 +484,16 @@ const INTENT_LABELS = {
   he: {
     faq: "שאלה כללית (FAQ)", fallback: "לא סווג / fallback",
     button_reply: "לחיצת כפתור", confirmation: "אישור הגעה (טקסט)",
+    arrival_confirmed: "אישור הגעה (כפתור)",
     date_change_request: "בקשת שינוי תאריך", human_handoff: "הועבר לטיפול אנושי",
+    auto_away_message: "הודעת מענה אוטומטי של האורח (התעלמנו)",
   },
   en: {
     faq: "General question (FAQ)", fallback: "Unclassified / fallback",
     button_reply: "Button tap", confirmation: "Arrival confirmation (typed)",
+    arrival_confirmed: "Arrival confirmation (button)",
     date_change_request: "Date-change request", human_handoff: "Handed off to staff",
+    auto_away_message: "Guest's own away-message auto-reply (ignored)",
   },
 };
 

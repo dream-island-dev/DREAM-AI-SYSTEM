@@ -73,6 +73,7 @@ import {
   CANONICAL_FINANCIAL_HANDOFF_MSG,
   isSevereComplaint,
   isLowValueCourtesyMessage,
+  isAutoAwayMessage,
   isCheckInPolicyQuestion,
   buildCheckInPolicyReply,
   isReplyObviouslyTruncated,
@@ -1744,6 +1745,27 @@ async function handleCourtesyAck(
     intent: "courtesy_ack",
   });
   console.info(`[webhook] 🤫 courtesy/emoji-only message — silent exit, no fallback sent — phone:${phone}`);
+}
+
+// Guest's own WhatsApp Business away-message auto-reply (see
+// isAutoAwayMessage doc-comment) — logged for staff visibility with a
+// distinct intent, never answered by the LLM. Same silent-exit contract as
+// handleCourtesyAck.
+async function handleAutoAwayMessage(
+  supabase: ReturnType<typeof createClient>,
+  opts: {
+    phone: string;
+    guestId: number | null;
+    msgId: string;
+    claimedConversationId: number | null;
+  },
+): Promise<void> {
+  const { phone, guestId, msgId, claimedConversationId } = opts;
+  await patchClaimedInbound(supabase, claimedConversationId, msgId, {
+    guest_id: guestId,
+    intent: "auto_away_message",
+  });
+  console.info(`[webhook] 🤖 guest's own away-message auto-reply detected — silent exit, no LLM — phone:${phone}`);
 }
 
 /** Tier-0 — check-in / entry policy FAQ. Zero LLM tokens; complete hours from bot_config. */
@@ -3959,6 +3981,14 @@ Deno.serve(async (req: Request) => {
         continue;
       }
 
+      // ── Defensive Shield — guest's own WhatsApp Business away-message ──────
+      // Same "before the LLM" placement as courtesy-ack above — see
+      // isAutoAwayMessage doc-comment (_shared/automationSchedule.ts).
+      if (!isButtonReply && isAutoAwayMessage(text)) {
+        await handleAutoAwayMessage(supabase, { phone, guestId, msgId, claimedConversationId });
+        continue;
+      }
+
       // ── Text confirmation detection (fallback for guests who type "כן" manually) ──
       // NOT gated on arrival_confirmed — a prior confirm may have set the DB flag
       // without delivering Stage 2 (staff-claim mute, send failure, manual toggle).
@@ -4257,6 +4287,12 @@ Deno.serve(async (req: Request) => {
       // ── Defensive Shield — emoji/courtesy-only pass (post-burst) ───────────
       if (!isButtonReply && effectiveText !== text && isLowValueCourtesyMessage(effectiveText)) {
         await handleCourtesyAck(supabase, { phone, guestId, msgId, claimedConversationId });
+        continue;
+      }
+
+      // ── Defensive Shield — guest's own away-message auto-reply (post-burst) ─
+      if (!isButtonReply && effectiveText !== text && isAutoAwayMessage(effectiveText)) {
+        await handleAutoAwayMessage(supabase, { phone, guestId, msgId, claimedConversationId });
         continue;
       }
 
