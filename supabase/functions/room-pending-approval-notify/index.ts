@@ -5,6 +5,7 @@
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { notifyRoomPendingApproval } from "../_shared/roomPendingApprovalPush.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -47,41 +48,12 @@ serve(async (req) => {
     }
 
     const supabase = createClient(supabaseUrl, serviceKey);
+    const result = await notifyRoomPendingApproval(supabase, room_id, { source: "tablet" });
 
-    const { data: room } = await supabase
-      .from("room_status")
-      .select("status, room_clean_status, jacuzzi_status")
-      .eq("room_id", room_id)
-      .maybeSingle();
-
-    if (!room || room.status !== "ממתין לאישור") {
-      return new Response(
-        JSON.stringify({ ok: true, notified: false, reason: "not_pending_approval" }),
-        { headers: { ...CORS, "Content-Type": "application/json" } }
-      );
-    }
-
-    const pushResp = await fetch(`${supabaseUrl}/functions/v1/push-notify`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${serviceKey}`,
-        apikey: serviceKey,
-      },
-      body: JSON.stringify({
-        department: "הנהלה",
-        title: "🔔 סוויטה מוכנה לאישור",
-        body: `${room_id} — חדר וג'קוזי נקיים. אשר שליחת הודעה לאורח וצ'ק-אין.`,
-        url: "/",
-        tag: `room-pending-${room_id}`,
-      }),
-    });
-
-    const pushResult = await pushResp.json().catch(() => ({}));
-    console.log(`[room-pending-approval-notify] ${room_id} push:`, pushResult);
+    console.log(`[room-pending-approval-notify] ${room_id}:`, result);
 
     return new Response(
-      JSON.stringify({ ok: true, notified: true, push: pushResult }),
+      JSON.stringify({ ok: true, ...result }),
       { headers: { ...CORS, "Content-Type": "application/json" } }
     );
   } catch (e) {

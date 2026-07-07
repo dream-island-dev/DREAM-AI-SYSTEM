@@ -1,8 +1,8 @@
 // Housekeeping group "צ'ק אין" → guests.checked_in + room_status.תפוס (§0.5).
 
 import type { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { israelYmd } from "./automationSchedule.ts";
 import { resolveSuiteFromEzgoFields } from "./guestRoomResolve.ts";
+import { findActiveGuestForSuite } from "./housekeepingGuestLookup.ts";
 
 export type HousekeepingCheckInAction =
   | "updated"
@@ -42,34 +42,6 @@ export function buildHousekeepingCheckInAckLine(result: HousekeepingCheckInResul
   }
 }
 
-async function findActiveGuestForRoom(
-  supabase: ReturnType<typeof createClient>,
-  roomId: string,
-): Promise<{ id: number; name: string | null; status: string; guest_notes: string | null } | null> {
-  const today = israelYmd(new Date());
-  const { data: rows, error } = await supabase
-    .from("guests")
-    .select("id, name, status, arrival_date, departure_date, guest_notes")
-    .eq("room", roomId)
-    .neq("status", "cancelled")
-    .lte("arrival_date", today)
-    .or(`departure_date.is.null,departure_date.gte.${today}`)
-    .order("arrival_date", { ascending: false })
-    .limit(5);
-
-  if (error) {
-    console.warn(`[housekeepingCheckIn] guest lookup failed for ${roomId}:`, error.message);
-    return null;
-  }
-  if (!rows?.length) return null;
-
-  const inHouse = rows.find((g) =>
-    g.status === "checked_in" || g.status === "room_ready" || g.status === "expected" ||
-    g.status === "pending"
-  );
-  return (inHouse ?? rows[0]) as { id: number; name: string | null; status: string; guest_notes: string | null };
-}
-
 export async function applyHousekeepingCheckInSignal(
   supabase: ReturnType<typeof createClient>,
   opts: { roomNumber: number; waMessageId: string; sourceLine?: string },
@@ -99,7 +71,7 @@ export async function applyHousekeepingCheckInSignal(
     };
   }
 
-  const guest = await findActiveGuestForRoom(supabase, roomId);
+  const guest = await findActiveGuestForSuite(supabase, roomId);
   if (!guest) {
     return { ok: false, roomNumber, roomId, guestId: null, guestName: null, action: "no_guest" };
   }

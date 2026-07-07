@@ -49,10 +49,13 @@ describe("housekeepingWaParse", () => {
 
   test("group ack message for fresh bell triggers", () => {
     expect(buildHousekeepingGroupAckMessage(["רובי 14"])).toBe(
-      "✅ חדר רובי 14 מוכן — נשלחה התראה לשליחת הודעה לאורח 🔔",
+      "✅ רובי 14 מוכן — ממתין לאישור מנהל לשליחת הודעה 🔔",
     );
-    expect(buildHousekeepingGroupAckMessage(["רובי 14", "רובי 15"])).toBe(
-      "✅ חדר רובי 14 מוכן — נשלחה התראה לשליחת הודעה לאורח 🔔\n✅ חדר רובי 15 מוכן — נשלחה התראה לשליחת הודעה לאורח 🔔",
+    expect(buildHousekeepingGroupAckMessage([
+      { roomId: "רובי 14", guestName: "ישראל ישראלי" },
+      { roomId: "רובי 15" },
+    ])).toBe(
+      "✅ רובי 14 מוכן — אורח: ישראל ישראלי — ממתין לאישור מנהל לשליחת הודעה 🔔\n✅ רובי 15 מוכן — ממתין לאישור מנהל לשליחת הודעה 🔔",
     );
     expect(buildHousekeepingGroupAckMessage([])).toBe("");
   });

@@ -91,3 +91,15 @@ export function roomsCanonicallyMatch(incoming, stored) {
   if (canonA && canonB && canonA === canonB) return true;
   return false;
 }
+
+/** Match a guests row to a SUITE_REGISTRY room_id (e.g. "רובי 14" ↔ room "14"). */
+export function guestRoomMatchesSuiteId(guest, roomId) {
+  const canon = String(roomId ?? "").trim();
+  if (!canon || !guest) return false;
+  const room = String(guest.room ?? "").trim();
+  const suiteName = String(guest.suite_name ?? "").trim();
+  if (room === canon || suiteName === canon) return true;
+  if (room && roomsCanonicallyMatch(canon, room)) return true;
+  if (suiteName && roomsCanonicallyMatch(canon, suiteName)) return true;
+  return false;
+}

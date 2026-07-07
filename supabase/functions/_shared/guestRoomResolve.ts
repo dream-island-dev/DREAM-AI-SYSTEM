@@ -52,6 +52,34 @@ export function resolveSuiteFromEzgoFields(
   return "";
 }
 
+/** Compare bare number ("14") vs canonical suite ("רובי 14"). Mirrors suiteRegistry.js */
+export function roomsCanonicallyMatch(incoming: string, stored: string): boolean {
+  const a = String(incoming ?? "").trim();
+  const b = String(stored ?? "").trim();
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const numA = a.match(/(\d+)\s*$/)?.[1] ?? a.match(/^(\d+)$/)?.[1];
+  const numB = b.match(/(\d+)\s*$/)?.[1];
+  if (numA && numB && numA === numB) return true;
+  const canonA = resolveSuiteFromEzgoFields(a, "", false) || a;
+  const canonB = resolveSuiteFromEzgoFields(b, "", false) || b;
+  return !!(canonA && canonB && canonA === canonB);
+}
+
+export function guestRoomMatchesSuiteId(
+  guest: { room?: string | null; suite_name?: string | null },
+  roomId: string,
+): boolean {
+  const canon = String(roomId ?? "").trim();
+  if (!canon || !guest) return false;
+  const room = String(guest.room ?? "").trim();
+  const suiteName = String(guest.suite_name ?? "").trim();
+  if (room === canon || suiteName === canon) return true;
+  if (room && roomsCanonicallyMatch(canon, room)) return true;
+  if (suiteName && roomsCanonicallyMatch(canon, suiteName)) return true;
+  return false;
+}
+
 function phoneLookupVariants(phone: string): string[] {
   const digits = phone.replace(/\D/g, "");
   if (!digits) return [];

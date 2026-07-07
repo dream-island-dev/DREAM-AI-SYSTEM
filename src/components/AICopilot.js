@@ -12,6 +12,7 @@ import {
   skipApprovalAndCheckIn,
   releaseApprovalGateOnly,
 } from "../utils/suiteCheckinSync";
+import { guestRoomMatchesSuiteId } from "../data/suiteRegistry";
 
 const FAB = 56;                  // bell diameter (px) — used for drag clamping
 const MARGIN = 8;                // min inset from viewport edges while dragging
@@ -105,21 +106,23 @@ export default function AICopilot({ user }) {
     if (!supabase) return { ...roomRow, guest: null, isEligible: false, alreadyNotified: false, _alertId };
 
     const todayIL = israelTodayStr();
-    const { data: guest } = await supabase
+    const { data: guestRows } = await supabase
       .from("guests")
-      .select("id, name, phone, spa_time, room, suite_name, status, arrival_date, room_ready_notified, msg_room_ready_sent")
-      .or(`room.eq.${roomRow.room_id},suite_name.eq.${roomRow.room_id}`)
+      .select("id, name, phone, spa_time, room, suite_name, status, arrival_date, departure_date, room_ready_notified, msg_room_ready_sent")
       .eq("arrival_date", todayIL)
       .neq("status", "cancelled")
-      .order("arrival_date", { ascending: true })
-      .limit(1)
-      .maybeSingle();
+      .in("status", ["pending", "expected", "room_ready"])
+      .order("arrival_date", { ascending: false })
+      .limit(40);
+
+    const guest =
+      (guestRows ?? []).find((g) => guestRoomMatchesSuiteId(g, roomRow.room_id)) ?? null;
 
     const isEligible = isArrivalToday(guest?.arrival_date);
     const alreadyNotified = !!(guest?.room_ready_notified || guest?.msg_room_ready_sent);
 
     // Stale gate — room_ready already sent from SuitesDashboard / prior approve.
-    if (alreadyNotified && isEligible) {
+    if (alreadyNotified) {
       await supabase
         .from("room_status")
         .update({ status: "פנוי", updated_at: new Date().toISOString() })
@@ -139,7 +142,7 @@ export default function AICopilot({ user }) {
       .eq("status", "ממתין לאישור");
     if (data?.length) {
       const enriched = await Promise.all(data.map(enrichRoom));
-      setAlerts(enriched.filter((a) => a.isEligible && !a.alreadyNotified));
+      setAlerts(enriched.filter((a) => !a.alreadyNotified));
     }
   }, [enrichRoom]);
 
@@ -152,12 +155,12 @@ export default function AICopilot({ user }) {
       .channel("ai_copilot_room_watch")
       .on(
         "postgres_changes",
-        { event: "UPDATE", schema: "public", table: "room_status" },
+        { event: "*", schema: "public", table: "room_status" },
         async (payload) => {
           const row = payload.new;
           if (row.status === "ממתין לאישור") {
             const enriched = await enrichRoom(row);
-            if (!enriched.isEligible || enriched.alreadyNotified) return;
+            if (enriched.alreadyNotified) return;
             setAlerts(prev => {
               if (prev.some(a => a.room_id === row.room_id)) return prev;
               return [...prev, enriched];
@@ -429,23 +432,38 @@ export default function AICopilot({ user }) {
                   לא נמצא אורח משויך לסוויטה זו
                 </div>
               )}
+              {alert.guest && !alert.isEligible && (
+                <div style={{ fontSize: "13px", color: "#A8843A", marginBottom: "10px" }}>
+                  ⚠ הגעת האורח ב-{alert.guest.arrival_date} (לא היום) — שליחת הודעה תיחסם
+                </div>
+              )}
 
               <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                 <div style={{ display: "flex", gap: "8px" }}>
                   <button
                     onClick={() => handleApprove(alert)}
-                    disabled={processing === alert._alertId || (alert.guest?.id && !canSend)}
-                    title={alert.guest?.id && !canSend ? "שליחה חסומה בשעות שקט" : undefined}
+                    disabled={
+                      processing === alert._alertId
+                      || (alert.guest?.id && !canSend)
+                      || (alert.guest && !alert.isEligible)
+                    }
+                    title={
+                      alert.guest && !alert.isEligible
+                        ? `הגעה ב-${alert.guest.arrival_date}, לא היום`
+                        : alert.guest?.id && !canSend
+                          ? "שליחה חסומה בשעות שקט"
+                          : undefined
+                    }
                     style={{
                       flex:       1,
-                      background: processing === alert._alertId || (alert.guest?.id && !canSend) ? "#ccc" : "var(--gold, #C9A96E)",
+                      background: processing === alert._alertId || (alert.guest?.id && !canSend) || (alert.guest && !alert.isEligible) ? "#ccc" : "var(--gold, #C9A96E)",
                       color:      "#fff",
                       border:     "none",
                       borderRadius: "8px",
                       padding:    "8px 0",
                       fontWeight: 700,
                       fontSize:   "13px",
-                      cursor:     processing === alert._alertId || (alert.guest?.id && !canSend) ? "default" : "pointer",
+                      cursor:     processing === alert._alertId || (alert.guest?.id && !canSend) || (alert.guest && !alert.isEligible) ? "default" : "pointer",
                       fontFamily: "inherit",
                       transition: "background 0.15s",
                     }}

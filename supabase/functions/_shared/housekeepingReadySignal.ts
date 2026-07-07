@@ -4,6 +4,8 @@
 
 import type { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { resolveSuiteFromEzgoFields } from "./guestRoomResolve.ts";
+import { findArrivingTodayGuestForSuite } from "./housekeepingGuestLookup.ts";
+import { notifyRoomPendingApproval } from "./roomPendingApprovalPush.ts";
 
 export type HousekeepingReadyAction =
   | "updated"
@@ -16,46 +18,29 @@ export interface HousekeepingReadyResult {
   ok: boolean;
   roomNumber: number;
   roomId: string | null;
+  guestId: number | null;
+  guestName: string | null;
   action: HousekeepingReadyAction;
   error?: string;
 }
 
-/** One line per suite — sent to the housekeeping group after a fresh bell trigger. */
-export function buildHousekeepingGroupAckMessage(roomIds: string[]): string {
-  const unique = [...new Set(roomIds.map((id) => id.trim()).filter(Boolean))];
-  if (unique.length === 0) return "";
-  return unique
-    .map((id) => `✅ חדר ${id} מוכן — נשלחה התראה לשליחת הודעה לאורח 🔔`)
-    .join("\n");
+export interface HousekeepingReadyAckItem {
+  roomId: string;
+  guestName?: string | null;
 }
 
-async function notifyManagerPendingApproval(roomId: string): Promise<void> {
-  const supabaseUrl = Deno.env.get("SUPABASE_URL");
-  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  if (!supabaseUrl || !serviceKey) return;
-
-  try {
-    const pushResp = await fetch(`${supabaseUrl}/functions/v1/push-notify`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${serviceKey}`,
-        apikey: serviceKey,
-      },
-      body: JSON.stringify({
-        department: "הנהלה",
-        title: "🔔 סוויטה מוכנה לאישור",
-        body: `${roomId} — אות מוכנות מקבוצת ניקיון. אשר שליחת הודעה לאורח וצ'ק-אין.`,
-        url: "/",
-        tag: `room-pending-${roomId}`,
-      }),
-    });
-    if (!pushResp.ok) {
-      console.warn(`[housekeepingReadySignal] push-notify HTTP ${pushResp.status} for ${roomId}`);
-    }
-  } catch (e) {
-    console.warn(`[housekeepingReadySignal] push-notify failed for ${roomId}:`, (e as Error).message);
+/** One line per suite — in-group ack after ממתין לאישור fires. */
+export function buildHousekeepingGroupAckMessage(items: HousekeepingReadyAckItem[]): string {
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  for (const { roomId, guestName } of items) {
+    const id = String(roomId ?? "").trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const guestPart = guestName?.trim() ? ` — אורח: ${guestName.trim()}` : "";
+    lines.push(`✅ ${id} מוכן${guestPart} — ממתין לאישור מנהל לשליחת הודעה 🔔`);
   }
+  return lines.join("\n");
 }
 
 export async function applyHousekeepingReadySignal(
@@ -67,7 +52,10 @@ export async function applyHousekeepingReadySignal(
 
   if (!roomId) {
     console.warn(`[housekeepingReadySignal] no suite mapping for room number ${roomNumber}`);
-    return { ok: false, roomNumber, roomId: null, action: "skipped_no_suite" };
+    return {
+      ok: false, roomNumber, roomId: null, guestId: null, guestName: null,
+      action: "skipped_no_suite",
+    };
   }
 
   const { error: dedupErr } = await supabase.from("housekeeping_wa_events").insert({
@@ -80,11 +68,20 @@ export async function applyHousekeepingReadySignal(
 
   if (dedupErr) {
     if (dedupErr.code === "23505") {
-      return { ok: true, roomNumber, roomId, action: "dedup" };
+      return {
+        ok: true, roomNumber, roomId, guestId: null, guestName: null, action: "dedup",
+      };
     }
     console.error("[housekeepingReadySignal] dedup insert failed:", dedupErr.message);
-    return { ok: false, roomNumber, roomId, action: "error", error: dedupErr.message };
+    return {
+      ok: false, roomNumber, roomId, guestId: null, guestName: null,
+      action: "error", error: dedupErr.message,
+    };
   }
+
+  const guest = await findArrivingTodayGuestForSuite(supabase, roomId);
+  const guestId = guest?.id ?? null;
+  const guestName = guest?.name ?? null;
 
   const { data: existing } = await supabase
     .from("room_status")
@@ -93,7 +90,9 @@ export async function applyHousekeepingReadySignal(
     .maybeSingle();
 
   if (existing?.status === "ממתין לאישור") {
-    return { ok: true, roomNumber, roomId, action: "already_pending" };
+    return {
+      ok: true, roomNumber, roomId, guestId, guestName, action: "already_pending",
+    };
   }
 
   const now = new Date().toISOString();
@@ -112,11 +111,20 @@ export async function applyHousekeepingReadySignal(
 
   if (upsertErr) {
     console.error(`[housekeepingReadySignal] room_status upsert failed for ${roomId}:`, upsertErr.message);
-    return { ok: false, roomNumber, roomId, action: "error", error: upsertErr.message };
+    return {
+      ok: false, roomNumber, roomId, guestId, guestName,
+      action: "error", error: upsertErr.message,
+    };
   }
 
-  await notifyManagerPendingApproval(roomId);
-  console.log(`[housekeepingReadySignal] ${roomId} (#${roomNumber}) → ממתין לאישור (wa=${waMessageId})`);
+  await notifyRoomPendingApproval(supabase, roomId, { source: "housekeeping_wa" });
+  console.log(
+    `[housekeepingReadySignal] ${roomId} (#${roomNumber}) → ממתין לאישור` +
+    (guestName ? ` guest=${guestName}` : " no_guest_today") +
+    ` (wa=${waMessageId})`,
+  );
 
-  return { ok: true, roomNumber, roomId, action: "updated" };
+  return {
+    ok: true, roomNumber, roomId, guestId, guestName, action: "updated",
+  };
 }

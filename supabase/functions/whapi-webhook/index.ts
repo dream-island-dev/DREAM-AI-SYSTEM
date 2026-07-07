@@ -493,7 +493,9 @@ serve(async (req: Request) => {
 
         const ackLines = [
           ...buildHousekeepingGroupAckMessage(
-            readySignals.filter((s) => s.action === "updated" && s.roomId).map((s) => s.roomId as string),
+            readySignals
+              .filter((s) => s.action === "updated" && s.roomId)
+              .map((s) => ({ roomId: s.roomId as string, guestName: s.guestName })),
           ).split("\n").filter(Boolean),
           ...checkInSignals.map(buildHousekeepingCheckInAckLine).filter((l): l is string => !!l),
         ];
