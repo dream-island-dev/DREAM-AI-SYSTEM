@@ -19,6 +19,9 @@ import {
   formatMultiRoomLineLabel,
   getDbMatchDiffLabels,
   buildEnrichGuestPatch,
+  buildCombinedRoomLabel,
+  buildDoc2SyncActionLabel,
+  resolveCandidateRoomDisplay,
   pickEnrichValue,
 } from "./guestImportIntelligence";
 
@@ -445,5 +448,42 @@ describe("Guest Import Intelligence — golden cases", () => {
   test("pickEnrichValue: skips when DB already has value", () => {
     expect(pickEnrichValue("14:00", "15:00")).toBeUndefined();
     expect(pickEnrichValue("14:00", "")).toBe("14:00");
+  });
+
+  test("resolveCandidateRoomDisplay: maps room number to registry suite", () => {
+    const label = resolveCandidateRoomDisplay({
+      roomName: "8",
+      suiteType: "סוויטת אמטיסט",
+      isDayGuest: false,
+    });
+    expect(label).toMatch(/אמטיסט/i);
+  });
+
+  test("buildCombinedRoomLabel: dedupes and joins multi-room labels", () => {
+    expect(buildCombinedRoomLabel(["אמטיסט 8", "וילה 3", "אמטיסט 8"])).toBe("אמטיסט 8 · וילה 3");
+  });
+
+  test("buildDoc2SyncActionLabel: enrich skips existing room", () => {
+    const label = buildDoc2SyncActionLabel({
+      dbStatus: "existing",
+      existingRow: { room: "אמטיסט 8" },
+      candidateRoom: "וילה 3",
+      enrichOnly: true,
+      hasPhone: true,
+      multiRoomLabel: "חדר 2 מ־2",
+    });
+    expect(label).toContain("⏭️ חדר קיים");
+    expect(label).toContain("חדר 2 מ־2");
+  });
+
+  test("buildDoc2SyncActionLabel: enrich fills empty room", () => {
+    const label = buildDoc2SyncActionLabel({
+      dbStatus: "existing",
+      existingRow: { room: "" },
+      candidateRoom: "אמטיסט 8",
+      enrichOnly: true,
+      hasPhone: true,
+    });
+    expect(label).toContain("🏨 חדר");
   });
 });

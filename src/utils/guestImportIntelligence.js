@@ -634,6 +634,94 @@ export function pickEnrichCount(importVal, dbVal) {
 }
 
 /**
+ * Canonical suite label from an import candidate (Doc 2 room line).
+ * @param {GuestImportCandidate|{roomName?:string, suiteType?:string, room?:string, isDayGuest?:boolean}} candidate
+ * @returns {string}
+ */
+export function resolveCandidateRoomDisplay(candidate) {
+  if (!candidate) return "";
+  const resolved = resolveSuiteFromEzgoFields(
+    candidate.roomName ?? candidate.room,
+    candidate.suiteType ?? "",
+    !!candidate.isDayGuest,
+  );
+  if (resolved) return resolved;
+  const rn = String(candidate.roomName ?? candidate.room ?? "").trim();
+  const st = String(candidate.suiteType ?? "").trim();
+  if (st && rn && st.includes(rn)) return st;
+  if (st && rn) return `${rn} ${st}`.trim();
+  return st || rn;
+}
+
+/**
+ * Deduped join for guests.room when one booking spans multiple suite lines.
+ * @param {string[]} labels
+ * @returns {string}
+ */
+export function buildCombinedRoomLabel(labels = []) {
+  const seen = new Set();
+  const out = [];
+  for (const raw of labels) {
+    const label = String(raw ?? "").trim();
+    if (!label) continue;
+    const key = label.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(label);
+  }
+  return out.join(" · ");
+}
+
+/**
+ * Grid preview: what Doc 2 sync will do for this row (enrich vs full).
+ * @param {object} opts
+ * @param {"new"|"existing"|"conflict"|"unimportable"|null} opts.dbStatus
+ * @param {Record<string, unknown>|null} opts.existingRow
+ * @param {string} opts.candidateRoom
+ * @param {boolean} opts.enrichOnly
+ * @param {boolean} opts.hasPhone
+ * @param {string} [opts.multiRoomLabel]
+ * @param {boolean} [opts.suiteAssignmentForce]
+ */
+export function buildDoc2SyncActionLabel({
+  dbStatus,
+  existingRow,
+  candidateRoom,
+  enrichOnly,
+  hasPhone,
+  multiRoomLabel = "",
+  suiteAssignmentForce = false,
+}) {
+  if (!hasPhone) return "⛔ ללא טלפון";
+  if (dbStatus === "unimportable") return "⛔ לא מיובא";
+
+  const room = String(candidateRoom ?? "").trim();
+  const dbRoom = String(existingRow?.room ?? "").trim();
+  const willFillRoom = !!room && (!dbRoom || suiteAssignmentForce);
+  const willSkipRoom = !!room && !!dbRoom && enrichOnly && !suiteAssignmentForce;
+
+  if (dbStatus === "new") {
+    const parts = ["🆕 ייווצר מלא"];
+    if (room) parts.push("🏨 חדר");
+    if (multiRoomLabel) parts.push(multiRoomLabel);
+    return parts.join(" · ");
+  }
+
+  if (!enrichOnly) {
+    const parts = ["🔄 עדכון מלא"];
+    if (room) parts.push("🏨 חדר");
+    if (multiRoomLabel) parts.push(multiRoomLabel);
+    return parts.join(" · ");
+  }
+
+  const parts = ["📥 השלמת חסר"];
+  if (willFillRoom) parts.push(suiteAssignmentForce && dbRoom ? "🏨 דריסת חדר" : "🏨 חדר");
+  else if (willSkipRoom) parts.push("⏭️ חדר קיים");
+  if (multiRoomLabel) parts.push(multiRoomLabel);
+  return parts.join(" · ");
+}
+
+/**
  * Human-readable diff labels for ⚠ התנגשות rows (FAIL VISIBLE in grid).
  * @returns {string[]} e.g. ["שם", "חדר"]
  */

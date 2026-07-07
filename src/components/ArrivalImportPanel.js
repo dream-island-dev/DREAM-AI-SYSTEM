@@ -27,7 +27,7 @@ import {
   profilesToArray,
   enrichProfilesFromExcel,
 } from "../utils/ezgoParser";
-import { mergeCandidates, classifyDbMatch, buildExistingGuestsLookup, findExistingGuestRow, buildMultiRoomLineIndexMap, formatMultiRoomLineLabel, bookingGuestKey, getDbMatchDiffLabels, buildEnrichGuestPatch } from "../utils/guestImportIntelligence";
+import { mergeCandidates, classifyDbMatch, buildExistingGuestsLookup, findExistingGuestRow, buildMultiRoomLineIndexMap, formatMultiRoomLineLabel, bookingGuestKey, getDbMatchDiffLabels, buildEnrichGuestPatch, resolveCandidateRoomDisplay, buildCombinedRoomLabel, buildDoc2SyncActionLabel } from "../utils/guestImportIntelligence";
 import { SUITE_ARRIVALS_SCHEMA, buildMaskedSample, detectSuiteArrivalsPreset, detectEzgoArrivalsPreset, applyFieldDefaultsToProfiles, parseMappingMemory, packMappingMemory } from "../utils/importMapper";
 import {
   isDetailedReservationFormat,
@@ -134,6 +134,169 @@ function _formatRoomForGrid(g) {
 function _resolveProfileRoomDisplay(g, editedRoom = "") {
   if (String(editedRoom ?? "").trim()) return String(editedRoom).trim();
   return _formatRoomForGrid(g);
+}
+
+function _buildIndicesByGuestKey(syncIndices, merged, mergedCandidates) {
+  const indicesByGuestKey = new Map();
+  for (const i of syncIndices) {
+    const g = merged[i];
+    const c = mergedCandidates[i];
+    const key = bookingGuestKey({
+      orderNumber: c.orderNumber ?? [...(g.orderNumbers ?? [])][0] ?? null,
+      arrivalDate: c.arrivalDate ?? g.arrivalDate,
+      guestPhone: c.guestPhone ?? g.guestPhone,
+    });
+    if (!key) continue;
+    if (!indicesByGuestKey.has(key)) indicesByGuestKey.set(key, []);
+    indicesByGuestKey.get(key).push(i);
+  }
+  return indicesByGuestKey;
+}
+
+function _buildSyncRoomsFromIndices(syncIndices, merged, mergedCandidates, gridByProfileIdx, importSource, detailedRoomFilter) {
+  return syncIndices
+    .flatMap((i) => {
+      const g = merged[i];
+      const c = mergedCandidates[i];
+      const edited = gridByProfileIdx.get(i) ?? {};
+      const roomOverride = edited.room || "";
+      const profileType = importSource === "detailed"
+        ? _resolveDetailedProfileType(g, detailedRoomFilter)
+        : (g.hasDayBooking ? "day_use" : "suite");
+      const isDayGuestRoom = profileType === "day_use";
+      return (g.rooms ?? []).map((r) => ({
+        resLineId: r.resLineId,
+        orderNumber: r.orderNumber,
+        roomName: r.roomName,
+        suiteType: r.suiteType,
+        roomDisplay: roomOverride
+          || resolveCandidateRoomDisplay({
+            roomName: r.roomName,
+            suiteType: r.suiteType,
+            isDayGuest: isDayGuestRoom,
+          })
+          || _bestGuessSuite(r.roomName, r.suiteType, isDayGuestRoom)
+          || null,
+        guestName: edited.guestName ?? c.guestName ?? g.guestName ?? "",
+        guestPhone: c.guestPhone ?? g.guestPhone ?? null,
+        coordPhone: g.coordPhone ?? null,
+        phoneSource: g.phoneSource,
+        adults: r.adults,
+        nights: r.nights,
+        arrivalDate: c.arrivalDate ?? g.arrivalDate ?? null,
+        checkinTime: r.checkinTime ?? null,
+        checkoutTime: r.checkoutTime ?? null,
+        isDayGuest: isDayGuestRoom,
+      }));
+    })
+    .filter((r) => r.resLineId && r.orderNumber);
+}
+
+async function _applyDoc2RoomGuestPatches(supabase, {
+  indicesByGuestKey,
+  merged,
+  mergedCandidates,
+  gridByProfileIdx,
+  existingGuestsLookup,
+  forceOverwriteRoom = false,
+}) {
+  let roomsFilledCount = 0;
+  let roomsSkippedExisting = 0;
+  let multiRoomBookingCount = 0;
+  let updated = 0;
+
+  for (const [, indices] of indicesByGuestKey) {
+    if (indices.length > 1) multiRoomBookingCount++;
+    const roomLabels = [];
+    let guestPhone;
+    let profileArrivalDate;
+    let orderNumber;
+
+    for (const i of indices) {
+      const g = merged[i];
+      const c = mergedCandidates[i];
+      const edited = gridByProfileIdx.get(i) ?? {};
+      guestPhone = c.guestPhone ?? g.guestPhone;
+      profileArrivalDate = c.arrivalDate ?? g.arrivalDate;
+      orderNumber = c.orderNumber ?? [...(g.orderNumbers ?? [])][0] ?? null;
+      const roomDisplay = _resolveProfileRoomDisplay(g, edited.room);
+      if (roomDisplay) roomLabels.push(roomDisplay);
+    }
+
+    const combinedRoom = buildCombinedRoomLabel(roomLabels);
+    if (!combinedRoom || !guestPhone || !profileArrivalDate) continue;
+
+    const existingRow = findExistingGuestRow(existingGuestsLookup, {
+      guestPhone,
+      arrivalDate: profileArrivalDate,
+      orderNumber,
+    });
+    if (!existingRow) continue;
+
+    const dbRoom = String(existingRow.room ?? "").trim();
+    if (dbRoom === combinedRoom) continue;
+    if (dbRoom && !forceOverwriteRoom) {
+      roomsSkippedExisting++;
+      continue;
+    }
+
+    const scoped = _scopeGuestRowQuery(
+      supabase.from("guests").update({ room: combinedRoom }),
+      { guestPhone, profileArrivalDate, orderNumber },
+    );
+    if (scoped) {
+      const { error } = await scoped;
+      if (error) throw new Error(error.message);
+      roomsFilledCount++;
+      updated++;
+    }
+  }
+
+  return { roomsFilledCount, roomsSkippedExisting, multiRoomBookingCount, updated };
+}
+
+function _suiteAssignmentSyncDiagnostics(syncIndices, merged, mergedCandidates, gridByProfileIdx, existingGuestsLookup) {
+  let skipped = 0;
+  const notFound = [];
+  const noRoom = [];
+
+  for (const i of syncIndices) {
+    const g = merged[i];
+    const c = mergedCandidates[i];
+    const edited = gridByProfileIdx.get(i) ?? {};
+    const room = String(edited.room ?? _resolveProfileRoomDisplay(g, edited.room) ?? "").trim();
+    const guestPhone = c?.guestPhone ?? g.guestPhone ?? edited.guestPhone ?? null;
+    const orderNumber = String(
+      edited.orderNumber ?? c?.orderNumber ?? [...(g.orderNumbers ?? [])][0] ?? "",
+    ).trim();
+    const profileArrival = c?.arrivalDate ?? g.arrivalDate ?? null;
+
+    if (!room) {
+      skipped++;
+      noRoom.push(orderNumber || g.guestName || `שורה ${i + 1}`);
+      continue;
+    }
+    if (!guestPhone && !orderNumber) {
+      skipped++;
+      notFound.push(`שורה ${i + 1}`);
+      continue;
+    }
+    const guestRow = findExistingGuestRow(existingGuestsLookup, {
+      guestPhone,
+      arrivalDate: profileArrival,
+      orderNumber: orderNumber || null,
+    });
+    if (!guestRow) {
+      skipped++;
+      notFound.push(orderNumber || g.guestName || guestPhone || `שורה ${i + 1}`);
+    }
+  }
+
+  return {
+    skipped,
+    notFound: [...new Set(notFound)],
+    noRoom: [...new Set(noRoom)],
+  };
 }
 
 function _gridRowId(g, i) {
@@ -602,7 +765,7 @@ function _scopeGuestRowQuery(query, { guestPhone, profileArrivalDate, orderNumbe
 // One row per guest profile. Multi-room (group) profiles show a read-only
 // "N rooms" count instead of a single editable room — picking a value there
 // still works and applies uniformly to that profile's rooms on sync.
-function _profilesToGridRows(merged, { suiteAssignmentOnly = false, badgeByIdx = null, existingGuestsLookup = null, dbMatchByIdx = null, dbDiffByIdx = null, multiRoomLineIndexMap = null, importWithoutAutomation = true } = {}) {
+function _profilesToGridRows(merged, { suiteAssignmentOnly = false, badgeByIdx = null, existingGuestsLookup = null, dbMatchByIdx = null, dbDiffByIdx = null, multiRoomLineIndexMap = null, syncActionByIdx = null, importWithoutAutomation = true } = {}) {
   return merged.map((g, i) => {
     const singleRoom = (g.rooms ?? []).length === 1 ? g.rooms[0] : null;
     const isDay       = !!g.isDayGuest || !!singleRoom?.isDayGuest;
@@ -612,7 +775,6 @@ function _profilesToGridRows(merged, { suiteAssignmentOnly = false, badgeByIdx =
     const existingRow = existingGuestsLookup ? findExistingGuestRow(existingGuestsLookup, candidate) : null;
     const dbStatus = dbMatchByIdx?.get(i) ?? null;
     const multiRoomLabel = formatMultiRoomLineLabel(multiRoomLineIndexMap, i);
-    // Financial mapping:
     const totalPrice  = (g.rooms ?? []).reduce((sum, r) => sum + (r.price || 0), 0);
     const qtyLabel    = multiRoomLabel
       || ((g.roomsQuantity ?? 0) > 1
@@ -628,9 +790,7 @@ function _profilesToGridRows(merged, { suiteAssignmentOnly = false, badgeByIdx =
       leadSource:   g.leadSource ?? "",
       automationMuted: _resolveGridAutomationMuted(g, existingRow, dbStatus, importWithoutAutomation),
       roomCount:    qtyLabel,
-      room:         suiteAssignmentOnly
-        ? roomDisplay
-        : ((g.rooms ?? []).length > 1 ? "" : roomDisplay),
+      room:         roomDisplay,
       tier:         isDay ? "☀️ בילוי יומי" : "🏨 סוויטה",
       spa_time:     g.spa_time ?? "",
       meal_time:    g.meal_time ?? "",
@@ -639,6 +799,7 @@ function _profilesToGridRows(merged, { suiteAssignmentOnly = false, badgeByIdx =
       arrivalDate:  g.arrivalDate ?? "",
       importBadge:  _composeImportBadge(g.guestName, badgeByIdx?.get(i), g.guestPhone),
       dbDiff:       dbDiffByIdx?.get(i) ?? "",
+      syncAction:   syncActionByIdx?.get(i) ?? "",
     };
   });
 }
@@ -743,100 +904,6 @@ export function _getSyncProfileIndices(merged, gridRows, { importSource, detaile
 }
 
 /** Targeted room-only sync — match existing guests by order_number or name. */
-async function _executeSuiteAssignmentOnlySync(supabase, {
-  merged,
-  gridRows,
-  syncIndices,
-  arrivalDate,
-}) {
-  const gridByProfileIdx = new Map(gridRows.map((r) => [r._profileIdx, r]));
-  let updated = 0;
-  let skipped = 0;
-  const notFound = [];
-  const ambiguous = [];
-  const noRoom = [];
-
-  for (const i of syncIndices) {
-    const g = merged[i];
-    const edited = gridByProfileIdx.get(i) ?? {};
-    const room = String(edited.room ?? "").trim();
-    const guestName = String(edited.guestName ?? g.guestName ?? "").trim();
-    const orderNumber = String(
-      edited.orderNumber ?? [...(g.orderNumbers ?? [])][0] ?? "",
-    ).trim();
-    const profileArrival = g.arrivalDate ?? arrivalDate ?? null;
-
-    if (!room) {
-      skipped++;
-      noRoom.push(orderNumber || guestName || `שורה ${i + 1}`);
-      continue;
-    }
-
-    if (!orderNumber && !guestName) {
-      skipped++;
-      notFound.push(`שורה ${i + 1}`);
-      continue;
-    }
-
-    let guestRow = null;
-
-    if (orderNumber) {
-      let q = supabase
-        .from("guests")
-        .select("id, name, order_number, room")
-        .eq("order_number", orderNumber);
-      if (profileArrival) q = q.eq("arrival_date", profileArrival);
-      const { data, error } = await q.maybeSingle();
-      if (error) throw new Error(error.message);
-      guestRow = data;
-    }
-
-    if (!guestRow && guestName) {
-      let q = supabase
-        .from("guests")
-        .select("id, name, order_number, room")
-        .eq("name", guestName);
-      if (profileArrival) q = q.eq("arrival_date", profileArrival);
-      const { data, error } = await q.limit(2);
-      if (error) throw new Error(error.message);
-      if (data?.length === 1) guestRow = data[0];
-      else if ((data?.length ?? 0) > 1) {
-        skipped++;
-        ambiguous.push(guestName);
-        continue;
-      }
-    }
-
-    if (!guestRow) {
-      skipped++;
-      notFound.push(orderNumber || guestName);
-      continue;
-    }
-
-    if (guestRow.room === room) {
-      skipped++;
-      continue;
-    }
-
-    const { error: updErr } = await supabase
-      .from("guests")
-      .update({ room })
-      .eq("id", guestRow.id);
-    if (updErr) throw new Error(updErr.message);
-    updated++;
-  }
-
-  return {
-    updated,
-    skipped,
-    notFound: [...new Set(notFound)],
-    ambiguous: [...new Set(ambiguous)],
-    noRoom: [...new Set(noRoom)],
-    total: syncIndices.length,
-    arrivalDate,
-  };
-}
-
 const AUTOMATION_MUTE_OPTIONS = [
   { value: "true", label: "🔇 מושתק" },
   { value: "false", label: "✅ פעיל" },
@@ -892,6 +959,7 @@ const SUITES_GRID_COLS = [
   { id: "roomCount",   label: "קבוצה",      editable: false, w: 70  },
   { id: "tier",        label: "שכבה",       editable: false, w: 90  },
   { id: "room",        label: "🏨 חדר/סוויטה", editable: true, w: 190, gold: true, options: ROOM_OPTIONS },
+  { id: "syncAction",  label: "פעולת סנכרון", editable: false, w: 160 },
   { id: "spa_time",    label: "שעת ספא",    editable: true,  w: 90  },
   { id: "meal_time",   label: "שעת ארוחה (ערמונים)", editable: true, w: 130 },
   { id: "meal_location", label: "בסיס אירוח", editable: false, w: 160 },
@@ -905,7 +973,9 @@ const SUITES_GRID_COLS = [
 const SUITE_ASSIGNMENT_GRID_COLS = [
   { id: "guestName",   label: "שם אורח",       editable: true,  w: 180 },
   { id: "orderNumber", label: "מס׳ הזמנה",     editable: false, w: 110 },
+  { id: "roomCount",   label: "חדר בהזמנה",    editable: false, w: 90 },
   { id: "room",        label: "🏨 חדר/סוויטה", editable: true,  w: 220, gold: true },
+  { id: "syncAction",  label: "פעולת סנכרון",  editable: false, w: 160 },
   { id: "guestPhone",  label: "טלפון",         editable: false, w: 120 },
 ];
 
@@ -959,6 +1029,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
   const [doc1Rec,  setDoc1Rec]  = useState(null);   // [] from Daily Report Excel
   const [doc1SyncMode, setDoc1SyncMode] = useState("suite_spa_only"); // "full" | "suite_spa_only"
   const [doc2SyncMode, setDoc2SyncMode] = useState("enrich"); // "enrich" | "full" | "suite_assignment_only"
+  const [suiteAssignmentForceRoom, setSuiteAssignmentForceRoom] = useState(false);
   const [rawDoc1Payload, setRawDoc1Payload] = useState(null); // { kind, data } for re-parse on mode change
   const [doc2Name, setDoc2Name] = useState("");
   const [doc1Name, setDoc1Name] = useState("");
@@ -1252,6 +1323,40 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     return map;
   }, [mergedCandidates, existingGuestsLookup, dbMatchByIdx]);
 
+  const enrichOnlyMode = doc2SyncMode === "enrich" || doc2SyncMode === "suite_assignment_only";
+
+  const syncActionByIdx = useMemo(() => {
+    const map = new Map();
+    const suiteAssign = doc2SyncMode === "suite_assignment_only" && importSource !== "detailed";
+    const enrichOnly = enrichOnlyMode;
+    mergedCandidates.forEach((c, i) => {
+      const g = merged?.[i];
+      const existingRow = findExistingGuestRow(existingGuestsLookup, c);
+      const candidateRoom = resolveCandidateRoomDisplay(c)
+        || _resolveProfileRoomDisplay(g ?? {}, "");
+      map.set(i, buildDoc2SyncActionLabel({
+        dbStatus: dbMatchByIdx.get(i) ?? null,
+        existingRow,
+        candidateRoom,
+        enrichOnly,
+        hasPhone: !!(c.guestPhone && String(c.guestPhone).trim()),
+        multiRoomLabel: formatMultiRoomLineLabel(multiRoomLineIndexMap, i),
+        suiteAssignmentForce: suiteAssign && suiteAssignmentForceRoom,
+      }));
+    });
+    return map;
+  }, [
+    mergedCandidates,
+    merged,
+    existingGuestsLookup,
+    dbMatchByIdx,
+    multiRoomLineIndexMap,
+    doc2SyncMode,
+    importSource,
+    enrichOnlyMode,
+    suiteAssignmentForceRoom,
+  ]);
+
   // Recompute grid rows when merged/db badges/import opt-in changes.
   // Manual cell edits live in gridRows state until the next full recompute.
   useEffect(() => {
@@ -1260,9 +1365,9 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     setGridRows(
       importSource === "detailed"
         ? _detailedProfilesToGridRows(merged, { badgeByIdx: importBadgeByIdx, existingGuestsLookup, dbMatchByIdx, dbDiffByIdx, importWithoutAutomation })
-        : _profilesToGridRows(merged, { suiteAssignmentOnly: suiteOnly, badgeByIdx: importBadgeByIdx, existingGuestsLookup, dbMatchByIdx, dbDiffByIdx, multiRoomLineIndexMap, importWithoutAutomation }),
+        : _profilesToGridRows(merged, { suiteAssignmentOnly: suiteOnly, badgeByIdx: importBadgeByIdx, existingGuestsLookup, dbMatchByIdx, dbDiffByIdx, multiRoomLineIndexMap, syncActionByIdx, importWithoutAutomation }),
     );
-  }, [merged, importSource, doc2SyncMode, importBadgeByIdx, existingGuestsLookup, dbMatchByIdx, dbDiffByIdx, multiRoomLineIndexMap, importWithoutAutomation]);
+  }, [merged, importSource, doc2SyncMode, importBadgeByIdx, existingGuestsLookup, dbMatchByIdx, dbDiffByIdx, multiRoomLineIndexMap, syncActionByIdx, importWithoutAutomation]);
 
   // ── Parse Doc 2: Suite CSV → AI-suggested column mapping → review screen ──
   // The AI only proposes; aggregateGuestProfiles() runs unchanged once the
@@ -1592,13 +1697,43 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
         }
 
         if (doc2SyncMode === "suite_assignment_only" && importSource !== "detailed") {
-          const roomStats = await _executeSuiteAssignmentOnlySync(supabase, {
-            merged,
-            gridRows,
-            syncIndices,
-            arrivalDate,
+          const indicesByGuestKey = _buildIndicesByGuestKey(syncIndices, merged, mergedCandidates);
+          const rooms = _buildSyncRoomsFromIndices(
+            syncIndices, merged, mergedCandidates, gridByProfileIdx, importSource, detailedRoomFilter,
+          );
+
+          const { data: rpcData, error: rpcErr } = await supabase.rpc("sync_suite_arrivals", {
+            payload: { profiles: [], rooms, enrichOnly: true },
           });
-          setResult({ mode: "suite_room_only", ...roomStats });
+          if (rpcErr) throw new Error("sync_suite_arrivals: " + rpcErr.message);
+
+          const patchStats = await _applyDoc2RoomGuestPatches(supabase, {
+            indicesByGuestKey,
+            merged,
+            mergedCandidates,
+            gridByProfileIdx,
+            existingGuestsLookup,
+            forceOverwriteRoom: suiteAssignmentForceRoom,
+          });
+          const diag = _suiteAssignmentSyncDiagnostics(
+            syncIndices, merged, mergedCandidates, gridByProfileIdx, existingGuestsLookup,
+          );
+
+          setResult({
+            mode: "suite_room_only",
+            updated: patchStats.updated,
+            roomsFilled: patchStats.roomsFilledCount,
+            roomsSkippedExisting: patchStats.roomsSkippedExisting,
+            multiRoomBookings: patchStats.multiRoomBookingCount,
+            skipped: diag.skipped,
+            notFound: diag.notFound,
+            noRoom: diag.noRoom,
+            total: syncIndices.length,
+            arrivalDate,
+            forceOverwriteRoom: suiteAssignmentForceRoom,
+            rooms: rpcData?.rooms ?? rooms.length,
+            skippedRooms: rpcData?.skipped ?? 0,
+          });
           return;
         }
 
@@ -1672,51 +1807,11 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           if ((profile.nights || 0) > (slot.nights || 0)) slot.nights = profile.nights;
         }
 
-        const indicesByGuestKey = new Map();
-        for (const i of syncIndices) {
-          const g = merged[i];
-          const c = mergedCandidates[i];
-          const key = bookingGuestKey({
-            orderNumber: c.orderNumber ?? [...(g.orderNumbers ?? [])][0] ?? null,
-            arrivalDate: c.arrivalDate ?? g.arrivalDate,
-            guestPhone: c.guestPhone ?? g.guestPhone,
-          });
-          if (!key) continue;
-          if (!indicesByGuestKey.has(key)) indicesByGuestKey.set(key, []);
-          indicesByGuestKey.get(key).push(i);
-        }
+        const indicesByGuestKey = _buildIndicesByGuestKey(syncIndices, merged, mergedCandidates);
 
-        const rooms = syncIndices
-          .flatMap((i) => {
-            const g = merged[i];
-            const c = mergedCandidates[i];
-            const edited      = gridByProfileIdx.get(i) ?? {};
-            const roomOverride = edited.room || "";
-            const profileType = importSource === "detailed"
-              ? _resolveDetailedProfileType(g, detailedRoomFilter)
-              : (g.hasDayBooking ? "day_use" : "suite");
-            const isDayGuestRoom = profileType === "day_use";
-            return (g.rooms ?? []).map(r => ({
-              resLineId:    r.resLineId,
-              orderNumber:  r.orderNumber,
-              roomName:     r.roomName,
-              suiteType:    r.suiteType,
-              roomDisplay:  roomOverride
-                || _bestGuessSuite(r.roomName, r.suiteType, isDayGuestRoom)
-                || null,
-              guestName:    edited.guestName ?? c.guestName ?? g.guestName ?? "",
-              guestPhone:   c.guestPhone ?? g.guestPhone ?? null,
-              coordPhone:   g.coordPhone ?? null,
-              phoneSource:  g.phoneSource,
-              adults:       r.adults,
-              nights:       r.nights,
-              arrivalDate:  c.arrivalDate ?? g.arrivalDate ?? null,
-              checkinTime:  r.checkinTime ?? null,
-              checkoutTime: r.checkoutTime ?? null,
-              isDayGuest:   isDayGuestRoom,
-            }));
-          })
-          .filter(r => r.resLineId && r.orderNumber);
+        const rooms = _buildSyncRoomsFromIndices(
+          syncIndices, merged, mergedCandidates, gridByProfileIdx, importSource, detailedRoomFilter,
+        );
 
         const batchProfileType = importSource === "detailed"
           ? (detailedRoomFilter === "all" ? "mixed" : detailedRoomFilter)
@@ -1735,12 +1830,16 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           });
         if (rpcErr) throw new Error("sync_suite_arrivals: " + rpcErr.message);
 
+        let roomsFilledCount = 0;
+        let roomsSkippedExisting = 0;
+        let multiRoomBookingCount = 0;
+
         for (const [, indices] of indicesByGuestKey) {
           let patch = {};
           let guestPhone;
           let profileArrivalDate;
           let orderNumber;
-          let lastRoom;
+          const roomLabels = [];
           let treatmentSum = 0;
           let notesMerged = "";
 
@@ -1752,7 +1851,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
             profileArrivalDate = c.arrivalDate ?? g.arrivalDate;
             orderNumber = c.orderNumber ?? [...(g.orderNumbers ?? [])][0] ?? null;
             const roomDisplay = _resolveProfileRoomDisplay(g, edited.room);
-            if (roomDisplay) lastRoom = roomDisplay;
+            if (roomDisplay) roomLabels.push(roomDisplay);
             const spaTime = edited.spa_time || c.spa_time || g.spa_time;
             const mealTime = edited.meal_time || c.meal_time || g.meal_time;
             const mealLoc = edited.meal_location || c.meal_location || g.meal_location;
@@ -1768,8 +1867,11 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
             if (notes) notesMerged = notesMerged ? `${notesMerged}\n${notes}` : notes;
           }
 
+          if (indices.length > 1) multiRoomBookingCount++;
+
           if (treatmentSum > 0) patch.treatment_count = treatmentSum;
-          if (lastRoom) patch.room = lastRoom;
+          const combinedRoom = buildCombinedRoomLabel(roomLabels);
+          if (combinedRoom) patch.room = combinedRoom;
           if (notesMerged) patch.guest_notes = notesMerged;
 
           const primaryIdx = indices[0];
@@ -1782,8 +1884,14 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
             arrivalDate: profileArrivalDate,
             orderNumber,
           });
+          const patchBeforeEnrich = { ...patch };
           if (enrichOnly && existingRow && primaryDbStatus !== "new") {
             patch = buildEnrichGuestPatch(patch, existingRow);
+          }
+          if (patchBeforeEnrich.room && !patch.room && existingRow?.room) {
+            roomsSkippedExisting++;
+          } else if (patch.room) {
+            roomsFilledCount++;
           }
           const wantMuted = _parseGridAutomationMuted(
             primaryEdited.automationMuted,
@@ -1828,6 +1936,9 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           enrichOnly,
           newCount,
           enrichedCount,
+          roomsFilledCount,
+          roomsSkippedExisting,
+          multiRoomBookingCount,
           total:  uniqueGuestCount,
           rooms:  rpcData?.rooms  ?? rooms.length,
           skippedRooms: rpcData?.skipped ?? 0,
@@ -1950,7 +2061,8 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     setDoc2Map(null); setDoc1Rec(null); setRawDoc1Payload(null);
     setDoc2Name(""); setDoc1Name("");
     setDoc1SyncMode("suite_spa_only");
-    setDoc2SyncMode("full");
+    setDoc2SyncMode("enrich");
+    setSuiteAssignmentForceRoom(false);
     setMerged(null); setGridRows([]); setShowOnlyWithSpa(true);
     setDetailedRoomFilter("all"); setSelectedIds(new Set()); setResult(null);
     setMappingStage("idle"); setRawDoc2Rows(null); setDoc2Fallback(null);
@@ -2276,8 +2388,9 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                   background: "var(--ivory)", border: "1px solid var(--border)",
                   color: "var(--black)", fontWeight: 600, lineHeight: 1.5,
                 }}>
-                  ממלא רק שדות <strong>ריקים</strong> בפרופיל קיים (שם/חדר/ספא/ארוחה וכו׳) — לא דורס נתונים שכבר שמורים.
-                  אורח חדש (🆕) נוצר במלואו. שורות ⚠ התנגשות מסומנות בעמודת «הבדל מול DB».
+                  ממלא רק שדות <strong>ריקים</strong> בפרופיל קיים — חדר/סוויטה מ-Doc 2 נכנס רק אם ריק ב-DB.
+                  כל שורת חדר בהזמנה נשמרת בטבלת שורות-חדר (suite_rooms) — הודעת «חדר מוכן» לכל סוויטה בנפרד.
+                  עמודת «פעולת סנכרון» מציגה מראש מה יקרה לכל שורה.
                 </div>
               )}
               {doc2SyncMode === "suite_assignment_only" && hasDoc2 && importSource !== "detailed" && (
@@ -2286,8 +2399,8 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                   background: "var(--ivory)", border: "1px solid var(--border)",
                   color: "var(--black)", fontWeight: 600, lineHeight: 1.5,
                 }}>
-                  מעדכן רק את עמודת <strong>חדר/סוויטה</strong> לאורחים קיימים (התאמה לפי מס׳ הזמנה או שם).
-                  לא משנה טלפון, תאריכים או סטטוס צ׳ק-אין.
+                  מעדכן <strong>רק שיבוץ חדר/סוויטה</strong> לאורחים קיימים (התאמה לפי טלפון+הזמנה+תאריך).
+                  ברירת מחדל: ממלא חדר רק אם ריק — לא דורס עריכה ידנית. סנכרון suite_rooms לכל שורת חדר.
                 </div>
               )}
             </div>
@@ -2538,7 +2651,16 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                   background: "rgba(201,169,110,0.1)", border: "1px solid rgba(201,169,110,0.35)",
                   fontSize: 11, fontWeight: 700, color: "var(--gold-dark)",
                 }}>
-                  🏨 תצוגת שיבוץ: שם · מס׳ הזמנה · חדר/סוויטה — {displayGridRows.length} שורות
+                  🏨 תצוגת שיבוץ: שם · מס׳ הזמנה · חדר · פעולת סנכרון — {displayGridRows.length} שורות
+                  <label style={{ display: "block", marginTop: 8, fontWeight: 600, cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={suiteAssignmentForceRoom}
+                      onChange={(e) => setSuiteAssignmentForceRoom(e.target.checked)}
+                      style={{ marginLeft: 6 }}
+                    />
+                    דרוס חדר קיים בפרופיל (לא מומלץ — ברירת מחדל ממלא ריק בלבד)
+                  </label>
                 </div>
               )}
               {syncEligibility && syncEligibility.total > 0 && (
@@ -2781,8 +2903,17 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                   <div style={{ fontSize: 13, color: "#065f46", lineHeight: 1.9 }}>
                     🏨 {result.suites} סוויטות ·
                     ☀️ {result.days} בילוי יומי ·
-                    🛏️ {result.rooms} חדרים
+                    🛏️ {result.rooms} חדרים ב-suite_rooms
                     {result.spa > 0 && <> · 💆 {result.spa} עם שעת ספא</>}
+                    {(result.roomsFilledCount ?? 0) > 0 && (
+                      <> · 🏨 {result.roomsFilledCount} חדרים עודכנו בפרופיל</>
+                    )}
+                    {(result.roomsSkippedExisting ?? 0) > 0 && (
+                      <> · ⏭️ {result.roomsSkippedExisting} עם חדר קיים (לא נדרס)</>
+                    )}
+                    {(result.multiRoomBookingCount ?? 0) > 0 && (
+                      <> · 🛏️×{result.multiRoomBookingCount} הזמנות מרובות-חדר</>
+                    )}
                   </div>
                   {result.skippedRooms > 0 && (
                     <div style={{ fontSize: 12, color: "#92400E", marginTop: 6, fontWeight: 700 }}>
@@ -2839,20 +2970,22 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                   <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 6 }}>
                     🏨 עודכנו {result.updated} שיבוצי סוויטות
                     {result.arrivalDate && <> (תאריך הגעה {result.arrivalDate})</>}
+                    {result.forceOverwriteRoom && <> · מצב דריסה פעיל</>}
                   </div>
                   <div style={{ fontSize: 13, lineHeight: 1.8 }}>
-                    סה״כ {result.total} שורות בקובץ
+                    סה״כ {result.total} שורות בקובץ · {result.rooms} שורות ב-suite_rooms
                     {result.skipped > 0 && <> · {result.skipped} דולגו</>}
+                    {(result.roomsSkippedExisting ?? 0) > 0 && (
+                      <> · {result.roomsSkippedExisting} עם חדר קיים (לא נדרס)</>
+                    )}
+                    {(result.multiRoomBookings ?? 0) > 0 && (
+                      <> · {result.multiRoomBookings} הזמנות מרובות-חדר</>
+                    )}
                   </div>
                   {result.noRoom?.length > 0 && (
                     <div style={{ fontSize: 12, color: "#92400E", marginTop: 8, fontWeight: 700 }}>
                       ⚠ ללא חדר משויך בטבלה: {result.noRoom.slice(0, 8).join(", ")}
                       {result.noRoom.length > 8 && ` +${result.noRoom.length - 8}`}
-                    </div>
-                  )}
-                  {result.ambiguous?.length > 0 && (
-                    <div style={{ fontSize: 12, color: "#92400E", marginTop: 8, fontWeight: 700 }}>
-                      ⚠ שם כפול במערכת (לא עודכן): {result.ambiguous.join(", ")}
                     </div>
                   )}
                   {result.notFound?.length > 0 && (
