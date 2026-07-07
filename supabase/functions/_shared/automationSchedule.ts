@@ -835,7 +835,7 @@ export function isSensitiveStayChangeRequest(text: string): boolean {
 
 /** Canonical staff handoff — MUST NOT vary; no enthusiastic approval language. */
 export const CANONICAL_STAY_CHANGE_HANDOFF_MSG =
-  "העברתי את בקשתך לצוות הסוויטות שלנו (אדיר ואפק), והם יצרו איתך קשר בהקדם. 🙏";
+  "העברתי את בקשתך לצוות הסוויטות שלנו, והם יצרו איתך קשר בהקדם. 🙏";
 
 // ── Check-in / entry policy FAQ — Tier-0 deterministic reply (no LLM) ────────
 // Catches "האם ניתן להכנס לחדר בשעה 12?" and similar — must NOT fall through to
