@@ -10,6 +10,7 @@ import ShiftScheduleTab from "./components/ShiftScheduleTab";
 import EmployeesPage from "./components/EmployeesPage";
 import { isAdminUser, isSuperAdmin, loadDepartments } from "./utils/admin";
 import { canAccessRoute, canSeeNavItem, filterNavItemsForUser } from "./utils/auth";
+import OritCustomerServicePanel from "./components/OritCustomerServicePanel";
 import { consumeStaffDeepLink } from "./utils/staffDeepLink";
 import { saveCheckinFilter } from "./utils/checkinFilterStorage";
 import { supabase, isSupabaseConfigured, loadAgentProfile } from "./supabaseClient";
@@ -1298,6 +1299,7 @@ function Sidebar({ user, active, setActive, openOpsCount, onLogout, isAdmin, isS
     { id: "employees",  icon: "👥", label: "עובדים",                                 managerOnly: true },
     { id: "checklist",  icon: "✅", label: "צ'קליסטים",                              managerOnly: true },
     { id: "requests_board", icon: "📋", label: "לוח בקשות", managerOnly: true, receptionistOk: true },
+    { id: "orit_cs_agent", icon: "👑", label: "סוכן שירות לקוחות", oritCsAgentOnly: true },
     { id: "ops_board",  icon: "🛠️", label: "תפעול ואחזקה", badge: openOpsCount,       managerOnly: false },
     { id: "vip_guests", icon: "🏨", label: "ניהול אורחים",                            managerOnly: true },
     { id: "broadcast",  icon: "📣", label: "שליחת הודעות",                           managerOnly: true },
@@ -1869,7 +1871,7 @@ async function loadUserWithProfile(session, setUser) {
   try {
     const { data } = await supabase
       .from("profiles")
-      .select("role, name, department, status, avatar, avatar_text, must_change_password")
+      .select("role, name, department, status, avatar, avatar_text, must_change_password, orit_cs_agent_access")
       .eq("id", base.id)
       .maybeSingle();
     setUser({ ...base, ...(data ?? {}) });
@@ -2192,6 +2194,7 @@ export default function App({ initialPage = "dashboard" }) {
     room_board:    "🏨 לוח סוויטות",
     housekeeping_tablet: "🧹 לוח ניקיון (טאבלט)",
     requests_board: "📋 לוח בקשות",
+    orit_cs_agent: "👑 סוכן שירות לקוחות",
     feedback_dashboard: "🌟 משוב אורחים",
     bot_config:    "🤖 הגדרות Smart Concierge",
     bot_settings:  "🧠 מוח הבוט",
@@ -2379,6 +2382,8 @@ export default function App({ initialPage = "dashboard" }) {
         return <HousekeepingTabletView />;
       case "requests_board":
         return <RequestsBoard user={user} onOpenDreamBotChat={openDreamBotChat} />;
+      case "orit_cs_agent":
+        return guardPage("orit_cs_agent", <OritCustomerServicePanel user={user} />);
       case "feedback_dashboard":
         return <GuestFeedbackTabs user={user} />;
       case "suites":

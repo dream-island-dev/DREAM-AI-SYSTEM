@@ -65,7 +65,22 @@ const ROUTE_ACCESS = {
   data_sync:              ["admin", "super_admin", "receptionist"],
   voucher_reconciliation: ["admin", "super_admin", "receptionist"],
   routing_control_center: ["admin", "super_admin"],
+  orit_cs_agent:          ["admin", "super_admin"],
 };
+
+/** Orit CS Agent — owner mailbox only (+ super_admin for support). */
+const ORIT_CS_AGENT_EMAILS = new Set([
+  "orit@dream-island.co.il",
+  "orit@dream.io", // XOS login (Supabase Auth)
+]);
+
+export function canAccessOritCsAgent(user) {
+  if (!user) return false;
+  if (isSuperAdmin(user)) return true;
+  if (user.orit_cs_agent_access === true) return true;
+  const email = (user.email || "").toLowerCase().trim();
+  return ORIT_CS_AGENT_EMAILS.has(email);
+}
 
 // ── Main gate ────────────────────────────────────────────────────────────────
 export function canPerform(action, user) {
@@ -76,6 +91,7 @@ export function canPerform(action, user) {
 /** Sidebar nav visibility — staff sees open items; receptionist also gets receptionistOk. */
 export function canSeeNavItem(item, user) {
   if (!user) return false;
+  if (item.oritCsAgentOnly) return canAccessOritCsAgent(user);
   if (isSuperAdmin(user) || isAdminUser(user) || user.role === "manager") return true;
   if (user.role === "receptionist") {
     return !item.managerOnly || item.receptionistOk === true;
@@ -86,6 +102,7 @@ export function canSeeNavItem(item, user) {
 /** App.js guardPage helper — returns true when user may render the route. */
 export function canAccessRoute(routeId, user) {
   if (!user) return false;
+  if (routeId === "orit_cs_agent") return canAccessOritCsAgent(user);
   const allowed = ROUTE_ACCESS[routeId];
   if (!allowed) return true;
   const role = getRole(user);

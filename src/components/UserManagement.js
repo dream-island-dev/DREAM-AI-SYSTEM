@@ -202,6 +202,29 @@ function UserCard({ u, isSelf, saving, canEdit, onUpdate, onToggle }) {
           )}
         </div>
 
+        {/* Orit CS Agent access */}
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>
+            סוכן שירות אורית
+          </div>
+          {canEdit && !isSelf ? (
+            <label style={{ display: "flex", alignItems: "center", gap: 10, minHeight: 48, cursor: saving ? "not-allowed" : "pointer", opacity: saving === "orit_cs_agent_access" ? 0.5 : 1 }}>
+              <input
+                type="checkbox"
+                checked={Boolean(u.orit_cs_agent_access)}
+                disabled={Boolean(saving)}
+                onChange={() => onUpdate(u.id, "orit_cs_agent_access", !u.orit_cs_agent_access)}
+                style={{ width: 20, height: 20, accentColor: "var(--gold)" }}
+              />
+              <span style={{ fontSize: 14 }}>גישה לטאב סוכן שירות לקוחות</span>
+            </label>
+          ) : (
+            <div style={{ padding: "10px 0", fontSize: 14, color: "var(--text-muted)" }}>
+              {u.orit_cs_agent_access ? "✅ מורשה" : "—"}
+            </div>
+          )}
+        </div>
+
         {/* Suspend / Activate */}
         {canEdit && !isSelf && (
           <button
@@ -587,6 +610,7 @@ export default function UserManagement({ currentUser }) {
                   <th>אימייל</th>
                   <th style={{ width: 165 }}>תפקיד</th>
                   <th style={{ width: 165 }}>מחלקה</th>
+                  <th style={{ width: 120 }}>סוכן אורית</th>
                   <th style={{ width: 80 }}>סטטוס</th>
                   <th style={{ width: 110 }}>פעולות</th>
                 </tr>
@@ -650,6 +674,25 @@ export default function UserManagement({ currentUser }) {
                           </select>
                         ) : (
                           <span style={{ fontSize: 13, color: "var(--text-muted)" }}>{u.department ?? "—"}</span>
+                        )}
+                      </td>
+
+                      {/* Orit CS access */}
+                      <td>
+                        {canEdit && !isSelf ? (
+                          <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: isSaving ? "not-allowed" : "pointer", opacity: isSaving === "orit_cs_agent_access" ? 0.5 : 1 }}>
+                            <input
+                              type="checkbox"
+                              checked={Boolean(u.orit_cs_agent_access)}
+                              disabled={Boolean(isSaving)}
+                              onChange={() => updateField(u.id, "orit_cs_agent_access", !u.orit_cs_agent_access)}
+                              title="גישה לטאב סוכן שירות לקוחות"
+                              style={{ width: 18, height: 18, accentColor: "var(--gold)" }}
+                            />
+                            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{u.orit_cs_agent_access ? "כן" : "לא"}</span>
+                          </label>
+                        ) : (
+                          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{u.orit_cs_agent_access ? "✅" : "—"}</span>
                         )}
                       </td>
 
