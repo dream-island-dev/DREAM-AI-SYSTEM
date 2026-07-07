@@ -202,7 +202,7 @@ export default function GuestsPage({
       }
       try {
         const { data: waData, error: waError } = await supabase.functions.invoke("whatsapp-send", {
-          body: { trigger: "room_ready", guestId: guest.id },
+          body: { trigger: "room_ready", guestId: guest.id, roomId: guest.room || undefined },
         });
         if (waError || !waData?.ok) {
           const reason = waData?.error ?? waError?.message ?? "שגיאה לא ידועה";

@@ -21,18 +21,22 @@ export async function checkPipelineDuplicate(
     guestId: number;
     triggerType: string;
     force?: boolean;
+    /** room_ready only — dedup per physical suite, not per guest profile */
+    roomId?: string | null;
   },
 ): Promise<DuplicateCheckResult> {
   if (opts.force) return { blocked: false };
 
-  const { data: sentRows, error } = await supabase
+  let query = supabase
     .from("notification_log")
-    .select("id, status, sent_at")
+    .select("id, status, sent_at, payload")
     .eq("guest_id", opts.guestId)
     .eq("trigger_type", opts.triggerType)
     .in("status", ["sent", "simulated"])
     .order("sent_at", { ascending: false })
-    .limit(1);
+    .limit(20);
+
+  const { data: sentRows, error } = await query;
 
   if (error) {
     // QA audit fix (2026-07-06): this used to fail OPEN (return not-blocked),
@@ -46,8 +50,16 @@ export async function checkPipelineDuplicate(
     return { blocked: true, reason: "lookup_failed" };
   }
 
-  if (sentRows && sentRows.length > 0) {
-    const row = sentRows[0] as { status?: string; sent_at?: string | null };
+  const roomKey = opts.roomId?.trim() || null;
+  const matching = (sentRows ?? []).filter((raw) => {
+    const row = raw as { status?: string; sent_at?: string | null; payload?: Record<string, unknown> | null };
+    if (opts.triggerType !== "room_ready" || !roomKey) return true;
+    const loggedRoom = String((row.payload as Record<string, unknown>)?.room_id ?? "").trim();
+    return loggedRoom === roomKey;
+  });
+
+  if (matching.length > 0) {
+    const row = matching[0] as { status?: string; sent_at?: string | null };
     return {
       blocked: true,
       reason: "already_sent",

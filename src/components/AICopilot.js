@@ -119,9 +119,27 @@ export default function AICopilot({ user }) {
       (guestRows ?? []).find((g) => guestRoomMatchesSuiteId(g, roomRow.room_id)) ?? null;
 
     const isEligible = isArrivalToday(guest?.arrival_date);
-    const alreadyNotified = !!(guest?.room_ready_notified || guest?.msg_room_ready_sent);
 
-    // Stale gate — room_ready already sent from SuitesDashboard / prior approve.
+    let alreadyNotified = false;
+    if (guest?.id) {
+      const { data: suiteRows } = await supabase
+        .from("suite_rooms")
+        .select("room_display, room_name, suite_type, room_ready_notified, msg_room_ready_sent")
+        .eq("guest_id", guest.id);
+      const match = (suiteRows ?? []).find((sr) =>
+        guestRoomMatchesSuiteId(
+          { room: sr.room_display ?? sr.room_name, suite_name: sr.suite_type },
+          roomRow.room_id,
+        ),
+      );
+      if (match) {
+        alreadyNotified = !!(match.room_ready_notified || match.msg_room_ready_sent);
+      } else if (!(suiteRows ?? []).length) {
+        alreadyNotified = !!(guest.room_ready_notified || guest.msg_room_ready_sent);
+      }
+    }
+
+    // Stale gate — room_ready already sent for this suite from SuitesDashboard / prior approve.
     if (alreadyNotified) {
       await supabase
         .from("room_status")
@@ -208,7 +226,7 @@ export default function AICopilot({ user }) {
           throw new Error("שליחה חסומה בשעות שקט — סמן את האישור למטה");
         }
         const { data, error: waError } = await supabase.functions.invoke("whatsapp-send", {
-          body: { trigger: "room_ready", guestId: guest.id },
+          body: { trigger: "room_ready", guestId: guest.id, roomId: alert.room_id },
         });
         if (waError) {
           throw new Error(`שליחת WhatsApp נכשלה (${waError.message}) — הסטטוס לא עודכן, אפשר לנסות שוב`);

@@ -94,6 +94,11 @@ import {
   isEffectiveSuiteGuest,
 } from "../_shared/suiteNames.ts";
 import { assertMetaMessageAccepted } from "../_shared/metaWamid.ts";
+import {
+  isSuiteRoomReadyAlreadySent,
+  markSuiteRoomReadySent,
+  syncGuestRoomReadyAggregate,
+} from "../_shared/suiteRoomReady.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -1196,9 +1201,10 @@ serve(async (req: Request) => {
 
   try {
     const body = await req.json();
-    const { trigger, guestId, assignments, weekStart, waTemplateName, templateVariables, force, force_channel, manual_override, scheduled_for, is_test, phone: testPhone, image_url: requestImageUrl, pipeline_reconcile } = body as {
+    const { trigger, guestId, roomId: requestRoomId, assignments, weekStart, waTemplateName, templateVariables, force, force_channel, manual_override, scheduled_for, is_test, phone: testPhone, image_url: requestImageUrl, pipeline_reconcile } = body as {
       trigger:             string;
       guestId?:            string;
+      roomId?:             string;    // room_ready — canonical suite label (multi-room)
       assignments?:        Record<string, unknown[]>;
       weekStart?:          string;
       waTemplateName?:     string;    // approved WA template name
@@ -2877,32 +2883,63 @@ serve(async (req: Request) => {
     // This block always early-returns — the generic hybrid fallback below is
     // never reached for trigger === "room_ready".
     if (trigger === "room_ready") {
-      if (!force && (guest as Record<string, unknown>).room_ready_notified === true) {
+      const rrRoomNameRaw = String(
+        requestRoomId ??
+        (guest as Record<string, unknown>).room ??
+        (guest as Record<string, unknown>).suite_name ??
+        ""
+      ).trim();
+      const rrRoomName = rrRoomNameRaw || "-";
+
+      const suiteRoomAlreadySent = !force && guestId
+        ? await isSuiteRoomReadyAlreadySent(supabase, Number(guestId), rrRoomNameRaw)
+        : false;
+
+      if (!force && guestId) {
+        if (suiteRoomAlreadySent) {
+          const rrPhone = safeGuestPhone(guest.phone) ?? String(guest.phone ?? "");
+          await logDuplicateBlocked(supabase, {
+            guestId: Number(guestId),
+            recipient: rrPhone,
+            triggerType: "room_ready",
+            reason: "already_sent",
+            source: "whatsapp-send_room_ready_suite",
+          });
+          await clearPendingRoomApprovalGate(supabase, rrRoomNameRaw);
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              skipped: true,
+              status: "duplicate_blocked",
+              reason: "room_ready_notified",
+              room_id: rrRoomNameRaw,
+            }),
+            { headers: { ...CORS, "Content-Type": "application/json" } },
+          );
+        }
+
         const rrDup = await checkPipelineDuplicate(supabase, {
-          guestId,
+          guestId: Number(guestId),
           triggerType: "room_ready",
+          roomId: rrRoomNameRaw,
           force: false,
         });
         if (rrDup.blocked) {
           const rrPhone = safeGuestPhone(guest.phone) ?? String(guest.phone ?? "");
           await logDuplicateBlocked(supabase, {
-            guestId,
+            guestId: Number(guestId),
             recipient: rrPhone,
             triggerType: "room_ready",
             reason: rrDup.reason,
             priorSentAt: rrDup.priorSentAt,
             source: "whatsapp-send_room_ready",
           });
-          await clearPendingRoomApprovalGate(
-            supabase,
-            guestRoomIdForApprovalGate(guest as Record<string, unknown>),
-          );
+          await clearPendingRoomApprovalGate(supabase, rrRoomNameRaw);
           return new Response(
-            JSON.stringify(duplicateBlockedResponseBody(rrDup, { reason: "room_ready_notified" })),
+            JSON.stringify(duplicateBlockedResponseBody(rrDup, { reason: "room_ready_notified", room_id: rrRoomNameRaw })),
             { headers: { ...CORS, "Content-Type": "application/json" } },
           );
         }
-        // Flag set without a successful log — allow repair send (split-brain).
       }
 
       const arrivalStr = String(guest.arrival_date ?? "");
@@ -2922,12 +2959,6 @@ serve(async (req: Request) => {
       }
 
       const rrGuestName = sanitizeTemplateVars([String(guest.name ?? "")])[0];
-      const rrRoomNameRaw = String(
-        (guest as Record<string, unknown>).room ??
-        (guest as Record<string, unknown>).suite_name ??
-        ""
-      ).trim();
-      const rrRoomName = rrRoomNameRaw || "-";
 
       // Query last inbound — any error defaults to template (safe path).
       let rrLastInbound: Date | null = null;
@@ -3027,6 +3058,7 @@ serve(async (req: Request) => {
         channel:      "whatsapp",
         status:       rrStatus,
         payload: {
+          room_id: rrRoomNameRaw,
           channel: rrDispatch.channel === "text" ? "session_message" : "meta_template",
           ...(rrDispatch.channel === "text"
             ? { scriptKey: rrDispatch.freeTextKey }
@@ -3051,10 +3083,20 @@ serve(async (req: Request) => {
         } catch (e) {
           console.warn("[whatsapp-send] room_ready conv log failed (non-blocking):", (e as Error).message);
         }
-        await supabase.from("guests").update({
-          room_ready_notified: true,
-          ...(flagColumn ? { [flagColumn]: true } : {}),
-        }).eq("id", guestId);
+        await markSuiteRoomReadySent(supabase, Number(guestId), rrRoomNameRaw);
+        await syncGuestRoomReadyAggregate(supabase, Number(guestId));
+        const { count: suiteRoomCount } = await supabase
+          .from("suite_rooms")
+          .select("id", { count: "exact", head: true })
+          .eq("guest_id", guestId);
+        if (!suiteRoomCount) {
+          await supabase.from("guests").update({
+            room_ready_notified: true,
+            ...(flagColumn ? { [flagColumn]: true } : {}),
+          }).eq("id", guestId);
+        } else if (flagColumn) {
+          await supabase.from("guests").update({ [flagColumn]: true }).eq("id", guestId);
+        }
         await clearPendingRoomApprovalGate(supabase, rrRoomNameRaw);
       }
 

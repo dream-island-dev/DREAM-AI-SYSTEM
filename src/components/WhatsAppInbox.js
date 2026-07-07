@@ -23,7 +23,6 @@ import {
 } from "../utils/guestTiming";
 import {
   formatGuestReactionLabel,
-  isGuestReactionRow,
   parseGuestReactionMessage,
 } from "../utils/inboxReactions";
 import {
@@ -44,6 +43,13 @@ import {
 import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
 import { buildStaffDeepLink, qrCodeImageUrl } from "../utils/staffDeepLink";
 import { buildSpaWhenPhrase, formatSpaSchedule } from "../utils/israeliTime";
+import {
+  applyAllReadCursors,
+  buildGroupedRosterSections,
+  contactUnreadCount,
+  isRecentlyActive,
+  sortContactsRecentFirst,
+} from "../utils/inboxReadState";
 
 const HIT_STAFF = "var(--hit-target-staff, 44px)";
 const HIT_COMFORT = "var(--hit-target-comfort, 48px)";
@@ -333,6 +339,7 @@ const T = {
     filterFuture: "📅 עתיד",
     filterClaimed: "🔒 בטיפול",
     filterUnread: "💬 לא נקרא",
+    filterRecent: "🕐 אחרונות",
     sortActivity: "פעילות",
     sortArrival: "הגעה",
     sortName: "שם",
@@ -414,6 +421,7 @@ const T = {
     filterFuture: "📅 Future",
     filterClaimed: "🔒 Claimed",
     filterUnread: "💬 Unread",
+    filterRecent: "🕐 Recent",
     sortActivity: "Activity",
     sortArrival: "Arrival",
     sortName: "Name",
@@ -713,29 +721,16 @@ function applyGuestProfileFromMessageRow(contact, row) {
   contact.claimedAt = row.guest_claimed_at ?? null;
 }
 
-/** Inbound is unread only when staff hasn't opened the thread AND no outbound reply exists after it. */
-function countUnreadInbound(messages) {
-  if (!messages?.length) return 0;
-  let n = 0;
-  for (const m of messages) {
-    if (m.direction !== "inbound" || m._read || isGuestReactionRow(m)) continue;
-    const answered = messages.some(
-      (o) => o.direction === "outbound" && o.created_at > m.created_at,
-    );
-    if (!answered) n++;
-  }
-  return n;
-}
-
 function contactDeparted(contact) {
   return isGuestDeparted(rosterGuestFields(contact));
 }
 
-function contactMatchesRosterFilter(contact, rosterFilter) {
+function contactMatchesRosterFilter(contact, rosterFilter, readCursorsByPhone = null) {
   if (rosterFilter === "all") return true;
   if (rosterFilter === "alerts") return !!contact.humanRequested;
   if (rosterFilter === "claimed") return !!contact.claimedBy;
-  if (rosterFilter === "unread") return countUnreadInbound(contact.messages) > 0;
+  if (rosterFilter === "recent") return isRecentlyActive(contact);
+  if (rosterFilter === "unread") return contactUnreadCount(contact, readCursorsByPhone) > 0;
   const seg = classifyInboxContactSegment(contact);
   if (rosterFilter === "in_resort") return seg === "in_resort";
   if (rosterFilter === "tomorrow") return seg === "tomorrow";
@@ -769,37 +764,6 @@ function sortRosterContacts(contacts, sortMode) {
     const bLast = b.messages[b.messages.length - 1]?.created_at ?? "";
     return bLast.localeCompare(aLast);
   });
-}
-
-/**
- * Grouped "all" view — alerts section first (staff-requested escalations),
- * then arrival-timing segments, each strictly latest-message-desc.
- * Session 125: the unread-pinned-to-top bucket (19262d6) was removed by
- * Mike's decision («פעילות») — pure WhatsApp recency order; unread state
- * still shows via the count badge + the «לא נקרא» filter chip.
- */
-function buildGroupedRosterSections(contacts, sortMode, lang) {
-  const alerts = contacts.filter((c) => c.humanRequested);
-  const rest = contacts.filter((c) => !c.humanRequested);
-  const sections = [];
-  if (alerts.length) {
-    const meta = getInboxRosterSegmentMeta("alerts", lang);
-    sections.push({
-      key: "alerts",
-      ...meta,
-      contacts: sortRosterContacts(alerts, sortMode),
-    });
-  }
-  for (const seg of INBOX_ROSTER_SEGMENT_ORDER) {
-    const inSeg = rest.filter((c) => classifyInboxContactSegment(c) === seg);
-    if (!inSeg.length) continue;
-    sections.push({
-      key: seg,
-      ...getInboxRosterSegmentMeta(seg, lang),
-      contacts: sortRosterContacts(inSeg, sortMode),
-    });
-  }
-  return sections;
 }
 
 /**
@@ -959,6 +923,7 @@ function contactItemPropsEqual(prev, next) {
   if (prev.onDismiss !== next.onDismiss) return false;
   if (prev.onArchive !== next.onArchive) return false;
   if (prev.onProfileClick !== next.onProfileClick) return false;
+  if (prev.readCursorsByPhone !== next.readCursorsByPhone) return false;
   const a = prev.contact, b = next.contact;
   if (a === b) return true;
   if (a.phone !== b.phone) return false;
@@ -979,12 +944,12 @@ function contactItemPropsEqual(prev, next) {
   const bLast = b.messages[b.messages.length - 1];
   if (aLast?.id !== bLast?.id) return false;
   // Unread count can change (openContact / outbound reply) without touching last id.
-  return countUnreadInbound(a.messages) === countUnreadInbound(b.messages);
+  return contactUnreadCount(a, prev.readCursorsByPhone) === contactUnreadCount(b, next.readCursorsByPhone);
 }
 
-const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobile, t, lang, dir, onClick, onProfileClick, onDismiss, onArchive, scriptsByKey, templatesByWaName }) {
+const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobile, t, lang, dir, readCursorsByPhone, onClick, onProfileClick, onDismiss, onArchive, scriptsByKey, templatesByWaName }) {
   const last  = contact.messages[contact.messages.length - 1];
-  const unread = countUnreadInbound(contact.messages);
+  const unread = contactUnreadCount(contact, readCursorsByPhone);
 
   const waPhone = contact.phone.replace(/^\+/, "");
   // "guest_alert" — Global Red Alert (any guest_alerts/Requests Board insert,
@@ -2584,6 +2549,14 @@ export default function WhatsAppInbox({
   const replyRef   = useRef(null);
   const pollRef    = useRef(null);
   const allMsgsRef = useRef([]);   // raw flat messages — source of truth for merging
+  const readCursorsRef = useRef(new Map()); // phone → last_read_at ISO (per staff)
+  const [readCursorsVersion, setReadCursorsVersion] = useState(0);
+  const readCursorsByPhone = useMemo(
+    () => readCursorsRef.current,
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- version bump re-exposes ref Map
+    [readCursorsVersion],
+  );
+  const bumpReadCursors = useCallback(() => setReadCursorsVersion((v) => v + 1), []);
   const lastSeenAt = useRef(null); // ISO timestamp of last fetch — used by fetchSince
   const guestPhoneMapRef = useRef(new Map()); // normalizePhone(guests.phone) → guest profile slice
   const guestIdMapRef = useRef(new Map()); // guests.id → same slice (phone-mismatch fallback)
@@ -2679,11 +2652,21 @@ export default function WhatsAppInbox({
   );
 
   const markPhoneInboundRead = useCallback((phone) => {
-    allMsgsRef.current = allMsgsRef.current.map((m) =>
-      m.phone === phone && m.direction === "inbound" ? { ...m, _read: true } : m
-    );
+    if (!phone) return;
+    const now = new Date().toISOString();
+    readCursorsRef.current.set(phone, now);
+    allMsgsRef.current = applyAllReadCursors(allMsgsRef.current, readCursorsRef.current);
     setContacts(applyGrouping(allMsgsRef.current));
-  }, [applyGrouping]);
+    bumpReadCursors();
+    if (user?.id && supabase) {
+      supabase.from("inbox_read_cursors").upsert(
+        { phone, staff_id: user.id, last_read_at: now, updated_at: now },
+        { onConflict: "phone,staff_id" },
+      ).then(({ error }) => {
+        if (error) console.warn("[WhatsAppInbox] read cursor save failed:", error.message);
+      });
+    }
+  }, [applyGrouping, bumpReadCursors, user?.id]);
 
   // Merge new conversation rows instantly (Realtime INSERT or incremental poll).
   const mergeIncomingRows = useCallback((rows) => {
@@ -2768,7 +2751,7 @@ export default function WhatsAppInbox({
 
     const rows = data ?? [];
     const flat = rows.map(normalise).reverse(); // back to ascending — every downstream consumer expects oldest→newest
-    allMsgsRef.current = flat;
+    allMsgsRef.current = applyAllReadCursors(flat, readCursorsRef.current);
     // Watermark = latest row timestamp (not wall-clock) so rows inserted during
     // fetchAll are not skipped by the next incremental poll.
     const maxTs = flat.reduce((max, m) => (m.created_at > max ? m.created_at : max), "");
@@ -2777,7 +2760,7 @@ export default function WhatsAppInbox({
     // Got a full page → there's likely older history beyond the window (heuristic,
     // not exact — worst case the "load older" button does one extra empty fetch).
     setHasMoreOlder(rows.length === INITIAL_FETCH_LIMIT);
-    setContacts(applyGrouping(flat));
+    setContacts(applyGrouping(allMsgsRef.current));
     setLastUpdated(new Date());
     setLoading(false);
     alertsReadyRef.current = true;
@@ -3237,18 +3220,13 @@ export default function WhatsAppInbox({
     }
     setDrawerOpen(false);
     setQuickOpen(false);
-    // AI suggestions + route draft are per-conversation — stale suggestions
-    // from whichever chat was open before must never leak into a new one.
     setAiSuggestions(null);
     setAiSuggestError(null);
     setRouteDraft(null);
-    allMsgsRef.current = allMsgsRef.current.map((m) =>
-      m.phone === phone && m.direction === "inbound" ? { ...m, _read: true } : m
-    );
-    setContacts(applyGrouping(allMsgsRef.current));
+    markPhoneInboundRead(phone);
     fetchThreadHistory(phone);
     fetchThreadDbCount(phone);
-  }, [isMobile, applyGrouping, fetchThreadHistory, fetchThreadDbCount]);
+  }, [isMobile, markPhoneInboundRead, fetchThreadHistory, fetchThreadDbCount]);
 
   useEffect(() => {
     if (mobileScreen === "list") {
@@ -3498,7 +3476,7 @@ export default function WhatsAppInbox({
 
     if (inboxMemoryCache.messages) {
       console.log(`[WA-inbox] Restoring ${inboxMemoryCache.messages.length} cached rows — instant paint, full revalidate next`);
-      allMsgsRef.current = inboxMemoryCache.messages;
+      allMsgsRef.current = applyAllReadCursors(inboxMemoryCache.messages, readCursorsRef.current);
       lastSeenAt.current = inboxMemoryCache.lastSeenAt;
       oldestSeenAtRef.current = inboxMemoryCache.oldestSeenAt;
       hydratedPhonesRef.current = new Set(inboxMemoryCache.hydratedPhones ?? []);
@@ -3523,6 +3501,32 @@ export default function WhatsAppInbox({
       }
     };
   }, [fetchAll, fetchSince, applyGrouping]);
+
+  // Per-staff read cursors — unread survives refresh; opening thread persists to DB.
+  useEffect(() => {
+    if (!user?.id || !supabase) return;
+    let cancelled = false;
+    (async () => {
+      const { data, error } = await supabase
+        .from("inbox_read_cursors")
+        .select("phone, last_read_at")
+        .eq("staff_id", user.id);
+      if (cancelled) return;
+      if (error) {
+        console.warn("[WhatsAppInbox] read cursors load failed:", error.message);
+        return;
+      }
+      const map = new Map();
+      for (const row of data ?? []) map.set(row.phone, row.last_read_at);
+      readCursorsRef.current = map;
+      if (allMsgsRef.current.length) {
+        allMsgsRef.current = applyAllReadCursors(allMsgsRef.current, map);
+        setContacts(applyGrouping(allMsgsRef.current));
+      }
+      bumpReadCursors();
+    })();
+    return () => { cancelled = true; };
+  }, [user?.id, applyGrouping, bumpReadCursors]);
 
   // ── Write-through to the module-level cross-mount cache ──────────────────
   // Runs after every contacts update regardless of which mutation caused it
@@ -3861,10 +3865,10 @@ export default function WhatsAppInbox({
   // "🔵 הודעות חדשות" section (buildGroupedRosterSections below) like anyone else's
   // unread message. Only a departed contact with zero unread stays departed-only.
   const activeRosterContacts = visibleContacts.filter(
-    (c) => !contactDeparted(c) || countUnreadInbound(c.messages) > 0,
+    (c) => !contactDeparted(c) || contactUnreadCount(c, readCursorsByPhone) > 0,
   );
   const departedContacts = visibleContacts.filter(
-    (c) => contactDeparted(c) && countUnreadInbound(c.messages) === 0,
+    (c) => contactDeparted(c) && contactUnreadCount(c, readCursorsByPhone) === 0,
   );
   const alertContacts = activeRosterContacts.filter((c) => c.humanRequested);
   const rosterSource =
@@ -3880,13 +3884,18 @@ export default function WhatsAppInbox({
         return hay.includes(q) || (qDigits.length >= 3 && phoneDigits.includes(qDigits));
       });
     }
-    list = list.filter((c) => contactMatchesRosterFilter(c, rosterFilter));
-    return sortRosterContacts(list, rosterSort);
-  }, [rosterSource, rosterSearch, rosterFilter, rosterSort]);
+    list = list.filter((c) => contactMatchesRosterFilter(c, rosterFilter, readCursorsByPhone));
+    return sortContactsRecentFirst(list, rosterSort, sortRosterContacts);
+  }, [rosterSource, rosterSearch, rosterFilter, rosterSort, readCursorsByPhone]);
 
   const rosterGroupedSections = useMemo(() => {
     if (rosterFilter !== "all" || rosterSearch.trim()) return null;
-    return buildGroupedRosterSections(displayContacts, rosterSort, lang);
+    return buildGroupedRosterSections(displayContacts, rosterSort, lang, {
+      getInboxRosterSegmentMeta,
+      INBOX_ROSTER_SEGMENT_ORDER,
+      classifyInboxContactSegment,
+      sortRosterContacts,
+    });
   }, [displayContacts, rosterFilter, rosterSearch, rosterSort, lang]);
 
   const rosterFilterChips = useMemo(() => [
@@ -3897,6 +3906,7 @@ export default function WhatsAppInbox({
     { id: "in_2_days", label: t.filterIn2Days },
     { id: "future", label: t.filterFuture },
     { id: "claimed", label: t.filterClaimed },
+    { id: "recent", label: t.filterRecent },
     { id: "unread", label: t.filterUnread },
     {
       id: "departed",
@@ -3915,7 +3925,7 @@ export default function WhatsAppInbox({
   const contextualMacros = buildContextualMacros(activeContact);
   const isContextualQuickList = contextualMacros.length > 0;
   const unreadTotal = activeRosterContacts.reduce(
-    (sum, c) => sum + countUnreadInbound(c.messages),
+    (sum, c) => sum + contactUnreadCount(c, readCursorsByPhone),
     0,
   );
   const aiLogEvents = thread.filter(
@@ -4165,6 +4175,7 @@ export default function WhatsAppInbox({
                     dir={t.dir}
                     scriptsByKey={scriptsByKey}
                     templatesByWaName={templatesByWaName}
+                    readCursorsByPhone={readCursorsByPhone}
                     onClick={openContact}
                     onProfileClick={openGuestContextDrawer}
                     onDismiss={dismissHumanRequest}
@@ -4185,6 +4196,7 @@ export default function WhatsAppInbox({
                 dir={t.dir}
                 scriptsByKey={scriptsByKey}
                 templatesByWaName={templatesByWaName}
+                readCursorsByPhone={readCursorsByPhone}
                 onClick={openContact}
                 onProfileClick={openGuestContextDrawer}
                 onDismiss={dismissHumanRequest}

@@ -86,16 +86,17 @@ export default function SuitesDashboard() {
     showToast(`📋 ${local} הועתק`);
   };
 
-  const sendRoomReady = async (phone, guestId) => {
+  const sendRoomReady = async (phone, guestId, roomId) => {
     if (!supabase) return;
     if (!ensureCanSend()) {
       showToast("❌ שליחה חסומה בשעות שקט — סמן את האישור למעלה");
       return;
     }
-    setSendingWa((prev) => new Set([...prev, phone]));
+    const waKey = `${phone}:${roomId || ""}`;
+    setSendingWa((prev) => new Set([...prev, waKey]));
     try {
       const { data, error } = await supabase.functions.invoke("whatsapp-send", {
-        body: { trigger: "room_ready", guestId },
+        body: { trigger: "room_ready", guestId, roomId: roomId || undefined },
       });
       if (error) throw new Error(error.message);
       if (!data?.ok) throw new Error(data?.error ?? "שגיאה לא ידועה");
@@ -108,17 +109,20 @@ export default function SuitesDashboard() {
       } else {
         showToast("✅ הודעת 'חדר מוכן' נשלחה");
       }
-      // Optimistically stamp the flag locally so the button flips to ✅ without a reload.
-      setGuestStatus((prev) => ({
-        ...prev,
-        [phone]: { ...prev[phone], msg_room_ready_sent: true },
-      }));
+      // Optimistically stamp per-room flag locally so the button flips to ✅ without reload.
+      setRooms((prev) =>
+        prev.map((row) =>
+          row.guest_phone === phone && (roomId ? (row.room_display || row.room_name) === roomId : true)
+            ? { ...row, room_ready_notified: true, msg_room_ready_sent: true }
+            : row,
+        ),
+      );
     } catch (e) {
       showToast(`❌ שליחה נכשלה: ${e.message}`);
     } finally {
       setSendingWa((prev) => {
         const n = new Set(prev);
-        n.delete(phone);
+        n.delete(waKey);
         return n;
       });
     }
@@ -343,14 +347,16 @@ export default function SuitesDashboard() {
                     {/* ── Room Ready dispatch button — Date guardrail (DNA §0.2 Disable Don't Hide) ── */}
                     {r.guest_phone && (() => {
                       const gs        = guestStatus[r.guest_phone];
+                      const roomLabel = r.room_display || r.room_name || "";
                       const isToday   = r.arrival_date === today;
                       const hasGuest  = !!gs?.id;
-                      const sent      = !!gs?.msg_room_ready_sent;
-                      const sending   = sendingWa.has(r.guest_phone);
+                      const sent      = !!(r.room_ready_notified || r.msg_room_ready_sent);
+                      const waKey     = `${r.guest_phone}:${roomLabel}`;
+                      const sending   = sendingWa.has(waKey);
                       const isDisabled = !isToday || !hasGuest || sent || sending || !canSend;
 
                       let tip = "";
-                      if (sent)          tip = "כבר נשלחה הודעת 'חדר מוכן' לאורח זה";
+                      if (sent)          tip = "כבר נשלחה הודעת 'חדר מוכן' לחדר זה";
                       else if (!canSend) tip = "שליחה חסומה בשעות שקט — סמן את האישור למעלה";
                       else if (!isToday) tip = `שליחה חסומה — הגעת האורח מתוכננת ל-${r.arrival_date || "תאריך לא ידוע"}`;
                       else if (!hasGuest) tip = "אורח לא נמצא בטבלת guests — לא ניתן לשלוח";
@@ -358,7 +364,7 @@ export default function SuitesDashboard() {
                       return (
                         <div style={{ marginTop: 9 }}>
                           <button
-                            onClick={() => !isDisabled && sendRoomReady(r.guest_phone, gs.id)}
+                            onClick={() => !isDisabled && sendRoomReady(r.guest_phone, gs.id, roomLabel)}
                             disabled={isDisabled}
                             title={tip}
                             style={{
