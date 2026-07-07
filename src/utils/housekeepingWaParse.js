@@ -7,6 +7,12 @@ const MAX_ROOM = 26;
 
 const FORWARDED_RE = /הועברה/i;
 
+// ✅ always takes priority over check-in phrasing in the same line: in practice
+// ✅ arrives first (room turned over), and "N צ'ק אין" is typed later, on its
+// own, once the guest actually walks in. Line has ✅ → ready only, never
+// check-in. Line has check-in phrasing with NO ✅ → check-in only.
+const HAS_CHECKMARK_RE = /✅/;
+
 const READY_EXCLUDE_LINE_RE =
   /ממתין|\bcheck\s*[- ]?\s*out\b|\bco\b|\bout\b|יצאו/i;
 
@@ -30,6 +36,8 @@ export function parseHousekeepingCheckInRoomNumbers(text) {
   for (const line of body.split(/\r?\n/)) {
     const t = line.trim();
     if (!t) continue;
+    // ✅ wins — a line with a checkmark is a ready signal, not a check-in one.
+    if (HAS_CHECKMARK_RE.test(t)) continue;
     const m = t.match(CHECKIN_LINE_RE);
     if (m) addRoom(rooms, m[1]);
   }
@@ -45,7 +53,8 @@ export function parseHousekeepingReadyRoomNumbers(text) {
   for (const line of body.split(/\r?\n/)) {
     const t = line.trim();
     if (!t || READY_EXCLUDE_LINE_RE.test(t)) continue;
-    if (CHECKIN_LINE_RE.test(t)) continue;
+    // Skip check-in-only lines — but ✅ always overrides check-in phrasing.
+    if (CHECKIN_LINE_RE.test(t) && !HAS_CHECKMARK_RE.test(t)) continue;
 
     let m = t.match(/^(?:room\s*)?(\d{1,2})\s*✅/i);
     if (m) {

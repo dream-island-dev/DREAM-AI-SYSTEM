@@ -1,12 +1,22 @@
 // Parse signals from the housekeeping WhatsApp group (צ'ק אין צ'ק אאוט).
 // Ready: N✅ / ready / מוכן → bell (ממתין לאישור).
 // Check-in: N צ'ק אין / check in → guests.checked_in + room תפוס.
+//
+// ✅ is the primary, authoritative signal that a room is clean/ready — it always
+// wins. A line that happens to mention "צ'ק אין" (check-in) alongside a ✅ is
+// still a READY signal, not a check-in one: in practice ✅ always arrives first
+// (room turned over), and staff only type "N צ'ק אין" later, in its own message
+// with no ✅, once the guest actually walks in. So: line has ✅ → ready only,
+// never check-in. Line has check-in phrasing with NO ✅ → check-in only.
 
 const MIN_ROOM = 1;
 const MAX_ROOM = 26;
 
 /** Whole-message skip (forwarded bubbles). */
 const FORWARDED_RE = /הועברה/i;
+
+/** ✅ always takes priority over check-in phrasing in the same line — see header note. */
+const HAS_CHECKMARK_RE = /✅/;
 
 /** Per-line exclusions for READY parser only (check-in has its own parser). */
 const READY_EXCLUDE_LINE_RE =
@@ -34,6 +44,8 @@ export function parseHousekeepingCheckInRoomNumbers(text: string): number[] {
   for (const line of body.split(/\r?\n/)) {
     const t = line.trim();
     if (!t) continue;
+    // ✅ wins — a line with a checkmark is a ready signal, not a check-in one.
+    if (HAS_CHECKMARK_RE.test(t)) continue;
     const m = t.match(CHECKIN_LINE_RE);
     if (m) addRoom(rooms, m[1]);
   }
@@ -49,8 +61,9 @@ export function parseHousekeepingReadyRoomNumbers(text: string): number[] {
   for (const line of body.split(/\r?\n/)) {
     const t = line.trim();
     if (!t || READY_EXCLUDE_LINE_RE.test(t)) continue;
-    // Skip lines that are check-in (handled separately)
-    if (CHECKIN_LINE_RE.test(t)) continue;
+    // Skip lines that are check-in-only (handled separately) — but ✅ always
+    // overrides check-in phrasing in the same line (see header note).
+    if (CHECKIN_LINE_RE.test(t) && !HAS_CHECKMARK_RE.test(t)) continue;
 
     // "14✅", "7 ✅", "Room 14 ✅"
     let m = t.match(/^(?:room\s*)?(\d{1,2})\s*✅/i);

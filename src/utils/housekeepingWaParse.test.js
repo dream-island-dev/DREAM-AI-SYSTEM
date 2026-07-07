@@ -27,6 +27,24 @@ describe("housekeepingWaParse", () => {
     expect(parseHousekeepingCheckInRoomNumbers("8 check out")).toEqual([]);
   });
 
+  test("✅ always wins over check-in phrasing in the same line (bell priority)", () => {
+    // ✅ right after the room number (the real-world order — ✅ arrives first)
+    // + check-in text tacked on → READY only, never check-in.
+    expect(parseHousekeepingReadyRoomNumbers("14 ✅ צ'ק אין")).toEqual([14]);
+    expect(parseHousekeepingCheckInRoomNumbers("14 ✅ צ'ק אין")).toEqual([]);
+
+    // ✅ anywhere in the line always blocks check-in detection, even if the
+    // ✅ isn't adjacent enough to the room number to register as ready itself
+    // (ambiguous message — safer to trigger neither action than to wrongly
+    // fire check-in on what was actually a ready/bell message).
+    expect(parseHousekeepingReadyRoomNumbers("14 צ'ק אין ✅")).toEqual([]);
+    expect(parseHousekeepingCheckInRoomNumbers("14 צ'ק אין ✅")).toEqual([]);
+
+    // No ✅, just check-in text → check-in only, never ready (unchanged behavior)
+    expect(parseHousekeepingReadyRoomNumbers("14 צ'ק אין")).toEqual([]);
+    expect(parseHousekeepingCheckInRoomNumbers("14 צ'ק אין")).toEqual([14]);
+  });
+
   test("ignores forwarded bubbles", () => {
     expect(parseHousekeepingReadyRoomNumbers("הועברה\n14✅")).toEqual([]);
   });
