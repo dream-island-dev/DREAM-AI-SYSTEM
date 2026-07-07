@@ -1297,7 +1297,7 @@ function Sidebar({ user, active, setActive, openOpsCount, onLogout, isAdmin, isS
     { id: "shifts",     icon: "🕐", label: "משמרות" },
     { id: "employees",  icon: "👥", label: "עובדים",                                 managerOnly: true },
     { id: "checklist",  icon: "✅", label: "צ'קליסטים",                              managerOnly: true },
-    { id: "requests_board", icon: "📋", label: "לוח בקשות",                            managerOnly: true },
+    { id: "requests_board", icon: "📋", label: "לוח בקשות", managerOnly: true, receptionistOk: true },
     { id: "ops_board",  icon: "🛠️", label: "תפעול ואחזקה", badge: openOpsCount,       managerOnly: false },
     { id: "vip_guests", icon: "🏨", label: "ניהול אורחים",                            managerOnly: true },
     { id: "broadcast",  icon: "📣", label: "שליחת הודעות",                           managerOnly: true },

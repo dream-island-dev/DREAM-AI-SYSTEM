@@ -294,8 +294,10 @@ const T = {
     aiLogHint: "פנימי — לא מוצג לאורח",
     quickBolt: "⚡",
     quickRepliesTitle: "תגובות מהירות",
-    routeTitle: "ניתוב משימה לתפעול",
+    routeTitle: "ניתוב בקשת אורח",
     routeMaint: "🔧 תחזוקה", routeHouse: "🛏️ משק בית",
+    routeRequests: "🛎️ ללוח בקשות",
+    routeRequestsToast: "✅ הבקשה נפתחה בלוח בקשות + נשלחה לקבוצת וואטסאפ",
     inputPh: "כתוב הודעה ידנית... (Enter לשליחה)",
     archive: "ארכיון", resolve: "טופל",
     identityDb: "תואם מהמערכת", identityWa: "פרופיל WhatsApp", identityPhone: "מספר בלבד",
@@ -320,6 +322,7 @@ const T = {
     routeSubtitle: "בחר/י קטגוריה ו/או תאר/י את הבקשה",
     routeNotePlaceholder: "פרטים נוספים (אופציונלי)...",
     routeDispatch: "🚀 שלח משימה",
+    routeDispatchRequests: "🚀 העבר ללוח בקשות",
     routeCancel: "ביטול",
     routeBack: "← חזרה",
     dismissAllAlerts: "ניקוי כל ההתראות",
@@ -376,8 +379,10 @@ const T = {
     aiLogHint: "Internal — never shown to the guest",
     quickBolt: "⚡",
     quickRepliesTitle: "Quick replies",
-    routeTitle: "Route task to operations",
+    routeTitle: "Route guest request",
     routeMaint: "🔧 Maintenance", routeHouse: "🛏️ Housekeeping",
+    routeRequests: "🛎️ Requests Board",
+    routeRequestsToast: "✅ Request opened on Requests Board + sent to WhatsApp group",
     inputPh: "Type a manual message... (Enter to send)",
     archive: "Archive", resolve: "Resolved",
     identityDb: "Matched in system", identityWa: "WhatsApp profile", identityPhone: "Phone only",
@@ -402,6 +407,7 @@ const T = {
     routeSubtitle: "Pick a category and/or describe the request",
     routeNotePlaceholder: "Additional details (optional)...",
     routeDispatch: "🚀 Dispatch task",
+    routeDispatchRequests: "🚀 Send to Requests Board",
     routeCancel: "Cancel",
     routeBack: "← Back",
     dismissAllAlerts: "Clear all alerts",
@@ -458,6 +464,12 @@ const TASK_SUBCATEGORIES = {
     { id: "towels",      label: "🧺 מגבות" },
     { id: "room_makeup", label: "🛏️ סידור חדר" },
     { id: "amenities",   label: "🧴 שירותי נוחות" },
+  ],
+  requests: [
+    { id: "manager",   label: "👔 מנהל" },
+    { id: "spa",       label: "💆 ספא" },
+    { id: "billing",   label: "💳 תשלום" },
+    { id: "general",   label: "📝 בקשה כללית" },
   ],
 };
 
@@ -3352,6 +3364,45 @@ export default function WhatsAppInbox({
     setTimeout(() => setRouteToast(null), 3500);
   }
 
+  // ── Route guest request → Requests Board + Whapi "בקשות אורחים" group ─────
+  async function routeRequestToBoard(contact, subCategoryLabel, note) {
+    if (!contact) return;
+    const lastInbound = [...contact.messages].reverse().find((m) => m.direction === "inbound");
+    const guestLabel = displayName(contact);
+    const definedText = [subCategoryLabel, note?.trim()].filter(Boolean).join(" — ");
+    const context = definedText || lastInbound?.message?.slice(0, 280) || "";
+    if (!context.trim()) {
+      setRouteToast("⚠️ בחר/י קטגוריה או הזן/י תיאור לפני ההעברה");
+      setTimeout(() => setRouteToast(null), 3500);
+      return;
+    }
+    try {
+      const { data, error: fnErr } = await supabase.functions.invoke("inbox-route-request", {
+        body: {
+          phone:               contact.phone,
+          guestId:             contact.guestId ?? null,
+          guestName:           guestLabel !== contact.phone ? guestLabel : null,
+          room:                contact.room ?? null,
+          subCategoryLabel:    subCategoryLabel ?? null,
+          note:                note?.trim() || null,
+          conversationId:      lastInbound?.id ?? null,
+          reporterProfileId:   user?.id ?? null,
+          rawGuestMessage:     lastInbound?.message ?? null,
+        },
+      });
+      if (fnErr || data?.ok === false) {
+        throw new Error(data?.error ?? fnErr?.message ?? "שגיאה בהעברת הבקשה");
+      }
+      const whapiNote = data?.notified ? "" : " (לוח בקשות עודכן — שיגור וואטסאפ נכשל)";
+      setRouteToast(t.routeRequestsToast + whapiNote);
+    } catch (e) {
+      setRouteToast("⚠️ שגיאה בהעברת בקשה: " + (e?.message ?? e));
+    }
+    setRouteDraft(null);
+    setQuickOpen(false);
+    setTimeout(() => setRouteToast(null), 4500);
+  }
+
   // ── On-demand AI reply suggestions (Sprint 1) ─────────────────────────────
   // Only ever called from the "✨ הצעות AI חכמות" button's onClick — never
   // automatically on chat selection (token-saving by design, per the brief).
@@ -4793,11 +4844,11 @@ export default function WhatsAppInbox({
                 <div style={{ fontSize: 11, fontWeight: 700, color: "#555", marginBottom: 6, textTransform: "uppercase" }}>
                   {t.routeTitle}
                 </div>
-                <div style={{ display: "flex", gap: 6 }}>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                   <button
                     onClick={() => setRouteDraft({ category: "maintenance", subCategory: null, note: "" })}
                     style={{
-                      flex: 1, padding: "8px 10px", borderRadius: 10, border: "1.5px solid #E0D5C5",
+                      flex: "1 1 30%", padding: "8px 10px", borderRadius: 10, border: "1.5px solid #E0D5C5",
                       background: "#FAFAFA", color: "#444", fontSize: 12, fontWeight: 700,
                       cursor: "pointer", minHeight: isMobile ? HIT_STAFF : "auto",
                     }}
@@ -4805,17 +4856,29 @@ export default function WhatsAppInbox({
                   <button
                     onClick={() => setRouteDraft({ category: "housekeeping", subCategory: null, note: "" })}
                     style={{
-                      flex: 1, padding: "8px 10px", borderRadius: 10, border: "1.5px solid #E0D5C5",
+                      flex: "1 1 30%", padding: "8px 10px", borderRadius: 10, border: "1.5px solid #E0D5C5",
                       background: "#FAFAFA", color: "#444", fontSize: 12, fontWeight: 700,
                       cursor: "pointer", minHeight: isMobile ? HIT_STAFF : "auto",
                     }}
                   >{t.routeHouse}</button>
+                  <button
+                    onClick={() => setRouteDraft({ category: "requests", subCategory: null, note: "" })}
+                    style={{
+                      flex: "1 1 30%", padding: "8px 10px", borderRadius: 10, border: "1.5px solid #D4C4F0",
+                      background: "#F8F5FF", color: "#5B21B6", fontSize: 12, fontWeight: 700,
+                      cursor: "pointer", minHeight: isMobile ? HIT_STAFF : "auto",
+                    }}
+                  >{t.routeRequests}</button>
                 </div>
               </>
             ) : (
               <div>
                 <div style={{ fontSize: 11, fontWeight: 700, color: "#555", marginBottom: 4, textTransform: "uppercase" }}>
-                  {routeDraft.category === "maintenance" ? t.routeMaint : t.routeHouse}
+                  {routeDraft.category === "maintenance"
+                    ? t.routeMaint
+                    : routeDraft.category === "housekeeping"
+                      ? t.routeHouse
+                      : t.routeRequests}
                 </div>
                 <div style={{ fontSize: 11, color: "#888", marginBottom: 8 }}>{t.routeSubtitle}</div>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
@@ -4859,11 +4922,16 @@ export default function WhatsAppInbox({
                     }}
                   >{t.routeCancel}</button>
                   <button
-                    onClick={() => routeTask(
-                      routeDraft.category, activeContact,
-                      routeDraft.subCategory ? TASK_SUBCATEGORIES[routeDraft.category].find((sc) => sc.id === routeDraft.subCategory)?.label : null,
-                      routeDraft.note
-                    )}
+                    onClick={() => {
+                      const subLabel = routeDraft.subCategory
+                        ? TASK_SUBCATEGORIES[routeDraft.category].find((sc) => sc.id === routeDraft.subCategory)?.label
+                        : null;
+                      if (routeDraft.category === "requests") {
+                        routeRequestToBoard(activeContact, subLabel, routeDraft.note);
+                      } else {
+                        routeTask(routeDraft.category, activeContact, subLabel, routeDraft.note);
+                      }
+                    }}
                     disabled={!routeDraft.subCategory && !routeDraft.note.trim()}
                     title={!routeDraft.subCategory && !routeDraft.note.trim() ? t.routeSubtitle : undefined}
                     style={{
@@ -4874,7 +4942,7 @@ export default function WhatsAppInbox({
                       cursor: (!routeDraft.subCategory && !routeDraft.note.trim()) ? "not-allowed" : "pointer",
                       minHeight: isMobile ? HIT_STAFF : "auto",
                     }}
-                  >{t.routeDispatch}</button>
+                  >{routeDraft.category === "requests" ? t.routeDispatchRequests : t.routeDispatch}</button>
                 </div>
               </div>
             )}
