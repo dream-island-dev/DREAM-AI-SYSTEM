@@ -1,6 +1,6 @@
 # XOS Agent Playbook — Smart Dev Environment
 > **Living document.** Mike + every Cursor agent reads this with `CLAUDE.md` and `docs/active_sprint.md`.
-> Last updated: 2026-06-30 (session 74 — playbook + UI upgrade strategy + token-efficient workflow).
+> Last updated: 2026-07-07 (session 130+ — playbook + UI upgrade strategy + token-efficient workflow + Advanced Prompt Engineering Rules).
 >
 > **When you learn something new that works** → add a bullet here + 1 line in `docs/changelog.md` + refresh `CLAUDE.md` §13 if architecture changed.
 
@@ -31,8 +31,8 @@ Mike is a learning developer. The agent is **Lead Architect + executor**.
 | Works on **desktop** for visual tasks | Uses `npm start` + DevTools mobile emulation |
 
 **Agent replies to Mike:** Hebrew, simple, max ~15 lines unless he asks for detail.
-
 **Agent writes code/docs/commits:** English.
+**Honesty Rule:** If context is lost, token limits are hit, or you simply don't know the answer, explicitly state "אני לא יודע" instead of hallucinating or guessing.
 
 ### 2.1 Mike Approval Loop (MANDATORY — how agent must behave)
 
@@ -40,13 +40,16 @@ Mike works on **desktop with `npm start` running**. He must **see** every change
 
 **Agent MUST follow this loop — never skip steps:**
 
-```
-1. DO    → one small visual change (one phase step or one file chunk)
-2. SAY   → Hebrew, short: what changed + exactly where to look in browser
-3. WAIT  → do NOT start next change until Mike replies
-4. BUILD → npm run build only before commit (not after every tiny edit)
-5. PUSH  → only after Mike says yes deploy / תעלה — NEVER push without approval
-```
+DO    → one small visual change (one phase step or one file chunk)
+
+SAY   → Hebrew, short: what changed + exactly where to look in browser
+
+WAIT  → do NOT start next change until Mike replies
+
+BUILD → npm run build only before commit (not after every tiny edit)
+
+PUSH  → only after Mike says yes deploy / תעלה — NEVER push without approval
+
 
 **After each code edit, agent tells Mike:**
 
@@ -90,11 +93,10 @@ Mike works on **desktop with `npm start` running**. He must **see** every change
 ### 3.2 Do not repeat what's in repo docs
 Use `@` references instead of re-explaining the project:
 
-```
 @CLAUDE.md @docs/active_sprint.md @docs/xos_agent_playbook.md
 Task: [one line]
 Constraints: visual only | no Hebrew label changes
-```
+
 
 ### 3.3 Approval vocabulary (saves tokens)
 
@@ -107,13 +109,12 @@ Constraints: visual only | no Hebrew label changes
 
 ### 3.4 Standard task envelope (copy-paste)
 
-```
 @CLAUDE.md @docs/xos_agent_playbook.md
 Scope: [file or phase]
 Goal: [one line]
 Constraints: [visual only | bugfix | no logic change]
 Deliver: small diff + deploy checklist + offer deploy
-```
+
 
 ---
 
@@ -210,7 +211,6 @@ Approved strategy (session 73–74). **Execute in order. Do not skip Phase 0.**
 
 ### 5.5 Mobile Checklist template (agent fills every phase)
 
-```
 Phase N — Mobile @ 390px / 768px
 [ ] No horizontal scroll on primary content
 [ ] Primary CTA ≥44px tap height
@@ -219,7 +219,7 @@ Phase N — Mobile @ 390px / 768px
 [ ] Hebrew badges readable, not clipped
 [ ] Disabled actions still visible (muted + title)
 [ ] npm run build clean
-```
+
 
 ### 5.6 Out of scope for staff UI pass
 - `GuestPortal.js`, `PhotoTour.js` — separate guest palette by design
@@ -231,7 +231,6 @@ See Mike's latest message or §11 — full handoff block maintained in playbook 
 
 ### 5.8 Phase kickoff prompt (short)
 
-```
 @CLAUDE.md @RESORT_UI_MANIFEST.md @docs/xos_agent_playbook.md
 @src/App.js
 
@@ -239,20 +238,22 @@ XOS staff UI — Phase 0 only: design tokens + utility classes in App.js.
 CSS vars only. No logic. No Hebrew label changes.
 Diagnostic summary of lines to touch BEFORE editing.
 Then atomic diff. npm run build. Deploy checklist. Offer deploy.
-```
+
 
 ---
 
 ## 6. Mandatory Agent Workflow (every code session)
 
 1. Read `CLAUDE.md` + `docs/active_sprint.md` + this file.
-2. Read target files before editing.
-3. Atomic diffs only.
-4. `npm run build` before commit when `src/` changed.
-5. End with **Deploy Checklist** (only layers touched).
-6. **Offer** autonomous deploy; run on `yes` / `כן` / `תעלה`.
-7. Update `docs/changelog.md` (1 line) + `CLAUDE.md` header if state changed.
-8. If process improved → update **this playbook** §9.
+2. **Plan & Chain of Thought:** For complex logic, split the task into 3 phases (Plan, Execute, Verify) and explain your reasoning step-by-step *before* writing code to avoid logic errors.
+3. Read target files before editing. Base code strictly on existing examples; do not reinvent the wheel.
+4. **Execute:** Atomic diffs only. Be mindful of context window limits — avoid massive single-shot refactors that cause context loss.
+5. **Self-Verify:** Before presenting to Mike, verify the code against constraints (assume another AI model will review your work).
+6. `npm run build` before commit when `src/` changed.
+7. End with **Deploy Checklist** (only layers touched).
+8. **Offer** autonomous deploy; run on `yes` / `כן` / `תעלה`.
+9. Update `docs/changelog.md` (1 line) + `CLAUDE.md` header if state changed.
+10. If process improved → update **this playbook** §9.
 
 ### Deploy checklist template
 
@@ -272,41 +273,38 @@ Then atomic diff. npm run build. Deploy checklist. Offer deploy.
 - Never touch `.env`.
 - Never modify Hebrew UI strings unless Mike explicitly asks.
 - `.maybeSingle()` not `.single()` on Supabase reads.
+- **Strict Code Constraints:** Do NOT add unrequested code comments. Do NOT rename existing functions unless explicitly instructed.
 
 ---
 
 ## 8. Prompt Templates (copy-paste for Mike)
 
 ### UI phase
-```
 @docs/xos_agent_playbook.md @src/App.js
 Phase [N]: [description]. Visual only. Summary first, then code.
-```
+
 
 ### Bug
-```
 @CLAUDE.md
 Bug: [what] on [screen/route]
 Expected: [one line]
-Minimal fix. Deploy checklist.
-```
+Minimal fix. Explain your reasoning step-by-step (Chain of Thought), verify constraints, then provide code.
+Deploy checklist.
+
 
 ### New feature
-```
 @CLAUDE.md @docs/active_sprint.md
 Feature: [one line]
-Check DNA principles §0. Fail visible. Offer phased plan before big code.
-```
+Check DNA principles §0. Fail visible. Offer phased plan (Plan, Execute, Verify) before big code.
+
 
 ### Deploy only
-```
 yes deploy
-```
+
 
 ### Short reply mode
-```
 Reply: Hebrew, max 15 lines.
-```
+
 
 ---
 
@@ -402,7 +400,6 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 12. Mike Quick Card (print this — 4 commands only)
 
-```
 ┌─────────────────────────────────────────────────────────┐
 │  npm start רץ → פתח localhost:3000                      │
 │                                                         │
@@ -415,88 +412,51 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 │                                                         │
 │  אחרי תעלה → בדוק בטלפון → כן / תקן: …                  │
 └─────────────────────────────────────────────────────────┘
-```
+
 
 First message to agent (once per session):
-```
 @docs/xos_agent_playbook.md
 npm start running. show me each change in browser before next step.
 start phase 0
-```
+
 
 ---
 
-```
-@CLAUDE.md @docs/active_sprint.md @docs/xos_agent_playbook.md @RESORT_UI_MANIFEST.md
-@src/App.js @.cursorrules
-
-# XOS Co-Pilot — Desktop session (dual-surface UI)
-
-Same agent as cloud. Read files above first.
-
-## Goal
-- **Desktop:** premium staff UI ("Wow") — clean, gold/ivory, scannable
-- **Mobile:** maximum comfort — fat taps, no overlap, RTL safe, keyboard OK
-- **Method:** build on desktop (`npm start`); verify 390px + 768px + 1280px every phase
-
-## Already on main (do not redo)
-- docs/xos_agent_playbook.md (dual-surface phases 0–5)
-- .cursorrules requires playbook read
-- Mike approves deploy: yes / כן / תעלה / yes deploy
-
-## Phase order (visual only — no logic, no Hebrew label changes)
-0 App.js tokens + mobile touch vars
-1 WhatsAppInbox (+ mobile: swipe, reply bar, badges)
-2a Dashboard KPI | 2b OperationsBoard
-3 HousekeepingTablet + AICopilot verify
-4 App.js mobile-bar/hamburger + GuestsPage
-5 Real phone QA on Vercel
-
-## First actions
-1. git pull
-2. npm start → localhost:3000
-3. Reply Hebrew ≤15 lines: confirm commit hash + npm running
-4. Post Phase 0 diagnostic (App.js lines only) — NO code yet
-5. Wait for: start phase 0
-
-## Per-phase deliverable
-- Atomic diff
-- Mobile Checklist (playbook §5.5) filled for that phase
-- npm run build clean
-- Deploy checklist + offer deploy
-
-Constraints: CSS vars, Disable-Don't-Hide, FAIL VISIBLE, no .env
-```
-
 ## 11. Desktop Session Kickoff — ONE MESSAGE (Mike copy-paste this entire block)
 
-```
 @CLAUDE.md @docs/active_sprint.md @docs/xos_agent_playbook.md @RESORT_UI_MANIFEST.md
 @src/App.js @.cursorrules
 
-# XOS Co-Pilot — EXECUTE UI upgrade (Mike approval workflow)
-
+XOS Co-Pilot — EXECUTE UI upgrade (Mike approval workflow)
 You are the same architect as cloud sessions. Read all @ files first.
 
-## Mike's workflow (NON-NEGOTIABLE — this is how we worked before and Mike loved it)
+Mike's workflow (NON-NEGOTIABLE — this is how we worked before and Mike loved it)
+Make ONE small visual change (or complete one clear step).
 
-1. Make ONE small visual change (or complete one clear step).
-2. Tell Mike in Hebrew (short):
-   - Open http://localhost:3000
-   - Which screen/tab to click (Hebrew nav name)
-   - Exactly what should look different
-   - Mobile: F12 → 390px if relevant
-3. STOP and WAIT. Do NOT make the next change until Mike replies.
-4. Mike approves with: כן / yes / המשך
-5. Only when a phase batch is done AND Mike is happy → ask:
-   "לבצע commit + push לפרודקשן?"
-6. Push ONLY when Mike says: כן / yes / תעלה / yes deploy
-7. Never push silently. Never skip the "where to look" step.
+Tell Mike in Hebrew (short):
+
+Open http://localhost:3000
+
+Which screen/tab to click (Hebrew nav name)
+
+Exactly what should look different
+
+Mobile: F12 → 390px if relevant
+
+STOP and WAIT. Do NOT make the next change until Mike replies.
+
+Mike approves with: כן / yes / המשך
+
+Only when a phase batch is done AND Mike is happy → ask:
+"לבצע commit + push לפרודקשן?"
+
+Push ONLY when Mike says: כן / yes / תעלה / yes deploy
+
+Never push silently. Never skip the "where to look" step.
 
 Mike does NOT read code. Mike looks at the browser (npm start is running).
 
-## What we planned (execute in order)
-
+What we planned (execute in order)
 GOAL: Staff UI — desktop "Wow" + mobile comfort. Visual only.
 
 Phase 0: App.js — design tokens + utility classes + mobile hit-target vars
@@ -510,20 +470,16 @@ Phase 5: Mike tests on phone at dream-ai-system.vercel.app after deploy
 Rules: CSS variables only, Disable-Don't-Hide, no Hebrew label changes, no logic, no .env
 After each phase: Mobile Checklist (playbook §5.5) + npm run build before commit
 
-## Your FIRST reply (Hebrew, max 12 lines)
+Your FIRST reply (Hebrew, max 12 lines)
+Confirm git commit hash after pull
 
-1. Confirm git commit hash after pull
-2. Confirm npm start assumption
-3. Phase 0 diagnostic — list App.js lines you will touch
-4. Ask: "להתחיל שינוי ראשון?" — wait for כן
+Confirm npm start assumption
+
+Phase 0 diagnostic — list App.js lines you will touch
+
+Ask: "להתחיל שינוי ראשון?" — wait for כן
 
 Do NOT write code in the first reply unless Mike already said כן below.
 
-## Mike says now:
-
+Mike says now:
 כן — התחל Phase 0. אחרי כל שינוי תראה לי בדפדפן ותחכה לאישור לפני commit/push.
-```
-
----
-
-## 11b. Legacy full prompt (reference)
