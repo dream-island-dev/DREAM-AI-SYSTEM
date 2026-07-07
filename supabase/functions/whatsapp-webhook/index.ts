@@ -78,6 +78,7 @@ import {
   guessGuestOpsSlaCategory,
   buildGuestOpsSlaDeadline,
   resolveGuestOpsDepartment,
+  extractAllowlistedRequestLines,
 } from "../_shared/automationSchedule.ts";
 import { translateTextForFieldOps } from "../_shared/fieldOpsTranslation.ts";
 import { resolveGuestRoomLabel } from "../_shared/guestRoomResolve.ts";
@@ -1647,6 +1648,13 @@ async function routeGuestRequestToOpsGroup(
     room: string | null;
     summary: string;
     rawText: string;
+    // Isolated/relevant text (see extractAllowlistedRequestLines) driving
+    // department/SLA/translation — omit only if isolation isn't cheap to
+    // compute at the call site; falls back to rawText, same as pre-fix
+    // behavior. rawText itself is unchanged and always stored in full below
+    // (Zero Data Loss, CLAUDE.md §0.1) — this param only narrows what's
+    // classified/translated for the ops-group card, not what's audited.
+    dispatchText?: string;
   },
 ): Promise<void> {
   const routing = await resolveRouting(supabase, taskIntentType("guest_request"), {
@@ -1669,12 +1677,19 @@ async function routeGuestRequestToOpsGroup(
   const roomForDb = resolvedRoom.startsWith("TBD") ? null : resolvedRoom;
   const roomLabel = resolvedRoom;
 
-  const department = resolveGuestOpsDepartment(args.rawText);
-  const slaCategory = guessGuestOpsSlaCategory(args.rawText);
+  const dispatchSrc = (args.dispatchText ?? args.rawText).trim();
+  if (args.dispatchText && args.dispatchText !== args.rawText) {
+    console.info(
+      `[webhook] 🛋️ guest_request dispatch text narrowed — full:"${args.rawText.slice(0, 120)}" → dispatch:"${dispatchSrc.slice(0, 120)}"`,
+    );
+  }
+
+  const department = resolveGuestOpsDepartment(dispatchSrc);
+  const slaCategory = guessGuestOpsSlaCategory(dispatchSrc);
   const slaDeadline = buildGuestOpsSlaDeadline(slaCategory);
   const priority = slaCategory === "pest_control" ? "urgent" : "normal";
 
-  const englishLine = await translateGuestRequestForFieldOps(roomLabel, args.rawText, args.summary);
+  const englishLine = await translateGuestRequestForFieldOps(roomLabel, dispatchSrc, args.summary);
   const card = `🔧 ${englishLine}\n👉 Please react with 👍🏼 to complete this task.`;
 
   const { data: task, error: insertErr } = await supabase
@@ -1693,7 +1708,7 @@ async function routeGuestRequestToOpsGroup(
       sla_deadline:        slaDeadline,
     }])
     .select("id")
-    .single();
+    .maybeSingle();
   if (insertErr || !task) {
     console.error("[webhook] 🛋️ guest_request task insert error:", insertErr?.message);
     return;
@@ -1815,7 +1830,15 @@ async function handleOperationalInHouseIntercept(
   },
 ): Promise<void> {
   const { phone, guestId, guest, text, msgId, claimedConversationId, sim } = opts;
+  // text can be burst-coalesced (multiple guest messages within a 5s window,
+  // see coalesceBurstIfLeader) — buildOperationalRequestSummary intentionally
+  // still scores the full blob (drives the guest-facing reply + internal
+  // attention_reason, a separate concern from the ops-group card). dispatchText
+  // isolates just the line(s) that independently pass the allowlist, so an
+  // unrelated adjacent message never dominates/confuses the translated Whapi
+  // card (root cause of the "אמרו לנו שאפשר ב-11" false-positive incident).
   const summary = buildOperationalRequestSummary(text);
+  const dispatchText = extractAllowlistedRequestLines(text);
   const guestName = (guest.name as string | null) ?? null;
   const guestRoom = (guest.room as string | null) ?? null;
   const reply = buildOperationalDispatchReply(summary, guestName);
@@ -1842,6 +1865,7 @@ async function handleOperationalInHouseIntercept(
     room: guestRoom,
     summary,
     rawText: text,
+    dispatchText,
   }).catch((e: Error) =>
     console.error("[webhook] 🛎️ operational intercept routeGuestRequestToOpsGroup error:", e.message)
   );
@@ -4601,6 +4625,10 @@ Deno.serve(async (req: Request) => {
 
         if (toolLoggedRequest && guestId && dispatchRoute === "operational_field_ops") {
           const guestRoom = (guest as Record<string, unknown> | null)?.room as string | null ?? null;
+          // effectiveText may be burst-coalesced — narrow to the allowlisted
+          // line(s) before translation/dispatch, same as the Tier-0 path in
+          // handleOperationalInHouseIntercept (see extractAllowlistedRequestLines).
+          const dispatchText = extractAllowlistedRequestLines(effectiveText);
           routeGuestRequestToOpsGroup(supabase, {
             guestId,
             phone,
@@ -4608,6 +4636,7 @@ Deno.serve(async (req: Request) => {
             room: guestRoom,
             summary: toolLoggedRequest.summary,
             rawText: effectiveText,
+            dispatchText,
           }).catch((e: Error) => console.error("[webhook] 🛋️ routeGuestRequestToOpsGroup error:", e.message));
           console.info(
             `[webhook] dispatch=operational_field_ops (LLM path) phone:${phone} guest:${guestId} room:${guestRoom ?? "—"}`,

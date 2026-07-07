@@ -496,12 +496,40 @@ export const PHYSICAL_REQUEST_INTENT_PATTERN =
 const ALLOWLIST_AMENITY_PATTERN =
   /(?:חלב|קפה|מגבות|שמפו|סבון|נייר(?:\s*טואלט)?|חלוק(?:ים)?|כרית(?:ות)?|שמיכ(?:ה|ות)?|קפסולות)/u;
 
+// ★ session 2026-07-07 fix: JS/Deno regex `\b` is defined over ASCII `\w`
+// and never matches Hebrew letters, so a bare "מים" had zero word-boundary
+// protection — it silently matched as a substring of unrelated Hebrew words
+// ending the same way, e.g. "בפעמים" (times/occasions). This is the exact,
+// confirmed root cause of the "אמרו לנו שאפשר ב-11 כמו שהיה בפעמים
+// הקודמות" false-positive incident: "מים" inside "בפעמים" + "אפשר" inside
+// "שאפשר" (PHYSICAL_REQUEST_INTENT_PATTERN) together satisfied this whole
+// branch on a single, non-burst message — no burst-coalescing needed at all.
+// The lookaround below simulates a real Hebrew word boundary: the character
+// immediately before "מים" must be either non-Hebrew (start/whitespace/
+// punctuation) OR exactly one of the standard single-letter prefix
+// particles (ה/ו/ש/ב/כ/ל/מ — "the/and/that/in/like/to/from", always glued
+// directly onto the following word with no space, e.g. "המים"/"ומים"/
+// "למים") — and that prefix letter must itself start a word, not be part of
+// a longer unrelated word. A bare non-Hebrew-letter check alone (without
+// the prefix allowance) would incorrectly reject legitimate glued forms
+// like "המים קרים" ("the water is cold").
 const ALLOWLIST_BOTTLED_WATER_PATTERN =
-  /(?:בבקשה\s+)?(?:עוד\s+)?מים(?:\s+(?:לחדר|בחדר|לסוויטה|בסוויטה|קר(?:ים|ות)|מינר(?:ל|al)))?/u;
+  /(?:בבקשה\s+)?(?:עוד\s+)?(?:(?<![א-ת])|(?<=(?<![א-ת])[הושבכלמ]))מים(?![א-ת])(?:\s+(?:לחדר|בחדר|לסוויטה|בסוויטה|קר(?:ים|ות)|מינר(?:ל|al)))?/u;
 
 /** Allowlist cat. 2 — maintenance / broken infrastructure. */
+// ★ session 2026-07-07 fix: the trailing bare alternative used to match
+// "לא עובד"/"תקלה"/"תקוע"/"שבור" ANYWHERE with zero required room/device
+// context (unlike the מזגן/טלוויזיה groups above, which correctly require
+// the device word) — false-positive risk on unrelated topics ("הקישור
+// לתשלום לא עובד"). Now requires a nearby device/room noun within a
+// gap-tolerant window, same [\s\S]{0,25} technique as
+// SENSITIVE_STAY_CHANGE_PATTERN below (session 96 precedent). Also: bare
+// "שלט" had the same unbounded-substring risk as "מים" above (it matches
+// inside unrelated words like "שלטון"/government) — same Hebrew-aware
+// word-boundary lookaround applied, preserving legitimate prefixed forms
+// ("השלט לא עובד"/"אין לי שלט").
 const ALLOWLIST_MAINTENANCE_PATTERN =
-  /מזגן(?:\s*(?:לא\s+עובד|לא\s+מקרר|תקול|מקולקל))?|(?:טלו(?:ו)?יז(?:יה|יון)|שלט(?:\s*ט(?:לו(?:ו)?יז)?)?)(?:\s*(?:לא\s+עובד|תקוע|שבור))?|סתימה|(?:אין|לא\s+)מים\s+חמים|זרם\s+חלש|אור\s*שבור|כספת\s*נעולה|דלת\s*לא\s*נפתח(?:ת)?|(?:לא\s+עובד(?:ת)?|תקלה|תקוע(?:ה)?|שבור(?:ה)?)/u;
+  /מזגן(?:\s*(?:לא\s+עובד|לא\s+מקרר|תקול|מקולקל))?|(?:טלו(?:ו)?יז(?:יה|יון)|(?:(?<![א-ת])|(?<=(?<![א-ת])[הושבכלמ]))שלט(?![א-ת])(?:\s*ט(?:לו(?:ו)?יז)?)?)(?:\s*(?:לא\s+עובד|תקוע|שבור))?|סתימה|(?:אין|לא\s+)מים\s+חמים|זרם\s+חלש|אור\s*שבור|כספת\s*נעולה|דלת\s*לא\s*נפתח(?:ת)?|(?:לא\s+עובד(?:ת)?|תקלה|תקוע(?:ה)?|שבור(?:ה)?)[\s\S]{0,25}(?:מזגן|טלו(?:ו)?יז(?:יה|יון)|שלט|דלת|כספת|מים|אור|חדר|סוויטה|מקרר|מקלחת|ברז|חלון|תריס)|(?:מזגן|טלו(?:ו)?יז(?:יה|יון)|שלט|דלת|כספת|מים|אור|חדר|סוויטה|מקרר|מקלחת|ברז|חלון|תריס)[\s\S]{0,25}(?:לא\s+עובד(?:ת)?|תקלה|תקוע(?:ה)?|שבור(?:ה)?)/u;
 
 /** Allowlist cat. 3 — cleaning / physical labor. */
 const ALLOWLIST_CLEANING_PATTERN =
@@ -576,6 +604,31 @@ export function isAllowlistedPhysicalTaskRequest(text: string): boolean {
   }
 
   return false;
+}
+
+/**
+ * Burst-coalesced guest text can be several distinct messages joined by "\n"
+ * (whatsapp-webhook's coalesceBurstIfLeader — same-phone inbound messages
+ * within a 5s wall-clock window, zero topic grouping). Dispatching the
+ * *whole* blob to the ops-group translator lets an unrelated line dominate/
+ * confuse the English card even when only ONE line actually triggered the
+ * allowlist gate (root cause of the "אמרו לנו שאפשר ב-11" false-positive
+ * incident). Isolates just the line(s) that independently match the
+ * allowlist; falls back to the full text if isolation finds nothing
+ * (defensive — never silently drops a legitimate request, CLAUDE.md §0.1
+ * Zero Data Loss).
+ */
+export function extractAllowlistedRequestLines(text: string): string {
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  if (lines.length <= 1) return text.trim();
+  const relevant = lines.filter((line) => isAllowlistedPhysicalTaskRequest(line));
+  if (relevant.length === 0) {
+    console.warn(
+      `[automationSchedule] extractAllowlistedRequestLines — no single line isolated from a ${lines.length}-line burst, falling back to full text`,
+    );
+    return text.trim();
+  }
+  return relevant.join("\n");
 }
 
 /** @deprecated use isAllowlistedPhysicalTaskRequest */
