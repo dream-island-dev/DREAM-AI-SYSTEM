@@ -4826,4 +4826,22 @@ Deno.serve(async (req: Request) => {
   // freeze/terminate the isolate before an un-awaited async task finishes.
   // processAsync() routinely takes 2-5s+ (BURST_COALESCE_MS=1800 alone, plus
   // the Gemini/Claude round-trip) — comfortably longer than the best-effort
-  // grace period, so replies were being silent
+  // grace period, so replies were being silently cut off after the inbound
+  // insert (which resolves fast) but before sendReply() ran. EdgeRuntime.
+  // waitUntil() is the documented Supabase mechanism to keep the isolate
+  // alive until the given promise settles, without delaying the response
+  // Meta receives. Falls back to the old un-awaited call if the runtime
+  // (e.g. local `supabase functions serve`) doesn't expose it.
+  const backgroundTask = processAsync().catch((e) =>
+    console.error("[webhook] processAsync error:", e)
+  );
+  const edgeRuntime = (globalThis as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } }).EdgeRuntime;
+  if (typeof edgeRuntime?.waitUntil === "function") {
+    edgeRuntime.waitUntil(backgroundTask);
+  }
+
+  // Respond to Meta within 20 s window
+  return new Response(JSON.stringify({ ok: true }), {
+    headers: { ...CORS, "Content-Type": "application/json" },
+  });
+});
