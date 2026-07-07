@@ -35,8 +35,10 @@
 //
 // Required secrets: WHAPI_TOKEN, ANTHROPIC_API_KEY, GEMINI_API_KEY (voice
 //   transcription only), SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY. Optional:
-//   WHAPI_GROUP_ID (lock to one group; also used by task-action as the
-//   confirmation target), WHAPI_API_URL.
+//   WHAPI_GROUP_ID (ops «קריאות» group — tasks + 👍 reactions),
+//   WHAPI_HOUSEKEEPING_GROUP_ID (צ'ק אין צ'ק אאוט — ready observer →
+//   room_status ממתין לאישור → AICopilot 🔔; short Hebrew ack in-group on success),
+//   WHAPI_API_URL.
 // ══════════════════════════════════════════════════════════════════════════════
 
 import { serve }         from "https://deno.land/std@0.168.0/http/server.ts";
@@ -45,6 +47,16 @@ import Anthropic         from "https://esm.sh/@anthropic-ai/sdk@0.20.0";
 import { sendWhapiText, cleanPhoneForMention } from "../_shared/whapiSend.ts";
 import { fetchWhapiMedia } from "../_shared/whapiMedia.ts";
 import { containsHebrew, translateTextForFieldOps } from "../_shared/fieldOpsTranslation.ts";
+import { parseHousekeepingReadyRoomNumbers } from "../_shared/housekeepingWaParse.ts";
+import { parseHousekeepingCheckInRoomNumbers } from "../_shared/housekeepingWaParse.ts";
+import {
+  applyHousekeepingReadySignal,
+  buildHousekeepingGroupAckMessage,
+} from "../_shared/housekeepingReadySignal.ts";
+import {
+  applyHousekeepingCheckInSignal,
+  buildHousekeepingCheckInAckLine,
+} from "../_shared/housekeepingCheckInSignal.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -395,6 +407,7 @@ serve(async (req: Request) => {
 
     const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
     const lockGroup = Deno.env.get("WHAPI_GROUP_ID")?.trim() || null;
+    const hkGroup   = Deno.env.get("WHAPI_HOUSEKEEPING_GROUP_ID")?.trim() || null;
     const results: Array<Record<string, unknown>> = [];
 
     // ── Reaction sweep (Sprint 2, Session 26) — 👍🏼 on a task card = done.
@@ -435,10 +448,87 @@ serve(async (req: Request) => {
       });
     }
 
+    // ── Housekeeping group (Phase 1) — parse ready signals, write room_status →
+    // ממתין לאישור, optional Hebrew ack in-group when a new bell fires. Parallel
+    // to the ops group; no tasks / no LLM.
+    if (hkGroup) {
+      for (const msg of messages) {
+        if (msg.fromMe) continue;
+        if (!msg.chatId.endsWith("@g.us") || msg.chatId !== hkGroup) continue;
+
+        if (!msg.text) {
+          results.push({ id: msg.id, channel: "housekeeping", ignored: "no_text" });
+          continue;
+        }
+
+        const readyRooms = parseHousekeepingReadyRoomNumbers(msg.text);
+        const checkInRooms = parseHousekeepingCheckInRoomNumbers(msg.text);
+        if (readyRooms.length === 0 && checkInRooms.length === 0) {
+          results.push({
+            id: msg.id,
+            channel: "housekeeping",
+            ignored: "no_housekeeping_pattern",
+            chat_id: msg.chatId,
+          });
+          continue;
+        }
+
+        const readySignals = [];
+        for (const roomNumber of readyRooms) {
+          readySignals.push(await applyHousekeepingReadySignal(supabase, {
+            roomNumber,
+            waMessageId: msg.id,
+            sourceLine: msg.text,
+          }));
+        }
+
+        const checkInSignals = [];
+        for (const roomNumber of checkInRooms) {
+          checkInSignals.push(await applyHousekeepingCheckInSignal(supabase, {
+            roomNumber,
+            waMessageId: msg.id,
+            sourceLine: msg.text,
+          }));
+        }
+
+        const ackLines = [
+          ...buildHousekeepingGroupAckMessage(
+            readySignals.filter((s) => s.action === "updated" && s.roomId).map((s) => s.roomId as string),
+          ).split("\n").filter(Boolean),
+          ...checkInSignals.map(buildHousekeepingCheckInAckLine).filter((l): l is string => !!l),
+        ];
+        const ackText = ackLines.join("\n");
+        let ackSent = false;
+        if (ackText) {
+          try {
+            await sendWhapiText(msg.chatId, ackText, { noLinkPreview: true });
+            ackSent = true;
+          } catch (e) {
+            console.warn(`[whapi-webhook] housekeeping ack failed for ${msg.id}:`, (e as Error).message);
+          }
+        }
+
+        console.log(
+          `[whapi-webhook] housekeeping ${msg.id} chat=${msg.chatId} ready=${readyRooms.join(",")} checkin=${checkInRooms.join(",")} ack=${ackSent}`,
+        );
+        results.push({
+          id: msg.id,
+          channel: "housekeeping",
+          chat_id: msg.chatId,
+          readyRooms,
+          checkInRooms,
+          readySignals,
+          checkInSignals,
+          ackSent,
+        });
+      }
+    }
+
     for (const msg of messages) {
       // ── Guards ────────────────────────────────────────────────────────────
       if (msg.fromMe)                  { results.push({ id: msg.id, ignored: "from_me" });     continue; } // never react to our own sends → no loops
       if (!msg.chatId.endsWith("@g.us")) { results.push({ id: msg.id, ignored: "not_a_group" }); continue; }
+      if (hkGroup && msg.chatId === hkGroup) continue; // handled by housekeeping sweep — never ops-classify
       if (lockGroup && msg.chatId !== lockGroup) { results.push({ id: msg.id, ignored: "other_group" }); continue; }
 
       // ── Voice note → transcribe, then rejoin the SAME pipeline a typed
