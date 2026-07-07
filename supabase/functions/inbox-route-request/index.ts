@@ -8,29 +8,12 @@
 
 import { serve }         from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient }  from "https://esm.sh/@supabase/supabase-js@2";
-import { sendWhapiText } from "../_shared/whapiSend.ts";
-import { triggerInboxRedAlert } from "../_shared/inboxRedAlert.ts";
-import { resolveRequestsWhapiGroupId } from "../_shared/routingConfig.ts";
-import { containsHebrew, translateTextForFieldOps } from "../_shared/fieldOpsTranslation.ts";
+import { onGuestAlertInserted } from "../_shared/guestAlertWhapiNotify.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
-
-function buildRequestCard(
-  room: string | null,
-  guestName: string | null,
-  message: string,
-  reporterName: string | null,
-): string {
-  return [
-    `🛎️ [GUEST REQUEST — Inbox] Suite ${room ?? "—"} (${guestName ?? "Guest"})`,
-    message,
-    ...(reporterName ? [`Routed by: ${reporterName}`] : []),
-    `Please check the Requests Board.`,
-  ].join("\n");
-}
 
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
@@ -99,13 +82,6 @@ serve(async (req: Request) => {
       if (guestErr) console.warn("[inbox-route-request] guest flag update failed:", guestErr.message);
     }
 
-    await triggerInboxRedAlert(supabase, {
-      guestId:        body.guestId ?? null,
-      phone,
-      conversationId: body.conversationId ?? null,
-      summary:        context,
-    }).catch((e: Error) => console.warn("[inbox-route-request] red-alert failed:", e.message));
-
     let reporterName: string | null = null;
     const reporterId = body.reporterProfileId ?? authData.user.id;
     if (reporterId) {
@@ -117,39 +93,24 @@ serve(async (req: Request) => {
       reporterName = (profile?.name as string | undefined) ?? null;
     }
 
-    const groupId = (await resolveRequestsWhapiGroupId(supabase, "alert_inbox_routed")) ?? "";
+    const notifyMessage = reporterName
+      ? `${alertMessage}\nRouted by: ${reporterName}`
+      : alertMessage;
 
-    let whapiMessage = alertMessage;
-    if (containsHebrew(whapiMessage)) {
-      whapiMessage = await translateTextForFieldOps(whapiMessage, {
-        room: body.room ?? null,
-        style: "description_only",
-      });
-    }
-    const card = buildRequestCard(body.room ?? null, body.guestName ?? null, whapiMessage, reporterName);
-
-    let groupNotified = false;
-    if (groupId) {
-      try {
-        await sendWhapiText(groupId, card, { noLinkPreview: true });
-        groupNotified = true;
-      } catch (e) {
-        console.error("[inbox-route-request] Whapi group send failed:", (e as Error).message);
-      }
-    } else {
-      console.warn("[inbox-route-request] no requests Whapi group configured — card not sent.");
-    }
-
-    const personalPhone = (Deno.env.get("SLA_GUEST_ALERT_PHONE") ?? "").trim();
-    let personalNotified = false;
-    if (personalPhone) {
-      try {
-        await sendWhapiText(personalPhone, card, { noLinkPreview: true });
-        personalNotified = true;
-      } catch (e) {
-        console.warn("[inbox-route-request] personal DM failed:", (e as Error).message);
-      }
-    }
+    const { groupNotified, personalNotified } = await onGuestAlertInserted(supabase, {
+      phone,
+      guestId:        body.guestId ?? null,
+      conversationId: body.conversationId ?? null,
+      message:        notifyMessage,
+      alertType:      "request",
+      guestName:      body.guestName ?? null,
+      room:           body.room ?? null,
+      sourceLabel:    "Inbox",
+      alsoPersonalDm: true,
+    }).catch((e: Error) => {
+      console.warn("[inbox-route-request] staff notify failed:", e.message);
+      return { groupNotified: false, personalNotified: false };
+    });
 
     return new Response(JSON.stringify({
       ok: true,

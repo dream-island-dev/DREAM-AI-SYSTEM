@@ -87,7 +87,7 @@ import {
   resolveAutomationScope,
 } from "../_shared/automationSchedule.ts";
 import { resolveGuestRoomLabel } from "../_shared/guestRoomResolve.ts";
-import { triggerInboxRedAlert } from "../_shared/inboxRedAlert.ts";
+import { onGuestAlertInserted } from "../_shared/guestAlertWhapiNotify.ts";
 import {
   buildOptionalSpaText,
   buildSpaLine,
@@ -1566,6 +1566,7 @@ async function flagGuestAlert(
   });
   if (insertErr) {
     console.error("[webhook] guest_alerts insert error:", insertErr.message);
+    return;
   }
 
   // b) If guest is registered → flip requires_attention flag for dashboard badge
@@ -1582,11 +1583,16 @@ async function flagGuestAlert(
     }
   }
 
-  // c) Global Red Alert (guest_alerts → Inbox) — every request that lands on
-  // the Requests Board also flags red in DREAM BOT Inbox, not just complaints
-  // routed here through the same call. Best-effort, mirrors (b) above.
-  triggerInboxRedAlert(supabase, { guestId, phone, conversationId }).catch((e: Error) =>
-    console.warn("[webhook] flagGuestAlert red-alert flag failed:", e.message)
+  // c) Global Red Alert + Whapi requests group — every Requests Board row.
+  onGuestAlertInserted(supabase, {
+    phone,
+    guestId,
+    conversationId,
+    message: originalMessage,
+    alertType: "complaint",
+    sourceLabel: "WhatsApp Bot",
+  }).catch((e: Error) =>
+    console.warn("[webhook] flagGuestAlert staff notify failed:", e.message),
   );
 
   console.info(
@@ -1891,11 +1897,19 @@ async function handleBalloonRoomRequestIntercept(
   });
   if (alertErr) {
     console.error("[webhook] 🎈 balloon guest_alerts insert FAILED:", alertErr.message);
+    return;
   }
 
-  triggerInboxRedAlert(supabase, { guestId, phone, conversationId: claimedConversationId }).catch(
-    (e: Error) => console.warn("[webhook] 🎈 balloon red-alert flag failed:", e.message),
-  );
+  onGuestAlertInserted(supabase, {
+    guestId,
+    phone,
+    conversationId: claimedConversationId,
+    message: `🎈 בקשת בלונים לחדר${guestRoom ? ` (${guestRoom})` : ""}: ${text}`,
+    alertType: "request",
+    guestName,
+    room: guestRoom,
+    sourceLabel: "WhatsApp Bot",
+  }).catch((e: Error) => console.warn("[webhook] 🎈 balloon staff notify failed:", e.message));
 
   if (BALLOON_VENDOR_PHONE) {
     sendWhapiText(
@@ -2047,11 +2061,18 @@ async function handleSevereComplaintKillSwitch(
   });
   if (alertErr) {
     console.error("[webhook] 🚨 severe_complaint guest_alerts insert FAILED:", alertErr.message);
+    return;
   }
 
-  triggerInboxRedAlert(supabase, { guestId, phone, conversationId: claimedConversationId }).catch(
-    (e: Error) => console.warn("[webhook] 🚨 severe_complaint red-alert flag failed:", e.message),
-  );
+  onGuestAlertInserted(supabase, {
+    guestId,
+    phone,
+    conversationId: claimedConversationId,
+    message: text,
+    alertType: "severe_complaint",
+    guestName,
+    sourceLabel: "WhatsApp Bot",
+  }).catch((e: Error) => console.warn("[webhook] 🚨 severe_complaint staff notify failed:", e.message));
 
   // Existing rules unchanged (requires_attention + guest_alerts above) — this
   // ALSO logs to the Guest Feedback & Sentiment Dashboard as negative, per
@@ -2138,7 +2159,19 @@ async function handleSensitiveStayChangeHandoff(
       conversation_id: claimedConversationId,
       resolved: false,
     });
-    if (error) console.warn("[webhook] guest_alerts (sensitive_stay_change) error:", error.message);
+    if (error) {
+      console.warn("[webhook] guest_alerts (sensitive_stay_change) error:", error.message);
+      return;
+    }
+    onGuestAlertInserted(supabase, {
+      guestId,
+      phone,
+      conversationId: claimedConversationId,
+      message: text,
+      alertType: "date_change_request",
+      room: guestRoom ?? null,
+      sourceLabel: "WhatsApp Bot",
+    }).catch((e: Error) => console.warn("[webhook] stay_change staff notify failed:", e.message));
   })().catch((e: Error) =>
     console.warn("[webhook] guest_alerts (sensitive_stay_change) error:", e.message)
   );
@@ -2224,7 +2257,19 @@ async function handleSensitiveFinancialHandoff(
       conversation_id: claimedConversationId,
       resolved: false,
     });
-    if (error) console.warn("[webhook] guest_alerts (sensitive_financial) error:", error.message);
+    if (error) {
+      console.warn("[webhook] guest_alerts (sensitive_financial) error:", error.message);
+      return;
+    }
+    onGuestAlertInserted(supabase, {
+      guestId,
+      phone,
+      conversationId: claimedConversationId,
+      message: text,
+      alertType: "financial_issue",
+      room: guestRoom ?? null,
+      sourceLabel: "WhatsApp Bot",
+    }).catch((e: Error) => console.warn("[webhook] financial staff notify failed:", e.message));
   })().catch((e: Error) =>
     console.warn("[webhook] guest_alerts (sensitive_financial) error:", e.message)
   );
@@ -3777,7 +3822,14 @@ Deno.serve(async (req: Request) => {
               guest_id: guestId, phone, alert_type: "date_change_request",
               message: `[כפתור: ${buttonTitle}]`, resolved: false,
             });
-            if (error) console.warn("[webhook] guest_alerts (button date_change) error:", error.message);
+            if (error) {
+              console.warn("[webhook] guest_alerts (button date_change) error:", error.message);
+              return;
+            }
+            onGuestAlertInserted(supabase, {
+              guestId, phone, message: `[כפתור: ${buttonTitle}]`, alertType: "date_change_request",
+              sourceLabel: "WhatsApp Bot",
+            }).catch((e: Error) => console.warn("[webhook] button date_change notify failed:", e.message));
           })().catch((e: Error) => console.warn("[webhook] guest_alerts (button date_change) error:", e.message));
           const dateChangeReply =
             "העברתי את בקשתך לצוות הסוויטות שלנו, בנתיים תכתוב לי באיזה תאריכים תרצו ואנחנו נבדוק זמינות עבורכם וניצור קשר בהקדם. 🙏";
@@ -4065,7 +4117,14 @@ Deno.serve(async (req: Request) => {
             alert_type: "date_change_request",
             message: text, conversation_id: dcConvId, resolved: false,
           });
-          if (error) console.warn("[webhook] guest_alerts (date_change) error:", error.message);
+          if (error) {
+            console.warn("[webhook] guest_alerts (date_change) error:", error.message);
+            return;
+          }
+          onGuestAlertInserted(supabase, {
+            guestId, phone, conversationId: dcConvId, message: text,
+            alertType: "date_change_request", sourceLabel: "WhatsApp Bot",
+          }).catch((e: Error) => console.warn("[webhook] date_change notify failed:", e.message));
         })().catch((e: Error) => console.warn("[webhook] guest_alerts (date_change) error:", e.message));
 
         const handoffMsg =
@@ -4584,13 +4643,26 @@ Deno.serve(async (req: Request) => {
         }
         const tagPrefix = futureTag ? `[${futureTag}] ` : "";
         (async () => {
+          const guestRoomForAlert = (guest as Record<string, unknown> | null)?.room as string | null ?? null;
+          const guestNameForAlert = (guest as Record<string, unknown> | null)?.name as string | null ?? null;
+          const alertMsg = `${tagPrefix}${toolLoggedRequest!.summary ?? effectiveText}`;
           const { error } = await supabase.from("guest_alerts").insert({
             guest_id: guestId, phone,
             alert_type: toolLoggedRequest!.category ?? "request",
-            message: `${tagPrefix}${toolLoggedRequest!.summary ?? effectiveText}`,
+            message: alertMsg,
             conversation_id: conversationId, resolved: false,
           });
-          if (error) console.error("[webhook] 🚨 guest_alerts (future-guest request) insert FAILED:", error.message);
+          if (error) {
+            console.error("[webhook] 🚨 guest_alerts (future-guest request) insert FAILED:", error.message);
+            return;
+          }
+          onGuestAlertInserted(supabase, {
+            guestId, phone, conversationId, message: alertMsg,
+            alertType: toolLoggedRequest!.category ?? "request",
+            guestName: guestNameForAlert, room: guestRoomForAlert,
+            sourceLabel: "WhatsApp Bot",
+            alsoPersonalDm: false,
+          }).catch((e: Error) => console.warn("[webhook] future-guest group notify failed:", e.message));
         })().catch((e: Error) => console.error("[webhook] 🚨 guest_alerts (future-guest request) insert FAILED:", e.message));
 
         // Best-effort personal heads-up — Adir gets the real room (staff need
@@ -4683,18 +4755,34 @@ Deno.serve(async (req: Request) => {
               guest_id: guestId, phone, alert_type: "request",
               message: effectiveText, conversation_id: conversationId, resolved: false,
             });
-            if (error) console.error("[webhook] 🚨 guest_alerts (request) insert FAILED:", error.message);
+            if (error) {
+              console.error("[webhook] 🚨 guest_alerts (request) insert FAILED:", error.message);
+              return;
+            }
+            const guestRoom = (guest as Record<string, unknown> | null)?.room as string | null ?? null;
+            onGuestAlertInserted(supabase, {
+              guestId, phone, conversationId, message: effectiveText, alertType: "request",
+              guestName, room: guestRoom, sourceLabel: "WhatsApp Bot",
+            }).catch((e: Error) => console.warn("[webhook] request keyword notify failed:", e.message));
           })().catch((e: Error) => console.error("[webhook] 🚨 guest_alerts (request) insert FAILED:", e.message));
         } else if (guestId && isBalloonRoomRequest(effectiveText)) {
           console.info(`[webhook] 🎈 dispatch=requests_board (balloon LLM path) phone:${phone}`);
           (async () => {
             const guestRoom = (guest as Record<string, unknown> | null)?.room as string | null ?? null;
+            const balloonMsg = `🎈 בקשת בלונים לחדר${guestRoom ? ` (${guestRoom})` : ""}: ${effectiveText}`;
             const { error } = await supabase.from("guest_alerts").insert({
               guest_id: guestId, phone, alert_type: "request",
-              message: `🎈 בקשת בלונים לחדר${guestRoom ? ` (${guestRoom})` : ""}: ${effectiveText}`,
+              message: balloonMsg,
               conversation_id: conversationId, resolved: false,
             });
-            if (error) console.error("[webhook] 🎈 guest_alerts (balloon) insert FAILED:", error.message);
+            if (error) {
+              console.error("[webhook] 🎈 guest_alerts (balloon) insert FAILED:", error.message);
+              return;
+            }
+            onGuestAlertInserted(supabase, {
+              guestId, phone, conversationId, message: balloonMsg, alertType: "request",
+              guestName, room: guestRoom, sourceLabel: "WhatsApp Bot",
+            }).catch((e: Error) => console.warn("[webhook] 🎈 balloon LLM notify failed:", e.message));
           })().catch((e: Error) => console.error("[webhook] 🎈 guest_alerts (balloon) insert FAILED:", e.message));
         }
       }
@@ -4741,7 +4829,14 @@ Deno.serve(async (req: Request) => {
             alert_type: "severe_complaint",
             message: effectiveText, conversation_id: conversationId, resolved: false,
           });
-          if (error) console.error("[webhook] 🚨 pre_send severe_complaint guest_alerts insert FAILED:", error.message);
+          if (error) {
+            console.error("[webhook] 🚨 pre_send severe_complaint guest_alerts insert FAILED:", error.message);
+            return;
+          }
+          onGuestAlertInserted(supabase, {
+            guestId, phone, conversationId, message: effectiveText,
+            alertType: "severe_complaint", guestName, sourceLabel: "WhatsApp Bot",
+          }).catch((e: Error) => console.warn("[webhook] pre_send severe notify failed:", e.message));
         })().catch((e: Error) => console.error("[webhook] 🚨 pre_send severe_complaint guest_alerts insert FAILED:", e.message));
         saveGuestFeedback(supabase, {
           guestId, phone, sentiment: "negative", text: effectiveText, source: "severe_complaint",
