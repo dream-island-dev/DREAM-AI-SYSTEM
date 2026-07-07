@@ -29,8 +29,13 @@
 //
 // Ops-group 👍 task completion: whapi-webhook (not this Meta guest webhook).
 // Dual lookup: bot card (tasks.whapi_message_id) → trigger text (tasks.source_message_id).
-// Field-ops Whapi cards: Hebrew stays in tasks.description — Gemini EN translation
-// only in outbound group payload (routeGuestRequestToOpsGroup + operational intercept).
+// Field-ops guest requests (operational intercept + LLM tool-calling path) no
+// longer dispatch to the Whapi ops group from this file at all — they only
+// create a pending_approval task (createPendingOpsApprovalTask). Gemini EN
+// translation + the actual Whapi send happen later, only after a staff member
+// approves in OperationsBoard.js, via the extended notify-manual-task function
+// (2026-07-07 Human-in-the-Loop gate — see git history for the prior
+// unsupervised routeGuestRequestToOpsGroup).
 // ══════════════════════════════════════════════════════════════════════════════
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -76,13 +81,10 @@ import {
   ADMIN_REQUESTS_DEPARTMENT,
   isGuestEligibleForInHouseOpsDispatch,
   guessGuestOpsSlaCategory,
-  buildGuestOpsSlaDeadline,
   resolveGuestOpsDepartment,
   extractAllowlistedRequestLines,
 } from "../_shared/automationSchedule.ts";
-import { translateTextForFieldOps } from "../_shared/fieldOpsTranslation.ts";
 import { resolveGuestRoomLabel } from "../_shared/guestRoomResolve.ts";
-import { resolveRouting, taskIntentType } from "../_shared/routingConfig.ts";
 import { triggerInboxRedAlert } from "../_shared/inboxRedAlert.ts";
 import {
   buildOptionalSpaText,
@@ -107,6 +109,10 @@ import {
   assertGuestEligibleForAutomation,
 } from "../_shared/guestOutboundGuard.ts";
 import { sanitizeMetaRecipientPhone } from "../_shared/metaPhone.ts";
+import {
+  extractArrivalTimeFromText,
+  persistGuestEta,
+} from "../_shared/guestEta.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -1479,36 +1485,6 @@ const ARRIVAL_TIME_QUESTION_RE =
 const ARRIVAL_TIME_UPDATE_RE =
   /שעת\s*הגעה|נגיע|ניגיע|מגיעים?|הגעה\s|צפו[ייה]\s*להגיע|מתוכנן|בסביבות|בערך|arriving\s+at/i;
 
-function extractArrivalTimeFromText(text: string): string | null {
-  const t = text.trim();
-
-  const colon = t.match(/(?:^|[^\d])(\d{1,2})\s*[:.׳·]\s*(\d{2})(?:\s|$|[^\d])/);
-  if (colon) {
-    const h = parseInt(colon[1], 10);
-    const m = parseInt(colon[2], 10);
-    if (h >= 0 && h <= 23 && m >= 0 && m <= 59) {
-      return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
-    }
-  }
-
-  const hourWord = t.match(/(?:בשעה|ב[-–]?\s*|שעה\s+|at\s+)(\d{1,2})(?:\s|$|[^\d:])/i);
-  if (hourWord) {
-    const h = parseInt(hourWord[1], 10);
-    if (h >= 0 && h <= 23) return `${String(h).padStart(2, "0")}:00`;
-  }
-
-  const bare = t.match(/^(\d{1,2})\s*[:.׳·]\s*(\d{2})$/);
-  if (bare) {
-    const h = parseInt(bare[1], 10);
-    const m = parseInt(bare[2], 10);
-    if (h >= 0 && h <= 23 && m >= 0 && m <= 59) {
-      return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
-    }
-  }
-
-  return null;
-}
-
 function isRecordOnlyArrivalTimeUpdate(text: string): boolean {
   if (DATE_CHANGE_RE.test(text)) return false;
   if (ARRIVAL_TIME_QUESTION_RE.test(text)) return false;
@@ -1628,18 +1604,21 @@ async function flagGuestAlert(
 //      the guest's own reply (already sent by the time this runs) or the
 //      guest_alerts dashboard row (already inserted independently).
 // ══════════════════════════════════════════════════════════════════════════════
-async function translateGuestRequestForFieldOps(
-  room: string | null,
-  rawText: string,
-  summaryHe: string,
-): Promise<string> {
-  const roomLabel = room ?? "—";
-  const src = (rawText.trim() || summaryHe).trim();
-  if (!src) return `Room ${roomLabel} - —`;
-  return translateTextForFieldOps(src, { room: roomLabel, style: "room_dash_line" });
-}
-
-async function routeGuestRequestToOpsGroup(
+// Human-in-the-Loop approval gate (2026-07-07): this function used to
+// translate the request and post it straight to the foreign-worker Whapi ops
+// group with zero human review (formerly routeGuestRequestToOpsGroup — see
+// git history). It now ONLY creates a pending_approval task; the bot has lost
+// the authority to dispatch this route unsupervised. A staff member reviews
+// (and can edit) the description in OperationsBoard.js and taps "✅ אשר ושגר"
+// (Approve & Dispatch), which invokes the extended notify-manual-task Edge
+// Function — that is the ONLY place translation + the actual Whapi send now
+// happen for this source. sla_deadline is deliberately left NULL here: it's
+// computed from dispatched_at at approval time (not from this row's
+// created_at), so the completion SLA measures time-to-complete from when the
+// task became actionable, not from the original guest message — a
+// pending_approval row can otherwise sit for an arbitrary, human-controlled
+// amount of time before anyone can act on it.
+async function createPendingOpsApprovalTask(
   supabase: ReturnType<typeof createClient>,
   args: {
     guestId: number;
@@ -1649,25 +1628,13 @@ async function routeGuestRequestToOpsGroup(
     summary: string;
     rawText: string;
     // Isolated/relevant text (see extractAllowlistedRequestLines) driving
-    // department/SLA/translation — omit only if isolation isn't cheap to
-    // compute at the call site; falls back to rawText, same as pre-fix
-    // behavior. rawText itself is unchanged and always stored in full below
-    // (Zero Data Loss, CLAUDE.md §0.1) — this param only narrows what's
-    // classified/translated for the ops-group card, not what's audited.
+    // department/SLA classification — omit only if isolation isn't cheap to
+    // compute at the call site; falls back to rawText. rawText itself is
+    // unchanged and always stored in full below (Zero Data Loss, CLAUDE.md
+    // §0.1) — this param only narrows what's classified, not what's audited.
     dispatchText?: string;
   },
 ): Promise<void> {
-  const routing = await resolveRouting(supabase, taskIntentType("guest_request"), {
-    destination_board: "operations",
-    whatsapp_group_id: null,
-    enable_sla: true,
-  });
-  const groupId = routing.whatsapp_group_id || Deno.env.get("WHAPI_GROUP_ID")?.trim();
-  if (!groupId) {
-    console.warn("[webhook] 🛋️ WHAPI_GROUP_ID unset — guest_request not routed to ops group");
-    return;
-  }
-
   const resolvedRoom = await resolveGuestRoomLabel(supabase, {
     guestId: args.guestId,
     phone: args.phone,
@@ -1675,7 +1642,6 @@ async function routeGuestRequestToOpsGroup(
     guestName: args.guestName,
   });
   const roomForDb = resolvedRoom.startsWith("TBD") ? null : resolvedRoom;
-  const roomLabel = resolvedRoom;
 
   const dispatchSrc = (args.dispatchText ?? args.rawText).trim();
   if (args.dispatchText && args.dispatchText !== args.rawText) {
@@ -1686,11 +1652,7 @@ async function routeGuestRequestToOpsGroup(
 
   const department = resolveGuestOpsDepartment(dispatchSrc);
   const slaCategory = guessGuestOpsSlaCategory(dispatchSrc);
-  const slaDeadline = buildGuestOpsSlaDeadline(slaCategory);
   const priority = slaCategory === "pest_control" ? "urgent" : "normal";
-
-  const englishLine = await translateGuestRequestForFieldOps(roomLabel, dispatchSrc, args.summary);
-  const card = `🔧 ${englishLine}\n👉 Please react with 👍🏼 to complete this task.`;
 
   const { data: task, error: insertErr } = await supabase
     .from("tasks")
@@ -1699,33 +1661,23 @@ async function routeGuestRequestToOpsGroup(
       department,
       description:         args.summary,
       priority,
-      status:              "open",
+      status:              "pending_approval",
       source:              "guest_request",
       guest_id:            args.guestId,
       reporter_raw_text:   args.rawText,
       action_token:        crypto.randomUUID(),
       sla_category:        slaCategory,
-      sla_deadline:        slaDeadline,
+      sla_deadline:        null,
     }])
     .select("id")
     .maybeSingle();
   if (insertErr || !task) {
-    console.error("[webhook] 🛋️ guest_request task insert error:", insertErr?.message);
+    console.error("[webhook] 🛋️ guest_request pending-approval task insert error:", insertErr?.message);
     return;
   }
 
-  let msgId: string | null = null;
-  try {
-    msgId = await sendWhapiText(groupId, card, { noLinkPreview: true });
-  } catch (e) {
-    console.warn(`[webhook] 🛋️ guest_request task ${task.id} created but Whapi send failed:`, (e as Error).message);
-  }
-  if (msgId) {
-    const { error: updErr } = await supabase.from("tasks").update({ whapi_message_id: msgId }).eq("id", task.id);
-    if (updErr) console.warn(`[webhook] 🛋️ failed to store whapi_message_id for task ${task.id}:`, updErr.message);
-  }
   console.info(
-    `[webhook] 🛋️ guest_request task ${task.id} room=${roomLabel} dept=${department} sla=${slaCategory} routed (sent=${!!msgId})`,
+    `[webhook] 🛋️ guest_request task ${task.id} room=${resolvedRoom} dept=${department} sla=${slaCategory} PENDING APPROVAL — awaiting staff review in OperationsBoard (no dispatch yet)`,
   );
 }
 
@@ -1857,8 +1809,9 @@ async function handleOperationalInHouseIntercept(
     console.error("[webhook] 🛎️ operational intercept guest update FAILED:", guestErr.message);
   }
 
-  // Operations Board (tasks) + Whapi ops group card — same path as log_guest_request.
-  routeGuestRequestToOpsGroup(supabase, {
+  // Operations Board (tasks) — pending_approval, same path as log_guest_request.
+  // Awaits staff review/Approve in OperationsBoard.js before any Whapi dispatch.
+  createPendingOpsApprovalTask(supabase, {
     guestId,
     phone,
     guestName,
@@ -1867,7 +1820,7 @@ async function handleOperationalInHouseIntercept(
     rawText: text,
     dispatchText,
   }).catch((e: Error) =>
-    console.error("[webhook] 🛎️ operational intercept routeGuestRequestToOpsGroup error:", e.message)
+    console.error("[webhook] 🛎️ operational intercept createPendingOpsApprovalTask error:", e.message)
   );
 
   if (!sim) {
@@ -3926,36 +3879,40 @@ Deno.serve(async (req: Request) => {
       // ── Record-only arrival TIME update — no needs_callback / alerts / ops ──
       if (!isButtonReply && guestId && isRecordOnlyArrivalTimeUpdate(text)) {
         const arrivalTime = extractArrivalTimeFromText(text)!;
-        const stamp = new Date().toISOString().slice(0, 16).replace("T", " ");
-        const noteLine = `[${stamp}] שעת הגעה: ${arrivalTime}`;
-        const newNotes = guest?.guest_notes ? `${guest.guest_notes}\n${noteLine}` : noteLine;
-
-        const { error: atErr } = await supabase.from("guests").update({
-          arrival_time: arrivalTime,
-          guest_notes: newNotes,
-        }).eq("id", guestId);
-        if (atErr) console.error("[webhook] arrival_time record-only update FAILED:", atErr.message);
-
-        await patchClaimedInbound(supabase, claimedConversationId, msgId, {
-          guest_id: guestId,
-          intent: "arrival_time_update",
+        const persistResult = await persistGuestEta(supabase, {
+          guestId,
+          guest: guest as Record<string, unknown>,
+          timeHhMm: arrivalTime,
+          source: "tier0_wa",
         });
-
-        if (!sim) {
-          try {
-            await sendReply(phone, RECORD_ONLY_ARRIVAL_REPLY);
-            await insertGuestOutboundIfNotMuted(supabase, {
-              phone, guest_id: guestId, message: RECORD_ONLY_ARRIVAL_REPLY, wa_message_id: null, intent: "arrival_time_update",
-            });
-          } catch (e) {
-            console.error("[webhook] arrival_time reply failed:", (e as Error).message);
-          }
+        if (!persistResult.ok && persistResult.skipped === "ineligible_guest") {
+          console.info("[webhook] arrival_time record-only — ineligible row, falling through");
         } else {
-          console.info(`[webhook] SIM — arrival_time record-only ${arrivalTime} from ${phone}`);
-        }
+          if (!persistResult.ok && persistResult.error) {
+            console.error("[webhook] arrival_time record-only update FAILED:", persistResult.error);
+          }
 
-        console.info(`[webhook] 🕐 arrival_time record-only — phone:${phone} time:${arrivalTime}`);
-        continue;
+          await patchClaimedInbound(supabase, claimedConversationId, msgId, {
+            guest_id: guestId,
+            intent: "arrival_time_update",
+          });
+
+          if (!sim) {
+            try {
+              await sendReply(phone, RECORD_ONLY_ARRIVAL_REPLY);
+              await insertGuestOutboundIfNotMuted(supabase, {
+                phone, guest_id: guestId, message: RECORD_ONLY_ARRIVAL_REPLY, wa_message_id: null, intent: "arrival_time_update",
+              });
+            } catch (e) {
+              console.error("[webhook] arrival_time reply failed:", (e as Error).message);
+            }
+          } else {
+            console.info(`[webhook] SIM — arrival_time record-only ${arrivalTime} from ${phone}`);
+          }
+
+          console.info(`[webhook] 🕐 arrival_time record-only — phone:${phone} time:${arrivalTime}`);
+          continue;
+        }
       }
 
       // ── Check-in / entry policy FAQ — Tier-0, before LLM (complete hours) ──
@@ -4626,10 +4583,10 @@ Deno.serve(async (req: Request) => {
         if (toolLoggedRequest && guestId && dispatchRoute === "operational_field_ops") {
           const guestRoom = (guest as Record<string, unknown> | null)?.room as string | null ?? null;
           // effectiveText may be burst-coalesced — narrow to the allowlisted
-          // line(s) before translation/dispatch, same as the Tier-0 path in
+          // line(s) before classification, same as the Tier-0 path in
           // handleOperationalInHouseIntercept (see extractAllowlistedRequestLines).
           const dispatchText = extractAllowlistedRequestLines(effectiveText);
-          routeGuestRequestToOpsGroup(supabase, {
+          createPendingOpsApprovalTask(supabase, {
             guestId,
             phone,
             guestName,
@@ -4637,9 +4594,9 @@ Deno.serve(async (req: Request) => {
             summary: toolLoggedRequest.summary,
             rawText: effectiveText,
             dispatchText,
-          }).catch((e: Error) => console.error("[webhook] 🛋️ routeGuestRequestToOpsGroup error:", e.message));
+          }).catch((e: Error) => console.error("[webhook] 🛋️ createPendingOpsApprovalTask error:", e.message));
           console.info(
-            `[webhook] dispatch=operational_field_ops (LLM path) phone:${phone} guest:${guestId} room:${guestRoom ?? "—"}`,
+            `[webhook] dispatch=operational_field_ops (LLM path, PENDING APPROVAL) phone:${phone} guest:${guestId} room:${guestRoom ?? "—"}`,
           );
         } else if (
           guestId

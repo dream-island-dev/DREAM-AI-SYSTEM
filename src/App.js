@@ -1475,9 +1475,12 @@ function Dashboard({ shifts, tasks, checklist, employees }) {
   const onShift = shifts.filter(
     (s) => s.status === "פעיל" && s.date === todayStr
   );
-  const openTasks = tasks.filter((t) => t.status !== "done");
+  // Inclusion list, not an exclusion list — a "pending_approval" (awaiting
+  // staff review, not yet actionable) or "rejected" (discarded false
+  // positive) task must not inflate "open work" (migration 149, HITL gate).
+  const openTasks = tasks.filter((t) => t.status === "open" || t.status === "in_progress");
   const urgentTasks = tasks.filter(
-    (t) => t.priority === "urgent" && t.status !== "done"
+    (t) => t.priority === "urgent" && (t.status === "open" || t.status === "in_progress")
   );
   const doneChecks = checklist.filter((c) => c.done).length;
   const checkPct = checklist.length ? Math.round((doneChecks / checklist.length) * 100) : 0;
@@ -2170,7 +2173,8 @@ export default function App({ initialPage = "dashboard" }) {
     return () => { active = false; };
   }, [user]);
 
-  const openOpsCount = tasks.filter((t) => t.status !== "done").length;
+  // Inclusion list — see Dashboard()'s openTasks comment (migration 149, HITL gate).
+  const openOpsCount = tasks.filter((t) => t.status === "open" || t.status === "in_progress").length;
 
   const pageTitle = {
     dashboard:  "דאשבורד ראשי 📊",

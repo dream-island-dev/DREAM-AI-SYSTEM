@@ -179,19 +179,46 @@ export function matchesCheckinTimelineScope(guest, scope, now = new Date()) {
   return false;
 }
 
-/** Shared roster sort — status → suite/room → ETA → arrival date → name. */
-export function sortCheckinRosterGuests(guests, now = new Date(), roomResolver) {
+/** Display arrival_date + optional ETA for צ'ק-אין roster cells. */
+export function formatCheckinArrivalDisplay(guest) {
+  return {
+    date: guest?.arrival_date ?? "—",
+    eta: (guest?.arrival_time ?? "").trim() || null,
+  };
+}
+
+const PRE_ARRIVAL_STATUSES = new Set(["pending", "expected", "room_ready"]);
+
+function isPreArrivalTodayGuest(guest, today) {
+  return PRE_ARRIVAL_STATUSES.has(guest?.status) && guest?.arrival_date === today;
+}
+
+/** Shared roster sort — status → (ETA|room by scope) → name. */
+export function sortCheckinRosterGuests(guests, now = new Date(), roomResolver, options = {}) {
+  const { prioritizeEta = false } = options;
+  const today = israelTodayStr();
   const eff = (g) => resolveEffectiveGuestStatus(g, now) ?? g.status ?? "";
   const roomOf = (g) => (g.room || roomResolver?.(g) || "").toString();
+  const etaOf = (g) => (g.arrival_time && /^\d{2}:\d{2}$/.test(g.arrival_time) ? g.arrival_time : "99:99");
+
   return [...guests].sort((a, b) => {
     const sa = STATUS_SORT_ORDER[eff(a)] ?? 5;
     const sb = STATUS_SORT_ORDER[eff(b)] ?? 5;
     if (sa !== sb) return sa - sb;
-    const roomCmp = roomOf(a).localeCompare(roomOf(b), "he");
-    if (roomCmp !== 0) return roomCmp;
-    const etaA = a.arrival_time || "99:99";
-    const etaB = b.arrival_time || "99:99";
-    if (etaA !== etaB) return etaA.localeCompare(etaB);
+
+    const etaFirst = prioritizeEta && isPreArrivalTodayGuest(a, today) && isPreArrivalTodayGuest(b, today);
+    if (etaFirst) {
+      const etaCmp = etaOf(a).localeCompare(etaOf(b));
+      if (etaCmp !== 0) return etaCmp;
+      const roomCmp = roomOf(a).localeCompare(roomOf(b), "he");
+      if (roomCmp !== 0) return roomCmp;
+    } else {
+      const roomCmp = roomOf(a).localeCompare(roomOf(b), "he");
+      if (roomCmp !== 0) return roomCmp;
+      const etaCmp = etaOf(a).localeCompare(etaOf(b));
+      if (etaCmp !== 0) return etaCmp;
+    }
+
     const arrCmp = (a.arrival_date || "").localeCompare(b.arrival_date || "");
     if (arrCmp !== 0) return arrCmp;
     return (a.name || "").localeCompare(b.name || "", "he");

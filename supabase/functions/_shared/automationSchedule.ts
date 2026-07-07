@@ -751,12 +751,17 @@ export function buildOperationalRequestSummary(text: string): string {
   return "בקשת שירות בחדר";
 }
 
-/** Deterministic field-ops reply — no LLM, no implied approval language. */
+/**
+ * Deterministic field-ops reply — no LLM, no implied approval language.
+ * Human-in-the-Loop gate (2026-07-07): must NOT claim the field team is
+ * already on the way — dispatch now waits on staff approval in
+ * OperationsBoard.js, so that claim would be false at send time.
+ */
 export function buildOperationalDispatchReply(
   _requestSummary?: string,
   _guestName?: string | null,
 ): string {
-  return "הבקשה הועברה ישירות לצוות השטח שלנו והם בדרך אליכם לחדר! המשך שהייה מפנקת! 🌟";
+  return "קיבלנו את הבקשה שלך, הצוות שלנו בודק ומטפל בה כעת 🙏";
 }
 
 // ── Administrative in-house requests → קבלה/בקשות (tasks only, no Whapi ops) ──

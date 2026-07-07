@@ -282,11 +282,21 @@ const DEPT_ICONS = {
   "הנהלה": "👔",
 };
 
-function TaskCard({ task, onClaim, onMarkDone, isUpdating, onOpenDreamBotChat }) {
+function TaskCard({ task, onClaim, onMarkDone, onApprove, onReject, isUpdating, onOpenDreamBotChat }) {
   const prio = PRIORITY_CONFIG[task.priority] ?? PRIORITY_CONFIG.normal;
   const isDone = task.status === "done";
   const isInProgress = task.status === "in_progress";
+  const isPendingApproval = task.status === "pending_approval";
+  const isRejected = task.status === "rejected";
   const src = SOURCE_META[task.source] ?? SOURCE_META.manual;
+
+  // Human-in-the-Loop gate: seeded once from task.description, then respects
+  // the staff member's own edits (does not re-sync from realtime updates to
+  // the same row while they're mid-edit — same instance persists per task.id
+  // across re-renders since the parent .map() already keys on it).
+  const [editedDesc, setEditedDesc] = useState(task.description ?? "");
+  const [showRejectInput, setShowRejectInput] = useState(false);
+  const [rejectReason, setRejectReason] = useState("");
 
   const timingBadge = getGuestTimingBadge(task.guests);
   const overdue = task.sla_deadline && !isDone && new Date(task.sla_deadline).getTime() < Date.now();
@@ -297,9 +307,11 @@ function TaskCard({ task, onClaim, onMarkDone, isUpdating, onOpenDreamBotChat })
   return (
     <div className="ops-task-card" style={{
       borderRadius: 14,
-      border: `1px solid ${isDone ? "#D1FAE5" : overdue ? "#DC2626" : prio.border}`,
-      background: isDone ? "#F0FDF4" : prio.bg,
-      padding: "16px", opacity: isDone ? 0.75 : 1,
+      border: `1px solid ${
+        isDone ? "#D1FAE5" : isRejected ? "#E5E7EB" : isPendingApproval ? "#FBBF24" : overdue ? "#DC2626" : prio.border
+      }`,
+      background: isDone ? "#F0FDF4" : isRejected ? "#F9FAFB" : isPendingApproval ? "#FFFBEB" : prio.bg,
+      padding: "16px", opacity: isDone ? 0.75 : isRejected ? 0.6 : 1,
       transition: "opacity 0.2s, border-color 0.2s",
       animation: overdue ? "sla-breach-pulse 1.6s ease-in-out infinite" : "none",
     }}>
@@ -308,12 +320,24 @@ function TaskCard({ task, onClaim, onMarkDone, isUpdating, onOpenDreamBotChat })
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
           <span style={{
             fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 12,
-            background: isDone ? "#D1FAE5" : isInProgress ? "#FEF3C7" : prio.bg,
-            color: isDone ? "#059669" : isInProgress ? "#B45309" : prio.color,
-            border: `1px solid ${isDone ? "#6EE7B7" : isInProgress ? "#FDE68A" : prio.border}`,
+            background: isDone ? "#D1FAE5" : isRejected ? "#E5E7EB" : isPendingApproval ? "#FEF3C7" : isInProgress ? "#FEF3C7" : prio.bg,
+            color: isDone ? "#059669" : isRejected ? "#6B7280" : isPendingApproval ? "#92400E" : isInProgress ? "#B45309" : prio.color,
+            border: `1px solid ${isDone ? "#6EE7B7" : isRejected ? "#D1D5DB" : isPendingApproval ? "#FCD34D" : isInProgress ? "#FDE68A" : prio.border}`,
           }}>
-            {isDone ? "✅ בוצע" : isInProgress ? "🙋‍♂️ בטיפול" : prio.label}
+            {isDone ? "✅ בוצע" : isRejected ? "🗑️ נדחתה" : isPendingApproval ? "⏳ ממתין לאישור" : isInProgress ? "🙋‍♂️ בטיפול" : prio.label}
           </span>
+          {/* Priority stays visible alongside the pending-approval status —
+              a pest-control ask shouldn't lose its urgent flag just because
+              it's awaiting review. */}
+          {isPendingApproval && task.priority === "urgent" && (
+            <span style={{
+              fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 12,
+              background: PRIORITY_CONFIG.urgent.bg, color: PRIORITY_CONFIG.urgent.color,
+              border: `1px solid ${PRIORITY_CONFIG.urgent.border}`,
+            }}>
+              {PRIORITY_CONFIG.urgent.label}
+            </span>
+          )}
           {task.room_number && (
             <span style={{
               fontSize: 11, color: "var(--text-muted)",
@@ -362,9 +386,25 @@ function TaskCard({ task, onClaim, onMarkDone, isUpdating, onOpenDreamBotChat })
         </div>
       )}
 
-      <div style={{ fontSize: 15, fontWeight: 600, color: "var(--black)", marginBottom: 10, lineHeight: 1.5 }}>
-        {task.description}
-      </div>
+      {isPendingApproval ? (
+        <textarea
+          value={editedDesc}
+          onChange={(e) => setEditedDesc(e.target.value)}
+          rows={3}
+          placeholder="תיאור הבקשה..."
+          style={{
+            width: "100%", resize: "vertical", direction: "rtl",
+            fontSize: 15, fontWeight: 600, color: "var(--black)", marginBottom: 10,
+            lineHeight: 1.5, fontFamily: "Heebo, sans-serif",
+            padding: "10px 12px", borderRadius: 10, border: "1px solid var(--border)",
+            background: "#FFFDF7", boxSizing: "border-box",
+          }}
+        />
+      ) : (
+        <div style={{ fontSize: 15, fontWeight: 600, color: "var(--black)", marginBottom: 10, lineHeight: 1.5 }}>
+          {task.description}
+        </div>
+      )}
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
         <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
@@ -390,7 +430,76 @@ function TaskCard({ task, onClaim, onMarkDone, isUpdating, onOpenDreamBotChat })
               💬 שיחה
             </button>
           )}
-          {!isDone && !isInProgress && (
+          {isPendingApproval && !showRejectInput && (
+            <>
+              <button
+                className="u-touch-comfort"
+                onClick={() => onApprove(task.id, editedDesc)}
+                disabled={isUpdating}
+                style={{
+                  padding: "10px 18px", borderRadius: 10, border: "none",
+                  background: isUpdating ? "var(--border)" : "linear-gradient(135deg, #16A34A, #15803D)",
+                  color: "#fff", fontFamily: "Heebo, sans-serif",
+                  fontSize: 14, fontWeight: 800, cursor: isUpdating ? "default" : "pointer",
+                }}
+              >
+                {isUpdating ? "⏳" : "✅ אשר ושגר"}
+              </button>
+              <button
+                className="u-touch-comfort"
+                onClick={() => setShowRejectInput(true)}
+                disabled={isUpdating}
+                style={{
+                  padding: "10px 18px", borderRadius: 10,
+                  border: "1px solid #DC2626", background: "#fff",
+                  color: "#DC2626", fontFamily: "Heebo, sans-serif",
+                  fontSize: 14, fontWeight: 700, cursor: isUpdating ? "default" : "pointer",
+                }}
+              >
+                🗑️ דחה
+              </button>
+            </>
+          )}
+          {isPendingApproval && showRejectInput && (
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", width: "100%" }}>
+              <input
+                type="text"
+                value={rejectReason}
+                onChange={(e) => setRejectReason(e.target.value)}
+                placeholder="סיבת הדחייה (אופציונלי)..."
+                style={{
+                  flex: 1, minWidth: 140, padding: "8px 10px", borderRadius: 8,
+                  border: "1px solid var(--border)", fontFamily: "Heebo, sans-serif",
+                  fontSize: 13, direction: "rtl",
+                }}
+              />
+              <button
+                className="u-touch-comfort"
+                onClick={() => onReject(task.id, rejectReason)}
+                disabled={isUpdating}
+                style={{
+                  padding: "8px 14px", borderRadius: 8, border: "none",
+                  background: "#DC2626", color: "#fff", fontFamily: "Heebo, sans-serif",
+                  fontSize: 13, fontWeight: 700, cursor: isUpdating ? "default" : "pointer",
+                }}
+              >
+                {isUpdating ? "⏳" : "אשר דחייה"}
+              </button>
+              <button
+                className="u-touch-comfort"
+                onClick={() => setShowRejectInput(false)}
+                disabled={isUpdating}
+                style={{
+                  padding: "8px 14px", borderRadius: 8, border: "1px solid var(--border)",
+                  background: "var(--card-bg)", color: "var(--text-muted)",
+                  fontFamily: "Heebo, sans-serif", fontSize: 13, cursor: isUpdating ? "default" : "pointer",
+                }}
+              >
+                ביטול
+              </button>
+            </div>
+          )}
+          {!isDone && !isInProgress && !isPendingApproval && !isRejected && (
             <button
               className="u-touch-comfort"
               onClick={() => onClaim(task.id)}
@@ -405,7 +514,7 @@ function TaskCard({ task, onClaim, onMarkDone, isUpdating, onOpenDreamBotChat })
               🙋‍♂️ אני מטפל
             </button>
           )}
-          {!isDone && (
+          {!isDone && !isPendingApproval && !isRejected && (
             <button
               className="u-touch-comfort"
               onClick={() => onMarkDone(task.id)}
@@ -432,7 +541,8 @@ export default function OperationsBoard({ user, isAdmin, onOpenDreamBotChat }) {
   const [loading,     setLoading]     = useState(true);
   const [updatingId,  setUpdatingId]  = useState(null);
   const [toast,       setToast]       = useState(null);
-  const [activeFilter, setActiveFilter] = useState("open"); // open | in_progress | done | all
+  const [activeFilter, setActiveFilter] = useState("open"); // pending_approval | open | in_progress | done | all
+  const [hasAppliedDefaultFilter, setHasAppliedDefaultFilter] = useState(false);
   const managerDept = user?.department || "";
 
   const showToast = useCallback((type, msg) => {
@@ -466,6 +576,17 @@ export default function OperationsBoard({ user, isAdmin, onOpenDreamBotChat }) {
 
   useEffect(() => { fetchTasks(); }, [fetchTasks]);
 
+  // Human-in-the-Loop gate: jump to the pending-approval tab on initial load
+  // if there's anything waiting — impossible to overlook by default. Only on
+  // the FIRST resolved fetch (hasAppliedDefaultFilter guard), never again
+  // afterward — a realtime INSERT of a new pending item must not yank a
+  // staff member out of the "done"/"in_progress" tab mid-review.
+  useEffect(() => {
+    if (hasAppliedDefaultFilter || loading) return;
+    if (tasks.some((t) => t.status === "pending_approval")) setActiveFilter("pending_approval");
+    setHasAppliedDefaultFilter(true);
+  }, [loading, tasks, hasAppliedDefaultFilter]);
+
   // ── Apply a full tasks row (local claim/done, or Realtime postgres_changes
   // from whapi-webhook 👍🏼 / another tab) onto the board list. Preserves the
   // guests(...) embed from the initial fetch — Realtime payloads are flat rows.
@@ -488,6 +609,10 @@ export default function OperationsBoard({ user, isAdmin, onOpenDreamBotChat }) {
         && merged.resolved_by_phone === prev[idx].resolved_by_phone
         && merged.resolved_at === prev[idx].resolved_at
         && merged.description === prev[idx].description
+        && merged.dispatched_at === prev[idx].dispatched_at
+        && merged.reviewed_by === prev[idx].reviewed_by
+        && merged.sla_deadline === prev[idx].sla_deadline
+        && merged.rejection_reason === prev[idx].rejection_reason
       ) {
         return prev;
       }
@@ -557,10 +682,77 @@ export default function OperationsBoard({ user, isAdmin, onOpenDreamBotChat }) {
     setUpdatingId(null);
   }, [user?.id, user?.name, showToast, applyTaskRowUpdate]);
 
+  // Human-in-the-Loop gate — "✅ אשר ושגר": invokes the extended
+  // notify-manual-task Edge Function, which guard-flips pending_approval→open
+  // BEFORE attempting the Whapi send (see that function's header comment) —
+  // so by the time this returns anything other than "already_processed", the
+  // status flip has already committed server-side regardless of whether the
+  // group card itself went out. Reflect that locally either way, but warn
+  // distinctly if the card send failed so staff know to check the group.
+  const approveTask = useCallback(async (taskId, editedText) => {
+    setUpdatingId(taskId);
+    const { data, error } = await supabase.functions.invoke("notify-manual-task", {
+      body: { taskId, editedDescription: editedText, reviewerId: user?.id ?? null },
+    });
+    if (error) {
+      showToast("err", "שגיאה באישור: " + error.message);
+    } else if (data?.ok === false) {
+      showToast("err", "שגיאה באישור: " + (data?.error ?? "שגיאה לא ידועה"));
+    } else if (data?.reason === "already_processed") {
+      showToast("err", "הבקשה כבר טופלה ע״י מישהו אחר");
+      fetchTasks();
+    } else {
+      applyTaskRowUpdate({ id: taskId, status: "open", description: editedText });
+      if (data?.notified === false) {
+        showToast("err", `הבקשה אושרה, אך השליחה לקבוצה נכשלה (${data?.reason ?? "שגיאה"}) — בדקו ידנית`);
+      } else {
+        showToast("ok", "✅ הבקשה אושרה ושוגרה לצוות!");
+      }
+    }
+    setUpdatingId(null);
+  }, [user?.id, showToast, applyTaskRowUpdate, fetchTasks]);
+
+  // "🗑️ דחה" — false positive, never reaches the ops group. Kept (not
+  // deleted) for audit, same guard pattern as the approve flip so a
+  // double-tap (or a reject racing an approve) can't silently corrupt state.
+  const rejectTask = useCallback(async (taskId, reason) => {
+    setUpdatingId(taskId);
+    const reviewedAt = new Date().toISOString();
+    const { data: rejected, error } = await supabase
+      .from("tasks")
+      .update({
+        status:            "rejected",
+        reviewed_by:       user?.id ?? null,
+        reviewed_at:       reviewedAt,
+        rejection_reason:  reason?.trim() || null,
+      })
+      .eq("id", taskId)
+      .eq("status", "pending_approval")
+      .select("id")
+      .maybeSingle();
+    if (error) {
+      showToast("err", "שגיאה בדחייה: " + error.message);
+    } else if (!rejected) {
+      showToast("err", "הבקשה כבר טופלה ע״י מישהו אחר");
+      fetchTasks();
+    } else {
+      applyTaskRowUpdate({
+        id: taskId,
+        status: "rejected",
+        reviewed_by: user?.id ?? null,
+        reviewed_at: reviewedAt,
+        rejection_reason: reason?.trim() || null,
+      });
+      showToast("ok", "🗑️ הבקשה נדחתה");
+    }
+    setUpdatingId(null);
+  }, [user?.id, showToast, applyTaskRowUpdate, fetchTasks]);
+
   const filtered = tasks.filter(t =>
     activeFilter === "all" ? true : t.status === activeFilter
   );
 
+  const pendingApprovalCount = tasks.filter(t => t.status === "pending_approval").length;
   const openCount       = tasks.filter(t => t.status === "open").length;
   const inProgressCount = tasks.filter(t => t.status === "in_progress").length;
   const doneCount       = tasks.filter(t => t.status === "done").length;
@@ -601,23 +793,28 @@ export default function OperationsBoard({ user, isAdmin, onOpenDreamBotChat }) {
 
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
         {[
+          { key: "pending_approval", label: `⏳ ממתינות לאישור (${pendingApprovalCount})` },
           { key: "open",        label: `🔓 פתוחות (${openCount})` },
           { key: "in_progress", label: `🙋‍♂️ בטיפול (${inProgressCount})` },
           { key: "done",        label: `✅ בוצעו (${doneCount})` },
           { key: "all",         label: `📋 הכל (${tasks.length})` },
-        ].map(({ key, label }) => (
-          <button
-            key={key}
-            onClick={() => setActiveFilter(key)}
-            style={{
-              padding: "7px 16px", borderRadius: 20, cursor: "pointer",
-              fontFamily: "Heebo, sans-serif", fontSize: 13, fontWeight: 700,
-              border: `2px solid ${activeFilter === key ? "var(--gold)" : "var(--border)"}`,
-              background: activeFilter === key ? "rgba(201,169,110,0.12)" : "var(--card-bg)",
-              color: activeFilter === key ? "var(--gold-dark)" : "var(--text-muted)",
-            }}
-          >{label}</button>
-        ))}
+        ].map(({ key, label }) => {
+          const urgentTab = key === "pending_approval" && pendingApprovalCount > 0;
+          return (
+            <button
+              key={key}
+              onClick={() => setActiveFilter(key)}
+              style={{
+                padding: "7px 16px", borderRadius: 20, cursor: "pointer",
+                fontFamily: "Heebo, sans-serif", fontSize: 13, fontWeight: 700,
+                border: `2px solid ${activeFilter === key ? "var(--gold)" : urgentTab ? "#FBBF24" : "var(--border)"}`,
+                background: activeFilter === key ? "rgba(201,169,110,0.12)" : urgentTab ? "#FFFBEB" : "var(--card-bg)",
+                color: activeFilter === key ? "var(--gold-dark)" : urgentTab ? "#92400E" : "var(--text-muted)",
+                animation: urgentTab && activeFilter !== key ? "sla-breach-pulse 1.8s ease-in-out infinite" : "none",
+              }}
+            >{label}</button>
+          );
+        })}
         <button onClick={fetchTasks} disabled={loading}
           style={{ padding: "7px 14px", borderRadius: 20, border: "1px solid var(--border)",
             background: "var(--card-bg)", cursor: "pointer", fontSize: 13, color: "var(--text-muted)" }}>
@@ -636,7 +833,9 @@ export default function OperationsBoard({ user, isAdmin, onOpenDreamBotChat }) {
           color: "var(--text-muted)", fontSize: 14, lineHeight: 2,
         }}>
           <div style={{ fontSize: 40, marginBottom: 8 }}>📋</div>
-          {activeFilter === "open" ? "אין משימות פתוחות כרגע 🎉" : "אין משימות להצגה"}
+          {activeFilter === "pending_approval" ? "אין בקשות הממתינות לאישור 🎉"
+            : activeFilter === "open" ? "אין משימות פתוחות כרגע 🎉"
+            : "אין משימות להצגה"}
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -646,6 +845,8 @@ export default function OperationsBoard({ user, isAdmin, onOpenDreamBotChat }) {
               task={task}
               onClaim={claimTask}
               onMarkDone={markDone}
+              onApprove={approveTask}
+              onReject={rejectTask}
               isUpdating={updatingId === task.id}
               onOpenDreamBotChat={onOpenDreamBotChat}
             />

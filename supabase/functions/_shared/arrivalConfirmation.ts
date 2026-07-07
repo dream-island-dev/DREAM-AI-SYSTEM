@@ -1,3 +1,5 @@
+import { israelYmd } from "./automationSchedule.ts";
+
 /**
  * Arrival confirmation detection + guest phone lookup + inbox backfill.
  * Shared by whatsapp-webhook (live) and whatsapp-cron (reconcile).
@@ -91,7 +93,7 @@ function pickGuestFromRows(
   if (rows.length === 0) return null;
   if (rows.length === 1) return rows[0];
 
-  const todayYmd = new Date().toISOString().slice(0, 10);
+  const todayYmd = israelYmd(new Date());
   const active = rows.filter((g) => g.status !== "cancelled");
   const pool = active.length ? active : rows;
   const upcoming = pool

@@ -15,10 +15,12 @@ import CheckinTimelineFilterBar from "./CheckinTimelineFilterBar";
 import { useCheckinTimelineFilter } from "../hooks/useCheckinTimelineFilter";
 import {
   CHECKIN_TIMELINE_ARCHIVE,
+  CHECKIN_TIMELINE_TODAY,
   CHECKIN_TIMELINE_TOMORROW,
   CHECKIN_TIMELINE_WEEK7,
   applyCheckinRosterFilter,
   countCheckinScopeTotals,
+  formatCheckinArrivalDisplay,
   getCheckinRowHighlight,
   resolveEffectiveGuestStatus,
   shouldAutoCheckoutGuest,
@@ -254,6 +256,7 @@ export default function GuestsPage({
     applyCheckinRosterFilter(suiteGuests, { scope: timelineScope, customArrivalDate }),
     new Date(),
     roomNameFor,
+    { prioritizeEta: timelineScope === CHECKIN_TIMELINE_TODAY },
   );
 
   // ── Bulk delete selected guests (same pattern as GuestDashboard.js) ────────
@@ -742,7 +745,21 @@ export default function GuestsPage({
                           </span>
                         )}
                       </td>
-                      <td style={{ fontSize: 13 }}>{g.arrival_date ?? "—"}</td>
+                      <td style={{ fontSize: 13 }}>
+                        {(() => {
+                          const arr = formatCheckinArrivalDisplay(g);
+                          return (
+                            <>
+                              <div>{arr.date}</div>
+                              {arr.eta && (
+                                <div style={{ fontSize: 12, fontWeight: 700, color: "var(--gold-dark)", direction: "ltr" }}>
+                                  🕐 {arr.eta}
+                                </div>
+                              )}
+                            </>
+                          );
+                        })()}
+                      </td>
                       <td style={{
                         fontSize: 13, fontWeight: (g.spa_time || g.spa_date) ? 800 : 400,
                         color: (g.spa_time || g.spa_date) ? "#7c3aed" : "var(--text-muted)",
@@ -833,7 +850,12 @@ export default function GuestsPage({
                     </div>
                     <div>
                       <dt>הגעה</dt>
-                      <dd>{g.arrival_date ?? "—"}</dd>
+                      <dd>
+                        {(() => {
+                          const arr = formatCheckinArrivalDisplay(g);
+                          return arr.eta ? `${arr.date} · 🕐 ${arr.eta}` : arr.date;
+                        })()}
+                      </dd>
                     </div>
                     <div>
                       <dt>ספא</dt>
