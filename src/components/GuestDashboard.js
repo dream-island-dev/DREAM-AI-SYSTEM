@@ -18,7 +18,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import AddGuestModal from "./AddGuestModal";
 import GuestAttentionBadge from "./GuestAttentionBadge";
-import CustomerProfilePane from "./CustomerProfilePane";
+import GuestContextDrawer from "./GuestContextDrawer";
 import QuietHoursGate from "./QuietHoursGate";
 import CheckinTimelineFilterBar from "./CheckinTimelineFilterBar";
 import { STATUS_META } from "../utils/guestStatusMeta";
@@ -194,7 +194,7 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
   const [editingGuest, setEditingGuest] = useState(null); // existing guest object for edit, null = closed
   const [waModal,     setWaModal]     = useState(null);  // guest object or null
   const [selected,    setSelected]    = useState(new Set()); // checked guest IDs
-  const [profileGuest, setProfileGuest] = useState(null); // guest object or null — CustomerProfilePane
+  const [profileGuest, setProfileGuest] = useState(null); // guest object or null — GuestContextDrawer
 
   const {
     timelineScope,
@@ -554,16 +554,24 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
         />
       )}
 
-      {/* Guest profile slide-out — click a guest's name to open */}
+      {/* Unified guest profile drawer — same component as WhatsAppInbox's
+          roster/thread profile click (👤 icon / name click here). */}
       {profileGuest && (
-        <CustomerProfilePane
-          guest={profileGuest}
+        <GuestContextDrawer
+          contact={{
+            phone: profileGuest.phone,
+            guestName: profileGuest.name,
+            room: profileGuest.room,
+            status: profileGuest.status,
+            arrivalDate: profileGuest.arrival_date,
+            departureDate: profileGuest.departure_date,
+            claimedBy: profileGuest.claimed_by,
+            portalToken: profileGuest.portal_token,
+          }}
           onClose={() => setProfileGuest(null)}
-          showToast={showToast}
           onOpenCheckin={onOpenCheckin}
           onOpenDreamBotChat={onOpenDreamBotChat}
           onGuestUpdated={(updated) => {
-            setProfileGuest(updated);
             setGuests((prev) => prev.map((g) => (g.id === updated.id ? { ...g, ...updated } : g)));
           }}
         />

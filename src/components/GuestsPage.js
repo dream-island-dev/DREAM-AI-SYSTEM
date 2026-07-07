@@ -8,7 +8,7 @@ import { SUITE_REGISTRY } from "../data/suiteRegistry";
 import { hasSuiteRoomTypeConflict } from "../utils/guestTiming";
 import AddGuestModal from "./AddGuestModal";
 import GuestAttentionBadge from "./GuestAttentionBadge";
-import CustomerProfilePane from "./CustomerProfilePane";
+import GuestContextDrawer from "./GuestContextDrawer";
 import QuietHoursGate from "./QuietHoursGate";
 import { STATUS_META } from "../utils/guestStatusMeta";
 import CheckinTimelineFilterBar from "./CheckinTimelineFilterBar";
@@ -53,7 +53,7 @@ export default function GuestsPage({
   const [loading, setLoading] = useState(true);
   const [busy, setBusy]       = useState(null);
   const [toast, setToast]     = useState(null);
-  const [profileGuest, setProfileGuest] = useState(null); // guest object or null — CustomerProfilePane
+  const [profileGuest, setProfileGuest] = useState(null); // guest object or null — GuestContextDrawer
   const [badgeHover, setBadgeHover] = useState(null);
   const [paymentModal, setPaymentModal] = useState(null); // { id, name, phone, amount, link }
   const [paymentBusy, setPaymentBusy]   = useState(null); // guestId being sent
@@ -535,19 +535,27 @@ export default function GuestsPage({
         />
       )}
 
-      {/* ── Read-only profile drawer (nights/checkout/portal link) — same
-          component + click pattern as GuestDashboard.js's "ניהול אורחים" ── */}
+      {/* ── Unified guest profile drawer — same component as WhatsAppInbox's
+          roster/thread profile click; GuestDashboard.js's "ניהול אורחים" uses
+          the same pattern. Self-fetches a fresh guests row keyed on phone. ── */}
       {profileGuest && (
-        <CustomerProfilePane
-          guest={profileGuest}
+        <GuestContextDrawer
+          contact={{
+            phone: profileGuest.phone,
+            guestName: profileGuest.name,
+            room: profileGuest.room,
+            status: profileGuest.status,
+            arrivalDate: profileGuest.arrival_date,
+            departureDate: profileGuest.departure_date,
+            claimedBy: profileGuest.claimed_by,
+            portalToken: profileGuest.portal_token,
+          }}
           onClose={() => setProfileGuest(null)}
-          showToast={showToast}
           onOpenDreamBotChat={onOpenDreamBotChat}
+          onOpenCheckin={onOpenCheckin}
           onGuestUpdated={(updated) => {
-            setProfileGuest(updated);
             setGuests((prev) => prev.map((x) => (x.id === updated.id ? { ...x, ...updated } : x)));
           }}
-          onOpenCheckin={onOpenCheckin}
         />
       )}
 

@@ -416,7 +416,7 @@ export default function CustomerProfilePane({ guest, onClose, onGuestUpdated, sh
           title={!liveGuest.portal_token ? "אין קישור פורטל לאורח זה" : undefined}
           style={{
             display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
-            width: "100%", padding: "9px 12px", borderRadius: 10, marginBottom: 16,
+            width: "100%", padding: "9px 12px", borderRadius: 10, marginBottom: 10,
             border: `1px solid ${linkCopied ? "#16A34A" : "var(--gold)"}`,
             background: linkCopied ? "#ECFDF5" : "var(--ivory)",
             color: linkCopied ? "#16A34A" : "var(--gold-dark)",
@@ -426,6 +426,24 @@ export default function CustomerProfilePane({ guest, onClose, onGuestUpdated, sh
           }}
         >
           {linkCopied ? "✓ הקישור הועתק" : "🔗 העתק קישור לפורטל האורח"}
+        </button>
+
+        <button
+          onClick={() => window.open(`${window.location.origin}/portal/${liveGuest.portal_token}`, "_blank", "noopener,noreferrer")}
+          disabled={!liveGuest.portal_token}
+          title={!liveGuest.portal_token ? "אין קישור פורטל לאורח זה" : undefined}
+          style={{
+            display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+            width: "100%", padding: "9px 12px", borderRadius: 10, marginBottom: 16,
+            border: "1px solid var(--gold)",
+            background: "var(--ivory)",
+            color: "var(--gold-dark)",
+            fontSize: 13, fontWeight: 700, fontFamily: "Heebo, sans-serif",
+            cursor: liveGuest.portal_token ? "pointer" : "not-allowed",
+            opacity: liveGuest.portal_token ? 1 : 0.5,
+          }}
+        >
+          👁️ צפה בפורטל האישי
         </button>
 
         <div style={{
