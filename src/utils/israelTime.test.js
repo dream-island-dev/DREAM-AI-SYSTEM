@@ -1,4 +1,5 @@
 import {
+  defaultStaffScheduleDateYmd,
   israelHmFromIso,
   israelYmdFromIso,
   isFutureScheduledQueueItem,
@@ -43,6 +44,33 @@ describe("israelTime queue schedule helpers", () => {
       schedule_date: "2026-07-10",
       schedule_time: "18:00",
     });
+  });
+
+  test("buildStaffSchedulePayload respects dateByKey override (stage mode)", () => {
+    const items = [
+      { guestId: 9, stageKey: "pre_arrival_2d", arrivalDate: "2026-07-15" },
+    ];
+    const rows = buildStaffSchedulePayload(
+      items,
+      { pre_arrival_2d: "10:30" },
+      (q) => q.stageKey,
+      { pre_arrival_2d: "2026-07-07" },
+    );
+    expect(rows[0].schedule_date).toBe("2026-07-07");
+    expect(rows[0].schedule_time).toBe("10:30");
+  });
+
+  test("defaultStaffScheduleDateYmd uses today when projected date is past", () => {
+    const items = [{ scheduledFor: "2026-07-01T08:00:00.000Z", arrivalDate: "2026-07-15" }];
+    expect(defaultStaffScheduleDateYmd(items, () => "2026-07-07")).toBe("2026-07-07");
+  });
+
+  test("defaultStaffScheduleDateYmd keeps earliest future projected date", () => {
+    const items = [
+      { scheduledFor: "2026-07-12T08:00:00.000Z" },
+      { scheduledFor: "2026-07-10T08:00:00.000Z" },
+    ];
+    expect(defaultStaffScheduleDateYmd(items, () => "2026-07-07")).toBe("2026-07-10");
   });
 
   test("isFutureScheduledQueueItem", () => {

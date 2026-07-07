@@ -1,11 +1,16 @@
 import { useMemo, useState } from "react";
 import IsraeliTimeSelect from "./IsraeliTimeSelect";
-import { israelHmFromIso, resolveQueueScheduleDateYmd } from "../utils/israelTime";
+import {
+  defaultStaffScheduleDateYmd,
+  israelHmFromIso,
+  israelTodayYmd,
+  resolveQueueScheduleDateYmd,
+} from "../utils/israelTime";
 
 const MODE_LABELS = {
+  by_stage: "לפי שלב (תאריך + שעה)",
   by_day: "לפי יום הגעה",
-  by_stage: "לפי שלב",
-  per_item: "שעה לכל הודעה",
+  per_item: "תאריך + שעה לכל הודעה",
 };
 
 function itemKey(item) {
@@ -27,9 +32,29 @@ export default function QueueBulkScheduleModal({
   saving,
   error,
 }) {
-  const [mode, setMode] = useState("by_day");
+  const [mode, setMode] = useState("by_stage");
   const [timesByDay, setTimesByDay] = useState({});
+  const [datesByDay, setDatesByDay] = useState(() => {
+    const init = {};
+    for (const q of items) {
+      const dk = dayKey(q);
+      if (!init[dk]) init[dk] = resolveQueueScheduleDateYmd(q, israelTodayYmd);
+    }
+    return init;
+  });
   const [timesByStage, setTimesByStage] = useState({});
+  const [datesByStage, setDatesByStage] = useState(() => {
+    const byStage = new Map();
+    for (const q of items) {
+      if (!byStage.has(q.stageKey)) byStage.set(q.stageKey, []);
+      byStage.get(q.stageKey).push(q);
+    }
+    const init = {};
+    for (const [sk, qs] of byStage.entries()) {
+      init[sk] = defaultStaffScheduleDateYmd(qs, israelTodayYmd);
+    }
+    return init;
+  });
   const [timesByItem, setTimesByItem] = useState(() => {
     const init = {};
     for (const q of items) {
@@ -75,20 +100,20 @@ export default function QueueBulkScheduleModal({
   const previewRows = useMemo(() => {
     if (mode === "by_day") {
       return items
-        .filter((q) => timesByDay[dayKey(q)])
+        .filter((q) => timesByDay[dayKey(q)] && datesByDay[dayKey(q)])
         .map((q) => ({
           guestName: q.guestName,
           stage: q.displayName ?? q.stageKey,
-          when: `${dayLabels[dayKey(q)] ?? dayKey(q)} · ${timesByDay[dayKey(q)]}`,
+          when: `${datesByDay[dayKey(q)]} · ${timesByDay[dayKey(q)]}`,
         }));
     }
     if (mode === "by_stage") {
       return items
-        .filter((q) => timesByStage[q.stageKey])
+        .filter((q) => timesByStage[q.stageKey] && datesByStage[q.stageKey])
         .map((q) => ({
           guestName: q.guestName,
           stage: q.displayName ?? q.stageKey,
-          when: `${resolveQueueScheduleDateYmd(q)} · ${timesByStage[q.stageKey]}`,
+          when: `${datesByStage[q.stageKey]} · ${timesByStage[q.stageKey]}`,
         }));
     }
     return items
@@ -98,26 +123,26 @@ export default function QueueBulkScheduleModal({
         stage: q.displayName ?? q.stageKey,
         when: `${datesByItem[itemKey(q)]} · ${timesByItem[itemKey(q)]}`,
       }));
-  }, [mode, items, timesByDay, timesByStage, timesByItem, datesByItem, dayLabels]);
+  }, [mode, items, timesByDay, timesByStage, timesByItem, datesByItem, datesByDay, datesByStage]);
 
   const buildPayload = () => {
     if (mode === "by_day") {
       return items
-        .filter((q) => timesByDay[dayKey(q)])
+        .filter((q) => timesByDay[dayKey(q)] && datesByDay[dayKey(q)])
         .map((q) => ({
           guest_id: q.guestId,
           stage_key: q.stageKey,
-          schedule_date: resolveQueueScheduleDateYmd(q),
+          schedule_date: datesByDay[dayKey(q)],
           schedule_time: timesByDay[dayKey(q)],
         }));
     }
     if (mode === "by_stage") {
       return items
-        .filter((q) => timesByStage[q.stageKey])
+        .filter((q) => timesByStage[q.stageKey] && datesByStage[q.stageKey])
         .map((q) => ({
           guest_id: q.guestId,
           stage_key: q.stageKey,
-          schedule_date: resolveQueueScheduleDateYmd(q),
+          schedule_date: datesByStage[q.stageKey],
           schedule_time: timesByStage[q.stageKey],
         }));
     }
@@ -145,8 +170,8 @@ export default function QueueBulkScheduleModal({
       }}>
         <div style={{ fontWeight: 800, fontSize: 18, marginBottom: 8 }}>📅 תזמון שליחה</div>
         <p style={{ fontSize: 13, color: "var(--text-muted)", lineHeight: 1.6, margin: "0 0 16px" }}>
-          {items.length} הודעות נבחרו. השעות נשמרות ב-<code>scheduled_tasks</code> — ה-cron ישלח אוטומטית
-          בזמן שנקבע (פעימה של 2.5ש׳ בין הודעות). אפשר גם «שלח עכשיו» לפני המועד.
+          {items.length} הודעות נבחרו. בחר שלב + <strong>תאריך ושעה</strong> לשליחה — מתאים גם לייבוא מאוחר
+          (למשל שלב 1 / אישור הגעה היום למרות שהמועד האוטומטי עבר). ה-cron ישלח בזמן שנקבע.
         </p>
 
         <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
@@ -178,8 +203,16 @@ export default function QueueBulkScheduleModal({
               }}>
                 <div style={{ flex: 1, minWidth: 140 }}>
                   <div style={{ fontWeight: 700, fontSize: 14 }}>{d.label}</div>
-                  <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{d.count} הודעות</div>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{d.count} הודעות · הגעה</div>
                 </div>
+                <input
+                  type="date"
+                  value={datesByDay[d.dateKey] ?? ""}
+                  onChange={(e) => setDatesByDay((prev) => ({ ...prev, [d.dateKey]: e.target.value }))}
+                  disabled={saving}
+                  title="תאריך שליחה"
+                  style={{ padding: "6px 8px", fontSize: 12, borderRadius: 6, border: "1px solid var(--border)" }}
+                />
                 <div style={{ width: 130 }}>
                   <IsraeliTimeSelect
                     value={timesByDay[d.dateKey] ?? ""}
@@ -204,8 +237,16 @@ export default function QueueBulkScheduleModal({
               }}>
                 <div style={{ flex: 1, minWidth: 140 }}>
                   <div style={{ fontWeight: 700, fontSize: 14 }}>{s.displayName}</div>
-                  <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{s.count} אורחים · תאריך לפי מועד משוער</div>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{s.count} אורחים · תאריך + שעת שליחה</div>
                 </div>
+                <input
+                  type="date"
+                  value={datesByStage[s.stageKey] ?? ""}
+                  onChange={(e) => setDatesByStage((prev) => ({ ...prev, [s.stageKey]: e.target.value }))}
+                  disabled={saving}
+                  title="תאריך שליחה"
+                  style={{ padding: "6px 8px", fontSize: 12, borderRadius: 6, border: "1px solid var(--border)" }}
+                />
                 <div style={{ width: 130 }}>
                   <IsraeliTimeSelect
                     value={timesByStage[s.stageKey] ?? ""}
@@ -300,7 +341,7 @@ export default function QueueBulkScheduleModal({
             type="button"
             className="btn btn-primary"
             disabled={saving || payloadCount === 0}
-            title={payloadCount === 0 ? "הגדר לפחות שעה אחת" : ""}
+            title={payloadCount === 0 ? "הגדר לפחות תאריך ושעה אחדים" : ""}
             onClick={() => onConfirm(buildPayload())}
             style={{ minWidth: 160 }}
           >

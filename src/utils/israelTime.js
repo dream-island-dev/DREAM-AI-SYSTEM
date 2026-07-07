@@ -24,6 +24,11 @@ export function isFutureScheduledQueueItem(item) {
 
 const ISRAEL_TZ = "Asia/Jerusalem";
 
+/** Today's calendar date YYYY-MM-DD in Israel. */
+export function israelTodayYmd() {
+  return israelYmdFromIso(new Date().toISOString());
+}
+
 /** YYYY-MM-DD in Israel for an ISO instant (queue schedule date picker default). */
 export function israelYmdFromIso(isoString) {
   if (!isoString) return "";
@@ -68,21 +73,39 @@ export function resolveQueueScheduleDateYmd(item, todayYmd = () => new Date().to
 }
 
 /**
+ * Default date for staff stage scheduling — today if projected/arrival is already past.
+ * @param {Array<{ scheduledFor?: string|null, arrivalDate?: string|null }>} items
+ */
+export function defaultStaffScheduleDateYmd(items, todayYmd = israelTodayYmd) {
+  const today = typeof todayYmd === "function" ? todayYmd() : todayYmd;
+  let earliestFuture = null;
+  for (const item of items) {
+    const d = resolveQueueScheduleDateYmd(item, () => today);
+    if (d >= today && (earliestFuture === null || d < earliestFuture)) {
+      earliestFuture = d;
+    }
+  }
+  return earliestFuture ?? today;
+}
+
+/**
  * Build payload rows for staff_schedule_tasks_batch RPC.
  * @param {Array<{ guestId: number, stageKey: string, scheduledFor?: string|null, arrivalDate?: string|null }>} items
  * @param {Record<string, string>} timeByKey — key → HH:MM (keys vary by mode)
  * @param {(item: object) => string} keyForItem
+ * @param {Record<string, string>|null} [dateByKey] — optional key → YYYY-MM-DD override
  */
-export function buildStaffSchedulePayload(items, timeByKey, keyForItem) {
+export function buildStaffSchedulePayload(items, timeByKey, keyForItem, dateByKey = null) {
   const rows = [];
   for (const item of items) {
     const key = keyForItem(item);
     const time = String(timeByKey[key] ?? "").trim();
+    const dateOverride = String(dateByKey?.[key] ?? "").trim();
     if (!time || !item?.guestId || !item?.stageKey) continue;
     rows.push({
       guest_id: item.guestId,
       stage_key: item.stageKey,
-      schedule_date: resolveQueueScheduleDateYmd(item),
+      schedule_date: dateOverride || resolveQueueScheduleDateYmd(item),
       schedule_time: time,
     });
   }
