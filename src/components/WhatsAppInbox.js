@@ -3478,7 +3478,12 @@ export default function WhatsAppInbox({
       if (fnErr || data?.ok === false) {
         throw new Error(data?.error ?? fnErr?.message ?? "שגיאה בהעברת הבקשה");
       }
-      const whapiNote = data?.notified ? "" : " (לוח בקשות עודכן — שיגור וואטסאפ נכשל)";
+      let whapiNote = "";
+      if (!data?.groupNotified && !data?.personalNotified) {
+        whapiNote = " (לוח בקשות עודכן — שיגור וואטסאפ נכשל)";
+      } else if (!data?.groupNotified) {
+        whapiNote = " (לוח בקשות עודכן — נשלח DM אישי בלבד, לא לקבוצה)";
+      }
       setRouteToast(t.routeRequestsToast + whapiNote);
     } catch (e) {
       setRouteToast("⚠️ שגיאה בהעברת בקשה: " + (e?.message ?? e));

@@ -10,7 +10,7 @@ import { serve }         from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient }  from "https://esm.sh/@supabase/supabase-js@2";
 import { sendWhapiText } from "../_shared/whapiSend.ts";
 import { triggerInboxRedAlert } from "../_shared/inboxRedAlert.ts";
-import { resolveRouting, alertIntentType } from "../_shared/routingConfig.ts";
+import { resolveRequestsWhapiGroupId } from "../_shared/routingConfig.ts";
 import { containsHebrew, translateTextForFieldOps } from "../_shared/fieldOpsTranslation.ts";
 
 const CORS = {
@@ -117,23 +117,7 @@ serve(async (req: Request) => {
       reporterName = (profile?.name as string | undefined) ?? null;
     }
 
-    const routing = await resolveRouting(supabase, alertIntentType("inbox_routed"), {
-      destination_board: "requests",
-      whatsapp_group_id: null,
-      enable_sla: true,
-    });
-  // alert_inbox_routed seed (migration 152); fall back to alert_request if unconfigured.
-    const routingFallback = await resolveRouting(supabase, alertIntentType("request"), {
-      destination_board: "requests",
-      whatsapp_group_id: null,
-      enable_sla: false,
-    });
-    const groupId = (
-      routing.whatsapp_group_id
-      || routingFallback.whatsapp_group_id
-      || (Deno.env.get("WHAPI_REQUESTS_GROUP_ID") ?? "").trim()
-      || ""
-    );
+    const groupId = (await resolveRequestsWhapiGroupId(supabase, "alert_inbox_routed")) ?? "";
 
     let whapiMessage = alertMessage;
     if (containsHebrew(whapiMessage)) {
