@@ -1856,7 +1856,14 @@ serve(async (req: Request) => {
       await fetchNightBeforeKnowledge(supabase);
     }
 
-    if (!force && guest.automation_muted === true) {
+    // Group-guest mute (automation_muted) blocks the autonomous timeline pipeline
+    // only — room_ready (staff-approved key handover) and manual triggers are
+    // deliberate one-off dispatches, not the automated stage sequence this flag
+    // exists to silence. Without this exemption a muted (group) guest's room
+    // never notifies at all, which contradicts the "group guests still get
+    // room_ready + courtesy chat" business rule (see CLAUDE.md §10 session 132/133 area).
+    const AUTOMATION_MUTE_EXEMPT = new Set([...MANUAL_TRIGGERS, "room_ready"]);
+    if (!force && guest.automation_muted === true && !AUTOMATION_MUTE_EXEMPT.has(trigger)) {
       console.log(`[whatsapp-send] skipped trigger="${trigger}" guestId=${guestId} reason=automation_muted`);
       return new Response(
         JSON.stringify({ ok: true, skipped: true, reason: "automation_muted" }),

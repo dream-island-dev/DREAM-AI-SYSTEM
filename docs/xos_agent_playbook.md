@@ -1,6 +1,6 @@
 # XOS Agent Playbook — Smart Dev Environment
 > **Living document.** Mike + every Cursor agent reads this with `CLAUDE.md` and `docs/active_sprint.md`.
-> Last updated: 2026-07-07 (session 130+ — playbook + UI upgrade strategy + token-efficient workflow + Advanced Prompt Engineering Rules).
+> Last updated: 2026-07-07 (session 131b — playbook + UI upgrade strategy + token-efficient workflow + Advanced Prompt Engineering Rules + external-verify/reset-on-drift + Design Mode/reuse-first/exact-match QA/no-autopilot).
 >
 > **When you learn something new that works** → add a bullet here + 1 line in `docs/changelog.md` + refresh `CLAUDE.md` §13 if architecture changed.
 
@@ -245,15 +245,25 @@ Then atomic diff. npm run build. Deploy checklist. Offer deploy.
 ## 6. Mandatory Agent Workflow (every code session)
 
 1. Read `CLAUDE.md` + `docs/active_sprint.md` + this file.
+1b. **Design Mode (new feature / architecturally unclear task only — skip for small bugfixes):** Do NOT write code yet. Present **3 distinct approaches** (not 3 variations of the same idea) with trade-offs — reuse-existing vs. new-table, sync vs. async, etc. Justify each briefly. Wait for Mike to pick one (or merge ideas) before any code is written. This is the step that catches "the agent quietly chose an architecture Mike wouldn't have picked" before it's baked into a diff.
 2. **Plan & Chain of Thought:** For complex logic, split the task into 3 phases (Plan, Execute, Verify) and explain your reasoning step-by-step *before* writing code to avoid logic errors.
-3. Read target files before editing. Base code strictly on existing examples; do not reinvent the wheel.
-4. **Execute:** Atomic diffs only. Be mindful of context window limits — avoid massive single-shot refactors that cause context loss.
-5. **Self-Verify:** Before presenting to Mike, verify the code against constraints (assume another AI model will review your work).
+3. Read target files before editing. **Search for an existing function/util/`_shared/` helper first — reuse beats reinventing.** Only write a new function when nothing existing fits; do not create a near-duplicate of something that already does 90% of the job. Base code strictly on existing examples.
+4. **Execute:** Atomic diffs only. Be mindful of context window limits — avoid massive single-shot refactors that cause context loss. Small focused diffs, not sprawling changes Mike can't read in one pass.
+5. **Self-Verify — exact match, not "close enough":** Before presenting to Mike, re-read his original request line-by-line against what you actually built. Flag explicitly if you simplified, skipped, or substituted something because it was easier — do not silently ship the easier version and call it done.
+5b. **External Verify (high-stakes only):** For risky/complex changes (migrations, payment/automation logic, RLS), do not trust self-check alone — a model grading its own work tends to say "looks good." Spawn a `Plan` agent (fresh context, no prior bias) to re-read the diff and challenge it before deploy, exactly like session 132's approval-gate design.
 6. `npm run build` before commit when `src/` changed.
 7. End with **Deploy Checklist** (only layers touched).
 8. **Offer** autonomous deploy; run on `yes` / `כן` / `תעלה`.
 9. Update `docs/changelog.md` (1 line) + `CLAUDE.md` header if state changed.
 10. If process improved → update **this playbook** §9.
+
+### 6.1 Reset-on-Drift Protocol
+If the agent starts inventing unrequested changes, contradicting its own prior statements, or "fixing" things Mike didn't ask about — **stop immediately, do not try to patch it within the same context.** Tell Mike plainly ("איבדתי הקשר / נראה שאני סוטה מהמשימה — כדאי לפתוח שיחה חדשה") and let him start a fresh session. Fighting drift inside a already-confused context window compounds errors instead of fixing them.
+
+### 6.2 QA / Edge Cases
+- **Mike names the critical edge cases** for features he cares about (payment, automation gates, guest data) — the agent does not guess which ones matter most.
+- The agent implements tests/checks for exactly those cases, then confirms explicitly which ones were covered — not a vague "should work now."
+- **Self-review is weak on logic bugs at this codebase's size** (same reason as §6 step 5b) — a model checking its own multi-file change is prone to missing the interaction it just introduced. Treat self-review as a first pass, not the final gate, on anything touching automation/payment/RLS.
 
 ### Deploy checklist template
 
@@ -274,6 +284,7 @@ Then atomic diff. npm run build. Deploy checklist. Offer deploy.
 - Never modify Hebrew UI strings unless Mike explicitly asks.
 - `.maybeSingle()` not `.single()` on Supabase reads.
 - **Strict Code Constraints:** Do NOT add unrequested code comments. Do NOT rename existing functions unless explicitly instructed.
+- **No Auto-Piloting:** the agent never runs `git commit`/`git push`, `db push`, or `functions deploy` without Mike's explicit approval word (§2.1/§12) — this is absolute, not a suggestion. Local, non-mutating commands (`npm run build`, reading files, `npm test`) do not require approval. Only one phase/part of a plan is worked on at a time — finish it, show Mike, wait — never run ahead into the next part unprompted.
 
 ---
 
@@ -323,6 +334,17 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 ---
 
 ## 10. Learnings Log
+
+### 2026-07-07 — Session 131b (Anti-laziness hygiene — Design Mode, reuse-first, exact-match QA, no-autopilot)
+- **Design Mode (§6 step 1b):** new/architecturally-unclear tasks now require 3 distinct proposed approaches, no code, before Mike picks one — catches the agent silently locking in an architecture Mike wouldn't have chosen.
+- **Reuse-first (§6 step 3):** explicit instruction to search existing `_shared/`/utils before writing a new function — prevents near-duplicate helpers accumulating.
+- **Exact-match self-verify (§6 step 5):** re-read Mike's original request line-by-line vs. what was built; flag any place a shortcut was taken because it was easier, don't ship the easier version silently.
+- **§6.2 QA:** Mike names critical edge cases explicitly (not the agent guessing); self-review treated as first pass only on automation/payment/RLS work, per the "student grading their own exam" problem.
+- **§7 No Auto-Piloting:** made explicit as a hard rule (was already true in practice via §2.1 Approval Loop) — no git/db/functions commands without Mike's explicit yes; local read-only commands (build/test) don't need approval; one phase at a time, never run ahead.
+
+### 2026-07-07 — Session 131 (Prompt-engineering hygiene — external verify + reset-on-drift)
+- **Most of the "role/task/constraints/examples/verify" formula was already in §6** — no need to duplicate. Two real gaps closed: (1) self-verification bias — a model checking its own diff tends to approve it; added §6 step 5b (spawn a `Plan` agent for high-stakes changes instead of self-check only). (2) drift handling — added §6.1: when the agent starts hallucinating/touching unrequested files, stop and ask Mike to open a fresh session rather than trying to self-correct mid-drift.
+- **Not added (already covered elsewhere):** role framing → CLAUDE.md's fixed architect persona + per-skill agent types; Chain-of-Thought for logic bugs → already §6 step 2; constraints/examples → already §5.1 + §6 step 3.
 
 ### 2026-07-07 — Session 130 (Group remark occupants import)
 - **שורש:** `sync_suite_arrivals` Tier-2 (order יחיד → עדכון אורח) דרס אורח-קבוצה שני באותה הזמנה — רק האחרון נשאר ב-DB (עיריית/הערות).

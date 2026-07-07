@@ -3857,9 +3857,18 @@ Deno.serve(async (req: Request) => {
       // NOT gated on arrival_confirmed — a prior confirm may have set the DB flag
       // without delivering Stage 2 (staff-claim mute, send failure, manual toggle).
       // Arrival confirm always beats LLM/portal-spa context for pre-check-in guests.
+      // ⚠️ session fix (2026-07-07): canGuestConfirmArrival() must NOT be checked
+      // here as a pre-condition — handleStage2ArrivalConfirmation() already does
+      // that check internally and exits silently on a genuine repeat (mirrors the
+      // button-tap path at "isButtonReply" above, which never pre-checks either).
+      // Pre-checking it here meant a guest who RE-typed "כן, מגיעים!" after Stage 2
+      // was already delivered fell straight through every remaining Tier-0
+      // classifier into the free-text LLM — producing an off-script improvised
+      // reply ("hallucination") instead of the same safe silence the button path
+      // already gets. Always intercept a confirmation text here; let the function
+      // decide what (if anything) to send.
       if (
         !isButtonReply &&
-        canGuestConfirmArrival(guest as Record<string, unknown> | null) &&
         isArrivalConfirmationMessage(text)
       ) {
         await handleStage2ArrivalConfirmation(supabase, {
@@ -4103,9 +4112,11 @@ Deno.serve(async (req: Request) => {
 
       // ── Arrival confirmation (post-burst) — before staff-claim LLM exit ──
       // Pipeline Stage 2 must fire even when Inbox "קח שיחה" is active.
+      // Same fix as the pre-burst branch above: no canGuestConfirmArrival()
+      // pre-check — let handleStage2ArrivalConfirmation() decide (send vs. safe
+      // silent repeat), so a repeat confirm never falls through to the LLM.
       if (
         !isButtonReply &&
-        canGuestConfirmArrival(guest as Record<string, unknown> | null) &&
         isArrivalConfirmationMessage(effectiveText)
       ) {
         await handleStage2ArrivalConfirmation(supabase, {
@@ -4815,22 +4826,4 @@ Deno.serve(async (req: Request) => {
   // freeze/terminate the isolate before an un-awaited async task finishes.
   // processAsync() routinely takes 2-5s+ (BURST_COALESCE_MS=1800 alone, plus
   // the Gemini/Claude round-trip) — comfortably longer than the best-effort
-  // grace period, so replies were being silently cut off after the inbound
-  // insert (which resolves fast) but before sendReply() ran. EdgeRuntime.
-  // waitUntil() is the documented Supabase mechanism to keep the isolate
-  // alive until the given promise settles, without delaying the response
-  // Meta receives. Falls back to the old un-awaited call if the runtime
-  // (e.g. local `supabase functions serve`) doesn't expose it.
-  const backgroundTask = processAsync().catch((e) =>
-    console.error("[webhook] processAsync error:", e)
-  );
-  const edgeRuntime = (globalThis as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } }).EdgeRuntime;
-  if (typeof edgeRuntime?.waitUntil === "function") {
-    edgeRuntime.waitUntil(backgroundTask);
-  }
-
-  // Respond to Meta within 20 s window
-  return new Response(JSON.stringify({ ok: true }), {
-    headers: { ...CORS, "Content-Type": "application/json" },
-  });
-});
+  // grace period, so replies were being silent
