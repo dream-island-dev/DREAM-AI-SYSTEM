@@ -186,6 +186,7 @@ const LEGACY_SCRIPT_TAG_RE = /^\[סקריפט:\s*(.+?)\]$/;
 const LEGACY_TEMPLATE_TAG_RE = /^\[תבנית:\s*(.+?)\]$/;
 const DISPATCH_META_PREFIX = /^\[META\]\n?/;
 const DISPATCH_SESSION_PREFIX = /^\[SESSION\]\n?/;
+const DISPATCH_WHAPI_PREFIX = /^\[WHAPI\]\n?/;
 const INTERACTIVE_BUTTONS_SUFFIX = /\n?\[\+\s*Interactive Buttons(?::\s*([^\]]+))?\]\s*$/;
 
 const LEGACY_BRACKET_SCRIPT_KEYS = {
@@ -194,7 +195,7 @@ const LEGACY_BRACKET_SCRIPT_KEYS = {
   "חדר מוכן: חופשי": "room_ready_reminder",
 };
 
-/** Strip whatsapp-send dispatch tags — [META]/[SESSION] + interactive-button footer. */
+/** Strip whatsapp-send dispatch tags — [META]/[SESSION]/[WHAPI] + interactive-button footer. */
 function parseOutboundDispatch(raw) {
   if (!raw || typeof raw !== "string") {
     return { channel: null, body: raw ?? "", hasInteractiveButtons: false, buttonLabels: null };
@@ -207,6 +208,9 @@ function parseOutboundDispatch(raw) {
   } else if (DISPATCH_SESSION_PREFIX.test(body)) {
     channel = "session";
     body = body.replace(DISPATCH_SESSION_PREFIX, "");
+  } else if (DISPATCH_WHAPI_PREFIX.test(body)) {
+    channel = "whapi";
+    body = body.replace(DISPATCH_WHAPI_PREFIX, "");
   }
   let buttonLabels = null;
   let hasInteractiveButtons = false;
@@ -1377,6 +1381,9 @@ const Bubble = React.memo(function Bubble({ msg, dir, resolveCtx, isMobile, onIm
           )}
           {isOut && dispatchInfo?.channel === "session" && (
             <span title="נשלח כהודעת סשן (24ש')" aria-label="Session message">🟢</span>
+          )}
+          {isOut && dispatchInfo?.channel === "whapi" && (
+            <span title="נשלח דרך מכשיר הסוויטות (Whapi)" aria-label="Whapi Suites device">📱</span>
           )}
           {isOut && <span>✓✓</span>}
         </div>

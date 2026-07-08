@@ -100,6 +100,7 @@ import {
   markSuiteRoomReadySent,
   syncGuestRoomReadyAggregate,
 } from "../_shared/suiteRoomReady.ts";
+import { shouldRouteGuestOutboundViaWhapiSuites } from "../_shared/guestWhapiRouting.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -131,13 +132,15 @@ function sessionButtonsToLabels(buttons: InteractiveButtonDef[]): string[] {
     .map((b) => String(b.label).trim());
 }
 
-/** Prefix [META]/[SESSION] + optional interactive-button footer for whatsapp_conversations. */
+/** Prefix [META]/[SESSION]/[WHAPI] + optional interactive-button footer for whatsapp_conversations. */
 function formatOutboundConversationLog(opts: {
-  channel: "meta_template" | "session_message";
+  channel: "meta_template" | "session_message" | "whapi_suites";
   body: string;
   interactiveButtonLabels?: string[];
 }): string {
-  const tag = opts.channel === "meta_template" ? "[META]" : "[SESSION]";
+  const tag =
+    opts.channel === "meta_template" ? "[META]" :
+    opts.channel === "whapi_suites" ? "[WHAPI]" : "[SESSION]";
   const lines: string[] = [tag, truncateConversationLog(opts.body.trim())];
   const labels = opts.interactiveButtonLabels?.filter(Boolean) ?? [];
   if (labels.length > 0) {
@@ -156,6 +159,13 @@ function buildSessionConversationLog(
     body,
     interactiveButtonLabels: labels.length ? labels : undefined,
   });
+}
+
+// Guest-outbound Whapi routing (Phase 1) — suite guests sent via the Suites
+// device. No interactive-button concept on Whapi's plain-text send, so no
+// labels param (unlike buildSessionConversationLog above).
+function buildWhapiSuitesConversationLog(body: string): string {
+  return formatOutboundConversationLog({ channel: "whapi_suites", body });
 }
 
 /**
@@ -1550,41 +1560,105 @@ serve(async (req: Request) => {
       // null below) — conversation history is the contract, not the profile.
       const staffGuest = await loadGuestByPhoneForStaffReply(supabase, targetPhone);
 
-      // ── 24-Hour Interaction Window Guard ─────────────────────────────────
-      // inbox_reply sends raw free text — previously unchecked here, so a
-      // manager replying to a stale thread just hit a possibly-cryptic Meta
-      // rejection AFTER attempting the send (CLAUDE.md §CORE BUSINESS LOGIC
-      // point 3 flagged this as open). Checking first turns the same
-      // inevitable outcome (Meta would reject either way — free text outside
-      // the window is a hard Meta rule, not a preference we control) into a
-      // fast, clear, pre-send signal instead of an after-the-fact API error.
-      // Only enforced when the phone matches a known guest row; an untracked
-      // number (no guest record) keeps today's permissive behavior, since we
-      // have no window data to check.
-      if (staffGuest && !isWindowOpen(staffGuest.wa_window_expires_at)) {
-        return new Response(
-          JSON.stringify({
-            ok: false,
-            status: "window_closed",
-            error: "window_closed: חלון 24 השעות סגור — האורח לא הגיב ב-24 השעות האחרונות, לא ניתן לשלוח הודעה חופשית. נדרשת תבנית מאושרת.",
-          }),
-          { headers: { ...CORS, "Content-Type": "application/json" } },
-        );
-      }
+      // ── Guest Outbound Whapi Routing (Phase 1) ───────────────────────────
+      // Suite guests route through the dedicated Suites Whapi device instead
+      // of Meta — inert unless both GUEST_WHAPI_SUITES_ENABLED and
+      // WHAPI_SUITES_TOKEN are set (see _shared/guestWhapiRouting.ts). Day
+      // guests / unregistered phones (isEffectiveSuiteGuest false) always
+      // keep today's Meta-only behavior below, unchanged.
+      const routeViaWhapiSuites = shouldRouteGuestOutboundViaWhapiSuites(staffGuest);
 
       let replyStatus = "simulated";
       let replyErr: string | null = null;
       let replyWamid: string | null = null;
+      let replyChannel: "meta" | "whapi_suites" = "meta";
+      // Set only when the Whapi attempt below hits a CONFIRMED failure (not a
+      // timeout) and we fall through to Meta — surfaced only if Meta then also
+      // fails, so a successful fallback stays silent to the caller (still
+      // console.warn'd for anyone reading Edge Function logs).
+      let whapiFallbackNote: string | null = null;
 
-      try {
-        if (!sim) {
-          replyWamid = await sendViaMeta(targetPhone, inboxMsg);
-          replyStatus = "sent";
+      if (routeViaWhapiSuites) {
+        try {
+          if (!sim) {
+            replyWamid = await sendWhapiText(targetPhone, inboxMsg, { tokenEnvVar: "WHAPI_SUITES_TOKEN" });
+          }
+          replyStatus = sim ? "simulated" : "sent";
+          replyChannel = "whapi_suites";
+        } catch (e) {
+          const whapiMessage = (e as Error).message;
+          if (whapiMessage.startsWith("timeout_no_response")) {
+            // Delivery genuinely unknown — never auto-retry on a second real
+            // WhatsApp number (risks a guest-visible double send). Surface
+            // this distinctly instead of silently falling back to Meta.
+            console.error("[whatsapp] inbox_reply Whapi Suites TIMED OUT (unknown delivery):", whapiMessage);
+            await notifyAdminIfDispatchFailed({
+              status: "timeout",
+              error: whapiMessage,
+              guestPhone: targetPhone,
+              dispatchType: "Session (Whapi Suites)",
+            });
+            return new Response(
+              JSON.stringify({
+                ok: false,
+                status: "timeout",
+                error: `whapi_timeout: ${whapiMessage}`,
+              }),
+              { headers: { ...CORS, "Content-Type": "application/json" } },
+            );
+          }
+          // Confirmed failure (non-2xx, missing token, etc.) — degrade to the
+          // existing Meta path below rather than hard-failing the send.
+          console.warn("[whatsapp] inbox_reply Whapi Suites send failed, falling back to Meta:", whapiMessage);
+          whapiFallbackNote = whapiMessage;
         }
-      } catch (e) {
-        replyErr = (e as Error).message;
-        console.error("[whatsapp] inbox_reply send failed:", replyErr);
-        replyStatus = "failed";
+      }
+
+      // Meta path — unchanged behavior. Taken whenever not routing via Whapi
+      // at all, OR when the Whapi attempt above hit a confirmed failure.
+      if (replyChannel !== "whapi_suites") {
+        // ── 24-Hour Interaction Window Guard ───────────────────────────────
+        // inbox_reply sends raw free text — previously unchecked here, so a
+        // manager replying to a stale thread just hit a possibly-cryptic Meta
+        // rejection AFTER attempting the send (CLAUDE.md §CORE BUSINESS LOGIC
+        // point 3 flagged this as open). Checking first turns the same
+        // inevitable outcome (Meta would reject either way — free text outside
+        // the window is a hard Meta rule, not a preference we control) into a
+        // fast, clear, pre-send signal instead of an after-the-fact API error.
+        // Only enforced when the phone matches a known guest row; an untracked
+        // number (no guest record) keeps today's permissive behavior, since we
+        // have no window data to check. Not applicable to the Whapi path
+        // above — that's a real WhatsApp number, no Meta session-window exists.
+        if (staffGuest && !isWindowOpen(staffGuest.wa_window_expires_at)) {
+          return new Response(
+            JSON.stringify({
+              ok: false,
+              status: "window_closed",
+              error: whapiFallbackNote
+                ? `whapi_failed: ${whapiFallbackNote}; window_closed: חלון 24 השעות סגור — האורח לא הגיב ב-24 השעות האחרונות, לא ניתן לשלוח הודעה חופשית. נדרשת תבנית מאושרת.`
+                : "window_closed: חלון 24 השעות סגור — האורח לא הגיב ב-24 השעות האחרונות, לא ניתן לשלוח הודעה חופשית. נדרשת תבנית מאושרת.",
+            }),
+            { headers: { ...CORS, "Content-Type": "application/json" } },
+          );
+        }
+
+        try {
+          if (!sim) {
+            replyWamid = await sendViaMeta(targetPhone, inboxMsg);
+            replyStatus = "sent";
+          }
+        } catch (e) {
+          replyErr = (e as Error).message;
+          console.error("[whatsapp] inbox_reply send failed:", replyErr);
+          replyStatus = "failed";
+        }
+
+        if (whapiFallbackNote && replyErr) {
+          // Both channels were attempted and both failed — combine so the
+          // admin alert and caller-visible error carry full context instead
+          // of losing the Whapi attempt to a console.warn nobody reads.
+          replyErr = `whapi_failed: ${whapiFallbackNote}; meta_failed: ${replyErr}`;
+        }
       }
 
       await notifyAdminIfDispatchFailed({
@@ -1601,7 +1675,9 @@ serve(async (req: Request) => {
         direction:     "outbound",
         message:       replyStatus === "failed"
           ? inboxMsg
-          : buildSessionConversationLog(inboxMsg),
+          : (replyChannel === "whapi_suites"
+              ? buildWhapiSuitesConversationLog(inboxMsg)
+              : buildSessionConversationLog(inboxMsg)),
         wa_message_id: replyWamid,
       });
 
