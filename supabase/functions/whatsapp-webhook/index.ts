@@ -626,7 +626,7 @@ async function sendStage2PayReply(
       }
       await sendCtaUrlButton(phone, finalPaymentReply, paymentButton.label, resolvedUrl);
     } else {
-      await sendReply(phone, finalPaymentReply);
+      await sendReply(phone, finalPaymentReply, { scripted: true });
     }
     if (_suppressGuestRepliesStaffClaim) {
       console.info(`[webhook] 💳 Stage 2 Pay outbound skipped — staff claim active guest_id=${guestId ?? "?"}`);
@@ -829,19 +829,24 @@ async function handleStage2ArrivalConfirmation(
         const prevStaffMute = _suppressGuestRepliesStaffClaim;
         setSuppressGuestRepliesStaffClaim(false);
         try {
-          const waId = await sendReply(phone, arrivalReply);
+          const waId = await sendReply(phone, arrivalReply, { scripted: true });
           if (!waId) {
             console.warn(
               `[webhook] ⚠️ stage_2_arrival sendReply empty — phone:${phone} (will try pipeline fallback)`,
             );
           } else {
-            await insertGuestOutboundIfNotMuted(supabaseClient, {
+            const convLogged = await insertGuestOutboundIfNotMuted(supabaseClient, {
               phone,
               guest_id: guestId,
               message: arrivalReply,
               wa_message_id: waId === "unknown" ? null : waId,
               intent: outboundIntent,
             });
+            if (!convLogged) {
+              console.error(
+                `[webhook] ⚠️ stage_2_arrival Meta send OK but inbox log FAILED — phone:${phone} intent:${outboundIntent}`,
+              );
+            }
             if (guestId) {
               await supabaseClient.from("guests").update({ msg_stage_2_arrival_sent: true }).eq("id", guestId);
               try {
@@ -1806,7 +1811,7 @@ async function handleCheckInPolicyFaq(
   });
   if (!sim) {
     try {
-      await sendReply(phone, reply);
+      await sendReply(phone, reply, { scripted: true });
       await insertGuestOutboundIfNotMuted(supabase, {
         phone, guest_id: guestId, message: reply, wa_message_id: null, intent: "check_in_policy_faq",
       });
@@ -1889,7 +1894,7 @@ async function handleOperationalInHouseIntercept(
 
   if (!sim) {
     try {
-      await sendReply(phone, reply);
+      await sendReply(phone, reply, { scripted: true });
       await insertGuestOutboundIfNotMuted(supabase, {
         phone,
         guest_id:      guestId,
@@ -1971,7 +1976,7 @@ async function handleBalloonRoomRequestIntercept(
 
   if (!sim) {
     try {
-      await sendReply(phone, reply);
+      await sendReply(phone, reply, { scripted: true });
       await insertGuestOutboundIfNotMuted(supabase, {
         phone,
         guest_id:      guestId,
@@ -2041,7 +2046,7 @@ async function handleAdministrativeInHouseIntercept(
 
   if (!sim) {
     try {
-      await sendReply(phone, reply);
+      await sendReply(phone, reply, { scripted: true });
       await insertGuestOutboundIfNotMuted(supabase, {
         phone,
         guest_id:      guestId,
@@ -2145,7 +2150,7 @@ async function handleSevereComplaintKillSwitch(
 
   if (!sim) {
     try {
-      await sendReply(phone, templateReply);
+      await sendReply(phone, templateReply, { scripted: true });
       await insertGuestOutboundIfNotMuted(supabase, {
         phone,
         guest_id:      guestId,
@@ -2229,7 +2234,7 @@ async function handleSensitiveStayChangeHandoff(
 
   if (!sim) {
     try {
-      await sendReply(phone, CANONICAL_STAY_CHANGE_HANDOFF_MSG);
+      await sendReply(phone, CANONICAL_STAY_CHANGE_HANDOFF_MSG, { scripted: true });
       await insertGuestOutboundIfNotMuted(supabase, {
         phone,
         guest_id:      guestId,
@@ -2316,7 +2321,7 @@ async function handleSensitiveFinancialHandoff(
 
   if (!sim) {
     try {
-      await sendReply(phone, CANONICAL_FINANCIAL_HANDOFF_MSG);
+      await sendReply(phone, CANONICAL_FINANCIAL_HANDOFF_MSG, { scripted: true });
       await insertGuestOutboundIfNotMuted(supabase, {
         phone,
         guest_id:      guestId,
@@ -3071,7 +3076,16 @@ function sanitizeReply(text: string): string {
 // ══════════════════════════════════════════════════════════════════════════════
 // §6  META CLOUD API — send WhatsApp reply
 // ══════════════════════════════════════════════════════════════════════════════
-async function sendReply(to: string, body: string): Promise<string> {
+type SendReplyOpts = {
+  /**
+   * Pre-approved BotScriptEditor / pipeline text (Stage 2, complaint_reply, etc.).
+   * Skips LLM-oriented sanitizeReply + truncation guard — those were replacing
+   * portal-link Stage 2 messages ending in URLs/🥰 with the generic emptyFallback.
+   */
+  scripted?: boolean;
+};
+
+async function sendReply(to: string, body: string, opts?: SendReplyOpts): Promise<string> {
   if (_suppressGuestRepliesStaffClaim) {
     console.info(`[webhook] 🔇 staff claim — sendReply suppressed to ${to}`);
     return "";
@@ -3095,31 +3109,35 @@ async function sendReply(to: string, body: string): Promise<string> {
   const phoneId = Deno.env.get("META_PHONE_NUMBER_ID");
   if (!token || !phoneId) throw new Error("missing_meta_creds");
 
-  // ── FINAL CHOKEPOINT (Session 24, Sprint 1.3) ──────────────────────────────
-  // Every guest-facing free-text reply goes out through sendReply(). Sanitizing
-  // HERE (not only at the AI call sites) guarantees no chain-of-thought leak,
-  // <think> tag, or unresolved {{placeholder}} ever reaches a guest, regardless
-  // of which code path produced `body`. If sanitization removes everything (the
-  // model emitted pure English reasoning), fall back to a safe Hebrew line
-  // instead of sending an empty message.
   const emptyFallback =
     "מצטערים, נשמח לעזור 🙏 אפשר לנסח שוב? צוות Dream Island כאן בשבילכם.";
-  const safeBodyRaw = sanitizeReply(body).trim() || emptyFallback;
 
-  const safeBody = isReplyObviouslyTruncated(safeBodyRaw)
-    ? resolveTruncatedReplyFallback(
-        safeBodyRaw,
-        "",
-        _configCache,
-        null,
-        emptyFallback,
-      )
-    : safeBodyRaw;
+  let safeBody: string;
+  if (opts?.scripted) {
+    // Scripted pipeline — placeholders already resolved; send verbatim.
+    safeBody = body.trim();
+    if (!safeBody) {
+      console.error(`[webhook] sendReply(scripted) empty body — not sent to ${to}`);
+      return "";
+    }
+  } else {
+    // ── FINAL CHOKEPOINT (Session 24) — LLM free-text only ───────────────────
+    const safeBodyRaw = sanitizeReply(body).trim() || emptyFallback;
+    safeBody = isReplyObviouslyTruncated(safeBodyRaw)
+      ? resolveTruncatedReplyFallback(
+          safeBodyRaw,
+          "",
+          _configCache,
+          null,
+          emptyFallback,
+        )
+      : safeBodyRaw;
 
-  if (safeBody !== safeBodyRaw) {
-    console.warn(
-      `[webhook] 🛡️ sendReply truncation guard — replaced tail:"${safeBodyRaw.slice(-50)}"`,
-    );
+    if (safeBody !== safeBodyRaw) {
+      console.warn(
+        `[webhook] 🛡️ sendReply truncation guard — replaced tail:"${safeBodyRaw.slice(-50)}"`,
+      );
+    }
   }
 
   const recipient = sanitizeMetaRecipientPhone(to);
@@ -3290,12 +3308,29 @@ async function resolveReactionTargetSnippet(
 async function insertGuestOutboundIfNotMuted(
   supabase: ReturnType<typeof createClient>,
   row: GuestOutboundRow,
-): Promise<void> {
-  if (_suppressGuestRepliesStaffClaim) return;
-  const { error } = await supabase.from("whatsapp_conversations").insert({
-    ...row,
-    direction: "outbound",
-  });
+): Promise<boolean> {
+  if (_suppressGuestRepliesStaffClaim) return false;
+
+  const baseRow = { ...row, direction: "outbound" as const };
+  let { error } = await supabase.from("whatsapp_conversations").insert(baseRow);
+
+  // FAIL VISIBLE fallback: a stale intent CHECK must never block inbox logging
+  // after Meta already delivered the message (migration 157 class of bug).
+  if (error?.code === "23514" && row.intent) {
+    const retry = await supabase.from("whatsapp_conversations").insert({
+      ...baseRow,
+      intent: null,
+    });
+    if (!retry.error) {
+      console.warn(
+        "[webhook] insertGuestOutboundIfNotMuted intent rejected — logged with intent=null:",
+        row.intent,
+      );
+      return true;
+    }
+    error = retry.error;
+  }
+
   if (error) {
     console.error(
       "[webhook] insertGuestOutboundIfNotMuted failed:",
@@ -3304,7 +3339,9 @@ async function insertGuestOutboundIfNotMuted(
       "intent:",
       row.intent,
     );
+    return false;
   }
+  return true;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -3639,7 +3676,7 @@ Deno.serve(async (req: Request) => {
           ? "⚠️ Couldn't update the task — please check the Operations Board."
           : isClaim ? "🙋‍♂️ Got it — marked as you're handling this now." : "✅ Marked as done, thank you!";
         try {
-          await sendReply(phone, confirmText);
+          await sendReply(phone, confirmText, { scripted: true });
         } catch (e) {
           console.error(`[webhook] failed to send ops confirmation to ${phone}:`, (e as Error).message);
         }
@@ -3862,7 +3899,7 @@ Deno.serve(async (req: Request) => {
           })().catch((e: Error) => console.warn("[webhook] guest_alerts (button date_change) error:", e.message));
           const dateChangeReply =
             "העברתי את בקשתך לצוות הסוויטות שלנו, בנתיים תכתוב לי באיזה תאריכים תרצו ואנחנו נבדוק זמינות עבורכם וניצור קשר בהקדם. 🙏";
-          try { await sendReply(phone, dateChangeReply); } catch (e) { console.error("[webhook] reply error:", (e as Error).message); }
+          try { await sendReply(phone, dateChangeReply, { scripted: true }); } catch (e) { console.error("[webhook] reply error:", (e as Error).message); }
           await insertGuestOutboundIfNotMuted(supabase, {
             phone, guest_id: guestId, message: dateChangeReply, wa_message_id: null, intent: "date_change_request",
           });
@@ -3870,7 +3907,7 @@ Deno.serve(async (req: Request) => {
         // ── "ספא וטיפולים 📜" — send spa menu as free text ──────────────────
         } else if (buttonTitle.includes("ספא") || buttonTitle.includes("טיפולים")) {
           const spaMenuText = scripts["spa_menu"]?.message_text?.trim() || SPA_MENU;
-          try { await sendReply(phone, spaMenuText); } catch (e) { console.error("[webhook] spa menu send error:", (e as Error).message); }
+          try { await sendReply(phone, spaMenuText, { scripted: true }); } catch (e) { console.error("[webhook] spa menu send error:", (e as Error).message); }
           await insertGuestOutboundIfNotMuted(supabase, {
             phone, guest_id: guestId, message: "[תפריט ספא]", wa_message_id: null, intent: "button_reply",
           });
@@ -3885,7 +3922,7 @@ Deno.serve(async (req: Request) => {
           }
           const callbackReply = scripts["callback_reply"]?.message_text?.trim()
             || "קיבלנו! 🙏 אחד מהצוות שלנו יצור אתכם קשר בהקדם. תמשיכו ליהנות!";
-          try { await sendReply(phone, callbackReply); } catch (e) { console.error("[webhook] reply error:", (e as Error).message); }
+          try { await sendReply(phone, callbackReply, { scripted: true }); } catch (e) { console.error("[webhook] reply error:", (e as Error).message); }
           await insertGuestOutboundIfNotMuted(supabase, {
             phone, guest_id: guestId, message: callbackReply, wa_message_id: null, intent: "button_reply",
           });
@@ -3896,7 +3933,7 @@ Deno.serve(async (req: Request) => {
           const feedbackReply = scripts["positive_feedback_reply"]?.message_text?.trim()
             ? scripts["positive_feedback_reply"]!.message_text!.replace(/\{\{\s*GOOGLE_REVIEW_URL\s*\}\}/gi, reviewUrl)
             : `שמחנו מאוד לשמוע! 🌟 אם תרצו לשתף את החוויה שלכם — זה יאיר לנו את היום:\n${reviewUrl}\nתודה ענקית ומחכים לכם בפעם הבאה! 💫`;
-          try { await sendReply(phone, feedbackReply); } catch (e) { console.error("[webhook] reply error:", (e as Error).message); }
+          try { await sendReply(phone, feedbackReply, { scripted: true }); } catch (e) { console.error("[webhook] reply error:", (e as Error).message); }
           await insertGuestOutboundIfNotMuted(supabase, {
             phone, guest_id: guestId, message: feedbackReply, wa_message_id: null, intent: "button_reply",
           });
@@ -3911,7 +3948,7 @@ Deno.serve(async (req: Request) => {
           }
           const improvReply = scripts["negative_feedback_reply"]?.message_text?.trim()
             || "תודה על הכנות — זה חשוב לנו מאוד. 🙏 מה היה אפשר לשפר? כתבו לנו כאן ונשתפר.";
-          try { await sendReply(phone, improvReply); } catch (e) { console.error("[webhook] reply error:", (e as Error).message); }
+          try { await sendReply(phone, improvReply, { scripted: true }); } catch (e) { console.error("[webhook] reply error:", (e as Error).message); }
           await insertGuestOutboundIfNotMuted(supabase, {
             phone, guest_id: guestId, message: improvReply, wa_message_id: null, intent: "button_reply",
           });
@@ -3939,7 +3976,7 @@ Deno.serve(async (req: Request) => {
               if (uErr) console.warn("[webhook] upsell_interest update error:", uErr.message);
               else console.info("[webhook] ✅ upsell_interest flagged for", bookingPhoneUpsell);
             });
-          try { await sendReply(phone, upsellPositiveReply); } catch (e) { console.error("[webhook] upsell reply error:", (e as Error).message); }
+          try { await sendReply(phone, upsellPositiveReply, { scripted: true }); } catch (e) { console.error("[webhook] upsell reply error:", (e as Error).message); }
           await insertGuestOutboundIfNotMuted(supabase, {
             phone, guest_id: guestId,
             message: upsellPositiveReply, wa_message_id: null, intent: "button_reply",
@@ -3953,7 +3990,7 @@ Deno.serve(async (req: Request) => {
           const declineReply =
             scripts["upsell_decline_reply"]?.message_text?.trim() ||
             "הכל בסדר גמור! אנחנו כאן לכל דבר אחר שתצטרכו לקראת החופשה. 🌴";
-          try { await sendReply(phone, declineReply); } catch (e) { console.error("[webhook] decline reply error:", (e as Error).message); }
+          try { await sendReply(phone, declineReply, { scripted: true }); } catch (e) { console.error("[webhook] decline reply error:", (e as Error).message); }
           await insertGuestOutboundIfNotMuted(supabase, {
             phone, guest_id: guestId,
             message: declineReply, wa_message_id: null, intent: "button_reply",
@@ -3964,7 +4001,7 @@ Deno.serve(async (req: Request) => {
           console.warn(`[webhook] ⚠️ unmatched button title="${buttonTitle}" id="${buttonId}" — sending generic reply`);
           const genericReply = scripts["generic_button_reply"]?.message_text?.trim()
             || "תודה! 😊 קיבלנו את בחירתך. האם יש משהו נוסף שנוכל לעשות עבורכם?";
-          try { await sendReply(phone, genericReply); } catch (e) { console.error("[webhook] generic button reply error:", (e as Error).message); }
+          try { await sendReply(phone, genericReply, { scripted: true }); } catch (e) { console.error("[webhook] generic button reply error:", (e as Error).message); }
           await insertGuestOutboundIfNotMuted(supabase, {
             phone, guest_id: guestId, message: genericReply, wa_message_id: null, intent: "button_reply",
           });
@@ -4051,7 +4088,7 @@ Deno.serve(async (req: Request) => {
 
           if (!sim) {
             try {
-              await sendReply(phone, RECORD_ONLY_ARRIVAL_REPLY);
+              await sendReply(phone, RECORD_ONLY_ARRIVAL_REPLY, { scripted: true });
               await insertGuestOutboundIfNotMuted(supabase, {
                 phone, guest_id: guestId, message: RECORD_ONLY_ARRIVAL_REPLY, wa_message_id: null, intent: "arrival_time_update",
               });
@@ -4169,7 +4206,7 @@ Deno.serve(async (req: Request) => {
 
         if (!sim) {
           try {
-            await sendReply(phone, handoffMsg);
+            await sendReply(phone, handoffMsg, { scripted: true });
             await insertGuestOutboundIfNotMuted(supabase, {
               phone, guest_id: guestId, message: handoffMsg, wa_message_id: null, intent: "date_change_request",
             });
@@ -4443,7 +4480,7 @@ Deno.serve(async (req: Request) => {
           const reflectionReply = buildReflectionReply(reflectionSentiment);
           if (!sim) {
             try {
-              await sendReply(phone, reflectionReply);
+              await sendReply(phone, reflectionReply, { scripted: true });
               await insertGuestOutboundIfNotMuted(supabase, {
                 phone, guest_id: guestId, message: reflectionReply, wa_message_id: null, intent: "guest_feedback",
               });
@@ -4513,6 +4550,7 @@ Deno.serve(async (req: Request) => {
       // hardcoded constant — without re-deriving it or matching brittle text.
       const fallbackReplyText = scripts["fallback_reply"]?.message_text?.trim() || FALLBACK_REPLY;
       let reply = fallbackReplyText;
+      let replyIsScripted = intent === "complaint" || intent === "upsell";
       // Set only inside the "faq" branch below when the model invokes
       // log_guest_request — drives the conditional guest_alerts gate further down.
       let toolLoggedRequest: AiReplyResult["loggedRequest"] = null;
@@ -4948,8 +4986,9 @@ Deno.serve(async (req: Request) => {
         );
       }
 
-      // ── Truncation guard — never send a reply cut mid-sentence to the guest ──
-      if (isReplyObviouslyTruncated(reply)) {
+      // ── Truncation guard — LLM replies only; scripted complaint/upsell must not
+      // be replaced (portal URLs / 🥰 endings are valid complete messages).
+      if (!replyIsScripted && isReplyObviouslyTruncated(reply)) {
         console.warn(
           `[webhook] 🛡️ truncated reply guard — phone:${phone} tail:"${reply.slice(-50)}"`,
         );
@@ -5015,7 +5054,7 @@ Deno.serve(async (req: Request) => {
         // ── Send WhatsApp reply ─────────────────────────────────────────────
         let outboundMsgId: string | null = null;
         try {
-          outboundMsgId = await sendReply(phone, reply);
+          outboundMsgId = await sendReply(phone, reply, replyIsScripted ? { scripted: true } : undefined);
         } catch (e) {
           console.error("[webhook] sendReply error:", (e as Error).message);
         }

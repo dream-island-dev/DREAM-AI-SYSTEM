@@ -54,6 +54,16 @@ describe("mergeThreadRows — additive thread merge (P1-D)", () => {
     expect(mergeThreadRows(local, [])).toHaveLength(2);
     expect(mergeThreadRows(local, null)).toHaveLength(2);
   });
+
+  test("fetchAll additive merge — realtime row during fetch survives full revalidate", () => {
+    const realtimeRow = msg("rt", "2026-07-08T18:30:00Z", { phone: "972524476422" });
+    const local = [realtimeRow];
+    const fetchAllWindow = [
+      msg("old", "2026-07-08T10:00:00Z", { phone: "972500000099" }),
+    ];
+    const merged = mergeThreadRows(local, fetchAllWindow);
+    expect(merged.map((m) => m.id)).toEqual(["old", "rt"]);
+  });
 });
 
 describe("groupByPhone — strict latest-message-desc (WhatsApp order)", () => {

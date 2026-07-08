@@ -21,13 +21,22 @@ export function looksLikeCheckInHoursReply(text) {
   return CHECK_IN_HOURS_REPLY_PATTERN.test(t);
 }
 
+export function hasCompleteGuestMessageEnding(text) {
+  const t = String(text || "").trim();
+  if (!t) return false;
+  if (/[.!?…🙏✅🥰🌸❤️💆🔑🌴✨🤍😊)\u201d\u2019"']$/u.test(t)) return true;
+  if (/https?:\/\/\S+$/i.test(t)) return true;
+  if (/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(t)) return true;
+  return false;
+}
+
 export function isReplyObviouslyTruncated(text) {
   const t = String(text || "").trim();
   if (!t || t.length < 25) return false;
   if (/(?:^|[\s,])מה$|החל\s+מה$|ובשבתות\s+וחגים\s+החל\s+מה$|בימי\s+חול,?\s+ובשבתות\s+וחגים\s+החל\s+מה$/u.test(t)) {
     return true;
   }
-  if (t.length > 70 && !/[.!?…🙏✅)\u201d\u2019"']$/.test(t)) return true;
+  if (t.length > 70 && !hasCompleteGuestMessageEnding(t)) return true;
   return false;
 }
 

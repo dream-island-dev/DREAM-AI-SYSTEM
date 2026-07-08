@@ -335,6 +335,12 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
+### 2026-07-08 — Session 144b (Inbox ghost outbound — Stage 2 + fetchAll race)
+- **שורש 1:** `whatsapp-send` `stage_2_arrival` fast-path שלח ל-Meta + `notification_log` אבל **לא** `whatsapp_conversations` — cron reconcile / pipeline fallback בלתי-נראה ב-Inbox.
+- **שורש 2:** `intent='arrival_confirmed'` נחסם ב-CHECK עד migration 157 — Meta הצליח, INSERT נכשל בשקט (`insertGuestOutboundIfNotMuted` רק `console.error`).
+- **שורש 3 (פרונט):** `fetchAll` החליף את `allMsgsRef` במקום `mergeThreadRows` — שורה שהגיעה ב-Realtime באמצע fetch נמחקה עד רענון ידני.
+- **תיקון:** conv log ב-whatsapp-send; retry `intent=null` על 23514; `fetchAll` additive; Realtime INSERT → תמיד `fetchSince`; migration 160 backfill מ-`notification_log`.
+
 ### 2026-07-07 — Session 131b (Anti-laziness hygiene — Design Mode, reuse-first, exact-match QA, no-autopilot)
 - **Design Mode (§6 step 1b):** new/architecturally-unclear tasks now require 3 distinct proposed approaches, no code, before Mike picks one — catches the agent silently locking in an architecture Mike wouldn't have chosen.
 - **Reuse-first (§6 step 3):** explicit instruction to search existing `_shared/`/utils before writing a new function — prevents near-duplicate helpers accumulating.

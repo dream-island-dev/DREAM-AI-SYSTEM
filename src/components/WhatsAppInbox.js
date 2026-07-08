@@ -2888,12 +2888,15 @@ export default function WhatsAppInbox({
 
     const rows = data ?? [];
     const flat = rows.map(normalise).reverse(); // back to ascending — every downstream consumer expects oldest→newest
-    allMsgsRef.current = applyAllReadCursors(flat, readCursorsRef.current);
+    // Additive merge — never wipe rows that arrived via Realtime/poll while
+    // this fetchAll round-trip was in flight (session 144 inbox ghost gap).
+    const merged = mergeThreadRows(allMsgsRef.current, flat);
+    allMsgsRef.current = applyAllReadCursors(merged, readCursorsRef.current);
     // Watermark = latest row timestamp (not wall-clock) so rows inserted during
     // fetchAll are not skipped by the next incremental poll.
-    const maxTs = flat.reduce((max, m) => (m.created_at > max ? m.created_at : max), "");
+    const maxTs = merged.reduce((max, m) => (m.created_at > max ? m.created_at : max), "");
     lastSeenAt.current = maxTs || new Date().toISOString();
-    oldestSeenAtRef.current = flat.length ? flat[0].created_at : null;
+    oldestSeenAtRef.current = merged.length ? merged[0].created_at : null;
     // Got a full page → there's likely older history beyond the window (heuristic,
     // not exact — worst case the "load older" button does one extra empty fetch).
     setHasMoreOlder(rows.length === INITIAL_FETCH_LIMIT);
@@ -3775,8 +3778,10 @@ export default function WhatsAppInbox({
           },
           (payload) => {
             console.log("[WA-inbox] ✅ Realtime INSERT received:", payload.new?.id, payload.new?.phone);
-            const merged = mergeIncomingRows([payload.new]);
-            if (!merged) fetchSince();
+            mergeIncomingRows([payload.new]);
+            // Always re-fetch with the full CONVERSATION_SELECT join — Realtime
+            // payloads are bare rows (no guests.* embed) and can race fetchAll.
+            fetchSince();
           }
         )
         .on(

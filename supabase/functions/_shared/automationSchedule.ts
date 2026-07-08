@@ -756,7 +756,7 @@ export function buildBalloonRoomRequestReply(guestName?: string | null): string 
 /**
  * Single routing decision for guest free-text requests (after allowlist gate).
  * - operational_field_ops → tasks (dept=תפעול) + Whapi EN card (checked-in only)
- * - admin_reception_tasks → tasks (dept=קבלה/בקשות), no Whapi ops group
+ * - admin_reception_tasks → guest_alerts (Requests Board) + Whapi בקשות אורחים
  * - requests_board → guest_alerts (pre-check-in physical, manager/price/human, balloons)
  * - kb_only → LLM/KB answer only
  */
@@ -929,6 +929,19 @@ export function buildCheckInPolicyReply(
   );
 }
 
+/** True when text ends like a complete guest-facing message (not mid-sentence). */
+export function hasCompleteGuestMessageEnding(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  // Punctuation / common closing emoji (Stage 2, spa, welcome scripts).
+  if (/[.!?…🙏✅🥰🌸❤️💆🔑🌴✨🤍😊)\u201d\u2019"']$/u.test(t)) return true;
+  // Portal / payment / workshop links — must NOT trip the truncation guard.
+  if (/https?:\/\/\S+$/i.test(t)) return true;
+  // Bare portal UUID path segment at end.
+  if (/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(t)) return true;
+  return false;
+}
+
 /** Detect LLM replies cut mid-sentence before they reach the guest. */
 export function isReplyObviouslyTruncated(text: string): boolean {
   const t = text.trim();
@@ -936,7 +949,7 @@ export function isReplyObviouslyTruncated(text: string): boolean {
   if (/(?:^|[\s,])מה$|החל\s+מה$|ובשבתות\s+וחגים\s+החל\s+מה$|בימי\s+חול,?\s+ובשבתות\s+וחגים\s+החל\s+מה$/u.test(t)) {
     return true;
   }
-  if (t.length > 70 && !/[.!?…🙏✅)\u201d\u2019"']$/.test(t)) return true;
+  if (t.length > 70 && !hasCompleteGuestMessageEnding(t)) return true;
   return false;
 }
 

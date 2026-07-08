@@ -2105,6 +2105,39 @@ serve(async (req: Request) => {
       });
 
       if (s2Status === "sent" || s2Status === "simulated") {
+        try {
+          const convMsg = buildSessionConversationLog(body);
+          let { error: convErr } = await supabase.from("whatsapp_conversations").insert({
+            phone:         targetPhone,
+            guest_id:      guestId,
+            direction:     "outbound",
+            message:       convMsg,
+            intent:        "arrival_confirmed",
+            wa_message_id: null,
+          });
+          if (convErr?.code === "23514") {
+            const retry = await supabase.from("whatsapp_conversations").insert({
+              phone: targetPhone, guest_id: guestId, direction: "outbound",
+              message: convMsg, intent: null, wa_message_id: null,
+            });
+            convErr = retry.error;
+          }
+          if (convErr) {
+            console.error("[whatsapp-send] stage_2_arrival conversation log FAILED:", convErr.message);
+            await supabase.from("notification_log").insert({
+              guest_id: guestId,
+              recipient: targetPhone,
+              trigger_type: "stage_2_arrival",
+              channel: "whatsapp",
+              status: "failed",
+              payload: { log_failure: true, conv_error: convErr.message, original_status: s2Status },
+            });
+          }
+        } catch (e) {
+          const errMsg = (e as Error).message;
+          console.error("[whatsapp-send] stage_2_arrival conversation log FAILED:", errMsg);
+        }
+
         await supabase.from("guests").update({ msg_stage_2_arrival_sent: true }).eq("id", guestId);
         if (force || manual_override) {
           await markScheduledTaskDispatched(guestId, trigger);
