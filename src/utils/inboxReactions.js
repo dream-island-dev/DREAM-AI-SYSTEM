@@ -3,8 +3,22 @@
  * Reactions are not real text messages — compact UI only.
  */
 
-const REACTION_ADD_WITH_SNIPPET = /^(\p{Extended_Pictographic})\s+תגובה על ההודעה:\s*«(.+)»$/u;
-const REACTION_ADD_GENERIC = /^(\p{Extended_Pictographic})\s+תגובה על הודעה קודמת$/u;
+// A guest's emoji reaction is rarely a single Unicode code point. WhatsApp's
+// default reactions include ❤️ (U+2764 + VARIATION SELECTOR-16) and skin-toned
+// 👍🏼 (U+1F44D + an Emoji_Modifier) — both common, and both invisible to a
+// capture group anchored to a lone \p{Extended_Pictographic} char: the regex
+// matches only the base code point, then fails on the very next character
+// (VS16 / skin tone) instead of the expected whitespace, so the *entire*
+// anchored pattern never matches. That silently fell through to the
+// "guest_reaction intent but unparsed" branch below, which used to render a
+// content-free "תגובה" bubble even though the webhook had logged the real
+// emoji + quoted snippet. EMOJI_SEQUENCE matches a full emoji grapheme
+// cluster: base pictograph + optional modifier/VS16, optionally chained with
+// ZWJ for compound emoji (👨‍👩‍👧), or a two-symbol flag.
+const EMOJI_SEQUENCE =
+  "(?:\\p{Regional_Indicator}{2}|\\p{Extended_Pictographic}(?:\\p{Emoji_Modifier}|\\uFE0F)?(?:\\u200D\\p{Extended_Pictographic}(?:\\p{Emoji_Modifier}|\\uFE0F)?)*)";
+const REACTION_ADD_WITH_SNIPPET = new RegExp(`^(${EMOJI_SEQUENCE})\\s+תגובה על ההודעה:\\s*«(.+)»$`, "u");
+const REACTION_ADD_GENERIC = new RegExp(`^(${EMOJI_SEQUENCE})\\s+תגובה על הודעה קודמת$`, "u");
 const REACTION_REMOVE_WITH_SNIPPET = /^הוסרה תגובה מההודעה:\s*«(.+)»$/u;
 const REACTION_REMOVE_GENERIC = /^הוסרה תגובה מהודעה קודמת$/u;
 
@@ -36,10 +50,13 @@ export function parseGuestReactionMessage(raw, intent) {
     return { kind: "remove", emoji: null, snippet: null };
   }
 
-  if (intent === "guest_reaction") {
-    return { kind: "add", emoji: null, snippet: null };
-  }
-
+  // intent="guest_reaction" but none of the known templates matched (e.g. a
+  // future Meta payload shape, or a row written by older webhook code).
+  // FAIL VISIBLE (CLAUDE.md §0.3): return null rather than a content-free
+  // stub — the caller falls back to rendering the raw stored message, which
+  // is always a real, human-readable string (the webhook never writes an
+  // empty inbox row for a reaction), instead of a generic "תגובה" pill that
+  // hides whatever actually happened.
   return null;
 }
 
@@ -55,5 +72,8 @@ export function formatGuestReactionLabel(parsed) {
     return `${parsed.emoji} תגובה ל־«${parsed.snippet}»`;
   }
   if (parsed.emoji) return parsed.emoji;
-  return "תגובה";
+  // Defense in depth — parseGuestReactionMessage no longer produces this shape
+  // (add + no emoji + no snippet) itself, but keep an honest label here in
+  // case a caller ever constructs one directly. Never claim content exists.
+  return "תגובת אמוג'י (פרטים חסרים)";
 }

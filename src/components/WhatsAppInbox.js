@@ -2581,6 +2581,12 @@ export default function WhatsAppInbox({
   const [sending, setSending]     = useState(false);
   const [reply, setReply]         = useState("");
   const [error, setError]         = useState(null);
+  // Tracks the exact banner text last set by a background *load* operation
+  // (fetchAll/fetchSince/fetchOlder polling) so its own next success can
+  // safely clear it — without ever clobbering a different, still-relevant
+  // error (e.g. a send failure) that a human hasn't acknowledged yet. See
+  // clearStaleNetworkError() below.
+  const lastNetworkErrorRef = useRef(null);
   const [showNewChat, setShowNewChat] = useState(false);
   const [showMobileQr, setShowMobileQr] = useState(false);
   // ── Bot active / human-handover toggle ───────────────────────────────────
@@ -2826,6 +2832,32 @@ export default function WhatsAppInbox({
     setDbLatestAt(data?.created_at ?? null);
   }, []);
 
+  // Sets the error banner for a background load failure with an operation-
+  // specific Hebrew prefix — a raw postgrest network error surfaces the
+  // browser's own message verbatim (e.g. "TypeError: Failed to fetch" for
+  // any transient connectivity blip, meaningless to staff without context)
+  // — and remembers the exact text so a later successful load can self-heal
+  // it (see clearStaleNetworkError below).
+  const setNetworkLoadError = useCallback((prefix, err) => {
+    const msg = `${prefix}: ${err?.message ?? "שגיאה לא ידועה"}`;
+    lastNetworkErrorRef.current = msg;
+    setError(msg);
+  }, []);
+
+  // Clears the banner ONLY if it is still exactly the load-error text this
+  // component set — never clobbers a different, still-relevant error (e.g.
+  // a send failure) that happens to be showing when a background poll tick
+  // succeeds. Without this, one transient network blip (tab wake-from-sleep,
+  // brief WiFi drop) leaves a permanent, misleading red banner even after
+  // the very next poll succeeds — the banner has nothing to do with what's
+  // currently happening, but reads as "this conversation is broken".
+  const clearStaleNetworkError = useCallback(() => {
+    const stale = lastNetworkErrorRef.current;
+    if (!stale) return;
+    lastNetworkErrorRef.current = null;
+    setError((cur) => (cur === stale ? null : cur));
+  }, []);
+
   // ── Full fetch (initial load only) ────────────────────────────────────────
   // Recency-windowed, NOT the whole table: previously this ordered ascending
   // + limit(2000), which fetches the OLDEST 2000 rows — once the table passed
@@ -2848,7 +2880,11 @@ export default function WhatsAppInbox({
       .order("created_at", { ascending: false })
       .limit(INITIAL_FETCH_LIMIT);
 
-    if (err) { setError(err.message); setLoading(false); return; }
+    if (err) {
+      setNetworkLoadError("שגיאת רשת בטעינת שיחות", err);
+      setLoading(false);
+      return;
+    }
 
     const rows = data ?? [];
     const flat = rows.map(normalise).reverse(); // back to ascending — every downstream consumer expects oldest→newest
@@ -2864,9 +2900,10 @@ export default function WhatsAppInbox({
     setContacts(applyGrouping(allMsgsRef.current));
     setLastUpdated(new Date());
     setLoading(false);
+    clearStaleNetworkError();
     alertsReadyRef.current = true;
     await fetchDbLatest();
-  }, [fetchDbLatest]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [fetchDbLatest, setNetworkLoadError, clearStaleNetworkError]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Incremental fetch — only rows newer than lastSeenAt ──────────────────
   // Used by: polling interval + Realtime callback.
@@ -2885,12 +2922,13 @@ export default function WhatsAppInbox({
 
     if (fetchErr) {
       console.warn("[WA-inbox] fetchSince error:", fetchErr.message);
-      setError(fetchErr.message);
+      setNetworkLoadError("שגיאת רשת בעדכון שיחות", fetchErr);
       return;
     }
+    clearStaleNetworkError();
     const rows = data ?? [];
     mergeIncomingRows(rows.length ? [...rows].reverse() : rows);
-  }, [mergeIncomingRows]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [mergeIncomingRows, setNetworkLoadError, clearStaleNetworkError]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Force full roster re-fetch (clears session cache + reloads recent window).
   const refreshRoster = useCallback(async () => {
@@ -2925,7 +2963,11 @@ export default function WhatsAppInbox({
         .order("created_at", { ascending: false })
         .limit(OLDER_BATCH_LIMIT);
 
-      if (err) { setError(err.message); return; }
+      if (err) {
+        setNetworkLoadError("שגיאת רשת בטעינת היסטוריה ישנה יותר", err);
+        return;
+      }
+      clearStaleNetworkError();
 
       const rows = data ?? [];
       const older = rows.map(normalise).reverse();
@@ -2939,7 +2981,7 @@ export default function WhatsAppInbox({
     } finally {
       setLoadingOlder(false);
     }
-  }, [loadingOlder, applyGrouping]);
+  }, [loadingOlder, applyGrouping, setNetworkLoadError, clearStaleNetworkError]);
 
   // ── Full history for a single opened contact ──────────────────────────────
   // The recency-windowed fetchAll/fetchOlder pool may not contain a guest's
@@ -4008,7 +4050,11 @@ export default function WhatsAppInbox({
       setQuickOpen(false);
       await fetchSince();
     } catch (err) {
-      setError(err?.message ?? "שגיאה בשליחת הודעת חדר מוכן");
+      // Always prefix with the operation name — an unprefixed err.message can
+      // be a raw browser/library string (e.g. "TypeError: Failed to fetch" on
+      // a network blip, or functions-js's "Failed to send a request to the
+      // Edge Function"), meaningless to staff without context.
+      setError(`שגיאת שליחה (חדר מוכן): ${err?.message ?? "שגיאה לא ידועה"}`);
     } finally {
       setSending(false);
     }
@@ -4043,7 +4089,9 @@ export default function WhatsAppInbox({
       markPhoneInboundRead(active);
       await fetchSince();
     } catch (err) {
-      setError(err?.message ?? "שגיאה בשליחה");
+      // Always prefix with the operation name — see sendRoomReady's catch
+      // above for why an unprefixed err.message is misleading.
+      setError(`שגיאת שליחה: ${err?.message ?? "שגיאה לא ידועה"}`);
     } finally {
       setSending(false);
     }
