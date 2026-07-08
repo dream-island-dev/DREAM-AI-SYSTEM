@@ -1,5 +1,5 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-06 (session 125). Current goals, blockers, and next priorities.
+> Last updated: 2026-07-08 (session 143 — audit fixes: Shabbat template bypass on manual morning dispatch, checkout_fb_daypass editor lock, live template names below corrected per migration 102 rename).
 > Full session history → `CLAUDE.md` §10 + `claude_history.md`.
 > **Agent workflow** → `docs/xos_agent_playbook.md`
 
@@ -52,11 +52,16 @@ pg_cron "wa-cron" (*/15min) active. SLA escalation (*/1min) active.
 ## 🔴 Blocked — Action Required (Mike)
 
 ### 1. Meta Template Approvals
+> ⚠️ Template names below corrected 2026-07-08 to what the live code actually routes to
+> (migration 102 renamed the morning pair; night_before routes to its own suites pair —
+> `dream_checkin_reminder_v2` now serves only day-pass `night_before_daypass` / day-pass `pre_arrival_2d`).
+> Verify approval status of THESE names in Meta Business Manager, not the old ones.
+
 | Template | Trigger | Status |
 |---|---|---|
-| `dream_checkin_reminder_v2` | night_before (T-1) | PENDING |
-| `dream_welcome_morning` | morning_suite + morning_welcome (arrival day) | PENDING |
-| `dream_room_ready` | AICopilot room-ready handoff | PENDING |
+| `night_before_suites` / `night_before_suites_shabbat` | night_before (T-1, suites) | Verify in Meta |
+| `suite_welcome_morning` / `suite_welcome_morning_shabbat` | morning_suite + morning_welcome (arrival day) | Verify in Meta |
+| `dream_room_ready1` | AICopilot room-ready handoff (outside 24h window) | Verify in Meta |
 
 **Resolution:** Approve in Meta Business Manager → then run:
 ```sql
@@ -84,9 +89,15 @@ WHERE stage_key IN ('night_before','morning_suite','morning_welcome');
 | `mid_stay` | `dream_mid_stay_check` | Day 2 of stay | ✅ Active |
 | `checkout_fb` | `dream_checkout_feedback` | Day after departure | ✅ Active |
 | `stage_2_arrival` | `dream_payment_and_workshops` | Arrival day | ✅ Active |
-| `night_before` | `dream_checkin_reminder_v2` | T-1 day | 🔴 Disabled (PENDING) |
-| `morning_suite` | `dream_welcome_morning` (weekday) / `dream_welcome_morning_shabbat` (Shabbat) | Arrival morning | 🔴 Disabled (PENDING — `dream_welcome_morning_shabbat` required) |
-| `morning_welcome` | `dream_welcome_morning` (weekday) / `dream_welcome_morning_shabbat` (Shabbat) | Arrival morning | 🔴 Disabled (PENDING — `dream_welcome_morning_shabbat` required) |
+| `night_before` | `night_before_suites` (weekday) / `night_before_suites_shabbat` (Shabbat) | T-1 day | 🔴 Disabled (last known — verify live) |
+| `morning_suite` | `suite_welcome_morning` (weekday) / `suite_welcome_morning_shabbat` (Shabbat) | Arrival morning | 🔴 Disabled (last known — verify live) |
+| `morning_welcome` | `suite_welcome_morning` (weekday) / `suite_welcome_morning_shabbat` (Shabbat) | Arrival morning | 🔴 Disabled (last known — verify live) |
+
+**Verify live state (Supabase SQL Editor):**
+```sql
+SELECT stage_key, is_active, meta_template_name, applies_to, local_time
+FROM automation_stages ORDER BY sequence_order;
+```
 
 ---
 

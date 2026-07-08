@@ -946,9 +946,14 @@ function resolvePipelineTemplateName(
   }
 
   if (trigger === "morning_suite" || trigger === "morning_welcome") {
+    // Always route to the approved Shabbat-aware pair — ignore automation_stages.
+    // meta_template_name (migration 102 left the weekday name there). Honoring the
+    // DB value before the Shabbat check let a manual force_channel=meta_template
+    // dispatch quote the weekday 15:00 check-in to a Saturday-arrival guest; the
+    // autonomous morningDispatch fast-path already computes this pair directly and
+    // night_before below follows the same ignore-the-DB rule.
     const isShabbat = isShabbatArrivalDate(String(guest.arrival_date ?? ""));
-    if (fromDb) return fromDb;
-    return isShabbat ? "suite_welcome_morning_shabbat" : (fromMap || "suite_welcome_morning");
+    return isShabbat ? "suite_welcome_morning_shabbat" : "suite_welcome_morning";
   }
 
   if (trigger === "night_before") {
