@@ -57,6 +57,21 @@ import {
   applyHousekeepingCheckInSignal,
   buildHousekeepingCheckInAckLine,
 } from "../_shared/housekeepingCheckInSignal.ts";
+import { isGuestWhapiSuitesEnabled } from "../_shared/guestWhapiRouting.ts";
+import { loadGuestByPhoneForStaffReply } from "../_shared/guestOutboundGuard.ts";
+import { isEffectiveSuiteGuest } from "../_shared/suiteNames.ts";
+import { onGuestAlertInserted } from "../_shared/guestAlertWhapiNotify.ts";
+import {
+  isGuestStaffClaimActive,
+  isLowValueCourtesyMessage,
+  isSevereComplaint,
+  isSensitiveStayChangeRequest,
+  CANONICAL_STAY_CHANGE_HANDOFF_MSG,
+  isSensitiveFinancialRequest,
+  CANONICAL_FINANCIAL_HANDOFF_MSG,
+  isCheckInPolicyQuestion,
+  buildCheckInPolicyReply,
+} from "../_shared/automationSchedule.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -392,6 +407,340 @@ async function findAssignedWorkerPhone(
   return (data?.phone as string | undefined) ?? null;
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// GUEST DIRECT MESSAGE HANDLING (Phase 2 MVP, guest-outbound Whapi rollout) —
+// 1:1 (non-group) conversations on this SAME already-connected Whapi device.
+// Gated entirely by isGuestWhapiSuitesEnabled() (_shared/guestWhapiRouting.ts,
+// GUEST_WHAPI_SUITES_ENABLED secret) — when disabled, the caller keeps today's
+// exact "not_a_group" ignore, byte-for-byte. Zero changes to whatsapp-webhook
+// (the Meta AI pipeline) or to anything above this line in this file (group
+// tasks/SLA/housekeeping) — this is a wholly new, independently-try/catch'd
+// branch reached only from the main loop's group guard below.
+//
+// Reuses the SAME pure Tier-0 classifiers whatsapp-webhook uses, all already
+// exported from _shared/automationSchedule.ts: staff-claim mute, courtesy
+// silence, severe-complaint kill-switch, sensitive stay/financial handoff,
+// check-in-policy FAQ. Everything else falls through to a lightweight Gemini
+// reply built from the same bot_settings/bot_config rows the Meta bot reads —
+// the persona/knowledge stays in sync automatically since that's shared DB
+// data, not duplicated code.
+//
+// Explicit, documented gap (not silently dropped — Meta is unaffected either
+// way): operational/administrative in-house routing, balloon-request routing,
+// record-only ETA extraction, the arrival-confirmation/Stage-2 state machine,
+// auto-away detection, and the date-change regex are NOT ported in this MVP.
+// A guest message matching one of those triggers gets the general FAQ/LLM
+// reply on this channel instead of specialized handling, until ported later.
+// ══════════════════════════════════════════════════════════════════════════════
+
+const GUEST_DM_GEMINI_MODEL = GEMINI_MODEL; // same gemini-1.5-flash already used for voice transcription above
+const GUEST_DM_HISTORY_LIMIT = 6;
+const GUEST_DM_LOW_CONFIDENCE_REPLY =
+  "אני בודק את זה מול הצוות שלנו ונחזור אליך בהקדם 🙏";
+const GUEST_DM_FALLBACK_SYSTEM_PROMPT =
+  "אתה קונסיירז' וירטואלי של Dream Island Resort. ענה בעברית, בנימוס ובקצרה, ואם אינך בטוח " +
+  "בתשובה — אמור שתבדוק זאת מול הצוות ותחזור לאורח. לעולם אל תמציא מידע.";
+
+function guestDmIsUniqueViolation(error: { code?: string; message?: string } | null): boolean {
+  if (!error) return false;
+  return error.code === "23505" || /duplicate key|unique constraint/i.test(error.message ?? "");
+}
+
+/** Insert-first dedup claim, mirroring whatsapp-webhook's claimInboundWaMessage
+ * contract exactly (unique index on wa_message_id is the ledger of record) —
+ * a separate, local copy rather than a shared import because that function
+ * lives inline in whatsapp-webhook/index.ts, not in _shared/. */
+async function claimGuestDmInbound(
+  supabase: ReturnType<typeof createClient>,
+  row: { phone: string; message: string; wa_message_id: string; push_name: string | null },
+): Promise<{ claimed: boolean; conversationId: number | null }> {
+  const { data, error } = await supabase
+    .from("whatsapp_conversations")
+    .insert({
+      phone: row.phone,
+      guest_id: null,
+      direction: "inbound",
+      message: row.message,
+      wa_message_id: row.wa_message_id,
+      intent: "received",
+      push_name: row.push_name,
+    })
+    .select("id")
+    .maybeSingle();
+  if (error) {
+    if (guestDmIsUniqueViolation(error)) return { claimed: false, conversationId: null };
+    console.error("[whapi-webhook] claimGuestDmInbound failed:", error.code, error.message);
+    return { claimed: false, conversationId: null };
+  }
+  return { claimed: true, conversationId: (data?.id as number | undefined) ?? null };
+}
+
+async function patchGuestDmInbound(
+  supabase: ReturnType<typeof createClient>,
+  conversationId: number | null,
+  patch: Record<string, unknown>,
+): Promise<void> {
+  if (!conversationId) return;
+  const { error } = await supabase.from("whatsapp_conversations").update(patch).eq("id", conversationId);
+  if (error) console.warn("[whapi-webhook] patchGuestDmInbound failed:", error.message);
+}
+
+async function fetchGuestDmBotConfig(supabase: ReturnType<typeof createClient>): Promise<Record<string, string>> {
+  const { data, error } = await supabase.from("bot_config").select("config_key, config_value");
+  if (error || !data?.length) return {};
+  const map: Record<string, string> = {};
+  for (const r of data as Array<{ config_key: string; config_value: string }>) map[r.config_key] = r.config_value;
+  return map;
+}
+
+async function fetchGuestDmSystemPrompt(supabase: ReturnType<typeof createClient>): Promise<string> {
+  const { data } = await supabase.from("bot_settings").select("system_prompt, knowledge_base").eq("id", 1).maybeSingle();
+  const base = ((data as Record<string, unknown> | null)?.system_prompt as string | undefined)?.trim()
+    || GUEST_DM_FALLBACK_SYSTEM_PROMPT;
+  const knowledge = ((data as Record<string, unknown> | null)?.knowledge_base as string | undefined)?.trim();
+  return knowledge ? `${base}\n\nידע נוסף:\n${knowledge}` : base;
+}
+
+async function fetchGuestDmHistory(
+  supabase: ReturnType<typeof createClient>,
+  phone: string,
+): Promise<Array<{ direction: string; message: string }>> {
+  const { data } = await supabase
+    .from("whatsapp_conversations")
+    .select("direction, message, created_at")
+    .eq("phone", phone)
+    .order("created_at", { ascending: false })
+    .limit(GUEST_DM_HISTORY_LIMIT);
+  return ((data ?? []) as Array<{ direction: string; message: string }>).reverse();
+}
+
+async function generateGuestDmReply(
+  apiKey: string,
+  systemPrompt: string,
+  history: Array<{ direction: string; message: string }>,
+  text: string,
+): Promise<string> {
+  const historyLines = history
+    .map((h) => `${h.direction === "inbound" ? "אורח" : "קונסיירז'"}: ${h.message.slice(0, 300)}`)
+    .join("\n");
+  const prompt = historyLines
+    ? `${systemPrompt}\n\nהיסטוריית שיחה אחרונה:\n${historyLines}\n\nהודעת האורח הנוכחית: ${text}`
+    : `${systemPrompt}\n\nהודעת האורח: ${text}`;
+
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${GUEST_DM_GEMINI_MODEL}:generateContent?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: { maxOutputTokens: 500, temperature: 0.4 },
+      }),
+      signal: AbortSignal.timeout(20_000),
+    },
+  );
+  if (!res.ok) {
+    const errBody = await res.text();
+    throw new Error(`gemini_guest_dm_${res.status}: ${errBody.slice(0, 300)}`);
+  }
+  const data = await res.json();
+  const replyText: string =
+    data?.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text ?? "").join("") ?? "";
+  if (!replyText.trim()) {
+    const finishReason = data?.candidates?.[0]?.finishReason;
+    throw new Error(finishReason === "SAFETY" ? "gemini_safety_filter" : "gemini_empty_reply");
+  }
+  // Minimal output-leakage guard (mirrors whatsapp-webhook's HARD DROP intent,
+  // scaled down for this MVP) — a code fence or raw chain-of-thought marker
+  // must never reach the guest.
+  const trimmed = replyText.trim();
+  if (/```|^(THOUGHT|REASONING)\b/i.test(trimmed)) {
+    throw new Error("gemini_output_leak_guard_tripped");
+  }
+  return trimmed;
+}
+
+async function sendGuestDmReply(
+  supabase: ReturnType<typeof createClient>,
+  phone: string,
+  guestId: number | null,
+  replyText: string,
+): Promise<void> {
+  const taggedMessage = `[WHAPI]\n${replyText}`;
+  let wamid: string | null = null;
+  try {
+    wamid = await sendWhapiText(cleanPhoneForMention(phone), replyText);
+  } catch (e) {
+    console.error("[whapi-webhook] sendGuestDmReply send failed:", (e as Error).message);
+  }
+  const { error } = await supabase.from("whatsapp_conversations").insert({
+    phone, guest_id: guestId, direction: "outbound", message: taggedMessage, wa_message_id: wamid,
+  });
+  if (error) console.warn("[whapi-webhook] sendGuestDmReply log insert failed:", error.message);
+}
+
+/** Shared escalation writer for the three "hand off to staff" Tier-0 shields
+ * below — same requires_attention/needs_callback/guest_alerts shape
+ * whatsapp-webhook's Meta-side handlers use, so the Inbox red-dot and
+ * GuestAttentionBadge behave identically regardless of channel. */
+async function escalateGuestDm(
+  supabase: ReturnType<typeof createClient>,
+  opts: {
+    phone: string; guestId: number | null; guestName: string | null; text: string;
+    conversationId: number | null; attentionReason: string; alertType: string;
+    humanRequestType?: string; replyText: string;
+  },
+): Promise<void> {
+  const { phone, guestId, guestName, text, conversationId, attentionReason, alertType, humanRequestType, replyText } = opts;
+
+  await patchGuestDmInbound(supabase, conversationId, {
+    guest_id: guestId,
+    intent: attentionReason,
+    ...(humanRequestType ? { human_requested: true, human_request_type: humanRequestType } : {}),
+  });
+
+  if (guestId) {
+    const { error } = await supabase.from("guests").update({
+      requires_attention: true,
+      requires_attention_since: new Date().toISOString(),
+      needs_callback: true,
+      attention_reason: attentionReason,
+    }).eq("id", guestId);
+    if (error) console.error(`[whapi-webhook] guest_dm ${attentionReason} guest update failed:`, error.message);
+  }
+
+  const { error: alertErr } = await supabase.from("guest_alerts").insert({
+    guest_id: guestId, phone, alert_type: alertType, message: text,
+    conversation_id: conversationId, resolved: false,
+  });
+  if (alertErr) {
+    console.warn(`[whapi-webhook] guest_dm ${attentionReason} guest_alerts insert failed:`, alertErr.message);
+  } else {
+    onGuestAlertInserted(supabase, {
+      guestId, phone, conversationId, message: text, alertType, guestName,
+      sourceLabel: "WhatsApp Bot (Whapi)",
+    }).catch((e: Error) => console.warn(`[whapi-webhook] guest_dm ${attentionReason} staff notify failed:`, e.message));
+  }
+
+  await sendGuestDmReply(supabase, phone, guestId, replyText);
+}
+
+async function handleGuestDirectMessage(
+  supabase: ReturnType<typeof createClient>,
+  msg: IncomingMessage,
+  results: Array<Record<string, unknown>>,
+): Promise<void> {
+  try {
+    if (adminNameFor(msg.fromPhone)) {
+      results.push({ id: msg.id, ignored: "admin_personal_dm" });
+      return;
+    }
+    if (!msg.text) {
+      results.push({ id: msg.id, ignored: "no_text" });
+      return;
+    }
+
+    const phone = msg.fromPhone.startsWith("+") ? msg.fromPhone : `+${msg.fromPhone}`;
+    const text = msg.text;
+
+    const claim = await claimGuestDmInbound(supabase, {
+      phone, message: text, wa_message_id: msg.id, push_name: msg.fromName ?? null,
+    });
+    if (!claim.claimed) {
+      results.push({ id: msg.id, ignored: "duplicate_guest_dm" });
+      return;
+    }
+
+    const guest = await loadGuestByPhoneForStaffReply(supabase, phone);
+    if (guest?.id) await patchGuestDmInbound(supabase, claim.conversationId, { guest_id: guest.id });
+
+    if (!isEffectiveSuiteGuest(guest)) {
+      results.push({ id: msg.id, action: "captured_no_autoreply", reason: guest ? "not_suite_guest" : "no_guest_match" });
+      return;
+    }
+    if (isGuestStaffClaimActive(guest)) {
+      results.push({ id: msg.id, action: "captured_staff_claimed" });
+      return;
+    }
+
+    const guestId = guest?.id ?? null;
+    const guestName = guest?.name ?? null;
+
+    if (isLowValueCourtesyMessage(text)) {
+      await patchGuestDmInbound(supabase, claim.conversationId, { intent: "courtesy_ack" });
+      results.push({ id: msg.id, action: "courtesy_ack_silent" });
+      return;
+    }
+
+    if (isSevereComplaint(text)) {
+      await escalateGuestDm(supabase, {
+        phone, guestId, guestName, text, conversationId: claim.conversationId,
+        attentionReason: "severe_complaint", alertType: "severe_complaint",
+        replyText: "אנחנו מצטערים מאוד לשמוע זאת — העברתי את זה ישירות לצוות הבכיר, ויחזרו אליך בהקדם. 🙏",
+      });
+      results.push({ id: msg.id, action: "severe_complaint_escalated" });
+      return;
+    }
+
+    if (isSensitiveStayChangeRequest(text)) {
+      await escalateGuestDm(supabase, {
+        phone, guestId, guestName, text, conversationId: claim.conversationId,
+        attentionReason: "date_change", alertType: "date_change_request", humanRequestType: "date_change",
+        replyText: CANONICAL_STAY_CHANGE_HANDOFF_MSG,
+      });
+      results.push({ id: msg.id, action: "stay_change_escalated" });
+      return;
+    }
+
+    if (isSensitiveFinancialRequest(text)) {
+      await escalateGuestDm(supabase, {
+        phone, guestId, guestName, text, conversationId: claim.conversationId,
+        attentionReason: "financial_issue", alertType: "financial_issue", humanRequestType: "financial_issue",
+        replyText: CANONICAL_FINANCIAL_HANDOFF_MSG,
+      });
+      results.push({ id: msg.id, action: "financial_escalated" });
+      return;
+    }
+
+    if (isCheckInPolicyQuestion(text)) {
+      await patchGuestDmInbound(supabase, claim.conversationId, { intent: "check_in_policy_faq" });
+      const cfg = await fetchGuestDmBotConfig(supabase);
+      await sendGuestDmReply(supabase, phone, guestId, buildCheckInPolicyReply(cfg));
+      results.push({ id: msg.id, action: "checkin_policy_faq" });
+      return;
+    }
+
+    // General LLM fallback — everything not caught by a Tier-0 shield above.
+    await patchGuestDmInbound(supabase, claim.conversationId, { intent: "faq" });
+    const geminiKey = Deno.env.get("GEMINI_API_KEY");
+    let replyText: string;
+    if (!geminiKey) {
+      replyText = GUEST_DM_LOW_CONFIDENCE_REPLY;
+    } else {
+      try {
+        const systemPrompt = await fetchGuestDmSystemPrompt(supabase);
+        const history = await fetchGuestDmHistory(supabase, phone);
+        replyText = await generateGuestDmReply(geminiKey, systemPrompt, history, text);
+      } catch (e) {
+        console.error("[whapi-webhook] guest DM LLM reply failed:", (e as Error).message);
+        replyText = GUEST_DM_LOW_CONFIDENCE_REPLY;
+        if (guestId) {
+          await supabase.from("guests").update({
+            requires_attention: true,
+            requires_attention_since: new Date().toISOString(),
+            attention_reason: "low_confidence_llm_whapi",
+          }).eq("id", guestId);
+        }
+      }
+    }
+    await sendGuestDmReply(supabase, phone, guestId, replyText);
+    results.push({ id: msg.id, action: "llm_reply_sent" });
+  } catch (e) {
+    console.error("[whapi-webhook] handleGuestDirectMessage failed:", (e as Error).message);
+    results.push({ id: msg.id, error: "guest_dm_failed", detail: (e as Error).message });
+  }
+}
+
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
@@ -529,7 +878,16 @@ serve(async (req: Request) => {
     for (const msg of messages) {
       // ── Guards ────────────────────────────────────────────────────────────
       if (msg.fromMe)                  { results.push({ id: msg.id, ignored: "from_me" });     continue; } // never react to our own sends → no loops
-      if (!msg.chatId.endsWith("@g.us")) { results.push({ id: msg.id, ignored: "not_a_group" }); continue; }
+      if (!msg.chatId.endsWith("@g.us")) {
+        // Guest Direct Message routing (Phase 2 MVP) — only when explicitly
+        // enabled; otherwise byte-for-byte identical to prior behavior.
+        if (isGuestWhapiSuitesEnabled()) {
+          await handleGuestDirectMessage(supabase, msg, results);
+        } else {
+          results.push({ id: msg.id, ignored: "not_a_group" });
+        }
+        continue;
+      }
       if (hkGroup && msg.chatId === hkGroup) continue; // handled by housekeeping sweep — never ops-classify
       if (lockGroup && msg.chatId !== lockGroup) { results.push({ id: msg.id, ignored: "other_group" }); continue; }
 

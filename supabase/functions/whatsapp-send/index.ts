@@ -57,7 +57,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendImageMessage, sendInteractiveButtons } from "../_shared/interactiveSend.ts";
 import { isArrivalTodayIsrael, israelTodayYmd } from "../_shared/israelDate.ts";
 import { sanitizeMetaRecipientPhone } from "../_shared/metaPhone.ts";
-import { sendWhapiText } from "../_shared/whapiSend.ts";
+import { sendWhapiText, cleanPhoneForMention } from "../_shared/whapiSend.ts";
 import {
   guardPaymentLink,
   logPaymentLinkFailure,
@@ -1584,7 +1584,10 @@ serve(async (req: Request) => {
           if (!sim) {
             // Uses the already-connected Whapi device (default WHAPI_TOKEN) —
             // not a separate Suites token/channel. See guestWhapiRouting.ts.
-            replyWamid = await sendWhapiText(targetPhone, inboxMsg);
+            // Whapi requires bare digits for a 1:1 contact "to" (no leading
+            // "+", unlike guests.phone's stored E.164 form) — cleanPhoneForMention
+            // is the existing digit-stripping helper, reused here for that reason.
+            replyWamid = await sendWhapiText(cleanPhoneForMention(targetPhone), inboxMsg);
           }
           replyStatus = sim ? "simulated" : "sent";
           replyChannel = "whapi_suites";
@@ -1599,7 +1602,7 @@ serve(async (req: Request) => {
               status: "timeout",
               error: whapiMessage,
               guestPhone: targetPhone,
-              dispatchType: "Session (Whapi)",
+              dispatchType: "Session",
             });
             return new Response(
               JSON.stringify({
