@@ -46,8 +46,9 @@ export function _whapiBase(): string {
 
 // envVarName defaults to WHAPI_TOKEN (the shared internal staff-ops channel)
 // so every existing caller is unaffected. Guest-outbound routing (Phase 1,
-// _shared/guestWhapiRouting.ts) passes "WHAPI_SUITES_TOKEN" explicitly to
-// reach the separate Suites-device channel instead.
+// _shared/guestWhapiRouting.ts) reuses this same default — the already-
+// connected device, not a separate channel. The optional override stays
+// available for a future dedicated channel/token if one is ever connected.
 export function _tokenOrThrow(envVarName: string = "WHAPI_TOKEN"): string {
   const token = Deno.env.get(envVarName);
   if (!token) throw new Error("missing_whapi_token");

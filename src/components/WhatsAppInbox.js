@@ -1383,7 +1383,7 @@ const Bubble = React.memo(function Bubble({ msg, dir, resolveCtx, isMobile, onIm
             <span title="נשלח כהודעת סשן (24ש')" aria-label="Session message">🟢</span>
           )}
           {isOut && dispatchInfo?.channel === "whapi" && (
-            <span title="נשלח דרך מכשיר הסוויטות (Whapi)" aria-label="Whapi Suites device">📱</span>
+            <span title="נשלח דרך Whapi (המכשיר המחובר)" aria-label="Whapi device">📱</span>
           )}
           {isOut && <span>✓✓</span>}
         </div>

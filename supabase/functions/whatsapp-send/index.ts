@@ -1561,11 +1561,12 @@ serve(async (req: Request) => {
       const staffGuest = await loadGuestByPhoneForStaffReply(supabase, targetPhone);
 
       // ── Guest Outbound Whapi Routing (Phase 1) ───────────────────────────
-      // Suite guests route through the dedicated Suites Whapi device instead
-      // of Meta — inert unless both GUEST_WHAPI_SUITES_ENABLED and
-      // WHAPI_SUITES_TOKEN are set (see _shared/guestWhapiRouting.ts). Day
-      // guests / unregistered phones (isEffectiveSuiteGuest false) always
-      // keep today's Meta-only behavior below, unchanged.
+      // Suite guests route through the already-connected Whapi device
+      // (same WHAPI_TOKEN channel as the internal staff-ops group) instead
+      // of Meta — inert unless GUEST_WHAPI_SUITES_ENABLED is set (see
+      // _shared/guestWhapiRouting.ts). Day guests / unregistered phones
+      // (isEffectiveSuiteGuest false) always keep today's Meta-only behavior
+      // below, unchanged.
       const routeViaWhapiSuites = shouldRouteGuestOutboundViaWhapiSuites(staffGuest);
 
       let replyStatus = "simulated";
@@ -1581,7 +1582,9 @@ serve(async (req: Request) => {
       if (routeViaWhapiSuites) {
         try {
           if (!sim) {
-            replyWamid = await sendWhapiText(targetPhone, inboxMsg, { tokenEnvVar: "WHAPI_SUITES_TOKEN" });
+            // Uses the already-connected Whapi device (default WHAPI_TOKEN) —
+            // not a separate Suites token/channel. See guestWhapiRouting.ts.
+            replyWamid = await sendWhapiText(targetPhone, inboxMsg);
           }
           replyStatus = sim ? "simulated" : "sent";
           replyChannel = "whapi_suites";
@@ -1596,7 +1599,7 @@ serve(async (req: Request) => {
               status: "timeout",
               error: whapiMessage,
               guestPhone: targetPhone,
-              dispatchType: "Session (Whapi Suites)",
+              dispatchType: "Session (Whapi)",
             });
             return new Response(
               JSON.stringify({
