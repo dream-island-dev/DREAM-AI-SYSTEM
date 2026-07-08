@@ -80,7 +80,6 @@ import {
   resolveTruncatedReplyFallback,
   shouldAutoPromoteToCheckedIn,
   resolveEffectiveGuestStatus,
-  ADMIN_REQUESTS_DEPARTMENT,
   isGuestEligibleForInHouseOpsDispatch,
   guessGuestOpsSlaCategory,
   resolveGuestOpsDepartment,
@@ -1698,26 +1697,44 @@ async function createPendingOpsApprovalTask(
   );
 }
 
-async function logAdministrativeRequestTask(
+async function logAdministrativeRequestAlert(
   supabase: ReturnType<typeof createClient>,
-  args: { guestId: number; room: string | null; summary: string; rawText: string },
+  args: {
+    phone: string;
+    guestId: number;
+    room: string | null;
+    summary: string;
+    rawText: string;
+    conversationId?: number | null;
+    alertType?: string;
+    guestName?: string | null;
+  },
 ): Promise<void> {
-  const { error: insertErr } = await supabase.from("tasks").insert({
-    room_number:       args.room,
-    department:        ADMIN_REQUESTS_DEPARTMENT,
-    description:       args.summary,
-    priority:          "normal",
-    status:            "open",
-    source:            "guest_request",
+  const alertType = args.alertType ?? "request";
+  const message = args.rawText?.trim() || args.summary;
+  const { error: insertErr } = await supabase.from("guest_alerts").insert({
     guest_id:          args.guestId,
-    reporter_raw_text: args.rawText,
-    action_token:      crypto.randomUUID(),
+    phone:             args.phone,
+    alert_type:        alertType,
+    message,
+    conversation_id:   args.conversationId ?? null,
+    resolved:          false,
   });
   if (insertErr) {
-    console.error("[webhook] 📋 admin request task insert error:", insertErr.message);
+    console.error("[webhook] 📋 admin request alert insert error:", insertErr.message);
     return;
   }
-  console.info(`[webhook] 📋 admin request logged — guest:${args.guestId} dept:${ADMIN_REQUESTS_DEPARTMENT} summary:${args.summary}`);
+  onGuestAlertInserted(supabase, {
+    guestId:        args.guestId,
+    phone:          args.phone,
+    conversationId: args.conversationId ?? null,
+    message,
+    alertType,
+    guestName:      args.guestName ?? null,
+    room:           args.room,
+    sourceLabel:    "WhatsApp Bot",
+  }).catch((e: Error) => console.warn("[webhook] 📋 admin request Whapi notify failed:", e.message));
+  console.info(`[webhook] 📋 admin request logged to Requests Board — guest:${args.guestId} type:${alertType}`);
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1833,9 +1850,18 @@ async function handleOperationalInHouseIntercept(
   const guestRoom = (guest.room as string | null) ?? null;
   const reply = buildOperationalDispatchReply(summary, guestName);
 
+  // human_requested/human_request_type also flag the SAME inbound row so
+  // WhatsAppInbox.js's red "🔴 מבקש מענה אנושי" dot lights up here too — this
+  // path only ever reached guests.requires_attention (a different badge, on
+  // GuestsPage/GuestDashboard) and the Ops Board's own pending_approval queue,
+  // never the Inbox's per-message flag, unlike every guest_alerts-based Tier-0
+  // shield (severe complaint / stay-change / financial / balloon / admin) which
+  // already gets it for free via onGuestAlertInserted→triggerInboxRedAlert.
   await patchClaimedInbound(supabase, claimedConversationId, msgId, {
     guest_id: guestId,
     intent: "operational_in_house_request",
+    human_requested: true,
+    human_request_type: "operational_request",
   });
 
   const { error: guestErr } = await supabase.from("guests").update({
@@ -1966,8 +1992,8 @@ async function handleBalloonRoomRequestIntercept(
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// §4b.1a ADMINISTRATIVE IN-HOUSE ROUTING — spa / front-desk asks → tasks only
-//       (קבלה/בקשות), no Whapi field-ops group alert.
+// §4b.1a ADMINISTRATIVE IN-HOUSE ROUTING — spa / front-desk asks → Requests
+//       Board (guest_alerts) + Whapi "בקשות אורחים", not Operations tasks.
 // ══════════════════════════════════════════════════════════════════════════════
 async function handleAdministrativeInHouseIntercept(
   supabase: ReturnType<typeof createClient>,
@@ -2001,13 +2027,16 @@ async function handleAdministrativeInHouseIntercept(
     console.error("[webhook] 📋 admin intercept guest update FAILED:", guestErr.message);
   }
 
-  logAdministrativeRequestTask(supabase, {
+  logAdministrativeRequestAlert(supabase, {
+    phone,
     guestId,
     room: guestRoom,
     summary,
     rawText: text,
+    conversationId: claimedConversationId,
+    guestName,
   }).catch((e: Error) =>
-    console.error("[webhook] 📋 admin intercept logAdministrativeRequestTask error:", e.message)
+    console.error("[webhook] 📋 admin intercept logAdministrativeRequestAlert error:", e.message)
   );
 
   if (!sim) {
@@ -2198,17 +2227,6 @@ async function handleSensitiveStayChangeHandoff(
     console.warn("[webhook] guest_alerts (sensitive_stay_change) error:", e.message)
   );
 
-  if (guestId) {
-    logAdministrativeRequestTask(supabase, {
-      guestId,
-      room: guestRoom ?? null,
-      summary: "בקשת שינוי שהות / צק-אאוט",
-      rawText: text,
-    }).catch((e: Error) =>
-      console.error("[webhook] 🛡️ sensitive_stay_change admin task error:", e.message)
-    );
-  }
-
   if (!sim) {
     try {
       await sendReply(phone, CANONICAL_STAY_CHANGE_HANDOFF_MSG);
@@ -2295,17 +2313,6 @@ async function handleSensitiveFinancialHandoff(
   })().catch((e: Error) =>
     console.warn("[webhook] guest_alerts (sensitive_financial) error:", e.message)
   );
-
-  if (guestId) {
-    logAdministrativeRequestTask(supabase, {
-      guestId,
-      room: guestRoom ?? null,
-      summary: "בקשה כספית / בעיית חיוב",
-      rawText: text,
-    }).catch((e: Error) =>
-      console.error("[webhook] 💳 sensitive_financial admin task error:", e.message)
-    );
-  }
 
   if (!sim) {
     try {
@@ -4500,7 +4507,12 @@ Deno.serve(async (req: Request) => {
       }
 
       // ── Route & generate reply ────────────────────────────────────────────
-      let reply = scripts["fallback_reply"]?.message_text?.trim() || FALLBACK_REPLY;
+      // Captured once so the final deflection-detection check (near send time,
+      // below) can compare the eventual `reply` against this exact default —
+      // whether it came from the editable BotScriptEditor script or the
+      // hardcoded constant — without re-deriving it or matching brittle text.
+      const fallbackReplyText = scripts["fallback_reply"]?.message_text?.trim() || FALLBACK_REPLY;
+      let reply = fallbackReplyText;
       // Set only inside the "faq" branch below when the model invokes
       // log_guest_request — drives the conditional guest_alerts gate further down.
       let toolLoggedRequest: AiReplyResult["loggedRequest"] = null;
@@ -4768,6 +4780,13 @@ Deno.serve(async (req: Request) => {
             rawText: effectiveText,
             dispatchText,
           }).catch((e: Error) => console.error("[webhook] 🛋️ createPendingOpsApprovalTask error:", e.message));
+          // Same Inbox red-dot flag as the Tier-0 operational intercept above —
+          // this LLM-tool path (log_guest_request) never went through guest_alerts
+          // either, so it was equally invisible in WhatsAppInbox.js until now.
+          patchClaimedInbound(supabase, claimedConversationId, msgId, {
+            human_requested: true,
+            human_request_type: "operational_request",
+          }).catch((e: Error) => console.warn("[webhook] 🛋️ operational LLM-path inbox flag failed:", e.message));
           console.info(
             `[webhook] dispatch=operational_field_ops (LLM path, PENDING APPROVAL) phone:${phone} guest:${guestId} room:${guestRoom ?? "—"}`,
           );
@@ -4777,12 +4796,15 @@ Deno.serve(async (req: Request) => {
           && isAdministrativeInHouseRequest(effectiveText)
         ) {
           const guestRoom = (guest as Record<string, unknown> | null)?.room as string | null ?? null;
-          logAdministrativeRequestTask(supabase, {
+          logAdministrativeRequestAlert(supabase, {
+            phone,
             guestId,
             room: guestRoom,
             summary: buildAdministrativeRequestSummary(effectiveText),
             rawText: effectiveText,
-          }).catch((e: Error) => console.error("[webhook] 📋 admin LLM-path task error:", e.message));
+            conversationId,
+            guestName,
+          }).catch((e: Error) => console.error("[webhook] 📋 admin LLM-path alert error:", e.message));
           console.info(`[webhook] dispatch=admin_reception_tasks phone:${phone} guest:${guestId}`);
         } else if (criticalKeywordHit) {
           console.info(`[webhook] 🛟 dispatch=requests_board (critical keyword) phone:${phone}`);
@@ -4941,18 +4963,39 @@ Deno.serve(async (req: Request) => {
       }
 
       const isLowConfidenceFaqMiss = reply.includes(LOW_CONFIDENCE_HANDOFF_SENTENCE);
-      if (isLowConfidenceFaqMiss && guestId) {
+      // Generic "no real answer, passing this to reception" deflection — fires
+      // when intent stayed "fallback" (unmatched/very short text), both AI
+      // engines threw, or the truncation guard above fell all the way back to
+      // the generic script instead of the check-in-policy substitute. Same bug
+      // class as isLowConfidenceFaqMiss: the guest already receives a reply that
+      // promises staff follow-up, but nothing told staff to expect it — neither
+      // requires_attention nor the Inbox's human_requested flag were ever set.
+      const isGenericFallbackHandoff =
+        !isLowConfidenceFaqMiss && (reply === fallbackReplyText || reply === FALLBACK_REPLY);
+
+      if ((isLowConfidenceFaqMiss || isGenericFallbackHandoff) && guestId) {
         supabase
           .from("guests")
           .update({
             requires_attention:       true,
             requires_attention_since: new Date().toISOString(),
-            attention_reason:         "שאלה מורכבת לצוות",
+            attention_reason:         isLowConfidenceFaqMiss ? "שאלה מורכבת לצוות" : "fallback_no_match",
           })
           .eq("id", guestId)
           .then(({ error }: { error: { message: string } | null }) => {
-            if (error) console.error("[webhook] 🤔 low-confidence FAQ guest update FAILED:", error.message);
+            if (error) console.error("[webhook] 🤔 deflection-handoff guest update FAILED:", error.message);
           });
+      }
+
+      if (isLowConfidenceFaqMiss || isGenericFallbackHandoff) {
+        // Mirrors every guest_alerts-based Tier-0 shield, which already gets
+        // this for free via onGuestAlertInserted→triggerInboxRedAlert — these
+        // two deflection paths never insert a guest_alerts row, so they need
+        // the same flag set directly on the inbound row.
+        patchClaimedInbound(supabase, claimedConversationId, msgId, {
+          human_requested: true,
+          human_request_type: "staff_handoff",
+        }).catch((e: Error) => console.warn("[webhook] 🤔 deflection-handoff inbox flag failed:", e.message));
       }
 
       if (isLowConfidenceFaqMiss) {

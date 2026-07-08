@@ -10,6 +10,7 @@ const REASON_META = {
   financial_issue:  { icon: "💳", title: "בקשה כספית / בעיית חיוב — לחץ לפרופיל" },
   "בקשת טיפול בספא": { icon: "💆", title: "ביקש/ה טיפול בספא מהפורטל — לחץ לפרופיל" },
   "שאלה מורכבת לצוות": { icon: "🤔", title: "הבוט לא היה בטוח בתשובה — שאלה ממתינה למענה אנושי — לחץ לפרופיל" },
+  fallback_no_match: { icon: "🔁", title: "הבוט לא מצא מענה מתאים והפנה לצוות הקבלה — לחץ לפרופיל" },
 };
 
 export default function GuestAttentionBadge({ guest, onUpdated, showToast, onOpenDreamBotChat }) {
