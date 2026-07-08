@@ -3949,22 +3949,69 @@ export default function WhatsAppInbox({
     requestAnimationFrame(() => replyRef.current?.focus());
   }
 
-  // ── Room Ready — pre-fill editable reply (staff reviews before inbox_reply send) ─
-  function preloadRoomReadyMessage() {
+  // ── Room Ready quick action ────────────────────────────────────────────────
+  // If session is open and guest is linked → keep human-in-loop draft flow.
+  // Otherwise (first outbound / closed window / unlinked thread) send approved
+  // template directly so staff can still dispatch room-ready manually.
+  async function preloadRoomReadyMessage() {
     if (!active) return;
-    if (!activeContact?.guestId) {
-      setError("לא ניתן לטעון הודעת חדר מוכן — השיחה אינה משויכת לרשומת אורח (guests)");
+    const hasGuest = !!activeContact?.guestId;
+    const sessionOpen = isSessionWindowOpenForContact(activeContact);
+
+    if (hasGuest && sessionOpen) {
+      const text = resolveRoomReadyDraftMessage(activeContact, scriptsByKey, templatesByWaName);
+      if (!text?.trim()) {
+        setError("לא נמצא תוכן להודעת חדר מוכן — בדוק BotScriptEditor / תבניות Meta");
+        return;
+      }
+      setReply(text);
+      setQuickOpen(false);
+      setError(null);
+      requestAnimationFrame(() => replyRef.current?.focus());
       return;
     }
-    const text = resolveRoomReadyDraftMessage(activeContact, scriptsByKey, templatesByWaName);
-    if (!text?.trim()) {
-      setError("לא נמצא תוכן להודעת חדר מוכן — בדוק BotScriptEditor / תבניות Meta");
+
+    if (!ensureCanSend()) {
+      setError("שליחה חסומה בשעות שקט — סמן את האישור למטה");
       return;
     }
-    setReply(text);
-    setQuickOpen(false);
+
+    setSending(true);
     setError(null);
-    requestAnimationFrame(() => replyRef.current?.focus());
+    try {
+      let data;
+      let fnErr;
+      if (hasGuest) {
+        ({ data, error: fnErr } = await supabase.functions.invoke("whatsapp-send", {
+          body: {
+            trigger: "room_ready",
+            guestId: activeContact.guestId,
+            roomId: activeContact.room ?? undefined,
+          },
+        }));
+      } else {
+        const fallbackName = String(activeContact?.guestName ?? activeContact?.pushName ?? "").trim() || "אורח יקר";
+        const fallbackRoom = String(activeContact?.room ?? "").trim() || "-";
+        ({ data, error: fnErr } = await supabase.functions.invoke("whatsapp-send", {
+          body: {
+            trigger: "broadcast",
+            phone: active,
+            waTemplateName: "dream_room_ready1",
+            templateVariables: [fallbackName, fallbackRoom],
+          },
+        }));
+      }
+
+      if (fnErr || !data?.ok) {
+        throw new Error(fnErr?.message ?? data?.error ?? "שגיאה בשליחת הודעת חדר מוכן");
+      }
+      setQuickOpen(false);
+      await fetchSince();
+    } catch (err) {
+      setError(err?.message ?? "שגיאה בשליחת הודעת חדר מוכן");
+    } finally {
+      setSending(false);
+    }
   }
 
   // ── Manual reply send ─────────────────────────────────────────────────────
@@ -4827,19 +4874,17 @@ export default function WhatsAppInbox({
               </button>
               <button
                 onClick={preloadRoomReadyMessage}
-                disabled={!activeContact?.guestId}
+                disabled={sending}
                 title={
-                  !activeContact?.guestId
-                    ? "השיחה הזו אינה משויכת לרשומת אורח (guests)"
-                    : isSessionWindowOpenForContact(activeContact)
-                      ? "טוען סקריפט room_ready_reminder לעריכה — שליחה ידנית מהתיבה למטה"
-                      : "טוען תבנית dream_room_ready לעריכה — שליחה ידנית מהתיבה למטה"
+                  isSessionWindowOpenForContact(activeContact) && activeContact?.guestId
+                    ? "טוען סקריפט room_ready_reminder לעריכה — שליחה ידנית מהתיבה למטה"
+                    : "שולח כעת הודעת חדר מוכן בתבנית מאושרת (גם מחוץ לחלון 24ש׳)"
                 }
                 style={{
                   padding: "8px 14px", borderRadius: 20, border: "1.5px solid var(--gold,#C9A96E)",
-                  background: !activeContact?.guestId ? "#F3F0EA" : "linear-gradient(135deg, #E8F5EF, #D4EDDA)",
-                  color: !activeContact?.guestId ? "var(--text-muted)" : "#1A7A4A", fontSize: 12, fontWeight: 700,
-                  cursor: !activeContact?.guestId ? "not-allowed" : "pointer",
+                  background: sending ? "#F3F0EA" : "linear-gradient(135deg, #E8F5EF, #D4EDDA)",
+                  color: sending ? "var(--text-muted)" : "#1A7A4A", fontSize: 12, fontWeight: 700,
+                  cursor: sending ? "not-allowed" : "pointer",
                   minHeight: isMobile ? HIT_STAFF : "auto",
                 }}
               >

@@ -117,8 +117,40 @@ export default function AICopilot({ user }) {
       .order("arrival_date", { ascending: false })
       .limit(120);
 
-    const guest =
+    let guest =
       (guestRows ?? []).find((g) => guestRoomMatchesSuiteId(g, roomRow.room_id)) ?? null;
+
+    // Fallback: room denorm in guests can lag behind suite_rooms.
+    // If the UI has a ready suite but guest room is missing/mismatched, resolve by suite_rows.
+    if (!guest) {
+      const { data: suiteRows } = await supabase
+        .from("suite_rooms")
+        .select("guest_id, room_display, room_name, suite_type")
+        .not("guest_id", "is", null)
+        .limit(500);
+
+      const suiteMatch = (suiteRows ?? []).find((sr) =>
+        guestRoomMatchesSuiteId(
+          { room: sr.room_display ?? sr.room_name, suite_name: sr.suite_type },
+          roomRow.room_id,
+        ),
+      );
+
+      if (suiteMatch?.guest_id) {
+        guest =
+          (guestRows ?? []).find((g) => Number(g.id) === Number(suiteMatch.guest_id)) ?? null;
+        if (!guest) {
+          const { data: guestBySuite } = await supabase
+            .from("guests")
+            .select("id, name, phone, spa_time, room, suite_name, status, arrival_date, departure_date, room_ready_notified, msg_room_ready_sent")
+            .eq("id", suiteMatch.guest_id)
+            .eq("arrival_date", todayIL)
+            .neq("status", "cancelled")
+            .maybeSingle();
+          guest = guestBySuite ?? null;
+        }
+      }
+    }
 
     const isEligible = isArrivalToday(guest?.arrival_date);
 

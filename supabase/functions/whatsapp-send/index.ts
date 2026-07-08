@@ -1381,21 +1381,51 @@ serve(async (req: Request) => {
       // of guessing, the next time a manual broadcast test fails.
       console.log(`[whatsapp-send] 🩺 broadcast request — guestId:${JSON.stringify(guestId)} waTemplateName:"${waTemplateName}" varsLen:${templateVariables?.length ?? 0}`);
 
-      if (!guestId)        throw new Error("guestId required for broadcast trigger");
+      const targetPhone = String(testPhone ?? "").trim();
+      if (!guestId && !targetPhone) {
+        throw new Error("guestId or phone is required for broadcast trigger");
+      }
       if (!waTemplateName) throw new Error("waTemplateName is required for broadcast");
 
-      // .maybeSingle() — never .single() (CLAUDE.md red line): .single() throws
-      // a Postgrest error (not a clean null) on zero OR multiple rows, which is
-      // exactly the kind of thing that was surfacing as an opaque "guest_not_found"
-      // with no detail on what actually went wrong.
-      const { data: guest, error: gErr } = await supabase
-        .from("guests").select("*").eq("id", guestId).maybeSingle();
-      if (gErr)    throw new Error(`guest_lookup_error: ${gErr.message}`);
-      if (!guest)  throw new Error(`guest_not_found: no guest row for id=${JSON.stringify(guestId)}`);
-      if (!guest.phone) throw new Error(`guest_no_phone: guest id=${guestId} (${guest.name ?? "?"}) has no phone on file`);
+      // Broadcast can target either an explicit guest row (guestId) or a raw phone.
+      // This keeps manual template dispatch available even when an inbox thread is
+      // not currently linked to a guests row.
+      let guest: any = null;
+      let resolvedGuestId: number | null = null;
+      if (guestId) {
+        const { data: byId, error: gErr } = await supabase
+          .from("guests").select("*").eq("id", guestId).maybeSingle();
+        if (gErr)   throw new Error(`guest_lookup_error: ${gErr.message}`);
+        if (!byId)  throw new Error(`guest_not_found: no guest row for id=${JSON.stringify(guestId)}`);
+        guest = byId;
+        resolvedGuestId = Number(byId.id);
+      } else {
+        const staffGuest = await loadGuestByPhoneForStaffReply(supabase, targetPhone);
+        if (staffGuest?.id) {
+          const { data: byPhoneGuest, error: gpErr } = await supabase
+            .from("guests")
+            .select("*")
+            .eq("id", staffGuest.id)
+            .maybeSingle();
+          if (gpErr) throw new Error(`guest_lookup_error: ${gpErr.message}`);
+          if (byPhoneGuest) {
+            guest = byPhoneGuest;
+            resolvedGuestId = Number(byPhoneGuest.id);
+          }
+        }
+        if (!guest) {
+          guest = { id: null, name: "אורח יקר", phone: targetPhone };
+        }
+      }
 
-      const broadcastInactive = assertGuestEligibleForAutomation(guest);
-      if (broadcastInactive) {
+      const guestPhone = String(guest.phone ?? "").trim();
+      if (!guestPhone) {
+        throw new Error(`guest_no_phone: guest id=${guestId ?? "n/a"} (${String(guest.name ?? "?")}) has no phone on file`);
+      }
+
+      // Only enforce active-status guard when we truly resolved a guests row.
+      const broadcastInactive = resolvedGuestId ? assertGuestEligibleForAutomation(guest) : null;
+      if (resolvedGuestId && broadcastInactive) {
         return new Response(
           JSON.stringify({ ok: false, status: "guest_not_active", reason: broadcastInactive, error: GUEST_NOT_ACTIVE_HE }),
           { headers: { ...CORS, "Content-Type": "application/json" } },
@@ -1424,7 +1454,7 @@ serve(async (req: Request) => {
       let dispatched: DispatchedTemplate | null = null;
       try {
         if (!sim) {
-          dispatched = await sendViaTemplate(guest.phone as string, waTemplateName, vars, "he", undefined, requestImageUrl);
+          dispatched = await sendViaTemplate(guestPhone, waTemplateName, vars, "he", undefined, requestImageUrl);
           status = "sent";
         }
       } catch (e) {
@@ -1440,13 +1470,13 @@ serve(async (req: Request) => {
         status,
         error: sendError,
         guestName: guest.name as string,
-        guestPhone: guest.phone as string,
+        guestPhone,
         dispatchType: "Template",
       });
 
       await supabase.from("notification_log").insert({
-        guest_id:     guestId,
-        recipient:    guest.phone,
+        guest_id:     resolvedGuestId,
+        recipient:    guestPhone,
         trigger_type: "broadcast",
         channel:      "whatsapp",
         status,
