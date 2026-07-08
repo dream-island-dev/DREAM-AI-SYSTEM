@@ -1558,9 +1558,11 @@ function NewChatModal({ onClose, onSent }) {
           body: { trigger: "inbox_reply", phone: g.phone, message: personalised },
         });
         if (!error && data?.ok) {
-          await supabase.from("whatsapp_conversations").insert({
-            phone: g.phone, direction: "outbound", message: personalised, wa_message_id: null,
-          });
+          // whatsapp-send's inbox_reply branch already inserts the outbound
+          // row server-side (with the real wa_message_id) — a second client
+          // insert here duplicated it into a visible ghost bubble in the
+          // thread, since mergeThreadRows/groupByPhone dedupe by row id, not
+          // content. The live Realtime subscription picks up the server row.
         } else {
           failures.push({
             name: g.name, phone: g.phone,
@@ -1656,10 +1658,11 @@ function NewChatModal({ onClose, onSent }) {
       if (error) throw new Error(data?.error ?? error.message ?? "שגיאה בשליחה");
       if (data && !data.ok) throw new Error(data.error ?? "שגיאה בשליחה");
 
-      await supabase.from("whatsapp_conversations").insert({
-        phone: selectedGuest.phone, direction: "outbound",
-        message: freeText.trim(), wa_message_id: null,
-      });
+      // whatsapp-send's inbox_reply branch already inserts the outbound row
+      // server-side (real wa_message_id + session-wrapped log text) — a
+      // second client insert here duplicated it into a visible ghost bubble,
+      // since mergeThreadRows/groupByPhone dedupe by row id, not content.
+      // The live Realtime subscription picks up the server row on its own.
       onSent(selectedGuest.phone, data?.simulation);
     } catch (e) {
       setErr(e?.message ?? "שגיאה");
@@ -1689,11 +1692,11 @@ function NewChatModal({ onClose, onSent }) {
       });
       if (error || !data?.ok) throw new Error(data?.error ?? error?.message ?? "שגיאה בשליחה");
 
-      const tmplPreview = substituteTemplateVars(selectedTmpl.bodyText, varValues);
-      await supabase.from("whatsapp_conversations").insert({
-        phone: selectedGuest.phone, direction: "outbound",
-        message: tmplPreview || `[תבנית: ${selectedTmpl.name}]`, wa_message_id: null,
-      });
+      // whatsapp-send's broadcast branch already inserts the outbound row
+      // server-side (real wa_message_id + template-derived log text) — a
+      // second client insert here duplicated it into a visible ghost bubble,
+      // since mergeThreadRows/groupByPhone dedupe by row id, not content.
+      // The live Realtime subscription picks up the server row on its own.
       onSent(selectedGuest.phone, data.simulation);
     } catch (e) {
       setErr(e?.message ?? "שגיאה");
@@ -1739,11 +1742,11 @@ function NewChatModal({ onClose, onSent }) {
           body: { trigger: "broadcast", guestId: g.id, waTemplateName: selectedTmpl.name, templateVariables: autoVars },
         });
         if (!error && data?.ok) {
-          const tmplPreview = substituteTemplateVars(selectedTmpl.bodyText, autoVars);
-          await supabase.from("whatsapp_conversations").insert({
-            phone: g.phone, direction: "outbound",
-            message: tmplPreview || `[תבנית: ${selectedTmpl.name}]`, wa_message_id: null,
-          });
+          // whatsapp-send's broadcast branch already inserts the outbound
+          // row server-side — a second client insert here duplicated it into
+          // a visible ghost bubble (mergeThreadRows/groupByPhone dedupe by
+          // row id, not content). The live Realtime subscription picks up
+          // the server row on its own.
         } else {
           failures.push({ name: g.name, phone: g.phone, reason: data?.error || error?.message || "שגיאה" });
         }
