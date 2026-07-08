@@ -111,9 +111,11 @@ export default function AICopilot({ user }) {
       .select("id, name, phone, spa_time, room, suite_name, status, arrival_date, departure_date, room_ready_notified, msg_room_ready_sent")
       .eq("arrival_date", todayIL)
       .neq("status", "cancelled")
-      .in("status", ["pending", "expected", "room_ready"])
+      // After 15:00 (or manual ops), many guests are already `checked_in`.
+      // Room-ready approvals should still be able to match the correct guest.
+      .in("status", ["pending", "expected", "room_ready", "checked_in"])
       .order("arrival_date", { ascending: false })
-      .limit(40);
+      .limit(120);
 
     const guest =
       (guestRows ?? []).find((g) => guestRoomMatchesSuiteId(g, roomRow.room_id)) ?? null;
