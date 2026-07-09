@@ -1,9 +1,16 @@
-import { isGarbledDbLabel, resolveBotScriptDisplayName, scriptKeyFriendly } from "./botScriptLabels";
+import { isGarbledDbText, resolveBotScriptDisplayName, scriptKeyFriendly } from "./botScriptLabels";
 
 describe("botScriptLabels", () => {
-  test("isGarbledDbLabel detects question-mark corruption", () => {
-    expect(isGarbledDbLabel("?????? ?????? ??? ???????? ????????")).toBe(true);
-    expect(isGarbledDbLabel("בוקר הגעה — שבת (שלב 3)")).toBe(false);
+  test("isGarbledDbText detects question-mark corruption", () => {
+    expect(isGarbledDbText("?????? ?????? ??? ???????? ????????")).toBe(true);
+    expect(isGarbledDbText("בוקר הגעה — שבת (שלב 3)")).toBe(false);
+  });
+
+  test("isGarbledDbText detects replacement-char and mojibake corruption", () => {
+    expect(isGarbledDbText("��� בוקר")).toBe(true);
+    expect(isGarbledDbText("cafÃ© rÃ©sumÃ© naÃ¯ve")).toBe(true);
+    expect(isGarbledDbText("")).toBe(false);
+    expect(isGarbledDbText(null)).toBe(false);
   });
 
   test("resolveBotScriptDisplayName falls back to friendly map", () => {

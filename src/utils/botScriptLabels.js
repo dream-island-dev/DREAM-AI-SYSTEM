@@ -28,12 +28,20 @@ export const BOT_SCRIPT_FRIENDLY = {
   morning_daypass:          "בוקר הגעה — בילוי יומי (שלב 3)",
 };
 
-/** True when DB label was corrupted (e.g. migration SQL piped without UTF-8 on Windows). */
-export function isGarbledDbLabel(value) {
+// Two mojibake modes seen in this DB so far: (1) literal '?' floods — a
+// PowerShell pipe re-encoding Hebrew to a non-UTF-8 console codepage before
+// it reaches Postgres; (2) U+FFFD replacement chars / repeated "Ã.." pairs —
+// invalid UTF-8 bytes decoded as Latin-1/Windows-1252 somewhere in transit.
+const MOJIBAKE_PAIR = /Ã./g;
+
+/** True when DB text (title or body) was corrupted in transit — used for both display_name and message_text. */
+export function isGarbledDbText(value) {
   const s = String(value ?? "").trim();
   if (!s) return false;
+  if (s.includes("�")) return true;
   const q = (s.match(/\?/g) || []).length;
-  return q >= 2 && q / s.length >= 0.25;
+  if (q >= 2 && q / s.length >= 0.25) return true;
+  return (s.match(MOJIBAKE_PAIR) || []).length >= 3;
 }
 
 export function scriptKeyFriendly(key) {
@@ -43,6 +51,6 @@ export function scriptKeyFriendly(key) {
 /** Prefer DB display_name; fall back to friendly map when garbled or empty. */
 export function resolveBotScriptDisplayName(scriptKey, dbDisplayName) {
   const db = String(dbDisplayName ?? "").trim();
-  if (db && !isGarbledDbLabel(db)) return db;
+  if (db && !isGarbledDbText(db)) return db;
   return scriptKeyFriendly(scriptKey);
 }

@@ -33,7 +33,7 @@ import {
   partitionGuestQueueItems,
   resolveGuestPipelineSegment,
 } from "../utils/pipelineSegment";
-import { scriptKeyFriendly } from "../utils/botScriptLabels";
+import { scriptKeyFriendly, isGarbledDbText, BOT_SCRIPT_FRIENDLY } from "../utils/botScriptLabels";
 
 const JOURNEY_PHASE_LABELS = {
   pre_arrival: "🌴 לפני ההגעה",
@@ -928,6 +928,11 @@ function StageCard({
               </select>
               {stage.session_message_script_key && (
                 <>
+                  {isGarbledDbText(draftText) && BOT_SCRIPT_FRIENDLY[stage.session_message_script_key] && (
+                    <div style={{ fontSize: 12, color: "#C0392B", fontWeight: 700, marginBottom: 6 }}>
+                      ⚠ טקסט DB פגום — שמור מחדש או הרץ migration 174
+                    </div>
+                  )}
                   <textarea
                     rows={4}
                     value={draftText}
@@ -985,6 +990,11 @@ function StageCard({
               </select>
               {shabbatScriptKey && (
                 <>
+                  {isGarbledDbText(draftShabbatText) && BOT_SCRIPT_FRIENDLY[shabbatScriptKey] && (
+                    <div style={{ fontSize: 12, color: "#C0392B", fontWeight: 700, marginBottom: 6 }}>
+                      ⚠ טקסט DB פגום — שמור מחדש או הרץ migration 174
+                    </div>
+                  )}
                   <textarea
                     rows={4}
                     value={draftShabbatText}

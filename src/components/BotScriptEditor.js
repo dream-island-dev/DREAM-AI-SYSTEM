@@ -17,7 +17,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
-import { resolveBotScriptDisplayName } from "../utils/botScriptLabels";
+import { resolveBotScriptDisplayName, isGarbledDbText } from "../utils/botScriptLabels";
 
 const TRIGGER_LABELS = {
   arrival_confirmed: { label: "אחרי אישור הגעה", color: "#1A7A4A", bg: "#E8F5EF" },
@@ -217,6 +217,14 @@ export default function BotScriptEditor() {
                       <span style={{ fontWeight: 700, fontSize: 14 }}>
                         {resolveBotScriptDisplayName(script.script_key, script.display_name)}
                       </span>
+                      {isGarbledDbText(script.display_name) && (
+                        <span
+                          style={{ fontSize: 11, color: "#C0392B", fontWeight: 700 }}
+                          title="שם התצוגה ב-DB פגום — מוצג לפי מיפוי קבוע, יש לתקן ב-DB"
+                        >
+                          ⚠ {script.script_key}
+                        </span>
+                      )}
                       <TriggerBadge event={script.trigger_event} />
                       {script.is_meta_template && (
                         <span style={{
