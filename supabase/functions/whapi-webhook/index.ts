@@ -44,7 +44,8 @@
 import { serve }         from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient }  from "https://esm.sh/@supabase/supabase-js@2";
 import Anthropic         from "https://esm.sh/@anthropic-ai/sdk@0.20.0";
-import { sendWhapiText, cleanPhoneForMention } from "../_shared/whapiSend.ts";
+import { sendWhapiText } from "../_shared/whapiSend.ts";
+import { findAssignedWorker, assigneeCardLine } from "../_shared/assignedWorker.ts";
 import { fetchWhapiMedia } from "../_shared/whapiMedia.ts";
 import { containsHebrew, translateTextForFieldOps } from "../_shared/fieldOpsTranslation.ts";
 import { parseHousekeepingReadyRoomNumbers } from "../_shared/housekeepingWaParse.ts";
@@ -365,46 +366,97 @@ async function resolveTaskByReaction(
 // GET/POST interstitial) is replaced by a single reaction gesture — no link,
 // no crawler-safety dance, just 👍🏼 on this card. task-action.ts itself stays
 // alive (the manager "Bump" action, sla-escalation-cron, still uses it).
-// Session — Dynamic Native Mentions. `assignedPhone` (already-cleaned bare
-// digits, e.g. "972504721760") is optional: when no profiles row has a phone
-// for the task's department, the card renders exactly as before (no dead
-// "Assigned:" line). The "@<digits>" substring must appear verbatim in the
-// body — that's what Whapi's `mentions` array binds to — so it's built from
-// the SAME cleaned variable passed to sendWhapiText below, never a separately
-// formatted display string.
-function buildTaskCard(room: string | null, desc: string, assignedPhone: string | null, fromVoice = false): string {
+// Assignee line uses profiles.name (see _shared/assignedWorker.ts) — never
+// @phone/@lid, which WhatsApp privacy groups render as opaque numeric IDs.
+function buildTaskCard(room: string | null, desc: string, assigneeLine: string | null, fromVoice = false): string {
   return [
     `📌 New Task Opened: Suite ${room ?? "—"}`,
     ...(fromVoice ? [`🎤 Transcribed from voice:`] : []),
     `📋 Task: ${desc}`,
     `⏰ Status: Pending`,
-    ...(assignedPhone ? [`👤 Assigned: @${assignedPhone}`] : []),
+    ...(assigneeLine ? [assigneeLine] : []),
     `👉 Please react with 👍🏼 to complete this task.`,
   ].join("\n");
 }
 
-// Department → on-duty worker, looked up live from `profiles` (phone E.164,
-// migration 070) — fully dynamic, not a hardcoded name/phone map, so it picks
-// up any worker added/reassigned to a department without a code change. No
-// shift/availability signal exists yet, so this is "first phone on file for
-// the department" — best-effort, same FAIL VISIBLE convention as every other
-// lookup in this file: a miss just means the card has no assignee tag.
-async function findAssignedWorkerPhone(
+function isDirectGuestChat(chatId: string): boolean {
+  return chatId.endsWith("@s.whatsapp.net") || chatId.endsWith("@c.us");
+}
+
+function canonicalGuestPhone(fromPhone: string, chatId: string): string {
+  const raw = (fromPhone || chatId.split("@")[0] || "").replace(/\D/g, "");
+  if (!raw) return "";
+  if (raw.startsWith("972")) return raw;
+  if (raw.startsWith("0")) return `972${raw.slice(1)}`;
+  return raw;
+}
+
+function guestPhoneVariants(phone: string): string[] {
+  const digits = phone.replace(/\D/g, "");
+  if (!digits) return [];
+  const bare = digits.startsWith("972") ? digits : `972${digits.replace(/^0/, "")}`;
+  return [...new Set([bare, `+${bare}`, `0${bare.slice(3)}`])];
+}
+
+async function lookupGuestByPhone(
   supabase: ReturnType<typeof createClient>,
-  department: string,
-): Promise<string | null> {
-  const { data, error } = await supabase
-    .from("profiles")
-    .select("phone")
-    .eq("department", department)
-    .not("phone", "is", null)
-    .limit(1)
+  phone: string,
+): Promise<{ id: number; name: string | null } | null> {
+  const variants = guestPhoneVariants(phone);
+  if (!variants.length) return null;
+  const { data } = await supabase
+    .from("guests")
+    .select("id, name")
+    .in("phone", variants)
     .maybeSingle();
+  return data ? { id: data.id as number, name: (data.name as string | null) ?? null } : null;
+}
+
+function isUniqueViolation(error: { code?: string; message?: string } | null): boolean {
+  if (!error) return false;
+  return error.code === "23505" || /duplicate key|unique constraint/i.test(error.message ?? "");
+}
+
+/** Insert-first dedup for Whapi Suites 1:1 guest inbox rows. */
+async function claimWhapiGuestInbound(
+  supabase: ReturnType<typeof createClient>,
+  row: {
+    phone: string;
+    guest_id: number | null;
+    message: string;
+    wa_message_id: string;
+    push_name: string | null;
+    message_type?: string;
+    media_url?: string | null;
+    media_mime?: string | null;
+    media_caption?: string | null;
+  },
+): Promise<{ claimed: boolean; conversationId: number | null }> {
+  const { data, error } = await supabase
+    .from("whatsapp_conversations")
+    .insert({
+      phone: row.phone,
+      guest_id: row.guest_id,
+      inbox_channel: "whapi",
+      direction: "inbound",
+      message: row.message,
+      wa_message_id: row.wa_message_id,
+      intent: "received",
+      push_name: row.push_name,
+      ...(row.message_type ? { message_type: row.message_type } : {}),
+      ...(row.media_url ? { media_url: row.media_url } : {}),
+      ...(row.media_mime ? { media_mime: row.media_mime } : {}),
+      ...(row.media_caption ? { media_caption: row.media_caption } : {}),
+    })
+    .select("id")
+    .maybeSingle();
+
   if (error) {
-    console.warn(`[whapi-webhook] assigned-worker lookup failed for department "${department}":`, error.message);
-    return null;
+    if (isUniqueViolation(error)) return { claimed: false, conversationId: null };
+    console.error("[whapi-webhook] claimWhapiGuestInbound failed:", error.message);
+    return { claimed: false, conversationId: null };
   }
-  return (data?.phone as string | undefined) ?? null;
+  return { claimed: true, conversationId: (data?.id as number) ?? null };
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -783,6 +835,73 @@ serve(async (req: Request) => {
     const hkGroup   = Deno.env.get("WHAPI_HOUSEKEEPING_GROUP_ID")?.trim() || null;
     const results: Array<Record<string, unknown>> = [];
 
+    // ── Suites device — 1:1 guest DMs (מכשיר הסוויטות) ─────────────────────
+    // Log-only path: no ops classification, no auto-reply. Inbox binds outbound
+    // to Whapi via inbox_channel='whapi' + whatsapp-send inbox_reply branch.
+    for (const msg of messages) {
+      if (msg.fromMe) {
+        results.push({ id: msg.id, channel: "guest_dm", ignored: "from_me" });
+        continue;
+      }
+      if (!isDirectGuestChat(msg.chatId)) continue;
+
+      let body = msg.text;
+      let fromVoice = false;
+      if (!body && msg.voiceMediaId) {
+        if ((msg.voiceSeconds ?? 0) > 180) {
+          results.push({ id: msg.id, channel: "guest_dm", ignored: "voice_too_long" });
+          continue;
+        }
+        try {
+          const geminiKey = Deno.env.get("GEMINI_API_KEY");
+          if (!geminiKey) throw new Error("no_gemini_key");
+          const base64Audio = await fetchWhapiMedia(msg.voiceMediaId);
+          body = await transcribeVoice(geminiKey, base64Audio, msg.voiceMimeType || "audio/ogg");
+          fromVoice = true;
+        } catch (e) {
+          console.error(`[whapi-webhook] guest_dm voice failed ${msg.id}:`, (e as Error).message);
+          results.push({ id: msg.id, channel: "guest_dm", error: "voice_transcription_failed" });
+          continue;
+        }
+      }
+
+      if (!body?.trim()) {
+        results.push({ id: msg.id, channel: "guest_dm", ignored: "no_text" });
+        continue;
+      }
+
+      const phone = canonicalGuestPhone(msg.fromPhone, msg.chatId);
+      if (!phone) {
+        results.push({ id: msg.id, channel: "guest_dm", ignored: "no_phone" });
+        continue;
+      }
+
+      const guest = await lookupGuestByPhone(supabase, phone);
+      const inboxText = fromVoice ? `🎤 ${body.trim()}` : body.trim();
+      const { claimed, conversationId } = await claimWhapiGuestInbound(supabase, {
+        phone,
+        guest_id: guest?.id ?? null,
+        message: inboxText,
+        wa_message_id: msg.id,
+        push_name: msg.fromName || null,
+      });
+
+      if (claimed) {
+        console.log(
+          `[whapi-webhook] guest_dm inbound phone:${phone} guest:${guest?.id ?? "unlinked"} conv:${conversationId ?? "?"}`,
+        );
+      }
+      results.push({
+        id: msg.id,
+        channel: "guest_dm",
+        phone,
+        guest_id: guest?.id ?? null,
+        claimed,
+        conversation_id: conversationId,
+        fromVoice,
+      });
+    }
+
     // ── Reaction sweep (Sprint 2, Session 26) — 👍🏼 on a task card = done.
     // Session 77c — dual lookup: staff often react to the ORIGINAL trigger
     // message (source_message_id) instead of the bot card (whapi_message_id).
@@ -902,16 +1021,8 @@ serve(async (req: Request) => {
     for (const msg of messages) {
       // ── Guards ────────────────────────────────────────────────────────────
       if (msg.fromMe)                  { results.push({ id: msg.id, ignored: "from_me" });     continue; } // never react to our own sends → no loops
-      if (!msg.chatId.endsWith("@g.us")) {
-        // Guest Direct Message routing (Phase 2 MVP) — only when explicitly
-        // enabled; otherwise byte-for-byte identical to prior behavior.
-        if (isGuestWhapiSuitesEnabled()) {
-          await handleGuestDirectMessage(supabase, msg, results);
-        } else {
-          results.push({ id: msg.id, ignored: "not_a_group" });
-        }
-        continue;
-      }
+      if (isDirectGuestChat(msg.chatId)) continue; // handled by guest_dm sweep above
+      if (!msg.chatId.endsWith("@g.us")) { results.push({ id: msg.id, ignored: "not_a_group" }); continue; }
       if (hkGroup && msg.chatId === hkGroup) continue; // handled by housekeeping sweep — never ops-classify
       if (lockGroup && msg.chatId !== lockGroup) { results.push({ id: msg.id, ignored: "other_group" }); continue; }
 
@@ -1012,8 +1123,8 @@ serve(async (req: Request) => {
         continue;
       }
 
-      const rawAssignedPhone = await findAssignedWorkerPhone(supabase, taskDepartment);
-      const assignedPhone = rawAssignedPhone ? cleanPhoneForMention(rawAssignedPhone) : null;
+      const assignedWorker = await findAssignedWorker(supabase, taskDepartment, "whapi-webhook");
+      const assigneeLine = assigneeCardLine(assignedWorker);
 
       // Whapi card translation only — tasks.description (already written above,
       // `cls.task_description`) stays in whatever language it was reported in
@@ -1027,17 +1138,14 @@ serve(async (req: Request) => {
           style: "description_only",
         });
       }
-      const card = buildTaskCard(cls.room_number, cardDescription, assignedPhone, fromVoice);
+      const card = buildTaskCard(cls.room_number, cardDescription, assigneeLine, fromVoice);
 
       // Reply into the SAME group. no_link_preview stops the crawler pre-fetch.
       // Non-blocking: the ticket already exists — a failed reply must not lose it.
       let replied = true;
       let cardMsgId: string | null = null;
       try {
-        cardMsgId = await sendWhapiText(msg.chatId, card, {
-          noLinkPreview: true,
-          ...(assignedPhone ? { mentions: [assignedPhone] } : {}),
-        });
+        cardMsgId = await sendWhapiText(msg.chatId, card, { noLinkPreview: true });
       } catch (e) {
         replied = false;
         console.warn(`[whapi-webhook] task ${task.id} created but group reply failed:`, (e as Error).message);

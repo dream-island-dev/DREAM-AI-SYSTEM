@@ -57,6 +57,7 @@ export async function triggerInboxRedAlert(
       .from("whatsapp_conversations")
       .select("id")
       .in("phone", variants)
+      .eq("inbox_channel", "meta")
       .eq("direction", "inbound")
       .order("created_at", { ascending: false })
       .limit(1)
@@ -82,6 +83,7 @@ export async function triggerInboxRedAlert(
     const { error } = await supabase.from("whatsapp_conversations").insert({
       phone,
       guest_id:   guestId,
+      inbox_channel: "meta",
       direction:  "inbound",
       message:    summary ? `[מערכת] ${summary}` : "[מערכת] בקשה חדשה נוצרה בלוח הבקשות.",
       wa_message_id: null,

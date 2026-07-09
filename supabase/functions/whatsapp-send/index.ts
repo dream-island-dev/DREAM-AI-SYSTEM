@@ -1112,12 +1112,15 @@ async function getLastInboundTimestamp(
     .from("whatsapp_conversations")
     .select("created_at")
     .eq("phone", phone)
+    .eq("inbox_channel", "meta")
     .eq("direction", "inbound")
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
   return data?.created_at ? new Date(data.created_at as string) : null;
 }
+
+const INBOX_CHANNEL_META = "meta" as const;
 
 // Simulation: true when explicitly set OR when Meta credentials are absent.
 const isSimulation = (): boolean =>
@@ -1582,6 +1585,9 @@ serve(async (req: Request) => {
       const b = body as Record<string, unknown>;
       const targetPhone = (b.phone as string | undefined)?.trim();
       const inboxMsg    = (b.message as string | undefined)?.trim();
+      const inboxChannel = String(b.inbox_channel ?? "meta").trim().toLowerCase() === "whapi"
+        ? "whapi"
+        : "meta";
 
       if (!targetPhone) throw new Error("phone is required for inbox_reply");
       if (!inboxMsg)    throw new Error("message is required for inbox_reply");
@@ -1593,21 +1599,9 @@ serve(async (req: Request) => {
       // null below) — conversation history is the contract, not the profile.
       const staffGuest = await loadGuestByPhoneForStaffReply(supabase, targetPhone);
 
-      // ── Guest Outbound Whapi Routing — MANUAL, explicit control only ─────
-      // Reverted from automatic guest-type classification (session 2026-07-09):
-      // Mike stopped that design — silently rerouting a live conversation by
-      // room_type risked disrupting an in-progress chat with zero staff
-      // action in the loop. The channel is now decided ENTIRELY by what the
-      // caller explicitly asks for — never inferred from the guest row.
-      // Two independent gates, both required: (1) the caller passed the
-      // literal string "whapi" (anything else, including omitted, is "meta"
-      // — restores today's exact legacy default), AND (2) the master switch
-      // GUEST_WHAPI_SUITES_ENABLED is on (_shared/guestWhapiRouting.ts). If
-      // staff explicitly asked for Whapi but the switch is off, that's a
-      // FAIL VISIBLE condition (§0.3) — surfaced as a clear error below, not
-      // a silent fall-through to Meta the caller didn't ask for.
-      const targetChannel = target_channel === "whapi" ? "whapi" : "meta";
-      if (targetChannel === "whapi" && !isGuestWhapiSuitesEnabled()) {
+      // Thread-bound channel (inbox_channel) decides routing. Whapi still
+      // requires GUEST_WHAPI_SUITES_ENABLED (FAIL VISIBLE if off).
+      if (inboxChannel === "whapi" && !isGuestWhapiSuitesEnabled()) {
         return new Response(
           JSON.stringify({
             ok: false,
@@ -1617,7 +1611,7 @@ serve(async (req: Request) => {
           { headers: { ...CORS, "Content-Type": "application/json" } },
         );
       }
-      const routeViaWhapiSuites = targetChannel === "whapi";
+      const routeViaWhapiSuites = inboxChannel === "whapi";
 
       let replyStatus = "simulated";
       let replyErr: string | null = null;
@@ -1685,7 +1679,7 @@ serve(async (req: Request) => {
         // number (no guest record) keeps today's permissive behavior, since we
         // have no window data to check. Not applicable to the Whapi path
         // above — that's a real WhatsApp number, no Meta session-window exists.
-        if (staffGuest && !isWindowOpen(staffGuest.wa_window_expires_at)) {
+        if (inboxChannel === "meta" && staffGuest && !isWindowOpen(staffGuest.wa_window_expires_at)) {
           return new Response(
             JSON.stringify({
               ok: false,
@@ -1721,13 +1715,14 @@ serve(async (req: Request) => {
         status: replyStatus,
         error: replyErr,
         guestPhone: targetPhone,
-        dispatchType: "Session",
+        dispatchType: inboxChannel === "whapi" ? "Whapi" : "Session",
       });
 
       // Insert outbound row so the inbox thread shows the message immediately
       await supabase.from("whatsapp_conversations").insert({
         phone:         targetPhone,
         guest_id:      staffGuest?.id ?? null,
+        inbox_channel: inboxChannel,
         direction:     "outbound",
         message:       replyStatus === "failed"
           ? inboxMsg

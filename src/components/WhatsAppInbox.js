@@ -69,7 +69,7 @@ const THREAD_HISTORY_LIMIT = 1500; // full-history cap for a single opened conta
 // used to be selected on every message row but was never read past normalise(),
 // pure dead payload multiplied across every row in every fetch.
 const CONVERSATION_SELECT =
-  "id, phone, direction, message, wa_message_id, created_at, intent, human_requested, human_request_type, push_name, " +
+  "id, phone, inbox_channel, direction, message, wa_message_id, created_at, intent, human_requested, human_request_type, push_name, " +
   "message_type, media_url, media_mime, media_caption, channel, " +
   "guests(id, name, spa_time, spa_date, room, room_type, status, arrival_date, departure_date, portal_token, meal_time, meal_location, claimed_by, claimed_at)";
 
@@ -816,9 +816,13 @@ export function mergeThreadRows(existingAll, fetchedRows) {
 export function groupByPhone(rows) {
   const map = new Map();
   for (const row of rows) {
-    if (!map.has(row.phone)) {
-      map.set(row.phone, {
+    const inboxChannel = row.inbox_channel === "whapi" ? "whapi" : "meta";
+    const threadKey = `${row.phone}::${inboxChannel}`;
+    if (!map.has(threadKey)) {
+      map.set(threadKey, {
+        threadKey,
         phone: row.phone,
+        inbox_channel: inboxChannel,
         guestId: row.guest_id ?? null,
         guestName: row.guest_name,
         spaTime: row.spa_time ?? null,
@@ -839,7 +843,7 @@ export function groupByPhone(rows) {
         humanRequestType: null,
       });
     }
-    const contact = map.get(row.phone);
+    const contact = map.get(threadKey);
     contact.messages.push(row);
     if (row.push_name) contact.pushName = row.push_name;
     // Flag contact if any inbound message is a human request
@@ -951,6 +955,7 @@ function contactItemPropsEqual(prev, next) {
   const a = prev.contact, b = next.contact;
   if (a === b) return true;
   if (a.phone !== b.phone) return false;
+  if ((a.inbox_channel ?? "meta") !== (b.inbox_channel ?? "meta")) return false;
   if (a.guestId !== b.guestId) return false;
   if (a.guestName !== b.guestName) return false;
   if (a.pushName !== b.pushName) return false;
@@ -1022,7 +1027,7 @@ const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobil
           width: ACTIONS_W, display: "flex",
         }}>
           <button
-            onClick={(e) => { e.stopPropagation(); setSwiped(false); onArchive?.(contact.phone); }}
+            onClick={(e) => { e.stopPropagation(); setSwiped(false); onArchive?.(contact); }}
             className="u-touch-comfort"
             style={{ flex: 1, border: "none", background: "var(--text-muted)", color: "white", fontSize: 12, fontWeight: 700 }}
           >{t.archive}</button>
@@ -1034,7 +1039,7 @@ const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobil
         </div>
       )}
       <div
-        onClick={() => { if (swiped) { setSwiped(false); return; } onClick(contact.phone); }}
+        onClick={() => { if (swiped) { setSwiped(false); return; } onClick(contact); }}
         onPointerDown={onPointerDown}
         style={{
           padding: "var(--space-sm) var(--space-md)",
@@ -1112,6 +1117,14 @@ const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobil
                   background: identity.bg, color: identity.fg,
                   fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: "var(--radius-sm)",
                 }}>{identity.label}</span>
+                <span className="u-badge-nowrap" style={{
+                  display: "inline-block",
+                  background: contact.inbox_channel === "whapi" ? "rgba(180, 83, 9, 0.12)" : "rgba(18, 140, 126, 0.12)",
+                  color: contact.inbox_channel === "whapi" ? "#B45309" : "#0F766E",
+                  fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: "var(--radius-sm)",
+                }}>
+                  {contact.inbox_channel === "whapi" ? "מכשיר הסוויטות" : "Dream Bot"}
+                </span>
                 {roomChip && (
                   <span className="u-badge-nowrap" style={{
                     display: "inline-block",
@@ -2634,16 +2647,12 @@ export default function WhatsAppInbox({
     canSend,
   } = useQuietHoursSend();
 
-  const [contacts, setContacts]   = useState([]); // grouped by phone
-  const [active, setActive]       = useState(null); // selected phone
+  const [contacts, setContacts]   = useState([]); // grouped by phone+channel
+  const [active, setActive]       = useState(null); // selected threadKey
+  const [channelFilter, setChannelFilter] = useState("all"); // all | meta | whapi
   const [loading, setLoading]     = useState(true);
   const [sending, setSending]     = useState(false);
   const [reply, setReply]         = useState("");
-  // Manual channel choice for the reply box (2026-07-09 pivot — was
-  // auto-classified by guest type; Mike stopped that design, staff now picks
-  // explicitly per send, every reply defaults to Meta). Reset on contact
-  // switch below so a Whapi choice never silently carries into a new thread.
-  const [replyChannel, setReplyChannel] = useState("meta");
   const [error, setError]         = useState(null);
   // Tracks the exact banner text last set by a background *load* operation
   // (fetchAll/fetchSince/fetchOlder polling) so its own next success can
@@ -2752,6 +2761,8 @@ export default function WhatsAppInbox({
     ...r,
     id:                     r.id != null ? Number(r.id) : r.id,
     phone:                  canonicalizePhone(r.phone),
+    inbox_channel:          r.inbox_channel === "whapi" ? "whapi" : "meta",
+    threadKey:              `${canonicalizePhone(r.phone)}::${r.inbox_channel === "whapi" ? "whapi" : "meta"}`,
     guest_id:               r.guests?.id ?? null,
     guest_name:             r.guests?.name ?? null,
     spa_time:               r.guests?.spa_time ?? null,
@@ -2822,14 +2833,16 @@ export default function WhatsAppInbox({
     [resolveIdentityFallback, resolveClaimNames, reconcileRowsWithGuestMap],
   );
 
-  const markPhoneInboundRead = useCallback((phone) => {
+  const markPhoneInboundRead = useCallback((contact) => {
+    const phone = contact?.phone;
     if (!phone) return;
+    const threadKey = contact?.threadKey ?? `${phone}::${contact?.inbox_channel ?? "meta"}`;
     const now = new Date().toISOString();
-    readCursorsRef.current.set(phone, now);
+    readCursorsRef.current.set(threadKey, now);
     allMsgsRef.current = applyAllReadCursors(allMsgsRef.current, readCursorsRef.current);
     setContacts(applyGrouping(allMsgsRef.current));
     bumpReadCursors();
-    if (user?.id && supabase) {
+    if (user?.id && supabase && (contact?.inbox_channel ?? "meta") === "meta") {
       supabase.from("inbox_read_cursors").upsert(
         { phone, staff_id: user.id, last_read_at: now, updated_at: now },
         { onConflict: "phone,staff_id" },
@@ -3056,11 +3069,12 @@ export default function WhatsAppInbox({
   // fully (bounded, single-phone query — cheap regardless of table size) so
   // the visible thread is never silently truncated. Runs once per phone per
   // session (hydratedPhonesRef) — cheap to skip on repeat clicks.
-  const fetchThreadHistory = useCallback(async (phone, { force = false } = {}) => {
+  const fetchThreadHistory = useCallback(async (phone, inboxChannel = "meta", { force = false } = {}) => {
     if (!phone) return;
-    if (!force && hydratedPhonesRef.current.has(phone)) return;
-    if (force) hydratedPhonesRef.current.delete(phone);
-    hydratedPhonesRef.current.add(phone);
+    const hydrateKey = `${phone}::${inboxChannel}`;
+    if (!force && hydratedPhonesRef.current.has(hydrateKey)) return;
+    if (force) hydratedPhonesRef.current.delete(hydrateKey);
+    hydratedPhonesRef.current.add(hydrateKey);
     setLoadingThread(true);
     try {
       // DESC + limit = the NEWEST rows (session 125 P1-D). Ascending+limit
@@ -3070,6 +3084,7 @@ export default function WhatsAppInbox({
       const { data, error: err } = await supabase
         .from("whatsapp_conversations")
         .select(CONVERSATION_SELECT)
+        .eq("inbox_channel", inboxChannel)
         .in("phone", phoneVariants(phone))
         .order("created_at", { ascending: false })
         .limit(THREAD_HISTORY_LIMIT);
@@ -3089,7 +3104,7 @@ export default function WhatsAppInbox({
     }
   }, [applyGrouping]);
 
-  const fetchThreadDbCount = useCallback(async (phone) => {
+  const fetchThreadDbCount = useCallback(async (phone, inboxChannel = "meta") => {
     if (!phone) {
       setThreadDbCount(null);
       return;
@@ -3097,6 +3112,7 @@ export default function WhatsAppInbox({
     const { count, error: err } = await supabase
       .from("whatsapp_conversations")
       .select("id", { count: "exact", head: true })
+      .eq("inbox_channel", inboxChannel)
       .in("phone", phoneVariants(phone));
     if (err) {
       console.warn("[WA-inbox] fetchThreadDbCount error:", err.message);
@@ -3106,18 +3122,19 @@ export default function WhatsAppInbox({
   }, []);
 
   const refreshActiveThread = useCallback(async () => {
-    if (!active) return;
+    const selected = contacts.find((c) => c.threadKey === active);
+    if (!selected) return;
     setThreadRefreshBusy(true);
     try {
       await Promise.all([
-        fetchThreadHistory(active, { force: true }),
-        fetchThreadDbCount(active),
+        fetchThreadHistory(selected.phone, selected.inbox_channel, { force: true }),
+        fetchThreadDbCount(selected.phone, selected.inbox_channel),
       ]);
       setLastUpdated(new Date());
     } finally {
       setThreadRefreshBusy(false);
     }
-  }, [active, fetchThreadHistory, fetchThreadDbCount]);
+  }, [active, contacts, fetchThreadHistory, fetchThreadDbCount]);
 
   // ── Full-inbox search (message content + guests not yet loaded) ──────────
   // displayContacts' rosterSearch filter (below) only matches contacts already
@@ -3170,7 +3187,10 @@ export default function WhatsAppInbox({
           .slice(0, 10); // bounded — a broad query shouldn't fire unbounded thread fetches
 
         if (newPhones.length) {
-          await Promise.all(newPhones.map((p) => fetchThreadHistory(p)));
+          await Promise.all(newPhones.flatMap((p) => [
+            fetchThreadHistory(p, "meta"),
+            fetchThreadHistory(p, "whapi"),
+          ]));
         } else if (msgRows.length) {
           setContacts(applyGrouping(allMsgsRef.current));
         }
@@ -3187,8 +3207,10 @@ export default function WhatsAppInbox({
   // Stable useCallback reference (not an inline arrow per roster row) so
   // ContactItem's React.memo comparator above can actually treat this prop as
   // unchanged across renders — see contactItemPropsEqual.
-  const archiveContact = useCallback((phone) => {
-    setArchivedPhones((prev) => new Set(prev).add(phone));
+  const archiveContact = useCallback((contact) => {
+    const key = contact?.threadKey ?? contact?.phone;
+    if (!key) return;
+    setArchivedPhones((prev) => new Set(prev).add(key));
   }, []);
 
   // ── Dismiss human-intervention request ────────────────────────────────────
@@ -3205,6 +3227,7 @@ export default function WhatsAppInbox({
         supabase.from("whatsapp_conversations")
           .update({ human_requested: false })
           .in("phone", variants)
+          .eq("inbox_channel", contact.inbox_channel ?? "meta")
           .eq("human_requested", true),
         supabase.from("guests")
           .update({ needs_callback: false })
@@ -3217,7 +3240,9 @@ export default function WhatsAppInbox({
       // (fetchSince() only re-fetches rows newer than the last poll, so an
       // UPDATE to an old row's flag wouldn't otherwise be picked up here).
       allMsgsRef.current = allMsgsRef.current.map((m) =>
-        m.phone === bare ? { ...m, human_requested: false } : m
+        m.phone === bare && (m.inbox_channel ?? "meta") === (contact.inbox_channel ?? "meta")
+          ? { ...m, human_requested: false }
+          : m
       );
       setContacts(applyGrouping(allMsgsRef.current));
     } catch (e) {
@@ -3421,9 +3446,9 @@ export default function WhatsAppInbox({
   // marks its inbound messages read locally so the unread badge actually
   // clears (previously `_read` was referenced by the badge logic but never
   // set anywhere, so unread counts only ever grew). ─────────────────────────
-  const openContact = useCallback((phone) => {
-    setActive(phone);
-    setReplyChannel("meta"); // never carry a Whapi choice into a different guest's thread
+  const openContact = useCallback((contact) => {
+    if (!contact?.threadKey) return;
+    setActive(contact.threadKey);
     if (isMobile) {
       setMobileScreen("thread");
       setMobileToolbarOpen(false);
@@ -3434,9 +3459,9 @@ export default function WhatsAppInbox({
     setAiSuggestions(null);
     setAiSuggestError(null);
     setRouteDraft(null);
-    markPhoneInboundRead(phone);
-    fetchThreadHistory(phone);
-    fetchThreadDbCount(phone);
+    markPhoneInboundRead(contact);
+    fetchThreadHistory(contact.phone, contact.inbox_channel);
+    fetchThreadDbCount(contact.phone, contact.inbox_channel);
   }, [isMobile, markPhoneInboundRead, fetchThreadHistory, fetchThreadDbCount]);
 
   useEffect(() => {
@@ -3494,14 +3519,14 @@ export default function WhatsAppInbox({
     );
 
     if (match) {
-      openContact(match.phone);
+      openContact(match);
       pendingFocusRef.current = null;
       if (pending.guestName && !match.guestName) setNavGuestName(pending.guestName);
       return;
     }
 
     if (!loading) {
-      openContact(pending.phone);
+      openContact({ threadKey: `${pending.phone}::meta`, phone: pending.phone, inbox_channel: "meta" });
       if (pending.guestName) setNavGuestName(pending.guestName);
       pendingFocusRef.current = null;
     }
@@ -3962,13 +3987,13 @@ export default function WhatsAppInbox({
 
   // ── Auto-scroll to bottom of thread ─────────────────────────────────────
   // Moved below derived `thread` — scroll when active chat grows (realtime/poll).
-  const activeContact   = contacts.find((c) => c.phone === active) ?? null;
+  const activeContact   = contacts.find((c) => c.threadKey === active) ?? null;
   const thread          = activeContact?.messages ?? [];
 
   useEffect(() => {
-    if (active) fetchThreadDbCount(active);
+    if (activeContact) fetchThreadDbCount(activeContact.phone, activeContact.inbox_channel);
     else setThreadDbCount(null);
-  }, [active, thread.length, lastUpdated, fetchThreadDbCount]);
+  }, [activeContact, thread.length, lastUpdated, fetchThreadDbCount]);
 
   useEffect(() => {
     if (activeContact?.guestName) setNavGuestName(null);
@@ -4107,7 +4132,7 @@ export default function WhatsAppInbox({
         ({ data, error: fnErr } = await supabase.functions.invoke("whatsapp-send", {
           body: {
             trigger: "broadcast",
-            phone: active,
+            phone: activeContact.phone,
             waTemplateName: "dream_room_ready1",
             templateVariables: [fallbackName, fallbackRoom],
           },
@@ -4132,7 +4157,7 @@ export default function WhatsAppInbox({
 
   // ── Manual reply send ─────────────────────────────────────────────────────
   async function sendManualReply() {
-    if (!reply.trim() || !active) return;
+    if (!reply.trim() || !active || !activeContact?.phone) return;
     if (!ensureCanSend()) {
       setError("שליחה חסומה בשעות שקט — סמן את האישור למטה");
       return;
@@ -4150,14 +4175,14 @@ export default function WhatsAppInbox({
       const { data, error: fnErr } = await supabase.functions.invoke("whatsapp-send", {
         body: {
           trigger: "inbox_reply",
-          phone: active,
+          phone: activeContact.phone,
+          inbox_channel: activeContact.inbox_channel ?? "meta",
           message: reply.trim(),
-          target_channel: replyChannel,
         },
       });
       if (fnErr || !data?.ok) throw new Error(fnErr?.message ?? data?.error ?? "שגיאה בשליחה");
       setReply("");
-      markPhoneInboundRead(active);
+      markPhoneInboundRead(activeContact);
       await fetchSince();
     } catch (err) {
       // Always prefix with the operation name — see sendRoomReady's catch
@@ -4169,7 +4194,7 @@ export default function WhatsAppInbox({
   }
 
   // ── Derived state ──────────────────────────────────────────────────────────
-  const visibleContacts = contacts.filter((c) => !archivedPhones.has(c.phone));
+  const visibleContacts = contacts.filter((c) => !archivedPhones.has(c.threadKey ?? c.phone));
   // A departed guest who messages back (new inbound, unread) must still surface in
   // the main "all" roster — not silently buried in the "אחרי עזיבה" tab nobody
   // checks by default (Disable Don't Hide, CLAUDE.md §0.2). It lands in the pinned
@@ -4184,8 +4209,11 @@ export default function WhatsAppInbox({
   const alertContacts = activeRosterContacts.filter((c) => c.humanRequested);
   const rosterSource =
     rosterFilter === "departed" ? departedContacts : activeRosterContacts;
+  const channelScopedRosterSource = rosterSource.filter((c) =>
+    channelFilter === "all" ? true : c.inbox_channel === channelFilter,
+  );
   const displayContacts = useMemo(() => {
-    let list = rosterSource;
+    let list = channelScopedRosterSource;
     const q = rosterSearch.trim().toLowerCase();
     if (q) {
       const qDigits = q.replace(/\D/g, "");
@@ -4197,7 +4225,7 @@ export default function WhatsAppInbox({
     }
     list = list.filter((c) => contactMatchesRosterFilter(c, rosterFilter, readCursorsByPhone));
     return sortContactsRecentFirst(list, rosterSort, sortRosterContacts);
-  }, [rosterSource, rosterSearch, rosterFilter, rosterSort, readCursorsByPhone]);
+  }, [channelScopedRosterSource, rosterSearch, rosterFilter, rosterSort, readCursorsByPhone]);
 
   const rosterGroupedSections = useMemo(() => {
     if (rosterFilter !== "all" || rosterSearch.trim()) return null;
@@ -4359,6 +4387,22 @@ export default function WhatsAppInbox({
               </button>
             ))}
           </div>
+          <div style={{ display: "flex", gap: 6, marginTop: 6, overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+            {[
+              { id: "all", label: "כל הערוצים" },
+              { id: "meta", label: "Dream Bot" },
+              { id: "whapi", label: "מכשיר הסוויטות" },
+            ].map((chip) => (
+              <button
+                key={chip.id}
+                type="button"
+                onClick={() => setChannelFilter(chip.id)}
+                className={`wa-sort-chip${channelFilter === chip.id ? " wa-sort-chip--active" : ""}`}
+              >
+                {chip.label}
+              </button>
+            ))}
+          </div>
           {rosterFilter === "all" && !rosterSearch.trim() && (
             <div style={{ display: "flex", gap: 6, marginTop: 6, alignItems: "center", flexWrap: "wrap" }}>
               <span style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 600 }}>{t.rosterGroupedHint}</span>
@@ -4413,6 +4457,22 @@ export default function WhatsAppInbox({
                     {chip.badge}
                   </span>
                 )}
+              </button>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 6, marginTop: 5, flexWrap: "nowrap", overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+            {[
+              { id: "all", label: "כל הערוצים" },
+              { id: "meta", label: "Dream Bot" },
+              { id: "whapi", label: "מכשיר הסוויטות" },
+            ].map((chip) => (
+              <button
+                key={chip.id}
+                type="button"
+                onClick={() => setChannelFilter(chip.id)}
+                className={`wa-sort-chip${channelFilter === chip.id ? " wa-sort-chip--active" : ""}`}
+              >
+                {chip.label}
               </button>
             ))}
           </div>
@@ -4479,7 +4539,7 @@ export default function WhatsAppInbox({
                   <ContactItem
                     key={c.phone}
                     contact={c}
-                    isActive={active === c.phone}
+                    isActive={active === c.threadKey}
                     isMobile={isMobile}
                     t={t}
                     lang={lang}
@@ -4500,7 +4560,7 @@ export default function WhatsAppInbox({
               <ContactItem
                 key={c.phone}
                 contact={c}
-                isActive={active === c.phone}
+                isActive={active === c.threadKey}
                 isMobile={isMobile}
                 t={t}
                 lang={lang}
@@ -4574,7 +4634,7 @@ export default function WhatsAppInbox({
           type="button"
           onClick={() => activeContact && openGuestContextDrawer(activeContact)}
           disabled={!activeContact}
-          title={activeContact ? displayName(activeContact) : active}
+          title={activeContact ? displayName(activeContact) : ""}
           style={{
             flex: 1, minWidth: 0, background: "none", border: "none", color: "inherit",
             cursor: activeContact ? "pointer" : "default", textAlign: "start", padding: 0,
@@ -4582,11 +4642,16 @@ export default function WhatsAppInbox({
           }}
         >
           <div style={{ fontWeight: 700, fontSize: isMobile ? 16 : 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {displayName(activeContact ?? (active ? { phone: active, guestName: navGuestName } : null))}
+            {displayName(activeContact ?? { phone: "", guestName: navGuestName })}
           </div>
           {(activeContact?.guestName || activeContact?.pushName || navGuestName) && (
             <div style={{ fontSize: 11, opacity: 0.75, direction: "ltr", marginTop: 1, textAlign: "start" }}>
-              {active}
+              {activeContact?.phone ?? ""}
+            </div>
+          )}
+          {activeContact && (
+            <div style={{ fontSize: 11, opacity: 0.9, marginTop: 2 }}>
+              {activeContact.inbox_channel === "whapi" ? "מכשיר הסוויטות" : "Dream Bot"}
             </div>
           )}
         </button>
@@ -5231,40 +5296,17 @@ export default function WhatsAppInbox({
           </div>
         )}
 
-        {/* Manual sending-channel toggle — every reply defaults to Meta;
-            Whapi is only used when staff explicitly picks it here. */}
-        <div style={{
-          padding: isMobile ? "6px 12px 0" : "4px var(--space-md) 0",
-          display: "flex", justifyContent: "flex-end", gap: 6,
-        }}>
+        {activeContact && (
           <div style={{
-            display: "flex", gap: 3, background: "var(--card-bg)",
-            border: "1px solid var(--border)", borderRadius: 999, padding: 3,
+            padding: isMobile ? "6px 12px 0" : "6px var(--space-md) 0",
+            fontSize: 11,
+            fontWeight: 700,
+            color: activeContact.inbox_channel === "whapi" ? "#B45309" : "#0F766E",
           }}>
-            <button
-              type="button"
-              onClick={() => setReplyChannel("meta")}
-              title="Dream Bot (Meta)"
-              style={{
-                border: "none", borderRadius: 999, padding: "4px 10px", fontSize: 11.5, fontWeight: 700,
-                cursor: "pointer", display: "flex", alignItems: "center", gap: 4,
-                background: replyChannel === "meta" ? "var(--gold,#C9A96E)" : "transparent",
-                color: replyChannel === "meta" ? "#1A1A1A" : "var(--text-muted)",
-              }}
-            >🤖 Dream Bot</button>
-            <button
-              type="button"
-              onClick={() => setReplyChannel("whapi")}
-              title="מכשיר הסוויטות (Whapi)"
-              style={{
-                border: "none", borderRadius: 999, padding: "4px 10px", fontSize: 11.5, fontWeight: 700,
-                cursor: "pointer", display: "flex", alignItems: "center", gap: 4,
-                background: replyChannel === "whapi" ? "#1A7A4A" : "transparent",
-                color: replyChannel === "whapi" ? "#fff" : "var(--text-muted)",
-              }}
-            >📱 מכשיר הסוויטות</button>
+            שליחה דרך: {activeContact.inbox_channel === "whapi" ? "מכשיר הסוויטות (Whapi)" : "Dream Bot (Meta)"}
           </div>
-        </div>
+        )}
+
         <div
           className={isMobile ? "wa-mobile-composer" : undefined}
           style={{

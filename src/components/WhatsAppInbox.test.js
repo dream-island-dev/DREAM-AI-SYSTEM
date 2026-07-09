@@ -95,4 +95,15 @@ describe("groupByPhone — strict latest-message-desc (WhatsApp order)", () => {
     const contacts = groupByPhone(rows);
     expect(contacts[0].phone).toBe("972500000001");
   });
+
+  test("same phone on meta and whapi yields two independent roster threads", () => {
+    const rows = [
+      msg("m1", "2026-07-06T10:00:00Z", { phone: "972500000001", inbox_channel: "meta" }),
+      msg("w1", "2026-07-06T09:00:00Z", { phone: "972500000001", inbox_channel: "whapi" }),
+    ];
+    const contacts = groupByPhone(rows);
+    expect(contacts).toHaveLength(2);
+    expect(contacts.map((c) => c.inbox_channel).sort()).toEqual(["meta", "whapi"]);
+    expect(contacts[0].inbox_channel).toBe("meta");
+  });
 });

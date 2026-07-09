@@ -60,7 +60,8 @@ export function applyReadCursorToMessages(messages, readCursorAt) {
 export function applyAllReadCursors(rows, readCursorsByPhone) {
   if (!rows?.length || !readCursorsByPhone?.size) return rows ?? [];
   return rows.map((m) => {
-    const cursor = readCursorsByPhone.get(m.phone);
+    const key = m.threadKey ?? `${m.phone}::${m.inbox_channel ?? "meta"}`;
+    const cursor = readCursorsByPhone.get(key);
     if (!cursor || m.direction !== "inbound" || m._read) return m;
     const msgTs = new Date(m.created_at).getTime();
     const cursorTs = new Date(cursor).getTime();
@@ -77,8 +78,8 @@ export function applyAllReadCursors(rows, readCursorsByPhone) {
  */
 export function sortContactsRecentFirst(contacts, sortMode, sortRosterContactsFn) {
   const recent = contacts.filter((c) => isRecentlyActive(c));
-  const recentPhones = new Set(recent.map((c) => c.phone));
-  const rest = contacts.filter((c) => !recentPhones.has(c.phone));
+  const recentKeys = new Set(recent.map((c) => c.threadKey ?? `${c.phone}::${c.inbox_channel ?? "meta"}`));
+  const rest = contacts.filter((c) => !recentKeys.has(c.threadKey ?? `${c.phone}::${c.inbox_channel ?? "meta"}`));
   return [
     ...sortRosterContactsFn(recent, "activity"),
     ...sortRosterContactsFn(rest, sortMode),
@@ -86,7 +87,8 @@ export function sortContactsRecentFirst(contacts, sortMode, sortRosterContactsFn
 }
 
 export function contactUnreadCount(contact, readCursorsByPhone) {
-  const cursor = readCursorsByPhone?.get?.(contact.phone) ?? null;
+  const key = contact.threadKey ?? `${contact.phone}::${contact.inbox_channel ?? "meta"}`;
+  const cursor = readCursorsByPhone?.get?.(key) ?? null;
   return countUnreadInbound(contact.messages, cursor);
 }
 
@@ -105,8 +107,8 @@ export function buildGroupedRosterSections(contacts, sortMode, lang, options = {
   } = options;
 
   const recent = contacts.filter((c) => isRecentlyActive(c, nowMs, recentWindowMs));
-  const recentPhones = new Set(recent.map((c) => c.phone));
-  const rest = contacts.filter((c) => !recentPhones.has(c.phone));
+  const recentKeys = new Set(recent.map((c) => c.threadKey ?? `${c.phone}::${c.inbox_channel ?? "meta"}`));
+  const rest = contacts.filter((c) => !recentKeys.has(c.threadKey ?? `${c.phone}::${c.inbox_channel ?? "meta"}`));
 
   const sections = [];
 

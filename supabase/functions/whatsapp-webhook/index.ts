@@ -73,6 +73,7 @@ import {
   CANONICAL_FINANCIAL_HANDOFF_MSG,
   isSevereComplaint,
   isLowValueCourtesyMessage,
+  isGuestGreetingMessage,
   isAutoAwayMessage,
   isCheckInPolicyQuestion,
   buildCheckInPolicyReply,
@@ -164,9 +165,9 @@ const PENDING_PORTAL_SPA_LLM_SUFFIX = [
 // sentinel. The LLM is instructed (both suffix sources below) to output this
 // EXACT sentence, verbatim, whenever it cannot answer from the attached
 // context — never a guess. The webhook then detects this literal string on
-// the outgoing reply (see the "faq" intent branch) and swaps the behavior
-// from "send it to the guest" to "quiet red-alert, staff takes over" —
-// mathematically enforced in code, not just requested of the model. A single
+// the outgoing reply (see the "faq" intent branch), sends it to the guest
+// verbatim, and flags staff for follow-up — mathematically enforced in code,
+// not just requested of the model. A single
 // source here guarantees the detector and the two prompt sources that emit
 // it can never drift out of sync.
 const LOW_CONFIDENCE_HANDOFF_SENTENCE =
@@ -1218,6 +1219,7 @@ async function claimInboundWaMessage(
     .insert({
       phone: row.phone,
       guest_id: row.guest_id,
+      inbox_channel: "meta",
       direction: "inbound",
       message: row.message,
       wa_message_id: row.wa_message_id,
@@ -1273,6 +1275,7 @@ async function coalesceBurstIfLeader(
   const { data: recentInbound } = await supabase
     .from("whatsapp_conversations")
     .select("message, wa_message_id, created_at")
+    .eq("inbox_channel", "meta")
     .eq("phone", phone)
     .eq("direction", "inbound")
     .gte("created_at", since)
@@ -1532,6 +1535,18 @@ const FALLBACK_REPLY =
   "תודה רבה על פנייתך. 🙏 " +
   "אני אעביר אותה לצוות הקבלה שלנו, שישמח לסייע לך בהקדם האפשרי.";
 
+const DEFAULT_GREETING_REPLY =
+  "שלום! 😊 ברוכים הבאים ל-Dream Island. במה אוכל לעזור לכם היום?";
+
+function buildGreetingReply(guestName: string | null, scriptText: string | null): string {
+  const base = scriptText?.trim() || DEFAULT_GREETING_REPLY;
+  return resolvePlaceholders(base, {
+    guestName: guestName ?? "אורח יקר",
+    spaTime: null,
+    workshopUrl: "",
+  });
+}
+
 function buildComplaintReply(guestName: string | null): string {
   const salutation = guestName ? `${guestName} היקר/ה, ` : "";
   return (
@@ -1748,10 +1763,70 @@ async function logAdministrativeRequestAlert(
 //      ("תודה", "אוקי", "סגור") carries zero routing intent — sending the
 //      fallback/apology script on these makes the bot look robotic and
 //      spammy. Conversation metadata is still logged, but NO reply goes out —
-//      silence is the correct human reaction to "thanks 🙏", exactly like a
-//      staff member would react. Runs before every other Tier-0 classifier
-//      and before the LLM — zero token/latency cost.
+//      silence is the correct human reaction to "thanks 🙏" AFTER the bot already
+//      spoke — never on a thread opener (see guestThreadHasPriorOutbound).
+//      Greetings (היי/שלום) are handled by handleGuestGreeting() instead.
+//      Runs before every other Tier-0 classifier and before the LLM — zero token cost.
 // ══════════════════════════════════════════════════════════════════════════════
+/** True when the guest already received at least one outbound in this phone thread. */
+async function guestThreadHasPriorOutbound(
+  supabase: ReturnType<typeof createClient>,
+  phone: string,
+): Promise<boolean> {
+  const { count, error } = await supabase
+    .from("whatsapp_conversations")
+    .select("id", { count: "exact", head: true })
+    .eq("inbox_channel", "meta")
+    .eq("phone", phone)
+    .eq("direction", "outbound")
+    .not("message", "like", "[SYSTEM]%");
+  if (error) {
+    console.warn("[webhook] guestThreadHasPriorOutbound failed:", error.message);
+    return false;
+  }
+  return (count ?? 0) > 0;
+}
+
+async function handleGuestGreeting(
+  supabase: ReturnType<typeof createClient>,
+  opts: {
+    phone: string;
+    guestId: number | null;
+    guestName: string | null;
+    msgId: string;
+    claimedConversationId: number | null;
+    sim: boolean;
+    scripts: Record<string, BotScript>;
+  },
+): Promise<void> {
+  const { phone, guestId, guestName, msgId, claimedConversationId, sim, scripts } = opts;
+  const reply = buildGreetingReply(
+    guestName,
+    scripts["greeting_reply"]?.message_text ?? null,
+  );
+  await patchClaimedInbound(supabase, claimedConversationId, msgId, {
+    guest_id: guestId,
+    intent: "greeting",
+  });
+  if (!sim) {
+    try {
+      await sendReply(phone, reply, { scripted: true });
+      await insertGuestOutboundIfNotMuted(supabase, {
+        phone,
+        guest_id: guestId,
+        message: reply,
+        wa_message_id: null,
+        intent: "greeting",
+      });
+    } catch (e) {
+      console.error("[webhook] greeting reply failed:", (e as Error).message);
+    }
+  } else {
+    console.info(`[webhook] SIM — greeting to ${phone}`);
+  }
+  console.info(`[webhook] 👋 greeting (Tier-0) — phone:${phone}`);
+}
+
 async function handleCourtesyAck(
   supabase: ReturnType<typeof createClient>,
   opts: {
@@ -3291,6 +3366,7 @@ async function resolveReactionTargetSnippet(
     const { data: recentOut } = await supabase
       .from("whatsapp_conversations")
       .select("message")
+      .eq("inbox_channel", "meta")
       .eq("phone", phone)
       .eq("direction", "outbound")
       .order("created_at", { ascending: false })
@@ -3311,7 +3387,7 @@ async function insertGuestOutboundIfNotMuted(
 ): Promise<boolean> {
   if (_suppressGuestRepliesStaffClaim) return false;
 
-  const baseRow = { ...row, direction: "outbound" as const };
+  const baseRow = { ...row, inbox_channel: "meta", direction: "outbound" as const };
   let { error } = await supabase.from("whatsapp_conversations").insert(baseRow);
 
   // FAIL VISIBLE fallback: a stale intent CHECK must never block inbox logging
@@ -4011,6 +4087,20 @@ Deno.serve(async (req: Request) => {
         continue; // skip normal intent routing
       }
 
+      // ── Tier-0 greeting opener (היי / שלום) — before courtesy silent-exit ──
+      if (!isButtonReply && isGuestGreetingMessage(text)) {
+        await handleGuestGreeting(supabase, {
+          phone,
+          guestId,
+          guestName,
+          msgId,
+          claimedConversationId,
+          sim,
+          scripts,
+        });
+        continue;
+      }
+
       // ── Defensive Shield — emoji/courtesy-only pass (Layer 2.1) ────────────
       // Checked before EVERY other Tier-0 classifier, including the typed
       // arrival-confirmation fallback right below — a pure "👍"/"תודה"/"בסדר"
@@ -4020,7 +4110,13 @@ Deno.serve(async (req: Request) => {
       // comment above) — a guest's unrelated "בסדר"/"מצוין" reply was swept
       // into "arrival confirmed" and triggered the spa-mentioning confirmation
       // reply. Keep this first so any future regex overlap fails safe (silence).
-      if (!isButtonReply && isLowValueCourtesyMessage(text)) {
+      // Silence applies ONLY when the bot already spoke in this thread — an opener
+      // "תודה"/"בסדר" with no prior outbound falls through to normal routing.
+      if (
+        !isButtonReply &&
+        isLowValueCourtesyMessage(text) &&
+        await guestThreadHasPriorOutbound(supabase, phone)
+      ) {
         await handleCourtesyAck(supabase, { phone, guestId, msgId, claimedConversationId });
         continue;
       }
@@ -4329,7 +4425,12 @@ Deno.serve(async (req: Request) => {
       }
 
       // ── Defensive Shield — emoji/courtesy-only pass (post-burst) ───────────
-      if (!isButtonReply && effectiveText !== text && isLowValueCourtesyMessage(effectiveText)) {
+      if (
+        !isButtonReply &&
+        effectiveText !== text &&
+        isLowValueCourtesyMessage(effectiveText) &&
+        await guestThreadHasPriorOutbound(supabase, phone)
+      ) {
         await handleCourtesyAck(supabase, { phone, guestId, msgId, claimedConversationId });
         continue;
       }
@@ -5039,9 +5140,11 @@ Deno.serve(async (req: Request) => {
 
       if (isLowConfidenceFaqMiss) {
         console.info(
-          `[webhook] 🔕 Defensive Shield — low-confidence FAQ miss, reply suppressed, staff flagged — phone:${phone} guest:${guestId ?? "unknown"}`,
+          `[webhook] 🤔 low-confidence FAQ miss — sending handoff message + staff flagged — phone:${phone} guest:${guestId ?? "unknown"}`,
         );
-      } else if (guest && (guest as Record<string, unknown>).status === "cancelled") {
+      }
+
+      if (guest && (guest as Record<string, unknown>).status === "cancelled") {
         // Zero-Spam Policy (§CORE BUSINESS LOGIC): cancelled guests never receive bot messages.
         // NOTE: guestId===null (unregistered number) and status==="checked_out" must still get a
         // reply — isGuestActiveForOutbound() is for scheduled/automation outbound only (cron,
@@ -5054,7 +5157,9 @@ Deno.serve(async (req: Request) => {
         // ── Send WhatsApp reply ─────────────────────────────────────────────
         let outboundMsgId: string | null = null;
         try {
-          outboundMsgId = await sendReply(phone, reply, replyIsScripted ? { scripted: true } : undefined);
+          const sendOpts =
+            replyIsScripted || isLowConfidenceFaqMiss ? { scripted: true as const } : undefined;
+          outboundMsgId = await sendReply(phone, reply, sendOpts);
         } catch (e) {
           console.error("[webhook] sendReply error:", (e as Error).message);
         }
@@ -5079,7 +5184,7 @@ Deno.serve(async (req: Request) => {
         console.error(`[webhook] 🛡️ per-message processing EXCEPTION phone:${phone}:`, errMsg, (e as Error)?.stack);
         try {
           await supabase.from("whatsapp_conversations").insert({
-            phone, direction: "outbound",
+            phone, inbox_channel: "meta", direction: "outbound",
             message: `[SYSTEM] ⚠️ שגיאה פנימית בעיבוד ההודעה — הצוות טופל, לא נשלחה תשובה אוטומטית. (${errMsg.slice(0, 200)})`,
             intent: null,
           });
@@ -5105,6 +5210,10 @@ Deno.serve(async (req: Request) => {
   const edgeRuntime = (globalThis as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } }).EdgeRuntime;
   if (typeof edgeRuntime?.waitUntil === "function") {
     edgeRuntime.waitUntil(backgroundTask);
+  } else {
+    // Runtimes without EdgeRuntime (local `supabase functions serve`) — awaiting
+    // is the only way to avoid the isolate freezing before sendReply() runs.
+    await backgroundTask;
   }
 
   // Respond to Meta within 20 s window
