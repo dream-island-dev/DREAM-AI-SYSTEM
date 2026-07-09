@@ -5,13 +5,20 @@ export type OritMailboxRow = {
   profile_id: string | null;
   owner_email: string;
   email_address: string | null;
+  provider: string;
   connection_status: string;
+  read_only_mode: boolean;
   auto_ack_enabled: boolean;
   auto_ack_template: string;
   sla_hours: number;
   oauth_refresh_token: string | null;
   token_expires_at: string | null;
   sync_cursor: string | null;
+  imap_host: string | null;
+  imap_port: number;
+  imap_username: string | null;
+  imap_password: string | null;
+  imap_tls: boolean;
 };
 
 export type OritThreadRow = {
@@ -34,6 +41,7 @@ export type OritThreadRow = {
 
 const NOREPLY_RE = /^(no[-_.]?reply|donotreply|do[-_.]?not[-_.]?reply|mailer-daemon|postmaster)@/i;
 const INTERNAL_DOMAIN_RE = /@dream-island\.co\.il$/i;
+const AUTO_REPLY_SUBJECT_RE = /(out\s*of\s*office|ooo|auto[- ]?reply|automatic reply|תשובה אוטומטית|חופשה|נעדר)/i;
 
 export function isMicrosoftConfigured(): boolean {
   return Boolean(
@@ -64,12 +72,17 @@ export function renderAutoAckTemplate(
     .trim();
 }
 
-export function shouldAutoAckInbound(fromEmail: string, isDemo: boolean): boolean {
+export function shouldAutoAckInbound(
+  fromEmail: string,
+  isDemo: boolean,
+  subject?: string | null,
+): boolean {
   if (isDemo) return false;
   const email = (fromEmail || "").trim().toLowerCase();
   if (!email || !email.includes("@")) return false;
   if (NOREPLY_RE.test(email)) return false;
   if (INTERNAL_DOMAIN_RE.test(email)) return false;
+  if (subject && AUTO_REPLY_SUBJECT_RE.test(subject)) return false;
   return true;
 }
 

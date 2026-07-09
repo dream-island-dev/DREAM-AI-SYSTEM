@@ -1,7 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import type { OritMailboxRow } from "../_shared/oritAgentMail.ts";
-import { resolveGraphAccessToken, sendGraphReply } from "../_shared/microsoftGraph.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -51,43 +50,18 @@ serve(async (req: Request) => {
 
     const mailbox = thread.orit_agent_mailbox as OritMailboxRow;
     const finalText = String(bodyText).trim();
-    let graphId: string | null = null;
+    const sentAt = new Date().toISOString();
 
     if (thread.is_demo) {
-      graphId = `demo-sent-${Date.now()}`;
-    } else if (mailbox.connection_status === "active") {
-      const accessToken = await resolveGraphAccessToken(mailbox, async (next) => {
-        await supabase.from("orit_agent_mailbox").update({
-          oauth_refresh_token: next.refreshToken ?? mailbox.oauth_refresh_token,
-          token_expires_at: next.expiresAt,
-        }).eq("id", mailbox.id);
-      });
-      graphId = await sendGraphReply(accessToken, {
-        toEmail: thread.from_email,
-        toName: thread.from_name,
-        subject: thread.subject || "פנייתך",
-        bodyText: finalText,
-      });
-    } else {
-      return new Response(JSON.stringify({
-        ok: false,
-        error: "תיבת המייל עדיין לא מחוברת — לא ניתן לשלוח.",
-      }), {
-        status: 200,
-        headers: { ...CORS, "Content-Type": "application/json" },
+      await supabase.from("orit_agent_messages").insert({
+        thread_id: threadId,
+        external_key: `demo-manual-${sentAt}`,
+        direction: "outbound",
+        body_text: finalText,
+        received_at: sentAt,
+        message_kind: "manual_reply",
       });
     }
-
-    const sentAt = new Date().toISOString();
-    await supabase.from("orit_agent_messages").insert({
-      thread_id: threadId,
-      external_key: graphId ?? `manual-${sentAt}`,
-      graph_message_id: graphId,
-      direction: "outbound",
-      body_text: finalText,
-      received_at: sentAt,
-      message_kind: "manual_reply",
-    });
 
     await supabase.from("orit_agent_style_samples").insert({
       mailbox_id: thread.mailbox_id,
@@ -103,7 +77,11 @@ serve(async (req: Request) => {
       }).eq("id", threadId);
     }
 
-    return new Response(JSON.stringify({ ok: true, graphId }), {
+    return new Response(JSON.stringify({
+      ok: true,
+      read_only_mode: mailbox?.read_only_mode !== false,
+      saved_sample: true,
+    }), {
       status: 200,
       headers: { ...CORS, "Content-Type": "application/json" },
     });

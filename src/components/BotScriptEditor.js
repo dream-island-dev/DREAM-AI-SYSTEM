@@ -25,6 +25,7 @@ const TRIGGER_LABELS = {
   complaint:         { label: "תלונה",            color: "#C0392B", bg: "#FFF0EE" },
   upsell:            { label: "שדרוג / Upsell",  color: "#92400E", bg: "#FEF3C7" },
   fallback:          { label: "תגובת נפילה",      color: "#6B7280", bg: "#F3F4F6" },
+  greeting:          { label: "ברכת פתיחה",       color: "#059669", bg: "#ECFDF5" },
   button_reply:      { label: "תגובת כפתור",      color: "#0E7490", bg: "#ECFEFF" },
 };
 

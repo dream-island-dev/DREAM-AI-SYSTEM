@@ -79,6 +79,7 @@ export function alertIntentType(alertType: string | null | undefined): string {
 
 const REQUESTS_GROUP_INTENT_PRIORITY = [
   "alert_inbox_routed",
+  "alert_portal_room_service",
   "alert_request",
   "portal_room_service",
   "portal_upsell",

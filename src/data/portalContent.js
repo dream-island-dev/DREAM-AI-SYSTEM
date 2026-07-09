@@ -12,9 +12,9 @@
 // this file. `ctas` shape: { label, actionType: "REQUEST"|"OPS_REQUEST"|"LINK",
 // upsellLabel? (REQUEST/OPS_REQUEST), buttonUrl? (LINK) }.
 // REQUEST → guest_alerts (Requests Board, sales/reception — spa, suite
-// upgrade, padel, etc., picked up at staff's own pace).
-// OPS_REQUEST → tasks (Operations Board, physical/actionable — e.g. Armonim's
-// room-service request below) + a direct WhatsApp alert to the duty manager.
+// upgrade, padel, room service, etc., picked up at staff's own pace).
+// OPS_REQUEST → guest_alerts alert_type=portal_room_service (same board +
+// Whapi "בקשות אורחים" via guest-portal-ops-request).
 // See CLAUDE.md "Enterprise Routing" for the full split rationale.
 //
 // Brand voice note: this copy is pulled from the actual resort website

@@ -18,6 +18,9 @@ const TYPE_META = {
   // original generic "💰 הזדמנות מכירה" so a portal request reads as exactly
   // that, at a glance, even without using the source filter below.
   upsell_opportunity:  { label: "🌴 בקשה מהפורטל",   bg: "#E8F5EF", color: "#1A7A4A" },
+  portal_room_service: { label: "🍽️ שירות לחדר (פורטל)", bg: "#FFF5E8", color: "#A8843A" },
+  financial_issue:     { label: "💳 בעיית חיוב",    bg: "#FFF0EE", color: "#C0392B" },
+  spa_request:         { label: "💆 בקשת ספא",       bg: "#E8F0FE", color: "#1A56DB" },
 };
 // FAIL VISIBLE (CLAUDE.md §0.3): an unrecognized alert_type must show as a
 // visible warning, not silently fall back to a "looks fine" label.

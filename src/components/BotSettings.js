@@ -3,9 +3,10 @@
 //
 // Reads/writes the single row in public.bot_settings (id = 1):
 //   • system_prompt  — overrides the base personality built from bot_config
-//   • knowledge_base — injected into every Gemini call as factual context
+//   • knowledge_base — injected into every LLM call as factual context
+//   • preferred_model — shared engine for Dream Bot (Meta) + Whapi Suites DM
 //
-// The whatsapp-webhook Edge Function reads these fields before calling Gemini.
+// bot_config.bot_active / bot_active_whapi — per-channel on/off toggles below.
 
 import { useState, useEffect, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
@@ -28,8 +29,8 @@ const DEFAULT_KB_HINT =
 // default (currently Claude-first, with automatic failover to the other
 // engine on error either way — see AiFailoverWidget.js for the live alert).
 const MODEL_OPTIONS = [
-  { value: "",                     label: "ברירת מחדל (Claude — claude-sonnet-4-6)" },
-  { value: "claude",               label: "Claude — claude-sonnet-4-6" },
+  { value: "",                     label: "ברירת מחדל (Claude Sonnet — שני הערוצים)" },
+  { value: "claude",               label: "Claude Sonnet — claude-sonnet-4-6" },
   { value: "claude-haiku",         label: "Claude Haiku — claude-haiku-4-5 (מהיר וזול, ניסיוני)" },
   { value: "gemini-2.0-flash-lite", label: "Gemini 2.0 Flash Lite (מהיר וזול — מומלץ לנפח גבוה)" },
   { value: "gemini-2.0-flash",      label: "Gemini 2.0 Flash" },
@@ -37,8 +38,22 @@ const MODEL_OPTIONS = [
   { value: "gemini-1.5-flash",      label: "Gemini 1.5 Flash" },
 ];
 
+const CHANNEL_TOGGLES = [
+  {
+    key: "bot_active",
+    mirrorKey: "bot_active_meta",
+    label: "Dream Bot (Meta)",
+    hint: "וואטסאפ רשמי — עונה גם למספרים ללא פרופיל אורח",
+  },
+  {
+    key: "bot_active_whapi",
+    label: "מכשיר הסוויטות (Whapi)",
+    hint: "הודעות פרטיות בלבד — רק לאורחים עם פרופיל פעיל במערכת",
+  },
+];
+
 const MODULE_LABELS = {
-  chat: "צ'אט אורחים (DREAM BOT)",
+  chat: "צ'אט אורחים (Dream Bot + Whapi)",
   routing: "ניתוב בקשות (Requests Board)",
 };
 
@@ -55,6 +70,8 @@ export default function BotSettings() {
   const [systemPrompt,  setSystemPrompt]  = useState("");
   const [knowledgeBase, setKnowledgeBase] = useState("");
   const [preferredModel, setPreferredModel] = useState("");
+  const [channelActive, setChannelActive] = useState({ bot_active: true, bot_active_whapi: true });
+  const [channelSaving, setChannelSaving] = useState(null);
   const [learnedRules, setLearnedRules] = useState([]);
   const [editingRuleId, setEditingRuleId] = useState(null);
   const [editingRuleText, setEditingRuleText] = useState("");
@@ -72,11 +89,10 @@ export default function BotSettings() {
   const fetchSettings = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) { setLoading(false); return; }
     setLoading(true);
-    const { data, error } = await supabase
-      .from("bot_settings")
-      .select("system_prompt, knowledge_base, preferred_model")
-      .eq("id", 1)
-      .maybeSingle();
+    const [{ data, error }, { data: cfgRows }] = await Promise.all([
+      supabase.from("bot_settings").select("system_prompt, knowledge_base, preferred_model").eq("id", 1).maybeSingle(),
+      supabase.from("bot_config").select("config_key, config_value").in("config_key", ["bot_active", "bot_active_whapi"]),
+    ]);
     if (error) {
       showToast("err", "שגיאה בטעינה: " + error.message);
     } else if (data) {
@@ -84,6 +100,11 @@ export default function BotSettings() {
       setKnowledgeBase(data.knowledge_base ?? "");
       setPreferredModel(data.preferred_model ?? "");
     }
+    const cfgMap = Object.fromEntries((cfgRows ?? []).map((r) => [r.config_key, r.config_value]));
+    setChannelActive({
+      bot_active: cfgMap.bot_active !== "false",
+      bot_active_whapi: cfgMap.bot_active_whapi !== "false",
+    });
     setLoading(false);
   }, []);
 
@@ -162,6 +183,21 @@ export default function BotSettings() {
     }
   };
 
+  const handleToggleChannel = async (ch) => {
+    if (!isSupabaseConfigured || !supabase) return showToast("err", "Supabase לא מחובר");
+    const nextVal = !channelActive[ch.key];
+    setChannelSaving(ch.key);
+    const rows = [{ config_key: ch.key, config_value: String(nextVal) }];
+    if (ch.mirrorKey) rows.push({ config_key: ch.mirrorKey, config_value: String(nextVal) });
+    const { error } = await supabase.from("bot_config").upsert(rows, { onConflict: "config_key" });
+    setChannelSaving(null);
+    if (error) showToast("err", "שגיאה בעדכון ערוץ: " + error.message);
+    else {
+      setChannelActive((prev) => ({ ...prev, [ch.key]: nextVal }));
+      showToast("ok", `✓ ${ch.label} — ${nextVal ? "פעיל" : "כבוי"}`);
+    }
+  };
+
   const handleSave = async () => {
     if (!isSupabaseConfigured || !supabase) return showToast("err", "Supabase לא מחובר");
     setSaving(true);
@@ -210,16 +246,57 @@ export default function BotSettings() {
               מוח הבוט — Dream Concierge AI
             </div>
             <div style={{ fontSize: 13, color: "var(--text-muted)", lineHeight: 1.6 }}>
-              שינויים כאן משפיעים ישירות על תשובות הבוט בוואטסאפ. הפרומפט מגדיר את האופי,
-              ובסיס הידע מספק לבוט עובדות ספציפיות על הריזורט. שניהם מוזרקים לפני כל תשובה.
+              מוח אחד משותף לשני ערוצי האורח: <strong>Dream Bot (Meta)</strong> ו<strong>מכשיר הסוויטות (Whapi)</strong>.
+              פרומפט, בסיס ידע ומנוע AI זהים — רק הדלקה/כיבוי לכל ערוץ נפרדת.
+              Meta עונה גם למספרים ללא פרופיל; Whapi רק לאורחים רשומים ופעילים.
             </div>
+          </div>
+        </div>
+
+        {/* ── Channel on/off ─────────────────────────────────────────────── */}
+        <div className="card" style={{ marginBottom: 20 }}>
+          <div className="card-header">
+            <div className="card-title">📡 ערוצי בוט — הדלקה / כיבוי</div>
+            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+              שינוי מיידי — אותם מפתחות כמו ב-Inbox
+            </span>
+          </div>
+          <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 14 }}>
+            {CHANNEL_TOGGLES.map((ch) => {
+              const on = channelActive[ch.key];
+              const busy = channelSaving === ch.key;
+              return (
+                <div
+                  key={ch.key}
+                  style={{
+                    display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
+                    padding: "12px 14px", borderRadius: 10, border: "1px solid var(--border)",
+                    background: on ? "rgba(201,169,110,0.08)" : "var(--ivory)",
+                  }}
+                >
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 14 }}>{ch.label}</div>
+                    <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>{ch.hint}</div>
+                  </div>
+                  <button
+                    type="button"
+                    className={`btn btn-sm ${on ? "btn-primary" : "btn-secondary"}`}
+                    onClick={() => handleToggleChannel(ch)}
+                    disabled={loading || busy}
+                    title={on ? "כבה בוט בערוץ זה" : "הדלק בוט בערוץ זה"}
+                  >
+                    {busy ? "…" : on ? "🤖 פעיל" : "😴 כבוי"}
+                  </button>
+                </div>
+              );
+            })}
           </div>
         </div>
 
         {/* ── Engine selector ────────────────────────────────────────────── */}
         <div className="card" style={{ marginBottom: 20 }}>
           <div className="card-header">
-            <div className="card-title">⚙️ מנוע AI לשיחת אורחים</div>
+            <div className="card-title">⚙️ מנוע AI — שני הערוצים</div>
             <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
               נכשל אוטומטית למנוע השני אם המנוע הנבחר לא מגיב — ⚠️ התראה תופיע בדאשבורד
             </span>

@@ -15,6 +15,7 @@ const ALERT_HEADLINE: Record<string, string> = {
   severe_complaint:     "🚨 SEVERE COMPLAINT",
   date_change_request:  "🗓️ DATE CHANGE",
   upsell_opportunity:   "🌴 PORTAL REQUEST",
+  portal_room_service:  "🍽️ ROOM SERVICE",
   spa_request:          "💆 SPA REQUEST",
   financial_issue:      "💳 FINANCIAL ISSUE",
 };

@@ -1,6 +1,11 @@
-// OritCustomerServicePanel.js — Suite owner CS agent: priority queue, SLA 72h, AI drafts.
+// OritCustomerServicePanel.js — Suite owner CS agent: read-only inbox, AI drafts, manual reply.
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
+
+const MAILBOX_COLUMNS = [
+  "id", "profile_id", "owner_email", "email_address", "provider", "connection_status",
+  "read_only_mode", "last_sync_at", "sla_hours", "digest_enabled", "connection_error",
+].join(", ");
 
 const URGENCY_META = {
   critical: { label: "🔴 קריטי", bg: "#FEE2E2", color: "#B91C1C" },
@@ -51,7 +56,6 @@ export default function OritCustomerServicePanel({ user }) {
   const [busy, setBusy] = useState(false);
   const [replyText, setReplyText] = useState("");
   const [toast, setToast] = useState(null);
-  const [connecting, setConnecting] = useState(false);
 
   const showToast = useCallback((kind, text) => {
     setToast({ kind, text });
@@ -62,7 +66,7 @@ export default function OritCustomerServicePanel({ user }) {
     if (!isSupabaseConfigured()) return;
     const { data, error } = await supabase
       .from("orit_agent_mailbox")
-      .select("*")
+      .select(MAILBOX_COLUMNS)
       .order("created_at", { ascending: true })
       .limit(1)
       .maybeSingle();
@@ -73,7 +77,9 @@ export default function OritCustomerServicePanel({ user }) {
     setMailbox(data);
     if (data?.profile_id == null && user?.id) {
       const userEmail = (user.email || "").toLowerCase();
-      if (userEmail && userEmail === (data?.owner_email || "").toLowerCase()) {
+      const ownsByEmail = userEmail && userEmail === (data?.owner_email || "").toLowerCase();
+      const hasAgentAccess = user?.orit_cs_agent_access === true || ownsByEmail;
+      if (hasAgentAccess) {
         await supabase.from("orit_agent_mailbox").update({ profile_id: user.id }).eq("id", data.id);
         setMailbox((prev) => (prev ? { ...prev, profile_id: user.id } : prev));
       }
@@ -145,33 +151,6 @@ export default function OritCustomerServicePanel({ user }) {
 
   const openCount = threads.filter((t) => t.status === "awaiting_reply").length;
 
-  const handleConnectOutlook = async () => {
-    if (!mailbox?.id) return;
-    setConnecting(true);
-    try {
-      const { data, error } = await supabase.functions.invoke("manager-mail-oauth", {
-        body: { mailboxId: mailbox.id },
-      });
-      if (error) throw error;
-      if (!data?.ok) {
-        showToast("err", data?.error || "לא ניתן להתחיל חיבור");
-        return;
-      }
-      if (data.status === "not_configured") {
-        showToast("err", data.error);
-        return;
-      }
-      if (data.authUrl) {
-        window.open(data.authUrl, "_blank", "noopener,noreferrer");
-        showToast("ok", "נפתח חלון חיבור Outlook — אשרי שם והחזרי למערכת");
-      }
-    } catch (e) {
-      showToast("err", e.message || "שגיאת חיבור");
-    } finally {
-      setConnecting(false);
-    }
-  };
-
   const handleAnalyze = async () => {
     if (!selectedId) return;
     setBusy(true);
@@ -191,53 +170,43 @@ export default function OritCustomerServicePanel({ user }) {
     }
   };
 
+  const handleCopyReply = async (text) => {
+    const value = (text ?? replyText).trim();
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+      setReplyText(value);
+      showToast("ok", "הועתק — שלחי את התשובה מ-Outlook שלך");
+    } catch {
+      showToast("err", "לא ניתן להעתיק — סמני והעתיקי ידנית");
+    }
+  };
+
   const handleMarkHandled = async () => {
     if (!selectedId) return;
     setBusy(true);
     try {
-      const { error } = await supabase.from("orit_agent_threads").update({
-        status: "handled",
-        handled_at: new Date().toISOString(),
-      }).eq("id", selectedId);
-      if (error) throw error;
+      if (replyText.trim()) {
+        const { data, error } = await supabase.functions.invoke("manager-mail-send", {
+          body: { threadId: selectedId, bodyText: replyText.trim(), markHandled: true },
+        });
+        if (error) throw error;
+        if (!data?.ok) throw new Error(data?.error || "שמירה נכשלה");
+        setReplyText("");
+      } else {
+        const { error } = await supabase.from("orit_agent_threads").update({
+          status: "handled",
+          handled_at: new Date().toISOString(),
+        }).eq("id", selectedId);
+        if (error) throw error;
+      }
       showToast("ok", "סומן כטופל");
       await loadThreads();
+      setSelectedId(null);
     } catch (e) {
       showToast("err", e.message);
     } finally {
       setBusy(false);
-    }
-  };
-
-  const handleSend = async () => {
-    if (!selectedId || !replyText.trim()) return;
-    setBusy(true);
-    try {
-      const { data, error } = await supabase.functions.invoke("manager-mail-send", {
-        body: { threadId: selectedId, bodyText: replyText.trim(), markHandled: true },
-      });
-      if (error) throw error;
-      if (!data?.ok) throw new Error(data?.error || "שליחה נכשלה");
-      setReplyText("");
-      showToast("ok", selected?.is_demo ? "נשלח (דמו — ללא מייל אמיתי)" : "התשובה נשלחה");
-      await loadThreads();
-      await loadThreadDetail(selectedId);
-    } catch (e) {
-      showToast("err", e.message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleSaveTemplate = async () => {
-    if (!mailbox?.id) return;
-    const next = window.prompt("ערכי תבנית אישור קבלה ({{GUEST_NAME}}, {{SUBJECT}}):", mailbox.auto_ack_template || "");
-    if (next == null) return;
-    const { error } = await supabase.from("orit_agent_mailbox").update({ auto_ack_template: next }).eq("id", mailbox.id);
-    if (error) showToast("err", error.message);
-    else {
-      showToast("ok", "תבנית נשמרה");
-      loadMailbox();
     }
   };
 
@@ -245,7 +214,42 @@ export default function OritCustomerServicePanel({ user }) {
     return <div style={{ padding: 48, textAlign: "center", color: "var(--text-muted)" }}>טוען סוכן שירות לקוחות…</div>;
   }
 
-  const connected = mailbox?.connection_status === "active";
+  if (!mailbox) {
+    return (
+      <div className="card" style={{ padding: 32, textAlign: "center" }}>
+        <div style={{ fontSize: 18, fontWeight: 700, color: "#B91C1C", marginBottom: 8 }}>⚠ תיבת הסוכן לא נמצאה</div>
+        <div style={{ color: "var(--text-muted)", marginBottom: 16 }}>
+          שורת mailbox חסרה או שאין הרשאה (RLS). ודאי ש-migration 155/156 הורצו ושיש גישה ב«ניהול משתמשים».
+        </div>
+        <button type="button" className="btn btn-primary" onClick={() => { setLoading(true); loadMailbox().finally(() => setLoading(false)); }}>
+          🔄 נסי שוב
+        </button>
+      </div>
+    );
+  }
+
+  const connected = mailbox.connection_status === "active";
+  const syncLabel = mailbox.last_sync_at
+    ? `סנכרון אחרון: ${fmtDt(mailbox.last_sync_at)}`
+    : "ממתין לסנכרון ראשון";
+
+  const handleSnooze = async () => {
+    if (!selectedId) return;
+    setBusy(true);
+    try {
+      const { error } = await supabase.from("orit_agent_threads").update({
+        status: "snoozed",
+      }).eq("id", selectedId);
+      if (error) throw error;
+      showToast("ok", "נדחה — תוכלי לחזור אליו מאוחר יותר");
+      setSelectedId(null);
+      await loadThreads();
+    } catch (e) {
+      showToast("err", e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
@@ -277,21 +281,9 @@ export default function OritCustomerServicePanel({ user }) {
             fontSize: 13,
             fontWeight: 700,
           }}>
-            {connected ? "✅ Outlook מחובר" : "⏳ ממתין לחיבור Outlook"}
+            {connected ? "✅ תיבת מייל מסונכרנת" : "⏳ ממתין לחיבור IMAP"}
           </span>
-          <button
-            type="button"
-            className="btn btn-primary"
-            disabled={connecting || connected}
-            title={connected ? "כבר מחובר" : "חיבור חד-פעמי לתיבת המייל"}
-            onClick={handleConnectOutlook}
-            style={{ minHeight: 44 }}
-          >
-            {connecting ? "⏳ מתחבר…" : "🔗 חברי את Outlook"}
-          </button>
-          <button type="button" className="btn" onClick={handleSaveTemplate} style={{ minHeight: 44 }}>
-            ✏️ תבנית אישור 72 שעות
-          </button>
+          <span style={{ fontSize: 13, opacity: 0.85 }}>{syncLabel}</span>
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
             <input type="checkbox" checked={showDemo} onChange={(e) => setShowDemo(e.target.checked)} />
             הצג דמו לתרגול
@@ -299,7 +291,17 @@ export default function OritCustomerServicePanel({ user }) {
         </div>
         {!connected && (
           <div style={{ marginTop: 12, fontSize: 13, opacity: 0.85 }}>
-            המערכת מוכנה. כשתחברי Outlook — כל פנייה תקבל אוטומטית מייל «קיבלנו, נחזור תוך 72 שעות».
+            המערכת קוראת מיילים בלבד (IMAP). אחרי שמייק יגדיר את החיבור — פניות יופיעו כאן. שליחת תשובות תמיד מ-Outlook שלך.
+          </div>
+        )}
+        {connected && (
+          <div style={{ marginTop: 12, fontSize: 13, opacity: 0.85 }}>
+            קראי את הפנייה, לחצי «הצעות תשובה», העתיקי ל-Outlook ושלחי. אחרי שליחה — «שלחתי — סמני כטופל».
+          </div>
+        )}
+        {mailbox.connection_error && (
+          <div style={{ marginTop: 10, fontSize: 13, color: "#FCA5A5" }}>
+            ⚠ שגיאת חיבור: {mailbox.connection_error}
           </div>
         )}
       </div>
@@ -341,9 +343,6 @@ export default function OritCustomerServicePanel({ user }) {
                   <div style={{ fontSize: 12, marginTop: 6, color: sla.startsWith("עבר") ? "#B91C1C" : "#047857", fontWeight: 600 }}>
                     {sla}
                   </div>
-                )}
-                {t.auto_ack_sent_at && (
-                  <div style={{ fontSize: 11, marginTop: 4, color: "#047857" }}>✅ אישור קבלה נשלח</div>
                 )}
               </button>
             );
@@ -399,23 +398,41 @@ export default function OritCustomerServicePanel({ user }) {
                 <button type="button" className="btn btn-primary" disabled={busy} onClick={handleAnalyze} style={{ minHeight: 44 }}>
                   ✨ הצעות תשובה
                 </button>
-                <button type="button" className="btn" disabled={busy} onClick={handleMarkHandled} style={{ minHeight: 44 }}>
-                  ✅ סמני כטופל
+                <button type="button" className="btn" disabled={busy || selected.status === "handled"} onClick={handleMarkHandled} style={{ minHeight: 44 }}>
+                  ✅ שלחתי — סמני כטופל
+                </button>
+                <button type="button" className="btn" disabled={busy} onClick={handleSnooze} style={{ minHeight: 44 }} title="דחי למחר / מאוחר יותר">
+                  😴 דחי למחר
                 </button>
               </div>
 
               {drafts.length > 0 && (
                 <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-muted)" }}>טיוטות להעתקה ל-Outlook</div>
                   {drafts.map((d) => (
-                    <button
-                      key={d.id}
-                      type="button"
-                      className="btn"
-                      style={{ textAlign: "right", whiteSpace: "pre-wrap", minHeight: 44 }}
-                      onClick={() => setReplyText(d.suggested_text)}
-                    >
-                      {d.suggested_text}
-                    </button>
+                    <div key={d.id} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                      <div style={{ padding: 10, borderRadius: 10, border: "1px solid var(--border)", background: "#FFFBEB", whiteSpace: "pre-wrap", fontSize: 14 }}>
+                        {d.suggested_text}
+                      </div>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        <button
+                          type="button"
+                          className="btn"
+                          style={{ minHeight: 40 }}
+                          onClick={() => { setReplyText(d.suggested_text); handleCopyReply(d.suggested_text); }}
+                        >
+                          📋 העתיקי
+                        </button>
+                        <button
+                          type="button"
+                          className="btn"
+                          style={{ minHeight: 40 }}
+                          onClick={() => setReplyText(d.suggested_text)}
+                        >
+                          ✏️ ערכי לפני העתקה
+                        </button>
+                      </div>
+                    </div>
                   ))}
                 </div>
               )}
@@ -423,7 +440,7 @@ export default function OritCustomerServicePanel({ user }) {
               <textarea
                 value={replyText}
                 onChange={(e) => setReplyText(e.target.value)}
-                placeholder="כתבי תשובה לאורח…"
+                placeholder="ערכי כאן טיוטה לפני העתקה ל-Outlook…"
                 rows={4}
                 style={{ width: "100%", borderRadius: 10, border: "1px solid var(--border)", padding: 12, fontFamily: "Heebo, sans-serif", marginBottom: 10 }}
               />
@@ -431,10 +448,10 @@ export default function OritCustomerServicePanel({ user }) {
                 type="button"
                 className="btn btn-primary"
                 disabled={busy || !replyText.trim()}
-                onClick={handleSend}
+                onClick={() => handleCopyReply()}
                 style={{ minHeight: 48, alignSelf: "flex-start" }}
               >
-                📤 שלחי תשובה
+                📋 העתיקי ללוח
               </button>
             </>
           )}

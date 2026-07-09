@@ -1739,6 +1739,19 @@ serve(async (req: Request) => {
         channel:       deliveredChannel,
       });
 
+      // Staff manual reply closes the attention loop — prevents the bot from
+      // re-mentioning a topic the team already handled in a prior outbound turn.
+      if (staffGuest?.id && replyStatus !== "failed") {
+        const { error: guestClearErr } = await supabase.from("guests").update({
+          requires_attention:       false,
+          attention_reason:         null,
+          needs_callback:           false,
+        }).eq("id", staffGuest.id);
+        if (guestClearErr) {
+          console.warn("[whatsapp-send] inbox_reply guest attention clear failed:", guestClearErr.message);
+        }
+      }
+
       return new Response(
         JSON.stringify({
           ok:         replyStatus !== "failed",

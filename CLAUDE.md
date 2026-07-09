@@ -77,11 +77,13 @@ whatsapp-webhook (צינור העיבוד הנכנס)
 4. Tier-0 Interceptions (אפס טוקנים):
    * קריאות שירות (משק/תפעול): מזהה מילות מפתח ➔ משימה בסטטוס pending_approval ב-Operations Board ➔ שולח הודעה קבועה לאורח.
    * Stay-Change Shield: בקשות ל-Late checkout או שינוי תאריך נחסמות מיידית לפני ה-LLM, מדליקות דגל date_change לצוות.
+5. משפט הפניה לצוות (`_shared/guestBotHandoff.ts`): "אני בודק את זה מול הצוות שלנו ונחזור אליך בהקדם 🙏" — זהה בשני הבוטים. כשהבוט שולח אותו → `human_requested` (נקודה אדומה ב-Inbox). Meta: עונה גם ללא פרופיל אורח; Whapi DM: auto-reply רק לאורח עם פרופיל פעיל (`shouldAutoReplyGuestWhapiDm`). ניווט: תפעול → `log_guest_request` / Tier-0; לוח בקשות / מנהלות → handoff.
+6. מוח הבוט משותף (`bot_settings` + `_shared/guestBotSettings.ts` / `guestBotLlm.ts`) — פרומפט, ידע, מנוע AI (`preferred_model`) וכללים שנלמדו זהים ל-Meta ו-Whapi DM; הדלקה/כיבוי per-channel ב-`bot_config` (`bot_active` / `bot_active_whapi`) — גם ב-BotSettings.js.
 
 מנוע אישור משימות שטח (Human-in-the-Loop)
 הבוט מייצר שורה בטבלת tasks בסטטוס pending_approval. הצוות ב-OperationsBoard.js מאשר או דוחה. רק לאחר אישור, הפונקציה notify-manual-task מתרגמת לאנגלית ומשגרת לקבוצת ה-Whapi הרלוונטית. SLA נמדד מרגע האישור.
 
-כרטיסי משימה בקבוצת Whapi (whapi-webhook + notify-manual-task): שורת שיוך = `👤 Assigned: {profiles.name}` דרך `_shared/assignedWorker.ts`. אין @mention לפי טלפון — בקבוצות עם פרטיות WhatsApp מציג LID מספרי (@1855…) במקום שם/מספר קריא.
+כרטיסי משימה בקבוצת Whapi (whapi-webhook + notify-manual-task): תבנית אחידה `_shared/taskCard.ts` — `📌 New Task Opened: Suite X` / `📋 Task` / `⏰ Status: Pending`; משימות מ-Inbox/HITL מוסיפות `📍 Source: [GUEST WA]` בשורה נפרדת. שורת שיוך = `👤 Assigned: {profiles.name}` דרך `_shared/assignedWorker.ts`. אין @mention לפי טלפון — בקבוצות עם פרטיות WhatsApp מציג LID מספרי (@1855…) במקום שם/מספר קריא.
 
 5. קונוונציות קוד וקווים אדומים
 

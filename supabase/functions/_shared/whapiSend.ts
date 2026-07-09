@@ -72,11 +72,10 @@ export async function sendWhapiText(
   // this is belt-and-suspenders). Omitted by default → fully backward compatible.
   const payload: Record<string, unknown> = { to, body };
   if (opts.noLinkPreview) payload.no_link_preview = true;
-  // Native @mention binding (dynamic task-assignment tags). `mentions` must be
-  // the bare-digits phone(s) — cleaned defensively here too, so a caller that
-  // forgot to strip "+"/dashes still gets a working mention rather than a
-  // silently-dead one. The body text must ALSO contain "@<same digits>" —
-  // that's the caller's job (the digits are the only part Whapi matches on).
+  // Native @mention binding for group messages. `mentions` must be bare-digits
+  // phone(s). The body text must ALSO contain "@<same digits>" for Whapi to
+  // bind the tag. Task cards intentionally omit mentions — WhatsApp privacy
+  // groups render them as opaque LID numbers; see _shared/assignedWorker.ts.
   if (opts.mentions?.length) payload.mentions = opts.mentions.map(cleanPhoneForMention);
 
   try {

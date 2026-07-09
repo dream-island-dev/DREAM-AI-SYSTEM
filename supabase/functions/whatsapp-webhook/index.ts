@@ -121,30 +121,22 @@ import {
   type AutomationStageRow,
   type GuestOutboundRow,
 } from "../_shared/guestInboundOrchestrator.ts";
+import {
+  GUEST_STAFF_HANDOFF_SENTENCE,
+  isGuestStaffHandoffReply,
+  buildMetaGuestRoutingGuidanceSuffix,
+} from "../_shared/guestBotHandoff.ts";
+import {
+  CLAUDE_MODEL,
+  CLAUDE_MODEL_HAIKU,
+  GEMINI_MODELS,
+  resolveGuestModelRoute,
+} from "../_shared/guestBotModelRoute.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
-
-const CLAUDE_MODEL = "claude-sonnet-4-6"; // default Claude engine; final fallback when all Gemini models fail
-// Faster/cheaper Claude option, selectable via bot_settings.preferred_model="claude-haiku"
-// (BotSettings.js MODEL_OPTIONS). Exact ID not yet confirmed against this project's
-// ANTHROPIC_API_KEY (restricted key — most model names 404, see CLAUDE.md §2); if it
-// 404s, the existing engine-level failover in the main handler (Claude→Gemini on any
-// callClaude() throw) already covers it — the guest never goes silent either way.
-const CLAUDE_MODEL_HAIKU = "claude-haiku-4-5";
-
-// Ordered fallback list — fastest/most reliable first, falls through on 404.
-// Override ALL by setting the GEMINI_MODEL Supabase secret.
-const GEMINI_MODELS: string[] = Deno.env.get("GEMINI_MODEL")
-  ? [Deno.env.get("GEMINI_MODEL")!]
-  : [
-      "gemini-2.0-flash-lite",   // fastest, most reliable for short replies
-      "gemini-2.0-flash",
-      "gemini-2.5-flash",
-      "gemini-1.5-flash",
-    ];
 
 // ══════════════════════════════════════════════════════════════════════════════
 // §1  DYNAMIC BOT CONFIG — loaded from bot_config table, cached 5 min
@@ -175,8 +167,7 @@ const PENDING_PORTAL_SPA_LLM_SUFFIX = [
 // not just requested of the model. A single
 // source here guarantees the detector and the two prompt sources that emit
 // it can never drift out of sync.
-const LOW_CONFIDENCE_HANDOFF_SENTENCE =
-  "אני בודק את זה מול דלפק הקבלה, נציג אנושי יחזור אליך לכאן ברגעים אלו ממש.";
+const LOW_CONFIDENCE_HANDOFF_SENTENCE = GUEST_STAFF_HANDOFF_SENTENCE;
 
 // Fallback static prompt — used ONLY when DB is completely unavailable.
 // Contains NO hardcoded booking URLs, prices, or marketing CTAs —
@@ -244,6 +235,16 @@ const IN_HOUSE_TONE_SUFFIX = `
 const ANTI_REASONING_LEAK_SUFFIX = `
 
 CRITICAL: Under no circumstances should you output your internal thinking, reasoning steps, variables, tags, markdown code blocks (\`\`\`), or English text to the user. Your output must strictly contain ONLY the natural, direct Hebrew response to the guest. If you feel the need to reason, do it internally; never let it escape into the final output text.`;
+
+// Appended to every guest FAQ LLM call — stops the model from re-opening topics
+// the staff/bot already closed in a prior outbound turn (e.g. "20 דקות יגיע"
+// after a food order, then guest asks about a door — model must not say "שוב").
+const FOCUS_CURRENT_MESSAGE_SUFFIX = `
+
+══ מיקוד בהודעה הנוכחית (חובה מוחלטת) ══
+• ענה/י אך ורק על מה שהאורח כותב בהודעה האחרונה — לא על נושאים ישנים מהיסטוריה.
+• אם נושא קודם כבר נענה בתשובת צוות או בוט קודמת (למשל "יגיע אליכם", "הועבר לצוות", "מטפלים בזה") — אל תחזור/י עליו, אל תכתוב "שוב" ואל תעביר/י שוב את אותה בקשה.
+• היסטוריית השיחה היא להקשר בלבד — לא רשימת משימות פתוחות.`;
 
 // Rapid burst coalescing — two webhook invocations within ~2s share one LLM reply.
 const BURST_COALESCE_MS = 1800;
@@ -734,46 +735,9 @@ async function fetchLearnedRulesSuffixes(
   }
 }
 
-// ── §1d  DYNAMIC MODEL ROUTING — preferred_model A/B testing & cost control ──
-// Maps the admin-chosen bot_settings.preferred_model value to a concrete
-// routing decision. Reordering (not replacing) GEMINI_MODELS preserves the
-// existing 404-resilience chain underneath a cost/quality pick — and the
-// "claude" branch still falls through to the full Gemini chain on failure
-// (and vice versa) at the call site, so a stale/restricted ANTHROPIC_API_KEY
-// can never go silent for guests, even when Claude is the chosen default.
-function resolveModelRoute(
-  preferredModel: string | null,
-): { engine: "gemini" | "claude"; geminiOrder: string[]; claudeModel: string } {
-  const normalized = (preferredModel ?? "").trim();
-
-  // Explicit Haiku pick — only when selected by name, never a default. Accepts
-  // both the short UI value ("claude-haiku") and the raw model id, same pattern
-  // as the "claude"/CLAUDE_MODEL pair below.
-  if (normalized === "claude-haiku" || normalized === CLAUDE_MODEL_HAIKU) {
-    return { engine: "claude", geminiOrder: GEMINI_MODELS, claudeModel: CLAUDE_MODEL_HAIKU };
-  }
-
-  if (normalized === "claude" || normalized === CLAUDE_MODEL) {
-    return { engine: "claude", geminiOrder: GEMINI_MODELS, claudeModel: CLAUDE_MODEL };
-  }
-
-  if (GEMINI_MODELS.includes(normalized)) {
-    return {
-      engine: "gemini",
-      geminiOrder: [normalized, ...GEMINI_MODELS.filter((m) => m !== normalized)],
-      claudeModel: CLAUDE_MODEL,
-    };
-  }
-
-  // Empty (no override configured) or unrecognized (typo / deprecated model id).
-  // Default per Mike's decision: route to Claude (Sonnet) first. Only warn for
-  // the typo case — an empty value is the normal "no override set" state, not
-  // an error.
-  if (normalized) {
-    console.warn(`[webhook] unknown preferred_model "${normalized}" — ignoring, defaulting to claude`);
-  }
-  return { engine: "claude", geminiOrder: GEMINI_MODELS, claudeModel: CLAUDE_MODEL };
-}
+// resolveGuestModelRoute() lives in _shared/guestBotModelRoute.ts — BotSettings.js,
+// Meta webhook, and Whapi DM all share the same mapping.
+const resolveModelRoute = resolveGuestModelRoute;
 
 // buildSystemPrompt is the THIRD-priority fallback (after bot_settings.system_prompt
 // and bot_scripts.ongoing_concierge.ai_system_prompt). It reads ALL behavioral
@@ -2224,6 +2188,7 @@ const TOOL_USAGE_INSTRUCTIONS = `
 פינוי זבל, החלפת מצעים, שטיפת רצפה.
 אסור לקרוא לפונקציה על שאלות מידע (איפה/מתי/שעות/מיקום בר/בריכה/עמדת ברד/צק-אאוט/WiFi).
 אל תקרא כשהאורח רק מעדכן שעת הגעה.
+קרא לפונקציה רק על הבקשה בטקסט הנוכחי — לא על נושאים ישנים מהיסטוריה שכבר נענו.
 אם קראת — הוסף/י גם תשובה חמה; אל תכתוב שהבקשה "הועברה" בלי קריאה לפונקציה.`;
 
 /** Server-side gate — model tool calls cannot bypass the physical-task allowlist. */
@@ -4344,7 +4309,9 @@ Deno.serve(async (req: Request) => {
           + STRICT_HEBREW_LOCK_SUFFIX
           + LUXURY_CONCIERGE_PERSONA_SUFFIX
           + (inRoomOverride ? IN_HOUSE_TONE_SUFFIX : "")
-          + ANTI_REASONING_LEAK_SUFFIX;
+          + ANTI_REASONING_LEAK_SUFFIX
+          + FOCUS_CURRENT_MESSAGE_SUFFIX
+          + buildMetaGuestRoutingGuidanceSuffix();
 
         // Dynamic engine routing (A/B testing & cost optimization) — preferred
         // engine is tried first, with the other engine kept as an automatic
@@ -4742,7 +4709,7 @@ Deno.serve(async (req: Request) => {
         );
       }
 
-      const isLowConfidenceFaqMiss = reply.includes(LOW_CONFIDENCE_HANDOFF_SENTENCE);
+      const isLowConfidenceFaqMiss = isGuestStaffHandoffReply(reply);
       // Generic "no real answer, passing this to reception" deflection — fires
       // when intent stayed "fallback" (unmatched/very short text), both AI
       // engines threw, or the truncation guard above fell all the way back to

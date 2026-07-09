@@ -18,6 +18,7 @@
 // "not_a_group" guard) — not covered by this file, which is outbound-only.
 
 import { isEffectiveSuiteGuest, GuestRoomFields } from "./suiteNames.ts";
+import { isGuestActiveForOutbound } from "./guestOutboundGuard.ts";
 
 export function isGuestWhapiSuitesEnabled(): boolean {
   return Deno.env.get("GUEST_WHAPI_SUITES_ENABLED") === "true";
@@ -28,4 +29,25 @@ export function shouldRouteGuestOutboundViaWhapiSuites(
   guest: GuestRoomFields | null | undefined,
 ): boolean {
   return isGuestWhapiSuitesEnabled() && isEffectiveSuiteGuest(guest);
+}
+
+/**
+ * Auto-reply eligibility for an INBOUND Suites-device guest DM
+ * (whapi-webhook's handleGuestDirectMessage) — deliberately broader than
+ * shouldRouteGuestOutboundViaWhapiSuites() above.
+ *
+ * That function answers "which channel should WE pick to send to this
+ * guest" (an OUTBOUND routing decision, which must stay narrow — suite vs
+ * day-pass content genuinely differs). This one answers "did a real, active
+ * guest just message a device we operate" — a guest who successfully DMs the
+ * Suites number has already proven they can reach it; gating the reply on
+ * isEffectiveSuiteGuest (room/room_type) additionally means a guest with no
+ * room assigned yet (e.g. arriving tomorrow, pre check-in) gets silence
+ * instead of a reply. Any guest whose profile isn't cancelled/checked_out
+ * qualifies — same "active" bar guestOutboundGuard.ts uses everywhere else.
+ */
+export function shouldAutoReplyGuestWhapiDm(
+  guest: { status?: string | null } | null | undefined,
+): boolean {
+  return isGuestWhapiSuitesEnabled() && isGuestActiveForOutbound(guest);
 }

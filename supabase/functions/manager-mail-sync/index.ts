@@ -3,83 +3,16 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   computeSlaDeadline,
   managerMailEnabled,
-  renderAutoAckTemplate,
-  shouldAutoAckInbound,
-  stripHtmlToText,
   type OritMailboxRow,
 } from "../_shared/oritAgentMail.ts";
 import { analyzeOritThread } from "../_shared/oritAgentAi.ts";
-import {
-  fetchRecentInboxMessages,
-  resolveGraphAccessToken,
-  sendGraphReply,
-} from "../_shared/microsoftGraph.ts";
+import { fetchMailboxInboxMessages, isMailboxIngestConfigured } from "../_shared/mailIngest.ts";
+import { isImapConfigured, resolveImapConfig, testImapConnection } from "../_shared/imapMail.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
-
-async function runAutoAck(
-  supabase: ReturnType<typeof createClient>,
-  mailbox: OritMailboxRow,
-  threadId: string,
-  accessToken: string,
-): Promise<void> {
-  const { data: thread } = await supabase
-    .from("orit_agent_threads")
-    .select("*")
-    .eq("id", threadId)
-    .maybeSingle();
-  if (!thread || thread.auto_ack_sent_at || thread.is_demo) return;
-  if (!mailbox.auto_ack_enabled) return;
-  if (!shouldAutoAckInbound(thread.from_email, thread.is_demo)) return;
-
-  const { data: existingAck } = await supabase
-    .from("orit_agent_auto_ack_log")
-    .select("id")
-    .eq("thread_id", threadId)
-    .maybeSingle();
-  if (existingAck) return;
-
-  const bodyText = renderAutoAckTemplate(
-    mailbox.auto_ack_template,
-    thread.from_name || "",
-    thread.subject || "",
-  );
-
-  const graphId = await sendGraphReply(accessToken, {
-    toEmail: thread.from_email,
-    toName: thread.from_name,
-    subject: thread.subject || "פנייתך",
-    bodyText,
-  });
-
-  const sentAt = new Date().toISOString();
-  const slaDeadline = computeSlaDeadline(thread.received_at, mailbox.sla_hours);
-
-  await supabase.from("orit_agent_threads").update({
-    auto_ack_sent_at: sentAt,
-    sla_deadline_at: slaDeadline,
-  }).eq("id", threadId);
-
-  await supabase.from("orit_agent_auto_ack_log").insert({
-    thread_id: threadId,
-    sent_at: sentAt,
-    graph_message_id: graphId,
-    body_preview: bodyText.slice(0, 500),
-  });
-
-  await supabase.from("orit_agent_messages").insert({
-    thread_id: threadId,
-    external_key: `auto-ack-${threadId}`,
-    direction: "outbound",
-    body_text: bodyText,
-    received_at: sentAt,
-    message_kind: "auto_ack",
-    graph_message_id: graphId,
-  });
-}
 
 async function analyzeThread(
   supabase: ReturnType<typeof createClient>,
@@ -91,7 +24,7 @@ async function analyzeThread(
     .select("*")
     .eq("id", threadId)
     .maybeSingle();
-  if (!thread) return;
+  if (!thread || thread.ai_analyzed_at) return;
 
   const { data: msgs } = await supabase
     .from("orit_agent_messages")
@@ -124,6 +57,8 @@ async function analyzeThread(
     ai_analyzed_at: new Date().toISOString(),
   }).eq("id", threadId);
 
+  await supabase.from("orit_agent_drafts").delete().eq("thread_id", threadId).eq("status", "suggested");
+
   if (analysis.suggestions.length) {
     await supabase.from("orit_agent_drafts").insert(
       analysis.suggestions.map((text) => ({
@@ -154,56 +89,88 @@ serve(async (req: Request) => {
     const { data: mailboxes } = await supabase
       .from("orit_agent_mailbox")
       .select("*")
-      .eq("connection_status", "active");
+      .in("connection_status", ["active", "disconnected", "error"]);
 
     let synced = 0;
-    for (const mailbox of mailboxes ?? []) {
+    for (const rawMailbox of mailboxes ?? []) {
+      const mailbox = rawMailbox as OritMailboxRow;
+      if (!isMailboxIngestConfigured(mailbox)) continue;
+
       try {
-        const accessToken = await resolveGraphAccessToken(mailbox as OritMailboxRow, async (next) => {
-          await supabase.from("orit_agent_mailbox").update({
-            oauth_refresh_token: next.refreshToken ?? mailbox.oauth_refresh_token,
-            token_expires_at: next.expiresAt,
-          }).eq("id", mailbox.id);
-        });
+        if (mailbox.provider === "imap" || isImapConfigured(mailbox)) {
+          const cfg = resolveImapConfig(mailbox);
+          if (!cfg) continue;
+          await testImapConnection(cfg);
+          if (mailbox.connection_status !== "active") {
+            await supabase.from("orit_agent_mailbox").update({
+              connection_status: "active",
+              email_address: mailbox.email_address || mailbox.owner_email,
+              connection_error: null,
+            }).eq("id", mailbox.id);
+          }
+        }
 
-        const messages = await fetchRecentInboxMessages(accessToken, 30);
+        const messages = await fetchMailboxInboxMessages({
+          mailbox,
+          onGraphTokenRefresh: async (next) => {
+            await supabase.from("orit_agent_mailbox").update({
+              oauth_refresh_token: next.refreshToken ?? mailbox.oauth_refresh_token,
+              token_expires_at: next.expiresAt,
+            }).eq("id", mailbox.id);
+          },
+        }, 30);
+
         for (const msg of messages) {
-          const fromEmail = msg.from?.emailAddress?.address ?? "";
-          const fromName = msg.from?.emailAddress?.name ?? null;
-          const subject = msg.subject ?? "";
-          const receivedAt = msg.receivedDateTime ?? new Date().toISOString();
-          const bodyText = msg.body?.contentType === "html"
-            ? stripHtmlToText(msg.body?.content ?? "")
-            : (msg.body?.content ?? msg.bodyPreview ?? "");
-          const threadKey = msg.conversationId || msg.id;
-          if (!threadKey || !fromEmail) continue;
+          if (!msg.fromEmail || !msg.threadKey) continue;
 
-          const { data: threadRow, error: threadErr } = await supabase
+          const { data: existingThread } = await supabase
             .from("orit_agent_threads")
-            .upsert({
-              mailbox_id: mailbox.id,
-              external_thread_key: threadKey,
-              graph_conversation_id: msg.conversationId ?? null,
-              subject,
-              from_email: fromEmail,
-              from_name: fromName,
-              received_at: receivedAt,
-              snippet: (msg.bodyPreview ?? bodyText).slice(0, 500),
-              status: "awaiting_reply",
-              is_demo: false,
-            }, { onConflict: "mailbox_id,external_thread_key" })
-            .select("*")
+            .select("id, status, sla_deadline_at, ai_analyzed_at")
+            .eq("mailbox_id", mailbox.id)
+            .eq("external_thread_key", msg.threadKey)
             .maybeSingle();
 
-          if (threadErr || !threadRow) continue;
+          if (existingThread?.status === "handled") continue;
+
+          let threadId = existingThread?.id ?? null;
+
+          if (!threadId) {
+            const slaDeadline = computeSlaDeadline(msg.receivedAt, mailbox.sla_hours);
+            const { data: inserted, error: insertErr } = await supabase
+              .from("orit_agent_threads")
+              .insert({
+                mailbox_id: mailbox.id,
+                external_thread_key: msg.threadKey,
+                graph_conversation_id: msg.threadKey,
+                subject: msg.subject,
+                from_email: msg.fromEmail,
+                from_name: msg.fromName,
+                received_at: msg.receivedAt,
+                snippet: msg.bodyPreview,
+                status: "awaiting_reply",
+                sla_deadline_at: slaDeadline,
+                is_demo: false,
+              })
+              .select("id")
+              .maybeSingle();
+            if (insertErr || !inserted) continue;
+            threadId = inserted.id;
+          } else {
+            await supabase.from("orit_agent_threads").update({
+              snippet: msg.bodyPreview,
+              subject: msg.subject || undefined,
+              sla_deadline_at: existingThread.sla_deadline_at
+                ?? computeSlaDeadline(msg.receivedAt, mailbox.sla_hours),
+            }).eq("id", threadId);
+          }
 
           const { error: msgErr } = await supabase.from("orit_agent_messages").upsert({
-            thread_id: threadRow.id,
+            thread_id: threadId,
             external_key: msg.id,
             graph_message_id: msg.id,
             direction: "inbound",
-            body_text: bodyText.slice(0, 8000),
-            received_at: receivedAt,
+            body_text: msg.bodyText,
+            received_at: msg.receivedAt,
             message_kind: "email",
           }, { onConflict: "thread_id,external_key" });
           if (msgErr) continue;
@@ -211,13 +178,7 @@ serve(async (req: Request) => {
           synced += 1;
 
           try {
-            await runAutoAck(supabase, mailbox as OritMailboxRow, threadRow.id, accessToken);
-          } catch (ackErr) {
-            console.warn("[manager-mail-sync] auto-ack failed:", (ackErr as Error).message);
-          }
-
-          try {
-            await analyzeThread(supabase, mailbox.id, threadRow.id);
+            await analyzeThread(supabase, mailbox.id, threadId);
           } catch (aiErr) {
             console.warn("[manager-mail-sync] analyze failed:", (aiErr as Error).message);
           }
@@ -225,6 +186,7 @@ serve(async (req: Request) => {
 
         await supabase.from("orit_agent_mailbox").update({
           last_sync_at: new Date().toISOString(),
+          connection_status: "active",
           connection_error: null,
         }).eq("id", mailbox.id);
       } catch (mbErr) {

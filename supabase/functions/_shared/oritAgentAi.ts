@@ -172,7 +172,7 @@ export async function composeMorningDigestBullet(data: {
   overdue: Array<{ subject: string; from_name: string | null; hours_over: number }>;
   waiting: Array<{ subject: string; from_name: string | null; hours_left: number }>;
   handledYesterday: number;
-  acksYesterday: number;
+  newYesterday: number;
 }): Promise<string> {
   const lines: string[] = [
     "🌅 סיכום שירות לקוחות — דרים איילנד",
@@ -197,7 +197,7 @@ export async function composeMorningDigestBullet(data: {
   }
 
   lines.push(`✅ טופל אתמול: ${data.handledYesterday}`);
-  lines.push(`📬 אישורי קבלה שנשלחו: ${data.acksYesterday}`);
+  lines.push(`📥 פניות חדשות אתמול: ${data.newYesterday}`);
   lines.push("");
   lines.push("🔗 dream-ai-system.vercel.app");
 

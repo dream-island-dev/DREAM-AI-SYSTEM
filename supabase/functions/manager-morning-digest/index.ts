@@ -98,17 +98,19 @@ serve(async (req: Request) => {
         .gte("handled_at", yesterdayStart.toISOString())
         .lte("handled_at", yesterdayEnd.toISOString());
 
-      const { count: acksYesterday } = await supabase
-        .from("orit_agent_auto_ack_log")
+      const { count: newYesterday } = await supabase
+        .from("orit_agent_threads")
         .select("id", { count: "exact", head: true })
-        .gte("sent_at", yesterdayStart.toISOString())
-        .lte("sent_at", yesterdayEnd.toISOString());
+        .eq("mailbox_id", mailbox.id)
+        .eq("is_demo", false)
+        .gte("received_at", yesterdayStart.toISOString())
+        .lte("received_at", yesterdayEnd.toISOString());
 
       const body = await composeMorningDigestBullet({
         overdue,
         waiting,
         handledYesterday: handledYesterday ?? 0,
-        acksYesterday: acksYesterday ?? 0,
+        newYesterday: newYesterday ?? 0,
       });
 
       const whapiId = await sendWhapiText(phone.replace(/\D/g, ""), body, { noLinkPreview: true });

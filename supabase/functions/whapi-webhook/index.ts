@@ -48,6 +48,7 @@ import { createClient }  from "https://esm.sh/@supabase/supabase-js@2";
 import Anthropic         from "https://esm.sh/@anthropic-ai/sdk@0.20.0";
 import { sendWhapiText, cleanPhoneForMention } from "../_shared/whapiSend.ts";
 import { findAssignedWorker, assigneeCardLine } from "../_shared/assignedWorker.ts";
+import { buildTaskCard } from "../_shared/taskCard.ts";
 import { fetchWhapiMedia } from "../_shared/whapiMedia.ts";
 import { containsHebrew, translateTextForFieldOps } from "../_shared/fieldOpsTranslation.ts";
 import { parseHousekeepingReadyRoomNumbers } from "../_shared/housekeepingWaParse.ts";
@@ -87,6 +88,12 @@ import {
   isWhapiBotActive,
   fetchChannelClaim,
 } from "../_shared/guestInboundOrchestrator.ts";
+import {
+  GUEST_STAFF_HANDOFF_SENTENCE,
+  isGuestStaffHandoffReply,
+} from "../_shared/guestBotHandoff.ts";
+import { assembleGuestBrainPrompt } from "../_shared/guestBotSettings.ts";
+import { generateGuestChatReply } from "../_shared/guestBotLlm.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -375,24 +382,6 @@ async function resolveTaskByReaction(
   return { ok: true };
 }
 
-// ── The structured English task card sent back into the group ────────────────
-// Session 27 Sprint 4.1: the old Accept/Complete link-tap flow (task-action
-// GET/POST interstitial) is replaced by a single reaction gesture — no link,
-// no crawler-safety dance, just 👍🏼 on this card. task-action.ts itself stays
-// alive (the manager "Bump" action, sla-escalation-cron, still uses it).
-// Assignee line uses profiles.name (see _shared/assignedWorker.ts) — never
-// @phone/@lid, which WhatsApp privacy groups render as opaque numeric IDs.
-function buildTaskCard(room: string | null, desc: string, assigneeLine: string | null, fromVoice = false): string {
-  return [
-    `📌 New Task Opened: Suite ${room ?? "—"}`,
-    ...(fromVoice ? [`🎤 Transcribed from voice:`] : []),
-    `📋 Task: ${desc}`,
-    `⏰ Status: Pending`,
-    ...(assigneeLine ? [assigneeLine] : []),
-    `👉 Please react with 👍🏼 to complete this task.`,
-  ].join("\n");
-}
-
 function isDirectGuestChat(chatId: string): boolean {
   return chatId.endsWith("@s.whatsapp.net") || chatId.endsWith("@c.us");
 }
@@ -515,13 +504,7 @@ async function claimWhapiGuestInbound(
 // GUEST_WHAPI_SUITES_ENABLED beyond a pilot rollout.
 // ══════════════════════════════════════════════════════════════════════════════
 
-const GUEST_DM_GEMINI_MODEL = GEMINI_MODEL; // same gemini-1.5-flash already used for voice transcription above
 const GUEST_DM_HISTORY_LIMIT = 6;
-const GUEST_DM_LOW_CONFIDENCE_REPLY =
-  "אני בודק את זה מול הצוות שלנו ונחזור אליך בהקדם 🙏";
-const GUEST_DM_FALLBACK_SYSTEM_PROMPT =
-  "אתה קונסיירז' וירטואלי של Dream Island Resort. ענה בעברית, בנימוס ובקצרה, ואם אינך בטוח " +
-  "בתשובה — אמור שתבדוק זאת מול הצוות ותחזור לאורח. לעולם אל תמציא מידע.";
 
 async function patchGuestDmInbound(
   supabase: ReturnType<typeof createClient>,
@@ -565,12 +548,16 @@ function buildGuestDmGreetingReply(guestName: string | null, scriptText: string 
   return base.replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, guestName?.trim() || "אורח יקר");
 }
 
-async function fetchGuestDmSystemPrompt(supabase: ReturnType<typeof createClient>): Promise<string> {
-  const { data } = await supabase.from("bot_settings").select("system_prompt, knowledge_base").eq("id", 1).maybeSingle();
-  const base = ((data as Record<string, unknown> | null)?.system_prompt as string | undefined)?.trim()
-    || GUEST_DM_FALLBACK_SYSTEM_PROMPT;
-  const knowledge = ((data as Record<string, unknown> | null)?.knowledge_base as string | undefined)?.trim();
-  return knowledge ? `${base}\n\nידע נוסף:\n${knowledge}` : base;
+function buildWhapiGuestContextLine(guest: ActiveGuestRow | null): string {
+  if (!guest) return "";
+  const g = guest as ActiveGuestRow & { arrival_date?: string | null; departure_date?: string | null };
+  const parts: string[] = [];
+  if (g.name) parts.push(`שם: ${g.name}`);
+  if (g.room) parts.push(`חדר: ${g.room}`);
+  if (g.status) parts.push(`סטטוס: ${g.status}`);
+  if (g.arrival_date) parts.push(`תאריך הגעה: ${g.arrival_date}`);
+  if (g.departure_date) parts.push(`תאריך עזיבה: ${g.departure_date}`);
+  return parts.length ? `\n\nפרטי האורח הנוכחי: ${parts.join(" | ")}` : "";
 }
 
 async function fetchGuestDmHistory(
@@ -585,52 +572,6 @@ async function fetchGuestDmHistory(
     .order("created_at", { ascending: false })
     .limit(GUEST_DM_HISTORY_LIMIT);
   return ((data ?? []) as Array<{ direction: string; message: string }>).reverse();
-}
-
-async function generateGuestDmReply(
-  apiKey: string,
-  systemPrompt: string,
-  history: Array<{ direction: string; message: string }>,
-  text: string,
-): Promise<string> {
-  const historyLines = history
-    .map((h) => `${h.direction === "inbound" ? "אורח" : "קונסיירז'"}: ${h.message.slice(0, 300)}`)
-    .join("\n");
-  const prompt = historyLines
-    ? `${systemPrompt}\n\nהיסטוריית שיחה אחרונה:\n${historyLines}\n\nהודעת האורח הנוכחית: ${text}`
-    : `${systemPrompt}\n\nהודעת האורח: ${text}`;
-
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GUEST_DM_GEMINI_MODEL}:generateContent?key=${apiKey}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        generationConfig: { maxOutputTokens: 500, temperature: 0.4 },
-      }),
-      signal: AbortSignal.timeout(20_000),
-    },
-  );
-  if (!res.ok) {
-    const errBody = await res.text();
-    throw new Error(`gemini_guest_dm_${res.status}: ${errBody.slice(0, 300)}`);
-  }
-  const data = await res.json();
-  const replyText: string =
-    data?.candidates?.[0]?.content?.parts?.map((p: { text?: string }) => p.text ?? "").join("") ?? "";
-  if (!replyText.trim()) {
-    const finishReason = data?.candidates?.[0]?.finishReason;
-    throw new Error(finishReason === "SAFETY" ? "gemini_safety_filter" : "gemini_empty_reply");
-  }
-  // Minimal output-leakage guard (mirrors whatsapp-webhook's HARD DROP intent,
-  // scaled down for this MVP) — a code fence or raw chain-of-thought marker
-  // must never reach the guest.
-  const trimmed = replyText.trim();
-  if (/```|^(THOUGHT|REASONING)\b/i.test(trimmed)) {
-    throw new Error("gemini_output_leak_guard_tripped");
-  }
-  return trimmed;
 }
 
 /** staffMuted mirrors whatsapp-webhook's _suppressGuestRepliesStaffClaim contract
@@ -709,6 +650,41 @@ async function escalateGuestDm(
   }
 
   await sendGuestDmReply(supabase, phone, guestId, replyText, staffMuted);
+}
+
+/** Staff handoff copy → Inbox red dot + guest attention badge (Meta parity). */
+async function flagGuestDmStaffHandoff(
+  supabase: ReturnType<typeof createClient>,
+  opts: {
+    phone: string;
+    guestId: number | null;
+    conversationId: number | null;
+    replyText: string;
+  },
+): Promise<void> {
+  if (!isGuestStaffHandoffReply(opts.replyText)) return;
+
+  await patchGuestDmInbound(supabase, opts.conversationId, {
+    guest_id: opts.guestId,
+    human_requested: true,
+    human_request_type: "staff_handoff",
+  });
+
+  if (opts.guestId) {
+    const { error } = await supabase.from("guests").update({
+      requires_attention:       true,
+      requires_attention_since: new Date().toISOString(),
+      needs_callback:           true,
+      attention_reason:         "שאלה מורכבת לצוות",
+    }).eq("id", opts.guestId);
+    if (error) {
+      console.error("[whapi-webhook] guest_dm staff_handoff guest update failed:", error.message);
+    }
+  }
+
+  console.info(
+    `[whapi-webhook] 🤔 staff handoff — red alert flagged — phone:${opts.phone} guest:${opts.guestId ?? "unknown"}`,
+  );
 }
 
 /**
@@ -889,27 +865,29 @@ async function handleGuestDirectMessage(
       results.push({ ...base, action: "captured_staff_claimed_faq" });
       return;
     }
-    const geminiKey = Deno.env.get("GEMINI_API_KEY");
+    const inHouse = guest?.status === "checked_in";
+    const brain = await assembleGuestBrainPrompt(supabase, "whapi", {
+      guestContextLine: buildWhapiGuestContextLine(guest),
+      inHouse,
+    });
+    console.info(`[whapi-webhook] guest_dm prompt source: ${brain.promptSource} model_pref=${brain.preferredModel ?? "(default)"}`);
+
     let replyText: string;
-    if (!geminiKey) {
-      replyText = GUEST_DM_LOW_CONFIDENCE_REPLY;
-    } else {
-      try {
-        const systemPrompt = await fetchGuestDmSystemPrompt(supabase);
-        const history = await fetchGuestDmHistory(supabase, phone);
-        replyText = await generateGuestDmReply(geminiKey, systemPrompt, history, text);
-      } catch (e) {
-        console.error("[whapi-webhook] guest DM LLM reply failed:", (e as Error).message);
-        replyText = GUEST_DM_LOW_CONFIDENCE_REPLY;
-        if (guestId) {
-          await supabase.from("guests").update({
-            requires_attention: true,
-            requires_attention_since: new Date().toISOString(),
-            attention_reason: "low_confidence_llm_whapi",
-          }).eq("id", guestId);
-        }
-      }
+    try {
+      const history = await fetchGuestDmHistory(supabase, phone);
+      replyText = await generateGuestChatReply({
+        userMessage: text,
+        guestName: guestName,
+        history,
+        systemPrompt: brain.systemPrompt,
+        preferredModel: brain.preferredModel,
+        logTag: "whapi-webhook",
+      });
+    } catch (e) {
+      console.error("[whapi-webhook] guest DM LLM reply failed:", (e as Error).message);
+      replyText = GUEST_STAFF_HANDOFF_SENTENCE;
     }
+    await flagGuestDmStaffHandoff(supabase, { phone, guestId, conversationId, replyText });
     await sendGuestDmReply(supabase, phone, guestId, replyText);
     results.push({ ...base, action: "llm_reply_sent" });
   } catch (e) {
