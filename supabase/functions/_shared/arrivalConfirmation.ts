@@ -168,6 +168,23 @@ export async function lookupGuestByPhone(
   return pick;
 }
 
+/**
+ * Best available guest match for an inbound message, on ANY channel — multi-
+ * variant phone match + last-9 suffix fallback + active/upcoming-arrival
+ * disambiguation (pickGuestFromRows). This is the one guest-by-phone lookup
+ * inbound handlers should use (whatsapp-webhook already gets this via
+ * lookupGuestByPhone directly; whapi-webhook's guest DM sweep now uses this
+ * wrapper instead of guestOutboundGuard.ts's simpler loadGuestByPhoneForStaffReply,
+ * which has no suffix fallback and doesn't prefer a non-cancelled row).
+ */
+export async function resolveGuestByInboundPhone(
+  supabaseClient: { from: (t: string) => unknown },
+  rawPhone: string,
+): Promise<Record<string, unknown> | null> {
+  const { phone, variants } = buildPhoneVariants(rawPhone);
+  return lookupGuestByPhone(supabaseClient, variants, phone);
+}
+
 type GuestConfirmCandidate = {
   id: number | string;
   phone?: string | null;

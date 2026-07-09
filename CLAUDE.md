@@ -43,7 +43,8 @@ Dream Island Resort Management System (XOS) — אפליקציית ניהול מ
 - dashboard / shifts / checklist / employees
 - vip_guests ➔ GuestDashboard.js (ניהול טקטי של הפרויקט - לינה / בילוי יומי)
 - guests ➔ GuestsPage.js (מסך צ'ק-אין ייעודי לסוויטות בלבד, אורחי יום מסוננים החוצה)
-- wa_inbox ➔ WhatsAppInbox.js (חדר בקרה תפעולי, ניהול שיחות, צ'אט, Claim ופתרון משימות). שיחות מופרדות לפי `inbox_channel` (`meta` = Dream Bot, `whapi` = מכשיר הסוויטות) — thread key = phone+channel.
+- wa_inbox ➔ WhatsAppInbox.js (חדר בקרה תפעולי, ניהול שיחות, צ'אט, Claim ופתרון משימות). שיחות מופרדות לפי `inbox_channel` (`meta` = Dream Bot, `whapi` = מכשיר הסוויטות) — thread key = phone+channel. Claim ומתג בוט (🤖/😴) הם per-channel: `guests.claimed_by`/`bot_active` ל-Meta (ללא שינוי), `guest_channel_claims`/`bot_active_whapi` ל-Whapi (migrations 170-171) — claim/כיבוי בערוץ אחד לא משפיע על השני.
+- orit_cs_agent ➔ OritCustomerServicePanel.js (סוכן שירות לקוחות לאורית — **IMAP read-only**, AI סיכום+טיוטות, העתקה ידנית ל-Outlook, דייג'סט בוקר Whapi). אין שליחה מהמערכת.
 - ops_board ➔ OperationsBoard.js (לוח תפעול ואחזקה, כולל טאב משימות ממתינות לאישור)
 - data_sync ➔ DataSyncPage.js (מסך סנכרון וייבוא קבצי אקסל ודוחות EZGO ל-Admin/Receptionist)
 - agent ➔ InventoryHub.js (ניהול מלאי, ייבוא דוחות, יצירת קישורי-קסם לעובדים ותור אישורים)

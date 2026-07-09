@@ -287,6 +287,7 @@ const T = {
     brand: "💬 DREAM BOT — תיבת שיחות",
     live: "LIVE", connecting: "מתחבר...",
     newChat: "✉️ חדש", botOn: "🤖 בוט פעיל", botOff: "😴 בוט כבוי",
+    botOnWhapi: "🏨 מכשיר הסוויטות פעיל", botOffWhapi: "😴 מכשיר הסוויטות כבוי",
     newMsgs: (n) => `${n} חדשות`,
     listCount: (n) => `${n} הודעות`,
     syncing: "⏳ מסנכרן...",
@@ -374,6 +375,7 @@ const T = {
     brand: "💬 DREAM BOT — Inbox",
     live: "LIVE", connecting: "Connecting...",
     newChat: "✉️ New", botOn: "🤖 Bot on", botOff: "😴 Bot off",
+    botOnWhapi: "🏨 Suites device on", botOffWhapi: "😴 Suites device off",
     newMsgs: (n) => `${n} new`,
     listCount: (n) => `${n} chats`,
     syncing: "⏳ Syncing...",
@@ -2687,6 +2689,9 @@ export default function WhatsAppInbox({
   // ── Bot active / human-handover toggle ───────────────────────────────────
   const [botActive, setBotActive]     = useState(true);
   const [togglingBot, setTogglingBot] = useState(false);
+  // ── Per-channel toggle (§4) — מכשיר הסוויטות (Whapi) ──────────────────────
+  const [botActiveWhapi, setBotActiveWhapi]     = useState(true);
+  const [togglingBotWhapi, setTogglingBotWhapi] = useState(false);
   // ── Realtime connection status ────────────────────────────────────────────
   const [realtimeOk, setRealtimeOk]   = useState(false);
   const [lastUpdated, setLastUpdated] = useState(null);
@@ -2762,6 +2767,7 @@ export default function WhatsAppInbox({
   const lastSeenAt = useRef(null); // ISO timestamp of last fetch — used by fetchSince
   const guestPhoneMapRef = useRef(new Map()); // normalizePhone(guests.phone) → guest profile slice
   const guestIdMapRef = useRef(new Map()); // guests.id → same slice (phone-mismatch fallback)
+  const whapiClaimsMapRef = useRef(new Map()); // guests.id → { claimed_by, claimed_at } (guest_channel_claims, whapi only — §4)
   const guestMapReadyRef = useRef(false); // true after initial guests fetch — avoids stripping before load
   const profilesMapRef   = useRef(new Map()); // profiles.id → profiles.name, for claimedBy display
   const alertsReadyRef   = useRef(false); // skip sounds until initial fetchAll completes
@@ -2779,30 +2785,39 @@ export default function WhatsAppInbox({
   const [rosterRefreshBusy, setRosterRefreshBusy] = useState(false);
 
   // ── Shared row normaliser ─────────────────────────────────────────────────
-  const normalise = (r) => ({
-    ...r,
-    id:                     r.id != null ? Number(r.id) : r.id,
-    phone:                  canonicalizePhone(r.phone),
-    inbox_channel:          r.inbox_channel === "whapi" ? "whapi" : "meta",
-    threadKey:              `${canonicalizePhone(r.phone)}::${r.inbox_channel === "whapi" ? "whapi" : "meta"}`,
-    guest_id:               r.guests?.id ?? null,
-    guest_name:             r.guests?.name ?? null,
-    spa_time:               r.guests?.spa_time ?? null,
-    spa_date:               r.guests?.spa_date ?? null,
-    guest_room:             r.guests?.room ?? null,
-    guest_room_type:        r.guests?.room_type ?? null,
-    guest_status:           r.guests?.status ?? null,
-    guest_departure_date:   r.guests?.departure_date ?? null,
-    guest_arrival_date:     r.guests?.arrival_date ?? null,
-    guest_portal_token:     r.guests?.portal_token ?? null,
-    guest_meal_time:        r.guests?.meal_time ?? null,
-    guest_meal_location:    r.guests?.meal_location ?? null,
-    guest_claimed_by:       r.guests?.claimed_by ?? null,
-    guest_claimed_at:       r.guests?.claimed_at ?? null,
-    push_name:              r.push_name ?? null,
-    human_requested:        r.human_requested    ?? false,
-    human_request_type:    r.human_request_type ?? null,
-  });
+  // guest_claimed_by/at: guests.claimed_by is the META claim only (migration
+  // 081, unchanged). A Whapi row's claim (§4, migration 171) lives in
+  // guest_channel_claims instead — whapiClaimsMapRef (populated below)
+  // overrides it here so a Meta claim never leaks onto a Whapi thread.
+  const normalise = (r) => {
+    const isWhapiRow = r.inbox_channel === "whapi";
+    const guestId = r.guests?.id ?? null;
+    const whapiClaim = isWhapiRow ? whapiClaimsMapRef.current.get(guestId) : null;
+    return {
+      ...r,
+      id:                     r.id != null ? Number(r.id) : r.id,
+      phone:                  canonicalizePhone(r.phone),
+      inbox_channel:          isWhapiRow ? "whapi" : "meta",
+      threadKey:              `${canonicalizePhone(r.phone)}::${isWhapiRow ? "whapi" : "meta"}`,
+      guest_id:               guestId,
+      guest_name:             r.guests?.name ?? null,
+      spa_time:               r.guests?.spa_time ?? null,
+      spa_date:               r.guests?.spa_date ?? null,
+      guest_room:             r.guests?.room ?? null,
+      guest_room_type:        r.guests?.room_type ?? null,
+      guest_status:           r.guests?.status ?? null,
+      guest_departure_date:   r.guests?.departure_date ?? null,
+      guest_arrival_date:     r.guests?.arrival_date ?? null,
+      guest_portal_token:     r.guests?.portal_token ?? null,
+      guest_meal_time:        r.guests?.meal_time ?? null,
+      guest_meal_location:    r.guests?.meal_location ?? null,
+      guest_claimed_by:       isWhapiRow ? (whapiClaim?.claimed_by ?? null) : (r.guests?.claimed_by ?? null),
+      guest_claimed_at:       isWhapiRow ? (whapiClaim?.claimed_at ?? null) : (r.guests?.claimed_at ?? null),
+      push_name:              r.push_name ?? null,
+      human_requested:        r.human_requested    ?? false,
+      human_request_type:    r.human_request_type ?? null,
+    };
+  };
 
   // ── Client-side identity-resolution fallback ──────────────────────────────
   // The webhook's guest_id join is the primary path for showing a real name
@@ -2880,9 +2895,12 @@ export default function WhatsAppInbox({
     const incoming = rows.map((r) => {
       const n = normalise(r);
       if (!n.guest_claimed_by) {
+        const nChannel = n.inbox_channel ?? "meta";
         for (let i = allMsgsRef.current.length - 1; i >= 0; i--) {
           const prev = allMsgsRef.current[i];
-          if (prev.phone === n.phone && prev.guest_claimed_by) {
+          // Channel-scoped (§4) — a Meta claim must never carry over onto an
+          // incoming Whapi row for the same phone, or vice versa.
+          if (prev.phone === n.phone && (prev.inbox_channel ?? "meta") === nChannel && prev.guest_claimed_by) {
             n.guest_claimed_by = prev.guest_claimed_by;
             n.guest_claimed_at = prev.guest_claimed_at ?? null;
             break;
@@ -3308,62 +3326,111 @@ export default function WhatsAppInbox({
   }, [applyGrouping, t]);
 
   // ── Claim / take-over / release a guest's conversation ───────────────────
-  // Persists to guests.claimed_by/claimed_at (migration 081) so the
-  // assignment survives a page refresh — unlike the in-memory "recently
-  // active" proxy above, this is a real, queryable assignment. Any staff
-  // member can claim OR take over an existing claim (no permission gate —
-  // small-team cooperative tool, same trust model as OperationsBoard's
-  // claim button); the visible claimedByName badge is the social signal
-  // that prevents stepping on each other's replies, not a hard lock.
+  // Meta thread: persists to guests.claimed_by/claimed_at (migration 081),
+  // unchanged — every other reader (whatsapp-webhook, whatsapp-send,
+  // whatsapp-cron) keeps working exactly as before. Whapi thread (§4,
+  // migration 171): persists to guest_channel_claims instead, so claiming
+  // one channel's thread never mutes the other. Any staff member can claim
+  // OR take over an existing claim (no permission gate — small-team
+  // cooperative tool, same trust model as OperationsBoard's claim button);
+  // the visible claimedByName badge is the social signal that prevents
+  // stepping on each other's replies, not a hard lock.
   const setClaim = useCallback(async (contact, claim) => {
     if (!contact || !user?.id) return;
-    const variants = phoneVariants(contact.phone);
+    const channel = contact.inbox_channel === "whapi" ? "whapi" : "meta";
     setClaimBusy(true);
     try {
       const patch = claim
         ? { claimed_by: user.id, claimed_at: new Date().toISOString() }
         : { claimed_by: null, claimed_at: null };
-      const { data: updatedRows, error: err } = await supabase
-        .from("guests")
-        .update(patch)
-        .in("phone", variants)
-        .select("id");
-      if (err) throw err;
-      if (!updatedRows?.length) {
-        if (!claim) {
-          // Releasing a claim on a phone with no guests row at all is a true
-          // no-op — nothing to release. Only "קח שיחה" (claim=true) must
-          // never fail silently/loudly for a not-yet-a-guest number.
-          throw new Error("לא נמצא פרופיל אורח לטלפון הזה — אין שיוך לשחרר.");
+
+      if (channel === "whapi") {
+        let guestId = contact.guestId ?? null;
+        if (!guestId) {
+          if (!claim) {
+            throw new Error("לא נמצא פרופיל אורח לטלפון הזה — אין שיוך לשחרר.");
+          }
+          // Same auto-create-stub contract as the Meta path below — a plain
+          // stub row, no claimed_by/claimed_at on it (that lives in
+          // guest_channel_claims for this channel).
+          const stubName = contact.guestName || contact.pushName || `אורח ${contact.phone}`;
+          const { data: created, error: insErr } = await supabase
+            .from("guests")
+            .insert({ name: stubName, phone: `+${contact.phone}` })
+            .select("id");
+          if (insErr) throw insErr;
+          guestId = created?.[0]?.id ?? null;
+          if (!guestId) throw new Error("יצירת פרופיל אורח נכשלה — לא ניתן להשתיק את הבוט.");
         }
-        // Auto-create-stub bugfix (Mike directive): a staff member clicking
-        // "קח שיחה" on a phone with no guests row must have the claim saved
-        // immediately, not fail — insert a minimal stub row (name/phone +
-        // the claim itself) rather than throwing. The guest editor (✏️)
-        // already treats any row as fully editable afterward, so nothing
-        // here is final — staff can fill in the rest right away.
-        const stubName = contact.guestName || contact.pushName || `אורח ${contact.phone}`;
-        const { data: created, error: insErr } = await supabase
+
+        if (claim) {
+          const { error: err } = await supabase
+            .from("guest_channel_claims")
+            .upsert(
+              { guest_id: guestId, inbox_channel: "whapi", claimed_by: patch.claimed_by, claimed_at: patch.claimed_at },
+              { onConflict: "guest_id,inbox_channel" },
+            );
+          if (err) throw err;
+          whapiClaimsMapRef.current.set(guestId, { claimed_by: patch.claimed_by, claimed_at: patch.claimed_at });
+        } else {
+          const { error: err } = await supabase
+            .from("guest_channel_claims")
+            .delete()
+            .eq("guest_id", guestId)
+            .eq("inbox_channel", "whapi");
+          if (err) throw err;
+          whapiClaimsMapRef.current.delete(guestId);
+        }
+      } else {
+        const variants = phoneVariants(contact.phone);
+        const { data: updatedRows, error: err } = await supabase
           .from("guests")
-          .insert({
-            name: stubName,
-            phone: `+${contact.phone}`,
-            claimed_by: patch.claimed_by,
-            claimed_at: patch.claimed_at,
-          })
+          .update(patch)
+          .in("phone", variants)
           .select("id");
-        if (insErr) throw insErr;
-        if (!created?.length) throw new Error("יצירת פרופיל אורח נכשלה — לא ניתן להשתיק את הבוט.");
+        if (err) throw err;
+        if (!updatedRows?.length) {
+          if (!claim) {
+            // Releasing a claim on a phone with no guests row at all is a true
+            // no-op — nothing to release. Only "קח שיחה" (claim=true) must
+            // never fail silently/loudly for a not-yet-a-guest number.
+            throw new Error("לא נמצא פרופיל אורח לטלפון הזה — אין שיוך לשחרר.");
+          }
+          // Auto-create-stub bugfix (Mike directive): a staff member clicking
+          // "קח שיחה" on a phone with no guests row must have the claim saved
+          // immediately, not fail — insert a minimal stub row (name/phone +
+          // the claim itself) rather than throwing. The guest editor (✏️)
+          // already treats any row as fully editable afterward, so nothing
+          // here is final — staff can fill in the rest right away.
+          const stubName = contact.guestName || contact.pushName || `אורח ${contact.phone}`;
+          const { data: created, error: insErr } = await supabase
+            .from("guests")
+            .insert({
+              name: stubName,
+              phone: `+${contact.phone}`,
+              claimed_by: patch.claimed_by,
+              claimed_at: patch.claimed_at,
+            })
+            .select("id");
+          if (insErr) throw insErr;
+          if (!created?.length) throw new Error("יצירת פרופיל אורח נכשלה — לא ניתן להשתיק את הבוט.");
+        }
       }
 
+      // Local patch scoped to THIS channel only — a Meta claim must never
+      // show up as claimed on that same phone's Whapi thread, and vice versa.
       allMsgsRef.current = allMsgsRef.current.map((m) =>
-        m.phone === contact.phone
+        m.phone === contact.phone && (m.inbox_channel ?? "meta") === channel
           ? { ...m, guest_claimed_by: patch.claimed_by, guest_claimed_at: patch.claimed_at }
           : m
       );
       setContacts(applyGrouping(allMsgsRef.current));
       if (claim) {
-        setRouteToast("🔇 הבוט מושתק לאורח זה — לחץ שוב לשחרור");
+        setRouteToast(
+          channel === "whapi"
+            ? "🔇 הבוט מושתק לאורח זה (מכשיר הסוויטות) — לחץ שוב לשחרור"
+            : "🔇 הבוט מושתק לאורח זה — לחץ שוב לשחרור",
+        );
         setTimeout(() => setRouteToast(null), 3500);
       }
     } catch (e) {
@@ -3851,27 +3918,78 @@ export default function WhatsAppInbox({
     inboxMemoryCache.hydratedPhones = [...hydratedPhonesRef.current];
   }, [contacts, hasMoreOlder]);
 
-  // ── Fetch bot active status from bot_config ───────────────────────────────
+  // ── Fetch Whapi per-channel claims (§4, migration 171) ────────────────────
+  // Populates whapiClaimsMapRef so normalise() shows the right claim state on
+  // Whapi threads (never guests.claimed_by, which is Meta-only). Re-applies
+  // onto already-loaded rows too, in case this resolves after the initial
+  // whatsapp_conversations fetch already normalised them with no claim data.
+  // No live cross-session sync yet (guest_channel_claims isn't in the
+  // Realtime publication) — a claim made in another staff member's browser
+  // only shows here after this component remounts, same limitation the old
+  // in-memory claim proxy had before migration 081 added it for Meta.
+  useEffect(() => {
+    supabase
+      .from("guest_channel_claims")
+      .select("guest_id, claimed_by, claimed_at")
+      .eq("inbox_channel", "whapi")
+      .then(({ data, error }) => {
+        if (error) {
+          console.warn("[WhatsAppInbox] whapi claims fetch failed:", error.message);
+          return;
+        }
+        const map = new Map();
+        (data ?? []).forEach((row) => {
+          map.set(row.guest_id, { claimed_by: row.claimed_by, claimed_at: row.claimed_at });
+        });
+        whapiClaimsMapRef.current = map;
+        allMsgsRef.current = allMsgsRef.current.map((m) => {
+          if ((m.inbox_channel ?? "meta") !== "whapi") return m;
+          const claim = map.get(m.guest_id);
+          return { ...m, guest_claimed_by: claim?.claimed_by ?? null, guest_claimed_at: claim?.claimed_at ?? null };
+        });
+        setContacts(applyGrouping(allMsgsRef.current));
+      });
+  }, [applyGrouping]);
+
+  // ── Fetch bot active status from bot_config (both channels) ───────────────
   useEffect(() => {
     supabase
       .from("bot_config")
-      .select("config_value")
-      .eq("config_key", "bot_active")
-      .maybeSingle()
+      .select("config_key, config_value")
+      .in("config_key", ["bot_active", "bot_active_whapi"])
       .then(({ data }) => {
-        if (data) setBotActive(data.config_value !== "false");
+        (data ?? []).forEach((row) => {
+          if (row.config_key === "bot_active") setBotActive(row.config_value !== "false");
+          if (row.config_key === "bot_active_whapi") setBotActiveWhapi(row.config_value !== "false");
+        });
       });
   }, []);
 
-  // ── Toggle bot active flag ────────────────────────────────────────────────
+  // ── Toggle bot active flag — Dream Bot (Meta). Also mirrors bot_active_meta
+  // (migration 171) so the parallel meta/whapi key naming stays in sync —
+  // whatsapp-webhook itself still reads "bot_active" only, unchanged. ────────
   async function toggleBot() {
     setTogglingBot(true);
     const newVal = !botActive;
     await supabase
       .from("bot_config")
       .upsert({ config_key: "bot_active", config_value: String(newVal) }, { onConflict: "config_key" });
+    await supabase
+      .from("bot_config")
+      .upsert({ config_key: "bot_active_meta", config_value: String(newVal) }, { onConflict: "config_key" });
     setBotActive(newVal);
     setTogglingBot(false);
+  }
+
+  // ── Toggle bot active flag — מכשיר הסוויטות (Whapi) ────────────────────────
+  async function toggleBotWhapi() {
+    setTogglingBotWhapi(true);
+    const newVal = !botActiveWhapi;
+    await supabase
+      .from("bot_config")
+      .upsert({ config_key: "bot_active_whapi", config_value: String(newVal) }, { onConflict: "config_key" });
+    setBotActiveWhapi(newVal);
+    setTogglingBotWhapi(false);
   }
 
   // ── Realtime subscription ─────────────────────────────────────────────────
@@ -5700,6 +5818,21 @@ export default function WhatsAppInbox({
               >
                 {togglingBot ? "⏳" : botActive ? "🤖" : "😴"}
               </HoldToConfirmButton>
+              <HoldToConfirmButton
+                onConfirm={toggleBotWhapi}
+                disabled={togglingBotWhapi}
+                title={botActiveWhapi ? t.botOnWhapi : t.botOffWhapi}
+                progressColor={botActiveWhapi ? "rgba(220,38,38,0.35)" : "rgba(180,83,9,0.35)"}
+                style={{
+                  ...MOBILE_TOOLBAR_BTN,
+                  borderRadius: "50%",
+                  width: HIT_STAFF, height: HIT_STAFF, padding: 0,
+                  background: botActiveWhapi ? "rgba(180,83,9,0.25)" : "rgba(255,255,255,0.12)",
+                  fontFamily: "Heebo, sans-serif",
+                }}
+              >
+                {togglingBotWhapi ? "⏳" : botActiveWhapi ? "🏨" : "😴"}
+              </HoldToConfirmButton>
               <button
                 onClick={() => setShowNewChat(true)}
                 title={t.newChat}
@@ -5823,6 +5956,22 @@ export default function WhatsAppInbox({
             }}
           >
             {isMobile ? (togglingBot ? "⏳" : botActive ? "🤖" : "😴") : (togglingBot ? "⏳" : botActive ? t.botOn : t.botOff)}
+          </HoldToConfirmButton>
+          <HoldToConfirmButton
+            onConfirm={toggleBotWhapi}
+            disabled={togglingBotWhapi}
+            title={botActiveWhapi ? t.botOnWhapi : t.botOffWhapi}
+            progressColor={botActiveWhapi ? "rgba(220,38,38,0.35)" : "rgba(180,83,9,0.35)"}
+            style={{
+              padding: isMobile ? "0" : "5px 14px", borderRadius: "var(--radius-pill)", fontSize: 12, fontWeight: 700,
+              border: "1.5px solid rgba(255,255,255,0.4)",
+              background: botActiveWhapi ? "rgba(180,83,9,0.25)" : "rgba(255,255,255,0.12)",
+              color: "white", cursor: togglingBotWhapi ? "not-allowed" : "pointer",
+              width: isMobile ? HIT_STAFF : "auto", height: isMobile ? HIT_STAFF : "auto", whiteSpace: "nowrap",
+              fontFamily: "Heebo, sans-serif",
+            }}
+          >
+            {isMobile ? (togglingBotWhapi ? "⏳" : botActiveWhapi ? "🏨" : "😴") : (togglingBotWhapi ? "⏳" : botActiveWhapi ? t.botOnWhapi : t.botOffWhapi)}
           </HoldToConfirmButton>
           <button
             onClick={() => setShowNewChat(true)}

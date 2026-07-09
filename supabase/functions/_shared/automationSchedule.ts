@@ -271,11 +271,21 @@ export function getAutomationScopeTriggerBlockReason(
   return "automation_courtesy_only";
 }
 
-/** True when DREAM BOT staff-claim mute is active on this guest row. */
+/**
+ * True when staff-claim mute is active for this guest, on the given channel.
+ * "meta" (default) reads guests.claimed_by (migration 081) — unchanged,
+ * every existing caller that omits `channel` keeps its exact current
+ * behavior. "whapi" (migration 171, §4) reads claimed_by_whapi instead —
+ * callers on that channel must attach it themselves (guest_channel_claims
+ * lookup; see _shared/guestInboundOrchestrator.ts:fetchChannelClaim) since
+ * it isn't a column on guests.
+ */
 export function isGuestStaffClaimActive(
-  guest: { claimed_by?: unknown } | null | undefined,
+  guest: { claimed_by?: unknown; claimed_by_whapi?: unknown } | null | undefined,
+  channel: "meta" | "whapi" = "meta",
 ): boolean {
-  return guest?.claimed_by != null && guest.claimed_by !== "";
+  const val = channel === "whapi" ? guest?.claimed_by_whapi : guest?.claimed_by;
+  return val != null && val !== "";
 }
 
 export interface ScheduleResult {

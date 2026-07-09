@@ -51,7 +51,6 @@ import {
   PAYMENT_LINK_FAILURE_LABEL,
 } from "../_shared/paymentLinkGuard.ts";
 import { sendWhapiText, cleanPhoneForMention } from "../_shared/whapiSend.ts";
-import { shouldRouteGuestOutboundViaWhapiSuites } from "../_shared/guestWhapiRouting.ts";
 import { formatGuestProfileForAi } from "../_shared/guestProfile.ts";
 import {
   shouldApplyInRoomContextOverride,
@@ -96,27 +95,32 @@ import {
   buildSpaSentence,
   buildSpaTimeSentence,
   hasSpaBooking,
-  normalizeHmTime,
-  normalizeSpaDateYmd,
   formatSpaScheduleDisplay,
 } from "../_shared/spaSchedule.ts";
-import {
-  checkPipelineDuplicate,
-  logDuplicateBlocked,
-} from "../_shared/automationDuplicateGuard.ts";
 import {
   buildPhoneVariants,
   isArrivalConfirmationMessage,
   lookupGuestByPhone,
 } from "../_shared/arrivalConfirmation.ts";
-import {
-  assertGuestEligibleForAutomation,
-} from "../_shared/guestOutboundGuard.ts";
 import { sanitizeMetaRecipientPhone } from "../_shared/metaPhone.ts";
 import {
   extractArrivalTimeFromText,
   persistGuestEta,
 } from "../_shared/guestEta.ts";
+import {
+  fetchAutomationStage,
+  spaVarsFromGuest,
+  resolvePlaceholders,
+  buildPortalLink,
+  canGuestConfirmArrival,
+  isRecordOnlyArrivalTimeUpdate,
+  RECORD_ONLY_ARRIVAL_REPLY,
+  patchClaimedInbound,
+  dispatchStage2ViaPipeline,
+  runGuestArrivalConfirmation,
+  type AutomationStageRow,
+  type GuestOutboundRow,
+} from "../_shared/guestInboundOrchestrator.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -287,95 +291,10 @@ async function fetchBotScripts(
   }
 }
 
-// Resolve template placeholders.
-//
-// {{SPA_LINE}}          → PRIMARY placeholder for Stage 2 reply:
-//                          WITH spa:    "מתואם לכם טיפול בספא בשעה 14:00. בנוסף, "
-//                          WITHOUT spa: ""   (the rest of the sentence flows naturally)
-// {{OPTIONAL_SPA_TEXT}} → legacy: "מתואם לכם טיפול בספא בשעה 14:00.\n" or "".
-// {{SPA_TIME}}          → raw time value, or strips containing sentence if absent.
-// {{GUEST_NAME}} / {{WORKSHOP_URL}} → direct substitution.
-// {{PORTAL_LINK}}       → guest's personal Pre-Arrival Portal magic-link
-//                          (session "Automation Recovery" follow-up). Same
-//                          graceful-fallback contract as SPA_TIME: substitutes
-//                          the real link when present, strips the whole
-//                          containing sentence when the guest has no
-//                          portal_token rather than ever sending a dead link.
-//
-// spaTime should be JUST the time value — "14:00" — not "טיפול 45 דקות בשעה 14:00".
-function spaVarsFromGuest(guest: Record<string, unknown> | null): {
-  spaTime: string | null;
-  spaDate: string | null;
-} {
-  const spaTime = normalizeHmTime(guest?.spa_time) || null;
-  const spaDate = normalizeSpaDateYmd(guest?.spa_date) || null;
-  return { spaTime, spaDate };
-}
-
-function resolvePlaceholders(
-  template: string,
-  vars: {
-    guestName: string;
-    spaTime: string | null;
-    spaDate?: string | null;
-    workshopUrl: string;
-    portalLink?: string;
-  },
-): string {
-  const spaDate = vars.spaDate ?? null;
-  const spaTime = vars.spaTime;
-  const spaLine = buildSpaLine(spaDate, spaTime);
-  const optionalSpaText = buildOptionalSpaText(spaDate, spaTime);
-
-  console.log(
-    `[webhook] 🩺 resolvePlaceholders() — spaDate:${JSON.stringify(spaDate)} spaTime:${JSON.stringify(spaTime)}` +
-    ` spaLine:${JSON.stringify(spaLine)} optionalSpaText:${JSON.stringify(optionalSpaText)}`,
-  );
-
-  let text = template
-    .replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, vars.guestName)
-    .replace(/\{\{\s*WORKSHOP_URL\s*\}\}/gi, vars.workshopUrl)
-    .replace(/\{\{\s*SPA_LINE\s*\}\}/gi, spaLine)
-    .replace(/\{\{\s*OPTIONAL_SPA_TEXT\s*\}\}/gi, optionalSpaText);
-
-  // {{PORTAL_LINK}}: substitute the real link, or strip the containing
-  // sentence entirely if the guest has no portal_token — never leave a blank
-  // "click here: " dangling in the message (CORE BUSINESS LOGIC #2, Graceful
-  // Fallback). Should not happen in practice (migration 083 backfilled every
-  // existing guest with a generated UUID and new rows get one by default) —
-  // but trust the actual DB value at send time, not the schema guarantee.
-  // {{portal_url}} is an alias for the exact same value — "SYSTEM ARCHITECTURE,
-  // ZERO-REJECTION, ROOM MASKING & UX" session's directive named it that way;
-  // supporting both spellings means neither an already-saved script nor a
-  // newly-typed one breaks.
-  const PORTAL_PLACEHOLDER_RE = /\{\{\s*(?:PORTAL_LINK|portal_url)\s*\}\}/gi;
-  if (vars.portalLink) {
-    text = text.replace(PORTAL_PLACEHOLDER_RE, vars.portalLink);
-  } else {
-    if (PORTAL_PLACEHOLDER_RE.test(text)) {
-      console.warn("[webhook] resolvePlaceholders() — guest has no portal_token; stripped portal-link sentence rather than send a blank link.");
-    }
-    text = text.replace(/[^\n.!?]*\{\{\s*(?:PORTAL_LINK|portal_url)\s*\}\}[^\n.!?]*[.!?]?\s*/gi, "");
-  }
-
-  if (hasSpaBooking(spaDate, spaTime)) {
-    const spaSentence = buildSpaTimeSentence(spaDate, spaTime).replace(/\.$/, "");
-    text = text.replace(/\{\{\s*SPA_TIME\s*\}\}/gi, spaSentence);
-  } else {
-    text = text.replace(/[^\n.!?]*\{\{\s*SPA_TIME\s*\}\}[^\n.!?]*[.!?]?\s*/gi, "");
-  }
-
-  const hadSpaPlaceholder = /\{\{\s*(?:SPA_LINE|OPTIONAL_SPA_TEXT|SPA_TIME)\s*\}\}/i.test(template);
-  if (hasSpaBooking(spaDate, spaTime) && !hadSpaPlaceholder) {
-    console.warn(
-      `[webhook] resolvePlaceholders() force-injecting spa sentence — template had no ` +
-      `recognized spa placeholder spaDate="${spaDate}" spaTime="${spaTime}"`,
-    );
-    text = `${text.trim()}\n\n${buildSpaTimeSentence(spaDate, spaTime)}`;
-  }
-
-  return text.trim();
-}
+// spaVarsFromGuest / resolvePlaceholders — moved to
+// _shared/guestInboundOrchestrator.ts (§2, Whapi/Meta guest-inbound
+// orchestrator unification) so whapi-webhook can build the same Stage 2 reply
+// text. Imported above.
 
 // ── Stage 2 Pay — payment/workshop placeholder resolver ─────────────────────
 // Deliberately separate from resolvePlaceholders() above: zero shared code,
@@ -466,35 +385,8 @@ function buildPaymentReply(vars: {
 // toggled the auto-payment branch on/off, and (since the button feature)
 // which interactive_buttons are configured. Generic by stageKey so a future
 // event_immediate stage can reuse it without writing a new cache.
-interface AutomationStageRow {
-  is_active: boolean;
-  session_message_script_key: string | null;
-  interactive_buttons: Array<{ type: string; label: string; url?: string }> | null;
-  offset_hours?: number | null;
-}
-const _stageCache = new Map<string, { row: AutomationStageRow | null; time: number }>();
-
-async function fetchAutomationStage(
-  supabaseClient: ReturnType<typeof createClient>,
-  stageKey: string
-): Promise<AutomationStageRow | null> {
-  const now = Date.now();
-  const cached = _stageCache.get(stageKey);
-  if (cached && now - cached.time < CONFIG_TTL_MS) return cached.row;
-  try {
-    const { data } = await supabaseClient
-      .from("automation_stages")
-      .select("is_active, session_message_script_key, interactive_buttons, offset_hours")
-      .eq("stage_key", stageKey)
-      .maybeSingle();
-    const row = (data as AutomationStageRow | null) ?? null;
-    _stageCache.set(stageKey, { row, time: now });
-    return row;
-  } catch (e) {
-    console.warn(`[webhook] fetchAutomationStage(${stageKey}) error:`, (e as Error).message);
-    return cached?.row ?? null;
-  }
-}
+// AutomationStageRow / fetchAutomationStage — moved to
+// _shared/guestInboundOrchestrator.ts. Imported above.
 
 // Resolves the same {{PAYMENT_LINK}}/{{WORKSHOP_URL}} tokens inside a
 // configured button's URL template — mirrors resolvePaymentPlaceholders()
@@ -662,6 +554,10 @@ async function sendStage2PayReply(
 }
 
 // ── Stage 2 Arrival — single send path for button / typed / post-burst confirm ──
+// Thin Meta-specific wrapper — the actual duplicate/eligibility/script/send
+// orchestration lives once in _shared/guestInboundOrchestrator.ts
+// (runGuestArrivalConfirmation), shared with whapi-webhook's guest DM
+// handler. All 5 call sites of this function below are UNCHANGED.
 async function handleStage2ArrivalConfirmation(
   supabaseClient: ReturnType<typeof createClient>,
   ctx: {
@@ -676,250 +572,46 @@ async function handleStage2ArrivalConfirmation(
     msgId?: string;
   },
 ): Promise<void> {
-  const {
-    scripts, phone, guestId, guest, sim, source, buttonTitle,
-    claimedConversationId, msgId,
-  } = ctx;
+  const { scripts, guest, phone, guestId, sim, source, buttonTitle } = ctx;
 
-  if (!canGuestConfirmArrival(guest)) {
-    if (guestId && !sim) {
-      const dup = await checkPipelineDuplicate(supabaseClient, {
-        guestId,
-        triggerType: "stage_2_arrival",
-      });
-      if (dup.blocked) {
-        await logDuplicateBlocked(supabaseClient, {
-          guestId,
-          recipient: phone,
-          triggerType: "stage_2_arrival",
-          reason: dup.reason,
-          priorSentAt: dup.priorSentAt,
-          source: `webhook_confirm_repeat_${source}`,
-        });
-      }
-    }
-    console.info(
-      `[webhook] arrival confirm skipped — pipeline already complete phone:${phone} status:${guest?.status ?? "null"}`,
-    );
-    return;
-  }
-
-  if (guest?.arrival_confirmed === true && guest?.msg_stage_2_arrival_sent === true) {
-    console.info(`[webhook] arrival pipeline complete — skip duplicate confirm phone:${phone}`);
-    return;
-  }
-
-  if (guestId) {
-    const confirmedAt = new Date().toISOString();
-    const windowExpires = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
-    const { error: confirmErr } = await supabaseClient.from("guests").update({
-      arrival_confirmed: true,
-      arrival_confirmed_at: confirmedAt,
-      wa_window_expires_at: windowExpires,
-      ...(guest?.status === "pending" ? { status: "expected" } : {}),
-    }).eq("id", guestId);
-    if (confirmErr) {
-      console.error(`[webhook] arrival_confirmed update FAILED phone:${phone}:`, confirmErr.message);
-    } else if (guest) {
-      guest.arrival_confirmed = true;
-      guest.arrival_confirmed_at = confirmedAt;
-      guest.wa_window_expires_at = windowExpires;
-    }
-  } else {
-    console.warn(
-      `[webhook] ⚠️ arrival confirm (${source}) but NO guest record for phone:${phone} — add guest for status/spa sync.`,
-    );
-  }
-
-  if (claimedConversationId != null || msgId) {
-    await patchClaimedInbound(supabaseClient, claimedConversationId ?? null, msgId ?? "", {
-      guest_id: guestId,
-      intent: source === "button" ? "button_reply" : "confirmation",
-    });
-  }
-
-  const stage2Inactive = assertGuestEligibleForAutomation(
-    guest as { status?: string | null } | null,
-  );
-  if (!guestId || stage2Inactive) {
-    console.warn(
-      `[webhook] stage_2_arrival outbound blocked phone:${phone} reason:${stage2Inactive ?? "guest_not_found"}`,
-    );
-    return;
-  }
-
-  const hasPendingPayment = !!(guest?.payment_amount);
-  const stage2Arrival = await fetchAutomationStage(supabaseClient, "stage_2_arrival");
-  const stage2Pay = await fetchAutomationStage(supabaseClient, "stage_2_pay");
-
-  if (stage2Arrival?.is_active === false) {
-    console.info(`[webhook] stage_2_arrival paused in automation_stages — confirm saved, no arrival reply phone:${phone}`);
-  } else {
-    // Interactive «כן מגיעים» always fires Stage 2 immediately — offset_hours is
-    // for cron/ACC catch-up only (guests who confirmed but never got the message).
-    const deferHours = stage2Arrival?.offset_hours ?? 0;
-    if (deferHours > 0) {
-      console.info(
-        `[webhook] stage_2_arrival offset_hours=${deferHours} ignored on live confirm — sending now phone:${phone}`,
-      );
-    }
-
-    const safeName = String(guest?.name ?? "").trim() || "אורח יקר";
-    const { spaTime, spaDate } = spaVarsFromGuest(guest);
-    const portalLink = buildPortalLink(guest?.portal_token);
-    if (!portalLink) {
-      console.warn(
-        `[webhook] ⚠️ guest ${phone} (id:${guestId}) has no portal_token — Stage 2 reply will not include a portal link.`,
-      );
-    }
-
-    const stage2Script = scripts["stage_2_arrival"];
-    if (!stage2Script?.message_text?.trim()) {
-      console.error(
-        `[webhook] stage_2_arrival: bot_scripts.message_text missing/empty — ` +
-        `refusing invented fallback phone:${phone} (edit in BotScriptEditor)`,
-      );
-    } else {
-      const hasOptionalSpaText = /\{\{\s*OPTIONAL_SPA_TEXT\s*\}\}/i.test(stage2Script.message_text);
-      const hasSpaLine = /\{\{\s*SPA_LINE\s*\}\}/i.test(stage2Script.message_text);
-      const hasSpaTimeLegacy = /\{\{\s*SPA_TIME\s*\}\}/i.test(stage2Script.message_text);
-      console.log(
-        `[webhook] 🩺 resolvePlaceholders input (${source}) — phone:${phone} spaTime:${JSON.stringify(spaTime)}` +
-        ` scriptHasOptionalSpaText:${hasOptionalSpaText} scriptHasSpaLine:${hasSpaLine} scriptHasSpaTime:${hasSpaTimeLegacy}`,
-      );
-      if (spaTime && !hasOptionalSpaText && !hasSpaLine && !hasSpaTimeLegacy) {
-        console.warn(
-          `[webhook] ⚠️ guest ${phone} has spa_time="${spaTime}" but stage_2_arrival has no spa placeholder — check BotScriptEditor.`,
-        );
-      }
-      const arrivalReply = resolvePlaceholders(stage2Script.message_text, {
-        guestName: safeName, spaTime, spaDate, workshopUrl: "", portalLink,
-      });
-
-      console.info(`[webhook] 🎉 arrival confirmed (${source}) — phone:${phone} name="${safeName}"`);
-
-      if (sim) {
-        console.info(`[webhook] SIM — would send Stage 2 arrival reply to ${phone}`);
-      } else {
-        const outboundIntent = source === "button" ? "arrival_confirmed" : "confirmation";
-        let sentOk = false;
-        let skipStage2Duplicate = false;
-
-        // Guest-level opt-in (migration 166, Phase 1) — only affects guests
-        // explicitly set to dispatch_channel="whapi" (no backfill; every
-        // existing/unset guest defaults to "meta", so this is a no-op until
-        // Phase 2's staff picker actually sets it). Also requires the master
-        // switch AND that this is an effective suite guest, the same gate
-        // every other guest-outbound Whapi path in the codebase uses.
-        const useWhapiForStage2 =
-          String((guest as Record<string, unknown> | null)?.dispatch_channel ?? "meta") === "whapi" &&
-          shouldRouteGuestOutboundViaWhapiSuites(guest as { room?: unknown; room_type?: unknown } | null);
-
-        if (guestId) {
-          const dup = await checkPipelineDuplicate(supabaseClient, {
-            guestId,
-            triggerType: "stage_2_arrival",
-          });
-          if (dup.blocked) {
-            await logDuplicateBlocked(supabaseClient, {
-              guestId,
-              recipient: phone,
-              triggerType: "stage_2_arrival",
-              reason: dup.reason,
-              priorSentAt: dup.priorSentAt,
-              source: `webhook_stage2_${source}`,
-            });
-            console.info(`[webhook] stage_2 duplicate_blocked on live ${source} phone:${phone}`);
-            skipStage2Duplicate = true;
-          }
-        }
-
-        if (!skipStage2Duplicate) {
+  const result = await runGuestArrivalConfirmation(
+    supabaseClient,
+    {
+      stage2ScriptText: scripts["stage_2_arrival"]?.message_text ?? null,
+      phone: ctx.phone,
+      guestId: ctx.guestId,
+      guest: ctx.guest,
+      sim: ctx.sim,
+      source: ctx.source,
+      buttonTitle: ctx.buttonTitle,
+      claimedConversationId: ctx.claimedConversationId,
+      msgId: ctx.msgId,
+      channel: "meta",
+    },
+    {
+      sendMessage: (p, body, useWhapi) =>
+        useWhapi ? sendWhapiText(cleanPhoneForMention(p), body) : sendReply(p, body, { scripted: true }),
+      insertOutboundIfNotMuted: (row) => insertGuestOutboundIfNotMuted(supabaseClient, row),
+      dispatchFallbackPipeline: dispatchStage2ViaPipeline,
+      withStaffMuteSuspended: async (fn) => {
         // Pipeline Stage 2 must deliver on guest confirm — staff-claim mute blocks
         // bot/LLM only, not this scheduled arrival reply (cron catch-up relies on
         // msg_stage_2_arrival_sent staying false when Meta send did not happen).
         const prevStaffMute = _suppressGuestRepliesStaffClaim;
         setSuppressGuestRepliesStaffClaim(false);
         try {
-          const waId = useWhapiForStage2
-            ? await sendWhapiText(cleanPhoneForMention(phone), arrivalReply)
-            : await sendReply(phone, arrivalReply, { scripted: true });
-          if (!waId) {
-            console.warn(
-              `[webhook] ⚠️ stage_2_arrival ${useWhapiForStage2 ? "sendWhapiText" : "sendReply"} empty — phone:${phone} (will try pipeline fallback)`,
-            );
-          } else {
-            const convLogged = await insertGuestOutboundIfNotMuted(supabaseClient, {
-              phone,
-              guest_id: guestId,
-              message: useWhapiForStage2 ? `[WHAPI]\n${arrivalReply}` : arrivalReply,
-              wa_message_id: waId === "unknown" ? null : waId,
-              intent: outboundIntent,
-              channel: useWhapiForStage2 ? "whapi" : "meta",
-            });
-            if (!convLogged) {
-              console.error(
-                `[webhook] ⚠️ stage_2_arrival ${useWhapiForStage2 ? "Whapi" : "Meta"} send OK but inbox log FAILED — phone:${phone} intent:${outboundIntent}`,
-              );
-            }
-            if (guestId) {
-              await supabaseClient.from("guests").update({ msg_stage_2_arrival_sent: true }).eq("id", guestId);
-              try {
-                const { error: logErr } = await supabaseClient.from("notification_log").insert({
-                  guest_id: guestId, recipient: phone,
-                  trigger_type: "stage_2_arrival", channel: "whatsapp",
-                  status: "sent",
-                  payload: {
-                    source,
-                    channel: useWhapiForStage2 ? "whapi_session" : "meta_session",
-                    ...(buttonTitle ? { buttonTitle } : {}),
-                  },
-                });
-                if (logErr) console.warn("[webhook] notification_log stage_2_arrival:", logErr.message);
-              } catch (logEx) {
-                console.warn("[webhook] notification_log stage_2_arrival:", (logEx as Error).message);
-              }
-            }
-            console.info(`[webhook] ✅ arrival reply sent to ${phone} via ${useWhapiForStage2 ? "Whapi" : "Meta"}`);
-            sentOk = true;
-          }
-        } catch (e) {
-          const errMsg = (e as Error).message;
-          const replyStatus = errMsg.startsWith("timeout_no_response") ? "timeout" : "failed";
-          console.error(`[webhook] ❌ arrival reply ${replyStatus} to ${phone}:`, errMsg);
-          try {
-            const { error: logErr } = await supabaseClient.from("notification_log").insert({
-              guest_id: guestId, recipient: phone,
-              trigger_type: "stage_2_arrival", channel: "whatsapp",
-              status: replyStatus,
-              payload: {
-                error: errMsg, source,
-                channel: useWhapiForStage2 ? "whapi_session" : "meta_session",
-                ...(buttonTitle ? { buttonTitle } : {}),
-              },
-            });
-            if (logErr) console.warn("[webhook] notification_log insert error:", logErr.message);
-          } catch (logEx) {
-            console.warn("[webhook] notification_log insert error:", (logEx as Error).message);
-          }
+          return await fn();
         } finally {
           setSuppressGuestRepliesStaffClaim(prevStaffMute);
         }
+      },
+    },
+  );
 
-        if (!sentOk && guestId) {
-          console.warn(`[webhook] stage_2 webhook path missed — invoking whatsapp-send pipeline guest_id=${guestId}`);
-          const fallback = await dispatchStage2ViaPipeline(guestId);
-          if (fallback.ok) {
-            console.info(`[webhook] ✅ stage_2 pipeline fallback ok guest_id=${guestId} status:${fallback.status}`);
-          } else {
-            console.error(`[webhook] ❌ stage_2 pipeline fallback failed guest_id=${guestId}:`, fallback.error);
-          }
-        }
-        } // !skipStage2Duplicate
-      }
-    }
-  }
+  if (!result.proceeded) return;
 
+  const hasPendingPayment = !!(guest?.payment_amount);
+  const stage2Pay = await fetchAutomationStage(supabaseClient, "stage_2_pay");
   if (hasPendingPayment && stage2Pay?.is_active === true) {
     await sendStage2PayReply(
       supabaseClient, scripts, stage2Pay, phone, guestId, guest, sim, buttonTitle,
@@ -1272,18 +964,7 @@ async function claimInboundWaMessage(
   return { claimed: true, conversationId: (data?.id as number) ?? null };
 }
 
-async function patchClaimedInbound(
-  supabase: ReturnType<typeof createClient>,
-  conversationId: number | null,
-  waMessageId: string,
-  patch: Record<string, unknown>,
-): Promise<void> {
-  const q = conversationId
-    ? supabase.from("whatsapp_conversations").update(patch).eq("id", conversationId)
-    : supabase.from("whatsapp_conversations").update(patch).eq("wa_message_id", waMessageId);
-  const { error } = await q;
-  if (error) console.warn("[webhook] patchClaimedInbound failed:", error.message);
-}
+// patchClaimedInbound — moved to _shared/guestInboundOrchestrator.ts. Imported above.
 
 /** Leader of a rapid burst orchestrates one LLM reply; followers log only. */
 async function coalesceBurstIfLeader(
@@ -1509,33 +1190,10 @@ const HUMAN_GENERAL_PATTERNS: RegExp[] = [
   /\bטלפון\b/i,
 ];
 
-/** Date-change, cancellation, or booking issue → escalate to human staff, never AI */
-const DATE_CHANGE_RE =
-  /שינוי\s*(ב)?תאריכ|שינוי\s*הזמנ|לשנות\s*(את\s*)?(ה)?תאריכ|לבטל|ביטול|לא\s*נוכל??\s*להגיע|לא\s*יכול(ים|ה)?\s*להגיע|לא\s*מגיעים|דחיי?ה|להדחות|בעיה\s*עם\s*(ה)?הזמנ/i;
-
-// ── Record-only arrival TIME (not date change) — no staff alerts ────────────
-const RECORD_ONLY_ARRIVAL_REPLY =
-  "תודה שעדכנתם, רשמתי לפניי את שעת ההגעה שלכם. מחכים לכם!";
-
-/** Guest asking when to arrive — FAQ, not a time update. */
-const ARRIVAL_TIME_QUESTION_RE =
-  /(?:מה|איזו|מתי|באיזה|כמה)\s+.{0,24}?(?:שעת?\s*ה?געה|נגיע|מגיע)|\?\s*$|what\s+time\s+(do|should|can)/i;
-
-/** Guest stating an estimated arrival time (not a date-change request). */
-const ARRIVAL_TIME_UPDATE_RE =
-  /שעת\s*הגעה|נגיע|ניגיע|מגיעים?|הגעה\s|צפו[ייה]\s*להגיע|מתוכנן|בסביבות|בערך|arriving\s+at/i;
-
-function isRecordOnlyArrivalTimeUpdate(text: string): boolean {
-  if (DATE_CHANGE_RE.test(text)) return false;
-  if (ARRIVAL_TIME_QUESTION_RE.test(text)) return false;
-  const time = extractArrivalTimeFromText(text);
-  if (!time) return false;
-  const trimmed = text.trim();
-  const isBareTimeReply =
-    trimmed.length <= 8 &&
-    !/[א-ת]{4,}/.test(trimmed.replace(/[\d:.׳·\s-–]/g, ""));
-  return ARRIVAL_TIME_UPDATE_RE.test(text) || isBareTimeReply;
-}
+// DATE_CHANGE_RE / RECORD_ONLY_ARRIVAL_REPLY / ARRIVAL_TIME_QUESTION_RE /
+// ARRIVAL_TIME_UPDATE_RE / isRecordOnlyArrivalTimeUpdate — moved to
+// _shared/guestInboundOrchestrator.ts so whapi-webhook shares the exact same
+// record-only ETA classifier. Imported above.
 
 // ── Critical-event safety net (Phase 2 request-handling) ────────────────────
 // Deterministic backstop for the "faq" branch when the model skips log_guest_request
@@ -2927,13 +2585,7 @@ async function callClaude(
  *  BEFORE this block so any future overlap fails safe (silence) instead of
  *  fails loud (a misdirected confirmation reply).
  */
-function canGuestConfirmArrival(guest: Record<string, unknown> | null): boolean {
-  if (!guest) return true;
-  if (String(guest.status ?? "") === "cancelled") return false;
-  // Allow catch-up when confirm landed but Stage 2 never delivered (staff-claim / send failure).
-  if (guest.arrival_confirmed === true && guest.msg_stage_2_arrival_sent === true) return false;
-  return true;
-}
+// canGuestConfirmArrival — moved to _shared/guestInboundOrchestrator.ts. Imported above.
 
 /** Early intercept — runs before auto-checkin / staff-mute can skew routing. */
 async function tryArrivalConfirmationIntercept(
@@ -2987,11 +2639,7 @@ const BALLOON_VENDOR_PHONE = (Deno.env.get("BALLOON_VENDOR_PHONE") ?? "").trim()
 // for {{PORTAL_LINK}} below. Defaults to the documented live Vercel URL
 // (CLAUDE.md §1) so this works with zero secret configuration; override via
 // PORTAL_BASE_URL if the deployment URL ever changes.
-const PORTAL_BASE_URL = (Deno.env.get("PORTAL_BASE_URL") ?? "https://dream-ai-system.vercel.app").replace(/\/$/, "");
-function buildPortalLink(portalToken: unknown): string {
-  const token = String(portalToken ?? "").trim();
-  return token ? `${PORTAL_BASE_URL}/portal/${token}` : "";
-}
+// PORTAL_BASE_URL / buildPortalLink — moved to _shared/guestInboundOrchestrator.ts. Imported above.
 
 // A timeout/abort means we never learned whether Meta processed the request —
 // not the same as Meta rejecting it. Tagged distinctly so callers (notification_log
@@ -3269,32 +2917,7 @@ async function sendReply(to: string, body: string, opts?: SendReplyOpts): Promis
   }
 }
 
-/** whatsapp-send stage_2_arrival — same path as cron reconcile (window bypass via pipeline_reconcile). */
-async function dispatchStage2ViaPipeline(
-  guestId: number,
-): Promise<{ ok: boolean; status?: string; error?: string }> {
-  const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-  try {
-    const res = await fetch(`${supabaseUrl}/functions/v1/whatsapp-send`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${serviceKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ trigger: "stage_2_arrival", guestId, pipeline_reconcile: true }),
-      signal: AbortSignal.timeout(28000),
-    });
-    const data = await res.json() as Record<string, unknown>;
-    return {
-      ok: data.ok === true,
-      status: data.status ? String(data.status) : undefined,
-      error: data.error ? String(data.error) : undefined,
-    };
-  } catch (e) {
-    return { ok: false, error: (e as Error).message };
-  }
-}
+// dispatchStage2ViaPipeline — moved to _shared/guestInboundOrchestrator.ts. Imported above.
 
 function guestOpsEligibility(
   guest: Record<string, unknown> | null | undefined,
@@ -3344,17 +2967,7 @@ async function refreshStaffClaimMuteFromDb(
   return active;
 }
 
-type GuestOutboundRow = {
-  phone: string;
-  guest_id: number | null;
-  message: string;
-  wa_message_id: string | null;
-  intent: string;
-  // Defaults to "meta" — every existing call site in this file is Meta-only.
-  // Only the dispatch_channel="whapi" branch in handleStage2ArrivalConfirmation
-  // passes "whapi" explicitly (Phase 1, guest-outbound Whapi rollout).
-  channel?: "meta" | "whapi";
-};
+// GuestOutboundRow — moved to _shared/guestInboundOrchestrator.ts. Imported above.
 
 /** Strip dispatch tags before quoting a message in a reaction snippet. */
 function stripInboxMessageForSnippet(raw: string): string {

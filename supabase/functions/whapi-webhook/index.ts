@@ -34,17 +34,19 @@
 // a typed message uses below.
 //
 // Required secrets: WHAPI_TOKEN, ANTHROPIC_API_KEY, GEMINI_API_KEY (voice
-//   transcription only), SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY. Optional:
+//   transcription + guest-DM FAQ fallback), SUPABASE_URL,
+//   SUPABASE_SERVICE_ROLE_KEY. Optional:
 //   WHAPI_GROUP_ID (ops «קריאות» group — tasks + 👍 reactions),
 //   WHAPI_HOUSEKEEPING_GROUP_ID (צ'ק אין צ'ק אאוט — ready observer →
 //   room_status ממתין לאישור → AICopilot 🔔; short Hebrew ack in-group on success),
-//   WHAPI_API_URL.
+//   WHAPI_API_URL, GUEST_WHAPI_SUITES_ENABLED (see GUEST DIRECT MESSAGE
+//   HANDLING below — gates guest-DM auto-reply; off = capture-only).
 // ══════════════════════════════════════════════════════════════════════════════
 
 import { serve }         from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient }  from "https://esm.sh/@supabase/supabase-js@2";
 import Anthropic         from "https://esm.sh/@anthropic-ai/sdk@0.20.0";
-import { sendWhapiText } from "../_shared/whapiSend.ts";
+import { sendWhapiText, cleanPhoneForMention } from "../_shared/whapiSend.ts";
 import { findAssignedWorker, assigneeCardLine } from "../_shared/assignedWorker.ts";
 import { fetchWhapiMedia } from "../_shared/whapiMedia.ts";
 import { containsHebrew, translateTextForFieldOps } from "../_shared/fieldOpsTranslation.ts";
@@ -58,12 +60,14 @@ import {
   applyHousekeepingCheckInSignal,
   buildHousekeepingCheckInAckLine,
 } from "../_shared/housekeepingCheckInSignal.ts";
-import { isGuestWhapiSuitesEnabled } from "../_shared/guestWhapiRouting.ts";
-import { loadGuestByPhoneForStaffReply } from "../_shared/guestOutboundGuard.ts";
-import { isEffectiveSuiteGuest } from "../_shared/suiteNames.ts";
+import { isGuestWhapiSuitesEnabled, shouldAutoReplyGuestWhapiDm } from "../_shared/guestWhapiRouting.ts";
+import { type ActiveGuestRow } from "../_shared/guestOutboundGuard.ts";
+import { resolveGuestByInboundPhone, isArrivalConfirmationMessage } from "../_shared/arrivalConfirmation.ts";
 import { onGuestAlertInserted } from "../_shared/guestAlertWhapiNotify.ts";
+import { extractArrivalTimeFromText, persistGuestEta } from "../_shared/guestEta.ts";
 import {
   isGuestStaffClaimActive,
+  isGuestGreetingMessage,
   isLowValueCourtesyMessage,
   isSevereComplaint,
   isSensitiveStayChangeRequest,
@@ -73,6 +77,16 @@ import {
   isCheckInPolicyQuestion,
   buildCheckInPolicyReply,
 } from "../_shared/automationSchedule.ts";
+import {
+  canGuestConfirmArrival,
+  runGuestArrivalConfirmation,
+  patchClaimedInbound,
+  dispatchStage2ViaPipeline,
+  isRecordOnlyArrivalTimeUpdate,
+  RECORD_ONLY_ARRIVAL_REPLY,
+  isWhapiBotActive,
+  fetchChannelClaim,
+} from "../_shared/guestInboundOrchestrator.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -391,27 +405,6 @@ function canonicalGuestPhone(fromPhone: string, chatId: string): string {
   return raw;
 }
 
-function guestPhoneVariants(phone: string): string[] {
-  const digits = phone.replace(/\D/g, "");
-  if (!digits) return [];
-  const bare = digits.startsWith("972") ? digits : `972${digits.replace(/^0/, "")}`;
-  return [...new Set([bare, `+${bare}`, `0${bare.slice(3)}`])];
-}
-
-async function lookupGuestByPhone(
-  supabase: ReturnType<typeof createClient>,
-  phone: string,
-): Promise<{ id: number; name: string | null } | null> {
-  const variants = guestPhoneVariants(phone);
-  if (!variants.length) return null;
-  const { data } = await supabase
-    .from("guests")
-    .select("id, name")
-    .in("phone", variants)
-    .maybeSingle();
-  return data ? { id: data.id as number, name: (data.name as string | null) ?? null } : null;
-}
-
 function isUniqueViolation(error: { code?: string; message?: string } | null): boolean {
   if (!error) return false;
   return error.code === "23505" || /duplicate key|unique constraint/i.test(error.message ?? "");
@@ -460,14 +453,28 @@ async function claimWhapiGuestInbound(
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// GUEST DIRECT MESSAGE HANDLING (Phase 2 MVP, guest-outbound Whapi rollout) —
-// 1:1 (non-group) conversations on this SAME already-connected Whapi device.
-// Gated entirely by isGuestWhapiSuitesEnabled() (_shared/guestWhapiRouting.ts,
-// GUEST_WHAPI_SUITES_ENABLED secret) — when disabled, the caller keeps today's
-// exact "not_a_group" ignore, byte-for-byte. Zero changes to whatsapp-webhook
-// (the Meta AI pipeline) or to anything above this line in this file (group
-// tasks/SLA/housekeeping) — this is a wholly new, independently-try/catch'd
-// branch reached only from the main loop's group guard below.
+// GUEST DIRECT MESSAGE HANDLING — 1:1 (non-group) conversations on the Suites
+// device (מכשיר הסוויטות), same brain as the Meta bot (whatsapp-webhook).
+//
+// WIRING: the "Suites device — 1:1 guest DMs" sweep in the main loop below
+// ALWAYS captures the inbound message first (claimWhapiGuestInbound — ZERO
+// DATA LOSS, every message lands in the Golden Profile's Inbox regardless of
+// auto-reply eligibility). handleGuestDirectMessage() is then invoked exactly
+// once per newly-claimed message (never on a dedup replay) to decide whether
+// and how to auto-reply. This two-step split (capture, then react) is why the
+// gate below only ever suppresses the REPLY, never the logging.
+//
+// Gate: shouldAutoReplyGuestWhapiDm() (_shared/guestWhapiRouting.ts) =
+// GUEST_WHAPI_SUITES_ENABLED secret AND the guest profile is active (not
+// cancelled/checked_out) — deliberately NOT gated on isEffectiveSuiteGuest
+// (room/room_type): a guest who successfully DMs the Suites device has
+// already proven they can reach it, including a guest with no room assigned
+// yet (pre-arrival). That narrower classifier is for OUTBOUND routing
+// decisions elsewhere (shouldRouteGuestOutboundViaWhapiSuites) — a different
+// question. When the gate is false, the message is captured_no_autoreply —
+// visible in the Inbox (intent stamped, FAIL VISIBLE), un-replied.
+// Admin/staff personal numbers (ADMIN_WHITELIST) are captured the same way
+// but never auto-replied to, regardless of the gate.
 //
 // Reuses the SAME pure Tier-0 classifiers whatsapp-webhook uses, all already
 // exported from _shared/automationSchedule.ts: staff-claim mute, courtesy
@@ -477,12 +484,35 @@ async function claimWhapiGuestInbound(
 // the persona/knowledge stays in sync automatically since that's shared DB
 // data, not duplicated code.
 //
-// Explicit, documented gap (not silently dropped — Meta is unaffected either
-// way): operational/administrative in-house routing, balloon-request routing,
-// record-only ETA extraction, the arrival-confirmation/Stage-2 state machine,
-// auto-away detection, and the date-change regex are NOT ported in this MVP.
-// A guest message matching one of those triggers gets the general FAQ/LLM
-// reply on this channel instead of specialized handling, until ported later.
+// Greeting opener (היי/שלום) IS ported — same Tier-0 classifier
+// (isGuestGreetingMessage) and same bot_scripts['greeting_reply'] row the
+// Meta bot reads, checked before the courtesy-silence shield exactly like
+// whatsapp-webhook orders it.
+//
+// FAIL VISIBLE — explicit, documented gap vs whatsapp-webhook (Meta is
+// unaffected either way, this list is Whapi-channel-only):
+//   • Stage 2 / arrival-confirmation state machine — PORTED (§2, Whapi/Meta
+//     parity rollout). "כן מגיעים" runs isArrivalConfirmationMessage +
+//     canGuestConfirmArrival and calls the SAME
+//     _shared/guestInboundOrchestrator.ts:runGuestArrivalConfirmation Meta
+//     uses, before the staffMuted gate (Stage 2 must never be blocked by a
+//     staff claim, same invariant as Meta). No interactive buttons on this
+//     channel — text-only confirm, which is all the bot_scripts.stage_2_arrival
+//     text ever asked for anyway.
+//   • Record-only arrival-TIME extraction — PORTED (§2). Same
+//     isRecordOnlyArrivalTimeUpdate + persistGuestEta as Meta, also ahead of
+//     the staffMuted gate.
+//   • bot_active_whapi — PORTED (§2, migration 170 stub ahead of §4's real
+//     toggle UI). Gates only the generic LLM/FAQ reply below, same position
+//     as Meta's bot_active gate.
+//   • Operational / administrative in-house routing and balloon-room-decor
+//     routing (Requests Board intercepts) — NOT ported. These requests reach
+//     the LLM fallback instead of creating a task/board row automatically.
+//   • Auto-away detection, in-room keyword override, 15:00 auto-checkin
+//     promotion, date-change regex — NOT ported.
+// Every one of these still works normally on the Meta channel; a guest who
+// also has a Meta thread is unaffected. Revisit this list before promoting
+// GUEST_WHAPI_SUITES_ENABLED beyond a pilot rollout.
 // ══════════════════════════════════════════════════════════════════════════════
 
 const GUEST_DM_GEMINI_MODEL = GEMINI_MODEL; // same gemini-1.5-flash already used for voice transcription above
@@ -492,44 +522,6 @@ const GUEST_DM_LOW_CONFIDENCE_REPLY =
 const GUEST_DM_FALLBACK_SYSTEM_PROMPT =
   "אתה קונסיירז' וירטואלי של Dream Island Resort. ענה בעברית, בנימוס ובקצרה, ואם אינך בטוח " +
   "בתשובה — אמור שתבדוק זאת מול הצוות ותחזור לאורח. לעולם אל תמציא מידע.";
-
-function guestDmIsUniqueViolation(error: { code?: string; message?: string } | null): boolean {
-  if (!error) return false;
-  return error.code === "23505" || /duplicate key|unique constraint/i.test(error.message ?? "");
-}
-
-/** Insert-first dedup claim, mirroring whatsapp-webhook's claimInboundWaMessage
- * contract exactly (unique index on wa_message_id is the ledger of record) —
- * a separate, local copy rather than a shared import because that function
- * lives inline in whatsapp-webhook/index.ts, not in _shared/. */
-async function claimGuestDmInbound(
-  supabase: ReturnType<typeof createClient>,
-  row: { phone: string; message: string; wa_message_id: string; push_name: string | null },
-): Promise<{ claimed: boolean; conversationId: number | null }> {
-  const { data, error } = await supabase
-    .from("whatsapp_conversations")
-    .insert({
-      phone: row.phone,
-      guest_id: null,
-      direction: "inbound",
-      message: row.message,
-      wa_message_id: row.wa_message_id,
-      intent: "received",
-      push_name: row.push_name,
-      // Explicit channel marker (manual-control rollout, migration 161) — lets
-      // the Inbox show a 📱 badge on the guest's own bubble too, not just on
-      // staff replies, so it's visible which device the guest wrote to.
-      channel: "whapi",
-    })
-    .select("id")
-    .maybeSingle();
-  if (error) {
-    if (guestDmIsUniqueViolation(error)) return { claimed: false, conversationId: null };
-    console.error("[whapi-webhook] claimGuestDmInbound failed:", error.code, error.message);
-    return { claimed: false, conversationId: null };
-  }
-  return { claimed: true, conversationId: (data?.id as number | undefined) ?? null };
-}
 
 async function patchGuestDmInbound(
   supabase: ReturnType<typeof createClient>,
@@ -549,6 +541,30 @@ async function fetchGuestDmBotConfig(supabase: ReturnType<typeof createClient>):
   return map;
 }
 
+/** Single active bot_scripts row by key — lighter than whatsapp-webhook's
+ * full-catalog fetchBotScripts() (this file only ever needs one script at a
+ * time so far: greeting_reply). */
+async function fetchGuestDmBotScript(
+  supabase: ReturnType<typeof createClient>,
+  scriptKey: string,
+): Promise<string | null> {
+  const { data } = await supabase
+    .from("bot_scripts")
+    .select("message_text")
+    .eq("script_key", scriptKey)
+    .eq("is_active", true)
+    .maybeSingle();
+  return ((data as Record<string, unknown> | null)?.message_text as string | undefined)?.trim() || null;
+}
+
+const GUEST_DM_DEFAULT_GREETING_REPLY =
+  "שלום! 😊 ברוכים הבאים ל-Dream Island. במה אוכל לעזור לכם היום?";
+
+function buildGuestDmGreetingReply(guestName: string | null, scriptText: string | null): string {
+  const base = scriptText?.trim() || GUEST_DM_DEFAULT_GREETING_REPLY;
+  return base.replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, guestName?.trim() || "אורח יקר");
+}
+
 async function fetchGuestDmSystemPrompt(supabase: ReturnType<typeof createClient>): Promise<string> {
   const { data } = await supabase.from("bot_settings").select("system_prompt, knowledge_base").eq("id", 1).maybeSingle();
   const base = ((data as Record<string, unknown> | null)?.system_prompt as string | undefined)?.trim()
@@ -565,6 +581,7 @@ async function fetchGuestDmHistory(
     .from("whatsapp_conversations")
     .select("direction, message, created_at")
     .eq("phone", phone)
+    .eq("inbox_channel", "whapi") // never blend in Meta-channel history for the same phone (migration 164)
     .order("created_at", { ascending: false })
     .limit(GUEST_DM_HISTORY_LIMIT);
   return ((data ?? []) as Array<{ direction: string; message: string }>).reverse();
@@ -641,7 +658,7 @@ async function sendGuestDmReply(
   }
   const { error } = await supabase.from("whatsapp_conversations").insert({
     phone, guest_id: guestId, direction: "outbound", message: taggedMessage, wa_message_id: wamid,
-    channel: "whapi",
+    inbox_channel: "whapi", channel: "whapi",
   });
   if (error) console.warn("[whapi-webhook] sendGuestDmReply log insert failed:", error.message);
 }
@@ -694,98 +711,182 @@ async function escalateGuestDm(
   await sendGuestDmReply(supabase, phone, guestId, replyText, staffMuted);
 }
 
+/**
+ * Called exactly once per newly-claimed (non-duplicate) inbound Suites-device
+ * DM — the sweep in the main loop has already inserted the inbox row via
+ * claimWhapiGuestInbound() before this runs, so every early-return here is a
+ * "captured, no auto-reply" outcome, never a "dropped" one.
+ */
 async function handleGuestDirectMessage(
   supabase: ReturnType<typeof createClient>,
-  msg: IncomingMessage,
+  opts: {
+    msgId: string;
+    phone: string; // canonical digits, no leading "+" (matches claimWhapiGuestInbound's stored phone)
+    text: string;
+    conversationId: number | null;
+    guest: ActiveGuestRow | null; // already loaded by the sweep via resolveGuestByInboundPhone
+  },
   results: Array<Record<string, unknown>>,
 ): Promise<void> {
+  const { msgId, phone, text, conversationId, guest } = opts;
+  const guestId = guest?.id ?? null;
+  const base = { id: msgId, channel: "guest_dm", phone, guest_id: guestId };
+
   try {
-    if (adminNameFor(msg.fromPhone)) {
-      results.push({ id: msg.id, ignored: "admin_personal_dm" });
-      return;
-    }
-    if (!msg.text) {
-      results.push({ id: msg.id, ignored: "no_text" });
+    if (adminNameFor(phone)) {
+      await patchGuestDmInbound(supabase, conversationId, { intent: "admin_personal_dm" });
+      results.push({ ...base, action: "captured_no_autoreply", reason: "admin_personal_dm" });
       return;
     }
 
-    const phone = msg.fromPhone.startsWith("+") ? msg.fromPhone : `+${msg.fromPhone}`;
-    const text = msg.text;
-
-    const claim = await claimGuestDmInbound(supabase, {
-      phone, message: text, wa_message_id: msg.id, push_name: msg.fromName ?? null,
-    });
-    if (!claim.claimed) {
-      results.push({ id: msg.id, ignored: "duplicate_guest_dm" });
+    if (!shouldAutoReplyGuestWhapiDm(guest)) {
+      const reason = !isGuestWhapiSuitesEnabled() ? "feature_disabled" : (guest ? "guest_inactive" : "no_guest_match");
+      await patchGuestDmInbound(supabase, conversationId, { intent: "captured_no_autoreply" });
+      results.push({ ...base, action: "captured_no_autoreply", reason });
       return;
     }
 
-    const guest = await loadGuestByPhoneForStaffReply(supabase, phone);
-    if (guest?.id) await patchGuestDmInbound(supabase, claim.conversationId, { guest_id: guest.id });
-
-    if (!isEffectiveSuiteGuest(guest)) {
-      results.push({ id: msg.id, action: "captured_no_autoreply", reason: guest ? "not_suite_guest" : "no_guest_match" });
-      return;
-    }
-
-    const guestId = guest?.id ?? null;
     const guestName = guest?.name ?? null;
+    // Per-channel claim (migration 171, §4) — Whapi's OWN claim, never
+    // guests.claimed_by (that's the Meta claim; claiming a Meta thread must
+    // not mute this channel, and vice versa).
+    const guestRecord = (guest as unknown) as Record<string, unknown> | null;
+    if (guestRecord) {
+      guestRecord.claimed_by_whapi = await fetchChannelClaim(supabase, guestId, "whapi");
+    }
     // Mirrors whatsapp-webhook's staff-claim contract: mute the REPLY, not the
     // shields' DB side-effects (guest_alerts/requires_attention still fire —
     // other staff must still see the urgency even if one staffer has claimed
     // the thread). Only the expensive LLM call is skipped outright when muted
     // (matches Meta's own cost-saving gate — no point generating a reply that
     // will be discarded).
-    const staffMuted = isGuestStaffClaimActive(guest);
+    const staffMuted = isGuestStaffClaimActive(guestRecord, "whapi");
+
+    // ── Tier-0 greeting opener (היי / שלום) — before courtesy silent-exit,
+    // same ordering whatsapp-webhook uses (a bare "היי" must never be swept
+    // into courtesy silence — the guest expects a hello back). ──────────────
+    if (isGuestGreetingMessage(text)) {
+      const scriptText = await fetchGuestDmBotScript(supabase, "greeting_reply");
+      await patchGuestDmInbound(supabase, conversationId, { intent: "greeting" });
+      await sendGuestDmReply(supabase, phone, guestId, buildGuestDmGreetingReply(guestName, scriptText), staffMuted);
+      results.push({ ...base, action: "greeting_reply", muted: staffMuted });
+      return;
+    }
 
     if (isLowValueCourtesyMessage(text)) {
-      await patchGuestDmInbound(supabase, claim.conversationId, { intent: "courtesy_ack" });
-      results.push({ id: msg.id, action: "courtesy_ack_silent" });
+      await patchGuestDmInbound(supabase, conversationId, { intent: "courtesy_ack" });
+      results.push({ ...base, action: "courtesy_ack_silent" });
       return;
     }
 
     if (isSevereComplaint(text)) {
       await escalateGuestDm(supabase, {
-        phone, guestId, guestName, text, conversationId: claim.conversationId,
+        phone, guestId, guestName, text, conversationId,
         attentionReason: "severe_complaint", alertType: "severe_complaint", staffMuted,
         replyText: "אנחנו מצטערים מאוד לשמוע זאת — העברתי את זה ישירות לצוות הבכיר, ויחזרו אליך בהקדם. 🙏",
       });
-      results.push({ id: msg.id, action: "severe_complaint_escalated", muted: staffMuted });
+      results.push({ ...base, action: "severe_complaint_escalated", muted: staffMuted });
       return;
     }
 
     if (isSensitiveStayChangeRequest(text)) {
       await escalateGuestDm(supabase, {
-        phone, guestId, guestName, text, conversationId: claim.conversationId,
+        phone, guestId, guestName, text, conversationId,
         attentionReason: "date_change", alertType: "date_change_request", humanRequestType: "date_change", staffMuted,
         replyText: CANONICAL_STAY_CHANGE_HANDOFF_MSG,
       });
-      results.push({ id: msg.id, action: "stay_change_escalated", muted: staffMuted });
+      results.push({ ...base, action: "stay_change_escalated", muted: staffMuted });
       return;
     }
 
     if (isSensitiveFinancialRequest(text)) {
       await escalateGuestDm(supabase, {
-        phone, guestId, guestName, text, conversationId: claim.conversationId,
+        phone, guestId, guestName, text, conversationId,
         attentionReason: "financial_issue", alertType: "financial_issue", humanRequestType: "financial_issue", staffMuted,
         replyText: CANONICAL_FINANCIAL_HANDOFF_MSG,
       });
-      results.push({ id: msg.id, action: "financial_escalated", muted: staffMuted });
+      results.push({ ...base, action: "financial_escalated", muted: staffMuted });
       return;
     }
 
     if (isCheckInPolicyQuestion(text)) {
-      await patchGuestDmInbound(supabase, claim.conversationId, { intent: "check_in_policy_faq" });
+      await patchGuestDmInbound(supabase, conversationId, { intent: "check_in_policy_faq" });
       const cfg = await fetchGuestDmBotConfig(supabase);
       await sendGuestDmReply(supabase, phone, guestId, buildCheckInPolicyReply(cfg), staffMuted);
-      results.push({ id: msg.id, action: "checkin_policy_faq", muted: staffMuted });
+      results.push({ ...base, action: "checkin_policy_faq", muted: staffMuted });
+      return;
+    }
+
+    // ── "כן מגיעים" → Stage 2 arrival confirmation (P0 — ported from
+    // whatsapp-webhook via _shared/guestInboundOrchestrator.ts). Must fire
+    // regardless of staffMuted — same "Stage 2 not blocked by staff claim"
+    // guarantee the Meta path has, which is why this check runs BEFORE the
+    // staffMuted gate below applies to anything. ───────────────────────────
+    if (isArrivalConfirmationMessage(text) && canGuestConfirmArrival(guestRecord)) {
+      const stage2ScriptText = await fetchGuestDmBotScript(supabase, "stage_2_arrival");
+      const result = await runGuestArrivalConfirmation(
+        supabase,
+        {
+          stage2ScriptText,
+          phone, guestId, guest: guestRecord, sim: false, source: "text",
+          claimedConversationId: conversationId, msgId, channel: "whapi",
+        },
+        {
+          sendMessage: (p, body) => sendWhapiText(cleanPhoneForMention(p), body),
+          insertOutboundIfNotMuted: async (row) => {
+            const { error } = await supabase.from("whatsapp_conversations").insert({
+              phone: row.phone, guest_id: row.guest_id, inbox_channel: "whapi", channel: "whapi",
+              direction: "outbound", message: row.message, wa_message_id: row.wa_message_id, intent: row.intent,
+            });
+            if (error) {
+              console.error("[whapi-webhook] stage2 outbound log failed:", error.message);
+              return false;
+            }
+            return true;
+          },
+          dispatchFallbackPipeline: dispatchStage2ViaPipeline,
+          withStaffMuteSuspended: (fn) => fn(),
+        },
+      );
+      results.push({ ...base, action: "stage2_arrival_confirmed", proceeded: result.proceeded });
+      return;
+    }
+
+    // ── Record-only arrival TIME update (P0 companion — no needs_callback /
+    // alerts / ops; also fires regardless of staffMuted, same as Meta). ────
+    if (guestId && isRecordOnlyArrivalTimeUpdate(text)) {
+      const arrivalTime = extractArrivalTimeFromText(text)!;
+      const persistResult = await persistGuestEta(supabase, {
+        guestId,
+        guest: guestRecord ?? {},
+        timeHhMm: arrivalTime,
+        source: "tier0_whapi",
+      });
+      if (persistResult.ok || persistResult.skipped !== "ineligible_guest") {
+        await patchClaimedInbound(supabase, conversationId, msgId, { intent: "arrival_time_update" });
+        await sendGuestDmReply(supabase, phone, guestId, RECORD_ONLY_ARRIVAL_REPLY, false);
+        results.push({ ...base, action: "arrival_time_record_only" });
+        return;
+      }
+      console.info("[whapi-webhook] arrival_time record-only — ineligible row, falling through");
+    }
+
+    // bot_active_whapi — stub gate ahead of §4's real toggle UI (migration
+    // 170 seeds bot_config.bot_active_whapi default 'true'). Mirrors where
+    // Meta's bot_active gates (whatsapp-webhook.js) — only the generic
+    // LLM/FAQ reply below is gated; Stage 2 and record-only ETA above always
+    // fire regardless, same invariant as Meta.
+    const botCfg = await fetchGuestDmBotConfig(supabase);
+    if (!isWhapiBotActive(botCfg)) {
+      await patchGuestDmInbound(supabase, conversationId, { intent: "faq" });
+      results.push({ ...base, action: "captured_bot_off_whapi" });
       return;
     }
 
     // General LLM fallback — everything not caught by a Tier-0 shield above.
-    await patchGuestDmInbound(supabase, claim.conversationId, { intent: "faq" });
+    await patchGuestDmInbound(supabase, conversationId, { intent: "faq" });
     if (staffMuted) {
-      results.push({ id: msg.id, action: "captured_staff_claimed_faq" });
+      results.push({ ...base, action: "captured_staff_claimed_faq" });
       return;
     }
     const geminiKey = Deno.env.get("GEMINI_API_KEY");
@@ -810,10 +911,10 @@ async function handleGuestDirectMessage(
       }
     }
     await sendGuestDmReply(supabase, phone, guestId, replyText);
-    results.push({ id: msg.id, action: "llm_reply_sent" });
+    results.push({ ...base, action: "llm_reply_sent" });
   } catch (e) {
     console.error("[whapi-webhook] handleGuestDirectMessage failed:", (e as Error).message);
-    results.push({ id: msg.id, error: "guest_dm_failed", detail: (e as Error).message });
+    results.push({ ...base, error: "guest_dm_failed", detail: (e as Error).message });
   }
 }
 
@@ -836,8 +937,11 @@ serve(async (req: Request) => {
     const results: Array<Record<string, unknown>> = [];
 
     // ── Suites device — 1:1 guest DMs (מכשיר הסוויטות) ─────────────────────
-    // Log-only path: no ops classification, no auto-reply. Inbox binds outbound
-    // to Whapi via inbox_channel='whapi' + whatsapp-send inbox_reply branch.
+    // Every inbound message is captured to the Inbox first (ZERO DATA LOSS,
+    // inbox_channel='whapi'), then — on a fresh (non-duplicate) claim only —
+    // handed to handleGuestDirectMessage() for Tier-0 shields + Gemini
+    // auto-reply, same brain as the Meta bot. See that function's header
+    // comment above for the gating rule and the documented gap list.
     for (const msg of messages) {
       if (msg.fromMe) {
         results.push({ id: msg.id, channel: "guest_dm", ignored: "from_me" });
@@ -876,7 +980,7 @@ serve(async (req: Request) => {
         continue;
       }
 
-      const guest = await lookupGuestByPhone(supabase, phone);
+      const guest = (await resolveGuestByInboundPhone(supabase, phone)) as ActiveGuestRow | null;
       const inboxText = fromVoice ? `🎤 ${body.trim()}` : body.trim();
       const { claimed, conversationId } = await claimWhapiGuestInbound(supabase, {
         phone,
@@ -886,20 +990,22 @@ serve(async (req: Request) => {
         push_name: msg.fromName || null,
       });
 
-      if (claimed) {
-        console.log(
-          `[whapi-webhook] guest_dm inbound phone:${phone} guest:${guest?.id ?? "unlinked"} conv:${conversationId ?? "?"}`,
-        );
+      if (!claimed) {
+        results.push({
+          id: msg.id, channel: "guest_dm", phone, guest_id: guest?.id ?? null,
+          claimed: false, conversation_id: conversationId, fromVoice,
+        });
+        continue;
       }
-      results.push({
-        id: msg.id,
-        channel: "guest_dm",
-        phone,
-        guest_id: guest?.id ?? null,
-        claimed,
-        conversation_id: conversationId,
-        fromVoice,
-      });
+
+      console.log(
+        `[whapi-webhook] guest_dm inbound phone:${phone} guest:${guest?.id ?? "unlinked"} conv:${conversationId ?? "?"}`,
+      );
+      await handleGuestDirectMessage(
+        supabase,
+        { msgId: msg.id, phone, text: body.trim(), conversationId, guest },
+        results,
+      );
     }
 
     // ── Reaction sweep (Sprint 2, Session 26) — 👍🏼 on a task card = done.
