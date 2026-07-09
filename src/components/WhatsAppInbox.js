@@ -342,6 +342,7 @@ const T = {
     filterAlerts: "🔴 התראות",
     filterInResort: "🟢 בריזורט",
     filterDeparted: "⚪ אחרי עזיבה",
+    departedChannelHint: (n) => `${n} בשיחות עזיבה בערוץ זה`,
     filterTomorrow: "📅 מחר",
     filterIn2Days: "📅 יומיים",
     filterFuture: "📅 עתיד",
@@ -428,6 +429,7 @@ const T = {
     filterAlerts: "🔴 Alerts",
     filterInResort: "🟢 In resort",
     filterDeparted: "⚪ After stay",
+    departedChannelHint: (n) => `${n} after-stay chats on this channel`,
     filterTomorrow: "📅 Tomorrow",
     filterIn2Days: "📅 2 days",
     filterFuture: "📅 Future",
@@ -747,6 +749,26 @@ function applyGuestProfileFromMessageRow(contact, row) {
 
 function contactDeparted(contact) {
   return isGuestDeparted(rosterGuestFields(contact));
+}
+
+// Roster-visibility window for a departed guest's thread — deliberately NOT
+// the same as isSessionWindowOpenForContact's 24h Meta session-window rule
+// above (a different, API-specific concern). This just answers "did THIS
+// threadKey (phone+channel) hear from the guest recently enough to still
+// belong in the active roster" — 7 days, generous enough to cover Whapi's
+// longer-tail post-stay ops conversations on the Suites device.
+const DEPARTED_ROSTER_RECENCY_MS = 7 * 24 * 3600 * 1000;
+
+function hasRecentInboundOnThread(contact, windowMs = DEPARTED_ROSTER_RECENCY_MS) {
+  if (!contact?.messages?.length) return false;
+  let lastInboundAt = null;
+  for (const m of contact.messages) {
+    if (m.direction !== "inbound" || !m.created_at) continue;
+    if (!lastInboundAt || m.created_at > lastInboundAt) lastInboundAt = m.created_at;
+  }
+  if (!lastInboundAt) return false;
+  const ts = new Date(lastInboundAt).getTime();
+  return Number.isFinite(ts) && Date.now() - ts < windowMs;
 }
 
 function contactMatchesRosterFilter(contact, rosterFilter, readCursorsByPhone = null) {
@@ -4209,11 +4231,17 @@ export default function WhatsAppInbox({
   // checks by default (Disable Don't Hide, CLAUDE.md §0.2). It lands in the pinned
   // "🔵 הודעות חדשות" section (buildGroupedRosterSections below) like anyone else's
   // unread message. Only a departed contact with zero unread stays departed-only.
+  // A departed guest stays in the active roster while unread OR while this
+  // specific thread (phone+channel) heard from them within the last 7 days —
+  // otherwise opening the thread (which clears unread via markPhoneInboundRead)
+  // instantly dropped it out of the roster it was just opened from. Whapi's
+  // post-stay ops conversations on the Suites device are exactly the case
+  // this was breaking hardest.
   const activeRosterContacts = visibleContacts.filter(
-    (c) => !contactDeparted(c) || contactUnreadCount(c, readCursorsByPhone) > 0,
+    (c) => !contactDeparted(c) || contactUnreadCount(c, readCursorsByPhone) > 0 || hasRecentInboundOnThread(c),
   );
   const departedContacts = visibleContacts.filter(
-    (c) => contactDeparted(c) && contactUnreadCount(c, readCursorsByPhone) === 0,
+    (c) => contactDeparted(c) && contactUnreadCount(c, readCursorsByPhone) === 0 && !hasRecentInboundOnThread(c),
   );
   const alertContacts = activeRosterContacts.filter((c) => c.humanRequested);
   const rosterSource =
@@ -4221,6 +4249,13 @@ export default function WhatsAppInbox({
   const channelScopedRosterSource = rosterSource.filter((c) =>
     channelFilter === "all" ? true : c.inbox_channel === channelFilter,
   );
+  // Departed contacts hidden by the current channel filter — surfaced as a
+  // count hint (not silently invisible) so staff filtering to "מכשיר
+  // הסוויטות" know older Whapi conversations exist under "אחרי עזיבה"
+  // instead of reading an empty/short roster as "nothing on this channel."
+  const departedContactsForChannel = channelFilter === "all"
+    ? departedContacts
+    : departedContacts.filter((c) => c.inbox_channel === channelFilter);
   const displayContacts = useMemo(() => {
     let list = channelScopedRosterSource;
     const q = rosterSearch.trim().toLowerCase();
@@ -4294,8 +4329,11 @@ export default function WhatsAppInbox({
           {(rosterSearch.trim() || rosterFilter !== "all") && displayContacts.length !== rosterSource.length && (
             <span style={{ opacity: 0.75 }}> / {rosterSource.length}</span>
           )}
-          {rosterFilter === "all" && departedContacts.length > 0 && (
+          {rosterFilter === "all" && channelFilter === "all" && departedContacts.length > 0 && (
             <span style={{ opacity: 0.75 }}> · {departedContacts.length} {t.filterDeparted.replace(/^⚪\s*/, "")}</span>
+          )}
+          {rosterFilter === "all" && channelFilter !== "all" && departedContactsForChannel.length > 0 && (
+            <span style={{ opacity: 0.75 }}> · {t.departedChannelHint(departedContactsForChannel.length)}</span>
           )}
         </span>
         <div style={{ display: "flex", alignItems: "center", gap: "var(--space-sm)", marginInlineStart: "auto" }}>
