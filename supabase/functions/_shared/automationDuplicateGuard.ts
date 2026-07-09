@@ -15,6 +15,33 @@ export type DuplicateCheckResult =
     priorStatus?: string | null;
   };
 
+type LookupFailMode = "fail_closed" | "fail_open";
+
+function resolveLookupFailMode(): LookupFailMode {
+  const raw = String(Deno.env.get("AUTOMATION_DUPLICATE_LOOKUP_FAIL_MODE") ?? "fail_open")
+    .trim()
+    .toLowerCase();
+  return raw === "fail_closed" ? "fail_closed" : "fail_open";
+}
+
+// Master kill-switch, separate from the old per-call force:true bypass.
+// Mike doesn't trust this guard right now — set AUTOMATION_DUPLICATE_GUARD_ENABLED=false
+// in Supabase secrets to disable it globally without touching call sites.
+// Defaults to enabled ("true") when unset, so behavior is unchanged unless the secret is set.
+let loggedGuardDisabled = false;
+
+function isGuardEnabled(): boolean {
+  const raw = String(Deno.env.get("AUTOMATION_DUPLICATE_GUARD_ENABLED") ?? "true")
+    .trim()
+    .toLowerCase();
+  const enabled = raw !== "false";
+  if (!enabled && !loggedGuardDisabled) {
+    loggedGuardDisabled = true;
+    console.warn("[automationDuplicateGuard] guard disabled via AUTOMATION_DUPLICATE_GUARD_ENABLED=false");
+  }
+  return enabled;
+}
+
 export async function checkPipelineDuplicate(
   supabase: SupabaseClient,
   opts: {
@@ -26,6 +53,7 @@ export async function checkPipelineDuplicate(
   },
 ): Promise<DuplicateCheckResult> {
   if (opts.force) return { blocked: false };
+  if (!isGuardEnabled()) return { blocked: false };
 
   let query = supabase
     .from("notification_log")
@@ -39,15 +67,23 @@ export async function checkPipelineDuplicate(
   const { data: sentRows, error } = await query;
 
   if (error) {
-    // QA audit fix (2026-07-06): this used to fail OPEN (return not-blocked),
-    // which — combined with whatsapp-cron's Stage 2 reconcile pass reading the
-    // exact same table — meant a single transient notification_log read
-    // failure could disable BOTH duplicate-send safety nets at once and let a
-    // real Meta send go out twice. Fail closed: an unreadable log means we
-    // cannot prove this wasn't already sent, so block for now and let the
-    // next cron tick / manual retry re-check once the table is readable again.
-    console.warn("[automationDuplicateGuard] log lookup failed — failing CLOSED (blocking send):", error.message);
-    return { blocked: true, reason: "lookup_failed" };
+    const mode = resolveLookupFailMode();
+    if (mode === "fail_closed") {
+      console.warn(
+        "[automationDuplicateGuard] log lookup failed — fail_closed mode (blocking send):",
+        error.message,
+      );
+      return { blocked: true, reason: "lookup_failed" };
+    }
+
+    // Delivery-first default: avoid dropping guest communication on transient
+    // notification_log read failures. Keep visibility via warning logs and
+    // automation-health checks.
+    console.warn(
+      "[automationDuplicateGuard] log lookup failed — fail_open mode (allowing send):",
+      error.message,
+    );
+    return { blocked: false };
   }
 
   const roomKey = opts.roomId?.trim() || null;
