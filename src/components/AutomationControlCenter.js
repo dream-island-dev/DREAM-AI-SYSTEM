@@ -33,6 +33,7 @@ import {
   partitionGuestQueueItems,
   resolveGuestPipelineSegment,
 } from "../utils/pipelineSegment";
+import { scriptKeyFriendly } from "../utils/botScriptLabels";
 
 const JOURNEY_PHASE_LABELS = {
   pre_arrival: "🌴 לפני ההגעה",
@@ -537,42 +538,7 @@ const PIPELINE_SECTION_META = {
   other:   { icon: "⚙️", label: "שלבים נוספים",               border: "var(--border)",     bg: "rgba(0,0,0,0.02)" },
 };
 
-// Session 30 Sprint 5.1 — manager-facing translation for the raw bot_scripts
-// script_key tokens shown in the session-message dropdown. Same FAIL VISIBLE
-// fallback convention as metaTemplateFriendly() below: an untranslated key
-// still renders (prefixed "⚠") instead of silently showing the raw snake_case
-// token, so a future script_key added without an entry here is still usable,
-// just visibly unpolished rather than broken.
-const SCRIPT_KEY_FRIENDLY = {
-  stage_3_morning:          "הודעת בוקר (שלב 3)",
-  complaint_reply:          "מענה לתלונה",
-  negative_feedback_reply:  "מענה למשוב שלילי",
-  upsell_reply:             "הצעת שדרוג (Upsell)",
-  fallback_reply:           "מענה ברירת מחדל (Fallback)",
-  greeting_reply:           "ברכת פתיחה — היי / שלום",
-  positive_feedback_reply:  "מענה למשוב חיובי",
-  upsell_accepted_reply:    "אישור קבלת שדרוג",
-  upsell_decline_reply:     "סירוב לשדרוג",
-  ongoing_concierge:        "שיח קונסיירג׳ שוטף",
-  stage_2_arrival:          "הודעת הגעה (שלב 2)",
-  callback_reply:           "מענה לבקשת חזרה טלפונית",
-  spa_menu:                 "תפריט טיפולי ספא",
-  stage_2_payment_reply:    "מענה לתשלום (שלב 2)",
-  night_before_reminder:    "תזכורת ערב לפני — כניסה ושעות (שלב 2.5)",
-  night_before_reminder_shabbat: "תזכורת ערב לפני — הגעה בשבת (שלב 2.5)",
-  stage_3_morning_shabbat:  "בוקר הגעה — שבת (שלב 3)",
-  pre_arrival_2d:           "פנייה ראשונה — אישור הגעה (שלב 1 — טקסט חופשי)",
-  mid_stay:                 "בדיקת שלום באמצע השהות (שלב 4 — טקסט חופשי)",
-  mid_stay_daypass:         "בדיקת שלום באמצע הביקור (שלב 4 — בילוי יומי)",
-  checkout_fb:              "בקשת משוב לאחר העזיבה (שלב 5 — טקסט חופשי)",
-  checkout_fb_daypass:      "בקשת משוב לאחר הביקור (שלב 5 — בילוי יומי)",
-  night_before_daypass:     "תזכורת ערב לפני — בילוי יומי (שלב 2.5)",
-  morning_daypass:          "בוקר הגעה — בילוי יומי (שלב 3)",
-};
-function scriptKeyFriendly(key) {
-  return SCRIPT_KEY_FRIENDLY[key] ?? `⚠ ${key}`;
-}
-
+// Session 30 Sprint 5.1 — script_key labels live in src/utils/botScriptLabels.js
 // Manager-facing description per Meta template — raw tokens like
 // "dream_arrival_confirmation" mean nothing to a non-technical resort
 // manager. FAIL VISIBLE fallback: an unmapped template shows "⚠ raw_name"

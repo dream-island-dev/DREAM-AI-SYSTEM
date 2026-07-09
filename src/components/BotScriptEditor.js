@@ -17,6 +17,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
+import { resolveBotScriptDisplayName } from "../utils/botScriptLabels";
 
 const TRIGGER_LABELS = {
   arrival_confirmed: { label: "אחרי אישור הגעה", color: "#1A7A4A", bg: "#E8F5EF" },
@@ -112,7 +113,7 @@ export default function BotScriptEditor() {
         ? { ...s, message_text: draft.message_text, ai_system_prompt: draft.ai_system_prompt }
         : s
       ));
-      showToast("ok", `✅ "${script.display_name}" עודכן`);
+      showToast("ok", `✅ "${resolveBotScriptDisplayName(script.script_key, script.display_name)}" עודכן`);
     }
     setSaving(null);
   };
@@ -213,7 +214,9 @@ export default function BotScriptEditor() {
 
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                      <span style={{ fontWeight: 700, fontSize: 14 }}>{script.display_name}</span>
+                      <span style={{ fontWeight: 700, fontSize: 14 }}>
+                        {resolveBotScriptDisplayName(script.script_key, script.display_name)}
+                      </span>
                       <TriggerBadge event={script.trigger_event} />
                       {script.is_meta_template && (
                         <span style={{
