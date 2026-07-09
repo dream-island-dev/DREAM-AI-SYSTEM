@@ -94,6 +94,10 @@ import {
 } from "../_shared/guestBotHandoff.ts";
 import { assembleGuestBrainPrompt } from "../_shared/guestBotSettings.ts";
 import { generateGuestChatReply } from "../_shared/guestBotLlm.ts";
+import {
+  formatWhapiSuitesConversationLog,
+  stripOutboundDispatchTag,
+} from "../_shared/outboundDispatchTag.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -571,7 +575,12 @@ async function fetchGuestDmHistory(
     .eq("inbox_channel", "whapi") // never blend in Meta-channel history for the same phone (migration 164)
     .order("created_at", { ascending: false })
     .limit(GUEST_DM_HISTORY_LIMIT);
-  return ((data ?? []) as Array<{ direction: string; message: string }>).reverse();
+  return ((data ?? []) as Array<{ direction: string; message: string }>)
+    .map((h) => ({
+      direction: h.direction,
+      message: stripOutboundDispatchTag(h.message),
+    }))
+    .reverse();
 }
 
 /** staffMuted mirrors whatsapp-webhook's _suppressGuestRepliesStaffClaim contract
@@ -590,10 +599,11 @@ async function sendGuestDmReply(
     console.info("[whapi-webhook] guest_dm reply suppressed — staff claim active:", phone);
     return;
   }
-  const taggedMessage = `[WHAPI]\n${replyText}`;
+  const guestBody = stripOutboundDispatchTag(replyText);
+  const taggedMessage = formatWhapiSuitesConversationLog(guestBody);
   let wamid: string | null = null;
   try {
-    wamid = await sendWhapiText(cleanPhoneForMention(phone), replyText);
+    wamid = await sendWhapiText(cleanPhoneForMention(phone), guestBody);
   } catch (e) {
     console.error("[whapi-webhook] sendGuestDmReply send failed:", (e as Error).message);
   }

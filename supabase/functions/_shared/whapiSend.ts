@@ -102,3 +102,43 @@ export async function sendWhapiText(
     throw e;
   }
 }
+
+/** Image message with optional caption — media may be a public HTTPS URL. */
+export async function sendWhapiImage(
+  to: string,
+  mediaUrl: string,
+  caption?: string,
+  opts: { tokenEnvVar?: string } = {},
+): Promise<string | null> {
+  const token = _tokenOrThrow(opts.tokenEnvVar);
+  const link = String(mediaUrl ?? "").trim();
+  if (!link) throw new Error("whapi_image_missing_url");
+
+  const payload: Record<string, unknown> = { to, media: link };
+  const cap = String(caption ?? "").trim();
+  if (cap) payload.caption = cap;
+
+  try {
+    const res = await fetch(`${_whapiBase()}/messages/image`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(25000),
+    });
+    if (!res.ok) {
+      const detail = (await res.text()).slice(0, 300);
+      throw new Error(`whapi_image_${res.status}: ${detail}`);
+    }
+    const data = (await res.json().catch(() => ({}))) as Record<string, any>;
+    return (data?.message?.id ?? data?.id ?? null) as string | null;
+  } catch (e) {
+    if (_isAbortError(e)) {
+      throw new Error("timeout_no_response: Whapi image did not respond within 25s — message may have still been delivered");
+    }
+    throw e;
+  }
+}

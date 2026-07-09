@@ -57,7 +57,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendImageMessage, sendInteractiveButtons } from "../_shared/interactiveSend.ts";
 import { isArrivalTodayIsrael, israelTodayYmd } from "../_shared/israelDate.ts";
 import { sanitizeMetaRecipientPhone } from "../_shared/metaPhone.ts";
-import { sendWhapiText, cleanPhoneForMention } from "../_shared/whapiSend.ts";
+import { sendWhapiText, sendWhapiImage, cleanPhoneForMention } from "../_shared/whapiSend.ts";
 import {
   guardPaymentLink,
   logPaymentLinkFailure,
@@ -696,7 +696,9 @@ const NIGHT_BEFORE_OVERRIDE_SESSION_IMAGE =
 // ── Stage session message helpers (Stage 2.5 + hybrid pipeline) ───────────────
 type StageMediaRow = {
   session_message_image_url?: string | null;
+  session_message_image_url_shabbat?: string | null;
   session_message_script_key?: string | null;
+  session_message_script_key_shabbat?: string | null;
 } | null;
 
 /** Image for session sends: automation_stages.session_message_image_url wins, then request body. */
@@ -706,6 +708,51 @@ function resolveStageSessionImageUrl(
 ): string | undefined {
   const link = String(stageRow?.session_message_image_url ?? requestImageUrl ?? "").trim();
   return link || undefined;
+}
+
+function resolveShabbatAwareScriptKey(
+  stageRow: StageMediaRow,
+  arrivalYmd: string,
+  fallbackKey: string,
+): string {
+  if (!isShabbatArrivalDate(arrivalYmd)) {
+    return stageRow?.session_message_script_key?.trim() || fallbackKey;
+  }
+  const shabbatKey = stageRow?.session_message_script_key_shabbat?.trim();
+  return shabbatKey || stageRow?.session_message_script_key?.trim() || fallbackKey;
+}
+
+function resolveShabbatAwareSessionImageUrl(
+  stageRow: StageMediaRow,
+  arrivalYmd: string,
+  requestImageUrl?: string | null,
+): string | undefined {
+  if (isShabbatArrivalDate(arrivalYmd)) {
+    const shabbatImg = String(stageRow?.session_message_image_url_shabbat ?? "").trim();
+    if (shabbatImg) return shabbatImg;
+  }
+  return resolveStageSessionImageUrl(stageRow, requestImageUrl);
+}
+
+/** Whapi dispatch: explicit dispatch_channel=whapi OR Shabbat suite arrival (auto). */
+function shouldUseWhapiForGuestAutomation(
+  guest: Record<string, unknown>,
+  arrivalYmd: string,
+): boolean {
+  if (!shouldRouteGuestOutboundViaWhapiSuites(guest)) return false;
+  if (String(guest.dispatch_channel ?? "meta") === "whapi") return true;
+  return isShabbatArrivalDate(arrivalYmd);
+}
+
+async function dispatchWhapiSessionMessage(
+  phone: string,
+  body: string,
+  imageUrl?: string,
+): Promise<string | null> {
+  const target = cleanPhoneForMention(phone);
+  const link = String(imageUrl ?? "").trim();
+  if (link) return sendWhapiImage(target, link, body);
+  return sendWhapiText(target, body);
 }
 
 /** Expand bot_script placeholders for free-text session messages. */
@@ -1987,7 +2034,7 @@ serve(async (req: Request) => {
     // Manual override (force=true) reads inactive stages too — admin may test a paused stage.
     let stageQuery = supabase
       .from("automation_stages")
-      .select("meta_template_name, session_message_script_key, session_message_image_url, interactive_buttons, guest_flag_column")
+      .select("meta_template_name, session_message_script_key, session_message_script_key_shabbat, session_message_image_url, session_message_image_url_shabbat, interactive_buttons, guest_flag_column")
       .eq("stage_key", trigger);
     if (!force) stageQuery = stageQuery.eq("is_active", true);
     const { data: stageRow } = await stageQuery.maybeSingle();
@@ -2219,9 +2266,10 @@ serve(async (req: Request) => {
       // manual force_channel="whapi_session" override got this; autonomous
       // cron / pipeline_reconcile catch-up now honors it too (§3 — this path
       // was Meta-only regardless of dispatch_channel before).
-      const useWhapiDispatchChannel =
-        String(guest.dispatch_channel ?? "meta") === "whapi" &&
-        shouldRouteGuestOutboundViaWhapiSuites(guest);
+      const useWhapiDispatchChannel = shouldUseWhapiForGuestAutomation(
+        guest,
+        normalizeArrivalDateYmd(guest.arrival_date),
+      );
       const s2Channel: "meta" | "whapi" = (forceWhapiSession || useWhapiDispatchChannel) ? "whapi" : "meta";
 
       const confirmFresh = !!guest.arrival_confirmed_at &&
@@ -2471,7 +2519,8 @@ serve(async (req: Request) => {
     let nightBeforeDispatch: NightBeforeDispatch | null = null;
 
     if (trigger === "night_before") {
-      const sessionScriptKey = stageRow?.session_message_script_key ?? "night_before_reminder";
+      const arrivalYmd = normalizeArrivalDateYmd(guest.arrival_date);
+      const sessionScriptKey = resolveShabbatAwareScriptKey(stageRow, arrivalYmd, "night_before_reminder");
       const windowOpen = isWindowOpen(guest.wa_window_expires_at);
       const isForceOverride = force === true;
 
@@ -2486,8 +2535,8 @@ serve(async (req: Request) => {
       );
 
       const sessionImage = isForceOverride
-        ? (resolveStageSessionImageUrl(stageRow, requestImageUrl) ?? NIGHT_BEFORE_OVERRIDE_SESSION_IMAGE)
-        : resolveStageSessionImageUrl(stageRow, requestImageUrl);
+        ? (resolveShabbatAwareSessionImageUrl(stageRow, arrivalYmd, requestImageUrl) ?? NIGHT_BEFORE_OVERRIDE_SESSION_IMAGE)
+        : resolveShabbatAwareSessionImageUrl(stageRow, arrivalYmd, requestImageUrl);
 
       const guestName = sanitizeTemplateVars([String(guest.name ?? "")])[0];
 
@@ -2530,9 +2579,7 @@ serve(async (req: Request) => {
         // dispatch_channel defaults to "meta" until §4's staff picker sets
         // it, so buildTemplateDispatch() (and the Shabbat anti-hijack rule
         // above) stays the only path for every guest that hasn't opted in.
-        const useWhapiAutonomous =
-          String(guest.dispatch_channel ?? "meta") === "whapi" &&
-          shouldRouteGuestOutboundViaWhapiSuites(guest);
+        const useWhapiAutonomous = shouldUseWhapiForGuestAutomation(guest, arrivalYmd);
         nightBeforeDispatch = useWhapiAutonomous
           ? { channel: "whapi", freeTextKey: sessionScriptKey, guestName, sessionImageUrl: sessionImage }
           : buildTemplateDispatch();
@@ -2563,7 +2610,7 @@ serve(async (req: Request) => {
             const nbForceSessionImmediate = force === true;
             nbSessionImageUrl =
               nightBeforeDispatch.sessionImageUrl
-              ?? resolveStageSessionImageUrl(stageRow, requestImageUrl)
+              ?? resolveShabbatAwareSessionImageUrl(stageRow, normalizeArrivalDateYmd(guest.arrival_date), requestImageUrl)
               ?? (nbForceSessionImmediate ? NIGHT_BEFORE_OVERRIDE_SESSION_IMAGE : undefined);
             const { data: scriptRow } = await supabase
               .from("bot_scripts")
@@ -2627,7 +2674,11 @@ serve(async (req: Request) => {
               );
               if (isWhapi) {
                 nbConvMessage = buildWhapiSuitesConversationLog(textBody);
-                nbWhapiWamid = await sendWhapiText(cleanPhoneForMention(String(guest.phone)), textBody);
+                nbWhapiWamid = await dispatchWhapiSessionMessage(
+                  String(guest.phone),
+                  textBody,
+                  nbSessionImageUrl,
+                );
                 nbSessionKind = "whapi";
               } else {
                 nbConvMessage = buildSessionConversationLog(
@@ -2903,21 +2954,26 @@ serve(async (req: Request) => {
     // not meta_template) OR the guest is opted into Whapi dispatch (autonomous
     // or manual — Whapi was previously in WHAPI_UNSUPPORTED_STAGES; removed
     // now that this path exists).
+    const mgArrivalYmd = normalizeArrivalDateYmd(guest.arrival_date);
     const useWhapiForMorning =
       (trigger === "morning_suite" || trigger === "morning_welcome") &&
-      String(guest.dispatch_channel ?? "meta") === "whapi" &&
-      shouldRouteGuestOutboundViaWhapiSuites(guest);
+      shouldUseWhapiForGuestAutomation(guest, mgArrivalYmd);
     const useMorningSession = (force === true && !forceMetaTemplate) || useWhapiForMorning;
 
     if ((trigger === "morning_suite" || trigger === "morning_welcome") &&
         useMorningSession &&
-        stageRow?.session_message_script_key) {
+        (stageRow?.session_message_script_key || stageRow?.session_message_script_key_shabbat)) {
+      const mgScriptKey = resolveShabbatAwareScriptKey(
+        stageRow,
+        mgArrivalYmd,
+        stageRow?.session_message_script_key ?? "stage_3_morning",
+      );
       let mgScriptText: string | null = null;
       try {
         const { data: mgScript } = await supabase
           .from("bot_scripts")
           .select("message_text")
-          .eq("script_key", stageRow.session_message_script_key)
+          .eq("script_key", mgScriptKey)
           .maybeSingle();
         mgScriptText = mgScript?.message_text?.trim() || null;
       } catch (e) {
@@ -2932,14 +2988,13 @@ serve(async (req: Request) => {
       // the session script happened to be missing/empty.
       if (!mgScriptText && useWhapiForMorning) {
         throw new Error(
-          `morning_whapi_script_missing: bot_scripts.${stageRow.session_message_script_key} ` +
+          `morning_whapi_script_missing: bot_scripts.${mgScriptKey} ` +
           `חסר או ריק — לא ניתן לשלוח דרך Whapi ללא הטקסט (ערוך ב-BotScriptEditor)`,
         );
       }
 
       if (mgScriptText) {
         const mgGuestName = sanitizeTemplateVars([String(guest.name ?? "")])[0];
-        const mgArrivalYmd = normalizeArrivalDateYmd(guest.arrival_date);
         const mgPortalUrl = guest.portal_token
           ? `${PORTAL_BASE_URL}/portal/${guest.portal_token as string}`
           : "";
@@ -2950,6 +3005,7 @@ serve(async (req: Request) => {
           mgArrivalYmd,
         );
         const mgChannel: "whapi" | "meta" = useWhapiForMorning ? "whapi" : "meta";
+        const mgImageUrl = resolveShabbatAwareSessionImageUrl(stageRow, mgArrivalYmd, requestImageUrl);
 
         let mgStatus = "simulated";
         let mgError: string | null = null;
@@ -2957,9 +3013,13 @@ serve(async (req: Request) => {
         try {
           if (!sim) {
             if (mgChannel === "whapi") {
-              mgWhapiWamid = await sendWhapiText(cleanPhoneForMention(String(guest.phone)), mgBody);
+              mgWhapiWamid = await dispatchWhapiSessionMessage(
+                String(guest.phone),
+                mgBody,
+                mgImageUrl,
+              );
             } else {
-              await sendViaMeta(String(guest.phone), mgBody, stageRow?.session_message_image_url);
+              await sendViaMeta(String(guest.phone), mgBody, mgImageUrl);
             }
             mgStatus = "sent";
           }
@@ -2987,7 +3047,7 @@ serve(async (req: Request) => {
           status:       mgStatus,
           payload: {
             channel:   mgChannel === "whapi" ? "whapi_session" : "session_message",
-            scriptKey: stageRow.session_message_script_key,
+            scriptKey: mgScriptKey,
             ...(mgError ? { error: mgError } : {}),
           },
         });
@@ -3111,7 +3171,11 @@ serve(async (req: Request) => {
             // Shabbat template not yet approved or errored → session script with
             // Shabbat time override (never weekday Meta — wrong 15:00 on Saturday).
             if (morningDispatch.primaryTemplate !== morningDispatch.fallbackTemplate) {
-              const scriptKey = stageRow?.session_message_script_key ?? "stage_3_morning";
+              const scriptKey = resolveShabbatAwareScriptKey(
+                stageRow,
+                normalizeArrivalDateYmd(guest.arrival_date),
+                "stage_3_morning",
+              );
               const { data: fbScript } = await supabase
                 .from("bot_scripts")
                 .select("message_text")
@@ -3495,9 +3559,8 @@ serve(async (req: Request) => {
     // — never hijack to bot_scripts just because wa_window_expires_at is open
     // (same rule as night_before session 102 and morning_suite session 102b).
     const isManualPipelineDispatch = force === true || manual_override === true;
-    const useWhapiForPipeline =
-      String(guest.dispatch_channel ?? "meta") === "whapi" &&
-      shouldRouteGuestOutboundViaWhapiSuites(guest);
+    const pipelineArrivalYmd = normalizeArrivalDateYmd(guest.arrival_date);
+    const useWhapiForPipeline = shouldUseWhapiForGuestAutomation(guest, pipelineArrivalYmd);
     let usedSessionMessage = false;
     let sessionBody: string | null = null;
     let sessionButtons: Array<{ type: string; label: string; url?: string }> = [];
@@ -3507,12 +3570,18 @@ serve(async (req: Request) => {
     // force_channel="session_message"/"whapi_session" bypasses the isWindowOpen()
     // guard so staff can send free-text to any guest on demand. useWhapiForPipeline
     // guests bypass it too — Whapi has no session-window concept at all.
-    if ((isManualPipelineDispatch || useWhapiForPipeline) && !forceMetaTemplate && stageRow?.session_message_script_key) {
+    if ((isManualPipelineDispatch || useWhapiForPipeline) && !forceMetaTemplate &&
+        (stageRow?.session_message_script_key || stageRow?.session_message_script_key_shabbat)) {
       if (forceSessionMessage || forceWhapiSession || useWhapiForPipeline || force === true || isWindowOpen(guest.wa_window_expires_at)) {
+        const pipelineScriptKey = resolveShabbatAwareScriptKey(
+          stageRow,
+          pipelineArrivalYmd,
+          stageRow?.session_message_script_key ?? "",
+        );
         const { data: scriptRow } = await supabase
           .from("bot_scripts")
           .select("message_text")
-          .eq("script_key", stageRow.session_message_script_key)
+          .eq("script_key", pipelineScriptKey)
           .maybeSingle();
         const rawText = scriptRow?.message_text?.trim();
         if (rawText) {
@@ -3528,10 +3597,10 @@ serve(async (req: Request) => {
           );
           sessionBody = body;
           sessionButtons = (stageRow.interactive_buttons ?? []) as typeof sessionButtons;
-          sessionImageUrl = resolveStageSessionImageUrl(stageRow, requestImageUrl) ?? null;
+          sessionImageUrl = resolveShabbatAwareSessionImageUrl(stageRow, pipelineArrivalYmd, requestImageUrl) ?? null;
           usedSessionMessage = true;
         } else {
-          console.warn(`[whatsapp-send] stage "${trigger}" has session_message_script_key="${stageRow.session_message_script_key}" but bot_scripts has no text — falling back to Meta template`);
+          console.warn(`[whatsapp-send] stage "${trigger}" has session_message_script_key="${pipelineScriptKey}" but bot_scripts has no text — falling back to Meta template`);
         }
       }
     }
@@ -3559,7 +3628,11 @@ serve(async (req: Request) => {
             // buttons/image header, so sessionButtons/sessionImageUrl are not
             // carried over here (pre-existing sendWhapiText characteristic,
             // same as the broadcast-template Whapi path above).
-            dispatchedWamid = await sendWhapiText(cleanPhoneForMention(guest.phone as string), sessionBody!);
+            dispatchedWamid = await dispatchWhapiSessionMessage(
+              guest.phone as string,
+              sessionBody!,
+              sessionImageUrl ?? undefined,
+            );
             console.log(`[whatsapp-send] ${trigger}: session dispatch via Whapi`);
           } else {
             const sessionResult = await sendStageSessionMessage(

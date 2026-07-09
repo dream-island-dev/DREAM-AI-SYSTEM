@@ -51,6 +51,12 @@ function _headerSignature(headers) {
 
 const DUMMY_DATE_RE = /^01[/.-]01[/.-](1900|1970|2001)/;
 
+function isSaturdayArrivalYmd(ymd) {
+  if (!ymd || !/^\d{4}-\d{2}-\d{2}$/.test(String(ymd))) return false;
+  const d = new Date(`${ymd}T12:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.getUTCDay() === 6;
+}
+
 function _parseDate(raw) {
   if (!raw) return null;
   if (raw instanceof Date) return isNaN(raw.getTime()) ? null : raw.toISOString().slice(0, 10);
@@ -2019,11 +2025,15 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           if (syncedPhones.length > 0) {
             const { data: syncedGuestRows, error: syncedLookupErr } = await supabase
               .from("guests")
-              .select("id, name, phone, room, room_type, dispatch_channel")
+              .select("id, name, phone, room, room_type, dispatch_channel, arrival_date")
               .in("phone", syncedPhones);
             if (syncedLookupErr) throw syncedLookupErr;
             const suiteRows = (syncedGuestRows ?? []).filter((g) => isSuiteGuestProfile(g));
             setSyncedGuestsForWhapiPick(suiteRows);
+            const autoShabbatIds = suiteRows
+              .filter((g) => g.dispatch_channel !== "whapi" && isSaturdayArrivalYmd(g.arrival_date))
+              .map((g) => g.id);
+            setWhapiPickSelected(new Set(autoShabbatIds));
           } else {
             setSyncedGuestsForWhapiPick([]);
           }
@@ -2031,7 +2041,6 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           console.warn("[ArrivalImportPanel] dispatch_channel picker guest lookup failed (non-blocking):", e?.message);
           setSyncedGuestsForWhapiPick([]);
         }
-        setWhapiPickSelected(new Set());
         setWhapiPickDone(false);
         setWhapiPickError(null);
 
@@ -3192,9 +3201,9 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                 📱 שיוך ערוץ שליחה — מכשיר הסוויטות (Whapi)
               </div>
               <div style={{ fontSize: 12.5, color: "#6b5b3a", marginBottom: 12, lineHeight: 1.6 }}>
-                {syncedGuestsForWhapiPick.length} אורחי סוויטות מהייבוא הזה. ברירת המחדל היא Dream Bot (Meta) —
-                סמן כאן רק מי שרוצים לשגר להם דרך מכשיר הסוויטות במקום. הפעולה הזו לא שולחת כלום —
-                רק קובעת ערוץ; השיגור עצמו מתבצע מ«בקרת אוטומציה → תור חי».
+                {syncedGuestsForWhapiPick.length} אורחי סוויטות מהייבוא הזה. מגיעים בשבת מסומנים אוטומטית —
+                שלבים 2.5 ו-3 יישלחו דרך מכשיר הסוויטות (גם בלי סימון כאן).
+                סמן נוספים אם רוצים שכל האוטומציות שלהם יעברו ל-Whapi.
               </div>
               {whapiPickError && (
                 <div style={{ background: "#FFF0EE", border: "1px solid #C0392B", borderRadius: 8, padding: "8px 12px", color: "#C0392B", fontSize: 12.5, marginBottom: 10 }}>
@@ -3228,6 +3237,9 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                     <span style={{ fontWeight: 600 }}>{g.name || "—"}</span>
                     <span style={{ color: "#8a8266" }}>{g.phone}</span>
                     {g.room && <span style={{ color: "#8a8266" }}>· {g.room}</span>}
+                    {isSaturdayArrivalYmd(g.arrival_date) && (
+                      <span style={{ fontSize: 11, color: "#7C3AED", fontWeight: 700 }}>🕍 שבת</span>
+                    )}
                     {g.dispatch_channel === "whapi" && (
                       <span style={{ marginRight: "auto", fontSize: 11, color: "#1A7A4A", fontWeight: 700 }}>
                         📱 כבר משויך

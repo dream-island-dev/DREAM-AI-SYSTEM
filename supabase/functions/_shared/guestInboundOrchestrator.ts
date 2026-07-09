@@ -18,6 +18,7 @@ import {
   logDuplicateBlocked,
 } from "./automationDuplicateGuard.ts";
 import { assertGuestEligibleForAutomation } from "./guestOutboundGuard.ts";
+import { formatWhapiSuitesConversationLog } from "./outboundDispatchTag.ts";
 import { shouldRouteGuestOutboundViaWhapiSuites } from "./guestWhapiRouting.ts";
 import { extractArrivalTimeFromText } from "./guestEta.ts";
 import {
@@ -446,7 +447,7 @@ export async function runGuestArrivalConfirmation(
       }
       const convLogged = await adapter.insertOutboundIfNotMuted({
         phone, guest_id: guestId,
-        message: useWhapiForStage2 ? `[WHAPI]\n${arrivalReply}` : arrivalReply,
+        message: useWhapiForStage2 ? formatWhapiSuitesConversationLog(arrivalReply) : arrivalReply,
         wa_message_id: waId === "unknown" ? null : waId,
         intent: outboundIntent,
         channel: useWhapiForStage2 ? "whapi" : "meta",

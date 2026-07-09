@@ -559,6 +559,8 @@ const SCRIPT_KEY_FRIENDLY = {
   spa_menu:                 "תפריט טיפולי ספא",
   stage_2_payment_reply:    "מענה לתשלום (שלב 2)",
   night_before_reminder:    "תזכורת ערב לפני — כניסה ושעות (שלב 2.5)",
+  night_before_reminder_shabbat: "תזכורת ערב לפני — הגעה בשבת (שלב 2.5)",
+  stage_3_morning_shabbat:  "בוקר הגעה — שבת (שלב 3)",
   pre_arrival_2d:           "פנייה ראשונה — אישור הגעה (שלב 1 — טקסט חופשי)",
   mid_stay:                 "בדיקת שלום באמצע השהות (שלב 4 — טקסט חופשי)",
   mid_stay_daypass:         "בדיקת שלום באמצע הביקור (שלב 4 — בילוי יומי)",
@@ -639,6 +641,8 @@ const SAMPLE_VALUES = {
 // is both unnecessary and misleading. The auto-fill panel is replaced by a
 // read-only routing info panel for these stage keys.
 const DETERMINISTIC_ROUTE_STAGE_KEYS = new Set(["night_before", "morning_suite", "morning_welcome"]);
+/** Stages with a separate Shabbat bot_script + optional image (migration 172). */
+const SHABBAT_VARIANT_STAGE_KEYS = new Set(["night_before", "morning_suite"]);
 function resolveSampleText(template) {
   if (!template) return "";
   const sampleSpaTime = "14:00";
@@ -799,6 +803,14 @@ function StageCard({
   const [draftImageUrl, setDraftImageUrl] = useState(stage.session_message_image_url ?? "");
   useEffect(() => { setDraftImageUrl(stage.session_message_image_url ?? ""); }, [stage.session_message_image_url]);
 
+  const shabbatScriptKey = stage.session_message_script_key_shabbat ?? "";
+  const savedShabbatText = scriptsByKey[shabbatScriptKey] ?? "";
+  const [draftShabbatText, setDraftShabbatText] = useState(savedShabbatText);
+  useEffect(() => { setDraftShabbatText(savedShabbatText); }, [shabbatScriptKey, savedShabbatText]);
+
+  const [draftShabbatImageUrl, setDraftShabbatImageUrl] = useState(stage.session_message_image_url_shabbat ?? "");
+  useEffect(() => { setDraftShabbatImageUrl(stage.session_message_image_url_shabbat ?? ""); }, [stage.session_message_image_url_shabbat]);
+
   // Auto-fill state removed — arrival stages route deterministically via
   // DETERMINISTIC_ROUTE_STAGE_KEYS; no manual {{2}}/{{3}} injection needed.
 
@@ -858,6 +870,20 @@ function StageCard({
                 <span style={{ fontSize: 11, color: "var(--text-muted)", fontStyle: "italic" }}>
                   (0 = יום ההגעה/הנוכחות, מספר שלילי = ימים לפני ההגעה)
                 </span>
+                {SHABBAT_VARIANT_STAGE_KEYS.has(stage.stage_key) && (
+                  <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 6 }}>
+                    <span style={{ fontSize: 12, color: "#7C3AED", fontWeight: 600 }}>🕍 שעת שליחה — הגעה בשבת</span>
+                    <input
+                      type="time"
+                      value={timeInputValue(stage.local_time_shabbat)}
+                      style={{ width: 110 }}
+                      onChange={(e) => patchStage(stage, { local_time_shabbat: e.target.value || null })}
+                    />
+                    <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                      (למשל 15:00 ביום שישי לפני הגעה בשבת — דורס את שעת יום החול)
+                    </span>
+                  </div>
+                )}
               </div>
             )}
             {stage.schedule_mode === "hours_after_event" && (
@@ -968,6 +994,62 @@ function StageCard({
             </div>
           )}
 
+          {/* ── Shabbat variant (night_before / morning_suite) ── */}
+          {SHABBAT_VARIANT_STAGE_KEYS.has(stage.stage_key) && stage.node_type !== "meta_template" && (
+            <div className="form-field" style={{
+              marginBottom: 0, padding: "14px 16px", borderRadius: 10,
+              border: "1px solid #C4B5FD", background: "rgba(124,58,237,0.05)",
+            }}>
+              <label style={{ fontWeight: 700, fontSize: 13, marginBottom: 8, display: "block", color: "#7C3AED" }}>
+                🕍 וריאנט שבת — הגעה בשבת (נשלח דרך מכשיר הסוויטות)
+              </label>
+              <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 10, lineHeight: 1.6 }}>
+                {stage.stage_key === "night_before"
+                  ? "יום שישי 15:00 — אורחים שמגיעים בשבת. טקסט + תמונה נפרדים מיום חול."
+                  : "בוקר יום השבת — הודעה עם קבלת חדרים ב-18:00."}
+                {" "}אוטומציה אוטומטית דרך Whapi כשהמכשיר מופעל (GUEST_WHAPI_SUITES_ENABLED).
+              </div>
+              <select
+                value={shabbatScriptKey}
+                onChange={(e) => patchStage(stage, { session_message_script_key_shabbat: e.target.value || null })}
+                style={{ marginBottom: 8 }}
+              >
+                <option value="">— ללא סקריפט שבת (יפול לסקריפט יום חול) —</option>
+                {availableScriptKeys.map((k) => <option key={k} value={k}>{scriptKeyFriendly(k)}</option>)}
+              </select>
+              {shabbatScriptKey && (
+                <>
+                  <textarea
+                    rows={4}
+                    value={draftShabbatText}
+                    onChange={(e) => setDraftShabbatText(e.target.value)}
+                    onBlur={(e) => saveSessionMessage(shabbatScriptKey, e.target.value)}
+                    style={{ direction: "rtl", fontFamily: "Heebo, sans-serif", lineHeight: 1.7, resize: "vertical", width: "100%" }}
+                  />
+                  <div style={{ marginTop: 10 }}>
+                    <MessagePreviewBubble>{renderResolvedPreview(draftShabbatText)}</MessagePreviewBubble>
+                  </div>
+                  <div className="form-field" style={{ marginTop: 10, marginBottom: 0 }}>
+                    <label style={{ fontSize: 12 }}>🖼️ תמונת שבת (אופציונלי)</label>
+                    <input
+                      type="text"
+                      value={draftShabbatImageUrl}
+                      onChange={(e) => setDraftShabbatImageUrl(e.target.value)}
+                      onBlur={(e) => patchStage(stage, { session_message_image_url_shabbat: e.target.value.trim() || null })}
+                      placeholder="https://dream-ai-system.vercel.app/images/suiteshabat.jpeg"
+                      style={{ direction: "ltr", fontFamily: "monospace", fontSize: 12 }}
+                    />
+                    {draftShabbatImageUrl && (
+                      <div style={{ marginTop: 6, fontSize: 11, color: "var(--text-muted)" }}>
+                        תצוגה מקדימה: <a href={draftShabbatImageUrl} target="_blank" rel="noreferrer">{draftShabbatImageUrl}</a>
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
           {/* ── Meta template selector — editable dropdown, saves to automation_stages.meta_template_name ── */}
           {/* The 24h-window override happens in whatsapp-send (BRANCH D): if the guest's             */}
           {/* wa_window_expires_at is still open, a session_message is sent instead of this template. */}
@@ -1032,7 +1114,7 @@ function StageCard({
                     <code style={{ background: "#F3F4F6", padding: "1px 5px", borderRadius: 4 }}>night_before_suites_shabbat</code>
                     <br />
                     <span style={{ color: "var(--text-muted)" }}>
-                      שליחה אוטומטית (cron) תמיד דרך תבנית Meta — גם בתוך חלון 24ש&apos;. סקריפט חופשי רק בשגר ידני → ערוץ Bot Script.
+                      יום חול (Meta): cron → תבנית Meta. שבת (Whapi): יום שישי 15:00 → סקריפט שבת + תמונה דרך מכשיר הסוויטות.
                     </span>
                   </div>
                 ) : (
@@ -2139,7 +2221,7 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
   // index.ts. Excluded client-side (Disable, Don't Hide — shown as a blocked
   // result with reason, not silently dropped) so a mixed selection doesn't
   // rely on the server's per-stage guard alone.
-  const WHAPI_UNSUPPORTED_STAGES = new Set(["morning_suite", "morning_welcome", "room_ready"]);
+  const WHAPI_UNSUPPORTED_STAGES = new Set(["room_ready"]);
 
   // ── Bulk dispatch — same call as whatsapp-cron uses (viaWhapi pins
   // force_channel="whapi_session" instead — manual dispatch only, never

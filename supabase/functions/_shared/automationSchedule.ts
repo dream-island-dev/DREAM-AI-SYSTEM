@@ -173,11 +173,14 @@ export interface AutomationStage {
   anchor_event: AnchorEvent;
   day_offset: number | null;
   local_time: string | null;     // "HH:MM:SS" from Postgres TIME, may be null
+  local_time_shabbat?: string | null;
   local_time_end: string | null;
   offset_hours: number | null;
   applies_to: AppliesTo;
   meta_template_name: string | null;
   session_message_script_key: string | null;
+  session_message_script_key_shabbat?: string | null;
+  session_message_image_url_shabbat?: string | null;
   interactive_buttons: InteractiveButton[];
   guest_flag_column: string | null;
   is_active: boolean;
@@ -328,6 +331,20 @@ function targetYmdFromAnchor(anchorDateStr: string, dayOffset: number): string {
   return ymd(addDays(anchorDate, dayOffset ?? 0));
 }
 
+function isShabbatArrivalDate(arrivalDateStr: string | null | undefined): boolean {
+  const ymdStr = String(arrivalDateStr ?? "").trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(ymdStr)) return false;
+  const d = new Date(`${ymdStr}T12:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.getUTCDay() === 6;
+}
+
+/** Shabbat arrivals may use local_time_shabbat instead of local_time (migration 172). */
+function effectiveStageLocalTime(stage: AutomationStage, guest: GuestForSchedule): string | null {
+  const shabbatTime = stage.local_time_shabbat?.trim();
+  if (shabbatTime && isShabbatArrivalDate(guest.arrival_date)) return shabbatTime;
+  return stage.local_time;
+}
+
 function isDueByIsraelLocalClock(
   now: Date,
   floorLocalHour: number,
@@ -431,7 +448,8 @@ export function computeScheduledInstant(
     const anchorDateStr = stage.anchor_event === "departure_date" ? guest.departure_date : guest.arrival_date;
     if (!anchorDateStr) return null;
     const targetDateStr = targetYmdFromAnchor(anchorDateStr, stage.day_offset ?? 0);
-    const floorUtcHour = stage.local_time ? parseLocalTimeToUtcHour(stage.local_time) : 0;
+    const stageLocalTime = effectiveStageLocalTime(stage, guest);
+    const floorUtcHour = stageLocalTime ? parseLocalTimeToUtcHour(stageLocalTime) : 0;
     return utcHourToTimestamp(targetDateStr, floorUtcHour);
   }
 
@@ -497,20 +515,21 @@ export function resolveStageSchedule(
 
     const targetDateStr = targetYmdFromAnchor(anchorDateStr, stage.day_offset ?? 0);
     const todayStr = israelYmd(now);
-    const floorUtcHour = stage.local_time ? parseLocalTimeToUtcHour(stage.local_time) : 0;
+    const stageLocalTime = effectiveStageLocalTime(stage, guest);
+    const floorUtcHour = stageLocalTime ? parseLocalTimeToUtcHour(stageLocalTime) : 0;
     const scheduledFor = scheduledForPreview ?? utcHourToTimestamp(targetDateStr, floorUtcHour);
 
     if (targetDateStr !== todayStr) {
       return { scheduledFor, dueNow: false, skipReason: targetDateStr < todayStr ? "date_passed" : null };
     }
 
-    if (!stage.local_time) {
+    if (!stageLocalTime) {
       // No hour gate configured — eligible any time on the target day
       // (matches pre_arrival_2d's current "any hour" behavior).
       return { scheduledFor: now, dueNow: true, skipReason: null };
     }
 
-    const floorLocal = parseLocalHour(stage.local_time);
+    const floorLocal = parseLocalHour(stageLocalTime);
     const ceilLocal = effectiveCeilLocalHour(
       floorLocal,
       stage.local_time_end ? parseLocalHour(stage.local_time_end) : null,

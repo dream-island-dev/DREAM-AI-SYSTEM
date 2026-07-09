@@ -10,6 +10,7 @@ import {
   resolveGuestModelRoute,
   type GuestModelRoute,
 } from "./guestBotModelRoute.ts";
+import { stripOutboundDispatchTag } from "./outboundDispatchTag.ts";
 
 const GEMINI_FETCH_TIMEOUT_MS = 20_000;
 const GEMINI_MAX_RETRIES = 2;
@@ -26,11 +27,18 @@ function _isGeminiRetryable(status: number): boolean {
 }
 
 function _sanitizeGuestReply(text: string): string {
-  const trimmed = text.trim();
+  const trimmed = stripOutboundDispatchTag(text.trim());
   if (/```|^(THOUGHT|REASONING)\b/i.test(trimmed)) {
     throw new Error("output_leak_guard_tripped");
   }
   return trimmed;
+}
+
+function _stripHistoryTags(history: GuestChatHistoryTurn[]): GuestChatHistoryTurn[] {
+  return history.map((h) => ({
+    direction: h.direction,
+    message: stripOutboundDispatchTag(h.message),
+  }));
 }
 
 async function _askGuestGemini(
@@ -184,11 +192,12 @@ export async function generateGuestChatReply(opts: GenerateGuestChatReplyOpts): 
   const logTag = opts.logTag ?? "guestBotLlm";
   const route = resolveGuestModelRoute(opts.preferredModel);
   const enrichedPrompt = opts.systemPrompt + (opts.toolInstructionsSuffix ?? "");
+  const history = _stripHistoryTags(opts.history);
 
   const tryGemini = () =>
-    _askGuestGemini(opts.userMessage, opts.guestName, opts.history, enrichedPrompt, route.geminiOrder, logTag);
+    _askGuestGemini(opts.userMessage, opts.guestName, history, enrichedPrompt, route.geminiOrder, logTag);
   const tryClaude = () =>
-    _callGuestClaude(opts.userMessage, opts.guestName, opts.history, enrichedPrompt, route.claudeModel, logTag);
+    _callGuestClaude(opts.userMessage, opts.guestName, history, enrichedPrompt, route.claudeModel, logTag);
 
   if (route.engine === "claude") {
     try {
