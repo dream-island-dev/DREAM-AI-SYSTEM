@@ -70,7 +70,7 @@ const THREAD_HISTORY_LIMIT = 1500; // full-history cap for a single opened conta
 // pure dead payload multiplied across every row in every fetch.
 const CONVERSATION_SELECT =
   "id, phone, direction, message, wa_message_id, created_at, intent, human_requested, human_request_type, push_name, " +
-  "message_type, media_url, media_mime, media_caption, " +
+  "message_type, media_url, media_mime, media_caption, channel, " +
   "guests(id, name, spa_time, spa_date, room, room_type, status, arrival_date, departure_date, portal_token, meal_time, meal_location, claimed_by, claimed_at)";
 
 // Module-level (outside the component) — survives WhatsAppInbox unmount/remount
@@ -1216,6 +1216,11 @@ const Bubble = React.memo(function Bubble({ msg, dir, resolveCtx, isMobile, onIm
   const rtl = dir === "rtl";
   const reaction = !isOut ? parseGuestReactionMessage(msg.message, msg.intent) : null;
   const dispatchInfo = isOut ? parseOutboundDispatch(msg.message) : null;
+  // The explicit `channel` DB column (manual-control rollout) wins over the
+  // legacy [META]/[SESSION]/[WHAPI] text-prefix parsing above, which only
+  // ever applied to outbound rows. This is what lets an INBOUND bubble show
+  // which device the guest actually wrote to, not just what staff replied on.
+  const resolvedChannel = msg.channel ?? dispatchInfo?.channel ?? null;
   const isImageMsg = msg.message_type === "image";
   const imageCaption = (msg.media_caption || "").trim()
     || (isImageMsg && msg.message && msg.message !== "📷 תמונה" ? msg.message : "");
@@ -1382,8 +1387,11 @@ const Bubble = React.memo(function Bubble({ msg, dir, resolveCtx, isMobile, onIm
           {isOut && dispatchInfo?.channel === "session" && (
             <span title="נשלח כהודעת סשן (24ש')" aria-label="Session message">🟢</span>
           )}
-          {isOut && dispatchInfo?.channel === "whapi" && (
-            <span title="נשלח דרך Whapi (המכשיר המחובר)" aria-label="Whapi device">📱</span>
+          {resolvedChannel === "whapi" && (
+            <span
+              title={isOut ? "נשלח דרך מכשיר הסוויטות (Whapi)" : "התקבל במכשיר הסוויטות (Whapi)"}
+              aria-label="Whapi Suites device"
+            >📱</span>
           )}
           {isOut && <span>✓✓</span>}
         </div>
@@ -1494,6 +1502,10 @@ function NewChatModal({ onClose, onSent }) {
   } = useQuietHoursSend();
 
   const [mode,          setMode]          = useState("free"); // "free" | "template"
+  // Manual sending-channel choice for the whole operation (2026-07-09 pivot —
+  // applies to every recipient in this modal, not per-guest; defaults to
+  // Meta, exactly like today, until staff explicitly picks Whapi).
+  const [sendChannel,   setSendChannel]   = useState("meta");
   const [guestSearch,   setGuestSearch]   = useState("");
   const [guestResults,  setGuestResults]  = useState([]);
   const [selectedGuest, setSelectedGuest] = useState(null);
@@ -1562,7 +1574,7 @@ function NewChatModal({ onClose, onSent }) {
       const personalised = bulkText.replace(/{{שם}}/g, g.name ?? "").replace(/\{\{שם\}\}/g, g.name ?? "");
       try {
         const { data, error } = await supabase.functions.invoke("whatsapp-send", {
-          body: { trigger: "inbox_reply", phone: g.phone, message: personalised },
+          body: { trigger: "inbox_reply", phone: g.phone, message: personalised, target_channel: sendChannel },
         });
         if (!error && data?.ok) {
           // whatsapp-send's inbox_reply branch already inserts the outbound
@@ -1660,7 +1672,7 @@ function NewChatModal({ onClose, onSent }) {
     setSending(true); setErr(null);
     try {
       const { data, error } = await supabase.functions.invoke("whatsapp-send", {
-        body: { trigger: "inbox_reply", phone: selectedGuest.phone, message: freeText.trim() },
+        body: { trigger: "inbox_reply", phone: selectedGuest.phone, message: freeText.trim(), target_channel: sendChannel },
       });
       if (error) throw new Error(data?.error ?? error.message ?? "שגיאה בשליחה");
       if (data && !data.ok) throw new Error(data.error ?? "שגיאה בשליחה");
@@ -1695,6 +1707,7 @@ function NewChatModal({ onClose, onSent }) {
           guestId:           selectedGuest.id,
           waTemplateName:    selectedTmpl.name,
           templateVariables: varValues,
+          target_channel:    sendChannel,
         },
       });
       if (error || !data?.ok) throw new Error(data?.error ?? error?.message ?? "שגיאה בשליחה");
@@ -1746,7 +1759,7 @@ function NewChatModal({ onClose, onSent }) {
           return "";
         });
         const { data, error } = await supabase.functions.invoke("whatsapp-send", {
-          body: { trigger: "broadcast", guestId: g.id, waTemplateName: selectedTmpl.name, templateVariables: autoVars },
+          body: { trigger: "broadcast", guestId: g.id, waTemplateName: selectedTmpl.name, templateVariables: autoVars, target_channel: sendChannel },
         });
         if (!error && data?.ok) {
           // whatsapp-send's broadcast branch already inserts the outbound
@@ -1847,6 +1860,42 @@ function NewChatModal({ onClose, onSent }) {
             checked={overrideChecked}
             onChange={setOverrideChecked}
           />
+
+          {/* ── Sending channel — applies to the whole operation below, every
+               recipient in bulk/audience mode included. Defaults to Meta;
+               Whapi is only used when explicitly picked here. ── */}
+          <div>
+            <label style={{ display: "block", fontWeight: 700, fontSize: 12, marginBottom: 6, color: "#555", textTransform: "uppercase", letterSpacing: 0.5 }}>
+              📡 ערוץ שליחה
+            </label>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                type="button"
+                onClick={() => setSendChannel("meta")}
+                style={{
+                  flex: 1, padding: "8px 12px", borderRadius: 10,
+                  border: `2px solid ${sendChannel === "meta" ? "var(--gold,#C9A96E)" : "#ddd"}`,
+                  background: sendChannel === "meta" ? "rgba(201,169,110,0.12)" : "#fff",
+                  fontWeight: sendChannel === "meta" ? 700 : 400, cursor: "pointer", fontSize: 13,
+                }}
+              >🤖 Dream Bot (Meta)</button>
+              <button
+                type="button"
+                onClick={() => setSendChannel("whapi")}
+                style={{
+                  flex: 1, padding: "8px 12px", borderRadius: 10,
+                  border: `2px solid ${sendChannel === "whapi" ? "#1A7A4A" : "#ddd"}`,
+                  background: sendChannel === "whapi" ? "rgba(26,122,74,0.08)" : "#fff",
+                  fontWeight: sendChannel === "whapi" ? 700 : 400, cursor: "pointer", fontSize: 13,
+                }}
+              >📱 מכשיר הסוויטות (Whapi)</button>
+            </div>
+            {sendChannel === "whapi" && mode === "template" && (
+              <div style={{ marginTop: 6, fontSize: 11.5, color: "#92400E", background: "#FFF8E7", border: "1px solid #C9A96E", borderRadius: 8, padding: "6px 10px" }}>
+                ⚠ דרך Whapi התבנית נשלחת כטקסט חופשי — ללא כפתורים, וייתכן פער מהניסוח המדויק שאושר ב-Meta.
+              </div>
+            )}
+          </div>
 
           {/* ── Guest search (hidden when template audience mode) ── */}
           <div style={{ display: mode === "template" && tmplMode === "audience" ? "none" : "block" }}>
@@ -2590,6 +2639,11 @@ export default function WhatsAppInbox({
   const [loading, setLoading]     = useState(true);
   const [sending, setSending]     = useState(false);
   const [reply, setReply]         = useState("");
+  // Manual channel choice for the reply box (2026-07-09 pivot — was
+  // auto-classified by guest type; Mike stopped that design, staff now picks
+  // explicitly per send, every reply defaults to Meta). Reset on contact
+  // switch below so a Whapi choice never silently carries into a new thread.
+  const [replyChannel, setReplyChannel] = useState("meta");
   const [error, setError]         = useState(null);
   // Tracks the exact banner text last set by a background *load* operation
   // (fetchAll/fetchSince/fetchOlder polling) so its own next success can
@@ -3369,6 +3423,7 @@ export default function WhatsAppInbox({
   // set anywhere, so unread counts only ever grew). ─────────────────────────
   const openContact = useCallback((phone) => {
     setActive(phone);
+    setReplyChannel("meta"); // never carry a Whapi choice into a different guest's thread
     if (isMobile) {
       setMobileScreen("thread");
       setMobileToolbarOpen(false);
@@ -4097,6 +4152,7 @@ export default function WhatsAppInbox({
           trigger: "inbox_reply",
           phone: active,
           message: reply.trim(),
+          target_channel: replyChannel,
         },
       });
       if (fnErr || !data?.ok) throw new Error(fnErr?.message ?? data?.error ?? "שגיאה בשליחה");
@@ -5175,6 +5231,40 @@ export default function WhatsAppInbox({
           </div>
         )}
 
+        {/* Manual sending-channel toggle — every reply defaults to Meta;
+            Whapi is only used when staff explicitly picks it here. */}
+        <div style={{
+          padding: isMobile ? "6px 12px 0" : "4px var(--space-md) 0",
+          display: "flex", justifyContent: "flex-end", gap: 6,
+        }}>
+          <div style={{
+            display: "flex", gap: 3, background: "var(--card-bg)",
+            border: "1px solid var(--border)", borderRadius: 999, padding: 3,
+          }}>
+            <button
+              type="button"
+              onClick={() => setReplyChannel("meta")}
+              title="Dream Bot (Meta)"
+              style={{
+                border: "none", borderRadius: 999, padding: "4px 10px", fontSize: 11.5, fontWeight: 700,
+                cursor: "pointer", display: "flex", alignItems: "center", gap: 4,
+                background: replyChannel === "meta" ? "var(--gold,#C9A96E)" : "transparent",
+                color: replyChannel === "meta" ? "#1A1A1A" : "var(--text-muted)",
+              }}
+            >🤖 Dream Bot</button>
+            <button
+              type="button"
+              onClick={() => setReplyChannel("whapi")}
+              title="מכשיר הסוויטות (Whapi)"
+              style={{
+                border: "none", borderRadius: 999, padding: "4px 10px", fontSize: 11.5, fontWeight: 700,
+                cursor: "pointer", display: "flex", alignItems: "center", gap: 4,
+                background: replyChannel === "whapi" ? "#1A7A4A" : "transparent",
+                color: replyChannel === "whapi" ? "#fff" : "var(--text-muted)",
+              }}
+            >📱 מכשיר הסוויטות</button>
+          </div>
+        </div>
         <div
           className={isMobile ? "wa-mobile-composer" : undefined}
           style={{

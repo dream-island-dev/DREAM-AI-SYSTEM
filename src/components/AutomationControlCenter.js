@@ -1179,11 +1179,18 @@ function ManualDispatchModal({ item, stages, onClose, onDispatched, showToast })
 
   const selectedStage   = stages.find((s) => s.stage_key === stageKey);
   const hasScriptKey    = !!selectedStage?.session_message_script_key;
+  // night_before has its own Shabbat/holiday-aware fast-path server-side that
+  // ignores force_channel entirely (invokeForcedDispatch omits it on purpose
+  // for this one stage — see comment there) — offering Whapi here would look
+  // selected but silently have zero effect. Disabled rather than built quietly
+  // wrong; extending that fast-path is a separate, deliberately-scoped change.
+  const whapiUnavailableForStage = stageKey === "night_before";
 
-  // When stage changes, revert to meta_template if session is not available.
+  // When stage changes, revert to meta_template if session/whapi is not available.
   useEffect(() => {
     if (channel === "session_message" && !hasScriptKey) setChannel("meta_template");
-  }, [stageKey, hasScriptKey, channel]);
+    if (channel === "whapi_session" && (!hasScriptKey || whapiUnavailableForStage)) setChannel("meta_template");
+  }, [stageKey, hasScriptKey, channel, whapiUnavailableForStage]);
 
   const runDispatch = async (scheduledFor) => {
     if (!supabase) return;
@@ -1326,6 +1333,27 @@ function ManualDispatchModal({ item, stages, onClose, onDispatched, showToast })
               🟢 Bot Script<br />
               <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
                 {hasScriptKey ? "מאלץ שליחה גם אם חלון סגור" : "לא זמין לשלב זה"}
+              </span>
+            </button>
+            <button
+              onClick={() => hasScriptKey && !whapiUnavailableForStage && setChannel("whapi_session")}
+              disabled={sending || !hasScriptKey || whapiUnavailableForStage}
+              title={
+                whapiUnavailableForStage
+                  ? "שלב זה מנותב אוטומטית ע\"י השרת (מודע לשבת/חג) — בחירת ערוץ ידנית לא זמינה כאן"
+                  : (!hasScriptKey ? "שלב זה אינו מוגדר עם Bot Script" : undefined)
+              }
+              style={{
+                flex: 1, padding: "8px 12px", borderRadius: 10, border: `2px solid ${channel === "whapi_session" ? "#1A7A4A" : "var(--border)"}`,
+                background: channel === "whapi_session" ? "rgba(26,122,74,0.08)" : ((hasScriptKey && !whapiUnavailableForStage) ? "#fff" : "#f5f5f5"),
+                fontWeight: channel === "whapi_session" ? 700 : 400,
+                cursor: (hasScriptKey && !whapiUnavailableForStage) ? "pointer" : "not-allowed", fontSize: 13,
+                color: (hasScriptKey && !whapiUnavailableForStage) ? "inherit" : "var(--text-muted)",
+              }}
+            >
+              📱 Whapi (מכשיר הסוויטות)<br />
+              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                {whapiUnavailableForStage ? "לא זמין לשלב זה (ניתוב שרת אוטומטי)" : (hasScriptKey ? "אותו טקסט Bot Script, דרך המכשיר המחובר" : "לא זמין לשלב זה")}
               </span>
             </button>
           </div>

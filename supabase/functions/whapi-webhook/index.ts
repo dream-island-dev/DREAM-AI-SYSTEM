@@ -464,6 +464,10 @@ async function claimGuestDmInbound(
       wa_message_id: row.wa_message_id,
       intent: "received",
       push_name: row.push_name,
+      // Explicit channel marker (manual-control rollout, migration 161) — lets
+      // the Inbox show a 📱 badge on the guest's own bubble too, not just on
+      // staff replies, so it's visible which device the guest wrote to.
+      channel: "whapi",
     })
     .select("id")
     .maybeSingle();
@@ -585,6 +589,7 @@ async function sendGuestDmReply(
   }
   const { error } = await supabase.from("whatsapp_conversations").insert({
     phone, guest_id: guestId, direction: "outbound", message: taggedMessage, wa_message_id: wamid,
+    channel: "whapi",
   });
   if (error) console.warn("[whapi-webhook] sendGuestDmReply log insert failed:", error.message);
 }
