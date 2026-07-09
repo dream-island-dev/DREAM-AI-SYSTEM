@@ -560,12 +560,22 @@ async function generateGuestDmReply(
   return trimmed;
 }
 
+/** staffMuted mirrors whatsapp-webhook's _suppressGuestRepliesStaffClaim contract
+ * exactly: when staff has claimed the conversation, the SEND (and its outbound
+ * log row) is skipped, but the caller's other DB side-effects (guest_alerts,
+ * requires_attention) still happen — a staffer on the thread doesn't hide the
+ * urgency flag from everyone else. */
 async function sendGuestDmReply(
   supabase: ReturnType<typeof createClient>,
   phone: string,
   guestId: number | null,
   replyText: string,
+  staffMuted = false,
 ): Promise<void> {
+  if (staffMuted) {
+    console.info("[whapi-webhook] guest_dm reply suppressed — staff claim active:", phone);
+    return;
+  }
   const taggedMessage = `[WHAPI]\n${replyText}`;
   let wamid: string | null = null;
   try {
@@ -582,16 +592,18 @@ async function sendGuestDmReply(
 /** Shared escalation writer for the three "hand off to staff" Tier-0 shields
  * below — same requires_attention/needs_callback/guest_alerts shape
  * whatsapp-webhook's Meta-side handlers use, so the Inbox red-dot and
- * GuestAttentionBadge behave identically regardless of channel. */
+ * GuestAttentionBadge behave identically regardless of channel. Escalation
+ * writes always run (even if staff has claimed the thread — see staffMuted
+ * doc above); only the reply send is conditionally suppressed. */
 async function escalateGuestDm(
   supabase: ReturnType<typeof createClient>,
   opts: {
     phone: string; guestId: number | null; guestName: string | null; text: string;
     conversationId: number | null; attentionReason: string; alertType: string;
-    humanRequestType?: string; replyText: string;
+    humanRequestType?: string; replyText: string; staffMuted: boolean;
   },
 ): Promise<void> {
-  const { phone, guestId, guestName, text, conversationId, attentionReason, alertType, humanRequestType, replyText } = opts;
+  const { phone, guestId, guestName, text, conversationId, attentionReason, alertType, humanRequestType, replyText, staffMuted } = opts;
 
   await patchGuestDmInbound(supabase, conversationId, {
     guest_id: guestId,
@@ -622,7 +634,7 @@ async function escalateGuestDm(
     }).catch((e: Error) => console.warn(`[whapi-webhook] guest_dm ${attentionReason} staff notify failed:`, e.message));
   }
 
-  await sendGuestDmReply(supabase, phone, guestId, replyText);
+  await sendGuestDmReply(supabase, phone, guestId, replyText, staffMuted);
 }
 
 async function handleGuestDirectMessage(
@@ -658,13 +670,16 @@ async function handleGuestDirectMessage(
       results.push({ id: msg.id, action: "captured_no_autoreply", reason: guest ? "not_suite_guest" : "no_guest_match" });
       return;
     }
-    if (isGuestStaffClaimActive(guest)) {
-      results.push({ id: msg.id, action: "captured_staff_claimed" });
-      return;
-    }
 
     const guestId = guest?.id ?? null;
     const guestName = guest?.name ?? null;
+    // Mirrors whatsapp-webhook's staff-claim contract: mute the REPLY, not the
+    // shields' DB side-effects (guest_alerts/requires_attention still fire —
+    // other staff must still see the urgency even if one staffer has claimed
+    // the thread). Only the expensive LLM call is skipped outright when muted
+    // (matches Meta's own cost-saving gate — no point generating a reply that
+    // will be discarded).
+    const staffMuted = isGuestStaffClaimActive(guest);
 
     if (isLowValueCourtesyMessage(text)) {
       await patchGuestDmInbound(supabase, claim.conversationId, { intent: "courtesy_ack" });
@@ -675,43 +690,47 @@ async function handleGuestDirectMessage(
     if (isSevereComplaint(text)) {
       await escalateGuestDm(supabase, {
         phone, guestId, guestName, text, conversationId: claim.conversationId,
-        attentionReason: "severe_complaint", alertType: "severe_complaint",
+        attentionReason: "severe_complaint", alertType: "severe_complaint", staffMuted,
         replyText: "אנחנו מצטערים מאוד לשמוע זאת — העברתי את זה ישירות לצוות הבכיר, ויחזרו אליך בהקדם. 🙏",
       });
-      results.push({ id: msg.id, action: "severe_complaint_escalated" });
+      results.push({ id: msg.id, action: "severe_complaint_escalated", muted: staffMuted });
       return;
     }
 
     if (isSensitiveStayChangeRequest(text)) {
       await escalateGuestDm(supabase, {
         phone, guestId, guestName, text, conversationId: claim.conversationId,
-        attentionReason: "date_change", alertType: "date_change_request", humanRequestType: "date_change",
+        attentionReason: "date_change", alertType: "date_change_request", humanRequestType: "date_change", staffMuted,
         replyText: CANONICAL_STAY_CHANGE_HANDOFF_MSG,
       });
-      results.push({ id: msg.id, action: "stay_change_escalated" });
+      results.push({ id: msg.id, action: "stay_change_escalated", muted: staffMuted });
       return;
     }
 
     if (isSensitiveFinancialRequest(text)) {
       await escalateGuestDm(supabase, {
         phone, guestId, guestName, text, conversationId: claim.conversationId,
-        attentionReason: "financial_issue", alertType: "financial_issue", humanRequestType: "financial_issue",
+        attentionReason: "financial_issue", alertType: "financial_issue", humanRequestType: "financial_issue", staffMuted,
         replyText: CANONICAL_FINANCIAL_HANDOFF_MSG,
       });
-      results.push({ id: msg.id, action: "financial_escalated" });
+      results.push({ id: msg.id, action: "financial_escalated", muted: staffMuted });
       return;
     }
 
     if (isCheckInPolicyQuestion(text)) {
       await patchGuestDmInbound(supabase, claim.conversationId, { intent: "check_in_policy_faq" });
       const cfg = await fetchGuestDmBotConfig(supabase);
-      await sendGuestDmReply(supabase, phone, guestId, buildCheckInPolicyReply(cfg));
-      results.push({ id: msg.id, action: "checkin_policy_faq" });
+      await sendGuestDmReply(supabase, phone, guestId, buildCheckInPolicyReply(cfg), staffMuted);
+      results.push({ id: msg.id, action: "checkin_policy_faq", muted: staffMuted });
       return;
     }
 
     // General LLM fallback — everything not caught by a Tier-0 shield above.
     await patchGuestDmInbound(supabase, claim.conversationId, { intent: "faq" });
+    if (staffMuted) {
+      results.push({ id: msg.id, action: "captured_staff_claimed_faq" });
+      return;
+    }
     const geminiKey = Deno.env.get("GEMINI_API_KEY");
     let replyText: string;
     if (!geminiKey) {
