@@ -50,7 +50,8 @@ import {
   markStage2PayProcessing,
   PAYMENT_LINK_FAILURE_LABEL,
 } from "../_shared/paymentLinkGuard.ts";
-import { sendWhapiText }    from "../_shared/whapiSend.ts";
+import { sendWhapiText, cleanPhoneForMention } from "../_shared/whapiSend.ts";
+import { shouldRouteGuestOutboundViaWhapiSuites } from "../_shared/guestWhapiRouting.ts";
 import { formatGuestProfileForAi } from "../_shared/guestProfile.ts";
 import {
   shouldApplyInRoomContextOverride,
@@ -804,6 +805,16 @@ async function handleStage2ArrivalConfirmation(
         let sentOk = false;
         let skipStage2Duplicate = false;
 
+        // Guest-level opt-in (migration 166, Phase 1) — only affects guests
+        // explicitly set to dispatch_channel="whapi" (no backfill; every
+        // existing/unset guest defaults to "meta", so this is a no-op until
+        // Phase 2's staff picker actually sets it). Also requires the master
+        // switch AND that this is an effective suite guest, the same gate
+        // every other guest-outbound Whapi path in the codebase uses.
+        const useWhapiForStage2 =
+          String((guest as Record<string, unknown> | null)?.dispatch_channel ?? "meta") === "whapi" &&
+          shouldRouteGuestOutboundViaWhapiSuites(guest as { room?: unknown; room_type?: unknown } | null);
+
         if (guestId) {
           const dup = await checkPipelineDuplicate(supabaseClient, {
             guestId,
@@ -830,22 +841,25 @@ async function handleStage2ArrivalConfirmation(
         const prevStaffMute = _suppressGuestRepliesStaffClaim;
         setSuppressGuestRepliesStaffClaim(false);
         try {
-          const waId = await sendReply(phone, arrivalReply, { scripted: true });
+          const waId = useWhapiForStage2
+            ? await sendWhapiText(cleanPhoneForMention(phone), arrivalReply)
+            : await sendReply(phone, arrivalReply, { scripted: true });
           if (!waId) {
             console.warn(
-              `[webhook] ⚠️ stage_2_arrival sendReply empty — phone:${phone} (will try pipeline fallback)`,
+              `[webhook] ⚠️ stage_2_arrival ${useWhapiForStage2 ? "sendWhapiText" : "sendReply"} empty — phone:${phone} (will try pipeline fallback)`,
             );
           } else {
             const convLogged = await insertGuestOutboundIfNotMuted(supabaseClient, {
               phone,
               guest_id: guestId,
-              message: arrivalReply,
+              message: useWhapiForStage2 ? `[WHAPI]\n${arrivalReply}` : arrivalReply,
               wa_message_id: waId === "unknown" ? null : waId,
               intent: outboundIntent,
+              channel: useWhapiForStage2 ? "whapi" : "meta",
             });
             if (!convLogged) {
               console.error(
-                `[webhook] ⚠️ stage_2_arrival Meta send OK but inbox log FAILED — phone:${phone} intent:${outboundIntent}`,
+                `[webhook] ⚠️ stage_2_arrival ${useWhapiForStage2 ? "Whapi" : "Meta"} send OK but inbox log FAILED — phone:${phone} intent:${outboundIntent}`,
               );
             }
             if (guestId) {
@@ -855,14 +869,18 @@ async function handleStage2ArrivalConfirmation(
                   guest_id: guestId, recipient: phone,
                   trigger_type: "stage_2_arrival", channel: "whatsapp",
                   status: "sent",
-                  payload: { source, ...(buttonTitle ? { buttonTitle } : {}) },
+                  payload: {
+                    source,
+                    channel: useWhapiForStage2 ? "whapi_session" : "meta_session",
+                    ...(buttonTitle ? { buttonTitle } : {}),
+                  },
                 });
                 if (logErr) console.warn("[webhook] notification_log stage_2_arrival:", logErr.message);
               } catch (logEx) {
                 console.warn("[webhook] notification_log stage_2_arrival:", (logEx as Error).message);
               }
             }
-            console.info(`[webhook] ✅ arrival reply sent to ${phone}`);
+            console.info(`[webhook] ✅ arrival reply sent to ${phone} via ${useWhapiForStage2 ? "Whapi" : "Meta"}`);
             sentOk = true;
           }
         } catch (e) {
@@ -874,7 +892,11 @@ async function handleStage2ArrivalConfirmation(
               guest_id: guestId, recipient: phone,
               trigger_type: "stage_2_arrival", channel: "whatsapp",
               status: replyStatus,
-              payload: { error: errMsg, source, ...(buttonTitle ? { buttonTitle } : {}) },
+              payload: {
+                error: errMsg, source,
+                channel: useWhapiForStage2 ? "whapi_session" : "meta_session",
+                ...(buttonTitle ? { buttonTitle } : {}),
+              },
             });
             if (logErr) console.warn("[webhook] notification_log insert error:", logErr.message);
           } catch (logEx) {
@@ -3328,6 +3350,10 @@ type GuestOutboundRow = {
   message: string;
   wa_message_id: string | null;
   intent: string;
+  // Defaults to "meta" — every existing call site in this file is Meta-only.
+  // Only the dispatch_channel="whapi" branch in handleStage2ArrivalConfirmation
+  // passes "whapi" explicitly (Phase 1, guest-outbound Whapi rollout).
+  channel?: "meta" | "whapi";
 };
 
 /** Strip dispatch tags before quoting a message in a reaction snippet. */
@@ -3387,7 +3413,8 @@ async function insertGuestOutboundIfNotMuted(
 ): Promise<boolean> {
   if (_suppressGuestRepliesStaffClaim) return false;
 
-  const baseRow = { ...row, inbox_channel: "meta", direction: "outbound" as const };
+  const channel = row.channel ?? "meta";
+  const baseRow = { ...row, inbox_channel: channel, channel, direction: "outbound" as const };
   let { error } = await supabase.from("whatsapp_conversations").insert(baseRow);
 
   // FAIL VISIBLE fallback: a stale intent CHECK must never block inbox logging

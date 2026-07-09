@@ -1554,6 +1554,7 @@ serve(async (req: Request) => {
             direction:     "outbound",
             message:       broadcastConvMsg,
             wa_message_id: routeViaWhapi ? whapiWamid : (dispatched?.wamid ?? null),
+            inbox_channel: routeViaWhapi ? "whapi" : "meta",
             channel:       routeViaWhapi ? "whapi" : "meta",
           });
         } catch (e) {
@@ -1718,11 +1719,16 @@ serve(async (req: Request) => {
         dispatchType: inboxChannel === "whapi" ? "Whapi" : "Session",
       });
 
-      // Insert outbound row so the inbox thread shows the message immediately
+      // Insert outbound row so the inbox thread shows the message immediately.
+      // inbox_channel reflects where the message ACTUALLY went (replyChannel,
+      // post-fallback) — not the staff-requested inboxChannel — so a Whapi
+      // attempt that failed and fell back to Meta files into the Meta thread,
+      // matching what the guest really received.
+      const deliveredChannel = replyChannel === "whapi_suites" ? "whapi" : "meta";
       await supabase.from("whatsapp_conversations").insert({
         phone:         targetPhone,
         guest_id:      staffGuest?.id ?? null,
-        inbox_channel: inboxChannel,
+        inbox_channel: deliveredChannel,
         direction:     "outbound",
         message:       replyStatus === "failed"
           ? inboxMsg
@@ -1730,7 +1736,7 @@ serve(async (req: Request) => {
               ? buildWhapiSuitesConversationLog(inboxMsg)
               : buildSessionConversationLog(inboxMsg)),
         wa_message_id: replyWamid,
-        channel:       replyChannel === "whapi_suites" ? "whapi" : "meta",
+        channel:       deliveredChannel,
       });
 
       return new Response(
@@ -1982,6 +1988,17 @@ serve(async (req: Request) => {
     if (forceWhapiSession && !isGuestWhapiSuitesEnabled()) {
       throw new Error("whapi_disabled: ערוץ Whapi נבחר אך אינו מופעל כרגע (GUEST_WHAPI_SUITES_ENABLED) — ההודעה לא נשלחה.");
     }
+    // stage_2_arrival and night_before each have their own dedicated block below
+    // that explicitly handles force_channel="whapi_session". Every other trigger
+    // either falls through to the generic pipeline branch (which already guards
+    // this — throws whapi_session_unavailable when unsupported) OR hits one of
+    // these three dedicated blocks that pre-date the Whapi work and never learned
+    // to check force_channel at all — without this guard they'd silently ignore
+    // a staff Whapi request and send via Meta instead (FAIL VISIBLE violation).
+    const WHAPI_UNSUPPORTED_STAGES = new Set(["morning_suite", "morning_welcome", "room_ready"]);
+    if (forceWhapiSession && WHAPI_UNSUPPORTED_STAGES.has(trigger)) {
+      throw new Error(`whapi_session_unavailable: שלב "${trigger}" אינו נתמך עדיין דרך Whapi — נא לבחור ערוץ אחר.`);
+    }
 
     if (!(trigger in PIPELINE_TEMPLATE) && !stageRow?.meta_template_name && !stageRow?.session_message_script_key) {
       throw new Error("unknown trigger: " + trigger);
@@ -2214,14 +2231,28 @@ serve(async (req: Request) => {
         portalLink,
       });
 
+      // Manual force_channel="whapi_session" only — mirrors night_before's
+      // pattern (whatsapp-send/index.ts night_before block). The autonomous/
+      // default path below (force !== true, including cron's
+      // pipeline_reconcile catch-up) is UNCHANGED and always stays Meta
+      // session — same contract night_before's own autonomous branch keeps.
+      // Guest-level dispatch_channel is read by whatsapp-webhook's live
+      // "כן מגיעים" confirm handler, not here.
+      const s2Channel: "meta" | "whapi" = forceWhapiSession ? "whapi" : "meta";
+
       let s2Status = "simulated";
       let s2Error: string | null = null;
+      let s2WhapiWamid: string | null = null;
       try {
         if (!sim) {
-          await sendStageSessionMessage(
-            targetPhone, body, undefined, [],
-            `stage_2_arrival guest_id=${guestId}`,
-          );
+          if (s2Channel === "whapi") {
+            s2WhapiWamid = await sendWhapiText(cleanPhoneForMention(targetPhone), body);
+          } else {
+            await sendStageSessionMessage(
+              targetPhone, body, undefined, [],
+              `stage_2_arrival guest_id=${guestId}`,
+            );
+          }
           s2Status = "sent";
         }
       } catch (e) {
@@ -2236,24 +2267,34 @@ serve(async (req: Request) => {
         trigger_type: "stage_2_arrival",
         channel: "whatsapp",
         status: s2Status,
-        payload: s2Error ? { error: s2Error, force: !!force } : { force: !!force },
+        payload: {
+          channel: s2Channel === "whapi" ? "whapi_session" : "session_message",
+          force: !!force,
+          ...(s2Error ? { error: s2Error } : {}),
+        },
       });
 
       if (s2Status === "sent" || s2Status === "simulated") {
         try {
-          const convMsg = buildSessionConversationLog(body);
+          const convMsg = s2Channel === "whapi"
+            ? buildWhapiSuitesConversationLog(body)
+            : buildSessionConversationLog(body);
+          const s2WamId = s2Channel === "whapi" ? s2WhapiWamid : null;
           let { error: convErr } = await supabase.from("whatsapp_conversations").insert({
             phone:         targetPhone,
             guest_id:      guestId,
             direction:     "outbound",
             message:       convMsg,
             intent:        "arrival_confirmed",
-            wa_message_id: null,
+            wa_message_id: s2WamId,
+            inbox_channel: s2Channel,
+            channel:       s2Channel,
           });
           if (convErr?.code === "23514") {
             const retry = await supabase.from("whatsapp_conversations").insert({
               phone: targetPhone, guest_id: guestId, direction: "outbound",
-              message: convMsg, intent: null, wa_message_id: null,
+              message: convMsg, intent: null, wa_message_id: s2WamId,
+              inbox_channel: s2Channel, channel: s2Channel,
             });
             convErr = retry.error;
           }
@@ -2284,7 +2325,7 @@ serve(async (req: Request) => {
           ok: s2Status === "sent" || s2Status === "simulated",
           simulation: sim,
           status: s2Status,
-          channel: "session_message",
+          channel: s2Channel === "whapi" ? "whapi_session" : "session_message",
           ...(s2Error ? { error: s2Error } : {}),
         }),
         { headers: { ...CORS, "Content-Type": "application/json" } },
@@ -2652,6 +2693,7 @@ serve(async (req: Request) => {
               body: `[${nightBeforeDispatch.channel === "template" ? nightBeforeDispatch.templateName : nightBeforeDispatch.freeTextKey}]`,
             }),
             wa_message_id: nightBeforeDispatch.channel === "whapi" ? nbWhapiWamid : null,
+            inbox_channel: nightBeforeDispatch.channel === "whapi" ? "whapi" : "meta",
             channel:       nightBeforeDispatch.channel === "whapi" ? "whapi" : "meta",
           });
           if (convErr) console.warn("[whatsapp-send] night_before conv log failed (non-blocking):", convErr.message);
@@ -3539,6 +3581,7 @@ serve(async (req: Request) => {
           direction: "outbound",
           message: pipelineConvMsg,
           wa_message_id: dispatchedWamid,
+          inbox_channel: forceWhapiSession ? "whapi" : "meta",
           channel: forceWhapiSession ? "whapi" : "meta",
         });
         if (convErr) {

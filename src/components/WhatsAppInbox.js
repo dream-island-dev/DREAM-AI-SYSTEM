@@ -1587,7 +1587,7 @@ function NewChatModal({ onClose, onSent }) {
       const personalised = bulkText.replace(/{{שם}}/g, g.name ?? "").replace(/\{\{שם\}\}/g, g.name ?? "");
       try {
         const { data, error } = await supabase.functions.invoke("whatsapp-send", {
-          body: { trigger: "inbox_reply", phone: g.phone, message: personalised, target_channel: sendChannel },
+          body: { trigger: "inbox_reply", phone: g.phone, message: personalised, inbox_channel: sendChannel },
         });
         if (!error && data?.ok) {
           // whatsapp-send's inbox_reply branch already inserts the outbound
@@ -1685,7 +1685,7 @@ function NewChatModal({ onClose, onSent }) {
     setSending(true); setErr(null);
     try {
       const { data, error } = await supabase.functions.invoke("whatsapp-send", {
-        body: { trigger: "inbox_reply", phone: selectedGuest.phone, message: freeText.trim(), target_channel: sendChannel },
+        body: { trigger: "inbox_reply", phone: selectedGuest.phone, message: freeText.trim(), inbox_channel: sendChannel },
       });
       if (error) throw new Error(data?.error ?? error.message ?? "שגיאה בשליחה");
       if (data && !data.ok) throw new Error(data.error ?? "שגיאה בשליחה");
@@ -3514,9 +3514,16 @@ export default function WhatsAppInbox({
     if (!pending || loading) return;
 
     const normTarget = normalizePhone(pending.phone);
-    const match = contacts.find(
+    const phoneMatches = contacts.filter(
       (c) => c.phone === pending.phone || normalizePhone(c.phone) === normTarget,
     );
+    // Deep links (Requests Board, QR modal, staff links) carry a phone only —
+    // no channel — and a guest can now have both a Meta and a Whapi thread.
+    // Deterministically prefer the Meta thread (primary/default channel) so
+    // the same phone always opens the same thread, instead of whichever one
+    // happened to sort first in the roster array.
+    const match =
+      phoneMatches.find((c) => (c.inbox_channel ?? "meta") === "meta") ?? phoneMatches[0];
 
     if (match) {
       openContact(match);
@@ -3526,6 +3533,8 @@ export default function WhatsAppInbox({
     }
 
     if (!loading) {
+      // No thread exists for this phone on either channel yet — Meta is the
+      // primary/default channel, so a brand-new synthetic contact opens there.
       openContact({ threadKey: `${pending.phone}::meta`, phone: pending.phone, inbox_channel: "meta" });
       if (pending.guestName) setNavGuestName(pending.guestName);
       pendingFocusRef.current = null;

@@ -378,6 +378,7 @@ const SCRIPT_KEY_FRIENDLY = {
   negative_feedback_reply:  "מענה למשוב שלילי",
   upsell_reply:             "הצעת שדרוג (Upsell)",
   fallback_reply:           "מענה ברירת מחדל (Fallback)",
+  greeting_reply:           "ברכת פתיחה — היי / שלום",
   positive_feedback_reply:  "מענה למשוב חיובי",
   upsell_accepted_reply:    "אישור קבלת שדרוג",
   upsell_decline_reply:     "סירוב לשדרוג",
@@ -1456,7 +1457,7 @@ function QueueGuestInboxLink({ guestName, phone, onOpenDreamBotChat }) {
 }
 
 export default function AutomationControlCenter({ onOpenDreamBotChat }) {
-  const [subTab, setSubTab] = useState("timeline"); // timeline | queue | history | builder | preview | templates
+  const [subTab, setSubTab] = useState("timeline"); // timeline | queue | history | builder | preview | templates | health
   const [stages, setStages] = useState([]);
   const [scriptsByKey, setScriptsByKey] = useState({});
   const [availableScriptKeys, setAvailableScriptKeys] = useState([]);
@@ -1476,6 +1477,25 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
   const [attentionOpen, setAttentionOpen] = useState(false);
   const [dismissedAttentionKeys, setDismissedAttentionKeys] = useState(new Set());
 
+  // ── Automation health watchdog (read-only preview) ───────────────────────
+  const [healthChecks, setHealthChecks] = useState(null);
+  const [loadingHealth, setLoadingHealth] = useState(false);
+  const [healthError, setHealthError] = useState(null);
+  const [healthRefreshedAt, setHealthRefreshedAt] = useState(null);
+  const HEALTH_CHECK_LABELS = {
+    cron_heartbeat_wa_cron: "דופק whatsapp-cron",
+    duplicate_lookup_failed: "חסימת כפילות שנכשלה בקריאה (lookup_failed)",
+    notification_failed_rate: "קצב כשלים בהודעות אוטומציה",
+    ai_failover_rate: "קצב failover בין מנועי AI",
+    template_approval_lookup: "בדיקת תבניות מול Meta",
+    automation_stages_read_error: "קריאת automation_stages",
+  };
+  const healthCheckLabel = (checkKey) => {
+    if (HEALTH_CHECK_LABELS[checkKey]) return HEALTH_CHECK_LABELS[checkKey];
+    if (checkKey.startsWith("template_approval:")) return `תבנית Meta: ${checkKey.slice("template_approval:".length)}`;
+    return checkKey;
+  };
+
   // ── Segment tabs + bulk dispatch ─────────────────────────────────────────
   const [queueSegment, setQueueSegment] = useState("suite");   // "suite" | "daypass"
   const [collapsedArrivalDays, setCollapsedArrivalDays] = useState(new Set());
@@ -1484,6 +1504,9 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
   const [dispatchProgress, setDispatchProgress] = useState(null);
   const [dispatchSummary, setDispatchSummary] = useState(null);
   const [showDispatchConfirm, setShowDispatchConfirm] = useState(false);
+  // Queue bulk Whapi action (Phase 2) — same confirm modal + send loop as the
+  // Meta bulk-send above, switched to force_channel="whapi_session" per item.
+  const [dispatchViaWhapi, setDispatchViaWhapi] = useState(false);
   const [showScheduleModal, setShowScheduleModal] = useState(false);
   const [scheduling, setScheduling] = useState(false);
   const [scheduleError, setScheduleError] = useState(null);
@@ -1593,6 +1616,26 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
     }
   }, [queuePreviewDate]);
 
+  // preview:true — read-only, never writes state or sends a Whapi alert
+  // (automation-health-cron/index.ts honors this regardless of
+  // AUTOMATION_HEALTH_ENABLED, so opening this tab is always safe).
+  const fetchHealth = useCallback(async () => {
+    if (!isSupabaseConfigured || !supabase) return;
+    setLoadingHealth(true);
+    setHealthError(null);
+    try {
+      const { data, error } = await supabase.functions.invoke("automation-health-cron", { body: { preview: true } });
+      if (error) throw new Error(error.message);
+      if (!data?.ok) throw new Error(data?.error ?? "unknown error");
+      setHealthChecks(data.checks ?? []);
+      setHealthRefreshedAt(new Date());
+    } catch (err) {
+      setHealthError(err?.message ?? String(err));
+    } finally {
+      setLoadingHealth(false);
+    }
+  }, []);
+
   const fetchMutedGuests = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) return;
     setLoadingMutedGuests(true);
@@ -1624,6 +1667,10 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
       fetchMutedGuests();
     }
   }, [subTab, fetchQueue, fetchMutedGuests, queuePreviewDate]);
+
+  useEffect(() => {
+    if (subTab === "health") fetchHealth();
+  }, [subTab, fetchHealth]);
 
   const scheduleQueueRefresh = useCallback(() => {
     if (queueSyncTimerRef.current) clearTimeout(queueSyncTimerRef.current);
@@ -1849,8 +1896,17 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
     "mid_stay_daypass", "checkout_fb_daypass",
   ]);
 
-  // ── Bulk dispatch — same call as whatsapp-cron uses ──────────────────────
-  const handleBulkDispatch = async (displayQueue) => {
+  // Stages whose dispatch block pre-dates the Whapi work and never learned to
+  // check force_channel — mirrors WHAPI_UNSUPPORTED_STAGES in whatsapp-send/
+  // index.ts. Excluded client-side (Disable, Don't Hide — shown as a blocked
+  // result with reason, not silently dropped) so a mixed selection doesn't
+  // rely on the server's per-stage guard alone.
+  const WHAPI_UNSUPPORTED_STAGES = new Set(["morning_suite", "morning_welcome", "room_ready"]);
+
+  // ── Bulk dispatch — same call as whatsapp-cron uses (viaWhapi pins
+  // force_channel="whapi_session" instead — manual dispatch only, never
+  // changes what cron itself sends) ────────────────────────────────────────
+  const handleBulkDispatch = async (displayQueue, viaWhapi = false) => {
     if (!isSupabaseConfigured || !supabase) return;
     setDispatching(true);
     const results = [];
@@ -1869,10 +1925,16 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
         results.push({ item, result: "blocked", reason: "day_pass_stage_gate" });
         continue;
       }
+      if (viaWhapi && WHAPI_UNSUPPORTED_STAGES.has(item.stageKey)) {
+        results.push({ item, result: "blocked", reason: "whapi_unsupported_stage" });
+        continue;
+      }
 
       try {
         const { data, error } = await supabase.functions.invoke("whatsapp-send", {
-          body: { trigger: item.stageKey, guestId: item.guestId },
+          body: viaWhapi
+            ? { trigger: item.stageKey, guestId: item.guestId, force: true, force_channel: "whapi_session" }
+            : { trigger: item.stageKey, guestId: item.guestId },
         });
         if (error) {
           results.push({ item, result: "error", error: error.message });
@@ -1900,6 +1962,7 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
     setDispatching(false);
     setDispatchProgress(null);
     setSelectedItems(new Set());
+    setDispatchViaWhapi(false);
     setDispatchSummary({
       total:   results.length,
       sent:    results.filter((r) => r.result === "sent").length,
@@ -1983,6 +2046,7 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
           { key: "builder",  label: "✨ אוטומציה חדשה" },
           { key: "preview",  label: "🧪 בדיקת תבניות" },
           { key: "templates", label: "📋 תבניות Meta" },
+          { key: "health",    label: "🩺 בריאות אוטומציה" },
         ].map(({ key, label }) => (
           <button key={key} onClick={() => setSubTab(key)} style={{
             background: "none", border: "none", cursor: "pointer",
@@ -2194,9 +2258,24 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                   background: "#fff", borderRadius: 16, padding: "28px 32px",
                   maxWidth: 440, width: "90%", direction: "rtl", boxShadow: "0 12px 48px rgba(0,0,0,0.25)",
                 }}>
-                  <div style={{ fontWeight: 800, fontSize: 18, marginBottom: 10 }}>🚀 אשר שגר הודעות</div>
+                  <div style={{ fontWeight: 800, fontSize: 18, marginBottom: 10 }}>
+                    {dispatchViaWhapi ? "📱 אשר שגר דרך מכשיר הסוויטות" : "🚀 אשר שגר הודעות"}
+                  </div>
                   <div style={{ fontSize: 14, color: "#444", lineHeight: 1.7, marginBottom: 20 }}>
-                    עומד לשלוח <strong>{selectedItems.size} הודעות</strong> לאורחים שנבחרו.
+                    עומד לשלוח <strong>{selectedItems.size} הודעות</strong> לאורחים שנבחרו
+                    {dispatchViaWhapi ? " דרך מכשיר הסוויטות (Whapi)" : ""}.
+                    {dispatchViaWhapi && (() => {
+                      const displayQ = queueSegment === "daypass" ? dayPassQueue : suiteQueue;
+                      const unsupportedCount = [...selectedItems].filter((k) => {
+                        const q = displayQ.find((qq) => `${qq.guestId}_${qq.stageKey}` === k);
+                        return q && WHAPI_UNSUPPORTED_STAGES.has(q.stageKey);
+                      }).length;
+                      return unsupportedCount > 0 ? (
+                        <div style={{ marginTop: 8, fontSize: 12, color: "#92400E", background: "#FFF8E7", borderRadius: 8, padding: "8px 12px", border: "1px solid #C9A96E" }}>
+                          ⚠ {unsupportedCount} מהנבחרים בשלב שעדיין לא נתמך דרך Whapi (בוקר הגעה / מסירת מפתח) — ידולגו ויוצגו בתוצאות.
+                        </div>
+                      ) : null;
+                    })()}
                     {queueSegment === "daypass" && (
                       <div style={{ marginTop: 8, fontSize: 12, color: "#7C3AED", background: "rgba(124,58,237,0.06)", borderRadius: 8, padding: "8px 12px", border: "1px solid #C4B5FD" }}>
                         🔒 אורחי יום-כיף — Stage 1 ו-Stage 2.5 ישתמשו בתבנית{" "}
@@ -2226,14 +2305,17 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                         // displayQueue is captured from the outer IIFE scope via closure.
                         // We re-derive it here to avoid stale-closure issues.
                         const displayQ = queueSegment === "daypass" ? dayPassQueue : suiteQueue;
-                        handleBulkDispatch(displayQ);
+                        handleBulkDispatch(displayQ, dispatchViaWhapi);
                       }}
                     >
-                      🚀 אשר ושגר
+                      {dispatchViaWhapi ? "📱 אשר ושגר" : "🚀 אשר ושגר"}
                     </button>
                     <button
                       className="btn btn-ghost btn-sm"
-                      onClick={() => setShowDispatchConfirm(false)}
+                      onClick={() => {
+                        setShowDispatchConfirm(false);
+                        setDispatchViaWhapi(false);
+                      }}
                     >
                       ביטול
                     </button>
@@ -2265,12 +2347,24 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                       <div style={{ color: "#7C3AED" }}>🔁 כפילויות נחסמו: <strong>{dispatchSummary.duplicates}</strong></div>
                     )}
                     {dispatchSummary.blocked > 0 && (
-                      <div style={{ color: "#7C3AED" }}>🔒 חסומות (שער Day Pass): <strong>{dispatchSummary.blocked}</strong></div>
+                      <div style={{ color: "#7C3AED" }}>🔒 חסומות: <strong>{dispatchSummary.blocked}</strong></div>
                     )}
                     {dispatchSummary.failed > 0 && (
                       <div style={{ color: "#C0392B" }}>❌ נכשלו: <strong>{dispatchSummary.failed}</strong></div>
                     )}
                   </div>
+                  {dispatchSummary.blocked > 0 && (
+                    <div style={{ marginTop: 16, maxHeight: 140, overflowY: "auto" }}>
+                      {dispatchSummary.details
+                        .filter((r) => r.result === "blocked")
+                        .map((r, i) => (
+                          <div key={i} style={{ fontSize: 11, color: "#7C3AED", padding: "4px 0", borderBottom: "1px solid var(--border)" }}>
+                            {r.item.guestName ?? r.item.guestId} — {r.item.displayName}:{" "}
+                            {r.reason === "whapi_unsupported_stage" ? "שלב לא נתמך עדיין דרך Whapi" : "שער יום-כיף"}
+                          </div>
+                        ))}
+                    </div>
+                  )}
                   {dispatchSummary.failed > 0 && (
                     <div style={{ marginTop: 16, maxHeight: 180, overflowY: "auto" }}>
                       {dispatchSummary.details
@@ -3133,15 +3227,34 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                 </button>
                 <button
                   className="btn btn-primary"
-                  onClick={() => setShowDispatchConfirm(true)}
+                  onClick={() => {
+                    setDispatchViaWhapi(false);
+                    setShowDispatchConfirm(true);
+                  }}
                   disabled={dispatching || scheduling}
                   style={{ minWidth: 180 }}
                 >
-                  {dispatching
+                  {dispatching && !dispatchViaWhapi
                     ? (dispatchProgress
                       ? `⏳ שולח ${dispatchProgress.current}/${dispatchProgress.total}…`
                       : "⏳ שולח...")
                     : "🚀 אשר ושגר"}
+                </button>
+                <button
+                  className="btn btn-primary"
+                  onClick={() => {
+                    setDispatchViaWhapi(true);
+                    setShowDispatchConfirm(true);
+                  }}
+                  disabled={dispatching || scheduling}
+                  style={{ minWidth: 200, background: "#1A7A4A", borderColor: "#1A7A4A" }}
+                  title="שגר את הנבחרים דרך מכשיר הסוויטות (Whapi) במקום Dream Bot — שלבים שאינם נתמכים עדיין ידולגו"
+                >
+                  {dispatching && dispatchViaWhapi
+                    ? (dispatchProgress
+                      ? `⏳ שולח ${dispatchProgress.current}/${dispatchProgress.total}…`
+                      : "⏳ שולח...")
+                    : "📱 שגר דרך מכשיר הסוויטות"}
                 </button>
                 <button
                   className="btn btn-ghost btn-sm"
@@ -3286,6 +3399,78 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
           initialCreateDraft={templateDraft}
           onDraftConsumed={() => setTemplateDraft(null)}
         />
+      )}
+
+      {subTab === "health" && (
+        <div style={{ maxWidth: 900 }}>
+          <div style={{
+            background: "linear-gradient(135deg, rgba(201,169,110,0.12) 0%, rgba(201,169,110,0.04) 100%)",
+            border: "1px solid var(--gold)", borderRadius: 12, padding: "14px 20px", marginBottom: 20,
+            fontSize: 13, color: "var(--text-muted)", lineHeight: 1.6,
+          }}>
+            🩺 תצוגה חיה, קריאה-בלבד (preview) — לא שולחת התראה ולא כותבת מצב. קרון נפרד
+            (<code>automation-health-cron</code>, כל 10 דק׳) מריץ את אותן בדיקות ומתריע ל-Whapi
+            בפועל רק אחרי הדלקת <code>AUTOMATION_HEALTH_ENABLED=true</code> ב-Supabase Secrets.
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+            <button className="btn btn-ghost btn-sm" onClick={fetchHealth} disabled={loadingHealth}>
+              {loadingHealth ? "⏳ טוען..." : "🔄 רענן"}
+            </button>
+            {healthRefreshedAt && (
+              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                עודכן: {healthRefreshedAt.toLocaleTimeString("he-IL")}
+              </span>
+            )}
+          </div>
+
+          {healthError && (
+            <div style={{
+              background: "#FFF0EE", border: "1px solid #C0392B", borderRadius: 10,
+              padding: 16, color: "#C0392B", marginBottom: 16,
+            }}>
+              ⚠️ שגיאה בטעינת בריאות אוטומציה: {healthError}
+            </div>
+          )}
+
+          {!healthError && loadingHealth && !healthChecks && (
+            <div style={{ textAlign: "center", padding: 60, color: "var(--text-muted)" }}>⏳ טוען בדיקות...</div>
+          )}
+
+          {!healthError && !loadingHealth && healthChecks && healthChecks.length === 0 && (
+            <div style={{ textAlign: "center", padding: 40, color: "var(--text-muted)" }}>אין בדיקות זמינות.</div>
+          )}
+
+          {healthChecks && healthChecks.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {healthChecks.map((c) => {
+                const bad = !!c.bad;
+                return (
+                  <div key={c.checkKey} style={{
+                    border: `1px solid ${bad ? "#C0392B" : "#1A7A4A"}`,
+                    background: bad ? "#FFF0EE" : "#E8F5EF",
+                    borderRadius: 10, padding: "12px 16px",
+                  }}>
+                    <div style={{
+                      display: "flex", alignItems: "center", gap: 8,
+                      fontWeight: 700, color: bad ? "#C0392B" : "#1A7A4A",
+                    }}>
+                      <span>{bad ? "🚨" : "✅"}</span>
+                      <span>{healthCheckLabel(c.checkKey)}</span>
+                    </div>
+                    {c.detail && Object.keys(c.detail).length > 0 && (
+                      <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 6, fontFamily: "monospace" }}>
+                        {Object.entries(c.detail)
+                          .map(([k, v]) => `${k}: ${typeof v === "object" ? JSON.stringify(v) : String(v)}`)
+                          .join("   ·   ")}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       )}
     </div>
   );

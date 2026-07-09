@@ -39,6 +39,7 @@ import {
   csvTextToRowObjects,
 } from "../utils/detailedReservationParser";
 import PriceDiscrepancyModal from "./PriceDiscrepancyModal";
+import { isSuiteGuestProfile } from "../utils/guestTiming";
 
 // Sorted, joined header signature — matches import_mapping_memory.header_signature (migration 049).
 // Not a hash: exact string equality is enough here and avoids a client-side hash dependency.
@@ -1073,6 +1074,16 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
   const [syncing,  setSyncing]  = useState(false);
   const [result,   setResult]   = useState(null);
   const [toast,    setToast]    = useState(null);
+
+  // ── Phase 2: batch dispatch_channel picker (guest-outbound Whapi rollout) ──
+  // Purely opt-in — sets guests.dispatch_channel on staff-selected suite guests
+  // from THIS sync batch only. Never sends anything itself (Queue's bulk Whapi
+  // action in AutomationControlCenter does that) and never touches cron.
+  const [syncedGuestsForWhapiPick, setSyncedGuestsForWhapiPick] = useState([]);
+  const [whapiPickSelected, setWhapiPickSelected] = useState(new Set());
+  const [whapiPickSaving, setWhapiPickSaving] = useState(false);
+  const [whapiPickDone, setWhapiPickDone] = useState(false);
+  const [whapiPickError, setWhapiPickError] = useState(null);
   const doc2Ref = useRef();
   const doc1Ref = useRef();
 
@@ -1704,6 +1715,9 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     if (!supabase || !canSync) return;
     setSyncing(true);
     setResult(null);
+    setSyncedGuestsForWhapiPick([]);
+    setWhapiPickDone(false);
+    setWhapiPickError(null);
     try {
 
       // ── PATH A: Suite CSV loaded (rooms + guests + bookings) ─────────────
@@ -1996,6 +2010,31 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
             gridByProfileIdx.get(i)?.guestName || mergedCandidates[i]?.guestName || `שורה ${i + 1}`),
         });
 
+        // ── Phase 2: batch dispatch_channel picker ──────────────────────────
+        // Purely additive read — reuses the phones already computed above for
+        // this sync batch (profiles), does not touch the patch loop. Suite-only
+        // (מכשיר הסוויטות is a suites device; day-pass guests can't use it).
+        try {
+          const syncedPhones = [...new Set(profiles.map((p) => p.guestPhone).filter(Boolean))];
+          if (syncedPhones.length > 0) {
+            const { data: syncedGuestRows, error: syncedLookupErr } = await supabase
+              .from("guests")
+              .select("id, name, phone, room, room_type, dispatch_channel")
+              .in("phone", syncedPhones);
+            if (syncedLookupErr) throw syncedLookupErr;
+            const suiteRows = (syncedGuestRows ?? []).filter((g) => isSuiteGuestProfile(g));
+            setSyncedGuestsForWhapiPick(suiteRows);
+          } else {
+            setSyncedGuestsForWhapiPick([]);
+          }
+        } catch (e) {
+          console.warn("[ArrivalImportPanel] dispatch_channel picker guest lookup failed (non-blocking):", e?.message);
+          setSyncedGuestsForWhapiPick([]);
+        }
+        setWhapiPickSelected(new Set());
+        setWhapiPickDone(false);
+        setWhapiPickError(null);
+
       // ── PATH B: Daily Report only — ENRICHMENT ONLY ─────────────────────
       // Updates spa/meal fields on EXISTING guests only. Never inserts new rows.
       // Guests must already exist from a Doc 2 (Suite CSV) import. This enforces
@@ -2097,6 +2136,48 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     }
   };
 
+  // ── Phase 2: batch dispatch_channel picker — sets guests.dispatch_channel
+  // on staff-selected guests from this sync only. Opt-in, never retroactive
+  // (only touches the ids staff explicitly checked just now); does not send
+  // anything — dispatch actually happens later via ACC's Queue / manual send.
+  const toggleWhapiPick = (id) => {
+    setWhapiPickSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+  const toggleWhapiPickAll = () => {
+    setWhapiPickSelected((prev) =>
+      prev.size === syncedGuestsForWhapiPick.length
+        ? new Set()
+        : new Set(syncedGuestsForWhapiPick.map((g) => g.id)),
+    );
+  };
+  const handleWhapiPickConfirm = async () => {
+    if (!supabase || whapiPickSelected.size === 0) return;
+    setWhapiPickSaving(true);
+    setWhapiPickError(null);
+    try {
+      const ids = [...whapiPickSelected];
+      const { error } = await supabase
+        .from("guests")
+        .update({ dispatch_channel: "whapi" })
+        .in("id", ids);
+      if (error) throw error;
+      setSyncedGuestsForWhapiPick((prev) =>
+        prev.map((g) => (ids.includes(g.id) ? { ...g, dispatch_channel: "whapi" } : g)),
+      );
+      setWhapiPickSelected(new Set());
+      setWhapiPickDone(true);
+      showToast("ok", `📱 ${ids.length} אורחים שויכו למכשיר הסוויטות`);
+    } catch (err) {
+      setWhapiPickError(err?.message ?? String(err));
+    } finally {
+      setWhapiPickSaving(false);
+    }
+  };
+
   const reset = () => {
     setDoc2Map(null); setDoc1Rec(null); setRawDoc1Payload(null);
     setDoc2Name(""); setDoc1Name("");
@@ -2105,6 +2186,8 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     setSuiteAssignmentForceRoom(false);
     setMerged(null); setGridRows([]); setShowOnlyWithSpa(true);
     setDetailedRoomFilter("all"); setSelectedIds(new Set()); setResult(null);
+    setSyncedGuestsForWhapiPick([]); setWhapiPickSelected(new Set());
+    setWhapiPickDone(false); setWhapiPickError(null);
     setMappingStage("idle"); setRawDoc2Rows(null); setDoc2Fallback(null);
     setAiSuggestion(null); setAiError(null); setAutoDateBanner(null);
     setImportSource(null); setDetailedFileName("");
@@ -3096,6 +3179,75 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                 fontFamily: "Heebo, sans-serif", fontSize: 13, fontWeight: 700,
               }}>
                 ← ייבוא נוסף
+              </button>
+            </div>
+          )}
+
+          {syncedGuestsForWhapiPick.length > 0 && (
+            <div style={{
+              marginTop: 16, background: "#FFF8E7", border: "1px solid #C9A96E",
+              borderRadius: 12, padding: "18px 20px",
+            }}>
+              <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 6, color: "#8a6d1a" }}>
+                📱 שיוך ערוץ שליחה — מכשיר הסוויטות (Whapi)
+              </div>
+              <div style={{ fontSize: 12.5, color: "#6b5b3a", marginBottom: 12, lineHeight: 1.6 }}>
+                {syncedGuestsForWhapiPick.length} אורחי סוויטות מהייבוא הזה. ברירת המחדל היא Dream Bot (Meta) —
+                סמן כאן רק מי שרוצים לשגר להם דרך מכשיר הסוויטות במקום. הפעולה הזו לא שולחת כלום —
+                רק קובעת ערוץ; השיגור עצמו מתבצע מ«בקרת אוטומציה → תור חי».
+              </div>
+              {whapiPickError && (
+                <div style={{ background: "#FFF0EE", border: "1px solid #C0392B", borderRadius: 8, padding: "8px 12px", color: "#C0392B", fontSize: 12.5, marginBottom: 10 }}>
+                  ⚠️ {whapiPickError}
+                </div>
+              )}
+              {whapiPickDone && whapiPickSelected.size === 0 && !whapiPickError && (
+                <div style={{ background: "#E8F5EF", border: "1px solid #1A7A4A", borderRadius: 8, padding: "8px 12px", color: "#1A7A4A", fontSize: 12.5, marginBottom: 10 }}>
+                  ✅ עודכן. ניתן לסמן עוד אורחים או לסיים.
+                </div>
+              )}
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                <button type="button" onClick={toggleWhapiPickAll} style={{ fontSize: 12, padding: "4px 10px", borderRadius: 8, border: "1px solid #C9A96E", background: "#fff", cursor: "pointer" }}>
+                  {whapiPickSelected.size === syncedGuestsForWhapiPick.length ? "נקה בחירה" : "בחר הכל"}
+                </button>
+                <span style={{ fontSize: 12, color: "#6b5b3a" }}>{whapiPickSelected.size} נבחרו</span>
+              </div>
+              <div style={{ maxHeight: 220, overflowY: "auto", border: "1px solid #EADFC5", borderRadius: 8, background: "#fff" }}>
+                {syncedGuestsForWhapiPick.map((g) => (
+                  <label key={g.id} style={{
+                    display: "flex", alignItems: "center", gap: 10, padding: "8px 12px",
+                    borderBottom: "1px solid #F3EEDF", fontSize: 13, cursor: "pointer",
+                    opacity: g.dispatch_channel === "whapi" ? 0.6 : 1,
+                  }}>
+                    <input
+                      type="checkbox"
+                      checked={whapiPickSelected.has(g.id)}
+                      onChange={() => toggleWhapiPick(g.id)}
+                      disabled={g.dispatch_channel === "whapi"}
+                    />
+                    <span style={{ fontWeight: 600 }}>{g.name || "—"}</span>
+                    <span style={{ color: "#8a8266" }}>{g.phone}</span>
+                    {g.room && <span style={{ color: "#8a8266" }}>· {g.room}</span>}
+                    {g.dispatch_channel === "whapi" && (
+                      <span style={{ marginRight: "auto", fontSize: 11, color: "#1A7A4A", fontWeight: 700 }}>
+                        📱 כבר משויך
+                      </span>
+                    )}
+                  </label>
+                ))}
+              </div>
+              <button
+                type="button"
+                onClick={handleWhapiPickConfirm}
+                disabled={whapiPickSaving || whapiPickSelected.size === 0}
+                style={{
+                  marginTop: 12, padding: "8px 18px", borderRadius: 8, border: "none",
+                  background: whapiPickSaving || whapiPickSelected.size === 0 ? "#D9CBA3" : "#1A7A4A",
+                  color: "#fff", fontWeight: 700, fontSize: 13,
+                  cursor: whapiPickSaving || whapiPickSelected.size === 0 ? "not-allowed" : "pointer",
+                }}
+              >
+                {whapiPickSaving ? "⏳ שומר..." : `📱 שייך ${whapiPickSelected.size || ""} למכשיר הסוויטות`}
               </button>
             </div>
           )}
