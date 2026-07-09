@@ -1142,8 +1142,9 @@ async function invokeForcedDispatch({ guestId, stageKey, forceChannel, scheduled
       trigger: stageKey,
       guestId,
       force: true,
-      // night_before: omit force_channel — server picks session vs template from live wa_window_expires_at
-      ...(stageKey !== "night_before" && forceChannel ? { force_channel: forceChannel } : {}),
+      // night_before now properly honors force_channel too (2026-07-09 fix) — no
+      // longer special-cased/omitted here. See whatsapp-send's night_before block.
+      ...(forceChannel ? { force_channel: forceChannel } : {}),
       manual_override: true,
       scheduled_for: scheduledFor ?? undefined,
       image_url: imageUrl ?? (stageKey === "night_before" ? NIGHT_BEFORE_OVERRIDE_IMAGE : undefined),
@@ -1179,10 +1180,14 @@ function ManualDispatchModal({ item, stages, onClose, onDispatched, showToast })
 
   const selectedStage   = stages.find((s) => s.stage_key === stageKey);
   const hasScriptKey    = !!selectedStage?.session_message_script_key;
+  // night_before's Shabbat/holiday-aware fast-path now properly honors
+  // force_channel (2026-07-09 fix) — Whapi is gated by hasScriptKey only,
+  // same as every other stage, no more stage-specific exclusion here.
 
-  // When stage changes, revert to meta_template if session is not available.
+  // When stage changes, revert to meta_template if session/whapi is not available.
   useEffect(() => {
     if (channel === "session_message" && !hasScriptKey) setChannel("meta_template");
+    if (channel === "whapi_session" && !hasScriptKey) setChannel("meta_template");
   }, [stageKey, hasScriptKey, channel]);
 
   const runDispatch = async (scheduledFor) => {
@@ -1326,6 +1331,23 @@ function ManualDispatchModal({ item, stages, onClose, onDispatched, showToast })
               🟢 Bot Script<br />
               <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
                 {hasScriptKey ? "מאלץ שליחה גם אם חלון סגור" : "לא זמין לשלב זה"}
+              </span>
+            </button>
+            <button
+              onClick={() => hasScriptKey && setChannel("whapi_session")}
+              disabled={sending || !hasScriptKey}
+              title={!hasScriptKey ? "שלב זה אינו מוגדר עם Bot Script" : undefined}
+              style={{
+                flex: 1, padding: "8px 12px", borderRadius: 10, border: `2px solid ${channel === "whapi_session" ? "#1A7A4A" : "var(--border)"}`,
+                background: channel === "whapi_session" ? "rgba(26,122,74,0.08)" : (hasScriptKey ? "#fff" : "#f5f5f5"),
+                fontWeight: channel === "whapi_session" ? 700 : 400,
+                cursor: hasScriptKey ? "pointer" : "not-allowed", fontSize: 13,
+                color: hasScriptKey ? "inherit" : "var(--text-muted)",
+              }}
+            >
+              📱 Whapi (מכשיר הסוויטות)<br />
+              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                {hasScriptKey ? "אותו טקסט Bot Script, דרך המכשיר המחובר" : "לא זמין לשלב זה"}
               </span>
             </button>
           </div>

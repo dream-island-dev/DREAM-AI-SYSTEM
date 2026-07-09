@@ -1,0 +1,11 @@
+-- ================================================================
+-- Migration 163: PLACEHOLDER — no-op.
+--
+-- This version was applied directly to the production database from
+-- a different machine/session (outside this git worktree's migration
+-- history) — confirmed by Mike, 2026-07-09. The actual SQL that ran
+-- was never committed to this repo. This empty placeholder exists so
+-- the Supabase CLI's local-vs-remote migration history check passes
+-- (it only verifies that a file exists for each version the remote
+-- already has recorded as applied) — it intentionally does nothing.
+-- ================================================================

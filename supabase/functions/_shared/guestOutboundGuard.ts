@@ -16,6 +16,10 @@ export type ActiveGuestRow = {
   automation_muted?: boolean | null;
   automation_scope?: string | null;
   claimed_by?: string | null;
+  // Additive (guest-outbound Whapi routing, Phase 1) — needed to classify
+  // effective suite guests via _shared/suiteNames.ts's isEffectiveSuiteGuest().
+  room?: string | null;
+  room_type?: string | null;
 };
 
 export function phoneLookupVariants(phone: string): string[] {
@@ -49,7 +53,7 @@ export function assertGuestEligibleForAutomation(
 }
 
 const ACTIVE_GUEST_SELECT =
-  "id, phone, status, name, wa_window_expires_at, portal_token, automation_muted, automation_scope, claimed_by";
+  "id, phone, status, name, wa_window_expires_at, portal_token, automation_muted, automation_scope, claimed_by, room, room_type";
 
 export async function loadActiveGuestById(
   supabase: SupabaseClient,

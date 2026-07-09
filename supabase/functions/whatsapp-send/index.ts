@@ -57,7 +57,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendImageMessage, sendInteractiveButtons } from "../_shared/interactiveSend.ts";
 import { isArrivalTodayIsrael, israelTodayYmd } from "../_shared/israelDate.ts";
 import { sanitizeMetaRecipientPhone } from "../_shared/metaPhone.ts";
-import { sendWhapiText } from "../_shared/whapiSend.ts";
+import { sendWhapiText, cleanPhoneForMention } from "../_shared/whapiSend.ts";
 import {
   guardPaymentLink,
   logPaymentLinkFailure,
@@ -100,6 +100,7 @@ import {
   markSuiteRoomReadySent,
   syncGuestRoomReadyAggregate,
 } from "../_shared/suiteRoomReady.ts";
+import { isGuestWhapiSuitesEnabled } from "../_shared/guestWhapiRouting.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -131,13 +132,15 @@ function sessionButtonsToLabels(buttons: InteractiveButtonDef[]): string[] {
     .map((b) => String(b.label).trim());
 }
 
-/** Prefix [META]/[SESSION] + optional interactive-button footer for whatsapp_conversations. */
+/** Prefix [META]/[SESSION]/[WHAPI] + optional interactive-button footer for whatsapp_conversations. */
 function formatOutboundConversationLog(opts: {
-  channel: "meta_template" | "session_message";
+  channel: "meta_template" | "session_message" | "whapi_suites";
   body: string;
   interactiveButtonLabels?: string[];
 }): string {
-  const tag = opts.channel === "meta_template" ? "[META]" : "[SESSION]";
+  const tag =
+    opts.channel === "meta_template" ? "[META]" :
+    opts.channel === "whapi_suites" ? "[WHAPI]" : "[SESSION]";
   const lines: string[] = [tag, truncateConversationLog(opts.body.trim())];
   const labels = opts.interactiveButtonLabels?.filter(Boolean) ?? [];
   if (labels.length > 0) {
@@ -156,6 +159,13 @@ function buildSessionConversationLog(
     body,
     interactiveButtonLabels: labels.length ? labels : undefined,
   });
+}
+
+// Guest-outbound Whapi routing (Phase 1) — suite guests sent via the Suites
+// device. No interactive-button concept on Whapi's plain-text send, so no
+// labels param (unlike buildSessionConversationLog above).
+function buildWhapiSuitesConversationLog(body: string): string {
+  return formatOutboundConversationLog({ channel: "whapi_suites", body });
 }
 
 /**
@@ -1207,7 +1217,7 @@ serve(async (req: Request) => {
 
   try {
     const body = await req.json();
-    const { trigger, guestId, roomId: requestRoomId, assignments, weekStart, waTemplateName, templateVariables, force, force_channel, manual_override, scheduled_for, is_test, phone: testPhone, image_url: requestImageUrl, pipeline_reconcile } = body as {
+    const { trigger, guestId, roomId: requestRoomId, assignments, weekStart, waTemplateName, templateVariables, force, force_channel, manual_override, scheduled_for, is_test, phone: testPhone, image_url: requestImageUrl, pipeline_reconcile, target_channel } = body as {
       trigger:             string;
       guestId?:            string;
       roomId?:             string;    // room_ready — canonical suite label (multi-room)
@@ -1216,13 +1226,14 @@ serve(async (req: Request) => {
       waTemplateName?:     string;    // approved WA template name
       templateVariables?:  string[];  // values for {{1}}, {{2}}, … in the template body
       force?:              boolean;   // Manual override: skip kill-switch + idempotency guard
-      force_channel?:      "meta_template" | "session_message"; // Pin channel for manual dispatch
+      force_channel?:      "meta_template" | "session_message" | "whapi_session"; // Pin channel for manual dispatch
       manual_override?:    boolean;   // Staff Smart Override — logs context + cancels scheduled_tasks
       scheduled_for?:      string;    // ISO — audit when cancelling a future cron slot
       is_test?:            boolean;   // template_test isolation gate
       phone?:              string;    // template_test target (E.164)
       image_url?:          string;    // optional IMAGE header (templates) or session caption image
       pipeline_reconcile?: boolean;   // cron catch-up for arrival_confirmed guests missing Stage 2
+      target_channel?:     "meta" | "whapi"; // Manual staff choice for inbox_reply/broadcast — see guestWhapiRouting.ts
     };
 
     if (!trigger) throw new Error("trigger is required");
@@ -1445,6 +1456,25 @@ serve(async (req: Request) => {
 
       const vars = ensureTemplateBodyVars(waTemplateName, templateVariables ?? [], guest);
 
+      // ── Manual channel choice (same contract as inbox_reply above) ────────
+      // Default is always Meta's approved-template API, unchanged. Whapi is
+      // only used when staff explicitly picked it AND the master switch is
+      // on — never inferred from guest type. Sending a Meta template as plain
+      // Whapi text loses quick-reply buttons and can drift from the actually-
+      // approved wording if message_templates is stale — the frontend surfaces
+      // that caveat inline before staff picks this option.
+      if (target_channel === "whapi" && !isGuestWhapiSuitesEnabled()) {
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            status: "whapi_disabled",
+            error: "whapi_disabled: ערוץ Whapi נבחר אך אינו מופעל כרגע (GUEST_WHAPI_SUITES_ENABLED) — ההודעה לא נשלחה.",
+          }),
+          { headers: { ...CORS, "Content-Type": "application/json" } },
+        );
+      }
+      const routeViaWhapi = target_channel === "whapi";
+
       let status = "simulated";
       let sendError: string | null = null;
       // Populated ONLY on a real, confirmed Meta dispatch — the literal
@@ -1452,9 +1482,18 @@ serve(async (req: Request) => {
       // Never fall back to `waTemplateName`/`vars` for logging: those are the
       // caller's INTENT, not proof of what was actually transmitted.
       let dispatched: DispatchedTemplate | null = null;
+      let whapiWamid: string | null = null;
+      // Resolved once, up front, regardless of sim mode — reused for both the
+      // actual send (only when !sim) and the conversation-log fallback below,
+      // so a real dispatch never renders the template body twice.
+      const whapiBody = routeViaWhapi ? await resolveMetaTemplateBodyText(supabase, waTemplateName, vars) : null;
       try {
         if (!sim) {
-          dispatched = await sendViaTemplate(guestPhone, waTemplateName, vars, "he", undefined, requestImageUrl);
+          if (routeViaWhapi) {
+            whapiWamid = await sendWhapiText(cleanPhoneForMention(guestPhone), whapiBody!);
+          } else {
+            dispatched = await sendViaTemplate(guestPhone, waTemplateName, vars, "he", undefined, requestImageUrl);
+          }
           status = "sent";
         }
       } catch (e) {
@@ -1483,6 +1522,7 @@ serve(async (req: Request) => {
         payload: {
           template:  dispatched?.templateName ?? waTemplateName,
           variables: dispatched?.variables ?? vars,
+          ...(routeViaWhapi ? { sendChannel: "whapi" } : {}),
           ...(sendError ? { error: sendError } : {}),
         },
       });
@@ -1498,17 +1538,20 @@ serve(async (req: Request) => {
           // null there — the caller's intended template/vars are the only
           // truth available. A real send always has `dispatched` populated;
           // it is what actually left for Meta and is what gets logged.
-          const broadcastConvMsg = await buildConversationLogFromTemplate(
-            supabase,
-            dispatched?.templateName ?? waTemplateName,
-            dispatched?.variables ?? vars,
-          );
+          const broadcastConvMsg = routeViaWhapi
+            ? buildWhapiSuitesConversationLog(whapiBody!)
+            : await buildConversationLogFromTemplate(
+                supabase,
+                dispatched?.templateName ?? waTemplateName,
+                dispatched?.variables ?? vars,
+              );
           const { error: convErr } = await supabase.from("whatsapp_conversations").insert({
             phone:         guest.phone as string,
             guest_id:      guestId,
             direction:     "outbound",
             message:       broadcastConvMsg,
-            wa_message_id: dispatched?.wamid ?? null,
+            wa_message_id: routeViaWhapi ? whapiWamid : (dispatched?.wamid ?? null),
+            channel:       routeViaWhapi ? "whapi" : "meta",
           });
         } catch (e) {
           console.warn("[whatsapp-send] broadcast conversation log failed (non-blocking):", (e as Error).message);
@@ -1550,41 +1593,128 @@ serve(async (req: Request) => {
       // null below) — conversation history is the contract, not the profile.
       const staffGuest = await loadGuestByPhoneForStaffReply(supabase, targetPhone);
 
-      // ── 24-Hour Interaction Window Guard ─────────────────────────────────
-      // inbox_reply sends raw free text — previously unchecked here, so a
-      // manager replying to a stale thread just hit a possibly-cryptic Meta
-      // rejection AFTER attempting the send (CLAUDE.md §CORE BUSINESS LOGIC
-      // point 3 flagged this as open). Checking first turns the same
-      // inevitable outcome (Meta would reject either way — free text outside
-      // the window is a hard Meta rule, not a preference we control) into a
-      // fast, clear, pre-send signal instead of an after-the-fact API error.
-      // Only enforced when the phone matches a known guest row; an untracked
-      // number (no guest record) keeps today's permissive behavior, since we
-      // have no window data to check.
-      if (staffGuest && !isWindowOpen(staffGuest.wa_window_expires_at)) {
+      // ── Guest Outbound Whapi Routing — MANUAL, explicit control only ─────
+      // Reverted from automatic guest-type classification (session 2026-07-09):
+      // Mike stopped that design — silently rerouting a live conversation by
+      // room_type risked disrupting an in-progress chat with zero staff
+      // action in the loop. The channel is now decided ENTIRELY by what the
+      // caller explicitly asks for — never inferred from the guest row.
+      // Two independent gates, both required: (1) the caller passed the
+      // literal string "whapi" (anything else, including omitted, is "meta"
+      // — restores today's exact legacy default), AND (2) the master switch
+      // GUEST_WHAPI_SUITES_ENABLED is on (_shared/guestWhapiRouting.ts). If
+      // staff explicitly asked for Whapi but the switch is off, that's a
+      // FAIL VISIBLE condition (§0.3) — surfaced as a clear error below, not
+      // a silent fall-through to Meta the caller didn't ask for.
+      const targetChannel = target_channel === "whapi" ? "whapi" : "meta";
+      if (targetChannel === "whapi" && !isGuestWhapiSuitesEnabled()) {
         return new Response(
           JSON.stringify({
             ok: false,
-            status: "window_closed",
-            error: "window_closed: חלון 24 השעות סגור — האורח לא הגיב ב-24 השעות האחרונות, לא ניתן לשלוח הודעה חופשית. נדרשת תבנית מאושרת.",
+            status: "whapi_disabled",
+            error: "whapi_disabled: ערוץ Whapi נבחר אך אינו מופעל כרגע (GUEST_WHAPI_SUITES_ENABLED) — ההודעה לא נשלחה.",
           }),
           { headers: { ...CORS, "Content-Type": "application/json" } },
         );
       }
+      const routeViaWhapiSuites = targetChannel === "whapi";
 
       let replyStatus = "simulated";
       let replyErr: string | null = null;
       let replyWamid: string | null = null;
+      let replyChannel: "meta" | "whapi_suites" = "meta";
+      // Set only when the Whapi attempt below hits a CONFIRMED failure (not a
+      // timeout) and we fall through to Meta — surfaced only if Meta then also
+      // fails, so a successful fallback stays silent to the caller (still
+      // console.warn'd for anyone reading Edge Function logs).
+      let whapiFallbackNote: string | null = null;
 
-      try {
-        if (!sim) {
-          replyWamid = await sendViaMeta(targetPhone, inboxMsg);
-          replyStatus = "sent";
+      if (routeViaWhapiSuites) {
+        try {
+          if (!sim) {
+            // Uses the already-connected Whapi device (default WHAPI_TOKEN) —
+            // not a separate Suites token/channel. See guestWhapiRouting.ts.
+            // Whapi requires bare digits for a 1:1 contact "to" (no leading
+            // "+", unlike guests.phone's stored E.164 form) — cleanPhoneForMention
+            // is the existing digit-stripping helper, reused here for that reason.
+            replyWamid = await sendWhapiText(cleanPhoneForMention(targetPhone), inboxMsg);
+          }
+          replyStatus = sim ? "simulated" : "sent";
+          replyChannel = "whapi_suites";
+        } catch (e) {
+          const whapiMessage = (e as Error).message;
+          if (whapiMessage.startsWith("timeout_no_response")) {
+            // Delivery genuinely unknown — never auto-retry on a second real
+            // WhatsApp number (risks a guest-visible double send). Surface
+            // this distinctly instead of silently falling back to Meta.
+            console.error("[whatsapp] inbox_reply Whapi Suites TIMED OUT (unknown delivery):", whapiMessage);
+            await notifyAdminIfDispatchFailed({
+              status: "timeout",
+              error: whapiMessage,
+              guestPhone: targetPhone,
+              dispatchType: "Session",
+            });
+            return new Response(
+              JSON.stringify({
+                ok: false,
+                status: "timeout",
+                error: `whapi_timeout: ${whapiMessage}`,
+              }),
+              { headers: { ...CORS, "Content-Type": "application/json" } },
+            );
+          }
+          // Confirmed failure (non-2xx, missing token, etc.) — degrade to the
+          // existing Meta path below rather than hard-failing the send.
+          console.warn("[whatsapp] inbox_reply Whapi Suites send failed, falling back to Meta:", whapiMessage);
+          whapiFallbackNote = whapiMessage;
         }
-      } catch (e) {
-        replyErr = (e as Error).message;
-        console.error("[whatsapp] inbox_reply send failed:", replyErr);
-        replyStatus = "failed";
+      }
+
+      // Meta path — unchanged behavior. Taken whenever not routing via Whapi
+      // at all, OR when the Whapi attempt above hit a confirmed failure.
+      if (replyChannel !== "whapi_suites") {
+        // ── 24-Hour Interaction Window Guard ───────────────────────────────
+        // inbox_reply sends raw free text — previously unchecked here, so a
+        // manager replying to a stale thread just hit a possibly-cryptic Meta
+        // rejection AFTER attempting the send (CLAUDE.md §CORE BUSINESS LOGIC
+        // point 3 flagged this as open). Checking first turns the same
+        // inevitable outcome (Meta would reject either way — free text outside
+        // the window is a hard Meta rule, not a preference we control) into a
+        // fast, clear, pre-send signal instead of an after-the-fact API error.
+        // Only enforced when the phone matches a known guest row; an untracked
+        // number (no guest record) keeps today's permissive behavior, since we
+        // have no window data to check. Not applicable to the Whapi path
+        // above — that's a real WhatsApp number, no Meta session-window exists.
+        if (staffGuest && !isWindowOpen(staffGuest.wa_window_expires_at)) {
+          return new Response(
+            JSON.stringify({
+              ok: false,
+              status: "window_closed",
+              error: whapiFallbackNote
+                ? `whapi_failed: ${whapiFallbackNote}; window_closed: חלון 24 השעות סגור — האורח לא הגיב ב-24 השעות האחרונות, לא ניתן לשלוח הודעה חופשית. נדרשת תבנית מאושרת.`
+                : "window_closed: חלון 24 השעות סגור — האורח לא הגיב ב-24 השעות האחרונות, לא ניתן לשלוח הודעה חופשית. נדרשת תבנית מאושרת.",
+            }),
+            { headers: { ...CORS, "Content-Type": "application/json" } },
+          );
+        }
+
+        try {
+          if (!sim) {
+            replyWamid = await sendViaMeta(targetPhone, inboxMsg);
+            replyStatus = "sent";
+          }
+        } catch (e) {
+          replyErr = (e as Error).message;
+          console.error("[whatsapp] inbox_reply send failed:", replyErr);
+          replyStatus = "failed";
+        }
+
+        if (whapiFallbackNote && replyErr) {
+          // Both channels were attempted and both failed — combine so the
+          // admin alert and caller-visible error carry full context instead
+          // of losing the Whapi attempt to a console.warn nobody reads.
+          replyErr = `whapi_failed: ${whapiFallbackNote}; meta_failed: ${replyErr}`;
+        }
       }
 
       await notifyAdminIfDispatchFailed({
@@ -1601,8 +1731,11 @@ serve(async (req: Request) => {
         direction:     "outbound",
         message:       replyStatus === "failed"
           ? inboxMsg
-          : buildSessionConversationLog(inboxMsg),
+          : (replyChannel === "whapi_suites"
+              ? buildWhapiSuitesConversationLog(inboxMsg)
+              : buildSessionConversationLog(inboxMsg)),
         wa_message_id: replyWamid,
+        channel:       replyChannel === "whapi_suites" ? "whapi" : "meta",
       });
 
       return new Response(
@@ -1847,6 +1980,13 @@ serve(async (req: Request) => {
 
     const forceMetaTemplate   = force === true && force_channel === "meta_template";
     const forceSessionMessage = force === true && force_channel === "session_message";
+    // Manual dispatch of tonight's automation through the Whapi device
+    // (AutomationControlCenter's ManualDispatchModal) — explicit staff choice
+    // only, same two-gate contract as inbox_reply/broadcast above.
+    const forceWhapiSession   = force === true && force_channel === "whapi_session";
+    if (forceWhapiSession && !isGuestWhapiSuitesEnabled()) {
+      throw new Error("whapi_disabled: ערוץ Whapi נבחר אך אינו מופעל כרגע (GUEST_WHAPI_SUITES_ENABLED) — ההודעה לא נשלחה.");
+    }
 
     if (!(trigger in PIPELINE_TEMPLATE) && !stageRow?.meta_template_name && !stageRow?.session_message_script_key) {
       throw new Error("unknown trigger: " + trigger);
@@ -2255,14 +2395,23 @@ serve(async (req: Request) => {
     // ── Night-before dispatch (Stage 2.5 — suites only) ─────────────────────
     // Day-pass guests use trigger 'night_before_daypass' (generic BRANCH D below).
     //
-    // Routing rule (Stage 2.5):
-    //   • Manual force (force===true) → session_message (unless force_channel=meta_template).
-    //   • Autonomous cron/default → ALWAYS Meta template night_before_suites / _shabbat.
-    //     Never hijack to session text just because the 24h window is open — that path
-    //     bypasses the Shabbat-approved static template bodies and caused 15:00 on Saturdays.
-    //   • Manual force_channel=session_message → bot_script free text (with Shabbat times).
+    // Routing rule (Stage 2.5), fixed 2026-07-09 — previously force_channel was read
+    // for logging only; `forceSessionImmediate = (force === true)` unconditionally won
+    // whenever force was true, so `useSessionChannel`/the meta_template branch below it
+    // were dead code and manual dispatch ALWAYS sent session text regardless of which
+    // channel staff picked. Now a real switch on force_channel when manually dispatched:
+    //   • Manual + force_channel="meta_template" → Shabbat/weekday Meta template.
+    //   • Manual + force_channel="whapi_session"  → same bot_script text as session_message,
+    //     sent via the Whapi Suites device instead of Meta.
+    //   • Manual + force_channel="session_message" (or no force_channel at all, the
+    //     pre-existing default for any caller that doesn't specify one) → Meta session text.
+    //   • Autonomous cron/default (force !== true) → UNCHANGED — ALWAYS Meta template
+    //     night_before_suites / _shabbat. Never hijack to session text just because the
+    //     24h window is open — that path bypasses the Shabbat-approved static template
+    //     bodies and caused 15:00 on Saturdays.
     type NightBeforeDispatch =
       | { channel: "text";     freeTextKey: string;   guestName: string; sessionImageUrl?: string }
+      | { channel: "whapi";    freeTextKey: string;   guestName: string; sessionImageUrl?: string }
       | { channel: "template"; templateName: string;  vars: string[];   buttonUrlParam?: string };
     let nightBeforeDispatch: NightBeforeDispatch | null = null;
 
@@ -2271,58 +2420,54 @@ serve(async (req: Request) => {
       const windowOpen = isWindowOpen(guest.wa_window_expires_at);
       const isForceOverride = force === true;
 
-      // EMERGENCY OVERRIDE: manual "שלח עכשיו" — total bypass of window + schedule gates.
-      const forceSessionImmediate = isForceOverride;
-
       console.log("=== STAGE 2.5 FORCE ATTEMPT ===");
       console.log("Guest:", guest.name, "Room Type:", guest.room_type, "Arrival:", guest.arrival_date);
       console.log(
         `[whatsapp-send] night_before: Stage 2.5 dispatch guest_id=${guestId} ` +
         `room_type=${guest.room_type ?? "null"} arrival=${guest.arrival_date ?? "null"} ` +
         `msg_pre_arrival_sent=${String(guest.msg_pre_arrival_sent)} windowOpen=${windowOpen} ` +
-        `forceSessionImmediate=${forceSessionImmediate} force_channel=${force_channel ?? "auto"} ` +
+        `isForceOverride=${isForceOverride} force_channel=${force_channel ?? "auto"} ` +
         `wa_window_expires_at=${guest.wa_window_expires_at ?? "null"}`,
       );
 
-      const useSessionChannel =
-        forceSessionImmediate
-        || (force === true && forceSessionMessage);
-
-      const sessionImage = forceSessionImmediate
+      const sessionImage = isForceOverride
         ? (resolveStageSessionImageUrl(stageRow, requestImageUrl) ?? NIGHT_BEFORE_OVERRIDE_SESSION_IMAGE)
         : resolveStageSessionImageUrl(stageRow, requestImageUrl);
 
       const guestName = sanitizeTemplateVars([String(guest.name ?? "")])[0];
 
-      if (forceSessionImmediate) {
-        // STRICT: session_message only — no Shabbat/weekday Meta evaluation.
-        nightBeforeDispatch = {
-          channel: "text",
-          freeTextKey: sessionScriptKey,
-          guestName,
-          sessionImageUrl: sessionImage,
-        };
+      const buildTemplateDispatch = (): NightBeforeDispatch => {
+        const arrivalDateStr = normalizeArrivalDateYmd(guest.arrival_date);
+        const isShabbat = isShabbatArrivalDate(arrivalDateStr);
+        const templateName = isShabbat ? "night_before_suites_shabbat" : "night_before_suites";
+        const templateVars = buildNameOnlyTemplateVars(guest);
         console.log(
-          `[whatsapp-send] night_before: route=session_message FORCE guest_id=${guestId} ` +
-          `script=${sessionScriptKey} image=${sessionImage?.slice(0, 64) ?? "default"}`,
+          `[whatsapp-send] night_before: route=meta_template guest_id=${guestId} ` +
+          `arrival=${arrivalDateStr} template=${templateName} isShabbat=${isShabbat} ` +
+          `vars=${JSON.stringify(templateVars)}`,
         );
-      } else if (useSessionChannel) {
+        return { channel: "template", templateName, vars: templateVars };
+      };
+
+      if (isForceOverride && force_channel === "meta_template") {
+        nightBeforeDispatch = buildTemplateDispatch();
+      } else if (isForceOverride && force_channel === "whapi_session") {
+        nightBeforeDispatch = { channel: "whapi", freeTextKey: sessionScriptKey, guestName, sessionImageUrl: sessionImage };
+        console.log(
+          `[whatsapp-send] night_before: route=whapi_session guest_id=${guestId} ` +
+          `script=${sessionScriptKey}`,
+        );
+      } else if (isForceOverride) {
+        // force_channel="session_message", or manual dispatch with no force_channel at
+        // all (pre-existing default behavior, preserved for any caller that omits it).
         nightBeforeDispatch = { channel: "text", freeTextKey: sessionScriptKey, guestName, sessionImageUrl: sessionImage };
         console.log(
           `[whatsapp-send] night_before: route=session_message guest_id=${guestId} ` +
           `script=${sessionScriptKey} has_image=${!!sessionImage}`,
         );
       } else {
-        const arrivalDateStr = normalizeArrivalDateYmd(guest.arrival_date);
-        const isShabbat = isShabbatArrivalDate(arrivalDateStr);
-        const templateName = isShabbat ? "night_before_suites_shabbat" : "night_before_suites";
-        const templateVars = buildNameOnlyTemplateVars(guest);
-        nightBeforeDispatch = { channel: "template", templateName, vars: templateVars };
-        console.log(
-          `[whatsapp-send] night_before: route=meta_template guest_id=${guestId} ` +
-          `arrival=${arrivalDateStr} template=${templateName} isShabbat=${isShabbat} ` +
-          `vars=${JSON.stringify(templateVars)}`,
-        );
+        // Autonomous cron/default — unchanged.
+        nightBeforeDispatch = buildTemplateDispatch();
       }
     }
 
@@ -2341,10 +2486,12 @@ serve(async (req: Request) => {
       let nbSessionKind: string | null = null;
       let nbSessionImageUrl: string | undefined;
       let nbConvMessage = "";
+      let nbWhapiWamid: string | null = null;
 
       try {
         if (!sim) {
-          if (nightBeforeDispatch.channel === "text") {
+          if (nightBeforeDispatch.channel === "text" || nightBeforeDispatch.channel === "whapi") {
+            const isWhapi = nightBeforeDispatch.channel === "whapi";
             const nbForceSessionImmediate = force === true;
             nbSessionImageUrl =
               nightBeforeDispatch.sessionImageUrl
@@ -2357,6 +2504,14 @@ serve(async (req: Request) => {
               .maybeSingle();
             const rawText = scriptRow?.message_text?.trim();
             if (!rawText) {
+              if (isWhapi) {
+                // Staff explicitly chose Whapi — never silently fall back to a Meta
+                // template they didn't ask for (FAIL VISIBLE §0.3), same precedent as
+                // the generic pipeline branch's whapi_session path.
+                throw new Error(
+                  "night_before_whapi_script_missing — הגדר טקסט ל-night_before_reminder ב-BotScriptEditor כדי לשלוח דרך Whapi",
+                );
+              }
               if (nbForceSessionImmediate) {
                 throw new Error(
                   "night_before_session_script_missing — הגדר טקסט ל-night_before_reminder ב-BotScriptEditor",
@@ -2384,6 +2539,10 @@ serve(async (req: Request) => {
                 fbDispatched.variables,
               );
             } else {
+              // Shared body construction — identical for Meta session and Whapi, so the
+              // Shabbat-aware entry/check-in times (resolveNightBeforeTimes) and the
+              // applySaturdayCheckInTimeOverride safety net apply the same way regardless
+              // of transport. Only the send call below differs.
               const arrivalYmd = normalizeArrivalDateYmd(guest.arrival_date);
               const nbTimes = await resolveNightBeforeTimes(supabase, arrivalYmd);
               const nbPortalUrl = guest.portal_token
@@ -2398,26 +2557,27 @@ serve(async (req: Request) => {
                 }),
                 arrivalYmd,
               );
-              nbConvMessage = buildSessionConversationLog(
-                textBody,
-                (stageRow?.interactive_buttons ?? []) as InteractiveButtonDef[],
-              );
-              nbSessionKind = await sendStageSessionMessage(
-                String(guest.phone),
-                textBody,
-                nbSessionImageUrl,
-                [],
-                `night_before guest_id=${guestId}`,
-              );
+              if (isWhapi) {
+                nbConvMessage = buildWhapiSuitesConversationLog(textBody);
+                nbWhapiWamid = await sendWhapiText(cleanPhoneForMention(String(guest.phone)), textBody);
+                nbSessionKind = "whapi";
+              } else {
+                nbConvMessage = buildSessionConversationLog(
+                  textBody,
+                  (stageRow?.interactive_buttons ?? []) as InteractiveButtonDef[],
+                );
+                nbSessionKind = await sendStageSessionMessage(
+                  String(guest.phone),
+                  textBody,
+                  nbSessionImageUrl,
+                  [],
+                  `night_before guest_id=${guestId}`,
+                );
+              }
             }
           } else {
-            if (force === true) {
-              throw new Error(
-                "night_before_force_meta_blocked — manual Send Now must use session_message only; " +
-                "check bot_scripts.night_before_reminder has message_text",
-              );
-            }
-            // Template path: IMAGE header from TEMPLATE_IMAGE_HEADER_DEFAULTS or session_message_image_url.
+            // Template path — reachable both autonomously (cron default) and manually
+            // (staff explicitly picked "🔵 Meta Template"). Same send either way.
             console.log(
               `[whatsapp-send] night_before Stage2.5 pre-send: template=${nightBeforeDispatch.templateName} ` +
               `vars=${JSON.stringify(nightBeforeDispatch.vars)} ` +
@@ -2447,12 +2607,19 @@ serve(async (req: Request) => {
         console.error(`[whatsapp-send] night_before dispatch ${nbStatus}:`, nbError);
       }
 
+      // Three-way payload/log channel label, computed once and reused below —
+      // avoids the old text-vs-everything-else binary that had no room for whapi.
+      const nbPayloadChannel =
+        nightBeforeDispatch.channel === "template" ? "meta_template"
+        : nightBeforeDispatch.channel === "whapi"   ? "whapi_session"
+        : "session_message";
+
       await notifyAdminIfDispatchFailed({
         status: nbStatus,
         error: nbError,
         guestName: guest.name as string,
         guestPhone: guest.phone as string,
-        dispatchType: nightBeforeDispatch.channel === "text" ? "Session" : "Template",
+        dispatchType: nightBeforeDispatch.channel === "template" ? "Template" : "Session",
       });
 
       // Log outcome — same shape as the existing pipeline log below so
@@ -2464,8 +2631,8 @@ serve(async (req: Request) => {
         channel:      "whatsapp",
         status:       nbStatus,
         payload: {
-          channel: nightBeforeDispatch.channel === "text" ? "session_message" : "meta_template",
-          ...(nightBeforeDispatch.channel === "text"
+          channel: nbPayloadChannel,
+          ...(nightBeforeDispatch.channel !== "template"
             ? {
                 scriptKey: nightBeforeDispatch.freeTextKey,
                 ...(nbSessionKind ? { sessionKind: nbSessionKind } : {}),
@@ -2484,10 +2651,13 @@ serve(async (req: Request) => {
             guest_id:      guestId,
             direction:     "outbound",
             message:       nbConvMessage || formatOutboundConversationLog({
-              channel: nightBeforeDispatch.channel === "text" ? "session_message" : "meta_template",
+              channel: nbPayloadChannel === "meta_template" ? "meta_template"
+                     : nbPayloadChannel === "whapi_session"  ? "whapi_suites"
+                     : "session_message",
               body: `[${nightBeforeDispatch.channel === "template" ? nightBeforeDispatch.templateName : nightBeforeDispatch.freeTextKey}]`,
             }),
-            wa_message_id: null,
+            wa_message_id: nightBeforeDispatch.channel === "whapi" ? nbWhapiWamid : null,
+            channel:       nightBeforeDispatch.channel === "whapi" ? "whapi" : "meta",
           });
           if (convErr) console.warn("[whatsapp-send] night_before conv log failed (non-blocking):", convErr.message);
         } catch (e) {
@@ -2505,7 +2675,7 @@ serve(async (req: Request) => {
           ok:         nbStatus === "sent" || nbStatus === "simulated",
           simulation: sim,
           status:     nbStatus,
-          channel:    nightBeforeDispatch.channel === "text" ? "session_message" : "meta_template",
+          channel:    nbPayloadChannel,
           ...(nightBeforeDispatch.channel === "template"
             ? { template: nightBeforeDispatch.templateName }
             : {}),
@@ -3202,11 +3372,11 @@ serve(async (req: Request) => {
     let sessionImageUrl: string | null = null;
 
     // force_channel="meta_template" pins to template regardless of window state.
-    // force_channel="session_message" bypasses the isWindowOpen() guard so staff
-    // can send free-text to any guest on demand. Both are only honoured when
-    // force=true (manual dispatch from AutomationControlCenter).
+    // force_channel="session_message"/"whapi_session" bypasses the isWindowOpen()
+    // guard so staff can send free-text to any guest on demand. All three are
+    // only honoured when force=true (manual dispatch from AutomationControlCenter).
     if (isManualPipelineDispatch && !forceMetaTemplate && stageRow?.session_message_script_key) {
-      if (forceSessionMessage || force === true || isWindowOpen(guest.wa_window_expires_at)) {
+      if (forceSessionMessage || forceWhapiSession || force === true || isWindowOpen(guest.wa_window_expires_at)) {
         const { data: scriptRow } = await supabase
           .from("bot_scripts")
           .select("message_text")
@@ -3234,6 +3404,13 @@ serve(async (req: Request) => {
       }
     }
 
+    // Staff explicitly picked Whapi for this dispatch — never silently fall
+    // through to a Meta template send they didn't ask for (FAIL VISIBLE §0.3).
+    // If this stage has no usable session body, fail loudly instead.
+    if (forceWhapiSession && !usedSessionMessage) {
+      throw new Error(`whapi_session_unavailable: שלב "${trigger}" אינו מוגדר עם Bot Script פעיל — לא ניתן לשלוח דרך Whapi.`);
+    }
+
     let status = "simulated";
     let sendError: string | null = null;
     let tmplVars: string[] = [];
@@ -3244,27 +3421,46 @@ serve(async (req: Request) => {
     if (usedSessionMessage) {
       try {
         if (!sim) {
-          const sessionResult = await sendStageSessionMessage(
-            guest.phone as string,
-            sessionBody!,
-            sessionImageUrl ?? undefined,
-            sessionButtons,
-            `stage="${trigger}" guest_id=${guestId}`,
-          );
-          dispatchedWamid = sessionResult.wamid;
-          console.log(`[whatsapp-send] ${trigger}: session dispatch kind=${sessionResult.kind}`);
+          if (forceWhapiSession) {
+            // Plain text only — Whapi has no equivalent of Meta's interactive
+            // buttons/image header, so sessionButtons/sessionImageUrl are not
+            // carried over here (pre-existing sendWhapiText characteristic,
+            // same as the broadcast-template Whapi path above).
+            dispatchedWamid = await sendWhapiText(cleanPhoneForMention(guest.phone as string), sessionBody!);
+            console.log(`[whatsapp-send] ${trigger}: session dispatch via Whapi`);
+          } else {
+            const sessionResult = await sendStageSessionMessage(
+              guest.phone as string,
+              sessionBody!,
+              sessionImageUrl ?? undefined,
+              sessionButtons,
+              `stage="${trigger}" guest_id=${guestId}`,
+            );
+            dispatchedWamid = sessionResult.wamid;
+            console.log(`[whatsapp-send] ${trigger}: session dispatch kind=${sessionResult.kind}`);
+          }
           status = "sent";
         }
       } catch (e) {
-        // ── 24-Hour Interaction Window Guard — failure fallback ────────────
-        // A session-message attempt can fail for reasons unrelated to window
-        // state (transient Meta error, malformed button payload, etc.). This
-        // is a scheduled automation stage — leaving the guest with NO message
-        // at all defeats the whole pipeline. Retry once via the
-        // window-independent Meta template instead of just recording failure.
         sessionFailureNote = (e as Error).message;
-        console.error(`[whatsapp] pipeline session-message send failed — falling back to Meta template:`, sessionFailureNote);
-        usedSessionMessage = false;
+        if (forceWhapiSession) {
+          // Staff explicitly chose Whapi — do NOT silently fall back to a
+          // Meta template send they didn't ask for (FAIL VISIBLE §0.3).
+          // Surface the failure directly instead of the usedSessionMessage
+          // fallthrough below, which is reserved for the Meta session path.
+          console.error(`[whatsapp] pipeline Whapi session send failed for stage "${trigger}":`, sessionFailureNote);
+          sendError = sessionFailureNote;
+          status = sessionFailureNote.startsWith("timeout_no_response") ? "timeout" : "failed";
+        } else {
+          // ── 24-Hour Interaction Window Guard — failure fallback ────────────
+          // A session-message attempt can fail for reasons unrelated to window
+          // state (transient Meta error, malformed button payload, etc.). This
+          // is a scheduled automation stage — leaving the guest with NO message
+          // at all defeats the whole pipeline. Retry once via the
+          // window-independent Meta template instead of just recording failure.
+          console.error(`[whatsapp] pipeline session-message send failed — falling back to Meta template:`, sessionFailureNote);
+          usedSessionMessage = false;
+        }
       }
     }
 
@@ -3301,7 +3497,7 @@ serve(async (req: Request) => {
       guest_id: guestId, recipient: guest.phone, trigger_type: trigger,
       channel: "whatsapp", status,
       payload: usedSessionMessage
-        ? { channel: "session_message", scriptKey: stageRow!.session_message_script_key, ...(sendError ? { error: sendError } : {}), ...(force ? { forced: true, force_channel, ...overridePayloadExtras } : {}) }
+        ? { channel: forceWhapiSession ? "whapi_session" : "session_message", scriptKey: stageRow!.session_message_script_key, ...(sendError ? { error: sendError } : {}), ...(force ? { forced: true, force_channel, ...overridePayloadExtras } : {}) }
         : {
             channel: "meta_template",
             template: templateDispatched?.templateName ?? tmplName,
@@ -3334,10 +3530,9 @@ serve(async (req: Request) => {
         const logPhone = (liveGuest?.phone as string | undefined) ?? (guest.phone as string);
 
         const pipelineConvMsg = usedSessionMessage
-          ? buildSessionConversationLog(
-              sessionBody!,
-              sessionButtons as InteractiveButtonDef[],
-            )
+          ? (forceWhapiSession
+              ? buildWhapiSuitesConversationLog(sessionBody!)
+              : buildSessionConversationLog(sessionBody!, sessionButtons as InteractiveButtonDef[]))
           : await buildConversationLogFromTemplate(
               supabase,
               templateDispatched?.templateName ?? tmplName,
@@ -3349,6 +3544,7 @@ serve(async (req: Request) => {
           direction: "outbound",
           message: pipelineConvMsg,
           wa_message_id: dispatchedWamid,
+          channel: forceWhapiSession ? "whapi" : "meta",
         });
         if (convErr) {
           console.error("[whatsapp-send] pipeline conversation log FAILED:", convErr.message);

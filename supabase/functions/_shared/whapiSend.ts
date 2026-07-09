@@ -44,8 +44,13 @@ export function _whapiBase(): string {
   return (Deno.env.get("WHAPI_API_URL") ?? "https://gate.whapi.cloud").replace(/\/+$/, "");
 }
 
-export function _tokenOrThrow(): string {
-  const token = Deno.env.get("WHAPI_TOKEN");
+// envVarName defaults to WHAPI_TOKEN (the shared internal staff-ops channel)
+// so every existing caller is unaffected. Guest-outbound routing (Phase 1,
+// _shared/guestWhapiRouting.ts) reuses this same default — the already-
+// connected device, not a separate channel. The optional override stays
+// available for a future dedicated channel/token if one is ever connected.
+export function _tokenOrThrow(envVarName: string = "WHAPI_TOKEN"): string {
+  const token = Deno.env.get(envVarName);
   if (!token) throw new Error("missing_whapi_token");
   return token;
 }
@@ -57,9 +62,9 @@ export function _tokenOrThrow(): string {
 export async function sendWhapiText(
   to: string,
   body: string,
-  opts: { noLinkPreview?: boolean; mentions?: string[] } = {},
+  opts: { noLinkPreview?: boolean; mentions?: string[]; tokenEnvVar?: string } = {},
 ): Promise<string | null> {
-  const token = _tokenOrThrow();
+  const token = _tokenOrThrow(opts.tokenEnvVar);
   // `no_link_preview` is a real Whapi body field (verified against live docs).
   // Sprint 2 sets it on the task-card reply so WhatsApp's link-preview crawler
   // does NOT pre-fetch the Accept/Complete URLs (that pre-fetch could otherwise
