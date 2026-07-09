@@ -207,6 +207,8 @@ export interface GuestForSchedule {
   automation_scope?: string | null;
   /** WhatsAppInbox "קח שיחה" — staff-owned thread; blocks autonomous cron sends. */
   claimed_by?: string | null;
+  /** stage_keys staff cancelled per guest (migration 169) — attached at cron/queue load. */
+  pipeline_suppressed_stages?: string[] | null;
   [flagColumn: string]: unknown;
 }
 
@@ -327,6 +329,16 @@ function isDueByIsraelLocalClock(
   return true;
 }
 
+/** Ignore ceiling when it precedes floor — misconfig must not block sends silently. */
+export function effectiveCeilLocalHour(
+  floorLocalHour: number,
+  ceilLocalHour: number | null,
+): number | null {
+  if (ceilLocalHour === null) return null;
+  if (ceilLocalHour < floorLocalHour) return null;
+  return ceilLocalHour;
+}
+
 /**
  * Stage-specific eligibility guards — ported 1:1 from whatsapp-cron's
  * existing per-trigger if/else conditions (cancelled/flag-already-sent/
@@ -347,6 +359,12 @@ export function checkEligibility(
   // needs_callback is a staff UI alert only — intentionally NOT checked here (session 59).
   const scopeSkip = getAutomationScopeStageSkipReason(guest, stage.stage_key);
   if (scopeSkip) return scopeSkip;
+  if (
+    Array.isArray(guest.pipeline_suppressed_stages)
+    && guest.pipeline_suppressed_stages.includes(stage.stage_key)
+  ) {
+    return "stage_suppressed";
+  }
   if (isGuestStaffClaimActive(guest)) return "staff_claim_active";
   if (stage.guest_flag_column && guest[stage.guest_flag_column] === true) return "already_sent";
 
@@ -483,7 +501,10 @@ export function resolveStageSchedule(
     }
 
     const floorLocal = parseLocalHour(stage.local_time);
-    const ceilLocal = stage.local_time_end ? parseLocalHour(stage.local_time_end) : null;
+    const ceilLocal = effectiveCeilLocalHour(
+      floorLocal,
+      stage.local_time_end ? parseLocalHour(stage.local_time_end) : null,
+    );
 
     if (!isDueByIsraelLocalClock(now, floorLocal, ceilLocal)) {
       const hour = israelLocalHour(now);
@@ -1016,11 +1037,26 @@ export const EMOJI_ONLY_PATTERN =
  * would signal a real (if short) message rather than a closer.
  */
 export const COURTESY_ONLY_PATTERN =
-  /^(?:תודה(?:\s*רבה)?|תודה\s*לך|הבנתי|הבנת|סגור|סבבה|בסדר(?:\s*גמור)?|היי+|הי|שלום|אוקיי?|יא?ל+ה|מעולה|נהדר|great|awesome|perfect|cool|thanks?(?:\s*a\s*lot)?|thank\s*you|thx|ty|ok(?:ay)?|got\s*it|understood|sounds?\s*good)[\s!.,?~*'"‍️]*[\p{Extended_Pictographic}☀-➿]*[\s!.,?~*'"]*$/iu;
+  /^(?:תודה(?:\s*רבה)?|תודה\s*לך|הבנתי|הבנת|סגור|סבבה|בסדר(?:\s*גמור)?|אוקיי?|יא?ל+ה|מעולה|נהדר|great|awesome|perfect|cool|thanks?(?:\s*a\s*lot)?|thank\s*you|thx|ty|ok(?:ay)?|got\s*it|understood|sounds?\s*good)[\s!.,?~*'"‍️]*[\p{Extended_Pictographic}☀-➿]*[\s!.,?~*'"]*$/iu;
+
+/** Conversation openers — must NEVER hit courtesy silent-exit (guest expects a hello back). */
+const GREETING_TOKEN =
+  "(?:היי+|הי|שלום|hey|hi|hello|good\\s*(?:morning|evening|afternoon))";
+export const GREETING_ONLY_PATTERN = new RegExp(
+  `^${GREETING_TOKEN}(?:\\s+${GREETING_TOKEN})*[\\s!.,?~*'\"‍️]*[\\p{Extended_Pictographic}☀-➿]*[\\s!.,?~*'\"]*$`,
+  "iu",
+);
+
+export function isGuestGreetingMessage(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  return GREETING_ONLY_PATTERN.test(t);
+}
 
 export function isLowValueCourtesyMessage(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
+  if (isGuestGreetingMessage(t)) return false;
   if (EMOJI_ONLY_PATTERN.test(t)) return true;
   return COURTESY_ONLY_PATTERN.test(t);
 }

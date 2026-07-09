@@ -27,6 +27,12 @@ import QueueBulkScheduleModal from "./QueueBulkScheduleModal";
 import QuietHoursGate from "./QuietHoursGate";
 import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
 import { formatIsraelDateTime, isFutureScheduledQueueItem } from "../utils/israelTime";
+import { isSendWindowInvalid, normalizeStageTimingPatch } from "../utils/sendWindow";
+import {
+  filterQueueItemsForGuest,
+  partitionGuestQueueItems,
+  resolveGuestPipelineSegment,
+} from "../utils/pipelineSegment";
 
 const JOURNEY_PHASE_LABELS = {
   pre_arrival: "🌴 לפני ההגעה",
@@ -86,6 +92,7 @@ const SKIP_REASON_LABELS = {
   quiet_hours_passed: "עבר חלון השעות",
   staff_claim_active: "שיחה בטיפול צוות",
   awaiting_confirmation: "ממתין לאישור הגעה",
+  stage_suppressed: "בוטל ידנית",
 };
 
 function queueYmd(d = new Date()) {
@@ -159,7 +166,8 @@ function groupQueueByArrivalDay(items, stages) {
     .map(([dateKey, guestMap]) => {
       const guests = [...guestMap.values()].map((g) => ({
         ...g,
-        items: sortQueueItemsByStage(g.items, stages),
+        pipelineSegment: resolveGuestPipelineSegment(g),
+        items: sortQueueItemsByStage(filterQueueItemsForGuest(g.items, g), stages),
       }));
       guests.sort((a, b) => (a.guestName ?? "").localeCompare(b.guestName ?? "", "he"));
       const itemCount = guests.reduce((n, g) => n + g.items.length, 0);
@@ -209,7 +217,7 @@ function queueStatusBadge(q) {
   if (q.dueNow && q.status === "pending") return { cls: "badge-gold", text: "⚡ מוכן לשליחה" };
   if (q.staffScheduled && isFutureScheduledQueueItem(q)) return { cls: "badge-blue", text: "📅 מתוזמן" };
   if (q.skipReason && SKIP_REASON_LABELS[q.skipReason]) {
-    return { cls: "badge-blue", text: `🕐 ${SKIP_REASON_LABELS[q.skipReason]}` };
+    return { cls: q.skipReason === "stage_suppressed" ? "badge" : "badge-blue", text: q.skipReason === "stage_suppressed" ? "🚫 בוטל ידנית" : `🕐 ${SKIP_REASON_LABELS[q.skipReason]}` };
   }
   if (q.status === "failed" || q.status === "timeout") return { cls: "badge-red", text: q.status === "timeout" ? "לא ודאי" : "נכשל" };
   return { cls: "badge-blue", text: "מתוזמן" };
@@ -239,6 +247,169 @@ function summarizeGuestQueueHealth(items) {
     else if (q.dueNow && q.status === "pending") dueNow += 1;
   }
   return { sent, failed, blocked, dueNow };
+}
+
+/** Single guest queue rows — shared by Live Queue segmented tables. */
+function renderGuestQueueRows({
+  items,
+  selectedItems,
+  toggleItem,
+  isDispatchable,
+  dayPassAllowedStages,
+  requestQueueSendNow,
+  setManualDispatchItem,
+  sendNowSending,
+  onSuppressStage,
+  onUnsuppressStage,
+  suppressBusyKey,
+}) {
+  return items.map((q) => {
+    const itemKey = `${q.guestId}_${q.stageKey}`;
+    const canDispatch = isDispatchable(q) && q.skipReason !== "stage_suppressed";
+    const isGated = isQueueItemGated(q, dayPassAllowedStages);
+    const isChecked = selectedItems.has(itemKey);
+    const badge = queueStatusBadge(q);
+    const proofLine = queueDeliveryProofLine(q);
+    const suppressKey = `${q.guestId}::${q.stageKey}`;
+    const suppressBusy = suppressBusyKey === suppressKey;
+    const isSuppressed = q.skipReason === "stage_suppressed";
+    return (
+      <tr
+        key={itemKey}
+        style={{
+          background: isChecked
+            ? "rgba(201,169,110,0.12)"
+            : q.dueNow
+            ? "rgba(201,169,110,0.06)"
+            : isSuppressed
+            ? "rgba(0,0,0,0.03)"
+            : undefined,
+        }}
+      >
+        <td style={{ textAlign: "center" }}>
+          {canDispatch && !isGated ? (
+            <input
+              type="checkbox"
+              checked={isChecked}
+              onChange={() => toggleItem(itemKey)}
+              style={{ cursor: "pointer", width: 16, height: 16 }}
+            />
+          ) : (
+            <span title={isGated ? "חסום ליום-כיף" : isSuppressed ? "בוטל ידנית" : "לא זמין לשליחה"} style={{ color: "var(--text-muted)" }}>
+              {isGated ? "🔒" : isSuppressed ? "🚫" : "—"}
+            </span>
+          )}
+        </td>
+        <td style={{ fontSize: 13, fontWeight: 600 }}>{q.displayName}</td>
+        <td style={{ fontSize: 12 }}>{formatQueueScheduleCell(q)}</td>
+        <td>
+          <span style={{
+            fontSize: 10, padding: "2px 7px", borderRadius: 10,
+            background: q.predictedChannel === "session_message" ? "#E8F5EF" : "#E0F2FE",
+            color: q.predictedChannel === "session_message" ? "#1A7A4A" : "#0369A1",
+          }}>
+            {q.predictedChannel === "session_message" ? "סשן" : "תבנית"}
+          </span>
+        </td>
+        <td>
+          <span className={`badge ${badge.cls}`}>{badge.text}</span>
+          {proofLine && (
+            <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 3 }} title="מבוסס notification_log">
+              {proofLine}
+            </div>
+          )}
+          {q.skipReason && !SKIP_REASON_LABELS[q.skipReason] && (
+            <div style={{ fontSize: 10, color: "var(--text-muted)" }}>{q.skipReason}</div>
+          )}
+        </td>
+        <td style={{ textAlign: "center" }}>
+          <div style={{ display: "flex", gap: 4, justifyContent: "center", flexWrap: "wrap" }}>
+            {canDispatch && (
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                title={`שלח עכשיו — ${q.displayName}`}
+                onClick={() => requestQueueSendNow(q)}
+                disabled={sendNowSending || !q.guestId}
+                style={{ fontSize: 10, padding: "3px 7px" }}
+              >
+                שלח
+              </button>
+            )}
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              title="שגר ידני"
+              onClick={() => setManualDispatchItem(q)}
+              disabled={!q.guestId || sendNowSending}
+              style={{ fontSize: 13, padding: "2px 6px", color: "var(--gold)" }}
+            >
+              ⚡
+            </button>
+            {onSuppressStage && !["sent", "simulated"].includes(q.status) && (
+              isSuppressed ? (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  title="החזר שלב לתור"
+                  disabled={suppressBusy}
+                  onClick={() => onUnsuppressStage(q.guestId, q.stageKey)}
+                  style={{ fontSize: 10, padding: "3px 7px" }}
+                >
+                  {suppressBusy ? "⏳" : "↩"}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  title="בטל שלב לאורח זה"
+                  disabled={suppressBusy}
+                  onClick={() => onSuppressStage(q.guestId, q.stageKey, q.displayName)}
+                  style={{ fontSize: 10, padding: "3px 7px", color: "#C0392B" }}
+                >
+                  {suppressBusy ? "⏳" : "✕"}
+                </button>
+              )
+            )}
+          </div>
+        </td>
+      </tr>
+    );
+  });
+}
+
+function GuestQueueStageTable(props) {
+  const { sectionLabel, items, sectionStyle } = props;
+  if (!items?.length) return null;
+  return (
+    <div style={{ marginBottom: 12 }}>
+      {sectionLabel && (
+        <div style={{
+          fontSize: 11, fontWeight: 800, marginBottom: 8, padding: "6px 10px",
+          borderRadius: 8, ...sectionStyle,
+        }}>
+          {sectionLabel}
+        </div>
+      )}
+      <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+        <table className="table" style={{ minWidth: 640, marginBottom: 0 }}>
+          <thead>
+            <tr style={{ fontSize: 11 }}>
+              <th style={{ width: 32 }} />
+              <th>שלב</th>
+              <th>מועד משוער</th>
+              <th>ערוץ</th>
+              <th>סטטוס</th>
+              <th style={{ width: 140, textAlign: "center" }}>פעולות</th>
+            </tr>
+          </thead>
+          <tbody>
+            {renderGuestQueueRows(props)}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
 }
 
 /** Meta burst protection — mirrors whatsapp-cron INTER_SEND_DELAY_MS. */
@@ -423,6 +594,20 @@ function metaTemplateFriendly(name) {
 
 function timeInputValue(pgTime) {
   return pgTime ? String(pgTime).slice(0, 5) : "";
+}
+
+/** Stages with an optional same-day send ceiling (local_time_end). */
+const STAGES_WITH_SEND_WINDOW = new Set([
+  "night_before",
+  "night_before_daypass",
+  "mid_stay",
+  "mid_stay_daypass",
+]);
+
+function sendWindowEndLabel(stageKey) {
+  return stageKey === "night_before" || stageKey === "night_before_daypass"
+    ? "עד שעה (שקט לילי)"
+    : "עד שעה (חלון שליחה)";
 }
 
 // ── Live preview helpers ─────────────────────────────────────────────────────
@@ -655,12 +840,19 @@ function StageCard({
                 <span style={{ fontSize: 12, color: "var(--text-muted)" }}>ימים, משעה</span>
                 <input type="time" value={timeInputValue(stage.local_time)} style={{ width: 110 }}
                   onChange={(e) => patchStage(stage, { local_time: e.target.value || null })} />
-                {stage.stage_key === "night_before" && (
+                {STAGES_WITH_SEND_WINDOW.has(stage.stage_key) && (
                   <>
-                    <span style={{ fontSize: 12, color: "var(--text-muted)" }}>עד שעה (שקט לילי)</span>
+                    <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                      {sendWindowEndLabel(stage.stage_key)}
+                    </span>
                     <input type="time" value={timeInputValue(stage.local_time_end)} style={{ width: 110 }}
                       onChange={(e) => patchStage(stage, { local_time_end: e.target.value || null })} />
                   </>
+                )}
+                {isSendWindowInvalid(stage.local_time, stage.local_time_end) && (
+                  <span style={{ fontSize: 11, color: "#C0392B", fontWeight: 600 }}>
+                    ⚠ שעת הסיום לפני ההתחלה — האוטומציה לא תישלח. נקה «עד שעה» או הגדל אותה.
+                  </span>
                 )}
                 <span style={{ fontSize: 11, color: "var(--text-muted)" }}>(שעון ישראל)</span>
                 <span style={{ fontSize: 11, color: "var(--text-muted)", fontStyle: "italic" }}>
@@ -1524,6 +1716,7 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
   const [sendNowConfirm, setSendNowConfirm] = useState(null);
   const [sendNowSending, setSendNowSending] = useState(false);
   const [sendNowError, setSendNowError] = useState(null);
+  const [suppressBusyKey, setSuppressBusyKey] = useState(null);
   const [staffTestPhone, setStaffTestPhone] = useState("");
 
   const showToast = useCallback((type, msg) => {
@@ -1832,16 +2025,61 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
   }, [runQueueSendNow]);
 
   const patchStage = async (stage, patch) => {
-    setStages((prev) => prev.map((s) => (s.id === stage.id ? { ...s, ...patch } : s)));
-    const { error } = await supabase.from("automation_stages").update(patch).eq("id", stage.id);
+    const normalized = normalizeStageTimingPatch(stage, patch);
+    const merged = { ...stage, ...patch };
+    const autoClearedEnd =
+      isSendWindowInvalid(merged.local_time, merged.local_time_end)
+      && normalized.local_time_end === null;
+    setStages((prev) => prev.map((s) => (s.id === stage.id ? { ...s, ...normalized } : s)));
+    const { error } = await supabase.from("automation_stages").update(normalized).eq("id", stage.id);
     if (error) {
       showToast("err", "שגיאה בשמירה: " + error.message);
       fetchStages(); // revert to DB truth
     } else {
-      showToast("ok", `✅ "${stage.display_name}" עודכן`);
+      showToast(
+        "ok",
+        autoClearedEnd
+          ? `✅ "${stage.display_name}" עודכן — שעת הסיום הוסרה (הייתה לפני שעת ההתחלה)`
+          : `✅ "${stage.display_name}" עודכן`,
+      );
       scheduleQueueRefresh();
     }
   };
+
+  const suppressGuestStage = useCallback(async (guestId, stageKey, displayName) => {
+    if (!isSupabaseConfigured || !supabase || !guestId || !stageKey) return;
+    const busyKey = `${guestId}::${stageKey}`;
+    setSuppressBusyKey(busyKey);
+    const { data, error } = await supabase.rpc("suppress_guest_pipeline_stage", {
+      p_guest_id: guestId,
+      p_stage_key: stageKey,
+      p_reason: "staff_acc_cancel",
+    });
+    setSuppressBusyKey(null);
+    if (error) showToast("err", `ביטול שלב נכשל: ${error.message}`);
+    else if (data?.ok === false) showToast("err", "ביטול שלב נכשל");
+    else {
+      showToast("ok", `🚫 "${displayName ?? stageKey}" בוטל לאורח זה`);
+      fetchQueue();
+    }
+  }, [showToast, fetchQueue]);
+
+  const unsuppressGuestStage = useCallback(async (guestId, stageKey) => {
+    if (!isSupabaseConfigured || !supabase || !guestId || !stageKey) return;
+    const busyKey = `${guestId}::${stageKey}`;
+    setSuppressBusyKey(busyKey);
+    const { data, error } = await supabase.rpc("unsuppress_guest_pipeline_stage", {
+      p_guest_id: guestId,
+      p_stage_key: stageKey,
+    });
+    setSuppressBusyKey(null);
+    if (error) showToast("err", `שחזור שלב נכשל: ${error.message}`);
+    else if (data?.ok === false) showToast("err", "שחזור שלב נכשל");
+    else {
+      showToast("ok", "↩ השלב הוחזר לתור");
+      fetchQueue();
+    }
+  }, [showToast, fetchQueue]);
 
   const saveSessionMessage = async (scriptKey, text) => {
     const { error } = await supabase.from("bot_scripts").update({ message_text: text }).eq("script_key", scriptKey);
@@ -2156,7 +2394,8 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
           q.guestId
           && !["sent", "simulated", "skipped"].includes(q.status)
           && !QUEUE_HIDDEN_SKIP_REASONS.has(q.skipReason)
-          && q.skipReason !== "awaiting_confirmation";
+          && q.skipReason !== "awaiting_confirmation"
+          && q.skipReason !== "stage_suppressed";
 
         const allDispatchableKeys = displayQueue
           .filter(isDispatchable)
@@ -3041,6 +3280,20 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
 
                         {!isCollapsed && day.guests.map((guest) => {
                           const health = summarizeGuestQueueHealth(guest.items);
+                          const { shared: sharedItems, pipeline: pipelineItems, segment } =
+                            partitionGuestQueueItems(guest.items, guest);
+                          const queueRowProps = {
+                            selectedItems,
+                            toggleItem,
+                            isDispatchable,
+                            dayPassAllowedStages: DAY_PASS_ALLOWED_STAGES,
+                            requestQueueSendNow,
+                            setManualDispatchItem,
+                            sendNowSending,
+                            onSuppressStage: suppressGuestStage,
+                            onUnsuppressStage: unsuppressGuestStage,
+                            suppressBusyKey,
+                          };
                           return (
                           <div
                             key={guest.guestId}
@@ -3052,6 +3305,16 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                                 phone={guest.phone}
                                 onOpenDreamBotChat={onOpenDreamBotChat}
                               />
+                              <span
+                                className="badge"
+                                style={{
+                                  background: segment === "suite" ? "rgba(3,105,161,0.12)" : "rgba(124,58,237,0.12)",
+                                  color: segment === "suite" ? "#0369A1" : "#7C3AED",
+                                  fontWeight: 800,
+                                }}
+                              >
+                                {segment === "suite" ? "🏨 סוויטות" : "☀️ בילוי יומי"}
+                              </span>
                               {health.sent > 0 && (
                                 <span className="badge badge-green" title="שלבים שנשלחו בהצלחה (notification_log)">
                                   ✅ {health.sent} נשלחו
@@ -3084,111 +3347,25 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                                 </span>
                               )}
                               <span style={{ marginRight: "auto", fontSize: 11, color: "var(--text-muted)" }}>
-                                {guest.items.length} שלבים פעילים
+                                {guest.items.length} שלבים · ✕ לביטול שלב בודד
                               </span>
                             </div>
 
-                            <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
-                              <table className="table" style={{ minWidth: 640, marginBottom: 0 }}>
-                                <thead>
-                                  <tr style={{ fontSize: 11 }}>
-                                    <th style={{ width: 32 }} />
-                                    <th>שלב</th>
-                                    <th>מועד משוער</th>
-                                    <th>ערוץ</th>
-                                    <th>סטטוס</th>
-                                    <th style={{ width: 110, textAlign: "center" }}>פעולות</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {guest.items.map((q) => {
-                                    const itemKey = `${q.guestId}_${q.stageKey}`;
-                                    const canDispatch = isDispatchable(q);
-                                    const isGated = isQueueItemGated(q, DAY_PASS_ALLOWED_STAGES);
-                                    const isChecked = selectedItems.has(itemKey);
-                                    const badge = queueStatusBadge(q);
-                                    const proofLine = queueDeliveryProofLine(q);
-                                    return (
-                                      <tr
-                                        key={itemKey}
-                                        style={{
-                                          background: isChecked
-                                            ? "rgba(201,169,110,0.12)"
-                                            : q.dueNow
-                                            ? "rgba(201,169,110,0.06)"
-                                            : undefined,
-                                        }}
-                                      >
-                                        <td style={{ textAlign: "center" }}>
-                                          {canDispatch && !isGated ? (
-                                            <input
-                                              type="checkbox"
-                                              checked={isChecked}
-                                              onChange={() => toggleItem(itemKey)}
-                                              style={{ cursor: "pointer", width: 16, height: 16 }}
-                                            />
-                                          ) : (
-                                            <span title={isGated ? "חסום ליום-כיף" : "לא זמין לשליחה"} style={{ color: "var(--text-muted)" }}>
-                                              {isGated ? "🔒" : "—"}
-                                            </span>
-                                          )}
-                                        </td>
-                                        <td style={{ fontSize: 13, fontWeight: 600 }}>{q.displayName}</td>
-                                        <td style={{ fontSize: 12 }}>
-                                          {formatQueueScheduleCell(q)}
-                                        </td>
-                                        <td>
-                                          <span style={{
-                                            fontSize: 10, padding: "2px 7px", borderRadius: 10,
-                                            background: q.predictedChannel === "session_message" ? "#E8F5EF" : "#E0F2FE",
-                                            color: q.predictedChannel === "session_message" ? "#1A7A4A" : "#0369A1",
-                                          }}>
-                                            {q.predictedChannel === "session_message" ? "סשן" : "תבנית"}
-                                          </span>
-                                        </td>
-                                        <td>
-                                          <span className={`badge ${badge.cls}`}>{badge.text}</span>
-                                          {proofLine && (
-                                            <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 3 }} title="מבוסס notification_log">
-                                              {proofLine}
-                                            </div>
-                                          )}
-                                          {q.skipReason && !SKIP_REASON_LABELS[q.skipReason] && (
-                                            <div style={{ fontSize: 10, color: "var(--text-muted)" }}>{q.skipReason}</div>
-                                          )}
-                                        </td>
-                                        <td style={{ textAlign: "center" }}>
-                                          <div style={{ display: "flex", gap: 4, justifyContent: "center" }}>
-                                            {canDispatch && (
-                                              <button
-                                                type="button"
-                                                className="btn btn-primary btn-sm"
-                                                title={`שלח עכשיו — ${q.displayName}`}
-                                                onClick={() => requestQueueSendNow(q)}
-                                                disabled={sendNowSending || !q.guestId}
-                                                style={{ fontSize: 10, padding: "3px 7px" }}
-                                              >
-                                                שלח
-                                              </button>
-                                            )}
-                                            <button
-                                              type="button"
-                                              className="btn btn-ghost btn-sm"
-                                              title="שגר ידני"
-                                              onClick={() => setManualDispatchItem(q)}
-                                              disabled={!q.guestId || sendNowSending}
-                                              style={{ fontSize: 13, padding: "2px 6px", color: "var(--gold)" }}
-                                            >
-                                              ⚡
-                                            </button>
-                                          </div>
-                                        </td>
-                                      </tr>
-                                    );
-                                  })}
-                                </tbody>
-                              </table>
-                            </div>
+                            <GuestQueueStageTable
+                              sectionLabel="🔗 שלבים משותפים (כל האורחים)"
+                              sectionStyle={{ background: "rgba(201,169,110,0.08)", color: "var(--gold-dark)" }}
+                              items={sharedItems}
+                              {...queueRowProps}
+                            />
+                            <GuestQueueStageTable
+                              sectionLabel={segment === "suite" ? "🏨 צינור סוויטות" : "☀️ צינור בילוי יומי"}
+                              sectionStyle={{
+                                background: segment === "suite" ? "rgba(3,105,161,0.08)" : "rgba(124,58,237,0.08)",
+                                color: segment === "suite" ? "#0369A1" : "#7C3AED",
+                              }}
+                              items={pipelineItems}
+                              {...queueRowProps}
+                            />
                           </div>
                           );
                         })}

@@ -55,6 +55,24 @@ function sleep(ms: number): Promise<void> {
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
+  // ── Health-watchdog heartbeat ────────────────────────────────────────────
+  // Written BEFORE the kill switch below and never allowed to throw — this proves
+  // "pg_cron → this function" is still firing, independent of whether CRON_ENABLED
+  // is deliberately off. automation-health-cron (migration 162) reads this row;
+  // a stale timestamp means the cron plumbing itself died, not just that sends
+  // are paused (that state is already visible via CRON_ENABLED in ACC systemStatus).
+  try {
+    await createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+    ).from("cron_heartbeats").upsert(
+      { job_name: "whatsapp-cron", last_run_at: new Date().toISOString() },
+      { onConflict: "job_name" },
+    );
+  } catch (e) {
+    console.warn("[whatsapp-cron] heartbeat upsert failed (non-blocking):", (e as Error).message);
+  }
+
   // ── EMERGENCY KILL SWITCH ───────────────────────────────────────────────────
   // ALL automated outbound sends are halted until CRON_ENABLED=true is set
   // explicitly in Supabase Secrets (Project → Settings → Edge Functions → Secrets).
@@ -164,6 +182,25 @@ Deno.serve(async (req: Request) => {
     const { data: guests = [] } = await supabase.from("guests").select(GUEST_SELECT);
 
     let guestsList = (guests ?? []) as GuestForSchedule[];
+
+    const guestIdsForSuppress = guestsList.map((g) => g.id as number);
+    const { data: suppressionRows } = await supabase
+      .from("guest_pipeline_stage_suppressions")
+      .select("guest_id, stage_key")
+      .in("guest_id", guestIdsForSuppress.length ? guestIdsForSuppress : [-1]);
+    const suppressedByGuestId = new Map<number, string[]>();
+    for (const row of suppressionRows ?? []) {
+      const gid = row.guest_id as number;
+      const list = suppressedByGuestId.get(gid) ?? [];
+      list.push(row.stage_key as string);
+      suppressedByGuestId.set(gid, list);
+    }
+    if (suppressedByGuestId.size > 0) {
+      guestsList = guestsList.map((g) => {
+        const stages = suppressedByGuestId.get(g.id as number);
+        return stages?.length ? { ...g, pipeline_suppressed_stages: stages } : g;
+      });
+    }
 
     const missedConfirmFixed = await reconcileMissedArrivalConfirmations(supabase, guestsList);
     if (missedConfirmFixed > 0) {

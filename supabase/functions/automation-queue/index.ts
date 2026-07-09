@@ -59,6 +59,7 @@ const QUEUE_PREVIEW_VISIBLE_SKIP_REASONS = new Set([
   "not_on_property",
   "quiet_hours_passed",
   "staff_claim_active",
+  "stage_suppressed",
 ]);
 
 Deno.serve(async (req: Request) => {
@@ -157,10 +158,41 @@ Deno.serve(async (req: Request) => {
       });
     }
 
+    const { data: suppressionRows, error: suppressErr } = await supabase
+      .from("guest_pipeline_stage_suppressions")
+      .select("guest_id, stage_key")
+      .in("guest_id", guestIds.length ? guestIds : [-1]);
+    if (suppressErr) throw new Error(`suppressions_lookup_error: ${suppressErr.message}`);
+
+    const suppressedByGuestId = new Map<number, string[]>();
+    for (const row of suppressionRows ?? []) {
+      const gid = row.guest_id as number;
+      const list = suppressedByGuestId.get(gid) ?? [];
+      list.push(row.stage_key as string);
+      suppressedByGuestId.set(gid, list);
+    }
+
+    const attachSuppressions = (guest: GuestForSchedule): GuestForSchedule => {
+      const stages = suppressedByGuestId.get(guest.id as number);
+      if (!stages?.length) return guest;
+      return { ...guest, pipeline_suppressed_stages: stages };
+    };
+
+    /** Hard pipeline gate — never surface the wrong journey in Live Queue. */
+    const stageMatchesGuestPipeline = (stage: AutomationStage, guest: GuestForSchedule): boolean => {
+      const effectiveSuite = isEffectiveSuiteGuest(guest);
+      if (stage.applies_to === "suite") return effectiveSuite;
+      if (stage.applies_to === "non_suite") return !effectiveSuite;
+      return true;
+    };
+
     const queue: Record<string, unknown>[] = [];
     for (const stage of stages) {
       for (const guest of guests) {
-        const result = resolveStageSchedule(stage, guest, now);
+        const guestRow = attachSuppressions(guest);
+        if (!stageMatchesGuestPipeline(stage, guestRow)) continue;
+
+        const result = resolveStageSchedule(stage, guestRow, now);
         const logRow = latestByKey.get(`${guest.id}::${stage.stage_key}`);
 
         // Omit rows that can never fire for this guest/stage combo.
@@ -202,6 +234,12 @@ Deno.serve(async (req: Request) => {
           arrivalDate: (guest as Record<string, unknown>).arrival_date ?? null,
           departureDate: (guest as Record<string, unknown>).departure_date ?? null,
           stageKey: stage.stage_key,
+          appliesTo: stage.applies_to,
+          pipelineSegment: stage.applies_to === "suite"
+            ? "suite"
+            : stage.applies_to === "non_suite"
+            ? "daypass"
+            : "shared",
           sequenceOrder: stage.sequence_order ?? 999,
           displayName: stage.display_name,
           journeyPhase: stage.journey_phase,
