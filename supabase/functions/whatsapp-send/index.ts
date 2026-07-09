@@ -2395,14 +2395,23 @@ serve(async (req: Request) => {
     // ── Night-before dispatch (Stage 2.5 — suites only) ─────────────────────
     // Day-pass guests use trigger 'night_before_daypass' (generic BRANCH D below).
     //
-    // Routing rule (Stage 2.5):
-    //   • Manual force (force===true) → session_message (unless force_channel=meta_template).
-    //   • Autonomous cron/default → ALWAYS Meta template night_before_suites / _shabbat.
-    //     Never hijack to session text just because the 24h window is open — that path
-    //     bypasses the Shabbat-approved static template bodies and caused 15:00 on Saturdays.
-    //   • Manual force_channel=session_message → bot_script free text (with Shabbat times).
+    // Routing rule (Stage 2.5), fixed 2026-07-09 — previously force_channel was read
+    // for logging only; `forceSessionImmediate = (force === true)` unconditionally won
+    // whenever force was true, so `useSessionChannel`/the meta_template branch below it
+    // were dead code and manual dispatch ALWAYS sent session text regardless of which
+    // channel staff picked. Now a real switch on force_channel when manually dispatched:
+    //   • Manual + force_channel="meta_template" → Shabbat/weekday Meta template.
+    //   • Manual + force_channel="whapi_session"  → same bot_script text as session_message,
+    //     sent via the Whapi Suites device instead of Meta.
+    //   • Manual + force_channel="session_message" (or no force_channel at all, the
+    //     pre-existing default for any caller that doesn't specify one) → Meta session text.
+    //   • Autonomous cron/default (force !== true) → UNCHANGED — ALWAYS Meta template
+    //     night_before_suites / _shabbat. Never hijack to session text just because the
+    //     24h window is open — that path bypasses the Shabbat-approved static template
+    //     bodies and caused 15:00 on Saturdays.
     type NightBeforeDispatch =
       | { channel: "text";     freeTextKey: string;   guestName: string; sessionImageUrl?: string }
+      | { channel: "whapi";    freeTextKey: string;   guestName: string; sessionImageUrl?: string }
       | { channel: "template"; templateName: string;  vars: string[];   buttonUrlParam?: string };
     let nightBeforeDispatch: NightBeforeDispatch | null = null;
 
@@ -2411,58 +2420,54 @@ serve(async (req: Request) => {
       const windowOpen = isWindowOpen(guest.wa_window_expires_at);
       const isForceOverride = force === true;
 
-      // EMERGENCY OVERRIDE: manual "שלח עכשיו" — total bypass of window + schedule gates.
-      const forceSessionImmediate = isForceOverride;
-
       console.log("=== STAGE 2.5 FORCE ATTEMPT ===");
       console.log("Guest:", guest.name, "Room Type:", guest.room_type, "Arrival:", guest.arrival_date);
       console.log(
         `[whatsapp-send] night_before: Stage 2.5 dispatch guest_id=${guestId} ` +
         `room_type=${guest.room_type ?? "null"} arrival=${guest.arrival_date ?? "null"} ` +
         `msg_pre_arrival_sent=${String(guest.msg_pre_arrival_sent)} windowOpen=${windowOpen} ` +
-        `forceSessionImmediate=${forceSessionImmediate} force_channel=${force_channel ?? "auto"} ` +
+        `isForceOverride=${isForceOverride} force_channel=${force_channel ?? "auto"} ` +
         `wa_window_expires_at=${guest.wa_window_expires_at ?? "null"}`,
       );
 
-      const useSessionChannel =
-        forceSessionImmediate
-        || (force === true && forceSessionMessage);
-
-      const sessionImage = forceSessionImmediate
+      const sessionImage = isForceOverride
         ? (resolveStageSessionImageUrl(stageRow, requestImageUrl) ?? NIGHT_BEFORE_OVERRIDE_SESSION_IMAGE)
         : resolveStageSessionImageUrl(stageRow, requestImageUrl);
 
       const guestName = sanitizeTemplateVars([String(guest.name ?? "")])[0];
 
-      if (forceSessionImmediate) {
-        // STRICT: session_message only — no Shabbat/weekday Meta evaluation.
-        nightBeforeDispatch = {
-          channel: "text",
-          freeTextKey: sessionScriptKey,
-          guestName,
-          sessionImageUrl: sessionImage,
-        };
+      const buildTemplateDispatch = (): NightBeforeDispatch => {
+        const arrivalDateStr = normalizeArrivalDateYmd(guest.arrival_date);
+        const isShabbat = isShabbatArrivalDate(arrivalDateStr);
+        const templateName = isShabbat ? "night_before_suites_shabbat" : "night_before_suites";
+        const templateVars = buildNameOnlyTemplateVars(guest);
         console.log(
-          `[whatsapp-send] night_before: route=session_message FORCE guest_id=${guestId} ` +
-          `script=${sessionScriptKey} image=${sessionImage?.slice(0, 64) ?? "default"}`,
+          `[whatsapp-send] night_before: route=meta_template guest_id=${guestId} ` +
+          `arrival=${arrivalDateStr} template=${templateName} isShabbat=${isShabbat} ` +
+          `vars=${JSON.stringify(templateVars)}`,
         );
-      } else if (useSessionChannel) {
+        return { channel: "template", templateName, vars: templateVars };
+      };
+
+      if (isForceOverride && force_channel === "meta_template") {
+        nightBeforeDispatch = buildTemplateDispatch();
+      } else if (isForceOverride && force_channel === "whapi_session") {
+        nightBeforeDispatch = { channel: "whapi", freeTextKey: sessionScriptKey, guestName, sessionImageUrl: sessionImage };
+        console.log(
+          `[whatsapp-send] night_before: route=whapi_session guest_id=${guestId} ` +
+          `script=${sessionScriptKey}`,
+        );
+      } else if (isForceOverride) {
+        // force_channel="session_message", or manual dispatch with no force_channel at
+        // all (pre-existing default behavior, preserved for any caller that omits it).
         nightBeforeDispatch = { channel: "text", freeTextKey: sessionScriptKey, guestName, sessionImageUrl: sessionImage };
         console.log(
           `[whatsapp-send] night_before: route=session_message guest_id=${guestId} ` +
           `script=${sessionScriptKey} has_image=${!!sessionImage}`,
         );
       } else {
-        const arrivalDateStr = normalizeArrivalDateYmd(guest.arrival_date);
-        const isShabbat = isShabbatArrivalDate(arrivalDateStr);
-        const templateName = isShabbat ? "night_before_suites_shabbat" : "night_before_suites";
-        const templateVars = buildNameOnlyTemplateVars(guest);
-        nightBeforeDispatch = { channel: "template", templateName, vars: templateVars };
-        console.log(
-          `[whatsapp-send] night_before: route=meta_template guest_id=${guestId} ` +
-          `arrival=${arrivalDateStr} template=${templateName} isShabbat=${isShabbat} ` +
-          `vars=${JSON.stringify(templateVars)}`,
-        );
+        // Autonomous cron/default — unchanged.
+        nightBeforeDispatch = buildTemplateDispatch();
       }
     }
 
@@ -2481,10 +2486,12 @@ serve(async (req: Request) => {
       let nbSessionKind: string | null = null;
       let nbSessionImageUrl: string | undefined;
       let nbConvMessage = "";
+      let nbWhapiWamid: string | null = null;
 
       try {
         if (!sim) {
-          if (nightBeforeDispatch.channel === "text") {
+          if (nightBeforeDispatch.channel === "text" || nightBeforeDispatch.channel === "whapi") {
+            const isWhapi = nightBeforeDispatch.channel === "whapi";
             const nbForceSessionImmediate = force === true;
             nbSessionImageUrl =
               nightBeforeDispatch.sessionImageUrl
@@ -2497,6 +2504,14 @@ serve(async (req: Request) => {
               .maybeSingle();
             const rawText = scriptRow?.message_text?.trim();
             if (!rawText) {
+              if (isWhapi) {
+                // Staff explicitly chose Whapi — never silently fall back to a Meta
+                // template they didn't ask for (FAIL VISIBLE §0.3), same precedent as
+                // the generic pipeline branch's whapi_session path.
+                throw new Error(
+                  "night_before_whapi_script_missing — הגדר טקסט ל-night_before_reminder ב-BotScriptEditor כדי לשלוח דרך Whapi",
+                );
+              }
               if (nbForceSessionImmediate) {
                 throw new Error(
                   "night_before_session_script_missing — הגדר טקסט ל-night_before_reminder ב-BotScriptEditor",
@@ -2524,6 +2539,10 @@ serve(async (req: Request) => {
                 fbDispatched.variables,
               );
             } else {
+              // Shared body construction — identical for Meta session and Whapi, so the
+              // Shabbat-aware entry/check-in times (resolveNightBeforeTimes) and the
+              // applySaturdayCheckInTimeOverride safety net apply the same way regardless
+              // of transport. Only the send call below differs.
               const arrivalYmd = normalizeArrivalDateYmd(guest.arrival_date);
               const nbTimes = await resolveNightBeforeTimes(supabase, arrivalYmd);
               const nbPortalUrl = guest.portal_token
@@ -2538,26 +2557,27 @@ serve(async (req: Request) => {
                 }),
                 arrivalYmd,
               );
-              nbConvMessage = buildSessionConversationLog(
-                textBody,
-                (stageRow?.interactive_buttons ?? []) as InteractiveButtonDef[],
-              );
-              nbSessionKind = await sendStageSessionMessage(
-                String(guest.phone),
-                textBody,
-                nbSessionImageUrl,
-                [],
-                `night_before guest_id=${guestId}`,
-              );
+              if (isWhapi) {
+                nbConvMessage = buildWhapiSuitesConversationLog(textBody);
+                nbWhapiWamid = await sendWhapiText(cleanPhoneForMention(String(guest.phone)), textBody);
+                nbSessionKind = "whapi";
+              } else {
+                nbConvMessage = buildSessionConversationLog(
+                  textBody,
+                  (stageRow?.interactive_buttons ?? []) as InteractiveButtonDef[],
+                );
+                nbSessionKind = await sendStageSessionMessage(
+                  String(guest.phone),
+                  textBody,
+                  nbSessionImageUrl,
+                  [],
+                  `night_before guest_id=${guestId}`,
+                );
+              }
             }
           } else {
-            if (force === true) {
-              throw new Error(
-                "night_before_force_meta_blocked — manual Send Now must use session_message only; " +
-                "check bot_scripts.night_before_reminder has message_text",
-              );
-            }
-            // Template path: IMAGE header from TEMPLATE_IMAGE_HEADER_DEFAULTS or session_message_image_url.
+            // Template path — reachable both autonomously (cron default) and manually
+            // (staff explicitly picked "🔵 Meta Template"). Same send either way.
             console.log(
               `[whatsapp-send] night_before Stage2.5 pre-send: template=${nightBeforeDispatch.templateName} ` +
               `vars=${JSON.stringify(nightBeforeDispatch.vars)} ` +
@@ -2587,12 +2607,19 @@ serve(async (req: Request) => {
         console.error(`[whatsapp-send] night_before dispatch ${nbStatus}:`, nbError);
       }
 
+      // Three-way payload/log channel label, computed once and reused below —
+      // avoids the old text-vs-everything-else binary that had no room for whapi.
+      const nbPayloadChannel =
+        nightBeforeDispatch.channel === "template" ? "meta_template"
+        : nightBeforeDispatch.channel === "whapi"   ? "whapi_session"
+        : "session_message";
+
       await notifyAdminIfDispatchFailed({
         status: nbStatus,
         error: nbError,
         guestName: guest.name as string,
         guestPhone: guest.phone as string,
-        dispatchType: nightBeforeDispatch.channel === "text" ? "Session" : "Template",
+        dispatchType: nightBeforeDispatch.channel === "template" ? "Template" : "Session",
       });
 
       // Log outcome — same shape as the existing pipeline log below so
@@ -2604,8 +2631,8 @@ serve(async (req: Request) => {
         channel:      "whatsapp",
         status:       nbStatus,
         payload: {
-          channel: nightBeforeDispatch.channel === "text" ? "session_message" : "meta_template",
-          ...(nightBeforeDispatch.channel === "text"
+          channel: nbPayloadChannel,
+          ...(nightBeforeDispatch.channel !== "template"
             ? {
                 scriptKey: nightBeforeDispatch.freeTextKey,
                 ...(nbSessionKind ? { sessionKind: nbSessionKind } : {}),
@@ -2624,10 +2651,13 @@ serve(async (req: Request) => {
             guest_id:      guestId,
             direction:     "outbound",
             message:       nbConvMessage || formatOutboundConversationLog({
-              channel: nightBeforeDispatch.channel === "text" ? "session_message" : "meta_template",
+              channel: nbPayloadChannel === "meta_template" ? "meta_template"
+                     : nbPayloadChannel === "whapi_session"  ? "whapi_suites"
+                     : "session_message",
               body: `[${nightBeforeDispatch.channel === "template" ? nightBeforeDispatch.templateName : nightBeforeDispatch.freeTextKey}]`,
             }),
-            wa_message_id: null,
+            wa_message_id: nightBeforeDispatch.channel === "whapi" ? nbWhapiWamid : null,
+            channel:       nightBeforeDispatch.channel === "whapi" ? "whapi" : "meta",
           });
           if (convErr) console.warn("[whatsapp-send] night_before conv log failed (non-blocking):", convErr.message);
         } catch (e) {
@@ -2645,7 +2675,7 @@ serve(async (req: Request) => {
           ok:         nbStatus === "sent" || nbStatus === "simulated",
           simulation: sim,
           status:     nbStatus,
-          channel:    nightBeforeDispatch.channel === "text" ? "session_message" : "meta_template",
+          channel:    nbPayloadChannel,
           ...(nightBeforeDispatch.channel === "template"
             ? { template: nightBeforeDispatch.templateName }
             : {}),
