@@ -115,7 +115,7 @@ serve(async (req: Request) => {
       .insert({
         guest_id:   guest.id,
         phone:      guest.phone,
-        alert_type: "request",
+        alert_type: "spa_request",
         message:    alertMessage,
         resolved:   false,
       })
@@ -127,7 +127,7 @@ serve(async (req: Request) => {
       guestId: guest.id as number,
       phone: guest.phone as string,
       message: alertMessage,
-      alertType: "request",
+      alertType: "spa_request",
       guestName: guest.name as string | null,
       room: guest.room as string | null,
       sourceLabel: "Guest Portal",

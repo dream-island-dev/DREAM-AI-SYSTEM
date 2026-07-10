@@ -28,6 +28,7 @@ import AutomationControlCenter from "./components/AutomationControlCenter";
 import RoomBoard from "./components/RoomBoard";
 import HousekeepingTabletView from "./components/HousekeepingTabletView";
 import RequestsBoard from "./components/RequestsBoard";
+import SpaBoard from "./components/SpaBoard";
 import GuestFeedbackTabs from "./components/GuestFeedbackTabs";
 import PasswordChangeScreen from "./components/PasswordChangeScreen";
 import SpaStagingPanel from "./components/SpaStagingPanel";
@@ -1307,6 +1308,7 @@ function Sidebar({ user, active, setActive, openOpsCount, onLogout, isAdmin, isS
     { id: "wa_inbox",   icon: "💬", label: "DREAM BOT — שיחות",                     managerOnly: true, receptionistOk: true },
     { id: "guests",     icon: "🛎️", label: "צ'ק-אין",                               managerOnly: true },
     { id: "room_board",   icon: "🏨", label: "לוח סוויטות",                            managerOnly: false },
+    { id: "spa_board",  icon: "💆", label: "לוח ספא",                                 managerOnly: true, receptionistOk: true },
     { id: "housekeeping_tablet", icon: "🧹", label: "לוח ניקיון (טאבלט)",              managerOnly: false },
     { id: "feedback_dashboard", icon: "🌟", label: "משוב אורחים",                     managerOnly: true, receptionistOk: true },
     { id: "scheduler",   icon: "🪄", label: "מחולל משמרות",                           managerOnly: true },
@@ -2201,6 +2203,7 @@ export default function App({ initialPage = "dashboard" }) {
     tasks:      "🛠️ תפעול ואחזקה",
     calls:      "🛠️ תפעול ואחזקה",
     room_board:    "🏨 לוח סוויטות",
+    spa_board:     "💆 לוח ספא",
     housekeeping_tablet: "🧹 לוח ניקיון (טאבלט)",
     requests_board: "📋 לוח בקשות",
     orit_cs_agent: "👑 סוכן שירות לקוחות",
@@ -2388,6 +2391,8 @@ export default function App({ initialPage = "dashboard" }) {
         return <SpaStagingPanel />;
       case "room_board":
         return <RoomBoard />;
+      case "spa_board":
+        return <SpaBoard onOpenDreamBotChat={openDreamBotChat} />;
       case "housekeeping_tablet":
         return <HousekeepingTabletView />;
       case "requests_board":
