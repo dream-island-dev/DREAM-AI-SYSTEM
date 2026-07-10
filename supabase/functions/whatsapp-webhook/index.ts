@@ -124,7 +124,6 @@ import {
 import {
   GUEST_STAFF_HANDOFF_SENTENCE,
   isGuestStaffHandoffReply,
-  buildMetaGuestRoutingGuidanceSuffix,
 } from "../_shared/guestBotHandoff.ts";
 import {
   CLAUDE_MODEL,
@@ -132,6 +131,14 @@ import {
   GEMINI_MODELS,
   resolveGuestModelRoute,
 } from "../_shared/guestBotModelRoute.ts";
+import {
+  fetchGuestBotSettings,
+  fetchGuestLearnedRulesSuffixes,
+} from "../_shared/guestBotSettings.ts";
+import {
+  FALLBACK_SYSTEM_PROMPT,
+  appendGuestBrainInvariantSuffixes,
+} from "../_shared/guestBotPrompt.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -158,94 +165,6 @@ const PENDING_PORTAL_SPA_LLM_SUFFIX = [
   "אל תפתח תהליך הזמנה חדש.",
 ].join(" ");
 
-// ── Layer 2.2 (Defensive Shield) — canonical model-declared "I don't know"
-// sentinel. The LLM is instructed (both suffix sources below) to output this
-// EXACT sentence, verbatim, whenever it cannot answer from the attached
-// context — never a guess. The webhook then detects this literal string on
-// the outgoing reply (see the "faq" intent branch), sends it to the guest
-// verbatim, and flags staff for follow-up — mathematically enforced in code,
-// not just requested of the model. A single
-// source here guarantees the detector and the two prompt sources that emit
-// it can never drift out of sync.
-const LOW_CONFIDENCE_HANDOFF_SENTENCE = GUEST_STAFF_HANDOFF_SENTENCE;
-
-// Fallback static prompt — used ONLY when DB is completely unavailable.
-// Contains NO hardcoded booking URLs, prices, or marketing CTAs —
-// those belong in bot_settings.system_prompt (the UI source of truth).
-const FALLBACK_SYSTEM_PROMPT = `
-אתה "DREAM CONCIERGE" — הקונסיירז' הדיגיטלי הרשמי של Dream Island, אחד מאתרי הנופש היוקרתיים בישראל.
-יוקרתי וחם בו-זמנית — דבר כמו מנהל/ת אירוח אנושי שמכיר את האורח, לא נציג שירות רשמי ורובוטי. קליל, מהיר ומדויק; בלי ניסוחים תאגידיים נוקשים ("בהמשך לפנייתך", "הריני להודיעך" וכדומה). עברית תקנית ואלגנטית, אך טבעית כמו שיחה אמיתית. אל תחשוף שאתה AI.
-אם פרט אינו ידוע לך בכלל ולא מופיע ב"פרטי האורח" שצורפו לשיחה — לעולם אל תמציא תשובה. השב במדויק: "${LOW_CONFIDENCE_HANDOFF_SENTENCE}"
-CRITICAL: אם האורח שואל על פרט אישי שלו (למשל שעת טיפול ספא, מספר חדר, תאריך הגעה)
-והפרט הזה כן מופיע ב"פרטי האורח" שצורפו לשיחה — ענה לו ישירות עם הערך המדויק.
-אל תפנה אותו לקבלה ואל תכתוב שאינך יודע כשהמידע נמצא לפניך.
-
-══ הנחיות שיחה ══
-• אל תפתח כל הודעה ב"שלום" — המשך את השיחה בצורה טבעית כאילו אתה זוכר מה שנאמר
-• קרא את היסטוריית השיחה לפני שאתה עונה — אל תחזור על מידע שכבר נמסר
-• אם האורח ממשיך נושא שנדון קודם — התייחס אליו ישירות, ללא הקדמות
-• דבר בגוף ראשון כנציג הצוות — "נדאג", "נסדר", "נשמח לעזור"
-• לעולם אל תכלול תגיות פנימיות כגון [תבנית:...] בתשובתך — הטקסט שלך נשלח ישירות לאורח.
-• השלם כל מחשבה עד סוף המשפט — לעולם אל תיקטע באמצע.
-• פלוט אך ורק את התשובה הסופית בעברית. אסור לכלול חשיבה, ניתוח, הסבר על ההחלטה, או טקסט באנגלית כלשהו (כגון "According to..." / "the category...") — אלה נחשבים דליפה לאורח.
-`.trim();
-
-// Session 30 Sprint 5.5 — Strict Language Lock & Anti-Hallucination firewall.
-// Unconditionally appended to enrichedPrompt below (see "faq" intent branch),
-// regardless of which of the 3 system-prompt sources won (bot_settings.system_prompt
-// admin override / bot_scripts.ongoing_concierge / buildSystemPrompt(bot_config) fallback).
-// Same reasoning as the session 24 COT-leak firewall (sanitizeReply()'s COT_CUE
-// regex): a rule baked only into buildSystemPrompt()/FALLBACK_SYSTEM_PROMPT only
-// fires when bot_config is the winning source — it goes silent the moment an
-// admin sets a custom bot_settings.system_prompt that doesn't happen to repeat
-// it. Appending here makes it a true invariant, independent of prompt source.
-const STRICT_HEBREW_LOCK_SUFFIX = `
-
-══ נעילת שפה ואנטי-הזיה (חובה מוחלטת) ══
-• ענה בעברית רהוטה, מפוארת ויוקרתית בלבד — לעולם לא באנגלית ולא בשפה אחרת, ללא יוצא מן הכלל.
-• אם התשובה לא מופיעה במפורש בהקשר שצורף (פרטי האורח / ידע הריזורט) — אסור לך להמציא או לנחש. השב במדויק במשפט הזה ואל תשנה אותו: "${LOW_CONFIDENCE_HANDOFF_SENTENCE}"`;
-
-// "Smart Inbox AI Copilot & System Prompt Overhaul" session — explicit
-// ROLE/TONE persona lock, unconditionally appended alongside
-// STRICT_HEBREW_LOCK_SUFFIX above (same reasoning, see that const's comment):
-// a rule that only lives inside buildSystemPrompt()/FALLBACK_SYSTEM_PROMPT
-// goes silent the instant bot_settings.system_prompt (admin override) wins
-// as the prompt source. Appending here makes tone a true invariant too, not
-// just language/anti-hallucination. Deliberately does NOT repeat the
-// language/anti-hallucination rules already covered above — only adds what
-// STRICT_HEBREW_LOCK_SUFFIX doesn't: who the bot is, and how it should sound.
-const LUXURY_CONCIERGE_PERSONA_SUFFIX = `
-
-══ זהות וטון (חובה מוחלטת) ══
-• את/ה הקונסיירז' הדיגיטלי של Dream Island — אחד מאתרי הנופש היוקרתיים בישראל.
-• דבר/י כמו מנהל/ת אירוח אנושי, חם ונעים שמכיר את האורח — לא כמו נציג שירות רשמי, קפדני או רובוטי.
-• קליל, חם, מעשי ומהיר. משפטים קצרים וטבעיים כמו שיחת וואטסאפ אמיתית — לא נאומים מנומקים או ניסוחים תאגידיים ("בהמשך לפנייתך", "הריני להודיעך").
-• אם משהו לא ידוע לך — לעולם אל תמציא/י. עברי/י בעדינות לבדיקה מול הצוות (ראה את המשפט המדויק לעיל), בלי להישמע מתנצל/ת או מתחמק/ת.`;
-
-// In-room keyword override — guest is physically in-suite but DB status lags.
-const IN_HOUSE_TONE_SUFFIX = `
-
-══ טון אורח בחדר (חובה מוחלטת) ══
-• האורח כבר נמצא בחדר/בסוויטה — אל תשתמש/י בניסוחי טרום-הגעה ("נתראה בקרוב", "כשתגיעו", "לפני ההגעה", "ביום ההגעה").
-• דבר/י כאורח שכבר נמצא במלון: "הבקשה הועברה לצוות והם יביאו לכם לחדר בהקדם", "מיד מטפלים בזה", "הצוות בדרך אליכם".
-• אם מדובר במגבות/שמפו/מים/קפסולות/ניקיון — אשר/י שהצוות מספק לחדר, בלי לשאול מתי מגיעים.`;
-
-// Hermetic seal — appended last to every guest LLM context (Claude/Gemini).
-// Complements sanitizeReply(); does NOT modify bot_settings.system_prompt in DB.
-const ANTI_REASONING_LEAK_SUFFIX = `
-
-CRITICAL: Under no circumstances should you output your internal thinking, reasoning steps, variables, tags, markdown code blocks (\`\`\`), or English text to the user. Your output must strictly contain ONLY the natural, direct Hebrew response to the guest. If you feel the need to reason, do it internally; never let it escape into the final output text.`;
-
-// Appended to every guest FAQ LLM call — stops the model from re-opening topics
-// the staff/bot already closed in a prior outbound turn (e.g. "20 דקות יגיע"
-// after a food order, then guest asks about a door — model must not say "שוב").
-const FOCUS_CURRENT_MESSAGE_SUFFIX = `
-
-══ מיקוד בהודעה הנוכחית (חובה מוחלטת) ══
-• ענה/י אך ורק על מה שהאורח כותב בהודעה האחרונה — לא על נושאים ישנים מהיסטוריה.
-• אם נושא קודם כבר נענה בתשובת צוות או בוט קודמת (למשל "יגיע אליכם", "הועבר לצוות", "מטפלים בזה") — אל תחזור/י עליו, אל תכתוב "שוב" ואל תעביר/י שוב את אותה בקשה.
-• היסטוריית השיחה היא להקשר בלבד — לא רשימת משימות פתוחות.`;
-
 // Rapid burst coalescing — two webhook invocations within ~2s share one LLM reply.
 const BURST_COALESCE_MS = 1800;
 const BURST_WINDOW_MS   = 5000;
@@ -254,10 +173,6 @@ const BURST_WINDOW_MS   = 5000;
 let _configCache: Record<string, string> = {};
 let _cacheTime = 0;
 const CONFIG_TTL_MS = 5 * 60 * 1000; // 5 minutes
-
-// Cache for bot_settings (admin-controlled prompt override)
-let _botSettingsCache: { system_prompt: string; knowledge_base: string; preferred_model: string | null } | null = null;
-let _botSettingsCacheTime = 0;
 
 // ── §1b  BOT SCRIPTS — loaded from bot_scripts table, cached 5 min ──────────
 interface BotScript {
@@ -646,92 +561,6 @@ async function fetchBotConfig(
   } catch (e) {
     console.warn("[webhook] fetchBotConfig error:", (e as Error).message);
     return _configCache;
-  }
-}
-
-async function fetchBotSettings(
-  supabaseClient: ReturnType<typeof createClient>
-): Promise<{ system_prompt: string; knowledge_base: string; preferred_model: string | null }> {
-  const empty = { system_prompt: "", knowledge_base: "", preferred_model: null };
-  const now = Date.now();
-  if (_botSettingsCache && now - _botSettingsCacheTime < CONFIG_TTL_MS) {
-    return _botSettingsCache;
-  }
-  try {
-    const { data, error } = await supabaseClient
-      .from("bot_settings")
-      .select("system_prompt, knowledge_base, preferred_model")
-      .eq("id", 1)
-      .maybeSingle();
-    if (error || !data) {
-      console.warn("[webhook] bot_settings not available:", error?.message ?? "empty");
-      return _botSettingsCache ?? empty;
-    }
-    _botSettingsCache = {
-      system_prompt:   ((data as Record<string, unknown>).system_prompt   as string) ?? "",
-      knowledge_base:  ((data as Record<string, unknown>).knowledge_base  as string) ?? "",
-      preferred_model: ((data as Record<string, unknown>).preferred_model as string | null) ?? null,
-    };
-    _botSettingsCacheTime = now;
-    return _botSettingsCache;
-  } catch (e) {
-    console.warn("[webhook] fetchBotSettings error:", (e as Error).message);
-    return _botSettingsCache ?? empty;
-  }
-}
-
-// ── §1e  UNIFIED AI LEARNING — xos_ai_rules (migration 103) ───────────────────
-// chat rules → guest persona prompt; routing rules → tool/routing block only.
-// Cached 5 min like bot_config; any failure returns empty suffixes.
-interface LearnedRulesSuffixes {
-  chatSuffix: string;
-  routingSuffix: string;
-}
-let _learnedRulesCache: { data: LearnedRulesSuffixes; at: number } | null = null;
-
-const EMPTY_LEARNED_RULES: LearnedRulesSuffixes = { chatSuffix: "", routingSuffix: "" };
-
-function _formatLearnedBlock(title: string, bullets: string[]): string {
-  return bullets.length ? `\n\n${title}\n${bullets.join("\n")}` : "";
-}
-
-async function fetchLearnedRulesSuffixes(
-  supabaseClient: ReturnType<typeof createClient>,
-): Promise<LearnedRulesSuffixes> {
-  const now = Date.now();
-  if (_learnedRulesCache && now - _learnedRulesCache.at < CONFIG_TTL_MS) {
-    return _learnedRulesCache.data;
-  }
-  try {
-    const { data, error } = await supabaseClient
-      .from("xos_ai_rules")
-      .select("module, rule_text")
-      .in("module", ["chat", "routing"])
-      .order("created_at", { ascending: true });
-
-    if (error) {
-      console.warn("[webhook] xos_ai_rules fetch failed (non-blocking):", error.message);
-      return _learnedRulesCache?.data ?? EMPTY_LEARNED_RULES;
-    }
-
-    const rows = (data ?? []) as Array<{ module: string; rule_text: string }>;
-    const byModule: Record<string, string[]> = { chat: [], routing: [] };
-    for (const row of rows) {
-      const t = String(row.rule_text ?? "").trim();
-      if (!t) continue;
-      const mod = String(row.module ?? "").trim();
-      if (mod === "chat" || mod === "routing") byModule[mod].push(`- ${t}`);
-    }
-
-    const suffixes: LearnedRulesSuffixes = {
-      chatSuffix: _formatLearnedBlock("══ כללים שנלמדו — צ'אט ══", byModule.chat),
-      routingSuffix: _formatLearnedBlock("══ כללים שנלמדו — ניתוב (פנימי) ══", byModule.routing),
-    };
-    _learnedRulesCache = { data: suffixes, at: now };
-    return suffixes;
-  } catch (e) {
-    console.warn("[webhook] xos_ai_rules fetch error (non-blocking):", (e as Error).message);
-    return _learnedRulesCache?.data ?? EMPTY_LEARNED_RULES;
   }
 }
 
@@ -3141,9 +2970,9 @@ Deno.serve(async (req: Request) => {
     // Load all config in parallel — each has its own 5-min cache
     const [botConfig, botSettings, scripts, learnedRules] = await Promise.all([
       fetchBotConfig(supabase),
-      fetchBotSettings(supabase),
+      fetchGuestBotSettings(supabase),
       fetchBotScripts(supabase),
-      fetchLearnedRulesSuffixes(supabase),
+      fetchGuestLearnedRulesSuffixes(supabase),
     ]);
 
     const systemPrompt = buildSystemPrompt(botConfig);
@@ -4306,12 +4135,7 @@ Deno.serve(async (req: Request) => {
           + (guestCtx ? `\n\nפרטי האורח הנוכחי: ${guestCtx}` : "")
           + (guest && isPendingPortalSpaRequest(guest as Record<string, unknown>)
             ? `\n\n${PENDING_PORTAL_SPA_LLM_SUFFIX}` : "")
-          + STRICT_HEBREW_LOCK_SUFFIX
-          + LUXURY_CONCIERGE_PERSONA_SUFFIX
-          + (inRoomOverride ? IN_HOUSE_TONE_SUFFIX : "")
-          + ANTI_REASONING_LEAK_SUFFIX
-          + FOCUS_CURRENT_MESSAGE_SUFFIX
-          + buildMetaGuestRoutingGuidanceSuffix();
+          + appendGuestBrainInvariantSuffixes("meta", { inHouse: inRoomOverride });
 
         // Dynamic engine routing (A/B testing & cost optimization) — preferred
         // engine is tried first, with the other engine kept as an automatic

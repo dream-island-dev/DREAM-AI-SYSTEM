@@ -8,7 +8,7 @@ import { useState, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 
 const MODULE_LABELS = {
-  chat: "צ'אט",
+  chat: "צ'אט אורחים (Dream Bot + Whapi)",
   routing: "ניתוב",
 };
 

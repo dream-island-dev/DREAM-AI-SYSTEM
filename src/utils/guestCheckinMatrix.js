@@ -189,7 +189,7 @@ export function formatCheckinArrivalDisplay(guest) {
 
 const PRE_ARRIVAL_STATUSES = new Set(["pending", "expected", "room_ready"]);
 
-function isPreArrivalTodayGuest(guest, today) {
+export function isPreArrivalTodayGuest(guest, today = israelTodayStr()) {
   return PRE_ARRIVAL_STATUSES.has(guest?.status) && guest?.arrival_date === today;
 }
 

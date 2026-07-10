@@ -22,6 +22,7 @@ import {
   countCheckinScopeTotals,
   formatCheckinArrivalDisplay,
   getCheckinRowHighlight,
+  isPreArrivalTodayGuest,
   resolveEffectiveGuestStatus,
   shouldAutoCheckoutGuest,
   shouldAutoPromoteToCheckedIn,
@@ -258,6 +259,20 @@ export default function GuestsPage({
     roomNameFor,
     { prioritizeEta: timelineScope === CHECKIN_TIMELINE_TODAY },
   );
+
+  // ── Arrival ETA board — today's pre-arrival roster, ETA-sorted, FAIL VISIBLE ──
+  const etaBoardGuests = timelineScope === CHECKIN_TIMELINE_TODAY
+    ? sortCheckinRosterGuests(
+        suiteGuests.filter((g) => isPreArrivalTodayGuest(g)),
+        new Date(),
+        roomNameFor,
+        { prioritizeEta: true },
+      )
+    : [];
+  const etaMissingCount = etaBoardGuests.filter((g) => {
+    const eta = (g.arrival_time || "").trim();
+    return !eta || !/^\d{2}:\d{2}$/.test(eta);
+  }).length;
 
   // ── Bulk delete selected guests (same pattern as GuestDashboard.js) ────────
   const handleDeleteSelected = async () => {
@@ -624,6 +639,71 @@ export default function GuestsPage({
           </button>
         </div>
       </div>
+
+      {timelineScope === CHECKIN_TIMELINE_TODAY && (
+        <div className="card" style={{ padding: "16px 18px", marginBottom: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+            <div style={{ fontSize: 15, fontWeight: 800, color: "var(--black)" }}>
+              🕐 לוח זמני הגעה — היום ({etaBoardGuests.length})
+            </div>
+            {etaMissingCount > 0 && (
+              <span style={{
+                fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 20,
+                background: "#FFF0EE", color: "#C0392B", border: "1px solid #C0392B",
+              }}>
+                ⚠ {etaMissingCount} ללא שעת הגעה
+              </span>
+            )}
+          </div>
+
+          {etaBoardGuests.length === 0 ? (
+            <div style={{ fontSize: 13, color: "var(--text-muted)", padding: "6px 2px" }}>
+              אין אורחים בטרום-הגעה להיום.
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {etaBoardGuests.map((g) => {
+                const arr = formatCheckinArrivalDisplay(g);
+                const hasValidEta = !!arr.eta && /^\d{2}:\d{2}$/.test(arr.eta);
+                const rowHi = getCheckinRowHighlight(g);
+                const sm = STATUS_META[g.status] ?? {};
+                return (
+                  <div
+                    key={g.id}
+                    onClick={() => setProfileGuest(g)}
+                    title="הצג פרופיל אורח"
+                    style={{
+                      display: "flex", alignItems: "center", gap: 10,
+                      padding: "8px 12px", borderRadius: 8, cursor: "pointer",
+                      background: rowHi.bg || "var(--ivory)",
+                      border: "1px solid var(--border)",
+                    }}
+                  >
+                    <span style={{
+                      minWidth: 78, fontSize: 13, fontWeight: 800, direction: "ltr", textAlign: "center",
+                      color: hasValidEta ? "var(--gold-dark)" : "#C0392B",
+                    }}>
+                      {hasValidEta ? `🕐 ${arr.eta}` : "⚠ טרם נמסר"}
+                    </span>
+                    <span style={{ minWidth: 90, fontSize: 13, color: "var(--text-muted)" }}>
+                      {roomNameFor(g) || "—"}
+                    </span>
+                    <span style={{ flex: 1, fontSize: 14, fontWeight: 700, color: "var(--black)" }}>
+                      {g.name}
+                    </span>
+                    <span style={{
+                      fontSize: 11, fontWeight: 700, padding: "2px 9px", borderRadius: 20,
+                      background: sm.bg ?? "var(--ivory)", color: sm.color ?? "var(--text-muted)",
+                    }}>
+                      {sm.label ?? g.status}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       {!isSupabaseConfigured && (
         <div style={{ background: "#FFF5E8", border: "1px solid #F5A623", borderRadius: 10, padding: "12px 16px", marginBottom: 16, fontSize: 13, color: "#7A4A00" }}>
