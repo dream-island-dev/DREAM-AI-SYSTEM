@@ -25,6 +25,21 @@ const UNMATCHED_REASON_LABELS = {
   write_failed: "שגיאת מערכת בשמירה",
 };
 
+// Staff board markers — soft pastels, one-tap on the card. Keys match
+// spa_appointments.board_color CHECK (migration 180). Sync never writes these.
+const BOARD_COLORS = [
+  { key: "gold",  label: "זהב",  bg: "#FBF3E0", border: "#C9A96E", text: "#412402" },
+  { key: "blue",  label: "כחול", bg: "#E8F0FE", border: "#1A56DB", text: "#1A3A6B" },
+  { key: "green", label: "ירוק", bg: "#EAF3DE", border: "#639922", text: "#3B6D11" },
+  { key: "rose",  label: "ורוד", bg: "#FCE8F0", border: "#C2185B", text: "#8B1548" },
+  { key: "amber", label: "כתום", bg: "#FFF5E8", border: "#F5A623", text: "#7A4A00" },
+  { key: "slate", label: "אפור", bg: "#F0F0F0", border: "#8A8A8A", text: "#3D3D3D" },
+];
+
+function boardColorStyle(key) {
+  return BOARD_COLORS.find((c) => c.key === key) ?? null;
+}
+
 function todayYmd() {
   return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
 }
@@ -340,6 +355,162 @@ function UnmatchedPanel({ rows, rooms, onAssignRoom, onDismiss }) {
   );
 }
 
+// ── Color dots — one tap = save (used in quick-edit + assign modal) ────────
+function ColorDots({ value, onChange, disabled }) {
+  return (
+    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+      {BOARD_COLORS.map((c) => {
+        const selected = value === c.key;
+        return (
+          <button
+            key={c.key}
+            type="button"
+            disabled={disabled}
+            title={c.label}
+            aria-label={c.label}
+            aria-pressed={selected}
+            onClick={() => onChange(selected ? null : c.key)}
+            style={{
+              width: 28, height: 28, borderRadius: "50%", padding: 0,
+              background: c.bg, border: selected ? `3px solid ${c.border}` : `2px solid ${c.border}`,
+              boxShadow: selected ? `0 0 0 2px ${c.border}44` : "none",
+              cursor: disabled ? "not-allowed" : "pointer", flexShrink: 0,
+              transform: selected ? "scale(1.08)" : "none", transition: "transform 0.12s",
+            }}
+          />
+        );
+      })}
+      <button
+        type="button"
+        disabled={disabled || !value}
+        onClick={() => onChange(null)}
+        title="הסר צבע"
+        style={{
+          minHeight: 28, padding: "0 10px", borderRadius: 14, border: "1px solid var(--border)",
+          background: "var(--ivory)", color: value ? "var(--text-muted)" : "#ccc",
+          fontSize: 11, fontWeight: 700, cursor: disabled || !value ? "not-allowed" : "pointer",
+          fontFamily: "Heebo, sans-serif",
+        }}
+      >
+        ללא
+      </button>
+    </div>
+  );
+}
+
+// ── Quick edit — color + staff note without reopening full AssignModal ─────
+function ApptQuickEdit({ appt, roomName, onClose, onPatched }) {
+  const [color, setColor] = useState(appt?.board_color ?? null);
+  const [staffNote, setStaffNote] = useState(appt?.staff_note ?? "");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState(null);
+  const noteDirty = (staffNote.trim() || "") !== (appt?.staff_note ?? "").trim();
+
+  if (!appt) return null;
+
+  async function patch(fields) {
+    setErr(null);
+    setSaving(true);
+    const { error } = await supabase.from("spa_appointments").update(fields).eq("id", appt.id);
+    setSaving(false);
+    if (error) {
+      setErr("⚠ שגיאה: " + error.message);
+      return false;
+    }
+    onPatched({ ...appt, ...fields });
+    return true;
+  }
+
+  async function handleColor(next) {
+    setColor(next);
+    const ok = await patch({ board_color: next });
+    if (!ok) setColor(appt.board_color ?? null);
+  }
+
+  async function handleSaveNote() {
+    const ok = await patch({ staff_note: staffNote.trim() || null });
+    if (ok) onClose();
+  }
+
+  const cStyle = boardColorStyle(color);
+
+  return (
+    <div
+      onClick={() => !saving && onClose()}
+      style={{ position: "fixed", inset: 0, zIndex: 9998, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: "var(--card-bg)", borderRadius: 16, padding: 24, maxWidth: 420, width: "100%",
+          direction: "rtl", textAlign: "right", boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
+          fontFamily: "Heebo, sans-serif",
+          borderTop: cStyle ? `5px solid ${cStyle.border}` : "5px solid transparent",
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+          <h3 style={{ margin: 0, color: "var(--gold-dark)", fontSize: 17 }}>✏️ תור · צבע והערה</h3>
+          <button type="button" onClick={onClose} aria-label="סגור" style={{ minWidth: 36, minHeight: 36, border: "none", background: "var(--ivory)", borderRadius: 8, cursor: "pointer", fontSize: 16 }}>✕</button>
+        </div>
+
+        <div style={{ background: cStyle?.bg ?? "var(--ivory)", border: `1px solid ${cStyle?.border ?? "var(--border)"}`, borderRadius: 10, padding: "10px 12px", marginBottom: 16, fontSize: 13 }}>
+          <div style={{ fontWeight: 800 }}>{roomName} · {appt.start_time?.slice(0, 5)}–{appt.end_time?.slice(0, 5)}</div>
+          <div style={{ color: "var(--text-muted)", marginTop: 2 }}>{appt.guests?.name ?? "—"}{appt.spa_therapists?.name ? ` · 👤 ${appt.spa_therapists.name}` : ""}</div>
+          {appt.treatment_type && (
+            <div style={{ fontSize: 12, marginTop: 4, fontWeight: 600 }}>{appt.treatment_type}</div>
+          )}
+        </div>
+
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ fontSize: 12, color: "var(--text-muted)", display: "block", marginBottom: 8 }}>צבע בלוח</label>
+          <ColorDots value={color} onChange={handleColor} disabled={saving} />
+        </div>
+
+        <div style={{ marginBottom: 14 }}>
+          <label style={{ fontSize: 12, color: "var(--text-muted)", display: "block", marginBottom: 6 }}>
+            הערת צוות <span style={{ opacity: 0.6 }}>(נשמרת גם אחרי ייבוא EZGO)</span>
+          </label>
+          <textarea
+            value={staffNote}
+            onChange={(e) => setStaffNote(e.target.value)}
+            rows={3}
+            placeholder="למשל: אלרגיה לשמן · להגיע 10 דק׳ מוקדם · VIP"
+            style={{ width: "100%", borderRadius: 8, border: "1px solid var(--border)", padding: 10, fontFamily: "Heebo, sans-serif", fontSize: 13, resize: "vertical", boxSizing: "border-box" }}
+          />
+        </div>
+
+        {appt.notes && (
+          <div style={{ marginBottom: 14, fontSize: 12, color: "var(--text-muted)", background: "var(--ivory)", borderRadius: 8, padding: "8px 10px" }}>
+            <div style={{ fontWeight: 700, marginBottom: 2 }}>מהייבוא (Ezgo):</div>
+            {appt.notes}
+          </div>
+        )}
+
+        {err && (
+          <div style={{ background: "#FFF0EE", border: "1px solid #E24B4A", color: "#A32D2D", borderRadius: 8, padding: "8px 12px", fontSize: 13, fontWeight: 600, marginBottom: 12 }}>
+            {err}
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+          <button className="btn btn-sm" onClick={onClose} disabled={saving} style={{ background: "var(--ivory)" }}>
+            {noteDirty ? "סגור בלי לשמור הערה" : "סגור"}
+          </button>
+          <button
+            className="btn btn-sm"
+            onClick={handleSaveNote}
+            disabled={saving || !noteDirty}
+            title={noteDirty ? "שמור הערת צוות" : "אין שינוי בהערה"}
+            style={{ background: noteDirty ? "var(--gold)" : "var(--border)", color: "#412402", fontWeight: 700 }}
+          >
+            {saving ? "שומר…" : "✓ שמור הערה"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Assign / create appointment modal ──────────────────────────────────────
 function AssignModal({ draft, rooms, therapists, onClose, onSaved }) {
   const [guest, setGuest] = useState(draft?.guest ?? null);
@@ -348,7 +519,8 @@ function AssignModal({ draft, rooms, therapists, onClose, onSaved }) {
   const [date, setDate] = useState(draft?.date ?? todayYmd());
   const [startTime, setStartTime] = useState(DEFAULT_START_TIME);
   const [endTime, setEndTime] = useState(addMinutesToHm(DEFAULT_START_TIME, DEFAULT_DURATION_MIN));
-  const [notes, setNotes] = useState("");
+  const [staffNote, setStaffNote] = useState("");
+  const [boardColor, setBoardColor] = useState(null);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState(null);
 
@@ -372,7 +544,8 @@ function AssignModal({ draft, rooms, therapists, onClose, onSaved }) {
         appointment_date: date,
         start_time: startTime,
         end_time: endTime,
-        notes: notes.trim() || null,
+        staff_note: staffNote.trim() || null,
+        board_color: boardColor,
       })
       .select("id")
       .maybeSingle();
@@ -487,11 +660,19 @@ function AssignModal({ draft, rooms, therapists, onClose, onSaved }) {
         </div>
 
         <div style={{ marginBottom: 14 }}>
+          <label style={{ fontSize: 12, color: "var(--text-muted)", display: "block", marginBottom: 8 }}>
+            צבע בלוח <span style={{ opacity: 0.6 }}>(אופציונלי)</span>
+          </label>
+          <ColorDots value={boardColor} onChange={setBoardColor} disabled={saving} />
+        </div>
+
+        <div style={{ marginBottom: 14 }}>
           <label style={{ fontSize: 12, color: "var(--text-muted)", display: "block", marginBottom: 6 }}>
-            הערות <span style={{ opacity: 0.6 }}>(אופציונלי)</span>
+            הערת צוות <span style={{ opacity: 0.6 }}>(אופציונלי)</span>
           </label>
           <textarea
-            value={notes} onChange={(e) => setNotes(e.target.value)} rows={2}
+            value={staffNote} onChange={(e) => setStaffNote(e.target.value)} rows={2}
+            placeholder="למשל: אלרגיה · VIP · להקדים"
             style={{ width: "100%", borderRadius: 8, border: "1px solid var(--border)", padding: 10, fontFamily: "Heebo, sans-serif", fontSize: 13, resize: "vertical", boxSizing: "border-box" }}
           />
         </div>
@@ -612,6 +793,7 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
   const [assignDraft, setAssignDraft] = useState(null); // { alertId?, guest?, roomId?, date }
   const [showTherapistPanel, setShowTherapistPanel] = useState(false);
   const [swapDraft, setSwapDraft] = useState(null); // appointment being swapped
+  const [editAppt, setEditAppt] = useState(null); // appointment for color/note quick-edit
   const [unmatchedRows, setUnmatchedRows] = useState([]);
   const [showImportZone, setShowImportZone] = useState(false);
 
@@ -810,6 +992,17 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
         onSaved={() => { setSwapDraft(null); showToast("✓ המטפלים הוחלפו בהצלחה"); fetchAppointments(); }}
       />
 
+      <ApptQuickEdit
+        key={editAppt?.id ?? "closed"}
+        appt={editAppt}
+        roomName={editAppt ? (roomsById[editAppt.room_id] ?? "—") : ""}
+        onClose={() => setEditAppt(null)}
+        onPatched={(next) => {
+          setAppointments((prev) => prev.map((a) => (a.id === next.id ? { ...a, ...next } : a)));
+          setEditAppt((cur) => (cur && cur.id === next.id ? { ...cur, ...next } : cur));
+        }}
+      />
+
       {!isSupabaseConfigured && (
         <div style={{ background: "#FFF5E8", border: "1px solid #F5A623", borderRadius: 10, padding: "12px 16px", marginBottom: 16, fontSize: 13, color: "#7A4A00" }}>
           Supabase לא מחובר — לא ניתן לטעון את לוח הספא.
@@ -858,7 +1051,7 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
       </div>
 
       {/* ── Date selector ───────────────────────────────────────────────────── */}
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 18, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10, flexWrap: "wrap" }}>
         <label style={{ fontSize: 13, fontWeight: 700, color: "var(--black)" }}>תאריך:</label>
         <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} />
         <button className="btn btn-ghost btn-sm" onClick={() => setSelectedDate(todayYmd())}>היום</button>
@@ -868,6 +1061,18 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
         <button className="btn btn-ghost btn-sm" onClick={() => setShowTherapistPanel(true)}>
           ✏️ עריכת שמות מטפלים
         </button>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 18, flexWrap: "wrap", fontSize: 11, color: "var(--text-muted)" }}>
+        <span style={{ fontWeight: 700 }}>טיפ:</span>
+        <span>לחיצה על תור → צבע + הערת צוות</span>
+        <span style={{ opacity: 0.5 }}>·</span>
+        {BOARD_COLORS.map((c) => (
+          <span key={c.key} title={c.label} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+            <span style={{ width: 10, height: 10, borderRadius: "50%", background: c.bg, border: `1.5px solid ${c.border}`, display: "inline-block" }} />
+            {c.label}
+          </span>
+        ))}
       </div>
 
       {showImportZone && (
@@ -906,36 +1111,68 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
                     <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 6 }}>
                       {roomAppts.length === 0 ? (
                         <div style={{ fontSize: 11, color: "#ccc" }}>אין תורים</div>
-                      ) : roomAppts.map((a) => (
-                        <div key={a.id} style={{
-                          background: "var(--ivory)", borderRadius: 8, padding: "6px 8px",
-                          border: a.therapist_id ? "1px solid var(--border)" : "1px solid #E8AE0A",
-                        }}>
-                          <div style={{ fontSize: 12, fontWeight: 700 }}>
-                            {a.start_time?.slice(0, 5)}–{a.end_time?.slice(0, 5)}
-                          </div>
-                          <div style={{ fontSize: 12 }}>{a.guests?.name ?? "—"}</div>
-                          {a.spa_therapists?.name ? (
-                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 4 }}>
-                              <div style={{ fontSize: 11, color: "var(--text-muted)" }}>👤 {a.spa_therapists.name}</div>
-                              <button
-                                type="button"
-                                onClick={() => setSwapDraft(a)}
-                                title="החלפת מטפל/ת עם תור אחר"
-                                style={{
-                                  minHeight: 26, minWidth: 26, padding: 0, borderRadius: 6,
-                                  border: "1px solid var(--border)", background: "var(--card-bg)",
-                                  cursor: "pointer", fontSize: 12, lineHeight: 1, flexShrink: 0,
-                                }}
-                              >
-                                🔄
-                              </button>
+                      ) : roomAppts.map((a) => {
+                        const cStyle = boardColorStyle(a.board_color);
+                        const hasNote = !!(a.staff_note || a.notes);
+                        return (
+                          <div
+                            key={a.id}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => setEditAppt(a)}
+                            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setEditAppt(a); } }}
+                            title="לחץ לעריכת צבע והערה"
+                            style={{
+                              background: cStyle?.bg ?? "var(--ivory)",
+                              borderRadius: 8, padding: "7px 8px",
+                              border: `1.5px solid ${cStyle?.border ?? (a.therapist_id ? "var(--border)" : "#E8AE0A")}`,
+                              borderRight: `4px solid ${cStyle?.border ?? (a.therapist_id ? "var(--border)" : "#E8AE0A")}`,
+                              cursor: "pointer", transition: "box-shadow 0.12s",
+                            }}
+                            onMouseEnter={(e) => { e.currentTarget.style.boxShadow = "0 2px 8px rgba(0,0,0,0.08)"; }}
+                            onMouseLeave={(e) => { e.currentTarget.style.boxShadow = "none"; }}
+                          >
+                            <div style={{ fontSize: 12, fontWeight: 700, color: cStyle?.text }}>
+                              {a.start_time?.slice(0, 5)}–{a.end_time?.slice(0, 5)}
+                              {hasNote ? " 📝" : ""}
                             </div>
-                          ) : (
-                            <div style={{ fontSize: 11, color: "#8A6A00", fontWeight: 700 }}>⚠ טרם שובץ מטפל/ת</div>
-                          )}
-                        </div>
-                      ))}
+                            <div style={{ fontSize: 12, fontWeight: 600 }}>{a.guests?.name ?? "—"}</div>
+                            {a.staff_note && (
+                              <div style={{
+                                fontSize: 11, marginTop: 3, color: cStyle?.text ?? "var(--text-muted)",
+                                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                                opacity: 0.9,
+                              }}>
+                                {a.staff_note}
+                              </div>
+                            )}
+                            {!a.staff_note && a.notes && (
+                              <div style={{ fontSize: 11, marginTop: 3, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                {a.notes}
+                              </div>
+                            )}
+                            {a.spa_therapists?.name ? (
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 4, marginTop: 2 }}>
+                                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>👤 {a.spa_therapists.name}</div>
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); setSwapDraft(a); }}
+                                  title="החלפת מטפל/ת עם תור אחר"
+                                  style={{
+                                    minHeight: 26, minWidth: 26, padding: 0, borderRadius: 6,
+                                    border: "1px solid var(--border)", background: "var(--card-bg)",
+                                    cursor: "pointer", fontSize: 12, lineHeight: 1, flexShrink: 0,
+                                  }}
+                                >
+                                  🔄
+                                </button>
+                              </div>
+                            ) : (
+                              <div style={{ fontSize: 11, color: "#8A6A00", fontWeight: 700, marginTop: 2 }}>⚠ טרם שובץ מטפל/ת</div>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                     <button
                       onClick={() => openAssignForRoom(room.id)}

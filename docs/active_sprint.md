@@ -1,5 +1,5 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-11 (Smart Spa Board Phases 0–3 shipped to main `ce1257b` — Vercel; migrations 178–179 already on remote DB).
+> Last updated: 2026-07-11 (Spa Board staff colors + notes UX — migration 180 + SpaBoard quick-edit).
 > Full session history → `CLAUDE.md` §10 + `claude_history.md`.
 > **Agent workflow** → `docs/xos_agent_playbook.md`
 
@@ -14,7 +14,8 @@ Goal: import the FULL daily Ezgo "פעילויות" report (not suite-only), mat
 | 0 | Schema — `spa_appointments` +ezgo_line_id/phone_snapshot/treatment_type, `spa_room_aliases`, `spa_import_unmatched` (migration 178) | ✅ pushed |
 | 1 | Shared pure parser (`src/utils/ezgoSpaActivitiesParser.js`) | ✅ done — 25 tests |
 | 2 | Upsert engine + guest write-through + `guest_profile.spa` context (`src/utils/spaActivitiesSyncEngine.js`) | ✅ done — 41 tests, external Plan-agent review (4 real bugs fixed), migration 179 pushed |
-| 3 | SpaBoard Excel import UI + unmatched panel + summary toast | ✅ code done — OOM blocker fixed (`package.json` direct `--max-old-space-size` + `.env.development` GENERATE_SOURCEMAP=false); `npm start` compiles, localhost:3000 up — **Mike: click-test import UI** |
+| 3 | SpaBoard Excel import UI + unmatched panel + summary toast | ✅ shipped `ce1257b` |
+| 3b | Staff UX — board colors + staff notes (quick-edit on card click) | ✅ code + migration 180 |
 | 4 | `spa-schedule-webhook` upgraded to shared engine, `filter=all` default | Pending |
 | 5 | Bot context enrichment (`buildGuestStageContext` spa line → room/therapist/type) | Pending |
 
