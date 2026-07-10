@@ -148,7 +148,7 @@ export const RECORD_ONLY_ARRIVAL_REPLY =
   "תודה שעדכנתם, רשמתי לפניי את שעת ההגעה שלכם. מחכים לכם!";
 
 /** Date-change, cancellation, or booking issue → escalate to human staff, never AI */
-const DATE_CHANGE_RE =
+export const DATE_CHANGE_RE =
   /שינוי\s*(ב)?תאריכ|שינוי\s*הזמנ|לשנות\s*(את\s*)?(ה)?תאריכ|לבטל|ביטול|לא\s*נוכל??\s*להגיע|לא\s*יכול(ים|ה)?\s*להגיע|לא\s*מגיעים|דחיי?ה|להדחות|בעיה\s*עם\s*(ה)?הזמנ/i;
 
 /** Guest asking when to arrive — FAQ, not a time update. */

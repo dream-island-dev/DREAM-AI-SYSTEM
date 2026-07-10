@@ -1,14 +1,22 @@
 // supabase/functions/guest-portal-ops-request/index.ts
-// Pre-Arrival Guest Portal — in-scroll room-service request dispatch.
+// Pre-Arrival / In-Stay Guest Portal — in-scroll room-service request dispatch.
 //
-// Guest tapping "הזמנת שירות לחדר" (Armonim scene) lands on the Requests Board
-// (guest_alerts) + Whapi "בקשות אורחים" group — same channel as portal upsells,
-// spa requests, and reception/financial guest asks. routing_config
-// (migration 121) already marks portal_room_service → destination_board=requests.
-
+// Two routes, same as Meta/Whapi's classifyGuestRequestDispatch:
+//   - In-house eligible guest (checked_in, or on-property arrival day) +
+//     upsellLabel matches the allowlisted physical categories (amenity /
+//     maintenance / cleaning) → _shared/createGuestOpsTask.ts (Operations
+//     Board, pending_approval, SLA-tracked) — same task shape Meta/Whapi
+//     already produce.
+//   - Everything else (not yet on property, or a non-allowlisted / generic
+//     ask like today's single "הזמנת שירות לחדר — ארמונים" CTA) → Requests
+//     Board (guest_alerts, alert_type=portal_room_service) + Whapi "בקשות
+//     אורחים" group, unchanged from before this cutover (Zero Data Loss —
+//     every request still lands somewhere, never silently dropped).
 import { serve }        from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { onGuestAlertInserted } from "../_shared/guestAlertWhapiNotify.ts";
+import { createGuestOpsTask } from "../_shared/createGuestOpsTask.ts";
+import { isGuestEligibleForInHouseOpsDispatch, isAllowlistedPhysicalTaskRequest } from "../_shared/automationSchedule.ts";
 
 function futureArrivalTag(arrivalDateStr: string | null, status: string | null): string | null {
   if (!arrivalDateStr || status === "checked_in") return null;
@@ -28,9 +36,13 @@ serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
   try {
-    const { token, upsellLabel } = await req.json();
+    const { token, upsellLabel, quantity } = await req.json();
     if (!token || typeof token !== "string") throw new Error("token required");
     if (!upsellLabel || typeof upsellLabel !== "string") throw new Error("upsellLabel required");
+    // Quantity contract (amenity taps only): bake into the description as
+    // "{itemLabel} × {qty}" — no new tasks column. Ignored/absent for
+    // free-standing CTAs (e.g. today's single generic room-service button).
+    const qty = Number.isInteger(quantity) && quantity > 0 ? quantity as number : null;
 
     const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     if (!UUID_RE.test(token)) {
@@ -47,7 +59,7 @@ serve(async (req: Request) => {
 
     const { data: guest, error: guestErr } = await supabase
       .from("guests")
-      .select("id, name, phone, room, arrival_date, status")
+      .select("id, name, phone, room, arrival_date, departure_date, status")
       .eq("portal_token", token)
       .maybeSingle();
     if (guestErr) throw new Error(`lookup_error: ${guestErr.message}`);
@@ -63,6 +75,46 @@ serve(async (req: Request) => {
         JSON.stringify({ ok: false, error: "guest_has_no_phone" }),
         { status: 200, headers: { ...CORS, "Content-Type": "application/json" } },
       );
+    }
+
+    const guestName = (guest.name as string | null) ?? null;
+    const guestRoom = (guest.room as string | null) ?? null;
+    const summary = qty ? `${upsellLabel} × ${qty}` : upsellLabel;
+
+    const eligible = isGuestEligibleForInHouseOpsDispatch(
+      {
+        status:         guest.status as string | null,
+        arrival_date:   guest.arrival_date as string | null,
+        departure_date: guest.departure_date as string | null,
+      },
+      new Date(),
+    );
+
+    if (eligible && isAllowlistedPhysicalTaskRequest(upsellLabel)) {
+      const result = await createGuestOpsTask({
+        supabase,
+        guestId: guest.id as number,
+        phone: guest.phone as string,
+        guestName,
+        room: guestRoom,
+        summary,
+        rawText: upsellLabel,
+      });
+
+      if (result.created || result.duplicate) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            routedTo: "ops_task",
+            taskId: result.taskId,
+            ...(result.duplicate ? { skipped: true, status: "duplicate_blocked" } : {}),
+          }),
+          { headers: { ...CORS, "Content-Type": "application/json" } },
+        );
+      }
+      // Task insert failed — fall through to the Requests Board path below
+      // rather than dropping the request (Zero Data Loss, CLAUDE.md §0.1).
+      console.warn("[guest-portal-ops-request] createGuestOpsTask failed, falling back to guest_alerts:", result.error);
     }
 
     const tag = futureArrivalTag(guest.arrival_date as string | null, guest.status as string | null);

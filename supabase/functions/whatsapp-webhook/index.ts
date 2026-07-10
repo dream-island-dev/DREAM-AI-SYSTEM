@@ -31,7 +31,7 @@
 // Dual lookup: bot card (tasks.whapi_message_id) → trigger text (tasks.source_message_id).
 // Field-ops guest requests (operational intercept + LLM tool-calling path) no
 // longer dispatch to the Whapi ops group from this file at all — they only
-// create a pending_approval task (createPendingOpsApprovalTask). Gemini EN
+// create a pending_approval task (_shared/createGuestOpsTask.ts). Gemini EN
 // translation + the actual Whapi send happen later, only after a staff member
 // approves in OperationsBoard.js, via the extended notify-manual-task function
 // (2026-07-07 Human-in-the-Loop gate — see git history for the prior
@@ -82,12 +82,10 @@ import {
   shouldAutoPromoteToCheckedIn,
   resolveEffectiveGuestStatus,
   isGuestEligibleForInHouseOpsDispatch,
-  guessGuestOpsSlaCategory,
-  resolveGuestOpsDepartment,
   extractAllowlistedRequestLines,
   resolveAutomationScope,
 } from "../_shared/automationSchedule.ts";
-import { resolveGuestRoomLabel } from "../_shared/guestRoomResolve.ts";
+import { createGuestOpsTask } from "../_shared/createGuestOpsTask.ts";
 import { onGuestAlertInserted } from "../_shared/guestAlertWhapiNotify.ts";
 import {
   buildOptionalSpaText,
@@ -115,6 +113,7 @@ import {
   canGuestConfirmArrival,
   isRecordOnlyArrivalTimeUpdate,
   RECORD_ONLY_ARRIVAL_REPLY,
+  DATE_CHANGE_RE,
   patchClaimedInbound,
   dispatchStage2ViaPipeline,
   runGuestArrivalConfirmation,
@@ -983,10 +982,15 @@ const HUMAN_GENERAL_PATTERNS: RegExp[] = [
   /\bטלפון\b/i,
 ];
 
-// DATE_CHANGE_RE / RECORD_ONLY_ARRIVAL_REPLY / ARRIVAL_TIME_QUESTION_RE /
-// ARRIVAL_TIME_UPDATE_RE / isRecordOnlyArrivalTimeUpdate — moved to
-// _shared/guestInboundOrchestrator.ts so whapi-webhook shares the exact same
-// record-only ETA classifier. Imported above.
+// DATE_CHANGE_RE / RECORD_ONLY_ARRIVAL_REPLY / isRecordOnlyArrivalTimeUpdate —
+// moved to _shared/guestInboundOrchestrator.ts so whapi-webhook shares the
+// exact same record-only ETA classifier. All three imported above (2026-07-10
+// P0: DATE_CHANGE_RE was defined there but never exported/imported here,
+// throwing ReferenceError on every non-intercepted inbound message — fixed by
+// exporting it and adding it to the import list).
+// ARRIVAL_TIME_QUESTION_RE / ARRIVAL_TIME_UPDATE_RE remain private to that
+// module (used only inside isRecordOnlyArrivalTimeUpdate there) — NOT
+// imported here, not referenced anywhere in this file.
 
 // ── Critical-event safety net (Phase 2 request-handling) ────────────────────
 // Deterministic backstop for the "faq" branch when the model skips log_guest_request
@@ -1113,82 +1117,16 @@ async function flagGuestAlert(
 //      the guest's own reply (already sent by the time this runs) or the
 //      guest_alerts dashboard row (already inserted independently).
 // ══════════════════════════════════════════════════════════════════════════════
-// Human-in-the-Loop approval gate (2026-07-07): this function used to
-// translate the request and post it straight to the foreign-worker Whapi ops
-// group with zero human review (formerly routeGuestRequestToOpsGroup — see
-// git history). It now ONLY creates a pending_approval task; the bot has lost
-// the authority to dispatch this route unsupervised. A staff member reviews
+// Human-in-the-Loop approval gate (2026-07-07): guest-initiated physical
+// requests only ever create a pending_approval task; the bot has no
+// authority to dispatch this route unsupervised. A staff member reviews
 // (and can edit) the description in OperationsBoard.js and taps "✅ אשר ושגר"
 // (Approve & Dispatch), which invokes the extended notify-manual-task Edge
 // Function — that is the ONLY place translation + the actual Whapi send now
-// happen for this source. sla_deadline is deliberately left NULL here: it's
-// computed from dispatched_at at approval time (not from this row's
-// created_at), so the completion SLA measures time-to-complete from when the
-// task became actionable, not from the original guest message — a
-// pending_approval row can otherwise sit for an arbitrary, human-controlled
-// amount of time before anyone can act on it.
-async function createPendingOpsApprovalTask(
-  supabase: ReturnType<typeof createClient>,
-  args: {
-    guestId: number;
-    phone: string;
-    guestName?: string | null;
-    room: string | null;
-    summary: string;
-    rawText: string;
-    // Isolated/relevant text (see extractAllowlistedRequestLines) driving
-    // department/SLA classification — omit only if isolation isn't cheap to
-    // compute at the call site; falls back to rawText. rawText itself is
-    // unchanged and always stored in full below (Zero Data Loss, CLAUDE.md
-    // §0.1) — this param only narrows what's classified, not what's audited.
-    dispatchText?: string;
-  },
-): Promise<void> {
-  const resolvedRoom = await resolveGuestRoomLabel(supabase, {
-    guestId: args.guestId,
-    phone: args.phone,
-    roomHint: args.room,
-    guestName: args.guestName,
-  });
-  const roomForDb = resolvedRoom.startsWith("TBD") ? null : resolvedRoom;
-
-  const dispatchSrc = (args.dispatchText ?? args.rawText).trim();
-  if (args.dispatchText && args.dispatchText !== args.rawText) {
-    console.info(
-      `[webhook] 🛋️ guest_request dispatch text narrowed — full:"${args.rawText.slice(0, 120)}" → dispatch:"${dispatchSrc.slice(0, 120)}"`,
-    );
-  }
-
-  const department = resolveGuestOpsDepartment(dispatchSrc);
-  const slaCategory = guessGuestOpsSlaCategory(dispatchSrc);
-  const priority = slaCategory === "pest_control" ? "urgent" : "normal";
-
-  const { data: task, error: insertErr } = await supabase
-    .from("tasks")
-    .insert([{
-      room_number:         roomForDb,
-      department,
-      description:         args.summary,
-      priority,
-      status:              "pending_approval",
-      source:              "guest_request",
-      guest_id:            args.guestId,
-      reporter_raw_text:   args.rawText,
-      action_token:        crypto.randomUUID(),
-      sla_category:        slaCategory,
-      sla_deadline:        null,
-    }])
-    .select("id")
-    .maybeSingle();
-  if (insertErr || !task) {
-    console.error("[webhook] 🛋️ guest_request pending-approval task insert error:", insertErr?.message);
-    return;
-  }
-
-  console.info(
-    `[webhook] 🛋️ guest_request task ${task.id} room=${resolvedRoom} dept=${department} sla=${slaCategory} PENDING APPROVAL — awaiting staff review in OperationsBoard (no dispatch yet)`,
-  );
-}
+// happen for this source. The actual insert (room resolution, department/SLA
+// classification, duplicate guard) lives in the shared
+// _shared/createGuestOpsTask.ts — Meta, Whapi guest DM, and the Guest Portal
+// all call that one helper so every surface produces an identical task row.
 
 async function logAdministrativeRequestAlert(
   supabase: ReturnType<typeof createClient>,
@@ -1428,7 +1366,8 @@ async function handleOperationalInHouseIntercept(
 
   // Operations Board (tasks) — pending_approval, same path as log_guest_request.
   // Awaits staff review/Approve in OperationsBoard.js before any Whapi dispatch.
-  createPendingOpsApprovalTask(supabase, {
+  createGuestOpsTask({
+    supabase,
     guestId,
     phone,
     guestName,
@@ -1437,7 +1376,7 @@ async function handleOperationalInHouseIntercept(
     rawText: text,
     dispatchText,
   }).catch((e: Error) =>
-    console.error("[webhook] 🛎️ operational intercept createPendingOpsApprovalTask error:", e.message)
+    console.error("[webhook] 🛎️ operational intercept createGuestOpsTask error:", e.message)
   );
 
   if (!sim) {
@@ -2433,7 +2372,9 @@ const BALLOON_VENDOR_PHONE = (Deno.env.get("BALLOON_VENDOR_PHONE") ?? "").trim()
 // for {{PORTAL_LINK}} below. Defaults to the documented live Vercel URL
 // (CLAUDE.md §1) so this works with zero secret configuration; override via
 // PORTAL_BASE_URL if the deployment URL ever changes.
-// PORTAL_BASE_URL / buildPortalLink — moved to _shared/guestInboundOrchestrator.ts. Imported above.
+// buildPortalLink moved to _shared/guestInboundOrchestrator.ts and IS imported
+// above. PORTAL_BASE_URL itself stays private to that module (read once via
+// Deno.env.get there) — it is not exported and not referenced in this file.
 
 // A timeout/abort means we never learned whether Meta processed the request —
 // not the same as Meta rejecting it. Tagged distinctly so callers (notification_log
@@ -4341,7 +4282,8 @@ Deno.serve(async (req: Request) => {
           // line(s) before classification, same as the Tier-0 path in
           // handleOperationalInHouseIntercept (see extractAllowlistedRequestLines).
           const dispatchText = extractAllowlistedRequestLines(effectiveText);
-          createPendingOpsApprovalTask(supabase, {
+          createGuestOpsTask({
+            supabase,
             guestId,
             phone,
             guestName,
@@ -4349,7 +4291,7 @@ Deno.serve(async (req: Request) => {
             summary: toolLoggedRequest.summary,
             rawText: effectiveText,
             dispatchText,
-          }).catch((e: Error) => console.error("[webhook] 🛋️ createPendingOpsApprovalTask error:", e.message));
+          }).catch((e: Error) => console.error("[webhook] 🛋️ createGuestOpsTask error:", e.message));
           // Same Inbox red-dot flag as the Tier-0 operational intercept above —
           // this LLM-tool path (log_guest_request) never went through guest_alerts
           // either, so it was equally invisible in WhatsAppInbox.js until now.

@@ -69,6 +69,8 @@ import { type ActiveGuestRow } from "../_shared/guestOutboundGuard.ts";
 import { resolveGuestByInboundPhone, isArrivalConfirmationMessage } from "../_shared/arrivalConfirmation.ts";
 import { onGuestAlertInserted } from "../_shared/guestAlertWhapiNotify.ts";
 import { extractArrivalTimeFromText, persistGuestEta } from "../_shared/guestEta.ts";
+import { formatGuestProfileForAi } from "../_shared/guestProfile.ts";
+import { formatSpaScheduleDisplay } from "../_shared/spaSchedule.ts";
 import { isExecutiveInbound } from "../_shared/executiveIdentity.ts";
 import { handleExecutiveVoiceMessage } from "../_shared/executiveAssistant.ts";
 import {
@@ -82,7 +84,13 @@ import {
   CANONICAL_FINANCIAL_HANDOFF_MSG,
   isCheckInPolicyQuestion,
   buildCheckInPolicyReply,
+  isGuestEligibleForInHouseOpsDispatch,
+  isAllowlistedPhysicalTaskRequest,
+  extractAllowlistedRequestLines,
+  buildOperationalRequestSummary,
+  buildOperationalDispatchReply,
 } from "../_shared/automationSchedule.ts";
+import { createGuestOpsTask } from "../_shared/createGuestOpsTask.ts";
 import {
   canGuestConfirmArrival,
   runGuestArrivalConfirmation,
@@ -559,13 +567,48 @@ function buildGuestDmGreetingReply(guestName: string | null, scriptText: string 
 
 function buildWhapiGuestContextLine(guest: ActiveGuestRow | null): string {
   if (!guest) return "";
-  const g = guest as ActiveGuestRow & { arrival_date?: string | null; departure_date?: string | null };
+  const g = guest as ActiveGuestRow & {
+    arrival_date?: string | null;
+    departure_date?: string | null;
+    arrival_time?: string | null;
+    arrival_confirmed?: boolean | null;
+    spa_time?: string | null;
+    spa_date?: string | null;
+    guest_profile?: Record<string, unknown> | null;
+  };
+  const today = new Date().toISOString().split("T")[0];
+  const isCheckedIn = g.status === "checked_in";
+
+  // Same stage computation as whatsapp-webhook's buildGuestStageContext — keep
+  // the two channels' guest-awareness in sync (2026-07-10 parity pass).
+  let stage = "";
+  if (g.arrival_date) {
+    if (g.arrival_date > today) stage = "טרם הגעה";
+    else if (g.arrival_date === today) stage = "יום הגעה — האורח מגיע היום";
+    else stage = "בתוך השהות";
+  }
+
   const parts: string[] = [];
   if (g.name) parts.push(`שם: ${g.name}`);
-  if (g.room) parts.push(`חדר: ${g.room}`);
-  if (g.status) parts.push(`סטטוס: ${g.status}`);
+  if (stage) parts.push(`שלב האורח: ${stage}`);
   if (g.arrival_date) parts.push(`תאריך הגעה: ${g.arrival_date}`);
   if (g.departure_date) parts.push(`תאריך עזיבה: ${g.departure_date}`);
+  if (g.room && isCheckedIn) {
+    parts.push(`חדר: ${g.room}`);
+  } else if (g.room) {
+    parts.push("חדר: ייחשף בצ'ק-אין — לפני אז אסור לחשוף/להמציא שם חדר ספציפי, רק לציין שזו סוויטת יוקרה");
+  }
+  if (g.room_type === "suite") parts.push("סוג: סוויטה");
+  if (g.status) parts.push(`סטטוס: ${g.status}`);
+  if (g.arrival_confirmed) parts.push("אישר הגעה: כן");
+  if (g.spa_time || g.spa_date) {
+    const sched = formatSpaScheduleDisplay(g.spa_date, g.spa_time);
+    if (sched) parts.push(`טיפול ספא: ${sched}`);
+  }
+
+  const profileLine = formatGuestProfileForAi(g.guest_profile ?? null, g.arrival_time ?? null);
+  if (profileLine) parts.push(profileLine);
+
   return parts.length ? `\n\nפרטי האורח הנוכחי: ${parts.join(" | ")}` : "";
 }
 
@@ -860,6 +903,60 @@ async function handleGuestDirectMessage(
         return;
       }
       console.info("[whapi-webhook] arrival_time record-only — ineligible row, falling through");
+    }
+
+    // ── Physical in-house ops request (Tier-0) — parity with Meta's
+    // handleOperationalInHouseIntercept (whatsapp-webhook). A checked-in / on-
+    // property-arrival-day suite guest asking for an allowlisted amenity,
+    // maintenance, or cleaning item creates a pending_approval Operations
+    // Board task via the shared _shared/createGuestOpsTask.ts helper — same
+    // room/department/SLA classification and task shape Meta already
+    // produces. Runs before the LLM fallback so this never costs a model
+    // call. DB side effects always run (matches every shield above); only
+    // the guest-facing reply is suppressed when staff has claimed this
+    // Whapi thread (staffMuted contract, see sendGuestDmReply doc above).
+    if (
+      guestId
+      && isGuestEligibleForInHouseOpsDispatch(
+        {
+          status:         (guestRecord?.status as string | null) ?? null,
+          arrival_date:   (guestRecord?.arrival_date as string | null) ?? null,
+          departure_date: (guestRecord?.departure_date as string | null) ?? null,
+        },
+        new Date(),
+      )
+      && isAllowlistedPhysicalTaskRequest(text)
+    ) {
+      const dispatchText = extractAllowlistedRequestLines(text);
+      const summary = buildOperationalRequestSummary(text);
+      const guestRoom = (guest?.room as string | null | undefined) ?? null;
+
+      createGuestOpsTask({
+        supabase, guestId, phone, guestName, room: guestRoom,
+        summary, rawText: text, dispatchText,
+      }).catch((e: Error) =>
+        console.error("[whapi-webhook] guest_dm operational intercept createGuestOpsTask error:", e.message),
+      );
+
+      await patchGuestDmInbound(supabase, conversationId, {
+        guest_id: guestId,
+        intent: "operational_in_house_request",
+        human_requested: true,
+        human_request_type: "operational_request",
+      });
+
+      const { error: guestUpdErr } = await supabase.from("guests").update({
+        requires_attention:       true,
+        requires_attention_since: new Date().toISOString(),
+        attention_reason:         summary,
+      }).eq("id", guestId);
+      if (guestUpdErr) {
+        console.error("[whapi-webhook] guest_dm operational intercept guest update failed:", guestUpdErr.message);
+      }
+
+      await sendGuestDmReply(supabase, phone, guestId, buildOperationalDispatchReply(summary, guestName), staffMuted);
+      results.push({ ...base, action: "operational_in_house_request", muted: staffMuted });
+      return;
     }
 
     // bot_active_whapi — stub gate ahead of §4's real toggle UI (migration
