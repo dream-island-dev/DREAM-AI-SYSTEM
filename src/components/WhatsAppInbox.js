@@ -1025,10 +1025,15 @@ const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobil
 
   function onPointerDown(e) {
     if (!isMobile) return;
-    dragRef.current = { startX: e.clientX, dragging: true };
+    dragRef.current = { startX: e.clientX, startY: e.clientY, dragging: true };
     const onMove = (ev) => {
       if (!dragRef.current.dragging) return;
       const dx = ev.clientX - dragRef.current.startX;
+      const dy = ev.clientY - dragRef.current.startY;
+      // Vertical scroll dominates this gesture — bail out so scrolling the
+      // roster to reach another guest never gets misread as a swipe (which
+      // would silently eat the next tap on that row).
+      if (Math.abs(dy) > 24 && Math.abs(dy) > Math.abs(dx)) { cleanup(); return; }
       if (Math.abs(dx) > 48) {
         setSwiped(rtl ? dx < 0 : dx > 0);
         cleanup();
@@ -1038,9 +1043,11 @@ const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobil
       dragRef.current.dragging = false;
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", cleanup);
+      window.removeEventListener("pointercancel", cleanup);
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", cleanup);
+    window.addEventListener("pointercancel", cleanup);
   }
 
   return (
@@ -5735,6 +5742,11 @@ export default function WhatsAppInbox({
           border: none;
           background: rgba(255,255,255,0.12);
           border-radius: 10px;
+          /* Always wins over the thread ⋮-menu's full-screen close-catcher
+             (zIndex 40/41) so back is tappable in one tap even if that menu
+             is still open. */
+          position: relative;
+          z-index: 50;
           color: white;
           cursor: pointer;
           flex-shrink: 0;
