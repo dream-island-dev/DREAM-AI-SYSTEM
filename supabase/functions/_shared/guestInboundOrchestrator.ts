@@ -414,13 +414,14 @@ export async function runGuestArrivalConfirmation(
 
   const outboundIntent = source === "button" ? "arrival_confirmed" : "confirmation";
 
-  // Guest-level opt-in (migration 166) OR the inbound message itself arrived
-  // via Whapi (a guest replying on that thread should get the reply on the
-  // SAME thread regardless of dispatch_channel — conversational locality).
+  // All autonomous suite-guest automation routes through Whapi when the
+  // feature flag is on (owner decision, 2026-07-10) — no dispatch_channel
+  // gate. OR'd with the inbound message itself having arrived via Whapi (a
+  // guest replying on that thread should get the reply on the SAME thread —
+  // conversational locality — even for a guest not otherwise Whapi-eligible).
   const useWhapiForStage2 =
     channel === "whapi" ||
-    (String((guest as Record<string, unknown> | null)?.dispatch_channel ?? "meta") === "whapi" &&
-      shouldRouteGuestOutboundViaWhapiSuites(guest as { room?: unknown; room_type?: unknown } | null));
+    shouldRouteGuestOutboundViaWhapiSuites(guest as { room?: unknown; room_type?: unknown } | null);
 
   if (guestId) {
     const dup = await checkPipelineDuplicate(supabaseClient, { guestId, triggerType: "stage_2_arrival" });

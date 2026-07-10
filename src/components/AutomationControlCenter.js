@@ -972,13 +972,13 @@ function StageCard({
               border: "1px solid #C4B5FD", background: "rgba(124,58,237,0.05)",
             }}>
               <label style={{ fontWeight: 700, fontSize: 13, marginBottom: 8, display: "block", color: "#7C3AED" }}>
-                🕍 וריאנט שבת — הגעה בשבת (נשלח דרך מכשיר הסוויטות)
+                🕍 וריאנט שבת — הגעה בשישי או בשבת
               </label>
               <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 10, lineHeight: 1.6 }}>
                 {stage.stage_key === "night_before"
-                  ? "יום שישי 15:00 — אורחים שמגיעים בשבת. טקסט + תמונה נפרדים מיום חול."
+                  ? "יום שישי 15:00 — אותה הודעה לאורחים שמגיעים בשישי (באותו היום) ולאורחים שמגיעים בשבת (יום לפני). טקסט + תמונה נפרדים מיום חול. אורח שמגיע בשישי ובצ׳ק-אין לפני 15:00 מדלג."
                   : "בוקר יום השבת — הודעה עם קבלת חדרים ב-18:00."}
-                {" "}אוטומציה אוטומטית דרך Whapi כשהמכשיר מופעל (GUEST_WHAPI_SUITES_ENABLED).
+                {" "}ערוץ שליחה (Meta/Whapi) נקבע לפי הגדרת מכשיר הסוויטות (GUEST_WHAPI_SUITES_ENABLED) — לא לפי יום ההגעה.
               </div>
               <select
                 value={shabbatScriptKey}
@@ -1083,14 +1083,14 @@ function StageCard({
                 </div>
                 {stage.stage_key === "night_before" ? (
                   <div style={{ fontSize: 11, color: "#555", lineHeight: 1.8 }}>
-                    📅 ראשון–שישי →{" "}
+                    📅 ראשון–חמישי (יום לפני ההגעה, 19:00) →{" "}
                     <code style={{ background: "#F3F4F6", padding: "1px 5px", borderRadius: 4 }}>night_before_suites</code>
                     <br />
-                    🕍 שבת →{" "}
+                    🕍 הגעה בשישי או בשבת (שישי 15:00, אותו תוכן לשני הימים) →{" "}
                     <code style={{ background: "#F3F4F6", padding: "1px 5px", borderRadius: 4 }}>night_before_suites_shabbat</code>
                     <br />
                     <span style={{ color: "var(--text-muted)" }}>
-                      יום חול (Meta): cron → תבנית Meta. שבת (Whapi): יום שישי 15:00 → סקריפט שבת + תמונה דרך מכשיר הסוויטות.
+                      אורח שמגיע בשישי שכבר בצ׳ק-אין לפני 15:00 מדלג על ההודעה. ערוץ שליחה (Meta/Whapi) נקבע לפי הגדרת מכשיר הסוויטות — לא לפי יום ההגעה.
                     </span>
                   </div>
                 ) : (

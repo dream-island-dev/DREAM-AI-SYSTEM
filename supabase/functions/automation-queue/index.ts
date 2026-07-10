@@ -60,6 +60,7 @@ const QUEUE_PREVIEW_VISIBLE_SKIP_REASONS = new Set([
   "quiet_hours_passed",
   "staff_claim_active",
   "stage_suppressed",
+  "already_checked_in",
 ]);
 
 Deno.serve(async (req: Request) => {

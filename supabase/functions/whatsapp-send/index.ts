@@ -386,6 +386,19 @@ function isSpecialNightBeforeDay(arrivalDateStr: string, specialDatesCsv: string
   return isShabbatArrivalDate(arrivalDateStr, specialDatesCsv);
 }
 
+// night_before's Shabbat-bundle cohort — Friday OR Saturday arrival (Friday
+// added 2026-07-10: Friday arrivals get the same Shabbat script/template/image
+// same-day instead of the weekday reminder the day before). Scoped to
+// night_before only — every other Shabbat-variant call site (morning_suite)
+// keeps calling isShabbatArrivalDate directly and stays Saturday-only.
+function isNightBeforeShabbatBundleArrival(arrivalDateStr: string): boolean {
+  const ymd = normalizeArrivalDateYmd(arrivalDateStr);
+  if (!ymd) return false;
+  const d = new Date(`${ymd}T12:00:00Z`);
+  const isFriday = !Number.isNaN(d.getTime()) && d.getUTCDay() === 5;
+  return isFriday || isShabbatArrivalDate(ymd, _knowledgeCache?.["night_before_special_dates"] ?? "");
+}
+
 async function resolveNightBeforeTimes(
   supabaseClient: ReturnType<typeof createClient>,
   arrivalDateStr: string
@@ -710,12 +723,17 @@ function resolveStageSessionImageUrl(
   return link || undefined;
 }
 
+// isShabbat is caller-supplied (not recomputed here) so each call site can
+// express its own Shabbat-ness rule — night_before treats Friday+Saturday as
+// the bundle (isNightBeforeShabbatBundleArrival), every other stage stays
+// Saturday-only (isShabbatArrivalDate) — while sharing the same script/image
+// fallback logic.
 function resolveShabbatAwareScriptKey(
   stageRow: StageMediaRow,
-  arrivalYmd: string,
+  isShabbat: boolean,
   fallbackKey: string,
 ): string {
-  if (!isShabbatArrivalDate(arrivalYmd)) {
+  if (!isShabbat) {
     return stageRow?.session_message_script_key?.trim() || fallbackKey;
   }
   const shabbatKey = stageRow?.session_message_script_key_shabbat?.trim();
@@ -724,24 +742,24 @@ function resolveShabbatAwareScriptKey(
 
 function resolveShabbatAwareSessionImageUrl(
   stageRow: StageMediaRow,
-  arrivalYmd: string,
+  isShabbat: boolean,
   requestImageUrl?: string | null,
 ): string | undefined {
-  if (isShabbatArrivalDate(arrivalYmd)) {
+  if (isShabbat) {
     const shabbatImg = String(stageRow?.session_message_image_url_shabbat ?? "").trim();
     if (shabbatImg) return shabbatImg;
   }
   return resolveStageSessionImageUrl(stageRow, requestImageUrl);
 }
 
-/** Whapi dispatch: explicit dispatch_channel=whapi OR Shabbat suite arrival (auto). */
+/** Route this suite guest's automation through the Whapi Suites device —
+ * applies uniformly regardless of arrival day-of-week or dispatch_channel
+ * (owner decision, 2026-07-10). Day-pass guests are never eligible —
+ * shouldRouteGuestOutboundViaWhapiSuites already gates on isEffectiveSuiteGuest. */
 function shouldUseWhapiForGuestAutomation(
   guest: Record<string, unknown>,
-  arrivalYmd: string,
 ): boolean {
-  if (!shouldRouteGuestOutboundViaWhapiSuites(guest)) return false;
-  if (String(guest.dispatch_channel ?? "meta") === "whapi") return true;
-  return isShabbatArrivalDate(arrivalYmd);
+  return shouldRouteGuestOutboundViaWhapiSuites(guest);
 }
 
 async function dispatchWhapiSessionMessage(
@@ -2260,16 +2278,10 @@ serve(async (req: Request) => {
         );
       }
 
-      // Guest-level opt-in (migration 166) — dispatch_channel="whapi" bypasses
-      // the Meta 24h window entirely (Whapi has no session-window concept)
-      // and always sends the bot_scripts text via Whapi. Previously only the
-      // manual force_channel="whapi_session" override got this; autonomous
-      // cron / pipeline_reconcile catch-up now honors it too (§3 — this path
-      // was Meta-only regardless of dispatch_channel before).
-      const useWhapiDispatchChannel = shouldUseWhapiForGuestAutomation(
-        guest,
-        normalizeArrivalDateYmd(guest.arrival_date),
-      );
+      // All autonomous suite-guest automation routes through Whapi when the
+      // feature flag is on (owner decision, 2026-07-10) — no dispatch_channel
+      // gate. Manual force_channel="whapi_session" still applies on top.
+      const useWhapiDispatchChannel = shouldUseWhapiForGuestAutomation(guest);
       const s2Channel: "meta" | "whapi" = (forceWhapiSession || useWhapiDispatchChannel) ? "whapi" : "meta";
 
       const confirmFresh = !!guest.arrival_confirmed_at &&
@@ -2520,7 +2532,8 @@ serve(async (req: Request) => {
 
     if (trigger === "night_before") {
       const arrivalYmd = normalizeArrivalDateYmd(guest.arrival_date);
-      const sessionScriptKey = resolveShabbatAwareScriptKey(stageRow, arrivalYmd, "night_before_reminder");
+      const isBundleArrival = isNightBeforeShabbatBundleArrival(arrivalYmd);
+      const sessionScriptKey = resolveShabbatAwareScriptKey(stageRow, isBundleArrival, "night_before_reminder");
       const windowOpen = isWindowOpen(guest.wa_window_expires_at);
       const isForceOverride = force === true;
 
@@ -2535,14 +2548,14 @@ serve(async (req: Request) => {
       );
 
       const sessionImage = isForceOverride
-        ? (resolveShabbatAwareSessionImageUrl(stageRow, arrivalYmd, requestImageUrl) ?? NIGHT_BEFORE_OVERRIDE_SESSION_IMAGE)
-        : resolveShabbatAwareSessionImageUrl(stageRow, arrivalYmd, requestImageUrl);
+        ? (resolveShabbatAwareSessionImageUrl(stageRow, isBundleArrival, requestImageUrl) ?? NIGHT_BEFORE_OVERRIDE_SESSION_IMAGE)
+        : resolveShabbatAwareSessionImageUrl(stageRow, isBundleArrival, requestImageUrl);
 
       const guestName = sanitizeTemplateVars([String(guest.name ?? "")])[0];
 
       const buildTemplateDispatch = (): NightBeforeDispatch => {
         const arrivalDateStr = normalizeArrivalDateYmd(guest.arrival_date);
-        const isShabbat = isShabbatArrivalDate(arrivalDateStr);
+        const isShabbat = isNightBeforeShabbatBundleArrival(arrivalDateStr);
         const templateName = isShabbat ? "night_before_suites_shabbat" : "night_before_suites";
         const templateVars = buildNameOnlyTemplateVars(guest);
         console.log(
@@ -2579,7 +2592,7 @@ serve(async (req: Request) => {
         // dispatch_channel defaults to "meta" until §4's staff picker sets
         // it, so buildTemplateDispatch() (and the Shabbat anti-hijack rule
         // above) stays the only path for every guest that hasn't opted in.
-        const useWhapiAutonomous = shouldUseWhapiForGuestAutomation(guest, arrivalYmd);
+        const useWhapiAutonomous = shouldUseWhapiForGuestAutomation(guest);
         nightBeforeDispatch = useWhapiAutonomous
           ? { channel: "whapi", freeTextKey: sessionScriptKey, guestName, sessionImageUrl: sessionImage }
           : buildTemplateDispatch();
@@ -2610,7 +2623,11 @@ serve(async (req: Request) => {
             const nbForceSessionImmediate = force === true;
             nbSessionImageUrl =
               nightBeforeDispatch.sessionImageUrl
-              ?? resolveShabbatAwareSessionImageUrl(stageRow, normalizeArrivalDateYmd(guest.arrival_date), requestImageUrl)
+              ?? resolveShabbatAwareSessionImageUrl(
+                stageRow,
+                isNightBeforeShabbatBundleArrival(normalizeArrivalDateYmd(guest.arrival_date)),
+                requestImageUrl,
+              )
               ?? (nbForceSessionImmediate ? NIGHT_BEFORE_OVERRIDE_SESSION_IMAGE : undefined);
             const { data: scriptRow } = await supabase
               .from("bot_scripts")
@@ -2637,7 +2654,7 @@ serve(async (req: Request) => {
                 ` — falling back to template for guest_id=${guestId}`,
               );
               const arrivalDateStr = normalizeArrivalDateYmd(guest.arrival_date);
-              const isShabbatFb = isShabbatArrivalDate(arrivalDateStr);
+              const isShabbatFb = isNightBeforeShabbatBundleArrival(arrivalDateStr);
               const fbTemplate = isShabbatFb ? "night_before_suites_shabbat" : "night_before_suites";
               const fbVars = buildNameOnlyTemplateVars(guest);
               const fbDispatched = await sendViaTemplate(
@@ -2944,20 +2961,22 @@ serve(async (req: Request) => {
 
     // ── Morning-of session path (suite guests) ───────────────────────────────
     // Autonomous cron → Shabbat-aware Meta templates below (suite_welcome_morning /
-    // suite_welcome_morning_shabbat) UNLESS dispatch_channel="whapi" (§3) — Whapi
-    // has no template concept, so the session script is its ONLY path, same
-    // precedent as night_before. Meta guests: never hijack to session text
-    // just because the 24h window is open — stage_3_morning carries weekday
-    // 15:00 check-in literals (applySaturdayCheckInTimeOverride fixes that).
+    // suite_welcome_morning_shabbat) UNLESS the guest routes through Whapi (all
+    // suite automation, owner decision 2026-07-10) — Whapi has no template
+    // concept, so the session script is its ONLY path, same precedent as
+    // night_before. Meta guests: never hijack to session text just because
+    // the 24h window is open — stage_3_morning carries weekday 15:00 check-in
+    // literals (applySaturdayCheckInTimeOverride fixes that).
     //
     // Session free-text fires when: staff explicitly forces (force===true,
     // not meta_template) OR the guest is opted into Whapi dispatch (autonomous
     // or manual — Whapi was previously in WHAPI_UNSUPPORTED_STAGES; removed
     // now that this path exists).
     const mgArrivalYmd = normalizeArrivalDateYmd(guest.arrival_date);
+    const mgIsShabbat = isShabbatArrivalDate(mgArrivalYmd);
     const useWhapiForMorning =
       (trigger === "morning_suite" || trigger === "morning_welcome") &&
-      shouldUseWhapiForGuestAutomation(guest, mgArrivalYmd);
+      shouldUseWhapiForGuestAutomation(guest);
     const useMorningSession = (force === true && !forceMetaTemplate) || useWhapiForMorning;
 
     if ((trigger === "morning_suite" || trigger === "morning_welcome") &&
@@ -2965,7 +2984,7 @@ serve(async (req: Request) => {
         (stageRow?.session_message_script_key || stageRow?.session_message_script_key_shabbat)) {
       const mgScriptKey = resolveShabbatAwareScriptKey(
         stageRow,
-        mgArrivalYmd,
+        mgIsShabbat,
         stageRow?.session_message_script_key ?? "stage_3_morning",
       );
       let mgScriptText: string | null = null;
@@ -3005,7 +3024,7 @@ serve(async (req: Request) => {
           mgArrivalYmd,
         );
         const mgChannel: "whapi" | "meta" = useWhapiForMorning ? "whapi" : "meta";
-        const mgImageUrl = resolveShabbatAwareSessionImageUrl(stageRow, mgArrivalYmd, requestImageUrl);
+        const mgImageUrl = resolveShabbatAwareSessionImageUrl(stageRow, mgIsShabbat, requestImageUrl);
 
         let mgStatus = "simulated";
         let mgError: string | null = null;
@@ -3173,7 +3192,7 @@ serve(async (req: Request) => {
             if (morningDispatch.primaryTemplate !== morningDispatch.fallbackTemplate) {
               const scriptKey = resolveShabbatAwareScriptKey(
                 stageRow,
-                normalizeArrivalDateYmd(guest.arrival_date),
+                mgIsShabbat,
                 "stage_3_morning",
               );
               const { data: fbScript } = await supabase
@@ -3388,13 +3407,11 @@ serve(async (req: Request) => {
         | { channel: "whapi";    freeTextKey: string; guestName: string; roomName: string }
         | { channel: "template"; templateName: string; vars: string[] };
 
-      // Guest-level opt-in (migration 166) — dispatch_channel="whapi" bypasses
-      // the 24h-inbound check entirely (Whapi has no session-window concept)
-      // and always uses the bot_scripts text via Whapi (§3 — room_ready was
-      // previously in WHAPI_UNSUPPORTED_STAGES; removed now that this exists).
-      const useWhapiForRoomReady =
-        String(guest.dispatch_channel ?? "meta") === "whapi" &&
-        shouldRouteGuestOutboundViaWhapiSuites(guest);
+      // All autonomous suite-guest automation routes through Whapi when the
+      // feature flag is on (owner decision, 2026-07-10) — no dispatch_channel
+      // gate. Bypasses the 24h-inbound check entirely (Whapi has no
+      // session-window concept) and always uses the bot_scripts text.
+      const useWhapiForRoomReady = shouldRouteGuestOutboundViaWhapiSuites(guest);
 
       const rrDispatch: RoomReadyDispatch = useWhapiForRoomReady
         ? { channel: "whapi", freeTextKey: "room_ready_reminder", guestName: rrGuestName, roomName: rrRoomName }
@@ -3553,14 +3570,16 @@ serve(async (req: Request) => {
 
     // ── Hybrid fallback (req #4) ───────────────────────────────────────────
     // Session free-text on manual staff dispatch (force / manual_override) OR
-    // when dispatch_channel="whapi" (§3) — Whapi has no template concept, so
-    // for those guests this is the ONLY path available, autonomous or not.
-    // Autonomous Meta guests still MUST always use the approved Meta template
-    // — never hijack to bot_scripts just because wa_window_expires_at is open
-    // (same rule as night_before session 102 and morning_suite session 102b).
+    // when the guest routes through Whapi (all suite automation, owner
+    // decision 2026-07-10) — Whapi has no template concept, so for those
+    // guests this is the ONLY path available, autonomous or not. Autonomous
+    // Meta guests still MUST always use the approved Meta template — never
+    // hijack to bot_scripts just because wa_window_expires_at is open (same
+    // rule as night_before session 102 and morning_suite session 102b).
     const isManualPipelineDispatch = force === true || manual_override === true;
     const pipelineArrivalYmd = normalizeArrivalDateYmd(guest.arrival_date);
-    const useWhapiForPipeline = shouldUseWhapiForGuestAutomation(guest, pipelineArrivalYmd);
+    const pipelineIsShabbat = isShabbatArrivalDate(pipelineArrivalYmd);
+    const useWhapiForPipeline = shouldUseWhapiForGuestAutomation(guest);
     let usedSessionMessage = false;
     let sessionBody: string | null = null;
     let sessionButtons: Array<{ type: string; label: string; url?: string }> = [];
@@ -3575,7 +3594,7 @@ serve(async (req: Request) => {
       if (forceSessionMessage || forceWhapiSession || useWhapiForPipeline || force === true || isWindowOpen(guest.wa_window_expires_at)) {
         const pipelineScriptKey = resolveShabbatAwareScriptKey(
           stageRow,
-          pipelineArrivalYmd,
+          pipelineIsShabbat,
           stageRow?.session_message_script_key ?? "",
         );
         const { data: scriptRow } = await supabase
@@ -3597,7 +3616,7 @@ serve(async (req: Request) => {
           );
           sessionBody = body;
           sessionButtons = (stageRow.interactive_buttons ?? []) as typeof sessionButtons;
-          sessionImageUrl = resolveShabbatAwareSessionImageUrl(stageRow, pipelineArrivalYmd, requestImageUrl) ?? null;
+          sessionImageUrl = resolveShabbatAwareSessionImageUrl(stageRow, pipelineIsShabbat, requestImageUrl) ?? null;
           usedSessionMessage = true;
         } else {
           console.warn(`[whatsapp-send] stage "${trigger}" has session_message_script_key="${pipelineScriptKey}" but bot_scripts has no text — falling back to Meta template`);

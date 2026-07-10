@@ -338,11 +338,52 @@ function isShabbatArrivalDate(arrivalDateStr: string | null | undefined): boolea
   return !Number.isNaN(d.getTime()) && d.getUTCDay() === 6;
 }
 
-/** Shabbat arrivals may use local_time_shabbat instead of local_time (migration 172). */
+/** Guest arrives on a Friday (Israel calendar day) — the same-day half of the
+ * night_before Shabbat bundle (2026-07-10: Friday arrivals get the Shabbat
+ * script/template same-day instead of the weekday reminder the day before). */
+export function isFridayArrivalDate(arrivalDateStr: string | null | undefined): boolean {
+  const ymdStr = String(arrivalDateStr ?? "").trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(ymdStr)) return false;
+  const d = new Date(`${ymdStr}T12:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.getUTCDay() === 5;
+}
+
+/** night_before's Shabbat-bundle cohort — Friday OR Saturday arrival. Scoped to
+ * night_before only; every other Shabbat-variant stage (morning_suite) stays
+ * Saturday-only via isShabbatArrivalDate. */
+export function isShabbatBundleArrival(arrivalDateStr: string | null | undefined): boolean {
+  return isFridayArrivalDate(arrivalDateStr) || isShabbatArrivalDate(arrivalDateStr);
+}
+
+/** night_before fires same-day (offset 0) for Friday arrivals instead of the
+ * stage's configured day-before offset — local_time_shabbat (15:00) already
+ * matches Saturday's day-before-Friday send, only the day changes. */
+function effectiveStageDayOffset(stage: AutomationStage, guest: GuestForSchedule): number {
+  if (stage.stage_key === "night_before" && isFridayArrivalDate(guest.arrival_date)) return 0;
+  return stage.day_offset ?? 0;
+}
+
+/** Shabbat arrivals may use local_time_shabbat instead of local_time (migration 172).
+ * night_before additionally treats Friday arrivals as part of the bundle. */
 function effectiveStageLocalTime(stage: AutomationStage, guest: GuestForSchedule): string | null {
   const shabbatTime = stage.local_time_shabbat?.trim();
-  if (shabbatTime && isShabbatArrivalDate(guest.arrival_date)) return shabbatTime;
-  return stage.local_time;
+  if (!shabbatTime) return stage.local_time;
+  const useShabbatTime = stage.stage_key === "night_before"
+    ? isShabbatBundleArrival(guest.arrival_date)
+    : isShabbatArrivalDate(guest.arrival_date);
+  return useShabbatTime ? shabbatTime : stage.local_time;
+}
+
+/** True when checkin_time predates today's AUTO_CHECKIN_LOCAL_HOUR gateway (Israel) —
+ * a genuine early/manual check-in, as opposed to a status flip stamped by this
+ * same tick's auto-promotion sweep. Timestamp-based (not scan-order-dependent) so
+ * it stays correct even for callers that evaluate after auto-checkin has run
+ * (e.g. automation-queue's Live Preview). */
+function isCheckinBeforeTodayAutoGateway(checkinTime: string, now: Date): boolean {
+  const checkinDate = new Date(checkinTime);
+  if (Number.isNaN(checkinDate.getTime())) return false;
+  const gatewayInstant = utcHourToTimestamp(israelYmd(now), AUTO_CHECKIN_LOCAL_HOUR - ISRAEL_UTC_OFFSET_HOURS);
+  return checkinDate.getTime() < gatewayInstant.getTime();
 }
 
 function isDueByIsraelLocalClock(
@@ -383,6 +424,19 @@ export function checkEligibility(
   const postStayStage =
     stage.stage_key === "checkout_fb" || stage.stage_key === "checkout_fb_daypass";
   if (!postStayStage && guest.status === "checked_out") return "guest_checked_out";
+  // Friday night_before bundle: skip only a genuine early/manual check-in
+  // (checkin_time before today's 15:00 gateway) — NOT a check-in stamped by
+  // this same tick's AUTO_CHECKIN_LOCAL_HOUR auto-promotion sweep, which would
+  // otherwise make the bundle skip itself on almost every Friday guest.
+  if (
+    stage.stage_key === "night_before" &&
+    isFridayArrivalDate(guest.arrival_date) &&
+    guest.status === "checked_in" &&
+    guest.checkin_time &&
+    isCheckinBeforeTodayAutoGateway(guest.checkin_time, now)
+  ) {
+    return "already_checked_in";
+  }
   // needs_callback is a staff UI alert only — intentionally NOT checked here (session 59).
   const scopeSkip = getAutomationScopeStageSkipReason(guest, stage.stage_key);
   if (scopeSkip) return scopeSkip;
@@ -447,7 +501,7 @@ export function computeScheduledInstant(
   if (stage.schedule_mode === "day_offset_with_time") {
     const anchorDateStr = stage.anchor_event === "departure_date" ? guest.departure_date : guest.arrival_date;
     if (!anchorDateStr) return null;
-    const targetDateStr = targetYmdFromAnchor(anchorDateStr, stage.day_offset ?? 0);
+    const targetDateStr = targetYmdFromAnchor(anchorDateStr, effectiveStageDayOffset(stage, guest));
     const stageLocalTime = effectiveStageLocalTime(stage, guest);
     const floorUtcHour = stageLocalTime ? parseLocalTimeToUtcHour(stageLocalTime) : 0;
     return utcHourToTimestamp(targetDateStr, floorUtcHour);
@@ -513,7 +567,7 @@ export function resolveStageSchedule(
     const anchorDateStr = stage.anchor_event === "departure_date" ? guest.departure_date : guest.arrival_date;
     if (!anchorDateStr) return { scheduledFor: null, dueNow: false, skipReason: "missing_anchor_date" };
 
-    const targetDateStr = targetYmdFromAnchor(anchorDateStr, stage.day_offset ?? 0);
+    const targetDateStr = targetYmdFromAnchor(anchorDateStr, effectiveStageDayOffset(stage, guest));
     const todayStr = israelYmd(now);
     const stageLocalTime = effectiveStageLocalTime(stage, guest);
     const floorUtcHour = stageLocalTime ? parseLocalTimeToUtcHour(stageLocalTime) : 0;

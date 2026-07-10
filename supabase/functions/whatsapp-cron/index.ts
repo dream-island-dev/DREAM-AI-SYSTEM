@@ -144,24 +144,12 @@ Deno.serve(async (req: Request) => {
       console.log(`[whatsapp-cron] auto_checkout archived ${autoCheckoutCount} guest(s) (today=${todayIsrael})`);
     }
 
-    // ── 15:00 Israel auto check-in — pending/expected/room_ready arriving today ──
+    // 15:00 Israel auto check-in now runs AFTER due[] is computed below (see
+    // "15:00 Israel auto check-in" block near the dispatch loop) — moved
+    // 2026-07-10 so the night_before Friday-bundle scan sees pre-promotion
+    // status this tick instead of racing its own auto-checkin sweep (both
+    // gate on the same AUTO_CHECKIN_LOCAL_HOUR=15 clock instant).
     let autoCheckinCount = 0;
-    if (isPastAutoCheckinGateway(now)) {
-      const { data: promoted, error: promoteErr } = await supabase
-        .from("guests")
-        .update({ status: "checked_in", checkin_time: now.toISOString() })
-        .eq("arrival_date", todayIsrael)
-        .in("status", checkinEligible)
-        .select("id");
-      if (promoteErr) {
-        console.error("[whatsapp-cron] auto_checkin update FAILED:", promoteErr.message);
-      } else {
-        autoCheckinCount = promoted?.length ?? 0;
-        if (autoCheckinCount > 0) {
-          console.log(`[whatsapp-cron] auto_checkin promoted ${autoCheckinCount} guest(s) for ${todayIsrael}`);
-        }
-      }
-    }
 
     const { data: stagesData, error: stagesErr } = await supabase
       .from("automation_stages")
@@ -368,6 +356,30 @@ Deno.serve(async (req: Request) => {
           );
           due.push({ guestId: gId, trigger: "stage_2_arrival", pipeline_reconcile: true });
           stage2ReconcileQueued++;
+        }
+      }
+    }
+
+    // ── 15:00 Israel auto check-in — pending/expected/room_ready arriving today ──
+    // Runs AFTER due[] is built (see header note above): the night_before
+    // Friday-bundle scan needs to see this guest's PRE-promotion status this
+    // tick, since both the bundle send and this promotion gate on the exact
+    // same AUTO_CHECKIN_LOCAL_HOUR=15 clock instant. Guests promoted here still
+    // become checked_in in this same tick, ready for dispatch and for next
+    // tick's scan — only the ORDER within this tick changed, not the outcome.
+    if (isPastAutoCheckinGateway(now)) {
+      const { data: promoted, error: promoteErr } = await supabase
+        .from("guests")
+        .update({ status: "checked_in", checkin_time: now.toISOString() })
+        .eq("arrival_date", todayIsrael)
+        .in("status", checkinEligible)
+        .select("id");
+      if (promoteErr) {
+        console.error("[whatsapp-cron] auto_checkin update FAILED:", promoteErr.message);
+      } else {
+        autoCheckinCount = promoted?.length ?? 0;
+        if (autoCheckinCount > 0) {
+          console.log(`[whatsapp-cron] auto_checkin promoted ${autoCheckinCount} guest(s) for ${todayIsrael}`);
         }
       }
     }
