@@ -1,5 +1,5 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-11 (Smart Spa Board — Ezgo Activities full sync, Phase 0-2 done: schema + parser + upsert engine, migrations 178-179 pushed).
+> Last updated: 2026-07-11 (Smart Spa Board Phases 0–3 shipped to main `ce1257b` — Vercel; migrations 178–179 already on remote DB).
 > Full session history → `CLAUDE.md` §10 + `claude_history.md`.
 > **Agent workflow** → `docs/xos_agent_playbook.md`
 
