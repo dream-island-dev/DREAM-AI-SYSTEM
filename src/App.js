@@ -22,6 +22,7 @@ import WhatsAppInbox from "./components/WhatsAppInbox";
 import OperationsBoard from "./components/OperationsBoard";
 import BotConfigPanel from "./components/BotConfigPanel";
 import BotSettings from "./components/BotSettings";
+import ExecutivePlaybook from "./components/ExecutivePlaybook";
 import BotScriptEditor from "./components/BotScriptEditor";
 import AutomationControlCenter from "./components/AutomationControlCenter";
 import RoomBoard from "./components/RoomBoard";
@@ -1433,6 +1434,14 @@ function Sidebar({ user, active, setActive, openOpsCount, onLogout, isAdmin, isS
               <span>בקרת אוטומציה</span>
             </button>
             <button
+              className={`nav-item ${active === "executive_playbook" ? "active" : ""}`}
+              onClick={() => setActive("executive_playbook")}
+              style={{ color: active === "executive_playbook" ? "var(--gold)" : "rgba(201,169,110,0.6)" }}
+            >
+              <span className="icon">👔</span>
+              <span>עוזר קולי למנכ"ל</span>
+            </button>
+            <button
               className={`nav-item ${active === "routing_control_center" ? "active" : ""}`}
               onClick={() => setActive("routing_control_center")}
               style={{ color: active === "routing_control_center" ? "var(--gold)" : "rgba(201,169,110,0.6)" }}
@@ -2200,6 +2209,7 @@ export default function App({ initialPage = "dashboard" }) {
     bot_settings:  "🧠 מוח הבוט",
     bot_scripts:   "📝 עורך סקריפטי הבוט",
     automation_center: "🎛️ בקרת אוטומציה",
+    executive_playbook: "👔 עוזר קולי למנכ\"ל",
     routing_control_center: "🔀 מרכז ניתוב",
     data_sync:  "📥 סנכרון נתונים",
     portal_settings: "🎨 הגדרות פורטל",
@@ -2408,6 +2418,11 @@ export default function App({ initialPage = "dashboard" }) {
         return guardPage(
           "bot_scripts",
           <BotScriptEditor />
+        );
+      case "executive_playbook":
+        return guardPage(
+          "executive_playbook",
+          <ExecutivePlaybook />
         );
       case "automation_center":
         return guardPage(

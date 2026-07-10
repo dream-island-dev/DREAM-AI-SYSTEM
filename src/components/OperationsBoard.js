@@ -46,6 +46,7 @@ const SOURCE_META = {
   legacy_service_call: { label: "🗄 היסטורי", color: "var(--text-muted)" },
   guest_request:       { label: "🛋️ בקשת אורח", color: "#A8843A" },
   portal_room_service: { label: "🍽️ שירות לחדר (פורטל)", color: "#A8843A" },
+  executive_voice:     { label: "👔 מנכ״ל", color: "#6B21A8" },
 };
 
 // ── Image preview helper (unchanged from TaskBoard.js) ───────────────────────

@@ -59,6 +59,7 @@ const ROUTE_ACCESS = {
   bot_settings:           ["admin", "super_admin"],
   bot_scripts:            ["admin", "super_admin"],
   automation_center:      ["admin", "super_admin"],
+  executive_playbook:     ["admin", "super_admin"],
   portal_settings:        ["admin", "super_admin"],
   cms_security:           ["admin", "super_admin"],
   users_mgmt:             ["super_admin"],

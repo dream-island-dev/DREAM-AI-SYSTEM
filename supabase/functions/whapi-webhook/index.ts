@@ -41,6 +41,9 @@
 //   room_status ממתין לאישור → AICopilot 🔔; short Hebrew ack in-group on success),
 //   WHAPI_API_URL, GUEST_WHAPI_SUITES_ENABLED (see GUEST DIRECT MESSAGE
 //   HANDLING below — gates guest-DM auto-reply; off = capture-only).
+//   EXECUTIVE_PHONE (972-prefixed digits, no "+") — CEO identity for the
+//   Executive Voice Assistant intercept (_shared/executiveIdentity.ts); falls
+//   back to the profiles row linked by migration 175 when unset.
 // ══════════════════════════════════════════════════════════════════════════════
 
 import { serve }         from "https://deno.land/std@0.168.0/http/server.ts";
@@ -66,6 +69,8 @@ import { type ActiveGuestRow } from "../_shared/guestOutboundGuard.ts";
 import { resolveGuestByInboundPhone, isArrivalConfirmationMessage } from "../_shared/arrivalConfirmation.ts";
 import { onGuestAlertInserted } from "../_shared/guestAlertWhapiNotify.ts";
 import { extractArrivalTimeFromText, persistGuestEta } from "../_shared/guestEta.ts";
+import { isExecutiveInbound } from "../_shared/executiveIdentity.ts";
+import { handleExecutiveVoiceMessage } from "../_shared/executiveAssistant.ts";
 import {
   isGuestStaffClaimActive,
   isGuestGreetingMessage,
@@ -989,6 +994,20 @@ serve(async (req: Request) => {
       console.log(
         `[whapi-webhook] guest_dm inbound phone:${phone} guest:${guest?.id ?? "unlinked"} conv:${conversationId ?? "?"}`,
       );
+
+      // ── Executive Voice Assistant (Eliad Co-Pilot) — CEO-only intercept ──
+      // Runs AFTER claimWhapiGuestInbound (ZERO DATA LOSS — already logged to
+      // the Inbox above) and BEFORE handleGuestDirectMessage, so a CEO message
+      // never reaches the guest Tier-0 shields / guest LLM brain at all.
+      if (await isExecutiveInbound(phone, supabase)) {
+        await handleExecutiveVoiceMessage(
+          supabase,
+          { phone, text: body.trim(), fromVoice, conversationId, msgId: msg.id },
+          results,
+        );
+        continue;
+      }
+
       await handleGuestDirectMessage(
         supabase,
         { msgId: msg.id, phone, text: body.trim(), conversationId, guest },
