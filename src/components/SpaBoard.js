@@ -8,11 +8,22 @@
 // here creates/links a spa_appointments row and resolves the alert. On
 // success, writes through guests.spa_time/spa_date (Golden Profile SSOT).
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
+import { parseEzgoActivitiesReport } from "../utils/ezgoSpaActivitiesParser";
+import { syncEzgoSpaActivities } from "../utils/spaActivitiesSyncEngine";
 
 const DEFAULT_START_TIME = "09:00";
 const DEFAULT_DURATION_MIN = 60;
+
+const UNMATCHED_REASON_LABELS = {
+  no_guest_match: "לא נמצא אורח לפי הטלפון",
+  room_unmapped: "חדר לא מזוהה במערכת",
+  conflict_23P01: "התנגשות בלוח הזמנים",
+  suspicious_shared_phone: "טלפון משותף לכמה אורחים",
+  invalid_time_range: "שעה לא תקינה בקובץ",
+  write_failed: "שגיאת מערכת בשמירה",
+};
 
 function todayYmd() {
   return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
@@ -196,6 +207,134 @@ function TherapistManagePanel({ therapists, onClose, onSaved }) {
             );
           })}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Ezgo Activities Excel import — Phase 3 UI over Phase 1/2's parser+engine ─
+// Imports the FULL daily report (suites/day-guests/groups — no suite-only
+// filter, per product goal #1). Anything the sync engine can't resolve lands
+// in spa_import_unmatched instead of vanishing (ZERO DATA LOSS) — surfaced
+// right below by <UnmatchedPanel>, not swallowed into a console log.
+function ActivitiesImportZone({ selectedDate, onImportDone, onError }) {
+  const [dragging, setDragging] = useState(false);
+  const [parsing, setParsing] = useState(false);
+  const fileRef = useRef();
+
+  const handleFile = async (file) => {
+    if (!file) return;
+    const ext = file.name.split(".").pop().toLowerCase();
+    if (!["xlsx", "xls", "csv"].includes(ext)) { onError("בחר קובץ .xlsx / .xls / .csv"); return; }
+    setParsing(true);
+    try {
+      const XLSX = await import("xlsx");
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: "array" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { defval: null });
+      if (!rows.length) { onError("הקובץ ריק"); return; }
+
+      const parsedRows = parseEzgoActivitiesReport(rows);
+      if (!parsedRows.length) { onError("לא נמצאו שורות בקובץ"); return; }
+
+      const summary = await syncEzgoSpaActivities(parsedRows, selectedDate, { supabase });
+      onImportDone(summary);
+    } catch (err) {
+      onError("שגיאה בייבוא: " + err.message);
+    } finally {
+      setParsing(false);
+    }
+  };
+
+  if (parsing) {
+    return (
+      <div style={{ background: "var(--ivory)", border: "1px solid var(--border)", borderRadius: 12, padding: "16px 20px", display: "flex", alignItems: "center", gap: 12 }}>
+        <div style={{ width: 18, height: 18, border: "3px solid var(--border)", borderTop: "3px solid var(--gold)", borderRadius: "50%", animation: "di-spin 0.8s linear infinite", flexShrink: 0 }} />
+        <span style={{ fontSize: 13, fontWeight: 700 }}>מייבא ומסנכרן — עשוי לקחת רגע לקובץ גדול...</span>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={(e) => { e.preventDefault(); setDragging(false); handleFile(e.dataTransfer.files?.[0]); }}
+      onClick={() => fileRef.current?.click()}
+      style={{
+        border: `2px dashed ${dragging ? "var(--gold)" : "var(--border)"}`,
+        borderRadius: 12, background: dragging ? "var(--ivory)" : "var(--card-bg)",
+        padding: "16px 20px", textAlign: "center", cursor: "pointer", transition: "all 0.15s",
+      }}
+    >
+      <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: "none" }}
+        onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])} />
+      <div style={{ fontSize: 13, fontWeight: 700 }}>📊 גרור לכאן את דוח הפעילויות מ-EZGO — או לחץ לבחירת קובץ</div>
+      <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+        מייבא את כל השורות בדוח עבור {selectedDate} — סוויטות, יום-כיף וקבוצות
+      </div>
+    </div>
+  );
+}
+
+// ── Unmatched Activities panel — FAIL VISIBLE, always shown when non-empty ──
+function UnmatchedPanel({ rows, rooms, onAssignRoom, onDismiss }) {
+  const [roomChoice, setRoomChoice] = useState({}); // unmatchedId -> room_id draft
+
+  if (!rows.length) return null;
+
+  return (
+    <div style={{ marginBottom: 24 }}>
+      <div style={{ fontSize: 15, fontWeight: 800, color: "#A32D2D", marginBottom: 10 }}>
+        ⚠ שורות ללא שיוך מלא מהייבוא האחרון ({rows.length})
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {rows.map((row) => (
+          <div key={row.id} style={{
+            background: "#FFF5F5", border: "1px solid #E24B4A", borderRadius: 10,
+            padding: "10px 14px", display: "flex", justifyContent: "space-between",
+            alignItems: "center", flexWrap: "wrap", gap: 10,
+          }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontWeight: 700, fontSize: 13 }}>
+                {row.guest_name || "אורח לא ידוע"}
+                {row.phone ? ` · ${row.phone.replace(/^972/, "0")}` : ""}
+                {row.start_time ? ` · ${row.start_time}` : ""}
+                {row.room_raw ? ` · ${row.room_raw}` : ""}
+              </div>
+              <div style={{ fontSize: 12, color: "#A32D2D", fontWeight: 700, marginTop: 2 }}>
+                {UNMATCHED_REASON_LABELS[row.reason] ?? row.reason}
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              {row.reason === "room_unmapped" && (
+                <>
+                  <select
+                    value={roomChoice[row.id] ?? ""}
+                    onChange={(e) => setRoomChoice((prev) => ({ ...prev, [row.id]: e.target.value }))}
+                    style={{ fontSize: 12 }}
+                  >
+                    <option value="">— שייך לחדר —</option>
+                    {rooms.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+                  </select>
+                  <button
+                    className="btn btn-sm"
+                    disabled={!roomChoice[row.id]}
+                    onClick={() => onAssignRoom(row, roomChoice[row.id])}
+                    title="ישויך לחדר מהיום — ייבוא הבא יזהה את השם הזה אוטומטית (הרשומה הנוכחית לא נוצרת רטרואקטיבית)"
+                    style={{ background: roomChoice[row.id] ? "var(--gold)" : "var(--border)", color: "#412402", fontWeight: 700 }}
+                  >
+                    ✓ שייך
+                  </button>
+                </>
+              )}
+              <button className="btn btn-ghost btn-sm" onClick={() => onDismiss(row.id)} title="סמן כטופל ידנית">
+                ✕ טופל
+              </button>
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -473,6 +612,8 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
   const [assignDraft, setAssignDraft] = useState(null); // { alertId?, guest?, roomId?, date }
   const [showTherapistPanel, setShowTherapistPanel] = useState(false);
   const [swapDraft, setSwapDraft] = useState(null); // appointment being swapped
+  const [unmatchedRows, setUnmatchedRows] = useState([]);
+  const [showImportZone, setShowImportZone] = useState(false);
 
   const showToast = (msg, type = "ok") => { setToast({ msg, type }); setTimeout(() => setToast(null), 3500); };
 
@@ -510,11 +651,23 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
     setSpaAlerts(data ?? []);
   }, []);
 
+  const fetchUnmatched = useCallback(async () => {
+    if (!supabase) return;
+    const { data, error } = await supabase
+      .from("spa_import_unmatched")
+      .select("*")
+      .eq("appointment_date", selectedDate)
+      .eq("resolved", false)
+      .order("created_at", { ascending: false });
+    if (error) showToast("שגיאה בטעינת שורות לא-משויכות: " + error.message, "err");
+    setUnmatchedRows(data ?? []);
+  }, [selectedDate]);
+
   const fetchAll = useCallback(async () => {
     setLoading(true);
-    await Promise.all([fetchStatic(), fetchAppointments(), fetchSpaAlerts()]);
+    await Promise.all([fetchStatic(), fetchAppointments(), fetchSpaAlerts(), fetchUnmatched()]);
     setLoading(false);
-  }, [fetchStatic, fetchAppointments, fetchSpaAlerts]);
+  }, [fetchStatic, fetchAppointments, fetchSpaAlerts, fetchUnmatched]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
@@ -524,9 +677,10 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
       .channel("spa-board-rt")
       .on("postgres_changes", { event: "*", schema: "public", table: "spa_appointments" }, fetchAppointments)
       .on("postgres_changes", { event: "*", schema: "public", table: "guest_alerts" }, fetchSpaAlerts)
+      .on("postgres_changes", { event: "*", schema: "public", table: "spa_import_unmatched" }, fetchUnmatched)
       .subscribe();
     return () => supabase.removeChannel(ch);
-  }, [fetchAppointments, fetchSpaAlerts]);
+  }, [fetchAppointments, fetchSpaAlerts, fetchUnmatched]);
 
   const apptsByRoom = useMemo(() => {
     const map = {};
@@ -564,6 +718,42 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
     showToast("✓ התור נקבע בהצלחה");
     fetchAppointments();
     fetchSpaAlerts();
+  }
+
+  function handleImportDone(summary) {
+    setShowImportZone(false);
+    const parts = [];
+    if (summary.created) parts.push(`${summary.created} תורים נוצרו`);
+    if (summary.updated) parts.push(`${summary.updated} עודכנו`);
+    if (summary.room_unmapped) parts.push(`${summary.room_unmapped} חדר לא מזוהה`);
+    if (summary.conflicts) parts.push(`${summary.conflicts} התנגשויות`);
+    if (summary.unmatched) parts.push(`${summary.unmatched} ללא שיוך`);
+    showToast(`✓ ייבוא הושלם — ${parts.join(" · ") || "אין שינויים"}`);
+    fetchAppointments();
+    fetchUnmatched();
+  }
+
+  async function handleDismissUnmatched(id) {
+    const { error } = await supabase
+      .from("spa_import_unmatched")
+      .update({ resolved: true, resolved_at: new Date().toISOString() })
+      .eq("id", id);
+    if (error) { showToast("⚠ שגיאה: " + error.message, "err"); return; }
+    fetchUnmatched();
+  }
+
+  async function handleAssignRoomAlias(row, roomId) {
+    if (!roomId || !row.room_raw) return;
+    const { error: aliasErr } = await supabase
+      .from("spa_room_aliases")
+      .insert({ ezgo_name: row.room_raw, room_id: Number(roomId) });
+    if (aliasErr) {
+      showToast(aliasErr.code === "23505" ? "⚠ השם הזה כבר משויך לחדר אחר" : "⚠ שגיאה בשיוך: " + aliasErr.message, "err");
+      return;
+    }
+    await supabase.from("spa_import_unmatched").update({ resolved: true, resolved_at: new Date().toISOString() }).eq("id", row.id);
+    showToast("✓ החדר שויך — ייבוא הבא יזהה את השם הזה אוטומטית");
+    fetchUnmatched();
   }
 
   const couples = rooms.filter((r) => r.room_type === "couple");
@@ -672,10 +862,30 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
         <label style={{ fontSize: 13, fontWeight: 700, color: "var(--black)" }}>תאריך:</label>
         <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} />
         <button className="btn btn-ghost btn-sm" onClick={() => setSelectedDate(todayYmd())}>היום</button>
-        <button className="btn btn-ghost btn-sm" onClick={() => setShowTherapistPanel(true)} style={{ marginRight: "auto" }}>
+        <button className="btn btn-sm" onClick={() => setShowImportZone((v) => !v)} style={{ marginRight: "auto", background: showImportZone ? "var(--gold)" : "var(--ivory)", fontWeight: 700 }}>
+          📊 ייבוא דוח פעילויות
+        </button>
+        <button className="btn btn-ghost btn-sm" onClick={() => setShowTherapistPanel(true)}>
           ✏️ עריכת שמות מטפלים
         </button>
       </div>
+
+      {showImportZone && (
+        <div style={{ marginBottom: 18 }}>
+          <ActivitiesImportZone
+            selectedDate={selectedDate}
+            onImportDone={handleImportDone}
+            onError={(msg) => showToast(msg, "err")}
+          />
+        </div>
+      )}
+
+      <UnmatchedPanel
+        rows={unmatchedRows}
+        rooms={rooms}
+        onAssignRoom={handleAssignRoomAlias}
+        onDismiss={handleDismissUnmatched}
+      />
 
       {/* ── Room-columns board ──────────────────────────────────────────────── */}
       {[{ label: "חדרי זוגות", list: couples }, { label: "חדרי יחיד", list: singles }].map((group) => (

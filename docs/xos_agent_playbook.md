@@ -335,6 +335,12 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
+### 2026-07-11 — CRA `npm start` OOM (Windows + Node 24)
+- **Symptom:** `FATAL ERROR: invalid table size` / heap OOM ~900MB during webpack compile; `npm run build` often still OK.
+- **False lead:** raising `NODE_OPTIONS=--max-old-space-size=4096` in PowerShell — on Windows the flag frequently never reaches the `react-scripts` child.
+- **Fix:** put the flag on the Node that runs webpack: `node --max-old-space-size=8192 node_modules/react-scripts/bin/react-scripts.js start` in `package.json`. Optionally `.env.development` → `GENERATE_SOURCEMAP=false` to cut peak heap in dev.
+- **Do not** blame feature diffs first when build is clean and only `start` OOMs.
+
 ### 2026-07-08 — Session 144b (Inbox ghost outbound — Stage 2 + fetchAll race)
 - **שורש 1:** `whatsapp-send` `stage_2_arrival` fast-path שלח ל-Meta + `notification_log` אבל **לא** `whatsapp_conversations` — cron reconcile / pipeline fallback בלתי-נראה ב-Inbox.
 - **שורש 2:** `intent='arrival_confirmed'` נחסם ב-CHECK עד migration 157 — Meta הצליח, INSERT נכשל בשקט (`insertGuestOutboundIfNotMuted` רק `console.error`).

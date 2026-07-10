@@ -16,9 +16,9 @@
   },
   "scripts": {
     "prestart": "node scripts/sync-changelog.js",
-    "start": "react-scripts start",
+    "start": "node --max-old-space-size=8192 node_modules/react-scripts/bin/react-scripts.js start",
     "prebuild": "node scripts/sync-changelog.js",
-    "build": "react-scripts build",
+    "build": "node --max-old-space-size=4096 node_modules/react-scripts/bin/react-scripts.js build",
     "test": "react-scripts test --env=jsdom",
     "eject": "react-scripts eject"
   },

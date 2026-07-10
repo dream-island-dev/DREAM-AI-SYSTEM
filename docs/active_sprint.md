@@ -1,7 +1,24 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-08 (session 143 — audit fixes: Shabbat template bypass on manual morning dispatch, checkout_fb_daypass editor lock, live template names below corrected per migration 102 rename).
+> Last updated: 2026-07-11 (Smart Spa Board — Ezgo Activities full sync, Phase 0-2 done: schema + parser + upsert engine, migrations 178-179 pushed).
 > Full session history → `CLAUDE.md` §10 + `claude_history.md`.
 > **Agent workflow** → `docs/xos_agent_playbook.md`
+
+---
+
+## 🟢 In Progress — Smart Spa Board: Full Ezgo Activities Sync (2026-07-11)
+
+Goal: import the FULL daily Ezgo "פעילויות" report (not suite-only), match rows to `guests` Golden Profile, write-through `spa_date`/`spa_time`/`guest_profile.spa` so the WhatsApp bot can reference the treatment, and never silently drop an unmatched row.
+
+| Phase | Target | Status |
+|---|---|---|
+| 0 | Schema — `spa_appointments` +ezgo_line_id/phone_snapshot/treatment_type, `spa_room_aliases`, `spa_import_unmatched` (migration 178) | ✅ pushed |
+| 1 | Shared pure parser (`src/utils/ezgoSpaActivitiesParser.js`) | ✅ done — 25 tests |
+| 2 | Upsert engine + guest write-through + `guest_profile.spa` context (`src/utils/spaActivitiesSyncEngine.js`) | ✅ done — 41 tests, external Plan-agent review (4 real bugs fixed), migration 179 pushed |
+| 3 | SpaBoard Excel import UI + unmatched panel + summary toast | ✅ code done — OOM blocker fixed (`package.json` direct `--max-old-space-size` + `.env.development` GENERATE_SOURCEMAP=false); `npm start` compiles, localhost:3000 up — **Mike: click-test import UI** |
+| 4 | `spa-schedule-webhook` upgraded to shared engine, `filter=all` default | Pending |
+| 5 | Bot context enrichment (`buildGuestStageContext` spa line → room/therapist/type) | Pending |
+
+**Known blocker seeded, not fully resolved:** room alias "ג'קוזי 1" has no confirmed mapping in `spa_room_aliases` — Mike didn't know which physical room and asked not to guess. Will surface as `spa_import_unmatched` (`reason='room_unmapped'`) on first real import; resolve via SpaBoard unmatched panel once Phase 3 ships.
 
 ---
 
