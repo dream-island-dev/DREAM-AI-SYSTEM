@@ -6,6 +6,35 @@ import { isGuestReactionRow } from "./inboxReactions";
 /** Contacts with a message in this window appear in the pinned «פעילות אחרונה» section. */
 export const INBOX_RECENT_ACTIVITY_MS = 24 * 60 * 60 * 1000;
 
+/** Canonical Map key for per-staff read cursors (must match WhatsAppInbox threadKey). */
+export function inboxReadCursorKey(phone, inboxChannel = "meta") {
+  if (!phone) return null;
+  return `${phone}::${inboxChannel ?? "meta"}`;
+}
+
+/**
+ * Resolve a read cursor for a thread.
+ * Prefers phone::channel; falls back to legacy phone-only keys (pre-migration 181).
+ */
+export function getReadCursorAt(readCursorsByPhone, phone, inboxChannel = "meta", threadKey = null) {
+  if (!readCursorsByPhone?.get) return null;
+  const key = threadKey ?? inboxReadCursorKey(phone, inboxChannel);
+  if (key && readCursorsByPhone.has(key)) return readCursorsByPhone.get(key);
+  if (phone && readCursorsByPhone.has(phone)) return readCursorsByPhone.get(phone);
+  return null;
+}
+
+/** Hydrate Map from inbox_read_cursors rows → threadKey keys. */
+export function buildReadCursorsMap(rows) {
+  const map = new Map();
+  for (const row of rows ?? []) {
+    if (!row?.phone || !row?.last_read_at) continue;
+    const key = inboxReadCursorKey(row.phone, row.inbox_channel ?? "meta");
+    if (key) map.set(key, row.last_read_at);
+  }
+  return map;
+}
+
 export function contactLastMessageAt(contact) {
   const last = contact?.messages?.[contact.messages.length - 1];
   return last?.created_at ?? null;
@@ -60,8 +89,12 @@ export function applyReadCursorToMessages(messages, readCursorAt) {
 export function applyAllReadCursors(rows, readCursorsByPhone) {
   if (!rows?.length || !readCursorsByPhone?.size) return rows ?? [];
   return rows.map((m) => {
-    const key = m.threadKey ?? `${m.phone}::${m.inbox_channel ?? "meta"}`;
-    const cursor = readCursorsByPhone.get(key);
+    const cursor = getReadCursorAt(
+      readCursorsByPhone,
+      m.phone,
+      m.inbox_channel ?? "meta",
+      m.threadKey ?? null,
+    );
     if (!cursor || m.direction !== "inbound" || m._read) return m;
     const msgTs = new Date(m.created_at).getTime();
     const cursorTs = new Date(cursor).getTime();
@@ -87,9 +120,13 @@ export function sortContactsRecentFirst(contacts, sortMode, sortRosterContactsFn
 }
 
 export function contactUnreadCount(contact, readCursorsByPhone) {
-  const key = contact.threadKey ?? `${contact.phone}::${contact.inbox_channel ?? "meta"}`;
-  const cursor = readCursorsByPhone?.get?.(key) ?? null;
-  return countUnreadInbound(contact.messages, cursor);
+  const cursor = getReadCursorAt(
+    readCursorsByPhone,
+    contact?.phone,
+    contact?.inbox_channel ?? "meta",
+    contact?.threadKey ?? null,
+  );
+  return countUnreadInbound(contact?.messages, cursor);
 }
 
 /**

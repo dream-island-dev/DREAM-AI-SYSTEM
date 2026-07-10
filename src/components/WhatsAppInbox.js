@@ -46,7 +46,9 @@ import { buildSpaWhenPhrase, formatSpaSchedule } from "../utils/israeliTime";
 import {
   applyAllReadCursors,
   buildGroupedRosterSections,
+  buildReadCursorsMap,
   contactUnreadCount,
+  inboxReadCursorKey,
   isRecentlyActive,
   sortContactsRecentFirst,
 } from "../utils/inboxReadState";
@@ -349,6 +351,8 @@ const T = {
     filterFuture: "📅 עתיד",
     filterClaimed: "🔒 בטיפול",
     filterUnread: "💬 לא נקרא",
+    markRead: "נקרא",
+    markReadTitle: "סמן כנקרא — הסר מפילטר לא נקרא",
     filterRecent: "🕐 אחרונות",
     sortActivity: "פעילות",
     sortArrival: "הגעה",
@@ -437,6 +441,8 @@ const T = {
     filterFuture: "📅 Future",
     filterClaimed: "🔒 Claimed",
     filterUnread: "💬 Unread",
+    markRead: "Read",
+    markReadTitle: "Mark as read — remove from Unread filter",
     filterRecent: "🕐 Recent",
     sortActivity: "Activity",
     sortArrival: "Arrival",
@@ -974,6 +980,7 @@ function contactItemPropsEqual(prev, next) {
   if (prev.onClick !== next.onClick) return false;
   if (prev.onDismiss !== next.onDismiss) return false;
   if (prev.onArchive !== next.onArchive) return false;
+  if (prev.onMarkRead !== next.onMarkRead) return false;
   if (prev.onProfileClick !== next.onProfileClick) return false;
   if (prev.readCursorsByPhone !== next.readCursorsByPhone) return false;
   const a = prev.contact, b = next.contact;
@@ -1000,7 +1007,7 @@ function contactItemPropsEqual(prev, next) {
   return contactUnreadCount(a, prev.readCursorsByPhone) === contactUnreadCount(b, next.readCursorsByPhone);
 }
 
-const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobile, t, lang, dir, readCursorsByPhone, onClick, onProfileClick, onDismiss, onArchive, scriptsByKey, templatesByWaName }) {
+const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobile, t, lang, dir, readCursorsByPhone, onClick, onProfileClick, onDismiss, onArchive, onMarkRead, scriptsByKey, templatesByWaName }) {
   const last  = contact.messages[contact.messages.length - 1];
   const unread = contactUnreadCount(contact, readCursorsByPhone);
 
@@ -1197,12 +1204,35 @@ const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobil
               <div style={{ fontSize: 11, color: "var(--text-muted)" }} title={formatTimeTitle(last?.created_at)}>{formatTime(last?.created_at)}</div>
             </div>
             {unread > 0 && (
-              <div className="u-badge-nowrap" style={{
-                background: "var(--whatsapp-green)", color: "white",
-                borderRadius: "var(--radius-md)", fontSize: 11, fontWeight: 700,
-                padding: "1px 7px", display: "inline-block",
-              }}>
-                {unread}
+              <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <div className="u-badge-nowrap" style={{
+                  background: "var(--whatsapp-green)", color: "white",
+                  borderRadius: "var(--radius-md)", fontSize: 11, fontWeight: 700,
+                  padding: "1px 7px", display: "inline-block",
+                }}>
+                  {unread}
+                </div>
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); onMarkRead?.(contact); }}
+                  title={t.markReadTitle}
+                  aria-label={t.markReadTitle}
+                  className={isMobile ? "u-touch-staff" : undefined}
+                  style={{
+                    border: "1px solid var(--whatsapp-green)",
+                    background: "var(--status-success-bg, #ECFDF5)",
+                    color: "var(--whatsapp-green)",
+                    borderRadius: "var(--radius-md)",
+                    fontSize: 11,
+                    fontWeight: 700,
+                    padding: isMobile ? "6px 10px" : "2px 8px",
+                    cursor: "pointer",
+                    lineHeight: 1.2,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  ✓ {t.markRead}
+                </button>
               </div>
             )}
           </div>
@@ -2763,7 +2793,7 @@ export default function WhatsAppInbox({
   const replyRef   = useRef(null);
   const pollRef    = useRef(null);
   const allMsgsRef = useRef([]);   // raw flat messages — source of truth for merging
-  const readCursorsRef = useRef(new Map()); // phone → last_read_at ISO (per staff)
+  const readCursorsRef = useRef(new Map()); // threadKey (phone::channel) → last_read_at ISO (per staff)
   const [readCursorsVersion, setReadCursorsVersion] = useState(0);
   const readCursorsByPhone = useMemo(
     () => readCursorsRef.current,
@@ -2880,16 +2910,23 @@ export default function WhatsAppInbox({
   const markPhoneInboundRead = useCallback((contact) => {
     const phone = contact?.phone;
     if (!phone) return;
-    const threadKey = contact?.threadKey ?? `${phone}::${contact?.inbox_channel ?? "meta"}`;
+    const inboxChannel = contact?.inbox_channel ?? "meta";
+    const threadKey = contact?.threadKey ?? inboxReadCursorKey(phone, inboxChannel);
     const now = new Date().toISOString();
     readCursorsRef.current.set(threadKey, now);
     allMsgsRef.current = applyAllReadCursors(allMsgsRef.current, readCursorsRef.current);
     setContacts(applyGrouping(allMsgsRef.current));
     bumpReadCursors();
-    if (user?.id && supabase && (contact?.inbox_channel ?? "meta") === "meta") {
+    if (user?.id && supabase) {
       supabase.from("inbox_read_cursors").upsert(
-        { phone, staff_id: user.id, last_read_at: now, updated_at: now },
-        { onConflict: "phone,staff_id" },
+        {
+          phone,
+          staff_id: user.id,
+          inbox_channel: inboxChannel,
+          last_read_at: now,
+          updated_at: now,
+        },
+        { onConflict: "phone,staff_id,inbox_channel" },
       ).then(({ error }) => {
         if (error) console.warn("[WhatsAppInbox] read cursor save failed:", error.message);
       });
@@ -3887,22 +3924,27 @@ export default function WhatsAppInbox({
     };
   }, [fetchAll, fetchSince, applyGrouping]);
 
-  // Per-staff read cursors — unread survives refresh; opening thread persists to DB.
+  // Per-staff read cursors — unread survives refresh; opening / «נקרא» persists to DB.
+  // Keys are phone::channel (buildReadCursorsMap) so Meta and Whapi stay independent.
   useEffect(() => {
     if (!user?.id || !supabase) return;
     let cancelled = false;
     (async () => {
       const { data, error } = await supabase
         .from("inbox_read_cursors")
-        .select("phone, last_read_at")
+        .select("phone, inbox_channel, last_read_at")
         .eq("staff_id", user.id);
       if (cancelled) return;
       if (error) {
         console.warn("[WhatsAppInbox] read cursors load failed:", error.message);
         return;
       }
-      const map = new Map();
-      for (const row of data ?? []) map.set(row.phone, row.last_read_at);
+      const map = buildReadCursorsMap(data);
+      // Merge into any optimistic marks already set (open / «נקרא» before SELECT returned).
+      // A full replace would briefly revive unread badges under slow load + cache paint.
+      for (const [key, at] of readCursorsRef.current.entries()) {
+        if (!map.has(key)) map.set(key, at);
+      }
       readCursorsRef.current = map;
       if (allMsgsRef.current.length) {
         allMsgsRef.current = applyAllReadCursors(allMsgsRef.current, map);
@@ -4709,7 +4751,7 @@ export default function WhatsAppInbox({
                 </div>
                 {section.contacts.map((c) => (
                   <ContactItem
-                    key={c.phone}
+                    key={c.threadKey ?? `${c.phone}::${c.inbox_channel ?? "meta"}`}
                     contact={c}
                     isActive={active === c.threadKey}
                     isMobile={isMobile}
@@ -4723,6 +4765,7 @@ export default function WhatsAppInbox({
                     onProfileClick={openGuestContextDrawer}
                     onDismiss={dismissHumanRequest}
                     onArchive={archiveContact}
+                    onMarkRead={markPhoneInboundRead}
                   />
                 ))}
               </div>
@@ -4730,7 +4773,7 @@ export default function WhatsAppInbox({
           ) : (
             displayContacts.map((c) => (
               <ContactItem
-                key={c.phone}
+                key={c.threadKey ?? `${c.phone}::${c.inbox_channel ?? "meta"}`}
                 contact={c}
                 isActive={active === c.threadKey}
                 isMobile={isMobile}
@@ -4744,6 +4787,7 @@ export default function WhatsAppInbox({
                 onProfileClick={openGuestContextDrawer}
                 onDismiss={dismissHumanRequest}
                 onArchive={archiveContact}
+                onMarkRead={markPhoneInboundRead}
               />
             ))
           )}
