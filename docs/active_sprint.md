@@ -5,6 +5,21 @@
 
 ---
 
+## 🟢 In Progress — DREAM BOT Inbox Mobile UX (2026-07-11)
+
+| Phase | Target | Status |
+|---|---|---|
+| 0 | Diagnostic — triple chrome, roster scroll, back-nav, FAB overlap, handoff gaps | ✅ done |
+| 1 | `App.js` — collapse topbar/PulseBar on Inbox mobile (list slim, thread hidden) | ✅ deployed |
+| 2 | `WhatsAppInbox.js` — compact roster header, collapsible filters, swipe threshold, FABs hide on thread | ✅ deployed |
+| 3 | Android/browser back closes thread (pushState/popstate); roster scroll preserved | ✅ deployed |
+| 3C | mobile-bar "💬 צ'אט" tab + unread badge | Optional — not approved, not built |
+| H | webhook per-message `catch` (`whatsapp-webhook/index.ts:4555`) never replies to guest / sets `human_requested` on uncaught exception | ⚠️ Open — needs Mike's approval before touching webhook |
+
+**Mike:** verify on a real phone (Android back gesture especially) — dev-env click-through wasn't possible (no login creds for the agent).
+
+---
+
 ## 🟢 In Progress — Smart Spa Board: Full Ezgo Activities Sync (2026-07-11)
 
 Goal: import the FULL daily Ezgo "פעילויות" report (not suite-only), match rows to `guests` Golden Profile, write-through `spa_date`/`spa_time`/`guest_profile.spa` so the WhatsApp bot can reference the treatment, and never silently drop an unmatched row.
