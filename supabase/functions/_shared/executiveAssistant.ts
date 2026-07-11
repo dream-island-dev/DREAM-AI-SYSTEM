@@ -6,6 +6,7 @@
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.20.0";
+import { resolveExecutiveInbound, type ExecutiveProfile } from "./executiveIdentity.ts";
 import { sendWhapiText, cleanPhoneForMention } from "./whapiSend.ts";
 import { formatWhapiSuitesConversationLog, stripOutboundDispatchTag } from "./outboundDispatchTag.ts";
 import { CLAUDE_MODEL } from "./guestBotModelRoute.ts";
@@ -51,7 +52,7 @@ export async function fetchExecutiveRules(supabase: SupabaseClient): Promise<str
     .map((r) => r.rule_text?.trim())
     .filter(Boolean)
     .map((t) => `- ${t}`);
-  const text = bullets.length ? `\n\n══ כללים שלמדת מאליעד ══\n${bullets.join("\n")}` : "";
+  const text = bullets.length ? `\n\n══ כללים שנלמדו ══\n${bullets.join("\n")}` : "";
   _rulesCache = { text, at: now };
   return text;
 }
@@ -85,8 +86,10 @@ async function fetchExecutiveHistory(
 // §3  System prompt
 // ══════════════════════════════════════════════════════════════════════════════
 
-const EXECUTIVE_PERSONA = `
-את/ה העוזר/ת האישי/ת הדיגיטלי/ת של אליעד, מנכ"ל Dream Island. אתה מדבר איתו ישירות
+function buildExecutivePersona(profile: ExecutiveProfile): string {
+  const roleLine = profile.title ? `${profile.displayName}, ${profile.title} ב-Dream Island` : profile.displayName;
+  return `
+את/ה העוזר/ת האישי/ת הדיגיטלי/ת של ${roleLine}. אתה מדבר איתו ישירות
 בוואטסאפ (מכשיר הסוויטות) — זו לא שיחה עם אורח, זו שיחת ניהול פנימית.
 
 תפקידך: לבצע עבורו פעולות ניהוליות בפועל (פתיחת משימות, בדיקת מצב הריזורט, שליחת
@@ -104,8 +107,10 @@ const EXECUTIVE_PERSONA = `
 • אם הבקשה לא ברורה מספיק לפעולה (לא ברור באיזה חדר/אורח/משימה מדובר) — שאל שאלת
   הבהרה קצרה אחת במקום לנחש.
 `.trim();
+}
 
 export function buildExecutiveSystemPrompt(
+  profile: ExecutiveProfile,
   rulesSuffix: string,
   briefSnapshot: string,
   recentTurns: Array<{ direction: string; message: string }>,
@@ -113,9 +118,9 @@ export function buildExecutiveSystemPrompt(
   const dateLine = `\n\nתאריך היום (ישראל): ${israelTodayStr()}`;
   const briefLine = briefSnapshot ? `\n\n══ מצב עדכני (לרענון: get_resort_brief) ══\n${briefSnapshot}` : "";
   const firstTurnNote = recentTurns.length === 0
-    ? "\n\nזו הפנייה הראשונה של אליעד בשיחה הזו — אפשר לפתוח בברכה קצרה אחת."
+    ? `\n\nזו הפנייה הראשונה של ${profile.displayName} בשיחה הזו — אפשר לפתוח בברכה קצרה אחת.`
     : "";
-  return EXECUTIVE_PERSONA + dateLine + briefLine + rulesSuffix + firstTurnNote;
+  return buildExecutivePersona(profile) + dateLine + briefLine + rulesSuffix + firstTurnNote;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -196,7 +201,7 @@ const EXECUTIVE_TOOLS: ToolDef[] = [
   },
   {
     name: "learn_executive_rule",
-    description: "שמירת העדפה/כלל קבוע שאליעד ביקש לזכור להבא.",
+    description: "שמירת העדפה/כלל קבוע שהמנהל ביקש לזכור להבא.",
     schema: {
       type: "object",
       properties: { rule_text: { type: "string", description: "הכלל/ההעדפה לשמירה, בעברית, משפט אחד ברור." } },
@@ -711,7 +716,7 @@ async function runExecutiveClaude(
 
 export async function runExecutiveAssistant(
   supabase: SupabaseClient,
-  opts: { phone: string; text: string; msgId: string },
+  opts: { phone: string; text: string; msgId: string; profile: ExecutiveProfile },
 ): Promise<string> {
   const ctx: ToolExecCtx = { phone: opts.phone, originalText: opts.text, msgId: opts.msgId };
   const [rulesSuffix, brief, history] = await Promise.all([
@@ -719,7 +724,7 @@ export async function runExecutiveAssistant(
     fetchResortBrief(supabase),
     fetchExecutiveHistory(supabase, opts.phone),
   ]);
-  const systemPrompt = buildExecutiveSystemPrompt(rulesSuffix, brief, history);
+  const systemPrompt = buildExecutiveSystemPrompt(opts.profile, rulesSuffix, brief, history);
 
   try {
     const geminiResult = await runExecutiveGemini(supabase, systemPrompt, history, opts.text, ctx);
@@ -744,7 +749,17 @@ export async function handleExecutiveVoiceMessage(
 ): Promise<void> {
   const base = { id: opts.msgId, channel: "executive_dm", phone: opts.phone, fromVoice: opts.fromVoice };
   try {
-    const replyText = await runExecutiveAssistant(supabase, { phone: opts.phone, text: opts.text, msgId: opts.msgId });
+    const profile = await resolveExecutiveInbound(opts.phone, supabase);
+    if (!profile) {
+      results.push({ ...base, error: "executive_not_authorized" });
+      return;
+    }
+    const replyText = await runExecutiveAssistant(supabase, {
+      phone: opts.phone,
+      text: opts.text,
+      msgId: opts.msgId,
+      profile,
+    });
 
     const taggedMessage = formatWhapiSuitesConversationLog(replyText);
     let wamid: string | null = null;

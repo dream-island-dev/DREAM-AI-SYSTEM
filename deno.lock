@@ -4,7 +4,27 @@
     "https://deno.land/std@0.168.0/fmt/colors.ts": "03ad95e543d2808bc43c17a3dd29d25b43d0f16287fe562a0be89bf632454a12",
     "https://deno.land/std@0.168.0/testing/_diff.ts": "a23e7fc2b4d8daa3e158fa06856bedf5334ce2a2831e8bf9e509717f455adb2c",
     "https://deno.land/std@0.168.0/testing/_format.ts": "cd11136e1797791045e639e9f0f4640d5b4166148796cad37e6ef75f7d7f3832",
-    "https://deno.land/std@0.168.0/testing/asserts.ts": "51353e79437361d4b02d8e32f3fc83b22231bc8f8d4c841d86fd32b0b0afe940"
+    "https://deno.land/std@0.168.0/testing/asserts.ts": "51353e79437361d4b02d8e32f3fc83b22231bc8f8d4c841d86fd32b0b0afe940",
+    "https://esm.sh/@anthropic-ai/sdk@0.20.0": "01940f6c38cd346bbd0066e76c1f346cd804be7a1de1a426e1aba514240a241c",
+    "https://esm.sh/@anthropic-ai/sdk@0.20.0/denonext/_shims/MultipartBody.mjs": "219a71dd758ca1749aaf8703c15051e3e02059b54cb9cb0d1edc548662aed207",
+    "https://esm.sh/@anthropic-ai/sdk@0.20.0/denonext/_shims/auto/runtime.mjs": "b886450ffc2026c11e280f53eacb485b043631cfc3bafcbdc6d579fe25f9fc50",
+    "https://esm.sh/@anthropic-ai/sdk@0.20.0/denonext/_shims/index.mjs": "2297d06274837c9aaee94e7e0d2d3fbb694503a0d7ae29c3c35e339475d782ae",
+    "https://esm.sh/@anthropic-ai/sdk@0.20.0/denonext/_shims/registry.mjs": "7783c7eb71c0e93b6101a3fb4d86a8690a62eccb56406f10dd087fea05b60627",
+    "https://esm.sh/@anthropic-ai/sdk@0.20.0/denonext/_shims/web-runtime.mjs": "eccaa1bd5d8fbd496a5d35db3425cf76711ef999fa2b71e46d8e860f5cbef93e",
+    "https://esm.sh/@anthropic-ai/sdk@0.20.0/denonext/core.mjs": "52e04ea5683b75b3e63cb097c541897c8bf026ee9e53d32ac081368a1b3724f9",
+    "https://esm.sh/@anthropic-ai/sdk@0.20.0/denonext/error.mjs": "5c6924da3544465d4cc808930eb353b7b424830e8476954b9d3a947b92fcb92d",
+    "https://esm.sh/@anthropic-ai/sdk@0.20.0/denonext/lib/MessageStream.mjs": "5ef0e03115eb7ffccbfc179664c3e57403f1d8d076f5ecaaa833ba2df01e7690",
+    "https://esm.sh/@anthropic-ai/sdk@0.20.0/denonext/resource.mjs": "9028df741de20cbba0e7a599494043377e45fe5293fbfd065cb3c84d4a042d0d",
+    "https://esm.sh/@anthropic-ai/sdk@0.20.0/denonext/resources/beta/beta.mjs": "826216c3a95587627dbfd493c21d3f365f8038b8a25ac343073566c61a5c394a",
+    "https://esm.sh/@anthropic-ai/sdk@0.20.0/denonext/resources/beta/tools/messages.mjs": "768d923a8125e7923b01379ca18b35e647a4d61807952d6c7480aada7bba08c6",
+    "https://esm.sh/@anthropic-ai/sdk@0.20.0/denonext/resources/beta/tools/tools.mjs": "642288950d456dd2abf9a3fefbf7e5624daa3c253f8bb2e1a39422ac2bc1153e",
+    "https://esm.sh/@anthropic-ai/sdk@0.20.0/denonext/resources/completions.mjs": "c75b1aecaf829ccdfbd9fce12f2bf39022599808f39622066b3b37c3abec1629",
+    "https://esm.sh/@anthropic-ai/sdk@0.20.0/denonext/resources/index.mjs": "c937306e7318aaeb471c3471be6c1cdacc68f59ce2aa35873b26a44d30ab1723",
+    "https://esm.sh/@anthropic-ai/sdk@0.20.0/denonext/resources/messages.mjs": "21b7d2f2b7483236d964e6f621ae36486ce0ec68b0cc019184182b5e62947043",
+    "https://esm.sh/@anthropic-ai/sdk@0.20.0/denonext/sdk.mjs": "7ce5c3d91012b1e408a7c660c4810c4e6fd5bf56883f3afed6dcd9f2723c309c",
+    "https://esm.sh/@anthropic-ai/sdk@0.20.0/denonext/streaming.mjs": "06d8dfaf93a2ffd8815c22254ecf2b3b98fee7dfcb5cf1f6d81237594ffe3136",
+    "https://esm.sh/@anthropic-ai/sdk@0.20.0/denonext/uploads.mjs": "34f5faaf3adb384a0401e1dd8ad6ae54ce11b47f6e26cfc191ffbab3a0f51da8",
+    "https://esm.sh/@anthropic-ai/sdk@0.20.0/denonext/version.mjs": "2abd5c0bd54a3449f800612e9f210f9ae0879063f16e8835e57a4e44c8a1deb8"
   },
   "workspace": {
     "packageJson": {
