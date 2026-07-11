@@ -1,5 +1,5 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-11 (Hybrid unanswered-guest escalation coded — awaiting deploy).
+> Last updated: 2026-07-11 (Hybrid escalation + Claude gemini fix synced to main & deployed).
 > Full session history → `CLAUDE.md` §10 + `claude_history.md`.
 > **Agent workflow** → `docs/xos_agent_playbook.md`
 
@@ -19,10 +19,11 @@ Code: `_shared/handoffEscalation.ts` (+6 tests), `sla-escalation-cron`, migratio
 | Phase | Status |
 |---|---|
 | Code + tests | ✅ done |
-| Cherry-pick Claude gemini-1.5 fix onto `main` | ✅ done |
-| `db push` migration 186 | 🔄 deploying |
-| `functions deploy sla-escalation-cron` | 🔄 deploying |
-| Push `main` (Vercel BotSettings + docs) | 🔄 deploying |
+| Cherry-pick Claude gemini-1.5 fix onto `main` | ✅ done + pushed |
+| `db push` migration 186 | ✅ pushed |
+| `functions deploy sla-escalation-cron` | ✅ deployed |
+| Push `main` (Vercel BotSettings + docs) | ✅ pushed |
+| Redeploy Claude funcs from `main` | ✅ process-knowledge / suggest-import-mapping / whatsapp-webhook / whapi-webhook |
 
 ---
 
