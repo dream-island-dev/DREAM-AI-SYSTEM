@@ -2,7 +2,7 @@
 // Knowledge ingestion pipeline for Agent Long-Term Memory (Pillar 3).
 //
 // Receives an uploaded file (PDF / image / plain text) from KnowledgeUploader.js,
-// passes it to Gemini 1.5 Flash (multimodal) for operational rule extraction,
+// passes it to Gemini (multimodal) for operational rule extraction,
 // and batch-inserts the extracted rules into the agent_memory table tagged with
 // the authenticated manager's department.
 //
@@ -45,10 +45,11 @@ const CORS = {
 };
 
 // ── Model configuration ───────────────────────────────────────────────────────
-// gemini-1.5-flash: confirmed multimodal support for PDF + image inline_data.
-// gemini-2.5-flash also supports multimodal but 1.5-flash has the most stable
-// inline_data (PDF) behaviour in the current Gemini API.
-const GEMINI_MODEL = "gemini-1.5-flash";
+// gemini-1.5-flash was retired from the v1beta generateContent API (confirmed
+// via live 404s) — this function hardcoded it with no fallback and silently
+// failed on every call. Fallback list matches the models already proven live
+// in executiveAssistant.ts and whapi-webhook's transcribeVoice().
+const GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash"];
 
 // ── Supported MIME types for inline_data (binary files) ──────────────────────
 const BINARY_MIME_TYPES = new Set([
@@ -162,40 +163,49 @@ async function callGemini(
     },
   };
 
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(requestBody),
-      signal: AbortSignal.timeout(60_000), // 60s — PDF parsing can be slow
+  let lastErr: Error | null = null;
+  for (const model of GEMINI_MODELS) {
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(requestBody),
+          signal: AbortSignal.timeout(60_000), // 60s — PDF parsing can be slow
+        }
+      );
+
+      if (!res.ok) {
+        const errBody = await res.text();
+        throw new Error(`gemini_http_${model}_${res.status}: ${errBody.slice(0, 300)}`);
+      }
+
+      const data = await res.json();
+
+      // Extract the text from the first candidate
+      const text: string =
+        data?.candidates?.[0]?.content?.parts
+          ?.map((p: { text?: string }) => p.text ?? "")
+          .join("") ?? "";
+
+      if (!text.trim()) {
+        // Check if content was filtered
+        const finishReason = data?.candidates?.[0]?.finishReason;
+        throw new Error(
+          finishReason === "SAFETY"
+            ? "gemini_safety_filter: content blocked"
+            : `gemini_empty_response_${model}`
+        );
+      }
+
+      return text;
+    } catch (e) {
+      lastErr = e as Error;
+      console.warn(`[process-knowledge] model="${model}" failed:`, lastErr.message);
     }
-  );
-
-  if (!res.ok) {
-    const errBody = await res.text();
-    throw new Error(`gemini_http_${res.status}: ${errBody.slice(0, 300)}`);
   }
-
-  const data = await res.json();
-
-  // Extract the text from the first candidate
-  const text: string =
-    data?.candidates?.[0]?.content?.parts
-      ?.map((p: { text?: string }) => p.text ?? "")
-      .join("") ?? "";
-
-  if (!text.trim()) {
-    // Check if content was filtered
-    const finishReason = data?.candidates?.[0]?.finishReason;
-    throw new Error(
-      finishReason === "SAFETY"
-        ? "gemini_safety_filter: content blocked"
-        : "gemini_empty_response"
-    );
-  }
-
-  return text;
+  throw lastErr ?? new Error("gemini_no_models_available");
 }
 
 // ── Main handler ───────────────────────────────────────────────────────────────

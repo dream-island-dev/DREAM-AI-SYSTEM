@@ -6,13 +6,16 @@
 export const CLAUDE_MODEL = "claude-sonnet-4-6";
 export const CLAUDE_MODEL_HAIKU = "claude-haiku-4-5";
 
+// gemini-1.5-flash was retired from the v1beta generateContent API (confirmed
+// via live 404s — see whapi-webhook's transcribeVoice history) and dropped
+// from this list and from BotSettings.js's MODEL_OPTIONS — it is no longer a
+// selectable preferred_model nor a fallback target anywhere in this codebase.
 export const GEMINI_MODELS: string[] = Deno.env.get("GEMINI_MODEL")
   ? [Deno.env.get("GEMINI_MODEL")!]
   : [
       "gemini-2.0-flash-lite",
       "gemini-2.0-flash",
       "gemini-2.5-flash",
-      "gemini-1.5-flash",
     ];
 
 export type GuestModelRoute = {

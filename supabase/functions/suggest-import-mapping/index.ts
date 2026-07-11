@@ -25,13 +25,16 @@ const CORS = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+// gemini-1.5-flash was retired from the v1beta generateContent API (confirmed
+// via live 404s — see whapi-webhook's transcribeVoice history) and dropped
+// from this list — it was dead weight at the tail, never reached since
+// gemini-2.0-flash/gemini-2.5-flash ahead of it both still work.
 const GEMINI_MODELS: string[] = Deno.env.get("GEMINI_MODEL")
   ? [Deno.env.get("GEMINI_MODEL")!]
   : [
       "gemini-2.0-flash-lite",
       "gemini-2.0-flash",
       "gemini-2.5-flash",
-      "gemini-1.5-flash",
     ];
 const CLAUDE_MODEL = "claude-sonnet-4-6"; // last-resort fallback only — ANTHROPIC_API_KEY is degraded per CLAUDE.md
 
