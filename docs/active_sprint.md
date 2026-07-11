@@ -1,5 +1,5 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-11 (Hybrid escalation + Claude gemini fix synced to main & deployed).
+> Last updated: 2026-07-11 (Spa Activities auto-create day_guest + hour agenda + dual entry — local only, awaiting deploy).
 > Full session history → `CLAUDE.md` §10 + `claude_history.md`.
 > **Agent workflow** → `docs/xos_agent_playbook.md`
 
@@ -77,6 +77,21 @@ Goal: import the FULL daily Ezgo "פעילויות" report (not suite-only), mat
 | 5 | Bot context enrichment (`buildGuestStageContext` spa line → room/therapist/type) | Pending |
 
 **Known blocker seeded, not fully resolved:** room alias "ג'קוזי 1" has no confirmed mapping in `spa_room_aliases` — Mike didn't know which physical room and asked not to guess. Will surface as `spa_import_unmatched` (`reason='room_unmapped'`) on first real import; resolve via SpaBoard unmatched panel once Phase 3 ships.
+
+---
+
+## 🟢 In Progress — Smart Spa Board: Activities auto-create day_guest + hour agenda + dual entry (2026-07-11)
+
+Follow-up sprint on top of the Full Ezgo Activities Sync above (locked decisions confirmed with Mike: room="Premium Day 1" for auto-created day_guest, couple/group cell on one phone = one profile + `couple_shared_phone` flag, never a guessed second guest).
+
+| Phase | Target | Status |
+|---|---|---|
+| 0 | Plan — engine signature/summary changes, agenda sketch, Data Sync mount point, test matrix, risks | ✅ done |
+| 1 | Engine: guest auto-create (`guests_created`), `not_in_file` count, `meal_time_set` (explicit-only, never overwrites) | ✅ done — 9 orchestrator tests + 6 `extractSpaMealTime` tests, external Plan-agent review (1 real bug fixed: auto-create gate only checked phone truthiness, not phone shape — added `PLAUSIBLE_ISRAELI_PHONE_RE` guard) |
+| 2 | UI: `ActivitiesImportZone` extracted to `src/components/spa/ActivitiesImportZone.js` (shared by SpaBoard + DataSyncPage); SpaBoard default view = hourly agenda, room-columns now secondary "לפי חדרים" tab; toast shows all new counts in both mount points | ✅ done |
+| 3 | Verify — full suite 269/269, `npm run build` clean, docs updated | ✅ done |
+
+**Not deployed** — local-only, awaiting Mike's `כן`/`תעלה`.
 
 ---
 

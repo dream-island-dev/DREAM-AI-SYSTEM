@@ -153,6 +153,53 @@ export function buildGuestSpaProfilePatch(existingProfile, appt) {
   };
 }
 
+// Guards the guest auto-create path only — resolvePhoneVariants/matching is
+// safe to run against a garbage phone (it just won't find anyone), but an
+// INSERT into the Golden Profile must not happen off a phone-shaped column
+// that actually contains OCR noise or a misaligned cell (e.g. a therapist
+// name landing in the טלפון column). 972 + 8-9 digits covers Israeli mobile
+// (05X-XXXXXXX → 972 + 9 digits) and landline (0X-XXXXXXX → 972 + 8 digits).
+const PLAUSIBLE_ISRAELI_PHONE_RE = /^972\d{8,9}$/;
+
+const MEAL_CONTEXT_RE = /(?:ארוחה|ארוחת|dinner|HB|Half[\s-]?Board|מסעדה|פנסיון|שולחן)/i;
+
+/**
+ * Explicit meal-time extraction from a spa row's note/extras text only —
+ * mirrors the same conservative discipline as ArrivalImportPanel's
+ * `_extractMealTime` (explicit meal keyword + clock time; bare evening times
+ * without a meal-context word are never captured) but scoped to a single
+ * free-text cell instead of a multi-line report block. Returns "HH:MM" or
+ * null — never guesses from board-basis words alone (locked decision, Mike).
+ */
+export function extractSpaMealTime(text) {
+  const clean = String(text ?? "").replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
+  if (!clean) return null;
+
+  let m = clean.match(/ארוחה[ת]?\s*(?:ערב|בוקר|צהריים)?\s*[-:]?\s*(\d{1,2}):(\d{2})/);
+  if (!m && /(?:ערב|צהריים)/i.test(clean)) {
+    m = clean.match(/מ-?\s*(\d{1,2}):(\d{2})/);
+  }
+  if (!m && /\b(?:HB|Half[\s-]?Board)\b/i.test(clean)) {
+    m = clean.match(/(\d{1,2}):(\d{2})/);
+  }
+  if (!m && /\bDinner\b/i.test(clean)) {
+    m = clean.match(/(\d{1,2}):(\d{2})/);
+  }
+  if (!m && /מסעדה/.test(clean)) {
+    m = clean.match(/(\d{1,2}):(\d{2})/);
+  }
+  if (!m && MEAL_CONTEXT_RE.test(clean)) {
+    const eveM = clean.match(/\b(1[89]|2[01]):(\d{2})\b/);
+    if (eveM) {
+      const h = parseInt(eveM[1], 10);
+      const min = parseInt(eveM[2], 10);
+      if (!(h === 21 && min > 30)) m = eveM;
+    }
+  }
+  if (!m) return null;
+  return `${m[1].padStart(2, "0")}:${m[2]}`;
+}
+
 /** Priority order matters — a row missing start/end time is not a room problem, and a room problem is not a guest problem; each must land in the reason a staff member can actually act on. */
 function classifyUnresolvedReason(row, guest, roomId) {
   if (!row.start_time || !row.end_time) return "invalid_time_range";
@@ -181,7 +228,10 @@ function unmatchedRow(batchId, appointmentDate, row, reason) {
  * doc. Returns a summary matching the Phase 3 import-toast shape.
  */
 export async function syncEzgoSpaActivities(parsedRows, appointmentDate, { supabase }) {
-  const summary = { created: 0, updated: 0, matched_guests: 0, unmatched: 0, room_unmapped: 0, conflicts: 0, suspicious: 0 };
+  const summary = {
+    created: 0, updated: 0, matched_guests: 0, unmatched: 0, room_unmapped: 0, conflicts: 0, suspicious: 0,
+    guests_created: 0, not_in_file: 0, meal_time_set: 0,
+  };
   if (!parsedRows.length) return summary;
 
   const [{ data: aliasRows }, { data: therapistRows }, { data: roomRows }, { data: existingAppts }] = await Promise.all([
@@ -219,11 +269,61 @@ export async function syncEzgoSpaActivities(parsedRows, appointmentDate, { supab
   const batchId = crypto.randomUUID();
   const unmatched = [];
   const touchedGuestIds = new Set();
+  const matchedExistingIds = new Set();
+  const mealTimeByGuestId = new Map();
 
   for (const row of parsedRows) {
     const roomId = row.room_raw ? aliasMap.get(row.room_raw) ?? null : null;
     const candidates = row.phone ? guestsByPhone.get(row.phone) ?? [] : [];
-    const { guest, suspicious, reason } = pickBestGuestMatch(candidates, appointmentDate, row.guest_name);
+    let { guest, suspicious, reason } = pickBestGuestMatch(candidates, appointmentDate, row.guest_name);
+    let coupleFlag = false;
+
+    // Auto-create a day_guest profile (Mike, locked decision) when no
+    // existing guest matches this phone but the row carries real identity —
+    // gated on a valid time range too, since a genuinely malformed row
+    // (no time) already fails classifyUnresolvedReason before it can reach
+    // here regardless. Idempotent within a batch: the newly-created guest is
+    // pushed into guestsByPhone immediately so a second row this same batch
+    // for the same phone (e.g. two treatments same day) finds it as a
+    // candidate instead of creating a duplicate profile.
+    if (!guest && row.start_time && row.end_time && row.guest_name && PLAUSIBLE_ISRAELI_PHONE_RE.test(row.phone ?? "")) {
+      const { data: newGuest, error: newGuestErr } = await supabase
+        .from("guests")
+        .insert({
+          phone: `+${row.phone}`,
+          name: row.guest_name,
+          room_type: "day_guest",
+          room: "Premium Day 1",
+          arrival_date: appointmentDate,
+          departure_date: appointmentDate,
+          status: "expected",
+          ...(row.group_label ? { guest_profile: { couple_shared_phone: true } } : {}),
+        })
+        .select("id, name, phone, arrival_date, departure_date, status")
+        .maybeSingle();
+      if (newGuestErr) {
+        console.error("[spaActivitiesSyncEngine] guest auto-create failed:", row.phone, newGuestErr.message);
+      } else if (newGuest) {
+        guest = newGuest;
+        summary.guests_created++;
+        if (!guestsByPhone.has(row.phone)) guestsByPhone.set(row.phone, []);
+        guestsByPhone.get(row.phone).push(newGuest);
+        // Group cell ("Name (Group)") means a companion shares this phone but
+        // has no name/phone of their own to create a second profile from —
+        // flag for staff instead of silently representing only one person
+        // (Mike, locked decision: one profile + flag, never a guessed second).
+        if (row.group_label) coupleFlag = true;
+      }
+    }
+
+    // Tracked before the unresolved-reason check (independent of whether
+    // THIS row can be fully written) so a row that references an existing
+    // appointment via ezgo_line_id still marks it "in file" even when some
+    // other part of the row (room/guest) can't resolve — otherwise a
+    // resolvable-but-partial row would wrongly count that appointment as
+    // missing from the file.
+    const existing = matchExistingAppointment(row, roomId, guest?.id, apptIndex);
+    if (existing) matchedExistingIds.add(existing.id);
 
     const unresolvedReason = classifyUnresolvedReason(row, guest, roomId);
     if (unresolvedReason) {
@@ -248,7 +348,6 @@ export async function syncEzgoSpaActivities(parsedRows, appointmentDate, { supab
       }
     }
 
-    const existing = matchExistingAppointment(row, roomId, guest.id, apptIndex);
     const payload = {
       guest_id: guest.id,
       room_id: roomId,
@@ -286,7 +385,26 @@ export async function syncEzgoSpaActivities(parsedRows, appointmentDate, { supab
       summary.suspicious++;
       unmatched.push({ ...unmatchedRow(batchId, appointmentDate, row, "suspicious_shared_phone"), guest_name: `${row.guest_name ?? "—"} (${reason})` });
     }
+    if (coupleFlag) {
+      summary.suspicious++;
+      unmatched.push({
+        ...unmatchedRow(batchId, appointmentDate, row, "suspicious_shared_phone"),
+        guest_name: `${row.guest_name ?? "—"} (זוג/קבוצה על טלפון אחד — פרופיל שני לא נוצר: "${row.group_label}")`,
+      });
+    }
+
+    // Explicit meal time from this row's note/extras only (never board-basis
+    // guessing) — earliest match across the batch wins per guest, actual
+    // write (and the "never overwrite existing meal_time" check) happens in
+    // the write-through pass below where guests.meal_time is already fetched.
+    const mealTime = extractSpaMealTime([row.note, row.extras].filter(Boolean).join(" "));
+    if (mealTime) {
+      const prevMeal = mealTimeByGuestId.get(guest.id);
+      if (!prevMeal || mealTime < prevMeal) mealTimeByGuestId.set(guest.id, mealTime);
+    }
   }
+
+  summary.not_in_file = (existingAppts ?? []).filter((a) => !matchedExistingIds.has(a.id)).length;
 
   if (unmatched.length) {
     const { error: unmatchedErr } = await supabase.from("spa_import_unmatched").insert(unmatched);
@@ -309,7 +427,7 @@ export async function syncEzgoSpaActivities(parsedRows, appointmentDate, { supab
     const earliest = earliestRows?.[0];
     if (!earliest) continue;
 
-    const { data: guestRow } = await supabase.from("guests").select("guest_profile").eq("id", guestId).maybeSingle();
+    const { data: guestRow } = await supabase.from("guests").select("guest_profile, meal_time").eq("id", guestId).maybeSingle();
     const patch = buildGuestSpaProfilePatch(guestRow?.guest_profile, {
       appointment_date: appointmentDate,
       start_time: earliest.start_time,
@@ -320,10 +438,17 @@ export async function syncEzgoSpaActivities(parsedRows, appointmentDate, { supab
       therapist: earliest.spa_therapists?.name ?? null,
     });
 
-    const { error: guestErr } = await supabase
-      .from("guests")
-      .update({ spa_date: appointmentDate, spa_time: earliest.start_time, guest_profile: patch })
-      .eq("id", guestId);
+    const updatePayload = { spa_date: appointmentDate, spa_time: earliest.start_time, guest_profile: patch };
+    // Never overwrite an existing meal_time (locked decision, Mike) — only
+    // fill it when this batch found an explicit meal mention AND the guest
+    // didn't already have one from the primary ops-report source.
+    const mealTime = mealTimeByGuestId.get(guestId);
+    if (mealTime && !guestRow?.meal_time) {
+      updatePayload.meal_time = mealTime;
+      summary.meal_time_set++;
+    }
+
+    const { error: guestErr } = await supabase.from("guests").update(updatePayload).eq("id", guestId);
     if (guestErr) console.warn("[spaActivitiesSyncEngine] guest write-through failed:", guestId, guestErr.message);
   }
 

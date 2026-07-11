@@ -8,10 +8,9 @@
 // here creates/links a spa_appointments row and resolves the alert. On
 // success, writes through guests.spa_time/spa_date (Golden Profile SSOT).
 
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
-import { parseEzgoActivitiesReport } from "../utils/ezgoSpaActivitiesParser";
-import { syncEzgoSpaActivities } from "../utils/spaActivitiesSyncEngine";
+import ActivitiesImportZone from "./spa/ActivitiesImportZone";
 
 const DEFAULT_START_TIME = "09:00";
 const DEFAULT_DURATION_MIN = 60;
@@ -222,72 +221,6 @@ function TherapistManagePanel({ therapists, onClose, onSaved }) {
             );
           })}
         </div>
-      </div>
-    </div>
-  );
-}
-
-// ── Ezgo Activities Excel import — Phase 3 UI over Phase 1/2's parser+engine ─
-// Imports the FULL daily report (suites/day-guests/groups — no suite-only
-// filter, per product goal #1). Anything the sync engine can't resolve lands
-// in spa_import_unmatched instead of vanishing (ZERO DATA LOSS) — surfaced
-// right below by <UnmatchedPanel>, not swallowed into a console log.
-function ActivitiesImportZone({ selectedDate, onImportDone, onError }) {
-  const [dragging, setDragging] = useState(false);
-  const [parsing, setParsing] = useState(false);
-  const fileRef = useRef();
-
-  const handleFile = async (file) => {
-    if (!file) return;
-    const ext = file.name.split(".").pop().toLowerCase();
-    if (!["xlsx", "xls", "csv"].includes(ext)) { onError("בחר קובץ .xlsx / .xls / .csv"); return; }
-    setParsing(true);
-    try {
-      const XLSX = await import("xlsx");
-      const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf, { type: "array" });
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(ws, { defval: null });
-      if (!rows.length) { onError("הקובץ ריק"); return; }
-
-      const parsedRows = parseEzgoActivitiesReport(rows);
-      if (!parsedRows.length) { onError("לא נמצאו שורות בקובץ"); return; }
-
-      const summary = await syncEzgoSpaActivities(parsedRows, selectedDate, { supabase });
-      onImportDone(summary);
-    } catch (err) {
-      onError("שגיאה בייבוא: " + err.message);
-    } finally {
-      setParsing(false);
-    }
-  };
-
-  if (parsing) {
-    return (
-      <div style={{ background: "var(--ivory)", border: "1px solid var(--border)", borderRadius: 12, padding: "16px 20px", display: "flex", alignItems: "center", gap: 12 }}>
-        <div style={{ width: 18, height: 18, border: "3px solid var(--border)", borderTop: "3px solid var(--gold)", borderRadius: "50%", animation: "di-spin 0.8s linear infinite", flexShrink: 0 }} />
-        <span style={{ fontSize: 13, fontWeight: 700 }}>מייבא ומסנכרן — עשוי לקחת רגע לקובץ גדול...</span>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
-      onDragLeave={() => setDragging(false)}
-      onDrop={(e) => { e.preventDefault(); setDragging(false); handleFile(e.dataTransfer.files?.[0]); }}
-      onClick={() => fileRef.current?.click()}
-      style={{
-        border: `2px dashed ${dragging ? "var(--gold)" : "var(--border)"}`,
-        borderRadius: 12, background: dragging ? "var(--ivory)" : "var(--card-bg)",
-        padding: "16px 20px", textAlign: "center", cursor: "pointer", transition: "all 0.15s",
-      }}
-    >
-      <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: "none" }}
-        onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])} />
-      <div style={{ fontSize: 13, fontWeight: 700 }}>📊 גרור לכאן את דוח הפעילויות מ-EZGO — או לחץ לבחירת קובץ</div>
-      <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
-        מייבא את כל השורות בדוח עבור {selectedDate} — סוויטות, יום-כיף וקבוצות
       </div>
     </div>
   );
@@ -796,6 +729,10 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
   const [editAppt, setEditAppt] = useState(null); // appointment for color/note quick-edit
   const [unmatchedRows, setUnmatchedRows] = useState([]);
   const [showImportZone, setShowImportZone] = useState(false);
+  // Hour agenda is the default view (Mike, locked decision) — room-columns
+  // stays available as a secondary tab, same data/handlers, just a different
+  // grouping of the same `appointments` state.
+  const [viewMode, setViewMode] = useState("agenda");
 
   const showToast = (msg, type = "ok") => { setToast({ msg, type }); setTimeout(() => setToast(null), 3500); };
 
@@ -875,6 +812,15 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
 
   const roomsById = useMemo(() => Object.fromEntries(rooms.map((r) => [r.id, r.name])), [rooms]);
 
+  // Agenda = flat chronological list of the day's appointments — no new
+  // bucketing algorithm, just a sort on the already-loaded `appointments`
+  // state (same TIME string comparison the room-columns view already relies
+  // on implicitly via `.order("start_time")` in fetchAppointments).
+  const agendaRows = useMemo(
+    () => [...appointments].sort((a, b) => (a.start_time || "").localeCompare(b.start_time || "")),
+    [appointments]
+  );
+
   const swapCandidates = useMemo(() => {
     if (!swapDraft) return [];
     return appointments
@@ -907,9 +853,12 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
     const parts = [];
     if (summary.created) parts.push(`${summary.created} תורים נוצרו`);
     if (summary.updated) parts.push(`${summary.updated} עודכנו`);
+    if (summary.guests_created) parts.push(`${summary.guests_created} אורחי-יום נוצרו`);
+    if (summary.meal_time_set) parts.push(`${summary.meal_time_set} שעת ארוחה נקלטה`);
     if (summary.room_unmapped) parts.push(`${summary.room_unmapped} חדר לא מזוהה`);
     if (summary.conflicts) parts.push(`${summary.conflicts} התנגשויות`);
     if (summary.unmatched) parts.push(`${summary.unmatched} ללא שיוך`);
+    if (summary.not_in_file) parts.push(`${summary.not_in_file} לא בקובץ (לא בוטלו)`);
     showToast(`✓ ייבוא הושלם — ${parts.join(" · ") || "אין שינויים"}`);
     fetchAppointments();
     fetchUnmatched();
@@ -1092,8 +1041,87 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
         onDismiss={handleDismissUnmatched}
       />
 
-      {/* ── Room-columns board ──────────────────────────────────────────────── */}
-      {[{ label: "חדרי זוגות", list: couples }, { label: "חדרי יחיד", list: singles }].map((group) => (
+      {/* ── View tabs — agenda (default) / room-columns (secondary) ─────────── */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
+        <div style={{ display: "flex", gap: 6, background: "var(--ivory)", borderRadius: 10, padding: 4 }}>
+          <button
+            className="btn btn-sm"
+            onClick={() => setViewMode("agenda")}
+            style={{ background: viewMode === "agenda" ? "var(--gold)" : "transparent", color: viewMode === "agenda" ? "#412402" : "var(--text-muted)", fontWeight: 700 }}
+          >
+            🕐 אג׳נדה שעתית
+          </button>
+          <button
+            className="btn btn-sm"
+            onClick={() => setViewMode("rooms")}
+            style={{ background: viewMode === "rooms" ? "var(--gold)" : "transparent", color: viewMode === "rooms" ? "#412402" : "var(--text-muted)", fontWeight: 700 }}
+          >
+            🚪 לפי חדרים
+          </button>
+        </div>
+        <button
+          className="btn btn-ghost btn-sm"
+          onClick={() => setAssignDraft({ date: selectedDate, guest: null, roomId: "" })}
+          style={{ marginRight: "auto" }}
+        >
+          + קבע תור
+        </button>
+      </div>
+
+      {/* ── Agenda view — flat chronological list, default (Mike, locked) ───── */}
+      {viewMode === "agenda" && (
+        <div style={{ marginBottom: 24 }}>
+          {agendaRows.length === 0 ? (
+            <div style={{ padding: "24px 0", textAlign: "center", color: "var(--text-muted)", fontSize: 13 }}>
+              אין תורים ליום זה
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {agendaRows.map((a) => {
+                const cStyle = boardColorStyle(a.board_color);
+                const hasNote = !!(a.staff_note || a.notes);
+                return (
+                  <div
+                    key={a.id}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => setEditAppt(a)}
+                    onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setEditAppt(a); } }}
+                    title="לחץ לעריכת צבע והערה"
+                    style={{
+                      display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap",
+                      background: cStyle?.bg ?? "var(--card-bg)",
+                      border: `1.5px solid ${cStyle?.border ?? (a.therapist_id ? "var(--border)" : "#E8AE0A")}`,
+                      borderRight: `4px solid ${cStyle?.border ?? (a.therapist_id ? "var(--border)" : "#E8AE0A")}`,
+                      borderRadius: 10, padding: "10px 14px", cursor: "pointer", transition: "box-shadow 0.12s",
+                    }}
+                    onMouseEnter={(e) => { e.currentTarget.style.boxShadow = "0 2px 8px rgba(0,0,0,0.08)"; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.boxShadow = "none"; }}
+                  >
+                    <div style={{ minWidth: 92, fontWeight: 800, fontSize: 14, color: cStyle?.text }}>
+                      {a.start_time?.slice(0, 5)}–{a.end_time?.slice(0, 5)}
+                    </div>
+                    <div style={{ minWidth: 120, fontWeight: 700, fontSize: 13 }}>{roomsById[a.room_id] ?? "—"}</div>
+                    <div style={{ minWidth: 140, fontSize: 13 }}>{a.guests?.name ?? "—"}</div>
+                    <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{a.treatment_type || ""}</div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginRight: "auto" }}>
+                      {hasNote && <span title={a.staff_note || a.notes}>📝</span>}
+                      {a.spa_therapists?.name ? (
+                        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>👤 {a.spa_therapists.name}</span>
+                      ) : (
+                        <span style={{ fontSize: 11, color: "#8A6A00", fontWeight: 700 }}>⚠ טרם שובץ מטפל/ת</span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Room-columns board — secondary tab ───────────────────────────────── */}
+      {viewMode === "rooms" && [{ label: "חדרי זוגות", list: couples }, { label: "חדרי יחיד", list: singles }].map((group) => (
         group.list.length === 0 ? null : (
           <div key={group.label} style={{ marginBottom: 24 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-muted)", marginBottom: 10, borderBottom: "1px solid var(--border)", paddingBottom: 6 }}>
