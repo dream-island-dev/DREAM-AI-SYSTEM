@@ -1042,11 +1042,28 @@ serve(async (req: Request) => {
       }
       if (!isDirectGuestChat(msg.chatId)) continue;
 
+      const phone = canonicalGuestPhone(msg.fromPhone, msg.chatId);
+      if (!phone) {
+        results.push({ id: msg.id, channel: "guest_dm", ignored: "no_phone" });
+        continue;
+      }
+
       let body = msg.text;
       let fromVoice = false;
       if (!body && msg.voiceMediaId) {
+        // A failure here used to `continue` with nothing but an internal
+        // results[] entry nobody reads — total silence to the sender AND no
+        // Inbox trace (violates the "ALWAYS captures the inbound message
+        // first" invariant documented below). Mirror the graceful-fallback
+        // reply the staff-group voice path already sends (~line 1252/1265)
+        // plus a placeholder Inbox row, so this pipeline fails the same way.
         if ((msg.voiceSeconds ?? 0) > 180) {
-          results.push({ id: msg.id, channel: "guest_dm", ignored: "voice_too_long" });
+          await claimWhapiGuestInbound(supabase, {
+            phone, guest_id: null, message: "🎤 [הקלטה קולית ארוכה מ-3 דקות — לא תומללה]",
+            wa_message_id: msg.id, push_name: msg.fromName || null,
+          });
+          await sendGuestDmReply(supabase, phone, null, "🎤 ההודעה הקולית ארוכה מ-3 דקות — אפשר לכתוב לי בטקסט? 🙏");
+          results.push({ id: msg.id, channel: "guest_dm", phone, ignored: "voice_too_long" });
           continue;
         }
         try {
@@ -1057,19 +1074,18 @@ serve(async (req: Request) => {
           fromVoice = true;
         } catch (e) {
           console.error(`[whapi-webhook] guest_dm voice failed ${msg.id}:`, (e as Error).message);
-          results.push({ id: msg.id, channel: "guest_dm", error: "voice_transcription_failed" });
+          await claimWhapiGuestInbound(supabase, {
+            phone, guest_id: null, message: "🎤 [לא הצלחנו לתמלל את ההקלטה הקולית]",
+            wa_message_id: msg.id, push_name: msg.fromName || null,
+          });
+          await sendGuestDmReply(supabase, phone, null, "🎤 לא הצלחתי להבין את ההקלטה — אפשר לכתוב לי בטקסט? 🙏");
+          results.push({ id: msg.id, channel: "guest_dm", phone, error: "voice_transcription_failed" });
           continue;
         }
       }
 
       if (!body?.trim()) {
         results.push({ id: msg.id, channel: "guest_dm", ignored: "no_text" });
-        continue;
-      }
-
-      const phone = canonicalGuestPhone(msg.fromPhone, msg.chatId);
-      if (!phone) {
-        results.push({ id: msg.id, channel: "guest_dm", ignored: "no_phone" });
         continue;
       }
 
