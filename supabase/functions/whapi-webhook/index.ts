@@ -53,7 +53,6 @@ import { serve }         from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient }  from "https://esm.sh/@supabase/supabase-js@2";
 import Anthropic         from "https://esm.sh/@anthropic-ai/sdk@0.20.0";
 import { sendWhapiText, cleanPhoneForMention } from "../_shared/whapiSend.ts";
-import { findAssignedWorker, assigneeCardLine } from "../_shared/assignedWorker.ts";
 import { buildTaskCard } from "../_shared/taskCard.ts";
 import { fetchWhapiMedia } from "../_shared/whapiMedia.ts";
 import { containsHebrew, translateTextForFieldOps } from "../_shared/fieldOpsTranslation.ts";
@@ -1381,14 +1380,12 @@ serve(async (req: Request) => {
         continue;
       }
 
-      const assignedWorker = await findAssignedWorker(supabase, taskDepartment, "whapi-webhook");
-      const assigneeLine = assigneeCardLine(assignedWorker);
-
       // Whapi card translation only — tasks.description (already written above,
       // `cls.task_description`) stays in whatever language it was reported in
       // for the DB/board UI. classifyWithAi() already forces English (its tool
       // schema demands it), so this only ever fires for a Tier-0 regex report
       // ("11- מגבות" / "חדר 5 מזגן לא עובד") that never touched an LLM.
+      // No 👤 Assigned line — department→profiles lookup mislabeled leadership.
       let cardDescription = cls.task_description;
       if (containsHebrew(cardDescription)) {
         cardDescription = await translateTextForFieldOps(cardDescription, {
@@ -1396,7 +1393,7 @@ serve(async (req: Request) => {
           style: "description_only",
         });
       }
-      const card = buildTaskCard(cls.room_number, cardDescription, assigneeLine, fromVoice);
+      const card = buildTaskCard(cls.room_number, cardDescription, null, fromVoice);
 
       // Reply into the SAME group. no_link_preview stops the crawler pre-fetch.
       // Non-blocking: the ticket already exists — a failed reply must not lose it.

@@ -6,9 +6,9 @@
 // this is "first phone on file for the department" — best-effort; a miss just
 // means the card has no assignee line.
 //
-// Task cards show the worker's *name* (👤 Assigned: …), never @phone/@lid.
-// WhatsApp groups with "hide phone numbers" render native @mentions as opaque
-// LID strings (e.g. @185513260638463) — unprofessional and confusing for staff.
+// Kept for future shift-aware assignment. Task cards no longer show
+// 👤 Assigned (best-effort first-phone-per-department mislabeled leadership).
+// Do not wire assigneeCardLine back into Whapi cards without a real roster.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 

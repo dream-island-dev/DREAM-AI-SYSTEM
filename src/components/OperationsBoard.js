@@ -44,7 +44,8 @@ const SOURCE_META = {
   whatsapp_staff:       { label: "📱 וואטסאפ", color: "#1A7A4A" },
   manual_group:        { label: "✍️ קבוצת צוות", color: "#1A7A4A" },
   legacy_service_call: { label: "🗄 היסטורי", color: "var(--text-muted)" },
-  guest_request:       { label: "🛋️ בקשת אורח", color: "#A8843A" },
+  guest_request:       { label: "🤖 בוט · בקשת אורח", color: "#A8843A" },
+  inbox_routed:        { label: "📥 ניתוב מתיבה", color: "#1A7A4A" },
   portal_room_service: { label: "🍽️ שירות לחדר (פורטל)", color: "#A8843A" },
   executive_voice:     { label: "👔 מנכ״ל", color: "#6B21A8" },
 };

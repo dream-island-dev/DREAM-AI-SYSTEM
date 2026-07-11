@@ -26,8 +26,11 @@ export function buildStaffDispatchedTaskCard(
   assigneeLine: string | null,
   source: string | null,
 ): string {
+  // guest_request = bot/portal HITL path — must stay visually distinct from
+  // inbox_routed (staff manually routed from Inbox). Same card layout either way.
   const sourceTag =
-    source === "inbox_routed" || source === "guest_request" ? "[GUEST WA]"
+    source === "guest_request" ? "[BOT]"
+      : source === "inbox_routed" ? "[GUEST WA]"
       : source === "manual" ? "[MANUAL TASK]"
       : null;
 

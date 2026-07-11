@@ -8,7 +8,7 @@
 //
 // Card format unified with buildTaskCard() in _shared/taskCard.ts
 // ("📌 New Task Opened: Suite X") — same English-in-group layout as whapi-
-// webhook staff reports. Source tag ([GUEST WA] / [MANUAL TASK]) on a
+// webhook staff reports. Source tag ([BOT] / [GUEST WA] / [MANUAL TASK]) on a
 // separate line so room number and task description never get mashed together.
 //
 // whapi_message_id is stored back on the task row so that listener can match
@@ -38,7 +38,6 @@
 import { serve }         from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient }  from "https://esm.sh/@supabase/supabase-js@2";
 import { sendWhapiText } from "../_shared/whapiSend.ts";
-import { findAssignedWorker, assigneeCardLine } from "../_shared/assignedWorker.ts";
 import { containsHebrew, translateTextForFieldOps } from "../_shared/fieldOpsTranslation.ts";
 import { buildGuestOpsSlaDeadline } from "../_shared/automationSchedule.ts";
 import { buildStaffDispatchedTaskCard } from "../_shared/taskCard.ts";
@@ -55,8 +54,8 @@ const FIELD_OPS_WHAPI_DEPARTMENTS = new Set([
   "תפעול ואחזקה",
 ]);
 
-// Assignee line uses profiles.name (see _shared/assignedWorker.ts) — same as
-// whapi-webhook task cards; no @phone/@lid in group text.
+// No 👤 Assigned line on cards — department→profiles lookup was best-effort
+// (first phone on file) and mislabeled leadership (e.g. CEO) as the assignee.
 
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
@@ -132,9 +131,6 @@ serve(async (req: Request) => {
         { headers: { ...CORS, "Content-Type": "application/json" } });
     }
 
-    const assignedWorker = await findAssignedWorker(supabase, workingTask.department, "notify-manual-task");
-    const assigneeLine = assigneeCardLine(assignedWorker);
-
     const rawDesc = String(workingTask.description ?? "");
     let whapiDesc = rawDesc;
     if (
@@ -151,7 +147,7 @@ serve(async (req: Request) => {
     const card = buildStaffDispatchedTaskCard(
       workingTask.room_number,
       whapiDesc,
-      assigneeLine,
+      null, // no Assigned line — see header comment
       workingTask.source as string | null,
     );
 
