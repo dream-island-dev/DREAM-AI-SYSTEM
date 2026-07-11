@@ -5,6 +5,35 @@
 // range via the Supabase query) and do zero I/O of their own — fully unit-testable.
 
 import { israelYmd, ISRAEL_UTC_OFFSET_HOURS } from "./automationSchedule.ts";
+import { CANONICAL_SUITE_NAMES } from "./suiteNames.ts";
+
+/** Hebrew labels for sla_category — mirrors OperationsBoard.js SLA_CATEGORY_OPTIONS (Deno boundary). */
+const SLA_CATEGORY_LABELS: Record<string, string> = {
+  pest_control: "🐜 הדברה",
+  guest_amenities: "🛏️ ציוד לאורח",
+  maintenance: "🔧 תחזוקה",
+  uncategorized: "❓ לא מסווג",
+};
+
+const DIGEST_SECTION_RULE = "━━━━━━━━━━━━━━━━";
+
+/** Bare task room_number ("22") → canonical suite ("אקווה מרין 22") for CEO-readable digest text. */
+export function formatDigestRoomLabel(room: string): string {
+  const trimmed = String(room ?? "").trim();
+  if (!trimmed) return "—";
+  if ((CANONICAL_SUITE_NAMES as readonly string[]).includes(trimmed)) return trimmed;
+  const num = trimmed.match(/^(\d+)$/)?.[1];
+  if (num) {
+    const matches = CANONICAL_SUITE_NAMES.filter((s) => s.endsWith(" " + num));
+    if (matches.length === 1) return matches[0];
+  }
+  return trimmed;
+}
+
+/** Internal sla_category key → Hebrew label for digest output. */
+export function formatDigestSlaCategory(category: string): string {
+  return SLA_CATEGORY_LABELS[category] ?? category;
+}
 
 export type DigestGuestRow = {
   id: number;
@@ -119,8 +148,9 @@ export type SuiteRequestSummary = {
 export function computeRequestsBySuite(tasks: DigestTaskRow[]): SuiteRequestSummary[] {
   const byRoom = new Map<string, SuiteRequestSummary>();
   for (const t of tasks) {
-    const room = t.room_number?.trim();
-    if (!room) continue;
+    const raw = t.room_number?.trim();
+    if (!raw) continue;
+    const room = formatDigestRoomLabel(raw);
     let entry = byRoom.get(room);
     if (!entry) {
       entry = { room, total: 0, resolved: 0, open: 0, rejected: 0, byCategory: {} };
@@ -359,13 +389,18 @@ export function composeResortDigestMessage(
   period: DigestPeriod,
   periodLabel: string,
 ): string {
+  const formatSuiteRequestLine = (s: SuiteRequestSummary): string => {
+    const rejectedPart = s.rejected ? ` | נדחו ${s.rejected}` : "";
+    return `  ${s.room}: ${s.total} (טופלו ${s.resolved} | פתוחות ${s.open}${rejectedPart})`;
+  };
+
   const lines: string[] = [
     `🏝️ דוח תפעולי ${PERIOD_LABELS[period]} — ${periodLabel}`,
     "",
     composeExecutiveHeadline(stats),
   ];
 
-  lines.push("", `הגעות (${stats.arrivals.length}):`);
+  lines.push("", DIGEST_SECTION_RULE, `הגעות (${stats.arrivals.length}):`);
   if (!stats.arrivals.length) {
     lines.push("  אין הגעות בתקופה זו.");
   } else {
@@ -386,7 +421,7 @@ export function composeResortDigestMessage(
     ? Math.round(late.reduce((sum, r) => sum + (r.lateMinutes ?? 0), 0) / late.length)
     : null;
 
-  lines.push("", "מוכנות חדרים:");
+  lines.push("", DIGEST_SECTION_RULE, "מוכנות חדרים:");
   lines.push(
     `  בזמן: ${onTime.length}${onTimeRate !== null ? ` (${onTimeRate}%)` : ""}` +
       ` | באיחור: ${late.length}${avgLateMinutes !== null ? ` (ממוצע ${avgLateMinutes} דק')` : ""}` +
@@ -395,33 +430,52 @@ export function composeResortDigestMessage(
   lines.push(...formatCappedList(late, (r) => `  ⏰ ${r.room} — איחור ${r.lateMinutes} דק'`, MAX_DIGEST_LIST_ITEMS));
   lines.push(...formatCappedList(unknown, (r) => `  ⚠️ ${r.room} — לא סומן "חדר מוכן"`, MAX_DIGEST_LIST_ITEMS));
 
-  lines.push("", `בקשות צוות לפי סוויטה (${stats.requestsBySuite.length} סוויטות):`);
-  if (!stats.requestsBySuite.length) {
-    lines.push("  אין בקשות בתקופה זו.");
+  const totalRequests = stats.requestsBySuite.reduce((sum, s) => sum + s.total, 0);
+  const sla = stats.slaCompliance;
+  const slaLine = sla.complianceRate !== null
+    ? (() => {
+        const breachedPart = sla.breachedStillOpen ? ` | חורגות פתוחות: ${sla.breachedStillOpen}` : "";
+        return `  עמידה ב-SLA: ${sla.complianceRate}% (${sla.withinSla}/${sla.withDeadline})${breachedPart}`;
+      })()
+    : null;
+
+  lines.push("", DIGEST_SECTION_RULE);
+  if (period === "monthly") {
+    lines.push(`בקשות צוות — סיכום חודשי (${stats.requestsBySuite.length} סוויטות):`);
+    if (!stats.requestsBySuite.length) {
+      lines.push("  אין בקשות בתקופה זו.");
+    } else {
+      lines.push(`  סה״כ ${totalRequests} בקשות`);
+      if (slaLine) lines.push(slaLine);
+      lines.push("  חמש הסוויטות העמוסות:");
+      lines.push(
+        ...stats.requestsBySuite
+          .slice(0, MAX_DIGEST_LIST_ITEMS)
+          .map(formatSuiteRequestLine),
+      );
+    }
   } else {
-    lines.push(
-      ...formatCappedList(
-        stats.requestsBySuite, // already sorted by total desc — busiest suites first
-        (s) => {
-          const rejectedPart = s.rejected ? ` | נדחו ${s.rejected}` : "";
-          return `  ${s.room}: ${s.total} (טופלו ${s.resolved} | פתוחות ${s.open}${rejectedPart})`;
-        },
-        MAX_DIGEST_LIST_ITEMS,
-      ),
-    );
-    const sla = stats.slaCompliance;
-    if (sla.complianceRate !== null) {
-      const breachedPart = sla.breachedStillOpen ? ` | חורגות פתוחות כרגע: ${sla.breachedStillOpen}` : "";
-      lines.push(`  עמידה ב-SLA: ${sla.complianceRate}% (${sla.withinSla}/${sla.withDeadline})${breachedPart}`);
+    lines.push(`בקשות צוות לפי סוויטה (${stats.requestsBySuite.length} סוויטות):`);
+    if (!stats.requestsBySuite.length) {
+      lines.push("  אין בקשות בתקופה זו.");
+    } else {
+      lines.push(
+        ...formatCappedList(
+          stats.requestsBySuite,
+          formatSuiteRequestLine,
+          MAX_DIGEST_LIST_ITEMS,
+        ),
+      );
+      if (slaLine) lines.push(slaLine);
     }
   }
 
   if (stats.anomalies.length) {
-    lines.push("", "🚩 חריגות:");
+    lines.push("", DIGEST_SECTION_RULE, "🚩 חריגות:");
     lines.push(
       ...formatCappedList(
-        stats.anomalies, // already sorted by count desc — worst repeat-offender first
-        (a) => `  ${a.room} — ${a.count}× ${a.category} באותה תקופה`,
+        stats.anomalies,
+        (a) => `  ${a.room} — ${a.count}× ${formatDigestSlaCategory(a.category)} באותה תקופה`,
         MAX_DIGEST_LIST_ITEMS,
       ),
     );
