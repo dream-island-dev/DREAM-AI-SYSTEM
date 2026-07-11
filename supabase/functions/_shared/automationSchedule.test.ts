@@ -16,6 +16,12 @@ import {
   resolveStageSchedule,
   shouldAutoPromoteToCheckedIn,
   resolveEffectiveGuestStatus,
+  isDepartureAssistRequest,
+  isInformationalGuestQuery,
+  isSensitiveStayChangeRequest,
+  isRequestSummaryGrounded,
+  buildDepartureAssistSummary,
+  extractAllowlistedRequestLines,
   type AutomationStage,
   type GuestForSchedule,
 } from "./automationSchedule.ts";
@@ -181,4 +187,70 @@ Deno.test("resolveEffectiveGuestStatus: departure-day auto checkout still fires 
     israelInstant(SAT, 11, 30),
   );
   assertEquals(result, "checked_out");
+});
+
+// ── Departure / porter assist — session 2026-07-11 hallucination incident ──
+// Guest: "לצערי אנחנו צריכים לעשות צאק אאוט ומבקשים שמישהו יגיע לחדר 9 לקחת
+// את המזוודה לקבלה" — bot replied with an invented "מגבת וחלוק לבריכה"
+// (towels & robe) ack instead of routing the actual luggage-help request.
+const INCIDENT_DEPARTURE_TEXT =
+  "לצערי אנחנו צריכים לעשות צאק אאוט ומבקשים שמישהו יגיע לחדר 9 לקחת את המזוודה לקבלה";
+
+Deno.test("isDepartureAssistRequest: incident text (checkout + luggage + room) → true", () => {
+  assertEquals(isDepartureAssistRequest(INCIDENT_DEPARTURE_TEXT), true);
+});
+
+Deno.test("isDepartureAssistRequest: incident text is NOT informational", () => {
+  assertEquals(isInformationalGuestQuery(INCIDENT_DEPARTURE_TEXT), false);
+});
+
+Deno.test("isDepartureAssistRequest: incident text is NOT a sensitive stay-change", () => {
+  assertEquals(isSensitiveStayChangeRequest(INCIDENT_DEPARTURE_TEXT), false);
+});
+
+Deno.test("isDepartureAssistRequest: bare checkout-hours FAQ stays informational, not departure assist", () => {
+  const t = "מה שעת צ'ק-אאוט?";
+  assertEquals(isDepartureAssistRequest(t), false);
+  assertEquals(isInformationalGuestQuery(t), true);
+});
+
+Deno.test("isDepartureAssistRequest: late checkout request stays on the stay-change shield, not departure assist", () => {
+  const t = "אפשר צ'ק אאוט מאוחר יותר היום?";
+  assertEquals(isSensitiveStayChangeRequest(t), true);
+  assertEquals(isDepartureAssistRequest(t), false);
+});
+
+Deno.test("isDepartureAssistRequest: plain 'thanks, checking out now' with no luggage ask → false", () => {
+  assertEquals(isDepartureAssistRequest("תודה, אנחנו עושים צ'ק אאוט עכשיו"), false);
+});
+
+Deno.test("buildDepartureAssistSummary: extracts room number from current text only", () => {
+  assertEquals(
+    buildDepartureAssistSummary(INCIDENT_DEPARTURE_TEXT),
+    "איסוף מזוודה לצ'ק-אאוט (חדר 9)",
+  );
+  assertEquals(
+    buildDepartureAssistSummary("צריכים לעשות צ'ק אאוט, מישהו יגיע לקחת את המזוודה?"),
+    "איסוף מזוודה לצ'ק-אאוט",
+  );
+});
+
+// ── Grounding — server-side check against history-bled tool summaries ──────
+Deno.test("isRequestSummaryGrounded: invented towels/robe summary vs luggage text → rejected", () => {
+  assertEquals(isRequestSummaryGrounded("מגבת וחלוק לבריכה", INCIDENT_DEPARTURE_TEXT), false);
+});
+
+Deno.test("isRequestSummaryGrounded: genuine luggage summary vs luggage text → accepted", () => {
+  assertEquals(isRequestSummaryGrounded("איסוף מזוודה לצ'ק-אאוט", INCIDENT_DEPARTURE_TEXT), true);
+});
+
+Deno.test("isRequestSummaryGrounded: genuine towel summary vs towel text → accepted", () => {
+  assertEquals(isRequestSummaryGrounded("בקשת מגבות לחדר", "אפשר עוד מגבות לחדר בבקשה"), true);
+});
+
+// ── Burst isolation — unrelated prior line must not dominate the allowlisted one ──
+Deno.test("extractAllowlistedRequestLines: unrelated departure line does not pollute an amenity burst", () => {
+  const burst = `${INCIDENT_DEPARTURE_TEXT}\nאגב אפשר גם עוד מגבות לחדר`;
+  const isolated = extractAllowlistedRequestLines(burst);
+  assertEquals(isolated, "אגב אפשר גם עוד מגבות לחדר");
 });

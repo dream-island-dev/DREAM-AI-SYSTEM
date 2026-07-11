@@ -733,6 +733,13 @@ export function messageSignalsOperationalInHouseRequest(text: string): boolean {
 export function isInformationalGuestQuery(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
+  // ★ session 2026-07-11 fix: INFORMATIONAL_GUEST_QUERY_PATTERN's bare
+  // "checkout|צ'ק-אאוט" alternative used to flag ANY message mentioning
+  // checkout as pure FAQ — including "we need to check out, please send
+  // someone for our luggage", which is a physical departure-assist request,
+  // not a question. Check the departure-assist classifier first so a real
+  // action ask is never mis-routed as informational-only.
+  if (isDepartureAssistRequest(t)) return false;
   if (INFORMATIONAL_GUEST_QUERY_PATTERN.test(t)) return true;
   if (/\?\s*$/.test(t) && !PHYSICAL_REQUEST_INTENT_PATTERN.test(t) && !ALLOWLIST_MAINTENANCE_PATTERN.test(t)) {
     return true;
@@ -997,6 +1004,87 @@ export function isSensitiveStayChangeRequest(text: string): boolean {
 /** Canonical staff handoff — MUST NOT vary; no enthusiastic approval language. */
 export const CANONICAL_STAY_CHANGE_HANDOFF_MSG =
   "העברתי את בקשתך לצוות הסוויטות שלנו, והם יצרו איתך קשר בהקדם. 🙏";
+
+// ── Guest request summary grounding — server-side check that a model's
+// claimed item_summary is actually about the CURRENT message, not a stale
+// topic carried over from conversation history (session 2026-07-11 incident:
+// a checkout+luggage message got logged with summary "מגבת וחלוק לבריכה" —
+// towels/robe from an earlier, already-resolved turn in the same thread).
+// Deliberately loose (substring/stem overlap, no real NLP) — the goal is
+// only to catch gross topic mismatches, not to second-guess paraphrasing.
+const GROUNDING_STOPWORDS = new Set([
+  "לצוות", "הבקשה", "בקשה", "לחדר", "בחדר", "לסוויטה", "בסוויטה", "בבקשה", "אנא",
+  "עוד", "של", "עם", "גם", "את", "או", "אחד", "אחת", "for", "the", "and",
+]);
+
+function normalizeGroundingToken(word: string): string {
+  let w = word;
+  if (w.length > 3 && /^[הושבכלמ]/u.test(w)) w = w.slice(1);
+  return w.replace(/(ים|ות)$/u, "");
+}
+
+/** True when at least one meaningful word of `summary` also appears in `text`. */
+export function isRequestSummaryGrounded(summary: string, text: string): boolean {
+  const words = summary
+    .split(/[\s,./()]+/u)
+    .map((w) => w.trim())
+    .filter((w) => w.length >= 3 && !GROUNDING_STOPWORDS.has(w));
+  if (words.length === 0) return true; // nothing specific enough to check — don't false-reject
+  return words.some((w) => {
+    if (text.includes(w)) return true;
+    const stem = normalizeGroundingToken(w);
+    return stem.length >= 2 && text.includes(stem);
+  });
+}
+
+// ── Departure / porter assist — physical checkout+luggage help. Distinct
+// from SENSITIVE_STAY_CHANGE_PATTERN (late checkout / extension — staff must
+// confirm availability): this guest IS leaving on schedule and needs someone
+// to carry bags to reception — an Ops Board task like towels/AC, never a
+// fake amenity ack (session 2026-07-11 hallucination incident).
+
+const DEPARTURE_CHECKOUT_MENTION_PATTERN = /צ.?ק.?אא?וט|checkout|check.?out/iu;
+
+const DEPARTURE_LUGGAGE_PATTERN =
+  /מזווד(?:ה|ות)|כבודה|luggage|bags?|porter|(?:לקחת|לאסוף|יעביר|יעבירו)[\s\S]{0,25}(?:חפצים|תיק(?:ים)?|לקבלה|מהחדר)|מישהו\s+יגיע[\s\S]{0,20}(?:לחדר|לקחת)/iu;
+
+const DEPARTURE_ASSIST_ACTION_PATTERN = /מישהו\s+יגיע|יגיע\s+מישהו|שמישהו|תבואו|תשלחו|תעזרו/iu;
+
+/** Guest is checking out on schedule and needs porter/luggage help — not late-checkout. */
+export function isDepartureAssistRequest(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  if (!DEPARTURE_CHECKOUT_MENTION_PATTERN.test(t)) return false;
+  if (!DEPARTURE_LUGGAGE_PATTERN.test(t)) return false;
+  if (isSensitiveStayChangeRequest(t)) return false; // late checkout / extension wins — do not steal
+  if (!(PHYSICAL_REQUEST_INTENT_PATTERN.test(t) || DEPARTURE_ASSIST_ACTION_PATTERN.test(t))) return false;
+  return true;
+}
+
+/** Tier-0 intercept gate — same on-property eligibility as operational in-house asks. */
+export function shouldInterceptDepartureAssistRequest(
+  text: string,
+  guest: GuestOpsEligibilityInput,
+  now: Date = new Date(),
+): boolean {
+  return isGuestEligibleForInHouseOpsDispatch(guest, now) && isDepartureAssistRequest(text);
+}
+
+/** Deterministic Hebrew summary from the CURRENT text only — never invents amenities. */
+export function buildDepartureAssistSummary(text: string): string {
+  const roomMatch = text.match(/חדר\s*(\d{1,4})/u);
+  return roomMatch ? `איסוף מזוודה לצ'ק-אאוט (חדר ${roomMatch[1]})` : "איסוף מזוודה לצ'ק-אאוט";
+}
+
+/**
+ * Deterministic reply — no enthusiasm, no implied approval. Human-in-the-Loop
+ * gate (same as buildOperationalDispatchReply): staff must still approve the
+ * Ops Board task before dispatch, so this must never claim help is already
+ * on the way.
+ */
+export function buildDepartureAssistReply(_guestName?: string | null): string {
+  return "קיבלנו את הבקשה שלך לעזרה עם המזוודות בצ'ק-אאוט, הצוות שלנו בודק ומטפל בה כעת 🙏";
+}
 
 // ── Check-in / entry policy FAQ — Tier-0 deterministic reply (no LLM) ────────
 // Catches "האם ניתן להכנס לחדר בשעה 12?" and similar — must NOT fall through to

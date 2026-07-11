@@ -91,6 +91,9 @@ import {
   extractAllowlistedRequestLines,
   buildOperationalRequestSummary,
   buildOperationalDispatchReply,
+  isDepartureAssistRequest,
+  buildDepartureAssistSummary,
+  buildDepartureAssistReply,
 } from "../_shared/automationSchedule.ts";
 import { createGuestOpsTask } from "../_shared/createGuestOpsTask.ts";
 import {
@@ -1005,6 +1008,56 @@ async function handleGuestDirectMessage(
       return;
     }
 
+    // ── Departure / porter assist (Tier-0) — parity with Meta's
+    // handleDepartureAssistIntercept (whatsapp-webhook). A checkout+luggage
+    // help request from an on-property guest — distinct from the stay-change
+    // shield above (late checkout/extension), which already returned if
+    // matched. Creates the same pending_approval Ops Board task as the
+    // physical in-house intercept, never a fake "forwarded" ack (session
+    // 2026-07-11 hallucination incident).
+    if (
+      guestId
+      && isGuestEligibleForInHouseOpsDispatch(
+        {
+          status:         (guestRecord?.status as string | null) ?? null,
+          arrival_date:   (guestRecord?.arrival_date as string | null) ?? null,
+          departure_date: (guestRecord?.departure_date as string | null) ?? null,
+        },
+        new Date(),
+      )
+      && isDepartureAssistRequest(text)
+    ) {
+      const summary = buildDepartureAssistSummary(text);
+      const guestRoom = (guest?.room as string | null | undefined) ?? null;
+
+      createGuestOpsTask({
+        supabase, guestId, phone, guestName, room: guestRoom,
+        summary, rawText: text,
+      }).catch((e: Error) =>
+        console.error("[whapi-webhook] guest_dm departure assist createGuestOpsTask error:", e.message),
+      );
+
+      await patchGuestDmInbound(supabase, conversationId, {
+        guest_id: guestId,
+        intent: "departure_assist_request",
+        human_requested: true,
+        human_request_type: "operational_request",
+      });
+
+      const { error: guestUpdErr } = await supabase.from("guests").update({
+        requires_attention:       true,
+        requires_attention_since: new Date().toISOString(),
+        attention_reason:         summary,
+      }).eq("id", guestId);
+      if (guestUpdErr) {
+        console.error("[whapi-webhook] guest_dm departure assist guest update failed:", guestUpdErr.message);
+      }
+
+      await sendGuestDmReply(supabase, phone, guestId, buildDepartureAssistReply(guestName), staffMuted);
+      results.push({ ...base, action: "departure_assist_request", muted: staffMuted });
+      return;
+    }
+
     // bot_active_whapi — stub gate ahead of §4's real toggle UI (migration
     // 170 seeds bot_config.bot_active_whapi default 'true'). Mirrors where
     // Meta's bot_active gates (whatsapp-webhook.js) — only the generic
@@ -1417,13 +1470,21 @@ serve(async (req: Request) => {
           source_message_id:   msg.id,
         }])
         .select()
-        .single();
+        .maybeSingle();
 
       if (insertErr) {
         // A race re-delivery may trip the source_message_id unique index — treat
         // as an already-handled duplicate, not a hard failure.
         console.error("[whapi-webhook] task insert error:", insertErr.message);
         results.push({ id: msg.id, error: "task_insert_failed", detail: insertErr.message });
+        continue;
+      }
+      if (!task) {
+        // Insert succeeded with no error but the select-back returned nothing
+        // (e.g. RLS gap) — CLAUDE.md §5 forbids .single(), which would have
+        // thrown here instead of surfacing FAIL VISIBLE.
+        console.error("[whapi-webhook] task insert returned no row (RLS?) — source_message_id:", msg.id);
+        results.push({ id: msg.id, error: "task_insert_no_row" });
         continue;
       }
 

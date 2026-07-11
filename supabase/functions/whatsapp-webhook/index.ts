@@ -83,6 +83,10 @@ import {
   isGuestEligibleForInHouseOpsDispatch,
   extractAllowlistedRequestLines,
   resolveAutomationScope,
+  shouldInterceptDepartureAssistRequest,
+  buildDepartureAssistSummary,
+  buildDepartureAssistReply,
+  isRequestSummaryGrounded,
 } from "../_shared/automationSchedule.ts";
 import { createGuestOpsTask } from "../_shared/createGuestOpsTask.ts";
 import { onGuestAlertInserted } from "../_shared/guestAlertWhapiNotify.ts";
@@ -1389,6 +1393,85 @@ async function handleOperationalInHouseIntercept(
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// §4b.1c DEPARTURE / PORTER ASSIST — checkout+luggage help, Tier-0, before LLM.
+//        Distinct from the sensitive stay-change shield (late checkout /
+//        extension): this guest IS leaving on schedule and needs someone to
+//        carry bags to reception — an Ops Board task, same path as towels/AC
+//        (session 2026-07-11 hallucination incident: this used to fall
+//        through to the LLM, which invented a "towels & robe" ack from stale
+//        history instead of routing the actual luggage request).
+// ══════════════════════════════════════════════════════════════════════════════
+async function handleDepartureAssistIntercept(
+  supabase: ReturnType<typeof createClient>,
+  opts: {
+    phone: string;
+    guestId: number;
+    guest: Record<string, unknown>;
+    text: string;
+    msgId: string;
+    claimedConversationId: number | null;
+    sim: boolean;
+  },
+): Promise<void> {
+  const { phone, guestId, guest, text, msgId, claimedConversationId, sim } = opts;
+  const summary = buildDepartureAssistSummary(text);
+  const guestName = (guest.name as string | null) ?? null;
+  const guestRoom = (guest.room as string | null) ?? null;
+  const reply = buildDepartureAssistReply(guestName);
+
+  await patchClaimedInbound(supabase, claimedConversationId, msgId, {
+    guest_id: guestId,
+    intent: "departure_assist_request",
+    human_requested: true,
+    human_request_type: "operational_request",
+  });
+
+  const { error: guestErr } = await supabase.from("guests").update({
+    requires_attention:       true,
+    requires_attention_since: new Date().toISOString(),
+    attention_reason:         summary,
+  }).eq("id", guestId);
+  if (guestErr) {
+    console.error("[webhook] 🧳 departure assist intercept guest update FAILED:", guestErr.message);
+  }
+
+  // Operations Board (tasks) — pending_approval, same path as the operational
+  // in-house intercept. Awaits staff review/Approve in OperationsBoard.js.
+  createGuestOpsTask({
+    supabase,
+    guestId,
+    phone,
+    guestName,
+    room: guestRoom,
+    summary,
+    rawText: text,
+  }).catch((e: Error) =>
+    console.error("[webhook] 🧳 departure assist intercept createGuestOpsTask error:", e.message)
+  );
+
+  if (!sim) {
+    try {
+      await sendReply(phone, reply, { scripted: true });
+      await insertGuestOutboundIfNotMuted(supabase, {
+        phone,
+        guest_id:      guestId,
+        message:       reply,
+        wa_message_id: null,
+        intent:        "departure_assist_request",
+      });
+    } catch (e) {
+      console.error("[webhook] 🧳 departure assist intercept reply failed:", (e as Error).message);
+    }
+  } else {
+    console.info(`[webhook] SIM — departure assist intercept from ${phone}: ${summary}`);
+  }
+
+  console.info(
+    `[webhook] 🧳 departure assist intercept — dispatch=operational_field_ops phone:${phone} guest:${guestId} summary:${summary}`,
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // §4b.1b BALLOON ROOM REQUEST — Requests Board only (guest_alerts), never ops.
 //       Reception coordinates with external balloon vendor.
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1952,11 +2035,31 @@ function filterToolLoggedRequest(
   logged: AiReplyResult["loggedRequest"],
 ): AiReplyResult["loggedRequest"] {
   if (!logged) return null;
-  if (isAllowlistedPhysicalTaskRequest(rawText)) return logged;
-  console.info(
-    `[webhook] log_guest_request suppressed (not on physical allowlist) — summary:"${logged.summary}" text:"${rawText.slice(0, 80)}"`,
-  );
-  return null;
+  if (!isAllowlistedPhysicalTaskRequest(rawText)) {
+    console.info(
+      `[webhook] log_guest_request suppressed (not on physical allowlist) — summary:"${logged.summary}" text:"${rawText.slice(0, 80)}"`,
+    );
+    return null;
+  }
+  // ★ session 2026-07-11 fix: allowlist match alone isn't enough — the model
+  // can call the tool with a summary bled over from an earlier, already-
+  // resolved topic in conversation history (TOOL_USAGE_INSTRUCTIONS already
+  // warns against this, but nothing enforced it server-side). Reject any
+  // summary with zero grounding in the CURRENT message text.
+  if (!isRequestSummaryGrounded(logged.summary, rawText)) {
+    console.warn(
+      `[webhook] 🛡️ log_guest_request suppressed (ungrounded summary — likely history bleed) — summary:"${logged.summary}" text:"${rawText.slice(0, 80)}"`,
+    );
+    return null;
+  }
+  return logged;
+}
+
+/** Matches the fixed "העברתי את הבקשה (X)" template regardless of X — used to
+ * catch a false confirmation left behind when the underlying tool call gets
+ * filtered out by filterToolLoggedRequest above. */
+function _looksLikeToolOnlyAck(reply: string): boolean {
+  return /העברתי את הבקשה\s*\([^)]*\)/u.test(reply);
 }
 
 // Both askGemini/callClaude now return this shape instead of a bare string,
@@ -3673,6 +3776,25 @@ Deno.serve(async (req: Request) => {
         continue;
       }
 
+      // ── Tier-0 departure / porter assist intercept (checkout + luggage help) ──
+      if (
+        !isButtonReply &&
+        guestId &&
+        guest &&
+        shouldInterceptDepartureAssistRequest(text, guestOpsEligibility(guest as Record<string, unknown>, statusForRouting), nowForGuest)
+      ) {
+        await handleDepartureAssistIntercept(supabase, {
+          phone,
+          guestId,
+          guest: guest as Record<string, unknown>,
+          text,
+          msgId,
+          claimedConversationId,
+          sim,
+        });
+        continue;
+      }
+
       // ── Rapid burst coalescing — one LLM reply per back-to-back cluster ──
       const burst = await coalesceBurstIfLeader(supabase, phone, msgId);
       if (!burst.proceed) continue;
@@ -3858,6 +3980,30 @@ Deno.serve(async (req: Request) => {
         continue;
       }
 
+      // ── Tier-0 departure / porter assist intercept (post-burst) ───────────
+      if (
+        !isButtonReply &&
+        guestId &&
+        guest &&
+        effectiveText !== text &&
+        shouldInterceptDepartureAssistRequest(
+          effectiveText,
+          guestOpsEligibility(guest as Record<string, unknown>, statusAfterBurst),
+          nowForGuest,
+        )
+      ) {
+        await handleDepartureAssistIntercept(supabase, {
+          phone,
+          guestId,
+          guest: guest as Record<string, unknown>,
+          text: effectiveText,
+          msgId,
+          claimedConversationId,
+          sim,
+        });
+        continue;
+      }
+
       // ── Guest feedback / sentiment reflection capture (free text) ─────────
       // Holistic stay/service reflections — NOT service-fault complaints
       // (those still flow through COMPLAINT_PATTERNS below, unchanged). Every
@@ -3955,6 +4101,11 @@ Deno.serve(async (req: Request) => {
       // Set only inside the "faq" branch below when the model invokes
       // log_guest_request — drives the conditional guest_alerts gate further down.
       let toolLoggedRequest: AiReplyResult["loggedRequest"] = null;
+      // Unfiltered tool call (before filterToolLoggedRequest's allowlist/grounding
+      // gate) — kept only to detect a suppressed request that left a false
+      // "העברתי את הבקשה (X)" ack baked into `reply` (see reply-integrity check
+      // below, session 2026-07-11 fix).
+      let rawToolLoggedRequest: AiReplyResult["loggedRequest"] = null;
 
       if (intent === "complaint") {
         // Use complaint_reply from BotScriptEditor if available, else fallback to hardcoded
@@ -4028,6 +4179,7 @@ Deno.serve(async (req: Request) => {
               FALLBACK_REPLY,
             );
           }
+          rawToolLoggedRequest = result.loggedRequest;
           toolLoggedRequest = filterToolLoggedRequest(effectiveText, result.loggedRequest);
         } catch (e) {
           const fallbackEngine = route.engine === "claude" ? "gemini" : "claude";
@@ -4059,6 +4211,7 @@ Deno.serve(async (req: Request) => {
                 FALLBACK_REPLY,
               );
             }
+            rawToolLoggedRequest = result.loggedRequest;
             toolLoggedRequest = filterToolLoggedRequest(effectiveText, result.loggedRequest);
           } catch (e2) {
             console.error("[webhook] both engines failed:", (e2 as Error).message);
@@ -4067,6 +4220,23 @@ Deno.serve(async (req: Request) => {
         }
       }
       // else "fallback" → FALLBACK_REPLY already set
+
+      // ── Tool-ack reply integrity (session 2026-07-11 fix) — filterToolLoggedRequest
+      // only ever gated whether a task/alert gets CREATED; it never touched `reply`
+      // itself. When the model's own text was empty, _buildToolOnlyReply already
+      // baked "בחירה מצוינת! העברתי את הבקשה (X) לצוות שלנו…" into `result.text`
+      // BEFORE the filter ran — so a suppressed/ungrounded tool call could still
+      // reach the guest as a false confirmation (the exact incident: luggage/
+      // checkout text, filtered tool call, but the towels-and-robe ack shipped
+      // anyway). If the raw call was present and got filtered to null, and the
+      // reply still carries that ack template, replace it with the canonical
+      // staff handoff — truthful regardless of which board (if any) picks this up.
+      if (rawToolLoggedRequest && !toolLoggedRequest && _looksLikeToolOnlyAck(reply)) {
+        console.warn(
+          `[webhook] 🛡️ ungrounded/suppressed tool ack replaced with handoff — summary:"${rawToolLoggedRequest.summary}" text:"${effectiveText.slice(0, 80)}"`,
+        );
+        reply = GUEST_STAFF_HANDOFF_SENTENCE;
+      }
 
       // ── Day-Guest Upsell Gate (Session 27 Sprint 4.3) — a day-guest ("בילוי
       // יומי") has no suite room service to fulfil, so a log_guest_request call
