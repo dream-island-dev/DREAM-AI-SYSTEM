@@ -252,12 +252,19 @@ const TRANSCRIBE_PROMPT =
   "החזר טקסט פשוט בלבד — את התמלול עצמו, בלי הערות, בלי markdown, בלי תגי שפה.";
 
 async function transcribeVoice(apiKey: string, base64Audio: string, mimeType: string): Promise<string> {
+  // Whapi sends the full codec string ("audio/ogg; codecs=opus") — the prior
+  // 404 was a model-routing error (fires before Google even parses the body),
+  // so whether Gemini's inline_data.mime_type tolerates that trailing
+  // "; codecs=opus" parameter was never actually exercised. Gemini's
+  // documented audio mime types are bare ("audio/ogg", no parameters) —
+  // strip it defensively rather than find out on the next real failure.
+  const bareMimeType = mimeType.split(";")[0].trim() || "audio/ogg";
   const requestBody = {
     contents: [{
       role: "user",
       parts: [
         { text: TRANSCRIBE_PROMPT },
-        { inline_data: { mime_type: mimeType, data: base64Audio } },
+        { inline_data: { mime_type: bareMimeType, data: base64Audio } },
       ],
     }],
     generationConfig: { maxOutputTokens: 1024, temperature: 0.0 },
