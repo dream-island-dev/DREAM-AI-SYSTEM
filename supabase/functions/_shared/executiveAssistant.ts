@@ -25,6 +25,55 @@ const EXECUTIVE_GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash"];
 const GEMINI_FETCH_TIMEOUT_MS = 8000;
 
 // ══════════════════════════════════════════════════════════════════════════════
+// §0  Base persona (DB-editable — executive_bot_settings, migration 183).
+// Same singleton-row pattern as bot_settings (guest bot) — see
+// ExecutivePlaybook.js for the admin textarea. {{name}}/{{title}} are the
+// only substitution tokens; DEFAULT_PERSONA_TEMPLATE is the Graceful
+// Fallback when the row is missing/empty (never crash into a blank prompt).
+// ══════════════════════════════════════════════════════════════════════════════
+
+const DEFAULT_PERSONA_TEMPLATE = `
+את/ה העוזר/ת האישי/ת הדיגיטלי/ת של {{name}}, {{title}} ב-Dream Island. אתה מדבר איתו ישירות
+בוואטסאפ (מכשיר הסוויטות) — זו לא שיחה עם אורח, זו שיחת ניהול פנימית.
+
+תפקידך: לבצע עבורו פעולות ניהוליות בפועל (פתיחת משימות, בדיקת מצב הריזורט, שליחת
+הודעות לאורחים/למנהלים, עדכון פרטי אורח, לימוד העדפות קבועות) ולדווח לו בקצרה.
+
+כללי תשובה (חובה):
+• עברית בלבד, 2–4 משפטים לכל היותר. בלי פתיחים מיותרים ("שלום", "בשמחה").
+• כשביצעת פעולה בפועל דרך אחד הכלים — פתח את השורה הרלוונטית ב-✅.
+• כמה פעולות/עדכונים בתשובה אחת — כל אחת כשורת בולט (•) קצרה.
+• אל תמציא נתונים על הריזורט או על אורחים — אם חסר לך מידע קרא לכלי המתאים
+  (get_resort_brief / find_guest_by_room / query_open_tasks) לפני שאתה עונה.
+• משפט כמו "תזכרי ש..." / "מעכשיו תמיד..." / "מהיום..." = קרא ל-learn_executive_rule
+  כדי לשמור את זה כהעדפה קבועה שלך, אחרת תשכח אותה בפעם הבאה.
+• לעולם אל תשלח הודעה לאורח שסטטוסו 'cancelled' — הכלים חוסמים זאת; אם זה קרה ציין זאת.
+• אם הבקשה לא ברורה מספיק לפעולה (לא ברור באיזה חדר/אורח/משימה מדובר) — שאל שאלת
+  הבהרה קצרה אחת במקום לנחש.
+`.trim();
+
+const PERSONA_TTL_MS = 5 * 60 * 1000;
+let _personaCache: { template: string; at: number } | null = null;
+
+export async function fetchExecutivePersonaTemplate(supabase: SupabaseClient): Promise<string> {
+  const now = Date.now();
+  if (_personaCache && now - _personaCache.at < PERSONA_TTL_MS) return _personaCache.template;
+
+  const { data, error } = await supabase
+    .from("executive_bot_settings")
+    .select("persona_prompt")
+    .eq("id", 1)
+    .maybeSingle();
+  if (error) {
+    console.warn("[executiveAssistant] fetchExecutivePersonaTemplate failed:", error.message);
+    return _personaCache?.template ?? DEFAULT_PERSONA_TEMPLATE;
+  }
+  const template = String((data as Record<string, unknown> | null)?.persona_prompt ?? "").trim() || DEFAULT_PERSONA_TEMPLATE;
+  _personaCache = { template, at: now };
+  return template;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // §1  Learned rules (reuses xos_ai_rules, module='executive' — no new table)
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -86,31 +135,17 @@ async function fetchExecutiveHistory(
 // §3  System prompt
 // ══════════════════════════════════════════════════════════════════════════════
 
-function buildExecutivePersona(profile: ExecutiveProfile): string {
-  const roleLine = profile.title ? `${profile.displayName}, ${profile.title} ב-Dream Island` : profile.displayName;
-  return `
-את/ה העוזר/ת האישי/ת הדיגיטלי/ת של ${roleLine}. אתה מדבר איתו ישירות
-בוואטסאפ (מכשיר הסוויטות) — זו לא שיחה עם אורח, זו שיחת ניהול פנימית.
-
-תפקידך: לבצע עבורו פעולות ניהוליות בפועל (פתיחת משימות, בדיקת מצב הריזורט, שליחת
-הודעות לאורחים/למנהלים, עדכון פרטי אורח, לימוד העדפות קבועות) ולדווח לו בקצרה.
-
-כללי תשובה (חובה):
-• עברית בלבד, 2–4 משפטים לכל היותר. בלי פתיחים מיותרים ("שלום", "בשמחה").
-• כשביצעת פעולה בפועל דרך אחד הכלים — פתח את השורה הרלוונטית ב-✅.
-• כמה פעולות/עדכונים בתשובה אחת — כל אחת כשורת בולט (•) קצרה.
-• אל תמציא נתונים על הריזורט או על אורחים — אם חסר לך מידע קרא לכלי המתאים
-  (get_resort_brief / find_guest_by_room / query_open_tasks) לפני שאתה עונה.
-• משפט כמו "תזכרי ש..." / "מעכשיו תמיד..." / "מהיום..." = קרא ל-learn_executive_rule
-  כדי לשמור את זה כהעדפה קבועה שלך, אחרת תשכח אותה בפעם הבאה.
-• לעולם אל תשלח הודעה לאורח שסטטוסו 'cancelled' — הכלים חוסמים זאת; אם זה קרה ציין זאת.
-• אם הבקשה לא ברורה מספיק לפעולה (לא ברור באיזה חדר/אורח/משימה מדובר) — שאל שאלת
-  הבהרה קצרה אחת במקום לנחש.
-`.trim();
+function buildExecutivePersona(profile: ExecutiveProfile, template: string): string {
+  const title = profile.title || "מנהל";
+  return template
+    .replaceAll("{{name}}", profile.displayName)
+    .replaceAll("{{title}}", title)
+    .trim();
 }
 
 export function buildExecutiveSystemPrompt(
   profile: ExecutiveProfile,
+  personaTemplate: string,
   rulesSuffix: string,
   briefSnapshot: string,
   recentTurns: Array<{ direction: string; message: string }>,
@@ -120,7 +155,7 @@ export function buildExecutiveSystemPrompt(
   const firstTurnNote = recentTurns.length === 0
     ? `\n\nזו הפנייה הראשונה של ${profile.displayName} בשיחה הזו — אפשר לפתוח בברכה קצרה אחת.`
     : "";
-  return buildExecutivePersona(profile) + dateLine + briefLine + rulesSuffix + firstTurnNote;
+  return buildExecutivePersona(profile, personaTemplate) + dateLine + briefLine + rulesSuffix + firstTurnNote;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -719,12 +754,13 @@ export async function runExecutiveAssistant(
   opts: { phone: string; text: string; msgId: string; profile: ExecutiveProfile },
 ): Promise<string> {
   const ctx: ToolExecCtx = { phone: opts.phone, originalText: opts.text, msgId: opts.msgId };
-  const [rulesSuffix, brief, history] = await Promise.all([
+  const [personaTemplate, rulesSuffix, brief, history] = await Promise.all([
+    fetchExecutivePersonaTemplate(supabase),
     fetchExecutiveRules(supabase),
     fetchResortBrief(supabase),
     fetchExecutiveHistory(supabase, opts.phone),
   ]);
-  const systemPrompt = buildExecutiveSystemPrompt(opts.profile, rulesSuffix, brief, history);
+  const systemPrompt = buildExecutiveSystemPrompt(opts.profile, personaTemplate, rulesSuffix, brief, history);
 
   try {
     const geminiResult = await runExecutiveGemini(supabase, systemPrompt, history, opts.text, ctx);

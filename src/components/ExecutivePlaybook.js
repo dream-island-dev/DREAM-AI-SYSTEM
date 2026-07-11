@@ -14,6 +14,10 @@ function formatDate(iso) {
 }
 
 export default function ExecutivePlaybook() {
+  const [personaPrompt, setPersonaPrompt] = useState("");
+  const [personaLoading, setPersonaLoading] = useState(true);
+  const [personaSaving, setPersonaSaving] = useState(false);
+  const [personaDirty, setPersonaDirty] = useState(false);
   const [rules, setRules] = useState([]);
   const [rulesLoading, setRulesLoading] = useState(true);
   const [newRuleText, setNewRuleText] = useState("");
@@ -28,6 +32,33 @@ export default function ExecutivePlaybook() {
   const showToast = (type, msg) => {
     setToast({ type, msg });
     setTimeout(() => setToast(null), 3500);
+  };
+
+  const fetchPersona = useCallback(async () => {
+    if (!isSupabaseConfigured || !supabase) { setPersonaLoading(false); return; }
+    setPersonaLoading(true);
+    const { data, error } = await supabase
+      .from("executive_bot_settings")
+      .select("persona_prompt")
+      .eq("id", 1)
+      .maybeSingle();
+    if (error) showToast("err", "שגיאה בטעינת הפרומפט: " + error.message);
+    setPersonaPrompt(data?.persona_prompt ?? "");
+    setPersonaDirty(false);
+    setPersonaLoading(false);
+  }, []);
+
+  const handleSavePersona = async () => {
+    const trimmed = personaPrompt.trim();
+    if (!trimmed) return showToast("err", "הפרומפט לא יכול להיות ריק");
+    setPersonaSaving(true);
+    const { error } = await supabase
+      .from("executive_bot_settings")
+      .upsert({ id: 1, persona_prompt: trimmed, updated_at: new Date().toISOString() });
+    setPersonaSaving(false);
+    if (error) return showToast("err", "שגיאה בשמירה: " + error.message);
+    setPersonaDirty(false);
+    showToast("ok", "✓ הפרומפט נשמר");
   };
 
   const fetchRules = useCallback(async () => {
@@ -56,6 +87,7 @@ export default function ExecutivePlaybook() {
     setLogLoading(false);
   }, []);
 
+  useEffect(() => { fetchPersona(); }, [fetchPersona]);
   useEffect(() => { fetchRules(); }, [fetchRules]);
   useEffect(() => { fetchLog(); }, [fetchLog]);
 
@@ -128,6 +160,48 @@ export default function ExecutivePlaybook() {
               מורשים: אליעד (מנכ"ל) ומייק (QA) — שיחה דרך מכשיר הסוויטות (קול או טקסט). כאן ניתן
               לצפות ולערוך את הכללים שנלמדו, ולראות יומן פעולות אחרון.
             </div>
+          </div>
+        </div>
+
+        {/* ── Base system prompt (executive_bot_settings, migration 183) ──── */}
+        <div className="card" style={{ marginBottom: 20 }}>
+          <div className="card-header">
+            <div className="card-title">📝 System Prompt בסיסי</div>
+          </div>
+          <div style={{ padding: "16px 20px" }}>
+            <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 10, lineHeight: 1.6 }}>
+              הטקסט שקובע את האישיות והכללים הבסיסיים של העוזר, לפני הכללים שנלמדו למטה.
+              {" "}<code>{"{{name}}"}</code> ו-<code>{"{{title}}"}</code> מוחלפים אוטומטית בשם ובתפקיד
+              של מי שכותב (אליעד / מייק / מנהל עתידי) — אין צורך לכתוב שם קבוע.
+            </div>
+            {personaLoading ? (
+              <div style={{ color: "var(--text-muted)", padding: "12px 0", textAlign: "center" }}>⏳ טוען…</div>
+            ) : (
+              <>
+                <textarea
+                  value={personaPrompt}
+                  onChange={(e) => { setPersonaPrompt(e.target.value); setPersonaDirty(true); }}
+                  rows={14}
+                  disabled={personaSaving}
+                  style={{
+                    width: "100%", boxSizing: "border-box", padding: "12px 14px",
+                    borderRadius: 8, border: "1px solid var(--border)", fontSize: 13,
+                    lineHeight: 1.7, resize: "vertical", direction: "rtl", fontFamily: "inherit",
+                  }}
+                />
+                <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm"
+                    onClick={handleSavePersona}
+                    disabled={personaSaving || !personaDirty || !personaPrompt.trim()}
+                  >
+                    {personaSaving ? "שומר…" : "💾 שמור"}
+                  </button>
+                  {personaDirty && <span style={{ fontSize: 12, color: "var(--text-muted)", alignSelf: "center" }}>שינויים לא שמורים</span>}
+                </div>
+              </>
+            )}
           </div>
         </div>
 
