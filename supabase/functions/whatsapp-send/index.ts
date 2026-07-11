@@ -3545,6 +3545,7 @@ serve(async (req: Request) => {
         if (!suiteRoomCount) {
           await supabase.from("guests").update({
             room_ready_notified: true,
+            room_ready_at: new Date().toISOString(),
             ...(flagColumn ? { [flagColumn]: true } : {}),
           }).eq("id", guestId);
         } else if (flagColumn) {

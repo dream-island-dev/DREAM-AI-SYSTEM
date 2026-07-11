@@ -830,7 +830,7 @@ async function runExecutiveClaude(
     tool_choice: { type: "auto" },
   } as any);
 
-  const blocks1 = resp1.content as Array<Record<string, unknown>>;
+  const blocks1 = resp1.content as unknown as Array<Record<string, unknown>>;
   const text1 = blocks1.filter((b) => b.type === "text").map((b) => String(b.text ?? "").trim()).filter(Boolean).join("\n");
   const toolUseBlocks = blocks1.filter((b) => b.type === "tool_use");
 
@@ -862,7 +862,7 @@ async function runExecutiveClaude(
       system: systemPrompt,
       messages: messages2,
     } as any);
-    const blocks2 = resp2.content as Array<Record<string, unknown>>;
+    const blocks2 = resp2.content as unknown as Array<Record<string, unknown>>;
     const text2 = blocks2.filter((b) => b.type === "text").map((b) => String(b.text ?? "").trim()).filter(Boolean).join("\n");
     if (text2) return { text: text2, toolCalls };
   } catch (e) {

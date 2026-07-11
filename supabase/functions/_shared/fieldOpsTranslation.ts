@@ -102,7 +102,7 @@ async function translateViaClaudeFallback(prompt: string): Promise<string | null
       max_tokens: 160,
       messages: [{ role: "user", content: prompt }],
     } as any);
-    const blocks = resp.content as Array<Record<string, unknown>>;
+    const blocks = resp.content as unknown as Array<Record<string, unknown>>;
     const translated = blocks
       .filter((b) => b.type === "text")
       .map((b) => String(b.text ?? "").trim())

@@ -1064,7 +1064,7 @@ export function resolveTruncatedReplyFallback(
   replyText: string,
   guestText: string,
   cfg: Record<string, string>,
-  arrivalDateStr?: string | null,
+  arrivalDateStr: string | null,
   genericFallback: string,
 ): string {
   if (isCheckInPolicyQuestion(guestText) || looksLikeCheckInHoursReply(replyText)) {

@@ -1,7 +1,27 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-11 (Inbox «נקרא» + migration 181 read-cursor channel fix).
+> Last updated: 2026-07-11 (Resort Ops Digest shipped, all 4 phases + pg_cron).
 > Full session history → `CLAUDE.md` §10 + `claude_history.md`.
 > **Agent workflow** → `docs/xos_agent_playbook.md`
+
+---
+
+## ✅ Shipped — Resort Ops Digest (2026-07-11)
+
+Daily/weekly/monthly Hebrew ops summary to Eliad (CEO) via the Whapi Suites device — arrivals by checkin-time bucket, room-ready timing (FAIL VISIBLE ⚠ when never marked), staff requests per suite, anomaly flags (≥3 same-category requests/suite/period).
+
+| Phase | Target | Status |
+|---|---|---|
+| 0 | Diagnostic — schema confirmed, `room_ready_at` gap + anomaly threshold (3) + cadence confirmed with Mike | ✅ done |
+| 1 | Migration 184 — `guests.room_ready_at`, `resort_digest_log` | ✅ pushed |
+| 2 | `_shared/resortDigestStats.ts` — pure aggregation, 21 tests | ✅ done |
+| 3 | `resort-digest-cron` function + manual `?period=daily` verify (idempotency confirmed) | ✅ deployed |
+| 4 | Migration 185 — 3 `pg_cron` schedules (daily 07:00 IL / weekly Sun 07:00 / monthly 1st 07:00) | ✅ pushed, confirmed active |
+
+Side fix (Mike asked to "handle system health" mid-session): live testing found `room_ready_at` was never actually written anywhere — fixed 4 call sites across `suiteRoomReady.ts`/`whatsapp-send`/`whatsapp-cron` (incl. nulling it on auto-checkout so a reused guest row never inherits a stale prior-stay timestamp). Also fixed 2 unrelated pre-existing `deno check` failures (`automationSchedule.ts:1068` TS1016, `executiveAssistant.ts`+`fieldOpsTranslation.ts` TS2352) — full detail in `docs/changelog.md`.
+
+**Smart-analytics follow-up (same day):** executive headline (✅/⚠️ one-liner), SLA compliance % from `tasks.sla_deadline` (unused until now), percentages + avg delay minutes. Live test at real volume (152 weekly arrivals) exposed a 150+ line wall-of-text problem — fixed with worst-first capped lists (`formatCappedList`, max 5/section + "+N more"). 35 tests pass. **Note:** Eliad's first 2 test messages today (daily 07-10, weekly 07-04–07-10) predate this fix — only the monthly (2026-06) test reflects the final polished format.
+
+**Known limitations (not fixed, flagged transparently):** cron times are static UTC like every other cron here — drifts ~1h in Israel winter (no DST auto-adjust). `tasks.room_number` ("8") vs `guests.room` ("אמטיסט 8") aren't the same string format — human-readable in the digest text but not cross-matched.
 
 ---
 

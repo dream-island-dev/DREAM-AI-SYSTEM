@@ -101,6 +101,6 @@ export async function syncGuestRoomReadyAggregate(
 
   await supabase
     .from("guests")
-    .update({ room_ready_notified: true, msg_room_ready_sent: true })
+    .update({ room_ready_notified: true, msg_room_ready_sent: true, room_ready_at: new Date().toISOString() })
     .eq("id", guestId);
 }

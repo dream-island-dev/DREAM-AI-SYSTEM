@@ -115,7 +115,7 @@ Deno.serve(async (req: Request) => {
     let autoCheckoutCount = 0;
     const { data: overdueCheckout, error: overdueErr } = await supabase
       .from("guests")
-      .update({ status: "checked_out", room_ready_notified: false, msg_room_ready_sent: false })
+      .update({ status: "checked_out", room_ready_notified: false, msg_room_ready_sent: false, room_ready_at: null })
       .lt("departure_date", todayIsrael)
       .in("status", checkoutEligible)
       .not("room_type", "in", "(day_guest,premium_day_guest)")
@@ -129,7 +129,7 @@ Deno.serve(async (req: Request) => {
     if (isPastAutoCheckoutGateway(now)) {
       const { data: todayCheckout, error: todayCheckoutErr } = await supabase
         .from("guests")
-        .update({ status: "checked_out", room_ready_notified: false, msg_room_ready_sent: false })
+        .update({ status: "checked_out", room_ready_notified: false, msg_room_ready_sent: false, room_ready_at: null })
         .eq("departure_date", todayIsrael)
         .in("status", checkoutEligible)
         .not("room_type", "in", "(day_guest,premium_day_guest)")
