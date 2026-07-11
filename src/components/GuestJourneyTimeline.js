@@ -4,7 +4,7 @@ import {
   getGuestPipelineLabel,
   mergeQueueIntoJourney,
 } from "../utils/guestJourneyStages";
-import { partitionGuestQueueItems } from "../utils/pipelineSegment";
+import { resolveGuestPipelineSegment } from "../utils/pipelineSegment";
 
 function StepRow({ step, compact }) {
   const color =
@@ -59,7 +59,7 @@ export default function GuestJourneyTimeline({
   suppressBusyKey,
 }) {
   const steps = mergeQueueIntoJourney(buildGuestJourneyFromFlags(guest), queueRows, guest);
-  const { shared, pipeline, segment } = partitionGuestQueueItems(queueRows, guest);
+  const segment = resolveGuestPipelineSegment(guest);
   const pipelineLabel = getGuestPipelineLabel(guest);
 
   if (!guest) {
