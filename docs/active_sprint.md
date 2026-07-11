@@ -1,14 +1,16 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-11 (ETA→Requests Board + assistant-voiced digest — **deploying**).
+> Last updated: 2026-07-11 (ETA→Requests Board + assistant digest — **deployed** `83569ed`).
 
 ---
 
-## 🟡 Deploying — ETA board + Eliad assistant digest (2026-07-11)
+## ✅ Deployed — ETA board + Eliad assistant digest (2026-07-11)
 
 | Piece | Detail |
 |---|---|
 | ETA | `arrival_time` + `guest_alerts.arrival_eta` («🕐 שעת הגעה») — board/profile only |
-| Eliad digest | Personal-assistant Hebrew voice + «תזכרי ש…» learn bridge (migration 187) |
+| Eliad digest | Personal-assistant Hebrew + learn bridge (migration 187) |
+
+Deployed: db 187, `whapi-webhook`, `whatsapp-webhook`, `resort-digest-cron`, frontend `main`.
 
 ---
 

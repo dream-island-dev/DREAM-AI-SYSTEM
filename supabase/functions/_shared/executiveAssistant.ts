@@ -20,6 +20,16 @@ import { translateTextForFieldOps } from "./fieldOpsTranslation.ts";
 import { SUITES_ROOM_SERVICE_GROUP_ID } from "./futureSuiteRoomServiceRouting.ts";
 import { loadActiveGuestById, type ActiveGuestRow } from "./guestOutboundGuard.ts";
 import { fetchResortBrief, israelTodayStr } from "./resortPulseStats.ts";
+import { isEffectiveSuiteGuest } from "./suiteNames.ts";
+import {
+  composeResortDigestMessage,
+  computeResortDigestStats,
+  filterDigestRelevantRules,
+  resolveDigestRange,
+  type DigestGuestRow,
+  type DigestPeriod,
+  type DigestTaskRow,
+} from "./resortDigestStats.ts";
 
 const EXECUTIVE_GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash"];
 // 15s — voice notes already spent wall-clock on transcription before we
@@ -147,8 +157,24 @@ const DEFAULT_PERSONA_TEMPLATE = `
 
 {{focus}}
 
-תפקידך: לבצע עבורו פעולות ניהוליות בפועל (פתיחת משימות, בדיקת מצב הריזורט, שליחת
-הודעות לאורחים/למנהלים, עדכון פרטי אורח, לימוד העדפות קבועות) ולדווח לו בקצרה.
+תפקידך: לבצע עבורו פעולות ניהוליות בפועל ולדווח לו בקצרה.
+
+מה אתה עושה ישירות (דרך כלי, בלי לשאול רשות):
+• מצב הריזורט / דוח תפעולי מיידי (יומי/שבועי/חודשי) / רשימת הגעות-עוזבים-אורחים בריזורט.
+• איתור אורח לפי חדר/שם, כולל הערות, ספא/ארוחות ודגלי תשומת-לב.
+• לוח הבקשות (תלונות/ספא/שינוי תאריך/חיוב) ומצב חדרים תפעולי (פנוי/ניקיון/תחזוקה).
+• פתיחת משימת שטח, אישור ושיגור משימה ממתינה לצוות, סימון בטיפול/בוצעה/דחייה.
+• סימון "חדר מוכן" לאורח (כולל שליחת ההודעה לאורח בפועל, ביום ההגעה, סוויטות בלבד).
+• שליחת הודעה חופשית לאורח או לקבוצת המנהלות; עדכון הערה/החרגה על פרופיל אורח.
+• לימוד העדפה קבועה שלך (learn_executive_rule) — פרטית לך, לא משפיעה על עוזר אחר.
+
+מתי אתה שואל שאלת הבהרה אחת (ולא מנחש):
+• לא ברור באיזה חדר/אורח/משימה מדובר, או כלי החזיר כמה מועמדים מתאימים.
+
+מה אתה תמיד מסרב לעשות (אין לזה כלי, ולא ינחש):
+• ביטול אורח, שינוי תאריכי הזמנה/צ'ק-אין בפועל, שינוי מחירים, עריכת שלבי אוטומציה
+  או מחיקת דאטה — "לזה צריך גישה למסך הניהול, לא דרכי". אם מתבקש — אמור זאת בקצרה
+  והפנה למסך המתאים, אל תנסה לבצע בעקיפין דרך כלי אחר.
 
 כללי תשובה (חובה):
 • עברית בלבד, 2–4 משפטים לכל היותר. בלי פתיחים מיותרים ("שלום", "בשמחה").
@@ -196,31 +222,45 @@ export async function fetchExecutivePersonaTemplate(supabase: SupabaseClient): P
 // ══════════════════════════════════════════════════════════════════════════════
 
 const RULES_TTL_MS = 5 * 60 * 1000;
-let _rulesCache: { text: string; at: number } | null = null;
+// Keyed by owner phone digits — Eliad and Mike must never see each other's
+// private rules cached under the same slot (see fetchExecutiveRules).
+const _rulesCache = new Map<string, { text: string; at: number }>();
 
-function _invalidateExecutiveRulesCache(): void {
-  _rulesCache = null;
+function _invalidateExecutiveRulesCache(phoneDigits?: string): void {
+  if (phoneDigits) _rulesCache.delete(phoneDigits);
+  else _rulesCache.clear();
 }
 
-export async function fetchExecutiveRules(supabase: SupabaseClient): Promise<string> {
+/**
+ * Rules visible to this executive: unscoped/shared (owner_phone IS NULL — every
+ * rule learned before migration 188, Graceful Fallback) plus this phone's own
+ * private rules. Prevents Mike's QA-directed rules ("explain technically when I
+ * ask") from bleeding into Eliad's CEO persona and vice versa (docs/active_sprint.md
+ * audit finding). Digest-content rules stay intentionally unscoped — see
+ * get_ops_digest_now / resort-digest-cron, which read module='executive' without
+ * this filter since there's only one digest recipient regardless of who taught it.
+ */
+export async function fetchExecutiveRules(supabase: SupabaseClient, phoneDigits: string): Promise<string> {
   const now = Date.now();
-  if (_rulesCache && now - _rulesCache.at < RULES_TTL_MS) return _rulesCache.text;
+  const cached = _rulesCache.get(phoneDigits);
+  if (cached && now - cached.at < RULES_TTL_MS) return cached.text;
 
   const { data, error } = await supabase
     .from("xos_ai_rules")
     .select("rule_text")
     .eq("module", "executive")
+    .or(`owner_phone.is.null,owner_phone.eq.${phoneDigits}`)
     .order("created_at", { ascending: true });
   if (error) {
     console.warn("[executiveAssistant] fetchExecutiveRules failed:", error.message);
-    return _rulesCache?.text ?? "";
+    return cached?.text ?? "";
   }
   const bullets = ((data ?? []) as Array<{ rule_text: string }>)
     .map((r) => r.rule_text?.trim())
     .filter(Boolean)
     .map((t) => `- ${t}`);
   const text = bullets.length ? `\n\n══ כללים שנלמדו ══\n${bullets.join("\n")}` : "";
-  _rulesCache = { text, at: now };
+  _rulesCache.set(phoneDigits, { text, at: now });
   return text;
 }
 
@@ -385,11 +425,86 @@ const EXECUTIVE_TOOLS: ToolDef[] = [
   },
   {
     name: "query_open_tasks",
-    description: "סיכום משימות פתוחות/בטיפול/ממתינות לאישור בלוח התפעול.",
+    description: "סיכום משימות פתוחות/בטיפול/ממתינות לאישור בלוח התפעול. מחזיר גם task_id לכל משימה, לשימוש בהמשך עם update_task_status.",
     schema: {
       type: "object",
       properties: {
         status_filter: { type: "string", enum: ["open", "in_progress", "pending_approval", "all"], description: "סינון לפי סטטוס, ברירת מחדל all." },
+        room: { type: "string", description: "סינון לפי חדר/סוויטה, אופציונלי." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "update_task_status",
+    description:
+      "עדכון סטטוס משימה קיימת בלוח התפעול: אישור ושיגור לצוות (pending_approval→open), התחלת טיפול " +
+      "(→in_progress), סיום (→done), או דחייה (pending_approval→rejected). איתור המשימה לפי task_id " +
+      "(אם ידוע מתוצאת query_open_tasks קודמת באותה שיחה) או לפי room (+ keyword אם יש כמה משימות פתוחות " +
+      "באותו חדר). אם ההתאמה לא חד-משמעית — הכלי מחזיר רשימת מועמדים במקום לנחש.",
+    schema: {
+      type: "object",
+      properties: {
+        task_id: { type: "string", description: "מזהה משימה, אם ידוע (מוחזר מ-query_open_tasks)." },
+        room: { type: "string", description: "חדר/סוויטה לאיתור המשימה, אם task_id לא ידוע." },
+        keyword: { type: "string", description: "מילת מפתח מתוך תיאור המשימה, לצמצום התאמות בחדר עם כמה משימות." },
+        new_status: { type: "string", enum: ["open", "in_progress", "done", "rejected"], description: "הסטטוס החדש. open על משימה ממתינה לאישור = אישור ושיגור לצוות." },
+        rejection_reason: { type: "string", description: "סיבת דחייה, אופציונלי (רק אם new_status=rejected)." },
+      },
+      required: ["new_status"],
+    },
+  },
+  {
+    name: "list_guest_alerts",
+    description:
+      "רשימת בקשות/התראות פתוחות מלוח הבקשות (Requests Board) — תלונות, בקשות ספא, שינויי תאריך, " +
+      "בעיות חיוב, שעות הגעה. לשאלות כמו \"יש בקשות פתוחות\", \"מה יש בלוח הבקשות\".",
+    schema: {
+      type: "object",
+      properties: {
+        alert_type: {
+          type: "string",
+          enum: ["complaint", "date_change_request", "request", "upsell_opportunity", "portal_room_service", "financial_issue", "spa_request", "arrival_eta"],
+          description: "סינון לפי סוג, אופציונלי.",
+        },
+        room: { type: "string", description: "סינון לפי חדר/שם אורח, אופציונלי." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "get_room_status",
+    description:
+      "מצב חדרים תפעולי (פנוי/תפוס/ניקיון/תחזוקה) מלוח החדרים — לא סטטוס האורח. לשאלות כמו " +
+      "\"מה מצב חדר 205\", \"כמה חדרים בניקיון כרגע\".",
+    schema: {
+      type: "object",
+      properties: { room: { type: "string", description: "חדר ספציפי; אם ריק — סיכום כל החדרים." } },
+      required: [],
+    },
+  },
+  {
+    name: "get_ops_digest_now",
+    description:
+      "דוח תפעולי מיידי (יומי/שבועי/חודשי) — הגעות, מוכנות חדרים, בקשות לפי סוויטה, עמידה ב-SLA, חריגות. " +
+      "לבקשות כמו \"תן לי את הדוח היומי עכשיו\". קריאה בלבד — לא נספר כשליחת הדוח היזום של הבוקר.",
+    schema: {
+      type: "object",
+      properties: { period: { type: "string", enum: ["daily", "weekly", "monthly"], description: "טווח הדוח, ברירת מחדל daily." } },
+      required: [],
+    },
+  },
+  {
+    name: "set_guest_status",
+    description:
+      "סימון \"חדר מוכן\" לאורח (guests.status→room_ready) — משגר גם את הודעת ה-WhatsApp הרגילה לאורח " +
+      "(רק ביום ההגעה בפועל, סוויטות בלבד, לא יום-כיף). אין כלי לצ'ק-אין/ביטול/שינוי תאריכים דרך קול — " +
+      "לאלה יש מנגנונים ייעודיים אחרים או שהם דורשים גישה למסך הניהול.",
+    schema: {
+      type: "object",
+      properties: {
+        guest_id: { type: "integer", description: "מזהה אורח, אם ידוע (עדיף על room)." },
+        room: { type: "string", description: "חדר/סוויטה לאיתור האורח, אם guest_id לא ידוע." },
       },
       required: [],
     },
@@ -401,7 +516,16 @@ const EXECUTIVE_TOOLS: ToolDef[] = [
 // ══════════════════════════════════════════════════════════════════════════════
 
 type ToolResult = Record<string, unknown> & { ok: boolean };
-export type ToolExecCtx = { phone: string; originalText: string; msgId: string };
+export type ToolExecCtx = {
+  phone: string;
+  originalText: string;
+  msgId: string;
+  /** Normalized executive phone digits (ExecutiveProfile.phoneDigits) — the
+   * scoping key for private learned rules. Kept separate from `phone` (which
+   * mirrors whatever raw format the inbound webhook carried) so rule scoping
+   * never drifts if that raw format ever changes. */
+  ownerPhone: string;
+};
 
 /** Widened row shape for the executive's own guest lookups — ActiveGuestRow
  * (guestOutboundGuard.ts) is deliberately narrow (outbound-eligibility gate
@@ -674,26 +798,37 @@ async function _execNotifyManagersGroup(args: Record<string, unknown>): Promise<
   return { ok: true, sent: true };
 }
 
-async function _execLearnExecutiveRule(supabase: SupabaseClient, args: Record<string, unknown>): Promise<ToolResult> {
+async function _execLearnExecutiveRule(
+  supabase: SupabaseClient,
+  args: Record<string, unknown>,
+  ctx: ToolExecCtx,
+): Promise<ToolResult> {
   const ruleText = String(args.rule_text ?? "").trim();
   if (!ruleText) return { ok: false, error: "rule_text_required" };
 
+  // Private to this executive (owner_phone) — dedupe only against rules
+  // already visible to them (their own + shared/unscoped), not the other
+  // executive's private rules (migration 188 / fetchExecutiveRules).
   const { data: existing } = await supabase
     .from("xos_ai_rules")
-    .select("rule_text")
+    .select("rule_text, owner_phone")
     .eq("module", "executive");
   const normalized = ruleText.trim().toLowerCase();
-  const isDupe = ((existing ?? []) as Array<{ rule_text: string }>).some(
-    (r) => (r.rule_text ?? "").trim().toLowerCase() === normalized,
+  const isDupe = ((existing ?? []) as Array<{ rule_text: string; owner_phone: string | null }>).some(
+    (r) =>
+      (r.rule_text ?? "").trim().toLowerCase() === normalized &&
+      (r.owner_phone === null || r.owner_phone === ctx.ownerPhone),
   );
   if (isDupe) return { ok: true, deduped: true };
 
-  const { error } = await supabase.from("xos_ai_rules").insert({ module: "executive", rule_text: ruleText });
+  const { error } = await supabase
+    .from("xos_ai_rules")
+    .insert({ module: "executive", rule_text: ruleText, owner_phone: ctx.ownerPhone });
   if (error) {
     console.error("[executiveAssistant] learn_executive_rule insert failed:", error.message);
     return { ok: false, error: error.message };
   }
-  _invalidateExecutiveRulesCache();
+  _invalidateExecutiveRulesCache(ctx.ownerPhone);
   return { ok: true, inserted: true };
 }
 
@@ -709,25 +844,330 @@ async function _execQueryOpenTasks(supabase: SupabaseClient, args: Record<string
   const statuses = filter === "all" || !OPEN_TASK_STATUSES.includes(filter as typeof OPEN_TASK_STATUSES[number])
     ? [...OPEN_TASK_STATUSES]
     : [filter];
+  const room = String(args.room ?? "").trim();
 
-  const { data, error } = await supabase
+  let query = supabase
     .from("tasks")
-    .select("room_number, description, department, status, sla_deadline")
+    .select("id, room_number, description, department, status, sla_deadline")
     .in("status", statuses)
     .order("created_at", { ascending: true })
     .limit(10);
+  if (room) query = query.ilike("room_number", `%${room}%`);
+
+  const { data, error } = await query;
   if (error) {
     console.warn("[executiveAssistant] query_open_tasks failed:", error.message);
     return { ok: false, error: error.message };
   }
 
-  const rows = (data ?? []) as Array<{ room_number: string | null; description: string; department: string; status: string; sla_deadline: string | null }>;
+  const rows = (data ?? []) as Array<{ id: string; room_number: string | null; description: string; department: string; status: string; sla_deadline: string | null }>;
   if (!rows.length) return { ok: true, count: 0, summary: "אין משימות פתוחות כרגע." };
 
   const lines = rows.map((t) =>
     `• ${t.room_number ? `[${t.room_number}] ` : ""}${t.description} (${t.department}, ${TASK_STATUS_LABEL_HE[t.status] ?? t.status})`,
   );
+  // tasks[] (with id) is for the model's own follow-up update_task_status call —
+  // the Hebrew summary line deliberately omits the uuid, it's not for the human.
+  return {
+    ok: true,
+    count: rows.length,
+    summary: lines.join("\n"),
+    tasks: rows.map((t) => ({ task_id: t.id, room_number: t.room_number, description: t.description, status: t.status })),
+  };
+}
+
+type TaskCandidate = { id: string; room_number: string | null; description: string; status: string; department: string };
+
+/**
+ * Best-effort task lookup by task_id (preferred) or room (+ optional keyword
+ * narrowing). Mirrors _resolveExecutiveGuestTarget's contract: returns exactly
+ * one match, a candidate list when ambiguous (caller must ask, never guess —
+ * CLAUDE.md persona rule), or null on a true miss.
+ */
+async function _resolveExecutiveTaskTarget(
+  supabase: SupabaseClient,
+  args: { task_id?: unknown; room?: unknown; keyword?: unknown },
+): Promise<{ task: TaskCandidate } | { candidates: TaskCandidate[] } | null> {
+  const taskId = String(args.task_id ?? "").trim();
+  if (taskId) {
+    const { data, error } = await supabase
+      .from("tasks")
+      .select("id, room_number, description, status, department")
+      .eq("id", taskId)
+      .maybeSingle();
+    if (error || !data) return null;
+    return { task: data as TaskCandidate };
+  }
+
+  const room = String(args.room ?? "").trim();
+  if (!room) return null;
+  const keyword = String(args.keyword ?? "").trim().toLowerCase();
+
+  const { data, error } = await supabase
+    .from("tasks")
+    .select("id, room_number, description, status, department")
+    .in("status", [...OPEN_TASK_STATUSES])
+    .ilike("room_number", `%${room}%`)
+    .order("created_at", { ascending: true })
+    .limit(10);
+  if (error) {
+    console.warn("[executiveAssistant] task lookup (room) failed:", error.message);
+    return null;
+  }
+  let candidates = (data ?? []) as TaskCandidate[];
+  if (keyword) {
+    const narrowed = candidates.filter((t) => (t.description ?? "").toLowerCase().includes(keyword));
+    if (narrowed.length) candidates = narrowed;
+  }
+  if (!candidates.length) return null;
+  if (candidates.length === 1) return { task: candidates[0] };
+  return { candidates };
+}
+
+function _taskCandidatesResult(candidates: TaskCandidate[]): ToolResult {
+  return {
+    ok: false,
+    error: "ambiguous_task",
+    candidates: candidates.map((c) => ({
+      task_id: c.id,
+      room_number: c.room_number,
+      description: c.description,
+      status: c.status,
+    })),
+  };
+}
+
+async function _execUpdateTaskStatus(
+  supabase: SupabaseClient,
+  args: Record<string, unknown>,
+): Promise<ToolResult> {
+  const newStatus = String(args.new_status ?? "");
+  if (!["open", "in_progress", "done", "rejected"].includes(newStatus)) {
+    return { ok: false, error: "invalid_new_status" };
+  }
+  if (!args.task_id && !args.room) return { ok: false, error: "task_id_or_room_required" };
+
+  const resolved = await _resolveExecutiveTaskTarget(supabase, args);
+  if (!resolved) return { ok: false, error: "task_not_found" };
+  if ("candidates" in resolved) return _taskCandidatesResult(resolved.candidates);
+  const task = resolved.task;
+
+  if (newStatus === "open") {
+    if (task.status !== "pending_approval") {
+      return { ok: false, error: "not_pending_approval", current_status: task.status };
+    }
+    // Same "Approve & Dispatch" path as OperationsBoard.js's approveTask —
+    // notify-manual-task performs the guarded pending_approval→open flip
+    // server-side BEFORE the Whapi card send, so a retry can't double-dispatch.
+    const supabaseUrl = Deno.env.get("SUPABASE_URL");
+    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    if (!supabaseUrl || !serviceKey) return { ok: false, error: "notify_function_unconfigured" };
+    try {
+      const res = await fetch(`${supabaseUrl}/functions/v1/notify-manual-task`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${serviceKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ taskId: task.id }),
+      });
+      const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+      if (!data.ok) return { ok: false, error: (data.error as string) ?? "notify_manual_task_failed" };
+      if (data.reason === "already_processed") return { ok: false, error: "already_processed" };
+      return { ok: true, task_id: task.id, approved: true, group_card_sent: data.notified !== false, reason: data.reason as string | undefined };
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
+  }
+
+  if (newStatus === "in_progress") {
+    if (!["open", "pending_approval"].includes(task.status)) {
+      return { ok: false, error: "invalid_transition", current_status: task.status };
+    }
+    const { error } = await supabase.from("tasks").update({ status: "in_progress" }).eq("id", task.id);
+    if (error) return { ok: false, error: error.message };
+    return { ok: true, task_id: task.id, status: "in_progress" };
+  }
+
+  if (newStatus === "done") {
+    if (task.status === "done") return { ok: true, task_id: task.id, status: "done", already_done: true };
+    // resolved_by_name (no resolved_by uuid — voice has no logged-in profiles.id)
+    // mirrors OperationsBoard's markDone attribution convention so this reads as
+    // executive-resolved, not silently indistinguishable from staff-resolved.
+    const { error } = await supabase
+      .from("tasks")
+      .update({ status: "done", resolved_by_name: "אליעד (קול)", resolved_at: new Date().toISOString() })
+      .eq("id", task.id);
+    if (error) return { ok: false, error: error.message };
+    return { ok: true, task_id: task.id, status: "done" };
+  }
+
+  // rejected — only valid from pending_approval, same guard as OperationsBoard's rejectTask.
+  if (task.status !== "pending_approval") {
+    return { ok: false, error: "not_pending_approval", current_status: task.status };
+  }
+  const reason = String(args.rejection_reason ?? "").trim() || null;
+  const { data: rejected, error } = await supabase
+    .from("tasks")
+    .update({ status: "rejected", reviewed_at: new Date().toISOString(), rejection_reason: reason })
+    .eq("id", task.id)
+    .eq("status", "pending_approval")
+    .select("id")
+    .maybeSingle();
+  if (error) return { ok: false, error: error.message };
+  if (!rejected) return { ok: false, error: "already_processed" };
+  return { ok: true, task_id: task.id, status: "rejected" };
+}
+
+const ALERT_TYPE_LABEL_HE: Record<string, string> = {
+  complaint: "🔴 תקלה",
+  date_change_request: "🗓️ שינוי תאריך",
+  request: "📝 בקשה",
+  upsell_opportunity: "🌴 בקשה מהפורטל",
+  portal_room_service: "🍽️ שירות לחדר (פורטל)",
+  financial_issue: "💳 בעיית חיוב",
+  spa_request: "💆 בקשת ספא",
+  arrival_eta: "🕐 שעת הגעה",
+};
+
+async function _execListGuestAlerts(supabase: SupabaseClient, args: Record<string, unknown>): Promise<ToolResult> {
+  let query = supabase
+    .from("guest_alerts")
+    .select("id, phone, alert_type, message, created_at, guests(name, room)")
+    .eq("resolved", false)
+    .order("created_at", { ascending: false })
+    .limit(15);
+
+  const alertType = String(args.alert_type ?? "").trim();
+  if (alertType) query = query.eq("alert_type", alertType);
+
+  const { data, error } = await query;
+  if (error) {
+    console.warn("[executiveAssistant] list_guest_alerts failed:", error.message);
+    return { ok: false, error: error.message };
+  }
+
+  type AlertRow = { id: number; alert_type: string; message: string; guests: { name: string | null; room: string | null } | null };
+  let rows = (data ?? []) as unknown as AlertRow[];
+
+  const room = String(args.room ?? "").trim().toLowerCase();
+  if (room) rows = rows.filter((r) => (r.guests?.room ?? "").toLowerCase().includes(room));
+
+  if (!rows.length) return { ok: true, count: 0, summary: "אין בקשות פתוחות בלוח הבקשות כרגע." };
+
+  const lines = rows.map((r) => {
+    const label = ALERT_TYPE_LABEL_HE[r.alert_type] ?? `⚠ ${r.alert_type}`;
+    const who = r.guests?.name ? `${r.guests.name}${r.guests.room ? ` (${r.guests.room})` : ""}` : "אורח לא מזוהה";
+    return `• ${label} — ${who}: ${(r.message ?? "").slice(0, 120)}`;
+  });
   return { ok: true, count: rows.length, summary: lines.join("\n") };
+}
+
+async function _execGetRoomStatus(supabase: SupabaseClient, args: Record<string, unknown>): Promise<ToolResult> {
+  const room = String(args.room ?? "").trim();
+
+  if (room) {
+    const { data, error } = await supabase
+      .from("room_status")
+      .select("room_id, status, notes, updated_at")
+      .ilike("room_id", `%${room}%`)
+      .limit(5);
+    if (error) return { ok: false, error: error.message };
+    const rows = (data ?? []) as Array<{ room_id: string; status: string; notes: string | null; updated_at: string }>;
+    if (!rows.length) return { ok: false, error: "room_not_found" };
+    return {
+      ok: true,
+      rooms: rows.map((r) => ({ room_id: r.room_id, status: r.status, notes: r.notes })),
+      summary: rows.map((r) => `${r.room_id}: ${r.status}${r.notes ? ` (${r.notes})` : ""}`).join("\n"),
+    };
+  }
+
+  const { data, error } = await supabase.from("room_status").select("status");
+  if (error) return { ok: false, error: error.message };
+  const counts = new Map<string, number>();
+  for (const r of (data ?? []) as Array<{ status: string }>) counts.set(r.status, (counts.get(r.status) ?? 0) + 1);
+  const summary = [...counts.entries()].map(([status, count]) => `${status}: ${count}`).join(" | ");
+  return { ok: true, summary: summary || "אין נתוני חדרים." };
+}
+
+async function _execGetOpsDigestNow(supabase: SupabaseClient, args: Record<string, unknown>): Promise<ToolResult> {
+  const period = String(args.period ?? "daily") as DigestPeriod;
+  if (!["daily", "weekly", "monthly"].includes(period)) return { ok: false, error: "invalid_period" };
+
+  const now = new Date();
+  const range = resolveDigestRange(period, now);
+  const rangeStartIso = range.rangeStart.toISOString();
+  const rangeEndIso = range.rangeEnd.toISOString();
+
+  // Same query shape as resort-digest-cron — kept read-only here: no
+  // resort_digest_log write, so an on-demand pull can never collide with the
+  // scheduled push's idempotency record for the same period.
+  const [guestsRes, tasksRes, ruleRows] = await Promise.all([
+    supabase
+      .from("guests")
+      .select("id, room, checkin_time, room_ready_at, room_ready_notified")
+      .gte("checkin_time", rangeStartIso)
+      .lt("checkin_time", rangeEndIso),
+    supabase
+      .from("tasks")
+      .select("id, room_number, sla_category, status, created_at, resolved_at, sla_deadline")
+      .gte("created_at", rangeStartIso)
+      .lt("created_at", rangeEndIso),
+    supabase.from("xos_ai_rules").select("rule_text").eq("module", "executive").order("created_at", { ascending: true }),
+  ]);
+  if (guestsRes.error || tasksRes.error) {
+    return { ok: false, error: guestsRes.error?.message ?? tasksRes.error?.message ?? "fetch_failed" };
+  }
+
+  const stats = computeResortDigestStats({
+    guests: (guestsRes.data ?? []) as DigestGuestRow[],
+    tasks: (tasksRes.data ?? []) as DigestTaskRow[],
+    now,
+  });
+  const learnedDigestNotes = filterDigestRelevantRules(
+    ((ruleRows.data ?? []) as Array<{ rule_text: string | null }>).map((r) => r.rule_text ?? ""),
+  );
+  const body = composeResortDigestMessage(stats, period, range.label, {
+    assistantForName: "אליעד",
+    learnedDigestNotes,
+  });
+  return { ok: true, period, period_date: range.periodDate, digest: body };
+}
+
+async function _execSetGuestStatus(supabase: SupabaseClient, args: Record<string, unknown>): Promise<ToolResult> {
+  if (!args.guest_id && !args.room) return { ok: false, error: "guest_id_or_room_required" };
+
+  const guest = await _resolveExecutiveGuestTarget(supabase, args);
+  if (!guest) return { ok: false, error: "guest_not_found_or_inactive" };
+  if (!isEffectiveSuiteGuest(guest)) return { ok: false, error: "day_pass_guest_not_supported" };
+  if (!["pending", "expected"].includes(guest.status)) {
+    return { ok: false, error: "invalid_status_transition", current_status: guest.status };
+  }
+
+  const { error: updateErr } = await supabase.from("guests").update({ status: "room_ready" }).eq("id", guest.id);
+  if (updateErr) return { ok: false, error: updateErr.message };
+
+  // Same trigger GuestsPage.js's "חדר מוכן" button calls — arrival-day gate,
+  // duplicate-blocked idempotency, and suite/day-pass routing all live there
+  // already; this tool never duplicates that logic. Status flip above already
+  // committed even if the send below fails — same UX as the reception button
+  // (report ⚠ FAIL VISIBLE, never silently pretend the guest was notified).
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (!supabaseUrl || !serviceKey) {
+    return { ok: true, guest_id: guest.id, status: "room_ready", guest_notified: false, notify_error: "functions_unconfigured" };
+  }
+  try {
+    const res = await fetch(`${supabaseUrl}/functions/v1/whatsapp-send`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${serviceKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ trigger: "room_ready", guestId: guest.id, roomId: guest.room || undefined }),
+    });
+    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!data.ok) {
+      return { ok: true, guest_id: guest.id, status: "room_ready", guest_notified: false, notify_error: (data.error as string) ?? "whatsapp_send_failed" };
+    }
+    return { ok: true, guest_id: guest.id, status: "room_ready", guest_notified: true };
+  } catch (e) {
+    return { ok: true, guest_id: guest.id, status: "room_ready", guest_notified: false, notify_error: (e as Error).message };
+  }
 }
 
 /** Exported for executiveAssistant.test.ts — the tool dispatcher is the unit
@@ -747,8 +1187,13 @@ export async function executeExecutiveTool(
     case "ceo_guest_override": return await _execCeoGuestOverride(supabase, args);
     case "send_guest_message": return await _execSendGuestMessage(supabase, args);
     case "notify_managers_group": return await _execNotifyManagersGroup(args);
-    case "learn_executive_rule": return await _execLearnExecutiveRule(supabase, args);
+    case "learn_executive_rule": return await _execLearnExecutiveRule(supabase, args, ctx);
     case "query_open_tasks": return await _execQueryOpenTasks(supabase, args);
+    case "update_task_status": return await _execUpdateTaskStatus(supabase, args);
+    case "list_guest_alerts": return await _execListGuestAlerts(supabase, args);
+    case "get_room_status": return await _execGetRoomStatus(supabase, args);
+    case "get_ops_digest_now": return await _execGetOpsDigestNow(supabase, args);
+    case "set_guest_status": return await _execSetGuestStatus(supabase, args);
     default: return { ok: false, error: `unknown_tool:${name}` };
   }
 }
@@ -782,7 +1227,14 @@ async function runExecutiveToolCalls(
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// §6  Gemini primary — function calling, max 2 rounds.
+// §6  Gemini primary — function calling, up to 3 rounds (conditional).
+// Rounds 1-2 both carry tools, so a genuine chain (e.g. "close the task for
+// room 5" → look up the task, then close it) can actually complete instead of
+// round 2 being forced to compose text around an unfinished action. Round 3
+// never carries tools — it exists purely to force a final Hebrew reply after a
+// round-2 tool call, capping worst-case latency at 3 model round-trips instead
+// of letting a chain run unbounded. The common single-tool (or no-tool) case
+// still finishes in 1-2 rounds exactly as before.
 // ══════════════════════════════════════════════════════════════════════════════
 
 const GEMINI_TOOLS_PAYLOAD = [{
@@ -845,44 +1297,50 @@ async function runExecutiveGemini(
   };
 
   for (const model of EXECUTIVE_GEMINI_MODELS) {
-    let round1: Record<string, unknown>;
-    try {
-      round1 = await _geminiCall(apiKey, model, { ...baseBody, tools: GEMINI_TOOLS_PAYLOAD });
-    } catch (e) {
-      console.warn(`[executiveAssistant] Gemini round1 model="${model}" failed:`, (e as Error).message);
-      continue;
+    let roundContents: Array<{ role: string; parts: unknown[] }> = contents;
+    let allToolCalls: ToolCallOut[] = [];
+    let modelFailed = false;
+    let finalText: string | null = null;
+
+    for (let round = 1; round <= 3; round++) {
+      const includeTools = round < 3;
+      let resp: Record<string, unknown>;
+      try {
+        resp = await _geminiCall(apiKey, model, {
+          ...baseBody,
+          contents: roundContents,
+          ...(includeTools ? { tools: GEMINI_TOOLS_PAYLOAD } : {}),
+        });
+      } catch (e) {
+        console.warn(`[executiveAssistant] Gemini round${round} model="${model}" failed:`, (e as Error).message);
+        modelFailed = round === 1 && !allToolCalls.length; // only bail to next model if we never got anywhere
+        break;
+      }
+
+      const parsed = _extractGeminiParts(resp);
+      if (!parsed.functionCalls.length) {
+        if (parsed.text) finalText = parsed.text;
+        break;
+      }
+      if (!includeTools) break; // round 3 has no tools declared — shouldn't happen, but never chain further
+
+      const toolCalls = await runExecutiveToolCalls(supabase, parsed.functionCalls, ctx);
+      allToolCalls = [...allToolCalls, ...toolCalls];
+      roundContents = [
+        ...roundContents,
+        { role: "model", parts: parsed.rawParts },
+        { role: "user", parts: toolCalls.map((c) => ({ functionResponse: { name: c.name, response: c.result } })) },
+      ];
     }
 
-    const parsed1 = _extractGeminiParts(round1);
-    if (!parsed1.functionCalls.length) {
-      if (!parsed1.text) continue;
-      return { text: parsed1.text, toolCalls: [] };
+    if (finalText) return { text: finalText, toolCalls: allToolCalls };
+    if (allToolCalls.length) {
+      // Tool(s) executed but no round ever produced closing text (rare) —
+      // fall back to a mechanical summary rather than losing a real,
+      // already-executed action (FAIL VISIBLE).
+      return { text: _buildToolFallbackSummary(allToolCalls), toolCalls: allToolCalls };
     }
-
-    const toolCalls = await runExecutiveToolCalls(supabase, parsed1.functionCalls, ctx);
-
-    // Round 2 — feed function results back, tools omitted so the model can
-    // only compose the final Hebrew reply (caps this loop at 2 rounds total).
-    const round2Contents = [
-      ...contents,
-      { role: "model", parts: parsed1.rawParts },
-      {
-        role: "user",
-        parts: toolCalls.map((c) => ({ functionResponse: { name: c.name, response: c.result } })),
-      },
-    ];
-
-    try {
-      const round2 = await _geminiCall(apiKey, model, { ...baseBody, contents: round2Contents });
-      const parsed2 = _extractGeminiParts(round2);
-      if (parsed2.text) return { text: parsed2.text, toolCalls };
-    } catch (e) {
-      console.warn(`[executiveAssistant] Gemini round2 model="${model}" failed:`, (e as Error).message);
-    }
-
-    // Round 2 produced no text (rare) — fall back to a mechanical summary
-    // rather than losing a real, already-executed action (FAIL VISIBLE).
-    return { text: _buildToolFallbackSummary(toolCalls), toolCalls };
+    if (modelFailed) continue; // try next model in EXECUTIVE_GEMINI_MODELS
   }
 
   return null;
@@ -896,7 +1354,8 @@ function _buildToolFallbackSummary(toolCalls: ToolCallOut[]): string {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// §7  Claude Sonnet 4.6 fallback — same 2-round tool-call contract.
+// §7  Claude Sonnet 4.6 fallback — same conditional up-to-3-round contract as
+// the Gemini path (see §6 header comment).
 // ══════════════════════════════════════════════════════════════════════════════
 
 const CLAUDE_TOOLS_PAYLOAD = EXECUTIVE_TOOLS.map((t) => ({ name: t.name, description: t.description, input_schema: t.schema }));
@@ -929,55 +1388,55 @@ async function runExecutiveClaude(
     return acc;
   }, []);
 
-  const resp1 = await anthropic.messages.create({
-    model: CLAUDE_MODEL,
-    max_tokens: 800,
-    system: systemPrompt,
-    messages,
-    tools: CLAUDE_TOOLS_PAYLOAD,
-    tool_choice: { type: "auto" },
-  } as any);
+  let roundMessages: Array<{ role: "user" | "assistant"; content: unknown }> = messages;
+  let allToolCalls: ToolCallOut[] = [];
 
-  const blocks1 = resp1.content as unknown as Array<Record<string, unknown>>;
-  const text1 = blocks1.filter((b) => b.type === "text").map((b) => String(b.text ?? "").trim()).filter(Boolean).join("\n");
-  const toolUseBlocks = blocks1.filter((b) => b.type === "tool_use");
+  for (let round = 1; round <= 3; round++) {
+    const includeTools = round < 3;
+    let resp;
+    try {
+      resp = await anthropic.messages.create({
+        model: CLAUDE_MODEL,
+        max_tokens: 800,
+        system: systemPrompt,
+        messages: roundMessages,
+        ...(includeTools ? { tools: CLAUDE_TOOLS_PAYLOAD, tool_choice: { type: "auto" } } : {}),
+      } as any);
+    } catch (e) {
+      console.warn(`[executiveAssistant] Claude round${round} failed:`, (e as Error).message);
+      if (round === 1) throw e; // round 1 hard-fails exactly like before (caller has no partial work to fall back on)
+      break;
+    }
 
-  if (!toolUseBlocks.length) {
-    if (!text1) throw new Error("claude_empty_response");
-    return { text: text1, toolCalls: [] };
+    const blocks = resp.content as unknown as Array<Record<string, unknown>>;
+    const text = blocks.filter((b) => b.type === "text").map((b) => String(b.text ?? "").trim()).filter(Boolean).join("\n");
+    const toolUseBlocks = blocks.filter((b) => b.type === "tool_use");
+
+    if (!toolUseBlocks.length) {
+      if (text) return { text, toolCalls: allToolCalls };
+      if (round === 1) throw new Error("claude_empty_response");
+      break;
+    }
+    if (!includeTools) break; // round 3 declared no tools — shouldn't happen, but never chain further
+
+    const calls: ToolCallReq[] = toolUseBlocks.map((b) => ({
+      name: String(b.name),
+      args: (b.input as Record<string, unknown>) ?? {},
+      id: String(b.id),
+    }));
+    const toolCalls = await runExecutiveToolCalls(supabase, calls, ctx);
+    allToolCalls = [...allToolCalls, ...toolCalls];
+    roundMessages = [
+      ...roundMessages,
+      { role: "assistant" as const, content: blocks },
+      {
+        role: "user" as const,
+        content: toolCalls.map((c) => ({ type: "tool_result", tool_use_id: c.id, content: JSON.stringify(c.result) })),
+      },
+    ];
   }
 
-  const calls: ToolCallReq[] = toolUseBlocks.map((b) => ({
-    name: String(b.name),
-    args: (b.input as Record<string, unknown>) ?? {},
-    id: String(b.id),
-  }));
-  const toolCalls = await runExecutiveToolCalls(supabase, calls, ctx);
-
-  const messages2 = [
-    ...messages,
-    { role: "assistant" as const, content: blocks1 },
-    {
-      role: "user" as const,
-      content: toolCalls.map((c) => ({ type: "tool_result", tool_use_id: c.id, content: JSON.stringify(c.result) })),
-    },
-  ];
-
-  try {
-    const resp2 = await anthropic.messages.create({
-      model: CLAUDE_MODEL,
-      max_tokens: 800,
-      system: systemPrompt,
-      messages: messages2,
-    } as any);
-    const blocks2 = resp2.content as unknown as Array<Record<string, unknown>>;
-    const text2 = blocks2.filter((b) => b.type === "text").map((b) => String(b.text ?? "").trim()).filter(Boolean).join("\n");
-    if (text2) return { text: text2, toolCalls };
-  } catch (e) {
-    console.warn("[executiveAssistant] Claude round2 failed:", (e as Error).message);
-  }
-
-  return { text: _buildToolFallbackSummary(toolCalls), toolCalls };
+  return { text: _buildToolFallbackSummary(allToolCalls), toolCalls: allToolCalls };
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -988,10 +1447,15 @@ export async function runExecutiveAssistant(
   supabase: SupabaseClient,
   opts: { phone: string; text: string; msgId: string; profile: ExecutiveProfile },
 ): Promise<string> {
-  const ctx: ToolExecCtx = { phone: opts.phone, originalText: opts.text, msgId: opts.msgId };
+  const ctx: ToolExecCtx = {
+    phone: opts.phone,
+    originalText: opts.text,
+    msgId: opts.msgId,
+    ownerPhone: opts.profile.phoneDigits,
+  };
   const [personaTemplate, rulesSuffix, brief, history] = await Promise.all([
     fetchExecutivePersonaTemplate(supabase),
-    fetchExecutiveRules(supabase),
+    fetchExecutiveRules(supabase, opts.profile.phoneDigits),
     fetchResortBrief(supabase),
     fetchExecutiveHistory(supabase, opts.phone),
   ]);
