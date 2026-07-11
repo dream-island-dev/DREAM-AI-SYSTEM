@@ -25,12 +25,10 @@ import {
   resolveStageSchedule,
   checkEligibility,
   CORE_PIPELINE_STAGE_KEYS,
-  isPastAutoCheckinGateway,
   isPastAutoCheckoutGateway,
   israelYmd,
   isGuestStaffClaimActive,
   resolveAutomationScope,
-  AUTO_CHECKIN_ELIGIBLE_STATUSES,
   AUTO_CHECKOUT_ELIGIBLE_STATUSES,
   type AutomationStage,
   type GuestForSchedule,
@@ -92,7 +90,6 @@ Deno.serve(async (req: Request) => {
 
     const now = new Date();
     const todayIsrael = israelYmd(now);
-    const checkinEligible = [...AUTO_CHECKIN_ELIGIBLE_STATUSES];
     const checkoutEligible = [...AUTO_CHECKOUT_ELIGIBLE_STATUSES];
 
     // ── 11:00 Israel auto checkout — departure day (or catch-up if overdue) ──
@@ -143,13 +140,6 @@ Deno.serve(async (req: Request) => {
     if (autoCheckoutCount > 0) {
       console.log(`[whatsapp-cron] auto_checkout archived ${autoCheckoutCount} guest(s) (today=${todayIsrael})`);
     }
-
-    // 15:00 Israel auto check-in now runs AFTER due[] is computed below (see
-    // "15:00 Israel auto check-in" block near the dispatch loop) — moved
-    // 2026-07-10 so the night_before Friday-bundle scan sees pre-promotion
-    // status this tick instead of racing its own auto-checkin sweep (both
-    // gate on the same AUTO_CHECKIN_LOCAL_HOUR=15 clock instant).
-    let autoCheckinCount = 0;
 
     const { data: stagesData, error: stagesErr } = await supabase
       .from("automation_stages")
@@ -360,29 +350,10 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    // ── 15:00 Israel auto check-in — pending/expected/room_ready arriving today ──
-    // Runs AFTER due[] is built (see header note above): the night_before
-    // Friday-bundle scan needs to see this guest's PRE-promotion status this
-    // tick, since both the bundle send and this promotion gate on the exact
-    // same AUTO_CHECKIN_LOCAL_HOUR=15 clock instant. Guests promoted here still
-    // become checked_in in this same tick, ready for dispatch and for next
-    // tick's scan — only the ORDER within this tick changed, not the outcome.
-    if (isPastAutoCheckinGateway(now)) {
-      const { data: promoted, error: promoteErr } = await supabase
-        .from("guests")
-        .update({ status: "checked_in", checkin_time: now.toISOString() })
-        .eq("arrival_date", todayIsrael)
-        .in("status", checkinEligible)
-        .select("id");
-      if (promoteErr) {
-        console.error("[whatsapp-cron] auto_checkin update FAILED:", promoteErr.message);
-      } else {
-        autoCheckinCount = promoted?.length ?? 0;
-        if (autoCheckinCount > 0) {
-          console.log(`[whatsapp-cron] auto_checkin promoted ${autoCheckinCount} guest(s) for ${todayIsrael}`);
-        }
-      }
-    }
+    // 15:00 Israel auto check-in DISABLED (2026-07-11) — the housekeeping WA
+    // group ("N צ'ק אין") is now the sole check-in source for suites; this
+    // sweep used to race ahead of staff and made the group ack falsely read
+    // "כבר מסומן כצ'ק-אין". See docs/changelog.md.
 
     // Delegate each to whatsapp-send (idempotent there), throttled in batches.
     const results: any[] = [];
@@ -455,7 +426,6 @@ Deno.serve(async (req: Request) => {
     return new Response(JSON.stringify({
       ok: true,
       scanned: guests?.length ?? 0,
-      auto_checkin_promoted: autoCheckinCount,
       auto_checkout_archived: autoCheckoutCount,
       fired: results.length,
       stage2_reconcile_queued: stage2ReconcileQueued,

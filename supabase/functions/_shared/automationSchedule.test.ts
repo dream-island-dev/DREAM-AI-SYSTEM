@@ -14,6 +14,8 @@
 import { assertEquals } from "https://deno.land/std@0.168.0/testing/asserts.ts";
 import {
   resolveStageSchedule,
+  shouldAutoPromoteToCheckedIn,
+  resolveEffectiveGuestStatus,
   type AutomationStage,
   type GuestForSchedule,
 } from "./automationSchedule.ts";
@@ -143,4 +145,40 @@ Deno.test("night_before: Saturday arrival checked_in is NOT covered by the Frida
   // status here should not be silently reinterpreted as the Friday skip.
   assertEquals(result.skipReason, null);
   assertEquals(result.dueNow, true);
+});
+
+// ── 15:00 auto check-in promotion — disabled 2026-07-11 (housekeeping WA
+// group is the sole check-in source for suites) ──────────────────────────
+
+Deno.test("shouldAutoPromoteToCheckedIn: always false — expected guest, arrival today, 16:00", () => {
+  const guest = suiteGuest({ status: "expected", arrival_date: SAT });
+  const result = shouldAutoPromoteToCheckedIn(
+    { arrival_date: guest.arrival_date, status: guest.status },
+    israelInstant(SAT, 16, 0),
+  );
+  assertEquals(result, false);
+});
+
+Deno.test("shouldAutoPromoteToCheckedIn: always false — pending guest, arrival today, past gateway", () => {
+  const result = shouldAutoPromoteToCheckedIn(
+    { arrival_date: SAT, status: "pending" },
+    israelInstant(SAT, 23, 0),
+  );
+  assertEquals(result, false);
+});
+
+Deno.test("resolveEffectiveGuestStatus: expected guest at 16:00 stays expected (no auto-promotion)", () => {
+  const result = resolveEffectiveGuestStatus(
+    { status: "expected", arrival_date: SAT, departure_date: null },
+    israelInstant(SAT, 16, 0),
+  );
+  assertEquals(result, "expected");
+});
+
+Deno.test("resolveEffectiveGuestStatus: departure-day auto checkout still fires at 11:00", () => {
+  const result = resolveEffectiveGuestStatus(
+    { status: "checked_in", arrival_date: FRI, departure_date: SAT },
+    israelInstant(SAT, 11, 30),
+  );
+  assertEquals(result, "checked_out");
 });

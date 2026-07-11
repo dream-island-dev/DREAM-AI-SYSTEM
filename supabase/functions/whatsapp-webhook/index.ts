@@ -79,7 +79,6 @@ import {
   buildCheckInPolicyReply,
   isReplyObviouslyTruncated,
   resolveTruncatedReplyFallback,
-  shouldAutoPromoteToCheckedIn,
   resolveEffectiveGuestStatus,
   isGuestEligibleForInHouseOpsDispatch,
   extractAllowlistedRequestLines,
@@ -803,23 +802,6 @@ function applyInRoomStatusOverride(
     .then(({ error }: { error: { message: string } | null }) => {
       if (error) {
         console.error(`[webhook] in-room status override FAILED phone:${phone}:`, error.message);
-      }
-    });
-}
-
-function applyAutoCheckinPromotion(
-  supabase: ReturnType<typeof createClient>,
-  guestId: number,
-  phone: string,
-): void {
-  supabase
-    .from("guests")
-    .update({ status: "checked_in", checkin_time: new Date().toISOString() })
-    .eq("id", guestId)
-    .in("status", ["pending", "expected", "room_ready"])
-    .then(({ error }: { error: { message: string } | null }) => {
-      if (error) {
-        console.error(`[webhook] auto_checkin promotion FAILED phone:${phone}:`, error.message);
       }
     });
 }
@@ -3222,12 +3204,8 @@ Deno.serve(async (req: Request) => {
         nowForGuest,
       );
 
-      // ── 15:00 Israel auto check-in — arrival today, still pending/expected ──
-      if (guestId && guest && shouldAutoPromoteToCheckedIn(guest as { status?: string; arrival_date?: string }, nowForGuest)) {
-        guest = { ...guest, status: "checked_in" };
-        applyAutoCheckinPromotion(supabase, guestId, phone);
-        console.info(`[webhook] 🕒 auto_checkin gateway → checked_in phone:${phone} guest:${guestId}`);
-      }
+      // 15:00 Israel auto check-in DISABLED (2026-07-11) — housekeeping WA
+      // group is the sole check-in source for suites; see whatsapp-cron.
 
       const staffClaimActive = isStaffClaimMutingGuest(guest as Record<string, unknown> | null);
       setSuppressGuestRepliesStaffClaim(staffClaimActive);

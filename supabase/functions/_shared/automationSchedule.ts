@@ -115,13 +115,22 @@ export function isGuestArrivalToday(
   return !!arrivalDate && arrivalDate === israelYmd(now);
 }
 
+/**
+ * DISABLED (2026-07-11) — always returns false. The 15:00 sweep used to flip
+ * pending/expected/room_ready guests to checked_in ahead of staff, which made
+ * the housekeeping WA group's "N צ'ק אין" ack falsely read "כבר מסומן
+ * כצ'ק-אין". The housekeeping WA group (housekeepingCheckInSignal.ts) is now
+ * the sole check-in source for suites; manual GuestsPage/RoomBoard check-in
+ * still works via performSuiteCheckIn. AUTO_CHECKIN_LOCAL_HOUR /
+ * isPastAutoCheckinGateway stay in use — isCheckinBeforeTodayAutoGateway
+ * still needs the 15:00 instant for the night_before Friday-bundle date math
+ * below, which is unrelated to this promotion.
+ */
 export function shouldAutoPromoteToCheckedIn(
-  guest: { arrival_date?: string | null; status?: string | null },
-  now: Date,
+  _guest: { arrival_date?: string | null; status?: string | null },
+  _now: Date,
 ): boolean {
-  if (!isPastAutoCheckinGateway(now)) return false;
-  if (!isGuestArrivalToday(guest.arrival_date, now)) return false;
-  return !!guest.status && AUTO_CHECKIN_ELIGIBLE_STATUSES.has(guest.status);
+  return false;
 }
 
 /** Auto checkout: 11:00 Israel on departure_date, or catch-up when departure_date passed. */
@@ -138,7 +147,8 @@ export function shouldAutoCheckoutGuest(
   return false;
 }
 
-/** In-memory + routing status: auto check-in after 15:00 / auto checkout after 11:00 on departure day. */
+/** In-memory + routing status: auto checkout after 11:00 on departure day. Auto
+ * check-in promotion is disabled — see shouldAutoPromoteToCheckedIn. */
 export function resolveEffectiveGuestStatus(
   guest: {
     status?: string | null;
@@ -148,7 +158,6 @@ export function resolveEffectiveGuestStatus(
   now: Date,
 ): string | null {
   if (shouldAutoCheckoutGuest(guest, now)) return "checked_out";
-  if (shouldAutoPromoteToCheckedIn(guest, now)) return "checked_in";
   return guest.status ?? null;
 }
 

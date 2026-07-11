@@ -1,6 +1,8 @@
 import {
   formatCheckinArrivalDisplay,
   sortCheckinRosterGuests,
+  shouldAutoPromoteToCheckedIn,
+  resolveEffectiveGuestStatus,
 } from "./guestCheckinMatrix";
 import { israelTodayStr } from "./guestTiming";
 
@@ -36,5 +38,25 @@ describe("sortCheckinRosterGuests prioritizeEta", () => {
     ];
     const sorted = sortCheckinRosterGuests(guests, new Date(), null, { prioritizeEta: false });
     expect(sorted.map((g) => g.id)).toEqual([1, 2]);
+  });
+});
+
+describe("shouldAutoPromoteToCheckedIn (disabled 2026-07-11)", () => {
+  it("returns false at 16:00 for an expected guest arriving today", () => {
+    const today = israelTodayStr();
+    const guest = { status: "expected", arrival_date: today };
+    const sixteenHundred = new Date();
+    sixteenHundred.setUTCHours(14, 0, 0, 0); // 16:00 Israel (UTC+2)
+    expect(shouldAutoPromoteToCheckedIn(guest, sixteenHundred)).toBe(false);
+  });
+});
+
+describe("resolveEffectiveGuestStatus (auto check-in promotion disabled)", () => {
+  it("keeps a pre-arrival guest at their real status past the old 15:00 gateway", () => {
+    const today = israelTodayStr();
+    const guest = { status: "expected", arrival_date: today };
+    const sixteenHundred = new Date();
+    sixteenHundred.setUTCHours(14, 0, 0, 0);
+    expect(resolveEffectiveGuestStatus(guest, sixteenHundred)).toBe("expected");
   });
 });

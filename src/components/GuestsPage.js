@@ -25,7 +25,6 @@ import {
   isPreArrivalTodayGuest,
   resolveEffectiveGuestStatus,
   shouldAutoCheckoutGuest,
-  shouldAutoPromoteToCheckedIn,
   sortCheckinRosterGuests,
 } from "../utils/guestCheckinMatrix";
 import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
@@ -78,7 +77,8 @@ export default function GuestsPage({
 
   const showToast = (type, msg) => { setToast({ type, msg }); setTimeout(() => setToast(null), 3500); };
 
-  /** 15:00 auto check-in + departure-day checkout — mirrors whatsapp-cron. */
+  /** Departure-day auto checkout — mirrors whatsapp-cron. 15:00 auto check-in
+   * DISABLED (2026-07-11): housekeeping WA group is the sole check-in source. */
   const applyReceptionMatrixSync = useCallback(async (guestList) => {
     if (!supabase || !guestList?.length) return guestList;
     const now = new Date();
@@ -86,13 +86,7 @@ export default function GuestsPage({
     let anyChanged = false;
 
     for (const g of guestList) {
-      if (shouldAutoPromoteToCheckedIn(g, now)) {
-        const result = await performSuiteCheckIn(supabase, g);
-        if (result.ok) {
-          next = next.map((x) => (x.id === g.id ? { ...x, ...result.guestPatch } : x));
-          anyChanged = true;
-        }
-      } else if (shouldAutoCheckoutGuest(g, now)) {
+      if (shouldAutoCheckoutGuest(g, now)) {
         const patch = { status: "checked_out", room_ready_notified: false, msg_room_ready_sent: false };
         const { error } = await supabase.from("guests").update(patch).eq("id", g.id);
         if (!error) {

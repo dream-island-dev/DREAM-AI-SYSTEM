@@ -56,17 +56,16 @@ export function isPastAutoCheckoutGateway(now = new Date()) {
   return israelLocalHour(now) >= AUTO_CHECKOUT_LOCAL_HOUR;
 }
 
-export function shouldAutoPromoteToCheckedIn(guest, now = new Date()) {
-  if (!guest?.arrival_date) return false;
-  if (!isPastAutoCheckinGateway(now)) return false;
-  if (guest.arrival_date !== israelTodayStr()) return false;
-  return AUTO_CHECKIN_ELIGIBLE.has(guest.status);
+/** DISABLED (2026-07-11) — always false. Housekeeping WA group is the sole
+ * check-in source for suites now; see automationSchedule.ts's mirror doc. */
+export function shouldAutoPromoteToCheckedIn(_guest, _now = new Date()) {
+  return false;
 }
 
-/** Effective status for UI/routing — 15:00 check-in / 11:00 checkout on departure day. */
+/** Effective status for UI/routing — 11:00 auto checkout on departure day.
+ * Auto check-in promotion is disabled — see shouldAutoPromoteToCheckedIn. */
 export function resolveEffectiveGuestStatus(guest, now = new Date()) {
   if (shouldAutoCheckoutGuest(guest, now)) return "checked_out";
-  if (shouldAutoPromoteToCheckedIn(guest, now)) return "checked_in";
   return guest?.status ?? null;
 }
 
