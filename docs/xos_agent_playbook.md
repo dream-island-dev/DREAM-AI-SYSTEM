@@ -335,6 +335,11 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
+### 2026-07-12 — Autonomous audit found uncommitted work-in-progress first
+- **Lesson:** before starting a fresh audit/fix pass, always run `git status`/`git diff --stat` first — a prior session's fully-tested, documented fix (departure-assist grounding, 22/22 tests, changelog entry already written as "not deployed") was sitting uncommitted. Verifying and shipping that is higher-value than re-auditing the same ground from scratch.
+- **`.single()` audit pattern:** grep for `.single()` across webhook files is a fast, cheap first pass for the hard CLAUDE.md rule — found one real instance (`whapi-webhook` group-task insert) that PostgREST would surface as an error object (not a JS throw) on an RLS select-back gap, so it wasn't crashing visibly but was silently mislabeling a created task as a failure.
+- **Sanitize-firewall parity checks by grep count are misleading** — `sanitizeGuestBotReply` grepped 0 hits in `whapi-webhook/index.ts` but is actually enforced via `generateGuestChatReply` in `_shared/guestBotLlm.ts`, which every Whapi guest-DM LLM reply routes through. Always trace the actual call chain, not just occurrence counts, before flagging a parity gap.
+
 ### 2026-07-11 — ETA on Requests Board (not Eliad push)
 - **Product:** Captured ETA → `guests.arrival_time` + `guest_alerts` (`arrival_eta` / «🕐 שעת הגעה»). Profile chip synced. No ops task / needs_callback / Inbox red-dot.
 - **Eliad reports:** Resort digest voiced as personal assistant; digest-relevant learned rules appended; footer invites «תזכרי ש…».
