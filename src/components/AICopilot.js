@@ -95,6 +95,21 @@ export default function AICopilot({ user }) {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
+  // Hide on the Inbox thread screen (mobile) — App.js's .mobile-bar is gone
+  // there too, so the raised default anchor would otherwise float over the
+  // composer/send button instead of clearing a bottom nav that isn't shown.
+  const [hiddenForThread, setHiddenForThread] = useState(
+    () => typeof document !== "undefined" && document.body.classList.contains("wa-inbox-mobile-thread")
+  );
+  useEffect(() => {
+    if (typeof document === "undefined") return undefined;
+    const update = () => setHiddenForThread(document.body.classList.contains("wa-inbox-mobile-thread"));
+    update();
+    const observer = new MutationObserver(update);
+    observer.observe(document.body, { attributes: true, attributeFilter: ["class"] });
+    return () => observer.disconnect();
+  }, []);
+
   function showToast(msg, type = "ok") {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 3500);
@@ -376,6 +391,7 @@ export default function AICopilot({ user }) {
   };
 
   if (!isSupabaseConfigured) return null;
+  if (isNarrowViewport && hiddenForThread) return null;
 
   const hasPending = alerts.length > 0;
   const hasNewAlert = newAlertId != null;

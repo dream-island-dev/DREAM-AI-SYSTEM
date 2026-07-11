@@ -859,6 +859,11 @@ const css = `
       overflow: hidden;
     }
     .topbar.topbar--wa-inbox .topbar-title { display: none; }
+    /* List screen: slim topbar to hamburger only — bell/account/logout stay
+       reachable via the hamburger drawer (Sidebar already shows user+logout),
+       no need to duplicate them in the Inbox topbar row. */
+    .topbar.topbar--wa-inbox .topbar-actions { display: none; }
+    .resort-pulse-bar--wa-inbox { display: none; }
     .main.main--wa-inbox {
       display: flex;
       flex-direction: column;
@@ -866,6 +871,9 @@ const css = `
     }
     body.wa-inbox-mobile-thread .mobile-bar { display: none !important; }
     body.wa-inbox-mobile-thread .main { padding-bottom: 0; }
+    /* Thread screen: drop the topbar entirely — the green thread header inside
+       WhatsAppInbox.js already provides back-nav; nothing else needed here. */
+    body.wa-inbox-mobile-thread .topbar { display: none !important; }
     .stat-grid {
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: var(--space-sm);
@@ -2503,7 +2511,7 @@ export default function App({ initialPage = "dashboard" }) {
                 ☰
               </button>
               <div className="topbar-title">{pageTitle[activePage]}</div>
-              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <div className="topbar-actions" style={{ display: "flex", alignItems: "center", gap: 12 }}>
                 <button
                   type="button"
                   className="topbar-cmd-btn u-touch-staff"
@@ -2588,7 +2596,10 @@ export default function App({ initialPage = "dashboard" }) {
               </div>
             </div>
             {user?.role !== "cleaner" && activePage !== "housekeeping_tablet" && (
-              <ResortPulseBar onAction={handlePulseAction} />
+              <ResortPulseBar
+                onAction={handlePulseAction}
+                className={activePage === "wa_inbox" ? "resort-pulse-bar--wa-inbox" : ""}
+              />
             )}
             <div className={`content${activePage === "wa_inbox" ? " content--wa-inbox" : ""}`}>{renderPage()}</div>
           </div>

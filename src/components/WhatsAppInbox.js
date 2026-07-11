@@ -1039,8 +1039,10 @@ const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobil
       const dy = ev.clientY - dragRef.current.startY;
       // Vertical scroll dominates this gesture — bail out so scrolling the
       // roster to reach another guest never gets misread as a swipe (which
-      // would silently eat the next tap on that row).
-      if (Math.abs(dy) > 24 && Math.abs(dy) > Math.abs(dx)) { cleanup(); return; }
+      // would silently eat the next tap on that row). Threshold raised from
+      // 24→32px (Phase 2) — a fast scroll flick can rack up a few px of dy
+      // before dx catches up; the wider margin cuts false-positive swipes.
+      if (Math.abs(dy) > 32 && Math.abs(dy) > Math.abs(dx)) { cleanup(); return; }
       if (Math.abs(dx) > 48) {
         setSwiped(rtl ? dx < 0 : dx > 0);
         cleanup();
@@ -2765,6 +2767,11 @@ export default function WhatsAppInbox({
     else if (id === "tomorrow") saveCheckinFilter({ scope: CHECKIN_TIMELINE_TOMORROW, customDate: null });
   }, []);
   const [rosterSort, setRosterSort] = useState("activity"); // activity | arrival | name
+  // Phase 2 mobile roster density — channel + sort chips collapse behind this
+  // toggle so the sticky header stays short enough to leave room for contact
+  // rows on a 390px screen; the primary status chips (rosterFilterChips) stay
+  // always visible since those are the ones staff reach for constantly.
+  const [rosterFilterPanelOpen, setRosterFilterPanelOpen] = useState(false);
   const [mobileToolbarOpen, setMobileToolbarOpen] = useState(false);
   const [mobileThreadMenuOpen, setMobileThreadMenuOpen] = useState(false);
   const [archivedPhones, setArchivedPhones] = useState(() => new Set());
@@ -3579,6 +3586,11 @@ export default function WhatsAppInbox({
   // marks its inbound messages read locally so the unread badge actually
   // clears (previously `_read` was referenced by the badge logic but never
   // set anywhere, so unread counts only ever grew). ─────────────────────────
+  // Tracks whether the current thread view pushed a browser-history entry
+  // (Phase 3A) so goBackToList can pop it instead of leaving a dangling
+  // forward-entry that would eat one extra Android back press.
+  const threadHistoryPushedRef = useRef(false);
+
   const openContact = useCallback((contact) => {
     if (!contact?.threadKey) return;
     setActive(contact.threadKey);
@@ -3586,6 +3598,10 @@ export default function WhatsAppInbox({
       setMobileScreen("thread");
       setMobileToolbarOpen(false);
       setMobileThreadMenuOpen(false);
+      if (typeof window !== "undefined" && window.history) {
+        window.history.pushState({ waScreen: "thread" }, "");
+        threadHistoryPushedRef.current = true;
+      }
     }
     setDrawerOpen(false);
     setQuickOpen(false);
@@ -3604,18 +3620,35 @@ export default function WhatsAppInbox({
     }
   }, [mobileScreen]);
 
-  const goBackToList = useCallback(() => {
+  // State-only close — the single place `mobileScreen` flips back to "list".
+  // Called directly when there's no pushed history entry to pop, and from the
+  // popstate listener below when the browser/Android back button fires.
+  const closeThread = useCallback(() => {
     setMobileScreen("list");
     setMobileThreadMenuOpen(false);
     setQuickOpen(false);
     setDrawerOpen(false);
   }, []);
 
+  // Public "go back" entry point — routes through history.back() when we own
+  // a pushed entry so the browser's back stack and the in-app screen never
+  // drift apart; popstate below is what actually calls closeThread() in that
+  // case. Falls back to an immediate closeThread() otherwise (desktop, or no
+  // history entry was pushed for this thread).
+  const goBackToList = useCallback(() => {
+    if (isMobile && threadHistoryPushedRef.current && typeof window !== "undefined" && window.history) {
+      threadHistoryPushedRef.current = false;
+      window.history.back();
+      return;
+    }
+    closeThread();
+  }, [isMobile, closeThread]);
+
   useEffect(() => {
     if (isMobile && mobileScreen === "thread" && !active) {
-      setMobileScreen("list");
+      goBackToList();
     }
-  }, [isMobile, mobileScreen, active]);
+  }, [isMobile, mobileScreen, active, goBackToList]);
 
   // Full-screen thread on phone — hide bottom nav (WhatsApp-style)
   useEffect(() => {
@@ -3623,6 +3656,31 @@ export default function WhatsAppInbox({
     const onThread = mobileScreen === "thread";
     document.body.classList.toggle("wa-inbox-mobile-thread", onThread);
     return () => { document.body.classList.remove("wa-inbox-mobile-thread"); };
+  }, [isMobile, mobileScreen]);
+
+  // Android/browser hardware back button while on the thread screen → close
+  // the thread instead of leaving the app/page. Mobile only; cleaned up on
+  // unmount or when the mobile breakpoint changes.
+  useEffect(() => {
+    if (!isMobile) return undefined;
+    const onPopState = () => {
+      threadHistoryPushedRef.current = false;
+      closeThread();
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [isMobile, closeThread]);
+
+  // Phase 3B (option A) — preserve the roster's scroll position across a
+  // thread visit. The list/thread panes are mounted exclusively (ternary), so
+  // the scrollable list div is a fresh DOM node every time we come back —
+  // without this it silently reset to the top on every single chat visit.
+  const listScrollRef = useRef(null);
+  const savedListScrollRef = useRef(0);
+  useEffect(() => {
+    if (isMobile && mobileScreen === "list" && listScrollRef.current) {
+      listScrollRef.current.scrollTop = savedListScrollRef.current;
+    }
   }, [isMobile, mobileScreen]);
 
   // ── Deep-link focus (Requests Board → "פתח שיחה ב-DREAM BOT") ───────────
@@ -4485,7 +4543,11 @@ export default function WhatsAppInbox({
   // ── Contact list pane — shared between the desktop two-pane layout and the
   // mobile "list" screen. ───────────────────────────────────────────────────
   const listPane = (
-    <div style={{ height: "100%", overflowY: "auto", background: "var(--card-bg)" }}>
+    <div
+      ref={listScrollRef}
+      onScroll={(e) => { savedListScrollRef.current = e.currentTarget.scrollTop; }}
+      style={{ height: "100%", overflowY: "auto", background: "var(--card-bg)" }}
+    >
       <div style={{
         padding: "var(--space-sm) var(--space-md)", borderBottom: "1px solid var(--border)",
         display: "flex", justifyContent: "space-between", alignItems: "center", gap: "var(--space-sm)",
@@ -4549,7 +4611,7 @@ export default function WhatsAppInbox({
             }}
           >
             {dismissAllBusy ? "⏳" : "✓"}
-            {t.dismissAllAlerts}
+            {!isMobile && t.dismissAllAlerts}
             {alertContacts.length > 0 && !dismissAllBusy && (
               <span style={{
                 background: "var(--gold, #C9A96E)", color: "#1A1A1A",
@@ -4570,14 +4632,26 @@ export default function WhatsAppInbox({
           top: 44,
           zIndex: 1,
         }}>
-          <input
-            type="search"
-            value={rosterSearch}
-            onChange={(e) => setRosterSearch(e.target.value)}
-            placeholder={t.searchPh}
-            aria-label={t.searchPh}
-            className="wa-roster-search"
-          />
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <input
+              type="search"
+              value={rosterSearch}
+              onChange={(e) => setRosterSearch(e.target.value)}
+              placeholder={t.searchPh}
+              aria-label={t.searchPh}
+              className="wa-roster-search"
+              style={{ flex: 1, minWidth: 0 }}
+            />
+            <button
+              type="button"
+              onClick={() => setRosterFilterPanelOpen((o) => !o)}
+              className={`wa-sort-chip${rosterFilterPanelOpen || channelFilter !== "all" ? " wa-sort-chip--active" : ""}`}
+              style={{ flexShrink: 0 }}
+              title="ערוץ + מיון"
+            >
+              סינון {rosterFilterPanelOpen ? "▲" : "▾"}
+            </button>
+          </div>
           {dbSearchBusy && (
             <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 4 }}>{t.dbSearching}</div>
           )}
@@ -4601,36 +4675,40 @@ export default function WhatsAppInbox({
               </button>
             ))}
           </div>
-          <div style={{ display: "flex", gap: 6, marginTop: 6, overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
-            {[
-              { id: "all", label: "כל הערוצים" },
-              { id: "meta", label: "Dream Bot" },
-              { id: "whapi", label: "מכשיר הסוויטות" },
-            ].map((chip) => (
-              <button
-                key={chip.id}
-                type="button"
-                onClick={() => setChannelFilter(chip.id)}
-                className={`wa-sort-chip${channelFilter === chip.id ? " wa-sort-chip--active" : ""}`}
-              >
-                {chip.label}
-              </button>
-            ))}
-          </div>
-          {rosterFilter === "all" && !rosterSearch.trim() && (
-            <div style={{ display: "flex", gap: 6, marginTop: 6, alignItems: "center", flexWrap: "wrap" }}>
-              <span style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 600 }}>{t.rosterGroupedHint}</span>
-              {rosterSortChips.map((chip) => (
-                <button
-                  key={chip.id}
-                  type="button"
-                  onClick={() => setRosterSort(chip.id)}
-                  className={`wa-sort-chip${rosterSort === chip.id ? " wa-sort-chip--active" : ""}`}
-                >
-                  {chip.label}
-                </button>
-              ))}
-            </div>
+          {rosterFilterPanelOpen && (
+            <>
+              <div style={{ display: "flex", gap: 6, marginTop: 6, overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+                {[
+                  { id: "all", label: "כל הערוצים" },
+                  { id: "meta", label: "Dream Bot" },
+                  { id: "whapi", label: "מכשיר הסוויטות" },
+                ].map((chip) => (
+                  <button
+                    key={chip.id}
+                    type="button"
+                    onClick={() => setChannelFilter(chip.id)}
+                    className={`wa-sort-chip${channelFilter === chip.id ? " wa-sort-chip--active" : ""}`}
+                  >
+                    {chip.label}
+                  </button>
+                ))}
+              </div>
+              {rosterFilter === "all" && !rosterSearch.trim() && (
+                <div style={{ display: "flex", gap: 6, marginTop: 6, alignItems: "center", flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 600 }}>{t.rosterGroupedHint}</span>
+                  {rosterSortChips.map((chip) => (
+                    <button
+                      key={chip.id}
+                      type="button"
+                      onClick={() => setRosterSort(chip.id)}
+                      className={`wa-sort-chip${rosterSort === chip.id ? " wa-sort-chip--active" : ""}`}
+                    >
+                      {chip.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </>
           )}
         </div>
       )}
