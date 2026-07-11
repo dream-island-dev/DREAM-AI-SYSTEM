@@ -125,8 +125,15 @@ async function fetchExecutiveHistory(
     console.warn("[executiveAssistant] fetchExecutiveHistory failed:", error.message);
     return [];
   }
+  // The 🎤 prefix (whapi-webhook's Inbox display convention for a
+  // transcribed voice note, see inboxText there) is Inbox-only — stripped
+  // here for the same reason [WHAPI]/[META] tags are: left in, the model
+  // sees several 🎤-prefixed turns in its own recent history and anchors on
+  // that pattern, parroting "can't understand the recording" back even for
+  // a freshly, successfully transcribed message (reproduced live — three
+  // real voice notes in a row all transcribed fine but got that reply).
   return ((data ?? []) as Array<{ direction: string; message: string }>)
-    .map((h) => ({ direction: h.direction, message: stripOutboundDispatchTag(h.message) }))
+    .map((h) => ({ direction: h.direction, message: stripOutboundDispatchTag(h.message).replace(/^🎤\s*/, "") }))
     .reverse()
     .slice(-4);
 }
