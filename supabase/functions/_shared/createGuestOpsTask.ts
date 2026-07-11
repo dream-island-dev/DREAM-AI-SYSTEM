@@ -11,6 +11,8 @@
 // Human-in-the-Loop gate (2026-07-07, unchanged here): always inserts
 // status='pending_approval'. Never dispatches to Whapi directly — staff
 // review/edit/approve in OperationsBoard.js is what triggers notify-manual-task.
+// Failsafe (2026-07-11): sla-escalation-cron auto-invokes that same function
+// after PENDING_APPROVAL_AUTO_APPROVE_MINUTES if reception never approves.
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { resolveGuestOpsDepartment, guessGuestOpsSlaCategory } from "./automationSchedule.ts";

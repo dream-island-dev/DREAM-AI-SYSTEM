@@ -85,6 +85,7 @@ whatsapp-webhook (צינור העיבוד הנכנס)
 
 מנוע אישור משימות שטח (Human-in-the-Loop)
 הבוט מייצר שורה בטבלת tasks בסטטוס pending_approval. הצוות ב-OperationsBoard.js מאשר או דוחה. רק לאחר אישור, הפונקציה notify-manual-task מתרגמת לאנגלית ומשגרת לקבוצת ה-Whapi הרלוונטית. SLA נמדד מרגע האישור.
+Failsafe (Hybrid unanswered escalation, `_shared/handoffEscalation.ts` + `sla-escalation-cron`): אם קבלת לא אישרה תוך 7 דק׳ — ה-cron קורא לאותו `notify-manual-task` (auto-approve + שיגור לתפעול) ומעדכן את מייק/אליעד/אדיר ב-Whapi DM. בקשות רכות (ספא / שינוי תאריך / כספים / staff_handoff) לא פותחות קריאת שטח — אחרי 20 דק׳ רק פינג לקבלה (`SLA_GUEST_ALERT_PHONE`) עם `whatsapp_conversations.handoff_escalated_at` (migration 186). דורש `SLA_ESCALATION_ENABLED=true`.
 
 כרטיסי משימה בקבוצת Whapi (whapi-webhook + notify-manual-task): תבנית אחידה `_shared/taskCard.ts` — `📌 New Task Opened: Suite X` / `📋 Task` / `⏰ Status: Pending`; משימות מ-Inbox/HITL מוסיפות `📍 Source: [GUEST WA]` בשורה נפרדת. שורת שיוך = `👤 Assigned: {profiles.name}` דרך `_shared/assignedWorker.ts`. אין @mention לפי טלפון — בקבוצות עם פרטיות WhatsApp מציג LID מספרי (@1855…) במקום שם/מספר קריא.
 

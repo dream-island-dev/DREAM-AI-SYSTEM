@@ -1,7 +1,28 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-11 (Resort Ops Digest shipped, all 4 phases + pg_cron).
+> Last updated: 2026-07-11 (Hybrid unanswered-guest escalation coded — awaiting deploy).
 > Full session history → `CLAUDE.md` §10 + `claude_history.md`.
 > **Agent workflow** → `docs/xos_agent_playbook.md`
+
+---
+
+## 🟢 In Progress — Hybrid unanswered-guest escalation (2026-07-11)
+
+Problem: Inbox red-dot (`human_requested`) + HITL `pending_approval` with no reception action left guests waiting forever — SLA cron only watched `status='open'`.
+
+| Path | Trigger | Action |
+|---|---|---|
+| HARD | `tasks` `pending_approval` + `guest_request` ≥7 min | auto `notify-manual-task` → ops Whapi + ping Mike/Eliad/Adir |
+| SOFT | Inbox `human_requested` non-ops (spa/date/finance/handoff) ≥20 min | Meta ping Adir only — **no** ops card; `handoff_escalated_at` |
+
+Code: `_shared/handoffEscalation.ts` (+6 tests), `sla-escalation-cron`, migration **186**. Kill switch still `SLA_ESCALATION_ENABLED=true`.
+
+| Phase | Status |
+|---|---|
+| Code + tests | ✅ done |
+| Cherry-pick Claude gemini-1.5 fix onto `main` | ✅ done |
+| `db push` migration 186 | 🔄 deploying |
+| `functions deploy sla-escalation-cron` | 🔄 deploying |
+| Push `main` (Vercel BotSettings + docs) | 🔄 deploying |
 
 ---
 

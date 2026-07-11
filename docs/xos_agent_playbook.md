@@ -335,6 +335,11 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
+### 2026-07-11 — HITL `pending_approval` had no SLA clock
+- **Symptom:** Guest room ask → red Inbox dot + Ops `pending_approval` task; reception ignores both → guest waits forever.
+- **Root:** `sla-escalation-cron` only scanned `tasks.status='open'`. HITL gate never flipped → unassigned SLA never fired. Soft handoffs (`human_requested` only) had zero escalation path.
+- **Fix pattern:** reuse `notify-manual-task` for auto-approve (don't duplicate Whapi card logic); split HARD (ops, 7 min, page management) vs SOFT (reception ping only, 20 min, never open field ops). Kill switch still `SLA_ESCALATION_ENABLED`.
+
 ### 2026-07-11 — CRA `npm start` OOM (Windows + Node 24)
 - **Symptom:** `FATAL ERROR: invalid table size` / heap OOM ~900MB during webpack compile; `npm run build` often still OK.
 - **False lead:** raising `NODE_OPTIONS=--max-old-space-size=4096` in PowerShell — on Windows the flag frequently never reaches the `react-scripts` child.

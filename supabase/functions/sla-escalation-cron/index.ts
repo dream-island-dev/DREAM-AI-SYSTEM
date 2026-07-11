@@ -1,34 +1,26 @@
 // supabase/functions/sla-escalation-cron/index.ts
 // SLA escalation scanner (pg_cron, every 1 min — see migration 074).
 //
-// Scans TWO boards for overdue items in English (dual-language framework:
+// Scans FOUR queues for overdue items in English (dual-language framework:
 // guests Hebrew, staff English):
 //   • guest_alerts (Guest Requests Board) — flat 10-min threshold, unchanged —
 //     notifies Adir (SLA_GUEST_ALERT_PHONE) via Meta (whatsapp-send inbox_reply).
-//   • tasks (Operations & Maintenance Board) — "unassigned" SLA: any task still
-//     status='open' (nobody tapped Accept → in_progress) past its threshold →
-//     🚨 alert posted straight into the Whapi ops group (SLA_ALERT_GROUP_ID,
-//     falls back to WHAPI_GROUP_ID). A claimed task (in_progress) stops
-//     escalating. Session 30 Sprint 5.3b — DYNAMIC routing: the unassigned
-//     threshold is now read from the task's own sla_category (SLA_THRESHOLDS
-//     below — same 10/15/30-min values whapi-webhook/NewTaskForm already use
-//     for the completion deadline) when one was set at creation; a task with
-//     no category (e.g. a manual task where the admin left "ללא מעקב SLA")
-//     falls back to the flat SLA_UNASSIGNED_MINUTES default (7). Previously
-//     this was a SINGLE flat 7-min window for every task regardless of
-//     category — a pest-control report and a towel request escalated on the
-//     same clock, which under-served the categories configured for a tighter
-//     window (10 min) and over-alerted on slower ones (30 min).
-// Both also broadcast a push-notify alert to the "הנהלה" department so the
-// dashboard surfaces it, not just WhatsApp.
+//   • pending_approval guest_request tasks (HITL stuck) — after 7 min with no
+//     reception Approve, auto-invoke notify-manual-task (pending→open + Whapi
+//     ops card) and page Mike/Eliad/Adir. Fixes the red-dot-ignored gap where
+//     the guest waited forever because sla only watched status='open'.
+//   • tasks status='open' unassigned SLA — unchanged (category 10/15/30 or
+//     flat SLA_UNASSIGNED_MINUTES). Claimed (in_progress) stops escalating.
+//   • soft Inbox handoffs (human_requested, non-ops types: spa / late checkout /
+//     finance / staff_handoff) — after 20 min, ping duty reception only. Never
+//     opens a field-ops card (migration 186 handoff_escalated_at idempotency).
 //
 // Same dedicated kill switch: deploying this does nothing until
 // SLA_ESCALATION_ENABLED=true is set explicitly in Supabase Secrets.
 //
-// Delivery split: guest_alerts → whatsapp-send "inbox_reply" (Meta, the one
-// trigger exempt from AUTOMATION_ENABLED — direct staff notification). tasks →
-// Whapi straight into the ops group (_shared/whapiSend.ts) — the same channel
-// the Sprint-2 task cards use, so breaches land where the team already works.
+// Delivery split: guest_alerts + soft handoffs → whatsapp-send "inbox_reply"
+// (Meta). pending auto-approve → notify-manual-task + Whapi DM to management.
+// open unassigned → Whapi ops group / SLA_OPS_ALERT_PHONE.
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -43,6 +35,17 @@ import {
   taskIntentType,
   alertIntentType,
 } from "../_shared/routingConfig.ts";
+import { listKnownExecutivePhoneDigits } from "../_shared/executiveIdentity.ts";
+import {
+  PENDING_APPROVAL_AUTO_APPROVE_MINUTES,
+  SOFT_HANDOFF_SLA_MINUTES,
+  pendingApprovalCutoffIso,
+  softHandoffCutoffIso,
+  isSoftHandoffHumanRequestType,
+  dedupePhoneDigits,
+  buildPendingAutoApproveManagerText,
+  buildSoftHandoffManagerText,
+} from "../_shared/handoffEscalation.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -93,6 +96,62 @@ async function pushAlert(supabaseUrl: string, anon: string, title: string, body:
     });
   } catch (e) {
     console.warn("[sla-escalation-cron] push-notify call failed (non-blocking):", (e as Error).message);
+  }
+}
+
+/** Mike + Eliad (KNOWN_EXECUTIVES) + Adir phones + optional MANAGEMENT_ESCALATION_PHONES. */
+function managementEscalationPhones(): string[] {
+  const extra = (Deno.env.get("MANAGEMENT_ESCALATION_PHONES") ?? "").split(",");
+  return dedupePhoneDigits([
+    ...listKnownExecutivePhoneDigits(),
+    Deno.env.get("SLA_OPS_ALERT_PHONE"),
+    Deno.env.get("SLA_GUEST_ALERT_PHONE"),
+    ...extra,
+  ]);
+}
+
+async function pingPhonesWhapi(phones: string[], message: string): Promise<number> {
+  let ok = 0;
+  for (const phone of phones) {
+    try {
+      await sendWhapiText(phone, message, { noLinkPreview: true });
+      ok++;
+    } catch (e) {
+      console.error(`[sla-escalation-cron] management Whapi ping failed for ${phone}:`, (e as Error).message);
+    }
+  }
+  return ok;
+}
+
+/** Same Approve & Dispatch path OperationsBoard uses — flips pending_approval→open + Whapi card. */
+async function invokeNotifyManualTask(
+  supabaseUrl: string,
+  serviceKey: string,
+  taskId: string | number,
+): Promise<{ ok: boolean; notified: boolean; reason?: string }> {
+  try {
+    const res = await fetch(`${supabaseUrl}/functions/v1/notify-manual-task`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: serviceKey,
+        Authorization: `Bearer ${serviceKey}`,
+      },
+      body: JSON.stringify({ taskId, reviewerId: null }),
+    });
+    const json = await res.json().catch(() => ({})) as {
+      ok?: boolean;
+      notified?: boolean;
+      reason?: string;
+      error?: string;
+    };
+    return {
+      ok: res.ok && json?.ok !== false,
+      notified: json?.notified === true,
+      reason: json?.reason ?? json?.error,
+    };
+  } catch (e) {
+    return { ok: false, notified: false, reason: (e as Error).message };
   }
 }
 
@@ -180,6 +239,73 @@ serve(async (req: Request) => {
     }
     if (guestResults.length > 0) {
       await pushAlert(supabaseUrl, anon, "⚠️ SLA Breach — Guest Request", `${guestResults.length} guest request(s) unresolved past ${GUEST_ALERT_SLA_MINUTES} min.`);
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // 1b. HITL stuck — pending_approval guest_request auto-approve (7 min).
+    //     Reception ignored the red dot / Ops Board queue → auto-dispatch to
+    //     field ops via notify-manual-task, then page Mike/Eliad/Adir.
+    // ════════════════════════════════════════════════════════════════════════
+    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const pendingCutoffIso = pendingApprovalCutoffIso(PENDING_APPROVAL_AUTO_APPROVE_MINUTES);
+    const { data: stuckPending, error: pendingErr } = await supabase
+      .from("tasks")
+      .select("id, room_number, description, created_at, source, status")
+      .eq("status", "pending_approval")
+      .eq("source", "guest_request")
+      .lt("created_at", pendingCutoffIso)
+      .limit(25);
+    if (pendingErr) throw new Error(`pending_approval_lookup_error: ${pendingErr.message}`);
+
+    const managementPhones = managementEscalationPhones();
+    if ((stuckPending ?? []).length > 0 && managementPhones.length === 0) {
+      console.warn("[sla-escalation-cron] ⚠️ no management phones — auto-approve will still dispatch ops card, but nobody gets the personal ping.");
+    }
+
+    const pendingAutoResults: Array<{ taskId: string | number; dispatched: boolean; managementPinged: number; reason?: string }> = [];
+    for (const task of stuckPending ?? []) {
+      const ageMinutes = Math.round((Date.now() - new Date(task.created_at as string).getTime()) / 60000);
+      const dispatch = await invokeNotifyManualTask(supabaseUrl, serviceKey, task.id as string | number);
+      if (!dispatch.ok && dispatch.reason !== "already_processed") {
+        console.error(
+          `[sla-escalation-cron] pending auto-approve failed for task ${task.id}: ${dispatch.reason ?? "unknown"}`,
+        );
+        pendingAutoResults.push({
+          taskId: task.id as string | number,
+          dispatched: false,
+          managementPinged: 0,
+          reason: dispatch.reason,
+        });
+        continue; // retry next minute — status still pending_approval
+      }
+
+      const managerText = buildPendingAutoApproveManagerText({
+        room: task.room_number as string | null,
+        description: task.description as string | null,
+        ageMinutes,
+        taskId: task.id as string | number,
+      });
+      const pinged = managementPhones.length > 0
+        ? await pingPhonesWhapi(managementPhones, managerText)
+        : 0;
+
+      console.info(
+        `[sla-escalation-cron] pending task ${task.id} AUTO-APPROVED after ${ageMinutes} min — notified=${dispatch.notified} management_pings=${pinged}`,
+      );
+      pendingAutoResults.push({
+        taskId: task.id as string | number,
+        dispatched: dispatch.notified || dispatch.reason === "already_processed",
+        managementPinged: pinged,
+        reason: dispatch.reason,
+      });
+    }
+    if (pendingAutoResults.some((r) => r.dispatched)) {
+      await pushAlert(
+        supabaseUrl,
+        anon,
+        "🚨 Auto-dispatch — Guest room request",
+        `${pendingAutoResults.filter((r) => r.dispatched).length} pending_approval task(s) auto-approved after ${PENDING_APPROVAL_AUTO_APPROVE_MINUTES} min.`,
+      );
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -328,11 +454,79 @@ serve(async (req: Request) => {
       await pushAlert(supabaseUrl, anon, "🚨 SLA Breach — Unassigned Task", `${(overdueTasks ?? []).length} task(s) unassigned past their SLA window.`);
     }
 
+    // ════════════════════════════════════════════════════════════════════════
+    // 3. Soft Inbox handoffs — human_requested, non-ops types (20 min).
+    //    Spa / late checkout / finance / generic staff_handoff → ping Adir
+    //    (SLA_GUEST_ALERT_PHONE) only. Never create a field-ops task.
+    // ════════════════════════════════════════════════════════════════════════
+    const softCutoffIso = softHandoffCutoffIso(SOFT_HANDOFF_SLA_MINUTES);
+    const { data: softCandidates, error: softErr } = await supabase
+      .from("whatsapp_conversations")
+      .select("id, phone, message, human_request_type, created_at, guest_id, guests(name, room)")
+      .eq("human_requested", true)
+      .eq("direction", "inbound")
+      .is("handoff_escalated_at", null)
+      .lt("created_at", softCutoffIso)
+      .order("created_at", { ascending: true })
+      .limit(40);
+    if (softErr) throw new Error(`soft_handoff_lookup_error: ${softErr.message}`);
+
+    const softResults: Array<{ conversationId: string | number; notified: boolean }> = [];
+    for (const row of softCandidates ?? []) {
+      if (!isSoftHandoffHumanRequestType(row.human_request_type as string | null)) continue;
+
+      const softGuest = (row as { guests?: { name?: string; room?: string } | null }).guests;
+      const guestLabel = softGuest
+        ? `${softGuest.name ?? "Guest"} (Room ${softGuest.room ?? "—"})`
+        : String(row.phone);
+      const ageMinutes = Math.round((Date.now() - new Date(row.created_at as string).getTime()) / 60000);
+      const preview = String(row.message ?? "").replace(/\s+/g, " ").trim().slice(0, 160);
+      const softText = buildSoftHandoffManagerText({
+        phone: String(row.phone),
+        requestType: row.human_request_type as string | null,
+        guestLabel,
+        ageMinutes,
+        preview,
+      });
+
+      const notified = guestAlertPhone
+        ? await notifyWhatsapp(supabaseUrl, anon, guestAlertPhone, softText)
+        : false;
+
+      // Mark regardless (same as guest_alerts) so a missing Adir phone does not
+      // re-scan the same soft row forever. Duty manager still sees Inbox red dot.
+      const { error: softMarkErr } = await supabase
+        .from("whatsapp_conversations")
+        .update({ handoff_escalated_at: new Date().toISOString() })
+        .eq("id", row.id);
+      if (softMarkErr) {
+        console.error(
+          `[sla-escalation-cron] failed to mark soft handoff ${row.id} escalated (will re-fire next run):`,
+          softMarkErr.message,
+        );
+      }
+
+      softResults.push({ conversationId: row.id as string | number, notified });
+    }
+    if (softResults.length > 0) {
+      await pushAlert(
+        supabaseUrl,
+        anon,
+        "⚠️ Soft handoff unanswered",
+        `${softResults.length} Inbox handoff(s) past ${SOFT_HANDOFF_SLA_MINUTES} min (non-ops).`,
+      );
+    }
+
     return new Response(
       JSON.stringify({
         ok: true,
         guestAlerts: { scanned: overdueAlerts?.length ?? 0, results: guestResults },
-        opsTasks:    { scanned: overdueTasks?.length ?? 0, results: opsResults },
+        pendingAutoApprove: {
+          scanned: stuckPending?.length ?? 0,
+          results: pendingAutoResults,
+        },
+        opsTasks: { scanned: overdueTasks?.length ?? 0, results: opsResults },
+        softHandoffs: { scanned: softCandidates?.length ?? 0, results: softResults },
       }),
       { headers: { ...CORS, "Content-Type": "application/json" } },
     );

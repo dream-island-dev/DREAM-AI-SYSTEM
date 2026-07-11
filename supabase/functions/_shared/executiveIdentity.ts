@@ -53,6 +53,14 @@ const KNOWN_EXECUTIVES: Record<string, ExecutiveProfile> = {
 /** The CEO's phone (bare digits) — resort-wide broadcasts (e.g. Resort Ops Digest) go to him only, never to Mike's QA number. */
 export const CEO_PHONE_DIGITS = KNOWN_EXECUTIVES["972505421751"].phoneDigits;
 
+/** System architect (Mike) — QA + management escalation pings. */
+export const ARCHITECT_PHONE_DIGITS = KNOWN_EXECUTIVES["972506842439"].phoneDigits;
+
+/** Bare-digit phones for every hardcoded known executive (Eliad + Mike today). */
+export function listKnownExecutivePhoneDigits(): string[] {
+  return Object.keys(KNOWN_EXECUTIVES);
+}
+
 /** profiles.email (lowercase) → the KNOWN_EXECUTIVES profile it falls back to. */
 const PROFILE_FALLBACK_EMAILS: Record<string, ExecutiveProfile> = {
   "eliad.benshimol@gmail.com": KNOWN_EXECUTIVES["972505421751"],
