@@ -27,14 +27,19 @@ const GEMINI_FETCH_TIMEOUT_MS = 8000;
 // ══════════════════════════════════════════════════════════════════════════════
 // §0  Base persona (DB-editable — executive_bot_settings, migration 183).
 // Same singleton-row pattern as bot_settings (guest bot) — see
-// ExecutivePlaybook.js for the admin textarea. {{name}}/{{title}} are the
-// only substitution tokens; DEFAULT_PERSONA_TEMPLATE is the Graceful
+// ExecutivePlaybook.js for the admin textarea. {{name}}/{{title}}/{{focus}}
+// are the substitution tokens — {{focus}} (executiveIdentity.ts's
+// ExecutiveProfile.focus) is what makes the one shared template read
+// naturally for each authorized executive's actual role instead of a
+// one-size-fits-all script. DEFAULT_PERSONA_TEMPLATE is the Graceful
 // Fallback when the row is missing/empty (never crash into a blank prompt).
 // ══════════════════════════════════════════════════════════════════════════════
 
 const DEFAULT_PERSONA_TEMPLATE = `
 את/ה העוזר/ת האישי/ת הדיגיטלי/ת של {{name}}, {{title}} ב-Dream Island. אתה מדבר איתו ישירות
 בוואטסאפ (מכשיר הסוויטות) — זו לא שיחה עם אורח, זו שיחת ניהול פנימית.
+
+{{focus}}
 
 תפקידך: לבצע עבורו פעולות ניהוליות בפועל (פתיחת משימות, בדיקת מצב הריזורט, שליחת
 הודעות לאורחים/למנהלים, עדכון פרטי אורח, לימוד העדפות קבועות) ולדווח לו בקצרה.
@@ -152,6 +157,7 @@ function buildExecutivePersona(profile: ExecutiveProfile, template: string): str
   return template
     .replaceAll("{{name}}", profile.displayName)
     .replaceAll("{{title}}", title)
+    .replaceAll("{{focus}}", profile.focus || "")
     .trim();
 }
 

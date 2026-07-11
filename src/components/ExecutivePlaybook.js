@@ -171,8 +171,9 @@ export default function ExecutivePlaybook() {
           <div style={{ padding: "16px 20px" }}>
             <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 10, lineHeight: 1.6 }}>
               הטקסט שקובע את האישיות והכללים הבסיסיים של העוזר, לפני הכללים שנלמדו למטה.
-              {" "}<code>{"{{name}}"}</code> ו-<code>{"{{title}}"}</code> מוחלפים אוטומטית בשם ובתפקיד
-              של מי שכותב (אליעד / מייק / מנהל עתידי) — אין צורך לכתוב שם קבוע.
+              {" "}<code>{"{{name}}"}</code>, <code>{"{{title}}"}</code> ו-<code>{"{{focus}}"}</code> מוחלפים אוטומטית
+              בשם, בתפקיד ובדגש-התמקדות של מי שכותב (אליעד / מייק / מנהל עתידי, מוגדר ב-executiveIdentity.ts) —
+              אין צורך לכתוב שם קבוע.
             </div>
             {personaLoading ? (
               <div style={{ color: "var(--text-muted)", padding: "12px 0", textAlign: "center" }}>⏳ טוען…</div>

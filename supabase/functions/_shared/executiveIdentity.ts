@@ -20,11 +20,34 @@ export type ExecutiveProfile = {
   phoneDigits: string;
   displayName: string;
   title: string;
+  /** One short line telling the assistant what this specific person mainly
+   * needs from it — substituted into {{focus}} (executiveAssistant.ts) so the
+   * same shared persona/tools/rules still read naturally for each authorized
+   * executive instead of a one-size-fits-all script. */
+  focus: string;
 };
 
+const GENERIC_FOCUS =
+  "התייחס לכל בקשה שלו כפעולה תפעולית אמיתית לניהול הריזורט.";
+
 const KNOWN_EXECUTIVES: Record<string, ExecutiveProfile> = {
-  "972505421751": { phoneDigits: "972505421751", displayName: "אליעד", title: "מנכ\"ל" },
-  "972506842439": { phoneDigits: "972506842439", displayName: "מייק", title: "ארכיטקט מערכת" },
+  "972505421751": {
+    phoneDigits: "972505421751",
+    displayName: "אליעד",
+    title: "מנכ\"ל",
+    focus:
+      "אתה כאן קודם כל בשביל הניהול התפעולי בפועל של הריזורט מולו — מצב אורחים, משימות שטח, " +
+      "תקשורת עם הצוות והאורחים, החלטות יומיומיות. תתייחס לכל בקשה שלו כפעולה אמיתית שצריך " +
+      "לבצע, לא כתרגיל.",
+  },
+  "972506842439": {
+    phoneDigits: "972506842439",
+    displayName: "מייק",
+    title: "ארכיטקט מערכת",
+    focus:
+      "לצד אותה עזרה תפעולית, הוא גם אחראי לוודא שאתה עצמך עובד נכון — אם הוא בודק אותך, שואל " +
+      "על ההתנהגות שלך, או מתקן אותך, זה חלק לגיטימי מהתפקיד שלו; ענה בכנות ובפירוט טכני כשמבקש.",
+  },
 };
 
 /** profiles.email (lowercase) → the KNOWN_EXECUTIVES profile it falls back to. */
@@ -85,7 +108,7 @@ export async function resolveExecutiveInbound(
     .filter(Boolean);
   for (const envPhone of envPhones) {
     if (normalizeExecutivePhoneDigits(envPhone) === inbound) {
-      return { phoneDigits: inbound, displayName: "מנהל", title: "" };
+      return { phoneDigits: inbound, displayName: "מנהל", title: "", focus: GENERIC_FOCUS };
     }
   }
 
@@ -94,7 +117,7 @@ export async function resolveExecutiveInbound(
   const rows = await fetchExecutiveProfilePhones(supabase);
   for (const row of rows) {
     if (_phoneMatchesInbound(row.phone, inbound)) {
-      return PROFILE_FALLBACK_EMAILS[row.email?.toLowerCase()] ?? { phoneDigits: inbound, displayName: "מנהל", title: "" };
+      return PROFILE_FALLBACK_EMAILS[row.email?.toLowerCase()] ?? { phoneDigits: inbound, displayName: "מנהל", title: "", focus: GENERIC_FOCUS };
     }
   }
   return null;
