@@ -35,7 +35,7 @@ Goal: import the FULL daily Ezgo "פעילויות" report (not suite-only), mat
 | P2-F | duplicate_blocked toasts — AICopilot + SuitesDashboard (ACC already covered) | ✅ deployed session 125 |
 | P2-G | Portal-link + Stage-2 buttons now preload editable draft (human-in-the-loop, preloadRoomReadyMessage pattern) — no direct dispatch | ✅ deployed session 125 |
 | P2-H | Check-in date filter (sessionStorage) ↔ Inbox roster chips (היום↔בריזורט, מחר↔מחר) | ✅ deployed session 125 |
-| P2-I | Inbox «נקרא» button + read-cursor key fix (migration 181 `inbox_channel`) | ✅ code — awaiting deploy |
+| P2-I | Inbox «נקרא» button + read-cursor key fix (migration 181 `inbox_channel`) | ✅ deployed `6a067e9` |
 
 **Post-deploy QA (Mike):** run the conflict-audit SQL (CLAUDE.md session 125) for today's arrivals; send a real ❤️ reaction to a bot message → readable line in DREAM BOT שיחות. After P2-I deploy: mark unread → F5 → must stay out of «לא נקרא».
 
