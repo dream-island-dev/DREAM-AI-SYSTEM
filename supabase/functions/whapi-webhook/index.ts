@@ -232,13 +232,21 @@ async function classifyWithAi(text: string): Promise<Classification> {
 }
 
 // ── Voice-note transcription (Gemini only — Claude has no audio input) ───────
-// Mirrors process-knowledge/index.ts's exact inline_data multimodal request
-// shape (same model, same temperature:0 for deterministic output) — the only
-// difference is the mime type and a plain-transcription prompt instead of a
-// rule-extraction one. Output is plain text, fed straight back into the SAME
-// parseDeterministic()/classifyWithAi() pipeline a typed message uses — no
-// parallel classification logic for voice.
-const GEMINI_MODEL = "gemini-1.5-flash";
+// Same inline_data multimodal request shape as process-knowledge/index.ts —
+// the only difference is the mime type and a plain-transcription prompt
+// instead of a rule-extraction one. Output is plain text, fed straight back
+// into the SAME parseDeterministic()/classifyWithAi() pipeline a typed
+// message uses — no parallel classification logic for voice.
+//
+// Model list (not a single hardcoded model): the original single model here,
+// "gemini-1.5-flash", started 404ing on Google's v1beta endpoint ("not found
+// ... or is not supported for generateContent") — confirmed via a real failed
+// voice note's error text landing in the Inbox (whapi-webhook guest_dm path
+// now logs it, see that block below). Google had deprecated it; nothing in
+// this repo changed. Mirrors EXECUTIVE_GEMINI_MODELS' fallback-list pattern
+// (executiveAssistant.ts, already proven live) instead of a single name, so a
+// future model retirement degrades to the next entry instead of a silent 404.
+const TRANSCRIBE_GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash"];
 const TRANSCRIBE_PROMPT =
   "תמלל את הקובץ הקולי המצורף במדויק, מילה במילה. הצוות מדבר עברית, לעתים אנגלית. " +
   "החזר טקסט פשוט בלבד — את התמלול עצמו, בלי הערות, בלי markdown, בלי תגי שפה.";
@@ -255,32 +263,41 @@ async function transcribeVoice(apiKey: string, base64Audio: string, mimeType: st
     generationConfig: { maxOutputTokens: 1024, temperature: 0.0 },
   };
 
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(requestBody),
-      signal: AbortSignal.timeout(30_000), // audio decode can be slower than the text-mapping calls elsewhere in this repo
-    },
-  );
+  let lastErr: Error | null = null;
+  for (const model of TRANSCRIBE_GEMINI_MODELS) {
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(requestBody),
+          signal: AbortSignal.timeout(30_000), // audio decode can be slower than the text-mapping calls elsewhere in this repo
+        },
+      );
 
-  if (!res.ok) {
-    const errBody = await res.text();
-    throw new Error(`gemini_transcribe_${res.status}: ${errBody.slice(0, 300)}`);
+      if (!res.ok) {
+        const errBody = await res.text();
+        throw new Error(`gemini_transcribe_${model}_${res.status}: ${errBody.slice(0, 300)}`);
+      }
+
+      const data = await res.json();
+      const text: string =
+        data?.candidates?.[0]?.content?.parts
+          ?.map((p: { text?: string }) => p.text ?? "")
+          .join("") ?? "";
+
+      if (!text.trim()) {
+        const finishReason = data?.candidates?.[0]?.finishReason;
+        throw new Error(finishReason === "SAFETY" ? "gemini_safety_filter" : `gemini_empty_transcription_${model}`);
+      }
+      return text.trim();
+    } catch (e) {
+      lastErr = e as Error;
+      console.warn(`[whapi-webhook] transcribeVoice model="${model}" failed:`, lastErr.message);
+    }
   }
-
-  const data = await res.json();
-  const text: string =
-    data?.candidates?.[0]?.content?.parts
-      ?.map((p: { text?: string }) => p.text ?? "")
-      .join("") ?? "";
-
-  if (!text.trim()) {
-    const finishReason = data?.candidates?.[0]?.finishReason;
-    throw new Error(finishReason === "SAFETY" ? "gemini_safety_filter" : "gemini_empty_transcription");
-  }
-  return text.trim();
+  throw lastErr ?? new Error("gemini_transcribe_no_models_available");
 }
 
 // ── Whapi message extraction (defensive — shape varies by version) ───────────
