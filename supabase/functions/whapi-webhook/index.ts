@@ -1073,13 +1073,18 @@ serve(async (req: Request) => {
           body = await transcribeVoice(geminiKey, base64Audio, msg.voiceMimeType || "audio/ogg");
           fromVoice = true;
         } catch (e) {
-          console.error(`[whapi-webhook] guest_dm voice failed ${msg.id}:`, (e as Error).message);
+          // FAIL VISIBLE: no live function-log access from this environment,
+          // so the real cause has to surface in the Inbox itself, not just
+          // console.error — otherwise a repeat failure is undiagnosable.
+          const errDetail = (e as Error).message?.slice(0, 200) || "unknown_error";
+          console.error(`[whapi-webhook] guest_dm voice failed ${msg.id}:`, errDetail);
           await claimWhapiGuestInbound(supabase, {
-            phone, guest_id: null, message: "🎤 [לא הצלחנו לתמלל את ההקלטה הקולית]",
+            phone, guest_id: null,
+            message: `🎤 [תמלול נכשל: ${errDetail} | media=${msg.voiceMediaId} mime=${msg.voiceMimeType} sec=${msg.voiceSeconds}]`,
             wa_message_id: msg.id, push_name: msg.fromName || null,
           });
           await sendGuestDmReply(supabase, phone, null, "🎤 לא הצלחתי להבין את ההקלטה — אפשר לכתוב לי בטקסט? 🙏");
-          results.push({ id: msg.id, channel: "guest_dm", phone, error: "voice_transcription_failed" });
+          results.push({ id: msg.id, channel: "guest_dm", phone, error: "voice_transcription_failed", detail: errDetail });
           continue;
         }
       }
