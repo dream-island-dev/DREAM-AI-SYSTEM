@@ -42,7 +42,7 @@ Dream Island Resort Management System (XOS) — אפליקציית ניהול מ
 
 - dashboard / shifts / checklist / employees
 - vip_guests ➔ GuestDashboard.js (ניהול טקטי של הפרויקט - לינה / בילוי יומי)
-- guests ➔ GuestsPage.js (מסך צ'ק-אין ייעודי לסוויטות בלבד, אורחי יום מסוננים החוצה)
+- guests ➔ GuestsPage.js (מסך צ'ק-אין ייעודי לסוויטות בלבד, אורחי יום מסוננים החוצה). כולל «לוח זמני הגעה — היום» — מיון לפי `arrival_time`, ⚠ למי שעדיין לא מסר שעה.
 - wa_inbox ➔ WhatsAppInbox.js (חדר בקרה תפעולי, ניהול שיחות, צ'אט, Claim ופתרון משימות). שיחות מופרדות לפי `inbox_channel` (`meta` = Dream Bot, `whapi` = מכשיר הסוויטות) — thread key = phone+channel. Claim ומתג בוט (🤖/😴) הם per-channel: `guests.claimed_by`/`bot_active` ל-Meta (ללא שינוי), `guest_channel_claims`/`bot_active_whapi` ל-Whapi (migrations 170-171) — claim/כיבוי בערוץ אחד לא משפיע על השני. **חובה:** סנכרון מפת אורחים ב-Inbox לעולם לא מעתיק `guests.claimed_by` לשיחת Whapi (רק `guest_channel_claims`); לפני stub ב-claim Whapi — חיפוש אורח קיים לפי טלפון. Unread = `inbox_read_cursors` per staff+phone+channel (migration 181); כפתור «נקרא» / פתיחת שיחה מעדכנים `last_read_at`. תגי יוצא `[META]`/`[SESSION]`/`[WHAPI]` ב-`whatsapp_conversations.message` הם ל-Inbox בלבד — חובה לפלטר לפני שליחה לאורח או הזרקה ל-LLM (`_shared/outboundDispatchTag.ts`).
 - orit_cs_agent ➔ OritCustomerServicePanel.js (סוכן שירות לקוחות לאורית — **IMAP read-only**, AI סיכום+טיוטות, העתקה ידנית ל-Outlook, דייג'סט בוקר Whapi). אין שליחה מהמערכת.
 - ops_board ➔ OperationsBoard.js (לוח תפעול ואחזקה, כולל טאב משימות ממתינות לאישור)
@@ -63,7 +63,7 @@ Dream Island Resort Management System (XOS) — אפליקציית ניהול מ
 - guests (Golden Profile):
   * status: 'pending' | 'expected' | 'room_ready' | 'checked_in' | 'cancelled'
   * room: שם סוויטה קנוני מתוך SUITE_REGISTRY או "Premium Day 1/2".
-  * arrival_time: שעת הגעה משוערת שמדווחת ע"י האורח (Record-Only, לא מקפיץ התראות).
+  * arrival_time: שעת הגעה משוערת שמדווחת ע"י האורח. נשמר ב-guests + שורת `guest_alerts` עם `alert_type='arrival_eta'` (תווית «🕐 שעת הגעה» בלוח בקשות). בלי needs_callback / משימות תפעול / נקודה אדומה. פרופיל חכם מציג «🕐 שעת הגעה HH:MM».
   * guest_profile: JSONB מובנה (VIP, רגישויות, אירוע).
   * claimed_by: שיוך שיחה ב-Inbox לנציג אנושי (מכבה אוטומציות).
 - tasks: ניהול משימות שטח ואחזקה. סטטוסים: 'pending_approval', 'open', 'in_progress', 'done', 'rejected'.
@@ -79,9 +79,9 @@ whatsapp-webhook (צינור העיבוד הנכנס)
    * קריאות שירות (משק/תפעול): מזהה מילות מפתח ➔ משימה בסטטוס pending_approval ב-Operations Board ➔ שולח הודעה קבועה לאורח.
    * Stay-Change Shield: בקשות ל-Late checkout או שינוי תאריך נחסמות מיידית לפני ה-LLM, מדליקות דגל date_change לצוות.
 5. משפט הפניה לצוות (`_shared/guestBotHandoff.ts`): "אני בודק את זה מול הצוות שלנו ונחזור אליך בהקדם 🙏" — זהה בשני הבוטים. כשהבוט שולח אותו → `human_requested` (נקודה אדומה ב-Inbox). Meta: עונה גם ללא פרופיל אורח; Whapi DM: auto-reply רק לאורח עם פרופיל פעיל (`shouldAutoReplyGuestWhapiDm`). ניווט: תפעול → `log_guest_request` / Tier-0; לוח בקשות / מנהלות → handoff.
-6. מוח הבוט משותף (`bot_settings` + `_shared/guestBotSettings.ts` / `guestBotLlm.ts`) — פרומפט, ידע, מנוע AI (`preferred_model`) וכללים שנלמדו זהים ל-Meta ו-Whapi DM; הדלקה/כיבוי per-channel ב-`bot_config` (`bot_active` / `bot_active_whapi`) — גם ב-BotSettings.js.
+6. מוח הבוט משותף (`bot_settings` + `_shared/guestBotSettings.ts` / `guestBotLlm.ts`) — פרומפט, ידע, מנוע AI (`preferred_model`) וכללים שנלמדו זהים ל-Meta ו-Whapi DM; הדלקה/כיבוי per-channel ב-`bot_config` (`bot_active` / `bot_active_whapi`) — גם ב-BotSettings.js. **Firewall יוצא:** `_shared/guestBotSanitize.ts` (`sanitizeGuestBotReply` / `looksLikePromptLeak`) — חובה לפני שליחה לאורח בשני הערוצים; דליפת הנחיות → ריק → משפט הפניה / empty-guard.
 7. אוטומציית שבת (migration 172): הגעה בשבת → שלבים 2.5 (יום שישי 15:00) ו-3 (בוקר שבת, צ׳ק-אין 18:00) נשלחים אוטומטית דרך מכשיר הסוויטות (Whapi) עם סקריפטים נפרדים (`night_before_reminder_shabbat`, `stage_3_morning_shabbat`) + תמונה `suiteshabat.jpeg` — עריכה ב-AutomationControlCenter → וריאנט שבת. `dispatch_channel=whapi` עדיין תקף לכל השלבים; שבת מנותבת גם בלי סימון ידני כש-`GUEST_WHAPI_SUITES_ENABLED=true`.
-8. Executive Voice Assistant (Eliad Co-Pilot, `_shared/executiveIdentity.ts` + `_shared/executiveAssistant.ts`, נקרא מ-whapi-webhook לפני handleGuestDirectMessage): מורשים אליעד (מנכ"ל) ומייק (ארכיטקט מערכת, QA) — `KNOWN_EXECUTIVES` בקוד + fallback ל-`EXECUTIVE_PHONES`/`EXECUTIVE_PHONE` (env) ול-`profiles.phone` (migration 175 אליעד, migration 182 מייק). ExecutivePlaybook.js מציג כללים שנלמדו + יומן פעולות.
+8. Executive Voice Assistant (Eliad Co-Pilot, `_shared/executiveIdentity.ts` + `_shared/executiveAssistant.ts`, נקרא מ-whapi-webhook לפני handleGuestDirectMessage): מורשים אליעד (מנכ"ל) ומייק (ארכיטקט מערכת, QA) — `KNOWN_EXECUTIVES` בקוד + fallback ל-`EXECUTIVE_PHONES`/`EXECUTIVE_PHONE` (env) ול-`profiles.phone` (migration 175 אליעד, migration 182 מייק). שליחת תשובה: `deliverExecutiveDmReply` מעדיף `chat_id` של ה-DM, retry + fallback לטלפון, FAIL VISIBLE באינבוקס אם השליחה נכשלה; retry של Whapi אחרי webhook איטי (`claimed:false`) מריץ שוב את העוזרת רק אם אין עדיין outbound עם `wa_message_id`. ExecutivePlaybook.js מציג כללים שנלמדו + יומן פעולות.
 
 מנוע אישור משימות שטח (Human-in-the-Loop)
 הבוט מייצר שורה בטבלת tasks בסטטוס pending_approval. הצוות ב-OperationsBoard.js מאשר או דוחה. רק לאחר אישור, הפונקציה notify-manual-task מתרגמת לאנגלית ומשגרת לקבוצת ה-Whapi הרלוונטית. SLA נמדד מרגע האישור.

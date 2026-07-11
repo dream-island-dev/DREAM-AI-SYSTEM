@@ -22,7 +22,113 @@ import { loadActiveGuestById, type ActiveGuestRow } from "./guestOutboundGuard.t
 import { fetchResortBrief, israelTodayStr } from "./resortPulseStats.ts";
 
 const EXECUTIVE_GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash"];
-const GEMINI_FETCH_TIMEOUT_MS = 8000;
+// 15s — voice notes already spent wall-clock on transcription before we
+// reach the LLM; tool round-trips need headroom or we silently fall through
+// and still risk a late Whapi webhook retry (see handleExecutiveVoiceMessage).
+const GEMINI_FETCH_TIMEOUT_MS = 15000;
+
+const EXECUTIVE_EMPTY_REPLY_FALLBACK =
+  "קיבלתי — לא הצלחתי להרכיב תשובה ברורה כרגע. אפשר לחזור בקצרה בטקסט?";
+
+/** Prefer the inbound Whapi chat_id (exact DM thread) over reconstructed digits. */
+export function resolveExecutiveReplyTo(phone: string, chatId?: string | null): string {
+  const chat = String(chatId ?? "").trim();
+  if (chat.endsWith("@s.whatsapp.net") || chat.endsWith("@c.us")) return chat;
+  return cleanPhoneForMention(phone);
+}
+
+async function _sleep(ms: number): Promise<void> {
+  await new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Deliver an executive DM reply via Whapi, then ALWAYS log to Inbox.
+ * FAIL VISIBLE: send failures are prefixed with ⚠ in the logged row and
+ * never reported as a successful send. Retries once; falls back from chat_id
+ * to bare phone digits if the chat_id path fails.
+ */
+export async function deliverExecutiveDmReply(
+  supabase: SupabaseClient,
+  opts: { phone: string; chatId?: string | null; replyText: string },
+): Promise<{ sent: boolean; wamid: string | null; error?: string }> {
+  const body = String(opts.replyText ?? "").trim() || EXECUTIVE_EMPTY_REPLY_FALLBACK;
+  const primaryTo = resolveExecutiveReplyTo(opts.phone, opts.chatId);
+  const phoneTo = cleanPhoneForMention(opts.phone);
+  const targets = primaryTo === phoneTo ? [primaryTo] : [primaryTo, phoneTo];
+
+  let wamid: string | null = null;
+  let lastErr: string | undefined;
+
+  for (const to of targets) {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        wamid = await sendWhapiText(to, body);
+        lastErr = undefined;
+        break;
+      } catch (e) {
+        lastErr = (e as Error).message;
+        console.error(
+          `[executiveAssistant] reply send failed to=${to} attempt=${attempt}:`,
+          lastErr,
+        );
+        if (attempt < 2) await _sleep(800);
+      }
+    }
+    if (!lastErr) break;
+  }
+
+  const sent = !lastErr;
+  const inboxBody = sent
+    ? formatWhapiSuitesConversationLog(body)
+    : formatWhapiSuitesConversationLog(
+      `⚠ שליחה נכשלה${lastErr ? ` (${lastErr.slice(0, 180)})` : ""}:\n${body}`,
+    );
+
+  const { error } = await supabase.from("whatsapp_conversations").insert({
+    phone: opts.phone,
+    guest_id: null,
+    direction: "outbound",
+    message: inboxBody,
+    wa_message_id: wamid,
+    inbox_channel: "whapi",
+    channel: "whapi",
+  });
+  if (error) console.warn("[executiveAssistant] outbound log insert failed:", error.message);
+
+  return sent ? { sent: true, wamid } : { sent: false, wamid: null, error: lastErr };
+}
+
+/** True when a successful Whapi outbound already exists after this inbound msg. */
+export async function executiveAlreadyRepliedSuccessfully(
+  supabase: SupabaseClient,
+  phone: string,
+  inboundWaMsgId: string,
+): Promise<boolean> {
+  const { data: inbound, error: inErr } = await supabase
+    .from("whatsapp_conversations")
+    .select("created_at")
+    .eq("wa_message_id", inboundWaMsgId)
+    .eq("direction", "inbound")
+    .eq("inbox_channel", "whapi")
+    .maybeSingle();
+  if (inErr || !inbound?.created_at) return false;
+
+  const { data: outbound, error: outErr } = await supabase
+    .from("whatsapp_conversations")
+    .select("id")
+    .eq("phone", phone)
+    .eq("direction", "outbound")
+    .eq("inbox_channel", "whapi")
+    .gt("created_at", inbound.created_at as string)
+    .not("wa_message_id", "is", null)
+    .limit(1)
+    .maybeSingle();
+  if (outErr) {
+    console.warn("[executiveAssistant] executiveAlreadyRepliedSuccessfully lookup failed:", outErr.message);
+    return false;
+  }
+  return !!outbound;
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // §0  Base persona (DB-editable — executive_bot_settings, migration 183).
@@ -52,6 +158,8 @@ const DEFAULT_PERSONA_TEMPLATE = `
   (get_resort_brief / find_guest_by_room / list_guests_by_scope / query_open_tasks) לפני שאתה עונה.
 • משפט כמו "תזכרי ש..." / "מעכשיו תמיד..." / "מהיום..." = קרא ל-learn_executive_rule
   כדי לשמור את זה כהעדפה קבועה שלך, אחרת תשכח אותה בפעם הבאה.
+  זה חל גם על דוחות התפעול היומיים/שבועיים שאת שולחת לו — אם הוא מבקש לשנות
+  משהו בדוח (מה להדגיש, מה להסיר), שמרי זאת ככלל ונציג את זה בדוחות הבאים.
 • לעולם אל תשלח הודעה לאורח שסטטוסו 'cancelled' — הכלים חוסמים זאת; אם זה קרה ציין זאת.
 • אם הבקשה לא ברורה מספיק לפעולה (לא ברור באיזה חדר/אורח/משימה מדובר) — שאל שאלת
   הבהרה קצרה אחת במקום לנחש.
@@ -907,16 +1015,46 @@ export async function runExecutiveAssistant(
 
 export async function handleExecutiveVoiceMessage(
   supabase: SupabaseClient,
-  opts: { phone: string; text: string; fromVoice: boolean; conversationId: number | null; msgId: string },
+  opts: {
+    phone: string;
+    text: string;
+    fromVoice: boolean;
+    conversationId: number | null;
+    msgId: string;
+    /** Inbound Whapi chat_id — preferred send target over reconstructed digits. */
+    chatId?: string | null;
+    /**
+     * Whapi webhook retry after a slow voice/LLM path: inbound already claimed
+     * by the first attempt. Re-enter only when no successful outbound exists yet.
+     */
+    unclaimedRetry?: boolean;
+  },
   results: Array<Record<string, unknown>>,
 ): Promise<void> {
-  const base = { id: opts.msgId, channel: "executive_dm", phone: opts.phone, fromVoice: opts.fromVoice };
+  const base = {
+    id: opts.msgId,
+    channel: "executive_dm",
+    phone: opts.phone,
+    fromVoice: opts.fromVoice,
+    unclaimedRetry: !!opts.unclaimedRetry,
+  };
   try {
     const profile = await resolveExecutiveInbound(opts.phone, supabase);
     if (!profile) {
       results.push({ ...base, error: "executive_not_authorized" });
       return;
     }
+
+    if (opts.unclaimedRetry) {
+      if (await executiveAlreadyRepliedSuccessfully(supabase, opts.phone, opts.msgId)) {
+        results.push({ ...base, action: "executive_reply_already_sent" });
+        return;
+      }
+      console.warn(
+        `[executiveAssistant] unclaimed retry — no successful outbound yet for ${opts.msgId}; re-running`,
+      );
+    }
+
     const replyText = await runExecutiveAssistant(supabase, {
       phone: opts.phone,
       text: opts.text,
@@ -924,20 +1062,21 @@ export async function handleExecutiveVoiceMessage(
       profile,
     });
 
-    const taggedMessage = formatWhapiSuitesConversationLog(replyText);
-    let wamid: string | null = null;
-    try {
-      wamid = await sendWhapiText(cleanPhoneForMention(opts.phone), replyText);
-    } catch (e) {
-      console.error("[executiveAssistant] reply send failed:", (e as Error).message);
-    }
-    const { error } = await supabase.from("whatsapp_conversations").insert({
-      phone: opts.phone, guest_id: null, direction: "outbound", message: taggedMessage, wa_message_id: wamid,
-      inbox_channel: "whapi", channel: "whapi",
+    const delivery = await deliverExecutiveDmReply(supabase, {
+      phone: opts.phone,
+      chatId: opts.chatId,
+      replyText,
     });
-    if (error) console.warn("[executiveAssistant] outbound log insert failed:", error.message);
 
-    results.push({ ...base, action: "executive_reply_sent" });
+    if (delivery.sent) {
+      results.push({ ...base, action: "executive_reply_sent", wamid: delivery.wamid });
+    } else {
+      results.push({
+        ...base,
+        action: "executive_reply_send_failed",
+        error: delivery.error ?? "send_failed",
+      });
+    }
   } catch (e) {
     console.error("[executiveAssistant] handleExecutiveVoiceMessage failed:", (e as Error).message);
     results.push({ ...base, error: "executive_handler_failed", detail: (e as Error).message });

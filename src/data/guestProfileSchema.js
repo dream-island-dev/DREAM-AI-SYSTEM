@@ -191,7 +191,7 @@ export function getProfileDisplayChips(profile, arrivalTime) {
   p.dietary.tags.forEach((t) => chips.push(labelById(DIETARY_TAGS, t)));
   p.arrival_context.tags.forEach((t) => chips.push(labelById(ARRIVAL_CONTEXT_TAGS, t)));
 
-  if (arrivalTime) chips.push(`🕐 ETA ${arrivalTime}`);
+  if (arrivalTime) chips.push(`🕐 שעת הגעה ${arrivalTime}`);
 
   return chips;
 }

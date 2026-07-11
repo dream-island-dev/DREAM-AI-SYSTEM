@@ -149,7 +149,7 @@ export const RECORD_ONLY_ARRIVAL_REPLY =
 
 /** Date-change, cancellation, or booking issue → escalate to human staff, never AI */
 export const DATE_CHANGE_RE =
-  /שינוי\s*(ב)?תאריכ|שינוי\s*הזמנ|לשנות\s*(את\s*)?(ה)?תאריכ|לבטל|ביטול|לא\s*נוכל??\s*להגיע|לא\s*יכול(ים|ה)?\s*להגיע|לא\s*מגיעים|דחיי?ה|להדחות|בעיה\s*עם\s*(ה)?הזמנ/i;
+  /שינוי\s*(ב)?תארי[כך]|שינוי\s*הזמנ|לשנות\s*(את\s*)?(ה)?תארי[כך]|לבטל|ביטול|לא\s*נוכל??\s*להגיע|לא\s*יכול(ים|ה)?\s*להגיע|לא\s*מגיעים|דחיי?ה|להדחות|בעיה\s*עם\s*(ה)?הזמנ/i;
 
 /** Guest asking when to arrive — FAQ, not a time update. */
 const ARRIVAL_TIME_QUESTION_RE =
@@ -157,7 +157,7 @@ const ARRIVAL_TIME_QUESTION_RE =
 
 /** Guest stating an estimated arrival time (not a date-change request). */
 const ARRIVAL_TIME_UPDATE_RE =
-  /שעת\s*הגעה|נגיע|ניגיע|מגיעים?|הגעה\s|צפו[ייה]\s*להגיע|מתוכנן|בסביבות|בערך|arriving\s+at/i;
+  /שעת\s*הגעה|נגיע|ניגיע|מגיעים?|מתכנ(?:ן|נת|נים|נות)\s*להגיע|להגיע\s+(?:לקראת|בסביבות|בערך|ב[-–]?\s*\d)|הגעה\s|צפו[ייה]\s*להגיע|מתוכנן|לקראת|בסביבות|בערך|arriving\s+at|planning\s+to\s+arrive|around\s+\d/i;
 
 export function isRecordOnlyArrivalTimeUpdate(text: string): boolean {
   if (DATE_CHANGE_RE.test(text)) return false;

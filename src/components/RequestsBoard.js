@@ -21,6 +21,7 @@ const TYPE_META = {
   portal_room_service: { label: "🍽️ שירות לחדר (פורטל)", bg: "#FFF5E8", color: "#A8843A" },
   financial_issue:     { label: "💳 בעיית חיוב",    bg: "#FFF0EE", color: "#C0392B" },
   spa_request:         { label: "💆 בקשת ספא",       bg: "#E8F0FE", color: "#1A56DB" },
+  arrival_eta:         { label: "🕐 שעת הגעה",       bg: "#F3EEFF", color: "#5B3CC4" },
 };
 // FAIL VISIBLE (CLAUDE.md §0.3): an unrecognized alert_type must show as a
 // visible warning, not silently fall back to a "looks fine" label.
@@ -218,7 +219,7 @@ export default function RequestsBoard({ user, onOpenDreamBotChat }) {
   // dashboard: alert_type='upsell_opportunity' is currently written ONLY by
   // guest-portal-upsell, so it's already a clean, unique key for "came from
   // the Guest Portal" — no new column needed.
-  const [sourceFilter, setSourceFilter] = useState("all"); // "all" | "portal"
+  const [sourceFilter, setSourceFilter] = useState("all"); // "all" | "portal" | "eta"
   const [resolvingReq, setResolvingReq] = useState(null); // the row being resolved
   const [noteText, setNoteText]         = useState("");
   const [saving, setSaving]             = useState(false);
@@ -303,10 +304,13 @@ export default function RequestsBoard({ user, onOpenDreamBotChat }) {
 
   const bySource = sourceFilter === "portal"
     ? requests.filter((r) => r.alert_type === "upsell_opportunity")
-    : requests;
+    : sourceFilter === "eta"
+      ? requests.filter((r) => r.alert_type === "arrival_eta")
+      : requests;
   const visible = showResolved ? bySource : bySource.filter((r) => !r.resolved);
   const pendingCount = bySource.filter((r) => !r.resolved).length;
   const portalPendingCount = requests.filter((r) => r.alert_type === "upsell_opportunity" && !r.resolved).length;
+  const etaPendingCount = requests.filter((r) => r.alert_type === "arrival_eta" && !r.resolved).length;
 
   return (
     <div>
@@ -416,6 +420,7 @@ export default function RequestsBoard({ user, onOpenDreamBotChat }) {
         {[
           { id: "all", label: "הכל" },
           { id: "portal", label: `🌴 בקשות מהפורטל${portalPendingCount > 0 ? ` (${portalPendingCount})` : ""}` },
+          { id: "eta", label: `🕐 שעות הגעה${etaPendingCount > 0 ? ` (${etaPendingCount})` : ""}` },
         ].map((f) => (
           <button
             key={f.id}

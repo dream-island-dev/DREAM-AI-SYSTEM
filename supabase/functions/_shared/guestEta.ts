@@ -42,7 +42,9 @@ export function extractArrivalTimeFromText(text: string): string | null {
     if (h >= 0 && h <= 23 && m >= 0 && m <= 59) return padHhMm(h, m);
   }
 
-  const hourWord = t.match(/(?:בשעה|ב[-–]?\s*|שעה\s+|at\s+|around\s+|approximately\s+)(\d{1,2})(?:\s|$|[^\d:])/i);
+  const hourWord = t.match(
+    /(?:בשעה\s+|ב[-–]?\s*|שעה\s+|לקראת\s*|בסביבות\s*|בערך\s*|at\s+|around\s+|approximately\s+)(\d{1,2})(?:\s|$|[^\d:])/i,
+  );
   if (hourWord) {
     const h = parseInt(hourWord[1], 10);
     if (h >= 0 && h <= 23) return padHhMm(h, 0);
@@ -115,6 +117,46 @@ export async function persistGuestEta(
 
   if (error) {
     console.error("[guestEta] persist FAILED:", error.message);
+    return { ok: false, error: error.message };
+  }
+  return { ok: true };
+}
+
+type AlertInsertClient = {
+  from: (table: string) => {
+    insert: (row: Record<string, unknown>) => Promise<{ error: { message: string } | null }>;
+  };
+};
+
+/**
+ * Sync captured ETA to Requests Board (`guest_alerts.alert_type = arrival_eta`).
+ * Does NOT set needs_callback / requires_attention / ops tasks — board + profile only.
+ */
+export async function insertArrivalEtaBoardAlert(
+  supabase: AlertInsertClient,
+  opts: {
+    guestId: number;
+    phone: string;
+    timeHhMm: string;
+    guestMessage: string;
+    conversationId?: number | null;
+  },
+): Promise<{ ok: boolean; error?: string }> {
+  if (!isValidHhMm(opts.timeHhMm)) {
+    return { ok: false, error: "invalid_time" };
+  }
+  const quote = opts.guestMessage.trim().slice(0, 500);
+  const message = `🕐 שעת הגעה משוערת: ${opts.timeHhMm}${quote ? `\n«${quote}»` : ""}`;
+  const { error } = await supabase.from("guest_alerts").insert({
+    guest_id: opts.guestId,
+    phone: opts.phone,
+    alert_type: "arrival_eta",
+    message,
+    conversation_id: opts.conversationId ?? null,
+    resolved: false,
+  });
+  if (error) {
+    console.error("[guestEta] arrival_eta board insert FAILED:", error.message);
     return { ok: false, error: error.message };
   }
   return { ok: true };

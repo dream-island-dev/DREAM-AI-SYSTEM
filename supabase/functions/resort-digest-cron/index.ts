@@ -14,6 +14,7 @@ import { CEO_PHONE_DIGITS } from "../_shared/executiveIdentity.ts";
 import {
   composeResortDigestMessage,
   computeResortDigestStats,
+  filterDigestRelevantRules,
   resolveDigestRange,
   type DigestGuestRow,
   type DigestPeriod,
@@ -90,7 +91,20 @@ serve(async (req: Request) => {
       tasks: (tasksRes.data ?? []) as DigestTaskRow[],
       now,
     });
-    const body = composeResortDigestMessage(stats, period, range.label);
+
+    const { data: ruleRows } = await supabase
+      .from("xos_ai_rules")
+      .select("rule_text")
+      .eq("module", "executive")
+      .order("created_at", { ascending: true });
+    const learnedDigestNotes = filterDigestRelevantRules(
+      ((ruleRows ?? []) as Array<{ rule_text: string | null }>).map((r) => r.rule_text ?? ""),
+    );
+
+    const body = composeResortDigestMessage(stats, period, range.label, {
+      assistantForName: "אליעד",
+      learnedDigestNotes,
+    });
 
     const wamid = await sendWhapiText(CEO_PHONE_DIGITS, body, { noLinkPreview: true });
     if (!wamid) {

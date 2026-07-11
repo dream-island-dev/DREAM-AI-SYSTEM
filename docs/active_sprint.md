@@ -1,7 +1,42 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-11 (Whapi claim mute fix — **deployed**).
-> Full session history → `CLAUDE.md` §10 + `claude_history.md`.
-> **Agent workflow** → `docs/xos_agent_playbook.md`
+> Last updated: 2026-07-11 (ETA→Requests Board + assistant-voiced digest — **deploying**).
+
+---
+
+## 🟡 Deploying — ETA board + Eliad assistant digest (2026-07-11)
+
+| Piece | Detail |
+|---|---|
+| ETA | `arrival_time` + `guest_alerts.arrival_eta` («🕐 שעת הגעה») — board/profile only |
+| Eliad digest | Personal-assistant Hebrew voice + «תזכרי ש…» learn bridge (migration 187) |
+
+---
+
+## ✅ Deployed — Guest bot prompt-leak + ETA miss (2026-07-11)
+
+Symptom (Suites / Whapi Inbox): guest «מתכננת להגיע לקראת 13:00…» got a reply that quoted system rules (`"תמיד בצורה טבעית…". - Yes. * "לעולם אל תציג את`) instead of a concierge answer.
+
+| Root cause | Fix |
+|---|---|
+| Whapi LLM path had a weak `_sanitizeGuestReply` (only ``` / THOUGHT) — Meta's firewall never ran | Shared `_shared/guestBotSanitize.ts` — COT strip + Hebrew prompt-regurgitation detect; empty → handoff |
+| Gemini priming (`הבנת…ענה כן`) continued as a rules quiz | Stronger priming + anti-quote rule in prompt suffixes |
+| ETA classifier missed `מתכננת להגיע` / `לקראת` → fell through to LLM | `ARRIVAL_TIME_UPDATE_RE` + `לקראת` in hourWord |
+
+Deployed: `whapi-webhook` + `whatsapp-webhook`. **Mike:** הודעת ETA בסגנון «מתכננת להגיע לקראת 13:00» → תשובת Record-Only; אם LLM בכל זאת דולף → משפט הפניה לצוות (לא ציטוט כללים).
+
+---
+
+## ✅ Deployed — Executive voice delivery (2026-07-11)
+
+Symptom: voice to personal assistant → reply in Inbox, nothing on WhatsApp.
+
+| Fix | Detail |
+|---|---|
+| `deliverExecutiveDmReply` | Prefer `chat_id`, retry, phone fallback, FAIL VISIBLE on fail |
+| Unclaimed Whapi retry | Re-run executive only if no successful outbound yet |
+| Gemini timeout | 8s → 15s for tool rounds after transcription |
+
+Deployed: `whapi-webhook`. **Mike:** send a voice note to מכשיר הסוויטות — expect reply on WhatsApp; if fail, Inbox shows `⚠ שליחה נכשלה`.
 
 ---
 

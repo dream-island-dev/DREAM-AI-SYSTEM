@@ -55,7 +55,7 @@ You are the Lead Software Architect for "XOS" (Dream Island Resort management sy
 ## <XOS_BUSINESS_LOGIC_RULES>
 Strict constraints for Dream Island operations. DO NOT BREAK:
 1. **Silence Rule:** `needs_callback` and `human_requested` are strictly UI alerts. They MUST NOT pause/mute backend automations, webhooks, or cron jobs.
-2. **Record-Only ETA:** Updates to arrival times (e.g., "15:30") must ONLY save to the `arrival_time` DB column and trigger an auto-reply. DO NOT trigger staff alerts or task creation.
+2. **Record-Only ETA:** Updates to arrival times (e.g., "15:30") save to the `arrival_time` DB column, auto-reply the guest, and insert `guest_alerts` with `alert_type='arrival_eta'` for the Requests Board. DO NOT trigger ops tasks, needs_callback, or Inbox red-dot.
 3. **Management Routing:** Suite guest requests must route directly to the Managers' Group (`120363429859248777@g.us`). The AI must translate these requests to English before dispatching to the group.
 </XOS_BUSINESS_LOGIC_RULES>
 

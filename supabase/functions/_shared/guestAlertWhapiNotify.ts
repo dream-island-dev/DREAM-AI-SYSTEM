@@ -18,6 +18,7 @@ const ALERT_HEADLINE: Record<string, string> = {
   portal_room_service:  "🍽️ ROOM SERVICE",
   spa_request:          "💆 SPA REQUEST",
   financial_issue:      "💳 FINANCIAL ISSUE",
+  arrival_eta:          "🕐 ARRIVAL ETA",
 };
 
 export type GuestAlertNotifyOpts = {
@@ -31,6 +32,8 @@ export type GuestAlertNotifyOpts = {
   sourceLabel?: string | null;
   /** Also DM SLA_GUEST_ALERT_PHONE (duty manager). Default false — callers that already ping Adir keep their path. */
   alsoPersonalDm?: boolean;
+  /** Informational board rows (e.g. arrival_eta) — no Inbox red-dot / no Whapi group spam. */
+  boardOnly?: boolean;
 };
 
 async function resolveGuestContext(
@@ -128,11 +131,16 @@ export async function notifyGuestAlertWhapiGroup(
   return { groupNotified, personalNotified };
 }
 
-/** Red-alert Inbox flag + Whapi requests group — call after every guest_alerts insert. */
+/** Red-alert Inbox flag + Whapi requests group — call after every guest_alerts insert.
+ *  Pass `boardOnly: true` for informational types (arrival_eta) that stay on the board only. */
 export async function onGuestAlertInserted(
   supabase: SupabaseClient,
   opts: GuestAlertNotifyOpts,
 ): Promise<{ groupNotified: boolean; personalNotified: boolean }> {
+  if (opts.boardOnly) {
+    return { groupNotified: false, personalNotified: false };
+  }
+
   await triggerInboxRedAlert(supabase, {
     guestId:        opts.guestId ?? null,
     phone:          opts.phone,

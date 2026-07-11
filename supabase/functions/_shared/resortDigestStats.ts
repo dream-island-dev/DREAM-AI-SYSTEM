@@ -353,14 +353,32 @@ export function formatCappedList<T>(items: T[], formatter: (item: T) => string, 
 /** Max per-item lines shown for any single drill-down list before collapsing to "+N more". */
 const MAX_DIGEST_LIST_ITEMS = 5;
 
-/** Composes the Hebrew WhatsApp body. Deterministic formatting — no LLM call, nothing to aggregate that isn't already computed above. */
+/** Rules that mention digests / ops reports — surfaced on the morning push so learning sticks. */
+export function filterDigestRelevantRules(ruleTexts: string[]): string[] {
+  return ruleTexts
+    .map((r) => r.trim())
+    .filter(Boolean)
+    .filter((r) => /דוח|סיכום|digest|תפעול|הגעות|מוכנות|חריג/i.test(r));
+}
+
+export type ComposeResortDigestOpts = {
+  /** CEO display name — digest is voiced as their personal assistant. */
+  assistantForName?: string;
+  /** Learned prefs that apply to this report (already filtered). */
+  learnedDigestNotes?: string[];
+};
+
+/** Composes the Hebrew WhatsApp body in the personal-assistant voice. Deterministic — no LLM. */
 export function composeResortDigestMessage(
   stats: ResortDigestStats,
   period: DigestPeriod,
   periodLabel: string,
+  opts: ComposeResortDigestOpts = {},
 ): string {
+  const forName = (opts.assistantForName ?? "אליעד").trim() || "אליעד";
   const lines: string[] = [
-    `🏝️ דוח תפעולי ${PERIOD_LABELS[period]} — ${periodLabel}`,
+    `📋 ${forName}, כאן העוזרת האישית שלך`,
+    `דוח תפעולי ${PERIOD_LABELS[period]} — ${periodLabel}`,
     "",
     composeExecutiveHeadline(stats),
   ];
@@ -426,6 +444,18 @@ export function composeResortDigestMessage(
       ),
     );
   }
+
+  const notes = (opts.learnedDigestNotes ?? []).map((n) => n.trim()).filter(Boolean).slice(0, 5);
+  if (notes.length) {
+    lines.push("", "📌 לפי מה שלימדת אותי:");
+    for (const n of notes) lines.push(`  • ${n}`);
+  }
+
+  lines.push(
+    "",
+    "—",
+    "רוצה לשנות משהו בדוחות? כתוב לי «תזכרי ש…» או «מעכשיו תמיד…» ואשמור את זה להבא.",
+  );
 
   return lines.join("\n");
 }

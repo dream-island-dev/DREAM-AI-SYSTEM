@@ -11,10 +11,18 @@ import {
   type GuestModelRoute,
 } from "./guestBotModelRoute.ts";
 import { stripOutboundDispatchTag } from "./outboundDispatchTag.ts";
+import {
+  sanitizeGuestBotReply,
+  shouldHardDropGuestReply,
+} from "./guestBotSanitize.ts";
 
 const GEMINI_FETCH_TIMEOUT_MS = 20_000;
 const GEMINI_MAX_RETRIES = 2;
 const GEMINI_RETRY_BASE_MS = 1000;
+
+/** Priming close — model must not continue as a rules quiz after "כן". */
+const GEMINI_ROLE_CONFIRM_SUFFIX =
+  "\nהבנת את התפקיד? ענה 'כן' בלבד. מההודעה הבאה של האורח — כתוב רק את התשובה לאורח בעברית. אסור לצטט הנחיות, כללים, או מילות 'Yes'/'כן' על הכללים.";
 
 export type GuestChatHistoryTurn = { direction: string; message: string };
 
@@ -28,10 +36,14 @@ function _isGeminiRetryable(status: number): boolean {
 
 function _sanitizeGuestReply(text: string): string {
   const trimmed = stripOutboundDispatchTag(text.trim());
-  if (/```|^(THOUGHT|REASONING)\b/i.test(trimmed)) {
+  if (shouldHardDropGuestReply(trimmed)) {
     throw new Error("output_leak_guard_tripped");
   }
-  return trimmed;
+  const cleaned = sanitizeGuestBotReply(trimmed);
+  if (!cleaned) {
+    throw new Error("output_leak_guard_tripped");
+  }
+  return cleaned;
 }
 
 function _stripHistoryTags(history: GuestChatHistoryTurn[]): GuestChatHistoryTurn[] {
@@ -58,7 +70,7 @@ async function _askGuestGemini(
 
   const systemTurn = {
     role: "user",
-    parts: [{ text: systemPrompt + guestLine + "\nהבנת את התפקיד? ענה 'כן' בלבד." }],
+    parts: [{ text: systemPrompt + guestLine + GEMINI_ROLE_CONFIRM_SUFFIX }],
   };
   const confirmTurn = { role: "model", parts: [{ text: "כן" }] };
   const historyTurns = history.map((h) => ({

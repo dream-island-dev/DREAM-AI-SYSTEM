@@ -10,7 +10,12 @@
 
 import { assertEquals } from "https://deno.land/std@0.168.0/testing/asserts.ts";
 import { normalizeExecutivePhoneDigits, isExecutiveInbound, resolveExecutiveInbound } from "./executiveIdentity.ts";
-import { executeExecutiveTool, type ToolExecCtx } from "./executiveAssistant.ts";
+import {
+  executeExecutiveTool,
+  resolveExecutiveReplyTo,
+  executiveAlreadyRepliedSuccessfully,
+  type ToolExecCtx,
+} from "./executiveAssistant.ts";
 
 const CTX: ToolExecCtx = { phone: "972505421751", originalText: "test", msgId: "msg1" };
 
@@ -125,4 +130,53 @@ Deno.test("learn_executive_rule — requires non-empty rule_text", async () => {
   const result = await executeExecutiveTool(supabase, "learn_executive_rule", { rule_text: "  " }, CTX);
   assertEquals(result.ok, false);
   assertEquals(result.error, "rule_text_required");
+});
+
+Deno.test("resolveExecutiveReplyTo — prefers inbound DM chat_id over bare phone", () => {
+  assertEquals(
+    resolveExecutiveReplyTo("972506842439", "972506842439@s.whatsapp.net"),
+    "972506842439@s.whatsapp.net",
+  );
+  assertEquals(
+    resolveExecutiveReplyTo("972506842439", "972506842439@c.us"),
+    "972506842439@c.us",
+  );
+  assertEquals(resolveExecutiveReplyTo("+972-50-684-2439", null), "972506842439");
+  assertEquals(resolveExecutiveReplyTo("972506842439", "120363xxx@g.us"), "972506842439");
+});
+
+Deno.test("executiveAlreadyRepliedSuccessfully — true when outbound wamid exists after inbound", async () => {
+  let call = 0;
+  const builder: any = {
+    select: () => builder,
+    eq: () => builder,
+    gt: () => builder,
+    not: () => builder,
+    limit: () => builder,
+    maybeSingle: () => {
+      call += 1;
+      if (call === 1) return Promise.resolve({ data: { created_at: "2026-07-11T10:00:00Z" }, error: null });
+      return Promise.resolve({ data: { id: 99 }, error: null });
+    },
+  };
+  const supabase = { from: () => builder } as any;
+  assertEquals(await executiveAlreadyRepliedSuccessfully(supabase, "972506842439", "wamid-1"), true);
+});
+
+Deno.test("executiveAlreadyRepliedSuccessfully — false when no successful outbound yet", async () => {
+  let call = 0;
+  const builder: any = {
+    select: () => builder,
+    eq: () => builder,
+    gt: () => builder,
+    not: () => builder,
+    limit: () => builder,
+    maybeSingle: () => {
+      call += 1;
+      if (call === 1) return Promise.resolve({ data: { created_at: "2026-07-11T10:00:00Z" }, error: null });
+      return Promise.resolve({ data: null, error: null });
+    },
+  };
+  const supabase = { from: () => builder } as any;
+  assertEquals(await executiveAlreadyRepliedSuccessfully(supabase, "972506842439", "wamid-1"), false);
 });

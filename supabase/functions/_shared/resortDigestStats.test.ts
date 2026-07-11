@@ -14,6 +14,7 @@ import {
   computeSlaCompliance,
   composeExecutiveHeadline,
   composeResortDigestMessage,
+  filterDigestRelevantRules,
   formatCappedList,
   resolveDigestRange,
   type DigestGuestRow,
@@ -278,6 +279,20 @@ Deno.test("composeResortDigestMessage: includes the headline and an SLA complian
   assertEquals(body.includes("עמידה ב-SLA: 100% (1/1)"), true);
 });
 
+Deno.test("filterDigestRelevantRules + compose learned notes", () => {
+  assertEquals(
+    filterDigestRelevantRules(["תמיד הדגישי חריגות בדוח", "קפה בבוקר", "סיכום קצר יותר"]),
+    ["תמיד הדגישי חריגות בדוח", "סיכום קצר יותר"],
+  );
+  const stats = computeResortDigestStats({ guests: [], tasks: [], now: SLA_NOW });
+  const body = composeResortDigestMessage(stats, "daily", "2026-07-11", {
+    assistantForName: "אליעד",
+    learnedDigestNotes: ["תמיד הדגישי חריגות בדוח"],
+  });
+  assertEquals(body.includes("לפי מה שלימדת אותי"), true);
+  assertEquals(body.includes("תמיד הדגישי חריגות בדוח"), true);
+});
+
 Deno.test("computeResortDigestStats: wires all five sections together from raw rows", () => {
   const stats = computeResortDigestStats({
     guests: [
@@ -304,6 +319,8 @@ Deno.test("composeResortDigestMessage: renders period header, counts, and a FAIL
   });
   const body = composeResortDigestMessage(stats, "daily", "2026-07-11");
   assertEquals(body.includes("דוח תפעולי יומי"), true);
+  assertEquals(body.includes("כאן העוזרת האישית שלך"), true);
+  assertEquals(body.includes("תזכרי ש"), true);
   assertEquals(body.includes("2026-07-11"), true);
   assertEquals(body.includes('לא סומן "חדר מוכן"'), true);
   assertEquals(body.includes("אין בקשות בתקופה זו."), true);

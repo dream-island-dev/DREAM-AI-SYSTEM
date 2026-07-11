@@ -278,7 +278,7 @@ If the agent starts inventing unrequested changes, contradicting its own prior s
 ## 7. XOS Rules Agents Must Not Break
 
 - `needs_callback` / `human_requested` = **UI alerts only** — never mute bot/cron/webhooks.
-- Record-only ETA → `arrival_time` + auto-reply only — no staff alerts/tasks.
+- Record-only ETA → `arrival_time` + auto-reply; also `guest_alerts.arrival_eta` for Requests Board (no ops tasks / needs_callback / red-dot).
 - Suite management routing → `120363429859248777@g.us` + English translation for staff cards.
 - Never touch `.env`.
 - Never modify Hebrew UI strings unless Mike explicitly asks.
@@ -334,6 +334,25 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 ---
 
 ## 10. Learnings Log
+
+### 2026-07-11 — ETA on Requests Board (not Eliad push)
+- **Product:** Captured ETA → `guests.arrival_time` + `guest_alerts` (`arrival_eta` / «🕐 שעת הגעה»). Profile chip synced. No ops task / needs_callback / Inbox red-dot.
+- **Eliad reports:** Resort digest voiced as personal assistant; digest-relevant learned rules appended; footer invites «תזכרי ש…».
+
+### 2026-07-11 — ETA «רשמתי לפניי» without DB write
+- **Symptom:** Guest «מתכננות להגיע ב-12:00» got exact Record-Only reply; `arrival_time` stayed empty.
+- **Root:** Tier-0 regex covered `מתכננת`/`מתכננים` but not feminine plural `מתכננות` or `להגיע ב-HH:MM` — LLM fell through and parroted the canned phrase. Also: `בסביבות N` needed `\s*` before digit; DATE_CHANGE used `תאריכ` and never matched final-kaf `תאריך`.
+- **Fix pattern:** gender-complete forms + `להגיע ב[-–]?\d` + hourWord spaces; never trust LLM copy as proof of persist. Morning roster = GuestsPage ETA board only (no Whapi push to Eliad).
+
+### 2026-07-11 — Whapi guest bot prompt leak (rules quiz)
+- **Symptom:** Suites DM replied with quoted system rules + `Yes` instead of Hebrew concierge copy.
+- **Root:** (1) Meta had `sanitizeReply`; Whapi `guestBotLlm` only checked ```/THOUGHT — Hebrew instruction regurgitation passed; (2) Gemini priming `הבנת…ענה כן` can continue as a rules quiz; (3) ETA Tier-0 missed `מתכננת להגיע`/`לקראת` so the message hit the LLM.
+- **Fix pattern:** one shared `_shared/guestBotSanitize.ts` on both channels; empty/leak → handoff; never assume Meta firewall covers Whapi.
+
+### 2026-07-11 — Executive voice: Inbox reply ≠ WhatsApp delivery
+- **Symptom:** Voice note to Mike/Eliad personal assistant → answer visible in XOS Inbox, nothing on WhatsApp.
+- **Root:** (1) outbound logged even when `sendWhapiText` threw; (2) slow voice+LLM → Whapi webhook retry → `claimed:false` skipped executive handler.
+- **Fix pattern:** dedicated `deliverExecutiveDmReply` (chat_id first, retry, FAIL VISIBLE); on unclaimed retry re-enter executive path only if no successful outbound yet (`wa_message_id` not null).
 
 ### 2026-07-11 — Whapi «קח שיחה» mute broken by Meta claim leak
 - **Symptom:** Claim mute works on Dream Bot; Suites (Whapi) bot keeps auto-replying after 🙋.

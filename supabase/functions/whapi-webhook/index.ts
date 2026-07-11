@@ -70,7 +70,7 @@ import { isGuestWhapiSuitesEnabled, shouldAutoReplyGuestWhapiDm } from "../_shar
 import { type ActiveGuestRow } from "../_shared/guestOutboundGuard.ts";
 import { resolveGuestByInboundPhone, isArrivalConfirmationMessage } from "../_shared/arrivalConfirmation.ts";
 import { onGuestAlertInserted } from "../_shared/guestAlertWhapiNotify.ts";
-import { extractArrivalTimeFromText, persistGuestEta } from "../_shared/guestEta.ts";
+import { extractArrivalTimeFromText, persistGuestEta, insertArrivalEtaBoardAlert } from "../_shared/guestEta.ts";
 import { formatGuestProfileForAi } from "../_shared/guestProfile.ts";
 import { formatSpaScheduleDisplay } from "../_shared/spaSchedule.ts";
 import { isExecutiveInbound } from "../_shared/executiveIdentity.ts";
@@ -912,8 +912,7 @@ async function handleGuestDirectMessage(
       return;
     }
 
-    // ── Record-only arrival TIME update (P0 companion — no needs_callback /
-    // alerts / ops; also fires regardless of staffMuted, same as Meta). ────
+    // ── Arrival TIME — persist + Requests Board (arrival_eta); no ops / needs_callback ──
     if (guestId && isRecordOnlyArrivalTimeUpdate(text)) {
       const arrivalTime = extractArrivalTimeFromText(text)!;
       const persistResult = await persistGuestEta(supabase, {
@@ -923,6 +922,27 @@ async function handleGuestDirectMessage(
         source: "tier0_whapi",
       });
       if (persistResult.ok || persistResult.skipped !== "ineligible_guest") {
+        if (persistResult.ok) {
+          const board = await insertArrivalEtaBoardAlert(supabase, {
+            guestId,
+            phone,
+            timeHhMm: arrivalTime,
+            guestMessage: text,
+            conversationId,
+          });
+          if (board.ok) {
+            onGuestAlertInserted(supabase, {
+              alertType: "arrival_eta",
+              message: `🕐 שעת הגעה משוערת: ${arrivalTime}`,
+              phone,
+              guestId,
+              conversationId,
+              boardOnly: true,
+            }).catch((e: Error) =>
+              console.warn("[whapi-webhook] arrival_eta board notify:", e.message),
+            );
+          }
+        }
         await patchClaimedInbound(supabase, conversationId, msgId, { intent: "arrival_time_update" });
         await sendGuestDmReply(supabase, phone, guestId, RECORD_ONLY_ARRIVAL_REPLY, false);
         results.push({ ...base, action: "arrival_time_record_only" });
@@ -1132,6 +1152,26 @@ serve(async (req: Request) => {
           id: msg.id, channel: "guest_dm", phone, guest_id: guest?.id ?? null,
           claimed: false, conversation_id: conversationId, fromVoice,
         });
+        // Voice/LLM paths can exceed Whapi's webhook wait — it retries the
+        // same wa_message_id. The first attempt already claimed inbound; if it
+        // died before a successful outbound, executives would get permanent
+        // silence (Inbox may still show a failed/partial reply). Re-enter the
+        // executive handler idempotently; guest LLM stays skip-on-dedup.
+        if (await isExecutiveInbound(phone, supabase)) {
+          await handleExecutiveVoiceMessage(
+            supabase,
+            {
+              phone,
+              text: body.trim(),
+              fromVoice,
+              conversationId,
+              msgId: msg.id,
+              chatId: msg.chatId,
+              unclaimedRetry: true,
+            },
+            results,
+          );
+        }
         continue;
       }
 
@@ -1146,7 +1186,14 @@ serve(async (req: Request) => {
       if (await isExecutiveInbound(phone, supabase)) {
         await handleExecutiveVoiceMessage(
           supabase,
-          { phone, text: body.trim(), fromVoice, conversationId, msgId: msg.id },
+          {
+            phone,
+            text: body.trim(),
+            fromVoice,
+            conversationId,
+            msgId: msg.id,
+            chatId: msg.chatId,
+          },
           results,
         );
         continue;

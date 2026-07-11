@@ -127,7 +127,12 @@ export default function RequestsAlertWidget({ onNavigate }) {
         (payload) => {
           const row = payload.new;
           setPendingCount((prev) => prev + 1);
-          const typeLabel = row.alert_type === "complaint" ? "🔴 תקלה" : "📝 בקשה";
+          const typeLabel =
+            row.alert_type === "complaint" ? "🔴 תקלה"
+            : row.alert_type === "arrival_eta" ? "🕐 שעת הגעה"
+            : row.alert_type === "spa_request" ? "💆 ספא"
+            : row.alert_type === "upsell_opportunity" ? "🌴 פורטל"
+            : "📝 בקשה";
           showToast(`${typeLabel} חדשה: ${String(row.message ?? "").slice(0, 60)}`);
         }
       )
