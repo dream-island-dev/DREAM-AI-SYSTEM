@@ -9,7 +9,7 @@
 // for this file — see the export's doc comment.
 
 import { assertEquals } from "https://deno.land/std@0.168.0/testing/asserts.ts";
-import { normalizeExecutivePhoneDigits, isExecutiveInbound } from "./executiveIdentity.ts";
+import { normalizeExecutivePhoneDigits, isExecutiveInbound, resolveExecutiveInbound } from "./executiveIdentity.ts";
 import { executeExecutiveTool, type ToolExecCtx } from "./executiveAssistant.ts";
 
 const CTX: ToolExecCtx = { phone: "972505421751", originalText: "test", msgId: "msg1" };
@@ -58,9 +58,26 @@ Deno.test("isExecutiveInbound — matches EXECUTIVE_PHONE secret regardless of i
   });
 });
 
-Deno.test("isExecutiveInbound — no secret, no supabase → false (fails closed)", async () => {
+Deno.test("resolveExecutiveInbound — Mike QA number (0506842439)", async () => {
   await withEnv("EXECUTIVE_PHONE", undefined, async () => {
-    assertEquals(await isExecutiveInbound("972505421751"), false);
+    const profile = await resolveExecutiveInbound("0506842439");
+    assertEquals(profile?.phoneDigits, "972506842439");
+    assertEquals(profile?.displayName, "מייק");
+    assertEquals(await isExecutiveInbound("972506842439"), true);
+  });
+});
+
+Deno.test("resolveExecutiveInbound — Eliad canonical number without env", async () => {
+  await withEnv("EXECUTIVE_PHONE", undefined, async () => {
+    const profile = await resolveExecutiveInbound("972505421751");
+    assertEquals(profile?.displayName, "אליעד");
+    assertEquals(await isExecutiveInbound("972505421751"), true);
+  });
+});
+
+Deno.test("isExecutiveInbound — unknown number without env/supabase → false", async () => {
+  await withEnv("EXECUTIVE_PHONE", undefined, async () => {
+    assertEquals(await isExecutiveInbound("972500000000"), false);
   });
 });
 

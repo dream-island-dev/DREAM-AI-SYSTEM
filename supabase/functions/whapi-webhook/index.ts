@@ -41,9 +41,10 @@
 //   room_status ממתין לאישור → AICopilot 🔔; short Hebrew ack in-group on success),
 //   WHAPI_API_URL, GUEST_WHAPI_SUITES_ENABLED (see GUEST DIRECT MESSAGE
 //   HANDLING below — gates guest-DM auto-reply; off = capture-only).
-//   EXECUTIVE_PHONE (972-prefixed digits, no "+") — CEO identity for the
-//   Executive Voice Assistant intercept (_shared/executiveIdentity.ts); falls
-//   back to the profiles row linked by migration 175 when unset.
+//   EXECUTIVE_PHONES / EXECUTIVE_PHONE (972-prefixed digits, no "+") — authorized
+//   executives for the Executive Voice Assistant intercept
+//   (_shared/executiveIdentity.ts); falls back to profiles rows (Eliad + Mike)
+//   when unset.
 // ══════════════════════════════════════════════════════════════════════════════
 
 import { serve }         from "https://deno.land/std@0.168.0/http/server.ts";

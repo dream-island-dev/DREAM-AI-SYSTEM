@@ -49,6 +49,7 @@ Dream Island Resort Management System (XOS) — אפליקציית ניהול מ
 - data_sync ➔ DataSyncPage.js (מסך סנכרון וייבוא קבצי אקסל ודוחות EZGO ל-Admin/Receptionist)
 - agent ➔ InventoryHub.js (ניהול מלאי, ייבוא דוחות, יצירת קישורי-קסם לעובדים ותור אישורים)
 - voucher_reconciliation ➔ VoucherReconciliationHub.js (מערכת התאמת שוברים ודוחות כספיים)
+- executive_playbook ➔ ExecutivePlaybook.js (עוזר קולי למנכ"ל — Eliad Co-Pilot: כללים שנלמדו + יומן פעולות; מורשים: אליעד `972505421751` + מייק QA `972506842439` דרך DM למכשיר הסוויטות Whapi; `_shared/executiveIdentity.ts` + `executiveAssistant.ts`; migration 175/177)
 - cms_security ➔ עטיפת <ProtectedRoute> הדורשת אימות TOTP / 2FA מבוסס חומרה.
 
 3. מבנה מסד הנתונים (טבלאות ליבה)
@@ -80,6 +81,7 @@ whatsapp-webhook (צינור העיבוד הנכנס)
 5. משפט הפניה לצוות (`_shared/guestBotHandoff.ts`): "אני בודק את זה מול הצוות שלנו ונחזור אליך בהקדם 🙏" — זהה בשני הבוטים. כשהבוט שולח אותו → `human_requested` (נקודה אדומה ב-Inbox). Meta: עונה גם ללא פרופיל אורח; Whapi DM: auto-reply רק לאורח עם פרופיל פעיל (`shouldAutoReplyGuestWhapiDm`). ניווט: תפעול → `log_guest_request` / Tier-0; לוח בקשות / מנהלות → handoff.
 6. מוח הבוט משותף (`bot_settings` + `_shared/guestBotSettings.ts` / `guestBotLlm.ts`) — פרומפט, ידע, מנוע AI (`preferred_model`) וכללים שנלמדו זהים ל-Meta ו-Whapi DM; הדלקה/כיבוי per-channel ב-`bot_config` (`bot_active` / `bot_active_whapi`) — גם ב-BotSettings.js.
 7. אוטומציית שבת (migration 172): הגעה בשבת → שלבים 2.5 (יום שישי 15:00) ו-3 (בוקר שבת, צ׳ק-אין 18:00) נשלחים אוטומטית דרך מכשיר הסוויטות (Whapi) עם סקריפטים נפרדים (`night_before_reminder_shabbat`, `stage_3_morning_shabbat`) + תמונה `suiteshabat.jpeg` — עריכה ב-AutomationControlCenter → וריאנט שבת. `dispatch_channel=whapi` עדיין תקף לכל השלבים; שבת מנותבת גם בלי סימון ידני כש-`GUEST_WHAPI_SUITES_ENABLED=true`.
+8. Executive Voice Assistant (whapi-webhook guest_dm intercept, migration 175): DM ממספר מורשה (`EXECUTIVE_PHONES` / `EXECUTIVE_PHONE` או fallback profiles) → `_shared/executiveAssistant.ts` (Gemini function-calling + Claude fallback) במקום בוט אורח; כלים: משימות (`source=executive_voice`, ישירות open), resort brief, אורח לפי חדר, שליחה לאורח/מנהלות, `learn_executive_rule` → `xos_ai_rules` module=`executive`; audit ב-`executive_action_log`. מייק (`0506842439`) מחובר ל-QA לפני rollout לאליעד (migration 177).
 
 מנוע אישור משימות שטח (Human-in-the-Loop)
 הבוט מייצר שורה בטבלת tasks בסטטוס pending_approval. הצוות ב-OperationsBoard.js מאשר או דוחה. רק לאחר אישור, הפונקציה notify-manual-task מתרגמת לאנגלית ומשגרת לקבוצת ה-Whapi הרלוונטית. SLA נמדד מרגע האישור.

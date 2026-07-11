@@ -125,8 +125,8 @@ export default function ExecutivePlaybook() {
               עוזר קולי למנכ"ל — Eliad Co-Pilot
             </div>
             <div style={{ fontSize: 13, color: "var(--text-muted)", lineHeight: 1.6 }}>
-              אליעד מדבר עם המערכת דרך מכשיר הסוויטות (הודעה קולית או טקסט). כאן ניתן לצפות
-              ולערוך את הכללים שהוא לימד את המערכת, ולראות יומן פעולות אחרון.
+              מורשים: אליעד (מנכ&quot;ל) ומייק (QA) — שיחה דרך מכשיר הסוויטות (קול או טקסט).
+              כאן ניתן לצפות ולערוך את הכללים שנלמדו, ולראות יומן פעולות אחרון.
             </div>
           </div>
         </div>
@@ -134,7 +134,7 @@ export default function ExecutivePlaybook() {
         {/* ── Learned rules ──────────────────────────────────────────────── */}
         <div className="card" style={{ marginBottom: 20 }}>
           <div className="card-header">
-            <div className="card-title">🧠 כללים שאליעד לימד</div>
+            <div className="card-title">🧠 כללים שנלמדו</div>
           </div>
           <div style={{ padding: "16px 20px" }}>
             <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
@@ -163,7 +163,7 @@ export default function ExecutivePlaybook() {
               <div style={{ color: "var(--text-muted)", padding: "12px 0", textAlign: "center" }}>⏳ טוען…</div>
             ) : rules.length === 0 ? (
               <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
-                עדיין אין כללים שנשמרו. אליעד יכול לומר "תזכרי ש..." בהודעה קולית והמערכת תשמור זאת אוטומטית.
+                עדיין אין כללים שנשמרו. מורשים יכולים לומר &quot;תזכרי ש...&quot; בהודעה קולית והמערכת תשמור זאת אוטומטית.
               </div>
             ) : (
               <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: 10 }}>
