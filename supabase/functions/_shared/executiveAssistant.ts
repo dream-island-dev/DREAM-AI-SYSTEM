@@ -44,7 +44,7 @@ const DEFAULT_PERSONA_TEMPLATE = `
 • כשביצעת פעולה בפועל דרך אחד הכלים — פתח את השורה הרלוונטית ב-✅.
 • כמה פעולות/עדכונים בתשובה אחת — כל אחת כשורת בולט (•) קצרה.
 • אל תמציא נתונים על הריזורט או על אורחים — אם חסר לך מידע קרא לכלי המתאים
-  (get_resort_brief / find_guest_by_room / query_open_tasks) לפני שאתה עונה.
+  (get_resort_brief / find_guest_by_room / list_guests_by_scope / query_open_tasks) לפני שאתה עונה.
 • משפט כמו "תזכרי ש..." / "מעכשיו תמיד..." / "מהיום..." = קרא ל-learn_executive_rule
   כדי לשמור את זה כהעדפה קבועה שלך, אחרת תשכח אותה בפעם הבאה.
 • לעולם אל תשלח הודעה לאורח שסטטוסו 'cancelled' — הכלים חוסמים זאת; אם זה קרה ציין זאת.
@@ -202,11 +202,25 @@ const EXECUTIVE_TOOLS: ToolDef[] = [
   },
   {
     name: "find_guest_by_room",
-    description: "איתור פרטי אורח פעיל לפי מספר/שם חדר.",
+    description: "איתור פרופיל מלא של אורח פעיל לפי מספר/שם חדר או לפי שם — כולל תאריכים, הערות, ספא/ארוחות ודגלי תשומת-לב.",
     schema: {
       type: "object",
-      properties: { room: { type: "string", description: "מספר/שם חדר או סוויטה." } },
-      required: ["room"],
+      properties: {
+        room: { type: "string", description: "מספר/שם חדר או סוויטה, אם ידוע." },
+        name: { type: "string", description: "שם האורח (מלא או חלקי), אם החדר לא ידוע." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "list_guests_by_scope",
+    description: "רשימת אורחים (שם, חדר, סטטוס, שעת הגעה) לפי טווח: מגיעים היום / עוזבים היום / בריזורט כרגע. לשאלות כמו \"מי מגיע היום\".",
+    schema: {
+      type: "object",
+      properties: {
+        scope: { type: "string", enum: ["arriving_today", "departing_today", "in_resort_now"], description: "טווח האורחים המבוקש." },
+      },
+      required: ["scope"],
     },
   },
   {
@@ -275,30 +289,75 @@ const EXECUTIVE_TOOLS: ToolDef[] = [
 type ToolResult = Record<string, unknown> & { ok: boolean };
 export type ToolExecCtx = { phone: string; originalText: string; msgId: string };
 
-/** Best-effort active-guest lookup by guest_id (preferred) or room text. */
+/** Widened row shape for the executive's own guest lookups — ActiveGuestRow
+ * (guestOutboundGuard.ts) is deliberately narrow (outbound-eligibility gate
+ * only); the executive assistant needs the full Golden Profile picture. */
+type ExecutiveGuestDetail = ActiveGuestRow & {
+  arrival_date?: string | null;
+  departure_date?: string | null;
+  arrival_time?: string | null;
+  guest_profile?: Record<string, unknown> | null;
+  guest_notes?: string | null;
+  spa_time?: string | null;
+  meal_time?: string | null;
+  meal_location?: string | null;
+  needs_callback?: boolean | null;
+  requires_attention?: boolean | null;
+  attention_reason?: string | null;
+};
+
+const EXECUTIVE_GUEST_DETAIL_SELECT =
+  "id, phone, status, name, room, room_type, arrival_date, departure_date, arrival_time, " +
+  "guest_profile, guest_notes, spa_time, meal_time, meal_location, needs_callback, requires_attention, attention_reason";
+
+/** Best-effort active-guest lookup by guest_id (preferred), room, or name. */
 async function _resolveExecutiveGuestTarget(
   supabase: SupabaseClient,
-  args: { guest_id?: unknown; room?: unknown },
-): Promise<ActiveGuestRow | null> {
+  args: { guest_id?: unknown; room?: unknown; name?: unknown },
+): Promise<ExecutiveGuestDetail | null> {
   const guestId = Number(args.guest_id);
   if (Number.isFinite(guestId) && guestId > 0) {
-    return await loadActiveGuestById(supabase, guestId);
+    // loadActiveGuestById already applies the cancelled/checked_out filter
+    // (isGuestActiveForOutbound) — reusing it here instead of a raw select
+    // keeps that safety guarantee in one place. Its select is narrower than
+    // EXECUTIVE_GUEST_DETAIL_SELECT, but none of this file's guest_id-based
+    // callers (ceo_guest_override, send_guest_message) need the wider
+    // fields — only the room/name path below (find_guest_by_room) does.
+    return await loadActiveGuestById(supabase, guestId) as ExecutiveGuestDetail | null;
   }
+
   const room = String(args.room ?? "").trim();
-  if (!room) return null;
+  const name = String(args.name ?? "").trim();
+  if (!room && !name) return null;
+
+  // A room/name match can be >1 active booking (e.g. today's guest checks
+  // out, the same room turns over to tomorrow's guest — completely normal
+  // churn, reproduced live on a real room with both bookings simultaneously
+  // active). Fetch a few candidates ordered soonest-first and prefer
+  // whichever one is actually current (checked in, or today falls inside
+  // [arrival_date, departure_date]) instead of just the furthest-future
+  // match — "who's in this room" should mean today, not next week.
   const { data, error } = await supabase
     .from("guests")
-    .select("id, phone, status, name, room, room_type, guest_profile, guest_notes")
-    .ilike("room", `%${room}%`)
+    .select(EXECUTIVE_GUEST_DETAIL_SELECT)
     .not("status", "in", "(cancelled,checked_out)")
-    .order("arrival_date", { ascending: false, nullsFirst: false })
+    .ilike(room ? "room" : "name", `%${room || name}%`)
+    .order("arrival_date", { ascending: true, nullsFirst: false })
     .order("id", { ascending: false })
-    .limit(1);
+    .limit(5);
   if (error) {
-    console.warn("[executiveAssistant] guest-by-room lookup failed:", error.message);
+    console.warn("[executiveAssistant] guest lookup (room/name) failed:", error.message);
     return null;
   }
-  return (data?.[0] as ActiveGuestRow | undefined) ?? null;
+  const candidates = (data ?? []) as unknown as ExecutiveGuestDetail[];
+  if (!candidates.length) return null;
+
+  const today = israelTodayStr();
+  const current = candidates.find((g) =>
+    g.status === "checked_in" ||
+    (!!g.arrival_date && g.arrival_date <= today && (!g.departure_date || g.departure_date >= today)),
+  );
+  return current ?? candidates[0];
 }
 
 async function _execCreateExecutiveTask(
@@ -362,16 +421,65 @@ async function _execGetResortBrief(supabase: SupabaseClient): Promise<ToolResult
 }
 
 async function _execFindGuestByRoom(supabase: SupabaseClient, args: Record<string, unknown>): Promise<ToolResult> {
-  const guest = await _resolveExecutiveGuestTarget(supabase, { room: args.room });
+  if (!args.room && !args.name) return { ok: false, error: "room_or_name_required" };
+  const guest = await _resolveExecutiveGuestTarget(supabase, { room: args.room, name: args.name });
   if (!guest) return { ok: false, error: "no_guest_found" };
+  const guestProfile = (guest.guest_profile as Record<string, unknown> | null) ?? {};
   return {
     ok: true,
     guest_id: guest.id,
     name: guest.name ?? null,
     phone: guest.phone,
     room: guest.room ?? null,
+    room_type: guest.room_type ?? null,
     status: guest.status,
+    arrival_date: guest.arrival_date ?? null,
+    departure_date: guest.departure_date ?? null,
+    arrival_time: guest.arrival_time ?? null,
+    guest_notes: guest.guest_notes ?? null,
+    guest_profile: Object.keys(guestProfile).length ? guestProfile : null,
+    spa_time: guest.spa_time ?? null,
+    meal_time: guest.meal_time ?? null,
+    meal_location: guest.meal_location ?? null,
+    needs_callback: guest.needs_callback ?? false,
+    requires_attention: guest.requires_attention ?? false,
+    attention_reason: guest.attention_reason ?? null,
   };
+}
+
+const LIST_GUESTS_SCOPE_LABEL_HE: Record<string, string> = {
+  arriving_today: "מגיעים היום",
+  departing_today: "עוזבים היום",
+  in_resort_now: "בריזורט כרגע",
+};
+
+async function _execListGuestsByScope(supabase: SupabaseClient, args: Record<string, unknown>): Promise<ToolResult> {
+  const scope = String(args.scope ?? "");
+  if (!(scope in LIST_GUESTS_SCOPE_LABEL_HE)) return { ok: false, error: "invalid_scope" };
+
+  const today = israelTodayStr();
+  let query = supabase
+    .from("guests")
+    .select("id, name, room, room_type, status, arrival_date, departure_date, arrival_time")
+    .not("status", "eq", "cancelled");
+
+  if (scope === "arriving_today") query = query.eq("arrival_date", today);
+  else if (scope === "departing_today") query = query.eq("departure_date", today).neq("status", "checked_out");
+  else query = query.lte("arrival_date", today).or(`departure_date.gte.${today},departure_date.is.null`);
+
+  const { data, error } = await query.order("room", { ascending: true }).limit(30);
+  if (error) {
+    console.warn("[executiveAssistant] list_guests_by_scope failed:", error.message);
+    return { ok: false, error: error.message };
+  }
+
+  const rows = (data ?? []) as Array<{ name: string | null; room: string | null; room_type: string | null; status: string; arrival_time: string | null }>;
+  if (!rows.length) return { ok: true, count: 0, scope, summary: `אין אורחים ב${LIST_GUESTS_SCOPE_LABEL_HE[scope]} כרגע.` };
+
+  const lines = rows.map((g) =>
+    `• ${g.name ?? "ללא שם"} — ${g.room ?? "ללא חדר"}${g.arrival_time ? ` (${g.arrival_time})` : ""} [${g.status}]`,
+  );
+  return { ok: true, count: rows.length, scope, summary: lines.join("\n") };
 }
 
 async function _execCeoGuestOverride(supabase: SupabaseClient, args: Record<string, unknown>): Promise<ToolResult> {
@@ -521,6 +629,7 @@ export async function executeExecutiveTool(
     case "create_executive_task": return await _execCreateExecutiveTask(supabase, args, ctx);
     case "get_resort_brief": return await _execGetResortBrief(supabase);
     case "find_guest_by_room": return await _execFindGuestByRoom(supabase, args);
+    case "list_guests_by_scope": return await _execListGuestsByScope(supabase, args);
     case "ceo_guest_override": return await _execCeoGuestOverride(supabase, args);
     case "send_guest_message": return await _execSendGuestMessage(supabase, args);
     case "notify_managers_group": return await _execNotifyManagersGroup(args);
