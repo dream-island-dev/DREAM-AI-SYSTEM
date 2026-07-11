@@ -222,10 +222,12 @@ export async function dispatchStage2ViaPipeline(
 // (today: Whapi only). Returns null when nothing is claimed on that channel.
 export async function fetchChannelClaim(
   supabaseClient: { from: (t: string) => unknown },
-  guestId: number | null,
+  guestId: number | string | null,
   channel: "meta" | "whapi",
 ): Promise<string | null> {
-  if (!guestId) return null;
+  if (guestId == null || guestId === "") return null;
+  const id = Number(guestId);
+  if (!Number.isFinite(id)) return null;
   const supabase = supabaseClient as {
     from: (t: string) => {
       select: (cols: string) => {
@@ -240,7 +242,7 @@ export async function fetchChannelClaim(
   const { data, error } = await supabase
     .from("guest_channel_claims")
     .select("claimed_by")
-    .eq("guest_id", guestId)
+    .eq("guest_id", id)
     .eq("inbox_channel", channel)
     .maybeSingle();
   if (error) {

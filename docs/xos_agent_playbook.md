@@ -335,6 +335,11 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
+### 2026-07-11 — Whapi «קח שיחה» mute broken by Meta claim leak
+- **Symptom:** Claim mute works on Dream Bot; Suites (Whapi) bot keeps auto-replying after 🙋.
+- **Root:** Inbox guest-map sync (`syncInboxContactWithGuestMap` / `reconcileMessageWithGuestMap`) always wrote `guests.claimed_by` onto every contact — Whapi badge lied (Meta ✓ / wiped Whapi claim). Separately, claim without `guestId` could INSERT a stub while `whapi-webhook` mute-checks the real guest via `resolveGuestByInboundPhone`.
+- **Fix pattern:** Whapi claim UI state only from `guest_channel_claims` (ready flag so empty Map doesn't wipe); phone lookup before stub; never copy Meta `claimed_by` onto `inbox_channel=whapi`.
+
 ### 2026-07-11 — Whapi Inbox `timeout_no_response` ≠ failed send
 - **Symptom:** Red Inbox error `whapi_timeout: …within 25s — message may have still been delivered` on Suites-device replies; staff tempted to resend.
 - **Root:** Whapi gate sometimes exceeds the AbortSignal window after WhatsApp already accepted the message. Code correctly refuses Meta fallback on timeout (duplicate risk).

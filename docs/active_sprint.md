@@ -1,7 +1,21 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-11 (Whapi Inbox timeout 45s + Hebrew uncertain-delivery — **deployed**).
+> Last updated: 2026-07-11 (Whapi claim mute fix — **deployed**).
 > Full session history → `CLAUDE.md` §10 + `claude_history.md`.
 > **Agent workflow** → `docs/xos_agent_playbook.md`
+
+---
+
+## ✅ Deployed — Whapi «קח שיחה» mute (2026-07-11)
+
+Symptom: Claim/mute works on Dream Bot (Meta); Suites device (Whapi) bot keeps replying.
+
+| Root cause | Fix |
+|---|---|
+| `syncInboxContactWithGuestMap` / `reconcileMessageWithGuestMap` copied Meta `guests.claimed_by` onto Whapi threads | Per-channel resolve via `guest_channel_claims` + `whapiClaimsReadyRef` |
+| Claim without `guestId` created a stub; webhook muted the real guest id | Phone lookup before stub; stamp `guest_id` on local rows |
+| LLM path omitted `staffMuted` on final send (defense-in-depth) | `sendGuestDmReply(..., staffMuted)` |
+
+Deployed: `whapi-webhook` + frontend push to `main`.
 
 ---
 

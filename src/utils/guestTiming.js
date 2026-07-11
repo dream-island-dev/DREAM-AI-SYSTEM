@@ -282,10 +282,19 @@ export function getInboxRosterSegmentMeta(segment, lang = "he") {
  * Align an inbox roster contact with the live guests phone map.
  * When the guest row was deleted (no map entry), strip DB profile fields so stale
  * denormalized data from old whatsapp_conversations rows cannot show "מחר" etc.
- * When a live row exists — map is the only source of truth (no merge with stale contact).
+ * When a live row exists — map is the only source of truth for profile fields
+ * (no merge with stale contact).
+ *
+ * Claim state is per-channel (migration 171):
+ * - Meta threads: guests.claimed_by / claimed_at on the map entry.
+ * - Whapi threads: guest_channel_claims — NEVER overwrite from guests.claimed_by
+ *   (that would leak a Dream Bot mute onto מכשיר הסוויטות, or wipe a real Whapi
+ *   claim). Prefer whapiClaimsMap[guestId]; else keep contact.claimedBy already
+ *   stamped from message rows / setClaim.
  */
-export function syncInboxContactWithGuestMap(contact, guestEntry) {
+export function syncInboxContactWithGuestMap(contact, guestEntry, whapiClaimsMap = null) {
   if (!contact) return contact;
+  const isWhapi = (contact.inbox_channel ?? "meta") === "whapi";
   if (!guestEntry?.id) {
     return {
       ...contact,
@@ -305,6 +314,27 @@ export function syncInboxContactWithGuestMap(contact, guestEntry) {
       claimedAt: null,
     };
   }
+  let claimedBy;
+  let claimedAt;
+  if (isWhapi) {
+    // null map = fetch not ready → preserve contact stamp (never leak Meta claim).
+    // Map instance (even empty) = fetch done → lookup; missing key = unclaimed.
+    if (whapiClaimsMap == null) {
+      claimedBy = contact.claimedBy ?? null;
+      claimedAt = contact.claimedAt ?? null;
+    } else {
+      const whapiClaim = whapiClaimsMap.has(guestEntry.id)
+        ? whapiClaimsMap.get(guestEntry.id)
+        : whapiClaimsMap.has(Number(guestEntry.id))
+          ? whapiClaimsMap.get(Number(guestEntry.id))
+          : undefined;
+      claimedBy = whapiClaim !== undefined ? (whapiClaim?.claimed_by ?? null) : null;
+      claimedAt = whapiClaim !== undefined ? (whapiClaim?.claimed_at ?? null) : null;
+    }
+  } else {
+    claimedBy = guestEntry.claimed_by ?? null;
+    claimedAt = guestEntry.claimed_at ?? null;
+  }
   return {
     ...contact,
     guestId: guestEntry.id,
@@ -319,8 +349,8 @@ export function syncInboxContactWithGuestMap(contact, guestEntry) {
     portalToken: guestEntry.portal_token ?? null,
     mealTime: guestEntry.meal_time ?? null,
     mealLocation: guestEntry.meal_location ?? null,
-    claimedBy: guestEntry.claimed_by ?? null,
-    claimedAt: guestEntry.claimed_at ?? null,
+    claimedBy,
+    claimedAt,
   };
 }
 

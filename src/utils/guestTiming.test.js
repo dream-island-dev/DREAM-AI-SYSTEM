@@ -199,6 +199,55 @@ describe("syncInboxContactWithGuestMap", () => {
     expect(synced.arrivalDate).toBe(israelDateOffsetStr(5));
     expect(classifyInboxContactSegment(synced)).toBe("future");
   });
+
+  test("Whapi thread never inherits Meta guests.claimed_by", () => {
+    const contact = {
+      phone: "972501111111",
+      inbox_channel: "whapi",
+      claimedBy: null,
+      claimedAt: null,
+      messages: [],
+    };
+    const metaClaimed = {
+      id: 55,
+      name: "אורח",
+      claimed_by: "staff-uuid-meta",
+      claimed_at: "2026-07-11T10:00:00Z",
+    };
+    const leaked = syncInboxContactWithGuestMap(contact, metaClaimed, null);
+    // Map not ready — preserve contact stamp (null), do NOT copy Meta claim.
+    expect(leaked.claimedBy).toBeNull();
+
+    const whapiMap = new Map([
+      [55, { claimed_by: "staff-uuid-whapi", claimed_at: "2026-07-11T11:00:00Z" }],
+    ]);
+    const muted = syncInboxContactWithGuestMap(contact, metaClaimed, whapiMap);
+    expect(muted.claimedBy).toBe("staff-uuid-whapi");
+
+    const emptyMap = new Map();
+    const unmuted = syncInboxContactWithGuestMap(
+      { ...contact, claimedBy: "stale-local" },
+      metaClaimed,
+      emptyMap,
+    );
+    expect(unmuted.claimedBy).toBeNull();
+  });
+
+  test("Meta thread still reads guests.claimed_by from map", () => {
+    const contact = {
+      phone: "972501111111",
+      inbox_channel: "meta",
+      claimedBy: null,
+      messages: [],
+    };
+    const next = syncInboxContactWithGuestMap(contact, {
+      id: 55,
+      name: "אורח",
+      claimed_by: "staff-uuid-meta",
+      claimed_at: "2026-07-11T10:00:00Z",
+    });
+    expect(next.claimedBy).toBe("staff-uuid-meta");
+  });
 });
 
 describe("getGuestArrivalRosterLabel — departed vs stale checked_in", () => {

@@ -1026,8 +1026,8 @@ async function handleGuestDirectMessage(
       replyText = GUEST_STAFF_HANDOFF_SENTENCE;
     }
     await flagGuestDmStaffHandoff(supabase, { phone, guestId, conversationId, replyText });
-    await sendGuestDmReply(supabase, phone, guestId, replyText);
-    results.push({ ...base, action: "llm_reply_sent" });
+    await sendGuestDmReply(supabase, phone, guestId, replyText, staffMuted);
+    results.push({ ...base, action: staffMuted ? "captured_staff_claimed_faq" : "llm_reply_sent" });
   } catch (e) {
     console.error("[whapi-webhook] handleGuestDirectMessage failed:", (e as Error).message);
     results.push({ ...base, error: "guest_dm_failed", detail: (e as Error).message });

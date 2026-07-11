@@ -668,10 +668,38 @@ function toGuestMapEntry(g) {
   };
 }
 
-/** Apply live guests map onto one flat message row (or strip when unregistered). */
-function reconcileMessageWithGuestMap(row, phoneMap) {
+/** Resolve Whapi per-channel claim for a guest id (migration 171). */
+function lookupWhapiClaim(whapiClaimsMap, guestId) {
+  if (!whapiClaimsMap || guestId == null) return undefined;
+  if (whapiClaimsMap.has(guestId)) return whapiClaimsMap.get(guestId);
+  const asNum = Number(guestId);
+  if (asNum !== guestId && whapiClaimsMap.has(asNum)) return whapiClaimsMap.get(asNum);
+  return undefined;
+}
+
+/** Apply live guests map onto one flat message row (or strip when unregistered).
+ * Claim is per-channel: Meta ← guests.claimed_by; Whapi ← guest_channel_claims
+ * (whapiClaimsMap). Never copy Meta's claimed_by onto a Whapi row. */
+function reconcileMessageWithGuestMap(row, phoneMap, whapiClaimsMap = null, whapiClaimsReady = false) {
   const guest = phoneMap.get(normalizePhone(row.phone));
   if (!guest?.id) return clearGuestFieldsFromMessage(row);
+  const isWhapi = (row.inbox_channel ?? "meta") === "whapi";
+  let claimedBy = guest.claimed_by ?? null;
+  let claimedAt = guest.claimed_at ?? null;
+  if (isWhapi) {
+    const whapiClaim = lookupWhapiClaim(whapiClaimsMap, guest.id);
+    if (whapiClaim !== undefined) {
+      claimedBy = whapiClaim?.claimed_by ?? null;
+      claimedAt = whapiClaim?.claimed_at ?? null;
+    } else if (whapiClaimsReady) {
+      claimedBy = null;
+      claimedAt = null;
+    } else {
+      // Claims fetch not finished — keep row stamp (setClaim / prior normalise).
+      claimedBy = row.guest_claimed_by ?? null;
+      claimedAt = row.guest_claimed_at ?? null;
+    }
+  }
   return {
     ...row,
     guest_id: guest.id,
@@ -686,8 +714,8 @@ function reconcileMessageWithGuestMap(row, phoneMap) {
     guest_portal_token: guest.portal_token,
     guest_meal_time: guest.meal_time,
     guest_meal_location: guest.meal_location,
-    guest_claimed_by: guest.claimed_by,
-    guest_claimed_at: guest.claimed_at,
+    guest_claimed_by: claimedBy,
+    guest_claimed_at: claimedAt,
   };
 }
 
@@ -2816,6 +2844,7 @@ export default function WhatsAppInbox({
   const guestPhoneMapRef = useRef(new Map()); // normalizePhone(guests.phone) → guest profile slice
   const guestIdMapRef = useRef(new Map()); // guests.id → same slice (phone-mismatch fallback)
   const whapiClaimsMapRef = useRef(new Map()); // guests.id → { claimed_by, claimed_at } (guest_channel_claims, whapi only — §4)
+  const whapiClaimsReadyRef = useRef(false); // true after guest_channel_claims fetch — empty Map before that must not wipe stamps
   const guestMapReadyRef = useRef(false); // true after initial guests fetch — avoids stripping before load
   const profilesMapRef   = useRef(new Map()); // profiles.id → profiles.name, for claimedBy display
   const alertsReadyRef   = useRef(false); // skip sounds until initial fetchAll completes
@@ -2888,14 +2917,23 @@ export default function WhatsAppInbox({
 
   const resolveIdentityFallback = useCallback((contacts) => {
     if (!guestMapReadyRef.current) return contacts;
+    // Pass Map only after claims fetch — null keeps Whapi stamps (never Meta leak).
+    const whapiMap = whapiClaimsReadyRef.current ? whapiClaimsMapRef.current : null;
     return contacts.map((c) =>
-      syncInboxContactWithGuestMap(c, resolveGuestEntryForContact(c)),
+      syncInboxContactWithGuestMap(c, resolveGuestEntryForContact(c), whapiMap),
     );
   }, [resolveGuestEntryForContact]);
 
   const reconcileRowsWithGuestMap = useCallback((rows) => {
     if (!guestMapReadyRef.current || !rows?.length) return rows;
-    return rows.map((r) => reconcileMessageWithGuestMap(r, guestPhoneMapRef.current));
+    return rows.map((r) =>
+      reconcileMessageWithGuestMap(
+        r,
+        guestPhoneMapRef.current,
+        whapiClaimsMapRef.current,
+        whapiClaimsReadyRef.current,
+      ),
+    );
   }, []);
 
   // ── Resolve claimed_by (a profiles.id UUID) to a display name, the same
@@ -3399,24 +3437,50 @@ export default function WhatsAppInbox({
         ? { claimed_by: user.id, claimed_at: new Date().toISOString() }
         : { claimed_by: null, claimed_at: null };
 
+      let resolvedGuestId = contact.guestId ?? null;
+
       if (channel === "whapi") {
-        let guestId = contact.guestId ?? null;
+        let guestId = resolvedGuestId;
         if (!guestId) {
-          if (!claim) {
-            throw new Error("לא נמצא פרופיל אורח לטלפון הזה — אין שיוך לשחרר.");
-          }
-          // Same auto-create-stub contract as the Meta path below — a plain
-          // stub row, no claimed_by/claimed_at on it (that lives in
-          // guest_channel_claims for this channel).
-          const stubName = contact.guestName || contact.pushName || `אורח ${contact.phone}`;
-          const { data: created, error: insErr } = await supabase
+          // Prefer an existing Golden Profile by phone — creating a stub while a
+          // real guests row exists would store the claim on the wrong id, and
+          // whapi-webhook's resolveGuestByInboundPhone would mute-check the
+          // real row (still unmuted) → bot keeps replying.
+          const variants = phoneVariants(contact.phone);
+          const { data: existingRows, error: findErr } = await supabase
             .from("guests")
-            .insert({ name: stubName, phone: `+${contact.phone}` })
-            .select("id");
-          if (insErr) throw insErr;
-          guestId = created?.[0]?.id ?? null;
-          if (!guestId) throw new Error("יצירת פרופיל אורח נכשלה — לא ניתן להשתיק את הבוט.");
+            .select("id, name, status, arrival_date, departure_date, room, room_type, spa_time, spa_date, portal_token, meal_time, meal_location, claimed_by, claimed_at")
+            .in("phone", variants)
+            .limit(5);
+          if (findErr) throw findErr;
+          const existing = (existingRows ?? []).find((g) => g.status !== "cancelled")
+            ?? existingRows?.[0]
+            ?? null;
+          if (existing?.id) {
+            guestId = existing.id;
+            const entry = toGuestMapEntry(existing);
+            if (entry) {
+              guestIdMapRef.current.set(entry.id, entry);
+              const mapKey = normalizePhone(contact.phone);
+              if (mapKey) guestPhoneMapRef.current.set(mapKey, entry);
+            }
+          } else if (!claim) {
+            throw new Error("לא נמצא פרופיל אורח לטלפון הזה — אין שיוך לשחרר.");
+          } else {
+            // Same auto-create-stub contract as the Meta path below — a plain
+            // stub row, no claimed_by/claimed_at on it (that lives in
+            // guest_channel_claims for this channel).
+            const stubName = contact.guestName || contact.pushName || `אורח ${contact.phone}`;
+            const { data: created, error: insErr } = await supabase
+              .from("guests")
+              .insert({ name: stubName, phone: `+${contact.phone}` })
+              .select("id");
+            if (insErr) throw insErr;
+            guestId = created?.[0]?.id ?? null;
+            if (!guestId) throw new Error("יצירת פרופיל אורח נכשלה — לא ניתן להשתיק את הבוט.");
+          }
         }
+        resolvedGuestId = guestId;
 
         if (claim) {
           const { error: err } = await supabase
@@ -3427,6 +3491,7 @@ export default function WhatsAppInbox({
             );
           if (err) throw err;
           whapiClaimsMapRef.current.set(guestId, { claimed_by: patch.claimed_by, claimed_at: patch.claimed_at });
+          whapiClaimsReadyRef.current = true;
         } else {
           const { error: err } = await supabase
             .from("guest_channel_claims")
@@ -3435,6 +3500,7 @@ export default function WhatsAppInbox({
             .eq("inbox_channel", "whapi");
           if (err) throw err;
           whapiClaimsMapRef.current.delete(guestId);
+          whapiClaimsReadyRef.current = true;
         }
       } else {
         const variants = phoneVariants(contact.phone);
@@ -3469,16 +3535,54 @@ export default function WhatsAppInbox({
             .select("id");
           if (insErr) throw insErr;
           if (!created?.length) throw new Error("יצירת פרופיל אורח נכשלה — לא ניתן להשתיק את הבוט.");
+          const stubId = created[0].id;
+          const stubEntry = {
+            id: stubId,
+            name: stubName,
+            status: null,
+            arrival_date: null,
+            departure_date: null,
+            room: null,
+            room_type: null,
+            spa_time: null,
+            spa_date: null,
+            portal_token: null,
+            meal_time: null,
+            meal_location: null,
+            claimed_by: patch.claimed_by,
+            claimed_at: patch.claimed_at,
+          };
+          guestPhoneMapRef.current.set(normalizePhone(contact.phone), stubEntry);
+          guestIdMapRef.current.set(stubId, stubEntry);
+        } else {
+          // Keep phone-map claim in sync so applyGrouping → reconcile does not
+          // wipe the Meta mute badge with a stale claimed_by=null.
+          for (const row of updatedRows) {
+            const prev = guestIdMapRef.current.get(row.id) ?? { id: row.id };
+            const next = {
+              ...prev,
+              claimed_by: patch.claimed_by,
+              claimed_at: patch.claimed_at,
+            };
+            guestIdMapRef.current.set(row.id, next);
+            const mapKey = normalizePhone(contact.phone);
+            if (mapKey) guestPhoneMapRef.current.set(mapKey, next);
+          }
         }
       }
 
       // Local patch scoped to THIS channel only — a Meta claim must never
       // show up as claimed on that same phone's Whapi thread, and vice versa.
-      allMsgsRef.current = allMsgsRef.current.map((m) =>
-        m.phone === contact.phone && (m.inbox_channel ?? "meta") === channel
-          ? { ...m, guest_claimed_by: patch.claimed_by, guest_claimed_at: patch.claimed_at }
-          : m
-      );
+      // Stamp guest_id when Whapi claim resolved a profile by phone so later
+      // regroups / webhook-aligned mute checks keep the same Golden Profile id.
+      allMsgsRef.current = allMsgsRef.current.map((m) => {
+        if (m.phone !== contact.phone || (m.inbox_channel ?? "meta") !== channel) return m;
+        const next = { ...m, guest_claimed_by: patch.claimed_by, guest_claimed_at: patch.claimed_at };
+        if (channel === "whapi" && resolvedGuestId && !m.guest_id) {
+          next.guest_id = resolvedGuestId;
+        }
+        return next;
+      });
       setContacts(applyGrouping(allMsgsRef.current));
       if (claim) {
         setRouteToast(
@@ -3513,7 +3617,12 @@ export default function WhatsAppInbox({
     allMsgsRef.current = allMsgsRef.current.map((m) => {
       if (m.phone !== targetPhone) return m;
       touched = true;
-      return reconcileMessageWithGuestMap(m, guestPhoneMapRef.current);
+      return reconcileMessageWithGuestMap(
+        m,
+        guestPhoneMapRef.current,
+        whapiClaimsMapRef.current,
+        whapiClaimsReadyRef.current,
+      );
     });
     if (touched) setContacts(applyGrouping(allMsgsRef.current));
   }, [applyGrouping]);
@@ -4051,11 +4160,15 @@ export default function WhatsAppInbox({
         const map = new Map();
         (data ?? []).forEach((row) => {
           map.set(row.guest_id, { claimed_by: row.claimed_by, claimed_at: row.claimed_at });
+          // Supabase may return bigint as string — index both forms.
+          const asNum = Number(row.guest_id);
+          if (!Number.isNaN(asNum)) map.set(asNum, { claimed_by: row.claimed_by, claimed_at: row.claimed_at });
         });
         whapiClaimsMapRef.current = map;
+        whapiClaimsReadyRef.current = true;
         allMsgsRef.current = allMsgsRef.current.map((m) => {
           if ((m.inbox_channel ?? "meta") !== "whapi") return m;
-          const claim = map.get(m.guest_id);
+          const claim = lookupWhapiClaim(map, m.guest_id);
           return { ...m, guest_claimed_by: claim?.claimed_by ?? null, guest_claimed_at: claim?.claimed_at ?? null };
         });
         setContacts(applyGrouping(allMsgsRef.current));
