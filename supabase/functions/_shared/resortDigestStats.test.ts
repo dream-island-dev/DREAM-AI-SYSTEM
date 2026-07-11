@@ -15,6 +15,8 @@ import {
   composeExecutiveHeadline,
   composeResortDigestMessage,
   formatCappedList,
+  formatDigestRoomLabel,
+  formatDigestSlaCategory,
   resolveDigestRange,
   type DigestGuestRow,
   type DigestTaskRow,
@@ -105,6 +107,27 @@ Deno.test("computeRoomReadyTiming: unknown (not swallowed as on_time) when room_
 Deno.test("computeRoomReadyTiming: excludes guests who never checked in", () => {
   const timing = computeRoomReadyTiming([guestRow({ checkin_time: null, room_ready_at: null })]);
   assertEquals(timing.length, 0);
+});
+
+Deno.test("formatDigestRoomLabel: bare number resolves to canonical suite name", () => {
+  assertEquals(formatDigestRoomLabel("22"), "אקווה מרין 22");
+  assertEquals(formatDigestRoomLabel("אמטיסט 8"), "אמטיסט 8");
+});
+
+Deno.test("formatDigestSlaCategory: maps DB keys to Hebrew labels", () => {
+  assertEquals(formatDigestSlaCategory("maintenance"), "🔧 תחזוקה");
+  assertEquals(formatDigestSlaCategory("guest_amenities"), "🛏️ ציוד לאורח");
+  assertEquals(formatDigestSlaCategory("pest_control"), "🐜 הדברה");
+});
+
+Deno.test("computeRequestsBySuite: merges bare room number with canonical suite label", () => {
+  const summary = computeRequestsBySuite([
+    taskRow({ room_number: "22" }),
+    taskRow({ room_number: "אקווה מרין 22" }),
+  ]);
+  assertEquals(summary.length, 1);
+  assertEquals(summary[0].room, "אקווה מרין 22");
+  assertEquals(summary[0].total, 2);
 });
 
 Deno.test("computeRequestsBySuite: excludes tasks with no room_number (general ops, not per-suite)", () => {
@@ -375,16 +398,28 @@ Deno.test("composeResortDigestMessage: at real-world volume, caps the room-ready
   assertEquals(body.includes("...ועוד 5 נוספים"), true);
 });
 
-Deno.test("composeResortDigestMessage: renders anomaly line when present", () => {
+Deno.test("composeResortDigestMessage: renders anomaly line with Hebrew category label", () => {
   const stats = computeResortDigestStats({
     guests: [],
     tasks: [
-      taskRow({ room_number: "A", sla_category: "pest_control" }),
-      taskRow({ room_number: "A", sla_category: "pest_control" }),
-      taskRow({ room_number: "A", sla_category: "pest_control" }),
+      taskRow({ room_number: "22", sla_category: "pest_control" }),
+      taskRow({ room_number: "22", sla_category: "pest_control" }),
+      taskRow({ room_number: "22", sla_category: "pest_control" }),
     ],
   });
   const body = composeResortDigestMessage(stats, "weekly", "2026-07-05–2026-07-11");
   assertEquals(body.includes("🚩 חריגות:"), true);
-  assertEquals(body.includes("A — 3× pest_control"), true);
+  assertEquals(body.includes("אקווה מרין 22 — 3× 🐜 הדברה"), true);
+});
+
+Deno.test("composeResortDigestMessage: monthly uses executive summary (no +N more trailer)", () => {
+  const tasks = Array.from({ length: 10 }, (_, i) =>
+    taskRow({ room_number: String(i + 1), status: "done" }),
+  );
+  const stats = computeResortDigestStats({ guests: [], tasks, now: SLA_NOW });
+  const body = composeResortDigestMessage(stats, "monthly", "2026-06");
+  assertEquals(body.includes("סיכום חודשי"), true);
+  assertEquals(body.includes("סה״כ 10 בקשות"), true);
+  assertEquals(body.includes("חמש הסוויטות העמוסות:"), true);
+  assertEquals(body.includes("...ועוד"), false);
 });
