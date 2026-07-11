@@ -52,6 +52,7 @@ import {
   isRecentlyActive,
   sortContactsRecentFirst,
 } from "../utils/inboxReadState";
+import { formatInboxOutboundError } from "../utils/inboxSendErrors";
 
 const HIT_STAFF = "var(--hit-target-staff, 44px)";
 const HIT_COMFORT = "var(--hit-target-comfort, 48px)";
@@ -1661,7 +1662,9 @@ function NewChatModal({ onClose, onSent }) {
         } else {
           failures.push({
             name: g.name, phone: g.phone,
-            reason: data?.status === "window_closed" ? "חלון 24ש׳ סגור" : (data?.error ?? error?.message ?? "שגיאה"),
+            reason: data?.status === "window_closed"
+              ? "חלון 24ש׳ סגור"
+              : formatInboxOutboundError(data, error?.message).replace(/^שגיאת שליחה:\s*/, ""),
           });
         }
       } catch (e) {
@@ -1750,8 +1753,9 @@ function NewChatModal({ onClose, onSent }) {
       const { data, error } = await supabase.functions.invoke("whatsapp-send", {
         body: { trigger: "inbox_reply", phone: selectedGuest.phone, message: freeText.trim(), inbox_channel: sendChannel },
       });
-      if (error) throw new Error(data?.error ?? error.message ?? "שגיאה בשליחה");
-      if (data && !data.ok) throw new Error(data.error ?? "שגיאה בשליחה");
+      if (error || (data && !data.ok)) {
+        throw new Error(formatInboxOutboundError(data, error?.message ?? data?.error));
+      }
 
       // whatsapp-send's inbox_reply branch already inserts the outbound row
       // server-side (real wa_message_id + session-wrapped log text) — a
@@ -4396,16 +4400,14 @@ export default function WhatsAppInbox({
       }
 
       if (fnErr || !data?.ok) {
-        throw new Error(fnErr?.message ?? data?.error ?? "שגיאה בשליחת הודעת חדר מוכן");
+        throw new Error(formatInboxOutboundError(data, fnErr?.message ?? data?.error, {
+          opLabel: "שגיאת שליחה (חדר מוכן)",
+        }));
       }
       setQuickOpen(false);
       await fetchSince();
     } catch (err) {
-      // Always prefix with the operation name — an unprefixed err.message can
-      // be a raw browser/library string (e.g. "TypeError: Failed to fetch" on
-      // a network blip, or functions-js's "Failed to send a request to the
-      // Edge Function"), meaningless to staff without context.
-      setError(`שגיאת שליחה (חדר מוכן): ${err?.message ?? "שגיאה לא ידועה"}`);
+      setError(err?.message ?? "שגיאת שליחה (חדר מוכן): שגיאה לא ידועה");
     } finally {
       setSending(false);
     }
@@ -4436,14 +4438,15 @@ export default function WhatsAppInbox({
           message: reply.trim(),
         },
       });
-      if (fnErr || !data?.ok) throw new Error(fnErr?.message ?? data?.error ?? "שגיאה בשליחה");
+      if (fnErr || !data?.ok) {
+        throw new Error(formatInboxOutboundError(data, fnErr?.message ?? data?.error));
+      }
       setReply("");
       markPhoneInboundRead(activeContact);
       await fetchSince();
     } catch (err) {
-      // Always prefix with the operation name — see sendRoomReady's catch
-      // above for why an unprefixed err.message is misleading.
-      setError(`שגיאת שליחה: ${err?.message ?? "שגיאה לא ידועה"}`);
+      // formatInboxOutboundError already prefixes hard fails; timeout is a full sentence.
+      setError(err?.message ?? "שגיאת שליחה: שגיאה לא ידועה");
     } finally {
       setSending(false);
     }

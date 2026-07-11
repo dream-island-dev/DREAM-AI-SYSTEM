@@ -15,10 +15,18 @@
 // Optional Supabase secret:  WHAPI_API_URL  (defaults to https://gate.whapi.cloud)
 //
 // Same FAIL-VISIBLE conventions as every other sender in this repo (CLAUDE.md
-// §0.3): 25s AbortSignal.timeout; a distinct "timeout_no_response" tag on abort
-// (a timeout is "unknown delivery", NOT a confirmed rejection); a non-2xx
-// surfaces the provider's error body (truncated) instead of failing silently.
+// §0.3): AbortSignal.timeout (WHAPI_FETCH_TIMEOUT_MS); a distinct
+// "timeout_no_response" tag on abort (a timeout is "unknown delivery", NOT a
+// confirmed rejection); a non-2xx surfaces the provider's error body
+// (truncated) instead of failing silently.
 //
+// 45s (was 25s): Whapi gate occasionally answers after the old window while
+// the WhatsApp message was already delivered — Inbox then showed a false
+// "failed" and staff risked a duplicate resend. Still shorter than Edge
+// Function wall-clock; never long enough to feel hung forever.
+const WHAPI_FETCH_TIMEOUT_MS = 45_000;
+const WHAPI_TIMEOUT_SECS = Math.round(WHAPI_FETCH_TIMEOUT_MS / 1000);
+
 // NOTE (Sprint 1): this module is the outbound *architecture* the plan asks us
 // to stand up now. It is intentionally NOT yet called from whapi-webhook — the
 // structured in-group task reply that uses it is Sprint 2. Keeping it here (and
@@ -87,7 +95,7 @@ export async function sendWhapiText(
         Accept: "application/json",
       },
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(25000),
+      signal: AbortSignal.timeout(WHAPI_FETCH_TIMEOUT_MS),
     });
     if (!res.ok) {
       const detail = (await res.text()).slice(0, 300);
@@ -97,7 +105,7 @@ export async function sendWhapiText(
     return (data?.message?.id ?? data?.id ?? null) as string | null;
   } catch (e) {
     if (_isAbortError(e)) {
-      throw new Error("timeout_no_response: Whapi did not respond within 25s — message may have still been delivered");
+      throw new Error(`timeout_no_response: Whapi did not respond within ${WHAPI_TIMEOUT_SECS}s — message may have still been delivered`);
     }
     throw e;
   }
@@ -127,7 +135,7 @@ export async function sendWhapiImage(
         Accept: "application/json",
       },
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(25000),
+      signal: AbortSignal.timeout(WHAPI_FETCH_TIMEOUT_MS),
     });
     if (!res.ok) {
       const detail = (await res.text()).slice(0, 300);
@@ -137,7 +145,7 @@ export async function sendWhapiImage(
     return (data?.message?.id ?? data?.id ?? null) as string | null;
   } catch (e) {
     if (_isAbortError(e)) {
-      throw new Error("timeout_no_response: Whapi image did not respond within 25s — message may have still been delivered");
+      throw new Error(`timeout_no_response: Whapi image did not respond within ${WHAPI_TIMEOUT_SECS}s — message may have still been delivered`);
     }
     throw e;
   }

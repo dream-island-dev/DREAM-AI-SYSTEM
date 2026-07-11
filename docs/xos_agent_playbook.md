@@ -335,6 +335,11 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
+### 2026-07-11 — Whapi Inbox `timeout_no_response` ≠ failed send
+- **Symptom:** Red Inbox error `whapi_timeout: …within 25s — message may have still been delivered` on Suites-device replies; staff tempted to resend.
+- **Root:** Whapi gate sometimes exceeds the AbortSignal window after WhatsApp already accepted the message. Code correctly refuses Meta fallback on timeout (duplicate risk).
+- **Fix pattern:** raise Whapi outbound timeout (45s); UI must say Hebrew «לא ודאי…בדקו לפני שליחה חוזרת», never dump English provider strings as a hard failure.
+
 ### 2026-07-11 — HITL `pending_approval` had no SLA clock
 - **Symptom:** Guest room ask → red Inbox dot + Ops `pending_approval` task; reception ignores both → guest waits forever.
 - **Root:** `sla-escalation-cron` only scanned `tasks.status='open'`. HITL gate never flipped → unassigned SLA never fired. Soft handoffs (`human_requested` only) had zero escalation path.

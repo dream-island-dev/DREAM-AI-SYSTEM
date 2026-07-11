@@ -95,6 +95,7 @@ Failsafe (Hybrid unanswered escalation, `_shared/handoffEscalation.ts` + `sla-es
 - איסור שימוש ב-.single(): בשאילתות Supabase יש להשתמש תמיד ב-.maybeSingle() כדי למנוע קריסות קוד.
 - קריאות ל-Edge Functions: תמיד supabase.functions.invoke() (לעולם לא fetch גולמי).
 - אבטחת מפתחות: אין להחזיק טוקנים של Meta, מפתחות AI או סודות VAPID בתוך פרונטאנד או ב-Git.
+- Whapi outbound (`_shared/whapiSend.ts`): timeout 45s → `timeout_no_response` (סטטוס `timeout`, לא `failed`). Inbox מציג «לא ודאי אם הגיע» — בלי fallback אוטומטי ל-Meta (סיכון כפילות).
 
 6. פרוטוקול העלאה לפרודקשן (Autonomous Deploy)
 

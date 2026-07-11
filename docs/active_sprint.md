@@ -1,7 +1,20 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-11 (Spa Activities auto-create day_guest + hour agenda + dual entry — local only, awaiting deploy).
+> Last updated: 2026-07-11 (Whapi Inbox timeout 45s + Hebrew uncertain-delivery — **deployed**).
 > Full session history → `CLAUDE.md` §10 + `claude_history.md`.
 > **Agent workflow** → `docs/xos_agent_playbook.md`
+
+---
+
+## ✅ Deployed — Whapi Inbox timeout UX (2026-07-11)
+
+Symptom: Inbox red error `whapi_timeout: …within 25s` on Suites (Whapi) replies; delivery may already have succeeded.
+
+| Change | File |
+|---|---|
+| Timeout 25s→45s | `_shared/whapiSend.ts` |
+| Hebrew «לא ודאי…למנוע כפילות» | `inboxSendErrors.js` + `WhatsAppInbox.js` |
+
+Deployed: `whatsapp-send` + 11 Whapi consumers + frontend push.
 
 ---
 
