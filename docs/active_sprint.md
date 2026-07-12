@@ -1,5 +1,23 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-12 (Doc 2 international WhatsApp phones).
+> Last updated: 2026-07-12 (dream_room_ready1 Meta param fix).
+
+---
+
+## ✅ Ready — dream_room_ready1 param trim (2026-07-12)
+
+`room_ready` Meta template path no longer sends 2 body vars when Meta expects 1 (`#132000`).
+
+| Piece | Detail |
+|---|---|
+| `_shared/metaTemplateVars.ts` | `resolveExpectedBodyParamCount` + `fitVarsToExpectedCount` |
+| `whatsapp-send` | chokepoint in `sendViaTemplate`; `TWO_PARAM_ROOM_TEMPLATES` in `ensureTemplateBodyVars` |
+| Tests | 6/6 Deno (`metaTemplateVars.test.ts`) |
+
+**Deploy:** `npx supabase functions deploy whatsapp-send --no-verify-jwt` only. No migration / no frontend.
+
+**Mike QA:** re-send room_ready to a Meta guest outside 24h window → no admin 🚨 alert; message arrives with guest name (room name omitted until Meta template gets `{{2}}` re-approved).
+
+**Optional product follow-up:** re-submit `dream_room_ready1` in Meta Business Manager with `{{2}}`=suite name if room must appear in template text.
 
 ---
 

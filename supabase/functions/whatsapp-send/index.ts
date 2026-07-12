@@ -71,6 +71,12 @@ import {
   resolveMetaTemplateBodyText,
 } from "../_shared/metaTemplateLog.ts";
 import {
+  buildTwoParamRoomVars,
+  fitVarsToExpectedCount,
+  resolveExpectedBodyParamCount,
+  TWO_PARAM_ROOM_TEMPLATES,
+} from "../_shared/metaTemplateVars.ts";
+import {
   buildOptionalSpaText,
   buildSpaLine,
   buildSpaTimeSentence,
@@ -491,6 +497,9 @@ function ensureTemplateBodyVars(
       ]);
     }
     return synced;
+  }
+  if (TWO_PARAM_ROOM_TEMPLATES.has(templateName)) {
+    return buildTwoParamRoomVars(guest);
   }
   return sanitizeTemplateVars(vars);
 }
@@ -1070,6 +1079,9 @@ function resolveTemplateVars(
   if (THREE_PARAM_TIMING_TEMPLATES.has(templateName)) {
     return syncTimingVarsForGuest(guest);
   }
+  if (TWO_PARAM_ROOM_TEMPLATES.has(templateName)) {
+    return buildTwoParamRoomVars(guest);
+  }
   if (templateName === "dream_checkin_reminder_v2") {
     return sanitizeTemplateVars([String(guest.name ?? ""), RESORT_CONTACT_PHONE]);
   }
@@ -1104,7 +1116,22 @@ async function sendViaTemplate(
     console.warn("[whatsapp-send] sendViaTemplate: templateName empty — send will fail");
   }
 
-  const { components, resolvedVars } = buildTemplateComponents(templateName, variables, {
+  const expectedCount = await resolveExpectedBodyParamCount(templateName);
+  const fittedVars = fitVarsToExpectedCount(variables, expectedCount, {
+    guestName: variables[0],
+  });
+  if (
+    TWO_PARAM_ROOM_TEMPLATES.has(templateName) &&
+    variables.length > fittedVars.length &&
+    expectedCount > 0
+  ) {
+    console.warn(
+      `[whatsapp-send] template="${templateName}": room name omitted from Meta payload` +
+      ` — live template expects ${expectedCount} body param(s), had ${variables.length}`,
+    );
+  }
+
+  const { components, resolvedVars } = buildTemplateComponents(templateName, fittedVars, {
     buttonUrlParam,
     headerImageUrl: headerImageUrlOverride,
   });

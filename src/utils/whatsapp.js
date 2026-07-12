@@ -6,6 +6,12 @@ export const THREE_PARAM_TIMING_TEMPLATES = new Set([
   "dream_suite_reminder",
 ]);
 
+/** Room-ready templates — code may build 2 vars; server trims to live Meta count */
+export const TWO_PARAM_ROOM_TEMPLATES = new Set([
+  "dream_room_ready",
+  "dream_room_ready1",
+]);
+
 export function guestDisplayName(guest) {
   const name = String(guest?.name ?? "").trim();
   return name || "אורח יקר";
@@ -56,6 +62,13 @@ export function buildThreeParamTimingVars(guest, entryTime, checkInTime) {
 export function buildThreeParamTimingVarsFromGuest(guest) {
   const { entryTime, checkInTime } = resolveDayTimings(String(guest?.arrival_date ?? ""));
   return buildThreeParamTimingVars(guest, entryTime, checkInTime);
+}
+
+export function buildTwoParamRoomVars(guest) {
+  return sanitizeTemplateVars([
+    guestDisplayName(guest),
+    guestRoomLabel(guest),
+  ]);
 }
 
 export function templateExpectsThreeBodyParams(templateName) {
