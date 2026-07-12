@@ -206,7 +206,7 @@ serve(async (req: Request) => {
 
       const alertGuest = (alert as any).guests as { name?: string; room?: string; arrival_date?: string; status?: string } | null;
       const guestLabel = alertGuest
-        ? `${alertGuest.name ?? "Guest"} (Room ${alertGuest.room ?? "—"})`
+        ? `${alertGuest.name ?? "אורח"} (${alertGuest.room ?? "—"})`
         : alert.phone;
       // Same exact tag format as guest-portal-upsell/guest-portal-ops-request's
       // futureArrivalTag() — "PORTAL CTAS & ADIR'S FUTURE CONTEXT" session —
@@ -219,15 +219,21 @@ serve(async (req: Request) => {
         if (daysAway > 0) arrivalNote = `\n⚠️ בקשה עתידית לתאריך ${alertGuest.arrival_date} - בעוד ${daysAway} ימים`;
       }
       const ageMinutes = Math.round((Date.now() - new Date(alert.created_at as string).getTime()) / 60000);
-      const englishText =
-        `⚠️ SLA BREACH — Guest request unresolved for ${ageMinutes} min (limit: ${GUEST_ALERT_SLA_MINUTES} min).\n` +
-        `Guest: ${guestLabel}\n` +
-        `Type: ${alert.alert_type}\n` +
-        `Message: "${alert.message}"\n` +
-        `Please check the Requests Board.` +
+      const phoneDigits = String(alert.phone ?? "").replace(/\D/g, "");
+      const boardUrl = "https://dream-ai-system.vercel.app/?page=requests_board";
+      const chatUrl = phoneDigits
+        ? `https://dream-ai-system.vercel.app/?page=wa_inbox&phone=${phoneDigits}`
+        : null;
+      const hebrewText =
+        `⚠️ חריגת SLA — בקשת אורח פתוחה ${ageMinutes} דק׳ (סף: ${GUEST_ALERT_SLA_MINUTES} דק׳).\n` +
+        `אורח: ${guestLabel}\n` +
+        `סוג: ${alert.alert_type}\n` +
+        `הודעה: "${alert.message}"\n` +
+        (chatUrl ? `💬 שיחה: ${chatUrl}\n` : "") +
+        `📋 לוח בקשות: ${boardUrl}` +
         arrivalNote;
 
-      const notified = guestAlertPhone ? await notifyWhatsapp(supabaseUrl, anon, guestAlertPhone, englishText) : false;
+      const notified = guestAlertPhone ? await notifyWhatsapp(supabaseUrl, anon, guestAlertPhone, hebrewText) : false;
 
       const { error: markErr } = await supabase
         .from("guest_alerts")

@@ -36,7 +36,7 @@ Dream Island Resort Management System (XOS) — אפליקציית ניהול מ
 | Database | Supabase PostgreSQL 15 | אכיפת Row Level Security (RLS) בכל הטבלאות |
 | AI Primary | Gemini 2.5 Flash / 2.0 Flash | משמש לשיחה חופשית, תמלול הודעות קוליות וסוכני Inbox |
 | AI Fallback | Claude Sonnet 4.6 | גיבוי אוטומטי בכשל או לפי הגדרת preferred_model |
-| WhatsApp | Meta Cloud API + Whapi.cloud | Meta לשיחות ישירות (1:1), Whapi לניהול קבוצות צוות וקליטת ריאקציות. אורחי סוויטות: כל ה-outbound (כולל אוטומציית Stage 1+) דרך מכשיר הסוויטות כש-`GUEST_WHAPI_SUITES_ENABLED`. Stage 1 שפספס מועד T-2 (ייבוא מאוחר) מופיע בתור חי כ-`missed_window` לשיגור ידני/מכה — לא נעלם כ-`date_passed`. |
+| WhatsApp | Meta Cloud API + Whapi.cloud | Meta לשיחות ישירות (1:1), Whapi לניהול קבוצות צוות וקליטת ריאקציות. אורחי סוויטות: כל ה-outbound (כולל אוטומציית Stage 1+) דרך מכשיר הסוויטות כש-`GUEST_WHAPI_SUITES_ENABLED`. Stage 1 שפספס מועד T-2 (ייבוא מאוחר) מופיע בתור חי כ-`missed_window` לשיגור ידני/מכה — לא נעלם כ-`date_passed`. קבוצת «בקשות אורחים» (`guestAlertWhapiNotify`): כרטיס בעברית + לינקים ל-Inbox/לוח בקשות — בלי תרגום HE→EN (זה לקבוצות תפעול שדה בלבד). |
 
 2. מפת ניתוב מרכזית (activePage ב-App.js)
 
@@ -46,7 +46,8 @@ Dream Island Resort Management System (XOS) — אפליקציית ניהול מ
 - wa_inbox ➔ WhatsAppInbox.js (חדר בקרה תפעולי, ניהול שיחות, צ'אט, Claim ופתרון משימות). שיחות מופרדות לפי `inbox_channel` (`meta` = Dream Bot, `whapi` = מכשיר הסוויטות) — thread key = phone+channel. Claim ומתג בוט (🤖/😴) הם per-channel: `guests.claimed_by`/`bot_active` ל-Meta (ללא שינוי), `guest_channel_claims`/`bot_active_whapi` ל-Whapi (migrations 170-171) — claim/כיבוי בערוץ אחד לא משפיע על השני. **חובה:** סנכרון מפת אורחים ב-Inbox לעולם לא מעתיק `guests.claimed_by` לשיחת Whapi (רק `guest_channel_claims`); לפני stub ב-claim Whapi — חיפוש אורח קיים לפי טלפון. Unread = `inbox_read_cursors` per staff+phone+channel (migration 181); כפתור «נקרא» / פתיחת שיחה מעדכנים `last_read_at`. תגי יוצא `[META]`/`[SESSION]`/`[WHAPI]` ב-`whatsapp_conversations.message` הם ל-Inbox בלבד — חובה לפלטר לפני שליחה לאורח או הזרקה ל-LLM (`_shared/outboundDispatchTag.ts`).
 - orit_cs_agent ➔ OritCustomerServicePanel.js (סוכן שירות לקוחות לאורית — **IMAP read-only**, AI סיכום+טיוטות, העתקה ידנית ל-Outlook, דייג'סט בוקר Whapi). אין שליחה מהמערכת.
 - ops_board ➔ OperationsBoard.js (לוח תפעול ואחזקה, כולל טאב משימות ממתינות לאישור)
-- data_sync ➔ DataSyncPage.js (מסך סנכרון וייבוא קבצי אקסל ודוחות EZGO ל-Admin/Receptionist)
+- data_sync ➔ DataSyncPage.js (מסך סנכרון וייבוא קבצי אקסל ודוחות EZGO ל-Admin/Receptionist). כולל ייבוא דוח פעילויות ספא (עברי או CSV אנגלי מ-EZGO) דרך אותו `ActivitiesImportZone` כמו לוח הספא.
+- spa_board ➔ SpaBoard.js (לוח ספא חכם — אג׳נדה/חדרים, ייבוא פעילויות EZGO → `spa_appointments` + write-through ל-`guests.spa_date`/`spa_time`. חדר זוגי = עד 2 תורים חופפים, מטפל לכל שורה. `iLineStatus=0` מדולג.)
 - agent ➔ InventoryHub.js (ניהול מלאי, ייבוא דוחות, יצירת קישורי-קסם לעובדים ותור אישורים)
 - voucher_reconciliation ➔ VoucherReconciliationHub.js (מערכת התאמת שוברים ודוחות כספיים)
 - executive_playbook ➔ ExecutivePlaybook.js (כללים שנלמדו + יומן פעולות ל-Executive Voice Assistant)

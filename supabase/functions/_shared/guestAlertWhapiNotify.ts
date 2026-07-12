@@ -2,23 +2,33 @@
 // Every guest_alerts row (Requests Board) also pings the "בקשות אורחים" Whapi
 // group — same JID resolution as inbox-route-request / RoutingControlCenter.
 // Best-effort, never blocks the caller (matches triggerInboxRedAlert contract).
+// Cards are Hebrew (reception group) with staff deep-links — NOT English field-ops.
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendWhapiText } from "./whapiSend.ts";
 import { alertIntentType, resolveRequestsWhapiGroupId } from "./routingConfig.ts";
-import { containsHebrew, translateTextForFieldOps } from "./fieldOpsTranslation.ts";
 import { triggerInboxRedAlert } from "./inboxRedAlert.ts";
 
-const ALERT_HEADLINE: Record<string, string> = {
-  request:              "🛎️ GUEST REQUEST",
-  complaint:            "😤 COMPLAINT",
-  severe_complaint:     "🚨 SEVERE COMPLAINT",
-  date_change_request:  "🗓️ DATE CHANGE",
-  upsell_opportunity:   "🌴 PORTAL REQUEST",
-  portal_room_service:  "🍽️ ROOM SERVICE",
-  spa_request:          "💆 SPA REQUEST",
-  financial_issue:      "💳 FINANCIAL ISSUE",
-  arrival_eta:          "🕐 ARRIVAL ETA",
+const STAFF_APP_ORIGIN = "https://dream-ai-system.vercel.app";
+
+/** Aligned with RequestsBoard.js TYPE_META labels. */
+const ALERT_HEADLINE_HE: Record<string, string> = {
+  request:              "🛎️ בקשת אורח",
+  complaint:            "😤 תלונה",
+  severe_complaint:     "🚨 תלונה חמורה",
+  date_change_request:  "🗓️ שינוי תאריך",
+  upsell_opportunity:   "🌴 בקשה מהפורטל",
+  portal_room_service:  "🍽️ שירות לחדר (פורטל)",
+  spa_request:          "💆 בקשת ספא",
+  financial_issue:      "💳 בעיית חיוב",
+  arrival_eta:          "🕐 שעת הגעה",
+};
+
+const SOURCE_LABEL_HE: Record<string, string> = {
+  Inbox:                    "תיבה",
+  "Guest Portal":           "פורטל אורחים",
+  "WhatsApp Bot":           "בוט",
+  "WhatsApp Bot (Whapi)":   "בוט (מכשיר סוויטות)",
 };
 
 export type GuestAlertNotifyOpts = {
@@ -35,6 +45,30 @@ export type GuestAlertNotifyOpts = {
   /** Informational board rows (e.g. arrival_eta) — no Inbox red-dot / no Whapi group spam. */
   boardOnly?: boolean;
 };
+
+export function phoneDigitsForDeepLink(phone: string | null | undefined): string {
+  return (phone ?? "").replace(/\D/g, "");
+}
+
+/** Same query shape as src/utils/staffDeepLink.js — login-aware open in XOS. */
+export function buildStaffAppDeepLink(opts: {
+  page: string;
+  phone?: string | null;
+  guestName?: string | null;
+}): string {
+  const params = new URLSearchParams();
+  params.set("page", opts.page);
+  const digits = phoneDigitsForDeepLink(opts.phone);
+  if (digits) params.set("phone", digits);
+  if (opts.guestName?.trim()) params.set("guestName", opts.guestName.trim());
+  return `${STAFF_APP_ORIGIN}/?${params.toString()}`;
+}
+
+function sourceLabelHe(raw: string | null | undefined): string | null {
+  const t = raw?.trim();
+  if (!t) return null;
+  return SOURCE_LABEL_HE[t] ?? t;
+}
 
 async function resolveGuestContext(
   supabase: SupabaseClient,
@@ -63,18 +97,29 @@ export function buildGuestAlertWhapiCard(opts: {
   guestName?: string | null;
   room?: string | null;
   sourceLabel?: string | null;
+  phone?: string | null;
   extraLine?: string | null;
 }): string {
-  const headline = ALERT_HEADLINE[opts.alertType] ?? "🛎️ GUEST ALERT";
-  const channel = opts.sourceLabel?.trim() ? ` — ${opts.sourceLabel.trim()}` : "";
-  const suite = opts.room?.trim() ? `Suite ${opts.room.trim()}` : "Suite —";
-  const name = opts.guestName?.trim() || "Guest";
-  return [
-    `${headline}${channel} | ${suite} (${name})`,
+  const headline = ALERT_HEADLINE_HE[opts.alertType] ?? `⚠ ${opts.alertType || "התראה"}`;
+  const channel = sourceLabelHe(opts.sourceLabel);
+  const header = channel ? `${headline} — ${channel}` : headline;
+  const room = opts.room?.trim() || "—";
+  const name = opts.guestName?.trim() || "אורח";
+  const boardUrl = buildStaffAppDeepLink({ page: "requests_board" });
+  const digits = phoneDigitsForDeepLink(opts.phone);
+  const lines = [
+    header,
+    `${room} (${name})`,
     opts.message.trim(),
     ...(opts.extraLine?.trim() ? [opts.extraLine.trim()] : []),
-    "Please check the Requests Board.",
-  ].join("\n");
+  ];
+  if (digits) {
+    lines.push(
+      `💬 שיחה: ${buildStaffAppDeepLink({ page: "wa_inbox", phone: digits, guestName: opts.guestName })}`,
+    );
+  }
+  lines.push(`📋 לוח בקשות: ${boardUrl}`);
+  return lines.join("\n");
 }
 
 /** Whapi group (+ optional personal DM). Returns delivery flags for UI/diagnostics. */
@@ -87,26 +132,22 @@ export async function notifyGuestAlertWhapiGroup(
 
   const ctx = await resolveGuestContext(supabase, opts.guestId, opts.guestName, opts.room);
 
-  let bodyText = opts.message;
-  if (containsHebrew(bodyText)) {
-    bodyText = await translateTextForFieldOps(bodyText, {
-      room: ctx.room,
-      style: "description_only",
-    });
-  }
-
+  // Keep message as stored (usually Hebrew). Do NOT translate HE→EN —
+  // this group is Hebrew reception, not English field ops.
   const card = buildGuestAlertWhapiCard({
     alertType: opts.alertType,
-    message: bodyText,
+    message: opts.message,
     guestName: ctx.guestName,
     room: ctx.room,
     sourceLabel: opts.sourceLabel,
+    phone: opts.phone,
   });
 
   let groupNotified = false;
   if (groupId) {
     try {
-      await sendWhapiText(groupId, card, { noLinkPreview: true });
+      // Link preview on so chat/board URLs are tappable in WhatsApp.
+      await sendWhapiText(groupId, card);
       groupNotified = true;
     } catch (e) {
       console.error(`[guestAlertWhapiNotify] group send failed (${intent}):`, (e as Error).message);
@@ -120,7 +161,7 @@ export async function notifyGuestAlertWhapiGroup(
     const personalPhone = (Deno.env.get("SLA_GUEST_ALERT_PHONE") ?? "").trim();
     if (personalPhone) {
       try {
-        await sendWhapiText(personalPhone, card, { noLinkPreview: true });
+        await sendWhapiText(personalPhone, card);
         personalNotified = true;
       } catch (e) {
         console.warn("[guestAlertWhapiNotify] personal DM failed:", (e as Error).message);

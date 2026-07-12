@@ -335,10 +335,20 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
+### 2026-07-12 — «בקשות אורחים» group ≠ English field-ops
+- **Symptom:** Whapi guest-request pings were English ("GUEST REQUEST… Please check the Requests Board") with no way to open the chat.
+- **Root:** `guestAlertWhapiNotify` reused field-ops card style + `translateTextForFieldOps` (HE→EN). That group is Hebrew reception.
+- **Fix pattern:** Hebrew headlines (match RequestsBoard labels), keep stored message language, deep-link via existing `?page=wa_inbox&phone=` / `?page=requests_board`. Never HE→EN-translate staff-facing reception groups.
+
 ### 2026-07-12 — Stage 1 late-import deadlock (date_passed hide)
 - **Symptom:** Tomorrow suite arrivals showed Stage 2 «ממתין לאישור הגעה» with no Stage 1 row and no Send — guests synced after T-2 never got the confirm ask.
 - **Root:** `resolveStageSchedule` returned `date_passed` for past day_offset windows; `automation-queue` treated it as `PERMANENT_SKIP` and omitted the row. Stage 2 correctly waits forever with nothing to unlock it.
 - **Fix pattern:** distinguish permanent past (`date_passed`, arrival already over) from catch-up (`missed_window`, arrival still today/future, `dueNow=false`); surface catch-up in Live Queue for manual/Whapi bulk. Never hide a still-actionable pipeline stage behind a permanent skip.
+
+### 2026-07-12 — Ezgo Spa Activities: English machine CSV ≠ Hebrew UI export
+- **Symptom:** Dropping the real "פעילות ספא….csv" into Spa Board would fail every row (`no_time_range` / no phone / no room).
+- **Root:** Parser was built for Hebrew UI headers (`תזמון`/`פעילות`/`טלפון`). Production export is English machine CSV (`tmStart`/`sActivityDesc`/`sTel`/`iAddsLineId`). Also: `iAddsLineId` is shared by both therapists on a couple booking; blanket room GiST forbade 2 overlapping appointments in couple rooms; aliases missing `סוויטת אבניו 2/3/4` and `טרקלין -חדר זוגי`.
+- **Fix pattern:** canonicalize English → Hebrew keys in the parser; `ezgo_line_id = iAddsLineId_sRowNum`; skip `iLineStatus=0` with a visible count; couple rooms = max 2 overlapping (single rooms keep hard GiST); seed aliases from the first real file, never guess (`ג'קוזי 1` still unmapped). Prefer file `dtDate` over the UI date picker when unanimous.
 
 ### 2026-07-12 — Autonomous audit found uncommitted work-in-progress first
 - **Lesson:** before starting a fresh audit/fix pass, always run `git status`/`git diff --stat` first — a prior session's fully-tested, documented fix (departure-assist grounding, 22/22 tests, changelog entry already written as "not deployed") was sitting uncommitted. Verifying and shipping that is higher-value than re-auditing the same ground from scratch.

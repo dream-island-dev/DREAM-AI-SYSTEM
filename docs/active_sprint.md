@@ -1,5 +1,19 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-12 (Suite journey — Whapi dispatch decoupled from Meta template approval — pushed to `main`).
+> Last updated: 2026-07-12 (Whapi «בקשות אורחים» Hebrew + deep-link cards — deployed).
+
+---
+
+## ✅ Deployed — Hebrew + deep-link Requests group cards (2026-07-12)
+
+| Piece | Detail |
+|---|---|
+| `_shared/guestAlertWhapiNotify.ts` | Hebrew headlines, no HE→EN translate, Inbox + Requests Board deep links |
+| `sla-escalation-cron` | Same Hebrew + URL pattern for guest_alerts SLA DMs |
+| Tests | 5/5 Deno (`guestAlertWhapiNotify.test.ts`) |
+
+Deployed: `whatsapp-webhook`, `whapi-webhook`, `inbox-route-request`, `guest-portal-upsell`, `guest-portal-spa-request`, `guest-portal-ops-request`, `sla-escalation-cron`. No migration / no frontend.
+
+**Mike QA:** נתב בקשה מהתיבה / פורטל → קבוצת «בקשות אורחים» בעברית + לינק «שיחה» פותח Inbox אחרי לוגין.
 
 ---
 
@@ -220,14 +234,17 @@ Goal: import the FULL daily Ezgo "פעילויות" report (not suite-only), mat
 | Phase | Target | Status |
 |---|---|---|
 | 0 | Schema — `spa_appointments` +ezgo_line_id/phone_snapshot/treatment_type, `spa_room_aliases`, `spa_import_unmatched` (migration 178) | ✅ pushed |
-| 1 | Shared pure parser (`src/utils/ezgoSpaActivitiesParser.js`) | ✅ done — 25 tests |
-| 2 | Upsert engine + guest write-through + `guest_profile.spa` context (`src/utils/spaActivitiesSyncEngine.js`) | ✅ done — 41 tests, external Plan-agent review (4 real bugs fixed), migration 179 pushed |
-| 3 | SpaBoard Excel import UI + unmatched panel + summary toast | ✅ shipped `ce1257b` |
+| 1 | Shared pure parser (`src/utils/ezgoSpaActivitiesParser.js`) | ✅ done — Hebrew + English CSV |
+| 2 | Upsert engine + guest write-through + `guest_profile.spa` context (`src/utils/spaActivitiesSyncEngine.js`) | ✅ done |
+| 3 | SpaBoard Excel import UI + unmatched panel + summary toast | ✅ shipped |
 | 3b | Staff UX — board colors + staff notes (quick-edit on card click) | ✅ code + migration 180 |
+| 3c | English machine-CSV + couple dual-row + missing aliases (migration 191) | ✅ code — **not deployed** |
 | 4 | `spa-schedule-webhook` upgraded to shared engine, `filter=all` default | Pending |
 | 5 | Bot context enrichment (`buildGuestStageContext` spa line → room/therapist/type) | Pending |
 
-**Known blocker seeded, not fully resolved:** room alias "ג'קוזי 1" has no confirmed mapping in `spa_room_aliases` — Mike didn't know which physical room and asked not to guess. Will surface as `spa_import_unmatched` (`reason='room_unmapped'`) on first real import; resolve via SpaBoard unmatched panel once Phase 3 ships.
+**2026-07-12 fix (3c):** Ezgo English CSV (`tmStart`/`sTel`/`iAddsLineId`…) now imports. Cancelled lines skipped+counted. Couple rooms = 2 overlapping appointments (one per therapist). Aliases: `סוויטת אבניו 2/3/4`, `טרקלין -חדר זוגי`. Still unmapped by design: `ג'קוזי 1`.
+
+**Mike QA after deploy:** לוח ספא → בחר תאריך (או השאר — הקובץ דורס מתאריך `dtDate`) → «📊 ייבוא דוח פעילויות» → גרור `פעילות ספא….csv` → toast עם נוצרו/מבוטלים; אג'נדה מציגה שני מטפלים בחדר זוגי באותה שעה.
 
 ---
 
