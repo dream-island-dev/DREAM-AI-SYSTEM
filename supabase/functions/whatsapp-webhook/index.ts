@@ -126,6 +126,8 @@ import {
 } from "../_shared/guestInboundOrchestrator.ts";
 import {
   GUEST_STAFF_HANDOFF_SENTENCE,
+  buildGuestHumanRequestReply,
+  detectGuestHumanRequest,
   isGuestStaffHandoffReply,
 } from "../_shared/guestBotHandoff.ts";
 import {
@@ -947,31 +949,8 @@ function classifyIntent(text: string): Intent {
   return "fallback";
 }
 
-// ── Human-agent request detection ────────────────────────────────────────────
-
-/** Phone/callback keywords → type = "call" */
-const HUMAN_CALL_PATTERNS: RegExp[] = [
-  /תחייגו|תצלצלו|תתקשרו/i,
-  /מספר\s*טלפון/i,
-  /תחזרו\s*אל(י|יי)/i,
-  /לטלפן|לצלצל/i,
-];
-
-/** Human-agent (text/chat) keywords → type = "chat" */
-const HUMAN_CHAT_PATTERNS: RegExp[] = [
-  /נציג[ה]?/i,
-  /מענה\s*אנושי/i,
-  /לדבר\s*עם\s*מישהו/i,
-  /אדם\s*אנושי|עם\s*אדם/i,
-  /בן\s*אדם/i,
-  /עם\s*בנ?[אוי]\s*אדם/i,
-];
-
-/** Generic "human" keyword — chat type */
-const HUMAN_GENERAL_PATTERNS: RegExp[] = [
-  /\bאנושי\b/i,
-  /\bטלפון\b/i,
-];
+// Human-agent request detection → _shared/guestBotHandoff.ts
+// (detectGuestHumanRequest + buildGuestHumanRequestReply) — same brain as Whapi.
 
 // DATE_CHANGE_RE / RECORD_ONLY_ARRIVAL_REPLY / isRecordOnlyArrivalTimeUpdate —
 // moved to _shared/guestInboundOrchestrator.ts so whapi-webhook shares the
@@ -986,15 +965,6 @@ const HUMAN_GENERAL_PATTERNS: RegExp[] = [
 // ── Critical-event safety net (Phase 2 request-handling) ────────────────────
 // Deterministic backstop for the "faq" branch when the model skips log_guest_request
 // on critical human/price/manager keywords — see criticalKeywordHit below (allowlist-gated).
-
-function detectHumanRequest(text: string): { requested: boolean; type: string | null } {
-  if (HUMAN_CALL_PATTERNS.some((p) => p.test(text))) return { requested: true, type: "call" };
-  if (HUMAN_CHAT_PATTERNS.some((p) => p.test(text))) return { requested: true, type: "chat" };
-  if (HUMAN_GENERAL_PATTERNS.some((p) => p.test(text))) {
-    return { requested: true, type: /טלפון/.test(text) ? "call" : "chat" };
-  }
-  return { requested: false, type: null };
-}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // §3  PRE-WRITTEN REPLIES — deterministic, instant, always correct Hebrew
@@ -4061,8 +4031,8 @@ Deno.serve(async (req: Request) => {
       // ── Classify intent (< 1 ms, no AI cost) ─────────────────────────────
       const intent = classifyIntent(effectiveText);
 
-      // ── Detect human-agent request ────────────────────────────────────────
-      const humanReq = detectHumanRequest(effectiveText);
+      // ── Detect human-agent request (shared brain — Meta + Whapi) ─────────
+      const humanReq = detectGuestHumanRequest(effectiveText);
       if (humanReq.requested) {
         console.info(`[webhook] 🙋 human_requested="${humanReq.type}" phone=${phone}`);
       }
@@ -4107,7 +4077,16 @@ Deno.serve(async (req: Request) => {
       // below, session 2026-07-11 fix).
       let rawToolLoggedRequest: AiReplyResult["loggedRequest"] = null;
 
-      if (intent === "complaint") {
+      // ── Tier-0 human/callback request — skip LLM on faq/fallback only.
+      // Complaint/upsell keep their scripted paths. Never invent "please contact
+      // us" when the guest asked staff to get back to them (2026-07-12).
+      if (humanReq.requested && (intent === "faq" || intent === "fallback")) {
+        reply = buildGuestHumanRequestReply(humanReq.type);
+        replyIsScripted = true;
+        console.info(
+          `[webhook] 🙋 human-request Tier-0 reply type="${humanReq.type}" phone=${phone}`,
+        );
+      } else if (intent === "complaint") {
         // Use complaint_reply from BotScriptEditor if available, else fallback to hardcoded
         const complaintScript = scripts["complaint_reply"];
         if (complaintScript?.message_text?.trim()) {
@@ -4570,7 +4549,10 @@ Deno.serve(async (req: Request) => {
         );
       }
 
-      const isLowConfidenceFaqMiss = isGuestStaffHandoffReply(reply);
+      // Explicit human/callback Tier-0 already flagged the inbound row with the
+      // precise type (call/chat) — do not reclassify as staff_handoff below.
+      const isLowConfidenceFaqMiss =
+        !humanReq.requested && isGuestStaffHandoffReply(reply);
       // Generic "no real answer, passing this to reception" deflection — fires
       // when intent stayed "fallback" (unmatched/very short text), both AI
       // engines threw, or the truncation guard above fell all the way back to

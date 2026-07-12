@@ -335,6 +335,11 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
+### 2026-07-12 — Callback invert: «תחזרו אלי» → bot says «תוכלו ליצור קשר»
+- **Symptom:** Guest asked staff to get back to them to schedule spa; bot replied asking the guest to initiate contact.
+- **Root:** Meta `detectHumanRequest` only flagged Inbox red-dot and still ran FAQ→LLM; Whapi had no detector at all. Prompt alone cannot prevent polarity inversion.
+- **Fix pattern:** Shared Tier-0 in `_shared/guestBotHandoff.ts` (`detectGuestHumanRequest` + `GUEST_CALLBACK_ACK_SENTENCE`) on both channels before LLM; never ask the guest to contact us when they asked for a callback. Soft SLA already knows `call`/`chat`.
+
 ### 2026-07-12 — «בקשות אורחים» group ≠ English field-ops
 - **Symptom:** Whapi guest-request pings were English ("GUEST REQUEST… Please check the Requests Board") with no way to open the chat.
 - **Root:** `guestAlertWhapiNotify` reused field-ops card style + `translateTextForFieldOps` (HE→EN). That group is Hebrew reception.

@@ -1,5 +1,19 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-12 (Whapi «בקשות אורחים» Hebrew + deep-link cards — deployed).
+> Last updated: 2026-07-12 (Tier-0 shared callback/human-request — Meta+Whapi).
+
+---
+
+## ✅ Deployed — Tier-0 callback / human-request shared brain (2026-07-12)
+
+Guest «אשמח שתחזרו אלי שנקבע» was getting LLM «תוכלו ליצור קשר» (inverted). Fix: shared detector + ack in `_shared/guestBotHandoff.ts`; Meta skips LLM on faq/fallback; Whapi Tier-0 before LLM. Complaint/upsell unchanged.
+
+| Piece | Detail |
+|---|---|
+| `_shared/guestBotHandoff.ts` | `detectGuestHumanRequest`, `GUEST_CALLBACK_ACK_SENTENCE`, `buildGuestHumanRequestReply` |
+| `whatsapp-webhook` / `whapi-webhook` | Same brain; Inbox `human_requested` type preserved (`call`/`chat`) |
+| Tests | 6 Deno — incident phrase + chat + FAQ negative |
+
+Deploy: `whatsapp-webhook`, `whapi-webhook` (`--no-verify-jwt`). No migration / no frontend.
 
 ---
 

@@ -108,6 +108,8 @@ import {
 } from "../_shared/guestInboundOrchestrator.ts";
 import {
   GUEST_STAFF_HANDOFF_SENTENCE,
+  buildGuestHumanRequestReply,
+  detectGuestHumanRequest,
   isGuestStaffHandoffReply,
 } from "../_shared/guestBotHandoff.ts";
 import { assembleGuestBrainPrompt } from "../_shared/guestBotSettings.ts";
@@ -1109,6 +1111,33 @@ async function handleGuestDirectMessage(
 
       await sendGuestDmReply(supabase, phone, guestId, buildDepartureAssistReply(guestName), staffMuted);
       results.push({ ...base, action: "departure_assist_request", muted: staffMuted });
+      return;
+    }
+
+    // ── Human / callback request (Tier-0) — shared brain with Meta.
+    // Guest asked staff to call them back or speak to a human — never LLM
+    // invent "please contact us". Flag Inbox; reply is deterministic.
+    const humanReq = detectGuestHumanRequest(text);
+    if (humanReq.requested) {
+      await patchGuestDmInbound(supabase, conversationId, {
+        guest_id: guestId,
+        intent: "human_request",
+        human_requested: true,
+        human_request_type: humanReq.type,
+      });
+      await sendGuestDmReply(
+        supabase,
+        phone,
+        guestId,
+        buildGuestHumanRequestReply(humanReq.type),
+        staffMuted,
+      );
+      results.push({
+        ...base,
+        action: "human_request_tier0",
+        type: humanReq.type,
+        muted: staffMuted,
+      });
       return;
     }
 
