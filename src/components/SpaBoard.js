@@ -57,6 +57,36 @@ function fmtTimestamp(iso) {
   return d.toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" });
 }
 
+function genderLabel(gender) {
+  if (gender === "female") return "אישה";
+  if (gender === "male") return "גבר";
+  return "לא הוגדר";
+}
+
+// Therapist -> distinct rooms they appear in today (soft ⚠ trigger, never blocks save).
+function therapistsMultiRoomToday(appointments) {
+  const map = new Map();
+  appointments.forEach((a) => {
+    if (!a.therapist_id) return;
+    if (!map.has(a.therapist_id)) map.set(a.therapist_id, new Set());
+    map.get(a.therapist_id).add(a.room_id);
+  });
+  return map;
+}
+
+function genderPrefMismatch(guestProfile, therapistGender) {
+  return guestProfile?.spa?.therapist_pref === "female_only" && therapistGender !== "female";
+}
+
+// Read-merge-write into guest_profile.spa — same shape/pattern as
+// spaActivitiesSyncEngine.js's buildGuestSpaProfilePatch, but only touches
+// therapist_pref so it never wipes date/time/room/treatment_type etc.
+function buildGuestSpaPrefPatch(existingProfile, therapistPref) {
+  const profile = existingProfile && typeof existingProfile === "object" ? existingProfile : {};
+  const spa = profile.spa && typeof profile.spa === "object" ? profile.spa : {};
+  return { ...profile, spa: { ...spa, therapist_pref: therapistPref } };
+}
+
 // Small reusable chat-launch button — same pattern as RequestsBoard.js's
 // DreamBotChatButton (not extracted to a shared file; this codebase keeps
 // small presentational bits local per-board rather than over-abstracting).
@@ -90,7 +120,7 @@ function GuestSearchField({ value, onSelect }) {
     let cancelled = false;
     supabase
       .from("guests")
-      .select("id, name, phone, room, status")
+      .select("id, name, phone, room, status, guest_profile")
       .or(`name.ilike.%${query.trim()}%,phone.ilike.%${query.trim()}%`)
       .limit(8)
       .then(({ data }) => { if (!cancelled) setResults(data ?? []); });
@@ -149,6 +179,7 @@ function GuestSearchField({ value, onSelect }) {
 function TherapistManagePanel({ therapists, onClose, onSaved }) {
   const [drafts, setDrafts] = useState({}); // id -> draft name (only while dirty)
   const [savingId, setSavingId] = useState(null);
+  const [genderSavingId, setGenderSavingId] = useState(null);
   const [err, setErr] = useState(null);
 
   async function handleSave(id) {
@@ -164,6 +195,16 @@ function TherapistManagePanel({ therapists, onClose, onSaved }) {
       return;
     }
     setDrafts((prev) => { const next = { ...prev }; delete next[id]; return next; });
+    onSaved();
+  }
+
+  // Immediate-save on change — same one-tap pattern as ColorDots, no dirty gate.
+  async function handleGenderChange(id, gender) {
+    setErr(null);
+    setGenderSavingId(id);
+    const { error } = await supabase.from("spa_therapists").update({ gender }).eq("id", id);
+    setGenderSavingId(null);
+    if (error) { setErr("⚠ שגיאה: " + error.message); return; }
     onSaved();
   }
 
@@ -202,6 +243,17 @@ function TherapistManagePanel({ therapists, onClose, onSaved }) {
                   onChange={(e) => setDrafts((prev) => ({ ...prev, [t.id]: e.target.value }))}
                   style={{ flex: 1, padding: "7px 10px", borderRadius: 8, border: "1px solid var(--border)", fontFamily: "Heebo, sans-serif", fontSize: 13 }}
                 />
+                <select
+                  value={t.gender ?? "unknown"}
+                  disabled={genderSavingId === t.id}
+                  onChange={(e) => handleGenderChange(t.id, e.target.value)}
+                  title="מגדר המטפל/ת — משפיע על אזהרת העדפת «רק מטפלת»"
+                  style={{ fontSize: 12, borderRadius: 6, border: "1px solid var(--border)", padding: "6px" }}
+                >
+                  <option value="unknown">לא הוגדר</option>
+                  <option value="female">אישה</option>
+                  <option value="male">גבר</option>
+                </select>
                 <button
                   type="button"
                   disabled={!dirty || savingId === t.id}
@@ -474,7 +526,7 @@ function ApptQuickEdit({ appt, roomName, onClose, onPatched }) {
 }
 
 // ── Assign / create appointment modal ──────────────────────────────────────
-function AssignModal({ draft, rooms, therapists, onClose, onSaved }) {
+function AssignModal({ draft, rooms, therapists, shiftRoster, onClose, onSaved }) {
   const [guest, setGuest] = useState(draft?.guest ?? null);
   const [roomId, setRoomId] = useState(draft?.roomId ?? "");
   const [therapistId, setTherapistId] = useState("");
@@ -483,8 +535,42 @@ function AssignModal({ draft, rooms, therapists, onClose, onSaved }) {
   const [endTime, setEndTime] = useState(addMinutesToHm(DEFAULT_START_TIME, DEFAULT_DURATION_MIN));
   const [staffNote, setStaffNote] = useState("");
   const [boardColor, setBoardColor] = useState(null);
+  const [femaleOnly, setFemaleOnly] = useState(draft?.guest?.guest_profile?.spa?.therapist_pref === "female_only");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState(null);
+
+  // Re-derive the guest's saved preference whenever a different guest is picked
+  // (search select or preloaded from an alert) — not on every unrelated re-render.
+  useEffect(() => {
+    setFemaleOnly(guest?.guest_profile?.spa?.therapist_pref === "female_only");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [guest?.id]);
+
+  const rosterHomeTherapistIds = useMemo(() => {
+    if (!roomId) return new Set();
+    return new Set(
+      (shiftRoster ?? [])
+        .filter((r) => String(r.room_id) === String(roomId) && r.appointment_date === date)
+        .map((r) => r.therapist_id)
+    );
+  }, [shiftRoster, roomId, date]);
+
+  // Sort: roster home-room match first, then (when guest wants female_only)
+  // female therapists first — still all selectable (Disable-Don't-Hide), just
+  // reordered + labeled so staff sees the best fit at the top.
+  const sortedTherapists = useMemo(() => {
+    return [...therapists].sort((a, b) => {
+      const aHome = rosterHomeTherapistIds.has(a.id) ? 1 : 0;
+      const bHome = rosterHomeTherapistIds.has(b.id) ? 1 : 0;
+      if (aHome !== bHome) return bHome - aHome;
+      if (femaleOnly) {
+        const aFem = a.gender === "female" ? 1 : 0;
+        const bFem = b.gender === "female" ? 1 : 0;
+        if (aFem !== bFem) return bFem - aFem;
+      }
+      return a.name.localeCompare(b.name, "he");
+    });
+  }, [therapists, rosterHomeTherapistIds, femaleOnly]);
 
   if (!draft) return null;
 
@@ -532,6 +618,16 @@ function AssignModal({ draft, rooms, therapists, onClose, onSaved }) {
       .eq("id", guest.id);
     if (guestErr) {
       console.warn("[SpaBoard] guests.spa_date/spa_time write-through failed:", guestErr.message);
+    }
+
+    // Read-merge-write the therapist_pref toggle — fresh read (not the possibly
+    // stale client-side `guest` copy) so we never clobber spa.date/time/room
+    // etc. written by the EZGO import sync engine.
+    const { data: freshGuestRow } = await supabase.from("guests").select("guest_profile").eq("id", guest.id).maybeSingle();
+    const prefPatch = buildGuestSpaPrefPatch(freshGuestRow?.guest_profile, femaleOnly ? "female_only" : null);
+    const { error: prefErr } = await supabase.from("guests").update({ guest_profile: prefPatch }).eq("id", guest.id);
+    if (prefErr) {
+      console.warn("[SpaBoard] guest_profile.spa.therapist_pref write-through failed:", prefErr.message);
     }
 
     if (draft.alertId) {
@@ -594,9 +690,25 @@ function AssignModal({ draft, rooms, therapists, onClose, onSaved }) {
             </label>
             <select value={therapistId} onChange={(e) => setTherapistId(e.target.value)} style={{ width: "100%" }}>
               <option value="">— טרם שובץ —</option>
-              {therapists.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+              {sortedTherapists.map((t) => {
+                const isHome = rosterHomeTherapistIds.has(t.id);
+                const mismatch = femaleOnly && t.gender !== "female";
+                const suffix = [isHome ? "חדר משמרת" : null, mismatch ? `⚠ ${genderLabel(t.gender)}` : null].filter(Boolean).join(" · ");
+                return (
+                  <option key={t.id} value={t.id} style={mismatch ? { color: "#8A6A00" } : undefined}>
+                    {t.name}{suffix ? ` (${suffix})` : ""}
+                  </option>
+                );
+              })}
             </select>
           </div>
+        </div>
+
+        <div style={{ marginBottom: 14 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
+            <input type="checkbox" checked={femaleOnly} onChange={(e) => setFemaleOnly(e.target.checked)} />
+            רק מטפלת <span style={{ opacity: 0.6, fontSize: 11 }}>(העדפת אורח/ת — נשמר בפרופיל, לא חוסם שיבוץ)</span>
+          </label>
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 14 }}>
@@ -744,6 +856,160 @@ function SwapTherapistModal({ sourceAppt, candidates, onClose, onSaved }) {
   );
 }
 
+// ── Shift roster — "home room for the day" per therapist (Architecture B) ──
+// Full-day replace on save: delete every spa_shift_roster row for this date,
+// then insert the picked set. Not atomic across the two calls — same
+// tolerance level already accepted elsewhere on this board (e.g. AssignModal's
+// appointment insert + guests write-through are two sequential calls too).
+function ShiftRosterModal({ date, rooms, therapists, existingRoster, bookedTherapistIds, onClose, onSaved }) {
+  const initial = useMemo(() => {
+    const map = {};
+    (existingRoster ?? []).forEach((r) => {
+      const key = String(r.room_id);
+      if (!map[key]) map[key] = [];
+      map[key].push(String(r.therapist_id));
+    });
+    return map;
+  }, [existingRoster]);
+
+  const [assignments, setAssignments] = useState(initial);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState(null);
+
+  function setSlot(roomId, slotIndex, therapistId, slotsCount) {
+    setAssignments((prev) => {
+      const key = String(roomId);
+      const arr = [...(prev[key] ?? [])];
+      while (arr.length < slotsCount) arr.push("");
+      arr[slotIndex] = therapistId;
+      return { ...prev, [key]: arr };
+    });
+  }
+
+  async function handleSave() {
+    setErr(null);
+
+    const chosenIds = Object.values(assignments).flat().filter(Boolean);
+    const dupId = chosenIds.find((id, i) => chosenIds.indexOf(id) !== i);
+    if (dupId) {
+      // Catch this client-side BEFORE the destructive delete below — otherwise
+      // a same-therapist-twice mistake would wipe the day's working roster
+      // and only then fail on the DB's UNIQUE(date, therapist_id), losing the
+      // previous good state for nothing.
+      const dupName = therapists.find((t) => String(t.id) === dupId)?.name ?? "מטפל/ת";
+      setErr(`⚠ ${dupName} נבחר/ה ליותר מחדר אחד — מטפל/ת יכול/ה להיות בית קבוע של חדר אחד בלבד ביום זה`);
+      return;
+    }
+
+    setSaving(true);
+
+    const rows = [];
+    Object.entries(assignments).forEach(([roomId, ids]) => {
+      (ids ?? []).filter(Boolean).forEach((therapistId) => {
+        rows.push({ appointment_date: date, room_id: Number(roomId), therapist_id: Number(therapistId) });
+      });
+    });
+
+    const { error: delErr } = await supabase.from("spa_shift_roster").delete().eq("appointment_date", date);
+    if (delErr) {
+      setSaving(false);
+      setErr("⚠ שגיאה במחיקת הסידור הקודם: " + delErr.message);
+      return;
+    }
+
+    if (rows.length > 0) {
+      const { error: insErr } = await supabase.from("spa_shift_roster").insert(rows);
+      setSaving(false);
+      if (insErr) {
+        // UNIQUE(appointment_date, therapist_id) — same therapist picked as home for 2 rooms.
+        setErr(insErr.code === "23505" ? "⚠ מטפל/ת אחד/ת לא יכול/ה להיות בית קבוע של יותר מחדר אחד באותו יום" : "⚠ שגיאה: " + insErr.message);
+        return;
+      }
+    } else {
+      setSaving(false);
+    }
+
+    onSaved();
+  }
+
+  const couples = rooms.filter((r) => r.room_type === "couple");
+  const singles = rooms.filter((r) => r.room_type === "single");
+  const rosteredTherapistIds = new Set(Object.values(assignments).flat().filter(Boolean));
+  const unrosteredBooked = therapists.filter((t) => bookedTherapistIds.has(t.id) && !rosteredTherapistIds.has(String(t.id)));
+
+  function renderRoomRow(room) {
+    const slotsCount = room.room_type === "couple" ? 2 : 1;
+    const current = assignments[String(room.id)] ?? [];
+    return (
+      <div key={room.id} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", padding: "8px 0", borderBottom: "1px solid var(--border)" }}>
+        <div style={{ minWidth: 100, fontWeight: 700, fontSize: 13 }}>{room.name}</div>
+        {Array.from({ length: slotsCount }).map((_, i) => (
+          <select
+            key={i}
+            value={current[i] ?? ""}
+            onChange={(e) => setSlot(room.id, i, e.target.value, slotsCount)}
+            style={{ fontSize: 12, flex: 1, minWidth: 130 }}
+          >
+            <option value="">— ללא —</option>
+            {therapists.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div
+      onClick={() => !saving && onClose()}
+      style={{ position: "fixed", inset: 0, zIndex: 9998, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: "var(--card-bg)", borderRadius: 16, padding: 24, maxWidth: 560, width: "100%",
+          direction: "rtl", textAlign: "right", boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
+          fontFamily: "Heebo, sans-serif", maxHeight: "88vh", display: "flex", flexDirection: "column",
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+          <h3 style={{ margin: 0, color: "var(--gold-dark)" }}>🗓️ סידור משמרת — {date}</h3>
+          <button type="button" onClick={onClose} aria-label="סגור" style={{ minWidth: 36, minHeight: 36, border: "none", background: "var(--ivory)", borderRadius: 8, cursor: "pointer", fontSize: 16 }}>✕</button>
+        </div>
+        <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 12 }}>
+          חדר הבית של המטפל/ת ליום זה — עוזר למיין את רשימת המטפלים בקביעת תור. לא חוסם שיבוץ בפועל.
+        </div>
+
+        {err && (
+          <div style={{ background: "#FFF0EE", border: "1px solid #E24B4A", color: "#A32D2D", borderRadius: 8, padding: "8px 12px", fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
+            {err}
+          </div>
+        )}
+
+        <div style={{ overflowY: "auto", flex: 1 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-muted)", marginTop: 6, marginBottom: 4 }}>חדרי זוגות</div>
+          {couples.map(renderRoomRow)}
+          <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-muted)", marginTop: 12, marginBottom: 4 }}>חדרי יחיד</div>
+          {singles.map(renderRoomRow)}
+
+          {unrosteredBooked.length > 0 && (
+            <div style={{ marginTop: 16, background: "var(--ivory)", borderRadius: 8, padding: "8px 10px", fontSize: 12 }}>
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>משובצים היום בלי בית קבוע:</div>
+              {unrosteredBooked.map((t) => t.name).join(" · ")}
+            </div>
+          )}
+        </div>
+
+        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 14 }}>
+          <button className="btn btn-sm" onClick={onClose} disabled={saving} style={{ background: "var(--ivory)" }}>ביטול</button>
+          <button className="btn btn-sm" onClick={handleSave} disabled={saving} style={{ background: "var(--gold)", color: "#412402", fontWeight: 700 }}>
+            {saving ? "שומר…" : "✓ שמור סידור"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function SpaBoard({ onOpenDreamBotChat }) {
   const [rooms, setRooms] = useState([]);
   const [therapists, setTherapists] = useState([]);
@@ -758,6 +1024,8 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
   const [editAppt, setEditAppt] = useState(null); // appointment for color/note quick-edit
   const [unmatchedRows, setUnmatchedRows] = useState([]);
   const [showImportZone, setShowImportZone] = useState(false);
+  const [shiftRoster, setShiftRoster] = useState([]);
+  const [showShiftRosterPanel, setShowShiftRosterPanel] = useState(false);
   // Hour agenda is the default view (Mike, locked decision) — room-columns
   // stays available as a secondary tab, same data/handlers, just a different
   // grouping of the same `appointments` state.
@@ -769,7 +1037,7 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
     if (!supabase) return;
     const [{ data: roomRows }, { data: therapistRows }] = await Promise.all([
       supabase.from("spa_rooms").select("id, name, room_type, display_order, active").eq("active", true).order("room_type").order("display_order"),
-      supabase.from("spa_therapists").select("id, name, active").eq("active", true).order("name"),
+      supabase.from("spa_therapists").select("id, name, active, gender").eq("active", true).order("name"),
     ]);
     setRooms(roomRows ?? []);
     setTherapists(therapistRows ?? []);
@@ -779,7 +1047,7 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
     if (!supabase) return;
     const { data, error } = await supabase
       .from("spa_appointments")
-      .select("*, guests(name, phone, room), spa_therapists(name)")
+      .select("*, guests(name, phone, room, guest_profile), spa_therapists(name, gender)")
       .eq("appointment_date", selectedDate)
       .neq("status", "cancelled")
       .order("start_time");
@@ -791,13 +1059,23 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
     if (!supabase) return;
     const { data, error } = await supabase
       .from("guest_alerts")
-      .select("*, guests(name, phone, room, arrival_date, departure_date, status)")
+      .select("*, guests(name, phone, room, arrival_date, departure_date, status, guest_profile)")
       .eq("alert_type", "spa_request")
       .eq("resolved", false)
       .order("created_at", { ascending: false });
     if (error) showToast("שגיאה בטעינת בקשות ספא: " + error.message, "err");
     setSpaAlerts(data ?? []);
   }, []);
+
+  const fetchShiftRoster = useCallback(async () => {
+    if (!supabase) return;
+    const { data, error } = await supabase
+      .from("spa_shift_roster")
+      .select("id, appointment_date, room_id, therapist_id")
+      .eq("appointment_date", selectedDate);
+    if (error) showToast("שגיאה בטעינת סידור המשמרת: " + error.message, "err");
+    setShiftRoster(data ?? []);
+  }, [selectedDate]);
 
   const fetchUnmatched = useCallback(async () => {
     if (!supabase) return;
@@ -813,9 +1091,9 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
-    await Promise.all([fetchStatic(), fetchAppointments(), fetchSpaAlerts(), fetchUnmatched()]);
+    await Promise.all([fetchStatic(), fetchAppointments(), fetchSpaAlerts(), fetchUnmatched(), fetchShiftRoster()]);
     setLoading(false);
-  }, [fetchStatic, fetchAppointments, fetchSpaAlerts, fetchUnmatched]);
+  }, [fetchStatic, fetchAppointments, fetchSpaAlerts, fetchUnmatched, fetchShiftRoster]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
@@ -826,9 +1104,10 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
       .on("postgres_changes", { event: "*", schema: "public", table: "spa_appointments" }, fetchAppointments)
       .on("postgres_changes", { event: "*", schema: "public", table: "guest_alerts" }, fetchSpaAlerts)
       .on("postgres_changes", { event: "*", schema: "public", table: "spa_import_unmatched" }, fetchUnmatched)
+      .on("postgres_changes", { event: "*", schema: "public", table: "spa_shift_roster" }, fetchShiftRoster)
       .subscribe();
     return () => supabase.removeChannel(ch);
-  }, [fetchAppointments, fetchSpaAlerts, fetchUnmatched]);
+  }, [fetchAppointments, fetchSpaAlerts, fetchUnmatched, fetchShiftRoster]);
 
   const apptsByRoom = useMemo(() => {
     const map = {};
@@ -840,6 +1119,24 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
   }, [appointments]);
 
   const roomsById = useMemo(() => Object.fromEntries(rooms.map((r) => [r.id, r.name])), [rooms]);
+
+  const multiRoomMap = useMemo(() => therapistsMultiRoomToday(appointments), [appointments]);
+  const bookedTherapistIdsToday = useMemo(
+    () => new Set(appointments.filter((a) => a.therapist_id).map((a) => a.therapist_id)),
+    [appointments]
+  );
+
+  // Soft ⚠ reasons for a card — never blocks save, purely informational (title tooltip).
+  function apptWarnings(a) {
+    const reasons = [];
+    if (a.therapist_id && (multiRoomMap.get(a.therapist_id)?.size ?? 0) > 1) {
+      reasons.push("מטפל/ת זה/ו משובץ/ת במספר חדרים היום");
+    }
+    if (genderPrefMismatch(a.guests?.guest_profile, a.spa_therapists?.gender)) {
+      reasons.push("האורח/ת ביקש/ה «רק מטפלת» — המטפל/ת המשובץ/ת אינה מוגדרת כאישה");
+    }
+    return reasons;
+  }
 
   // Agenda = flat chronological list of the day's appointments — no new
   // bucketing algorithm, just a sort on the already-loaded `appointments`
@@ -866,7 +1163,9 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
     setAssignDraft({
       alertId: alert.id,
       date: selectedDate,
-      guest: alert.guests ? { id: alert.guest_id, name: alert.guests.name, phone: alert.guests.phone, room: alert.guests.room } : null,
+      guest: alert.guests
+        ? { id: alert.guest_id, name: alert.guests.name, phone: alert.guests.phone, room: alert.guests.room, guest_profile: alert.guests.guest_profile }
+        : null,
     });
   }
 
@@ -977,9 +1276,22 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
         draft={assignDraft}
         rooms={rooms}
         therapists={therapists}
+        shiftRoster={shiftRoster}
         onClose={() => setAssignDraft(null)}
         onSaved={handleSaved}
       />
+
+      {showShiftRosterPanel && (
+        <ShiftRosterModal
+          date={selectedDate}
+          rooms={rooms}
+          therapists={therapists}
+          existingRoster={shiftRoster}
+          bookedTherapistIds={bookedTherapistIdsToday}
+          onClose={() => setShowShiftRosterPanel(false)}
+          onSaved={() => { setShowShiftRosterPanel(false); showToast("✓ סידור המשמרת נשמר"); fetchShiftRoster(); }}
+        />
+      )}
 
       <SwapTherapistModal
         sourceAppt={swapSource}
@@ -1057,6 +1369,9 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
         <button className="btn btn-ghost btn-sm" onClick={() => setShowTherapistPanel(true)}>
           ✏️ עריכת שמות מטפלים
         </button>
+        <button className="btn btn-ghost btn-sm" onClick={() => setShowShiftRosterPanel(true)}>
+          🗓️ סידור משמרת
+        </button>
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 18, flexWrap: "wrap", fontSize: 11, color: "var(--text-muted)" }}>
@@ -1128,6 +1443,7 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
               {agendaRows.map((a) => {
                 const cStyle = boardColorStyle(a.board_color);
                 const hasNote = !!(a.staff_note || a.notes);
+                const warnings = apptWarnings(a);
                 return (
                   <div
                     key={a.id}
@@ -1154,6 +1470,9 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
                     <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{a.treatment_type || ""}</div>
                     <div style={{ display: "flex", alignItems: "center", gap: 6, marginRight: "auto" }}>
                       {hasNote && <span title={a.staff_note || a.notes}>📝</span>}
+                      {warnings.length > 0 && (
+                        <span title={warnings.join(" · ")} style={{ fontSize: 11, color: "#A32D2D", fontWeight: 700 }}>⚠</span>
+                      )}
                       {a.spa_therapists?.name ? (
                         <span style={{ fontSize: 12, color: "var(--text-muted)" }}>👤 {a.spa_therapists.name}</span>
                       ) : (
@@ -1190,6 +1509,7 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
                       ) : roomAppts.map((a) => {
                         const cStyle = boardColorStyle(a.board_color);
                         const hasNote = !!(a.staff_note || a.notes);
+                        const warnings = apptWarnings(a);
                         return (
                           <div
                             key={a.id}
@@ -1229,7 +1549,12 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
                             )}
                             {a.spa_therapists?.name ? (
                               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 4, marginTop: 2 }}>
-                                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>👤 {a.spa_therapists.name}</div>
+                                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                                  👤 {a.spa_therapists.name}
+                                  {warnings.length > 0 && (
+                                    <span title={warnings.join(" · ")} style={{ marginRight: 4, color: "#A32D2D", fontWeight: 700 }}>⚠</span>
+                                  )}
+                                </div>
                                 <button
                                   type="button"
                                   onClick={(e) => { e.stopPropagation(); setSwapDraft(a); }}
