@@ -68,7 +68,7 @@ Dream Island Resort Management System (XOS) — אפליקציית ניהול מ
   * guest_profile: JSONB מובנה (VIP, רגישויות, אירוע).
   * claimed_by: שיוך שיחה ב-Inbox לנציג אנושי (מכבה אוטומציות).
 - tasks: ניהול משימות שטח ואחזקה. סטטוסים: 'pending_approval', 'open', 'in_progress', 'done', 'rejected'.
-- room_status: ניהול מערך הניקיון וסטטוס החדרים (נפרד לחלוטין מ-guests.status).
+- room_status: ניהול מערך הניקיון וסטטוס החדרים (נפרד לחלוטין מ-guests.status). קבוצת Whapi «צ'ק אין צ'ק אאוט» (`WHAPI_HOUSEKEEPING_GROUP_ID`): `N✅`→ממתין לאישור; `N צ'ק אין`→`guests.checked_in`+תפוס; `Co N`/`N co`→`guests.checked_out`+לניקיון (`housekeepingCheckOutSignal.ts`).
 
 4. ארכיטקטורת ה-Webhooks וסוכני ה-AI
 

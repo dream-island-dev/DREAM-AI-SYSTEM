@@ -37,8 +37,9 @@
 //   transcription + guest-DM FAQ fallback), SUPABASE_URL,
 //   SUPABASE_SERVICE_ROLE_KEY. Optional:
 //   WHAPI_GROUP_ID (ops «קריאות» group — tasks + 👍 reactions),
-//   WHAPI_HOUSEKEEPING_GROUP_ID (צ'ק אין צ'ק אאוט — ready observer →
-//   room_status ממתין לאישור → AICopilot 🔔; short Hebrew ack in-group on success),
+//   WHAPI_HOUSEKEEPING_GROUP_ID (צ'ק אין צ'ק אאוט — ready → ממתין לאישור 🔔;
+//   check-in → guests.checked_in + תפוס; Co N / N co → guests.checked_out + לניקיון;
+//   short Hebrew ack in-group on success),
 //   WHAPI_API_URL, GUEST_WHAPI_SUITES_ENABLED (see GUEST DIRECT MESSAGE
 //   HANDLING below — gates guest-DM auto-reply; off = capture-only).
 //   EXECUTIVE_PHONES / EXECUTIVE_PHONE (972-prefixed digits, no "+",
@@ -56,8 +57,11 @@ import { sendWhapiText, cleanPhoneForMention } from "../_shared/whapiSend.ts";
 import { buildTaskCard } from "../_shared/taskCard.ts";
 import { fetchWhapiMedia } from "../_shared/whapiMedia.ts";
 import { containsHebrew, translateTextForFieldOps } from "../_shared/fieldOpsTranslation.ts";
-import { parseHousekeepingReadyRoomNumbers } from "../_shared/housekeepingWaParse.ts";
-import { parseHousekeepingCheckInRoomNumbers } from "../_shared/housekeepingWaParse.ts";
+import {
+  parseHousekeepingReadyRoomNumbers,
+  parseHousekeepingCheckInRoomNumbers,
+  parseHousekeepingCheckOutRoomNumbers,
+} from "../_shared/housekeepingWaParse.ts";
 import {
   applyHousekeepingReadySignal,
   buildHousekeepingGroupAckMessage,
@@ -66,6 +70,10 @@ import {
   applyHousekeepingCheckInSignal,
   buildHousekeepingCheckInAckLine,
 } from "../_shared/housekeepingCheckInSignal.ts";
+import {
+  applyHousekeepingCheckOutSignal,
+  buildHousekeepingCheckOutAckLine,
+} from "../_shared/housekeepingCheckOutSignal.ts";
 import { isGuestWhapiSuitesEnabled, shouldAutoReplyGuestWhapiDm } from "../_shared/guestWhapiRouting.ts";
 import { type ActiveGuestRow } from "../_shared/guestOutboundGuard.ts";
 import { resolveGuestByInboundPhone, isArrivalConfirmationMessage } from "../_shared/arrivalConfirmation.ts";
@@ -1400,7 +1408,8 @@ serve(async (req: Request) => {
 
         const readyRooms = parseHousekeepingReadyRoomNumbers(msg.text);
         const checkInRooms = parseHousekeepingCheckInRoomNumbers(msg.text);
-        if (readyRooms.length === 0 && checkInRooms.length === 0) {
+        const checkOutRooms = parseHousekeepingCheckOutRoomNumbers(msg.text);
+        if (readyRooms.length === 0 && checkInRooms.length === 0 && checkOutRooms.length === 0) {
           results.push({
             id: msg.id,
             channel: "housekeeping",
@@ -1428,6 +1437,15 @@ serve(async (req: Request) => {
           }));
         }
 
+        const checkOutSignals = [];
+        for (const roomNumber of checkOutRooms) {
+          checkOutSignals.push(await applyHousekeepingCheckOutSignal(supabase, {
+            roomNumber,
+            waMessageId: msg.id,
+            sourceLine: msg.text,
+          }));
+        }
+
         const ackLines = [
           ...buildHousekeepingGroupAckMessage(
             readySignals
@@ -1435,6 +1453,7 @@ serve(async (req: Request) => {
               .map((s) => ({ roomId: s.roomId as string, guestName: s.guestName })),
           ).split("\n").filter(Boolean),
           ...checkInSignals.map(buildHousekeepingCheckInAckLine).filter((l): l is string => !!l),
+          ...checkOutSignals.map(buildHousekeepingCheckOutAckLine).filter((l): l is string => !!l),
         ];
         const ackText = ackLines.join("\n");
         let ackSent = false;
@@ -1448,7 +1467,7 @@ serve(async (req: Request) => {
         }
 
         console.log(
-          `[whapi-webhook] housekeeping ${msg.id} chat=${msg.chatId} ready=${readyRooms.join(",")} checkin=${checkInRooms.join(",")} ack=${ackSent}`,
+          `[whapi-webhook] housekeeping ${msg.id} chat=${msg.chatId} ready=${readyRooms.join(",")} checkin=${checkInRooms.join(",")} checkout=${checkOutRooms.join(",")} ack=${ackSent}`,
         );
         results.push({
           id: msg.id,
@@ -1456,8 +1475,10 @@ serve(async (req: Request) => {
           chat_id: msg.chatId,
           readyRooms,
           checkInRooms,
+          checkOutRooms,
           readySignals,
           checkInSignals,
+          checkOutSignals,
           ackSent,
         });
       }

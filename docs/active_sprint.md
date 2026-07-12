@@ -1,5 +1,22 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-12 (Tier-0 shared callback/human-request — Meta+Whapi).
+> Last updated: 2026-07-12 (Housekeeping WA check-out Co N — deployed).
+
+---
+
+## ✅ Deployed — Housekeeping WA check-out (2026-07-12)
+
+`Co 23` / `24 co` in «צ'ק אין צ'ק אאוט» → same observer path as check-in.
+
+| Piece | Detail |
+|---|---|
+| `housekeepingWaParse` | `parseHousekeepingCheckOutRoomNumbers` (prefix/suffix Co + Hebrew) |
+| `housekeepingCheckOutSignal.ts` | guest `checked_out` + `room_status` לניקיון; departing today/overdue only |
+| migration 192 | `housekeeping_wa_events.event_type` allows `check_out` |
+| `whapi-webhook` | Wired into existing housekeeping sweep + Hebrew ack |
+
+Deployed: `db push` (191+192), `whapi-webhook --no-verify-jwt`.
+
+**Mike QA:** בקבוצה «צ'ק אין צ'ק אאוט» — `Co 23` או `24 co` על חדר עם אורח שעוזב היום → ack ✅ + סטטוס אורח `checked_out` + חדר לניקיון.
 
 ---
 

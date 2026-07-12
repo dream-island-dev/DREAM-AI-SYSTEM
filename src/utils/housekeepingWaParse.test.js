@@ -1,4 +1,8 @@
-import { parseHousekeepingReadyRoomNumbers, parseHousekeepingCheckInRoomNumbers } from "./housekeepingWaParse";
+import {
+  parseHousekeepingReadyRoomNumbers,
+  parseHousekeepingCheckInRoomNumbers,
+  parseHousekeepingCheckOutRoomNumbers,
+} from "./housekeepingWaParse";
 import { buildHousekeepingGroupAckMessage } from "./housekeepingReadySignal";
 
 describe("housekeepingWaParse", () => {
@@ -25,6 +29,22 @@ describe("housekeepingWaParse", () => {
     expect(parseHousekeepingCheckInRoomNumbers("1 check in")).toEqual([1]);
     expect(parseHousekeepingCheckInRoomNumbers("17 צ'ק אין")).toEqual([17]);
     expect(parseHousekeepingCheckInRoomNumbers("8 check out")).toEqual([]);
+  });
+
+  test("parses check-out patterns from live group (Co 23 / 24 co)", () => {
+    expect(parseHousekeepingCheckOutRoomNumbers("Co 23")).toEqual([23]);
+    expect(parseHousekeepingCheckOutRoomNumbers("24 co")).toEqual([24]);
+    expect(parseHousekeepingCheckOutRoomNumbers("CO 7")).toEqual([7]);
+    expect(parseHousekeepingCheckOutRoomNumbers("16 check out")).toEqual([16]);
+    expect(parseHousekeepingCheckOutRoomNumbers("check out 11")).toEqual([11]);
+    expect(parseHousekeepingCheckOutRoomNumbers("23 צ'ק אאוט")).toEqual([23]);
+    expect(parseHousekeepingCheckOutRoomNumbers("צק אאוט 9")).toEqual([9]);
+    // Must not steal check-in or ready
+    expect(parseHousekeepingCheckOutRoomNumbers("17 צ'ק אין")).toEqual([]);
+    expect(parseHousekeepingCheckOutRoomNumbers("14✅")).toEqual([]);
+    expect(parseHousekeepingCheckInRoomNumbers("Co 23")).toEqual([]);
+    expect(parseHousekeepingReadyRoomNumbers("Co 23")).toEqual([]);
+    expect(parseHousekeepingReadyRoomNumbers("24 co")).toEqual([]);
   });
 
   test("✅ always wins over check-in phrasing in the same line (bell priority)", () => {

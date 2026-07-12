@@ -1,4 +1,4 @@
-// Live guest ↔ suite matching for housekeeping WA signals (ready + check-in).
+// Live guest ↔ suite matching for housekeeping WA signals (ready / check-in / check-out).
 // Mirrors src/data/suiteRegistry.js guestRoomMatchesSuiteId at the Deno boundary.
 
 import type { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -83,4 +83,52 @@ export async function findActiveGuestForSuite(
     ACTIVE_STATUSES.includes(g.status as typeof ACTIVE_STATUSES[number])
   ) as SuiteGuestRow[];
   return pickBestMatch(inScope, roomId);
+}
+
+const CHECKOUT_CANDIDATE_STATUSES = [
+  "pending",
+  "expected",
+  "room_ready",
+  "checked_in",
+  "checked_out",
+] as const;
+
+/**
+ * Guest due to leave today (or overdue) in this suite — WA "Co N" check-out.
+ * Includes already-checked_out so the signal can ack idempotently.
+ */
+export async function findDepartingGuestForSuite(
+  supabase: ReturnType<typeof createClient>,
+  roomId: string,
+): Promise<SuiteGuestRow | null> {
+  const today = israelYmd(new Date());
+  const { data: rows, error } = await supabase
+    .from("guests")
+    .select(
+      "id, name, phone, spa_time, room, suite_name, status, arrival_date, departure_date, guest_notes, room_ready_notified, msg_room_ready_sent",
+    )
+    .neq("status", "cancelled")
+    .lte("departure_date", today)
+    .in("status", [...CHECKOUT_CANDIDATE_STATUSES])
+    .order("departure_date", { ascending: false })
+    .limit(40);
+
+  if (error) {
+    console.warn(`[housekeepingGuestLookup] departing lookup failed for ${roomId}:`, error.message);
+    return null;
+  }
+
+  const matched = pickBestMatch((rows ?? []) as SuiteGuestRow[], roomId);
+  if (!matched) return null;
+
+  // Prefer a still-in-house guest over an already-archived one on the same room.
+  if (matched.status === "checked_out") {
+    const active = ((rows ?? []) as SuiteGuestRow[]).find(
+      (g) =>
+        guestRoomMatchesSuiteId(g, roomId) &&
+        ACTIVE_STATUSES.includes(g.status as typeof ACTIVE_STATUSES[number]),
+    );
+    if (active) return active;
+  }
+  return matched;
 }
