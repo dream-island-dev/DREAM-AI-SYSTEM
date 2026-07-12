@@ -29,6 +29,7 @@ import {
   hasSuiteRoomTypeConflict,
   isEffectiveSuiteGuest,
 } from "../_shared/suiteNames.ts";
+import { isStageEffectivelyActive } from "../_shared/guestWhapiRouting.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -101,10 +102,14 @@ Deno.serve(async (req: Request) => {
       previewAt: now.toISOString(),
     };
 
+    // is_active is NOT filtered in SQL — a stage paused only because its Meta
+    // template isn't approved yet must still surface for Whapi-eligible suite
+    // guests in the Live Queue (isStageEffectivelyActive, per-guest, below) —
+    // same gate whatsapp-cron uses, so the queue can never show a row that
+    // won't actually fire, or hide one that will.
     const { data: stagesData, error: stagesErr } = await supabase
       .from("automation_stages")
       .select("*")
-      .eq("is_active", true)
       .order("sequence_order");
     if (stagesErr) throw new Error(`stages_lookup_error: ${stagesErr.message}`);
     const stages = (stagesData ?? []) as AutomationStage[];
@@ -194,6 +199,7 @@ Deno.serve(async (req: Request) => {
       for (const guest of guests) {
         const guestRow = attachSuppressions(guest);
         if (!stageMatchesGuestPipeline(stage, guestRow)) continue;
+        if (!isStageEffectivelyActive(stage, guestRow)) continue;
 
         const result = resolveStageSchedule(stage, guestRow, now);
         const logRow = latestByKey.get(`${guest.id}::${stage.stage_key}`);

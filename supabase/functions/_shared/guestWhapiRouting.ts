@@ -32,6 +32,29 @@ export function shouldRouteGuestOutboundViaWhapiSuites(
 }
 
 /**
+ * automation_stages.is_active has, in every documented case so far (see
+ * docs/active_sprint.md "Blocked — Action Required"), meant "is this stage's
+ * Meta template approved/cleared" — night_before / morning_suite get paused
+ * with is_active=false while waiting on Meta Business Manager, nothing else.
+ * Whapi's free-text session path never needs Meta template approval, so a
+ * stage paused only for that reason must still reach Whapi-eligible suite
+ * guests. Meta-bound guests are completely unaffected — a paused stage stays
+ * paused for them, identical to today's behavior.
+ *
+ * Single source of truth for this decision — whatsapp-cron (due-item scan),
+ * automation-queue (ACC Live Queue projection), and whatsapp-send (actual
+ * dispatch gate) must all agree, or a stage can appear due in one place and
+ * silently refuse to send in another (the exact class of bug the 2026-07-12
+ * Stage 1 Whapi incident already came from).
+ */
+export function isStageEffectivelyActive(
+  stage: { is_active: boolean },
+  guest: GuestRoomFields | null | undefined,
+): boolean {
+  return stage.is_active === true || shouldRouteGuestOutboundViaWhapiSuites(guest);
+}
+
+/**
  * Auto-reply eligibility for an INBOUND Suites-device guest DM
  * (whapi-webhook's handleGuestDirectMessage) — deliberately broader than
  * shouldRouteGuestOutboundViaWhapiSuites() above.

@@ -59,6 +59,7 @@ import { isArrivalTodayIsrael, israelTodayYmd } from "../_shared/israelDate.ts";
 import { sanitizeMetaRecipientPhone } from "../_shared/metaPhone.ts";
 import { sendWhapiText, sendWhapiImage, cleanPhoneForMention } from "../_shared/whapiSend.ts";
 import { ensureArrivalConfirmationCta } from "../_shared/arrivalConfirmation.ts";
+import { isStageEffectivelyActive } from "../_shared/guestWhapiRouting.ts";
 import {
   guardPaymentLink,
   logPaymentLinkFailure,
@@ -728,6 +729,7 @@ type StageMediaRow = {
   session_message_image_url_shabbat?: string | null;
   session_message_script_key?: string | null;
   session_message_script_key_shabbat?: string | null;
+  is_active?: boolean;
 } | null;
 
 /** Image for session sends: automation_stages.session_message_image_url wins, then request body. */
@@ -2066,12 +2068,16 @@ serve(async (req: Request) => {
     // Same "DB overrides, hardcoded fallback" pattern already proven for
     // bot_settings.system_prompt overriding FALLBACK_SYSTEM_PROMPT.
     // Manual override (force=true) reads inactive stages too — admin may test a paused stage.
-    let stageQuery = supabase
+    // is_active is NOT filtered here anymore (was: `.eq("is_active", true)` when
+    // !force) — a stage paused only for a pending Meta template approval must
+    // still reach Whapi-eligible suite guests. The is_active check now happens
+    // below, once `guest` is loaded, via the shared isStageEffectivelyActive
+    // gate (same one whatsapp-cron/automation-queue use).
+    const { data: stageRow } = await supabase
       .from("automation_stages")
-      .select("meta_template_name, session_message_script_key, session_message_script_key_shabbat, session_message_image_url, session_message_image_url_shabbat, interactive_buttons, guest_flag_column")
-      .eq("stage_key", trigger);
-    if (!force) stageQuery = stageQuery.eq("is_active", true);
-    const { data: stageRow } = await stageQuery.maybeSingle();
+      .select("meta_template_name, session_message_script_key, session_message_script_key_shabbat, session_message_image_url, session_message_image_url_shabbat, interactive_buttons, guest_flag_column, is_active")
+      .eq("stage_key", trigger)
+      .maybeSingle();
 
     const forceMetaTemplate   = force === true && force_channel === "meta_template";
     const forceSessionMessage = force === true && force_channel === "session_message";
@@ -2106,6 +2112,20 @@ serve(async (req: Request) => {
       .from("guests").select("*").eq("id", guestId).maybeSingle();
     if (gErr)   throw new Error(`guest_lookup_error: ${gErr.message}`);
     if (!guest) throw new Error(`guest_not_found: no guest row for id=${JSON.stringify(guestId)}`);
+
+    // Stage paused (is_active=false, e.g. Meta template pending approval) and
+    // this guest isn't Whapi-eligible → same effective behavior as the old
+    // `.eq("is_active", true)` query filter for this guest (skip, don't send).
+    // Whapi-eligible suite guests bypass a Meta-template-only pause — same
+    // shared gate whatsapp-cron/automation-queue use (isStageEffectivelyActive).
+    // Manual force=true is untouched (admin explicitly testing a paused stage).
+    if (!force && stageRow && !isStageEffectivelyActive(stageRow as { is_active: boolean }, guest)) {
+      console.log(`[whatsapp-send] skipped trigger="${trigger}" guestId=${guestId} reason=stage_inactive`);
+      return new Response(
+        JSON.stringify({ ok: true, skipped: true, reason: "stage_inactive" }),
+        { headers: { ...CORS, "Content-Type": "application/json" } },
+      );
+    }
 
     // FAIL VISIBLE (P0, session 125): suite room + day-pass room_type is a data
     // conflict — routing below treats this guest as SUITE (suiteNames.ts).

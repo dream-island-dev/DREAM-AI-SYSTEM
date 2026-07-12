@@ -35,6 +35,7 @@ import {
 } from "../_shared/automationSchedule.ts";
 import { reconcileMissedArrivalConfirmations } from "../_shared/arrivalConfirmation.ts";
 import { loadGuestByIdForPipeline } from "../_shared/guestOutboundGuard.ts";
+import { isStageEffectivelyActive } from "../_shared/guestWhapiRouting.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -141,10 +142,14 @@ Deno.serve(async (req: Request) => {
       console.log(`[whatsapp-cron] auto_checkout archived ${autoCheckoutCount} guest(s) (today=${todayIsrael})`);
     }
 
+    // is_active is NOT filtered in SQL anymore — a stage paused only because
+    // its Meta template isn't approved yet must still reach Whapi-eligible
+    // suite guests (isStageEffectivelyActive, per-guest, in the scan loop
+    // below). Meta-bound guests are unaffected: the loop still skips them
+    // exactly like the old `.eq("is_active", true)` filter did.
     const { data: stagesData, error: stagesErr } = await supabase
       .from("automation_stages")
       .select("*")
-      .eq("is_active", true)
       .neq("schedule_mode", "event_immediate")
       .order("sequence_order");
     if (stagesErr) throw new Error(`stages_lookup_error: ${stagesErr.message}`);
@@ -191,7 +196,11 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    const activeStageKeys = stages.map((s) => s.stage_key);
+    // Truly-active (is_active=true) only — for the diagnostic warnings below,
+    // which are specifically about the Meta path. `stages` itself now also
+    // carries paused rows through to the scan loop (isStageEffectivelyActive
+    // decides per-guest whether a paused row still applies via Whapi).
+    const activeStageKeys = stages.filter((s) => s.is_active === true).map((s) => s.stage_key);
     console.log(`[whatsapp-cron] scan_start guests=${guestsList.length} active_stages=[${activeStageKeys.join(", ")}]`);
 
     const missingCoreStages = CORE_PIPELINE_STAGE_KEYS.filter((k) => !activeStageKeys.includes(k));
@@ -205,8 +214,9 @@ Deno.serve(async (req: Request) => {
 
     if (!activeStageKeys.includes("night_before")) {
       console.warn(
-        "[whatsapp-cron] night_before NOT in active_stages — Stage 2.5 (suites) will never dispatch. " +
-        "Re-enable: UPDATE automation_stages SET is_active=true WHERE stage_key='night_before';",
+        "[whatsapp-cron] night_before is_active=false — Meta template path paused; " +
+        "Whapi-eligible suite guests still dispatch via isStageEffectivelyActive. " +
+        "Re-enable Meta: UPDATE automation_stages SET is_active=true WHERE stage_key='night_before';",
       );
     }
 
@@ -231,6 +241,12 @@ Deno.serve(async (req: Request) => {
     const due: DueItem[] = [];
     for (const guest of guestsList) {
       for (const stage of stages) {
+        // Stage paused (is_active=false) and this guest isn't Whapi-eligible
+        // → identical to the old `.eq("is_active", true)` SQL filter for
+        // this guest. Whapi-eligible suite guests bypass a Meta-template-only
+        // pause (isStageEffectivelyActive, _shared/guestWhapiRouting.ts).
+        if (!isStageEffectivelyActive(stage, guest)) continue;
+
         const staffKey = `${guest.id}::${stage.stage_key}`;
         const staffSchedIso = staffScheduleByKey.get(staffKey);
         const result = resolveStageSchedule(stage, guest, now);
