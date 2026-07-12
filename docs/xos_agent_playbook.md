@@ -1,6 +1,6 @@
 # XOS Agent Playbook — Smart Dev Environment
 > **Living document.** Mike + every Cursor agent reads this with `CLAUDE.md` and `docs/active_sprint.md`.
-> Last updated: 2026-07-07 (session 131b — playbook + UI upgrade strategy + token-efficient workflow + Advanced Prompt Engineering Rules + external-verify/reset-on-drift + Design Mode/reuse-first/exact-match QA/no-autopilot).
+> Last updated: 2026-07-12 (session pipeline — Research→Diagnostic→Execute→QA + thin Cursor rule; agent auto-routes by task type).
 >
 > **When you learn something new that works** → add a bullet here + 1 line in `docs/changelog.md` + refresh `CLAUDE.md` §13 if architecture changed.
 
@@ -244,18 +244,36 @@ Then atomic diff. npm run build. Deploy checklist. Offer deploy.
 
 ## 6. Mandatory Agent Workflow (every code session)
 
+### 6.0 Session Pipeline (agent auto-routes — Mike need not pick a prompt)
+
+Cursor rule: `.cursor/rules/XOS-Session-Pipeline.mdc`. Full copy-paste prompts: **§8**.
+
+| Stage | When | Output | Stop? |
+|---|---|---|---|
+| **0 Research** | "how does X work", unclear ground truth, pre-feature map | Facts table + file:line evidence only — **no code** | Yes — wait |
+| **1 Diagnostic** | New feature / non-trivial fix / architecture choice | 3 distinct approaches + exact files/lines + chosen option + reuse/caching notes — **no code** | Yes — wait for `כן`/`yes` |
+| **2 Execute** | After Mike confirms Stage 1 (or tiny 1-line bug) | Atomic diffs only + cache invalidation if mutating | Soft — show Mike |
+| **3 QA** | After Stage 2 on automation / webhooks / RLS / Shabbat / guest routing | Independent review → P0 list or `PASSED QA` | Soft — before deploy |
+| **4 Deploy** | Mike says `תעלה` / `yes deploy` | Checklist layers touched only | Run commands |
+
+**Skip matrix (token-efficient):**
+- One-line typo / CSS token / obvious null-check → Stage 2 only (no Research/Diagnostic).
+- Pure investigation → Stage 0 only (stop).
+- Visual-only staff UI → Stage 1 short file/line list → Stage 2 (UI template §8.4); skip Shabbat QA unless automation touched.
+- Mike override: `רק research` / `רק diagnostic` / `תריץ QA` forces that stage.
+
 1. Read `CLAUDE.md` + `docs/active_sprint.md` + this file.
-1b. **Design Mode (new feature / architecturally unclear task only — skip for small bugfixes):** Do NOT write code yet. Present **3 distinct approaches** (not 3 variations of the same idea) with trade-offs — reuse-existing vs. new-table, sync vs. async, etc. Justify each briefly. Wait for Mike to pick one (or merge ideas) before any code is written. This is the step that catches "the agent quietly chose an architecture Mike wouldn't have picked" before it's baked into a diff.
-2. **Plan & Chain of Thought:** For complex logic, split the task into 3 phases (Plan, Execute, Verify) and explain your reasoning step-by-step *before* writing code to avoid logic errors.
-3. Read target files before editing. **Search for an existing function/util/`_shared/` helper first — reuse beats reinventing.** Only write a new function when nothing existing fits; do not create a near-duplicate of something that already does 90% of the job. Base code strictly on existing examples.
-4. **Execute:** Atomic diffs only. Be mindful of context window limits — avoid massive single-shot refactors that cause context loss. Small focused diffs, not sprawling changes Mike can't read in one pass.
-5. **Self-Verify — exact match, not "close enough":** Before presenting to Mike, re-read his original request line-by-line against what you actually built. Flag explicitly if you simplified, skipped, or substituted something because it was easier — do not silently ship the easier version and call it done.
-5b. **External Verify (high-stakes only):** For risky/complex changes (migrations, payment/automation logic, RLS), do not trust self-check alone — a model grading its own work tends to say "looks good." Spawn a `Plan` agent (fresh context, no prior bias) to re-read the diff and challenge it before deploy, exactly like session 132's approval-gate design.
+1b. **Design Mode (= Stage 1):** new feature / architecturally unclear only — skip for small bugfixes. Present **3 distinct approaches** (not 3 variations of the same idea) with trade-offs. Justify chosen option (Disable-Don't-Hide, FAIL VISIBLE). List exact files/lines. Identify reusable helpers first. Wait for Mike to pick / say `כן` before any code.
+2. **Plan & Chain of Thought:** For complex logic, Plan → Execute → Verify reasoning *before* writing code.
+3. Read target files before editing. **Search existing function/util/`_shared/` first — reuse beats reinventing.**
+4. **Execute (Stage 2):** Atomic diffs only. Small focused diffs. Every DB mutation that feeds cached UI → invalidate/update that cache immediately.
+5. **Self-Verify — exact match:** Re-read Mike's ask line-by-line vs what shipped. Flag simplifications explicitly.
+5b. **External Verify / Independent QA (Stage 3):** High-stakes (migrations, automation, RLS, guest bot, Shabbat) — do not trust self-check alone. Run §8.3 checklist (or spawn fresh Plan agent). Output P0 flaws or `PASSED QA`.
 6. `npm run build` before commit when `src/` changed.
 7. End with **Deploy Checklist** (only layers touched).
 8. **Offer** autonomous deploy; run on `yes` / `כן` / `תעלה`.
-9. Update `docs/changelog.md` (1 line) + `CLAUDE.md` header if state changed.
-10. If process improved → update **this playbook** §9.
+9. Update `docs/changelog.md` (1 line) + `CLAUDE.md` if architecture state changed.
+10. If process improved → update **this playbook** §9 / §10.
 
 ### 6.1 Reset-on-Drift Protocol
 If the agent starts inventing unrequested changes, contradicting its own prior statements, or "fixing" things Mike didn't ask about — **stop immediately, do not try to patch it within the same context.** Tell Mike plainly ("איבדתי הקשר / נראה שאני סוטה מהמשימה — כדאי לפתוח שיחה חדשה") and let him start a fresh session. Fighting drift inside a already-confused context window compounds errors instead of fixing them.
@@ -264,6 +282,7 @@ If the agent starts inventing unrequested changes, contradicting its own prior s
 - **Mike names the critical edge cases** for features he cares about (payment, automation gates, guest data) — the agent does not guess which ones matter most.
 - The agent implements tests/checks for exactly those cases, then confirms explicitly which ones were covered — not a vague "should work now."
 - **Self-review is weak on logic bugs at this codebase's size** (same reason as §6 step 5b) — a model checking its own multi-file change is prone to missing the interaction it just introduced. Treat self-review as a first pass, not the final gate, on anything touching automation/payment/RLS.
+- **Always on Stage 3 checklist:** Silence Rule (`needs_callback`/`human_requested` never mute backend); Record-Only ETA; Shabbat guest routing; no duplicate helpers; cache invalidation on mutations.
 
 ### Deploy checklist template
 
@@ -290,31 +309,93 @@ If the agent starts inventing unrequested changes, contradicting its own prior s
 
 ## 8. Prompt Templates (copy-paste for Mike)
 
-### UI phase
-@docs/xos_agent_playbook.md @src/App.js
-Phase [N]: [description]. Visual only. Summary first, then code.
+**Default:** describe the task in one line — the agent auto-routes via §6.0. Use these only to force a role or paste Stage-3 QA on a finished diff.
 
+### 8.1 Research (read-only ground truth)
 
-### Bug
-@CLAUDE.md
-Bug: [what] on [screen/route]
-Expected: [one line]
-Minimal fix. Explain your reasoning step-by-step (Chain of Thought), verify constraints, then provide code.
-Deploy checklist.
+```
+@CLAUDE.md @docs/active_sprint.md @docs/xos_agent_playbook.md
+Role: Read-Only Research Agent for XOS.
+Task: Extract absolute ground truth regarding [TOPIC — e.g. Shabbat routing in whatsapp-send].
+Constraints:
+1. DO NOT write or propose any code modifications.
+2. Scan file structure + migration history; cite exact file names and line numbers.
+3. Output a concise table of facts and evidence only.
+```
 
+### 8.2 Architect — TWO-PART (Diagnostic then Execute)
 
-### New feature
+```
+@CLAUDE.md @docs/active_sprint.md @docs/xos_agent_playbook.md
+Zero pleasantries. Jump straight to technical execution.
+ROLE: Lead Software Architect for XOS (token-efficient).
+TASK: [one-line feature/fix]
+
+PART 1 — DIAGNOSTIC (READ-ONLY):
+1. No code blocks yet.
+2. Brainstorm 3 distinct architectural alternatives.
+3. For each: exact files + lines to touch.
+4. Justify chosen option (Disable-Don't-Hide, FAIL VISIBLE).
+5. Name existing reusable helpers to avoid duplication.
+6. If heavy DB reads: Strategic Caching + TTL.
+Output Part 1, STOP, wait for כן / yes.
+
+PART 2 — EXECUTE (only after confirmation):
+1. Atomic diffs only (2–3 lines context). NEVER dump full files.
+2. Any INSERT/UPDATE/DELETE on cached UI data → invalidate cache immediately.
+3. No new CSS vars outside :root; no Hebrew label changes.
+4. Self-QA incl. Shabbat guest edge cases.
+5. Autopilot Deploy Checklist + 1-line docs/changelog.md.
+```
+
+### 8.2b Short Diagnostic-only (when Research facts already pasted)
+
+```
 @CLAUDE.md @docs/active_sprint.md
-Feature: [one line]
-Check DNA principles §0. Fail visible. Offer phased plan (Plan, Execute, Verify) before big code.
+Facts from research: [paste Stage 0 table]
+PART 1 — Diagnostic FIRST: exact files/lines to touch. No code. Wait for כן.
+PART 2 — Execute only after confirmation: atomic diffs + caching constraints.
+```
 
+### 8.3 Independent QA (after Atomic Diffs)
 
-### Deploy only
-yes deploy
+```
+@CLAUDE.md
+Role: Independent Senior QA & Code Reviewer for XOS.
+Task: Audit these code changes:
+[paste Atomic Diffs]
 
+Verify strictly:
+1. Duplicate functions / Reusability violations?
+2. Silence Rule, Record-Only ETA, or other XOS operational rules broken?
+3. Cache invalidation if DB mutations?
+4. Saturday/Shabbat guest edge-case failures?
 
-### Short reply mode
-Reply: Hebrew, max 15 lines.
+Output: list of P0 flaws OR reply "PASSED QA".
+```
+
+### 8.4 UI/UX Specialist (visual only)
+
+```
+@CLAUDE.md @src/App.js @docs/xos_agent_playbook.md
+Role: XOS UI/UX Specialist.
+Task: Upgrade visual layout of [SCREEN/COMPONENT].
+Constraints:
+1. ONLY existing :root CSS variables (--gold, --ivory, etc.).
+2. Do NOT touch backend routing, DB fetches, or Hebrew labels.
+3. Responsive: Desktop 1280px + Mobile 390px.
+4. Preserve Disable-Don't-Hide + FAIL VISIBLE.
+Diagnostic file/line list first; wait for כן before diffs.
+```
+
+### 8.5 Short envelopes
+
+| Need | Paste |
+|---|---|
+| Bug | `@CLAUDE.md` Bug: [what] on [route]. Expected: [line]. Minimal fix. Deploy checklist. |
+| Deploy | `yes deploy` / `תעלה` |
+| Hebrew short | Reply: Hebrew, max 15 lines. |
+| Force stage | `רק research` / `רק diagnostic` / `תריץ QA` |
 
 
 ---
@@ -334,6 +415,11 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 ---
 
 ## 10. Learnings Log
+
+### 2026-07-12 — Session pipeline: Research → Diagnostic → Execute → QA (agent routes)
+- **Problem:** Mike had 4 strong role-prompts but no single place that said when each runs; copy-pasting every time wasted tokens and risked skipping Diagnostic/QA.
+- **Decision:** Playbook §6.0 + §8 full templates + thin alwaysApply rule `XOS-Session-Pipeline.mdc`. Agent auto-routes by task type; Mike overrides with `רק research` / `רק diagnostic` / `תריץ QA`.
+- **Not chosen:** Fat always-on rule (token noise on tiny bugs) or 4 separate Skills (duplicate of §8 until Mike asks).
 
 ### 2026-07-12 — Callback invert: «תחזרו אלי» → bot says «תוכלו ליצור קשר»
 - **Symptom:** Guest asked staff to get back to them to schedule spa; bot replied asking the guest to initiate contact.
@@ -499,8 +585,10 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 ## 12. Mike Quick Card (print this — 4 commands only)
 
 ┌─────────────────────────────────────────────────────────┐
-│  npm start רץ → פתח localhost:3000                      │
+│  כתוב משימה בשורה אחת — הסוכן מנתב (§6.0 / §8)         │
+│  override: רק research / רק diagnostic / תריץ QA        │
 │                                                         │
+│  npm start רץ → פתח localhost:3000                      │
 │  הסוכן שינה משהו → אתה מסתכל בדפדפן → כותב:            │
 │                                                         │
 │    כן          = המשך לשלב הבא                          │

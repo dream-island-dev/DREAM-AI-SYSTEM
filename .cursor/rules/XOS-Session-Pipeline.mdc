@@ -1,0 +1,26 @@
+---
+description: XOS session pipeline — agent auto-routes Research → Diagnostic → Execute → QA. Full prompts in docs/xos_agent_playbook.md §6.0 and §8.
+alwaysApply: true
+---
+
+# XOS Session Pipeline (thin gate)
+
+Before coding on a non-trivial task, follow `docs/xos_agent_playbook.md` §6.0. Do not dump full prompt text here.
+
+## Auto-route (Mike describes the task; you pick the stage)
+
+| Mike signal | Stage |
+|---|---|
+| How does X work / map ground truth | **0 Research** — facts + file:line only; no code; STOP |
+| Feature / non-trivial fix / unclear architecture | **1 Diagnostic** — 3 options + files/lines; no code; STOP for `כן`/`yes` |
+| Tiny bug / one-line / confirmed Architecture | **2 Execute** — atomic diffs |
+| After Stage 2 on automation, webhooks, RLS, Shabbat, guest routing | **3 QA** — §8.3 checklist → P0 or `PASSED QA` |
+| `תעלה` / `yes deploy` | **4 Deploy** — checklist layers only |
+| `רק research` / `רק diagnostic` / `תריץ QA` | Force that stage |
+
+## Hard stops
+
+- Stage 0 / 1: never write or propose code until Mike confirms.
+- Stage 2: atomic diffs; reuse `_shared`/utils; invalidate cache on mutations that feed cached UI.
+- Never commit/push/db push/functions deploy without explicit approval.
+- Hebrew chat to Mike; English in code/docs/commits.

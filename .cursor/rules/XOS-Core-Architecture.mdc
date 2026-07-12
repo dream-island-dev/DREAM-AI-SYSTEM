@@ -1,0 +1,5 @@
+---
+alwaysApply: true
+---
+
+Reference and strictly follow the architecture and constraints defined in the files CLAUDE.md and docs/xos_agent_playbook.md
