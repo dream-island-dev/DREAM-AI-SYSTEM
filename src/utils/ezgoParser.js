@@ -109,7 +109,7 @@ export function resolveImportAutomationScope({
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Normalizes any matched IL_MOBILE_RE capture to E.164 "+972XXXXXXXXX".
+ * Normalizes Israeli mobile captures to E.164 "+972XXXXXXXXX".
  *
  * EZGO sRemark phones always have a leading "0" (domestic format).
  * EZGO sTel1 phones OMIT the leading "0" (9 digits starting with "5") —
@@ -121,7 +121,7 @@ export function resolveImportAutomationScope({
  */
 export function normalizeILMobile(raw) {
   if (!raw) return null;
-  const digits = raw.replace(/[^\d]/g, "");
+  const digits = String(raw).replace(/[^\d]/g, "");
   if (digits.length === 10 && digits.startsWith("0"))   return `+972${digits.slice(1)}`;
   if (digits.length === 9  && digits.startsWith("5"))   return `+972${digits}`;
   if (digits.length === 12 && digits.startsWith("972")) return `+${digits}`;
@@ -129,6 +129,8 @@ export function normalizeILMobile(raw) {
 }
 
 const REPEATED_DIGIT_RE = /^(\d)\1+$/;
+// ITU E.164: country code + subscriber, 8–15 digits (no leading 0 after CC).
+const E164_DIGIT_RE = /^[1-9]\d{7,14}$/;
 
 /**
  * Placeholder coordinator phones ("111", "000…") — not real guest numbers.
@@ -143,17 +145,55 @@ export function isDummyPhone(phone) {
 }
 
 /**
+ * Doc 2 / WhatsApp — normalize any plausible guest phone to E.164.
+ * Israeli domestic shapes stay on the IL path; foreign numbers (with +,
+ * 00-prefix, or bare digits that already include a country code) are kept
+ * so Meta/Whapi can deliver. Local-looking numbers without a country code
+ * (e.g. bare 10-digit US) stay null — FAIL VISIBLE, staff must add +.
+ */
+export function normalizeWhatsAppPhone(raw) {
+  if (raw == null || raw === "") return null;
+  const trimmed = String(raw).trim();
+  if (!trimmed) return null;
+
+  const il = normalizeILMobile(trimmed);
+  if (il) return il;
+
+  const hadPlus = /^\s*\+/.test(trimmed);
+  const digitsRaw = trimmed.replace(/[^\d]/g, "");
+  if (!digitsRaw) return null;
+
+  const fromIntlPrefix = digitsRaw.startsWith("00");
+  let digits = fromIntlPrefix ? digitsRaw.slice(2) : digitsRaw;
+
+  // 00972… / +972 after 00-strip — same shape as IL international export.
+  const ilAfterStrip = normalizeILMobile(digits);
+  if (ilAfterStrip) return ilAfterStrip;
+
+  if (!E164_DIGIT_RE.test(digits) || isDummyPhone(digits)) return null;
+
+  // Explicit + / 00 → trust as international E.164.
+  if (hadPlus || fromIntlPrefix) return `+${digits}`;
+
+  // Bare digits: only when length already implies a country code (11–15).
+  // 8–10 without + is too ambiguous (local national numbers).
+  if (digits.length >= 11) return `+${digits}`;
+
+  return null;
+}
+
+/**
  * Sprint C DOCS2 — validates/normalizes a phone number staff types directly
  * into the sync grid (ArrivalImportPanel guestPhone cell). Reuses the same
  * normalizer/dummy-check as the import parser so a hand-typed number is held
  * to the same bar as one extracted from EZGO. Clearing the cell (blank) is a
  * legal way to revert a guest back to no-phone — only returns invalid:true
- * when the staff typed something that doesn't resolve to a real IL mobile.
+ * when the staff typed something that doesn't resolve to a real WhatsApp E.164.
  */
 export function normalizeGuestPhoneEdit(raw) {
   const trimmed = String(raw ?? "").trim();
   if (!trimmed) return { value: null, valid: true };
-  const e164 = normalizeILMobile(trimmed);
+  const e164 = normalizeWhatsAppPhone(trimmed);
   if (!e164 || isDummyPhone(e164)) return { value: null, valid: false };
   return { value: e164, valid: true };
 }
@@ -418,12 +458,18 @@ export function extractGuestDetails(row, columnMapping = {}, fallbackDate = null
   // ── Arrival date ─────────────────────────────────────────────────────────
   const arrivalDate = parseDate(val("arrivalDate")) ?? fallbackDate;
 
-  // ── Coordinator phone (source value may be 9-digit without leading 0) ────
-  const coordE164 = normalizeILMobile(
-    /^\d{9}$/.test(coordPhoneRaw) ? `0${coordPhoneRaw}` : coordPhoneRaw
+  // ── Phone columns (IL domestic 9-digit omits leading 0; foreign keep +/00) ─
+  // Only prepend 0 for bare 9-digit IL mobiles (05X…). Never invent a country
+  // code for foreign national numbers — those need + or 00 in the source.
+  const coordE164 = normalizeWhatsAppPhone(
+    /^\d{9}$/.test(coordPhoneRaw) && coordPhoneRaw.startsWith("5")
+      ? `0${coordPhoneRaw}`
+      : coordPhoneRaw
   );
-  const directE164 = normalizeILMobile(
-    /^\d{9}$/.test(directPhoneRaw) ? `0${directPhoneRaw}` : directPhoneRaw
+  const directE164 = normalizeWhatsAppPhone(
+    /^\d{9}$/.test(directPhoneRaw) && directPhoneRaw.startsWith("5")
+      ? `0${directPhoneRaw}`
+      : directPhoneRaw
   );
 
   const coordName = coordNameRaw.replace(SOURCE_RE, "").trim() || null;

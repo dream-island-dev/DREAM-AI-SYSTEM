@@ -9,6 +9,7 @@ import {
   isRemarkGroupOccupant,
   resolveImportAutomationScope,
   normalizeGuestPhoneEdit,
+  normalizeWhatsAppPhone,
 } from "./ezgoParser";
 
 const ARRIVALS_MAPPING = {
@@ -371,21 +372,69 @@ describe("normalizeGuestPhoneEdit", () => {
     expect(normalizeGuestPhoneEdit("+972-50-123-4567")).toEqual({ value: "+972501234567", valid: true });
   });
 
+  test("accepts a foreign WhatsApp number with +", () => {
+    expect(normalizeGuestPhoneEdit("+1 212 555 0123")).toEqual({ value: "+12125550123", valid: true });
+  });
+
+  test("accepts a UK number with 00 prefix", () => {
+    expect(normalizeGuestPhoneEdit("0044 7700 900123")).toEqual({ value: "+447700900123", valid: true });
+  });
+
   test("clearing the cell (blank) is valid — reverts to no-phone", () => {
     expect(normalizeGuestPhoneEdit("")).toEqual({ value: null, valid: true });
     expect(normalizeGuestPhoneEdit("   ")).toEqual({ value: null, valid: true });
     expect(normalizeGuestPhoneEdit(null)).toEqual({ value: null, valid: true });
   });
 
-  test("rejects garbage that doesn't resolve to an IL mobile", () => {
+  test("rejects garbage that doesn't resolve to WhatsApp E.164", () => {
     expect(normalizeGuestPhoneEdit("abc")).toEqual({ value: null, valid: false });
     expect(normalizeGuestPhoneEdit("123")).toEqual({ value: null, valid: false });
   });
 
+  test("rejects bare US national digits without country code (FAIL VISIBLE)", () => {
+    expect(normalizeGuestPhoneEdit("2125550123")).toEqual({ value: null, valid: false });
+  });
+
   test("rejects a too-short placeholder (isDummyPhone length gate)", () => {
-    // "111" fails normalizeILMobile outright (no branch matches 3 digits) —
+    // "111" fails normalizeWhatsAppPhone outright (no branch matches 3 digits) —
     // same isDummyPhone() this reuses already covers the reject-path in
     // guestImportIntelligence.test.js ("111" → dummy).
     expect(normalizeGuestPhoneEdit("111")).toEqual({ value: null, valid: false });
+  });
+});
+
+describe("normalizeWhatsAppPhone — international Doc 2", () => {
+  test("IL domestic unchanged", () => {
+    expect(normalizeWhatsAppPhone("052-1234567")).toBe("+972521234567");
+  });
+
+  test("00972 strips to IL E.164", () => {
+    expect(normalizeWhatsAppPhone("00972501234567")).toBe("+972501234567");
+  });
+
+  test("+1 US mobile", () => {
+    expect(normalizeWhatsAppPhone("+1-212-555-0123")).toBe("+12125550123");
+  });
+
+  test("bare digits with country code (11+)", () => {
+    expect(normalizeWhatsAppPhone("12125550123")).toBe("+12125550123");
+  });
+});
+
+describe("extractGuestDetails — foreign phone column", () => {
+  test("sTel1 foreign +number syncs as guestPhone (not dropped)", () => {
+    const row = extractGuestDetails(
+      {
+        Order: "400400",
+        ResLine: "rl-intl",
+        Remark: "",
+        CoordName: "John Smith",
+        CoordPhone: "",
+        GuestPhone: "+44 7700 900123",
+      },
+      ARRIVALS_MAPPING,
+    );
+    expect(row.guestPhone).toBe("+447700900123");
+    expect(row.phoneSource).toBe("individual");
   });
 });

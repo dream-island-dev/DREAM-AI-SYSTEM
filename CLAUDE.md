@@ -56,8 +56,8 @@ Dream Island Resort Management System (XOS) — אפליקציית ניהול מ
 3. מבנה מסד הנתונים (טבלאות ליבה)
 
 פורמטי טלפון קריטיים (חובה לסנכרון):
-- guests.phone = +972501234567 (עם סימן +, פורמט E.164 תקני).
-- bookings.phone / Meta Webhook = 972501234567 (ללא +).
+- guests.phone = E.164 עם `+` (ישראלי `+972…` או בינלאומי `+1…`/`+44…` וכו׳). Doc 2 מנרמל דרך `normalizeWhatsAppPhone` — מספר זר נשמר ונשלח ב-WhatsApp; מספר לאומי בלי קידומת מדינה נדחה (FAIL VISIBLE).
+- bookings.phone / Meta Webhook = ספרות בלבד בלי `+` (972… / 1… / 44…).
 - כלל פיתוח: בחיפוש הצלבות מול bookings יש לבצע תמיד phone.slice(1) כדי להוריד את ה-+.
 
 טבלאות ושדות מרכזיים:

@@ -1,5 +1,21 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-12 (Housekeeping WA check-out Co N — deployed).
+> Last updated: 2026-07-12 (Doc 2 international WhatsApp phones).
+
+---
+
+## ✅ Ready — Doc 2 international phones (2026-07-12)
+
+Foreign guest numbers in suite CSV / grid edit now normalize to E.164 and sync (WhatsApp can deliver). IL path unchanged. Bare local digits without country code still rejected.
+
+| Piece | Detail |
+|---|---|
+| `normalizeWhatsAppPhone` | `ezgoParser.js` — `+` / `00` / bare 11–15 digit CC |
+| Wire-in | `extractGuestDetails` columns + `normalizeGuestPhoneEdit` |
+| Tests | 33 `ezgoParser` + ArrivalImport / guestImportIntelligence |
+
+**Deploy:** frontend only (`npm run build` → push `main`). No migration / functions.
+
+**Mike QA:** Doc 2 row with `+44…` or `+1…` → appears in grid → sync → automation can send.
 
 ---
 
