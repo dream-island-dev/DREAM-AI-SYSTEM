@@ -4,10 +4,8 @@
 //
 // shouldRouteGuestOutboundViaWhapiSuites is the single gate whatsapp-send's
 // shouldUseWhapiForGuestAutomation() now wraps directly (2026-07-10 — the
-// dispatch_channel and Shabbat-only gates were removed). These tests cover
-// the routing rule itself: suite guests always route to Whapi once the flag
-// is on, regardless of arrival day-of-week or dispatch_channel; day-pass
-// guests never do.
+// dispatch_channel and Shabbat-only gates were removed; 2026-07-12 day-pass
+// included). Suite + day-pass guests route to Whapi once the flag is on.
 
 import { assertEquals } from "https://deno.land/std@0.168.0/testing/asserts.ts";
 import { shouldRouteGuestOutboundViaWhapiSuites, isStageEffectivelyActive } from "./guestWhapiRouting.ts";
@@ -38,8 +36,15 @@ Deno.test("suite guest, flag off → Meta path (feature inert)", () => {
   });
 });
 
-Deno.test("day-pass guest, any trigger, flag on → Meta path, never Whapi", () => {
+Deno.test("day-pass guest, flag on → Whapi path (same transport as suites)", () => {
   withWhapiFlag(true, () => {
+    const guest = { room: "Premium Day 1", room_type: "day_guest", dispatch_channel: "meta" };
+    assertEquals(shouldRouteGuestOutboundViaWhapiSuites(guest), true);
+  });
+});
+
+Deno.test("day-pass guest, flag off → Meta path (feature inert)", () => {
+  withWhapiFlag(false, () => {
     const guest = { room: null, room_type: "day_guest", dispatch_channel: "whapi" };
     assertEquals(shouldRouteGuestOutboundViaWhapiSuites(guest), false);
   });
@@ -59,8 +64,15 @@ Deno.test("isStageEffectivelyActive: is_active=true stage is active for anyone, 
   });
 });
 
-Deno.test("isStageEffectivelyActive: is_active=false + Meta-only (day-pass) guest stays paused", () => {
+Deno.test("isStageEffectivelyActive: is_active=false + day-pass guest, flag on bypasses Meta-template pause", () => {
   withWhapiFlag(true, () => {
+    const guest = { room: null, room_type: "day_guest" };
+    assertEquals(isStageEffectivelyActive({ is_active: false }, guest), true);
+  });
+});
+
+Deno.test("isStageEffectivelyActive: is_active=false + day-pass guest, flag off stays paused", () => {
+  withWhapiFlag(false, () => {
     const guest = { room: null, room_type: "day_guest" };
     assertEquals(isStageEffectivelyActive({ is_active: false }, guest), false);
   });

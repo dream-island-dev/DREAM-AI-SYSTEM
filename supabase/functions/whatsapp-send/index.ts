@@ -779,10 +779,10 @@ function resolveShabbatAwareSessionImageUrl(
   return resolveStageSessionImageUrl(stageRow, requestImageUrl);
 }
 
-/** Route this suite guest's automation through the Whapi Suites device —
+/** Route suite + day-pass guest automation through the Whapi Suites device —
  * applies uniformly regardless of arrival day-of-week or dispatch_channel
- * (owner decision, 2026-07-10). Day-pass guests are never eligible —
- * shouldRouteGuestOutboundViaWhapiSuites already gates on isEffectiveSuiteGuest. */
+ * (owner decisions 2026-07-10 suite, 2026-07-12 day-pass). Meta templates are
+ * not used for these guests while GUEST_WHAPI_SUITES_ENABLED is on. */
 function shouldUseWhapiForGuestAutomation(
   guest: Record<string, unknown>,
 ): boolean {
@@ -2886,11 +2886,19 @@ serve(async (req: Request) => {
     }
 
     // ── Morning day-pass fast-path (Stage 3 — בוקר הגעה, בילוי יומי) ──────────
-    // Autonomous cron → Shabbat-aware Meta template (same as suites).
-    // Session morning_daypass only on manual force (force===true).
+    // Meta template path ONLY when Whapi routing is off. When
+    // GUEST_WHAPI_SUITES_ENABLED, day-pass falls through to the shared Whapi
+    // morning session block below (morning_daypass script) — same transport
+    // as suites (owner 2026-07-12). Autonomous Meta here used to retry
+    // forever on broken dream_checkin_reminder_v2 / URL-button templates.
+    // Session morning_daypass also on manual force (force===true) for Meta-bound.
     // isEffectiveDayPassGuest — a suite-room guest mis-tagged day_guest falls
     // through to the generic (suite-template) morning path below (P0, s125).
-    if (trigger === "morning_welcome" && isEffectiveDayPassGuest(guest)) {
+    if (
+      trigger === "morning_welcome" &&
+      isEffectiveDayPassGuest(guest) &&
+      !shouldUseWhapiForGuestAutomation(guest)
+    ) {
       const dpGuestName = sanitizeTemplateVars([String(guest.name ?? "")])[0];
       const dpArrivalYmd = normalizeArrivalDateYmd(guest.arrival_date);
       const dpIsShabbat = isShabbatArrivalDate(dpArrivalYmd);
@@ -3634,12 +3642,12 @@ serve(async (req: Request) => {
 
     // ── Hybrid fallback (req #4) ───────────────────────────────────────────
     // Session free-text on manual staff dispatch (force / manual_override) OR
-    // when the guest routes through Whapi (all suite automation, owner
-    // decision 2026-07-10) — Whapi has no template concept, so for those
-    // guests this is the ONLY path available, autonomous or not. Autonomous
-    // Meta guests still MUST always use the approved Meta template — never
-    // hijack to bot_scripts just because wa_window_expires_at is open (same
-    // rule as night_before session 102 and morning_suite session 102b).
+    // when the guest routes through Whapi (suite + day-pass automation while
+    // GUEST_WHAPI_SUITES_ENABLED — owner 2026-07-10/12). Whapi has no template
+    // concept, so for those guests this is the ONLY path, autonomous or not.
+    // Autonomous Meta-only guests (flag off) still MUST use the approved Meta
+    // template — never hijack to bot_scripts just because wa_window_expires_at
+    // is open (same rule as night_before session 102 / morning_suite 102b).
     const isManualPipelineDispatch = force === true || manual_override === true;
     const pipelineArrivalYmd = normalizeArrivalDateYmd(guest.arrival_date);
     const pipelineIsShabbat = isShabbatArrivalDate(pipelineArrivalYmd);

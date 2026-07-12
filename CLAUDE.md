@@ -36,7 +36,7 @@ Dream Island Resort Management System (XOS) — אפליקציית ניהול מ
 | Database | Supabase PostgreSQL 15 | אכיפת Row Level Security (RLS) בכל הטבלאות |
 | AI Primary | Gemini 2.5 Flash / 2.0 Flash | משמש לשיחה חופשית, תמלול הודעות קוליות וסוכני Inbox |
 | AI Fallback | Claude Sonnet 4.6 | גיבוי אוטומטי בכשל או לפי הגדרת preferred_model |
-| WhatsApp | Meta Cloud API + Whapi.cloud | Meta לשיחות ישירות (1:1), Whapi לניהול קבוצות צוות וקליטת ריאקציות. אורחי סוויטות: כל ה-outbound (כולל אוטומציית Stage 1+) דרך מכשיר הסוויטות כש-`GUEST_WHAPI_SUITES_ENABLED`. Stage 1 שפספס מועד T-2 (ייבוא מאוחר) מופיע בתור חי כ-`missed_window` לשיגור ידני/מכה — לא נעלם כ-`date_passed`. קבוצת «בקשות אורחים» (`guestAlertWhapiNotify`): כרטיס בעברית + לינקים ל-Inbox/לוח בקשות — בלי תרגום HE→EN (זה לקבוצות תפעול שדה בלבד). |
+| WhatsApp | Meta Cloud API + Whapi.cloud | Meta לשיחות ישירות (1:1), Whapi לניהול קבוצות צוות וקליטת ריאקציות. אורחי סוויטות **ויום-כיף**: כל ה-outbound (כולל אוטומציה) דרך מכשיר הסוויטות כש-`GUEST_WHAPI_SUITES_ENABLED` — לא תבניות Meta (יום-כיף שנשאר על Meta נכשל בלולאת cron על `dream_checkin_reminder_v2`). Stage 1 שפספס מועד T-2 (ייבוא מאוחר) מופיע בתור חי כ-`missed_window` לשיגור ידני/מכה — לא נעלם כ-`date_passed`. קבוצת «בקשות אורחים» (`guestAlertWhapiNotify`): כרטיס בעברית + לינקים ל-Inbox/לוח בקשות — בלי תרגום HE→EN (זה לקבוצות תפעול שדה בלבד). |
 
 2. מפת ניתוב מרכזית (activePage ב-App.js)
 

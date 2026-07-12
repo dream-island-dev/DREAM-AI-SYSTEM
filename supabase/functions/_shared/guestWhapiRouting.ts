@@ -17,18 +17,30 @@
 // current message loop ignores anything that isn't a group chat — see its
 // "not_a_group" guard) — not covered by this file, which is outbound-only.
 
-import { isEffectiveSuiteGuest, GuestRoomFields } from "./suiteNames.ts";
+import {
+  isEffectiveDayPassGuest,
+  isEffectiveSuiteGuest,
+  GuestRoomFields,
+} from "./suiteNames.ts";
 import { isGuestActiveForOutbound } from "./guestOutboundGuard.ts";
 
 export function isGuestWhapiSuitesEnabled(): boolean {
   return Deno.env.get("GUEST_WHAPI_SUITES_ENABLED") === "true";
 }
 
-/** Effective suite guest AND feature enabled — the one call sites should use. */
+/**
+ * Guest outbound via Suites Whapi device (not Meta templates) when the master
+ * flag is on. Covers effective suite AND day-pass guests — day-pass previously
+ * stayed on Meta and hit broken templates (e.g. dream_checkin_reminder_v2
+ * #131008 URL button / #132000 body params) in a cron retry loop.
+ * Content still comes from stage-specific bot_scripts (night_before_daypass,
+ * morning_daypass, …); this gate only picks the transport.
+ */
 export function shouldRouteGuestOutboundViaWhapiSuites(
   guest: GuestRoomFields | null | undefined,
 ): boolean {
-  return isGuestWhapiSuitesEnabled() && isEffectiveSuiteGuest(guest);
+  if (!isGuestWhapiSuitesEnabled() || !guest) return false;
+  return isEffectiveSuiteGuest(guest) || isEffectiveDayPassGuest(guest);
 }
 
 /**
@@ -37,9 +49,8 @@ export function shouldRouteGuestOutboundViaWhapiSuites(
  * Meta template approved/cleared" — night_before / morning_suite get paused
  * with is_active=false while waiting on Meta Business Manager, nothing else.
  * Whapi's free-text session path never needs Meta template approval, so a
- * stage paused only for that reason must still reach Whapi-eligible suite
- * guests. Meta-bound guests are completely unaffected — a paused stage stays
- * paused for them, identical to today's behavior.
+ * stage paused only for that reason must still reach Whapi-eligible guests
+ * (suite + day-pass). Meta-only guests (flag off) stay paused.
  *
  * Single source of truth for this decision — whatsapp-cron (due-item scan),
  * automation-queue (ACC Live Queue projection), and whatsapp-send (actual

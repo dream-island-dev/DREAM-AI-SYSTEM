@@ -416,6 +416,11 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
+### 2026-07-12 — Day-pass still on Meta while suites on Whapi → cron alert loop
+- **Symptom:** Admin Whapi alert every ~15m for «ליאור ורותי חזיזה» — `meta_template_400` #131008 URL button / earlier #132000 on `dream_checkin_reminder_v2`.
+- **Root:** Guest is `day_guest` (Premium Day). `shouldRouteGuestOutboundViaWhapiSuites` was suite-only, so `night_before_daypass` kept calling Meta; broken template never stamped `msg_pre_arrival_sent` → infinite cron retry.
+- **Fix pattern:** When `GUEST_WHAPI_SUITES_ENABLED`, route **suite + day-pass** outbound via Whapi session scripts; skip Meta day-pass morning fast-path. Do not assume "Whapi = all guests" without checking `room_type` in the log.
+
 ### 2026-07-12 — Session pipeline: Research → Diagnostic → Execute → QA (agent routes)
 - **Problem:** Mike had 4 strong role-prompts but no single place that said when each runs; copy-pasting every time wasted tokens and risked skipping Diagnostic/QA.
 - **Decision:** Playbook §6.0 + §8 full templates + thin alwaysApply rule `XOS-Session-Pipeline.mdc`. Agent auto-routes by task type; Mike overrides with `רק research` / `רק diagnostic` / `תריץ QA`.

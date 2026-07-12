@@ -1,5 +1,21 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-12 (dream_room_ready1 Meta param fix).
+> Last updated: 2026-07-12 (day-pass Whapi routing — Meta template loop).
+
+---
+
+## ✅ Deployed — Day-pass → Whapi (2026-07-12)
+
+Cron was hammering Meta `dream_checkin_reminder_v2` for day-pass guests (e.g. חזיזה) every 15m → admin alerts. Suites already on Whapi; day-pass was excluded.
+
+| Piece | Detail |
+|---|---|
+| `_shared/guestWhapiRouting.ts` | `shouldRouteGuestOutboundViaWhapiSuites` = suite **or** day-pass when flag on |
+| `whatsapp-send` | Skip Meta morning day-pass fast-path when Whapi eligible |
+| Tests | 11/11 Deno |
+
+**Deployed:** `whatsapp-send`, `whatsapp-cron`, `automation-queue`, `whatsapp-webhook`, `whapi-webhook`, `guest-portal-spa-request`.
+
+**Mike QA:** אורח יום-כיף (3540 חזיזה) — cron הבא / Override `night_before_daypass` → Whapi session, לא Meta; `msg_pre_arrival_sent=true`; אין התראת אדמין חוזרת.
 
 ---
 
