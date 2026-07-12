@@ -3,7 +3,7 @@
 
 ---
 
-## ✅ Ready — dream_room_ready1 param trim (2026-07-12)
+## ✅ Deployed — dream_room_ready1 param trim (2026-07-12)
 
 `room_ready` Meta template path no longer sends 2 body vars when Meta expects 1 (`#132000`).
 
@@ -13,9 +13,9 @@
 | `whatsapp-send` | chokepoint in `sendViaTemplate`; `TWO_PARAM_ROOM_TEMPLATES` in `ensureTemplateBodyVars` |
 | Tests | 6/6 Deno (`metaTemplateVars.test.ts`) |
 
-**Deploy:** `npx supabase functions deploy whatsapp-send --no-verify-jwt` only. No migration / no frontend.
+**Deployed:** `whatsapp-send --no-verify-jwt` from desktop (cloud lacked token). `GUEST_WHAPI_SUITES_ENABLED` present in secrets. Suite guests → Whapi free-text; Meta trim = safety net only.
 
-**Mike QA:** re-send room_ready to a Meta guest outside 24h window → no admin 🚨 alert; message arrives with guest name (room name omitted until Meta template gets `{{2}}` re-approved).
+**Mike QA:** «חדר מוכן» לסוויטה → Whapi טקסט חופשי עם שם סוויטה. Meta guest מחוץ ל-24ש׳ → בלי #132000, רק שם אורח בתבנית.
 
 **Optional product follow-up:** re-submit `dream_room_ready1` in Meta Business Manager with `{{2}}`=suite name if room must appear in template text.
 
