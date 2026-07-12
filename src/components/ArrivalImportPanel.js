@@ -26,6 +26,7 @@ import {
   aggregateGuestProfiles,
   profilesToArray,
   enrichProfilesFromExcel,
+  normalizeGuestPhoneEdit,
 } from "../utils/ezgoParser";
 import { mergeCandidates, classifyDbMatch, buildExistingGuestsLookup, findExistingGuestRow, buildMultiRoomLineIndexMap, formatMultiRoomLineLabel, bookingGuestKey, getDbMatchDiffLabels, buildEnrichGuestPatch, resolveCandidateRoomDisplay, buildCombinedRoomLabel, buildDoc2SyncActionLabel } from "../utils/guestImportIntelligence";
 import { SUITE_ARRIVALS_SCHEMA, buildMaskedSample, detectSuiteArrivalsPreset, detectEzgoArrivalsPreset, applyFieldDefaultsToProfiles, parseMappingMemory, packMappingMemory } from "../utils/importMapper";
@@ -143,15 +144,16 @@ function _resolveProfileRoomDisplay(g, editedRoom = "") {
   return _formatRoomForGrid(g);
 }
 
-function _buildIndicesByGuestKey(syncIndices, merged, mergedCandidates) {
+function _buildIndicesByGuestKey(syncIndices, merged, mergedCandidates, gridByProfileIdx = null) {
   const indicesByGuestKey = new Map();
   for (const i of syncIndices) {
     const g = merged[i];
     const c = mergedCandidates[i];
+    const edited = gridByProfileIdx?.get(i);
     const key = bookingGuestKey({
       orderNumber: c.orderNumber ?? [...(g.orderNumbers ?? [])][0] ?? null,
       arrivalDate: c.arrivalDate ?? g.arrivalDate,
-      guestPhone: c.guestPhone ?? g.guestPhone,
+      guestPhone: (edited?.guestPhone ?? c.guestPhone ?? g.guestPhone) || null,
     });
     if (!key) continue;
     if (!indicesByGuestKey.has(key)) indicesByGuestKey.set(key, []);
@@ -185,7 +187,7 @@ function _buildSyncRoomsFromIndices(syncIndices, merged, mergedCandidates, gridB
           || _bestGuessSuite(r.roomName, r.suiteType, isDayGuestRoom)
           || null,
         guestName: edited.guestName ?? c.guestName ?? g.guestName ?? "",
-        guestPhone: c.guestPhone ?? g.guestPhone ?? null,
+        guestPhone: (edited.guestPhone ?? c.guestPhone ?? g.guestPhone) || null,
         coordPhone: g.coordPhone ?? null,
         phoneSource: g.phoneSource,
         adults: r.adults,
@@ -223,7 +225,7 @@ async function _applyDoc2RoomGuestPatches(supabase, {
       const g = merged[i];
       const c = mergedCandidates[i];
       const edited = gridByProfileIdx.get(i) ?? {};
-      guestPhone = c.guestPhone ?? g.guestPhone;
+      guestPhone = (edited.guestPhone ?? c.guestPhone ?? g.guestPhone) || null;
       profileArrivalDate = c.arrivalDate ?? g.arrivalDate;
       orderNumber = c.orderNumber ?? [...(g.orderNumbers ?? [])][0] ?? null;
       const roomDisplay = _resolveProfileRoomDisplay(g, edited.room);
@@ -231,7 +233,8 @@ async function _applyDoc2RoomGuestPatches(supabase, {
     }
 
     const combinedRoom = buildCombinedRoomLabel(roomLabels);
-    if (!combinedRoom || !guestPhone || !profileArrivalDate) continue;
+    // No-phone guest — still assignable by order+date (same tier _scopeGuestRowQuery supports).
+    if (!combinedRoom || !profileArrivalDate || (!guestPhone && !orderNumber)) continue;
 
     const existingRow = findExistingGuestRow(existingGuestsLookup, {
       guestPhone,
@@ -767,6 +770,17 @@ function _scopeGuestRowQuery(query, { guestPhone, profileArrivalDate, orderNumbe
   if (guestPhone && profileArrivalDate) {
     return query.eq("phone", guestPhone).eq("arrival_date", profileArrivalDate);
   }
+  // No-phone guest (Sprint C DOCS2) — same order+date tier the RPC itself uses
+  // to find this row (sync_suite_arrivals Tier-2). Without an order_number
+  // there is no reliable key to scope an UPDATE by, so this patch (spa/meal/
+  // room/automation_scope) is skipped for that row — same accepted gap as the
+  // RPC's own no-phone/no-order duplicate-risk case.
+  if (orderNumber && profileArrivalDate) {
+    return query
+      .eq("order_number", orderNumber)
+      .eq("arrival_date", profileArrivalDate)
+      .is("phone", null);
+  }
   return null;
 }
 
@@ -879,6 +893,7 @@ export function _getSyncProfileIndices(merged, gridRows, { importSource, detaile
   const indices = [];
   const conflicts = [];
   const skippedNoPhone = [];
+  const createdWithoutPhone = [];
   let skippedUnimportable = 0;
   let skippedDeselected = 0;
   for (let i = 0; i < merged.length; i++) {
@@ -898,18 +913,22 @@ export function _getSyncProfileIndices(merged, gridRows, { importSource, detaile
     const dbStatus = dbMatchByIdx?.get(i) ?? null;
     if (dbStatus === "unimportable") { skippedUnimportable++; continue; }
     const guestPhone = c?.guestPhone ?? g.guestPhone ?? row?.guestPhone;
+    const guestName = String(row?.guestName ?? c?.guestName ?? g.guestName ?? "").trim();
+    const orderNumber = String(row?.orderNumber ?? c?.orderNumber ?? [...(g.orderNumbers ?? [])][0] ?? "").trim();
     if (!guestPhone) {
-      skippedNoPhone.push({
-        idx: i,
-        guestName: String(row?.guestName ?? c?.guestName ?? g.guestName ?? "").trim() || `שורה ${i + 1}`,
-        orderNumber: String(row?.orderNumber ?? c?.orderNumber ?? [...(g.orderNumbers ?? [])][0] ?? "").trim(),
-      });
-      continue;
+      // Zero Data Loss (§0.1): a named/ordered row is never dropped just because
+      // the phone is missing — it still syncs (guests.phone NULL, muted), only
+      // truly-blank rows (no phone, no name, no order) are skipped outright.
+      if (!guestName && !orderNumber) {
+        skippedNoPhone.push({ idx: i, guestName: `שורה ${i + 1}`, orderNumber });
+        continue;
+      }
+      createdWithoutPhone.push({ idx: i, guestName: guestName || `שורה ${i + 1}`, orderNumber });
     }
     if (dbStatus === "conflict") conflicts.push(i);
     indices.push(i);
   }
-  return { indices, conflicts, skippedUnimportable, skippedNoPhone, skippedDeselected };
+  return { indices, conflicts, skippedUnimportable, skippedNoPhone, createdWithoutPhone, skippedDeselected };
 }
 
 /** Targeted room-only sync — match existing guests by order_number or name. */
@@ -969,7 +988,7 @@ function _scopeToAutomationMuted(scope) {
 
 const DETAILED_GRID_COLS = [
   { id: "guestName",     label: "שם אורח",      editable: true,  w: 150 },
-  { id: "guestPhone",    label: "טלפון",         editable: false, w: 120 },
+  { id: "guestPhone",    label: "טלפון",         editable: true,  w: 120 },
   { id: "orderNumber",   label: "מספר הזמנה",    editable: false, w: 100 },
   { id: "arrivalDate",   label: "הגעה",          editable: false, w: 100 },
   { id: "amount",        label: "💰 סכום (₪)",   editable: true,  w: 100 },
@@ -984,7 +1003,7 @@ const DETAILED_GRID_COLS = [
 
 const SUITES_GRID_COLS = [
   { id: "guestName",   label: "שם אורח",   editable: true,  w: 150 },
-  { id: "guestPhone",  label: "טלפון",      editable: false, w: 120 },
+  { id: "guestPhone",  label: "טלפון",      editable: true,  w: 120 },
   { id: "orderNumber", label: "מס׳ הזמנה",  editable: false, w: 100 },
   { id: "phoneSource", label: "מקור",       editable: false, w: 80  },
   { id: "leadSource",  label: "מקור הגעה",  editable: false, w: 100 },
@@ -1009,7 +1028,7 @@ const SUITE_ASSIGNMENT_GRID_COLS = [
   { id: "roomCount",   label: "חדר בהזמנה",    editable: false, w: 90 },
   { id: "room",        label: "🏨 חדר/סוויטה", editable: true,  w: 220, gold: true },
   { id: "syncAction",  label: "פעולת סנכרון",  editable: false, w: 160 },
-  { id: "guestPhone",  label: "טלפון",         editable: false, w: 120 },
+  { id: "guestPhone",  label: "טלפון",         editable: true,  w: 120 },
 ];
 
 // ── DropZone ─────────────────────────────────────────────────────────────────
@@ -1689,7 +1708,25 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
 
   const handleFilteredGridChange = useCallback((updatedRows) => {
     setGridRows((prev) => {
-      const patch = new Map(updatedRows.map((r) => [r._id, r]));
+      const prevById = new Map(prev.map((r) => [r._id, r]));
+      const patch = new Map();
+      for (const row of updatedRows) {
+        const prevRow = prevById.get(row._id);
+        if (prevRow && row.guestPhone !== prevRow.guestPhone) {
+          const { value, valid } = normalizeGuestPhoneEdit(row.guestPhone);
+          if (!valid) {
+            showToast("err", `מספר טלפון לא תקין — "${row.guestPhone}" לא נשמר`);
+            patch.set(row._id, { ...row, guestPhone: prevRow.guestPhone });
+            continue;
+          }
+          // Grid state convention for this column is "" (never null) for no-value
+          // — every ?? fallback chain downstream (rawProfiles, UPDATE loop) relies
+          // on that to tell "staff cleared it" apart from "grid row not found".
+          patch.set(row._id, { ...row, guestPhone: value ?? "" });
+          continue;
+        }
+        patch.set(row._id, row);
+      }
       return prev.map((r) => (patch.has(r._id) ? patch.get(r._id) : r));
     });
   }, []);
@@ -1729,7 +1766,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
       // ── PATH A: Suite CSV loaded (rooms + guests + bookings) ─────────────
       if (hasDoc2 && merged) {
         const gridByProfileIdx = new Map(gridRows.map((r) => [r._profileIdx, r]));
-        const { indices: syncIndices, conflicts, skippedUnimportable, skippedNoPhone, skippedDeselected } = _getSyncProfileIndices(merged, gridRows, {
+        const { indices: syncIndices, conflicts, skippedUnimportable, skippedNoPhone, createdWithoutPhone, skippedDeselected } = _getSyncProfileIndices(merged, gridRows, {
           importSource,
           detailedRoomFilter,
           selectedIds,
@@ -1744,7 +1781,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
         }
 
         if (doc2SyncMode === "suite_assignment_only" && importSource !== "detailed") {
-          const indicesByGuestKey = _buildIndicesByGuestKey(syncIndices, merged, mergedCandidates);
+          const indicesByGuestKey = _buildIndicesByGuestKey(syncIndices, merged, mergedCandidates, gridByProfileIdx);
           const rooms = _buildSyncRoomsFromIndices(
             syncIndices, merged, mergedCandidates, gridByProfileIdx, importSource, detailedRoomFilter,
           );
@@ -1810,7 +1847,11 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
             const isSuiteProfile = profileType === "suite";
             const profileArrivalDate = c.arrivalDate ?? g.arrivalDate ?? null;
             return {
-              guestPhone:      c.guestPhone ?? g.guestPhone,
+              // Staff edit in grid wins at sync time (same rule as room, see
+              // _resolveProfileRoomDisplay) — a phone typed into the DOCS2 grid
+              // must reach the RPC even though the source file had none. "" (grid's
+              // no-value convention) is normalized to null before it leaves this file.
+              guestPhone:      (edited.guestPhone ?? c.guestPhone ?? g.guestPhone) || null,
               guestName:       edited.guestName ?? c.guestName ?? g.guestName ?? "",
               arrivalDate:     profileArrivalDate,
               departureDate:   _addNights(profileArrivalDate, nights),
@@ -1863,7 +1904,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           if ((profile.nights || 0) > (slot.nights || 0)) slot.nights = profile.nights;
         }
 
-        const indicesByGuestKey = _buildIndicesByGuestKey(syncIndices, merged, mergedCandidates);
+        const indicesByGuestKey = _buildIndicesByGuestKey(syncIndices, merged, mergedCandidates, gridByProfileIdx);
 
         const rooms = _buildSyncRoomsFromIndices(
           syncIndices, merged, mergedCandidates, gridByProfileIdx, importSource, detailedRoomFilter,
@@ -1903,7 +1944,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
             const g = merged[i];
             const c = mergedCandidates[i];
             const edited = gridByProfileIdx.get(i) ?? {};
-            guestPhone = c.guestPhone ?? g.guestPhone;
+            guestPhone = (edited.guestPhone ?? c.guestPhone ?? g.guestPhone) || null;
             profileArrivalDate = c.arrivalDate ?? g.arrivalDate;
             orderNumber = c.orderNumber ?? [...(g.orderNumbers ?? [])][0] ?? null;
             const roomDisplay = _resolveProfileRoomDisplay(g, edited.room);
@@ -1962,13 +2003,15 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
             patch.automation_muted = resolvedScope === "muted";
           }
 
-          if (guestPhone && profileArrivalDate && Object.keys(patch).length > 0) {
+          if ((guestPhone || orderNumber) && profileArrivalDate && Object.keys(patch).length > 0) {
             const scoped = _scopeGuestRowQuery(
               supabase.from("guests").update(patch),
               { guestPhone, profileArrivalDate, orderNumber },
             );
             if (scoped) await scoped;
           }
+          // bookings has no no-phone counterpart (phone NOT NULL, see migration
+          // 190) — this block stays phone-gated on purpose.
           if (guestPhone && profileArrivalDate) {
             const roomLineCount = indices.length;
             const qtyFromProfile = merged[indices[0]]?.roomsQuantity;
@@ -2010,6 +2053,8 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           batchType: batchProfileType,
           skippedUnimportable,
           skippedNoPhone,
+          createdWithoutPhone,
+          createdWithoutPhoneCount: rpcData?.createdWithoutPhone ?? createdWithoutPhone.length,
           skippedDeselected,
           conflictCount: conflicts.length,
           conflictNames: conflicts.map((i) =>
@@ -2261,6 +2306,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
       total: merged.length,
       ready: r.indices.length,
       skippedNoPhone: r.skippedNoPhone,
+      createdWithoutPhone: r.createdWithoutPhone,
       skippedUnimportable: r.skippedUnimportable,
       skippedDeselected: r.skippedDeselected,
     };
@@ -2812,7 +2858,10 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                 }}>
                   📊 בקובץ {syncEligibility.total} שורות · מוכנות לייבוא: {syncEligibility.ready}
                   {syncEligibility.skippedNoPhone.length > 0 && (
-                    <> · 📵 {syncEligibility.skippedNoPhone.length} ללא טלפון</>
+                    <> · 📵 {syncEligibility.skippedNoPhone.length} ללא טלפון (לא סונכרן)</>
+                  )}
+                  {syncEligibility.createdWithoutPhone.length > 0 && (
+                    <> · 📵 {syncEligibility.createdWithoutPhone.length} ייווצר בלי טלפון (מושתק)</>
                   )}
                   {syncEligibility.skippedUnimportable > 0 && (
                     <> · ⛔ {syncEligibility.skippedUnimportable} מטריית קבוצה</>
@@ -2822,10 +2871,18 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                   )}
                   {syncEligibility.skippedNoPhone.length > 0 && (
                     <div style={{ fontWeight: 600, marginTop: 4 }}>
-                      ללא טלפון: {syncEligibility.skippedNoPhone.slice(0, 6).map((r) => r.guestName).join(", ")}
+                      ללא טלפון ולא סונכרן: {syncEligibility.skippedNoPhone.slice(0, 6).map((r) => r.guestName).join(", ")}
                       {syncEligibility.skippedNoPhone.length > 6
                         ? ` +${syncEligibility.skippedNoPhone.length - 6}` : ""}
                       {" "}— הוסף מספר בהערות או בעמודת טלפון
+                    </div>
+                  )}
+                  {syncEligibility.createdWithoutPhone.length > 0 && (
+                    <div style={{ fontWeight: 600, marginTop: 4 }}>
+                      ייווצר בלי טלפון (בלי WhatsApp עד שיוזן): {syncEligibility.createdWithoutPhone.slice(0, 6).map((r) => r.guestName).join(", ")}
+                      {syncEligibility.createdWithoutPhone.length > 6
+                        ? ` +${syncEligibility.createdWithoutPhone.length - 6}` : ""}
+                      {" "}— אפשר להזין טלפון בעמודה לפני הסנכרון
                     </div>
                   )}
                 </div>
@@ -3102,6 +3159,13 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                       📵 {result.skippedNoPhone.length} ללא טלפון — לא סונכרנו (בדוק הערות / עמודת טלפון):{" "}
                       {result.skippedNoPhone.slice(0, 8).map((r) => r.guestName).join(", ")}
                       {result.skippedNoPhone.length > 8 && ` +${result.skippedNoPhone.length - 8}`}
+                    </div>
+                  )}
+                  {(result.createdWithoutPhoneCount ?? 0) > 0 && (
+                    <div style={{ fontSize: 12, color: "#92400E", marginTop: 6, fontWeight: 700 }}>
+                      📵 {result.createdWithoutPhoneCount} נוצרו/עודכנו בלי טלפון — מושתקים אוטומטית (בלי WhatsApp) עד שיוזן טלפון:{" "}
+                      {(result.createdWithoutPhone ?? []).slice(0, 8).map((r) => r.guestName).join(", ")}
+                      {(result.createdWithoutPhone?.length ?? 0) > 8 && ` +${result.createdWithoutPhone.length - 8}`}
                     </div>
                   )}
                   {result.skippedDeselected > 0 && (

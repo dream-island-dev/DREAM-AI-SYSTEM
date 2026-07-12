@@ -517,10 +517,16 @@ export function isSameBookingGuest(candidate, existingGuestRow) {
   return phoneMatches && orderMatches && dateMatches;
 }
 
-/** Stable key for one guest booking (order + arrival + phone). */
+/**
+ * Stable key for one guest booking (order + arrival + phone).
+ * Sprint C DOCS2: phone is no longer required — a no-phone guest (named/ordered
+ * row synced with phone=NULL) still needs a stable key so its rooms/spa/meal
+ * patches group correctly instead of silently falling out of every
+ * multi-room-count/patch loop that keys off this function.
+ */
 export function bookingGuestKey(candidate) {
-  if (!candidate?.orderNumber || !candidate.arrivalDate || !candidate.guestPhone) return null;
-  return `${candidate.orderNumber}::${candidate.arrivalDate}::${candidate.guestPhone}`;
+  if (!candidate?.orderNumber || !candidate.arrivalDate) return null;
+  return `${candidate.orderNumber}::${candidate.arrivalDate}::${candidate.guestPhone ?? "nophone"}`;
 }
 
 /** Count import lines per booking guest (internal). */

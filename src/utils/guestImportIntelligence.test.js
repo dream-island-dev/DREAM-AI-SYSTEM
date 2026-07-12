@@ -23,6 +23,7 @@ import {
   buildDoc2SyncActionLabel,
   resolveCandidateRoomDisplay,
   pickEnrichValue,
+  bookingGuestKey,
 } from "./guestImportIntelligence";
 
 const ARRIVALS_MAPPING = {
@@ -486,5 +487,29 @@ describe("Guest Import Intelligence — golden cases", () => {
       hasPhone: true,
     });
     expect(label).toContain("🏨 חדר");
+  });
+});
+
+// ── Sprint C DOCS2 — bookingGuestKey no longer requires a phone ─────────────
+describe("bookingGuestKey — no-phone guests still get a stable grouping key", () => {
+  test("order + arrival only (no phone) — returns a stable key, not null", () => {
+    const key = bookingGuestKey({ orderNumber: "300300", arrivalDate: "2026-09-01", guestPhone: null });
+    expect(key).not.toBeNull();
+    expect(key).toBe(bookingGuestKey({ orderNumber: "300300", arrivalDate: "2026-09-01", guestPhone: null }));
+  });
+
+  test("still requires order + arrival — missing order returns null", () => {
+    expect(bookingGuestKey({ orderNumber: null, arrivalDate: "2026-09-01", guestPhone: null })).toBeNull();
+  });
+
+  test("phone-present key is unchanged (backward compatible)", () => {
+    const key = bookingGuestKey({ orderNumber: "300300", arrivalDate: "2026-09-01", guestPhone: "+972501234567" });
+    expect(key).toBe("300300::2026-09-01::+972501234567");
+  });
+
+  test("a no-phone key and a phone-present key for the same order+date are distinct", () => {
+    const noPhoneKey = bookingGuestKey({ orderNumber: "300300", arrivalDate: "2026-09-01", guestPhone: null });
+    const withPhoneKey = bookingGuestKey({ orderNumber: "300300", arrivalDate: "2026-09-01", guestPhone: "+972501234567" });
+    expect(noPhoneKey).not.toBe(withPhoneKey);
   });
 });

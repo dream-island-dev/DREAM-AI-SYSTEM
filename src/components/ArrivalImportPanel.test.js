@@ -6,8 +6,13 @@
 
 import { _getSyncProfileIndices, _isSuspiciousGuestName } from "./ArrivalImportPanel";
 
-function _row(i, { guestPhone = "+972500000000" } = {}) {
-  return { _profileIdx: i, guestPhone };
+function _row(i, { guestPhone = "+972500000000", guestName, orderNumber } = {}) {
+  return {
+    _profileIdx: i,
+    guestPhone,
+    guestName,
+    orderNumbers: orderNumber ? new Set([orderNumber]) : undefined,
+  };
 }
 
 function _gridRow(i) {
@@ -126,6 +131,62 @@ describe("_getSyncProfileIndices — Sprint 3 DB-match gating", () => {
     expect(indices).toEqual([0, 1]);
     expect(skippedUnimportable).toBe(0);
     expect(conflicts).toEqual([]);
+  });
+});
+
+// ── Sprint C DOCS2 — no-phone rows with a name or order still sync ──────────
+describe("_getSyncProfileIndices — Sprint C DOCS2 no-phone guests", () => {
+  test("no phone but has a guestName — included in indices, reported as createdWithoutPhone", () => {
+    const merged = [_row(0, { guestPhone: null, guestName: "אורח בלי טלפון" })];
+    const gridRows = merged.map((_, i) => _gridRow(i));
+    const dbMatchByIdx = new Map([[0, "new"]]);
+
+    const { indices, skippedNoPhone, createdWithoutPhone } = _getSyncProfileIndices(merged, gridRows, {
+      importSource: null,
+      detailedRoomFilter: "all",
+      selectedIds: new Set(),
+      dbMatchByIdx,
+    });
+
+    expect(indices).toEqual([0]);
+    expect(skippedNoPhone).toHaveLength(0);
+    expect(createdWithoutPhone).toHaveLength(1);
+    expect(createdWithoutPhone[0].guestName).toBe("אורח בלי טלפון");
+  });
+
+  test("no phone but has an orderNumber (no name) — included, reported as createdWithoutPhone", () => {
+    const merged = [_row(0, { guestPhone: null, orderNumber: "300300" })];
+    const gridRows = merged.map((_, i) => _gridRow(i));
+    const dbMatchByIdx = new Map([[0, "new"]]);
+
+    const { indices, skippedNoPhone, createdWithoutPhone } = _getSyncProfileIndices(merged, gridRows, {
+      importSource: null,
+      detailedRoomFilter: "all",
+      selectedIds: new Set(),
+      dbMatchByIdx,
+    });
+
+    expect(indices).toEqual([0]);
+    expect(skippedNoPhone).toHaveLength(0);
+    expect(createdWithoutPhone).toHaveLength(1);
+    expect(createdWithoutPhone[0].orderNumber).toBe("300300");
+  });
+
+  test("no phone, no name, no order — still truly skipped (unimportable)", () => {
+    const merged = [_row(0, { guestPhone: null })];
+    const gridRows = merged.map((_, i) => _gridRow(i));
+    const dbMatchByIdx = new Map([[0, "new"]]);
+
+    const { indices, skippedNoPhone, createdWithoutPhone } = _getSyncProfileIndices(merged, gridRows, {
+      importSource: null,
+      detailedRoomFilter: "all",
+      selectedIds: new Set(),
+      dbMatchByIdx,
+    });
+
+    expect(indices).toEqual([]);
+    expect(skippedNoPhone).toHaveLength(1);
+    expect(createdWithoutPhone).toHaveLength(0);
   });
 });
 

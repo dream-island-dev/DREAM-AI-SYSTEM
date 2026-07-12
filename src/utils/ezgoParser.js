@@ -119,7 +119,7 @@ export function resolveImportAutomationScope({
  * place; the three branches then just need to recognize the resulting
  * digit-only sequence by length/prefix.
  */
-function normalizeILMobile(raw) {
+export function normalizeILMobile(raw) {
   if (!raw) return null;
   const digits = raw.replace(/[^\d]/g, "");
   if (digits.length === 10 && digits.startsWith("0"))   return `+972${digits.slice(1)}`;
@@ -140,6 +140,22 @@ export function isDummyPhone(phone) {
   if (digits.length < 7) return true;
   if (REPEATED_DIGIT_RE.test(digits)) return true;
   return false;
+}
+
+/**
+ * Sprint C DOCS2 — validates/normalizes a phone number staff types directly
+ * into the sync grid (ArrivalImportPanel guestPhone cell). Reuses the same
+ * normalizer/dummy-check as the import parser so a hand-typed number is held
+ * to the same bar as one extracted from EZGO. Clearing the cell (blank) is a
+ * legal way to revert a guest back to no-phone — only returns invalid:true
+ * when the staff typed something that doesn't resolve to a real IL mobile.
+ */
+export function normalizeGuestPhoneEdit(raw) {
+  const trimmed = String(raw ?? "").trim();
+  if (!trimmed) return { value: null, valid: true };
+  const e164 = normalizeILMobile(trimmed);
+  if (!e164 || isDummyPhone(e164)) return { value: null, valid: false };
+  return { value: e164, valid: true };
 }
 
 /**

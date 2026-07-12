@@ -8,6 +8,7 @@ import {
   extractNameFromRemarkWithoutPhone,
   isRemarkGroupOccupant,
   resolveImportAutomationScope,
+  normalizeGuestPhoneEdit,
 } from "./ezgoParser";
 
 const ARRIVALS_MAPPING = {
@@ -353,5 +354,38 @@ describe("ezgoParser — Sprint 1 fixes", () => {
         remarkNameCandidate: null,
       }),
     ).toBe("muted");
+  });
+});
+
+// ── Sprint C DOCS2 — normalizeGuestPhoneEdit (inline grid phone edit) ────────
+describe("normalizeGuestPhoneEdit", () => {
+  test("normalizes a domestic 0-prefixed number to E.164", () => {
+    expect(normalizeGuestPhoneEdit("0501234567")).toEqual({ value: "+972501234567", valid: true });
+  });
+
+  test("normalizes a 9-digit number without the leading 0", () => {
+    expect(normalizeGuestPhoneEdit("501234567")).toEqual({ value: "+972501234567", valid: true });
+  });
+
+  test("normalizes an international format with spaces/dashes", () => {
+    expect(normalizeGuestPhoneEdit("+972-50-123-4567")).toEqual({ value: "+972501234567", valid: true });
+  });
+
+  test("clearing the cell (blank) is valid — reverts to no-phone", () => {
+    expect(normalizeGuestPhoneEdit("")).toEqual({ value: null, valid: true });
+    expect(normalizeGuestPhoneEdit("   ")).toEqual({ value: null, valid: true });
+    expect(normalizeGuestPhoneEdit(null)).toEqual({ value: null, valid: true });
+  });
+
+  test("rejects garbage that doesn't resolve to an IL mobile", () => {
+    expect(normalizeGuestPhoneEdit("abc")).toEqual({ value: null, valid: false });
+    expect(normalizeGuestPhoneEdit("123")).toEqual({ value: null, valid: false });
+  });
+
+  test("rejects a too-short placeholder (isDummyPhone length gate)", () => {
+    // "111" fails normalizeILMobile outright (no branch matches 3 digits) —
+    // same isDummyPhone() this reuses already covers the reject-path in
+    // guestImportIntelligence.test.js ("111" → dummy).
+    expect(normalizeGuestPhoneEdit("111")).toEqual({ value: null, valid: false });
   });
 });
