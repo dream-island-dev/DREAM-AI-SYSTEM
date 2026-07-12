@@ -234,6 +234,21 @@ const PIPELINE_TEMPLATE: Record<string, string> = {
   night_before_daypass: "dream_checkin_reminder_v2",   // day-pass T-1 evening reminder (BRANCH D hybrid)
 };
 
+/** Hardcoded bot_scripts keys when automation_stages.session_message_script_key
+ * was cleared in ACC (live 2026-07-12: Stage 1 Whapi bulk → whapi_session_unavailable).
+ * DB column still wins when set; this is FAIL-CLOSED fallback for Whapi/session. */
+const PIPELINE_SESSION_SCRIPT: Record<string, string> = {
+  pre_arrival_2d:       "pre_arrival_2d",
+  night_before:         "night_before_reminder",
+  night_before_daypass: "night_before_daypass",
+  morning_suite:        "stage_3_morning",
+  morning_welcome:      "morning_daypass",
+  mid_stay:             "mid_stay",
+  mid_stay_daypass:     "mid_stay_daypass",
+  checkout_fb:          "checkout_fb",
+  checkout_fb_daypass:  "checkout_fb_daypass",
+};
+
 // ── Synchronous day-of-week aware timing helper ───────────────────────────────
 // Used by morning_suite / morning_welcome templates whose {{2}}/{{3}} variables
 // carry the guest's arrival-time window. Identical Shabbat logic as
@@ -3590,13 +3605,14 @@ serve(async (req: Request) => {
     // force_channel="session_message"/"whapi_session" bypasses the isWindowOpen()
     // guard so staff can send free-text to any guest on demand. useWhapiForPipeline
     // guests bypass it too — Whapi has no session-window concept at all.
+    const pipelineScriptFallback = PIPELINE_SESSION_SCRIPT[trigger] ?? "";
     if ((isManualPipelineDispatch || useWhapiForPipeline) && !forceMetaTemplate &&
-        (stageRow?.session_message_script_key || stageRow?.session_message_script_key_shabbat)) {
+        (stageRow?.session_message_script_key || stageRow?.session_message_script_key_shabbat || pipelineScriptFallback)) {
       if (forceSessionMessage || forceWhapiSession || useWhapiForPipeline || force === true || isWindowOpen(guest.wa_window_expires_at)) {
         const pipelineScriptKey = resolveShabbatAwareScriptKey(
           stageRow,
           pipelineIsShabbat,
-          stageRow?.session_message_script_key ?? "",
+          pipelineScriptFallback || (stageRow?.session_message_script_key ?? ""),
         );
         const { data: scriptRow } = await supabase
           .from("bot_scripts")
