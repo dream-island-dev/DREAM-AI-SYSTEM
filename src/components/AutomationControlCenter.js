@@ -311,14 +311,14 @@ function renderGuestQueueRows({
         <td>
           <span style={{
             fontSize: 10, padding: "2px 7px", borderRadius: 10,
-            background: q.effectiveSuite
+            background: isWhapiRoutedQueueItem(q)
               ? "#E8F5EF"
               : q.predictedChannel === "session_message" ? "#E8F5EF" : "#E0F2FE",
-            color: q.effectiveSuite
+            color: isWhapiRoutedQueueItem(q)
               ? "#1A7A4A"
               : q.predictedChannel === "session_message" ? "#1A7A4A" : "#0369A1",
           }}>
-            {q.effectiveSuite ? "מכשיר סוויטות" : q.predictedChannel === "session_message" ? "סשן" : "תבנית"}
+            {isWhapiRoutedQueueItem(q) ? "מכשיר סוויטות" : q.predictedChannel === "session_message" ? "סשן" : "תבנית"}
           </span>
         </td>
         <td>
@@ -456,6 +456,18 @@ function shortStageLabel(displayName, stageKey) {
 function isDayPassQueueItem(q) {
   if (q?.effectiveSuite === true) return false;
   return q?.room_type === "day_guest" || q?.room_type === "premium_day_guest";
+}
+
+/**
+ * Real outbound-channel truth for a queue item — MUST match server routing
+ * (guestWhapiRouting.ts shouldRouteGuestOutboundViaWhapiSuites): suite OR
+ * day-pass go via the Whapi Suites device when GUEST_WHAPI_SUITES_ENABLED.
+ * Falls back to effectiveSuite when effectiveWhapiGuest is absent (older
+ * cached queue payloads, pre-deploy) so suite guests never regress to a
+ * false "Meta" reading mid-rollout.
+ */
+function isWhapiRoutedQueueItem(q) {
+  return q?.effectiveWhapiGuest ?? q?.effectiveSuite === true;
 }
 
 function isQueueItemGated(q, dayPassAllowedStages) {
@@ -1423,6 +1435,11 @@ function ManualDispatchModal({ item, stages, onClose, onDispatched, showToast })
 
   // Effective classification — matches server routing (suite room wins).
   const isDayType = isDayPassQueueItem(item);
+  // Whapi-eligible (suite OR day-pass, GUEST_WHAPI_SUITES_ENABLED) — Meta
+  // options stay clickable (real fallback for a dead Whapi device) but get
+  // a visible warning instead of silently looking like the normal choice.
+  const isWhapiEligible = isWhapiRoutedQueueItem(item);
+  const whapiPreferredTitle = "האורח מנותב ל-Whapi (מכשיר הסוויטות, ללא עמלת Meta) — לבחור Meta רק במקרה חריג (למשל תקלה במכשיר הסוויטות)";
 
   // Filter to stages the backend will actually allow for this room_type.
   const allowedStages = stages.filter((s) => {
@@ -1431,9 +1448,10 @@ function ManualDispatchModal({ item, stages, onClose, onDispatched, showToast })
   });
 
   const [stageKey, setStageKey]   = useState(item.stageKey ?? (allowedStages[0]?.stage_key ?? ""));
-  // Suite guests always talk on the Suites device — default Override to Whapi.
+  // Suite + day-pass guests always talk on the Suites device (when
+  // GUEST_WHAPI_SUITES_ENABLED) — default Override to Whapi.
   const [channel, setChannel]     = useState(
-    item.effectiveSuite ? "whapi_session" : "meta_template",
+    isWhapiRoutedQueueItem(item) ? "whapi_session" : "meta_template",
   );
   const [confirmed, setConfirmed] = useState(false);
   const [sending, setSending]     = useState(false);
@@ -1570,30 +1588,35 @@ function ManualDispatchModal({ item, stages, onClose, onDispatched, showToast })
             <button
               onClick={() => setChannel("meta_template")}
               disabled={sending}
+              title={isWhapiEligible ? whapiPreferredTitle : undefined}
               style={{
-                flex: 1, padding: "8px 12px", borderRadius: 10, border: `2px solid ${channel === "meta_template" ? "var(--gold)" : "var(--border)"}`,
-                background: channel === "meta_template" ? "rgba(201,169,110,0.12)" : "#fff",
+                flex: 1, padding: "8px 12px", borderRadius: 10,
+                border: `2px solid ${channel === "meta_template" ? "var(--gold)" : isWhapiEligible ? "#D97706" : "var(--border)"}`,
+                background: channel === "meta_template" ? "rgba(201,169,110,0.12)" : isWhapiEligible ? "#FFF8E7" : "#fff",
                 fontWeight: channel === "meta_template" ? 700 : 400, cursor: "pointer", fontSize: 13,
               }}
             >
               🔵 Meta Template<br />
-              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>עובד תמיד (ללא חלון 24ש')</span>
+              <span style={{ fontSize: 11, color: isWhapiEligible ? "#92400E" : "var(--text-muted)" }}>
+                {isWhapiEligible ? "⚠ עמלת Meta — עדיף Whapi" : "עובד תמיד (ללא חלון 24ש')"}
+              </span>
             </button>
             <button
               onClick={() => hasScriptKey && setChannel("session_message")}
               disabled={sending || !hasScriptKey}
-              title={!hasScriptKey ? "שלב זה אינו מוגדר עם Bot Script" : undefined}
+              title={!hasScriptKey ? "שלב זה אינו מוגדר עם Bot Script" : isWhapiEligible ? whapiPreferredTitle : undefined}
               style={{
-                flex: 1, padding: "8px 12px", borderRadius: 10, border: `2px solid ${channel === "session_message" ? "#1A7A4A" : "var(--border)"}`,
-                background: channel === "session_message" ? "rgba(26,122,74,0.08)" : (hasScriptKey ? "#fff" : "#f5f5f5"),
+                flex: 1, padding: "8px 12px", borderRadius: 10,
+                border: `2px solid ${channel === "session_message" ? "#1A7A4A" : isWhapiEligible && hasScriptKey ? "#D97706" : "var(--border)"}`,
+                background: channel === "session_message" ? "rgba(26,122,74,0.08)" : !hasScriptKey ? "#f5f5f5" : isWhapiEligible ? "#FFF8E7" : "#fff",
                 fontWeight: channel === "session_message" ? 700 : 400,
                 cursor: hasScriptKey ? "pointer" : "not-allowed", fontSize: 13,
                 color: hasScriptKey ? "inherit" : "var(--text-muted)",
               }}
             >
               🟢 Bot Script<br />
-              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                {hasScriptKey ? "מאלץ שליחה גם אם חלון סגור" : "לא זמין לשלב זה"}
+              <span style={{ fontSize: 11, color: isWhapiEligible && hasScriptKey ? "#92400E" : "var(--text-muted)" }}>
+                {!hasScriptKey ? "לא זמין לשלב זה" : isWhapiEligible ? "⚠ עמלת Meta — עדיף Whapi" : "מאלץ שליחה גם אם חלון סגור"}
               </span>
             </button>
             <button
@@ -2037,11 +2060,11 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
   const runQueueSendNow = useCallback(async (item, scheduledFor) => {
     if (!supabase) return;
     // night_before: no force_channel pin — whatsapp-send zero-guard uses live window + force=true.
-    // Suite guests: always Suites device (Whapi) — Dream Bot Meta is wrong channel for them.
+    // Suite + day-pass guests: always Suites device (Whapi) when Whapi-eligible — Dream Bot Meta is wrong channel for them.
     const forceChannel =
       item.stageKey === "night_before"
         ? undefined
-        : item.effectiveSuite
+        : isWhapiRoutedQueueItem(item)
           ? "whapi_session"
           : item.predictedChannel === "session_message"
             ? "session_message"

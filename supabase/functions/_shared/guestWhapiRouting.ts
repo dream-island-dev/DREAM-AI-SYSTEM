@@ -85,3 +85,16 @@ export function shouldAutoReplyGuestWhapiDm(
 ): boolean {
   return isGuestWhapiSuitesEnabled() && isGuestActiveForOutbound(guest);
 }
+
+/**
+ * Phase 3 hard-fail escape hatch (2026-07-13) — ACC's Override still keeps
+ * "🔵 Meta Template" clickable-not-disabled for Whapi-eligible guests (a
+ * legitimate fallback when the physical Suites device is down), so this must
+ * stay an explicit opt-in, not a permanent block. Default false: a staff
+ * force_channel="meta_template" on a Whapi-eligible guest is refused
+ * (FAIL VISIBLE) unless someone deliberately sets this secret.
+ *   npx supabase secrets set ALLOW_META_GUEST_TEMPLATES=true
+ */
+export function isMetaGuestTemplateAllowed(): boolean {
+  return Deno.env.get("ALLOW_META_GUEST_TEMPLATES") === "true";
+}

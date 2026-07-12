@@ -108,7 +108,11 @@ import {
   markSuiteRoomReadySent,
   syncGuestRoomReadyAggregate,
 } from "../_shared/suiteRoomReady.ts";
-import { isGuestWhapiSuitesEnabled, shouldRouteGuestOutboundViaWhapiSuites } from "../_shared/guestWhapiRouting.ts";
+import {
+  isGuestWhapiSuitesEnabled,
+  shouldRouteGuestOutboundViaWhapiSuites,
+  isMetaGuestTemplateAllowed,
+} from "../_shared/guestWhapiRouting.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -787,6 +791,26 @@ function shouldUseWhapiForGuestAutomation(
   guest: Record<string, unknown>,
 ): boolean {
   return shouldRouteGuestOutboundViaWhapiSuites(guest);
+}
+
+// Phase 3 hard-fail (2026-07-13) — staff explicitly forced force_channel=
+// "meta_template" on a Whapi-eligible guest. ACC's Override keeps the Meta
+// button enabled (not disabled) for exactly this case — a real fallback when
+// the physical Suites device is down — so this refuses by default rather
+// than silently sending, and names the escape hatch instead of dead-ending.
+function metaTemplateBlockedForWhapiGuestResponse(): Response {
+  return new Response(
+    JSON.stringify({
+      ok: false,
+      status: "meta_blocked_whapi_eligible",
+      error:
+        "meta_blocked_whapi_eligible: אורח זה מנותב ל-Whapi (מכשיר הסוויטות) — " +
+        "שליחת Meta Template ידנית חסומה כברירת מחדל כדי למנוע עמלה מיותרת. " +
+        "אם באמת צריך Meta (למשל תקלה במכשיר הסוויטות), הגדר " +
+        "ALLOW_META_GUEST_TEMPLATES=true (supabase secrets) ונסה שוב.",
+    }),
+    { headers: { ...CORS, "Content-Type": "application/json" } },
+  );
 }
 
 async function dispatchWhapiSessionMessage(
@@ -1570,12 +1594,17 @@ serve(async (req: Request) => {
       const vars = ensureTemplateBodyVars(waTemplateName, templateVariables ?? [], guest);
 
       // ── Manual channel choice (same contract as inbox_reply above) ────────
-      // Default is always Meta's approved-template API, unchanged. Whapi is
-      // only used when staff explicitly picked it AND the master switch is
-      // on — never inferred from guest type. Sending a Meta template as plain
-      // Whapi text loses quick-reply buttons and can drift from the actually-
-      // approved wording if message_templates is stale — the frontend surfaces
-      // that caveat inline before staff picks this option.
+      // Whapi-eligible guests (suite/day-pass, GUEST_WHAPI_SUITES_ENABLED)
+      // now default to Whapi even for broadcast — a staff campaign that never
+      // touches the channel toggle must not silently burn a Meta template fee
+      // (the same "silent Meta by default" gap already closed for autonomous
+      // cron/pipeline dispatch). target_channel="meta" stays the one
+      // deliberate escape hatch — staff explicitly wants the real Meta
+      // template (e.g. a button-bearing template Whapi's free-text can't
+      // reproduce, or message_templates drifted from the live bot_scripts
+      // text). Non-eligible guests (flag off, or genuinely non-suite/
+      // non-daypass) keep the original contract: Whapi only on explicit
+      // target_channel="whapi".
       if (target_channel === "whapi" && !isGuestWhapiSuitesEnabled()) {
         return new Response(
           JSON.stringify({
@@ -1586,7 +1615,9 @@ serve(async (req: Request) => {
           { headers: { ...CORS, "Content-Type": "application/json" } },
         );
       }
-      const routeViaWhapi = target_channel === "whapi";
+      const routeViaWhapi =
+        target_channel === "whapi" ||
+        (target_channel !== "meta" && shouldRouteGuestOutboundViaWhapiSuites(guest));
 
       let status = "simulated";
       let sendError: string | null = null;
@@ -1884,7 +1915,7 @@ serve(async (req: Request) => {
 
       const { data: guest, error: gErr } = await supabase
         .from("guests")
-        .select("id, name, phone, payment_amount, payment_link_url, direct_payment_url, ezgo_portal_url")
+        .select("id, name, phone, room, room_type, payment_amount, payment_link_url, direct_payment_url, ezgo_portal_url")
         .eq("id", guestId)
         .maybeSingle();
       if (gErr)   throw new Error(`guest_lookup_error: ${gErr.message}`);
@@ -1921,23 +1952,40 @@ serve(async (req: Request) => {
       const amount   = String(guest.payment_amount);
       const urlToken = linkGuard.buttonToken;
 
+      // Whapi-eligible guests (suite/day-pass, GUEST_WHAPI_SUITES_ENABLED) get
+      // the same approved copy as free text via the Suites device — never
+      // dream_payment_and_workshops Meta template (fee + button Whapi can't
+      // render anyway). resolveMetaTemplateBodyText reuses the already-synced
+      // message_templates content (same helper the broadcast Whapi path
+      // uses); the payment link is appended explicitly since Whapi has no
+      // button entity to carry linkGuard.url the way Meta's CTA button does.
+      const whapiEligiblePay = shouldRouteGuestOutboundViaWhapiSuites(guest);
+      const whapiPayBody = whapiEligiblePay
+        ? `${await resolveMetaTemplateBodyText(supabase, "dream_payment_and_workshops", [safeName, amount])}\n\n${linkGuard.url}`
+        : null;
+
       let status = "simulated";
       let sendError: string | null = null;
+      let payWhapiWamid: string | null = null;
       try {
         if (!sim) {
-          await sendViaTemplate(
-            String(guest.phone),
-            "dream_payment_and_workshops",
-            [safeName, amount],
-            "he",
-            urlToken,
-          );
+          if (whapiEligiblePay) {
+            payWhapiWamid = await sendWhapiText(cleanPhoneForMention(String(guest.phone)), whapiPayBody!);
+          } else {
+            await sendViaTemplate(
+              String(guest.phone),
+              "dream_payment_and_workshops",
+              [safeName, amount],
+              "he",
+              urlToken,
+            );
+          }
           status = "sent";
         }
       } catch (e) {
         sendError = (e as Error).message;
         console.error("[whatsapp] payment_and_workshops send failed:", sendError);
-        status = "failed";
+        status = sendError.startsWith("timeout_no_response") ? "timeout" : "failed";
       }
 
       await notifyAdminIfDispatchFailed({
@@ -1945,7 +1993,7 @@ serve(async (req: Request) => {
         error: sendError,
         guestName: guest.name as string,
         guestPhone: guest.phone as string,
-        dispatchType: "Template",
+        dispatchType: whapiEligiblePay ? "Session" : "Template",
       });
 
       await supabase.from("notification_log").insert({
@@ -1955,6 +2003,7 @@ serve(async (req: Request) => {
         channel:      "whatsapp",
         status,
         payload: {
+          channel:  whapiEligiblePay ? "whapi_session" : "meta_template",
           template: "dream_payment_and_workshops",
           amount,
           urlToken,
@@ -1963,8 +2012,30 @@ serve(async (req: Request) => {
         },
       });
 
+      if (whapiEligiblePay && (status === "sent" || status === "simulated")) {
+        try {
+          await supabase.from("whatsapp_conversations").insert({
+            phone:         guest.phone,
+            guest_id:      guestId,
+            direction:     "outbound",
+            message:       buildWhapiSuitesConversationLog(whapiPayBody!),
+            wa_message_id: payWhapiWamid,
+            inbox_channel: "whapi",
+            channel:       "whapi",
+          });
+        } catch (e) {
+          console.warn("[whatsapp-send] payment_and_workshops conv log failed (non-blocking):", (e as Error).message);
+        }
+      }
+
       return new Response(
-        JSON.stringify({ ok: status !== "failed", simulation: sim, status, ...(sendError ? { error: sendError } : {}) }),
+        JSON.stringify({
+          ok: status === "sent" || status === "simulated",
+          simulation: sim,
+          status,
+          channel: whapiEligiblePay ? "whapi_session" : "meta_template",
+          ...(sendError ? { error: sendError } : {}),
+        }),
         { headers: { ...CORS, "Content-Type": "application/json" } },
       );
     }
@@ -2478,6 +2549,9 @@ serve(async (req: Request) => {
     // night_before is excluded: Stage 2.5 has its own fast-path below that picks
     // night_before_suites / _shabbat (not automation_stages.meta_template_name).
     if (forceMetaTemplate && trigger !== "night_before") {
+      if (shouldRouteGuestOutboundViaWhapiSuites(guest) && !isMetaGuestTemplateAllowed()) {
+        return metaTemplateBlockedForWhapiGuestResponse();
+      }
       const targetPhone = safeGuestPhone(guest.phone);
       if (!targetPhone) {
         console.warn(`[whatsapp-send] force meta: guest_id=${guestId} has no phone`);
@@ -2630,6 +2704,9 @@ serve(async (req: Request) => {
       };
 
       if (isForceOverride && force_channel === "meta_template") {
+        if (shouldRouteGuestOutboundViaWhapiSuites(guest) && !isMetaGuestTemplateAllowed()) {
+          return metaTemplateBlockedForWhapiGuestResponse();
+        }
         nightBeforeDispatch = buildTemplateDispatch();
       } else if (isForceOverride && force_channel === "whapi_session") {
         nightBeforeDispatch = { channel: "whapi", freeTextKey: sessionScriptKey, guestName, sessionImageUrl: sessionImage };
@@ -3050,9 +3127,14 @@ serve(async (req: Request) => {
       shouldUseWhapiForGuestAutomation(guest);
     const useMorningSession = (force === true && !forceMetaTemplate) || useWhapiForMorning;
 
-    if ((trigger === "morning_suite" || trigger === "morning_welcome") &&
-        useMorningSession &&
-        (stageRow?.session_message_script_key || stageRow?.session_message_script_key_shabbat)) {
+    // No longer gated on stageRow having a configured session_message_script_key
+    // — resolveShabbatAwareScriptKey already falls back to "stage_3_morning"
+    // when it's empty. Gating on it here meant a stage with NO script key at
+    // all skipped this whole block (including the useWhapiForMorning FAIL
+    // VISIBLE throw below) and fell straight through to sendViaTemplate for a
+    // Whapi-eligible guest — the exact silent-Meta-fallback this block exists
+    // to prevent.
+    if ((trigger === "morning_suite" || trigger === "morning_welcome") && useMorningSession) {
       const mgScriptKey = resolveShabbatAwareScriptKey(
         stageRow,
         mgIsShabbat,
@@ -3176,7 +3258,7 @@ serve(async (req: Request) => {
       // Script not found or empty — fall through to Shabbat-aware template path.
       // (useWhapiForMorning already threw above — unreachable for Whapi guests.)
       console.warn(
-        `[whatsapp-send] morning session-text: script_key="${stageRow.session_message_script_key}"` +
+        `[whatsapp-send] morning session-text: script_key="${stageRow?.session_message_script_key}"` +
         ` not found or empty for trigger="${trigger}" guest_id=${guestId} — falling through to template`,
       );
     }

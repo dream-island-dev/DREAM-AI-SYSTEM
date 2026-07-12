@@ -51,6 +51,7 @@ import {
   PAYMENT_LINK_FAILURE_LABEL,
 } from "../_shared/paymentLinkGuard.ts";
 import { sendWhapiText, cleanPhoneForMention } from "../_shared/whapiSend.ts";
+import { shouldRouteGuestOutboundViaWhapiSuites } from "../_shared/guestWhapiRouting.ts";
 import { formatGuestProfileForAi } from "../_shared/guestProfile.ts";
 import {
   shouldApplyInRoomContextOverride,
@@ -361,6 +362,12 @@ async function sendStage2PayReply(
   const { spaTime, spaDate } = spaVarsFromGuest(guest);
   const payPortalLink  = buildPortalLink(guest?.portal_token);
   const triggerType    = "stage_2_pay";
+  // Whapi has no button entity — a Whapi-eligible guest (suite/day-pass,
+  // GUEST_WHAPI_SUITES_ENABLED) always gets the payment link inlined as
+  // plain text, never sendCtaUrlButton's Meta interactive button.
+  const whapiEligiblePay = shouldRouteGuestOutboundViaWhapiSuites(
+    guest as { room?: unknown; room_type?: unknown } | null,
+  );
 
   if (guestId != null) {
     if (await isStage2PayAlreadyDispatched(supabaseClient, guestId, triggerType)) {
@@ -409,10 +416,10 @@ async function sendStage2PayReply(
       })
     : buildPaymentReply({
         guestName: payName, paymentAmount: payAmount, paymentLink: payLink, workshopUrl: payWorkshopUrl,
-        spaTime, spaDate, hasButton: !!paymentButton,
+        spaTime, spaDate, hasButton: !!paymentButton && !whapiEligiblePay,
       });
 
-  console.info(`[webhook] 💳 arrival confirmed (payment-pending) — phone:${phone} name="${payName}" button:${!!paymentButton}`);
+  console.info(`[webhook] 💳 arrival confirmed (payment-pending) — phone:${phone} name="${payName}" button:${!!paymentButton && !whapiEligiblePay} whapi:${whapiEligiblePay}`);
 
   if (sim) {
     console.info(`[webhook] SIM — would send Stage 2 Pay reply to ${phone}, would not actually send.`);
@@ -434,7 +441,10 @@ async function sendStage2PayReply(
   const finalPaymentReply = sanitizeReply(paymentReply).trim() || paymentReply;
 
   try {
-    if (paymentButton?.url) {
+    let payWamid: string | null = null;
+    if (whapiEligiblePay) {
+      payWamid = await sendWhapiText(cleanPhoneForMention(phone), finalPaymentReply);
+    } else if (paymentButton?.url) {
       if (_suppressGuestRepliesStaffClaim) {
         console.info(`[webhook] 💳 Stage 2 Pay CTA suppressed — staff claim active guest_id=${guestId ?? "?"}`);
         return;
@@ -452,13 +462,14 @@ async function sendStage2PayReply(
       return;
     }
     await insertGuestOutboundIfNotMuted(supabaseClient, {
-      phone, guest_id: guestId as number | null, message: finalPaymentReply, wa_message_id: null, intent: "stage_2_pay",
+      phone, guest_id: guestId as number | null, message: finalPaymentReply, wa_message_id: payWamid, intent: "stage_2_pay",
+      channel: whapiEligiblePay ? "whapi" : "meta",
     });
     const { error: logErr } = await supabaseClient.from("notification_log").insert({
       guest_id: guestId, recipient: phone,
       trigger_type: triggerType, channel: "whatsapp",
       status: "sent",
-      payload: { channel: "session_message", paymentUrlValidated: true, ...(buttonTitle ? { buttonTitle } : {}) },
+      payload: { channel: whapiEligiblePay ? "whapi_session" : "session_message", paymentUrlValidated: true, ...(buttonTitle ? { buttonTitle } : {}) },
     });
     if (logErr) console.warn("[webhook] notification_log insert error:", logErr.message);
     console.info(`[webhook] ✅ payment reply sent to ${phone}`);

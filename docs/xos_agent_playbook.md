@@ -416,6 +416,11 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
+### 2026-07-13 — Whapi-first guest outbound: single choke point + a TS narrowing trap
+- **Single choke point found, not assumed:** `whatsapp-send`'s generic `if (forceMetaTemplate && trigger !== "night_before")` branch (one early `if`, well before any per-trigger block) turned out to already intercept EVERY manual `force_channel=meta_template` request except `night_before` — including `room_ready` and `morning_suite`/`morning_welcome`, whose own later trigger-specific blocks never run for a forced-Meta request at all. One Phase-3 hard-fail guard placed there (+ one more in `night_before`'s own separate `force_channel` switch) covered all triggers — didn't need to touch room_ready/morning's own code. Lesson: before assuming a fix needs N call sites, trace whether an early generic branch already short-circuits most of them.
+- **`a?.b || a?.c` as an `if` condition silently narrows `a` to non-null inside the block** — removing that condition (to fix a Whapi FAIL VISIBLE fallthrough gap) reintroduced a `'stageRow' is possibly null` TS error on a later unguarded `stageRow.x` access that had relied on it. `deno check`'s before/after delta caught it immediately; simplifying a compound optional-chaining condition is not free even when the condition itself looks redundant.
+- **Verify by diffing deno-check error counts, not by trusting a single `deno check` run** — this codebase carries ~37-118 pre-existing type errors per Edge Function (Supabase client generic mismatches, mostly). A raw error count means nothing; stash/diff (or a `git show HEAD:file` copy in a temp dir — safer than `git stash`, which risks sweeping up unrelated uncommitted work) against baseline is the only way to know if a change actually introduced something new.
+
 ### 2026-07-12 — Day-pass still on Meta while suites on Whapi → cron alert loop
 - **Symptom:** Admin Whapi alert every ~15m for «ליאור ורותי חזיזה» — `meta_template_400` #131008 URL button / earlier #132000 on `dream_checkin_reminder_v2`.
 - **Root:** Guest is `day_guest` (Premium Day). `shouldRouteGuestOutboundViaWhapiSuites` was suite-only, so `night_before_daypass` kept calling Meta; broken template never stamped `msg_pre_arrival_sent` → infinite cron retry.

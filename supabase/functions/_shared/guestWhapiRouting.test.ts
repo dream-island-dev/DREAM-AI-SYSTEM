@@ -8,7 +8,11 @@
 // included). Suite + day-pass guests route to Whapi once the flag is on.
 
 import { assertEquals } from "https://deno.land/std@0.168.0/testing/asserts.ts";
-import { shouldRouteGuestOutboundViaWhapiSuites, isStageEffectivelyActive } from "./guestWhapiRouting.ts";
+import {
+  shouldRouteGuestOutboundViaWhapiSuites,
+  isStageEffectivelyActive,
+  isMetaGuestTemplateAllowed,
+} from "./guestWhapiRouting.ts";
 
 function withWhapiFlag(enabled: boolean, fn: () => void) {
   const prev = Deno.env.get("GUEST_WHAPI_SUITES_ENABLED");
@@ -19,6 +23,18 @@ function withWhapiFlag(enabled: boolean, fn: () => void) {
   } finally {
     if (prev === undefined) Deno.env.delete("GUEST_WHAPI_SUITES_ENABLED");
     else Deno.env.set("GUEST_WHAPI_SUITES_ENABLED", prev);
+  }
+}
+
+function withMetaGuestTemplatesAllowed(enabled: boolean, fn: () => void) {
+  const prev = Deno.env.get("ALLOW_META_GUEST_TEMPLATES");
+  if (enabled) Deno.env.set("ALLOW_META_GUEST_TEMPLATES", "true");
+  else Deno.env.delete("ALLOW_META_GUEST_TEMPLATES");
+  try {
+    fn();
+  } finally {
+    if (prev === undefined) Deno.env.delete("ALLOW_META_GUEST_TEMPLATES");
+    else Deno.env.set("ALLOW_META_GUEST_TEMPLATES", prev);
   }
 }
 
@@ -95,5 +111,17 @@ Deno.test("isStageEffectivelyActive: is_active=false + Whapi-eligible suite gues
 Deno.test("isStageEffectivelyActive: is_active=false + no guest context (event-immediate stages) stays paused", () => {
   withWhapiFlag(true, () => {
     assertEquals(isStageEffectivelyActive({ is_active: false }, null), false);
+  });
+});
+
+Deno.test("isMetaGuestTemplateAllowed: false by default (secret unset)", () => {
+  withMetaGuestTemplatesAllowed(false, () => {
+    assertEquals(isMetaGuestTemplateAllowed(), false);
+  });
+});
+
+Deno.test("isMetaGuestTemplateAllowed: true only when the escape-hatch secret is explicitly set", () => {
+  withMetaGuestTemplatesAllowed(true, () => {
+    assertEquals(isMetaGuestTemplateAllowed(), true);
   });
 });

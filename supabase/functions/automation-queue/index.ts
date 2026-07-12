@@ -29,7 +29,10 @@ import {
   hasSuiteRoomTypeConflict,
   isEffectiveSuiteGuest,
 } from "../_shared/suiteNames.ts";
-import { isStageEffectivelyActive } from "../_shared/guestWhapiRouting.ts";
+import {
+  isStageEffectivelyActive,
+  shouldRouteGuestOutboundViaWhapiSuites,
+} from "../_shared/guestWhapiRouting.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -238,6 +241,11 @@ Deno.serve(async (req: Request) => {
           // Effective routing truth (suiteNames.ts) — the ACC chips/gates must
           // segment by THIS, not raw room_type, to match cron/send routing.
           effectiveSuite: isEffectiveSuiteGuest(guest),
+          // Real outbound-channel truth (guestWhapiRouting.ts) — suite OR
+          // day-pass when GUEST_WHAPI_SUITES_ENABLED, same gate whatsapp-send
+          // actually dispatches on. effectiveSuite above is suite-only and
+          // under-reports Whapi-eligible day-pass guests in ACC chips/gates.
+          effectiveWhapiGuest: shouldRouteGuestOutboundViaWhapiSuites(guest),
           // FAIL VISIBLE: suite room + day-pass room_type — ⚠ badge in ACC.
           roomTypeConflict: hasSuiteRoomTypeConflict(guest),
           arrivalDate: (guest as Record<string, unknown>).arrival_date ?? null,
