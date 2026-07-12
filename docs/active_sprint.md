@@ -1,5 +1,22 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-12 (Stage 1 missed-window catch-up — **deployed** `57ff36d`).
+> Last updated: 2026-07-12 (Sprint B — Inbox composer emoji picker, PRIMARY only — pushed to `main`).
+
+---
+
+## ✅ Deployed — Sprint B: Inbox composer emoji picker (2026-07-12)
+
+Goal: staff desktop has no native phone emoji keyboard — add a picker next to the Inbox reply composer.
+
+| Piece | Detail |
+|---|---|
+| `src/utils/emojiPickerData.js` | Curated 40-emoji list, no new dependency |
+| `WhatsAppInbox.js` | 😊 button next to ⚡ quick-replies; popup reuses the same bottom-sheet/desktop-panel pattern; `insertEmojiAtCursor` splices into the reply textarea at caret position, stays open for multiple picks |
+
+**SECONDARY deferred:** bubble long-press → WhatsApp reaction via Meta/Whapi API. Phase-1 research found zero existing reaction-send infra (`_shared/whapiSend.ts` has no PUT reaction; Meta side has no reaction POST either) — full second feature, not a small add-on. Mike confirmed: split to its own future sprint.
+
+Deployed: frontend `main` only — no Edge Function / migration touched.
+
+**Mike QA (not yet click-tested by the agent — no login creds in this sandbox):** `wa_inbox` → open a thread → 😊 button next to ⚡ → panel opens → tap an emoji → lands in composer at cursor. Mobile: F12 → 390px, panel should open as a bottom sheet, no overlap with `mobile-bar`.
 
 ---
 

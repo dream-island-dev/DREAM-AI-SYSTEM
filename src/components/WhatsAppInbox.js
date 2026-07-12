@@ -11,6 +11,7 @@ import AILearningButton from "./AILearningButton";
 import HoldToConfirmButton from "./HoldToConfirmButton";
 import QuietHoursGate from "./QuietHoursGate";
 import { getSuiteSection } from "../data/suiteRegistry";
+import { COMPOSER_EMOJIS } from "../utils/emojiPickerData";
 import {
   classifyInboundMessageAlert,
   classifyInboxContactSegment,
@@ -303,6 +304,8 @@ const T = {
     aiLogHint: "פנימי — לא מוצג לאורח",
     quickBolt: "⚡",
     quickRepliesTitle: "תגובות מהירות",
+    emojiBtn: "😊",
+    emojiPickerTitle: "אימוג'ים",
     routeTitle: "ניתוב בקשת אורח",
     routeMaint: "🔧 תחזוקה", routeHouse: "🛏️ משק בית",
     routeRequests: "🛎️ ללוח בקשות",
@@ -393,6 +396,8 @@ const T = {
     aiLogHint: "Internal — never shown to the guest",
     quickBolt: "⚡",
     quickRepliesTitle: "Quick replies",
+    emojiBtn: "😊",
+    emojiPickerTitle: "Emoji",
     routeTitle: "Route guest request",
     routeMaint: "🔧 Maintenance", routeHouse: "🛏️ Housekeeping",
     routeRequests: "🛎️ Requests Board",
@@ -2774,6 +2779,7 @@ export default function WhatsAppInbox({
   const t                         = T[lang];
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [quickOpen, setQuickOpen]   = useState(false);
+  const [emojiOpen, setEmojiOpen]   = useState(false);
   const [rosterSearch, setRosterSearch] = useState("");
   const [dbSearchBusy, setDbSearchBusy] = useState(false); // full-inbox DB search in flight (see effect below)
   // Session 125 P2-H — one timeline, three surfaces: the צ'ק-אין/ניהול-אורחים
@@ -4565,6 +4571,22 @@ export default function WhatsAppInbox({
     }
   }
 
+  // Inserts an emoji at the textarea's current cursor position (not just
+  // appended) so staff can drop it mid-sentence, then restores focus + caret
+  // right after the inserted character — picker stays open for multiple picks.
+  function insertEmojiAtCursor(emoji) {
+    const el = replyRef.current;
+    const start = el?.selectionStart ?? reply.length;
+    const end   = el?.selectionEnd ?? reply.length;
+    const next  = reply.slice(0, start) + emoji + reply.slice(end);
+    setReply(next);
+    const caret = start + emoji.length;
+    requestAnimationFrame(() => {
+      el?.focus();
+      el?.setSelectionRange(caret, caret);
+    });
+  }
+
   // ── Derived state ──────────────────────────────────────────────────────────
   const visibleContacts = contacts.filter((c) => !archivedPhones.has(c.threadKey ?? c.phone));
   // A departed guest who messages back (new inbound, unread) must still surface in
@@ -5685,6 +5707,87 @@ export default function WhatsAppInbox({
           </>
         )}
 
+        {emojiOpen && (
+          <>
+            {isMobile && (
+              <div
+                role="presentation"
+                onClick={() => setEmojiOpen(false)}
+                style={{
+                  position: "fixed", inset: 0, zIndex: 48,
+                  background: "rgba(0,0,0,0.45)",
+                }}
+              />
+            )}
+            <div style={{
+              ...(isMobile ? {
+                position: "fixed",
+                bottom: 0,
+                left: 0,
+                right: 0,
+                zIndex: 49,
+                borderRadius: "16px 16px 0 0",
+                padding: "14px 16px max(env(safe-area-inset-bottom, 0px), 14px)",
+                maxHeight: "50vh",
+                boxShadow: "0 -8px 32px rgba(0,0,0,0.2)",
+                border: "none",
+              } : {
+                position: "absolute",
+                bottom: "100%",
+                insetInlineStart: 14,
+                insetInlineEnd: 14,
+                marginBottom: 6,
+                maxHeight: "40vh",
+                boxShadow: "0 -4px 16px rgba(0,0,0,0.12)",
+                border: "1px solid #ddd",
+                borderRadius: 14,
+                padding: 12,
+              }),
+              background: "white",
+              overflowY: "auto",
+            }}>
+              {isMobile && (
+                <div style={{
+                  display: "flex", justifyContent: "space-between", alignItems: "center",
+                  marginBottom: 12, paddingBottom: 10, borderBottom: "1px solid var(--border)",
+                }}>
+                  <span style={{ fontWeight: 800, fontSize: 15, color: "var(--black)" }}>{t.emojiPickerTitle}</span>
+                  <button
+                    type="button"
+                    onClick={() => setEmojiOpen(false)}
+                    aria-label={t.closeSheet}
+                    className="u-touch-staff"
+                    style={{
+                      border: "1px solid var(--border)", background: "var(--ivory)",
+                      borderRadius: "50%", width: HIT_STAFF, height: HIT_STAFF, fontSize: 16, cursor: "pointer",
+                    }}
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                {COMPOSER_EMOJIS.map((emoji, i) => (
+                  <button
+                    key={`${emoji}-${i}`}
+                    type="button"
+                    onClick={() => insertEmojiAtCursor(emoji)}
+                    className={isMobile ? "u-touch-comfort" : undefined}
+                    style={{
+                      border: "none", background: "transparent", borderRadius: 8,
+                      width: isMobile ? HIT_COMFORT : 36, height: isMobile ? HIT_COMFORT : 36,
+                      fontSize: isMobile ? 22 : 19, cursor: "pointer",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                    }}
+                  >
+                    {emoji}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </>
+        )}
+
         {routeToast && (
           <div style={{
             position: "absolute", bottom: "100%", insetInlineStart: 14, insetInlineEnd: 14,
@@ -5727,7 +5830,7 @@ export default function WhatsAppInbox({
           display: "flex", gap: "var(--space-sm)", alignItems: "flex-end",
         }}>
           <button
-            onClick={() => setQuickOpen((o) => !o)}
+            onClick={() => { setEmojiOpen(false); setQuickOpen((o) => !o); }}
             aria-label={t.quickRepliesTitle}
             className={isMobile ? "u-touch-comfort" : undefined}
             style={{
@@ -5739,6 +5842,20 @@ export default function WhatsAppInbox({
             }}
           >
             {t.quickBolt}
+          </button>
+          <button
+            onClick={() => { setQuickOpen(false); setEmojiOpen((o) => !o); }}
+            aria-label={t.emojiPickerTitle}
+            className={isMobile ? "u-touch-comfort" : undefined}
+            style={{
+              background: emojiOpen ? "var(--border)" : "var(--card-bg)",
+              border: "1px solid var(--border)", borderRadius: "50%",
+              width: isMobile ? HIT_COMFORT : 40, height: isMobile ? HIT_COMFORT : 40, fontSize: 17,
+              cursor: "pointer", flexShrink: 0, display: "flex",
+              alignItems: "center", justifyContent: "center",
+            }}
+          >
+            {t.emojiBtn}
           </button>
           <textarea
             ref={replyRef}
