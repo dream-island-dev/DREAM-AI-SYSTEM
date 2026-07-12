@@ -3,7 +3,7 @@
 
 ---
 
-## 🟡 Local — Stage 1 Whapi arrival-confirm CTA safety net (2026-07-12)
+## ✅ Deployed — Stage 1 Whapi arrival-confirm CTA safety net (2026-07-12)
 
 Design Mode picked approach 1 (CTA text hotfix) over Whapi interactive buttons — Whapi's own docs flag button-send as "not stable," zero button-parse infra exists in `whapi-webhook`, and compat with the session-paired Suites device is unconfirmed.
 
@@ -14,7 +14,9 @@ Design Mode picked approach 1 (CTA text hotfix) over Whapi interactive buttons �
 | `AutomationControlCenter.js` | Bulk dispatch summary modal now separates `timeout` ("⏳ לא ודאי אם הגיעו") from real `failed` — Live Queue badge already had this, modal didn't |
 | Tests | 7 new Deno tests, `deno check` delta-clean (37 pre-existing errors, unchanged), `npm run build` clean |
 
-**Not deployed** — awaiting Mike's `כן`/`תעלה`. Deploy: `whatsapp-send` (+ optionally `whapi-webhook`/`whatsapp-webhook`/`whatsapp-cron` since `_shared/arrivalConfirmation.ts` changed, though their behavior is unaffected — pure addition) + frontend push.
+Deployed: `whatsapp-send`, `whapi-webhook`, `whatsapp-webhook`, `whatsapp-cron` (all 4 consume the changed `_shared/arrivalConfirmation.ts`), frontend push to `main` (`d67ecd6`). No migration needed — root-cause fix (migration 189) was already live.
+
+**Mike QA:** תור «פספס מועד» ל-Whapi (ACC) → «📱 שגר» → אורח מקבל הודעה עם «כן, מגיעים!» → כתיבת אותו משפט חוזר → Stage 2 נשלח מיד באותו thread. הודעת «לא, שינוי בתאריך» לא אמורה לאשר. Meta ללא שינוי — כפתור «כן, מגיעים!» עדיין עובד כרגיל.
 
 ---
 
