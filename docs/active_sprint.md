@@ -1,5 +1,21 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-12 (Sprint B — Inbox composer emoji picker, PRIMARY only — pushed to `main`).
+> Last updated: 2026-07-12 (Suite journey — Whapi dispatch decoupled from Meta template approval — pushed to `main`).
+
+---
+
+## ✅ Deployed — Suite journey decoupled from Meta template approval (2026-07-12)
+
+`automation_stages.is_active` (Meta-template-approved flag) was silently blocking Whapi-eligible suite guests too — `night_before`/`morning_suite` paused pending Meta clearance meant the Suites-device journey never fired for them either, in cron AND in ACC's Live Queue.
+
+| Piece | Detail |
+|---|---|
+| `_shared/guestWhapiRouting.ts` | `isStageEffectivelyActive(stage, guest)` — paused stage still fires for Whapi-eligible suite guests; Meta guests unaffected |
+| `whatsapp-cron`, `automation-queue`, `whatsapp-send` | All 3 now use the same shared gate instead of independent `is_active` filters |
+| Tests | 9 new, 43/43 total pass |
+
+Deployed: `whatsapp-send`, `whatsapp-cron`, `automation-queue`, `whapi-webhook`, `whatsapp-webhook`, `guest-portal-spa-request`, `main` (`700fbda`). No migration.
+
+**Mike QA:** if `night_before`/`morning_suite` are `is_active=false` live, Whapi-eligible suite guests should now start receiving Stage 2.5/Stage 3 automatically — worth a spot-check on tonight's cron run or tomorrow's arrivals. Check current value: `SELECT stage_key, is_active FROM automation_stages WHERE stage_key IN ('night_before','morning_suite');`
 
 ---
 
