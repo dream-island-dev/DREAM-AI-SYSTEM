@@ -25,7 +25,7 @@
 // silently miss every match); unmatched reasons are now picked by an
 // explicit priority so a missing-time row isn't mislabeled "room_unmapped".
 
-import { normalizeActivitiesPhone } from "./ezgoSpaActivitiesParser";
+import { normalizeActivitiesPhone, collectGuestNameHints, resolveSpaGuestDisplayName } from "./ezgoSpaActivitiesParser";
 
 /** "972XXXXXXXXX" (Phase 1's normalized shape) → every phone spelling guests.phone might be stored as ("+972…", "972…", "0…" — CLAUDE.md §3 phone format rule). */
 export function resolvePhoneVariants(phone972) {
@@ -49,29 +49,52 @@ function namesLikelyMatch(a, b) {
 }
 
 /**
+ * Looser Hebrew person match: all tokens of the shorter name appear in the
+ * longer ("רעות לוי" ↔ "רעות לוי כהן"). Requires ≥2 tokens on the smaller set
+ * so a single shared first name never steals another guest on a group phone.
+ */
+function namesLooselyMatch(a, b) {
+  if (namesLikelyMatch(a, b)) return true;
+  const ta = nameTokenSet(a);
+  const tb = nameTokenSet(b);
+  if (ta.size >= 2 && ta.size <= tb.size && [...ta].every((t) => tb.has(t))) return true;
+  if (tb.size >= 2 && tb.size <= ta.size && [...tb].every((t) => ta.has(t))) return true;
+  return false;
+}
+
+function guestMatchesNameHint(guest, hint) {
+  if (!hint || !guest?.name) return false;
+  return namesLooselyMatch(hint, guest.name);
+}
+
+/**
  * Disambiguates multiple guests.phone rows sharing one phone (couples/groups
  * on an organizer's number — expected, not an error). Tries the row's own
- * לקוח name against each candidate FIRST — without this, two guests sharing
- * a phone with overlapping stay windows (the normal couple case) would both
- * resolve to the identical candidate, silently writing the wrong person's
- * guest_id on one of the two appointments. Falls back to stay-window
- * containment, then closest arrival_date. A single candidate is accepted
- * as-is, never flagged. Any multi-candidate outcome is still flagged
- * suspicious=true — a shared phone stays visible to staff even when
- * confidently resolved by name.
+ * לקוח name AND group_label / Hebrew paren person name against each candidate
+ * FIRST — without this, two guests sharing a phone with overlapping stay
+ * windows (the normal couple case) would both resolve to the identical
+ * candidate, and Latin nicknames like "limor (לימור סולומון)" would miss the
+ * Golden Profile entirely. Falls back to stay-window containment, then
+ * closest arrival_date. A single candidate is accepted as-is, never flagged.
+ * Any multi-candidate outcome is still flagged suspicious=true — a shared
+ * phone stays visible to staff even when confidently resolved by name.
+ *
+ * @param {string|null} [guestNameHint]
+ * @param {string|null} [groupLabelHint] — parentheses text from parseGuestNameCell
  */
-export function pickBestGuestMatch(candidates, appointmentDate, guestNameHint) {
+export function pickBestGuestMatch(candidates, appointmentDate, guestNameHint, groupLabelHint = null) {
   const list = candidates ?? [];
   if (list.length === 0) return { guest: null, suspicious: false, reason: null };
   if (list.length === 1) return { guest: list[0], suspicious: false, reason: null };
 
-  if (guestNameHint) {
-    const nameMatches = list.filter((c) => namesLikelyMatch(guestNameHint, c.name));
+  const hints = collectGuestNameHints(guestNameHint, groupLabelHint);
+  for (const hint of hints) {
+    const nameMatches = list.filter((c) => guestMatchesNameHint(c, hint));
     if (nameMatches.length === 1) {
       return {
         guest: nameMatches[0],
         suspicious: true,
-        reason: `${list.length} אורחים על אותו טלפון — זוהה לפי שם ("${guestNameHint}")`,
+        reason: `${list.length} אורחים על אותו טלפון — זוהה לפי שם ("${hint}")`,
       };
     }
   }
@@ -113,7 +136,10 @@ export function buildExistingApptIndex(existingAppts) {
   const byNaturalKey = new Map();
   for (const a of existingAppts ?? []) {
     if (a.ezgo_line_id) byLineId.set(a.ezgo_line_id, a);
-    byNaturalKey.set(`${a.room_id}|${a.start_time}|${a.guest_id ?? ""}`, a);
+    // Therapist is part of the natural key so a couple booking (same room +
+    // start + guest, two therapists) does not collapse to one appointment on
+    // re-import when ezgo_line_id is missing.
+    byNaturalKey.set(`${a.room_id}|${a.start_time}|${a.guest_id ?? ""}|${a.therapist_id ?? ""}`, a);
   }
   return { byLineId, byNaturalKey };
 }
@@ -121,15 +147,16 @@ export function buildExistingApptIndex(existingAppts) {
 /**
  * Idempotency match for one parsed row against a day's existing appointments
  * — ezgo_line_id wins when present (stable per-row id from Ezgo); otherwise
- * falls back to (room, start_time, guest) so a re-import UPDATEs instead of
- * duplicating. Returns null when this is a genuinely new appointment.
+ * falls back to (room, start_time, guest, therapist) so a re-import UPDATEs
+ * instead of duplicating, including couple slots with two therapists.
+ * Returns null when this is a genuinely new appointment.
  */
-export function matchExistingAppointment(row, roomId, guestId, index) {
+export function matchExistingAppointment(row, roomId, guestId, index, therapistId = null) {
   if (row.ezgo_line_id && index.byLineId.has(row.ezgo_line_id)) {
     return index.byLineId.get(row.ezgo_line_id);
   }
   if (roomId != null) {
-    const hit = index.byNaturalKey.get(`${roomId}|${row.start_time}|${guestId ?? ""}`);
+    const hit = index.byNaturalKey.get(`${roomId}|${row.start_time}|${guestId ?? ""}|${therapistId ?? ""}`);
     if (hit) return hit;
   }
   return null;
@@ -227,10 +254,11 @@ function unmatchedRow(batchId, appointmentDate, row, reason) {
  * auto-cancel), matching the locked "upsert-only" default from the planning
  * doc. Returns a summary matching the Phase 3 import-toast shape.
  */
-export async function syncEzgoSpaActivities(parsedRows, appointmentDate, { supabase }) {
+export async function syncEzgoSpaActivities(parsedRows, appointmentDate, { supabase, skippedCancelled = 0 } = {}) {
   const summary = {
     created: 0, updated: 0, matched_guests: 0, unmatched: 0, room_unmapped: 0, conflicts: 0, suspicious: 0,
-    guests_created: 0, not_in_file: 0, meal_time_set: 0,
+    guests_created: 0, not_in_file: 0, meal_time_set: 0, skipped_cancelled: skippedCancelled,
+    appointment_date: appointmentDate,
   };
   if (!parsedRows.length) return summary;
 
@@ -242,7 +270,7 @@ export async function syncEzgoSpaActivities(parsedRows, appointmentDate, { supab
     // index — matching against one would silently "revive" a slot a staff
     // member intentionally cancelled (payload never sets status, so an
     // UPDATE would leave it cancelled forever while reporting success).
-    supabase.from("spa_appointments").select("id, guest_id, room_id, ezgo_line_id, start_time").eq("appointment_date", appointmentDate).neq("status", "cancelled"),
+    supabase.from("spa_appointments").select("id, guest_id, room_id, therapist_id, ezgo_line_id, start_time").eq("appointment_date", appointmentDate).neq("status", "cancelled"),
   ]);
   const aliasMap = new Map((aliasRows ?? []).map((r) => [r.ezgo_name, r.room_id]));
   const therapistMap = new Map((therapistRows ?? []).map((t) => [t.name, t.id]));
@@ -275,7 +303,12 @@ export async function syncEzgoSpaActivities(parsedRows, appointmentDate, { supab
   for (const row of parsedRows) {
     const roomId = row.room_raw ? aliasMap.get(row.room_raw) ?? null : null;
     const candidates = row.phone ? guestsByPhone.get(row.phone) ?? [] : [];
-    let { guest, suspicious, reason } = pickBestGuestMatch(candidates, appointmentDate, row.guest_name);
+    let { guest, suspicious, reason } = pickBestGuestMatch(
+      candidates,
+      appointmentDate,
+      row.guest_name,
+      row.group_label
+    );
     let coupleFlag = false;
 
     // Auto-create a day_guest profile (Mike, locked decision) when no
@@ -286,12 +319,15 @@ export async function syncEzgoSpaActivities(parsedRows, appointmentDate, { supab
     // pushed into guestsByPhone immediately so a second row this same batch
     // for the same phone (e.g. two treatments same day) finds it as a
     // candidate instead of creating a duplicate profile.
-    if (!guest && row.start_time && row.end_time && row.guest_name && PLAUSIBLE_ISRAELI_PHONE_RE.test(row.phone ?? "")) {
+    // Display name prefers Hebrew paren person over Latin nickname so the
+    // Golden Profile stays readable for staff / bot context.
+    const displayName = resolveSpaGuestDisplayName(row.guest_name, row.group_label);
+    if (!guest && row.start_time && row.end_time && displayName && PLAUSIBLE_ISRAELI_PHONE_RE.test(row.phone ?? "")) {
       const { data: newGuest, error: newGuestErr } = await supabase
         .from("guests")
         .insert({
           phone: `+${row.phone}`,
-          name: row.guest_name,
+          name: displayName,
           room_type: "day_guest",
           room: "Premium Day 1",
           arrival_date: appointmentDate,
@@ -316,23 +352,6 @@ export async function syncEzgoSpaActivities(parsedRows, appointmentDate, { supab
       }
     }
 
-    // Tracked before the unresolved-reason check (independent of whether
-    // THIS row can be fully written) so a row that references an existing
-    // appointment via ezgo_line_id still marks it "in file" even when some
-    // other part of the row (room/guest) can't resolve — otherwise a
-    // resolvable-but-partial row would wrongly count that appointment as
-    // missing from the file.
-    const existing = matchExistingAppointment(row, roomId, guest?.id, apptIndex);
-    if (existing) matchedExistingIds.add(existing.id);
-
-    const unresolvedReason = classifyUnresolvedReason(row, guest, roomId);
-    if (unresolvedReason) {
-      if (unresolvedReason === "room_unmapped") summary.room_unmapped++;
-      summary.unmatched++;
-      unmatched.push(unmatchedRow(batchId, appointmentDate, row, unresolvedReason));
-      continue;
-    }
-
     let therapistId = therapistMap.get(row.therapist_name) ?? null;
     if (row.therapist_name && !therapistId) {
       const { data: newTherapist, error: newTherapistErr } = await supabase
@@ -346,6 +365,24 @@ export async function syncEzgoSpaActivities(parsedRows, appointmentDate, { supab
         therapistId = newTherapist.id;
         therapistMap.set(row.therapist_name, therapistId);
       }
+    }
+
+    // Tracked before the unresolved-reason check (independent of whether
+    // THIS row can be fully written) so a row that references an existing
+    // appointment via ezgo_line_id still marks it "in file" even when some
+    // other part of the row (room/guest) can't resolve — otherwise a
+    // resolvable-but-partial row would wrongly count that appointment as
+    // missing from the file. Therapist is resolved first so the natural-key
+    // fallback can distinguish the two halves of a couple booking.
+    const existing = matchExistingAppointment(row, roomId, guest?.id, apptIndex, therapistId);
+    if (existing) matchedExistingIds.add(existing.id);
+
+    const unresolvedReason = classifyUnresolvedReason(row, guest, roomId);
+    if (unresolvedReason) {
+      if (unresolvedReason === "room_unmapped") summary.room_unmapped++;
+      summary.unmatched++;
+      unmatched.push(unmatchedRow(batchId, appointmentDate, row, unresolvedReason));
+      continue;
     }
 
     const payload = {

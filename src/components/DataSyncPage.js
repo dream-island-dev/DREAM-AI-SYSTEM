@@ -30,6 +30,9 @@ function SpaActivitiesSyncSection() {
     if (summary.updated) parts.push(`${summary.updated} עודכנו`);
     if (summary.guests_created) parts.push(`${summary.guests_created} אורחי-יום נוצרו`);
     if (summary.meal_time_set) parts.push(`${summary.meal_time_set} שעת ארוחה נקלטה`);
+    if (summary.skipped_cancelled) parts.push(`${summary.skipped_cancelled} מבוטלים ב-EZGO`);
+    if (summary.date_from_file) parts.push(`תאריך מהקובץ ${summary.date_from_file}`);
+    if (summary.date_mixed) parts.push("⚠ כמה תאריכים בקובץ — השתמשתי בתאריך שנבחר");
     if (summary.room_unmapped) parts.push(`${summary.room_unmapped} חדר לא מזוהה`);
     if (summary.conflicts) parts.push(`${summary.conflicts} התנגשויות`);
     if (summary.unmatched) parts.push(`${summary.unmatched} ללא שיוך`);

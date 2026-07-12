@@ -227,15 +227,44 @@ function TherapistManagePanel({ therapists, onClose, onSaved }) {
 }
 
 // ── Unmatched Activities panel — FAIL VISIBLE, always shown when non-empty ──
-function UnmatchedPanel({ rows, rooms, onAssignRoom, onDismiss }) {
+function UnmatchedPanel({ rows, rooms, onAssignRoom, onDismiss, onDismissAll }) {
   const [roomChoice, setRoomChoice] = useState({}); // unmatchedId -> room_id draft
+  const [dismissAllBusy, setDismissAllBusy] = useState(false);
 
   if (!rows.length) return null;
 
+  async function handleDismissAll() {
+    if (!onDismissAll || dismissAllBusy) return;
+    if (!window.confirm(`לסמן את כל ${rows.length} השורות כטופלו?\n(לא מוחק תורים — רק מנקה את רשימת האזהרות)`)) return;
+    setDismissAllBusy(true);
+    try {
+      await onDismissAll();
+    } finally {
+      setDismissAllBusy(false);
+    }
+  }
+
   return (
     <div style={{ marginBottom: 24 }}>
-      <div style={{ fontSize: 15, fontWeight: 800, color: "#A32D2D", marginBottom: 10 }}>
-        ⚠ שורות ללא שיוך מלא מהייבוא האחרון ({rows.length})
+      <div style={{
+        display: "flex", justifyContent: "space-between", alignItems: "center",
+        flexWrap: "wrap", gap: 10, marginBottom: 10,
+      }}>
+        <div style={{ fontSize: 15, fontWeight: 800, color: "#A32D2D" }}>
+          ⚠ שורות ללא שיוך מלא מהייבוא האחרון ({rows.length})
+        </div>
+        {onDismissAll && (
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            disabled={dismissAllBusy}
+            onClick={handleDismissAll}
+            title="סמן את כל השורות כטופלו — מנקה את הבאנר בלי למחוק תורים"
+            style={{ fontWeight: 700, color: "#A32D2D", border: "1px solid #E24B4A" }}
+          >
+            {dismissAllBusy ? "מנקה..." : `✕ נקה הכל (${rows.length})`}
+          </button>
+        )}
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {rows.map((row) => (
@@ -855,11 +884,17 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
     if (summary.updated) parts.push(`${summary.updated} עודכנו`);
     if (summary.guests_created) parts.push(`${summary.guests_created} אורחי-יום נוצרו`);
     if (summary.meal_time_set) parts.push(`${summary.meal_time_set} שעת ארוחה נקלטה`);
+    if (summary.skipped_cancelled) parts.push(`${summary.skipped_cancelled} מבוטלים ב-EZGO`);
+    if (summary.date_from_file) parts.push(`תאריך מהקובץ ${summary.date_from_file}`);
+    if (summary.date_mixed) parts.push("⚠ כמה תאריכים בקובץ — השתמשתי בתאריך שנבחר");
     if (summary.room_unmapped) parts.push(`${summary.room_unmapped} חדר לא מזוהה`);
     if (summary.conflicts) parts.push(`${summary.conflicts} התנגשויות`);
     if (summary.unmatched) parts.push(`${summary.unmatched} ללא שיוך`);
     if (summary.not_in_file) parts.push(`${summary.not_in_file} לא בקובץ (לא בוטלו)`);
     showToast(`✓ ייבוא הושלם — ${parts.join(" · ") || "אין שינויים"}`);
+    if (summary.date_from_file && summary.date_from_file !== selectedDate) {
+      setSelectedDate(summary.date_from_file);
+    }
     fetchAppointments();
     fetchUnmatched();
   }
@@ -870,6 +905,18 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
       .update({ resolved: true, resolved_at: new Date().toISOString() })
       .eq("id", id);
     if (error) { showToast("⚠ שגיאה: " + error.message, "err"); return; }
+    fetchUnmatched();
+  }
+
+  async function handleDismissAllUnmatched() {
+    if (!unmatchedRows.length) return;
+    const ids = unmatchedRows.map((r) => r.id);
+    const { error } = await supabase
+      .from("spa_import_unmatched")
+      .update({ resolved: true, resolved_at: new Date().toISOString() })
+      .in("id", ids);
+    if (error) { showToast("⚠ שגיאה בניקוי: " + error.message, "err"); return; }
+    showToast(`✓ נוקו ${ids.length} שורות אזהרה`);
     fetchUnmatched();
   }
 
@@ -1039,6 +1086,7 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
         rooms={rooms}
         onAssignRoom={handleAssignRoomAlias}
         onDismiss={handleDismissUnmatched}
+        onDismissAll={handleDismissAllUnmatched}
       />
 
       {/* ── View tabs — agenda (default) / room-columns (secondary) ─────────── */}

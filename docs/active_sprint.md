@@ -286,12 +286,15 @@ Goal: import the FULL daily Ezgo "פעילויות" report (not suite-only), mat
 | 3 | SpaBoard Excel import UI + unmatched panel + summary toast | ✅ shipped |
 | 3b | Staff UX — board colors + staff notes (quick-edit on card click) | ✅ code + migration 180 |
 | 3c | English machine-CSV + couple dual-row + missing aliases (migration 191) | ✅ code — **not deployed** |
+| 3d | CSV בע"מ repair + Golden Profile name match (Latin nickname / Hebrew paren) + «נקה הכל» unmatched | ✅ code — **not deployed** |
 | 4 | `spa-schedule-webhook` upgraded to shared engine, `filter=all` default | Pending |
 | 5 | Bot context enrichment (`buildGuestStageContext` spa line → room/therapist/type) | Pending |
 
 **2026-07-12 fix (3c):** Ezgo English CSV (`tmStart`/`sTel`/`iAddsLineId`…) now imports. Cancelled lines skipped+counted. Couple rooms = 2 overlapping appointments (one per therapist). Aliases: `סוויטת אבניו 2/3/4`, `טרקלין -חדר זוגי`. Still unmapped by design: `ג'קוזי 1`.
 
-**Mike QA after deploy:** לוח ספא → בחר תאריך (או השאר — הקובץ דורס מתאריך `dtDate`) → «📊 ייבוא דוח פעילויות» → גרור `פעילות ספא….csv` → toast עם נוצרו/מבוטלים; אג'נדה מציגה שני מטפלים בחדר זוגי באותה שעה.
+**2026-07-12 fix (3d):** Real `תפעול ספא 13.7.csv` exposed three luxury-sync gaps — (1) unescaped `בע"מ` quotes made SheetJS drop ~half the rows (ZERO DATA LOSS); `repairEzgoCsvText` before parse recovers full day (~226 active / ~49 cancelled); (2) Excel serial / locale dates + numeric phones normalized; (3) `limor (לימור סולומון)` now matches Golden Profile via `group_label` / Hebrew paren person name, not Latin nickname alone; auto-create day_guest uses Hebrew display name. SpaBoard unmatched panel: «✕ נקה הכל» bulk dismiss. Validated live against Mike's 13.7 file (77 spa unit tests).
+
+**Mike QA after deploy:** לוח ספא → אם יש באנר אדום ישן לחץ «נקה הכל» → בחר תאריך 13/07 (או השאר — הקובץ דורס מ-`dtDate`) → «📊 ייבוא דוח פעילויות» → גרור `תפעול ספא 13.7.csv` → toast עם נוצרו/מבוטלים; אורחים קיימים מקבלים `spa_date`/`spa_time`/`guest_profile.spa`; אג'נדה מציגה שני מטפלים בחדר זוגי.
 
 ---
 

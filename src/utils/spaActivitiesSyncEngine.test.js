@@ -72,6 +72,33 @@ describe("pickBestGuestMatch", () => {
     expect(guest.id).toBe(1); // closest arrival_date, name hint didn't help
   });
 
+  test("Latin nickname + Hebrew group_label matches Golden Profile Hebrew name", () => {
+    const limor = { id: 1, name: "לימור סולומון", arrival_date: "2026-07-12", departure_date: "2026-07-14" };
+    const other = { id: 2, name: "כהן משה", arrival_date: "2026-07-12", departure_date: "2026-07-14" };
+    const { guest, suspicious } = pickBestGuestMatch([limor, other], "2026-07-13", "limor", "לימור סולומון");
+    expect(guest.id).toBe(1);
+    expect(suspicious).toBe(true);
+  });
+
+  test("org group_label is ignored for name match — does not steal by ועד… tokens", () => {
+    const a = { id: 1, name: "זיו מוזס", arrival_date: "2026-07-13", departure_date: "2026-07-13" };
+    const b = { id: 2, name: "מאור סיסו", arrival_date: "2026-07-13", departure_date: "2026-07-13" };
+    const { guest } = pickBestGuestMatch(
+      [a, b],
+      "2026-07-13",
+      "זיו מוזס",
+      "ועד עובדי הטכנולוגיה בנק הפועלים"
+    );
+    expect(guest.id).toBe(1);
+  });
+
+  test("loose Hebrew token subset matches fuller stored name", () => {
+    const full = { id: 1, name: "רעות לוי כהן", arrival_date: "2026-07-10", departure_date: "2026-07-20" };
+    const other = { id: 2, name: "שלומית מרמור", arrival_date: "2026-07-10", departure_date: "2026-07-20" };
+    const { guest } = pickBestGuestMatch([full, other], "2026-07-13", "רעות לוי");
+    expect(guest.id).toBe(1);
+  });
+
   test("no stay-window match — falls back to closest arrival_date, still flagged suspicious", () => {
     const far = { id: 1, arrival_date: "2026-01-01" };
     const close = { id: 2, arrival_date: "2026-07-14" };
@@ -92,26 +119,41 @@ describe("pickBestGuestMatch", () => {
 
 describe("buildExistingApptIndex / matchExistingAppointment", () => {
   const existing = [
-    { id: 100, ezgo_line_id: "L1", room_id: 5, start_time: "10:00", guest_id: 42 },
-    { id: 101, ezgo_line_id: null, room_id: 6, start_time: "11:00", guest_id: 43 },
+    { id: 100, ezgo_line_id: "L1", room_id: 5, start_time: "10:00", guest_id: 42, therapist_id: 7 },
+    { id: 101, ezgo_line_id: null, room_id: 6, start_time: "11:00", guest_id: 43, therapist_id: 8 },
+    { id: 102, ezgo_line_id: "2890534_1", room_id: 1, start_time: "09:00", guest_id: 50, therapist_id: 10 },
+    { id: 103, ezgo_line_id: "2890534_2", room_id: 1, start_time: "09:00", guest_id: 50, therapist_id: 11 },
   ];
 
   test("matches by ezgo_line_id first when present", () => {
     const index = buildExistingApptIndex(existing);
     const row = { ezgo_line_id: "L1", start_time: "10:00" };
-    expect(matchExistingAppointment(row, 5, 42, index).id).toBe(100);
+    expect(matchExistingAppointment(row, 5, 42, index, 7).id).toBe(100);
   });
 
-  test("falls back to (room, start_time, guest) natural key when no line id", () => {
+  test("falls back to (room, start_time, guest, therapist) natural key when no line id", () => {
     const index = buildExistingApptIndex(existing);
     const row = { ezgo_line_id: null, start_time: "11:00" };
-    expect(matchExistingAppointment(row, 6, 43, index).id).toBe(101);
+    expect(matchExistingAppointment(row, 6, 43, index, 8).id).toBe(101);
+  });
+
+  test("couple slot — two therapists same room/start/guest stay as distinct appointments", () => {
+    const index = buildExistingApptIndex(existing);
+    expect(matchExistingAppointment({ ezgo_line_id: "2890534_1", start_time: "09:00" }, 1, 50, index, 10).id).toBe(102);
+    expect(matchExistingAppointment({ ezgo_line_id: "2890534_2", start_time: "09:00" }, 1, 50, index, 11).id).toBe(103);
+    // Natural-key path also distinguishes by therapist when line ids are absent.
+    const noLine = buildExistingApptIndex([
+      { id: 201, ezgo_line_id: null, room_id: 1, start_time: "09:00", guest_id: 50, therapist_id: 10 },
+      { id: 202, ezgo_line_id: null, room_id: 1, start_time: "09:00", guest_id: 50, therapist_id: 11 },
+    ]);
+    expect(matchExistingAppointment({ ezgo_line_id: null, start_time: "09:00" }, 1, 50, noLine, 10).id).toBe(201);
+    expect(matchExistingAppointment({ ezgo_line_id: null, start_time: "09:00" }, 1, 50, noLine, 11).id).toBe(202);
   });
 
   test("no match → null (this is a genuinely new appointment)", () => {
     const index = buildExistingApptIndex(existing);
     const row = { ezgo_line_id: null, start_time: "12:00" };
-    expect(matchExistingAppointment(row, 7, 99, index)).toBeNull();
+    expect(matchExistingAppointment(row, 7, 99, index, 1)).toBeNull();
   });
 
   test("empty existing list never throws", () => {

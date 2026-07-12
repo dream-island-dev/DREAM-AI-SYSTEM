@@ -47,7 +47,7 @@ Dream Island Resort Management System (XOS) — אפליקציית ניהול מ
 - orit_cs_agent ➔ OritCustomerServicePanel.js (סוכן שירות לקוחות לאורית — **IMAP read-only**, AI סיכום+טיוטות, העתקה ידנית ל-Outlook, דייג'סט בוקר Whapi). אין שליחה מהמערכת.
 - ops_board ➔ OperationsBoard.js (לוח תפעול ואחזקה, כולל טאב משימות ממתינות לאישור)
 - data_sync ➔ DataSyncPage.js (מסך סנכרון וייבוא קבצי אקסל ודוחות EZGO ל-Admin/Receptionist). כולל ייבוא דוח פעילויות ספא (עברי או CSV אנגלי מ-EZGO) דרך אותו `ActivitiesImportZone` כמו לוח הספא.
-- spa_board ➔ SpaBoard.js (לוח ספא חכם — אג׳נדה/חדרים, ייבוא פעילויות EZGO → `spa_appointments` + write-through ל-`guests.spa_date`/`spa_time`. חדר זוגי = עד 2 תורים חופפים, מטפל לכל שורה. `iLineStatus=0` מדולג.)
+- spa_board ➔ SpaBoard.js (לוח ספא חכם — אג׳נדה/חדרים, ייבוא פעילויות EZGO עברי או CSV אנגלי → `spa_appointments` + write-through ל-`guests.spa_date`/`spa_time`/`guest_profile.spa`. CSV: תיקון `בע"מ` לפני parse; שיוך אורח לפי טלפון + שם עברי בסוגריים. חדר זוגי = עד 2 תורים חופפים. `iLineStatus=0` מדולג. באנר unmatched עם «נקה הכל».)
 - agent ➔ InventoryHub.js (ניהול מלאי, ייבוא דוחות, יצירת קישורי-קסם לעובדים ותור אישורים)
 - voucher_reconciliation ➔ VoucherReconciliationHub.js (מערכת התאמת שוברים ודוחות כספיים)
 - executive_playbook ➔ ExecutivePlaybook.js (כללים שנלמדו + יומן פעולות ל-Executive Voice Assistant)
