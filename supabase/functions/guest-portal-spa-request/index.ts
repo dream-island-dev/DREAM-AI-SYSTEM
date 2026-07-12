@@ -5,8 +5,8 @@
 
 import { serve }        from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { cleanPhoneForMention, sendWhapiText } from "../_shared/whapiSend.ts";
 import { onGuestAlertInserted } from "../_shared/guestAlertWhapiNotify.ts";
+import { shouldRouteGuestOutboundViaWhapiSuites } from "../_shared/guestWhapiRouting.ts";
 
 export const PORTAL_SPA_ATTENTION_REASON = "בקשת טיפול בספא";
 
@@ -52,7 +52,7 @@ serve(async (req: Request) => {
 
     const { data: guest, error: guestErr } = await supabase
       .from("guests")
-      .select("id, name, phone, room, arrival_date, status, guest_notes, spa_time")
+      .select("id, name, phone, room, room_type, arrival_date, status, guest_notes, spa_time")
       .eq("portal_token", token)
       .maybeSingle();
     if (guestErr) throw new Error(`lookup_error: ${guestErr.message}`);
@@ -134,6 +134,15 @@ serve(async (req: Request) => {
       alsoPersonalDm: true,
     }).catch((e: Error) => console.warn("[guest-portal-spa-request] staff notify failed:", e.message));
 
+    // Suite guests (flag on) route through Whapi first — whatsapp-send's
+    // inbox_reply branch already contains the correct fallback contract
+    // (confirmed Whapi failure → Meta; Whapi timeout → hard-stop, no
+    // fallback, no duplicate-send risk) and always logs whichever channel
+    // actually delivered. Day-pass guests / flag off → same Meta path as
+    // before. No separate raw-Whapi fallback here anymore — a message sent
+    // that way never made it into whatsapp_conversations (Zero Data Loss gap).
+    const outboundChannel = shouldRouteGuestOutboundViaWhapiSuites(guest) ? "whapi" : "meta";
+
     let conciergeReplySent = false;
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -148,26 +157,17 @@ serve(async (req: Request) => {
           trigger: "inbox_reply",
           phone: guest.phone,
           message: PORTAL_SPA_GUEST_REPLY,
+          inbox_channel: outboundChannel,
         }),
         signal: AbortSignal.timeout(28000),
       });
       const waData = await waRes.json().catch(() => ({}));
       conciergeReplySent = waRes.ok && (waData as { ok?: boolean }).ok !== false;
       if (!conciergeReplySent) {
-        console.warn("[guest-portal-spa-request] Meta concierge reply failed:", JSON.stringify(waData).slice(0, 300));
+        console.warn(`[guest-portal-spa-request] concierge reply failed (channel=${outboundChannel}):`, JSON.stringify(waData).slice(0, 300));
       }
     } catch (e) {
       console.warn("[guest-portal-spa-request] whatsapp-send invoke failed:", (e as Error).message);
-    }
-
-    if (!conciergeReplySent) {
-      try {
-        const digits = cleanPhoneForMention(guest.phone as string);
-        await sendWhapiText(digits, PORTAL_SPA_GUEST_REPLY, { noLinkPreview: true });
-        conciergeReplySent = true;
-      } catch (e) {
-        console.warn("[guest-portal-spa-request] Whapi guest DM fallback failed:", (e as Error).message);
-      }
     }
 
     return new Response(
@@ -175,6 +175,7 @@ serve(async (req: Request) => {
         ok: true,
         alertId: alert?.id ?? null,
         conciergeReplySent,
+        channel: outboundChannel,
         attentionReason: PORTAL_SPA_ATTENTION_REASON,
       }),
       { headers: { ...CORS, "Content-Type": "application/json" } },

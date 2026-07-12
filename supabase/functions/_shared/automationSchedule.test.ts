@@ -254,3 +254,79 @@ Deno.test("extractAllowlistedRequestLines: unrelated departure line does not pol
   const isolated = extractAllowlistedRequestLines(burst);
   assertEquals(isolated, "אגב אפשר גם עוד מגבות לחדר");
 });
+
+// ── Stage 1 (pre_arrival_2d) late-import catch-up ──────────────────────────
+function stage1PreArrival(overrides: Partial<AutomationStage> = {}): AutomationStage {
+  return {
+    stage_key: "pre_arrival_2d",
+    display_name: "Stage 1 — אישור הגעה",
+    journey_phase: "pre_arrival",
+    sequence_order: 100,
+    node_type: "hybrid",
+    schedule_mode: "day_offset_with_time",
+    anchor_event: "arrival_date",
+    day_offset: -2,
+    local_time: null,
+    local_time_shabbat: null,
+    local_time_end: null,
+    offset_hours: null,
+    applies_to: "all",
+    meta_template_name: "dream_arrival_confirmation",
+    session_message_script_key: "pre_arrival_2d",
+    session_message_script_key_shabbat: null,
+    session_message_image_url_shabbat: null,
+    interactive_buttons: [],
+    guest_flag_column: "msg_pre_arrival_2d_sent",
+    is_active: true,
+    ...overrides,
+  };
+}
+
+Deno.test("pre_arrival_2d: late import before arrival → missed_window (not date_passed, not dueNow)", () => {
+  // Arrival tomorrow; T-2 was yesterday → window missed, still catch-up eligible.
+  const guest = suiteGuest({
+    arrival_date: "2026-07-13",
+    msg_pre_arrival_2d_sent: false,
+  });
+  const result = resolveStageSchedule(stage1PreArrival(), guest, israelInstant("2026-07-12", 11, 0));
+  assertEquals(result.skipReason, "missed_window");
+  assertEquals(result.dueNow, false);
+});
+
+Deno.test("pre_arrival_2d: late import on arrival day → missed_window", () => {
+  const guest = suiteGuest({
+    arrival_date: "2026-07-12",
+    msg_pre_arrival_2d_sent: false,
+  });
+  const result = resolveStageSchedule(stage1PreArrival(), guest, israelInstant("2026-07-12", 11, 0));
+  assertEquals(result.skipReason, "missed_window");
+  assertEquals(result.dueNow, false);
+});
+
+Deno.test("pre_arrival_2d: arrival already past → date_passed (hidden permanently)", () => {
+  const guest = suiteGuest({
+    arrival_date: "2026-07-10",
+    msg_pre_arrival_2d_sent: false,
+  });
+  const result = resolveStageSchedule(stage1PreArrival(), guest, israelInstant("2026-07-12", 11, 0));
+  assertEquals(result.skipReason, "date_passed");
+  assertEquals(result.dueNow, false);
+});
+
+Deno.test("pre_arrival_2d: on T-2 day → dueNow (normal cron path)", () => {
+  const guest = suiteGuest({
+    arrival_date: "2026-07-14",
+    msg_pre_arrival_2d_sent: false,
+  });
+  const result = resolveStageSchedule(stage1PreArrival(), guest, israelInstant("2026-07-12", 11, 0));
+  assertEquals(result.skipReason, null);
+  assertEquals(result.dueNow, true);
+});
+
+Deno.test("night_before after window: still date_passed (no Stage-1-style catch-up)", () => {
+  // night_before day_offset -1; arrival 07-13 → target 07-12; evaluating 07-13 → passed.
+  const guest = suiteGuest({ arrival_date: "2026-07-13", msg_pre_arrival_sent: false });
+  const result = resolveStageSchedule(nightBeforeStage(), guest, israelInstant("2026-07-13", 10, 0));
+  assertEquals(result.skipReason, "date_passed");
+  assertEquals(result.dueNow, false);
+});

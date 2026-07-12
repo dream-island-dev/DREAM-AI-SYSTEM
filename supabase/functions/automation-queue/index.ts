@@ -61,6 +61,8 @@ const QUEUE_PREVIEW_VISIBLE_SKIP_REASONS = new Set([
   "staff_claim_active",
   "stage_suppressed",
   "already_checked_in",
+  // Stage 1 late-import catch-up — still dispatchable manually / Whapi bulk.
+  "missed_window",
 ]);
 
 Deno.serve(async (req: Request) => {

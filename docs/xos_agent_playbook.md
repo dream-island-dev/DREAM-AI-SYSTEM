@@ -335,6 +335,11 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
+### 2026-07-12 — Stage 1 late-import deadlock (date_passed hide)
+- **Symptom:** Tomorrow suite arrivals showed Stage 2 «ממתין לאישור הגעה» with no Stage 1 row and no Send — guests synced after T-2 never got the confirm ask.
+- **Root:** `resolveStageSchedule` returned `date_passed` for past day_offset windows; `automation-queue` treated it as `PERMANENT_SKIP` and omitted the row. Stage 2 correctly waits forever with nothing to unlock it.
+- **Fix pattern:** distinguish permanent past (`date_passed`, arrival already over) from catch-up (`missed_window`, arrival still today/future, `dueNow=false`); surface catch-up in Live Queue for manual/Whapi bulk. Never hide a still-actionable pipeline stage behind a permanent skip.
+
 ### 2026-07-12 — Autonomous audit found uncommitted work-in-progress first
 - **Lesson:** before starting a fresh audit/fix pass, always run `git status`/`git diff --stat` first — a prior session's fully-tested, documented fix (departure-assist grounding, 22/22 tests, changelog entry already written as "not deployed") was sitting uncommitted. Verifying and shipping that is higher-value than re-auditing the same ground from scratch.
 - **`.single()` audit pattern:** grep for `.single()` across webhook files is a fast, cheap first pass for the hard CLAUDE.md rule — found one real instance (`whapi-webhook` group-task insert) that PostgREST would surface as an error object (not a JS throw) on an RLS select-back gap, so it wasn't crashing visibly but was silently mislabeling a created task as a failure.

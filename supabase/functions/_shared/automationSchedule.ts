@@ -583,7 +583,22 @@ export function resolveStageSchedule(
     const scheduledFor = scheduledForPreview ?? utcHourToTimestamp(targetDateStr, floorUtcHour);
 
     if (targetDateStr !== todayStr) {
-      return { scheduledFor, dueNow: false, skipReason: targetDateStr < todayStr ? "date_passed" : null };
+      if (targetDateStr > todayStr) {
+        return { scheduledFor, dueNow: false, skipReason: null };
+      }
+      // targetDateStr < todayStr — window day already passed.
+      // Stage 1 catch-up (late EZGO import): guest still arrives today or later,
+      // confirmation request was never sent → surface as missed_window for Live
+      // Queue / manual Whapi bulk. dueNow stays false so cron does NOT auto-spam.
+      const arrivalYmd = String(guest.arrival_date ?? "").trim().slice(0, 10);
+      if (
+        stage.stage_key === "pre_arrival_2d"
+        && /^\d{4}-\d{2}-\d{2}$/.test(arrivalYmd)
+        && arrivalYmd >= todayStr
+      ) {
+        return { scheduledFor, dueNow: false, skipReason: "missed_window" };
+      }
+      return { scheduledFor, dueNow: false, skipReason: "date_passed" };
     }
 
     if (!stageLocalTime) {

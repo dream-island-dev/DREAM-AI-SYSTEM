@@ -487,6 +487,60 @@ async function claimWhapiGuestInbound(
   return { claimed: true, conversationId: (data?.id as number) ?? null };
 }
 
+/**
+ * Mirror a from_me (device-sent) 1:1 message into the Inbox — the physical
+ * Suites phone is a real WhatsApp client staff can type into directly, and
+ * without this those messages exist on the phone but never appear in XOS.
+ *
+ * Phone resolution: on an outbound Whapi event `from`/fromPhone reflects the
+ * DEVICE's own number, not the guest — canonicalGuestPhone("", chatId) forces
+ * its existing chatId-fallback branch to resolve the peer instead.
+ *
+ * Dedup: shares the same global unique index on wa_message_id that
+ * claimWhapiGuestInbound relies on for inbound. A message sent via the Inbox
+ * UI (whatsapp-send inbox_reply / sendGuestDmReply) already inserted this row
+ * synchronously at send time with the same wa_message_id — this insert then
+ * 23505s and is absorbed as "already_logged", not duplicated. That assumption
+ * (webhook echo id === send-time wamid) is unverified against a live payload;
+ * flagged for the Phase 3 QA pass.
+ */
+async function mirrorWhapiOutboundDm(
+  supabase: ReturnType<typeof createClient>,
+  msg: IncomingMessage,
+): Promise<{ mirrored: boolean; reason?: string }> {
+  const phone = canonicalGuestPhone("", msg.chatId);
+  if (!phone) return { mirrored: false, reason: "no_phone" };
+
+  let body = msg.text?.trim() || "";
+  if (!body) {
+    // Zero Data Loss — a from_me voice note/photo with no caption must still
+    // leave a visible trace, not vanish silently. No transcription attempted
+    // here (that's for guest-authored inbound voice only, see below).
+    body = msg.voiceMediaId
+      ? "🎤 [הודעה קולית נשלחה מהמכשיר]"
+      : "📎 [מדיה נשלחה מהמכשיר — אין טקסט]";
+  }
+
+  const guest = (await resolveGuestByInboundPhone(supabase, phone)) as ActiveGuestRow | null;
+
+  const { error } = await supabase.from("whatsapp_conversations").insert({
+    phone,
+    guest_id: guest?.id ?? null,
+    direction: "outbound",
+    message: formatWhapiSuitesConversationLog(body),
+    wa_message_id: msg.id,
+    inbox_channel: "whapi",
+    channel: "whapi",
+  });
+
+  if (error) {
+    if (isUniqueViolation(error)) return { mirrored: false, reason: "already_logged" };
+    console.error("[whapi-webhook] mirrorWhapiOutboundDm insert failed:", error.message);
+    return { mirrored: false, reason: "insert_failed" };
+  }
+  return { mirrored: true };
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // GUEST DIRECT MESSAGE HANDLING — 1:1 (non-group) conversations on the Suites
 // device (מכשיר הסוויטות), same brain as the Meta bot (whatsapp-webhook).
@@ -1133,7 +1187,12 @@ serve(async (req: Request) => {
     // comment above for the gating rule and the documented gap list.
     for (const msg of messages) {
       if (msg.fromMe) {
-        results.push({ id: msg.id, channel: "guest_dm", ignored: "from_me" });
+        if (isDirectGuestChat(msg.chatId)) {
+          const mirror = await mirrorWhapiOutboundDm(supabase, msg);
+          results.push({ id: msg.id, channel: "guest_dm", from_me: true, ...mirror });
+        } else {
+          results.push({ id: msg.id, channel: "guest_dm", ignored: "from_me" });
+        }
         continue;
       }
       if (!isDirectGuestChat(msg.chatId)) continue;

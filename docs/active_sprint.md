@@ -1,5 +1,42 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-11 (ETA→Requests Board + assistant digest — **deployed** `83569ed`).
+> Last updated: 2026-07-12 (Stage 1 missed-window catch-up — **ready to deploy**).
+
+---
+
+## 🟡 Ready to deploy — Stage 1 missed-window catch-up (2026-07-12)
+
+**Problem:** Late EZGO import after T-2 → Stage 1 vanished (`date_passed`) while Stage 2 sat on «ממתין לאישור הגעה» forever (guest never got the confirm ask).
+
+| Piece | Detail |
+|---|---|
+| `automationSchedule` | `pre_arrival_2d` past window + arrival ≥ today → `missed_window` (not `date_passed`); `dueNow=false` so cron does not auto-spam |
+| `automation-queue` | `missed_window` visible in Live Queue |
+| ACC | Badge «⚠ פספס מועד», «שלח», suite channel chip «מכשיר סוויטות», suite Send → `whapi_session` |
+
+**Deploy:** `automation-queue` (+ any consumer of `_shared/automationSchedule`) + frontend push.
+
+**Mike QA:** מחר בתור חי — אורחי סוויטה בלי Stage 1 → שורה כתומה + סימון מרובה → «📱 שגר דרך מכשיר הסוויטות».
+
+---
+
+## ✅ Deployed — Sprint A: suite guests via Whapi + from_me DM mirror (2026-07-12)
+
+Goal: suite-guest DMs never silently default to Meta, and messages sent from the physical Suites phone show up in the Inbox.
+
+| Piece | Detail |
+|---|---|
+| `guest-portal-spa-request` | Now routes via `shouldRouteGuestOutboundViaWhapiSuites(guest)` through `whatsapp-send inbox_reply` (single call, inherits confirmed-fail→Meta / timeout→hard-stop). Also fixed a Zero-Data-Loss gap: the old raw-Whapi fallback never logged to the Inbox. |
+| `whapi-webhook` | New `mirrorWhapiOutboundDm()` — `from_me` 1:1 messages (physical Suites phone) now log into the Inbox instead of being ignored. Phone resolved from `chat_id`, deduped on `wa_message_id`, empty-text media gets a placeholder. |
+| Audit | All 13 guest-facing send call sites checked — only the spa-request portal DM'd the guest directly via Meta-first; everything else already staff/group-only. |
+
+Deployed: `guest-portal-spa-request`, `whapi-webhook`. No db/frontend changes this round.
+
+**Open follow-up (flagged, not built):** 1:1 reactions (both `from_me` and guest-inbound) are still dropped as `not_a_group_reaction` — no parity yet with Meta's session-128 guest-reaction chip. **Also unverified:** whether Whapi's webhook-echo `msg.id` for a from_me event equals the `wamid` returned at send time (the dedup assumption) — needs confirming on the first live device-sent test message.
+
+**Mike — QA to run:**
+1. Send a text from the physical Suites phone to a suite guest → should appear in Inbox within seconds, `[WHAPI]` tag, no duplicate.
+2. Spa request from a suite guest's portal → ack arrives on the Suites number, Inbox thread shows `whapi` not `meta`.
+3. Same from a day-pass guest → unchanged, still Meta.
 
 ---
 

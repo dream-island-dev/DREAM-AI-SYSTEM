@@ -94,6 +94,7 @@ const SKIP_REASON_LABELS = {
   staff_claim_active: "שיחה בטיפול צוות",
   awaiting_confirmation: "ממתין לאישור הגעה",
   stage_suppressed: "בוטל ידנית",
+  missed_window: "פספס מועד — לשגר ידנית",
 };
 
 function queueYmd(d = new Date()) {
@@ -198,6 +199,7 @@ function formatQueueScheduleCell(q) {
     return when;
   }
   if (q.skipReason === "awaiting_confirmation") return "מיד לאחר אישור הגעה";
+  if (q.skipReason === "missed_window") return "פספס מועד — לשגר ידנית";
   if (q.stageKey === "stage_2_arrival" && q.dueNow) return "מיידי (אחרי אישור)";
   return "—";
 }
@@ -216,6 +218,7 @@ function queueStatusBadge(q) {
   if (q.status === "blocked_by_meta") return { cls: "badge-orange", text: "🟠 ממתין לאישור" };
   if (q.status === "failed_missing_link") return { cls: "badge-red", text: "❌ חסר קישור תשלום" };
   if (q.dueNow && q.status === "pending") return { cls: "badge-gold", text: "⚡ מוכן לשליחה" };
+  if (q.skipReason === "missed_window") return { cls: "badge-orange", text: "⚠ פספס מועד — לשגר ידנית" };
   if (q.staffScheduled && isFutureScheduledQueueItem(q)) return { cls: "badge-blue", text: "📅 מתוזמן" };
   if (q.skipReason && SKIP_REASON_LABELS[q.skipReason]) {
     return { cls: q.skipReason === "stage_suppressed" ? "badge" : "badge-blue", text: q.skipReason === "stage_suppressed" ? "🚫 בוטל ידנית" : `🕐 ${SKIP_REASON_LABELS[q.skipReason]}` };
@@ -280,6 +283,8 @@ function renderGuestQueueRows({
         style={{
           background: isChecked
             ? "rgba(201,169,110,0.12)"
+            : q.skipReason === "missed_window"
+            ? "rgba(217,119,6,0.08)"
             : q.dueNow
             ? "rgba(201,169,110,0.06)"
             : isSuppressed
@@ -306,10 +311,14 @@ function renderGuestQueueRows({
         <td>
           <span style={{
             fontSize: 10, padding: "2px 7px", borderRadius: 10,
-            background: q.predictedChannel === "session_message" ? "#E8F5EF" : "#E0F2FE",
-            color: q.predictedChannel === "session_message" ? "#1A7A4A" : "#0369A1",
+            background: q.effectiveSuite
+              ? "#E8F5EF"
+              : q.predictedChannel === "session_message" ? "#E8F5EF" : "#E0F2FE",
+            color: q.effectiveSuite
+              ? "#1A7A4A"
+              : q.predictedChannel === "session_message" ? "#1A7A4A" : "#0369A1",
           }}>
-            {q.predictedChannel === "session_message" ? "סשן" : "תבנית"}
+            {q.effectiveSuite ? "מכשיר סוויטות" : q.predictedChannel === "session_message" ? "סשן" : "תבנית"}
           </span>
         </td>
         <td>
@@ -1422,7 +1431,10 @@ function ManualDispatchModal({ item, stages, onClose, onDispatched, showToast })
   });
 
   const [stageKey, setStageKey]   = useState(item.stageKey ?? (allowedStages[0]?.stage_key ?? ""));
-  const [channel, setChannel]     = useState("meta_template");
+  // Suite guests always talk on the Suites device — default Override to Whapi.
+  const [channel, setChannel]     = useState(
+    item.effectiveSuite ? "whapi_session" : "meta_template",
+  );
   const [confirmed, setConfirmed] = useState(false);
   const [sending, setSending]     = useState(false);
   const [result, setResult]       = useState(null); // {ok, message}
@@ -2024,13 +2036,16 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
 
   const runQueueSendNow = useCallback(async (item, scheduledFor) => {
     if (!supabase) return;
-    // night_before: no force_channel pin — whatsapp-send zero-guard uses live window + force=true
+    // night_before: no force_channel pin — whatsapp-send zero-guard uses live window + force=true.
+    // Suite guests: always Suites device (Whapi) — Dream Bot Meta is wrong channel for them.
     const forceChannel =
       item.stageKey === "night_before"
         ? undefined
-        : item.predictedChannel === "session_message"
-          ? "session_message"
-          : "meta_template";
+        : item.effectiveSuite
+          ? "whapi_session"
+          : item.predictedChannel === "session_message"
+            ? "session_message"
+            : "meta_template";
     setSendNowSending(true);
     setSendNowError(null);
     try {
@@ -2364,7 +2379,7 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
             ⚙️ עריכת תזמון/תוכן כאן <strong>חיה</strong> — whatsapp-cron ו-whatsapp-send קוראים בפועל מהטבלה הזו ומחליטים לפיה
             מתי ומה לשלוח לאורחים. הפעלה/כיבוי או שינוי שלב כאן משפיע ישירות על מה שהאורח מקבל בוואטסאפ, לא רק על מה שמוצג בלוח.
             <br />
-            שלב 2 (אישור הגעה): נשלח מיד כשהאורח לוחץ «כן מגיעים», מופיע גם ב<strong>תור חי</strong> לאורחים שאישרו וטרם קיבלו — ניתן לשגר ידנית/מאסיבית משם. <code>offset_hours</code> משפיע רק על תזמון cron/תור (גיבוי), לא על לחיצת האורח.
+            שלב 1 (אישור הגעה): אם האורח סונכרן אחרי מועד ה-T-2 — השלב מופיע כ־«⚠ פספס מועד» עם כפתור «שלח» / בחירה מרובה + «📱 שגר דרך מכשיר הסוויטות». ה-cron לא שולח אוטומטית אחרי שפספס (למנוע ספאם). שלב 2: נשלח מיד כשהאורח לוחץ «כן מגיעים», מופיע גם ב<strong>תור חי</strong> לאורחים שאישרו וטרם קיבלו. <code>offset_hours</code> משפיע רק על תזמון cron/תור (גיבוי), לא על לחיצת האורח.
           </div>
 
           {loadingStages ? (
