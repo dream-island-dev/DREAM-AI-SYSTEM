@@ -3,6 +3,21 @@
 
 ---
 
+## 🟡 Local — Stage 1 Whapi arrival-confirm CTA safety net (2026-07-12)
+
+Design Mode picked approach 1 (CTA text hotfix) over Whapi interactive buttons — Whapi's own docs flag button-send as "not stable," zero button-parse infra exists in `whapi-webhook`, and compat with the session-paired Suites device is unconfirmed.
+
+| Piece | Detail |
+|---|---|
+| `_shared/arrivalConfirmation.ts` | `ensureArrivalConfirmationCta()` — defends the "כן, מגיעים!" typed-reply CTA on Whapi Stage 1 (no buttons there, unlike Meta); no-op when already present (confirmed live migration-100 seed text has it) |
+| `whatsapp-send` | Wired scoped to `pre_arrival_2d` + Whapi channel only — Meta template path untouched |
+| `AutomationControlCenter.js` | Bulk dispatch summary modal now separates `timeout` ("⏳ לא ודאי אם הגיעו") from real `failed` — Live Queue badge already had this, modal didn't |
+| Tests | 7 new Deno tests, `deno check` delta-clean (37 pre-existing errors, unchanged), `npm run build` clean |
+
+**Not deployed** — awaiting Mike's `כן`/`תעלה`. Deploy: `whatsapp-send` (+ optionally `whapi-webhook`/`whatsapp-webhook`/`whatsapp-cron` since `_shared/arrivalConfirmation.ts` changed, though their behavior is unaffected — pure addition) + frontend push.
+
+---
+
 ## ✅ Deployed — Sprint B: Inbox composer emoji picker (2026-07-12)
 
 Goal: staff desktop has no native phone emoji keyboard — add a picker next to the Inbox reply composer.

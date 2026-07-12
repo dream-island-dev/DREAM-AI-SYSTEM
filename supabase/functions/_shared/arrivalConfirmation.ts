@@ -20,7 +20,7 @@ export function normalizePhoneSuffix(phoneStr: unknown): string {
   return String(phoneStr ?? "").replace(/\D/g, "").slice(-9);
 }
 
-function hebrewOnlyLetters(s: string): string {
+export function hebrewOnlyLetters(s: string): string {
   return s.replace(/[^א-ת]/g, "");
 }
 
@@ -76,6 +76,28 @@ export function isArrivalConfirmationMessage(
     }
   }
   return false;
+}
+
+/** Canonical Stage 1 CTA — Whapi has no interactive buttons (unlike Meta's
+ * template), so the typed reply this asks for is the guest's only path to
+ * confirmation. Appended defensively; the live bot_scripts.pre_arrival_2d
+ * body (migration 100) already includes an equivalent phrase. */
+export const ARRIVAL_CONFIRM_CTA_HE = 'לאישור הגעה — כתבו לנו כאן "כן, מגיעים!" 🌴';
+
+/** Same כן+מגיעים heuristic isArrivalConfirmationMessage's fallback branch
+ * uses, applied to an outbound body instead of an inbound reply. */
+function bodyAlreadyHasConfirmCta(text: string): boolean {
+  const heb = hebrewOnlyLetters(text);
+  return heb.includes("כן") && heb.includes("מגיעים");
+}
+
+/** Guarantees a Stage 1 Whapi session body always carries a confirmable CTA,
+ * even if bot_scripts.pre_arrival_2d gets edited in ACC and the confirm
+ * phrase is dropped — a guest with no way to trigger Stage 2 is a silent
+ * pipeline dead-end. No-op when the phrase is already present. */
+export function ensureArrivalConfirmationCta(body: string): string {
+  if (bodyAlreadyHasConfirmCta(body)) return body;
+  return `${body.trimEnd()}\n\n${ARRIVAL_CONFIRM_CTA_HE}`;
 }
 
 export function buildPhoneVariants(from: string): { phone: string; variants: string[] } {

@@ -58,6 +58,7 @@ import { sendImageMessage, sendInteractiveButtons } from "../_shared/interactive
 import { isArrivalTodayIsrael, israelTodayYmd } from "../_shared/israelDate.ts";
 import { sanitizeMetaRecipientPhone } from "../_shared/metaPhone.ts";
 import { sendWhapiText, sendWhapiImage, cleanPhoneForMention } from "../_shared/whapiSend.ts";
+import { ensureArrivalConfirmationCta } from "../_shared/arrivalConfirmation.ts";
 import {
   guardPaymentLink,
   logPaymentLinkFailure,
@@ -3631,7 +3632,12 @@ serve(async (req: Request) => {
               .replace(/\{\{\s*portal_url\s*\}\}/gi, portalUrl),
             String(guest.arrival_date ?? ""),
           );
-          sessionBody = body;
+          // Stage 1 over Whapi has no interactive buttons (Meta's template
+          // does) — the typed CTA in the body is the guest's only path to
+          // confirming. Defend against an ACC edit that drops the phrase.
+          sessionBody = (trigger === "pre_arrival_2d" && (forceWhapiSession || useWhapiForPipeline))
+            ? ensureArrivalConfirmationCta(body)
+            : body;
           sessionButtons = (stageRow.interactive_buttons ?? []) as typeof sessionButtons;
           sessionImageUrl = resolveShabbatAwareSessionImageUrl(stageRow, pipelineIsShabbat, requestImageUrl) ?? null;
           usedSessionMessage = true;

@@ -2257,6 +2257,8 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
           }
         } else if (data?.ok) {
           results.push({ item, result: "sent", simulation: data.simulation });
+        } else if (data?.status === "timeout") {
+          results.push({ item, result: "timeout", error: data?.error ?? "timeout_no_response" });
         } else {
           results.push({ item, result: "failed", error: data?.error ?? "unknown" });
         }
@@ -2280,6 +2282,7 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
       skipped: results.filter((r) => r.result === "skipped").length,
       duplicates: results.filter((r) => r.result === "duplicate").length,
       blocked: results.filter((r) => r.result === "blocked").length,
+      timeout: results.filter((r) => r.result === "timeout").length,
       failed:  results.filter((r) => r.result === "failed" || r.result === "error").length,
       details: results,
     });
@@ -2661,6 +2664,9 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                     {dispatchSummary.blocked > 0 && (
                       <div style={{ color: "#7C3AED" }}>🔒 חסומות: <strong>{dispatchSummary.blocked}</strong></div>
                     )}
+                    {dispatchSummary.timeout > 0 && (
+                      <div style={{ color: "#92702C" }}>⏳ לא ודאי אם הגיעו: <strong>{dispatchSummary.timeout}</strong></div>
+                    )}
                     {dispatchSummary.failed > 0 && (
                       <div style={{ color: "#C0392B" }}>❌ נכשלו: <strong>{dispatchSummary.failed}</strong></div>
                     )}
@@ -2673,6 +2679,17 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                           <div key={i} style={{ fontSize: 11, color: "#7C3AED", padding: "4px 0", borderBottom: "1px solid var(--border)" }}>
                             {r.item.guestName ?? r.item.guestId} — {r.item.displayName}:{" "}
                             {r.reason === "whapi_unsupported_stage" ? "שלב לא נתמך עדיין דרך Whapi" : "שער יום-כיף"}
+                          </div>
+                        ))}
+                    </div>
+                  )}
+                  {dispatchSummary.timeout > 0 && (
+                    <div style={{ marginTop: 16, maxHeight: 140, overflowY: "auto" }}>
+                      {dispatchSummary.details
+                        .filter((r) => r.result === "timeout")
+                        .map((r, i) => (
+                          <div key={i} style={{ fontSize: 11, color: "#92702C", padding: "4px 0", borderBottom: "1px solid var(--border)" }}>
+                            {r.item.guestName ?? r.item.guestId} — {r.item.displayName}: לא ודאי אם הגיע — בדקו לפני שליחה חוזרת
                           </div>
                         ))}
                     </div>
