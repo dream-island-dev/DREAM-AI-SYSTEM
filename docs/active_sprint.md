@@ -285,8 +285,8 @@ Goal: import the FULL daily Ezgo "פעילויות" report (not suite-only), mat
 | 2 | Upsert engine + guest write-through + `guest_profile.spa` context (`src/utils/spaActivitiesSyncEngine.js`) | ✅ done |
 | 3 | SpaBoard Excel import UI + unmatched panel + summary toast | ✅ shipped |
 | 3b | Staff UX — board colors + staff notes (quick-edit on card click) | ✅ code + migration 180 |
-| 3c | English machine-CSV + couple dual-row + missing aliases (migration 191) | ✅ code — **not deployed** |
-| 3d | CSV בע"מ repair + Golden Profile name match (Latin nickname / Hebrew paren) + «נקה הכל» unmatched | ✅ code — **not deployed** |
+| 3c | English machine-CSV + couple dual-row + missing aliases (migration 191) | ✅ deployed (db 191 earlier; frontend `cacc05d`) |
+| 3d | CSV בע"מ repair + Golden Profile name match + «נקה הכל» unmatched | ✅ deployed frontend `cacc05d` (2026-07-12) |
 | 4 | `spa-schedule-webhook` upgraded to shared engine, `filter=all` default | Pending |
 | 5 | Bot context enrichment (`buildGuestStageContext` spa line → room/therapist/type) | Pending |
 
