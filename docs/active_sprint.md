@@ -1,9 +1,9 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-12 (Stage 1 missed-window catch-up — **ready to deploy**).
+> Last updated: 2026-07-12 (Stage 1 missed-window catch-up — **deployed** `57ff36d`).
 
 ---
 
-## 🟡 Ready to deploy — Stage 1 missed-window catch-up (2026-07-12)
+## ✅ Deployed — Stage 1 missed-window catch-up (2026-07-12)
 
 **Problem:** Late EZGO import after T-2 → Stage 1 vanished (`date_passed`) while Stage 2 sat on «ממתין לאישור הגעה» forever (guest never got the confirm ask).
 
@@ -13,7 +13,7 @@
 | `automation-queue` | `missed_window` visible in Live Queue |
 | ACC | Badge «⚠ פספס מועד», «שלח», suite channel chip «מכשיר סוויטות», suite Send → `whapi_session` |
 
-**Deploy:** `automation-queue` (+ any consumer of `_shared/automationSchedule`) + frontend push.
+Deployed: `automation-queue` + frontend `main` (`57ff36d`).
 
 **Mike QA:** מחר בתור חי — אורחי סוויטה בלי Stage 1 → שורה כתומה + סימון מרובה → «📱 שגר דרך מכשיר הסוויטות».
 
