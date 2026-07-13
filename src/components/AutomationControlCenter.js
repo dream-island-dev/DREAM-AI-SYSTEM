@@ -223,6 +223,15 @@ function queueStatusBadge(q) {
   if (q.skipReason && SKIP_REASON_LABELS[q.skipReason]) {
     return { cls: q.skipReason === "stage_suppressed" ? "badge" : "badge-blue", text: q.skipReason === "stage_suppressed" ? "🚫 בוטל ידנית" : `🕐 ${SKIP_REASON_LABELS[q.skipReason]}` };
   }
+  // Anti-spam/anti-race latch (2026-07-13) — retryGate stays populated even
+  // after skipReason is masked to null by a logged attempt (see
+  // automation-queue's status/skipReason fields above); checked before the
+  // generic failed/timeout fallback so staff see WHY cron isn't retrying yet,
+  // not just that the last attempt failed. Dispatch button stays enabled
+  // (isDispatchable doesn't exclude these) — manual/Override still sends.
+  if (q.retryGate === "exhausted") return { cls: "badge-red", text: "🛑 מוצה — נדרשת שליחה ידנית" };
+  if (q.retryGate === "cooldown") return { cls: "badge-orange", text: "⏳ בהמתנה — ניסיון קודם נכשל" };
+  if (q.retryGate === "in_flight") return { cls: "badge-blue", text: "🔄 בתהליך שליחה" };
   if (q.status === "failed" || q.status === "timeout") return { cls: "badge-red", text: q.status === "timeout" ? "לא ודאי" : "נכשל" };
   return { cls: "badge-blue", text: "מתוזמן" };
 }

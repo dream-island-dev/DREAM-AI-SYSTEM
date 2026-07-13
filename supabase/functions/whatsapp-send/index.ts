@@ -89,6 +89,7 @@ import {
   duplicateBlockedResponseBody,
   logDuplicateBlocked,
 } from "../_shared/automationDuplicateGuard.ts";
+import { claimDispatchAttempt, finalizeDispatchAttempt } from "../_shared/automationClaim.ts";
 import {
   assertGuestEligibleForAutomation,
   GUEST_NOT_ACTIVE_HE,
@@ -1037,7 +1038,11 @@ async function notifyAdminIfDispatchFailed(params: {
   dispatchType: "Template" | "Session";
 }): Promise<void> {
   if (!params.error) return;
-  if (params.status !== "failed" && params.status !== "blocked_by_meta") return;
+  // "timeout" included (2026-07-13) — it was previously silently excluded
+  // here, which is exactly what let the Stage 3 Shabbat retry-storm run
+  // unnoticed: the one status causing the spam was also the one status that
+  // never paged anyone.
+  if (params.status !== "failed" && params.status !== "blocked_by_meta" && params.status !== "timeout") return;
   await alertAdminDispatchFailure({
     guestName: params.guestName,
     guestPhone: params.guestPhone,
@@ -3794,6 +3799,25 @@ serve(async (req: Request) => {
       throw new Error(`whapi_session_unavailable: שלב "${trigger}" אינו מוגדר עם Bot Script פעיל — לא ניתן לשלוח דרך Whapi.`);
     }
 
+    // Phase C claim-before-send (2026-07-13) — prevents two overlapping cron
+    // ticks (or a cron tick racing a manual Override) from dispatching this
+    // exact guest+trigger concurrently. Scoped to this generic fallback path
+    // only this session — see automationClaim.ts header for the explicit
+    // follow-up list of the remaining special-cased fast paths.
+    const claim = await claimDispatchAttempt(supabase, {
+      guestId,
+      triggerType: trigger,
+      recipient: guest.phone as string,
+      force: force === true,
+    });
+    if (!claim.claimed) {
+      console.log(`[whatsapp-send] BRANCH_D claim_conflict trigger="${trigger}" guestId=${guestId} reason=${claim.reason}`);
+      return new Response(
+        JSON.stringify({ ok: true, skipped: true, status: "in_flight", reason: "claim_conflict" }),
+        { headers: { ...CORS, "Content-Type": "application/json" } },
+      );
+    }
+
     let status = "simulated";
     let sendError: string | null = null;
     let tmplVars: string[] = [];
@@ -3880,10 +3904,8 @@ serve(async (req: Request) => {
       }
     }
 
-    await supabase.from("notification_log").insert({
-      guest_id: guestId, recipient: guest.phone, trigger_type: trigger,
-      channel: "whatsapp", status,
-      payload: usedSessionMessage
+    await finalizeDispatchAttempt(supabase, claim.logId, status,
+      usedSessionMessage
         ? { channel: (forceWhapiSession || useWhapiForPipeline) ? "whapi_session" : "session_message", scriptKey: stageRow!.session_message_script_key, ...(sendError ? { error: sendError } : {}), ...(force ? { forced: true, force_channel, ...overridePayloadExtras } : {}) }
         : {
             channel: "meta_template",
@@ -3893,7 +3915,7 @@ serve(async (req: Request) => {
             ...(sessionFailureNote ? { sessionMessageFailureNote: sessionFailureNote } : {}),
             ...(force ? { forced: true, force_channel, ...overridePayloadExtras } : {}),
           },
-    });
+    );
 
     await notifyAdminIfDispatchFailed({
       status,

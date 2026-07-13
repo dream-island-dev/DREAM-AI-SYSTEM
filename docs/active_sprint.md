@@ -1,5 +1,24 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-13 (Guest Experience Survey + Spa warm-up — code complete, not deployed).
+> Last updated: 2026-07-13 (Automation retry-storm fix — code complete, not deployed).
+
+---
+
+## 🟡 Ready to deploy — Automation retry-storm fix: cooldown/exhausted latch + claim-before-send (2026-07-13)
+
+Live incident: Stage 3 Shabbat morning script re-sent to «אוחיון רויטל» every ~15m by `whatsapp-cron`. Root cause + full Phase B/C design in the session plan; Mike locked **B then C**.
+
+| Piece | Detail |
+|---|---|
+| Phase B — `_shared/automationRetryGate.ts` | Pure `evaluateRetryGate`: `cooldown` (30min) after 1 timeout/failed/blocked_by_meta, `exhausted` after 4, per (guest, stage_key). Wired into `checkEligibility` — the one gate `whatsapp-cron` + `automation-queue` already share, so every trigger is covered with no per-trigger duplication. Also gates the separate `stage_2_arrival` reconcile pass (event_immediate stages skip the main due-loop). |
+| Phase B — ACC + admin visibility | Live Queue `retryGate` field + `⏳ בהמתנה` / `🛑 מוצה` / `🔄 בתהליך שליחה` badges (Override still sends, Disable-Don't-Hide). `notifyAdminIfDispatchFailed` now also alerts on `timeout` (was silently excluded — the reason nobody caught this sooner). |
+| Phase C — migration 195 | Partial unique index on `notification_log(guest_id, trigger_type) WHERE status='processing'` — reuses the already-reserved but previously-unused `'processing'` status. |
+| Phase C — `_shared/automationClaim.ts` | `claimDispatchAttempt`/`finalizeDispatchAttempt` — claim before send, one row per attempt, 5min stale-claim reclaim, `force` bypass. Wired into `whatsapp-send`'s generic BRANCH D path this session (`pre_arrival_2d`, `mid_stay(+daypass)`, `checkout_fb(+daypass)`, `spa_warmup_daypass`, `survey_invite_daypass`, `night_before_daypass`). |
+| Explicit follow-up (not this session) | Same helper, wire into the remaining special-cased fast paths: `night_before`, `morning_suite`/`morning_welcome`, `room_ready`, `stage_2_arrival`'s own dispatch (its reconcile-queue side is already covered). |
+| Tests | 61 new/updated Deno tests pass. `deno check` delta-clean (whatsapp-send +1 error — pre-existing loose-`guestId` typing pattern, already present twice in the same file, not a new class of issue). `npm run build` clean. |
+
+**Deploy when Mike says `כן`/`תעלה`:** `npx supabase db push` (migration 195) + `npx supabase functions deploy --no-verify-jwt` for `whatsapp-cron`, `automation-queue`, `whatsapp-send` (all consume `_shared/automationRetryGate.ts`; whatsapp-send also consumes `_shared/automationClaim.ts`) + `npm run build` → push `main` for `AutomationControlCenter.js`.
+
+**Mike QA after deploy:** force a Whapi timeout on a test guest → `notification_log` gets `timeout` → ACC shows `⏳ בהמתנה` within the same tick → no re-fire for 30min → after 4 attempts shows `🛑 מוצה` → manual Override still sends regardless.
 
 ---
 

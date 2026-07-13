@@ -484,3 +484,70 @@ Deno.test("survey_invite_daypass: needs_callback=true does NOT mute the automati
   assertEquals(result.skipReason, null);
   assertEquals(result.dueNow, true);
 });
+
+// ── Anti-spam/anti-race latch (2026-07-13, automationRetryGate.ts) ─────────
+// Regression coverage for the checkEligibility wiring — the pure
+// evaluateRetryGate decision table itself is covered exhaustively in
+// automationRetryGate.test.ts; these confirm it's actually reached from
+// resolveStageSchedule/checkEligibility with the right per-stage_key scoping.
+
+Deno.test("morning_suite: recent timeout attempt within cooldown → skipReason=cooldown, not re-queued", () => {
+  const stage = nightBeforeStage({ stage_key: "morning_suite", guest_flag_column: "msg_morning_suite_sent" });
+  const guest = suiteGuest({
+    arrival_date: SAT,
+    automation_retry_state: {
+      morning_suite: { count: 1, lastAttemptAt: israelInstant(SAT, 9, 55).toISOString(), processing: false },
+    },
+  });
+  const result = resolveStageSchedule(stage, guest, israelInstant(SAT, 10, 0));
+  assertEquals(result.dueNow, false);
+  assertEquals(result.skipReason, "cooldown");
+});
+
+Deno.test("morning_suite: 4th failed attempt logged → exhausted, even though flag was never stamped", () => {
+  const stage = nightBeforeStage({ stage_key: "morning_suite", guest_flag_column: "msg_morning_suite_sent" });
+  const guest = suiteGuest({
+    arrival_date: SAT,
+    msg_morning_suite_sent: false,
+    automation_retry_state: {
+      morning_suite: { count: 4, lastAttemptAt: israelInstant(SAT, 6, 0).toISOString(), processing: false },
+    },
+  });
+  const result = resolveStageSchedule(stage, guest, israelInstant(SAT, 14, 0));
+  assertEquals(result.dueNow, false);
+  assertEquals(result.skipReason, "exhausted");
+});
+
+Deno.test("retry state is scoped per stage_key — a cooldown on morning_suite does not block night_before for the same guest", () => {
+  const stage = nightBeforeStage(); // stage_key: "night_before"
+  const guest = suiteGuest({
+    arrival_date: SAT,
+    automation_retry_state: {
+      morning_suite: { count: 1, lastAttemptAt: israelInstant(FRI, 15, 4).toISOString(), processing: false },
+    },
+  });
+  const result = resolveStageSchedule(stage, guest, israelInstant(FRI, 15, 5));
+  assertEquals(result.dueNow, true);
+  assertEquals(result.skipReason, null);
+});
+
+Deno.test("no prior attempts (fresh guest) → retry gate never fires, normal dueNow behavior unchanged", () => {
+  const stage = nightBeforeStage();
+  const guest = suiteGuest({ arrival_date: SAT });
+  const result = resolveStageSchedule(stage, guest, israelInstant(FRI, 15, 5));
+  assertEquals(result.dueNow, true);
+  assertEquals(result.skipReason, null);
+});
+
+Deno.test("an in-flight (processing) claim → skipReason=in_flight, cron must not double-dispatch", () => {
+  const stage = nightBeforeStage({ stage_key: "morning_suite", guest_flag_column: "msg_morning_suite_sent" });
+  const guest = suiteGuest({
+    arrival_date: SAT,
+    automation_retry_state: {
+      morning_suite: { count: 0, lastAttemptAt: israelInstant(SAT, 9, 59).toISOString(), processing: true },
+    },
+  });
+  const result = resolveStageSchedule(stage, guest, israelInstant(SAT, 10, 0));
+  assertEquals(result.dueNow, false);
+  assertEquals(result.skipReason, "in_flight");
+});

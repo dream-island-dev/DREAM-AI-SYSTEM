@@ -14,6 +14,7 @@
 
 import { assertPipelineLifecycleForTrigger } from "./pipelineLifecycle.ts";
 import { isEffectiveSuiteGuest } from "./suiteNames.ts";
+import { evaluateRetryGate, type RetryState } from "./automationRetryGate.ts";
 
 export const ISRAEL_UTC_OFFSET_HOURS = 2;
 
@@ -221,6 +222,9 @@ export interface GuestForSchedule {
   claimed_by?: string | null;
   /** stage_keys staff cancelled per guest (migration 169) — attached at cron/queue load. */
   pipeline_suppressed_stages?: string[] | null;
+  /** Per-stage_key retry/claim state (automationRetryGate.ts) — attached at cron/queue load
+   * from a batched notification_log read, same pattern as pipeline_suppressed_stages. */
+  automation_retry_state?: Record<string, RetryState> | null;
   /** Day-pass spa cohort — anchor for spa_warmup_daypass (spa_time) + eligibility for both survey stages. */
   spa_date?: string | null;
   spa_time?: string | null;
@@ -495,6 +499,13 @@ export function checkEligibility(
     return "stage_suppressed";
   }
   if (isGuestStaffClaimActive(guest)) return "staff_claim_active";
+  // Anti-spam/anti-race latch (2026-07-13) — a timeout/failed prior attempt
+  // never stamps guest_flag_column (see automationRetryGate.ts header), so
+  // without this a guest would re-qualify as due on every ~15-min cron tick
+  // forever. Checked before already_sent since a guest can be mid-retry for
+  // a stage that has never successfully sent.
+  const retryGate = evaluateRetryGate(guest.automation_retry_state?.[stage.stage_key], now);
+  if (retryGate) return retryGate;
   if (stage.guest_flag_column && guest[stage.guest_flag_column] === true) return "already_sent";
 
   // Effective classification (P0, session 125): room_type OR canonical suite

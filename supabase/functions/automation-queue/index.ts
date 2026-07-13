@@ -33,6 +33,11 @@ import {
   isStageEffectivelyActive,
   shouldRouteGuestOutboundViaWhapiSuites,
 } from "../_shared/guestWhapiRouting.ts";
+import {
+  buildRetryStateMap,
+  RETRY_LOOKBACK_HOURS,
+  type RetryState,
+} from "../_shared/automationRetryGate.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -67,6 +72,12 @@ const QUEUE_PREVIEW_VISIBLE_SKIP_REASONS = new Set([
   "already_checked_in",
   // Stage 1 late-import catch-up — still dispatchable manually / Whapi bulk.
   "missed_window",
+  // Anti-spam/anti-race latch (automationRetryGate.ts, 2026-07-13) — all three
+  // need staff visibility, never silent omission: cooldown/in_flight resolve
+  // on their own, exhausted needs a human (manual/Override dispatch).
+  "cooldown",
+  "exhausted",
+  "in_flight",
 ]);
 
 Deno.serve(async (req: Request) => {
@@ -189,6 +200,25 @@ Deno.serve(async (req: Request) => {
       return { ...guest, pipeline_suppressed_stages: stages };
     };
 
+    // Anti-spam/anti-race latch (automationRetryGate.ts, 2026-07-13) — derived
+    // from the notification_log rows already fetched above (no new query).
+    // Same gate whatsapp-cron applies before dispatching, so the Live Queue
+    // can never show "pending" for a guest cron is actually holding back.
+    const retryLookbackSinceMs = now.getTime() - RETRY_LOOKBACK_HOURS * 3600 * 1000;
+    const retryEligibleRows = (logRows ?? []).filter((r) =>
+      (r.status === "timeout" || r.status === "failed" || r.status === "blocked_by_meta" || r.status === "processing") &&
+      r.sent_at != null && new Date(r.sent_at as string).getTime() >= retryLookbackSinceMs
+    );
+    const retryStateByKey = buildRetryStateMap(retryEligibleRows);
+    const attachRetryState = (guest: GuestForSchedule): GuestForSchedule => {
+      const perStage: Record<string, RetryState> = {};
+      for (const stage of stages) {
+        const state = retryStateByKey.get(`${guest.id}::${stage.stage_key}`);
+        if (state) perStage[stage.stage_key] = state;
+      }
+      return Object.keys(perStage).length ? { ...guest, automation_retry_state: perStage } : guest;
+    };
+
     /** Hard pipeline gate — never surface the wrong journey in Live Queue. */
     const stageMatchesGuestPipeline = (stage: AutomationStage, guest: GuestForSchedule): boolean => {
       const effectiveSuite = isEffectiveSuiteGuest(guest);
@@ -200,7 +230,7 @@ Deno.serve(async (req: Request) => {
     const queue: Record<string, unknown>[] = [];
     for (const stage of stages) {
       for (const guest of guests) {
-        const guestRow = attachSuppressions(guest);
+        const guestRow = attachRetryState(attachSuppressions(guest));
         if (!stageMatchesGuestPipeline(stage, guestRow)) continue;
         if (!isStageEffectivelyActive(stage, guestRow)) continue;
 
@@ -281,6 +311,13 @@ Deno.serve(async (req: Request) => {
             result.skipReason && PERMANENT_SKIP_REASONS.has(result.skipReason) ? "skipped" : "pending"
           ),
           skipReason: logRow ? null : result.skipReason,
+          // Additive, independent of skipReason's existing "null once a log
+          // row exists" semantics above (other consumers may depend on that) —
+          // this is the one place "why isn't cron retrying right now" survives
+          // past the first logged attempt, for the ACC badge.
+          retryGate: (result.skipReason === "cooldown" || result.skipReason === "exhausted" || result.skipReason === "in_flight")
+            ? result.skipReason
+            : null,
           lastAttemptAt: logRow?.sent_at ?? null,
         });
       }

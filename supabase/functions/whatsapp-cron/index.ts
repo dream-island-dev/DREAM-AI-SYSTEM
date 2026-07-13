@@ -36,6 +36,7 @@ import {
 import { reconcileMissedArrivalConfirmations } from "../_shared/arrivalConfirmation.ts";
 import { loadGuestByIdForPipeline } from "../_shared/guestOutboundGuard.ts";
 import { isStageEffectivelyActive } from "../_shared/guestWhapiRouting.ts";
+import { buildRetryStateMap, evaluateRetryGate, RETRY_LOOKBACK_HOURS, type RetryState } from "../_shared/automationRetryGate.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -183,6 +184,35 @@ Deno.serve(async (req: Request) => {
         const stages = suppressedByGuestId.get(g.id as number);
         return stages?.length ? { ...g, pipeline_suppressed_stages: stages } : g;
       });
+    }
+
+    // Anti-spam/anti-race latch (2026-07-13) — recent timeout/failed/
+    // blocked_by_meta/processing attempts per (guest, trigger), attached the
+    // same way as suppressions above so checkEligibility (automationSchedule.ts)
+    // can gate a re-fire without any per-trigger duplication here. Narrower
+    // than the existing automation-queue 7-day/all-status read (24h + 4
+    // statuses only) — same table/shape, strictly cheaper.
+    const retrySinceIso = new Date(now.getTime() - RETRY_LOOKBACK_HOURS * 3600 * 1000).toISOString();
+    const { data: retryRows, error: retryErr } = await supabase
+      .from("notification_log")
+      .select("guest_id, trigger_type, status, sent_at")
+      .in("guest_id", guestIdsForSuppress.length ? guestIdsForSuppress : [-1])
+      .in("status", ["timeout", "failed", "blocked_by_meta", "processing"])
+      .gte("sent_at", retrySinceIso);
+    if (retryErr) {
+      console.warn("[whatsapp-cron] retry_state lookup failed (non-blocking, no gate applied this tick):", retryErr.message);
+    } else {
+      const retryStateByKey = buildRetryStateMap(retryRows ?? []);
+      if (retryStateByKey.size > 0) {
+        guestsList = guestsList.map((g) => {
+          const perStage: Record<string, RetryState> = {};
+          for (const stage of stages) {
+            const state = retryStateByKey.get(`${g.id}::${stage.stage_key}`);
+            if (state) perStage[stage.stage_key] = state;
+          }
+          return Object.keys(perStage).length ? { ...g, automation_retry_state: perStage } : g;
+        });
+      }
     }
 
     const missedConfirmFixed = await reconcileMissedArrivalConfirmations(supabase, guestsList);
@@ -350,6 +380,11 @@ Deno.serve(async (req: Request) => {
           const gId = guest.id as number;
           if (stage2ActuallySent.has(gId)) continue;
           if (dueKey(gId, "stage_2_arrival")) continue;
+          // stage_2_arrival is schedule_mode='event_immediate' — excluded
+          // from the main due-loop above (and its checkEligibility retry-gate
+          // check) by design, so this separate reconcile pass needs its own
+          // anti-spam latch on the exact same automation_retry_state map.
+          if (evaluateRetryGate(guest.automation_retry_state?.stage_2_arrival, now)) continue;
 
           if (guest.msg_stage_2_arrival_sent === true) {
             await supabase.from("guests").update({ msg_stage_2_arrival_sent: false }).eq("id", gId);
