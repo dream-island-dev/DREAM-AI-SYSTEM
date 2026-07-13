@@ -1,4 +1,6 @@
-2026-07-13 | Meta `dream_survey_invite` for day-pass survey invite — DEPLOYED (PENDING Meta) | Mike-locked HE body + URL button «למילוי הסקר» → portal/`{{1}}` + `#survey`. Migration 199; create-wa-template examples; whatsapp-send/sync wired. Meta status PENDING (id 2348428192349886) — live sends after APPROVED. register-templates deploy skipped (pre-existing HE string parse bug).
+2026-07-13 | Day-pass Option C DEPLOYED — window-opener + spa_warmup Meta + Whapi→Dream Bot failover | Migration 200; evening/morning «מחכים לכם!»; session-first when window open; Whapi fail → Dream Bot. Meta PENDING: `dream_daypass_eve` (1476488857849470), `dream_spa_warmup` (999800912663484); survey invite already PENDING. Club opt-in (A) next after this.
+
+
 
 
 

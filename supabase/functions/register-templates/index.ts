@@ -184,6 +184,29 @@ const TEMPLATES: Template[] = [
     ],
   },
 
+  // Day-pass evening cold-start — Quick Reply opens Meta 24h window (Option C).
+  {
+    name: "dream_daypass_eve", category: "UTILITY", language: "he",
+    components: [
+      { type: "BODY",
+        text: "היי {{1}}, מחר מחכה לכם יום מדהים בדרים איילנד! ☀️\n\nכל הצוות כבר מתארגן לקראתכם.\nרק לוודא שאתם איתנו — לחצו על הכפתור ונשמח לקבל אישור 🤍",
+        example: { body_text: [["ישראל ישראלי"]] } },
+      { type: "BUTTONS", buttons: [
+        { type: "QUICK_REPLY", text: "מחכים לכם!" },
+      ]},
+    ],
+  },
+
+  // Day-pass spa warm-up — Meta/Dream Bot backup when Whapi fails or window closed.
+  {
+    name: "dream_spa_warmup", category: "UTILITY", language: "he",
+    components: [
+      { type: "BODY",
+        text: "היי {{1}}, עוד קצת ומתחיל הטיפול המפנק שלכם בספא ({{2}}) 💆✨\n\nזה הזמן להירגע, לנשום עמוק ולהתחיל לעבור למצב פינוק. ניפגש בקרוב!",
+        example: { body_text: [["ישראל ישראלי", "11:00"]] } },
+    ],
+  },
+
   // Day-pass + spa survey invite (Mike lock 2026-07-13). Body exact — no
   // space after היי; send-time {{1}} is " FirstName". URL button → portal/#survey.
   {

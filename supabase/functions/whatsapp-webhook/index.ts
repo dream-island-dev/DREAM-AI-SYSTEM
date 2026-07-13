@@ -104,6 +104,10 @@ import {
   isArrivalConfirmationMessage,
   lookupGuestByPhone,
 } from "../_shared/arrivalConfirmation.ts";
+import {
+  DAYPASS_WINDOW_OPENER_ACK_HE,
+  isDaypassWindowOpenerMessage,
+} from "../_shared/daypassWindowOpener.ts";
 import { sanitizeMetaRecipientPhone } from "../_shared/metaPhone.ts";
 import {
   extractArrivalTimeFromText,
@@ -3310,6 +3314,20 @@ Deno.serve(async (req: Request) => {
           console.info(`[webhook] ✅ button reply handled — "${buttonTitle}" phone:${phone}`);
           continue;
 
+        // ── Day-pass window opener («מחכים לכם!») — ack only; inbound already
+        //    refreshed wa_window_expires_at for Meta free-text follow-ups.
+        } else if (isDaypassWindowOpenerMessage(buttonTitle, { buttonTitle })) {
+          try {
+            await sendReply(phone, DAYPASS_WINDOW_OPENER_ACK_HE, { scripted: true });
+          } catch (e) {
+            console.error("[webhook] daypass window-opener ack error:", (e as Error).message);
+          }
+          await insertGuestOutboundIfNotMuted(supabase, {
+            phone, guest_id: guestId, message: DAYPASS_WINDOW_OPENER_ACK_HE, wa_message_id: null, intent: "daypass_window_opener",
+          });
+          console.info(`[webhook] ✅ daypass window opener — phone:${phone}`);
+          continue;
+
         // ── "לא, שינוי בתאריך" — date change → ask + flag for staff ─────────
         } else if (buttonTitle.includes("שינוי בתאריך") || buttonTitle.includes("לא,")) {
           if (guestId) {
@@ -3521,6 +3539,21 @@ Deno.serve(async (req: Request) => {
           msgId,
         });
         console.info(`[webhook] ✅ pre-arrival confirmed (text) — phone:${phone} guest:${guestId}`);
+        continue;
+      }
+
+      // Day-pass window opener typed («מחכים לכם!» / «אנחנו בדרך») — soft ack.
+      // Inbound already refreshed wa_window_expires_at for Meta free-text stages.
+      if (!isButtonReply && isDaypassWindowOpenerMessage(text)) {
+        try {
+          await sendReply(phone, DAYPASS_WINDOW_OPENER_ACK_HE, { scripted: true });
+        } catch (e) {
+          console.error("[webhook] daypass window-opener text ack error:", (e as Error).message);
+        }
+        await insertGuestOutboundIfNotMuted(supabase, {
+          phone, guest_id: guestId, message: DAYPASS_WINDOW_OPENER_ACK_HE, wa_message_id: null, intent: "daypass_window_opener",
+        });
+        console.info(`[webhook] ✅ daypass window opener (text) — phone:${phone}`);
         continue;
       }
 

@@ -59,6 +59,10 @@ import { isArrivalTodayIsrael, israelTodayYmd } from "../_shared/israelDate.ts";
 import { sanitizeMetaRecipientPhone } from "../_shared/metaPhone.ts";
 import { sendWhapiText, sendWhapiImage, cleanPhoneForMention } from "../_shared/whapiSend.ts";
 import { ensureArrivalConfirmationCta } from "../_shared/arrivalConfirmation.ts";
+import {
+  DAYPASS_SESSION_FIRST_TRIGGERS,
+  ensureDaypassWindowOpenerCta,
+} from "../_shared/daypassWindowOpener.ts";
 import { isStageEffectivelyActive } from "../_shared/guestWhapiRouting.ts";
 import {
   guardPaymentLink,
@@ -246,8 +250,9 @@ const PIPELINE_TEMPLATE: Record<string, string> = {
   mid_stay_daypass:    "dream_mid_stay_check",         // day-pass same-day courtesy check
   checkout_fb:         "dream_checkout_feedback",      // day after departure → feedback + Quick Reply buttons
   checkout_fb_daypass: "dream_checkout_feedback",      // day-pass post-visit feedback
-  night_before_daypass: "dream_checkin_reminder_v2",   // day-pass T-1 evening reminder (BRANCH D hybrid)
+  night_before_daypass: "dream_daypass_eve",           // day-pass T-1 — QR opens Meta 24h window
   survey_invite_daypass: "dream_survey_invite",        // day-pass+spa 17:00 survey — URL btn → portal/#survey
+  spa_warmup_daypass: "dream_spa_warmup",              // spa_time−75m — Meta backup when Whapi/window fails
 };
 
 /** Hardcoded bot_scripts keys when automation_stages.session_message_script_key
@@ -342,6 +347,10 @@ const PIPELINE_VARS: Record<string, (g: Record<string, unknown>) => string[]> = 
   checkout_fb_daypass: (g) => [String(g.name ?? "")],
   night_before_daypass: (g) => [String(g.name ?? "")],
   survey_invite_daypass: (g) => [String(g.name ?? "")],
+  spa_warmup_daypass: (g) => [
+    String(g.name ?? ""),
+    normalizeHmTime(g.spa_time) || "10:00",
+  ],
 };
 
 // Maps each pipeline trigger to the DB flag it atomically stamps.
@@ -592,6 +601,8 @@ const TEMPLATE_NO_HEADER = new Set([
   "dream_welcome_morning_shabbat",
   "dream_handover_agent_v2",
   "dream_survey_invite",
+  "dream_spa_warmup",
+  "dream_daypass_eve",
 ]);
 
 function templateExpectsImageHeader(templateName: string): boolean {
@@ -3003,7 +3014,10 @@ serve(async (req: Request) => {
       const dpArrivalYmd = normalizeArrivalDateYmd(guest.arrival_date);
       const dpIsShabbat = isShabbatArrivalDate(dpArrivalYmd);
       const dpTemplate = dpIsShabbat ? "suite_welcome_morning_shabbat" : "suite_welcome_morning";
-      const dpUseSession = force === true && !forceMetaTemplate;
+      // Option C: open Meta window → free-text morning_daypass + QR; else template.
+      const dpUseSession =
+        !forceMetaTemplate &&
+        ((force === true) || isWindowOpen(guest.wa_window_expires_at));
       let dpStatus = "simulated";
       let dpError: string | null = null;
       let dpChannel: "session_message" | "meta_template" = dpUseSession ? "session_message" : "meta_template";
@@ -3043,11 +3057,15 @@ serve(async (req: Request) => {
                   .replace(/\{\{\s*portal_url\s*\}\}/gi, dpPortalUrl),
                 dpArrivalYmd,
               );
-              dpConvMessage = buildSessionConversationLog(
+              const buttons = (stageRow?.interactive_buttons ?? []) as InteractiveButtonDef[];
+              dpConvMessage = buildSessionConversationLog(body, buttons);
+              await sendStageSessionMessage(
+                String(guest.phone),
                 body,
-                (stageRow?.interactive_buttons ?? []) as InteractiveButtonDef[],
+                stageRow?.session_message_image_url ?? undefined,
+                buttons,
+                `morning_welcome day_pass guest_id=${guestId}`,
               );
-              await sendViaMeta(String(guest.phone), body, stageRow?.session_message_image_url);
             }
           } else {
             console.log(
@@ -3193,12 +3211,15 @@ serve(async (req: Request) => {
         const mgPortalUrl = guest.portal_token
           ? `${PORTAL_BASE_URL}/portal/${guest.portal_token as string}`
           : "";
-        const mgBody = applySaturdayCheckInTimeOverride(
+        let mgBody = applySaturdayCheckInTimeOverride(
           mgScriptText
             .replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, mgGuestName)
             .replace(/\{\{\s*portal_url\s*\}\}/gi, mgPortalUrl),
           mgArrivalYmd,
         );
+        if (trigger === "morning_welcome" && isEffectiveDayPassGuest(guest) && useWhapiForMorning) {
+          mgBody = ensureDaypassWindowOpenerCta(mgBody);
+        }
         const mgChannel: "whapi" | "meta" = useWhapiForMorning ? "whapi" : "meta";
         const mgImageUrl = resolveShabbatAwareSessionImageUrl(stageRow, mgIsShabbat, requestImageUrl);
 
@@ -3750,31 +3771,34 @@ serve(async (req: Request) => {
       );
     }
 
-    // ── Hybrid fallback (req #4) ───────────────────────────────────────────
-    // Session free-text on manual staff dispatch (force / manual_override) OR
-    // when the guest routes through Whapi (suite + day-pass automation while
-    // GUEST_WHAPI_SUITES_ENABLED — owner 2026-07-10/12). Whapi has no template
-    // concept, so for those guests this is the ONLY path, autonomous or not.
-    // Autonomous Meta-only guests (flag off) still MUST use the approved Meta
-    // template — never hijack to bot_scripts just because wa_window_expires_at
-    // is open (same rule as night_before session 102 / morning_suite 102b).
+    // Hybrid fallback (req #4) — Session free-text when:
+    //   • manual staff dispatch, OR
+    //   • guest routes through Whapi (primary day-pass/suite transport), OR
+    //   • day-pass + Meta channel + open 24h window (Option C session-first —
+    //     avoids templates when morning/evening opener already got a reply).
     const isManualPipelineDispatch = force === true || manual_override === true;
     const pipelineArrivalYmd = normalizeArrivalDateYmd(guest.arrival_date);
     const pipelineIsShabbat = isShabbatArrivalDate(pipelineArrivalYmd);
     const useWhapiForPipeline = shouldUseWhapiForGuestAutomation(guest);
+    const daypassSessionPreferred =
+      !forceMetaTemplate &&
+      isEffectiveDayPassGuest(guest) &&
+      DAYPASS_SESSION_FIRST_TRIGGERS.has(trigger) &&
+      isWindowOpen(guest.wa_window_expires_at);
     let usedSessionMessage = false;
     let sessionBody: string | null = null;
     let sessionButtons: Array<{ type: string; label: string; url?: string }> = [];
     let sessionImageUrl: string | null = null;
+    let usedDreamBotFallback = false;
 
     // force_channel="meta_template" pins to template regardless of window state.
     // force_channel="session_message"/"whapi_session" bypasses the isWindowOpen()
     // guard so staff can send free-text to any guest on demand. useWhapiForPipeline
     // guests bypass it too — Whapi has no session-window concept at all.
     const pipelineScriptFallback = PIPELINE_SESSION_SCRIPT[trigger] ?? "";
-    if ((isManualPipelineDispatch || useWhapiForPipeline) && !forceMetaTemplate &&
+    if ((isManualPipelineDispatch || useWhapiForPipeline || daypassSessionPreferred) && !forceMetaTemplate &&
         (stageRow?.session_message_script_key || stageRow?.session_message_script_key_shabbat || pipelineScriptFallback)) {
-      if (forceSessionMessage || forceWhapiSession || useWhapiForPipeline || force === true || isWindowOpen(guest.wa_window_expires_at)) {
+      if (forceSessionMessage || forceWhapiSession || useWhapiForPipeline || force === true || isWindowOpen(guest.wa_window_expires_at) || daypassSessionPreferred) {
         const pipelineScriptKey = resolveShabbatAwareScriptKey(
           stageRow,
           pipelineIsShabbat,
@@ -3791,7 +3815,7 @@ serve(async (req: Request) => {
           const portalUrl = guest.portal_token
             ? `${PORTAL_BASE_URL}/portal/${guest.portal_token as string}`
             : "";
-          const body = applySaturdayCheckInTimeOverride(
+          let body = applySaturdayCheckInTimeOverride(
             rawText
               .replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, guestName)
               .replace(/\{\{\s*portal_url\s*\}\}/gi, portalUrl)
@@ -3801,9 +3825,18 @@ serve(async (req: Request) => {
           // Stage 1 over Whapi has no interactive buttons (Meta's template
           // does) — the typed CTA in the body is the guest's only path to
           // confirming. Defend against an ACC edit that drops the phrase.
-          sessionBody = (trigger === "pre_arrival_2d" && (forceWhapiSession || useWhapiForPipeline))
-            ? ensureArrivalConfirmationCta(body)
-            : body;
+          if (trigger === "pre_arrival_2d" && (forceWhapiSession || useWhapiForPipeline)) {
+            body = ensureArrivalConfirmationCta(body);
+          }
+          // Day-pass evening/morning on Whapi: no Meta QR buttons — keep typed
+          // window-opener CTA so Dream Bot backup can free-text later.
+          if (
+            (trigger === "night_before_daypass" || trigger === "morning_welcome") &&
+            (forceWhapiSession || useWhapiForPipeline)
+          ) {
+            body = ensureDaypassWindowOpenerCta(body);
+          }
+          sessionBody = body;
           sessionButtons = (stageRow.interactive_buttons ?? []) as typeof sessionButtons;
           sessionImageUrl = resolveShabbatAwareSessionImageUrl(stageRow, pipelineIsShabbat, requestImageUrl) ?? null;
           usedSessionMessage = true;
@@ -3817,6 +3850,8 @@ serve(async (req: Request) => {
     // never silently fall through to a Meta template send they didn't ask
     // for / opted out of (FAIL VISIBLE §0.3). If this stage has no usable
     // session body, fail loudly instead.
+    // Exception (Option C): autonomous Whapi with missing script still fails
+    // loudly; Dream Bot failover only applies AFTER a Whapi *send* fails.
     if ((forceWhapiSession || useWhapiForPipeline) && !usedSessionMessage) {
       throw new Error(`whapi_session_unavailable: שלב "${trigger}" אינו מוגדר עם Bot Script פעיל — לא ניתן לשלוח דרך Whapi.`);
     }
@@ -3876,21 +3911,46 @@ serve(async (req: Request) => {
         }
       } catch (e) {
         sessionFailureNote = (e as Error).message;
-        if (forceWhapiSession || useWhapiForPipeline) {
-          // Staff explicitly chose Whapi — do NOT silently fall back to a
-          // Meta template send they didn't ask for (FAIL VISIBLE §0.3).
-          // Surface the failure directly instead of the usedSessionMessage
-          // fallthrough below, which is reserved for the Meta session path.
+        if (forceWhapiSession) {
+          // Staff explicitly chose Whapi — do NOT silently fall back to Meta
+          // (FAIL VISIBLE §0.3). Autonomous Whapi failure → Dream Bot below.
           console.error(`[whatsapp] pipeline Whapi session send failed for stage "${trigger}":`, sessionFailureNote);
           sendError = sessionFailureNote;
           status = sessionFailureNote.startsWith("timeout_no_response") ? "timeout" : "failed";
+        } else if (useWhapiForPipeline) {
+          // Option C: Whapi down / ban → Dream Bot backup.
+          // Prefer Meta session when 24h window is open; else Meta template.
+          console.error(
+            `[whatsapp] pipeline Whapi failed for "${trigger}" — Dream Bot fallback:`,
+            sessionFailureNote,
+          );
+          usedDreamBotFallback = true;
+          if (isWindowOpen(guest.wa_window_expires_at) && sessionBody) {
+            try {
+              if (!sim) {
+                const sessionResult = await sendStageSessionMessage(
+                  guest.phone as string,
+                  sessionBody!,
+                  sessionImageUrl ?? undefined,
+                  sessionButtons,
+                  `stage="${trigger}" guest_id=${guestId} dream_bot_fallback`,
+                );
+                dispatchedWamid = sessionResult.wamid;
+                status = "sent";
+                console.log(`[whatsapp-send] ${trigger}: Dream Bot session fallback after Whapi fail`);
+              }
+            } catch (metaSessionErr) {
+              console.error(
+                `[whatsapp] Dream Bot session fallback failed — trying Meta template:`,
+                (metaSessionErr as Error).message,
+              );
+              usedSessionMessage = false;
+            }
+          } else {
+            usedSessionMessage = false;
+          }
         } else {
-          // ── 24-Hour Interaction Window Guard — failure fallback ────────────
-          // A session-message attempt can fail for reasons unrelated to window
-          // state (transient Meta error, malformed button payload, etc.). This
-          // is a scheduled automation stage — leaving the guest with NO message
-          // at all defeats the whole pipeline. Retry once via the
-          // window-independent Meta template instead of just recording failure.
+          // Meta session path failure → template retry.
           console.error(`[whatsapp] pipeline session-message send failed — falling back to Meta template:`, sessionFailureNote);
           usedSessionMessage = false;
         }
@@ -3928,9 +3988,17 @@ serve(async (req: Request) => {
 
     await finalizeDispatchAttempt(supabase, claim.logId, status,
       usedSessionMessage
-        ? { channel: (forceWhapiSession || useWhapiForPipeline) ? "whapi_session" : "session_message", scriptKey: stageRow!.session_message_script_key, ...(sendError ? { error: sendError } : {}), ...(force ? { forced: true, force_channel, ...overridePayloadExtras } : {}) }
+        ? {
+            channel: usedDreamBotFallback
+              ? "meta_session_whapi_fallback"
+              : ((forceWhapiSession || useWhapiForPipeline) ? "whapi_session" : "session_message"),
+            scriptKey: stageRow!.session_message_script_key,
+            ...(sendError ? { error: sendError } : {}),
+            ...(sessionFailureNote ? { whapiFailureNote: sessionFailureNote } : {}),
+            ...(force ? { forced: true, force_channel, ...overridePayloadExtras } : {}),
+          }
         : {
-            channel: "meta_template",
+            channel: usedDreamBotFallback ? "meta_template_whapi_fallback" : "meta_template",
             template: templateDispatched?.templateName ?? tmplName,
             variables: templateDispatched?.variables ?? tmplVars,
             ...(sendError ? { error: sendError } : {}),
@@ -3960,8 +4028,10 @@ serve(async (req: Request) => {
         const logGuestId = liveGuest?.id ?? null;
         const logPhone = (liveGuest?.phone as string | undefined) ?? (guest.phone as string);
 
+        const pipelineViaWhapi =
+          (forceWhapiSession || useWhapiForPipeline) && !usedDreamBotFallback;
         const pipelineConvMsg = usedSessionMessage
-          ? ((forceWhapiSession || useWhapiForPipeline)
+          ? (pipelineViaWhapi
               ? buildWhapiSuitesConversationLog(sessionBody!)
               : buildSessionConversationLog(sessionBody!, sessionButtons as InteractiveButtonDef[]))
           : await buildConversationLogFromTemplate(
@@ -3975,8 +4045,8 @@ serve(async (req: Request) => {
           direction: "outbound",
           message: pipelineConvMsg,
           wa_message_id: dispatchedWamid,
-          inbox_channel: (forceWhapiSession || useWhapiForPipeline) ? "whapi" : "meta",
-          channel: (forceWhapiSession || useWhapiForPipeline) ? "whapi" : "meta",
+          inbox_channel: pipelineViaWhapi ? "whapi" : "meta",
+          channel: pipelineViaWhapi ? "whapi" : "meta",
         });
         if (convErr) {
           console.error("[whatsapp-send] pipeline conversation log FAILED:", convErr.message);

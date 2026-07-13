@@ -77,6 +77,10 @@ import {
 import { isGuestWhapiSuitesEnabled, isWhapiGuestSosActive, shouldAutoReplyGuestWhapiDm, primeGuestChannelConfig } from "../_shared/guestWhapiRouting.ts";
 import { type ActiveGuestRow } from "../_shared/guestOutboundGuard.ts";
 import { resolveGuestByInboundPhone, isArrivalConfirmationMessage } from "../_shared/arrivalConfirmation.ts";
+import {
+  DAYPASS_WINDOW_OPENER_ACK_HE,
+  isDaypassWindowOpenerMessage,
+} from "../_shared/daypassWindowOpener.ts";
 import { onGuestAlertInserted } from "../_shared/guestAlertWhapiNotify.ts";
 import { extractArrivalTimeFromText, persistGuestEta, insertArrivalEtaBoardAlert } from "../_shared/guestEta.ts";
 import { formatGuestProfileForAi } from "../_shared/guestProfile.ts";
@@ -978,6 +982,22 @@ async function handleGuestDirectMessage(
         },
       );
       results.push({ ...base, action: "stage2_arrival_confirmed", proceeded: result.proceeded });
+      return;
+    }
+
+    // Day-pass window opener («מחכים לכם!») — soft ack; inbound refreshed window.
+    if (isDaypassWindowOpenerMessage(text)) {
+      try {
+        await sendWhapiText(cleanPhoneForMention(phone), DAYPASS_WINDOW_OPENER_ACK_HE);
+      } catch (e) {
+        console.error("[whapi-webhook] daypass window-opener ack failed:", (e as Error).message);
+      }
+      await supabase.from("whatsapp_conversations").insert({
+        phone, guest_id: guestId, inbox_channel: "whapi", channel: "whapi",
+        direction: "outbound", message: DAYPASS_WINDOW_OPENER_ACK_HE, wa_message_id: null,
+        intent: "daypass_window_opener",
+      });
+      results.push({ ...base, action: "daypass_window_opener" });
       return;
     }
 

@@ -37,6 +37,8 @@ const LABEL_MAP: Record<string, string> = {
   dream_handover_agent_v2:     "העברה לנציג",
   dream_checkout_feedback:     "פידבק אחרי יציאה",
   dream_survey_invite:         "סקר חוויית אורח (בילוי יומי)",
+  dream_daypass_eve:           "ערב לפני — בילוי יומי (פותח חלון)",
+  dream_spa_warmup:            "חימום ספא (בילוי יומי)",
   hello_world:                 "בדיקת מערכת",
 };
 
@@ -60,6 +62,8 @@ const SORT_MAP: Record<string, number> = {
   dream_handover_agent_v2:     16,
   dream_checkout_feedback:     17,
   dream_survey_invite:         18,
+  dream_daypass_eve:           19,
+  dream_spa_warmup:            20,
   hello_world:                 99,
 };
 

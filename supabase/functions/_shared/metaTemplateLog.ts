@@ -100,6 +100,12 @@ export const TEMPLATE_BODY_APPROVED: Record<string, string> = {
   dream_survey_invite:
     "היי{{1}}, תודה שביליתם איתנו היום! 🌴\n\n" +
     "נשמח שתדרגו את החוויה שלכם במתחם 🙏🏽",
+  dream_spa_warmup:
+    "היי {{1}}, עוד קצת ומתחיל הטיפול המפנק שלכם בספא ({{2}}) 💆✨\n\n" +
+    "זה הזמן להירגע, לנשום עמוק ולהתחיל לעבור למצב פינוק. ניפגש בקרוב!",
+  dream_daypass_eve:
+    "היי {{1}}, מחר מחכה לכם יום מדהים בדרים איילנד! ☀️\n\n" +
+    "כל הצוות כבר מתארגן לקראתכם.\nרק לוודא שאתם איתנו — לחצו על הכפתור ונשמח לקבל אישור 🤍",
 };
 
 /** Quick Reply labels — inbox footer only. */
@@ -107,6 +113,7 @@ export const TEMPLATE_QUICK_REPLY_BUTTONS: Record<string, string[]> = {
   dream_arrival_confirmation: ["כן, מגיעים! ✨", "לא, שינוי בתאריך 🗓️"],
   dream_mid_stay_check: ["ספא וטיפולים 📜", "דברו איתי 📞"],
   dream_checkout_feedback: ["היה מושלם! ✨", "יש מקום לשיפור 💬"],
+  dream_daypass_eve: ["מחכים לכם!"],
 };
 
 type MetaComponent = { type?: string; text?: string; buttons?: Array<{ type?: string; text?: string }> };

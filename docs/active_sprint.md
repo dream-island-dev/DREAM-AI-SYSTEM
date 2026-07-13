@@ -1,5 +1,20 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-13 (dream_survey_invite submitted to Meta — PENDING approval).
+> Last updated: 2026-07-13 (Option C DEPLOYED — templates PENDING Meta approval).
+
+---
+
+## ✅ Deployed — Day-pass Option C (2026-07-13)
+
+| Piece | Status |
+|---|---|
+| Migration 200 | `db push` ✅ |
+| Functions | whatsapp-send, whatsapp-webhook, whapi-webhook, create-wa-template, sync-wa-templates ✅ |
+| Meta `dream_daypass_eve` | PENDING id `1476488857849470` |
+| Meta `dream_spa_warmup` | PENDING id `999800912663484` (body starts with היי — Meta rejects leading `{{1}}`) |
+| Meta `dream_survey_invite` | PENDING (earlier) |
+| Ops | ACC day-pass → **Whapi**; Dream Bot = failover only until templates APPROVED |
+
+**Next:** Customer club opt-in after survey (Approach A) — not in this deploy.
 
 ---
 
