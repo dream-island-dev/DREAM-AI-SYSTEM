@@ -113,6 +113,7 @@ import {
   isGuestWhapiSuitesEnabled,
   shouldRouteGuestOutboundViaWhapiSuites,
   isMetaGuestTemplateAllowed,
+  whapiDisabledReasonHe,
 } from "../_shared/guestWhapiRouting.ts";
 
 const CORS = {
@@ -1615,7 +1616,7 @@ serve(async (req: Request) => {
           JSON.stringify({
             ok: false,
             status: "whapi_disabled",
-            error: "whapi_disabled: ערוץ Whapi נבחר אך אינו מופעל כרגע (GUEST_WHAPI_SUITES_ENABLED) — ההודעה לא נשלחה.",
+            error: `whapi_disabled: ${whapiDisabledReasonHe()}`,
           }),
           { headers: { ...CORS, "Content-Type": "application/json" } },
         );
@@ -1753,7 +1754,7 @@ serve(async (req: Request) => {
           JSON.stringify({
             ok: false,
             status: "whapi_disabled",
-            error: "whapi_disabled: ערוץ Whapi נבחר אך אינו מופעל כרגע (GUEST_WHAPI_SUITES_ENABLED) — ההודעה לא נשלחה.",
+            error: `whapi_disabled: ${whapiDisabledReasonHe()}`,
           }),
           { headers: { ...CORS, "Content-Type": "application/json" } },
         );
@@ -2189,7 +2190,7 @@ serve(async (req: Request) => {
     // only, same two-gate contract as inbox_reply/broadcast above.
     const forceWhapiSession   = force === true && force_channel === "whapi_session";
     if (forceWhapiSession && !isGuestWhapiSuitesEnabled()) {
-      throw new Error("whapi_disabled: ערוץ Whapi נבחר אך אינו מופעל כרגע (GUEST_WHAPI_SUITES_ENABLED) — ההודעה לא נשלחה.");
+      throw new Error(`whapi_disabled: ${whapiDisabledReasonHe()}`);
     }
     // stage_2_arrival, night_before, morning_suite/morning_welcome, and
     // room_ready each have their own dedicated block below that explicitly

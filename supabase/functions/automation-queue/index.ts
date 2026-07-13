@@ -32,6 +32,7 @@ import {
 import {
   isStageEffectivelyActive,
   shouldRouteGuestOutboundViaWhapiSuites,
+  isWhapiGuestSosActive,
 } from "../_shared/guestWhapiRouting.ts";
 import {
   buildRetryStateMap,
@@ -104,8 +105,8 @@ Deno.serve(async (req: Request) => {
       return new Date();
     })();
 
-    // Same three kill-switches that gate the live functions — exposing them
-    // here is the entire "Pulse" feature, no new infra required.
+    // Same kill-switches that gate the live functions — exposing them here
+    // is the entire "Pulse" feature, no new infra required.
     const systemStatus = {
       cronEnabled: Deno.env.get("CRON_ENABLED") === "true",
       automationEnabled: Deno.env.get("AUTOMATION_ENABLED") === "true",
@@ -113,6 +114,10 @@ Deno.serve(async (req: Request) => {
         Deno.env.get("WHATSAPP_SIMULATION") === "true" ||
         !(Deno.env.get("META_WHATSAPP_TOKEN") ?? Deno.env.get("WHATSAPP_TOKEN")) ||
         !(Deno.env.get("META_PHONE_NUMBER_ID") ?? Deno.env.get("WHATSAPP_PHONE_NUMBER_ID")),
+      // P0 SOS (2026-07-13) — WHAPI_GUEST_SOS_META. When true, every guest
+      // automation that would route via the Suites Whapi device falls back
+      // to Meta Dream Bot instead (guestWhapiRouting.ts). FAIL VISIBLE badge.
+      whapiGuestSosActive: isWhapiGuestSosActive(),
       previewAt: now.toISOString(),
     };
 

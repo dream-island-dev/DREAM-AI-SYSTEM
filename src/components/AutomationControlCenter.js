@@ -2942,6 +2942,17 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                 {/* ── Pulse ── */}
                 <div className="card" style={{ marginBottom: 16, padding: "16px 20px" }}>
                   <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 10 }}>💓 פעימת חיים</div>
+                  {queueData.systemStatus.whapiGuestSosActive && (
+                    <div style={{
+                      marginBottom: 10, fontSize: 13, fontWeight: 700, color: "#7C2D12",
+                      background: "#FFEDD5", border: "1px solid #C2410C", borderRadius: 8,
+                      padding: "10px 14px", lineHeight: 1.6,
+                    }}>
+                      🚨 מצב חירום Meta / Dream Bot פעיל — מכשיר הסוויטות (Whapi) מושבת זמנית.
+                      כל האוטומציה לאורחים (כולל חדר מוכן) עוברת ל-Meta. אקרוקת חדרנות (N✅ / צ'ק אין / Co) עדיין תלויה במכשיר עצמו.
+                      כיבוי: <code style={{ background: "rgba(0,0,0,0.06)", padding: "1px 5px", borderRadius: 4 }}>WHAPI_GUEST_SOS_META</code>.
+                    </div>
+                  )}
                   <div style={{ display: "flex", gap: 20, flexWrap: "wrap", fontSize: 13 }}>
                     <span>{queueData.systemStatus.cronEnabled ? "🟢" : "🔴"} CRON_ENABLED (תזמון אוטומטי)</span>
                     <span>{queueData.systemStatus.automationEnabled ? "🟢" : "🔴"} AUTOMATION_ENABLED (שליחה כללית)</span>

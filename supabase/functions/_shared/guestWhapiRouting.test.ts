@@ -12,6 +12,9 @@ import {
   shouldRouteGuestOutboundViaWhapiSuites,
   isStageEffectivelyActive,
   isMetaGuestTemplateAllowed,
+  isGuestWhapiSuitesEnabled,
+  isWhapiGuestSosActive,
+  shouldAutoReplyGuestWhapiDm,
 } from "./guestWhapiRouting.ts";
 
 function withWhapiFlag(enabled: boolean, fn: () => void) {
@@ -23,6 +26,18 @@ function withWhapiFlag(enabled: boolean, fn: () => void) {
   } finally {
     if (prev === undefined) Deno.env.delete("GUEST_WHAPI_SUITES_ENABLED");
     else Deno.env.set("GUEST_WHAPI_SUITES_ENABLED", prev);
+  }
+}
+
+function withSos(active: boolean, fn: () => void) {
+  const prev = Deno.env.get("WHAPI_GUEST_SOS_META");
+  if (active) Deno.env.set("WHAPI_GUEST_SOS_META", "true");
+  else Deno.env.delete("WHAPI_GUEST_SOS_META");
+  try {
+    fn();
+  } finally {
+    if (prev === undefined) Deno.env.delete("WHAPI_GUEST_SOS_META");
+    else Deno.env.set("WHAPI_GUEST_SOS_META", prev);
   }
 }
 
@@ -123,5 +138,90 @@ Deno.test("isMetaGuestTemplateAllowed: false by default (secret unset)", () => {
 Deno.test("isMetaGuestTemplateAllowed: true only when the escape-hatch secret is explicitly set", () => {
   withMetaGuestTemplatesAllowed(true, () => {
     assertEquals(isMetaGuestTemplateAllowed(), true);
+  });
+});
+
+// ── P0 SOS (2026-07-13, WHAPI_GUEST_SOS_META) — full routing matrix ──
+
+Deno.test("isWhapiGuestSosActive: false by default", () => {
+  withSos(false, () => {
+    assertEquals(isWhapiGuestSosActive(), false);
+  });
+});
+
+Deno.test("isWhapiGuestSosActive: true only when the SOS secret is explicitly set", () => {
+  withSos(true, () => {
+    assertEquals(isWhapiGuestSosActive(), true);
+  });
+});
+
+Deno.test("isGuestWhapiSuitesEnabled: SOS on overrides GUEST_WHAPI_SUITES_ENABLED=true", () => {
+  withSos(true, () => {
+    withWhapiFlag(true, () => {
+      assertEquals(isGuestWhapiSuitesEnabled(), false);
+    });
+  });
+});
+
+Deno.test("isGuestWhapiSuitesEnabled: SOS on + flag off stays false (no change)", () => {
+  withSos(true, () => {
+    withWhapiFlag(false, () => {
+      assertEquals(isGuestWhapiSuitesEnabled(), false);
+    });
+  });
+});
+
+Deno.test("isGuestWhapiSuitesEnabled: SOS off + flag on is unaffected (pre-P0 behavior preserved)", () => {
+  withSos(false, () => {
+    withWhapiFlag(true, () => {
+      assertEquals(isGuestWhapiSuitesEnabled(), true);
+    });
+  });
+});
+
+Deno.test("shouldRouteGuestOutboundViaWhapiSuites: SOS on sends a suite guest back to Meta even with flag on", () => {
+  withSos(true, () => {
+    withWhapiFlag(true, () => {
+      const guest = { room: "אמטיסט 8", room_type: "suite" };
+      assertEquals(shouldRouteGuestOutboundViaWhapiSuites(guest), false);
+    });
+  });
+});
+
+Deno.test("shouldRouteGuestOutboundViaWhapiSuites: SOS on sends a day-pass guest back to Meta even with flag on", () => {
+  withSos(true, () => {
+    withWhapiFlag(true, () => {
+      const guest = { room: "Premium Day 1", room_type: "day_guest" };
+      assertEquals(shouldRouteGuestOutboundViaWhapiSuites(guest), false);
+    });
+  });
+});
+
+// room_ready (whatsapp-send/index.ts) reads isGuestWhapiSuitesEnabled()
+// directly rather than going through shouldRouteGuestOutboundViaWhapiSuites —
+// this is the exact case the P0 required covering without a per-caller edit.
+Deno.test("isGuestWhapiSuitesEnabled: SOS on covers the room_ready direct-read path too", () => {
+  withSos(true, () => {
+    withWhapiFlag(true, () => {
+      const useWhapiForRoomReady = isGuestWhapiSuitesEnabled();
+      assertEquals(useWhapiForRoomReady, false);
+    });
+  });
+});
+
+Deno.test("isMetaGuestTemplateAllowed: SOS on auto-allows Meta templates even without the escape-hatch secret", () => {
+  withSos(true, () => {
+    withMetaGuestTemplatesAllowed(false, () => {
+      assertEquals(isMetaGuestTemplateAllowed(), true);
+    });
+  });
+});
+
+Deno.test("shouldAutoReplyGuestWhapiDm: SOS on silences the Whapi DM auto-reply even for an active guest", () => {
+  withSos(true, () => {
+    withWhapiFlag(true, () => {
+      const guest = { status: "checked_in" };
+      assertEquals(shouldAutoReplyGuestWhapiDm(guest), false);
+    });
   });
 });

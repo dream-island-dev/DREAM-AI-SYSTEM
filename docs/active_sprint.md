@@ -1,5 +1,30 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-13 (room_ready Whapi fix — deployed).
+> Last updated: 2026-07-13 (Whapi Suites device banned — SOS Meta dual-path deployed).
+
+---
+
+## ✅ Deployed — P0: Whapi Suites device banned → SOS Meta/Dream Bot dual-path (2026-07-13)
+
+Incident: WhatsApp restricted the Suites device (~17h, suspected automated-message/spam) and the Whapi channel itself showed `QR`/disconnected. All Suites-device Whapi traffic (guest automation + housekeeping-group observer) became unreliable or dead.
+
+**Root cause found (see forensics below) — already fixed and deployed separately, before this SOS work started.** SOS is the emergency lever for the remaining ban window, not the root-cause fix.
+
+| Piece | Detail |
+|---|---|
+| `_shared/guestWhapiRouting.ts` | New `isWhapiGuestSosActive()` reads `WHAPI_GUEST_SOS_META`. Folded directly into `isGuestWhapiSuitesEnabled()` (returns `false` when SOS active regardless of `GUEST_WHAPI_SUITES_ENABLED`) — every one of that function's ~10 callers (incl. `room_ready`, which reads it directly rather than through `shouldRouteGuestOutboundViaWhapiSuites`) falls back to Meta automatically, zero per-caller edits. `isMetaGuestTemplateAllowed()` auto-true during SOS (no need to also flip `ALLOW_META_GUEST_TEMPLATES`). New `whapiDisabledReasonHe()` gives FAIL VISIBLE Hebrew text that distinguishes "SOS active" from "feature never turned on". |
+| `whatsapp-send` / `whapi-webhook` | The 3 `whapi_disabled` error sites + the Whapi-DM auto-reply "reason" code now surface SOS distinctly (`sos_active`). |
+| `automation-queue` | `systemStatus.whapiGuestSosActive` exposed (same pattern as `cronEnabled`/`automationEnabled`). |
+| ACC (`AutomationControlCenter.js`) | 🚨 red/orange banner in the Pulse card when SOS is active — Hebrew, explains housekeeping-group is NOT covered. |
+| Tests | 14 new Deno tests (SOS × flag matrix, incl. the room_ready direct-read path and the Whapi-DM auto-reply silencing) — 23/23 pass. `deno check` delta-clean (39/66 pre-existing errors on `whatsapp-send`/`whapi-webhook` unchanged before/after — systemic esm.sh SupabaseClient version mismatch, not from this change). |
+| NOT covered by SOS | Housekeeping-group observer (`N✅`/`N צ'ק אין`/`Co N`) is INBOUND on the same banned device — no Meta substitute. Stays broken until the device itself is unbanned + reconnected, regardless of this flag. |
+| Cleanup | Deleted `supabase/functions/debug-whapi-diag` (temporary, self-documented for deletion after diagnosis). |
+
+**Enable SOS (during ban):** `npx supabase secrets set WHAPI_GUEST_SOS_META=true`
+**Disable SOS (ban over + device reconnected):** `npx supabase secrets unset WHAPI_GUEST_SOS_META`
+
+**Forensics — why the ban likely happened:** queried `notification_log` on the linked prod DB. Between **05:17–08:32 UTC today**, `morning_welcome` alone fired **493 failed attempts across 40 distinct guests** (~every 15 min per guest for 3+ hours — the retry-storm pattern, not a single misbehaving guest). `morning_suite` added 131 more across 8 guests going back to 07-11. Cross-checked against deployed-function timestamps: `whatsapp-cron` (which carries the retry-storm fix, commit `46155bd`, see entry below) was last deployed **08:38:20 UTC** — i.e. the storm ran the entire window on the OLD unprotected code and stopped almost immediately once the fix rolled out. That fix is confirmed live; no further code change needed for the storm itself. A narrower follow-up (Phase C `automationClaim` wiring for `night_before`/`morning_suite`/`morning_welcome`/`room_ready`/`stage_2_arrival` — 6 dispatch blocks, not the 4 originally scoped) is intentionally deferred to a separate, calmer session — it guards a different, rarer failure mode (concurrent overlapping cron ticks) and was not the cause of tonight's ban.
+
+**Mike QA:** enable SOS → force `room_ready` / any Override stage → guest receives via Meta Dream Bot, Inbox shows `[META]` not `[WHAPI]`, ACC Pulse shows the 🚨 banner → disable SOS after device reconnects → same test shows `[WHAPI]` again.
 
 ---
 
@@ -29,7 +54,7 @@ Live incident: Stage 3 Shabbat morning script re-sent to «אוחיון רויט
 | Phase B — ACC + admin visibility | Live Queue `retryGate` field + `⏳ בהמתנה` / `🛑 מוצה` / `🔄 בתהליך שליחה` badges (Override still sends, Disable-Don't-Hide). `notifyAdminIfDispatchFailed` now also alerts on `timeout` (was silently excluded — the reason nobody caught this sooner). |
 | Phase C — migration 195 | Partial unique index on `notification_log(guest_id, trigger_type) WHERE status='processing'` — reuses the already-reserved but previously-unused `'processing'` status. |
 | Phase C — `_shared/automationClaim.ts` | `claimDispatchAttempt`/`finalizeDispatchAttempt` — claim before send, one row per attempt, 5min stale-claim reclaim, `force` bypass. Wired into `whatsapp-send`'s generic BRANCH D path this session (`pre_arrival_2d`, `mid_stay(+daypass)`, `checkout_fb(+daypass)`, `spa_warmup_daypass`, `survey_invite_daypass`, `night_before_daypass`). |
-| Explicit follow-up (not this session) | Same helper, wire into the remaining special-cased fast paths: `night_before`, `morning_suite`/`morning_welcome`, `room_ready`, `stage_2_arrival`'s own dispatch (its reconcile-queue side is already covered). |
+| Explicit follow-up (not this session) | Same helper, wire into the remaining special-cased fast paths: `night_before`, `morning_suite`/`morning_welcome` (turns out to be 3 separate dispatch blocks — day-pass Meta fast-path, Whapi/force session block, Shabbat template block), `room_ready`, `stage_2_arrival`'s own dispatch (its reconcile-queue side is already covered). Confirmed 2026-07-13 (P0 SOS session) still missing — this is Phase B (this entry) that stopped the ban-causing storm, not Phase C; deferred as a tracked follow-up rather than rushed mid-incident, see P0 entry above for the forensic timeline proving Phase B alone was sufficient. |
 | Tests | 61 new/updated Deno tests pass. `deno check` delta-clean (whatsapp-send +1 error — pre-existing loose-`guestId` typing pattern, already present twice in the same file, not a new class of issue). `npm run build` clean. |
 
 **Deployed:** migration 195 pushed; `whatsapp-cron`, `automation-queue`, `whatsapp-send` (`--no-verify-jwt`); frontend pushed to `main` (`46155bd`).

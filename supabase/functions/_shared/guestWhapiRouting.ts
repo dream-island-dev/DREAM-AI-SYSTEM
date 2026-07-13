@@ -24,7 +24,33 @@ import {
 } from "./suiteNames.ts";
 import { isGuestActiveForOutbound } from "./guestOutboundGuard.ts";
 
+/**
+ * SOS kill-switch (P0, 2026-07-13) — WhatsApp put the Suites device on a
+ * ~17h restriction (suspected automated-message/spam flag) after a
+ * retry-storm; the Whapi channel itself also showed QR/disconnected. While
+ * this is set, EVERY guest-outbound decision that would otherwise pick the
+ * Suites Whapi device falls back to Meta Dream Bot instead — independent of
+ * GUEST_WHAPI_SUITES_ENABLED, which is left untouched so it keeps recording
+ * the standing intent ("we want Whapi-first for suites/day-pass") separately
+ * from this temporary transport outage. Mike flips ONE flag either way:
+ *   npx supabase secrets set WHAPI_GUEST_SOS_META=true      # activate SOS
+ *   npx supabase secrets unset WHAPI_GUEST_SOS_META         # restore Whapi-first
+ * Does NOT fix the housekeeping-group observer (N✅ / checkin / checkout
+ * acks) — that is INBOUND on the same banned device with no Meta substitute;
+ * it stays broken until the device itself is unbanned + reconnected.
+ */
+export function isWhapiGuestSosActive(): boolean {
+  return Deno.env.get("WHAPI_GUEST_SOS_META") === "true";
+}
+
+/**
+ * SOS check lives here (not scattered at call sites) so every one of this
+ * function's ~10 callers — including room_ready, which reads this directly
+ * rather than through shouldRouteGuestOutboundViaWhapiSuites — automatically
+ * falls back to Meta the instant SOS is active, with no per-caller changes.
+ */
 export function isGuestWhapiSuitesEnabled(): boolean {
+  if (isWhapiGuestSosActive()) return false;
   return Deno.env.get("GUEST_WHAPI_SUITES_ENABLED") === "true";
 }
 
@@ -96,5 +122,22 @@ export function shouldAutoReplyGuestWhapiDm(
  *   npx supabase secrets set ALLOW_META_GUEST_TEMPLATES=true
  */
 export function isMetaGuestTemplateAllowed(): boolean {
+  // SOS implies Meta IS the sanctioned path for Whapi-eligible guests — don't
+  // make staff also flip ALLOW_META_GUEST_TEMPLATES by hand during an outage.
+  if (isWhapiGuestSosActive()) return true;
   return Deno.env.get("ALLOW_META_GUEST_TEMPLATES") === "true";
+}
+
+/**
+ * FAIL VISIBLE reason text for a Whapi-eligible action currently refused —
+ * distinguishes "SOS emergency active" from "feature simply never turned on"
+ * so a staff member troubleshooting mid-incident isn't misled into hunting
+ * for the wrong secret. Callers prefix this with their own status/error code.
+ */
+export function whapiDisabledReasonHe(): string {
+  if (isWhapiGuestSosActive()) {
+    return "🚨 מצב חירום Meta פעיל (WHAPI_GUEST_SOS_META) — מכשיר הסוויטות מושבת זמנית עקב הגבלת וואטסאפ. " +
+      "שליחה ידנית דרך Whapi חסומה כרגע — יש להשתמש ב-Meta Template.";
+  }
+  return "ערוץ Whapi נבחר אך אינו מופעל כרגע (GUEST_WHAPI_SUITES_ENABLED) — ההודעה לא נשלחה.";
 }
