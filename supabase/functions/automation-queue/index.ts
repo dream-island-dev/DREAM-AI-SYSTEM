@@ -33,6 +33,9 @@ import {
   isStageEffectivelyActive,
   shouldRouteGuestOutboundViaWhapiSuites,
   isWhapiGuestSosActive,
+  primeGuestChannelConfig,
+  getGuestSuitesChannel,
+  getGuestDaypassChannel,
 } from "../_shared/guestWhapiRouting.ts";
 import {
   buildRetryStateMap,
@@ -58,6 +61,9 @@ const PERMANENT_SKIP_REASONS = new Set([
   "missing_anchor_date",
   "missing_anchor_timestamp",
   "unknown_schedule_mode",
+  // checkout_fb_daypass yields to survey_invite_daypass for spa-cohort guests
+  // (2026-07-13 dedupe) — guest IS being contacted, just via the other stage.
+  "superseded_by_survey",
   "date_passed",
 ]);
 
@@ -89,6 +95,8 @@ Deno.serve(async (req: Request) => {
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
     );
+    // Must prime before any isStageEffectivelyActive/shouldRouteGuestOutboundViaWhapiSuites call below.
+    await primeGuestChannelConfig(supabase);
 
     const now = await (async () => {
       if (req.method === "POST") {
@@ -118,6 +126,10 @@ Deno.serve(async (req: Request) => {
       // automation that would route via the Suites Whapi device falls back
       // to Meta Dream Bot instead (guestWhapiRouting.ts). FAIL VISIBLE badge.
       whapiGuestSosActive: isWhapiGuestSosActive(),
+      // P0 channel control (2026-07-13) — current ACC selector state, so the
+      // frontend dropdowns can render the live value without a second query.
+      guestSuitesChannel: getGuestSuitesChannel(),
+      guestDaypassChannel: getGuestDaypassChannel(),
       previewAt: now.toISOString(),
     };
 

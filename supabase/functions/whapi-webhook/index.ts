@@ -74,7 +74,7 @@ import {
   applyHousekeepingCheckOutSignal,
   buildHousekeepingCheckOutAckLine,
 } from "../_shared/housekeepingCheckOutSignal.ts";
-import { isGuestWhapiSuitesEnabled, isWhapiGuestSosActive, shouldAutoReplyGuestWhapiDm } from "../_shared/guestWhapiRouting.ts";
+import { isGuestWhapiSuitesEnabled, isWhapiGuestSosActive, shouldAutoReplyGuestWhapiDm, primeGuestChannelConfig } from "../_shared/guestWhapiRouting.ts";
 import { type ActiveGuestRow } from "../_shared/guestOutboundGuard.ts";
 import { resolveGuestByInboundPhone, isArrivalConfirmationMessage } from "../_shared/arrivalConfirmation.ts";
 import { onGuestAlertInserted } from "../_shared/guestAlertWhapiNotify.ts";
@@ -1214,6 +1214,7 @@ serve(async (req: Request) => {
     }
 
     const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+    await primeGuestChannelConfig(supabase);
     const lockGroup = Deno.env.get("WHAPI_GROUP_ID")?.trim() || null;
     const hkGroup   = Deno.env.get("WHAPI_HOUSEKEEPING_GROUP_ID")?.trim() || null;
     const results: Array<Record<string, unknown>> = [];

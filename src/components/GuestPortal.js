@@ -273,7 +273,8 @@ function SurveySection({ guest, token, onToast }) {
               key={c.key}
               label={c.label}
               value={scores[c.key]}
-              max={5}
+              max={10}
+              small
               onChange={(n) => setScores((prev) => ({ ...prev, [c.key]: n }))}
             />
           ))}

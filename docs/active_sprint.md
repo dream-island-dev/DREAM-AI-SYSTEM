@@ -1,5 +1,25 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-13 (Whapi Suites device banned — SOS Meta dual-path deployed).
+> Last updated: 2026-07-13 (Independent Suites/Day-pass channel control — P0 built, awaiting deploy).
+
+---
+
+## ✅ Deployed — P0: Independent Suites/Day-pass channel control + survey dedupe + 1-10 scale (2026-07-13)
+
+Follow-up to the SOS session below — Mike locked: ACC gets 2 independent cohort selectors instead of one global flag, plus a live-audit finding that the survey backend was already deployed without Mike's `כן`.
+
+| Piece | Detail |
+|---|---|
+| Migration 196 | `bot_config` rows `guest_suites_channel` (whapi\|meta, default meta) + `guest_daypass_channel` (off\|whapi\|meta, default off); widens `guest_surveys`' 6 category CHECK constraints 1-5→1-10 (194 already live on remote, can't edit in place) |
+| `_shared/guestWhapiRouting.ts` | `primeGuestChannelConfig()` (module-level sync cache, reuses `guestBotSettings.ts`'s cached KV fetch) wired into 7 real consumers; `shouldRouteGuestOutboundViaWhapiSuites` now cohort-aware; `isStageEffectivelyActive` hard-blocks day-pass when channel="off" even if is_active=true (real OFF, not just no-Whapi) — manual Override unaffected |
+| `AutomationControlCenter.js` | 2 new dropdowns in the Pulse card (🏨 ערוץ סוויטות, ☀️ ערוץ יום-כיף), writes `bot_config` directly (admin/super_admin RLS — non-admin gets a Hebrew FAIL VISIBLE toast) |
+| `automationSchedule.ts` | `checkout_fb_daypass` skipped (`superseded_by_survey`) for spa-cohort day-pass guests — they get `survey_invite_daypass` instead, no double post-visit touch |
+| `guest-portal-survey` + `GuestPortal.js` | Category scale 1-5→1-10 (Mike Q1): `GOOGLE_CTA_MIN_AVG_CATEGORY` 4.0→8.0, `NEGATIVE_CATEGORY_MAX` 2→4 (both stay 80%/40% proportionally), `RatingRow` UI `max={10}` |
+| **Live audit finding** | `guest_surveys`/`guest-portal-survey`/`guest-portal-data`/`resort-digest-cron` were ALREADY deployed to prod this morning (08:03 UTC) despite this doc saying "awaiting כן" — `notification_log` showed 123 failed `spa_warmup_daypass` + 4 failed `survey_invite_daypass` attempts today (is_active=false didn't block them — confirms the bug this session fixes), all failed on the Whapi SOS ban / missing Meta template, zero guests actually received anything |
+| Tests | guestWhapiRouting.test.ts rewritten (29 pass), automationSchedule.test.ts +3 (46 total), 331/331 jest, `deno check` delta-clean (7 functions, verified against HEAD worktree baseline), `npm run build` clean |
+
+**Deployed:** migration 196 `db push`; functions `automation-queue`, `guest-portal-spa-request`, `guest-portal-survey`, `whapi-webhook`, `whatsapp-cron`, `whatsapp-send`, `whatsapp-webhook` (`--no-verify-jwt`); frontend push `main`.
+
+**Mike QA:** ACC Pulse — 2 dropdowns at defaults (Suites=DreamBot, Day-pass=Off); Day-pass Off must keep `spa_warmup`/`survey_invite` out of Live Queue even if `is_active=true`; flip Day-pass→Whapi on a test guest to re-enable; spa-cohort day-pass shows `checkout_fb_daypass` as `superseded_by_survey`.
 
 ---
 

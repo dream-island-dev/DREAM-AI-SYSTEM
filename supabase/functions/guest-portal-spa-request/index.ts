@@ -6,7 +6,7 @@
 import { serve }        from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { onGuestAlertInserted } from "../_shared/guestAlertWhapiNotify.ts";
-import { shouldRouteGuestOutboundViaWhapiSuites } from "../_shared/guestWhapiRouting.ts";
+import { shouldRouteGuestOutboundViaWhapiSuites, primeGuestChannelConfig } from "../_shared/guestWhapiRouting.ts";
 
 export const PORTAL_SPA_ATTENTION_REASON = "בקשת טיפול בספא";
 
@@ -49,6 +49,7 @@ serve(async (req: Request) => {
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
     );
+    await primeGuestChannelConfig(supabase);
 
     const { data: guest, error: guestErr } = await supabase
       .from("guests")

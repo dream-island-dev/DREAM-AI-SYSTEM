@@ -7,9 +7,11 @@
 //
 // Uses the ALREADY-CONNECTED Whapi device (the same WHAPI_TOKEN channel that
 // today handles the internal staff-ops group) — not a separate token/device.
-// Gated on a single master switch so the feature stays inert (falls through
-// to today's Meta-only behavior) until explicitly turned on:
-//   npx supabase secrets set GUEST_WHAPI_SUITES_ENABLED=true
+// Gated per-cohort (P0, 2026-07-13) via bot_config rows editable from ACC —
+// "guest_suites_channel" (whapi|meta) and "guest_daypass_channel"
+// (off|whapi|meta) — see primeGuestChannelConfig below. The old single env
+// flag GUEST_WHAPI_SUITES_ENABLED is no longer read by routing decisions in
+// this file; it is left in place only as historical/emergency context.
 //
 // ⚠️ Because this reuses the staff-ops device, guest replies land in the same
 // WhatsApp number already used for team task cards/DMs. Inbound handling for
@@ -23,6 +25,51 @@ import {
   GuestRoomFields,
 } from "./suiteNames.ts";
 import { isGuestActiveForOutbound } from "./guestOutboundGuard.ts";
+import { fetchGuestBotConfig } from "./guestBotSettings.ts";
+
+/**
+ * Per-cohort channel control (P0, 2026-07-13) — replaces the single global
+ * GUEST_WHAPI_SUITES_ENABLED gate for routing decisions with two independent
+ * ACC-editable settings stored as bot_config rows (same KV table as
+ * bot_active/bot_active_whapi — no new table): "guest_suites_channel"
+ * (whapi|meta) and "guest_daypass_channel" (off|whapi|meta). Defaults below
+ * match Mike's lock (Suites=DreamBot, Day-pass=Off) so any caller that never
+ * primes the cache — or a cold isolate before its first prime — degrades to
+ * the safe/conservative choice, not a silent Whapi send.
+ *
+ * Callers MUST `await primeGuestChannelConfig(supabase)` once near the top
+ * of their handler, before any of the routing functions below run. Priming
+ * is cheap to call repeatedly — it just delegates to fetchGuestBotConfig's
+ * own 5-minute TTL cache — so a shared helper (e.g. guestInboundOrchestrator)
+ * priming again after its caller already did is not a real extra DB hit.
+ */
+type SuitesChannel = "whapi" | "meta";
+type DaypassChannel = "off" | "whapi" | "meta";
+
+let _suitesChannel: SuitesChannel = "meta";
+let _daypassChannel: DaypassChannel = "off";
+
+// deno-lint-ignore no-explicit-any
+export async function primeGuestChannelConfig(supabase: any): Promise<void> {
+  const cfg = await fetchGuestBotConfig(supabase);
+  _suitesChannel = cfg["guest_suites_channel"] === "whapi" ? "whapi" : "meta";
+  const dp = cfg["guest_daypass_channel"];
+  _daypassChannel = dp === "whapi" ? "whapi" : dp === "meta" ? "meta" : "off";
+}
+
+/** Read-only accessors for callers that need to display current state (ACC systemStatus). */
+export function getGuestSuitesChannel(): SuitesChannel { return _suitesChannel; }
+export function getGuestDaypassChannel(): DaypassChannel { return _daypassChannel; }
+
+/**
+ * Test-only synchronous override — lets Deno tests set the cache directly
+ * instead of mocking a Supabase client + fetchGuestBotConfig just to reach
+ * primeGuestChannelConfig. Not called anywhere outside *.test.ts.
+ */
+export function __setGuestChannelsForTest(suites: SuitesChannel, daypass: DaypassChannel): void {
+  _suitesChannel = suites;
+  _daypassChannel = daypass;
+}
 
 /**
  * SOS kill-switch (P0, 2026-07-13) — WhatsApp put the Suites device on a
@@ -48,25 +95,31 @@ export function isWhapiGuestSosActive(): boolean {
  * function's ~10 callers — including room_ready, which reads this directly
  * rather than through shouldRouteGuestOutboundViaWhapiSuites — automatically
  * falls back to Meta the instant SOS is active, with no per-caller changes.
+ *
+ * Suites-specific: room_ready and the other standalone (non-guest) callers
+ * of this function are historically suite-only contexts, so this maps to
+ * the Suites cohort channel. Day-pass has its own independent channel value
+ * — see shouldRouteGuestOutboundViaWhapiSuites, which is cohort-aware.
  */
 export function isGuestWhapiSuitesEnabled(): boolean {
   if (isWhapiGuestSosActive()) return false;
-  return Deno.env.get("GUEST_WHAPI_SUITES_ENABLED") === "true";
+  return _suitesChannel === "whapi";
 }
 
 /**
- * Guest outbound via Suites Whapi device (not Meta templates) when the master
- * flag is on. Covers effective suite AND day-pass guests — day-pass previously
- * stayed on Meta and hit broken templates (e.g. dream_checkin_reminder_v2
- * #131008 URL button / #132000 body params) in a cron retry loop.
- * Content still comes from stage-specific bot_scripts (night_before_daypass,
- * morning_daypass, …); this gate only picks the transport.
+ * Guest outbound via Suites Whapi device (not Meta templates) — cohort-aware
+ * (P0, 2026-07-13): suite guests follow guest_suites_channel, day-pass guests
+ * follow guest_daypass_channel independently. Content still comes from
+ * stage-specific bot_scripts (night_before_daypass, morning_daypass, …);
+ * this gate only picks the transport.
  */
 export function shouldRouteGuestOutboundViaWhapiSuites(
   guest: GuestRoomFields | null | undefined,
 ): boolean {
-  if (!isGuestWhapiSuitesEnabled() || !guest) return false;
-  return isEffectiveSuiteGuest(guest) || isEffectiveDayPassGuest(guest);
+  if (isWhapiGuestSosActive() || !guest) return false;
+  if (isEffectiveSuiteGuest(guest)) return _suitesChannel === "whapi";
+  if (isEffectiveDayPassGuest(guest)) return _daypassChannel === "whapi";
+  return false;
 }
 
 /**
@@ -78,6 +131,15 @@ export function shouldRouteGuestOutboundViaWhapiSuites(
  * stage paused only for that reason must still reach Whapi-eligible guests
  * (suite + day-pass). Meta-only guests (flag off) stay paused.
  *
+ * Day-pass hard mute (P0, 2026-07-13): guest_daypass_channel="off" is a real
+ * kill switch, not just "don't use Whapi" — it must block day-pass guests
+ * even on stages where is_active happens to be true (Meta path), because
+ * "Off" means no automated day-pass outbound at all until Mike re-enables
+ * it. This check runs before the is_active OR-clause so it can't be bypassed
+ * by a stage that was independently left/flipped active. Manual Override
+ * (force=true at every call site below) is untouched — Disable-Don't-Hide
+ * still applies to the scheduled/automatic path only.
+ *
  * Single source of truth for this decision — whatsapp-cron (due-item scan),
  * automation-queue (ACC Live Queue projection), and whatsapp-send (actual
  * dispatch gate) must all agree, or a stage can appear due in one place and
@@ -88,6 +150,7 @@ export function isStageEffectivelyActive(
   stage: { is_active: boolean },
   guest: GuestRoomFields | null | undefined,
 ): boolean {
+  if (isEffectiveDayPassGuest(guest) && _daypassChannel === "off") return false;
   return stage.is_active === true || shouldRouteGuestOutboundViaWhapiSuites(guest);
 }
 
@@ -139,5 +202,5 @@ export function whapiDisabledReasonHe(): string {
     return "🚨 מצב חירום Meta פעיל (WHAPI_GUEST_SOS_META) — מכשיר הסוויטות מושבת זמנית עקב הגבלת וואטסאפ. " +
       "שליחה ידנית דרך Whapi חסומה כרגע — יש להשתמש ב-Meta Template.";
   }
-  return "ערוץ Whapi נבחר אך אינו מופעל כרגע (GUEST_WHAPI_SUITES_ENABLED) — ההודעה לא נשלחה.";
+  return "ערוץ Whapi נבחר אך אינו מופעל כרגע (הגדרת ערוץ ב-ACC) — ההודעה לא נשלחה.";
 }

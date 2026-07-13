@@ -7,10 +7,13 @@
 // enforced by guest_surveys' UNIQUE(guest_id, visit_date), not just here.
 //
 // Positive gate (tunable constants below): overall_experience >= 8 AND the
-// average of the six 1-5 category scores >= 4.0 → Google review CTA shown.
-// Negative outcome (any category <=2 OR overall <=4) mirrors a row into
+// average of the six 1-10 category scores >= 8.0 → Google review CTA shown.
+// Negative outcome (any category <=4 OR overall <=4) mirrors a row into
 // guest_feedback (source='structured_survey') so it surfaces in the existing
 // staff attention triage — same convention as the post-stay button path.
+// Scale changed 1-5 → 1-10 (Mike, 2026-07-13, Q1) — thresholds rescaled to
+// keep the same proportional bar: 4.0/5.0=80% → 8.0/10; 2/5=40% → 4/10.
+// Migration 196 widens guest_surveys' CHECK constraints to match.
 
 import { serve }        from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -24,17 +27,17 @@ const CATEGORY_FIELDS = [
   "patio", "live_kitchen", "chestnut_restaurant", "service_team", "spa", "cleaning_maintenance",
 ] as const;
 
-/** Mike-confirmed gate (product lock): overall>=8 AND avg categories>=4.0 → Google CTA. */
+/** Mike-confirmed gate (product lock): overall>=8 AND avg categories>=8.0 (1-10 scale) → Google CTA. */
 const GOOGLE_CTA_MIN_OVERALL = 8;
-const GOOGLE_CTA_MIN_AVG_CATEGORY = 4.0;
-/** Any category <=2 OR overall <=4 → negative attention mirror row. */
-const NEGATIVE_CATEGORY_MAX = 2;
+const GOOGLE_CTA_MIN_AVG_CATEGORY = 8.0;
+/** Any category <=4 OR overall <=4 → negative attention mirror row (1-10 scale). */
+const NEGATIVE_CATEGORY_MAX = 4;
 const NEGATIVE_OVERALL_MAX = 4;
 
 const GOOGLE_REVIEW_URL = Deno.env.get("GOOGLE_REVIEW_URL") ?? "";
 
 function isValidCategoryScore(n: unknown): n is number {
-  return typeof n === "number" && Number.isInteger(n) && n >= 1 && n <= 5;
+  return typeof n === "number" && Number.isInteger(n) && n >= 1 && n <= 10;
 }
 
 function isValidOverallScore(n: unknown): n is number {

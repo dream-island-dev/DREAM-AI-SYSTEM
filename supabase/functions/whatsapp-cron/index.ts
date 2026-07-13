@@ -35,7 +35,7 @@ import {
 } from "../_shared/automationSchedule.ts";
 import { reconcileMissedArrivalConfirmations } from "../_shared/arrivalConfirmation.ts";
 import { loadGuestByIdForPipeline } from "../_shared/guestOutboundGuard.ts";
-import { isStageEffectivelyActive } from "../_shared/guestWhapiRouting.ts";
+import { isStageEffectivelyActive, primeGuestChannelConfig } from "../_shared/guestWhapiRouting.ts";
 import { buildRetryStateMap, evaluateRetryGate, RETRY_LOOKBACK_HOURS, type RetryState } from "../_shared/automationRetryGate.ts";
 
 const CORS = {
@@ -89,6 +89,7 @@ Deno.serve(async (req: Request) => {
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const anon = Deno.env.get("SUPABASE_ANON_KEY")!;
     const supabase = createClient(supabaseUrl, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+    await primeGuestChannelConfig(supabase);
 
     const now = new Date();
     const todayIsrael = israelYmd(now);

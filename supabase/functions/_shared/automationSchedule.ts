@@ -553,6 +553,19 @@ export function checkEligibility(
     const arrivalStr = String(guest.arrival_date ?? "").trim().slice(0, 10);
     if (!spaDateStr || spaDateStr !== arrivalStr) return "no_spa_visit_today";
   }
+
+  // Dedupe vs. the structured survey (Mike lock, 2026-07-13): a day-pass+spa
+  // guest is survey-eligible (same spa-cohort test as the block above) and
+  // already gets survey_invite_daypass as their one post-visit touch — the
+  // older, unscoped checkout_fb_daypass would otherwise double up on them.
+  // Non-spa day-pass guests are untouched — checkout_fb_daypass stays their
+  // only feedback channel.
+  if (stage.stage_key === "checkout_fb_daypass") {
+    const spaDateStr = String(guest.spa_date ?? "").trim().slice(0, 10);
+    const arrivalStr = String(guest.arrival_date ?? "").trim().slice(0, 10);
+    if (spaDateStr && spaDateStr === arrivalStr) return "superseded_by_survey";
+  }
+
   if (stage.stage_key === "spa_warmup_daypass") {
     const anchor = israelLocalDateTimeToUtc(guest.spa_date, guest.spa_time);
     if (anchor) {

@@ -485,6 +485,55 @@ Deno.test("survey_invite_daypass: needs_callback=true does NOT mute the automati
   assertEquals(result.dueNow, true);
 });
 
+// ── checkout_fb_daypass vs. survey_invite_daypass dedupe (Mike lock, 2026-07-13) ──
+// A spa-cohort day-pass guest gets survey_invite_daypass as their ONE
+// post-visit touch; the older, unscoped checkout_fb_daypass must yield to it
+// so the guest isn't contacted twice. Non-spa day-pass guests are untouched.
+
+function checkoutFbDaypassStage(overrides: Partial<AutomationStage> = {}): AutomationStage {
+  return {
+    stage_key: "checkout_fb_daypass",
+    display_name: "משוב לאחר עזיבה (בילוי יומי)",
+    journey_phase: "post_stay",
+    sequence_order: 420,
+    node_type: "hybrid",
+    schedule_mode: "day_offset_with_time",
+    anchor_event: "departure_date",
+    day_offset: 1,
+    local_time: "09:00",
+    local_time_end: null,
+    offset_hours: null,
+    applies_to: "non_suite",
+    meta_template_name: "dream_checkout_feedback",
+    session_message_script_key: "checkout_fb_daypass",
+    interactive_buttons: [],
+    guest_flag_column: "msg_checkout_fb_sent",
+    is_active: true,
+    ...overrides,
+  };
+}
+
+Deno.test("checkout_fb_daypass: spa-cohort day-pass guest (survey-eligible) → superseded_by_survey, not sent", () => {
+  const guest = daypassSpaGuest(); // spa_date === arrival_date === departure_date
+  const result = resolveStageSchedule(checkoutFbDaypassStage(), guest, israelInstant("2026-07-14", 9, 0));
+  assertEquals(result.skipReason, "superseded_by_survey");
+  assertEquals(result.dueNow, false);
+});
+
+Deno.test("checkout_fb_daypass: non-spa day-pass guest → fires normally (their only feedback channel)", () => {
+  const guest = daypassSpaGuest({ spa_date: null, spa_time: null });
+  const result = resolveStageSchedule(checkoutFbDaypassStage(), guest, israelInstant("2026-07-14", 9, 0));
+  assertEquals(result.skipReason, null);
+  assertEquals(result.dueNow, true);
+});
+
+Deno.test("checkout_fb_daypass: stale prior-visit spa_date (not this visit) → fires normally", () => {
+  const guest = daypassSpaGuest({ spa_date: "2026-07-01" });
+  const result = resolveStageSchedule(checkoutFbDaypassStage(), guest, israelInstant("2026-07-14", 9, 0));
+  assertEquals(result.skipReason, null);
+  assertEquals(result.dueNow, true);
+});
+
 // ── Anti-spam/anti-race latch (2026-07-13, automationRetryGate.ts) ─────────
 // Regression coverage for the checkEligibility wiring — the pure
 // evaluateRetryGate decision table itself is covered exhaustively in

@@ -51,7 +51,7 @@ import {
   PAYMENT_LINK_FAILURE_LABEL,
 } from "../_shared/paymentLinkGuard.ts";
 import { sendWhapiText, cleanPhoneForMention } from "../_shared/whapiSend.ts";
-import { shouldRouteGuestOutboundViaWhapiSuites } from "../_shared/guestWhapiRouting.ts";
+import { shouldRouteGuestOutboundViaWhapiSuites, primeGuestChannelConfig } from "../_shared/guestWhapiRouting.ts";
 import { formatGuestProfileForAi } from "../_shared/guestProfile.ts";
 import {
   shouldApplyInRoomContextOverride,
@@ -2898,6 +2898,7 @@ Deno.serve(async (req: Request) => {
       return;
     }
     const supabase = createClient(supabaseUrl, serviceKey);
+    await primeGuestChannelConfig(supabase);
 
     // Load all config in parallel — each has its own 5-min cache
     const [botConfig, botSettings, scripts, learnedRules] = await Promise.all([

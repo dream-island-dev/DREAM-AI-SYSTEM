@@ -1911,6 +1911,23 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
     }
   }, [queuePreviewDate]);
 
+  // Suites {whapi|meta} / Day-pass {off|whapi|meta} channel selectors (P0,
+  // 2026-07-13) — direct bot_config write (same RLS pattern as patchStage's
+  // automation_stages.update above), then re-fetch so systemStatus and every
+  // Live Queue row's predicted channel reflect the new value immediately.
+  const updateGuestChannel = useCallback(async (configKey, newValue, label) => {
+    const { error } = await supabase
+      .from("bot_config")
+      .update({ config_value: newValue })
+      .eq("config_key", configKey);
+    if (error) {
+      showToast("err", "שגיאה בשמירת ערוץ: " + error.message);
+    } else {
+      showToast("ok", `✅ ${label} עודכן`);
+      fetchQueue();
+    }
+  }, [showToast, fetchQueue]);
+
   // preview:true — read-only, never writes state or sends a Whapi alert
   // (automation-health-cron/index.ts honors this regardless of
   // AUTOMATION_HEALTH_ENABLED, so opening this tab is always safe).
@@ -2953,6 +2970,37 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                       כיבוי: <code style={{ background: "rgba(0,0,0,0.06)", padding: "1px 5px", borderRadius: 4 }}>WHAPI_GUEST_SOS_META</code>.
                     </div>
                   )}
+                  {/* ── Guest channel selectors (P0, 2026-07-13) — independent per cohort ── */}
+                  <div style={{ display: "flex", gap: 24, flexWrap: "wrap", fontSize: 13, marginBottom: 10 }}>
+                    <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span>🏨 ערוץ סוויטות:</span>
+                      <select
+                        value={queueData.systemStatus.guestSuitesChannel ?? "meta"}
+                        onChange={(e) => updateGuestChannel("guest_suites_channel", e.target.value, "ערוץ סוויטות")}
+                        style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid var(--border)", fontFamily: "inherit", fontSize: 13 }}
+                      >
+                        <option value="whapi">📱 Whapi (מכשיר סוויטות)</option>
+                        <option value="meta">🔵 DreamBot (Meta)</option>
+                      </select>
+                    </label>
+                    <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span>☀️ ערוץ יום-כיף:</span>
+                      <select
+                        value={queueData.systemStatus.guestDaypassChannel ?? "off"}
+                        onChange={(e) => updateGuestChannel("guest_daypass_channel", e.target.value, "ערוץ יום-כיף")}
+                        style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid var(--border)", fontFamily: "inherit", fontSize: 13 }}
+                      >
+                        <option value="off">⛔ כבוי (Off)</option>
+                        <option value="whapi">📱 Whapi (מכשיר סוויטות)</option>
+                        <option value="meta">🔵 DreamBot (Meta)</option>
+                      </select>
+                    </label>
+                    {queueData.systemStatus.guestDaypassChannel === "off" && (
+                      <span style={{ color: "var(--text-muted)", fontSize: 12, alignSelf: "center" }}>
+                        אוטומציית יום-כיף כבויה לגמרי — שיגור ידני (Override) עדיין עובד
+                      </span>
+                    )}
+                  </div>
                   <div style={{ display: "flex", gap: 20, flexWrap: "wrap", fontSize: 13 }}>
                     <span>{queueData.systemStatus.cronEnabled ? "🟢" : "🔴"} CRON_ENABLED (תזמון אוטומטי)</span>
                     <span>{queueData.systemStatus.automationEnabled ? "🟢" : "🔴"} AUTOMATION_ENABLED (שליחה כללית)</span>

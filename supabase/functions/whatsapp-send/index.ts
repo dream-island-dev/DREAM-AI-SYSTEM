@@ -113,6 +113,7 @@ import {
   isGuestWhapiSuitesEnabled,
   shouldRouteGuestOutboundViaWhapiSuites,
   isMetaGuestTemplateAllowed,
+  primeGuestChannelConfig,
   whapiDisabledReasonHe,
 } from "../_shared/guestWhapiRouting.ts";
 
@@ -1406,6 +1407,7 @@ serve(async (req: Request) => {
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
+    await primeGuestChannelConfig(supabase);
 
     const sim = isSimulation();
 
