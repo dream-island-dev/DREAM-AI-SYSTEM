@@ -1,4 +1,5 @@
-2026-07-13 | Survey dynamic categories + suites upsell CTA — DEPLOYED | Editor can add/remove rating categories (1–12); scores in `guest_surveys.ratings` jsonb (migration 198). Positive avg (overall≥8 + categories avg≥8) shows CTA to https://www.dream-island.co.il/suites (label/URL editable). Low scores skip suites CTA. guest-portal-survey + portal thank-you updated. Migration 197 (`guest_survey_ui` bot_config) + staff preview/editor.
+2026-07-13 | Meta template `dream_survey_invite` for day-pass survey invite (wiring ready, not deployed) | Mike-locked HE body + URL button «למילוי הסקר» → `…/portal/{{1}}` with send-time `#survey`. create-wa-template now sends body/URL examples. Migration 199 sets `meta_template_name`; whatsapp-send/sync/register wired. Live only after Meta APPROVES + deploy.
+
 
 2026-07-13 | Guest survey staff preview + editable labels — DEPLOYED | Shared `GuestSurveyForm` + `guestSurveyUi` (bot_config `guest_survey_ui` JSON, migration 197). Feedback → סקרים: תצוגה מקדימה (portal chrome) + עריכת תוויות (admin). Portal reads labels via `guest-portal-data.portalConfig.survey_ui`. Fixed stale `/5` display + negative threshold 4/10.
 

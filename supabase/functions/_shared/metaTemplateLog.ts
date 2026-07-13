@@ -97,6 +97,9 @@ export const TEMPLATE_BODY_APPROVED: Record<string, string> = {
   dream_handover_agent_v2:
     "תודה על פנייתך, {{1}}. העברנו את בקשתך לאחד מהצוות שיחזור אליך בהקדם. " +
     "דרים איילנד — תמיד לשירותך",
+  dream_survey_invite:
+    "היי{{1}}, תודה שביליתם איתנו היום! 🌴\n\n" +
+    "נשמח שתדרגו את החוויה שלכם במתחם 🙏🏽",
 };
 
 /** Quick Reply labels — inbox footer only. */

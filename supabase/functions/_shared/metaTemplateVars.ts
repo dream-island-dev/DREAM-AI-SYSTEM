@@ -17,6 +17,7 @@ export function countMetaBodyParams(bodyText: string): number {
  */
 const PRODUCTION_PARAM_COUNT_FALLBACK: Record<string, number> = {
   dream_room_ready1: 1,
+  dream_survey_invite: 1,
 };
 
 /** Minimal body snapshots for param-count fallback when Meta API is unreachable. */
@@ -27,6 +28,8 @@ const TEMPLATE_BODY_PARAM_SNAPSHOTS: Record<string, string> = {
     "🔑 {{1}}, יש לנו בשורה — הסוויטה שלך מוכנה ומחכה לך!",
   night_before_suites: "היי {{1}} מה שלומכם?",
   dream_suite_reminder: "היי {{1}} — {{2}} — {{3}}",
+  dream_survey_invite:
+    "היי{{1}}, תודה שביליתם איתנו היום! 🌴\n\nנשמח שתדרגו את החוויה שלכם במתחם 🙏🏽",
 };
 
 const _expectedCountCache = new Map<string, number>();

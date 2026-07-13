@@ -1,5 +1,19 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-13 (Survey staff preview + label editor — built, awaiting visual QA).
+> Last updated: 2026-07-13 (Survey invite Meta template `dream_survey_invite` — wired locally, awaiting תעלה + Meta APPROVED).
+
+---
+
+## 🟡 In progress — Survey invite WhatsApp button via Meta template (2026-07-13)
+
+| Piece | Detail |
+|---|---|
+| Meta template | `dream_survey_invite` UTILITY/he — Mike-locked body `היי{{1}}, תודה…` + URL btn «למילוי הסקר» → portal/`{{1}}` (suffix `#survey`) |
+| create-wa-template | Body + dynamic-URL `example` required by Meta |
+| Migration 199 | `survey_invite_daypass.meta_template_name` + bot_scripts text (Whapi keeps plain `{{portal_url}}#survey`) |
+| whatsapp-send | PIPELINE + dynamic URL set + leading-space inject for `היי{{1}}` |
+| Gate | Day-pass ACC channel still **Off** → no mass send until flipped; template must show **APPROVED** in Meta first |
+
+**Blocked on:** Mike `תעלה` → deploy functions + db push → create template on Meta → wait PENDING→APPROVED → sync.
 
 ---
 

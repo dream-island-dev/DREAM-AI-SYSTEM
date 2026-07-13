@@ -184,6 +184,25 @@ const TEMPLATES: Template[] = [
     ],
   },
 
+  // Day-pass + spa survey invite (Mike lock 2026-07-13). Body exact — no
+  // space after היי; send-time {{1}} is " FirstName". URL button → portal/#survey.
+  {
+    name: "dream_survey_invite", category: "UTILITY", language: "he",
+    components: [
+      { type: "BODY",
+        text: "היי{{1}}, תודה שביליתם איתנו היום! 🌴\n\nנשמח שתדרגו את החוויה שלכם במתחם 🙏🏽",
+        example: { body_text: [[" ישראל ישראלי"]] } },
+      { type: "BUTTONS", buttons: [
+        {
+          type: "URL",
+          text: "למילוי הסקר",
+          url: "https://dream-ai-system.vercel.app/portal/{{1}}",
+          example: ["00000000-0000-0000-0000-000000000001#survey"],
+        },
+      ]},
+    ],
+  },
+
 ];
 
 interface TemplateResult { name: string; ok: boolean; status?: string; id?: string; error?: string; }

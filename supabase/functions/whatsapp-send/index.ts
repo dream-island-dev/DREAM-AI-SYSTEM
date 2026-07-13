@@ -247,6 +247,7 @@ const PIPELINE_TEMPLATE: Record<string, string> = {
   checkout_fb:         "dream_checkout_feedback",      // day after departure → feedback + Quick Reply buttons
   checkout_fb_daypass: "dream_checkout_feedback",      // day-pass post-visit feedback
   night_before_daypass: "dream_checkin_reminder_v2",   // day-pass T-1 evening reminder (BRANCH D hybrid)
+  survey_invite_daypass: "dream_survey_invite",        // day-pass+spa 17:00 survey — URL btn → portal/#survey
 };
 
 /** Hardcoded bot_scripts keys when automation_stages.session_message_script_key
@@ -262,6 +263,8 @@ const PIPELINE_SESSION_SCRIPT: Record<string, string> = {
   mid_stay_daypass:     "mid_stay_daypass",
   checkout_fb:          "checkout_fb",
   checkout_fb_daypass:  "checkout_fb_daypass",
+  spa_warmup_daypass:   "spa_warmup_daypass",
+  survey_invite_daypass: "survey_invite_daypass",
 };
 
 // ── Synchronous day-of-week aware timing helper ───────────────────────────────
@@ -338,6 +341,7 @@ const PIPELINE_VARS: Record<string, (g: Record<string, unknown>) => string[]> = 
   checkout_fb:         (g) => [String(g.name ?? "")],
   checkout_fb_daypass: (g) => [String(g.name ?? "")],
   night_before_daypass: (g) => [String(g.name ?? "")],
+  survey_invite_daypass: (g) => [String(g.name ?? "")],
 };
 
 // Maps each pipeline trigger to the DB flag it atomically stamps.
@@ -353,6 +357,8 @@ const GUEST_FLAG: Record<string, string> = {
   checkout_fb_daypass: "msg_checkout_fb_sent",
   night_before_daypass: "msg_pre_arrival_sent",
   stage_2_arrival:     "msg_stage_2_arrival_sent",
+  survey_invite_daypass: "msg_survey_invite_sent",
+  spa_warmup_daypass:    "msg_spa_warmup_sent",
 };
 
 // ── Stage 2.5 (night_before) — Sabbath/Holiday-aware entry/check-in times ───
@@ -585,6 +591,7 @@ const TEMPLATE_NO_HEADER = new Set([
   "dream_welcome_morning",
   "dream_welcome_morning_shabbat",
   "dream_handover_agent_v2",
+  "dream_survey_invite",
 ]);
 
 function templateExpectsImageHeader(templateName: string): boolean {
@@ -702,14 +709,17 @@ function buildTemplateComponents(
 
   if (variables.length > 0) {
     const bodyParams = variables.map((v, i) => {
-      const text = String(v ?? "").trim();
+      let text = String(v ?? "").trim();
       if (!text) {
         console.warn(`[whatsapp-send] template="${templateName}": body param {{${i + 1}}} empty after sanitize`);
+        text = i === 0 ? "אורח יקר" : i === 1 ? "12:00" : i === 2 ? "15:00" : "-";
       }
-      return {
-        type: "text",
-        text: text || (i === 0 ? "אורח יקר" : i === 1 ? "12:00" : i === 2 ? "15:00" : "-"),
-      };
+      // Mike-locked body is "היי{{1}}" (no space after היי). sanitizeTemplateVars
+      // trims, so we inject a leading space here so guests see "היי שם".
+      if (templateName === "dream_survey_invite" && i === 0 && !text.startsWith(" ")) {
+        text = ` ${text}`;
+      }
+      return { type: "text", text };
     });
     components.push({ type: "body", parameters: bodyParams });
   } else {
@@ -968,6 +978,7 @@ async function sendViaMeta(to: string, body: string, imageUrl?: string | null): 
 const TEMPLATE_HAS_DYNAMIC_URL_BUTTON = new Set([
   "dream_suite_reminder",
   "dream_payment_and_workshops",
+  "dream_survey_invite",
 ]);
 
 function resolveDynamicUrlButtonParam(
@@ -981,7 +992,10 @@ function resolveDynamicUrlButtonParam(
   }
   if (!TEMPLATE_HAS_DYNAMIC_URL_BUTTON.has(templateName)) return undefined;
   const token = String(portalToken ?? "").trim();
-  return token || undefined;
+  if (!token) return undefined;
+  // dream_survey_invite URL is …/portal/{{1}} — suffix must land on #survey.
+  if (templateName === "dream_survey_invite") return `${token}#survey`;
+  return token;
 }
 
 function safeGuestPhone(phone: unknown): string {

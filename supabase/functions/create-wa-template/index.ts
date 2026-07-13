@@ -43,7 +43,7 @@ serve(async (req: Request) => {
       body:      string;
       header?:   string;
       footer?:   string;
-      buttons?:  Array<{ type: string; text: string; url?: string; phone_number?: string }>;
+      buttons?:  Array<{ type: string; text: string; url?: string; phone_number?: string; example?: string }>;
     };
 
     // Validate required fields
@@ -70,7 +70,18 @@ serve(async (req: Request) => {
       components.push({ type: "HEADER", format: "TEXT", text: body.header.trim() });
     }
 
-    components.push({ type: "BODY", text: body.body.trim() });
+    const bodyText = body.body.trim();
+    // Meta requires sample values whenever the body contains {{n}} variables.
+    const bodyVarMatches = [...bodyText.matchAll(/\{\{(\d+)\}\}/g)];
+    const maxBodyVar = bodyVarMatches.reduce((m, x) => Math.max(m, Number(x[1])), 0);
+    const bodyComponent: Record<string, unknown> = { type: "BODY", text: bodyText };
+    if (maxBodyVar > 0) {
+      const samples = Array.from({ length: maxBodyVar }, (_, i) =>
+        i === 0 ? "ישראל ישראלי" : `ערך${i + 1}`,
+      );
+      bodyComponent.example = { body_text: [samples] };
+    }
+    components.push(bodyComponent);
 
     if (body.footer?.trim()) {
       components.push({ type: "FOOTER", text: body.footer.trim() });
@@ -85,7 +96,15 @@ serve(async (req: Request) => {
         if (!b.text?.trim()) throw new Error("לכל כפתור חייב להיות טקסט");
         if (type === "URL") {
           if (!b.url?.trim()) throw new Error("כפתור מסוג URL חייב לינק");
-          return { type: "URL", text: b.text.trim(), url: b.url.trim() };
+          const url = b.url.trim();
+          const btn: Record<string, unknown> = { type: "URL", text: b.text.trim().slice(0, 25), url };
+          // Dynamic URL (…/{{1}}) requires a suffix example for Meta review.
+          if (/\{\{\s*1\s*\}\}/.test(url)) {
+            const ex = (b as { example?: string }).example?.trim()
+              || "00000000-0000-0000-0000-000000000001#survey";
+            btn.example = [ex];
+          }
+          return btn;
         }
         if (type === "PHONE_NUMBER") {
           if (!b.phone_number?.trim()) throw new Error("כפתור מסוג PHONE_NUMBER חייב מספר טלפון");
