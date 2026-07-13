@@ -1,9 +1,9 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-13 (room_ready Whapi fix — ready to deploy).
+> Last updated: 2026-07-13 (room_ready Whapi fix — deployed).
 
 ---
 
-## 🟡 Ready to deploy — room_ready always Whapi when Suites flag on (2026-07-13)
+## ✅ Deployed — room_ready always Whapi when Suites flag on (2026-07-13)
 
 Regression: after Whapi-first, «חדר מוכן» could still hit Meta `dream_room_ready1` when `guests.room` was empty/stale (AICopilot/housekeeping already had the suite `roomId`). Meta path failed → guest got no message. Housekeeping N✅ → ממתין לאישור sync was fine.
 
