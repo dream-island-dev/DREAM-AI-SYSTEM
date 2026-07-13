@@ -23,7 +23,7 @@ CLAUDE.md — Dream Island AI System (XOS)
 UX Guardrails & שליחת הודעות
 - Zero-Spam Policy: לעולם לא לשלוח broadcast/הודעה אוטומטית אם האורח מבוטל (status='cancelled'). דגל needs_callback הוא התראה לצוות בלבד ואינו חוסם את הבוט או ה-Cron.
 - Graceful Fallback: אם דאטה דינמי (כמו spa_time) חסר, מנקים את ה-placeholder ולא שולחים {{VARS}} גולמי לאורח.
-- Template Awareness: הודעות מעבר לחלון 24h של Meta חייבות תבנית מאושרת מראש (sendViaTemplate). אם החלון סגור, ה-Inbox מחזיר סטטוס window_closed מיידית. `sendViaTemplate` מיישר מספר פרמטרים לפי התבנית החיה ב-Meta (`_shared/metaTemplateVars.ts`) — `dream_room_ready1` מאושרת עם `{{1}}` בלבד (שם); שם סוויטה נשלח רק בנתיב session/Whapi.
+- Template Awareness: הודעות מעבר לחלון 24h של Meta חייבות תבנית מאושרת מראש (sendViaTemplate). אם החלון סגור, ה-Inbox מחזיר סטטוס window_closed מיידית. `sendViaTemplate` מיישר מספר פרמטרים לפי התבנית החיה ב-Meta (`_shared/metaTemplateVars.ts`) — `dream_room_ready1` מאושרת עם `{{1}}` בלבד (שם); שם סוויטה נשלח רק בנתיב session/Whapi. **`room_ready` (חדר מוכן):** כש-`GUEST_WHAPI_SUITES_ENABLED` — תמיד Whapi + `bot_scripts.room_ready_reminder` (לא Meta); לא תלוי ב-`guests.room` (יכול להיות ריק מול `roomId` מ-AICopilot/housekeeping).
 
 1. הגדרת המערכת וסטאק טכני
 

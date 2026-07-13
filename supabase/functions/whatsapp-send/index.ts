@@ -3566,11 +3566,16 @@ serve(async (req: Request) => {
         | { channel: "whapi";    freeTextKey: string; guestName: string; roomName: string }
         | { channel: "template"; templateName: string; vars: string[] };
 
-      // All autonomous suite-guest automation routes through Whapi when the
-      // feature flag is on (owner decision, 2026-07-10) — no dispatch_channel
-      // gate. Bypasses the 24h-inbound check entirely (Whapi has no
-      // session-window concept) and always uses the bot_scripts text.
-      const useWhapiForRoomReady = shouldRouteGuestOutboundViaWhapiSuites(guest);
+      // room_ready is a suite staff event (AICopilot / GuestsPage / SuitesDashboard
+      // / housekeeping N✅ → ממתין לאישור). When GUEST_WHAPI_SUITES_ENABLED is on,
+      // ALWAYS use Whapi free-text — never Meta dream_room_ready1.
+      // Why not shouldRouteGuestOutboundViaWhapiSuites(guest) alone: guests.room
+      // denorm can lag behind suite_rooms / the roomId the UI already knows
+      // (housekeeping ready signal). That dropped suite guests onto the Meta
+      // template path after Whapi-first, so "חדר מוכן" failed on Facebook
+      // template errors while the Suites device was healthy. Flag-off keeps
+      // the legacy Meta session/template split.
+      const useWhapiForRoomReady = isGuestWhapiSuitesEnabled();
 
       const rrDispatch: RoomReadyDispatch = useWhapiForRoomReady
         ? { channel: "whapi", freeTextKey: "room_ready_reminder", guestName: rrGuestName, roomName: rrRoomName }

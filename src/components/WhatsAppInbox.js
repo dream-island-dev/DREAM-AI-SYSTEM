@@ -167,13 +167,17 @@ function isSessionWindowOpenForContact(contact) {
   return Number.isFinite(ts) && Date.now() - ts < 24 * 3600 * 1000;
 }
 
-/** Pre-fill text for Inbox «חדר מוכן» — session script if window open, else Meta template body. */
+/** Pre-fill text for Inbox «חדר מוכן» — Whapi / open session → bot script; else Meta body draft. */
 function resolveRoomReadyDraftMessage(contact, scriptsByKey, templatesByWaName) {
   const ctx = buildGuestResolveContext(contact);
   const guestName = ctx.guestName || "אורח יקר";
   const room = ctx.room && ctx.room !== "-" ? ctx.room : "הסוויטה שלכם";
 
-  if (isSessionWindowOpenForContact(contact)) {
+  // Whapi threads (and open Meta sessions) always prefer room_ready_reminder —
+  // never draft a Meta template body that staff then can't send after Whapi-first.
+  const preferScript =
+    contact?.inbox_channel === "whapi" || isSessionWindowOpenForContact(contact);
+  if (preferScript) {
     const script = scriptsByKey?.get("room_ready_reminder");
     if (script?.trim()) return expandScriptForDisplay(script, ctx);
   }

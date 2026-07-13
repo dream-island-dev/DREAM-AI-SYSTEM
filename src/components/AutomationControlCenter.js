@@ -2239,12 +2239,11 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
     "mid_stay_daypass", "checkout_fb_daypass",
   ]);
 
-  // Stages whose dispatch block pre-dates the Whapi work and never learned to
-  // check force_channel — mirrors WHAPI_UNSUPPORTED_STAGES in whatsapp-send/
-  // index.ts. Excluded client-side (Disable, Don't Hide — shown as a blocked
-  // result with reason, not silently dropped) so a mixed selection doesn't
-  // rely on the server's per-stage guard alone.
-  const WHAPI_UNSUPPORTED_STAGES = new Set(["room_ready"]);
+  // Mirrors WHAPI_UNSUPPORTED_STAGES in whatsapp-send (emptied 2026-07-09 —
+  // room_ready now dispatches via Whapi free-text like every other suite stage).
+  // Kept as a Set so a future re-block is one-line; client Disable-Don't-Hide
+  // still shows a blocked reason instead of silently dropping mixed selections.
+  const WHAPI_UNSUPPORTED_STAGES = new Set();
 
   // ── Bulk dispatch — same call as whatsapp-cron uses (viaWhapi pins
   // force_channel="whapi_session" instead — manual dispatch only, never

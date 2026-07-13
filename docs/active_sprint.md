@@ -1,5 +1,21 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-13 (Automation retry-storm fix — deployed).
+> Last updated: 2026-07-13 (room_ready Whapi fix — ready to deploy).
+
+---
+
+## 🟡 Ready to deploy — room_ready always Whapi when Suites flag on (2026-07-13)
+
+Regression: after Whapi-first, «חדר מוכן» could still hit Meta `dream_room_ready1` when `guests.room` was empty/stale (AICopilot/housekeeping already had the suite `roomId`). Meta path failed → guest got no message. Housekeeping N✅ → ממתין לאישור sync was fine.
+
+| Piece | Detail |
+|---|---|
+| `whatsapp-send` room_ready | `useWhapiForRoomReady = isGuestWhapiSuitesEnabled()` — Whapi + `room_ready_reminder` only; no Meta when flag on |
+| ACC | `WHAPI_UNSUPPORTED_STAGES` emptied (was stale `room_ready`) |
+| Inbox | Whapi threads draft `room_ready_reminder`, not Meta body |
+
+**Deploy:** `npx supabase functions deploy whatsapp-send --no-verify-jwt` + frontend push. No migration.
+
+**Mike QA:** N✅ בקבוצת צ'ק אין → פעמון AICopilot → אשר → אורח מקבל Whapi (מכשיר סוויטות), לא Meta.
 
 ---
 
