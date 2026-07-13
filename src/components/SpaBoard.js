@@ -11,7 +11,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import ActivitiesImportZone from "./spa/ActivitiesImportZone";
-import { resolveHomeRoomMap, planAlignDay } from "../utils/spaStickyRoom";
+import { resolveHomeRoomMap, planAlignDay, roomOccupancyAtSlot } from "../utils/spaStickyRoom";
 
 const DEFAULT_START_TIME = "09:00";
 const DEFAULT_DURATION_MIN = 60;
@@ -890,27 +890,70 @@ function SwapTherapistModal({ sourceAppt, candidates, onClose, onSaved }) {
 // Changes room_id (optionally therapist_id) on ONE appointment row via a
 // single UPDATE — unlike SwapTherapistModal's two-row exchange, one row never
 // trips the therapist-overlap exclusion mid-statement, so no RPC is needed.
-function MoveGuestModal({ appt, rooms, therapists, homeRoomByTherapist, onClose, onSaved }) {
+// Room picker is availability-aware for the appointment's time window
+// (reuses roomOccupancyAtSlot) — free rooms first, full rooms greyed but
+// still visible (Disable-Don't-Hide) with an Override path.
+function MoveGuestModal({ appt, rooms, therapists, appointments, homeRoomByTherapist, onClose, onSaved }) {
   const homeRoomId = appt?.therapist_id ? homeRoomByTherapist?.get(appt.therapist_id) : null;
   const [roomId, setRoomId] = useState("");
+  const [overrideFull, setOverrideFull] = useState(false);
   const [reassignTherapist, setReassignTherapist] = useState(false);
   const [targetTherapistId, setTargetTherapistId] = useState("");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState(null);
 
+  const roomTypeById = useMemo(
+    () => Object.fromEntries((rooms ?? []).map((r) => [r.id, r.room_type])),
+    [rooms]
+  );
+
+  const roomOptions = useMemo(() => {
+    if (!appt) return [];
+    return (rooms ?? []).map((r) => {
+      const occ = roomOccupancyAtSlot(appointments, appt, r.id, roomTypeById);
+      const isCurrent = r.id === appt.room_id;
+      const isHome = homeRoomId != null && r.id === homeRoomId;
+      return { ...r, ...occ, isCurrent, isHome };
+    }).sort((a, b) => {
+      // Home free → other free → current → full; within group couple/single then name
+      const rank = (r) => {
+        if (r.isHome && r.free) return 0;
+        if (r.free && !r.isCurrent) return 1;
+        if (r.isCurrent) return 2;
+        if (r.free) return 3;
+        return 4;
+      };
+      const d = rank(a) - rank(b);
+      if (d !== 0) return d;
+      if (a.room_type !== b.room_type) return a.room_type === "couple" ? -1 : 1;
+      return (a.name || "").localeCompare(b.name || "", "he");
+    });
+  }, [rooms, appointments, appt, roomTypeById, homeRoomId]);
+
+  const freeCount = roomOptions.filter((r) => r.free && !r.isCurrent).length;
+  const selectedMeta = roomOptions.find((r) => String(r.id) === String(roomId));
+  const selectedIsFull = selectedMeta && !selectedMeta.free && !selectedMeta.isCurrent;
+
   useEffect(() => {
-    setRoomId(homeRoomId ? String(homeRoomId) : appt?.room_id ? String(appt.room_id) : "");
+    setOverrideFull(false);
     setReassignTherapist(false);
     setTargetTherapistId("");
     setErr(null);
+    if (!appt) return;
+    // Smart default: home if free (and not current) → else first free ≠ current → else home if away
+    const homeOpt = roomOptions.find((r) => r.isHome);
+    const firstFree = roomOptions.find((r) => r.free && !r.isCurrent);
+    if (homeOpt?.free && !homeOpt.isCurrent) setRoomId(String(homeOpt.id));
+    else if (firstFree) setRoomId(String(firstFree.id));
+    else if (homeOpt && !homeOpt.isCurrent) setRoomId(String(homeOpt.id));
+    else setRoomId("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appt?.id]);
 
   if (!appt) return null;
 
   const currentTherapistName = therapists.find((t) => t.id === appt.therapist_id)?.name ?? "—";
-  const couples = rooms.filter((r) => r.room_type === "couple");
-  const singles = rooms.filter((r) => r.room_type === "single");
+  const timeLabel = `${appt.start_time?.slice(0, 5) ?? "—"}–${appt.end_time?.slice(0, 5) ?? "—"}`;
 
   async function handleMove() {
     setErr(null);
@@ -918,17 +961,26 @@ function MoveGuestModal({ appt, rooms, therapists, homeRoomByTherapist, onClose,
     if (String(roomId) === String(appt.room_id) && !(reassignTherapist && targetTherapistId)) {
       return setErr("החדר שנבחר זהה לחדר הנוכחי");
     }
+    if (selectedIsFull && !overrideFull) {
+      return setErr("⚠ החדר מלא בשעת הטיפול — סמן/י «חריג — העבר בכל זאת» או בחר/י חדר פנוי");
+    }
     setSaving(true);
     const patch = { room_id: Number(roomId) };
     if (reassignTherapist && targetTherapistId) patch.therapist_id = Number(targetTherapistId);
     const { error } = await supabase.from("spa_appointments").update(patch).eq("id", appt.id);
     setSaving(false);
     if (error) {
-      // FAIL VISIBLE — same GiST/capacity constraints as AssignModal's insert.
       setErr(error.code === "23P01" ? "⚠ התנגשות בלוח הזמנים בחדר היעד" : "⚠ שגיאה: " + error.message);
       return;
     }
     onSaved();
+  }
+
+  function statusBadge(r) {
+    if (r.isCurrent) return "נוכחי";
+    if (r.free && r.capacity > 1) return `פנוי (${r.openSlots}/${r.capacity})`;
+    if (r.free) return "פנוי";
+    return "מלא";
   }
 
   return (
@@ -939,7 +991,7 @@ function MoveGuestModal({ appt, rooms, therapists, homeRoomByTherapist, onClose,
       <div
         onClick={(e) => e.stopPropagation()}
         style={{
-          background: "var(--card-bg)", borderRadius: 16, padding: 24, maxWidth: 460, width: "100%",
+          background: "var(--card-bg)", borderRadius: 16, padding: 24, maxWidth: 480, width: "100%",
           direction: "rtl", textAlign: "right", boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
           fontFamily: "Heebo, sans-serif", maxHeight: "85vh", display: "flex", flexDirection: "column",
         }}
@@ -950,13 +1002,18 @@ function MoveGuestModal({ appt, rooms, therapists, homeRoomByTherapist, onClose,
         </div>
 
         <div style={{ background: "var(--ivory)", border: "1px solid var(--border)", borderRadius: 10, padding: "10px 12px", marginBottom: 12, fontSize: 13 }}>
-          <div style={{ fontWeight: 700 }}>{rooms.find((r) => r.id === appt.room_id)?.name ?? "—"} · {appt.start_time?.slice(0, 5)}–{appt.end_time?.slice(0, 5)}</div>
+          <div style={{ fontWeight: 700 }}>{rooms.find((r) => r.id === appt.room_id)?.name ?? "—"} · {timeLabel}</div>
           <div style={{ color: "var(--text-muted)", marginTop: 2 }}>👤 {currentTherapistName} · {appt.guests?.name ?? "—"}</div>
           {homeRoomId && (
             <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
               חדר הבית של {currentTherapistName} היום: {rooms.find((r) => r.id === homeRoomId)?.name ?? "—"}
             </div>
           )}
+          <div style={{ fontSize: 11, marginTop: 6, fontWeight: 600, color: freeCount > 0 ? "#2F6B3A" : "#A32D2D" }}>
+            {freeCount > 0
+              ? `✓ ${freeCount} חדרי יעד פנויים בשעת הטיפול (${timeLabel})`
+              : `⚠ אין חדר פנוי בשעת הטיפול (${timeLabel}) — רק חריג ידני`}
+          </div>
         </div>
 
         {err && (
@@ -965,18 +1022,52 @@ function MoveGuestModal({ appt, rooms, therapists, homeRoomByTherapist, onClose,
           </div>
         )}
 
-        <div style={{ marginBottom: 14 }}>
-          <label style={{ fontSize: 12, color: "var(--text-muted)", display: "block", marginBottom: 6 }}>חדר יעד</label>
-          <select value={roomId} onChange={(e) => setRoomId(e.target.value)} style={{ width: "100%" }}>
-            <option value="">— בחר חדר —</option>
-            <optgroup label="חדרי זוגות">
-              {couples.map((r) => <option key={r.id} value={r.id}>{r.name}{r.id === homeRoomId ? " · חדר בית" : ""}</option>)}
-            </optgroup>
-            <optgroup label="חדרי יחיד">
-              {singles.map((r) => <option key={r.id} value={r.id}>{r.name}{r.id === homeRoomId ? " · חדר בית" : ""}</option>)}
-            </optgroup>
-          </select>
+        <div style={{ marginBottom: 14, overflowY: "auto", flex: 1, minHeight: 0 }}>
+          <label style={{ fontSize: 12, color: "var(--text-muted)", display: "block", marginBottom: 8 }}>
+            חדר יעד לפי זמינות בשעה זו
+          </label>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {roomOptions.map((r) => {
+              const selected = String(r.id) === String(roomId);
+              const muted = !r.free && !r.isCurrent;
+              return (
+                <button
+                  key={r.id}
+                  type="button"
+                  onClick={() => { setRoomId(String(r.id)); setOverrideFull(false); setErr(null); }}
+                  title={muted ? "מלא בשעת הטיפול — ניתן לבחור כחריג" : r.isHome ? "חדר הבית של המטפל/ת" : "פנוי בשעת הטיפול"}
+                  style={{
+                    display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8,
+                    width: "100%", textAlign: "right", padding: "10px 12px", borderRadius: 10, cursor: "pointer",
+                    border: selected ? "2px solid var(--gold)" : "1px solid var(--border)",
+                    background: selected ? "#FFF8E8" : muted ? "#F7F5F2" : "var(--card-bg)",
+                    opacity: muted ? 0.72 : 1,
+                    fontFamily: "inherit", fontSize: 13,
+                  }}
+                >
+                  <div style={{ fontWeight: 700 }}>
+                    {r.name}
+                    {r.isHome ? " · חדר בית" : ""}
+                    {r.isCurrent ? " · נוכחי" : ""}
+                  </div>
+                  <span style={{
+                    fontSize: 11, fontWeight: 700, whiteSpace: "nowrap",
+                    color: r.free ? "#2F6B3A" : muted ? "#A32D2D" : "var(--text-muted)",
+                  }}>
+                    {statusBadge(r)}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
         </div>
+
+        {selectedIsFull && (
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer", marginBottom: 12, color: "#A32D2D", fontWeight: 600 }}>
+            <input type="checkbox" checked={overrideFull} onChange={(e) => setOverrideFull(e.target.checked)} />
+            חריג — העבר בכל זאת (החדר מלא בשעה זו)
+          </label>
+        )}
 
         <div style={{ marginBottom: 14 }}>
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
@@ -1554,6 +1645,7 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
         appt={moveDraft}
         rooms={rooms}
         therapists={therapists}
+        appointments={appointments}
         homeRoomByTherapist={homeRoomByTherapist}
         onClose={() => setMoveDraft(null)}
         onSaved={handleMoveSaved}

@@ -1,3 +1,5 @@
+2026-07-14 | Move Guest modal — room picker shows free/full by appointment time slot (home first); full rooms visible with Override | Reuses roomOccupancyAtSlot from spaStickyRoom.js.
+
 2026-07-14 | Spa «יישור יום» safe align — greedy capacity check + cascade + parking-room mutual swaps; blocked list shows time/therapist + dismiss | Still therapist-sticky (move guests home only). No migration.
 
 2026-07-14 | Guest Club broadcast — DEPLOYED | `guest-club-broadcast` + Feedback → סקרים panel: Whapi free-text or Meta template to `guest_club_members` status=active only (max 80/batch); dry-run + confirm.

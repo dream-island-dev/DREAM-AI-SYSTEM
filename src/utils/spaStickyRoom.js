@@ -53,6 +53,25 @@ export function canPlaceInRoom(simAppts, appt, targetRoomId, roomTypeById) {
   return true;
 }
 
+/**
+ * Occupancy of a room during `appt`'s time window (excludes that appointment).
+ * Used by Move Guest UI to label free vs full options.
+ */
+export function roomOccupancyAtSlot(simAppts, appt, targetRoomId, roomTypeById) {
+  const lookup = (id) =>
+    roomTypeById instanceof Map ? roomTypeById.get(id) : roomTypeById?.[id];
+  const roomType = lookup(targetRoomId) ?? "single";
+  const capacity = roomCapacity(roomType);
+  let used = 0;
+  for (const a of simAppts ?? []) {
+    if (!appt || a.id === appt.id || a.status === "cancelled") continue;
+    if (a.room_id !== targetRoomId) continue;
+    if (timesOverlap(a.start_time, a.end_time, appt.start_time, appt.end_time)) used += 1;
+  }
+  const openSlots = Math.max(0, capacity - used);
+  return { used, capacity, openSlots, free: openSlots > 0, roomType };
+}
+
 /** First room where `appt` fits, skipping `excludeRoomIds`. */
 export function findParkingRoomId(simAppts, appt, roomIds, roomTypeById, excludeRoomIds = []) {
   const exclude = new Set(excludeRoomIds);

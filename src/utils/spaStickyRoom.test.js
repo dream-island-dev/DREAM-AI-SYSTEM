@@ -4,6 +4,7 @@ import {
   planAlignDay,
   timesOverlap,
   canPlaceInRoom,
+  roomOccupancyAtSlot,
 } from "./spaStickyRoom";
 
 const DATE = "2026-07-13";
@@ -83,6 +84,25 @@ describe("canPlaceInRoom", () => {
     const sim = [appt(1, 10, 200, "09:00"), appt(2, 20, 200, "09:15")];
     const candidate = appt(3, 30, 100, "09:30");
     expect(canPlaceInRoom(sim, candidate, 200, roomTypes)).toBe(false);
+  });
+});
+
+describe("roomOccupancyAtSlot", () => {
+  const roomTypes = { 100: "single", 200: "couple" };
+
+  test("counts others in the slot and ignores self", () => {
+    const self = appt(1, 10, 200, "09:00");
+    const other = appt(2, 20, 100, "09:00");
+    const occ = roomOccupancyAtSlot([self, other], self, 100, roomTypes);
+    expect(occ).toEqual({ used: 1, capacity: 1, openSlots: 0, free: false, roomType: "single" });
+  });
+
+  test("couple room shows one open slot when one guest already there", () => {
+    const moving = appt(9, 30, 100, "09:00");
+    const occ = roomOccupancyAtSlot([appt(1, 10, 200, "09:00"), moving], moving, 200, roomTypes);
+    expect(occ.free).toBe(true);
+    expect(occ.openSlots).toBe(1);
+    expect(occ.used).toBe(1);
   });
 });
 
