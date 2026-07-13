@@ -1336,15 +1336,21 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
     fetchAppointments();
   }
 
-  // «יישור יום» — seeds/upserts spa_shift_roster from first-touch (roster
-  // rows already present win), then attempts a single room_id UPDATE per
-  // out-of-home appointment. Never touches EZGO line ids, never cancels —
-  // a real remaining conflict (23P01 / exclusion_violation) is left alone
-  // and surfaced FAIL VISIBLE for manual «העבר אורח».
+  // «יישור יום» — seeds spa_shift_roster (existing rows win), then applies
+  // only SAFE room_id moves (sim + cascade in planAlignDay). Blocked leftovers
+  // never hit the DB — FAIL VISIBLE list for manual «העבר אורח». No EZGO /
+  // cancel side effects. Race 23P01 on a "safe" move still surfaces in list.
   async function handleAlignDay() {
     setAlignRunning(true);
     setAlignBlocked([]);
-    const { rosterUpserts, moves } = planAlignDay(appointments, shiftRoster);
+    const roomTypeById = Object.fromEntries(rooms.map((r) => [r.id, r.room_type]));
+    const allRoomIds = rooms.map((r) => r.id);
+    const { rosterUpserts, safeMoves, swapPairs, blockedMoves } = planAlignDay(
+      appointments,
+      shiftRoster,
+      roomTypeById,
+      allRoomIds
+    );
 
     if (rosterUpserts.length > 0) {
       const { error: rosterErr } = await supabase.from("spa_shift_roster").insert(rosterUpserts);
@@ -1355,28 +1361,68 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
       }
     }
 
+    const therapistsById = Object.fromEntries(therapists.map((t) => [t.id, t.name]));
+    const enrichBlocked = (move, reason) => {
+      const appt = appointments.find((a) => a.id === move.apptId);
+      return {
+        apptId: move.apptId,
+        guestName: appt?.guests?.name ?? "—",
+        therapistName: therapistsById[move.therapistId] ?? "—",
+        timeLabel: appt?.start_time ? `${appt.start_time.slice(0, 5)}${appt.end_time ? `–${appt.end_time.slice(0, 5)}` : ""}` : "—",
+        fromRoomName: roomsById[move.fromRoomId] ?? "—",
+        toRoomName: roomsById[move.toRoomId] ?? "—",
+        reason: reason || move.reason || "room_full",
+      };
+    };
+
     let movedCount = 0;
-    const blocked = [];
-    for (const move of moves) {
+    const blocked = blockedMoves.map((m) => enrichBlocked(m, "room_full"));
+
+    for (const move of safeMoves) {
       const { error } = await supabase.from("spa_appointments").update({ room_id: move.toRoomId }).eq("id", move.apptId);
-      if (error) {
-        const appt = appointments.find((a) => a.id === move.apptId);
-        blocked.push({
-          apptId: move.apptId,
-          guestName: appt?.guests?.name ?? "—",
-          fromRoomName: roomsById[move.fromRoomId] ?? "—",
-          toRoomName: roomsById[move.toRoomId] ?? "—",
-        });
-      } else {
-        movedCount += 1;
-      }
+      if (error) blocked.push(enrichBlocked(move, "db_conflict"));
+      else movedCount += 1;
     }
 
+    // Mutual home-room swap: A→parking → B→A's home → A→B's former (= A's home target).
+    // Three sequential UPDATEs never double-book the same single room mid-flight.
+    for (const pair of swapPairs ?? []) {
+      const { a, b, parkingRoomId } = pair;
+      const step1 = await supabase.from("spa_appointments").update({ room_id: parkingRoomId }).eq("id", a.apptId);
+      if (step1.error) {
+        blocked.push(enrichBlocked(a, "db_conflict"), enrichBlocked(b, "db_conflict"));
+        continue;
+      }
+      const step2 = await supabase.from("spa_appointments").update({ room_id: b.toRoomId }).eq("id", b.apptId);
+      if (step2.error) {
+        // Roll A back to original room so we don't leave a half-applied swap.
+        await supabase.from("spa_appointments").update({ room_id: a.fromRoomId }).eq("id", a.apptId);
+        blocked.push(enrichBlocked(a, "db_conflict"), enrichBlocked(b, "db_conflict"));
+        continue;
+      }
+      const step3 = await supabase.from("spa_appointments").update({ room_id: a.toRoomId }).eq("id", a.apptId);
+      if (step3.error) {
+        await supabase.from("spa_appointments").update({ room_id: b.fromRoomId }).eq("id", b.apptId);
+        await supabase.from("spa_appointments").update({ room_id: a.fromRoomId }).eq("id", a.apptId);
+        blocked.push(enrichBlocked(a, "db_conflict"), enrichBlocked(b, "db_conflict"));
+        continue;
+      }
+      movedCount += 2;
+    }
+
+    blocked.sort((a, b) => (a.timeLabel || "").localeCompare(b.timeLabel || ""));
     setAlignRunning(false);
     setAlignBlocked(blocked);
     fetchShiftRoster();
     fetchAppointments();
-    showToast(`✓ יושרו ${movedCount} תורים${blocked.length ? ` · ⚠ ${blocked.length} נחסמו — טופלו למטה` : ""}`, blocked.length ? "err" : "ok");
+    if (movedCount === 0 && blocked.length === 0) {
+      showToast("✓ כל התורים כבר בחדר הבית של המטפל/ת");
+    } else {
+      showToast(
+        `✓ יושרו בבטחה ${movedCount} תורים${blocked.length ? ` · ⚠ ${blocked.length} ממתינים להעברה ידנית (למטה)` : ""}`,
+        blocked.length ? "err" : "ok"
+      );
+    }
   }
 
   function handleImportDone(summary) {
@@ -1589,7 +1635,7 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
           className="btn btn-sm"
           onClick={handleAlignDay}
           disabled={alignRunning}
-          title="מסדר סידור משמרת מתוך הופעה ראשונה + מעביר תורים לחדר הבית של כל מטפל/ת, איפה שאפשר"
+          title="מיישר בבטחה: מעביר אורחים לחדר־בית רק כשהיעד פנוי (+ cascade). זוגות תקועים מחליפים דרך חדר ביניים. השאר — רשימה להעברה ידנית."
           style={{ background: "var(--gold)", color: "#412402", fontWeight: 700 }}
         >
           {alignRunning ? "מיישר…" : "🧭 יישור יום"}
@@ -1629,8 +1675,22 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
       {/* ── יישור יום blockers — FAIL VISIBLE, resolved via «העבר אורח» per row ── */}
       {alignBlocked.length > 0 && (
         <div style={{ marginBottom: 24 }}>
-          <div style={{ fontSize: 15, fontWeight: 800, color: "#A32D2D", marginBottom: 10 }}>
-            ⚠ יישור יום — {alignBlocked.length} תורים לא הועברו (התנגשות בלוח הזמנים)
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 10, flexWrap: "wrap" }}>
+            <div style={{ fontSize: 15, fontWeight: 800, color: "#A32D2D" }}>
+              ⚠ יישור יום — {alignBlocked.length} תורים ממתינים (חדר הבית מלא באותה שעה)
+            </div>
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => setAlignBlocked([])}
+              title="מסתיר את הרשימה בלי לשנות תורים"
+              style={{ background: "var(--ivory)", color: "var(--text-muted)", fontWeight: 600 }}
+            >
+              סגור רשימה
+            </button>
+          </div>
+          <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 10 }}>
+            היישור העביר רק תורים בטוחים. כאן נשארו מקרים שדורשים בחירה ידנית (החלפת חדר / העברת אורח אחר קודם).
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {alignBlocked.map((b) => (
@@ -1639,8 +1699,14 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
                 padding: "10px 14px", display: "flex", justifyContent: "space-between",
                 alignItems: "center", flexWrap: "wrap", gap: 10,
               }}>
-                <div style={{ fontWeight: 700, fontSize: 13 }}>
-                  {b.guestName} · {b.fromRoomName} ← יעד: {b.toRoomName}
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 700, fontSize: 13 }}>
+                    {b.timeLabel} · {b.guestName}
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
+                    👤 {b.therapistName} · {b.fromRoomName} ← יעד: {b.toRoomName}
+                    {b.reason === "db_conflict" ? " · ⚠ נחסם גם בשרת" : " · חדר מלא"}
+                  </div>
                 </div>
                 <button
                   className="btn btn-sm"

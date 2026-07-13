@@ -153,22 +153,21 @@ Live incident: Stage 3 Shabbat morning script re-sent to «אוחיון רויט
 
 ---
 
-## 🟡 Ready to deploy — Spa Board therapist sticky-room hard gate + Move Guest + יישור יום (2026-07-13)
+## 🟡 Ready to deploy — Spa Board sticky-room + safe «יישור יום» (2026-07-13 / 2026-07-14)
 
-Follow-up on migration 193's advisory roster (this round adds no migration — pure client logic + a single-row UPDATE).
+Follow-up on migration 193 (no migration this round — client logic only).
 
 | Piece | Detail |
 |---|---|
-| `src/utils/spaStickyRoom.js` (new, 11 jest tests) | `inferHomeRoomByTherapist` (earliest non-cancelled appt/therapist/day), `resolveHomeRoomMap` (existing `spa_shift_roster` row always wins), `planAlignDay` (roster seed-upserts + room moves). Pure — no Supabase. |
-| `AssignModal` | Hard sticky gate on save: therapist has a home room ≠ selected room → Hebrew FAIL VISIBLE, blocked unless «חריג — שבץ בכל זאת» Override checkbox is ticked. Save button never hidden/disabled by this. |
-| `MoveGuestModal` (new) | Primary fix path — single `UPDATE spa_appointments SET room_id=…` (+ optional therapist reassign). No RPC needed: one row can't trip the therapist-overlap exclusion mid-statement the way migration 177's two-row swap could. Defaults target room to the appointment's therapist's home room; therapist stays put unless staff opts in. |
-| «🧭 יישור יום» toolbar button | Seeds missing roster rows (additive INSERT only — never deletes/overwrites a row staff already set), then attempts a room move per out-of-home appointment. 23P01/exclusion_violation per row → FAIL VISIBLE blocked list with inline «➡️ העבר אורח» retry. Never touches EZGO line ids, never cancels. |
-| `SwapTherapistModal` (🔄) | Demoted — title/tooltip now read "(חריג)", point at Move Guest as the default. |
-| Tests | 331/331 jest (11 new), `npm run build` clean. No migration, no Edge Functions touched. |
+| `src/utils/spaStickyRoom.js` (21 jest tests) | Home room inference + `planAlignDay`: **safeMoves** (capacity-aware greedy + cascade), **swapPairs** (mutual home-room deadlock via parking room — 3 sequential UPDATEs), **blockedMoves** (FAIL VISIBLE leftovers). Couple capacity=2. |
+| `AssignModal` | Hard sticky gate + Override «חריג — שבץ בכל זאת». |
+| `MoveGuestModal` | Manual fix path — single `UPDATE room_id`. |
+| «🧭 יישור יום» | Seeds missing roster rows → applies safeMoves → applies swapPairs with parking hop → lists blocked with time/therapist + «סגור רשימה». Never blind UPDATE that expects 23P01. |
+| Tests | `spaStickyRoom` 21/21. No Edge Functions / DB migration. |
 
-**Not deployed** — awaiting Mike's `כן`/`תעלה`. Frontend-only deploy (git push `main`).
+**Not deployed** — awaiting Mike's `כן`/`תעלה`. Frontend-only.
 
-**Mike QA to run:** therapist with 2+ rooms today → «יישור יום» moves what it can + lists blockers; try assigning that therapist to a different room in AssignModal without ticking Override → blocked in Hebrew; tick Override → saves; «➡️ העבר אורח» on a room-columns card moves the guest, therapist stays; couple room still allows 2 overlapping appointments; 🔄 still works as the exception path.
+**Mike QA:** pick a busy past day → יישור יום → expect fewer red rows than before; mutual A↔B home swaps should resolve when another room is free at that slot; remaining blockers open «העבר אורח»; re-align after one manual move may clear more.
 
 ---
 
