@@ -1,4 +1,5 @@
-2026-07-13 | Meta template `dream_survey_invite` for day-pass survey invite (wiring ready, not deployed) | Mike-locked HE body + URL button «למילוי הסקר» → `…/portal/{{1}}` with send-time `#survey`. create-wa-template now sends body/URL examples. Migration 199 sets `meta_template_name`; whatsapp-send/sync/register wired. Live only after Meta APPROVES + deploy.
+2026-07-13 | Meta `dream_survey_invite` for day-pass survey invite — DEPLOYED (PENDING Meta) | Mike-locked HE body + URL button «למילוי הסקר» → portal/`{{1}}` + `#survey`. Migration 199; create-wa-template examples; whatsapp-send/sync wired. Meta status PENDING (id 2348428192349886) — live sends after APPROVED. register-templates deploy skipped (pre-existing HE string parse bug).
+
 
 
 2026-07-13 | Guest survey staff preview + editable labels — DEPLOYED | Shared `GuestSurveyForm` + `guestSurveyUi` (bot_config `guest_survey_ui` JSON, migration 197). Feedback → סקרים: תצוגה מקדימה (portal chrome) + עריכת תוויות (admin). Portal reads labels via `guest-portal-data.portalConfig.survey_ui`. Fixed stale `/5` display + negative threshold 4/10.
