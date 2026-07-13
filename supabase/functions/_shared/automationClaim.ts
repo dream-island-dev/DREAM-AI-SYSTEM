@@ -15,13 +15,14 @@
 // completes, so one row = one attempt (no notification_log/Inbox flooding),
 // and the unique index naturally releases for the next attempt.
 //
-// This currently guards ONLY the generic BRANCH D pipeline path in
-// whatsapp-send/index.ts (pre_arrival_2d, mid_stay(+daypass),
-// checkout_fb(+daypass), spa_warmup_daypass, survey_invite_daypass) — see
-// docs/active_sprint.md / playbook §10 for the explicit follow-up list of
-// the remaining special-cased fast paths (night_before, morning_suite/
-// morning_welcome, room_ready, stage_2_arrival, day-pass morning) not yet
-// wired to this helper.
+// Wired into every guest-outbound dispatch block in whatsapp-send/index.ts:
+// the generic BRANCH D pipeline path (pre_arrival_2d, mid_stay(+daypass),
+// checkout_fb(+daypass), spa_warmup_daypass, survey_invite_daypass,
+// night_before_daypass) plus the 6 special-cased fast paths completed
+// 2026-07-13 (stage_2_arrival, night_before, morning_welcome's day-pass Meta
+// fast-path, morning_suite/morning_welcome's Whapi/force session block,
+// morning_suite/morning_welcome's Shabbat-aware Meta template block,
+// room_ready) — see docs/active_sprint.md for the deploy entry.
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 

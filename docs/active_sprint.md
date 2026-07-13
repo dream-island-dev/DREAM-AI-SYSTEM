@@ -1,5 +1,21 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-13 (Whapi Suites device banned — SOS Meta dual-path deployed).
+> Last updated: 2026-07-13 (Phase C claim-before-send follow-up — 6 remaining dispatch blocks wired).
+
+---
+
+## ✅ Deployed — Phase C claim-before-send: remaining 6 dispatch blocks (2026-07-13)
+
+Tracked follow-up from the retry-storm fix entry below, and from the P0 SOS session's forensic re-count (`automationClaim.ts`'s own header comment undercounted — `morning_welcome` alone is 3 separate dispatch blocks, not 1). This is NOT an active-incident fix — it guards a narrow race (two overlapping `whatsapp-cron` ticks, or a cron tick racing an ACC manual Override, hitting the exact same guest+trigger simultaneously), not the retry-storm (already fixed and confirmed by the P0 session's forensic timeline).
+
+| Piece | Detail |
+|---|---|
+| `whatsapp-send` — 6 blocks | `claimDispatchAttempt`/`finalizeDispatchAttempt` wired into `stage_2_arrival`, `night_before`, `morning_welcome`'s day-pass Meta fast-path, `morning_suite`/`morning_welcome`'s Whapi/force session block, `morning_suite`/`morning_welcome`'s Shabbat-aware Meta template block, and `room_ready` — each block's own plain `notification_log.insert()` replaced with the claim/finalize pair, same payload shape as before. Claim placed after each block's eligibility-only early returns (duplicate-blocked, window-closed, wrong-day) and right before the real send attempt, so a config-error throw (missing `bot_scripts` text for a Whapi-eligible guest) still surfaces FAIL VISIBLE without a claim left unfinalized. Claim-conflict response mirrors BRANCH D's exact shape: `{ ok: true, skipped: true, status: "in_flight", reason: "claim_conflict" }`. |
+| `automationClaim.ts` header | Updated — no longer lists these 6 as an open follow-up. |
+| Tests | `deno check` delta: +6 errors, all identical pre-existing `guestId: string`-vs-`number` pattern already present in BRANCH D's own claim call (verified via before/after diff of unique error messages, not just count) — no new class of issue. `automationClaim.test.ts` (6 tests, unchanged) + full `_shared` suite (196 tests) pass with `--allow-env --allow-read`. No dedicated `whatsapp-send/index.ts` test file exists in this repo to extend — building one from scratch (mocking guest/stageRow/bot_scripts lookups + every send function) was judged disproportionate scope for a narrow race-guard change to already-tested, unmodified shared logic. |
+
+**Deployed:** `npx supabase functions deploy whatsapp-send --no-verify-jwt`. No migration, no frontend change.
+
+**Mike QA:** trigger the same guest+trigger twice in quick succession (e.g. two ACC Override clicks, or a manual `force` call racing a cron tick) for `room_ready` or `night_before` → second request returns `{"skipped":true,"status":"in_flight","reason":"claim_conflict"}` instead of sending a duplicate message.
 
 ---
 
@@ -54,7 +70,7 @@ Live incident: Stage 3 Shabbat morning script re-sent to «אוחיון רויט
 | Phase B — ACC + admin visibility | Live Queue `retryGate` field + `⏳ בהמתנה` / `🛑 מוצה` / `🔄 בתהליך שליחה` badges (Override still sends, Disable-Don't-Hide). `notifyAdminIfDispatchFailed` now also alerts on `timeout` (was silently excluded — the reason nobody caught this sooner). |
 | Phase C — migration 195 | Partial unique index on `notification_log(guest_id, trigger_type) WHERE status='processing'` — reuses the already-reserved but previously-unused `'processing'` status. |
 | Phase C — `_shared/automationClaim.ts` | `claimDispatchAttempt`/`finalizeDispatchAttempt` — claim before send, one row per attempt, 5min stale-claim reclaim, `force` bypass. Wired into `whatsapp-send`'s generic BRANCH D path this session (`pre_arrival_2d`, `mid_stay(+daypass)`, `checkout_fb(+daypass)`, `spa_warmup_daypass`, `survey_invite_daypass`, `night_before_daypass`). |
-| Explicit follow-up (not this session) | Same helper, wire into the remaining special-cased fast paths: `night_before`, `morning_suite`/`morning_welcome` (turns out to be 3 separate dispatch blocks — day-pass Meta fast-path, Whapi/force session block, Shabbat template block), `room_ready`, `stage_2_arrival`'s own dispatch (its reconcile-queue side is already covered). Confirmed 2026-07-13 (P0 SOS session) still missing — this is Phase B (this entry) that stopped the ban-causing storm, not Phase C; deferred as a tracked follow-up rather than rushed mid-incident, see P0 entry above for the forensic timeline proving Phase B alone was sufficient. |
+| Explicit follow-up (not this session) | ✅ Done — see "Phase C claim-before-send: remaining 6 dispatch blocks" entry above (2026-07-13, same day, later session). |
 | Tests | 61 new/updated Deno tests pass. `deno check` delta-clean (whatsapp-send +1 error — pre-existing loose-`guestId` typing pattern, already present twice in the same file, not a new class of issue). `npm run build` clean. |
 
 **Deployed:** migration 195 pushed; `whatsapp-cron`, `automation-queue`, `whatsapp-send` (`--no-verify-jwt`); frontend pushed to `main` (`46155bd`).
