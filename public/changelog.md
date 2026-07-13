@@ -1,6 +1,7 @@
-2026-07-13 | Guest Club preview + label editor (not yet deployed) | `bot_config.guest_club_ui` (migration 202); Feedback → סקרים: «תצוגה מקדימה — מועדון» + «עריכת מועדון»; portal reads `portalConfig.club_ui`. Builds on club opt-in MVP (201 + guest-portal-club).
+2026-07-14 | Guest Club broadcast — DEPLOYED | `guest-club-broadcast` + Feedback → סקרים panel: Whapi free-text or Meta template to `guest_club_members` status=active only (max 80/batch); dry-run + confirm.
 
-2026-07-13 | Guest Club opt-in after survey (MVP, not yet deployed) | Migration 201 `guest_club_members` + `guests.club_status`. Portal thank-you offers join/decline → `guest-portal-club`. Feedback → סקרים shows active members count/list. Marketing broadcast templates = follow-up.
+2026-07-13 | Guest Club opt-in + preview/editor — DEPLOYED | Migrations 201–202; `guest-portal-club`; portal thank-you CTA; Feedback → סקרים preview/edit club copy + active members list. Broadcast offers = next.
+
 
 
 

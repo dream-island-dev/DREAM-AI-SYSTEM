@@ -1,5 +1,17 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-13 (Guest Club DEPLOYED).
+> Last updated: 2026-07-14 (Club broadcast DEPLOYED).
+
+---
+
+## ✅ Deployed — Guest Club broadcast (2026-07-14)
+
+| Piece | Status |
+|---|---|
+| Function | `guest-club-broadcast` ✅ |
+| Frontend | Feedback → סקרים → «📣 שידור הצעות למועדון» via `main` |
+| Caps | 60 default / 80 max; active members only |
+
+**Next:** Meta marketing templates APPROVED if using Meta channel; keep Zero-Spam.
 
 ---
 
@@ -11,8 +23,6 @@
 | Functions | `guest-portal-club`, `guest-portal-survey`, `guest-portal-data` ✅ |
 | Frontend | Vercel via `main` |
 | QA | Feedback → סקרים: preview/edit club; portal after survey → join |
-
-**Next:** Club offer broadcast (Whapi / Meta marketing templates).
 
 ---
 

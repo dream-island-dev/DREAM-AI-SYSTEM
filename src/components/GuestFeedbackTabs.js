@@ -9,6 +9,7 @@ import { useState, useEffect, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import GuestSurveyForm from "./GuestSurveyForm";
 import GuestClubOfferCard from "./GuestClubOfferCard";
+import GuestClubBroadcastPanel from "./GuestClubBroadcastPanel";
 import {
   BOT_CONFIG_SURVEY_UI_KEY,
   DEFAULT_GUEST_SURVEY_UI,
@@ -717,6 +718,11 @@ function SurveysView() {
           </div>
         </div>
       )}
+
+      <GuestClubBroadcastPanel
+        activeCount={clubMembers.length}
+        onToast={(type, msg) => showToastMsg(type, msg)}
+      />
 
       <div className="card" style={{ padding: "14px 16px", marginBottom: 20 }}>
         <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10, color: "var(--black)" }}>ממוצע לפי קטגוריה (הכל)</div>

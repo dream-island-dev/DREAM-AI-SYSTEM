@@ -1,3 +1,5 @@
+2026-07-14 | Guest Club broadcast — DEPLOYED | `guest-club-broadcast` + Feedback → סקרים panel: Whapi free-text or Meta template to `guest_club_members` status=active only (max 80/batch); dry-run + confirm.
+
 2026-07-13 | Guest Club opt-in + preview/editor — DEPLOYED | Migrations 201–202; `guest-portal-club`; portal thank-you CTA; Feedback → סקרים preview/edit club copy + active members list. Broadcast offers = next.
 
 
