@@ -21,8 +21,10 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import PhotoTour from "./PhotoTour";
 import GuestSurveyForm from "./GuestSurveyForm";
+import GuestClubOfferCard from "./GuestClubOfferCard";
 import { formatSpaSchedule } from "../utils/israeliTime";
 import { DEFAULT_GUEST_SURVEY_UI, normalizeGuestSurveyUi, serializeGuestSurveyUi } from "../utils/guestSurveyUi";
+import { DEFAULT_GUEST_CLUB_UI, normalizeGuestClubUi } from "../utils/guestClubUi";
 
 const XOS_GOLD    = "#D4AF37";
 const XOS_BG_TOP  = "#0f172a";
@@ -154,10 +156,13 @@ function SpaRequestButton({ onClick, busy }) {
 // MVP audience: day-pass + spa that day (guest.survey_eligible, server-
 // authoritative — guest-portal-data). Labels from portalConfig.survey_ui
 // (bot_config) with shared GuestSurveyForm (staff preview uses the same UI).
-function SurveySection({ guest, token, onToast, surveyUi }) {
+function SurveySection({ guest, token, onToast, surveyUi, clubUi }) {
   const [submitting, setSubmitting] = useState(false);
-  const [result, setResult] = useState(null); // { googleCta, reviewUrl } after successful submit
+  const [result, setResult] = useState(null); // thank-you payload after successful submit
+  const [clubStatus, setClubStatus] = useState(guest?.club_status ?? null); // active | declined | null
+  const [clubBusy, setClubBusy] = useState(false);
   const ui = normalizeGuestSurveyUi(surveyUi ?? DEFAULT_GUEST_SURVEY_UI);
+  const club = normalizeGuestClubUi(clubUi ?? DEFAULT_GUEST_CLUB_UI);
 
   if (!guest?.survey_eligible) return null;
 
@@ -187,6 +192,7 @@ function SurveySection({ guest, token, onToast, surveyUi }) {
         suitesCta: !!data.suitesCta,
         suitesUrl: data.suitesUrl ?? null,
         suitesCtaLabel: data.suitesCtaLabel ?? null,
+        clubOffer: !!data.clubOffer,
       });
     } catch (e) {
       onToast(
@@ -199,16 +205,38 @@ function SurveySection({ guest, token, onToast, surveyUi }) {
     }
   }
 
+  async function handleClubAction(action) {
+    if (clubBusy) return;
+    setClubBusy(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("guest-portal-club", {
+        body: { token, action },
+      });
+      if (error || !data?.ok) throw new Error(data?.error ?? error?.message ?? "שגיאה");
+      setClubStatus(data.status || (action === "join" ? "active" : "declined"));
+      onToast(
+        action === "join"
+          ? "✅ נרשמתם למועדון — נשמח לעדכן אתכם בהצעות בלעדיות"
+          : "בסדר גמור — תודה בכל זאת 🙏",
+      );
+    } catch (_e) {
+      onToast("⚠️ לא הצלחנו לעדכן — נסו שוב מאוחר יותר");
+    } finally {
+      setClubBusy(false);
+    }
+  }
+
   if (result) {
     const hasSuites = result.suitesCta && result.suitesUrl;
     const hasGoogle = result.googleCta && result.reviewUrl;
+    const showClub = result.clubOffer && !clubStatus;
     return (
       <div id="survey" style={{ padding: "0 16px 36px", scrollMarginTop: 24 }}>
         <GlassPanel title="📊 סקר חוויית אורח">
           <div style={{ padding: "22px 16px", textAlign: "center" }}>
             <div style={{
               fontSize: 14, color: XOS_TEXT, lineHeight: 1.8,
-              marginBottom: (hasSuites || hasGoogle) ? 16 : 0,
+              marginBottom: (hasSuites || hasGoogle || showClub || clubStatus) ? 16 : 0,
             }}>
               תודה רבה על המשוב! 🙏 זה עוזר לנו להמשיך ולהשתפר.
             </div>
@@ -220,7 +248,7 @@ function SurveySection({ guest, token, onToast, surveyUi }) {
                 style={{
                   display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8,
                   width: "100%", maxWidth: 320, boxSizing: "border-box",
-                  marginBottom: hasGoogle ? 12 : 0,
+                  marginBottom: (hasGoogle || showClub) ? 12 : 0,
                   padding: "12px 22px", borderRadius: 14,
                   background: `linear-gradient(135deg, ${XOS_GOLD}, #B8960C)`,
                   color: "#0f172a", fontSize: 14, fontWeight: 700, textDecoration: "none",
@@ -237,6 +265,7 @@ function SurveySection({ guest, token, onToast, surveyUi }) {
                 style={{
                   display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8,
                   width: "100%", maxWidth: 320, boxSizing: "border-box",
+                  marginBottom: showClub ? 12 : 0,
                   padding: "12px 22px", borderRadius: 14,
                   background: hasSuites ? "rgba(255,255,255,0.06)" : `linear-gradient(135deg, ${XOS_GOLD}, #B8960C)`,
                   border: hasSuites ? `1px solid ${XOS_BORDER}` : "none",
@@ -245,6 +274,16 @@ function SurveySection({ guest, token, onToast, surveyUi }) {
               >
                 ⭐ נשמח לביקורת קצרה בגוגל
               </a>
+            )}
+            {showClub && (
+              <GuestClubOfferCard
+                ui={club}
+                busy={clubBusy}
+                onAction={handleClubAction}
+              />
+            )}
+            {clubStatus === "active" && (
+              <GuestClubOfferCard ui={club} status="active" />
             )}
           </div>
         </GlassPanel>
@@ -669,13 +708,13 @@ function SuiteQuickActions() {
 }
 
 // ── SUITE VIEW — full portal ──────────────────────────────────────────────────
-function SuiteView({ guest, phase, countdown, upsellItems, token, onToast, onUpsell, upsellBusy, onSpaRequest, spaBusy, showSpaRequest, scenes, surveyUi }) {
+function SuiteView({ guest, phase, countdown, upsellItems, token, onToast, onUpsell, upsellBusy, onSpaRequest, spaBusy, showSpaRequest, scenes, surveyUi, clubUi }) {
   return (
     <>
       <PortalHero guest={guest} phase={phase} countdown={countdown} />
       <ItineraryPanel guest={guest} onSpaRequest={onSpaRequest} spaBusy={spaBusy} showSpaRequest={showSpaRequest} />
       <SecurePaymentButton guest={guest} />
-      <SurveySection guest={guest} token={token} onToast={onToast} surveyUi={surveyUi} />
+      <SurveySection guest={guest} token={token} onToast={onToast} surveyUi={surveyUi} clubUi={clubUi} />
       <SuiteQuickActions />
 
       {/* Pre-Order module (DB-driven, suite + all items) */}
@@ -688,7 +727,7 @@ function SuiteView({ guest, phase, countdown, upsellItems, token, onToast, onUps
 }
 
 // ── DAY-USE VIEW — focused (Spa / Meals / Activities) ────────────────────────
-function DayUseView({ guest, phase, countdown, upsellItems, token, onToast, onUpsell, upsellBusy, onSpaRequest, spaBusy, showSpaRequest, scenes, surveyUi }) {
+function DayUseView({ guest, phase, countdown, upsellItems, token, onToast, onUpsell, upsellBusy, onSpaRequest, spaBusy, showSpaRequest, scenes, surveyUi, clubUi }) {
 
   return (
     <>
@@ -750,7 +789,7 @@ function DayUseView({ guest, phase, countdown, upsellItems, token, onToast, onUp
       </div>
 
       <SecurePaymentButton guest={guest} />
-      <SurveySection guest={guest} token={token} onToast={onToast} surveyUi={surveyUi} />
+      <SurveySection guest={guest} token={token} onToast={onToast} surveyUi={surveyUi} clubUi={clubUi} />
 
       {/* Focused activity info panel */}
       <div style={{ padding: "0 16px 20px" }}>
@@ -789,6 +828,7 @@ export default function GuestPortal({ token }) {
     has_spa_booking: false,
     enable_spa_request_button: true,
     survey_ui: DEFAULT_GUEST_SURVEY_UI,
+    club_ui: DEFAULT_GUEST_CLUB_UI,
   });
   const [upsellBusy, setUpsellBusy]       = useState(null);
   const [spaBusy, setSpaBusy]           = useState(false);
@@ -821,6 +861,7 @@ export default function GuestPortal({ token }) {
               has_spa_booking: !!data.portalConfig.has_spa_booking,
               enable_spa_request_button: data.portalConfig.enable_spa_request_button !== false,
               survey_ui: normalizeGuestSurveyUi(data.portalConfig.survey_ui),
+              club_ui: normalizeGuestClubUi(data.portalConfig.club_ui),
             });
           }
         }
@@ -953,6 +994,7 @@ export default function GuestPortal({ token }) {
           showSpaRequest={showSpaRequest}
           scenes={portalScenes}
           surveyUi={portalConfig.survey_ui}
+          clubUi={portalConfig.club_ui}
         />
       ) : isDayUse ? (
         <DayUseView
@@ -969,6 +1011,7 @@ export default function GuestPortal({ token }) {
           showSpaRequest={showSpaRequest}
           scenes={portalScenes}
           surveyUi={portalConfig.survey_ui}
+          clubUi={portalConfig.club_ui}
         />
       ) : (
         /* Unknown room_type: safe default = SuiteView (shows more, not less) */
@@ -986,6 +1029,7 @@ export default function GuestPortal({ token }) {
           showSpaRequest={showSpaRequest}
           scenes={portalScenes}
           surveyUi={portalConfig.survey_ui}
+          clubUi={portalConfig.club_ui}
         />
       )}
 

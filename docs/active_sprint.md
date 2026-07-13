@@ -1,5 +1,18 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-13 (Option C DEPLOYED — templates PENDING Meta approval).
+> Last updated: 2026-07-13 (Guest Club DEPLOYED).
+
+---
+
+## ✅ Deployed — Guest Club opt-in + preview/editor (2026-07-13)
+
+| Piece | Status |
+|---|---|
+| Migrations 201–202 | `db push` ✅ |
+| Functions | `guest-portal-club`, `guest-portal-survey`, `guest-portal-data` ✅ |
+| Frontend | Vercel via `main` |
+| QA | Feedback → סקרים: preview/edit club; portal after survey → join |
+
+**Next:** Club offer broadcast (Whapi / Meta marketing templates).
 
 ---
 

@@ -1,4 +1,6 @@
-2026-07-13 | Day-pass Option C DEPLOYED — window-opener + spa_warmup Meta + Whapi→Dream Bot failover | Migration 200; evening/morning «מחכים לכם!»; session-first when window open; Whapi fail → Dream Bot. Meta PENDING: `dream_daypass_eve` (1476488857849470), `dream_spa_warmup` (999800912663484); survey invite already PENDING. Club opt-in (A) next after this.
+2026-07-13 | Guest Club opt-in + preview/editor — DEPLOYED | Migrations 201–202; `guest-portal-club`; portal thank-you CTA; Feedback → סקרים preview/edit club copy + active members list. Broadcast offers = next.
+
+
 
 
 

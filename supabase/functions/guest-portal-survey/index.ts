@@ -90,7 +90,7 @@ serve(async (req: Request) => {
 
     const { data: guest, error: guestErr } = await supabase
       .from("guests")
-      .select("id, phone, room_type, arrival_date, spa_date, status")
+      .select("id, phone, room_type, arrival_date, spa_date, status, club_status")
       .eq("portal_token", token)
       .maybeSingle();
     if (guestErr) throw new Error(`lookup_error: ${guestErr.message}`);
@@ -173,6 +173,22 @@ serve(async (req: Request) => {
       ? (surveyUi.suites_cta_url || DEFAULT_SUITES_CTA_URL)
       : null;
 
+    // Club offer after every successful survey — hide when already active.
+    let clubOffer = true;
+    const { data: clubRow } = await supabase
+      .from("guest_club_members")
+      .select("status")
+      .eq("phone", guest.phone as string)
+      .maybeSingle();
+    if (clubRow?.status === "active" || guest.club_status === "active") {
+      clubOffer = false;
+    }
+    // Declined/opted_out still get one silent skip of the offer for this visit
+    // if they already decided — don't nag.
+    if (clubRow?.status === "declined" || clubRow?.status === "opted_out") {
+      clubOffer = false;
+    }
+
     return new Response(
       JSON.stringify({
         ok: true,
@@ -181,6 +197,7 @@ serve(async (req: Request) => {
         suitesCta: suitesCtaShown,
         suitesUrl,
         suitesCtaLabel: suitesCtaShown ? surveyUi.suites_cta_label : null,
+        clubOffer,
       }),
       { headers: { ...CORS, "Content-Type": "application/json" } },
     );

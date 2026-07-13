@@ -16,6 +16,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { formatSpaScheduleDisplay, hasSpaBooking } from "../_shared/spaSchedule.ts";
 import { buildMealsItinerary } from "../_shared/stayMeals.ts";
 import { normalizeGuestSurveyUi } from "../_shared/guestSurveyUi.ts";
+import { normalizeGuestClubUi } from "../_shared/guestClubUi.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -49,7 +50,7 @@ serve(async (req: Request) => {
 
     const { data: guest, error: err } = await supabase
       .from("guests")
-      .select("id, name, room, room_type, arrival_date, departure_date, spa_time, spa_date, meal_time, meal_location, meal_plan, breakfast_time, lunch_time, dinner_time, status, payment_amount, direct_payment_url, payment_link_url")
+      .select("id, name, room, room_type, arrival_date, departure_date, spa_time, spa_date, meal_time, meal_location, meal_plan, breakfast_time, lunch_time, dinner_time, status, payment_amount, direct_payment_url, payment_link_url, club_status")
       .eq("portal_token", token)
       .maybeSingle();
 
@@ -218,6 +219,8 @@ serve(async (req: Request) => {
     (maskedGuest as Record<string, unknown>).survey_eligible = surveyEligible;
     (maskedGuest as Record<string, unknown>).survey_completed = surveyCompleted;
     (maskedGuest as Record<string, unknown>).survey_scores = surveyScores;
+    (maskedGuest as Record<string, unknown>).club_status =
+      (guest as Record<string, unknown>).club_status ?? null;
     delete (maskedGuest as Record<string, unknown>).id;
 
     // Editable Hebrew labels (staff Feedback → Surveys editor → bot_config).
@@ -231,6 +234,16 @@ serve(async (req: Request) => {
     }
     const surveyUi = normalizeGuestSurveyUi(surveyUiRow?.config_value ?? null);
 
+    const { data: clubUiRow, error: clubUiErr } = await supabase
+      .from("bot_config")
+      .select("config_value")
+      .eq("config_key", "guest_club_ui")
+      .maybeSingle();
+    if (clubUiErr) {
+      console.warn("[guest-portal-data] guest_club_ui fetch failed (defaults):", clubUiErr.message);
+    }
+    const clubUi = normalizeGuestClubUi(clubUiRow?.config_value ?? null);
+
     return new Response(
       JSON.stringify({
         ok: true,
@@ -241,6 +254,7 @@ serve(async (req: Request) => {
           has_spa_booking: hasSpaBookingFlag,
           enable_spa_request_button: enableSpaRequestButton,
           survey_ui: surveyUi,
+          club_ui: clubUi,
         },
       }),
       { headers: { ...CORS, "Content-Type": "application/json" } }

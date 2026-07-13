@@ -8,6 +8,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import GuestSurveyForm from "./GuestSurveyForm";
+import GuestClubOfferCard from "./GuestClubOfferCard";
 import {
   BOT_CONFIG_SURVEY_UI_KEY,
   DEFAULT_GUEST_SURVEY_UI,
@@ -22,6 +23,12 @@ import {
   resolveSurveyCategoryScores,
   serializeGuestSurveyUi,
 } from "../utils/guestSurveyUi";
+import {
+  BOT_CONFIG_CLUB_UI_KEY,
+  cloneDefaultClubUi,
+  normalizeGuestClubUi,
+  serializeGuestClubUi,
+} from "../utils/guestClubUi";
 
 const SENTIMENT_META = {
   positive: { label: "🌟 חיובי",  bg: "#E8F5EF", color: "#1A7A4A", border: "#1A7A4A" },
@@ -264,6 +271,138 @@ function SurveyLabelsEditorModal({ draft, onChange, onSave, onClose, saving }) {
   );
 }
 
+function ClubPreviewModal({ ui, onClose }) {
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="תצוגה מקדימה של מועדון הלקוחות"
+      onClick={onClose}
+      style={{
+        position: "fixed", inset: 0, zIndex: 10000,
+        background: "rgba(15,23,42,0.72)", display: "flex",
+        alignItems: "center", justifyContent: "center", padding: 16,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: "100%", maxWidth: 420, maxHeight: "92vh", overflow: "auto",
+          borderRadius: 18,
+          background: "linear-gradient(180deg, #0f172a 0%, #09090b 100%)",
+          border: "1px solid rgba(212,175,55,0.28)",
+          boxShadow: "0 24px 64px rgba(0,0,0,0.55)",
+          padding: "18px 16px 20px",
+          fontFamily: "Heebo, sans-serif",
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 10 }}>
+          <div style={{ color: "#D4AF37", fontWeight: 800, fontSize: 14 }}>👁️ תצוגה מקדימה — מועדון (אחרי סקר)</div>
+          <button
+            type="button"
+            onClick={onClose}
+            style={{
+              border: "1px solid rgba(255,255,255,0.2)", background: "transparent",
+              color: "#F8FAFC", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontFamily: "inherit",
+            }}
+          >
+            סגור
+          </button>
+        </div>
+        <div style={{ color: "#F8FAFC", fontSize: 13, lineHeight: 1.7, textAlign: "center", marginBottom: 12 }}>
+          תודה רבה על המשוב! 🙏
+        </div>
+        <GuestClubOfferCard ui={ui} previewOnly />
+      </div>
+    </div>
+  );
+}
+
+function ClubLabelsEditorModal({ draft, onChange, onSave, onClose, saving }) {
+  const fields = [
+    ["title", "כותרת"],
+    ["body", "טקסט גוף"],
+    ["join_label", "כפתור הצטרפות"],
+    ["decline_label", "כפתור סירוב"],
+    ["joined_confirm", "הודעה אחרי הצטרפות"],
+  ];
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="עריכת תוויות מועדון"
+      onClick={onClose}
+      style={{
+        position: "fixed", inset: 0, zIndex: 10000,
+        background: "rgba(15,23,42,0.55)", display: "flex",
+        alignItems: "center", justifyContent: "center", padding: 16,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: "100%", maxWidth: 520, maxHeight: "90vh", overflow: "auto",
+          background: "var(--card-bg)", borderRadius: 16, border: "1px solid var(--border)",
+          padding: 20, boxShadow: "0 20px 50px rgba(0,0,0,0.25)",
+        }}
+      >
+        <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 14, color: "var(--black)" }}>
+          ✏️ עריכת תוויות מועדון לקוחות
+        </div>
+        <div style={{ display: "grid", gap: 12 }}>
+          {fields.map(([key, label]) => (
+            <label key={key} style={{ display: "grid", gap: 6, fontSize: 12.5, color: "var(--text-muted)" }}>
+              {label}
+              <textarea
+                rows={key === "body" ? 3 : 2}
+                value={draft[key] ?? ""}
+                onChange={(e) => onChange({ ...draft, [key]: e.target.value })}
+                style={{ ...fieldInputStyle, resize: "vertical", minHeight: key === "body" ? 72 : 42 }}
+              />
+            </label>
+          ))}
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 18 }}>
+          <button
+            type="button"
+            disabled={saving}
+            onClick={onSave}
+            style={{
+              padding: "10px 16px", borderRadius: 12, border: "none",
+              background: "var(--gold-dark)", color: "#fff", fontWeight: 800,
+              cursor: saving ? "wait" : "pointer", fontFamily: "inherit",
+            }}
+          >
+            {saving ? "שומר..." : "שמירה"}
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            style={{
+              padding: "10px 16px", borderRadius: 12, border: "1px solid var(--border)",
+              background: "var(--card-bg)", color: "var(--black)", fontWeight: 700,
+              cursor: "pointer", fontFamily: "inherit",
+            }}
+          >
+            ביטול
+          </button>
+          <button
+            type="button"
+            onClick={() => onChange(cloneDefaultClubUi())}
+            style={{
+              padding: "10px 16px", borderRadius: 12, border: "1px solid var(--border)",
+              background: "var(--ivory)", color: "var(--text-muted)", fontWeight: 700,
+              cursor: "pointer", fontFamily: "inherit",
+            }}
+          >
+            איפוס לברירת מחדל
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SurveysView() {
   const [surveys, setSurveys] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -273,6 +412,12 @@ function SurveysView() {
   const [showPreview, setShowPreview] = useState(false);
   const [showEditor, setShowEditor] = useState(false);
   const [savingUi, setSavingUi] = useState(false);
+  const [clubMembers, setClubMembers] = useState([]);
+  const [clubUi, setClubUi] = useState(() => cloneDefaultClubUi());
+  const [draftClubUi, setDraftClubUi] = useState(() => cloneDefaultClubUi());
+  const [showClubPreview, setShowClubPreview] = useState(false);
+  const [showClubEditor, setShowClubEditor] = useState(false);
+  const [savingClubUi, setSavingClubUi] = useState(false);
 
   const showToastMsg = useCallback((type, msg) => {
     setToast({ type, msg });
@@ -294,6 +439,37 @@ function SurveysView() {
     setDraftUi(ui);
   }, [showToastMsg]);
 
+  const fetchClubUi = useCallback(async () => {
+    if (!isSupabaseConfigured || !supabase) return;
+    const { data, error } = await supabase
+      .from("bot_config")
+      .select("config_value")
+      .eq("config_key", BOT_CONFIG_CLUB_UI_KEY)
+      .maybeSingle();
+    if (error) {
+      console.warn("[GuestFeedbackTabs] guest_club_ui:", error.message);
+      return;
+    }
+    const ui = normalizeGuestClubUi(data?.config_value ?? null);
+    setClubUi(ui);
+    setDraftClubUi(ui);
+  }, []);
+
+  const fetchClubMembers = useCallback(async () => {
+    if (!isSupabaseConfigured || !supabase) return;
+    const { data, error } = await supabase
+      .from("guest_club_members")
+      .select("id, phone, status, opted_in_at, declined_at, source, guests(name)")
+      .eq("status", "active")
+      .order("opted_in_at", { ascending: false })
+      .limit(100);
+    if (error) {
+      console.warn("[GuestFeedbackTabs] guest_club_members:", error.message);
+      return;
+    }
+    setClubMembers(data ?? []);
+  }, []);
+
   const fetchSurveys = useCallback(async () => {
     setLoading(true);
     if (!isSupabaseConfigured || !supabase) { setLoading(false); return; }
@@ -307,16 +483,22 @@ function SurveysView() {
     setLoading(false);
   }, [showToastMsg]);
 
-  useEffect(() => { fetchSurveys(); fetchSurveyUi(); }, [fetchSurveys, fetchSurveyUi]);
+  useEffect(() => {
+    fetchSurveys();
+    fetchSurveyUi();
+    fetchClubUi();
+    fetchClubMembers();
+  }, [fetchSurveys, fetchSurveyUi, fetchClubUi, fetchClubMembers]);
 
   useEffect(() => {
     if (!isSupabaseConfigured || !supabase) return;
     const ch = supabase
       .channel("guest-surveys-rt")
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "guest_surveys" }, () => fetchSurveys())
+      .on("postgres_changes", { event: "*", schema: "public", table: "guest_club_members" }, () => fetchClubMembers())
       .subscribe();
     return () => { supabase.removeChannel(ch); };
-  }, [fetchSurveys]);
+  }, [fetchSurveys, fetchClubMembers]);
 
   useEffect(() => {
     if (!toast) return;
@@ -351,6 +533,35 @@ function SurveysView() {
     setDraftUi(normalized);
     setShowEditor(false);
     showToastMsg("ok", "✅ תוויות הסקר נשמרו — האורח יראה אותן בפורטל");
+  }
+
+  async function saveClubUi() {
+    if (savingClubUi) return;
+    setSavingClubUi(true);
+    const normalized = normalizeGuestClubUi(draftClubUi);
+    const { error } = await supabase
+      .from("bot_config")
+      .upsert(
+        {
+          config_key: BOT_CONFIG_CLUB_UI_KEY,
+          config_value: serializeGuestClubUi(normalized),
+          category: "general",
+          label: "תוויות הצטרפות למועדון לקוחות (JSON)",
+        },
+        { onConflict: "config_key" },
+      );
+    setSavingClubUi(false);
+    if (error) {
+      const msg = /permission|policy|RLS|row-level/i.test(error.message)
+        ? "אין הרשאה לשמור תוויות מועדון — נדרש admin / super_admin."
+        : "שגיאה בשמירה: " + error.message;
+      showToastMsg("err", msg);
+      return;
+    }
+    setClubUi(normalized);
+    setDraftClubUi(normalized);
+    setShowClubEditor(false);
+    showToastMsg("ok", "✅ תוויות המועדון נשמרו — האורח יראה אותן אחרי הסקר");
   }
 
   const todayStr = new Date().toISOString().slice(0, 10);
@@ -395,6 +606,18 @@ function SurveysView() {
           saving={savingUi}
         />
       )}
+      {showClubPreview && (
+        <ClubPreviewModal ui={clubUi} onClose={() => setShowClubPreview(false)} />
+      )}
+      {showClubEditor && (
+        <ClubLabelsEditorModal
+          draft={draftClubUi}
+          onChange={setDraftClubUi}
+          onSave={saveClubUi}
+          onClose={() => { setDraftClubUi(clubUi); setShowClubEditor(false); }}
+          saving={savingClubUi}
+        />
+      )}
 
       <div style={{
         display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 16, alignItems: "center",
@@ -421,8 +644,30 @@ function SurveysView() {
         >
           ✏️ עריכת תוויות
         </button>
+        <button
+          type="button"
+          onClick={() => setShowClubPreview(true)}
+          style={{
+            padding: "10px 16px", borderRadius: 12, border: "1.5px solid var(--gold-dark)",
+            background: "var(--ivory)", color: "var(--gold-dark)", fontWeight: 800,
+            cursor: "pointer", fontFamily: "inherit", fontSize: 13.5,
+          }}
+        >
+          👁️ תצוגה מקדימה — מועדון
+        </button>
+        <button
+          type="button"
+          onClick={() => { setDraftClubUi(normalizeGuestClubUi(clubUi)); setShowClubEditor(true); }}
+          style={{
+            padding: "10px 16px", borderRadius: 12, border: "1.5px solid var(--border)",
+            background: "var(--card-bg)", color: "var(--black)", fontWeight: 800,
+            cursor: "pointer", fontFamily: "inherit", fontSize: 13.5,
+          }}
+        >
+          ✏️ עריכת מועדון
+        </button>
         <span style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
-          רואים / ערכים / מוסיפים קטגוריות — לפני שליחה לאורחים. אחרי ציון חיובי יופיע קישור לסוויטות.
+          סקר + מועדון — עריכה לפני שליחה לאורחים. אחרי ציון חיובי יופיע קישור לסוויטות; אחרי הסקר — הצעת מועדון.
         </span>
       </div>
 
@@ -443,7 +688,35 @@ function SurveysView() {
           <div style={{ fontSize: 11, color: "var(--text-muted)" }}>ציונים נמוכים היום</div>
           <div style={{ fontSize: 26, fontWeight: 800, color: todayLowCount ? "#C0392B" : "var(--black)" }}>{todayLowCount}</div>
         </div>
+        <div className="card" style={{ padding: "14px 16px", borderInlineStart: "4px solid var(--gold-dark)" }}>
+          <div style={{ fontSize: 11, color: "var(--text-muted)" }}>🌴 חברי מועדון פעילים</div>
+          <div style={{ fontSize: 26, fontWeight: 800, color: "var(--black)" }}>{clubMembers.length}</div>
+        </div>
       </div>
+
+      {clubMembers.length > 0 && (
+        <div className="card" style={{ padding: "14px 16px", marginBottom: 20 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10, color: "var(--black)" }}>
+            מועדון לקוחות — הצטרפו לאחרונה (עד 100)
+          </div>
+          <div style={{ display: "grid", gap: 8, maxHeight: 220, overflowY: "auto" }}>
+            {clubMembers.map((m) => (
+              <div key={m.id} style={{
+                display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap",
+                fontSize: 13, padding: "8px 10px", borderRadius: 10, background: "var(--ivory)",
+                border: "1px solid var(--border)",
+              }}>
+                <span style={{ fontWeight: 700, color: "var(--black)" }}>
+                  {m.guests?.name || "אורח"} · {m.phone}
+                </span>
+                <span style={{ color: "var(--text-muted)", fontSize: 12 }}>
+                  {m.opted_in_at ? new Date(m.opted_in_at).toLocaleString("he-IL") : "—"}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="card" style={{ padding: "14px 16px", marginBottom: 20 }}>
         <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10, color: "var(--black)" }}>ממוצע לפי קטגוריה (הכל)</div>
