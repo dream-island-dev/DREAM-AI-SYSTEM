@@ -160,7 +160,7 @@ Deno.serve(async (req: Request) => {
     // needs_callback is selected for observability only — NOT used in eligibility
     // (checkEligibility in automationSchedule.ts; session 59 decouple).
     const GUEST_SELECT =
-      "id, name, phone, arrival_date, departure_date, room, room_type, status, checkin_time, needs_callback, automation_muted, automation_scope, claimed_by, arrival_confirmed, arrival_confirmed_at, msg_stage_2_arrival_sent, msg_pre_arrival_2d_sent, msg_pre_arrival_sent, msg_morning_suite_sent, msg_morning_welcome_sent, msg_mid_stay_sent, msg_checkout_fb_sent";
+      "id, name, phone, arrival_date, departure_date, room, room_type, status, checkin_time, needs_callback, automation_muted, automation_scope, claimed_by, arrival_confirmed, arrival_confirmed_at, spa_date, spa_time, msg_stage_2_arrival_sent, msg_pre_arrival_2d_sent, msg_pre_arrival_sent, msg_morning_suite_sent, msg_morning_welcome_sent, msg_mid_stay_sent, msg_checkout_fb_sent, msg_spa_warmup_sent, msg_survey_invite_sent";
 
     const { data: guests = [] } = await supabase.from("guests").select(GUEST_SELECT);
 

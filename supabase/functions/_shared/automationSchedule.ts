@@ -163,7 +163,7 @@ export function resolveEffectiveGuestStatus(
 
 export type ScheduleMode = "day_offset_with_time" | "hours_after_event" | "event_immediate";
 export type NodeType = "meta_template" | "session_message" | "hybrid";
-export type AnchorEvent = "arrival_date" | "departure_date" | "arrival_confirmed_at" | "checkin_time";
+export type AnchorEvent = "arrival_date" | "departure_date" | "arrival_confirmed_at" | "checkin_time" | "spa_time";
 export type AppliesTo = "all" | "suite" | "non_suite";
 
 export interface InteractiveButton {
@@ -221,6 +221,9 @@ export interface GuestForSchedule {
   claimed_by?: string | null;
   /** stage_keys staff cancelled per guest (migration 169) — attached at cron/queue load. */
   pipeline_suppressed_stages?: string[] | null;
+  /** Day-pass spa cohort — anchor for spa_warmup_daypass (spa_time) + eligibility for both survey stages. */
+  spa_date?: string | null;
+  spa_time?: string | null;
   [flagColumn: string]: unknown;
 }
 
@@ -332,6 +335,42 @@ export function parseLocalHour(localTime: string): number {
 function utcHourToTimestamp(dateStr: string, utcHour: number): Date {
   const normalized = ((utcHour % 24) + 24) % 24;
   return new Date(`${dateStr}T${String(normalized).padStart(2, "0")}:00:00.000Z`);
+}
+
+/** Combine a DATE + local "HH:MM(:SS)" TIME (Israel, fixed UTC+2) into a UTC instant. */
+function israelLocalDateTimeToUtc(dateStr: string | null | undefined, timeStr: string | null | undefined): Date | null {
+  const d = String(dateStr ?? "").trim().slice(0, 10);
+  const t = String(timeStr ?? "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return null;
+  const m = t.match(/^(\d{1,2}):(\d{2})/);
+  if (!m) return null;
+  const hh = parseInt(m[1], 10);
+  const mm = parseInt(m[2], 10);
+  if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
+  const utcMidnightMs = new Date(`${d}T00:00:00.000Z`).getTime();
+  return new Date(utcMidnightMs + ((hh - ISRAEL_UTC_OFFSET_HOURS) * 60 + mm) * 60_000);
+}
+
+/** spa_warmup_daypass send instant must land within sane operating hours — a
+ * missing/garbled spa_time must never silently schedule a 3am send. */
+const SPA_WARMUP_SANE_HOUR_MIN = 6;
+const SPA_WARMUP_SANE_HOUR_MAX = 22;
+
+/** Shared anchor resolver for schedule_mode='hours_after_event' — one place
+ * for all three anchor kinds, used by both computeScheduledInstant and
+ * resolveStageSchedule so they can never diverge. */
+function resolveHoursAfterEventAnchor(stage: AutomationStage, guest: GuestForSchedule): Date | null {
+  if (stage.anchor_event === "checkin_time") {
+    return guest.checkin_time ? new Date(guest.checkin_time) : null;
+  }
+  if (stage.anchor_event === "arrival_confirmed_at") {
+    const anchor = resolveArrivalConfirmedAnchor(guest);
+    return anchor ? new Date(anchor) : null;
+  }
+  if (stage.anchor_event === "spa_time") {
+    return israelLocalDateTimeToUtc(guest.spa_date, guest.spa_time);
+  }
+  return null;
 }
 
 /** Calendar YMD + day offset without timezone drift on the anchor DATE string. */
@@ -491,6 +530,32 @@ export function checkEligibility(
       }
     }
   }
+
+  // Day-pass Guest Experience Survey cohort (spa_warmup_daypass /
+  // survey_invite_daypass) — applies_to='non_suite' alone can't express the
+  // additional "has spa that day" audience narrowing; spa_date is written
+  // through from the Spa Board sync (guest_profile.spa / CLAUDE.md §2
+  // spa_board), so comparing it to the same-day visit's arrival_date is the
+  // existing source of truth, not a new join.
+  if (stage.stage_key === "spa_warmup_daypass" || stage.stage_key === "survey_invite_daypass") {
+    const spaDateStr = String(guest.spa_date ?? "").trim().slice(0, 10);
+    const arrivalStr = String(guest.arrival_date ?? "").trim().slice(0, 10);
+    if (!spaDateStr || spaDateStr !== arrivalStr) return "no_spa_visit_today";
+  }
+  if (stage.stage_key === "spa_warmup_daypass") {
+    const anchor = israelLocalDateTimeToUtc(guest.spa_date, guest.spa_time);
+    if (anchor) {
+      const warmupInstant = new Date(anchor.getTime() + (stage.offset_hours ?? 0) * 3600 * 1000);
+      const localHour = israelLocalHour(warmupInstant);
+      if (localHour < SPA_WARMUP_SANE_HOUR_MIN || localHour > SPA_WARMUP_SANE_HOUR_MAX) {
+        return "spa_warmup_outside_hours";
+      }
+    }
+    // No anchor at all (spa_time missing/unparseable) falls through and is
+    // caught by resolveStageSchedule's own missing_anchor_timestamp guard —
+    // no silent fake time, no duplicate skip-reason logic needed here.
+  }
+
   return null;
 }
 
@@ -517,13 +582,9 @@ export function computeScheduledInstant(
   }
 
   if (stage.schedule_mode === "hours_after_event") {
-    const anchorTs = stage.anchor_event === "checkin_time"
-      ? guest.checkin_time
-      : stage.anchor_event === "arrival_confirmed_at"
-      ? resolveArrivalConfirmedAnchor(guest)
-      : null;
-    if (!anchorTs) return null;
-    return new Date(new Date(anchorTs).getTime() + (stage.offset_hours ?? 0) * 3600 * 1000);
+    const anchor = resolveHoursAfterEventAnchor(stage, guest);
+    if (!anchor) return null;
+    return new Date(anchor.getTime() + (stage.offset_hours ?? 0) * 3600 * 1000);
   }
 
   return null;
@@ -624,13 +685,9 @@ export function resolveStageSchedule(
   }
 
   if (stage.schedule_mode === "hours_after_event") {
-    const anchorTs = stage.anchor_event === "checkin_time"
-      ? guest.checkin_time
-      : stage.anchor_event === "arrival_confirmed_at"
-      ? resolveArrivalConfirmedAnchor(guest)
-      : null;
-    if (!anchorTs) return { scheduledFor: null, dueNow: false, skipReason: "missing_anchor_timestamp" };
-    const scheduledFor = scheduledForPreview ?? new Date(new Date(anchorTs).getTime() + (stage.offset_hours ?? 0) * 3600 * 1000);
+    const anchor = resolveHoursAfterEventAnchor(stage, guest);
+    if (!anchor) return { scheduledFor: null, dueNow: false, skipReason: "missing_anchor_timestamp" };
+    const scheduledFor = scheduledForPreview ?? new Date(anchor.getTime() + (stage.offset_hours ?? 0) * 3600 * 1000);
     return { scheduledFor, dueNow: scheduledFor.getTime() <= now.getTime(), skipReason: null };
   }
 

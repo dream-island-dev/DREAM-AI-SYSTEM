@@ -2311,14 +2311,14 @@ serve(async (req: Request) => {
     // migration 093). Stage 3 (morning_welcome) now applies to day-pass guests too.
     const DAY_PASS_ALLOWED_TRIGGERS = new Set([
       "pre_arrival_2d", "stage_2_arrival", "night_before_daypass", "morning_welcome",
-      "mid_stay_daypass", "checkout_fb_daypass",
+      "mid_stay_daypass", "checkout_fb_daypass", "spa_warmup_daypass", "survey_invite_daypass",
     ]);
     // isEffectiveDayPassGuest (not raw room_type): a suite-room guest mis-tagged
     // day_guest must NOT be run through day-pass restrictions (P0, session 125).
     if (!force && isEffectiveDayPassGuest(guest) && !DAY_PASS_ALLOWED_TRIGGERS.has(trigger)) {
       console.warn(
         `[whatsapp-send] day_pass_stage_gate: trigger="${trigger}" blocked for ` +
-        `guest_id=${guestId} (room_type=${guest.room_type}) — allowed: pre_arrival_2d, stage_2_arrival, night_before_daypass, morning_welcome, mid_stay_daypass, checkout_fb_daypass`,
+        `guest_id=${guestId} (room_type=${guest.room_type}) — allowed: pre_arrival_2d, stage_2_arrival, night_before_daypass, morning_welcome, mid_stay_daypass, checkout_fb_daypass, spa_warmup_daypass, survey_invite_daypass`,
       );
       return new Response(
         JSON.stringify({
@@ -2337,6 +2337,7 @@ serve(async (req: Request) => {
     // for the misrouting incident (suite guest got morning_daypass content).
     const DAYPASS_ONLY_TRIGGERS = new Set([
       "night_before_daypass", "morning_daypass", "mid_stay_daypass", "checkout_fb_daypass",
+      "spa_warmup_daypass", "survey_invite_daypass",
     ]);
     if (!force && isEffectiveSuiteGuest(guest) && DAYPASS_ONLY_TRIGGERS.has(trigger)) {
       console.warn(
@@ -3766,7 +3767,8 @@ serve(async (req: Request) => {
           const body = applySaturdayCheckInTimeOverride(
             rawText
               .replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, guestName)
-              .replace(/\{\{\s*portal_url\s*\}\}/gi, portalUrl),
+              .replace(/\{\{\s*portal_url\s*\}\}/gi, portalUrl)
+              .replace(/\{\{\s*SPA_TIME\s*\}\}/gi, normalizeHmTime(guest.spa_time) || ""),
             String(guest.arrival_date ?? ""),
           );
           // Stage 1 over Whapi has no interactive buttons (Meta's template

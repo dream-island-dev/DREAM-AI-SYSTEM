@@ -15,8 +15,10 @@ export const GUEST_JOURNEY_STAGES = [
   { key: "morning_welcome", label: "שלב 3 — בוקר הגעה (בילוי יומי)", flag: "msg_morning_welcome_sent", segment: "daypass" },
   { key: "mid_stay", label: "שלב 4 — שיחות נימוסים (סוויטות)", flag: "msg_mid_stay_sent", segment: "suite" },
   { key: "mid_stay_daypass", label: "שלב 4 — שיחות נימוסים (בילוי יומי)", flag: "msg_mid_stay_sent", segment: "daypass" },
+  { key: "spa_warmup_daypass", label: "ספא — חימום לפני הטיפול (בילוי יומי)", flag: "msg_spa_warmup_sent", segment: "daypass" },
   { key: "checkout_fb", label: "שלב 5 — משוב עזיבה (סוויטות)", flag: "msg_checkout_fb_sent", segment: "suite" },
   { key: "checkout_fb_daypass", label: "שלב 5 — משוב עזיבה (בילוי יומי)", flag: "msg_checkout_fb_sent", segment: "daypass" },
+  { key: "survey_invite_daypass", label: "סקר חוויית אורח (בילוי יומי)", flag: "msg_survey_invite_sent", segment: "daypass" },
 ];
 
 export const SKIP_REASON_LABELS = {

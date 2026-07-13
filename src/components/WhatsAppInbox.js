@@ -353,6 +353,7 @@ const T = {
     filterTomorrow: "📅 מחר",
     filterIn2Days: "📅 יומיים",
     filterFuture: "📅 עתיד",
+    filterSpaDaypass: "☀️ ספא יום",
     filterClaimed: "🔒 בטיפול",
     filterUnread: "💬 לא נקרא",
     markRead: "נקרא",
@@ -445,6 +446,7 @@ const T = {
     filterTomorrow: "📅 Tomorrow",
     filterIn2Days: "📅 2 days",
     filterFuture: "📅 Future",
+    filterSpaDaypass: "☀️ Spa day-pass",
     filterClaimed: "🔒 Claimed",
     filterUnread: "💬 Unread",
     markRead: "Read",
@@ -811,6 +813,16 @@ function hasRecentInboundOnThread(contact, windowMs = DEPARTED_ROSTER_RECENCY_MS
   if (!lastInboundAt) return false;
   const ts = new Date(lastInboundAt).getTime();
   return Number.isFinite(ts) && Date.now() - ts < windowMs;
+}
+
+// Guest Experience Survey cohort (day-pass + spa that day) — segmented out of
+// the default/primary roster so suite red-dots aren't diluted (product lock:
+// Inbox separation). UI-only split on the existing meta/whapi threads, no new
+// channel — same guest.room_type + spa_date truth guest-portal-data reads.
+function contactIsDaypassSpaCohort(contact) {
+  const rt = contact?.roomType;
+  if (rt !== "day_guest" && rt !== "premium_day_guest") return false;
+  return !!String(contact?.spaDate ?? "").trim();
 }
 
 function contactMatchesRosterFilter(contact, rosterFilter, readCursorsByPhone = null) {
@@ -4601,14 +4613,20 @@ export default function WhatsAppInbox({
   // post-stay ops conversations on the Suites device are exactly the case
   // this was breaking hardest.
   const activeRosterContacts = visibleContacts.filter(
-    (c) => !contactDeparted(c) || contactUnreadCount(c, readCursorsByPhone) > 0 || hasRecentInboundOnThread(c),
+    (c) =>
+      (!contactDeparted(c) || contactUnreadCount(c, readCursorsByPhone) > 0 || hasRecentInboundOnThread(c))
+      && !contactIsDaypassSpaCohort(c),
   );
   const departedContacts = visibleContacts.filter(
     (c) => contactDeparted(c) && contactUnreadCount(c, readCursorsByPhone) === 0 && !hasRecentInboundOnThread(c),
   );
+  // Day-pass + spa cohort — its own tab, excluded from "all" (Inbox separation).
+  const spaDaypassContacts = visibleContacts.filter((c) => contactIsDaypassSpaCohort(c));
   const alertContacts = activeRosterContacts.filter((c) => c.humanRequested);
   const rosterSource =
-    rosterFilter === "departed" ? departedContacts : activeRosterContacts;
+    rosterFilter === "departed" ? departedContacts :
+    rosterFilter === "spa_daypass" ? spaDaypassContacts :
+    activeRosterContacts;
   const channelScopedRosterSource = rosterSource.filter((c) =>
     channelFilter === "all" ? true : c.inbox_channel === channelFilter,
   );
@@ -4655,10 +4673,15 @@ export default function WhatsAppInbox({
     { id: "recent", label: t.filterRecent },
     { id: "unread", label: t.filterUnread },
     {
+      id: "spa_daypass",
+      label: `${t.filterSpaDaypass}${spaDaypassContacts.length ? ` (${spaDaypassContacts.length})` : ""}`,
+      badge: spaDaypassContacts.reduce((sum, c) => sum + contactUnreadCount(c, readCursorsByPhone), 0),
+    },
+    {
       id: "departed",
       label: `${t.filterDeparted}${departedContacts.length ? ` (${departedContacts.length})` : ""}`,
     },
-  ], [t, alertContacts.length, departedContacts.length]);
+  ], [t, alertContacts.length, departedContacts.length, spaDaypassContacts, readCursorsByPhone]);
 
   const rosterSortChips = useMemo(() => [
     { id: "activity", label: t.sortActivity },

@@ -11,6 +11,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendWhapiText } from "../_shared/whapiSend.ts";
 import { formatWhapiSuitesConversationLog } from "../_shared/outboundDispatchTag.ts";
 import { CEO_PHONE_DIGITS } from "../_shared/executiveIdentity.ts";
+import { israelYmd } from "../_shared/automationSchedule.ts";
 import {
   composeResortDigestMessage,
   computeResortDigestStats,
@@ -18,6 +19,7 @@ import {
   resolveDigestRange,
   type DigestGuestRow,
   type DigestPeriod,
+  type DigestSurveyRow,
   type DigestTaskRow,
 } from "../_shared/resortDigestStats.ts";
 
@@ -67,7 +69,12 @@ serve(async (req: Request) => {
     const rangeStartIso = range.rangeStart.toISOString();
     const rangeEndIso = range.rangeEnd.toISOString();
 
-    const [guestsRes, tasksRes] = await Promise.all([
+    // guest_surveys.visit_date is a plain DATE (no time component) — bound it
+    // by Israel-calendar Ymd, not the UTC instant range the other two queries use.
+    const surveyStartYmd = israelYmd(range.rangeStart);
+    const surveyEndYmd = israelYmd(range.rangeEnd);
+
+    const [guestsRes, tasksRes, surveysRes] = await Promise.all([
       supabase
         .from("guests")
         .select("id, room, checkin_time, room_ready_at, room_ready_notified")
@@ -78,6 +85,11 @@ serve(async (req: Request) => {
         .select("id, room_number, sla_category, status, created_at, resolved_at, sla_deadline")
         .gte("created_at", rangeStartIso)
         .lt("created_at", rangeEndIso),
+      supabase
+        .from("guest_surveys")
+        .select("overall_experience, patio, live_kitchen, chestnut_restaurant, service_team, spa, cleaning_maintenance")
+        .gte("visit_date", surveyStartYmd)
+        .lt("visit_date", surveyEndYmd),
     ]);
 
     if (guestsRes.error || tasksRes.error) {
@@ -85,10 +97,16 @@ serve(async (req: Request) => {
       console.error("[resort-digest-cron] fetch failed:", detail);
       return json({ ok: false, error: "fetch_failed", detail });
     }
+    if (surveysRes.error) {
+      // Non-fatal — digest still sends without the survey section (FAIL VISIBLE
+      // via the log, not a silent gap the reader can't tell happened).
+      console.warn("[resort-digest-cron] guest_surveys fetch failed (non-blocking):", surveysRes.error.message);
+    }
 
     const stats = computeResortDigestStats({
       guests: (guestsRes.data ?? []) as DigestGuestRow[],
       tasks: (tasksRes.data ?? []) as DigestTaskRow[],
+      surveys: surveysRes.error ? undefined : ((surveysRes.data ?? []) as DigestSurveyRow[]),
       now,
     });
 

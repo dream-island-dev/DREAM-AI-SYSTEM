@@ -41,7 +41,189 @@ const TAB_ORDER = [
   { id: "neutral",  label: "⚪ ניטרלי" },
 ];
 
+// ── Guest Experience Survey sub-tab (structured_survey — guest_surveys) ─────
+// Deliberately separate list/aggregation from the free-text sentiment tabs
+// above — different schema, different shape (1-5/1-10 stars, not sentiment).
+const SURVEY_CATEGORY_FIELDS = [
+  { key: "patio", label: "פטיו" },
+  { key: "live_kitchen", label: "מטבח חי" },
+  { key: "chestnut_restaurant", label: "מסעדת ערמונים" },
+  { key: "service_team", label: "צוות שירות" },
+  { key: "spa", label: "ספא" },
+  { key: "cleaning_maintenance", label: "ניקיון ותחזוקה" },
+];
+
+/** Any category <=2 OR overall <=4 — same threshold as guest-portal-survey's negative gate. */
+function isLowScoreSurvey(s) {
+  if (Number(s.overall_experience) <= 4) return true;
+  return SURVEY_CATEGORY_FIELDS.some((c) => Number(s[c.key]) <= 2);
+}
+
+function average(nums) {
+  const vals = nums.filter((n) => typeof n === "number" && !Number.isNaN(n));
+  if (!vals.length) return null;
+  return vals.reduce((sum, n) => sum + n, 0) / vals.length;
+}
+
+function SurveysView() {
+  const [surveys, setSurveys] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [toast, setToast]     = useState(null);
+
+  const fetchSurveys = useCallback(async () => {
+    setLoading(true);
+    if (!isSupabaseConfigured || !supabase) { setLoading(false); return; }
+    const { data, error } = await supabase
+      .from("guest_surveys")
+      .select("*, guests(name, room)")
+      .order("visit_date", { ascending: false })
+      .order("created_at", { ascending: false });
+    if (error) setToast({ type: "err", msg: "שגיאה בטעינה: " + error.message });
+    else setSurveys(data ?? []);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { fetchSurveys(); }, [fetchSurveys]);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase) return;
+    const ch = supabase
+      .channel("guest-surveys-rt")
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "guest_surveys" }, () => fetchSurveys())
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [fetchSurveys]);
+
+  useEffect(() => {
+    if (!toast) return;
+    const id = setTimeout(() => setToast(null), 3500);
+    return () => clearTimeout(id);
+  }, [toast]);
+
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayRows = surveys.filter((s) => s.visit_date === todayStr);
+  const todayAvgOverall = average(todayRows.map((s) => Number(s.overall_experience)));
+  const todayLowCount = todayRows.filter(isLowScoreSurvey).length;
+  const categoryAverages = SURVEY_CATEGORY_FIELDS.map((c) => ({
+    ...c,
+    avg: average(surveys.map((s) => Number(s[c.key]))),
+  }));
+
+  // Low-score rows first (FAIL VISIBLE) — worst overall, then worst category avg.
+  const sorted = [...surveys].sort((a, b) => {
+    const lowA = isLowScoreSurvey(a) ? 0 : 1;
+    const lowB = isLowScoreSurvey(b) ? 0 : 1;
+    if (lowA !== lowB) return lowA - lowB;
+    return Number(a.overall_experience) - Number(b.overall_experience);
+  });
+
+  return (
+    <div>
+      {toast && (
+        <div style={{
+          position: "fixed", top: 20, left: "50%", transform: "translateX(-50%)", zIndex: 9999,
+          padding: "12px 24px", borderRadius: 10, fontWeight: 700, fontSize: 14,
+          background: "#FFF0EE", color: "#C0392B", border: "1px solid #C0392B",
+        }}>{toast.msg}</div>
+      )}
+
+      <div style={{
+        display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 20,
+      }}>
+        <div className="card" style={{ padding: "14px 16px" }}>
+          <div style={{ fontSize: 11, color: "var(--text-muted)" }}>סקרים היום</div>
+          <div style={{ fontSize: 26, fontWeight: 800, color: "var(--black)" }}>{todayRows.length}</div>
+        </div>
+        <div className="card" style={{ padding: "14px 16px" }}>
+          <div style={{ fontSize: 11, color: "var(--text-muted)" }}>ממוצע חוויה כללית</div>
+          <div style={{ fontSize: 26, fontWeight: 800, color: "var(--black)" }}>
+            {todayAvgOverall !== null ? todayAvgOverall.toFixed(1) : "—"}
+          </div>
+        </div>
+        <div className="card" style={{ padding: "14px 16px", borderInlineStart: todayLowCount ? "4px solid #C0392B" : undefined }}>
+          <div style={{ fontSize: 11, color: "var(--text-muted)" }}>ציונים נמוכים היום</div>
+          <div style={{ fontSize: 26, fontWeight: 800, color: todayLowCount ? "#C0392B" : "var(--black)" }}>{todayLowCount}</div>
+        </div>
+      </div>
+
+      <div className="card" style={{ padding: "14px 16px", marginBottom: 20 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10, color: "var(--black)" }}>ממוצע לפי קטגוריה (הכל)</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 10 }}>
+          {categoryAverages.map((c) => (
+            <div key={c.key} style={{ fontSize: 12.5, color: "var(--text-muted)" }}>
+              {c.label}: <strong style={{ color: "var(--black)" }}>{c.avg !== null ? c.avg.toFixed(1) : "—"}</strong>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {loading ? (
+        <div style={{ textAlign: "center", padding: 48, color: "var(--text-muted)" }}>טוען סקרים...</div>
+      ) : sorted.length === 0 ? (
+        <div style={{
+          textAlign: "center", padding: 48, color: "var(--text-muted)",
+          background: "var(--ivory)", borderRadius: 14, border: "1px solid var(--border)",
+        }}>
+          אין עדיין סקרים שהוגשו.
+        </div>
+      ) : (
+        <div style={{ display: "grid", gap: 12 }}>
+          {sorted.map((s) => {
+            const low = isLowScoreSurvey(s);
+            return (
+              <div
+                key={s.id}
+                className="card"
+                style={{ borderInlineStart: `5px solid ${low ? "#C0392B" : "#1A7A4A"}`, padding: "16px 18px", background: "var(--card-bg)" }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: 800, fontSize: 16, color: "var(--black)" }}>
+                      {s.guests?.name || "אורח"}
+                    </div>
+                    <div style={{ fontSize: 12.5, color: "var(--text-muted)", marginTop: 3 }}>
+                      {s.guests?.room ? `🏨 ${s.guests.room} · ` : ""}{s.visit_date}
+                    </div>
+                  </div>
+                  <span style={{
+                    padding: "4px 10px", borderRadius: 20, fontSize: 12, fontWeight: 700,
+                    background: low ? "#FFF0EE" : "#E8F5EF", color: low ? "#C0392B" : "#1A7A4A", whiteSpace: "nowrap",
+                  }}>
+                    חוויה כללית {s.overall_experience}/10
+                  </span>
+                </div>
+
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8, margin: "10px 0" }}>
+                  {SURVEY_CATEGORY_FIELDS.map((c) => (
+                    <span key={c.key} style={{ fontSize: 11.5, color: "var(--text-muted)", background: "var(--ivory)", padding: "3px 8px", borderRadius: 10 }}>
+                      {c.label}: {s[c.key]}/5
+                    </span>
+                  ))}
+                </div>
+
+                {s.free_text && (
+                  <div style={{
+                    padding: 13, background: "var(--ivory)", borderRadius: 10,
+                    fontSize: 14, color: "#333", lineHeight: 1.6, whiteSpace: "pre-wrap",
+                    border: "1px solid var(--border)",
+                  }}>
+                    {s.free_text}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function GuestFeedbackTabs({ user }) {
+  // Deep link: ?page=feedback_dashboard&tab=surveys — read once on mount.
+  const [view, setView]                 = useState(() =>
+    new URLSearchParams(window.location.search).get("tab") === "surveys" ? "surveys" : "feedback",
+  );
   const [feedback, setFeedback]         = useState([]);
   const [loading, setLoading]           = useState(true);
   const [toast, setToast]               = useState(null);
@@ -124,6 +306,39 @@ export default function GuestFeedbackTabs({ user }) {
         </div>
       </div>
 
+      <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+        <button
+          type="button"
+          onClick={() => setView("feedback")}
+          style={{
+            padding: "9px 18px", borderRadius: 20, fontSize: 13, fontWeight: 700,
+            border: `1.5px solid ${view === "feedback" ? "var(--gold-dark)" : "var(--border)"}`,
+            background: view === "feedback" ? "var(--ivory)" : "var(--card-bg)",
+            color: view === "feedback" ? "var(--gold-dark)" : "var(--text-muted)",
+            cursor: "pointer", fontFamily: "inherit", minHeight: 40,
+          }}
+        >
+          💬 משוב חופשי
+        </button>
+        <button
+          type="button"
+          onClick={() => setView("surveys")}
+          style={{
+            padding: "9px 18px", borderRadius: 20, fontSize: 13, fontWeight: 700,
+            border: `1.5px solid ${view === "surveys" ? "var(--gold-dark)" : "var(--border)"}`,
+            background: view === "surveys" ? "var(--ivory)" : "var(--card-bg)",
+            color: view === "surveys" ? "var(--gold-dark)" : "var(--text-muted)",
+            cursor: "pointer", fontFamily: "inherit", minHeight: 40,
+          }}
+        >
+          📊 סקרים
+        </button>
+      </div>
+
+      {view === "surveys" ? (
+        <SurveysView />
+      ) : (
+      <>
       <div style={{ display: "flex", gap: 8, marginBottom: 18, flexWrap: "wrap", alignItems: "center" }}>
         {TAB_ORDER.map((t) => {
           const active = tab === t.id;
@@ -253,6 +468,8 @@ export default function GuestFeedbackTabs({ user }) {
             );
           })}
         </div>
+      )}
+      </>
       )}
     </div>
   );

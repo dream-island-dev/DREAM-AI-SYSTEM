@@ -148,6 +148,183 @@ function SpaRequestButton({ onClick, busy }) {
   );
 }
 
+// ── Guest Experience Survey ────────────────────────────────────────────────
+// MVP audience: day-pass + spa that day (guest.survey_eligible, server-
+// authoritative — guest-portal-data). Reusable component so a future flag
+// flip can extend eligibility to suite guests without touching this UI.
+const SURVEY_CATEGORIES = [
+  { key: "patio", label: "החצר / הפטיו" },
+  { key: "live_kitchen", label: "המטבח החי" },
+  { key: "chestnut_restaurant", label: "מסעדת ערמונים" },
+  { key: "service_team", label: "צוות השירות" },
+  { key: "spa", label: "הספא" },
+  { key: "cleaning_maintenance", label: "ניקיון ותחזוקה" },
+];
+
+function RatingRow({ label, value, max, onChange, small }) {
+  const size = small ? 30 : 38;
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ fontSize: 13, color: XOS_TEXT, marginBottom: 8, textAlign: "right", fontWeight: 600 }}>
+        {label}
+      </div>
+      <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", flexWrap: "wrap", flexDirection: "row-reverse" }}>
+        {Array.from({ length: max }, (_, i) => i + 1).map((n) => (
+          <button
+            key={n}
+            type="button"
+            onClick={() => onChange(n)}
+            style={{
+              width: size, height: size, borderRadius: "50%",
+              border: `1px solid ${n <= value ? XOS_GOLD : XOS_BORDER}`,
+              background: n <= value ? "rgba(212,175,55,0.20)" : "transparent",
+              color: n <= value ? XOS_GOLD : XOS_MUTED,
+              fontSize: small ? 12 : 14, fontWeight: 700, fontFamily: "inherit",
+              cursor: "pointer", flexShrink: 0,
+            }}
+          >
+            {n}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SurveySection({ guest, token, onToast }) {
+  const initialScores = Object.fromEntries(SURVEY_CATEGORIES.map((c) => [c.key, 0]));
+  const [scores, setScores] = useState(initialScores);
+  const [overall, setOverall] = useState(0);
+  const [freeText, setFreeText] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [result, setResult] = useState(null); // { googleCta, reviewUrl } after successful submit
+
+  if (!guest?.survey_eligible) return null;
+
+  if (guest.survey_completed && !result) {
+    return (
+      <div id="survey" style={{ padding: "0 16px 36px", scrollMarginTop: 24 }}>
+        <GlassPanel title="📊 סקר חוויית אורח">
+          <div style={{ padding: "22px 16px", textAlign: "center", color: XOS_MUTED, fontSize: 13, lineHeight: 1.8 }}>
+            תודה! כבר מילאתם את הסקר עבור הביקור הזה. 🙏
+          </div>
+        </GlassPanel>
+      </div>
+    );
+  }
+
+  const allAnswered = SURVEY_CATEGORIES.every((c) => scores[c.key] > 0) && overall > 0;
+
+  async function handleSubmit() {
+    if (submitting || !allAnswered) return;
+    setSubmitting(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("guest-portal-survey", {
+        body: { token, scores: { ...scores, overall_experience: overall, free_text: freeText } },
+      });
+      if (error || !data?.ok) throw new Error(data?.error ?? error?.message ?? "שגיאה");
+      setResult({ googleCta: !!data.googleCta, reviewUrl: data.reviewUrl ?? null });
+    } catch (e) {
+      onToast(
+        e?.message === "already_submitted"
+          ? "כבר מילאתם את הסקר עבור הביקור הזה."
+          : "⚠️ לא הצלחנו לשלוח את הסקר — נסו שוב מאוחר יותר",
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (result) {
+    return (
+      <div id="survey" style={{ padding: "0 16px 36px", scrollMarginTop: 24 }}>
+        <GlassPanel title="📊 סקר חוויית אורח">
+          <div style={{ padding: "22px 16px", textAlign: "center" }}>
+            <div style={{ fontSize: 14, color: XOS_TEXT, lineHeight: 1.8, marginBottom: result.googleCta ? 16 : 0 }}>
+              תודה רבה על המשוב! 🙏 זה עוזר לנו להמשיך ולהשתפר.
+            </div>
+            {result.googleCta && result.reviewUrl && (
+              <a
+                href={result.reviewUrl.startsWith("http") ? result.reviewUrl : `https://${result.reviewUrl}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: 8,
+                  padding: "12px 22px", borderRadius: 14,
+                  background: `linear-gradient(135deg, ${XOS_GOLD}, #B8960C)`,
+                  color: "#0f172a", fontSize: 14, fontWeight: 700, textDecoration: "none",
+                }}
+              >
+                ⭐ נשמח לביקורת קצרה בגוגל
+              </a>
+            )}
+          </div>
+        </GlassPanel>
+      </div>
+    );
+  }
+
+  return (
+    <div id="survey" style={{ padding: "0 16px 36px", scrollMarginTop: 24 }}>
+      <GlassPanel title="📊 ספרו לנו איך היה">
+        <div style={{ padding: "18px 16px 8px" }}>
+          {SURVEY_CATEGORIES.map((c) => (
+            <RatingRow
+              key={c.key}
+              label={c.label}
+              value={scores[c.key]}
+              max={5}
+              onChange={(n) => setScores((prev) => ({ ...prev, [c.key]: n }))}
+            />
+          ))}
+          <RatingRow
+            label="החוויה הכללית (1-10)"
+            value={overall}
+            max={10}
+            small
+            onChange={setOverall}
+          />
+          <div style={{ marginTop: 4, marginBottom: 16 }}>
+            <div style={{ fontSize: 13, color: XOS_TEXT, marginBottom: 8, textAlign: "right", fontWeight: 600 }}>
+              רוצים להוסיף כמה מילים? (לא חובה)
+            </div>
+            <textarea
+              value={freeText}
+              onChange={(e) => setFreeText(e.target.value)}
+              rows={3}
+              placeholder="ספרו לנו עוד..."
+              style={{
+                width: "100%", boxSizing: "border-box", padding: "10px 12px", borderRadius: 10,
+                border: `1px solid ${XOS_BORDER}`, background: "rgba(255,255,255,0.03)",
+                color: XOS_TEXT, fontSize: 13, fontFamily: "inherit", resize: "vertical",
+                textAlign: "right",
+              }}
+            />
+          </div>
+        </div>
+        <div style={{ padding: "0 16px 16px" }}>
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={!allAnswered || submitting}
+            title={!allAnswered ? "אנא דרגו את כל הקטגוריות לפני שליחה" : ""}
+            style={{
+              width: "100%", padding: "14px", borderRadius: 12, border: "none",
+              cursor: allAnswered && !submitting ? "pointer" : "not-allowed",
+              background: allAnswered ? `linear-gradient(135deg, ${XOS_GOLD}, #B8960C)` : "rgba(255,255,255,0.08)",
+              color: allAnswered ? "#0f172a" : XOS_MUTED,
+              fontSize: 15, fontWeight: 700, fontFamily: "Heebo, sans-serif",
+              opacity: submitting ? 0.7 : 1,
+            }}
+          >
+            {submitting ? "שולחים…" : "📨 שליחת הסקר"}
+          </button>
+        </div>
+      </GlassPanel>
+    </div>
+  );
+}
+
 // ── Pre-Order Module ──────────────────────────────────────────────────────────
 // Groups upsell_items by category, renders a qty-stepper per item, and
 // submits to guest-portal-order edge function.
@@ -553,6 +730,7 @@ function SuiteView({ guest, phase, countdown, upsellItems, token, onToast, onUps
       <PortalHero guest={guest} phase={phase} countdown={countdown} />
       <ItineraryPanel guest={guest} onSpaRequest={onSpaRequest} spaBusy={spaBusy} showSpaRequest={showSpaRequest} />
       <SecurePaymentButton guest={guest} />
+      <SurveySection guest={guest} token={token} onToast={onToast} />
       <SuiteQuickActions />
 
       {/* Pre-Order module (DB-driven, suite + all items) */}
@@ -627,6 +805,7 @@ function DayUseView({ guest, phase, countdown, upsellItems, token, onToast, onUp
       </div>
 
       <SecurePaymentButton guest={guest} />
+      <SurveySection guest={guest} token={token} onToast={onToast} />
 
       {/* Focused activity info panel */}
       <div style={{ padding: "0 16px 20px" }}>

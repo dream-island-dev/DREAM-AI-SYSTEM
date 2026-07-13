@@ -1,5 +1,24 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-12 (day-pass Whapi routing — Meta template loop).
+> Last updated: 2026-07-13 (Guest Experience Survey + Spa warm-up — code complete, not deployed).
+
+---
+
+## 🟡 Ready to deploy — Guest Experience Survey (Portal) + Spa warm-up (2026-07-13)
+
+MVP audience: day-pass + spa-that-day guests. Full plan/execute/verify in this session.
+
+| Piece | Detail |
+|---|---|
+| DB | Migration 194 — `guest_surveys` table, `guests` flags, 2 `automation_stages` rows, `bot_scripts` seeds, widened `anchor_event`/`guest_feedback.source` CHECKs |
+| `automationSchedule.ts` | New `anchor_event='spa_time'` (spa_date+spa_time combined instant) — `spa_warmup_daypass` = spa_time−75min; eligibility gate requires spa that day for both new stages |
+| `guest-portal-survey` (new) | Score validation, positive gate (overall≥8 & avg categories≥4.0) → Google CTA, negative → `guest_feedback` mirror row |
+| `GuestPortal.js` | `SurveySection` — server-gated (`guest.survey_eligible`), mounted in both DayUseView + SuiteView (no-op for suites until eligibility flag extends) |
+| `WhatsAppInbox.js` | Day-pass+spa cohort split into its own "☀️ ספא יום" tab, excluded from default roster (mirrors "departed" pattern) |
+| `GuestFeedbackTabs.js` | New "📊 סקרים" sub-tab, deep-link `?page=feedback_dashboard&tab=surveys` |
+| `resort-digest-cron` | Optional survey stats section (additive) |
+| Tests | 320/320 jest, 38/38 + 36/36 Deno (automationSchedule + resortDigestStats), `deno check` delta-clean on all touched functions, `npm run build` clean |
+
+**Not deployed** — awaiting Mike's `כן`/`תעלה`. See QA checklist in this session's reply for what to click-test first.
 
 ---
 

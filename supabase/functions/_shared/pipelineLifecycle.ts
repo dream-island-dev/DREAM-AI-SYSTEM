@@ -9,6 +9,8 @@ export const POST_STAY_PIPELINE_TRIGGERS = new Set([
 export const IN_STAY_PIPELINE_TRIGGERS = new Set([
   "mid_stay",
   "mid_stay_daypass",
+  "spa_warmup_daypass",
+  "survey_invite_daypass",
 ]);
 
 export const ARRIVAL_DAY_PIPELINE_TRIGGERS = new Set([

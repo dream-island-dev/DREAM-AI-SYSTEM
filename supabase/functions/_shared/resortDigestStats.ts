@@ -6,6 +6,13 @@
 
 import { israelYmd, ISRAEL_UTC_OFFSET_HOURS } from "./automationSchedule.ts";
 
+// Same value as guestAlertWhapiNotify.ts's STAFF_APP_ORIGIN — duplicated, not
+// imported. This module is deliberately zero-I/O / dependency-light (pure
+// aggregation, fully unit-testable); importing guestAlertWhapiNotify.ts here
+// would drag its Supabase-client call chain into every test/typecheck of this
+// file for one string constant.
+const STAFF_APP_ORIGIN = "https://dream-ai-system.vercel.app";
+
 export type DigestGuestRow = {
   id: number;
   room: string | null;
@@ -210,17 +217,58 @@ export function computeSlaCompliance(tasks: DigestTaskRow[], now: Date): SlaComp
   };
 }
 
+export type DigestSurveyRow = {
+  overall_experience: number;
+  patio: number;
+  live_kitchen: number;
+  chestnut_restaurant: number;
+  service_team: number;
+  spa: number;
+  cleaning_maintenance: number;
+};
+
+export type SurveyDigestStats = {
+  count: number;
+  avgOverall: number | null;
+  /** Same threshold as guest-portal-survey's negative gate: any category <=2 OR overall <=4. */
+  lowScoreCount: number;
+};
+
+const SURVEY_CATEGORY_KEYS = [
+  "patio", "live_kitchen", "chestnut_restaurant", "service_team", "spa", "cleaning_maintenance",
+] as const;
+
+function isLowScoreSurveyRow(s: DigestSurveyRow): boolean {
+  if (s.overall_experience <= 4) return true;
+  return SURVEY_CATEGORY_KEYS.some((k) => s[k] <= 2);
+}
+
+/** Guest Experience Survey (day-pass + spa cohort) — additive, optional in the digest. */
+export function computeSurveyDigestStats(rows: DigestSurveyRow[]): SurveyDigestStats {
+  const avgOverall = rows.length
+    ? rows.reduce((sum, r) => sum + r.overall_experience, 0) / rows.length
+    : null;
+  return {
+    count: rows.length,
+    avgOverall,
+    lowScoreCount: rows.filter(isLowScoreSurveyRow).length,
+  };
+}
+
 export type ResortDigestStats = {
   arrivals: ArrivalEntry[];
   roomReadyTiming: RoomReadyEntry[];
   requestsBySuite: SuiteRequestSummary[];
   anomalies: AnomalyFlag[];
   slaCompliance: SlaComplianceStats;
+  /** Optional — only populated when the caller passes survey rows in. */
+  surveys?: SurveyDigestStats | null;
 };
 
 export function computeResortDigestStats(inputs: {
   guests: DigestGuestRow[];
   tasks: DigestTaskRow[];
+  surveys?: DigestSurveyRow[];
   now?: Date;
 }): ResortDigestStats {
   const requestsBySuite = computeRequestsBySuite(inputs.tasks);
@@ -230,6 +278,7 @@ export function computeResortDigestStats(inputs: {
     requestsBySuite,
     anomalies: computeAnomalies(requestsBySuite),
     slaCompliance: computeSlaCompliance(inputs.tasks, inputs.now ?? new Date()),
+    surveys: inputs.surveys ? computeSurveyDigestStats(inputs.surveys) : null,
   };
 }
 
@@ -443,6 +492,20 @@ export function composeResortDigestMessage(
         MAX_DIGEST_LIST_ITEMS,
       ),
     );
+  }
+
+  if (stats.surveys) {
+    const sv = stats.surveys;
+    lines.push("", `סקרי חוויית אורח (${sv.count}):`);
+    if (!sv.count) {
+      lines.push("  אין סקרים בתקופה זו.");
+    } else {
+      lines.push(
+        `  ממוצע חוויה כללית: ${sv.avgOverall !== null ? sv.avgOverall.toFixed(1) : "—"}/10` +
+          (sv.lowScoreCount ? ` | ציונים נמוכים: ${sv.lowScoreCount}` : ""),
+      );
+      lines.push(`  📊 ${STAFF_APP_ORIGIN}/?page=feedback_dashboard&tab=surveys`);
+    }
   }
 
   const notes = (opts.learnedDigestNotes ?? []).map((n) => n.trim()).filter(Boolean).slice(0, 5);

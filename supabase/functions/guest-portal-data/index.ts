@@ -48,7 +48,7 @@ serve(async (req: Request) => {
 
     const { data: guest, error: err } = await supabase
       .from("guests")
-      .select("name, room, room_type, arrival_date, departure_date, spa_time, spa_date, meal_time, meal_location, meal_plan, breakfast_time, lunch_time, dinner_time, status, payment_amount, direct_payment_url, payment_link_url")
+      .select("id, name, room, room_type, arrival_date, departure_date, spa_time, spa_date, meal_time, meal_location, meal_plan, breakfast_time, lunch_time, dinner_time, status, payment_amount, direct_payment_url, payment_link_url")
       .eq("portal_token", token)
       .maybeSingle();
 
@@ -190,6 +190,34 @@ serve(async (req: Request) => {
     (maskedGuest as Record<string, unknown>).spa_schedule_display = spaScheduleDisplay;
     (maskedGuest as Record<string, unknown>).meals_itinerary = buildMealsItinerary(guest);
     const enableSpaRequestButton = spaToggleRow?.value_bool !== false;
+
+    // ── Guest Experience Survey — MVP audience: day-pass + spa that day ────
+    // Idempotent view: return existing scores when already completed instead
+    // of a blank form (guest-portal-survey enforces the actual UNIQUE(guest_id,
+    // visit_date) write-once constraint — this is just the read side).
+    const isDayPassRoomType = guest.room_type === "day_guest" || guest.room_type === "premium_day_guest";
+    const surveyEligible = isDayPassRoomType && hasSpaBookingFlag;
+    let surveyCompleted = false;
+    let surveyScores: Record<string, unknown> | null = null;
+    if (guest.id != null) {
+      const { data: surveyRow, error: surveyErr } = await supabase
+        .from("guest_surveys")
+        .select("patio, live_kitchen, chestnut_restaurant, service_team, spa, cleaning_maintenance, overall_experience, free_text, google_cta_shown")
+        .eq("guest_id", guest.id as number)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (surveyErr) {
+        console.warn("[guest-portal-data] guest_surveys fetch failed (non-blocking):", surveyErr.message);
+      } else if (surveyRow) {
+        surveyCompleted = true;
+        surveyScores = surveyRow;
+      }
+    }
+    (maskedGuest as Record<string, unknown>).survey_eligible = surveyEligible;
+    (maskedGuest as Record<string, unknown>).survey_completed = surveyCompleted;
+    (maskedGuest as Record<string, unknown>).survey_scores = surveyScores;
+    delete (maskedGuest as Record<string, unknown>).id;
 
     return new Response(
       JSON.stringify({
