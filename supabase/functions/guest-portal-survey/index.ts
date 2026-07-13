@@ -2,45 +2,36 @@
 // Guest Experience Survey — Guest Portal write path.
 //
 // MVP audience: day-pass (day_guest / premium_day_guest) guests who have a
-// spa booking that day (guests.spa_date === arrival_date, same write-through
-// truth guest-portal-data reads for eligibility). One survey per visit —
-// enforced by guest_surveys' UNIQUE(guest_id, visit_date), not just here.
+// spa booking that day. Categories come from bot_config.guest_survey_ui
+// (staff-editable, including custom keys). Scores stored in
+// guest_surveys.ratings jsonb; legacy six columns mirrored when present.
 //
-// Positive gate (tunable constants below): overall_experience >= 8 AND the
-// average of the six 1-10 category scores >= 8.0 → Google review CTA shown.
-// Negative outcome (any category <=4 OR overall <=4) mirrors a row into
-// guest_feedback (source='structured_survey') so it surfaces in the existing
-// staff attention triage — same convention as the post-stay button path.
-// Scale changed 1-5 → 1-10 (Mike, 2026-07-13, Q1) — thresholds rescaled to
-// keep the same proportional bar: 4.0/5.0=80% → 8.0/10; 2/5=40% → 4/10.
-// Migration 196 widens guest_surveys' CHECK constraints to match.
+// Positive gate (overall≥8 AND avg categories≥8.0): Google review CTA +
+// suites booking CTA (https://www.dream-island.co.il/suites).
+// Negative (any category≤4 OR overall≤4): guest_feedback mirror row.
 
 import { serve }        from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import {
+  DEFAULT_SUITES_CTA_URL,
+  isPositiveSurveyAverage,
+  LEGACY_SURVEY_CATEGORY_KEYS,
+  normalizeGuestSurveyUi,
+} from "../_shared/guestSurveyUi.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-const CATEGORY_FIELDS = [
-  "patio", "live_kitchen", "chestnut_restaurant", "service_team", "spa", "cleaning_maintenance",
-] as const;
-
-/** Mike-confirmed gate (product lock): overall>=8 AND avg categories>=8.0 (1-10 scale) → Google CTA. */
 const GOOGLE_CTA_MIN_OVERALL = 8;
 const GOOGLE_CTA_MIN_AVG_CATEGORY = 8.0;
-/** Any category <=4 OR overall <=4 → negative attention mirror row (1-10 scale). */
 const NEGATIVE_CATEGORY_MAX = 4;
 const NEGATIVE_OVERALL_MAX = 4;
 
 const GOOGLE_REVIEW_URL = Deno.env.get("GOOGLE_REVIEW_URL") ?? "";
 
-function isValidCategoryScore(n: unknown): n is number {
-  return typeof n === "number" && Number.isInteger(n) && n >= 1 && n <= 10;
-}
-
-function isValidOverallScore(n: unknown): n is number {
+function isValidScore(n: unknown): n is number {
   return typeof n === "number" && Number.isInteger(n) && n >= 1 && n <= 10;
 }
 
@@ -61,27 +52,41 @@ serve(async (req: Request) => {
     }
 
     if (!scores || typeof scores !== "object") throw new Error("scores required");
-    for (const field of CATEGORY_FIELDS) {
-      if (!isValidCategoryScore((scores as Record<string, unknown>)[field])) {
-        return new Response(
-          JSON.stringify({ ok: false, error: `invalid_score_${field}` }),
-          { status: 200, headers: { ...CORS, "Content-Type": "application/json" } },
-        );
-      }
-    }
-    if (!isValidOverallScore((scores as Record<string, unknown>).overall_experience)) {
-      return new Response(
-        JSON.stringify({ ok: false, error: "invalid_score_overall_experience" }),
-        { status: 200, headers: { ...CORS, "Content-Type": "application/json" } },
-      );
-    }
-    const freeTextRaw = (scores as Record<string, unknown>).free_text;
-    const freeText = typeof freeTextRaw === "string" ? freeTextRaw.trim().slice(0, 2000) : null;
 
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
     );
+
+    const { data: surveyUiRow } = await supabase
+      .from("bot_config")
+      .select("config_value")
+      .eq("config_key", "guest_survey_ui")
+      .maybeSingle();
+    const surveyUi = normalizeGuestSurveyUi(surveyUiRow?.config_value ?? null);
+
+    const scoreMap = scores as Record<string, unknown>;
+    const categoryValues: number[] = [];
+    const ratings: Record<string, number> = {};
+    for (const cat of surveyUi.categories) {
+      if (!isValidScore(scoreMap[cat.key])) {
+        return new Response(
+          JSON.stringify({ ok: false, error: `invalid_score_${cat.key}` }),
+          { status: 200, headers: { ...CORS, "Content-Type": "application/json" } },
+        );
+      }
+      const v = scoreMap[cat.key] as number;
+      categoryValues.push(v);
+      ratings[cat.key] = v;
+    }
+    if (!isValidScore(scoreMap.overall_experience)) {
+      return new Response(
+        JSON.stringify({ ok: false, error: "invalid_score_overall_experience" }),
+        { status: 200, headers: { ...CORS, "Content-Type": "application/json" } },
+      );
+    }
+    const freeTextRaw = scoreMap.free_text;
+    const freeText = typeof freeTextRaw === "string" ? freeTextRaw.trim().slice(0, 2000) : null;
 
     const { data: guest, error: guestErr } = await supabase
       .from("guests")
@@ -102,8 +107,6 @@ serve(async (req: Request) => {
       );
     }
 
-    // Server-authoritative eligibility — same truth guest-portal-data exposes
-    // as survey_eligible; the client's gating on that flag is UX only.
     const isDayPassRoomType = guest.room_type === "day_guest" || guest.room_type === "premium_day_guest";
     const spaDateStr = String((guest.spa_date as string | null) ?? "").trim().slice(0, 10);
     const arrivalStr = String((guest.arrival_date as string | null) ?? "").trim().slice(0, 10);
@@ -120,10 +123,10 @@ serve(async (req: Request) => {
       );
     }
 
-    const categoryValues = CATEGORY_FIELDS.map((f) => (scores as Record<string, number>)[f]);
     const avgCategory = categoryValues.reduce((sum, v) => sum + v, 0) / categoryValues.length;
-    const overall = (scores as Record<string, number>).overall_experience;
+    const overall = scoreMap.overall_experience as number;
     const googleCtaShown = overall >= GOOGLE_CTA_MIN_OVERALL && avgCategory >= GOOGLE_CTA_MIN_AVG_CATEGORY;
+    const suitesCtaShown = isPositiveSurveyAverage(overall, categoryValues);
     const isNegative = categoryValues.some((v) => v <= NEGATIVE_CATEGORY_MAX) || overall <= NEGATIVE_OVERALL_MAX;
 
     const insertRow: Record<string, unknown> = {
@@ -132,14 +135,17 @@ serve(async (req: Request) => {
       visit_date: arrivalStr,
       free_text: freeText,
       google_cta_shown: googleCtaShown,
+      suites_cta_shown: suitesCtaShown,
       portal_token_snapshot: token,
+      overall_experience: overall,
+      ratings,
     };
-    for (const f of CATEGORY_FIELDS) insertRow[f] = (scores as Record<string, number>)[f];
-    insertRow.overall_experience = overall;
+    for (const key of LEGACY_SURVEY_CATEGORY_KEYS) {
+      insertRow[key] = typeof ratings[key] === "number" ? ratings[key] : null;
+    }
 
     const { error: insertErr } = await supabase.from("guest_surveys").insert(insertRow);
     if (insertErr) {
-      // UNIQUE(guest_id, visit_date) — one completed survey per visit.
       if (insertErr.code === "23505" || /duplicate key/i.test(insertErr.message)) {
         return new Response(
           JSON.stringify({ ok: false, error: "already_submitted" }),
@@ -163,11 +169,18 @@ serve(async (req: Request) => {
       }
     }
 
+    const suitesUrl = suitesCtaShown
+      ? (surveyUi.suites_cta_url || DEFAULT_SUITES_CTA_URL)
+      : null;
+
     return new Response(
       JSON.stringify({
         ok: true,
         googleCta: googleCtaShown,
         reviewUrl: googleCtaShown ? (GOOGLE_REVIEW_URL || "dream-island.co.il") : null,
+        suitesCta: suitesCtaShown,
+        suitesUrl,
+        suitesCtaLabel: suitesCtaShown ? surveyUi.suites_cta_label : null,
       }),
       { headers: { ...CORS, "Content-Type": "application/json" } },
     );

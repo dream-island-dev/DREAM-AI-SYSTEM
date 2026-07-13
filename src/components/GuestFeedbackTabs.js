@@ -7,6 +7,21 @@
 // front-desk stops scrolling past reviews to find real requests.
 import { useState, useEffect, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
+import GuestSurveyForm from "./GuestSurveyForm";
+import {
+  BOT_CONFIG_SURVEY_UI_KEY,
+  DEFAULT_GUEST_SURVEY_UI,
+  SURVEY_MAX_CATEGORIES,
+  SURVEY_MIN_CATEGORIES,
+  SURVEY_SCORE_MAX,
+  addSurveyCategory,
+  cloneDefaultSurveyUi,
+  isLowScoreSurveyRow,
+  normalizeGuestSurveyUi,
+  removeSurveyCategory,
+  resolveSurveyCategoryScores,
+  serializeGuestSurveyUi,
+} from "../utils/guestSurveyUi";
 
 const SENTIMENT_META = {
   positive: { label: "🌟 חיובי",  bg: "#E8F5EF", color: "#1A7A4A", border: "#1A7A4A" },
@@ -43,21 +58,9 @@ const TAB_ORDER = [
 
 // ── Guest Experience Survey sub-tab (structured_survey — guest_surveys) ─────
 // Deliberately separate list/aggregation from the free-text sentiment tabs
-// above — different schema, different shape (1-5/1-10 stars, not sentiment).
-const SURVEY_CATEGORY_FIELDS = [
-  { key: "patio", label: "פטיו" },
-  { key: "live_kitchen", label: "מטבח חי" },
-  { key: "chestnut_restaurant", label: "מסעדת ערמונים" },
-  { key: "service_team", label: "צוות שירות" },
-  { key: "spa", label: "ספא" },
-  { key: "cleaning_maintenance", label: "ניקיון ותחזוקה" },
-];
-
-/** Any category <=2 OR overall <=4 — same threshold as guest-portal-survey's negative gate. */
-function isLowScoreSurvey(s) {
-  if (Number(s.overall_experience) <= 4) return true;
-  return SURVEY_CATEGORY_FIELDS.some((c) => Number(s[c.key]) <= 2);
-}
+// above — different schema, different shape (1-10 stars, not sentiment).
+// Preview + label editor: same GuestSurveyForm the portal uses; labels live in
+// bot_config.guest_survey_ui (category keys frozen to DB columns).
 
 function average(nums) {
   const vals = nums.filter((n) => typeof n === "number" && !Number.isNaN(n));
@@ -65,10 +68,231 @@ function average(nums) {
   return vals.reduce((sum, n) => sum + n, 0) / vals.length;
 }
 
+const fieldInputStyle = {
+  width: "100%", boxSizing: "border-box", padding: "10px 12px", borderRadius: 10,
+  border: "1px solid var(--border)", background: "var(--card-bg)", color: "var(--black)",
+  fontSize: 13.5, fontFamily: "inherit", textAlign: "right",
+};
+
+function SurveyPreviewModal({ ui, onClose }) {
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="תצוגה מקדימה של הסקר"
+      onClick={onClose}
+      style={{
+        position: "fixed", inset: 0, zIndex: 10000,
+        background: "rgba(15,23,42,0.72)", display: "flex",
+        alignItems: "center", justifyContent: "center", padding: 16,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: "100%", maxWidth: 420, maxHeight: "92vh", overflow: "auto",
+          borderRadius: 18,
+          background: "linear-gradient(180deg, #0f172a 0%, #09090b 100%)",
+          border: "1px solid rgba(212,175,55,0.28)",
+          boxShadow: "0 24px 64px rgba(0,0,0,0.55)",
+          padding: "18px 16px 20px",
+          fontFamily: "Heebo, sans-serif",
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 10 }}>
+          <div style={{ color: "#D4AF37", fontWeight: 800, fontSize: 14 }}>👁️ תצוגה מקדימה — כמו בפורטל האורח</div>
+          <button
+            type="button"
+            onClick={onClose}
+            style={{
+              border: "1px solid rgba(255,255,255,0.2)", background: "transparent",
+              color: "#F8FAFC", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontFamily: "inherit",
+            }}
+          >
+            סגור
+          </button>
+        </div>
+        <GuestSurveyForm key={serializeGuestSurveyUi(ui)} ui={ui} variant="portal" previewOnly />
+      </div>
+    </div>
+  );
+}
+
+function SurveyLabelsEditorModal({ draft, onChange, onSave, onClose, saving }) {
+  const canAdd = draft.categories.length < SURVEY_MAX_CATEGORIES;
+  const canRemove = draft.categories.length > SURVEY_MIN_CATEGORIES;
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="עריכת תוויות סקר"
+      onClick={onClose}
+      style={{
+        position: "fixed", inset: 0, zIndex: 10000,
+        background: "rgba(0,0,0,0.45)", display: "flex",
+        alignItems: "center", justifyContent: "center", padding: 16,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: "100%", maxWidth: 560, maxHeight: "92vh", overflow: "auto",
+          borderRadius: 16, background: "var(--card-bg)", border: "1px solid var(--border)",
+          boxShadow: "0 20px 50px rgba(0,0,0,0.25)", padding: 20, direction: "rtl",
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 8 }}>
+          <div style={{ fontWeight: 800, fontSize: 17, color: "var(--black)" }}>✏️ עריכת חלון הסקר</div>
+          <button type="button" onClick={onClose} style={{ cursor: "pointer", border: "1px solid var(--border)", borderRadius: 8, padding: "6px 12px", background: "var(--ivory)", fontFamily: "inherit" }}>
+            ביטול
+          </button>
+        </div>
+        <p style={{ fontSize: 12.5, color: "var(--text-muted)", lineHeight: 1.6, marginBottom: 16 }}>
+          אפשר לשנות טקסטים, להוסיף קטגוריות דירוג חדשות או להסיר קיימות (מינימום {SURVEY_MIN_CATEGORIES}, מקסימום {SURVEY_MAX_CATEGORIES}).
+          אחרי דירוג חיובי (ממוצע ≥8 וחוויה כללית ≥8) האורח יראה קישור להזמנת סוויטה.
+          דרושה הרשאת admin / super_admin.
+        </p>
+
+        {[
+          ["panel_title", "כותרת הפאנל"],
+          ["overall_label", "תווית חוויה כללית"],
+          ["free_text_label", "תווית טקסט חופשי"],
+          ["free_text_placeholder", "Placeholder לטקסט חופשי"],
+          ["submit_label", "טקסט כפתור שליחה"],
+          ["suites_cta_label", "טקסט כפתור הזמנת סוויטה (אחרי ציון חיובי)"],
+          ["suites_cta_url", "קישור הזמנת סוויטה"],
+        ].map(([key, label]) => (
+          <label key={key} style={{ display: "block", marginBottom: 12 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 5, color: "var(--text-muted)" }}>{label}</div>
+            <input
+              value={draft[key] ?? ""}
+              onChange={(e) => onChange({ ...draft, [key]: e.target.value })}
+              style={fieldInputStyle}
+            />
+          </label>
+        ))}
+
+        <div style={{
+          display: "flex", justifyContent: "space-between", alignItems: "center",
+          gap: 10, margin: "16px 0 10px", flexWrap: "wrap",
+        }}>
+          <div style={{ fontSize: 13, fontWeight: 800, color: "var(--black)" }}>
+            קטגוריות דירוג (1–{SURVEY_SCORE_MAX}) — {draft.categories.length}/{SURVEY_MAX_CATEGORIES}
+          </div>
+          <button
+            type="button"
+            disabled={!canAdd || saving}
+            onClick={() => onChange(addSurveyCategory(draft, "קטגוריה חדשה"))}
+            title={!canAdd ? `הגעתם למקסימום ${SURVEY_MAX_CATEGORIES} קטגוריות` : "הוספת קטגוריית דירוג"}
+            style={{
+              padding: "8px 12px", borderRadius: 10, border: "1.5px solid var(--gold-dark)",
+              background: canAdd ? "var(--ivory)" : "var(--card-bg)",
+              color: canAdd ? "var(--gold-dark)" : "var(--text-muted)",
+              fontWeight: 800, cursor: canAdd ? "pointer" : "not-allowed", fontFamily: "inherit", fontSize: 12.5,
+              opacity: canAdd ? 1 : 0.55,
+            }}
+          >
+            ＋ הוסף קטגוריה
+          </button>
+        </div>
+
+        {draft.categories.map((c, idx) => (
+          <div key={c.key} style={{ display: "flex", gap: 8, alignItems: "flex-end", marginBottom: 12 }}>
+            <label style={{ flex: 1, display: "block" }}>
+              <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 5, color: "var(--text-muted)" }}>
+                {c.key}
+              </div>
+              <input
+                value={c.label}
+                onChange={(e) => {
+                  const categories = draft.categories.map((row, i) =>
+                    i === idx ? { ...row, label: e.target.value } : row,
+                  );
+                  onChange({ ...draft, categories });
+                }}
+                style={fieldInputStyle}
+              />
+            </label>
+            <button
+              type="button"
+              disabled={!canRemove || saving}
+              onClick={() => onChange(removeSurveyCategory(draft, c.key))}
+              title={!canRemove ? `חייבת להישאר לפחות קטגוריה אחת` : "הסרת קטגוריה"}
+              style={{
+                flexShrink: 0, marginBottom: 1, padding: "10px 12px", borderRadius: 10,
+                border: "1px solid var(--border)", background: "var(--ivory)",
+                color: canRemove ? "#C0392B" : "var(--text-muted)",
+                cursor: canRemove ? "pointer" : "not-allowed", fontFamily: "inherit",
+                fontWeight: 700, opacity: canRemove ? 1 : 0.45,
+              }}
+            >
+              הסר
+            </button>
+          </div>
+        ))}
+
+        <div style={{ display: "flex", gap: 10, marginTop: 18, flexWrap: "wrap" }}>
+          <button
+            type="button"
+            disabled={saving}
+            onClick={onSave}
+            style={{
+              flex: 1, minWidth: 140, padding: "12px 16px", borderRadius: 12, border: "none",
+              background: "linear-gradient(135deg, var(--gold), #B8960C)", color: "var(--black)",
+              fontWeight: 800, cursor: saving ? "wait" : "pointer", fontFamily: "inherit", opacity: saving ? 0.7 : 1,
+            }}
+          >
+            {saving ? "שומר…" : "💾 שמירה"}
+          </button>
+          <button
+            type="button"
+            disabled={saving}
+            onClick={() => onChange(cloneDefaultSurveyUi())}
+            title="איפוס לתוויות ברירת המחדל (עדיין צריך לשמור)"
+            style={{
+              padding: "12px 16px", borderRadius: 12, border: "1px solid var(--border)",
+              background: "var(--ivory)", color: "var(--text-muted)", fontWeight: 700,
+              cursor: "pointer", fontFamily: "inherit",
+            }}
+          >
+            איפוס לברירת מחדל
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SurveysView() {
   const [surveys, setSurveys] = useState([]);
   const [loading, setLoading] = useState(true);
   const [toast, setToast]     = useState(null);
+  const [surveyUi, setSurveyUi] = useState(() => cloneDefaultSurveyUi());
+  const [draftUi, setDraftUi] = useState(() => cloneDefaultSurveyUi());
+  const [showPreview, setShowPreview] = useState(false);
+  const [showEditor, setShowEditor] = useState(false);
+  const [savingUi, setSavingUi] = useState(false);
+
+  const showToastMsg = useCallback((type, msg) => {
+    setToast({ type, msg });
+  }, []);
+
+  const fetchSurveyUi = useCallback(async () => {
+    if (!isSupabaseConfigured || !supabase) return;
+    const { data, error } = await supabase
+      .from("bot_config")
+      .select("config_value")
+      .eq("config_key", BOT_CONFIG_SURVEY_UI_KEY)
+      .maybeSingle();
+    if (error) {
+      showToastMsg("err", "שגיאה בטעינת תוויות סקר: " + error.message);
+      return;
+    }
+    const ui = normalizeGuestSurveyUi(data?.config_value ?? DEFAULT_GUEST_SURVEY_UI);
+    setSurveyUi(ui);
+    setDraftUi(ui);
+  }, [showToastMsg]);
 
   const fetchSurveys = useCallback(async () => {
     setLoading(true);
@@ -78,12 +302,12 @@ function SurveysView() {
       .select("*, guests(name, room)")
       .order("visit_date", { ascending: false })
       .order("created_at", { ascending: false });
-    if (error) setToast({ type: "err", msg: "שגיאה בטעינה: " + error.message });
+    if (error) showToastMsg("err", "שגיאה בטעינה: " + error.message);
     else setSurveys(data ?? []);
     setLoading(false);
-  }, []);
+  }, [showToastMsg]);
 
-  useEffect(() => { fetchSurveys(); }, [fetchSurveys]);
+  useEffect(() => { fetchSurveys(); fetchSurveyUi(); }, [fetchSurveys, fetchSurveyUi]);
 
   useEffect(() => {
     if (!isSupabaseConfigured || !supabase) return;
@@ -100,19 +324,49 @@ function SurveysView() {
     return () => clearTimeout(id);
   }, [toast]);
 
+  async function saveSurveyUi() {
+    if (savingUi) return;
+    setSavingUi(true);
+    const normalized = normalizeGuestSurveyUi(draftUi);
+    const { error } = await supabase
+      .from("bot_config")
+      .upsert(
+        {
+          config_key: BOT_CONFIG_SURVEY_UI_KEY,
+          config_value: serializeGuestSurveyUi(normalized),
+          category: "general",
+          label: "תוויות סקר חוויית אורח (JSON)",
+        },
+        { onConflict: "config_key" },
+      );
+    setSavingUi(false);
+    if (error) {
+      const msg = /permission|policy|RLS|row-level/i.test(error.message)
+        ? "אין הרשאה לשמור תוויות סקר — נדרש admin / super_admin."
+        : "שגיאה בשמירה: " + error.message;
+      showToastMsg("err", msg);
+      return;
+    }
+    setSurveyUi(normalized);
+    setDraftUi(normalized);
+    setShowEditor(false);
+    showToastMsg("ok", "✅ תוויות הסקר נשמרו — האורח יראה אותן בפורטל");
+  }
+
   const todayStr = new Date().toISOString().slice(0, 10);
   const todayRows = surveys.filter((s) => s.visit_date === todayStr);
   const todayAvgOverall = average(todayRows.map((s) => Number(s.overall_experience)));
-  const todayLowCount = todayRows.filter(isLowScoreSurvey).length;
-  const categoryAverages = SURVEY_CATEGORY_FIELDS.map((c) => ({
+  const todayLowCount = todayRows.filter(isLowScoreSurveyRow).length;
+  const categoryAverages = surveyUi.categories.map((c) => ({
     ...c,
-    avg: average(surveys.map((s) => Number(s[c.key]))),
+    avg: average(
+      surveys.map((s) => resolveSurveyCategoryScores(s, [c])[0]?.score),
+    ),
   }));
 
-  // Low-score rows first (FAIL VISIBLE) — worst overall, then worst category avg.
   const sorted = [...surveys].sort((a, b) => {
-    const lowA = isLowScoreSurvey(a) ? 0 : 1;
-    const lowB = isLowScoreSurvey(b) ? 0 : 1;
+    const lowA = isLowScoreSurveyRow(a) ? 0 : 1;
+    const lowB = isLowScoreSurveyRow(b) ? 0 : 1;
     if (lowA !== lowB) return lowA - lowB;
     return Number(a.overall_experience) - Number(b.overall_experience);
   });
@@ -123,9 +377,54 @@ function SurveysView() {
         <div style={{
           position: "fixed", top: 20, left: "50%", transform: "translateX(-50%)", zIndex: 9999,
           padding: "12px 24px", borderRadius: 10, fontWeight: 700, fontSize: 14,
-          background: "#FFF0EE", color: "#C0392B", border: "1px solid #C0392B",
+          background: toast.type === "ok" ? "#E8F5EF" : "#FFF0EE",
+          color: toast.type === "ok" ? "#1A7A4A" : "#C0392B",
+          border: `1px solid ${toast.type === "ok" ? "#1A7A4A" : "#C0392B"}`,
         }}>{toast.msg}</div>
       )}
+
+      {showPreview && (
+        <SurveyPreviewModal ui={surveyUi} onClose={() => setShowPreview(false)} />
+      )}
+      {showEditor && (
+        <SurveyLabelsEditorModal
+          draft={draftUi}
+          onChange={setDraftUi}
+          onSave={saveSurveyUi}
+          onClose={() => { setDraftUi(surveyUi); setShowEditor(false); }}
+          saving={savingUi}
+        />
+      )}
+
+      <div style={{
+        display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 16, alignItems: "center",
+      }}>
+        <button
+          type="button"
+          onClick={() => setShowPreview(true)}
+          style={{
+            padding: "10px 16px", borderRadius: 12, border: "1.5px solid var(--gold-dark)",
+            background: "var(--ivory)", color: "var(--gold-dark)", fontWeight: 800,
+            cursor: "pointer", fontFamily: "inherit", fontSize: 13.5,
+          }}
+        >
+          👁️ תצוגה מקדימה
+        </button>
+        <button
+          type="button"
+          onClick={() => { setDraftUi(normalizeGuestSurveyUi(surveyUi)); setShowEditor(true); }}
+          style={{
+            padding: "10px 16px", borderRadius: 12, border: "1.5px solid var(--border)",
+            background: "var(--card-bg)", color: "var(--black)", fontWeight: 800,
+            cursor: "pointer", fontFamily: "inherit", fontSize: 13.5,
+          }}
+        >
+          ✏️ עריכת תוויות
+        </button>
+        <span style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
+          רואים / ערכים / מוסיפים קטגוריות — לפני שליחה לאורחים. אחרי ציון חיובי יופיע קישור לסוויטות.
+        </span>
+      </div>
 
       <div style={{
         display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 20,
@@ -164,12 +463,12 @@ function SurveysView() {
           textAlign: "center", padding: 48, color: "var(--text-muted)",
           background: "var(--ivory)", borderRadius: 14, border: "1px solid var(--border)",
         }}>
-          אין עדיין סקרים שהוגשו.
+          אין עדיין סקרים שהוגשו — השתמשו ב«תצוגה מקדימה» כדי לראות את הטופס.
         </div>
       ) : (
         <div style={{ display: "grid", gap: 12 }}>
           {sorted.map((s) => {
-            const low = isLowScoreSurvey(s);
+            const low = isLowScoreSurveyRow(s);
             return (
               <div
                 key={s.id}
@@ -189,14 +488,14 @@ function SurveysView() {
                     padding: "4px 10px", borderRadius: 20, fontSize: 12, fontWeight: 700,
                     background: low ? "#FFF0EE" : "#E8F5EF", color: low ? "#C0392B" : "#1A7A4A", whiteSpace: "nowrap",
                   }}>
-                    חוויה כללית {s.overall_experience}/10
+                    חוויה כללית {s.overall_experience}/{SURVEY_SCORE_MAX}
                   </span>
                 </div>
 
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 8, margin: "10px 0" }}>
-                  {SURVEY_CATEGORY_FIELDS.map((c) => (
+                  {resolveSurveyCategoryScores(s, surveyUi.categories).map((c) => (
                     <span key={c.key} style={{ fontSize: 11.5, color: "var(--text-muted)", background: "var(--ivory)", padding: "3px 8px", borderRadius: 10 }}>
-                      {c.label}: {s[c.key]}/5
+                      {c.label}: {c.score != null ? `${c.score}/${SURVEY_SCORE_MAX}` : "—"}
                     </span>
                   ))}
                 </div>

@@ -20,7 +20,9 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import PhotoTour from "./PhotoTour";
+import GuestSurveyForm from "./GuestSurveyForm";
 import { formatSpaSchedule } from "../utils/israeliTime";
+import { DEFAULT_GUEST_SURVEY_UI, normalizeGuestSurveyUi, serializeGuestSurveyUi } from "../utils/guestSurveyUi";
 
 const XOS_GOLD    = "#D4AF37";
 const XOS_BG_TOP  = "#0f172a";
@@ -150,54 +152,12 @@ function SpaRequestButton({ onClick, busy }) {
 
 // ── Guest Experience Survey ────────────────────────────────────────────────
 // MVP audience: day-pass + spa that day (guest.survey_eligible, server-
-// authoritative — guest-portal-data). Reusable component so a future flag
-// flip can extend eligibility to suite guests without touching this UI.
-const SURVEY_CATEGORIES = [
-  { key: "patio", label: "החצר / הפטיו" },
-  { key: "live_kitchen", label: "המטבח החי" },
-  { key: "chestnut_restaurant", label: "מסעדת ערמונים" },
-  { key: "service_team", label: "צוות השירות" },
-  { key: "spa", label: "הספא" },
-  { key: "cleaning_maintenance", label: "ניקיון ותחזוקה" },
-];
-
-function RatingRow({ label, value, max, onChange, small }) {
-  const size = small ? 30 : 38;
-  return (
-    <div style={{ marginBottom: 16 }}>
-      <div style={{ fontSize: 13, color: XOS_TEXT, marginBottom: 8, textAlign: "right", fontWeight: 600 }}>
-        {label}
-      </div>
-      <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", flexWrap: "wrap", flexDirection: "row-reverse" }}>
-        {Array.from({ length: max }, (_, i) => i + 1).map((n) => (
-          <button
-            key={n}
-            type="button"
-            onClick={() => onChange(n)}
-            style={{
-              width: size, height: size, borderRadius: "50%",
-              border: `1px solid ${n <= value ? XOS_GOLD : XOS_BORDER}`,
-              background: n <= value ? "rgba(212,175,55,0.20)" : "transparent",
-              color: n <= value ? XOS_GOLD : XOS_MUTED,
-              fontSize: small ? 12 : 14, fontWeight: 700, fontFamily: "inherit",
-              cursor: "pointer", flexShrink: 0,
-            }}
-          >
-            {n}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function SurveySection({ guest, token, onToast }) {
-  const initialScores = Object.fromEntries(SURVEY_CATEGORIES.map((c) => [c.key, 0]));
-  const [scores, setScores] = useState(initialScores);
-  const [overall, setOverall] = useState(0);
-  const [freeText, setFreeText] = useState("");
+// authoritative — guest-portal-data). Labels from portalConfig.survey_ui
+// (bot_config) with shared GuestSurveyForm (staff preview uses the same UI).
+function SurveySection({ guest, token, onToast, surveyUi }) {
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState(null); // { googleCta, reviewUrl } after successful submit
+  const ui = normalizeGuestSurveyUi(surveyUi ?? DEFAULT_GUEST_SURVEY_UI);
 
   if (!guest?.survey_eligible) return null;
 
@@ -213,17 +173,21 @@ function SurveySection({ guest, token, onToast }) {
     );
   }
 
-  const allAnswered = SURVEY_CATEGORIES.every((c) => scores[c.key] > 0) && overall > 0;
-
-  async function handleSubmit() {
-    if (submitting || !allAnswered) return;
+  async function handleSubmit(scoresPayload) {
+    if (submitting) return;
     setSubmitting(true);
     try {
       const { data, error } = await supabase.functions.invoke("guest-portal-survey", {
-        body: { token, scores: { ...scores, overall_experience: overall, free_text: freeText } },
+        body: { token, scores: scoresPayload },
       });
       if (error || !data?.ok) throw new Error(data?.error ?? error?.message ?? "שגיאה");
-      setResult({ googleCta: !!data.googleCta, reviewUrl: data.reviewUrl ?? null });
+      setResult({
+        googleCta: !!data.googleCta,
+        reviewUrl: data.reviewUrl ?? null,
+        suitesCta: !!data.suitesCta,
+        suitesUrl: data.suitesUrl ?? null,
+        suitesCtaLabel: data.suitesCtaLabel ?? null,
+      });
     } catch (e) {
       onToast(
         e?.message === "already_submitted"
@@ -236,23 +200,47 @@ function SurveySection({ guest, token, onToast }) {
   }
 
   if (result) {
+    const hasSuites = result.suitesCta && result.suitesUrl;
+    const hasGoogle = result.googleCta && result.reviewUrl;
     return (
       <div id="survey" style={{ padding: "0 16px 36px", scrollMarginTop: 24 }}>
         <GlassPanel title="📊 סקר חוויית אורח">
           <div style={{ padding: "22px 16px", textAlign: "center" }}>
-            <div style={{ fontSize: 14, color: XOS_TEXT, lineHeight: 1.8, marginBottom: result.googleCta ? 16 : 0 }}>
+            <div style={{
+              fontSize: 14, color: XOS_TEXT, lineHeight: 1.8,
+              marginBottom: (hasSuites || hasGoogle) ? 16 : 0,
+            }}>
               תודה רבה על המשוב! 🙏 זה עוזר לנו להמשיך ולהשתפר.
             </div>
-            {result.googleCta && result.reviewUrl && (
+            {hasSuites && (
+              <a
+                href={result.suitesUrl.startsWith("http") ? result.suitesUrl : `https://${result.suitesUrl}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8,
+                  width: "100%", maxWidth: 320, boxSizing: "border-box",
+                  marginBottom: hasGoogle ? 12 : 0,
+                  padding: "12px 22px", borderRadius: 14,
+                  background: `linear-gradient(135deg, ${XOS_GOLD}, #B8960C)`,
+                  color: "#0f172a", fontSize: 14, fontWeight: 700, textDecoration: "none",
+                }}
+              >
+                {result.suitesCtaLabel || "🛏️ רוצים לחוות לינה בסוויטה?"}
+              </a>
+            )}
+            {hasGoogle && (
               <a
                 href={result.reviewUrl.startsWith("http") ? result.reviewUrl : `https://${result.reviewUrl}`}
                 target="_blank"
                 rel="noopener noreferrer"
                 style={{
-                  display: "inline-flex", alignItems: "center", gap: 8,
+                  display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8,
+                  width: "100%", maxWidth: 320, boxSizing: "border-box",
                   padding: "12px 22px", borderRadius: 14,
-                  background: `linear-gradient(135deg, ${XOS_GOLD}, #B8960C)`,
-                  color: "#0f172a", fontSize: 14, fontWeight: 700, textDecoration: "none",
+                  background: hasSuites ? "rgba(255,255,255,0.06)" : `linear-gradient(135deg, ${XOS_GOLD}, #B8960C)`,
+                  border: hasSuites ? `1px solid ${XOS_BORDER}` : "none",
+                  color: hasSuites ? XOS_TEXT : "#0f172a", fontSize: 14, fontWeight: 700, textDecoration: "none",
                 }}
               >
                 ⭐ נשמח לביקורת קצרה בגוגל
@@ -266,60 +254,16 @@ function SurveySection({ guest, token, onToast }) {
 
   return (
     <div id="survey" style={{ padding: "0 16px 36px", scrollMarginTop: 24 }}>
-      <GlassPanel title="📊 ספרו לנו איך היה">
-        <div style={{ padding: "18px 16px 8px" }}>
-          {SURVEY_CATEGORIES.map((c) => (
-            <RatingRow
-              key={c.key}
-              label={c.label}
-              value={scores[c.key]}
-              max={10}
-              small
-              onChange={(n) => setScores((prev) => ({ ...prev, [c.key]: n }))}
-            />
-          ))}
-          <RatingRow
-            label="החוויה הכללית (1-10)"
-            value={overall}
-            max={10}
-            small
-            onChange={setOverall}
+      <GlassPanel title={ui.panel_title}>
+        <div style={{ padding: "18px 16px 16px" }}>
+          <GuestSurveyForm
+            key={serializeGuestSurveyUi(ui)}
+            ui={ui}
+            variant="portal"
+            panelTitleOverride=""
+            submitting={submitting}
+            onSubmit={handleSubmit}
           />
-          <div style={{ marginTop: 4, marginBottom: 16 }}>
-            <div style={{ fontSize: 13, color: XOS_TEXT, marginBottom: 8, textAlign: "right", fontWeight: 600 }}>
-              רוצים להוסיף כמה מילים? (לא חובה)
-            </div>
-            <textarea
-              value={freeText}
-              onChange={(e) => setFreeText(e.target.value)}
-              rows={3}
-              placeholder="ספרו לנו עוד..."
-              style={{
-                width: "100%", boxSizing: "border-box", padding: "10px 12px", borderRadius: 10,
-                border: `1px solid ${XOS_BORDER}`, background: "rgba(255,255,255,0.03)",
-                color: XOS_TEXT, fontSize: 13, fontFamily: "inherit", resize: "vertical",
-                textAlign: "right",
-              }}
-            />
-          </div>
-        </div>
-        <div style={{ padding: "0 16px 16px" }}>
-          <button
-            type="button"
-            onClick={handleSubmit}
-            disabled={!allAnswered || submitting}
-            title={!allAnswered ? "אנא דרגו את כל הקטגוריות לפני שליחה" : ""}
-            style={{
-              width: "100%", padding: "14px", borderRadius: 12, border: "none",
-              cursor: allAnswered && !submitting ? "pointer" : "not-allowed",
-              background: allAnswered ? `linear-gradient(135deg, ${XOS_GOLD}, #B8960C)` : "rgba(255,255,255,0.08)",
-              color: allAnswered ? "#0f172a" : XOS_MUTED,
-              fontSize: 15, fontWeight: 700, fontFamily: "Heebo, sans-serif",
-              opacity: submitting ? 0.7 : 1,
-            }}
-          >
-            {submitting ? "שולחים…" : "📨 שליחת הסקר"}
-          </button>
         </div>
       </GlassPanel>
     </div>
@@ -725,13 +669,13 @@ function SuiteQuickActions() {
 }
 
 // ── SUITE VIEW — full portal ──────────────────────────────────────────────────
-function SuiteView({ guest, phase, countdown, upsellItems, token, onToast, onUpsell, upsellBusy, onSpaRequest, spaBusy, showSpaRequest, scenes }) {
+function SuiteView({ guest, phase, countdown, upsellItems, token, onToast, onUpsell, upsellBusy, onSpaRequest, spaBusy, showSpaRequest, scenes, surveyUi }) {
   return (
     <>
       <PortalHero guest={guest} phase={phase} countdown={countdown} />
       <ItineraryPanel guest={guest} onSpaRequest={onSpaRequest} spaBusy={spaBusy} showSpaRequest={showSpaRequest} />
       <SecurePaymentButton guest={guest} />
-      <SurveySection guest={guest} token={token} onToast={onToast} />
+      <SurveySection guest={guest} token={token} onToast={onToast} surveyUi={surveyUi} />
       <SuiteQuickActions />
 
       {/* Pre-Order module (DB-driven, suite + all items) */}
@@ -744,7 +688,7 @@ function SuiteView({ guest, phase, countdown, upsellItems, token, onToast, onUps
 }
 
 // ── DAY-USE VIEW — focused (Spa / Meals / Activities) ────────────────────────
-function DayUseView({ guest, phase, countdown, upsellItems, token, onToast, onUpsell, upsellBusy, onSpaRequest, spaBusy, showSpaRequest, scenes }) {
+function DayUseView({ guest, phase, countdown, upsellItems, token, onToast, onUpsell, upsellBusy, onSpaRequest, spaBusy, showSpaRequest, scenes, surveyUi }) {
 
   return (
     <>
@@ -806,7 +750,7 @@ function DayUseView({ guest, phase, countdown, upsellItems, token, onToast, onUp
       </div>
 
       <SecurePaymentButton guest={guest} />
-      <SurveySection guest={guest} token={token} onToast={onToast} />
+      <SurveySection guest={guest} token={token} onToast={onToast} surveyUi={surveyUi} />
 
       {/* Focused activity info panel */}
       <div style={{ padding: "0 16px 20px" }}>
@@ -841,7 +785,11 @@ export default function GuestPortal({ token }) {
   const [portalScenes, setPortalScenes] = useState([]);
   const [loading, setLoading]           = useState(true);
   const [loadError, setLoadError]       = useState(null);
-  const [portalConfig, setPortalConfig]   = useState({ has_spa_booking: false, enable_spa_request_button: true });
+  const [portalConfig, setPortalConfig]   = useState({
+    has_spa_booking: false,
+    enable_spa_request_button: true,
+    survey_ui: DEFAULT_GUEST_SURVEY_UI,
+  });
   const [upsellBusy, setUpsellBusy]       = useState(null);
   const [spaBusy, setSpaBusy]           = useState(false);
   const [toast, setToast]               = useState(null);
@@ -872,6 +820,7 @@ export default function GuestPortal({ token }) {
             setPortalConfig({
               has_spa_booking: !!data.portalConfig.has_spa_booking,
               enable_spa_request_button: data.portalConfig.enable_spa_request_button !== false,
+              survey_ui: normalizeGuestSurveyUi(data.portalConfig.survey_ui),
             });
           }
         }
@@ -1003,6 +952,7 @@ export default function GuestPortal({ token }) {
           spaBusy={spaBusy}
           showSpaRequest={showSpaRequest}
           scenes={portalScenes}
+          surveyUi={portalConfig.survey_ui}
         />
       ) : isDayUse ? (
         <DayUseView
@@ -1018,6 +968,7 @@ export default function GuestPortal({ token }) {
           spaBusy={spaBusy}
           showSpaRequest={showSpaRequest}
           scenes={portalScenes}
+          surveyUi={portalConfig.survey_ui}
         />
       ) : (
         /* Unknown room_type: safe default = SuiteView (shows more, not less) */
@@ -1034,6 +985,7 @@ export default function GuestPortal({ token }) {
           spaBusy={spaBusy}
           showSpaRequest={showSpaRequest}
           scenes={portalScenes}
+          surveyUi={portalConfig.survey_ui}
         />
       )}
 

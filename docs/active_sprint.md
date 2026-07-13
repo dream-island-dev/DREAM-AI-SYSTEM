@@ -1,5 +1,23 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-13 (Independent Suites/Day-pass channel control — P0 built, awaiting deploy).
+> Last updated: 2026-07-13 (Survey staff preview + label editor — built, awaiting visual QA).
+
+---
+
+## ✅ Deployed — Guest survey preview + dynamic categories + suites CTA (2026-07-13)
+
+| Piece | Detail |
+|---|---|
+| Migration 197 | Seeds `bot_config.guest_survey_ui` JSON |
+| Migration 198 | `ratings` jsonb + nullable legacy cols; `suites_cta_shown` |
+| Feedback → 📊 סקרים | Preview + editor: add/remove categories (1–12), suites CTA label/URL |
+| Thank-you (portal) | Positive avg → CTA to dream-island.co.il/suites; low score → no suites link (+ Google CTA unchanged when positive) |
+| Functions | `guest-portal-data`, `guest-portal-survey` |
+
+**Deployed:** `db push` 197+198; `guest-portal-data` + `guest-portal-survey`; frontend `main`.
+
+**Mike QA live:** ACC/Feedback → סקרים → עריכה/תצוגה; submit positive survey on day-pass+spa portal → suites CTA.
+
+---
 
 ---
 

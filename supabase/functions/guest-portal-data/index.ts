@@ -15,6 +15,7 @@ import { serve }        from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { formatSpaScheduleDisplay, hasSpaBooking } from "../_shared/spaSchedule.ts";
 import { buildMealsItinerary } from "../_shared/stayMeals.ts";
+import { normalizeGuestSurveyUi } from "../_shared/guestSurveyUi.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -202,7 +203,7 @@ serve(async (req: Request) => {
     if (guest.id != null) {
       const { data: surveyRow, error: surveyErr } = await supabase
         .from("guest_surveys")
-        .select("patio, live_kitchen, chestnut_restaurant, service_team, spa, cleaning_maintenance, overall_experience, free_text, google_cta_shown")
+        .select("patio, live_kitchen, chestnut_restaurant, service_team, spa, cleaning_maintenance, overall_experience, free_text, google_cta_shown, suites_cta_shown, ratings")
         .eq("guest_id", guest.id as number)
         .order("created_at", { ascending: false })
         .limit(1)
@@ -219,6 +220,17 @@ serve(async (req: Request) => {
     (maskedGuest as Record<string, unknown>).survey_scores = surveyScores;
     delete (maskedGuest as Record<string, unknown>).id;
 
+    // Editable Hebrew labels (staff Feedback → Surveys editor → bot_config).
+    const { data: surveyUiRow, error: surveyUiErr } = await supabase
+      .from("bot_config")
+      .select("config_value")
+      .eq("config_key", "guest_survey_ui")
+      .maybeSingle();
+    if (surveyUiErr) {
+      console.warn("[guest-portal-data] guest_survey_ui fetch failed (defaults):", surveyUiErr.message);
+    }
+    const surveyUi = normalizeGuestSurveyUi(surveyUiRow?.config_value ?? null);
+
     return new Response(
       JSON.stringify({
         ok: true,
@@ -228,6 +240,7 @@ serve(async (req: Request) => {
         portalConfig: {
           has_spa_booking: hasSpaBookingFlag,
           enable_spa_request_button: enableSpaRequestButton,
+          survey_ui: surveyUi,
         },
       }),
       { headers: { ...CORS, "Content-Type": "application/json" } }
