@@ -647,6 +647,39 @@ export const CORE_PIPELINE_STAGE_KEYS = [
   "checkout_fb_daypass",
 ] as const;
 
+/** Pipeline stages that must NEVER auto-send after the ACC send window — surface
+ * as missed_window in Live Queue for manual Override only (2026-07-14). */
+const MISSED_WINDOW_AFTER_SEND_WINDOW_KEYS = new Set<string>([
+  ...CORE_PIPELINE_STAGE_KEYS,
+  "spa_warmup_daypass",
+  "survey_invite_daypass",
+  "night_before_daypass",
+  "butler_1h",
+]);
+
+/** When local_time is set but local_time_end is missing, cap auto-send at
+ * floor+4h (max 23) so a late-imported guest cannot trigger all-day cron spam. */
+const DEFAULT_SEND_WINDOW_SPAN_HOURS = 4;
+
+function resolveSendWindowCeil(
+  stage: AutomationStage,
+  floorLocal: number,
+  ceilLocal: number | null,
+): number | null {
+  const configured = effectiveCeilLocalHour(floorLocal, ceilLocal);
+  if (configured !== null) return configured;
+  if (!stage.local_time || !MISSED_WINDOW_AFTER_SEND_WINDOW_KEYS.has(stage.stage_key)) {
+    return null;
+  }
+  return Math.min(23, floorLocal + DEFAULT_SEND_WINDOW_SPAN_HOURS);
+}
+
+function pastWindowSkipReason(stageKey: string): "missed_window" | "quiet_hours_passed" {
+  return MISSED_WINDOW_AFTER_SEND_WINDOW_KEYS.has(stageKey)
+    ? "missed_window"
+    : "quiet_hours_passed";
+}
+
 /**
  * Resolves the exact instant a stage is scheduled to fire for a guest, and
  * whether it is due right now. `now` is injected (not read internally) so
@@ -712,7 +745,8 @@ export function resolveStageSchedule(
     }
 
     const floorLocal = parseLocalHour(stageLocalTime);
-    const ceilLocal = effectiveCeilLocalHour(
+    const ceilLocal = resolveSendWindowCeil(
+      stage,
       floorLocal,
       stage.local_time_end ? parseLocalHour(stage.local_time_end) : null,
     );
@@ -728,7 +762,11 @@ export function resolveStageSchedule(
       ) {
         return { scheduledFor, dueNow: false, skipReason: "missed_window" };
       }
-      return { scheduledFor, dueNow: false, skipReason: "quiet_hours_passed" };
+      return {
+        scheduledFor,
+        dueNow: false,
+        skipReason: pastWindowSkipReason(stage.stage_key),
+      };
     }
     return { scheduledFor, dueNow: true, skipReason: null };
   }

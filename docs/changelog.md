@@ -1,3 +1,5 @@
+2026-07-14 | Morning Stage 3 send-window fix — `morning_suite`/`morning_welcome` capped 10:00; past window → `missed_window` (ACC manual only, no cron blast); `stage_3_morning` Whapi script synced to Meta 12:00/15:00 (was stale 09:00) | migration 206; automationSchedule.ts.
+
 2026-07-14 | Whapi SOS service fallback — `dream_service_fallback` Meta template (כפתורים: יש לי בקשה | הכל בסדר תודה); `guest-emergency-broadcast` להגעות היום בלבד; Inbox מאוחד per-phone + בורר ערוץ שליחה | ACC: WhapiEmergencyBroadcastPanel; webhook ack לכפתורים.
 
 2026-07-14 | Whapi failover + Dream Bot full guest outbound — migration 205: SOS ידני ב-ACC, auto-failover on /health probe, daypass=Meta only (never Whapi); spa sync opt-in suppress; missed_window for spa stages; 2.5s throttle in club broadcast | ACC Pulse: Whapi status + בדוק עכשיו + החזר ל-Whapi.

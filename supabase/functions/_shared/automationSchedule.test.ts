@@ -331,6 +331,73 @@ Deno.test("night_before after window: still date_passed (no Stage-1-style catch-
   assertEquals(result.dueNow, false);
 });
 
+function morningSuiteStage(overrides: Partial<AutomationStage> = {}): AutomationStage {
+  return {
+    stage_key: "morning_suite",
+    display_name: "Stage 3 — בוקר הגעה (סוויטות)",
+    journey_phase: "arrival_day",
+    sequence_order: 250,
+    node_type: "hybrid",
+    schedule_mode: "day_offset_with_time",
+    anchor_event: "arrival_date",
+    day_offset: 0,
+    local_time: "06:00",
+    local_time_end: "10:00",
+    offset_hours: null,
+    applies_to: "suite",
+    meta_template_name: "suite_welcome_morning",
+    session_message_script_key: "stage_3_morning",
+    interactive_buttons: [],
+    guest_flag_column: "msg_morning_suite_sent",
+    is_active: true,
+    ...overrides,
+  };
+}
+
+Deno.test("morning_suite: inside send window on arrival day → dueNow", () => {
+  const guest = suiteGuest({
+    arrival_date: SAT,
+    msg_morning_suite_sent: false,
+  });
+  const result = resolveStageSchedule(morningSuiteStage(), guest, israelInstant(SAT, 8, 0));
+  assertEquals(result.skipReason, null);
+  assertEquals(result.dueNow, true);
+});
+
+Deno.test("morning_suite: after send window on arrival day → missed_window, not cron auto-send", () => {
+  const guest = suiteGuest({
+    arrival_date: SAT,
+    msg_morning_suite_sent: false,
+  });
+  const result = resolveStageSchedule(morningSuiteStage(), guest, israelInstant(SAT, 17, 33));
+  assertEquals(result.skipReason, "missed_window");
+  assertEquals(result.dueNow, false);
+});
+
+Deno.test("morning_suite: no local_time_end → default 4h cap, afternoon is missed_window", () => {
+  const guest = suiteGuest({
+    arrival_date: SAT,
+    msg_morning_suite_sent: false,
+  });
+  const stage = morningSuiteStage({ local_time_end: null });
+  const result = resolveStageSchedule(stage, guest, israelInstant(SAT, 17, 0));
+  assertEquals(result.skipReason, "missed_window");
+  assertEquals(result.dueNow, false);
+});
+
+Deno.test("night_before: past same-day quiet ceiling → missed_window (manual only)", () => {
+  const stage = nightBeforeStage({
+    day_offset: 0,
+    local_time: "19:00",
+    local_time_end: "21:00",
+    local_time_shabbat: null,
+  });
+  const guest = suiteGuest({ arrival_date: SAT, msg_pre_arrival_sent: false });
+  const result = resolveStageSchedule(stage, guest, israelInstant(SAT, 22, 0));
+  assertEquals(result.skipReason, "missed_window");
+  assertEquals(result.dueNow, false);
+});
+
 // ── Guest Experience Survey — spa_warmup_daypass / survey_invite_daypass ────
 // (2026-07-13, migration 194) — spa_time-relative anchor + spa-cohort gate.
 

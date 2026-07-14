@@ -640,6 +640,8 @@ function timeInputValue(pgTime) {
 const STAGES_WITH_SEND_WINDOW = new Set([
   "night_before",
   "night_before_daypass",
+  "morning_suite",
+  "morning_welcome",
   "mid_stay",
   "mid_stay_daypass",
 ]);
