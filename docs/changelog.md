@@ -1,3 +1,5 @@
+2026-07-14 | spa_warmup_daypass anchor fix — DB `anchor_event=spa_time` (migration 204); cron ignores corrupted anchor; ACC «30 דקות לפני שעת הטיפול» UI + auto-repair on load | Per-guest spa_time from Spa Board, not arrival confirmation.
+
 2026-07-14 | Day-pass spa journey polish — club only after positive survey; suites CTA after club join; consent_line for WA marketing; night_before_daypass spa-cohort gate | guest-portal-survey + GuestPortal + automationSchedule.
 
 2026-07-14 | RoomBoard auto-sync — guest-aware display (resolveEffectiveRoomStatus) + silent DB reconcile on load/realtime; no manual button | roomBoardGuestResolve.js + roomBoardSync.js; WHAPI still source for cleaning/check-in/out events.

@@ -252,7 +252,7 @@ const PIPELINE_TEMPLATE: Record<string, string> = {
   checkout_fb_daypass: "dream_checkout_feedback",      // day-pass post-visit feedback
   night_before_daypass: "dream_daypass_eve",           // day-pass T-1 — QR opens Meta 24h window
   survey_invite_daypass: "dream_survey_invite",        // day-pass+spa 17:00 survey — URL btn → portal/#survey
-  spa_warmup_daypass: "dream_spa_warmup",              // spa_time−75m — Meta backup when Whapi/window fails
+  spa_warmup_daypass: "dream_spa_warmup",              // spa_time − X min (ACC; default 30) — Meta backup when Whapi/window fails
 };
 
 /** Hardcoded bot_scripts keys when automation_stages.session_message_script_key

@@ -402,6 +402,17 @@ function surveyInviteStage(overrides: Partial<AutomationStage> = {}): Automation
   };
 }
 
+Deno.test("spa_warmup_daypass: corrupted anchor_event still schedules from spa_time", () => {
+  const guest = daypassSpaGuest({ spa_time: "16:00" });
+  const corrupted = spaWarmupStage({
+    anchor_event: "arrival_confirmed_at",
+    offset_hours: -0.5,
+  });
+  const due = resolveStageSchedule(corrupted, guest, israelInstant("2026-07-13", 15, 30));
+  assertEquals(due.dueNow, true);
+  assertEquals(due.skipReason, null);
+});
+
 Deno.test("spa_warmup_daypass: dueNow exactly at spa_time-30min, not before", () => {
   const guest = daypassSpaGuest({ spa_time: "16:00" }); // warmup instant = 15:30 Israel
   const before = resolveStageSchedule(spaWarmupStage(), guest, israelInstant("2026-07-13", 15, 29));

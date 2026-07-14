@@ -364,6 +364,11 @@ const SPA_WARMUP_SANE_HOUR_MAX = 22;
  * for all three anchor kinds, used by both computeScheduledInstant and
  * resolveStageSchedule so they can never diverge. */
 function resolveHoursAfterEventAnchor(stage: AutomationStage, guest: GuestForSchedule): Date | null {
+  // spa_warmup_daypass is always per-guest spa_time — never arrival_confirmed_at
+  // even if automation_stages.anchor_event was corrupted via legacy ACC UI.
+  if (stage.stage_key === "spa_warmup_daypass") {
+    return israelLocalDateTimeToUtc(guest.spa_date, guest.spa_time);
+  }
   if (stage.anchor_event === "checkin_time") {
     return guest.checkin_time ? new Date(guest.checkin_time) : null;
   }

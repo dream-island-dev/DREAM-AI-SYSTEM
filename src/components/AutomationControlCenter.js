@@ -526,6 +526,47 @@ function isCronScheduledStage(stage) {
   return !!stage?.is_active && stage.schedule_mode !== "event_immediate";
 }
 
+/** spa_warmup_daypass — ACC edits "minutes before spa_time"; DB stores offset_hours (negative). */
+const SPA_WARMUP_DEFAULT_MINUTES = 30;
+const SPA_WARMUP_MIN_MINUTES = 5;
+const SPA_WARMUP_MAX_MINUTES = 180;
+
+function isSpaWarmupTimingStage(stage) {
+  return stage?.stage_key === "spa_warmup_daypass"
+    || (stage?.schedule_mode === "hours_after_event" && stage?.anchor_event === "spa_time");
+}
+
+function clampSpaWarmupMinutes(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return SPA_WARMUP_DEFAULT_MINUTES;
+  return Math.min(SPA_WARMUP_MAX_MINUTES, Math.max(SPA_WARMUP_MIN_MINUTES, Math.round(n)));
+}
+
+function spaWarmupMinutesBeforeFromOffset(offsetHours) {
+  const h = Number(offsetHours);
+  // Negative = before spa_time (correct). Positive/0 treated as legacy mistaken
+  // "hours after arrival" edits — still show as minutes-before magnitude.
+  if (!Number.isFinite(h) || h === 0) return SPA_WARMUP_DEFAULT_MINUTES;
+  return clampSpaWarmupMinutes(Math.abs(h) * 60);
+}
+
+function spaWarmupOffsetHoursFromMinutes(minutes) {
+  return -(clampSpaWarmupMinutes(minutes) / 60);
+}
+
+/** One-time repair when DB row was edited via legacy "hours after arrival" UI. */
+function spaWarmupTimingRepairPatch(stage) {
+  if (stage?.stage_key !== "spa_warmup_daypass") return null;
+  const patch = {};
+  if (stage.schedule_mode !== "hours_after_event") patch.schedule_mode = "hours_after_event";
+  if (stage.anchor_event !== "spa_time") patch.anchor_event = "spa_time";
+  const oh = Number(stage.offset_hours);
+  if (!Number.isFinite(oh) || oh >= 0) {
+    patch.offset_hours = spaWarmupOffsetHoursFromMinutes(SPA_WARMUP_DEFAULT_MINUTES);
+  }
+  return Object.keys(patch).length ? patch : null;
+}
+
 /** Live Queue visibility — cron stages + Stage 2 (immediate on «כן מגיעים»). */
 const QUEUE_ALWAYS_VISIBLE_STAGE_KEYS = new Set(["stage_2_arrival", "stage_2_pay"]);
 
@@ -882,13 +923,48 @@ function StageCard({
                 )}
               </div>
             )}
-            {stage.schedule_mode === "hours_after_event" && (
+            {isSpaWarmupTimingStage(stage) && (
+              <div className="actr-timing-row" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <div style={{
+                  fontSize: 12.5, fontWeight: 700, color: "var(--black)", lineHeight: 1.5,
+                  padding: "8px 10px", borderRadius: 10, background: "rgba(201,169,110,0.12)",
+                  border: "1px solid var(--gold)",
+                }}>
+                  💆 מקושר לשעת הטיפול (`spa_time`) מהלוח ספא / סנכרון EZGO — לא לאישור הגעה.
+                </div>
+                <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>שלח</span>
+                  <input
+                    type="number"
+                    min={5}
+                    max={180}
+                    step={5}
+                    value={spaWarmupMinutesBeforeFromOffset(stage.offset_hours)}
+                    style={{ width: 80 }}
+                    title="ברירת מחדל 30 — ניתן לשנות (5–180)"
+                    onChange={(e) => {
+                      const mins = clampSpaWarmupMinutes(parseInt(e.target.value, 10));
+                      patchStage(stage, {
+                        schedule_mode: "hours_after_event",
+                        anchor_event: "spa_time",
+                        offset_hours: spaWarmupOffsetHoursFromMinutes(mins),
+                      });
+                    }}
+                  />
+                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>דקות לפני שעת הטיפול</span>
+                </div>
+                <span style={{ fontSize: 11, color: "var(--text-muted)", lineHeight: 1.5 }}>
+                  דוגמה: טיפול ב־16:00 + 30 דק׳ → שליחה ב־15:30. רק אורח בילוי-יומי עם ספא היום; בלי כפילויות; cron בפעימות.
+                </span>
+              </div>
+            )}
+            {stage.schedule_mode === "hours_after_event" && !isSpaWarmupTimingStage(stage) && (
               <div className="actr-timing-row" style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                 <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
                   {stage.offset_hours ?? 0} שעות אחרי {stage.anchor_event === "checkin_time" ? "צ׳ק-אין" : "אישור הגעה"}
                 </span>
                 <input type="number" value={stage.offset_hours ?? 0} style={{ width: 70 }}
-                  onChange={(e) => patchStage(stage, { offset_hours: parseInt(e.target.value, 10) || 0 })} />
+                  onChange={(e) => patchStage(stage, { offset_hours: parseFloat(e.target.value) || 0 })} />
               </div>
             )}
             {stage.schedule_mode === "event_immediate" && (
@@ -1842,7 +1918,25 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
       supabase.from("bot_scripts").select("script_key, message_text"),
     ]);
     if (stageErr) showToast("err", "שגיאה בטעינת שלבים: " + stageErr.message);
-    else setStages(stageRows ?? []);
+    else {
+      const rows = stageRows ?? [];
+      const repairs = rows
+        .map((s) => ({ stage: s, patch: spaWarmupTimingRepairPatch(s) }))
+        .filter((x) => x.patch);
+      if (repairs.length > 0 && supabase) {
+        await Promise.all(
+          repairs.map(({ stage, patch }) =>
+            supabase.from("automation_stages").update(patch).eq("id", stage.id),
+          ),
+        );
+        setStages(rows.map((s) => {
+          const hit = repairs.find((r) => r.stage.id === s.id);
+          return hit ? { ...s, ...hit.patch } : s;
+        }));
+      } else {
+        setStages(rows);
+      }
+    }
     if (scriptErr) showToast("err", "שגיאה בטעינת סקריפטים: " + scriptErr.message);
     else {
       const map = {};
