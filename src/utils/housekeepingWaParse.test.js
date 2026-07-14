@@ -28,6 +28,10 @@ describe("housekeepingWaParse", () => {
     expect(parseHousekeepingCheckInRoomNumbers("25 צק אין")).toEqual([25]);
     expect(parseHousekeepingCheckInRoomNumbers("1 check in")).toEqual([1]);
     expect(parseHousekeepingCheckInRoomNumbers("17 צ'ק אין")).toEqual([17]);
+    expect(parseHousekeepingCheckInRoomNumbers("CI 17")).toEqual([17]);
+    expect(parseHousekeepingCheckInRoomNumbers("ci 7")).toEqual([7]);
+    expect(parseHousekeepingCheckInRoomNumbers("check in 11")).toEqual([11]);
+    expect(parseHousekeepingCheckInRoomNumbers("17 ci")).toEqual([17]);
     expect(parseHousekeepingCheckInRoomNumbers("8 check out")).toEqual([]);
   });
 
@@ -41,6 +45,7 @@ describe("housekeepingWaParse", () => {
     expect(parseHousekeepingCheckOutRoomNumbers("צק אאוט 9")).toEqual([9]);
     // Must not steal check-in or ready
     expect(parseHousekeepingCheckOutRoomNumbers("17 צ'ק אין")).toEqual([]);
+    expect(parseHousekeepingCheckOutRoomNumbers("CI 17")).toEqual([]);
     expect(parseHousekeepingCheckOutRoomNumbers("14✅")).toEqual([]);
     expect(parseHousekeepingCheckInRoomNumbers("Co 23")).toEqual([]);
     expect(parseHousekeepingReadyRoomNumbers("Co 23")).toEqual([]);
@@ -62,7 +67,9 @@ describe("housekeepingWaParse", () => {
 
     // No ✅, just check-in text → check-in only, never ready (unchanged behavior)
     expect(parseHousekeepingReadyRoomNumbers("14 צ'ק אין")).toEqual([]);
+    expect(parseHousekeepingReadyRoomNumbers("CI 17")).toEqual([]);
     expect(parseHousekeepingCheckInRoomNumbers("14 צ'ק אין")).toEqual([14]);
+    expect(parseHousekeepingCheckInRoomNumbers("CI 17")).toEqual([17]);
   });
 
   test("ignores forwarded bubbles", () => {

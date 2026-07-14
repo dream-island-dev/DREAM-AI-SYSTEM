@@ -19,6 +19,19 @@ const READY_EXCLUDE_LINE_RE =
 const CHECKIN_LINE_RE =
   /^(?:room\s*)?(\d{1,2})\s*(?:צ['׳']ק\s*אין|צק\s*אין|\bcheck\s*[- ]?\s*in\b)/i;
 
+const CHECKIN_TOKEN_PREFIX = "(?:ci\\b|check\\s*[- ]?\\s*in\\b|צ['׳']ק\\s*אין|צק\\s*אין)";
+const CHECKIN_TOKEN_SUFFIX = "(?:ci\\b|check\\s*[- ]?\\s*in\\b)";
+
+const CHECKIN_PREFIX_RE = new RegExp(
+  `^(?:room\\s*)?${CHECKIN_TOKEN_PREFIX}\\s+(\\d{1,2})$`,
+  "i",
+);
+
+const CHECKIN_SUFFIX_RE = new RegExp(
+  `^(?:room\\s*)?(\\d{1,2})\\s+${CHECKIN_TOKEN_SUFFIX}`,
+  "i",
+);
+
 // Hebrew has no JS \w word-chars — never put \b after Hebrew alternatives.
 const CHECKOUT_TOKEN_PREFIX =
   "(?:co|check\\s*[- ]?\\s*out|צ['׳']ק\\s*אא?וט|צק\\s*אא?וט)";
@@ -44,6 +57,20 @@ function addRoom(rooms, raw) {
   if (inSuiteRange(n)) rooms.add(n);
 }
 
+function matchCheckInRoom(line) {
+  let m = line.match(CHECKIN_LINE_RE);
+  if (m) return m[1];
+  m = line.match(CHECKIN_PREFIX_RE);
+  if (m) return m[1];
+  m = line.match(CHECKIN_SUFFIX_RE);
+  if (m) return m[1];
+  return undefined;
+}
+
+function isCheckInLine(line) {
+  return matchCheckInRoom(line) !== undefined;
+}
+
 export function parseHousekeepingCheckInRoomNumbers(text) {
   const body = String(text ?? "").trim();
   if (!body || FORWARDED_RE.test(body)) return [];
@@ -54,8 +81,8 @@ export function parseHousekeepingCheckInRoomNumbers(text) {
     if (!t) continue;
     // ✅ wins — a line with a checkmark is a ready signal, not a check-in one.
     if (HAS_CHECKMARK_RE.test(t)) continue;
-    const m = t.match(CHECKIN_LINE_RE);
-    if (m) addRoom(rooms, m[1]);
+    const room = matchCheckInRoom(t);
+    if (room) addRoom(rooms, room);
   }
   return [...rooms].sort((a, b) => a - b);
 }
@@ -70,7 +97,7 @@ export function parseHousekeepingCheckOutRoomNumbers(text) {
     const t = line.trim();
     if (!t) continue;
     if (HAS_CHECKMARK_RE.test(t)) continue;
-    if (CHECKIN_LINE_RE.test(t)) continue;
+    if (isCheckInLine(t)) continue;
 
     let m = t.match(CHECKOUT_PREFIX_RE);
     if (m) {
@@ -93,7 +120,7 @@ export function parseHousekeepingReadyRoomNumbers(text) {
     const t = line.trim();
     if (!t || READY_EXCLUDE_LINE_RE.test(t)) continue;
     // Skip check-in-only lines — but ✅ always overrides check-in phrasing.
-    if (CHECKIN_LINE_RE.test(t) && !HAS_CHECKMARK_RE.test(t)) continue;
+    if (isCheckInLine(t) && !HAS_CHECKMARK_RE.test(t)) continue;
     if (CHECKOUT_PREFIX_RE.test(t) || CHECKOUT_SUFFIX_RE.test(t)) continue;
 
     let m = t.match(/^(?:room\s*)?(\d{1,2})\s*✅/i);

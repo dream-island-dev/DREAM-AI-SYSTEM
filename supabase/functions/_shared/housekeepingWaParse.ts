@@ -1,6 +1,6 @@
 // Parse signals from the housekeeping WhatsApp group (צ'ק אין צ'ק אאוט).
 // Ready: N✅ / ready / מוכן → bell (ממתין לאישור).
-// Check-in: N צ'ק אין / check in → guests.checked_in + room תפוס.
+// Check-in: N צ'ק אין / CI N / check in → guests.checked_in + room תפוס.
 // Check-out: Co N / N co / צ'ק אאוט → guests.checked_out + room לניקיון.
 //
 // ✅ is the primary, authoritative signal that a room is clean/ready — it always
@@ -23,9 +23,24 @@ const HAS_CHECKMARK_RE = /✅/;
 const READY_EXCLUDE_LINE_RE =
   /ממתין|\bcheck\s*[- ]?\s*out\b|\bco\b|\bout\b|יצאו|צ['׳']ק\s*אא?וט|צק\s*אא?וט/i;
 
-/** צ'ק אין / check in — must not match check out. */
+/** N צ'ק אין / N check in — must not match check out. */
 const CHECKIN_LINE_RE =
   /^(?:room\s*)?(\d{1,2})\s*(?:צ['׳']ק\s*אין|צק\s*אין|\bcheck\s*[- ]?\s*in\b)/i;
+
+const CHECKIN_TOKEN_PREFIX = "(?:ci\\b|check\\s*[- ]?\\s*in\\b|צ['׳']ק\\s*אין|צק\\s*אין)";
+const CHECKIN_TOKEN_SUFFIX = "(?:ci\\b|check\\s*[- ]?\\s*in\\b)";
+
+/** "CI 17" / "check in 16" / "צ'ק אין 24" */
+const CHECKIN_PREFIX_RE = new RegExp(
+  `^(?:room\\s*)?${CHECKIN_TOKEN_PREFIX}\\s+(\\d{1,2})$`,
+  "i",
+);
+
+/** "17 ci" / "16 check in" */
+const CHECKIN_SUFFIX_RE = new RegExp(
+  `^(?:room\\s*)?(\\d{1,2})\\s+${CHECKIN_TOKEN_SUFFIX}`,
+  "i",
+);
 
 // Hebrew has no JS \w word-chars — never put \b after Hebrew alternatives.
 const CHECKOUT_TOKEN_PREFIX =
@@ -54,6 +69,20 @@ function addRoom(rooms: Set<number>, raw: string | undefined): void {
   if (inSuiteRange(n)) rooms.add(n);
 }
 
+function matchCheckInRoom(line: string): string | undefined {
+  let m = line.match(CHECKIN_LINE_RE);
+  if (m) return m[1];
+  m = line.match(CHECKIN_PREFIX_RE);
+  if (m) return m[1];
+  m = line.match(CHECKIN_SUFFIX_RE);
+  if (m) return m[1];
+  return undefined;
+}
+
+function isCheckInLine(line: string): boolean {
+  return matchCheckInRoom(line) !== undefined;
+}
+
 /** Exported for tests via src/utils mirror — keep patterns in sync. */
 export function parseHousekeepingCheckInRoomNumbers(text: string): number[] {
   const body = String(text ?? "").trim();
@@ -65,8 +94,8 @@ export function parseHousekeepingCheckInRoomNumbers(text: string): number[] {
     if (!t) continue;
     // ✅ wins — a line with a checkmark is a ready signal, not a check-in one.
     if (HAS_CHECKMARK_RE.test(t)) continue;
-    const m = t.match(CHECKIN_LINE_RE);
-    if (m) addRoom(rooms, m[1]);
+    const room = matchCheckInRoom(t);
+    if (room) addRoom(rooms, room);
   }
   return [...rooms].sort((a, b) => a - b);
 }
@@ -82,7 +111,7 @@ export function parseHousekeepingCheckOutRoomNumbers(text: string): number[] {
     if (!t) continue;
     if (HAS_CHECKMARK_RE.test(t)) continue;
     // Never steal a check-in line.
-    if (CHECKIN_LINE_RE.test(t)) continue;
+    if (isCheckInLine(t)) continue;
 
     let m = t.match(CHECKOUT_PREFIX_RE);
     if (m) {
@@ -106,7 +135,7 @@ export function parseHousekeepingReadyRoomNumbers(text: string): number[] {
     if (!t || READY_EXCLUDE_LINE_RE.test(t)) continue;
     // Skip lines that are check-in-only (handled separately) — but ✅ always
     // overrides check-in phrasing in the same line (see header note).
-    if (CHECKIN_LINE_RE.test(t) && !HAS_CHECKMARK_RE.test(t)) continue;
+    if (isCheckInLine(t) && !HAS_CHECKMARK_RE.test(t)) continue;
     // Skip checkout-only lines (handled by check-out parser).
     if (CHECKOUT_PREFIX_RE.test(t) || CHECKOUT_SUFFIX_RE.test(t)) continue;
 
