@@ -29,6 +29,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendWhapiText } from "../_shared/whapiSend.ts";
+import { probeWhapiDeviceHealth, persistWhapiHealthToBotConfig } from "../_shared/whapiHealth.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -64,6 +65,37 @@ async function resolveAlertGroupId(): Promise<string> {
     Deno.env.get("WHAPI_GROUP_ID") ??
     ""
   ).trim();
+}
+
+async function checkWhapiDeviceHealth(
+  supabase: ReturnType<typeof createClient>,
+  opts: { persist?: boolean } = {},
+): Promise<CheckResult & { snapshot?: Awaited<ReturnType<typeof probeWhapiDeviceHealth>> }> {
+  const snapshot = await probeWhapiDeviceHealth({ wakeup: false });
+  if (opts.persist) {
+    try {
+      await persistWhapiHealthToBotConfig(supabase, snapshot);
+    } catch (e) {
+      console.warn("[automation-health-cron] whapi health persist failed:", (e as Error).message);
+    }
+  }
+  const bad = !snapshot.healthy;
+  return {
+    checkKey: "whapi_device_health",
+    bad,
+    snapshot,
+    detail: {
+      status: snapshot.statusText,
+      healthy: snapshot.healthy,
+      checked_at: snapshot.checkedAt,
+      error: snapshot.error,
+      uptime_seconds: snapshot.uptimeSeconds,
+    },
+    badMessage:
+      `🚨 בריאות אוטומציה: מכשיר Whapi לא זמין (סטטוס: ${snapshot.statusText}` +
+      `${snapshot.error ? `, ${snapshot.error}` : ""}) — אורחים יעברו אוטומטית ל-Dream Bot אם Failover מופעל.`,
+    okMessage: `✅ בריאות אוטומציה: מכשיר Whapi פעיל (${snapshot.statusText}) — ניתן להחזיר ערוץ Whapi ב-ACC.`,
+  };
 }
 
 // ── Individual checks ────────────────────────────────────────────────────────
@@ -392,14 +424,23 @@ Deno.serve(async (req: Request) => {
 
     const reqUrl = new URL(req.url);
     let isPreview = req.method === "GET" || reqUrl.searchParams.get("preview") === "true";
-    // Also accept { preview: true } in the request body — supabase-js's
-    // functions.invoke() (what the ACC health tab uses) always POSTs and
-    // can't set query params, same reasoning as get-wa-templates's ?all=true.
-    if (!isPreview && req.method === "POST") {
+    let probeWhapiOnly = false;
+    if (req.method === "POST") {
       try {
         const body = await req.json() as Record<string, unknown>;
-        isPreview = body?.preview === true;
-      } catch { /* no/empty body — keep false (real pg_cron ticks send {}) */ }
+        if (body?.preview === true) isPreview = true;
+        if (body?.probeWhapi === true) probeWhapiOnly = true;
+      } catch { /* no/empty body */ }
+    }
+
+    if (probeWhapiOnly) {
+      const whapiCheck = await checkWhapiDeviceHealth(supabase, { persist: true });
+      return jsonResponse({
+        ok: true,
+        probeWhapi: true,
+        whapi: whapiCheck.snapshot,
+        check: { checkKey: whapiCheck.checkKey, bad: whapiCheck.bad, detail: whapiCheck.detail },
+      });
     }
 
     // Dogfood our own heartbeat — proves this watchdog itself is alive. Only on
@@ -416,6 +457,7 @@ Deno.serve(async (req: Request) => {
       await checkDuplicateLookupFailed(supabase),
       await checkFailedRate(supabase),
       await checkFailoverRate(supabase),
+      await checkWhapiDeviceHealth(supabase, { persist: !isPreview }),
       ...(await checkTemplateApprovals(supabase)),
     ];
 

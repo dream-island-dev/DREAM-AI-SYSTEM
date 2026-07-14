@@ -35,8 +35,10 @@ import {
 } from "../_shared/automationSchedule.ts";
 import { reconcileMissedArrivalConfirmations } from "../_shared/arrivalConfirmation.ts";
 import { loadGuestByIdForPipeline } from "../_shared/guestOutboundGuard.ts";
-import { isStageEffectivelyActive, primeGuestChannelConfig } from "../_shared/guestWhapiRouting.ts";
+import { isStageEffectivelyActive, primeGuestChannelConfig, isWhapiGuestSosActive } from "../_shared/guestWhapiRouting.ts";
 import { buildRetryStateMap, evaluateRetryGate, RETRY_LOOKBACK_HOURS, type RetryState } from "../_shared/automationRetryGate.ts";
+import { probeWhapiDeviceHealth, persistWhapiHealthToBotConfig } from "../_shared/whapiHealth.ts";
+import { INTER_SEND_DELAY_MS, sleep } from "../_shared/outboundThrottle.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -45,12 +47,6 @@ const CORS = {
 
 /** Sends per batch — logged for observability; still sequential, not parallel. */
 const DISPATCH_BATCH_SIZE = 10;
-/** Pause between individual whatsapp-send calls (Meta burst rate-limit safety). */
-const INTER_SEND_DELAY_MS = 2500;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
@@ -90,6 +86,19 @@ Deno.serve(async (req: Request) => {
     const anon = Deno.env.get("SUPABASE_ANON_KEY")!;
     const supabase = createClient(supabaseUrl, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
     await primeGuestChannelConfig(supabase);
+
+    // Whapi device probe (non-blocking) — persists bot_config for auto-failover.
+    try {
+      const whapiSnap = await probeWhapiDeviceHealth({ wakeup: false });
+      await persistWhapiHealthToBotConfig(supabase, whapiSnap);
+      await primeGuestChannelConfig(supabase);
+      console.log(
+        `[whatsapp-cron] whapi_health status=${whapiSnap.statusText} healthy=${whapiSnap.healthy} ` +
+        `sos_effective=${isWhapiGuestSosActive()}`,
+      );
+    } catch (e) {
+      console.warn("[whatsapp-cron] whapi_health probe failed (non-blocking):", (e as Error).message);
+    }
 
     const now = new Date();
     const todayIsrael = israelYmd(now);

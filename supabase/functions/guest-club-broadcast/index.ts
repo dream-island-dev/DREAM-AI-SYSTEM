@@ -16,6 +16,7 @@
 import { serve }        from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendWhapiText, cleanPhoneForMention } from "../_shared/whapiSend.ts";
+import { INTER_SEND_DELAY_MS, sleep } from "../_shared/outboundThrottle.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -129,7 +130,8 @@ serve(async (req: Request) => {
     let failed = 0;
     let skipped = 0;
 
-    for (const row of rows) {
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
       const phone = String(row.phone ?? "").trim();
       const name = guestNameFrom(row);
       if (!phone) {
@@ -211,6 +213,7 @@ serve(async (req: Request) => {
         failed++;
         results.push({ phone, name, status: "failed", error: (e as Error).message });
       }
+      if (i < rows.length - 1) await sleep(INTER_SEND_DELAY_MS);
     }
 
     return new Response(

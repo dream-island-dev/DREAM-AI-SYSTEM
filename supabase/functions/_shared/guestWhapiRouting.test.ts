@@ -18,6 +18,7 @@ import {
   isWhapiGuestSosActive,
   shouldAutoReplyGuestWhapiDm,
   __setGuestChannelsForTest,
+  __setWhapiFailoverForTest,
 } from "./guestWhapiRouting.ts";
 
 type SuitesChannel = "whapi" | "meta";
@@ -29,6 +30,7 @@ function withChannels(suites: SuitesChannel, daypass: DaypassChannel, fn: () => 
     fn();
   } finally {
     __setGuestChannelsForTest("meta", "off"); // restore module defaults
+    __setWhapiFailoverForTest({ sosManual: false, autoFailover: true, deviceHealthy: null });
   }
 }
 
@@ -72,10 +74,10 @@ Deno.test("suite guest routes Meta when guest_suites_channel=meta (DreamBot)", (
   });
 });
 
-Deno.test("day-pass guest routes Whapi when guest_daypass_channel=whapi, independent of suites channel", () => {
+Deno.test("day-pass guest never routes Whapi (migration 205 — spa/day-pass Meta only)", () => {
   withChannels("meta", "whapi", () => {
     const guest = { room: "Premium Day 1", room_type: "day_guest" };
-    assertEquals(shouldRouteGuestOutboundViaWhapiSuites(guest), true);
+    assertEquals(shouldRouteGuestOutboundViaWhapiSuites(guest), false);
   });
 });
 
@@ -115,10 +117,10 @@ Deno.test("isStageEffectivelyActive: is_active=true stage is active for anyone, 
   });
 });
 
-Deno.test("isStageEffectivelyActive: is_active=false + day-pass guest, daypass=whapi bypasses Meta-template pause", () => {
+Deno.test("isStageEffectivelyActive: is_active=false + day-pass guest never Whapi-bypasses (migration 205)", () => {
   withChannels("meta", "whapi", () => {
     const guest = { room: null, room_type: "day_guest" };
-    assertEquals(isStageEffectivelyActive({ is_active: false }, guest), true);
+    assertEquals(isStageEffectivelyActive({ is_active: false }, guest), false);
   });
 });
 
@@ -190,6 +192,27 @@ Deno.test("isMetaGuestTemplateAllowed: false by default (secret unset)", () => {
 Deno.test("isMetaGuestTemplateAllowed: true only when the escape-hatch secret is explicitly set", () => {
   withMetaGuestTemplatesAllowed(true, () => {
     assertEquals(isMetaGuestTemplateAllowed(), true);
+  });
+});
+
+Deno.test("isWhapiGuestSosActive: bot_config manual SOS without env secret", () => {
+  withSos(false, () => {
+    __setWhapiFailoverForTest({ sosManual: true, deviceHealthy: true });
+    assertEquals(isWhapiGuestSosActive(), true);
+  });
+});
+
+Deno.test("isWhapiGuestSosActive: auto-failover when device unhealthy", () => {
+  withSos(false, () => {
+    __setWhapiFailoverForTest({ sosManual: false, autoFailover: true, deviceHealthy: false });
+    assertEquals(isWhapiGuestSosActive(), true);
+  });
+});
+
+Deno.test("isWhapiGuestSosActive: unknown device health does not auto-failover", () => {
+  withSos(false, () => {
+    __setWhapiFailoverForTest({ sosManual: false, autoFailover: true, deviceHealthy: null });
+    assertEquals(isWhapiGuestSosActive(), false);
   });
 });
 

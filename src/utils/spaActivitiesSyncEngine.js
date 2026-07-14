@@ -27,6 +27,21 @@
 
 import { normalizeActivitiesPhone, collectGuestNameHints, resolveSpaGuestDisplayName } from "./ezgoSpaActivitiesParser";
 
+/** Spa cohort automation — muted on sync until staff unsuppresses in ACC (opt-in). */
+const SPA_AUTOMATION_STAGE_KEYS = ["spa_warmup_daypass", "survey_invite_daypass"];
+
+export async function suppressSpaAutomationStages(supabase, guestId, summary = {}) {
+  for (const stageKey of SPA_AUTOMATION_STAGE_KEYS) {
+    const { error } = await supabase.rpc("suppress_guest_pipeline_stage", {
+      p_guest_id: guestId,
+      p_stage_key: stageKey,
+      p_reason: "spa_sync_opt_in",
+    });
+    if (!error) summary.spa_automation_muted = (summary.spa_automation_muted ?? 0) + 1;
+    else console.warn("[spaActivitiesSyncEngine] suppress failed:", guestId, stageKey, error.message);
+  }
+}
+
 /** "972XXXXXXXXX" (Phase 1's normalized shape) → every phone spelling guests.phone might be stored as ("+972…", "972…", "0…" — CLAUDE.md §3 phone format rule). */
 export function resolvePhoneVariants(phone972) {
   if (!phone972) return [];
@@ -487,6 +502,7 @@ export async function syncEzgoSpaActivities(parsedRows, appointmentDate, { supab
 
     const { error: guestErr } = await supabase.from("guests").update(updatePayload).eq("id", guestId);
     if (guestErr) console.warn("[spaActivitiesSyncEngine] guest write-through failed:", guestId, guestErr.message);
+    else await suppressSpaAutomationStages(supabase, guestId, summary);
   }
 
   return summary;

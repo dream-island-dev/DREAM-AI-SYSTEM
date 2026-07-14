@@ -2022,6 +2022,42 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
     }
   }, [showToast, fetchQueue]);
 
+  const updateBotConfigFlag = useCallback(async (configKey, enabled, label) => {
+    const { error } = await supabase
+      .from("bot_config")
+      .update({ config_value: enabled ? "true" : "false" })
+      .eq("config_key", configKey);
+    if (error) {
+      showToast("err", "שגיאה בשמירה: " + error.message);
+    } else {
+      showToast("ok", `✅ ${label}`);
+      fetchQueue();
+    }
+  }, [showToast, fetchQueue]);
+
+  const probeWhapiDevice = useCallback(async () => {
+    if (!isSupabaseConfigured || !supabase) return;
+    showToast("ok", "⏳ בודק מכשיר Whapi...");
+    try {
+      const { data, error } = await supabase.functions.invoke("automation-health-cron", {
+        body: { probeWhapi: true },
+      });
+      if (error) throw new Error(error.message);
+      if (!data?.ok) throw new Error(data?.error ?? "probe failed");
+      const st = data.whapi?.statusText ?? "?";
+      const ok = data.whapi?.healthy;
+      showToast(ok ? "ok" : "err", ok ? `✅ Whapi פעיל (${st})` : `🔴 Whapi לא זמין (${st})`);
+      fetchQueue();
+    } catch (err) {
+      showToast("err", "בדיקת Whapi נכשלה: " + (err?.message ?? String(err)));
+    }
+  }, [showToast, fetchQueue]);
+
+  const restoreWhapiRouting = useCallback(async () => {
+    await updateBotConfigFlag("whapi_guest_sos_active", false, "SOS כבוי — מוכן ל-Whapi (אם המכשיר AUTH)");
+    fetchQueue();
+  }, [updateBotConfigFlag, fetchQueue]);
+
   // preview:true — read-only, never writes state or sends a Whapi alert
   // (automation-health-cron/index.ts honors this regardless of
   // AUTOMATION_HEALTH_ENABLED, so opening this tab is always safe).
@@ -3059,11 +3095,67 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                       background: "#FFEDD5", border: "1px solid #C2410C", borderRadius: 8,
                       padding: "10px 14px", lineHeight: 1.6,
                     }}>
-                      🚨 מצב חירום Meta / Dream Bot פעיל — מכשיר הסוויטות (Whapi) מושבת זמנית.
-                      כל האוטומציה לאורחים (כולל חדר מוכן) עוברת ל-Meta. אקרוקת חדרנות (N✅ / צ'ק אין / Co) עדיין תלויה במכשיר עצמו.
-                      כיבוי: <code style={{ background: "rgba(0,0,0,0.06)", padding: "1px 5px", borderRadius: 4 }}>WHAPI_GUEST_SOS_META</code>.
+                      🚨 Dream Bot פעיל לאורחים — Whapi מנותב ל-Meta.
+                      {queueData.systemStatus.whapiDevice?.sosManual
+                        ? " (SOS ידני)"
+                        : queueData.systemStatus.whapiDevice?.healthy === false
+                          ? ` (Failover אוטומטי — סטטוס: ${queueData.systemStatus.whapiDevice?.statusText ?? "?"})`
+                          : ""}
+                      {" "}אקרוקת חדרנות (N✅) עדיין תלויה במכשיר הפיזי.
                     </div>
                   )}
+                  {/* ── Whapi device status + failover controls ── */}
+                  <div style={{
+                    display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center",
+                    marginBottom: 12, fontSize: 13, padding: "10px 12px",
+                    background: "var(--bg-subtle)", borderRadius: 8, border: "1px solid var(--border)",
+                  }}>
+                    <span style={{ fontWeight: 700 }}>
+                      📱 מכשיר Whapi:{" "}
+                      {queueData.systemStatus.whapiDevice?.healthy === true ? "🟢" :
+                        queueData.systemStatus.whapiDevice?.healthy === false ? "🔴" : "⚪"}
+                      {" "}
+                      <code>{queueData.systemStatus.whapiDevice?.statusText ?? "לא נבדק"}</code>
+                    </span>
+                    {queueData.systemStatus.whapiDevice?.checkedAt && (
+                      <span style={{ color: "var(--text-muted)", fontSize: 12 }}>
+                        נבדק: {new Date(queueData.systemStatus.whapiDevice.checkedAt).toLocaleString("he-IL")}
+                      </span>
+                    )}
+                    <button type="button" className="btn btn-ghost btn-sm actr-touch-btn" onClick={probeWhapiDevice}>
+                      🔄 בדוק עכשיו
+                    </button>
+                    <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+                      <input
+                        type="checkbox"
+                        checked={queueData.systemStatus.whapiDevice?.sosManual === true}
+                        onChange={(e) => updateBotConfigFlag(
+                          "whapi_guest_sos_active",
+                          e.target.checked,
+                          e.target.checked ? "SOS ידני הופעל — Dream Bot" : "SOS ידני כובה",
+                        )}
+                      />
+                      SOS ידני (Dream Bot לכל האורחים)
+                    </label>
+                    <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+                      <input
+                        type="checkbox"
+                        checked={queueData.systemStatus.whapiDevice?.autoFailover !== false}
+                        onChange={(e) => updateBotConfigFlag(
+                          "whapi_auto_failover",
+                          e.target.checked,
+                          e.target.checked ? "Failover אוטומטי מופעל" : "Failover אוטומטי כבוי",
+                        )}
+                      />
+                      Failover אוטומטי
+                    </label>
+                    {queueData.systemStatus.whapiDevice?.healthy === true
+                      && queueData.systemStatus.whapiGuestSosActive && (
+                      <button type="button" className="btn btn-primary btn-sm actr-touch-btn" onClick={restoreWhapiRouting}>
+                        ✅ החזר ל-Whapi
+                      </button>
+                    )}
+                  </div>
                   {/* ── Guest channel selectors (P0, 2026-07-13) — independent per cohort ── */}
                   <div style={{ display: "flex", gap: 24, flexWrap: "wrap", fontSize: 13, marginBottom: 10 }}>
                     <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -3085,8 +3177,10 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                         style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid var(--border)", fontFamily: "inherit", fontSize: 13 }}
                       >
                         <option value="off">⛔ כבוי (Off)</option>
-                        <option value="whapi">📱 Whapi (מכשיר סוויטות)</option>
-                        <option value="meta">🔵 DreamBot (Meta)</option>
+                        <option value="meta">🔵 DreamBot (Meta) — מומלץ לספא/יום-כיף</option>
+                        <option value="whapi" disabled title="חסום — יום-כיף/ספא לא דרך Whapi (מניעת חסימות)">
+                          📱 Whapi (מושבת ליום-כיף)
+                        </option>
                       </select>
                     </label>
                     {queueData.systemStatus.guestDaypassChannel === "off" && (

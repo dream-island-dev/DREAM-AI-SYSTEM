@@ -12,6 +12,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import ActivitiesImportZone from "./spa/ActivitiesImportZone";
 import { resolveHomeRoomMap, planAlignDay, roomOccupancyAtSlot } from "../utils/spaStickyRoom";
+import { suppressSpaAutomationStages } from "../utils/spaActivitiesSyncEngine";
 
 const DEFAULT_START_TIME = "09:00";
 const DEFAULT_DURATION_MIN = 60;
@@ -634,6 +635,8 @@ function AssignModal({ draft, rooms, therapists, shiftRoster, homeRoomByTherapis
       .eq("id", guest.id);
     if (guestErr) {
       console.warn("[SpaBoard] guests.spa_date/spa_time write-through failed:", guestErr.message);
+    } else {
+      await suppressSpaAutomationStages(supabase, guest.id);
     }
 
     // Read-merge-write the therapist_pref toggle — fresh read (not the possibly

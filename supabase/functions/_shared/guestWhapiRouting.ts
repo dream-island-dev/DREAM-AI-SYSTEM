@@ -48,6 +48,20 @@ type DaypassChannel = "off" | "whapi" | "meta";
 
 let _suitesChannel: SuitesChannel = "meta";
 let _daypassChannel: DaypassChannel = "off";
+/** ACC-editable manual SOS (bot_config whapi_guest_sos_active) — forces Meta. */
+let _guestSosManual = false;
+/** When true and whapi_device_healthy=false, route guest outbound to Meta. */
+let _whapiAutoFailover = true;
+/** null = never probed yet — auto-failover does not trigger on unknown. */
+let _whapiDeviceHealthy: boolean | null = null;
+let _whapiDeviceStatusText = "UNKNOWN";
+let _whapiDeviceCheckedAt: string | null = null;
+
+function parseBoolConfig(val: string | undefined, defaultVal: boolean): boolean {
+  if (val === "true") return true;
+  if (val === "false") return false;
+  return defaultVal;
+}
 
 // deno-lint-ignore no-explicit-any
 export async function primeGuestChannelConfig(supabase: any): Promise<void> {
@@ -55,11 +69,38 @@ export async function primeGuestChannelConfig(supabase: any): Promise<void> {
   _suitesChannel = cfg["guest_suites_channel"] === "whapi" ? "whapi" : "meta";
   const dp = cfg["guest_daypass_channel"];
   _daypassChannel = dp === "whapi" ? "whapi" : dp === "meta" ? "meta" : "off";
+  _guestSosManual = cfg["whapi_guest_sos_active"] === "true";
+  _whapiAutoFailover = parseBoolConfig(cfg["whapi_auto_failover"], true);
+  const healthyRaw = cfg["whapi_device_healthy"];
+  _whapiDeviceHealthy = healthyRaw === "true" ? true : healthyRaw === "false" ? false : null;
+  _whapiDeviceStatusText = String(cfg["whapi_device_status"] ?? "UNKNOWN").trim() || "UNKNOWN";
+  const checked = String(cfg["whapi_device_checked_at"] ?? "").trim();
+  _whapiDeviceCheckedAt = checked || null;
 }
 
 /** Read-only accessors for callers that need to display current state (ACC systemStatus). */
 export function getGuestSuitesChannel(): SuitesChannel { return _suitesChannel; }
 export function getGuestDaypassChannel(): DaypassChannel { return _daypassChannel; }
+
+export type WhapiDeviceStatusSnapshot = {
+  statusText: string;
+  healthy: boolean | null;
+  checkedAt: string | null;
+  sosManual: boolean;
+  autoFailover: boolean;
+  sosEffective: boolean;
+};
+
+export function getWhapiDeviceStatusSnapshot(): WhapiDeviceStatusSnapshot {
+  return {
+    statusText: _whapiDeviceStatusText,
+    healthy: _whapiDeviceHealthy,
+    checkedAt: _whapiDeviceCheckedAt,
+    sosManual: _guestSosManual,
+    autoFailover: _whapiAutoFailover,
+    sosEffective: isWhapiGuestSosActive(),
+  };
+}
 
 /**
  * Test-only synchronous override — lets Deno tests set the cache directly
@@ -69,6 +110,19 @@ export function getGuestDaypassChannel(): DaypassChannel { return _daypassChanne
 export function __setGuestChannelsForTest(suites: SuitesChannel, daypass: DaypassChannel): void {
   _suitesChannel = suites;
   _daypassChannel = daypass;
+}
+
+/** Test-only — reset SOS / health cache without mocking bot_config. */
+export function __setWhapiFailoverForTest(opts: {
+  sosManual?: boolean;
+  autoFailover?: boolean;
+  deviceHealthy?: boolean | null;
+  statusText?: string;
+}): void {
+  if (opts.sosManual !== undefined) _guestSosManual = opts.sosManual;
+  if (opts.autoFailover !== undefined) _whapiAutoFailover = opts.autoFailover;
+  if (opts.deviceHealthy !== undefined) _whapiDeviceHealthy = opts.deviceHealthy;
+  if (opts.statusText !== undefined) _whapiDeviceStatusText = opts.statusText;
 }
 
 /**
@@ -87,7 +141,10 @@ export function __setGuestChannelsForTest(suites: SuitesChannel, daypass: Daypas
  * it stays broken until the device itself is unbanned + reconnected.
  */
 export function isWhapiGuestSosActive(): boolean {
-  return Deno.env.get("WHAPI_GUEST_SOS_META") === "true";
+  if (Deno.env.get("WHAPI_GUEST_SOS_META") === "true") return true;
+  if (_guestSosManual) return true;
+  if (_whapiAutoFailover && _whapiDeviceHealthy === false) return true;
+  return false;
 }
 
 /**
@@ -117,8 +174,10 @@ export function shouldRouteGuestOutboundViaWhapiSuites(
   guest: GuestRoomFields | null | undefined,
 ): boolean {
   if (isWhapiGuestSosActive() || !guest) return false;
+  // P0 (migration 205): day-pass / spa cohort never uses the physical Whapi
+  // device for automated guest outbound — Meta Dream Bot only (ban prevention).
+  if (isEffectiveDayPassGuest(guest)) return false;
   if (isEffectiveSuiteGuest(guest)) return _suitesChannel === "whapi";
-  if (isEffectiveDayPassGuest(guest)) return _daypassChannel === "whapi";
   return false;
 }
 
@@ -199,7 +258,11 @@ export function isMetaGuestTemplateAllowed(): boolean {
  */
 export function whapiDisabledReasonHe(): string {
   if (isWhapiGuestSosActive()) {
-    return "🚨 מצב חירום Meta פעיל (WHAPI_GUEST_SOS_META) — מכשיר הסוויטות מושבת זמנית עקב הגבלת וואטסאפ. " +
+    if (_guestSosManual || Deno.env.get("WHAPI_GUEST_SOS_META") === "true") {
+      return "🚨 מצב חירום Meta / Dream Bot פעיל — מכשיר הסוויטות (Whapi) מושבת זמנית. " +
+        "שליחה ידנית דרך Whapi חסומה כרגע — יש להשתמש ב-Meta Template.";
+    }
+    return `🚨 Failover אוטומטי ל-Dream Bot — מכשיר Whapi לא זמין (סטטוס: ${_whapiDeviceStatusText}). ` +
       "שליחה ידנית דרך Whapi חסומה כרגע — יש להשתמש ב-Meta Template.";
   }
   return "ערוץ Whapi נבחר אך אינו מופעל כרגע (הגדרת ערוץ ב-ACC) — ההודעה לא נשלחה.";

@@ -36,6 +36,7 @@ import {
   primeGuestChannelConfig,
   getGuestSuitesChannel,
   getGuestDaypassChannel,
+  getWhapiDeviceStatusSnapshot,
 } from "../_shared/guestWhapiRouting.ts";
 import {
   buildRetryStateMap,
@@ -126,6 +127,7 @@ Deno.serve(async (req: Request) => {
       // automation that would route via the Suites Whapi device falls back
       // to Meta Dream Bot instead (guestWhapiRouting.ts). FAIL VISIBLE badge.
       whapiGuestSosActive: isWhapiGuestSosActive(),
+      whapiDevice: getWhapiDeviceStatusSnapshot(),
       // P0 channel control (2026-07-13) — current ACC selector state, so the
       // frontend dropdowns can render the live value without a second query.
       guestSuitesChannel: getGuestSuitesChannel(),

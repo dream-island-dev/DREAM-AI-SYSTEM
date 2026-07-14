@@ -1,3 +1,5 @@
+2026-07-14 | Whapi failover + Dream Bot full guest outbound — migration 205: SOS ידני ב-ACC, auto-failover on /health probe, daypass=Meta only (never Whapi); spa sync opt-in suppress; missed_window for spa stages; 2.5s throttle in club broadcast | ACC Pulse: Whapi status + בדוק עכשיו + החזר ל-Whapi.
+
 2026-07-14 | Housekeeping WA apostrophe normalize — `16 צ׳ק אין` / iOS U+2019 geresh variants → check-in | housekeepingWaParse normalize before match; whapi-webhook deployed.
 
 2026-07-14 | Housekeeping WA check-in — `CI N` / `check in N` / `N ci` parsed like `Co N` for checkout; updates guests.checked_in + room תפוס | housekeepingWaParse.ts; deploy whapi-webhook.

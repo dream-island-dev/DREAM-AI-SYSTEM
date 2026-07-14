@@ -457,6 +457,13 @@ Deno.test("spa_warmup_daypass: very early spa_time → outside sane hours, skipp
   assertEquals(result.dueNow, false);
 });
 
+Deno.test("spa_warmup_daypass: >30min past warmup instant → missed_window (no cron blast)", () => {
+  const guest = daypassSpaGuest({ spa_time: "16:00" });
+  const result = resolveStageSchedule(spaWarmupStage(), guest, israelInstant("2026-07-13", 17, 1));
+  assertEquals(result.skipReason, "missed_window");
+  assertEquals(result.dueNow, false);
+});
+
 Deno.test("spa_warmup_daypass: cancelled guest never fires", () => {
   const guest = daypassSpaGuest({ status: "cancelled" });
   const result = resolveStageSchedule(spaWarmupStage(), guest, israelInstant("2026-07-13", 14, 45));

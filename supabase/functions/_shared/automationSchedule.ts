@@ -360,6 +360,16 @@ function israelLocalDateTimeToUtc(dateStr: string | null | undefined, timeStr: s
 const SPA_WARMUP_SANE_HOUR_MIN = 6;
 const SPA_WARMUP_SANE_HOUR_MAX = 22;
 
+/** Day-pass spa cohort stages — late catch-up after this grace → missed_window
+ * (manual Override only), never cron bulk-blast (Whapi ban prevention). */
+const SPA_DAYPASS_CATCHUP_GRACE_MS = 30 * 60 * 1000;
+
+const SPA_DAYPASS_CATCHUP_STAGE_KEYS = new Set([
+  "spa_warmup_daypass",
+  "survey_invite_daypass",
+  "night_before_daypass",
+]);
+
 /** Shared anchor resolver for schedule_mode='hours_after_event' — one place
  * for all three anchor kinds, used by both computeScheduledInstant and
  * resolveStageSchedule so they can never diverge. */
@@ -712,6 +722,12 @@ export function resolveStageSchedule(
       if (hour < floorLocal) {
         return { scheduledFor, dueNow: false, skipReason: null };
       }
+      if (
+        SPA_DAYPASS_CATCHUP_STAGE_KEYS.has(stage.stage_key)
+        && scheduledFor.getTime() < now.getTime() - SPA_DAYPASS_CATCHUP_GRACE_MS
+      ) {
+        return { scheduledFor, dueNow: false, skipReason: "missed_window" };
+      }
       return { scheduledFor, dueNow: false, skipReason: "quiet_hours_passed" };
     }
     return { scheduledFor, dueNow: true, skipReason: null };
@@ -721,6 +737,13 @@ export function resolveStageSchedule(
     const anchor = resolveHoursAfterEventAnchor(stage, guest);
     if (!anchor) return { scheduledFor: null, dueNow: false, skipReason: "missing_anchor_timestamp" };
     const scheduledFor = scheduledForPreview ?? new Date(anchor.getTime() + (stage.offset_hours ?? 0) * 3600 * 1000);
+    const msPast = now.getTime() - scheduledFor.getTime();
+    if (
+      SPA_DAYPASS_CATCHUP_STAGE_KEYS.has(stage.stage_key)
+      && msPast > SPA_DAYPASS_CATCHUP_GRACE_MS
+    ) {
+      return { scheduledFor, dueNow: false, skipReason: "missed_window" };
+    }
     return { scheduledFor, dueNow: scheduledFor.getTime() <= now.getTime(), skipReason: null };
   }
 

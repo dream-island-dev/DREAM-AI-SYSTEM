@@ -1,3 +1,5 @@
+2026-07-14 | Housekeeping WA apostrophe normalize — `16 צ׳ק אין` / iOS U+2019 geresh variants → check-in | housekeepingWaParse normalize before match; whapi-webhook deployed.
+
 2026-07-14 | Housekeeping WA check-in — `CI N` / `check in N` / `N ci` parsed like `Co N` for checkout; updates guests.checked_in + room תפוס | housekeepingWaParse.ts; deploy whapi-webhook.
 
 2026-07-14 | spa_warmup_daypass anchor fix — DB `anchor_event=spa_time` (migration 204); cron ignores corrupted anchor; ACC «30 דקות לפני שעת הטיפול» UI + auto-repair on load | Per-guest spa_time from Spa Board, not arrival confirmation.
