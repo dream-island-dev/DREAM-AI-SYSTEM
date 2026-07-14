@@ -13,6 +13,16 @@
 const MIN_ROOM = 1;
 const MAX_ROOM = 26;
 
+/** iOS/WhatsApp often use U+2019 etc. instead of ASCII ' or Hebrew geresh. */
+const HEBREW_TSADI_QOF_APOSTROPHE = "[''\\u2019\\u2018\\u05F3\\u02BC\\u0060\\u00B4\\u2032]";
+
+function normalizeHousekeepingLine(line: string): string {
+  return line.replace(
+    new RegExp(`צ${HEBREW_TSADI_QOF_APOSTROPHE}ק`, "g"),
+    "צק",
+  );
+}
+
 /** Whole-message skip (forwarded bubbles). */
 const FORWARDED_RE = /הועברה/i;
 
@@ -90,7 +100,7 @@ export function parseHousekeepingCheckInRoomNumbers(text: string): number[] {
 
   const rooms = new Set<number>();
   for (const line of body.split(/\r?\n/)) {
-    const t = line.trim();
+    const t = normalizeHousekeepingLine(line.trim());
     if (!t) continue;
     // ✅ wins — a line with a checkmark is a ready signal, not a check-in one.
     if (HAS_CHECKMARK_RE.test(t)) continue;
@@ -107,7 +117,7 @@ export function parseHousekeepingCheckOutRoomNumbers(text: string): number[] {
 
   const rooms = new Set<number>();
   for (const line of body.split(/\r?\n/)) {
-    const t = line.trim();
+    const t = normalizeHousekeepingLine(line.trim());
     if (!t) continue;
     if (HAS_CHECKMARK_RE.test(t)) continue;
     // Never steal a check-in line.
@@ -131,7 +141,7 @@ export function parseHousekeepingReadyRoomNumbers(text: string): number[] {
   const rooms = new Set<number>();
 
   for (const line of body.split(/\r?\n/)) {
-    const t = line.trim();
+    const t = normalizeHousekeepingLine(line.trim());
     if (!t || READY_EXCLUDE_LINE_RE.test(t)) continue;
     // Skip lines that are check-in-only (handled separately) — but ✅ always
     // overrides check-in phrasing in the same line (see header note).

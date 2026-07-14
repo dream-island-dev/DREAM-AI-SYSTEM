@@ -28,6 +28,7 @@ describe("housekeepingWaParse", () => {
     expect(parseHousekeepingCheckInRoomNumbers("25 צק אין")).toEqual([25]);
     expect(parseHousekeepingCheckInRoomNumbers("1 check in")).toEqual([1]);
     expect(parseHousekeepingCheckInRoomNumbers("17 צ'ק אין")).toEqual([17]);
+    expect(parseHousekeepingCheckInRoomNumbers("16 צ\u2019ק אין")).toEqual([16]);
     expect(parseHousekeepingCheckInRoomNumbers("CI 17")).toEqual([17]);
     expect(parseHousekeepingCheckInRoomNumbers("ci 7")).toEqual([7]);
     expect(parseHousekeepingCheckInRoomNumbers("check in 11")).toEqual([11]);

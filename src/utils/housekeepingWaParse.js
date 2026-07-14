@@ -5,6 +5,15 @@
 const MIN_ROOM = 1;
 const MAX_ROOM = 26;
 
+const HEBREW_TSADI_QOF_APOSTROPHE = "[''\\u2019\\u2018\\u05F3\\u02BC\\u0060\\u00B4\\u2032]";
+
+function normalizeHousekeepingLine(line) {
+  return line.replace(
+    new RegExp(`צ${HEBREW_TSADI_QOF_APOSTROPHE}ק`, "g"),
+    "צק",
+  );
+}
+
 const FORWARDED_RE = /הועברה/i;
 
 // ✅ always takes priority over check-in phrasing in the same line: in practice
@@ -77,7 +86,7 @@ export function parseHousekeepingCheckInRoomNumbers(text) {
 
   const rooms = new Set();
   for (const line of body.split(/\r?\n/)) {
-    const t = line.trim();
+    const t = normalizeHousekeepingLine(line.trim());
     if (!t) continue;
     // ✅ wins — a line with a checkmark is a ready signal, not a check-in one.
     if (HAS_CHECKMARK_RE.test(t)) continue;
@@ -94,7 +103,7 @@ export function parseHousekeepingCheckOutRoomNumbers(text) {
 
   const rooms = new Set();
   for (const line of body.split(/\r?\n/)) {
-    const t = line.trim();
+    const t = normalizeHousekeepingLine(line.trim());
     if (!t) continue;
     if (HAS_CHECKMARK_RE.test(t)) continue;
     if (isCheckInLine(t)) continue;
@@ -117,7 +126,7 @@ export function parseHousekeepingReadyRoomNumbers(text) {
   const rooms = new Set();
 
   for (const line of body.split(/\r?\n/)) {
-    const t = line.trim();
+    const t = normalizeHousekeepingLine(line.trim());
     if (!t || READY_EXCLUDE_LINE_RE.test(t)) continue;
     // Skip check-in-only lines — but ✅ always overrides check-in phrasing.
     if (isCheckInLine(t) && !HAS_CHECKMARK_RE.test(t)) continue;
