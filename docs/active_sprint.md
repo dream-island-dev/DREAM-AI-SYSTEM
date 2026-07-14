@@ -1,5 +1,35 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-14 (Club broadcast DEPLOYED).
+> Last updated: 2026-07-14 (Day-pass spa warmup 30min + Whapi channel).
+
+---
+
+## ✅ Day-pass journey — evening + spa warmup X min + survey (2026-07-14)
+
+| Piece | Status |
+|---|---|
+| Migration 203 | `spa_warmup_daypass.offset_hours = -0.5` (30 min before) ✅ pushed |
+| ACC UI | «דקות לפני שעת הטיפול» (5–180) — **DEPLOYED** ce84783 + migration 204 |
+| `guest_daypass_channel` | **whapi** |
+| Survey invite QA | Feedback → סקרים → «הודעת סקר בוואטסאפ + קישור» (preview + open + 1 guest send) |
+| Intentional OFF | `morning_welcome`, `mid_stay_daypass`, `checkout_fb_daypass` |
+| Anti-spam / hermetic | cron 2.5s pulse; spa cohort gate; `msg_spa_warmup_sent`; BRANCH D claim+dedup |
+
+**Mike QA:** ACC → צינור בילוי יומי → «ספא — חימום» → רואה 30; אפשר לשנות X; Pulse: יום-כיף=Whapi. Feedback → סקרים → בחרו אורח עם ספא → פתח פורטל / שלח WA.
+
+---
+
+## ✅ Ops — Whapi Suites restored after SOS (2026-07-14)
+
+| Action | Result |
+|---|---|
+| `npx supabase secrets unset WHAPI_GUEST_SOS_META` | ✅ SOS off — Meta no longer forced |
+| `bot_config.guest_suites_channel` | ✅ `whapi` |
+| `bot_config.guest_daypass_channel` | ✅ later set **whapi** (spa journey session) |
+| Redeploy | `automation-queue`, `whatsapp-cron`, `whatsapp-send`, `whapi-webhook` |
+
+**Mike QA:** ACC → פעימת חיים — אין באנר SOS; 🏨 ערוץ סוויטות = Whapi; Cron/Automation ירוקים; Override לאורח בדיקה → Inbox `[WHAPI]`.
+
+**Still manual:** SOS re-enable if device bans again (`secrets set WHAPI_GUEST_SOS_META=true`). Auto health-check failover = follow-up, not done this session.
 
 ---
 
