@@ -226,6 +226,20 @@ const TEMPLATES: Template[] = [
     ],
   },
 
+  // Whapi outage / SOS — opens Meta 24h window for in-resort service (Option B, 2026-07-14).
+  {
+    name: "dream_service_fallback", category: "UTILITY", language: "he",
+    components: [
+      { type: "BODY",
+        text: "היי {{1}}, אנחנו זמינים לכם בצ'אט לכל מה שצריך במהלך השהות בדרים איילנד 🌴\n\nבקשות חדר, מגבות, ניקיון, שאלות על המתחם — פשוט כתבו לנו כאן.\n\nלחצו «יש לי בקשה» או כתבו הודעה חופשית.",
+        example: { body_text: [["ישראל ישראלי"]] } },
+      { type: "BUTTONS", buttons: [
+        { type: "QUICK_REPLY", text: "יש לי בקשה" },
+        { type: "QUICK_REPLY", text: "הכל בסדר, תודה" },
+      ]},
+    ],
+  },
+
 ];
 
 interface TemplateResult { name: string; ok: boolean; status?: string; id?: string; error?: string; }

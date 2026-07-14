@@ -5,7 +5,7 @@
 // (2) groupByPhone: strict latest-message-desc (Mike: «פעילות») — no unread/
 //     alert reordering in the base roster order.
 
-import { mergeThreadRows, groupByPhone } from "./WhatsAppInbox";
+import { mergeThreadRows, groupByPhone, groupByPhoneUnified, contactMatchesChannelFilter, inferDefaultReplyChannel } from "./WhatsAppInbox";
 
 function msg(id, createdAt, extra = {}) {
   return {
@@ -105,5 +105,38 @@ describe("groupByPhone — strict latest-message-desc (WhatsApp order)", () => {
     expect(contacts).toHaveLength(2);
     expect(contacts.map((c) => c.inbox_channel).sort()).toEqual(["meta", "whapi"]);
     expect(contacts[0].inbox_channel).toBe("meta");
+  });
+});
+
+describe("groupByPhoneUnified — one thread per phone", () => {
+  test("merges meta + whapi messages chronologically", () => {
+    const rows = [
+      msg("m1", "2026-07-06T09:00:00Z", { phone: "972500000001", inbox_channel: "meta" }),
+      msg("w1", "2026-07-06T10:00:00Z", { phone: "972500000001", inbox_channel: "whapi" }),
+    ];
+    const contacts = groupByPhoneUnified(rows);
+    expect(contacts).toHaveLength(1);
+    expect(contacts[0].inbox_channel).toBe("unified");
+    expect(contacts[0].channelsPresent.sort()).toEqual(["meta", "whapi"]);
+    expect(contacts[0].messages.map((m) => m.id)).toEqual(["m1", "w1"]);
+  });
+});
+
+describe("contactMatchesChannelFilter + inferDefaultReplyChannel", () => {
+  const unified = {
+    inbox_channel: "unified",
+    channelsPresent: ["meta", "whapi"],
+    messages: [msg("w1", "2026-07-06T10:00:00Z", { inbox_channel: "whapi" })],
+  };
+
+  test("unified contact matches both channel filters", () => {
+    expect(contactMatchesChannelFilter(unified, "meta")).toBe(true);
+    expect(contactMatchesChannelFilter(unified, "whapi")).toBe(true);
+    expect(contactMatchesChannelFilter(unified, "all")).toBe(true);
+  });
+
+  test("SOS forces meta reply on unified threads", () => {
+    expect(inferDefaultReplyChannel(unified, true)).toBe("meta");
+    expect(inferDefaultReplyChannel(unified, false)).toBe("whapi");
   });
 });

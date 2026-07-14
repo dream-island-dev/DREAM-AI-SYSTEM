@@ -948,6 +948,88 @@ export function groupByPhone(rows) {
   });
 }
 
+/** Unified roster — one thread per phone; messages from Meta + Whapi merged chronologically. */
+export function groupByPhoneUnified(rows) {
+  const map = new Map();
+  for (const row of rows) {
+    const phone = canonicalizePhone(row.phone);
+    const inboxChannel = row.inbox_channel === "whapi" ? "whapi" : "meta";
+    const threadKey = phone;
+    if (!map.has(threadKey)) {
+      map.set(threadKey, {
+        threadKey,
+        phone,
+        inbox_channel: "unified",
+        channelsPresent: [],
+        guestId: row.guest_id ?? null,
+        guestName: row.guest_name,
+        spaTime: row.spa_time ?? null,
+        spaDate: row.spa_date ?? null,
+        room: row.guest_room ?? null,
+        roomType: row.guest_room_type ?? null,
+        status: row.guest_status ?? null,
+        departureDate: row.guest_departure_date ?? null,
+        arrivalDate: row.guest_arrival_date ?? null,
+        portalToken: row.guest_portal_token ?? null,
+        mealTime: row.guest_meal_time ?? null,
+        mealLocation: row.guest_meal_location ?? null,
+        claimedBy: row.guest_claimed_by ?? null,
+        claimedAt: row.guest_claimed_at ?? null,
+        pushName: row.push_name ?? null,
+        messages: [],
+        humanRequested: false,
+        humanRequestType: null,
+      });
+    }
+    const contact = map.get(threadKey);
+    if (!contact.channelsPresent.includes(inboxChannel)) {
+      contact.channelsPresent.push(inboxChannel);
+    }
+    contact.messages.push(row);
+    if (row.push_name) contact.pushName = row.push_name;
+    if (row.human_requested && row.direction === "inbound") {
+      contact.humanRequested = true;
+      if (row.human_request_type && !contact.humanRequestType) {
+        contact.humanRequestType = row.human_request_type;
+      }
+    }
+  }
+  for (const contact of map.values()) {
+    contact.messages.sort((a, b) => {
+      const ca = a.created_at ?? "";
+      const cb = b.created_at ?? "";
+      return ca < cb ? -1 : ca > cb ? 1 : 0;
+    });
+    const last = contact.messages[contact.messages.length - 1];
+    applyGuestProfileFromMessageRow(contact, last);
+  }
+  return [...map.values()].sort((a, b) => {
+    const aLast = a.messages[a.messages.length - 1]?.created_at ?? "";
+    const bLast = b.messages[b.messages.length - 1]?.created_at ?? "";
+    return bLast.localeCompare(aLast);
+  });
+}
+
+export function contactMatchesChannelFilter(contact, channelFilter) {
+  if (channelFilter === "all") return true;
+  if (contact.inbox_channel === "unified") {
+    return (contact.channelsPresent ?? []).includes(channelFilter);
+  }
+  return contact.inbox_channel === channelFilter;
+}
+
+/** Default outbound channel when opening a unified (or single-channel) thread. */
+export function inferDefaultReplyChannel(contact, whapiSosActive = false) {
+  if (!contact) return "meta";
+  if (contact.inbox_channel !== "unified") {
+    return contact.inbox_channel === "whapi" ? "whapi" : "meta";
+  }
+  if (whapiSosActive) return "meta";
+  const last = contact.messages?.[contact.messages.length - 1];
+  const lastCh = last?.inbox_channel === "whapi" ? "whapi" : "meta";
+  return lastCh;
+}
+
 // ── Identity resolution (Smart Guest Identity) ───────────────────────────────
 // Precedence: DB-matched guest name > WhatsApp profile push name > raw phone.
 function displayName(contact) {
@@ -1209,11 +1291,15 @@ const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobil
                 }}>{identity.label}</span>
                 <span className="u-badge-nowrap" style={{
                   display: "inline-block",
-                  background: contact.inbox_channel === "whapi" ? "rgba(180, 83, 9, 0.12)" : "rgba(18, 140, 126, 0.12)",
-                  color: contact.inbox_channel === "whapi" ? "#B45309" : "#0F766E",
+                  background: contact.inbox_channel === "whapi" ? "rgba(180, 83, 9, 0.12)" : contact.inbox_channel === "unified" ? "rgba(99, 102, 241, 0.12)" : "rgba(18, 140, 126, 0.12)",
+                  color: contact.inbox_channel === "whapi" ? "#B45309" : contact.inbox_channel === "unified" ? "#4338CA" : "#0F766E",
                   fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: "var(--radius-sm)",
                 }}>
-                  {contact.inbox_channel === "whapi" ? "מכשיר הסוויטות" : "Dream Bot"}
+                  {contact.inbox_channel === "whapi"
+                    ? "מכשיר הסוויטות"
+                    : contact.inbox_channel === "unified"
+                      ? (contact.channelsPresent?.length > 1 ? "Dream Bot + Whapi" : contact.channelsPresent?.[0] === "whapi" ? "Whapi" : "Dream Bot")
+                      : "Dream Bot"}
                 </span>
                 {roomChip && (
                   <span className="u-badge-nowrap" style={{
@@ -2766,6 +2852,8 @@ export default function WhatsAppInbox({
   const [contacts, setContacts]   = useState([]); // grouped by phone+channel
   const [active, setActive]       = useState(null); // selected threadKey
   const [channelFilter, setChannelFilter] = useState("all"); // all | meta | whapi
+  const [replyChannel, setReplyChannel] = useState("meta"); // outbound channel for unified threads
+  const [whapiSosActive, setWhapiSosActive] = useState(false);
   const [loading, setLoading]     = useState(true);
   const [sending, setSending]     = useState(false);
   const [reply, setReply]         = useState("");
@@ -2973,7 +3061,7 @@ export default function WhatsAppInbox({
   const applyGrouping = useCallback(
     (rows) => {
       const reconciled = reconcileRowsWithGuestMap(rows);
-      return resolveClaimNames(resolveIdentityFallback(groupByPhone(reconciled)));
+      return resolveClaimNames(resolveIdentityFallback(groupByPhoneUnified(reconciled)));
     },
     [resolveIdentityFallback, resolveClaimNames, reconcileRowsWithGuestMap],
   );
@@ -2981,26 +3069,35 @@ export default function WhatsAppInbox({
   const markPhoneInboundRead = useCallback((contact) => {
     const phone = contact?.phone;
     if (!phone) return;
-    const inboxChannel = contact?.inbox_channel ?? "meta";
-    const threadKey = contact?.threadKey ?? inboxReadCursorKey(phone, inboxChannel);
+    const channels = contact?.inbox_channel === "unified"
+      ? (contact.channelsPresent?.length ? contact.channelsPresent : ["meta", "whapi"])
+      : [contact?.inbox_channel ?? "meta"];
     const now = new Date().toISOString();
-    readCursorsRef.current.set(threadKey, now);
+    for (const inboxChannel of channels) {
+      const threadKey = contact?.threadKey ?? inboxReadCursorKey(phone, inboxChannel);
+      readCursorsRef.current.set(
+        contact?.inbox_channel === "unified" ? inboxReadCursorKey(phone, inboxChannel) : threadKey,
+        now,
+      );
+    }
     allMsgsRef.current = applyAllReadCursors(allMsgsRef.current, readCursorsRef.current);
     setContacts(applyGrouping(allMsgsRef.current));
     bumpReadCursors();
     if (user?.id && supabase) {
-      supabase.from("inbox_read_cursors").upsert(
-        {
-          phone,
-          staff_id: user.id,
-          inbox_channel: inboxChannel,
-          last_read_at: now,
-          updated_at: now,
-        },
-        { onConflict: "phone,staff_id,inbox_channel" },
-      ).then(({ error }) => {
-        if (error) console.warn("[WhatsAppInbox] read cursor save failed:", error.message);
-      });
+      for (const inboxChannel of channels) {
+        supabase.from("inbox_read_cursors").upsert(
+          {
+            phone,
+            staff_id: user.id,
+            inbox_channel: inboxChannel,
+            last_read_at: now,
+            updated_at: now,
+          },
+          { onConflict: "phone,staff_id,inbox_channel" },
+        ).then(({ error }) => {
+          if (error) console.warn("[WhatsAppInbox] read cursor save failed:", error.message);
+        });
+      }
     }
   }, [applyGrouping, bumpReadCursors, user?.id]);
 
@@ -3264,17 +3361,34 @@ export default function WhatsAppInbox({
       setThreadDbCount(null);
       return;
     }
-    const { count, error: err } = await supabase
-      .from("whatsapp_conversations")
-      .select("id", { count: "exact", head: true })
-      .eq("inbox_channel", inboxChannel)
-      .in("phone", phoneVariants(phone));
-    if (err) {
-      console.warn("[WA-inbox] fetchThreadDbCount error:", err.message);
+    const channels = inboxChannel === "unified" ? ["meta", "whapi"] : [inboxChannel];
+    let total = 0;
+    for (const ch of channels) {
+      const { count, error: err } = await supabase
+        .from("whatsapp_conversations")
+        .select("id", { count: "exact", head: true })
+        .eq("inbox_channel", ch)
+        .in("phone", phoneVariants(phone));
+      if (err) {
+        console.warn("[WA-inbox] fetchThreadDbCount error:", err.message);
+        return;
+      }
+      total += count ?? 0;
+    }
+    setThreadDbCount(total);
+  }, []);
+
+  const fetchThreadHistoryForContact = useCallback(async (phone, inboxChannel = "meta", opts = {}) => {
+    if (!phone) return;
+    if (inboxChannel === "unified") {
+      await Promise.all([
+        fetchThreadHistory(phone, "meta", opts),
+        fetchThreadHistory(phone, "whapi", opts),
+      ]);
       return;
     }
-    setThreadDbCount(count ?? null);
-  }, []);
+    await fetchThreadHistory(phone, inboxChannel, opts);
+  }, [fetchThreadHistory]);
 
   const refreshActiveThread = useCallback(async () => {
     const selected = contacts.find((c) => c.threadKey === active);
@@ -3282,14 +3396,14 @@ export default function WhatsAppInbox({
     setThreadRefreshBusy(true);
     try {
       await Promise.all([
-        fetchThreadHistory(selected.phone, selected.inbox_channel, { force: true }),
+        fetchThreadHistoryForContact(selected.phone, selected.inbox_channel, { force: true }),
         fetchThreadDbCount(selected.phone, selected.inbox_channel),
       ]);
       setLastUpdated(new Date());
     } finally {
       setThreadRefreshBusy(false);
     }
-  }, [active, contacts, fetchThreadHistory, fetchThreadDbCount]);
+  }, [active, contacts, fetchThreadHistoryForContact, fetchThreadDbCount]);
 
   // ── Full-inbox search (message content + guests not yet loaded) ──────────
   // displayContacts' rosterSearch filter (below) only matches contacts already
@@ -3744,9 +3858,10 @@ export default function WhatsAppInbox({
     setAiSuggestError(null);
     setRouteDraft(null);
     markPhoneInboundRead(contact);
-    fetchThreadHistory(contact.phone, contact.inbox_channel);
+    setReplyChannel(inferDefaultReplyChannel(contact, whapiSosActive));
+    fetchThreadHistoryForContact(contact.phone, contact.inbox_channel);
     fetchThreadDbCount(contact.phone, contact.inbox_channel);
-  }, [isMobile, markPhoneInboundRead, fetchThreadHistory, fetchThreadDbCount]);
+  }, [isMobile, markPhoneInboundRead, fetchThreadHistoryForContact, fetchThreadDbCount, whapiSosActive]);
 
   useEffect(() => {
     if (mobileScreen === "list") {
@@ -4202,11 +4317,16 @@ export default function WhatsAppInbox({
     supabase
       .from("bot_config")
       .select("config_key, config_value")
-      .in("config_key", ["bot_active", "bot_active_whapi"])
+      .in("config_key", ["bot_active", "bot_active_whapi", "whapi_guest_sos_active"])
       .then(({ data }) => {
         (data ?? []).forEach((row) => {
           if (row.config_key === "bot_active") setBotActive(row.config_value !== "false");
           if (row.config_key === "bot_active_whapi") setBotActiveWhapi(row.config_value !== "false");
+          if (row.config_key === "whapi_guest_sos_active") {
+            const sosOn = row.config_value === "true";
+            setWhapiSosActive(sosOn);
+            if (sosOn) setReplyChannel("meta");
+          }
         });
       });
   }, []);
@@ -4384,11 +4504,17 @@ export default function WhatsAppInbox({
   // Moved below derived `thread` — scroll when active chat grows (realtime/poll).
   const activeContact   = contacts.find((c) => c.threadKey === active) ?? null;
   const thread          = activeContact?.messages ?? [];
+  const activeInboxChannel = activeContact?.inbox_channel ?? null;
 
   useEffect(() => {
     if (activeContact) fetchThreadDbCount(activeContact.phone, activeContact.inbox_channel);
     else setThreadDbCount(null);
   }, [activeContact, thread.length, lastUpdated, fetchThreadDbCount]);
+
+  useEffect(() => {
+    if (!whapiSosActive || activeInboxChannel !== "unified") return;
+    setReplyChannel("meta");
+  }, [whapiSosActive, activeInboxChannel, active]);
 
   useEffect(() => {
     if (activeContact?.guestName) setNavGuestName(null);
@@ -4569,7 +4695,9 @@ export default function WhatsAppInbox({
         body: {
           trigger: "inbox_reply",
           phone: activeContact.phone,
-          inbox_channel: activeContact.inbox_channel ?? "meta",
+          inbox_channel: activeContact.inbox_channel === "unified"
+            ? replyChannel
+            : (activeContact.inbox_channel ?? "meta"),
           message: reply.trim(),
         },
       });
@@ -4632,7 +4760,7 @@ export default function WhatsAppInbox({
     rosterFilter === "spa_daypass" ? spaDaypassContacts :
     activeRosterContacts;
   const channelScopedRosterSource = rosterSource.filter((c) =>
-    channelFilter === "all" ? true : c.inbox_channel === channelFilter,
+    channelFilter === "all" ? true : contactMatchesChannelFilter(c, channelFilter),
   );
   // Departed contacts hidden by the current channel filter — surfaced as a
   // count hint (not silently invisible) so staff filtering to "מכשיר
@@ -4640,7 +4768,7 @@ export default function WhatsAppInbox({
   // instead of reading an empty/short roster as "nothing on this channel."
   const departedContactsForChannel = channelFilter === "all"
     ? departedContacts
-    : departedContacts.filter((c) => c.inbox_channel === channelFilter);
+    : departedContacts.filter((c) => contactMatchesChannelFilter(c, channelFilter));
   const displayContacts = useMemo(() => {
     let list = channelScopedRosterSource;
     const q = rosterSearch.trim().toLowerCase();
@@ -5109,9 +5237,43 @@ export default function WhatsAppInbox({
             </div>
           )}
           {activeContact && (
-            <div style={{ fontSize: 11, opacity: 0.9, marginTop: 2 }}>
-              {activeContact.inbox_channel === "whapi" ? "מכשיר הסוויטות" : "Dream Bot"}
-            </div>
+            activeContact.inbox_channel === "unified" ? (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 4, alignItems: "center" }}>
+                <span style={{ fontSize: 10, opacity: 0.85 }}>ענה דרך:</span>
+                <button
+                  type="button"
+                  onClick={() => setReplyChannel("meta")}
+                  style={{
+                    fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 6, cursor: "pointer",
+                    border: replyChannel === "meta" ? "1px solid rgba(255,255,255,0.9)" : "1px solid rgba(255,255,255,0.35)",
+                    background: replyChannel === "meta" ? "rgba(15,118,110,0.45)" : "rgba(255,255,255,0.1)",
+                    color: "white",
+                  }}
+                >
+                  Dream Bot
+                </button>
+                <button
+                  type="button"
+                  onClick={() => !whapiSosActive && setReplyChannel("whapi")}
+                  disabled={whapiSosActive}
+                  title={whapiSosActive ? "Whapi חסום — שליחה רק דרך Dream Bot" : "שליחה דרך מכשיר הסוויטות"}
+                  style={{
+                    fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 6,
+                    cursor: whapiSosActive ? "not-allowed" : "pointer",
+                    opacity: whapiSosActive ? 0.45 : 1,
+                    border: replyChannel === "whapi" ? "1px solid rgba(255,255,255,0.9)" : "1px solid rgba(255,255,255,0.35)",
+                    background: replyChannel === "whapi" ? "rgba(180,83,9,0.45)" : "rgba(255,255,255,0.1)",
+                    color: "white",
+                  }}
+                >
+                  מכשיר הסוויטות
+                </button>
+              </div>
+            ) : (
+              <div style={{ fontSize: 11, opacity: 0.9, marginTop: 2 }}>
+                {activeContact.inbox_channel === "whapi" ? "מכשיר הסוויטות" : "Dream Bot"}
+              </div>
+            )
           )}
         </button>
         <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 4 : 8, flexShrink: 0, position: "relative" }}>
@@ -5836,16 +5998,24 @@ export default function WhatsAppInbox({
           </div>
         )}
 
-        {activeContact && (
+        {activeContact && (() => {
+          const outboundCh = activeContact.inbox_channel === "unified"
+            ? replyChannel
+            : (activeContact.inbox_channel ?? "meta");
+          return (
           <div style={{
             padding: isMobile ? "6px 12px 0" : "6px var(--space-md) 0",
             fontSize: 11,
             fontWeight: 700,
-            color: activeContact.inbox_channel === "whapi" ? "#B45309" : "#0F766E",
+            color: outboundCh === "whapi" ? "#B45309" : "#0F766E",
           }}>
-            שליחה דרך: {activeContact.inbox_channel === "whapi" ? "מכשיר הסוויטות (Whapi)" : "Dream Bot (Meta)"}
+            שליחה דרך: {outboundCh === "whapi" ? "מכשיר הסוויטות (Whapi)" : "Dream Bot (Meta)"}
+            {whapiSosActive && activeContact.inbox_channel === "unified" && (
+              <span style={{ fontWeight: 600, color: "#0369A1", marginRight: 6 }}> · SOS פעיל</span>
+            )}
           </div>
-        )}
+          );
+        })()}
 
         <div
           className={isMobile ? "wa-mobile-composer" : undefined}

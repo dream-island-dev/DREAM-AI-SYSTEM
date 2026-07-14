@@ -1,3 +1,5 @@
+2026-07-14 | Whapi SOS service fallback — `dream_service_fallback` Meta template (כפתורים: יש לי בקשה | הכל בסדר תודה); `guest-emergency-broadcast` להגעות היום בלבד; Inbox מאוחד per-phone + בורר ערוץ שליחה | ACC: WhapiEmergencyBroadcastPanel; webhook ack לכפתורים.
+
 2026-07-14 | Whapi failover + Dream Bot full guest outbound — migration 205: SOS ידני ב-ACC, auto-failover on /health probe, daypass=Meta only (never Whapi); spa sync opt-in suppress; missed_window for spa stages; 2.5s throttle in club broadcast | ACC Pulse: Whapi status + בדוק עכשיו + החזר ל-Whapi.
 
 2026-07-14 | Housekeeping WA apostrophe normalize — `16 צ׳ק אין` / iOS U+2019 geresh variants → check-in | housekeepingWaParse normalize before match; whapi-webhook deployed.

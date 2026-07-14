@@ -108,6 +108,11 @@ import {
   DAYPASS_WINDOW_OPENER_ACK_HE,
   isDaypassWindowOpenerMessage,
 } from "../_shared/daypassWindowOpener.ts";
+import {
+  isServiceFallbackButtonReply,
+  SERVICE_FALLBACK_OK_ACK_HE,
+  SERVICE_FALLBACK_REQUEST_ACK_HE,
+} from "../_shared/serviceFallbackTemplate.ts";
 import { sanitizeMetaRecipientPhone } from "../_shared/metaPhone.ts";
 import {
   extractArrivalTimeFromText,
@@ -3299,6 +3304,7 @@ Deno.serve(async (req: Request) => {
         });
 
         // ── "כן, מגיעים! ✨" — arrival confirmed → stage_2_arrival script ──
+        const serviceFallbackKind = isServiceFallbackButtonReply(buttonTitle, { buttonTitle });
         if (isArrivalConfirmationMessage(buttonTitle, { buttonTitle, buttonId })) {
           await handleStage2ArrivalConfirmation(supabase, {
             scripts,
@@ -3312,6 +3318,20 @@ Deno.serve(async (req: Request) => {
             msgId,
           });
           console.info(`[webhook] ✅ button reply handled — "${buttonTitle}" phone:${phone}`);
+          continue;
+
+        } else if (serviceFallbackKind) {
+          const ack = serviceFallbackKind === "ok" ? SERVICE_FALLBACK_OK_ACK_HE : SERVICE_FALLBACK_REQUEST_ACK_HE;
+          try {
+            await sendReply(phone, ack, { scripted: true });
+          } catch (e) {
+            console.error("[webhook] service_fallback ack error:", (e as Error).message);
+          }
+          await insertGuestOutboundIfNotMuted(supabase, {
+            phone, guest_id: guestId, message: ack, wa_message_id: null,
+            intent: serviceFallbackKind === "ok" ? "service_fallback_ok" : "service_fallback_request",
+          });
+          console.info(`[webhook] ✅ service_fallback ${serviceFallbackKind} — phone:${phone}`);
           continue;
 
         // ── Day-pass window opener («מחכים לכם!») — ack only; inbound already

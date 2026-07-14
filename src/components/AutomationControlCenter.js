@@ -34,6 +34,7 @@ import {
   resolveGuestPipelineSegment,
 } from "../utils/pipelineSegment";
 import { scriptKeyFriendly, isGarbledDbText, BOT_SCRIPT_FRIENDLY } from "../utils/botScriptLabels";
+import WhapiEmergencyBroadcastPanel from "./WhapiEmergencyBroadcastPanel";
 
 const JOURNEY_PHASE_LABELS = {
   pre_arrival: "🌴 לפני ההגעה",
@@ -3103,6 +3104,10 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                           : ""}
                       {" "}אקרוקת חדרנות (N✅) עדיין תלויה במכשיר הפיזי.
                     </div>
+                  )}
+                  {(queueData.systemStatus.whapiGuestSosActive
+                    || queueData.systemStatus.whapiDevice?.healthy === false) && (
+                    <WhapiEmergencyBroadcastPanel onToast={showToast} />
                   )}
                   {/* ── Whapi device status + failover controls ── */}
                   <div style={{

@@ -39,6 +39,7 @@ const LABEL_MAP: Record<string, string> = {
   dream_survey_invite:         "סקר חוויית אורח (בילוי יומי)",
   dream_daypass_eve:           "ערב לפני — בילוי יומי (פותח חלון)",
   dream_spa_warmup:            "חימום ספא (בילוי יומי)",
+  dream_service_fallback:      "גיבוי שירות — Dream Bot (חירום Whapi)",
   hello_world:                 "בדיקת מערכת",
 };
 
@@ -64,6 +65,7 @@ const SORT_MAP: Record<string, number> = {
   dream_survey_invite:         18,
   dream_daypass_eve:           19,
   dream_spa_warmup:            20,
+  dream_service_fallback:      21,
   hello_world:                 99,
 };
 
