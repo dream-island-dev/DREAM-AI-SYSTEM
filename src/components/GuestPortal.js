@@ -187,6 +187,7 @@ function SurveySection({ guest, token, onToast, surveyUi, clubUi }) {
       });
       if (error || !data?.ok) throw new Error(data?.error ?? error?.message ?? "שגיאה");
       setResult({
+        positiveReview: !!data.positiveReview,
         googleCta: !!data.googleCta,
         reviewUrl: data.reviewUrl ?? null,
         suitesCta: !!data.suitesCta,
@@ -227,36 +228,24 @@ function SurveySection({ guest, token, onToast, surveyUi, clubUi }) {
   }
 
   if (result) {
-    const hasSuites = result.suitesCta && result.suitesUrl;
     const hasGoogle = result.googleCta && result.reviewUrl;
     const showClub = result.clubOffer && !clubStatus;
+    const showSuitesAfterJoin =
+      result.suitesCta && result.suitesUrl && (clubStatus === "active" || !result.clubOffer);
+    const suitesHref = result.suitesUrl?.startsWith("http")
+      ? result.suitesUrl
+      : `https://${result.suitesUrl}`;
+
     return (
       <div id="survey" style={{ padding: "0 16px 36px", scrollMarginTop: 24 }}>
         <GlassPanel title="📊 סקר חוויית אורח">
           <div style={{ padding: "22px 16px", textAlign: "center" }}>
             <div style={{
               fontSize: 14, color: XOS_TEXT, lineHeight: 1.8,
-              marginBottom: (hasSuites || hasGoogle || showClub || clubStatus) ? 16 : 0,
+              marginBottom: (hasGoogle || showClub || clubStatus || showSuitesAfterJoin) ? 16 : 0,
             }}>
               תודה רבה על המשוב! 🙏 זה עוזר לנו להמשיך ולהשתפר.
             </div>
-            {hasSuites && (
-              <a
-                href={result.suitesUrl.startsWith("http") ? result.suitesUrl : `https://${result.suitesUrl}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{
-                  display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8,
-                  width: "100%", maxWidth: 320, boxSizing: "border-box",
-                  marginBottom: (hasGoogle || showClub) ? 12 : 0,
-                  padding: "12px 22px", borderRadius: 14,
-                  background: `linear-gradient(135deg, ${XOS_GOLD}, #B8960C)`,
-                  color: "#0f172a", fontSize: 14, fontWeight: 700, textDecoration: "none",
-                }}
-              >
-                {result.suitesCtaLabel || "🛏️ רוצים לחוות לינה בסוויטה?"}
-              </a>
-            )}
             {hasGoogle && (
               <a
                 href={result.reviewUrl.startsWith("http") ? result.reviewUrl : `https://${result.reviewUrl}`}
@@ -265,11 +254,10 @@ function SurveySection({ guest, token, onToast, surveyUi, clubUi }) {
                 style={{
                   display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8,
                   width: "100%", maxWidth: 320, boxSizing: "border-box",
-                  marginBottom: showClub ? 12 : 0,
+                  marginBottom: (showClub || clubStatus || showSuitesAfterJoin) ? 12 : 0,
                   padding: "12px 22px", borderRadius: 14,
-                  background: hasSuites ? "rgba(255,255,255,0.06)" : `linear-gradient(135deg, ${XOS_GOLD}, #B8960C)`,
-                  border: hasSuites ? `1px solid ${XOS_BORDER}` : "none",
-                  color: hasSuites ? XOS_TEXT : "#0f172a", fontSize: 14, fontWeight: 700, textDecoration: "none",
+                  background: `linear-gradient(135deg, ${XOS_GOLD}, #B8960C)`,
+                  color: "#0f172a", fontSize: 14, fontWeight: 700, textDecoration: "none",
                 }}
               >
                 ⭐ נשמח לביקורת קצרה בגוגל
@@ -284,6 +272,23 @@ function SurveySection({ guest, token, onToast, surveyUi, clubUi }) {
             )}
             {clubStatus === "active" && (
               <GuestClubOfferCard ui={club} status="active" />
+            )}
+            {showSuitesAfterJoin && (
+              <a
+                href={suitesHref}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8,
+                  width: "100%", maxWidth: 320, boxSizing: "border-box",
+                  marginTop: clubStatus === "active" ? 12 : 0,
+                  padding: "12px 22px", borderRadius: 14,
+                  background: `linear-gradient(135deg, ${XOS_GOLD}, #B8960C)`,
+                  color: "#0f172a", fontSize: 14, fontWeight: 700, textDecoration: "none",
+                }}
+              >
+                {result.suitesCtaLabel || "🛏️ רוצים לחוות לינה בסוויטה?"}
+              </a>
             )}
           </div>
         </GlassPanel>

@@ -548,7 +548,11 @@ export function checkEligibility(
   // through from the Spa Board sync (guest_profile.spa / CLAUDE.md §2
   // spa_board), so comparing it to the same-day visit's arrival_date is the
   // existing source of truth, not a new join.
-  if (stage.stage_key === "spa_warmup_daypass" || stage.stage_key === "survey_invite_daypass") {
+  if (
+    stage.stage_key === "night_before_daypass" ||
+    stage.stage_key === "spa_warmup_daypass" ||
+    stage.stage_key === "survey_invite_daypass"
+  ) {
     const spaDateStr = String(guest.spa_date ?? "").trim().slice(0, 10);
     const arrivalStr = String(guest.arrival_date ?? "").trim().slice(0, 10);
     if (!spaDateStr || spaDateStr !== arrivalStr) return "no_spa_visit_today";

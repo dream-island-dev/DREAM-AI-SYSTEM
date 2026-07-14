@@ -368,7 +368,7 @@ function spaWarmupStage(overrides: Partial<AutomationStage> = {}): AutomationSta
     day_offset: null,
     local_time: null,
     local_time_end: null,
-    offset_hours: -1.25,
+    offset_hours: -0.5, // default 30 minutes before spa_time (ACC can change X)
     applies_to: "non_suite",
     meta_template_name: null,
     session_message_script_key: "spa_warmup_daypass",
@@ -402,14 +402,22 @@ function surveyInviteStage(overrides: Partial<AutomationStage> = {}): Automation
   };
 }
 
-Deno.test("spa_warmup_daypass: dueNow exactly at spa_time-75min, not before", () => {
-  const guest = daypassSpaGuest({ spa_time: "16:00" }); // warmup instant = 14:45 Israel
-  const before = resolveStageSchedule(spaWarmupStage(), guest, israelInstant("2026-07-13", 14, 44));
+Deno.test("spa_warmup_daypass: dueNow exactly at spa_time-30min, not before", () => {
+  const guest = daypassSpaGuest({ spa_time: "16:00" }); // warmup instant = 15:30 Israel
+  const before = resolveStageSchedule(spaWarmupStage(), guest, israelInstant("2026-07-13", 15, 29));
   assertEquals(before.dueNow, false);
   assertEquals(before.skipReason, null);
-  const due = resolveStageSchedule(spaWarmupStage(), guest, israelInstant("2026-07-13", 14, 45));
+  const due = resolveStageSchedule(spaWarmupStage(), guest, israelInstant("2026-07-13", 15, 30));
   assertEquals(due.dueNow, true);
   assertEquals(due.skipReason, null);
+});
+
+Deno.test("spa_warmup_daypass: custom X minutes before (ACC offset_hours)", () => {
+  const guest = daypassSpaGuest({ spa_time: "16:00" });
+  // 45 minutes before → 15:15
+  const stage = spaWarmupStage({ offset_hours: -0.75 });
+  assertEquals(resolveStageSchedule(stage, guest, israelInstant("2026-07-13", 15, 14)).dueNow, false);
+  assertEquals(resolveStageSchedule(stage, guest, israelInstant("2026-07-13", 15, 15)).dueNow, true);
 });
 
 Deno.test("spa_warmup_daypass: missing spa_time → missing_anchor_timestamp (no silent fake time)", () => {
@@ -483,6 +491,22 @@ Deno.test("survey_invite_daypass: needs_callback=true does NOT mute the automati
   const result = resolveStageSchedule(surveyInviteStage(), guest, israelInstant("2026-07-13", 17, 0));
   assertEquals(result.skipReason, null);
   assertEquals(result.dueNow, true);
+});
+
+function nightBeforeDaypassStage(overrides: Partial<AutomationStage> = {}): AutomationStage {
+  return {
+    ...nightBeforeStage({ applies_to: "non_suite" }),
+    stage_key: "night_before_daypass",
+    display_name: "Stage 2.5 — תזכורת ערב לפני (בילוי יומי)",
+    session_message_script_key: "night_before_daypass",
+    ...overrides,
+  };
+}
+
+Deno.test("night_before_daypass: no spa that day → no_spa_visit_today (spa cohort gate)", () => {
+  const guest = daypassSpaGuest({ arrival_date: "2026-07-14", spa_date: null, spa_time: null });
+  const result = resolveStageSchedule(nightBeforeDaypassStage(), guest, israelInstant("2026-07-13", 19, 30));
+  assertEquals(result.skipReason, "no_spa_visit_today");
 });
 
 // ── checkout_fb_daypass vs. survey_invite_daypass dedupe (Mike lock, 2026-07-13) ──

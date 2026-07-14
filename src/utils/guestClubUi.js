@@ -7,6 +7,8 @@ export const BOT_CONFIG_CLUB_UI_KEY = "guest_club_ui";
 export const DEFAULT_GUEST_CLUB_UI = Object.freeze({
   title: "🌴 מועדון לקוחות Dream Island",
   body: "רוצים לקבל הצעות בלעדיות לאירועים וסדנאות מיוחדים במתחם?",
+  consent_line:
+    "בלחיצה על «כן» אתם מאשרים לקבל הודעות שיווק ב-WhatsApp מ-Dream Island. ניתן לבטל בכל עת.",
   join_label: "כן, אני רוצה ✨",
   decline_label: "לא תודה",
   joined_confirm: "אתם במועדון — נעדכן בהצעות בלעדיות ✨",
@@ -37,6 +39,7 @@ export function normalizeGuestClubUi(raw) {
   return {
     title: trimLabel(parsed.title, DEFAULT_GUEST_CLUB_UI.title),
     body: trimLabel(parsed.body, DEFAULT_GUEST_CLUB_UI.body),
+    consent_line: trimLabel(parsed.consent_line, DEFAULT_GUEST_CLUB_UI.consent_line),
     join_label: trimLabel(parsed.join_label, DEFAULT_GUEST_CLUB_UI.join_label),
     decline_label: trimLabel(parsed.decline_label, DEFAULT_GUEST_CLUB_UI.decline_label),
     joined_confirm: trimLabel(parsed.joined_confirm, DEFAULT_GUEST_CLUB_UI.joined_confirm),

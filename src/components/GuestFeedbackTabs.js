@@ -10,6 +10,7 @@ import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import GuestSurveyForm from "./GuestSurveyForm";
 import GuestClubOfferCard from "./GuestClubOfferCard";
 import GuestClubBroadcastPanel from "./GuestClubBroadcastPanel";
+import SurveyInviteTestPanel from "./SurveyInviteTestPanel";
 import {
   BOT_CONFIG_SURVEY_UI_KEY,
   DEFAULT_GUEST_SURVEY_UI,
@@ -158,7 +159,7 @@ function SurveyLabelsEditorModal({ draft, onChange, onSave, onClose, saving }) {
         </div>
         <p style={{ fontSize: 12.5, color: "var(--text-muted)", lineHeight: 1.6, marginBottom: 16 }}>
           אפשר לשנות טקסטים, להוסיף קטגוריות דירוג חדשות או להסיר קיימות (מינימום {SURVEY_MIN_CATEGORIES}, מקסימום {SURVEY_MAX_CATEGORIES}).
-          אחרי דירוג חיובי (ממוצע ≥8 וחוויה כללית ≥8) האורח יראה קישור להזמנת סוויטה.
+          אחרי דירוג חיובי (ממוצע ≥8 וחוויה כללית ≥8) האורח יראה הצעת מועדון (עם הסכמה ל-WhatsApp), ואחרי הצטרפות — קישור להזמנת סוויטה.
           דרושה הרשאת admin / super_admin.
         </p>
 
@@ -718,6 +719,8 @@ function SurveysView() {
           </div>
         </div>
       )}
+
+      <SurveyInviteTestPanel onToast={(type, msg) => showToastMsg(type, msg)} />
 
       <GuestClubBroadcastPanel
         activeCount={clubMembers.length}

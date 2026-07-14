@@ -43,9 +43,14 @@ export default function GuestClubOfferCard({
       <div style={{ fontSize: 14, fontWeight: 700, color: XOS_GOLD, marginBottom: 8 }}>
         {club.title}
       </div>
-      <div style={{ fontSize: 13, color: XOS_TEXT, lineHeight: 1.7, marginBottom: 14 }}>
+      <div style={{ fontSize: 13, color: XOS_TEXT, lineHeight: 1.7, marginBottom: 10 }}>
         {club.body}
       </div>
+      {club.consent_line && (
+        <div style={{ fontSize: 11, color: XOS_MUTED, lineHeight: 1.6, marginBottom: 14 }}>
+          {club.consent_line}
+        </div>
+      )}
       <div style={{ display: "flex", flexDirection: "column", gap: 8, alignItems: "center" }}>
         <button
           type="button"

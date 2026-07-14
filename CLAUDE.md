@@ -40,7 +40,7 @@ Dream Island Resort Management System (XOS) — אפליקציית ניהול מ
 
 1.1 Guest Experience Survey + Spa warm-up + Guest Club (DEPLOYED 2026-07-14)
 
-MVP אורח: בילוי יומי + ספא → סקר → הצטרפות מועדון (`guest_club_members`). צוות: Feedback → סקרים (preview/editor + רשימת חברים + שידור הצעות). **שידור:** `guest-club-broadcast` — רק status=active; Whapi טקסט או Meta template; dry-run + אישור; מגבלת אצווה 80.
+MVP אורח: בילוי יומי + ספא → סקר → הצטרפות מועדון (`guest_club_members`). **זרימה (2026-07-14):** 3 הודעות WA לקוהורט ספא בלבד (`night_before_daypass` + `spa_warmup_daypass` + `survey_invite_daypass`); מועדון רק אחרי סקר חיובי (≥8); קישור סוויטות אחרי join; `consent_line` ב-`guest_club_ui`. צוות: Feedback → סקרים. **שידור:** `guest-club-broadcast` — רק status=active.
 
 2. מפת ניתוב מרכזית (activePage ב-App.js)
 

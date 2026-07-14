@@ -1,3 +1,5 @@
+2026-07-14 | Day-pass spa journey polish — club only after positive survey; suites CTA after club join; consent_line for WA marketing; night_before_daypass spa-cohort gate | guest-portal-survey + GuestPortal + automationSchedule.
+
 2026-07-14 | RoomBoard auto-sync — guest-aware display (resolveEffectiveRoomStatus) + silent DB reconcile on load/realtime; no manual button | roomBoardGuestResolve.js + roomBoardSync.js; WHAPI still source for cleaning/check-in/out events.
 
 2026-07-14 | Feedback → סקרים: SurveyInviteTestPanel — preview WA invite + open portal #survey + single-guest Whapi send with confirm | Same `survey_invite_daypass` script; hermetic one-at-a-time.

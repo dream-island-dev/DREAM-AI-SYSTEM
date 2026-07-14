@@ -173,8 +173,8 @@ serve(async (req: Request) => {
       ? (surveyUi.suites_cta_url || DEFAULT_SUITES_CTA_URL)
       : null;
 
-    // Club offer after every successful survey — hide when already active.
-    let clubOffer = true;
+    // Club offer only after a positive survey (same gate as suites CTA).
+    let clubOffer = suitesCtaShown;
     const { data: clubRow } = await supabase
       .from("guest_club_members")
       .select("status")
@@ -183,8 +183,6 @@ serve(async (req: Request) => {
     if (clubRow?.status === "active" || guest.club_status === "active") {
       clubOffer = false;
     }
-    // Declined/opted_out still get one silent skip of the offer for this visit
-    // if they already decided — don't nag.
     if (clubRow?.status === "declined" || clubRow?.status === "opted_out") {
       clubOffer = false;
     }
@@ -192,6 +190,7 @@ serve(async (req: Request) => {
     return new Response(
       JSON.stringify({
         ok: true,
+        positiveReview: suitesCtaShown,
         googleCta: googleCtaShown,
         reviewUrl: googleCtaShown ? (GOOGLE_REVIEW_URL || "dream-island.co.il") : null,
         suitesCta: suitesCtaShown,
