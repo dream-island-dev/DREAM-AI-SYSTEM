@@ -1,3 +1,11 @@
+2026-07-14 | RoomBoard auto-sync — guest-aware display (resolveEffectiveRoomStatus) + silent DB reconcile on load/realtime; no manual button | roomBoardGuestResolve.js + roomBoardSync.js; WHAPI still source for cleaning/check-in/out events.
+
+2026-07-14 | Feedback → סקרים: SurveyInviteTestPanel — preview WA invite + open portal #survey + single-guest Whapi send with confirm | Same `survey_invite_daypass` script; hermetic one-at-a-time.
+
+2026-07-14 | Day-pass spa warmup — default 30 min before spa_time + ACC «X דקות לפני» editor; daypass channel → Whapi; migration 203 | Hermetic: spa cohort gate + msg_spa_warmup_sent + claim/dedup + cron 2.5s pulse. Stages morning/mid/checkout stay off intentionally.
+
+2026-07-14 | Whapi suites restore after SOS — `WHAPI_GUEST_SOS_META` unset; `guest_suites_channel=whapi`; day-pass left `off`; redeployed automation-queue/whatsapp-cron/whatsapp-send/whapi-webhook | ACC Pulse: no SOS banner; Suites=Whapi.
+
 2026-07-14 | Move Guest modal — room picker shows free/full by appointment time slot (home first); full rooms visible with Override | Reuses roomOccupancyAtSlot from spaStickyRoom.js.
 
 2026-07-14 | Spa «יישור יום» safe align — greedy capacity check + cascade + parking-room mutual swaps; blocked list shows time/therapist + dismiss | Still therapist-sticky (move guests home only). No migration.

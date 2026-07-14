@@ -5,7 +5,7 @@
 // • Confirmation modal before marking a room "פנוי"
 // • Auto-notifies arriving guest via room-clean-notify Edge Function
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { supabase } from "../supabaseClient";
 import { SUITE_REGISTRY, SUITE_SECTIONS } from "../data/suiteRegistry";
 import {
@@ -13,6 +13,20 @@ import {
   skipApprovalAndCheckIn,
   releaseApprovalGateOnly,
 } from "../utils/suiteCheckinSync";
+import { israelTodayStr, israelDateOffsetStr } from "../utils/guestTiming";
+import { isPreArrivalTodayGuest } from "../utils/guestCheckinMatrix";
+import {
+  buildRoomGuestMap,
+  isGuestInStay,
+  isArrivalTodayGuest,
+  isArrivalTomorrowGuest,
+} from "../utils/roomBoardGuestResolve";
+import {
+  detectRoomSyncMismatch,
+  planRoomBoardReconcile,
+  applyRoomBoardReconcile,
+  resolveEffectiveRoomStatus,
+} from "../utils/roomBoardSync";
 
 // ── Suite definitions — driven by the physical registry (26 suites) ───────
 const SUITES = SUITE_REGISTRY.map(name => {
@@ -89,6 +103,10 @@ const TR = {
     toastSkipGate:   (id) => `סוויטה ${id} — צ'ק-אין בלי הודעה ✓`,
     toastReleaseGate:(id) => `סוויטה ${id} — שער אישור נסגר`,
     toastCleanDone:  (id) => `סוויטה ${id} — ממתין לאישור מנהל 🔔`,
+    arrivalsToday:   "הגעות היום",
+    arrivalToday:    "🟡 הגעה היום",
+    arrivalTomorrow: "🔵 הגעה מחר",
+    arrivalUpcoming: "🔵 הגעה קרובה",
   },
   en: {
     header:          "🏨 Room Board",
@@ -123,6 +141,10 @@ const TR = {
     toastSkipGate:   (id) => `Room ${id} — check-in without message ✓`,
     toastReleaseGate:(id) => `Room ${id} — approval gate closed`,
     toastCleanDone:  (id) => `Room ${id} — Ready for guest ✓`,
+    arrivalsToday:   "Today's arrivals",
+    arrivalToday:    "🟡 Arriving today",
+    arrivalTomorrow: "🔵 Arriving tomorrow",
+    arrivalUpcoming: "🔵 Upcoming arrival",
   },
 };
 
@@ -145,6 +167,7 @@ const STATUSES = ["תפוס", "פנוי", "לניקיון", "בניקיון", "�
 export default function RoomBoard({ isKioskMode = false, onLogout }) {
   const [statusMap,   setStatusMap]   = useState({});
   const [guests,      setGuests]      = useState([]);
+  const [suiteRows,   setSuiteRows]   = useState([]);
   const [loading,     setLoading]     = useState(true);
   const [filter,      setFilter]      = useState(isKioskMode ? "לניקיון" : "הכל");
   const [updating,    setUpdating]    = useState(null);
@@ -155,46 +178,88 @@ export default function RoomBoard({ isKioskMode = false, onLogout }) {
   const [notifyState, setNotifyState] = useState({});
 
   const t = TR[lang];
+  const syncLock = useRef(false);
 
-  // ── Fetch ───────────────────────────────────────────────────────────────
-  const fetchAll = useCallback(async () => {
-    if (!supabase) return;
-    const [{ data: statuses }, { data: guestRows }] = await Promise.all([
-      supabase
-        .from("room_status")
-        .select("room_id, status, cleaning_started_at, last_clean_duration_sec"),
-      supabase
-        .from("guests")
-        .select("id, name, room, suite_name, arrival_date, departure_date, status, phone, spa_time")
-        .in("status", ["checked_in", "room_ready", "pending", "expected"]),
-    ]);
-    if (statuses) {
+  // ── Fetch + auto-reconcile room_status ↔ guests (no manual button) ─────
+  const syncBoard = useCallback(async () => {
+    if (!supabase || syncLock.current) return;
+    syncLock.current = true;
+    try {
+      const today = israelTodayStr();
+      const weekAhead = israelDateOffsetStr(7, today);
+      const [{ data: statuses }, { data: guestRows }, { data: suiteRoomRows }] = await Promise.all([
+        supabase
+          .from("room_status")
+          .select("room_id, status, cleaning_started_at, last_clean_duration_sec"),
+        supabase
+          .from("guests")
+          .select("id, name, room, suite_name, arrival_date, departure_date, status, phone, spa_time")
+          .neq("status", "cancelled")
+          .or(`status.eq.checked_in,and(arrival_date.gte.${today},arrival_date.lte.${weekAhead})`)
+          .in("status", ["checked_in", "room_ready", "pending", "expected"]),
+        supabase
+          .from("suite_rooms")
+          .select("guest_id, room_display, room_name, suite_type, arrival_date")
+          .not("guest_id", "is", null)
+          .gte("arrival_date", today)
+          .lte("arrival_date", weekAhead),
+      ]);
+
+      const guestList = guestRows ?? [];
+      const suiteList = suiteRoomRows ?? [];
+      const guestByRoom = buildRoomGuestMap(SUITE_REGISTRY, guestList, suiteList, today);
+
       const map = {};
-      statuses.forEach(r => {
+      (statuses ?? []).forEach((r) => {
         map[r.room_id] = {
           status:            r.status,
           cleaningStartedAt: r.cleaning_started_at,
           lastDuration:      r.last_clean_duration_sec,
         };
       });
+
+      const snapshot = SUITES.map((s) => {
+        const guest = guestByRoom[s.id] ?? null;
+        const dbStatus = map[s.id]?.status ?? "פנוי";
+        return {
+          id: s.id,
+          status: dbStatus,
+          guest,
+          syncMismatch: detectRoomSyncMismatch(dbStatus, guest, today),
+        };
+      });
+
+      const fixes = planRoomBoardReconcile(snapshot);
+      if (fixes.length) {
+        await applyRoomBoardReconcile(supabase, fixes);
+        const now = new Date().toISOString();
+        for (const fix of fixes) {
+          map[fix.roomId] = { ...(map[fix.roomId] ?? {}), status: fix.to, updatedAt: now };
+        }
+      }
+
       setStatusMap(map);
+      setGuests(guestList);
+      setSuiteRows(suiteList);
+    } finally {
+      syncLock.current = false;
+      setLoading(false);
     }
-    setGuests(guestRows ?? []);
-    setLoading(false);
   }, []);
 
-  useEffect(() => { fetchAll(); }, [fetchAll]);
+  useEffect(() => { syncBoard(); }, [syncBoard]);
 
   // ── Realtime ────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!supabase) return;
     const ch = supabase
       .channel("room-board-rt")
-      .on("postgres_changes", { event: "*", schema: "public", table: "room_status" }, fetchAll)
-      .on("postgres_changes", { event: "*", schema: "public", table: "guests" }, fetchAll)
+      .on("postgres_changes", { event: "*", schema: "public", table: "room_status" }, syncBoard)
+      .on("postgres_changes", { event: "*", schema: "public", table: "guests" }, syncBoard)
+      .on("postgres_changes", { event: "*", schema: "public", table: "suite_rooms" }, syncBoard)
       .subscribe();
     return () => supabase.removeChannel(ch);
-  }, [fetchAll]);
+  }, [syncBoard]);
 
   // ── Toast ───────────────────────────────────────────────────────────────
   function showToast(msg, type = "ok") {
@@ -367,22 +432,41 @@ export default function RoomBoard({ isKioskMode = false, onLogout }) {
   }
 
   // ── Derived ─────────────────────────────────────────────────────────────
-  const rooms = useMemo(() =>
-    SUITES.map(s => ({
-      ...s,
-      status:            statusMap[s.id]?.status            ?? "פנוי",
-      cleaningStartedAt: statusMap[s.id]?.cleaningStartedAt ?? null,
-      lastDuration:      statusMap[s.id]?.lastDuration      ?? null,
-      // Match by suite_name (new flow) or legacy room column
-      guest: guests.find(g =>
-        String(g.suite_name ?? "").trim() === s.id ||
-        String(g.room       ?? "").trim() === s.id
-      ) ?? null,
-    })),
-    [statusMap, guests]
+  const todayIL = israelTodayStr();
+  const guestByRoom = useMemo(
+    () => buildRoomGuestMap(SUITE_REGISTRY, guests, suiteRows, todayIL),
+    [guests, suiteRows, todayIL],
   );
 
-  const filtered = filter === "הכל" ? rooms : rooms.filter(r => r.status === filter);
+  const rooms = useMemo(() =>
+    SUITES.map(s => {
+      const guest = guestByRoom[s.id] ?? null;
+      const dbStatus = statusMap[s.id]?.status ?? "פנוי";
+      const status = resolveEffectiveRoomStatus(dbStatus, guest, todayIL);
+      return {
+        ...s,
+        status,
+        dbStatus,
+        cleaningStartedAt: statusMap[s.id]?.cleaningStartedAt ?? null,
+        lastDuration:      statusMap[s.id]?.lastDuration      ?? null,
+        guest,
+        syncMismatch: detectRoomSyncMismatch(dbStatus, guest, todayIL),
+        isArrivalToday: isArrivalTodayGuest(guest, todayIL) || isPreArrivalTodayGuest(guest, todayIL),
+      };
+    }),
+    [statusMap, guestByRoom, todayIL],
+  );
+
+  const todayArrivalCount = rooms.filter(r => r.isArrivalToday).length;
+
+  const filtered = useMemo(() => {
+    if (filter === "הגעות היום") {
+      return rooms.filter(r => r.isArrivalToday || isGuestInStay(r.guest, todayIL));
+    }
+    if (filter === "הכל") return rooms;
+    return rooms.filter(r => r.status === filter);
+  }, [rooms, filter, todayIL]);
+
   const countOf  = (st) => rooms.filter(r => r.status === st).length;
 
   if (loading) return (
@@ -473,7 +557,7 @@ export default function RoomBoard({ isKioskMode = false, onLogout }) {
         <div style={{ fontSize: 22, fontWeight: 800, color: "var(--black)" }}>
           {t.header}
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
             {t.occupiedOf(countOf("תפוס"), rooms.length)} · {t.availLabel(countOf("פנוי"))}
           </div>
@@ -532,10 +616,12 @@ export default function RoomBoard({ isKioskMode = false, onLogout }) {
 
       {/* Filter chips */}
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 20 }}>
-        {["הכל", ...STATUSES].map(f => {
+        {["הכל", "הגעות היום", ...STATUSES].map(f => {
           const active = filter === f;
           const label  = f === "הכל"
             ? `${t.all} (${rooms.length})`
+            : f === "הגעות היום"
+            ? `${t.arrivalsToday} (${todayArrivalCount})`
             : `${t.statusLabels[f]} (${countOf(f)})`;
           return (
             <button
@@ -544,10 +630,12 @@ export default function RoomBoard({ isKioskMode = false, onLogout }) {
               style={{
                 padding: "7px 16px", borderRadius: 20, fontSize: 13,
                 cursor: "pointer", fontFamily: "inherit",
-                border:     active ? "none" : "1px solid var(--border)",
                 background: active ? "var(--gold)" : "var(--card-bg)",
-                color:      active ? "#412402"     : "var(--text-muted)",
-                fontWeight: active ? 700 : 400,
+                color:      active ? "#412402"     : (f === "הגעות היום" ? "#185FA5" : "var(--text-muted)"),
+                fontWeight: active ? 700 : (f === "הגעות היום" ? 600 : 400),
+                border: active
+                  ? "none"
+                  : (f === "הגעות היום" ? "1px solid #378ADD" : "1px solid var(--border)"),
               }}
             >
               {label}
@@ -582,6 +670,7 @@ export default function RoomBoard({ isKioskMode = false, onLogout }) {
                 <RoomCard
                   key={room.id}
                   room={room}
+                  lang={lang}
                   isUpdating={updating === room.id}
                   t={t}
                   onUpdate={updateStatus}
@@ -608,12 +697,22 @@ export default function RoomBoard({ isKioskMode = false, onLogout }) {
 }
 
 // ── RoomCard — self-contained timer, 52px touch buttons ──────────────────
-function RoomCard({ room, isUpdating, t, onUpdate, onCheckIn, onReleaseGate, onCleanStart, onCleanDone, waState, onRetryNotify }) {
+function RoomCard({ room, isUpdating, t, lang, onUpdate, onCheckIn, onReleaseGate, onCleanStart, onCleanDone, waState, onRetryNotify }) {
   const [hovered,  setHovered]  = useState(null);
   const [timerSec, setTimerSec] = useState(0);
 
   const meta    = STATUS_META[room.status] ?? STATUS_META["פנוי"];
   const actions = STATUS_ACTIONS[room.status] ?? [];
+  const todayIL = israelTodayStr();
+
+  function arrivalLabel(guest) {
+    if (!guest || guest.status === "checked_in") return null;
+    if (isArrivalTodayGuest(guest, todayIL) || isPreArrivalTodayGuest(guest, todayIL)) {
+      return t.arrivalToday;
+    }
+    if (isArrivalTomorrowGuest(guest, todayIL)) return t.arrivalTomorrow;
+    return t.arrivalUpcoming;
+  }
 
   // Per-card cleaning timer — only runs when this room is being cleaned
   useEffect(() => {
@@ -667,7 +766,7 @@ function RoomCard({ room, isUpdating, t, onUpdate, onCheckIn, onReleaseGate, onC
       {/* Body: guest / timer / last-clean badge */}
       <div style={{ flex: 1 }}>
         {room.guest ? (
-          room.guest.status === "checked_in" ? (
+          room.guest.status === "checked_in" && isGuestInStay(room.guest, todayIL) ? (
             <div style={{
               display: "inline-flex", flexDirection: "column", gap: 2,
               background: "#EAF3DE", border: "1px solid #639922", borderRadius: 8,
@@ -682,10 +781,17 @@ function RoomCard({ room, isUpdating, t, onUpdate, onCheckIn, onReleaseGate, onC
           ) : (
             <div style={{
               display: "inline-flex", flexDirection: "column", gap: 2,
-              background: "#E6F1FB", border: "1px solid #378ADD", borderRadius: 8,
+              background: isArrivalTodayGuest(room.guest, todayIL) ? "#FDF6DC" : "#E6F1FB",
+              border: `1px solid ${isArrivalTodayGuest(room.guest, todayIL) ? "#E8AE0A" : "#378ADD"}`,
+              borderRadius: 8,
               padding: "6px 10px", marginBottom: 4,
             }}>
-              <span style={{ fontSize: 11, fontWeight: 800, color: "#185FA5" }}>🔵 הגעה קרובה</span>
+              <span style={{
+                fontSize: 11, fontWeight: 800,
+                color: isArrivalTodayGuest(room.guest, todayIL) ? "#8A6A00" : "#185FA5",
+              }}>
+                {arrivalLabel(room.guest)}
+              </span>
               <span style={{ fontSize: 13, fontWeight: 700, color: "var(--black)" }}>👤 {room.guest.name}</span>
               <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
                 צפי הגעה: {fmtDate(room.guest.arrival_date) ?? "?"}
