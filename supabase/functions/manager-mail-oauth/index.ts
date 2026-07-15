@@ -14,9 +14,10 @@ const CORS = {
 };
 
 function htmlPage(title: string, body: string): Response {
-  return new Response(`<!DOCTYPE html><html lang="he" dir="rtl"><head><meta charset="utf-8"><title>${title}</title></head><body style="font-family:Heebo,sans-serif;padding:24px;">${body}</body></html>`, {
-    headers: { "Content-Type": "text/html; charset=utf-8" },
-  });
+  return new Response(
+    `<!DOCTYPE html><html lang="he" dir="rtl"><head><meta charset="UTF-8"><title>${title}</title></head><body style="font-family:Heebo,sans-serif;padding:24px;">${body}</body></html>`,
+    { headers: { "Content-Type": "text/html; charset=utf-8" } },
+  );
 }
 
 async function triggerInitialSync(): Promise<void> {

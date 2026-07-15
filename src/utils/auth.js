@@ -77,7 +77,7 @@ const ORIT_CS_AGENT_EMAILS = new Set([
 
 export function canAccessOritCsAgent(user) {
   if (!user) return false;
-  if (isSuperAdmin(user)) return true;
+  if (isSuperAdmin(user) || isAdminUser(user)) return true;
   if (user.orit_cs_agent_access === true) return true;
   const email = (user.email || "").toLowerCase().trim();
   return ORIT_CS_AGENT_EMAILS.has(email);

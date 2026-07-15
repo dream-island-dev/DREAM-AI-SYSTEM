@@ -71,8 +71,12 @@ export default function OritCustomerServicePanel({ user }) {
       .limit(1)
       .maybeSingle();
     if (error) {
+      console.error("[orit-cs] mailbox load:", error);
       showToast("err", error.message);
       return null;
+    }
+    if (!data) {
+      console.warn("[orit-cs] mailbox row not visible (RLS or missing migration)");
     }
     let next = data;
     if (data?.profile_id == null && user?.id) {
