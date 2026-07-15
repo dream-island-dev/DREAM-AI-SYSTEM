@@ -50,9 +50,9 @@ Deno.test("composeArrivalDeskBrief — splits today/tomorrow and missing time", 
   assertEquals(brief.summary.includes("⚠VIP"), true);
 });
 
-Deno.test("buildFrontDeskMorningMessage — includes power hints and stats", () => {
+Deno.test("buildFrontDeskMorningMessage — includes power hints and stats, no tomorrow clutter", () => {
   const body = buildFrontDeskMorningMessage({
-    brief: composeArrivalDeskBrief(ROWS, NOW),
+    brief: composeArrivalDeskBrief(ROWS, NOW, { includeTomorrow: false }),
     openActionable: [
       { id: 1, alert_type: "request", message: "מגבות נוספות", guests: { name: "דנה", room: "Suite 7" } },
     ],
@@ -60,6 +60,8 @@ Deno.test("buildFrontDeskMorningMessage — includes power hints and stats", () 
   });
   assertEquals(body.includes("בוקר טוב אדיר"), true);
   assertEquals(body.includes("2 הגעות היום"), true);
+  assertEquals(body.includes("📅 מחר"), false);
+  assertEquals(body.includes("מחר ("), false);
   assertEquals(body.includes("💪 מה אתה יכול לבקש"), true);
   assertEquals(body.includes("מגבות נוספות"), true);
   assertEquals(body.includes("שעות הגעה מאורחים"), true);
@@ -68,7 +70,7 @@ Deno.test("buildFrontDeskMorningMessage — includes power hints and stats", () 
 
 Deno.test("buildFrontDeskMorningMessage — omits power hints when includePowerHints=false", () => {
   const body = buildFrontDeskMorningMessage({
-    brief: composeArrivalDeskBrief(ROWS, NOW),
+    brief: composeArrivalDeskBrief(ROWS, NOW, { includeTomorrow: false }),
     openActionable: [],
     openEtaCount: 0,
   }, { includePowerHints: false });
@@ -78,7 +80,7 @@ Deno.test("buildFrontDeskMorningMessage — omits power hints when includePowerH
 
 Deno.test("buildFrontDeskMorningMessage — includes power hints when includePowerHints=true", () => {
   const body = buildFrontDeskMorningMessage({
-    brief: composeArrivalDeskBrief(ROWS, NOW),
+    brief: composeArrivalDeskBrief(ROWS, NOW, { includeTomorrow: false }),
     openActionable: [],
     openEtaCount: 0,
   }, { includePowerHints: true });
@@ -88,7 +90,7 @@ Deno.test("buildFrontDeskMorningMessage — includes power hints when includePow
 Deno.test("buildFrontDeskMorningMessage — omits the arrival-time-request suggestion when nobody is missing a time", () => {
   const allWithTime: ArrivalDeskGuestRow[] = ROWS.map((g) => ({ ...g, arrival_time: g.arrival_time ?? "12:00" }));
   const body = buildFrontDeskMorningMessage({
-    brief: composeArrivalDeskBrief(allWithTime, NOW),
+    brief: composeArrivalDeskBrief(allWithTime, NOW, { includeTomorrow: false }),
     openActionable: [],
     openEtaCount: 0,
   });

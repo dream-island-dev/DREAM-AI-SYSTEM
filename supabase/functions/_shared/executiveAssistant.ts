@@ -370,7 +370,7 @@ const EXECUTIVE_TOOLS: ToolDef[] = [
       type: "object",
       properties: {
         description: { type: "string", description: "תיאור המשימה בעברית, ברור ותמציתי." },
-        room_number: { type: "string", description: "מספר/שם חדר או סוויטה, אם רלוונטי." },
+        room_number: { type: "string", description: "מספר/שם חדר או סוויטה — חובה לבקשות שטח (מגבות, תיקון, ניקיון)." },
         department: { type: "string", enum: ["תפעול", "משק", "קבלה/בקשות"], description: "מחלקה אחראית, אם ידוע." },
         priority: { type: "string", enum: ["normal", "urgent"], description: "דחיפות המשימה." },
         sla_category: { type: "string", enum: Object.keys(GUEST_OPS_SLA_THRESHOLDS), description: "קטגוריית SLA, אם ידוע." },
@@ -799,6 +799,9 @@ async function _execCreateExecutiveTask(
   if (!description) return { ok: false, error: "description_required" };
 
   const roomNumber = String(args.room_number ?? "").trim() || null;
+  if (ctx.assistantTier === "front_desk" && !roomNumber) {
+    return { ok: false, error: "room_required_for_front_desk_task" };
+  }
   if (!roomNumber) {
     console.warn(`[executiveAssistant] create_executive_task with no room — desc:"${description.slice(0, 80)}"`);
   }
@@ -808,6 +811,7 @@ async function _execCreateExecutiveTask(
   const department = String(args.department ?? "").trim() || resolveGuestOpsDepartment(description);
   const priority = args.priority === "urgent" || slaCategory === "pest_control" ? "urgent" : "normal";
   const slaDeadline = buildGuestOpsSlaDeadline(slaCategory, new Date());
+  const taskSource = ctx.assistantTier === "front_desk" ? "front_desk_voice" : "executive_voice";
 
   const { data: task, error } = await supabase
     .from("tasks")
@@ -817,7 +821,7 @@ async function _execCreateExecutiveTask(
       description,
       priority,
       status: "open",
-      source: "executive_voice",
+      source: taskSource,
       reporter_raw_text: ctx.originalText,
       source_message_id: ctx.msgId,
       action_token: crypto.randomUUID(),
@@ -1224,7 +1228,7 @@ async function _execLearnRule(
 async function _execGetArrivalDeskBrief(supabase: SupabaseClient): Promise<ToolResult> {
   const { fetchFrontDeskMorningStats } = await import("./frontDeskMorningBrief.ts");
   try {
-    const { brief } = await fetchFrontDeskMorningStats(supabase);
+    const { brief } = await fetchFrontDeskMorningStats(supabase, new Date(), { includeTomorrow: true });
     if (!brief.todayTotal && !brief.tomorrowTotal) {
       return { ok: true, count: 0, summary: "אין הגעות סוויטות היום או מחר." };
     }

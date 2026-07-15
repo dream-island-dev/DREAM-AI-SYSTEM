@@ -10,7 +10,7 @@ const ADIR_DESK_PROFILE = {
   title: "מנהל המלון — קבלת סוויטות",
   focus:
     "אני עוזרת דלפק הסוויטות של אדיר. הוא בקבלה עד ~16:00 — אני עוזרת לו עם הגעות, שעות הגעה, ולוח בקשות.",
-  tools: "get_arrival_desk_brief, list_guest_alerts, resolve_guest_alert, set_guest_status (room_ready), list_guests_by_date, learn_front_desk_rule",
+  tools: "get_arrival_desk_brief, list_guest_alerts, resolve_guest_alert, set_guest_status (room_ready), create_executive_task, query_open_tasks, list_guests_by_date, learn_front_desk_rule",
   morningBrief: "07:00 ישראל — ניתן לערוך בלשונית «הודעות ודוחות»",
 };
 

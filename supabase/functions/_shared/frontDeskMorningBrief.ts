@@ -70,17 +70,21 @@ export type ArrivalDeskBrief = {
   summary: string;
 };
 
-/** Desk arrival list — today + tomorrow suite guests (tool + cron body). */
+/** Desk arrival list — today (+ optional tomorrow for voice tool). */
 export function composeArrivalDeskBrief(
   rows: ArrivalDeskGuestRow[],
   now: Date = new Date(),
+  opts: { includeTomorrow?: boolean } = {},
 ): ArrivalDeskBrief {
+  const includeTomorrow = opts.includeTomorrow !== false;
   const todayYmd = israelYmd(now);
   const tomorrowYmd = addDaysYmd(todayYmd, 1);
   const suites = rows.filter((g) => isEffectiveSuiteGuest(g));
 
   const todayGuests = suites.filter((g) => g.arrival_date === todayYmd);
-  const tomorrowGuests = suites.filter((g) => g.arrival_date === tomorrowYmd);
+  const tomorrowGuests = includeTomorrow
+    ? suites.filter((g) => g.arrival_date === tomorrowYmd)
+    : [];
 
   const todayWithTime: string[] = [];
   const todayMissing: string[] = [];
@@ -92,8 +96,9 @@ export function composeArrivalDeskBrief(
 
   const tomorrowLines = tomorrowGuests.map((g) => formatGuestLine(g, "מחר"));
 
+  const headerDate = includeTomorrow ? `${todayYmd} / ${tomorrowYmd}` : todayYmd;
   const parts = [
-    `📋 לוח הגעות סוויטות (${todayYmd} / ${tomorrowYmd})`,
+    `📋 לוח הגעות סוויטות (${headerDate})`,
     `היום — עם שעה (${todayWithTime.length}):`,
     todayWithTime.length ? todayWithTime.join("\n") : "— אין —",
     `היום — בלי שעה (${todayMissing.length}):`,
@@ -123,15 +128,18 @@ export type FrontDeskMorningStats = {
 export async function fetchFrontDeskMorningStats(
   supabase: SupabaseClient,
   now: Date = new Date(),
+  opts: { includeTomorrow?: boolean } = {},
 ): Promise<FrontDeskMorningStats> {
+  const includeTomorrow = opts.includeTomorrow === true;
   const todayYmd = israelYmd(now);
   const tomorrowYmd = addDaysYmd(todayYmd, 1);
+  const arrivalDates = includeTomorrow ? [todayYmd, tomorrowYmd] : [todayYmd];
 
   const [guestsRes, alertsRes] = await Promise.all([
     supabase
       .from("guests")
       .select("name, room, room_type, status, arrival_date, arrival_time, requires_attention")
-      .in("arrival_date", [todayYmd, tomorrowYmd])
+      .in("arrival_date", arrivalDates)
       .not("status", "eq", "cancelled")
       .order("arrival_date", { ascending: true })
       .order("arrival_time", { ascending: true, nullsFirst: false })
@@ -146,7 +154,11 @@ export async function fetchFrontDeskMorningStats(
 
   if (guestsRes.error) throw new Error(guestsRes.error.message);
 
-  const brief = composeArrivalDeskBrief((guestsRes.data ?? []) as ArrivalDeskGuestRow[], now);
+  const brief = composeArrivalDeskBrief(
+    (guestsRes.data ?? []) as ArrivalDeskGuestRow[],
+    now,
+    { includeTomorrow },
+  );
 
   const allAlerts = (alertsRes.error ? [] : (alertsRes.data ?? [])) as unknown as OpenAlertRow[];
   const openActionable = allAlerts.filter((a) => a.alert_type !== "arrival_eta").slice(0, 5);
@@ -188,9 +200,6 @@ export function buildFrontDeskMorningMessage(
   ];
   if (openEtaCount) {
     headline.push(applyStaffMessageTemplate(shell.eta_note, { eta_count: openEtaCount }));
-  }
-  if (brief.tomorrowTotal) {
-    headline.push(applyStaffMessageTemplate(shell.tomorrow_note, { tomorrow_total: brief.tomorrowTotal }));
   }
 
   const sections: string[] = [...headline, "", brief.summary];

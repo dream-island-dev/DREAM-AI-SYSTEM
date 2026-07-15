@@ -6,7 +6,6 @@ export const STAFF_DIGEST_FIELD_LABELS = {
     title: "כותרת ({{date_he}})",
     snapshot: "שורת מבט ({{today_total}}, {{missing_time}}, {{open_summary}})",
     eta_note: "שורת שעות הגעה ({{eta_count}})",
-    tomorrow_note: "שורת מחר ({{tomorrow_total}})",
     missing_time_cta: "הצעה לבקש שעות ({{missing_time}})",
     open_header: "כותרת בקשות פתוחות",
     power_hints: "בלוק «מה אפשר לבקש»",

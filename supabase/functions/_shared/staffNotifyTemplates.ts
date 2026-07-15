@@ -156,7 +156,6 @@ export const ADIR_MORNING_BRIEF_DEFAULTS: Record<string, string> = {
   title: "עוזרת דלפק הסוויטות — סיכום להיום ({{date_he}})",
   snapshot: "📊 במבט: {{today_total}} הגעות היום | {{missing_time}} בלי שעה | {{open_summary}}",
   eta_note: "🕐 {{eta_count}} שעות הגעה רשומות בלוח",
-  tomorrow_note: "📅 מחר: {{tomorrow_total}} הגעות",
   missing_time_cta:
     'רוצה שאשלח הודעה קצרה לבקש שעת הגעה מ-{{missing_time}} האורחים שעדיין בלי שעה? רק תגיד לי "כן, תשלחי".',
   open_header: "🔔 בקשות פתוחות (לטיפול):",

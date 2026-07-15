@@ -47,7 +47,8 @@ const SOURCE_META = {
   guest_request:       { label: "🤖 בוט · בקשת אורח", color: "#A8843A" },
   inbox_routed:        { label: "📥 ניתוב מתיבה", color: "#1A7A4A" },
   portal_room_service: { label: "🍽️ שירות לחדר (פורטל)", color: "#A8843A" },
-  executive_voice:     { label: "👔 מנכ״ל", color: "#6B21A8" },
+  executive_voice:     { label: "👔 קול מנכ״ל", color: "#6B21A8" },
+  front_desk_voice:    { label: "🏨 קול דלפק", color: "#0D9488" },
 };
 
 // ── Image preview helper (unchanged from TaskBoard.js) ───────────────────────

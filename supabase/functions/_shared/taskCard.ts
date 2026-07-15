@@ -32,6 +32,8 @@ export function buildStaffDispatchedTaskCard(
     source === "guest_request" ? "[BOT]"
       : source === "inbox_routed" ? "[GUEST WA]"
       : source === "manual" ? "[MANUAL TASK]"
+      : source === "front_desk_voice" ? "[FRONT DESK]"
+      : source === "executive_voice" ? "[EXEC VOICE]"
       : null;
 
   return [

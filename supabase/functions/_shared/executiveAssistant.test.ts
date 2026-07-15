@@ -167,6 +167,17 @@ Deno.test("create_executive_task — requires non-empty description", async () =
   assertEquals(result.error, "description_required");
 });
 
+Deno.test("create_executive_task — Adir front desk requires room_number", async () => {
+  const result = await executeExecutiveTool(
+    mockSupabase({}),
+    "create_executive_task",
+    { description: "מגבות נוספות" },
+    ADIR_CTX,
+  );
+  assertEquals(result.ok, false);
+  assertEquals(result.error, "room_required_for_front_desk_task");
+});
+
 Deno.test("send_guest_message — blocks a cancelled guest", async () => {
   const supabase = mockSupabase({
     maybeSingle: { data: { id: 1, phone: "+972500000000", status: "cancelled", name: "Test" }, error: null },
