@@ -13,6 +13,7 @@
 import { useState } from "react";
 import ArrivalImportPanel from "./ArrivalImportPanel";
 import ActivitiesImportZone from "./spa/ActivitiesImportZone";
+import SmartPastePanel from "./SmartPastePanel";
 
 function todayYmd() {
   return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
@@ -72,6 +73,12 @@ function SpaActivitiesSyncSection() {
 }
 
 export default function DataSyncPage() {
+  const [toast, setToast] = useState(null);
+  const showToast = (msg, type = "ok") => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 4500);
+  };
+
   return (
     <div
       style={{
@@ -106,6 +113,19 @@ export default function DataSyncPage() {
           </div>
         </div>
       </div>
+
+      {toast && (
+        <div style={{
+          borderRadius: 10, padding: "10px 16px", marginBottom: 14, fontWeight: 700, fontSize: 13,
+          background: toast.type === "err" ? "#FCEBEB" : "#EAF3DE",
+          color: toast.type === "err" ? "#A32D2D" : "#3B6D11",
+          border: `1px solid ${toast.type === "err" ? "#E24B4A" : "#639922"}`,
+        }}>
+          {toast.msg}
+        </div>
+      )}
+
+      <SmartPastePanel showToast={showToast} />
 
       <ArrivalImportPanel defaultOpen />
 
