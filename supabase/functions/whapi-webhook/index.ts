@@ -109,6 +109,11 @@ import {
 } from "../_shared/automationSchedule.ts";
 import { createGuestOpsTask } from "../_shared/createGuestOpsTask.ts";
 import {
+  classifyFacilityReview,
+  buildFacilityReviewReply,
+  saveGuestFacilityReview,
+} from "../_shared/guestFacilityReview.ts";
+import {
   canGuestConfirmArrival,
   runGuestArrivalConfirmation,
   patchClaimedInbound,
@@ -1141,6 +1146,30 @@ async function handleGuestDirectMessage(
 
       await sendGuestDmReply(supabase, phone, guestId, buildDepartureAssistReply(guestName), staffMuted);
       results.push({ ...base, action: "departure_assist_request", muted: staffMuted });
+      return;
+    }
+
+    // ── Facility review (restaurant, spa, pool…) — tier-0, no LLM cost.
+    const facilityCapture = classifyFacilityReview(text);
+    if (facilityCapture) {
+      await saveGuestFacilityReview(supabase, { guestId, phone, capture: facilityCapture });
+      await patchGuestDmInbound(supabase, conversationId, {
+        guest_id: guestId,
+        intent: "guest_feedback",
+      });
+      const facilityReply = buildFacilityReviewReply(
+        facilityCapture.facility,
+        facilityCapture.sentiment,
+        facilityCapture.rating,
+      );
+      await sendGuestDmReply(supabase, phone, guestId, facilityReply, staffMuted);
+      results.push({
+        ...base,
+        action: "facility_review_captured",
+        facility: facilityCapture.facility,
+        sentiment: facilityCapture.sentiment,
+        muted: staffMuted,
+      });
       return;
     }
 

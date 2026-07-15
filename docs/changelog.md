@@ -1,3 +1,5 @@
+2026-07-15 | Facility reviews via guest bot — migration 212 `guest_feedback.facility_category`+`rating`; `_shared/guestFacilityReview.ts` tier-0 + `log_facility_review` LLM tool (Meta); Whapi tier-0; Feedback → משוב חופשי: facility filter chips (מסעדה מודגשת) + דירוג | whatsapp-webhook + whapi-webhook deploy + db push.
+
 2026-07-15 | Orit CS bootstrap-only load — `orit-cs-bootstrap` returns mailbox+threads; UI stops RLS race that cleared threads after load | OritCustomerServicePanel + function deploy.
 
 2026-07-15 | EZGO Operations email (Option A) — Doc 1 accepts Gmail `.eml` + HTML paste; panel «ממייל EZGO Operations» in ArrivalImportPanel (`ezgoEmailHtml.js`); no plain-text Gmail copy | DataSyncPage.

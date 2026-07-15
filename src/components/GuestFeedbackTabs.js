@@ -31,6 +31,11 @@ import {
   normalizeGuestClubUi,
   serializeGuestClubUi,
 } from "../utils/guestClubUi";
+import {
+  FACILITY_FILTER_ORDER,
+  facilityLabel,
+  averageRating,
+} from "../utils/guestFacilityMeta";
 
 const SENTIMENT_META = {
   positive: { label: "🌟 חיובי",  bg: "#E8F5EF", color: "#1A7A4A", border: "#1A7A4A" },
@@ -47,6 +52,9 @@ const SOURCE_LABEL = {
   freeform_reflection: "💬 הודעה חופשית",
   post_stay_button:    "🔘 כפתור לאחר שהות",
   severe_complaint:    "🚨 תלונה חריפה",
+  structured_survey:   "📊 סקר מבנה",
+  facility_review:     "🍽️ ביקורת מתקן (בוט)",
+  bot_tool:            "🤖 ביקורת מתקן (AI)",
 };
 
 function fmtTimestamp(iso) {
@@ -809,6 +817,7 @@ export default function GuestFeedbackTabs({ user }) {
   const [loading, setLoading]           = useState(true);
   const [toast, setToast]               = useState(null);
   const [tab, setTab]                   = useState("negative"); // most actionable stream first
+  const [facilityFilter, setFacilityFilter] = useState("all");
   const [showArchived, setShowArchived] = useState(false);
   const [archivingId, setArchivingId]   = useState(null);
 
@@ -861,9 +870,40 @@ export default function GuestFeedbackTabs({ user }) {
   };
 
   const bySentiment = feedback.filter((f) => f.sentiment === tab);
-  const visible = showArchived ? bySentiment : bySentiment.filter((f) => f.status !== "archived");
+  const byFacility = facilityFilter === "all"
+    ? bySentiment
+    : facilityFilter === "uncategorized"
+      ? bySentiment.filter((f) => !f.facility_category)
+      : bySentiment.filter((f) => f.facility_category === facilityFilter);
+  const visible = showArchived ? byFacility : byFacility.filter((f) => f.status !== "archived");
   const openCount = (sentiment) =>
     feedback.filter((f) => f.sentiment === sentiment && f.status !== "archived").length;
+
+  const facilityRows = facilityFilter === "all"
+    ? feedback.filter((f) => f.facility_category && f.status !== "archived")
+    : byFacility.filter((f) => f.status !== "archived");
+  const facilityAvg = averageRating(facilityRows);
+  const restaurantOpen = feedback.filter(
+    (f) => f.facility_category === "restaurant" && f.status !== "archived",
+  ).length;
+
+  const facilityCount = (id) => {
+    if (id === "all") {
+      return feedback.filter((f) => f.facility_category && f.status !== "archived").length;
+    }
+    if (id === "uncategorized") {
+      return feedback.filter((f) => !f.facility_category && f.status !== "archived").length;
+    }
+    return feedback.filter((f) => f.facility_category === id && f.status !== "archived").length;
+  };
+
+  const sortedVisible = [...visible].sort((a, b) => {
+    if (a.facility_category === "restaurant" && b.facility_category !== "restaurant") return -1;
+    if (b.facility_category === "restaurant" && a.facility_category !== "restaurant") return 1;
+    if (a.rating != null && b.rating == null) return -1;
+    if (b.rating != null && a.rating == null) return 1;
+    return new Date(b.created_at) - new Date(a.created_at);
+  });
 
   return (
     <div>
@@ -883,7 +923,12 @@ export default function GuestFeedbackTabs({ user }) {
           💬 משוב וסנטימנט אורחים
         </h2>
         <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
-          רשמים וביקורות כלליים על השהות — נפרד מלוח הבקשות התפעולי, כדי שהצוות בקבלה לא יגלול דרך שבחים כדי למצוא בקשה אמיתית.
+          רשמים וביקורות על השהות והמתקנים (מסעדה, ספא, בריכה…) — נפרד מלוח הבקשות התפעולי.
+          {restaurantOpen > 0 && (
+            <span style={{ marginInlineStart: 8, fontWeight: 700, color: "var(--gold-dark)" }}>
+              🍽️ {restaurantOpen} ביקורות מסעדה פתוחות
+            </span>
+          )}
         </div>
       </div>
 
@@ -920,6 +965,41 @@ export default function GuestFeedbackTabs({ user }) {
         <SurveysView />
       ) : (
       <>
+      <div style={{
+        display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap", alignItems: "center",
+        padding: "12px 14px", background: "var(--ivory)", borderRadius: 12, border: "1px solid var(--border)",
+      }}>
+        <span style={{ fontSize: 12, fontWeight: 800, color: "var(--text-muted)", marginInlineEnd: 4 }}>
+          סינון מתקן:
+        </span>
+        {[...FACILITY_FILTER_ORDER, { id: "uncategorized", label: "💬 כללי / ללא מתקן" }].map((f) => {
+          const active = facilityFilter === f.id;
+          const count = facilityCount(f.id);
+          return (
+            <button
+              key={f.id}
+              type="button"
+              onClick={() => setFacilityFilter(f.id)}
+              style={{
+                padding: "7px 14px", borderRadius: 18, fontSize: 12, fontWeight: 700,
+                border: `1.5px solid ${active ? "var(--gold-dark)" : "var(--border)"}`,
+                background: active ? "var(--card-bg)" : "transparent",
+                color: active ? "var(--gold-dark)" : "var(--text-muted)",
+                cursor: "pointer", fontFamily: "inherit",
+                boxShadow: f.highlight && !active ? "0 0 0 1px rgba(212,175,55,0.25)" : "none",
+              }}
+            >
+              {f.label}{count > 0 ? ` (${count})` : ""}
+            </button>
+          );
+        })}
+        {facilityAvg != null && facilityFilter !== "all" && facilityFilter !== "uncategorized" && (
+          <span style={{ marginInlineStart: "auto", fontSize: 12, fontWeight: 700, color: "var(--gold-dark)" }}>
+            ממוצע דירוג: {facilityAvg}/10
+          </span>
+        )}
+      </div>
+
       <div style={{ display: "flex", gap: 8, marginBottom: 18, flexWrap: "wrap", alignItems: "center" }}>
         {TAB_ORDER.map((t) => {
           const active = tab === t.id;
@@ -978,7 +1058,7 @@ export default function GuestFeedbackTabs({ user }) {
         </div>
       ) : (
         <div style={{ display: "grid", gap: 12 }}>
-          {visible.map((f) => {
+          {sortedVisible.map((f) => {
             const sm = sentimentMeta(f.sentiment);
             const archived = f.status === "archived";
             return (
@@ -1003,6 +1083,17 @@ export default function GuestFeedbackTabs({ user }) {
                     </div>
                   </div>
                   <div style={{ display: "flex", gap: 6, alignItems: "flex-start", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                    {f.facility_category && (
+                      <span style={{
+                        padding: "4px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700,
+                        background: f.facility_category === "restaurant" ? "#FFF8E8" : "var(--ivory)",
+                        color: f.facility_category === "restaurant" ? "#9A7209" : "var(--text-muted)",
+                        whiteSpace: "nowrap",
+                      }}>
+                        {facilityLabel(f.facility_category)}
+                        {f.rating != null ? ` · ${f.rating}/10` : ""}
+                      </span>
+                    )}
                     <span style={{
                       padding: "4px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700,
                       background: sm.bg, color: sm.color, whiteSpace: "nowrap",

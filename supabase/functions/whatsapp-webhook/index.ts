@@ -90,6 +90,17 @@ import {
   isRequestSummaryGrounded,
 } from "../_shared/automationSchedule.ts";
 import { createGuestOpsTask } from "../_shared/createGuestOpsTask.ts";
+import {
+  LOG_FACILITY_REVIEW_TOOL_NAME,
+  LOG_FACILITY_REVIEW_TOOL_DESCRIPTION,
+  LOG_FACILITY_REVIEW_JSON_SCHEMA,
+  FACILITY_REVIEW_TOOL_INSTRUCTIONS,
+  classifyFacilityReview,
+  buildFacilityReviewReply,
+  saveGuestFacilityReview,
+  normalizeFacilityReviewToolArgs,
+  type FacilityReviewCapture,
+} from "../_shared/guestFacilityReview.ts";
 import { onGuestAlertInserted } from "../_shared/guestAlertWhapiNotify.ts";
 import {
   buildOptionalSpaText,
@@ -1987,18 +1998,32 @@ const LOG_REQUEST_JSON_SCHEMA = {
   required: ["category", "item_summary"],
 };
 
-const CLAUDE_TOOLS = [{
-  name: LOG_REQUEST_TOOL_NAME,
-  description: LOG_REQUEST_TOOL_DESCRIPTION,
-  input_schema: LOG_REQUEST_JSON_SCHEMA,
-}];
-
-const GEMINI_TOOLS = [{
-  functionDeclarations: [{
+const CLAUDE_TOOLS = [
+  {
     name: LOG_REQUEST_TOOL_NAME,
     description: LOG_REQUEST_TOOL_DESCRIPTION,
-    parameters: LOG_REQUEST_JSON_SCHEMA,
-  }],
+    input_schema: LOG_REQUEST_JSON_SCHEMA,
+  },
+  {
+    name: LOG_FACILITY_REVIEW_TOOL_NAME,
+    description: LOG_FACILITY_REVIEW_TOOL_DESCRIPTION,
+    input_schema: LOG_FACILITY_REVIEW_JSON_SCHEMA,
+  },
+];
+
+const GEMINI_TOOLS = [{
+  functionDeclarations: [
+    {
+      name: LOG_REQUEST_TOOL_NAME,
+      description: LOG_REQUEST_TOOL_DESCRIPTION,
+      parameters: LOG_REQUEST_JSON_SCHEMA,
+    },
+    {
+      name: LOG_FACILITY_REVIEW_TOOL_NAME,
+      description: LOG_FACILITY_REVIEW_TOOL_DESCRIPTION,
+      parameters: LOG_FACILITY_REVIEW_JSON_SCHEMA,
+    },
+  ],
 }];
 
 // Code-level only — deliberately NOT stored in bot_settings.system_prompt.
@@ -2017,7 +2042,7 @@ const TOOL_USAGE_INSTRUCTIONS = `
 אסור לקרוא לפונקציה על שאלות מידע (איפה/מתי/שעות/מיקום בר/בריכה/עמדת ברד/צק-אאוט/WiFi).
 אל תקרא כשהאורח רק מעדכן שעת הגעה.
 קרא לפונקציה רק על הבקשה בטקסט הנוכחי — לא על נושאים ישנים מהיסטוריה שכבר נענו.
-אם קראת — הוסף/י גם תשובה חמה; אל תכתוב שהבקשה "הועברה" בלי קריאה לפונקציה.`;
+אם קראת — הוסף/י גם תשובה חמה; אל תכתוב שהבקשה "הועברה" בלי קריאה לפונקציה.${FACILITY_REVIEW_TOOL_INSTRUCTIONS}`;
 
 /** Server-side gate — model tool calls cannot bypass the physical-task allowlist. */
 function filterToolLoggedRequest(
@@ -2057,6 +2082,7 @@ function _looksLikeToolOnlyAck(reply: string): boolean {
 interface AiReplyResult {
   text: string;
   loggedRequest: { category: "request" | "upsell_opportunity"; summary: string } | null;
+  loggedFacilityReview: FacilityReviewCapture | null;
 }
 
 // Validates/coerces raw tool-call args — never trust model output blindly.
@@ -2081,6 +2107,41 @@ function _normalizeLoggedRequest(raw: unknown): AiReplyResult["loggedRequest"] {
 // the tool but — despite TOOL_USAGE_INSTRUCTIONS — omits accompanying text.
 function _buildToolOnlyReply(loggedRequest: NonNullable<AiReplyResult["loggedRequest"]>): string {
   return `בחירה מצוינת! העברתי את הבקשה (${loggedRequest.summary}) לצוות שלנו, ויחזרו אליך בהקדם. 🙏`;
+}
+
+function _extractAiToolResults(
+  rawParts: Array<Record<string, unknown>>,
+): Pick<AiReplyResult, "loggedRequest" | "loggedFacilityReview"> {
+  let loggedRequest: AiReplyResult["loggedRequest"] = null;
+  let loggedFacilityReview: FacilityReviewCapture | null = null;
+  for (const p of rawParts) {
+    const fc = p.functionCall as Record<string, unknown> | undefined;
+    if (!fc?.name) continue;
+    if (fc.name === LOG_REQUEST_TOOL_NAME) {
+      loggedRequest = _normalizeLoggedRequest(fc.args);
+    }
+    if (fc.name === LOG_FACILITY_REVIEW_TOOL_NAME) {
+      loggedFacilityReview = normalizeFacilityReviewToolArgs(fc.args);
+    }
+  }
+  return { loggedRequest, loggedFacilityReview };
+}
+
+function _extractClaudeToolResults(
+  blocks: Array<Record<string, unknown>>,
+): Pick<AiReplyResult, "loggedRequest" | "loggedFacilityReview"> {
+  let loggedRequest: AiReplyResult["loggedRequest"] = null;
+  let loggedFacilityReview: FacilityReviewCapture | null = null;
+  for (const b of blocks) {
+    if (b.type !== "tool_use") continue;
+    if (b.name === LOG_REQUEST_TOOL_NAME) {
+      loggedRequest = _normalizeLoggedRequest(b.input);
+    }
+    if (b.name === LOG_FACILITY_REVIEW_TOOL_NAME) {
+      loggedFacilityReview = normalizeFacilityReviewToolArgs(b.input);
+    }
+  }
+  return { loggedRequest, loggedFacilityReview };
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -2250,10 +2311,13 @@ async function askGemini(
       .map((p) => String(p.text).trim())
       .join("\n")
       .trim();
-    const fnPart = rawParts.find(p => (p.functionCall as Record<string, unknown> | undefined)?.name === LOG_REQUEST_TOOL_NAME);
-    const loggedRequest = fnPart ? _normalizeLoggedRequest((fnPart.functionCall as Record<string, unknown>)?.args) : null;
-    if (!text && !loggedRequest) return null;
-    return { text: text || (loggedRequest ? _buildToolOnlyReply(loggedRequest) : ""), loggedRequest };
+    const { loggedRequest, loggedFacilityReview } = _extractAiToolResults(rawParts);
+    if (!text && !loggedRequest && !loggedFacilityReview) return null;
+    return {
+      text: text || (loggedRequest ? _buildToolOnlyReply(loggedRequest) : ""),
+      loggedRequest,
+      loggedFacilityReview,
+    };
   }
 
   for (const model of modelOrder) {
@@ -2281,6 +2345,9 @@ async function askGemini(
     if (!result) throw new Error("gemini_empty_response");
     if (result.loggedRequest) {
       console.info(`[webhook] 🔧 Gemini called ${LOG_REQUEST_TOOL_NAME}:`, JSON.stringify(result.loggedRequest));
+    }
+    if (result.loggedFacilityReview) {
+      console.info(`[webhook] 🍽️ Gemini called ${LOG_FACILITY_REVIEW_TOOL_NAME}:`, JSON.stringify(result.loggedFacilityReview));
     }
     console.log(`[webhook] Gemini OK model="${model}"`);
     return result;
@@ -2370,16 +2437,18 @@ async function callClaude(
     .map(b => String(b.text ?? "").trim())
     .filter(Boolean)
     .join("\n");
-  const toolBlock = blocks.find(b => b.type === "tool_use" && b.name === LOG_REQUEST_TOOL_NAME);
-  const loggedRequest = toolBlock ? _normalizeLoggedRequest(toolBlock.input) : null;
+  const { loggedRequest, loggedFacilityReview } = _extractClaudeToolResults(blocks);
   if (loggedRequest) {
     console.info(`[webhook] 🔧 Claude called ${LOG_REQUEST_TOOL_NAME}:`, JSON.stringify(loggedRequest));
+  }
+  if (loggedFacilityReview) {
+    console.info(`[webhook] 🍽️ Claude called ${LOG_FACILITY_REVIEW_TOOL_NAME}:`, JSON.stringify(loggedFacilityReview));
   }
 
   const finalText = text || (loggedRequest ? _buildToolOnlyReply(loggedRequest) : "");
   if (!finalText) throw new Error("claude_empty_response");
   console.log(`[webhook] ✅ Claude OK (fallback) engine=${modelId}`);
-  return { text: finalText, loggedRequest };
+  return { text: finalText, loggedRequest, loggedFacilityReview };
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -4039,6 +4108,38 @@ Deno.serve(async (req: Request) => {
         continue;
       }
 
+      // ── Facility review capture (restaurant, spa, pool, etc.) — before
+      // holistic stay reflections; more specific facility wins.
+      if (!isButtonReply) {
+        const facilityCapture = classifyFacilityReview(effectiveText);
+        if (facilityCapture) {
+          await saveGuestFacilityReview(supabase, { guestId, phone, capture: facilityCapture });
+          await patchClaimedInbound(supabase, claimedConversationId, msgId, {
+            guest_id: guestId,
+            intent: "guest_feedback",
+          });
+          const facilityReply = buildFacilityReviewReply(
+            facilityCapture.facility,
+            facilityCapture.sentiment,
+            facilityCapture.rating,
+          );
+          if (!sim) {
+            try {
+              await sendReply(phone, facilityReply, { scripted: true });
+              await insertGuestOutboundIfNotMuted(supabase, {
+                phone, guest_id: guestId, message: facilityReply, wa_message_id: null, intent: "guest_feedback",
+              });
+            } catch (e) {
+              console.error("[webhook] 🍽️ facility review reply failed:", (e as Error).message);
+            }
+          }
+          console.info(
+            `[webhook] 🍽️ facility review captured — ${facilityCapture.facility}:${facilityCapture.sentiment} phone:${phone}`,
+          );
+          continue;
+        }
+      }
+
       // ── Guest feedback / sentiment reflection capture (free text) ─────────
       // Holistic stay/service reflections — NOT service-fault complaints
       // (those still flow through COMPLAINT_PATTERNS below, unchanged). Every
@@ -4136,6 +4237,7 @@ Deno.serve(async (req: Request) => {
       // Set only inside the "faq" branch below when the model invokes
       // log_guest_request — drives the conditional guest_alerts gate further down.
       let toolLoggedRequest: AiReplyResult["loggedRequest"] = null;
+      let toolLoggedFacilityReview: FacilityReviewCapture | null = null;
       // Unfiltered tool call (before filterToolLoggedRequest's allowlist/grounding
       // gate) — kept only to detect a suppressed request that left a false
       // "העברתי את הבקשה (X)" ack baked into `reply` (see reply-integrity check
@@ -4225,6 +4327,7 @@ Deno.serve(async (req: Request) => {
           }
           rawToolLoggedRequest = result.loggedRequest;
           toolLoggedRequest = filterToolLoggedRequest(effectiveText, result.loggedRequest);
+          toolLoggedFacilityReview = result.loggedFacilityReview;
         } catch (e) {
           const fallbackEngine = route.engine === "claude" ? "gemini" : "claude";
           console.error(`[webhook] ${route.engine} failed → trying ${fallbackEngine}:`, (e as Error).message);
@@ -4257,6 +4360,7 @@ Deno.serve(async (req: Request) => {
             }
             rawToolLoggedRequest = result.loggedRequest;
             toolLoggedRequest = filterToolLoggedRequest(effectiveText, result.loggedRequest);
+            toolLoggedFacilityReview = result.loggedFacilityReview;
           } catch (e2) {
             console.error("[webhook] both engines failed:", (e2 as Error).message);
             reply = FALLBACK_REPLY;
@@ -4299,6 +4403,17 @@ Deno.serve(async (req: Request) => {
           : "בפעם הבאה אתה מוזמן לביקור לינה בסוויטות שלנו או ב-PREMIUM DAY המפואר שלנו 🌟";
         console.info(`[webhook] 🏊 day-guest upsell gate fired — phone:${phone} premiumFree:${premiumFree}`);
         toolLoggedRequest = null;
+      }
+
+      if (toolLoggedFacilityReview) {
+        await saveGuestFacilityReview(supabase, {
+          guestId,
+          phone,
+          capture: toolLoggedFacilityReview,
+        });
+        console.info(
+          `[webhook] 🍽️ facility review saved (LLM tool) — ${toolLoggedFacilityReview.facility} phone:${phone}`,
+        );
       }
 
       // ── Zero-Rejection Future-Guest Routing (replaces the Session 30 Sprint

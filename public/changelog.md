@@ -1,3 +1,9 @@
+2026-07-15 | Facility reviews via guest bot — migration 212 `guest_feedback.facility_category`+`rating`; `_shared/guestFacilityReview.ts` tier-0 + `log_facility_review` LLM tool (Meta); Whapi tier-0; Feedback → משוב חופשי: facility filter chips (מסעדה מודגשת) + דירוג | whatsapp-webhook + whapi-webhook deploy + db push.
+
+2026-07-15 | Orit CS bootstrap-only load — `orit-cs-bootstrap` returns mailbox+threads; UI stops RLS race that cleared threads after load | OritCustomerServicePanel + function deploy.
+
+2026-07-15 | EZGO Operations email (Option A) — Doc 1 accepts Gmail `.eml` + HTML paste; panel «ממייל EZGO Operations» in ArrivalImportPanel (`ezgoEmailHtml.js`); no plain-text Gmail copy | DataSyncPage.
+
 2026-07-15 | Inbox בריזורט/מגיעים היום — סוויטות בלבד | `isGuestInResortToday` = `checked_in` בלבד; סגמנט `arriving_today` לסוויטות בטרום-צ'ק-אין; צ'יפ חדש ב-WhatsAppInbox; ResortPulseBar מיושר; 29 tests.
 
 2026-07-15 | Orit CS Agent — Graph M365 live path + UI connect | migration 208 `provider=microsoft`; `mailIngest.ts` Graph לפני IMAP; `OritCustomerServicePanel` כפתורי «חברי Outlook 365» + «סנכרן עכשיו» + תיקון טעינה; functions deployed; `docs/orit_outlook_connect.md` עודכן.
