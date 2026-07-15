@@ -22,7 +22,7 @@ serve(async (req: Request) => {
     const authHeader = req.headers.get("Authorization") ?? "";
     const jwt = authHeader.replace(/^Bearer\s+/i, "");
     if (!jwt) {
-      return new Response(JSON.stringify({ ok: false, error: "unauthorized" }), {
+      return new Response(JSON.stringify({ ok: false, error: "unauthorized", hint: "התחבר מחדש ל-XOS" }), {
         status: 200,
         headers: { ...CORS, "Content-Type": "application/json" },
       });
@@ -35,7 +35,7 @@ serve(async (req: Request) => {
 
     const { data: userData, error: userErr } = await supabase.auth.getUser(jwt);
     if (userErr || !userData?.user) {
-      return new Response(JSON.stringify({ ok: false, error: "unauthorized" }), {
+      return new Response(JSON.stringify({ ok: false, error: "unauthorized", hint: userErr?.message }), {
         status: 200,
         headers: { ...CORS, "Content-Type": "application/json" },
       });
@@ -47,8 +47,13 @@ serve(async (req: Request) => {
       .eq("id", userData.user.id)
       .maybeSingle();
 
-    if (!canUseOritAgent(profile?.role, profile?.orit_cs_agent_access, profile?.email ?? userData.user.email)) {
-      return new Response(JSON.stringify({ ok: false, error: "forbidden" }), {
+    const userEmail = profile?.email ?? userData.user.email ?? "";
+    if (!canUseOritAgent(profile?.role, profile?.orit_cs_agent_access, userEmail)) {
+      return new Response(JSON.stringify({
+        ok: false,
+        error: "forbidden",
+        hint: `אין הרשאה לסוכן (role=${profile?.role ?? "?"})`,
+      }), {
         status: 200,
         headers: { ...CORS, "Content-Type": "application/json" },
       });
@@ -81,7 +86,22 @@ serve(async (req: Request) => {
       mailbox.profile_id = userData.user.id;
     }
 
-    return new Response(JSON.stringify({ ok: true, mailbox }), {
+    const includeDemo = (await req.json().catch(() => ({}))).includeDemo === true;
+    let threadsQ = supabase
+      .from("orit_agent_threads")
+      .select("*")
+      .eq("mailbox_id", mailbox.id)
+      .order("received_at", { ascending: false });
+    if (!includeDemo) threadsQ = threadsQ.eq("is_demo", false);
+    const { data: threads, error: thErr } = await threadsQ;
+    if (thErr) {
+      return new Response(JSON.stringify({ ok: false, error: thErr.message }), {
+        status: 200,
+        headers: { ...CORS, "Content-Type": "application/json" },
+      });
+    }
+
+    return new Response(JSON.stringify({ ok: true, mailbox, threads: threads ?? [] }), {
       status: 200,
       headers: { ...CORS, "Content-Type": "application/json" },
     });

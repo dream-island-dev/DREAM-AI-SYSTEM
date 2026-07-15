@@ -66,62 +66,37 @@ export default function OritCustomerServicePanel({ user }) {
 
   const loadMailbox = useCallback(async () => {
     if (!isSupabaseConfigured()) {
-      setLoadError("Supabase לא מוגדר בפרונט (חסרים REACT_APP_SUPABASE_* ב-Vercel)");
+      setLoadError("Supabase לא מוגדר ב-Vercel — חסרים REACT_APP_SUPABASE_URL / REACT_APP_SUPABASE_ANON_KEY");
       return null;
     }
     setLoadError(null);
 
-    const { data: boot, error: bootErr } = await supabase.functions.invoke("orit-cs-bootstrap", { body: {} });
-    if (!bootErr && boot?.ok && boot?.mailbox) {
-      setMailbox(boot.mailbox);
-      return boot.mailbox;
-    }
-    if (bootErr) console.warn("[orit-cs] bootstrap:", bootErr);
-    if (boot && !boot.ok) console.warn("[orit-cs] bootstrap:", boot.error);
+    const { data: boot, error: bootErr } = await supabase.functions.invoke("orit-cs-bootstrap", {
+      body: { includeDemo: showDemo },
+    });
 
-    const { data: rpcRows, error: rpcErr } = await supabase.rpc("get_orit_cs_mailbox");
-    if (rpcErr) {
-      console.error("[orit-cs] mailbox rpc:", rpcErr);
-      // Fallback if migration 211 not yet applied
-      if (rpcErr.code !== "PGRST202") {
-        setLoadError(rpcErr.message);
-        showToast("err", rpcErr.message);
-        return null;
-      }
+    if (bootErr) {
+      const msg = bootErr.message || "שגיאת רשת בטעינת הסוכן";
+      setLoadError(msg);
+      showToast("err", msg);
+      return null;
     }
-    let data = Array.isArray(rpcRows) ? rpcRows[0] : rpcRows;
-    if (!data) {
-      const { data: rows, error } = await supabase
-        .from("orit_agent_mailbox")
-        .select(MAILBOX_COLUMNS)
-        .order("connection_status", { ascending: true })
-        .limit(5);
-      if (error) {
-        console.error("[orit-cs] mailbox load:", error);
-        setLoadError(error.message);
-        showToast("err", error.message);
-        return null;
-      }
-      data = (rows ?? []).find((m) => m.connection_status === "active") ?? rows?.[0] ?? null;
+
+    if (!boot?.ok) {
+      const msg = boot?.hint || boot?.error || "לא ניתן לטעון את תיבת הסוכן";
+      setLoadError(msg);
+      return null;
     }
-    if (!data) {
-      const errDetail = boot?.error || rpcErr?.message || "unknown";
-      setLoadError(`לא נמצאה תיבה (${errDetail}) — נסה להתנתק ולהתחבר מחדש`);
-      console.warn("[orit-cs] mailbox row not visible", { boot, rpcErr });
+
+    if (!boot.mailbox) {
+      setLoadError("mailbox_not_found בשרת");
+      return null;
     }
-    let next = data;
-    if (data?.profile_id == null && user?.id) {
-      const userEmail = (user.email || "").toLowerCase();
-      const ownsByEmail = userEmail && userEmail === (data?.owner_email || "").toLowerCase();
-      const hasAgentAccess = user?.orit_cs_agent_access === true || ownsByEmail;
-      if (hasAgentAccess) {
-        await supabase.from("orit_agent_mailbox").update({ profile_id: user.id }).eq("id", data.id);
-        next = { ...data, profile_id: user.id };
-      }
-    }
-    setMailbox(next);
-    return next;
-  }, [user?.id, user?.email, user?.orit_cs_agent_access, showToast]);
+
+    setMailbox(boot.mailbox);
+    setThreads(sortThreads(boot.threads ?? []));
+    return boot.mailbox;
+  }, [showDemo, showToast]);
 
   const loadThreads = useCallback(async () => {
     if (!mailbox?.id) return;
@@ -167,10 +142,6 @@ export default function OritCustomerServicePanel({ user }) {
   }, [loadMailbox]);
 
   useEffect(() => {
-    loadThreads();
-  }, [loadThreads]);
-
-  useEffect(() => {
     loadThreadDetail(selectedId);
   }, [selectedId, loadThreadDetail]);
 
@@ -179,12 +150,12 @@ export default function OritCustomerServicePanel({ user }) {
     const ch = supabase
       .channel(`orit-cs-threads-${mailbox.id}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "orit_agent_threads", filter: `mailbox_id=eq.${mailbox.id}` }, () => {
-        loadThreads();
+        loadMailbox();
         if (selectedId) loadThreadDetail(selectedId);
       })
       .subscribe();
     return () => { supabase.removeChannel(ch); };
-  }, [mailbox?.id, selectedId, loadThreads, loadThreadDetail]);
+  }, [mailbox?.id, selectedId, loadMailbox, loadThreadDetail]);
 
   const selected = useMemo(
     () => threads.find((t) => t.id === selectedId) ?? null,
