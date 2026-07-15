@@ -63,7 +63,7 @@ export default function OritCustomerServicePanel({ user }) {
   }, []);
 
   const loadMailbox = useCallback(async () => {
-    if (!isSupabaseConfigured()) return;
+    if (!isSupabaseConfigured()) return null;
     const { data, error } = await supabase
       .from("orit_agent_mailbox")
       .select(MAILBOX_COLUMNS)
@@ -72,19 +72,21 @@ export default function OritCustomerServicePanel({ user }) {
       .maybeSingle();
     if (error) {
       showToast("err", error.message);
-      return;
+      return null;
     }
-    setMailbox(data);
+    let next = data;
     if (data?.profile_id == null && user?.id) {
       const userEmail = (user.email || "").toLowerCase();
       const ownsByEmail = userEmail && userEmail === (data?.owner_email || "").toLowerCase();
       const hasAgentAccess = user?.orit_cs_agent_access === true || ownsByEmail;
       if (hasAgentAccess) {
         await supabase.from("orit_agent_mailbox").update({ profile_id: user.id }).eq("id", data.id);
-        setMailbox((prev) => (prev ? { ...prev, profile_id: user.id } : prev));
+        next = { ...data, profile_id: user.id };
       }
     }
-  }, [user, showToast]);
+    setMailbox(next);
+    return next;
+  }, [user?.id, user?.email, user?.orit_cs_agent_access, showToast]);
 
   const loadThreads = useCallback(async () => {
     if (!mailbox?.id) return;
@@ -117,11 +119,16 @@ export default function OritCustomerServicePanel({ user }) {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       setLoading(true);
-      await loadMailbox();
-      setLoading(false);
+      try {
+        await loadMailbox();
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     })();
+    return () => { cancelled = true; };
   }, [loadMailbox]);
 
   useEffect(() => {
@@ -151,6 +158,57 @@ export default function OritCustomerServicePanel({ user }) {
 
   const openCount = threads.filter((t) => t.status === "awaiting_reply").length;
 
+  const handleConnectOutlook = async () => {
+    if (!mailbox?.id) return;
+    setBusy(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("manager-mail-oauth", {
+        body: { mailboxId: mailbox.id },
+      });
+      if (error) throw error;
+      if (data?.status === "not_configured" || data?.error === "missing_client_id") {
+        throw new Error("חיבור Microsoft עדיין לא הוגדר בשרת — פנה למייק.");
+      }
+      if (!data?.authUrl) throw new Error(data?.error || "לא התקבל קישור חיבור");
+      const popup = window.open(data.authUrl, "_blank", "noopener,noreferrer");
+      if (!popup) {
+        showToast("err", "הדפדפן חסם חלון קופץ — אשר pop-ups ונסי שוב");
+        return;
+      }
+      showToast("ok", "נפתח חלון Microsoft — התחברי לתיבת 365 ולחצי «מסכים»");
+      const onFocus = async () => {
+        window.removeEventListener("focus", onFocus);
+        await loadMailbox();
+        await loadThreads();
+      };
+      window.addEventListener("focus", onFocus);
+    } catch (e) {
+      showToast("err", e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleSyncNow = async () => {
+    setBusy(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("manager-mail-sync", { body: {} });
+      if (error) throw error;
+      if (data?.skipped) {
+        showToast("err", "סנכרון כבוי בשרת (MANAGER_MAIL_ENABLED)");
+        return;
+      }
+      await loadMailbox();
+      await loadThreads();
+      const n = data?.synced ?? 0;
+      showToast("ok", n > 0 ? `סונכרנו ${n} הודעות חדשות` : "סנכרון הושלם — אין הודעות חדשות");
+    } catch (e) {
+      showToast("err", e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleAnalyze = async () => {
     if (!selectedId) return;
     setBusy(true);
@@ -163,6 +221,24 @@ export default function OritCustomerServicePanel({ user }) {
       showToast("ok", "✨ הסוכן עדכן סיכום והצעות");
       await loadThreads();
       await loadThreadDetail(selectedId);
+    } catch (e) {
+      showToast("err", e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleSnooze = async () => {
+    if (!selectedId) return;
+    setBusy(true);
+    try {
+      const { error } = await supabase.from("orit_agent_threads").update({
+        status: "snoozed",
+      }).eq("id", selectedId);
+      if (error) throw error;
+      showToast("ok", "נדחה — תוכלי לחזור אליו מאוחר יותר");
+      setSelectedId(null);
+      await loadThreads();
     } catch (e) {
       showToast("err", e.message);
     } finally {
@@ -233,23 +309,7 @@ export default function OritCustomerServicePanel({ user }) {
     ? `סנכרון אחרון: ${fmtDt(mailbox.last_sync_at)}`
     : "ממתין לסנכרון ראשון";
 
-  const handleSnooze = async () => {
-    if (!selectedId) return;
-    setBusy(true);
-    try {
-      const { error } = await supabase.from("orit_agent_threads").update({
-        status: "snoozed",
-      }).eq("id", selectedId);
-      if (error) throw error;
-      showToast("ok", "נדחה — תוכלי לחזור אליו מאוחר יותר");
-      setSelectedId(null);
-      await loadThreads();
-    } catch (e) {
-      showToast("err", e.message);
-    } finally {
-      setBusy(false);
-    }
-  };
+  const needsOAuth = mailbox.provider === "microsoft" && mailbox.connection_status !== "active";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
@@ -281,17 +341,46 @@ export default function OritCustomerServicePanel({ user }) {
             fontSize: 13,
             fontWeight: 700,
           }}>
-            {connected ? "✅ תיבת מייל מסונכרנת" : "⏳ ממתין לחיבור IMAP"}
+            {connected ? "✅ תיבת מייל מסונכרנת" : "⏳ ממתין לחיבור Outlook 365"}
           </span>
           <span style={{ fontSize: 13, opacity: 0.85 }}>{syncLabel}</span>
+          {mailbox.email_address && (
+            <span style={{ fontSize: 12, opacity: 0.75 }}>{mailbox.email_address}</span>
+          )}
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
             <input type="checkbox" checked={showDemo} onChange={(e) => setShowDemo(e.target.checked)} />
             הצג דמו לתרגול
           </label>
         </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
+          {needsOAuth && (
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={busy}
+              onClick={handleConnectOutlook}
+              style={{ minHeight: 44 }}
+              title="חיבור חד-פעמי לתיבת Microsoft 365 שמקבלת את המיילים"
+            >
+              🔗 חברי תיבת Outlook 365
+            </button>
+          )}
+          <button
+            type="button"
+            className="btn"
+            disabled={busy || needsOAuth}
+            onClick={handleSyncNow}
+            style={{ minHeight: 44 }}
+            title={needsOAuth ? "קודם חברי את תיבת Outlook" : "משוך מיילים חדשים עכשיו"}
+          >
+            🔄 סנכרן עכשיו
+          </button>
+        </div>
         {!connected && (
           <div style={{ marginTop: 12, fontSize: 13, opacity: 0.85 }}>
-            המערכת קוראת מיילים בלבד (IMAP). אחרי שמייק יגדיר את החיבור — פניות יופיעו כאן. שליחת תשובות תמיד מ-Outlook שלך.
+            {needsOAuth
+              ? "לחצי «חברי תיבת Outlook 365» → התחברי ל-orit@triobcom… → מסכים. המיילים מ-dream-island.co.il מגיעים לשם ב-Forward. שליחת תשובות תמיד מ-Outlook שלך."
+              : "ממתינה לסנכרון ראשון — לחצי «סנכרן עכשיו»."}
           </div>
         )}
         {connected && (

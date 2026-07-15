@@ -35,10 +35,10 @@ function graphToInbound(msg: Awaited<ReturnType<typeof fetchRecentInboxMessages>
 }
 
 export function isMailboxIngestConfigured(mailbox: OritMailboxRow): boolean {
-  if (mailbox.provider === "imap" || isImapConfigured(mailbox)) return isImapConfigured(mailbox);
   if (mailbox.provider === "microsoft") {
     return Boolean(mailbox.oauth_refresh_token);
   }
+  if (mailbox.provider === "imap" || isImapConfigured(mailbox)) return isImapConfigured(mailbox);
   return isImapConfigured(mailbox);
 }
 
@@ -47,12 +47,6 @@ export async function fetchMailboxInboxMessages(
   limit = 30,
 ): Promise<InboundMailMessage[]> {
   const { mailbox } = ctx;
-
-  if (mailbox.provider === "imap" || isImapConfigured(mailbox)) {
-    const cfg = resolveImapConfig(mailbox);
-    if (!cfg) throw new Error("imap_not_configured");
-    return fetchImapInboxMessages(cfg, limit);
-  }
 
   if (mailbox.provider === "microsoft" && mailbox.oauth_refresh_token) {
     const accessToken = await resolveGraphAccessToken(mailbox, async (next) => {
@@ -66,6 +60,12 @@ export async function fetchMailboxInboxMessages(
     });
     const graphMsgs = await fetchRecentInboxMessages(accessToken, limit);
     return graphMsgs.map(graphToInbound).filter((m): m is InboundMailMessage => m !== null);
+  }
+
+  if (mailbox.provider === "imap" || isImapConfigured(mailbox)) {
+    const cfg = resolveImapConfig(mailbox);
+    if (!cfg) throw new Error("imap_not_configured");
+    return fetchImapInboxMessages(cfg, limit);
   }
 
   throw new Error("mailbox_not_configured");

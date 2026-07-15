@@ -1,3 +1,5 @@
+2026-07-15 | Orit CS Agent — Graph M365 live path + UI connect | migration 208 `provider=microsoft`; `mailIngest.ts` Graph לפני IMAP; `OritCustomerServicePanel` כפתורי «חברי Outlook 365» + «סנכרן עכשיו» + תיקון טעינה; functions deployed; `docs/orit_outlook_connect.md` עודכן.
+
 2026-07-15 | Smart Paste pipeline — `parse-raw-paste` Edge Function (Gemini 2.5 Flash JSON schema, suite_guest/day_guest); `SmartPastePanel` + fuzzy `match_guest_fuzzy` scenarios (enrich / missing alert / day guest) on DataSyncPage | migration 207 + functions deploy.
 
 2026-07-15 | Smart Paste groundwork — `pg_trgm` + GIN index on `guests.name` + RPC `match_guest_fuzzy(p_name, p_arrival_date?)` (similarity > 0.3, max 15) | migration 207.
