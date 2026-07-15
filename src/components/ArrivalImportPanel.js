@@ -41,6 +41,7 @@ import {
 } from "../utils/detailedReservationParser";
 import PriceDiscrepancyModal from "./PriceDiscrepancyModal";
 import { isSuiteGuestProfile } from "../utils/guestTiming";
+import { resolveEzgoHtmlFromUpload, looksLikeEml } from "../utils/ezgoEmailHtml";
 
 // Sorted, joined header signature — matches import_mapping_memory.header_signature (migration 049).
 // Not a hash: exact string equality is enough here and avoids a client-side hash dependency.
@@ -613,6 +614,33 @@ function _buildDoc1Records(payload, syncMode) {
   return parseComprehensiveReport(payload.data, opts);
 }
 
+function _finalizeDoc1Ingest({ payload, records, syncMode, detectedDate, filenameForDate, dateSource }) {
+  if (!records.length) {
+    return {
+      ok: false,
+      errMsg: syncMode === "suite_spa_only"
+        ? "לא נמצאו שורות «לאורחי הסוויטות» עם שעת ספא בדוח"
+        : "לא נמצאו הזמנות בדוח — בדוק פורמט",
+    };
+  }
+  let arrivalHint = detectedDate ?? null;
+  let arrivalSource = dateSource ?? null;
+  if (!arrivalHint && filenameForDate) {
+    arrivalHint = _detectDateFromFilename(filenameForDate);
+    if (arrivalHint) arrivalSource = "שם הקובץ";
+  }
+  return {
+    ok: true,
+    payload,
+    records,
+    arrivalHint,
+    arrivalSource,
+    toastMsg: syncMode === "suite_spa_only"
+      ? `זוהו ${records.length} הזמנות ספא לסוויטות (לאורחי הסוויטות)`
+      : `נטענו ${records.length} שורות מהדוח היומי`,
+  };
+}
+
 // ── Profile Map cloner ────────────────────────────────────────────────────────
 
 function _cloneProfileMap(map) {
@@ -1085,6 +1113,8 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
   const [rawDoc1Payload, setRawDoc1Payload] = useState(null); // { kind, data } for re-parse on mode change
   const [doc2Name, setDoc2Name] = useState("");
   const [doc1Name, setDoc1Name] = useState("");
+  const [doc1PasteText, setDoc1PasteText] = useState("");
+  const [ezgoEmailOpen, setEzgoEmailOpen] = useState(true);
   // Deterministic arrival date — staff sets this BEFORE dropping Doc 2; its
   // value at upload time becomes every profile's arrival date (no filename
   // or in-file date column is auto-parsed anymore).
@@ -1616,34 +1646,52 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     setDoc2Name("");
   }, []);
 
-  // ── Parse Doc 1: Comprehensive Daily Report (Excel or EZGO HTML) ────────
+  // ── Parse Doc 1: Comprehensive Daily Report (Excel or EZGO HTML / Gmail .eml) ─
+  const applyDoc1Result = useCallback((result, displayName) => {
+    if (!result.ok) {
+      showToast("err", result.errMsg);
+      setRawDoc1Payload(null);
+      setDoc1Rec(null);
+      return;
+    }
+    if (result.arrivalHint) {
+      setArrivalDate(result.arrivalHint);
+      if (result.arrivalSource) {
+        setAutoDateBanner({ date: result.arrivalHint, source: result.arrivalSource });
+      }
+    }
+    setDoc1Name(displayName);
+    setRawDoc1Payload(result.payload);
+    showToast("ok", result.toastMsg);
+  }, []);
+
   const handleDoc1 = useCallback(async (file) => {
     if (!file) return;
-    setDoc1Name(file.name);
     setResult(null);
     try {
+      const headSniff = await file.slice(0, 2048).text().catch(() => "");
+      const looksEml = /\.eml$/i.test(file.name);
       const looksHtmlByName = /\.html?$/i.test(file.name);
       const looksHtmlByMime = file.type === "text/html";
-      const headSniff = await file.slice(0, 512).text().catch(() => "");
-      const looksHtmlByContent = /<!DOCTYPE\s+html|<html[\s>]|<table[\s>]/i.test(headSniff.trimStart());
-      const isHtml = looksHtmlByName || looksHtmlByMime || looksHtmlByContent;
-
-      const detectedByName = _detectDateFromFilename(file.name);
-      if (detectedByName) {
-        setArrivalDate(detectedByName);
-        setAutoDateBanner({ date: detectedByName, source: "שם הקובץ" });
-      }
+      const resolvedFromHead = resolveEzgoHtmlFromUpload({ text: headSniff, filename: file.name });
+      const isHtml = looksEml || looksHtmlByName || looksHtmlByMime
+        || /<!DOCTYPE\s+html|<html[\s>]|<table[\s>]/i.test(headSniff.trimStart())
+        || (!!resolvedFromHead && (looksEml || looksHtmlByName));
 
       let payload;
+      let detectedDate = null;
+
       if (isHtml) {
-        const text = await file.text();
-        payload = { kind: "html", data: text };
-        const preview = parseHtmlDailyReport(text, _doc1ParseOpts(doc1SyncMode));
-        const detectedDate = preview.find((r) => r.arrival_date)?.arrival_date;
-        if (detectedDate) {
-          setArrivalDate(detectedDate);
-          setAutoDateBanner({ date: detectedDate, source: "הדוח היומי (HTML)" });
+        const rawText = await file.text();
+        const htmlText = resolveEzgoHtmlFromUpload({ text: rawText, filename: file.name })
+          ?? rawText.trimStart().replace(/^\uFEFF/, "");
+        if (!/<table[\s>]/i.test(htmlText)) {
+          showToast("err", "לא נמצאה טבלת EZGO בקובץ — הורד את המייל כ-.eml או HTML (לא העתקת טקסט מ-Gmail)");
+          return;
         }
+        payload = { kind: "html", data: htmlText };
+        const preview = parseHtmlDailyReport(htmlText, _doc1ParseOpts(doc1SyncMode));
+        detectedDate = preview.find((r) => r.arrival_date)?.arrival_date ?? null;
       } else {
         const XLSX = await import("xlsx");
         const buf  = await file.arrayBuffer();
@@ -1651,36 +1699,60 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
         const ws   = wb.Sheets[wb.SheetNames[0]];
         const rows = XLSX.utils.sheet_to_json(ws, { defval: null, header: 1 });
         payload = { kind: "rows", data: rows };
-        if (!detectedByName) {
+        if (!detectedDate) {
           const firstDateRow = rows.find((row) => Array.isArray(row) && typeof row[0] === "number" && row[0] > 40000);
           if (firstDateRow) {
-            const detectedDate = _parseDate(firstDateRow[0]);
-            if (detectedDate) {
-              setArrivalDate(detectedDate);
-              setAutoDateBanner({ date: detectedDate, source: "תאריך בדוח (Excel)" });
-            }
+            detectedDate = _parseDate(firstDateRow[0]);
           }
         }
       }
 
       const records = _buildDoc1Records(payload, doc1SyncMode);
-      if (!records.length) {
-        showToast("err", doc1SyncMode === "suite_spa_only"
-          ? "לא נמצאו שורות «לאורחי הסוויטות» עם שעת ספא בדוח"
-          : "לא נמצאו הזמנות בדוח — בדוק פורמט");
-        setRawDoc1Payload(null);
-        setDoc1Rec(null);
-        return;
-      }
-
-      setRawDoc1Payload(payload);
-      showToast("ok", doc1SyncMode === "suite_spa_only"
-        ? `זוהו ${records.length} הזמנות ספא לסוויטות (לאורחי הסוויטות)`
-        : `נטענו ${records.length} שורות מהדוח היומי`);
+      const finalized = _finalizeDoc1Ingest({
+        payload,
+        records,
+        syncMode: doc1SyncMode,
+        detectedDate,
+        filenameForDate: file.name,
+        dateSource: isHtml && detectedDate ? "הדוח היומי (HTML)" : (detectedDate ? "תאריך בדוח (Excel)" : null),
+      });
+      applyDoc1Result(finalized, file.name);
     } catch (err) {
       showToast("err", "שגיאה בקריאת הדוח: " + err.message);
     }
-  }, [doc1SyncMode]);
+  }, [doc1SyncMode, applyDoc1Result]);
+
+  const handleDoc1Paste = useCallback(() => {
+    const raw = doc1PasteText.trim();
+    if (!raw) {
+      showToast("err", "הדבק קוד HTML מהמייל או תוכן קובץ .eml");
+      return;
+    }
+    setResult(null);
+    try {
+      const htmlText = resolveEzgoHtmlFromUpload({ text: raw, filename: looksLikeEml(raw) ? "paste.eml" : "paste.html" });
+      if (!htmlText || !/<table[\s>]/i.test(htmlText)) {
+        showToast("err", "לא זוהתה טבלת EZGO — הורד את המייל (⋮ → הורד הודעה) או «הצג מקור» → HTML. אל תעתיק טקסט גלוי מ-Gmail");
+        return;
+      }
+      const payload = { kind: "html", data: htmlText };
+      const preview = parseHtmlDailyReport(htmlText, _doc1ParseOpts(doc1SyncMode));
+      const detectedDate = preview.find((r) => r.arrival_date)?.arrival_date ?? null;
+      const records = _buildDoc1Records(payload, doc1SyncMode);
+      const finalized = _finalizeDoc1Ingest({
+        payload,
+        records,
+        syncMode: doc1SyncMode,
+        detectedDate,
+        filenameForDate: null,
+        dateSource: detectedDate ? "הדוח היומי (HTML)" : null,
+      });
+      applyDoc1Result(finalized, "מייל EZGO (הדבקה)");
+      setDoc1PasteText("");
+    } catch (err) {
+      showToast("err", "שגיאה בפענוח ההדבקה: " + err.message);
+    }
+  }, [doc1PasteText, doc1SyncMode, applyDoc1Result]);
 
   const displayGridRows = useMemo(() => {
     let rows = gridRows;
@@ -2447,7 +2519,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
             fontSize: 12, color: "var(--gold-light)", lineHeight: 1.8,
           }}>
             <strong>Doc 2 — דוח כניסות EZGO (CSV):</strong> ייבוא חדרים, אורחים, הזמנות · או <strong>«שיבוץ סוויטות בלבד»</strong> לעדכון חדר בפרופיל קיים (מס׳ הזמנה / שם)<br />
-            <strong>Doc 1 — דוח יומי מקיף (Excel / HTML):</strong> עדכון שעות ספא (+ ארוחה במצב מלא)<br />
+            <strong>Doc 1 — דוח יומי מקיף (Excel / HTML / מייל EZGO):</strong> עדכון שעות ספא + HB/FB · <strong>📧 ממייל Operations</strong> — הורד .eml מ-Gmail או הדבק HTML (ראה למטה)<br />
             <strong>💆 ספא סוויטות בלבד (ברירת מחדל):</strong> שורות עם «לאורחי הסוויטות» בלבד · התאמה לפי <em>מספר הזמנה</em> + תאריך הגעה → עדכון פרופיל קיים<br />
             <span style={{ color: "rgba(232,201,138,0.55)", fontSize: 11 }}>
               ניתן להעלות כל דוח בנפרד ● ערוך שם/חדר/ספא בטבלה לפני הסנכרון ● שדות בוט חיים לא נדרסים
@@ -2585,14 +2657,88 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
             </div>
             <DropZone
               label="📊 Doc 1 — דוח יומי מקיף"
-              hint="Excel / HTML EZGO — שעות ספא וארוחה"
+              hint="Excel / HTML / .eml מ-Gmail — שעות ספא ופנסיון"
               loaded={hasDoc1}
               fileName={doc1Name}
               onFile={handleDoc1}
               inputRef={doc1Ref}
-              accept=".xlsx,.xls,.htm,.html"
+              accept=".xlsx,.xls,.htm,.html,.eml"
               optional
             />
+          </div>
+
+          {/* EZGO Operations email — Option A workflow */}
+          <div style={{
+            marginBottom: 14, borderRadius: 12,
+            border: "1px solid rgba(34,197,94,0.35)",
+            background: "rgba(22,163,74,0.06)",
+            overflow: "hidden",
+          }}>
+            <button
+              type="button"
+              onClick={() => setEzgoEmailOpen((o) => !o)}
+              style={{
+                width: "100%", display: "flex", alignItems: "center", gap: 10,
+                padding: "12px 14px", border: "none", cursor: "pointer",
+                background: "transparent", fontFamily: "Heebo,sans-serif",
+                textAlign: "right",
+              }}
+            >
+              <span style={{ fontSize: 18 }}>📧</span>
+              <span style={{ flex: 1, fontWeight: 800, fontSize: 13, color: "#86efac" }}>
+                ממייל EZGO Operations — בלי להעתיק טקסט ידנית
+              </span>
+              {hasDoc1 && (
+                <span style={{ fontSize: 11, color: "#4ade80", fontWeight: 700 }}>
+                  ✓ דוח נטען
+                </span>
+              )}
+              <span style={{ color: "rgba(134,239,172,0.6)", fontSize: 12 }}>{ezgoEmailOpen ? "▲" : "▼"}</span>
+            </button>
+            {ezgoEmailOpen && (
+              <div style={{ padding: "0 14px 14px", fontSize: 12, color: "rgba(232,201,138,0.85)", lineHeight: 1.85 }}>
+                <ol style={{ margin: "0 0 12px", paddingRight: 20 }}>
+                  <li>ב-Gmail פתח מייל מ-<strong style={{ direction: "ltr", display: "inline" }}>noreply@ezgo.co.il</strong> — נושא «Operations»</li>
+                  <li><strong>מומלץ:</strong> ⋮ → <strong>הורד הודעה</strong> (.eml) וגרור ל-Doc 1 למעלה</li>
+                  <li><strong>חלופה:</strong> ⋮ → <strong>הצג מקור</strong> → שמור כ-HTML או העתק את כל הקוד להדבקה למטה</li>
+                  <li>ודא מצב Doc 1: <strong>«ספא סוויטות בלבד»</strong> → לחץ <strong>סנכרן ספא סוויטות</strong></li>
+                </ol>
+                <div style={{
+                  fontSize: 11, color: "#fbbf24", fontWeight: 700, marginBottom: 10,
+                  padding: "8px 10px", borderRadius: 8,
+                  background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.35)",
+                }}>
+                  ⚠ מייל אחד = יום אחד. אל תעתיק טקסט גלוי מ-Gmail (PDF/הדפסה) — חייב HTML או .eml
+                </div>
+                <textarea
+                  value={doc1PasteText}
+                  onChange={(e) => setDoc1PasteText(e.target.value)}
+                  placeholder="הדבק כאן קוד HTML מ«הצג מקור» או תוכן קובץ .eml…"
+                  dir="ltr"
+                  style={{
+                    width: "100%", minHeight: 72, maxHeight: 160, resize: "vertical",
+                    padding: "10px 12px", borderRadius: 8, boxSizing: "border-box",
+                    border: "1px solid rgba(34,197,94,0.4)",
+                    background: "rgba(0,0,0,0.25)", color: "#d1fae5",
+                    fontFamily: "monospace", fontSize: 11,
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={handleDoc1Paste}
+                  disabled={!doc1PasteText.trim()}
+                  style={{
+                    marginTop: 8, padding: "8px 18px", borderRadius: 20, border: "none",
+                    cursor: doc1PasteText.trim() ? "pointer" : "not-allowed",
+                    opacity: doc1PasteText.trim() ? 1 : 0.5,
+                    fontFamily: "Heebo,sans-serif", fontSize: 12, fontWeight: 800,
+                    background: "linear-gradient(135deg,#22c55e,#16a34a)", color: "#fff",
+                  }}
+                >
+                  📥 טען דוח מההדבקה
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Doc 1 sync mode — suite spa only vs full enrichment */}

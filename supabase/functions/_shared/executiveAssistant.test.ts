@@ -89,6 +89,36 @@ function mockSupabase(opts: {
   return { from: () => builder } as any;
 }
 
+/** Per-table Supabase stub — each `.from(table)` call gets its own configured
+ * response, unlike mockSupabase's single shared response. Needed for tool
+ * executors that touch more than one table in a single call (e.g.
+ * request_missing_arrival_times: guests lookup + whatsapp_conversations
+ * dedupe + whatsapp_conversations insert). */
+function mockSupabaseByTable(tables: Record<string, { data: unknown; error: unknown }>) {
+  return {
+    from: (table: string) => {
+      const resp = tables[table] ?? { data: null, error: null };
+      const builder: any = {
+        select: () => builder,
+        eq: () => builder,
+        in: () => builder,
+        not: () => builder,
+        is: () => builder,
+        ilike: () => builder,
+        gte: () => builder,
+        lt: () => builder,
+        order: () => builder,
+        limit: () => builder,
+        insert: () => builder,
+        update: () => builder,
+        maybeSingle: () => Promise.resolve(resp),
+        then: (resolve: any, reject?: any) => Promise.resolve(resp).then(resolve, reject),
+      };
+      return builder;
+    },
+  } as any;
+}
+
 Deno.test("normalizeExecutivePhoneDigits — local 0-prefix → 972 E.164 digits", () => {
   assertEquals(normalizeExecutivePhoneDigits("0505421751"), "972505421751");
   assertEquals(normalizeExecutivePhoneDigits("+972505421751"), "972505421751");
@@ -523,6 +553,14 @@ Deno.test("resolveStaffAssistantInbound — Adir front desk profile", async () =
   assertEquals(await isStaffAssistantInbound("972546294885"), true);
 });
 
+Deno.test("buildExecutiveSystemPrompt — Adir overlay mentions the two new front-desk tools", async () => {
+  const profile = await resolveStaffAssistantInbound("972546294885");
+  if (!profile) throw new Error("expected Adir profile");
+  const prompt = buildExecutiveSystemPrompt(profile, "BASE {{name}} {{title}} {{focus}}", "", "", []);
+  assertEquals(prompt.includes("request_missing_arrival_times"), true);
+  assertEquals(prompt.includes("escalate_to_eliad"), true);
+});
+
 Deno.test("get_system_health — forbidden for Eliad", async () => {
   const result = await executeExecutiveTool(mockSupabase({}), "get_system_health", {}, CTX);
   assertEquals(result.ok, false);
@@ -545,6 +583,121 @@ Deno.test("get_arrival_desk_brief — forbidden for Eliad", async () => {
   const result = await executeExecutiveTool(mockSupabase({}), "get_arrival_desk_brief", {}, CTX);
   assertEquals(result.ok, false);
   assertEquals(result.error, "tool_forbidden_for_role");
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// escalate_to_eliad / request_missing_arrival_times (Adir front-desk tools)
+// ══════════════════════════════════════════════════════════════════════════════
+
+Deno.test("resolveExecutiveToolDefs — Adir gets the two new front-desk tools, Eliad does not", () => {
+  const adirDefs = resolveExecutiveToolDefs("972546294885", "front_desk");
+  assertEquals(adirDefs.some((t) => t.name === "request_missing_arrival_times"), true);
+  assertEquals(adirDefs.some((t) => t.name === "escalate_to_eliad"), true);
+  const eliadDefs = resolveExecutiveToolDefs("972505421751", "executive");
+  assertEquals(eliadDefs.some((t) => t.name === "request_missing_arrival_times"), false);
+  assertEquals(eliadDefs.some((t) => t.name === "escalate_to_eliad"), false);
+});
+
+Deno.test("escalate_to_eliad — requires a non-empty summary", async () => {
+  const result = await executeExecutiveTool(mockSupabaseByTable({}), "escalate_to_eliad", {}, ADIR_CTX);
+  assertEquals(result.ok, false);
+  assertEquals(result.error, "summary_required");
+});
+
+Deno.test("escalate_to_eliad — forbidden for Eliad himself (front-desk-only tool)", async () => {
+  const result = await executeExecutiveTool(mockSupabaseByTable({}), "escalate_to_eliad", { summary: "x" }, CTX);
+  assertEquals(result.ok, false);
+  assertEquals(result.error, "tool_forbidden_for_role");
+});
+
+Deno.test("escalate_to_eliad — sends a DM to Eliad's phone with the summary", async () => {
+  const supabase = mockSupabaseByTable({ whatsapp_conversations: { data: null, error: null } });
+  await withEnvs({ WHAPI_TOKEN: "test-token" }, async () => {
+    let sentTo = "";
+    let sentBody = "";
+    await withFetch(
+      (_input, init) => {
+        const parsed = JSON.parse(String((init as RequestInit | undefined)?.body ?? "{}"));
+        sentTo = String(parsed.to ?? "");
+        sentBody = String(parsed.body ?? "");
+        return Promise.resolve(new Response(JSON.stringify({ id: "wamid-1" }), { status: 200 }));
+      },
+      async () => {
+        const result = await executeExecutiveTool(
+          supabase,
+          "escalate_to_eliad",
+          { summary: "האורח מבקש פיצוי, אני לא יכול להחליט לבד", room: "אמטיסט 9" },
+          ADIR_CTX,
+        );
+        assertEquals(result.ok, true);
+        assertEquals(result.sent, true);
+      },
+    );
+    assertEquals(sentTo, "972505421751");
+    assertEquals(sentBody.includes("האורח מבקש פיצוי"), true);
+    assertEquals(sentBody.includes("אמטיסט 9"), true);
+  });
+});
+
+Deno.test("request_missing_arrival_times — forbidden for Eliad (front-desk-only tool)", async () => {
+  const result = await executeExecutiveTool(mockSupabaseByTable({}), "request_missing_arrival_times", {}, CTX);
+  assertEquals(result.ok, false);
+  assertEquals(result.error, "tool_forbidden_for_role");
+});
+
+Deno.test("request_missing_arrival_times — no missing-time suite guests today reports zero", async () => {
+  const supabase = mockSupabaseByTable({ guests: { data: [], error: null } });
+  const result = await executeExecutiveTool(supabase, "request_missing_arrival_times", {}, ADIR_CTX);
+  assertEquals(result.ok, true);
+  assertEquals(result.count, 0);
+  assertEquals(result.sent, 0);
+});
+
+Deno.test("request_missing_arrival_times — sends to suite guests missing a time, skips day-pass guests", async () => {
+  const supabase = mockSupabaseByTable({
+    guests: {
+      data: [
+        { id: 1, name: "כהן", room: "אמטיסט 3", room_type: "suite", phone: "+972500000001", status: "expected" },
+        { id: 2, name: "לוי", room: "Premium Day 1", room_type: "day_guest", phone: "+972500000002", status: "expected" },
+      ],
+      error: null,
+    },
+    whatsapp_conversations: { data: [], error: null },
+  });
+  await withEnvs({ WHAPI_TOKEN: "test-token" }, async () => {
+    const sentTargets: string[] = [];
+    await withFetch(
+      (_input, init) => {
+        const parsed = JSON.parse(String((init as RequestInit | undefined)?.body ?? "{}"));
+        sentTargets.push(String(parsed.to ?? ""));
+        return Promise.resolve(new Response(JSON.stringify({ id: "wamid-x" }), { status: 200 }));
+      },
+      async () => {
+        const result = await executeExecutiveTool(supabase, "request_missing_arrival_times", {}, ADIR_CTX);
+        assertEquals(result.ok, true);
+        assertEquals(result.count, 1);
+        assertEquals(result.sent, 1);
+      },
+    );
+    assertEquals(sentTargets, ["972500000001"]);
+  });
+});
+
+Deno.test("request_missing_arrival_times — skips a guest already asked today (dedupe, no re-send)", async () => {
+  const supabase = mockSupabaseByTable({
+    guests: {
+      data: [
+        { id: 1, name: "כהן", room: "אמטיסט 3", room_type: "suite", phone: "+972500000001", status: "expected" },
+      ],
+      error: null,
+    },
+    whatsapp_conversations: { data: [{ phone: "+972500000001" }], error: null },
+  });
+  const result = await executeExecutiveTool(supabase, "request_missing_arrival_times", {}, ADIR_CTX);
+  assertEquals(result.ok, true);
+  assertEquals(result.count, 1);
+  assertEquals(result.sent, 0);
+  assertEquals(result.already_asked, 1);
 });
 
 Deno.test("list_executive_rules_audit — Mike can list Eliad + shared rules", async () => {

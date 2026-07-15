@@ -54,6 +54,7 @@ Deno.test("buildArrivalEtaAdirMessage — tags Meta channel", () => {
   assertEquals(msg.includes("Dream Bot"), true);
   assertEquals(msg.includes("15:30"), true);
   assertEquals(msg.includes("שעת הגעה חדשה"), true);
+  assertEquals(msg.includes("מה לעשות"), true);
 });
 
 Deno.test("buildArrivalEtaAdirMessage — update wording when time changed", () => {

@@ -14,6 +14,7 @@
 import { serve }         from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient }  from "https://esm.sh/@supabase/supabase-js@2";
 import { sendWhapiText } from "../_shared/whapiSend.ts";
+import { buildInventorySubmitAdirText } from "../_shared/adirNotifyMessages.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -103,10 +104,10 @@ serve(async (req: Request) => {
     // employee's success screen, the submission row already exists and is
     // visible in the approval queue regardless.
     try {
-      const text =
-        `📦 INVENTORY SUBMITTED — ${link.location_name}\n` +
-        `${countRows.length} items reported, awaiting your approval.\n` +
-        `Please check the inventory approval queue.`;
+      const text = buildInventorySubmitAdirText({
+        locationName: link.location_name as string,
+        itemCount: countRows.length,
+      });
       await sendWhapiText(ADIR_PHONE, text, { noLinkPreview: true });
     } catch (e) {
       console.warn(`[inventory-portal-submit] submission ${submission.id} created but manager alert failed:`, (e as Error).message);

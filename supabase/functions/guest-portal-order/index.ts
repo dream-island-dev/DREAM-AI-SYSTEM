@@ -23,6 +23,7 @@
 import { serve }        from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendWhapiText } from "../_shared/whapiSend.ts";
+import { buildPortalOrderAdirText } from "../_shared/adirNotifyMessages.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -176,12 +177,12 @@ serve(async (req: Request) => {
         })
         .join("\n");
 
-      const msg =
-        `🛎️ ORDER from Portal — ${guest.name ?? "Guest"}` +
-        (guest.room ? ` | ${guest.room as string}` : "") +
-        `\n${itemLines}` +
-        (arrivalTag ? `\n${arrivalTag}` : "") +
-        `\nCheck the Operations Board or Orders tab.`;
+      const msg = buildPortalOrderAdirText({
+        guestName: guest.name as string | null,
+        room: guest.room as string | null,
+        itemLines,
+        arrivalTag,
+      });
 
       await sendWhapiText(ADIR_PHONE, msg, { noLinkPreview: true });
     } catch (e) {

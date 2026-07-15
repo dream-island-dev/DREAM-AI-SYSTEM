@@ -27,6 +27,7 @@ import { formatWhapiSuitesConversationLog, stripOutboundDispatchTag } from "./ou
 import { CLAUDE_MODEL } from "./guestBotModelRoute.ts";
 import {
   GUEST_OPS_SLA_THRESHOLDS,
+  ISRAEL_UTC_OFFSET_HOURS,
   buildGuestOpsSlaDeadline,
   guessGuestOpsSlaCategory,
   resolveGuestOpsDepartment,
@@ -34,6 +35,7 @@ import {
 import { translateTextForFieldOps } from "./fieldOpsTranslation.ts";
 import { SUITES_ROOM_SERVICE_GROUP_ID } from "./futureSuiteRoomServiceRouting.ts";
 import { loadActiveGuestById, type ActiveGuestRow } from "./guestOutboundGuard.ts";
+import { buildStaffAppDeepLink, phoneDigitsForDeepLink } from "./guestAlertWhapiNotify.ts";
 import { fetchResortBrief, israelTodayStr, addDaysYmd } from "./resortPulseStats.ts";
 import { isEffectiveSuiteGuest } from "./suiteNames.ts";
 import {
@@ -638,6 +640,29 @@ const FRONT_DESK_EXTRA_TOOL_DEFS: ToolDef[] = [
       required: ["rule_text"],
     },
   },
+  {
+    name: "request_missing_arrival_times",
+    description:
+      "שליחת הודעת וואטסאפ קצרה לכל אורחי הסוויטות שמגיעים היום ועדיין לא דיווחו שעת הגעה, לבקש מהם שעה משוערת. " +
+      "להשתמש רק אחרי שאדיר אישר במפורש (למשל ענה \"כן\" להצעה בבריף הבוקר, או ביקש \"תשלחי להם הודעה לבקש שעת הגעה\"). " +
+      "מדלג אוטומטית על מי שכבר קיבל את ההודעה הזו היום.",
+    schema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "escalate_to_eliad",
+    description:
+      "שליחת עדכון אישי לאליעד (מנכ\"ל) על מקרה ספציפי שדורש החלטת הנהלה — פיצוי, הנחה, מקרה VIP, או כל דבר " +
+      "שאדיר לא יכול/רוצה להחליט עליו לבד. לא לשימוש עבור בקשות שגרתיות שאדיר יכול לטפל בהן בעצמו.",
+    schema: {
+      type: "object",
+      properties: {
+        summary: { type: "string", description: "תיאור קצר וברור של המצב וההחלטה הנדרשת, בעברית." },
+        guest_id: { type: "integer", description: "מזהה אורח, אם ידוע (עדיף על room)." },
+        room: { type: "string", description: "חדר/סוויטה, אם רלוונטי." },
+      },
+      required: ["summary"],
+    },
+  },
 ];
 
 const FRONT_DESK_EXTRA_TOOL_NAMES = new Set(FRONT_DESK_EXTRA_TOOL_DEFS.map((t) => t.name));
@@ -967,23 +992,22 @@ async function _execCeoGuestOverride(supabase: SupabaseClient, args: Record<stri
   return { ok: true, guest_id: guest.id, guest_name: guest.name ?? null, override_type: overrideType };
 }
 
-async function _execSendGuestMessage(supabase: SupabaseClient, args: Record<string, unknown>): Promise<ToolResult> {
-  const message = String(args.message ?? "").trim();
-  if (!message) return { ok: false, error: "message_required" };
-  if (!args.guest_id && !args.room) return { ok: false, error: "guest_id_or_room_required" };
-
-  const guest = await _resolveExecutiveGuestTarget(supabase, args);
-  if (!guest) return { ok: false, error: "guest_not_found_or_inactive" };
-  if (!guest.phone) return { ok: false, error: "guest_no_phone" };
-
+/** Send one free-text WhatsApp message to a guest via the Whapi Suites device
+ * + log to Inbox. Shared by send_guest_message and request_missing_arrival_times —
+ * same direct-Whapi path send_guest_message already used before this helper was
+ * extracted (no per-cohort channel routing here; not introducing new routing
+ * logic that doesn't already exist for this assistant's guest messaging). */
+async function _sendGuestWhapiMessage(
+  supabase: SupabaseClient,
+  guest: { id: number; phone: string },
+  message: string,
+): Promise<{ sent: boolean; wamid: string | null; error?: string }> {
   let wamid: string | null = null;
   try {
     wamid = await sendWhapiText(cleanPhoneForMention(guest.phone), message);
   } catch (e) {
-    console.error("[executiveAssistant] send_guest_message failed:", (e as Error).message);
-    return { ok: false, error: (e as Error).message };
+    return { sent: false, wamid: null, error: (e as Error).message };
   }
-
   const { error } = await supabase.from("whatsapp_conversations").insert({
     phone: guest.phone,
     guest_id: guest.id,
@@ -993,9 +1017,154 @@ async function _execSendGuestMessage(supabase: SupabaseClient, args: Record<stri
     inbox_channel: "whapi",
     channel: "whapi",
   });
-  if (error) console.warn("[executiveAssistant] send_guest_message log insert failed:", error.message);
+  if (error) console.warn("[executiveAssistant] guest whapi message log insert failed:", error.message);
+  return { sent: true, wamid };
+}
 
+async function _execSendGuestMessage(supabase: SupabaseClient, args: Record<string, unknown>): Promise<ToolResult> {
+  const message = String(args.message ?? "").trim();
+  if (!message) return { ok: false, error: "message_required" };
+  if (!args.guest_id && !args.room) return { ok: false, error: "guest_id_or_room_required" };
+
+  const guest = await _resolveExecutiveGuestTarget(supabase, args);
+  if (!guest) return { ok: false, error: "guest_not_found_or_inactive" };
+  if (!guest.phone) return { ok: false, error: "guest_no_phone" };
+
+  const result = await _sendGuestWhapiMessage(supabase, { id: guest.id, phone: guest.phone }, message);
+  if (!result.sent) {
+    console.error("[executiveAssistant] send_guest_message failed:", result.error);
+    return { ok: false, error: result.error };
+  }
   return { ok: true, guest_id: guest.id, sent: true };
+}
+
+const ARRIVAL_ETA_REQUEST_MESSAGE = "היי, נשמח לדעת מתי תגיעו היום בערך? 😊";
+// Distinctive substring used to detect "already asked today" without a schema
+// change (MVP #1 — no migration, see plan). Matched against
+// whatsapp_conversations.message for today's Israel-local date.
+const ARRIVAL_ETA_REQUEST_DEDUPE_MARK = "נשמח לדעת מתי תגיעו";
+
+type MissingEtaGuestRow = {
+  id: number;
+  name: string | null;
+  room: string | null;
+  room_type: string | null;
+  phone: string | null;
+  status: string;
+};
+
+async function _execRequestMissingArrivalTimes(supabase: SupabaseClient): Promise<ToolResult> {
+  const todayYmd = israelTodayStr();
+  const { data, error } = await supabase
+    .from("guests")
+    .select("id, name, room, room_type, phone, status, arrival_date, arrival_time")
+    .eq("arrival_date", todayYmd)
+    .not("status", "eq", "cancelled")
+    .is("arrival_time", null);
+  if (error) {
+    console.warn("[executiveAssistant] request_missing_arrival_times lookup failed:", error.message);
+    return { ok: false, error: error.message };
+  }
+
+  const candidates = ((data ?? []) as unknown as MissingEtaGuestRow[]).filter(
+    (g) => isEffectiveSuiteGuest(g) && g.phone,
+  );
+  if (!candidates.length) return { ok: true, count: 0, sent: 0, summary: "אין אורחי סוויטות בלי שעת הגעה היום." };
+
+  // Israel-local midnight today, as a UTC instant — same fixed-offset
+  // convention as resortDigestStats.ts's israelMidnightUtc (no DST
+  // adjustment, consistent with the rest of the cron pipeline).
+  const todayStartIso = new Date(
+    new Date(`${todayYmd}T00:00:00.000Z`).getTime() - ISRAEL_UTC_OFFSET_HOURS * 3_600_000,
+  ).toISOString();
+
+  const phones = candidates.map((g) => g.phone as string);
+  const { data: alreadySent, error: dedupeErr } = await supabase
+    .from("whatsapp_conversations")
+    .select("phone")
+    .eq("direction", "outbound")
+    .in("phone", phones)
+    .gte("created_at", todayStartIso)
+    .ilike("message", `%${ARRIVAL_ETA_REQUEST_DEDUPE_MARK}%`);
+  if (dedupeErr) {
+    console.warn("[executiveAssistant] request_missing_arrival_times dedupe lookup failed:", dedupeErr.message);
+  }
+  const alreadyAskedPhones = new Set(((alreadySent ?? []) as Array<{ phone: string }>).map((r) => r.phone));
+
+  const toSend = candidates.filter((g) => !alreadyAskedPhones.has(g.phone as string));
+  const skippedAlready = candidates.length - toSend.length;
+  if (!toSend.length) {
+    return {
+      ok: true,
+      count: candidates.length,
+      sent: 0,
+      already_asked: skippedAlready,
+      summary: `כל ה-${candidates.length} האורחים בלי שעה כבר קיבלו את ההודעה הזו היום.`,
+    };
+  }
+
+  let sentCount = 0;
+  const failedNames: string[] = [];
+  const sentNames: string[] = [];
+  for (const g of toSend) {
+    const result = await _sendGuestWhapiMessage(
+      supabase,
+      { id: g.id, phone: g.phone as string },
+      ARRIVAL_ETA_REQUEST_MESSAGE,
+    );
+    if (result.sent) {
+      sentCount++;
+      sentNames.push(g.name ?? g.room ?? "אורח");
+    } else {
+      failedNames.push(g.name ?? g.room ?? "אורח");
+      console.warn(`[executiveAssistant] arrival-eta request failed for guest ${g.id}:`, result.error);
+    }
+  }
+
+  const summaryParts = [`נשלח ל-${sentCount} אורחים: ${sentNames.join(", ") || "—"}`];
+  if (failedNames.length) summaryParts.push(`⚠ נכשל עבור: ${failedNames.join(", ")}`);
+  if (skippedAlready) summaryParts.push(`(${skippedAlready} כבר קיבלו היום, לא נשלח שוב)`);
+
+  return {
+    ok: true,
+    count: candidates.length,
+    sent: sentCount,
+    failed: failedNames.length,
+    already_asked: skippedAlready,
+    summary: summaryParts.join(" "),
+  };
+}
+
+async function _execEscalateToEliad(supabase: SupabaseClient, args: Record<string, unknown>): Promise<ToolResult> {
+  const summary = String(args.summary ?? "").trim();
+  if (!summary) return { ok: false, error: "summary_required" };
+
+  let guestName: string | null = null;
+  let room: string | null = String(args.room ?? "").trim() || null;
+  let guestPhoneDigits: string | null = null;
+  if (args.guest_id || args.room) {
+    const guest = await _resolveExecutiveGuestTarget(supabase, args);
+    if (guest) {
+      guestName = guest.name ?? null;
+      room = guest.room ?? room;
+      guestPhoneDigits = phoneDigitsForDeepLink(guest.phone) || null;
+    }
+  }
+
+  const lines = ["📣 עדכון מאדיר", ""];
+  if (room || guestName) lines.push(`${room ?? "—"}${guestName ? ` — ${guestName}` : ""}`);
+  lines.push(
+    summary,
+    "",
+    `💬 לפתוח באינבוקס: ${buildStaffAppDeepLink({ page: "wa_inbox", phone: guestPhoneDigits, guestName })}`,
+  );
+
+  const delivery = await deliverExecutiveDmReply(supabase, {
+    phone: CEO_PHONE_DIGITS,
+    replyText: lines.join("\n"),
+  });
+  if (!delivery.sent) return { ok: false, error: delivery.error ?? "send_failed" };
+  return { ok: true, sent: true, escalated_to: "אליעד" };
 }
 
 async function _execNotifyManagersGroup(args: Record<string, unknown>): Promise<ToolResult> {
@@ -1064,6 +1233,9 @@ async function _execGetArrivalDeskBrief(supabase: SupabaseClient): Promise<ToolR
       with_time: brief.todayWithTime,
       missing_time: brief.todayMissingTime,
       summary: brief.summary,
+      ...(brief.todayMissingTime > 0
+        ? { suggestion: "אפשר להציע לאדיר לשלוח הודעה לבקש שעת הגעה מכל מי שעדיין בלי שעה (request_missing_arrival_times), אם הוא מאשר." }
+        : {}),
     };
   } catch (e) {
     console.warn("[executiveAssistant] get_arrival_desk_brief failed:", (e as Error).message);
@@ -1630,6 +1802,8 @@ export async function executeExecutiveTool(
     case "get_arrival_desk_brief": return await _execGetArrivalDeskBrief(supabase);
     case "resolve_guest_alert": return await _execResolveGuestAlert(supabase, args);
     case "learn_front_desk_rule": return await _execLearnRule(supabase, args, ctx, "front_desk");
+    case "request_missing_arrival_times": return await _execRequestMissingArrivalTimes(supabase);
+    case "escalate_to_eliad": return await _execEscalateToEliad(supabase, args);
     default: return { ok: false, error: `unknown_tool:${name}` };
   }
 }

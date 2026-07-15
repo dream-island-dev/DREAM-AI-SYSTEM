@@ -12,7 +12,7 @@ import { triggerInboxRedAlert } from "./inboxRedAlert.ts";
 const STAFF_APP_ORIGIN = "https://dream-ai-system.vercel.app";
 
 /** Aligned with RequestsBoard.js TYPE_META labels. */
-const ALERT_HEADLINE_HE: Record<string, string> = {
+export const GUEST_ALERT_TYPE_LABEL_HE: Record<string, string> = {
   request:              "🛎️ בקשת אורח",
   complaint:            "😤 תלונה",
   severe_complaint:     "🚨 תלונה חמורה",
@@ -45,6 +45,10 @@ export type GuestAlertNotifyOpts = {
   /** Informational board rows (e.g. arrival_eta) — no Inbox red-dot / no Whapi group spam. */
   boardOnly?: boolean;
 };
+
+export function guestAlertTypeLabelHe(alertType: string): string {
+  return GUEST_ALERT_TYPE_LABEL_HE[alertType] ?? `⚠ ${alertType || "התראה"}`;
+}
 
 export function phoneDigitsForDeepLink(phone: string | null | undefined): string {
   return (phone ?? "").replace(/\D/g, "");
@@ -100,7 +104,7 @@ export function buildGuestAlertWhapiCard(opts: {
   phone?: string | null;
   extraLine?: string | null;
 }): string {
-  const headline = ALERT_HEADLINE_HE[opts.alertType] ?? `⚠ ${opts.alertType || "התראה"}`;
+  const headline = guestAlertTypeLabelHe(opts.alertType);
   const channel = sourceLabelHe(opts.sourceLabel);
   const header = channel ? `${headline} — ${channel}` : headline;
   const room = opts.room?.trim() || "—";

@@ -72,11 +72,18 @@ export function buildArrivalEtaAdirMessage(opts: {
   const digits = phoneDigitsForDeepLink(opts.phone);
   const lines = [
     headline,
-    `${who} | ${room} | ${dateLabel} | ${timeLine}`,
-    `מקור: ${channelLabel}`,
+    "",
+    `👤 ${who} | 🏨 ${room}`,
+    `📅 ${dateLabel} | 🕐 ${timeLine}`,
+    `📱 מקור: ${channelLabel}`,
   ];
   const quote = opts.guestQuote?.trim().slice(0, 200);
-  if (quote) lines.push(`«${quote}»`);
+  if (quote) lines.push(`💬 «${quote}»`);
+  lines.push(
+    "",
+    "👉 מה לעשות:",
+    "עדכן בלוח ההגעות או ענה לאורח אם צריך.",
+  );
   if (digits) {
     lines.push(`💬 שיחה: ${buildStaffAppDeepLink({ page: "wa_inbox", phone: digits, guestName: opts.guestName })}`);
   }

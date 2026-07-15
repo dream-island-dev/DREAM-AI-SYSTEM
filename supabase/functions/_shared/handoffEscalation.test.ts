@@ -70,16 +70,16 @@ Deno.test("manager texts — hard mentions auto-dispatch; soft forbids ops card"
     ageMinutes: 8,
     taskId: 42,
   });
-  assert(hard.includes("AUTO-DISPATCH"));
-  assert(hard.includes("Task #42"));
+  assert(hard.includes("נשלחה אוטומטית"));
+  assert(hard.includes("משימה #42"));
 
   const soft = buildSoftHandoffManagerText({
     phone: "972501234567",
     requestType: "date_change",
-    guestLabel: "ישראל ישראלי",
+    guestLabel: "ישראל ישראלי (אמטיסט 3)",
     ageMinutes: 22,
     preview: "אפשר צ'ק אאוט מאוחר?",
   });
-  assert(soft.includes("soft / non-ops"));
-  assert(soft.includes("do NOT open a field-ops card"));
+  assert(soft.includes("אורח מחכה לתשובה"));
+  assert(soft.includes("אל תפתח כרטיס תחזוקה"));
 });

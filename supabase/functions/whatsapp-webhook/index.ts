@@ -51,6 +51,7 @@ import {
   PAYMENT_LINK_FAILURE_LABEL,
 } from "../_shared/paymentLinkGuard.ts";
 import { sendWhapiText, cleanPhoneForMention } from "../_shared/whapiSend.ts";
+import { buildPreCheckinGuestRequestAdirText } from "../_shared/adirNotifyMessages.ts";
 import { shouldRouteGuestOutboundViaWhapiSuites, primeGuestChannelConfig } from "../_shared/guestWhapiRouting.ts";
 import { formatGuestProfileForAi } from "../_shared/guestProfile.ts";
 import {
@@ -4495,12 +4496,16 @@ Deno.serve(async (req: Request) => {
         // it to plan; only GUEST-facing messages are masked, see Room Masking
         // below), never blocks the guest's reply on a Whapi failure.
         const guestRoomForAdir = (guest as Record<string, unknown> | null)?.room as string | null ?? "—";
+        const guestNameForAdir = (guest as Record<string, unknown> | null)?.name as string | null ?? null;
         sendWhapiText(
           ADIR_PERSONAL_PHONE,
-          `🌴 PRE-CHECK-IN GUEST REQUEST — Suite ${guestRoomForAdir} (${(guest as Record<string, unknown> | null)?.name ?? "Guest"})\n` +
-          `${toolLoggedRequest.summary ?? effectiveText}` +
-          (futureTag ? `\n${futureTag}` : `\nArriving today, not checked in yet.`) +
-          `\nHeads-up only, check the Requests Board.`,
+          buildPreCheckinGuestRequestAdirText({
+            room: guestRoomForAdir,
+            guestName: guestNameForAdir,
+            summary: String(toolLoggedRequest.summary ?? effectiveText),
+            futureTag,
+            arrivingToday: !futureTag,
+          }),
           { noLinkPreview: true },
         ).catch((e: Error) => console.warn("[webhook] future-guest Adir alert failed (non-blocking):", e.message));
 

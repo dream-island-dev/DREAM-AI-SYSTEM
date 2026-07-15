@@ -10,6 +10,9 @@
 //
 // Pure helpers live here so sla-escalation-cron stays thin and unit-testable.
 
+import { buildStaffAppDeepLink } from "./guestAlertWhapiNotify.ts";
+import { handoffTypeLabelHe } from "./adirNotifyMessages.ts";
+
 /** Minutes a guest_request may sit in pending_approval before auto-approve. */
 export const PENDING_APPROVAL_AUTO_APPROVE_MINUTES = 7;
 
@@ -97,13 +100,16 @@ export function buildPendingAutoApproveManagerText(args: {
   ageMinutes: number;
   taskId: string | number;
 }): string {
-  return (
-    `🚨 AUTO-DISPATCH — Guest room request sat ${args.ageMinutes} min without reception approval.\n` +
-    `Suite: ${args.room ?? "—"}\n` +
-    `Request: ${args.description ?? "—"}\n` +
-    `Task #${args.taskId} was auto-approved and sent to Operations.\n` +
-    `Please confirm field response.`
-  );
+  return [
+    "🚨 בקשת חדר נשלחה אוטומטית לתחזוקה",
+    `עברו ${args.ageMinutes} דק׳ בלי אישור קבלה — המערכת אישרה ושיגרה לבד.`,
+    "",
+    `🏨 סוויטה: ${args.room ?? "—"}`,
+    `📋 בקשה: ${args.description ?? "—"}`,
+    "",
+    "👉 מה לעשות:",
+    `וודא שהצוות בשטח מטפל. משימה #${args.taskId}.`,
+  ].join("\n");
 }
 
 export function buildSoftHandoffManagerText(args: {
@@ -113,12 +119,22 @@ export function buildSoftHandoffManagerText(args: {
   ageMinutes: number;
   preview: string;
 }): string {
-  return (
-    `⚠️ Unanswered guest handoff — ${args.ageMinutes} min (soft / non-ops).\n` +
-    `Guest: ${args.guestLabel}\n` +
-    `Type: ${args.requestType ?? "staff_handoff"}\n` +
-    `Phone: ${args.phone}\n` +
-    `Message: "${args.preview}"\n` +
-    `Check DREAM BOT Inbox — do NOT open a field-ops card for spa / late checkout / finance.`
-  );
+  const digits = args.phone.replace(/\D/g, "");
+  const lines = [
+    "⚠️ אורח מחכה לתשובה",
+    `עברו ${args.ageMinutes} דק׳ מאז שהבוט העביר לצוות.`,
+    "",
+    `👤 ${args.guestLabel}`,
+    `📌 ${handoffTypeLabelHe(args.requestType)}`,
+    `💬 «${args.preview}»`,
+    "",
+    "👉 מה לעשות:",
+    "זו בקשה שלא דורשת תחזוקה בשטח (ספא / חיוב / שינוי תאריך).",
+    "ענה לאורח מהאינבוקס — אל תפתח כרטיס תחזוקה.",
+  ];
+  if (digits) {
+    lines.push(`💬 אינבוקס: ${buildStaffAppDeepLink({ page: "wa_inbox", phone: digits })}`);
+  }
+  lines.push(`📋 לוח בקשות: ${buildStaffAppDeepLink({ page: "requests_board" })}`);
+  return lines.join("\n");
 }

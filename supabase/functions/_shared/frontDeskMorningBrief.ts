@@ -36,10 +36,20 @@ const ALERT_TYPE_LABEL_HE: Record<string, string> = {
   arrival_eta: "🕐 שעת הגעה",
 };
 
+const GUEST_STATUS_LABEL_HE: Record<string, string> = {
+  pending:     "ממתין",
+  expected:    "צפוי",
+  room_ready:  "חדר מוכן",
+  checked_in:  "בנוי",
+  checked_out: "יצא",
+  cancelled:   "בוטל",
+};
+
 function formatGuestLine(g: ArrivalDeskGuestRow, dayLabel: string): string {
   const attn = g.requires_attention ? " ⚠VIP" : "";
   const time = g.arrival_time?.trim() ? ` ${g.arrival_time}` : "";
-  return `• ${g.name ?? "—"} — ${g.room ?? "—"} (${dayLabel})${time}${attn} [${g.status}]`;
+  const status = GUEST_STATUS_LABEL_HE[g.status] ?? g.status;
+  return `• ${g.name ?? "—"} — ${g.room ?? "—"} (${dayLabel})${time}${attn} [${status}]`;
 }
 
 export type ArrivalDeskBrief = {
@@ -157,6 +167,13 @@ export function buildFrontDeskMorningMessage(stats: FrontDeskMorningStats): stri
   if (brief.tomorrowTotal) headline.push(`📅 מחר: ${brief.tomorrowTotal} הגעות`);
 
   const sections: string[] = [...headline, "", brief.summary];
+
+  if (brief.todayMissingTime > 0) {
+    sections.push(
+      "",
+      `רוצה שאשלח הודעה קצרה לבקש שעת הגעה מ-${brief.todayMissingTime} האורחים שעדיין בלי שעה? רק תגיד לי "כן, תשלחי".`,
+    );
+  }
 
   if (openActionable.length) {
     sections.push("", "🔔 בקשות פתוחות (לטיפול):");

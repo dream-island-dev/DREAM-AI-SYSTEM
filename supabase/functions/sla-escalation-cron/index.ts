@@ -20,7 +20,8 @@
 //
 // Delivery split: guest_alerts + soft handoffs → whatsapp-send "inbox_reply"
 // (Meta). pending auto-approve → notify-manual-task + Whapi DM to management.
-// open unassigned → Whapi ops group / SLA_OPS_ALERT_PHONE.
+// open unassigned → Whapi ops group; guest_request may also DM SLA_OPS_ALERT_PHONE
+// when SLA_OPS_PERSONAL_ALERT_ENABLED=true (off by default — Lidor personal pings).
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -46,6 +47,10 @@ import {
   buildPendingAutoApproveManagerText,
   buildSoftHandoffManagerText,
 } from "../_shared/handoffEscalation.ts";
+import {
+  buildGuestAlertSlaEscalationText,
+  formatAdirGuestLabel,
+} from "../_shared/adirNotifyMessages.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -99,12 +104,22 @@ async function pushAlert(supabaseUrl: string, anon: string, title: string, body:
   }
 }
 
+/** Personal 1:1 SLA pings to SLA_OPS_ALERT_PHONE (Lidor) — disabled unless explicitly enabled. */
+function isOpsPersonalAlertEnabled(): boolean {
+  return Deno.env.get("SLA_OPS_PERSONAL_ALERT_ENABLED") === "true";
+}
+
+function opsPersonalAlertPhone(): string {
+  if (!isOpsPersonalAlertEnabled()) return "";
+  return (Deno.env.get("SLA_OPS_ALERT_PHONE") ?? "").trim();
+}
+
 /** Mike + Eliad (KNOWN_EXECUTIVES) + Adir phones + optional MANAGEMENT_ESCALATION_PHONES. */
 function managementEscalationPhones(): string[] {
   const extra = (Deno.env.get("MANAGEMENT_ESCALATION_PHONES") ?? "").split(",");
   return dedupePhoneDigits([
     ...listKnownExecutivePhoneDigits(),
-    Deno.env.get("SLA_OPS_ALERT_PHONE"),
+    opsPersonalAlertPhone(),
     Deno.env.get("SLA_GUEST_ALERT_PHONE"),
     ...extra,
   ]);
@@ -216,22 +231,19 @@ serve(async (req: Request) => {
         const today = new Date(); today.setUTCHours(0, 0, 0, 0);
         const arrival = new Date(`${alertGuest.arrival_date}T00:00:00Z`);
         const daysAway = Math.round((arrival.getTime() - today.getTime()) / 86400000);
-        if (daysAway > 0) arrivalNote = `\n⚠️ בקשה עתידית לתאריך ${alertGuest.arrival_date} - בעוד ${daysAway} ימים`;
+        if (daysAway > 0) arrivalNote = `⚠️ בקשה עתידית — הגעה ב-${alertGuest.arrival_date} (בעוד ${daysAway} ימים)`;
       }
       const ageMinutes = Math.round((Date.now() - new Date(alert.created_at as string).getTime()) / 60000);
-      const phoneDigits = String(alert.phone ?? "").replace(/\D/g, "");
-      const boardUrl = "https://dream-ai-system.vercel.app/?page=requests_board";
-      const chatUrl = phoneDigits
-        ? `https://dream-ai-system.vercel.app/?page=wa_inbox&phone=${phoneDigits}`
-        : null;
-      const hebrewText =
-        `⚠️ חריגת SLA — בקשת אורח פתוחה ${ageMinutes} דק׳ (סף: ${GUEST_ALERT_SLA_MINUTES} דק׳).\n` +
-        `אורח: ${guestLabel}\n` +
-        `סוג: ${alert.alert_type}\n` +
-        `הודעה: "${alert.message}"\n` +
-        (chatUrl ? `💬 שיחה: ${chatUrl}\n` : "") +
-        `📋 לוח בקשות: ${boardUrl}` +
-        arrivalNote;
+      const hebrewText = buildGuestAlertSlaEscalationText({
+        ageMinutes,
+        thresholdMinutes: GUEST_ALERT_SLA_MINUTES,
+        guestLabel,
+        alertType: String(alert.alert_type ?? "request"),
+        message: String(alert.message ?? ""),
+        phone: String(alert.phone ?? ""),
+        guestName: alertGuest?.name ?? null,
+        futureArrivalNote: arrivalNote || null,
+      });
 
       const notified = guestAlertPhone ? await notifyWhatsapp(supabaseUrl, anon, guestAlertPhone, hebrewText) : false;
 
@@ -366,13 +378,16 @@ serve(async (req: Request) => {
     // SLA_GUEST_ALERT_PHONE but never wired into code until now (Session 26
     // Sprint 3.3 finally gives it a job: the personal-manager half of the
     // guest_request escalation path).
-    const managerPhone  = (Deno.env.get("SLA_OPS_ALERT_PHONE") ?? "").trim();
+    const managerPhone  = opsPersonalAlertPhone();
     const functionsBase = `${supabaseUrl}/functions/v1/task-action`;
-    if ((overdueTasks ?? []).some((t) => t.source !== "guest_request") && !alertGroupId) {
+    const needsGroupAlert = (overdueTasks ?? []).some(
+      (t) => t.source !== "guest_request" || !managerPhone,
+    );
+    if (needsGroupAlert && !alertGroupId) {
       console.warn("[sla-escalation-cron] ⚠️ no SLA_ALERT_GROUP_ID/WHAPI_GROUP_ID set — ops breaches NOT marked escalated, will retry next run.");
     }
-    if ((overdueTasks ?? []).some((t) => t.source === "guest_request") && !managerPhone) {
-      console.warn("[sla-escalation-cron] ⚠️ SLA_OPS_ALERT_PHONE not set — guest-request breaches NOT marked escalated, will retry next run.");
+    if ((overdueTasks ?? []).some((t) => t.source === "guest_request") && isOpsPersonalAlertEnabled() && !managerPhone) {
+      console.warn("[sla-escalation-cron] ⚠️ SLA_OPS_PERSONAL_ALERT_ENABLED but SLA_OPS_ALERT_PHONE not set — guest-request breaches NOT marked escalated, will retry next run.");
     }
 
     const opsResults: Array<{ taskId: string; notified: boolean }> = [];
@@ -381,18 +396,16 @@ serve(async (req: Request) => {
       const isGuestRequest = task.source === "guest_request";
 
       let notified = false;
-      if (isGuestRequest) {
-        if (managerPhone) {
-          const bumpUrl = `${functionsBase}?id=${task.id}&action=bump&token=${task.action_token}`;
-          const managerText =
-            `🚨 SLA ALERT: Room ${task.room_number ?? "—"} request (${task.description}) is UNRESOLVED for ${ageMinutes} minutes!\n` +
-            `⚡ Bump Task: ${bumpUrl}`;
-          try {
-            await sendWhapiText(managerPhone, managerText, { noLinkPreview: true });
-            notified = true;
-          } catch (e) {
-            console.error(`[sla-escalation-cron] manager SLA alert failed for guest-request task ${task.id} (will retry next run):`, (e as Error).message);
-          }
+      if (isGuestRequest && managerPhone) {
+        const bumpUrl = `${functionsBase}?id=${task.id}&action=bump&token=${task.action_token}`;
+        const managerText =
+          `🚨 SLA ALERT: Room ${task.room_number ?? "—"} request (${task.description}) is UNRESOLVED for ${ageMinutes} minutes!\n` +
+          `⚡ Bump Task: ${bumpUrl}`;
+        try {
+          await sendWhapiText(managerPhone, managerText, { noLinkPreview: true });
+          notified = true;
+        } catch (e) {
+          console.error(`[sla-escalation-cron] manager SLA alert failed for guest-request task ${task.id} (will retry next run):`, (e as Error).message);
         }
       } else {
         // Ops-group card translation only — tasks.description in the DB (already
@@ -483,7 +496,7 @@ serve(async (req: Request) => {
 
       const softGuest = (row as { guests?: { name?: string; room?: string } | null }).guests;
       const guestLabel = softGuest
-        ? `${softGuest.name ?? "Guest"} (Room ${softGuest.room ?? "—"})`
+        ? formatAdirGuestLabel(softGuest.name, softGuest.room)
         : String(row.phone);
       const ageMinutes = Math.round((Date.now() - new Date(row.created_at as string).getTime()) / 60000);
       const preview = String(row.message ?? "").replace(/\s+/g, " ").trim().slice(0, 160);
