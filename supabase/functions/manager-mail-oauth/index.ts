@@ -123,11 +123,20 @@ serve(async (req: Request) => {
       const { data: mailbox } = await supabase
         .from("orit_agent_mailbox")
         .select("id")
-        .order("created_at", { ascending: true })
-        .limit(1)
+        .eq("owner_email", "orit@dream-island.co.il")
         .maybeSingle();
       if (!mailbox?.id) {
-        return htmlPage("שגיאה", "<h2>תיבת הסוכן לא נמצאה ב-DB</h2>");
+        const { data: fallback } = await supabase
+          .from("orit_agent_mailbox")
+          .select("id")
+          .eq("connection_status", "active")
+          .order("last_sync_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (!fallback?.id) {
+          return htmlPage("שגיאה", "<h2>תיבת הסוכן לא נמצאה ב-DB</h2>");
+        }
+        return beginOAuthForMailbox(supabase, fallback.id);
       }
 
       return beginOAuthForMailbox(supabase, mailbox.id);

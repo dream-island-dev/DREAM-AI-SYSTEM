@@ -64,17 +64,18 @@ export default function OritCustomerServicePanel({ user }) {
 
   const loadMailbox = useCallback(async () => {
     if (!isSupabaseConfigured()) return null;
-    const { data, error } = await supabase
+    const { data: rows, error } = await supabase
       .from("orit_agent_mailbox")
       .select(MAILBOX_COLUMNS)
-      .order("created_at", { ascending: true })
-      .limit(1)
-      .maybeSingle();
+      .order("connection_status", { ascending: true })
+      .order("last_sync_at", { ascending: false, nullsFirst: false })
+      .limit(5);
     if (error) {
       console.error("[orit-cs] mailbox load:", error);
       showToast("err", error.message);
       return null;
     }
+    const data = (rows ?? []).find((m) => m.connection_status === "active") ?? rows?.[0] ?? null;
     if (!data) {
       console.warn("[orit-cs] mailbox row not visible (RLS or missing migration)");
     }
