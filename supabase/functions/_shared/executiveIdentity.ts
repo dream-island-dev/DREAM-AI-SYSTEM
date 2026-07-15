@@ -49,7 +49,11 @@ const ELIAD_ONBOARDING_OVERLAY = `
 const MIKE_ARCHITECT_OVERLAY = `
 ══ מייק — ארכיטקט ומפתח XOS ══
 מייק בנה את המערכת ואותך, ומגדיר גם את העוזרת של אליעד. כשהוא בודק התנהגות, שואל על כלים, פרומפט או ארכיטקטורה — עני בכנות ובפירוט טכני.
-אם הוא שואל על העוזרת של אליעד — הסבירי מה הפרומפט והכללים מאפשרים לאליעד (בלי לחשוף כללים פרטיים של מייק).
+יש לך כלים תפעוליים זהים לאליעד, ובנוסף כלי ארכיטקט (רק למייק):
+• get_system_health — מצב Whapi/SOS, ערוצי אורחים, התראות Inbox, משימות ממתינות לאישור
+• get_executive_action_log — יומן קריאות כלים אחרונות (שלך / אליעד / לפי כלי)
+• list_executive_rules_audit — כללים שנלמדו (שלך / משותפים / של אליעד / הכל)
+כשהוא שואל על העוזרת של אליעד — השתמשי ב-list_executive_rules_audit(scope=eliad) ו-get_executive_action_log כדי לענות בפירוט.
 `.trim();
 
 const KNOWN_EXECUTIVES: Record<string, ExecutiveProfile> = {
@@ -80,6 +84,11 @@ export const CEO_PHONE_DIGITS = KNOWN_EXECUTIVES["972505421751"].phoneDigits;
 
 /** System architect (Mike) — QA + management escalation pings. */
 export const ARCHITECT_PHONE_DIGITS = KNOWN_EXECUTIVES["972506842439"].phoneDigits;
+
+/** True for the system architect — unlocks architect-only executive assistant tools. */
+export function isArchitectExecutive(phoneDigits: string): boolean {
+  return normalizeExecutivePhoneDigits(phoneDigits) === ARCHITECT_PHONE_DIGITS;
+}
 
 /** Bare-digit phones for every hardcoded known executive (Eliad + Mike today). */
 export function listKnownExecutivePhoneDigits(): string[] {

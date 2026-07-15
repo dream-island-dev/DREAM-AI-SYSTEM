@@ -6,7 +6,19 @@
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.20.0";
-import { resolveExecutiveInbound, type ExecutiveProfile } from "./executiveIdentity.ts";
+import {
+  resolveExecutiveInbound,
+  type ExecutiveProfile,
+  ARCHITECT_PHONE_DIGITS,
+  CEO_PHONE_DIGITS,
+  normalizeExecutivePhoneDigits,
+} from "./executiveIdentity.ts";
+import {
+  primeGuestChannelConfig,
+  getWhapiDeviceStatusSnapshot,
+  getGuestSuitesChannel,
+  getGuestDaypassChannel,
+} from "./guestWhapiRouting.ts";
 import { sendWhapiText, cleanPhoneForMention } from "./whapiSend.ts";
 import { formatWhapiSuitesConversationLog, stripOutboundDispatchTag } from "./outboundDispatchTag.ts";
 import { CLAUDE_MODEL } from "./guestBotModelRoute.ts";
@@ -535,6 +547,69 @@ const EXECUTIVE_TOOLS: ToolDef[] = [
     },
   },
 ];
+
+/** Architect-only tools — exposed to the LLM and executable only for Mike (ARCHITECT_PHONE_DIGITS). */
+const ARCHITECT_TOOL_DEFS: ToolDef[] = [
+  {
+    name: "get_system_health",
+    description:
+      "סטטוס מערכת XOS למפתח: מכשיר Whapi (בריא/חסום), SOS ידני, ערוצי סוויטות/יום-כיף, בוטים פעילים, " +
+      "ספירת human_requested ב-Inbox, משימות pending_approval. לשאלות כמו \"האם Whapi חסום\", \"מה מצב המערכת\".",
+    schema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "get_executive_action_log",
+    description:
+      "יומן קריאות כלים אחרונות של העוזרת האישית (executive_action_log) — לדיבוג ו-QA. " +
+      "אפשר לסנן לפי טלפון מנהל או שם כלי.",
+    schema: {
+      type: "object",
+      properties: {
+        limit: { type: "integer", description: "מספר שורות, ברירת מחדל 15, מקסימום 30." },
+        phone: { type: "string", description: "סינון לפי טלפון מנהל (כל פורמט)." },
+        tool_name: { type: "string", description: "סינון לפי שם כלי, למשל list_guests_by_date." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "list_executive_rules_audit",
+    description:
+      "רשימת כללים שנלמדו (module=executive) עם בעלים — לבדיקת מה אליעד למד מול מה משותף. " +
+      "scope: self=של מייק, shared=משותפים, eliad=של אליעד+משותפים, all=הכל.",
+    schema: {
+      type: "object",
+      properties: {
+        scope: { type: "string", enum: ["self", "shared", "eliad", "all"], description: "טווח הכללים." },
+      },
+      required: [],
+    },
+  },
+];
+
+const ARCHITECT_TOOL_NAMES = new Set(ARCHITECT_TOOL_DEFS.map((t) => t.name));
+
+/** Operational + architect tools for Mike; operational only for Eliad and other executives. */
+export function resolveExecutiveToolDefs(ownerPhone: string): ToolDef[] {
+  const digits = normalizeExecutivePhoneDigits(ownerPhone);
+  if (digits === ARCHITECT_PHONE_DIGITS) return [...EXECUTIVE_TOOLS, ...ARCHITECT_TOOL_DEFS];
+  return EXECUTIVE_TOOLS;
+}
+
+function _buildGeminiToolsPayload(toolDefs: ToolDef[]) {
+  return [{
+    functionDeclarations: toolDefs.map((t) => ({ name: t.name, description: t.description, parameters: t.schema })),
+  }];
+}
+
+function _buildClaudeToolsPayload(toolDefs: ToolDef[]) {
+  return toolDefs.map((t) => ({ name: t.name, description: t.description, input_schema: t.schema }));
+}
+
+function _isArchitectToolAllowed(name: string, ownerPhone: string): boolean {
+  if (!ARCHITECT_TOOL_NAMES.has(name)) return true;
+  return normalizeExecutivePhoneDigits(ownerPhone) === ARCHITECT_PHONE_DIGITS;
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // §5  Tool executors — server-side gates the model cannot bypass.
@@ -1242,6 +1317,126 @@ async function _execSetGuestStatus(supabase: SupabaseClient, args: Record<string
   }
 }
 
+async function _execGetSystemHealth(supabase: SupabaseClient): Promise<ToolResult> {
+  await primeGuestChannelConfig(supabase);
+  const whapi = getWhapiDeviceStatusSnapshot();
+
+  const [inboxRes, pendingRes, botCfgRes] = await Promise.all([
+    supabase
+      .from("whatsapp_conversations")
+      .select("phone")
+      .eq("direction", "inbound")
+      .eq("human_requested", true)
+      .limit(200),
+    supabase.from("tasks").select("id").eq("status", "pending_approval").limit(100),
+    supabase
+      .from("bot_config")
+      .select("config_key, config_value")
+      .in("config_key", ["bot_active", "bot_active_whapi", "guest_suites_channel", "guest_daypass_channel"]),
+  ]);
+
+  const inboxAlerts = new Set(
+    ((inboxRes.data ?? []) as Array<{ phone: string }>).map((r) => r.phone).filter(Boolean),
+  ).size;
+  const pendingApproval = (pendingRes.data ?? []).length;
+  const cfg = Object.fromEntries(
+    ((botCfgRes.data ?? []) as Array<{ config_key: string; config_value: string }>).map((r) => [r.config_key, r.config_value]),
+  );
+
+  const whapiLine = whapi.sosEffective
+    ? "⚠ Whapi SOS פעיל — כל outbound אורחים ל-Meta"
+    : whapi.healthy === false
+    ? "⚠ מכשיר Whapi לא בריא"
+    : whapi.healthy === true
+    ? "✓ מכשיר Whapi בריא"
+    : "? מצב Whapi לא ידוע (עדיין לא נבדק)";
+
+  const lines = [
+    whapiLine,
+    `Whapi status: ${whapi.statusText}${whapi.checkedAt ? ` (נבדק ${whapi.checkedAt.slice(0, 16).replace("T", " ")})` : ""}`,
+    `ערוץ סוויטות: ${getGuestSuitesChannel()} | יום-כיף: ${getGuestDaypassChannel()}`,
+    `בוט Meta: ${cfg.bot_active !== "false" ? "פעיל" : "כבוי"} | בוט Whapi: ${cfg.bot_active_whapi !== "false" ? "פעיל" : "כבוי"}`,
+    `Inbox human_requested: ${inboxAlerts} שיחות`,
+    `משימות pending_approval: ${pendingApproval}`,
+  ];
+  return { ok: true, summary: lines.join("\n"), whapi, inbox_human_requested: inboxAlerts, pending_approval_tasks: pendingApproval };
+}
+
+async function _execGetExecutiveActionLog(supabase: SupabaseClient, args: Record<string, unknown>): Promise<ToolResult> {
+  const limit = Math.min(Math.max(Number(args.limit) || 15, 1), 30);
+  let query = supabase
+    .from("executive_action_log")
+    .select("phone, tool_name, args_json, result_json, created_at")
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  const phoneFilter = String(args.phone ?? "").trim();
+  if (phoneFilter) query = query.eq("phone", cleanPhoneForMention(normalizeExecutivePhoneDigits(phoneFilter)));
+  const toolFilter = String(args.tool_name ?? "").trim();
+  if (toolFilter) query = query.eq("tool_name", toolFilter);
+
+  const { data, error } = await query;
+  if (error) {
+    console.warn("[executiveAssistant] get_executive_action_log failed:", error.message);
+    return { ok: false, error: error.message };
+  }
+
+  const rows = (data ?? []) as Array<{
+    phone: string;
+    tool_name: string;
+    args_json: Record<string, unknown>;
+    result_json: Record<string, unknown>;
+    created_at: string;
+  }>;
+  if (!rows.length) return { ok: true, count: 0, summary: "אין רשומות ביומן הפעולות." };
+
+  const lines = rows.map((r) => {
+    const ok = (r.result_json as { ok?: boolean })?.ok !== false;
+    const stamp = r.created_at?.slice(0, 16).replace("T", " ") ?? "";
+    const err = !ok ? ` — ${String((r.result_json as { error?: string })?.error ?? "failed")}` : "";
+    return `• ${stamp} | ${r.phone} | ${r.tool_name}${err}`;
+  });
+  return { ok: true, count: rows.length, summary: lines.join("\n"), entries: rows };
+}
+
+async function _execListExecutiveRulesAudit(
+  supabase: SupabaseClient,
+  args: Record<string, unknown>,
+  ctx: ToolExecCtx,
+): Promise<ToolResult> {
+  const scope = String(args.scope ?? "all");
+  if (!["self", "shared", "eliad", "all"].includes(scope)) return { ok: false, error: "invalid_scope" };
+
+  let query = supabase
+    .from("xos_ai_rules")
+    .select("id, rule_text, owner_phone, created_at")
+    .eq("module", "executive")
+    .order("created_at", { ascending: true });
+
+  if (scope === "self") query = query.eq("owner_phone", ctx.ownerPhone);
+  else if (scope === "shared") query = query.is("owner_phone", null);
+  else if (scope === "eliad") query = query.or(`owner_phone.is.null,owner_phone.eq.${CEO_PHONE_DIGITS}`);
+
+  const { data, error } = await query;
+  if (error) {
+    console.warn("[executiveAssistant] list_executive_rules_audit failed:", error.message);
+    return { ok: false, error: error.message };
+  }
+
+  const rows = (data ?? []) as Array<{ rule_text: string; owner_phone: string | null; created_at: string }>;
+  if (!rows.length) return { ok: true, count: 0, scope, summary: "אין כללים בטווח המבוקש." };
+
+  const ownerLabel = (phone: string | null) => {
+    if (!phone) return "משותף";
+    if (phone === CEO_PHONE_DIGITS) return "אליעד";
+    if (phone === ARCHITECT_PHONE_DIGITS) return "מייק";
+    return phone;
+  };
+
+  const lines = rows.map((r) => `• [${ownerLabel(r.owner_phone)}] ${r.rule_text?.trim() ?? ""}`);
+  return { ok: true, count: rows.length, scope, summary: lines.join("\n") };
+}
+
 /** Exported for executiveAssistant.test.ts — the tool dispatcher is the unit
  * under test for the per-tool server-side gates (description required, dedupe,
  * cancelled-guest block); it's not part of the public orchestration API. */
@@ -1251,6 +1446,9 @@ export async function executeExecutiveTool(
   args: Record<string, unknown>,
   ctx: ToolExecCtx,
 ): Promise<ToolResult> {
+  if (!_isArchitectToolAllowed(name, ctx.ownerPhone)) {
+    return { ok: false, error: "architect_tool_forbidden" };
+  }
   switch (name) {
     case "create_executive_task": return await _execCreateExecutiveTask(supabase, args, ctx);
     case "get_resort_brief": return await _execGetResortBrief(supabase);
@@ -1267,6 +1465,9 @@ export async function executeExecutiveTool(
     case "get_room_status": return await _execGetRoomStatus(supabase, args);
     case "get_ops_digest_now": return await _execGetOpsDigestNow(supabase, args);
     case "set_guest_status": return await _execSetGuestStatus(supabase, args);
+    case "get_system_health": return await _execGetSystemHealth(supabase);
+    case "get_executive_action_log": return await _execGetExecutiveActionLog(supabase, args);
+    case "list_executive_rules_audit": return await _execListExecutiveRulesAudit(supabase, args, ctx);
     default: return { ok: false, error: `unknown_tool:${name}` };
   }
 }
@@ -1309,10 +1510,6 @@ async function runExecutiveToolCalls(
 // of letting a chain run unbounded. The common single-tool (or no-tool) case
 // still finishes in 1-2 rounds exactly as before.
 // ══════════════════════════════════════════════════════════════════════════════
-
-const GEMINI_TOOLS_PAYLOAD = [{
-  functionDeclarations: EXECUTIVE_TOOLS.map((t) => ({ name: t.name, description: t.description, parameters: t.schema })),
-}];
 
 function _historyToGeminiTurns(history: Array<{ direction: string; message: string }>) {
   return history.map((h) => ({ role: h.direction === "inbound" ? "user" : "model", parts: [{ text: h.message }] }));
@@ -1358,9 +1555,11 @@ async function runExecutiveGemini(
   history: Array<{ direction: string; message: string }>,
   userMessage: string,
   ctx: ToolExecCtx,
+  toolDefs: ToolDef[],
 ): Promise<{ text: string; toolCalls: ToolCallOut[] } | null> {
   const apiKey = Deno.env.get("GEMINI_API_KEY");
   if (!apiKey) return null;
+  const geminiTools = _buildGeminiToolsPayload(toolDefs);
 
   const contents = [..._historyToGeminiTurns(history), { role: "user", parts: [{ text: userMessage }] }];
   const baseBody = {
@@ -1382,7 +1581,7 @@ async function runExecutiveGemini(
         resp = await _geminiCall(apiKey, model, {
           ...baseBody,
           contents: roundContents,
-          ...(includeTools ? { tools: GEMINI_TOOLS_PAYLOAD } : {}),
+          ...(includeTools ? { tools: geminiTools } : {}),
         });
       } catch (e) {
         console.warn(`[executiveAssistant] Gemini round${round} model="${model}" failed:`, (e as Error).message);
@@ -1431,18 +1630,18 @@ function _buildToolFallbackSummary(toolCalls: ToolCallOut[]): string {
 // the Gemini path (see §6 header comment).
 // ══════════════════════════════════════════════════════════════════════════════
 
-const CLAUDE_TOOLS_PAYLOAD = EXECUTIVE_TOOLS.map((t) => ({ name: t.name, description: t.description, input_schema: t.schema }));
-
 async function runExecutiveClaude(
   supabase: SupabaseClient,
   systemPrompt: string,
   history: Array<{ direction: string; message: string }>,
   userMessage: string,
   ctx: ToolExecCtx,
+  toolDefs: ToolDef[],
 ): Promise<{ text: string; toolCalls: ToolCallOut[] }> {
   const key = Deno.env.get("ANTHROPIC_API_KEY");
   if (!key) throw new Error("no_anthropic_key");
   const anthropic = new Anthropic({ apiKey: key });
+  const claudeTools = _buildClaudeToolsPayload(toolDefs);
 
   // Claude requires strict user/assistant alternation — merge consecutive
   // same-role turns, same fix whatsapp-webhook's callClaude already applies.
@@ -1473,7 +1672,7 @@ async function runExecutiveClaude(
         max_tokens: 800,
         system: systemPrompt,
         messages: roundMessages,
-        ...(includeTools ? { tools: CLAUDE_TOOLS_PAYLOAD, tool_choice: { type: "auto" } } : {}),
+        ...(includeTools ? { tools: claudeTools, tool_choice: { type: "auto" } } : {}),
       } as any);
     } catch (e) {
       console.warn(`[executiveAssistant] Claude round${round} failed:`, (e as Error).message);
@@ -1533,16 +1732,17 @@ export async function runExecutiveAssistant(
     fetchExecutiveHistory(supabase, opts.phone),
   ]);
   const systemPrompt = buildExecutiveSystemPrompt(opts.profile, personaTemplate, rulesSuffix, brief, history);
+  const toolDefs = resolveExecutiveToolDefs(opts.profile.phoneDigits);
 
   try {
-    const geminiResult = await runExecutiveGemini(supabase, systemPrompt, history, opts.text, ctx);
+    const geminiResult = await runExecutiveGemini(supabase, systemPrompt, history, opts.text, ctx, toolDefs);
     if (geminiResult) return geminiResult.text;
     console.warn("[executiveAssistant] all Gemini models unavailable — falling back to Claude");
   } catch (e) {
     console.error("[executiveAssistant] Gemini path errored — falling back to Claude:", (e as Error).message);
   }
 
-  const claudeResult = await runExecutiveClaude(supabase, systemPrompt, history, opts.text, ctx);
+  const claudeResult = await runExecutiveClaude(supabase, systemPrompt, history, opts.text, ctx, toolDefs);
   return claudeResult.text;
 }
 

@@ -16,10 +16,12 @@ import {
   executiveAlreadyRepliedSuccessfully,
   fetchExecutiveRules,
   buildExecutiveSystemPrompt,
+  resolveExecutiveToolDefs,
   type ToolExecCtx,
 } from "./executiveAssistant.ts";
 
 const CTX: ToolExecCtx = { phone: "972505421751", originalText: "test", msgId: "msg1", ownerPhone: "972505421751" };
+const MIKE_CTX: ToolExecCtx = { phone: "972506842439", originalText: "test", msgId: "msg2", ownerPhone: "972506842439" };
 
 function withEnv(key: string, value: string | undefined, fn: () => Promise<void> | void) {
   const prev = Deno.env.get(key);
@@ -497,4 +499,54 @@ Deno.test("buildExecutiveSystemPrompt — Mike overlay includes architect contex
   if (!profile) throw new Error("expected Mike profile");
   const prompt = buildExecutiveSystemPrompt(profile, "BASE", "", "", []);
   assertEquals(prompt.includes("ארכיטקט ומפתח XOS"), true);
+  assertEquals(prompt.includes("get_system_health"), true);
+});
+
+Deno.test("resolveExecutiveToolDefs — Mike gets architect tools, Eliad does not", () => {
+  assertEquals(resolveExecutiveToolDefs("972506842439").some((t) => t.name === "get_system_health"), true);
+  assertEquals(resolveExecutiveToolDefs("972505421751").some((t) => t.name === "get_system_health"), false);
+});
+
+Deno.test("get_system_health — forbidden for Eliad", async () => {
+  const result = await executeExecutiveTool(mockSupabase({}), "get_system_health", {}, CTX);
+  assertEquals(result.ok, false);
+  assertEquals(result.error, "architect_tool_forbidden");
+});
+
+Deno.test("list_executive_rules_audit — forbidden for Eliad", async () => {
+  const result = await executeExecutiveTool(mockSupabase({}), "list_executive_rules_audit", { scope: "all" }, CTX);
+  assertEquals(result.ok, false);
+  assertEquals(result.error, "architect_tool_forbidden");
+});
+
+Deno.test("list_executive_rules_audit — Mike can list Eliad + shared rules", async () => {
+  const supabase = mockSupabase({
+    default: {
+      data: [
+        { rule_text: "כלל משותף", owner_phone: null, created_at: "2026-01-01" },
+        { rule_text: "VIP ראשון", owner_phone: "972505421751", created_at: "2026-01-02" },
+      ],
+      error: null,
+    },
+    onOr: () => {},
+  });
+  const result = await executeExecutiveTool(supabase, "list_executive_rules_audit", { scope: "eliad" }, MIKE_CTX);
+  assertEquals(result.ok, true);
+  assertEquals(result.count, 2);
+  assertEquals(String(result.summary).includes("אליעד"), true);
+});
+
+Deno.test("get_executive_action_log — Mike returns recent tool rows", async () => {
+  const supabase = mockSupabase({
+    default: {
+      data: [
+        { phone: "972505421751", tool_name: "list_guests_by_date", args_json: {}, result_json: { ok: true }, created_at: "2026-07-15T10:00:00Z" },
+      ],
+      error: null,
+    },
+  });
+  const result = await executeExecutiveTool(supabase, "get_executive_action_log", { limit: 5 }, MIKE_CTX);
+  assertEquals(result.ok, true);
+  assertEquals(result.count, 1);
+  assertEquals(String(result.summary).includes("list_guests_by_date"), true);
 });

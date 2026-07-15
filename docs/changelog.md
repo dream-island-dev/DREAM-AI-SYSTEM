@@ -1,3 +1,5 @@
+2026-07-15 | Executive Assistant — architect tools for Mike (system health, action log, rules audit) | 3 architect-only tools gated server-side to ARCHITECT_PHONE_DIGITS; Eliad keeps 15 operational tools. Deploy: `whapi-webhook`.
+
 2026-07-15 | Executive Assistant — future arrivals + Eliad onboarding + per-executive persona overlays | New tool `list_guests_by_date` (arriving/departing/in_house by YYYY-MM-DD); system prompt shows today+tomorrow; `executiveIdentity.ts` `personaOverlay` — Eliad gets "how to work with me" guide on first message/help questions; Mike gets architect/XOS context. Migration 213 syncs live persona row. 38 Deno tests. Deploy: `whapi-webhook` + `db push`.
 
 2026-07-15 | Inbox dismiss red alert — `dismissHumanRequest` on unified threads now clears meta+whapi (was filtering `inbox_channel=unified`, a UI-only key) | WhatsAppInbox.js + tests.
