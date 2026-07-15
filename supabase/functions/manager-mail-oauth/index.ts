@@ -19,6 +19,46 @@ function htmlPage(title: string, body: string): Response {
   });
 }
 
+async function triggerInitialSync(): Promise<void> {
+  const base = Deno.env.get("SUPABASE_URL");
+  if (!base) return;
+  try {
+    await fetch(`${base}/functions/v1/manager-mail-sync`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+      signal: AbortSignal.timeout(55_000),
+    });
+  } catch (e) {
+    console.warn("[manager-mail-oauth] post-connect sync failed:", (e as Error).message);
+  }
+}
+
+async function beginOAuthForMailbox(
+  supabase: ReturnType<typeof createClient>,
+  mailboxId: string,
+  profileId?: string | null,
+): Promise<Response> {
+  if (!isMicrosoftConfigured()) {
+    return htmlPage("שגיאה", "<h2>Microsoft OAuth לא מוגדר בשרת</h2><p>פנה למייק.</p>");
+  }
+  const { clientId } = getMicrosoftOAuthConfig();
+  if (!clientId) {
+    return htmlPage("שגיאה", "<h2>חסר Client ID</h2>");
+  }
+
+  const patch: Record<string, unknown> = {
+    connection_status: "pending",
+    connection_error: null,
+  };
+  if (profileId) patch.profile_id = profileId;
+
+  await supabase.from("orit_agent_mailbox").update(patch).eq("id", mailboxId);
+
+  const authUrl = buildMicrosoftAuthUrl(mailboxId);
+  return Response.redirect(authUrl, 302);
+}
+
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
@@ -61,10 +101,35 @@ serve(async (req: Request) => {
         connection_error: null,
       }).eq("id", state);
 
+      await triggerInitialSync();
+
       return htmlPage(
         "חובר בהצלחה",
-        "<h2>✅ תיבת Outlook חוברה בהצלחה</h2><p>אפשר לסגור חלון זה ולחזור למערכת.</p>",
+        `<h2>✅ תיבת Outlook חוברה בהצלחה</h2>
+         <p>מחובר: <strong>${profileEmail ?? ""}</strong></p>
+         <p>המיילים מסתנכרנים עכשיו. אפשר לסגור ולפתוח את XOS → סוכן שירות לקוחות.</p>`,
       );
+    }
+
+    // One-click setup link (no XOS login / console): GET ?key=ORIT_MAIL_SETUP_KEY
+    if (req.method === "GET") {
+      const key = url.searchParams.get("key") ?? "";
+      const setupKey = Deno.env.get("ORIT_MAIL_SETUP_KEY") ?? "";
+      if (!setupKey || key !== setupKey) {
+        return htmlPage("גישה נדחתה", "<h2>קישור לא תקין או פג תוקף</h2><p>בקש קישור חדש ממייק.</p>");
+      }
+
+      const { data: mailbox } = await supabase
+        .from("orit_agent_mailbox")
+        .select("id")
+        .order("created_at", { ascending: true })
+        .limit(1)
+        .maybeSingle();
+      if (!mailbox?.id) {
+        return htmlPage("שגיאה", "<h2>תיבת הסוכן לא נמצאה ב-DB</h2>");
+      }
+
+      return beginOAuthForMailbox(supabase, mailbox.id);
     }
 
     if (req.method !== "POST") {
@@ -112,12 +177,12 @@ serve(async (req: Request) => {
       });
     }
 
+    const authUrl = buildMicrosoftAuthUrl(mailboxId);
     await supabase.from("orit_agent_mailbox").update({
       profile_id: userData.user.id,
       connection_status: "pending",
     }).eq("id", mailboxId);
 
-    const authUrl = buildMicrosoftAuthUrl(mailboxId);
     return new Response(JSON.stringify({ ok: true, authUrl }), {
       status: 200,
       headers: { ...CORS, "Content-Type": "application/json" },
