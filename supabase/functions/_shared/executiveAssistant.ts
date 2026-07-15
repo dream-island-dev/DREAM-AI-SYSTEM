@@ -47,6 +47,7 @@ import {
   type DigestPeriod,
   type DigestTaskRow,
 } from "./resortDigestStats.ts";
+import { loadStaffNotifyTemplates } from "./staffNotifyTemplates.ts";
 
 const EXECUTIVE_GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash"];
 // 15s — voice notes already spent wall-clock on transcription before we
@@ -1602,9 +1603,11 @@ async function _execGetOpsDigestNow(supabase: SupabaseClient, args: Record<strin
   const learnedDigestNotes = filterDigestRelevantRules(
     ((ruleRows.data ?? []) as Array<{ rule_text: string | null }>).map((r) => r.rule_text ?? ""),
   );
+  const templates = await loadStaffNotifyTemplates(supabase);
   const body = composeResortDigestMessage(stats, period, range.label, {
     assistantForName: "אליעד",
     learnedDigestNotes,
+    templates,
   });
   return { ok: true, period, period_date: range.periodDate, digest: body };
 }

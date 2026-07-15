@@ -15,6 +15,7 @@ import { serve }         from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient }  from "https://esm.sh/@supabase/supabase-js@2";
 import { sendWhapiText } from "../_shared/whapiSend.ts";
 import { buildInventorySubmitAdirText } from "../_shared/adirNotifyMessages.ts";
+import { loadStaffNotifyTemplates } from "../_shared/staffNotifyTemplates.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -104,9 +105,11 @@ serve(async (req: Request) => {
     // employee's success screen, the submission row already exists and is
     // visible in the approval queue regardless.
     try {
+      const templates = await loadStaffNotifyTemplates(supabase);
       const text = buildInventorySubmitAdirText({
         locationName: link.location_name as string,
         itemCount: countRows.length,
+        templates,
       });
       await sendWhapiText(ADIR_PHONE, text, { noLinkPreview: true });
     } catch (e) {

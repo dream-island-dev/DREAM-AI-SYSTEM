@@ -5,6 +5,14 @@
 // range via the Supabase query) and do zero I/O of their own — fully unit-testable.
 
 import { israelYmd, ISRAEL_UTC_OFFSET_HOURS } from "./automationSchedule.ts";
+import {
+  applyStaffMessageTemplate,
+  ELIAD_DIGEST_SHELL_DEFAULTS,
+  mergeDigestConfig,
+  resolveStaffTemplate,
+  STAFF_TEMPLATE_KEYS,
+  type StaffTemplateMap,
+} from "./staffNotifyTemplates.ts";
 
 // Same value as guestAlertWhapiNotify.ts's STAFF_APP_ORIGIN — duplicated, not
 // imported. This module is deliberately zero-I/O / dependency-light (pure
@@ -317,7 +325,10 @@ function taskCategoryLabelHe(category: string): string {
 /**
  * One deterministic action line for the CEO — derived only from computed stats.
  */
-export function composeExecutiveActionHint(stats: ResortDigestStats): string {
+export function composeExecutiveActionHint(
+  stats: ResortDigestStats,
+  quietFallback?: string,
+): string {
   const breachedOpen = stats.slaCompliance.breachedStillOpen;
   const unknownRooms = stats.roomReadyTiming.filter((r) => r.status === "unknown");
   const lateRooms = stats.roomReadyTiming.filter((r) => r.status === "late");
@@ -342,7 +353,7 @@ export function composeExecutiveActionHint(stats: ResortDigestStats): string {
   if (lowSurveys > 0) {
     return `👉 מומלץ היום: ${lowSurveys} סקרים עם ציון נמוך — כדאי לעבור על המשוב בלוח.`;
   }
-  return "👉 מצב שקט — אין פעולה דחופה מהדוח. שאל אותי «מה מצב הריזורט?» לעדכון חי.";
+  return quietFallback ?? "👉 מצב שקט — אין פעולה דחופה מהדוח. שאל אותי «מה מצב הריזורט?» לעדכון חי.";
 }
 
 export type DigestPeriod = "daily" | "weekly" | "monthly";
@@ -457,6 +468,8 @@ export type ComposeResortDigestOpts = {
   assistantForName?: string;
   /** Learned prefs that apply to this report (already filtered). */
   learnedDigestNotes?: string[];
+  /** DB-editable shell fragments. */
+  templates?: StaffTemplateMap;
 };
 
 /** Composes the Hebrew WhatsApp body in the personal-assistant voice. Deterministic — no LLM. */
@@ -467,12 +480,18 @@ export function composeResortDigestMessage(
   opts: ComposeResortDigestOpts = {},
 ): string {
   const forName = (opts.assistantForName ?? "אליעד").trim() || "אליעד";
+  const shellRow = resolveStaffTemplate(opts.templates, STAFF_TEMPLATE_KEYS.ELIAD_DIGEST_SHELL);
+  const shell = mergeDigestConfig(ELIAD_DIGEST_SHELL_DEFAULTS, shellRow?.digest_config);
+
   const lines: string[] = [
-    `📋 ${forName}, כאן העוזרת האישית שלך`,
-    `דוח תפעולי ${PERIOD_LABELS[period]} — ${periodLabel}`,
+    applyStaffMessageTemplate(shell.opening_line, { name: forName }),
+    applyStaffMessageTemplate(shell.period_line, {
+      period_he: PERIOD_LABELS[period],
+      period_label: periodLabel,
+    }),
     "",
     composeExecutiveHeadline(stats),
-    composeExecutiveActionHint(stats),
+    composeExecutiveActionHint(stats, shell.action_hint_quiet),
   ];
 
   lines.push("", `הגעות (${stats.arrivals.length}):`);
@@ -525,7 +544,7 @@ export function composeResortDigestMessage(
         ? ` | לא בזמן ועדיין פתוחות: ${sla.breachedStillOpen}`
         : "";
       lines.push(
-        `  עמידה ביעדי זמן הטיפול: ${sla.complianceRate}% (${sla.withinSla}/${sla.withDeadline})${breachedPart}`,
+        `  ${shell.sla_label}: ${sla.complianceRate}% (${sla.withinSla}/${sla.withDeadline})${breachedPart}`,
       );
     }
   }
@@ -564,8 +583,8 @@ export function composeResortDigestMessage(
   lines.push(
     "",
     "—",
-    "רוצה לשנות משהו בדוחות? כתוב לי «תזכרי ש…» — אשמור להבא.",
-    "לעדכון חי: «מה מצב הריזורט?» או «תן לי דוח יומי עכשיו».",
+    shell.footer_1,
+    shell.footer_2,
   );
 
   return lines.join("\n");

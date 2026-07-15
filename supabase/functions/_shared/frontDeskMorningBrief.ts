@@ -6,6 +6,14 @@ import { israelYmd } from "./automationSchedule.ts";
 import { addDaysYmd } from "./resortPulseStats.ts";
 import { isEffectiveSuiteGuest } from "./suiteNames.ts";
 import { buildStaffAppDeepLink } from "./guestAlertWhapiNotify.ts";
+import {
+  ADIR_MORNING_BRIEF_DEFAULTS,
+  applyStaffMessageTemplate,
+  mergeDigestConfig,
+  resolveStaffTemplate,
+  STAFF_TEMPLATE_KEYS,
+  type StaffTemplateMap,
+} from "./staffNotifyTemplates.ts";
 
 export type ArrivalDeskGuestRow = {
   name: string | null;
@@ -155,32 +163,47 @@ function formatDateHe(ymd: string): string {
 /** Full Whapi morning DM — arrivals + open requests. Power hints only before onboarding sent. */
 export function buildFrontDeskMorningMessage(
   stats: FrontDeskMorningStats,
-  opts: { includePowerHints?: boolean } = {},
+  opts: { includePowerHints?: boolean; templates?: StaffTemplateMap } = {},
 ): string {
   const includePowerHints = opts.includePowerHints !== false;
   const { brief, openActionable, openEtaCount } = stats;
   const dateHe = formatDateHe(brief.todayYmd);
 
+  const shellRow = resolveStaffTemplate(opts.templates, STAFF_TEMPLATE_KEYS.ADIR_MORNING_BRIEF);
+  const shell = mergeDigestConfig(ADIR_MORNING_BRIEF_DEFAULTS, shellRow?.digest_config);
+
+  const openSummary = openActionable.length
+    ? `${openActionable.length} בקשות לטיפול`
+    : "אין בקשות דחופות";
+
   const headline = [
-    "בוקר טוב אדיר 🌅",
-    `עוזרת דלפק הסוויטות — סיכום להיום (${dateHe})`,
+    applyStaffMessageTemplate(shell.greeting, {}),
+    applyStaffMessageTemplate(shell.title, { date_he: dateHe }),
     "",
-    `📊 במבט: ${brief.todayTotal} הגעות היום | ${brief.todayMissingTime} בלי שעה | ${openActionable.length ? openActionable.length + " בקשות לטיפול" : "אין בקשות דחופות"}`,
+    applyStaffMessageTemplate(shell.snapshot, {
+      today_total: brief.todayTotal,
+      missing_time: brief.todayMissingTime,
+      open_summary: openSummary,
+    }),
   ];
-  if (openEtaCount) headline.push(`🕐 ${openEtaCount} שעות הגעה רשומות בלוח`);
-  if (brief.tomorrowTotal) headline.push(`📅 מחר: ${brief.tomorrowTotal} הגעות`);
+  if (openEtaCount) {
+    headline.push(applyStaffMessageTemplate(shell.eta_note, { eta_count: openEtaCount }));
+  }
+  if (brief.tomorrowTotal) {
+    headline.push(applyStaffMessageTemplate(shell.tomorrow_note, { tomorrow_total: brief.tomorrowTotal }));
+  }
 
   const sections: string[] = [...headline, "", brief.summary];
 
   if (brief.todayMissingTime > 0) {
     sections.push(
       "",
-      `רוצה שאשלח הודעה קצרה לבקש שעת הגעה מ-${brief.todayMissingTime} האורחים שעדיין בלי שעה? רק תגיד לי "כן, תשלחי".`,
+      applyStaffMessageTemplate(shell.missing_time_cta, { missing_time: brief.todayMissingTime }),
     );
   }
 
   if (openActionable.length) {
-    sections.push("", "🔔 בקשות פתוחות (לטיפול):");
+    sections.push("", shell.open_header);
     for (const a of openActionable) {
       const label = ALERT_TYPE_LABEL_HE[a.alert_type] ?? `⚠ ${a.alert_type}`;
       const who = a.guests?.room
@@ -201,11 +224,7 @@ export function buildFrontDeskMorningMessage(
       sections.length - 2,
       0,
       "",
-      "💪 מה אתה יכול לבקש ממני (קול או טקסט):",
-      "• «לוח הגעות» / «מי בלי שעה?»",
-      "• «טיפלתי בבקשת חדר 7»",
-      "• «חדר 5 מוכן»",
-      "שעות הגעה מאורחים מגיעות אליך אוטומטית 🕐",
+      shell.power_hints,
     );
   }
 

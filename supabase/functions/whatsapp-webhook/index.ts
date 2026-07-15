@@ -52,6 +52,7 @@ import {
 } from "../_shared/paymentLinkGuard.ts";
 import { sendWhapiText, cleanPhoneForMention } from "../_shared/whapiSend.ts";
 import { buildPreCheckinGuestRequestAdirText } from "../_shared/adirNotifyMessages.ts";
+import { loadStaffNotifyTemplates } from "../_shared/staffNotifyTemplates.ts";
 import { shouldRouteGuestOutboundViaWhapiSuites, primeGuestChannelConfig } from "../_shared/guestWhapiRouting.ts";
 import { formatGuestProfileForAi } from "../_shared/guestProfile.ts";
 import {
@@ -4497,16 +4498,19 @@ Deno.serve(async (req: Request) => {
         // below), never blocks the guest's reply on a Whapi failure.
         const guestRoomForAdir = (guest as Record<string, unknown> | null)?.room as string | null ?? "—";
         const guestNameForAdir = (guest as Record<string, unknown> | null)?.name as string | null ?? null;
-        sendWhapiText(
-          ADIR_PERSONAL_PHONE,
-          buildPreCheckinGuestRequestAdirText({
-            room: guestRoomForAdir,
-            guestName: guestNameForAdir,
-            summary: String(toolLoggedRequest.summary ?? effectiveText),
-            futureTag,
-            arrivingToday: !futureTag,
-          }),
-          { noLinkPreview: true },
+        loadStaffNotifyTemplates(supabase).then((templates) =>
+          sendWhapiText(
+            ADIR_PERSONAL_PHONE,
+            buildPreCheckinGuestRequestAdirText({
+              room: guestRoomForAdir,
+              guestName: guestNameForAdir,
+              summary: String(toolLoggedRequest.summary ?? effectiveText),
+              futureTag,
+              arrivingToday: !futureTag,
+              templates,
+            }),
+            { noLinkPreview: true },
+          ),
         ).catch((e: Error) => console.warn("[webhook] future-guest Adir alert failed (non-blocking):", e.message));
 
         reply =

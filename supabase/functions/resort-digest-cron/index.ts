@@ -22,6 +22,7 @@ import {
   type DigestSurveyRow,
   type DigestTaskRow,
 } from "../_shared/resortDigestStats.ts";
+import { loadStaffNotifyTemplates } from "../_shared/staffNotifyTemplates.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -119,9 +120,11 @@ serve(async (req: Request) => {
       ((ruleRows ?? []) as Array<{ rule_text: string | null }>).map((r) => r.rule_text ?? ""),
     );
 
+    const templates = await loadStaffNotifyTemplates(supabase);
     const body = composeResortDigestMessage(stats, period, range.label, {
       assistantForName: "אליעד",
       learnedDigestNotes,
+      templates,
     });
 
     const wamid = await sendWhapiText(CEO_PHONE_DIGITS, body, { noLinkPreview: true });

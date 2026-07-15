@@ -2,6 +2,11 @@
 // Hebrew staff notifications for duty manager (Adir) — clear, professional, actionable.
 
 import { buildStaffAppDeepLink, guestAlertTypeLabelHe, phoneDigitsForDeepLink } from "./guestAlertWhapiNotify.ts";
+import {
+  composeFromStaffTemplate,
+  STAFF_TEMPLATE_KEYS,
+  type StaffTemplateMap,
+} from "./staffNotifyTemplates.ts";
 
 export { guestAlertTypeLabelHe };
 
@@ -41,9 +46,25 @@ export function buildGuestAlertSlaEscalationText(opts: {
   phone?: string | null;
   guestName?: string | null;
   futureArrivalNote?: string | null;
+  templates?: StaffTemplateMap;
 }): string {
   const typeLabel = guestAlertTypeLabelHe(opts.alertType);
   const digits = phoneDigitsForDeepLink(opts.phone);
+  const inboxLine = digits
+    ? `💬 שיחה: ${buildStaffAppDeepLink({ page: "wa_inbox", phone: digits, guestName: opts.guestName })}`
+    : "";
+  const fromDb = composeFromStaffTemplate(opts.templates, STAFF_TEMPLATE_KEYS.ADIR_GUEST_ALERT_SLA, {
+    age_minutes: opts.ageMinutes,
+    threshold_minutes: opts.thresholdMinutes,
+    guest_label: opts.guestLabel,
+    alert_type_label: typeLabel,
+    message: opts.message,
+    inbox_line: inboxLine,
+    requests_board_link: buildStaffAppDeepLink({ page: "requests_board" }),
+    future_note: opts.futureArrivalNote?.trim() ? `\n${opts.futureArrivalNote.trim()}` : "",
+  });
+  if (fromDb) return fromDb;
+
   const lines = [
     "⚠️ בקשת אורח ממתינה יותר מדי",
     `עברו ${opts.ageMinutes} דק׳ (המקסימום: ${opts.thresholdMinutes} דק׳).`,
@@ -55,11 +76,7 @@ export function buildGuestAlertSlaEscalationText(opts: {
     "👉 מה לעשות:",
     "ענה לאורח או סגור את הבקשה בלוח הבקשות.",
   ];
-  if (digits) {
-    lines.push(
-      `💬 שיחה: ${buildStaffAppDeepLink({ page: "wa_inbox", phone: digits, guestName: opts.guestName })}`,
-    );
-  }
+  if (digits) lines.push(inboxLine);
   lines.push(`📋 לוח בקשות: ${buildStaffAppDeepLink({ page: "requests_board" })}`);
   if (opts.futureArrivalNote?.trim()) lines.push("", opts.futureArrivalNote.trim());
   return lines.join("\n");
@@ -71,10 +88,20 @@ export function buildPreCheckinGuestRequestAdirText(opts: {
   summary: string;
   futureTag?: string | null;
   arrivingToday?: boolean;
+  templates?: StaffTemplateMap;
 }): string {
   const who = opts.guestName?.trim() || "אורח";
   const timing = opts.futureTag?.trim()
     ?? (opts.arrivingToday ? "מגיעים היום — עדיין לא נכנסו לסוויטה." : "");
+  const fromDb = composeFromStaffTemplate(opts.templates, STAFF_TEMPLATE_KEYS.ADIR_PRE_CHECKIN, {
+    room: opts.room,
+    guest_name: who,
+    summary: opts.summary.trim(),
+    timing_line: timing,
+    requests_board_link: buildStaffAppDeepLink({ page: "requests_board" }),
+  });
+  if (fromDb) return fromDb;
+
   const lines = [
     "🌴 בקשה מאורח לפני צ׳ק-אין",
     "",
@@ -98,13 +125,22 @@ export function buildPortalOrderAdirText(opts: {
   room?: string | null;
   itemLines: string;
   arrivalTag?: string | null;
+  templates?: StaffTemplateMap;
 }): string {
   const who = opts.guestName?.trim() || "אורח";
   const room = opts.room?.trim();
+  const guestHeader = room ? `👤 ${who} | 🏨 ${room}` : `👤 ${who}`;
+  const fromDb = composeFromStaffTemplate(opts.templates, STAFF_TEMPLATE_KEYS.ADIR_PORTAL_ORDER, {
+    guest_header: guestHeader,
+    item_lines: opts.itemLines.trim(),
+    arrival_tag: opts.arrivalTag?.trim() ?? "",
+  });
+  if (fromDb) return fromDb;
+
   const lines = [
     "🛎️ הזמנה חדשה מהפורטל",
     "",
-    room ? `👤 ${who} | 🏨 ${room}` : `👤 ${who}`,
+    guestHeader,
     opts.itemLines.trim(),
   ];
   if (opts.arrivalTag?.trim()) lines.push(opts.arrivalTag.trim());
@@ -119,7 +155,15 @@ export function buildPortalOrderAdirText(opts: {
 export function buildInventorySubmitAdirText(opts: {
   locationName: string;
   itemCount: number;
+  templates?: StaffTemplateMap;
 }): string {
+  const fromDb = composeFromStaffTemplate(opts.templates, STAFF_TEMPLATE_KEYS.ADIR_INVENTORY, {
+    location_name: opts.locationName,
+    item_count: opts.itemCount,
+    agent_link: buildStaffAppDeepLink({ page: "agent" }),
+  });
+  if (fromDb) return fromDb;
+
   return [
     "📦 דוח מלאי חדש ממתין לאישור",
     "",

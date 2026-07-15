@@ -22,6 +22,7 @@ import {
   buildFrontDeskCapabilitiesOnboardingMessage,
   FRONT_DESK_ONBOARDING_CONFIG_KEY,
 } from "../_shared/frontDeskOnboarding.ts";
+import { loadStaffNotifyTemplates } from "../_shared/staffNotifyTemplates.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -98,11 +99,12 @@ serve(async (req: Request) => {
     }
 
     const phone = resolveAdirNotifyPhoneDigits();
+    const templates = await loadStaffNotifyTemplates(supabase);
     const onboardingAlreadySent = await isOnboardingSent(supabase);
     let onboardingSentNow = false;
 
     if (!onboardingAlreadySent) {
-      const onboardingBody = buildFrontDeskCapabilitiesOnboardingMessage();
+      const onboardingBody = buildFrontDeskCapabilitiesOnboardingMessage(templates);
       const onboardingWamid = await sendWhapiText(phone, onboardingBody, { noLinkPreview: true });
       if (!onboardingWamid) {
         console.warn("[front-desk-morning-cron] onboarding whapi send failed — will retry next run");
@@ -115,7 +117,10 @@ serve(async (req: Request) => {
     }
 
     const stats = await fetchFrontDeskMorningStats(supabase);
-    const body = buildFrontDeskMorningMessage(stats, { includePowerHints: !onboardingAlreadySent && !onboardingSentNow });
+    const body = buildFrontDeskMorningMessage(stats, {
+      includePowerHints: !onboardingAlreadySent && !onboardingSentNow,
+      templates,
+    });
     const wamid = await sendWhapiText(phone, body, { noLinkPreview: true });
     if (!wamid) {
       console.warn("[front-desk-morning-cron] whapi send returned no message id");

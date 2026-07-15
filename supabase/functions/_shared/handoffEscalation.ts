@@ -12,6 +12,11 @@
 
 import { buildStaffAppDeepLink } from "./guestAlertWhapiNotify.ts";
 import { handoffTypeLabelHe } from "./adirNotifyMessages.ts";
+import {
+  composeFromStaffTemplate,
+  STAFF_TEMPLATE_KEYS,
+  type StaffTemplateMap,
+} from "./staffNotifyTemplates.ts";
 
 /** Minutes a guest_request may sit in pending_approval before auto-approve. */
 export const PENDING_APPROVAL_AUTO_APPROVE_MINUTES = 7;
@@ -118,8 +123,22 @@ export function buildSoftHandoffManagerText(args: {
   guestLabel: string;
   ageMinutes: number;
   preview: string;
+  templates?: StaffTemplateMap;
 }): string {
   const digits = args.phone.replace(/\D/g, "");
+  const inboxLine = digits
+    ? `💬 אינבוקס: ${buildStaffAppDeepLink({ page: "wa_inbox", phone: digits })}`
+    : "";
+  const fromDb = composeFromStaffTemplate(args.templates, STAFF_TEMPLATE_KEYS.ADIR_SOFT_HANDOFF, {
+    age_minutes: args.ageMinutes,
+    guest_label: args.guestLabel,
+    request_type_label: handoffTypeLabelHe(args.requestType),
+    preview: args.preview,
+    inbox_line: inboxLine,
+    requests_board_link: buildStaffAppDeepLink({ page: "requests_board" }),
+  });
+  if (fromDb) return fromDb;
+
   const lines = [
     "⚠️ אורח מחכה לתשובה",
     `עברו ${args.ageMinutes} דק׳ מאז שהבוט העביר לצוות.`,
@@ -132,9 +151,7 @@ export function buildSoftHandoffManagerText(args: {
     "זו בקשה שלא דורשת תחזוקה בשטח (ספא / חיוב / שינוי תאריך).",
     "ענה לאורח מהאינבוקס — אל תפתח כרטיס תחזוקה.",
   ];
-  if (digits) {
-    lines.push(`💬 אינבוקס: ${buildStaffAppDeepLink({ page: "wa_inbox", phone: digits })}`);
-  }
+  if (digits) lines.push(inboxLine);
   lines.push(`📋 לוח בקשות: ${buildStaffAppDeepLink({ page: "requests_board" })}`);
   return lines.join("\n");
 }

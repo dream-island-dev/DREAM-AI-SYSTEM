@@ -8,6 +8,12 @@ import { buildStaffAppDeepLink, phoneDigitsForDeepLink } from "./guestAlertWhapi
 import { isEffectiveSuiteGuest } from "./suiteNames.ts";
 import { israelYmd } from "./automationSchedule.ts";
 import { addDaysYmd } from "./resortPulseStats.ts";
+import {
+  composeFromStaffTemplate,
+  loadStaffNotifyTemplates,
+  STAFF_TEMPLATE_KEYS,
+  type StaffTemplateMap,
+} from "./staffNotifyTemplates.ts";
 
 /** Same bare digits as task-action.ts ACTOR_PHONES.Adir — duty manager default. */
 export const ADIR_PHONE_DIGITS = "972546294885";
@@ -58,6 +64,7 @@ export function buildArrivalEtaAdirMessage(opts: {
   guestQuote?: string;
   channel: ArrivalEtaNotifyChannel;
   phone: string;
+  templates?: StaffTemplateMap;
 }): string {
   const channelLabel = opts.channel === "meta" ? "Dream Bot" : "מכשיר סוויטות";
   const isUpdate = !!opts.previousTime?.trim() && opts.previousTime.trim() !== opts.timeHhMm;
@@ -70,6 +77,24 @@ export function buildArrivalEtaAdirMessage(opts: {
     : opts.timeHhMm;
 
   const digits = phoneDigitsForDeepLink(opts.phone);
+  const quote = opts.guestQuote?.trim().slice(0, 200);
+  const inboxLine = digits
+    ? `💬 שיחה: ${buildStaffAppDeepLink({ page: "wa_inbox", phone: digits, guestName: opts.guestName })}`
+    : "";
+
+  const fromDb = composeFromStaffTemplate(opts.templates, STAFF_TEMPLATE_KEYS.ADIR_ARRIVAL_ETA, {
+    headline,
+    guest_name: who,
+    room,
+    date_label: dateLabel,
+    time_line: timeLine,
+    channel_label: channelLabel,
+    quote_line: quote ? `💬 «${quote}»` : "",
+    inbox_line: inboxLine,
+    requests_board_link: buildStaffAppDeepLink({ page: "requests_board" }),
+  });
+  if (fromDb) return fromDb;
+
   const lines = [
     headline,
     "",
@@ -77,16 +102,13 @@ export function buildArrivalEtaAdirMessage(opts: {
     `📅 ${dateLabel} | 🕐 ${timeLine}`,
     `📱 מקור: ${channelLabel}`,
   ];
-  const quote = opts.guestQuote?.trim().slice(0, 200);
   if (quote) lines.push(`💬 «${quote}»`);
   lines.push(
     "",
     "👉 מה לעשות:",
     "עדכן בלוח ההגעות או ענה לאורח אם צריך.",
   );
-  if (digits) {
-    lines.push(`💬 שיחה: ${buildStaffAppDeepLink({ page: "wa_inbox", phone: digits, guestName: opts.guestName })}`);
-  }
+  if (digits) lines.push(inboxLine);
   lines.push(`📋 לוח בקשות: ${buildStaffAppDeepLink({ page: "requests_board" })}`);
   return lines.join("\n");
 }
@@ -125,6 +147,8 @@ export async function notifyAdirArrivalEta(
     }
   }
 
+  const templates = await loadStaffNotifyTemplates(supabase);
+
   const body = buildArrivalEtaAdirMessage({
     guestName,
     room,
@@ -134,6 +158,7 @@ export async function notifyAdirArrivalEta(
     guestQuote: opts.guestQuote,
     channel: opts.channel,
     phone: opts.phone,
+    templates,
   });
 
   const to = cleanPhoneForMention(resolveAdirNotifyPhoneDigits());

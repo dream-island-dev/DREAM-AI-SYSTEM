@@ -2,11 +2,24 @@
 // One-time capabilities guide for Adir — sent once before the daily morning brief.
 
 import { buildStaffAppDeepLink } from "./guestAlertWhapiNotify.ts";
+import {
+  composeFromStaffTemplate,
+  STAFF_TEMPLATE_KEYS,
+  type StaffTemplateMap,
+} from "./staffNotifyTemplates.ts";
 
 export const FRONT_DESK_ONBOARDING_CONFIG_KEY = "front_desk_onboarding_sent";
 
 /** Full Hebrew guide — deterministic, no LLM. */
-export function buildFrontDeskCapabilitiesOnboardingMessage(): string {
+export function buildFrontDeskCapabilitiesOnboardingMessage(
+  templates?: StaffTemplateMap,
+): string {
+  const fromDb = composeFromStaffTemplate(templates, STAFF_TEMPLATE_KEYS.ADIR_ONBOARDING, {
+    requests_board_link: buildStaffAppDeepLink({ page: "requests_board" }),
+    inbox_link: buildStaffAppDeepLink({ page: "wa_inbox" }),
+  });
+  if (fromDb) return fromDb;
+
   return [
     "אדיר, בוקר טוב 🌅",
     "",

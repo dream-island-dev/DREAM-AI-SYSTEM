@@ -1,3 +1,5 @@
+2026-07-16 | Staff notify templates UI — edit Adir/Eliad messages & digests in Executive Playbook | migration 216 `staff_message_templates`, `StaffNotifyPanel`, `staff-notify-preview`.
+
 2026-07-16 | Eliad digest — Hebrew SLA labels + deterministic action hint; Adir one-time onboarding before morning brief | resortDigestStats, frontDeskOnboarding, front-desk-morning-cron.
 
 2026-07-16 | Adir staff notifications — unified Hebrew templates | `_shared/adirNotifyMessages.ts` — SLA/handoff/pre-checkin/portal/inventory; polished ETA + morning brief. Deploy: `sla-escalation-cron`, `whatsapp-webhook`, `guest-portal-order`, `inventory-portal-submit`.

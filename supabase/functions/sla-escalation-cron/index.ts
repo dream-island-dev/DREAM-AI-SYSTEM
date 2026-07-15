@@ -51,6 +51,7 @@ import {
   buildGuestAlertSlaEscalationText,
   formatAdirGuestLabel,
 } from "../_shared/adirNotifyMessages.ts";
+import { loadStaffNotifyTemplates } from "../_shared/staffNotifyTemplates.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -186,6 +187,7 @@ serve(async (req: Request) => {
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const anon = Deno.env.get("SUPABASE_ANON_KEY")!;
     const supabase = createClient(supabaseUrl, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+    const staffTemplates = await loadStaffNotifyTemplates(supabase);
 
     const guestAlertPhone = Deno.env.get("SLA_GUEST_ALERT_PHONE") ?? "";
     if (!guestAlertPhone) console.warn("[sla-escalation-cron] ⚠️ SLA_GUEST_ALERT_PHONE not set — overdue guest alerts will be marked escalated with nobody notified.");
@@ -243,6 +245,7 @@ serve(async (req: Request) => {
         phone: String(alert.phone ?? ""),
         guestName: alertGuest?.name ?? null,
         futureArrivalNote: arrivalNote || null,
+        templates: staffTemplates,
       });
 
       const notified = guestAlertPhone ? await notifyWhatsapp(supabaseUrl, anon, guestAlertPhone, hebrewText) : false;
@@ -506,6 +509,7 @@ serve(async (req: Request) => {
         guestLabel,
         ageMinutes,
         preview,
+        templates: staffTemplates,
       });
 
       const notified = guestAlertPhone

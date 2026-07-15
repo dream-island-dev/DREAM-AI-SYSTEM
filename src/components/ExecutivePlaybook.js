@@ -1,7 +1,8 @@
-// Admin view for Staff Voice Assistants — Executive Playbook (Eliad/Mike) + read-only Adir desk profile.
+// Admin view for Staff Voice Assistants — Executive Playbook (Eliad/Mike) + Adir desk profile + staff notify templates.
 
 import { useState, useEffect, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
+import StaffNotifyPanel from "./StaffNotifyPanel";
 
 /** Read-only mirror of executiveIdentity.ts KNOWN_FRONT_DESK — for admin visibility. */
 const ADIR_DESK_PROFILE = {
@@ -10,7 +11,7 @@ const ADIR_DESK_PROFILE = {
   focus:
     "אני עוזרת דלפק הסוויטות של אדיר. הוא בקבלה עד ~16:00 — אני עוזרת לו עם הגעות, שעות הגעה, ולוח בקשות.",
   tools: "get_arrival_desk_brief, list_guest_alerts, resolve_guest_alert, set_guest_status (room_ready), list_guests_by_date, learn_front_desk_rule",
-  morningBrief: "07:00 ישראל — הודעת Whapi אוטומטית (לוח הגעות + בקשות + «מה אפשר לבקש»). לא נערך כאן — frontDeskMorningBrief.ts",
+  morningBrief: "07:00 ישראל — ניתן לערוך בלשונית «הודעות ודוחות»",
 };
 
 function formatDate(iso) {
@@ -19,6 +20,7 @@ function formatDate(iso) {
 }
 
 export default function ExecutivePlaybook() {
+  const [mainTab, setMainTab] = useState("playbook");
   const [personaPrompt, setPersonaPrompt] = useState("");
   const [personaLoading, setPersonaLoading] = useState(true);
   const [personaSaving, setPersonaSaving] = useState(false);
@@ -165,7 +167,7 @@ export default function ExecutivePlaybook() {
         </div>
       )}
 
-      <div style={{ maxWidth: 820 }}>
+      <div style={{ maxWidth: mainTab === "staff_notify" ? 1100 : 820 }}>
         <div style={{
           background: "linear-gradient(135deg, rgba(107,33,168,0.12) 0%, rgba(107,33,168,0.04) 100%)",
           border: "1px solid #6B21A8", borderRadius: 12,
@@ -180,13 +182,33 @@ export default function ExecutivePlaybook() {
             <div style={{ fontSize: 13, color: "var(--text-muted)", lineHeight: 1.6 }}>
               <strong>אליעד (מנכ"ל):</strong> העוזרת האישית שלו — הפרומפט הבסיסי למטה + דגש אישי בקוד (executiveIdentity.ts).
               <br />
-              <strong>אדיר (דלפק):</strong> פרופיל נפרד — כרטיס למטה (קריאה בלבד; עריכה בקוד).
+              <strong>אדיר (דלפק):</strong> פרופיל נפרד — כרטיס למטה; הודעות ודוחות בלשונית «הודעות ודוחות».
               <br />
               כללים שנלמדו בקול: אליעד → module executive | אדיר → module front_desk.
             </div>
           </div>
         </div>
 
+        <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
+          {[
+            { id: "playbook", label: "🧠 פרומפט וכללים" },
+            { id: "staff_notify", label: "📨 הודעות ודוחות" },
+          ].map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              className={`btn btn-sm ${mainTab === t.id ? "btn-primary" : "btn-secondary"}`}
+              onClick={() => setMainTab(t.id)}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {mainTab === "staff_notify" ? (
+          <StaffNotifyPanel showToast={showToast} />
+        ) : (
+        <>
         {/* ── Base system prompt (executive_bot_settings, migration 183) ──── */}
         <div className="card" style={{ marginBottom: 20 }}>
           <div className="card-header">
@@ -233,7 +255,7 @@ export default function ExecutivePlaybook() {
         {/* ── Adir front desk (read-only — executiveIdentity.ts) ───────────── */}
         <div className="card" style={{ marginBottom: 20, borderColor: "#0D9488" }}>
           <div className="card-header">
-            <div className="card-title">🏨 עוזרת דלפק — אדיר (קריאה בלבד)</div>
+            <div className="card-title">🏨 עוזרת דלפק — אדיר</div>
           </div>
           <div style={{ padding: "16px 20px", fontSize: 13, lineHeight: 1.7 }}>
             <div style={{ marginBottom: 10 }}>
@@ -379,6 +401,8 @@ export default function ExecutivePlaybook() {
             )}
           </div>
         </div>
+        </>
+        )}
       </div>
     </div>
   );
