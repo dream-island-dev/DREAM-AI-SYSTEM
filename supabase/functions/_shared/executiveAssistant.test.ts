@@ -15,6 +15,7 @@ import {
   resolveExecutiveReplyTo,
   executiveAlreadyRepliedSuccessfully,
   fetchExecutiveRules,
+  buildExecutiveSystemPrompt,
   type ToolExecCtx,
 } from "./executiveAssistant.ts";
 
@@ -437,4 +438,63 @@ Deno.test("executiveAlreadyRepliedSuccessfully — false when no successful outb
   };
   const supabase = { from: () => builder } as any;
   assertEquals(await executiveAlreadyRepliedSuccessfully(supabase, "972506842439", "wamid-1"), false);
+});
+
+Deno.test("list_guests_by_date — rejects invalid date format", async () => {
+  const result = await executeExecutiveTool(
+    mockSupabase({}),
+    "list_guests_by_date",
+    { date: "16/07/2026", mode: "arriving" },
+    CTX,
+  );
+  assertEquals(result.ok, false);
+  assertEquals(result.error, "invalid_date_format");
+});
+
+Deno.test("list_guests_by_date — rejects invalid mode", async () => {
+  const result = await executeExecutiveTool(
+    mockSupabase({}),
+    "list_guests_by_date",
+    { date: "2026-07-16", mode: "tomorrow" },
+    CTX,
+  );
+  assertEquals(result.ok, false);
+  assertEquals(result.error, "invalid_mode");
+});
+
+Deno.test("list_guests_by_date — returns arriving guests for date", async () => {
+  const supabase = mockSupabase({
+    default: {
+      data: [
+        { name: "כהן", room: "אמטיסט 3", room_type: "suite", status: "expected", arrival_time: "15:30", requires_attention: false },
+      ],
+      error: null,
+    },
+  });
+  const result = await executeExecutiveTool(
+    supabase,
+    "list_guests_by_date",
+    { date: "2026-07-16", mode: "arriving" },
+    CTX,
+  );
+  assertEquals(result.ok, true);
+  assertEquals(result.count, 1);
+  assertEquals(result.date, "2026-07-16");
+  assertEquals(String(result.summary).includes("כהן"), true);
+});
+
+Deno.test("buildExecutiveSystemPrompt — Eliad overlay includes onboarding guidance", async () => {
+  const profile = await resolveExecutiveInbound("972505421751");
+  if (!profile) throw new Error("expected Eliad profile");
+  const prompt = buildExecutiveSystemPrompt(profile, "BASE {{name}} {{title}} {{focus}}", "", "", []);
+  assertEquals(prompt.includes("הכוונה לאליעד"), true);
+  assertEquals(prompt.includes("list_guests_by_date"), true);
+  assertEquals(prompt.includes("מחר:"), true);
+});
+
+Deno.test("buildExecutiveSystemPrompt — Mike overlay includes architect context", async () => {
+  const profile = await resolveExecutiveInbound("972506842439");
+  if (!profile) throw new Error("expected Mike profile");
+  const prompt = buildExecutiveSystemPrompt(profile, "BASE", "", "", []);
+  assertEquals(prompt.includes("ארכיטקט ומפתח XOS"), true);
 });

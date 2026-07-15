@@ -19,7 +19,7 @@ import {
 import { translateTextForFieldOps } from "./fieldOpsTranslation.ts";
 import { SUITES_ROOM_SERVICE_GROUP_ID } from "./futureSuiteRoomServiceRouting.ts";
 import { loadActiveGuestById, type ActiveGuestRow } from "./guestOutboundGuard.ts";
-import { fetchResortBrief, israelTodayStr } from "./resortPulseStats.ts";
+import { fetchResortBrief, israelTodayStr, addDaysYmd } from "./resortPulseStats.ts";
 import { isEffectiveSuiteGuest } from "./suiteNames.ts";
 import {
   composeResortDigestMessage,
@@ -161,6 +161,7 @@ const DEFAULT_PERSONA_TEMPLATE = `
 
 מה אתה עושה ישירות (דרך כלי, בלי לשאול רשות):
 • מצב הריזורט / דוח תפעולי מיידי (יומי/שבועי/חודשי) / רשימת הגעות-עוזבים-אורחים בריזורט.
+• רשימת אורחים לפי תאריך — היום, מחר, או כל תאריך עתידי/עבר (list_guests_by_date).
 • איתור אורח לפי חדר/שם, כולל הערות, ספא/ארוחות ודגלי תשומת-לב.
 • לוח הבקשות (תלונות/ספא/שינוי תאריך/חיוב) ומצב חדרים תפעולי (פנוי/ניקיון/תחזוקה).
 • פתיחת משימת שטח, אישור ושיגור משימה ממתינה לצוות, סימון בטיפול/בוצעה/דחייה.
@@ -181,7 +182,9 @@ const DEFAULT_PERSONA_TEMPLATE = `
 • כשביצעת פעולה בפועל דרך אחד הכלים — פתח את השורה הרלוונטית ב-✅.
 • כמה פעולות/עדכונים בתשובה אחת — כל אחת כשורת בולט (•) קצרה.
 • אל תמציא נתונים על הריזורט או על אורחים — אם חסר לך מידע קרא לכלי המתאים
-  (get_resort_brief / find_guest_by_room / list_guests_by_scope / query_open_tasks) לפני שאתה עונה.
+  (get_resort_brief / list_guests_by_date / find_guest_by_room / list_guests_by_scope / query_open_tasks) לפני שאתה עונה.
+• לשאלות על "מחר" / "ביום X" / תאריך עתידי — חשב את התאריך (ישראל) וקרא ל-list_guests_by_date;
+  לעולם אל תגיד שאין לך אפשרות לבדוק ימים עתידיים.
 • משפט כמו "תזכרי ש..." / "מעכשיו תמיד..." / "מהיום..." = קרא ל-learn_executive_rule
   כדי לשמור את זה כהעדפה קבועה שלך, אחרת תשכח אותה בפעם הבאה.
   זה חל גם על דוחות התפעול היומיים/שבועיים שאת שולחת לו — אם הוא מבקש לשנות
@@ -316,12 +319,15 @@ export function buildExecutiveSystemPrompt(
   briefSnapshot: string,
   recentTurns: Array<{ direction: string; message: string }>,
 ): string {
-  const dateLine = `\n\nתאריך היום (ישראל): ${israelTodayStr()}`;
+  const dateLine = `\n\nתאריך היום (ישראל): ${israelTodayStr()} | מחר: ${addDaysYmd(israelTodayStr(), 1)}`;
   const briefLine = briefSnapshot ? `\n\n══ מצב עדכני (לרענון: get_resort_brief) ══\n${briefSnapshot}` : "";
   const firstTurnNote = recentTurns.length === 0
-    ? `\n\nזו הפנייה הראשונה של ${profile.displayName} בשיחה הזו — אפשר לפתוח בברכה קצרה אחת.`
+    ? `\n\nזו הפנייה הראשונה של ${profile.displayName} בשיחה הזו — אם הוא מנהל (לא מפתח שבודק אותך), פתחי בברכה קצרה והציעי בקצרה מה אפשר לבקש (ראי סעיף ההכוונה בפרסונה).`
     : "";
-  return buildExecutivePersona(profile, personaTemplate) + dateLine + briefLine + rulesSuffix + firstTurnNote;
+  const overlayLine = profile.personaOverlay?.trim()
+    ? `\n\n${profile.personaOverlay.trim()}`
+    : "";
+  return buildExecutivePersona(profile, personaTemplate) + dateLine + briefLine + rulesSuffix + overlayLine + firstTurnNote;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -368,13 +374,32 @@ const EXECUTIVE_TOOLS: ToolDef[] = [
   },
   {
     name: "list_guests_by_scope",
-    description: "רשימת אורחים (שם, חדר, סטטוס, שעת הגעה) לפי טווח: מגיעים היום / עוזבים היום / בריזורט כרגע. לשאלות כמו \"מי מגיע היום\".",
+    description: "רשימת אורחים (שם, חדר, סטטוס, שעת הגעה) לפי טווח של היום בלבד: מגיעים היום / עוזבים היום / בריזורט כרגע. לשאלות כמו \"מי מגיע היום\".",
     schema: {
       type: "object",
       properties: {
         scope: { type: "string", enum: ["arriving_today", "departing_today", "in_resort_now"], description: "טווח האורחים המבוקש." },
       },
       required: ["scope"],
+    },
+  },
+  {
+    name: "list_guests_by_date",
+    description:
+      "רשימת אורחים לפי תאריך ספציפי (YYYY-MM-DD, ישראל) — מגיעים / עוזבים / בבית באותו יום. " +
+      "לשאלות כמו \"מי מגיע מחר\", \"מי עוזב ביום ראשון\", \"מי יהיה בריזורט ב-20/7\". " +
+      "למחר: arrival_date = תאריך מחר.",
+    schema: {
+      type: "object",
+      properties: {
+        date: { type: "string", description: "תאריך בפורמט YYYY-MM-DD (לוח שנה ישראל)." },
+        mode: {
+          type: "string",
+          enum: ["arriving", "departing", "in_house"],
+          description: "arriving=מגיעים באותו יום, departing=עוזבים, in_house=נמצאים בריזורט באותו יום.",
+        },
+      },
+      required: ["date", "mode"],
     },
   },
   {
@@ -718,6 +743,53 @@ async function _execListGuestsByScope(supabase: SupabaseClient, args: Record<str
     `• ${g.name ?? "ללא שם"} — ${g.room ?? "ללא חדר"}${g.arrival_time ? ` (${g.arrival_time})` : ""} [${g.status}]`,
   );
   return { ok: true, count: rows.length, scope, summary: lines.join("\n") };
+}
+
+const LIST_GUESTS_DATE_MODE_LABEL_HE: Record<string, string> = {
+  arriving: "מגיעים",
+  departing: "עוזבים",
+  in_house: "בריזורט",
+};
+
+const YMD_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+async function _execListGuestsByDate(supabase: SupabaseClient, args: Record<string, unknown>): Promise<ToolResult> {
+  const date = String(args.date ?? "").trim();
+  const mode = String(args.mode ?? "");
+  if (!YMD_DATE_RE.test(date)) return { ok: false, error: "invalid_date_format" };
+  if (!(mode in LIST_GUESTS_DATE_MODE_LABEL_HE)) return { ok: false, error: "invalid_mode" };
+
+  let query = supabase
+    .from("guests")
+    .select("id, name, room, room_type, status, arrival_date, departure_date, arrival_time, requires_attention")
+    .not("status", "eq", "cancelled");
+
+  if (mode === "arriving") query = query.eq("arrival_date", date);
+  else if (mode === "departing") query = query.eq("departure_date", date).neq("status", "checked_out");
+  else query = query.lte("arrival_date", date).or(`departure_date.gte.${date},departure_date.is.null`);
+
+  const { data, error } = await query.order("room", { ascending: true }).limit(40);
+  if (error) {
+    console.warn("[executiveAssistant] list_guests_by_date failed:", error.message);
+    return { ok: false, error: error.message };
+  }
+
+  const rows = (data ?? []) as Array<{
+    name: string | null;
+    room: string | null;
+    room_type: string | null;
+    status: string;
+    arrival_time: string | null;
+    requires_attention: boolean | null;
+  }>;
+  const label = `${LIST_GUESTS_DATE_MODE_LABEL_HE[mode]} ב-${date}`;
+  if (!rows.length) return { ok: true, count: 0, date, mode, summary: `אין אורחים — ${label}.` };
+
+  const lines = rows.map((g) => {
+    const attn = g.requires_attention ? " ⚠" : "";
+    return `• ${g.name ?? "ללא שם"} — ${g.room ?? "ללא חדר"}${g.arrival_time ? ` (${g.arrival_time})` : ""} [${g.status}]${attn}`;
+  });
+  return { ok: true, count: rows.length, date, mode, summary: lines.join("\n") };
 }
 
 async function _execCeoGuestOverride(supabase: SupabaseClient, args: Record<string, unknown>): Promise<ToolResult> {
@@ -1184,6 +1256,7 @@ export async function executeExecutiveTool(
     case "get_resort_brief": return await _execGetResortBrief(supabase);
     case "find_guest_by_room": return await _execFindGuestByRoom(supabase, args);
     case "list_guests_by_scope": return await _execListGuestsByScope(supabase, args);
+    case "list_guests_by_date": return await _execListGuestsByDate(supabase, args);
     case "ceo_guest_override": return await _execCeoGuestOverride(supabase, args);
     case "send_guest_message": return await _execSendGuestMessage(supabase, args);
     case "notify_managers_group": return await _execNotifyManagersGroup(args);

@@ -159,6 +159,7 @@ export default function ExecutivePlaybook() {
             <div style={{ fontSize: 13, color: "var(--text-muted)", lineHeight: 1.6 }}>
               מורשים: אליעד (מנכ"ל) ומייק (QA) — שיחה דרך מכשיר הסוויטות (קול או טקסט). כאן ניתן
               לצפות ולערוך את הכללים שנלמדו, ולראות יומן פעולות אחרון.
+              {" "}הכוונה לאליעד (איך לעבוד עם העוזרת) ופרסונה נפרדת למייק מוגדרות בקוד — executiveIdentity.ts.
             </div>
           </div>
         </div>

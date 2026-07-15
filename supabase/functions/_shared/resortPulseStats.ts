@@ -12,6 +12,13 @@ export function israelTodayStr(): string {
   return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
 }
 
+/** Add calendar days to a YYYY-MM-DD string (UTC-safe, no TZ drift). */
+export function addDaysYmd(dateYmd: string, days: number): string {
+  const [y, m, d] = dateYmd.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d + days));
+  return dt.toISOString().slice(0, 10);
+}
+
 type GuestRow = {
   id: number;
   status?: string | null;
