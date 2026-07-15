@@ -66,6 +66,25 @@ Deno.test("buildFrontDeskMorningMessage — includes power hints and stats", () 
   assertEquals(body.includes("רוצה שאשלח הודעה קצרה לבקש שעת הגעה מ-1 האורחים"), true);
 });
 
+Deno.test("buildFrontDeskMorningMessage — omits power hints when includePowerHints=false", () => {
+  const body = buildFrontDeskMorningMessage({
+    brief: composeArrivalDeskBrief(ROWS, NOW),
+    openActionable: [],
+    openEtaCount: 0,
+  }, { includePowerHints: false });
+  assertEquals(body.includes("💪 מה אתה יכול לבקש"), false);
+  assertEquals(body.includes("לוח בקשות"), true);
+});
+
+Deno.test("buildFrontDeskMorningMessage — includes power hints when includePowerHints=true", () => {
+  const body = buildFrontDeskMorningMessage({
+    brief: composeArrivalDeskBrief(ROWS, NOW),
+    openActionable: [],
+    openEtaCount: 0,
+  }, { includePowerHints: true });
+  assertEquals(body.includes("💪 מה אתה יכול לבקש"), true);
+});
+
 Deno.test("buildFrontDeskMorningMessage — omits the arrival-time-request suggestion when nobody is missing a time", () => {
   const allWithTime: ArrivalDeskGuestRow[] = ROWS.map((g) => ({ ...g, arrival_time: g.arrival_time ?? "12:00" }));
   const body = buildFrontDeskMorningMessage({

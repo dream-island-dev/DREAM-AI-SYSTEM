@@ -152,8 +152,12 @@ function formatDateHe(ymd: string): string {
   return `${d}/${m}/${y}`;
 }
 
-/** Full Whapi morning DM — arrivals + open requests + «כוח בידיים» onboarding. */
-export function buildFrontDeskMorningMessage(stats: FrontDeskMorningStats): string {
+/** Full Whapi morning DM — arrivals + open requests. Power hints only before onboarding sent. */
+export function buildFrontDeskMorningMessage(
+  stats: FrontDeskMorningStats,
+  opts: { includePowerHints?: boolean } = {},
+): string {
+  const includePowerHints = opts.includePowerHints !== false;
   const { brief, openActionable, openEtaCount } = stats;
   const dateHe = formatDateHe(brief.todayYmd);
 
@@ -188,16 +192,22 @@ export function buildFrontDeskMorningMessage(stats: FrontDeskMorningStats): stri
 
   sections.push(
     "",
-    "💪 מה אתה יכול לבקש ממני (קול או טקסט למכשיר הסוויטות):",
-    "• «לוח הגעות» / «מי בלי שעה?»",
-    "• «טיפלתי בבקשת חדר 7»",
-    "• «חדר 5 מוכן»",
-    "• «מי מגיע מחר?»",
-    "שעות הגעה מאורחים (Dream Bot / מכשיר סוויטות) מגיעות אליך אוטומטית 🕐",
-    "",
     `📋 לוח בקשות: ${buildStaffAppDeepLink({ page: "requests_board" })}`,
     `💬 אינבוקס: ${buildStaffAppDeepLink({ page: "wa_inbox" })}`,
   );
+
+  if (includePowerHints) {
+    sections.splice(
+      sections.length - 2,
+      0,
+      "",
+      "💪 מה אתה יכול לבקש ממני (קול או טקסט):",
+      "• «לוח הגעות» / «מי בלי שעה?»",
+      "• «טיפלתי בבקשת חדר 7»",
+      "• «חדר 5 מוכן»",
+      "שעות הגעה מאורחים מגיעות אליך אוטומטית 🕐",
+    );
+  }
 
   return sections.join("\n");
 }

@@ -295,12 +295,54 @@ export function composeExecutiveHeadline(stats: ResortDigestStats): string {
   if (unknownCount) concerns.push(`${unknownCount} חדרים בלי סימון "מוכן"`);
   if (lateCount) concerns.push(`${lateCount} חדרים התעכבו`);
   if (stats.slaCompliance.breachedStillOpen) {
-    concerns.push(`${stats.slaCompliance.breachedStillOpen} בקשות פתוחות חורגות מ-SLA`);
+    concerns.push(`${stats.slaCompliance.breachedStillOpen} משימות פתוחות שלא טופלו בזמן`);
   }
   if (stats.anomalies.length) concerns.push(`${stats.anomalies.length} סוויטות עם ריבוי בקשות חוזרות`);
 
   if (!concerns.length) return "✅ הכל תקין — אין נקודות לתשומת לב מיוחדת בתקופה זו.";
   return `⚠️ לתשומת לבך: ${concerns.join(" | ")}`;
+}
+
+const TASK_CATEGORY_LABEL_HE: Record<string, string> = {
+  pest_control:    "הדברה",
+  guest_amenities: "ציוד לאורח",
+  maintenance:     "תחזוקה",
+  uncategorized:   "כללי",
+};
+
+function taskCategoryLabelHe(category: string): string {
+  return TASK_CATEGORY_LABEL_HE[category] ?? category;
+}
+
+/**
+ * One deterministic action line for the CEO — derived only from computed stats.
+ */
+export function composeExecutiveActionHint(stats: ResortDigestStats): string {
+  const breachedOpen = stats.slaCompliance.breachedStillOpen;
+  const unknownRooms = stats.roomReadyTiming.filter((r) => r.status === "unknown");
+  const lateRooms = stats.roomReadyTiming.filter((r) => r.status === "late");
+  const topAnomaly = stats.anomalies[0];
+  const lowSurveys = stats.surveys?.lowScoreCount ?? 0;
+
+  if (breachedOpen > 0) {
+    return `👉 מומלץ היום: לבדוק ${breachedOpen} משימות שלא נסגרו ביעד הזמן — בלוח התפעול.`;
+  }
+  if (unknownRooms.length > 0) {
+    const rooms = unknownRooms.slice(0, 3).map((r) => r.room).join(", ");
+    const more = unknownRooms.length > 3 ? ` (+${unknownRooms.length - 3})` : "";
+    return `👉 מומלץ היום: לוודא סימון «חדר מוכן» — ${rooms}${more}.`;
+  }
+  if (lateRooms.length > 0) {
+    const worst = [...lateRooms].sort((a, b) => (b.lateMinutes ?? 0) - (a.lateMinutes ?? 0))[0];
+    return `👉 מומלץ היום: לבדוק איחור במוכנות — ${worst.room} (${worst.lateMinutes} דק').`;
+  }
+  if (topAnomaly) {
+    return `👉 מומלץ היום: ${topAnomaly.room} — ${topAnomaly.count} בקשות ${taskCategoryLabelHe(topAnomaly.category)} באותה תקופה (חריגה חוזרת).`;
+  }
+  if (lowSurveys > 0) {
+    return `👉 מומלץ היום: ${lowSurveys} סקרים עם ציון נמוך — כדאי לעבור על המשוב בלוח.`;
+  }
+  return "👉 מצב שקט — אין פעולה דחופה מהדוח. שאל אותי «מה מצב הריזורט?» לעדכון חי.";
 }
 
 export type DigestPeriod = "daily" | "weekly" | "monthly";
@@ -430,6 +472,7 @@ export function composeResortDigestMessage(
     `דוח תפעולי ${PERIOD_LABELS[period]} — ${periodLabel}`,
     "",
     composeExecutiveHeadline(stats),
+    composeExecutiveActionHint(stats),
   ];
 
   lines.push("", `הגעות (${stats.arrivals.length}):`);
@@ -478,8 +521,12 @@ export function composeResortDigestMessage(
     );
     const sla = stats.slaCompliance;
     if (sla.complianceRate !== null) {
-      const breachedPart = sla.breachedStillOpen ? ` | חורגות פתוחות כרגע: ${sla.breachedStillOpen}` : "";
-      lines.push(`  עמידה ב-SLA: ${sla.complianceRate}% (${sla.withinSla}/${sla.withDeadline})${breachedPart}`);
+      const breachedPart = sla.breachedStillOpen
+        ? ` | לא בזמן ועדיין פתוחות: ${sla.breachedStillOpen}`
+        : "";
+      lines.push(
+        `  עמידה ביעדי זמן הטיפול: ${sla.complianceRate}% (${sla.withinSla}/${sla.withDeadline})${breachedPart}`,
+      );
     }
   }
 
@@ -488,7 +535,7 @@ export function composeResortDigestMessage(
     lines.push(
       ...formatCappedList(
         stats.anomalies, // already sorted by count desc — worst repeat-offender first
-        (a) => `  ${a.room} — ${a.count}× ${a.category} באותה תקופה`,
+        (a) => `  ${a.room} — ${a.count}× ${taskCategoryLabelHe(a.category)} באותה תקופה`,
         MAX_DIGEST_LIST_ITEMS,
       ),
     );
@@ -517,7 +564,8 @@ export function composeResortDigestMessage(
   lines.push(
     "",
     "—",
-    "רוצה לשנות משהו בדוחות? כתוב לי «תזכרי ש…» או «מעכשיו תמיד…» ואשמור את זה להבא.",
+    "רוצה לשנות משהו בדוחות? כתוב לי «תזכרי ש…» — אשמור להבא.",
+    "לעדכון חי: «מה מצב הריזורט?» או «תן לי דוח יומי עכשיו».",
   );
 
   return lines.join("\n");

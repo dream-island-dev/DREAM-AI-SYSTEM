@@ -1,3 +1,5 @@
+2026-07-16 | Eliad digest — Hebrew SLA labels + deterministic action hint; Adir one-time onboarding before morning brief | resortDigestStats, frontDeskOnboarding, front-desk-morning-cron.
+
 2026-07-16 | Adir staff notifications — unified Hebrew templates | `_shared/adirNotifyMessages.ts` — SLA/handoff/pre-checkin/portal/inventory; polished ETA + morning brief. Deploy: `sla-escalation-cron`, `whatsapp-webhook`, `guest-portal-order`, `inventory-portal-submit`.
 
 2026-07-16 | SLA personal DM to Lidor disabled by default | `sla-escalation-cron` — `SLA_OPS_PERSONAL_ALERT_ENABLED` must be `true` for `SLA_OPS_ALERT_PHONE` pings; guest_request breaches fall back to ops group. Deploy: `sla-escalation-cron`.

@@ -13,6 +13,7 @@ import {
   computeRoomReadyTiming,
   computeSlaCompliance,
   composeExecutiveHeadline,
+  composeExecutiveActionHint,
   composeResortDigestMessage,
   filterDigestRelevantRules,
   formatCappedList,
@@ -264,8 +265,18 @@ Deno.test("composeExecutiveHeadline: lists concerns from room-ready, SLA breache
   const headline = composeExecutiveHeadline(stats);
   assertEquals(headline.startsWith("⚠️ לתשומת לבך:"), true);
   assertEquals(headline.includes('1 חדרים בלי סימון "מוכן"'), true);
-  assertEquals(headline.includes("1 בקשות פתוחות חורגות מ-SLA"), true);
+  assertEquals(headline.includes("1 משימות פתוחות שלא טופלו בזמן"), true);
   assertEquals(headline.includes("1 סוויטות עם ריבוי בקשות חוזרות"), true);
+});
+
+Deno.test("composeExecutiveActionHint — breached open tasks first priority", () => {
+  const stats = computeResortDigestStats({
+    guests: [],
+    tasks: [taskRow({ status: "open", sla_deadline: "2026-07-11T11:00:00.000Z" })],
+    now: SLA_NOW,
+  });
+  const hint = composeExecutiveActionHint(stats);
+  assertEquals(hint.includes("לא נסגרו ביעד הזמן"), true);
 });
 
 Deno.test("composeResortDigestMessage: includes the headline and an SLA compliance line", () => {
@@ -276,7 +287,8 @@ Deno.test("composeResortDigestMessage: includes the headline and an SLA complian
   });
   const body = composeResortDigestMessage(stats, "daily", "2026-07-11");
   assertEquals(body.includes("✅ הכל תקין"), true);
-  assertEquals(body.includes("עמידה ב-SLA: 100% (1/1)"), true);
+  assertEquals(body.includes("עמידה ביעדי זמן הטיפול: 100% (1/1)"), true);
+  assertEquals(body.includes("👉 מצב שקט"), true);
 });
 
 Deno.test("filterDigestRelevantRules + compose learned notes", () => {
@@ -403,5 +415,5 @@ Deno.test("composeResortDigestMessage: renders anomaly line when present", () =>
   });
   const body = composeResortDigestMessage(stats, "weekly", "2026-07-05–2026-07-11");
   assertEquals(body.includes("🚩 חריגות:"), true);
-  assertEquals(body.includes("A — 3× pest_control"), true);
+  assertEquals(body.includes("A — 3× הדברה"), true);
 });

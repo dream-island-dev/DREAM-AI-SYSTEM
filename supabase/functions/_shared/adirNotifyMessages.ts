@@ -128,5 +128,7 @@ export function buildInventorySubmitAdirText(opts: {
     "",
     "👉 מה לעשות:",
     "פתח את תור אישורי המלאי במערכת ואשר או דחה.",
+    "",
+    `📦 מלאי ואישורים: ${buildStaffAppDeepLink({ page: "agent" })}`,
   ].join("\n");
 }
