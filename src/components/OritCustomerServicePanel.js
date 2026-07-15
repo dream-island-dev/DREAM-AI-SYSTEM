@@ -62,22 +62,42 @@ export default function OritCustomerServicePanel({ user }) {
     setTimeout(() => setToast(null), 4000);
   }, []);
 
+  const [loadError, setLoadError] = useState(null);
+
   const loadMailbox = useCallback(async () => {
-    if (!isSupabaseConfigured()) return null;
-    const { data: rows, error } = await supabase
-      .from("orit_agent_mailbox")
-      .select(MAILBOX_COLUMNS)
-      .order("connection_status", { ascending: true })
-      .order("last_sync_at", { ascending: false, nullsFirst: false })
-      .limit(5);
-    if (error) {
-      console.error("[orit-cs] mailbox load:", error);
-      showToast("err", error.message);
+    if (!isSupabaseConfigured()) {
+      setLoadError("Supabase לא מוגדר בפרונט (חסרים REACT_APP_SUPABASE_* ב-Vercel)");
       return null;
     }
-    const data = (rows ?? []).find((m) => m.connection_status === "active") ?? rows?.[0] ?? null;
+    setLoadError(null);
+    const { data: rpcRows, error: rpcErr } = await supabase.rpc("get_orit_cs_mailbox");
+    if (rpcErr) {
+      console.error("[orit-cs] mailbox rpc:", rpcErr);
+      // Fallback if migration 211 not yet applied
+      if (rpcErr.code !== "PGRST202") {
+        setLoadError(rpcErr.message);
+        showToast("err", rpcErr.message);
+        return null;
+      }
+    }
+    let data = Array.isArray(rpcRows) ? rpcRows[0] : rpcRows;
     if (!data) {
-      console.warn("[orit-cs] mailbox row not visible (RLS or missing migration)");
+      const { data: rows, error } = await supabase
+        .from("orit_agent_mailbox")
+        .select(MAILBOX_COLUMNS)
+        .order("connection_status", { ascending: true })
+        .limit(5);
+      if (error) {
+        console.error("[orit-cs] mailbox load:", error);
+        setLoadError(error.message);
+        showToast("err", error.message);
+        return null;
+      }
+      data = (rows ?? []).find((m) => m.connection_status === "active") ?? rows?.[0] ?? null;
+    }
+    if (!data) {
+      setLoadError("אין שורת mailbox או שאין הרשאה — בדוק ניהול משתמשים (orit_cs_agent_access)");
+      console.warn("[orit-cs] mailbox row not visible");
     }
     let next = data;
     if (data?.profile_id == null && user?.id) {
@@ -300,7 +320,7 @@ export default function OritCustomerServicePanel({ user }) {
       <div className="card" style={{ padding: 32, textAlign: "center" }}>
         <div style={{ fontSize: 18, fontWeight: 700, color: "#B91C1C", marginBottom: 8 }}>⚠ תיבת הסוכן לא נמצאה</div>
         <div style={{ color: "var(--text-muted)", marginBottom: 16 }}>
-          שורת mailbox חסרה או שאין הרשאה (RLS). ודאי ש-migration 155/156 הורצו ושיש גישה ב«ניהול משתמשים».
+          {loadError || "שורת mailbox חסרה או שאין הרשאה (RLS). ודאי שיש גישה ב«ניהול משתמשים»."}
         </div>
         <button type="button" className="btn btn-primary" onClick={() => { setLoading(true); loadMailbox().finally(() => setLoading(false)); }}>
           🔄 נסי שוב
