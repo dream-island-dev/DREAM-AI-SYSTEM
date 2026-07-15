@@ -1,6 +1,7 @@
 // OritCustomerServicePanel.js — Suite owner CS agent: read-only inbox, AI drafts, manual reply.
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
+import useIsMobile from "../utils/useIsMobile";
 
 const URGENCY_META = {
   critical: { label: "🔴 קריטי", bg: "#FEE2E2", color: "#B91C1C" },
@@ -41,6 +42,12 @@ function sortThreads(rows) {
 }
 
 export default function OritCustomerServicePanel({ user }) {
+  const isMobile = useIsMobile(768);
+  const [mobileScreen, setMobileScreen] = useState("list"); // "list" | "detail"
+  const detailHistoryPushedRef = useRef(false);
+  const listScrollRef = useRef(null);
+  const savedListScrollRef = useRef(0);
+
   const [mailbox, setMailbox] = useState(null);
   const [threads, setThreads] = useState([]);
   const [messages, setMessages] = useState([]);
@@ -58,6 +65,37 @@ export default function OritCustomerServicePanel({ user }) {
   }, []);
 
   const [loadError, setLoadError] = useState(null);
+
+  const closeDetail = useCallback(() => {
+    setMobileScreen("list");
+    setSelectedId(null);
+    setReplyText("");
+  }, []);
+
+  const goBackToList = useCallback(() => {
+    if (isMobile && detailHistoryPushedRef.current && typeof window !== "undefined" && window.history) {
+      detailHistoryPushedRef.current = false;
+      window.history.back();
+      return;
+    }
+    closeDetail();
+  }, [isMobile, closeDetail]);
+
+  const openThread = useCallback((threadId) => {
+    if (!threadId) return;
+    if (isMobile && listScrollRef.current) {
+      savedListScrollRef.current = listScrollRef.current.scrollTop;
+    }
+    setSelectedId(threadId);
+    setReplyText("");
+    if (isMobile) {
+      setMobileScreen("detail");
+      if (typeof window !== "undefined" && window.history) {
+        window.history.pushState({ oritCsScreen: "detail" }, "");
+        detailHistoryPushedRef.current = true;
+      }
+    }
+  }, [isMobile]);
 
   const loadMailbox = useCallback(async () => {
     if (!isSupabaseConfigured) {
@@ -145,6 +183,28 @@ export default function OritCustomerServicePanel({ user }) {
     return () => { supabase.removeChannel(ch); };
   }, [mailbox?.id, selectedId, loadMailbox, loadThreadDetail]);
 
+  useEffect(() => {
+    if (!isMobile) return undefined;
+    const onPopState = () => {
+      detailHistoryPushedRef.current = false;
+      closeDetail();
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [isMobile, closeDetail]);
+
+  useEffect(() => {
+    if (isMobile && mobileScreen === "detail" && !selectedId) {
+      goBackToList();
+    }
+  }, [isMobile, mobileScreen, selectedId, goBackToList]);
+
+  useEffect(() => {
+    if (isMobile && mobileScreen === "list" && listScrollRef.current) {
+      listScrollRef.current.scrollTop = savedListScrollRef.current;
+    }
+  }, [isMobile, mobileScreen]);
+
   const selected = useMemo(
     () => threads.find((t) => t.id === selectedId) ?? null,
     [threads, selectedId],
@@ -229,7 +289,7 @@ export default function OritCustomerServicePanel({ user }) {
       }).eq("id", selectedId);
       if (error) throw error;
       showToast("ok", "נדחה — תוכלי לחזור אליו מאוחר יותר");
-      setSelectedId(null);
+      goBackToList();
       await loadMailbox();
     } catch (e) {
       showToast("err", e.message);
@@ -270,7 +330,7 @@ export default function OritCustomerServicePanel({ user }) {
       }
       showToast("ok", "סומן כטופל");
       await loadMailbox();
-      setSelectedId(null);
+      goBackToList();
     } catch (e) {
       showToast("err", e.message);
     } finally {
@@ -302,9 +362,238 @@ export default function OritCustomerServicePanel({ user }) {
     : "ממתין לסנכרון ראשון";
 
   const needsOAuth = mailbox.provider === "microsoft" && mailbox.connection_status !== "active";
+  const showHeaderCard = !isMobile || mobileScreen === "list";
+  const onDetailMobile = isMobile && mobileScreen === "detail";
+
+  const queuePane = (
+    <div
+      className="card"
+      ref={listScrollRef}
+      style={{
+        padding: 12,
+        overflow: "auto",
+        maxHeight: isMobile ? "none" : "72vh",
+        flex: isMobile ? 1 : undefined,
+        minHeight: isMobile ? 0 : undefined,
+      }}
+    >
+      <div style={{ fontWeight: 700, marginBottom: 10 }}>תור עדיפויות</div>
+      {threads.length === 0 && (
+        <div style={{ color: "var(--text-muted)", padding: 16, textAlign: "center" }}>אין פניות להצגה</div>
+      )}
+      {threads.map((t) => {
+        const um = urgencyMeta(t.urgency);
+        const sla = slaLabel(t.sla_deadline_at);
+        return (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => openThread(t.id)}
+            style={{
+              width: "100%",
+              textAlign: "right",
+              border: selectedId === t.id ? "2px solid var(--gold)" : "1px solid var(--border)",
+              borderRadius: 12,
+              padding: 12,
+              marginBottom: 8,
+              background: selectedId === t.id ? "#FFFBEB" : "var(--card-bg)",
+              cursor: "pointer",
+              minHeight: 44,
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
+              <span style={{ fontSize: 12, padding: "2px 8px", borderRadius: 999, background: um.bg, color: um.color, fontWeight: 700 }}>
+                {um.label}
+              </span>
+              {t.is_demo && <span style={{ fontSize: 11, color: "var(--text-muted)" }}>דמו</span>}
+            </div>
+            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>{t.subject || "(ללא נושא)"}</div>
+            <div style={{ fontSize: 13, color: "var(--text-muted)" }}>{t.from_name || t.from_email}</div>
+            {sla && (
+              <div style={{ fontSize: 12, marginTop: 6, color: sla.startsWith("עבר") ? "#B91C1C" : "#047857", fontWeight: 600 }}>
+                {sla}
+              </div>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  const detailPane = (
+    <div
+      className="card"
+      style={{
+        padding: 16,
+        display: "flex",
+        flexDirection: "column",
+        minHeight: isMobile ? 0 : 480,
+        flex: isMobile ? 1 : undefined,
+        overflow: "hidden",
+      }}
+    >
+      {onDetailMobile && (
+        <button
+          type="button"
+          onClick={goBackToList}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            marginBottom: 12,
+            padding: "10px 4px",
+            minHeight: 44,
+            border: "none",
+            background: "transparent",
+            cursor: "pointer",
+            fontFamily: "Heebo, sans-serif",
+            fontSize: 15,
+            fontWeight: 700,
+            color: "var(--gold-dark)",
+            alignSelf: "flex-start",
+          }}
+        >
+          <span aria-hidden="true">→</span>
+          <span>חזרה לתור</span>
+        </button>
+      )}
+      {!selected ? (
+        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-muted)" }}>
+          בחרי פנייה מהרשימה
+        </div>
+      ) : (
+        <>
+          <div style={{ marginBottom: 12, flexShrink: 0 }}>
+            <div style={{ fontSize: isMobile ? 16 : 18, fontWeight: 800 }}>{selected.subject}</div>
+            <div style={{ color: "var(--text-muted)", marginTop: 4, fontSize: isMobile ? 13 : 14 }}>
+              {selected.from_name} · {selected.from_email} · {fmtDt(selected.received_at)}
+            </div>
+            {selected.urgency_reason && (
+              <div style={{ marginTop: 10, padding: 10, borderRadius: 8, background: "#FEF3C7", fontSize: 14 }}>
+                <strong>למה זה דחוף:</strong> {selected.urgency_reason}
+              </div>
+            )}
+            {selected.ai_summary && (
+              <div style={{ marginTop: 10, padding: 10, borderRadius: 8, background: "var(--ivory)", fontSize: 14 }}>
+                <strong>סיכום הסוכן:</strong> {selected.ai_summary}
+              </div>
+            )}
+          </div>
+
+          <div style={{
+            flex: 1,
+            overflow: "auto",
+            WebkitOverflowScrolling: "touch",
+            border: "1px solid var(--border)",
+            borderRadius: 10,
+            padding: 12,
+            marginBottom: 12,
+            background: "#FAFAF9",
+            minHeight: isMobile ? 120 : undefined,
+          }}
+          >
+            {messages.map((m) => (
+              <div key={m.id} style={{ marginBottom: 12, textAlign: m.direction === "outbound" ? "left" : "right" }}>
+                <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>
+                  {m.direction === "outbound" ? "יוצא" : "נכנס"} · {m.message_kind} · {fmtDt(m.received_at)}
+                </div>
+                <div style={{
+                  display: "inline-block",
+                  maxWidth: "90%",
+                  padding: "10px 12px",
+                  borderRadius: 10,
+                  background: m.direction === "outbound" ? "#DCFCE7" : "#fff",
+                  border: "1px solid var(--border)",
+                  whiteSpace: "pre-wrap",
+                }}>
+                  {m.body_text}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10, flexShrink: 0 }}>
+            <button type="button" className="btn btn-primary" disabled={busy} onClick={handleAnalyze} style={{ minHeight: 44 }}>
+              ✨ הצעות תשובה
+            </button>
+            <button type="button" className="btn" disabled={busy || selected.status === "handled"} onClick={handleMarkHandled} style={{ minHeight: 44 }}>
+              ✅ שלחתי — סמני כטופל
+            </button>
+            <button type="button" className="btn" disabled={busy} onClick={handleSnooze} style={{ minHeight: 44 }} title="דחי למחר / מאוחר יותר">
+              😴 דחי למחר
+            </button>
+          </div>
+
+          {drafts.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10, flexShrink: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-muted)" }}>טיוטות להעתקה ל-Outlook</div>
+              {drafts.map((d) => (
+                <div key={d.id} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  <div style={{ padding: 10, borderRadius: 10, border: "1px solid var(--border)", background: "#FFFBEB", whiteSpace: "pre-wrap", fontSize: 14 }}>
+                    {d.suggested_text}
+                  </div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <button
+                      type="button"
+                      className="btn"
+                      style={{ minHeight: 44 }}
+                      onClick={() => { setReplyText(d.suggested_text); handleCopyReply(d.suggested_text); }}
+                    >
+                      📋 העתיקי
+                    </button>
+                    <button
+                      type="button"
+                      className="btn"
+                      style={{ minHeight: 44 }}
+                      onClick={() => setReplyText(d.suggested_text)}
+                    >
+                      ✏️ ערכי לפני העתקה
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <textarea
+            value={replyText}
+            onChange={(e) => setReplyText(e.target.value)}
+            placeholder="ערכי כאן טיוטה לפני העתקה ל-Outlook…"
+            rows={isMobile ? 3 : 4}
+            style={{
+              width: "100%",
+              borderRadius: 10,
+              border: "1px solid var(--border)",
+              padding: 12,
+              fontFamily: "Heebo, sans-serif",
+              marginBottom: 10,
+              flexShrink: 0,
+              fontSize: 16,
+            }}
+          />
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={busy || !replyText.trim()}
+            onClick={() => handleCopyReply()}
+            style={{ minHeight: 48, alignSelf: "flex-start", flexShrink: 0 }}
+          >
+            📋 העתיקי ללוח
+          </button>
+        </>
+      )}
+    </div>
+  );
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
+    <div style={{
+      display: "flex",
+      flexDirection: "column",
+      gap: 16,
+      minHeight: 0,
+      height: onDetailMobile ? "calc(100dvh - 140px)" : undefined,
+    }}
+    >
       {toast && (
         <div style={{
           padding: "12px 16px",
@@ -317,227 +606,86 @@ export default function OritCustomerServicePanel({ user }) {
         </div>
       )}
 
-      <div className="card" style={{ padding: 16, background: "linear-gradient(135deg, #1A1A1A 0%, #2d2418 100%)", color: "#F5F0E8", border: "1px solid var(--gold-dark)" }}>
-        <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 6 }}>👑 סוכן שירות לקוחות — אורית</div>
-        <div style={{ opacity: 0.9, marginBottom: 12 }}>
-          {openCount > 0
-            ? `יש ${openCount} פניות שממתינות לטיפולך`
-            : "אין פניות פתוחות כרגע — כל הכבוד!"}
-        </div>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
-          <span style={{
-            padding: "6px 12px",
-            borderRadius: 999,
-            background: connected ? "#065F4622" : "#F59E0B22",
-            color: connected ? "#6EE7B7" : "#FCD34D",
-            fontSize: 13,
-            fontWeight: 700,
-          }}>
-            {connected ? "✅ תיבת מייל מסונכרנת" : "⏳ ממתין לחיבור Outlook 365"}
-          </span>
-          <span style={{ fontSize: 13, opacity: 0.85 }}>{syncLabel}</span>
-          {mailbox.email_address && (
-            <span style={{ fontSize: 12, opacity: 0.75 }}>{mailbox.email_address}</span>
-          )}
-          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
-            <input type="checkbox" checked={showDemo} onChange={(e) => setShowDemo(e.target.checked)} />
-            הצג דמו לתרגול
-          </label>
-        </div>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
-          {needsOAuth && (
-            <button
-              type="button"
-              className="btn btn-primary"
-              disabled={busy}
-              onClick={handleConnectOutlook}
-              style={{ minHeight: 44 }}
-              title="חיבור חד-פעמי לתיבת Microsoft 365 שמקבלת את המיילים"
-            >
-              🔗 חברי תיבת Outlook 365
-            </button>
-          )}
-          <button
-            type="button"
-            className="btn"
-            disabled={busy || needsOAuth}
-            onClick={handleSyncNow}
-            style={{ minHeight: 44 }}
-            title={needsOAuth ? "קודם חברי את תיבת Outlook" : "משוך מיילים חדשים עכשיו"}
-          >
-            🔄 סנכרן עכשיו
-          </button>
-        </div>
-        {!connected && (
-          <div style={{ marginTop: 12, fontSize: 13, opacity: 0.85 }}>
-            {needsOAuth
-              ? "לחצי «חברי תיבת Outlook 365» → התחברי ל-orit@triobcom… → מסכים. המיילים מ-dream-island.co.il מגיעים לשם ב-Forward. שליחת תשובות תמיד מ-Outlook שלך."
-              : "ממתינה לסנכרון ראשון — לחצי «סנכרן עכשיו»."}
+      {showHeaderCard && (
+        <div className="card" style={{ padding: 16, background: "linear-gradient(135deg, #1A1A1A 0%, #2d2418 100%)", color: "#F5F0E8", border: "1px solid var(--gold-dark)" }}>
+          <div style={{ fontSize: isMobile ? 17 : 20, fontWeight: 800, marginBottom: 6 }}>👑 סוכן שירות לקוחות — אורית</div>
+          <div style={{ opacity: 0.9, marginBottom: 12, fontSize: isMobile ? 14 : undefined }}>
+            {openCount > 0
+              ? `יש ${openCount} פניות שממתינות לטיפולך`
+              : "אין פניות פתוחות כרגע — כל הכבוד!"}
           </div>
-        )}
-        {connected && (
-          <div style={{ marginTop: 12, fontSize: 13, opacity: 0.85 }}>
-            קראי את הפנייה, לחצי «הצעות תשובה», העתיקי ל-Outlook ושלחי. אחרי שליחה — «שלחתי — סמני כטופל».
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+            <span style={{
+              padding: "6px 12px",
+              borderRadius: 999,
+              background: connected ? "#065F4622" : "#F59E0B22",
+              color: connected ? "#6EE7B7" : "#FCD34D",
+              fontSize: 13,
+              fontWeight: 700,
+            }}>
+              {connected ? "✅ תיבת מייל מסונכרנת" : "⏳ ממתין לחיבור Outlook 365"}
+            </span>
+            <span style={{ fontSize: 13, opacity: 0.85 }}>{syncLabel}</span>
+            {mailbox.email_address && (
+              <span style={{ fontSize: 12, opacity: 0.75, wordBreak: "break-all" }}>{mailbox.email_address}</span>
+            )}
+            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer", minHeight: 44 }}>
+              <input type="checkbox" checked={showDemo} onChange={(e) => setShowDemo(e.target.checked)} />
+              הצג דמו לתרגול
+            </label>
           </div>
-        )}
-        {mailbox.connection_error && (
-          <div style={{ marginTop: 10, fontSize: 13, color: "#FCA5A5" }}>
-            ⚠ שגיאת חיבור: {mailbox.connection_error}
-          </div>
-        )}
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(280px, 360px) 1fr", gap: 16, minHeight: 480 }}>
-        <div className="card" style={{ padding: 12, overflow: "auto", maxHeight: "72vh" }}>
-          <div style={{ fontWeight: 700, marginBottom: 10 }}>תור עדיפויות</div>
-          {threads.length === 0 && (
-            <div style={{ color: "var(--text-muted)", padding: 16, textAlign: "center" }}>אין פניות להצגה</div>
-          )}
-          {threads.map((t) => {
-            const um = urgencyMeta(t.urgency);
-            const sla = slaLabel(t.sla_deadline_at);
-            return (
-              <button
-                key={t.id}
-                type="button"
-                onClick={() => setSelectedId(t.id)}
-                style={{
-                  width: "100%",
-                  textAlign: "right",
-                  border: selectedId === t.id ? "2px solid var(--gold)" : "1px solid var(--border)",
-                  borderRadius: 12,
-                  padding: 12,
-                  marginBottom: 8,
-                  background: selectedId === t.id ? "#FFFBEB" : "var(--card-bg)",
-                  cursor: "pointer",
-                }}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
-                  <span style={{ fontSize: 12, padding: "2px 8px", borderRadius: 999, background: um.bg, color: um.color, fontWeight: 700 }}>
-                    {um.label}
-                  </span>
-                  {t.is_demo && <span style={{ fontSize: 11, color: "var(--text-muted)" }}>דמו</span>}
-                </div>
-                <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>{t.subject || "(ללא נושא)"}</div>
-                <div style={{ fontSize: 13, color: "var(--text-muted)" }}>{t.from_name || t.from_email}</div>
-                {sla && (
-                  <div style={{ fontSize: 12, marginTop: 6, color: sla.startsWith("עבר") ? "#B91C1C" : "#047857", fontWeight: 600 }}>
-                    {sla}
-                  </div>
-                )}
-              </button>
-            );
-          })}
-        </div>
-
-        <div className="card" style={{ padding: 16, display: "flex", flexDirection: "column", minHeight: 480 }}>
-          {!selected ? (
-            <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-muted)" }}>
-              בחרי פנייה מהרשימה
-            </div>
-          ) : (
-            <>
-              <div style={{ marginBottom: 12 }}>
-                <div style={{ fontSize: 18, fontWeight: 800 }}>{selected.subject}</div>
-                <div style={{ color: "var(--text-muted)", marginTop: 4 }}>
-                  {selected.from_name} · {selected.from_email} · {fmtDt(selected.received_at)}
-                </div>
-                {selected.urgency_reason && (
-                  <div style={{ marginTop: 10, padding: 10, borderRadius: 8, background: "#FEF3C7", fontSize: 14 }}>
-                    <strong>למה זה דחוף:</strong> {selected.urgency_reason}
-                  </div>
-                )}
-                {selected.ai_summary && (
-                  <div style={{ marginTop: 10, padding: 10, borderRadius: 8, background: "var(--ivory)", fontSize: 14 }}>
-                    <strong>סיכום הסוכן:</strong> {selected.ai_summary}
-                  </div>
-                )}
-              </div>
-
-              <div style={{ flex: 1, overflow: "auto", border: "1px solid var(--border)", borderRadius: 10, padding: 12, marginBottom: 12, background: "#FAFAF9" }}>
-                {messages.map((m) => (
-                  <div key={m.id} style={{ marginBottom: 12, textAlign: m.direction === "outbound" ? "left" : "right" }}>
-                    <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>
-                      {m.direction === "outbound" ? "יוצא" : "נכנס"} · {m.message_kind} · {fmtDt(m.received_at)}
-                    </div>
-                    <div style={{
-                      display: "inline-block",
-                      maxWidth: "90%",
-                      padding: "10px 12px",
-                      borderRadius: 10,
-                      background: m.direction === "outbound" ? "#DCFCE7" : "#fff",
-                      border: "1px solid var(--border)",
-                      whiteSpace: "pre-wrap",
-                    }}>
-                      {m.body_text}
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
-                <button type="button" className="btn btn-primary" disabled={busy} onClick={handleAnalyze} style={{ minHeight: 44 }}>
-                  ✨ הצעות תשובה
-                </button>
-                <button type="button" className="btn" disabled={busy || selected.status === "handled"} onClick={handleMarkHandled} style={{ minHeight: 44 }}>
-                  ✅ שלחתי — סמני כטופל
-                </button>
-                <button type="button" className="btn" disabled={busy} onClick={handleSnooze} style={{ minHeight: 44 }} title="דחי למחר / מאוחר יותר">
-                  😴 דחי למחר
-                </button>
-              </div>
-
-              {drafts.length > 0 && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10 }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-muted)" }}>טיוטות להעתקה ל-Outlook</div>
-                  {drafts.map((d) => (
-                    <div key={d.id} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                      <div style={{ padding: 10, borderRadius: 10, border: "1px solid var(--border)", background: "#FFFBEB", whiteSpace: "pre-wrap", fontSize: 14 }}>
-                        {d.suggested_text}
-                      </div>
-                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                        <button
-                          type="button"
-                          className="btn"
-                          style={{ minHeight: 40 }}
-                          onClick={() => { setReplyText(d.suggested_text); handleCopyReply(d.suggested_text); }}
-                        >
-                          📋 העתיקי
-                        </button>
-                        <button
-                          type="button"
-                          className="btn"
-                          style={{ minHeight: 40 }}
-                          onClick={() => setReplyText(d.suggested_text)}
-                        >
-                          ✏️ ערכי לפני העתקה
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              <textarea
-                value={replyText}
-                onChange={(e) => setReplyText(e.target.value)}
-                placeholder="ערכי כאן טיוטה לפני העתקה ל-Outlook…"
-                rows={4}
-                style={{ width: "100%", borderRadius: 10, border: "1px solid var(--border)", padding: 12, fontFamily: "Heebo, sans-serif", marginBottom: 10 }}
-              />
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
+            {needsOAuth && (
               <button
                 type="button"
                 className="btn btn-primary"
-                disabled={busy || !replyText.trim()}
-                onClick={() => handleCopyReply()}
-                style={{ minHeight: 48, alignSelf: "flex-start" }}
+                disabled={busy}
+                onClick={handleConnectOutlook}
+                style={{ minHeight: 44 }}
+                title="חיבור חד-פעמי לתיבת Microsoft 365 שמקבלת את המיילים"
               >
-                📋 העתיקי ללוח
+                🔗 חברי תיבת Outlook 365
               </button>
-            </>
+            )}
+            <button
+              type="button"
+              className="btn"
+              disabled={busy || needsOAuth}
+              onClick={handleSyncNow}
+              style={{ minHeight: 44 }}
+              title={needsOAuth ? "קודם חברי את תיבת Outlook" : "משוך מיילים חדשים עכשיו"}
+            >
+              🔄 סנכרן עכשיו
+            </button>
+          </div>
+          {!connected && (
+            <div style={{ marginTop: 12, fontSize: 13, opacity: 0.85 }}>
+              {needsOAuth
+                ? "לחצי «חברי תיבת Outlook 365» → התחברי ל-orit@triobcom… → מסכים. המיילים מ-dream-island.co.il מגיעים לשם ב-Forward. שליחת תשובות תמיד מ-Outlook שלך."
+                : "ממתינה לסנכרון ראשון — לחצי «סנכרן עכשיו»."}
+            </div>
+          )}
+          {connected && !isMobile && (
+            <div style={{ marginTop: 12, fontSize: 13, opacity: 0.85 }}>
+              קראי את הפנייה, לחצי «הצעות תשובה», העתיקי ל-Outlook ושלחי. אחרי שליחה — «שלחתי — סמני כטופל».
+            </div>
+          )}
+          {mailbox.connection_error && (
+            <div style={{ marginTop: 10, fontSize: 13, color: "#FCA5A5" }}>
+              ⚠ שגיאת חיבור: {mailbox.connection_error}
+            </div>
           )}
         </div>
-      </div>
+      )}
+
+      {isMobile ? (
+        mobileScreen === "list" ? queuePane : detailPane
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(280px, 360px) 1fr", gap: 16, minHeight: 480 }}>
+          {queuePane}
+          {detailPane}
+        </div>
+      )}
     </div>
   );
 }

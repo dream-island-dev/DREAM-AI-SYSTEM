@@ -1,3 +1,5 @@
+2026-07-16 | Orit CS Agent — mobile master-detail (list OR detail, back button, Android history) | `OritCustomerServicePanel.js` + `useIsMobile.js`; fixes cut-off detail pane on phone.
+
 2026-07-16 | Staff notify templates UI — edit Adir/Eliad messages & digests in Executive Playbook | migration 216 `staff_message_templates`, `StaffNotifyPanel`, `staff-notify-preview`.
 
 2026-07-16 | Eliad digest — Hebrew SLA labels + deterministic action hint; Adir one-time onboarding before morning brief | resortDigestStats, frontDeskOnboarding, front-desk-morning-cron.
