@@ -314,54 +314,41 @@ export function getInboxRosterSegmentMeta(segment, lang = "he") {
  * - Meta threads: guests.claimed_by / claimed_at on the map entry.
  * - Whapi threads: guest_channel_claims — NEVER overwrite from guests.claimed_by
  *   (that would leak a Dream Bot mute onto מכשיר הסוויטות, or wipe a real Whapi
- *   claim). Prefer whapiClaimsMap[guestId]; else keep contact.claimedBy already
- *   stamped from message rows / setClaim.
+ *   claim). Prefer whapiClaimsMap[guestId]; else keep contact stamp from setClaim.
+ * - Unified threads (Meta+Whapi merged): expose metaClaimedBy + whapiClaimedBy
+ *   separately; claimedBy = either (for roster «בטיפול» filter).
  */
-export function syncInboxContactWithGuestMap(contact, guestEntry, whapiClaimsMap = null) {
-  if (!contact) return contact;
-  const isWhapi = (contact.inbox_channel ?? "meta") === "whapi";
-  if (!guestEntry?.id) {
-    return {
-      ...contact,
-      guestId: null,
-      guestName: null,
-      spaTime: null,
-      spaDate: null,
-      room: null,
-      roomType: null,
-      status: null,
-      departureDate: null,
-      arrivalDate: null,
-      portalToken: null,
-      mealTime: null,
-      mealLocation: null,
-      claimedBy: null,
-      claimedAt: null,
-    };
-  }
-  let claimedBy;
-  let claimedAt;
-  if (isWhapi) {
-    // null map = fetch not ready → preserve contact stamp (never leak Meta claim).
-    // Map instance (even empty) = fetch done → lookup; missing key = unclaimed.
-    if (whapiClaimsMap == null) {
-      claimedBy = contact.claimedBy ?? null;
-      claimedAt = contact.claimedAt ?? null;
-    } else {
-      const whapiClaim = whapiClaimsMap.has(guestEntry.id)
-        ? whapiClaimsMap.get(guestEntry.id)
-        : whapiClaimsMap.has(Number(guestEntry.id))
-          ? whapiClaimsMap.get(Number(guestEntry.id))
-          : undefined;
-      claimedBy = whapiClaim !== undefined ? (whapiClaim?.claimed_by ?? null) : null;
-      claimedAt = whapiClaim !== undefined ? (whapiClaim?.claimed_at ?? null) : null;
-    }
-  } else {
-    claimedBy = guestEntry.claimed_by ?? null;
-    claimedAt = guestEntry.claimed_at ?? null;
-  }
+function lookupWhapiClaimFromMap(whapiClaimsMap, guestId) {
+  if (whapiClaimsMap == null) return undefined;
+  if (whapiClaimsMap.has(guestId)) return whapiClaimsMap.get(guestId);
+  const asNum = Number(guestId);
+  if (!Number.isNaN(asNum) && whapiClaimsMap.has(asNum)) return whapiClaimsMap.get(asNum);
+  return undefined;
+}
+
+const STRIPPED_GUEST_PROFILE = {
+  guestId: null,
+  guestName: null,
+  spaTime: null,
+  spaDate: null,
+  room: null,
+  roomType: null,
+  status: null,
+  departureDate: null,
+  arrivalDate: null,
+  portalToken: null,
+  mealTime: null,
+  mealLocation: null,
+  claimedBy: null,
+  claimedAt: null,
+  metaClaimedBy: null,
+  metaClaimedAt: null,
+  whapiClaimedBy: null,
+  whapiClaimedAt: null,
+};
+
+function guestProfileFromEntry(guestEntry) {
   return {
-    ...contact,
     guestId: guestEntry.id,
     guestName: guestEntry.name ?? null,
     status: guestEntry.status ?? null,
@@ -374,6 +361,63 @@ export function syncInboxContactWithGuestMap(contact, guestEntry, whapiClaimsMap
     portalToken: guestEntry.portal_token ?? null,
     mealTime: guestEntry.meal_time ?? null,
     mealLocation: guestEntry.meal_location ?? null,
+  };
+}
+
+export function syncInboxContactWithGuestMap(contact, guestEntry, whapiClaimsMap = null) {
+  if (!contact) return contact;
+  const isUnified = contact.inbox_channel === "unified";
+  const isWhapi = !isUnified && (contact.inbox_channel ?? "meta") === "whapi";
+
+  if (!guestEntry?.id) {
+    return { ...contact, ...STRIPPED_GUEST_PROFILE };
+  }
+
+  const profile = guestProfileFromEntry(guestEntry);
+
+  if (isUnified) {
+    const metaClaimedBy = guestEntry.claimed_by ?? null;
+    const metaClaimedAt = guestEntry.claimed_at ?? null;
+    let whapiClaimedBy = null;
+    let whapiClaimedAt = null;
+    if (whapiClaimsMap == null) {
+      whapiClaimedBy = contact.whapiClaimedBy ?? null;
+      whapiClaimedAt = contact.whapiClaimedAt ?? null;
+    } else {
+      const whapiClaim = lookupWhapiClaimFromMap(whapiClaimsMap, guestEntry.id);
+      whapiClaimedBy = whapiClaim !== undefined ? (whapiClaim?.claimed_by ?? null) : null;
+      whapiClaimedAt = whapiClaim !== undefined ? (whapiClaim?.claimed_at ?? null) : null;
+    }
+    return {
+      ...contact,
+      ...profile,
+      metaClaimedBy,
+      metaClaimedAt,
+      whapiClaimedBy,
+      whapiClaimedAt,
+      claimedBy: metaClaimedBy || whapiClaimedBy || null,
+      claimedAt: metaClaimedBy ? metaClaimedAt : whapiClaimedAt,
+    };
+  }
+
+  let claimedBy;
+  let claimedAt;
+  if (isWhapi) {
+    if (whapiClaimsMap == null) {
+      claimedBy = contact.claimedBy ?? null;
+      claimedAt = contact.claimedAt ?? null;
+    } else {
+      const whapiClaim = lookupWhapiClaimFromMap(whapiClaimsMap, guestEntry.id);
+      claimedBy = whapiClaim !== undefined ? (whapiClaim?.claimed_by ?? null) : null;
+      claimedAt = whapiClaim !== undefined ? (whapiClaim?.claimed_at ?? null) : null;
+    }
+  } else {
+    claimedBy = guestEntry.claimed_by ?? null;
+    claimedAt = guestEntry.claimed_at ?? null;
+  }
+  return {
+    ...contact,
+    ...profile,
     claimedBy,
     claimedAt,
   };

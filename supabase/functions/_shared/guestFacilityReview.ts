@@ -47,7 +47,7 @@ const FACILITY_PATTERNS: Array<{ facility: FacilityCategory; patterns: RegExp[] 
   },
   {
     facility: "spa",
-    patterns: [/ספא|spa|טיפול\s*(ב)?ספא|מסאז|עיסוי|מטפל|מטפלת/i],
+    patterns: [/ספא|spa|טיפול\s*(ב)?ספא|מסאז|מסטאג|מסאג|עיסוי|מטפל|מטפלת/i],
   },
   {
     facility: "pool",
@@ -76,7 +76,7 @@ const POSITIVE_OPINION: RegExp[] = [
 ];
 
 const NEGATIVE_OPINION: RegExp[] = [
-  /גרוע|מאכזב|לא\s*טעים|לא\s*אהבתי|לא\s*מרוצה|לא\s*נעים|cold\s+food|disappointing|worst/i,
+  /גרוע|מאכזב|לא\s*טעים|לא\s*אהבתי|לא\s*מרוצה|לא\s*התרשמנו|לא\s*נעים|cold\s+food|disappointing|worst/i,
 ];
 
 const QUESTION_EXCLUSION = /^(?:מה|מתי|איך|למה|האם|כמה|איפה|היכן)\b/u;

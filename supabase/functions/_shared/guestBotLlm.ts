@@ -110,6 +110,10 @@ async function _askGuestGemini(
           throw new Error(lastErr);
         }
         const data = await res.json();
+        const finishReason = (data?.candidates?.[0]?.finishReason as string | undefined) ?? "";
+        if (finishReason === "MAX_TOKENS") {
+          console.warn(`[${logTag}] Gemini finishReason=MAX_TOKENS — reply may be truncated`);
+        }
         const parts = (data?.candidates?.[0]?.content?.parts ?? []) as Array<{ text?: string; thought?: boolean }>;
         const text = parts
           .filter((p) => !p.thought && typeof p.text === "string" && p.text.trim())

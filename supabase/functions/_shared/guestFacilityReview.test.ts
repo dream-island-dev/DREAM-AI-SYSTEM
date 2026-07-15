@@ -35,6 +35,14 @@ Deno.test("classifyFacilityReview — spa negative", () => {
   assertEquals(r?.sentiment, "negative");
 });
 
+Deno.test("classifyFacilityReview — massage typo + לא התרשמנו (spa negative)", () => {
+  const t =
+    "המקום מצויין מדהים יחסית למחיר לא התרשמנו מהמסטאג' היה פחות 45 דקות וגם יותר מדי עדין";
+  const r = classifyFacilityReview(t);
+  assertEquals(r?.facility, "spa");
+  assertEquals(r?.sentiment, "negative");
+});
+
 Deno.test("extractRatingFromText — Hebrew words", () => {
   assertEquals(extractRatingFromText("אני נותן תשע למסעדה"), 9);
 });

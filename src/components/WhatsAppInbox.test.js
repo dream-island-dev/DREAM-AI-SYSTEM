@@ -5,7 +5,7 @@
 // (2) groupByPhone: strict latest-message-desc (Mike: «פעילות») — no unread/
 //     alert reordering in the base roster order.
 
-import { mergeThreadRows, groupByPhone, groupByPhoneUnified, contactMatchesChannelFilter, inferDefaultReplyChannel } from "./WhatsAppInbox";
+import { mergeThreadRows, groupByPhone, groupByPhoneUnified, contactMatchesChannelFilter, inferDefaultReplyChannel, resolveClaimChannel, buildChannelClaimsState } from "./WhatsAppInbox";
 
 function msg(id, createdAt, extra = {}) {
   return {
@@ -138,5 +138,31 @@ describe("contactMatchesChannelFilter + inferDefaultReplyChannel", () => {
   test("SOS forces meta reply on unified threads", () => {
     expect(inferDefaultReplyChannel(unified, true)).toBe("meta");
     expect(inferDefaultReplyChannel(unified, false)).toBe("whapi");
+  });
+});
+
+describe("resolveClaimChannel — per-channel staff mute target", () => {
+  test("unified thread follows replyChannel", () => {
+    const unified = { inbox_channel: "unified" };
+    expect(resolveClaimChannel(unified, "whapi")).toBe("whapi");
+    expect(resolveClaimChannel(unified, "meta")).toBe("meta");
+  });
+
+  test("single-channel threads are fixed", () => {
+    expect(resolveClaimChannel({ inbox_channel: "whapi" }, "meta")).toBe("whapi");
+    expect(resolveClaimChannel({ inbox_channel: "meta" }, "whapi")).toBe("meta");
+  });
+});
+
+describe("buildChannelClaimsState — dual claim snapshot", () => {
+  test("unified exposes meta and whapi claims separately", () => {
+    const contact = {
+      inbox_channel: "unified",
+      metaClaimedBy: "meta-uuid",
+      whapiClaimedBy: "whapi-uuid",
+    };
+    const state = buildChannelClaimsState(contact);
+    expect(state.meta.claimedBy).toBe("meta-uuid");
+    expect(state.whapi.claimedBy).toBe("whapi-uuid");
   });
 });

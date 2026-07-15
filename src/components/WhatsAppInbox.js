@@ -1033,6 +1033,69 @@ export function inferDefaultReplyChannel(contact, whapiSosActive = false) {
   return lastCh;
 }
 
+/**
+ * Per-channel staff claim target for setClaim — unified threads follow the
+ * active reply channel; single-channel threads are fixed.
+ */
+export function resolveClaimChannel(contact, replyChannel = "meta") {
+  if (!contact) return "meta";
+  if (contact.inbox_channel === "whapi") return "whapi";
+  if (contact.inbox_channel === "meta") return "meta";
+  return replyChannel === "whapi" ? "whapi" : "meta";
+}
+
+/**
+ * Snapshot of Meta vs Whapi claim state for one contact — pure helper so UI
+ * and tests share one source of truth (guests.claimed_by vs guest_channel_claims).
+ */
+export function buildChannelClaimsState(contact, { metaClaimedBy = null, whapiClaimedBy = null } = {}) {
+  if (!contact) {
+    return {
+      meta: { claimedBy: null, claimedAt: null },
+      whapi: { claimedBy: null, claimedAt: null },
+    };
+  }
+  if (contact.inbox_channel === "unified") {
+    return {
+      meta: {
+        claimedBy: contact.metaClaimedBy ?? metaClaimedBy,
+        claimedAt: contact.metaClaimedAt ?? null,
+      },
+      whapi: {
+        claimedBy: contact.whapiClaimedBy ?? whapiClaimedBy,
+        claimedAt: contact.whapiClaimedAt ?? null,
+      },
+    };
+  }
+  if (contact.inbox_channel === "whapi") {
+    return {
+      meta: { claimedBy: null, claimedAt: null },
+      whapi: {
+        claimedBy: contact.claimedBy ?? whapiClaimedBy,
+        claimedAt: contact.claimedAt ?? null,
+      },
+    };
+  }
+  if (contact.inbox_channel === "meta") {
+    return {
+      meta: {
+        claimedBy: contact.claimedBy ?? metaClaimedBy,
+        claimedAt: contact.claimedAt ?? null,
+      },
+      whapi: { claimedBy: null, claimedAt: null },
+    };
+  }
+  return {
+    meta: { claimedBy: metaClaimedBy, claimedAt: null },
+    whapi: { claimedBy: whapiClaimedBy, claimedAt: null },
+  };
+}
+
+/** Channel label for unified-thread message rails (Hebrew UI). */
+export function inboxChannelLabel(channel) {
+  return channel === "whapi" ? "מכשיר הסוויטות" : "Dream Bot";
+}
+
 // ── Identity resolution (Smart Guest Identity) ───────────────────────────────
 // Precedence: DB-matched guest name > WhatsApp profile push name > raw phone.
 function displayName(contact) {
@@ -1415,6 +1478,69 @@ const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobil
   );
 }, contactItemPropsEqual);
 
+// ── Per-channel mute (claim) control — unified threads need one per device ───
+function ChannelMuteButton({
+  channel,
+  claimedBy,
+  claimedByName,
+  userId,
+  claimBusy,
+  isMobile,
+  onToggle,
+  t,
+  disabled = false,
+  disabledTitle = "",
+}) {
+  const isMine = claimedBy === userId;
+  const isClaimed = !!claimedBy;
+  const isMeta = channel === "meta";
+  const shortLabel = isMeta ? "🤖" : "🏨";
+  const title = disabled
+    ? disabledTitle
+    : isMine
+      ? (isMeta ? `${t.claimedByMe} (Dream Bot)` : `${t.claimedByMe} (מכשיר הסוויטות)`)
+      : isClaimed
+        ? t.claimedBadge(claimedByName ?? "—")
+        : isMeta
+          ? `${t.claimChat} — Dream Bot`
+          : `${t.claimChat} — מכשיר הסוויטות`;
+  return (
+    <button
+      type="button"
+      onClick={() => !disabled && onToggle(channel)}
+      disabled={claimBusy || disabled}
+      title={title}
+      style={{
+        background: isMine
+          ? (isMeta ? "rgba(37,211,102,0.3)" : "rgba(180,83,9,0.35)")
+          : isClaimed
+            ? "rgba(255,193,7,0.2)"
+            : "rgba(255,255,255,0.1)",
+        border: `1px solid ${isMeta ? "rgba(15,118,110,0.5)" : "rgba(180,83,9,0.5)"}`,
+        color: "white",
+        borderRadius: "var(--radius-sm)",
+        fontSize: isMobile ? 12 : 11,
+        fontWeight: 700,
+        cursor: (claimBusy || disabled) ? "not-allowed" : "pointer",
+        padding: isMobile ? "6px 8px" : "4px 8px",
+        minHeight: isMobile ? HIT_STAFF : "auto",
+        opacity: (claimBusy || disabled) ? 0.5 : 1,
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
+        whiteSpace: "nowrap",
+      }}
+    >
+      {claimBusy ? "⏳" : isMine ? "✓" : isClaimed ? "🔁" : shortLabel}
+      {!isMobile && (
+        <span style={{ fontSize: 10, opacity: 0.9 }}>
+          {isMeta ? "Dream Bot" : "סוויטות"}
+        </span>
+      )}
+    </button>
+  );
+}
+
 // ── Message bubble ────────────────────────────────────────────────────────────
 // Luxury-tone visual hierarchy: inbound guest messages stay crisp/light for
 // readability; outbound bot/staff replies use the resort's deep-slate/gold
@@ -1426,16 +1552,16 @@ const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobil
 // same row reference, not a clone) and `resolveCtx` is memoized on primitives
 // below (see activeResolveCtx) — so a bubble only re-renders when its own
 // message, direction, or resolved guest context actually changed.
-const Bubble = React.memo(function Bubble({ msg, dir, resolveCtx, isMobile, onImageOpen, t }) {
+const Bubble = React.memo(function Bubble({ msg, dir, resolveCtx, isMobile, onImageOpen, t, unifiedThread = false }) {
   const isOut = msg.direction === "outbound";
   const rtl = dir === "rtl";
   const reaction = !isOut ? parseGuestReactionMessage(msg.message, msg.intent) : null;
   const dispatchInfo = isOut ? parseOutboundDispatch(msg.message) : null;
-  // The explicit `channel` DB column (manual-control rollout) wins over the
-  // legacy [META]/[SESSION]/[WHAPI] text-prefix parsing above, which only
-  // ever applied to outbound rows. This is what lets an INBOUND bubble show
-  // which device the guest actually wrote to, not just what staff replied on.
-  const resolvedChannel = msg.channel ?? dispatchInfo?.channel ?? null;
+  const resolvedChannel = msg.channel ?? dispatchInfo?.channel ?? (msg.inbox_channel === "whapi" ? "whapi" : msg.inbox_channel === "meta" ? "meta" : null);
+  const channelRail = unifiedThread && resolvedChannel
+    ? inboxChannelLabel(resolvedChannel === "whapi" ? "whapi" : "meta")
+    : null;
+  const railColor = resolvedChannel === "whapi" ? "#B45309" : "#0F766E";
   const isImageMsg = msg.message_type === "image";
   const imageCaption = (msg.media_caption || "").trim()
     || (isImageMsg && msg.message && msg.message !== "📷 תמונה" ? msg.message : "");
@@ -1558,8 +1684,26 @@ const Bubble = React.memo(function Bubble({ msg, dir, resolveCtx, isMobile, onIm
   return (
     <div style={{
       display: "flex",
-      justifyContent: isOut ? (rtl ? "flex-start" : "flex-end") : (rtl ? "flex-end" : "flex-start"),
+      flexDirection: "column",
+      alignItems: isOut ? (rtl ? "flex-start" : "flex-end") : (rtl ? "flex-end" : "flex-start"),
       marginBottom: 4,
+    }}>
+      {channelRail && (
+        <div style={{
+          fontSize: 9,
+          fontWeight: 700,
+          color: railColor,
+          marginBottom: 2,
+          paddingInline: 4,
+          opacity: 0.85,
+        }}>
+          {isOut ? "→" : "←"} {channelRail}
+        </div>
+      )}
+    <div style={{
+      display: "flex",
+      justifyContent: isOut ? (rtl ? "flex-start" : "flex-end") : (rtl ? "flex-end" : "flex-start"),
+      width: "100%",
     }}>
       <div style={{
         maxWidth: isMobile ? "88%" : "78%",
@@ -1611,6 +1755,7 @@ const Bubble = React.memo(function Bubble({ msg, dir, resolveCtx, isMobile, onIm
           {isOut && <span>✓✓</span>}
         </div>
       </div>
+    </div>
     </div>
   );
 });
@@ -3055,10 +3200,16 @@ export default function WhatsAppInbox({
   // fallback above — avoids a second nested FK alias in the main query.
   const resolveClaimNames = useCallback((contacts) => {
     if (profilesMapRef.current.size === 0) return contacts;
+    const nameFor = (id) => (id ? profilesMapRef.current.get(id) : null);
     return contacts.map((c) => {
-      if (!c.claimedBy) return c;
-      const name = profilesMapRef.current.get(c.claimedBy);
-      return name ? { ...c, claimedByName: name } : c;
+      let next = c;
+      const claimedName = nameFor(c.claimedBy);
+      if (claimedName) next = { ...next, claimedByName: claimedName };
+      const metaName = nameFor(c.metaClaimedBy);
+      if (metaName) next = { ...next, metaClaimedByName: metaName };
+      const whapiName = nameFor(c.whapiClaimedBy);
+      if (whapiName) next = { ...next, whapiClaimedByName: whapiName };
+      return next;
     });
   }, []);
 
@@ -3568,9 +3719,9 @@ export default function WhatsAppInbox({
   // cooperative tool, same trust model as OperationsBoard's claim button);
   // the visible claimedByName badge is the social signal that prevents
   // stepping on each other's replies, not a hard lock.
-  const setClaim = useCallback(async (contact, claim) => {
+  const setClaim = useCallback(async (contact, claim, channelOverride = null) => {
     if (!contact || !user?.id) return;
-    const channel = contact.inbox_channel === "whapi" ? "whapi" : "meta";
+    const channel = channelOverride ?? resolveClaimChannel(contact, replyChannel);
     setClaimBusy(true);
     try {
       const patch = claim
@@ -3728,7 +3879,7 @@ export default function WhatsAppInbox({
         setRouteToast(
           channel === "whapi"
             ? "🔇 הבוט מושתק לאורח זה (מכשיר הסוויטות) — לחץ שוב לשחרור"
-            : "🔇 הבוט מושתק לאורח זה — לחץ שוב לשחרור",
+            : "🔇 הבוט מושתק לאורח זה (Dream Bot) — לחץ שוב לשחרור",
         );
         setTimeout(() => setRouteToast(null), 3500);
       }
@@ -3737,7 +3888,7 @@ export default function WhatsAppInbox({
     } finally {
       setClaimBusy(false);
     }
-  }, [applyGrouping, user]);
+  }, [applyGrouping, user, replyChannel]);
 
   // ── Apply a full guests row (from the editor's onSaved, or a Realtime
   // postgres_changes payload — both shapes match: id/name/phone/.../
@@ -4510,6 +4661,17 @@ export default function WhatsAppInbox({
   const thread          = activeContact?.messages ?? [];
   const activeInboxChannel = activeContact?.inbox_channel ?? null;
 
+  const activeChannelClaims = useMemo(
+    () => buildChannelClaimsState(activeContact),
+    [activeContact],
+  );
+
+  const handleChannelClaimToggle = useCallback((channel) => {
+    if (!activeContact || !user?.id) return;
+    const slot = channel === "whapi" ? activeChannelClaims.whapi : activeChannelClaims.meta;
+    void setClaim(activeContact, slot.claimedBy !== user.id, channel);
+  }, [activeContact, activeChannelClaims, setClaim, user?.id]);
+
   useEffect(() => {
     if (activeContact) fetchThreadDbCount(activeContact.phone, activeContact.inbox_channel);
     else setThreadDbCount(null);
@@ -4695,13 +4857,19 @@ export default function WhatsAppInbox({
     // time fetchSince()/realtime merges the new outbound row in below.
     nearBottomRef.current = true;
     try {
+      const sendCh = activeContact.inbox_channel === "unified"
+        ? replyChannel
+        : (activeContact.inbox_channel ?? "meta");
+      const chClaims = buildChannelClaimsState(activeContact);
+      const alreadyClaimed = sendCh === "whapi" ? chClaims.whapi.claimedBy : chClaims.meta.claimedBy;
+      if (!alreadyClaimed) {
+        await setClaim(activeContact, true, sendCh);
+      }
       const { data, error: fnErr } = await supabase.functions.invoke("whatsapp-send", {
         body: {
           trigger: "inbox_reply",
           phone: activeContact.phone,
-          inbox_channel: activeContact.inbox_channel === "unified"
-            ? replyChannel
-            : (activeContact.inbox_channel ?? "meta"),
+          inbox_channel: sendCh,
           message: reply.trim(),
         },
       });
@@ -5290,29 +5458,47 @@ export default function WhatsAppInbox({
               💆 {t.spa} {formatSpaSchedule(activeContact.spaDate, activeContact.spaTime) || activeContact.spaTime}
             </div>
           )}
-          {/* Claim / take-over — icon-only with a title tooltip to stay compact
-              on mobile (same header row already holds back-button+name+spa
-              chip+AI-log button). Never hidden/disabled per §0.2 — relabels
-              instead: 🙋 unclaimed → 🔁 take-over from someone else → ✓ yours. */}
-          {activeContact && (
-            <button
-              onClick={() => setClaim(activeContact, activeContact.claimedBy !== user?.id)}
-              disabled={claimBusy}
-              title={
-                activeContact.claimedBy === user?.id ? t.claimedByMe
-                : activeContact.claimedBy ? t.claimedBadge(activeContact.claimedByName ?? "—")
-                : t.claimChat
-              }
-              style={{
-                background: activeContact.claimedBy === user?.id ? "rgba(37,211,102,0.3)" : "rgba(255,255,255,0.1)",
-                border: "1px solid rgba(255,255,255,0.35)", color: "white",
-                borderRadius: "var(--radius-sm)", fontSize: 13, cursor: claimBusy ? "not-allowed" : "pointer",
-                padding: "6px 10px", minHeight: isMobile ? HIT_STAFF : "auto", minWidth: isMobile ? HIT_STAFF : "auto",
-                opacity: claimBusy ? 0.6 : 1,
+          {/* Per-channel claim — unified threads get one mute per device (§4). */}
+          {activeContact && activeContact.inbox_channel === "unified" && (
+            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+              <ChannelMuteButton
+                channel="meta"
+                claimedBy={activeChannelClaims.meta.claimedBy}
+                claimedByName={activeContact.metaClaimedByName}
+                userId={user?.id}
+                claimBusy={claimBusy}
+                isMobile={isMobile}
+                onToggle={handleChannelClaimToggle}
+                t={t}
+              />
+              <ChannelMuteButton
+                channel="whapi"
+                claimedBy={activeChannelClaims.whapi.claimedBy}
+                claimedByName={activeContact.whapiClaimedByName}
+                userId={user?.id}
+                claimBusy={claimBusy}
+                isMobile={isMobile}
+                onToggle={handleChannelClaimToggle}
+                t={t}
+                disabled={whapiSosActive}
+                disabledTitle="Whapi חסום ב-SOS — השתקה רק ל-Dream Bot"
+              />
+            </div>
+          )}
+          {activeContact && activeContact.inbox_channel !== "unified" && (
+            <ChannelMuteButton
+              channel={activeContact.inbox_channel === "whapi" ? "whapi" : "meta"}
+              claimedBy={activeContact.claimedBy}
+              claimedByName={activeContact.claimedByName}
+              userId={user?.id}
+              claimBusy={claimBusy}
+              isMobile={isMobile}
+              onToggle={() => {
+                const ch = activeContact.inbox_channel === "whapi" ? "whapi" : "meta";
+                void setClaim(activeContact, activeContact.claimedBy !== user?.id, ch);
               }}
-            >
-              {claimBusy ? "⏳" : activeContact.claimedBy === user?.id ? "✓" : activeContact.claimedBy ? "🔁" : "🙋"}
-            </button>
+              t={t}
+            />
           )}
           {!isMobile && (
             <>
@@ -5483,19 +5669,43 @@ export default function WhatsAppInbox({
         </div>
       )}
 
-      {activeContact?.claimedBy && (
+      {(activeChannelClaims.meta.claimedBy || activeChannelClaims.whapi.claimedBy) && (
         <div style={{
           flexShrink: 0,
           padding: "8px 16px",
-          background: activeContact.claimedBy === user?.id ? "rgba(37,211,102,0.15)" : "rgba(255,193,7,0.15)",
+          background: "rgba(255,193,7,0.12)",
           borderBottom: "1px solid rgba(0,0,0,0.08)",
-          fontSize: 13,
+          fontSize: 12,
           fontWeight: 700,
           color: "var(--black)",
+          display: "flex",
+          flexDirection: "column",
+          gap: 4,
         }}>
-          {activeContact.claimedBy === user?.id
-            ? "🔇 הבוט מושתק — את/ה מנהל/ת את השיחה. לחץ ✓ לשחרור והפעלת הבוט."
-            : `🔇 הבוט מושתק — ${activeContact.claimedByName ?? "צוות"} מטפל/ת בשיחה.`}
+          {activeChannelClaims.meta.claimedBy && (
+            <div>
+              {activeChannelClaims.meta.claimedBy === user?.id
+                ? "🔇 Dream Bot מושתק — את/ה מנהל/ת. לחץ ✓ לשחרור."
+                : `🔇 Dream Bot מושתק — ${activeContact.metaClaimedByName ?? "צוות"} מטפל/ת.`}
+            </div>
+          )}
+          {activeChannelClaims.whapi.claimedBy && (
+            <div>
+              {activeChannelClaims.whapi.claimedBy === user?.id
+                ? "🔇 מכשיר הסוויטות מושתק — את/ה מנהל/ת. לחץ ✓ לשחרור."
+                : `🔇 מכשיר הסוויטות מושתק — ${activeContact.whapiClaimedByName ?? "צוות"} מטפל/ת.`}
+            </div>
+          )}
+          {activeChannelClaims.meta.claimedBy && !activeChannelClaims.whapi.claimedBy && activeContact.inbox_channel === "unified" && (
+            <div style={{ fontSize: 11, fontWeight: 600, opacity: 0.75 }}>
+              🏨 מכשיר הסוויטות — בוט פעיל
+            </div>
+          )}
+          {!activeChannelClaims.meta.claimedBy && activeChannelClaims.whapi.claimedBy && activeContact.inbox_channel === "unified" && (
+            <div style={{ fontSize: 11, fontWeight: 600, opacity: 0.75 }}>
+              🤖 Dream Bot — בוט פעיל
+            </div>
+          )}
         </div>
       )}
 
@@ -5556,6 +5766,7 @@ export default function WhatsAppInbox({
                 isMobile={isMobile}
                 onImageOpen={setImageLightbox}
                 t={t}
+                unifiedThread={activeContact?.inbox_channel === "unified"}
               />
             ))}
             <div ref={bottomRef} />

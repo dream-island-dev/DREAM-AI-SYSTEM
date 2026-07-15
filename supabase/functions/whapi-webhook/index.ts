@@ -106,6 +106,7 @@ import {
   isDepartureAssistRequest,
   buildDepartureAssistSummary,
   buildDepartureAssistReply,
+  isReplyObviouslyTruncated,
 } from "../_shared/automationSchedule.ts";
 import { createGuestOpsTask } from "../_shared/createGuestOpsTask.ts";
 import {
@@ -1239,6 +1240,15 @@ async function handleGuestDirectMessage(
     } catch (e) {
       console.error("[whapi-webhook] guest DM LLM reply failed:", (e as Error).message);
       replyText = GUEST_STAFF_HANDOFF_SENTENCE;
+    }
+    if (isReplyObviouslyTruncated(replyText)) {
+      console.warn(
+        `[whapi-webhook] 🛡️ truncated reply guard — phone:${phone} tail:"${replyText.slice(-50)}"`,
+      );
+      const reclass = classifyFacilityReview(text);
+      replyText = reclass
+        ? buildFacilityReviewReply(reclass.facility, reclass.sentiment, reclass.rating)
+        : GUEST_STAFF_HANDOFF_SENTENCE;
     }
     await flagGuestDmStaffHandoff(supabase, { phone, guestId, conversationId, replyText });
     await sendGuestDmReply(supabase, phone, guestId, replyText, staffMuted);

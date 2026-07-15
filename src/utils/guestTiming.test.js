@@ -336,3 +336,15 @@ describe("getGuestArrivalRosterLabel — departed vs stale checked_in", () => {
     expect(getGuestTimingBadge(guest).label).toBe("🌅 מגיעים היום");
   });
 });
+
+describe("syncInboxContactWithGuestMap — unified dual claim", () => {
+  test("keeps Meta and Whapi claims separate on merged threads", () => {
+    const contact = { inbox_channel: "unified", phone: "972500000001" };
+    const guest = { id: 42, name: "Test", claimed_by: "meta-staff", claimed_at: "2026-01-01" };
+    const whapiMap = new Map([[42, { claimed_by: "whapi-staff", claimed_at: "2026-01-02" }]]);
+    const synced = syncInboxContactWithGuestMap(contact, guest, whapiMap);
+    expect(synced.metaClaimedBy).toBe("meta-staff");
+    expect(synced.whapiClaimedBy).toBe("whapi-staff");
+    expect(synced.claimedBy).toBe("meta-staff");
+  });
+});
