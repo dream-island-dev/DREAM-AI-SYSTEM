@@ -66,31 +66,40 @@ export default function OritCustomerServicePanel({ user }) {
     }
     setLoadError(null);
 
-    const { data: boot, error: bootErr } = await supabase.functions.invoke("orit-cs-bootstrap", {
-      body: { includeDemo: showDemo },
-    });
+    try {
+      const { data: boot, error: bootErr } = await supabase.functions.invoke("orit-cs-bootstrap", {
+        body: { includeDemo: showDemo },
+      });
 
-    if (bootErr) {
-      const msg = bootErr.message || "שגיאת רשת בטעינת הסוכן";
+      if (bootErr) {
+        console.error("[orit-cs] bootstrap error:", bootErr);
+        const msg = bootErr.message || "שגיאת רשת בטעינת הסוכן";
+        setLoadError(msg);
+        showToast("err", msg);
+        return null;
+      }
+
+      if (!boot?.ok) {
+        const msg = boot?.hint || boot?.error || "לא ניתן לטעון את תיבת הסוכן";
+        setLoadError(msg);
+        return null;
+      }
+
+      if (!boot.mailbox) {
+        setLoadError("mailbox_not_found בשרת");
+        return null;
+      }
+
+      setMailbox(boot.mailbox);
+      setThreads(sortThreads(boot.threads ?? []));
+      return boot.mailbox;
+    } catch (e) {
+      console.error("[orit-cs] loadMailbox unexpected exception:", e);
+      const msg = e?.message ? `שגיאה לא צפויה: ${e.message}` : "שגיאה לא צפויה בטעינת הסוכן";
       setLoadError(msg);
       showToast("err", msg);
       return null;
     }
-
-    if (!boot?.ok) {
-      const msg = boot?.hint || boot?.error || "לא ניתן לטעון את תיבת הסוכן";
-      setLoadError(msg);
-      return null;
-    }
-
-    if (!boot.mailbox) {
-      setLoadError("mailbox_not_found בשרת");
-      return null;
-    }
-
-    setMailbox(boot.mailbox);
-    setThreads(sortThreads(boot.threads ?? []));
-    return boot.mailbox;
   }, [showDemo, showToast]);
 
   const loadThreadDetail = useCallback(async (threadId) => {
