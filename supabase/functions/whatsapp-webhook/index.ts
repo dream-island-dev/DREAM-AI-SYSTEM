@@ -3649,6 +3649,7 @@ Deno.serve(async (req: Request) => {
       // ── Arrival TIME — persist + Requests Board (arrival_eta); no ops / needs_callback ──
       if (!isButtonReply && guestId && isRecordOnlyArrivalTimeUpdate(text)) {
         const arrivalTime = extractArrivalTimeFromText(text)!;
+        const previousArrivalTime = (guest as { arrival_time?: string | null }).arrival_time ?? null;
         const persistResult = await persistGuestEta(supabase, {
           guestId,
           guest: guest as Record<string, unknown>,
@@ -3680,6 +3681,18 @@ Deno.serve(async (req: Request) => {
                 boardOnly: true,
               }).catch((e: Error) =>
                 console.warn("[webhook] arrival_eta board notify:", e.message),
+              );
+              const { notifyAdirArrivalEta } = await import("../_shared/arrivalEtaAdirNotify.ts");
+              notifyAdirArrivalEta(supabase, {
+                guest: guest as Record<string, unknown> & { arrival_date: string },
+                guestId,
+                timeHhMm: arrivalTime,
+                previousTime: previousArrivalTime,
+                guestQuote: text,
+                channel: "meta",
+                phone,
+              }).catch((e: Error) =>
+                console.warn("[webhook] arrival_eta adir notify:", e.message),
               );
             }
           }

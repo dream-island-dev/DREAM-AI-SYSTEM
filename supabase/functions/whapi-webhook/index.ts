@@ -85,7 +85,7 @@ import { onGuestAlertInserted } from "../_shared/guestAlertWhapiNotify.ts";
 import { extractArrivalTimeFromText, persistGuestEta, insertArrivalEtaBoardAlert } from "../_shared/guestEta.ts";
 import { formatGuestProfileForAi } from "../_shared/guestProfile.ts";
 import { formatSpaScheduleDisplay } from "../_shared/spaSchedule.ts";
-import { isExecutiveInbound } from "../_shared/executiveIdentity.ts";
+import { isStaffAssistantInbound } from "../_shared/executiveIdentity.ts";
 import { handleExecutiveVoiceMessage } from "../_shared/executiveAssistant.ts";
 import {
   isGuestStaffClaimActive,
@@ -1010,6 +1010,10 @@ async function handleGuestDirectMessage(
     // ── Arrival TIME — persist + Requests Board (arrival_eta); no ops / needs_callback ──
     if (guestId && isRecordOnlyArrivalTimeUpdate(text)) {
       const arrivalTime = extractArrivalTimeFromText(text)!;
+      const previousArrivalTime =
+        (guestRecord as { arrival_time?: string | null } | null)?.arrival_time
+        ?? (guest as { arrival_time?: string | null } | null)?.arrival_time
+        ?? null;
       const persistResult = await persistGuestEta(supabase, {
         guestId,
         guest: guestRecord ?? {},
@@ -1035,6 +1039,18 @@ async function handleGuestDirectMessage(
               boardOnly: true,
             }).catch((e: Error) =>
               console.warn("[whapi-webhook] arrival_eta board notify:", e.message),
+            );
+            const { notifyAdirArrivalEta } = await import("../_shared/arrivalEtaAdirNotify.ts");
+            notifyAdirArrivalEta(supabase, {
+              guest: (guestRecord ?? guest ?? {}) as Record<string, unknown> & { arrival_date: string },
+              guestId,
+              timeHhMm: arrivalTime,
+              previousTime: previousArrivalTime,
+              guestQuote: text,
+              channel: "whapi",
+              phone,
+            }).catch((e: Error) =>
+              console.warn("[whapi-webhook] arrival_eta adir notify:", e.message),
             );
           }
         }
@@ -1368,7 +1384,7 @@ serve(async (req: Request) => {
         // died before a successful outbound, executives would get permanent
         // silence (Inbox may still show a failed/partial reply). Re-enter the
         // executive handler idempotently; guest LLM stays skip-on-dedup.
-        if (await isExecutiveInbound(phone, supabase)) {
+        if (await isStaffAssistantInbound(phone, supabase)) {
           await handleExecutiveVoiceMessage(
             supabase,
             {
@@ -1390,11 +1406,11 @@ serve(async (req: Request) => {
         `[whapi-webhook] guest_dm inbound phone:${phone} guest:${guest?.id ?? "unlinked"} conv:${conversationId ?? "?"}`,
       );
 
-      // ── Executive Voice Assistant (Eliad Co-Pilot) — CEO-only intercept ──
+      // ── Staff Assistant (CEO + Front Desk) — intercept before guest LLM ──
       // Runs AFTER claimWhapiGuestInbound (ZERO DATA LOSS — already logged to
-      // the Inbox above) and BEFORE handleGuestDirectMessage, so a CEO message
-      // never reaches the guest Tier-0 shields / guest LLM brain at all.
-      if (await isExecutiveInbound(phone, supabase)) {
+      // the Inbox above) and BEFORE handleGuestDirectMessage, so staff DMs
+      // never reach the guest Tier-0 shields / guest LLM brain at all.
+      if (await isStaffAssistantInbound(phone, supabase)) {
         await handleExecutiveVoiceMessage(
           supabase,
           {

@@ -1,12 +1,17 @@
-// src/components/ExecutivePlaybook.js
-// Admin view for the Executive Voice Assistant (Eliad Co-Pilot) — Phase 2b.
-// Reuses xos_ai_rules (module='executive', same table/CRUD shape BotSettings.js
-// already uses for module='chat'/'routing') and reads executive_action_log
-// (migration 175, admin/super_admin RLS-gated) for a lightweight audit trail.
-// No new playbook table — CLAUDE.md §0.4 Universal Architecture.
+// Admin view for Staff Voice Assistants — Executive Playbook (Eliad/Mike) + read-only Adir desk profile.
 
 import { useState, useEffect, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
+
+/** Read-only mirror of executiveIdentity.ts KNOWN_FRONT_DESK — for admin visibility. */
+const ADIR_DESK_PROFILE = {
+  displayName: "אדיר",
+  title: "מנהל המלון — קבלת סוויטות",
+  focus:
+    "אני עוזרת דלפק הסוויטות של אדיר. הוא בקבלה עד ~16:00 — אני עוזרת לו עם הגעות, שעות הגעה, ולוח בקשות.",
+  tools: "get_arrival_desk_brief, list_guest_alerts, resolve_guest_alert, set_guest_status (room_ready), list_guests_by_date, learn_front_desk_rule",
+  morningBrief: "07:00 ישראל — הודעת Whapi אוטומטית (לוח הגעות + בקשות + «מה אפשר לבקש»). לא נערך כאן — frontDeskMorningBrief.ts",
+};
 
 function formatDate(iso) {
   if (!iso) return "";
@@ -25,6 +30,8 @@ export default function ExecutivePlaybook() {
   const [editingId, setEditingId] = useState(null);
   const [editingText, setEditingText] = useState("");
   const [busyId, setBusyId] = useState(null);
+  const [adirRules, setAdirRules] = useState([]);
+  const [adirRulesLoading, setAdirRulesLoading] = useState(true);
   const [log, setLog] = useState([]);
   const [logLoading, setLogLoading] = useState(true);
   const [toast, setToast] = useState(null);
@@ -74,6 +81,19 @@ export default function ExecutivePlaybook() {
     setRulesLoading(false);
   }, []);
 
+  const fetchAdirRules = useCallback(async () => {
+    if (!isSupabaseConfigured || !supabase) { setAdirRulesLoading(false); return; }
+    setAdirRulesLoading(true);
+    const { data, error } = await supabase
+      .from("xos_ai_rules")
+      .select("id, rule_text, created_at")
+      .eq("module", "front_desk")
+      .order("created_at", { ascending: true });
+    if (error) showToast("err", "שגיאה בטעינת כללי אדיר: " + error.message);
+    setAdirRules(data ?? []);
+    setAdirRulesLoading(false);
+  }, []);
+
   const fetchLog = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) { setLogLoading(false); return; }
     setLogLoading(true);
@@ -89,6 +109,7 @@ export default function ExecutivePlaybook() {
 
   useEffect(() => { fetchPersona(); }, [fetchPersona]);
   useEffect(() => { fetchRules(); }, [fetchRules]);
+  useEffect(() => { fetchAdirRules(); }, [fetchAdirRules]);
   useEffect(() => { fetchLog(); }, [fetchLog]);
 
   const handleAddRule = async () => {
@@ -154,12 +175,14 @@ export default function ExecutivePlaybook() {
           <span style={{ fontSize: 28 }}>👔</span>
           <div>
             <div style={{ fontWeight: 800, fontSize: 15, color: "#6B21A8", marginBottom: 4 }}>
-              עוזר קולי למנכ"ל — Eliad Co-Pilot
+              עוזרות קוליות לצוות ניהול
             </div>
             <div style={{ fontSize: 13, color: "var(--text-muted)", lineHeight: 1.6 }}>
-              מורשים: אליעד (מנכ"ל) ומייק (QA) — שיחה דרך מכשיר הסוויטות (קול או טקסט). כאן ניתן
-              לצפות ולערוך את הכללים שנלמדו, ולראות יומן פעולות אחרון.
-              {" "}הכוונה לאליעד (איך לעבוד עם העוזרת) ופרסונה נפרדת למייק מוגדרות בקוד — executiveIdentity.ts.
+              <strong>אליעד (מנכ"ל):</strong> העוזרת האישית שלו — הפרומפט הבסיסי למטה + דגש אישי בקוד (executiveIdentity.ts).
+              <br />
+              <strong>אדיר (דלפק):</strong> פרופיל נפרד — כרטיס למטה (קריאה בלבד; עריכה בקוד).
+              <br />
+              כללים שנלמדו בקול: אליעד → module executive | אדיר → module front_desk.
             </div>
           </div>
         </div>
@@ -167,7 +190,7 @@ export default function ExecutivePlaybook() {
         {/* ── Base system prompt (executive_bot_settings, migration 183) ──── */}
         <div className="card" style={{ marginBottom: 20 }}>
           <div className="card-header">
-            <div className="card-title">📝 System Prompt בסיסי</div>
+            <div className="card-title">📝 System Prompt בסיסי (משותף — אליעד + אדיר + מייק)</div>
           </div>
           <div style={{ padding: "16px 20px" }}>
             <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 10, lineHeight: 1.6 }}>
@@ -207,10 +230,39 @@ export default function ExecutivePlaybook() {
           </div>
         </div>
 
+        {/* ── Adir front desk (read-only — executiveIdentity.ts) ───────────── */}
+        <div className="card" style={{ marginBottom: 20, borderColor: "#0D9488" }}>
+          <div className="card-header">
+            <div className="card-title">🏨 עוזרת דלפק — אדיר (קריאה בלבד)</div>
+          </div>
+          <div style={{ padding: "16px 20px", fontSize: 13, lineHeight: 1.7 }}>
+            <div style={{ marginBottom: 10 }}>
+              <strong>{ADIR_DESK_PROFILE.displayName}</strong> — {ADIR_DESK_PROFILE.title}
+            </div>
+            <div style={{ marginBottom: 10, color: "var(--text-muted)" }}>{ADIR_DESK_PROFILE.focus}</div>
+            <div style={{ marginBottom: 10 }}>
+              <strong>כלים:</strong> <code style={{ fontSize: 11 }}>{ADIR_DESK_PROFILE.tools}</code>
+            </div>
+            <div style={{ marginBottom: 14, padding: "10px 12px", background: "var(--ivory)", borderRadius: 8 }}>
+              <strong>בריף בוקר:</strong> {ADIR_DESK_PROFILE.morningBrief}
+            </div>
+            <div style={{ fontWeight: 700, marginBottom: 8 }}>כללים שנלמדו (front_desk)</div>
+            {adirRulesLoading ? (
+              <div style={{ color: "var(--text-muted)" }}>⏳ טוען…</div>
+            ) : adirRules.length === 0 ? (
+              <div style={{ color: "var(--text-muted)" }}>אין עדיין — אדיר יכול לומר «תזכרי ש…» בקול.</div>
+            ) : (
+              <ul style={{ margin: 0, padding: "0 18px" }}>
+                {adirRules.map((r) => <li key={r.id}>{r.rule_text}</li>)}
+              </ul>
+            )}
+          </div>
+        </div>
+
         {/* ── Learned rules ──────────────────────────────────────────────── */}
         <div className="card" style={{ marginBottom: 20 }}>
           <div className="card-header">
-            <div className="card-title">🧠 כללים שנלמדו</div>
+            <div className="card-title">🧠 כללים שנלמדו — אליעד (executive)</div>
           </div>
           <div style={{ padding: "16px 20px" }}>
             <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>

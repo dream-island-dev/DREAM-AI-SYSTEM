@@ -7,11 +7,14 @@
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.20.0";
 import {
-  resolveExecutiveInbound,
+  resolveStaffAssistantInbound,
   type ExecutiveProfile,
+  type AssistantTier,
   ARCHITECT_PHONE_DIGITS,
   CEO_PHONE_DIGITS,
+  FRONT_DESK_PHONE_DIGITS,
   normalizeExecutivePhoneDigits,
+  resolveAssistantTier,
 } from "./executiveIdentity.ts";
 import {
   primeGuestChannelConfig,
@@ -164,14 +167,14 @@ export async function executiveAlreadyRepliedSuccessfully(
 // ══════════════════════════════════════════════════════════════════════════════
 
 const DEFAULT_PERSONA_TEMPLATE = `
-את/ה העוזר/ת האישי/ת הדיגיטלי/ת של {{name}}, {{title}} ב-Dream Island. אתה מדבר איתו ישירות
-בוואטסאפ (מכשיר הסוויטות) — זו לא שיחה עם אורח, זו שיחת ניהול פנימית.
+אני העוזרת האישית של {{name}}, {{title}} ב-Dream Island.
+אני מדברת איתו ישירות בוואטסאפ (מכשיר הסוויטות) — שיחה פנימית עם {{name}}, לא עם אורח.
 
 {{focus}}
 
-תפקידך: לבצע עבורו פעולות ניהוליות בפועל ולדווח לו בקצרה.
+תפקידי: לבצע עבורו פעולות ניהוליות בפועל ולדווח לו בקצרה.
 
-מה אתה עושה ישירות (דרך כלי, בלי לשאול רשות):
+מה אני עושה ישירות (דרך כלי, בלי לשאול רשות):
 • מצב הריזורט / דוח תפעולי מיידי (יומי/שבועי/חודשי) / רשימת הגעות-עוזבים-אורחים בריזורט.
 • רשימת אורחים לפי תאריך — היום, מחר, או כל תאריך עתידי/עבר (list_guests_by_date).
 • איתור אורח לפי חדר/שם, כולל הערות, ספא/ארוחות ודגלי תשומת-לב.
@@ -181,34 +184,27 @@ const DEFAULT_PERSONA_TEMPLATE = `
 • שליחת הודעה חופשית לאורח או לקבוצת המנהלות; עדכון הערה/החרגה על פרופיל אורח.
 • לימוד העדפה קבועה שלך (learn_executive_rule) — פרטית לך, לא משפיעה על עוזר אחר.
 
-מתי אתה שואל שאלת הבהרה אחת (ולא מנחש):
+מתי אני שואלת שאלת הבהרה אחת (ולא מנחשת):
 • לא ברור באיזה חדר/אורח/משימה מדובר, או כלי החזיר כמה מועמדים מתאימים.
 
-מה אתה תמיד מסרב לעשות (אין לזה כלי, ולא ינחש):
-• ביטול אורח, שינוי תאריכי הזמנה/צ'ק-אין בפועל, שינוי מחירים, עריכת שלבי אוטומציה
-  או מחיקת דאטה — "לזה צריך גישה למסך הניהול, לא דרכי". אם מתבקש — אמור זאת בקצרה
-  והפנה למסך המתאים, אל תנסה לבצע בעקיפין דרך כלי אחר.
+מה אני תמיד מסרבת לעשות (אין לזה כלי):
+• ביטול אורח, שינוי תאריכים בפועל, מחירים, אוטומציות או מחיקת דאטה — «לזה צריך מסך הניהול».
 
 כללי תשובה (חובה):
-• עברית בלבד, 2–4 משפטים לכל היותר. בלי פתיחים מיותרים ("שלום", "בשמחה").
-• כשביצעת פעולה בפועל דרך אחד הכלים — פתח את השורה הרלוונטית ב-✅.
-• כמה פעולות/עדכונים בתשובה אחת — כל אחת כשורת בולט (•) קצרה.
-• אל תמציא נתונים על הריזורט או על אורחים — אם חסר לך מידע קרא לכלי המתאים
-  (get_resort_brief / list_guests_by_date / find_guest_by_room / list_guests_by_scope / query_open_tasks) לפני שאתה עונה.
+• עברית בלבד, 2–4 משפטים. פני אליו ישירות («{{name}}, …» / «עבורך…») — את עוזרתו האישית, לא בוט כללי.
+• בלי פתיחים מיותרים («שלום», «בשמחה»).
+• כשביצעתי פעולה בפועל דרך כלי — פותחת את השורה ב-✅.
+• כמה עדכונים — כל אחד בשורת • קצרה.
+• אל תמציאי נתונים — אם חסר מידע, קראי לכלי לפני שאת עונה.
 • לשאלות על "מחר" / "ביום X" / תאריך עתידי — חשב את התאריך (ישראל) וקרא ל-list_guests_by_date;
   לעולם אל תגיד שאין לך אפשרות לבדוק ימים עתידיים.
 • משפט כמו "תזכרי ש..." / "מעכשיו תמיד..." / "מהיום..." = קרא ל-learn_executive_rule
   כדי לשמור את זה כהעדפה קבועה שלך, אחרת תשכח אותה בפעם הבאה.
   זה חל גם על דוחות התפעול היומיים/שבועיים שאת שולחת לו — אם הוא מבקש לשנות
   משהו בדוח (מה להדגיש, מה להסיר), שמרי זאת ככלל ונציג את זה בדוחות הבאים.
-• לעולם אל תשלח הודעה לאורח שסטטוסו 'cancelled' — הכלים חוסמים זאת; אם זה קרה ציין זאת.
-• אם הבקשה לא ברורה מספיק לפעולה (לא ברור באיזה חדר/אורח/משימה מדובר) — שאל שאלת
-  הבהרה קצרה אחת במקום לנחש.
-• כל הודעה שאתה מקבל היא כבר טקסט רגיל — גם אם המשתמש שלח אותה בפועל כהקלטה קולית,
-  היא כבר תומללה לטקסט לפני שהגיעה אליך, ואתה רואה רק את הטקסט המתומלל, בדיוק כמו
-  הודעה מוקלדת. לעולם אל תגיד "אני לא מבינה הקלטות קוליות" או "אני לא מצליחה להבין
-  את ההקלטה" — זה תמיד שגוי במערכת הזו; אתה מעולם לא מקבל אודיו גולמי, רק טקסט.
-  אם השאלה עוסקת ביכולת שלך להבין הקלטות — פשוט ענה שכן, ותענה לתוכן שכתוב לך.
+• לעולם אל תשלחי הודעה לאורח שסטטוסו cancelled — הכלים חוסמים זאת.
+• אם הבקשה לא ברורה — שאלי שאלת הבהרה קצרה אחת.
+• הודעות קוליות מגיעות כבר כטקסט מתומלל — לעולם אל תגידי «לא מבינה הקלטות».
 `.trim();
 
 const PERSONA_TTL_MS = 5 * 60 * 1000;
@@ -241,9 +237,16 @@ const RULES_TTL_MS = 5 * 60 * 1000;
 // private rules cached under the same slot (see fetchExecutiveRules).
 const _rulesCache = new Map<string, { text: string; at: number }>();
 
-function _invalidateExecutiveRulesCache(phoneDigits?: string): void {
-  if (phoneDigits) _rulesCache.delete(phoneDigits);
-  else _rulesCache.clear();
+function _invalidateExecutiveRulesCache(phoneDigits?: string, module?: string): void {
+  if (!phoneDigits) {
+    _rulesCache.clear();
+    return;
+  }
+  if (module) _rulesCache.delete(`${phoneDigits}:${module}`);
+  else {
+    _rulesCache.delete(`${phoneDigits}:executive`);
+    _rulesCache.delete(`${phoneDigits}:front_desk`);
+  }
 }
 
 /**
@@ -255,15 +258,20 @@ function _invalidateExecutiveRulesCache(phoneDigits?: string): void {
  * get_ops_digest_now / resort-digest-cron, which read module='executive' without
  * this filter since there's only one digest recipient regardless of who taught it.
  */
-export async function fetchExecutiveRules(supabase: SupabaseClient, phoneDigits: string): Promise<string> {
+export async function fetchExecutiveRules(
+  supabase: SupabaseClient,
+  phoneDigits: string,
+  module: "executive" | "front_desk" = "executive",
+): Promise<string> {
   const now = Date.now();
-  const cached = _rulesCache.get(phoneDigits);
+  const cacheKey = `${phoneDigits}:${module}`;
+  const cached = _rulesCache.get(cacheKey);
   if (cached && now - cached.at < RULES_TTL_MS) return cached.text;
 
   const { data, error } = await supabase
     .from("xos_ai_rules")
     .select("rule_text")
-    .eq("module", "executive")
+    .eq("module", module)
     .or(`owner_phone.is.null,owner_phone.eq.${phoneDigits}`)
     .order("created_at", { ascending: true });
   if (error) {
@@ -275,7 +283,7 @@ export async function fetchExecutiveRules(supabase: SupabaseClient, phoneDigits:
     .filter(Boolean)
     .map((t) => `- ${t}`);
   const text = bullets.length ? `\n\n══ כללים שנלמדו ══\n${bullets.join("\n")}` : "";
-  _rulesCache.set(phoneDigits, { text, at: now });
+  _rulesCache.set(cacheKey, { text, at: now });
   return text;
 }
 
@@ -334,7 +342,7 @@ export function buildExecutiveSystemPrompt(
   const dateLine = `\n\nתאריך היום (ישראל): ${israelTodayStr()} | מחר: ${addDaysYmd(israelTodayStr(), 1)}`;
   const briefLine = briefSnapshot ? `\n\n══ מצב עדכני (לרענון: get_resort_brief) ══\n${briefSnapshot}` : "";
   const firstTurnNote = recentTurns.length === 0
-    ? `\n\nזו הפנייה הראשונה של ${profile.displayName} בשיחה הזו — אם הוא מנהל (לא מפתח שבודק אותך), פתחי בברכה קצרה והציעי בקצרה מה אפשר לבקש (ראי סעיף ההכוונה בפרסונה).`
+    ? `\n\nזו הפנייה הראשונה של ${profile.displayName} בשיחה הזו — פתחי בקצרה: הזכירי שאת העוזרת האישית שלו, והציעי מה אפשר לבקש (ראי סעיף ההכוונה).`
     : "";
   const overlayLine = profile.personaOverlay?.trim()
     ? `\n\n${profile.personaOverlay.trim()}`
@@ -589,10 +597,58 @@ const ARCHITECT_TOOL_DEFS: ToolDef[] = [
 
 const ARCHITECT_TOOL_NAMES = new Set(ARCHITECT_TOOL_DEFS.map((t) => t.name));
 
-/** Operational + architect tools for Mike; operational only for Eliad and other executives. */
-export function resolveExecutiveToolDefs(ownerPhone: string): ToolDef[] {
-  const digits = normalizeExecutivePhoneDigits(ownerPhone);
-  if (digits === ARCHITECT_PHONE_DIGITS) return [...EXECUTIVE_TOOLS, ...ARCHITECT_TOOL_DEFS];
+const FRONT_DESK_FORBIDDEN_TOOL_NAMES = new Set([
+  "ceo_guest_override",
+  "get_ops_digest_now",
+  "notify_managers_group",
+  "learn_executive_rule",
+  ...ARCHITECT_TOOL_NAMES,
+]);
+
+const FRONT_DESK_EXTRA_TOOL_DEFS: ToolDef[] = [
+  {
+    name: "get_arrival_desk_brief",
+    description:
+      "לוח הגעות דלפק סוויטות — היום ומחר: מי מגיע, מי עם שעת הגעה, מי עדיין בלי שעה (⚠), VIP. " +
+      "לשאלות «מי מגיע היום», «מי בלי שעה», «לוח הגעות».",
+    schema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "resolve_guest_alert",
+    description:
+      "סימון בקשה בלוח הבקשות כטופלה (resolved). לפי alert_id או חדר+מילת מפתח. " +
+      "אם יש כמה התאמות — מחזיר רשימה, לא מנחש.",
+    schema: {
+      type: "object",
+      properties: {
+        alert_id: { type: "integer", description: "מזהה שורה מ-list_guest_alerts." },
+        room: { type: "string", description: "חדר/סוויטה לסינון." },
+        keyword: { type: "string", description: "מילה מההודעה לסינון." },
+        note: { type: "string", description: "הערת סגירה אופציונלית." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "learn_front_desk_rule",
+    description: "שמירת העדפה קבועה של אדיר (פרטית לו) — למשל סדר עדיפויות בתשובות.",
+    schema: {
+      type: "object",
+      properties: { rule_text: { type: "string", description: "הכלל לשמור." } },
+      required: ["rule_text"],
+    },
+  },
+];
+
+const FRONT_DESK_EXTRA_TOOL_NAMES = new Set(FRONT_DESK_EXTRA_TOOL_DEFS.map((t) => t.name));
+
+/** Tool surface per assistant tier. */
+export function resolveExecutiveToolDefs(ownerPhone: string, tier: AssistantTier = "executive"): ToolDef[] {
+  if (tier === "architect") return [...EXECUTIVE_TOOLS, ...ARCHITECT_TOOL_DEFS];
+  if (tier === "front_desk") {
+    const base = EXECUTIVE_TOOLS.filter((t) => !FRONT_DESK_FORBIDDEN_TOOL_NAMES.has(t.name));
+    return [...base, ...FRONT_DESK_EXTRA_TOOL_DEFS];
+  }
   return EXECUTIVE_TOOLS;
 }
 
@@ -606,9 +662,17 @@ function _buildClaudeToolsPayload(toolDefs: ToolDef[]) {
   return toolDefs.map((t) => ({ name: t.name, description: t.description, input_schema: t.schema }));
 }
 
-function _isArchitectToolAllowed(name: string, ownerPhone: string): boolean {
-  if (!ARCHITECT_TOOL_NAMES.has(name)) return true;
-  return normalizeExecutivePhoneDigits(ownerPhone) === ARCHITECT_PHONE_DIGITS;
+function _isToolAllowedForCaller(name: string, ownerPhone: string, tier: AssistantTier): boolean {
+  if (ARCHITECT_TOOL_NAMES.has(name)) {
+    return tier === "architect";
+  }
+  if (FRONT_DESK_EXTRA_TOOL_NAMES.has(name)) {
+    return tier === "front_desk";
+  }
+  if (tier === "front_desk" && FRONT_DESK_FORBIDDEN_TOOL_NAMES.has(name)) {
+    return false;
+  }
+  return true;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -624,7 +688,9 @@ export type ToolExecCtx = {
    * scoping key for private learned rules. Kept separate from `phone` (which
    * mirrors whatever raw format the inbound webhook carried) so rule scoping
    * never drifts if that raw format ever changes. */
+  /** Scoping key for private learned rules + tool tier gates. */
   ownerPhone: string;
+  assistantTier: AssistantTier;
 };
 
 /** Widened row shape for the executive's own guest lookups — ActiveGuestRow
@@ -950,16 +1016,22 @@ async function _execLearnExecutiveRule(
   args: Record<string, unknown>,
   ctx: ToolExecCtx,
 ): Promise<ToolResult> {
+  return _execLearnRule(supabase, args, ctx, "executive");
+}
+
+async function _execLearnRule(
+  supabase: SupabaseClient,
+  args: Record<string, unknown>,
+  ctx: ToolExecCtx,
+  module: "executive" | "front_desk",
+): Promise<ToolResult> {
   const ruleText = String(args.rule_text ?? "").trim();
   if (!ruleText) return { ok: false, error: "rule_text_required" };
 
-  // Private to this executive (owner_phone) — dedupe only against rules
-  // already visible to them (their own + shared/unscoped), not the other
-  // executive's private rules (migration 188 / fetchExecutiveRules).
   const { data: existing } = await supabase
     .from("xos_ai_rules")
     .select("rule_text, owner_phone")
-    .eq("module", "executive");
+    .eq("module", module);
   const normalized = ruleText.trim().toLowerCase();
   const isDupe = ((existing ?? []) as Array<{ rule_text: string; owner_phone: string | null }>).some(
     (r) =>
@@ -970,13 +1042,100 @@ async function _execLearnExecutiveRule(
 
   const { error } = await supabase
     .from("xos_ai_rules")
-    .insert({ module: "executive", rule_text: ruleText, owner_phone: ctx.ownerPhone });
+    .insert({ module, rule_text: ruleText, owner_phone: ctx.ownerPhone });
   if (error) {
-    console.error("[executiveAssistant] learn_executive_rule insert failed:", error.message);
+    console.error(`[executiveAssistant] learn rule (${module}) insert failed:`, error.message);
     return { ok: false, error: error.message };
   }
-  _invalidateExecutiveRulesCache(ctx.ownerPhone);
+  _invalidateExecutiveRulesCache(ctx.ownerPhone, module);
   return { ok: true, inserted: true };
+}
+
+async function _execGetArrivalDeskBrief(supabase: SupabaseClient): Promise<ToolResult> {
+  const { fetchFrontDeskMorningStats } = await import("./frontDeskMorningBrief.ts");
+  try {
+    const { brief } = await fetchFrontDeskMorningStats(supabase);
+    if (!brief.todayTotal && !brief.tomorrowTotal) {
+      return { ok: true, count: 0, summary: "אין הגעות סוויטות היום או מחר." };
+    }
+    return {
+      ok: true,
+      count: brief.todayTotal + brief.tomorrowTotal,
+      with_time: brief.todayWithTime,
+      missing_time: brief.todayMissingTime,
+      summary: brief.summary,
+    };
+  } catch (e) {
+    console.warn("[executiveAssistant] get_arrival_desk_brief failed:", (e as Error).message);
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
+async function _execResolveGuestAlert(supabase: SupabaseClient, args: Record<string, unknown>): Promise<ToolResult> {
+  const alertId = Number(args.alert_id);
+  const room = String(args.room ?? "").trim().toLowerCase();
+  const keyword = String(args.keyword ?? "").trim().toLowerCase();
+  const note = String(args.note ?? "").trim();
+
+  if (Number.isFinite(alertId) && alertId > 0) {
+    const { data, error } = await supabase
+      .from("guest_alerts")
+      .update({
+        resolved: true,
+        resolved_at: new Date().toISOString(),
+        resolution_notes: note || "סומן ע\"י עוזרת דלפק (אדיר)",
+      })
+      .eq("id", alertId)
+      .eq("resolved", false)
+      .select("id")
+      .maybeSingle();
+    if (error) return { ok: false, error: error.message };
+    if (!data) return { ok: false, error: "alert_not_found_or_already_resolved" };
+    return { ok: true, alert_id: alertId };
+  }
+
+  if (!room && !keyword) return { ok: false, error: "alert_id_or_room_or_keyword_required" };
+
+  const { data, error } = await supabase
+    .from("guest_alerts")
+    .select("id, message, alert_type, guests(name, room)")
+    .eq("resolved", false)
+    .order("created_at", { ascending: false })
+    .limit(20);
+  if (error) return { ok: false, error: error.message };
+
+  type AlertRow = { id: number; message: string; alert_type: string; guests: { name: string | null; room: string | null } | null };
+  let rows = (data ?? []) as unknown as AlertRow[];
+  if (room) {
+    rows = rows.filter((r) => (r.guests?.room ?? "").toLowerCase().includes(room));
+  }
+  if (keyword) {
+    rows = rows.filter((r) => `${r.message} ${r.alert_type}`.toLowerCase().includes(keyword));
+  }
+  if (!rows.length) return { ok: false, error: "no_matching_open_alert" };
+  if (rows.length > 1) {
+    return {
+      ok: false,
+      error: "ambiguous_alert_match",
+      candidates: rows.map((r) => ({
+        alert_id: r.id,
+        room: r.guests?.room ?? null,
+        message: (r.message ?? "").slice(0, 80),
+      })),
+    };
+  }
+
+  const target = rows[0];
+  const { error: updErr } = await supabase
+    .from("guest_alerts")
+    .update({
+      resolved: true,
+      resolved_at: new Date().toISOString(),
+      resolution_notes: note || "סומן ע\"י עוזרת דלפק (אדיר)",
+    })
+    .eq("id", target.id);
+  if (updErr) return { ok: false, error: updErr.message };
+  return { ok: true, alert_id: target.id, room: target.guests?.room ?? null };
 }
 
 const OPEN_TASK_STATUSES = ["open", "in_progress", "pending_approval"] as const;
@@ -1446,8 +1605,8 @@ export async function executeExecutiveTool(
   args: Record<string, unknown>,
   ctx: ToolExecCtx,
 ): Promise<ToolResult> {
-  if (!_isArchitectToolAllowed(name, ctx.ownerPhone)) {
-    return { ok: false, error: "architect_tool_forbidden" };
+  if (!_isToolAllowedForCaller(name, ctx.ownerPhone, ctx.assistantTier)) {
+    return { ok: false, error: "tool_forbidden_for_role" };
   }
   switch (name) {
     case "create_executive_task": return await _execCreateExecutiveTask(supabase, args, ctx);
@@ -1468,6 +1627,9 @@ export async function executeExecutiveTool(
     case "get_system_health": return await _execGetSystemHealth(supabase);
     case "get_executive_action_log": return await _execGetExecutiveActionLog(supabase, args);
     case "list_executive_rules_audit": return await _execListExecutiveRulesAudit(supabase, args, ctx);
+    case "get_arrival_desk_brief": return await _execGetArrivalDeskBrief(supabase);
+    case "resolve_guest_alert": return await _execResolveGuestAlert(supabase, args);
+    case "learn_front_desk_rule": return await _execLearnRule(supabase, args, ctx, "front_desk");
     default: return { ok: false, error: `unknown_tool:${name}` };
   }
 }
@@ -1719,20 +1881,28 @@ export async function runExecutiveAssistant(
   supabase: SupabaseClient,
   opts: { phone: string; text: string; msgId: string; profile: ExecutiveProfile },
 ): Promise<string> {
+  const tier = resolveAssistantTier(opts.profile);
+  const rulesModule = tier === "front_desk" ? "front_desk" : "executive";
   const ctx: ToolExecCtx = {
     phone: opts.phone,
     originalText: opts.text,
     msgId: opts.msgId,
     ownerPhone: opts.profile.phoneDigits,
+    assistantTier: tier,
   };
   const [personaTemplate, rulesSuffix, brief, history] = await Promise.all([
     fetchExecutivePersonaTemplate(supabase),
-    fetchExecutiveRules(supabase, opts.profile.phoneDigits),
-    fetchResortBrief(supabase),
+    fetchExecutiveRules(supabase, opts.profile.phoneDigits, rulesModule),
+    tier === "front_desk" ? Promise.resolve("") : fetchResortBrief(supabase),
     fetchExecutiveHistory(supabase, opts.phone),
   ]);
-  const systemPrompt = buildExecutiveSystemPrompt(opts.profile, personaTemplate, rulesSuffix, brief, history);
-  const toolDefs = resolveExecutiveToolDefs(opts.profile.phoneDigits);
+  let briefSnapshot = brief;
+  if (tier === "front_desk") {
+    const desk = await _execGetArrivalDeskBrief(supabase);
+    if (desk.ok && desk.summary) briefSnapshot = String(desk.summary);
+  }
+  const systemPrompt = buildExecutiveSystemPrompt(opts.profile, personaTemplate, rulesSuffix, briefSnapshot, history);
+  const toolDefs = resolveExecutiveToolDefs(opts.profile.phoneDigits, tier);
 
   try {
     const geminiResult = await runExecutiveGemini(supabase, systemPrompt, history, opts.text, ctx, toolDefs);
@@ -1776,9 +1946,9 @@ export async function handleExecutiveVoiceMessage(
     unclaimedRetry: !!opts.unclaimedRetry,
   };
   try {
-    const profile = await resolveExecutiveInbound(opts.phone, supabase);
+    const profile = await resolveStaffAssistantInbound(opts.phone, supabase);
     if (!profile) {
-      results.push({ ...base, error: "executive_not_authorized" });
+      results.push({ ...base, error: "staff_assistant_not_authorized" });
       return;
     }
 

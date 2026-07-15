@@ -416,6 +416,12 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
+### 2026-07-15 — Cursor writes, Claude Code verifies (handoff saves tokens)
+- **Standing workflow (Mike-approved):** Cursor/Composer implements features + atomic diffs; Claude Code receives a **short handoff** (file list, test commands, deploy checklist — not full chat history), reads ground-truth files, runs `deno test`, fixes slips (e.g. missing `useState`, stale test assertions), then deploys only on explicit `תעלה`/`yes`.
+- **Handoff template:** Goal (1 para) → Files to read → Tests to run → Deploy commands → Do NOT mix (unrelated uncommitted paths) → Manual QA phrases.
+- **Real slips caught this way (Adir session):** `ExecutivePlaybook.js` used `log`/`logLoading` without `useState` (would crash render); `executiveAssistant.test.ts` still asserted old Eliad overlay heading after persona rename.
+- **Token rule:** Cursor stops before long deploy/log loops; Claude Code owns terminal verification. Neither agent re-explains the whole architecture in the handoff.
+
 ### 2026-07-13 — Whapi ban → always need a Dream Bot SOS; and "fix deployed" isn't "fix landed before the damage"
 - **New standing rule:** any time guest outbound depends on one physical Whapi device (Suites number), there must be a documented, flaggable SOS fallback to Meta Dream Bot that does not require a code deploy to activate — WhatsApp itself can restrict/ban a device (spam/automated-message detection) with no warning, and the ban clock (~17h observed) is outside our control. `WHAPI_GUEST_SOS_META` (checked inside `isGuestWhapiSuitesEnabled()` itself, not a parallel gate) is that lever now; keep it working for every future Whapi-routed guest trigger, not just the ones that existed on 2026-07-13.
 - **Fold the emergency switch into the existing single choke point, don't add a second one:** `guestWhapiRouting.ts`'s `isGuestWhapiSuitesEnabled()` already had ~10 callers (incl. `room_ready`'s direct read, which bypasses the suite/day-pass classifier entirely). Rather than auditing and editing every call site to also check a new SOS flag, the SOS check went inside that one function — every caller inherited the fallback for free, and the test matrix could assert coverage of the "bypasses the classifier" case directly instead of trusting it by inspection.

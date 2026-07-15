@@ -16,10 +16,13 @@ export function normalizeExecutivePhoneDigits(raw: string): string {
   return digits;
 }
 
+export type AssistantTier = "executive" | "front_desk" | "architect";
+
 export type ExecutiveProfile = {
   phoneDigits: string;
   displayName: string;
   title: string;
+  assistantTier?: AssistantTier;
   /** One short line telling the assistant what this specific person mainly
    * needs from it — substituted into {{focus}} (executiveAssistant.ts) so the
    * same shared persona/tools/rules still read naturally for each authorized
@@ -34,8 +37,9 @@ const GENERIC_FOCUS =
   "התייחס לכל בקשה שלו כפעולה תפעולית אמיתית לניהול הריזורט.";
 
 const ELIAD_ONBOARDING_OVERLAY = `
-══ הכוונה לאליעד — איך לעבוד איתך ══
-אם אליעד שואל "איך את עובדת" / "מה את יודעת לעשות" / "עזרה" / "מה אפשר לבקש ממך" — או שזו הפנייה הראשונה שלו בשיחה — הסבירי בידידותיות ובקצרה (עד 6 שורות) מה אפשר לבקש, עם דוגמאות מעשיות:
+══ אליעד — העוזרת האישית שלך ══
+את עוזרתו האישית של אליעד, מנכ"ל Dream Island. בכל תשובה — פני אליו ישירות («אליעד, …»), בקצרה וברור.
+אם אליעד שואל "עזרה" / "איך את עובדת" / "מה אפשר לבקש" — או שזו הפנייה הראשונה — הסבירי בקצרה (עד 6 שורות):
 • "מי מגיע מחר?" / "מי מגיע ביום ראשון?" (list_guests_by_date)
 • "מה המצב עכשיו בריזורט?" (get_resort_brief)
 • "פתח משימה לתקן את המזגן בחדר 3" (create_executive_task)
@@ -56,26 +60,57 @@ const MIKE_ARCHITECT_OVERLAY = `
 כשהוא שואל על העוזרת של אליעד — השתמשי ב-list_executive_rules_audit(scope=eliad) ו-get_executive_action_log כדי לענות בפירוט.
 `.trim();
 
+const ADIR_FRONT_DESK_OVERLAY = `
+══ הכוונה לאדיר — עוזרת דלפק סוויטות ══
+אם אדיר שואל "עזרה" / "איך את עובדת" / זו הפנייה הראשונה — הסבירי בקצרה (עד 6 שורות):
+• "לוח הגעות" / "מי מגיע היום בלי שעה?" (get_arrival_desk_brief)
+• "מי מגיע מחר?" (list_guests_by_date)
+• "מה פתוח לי?" (list_guest_alerts)
+• "טיפלתי בבקשת חדר 7" (resolve_guest_alert)
+• "חדר 5 מוכן" (set_guest_status)
+עד ~16:00 התמקדי בהגעות ושעות הגעה; אחר כך בבקשות פתוחות.
+כשמגיעה שעת הגעה מאורח (Dream Bot או מכשיר סוויטות) — את כבר מודיעה לו בנפרד; הוא יכול לשאול "מי עוד בלי שעה?".
+`.trim();
+
 const KNOWN_EXECUTIVES: Record<string, ExecutiveProfile> = {
   "972505421751": {
     phoneDigits: "972505421751",
     displayName: "אליעד",
     title: "מנכ\"ל",
+    assistantTier: "executive",
     focus:
-      "את עוזרתו האישית של אליעד, מנכ\"ל Dream Island. את מדברת איתו בוואטסאפ — שיחת ניהול פנימית, לא עם אורח. " +
-      "את יודעת את הריזורט לעומק: מי מגיע היום ומחר, מי עוזב, מה פתוח בלוח בקשות, איפה צווארי בקבוק. " +
-      "תתייחסי לכל בקשה שלו כפעולה אמיתית שצריך לבצע, לא כתרגיל.",
+      "אני העוזרת האישית של אליעד, מנכ\"ל Dream Island. אני מדברת איתו בוואטסאפ — לא עם אורח. " +
+      "אני יודעת מי מגיע היום ומחר, מה פתוח בלוח בקשות, ואיפה צווארי בקבוק. " +
+      "כל בקשה שלו = פעולה אמיתית שאני מבצעת.",
     personaOverlay: ELIAD_ONBOARDING_OVERLAY,
   },
   "972506842439": {
     phoneDigits: "972506842439",
     displayName: "מייק",
     title: "ארכיטקט מערכת",
+    assistantTier: "architect",
     focus:
       "את עוזרתו האישית של מייק, ארכיטקט ומפתח מערכת XOS. לצד עזרה תפעולית מלאה כמו לאליעד, הוא גם אחראי " +
       "לוודא שאת עובדת נכון — אם הוא בודק אותך, שואל על כלים או מתקן אותך, זה חלק לגיטימי מהתפקיד; " +
       "עני בכנות ובפירוט טכני כשמבקש.",
     personaOverlay: MIKE_ARCHITECT_OVERLAY,
+  },
+};
+
+/** Front desk — suite reception (Adir). Same Whapi DM pipeline, different tools/persona. */
+export const FRONT_DESK_PHONE_DIGITS = "972546294885";
+
+const KNOWN_FRONT_DESK: Record<string, ExecutiveProfile> = {
+  [FRONT_DESK_PHONE_DIGITS]: {
+    phoneDigits: FRONT_DESK_PHONE_DIGITS,
+    displayName: "אדיר",
+    title: "מנהל המלון — קבלת סוויטות",
+    assistantTier: "front_desk",
+    focus:
+      "את עוזרת דלפק הסוויטות של אדיר. הוא במשרד הקבלה עד ~16:00 ומקבל אורחים — את עוזרת לו לא לרדוף אחרי מידע: " +
+      "מי מגיע היום/מחר, מי עדיין בלי שעת הגעה, מה פתוח בלוח בקשות, ולסגור בקשות בקול. " +
+      "תתייחסי לכל בקשה כפעולה אמיתית.",
+    personaOverlay: ADIR_FRONT_DESK_OVERLAY,
   },
 };
 
@@ -88,6 +123,44 @@ export const ARCHITECT_PHONE_DIGITS = KNOWN_EXECUTIVES["972506842439"].phoneDigi
 /** True for the system architect — unlocks architect-only executive assistant tools. */
 export function isArchitectExecutive(phoneDigits: string): boolean {
   return normalizeExecutivePhoneDigits(phoneDigits) === ARCHITECT_PHONE_DIGITS;
+}
+
+export function isFrontDeskInbound(phoneDigits: string): boolean {
+  return normalizeExecutivePhoneDigits(phoneDigits) === FRONT_DESK_PHONE_DIGITS;
+}
+
+export function resolveFrontDeskInbound(phoneDigits: string): ExecutiveProfile | null {
+  const inbound = normalizeExecutivePhoneDigits(phoneDigits);
+  return KNOWN_FRONT_DESK[inbound] ?? null;
+}
+
+/** Executive Co-Pilot or Front Desk assistant — whapi-webhook DM intercept. */
+export async function resolveStaffAssistantInbound(
+  phoneDigits: string,
+  supabase?: SupabaseClient,
+): Promise<ExecutiveProfile | null> {
+  const exec = await resolveExecutiveInbound(phoneDigits, supabase);
+  if (exec) {
+    const inbound = normalizeExecutivePhoneDigits(phoneDigits);
+    const tier = KNOWN_EXECUTIVES[inbound]?.assistantTier
+      ?? (inbound === ARCHITECT_PHONE_DIGITS ? "architect" : "executive");
+    return { ...exec, assistantTier: exec.assistantTier ?? tier };
+  }
+  return resolveFrontDeskInbound(phoneDigits);
+}
+
+export async function isStaffAssistantInbound(
+  phoneDigits: string,
+  supabase?: SupabaseClient,
+): Promise<boolean> {
+  return (await resolveStaffAssistantInbound(phoneDigits, supabase)) !== null;
+}
+
+export function resolveAssistantTier(profile: ExecutiveProfile): AssistantTier {
+  if (profile.assistantTier) return profile.assistantTier;
+  if (profile.phoneDigits === ARCHITECT_PHONE_DIGITS) return "architect";
+  if (profile.phoneDigits === FRONT_DESK_PHONE_DIGITS) return "front_desk";
+  return "executive";
 }
 
 /** Bare-digit phones for every hardcoded known executive (Eliad + Mike today). */

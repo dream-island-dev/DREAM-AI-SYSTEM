@@ -9,7 +9,7 @@
 // for this file — see the export's doc comment.
 
 import { assertEquals } from "https://deno.land/std@0.168.0/testing/asserts.ts";
-import { normalizeExecutivePhoneDigits, isExecutiveInbound, resolveExecutiveInbound } from "./executiveIdentity.ts";
+import { normalizeExecutivePhoneDigits, isExecutiveInbound, resolveExecutiveInbound, resolveStaffAssistantInbound, isStaffAssistantInbound } from "./executiveIdentity.ts";
 import {
   executeExecutiveTool,
   resolveExecutiveReplyTo,
@@ -20,8 +20,9 @@ import {
   type ToolExecCtx,
 } from "./executiveAssistant.ts";
 
-const CTX: ToolExecCtx = { phone: "972505421751", originalText: "test", msgId: "msg1", ownerPhone: "972505421751" };
-const MIKE_CTX: ToolExecCtx = { phone: "972506842439", originalText: "test", msgId: "msg2", ownerPhone: "972506842439" };
+const CTX: ToolExecCtx = { phone: "972505421751", originalText: "test", msgId: "msg1", ownerPhone: "972505421751", assistantTier: "executive" };
+const MIKE_CTX: ToolExecCtx = { phone: "972506842439", originalText: "test", msgId: "msg2", ownerPhone: "972506842439", assistantTier: "architect" };
+const ADIR_CTX: ToolExecCtx = { phone: "972546294885", originalText: "test", msgId: "msg3", ownerPhone: "972546294885", assistantTier: "front_desk" };
 
 function withEnv(key: string, value: string | undefined, fn: () => Promise<void> | void) {
   const prev = Deno.env.get(key);
@@ -489,7 +490,7 @@ Deno.test("buildExecutiveSystemPrompt — Eliad overlay includes onboarding guid
   const profile = await resolveExecutiveInbound("972505421751");
   if (!profile) throw new Error("expected Eliad profile");
   const prompt = buildExecutiveSystemPrompt(profile, "BASE {{name}} {{title}} {{focus}}", "", "", []);
-  assertEquals(prompt.includes("הכוונה לאליעד"), true);
+  assertEquals(prompt.includes("העוזרת האישית שלך"), true);
   assertEquals(prompt.includes("list_guests_by_date"), true);
   assertEquals(prompt.includes("מחר:"), true);
 });
@@ -503,20 +504,47 @@ Deno.test("buildExecutiveSystemPrompt — Mike overlay includes architect contex
 });
 
 Deno.test("resolveExecutiveToolDefs — Mike gets architect tools, Eliad does not", () => {
-  assertEquals(resolveExecutiveToolDefs("972506842439").some((t) => t.name === "get_system_health"), true);
-  assertEquals(resolveExecutiveToolDefs("972505421751").some((t) => t.name === "get_system_health"), false);
+  assertEquals(resolveExecutiveToolDefs("972506842439", "architect").some((t) => t.name === "get_system_health"), true);
+  assertEquals(resolveExecutiveToolDefs("972505421751", "executive").some((t) => t.name === "get_system_health"), false);
+});
+
+Deno.test("resolveExecutiveToolDefs — Adir gets front desk tools, not CEO override", () => {
+  const defs = resolveExecutiveToolDefs("972546294885", "front_desk");
+  assertEquals(defs.some((t) => t.name === "get_arrival_desk_brief"), true);
+  assertEquals(defs.some((t) => t.name === "ceo_guest_override"), false);
+  assertEquals(defs.some((t) => t.name === "get_system_health"), false);
+});
+
+Deno.test("resolveStaffAssistantInbound — Adir front desk profile", async () => {
+  const profile = await resolveStaffAssistantInbound("0546294885");
+  assertEquals(profile?.phoneDigits, "972546294885");
+  assertEquals(profile?.displayName, "אדיר");
+  assertEquals(profile?.assistantTier, "front_desk");
+  assertEquals(await isStaffAssistantInbound("972546294885"), true);
 });
 
 Deno.test("get_system_health — forbidden for Eliad", async () => {
   const result = await executeExecutiveTool(mockSupabase({}), "get_system_health", {}, CTX);
   assertEquals(result.ok, false);
-  assertEquals(result.error, "architect_tool_forbidden");
+  assertEquals(result.error, "tool_forbidden_for_role");
 });
 
 Deno.test("list_executive_rules_audit — forbidden for Eliad", async () => {
   const result = await executeExecutiveTool(mockSupabase({}), "list_executive_rules_audit", { scope: "all" }, CTX);
   assertEquals(result.ok, false);
-  assertEquals(result.error, "architect_tool_forbidden");
+  assertEquals(result.error, "tool_forbidden_for_role");
+});
+
+Deno.test("ceo_guest_override — forbidden for Adir front desk", async () => {
+  const result = await executeExecutiveTool(mockSupabase({}), "ceo_guest_override", {}, ADIR_CTX);
+  assertEquals(result.ok, false);
+  assertEquals(result.error, "tool_forbidden_for_role");
+});
+
+Deno.test("get_arrival_desk_brief — forbidden for Eliad", async () => {
+  const result = await executeExecutiveTool(mockSupabase({}), "get_arrival_desk_brief", {}, CTX);
+  assertEquals(result.ok, false);
+  assertEquals(result.error, "tool_forbidden_for_role");
 });
 
 Deno.test("list_executive_rules_audit — Mike can list Eliad + shared rules", async () => {
