@@ -60,7 +60,7 @@ export default function OritCustomerServicePanel({ user }) {
   const [loadError, setLoadError] = useState(null);
 
   const loadMailbox = useCallback(async () => {
-    if (!isSupabaseConfigured()) {
+    if (!isSupabaseConfigured) {
       setLoadError("Supabase לא מוגדר ב-Vercel — חסרים REACT_APP_SUPABASE_URL / REACT_APP_SUPABASE_ANON_KEY");
       return null;
     }
@@ -134,7 +134,7 @@ export default function OritCustomerServicePanel({ user }) {
   }, [selectedId, loadThreadDetail]);
 
   useEffect(() => {
-    if (!mailbox?.id || !isSupabaseConfigured()) return;
+    if (!mailbox?.id || !isSupabaseConfigured) return;
     const ch = supabase
       .channel(`orit-cs-threads-${mailbox.id}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "orit_agent_threads", filter: `mailbox_id=eq.${mailbox.id}` }, () => {
