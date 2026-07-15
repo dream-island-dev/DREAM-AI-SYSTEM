@@ -3,6 +3,7 @@ import {
   normalizeMealPlan,
   applyLegacyMealColumns,
   MEAL_SLOTS_BY_PLAN,
+  inferMealPlanFromHints,
 } from "../data/stayMealsSchema";
 import {
   remarkContainsOccupantIdentity,
@@ -12,6 +13,16 @@ import {
 describe("stayMealsSchema", () => {
   test("half_board shows breakfast + dinner slots", () => {
     expect(MEAL_SLOTS_BY_PLAN.half_board).toEqual(["breakfast", "dinner"]);
+  });
+
+  test("buildMealsItinerary half_board without times — plain Hebrew only", () => {
+    const rows = buildMealsItinerary({ meal_plan: "half_board" });
+    expect(rows).toEqual([{ icon: "🍴", label: "פנסיון", value: "חצי פנסיון" }]);
+  });
+
+  test("buildMealsItinerary full_board without times — plain Hebrew only", () => {
+    const rows = buildMealsItinerary({ meal_plan: "full_board" });
+    expect(rows).toEqual([{ icon: "🍴", label: "פנסיון", value: "פנסיון מלא" }]);
   });
 
   test("buildMealsItinerary full_board with times", () => {
@@ -25,6 +36,12 @@ describe("stayMealsSchema", () => {
     expect(rows.some((r) => r.value === "פנסיון מלא")).toBe(true);
     expect(rows.some((r) => r.value.includes("08:00"))).toBe(true);
     expect(rows.some((r) => r.value.includes("19:30"))).toBe(true);
+  });
+
+  test("inferMealPlanFromHints maps HB/FB abbreviations", () => {
+    expect(inferMealPlanFromHints({ meal_plan_label: "HB" })).toBe("half_board");
+    expect(inferMealPlanFromHints({ meal_plan_label: "FB" })).toBe("full_board");
+    expect(inferMealPlanFromHints({ guest_type_reason: "חצי פנסיון" })).toBe("half_board");
   });
 
   test("applyLegacyMealColumns sets meal_time from dinner", () => {

@@ -1,31 +1,39 @@
 // Smart Paste — client-side fuzzy match + scenario classification after parse-raw-paste.
 import { buildEnrichGuestPatch } from "./guestImportIntelligence";
-import { normalizeMealPlan, MEAL_SLOT_LABELS, MEAL_SLOTS_BY_PLAN } from "../data/stayMealsSchema";
+import {
+  inferMealPlanFromHints,
+  mealPlanLabel,
+  normalizeMealPlan,
+} from "../data/stayMealsSchema";
 
 /** @typedef {'sync_enrich'|'suite_missing_alert'|'day_guest_optional'} SmartPasteScenario */
 
-const MEAL_PLAN_LABELS = {
-  none: "ללא פנסיון",
-  dinner_only: "ארוחת ערב בלבד",
-  half_board: "חצי פנסיון (HB)",
-  full_board: "פנסיון מלא (FB)",
-};
+/**
+ * Normalize meal_plan from HB/FB hints when Gemini returned label only.
+ * @param {object} candidate
+ */
+export function normalizePasteCandidate(candidate) {
+  const inferred = inferMealPlanFromHints(candidate);
+  const meal_plan = inferred !== "none" ? inferred : normalizeMealPlan(candidate.meal_plan);
+  return { ...candidate, meal_plan };
+}
 
 /**
  * Map parse-raw-paste candidate → enrich patch keys on guests row.
  * @param {object} candidate
  */
 export function candidateToImportFields(candidate) {
+  const c = normalizePasteCandidate(candidate);
   const fields = {};
-  if (candidate.meal_plan && candidate.meal_plan !== "none") {
-    fields.meal_plan = candidate.meal_plan;
+  if (c.meal_plan && c.meal_plan !== "none") {
+    fields.meal_plan = c.meal_plan;
   }
-  if (candidate.spa_time) fields.spa_time = candidate.spa_time;
-  if (candidate.spa_date) fields.spa_date = candidate.spa_date;
-  if (candidate.order_number) fields.order_number = candidate.order_number;
-  if (candidate.phone_raw) fields.phone = candidate.phone_raw;
-  if (candidate.guest_name) fields.name = candidate.guest_name;
-  if (candidate.guest_count != null) fields.treatment_count = candidate.guest_count;
+  if (c.spa_time) fields.spa_time = c.spa_time;
+  if (c.spa_date) fields.spa_date = c.spa_date;
+  if (c.order_number) fields.order_number = c.order_number;
+  if (c.phone_raw) fields.phone = c.phone_raw;
+  if (c.guest_name) fields.name = c.guest_name;
+  if (c.guest_count != null) fields.treatment_count = c.guest_count;
   return fields;
 }
 
@@ -35,12 +43,13 @@ export function candidateToImportFields(candidate) {
  * @param {object} existingRow — guests row from fuzzy match
  */
 export function computeMissingEnrichFields(candidate, existingRow) {
-  const importFields = candidateToImportFields(candidate);
+  const c = normalizePasteCandidate(candidate);
+  const importFields = candidateToImportFields(c);
   const patch = buildEnrichGuestPatch(importFields, existingRow);
   const labels = [];
 
   if (patch.meal_plan) {
-    labels.push(`פנסיון: ${MEAL_PLAN_LABELS[patch.meal_plan] ?? patch.meal_plan}`);
+    labels.push(`פנסיון: ${mealPlanLabel(patch.meal_plan)}`);
   }
   if (patch.spa_time) labels.push(`שעת ספא: ${patch.spa_time}`);
   if (patch.spa_date) labels.push(`תאריך ספא: ${patch.spa_date}`);
@@ -48,18 +57,6 @@ export function computeMissingEnrichFields(candidate, existingRow) {
   if (patch.phone) labels.push(`טלפון: ${patch.phone}`);
   if (patch.name) labels.push(`שם: ${patch.name}`);
   if (patch.treatment_count != null) labels.push(`כמות אורחים/טיפולים: ${patch.treatment_count}`);
-
-  const plan = normalizeMealPlan(existingRow?.meal_plan);
-  const slots = MEAL_SLOTS_BY_PLAN[plan] ?? [];
-  for (const slot of slots) {
-    const col = slot === "dinner" ? "dinner_time" : `${slot}_time`;
-    if (!existingRow?.[col] && candidate.meal_plan && candidate.meal_plan !== "none") {
-      const label = MEAL_SLOT_LABELS[slot];
-      if (label && !labels.some((l) => l.includes(label))) {
-        labels.push(`${label} — חסר בפרופיל (פנסיון מזוהה בדוח)`);
-      }
-    }
-  }
 
   return { patch, labels };
 }
@@ -72,7 +69,9 @@ export function computeMissingEnrichFields(candidate, existingRow) {
 export async function classifySmartPasteCandidates(supabase, candidates) {
   const classified = [];
 
-  for (const candidate of candidates) {
+  for (const raw of candidates) {
+    const candidate = normalizePasteCandidate(raw);
+
     if (candidate.guest_type === "day_guest") {
       classified.push({
         scenario: /** @type {SmartPasteScenario} */ ("day_guest_optional"),

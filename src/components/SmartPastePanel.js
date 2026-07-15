@@ -6,9 +6,11 @@ import {
   SCENARIO_META,
   candidateToImportFields,
   computeMissingEnrichFields,
+  normalizePasteCandidate,
 } from "../utils/smartPastePipeline";
 import { buildEnrichGuestPatch } from "../utils/guestImportIntelligence";
 import { normalizeGuestPhoneEdit } from "../utils/ezgoParser";
+import { mealPlanLabel } from "../data/stayMealsSchema";
 
 function todayYmd() {
   return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
@@ -16,7 +18,8 @@ function todayYmd() {
 
 function ScenarioCard({ item, onEnrich, onCreateDayGuest, busy }) {
   const meta = SCENARIO_META[item.scenario];
-  const c = item.candidate;
+  const c = normalizePasteCandidate(item.candidate);
+  const planLabel = c.meal_plan && c.meal_plan !== "none" ? mealPlanLabel(c.meal_plan) : null;
 
   return (
     <div style={{
@@ -45,7 +48,7 @@ function ScenarioCard({ item, onEnrich, onCreateDayGuest, busy }) {
       </div>
       <div style={{ fontSize: 12, color: "#555", marginBottom: 6 }}>
         {c.guest_type_reason}
-        {c.meal_plan_label ? ` · ${c.meal_plan_label}` : ""}
+        {planLabel ? ` · ${planLabel}` : (c.meal_plan_label ? ` · ${c.meal_plan_label}` : "")}
         {c.spa_time ? ` · ספא ${c.spa_time}` : ""}
         {c.order_number ? ` · הזמנה ${c.order_number}` : ""}
       </div>

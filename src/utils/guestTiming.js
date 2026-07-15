@@ -8,8 +8,6 @@
 
 import { SUITE_REGISTRY } from "../data/suiteRegistry";
 
-const todayStr = () => new Date().toISOString().slice(0, 10);
-
 /** Calendar today in Israel (YYYY-MM-DD) — matches DATE columns as hotel-local days. */
 export function israelTodayStr() {
   return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
@@ -29,15 +27,32 @@ export function isArrivalToday(arrivalDateStr) {
   return arrivalDateStr === israelTodayStr();
 }
 
-/** True when the guest's stay window includes today (in-resort), per golden profile dates+status. */
+const PRE_ARRIVAL_STATUSES = new Set(["pending", "expected", "room_ready"]);
+
+/** Arrival day, pre check-in (pending / expected / room_ready). */
+export function isPreArrivalTodayGuest(guest, today = israelTodayStr()) {
+  return PRE_ARRIVAL_STATUSES.has(guest?.status) && guest?.arrival_date === today;
+}
+
+/** True when guest is physically in-house: checked_in + within stay window (Israel calendar). */
 export function isGuestInResortToday(guest) {
   if (!guest?.arrival_date) return false;
-  if (guest.status === "cancelled") return false;
-  const today = todayStr();
-  if (guest.status === "checked_in") return true;
+  if (guest.status !== "checked_in") return false;
+  if (isGuestDeparted(guest)) return false;
+  const today = israelTodayStr();
   if (guest.arrival_date > today) return false;
-  if (!guest.departure_date || guest.departure_date >= today) return true;
-  return false;
+  if (guest.departure_date && guest.departure_date < today) return false;
+  return true;
+}
+
+/** Suite guest checked in and currently in-house. */
+export function isSuiteInResortToday(guest) {
+  return isSuiteGuestProfile(guest) && isGuestInResortToday(guest);
+}
+
+/** Suite guest arriving today, not yet checked in. */
+export function isSuiteArrivingToday(guest) {
+  return isSuiteGuestProfile(guest) && isPreArrivalTodayGuest(guest);
 }
 
 /** Suite profile: explicit room_type or assigned room from SUITE_REGISTRY. */
@@ -113,15 +128,19 @@ export function getGuestArrivalRosterLabel(guest, lang = "he") {
     };
   }
 
-  const inStay =
-    status === "checked_in" ||
-    (arrival <= today && (!departure || departure >= today));
-
-  if (inStay && arrival <= today) {
+  if (isSuiteInResortToday(guest)) {
     return {
       label: en ? "🟢 In resort" : "🟢 בריזורט",
       bg: "#F0FDF4",
       fg: "#15803D",
+    };
+  }
+
+  if (isSuiteArrivingToday(guest)) {
+    return {
+      label: en ? "🌅 Arriving today" : "🌅 מגיעים היום",
+      bg: "#FFFBEB",
+      fg: "#B45309",
     };
   }
 
@@ -171,25 +190,23 @@ const fmtDate = (d) =>
 // badge at all rather than a misleading default.
 export function getGuestTimingBadge(guest) {
   if (!guest || !guest.arrival_date) return null;
-  const today = todayStr();
+  const today = israelTodayStr();
 
   if (isGuestDeparted(guest)) {
     return { label: "⚪ אורח לאחר עזיבה", bg: "var(--ivory)", color: "var(--text-muted)", border: "var(--border)" };
   }
 
-  if (guest.status === "checked_in") {
+  if (isGuestInResortToday(guest)) {
     return { label: "🟢 אורח בריזורט", bg: "#F0FDF4", color: "#15803D", border: "#BBF7D0" };
+  }
+  if (isSuiteArrivingToday(guest)) {
+    return { label: "🌅 מגיעים היום", bg: "#FFFBEB", color: "#B45309", border: "#FDE68A" };
   }
   if (guest.arrival_date > today) {
     return {
       label: `🟡 הגעה עתידית: ${fmtDate(guest.arrival_date)}`,
       bg: "#FFFBEB", color: "#B45309", border: "#FDE68A",
     };
-  }
-  // Dates say "currently staying" even if status hasn't been flipped to
-  // checked_in yet (e.g. still 'room_ready'/'expected' on arrival day).
-  if (!guest.departure_date || guest.departure_date >= today) {
-    return { label: "🟢 אורח בריזורט", bg: "#F0FDF4", color: "#15803D", border: "#BBF7D0" };
   }
   return { label: "⚪ אורח לאחר עזיבה", bg: "var(--ivory)", color: "var(--text-muted)", border: "var(--border)" };
 }
@@ -203,25 +220,30 @@ export function isGuestDeparted(guest) {
   return false;
 }
 
-/** Normalize inbox contact / guests row to { arrival_date, departure_date, status }. */
+/** Normalize inbox contact / guests row to profile fields for roster classification. */
 export function rosterGuestFields(contact) {
-  if (!contact) return { arrival_date: null, departure_date: null, status: null };
+  if (!contact) {
+    return { arrival_date: null, departure_date: null, status: null, room: null, room_type: null };
+  }
   return {
     arrival_date: contact.arrival_date ?? contact.arrivalDate ?? null,
     departure_date: contact.departure_date ?? contact.departureDate ?? null,
     status: contact.status ?? null,
+    room: contact.room ?? null,
+    room_type: contact.room_type ?? contact.roomType ?? null,
   };
 }
 
 /**
  * Inbox roster segment for filtering + grouped sections (Israel calendar).
- * @returns {"departed"|"no_date"|"in_resort"|"tomorrow"|"in_2_days"|"future"}
+ * @returns {"departed"|"no_date"|"in_resort"|"arriving_today"|"tomorrow"|"in_2_days"|"future"}
  */
 export function classifyInboxRosterSegment(guest) {
   const g = rosterGuestFields(guest);
   if (isGuestDeparted(g)) return "departed";
   if (!g.arrival_date) return "no_date";
-  if (isGuestInResortToday(g)) return "in_resort";
+  if (isSuiteInResortToday(g)) return "in_resort";
+  if (isSuiteArrivingToday(g)) return "arriving_today";
 
   const diff = israelDaysBetween(israelTodayStr(), g.arrival_date);
   if (diff === 1) return "tomorrow";
@@ -246,6 +268,7 @@ export function classifyInboxContactSegment(contact) {
 /** Display order for grouped inbox roster (excludes departed — separate tab). */
 export const INBOX_ROSTER_SEGMENT_ORDER = [
   "in_resort",
+  "arriving_today",
   "tomorrow",
   "in_2_days",
   "future",
@@ -256,6 +279,7 @@ const INBOX_SEGMENT_META = {
   he: {
     unread: { label: "🔵 הודעות חדשות", bg: "#EFF6FF", fg: "#1D4ED8" },
     in_resort: { label: "🟢 בריזורט", bg: "#F0FDF4", fg: "#15803D" },
+    arriving_today: { label: "🌅 מגיעים היום", bg: "#FFFBEB", fg: "#B45309" },
     tomorrow: { label: "📅 מחר", bg: "#FFFBEB", fg: "#B45309" },
     in_2_days: { label: "📅 עוד יומיים", bg: "#FFFBEB", fg: "#B45309" },
     future: { label: "📅 הגעה עתידית", bg: "#FFFBEB", fg: "#B45309" },
@@ -265,6 +289,7 @@ const INBOX_SEGMENT_META = {
   en: {
     unread: { label: "🔵 New messages", bg: "#EFF6FF", fg: "#1D4ED8" },
     in_resort: { label: "🟢 In resort", bg: "#F0FDF4", fg: "#15803D" },
+    arriving_today: { label: "🌅 Arriving today", bg: "#FFFBEB", fg: "#B45309" },
     tomorrow: { label: "📅 Tomorrow", bg: "#FFFBEB", fg: "#B45309" },
     in_2_days: { label: "📅 In 2 days", bg: "#FFFBEB", fg: "#B45309" },
     future: { label: "📅 Future arrival", bg: "#FFFBEB", fg: "#B45309" },

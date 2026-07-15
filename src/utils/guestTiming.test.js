@@ -54,14 +54,52 @@ describe("classifyInboxRosterSegment", () => {
   const in5 = israelDateOffsetStr(5);
   const yesterday = israelDateOffsetStr(-1);
 
-  test("in_resort when checked_in", () => {
+  test("in_resort when suite checked_in", () => {
     expect(
       classifyInboxRosterSegment({
         arrival_date: yesterday,
         departure_date: tomorrow,
         status: "checked_in",
+        room_type: "suite",
+        room: "אמטיסט 8",
       }),
     ).toBe("in_resort");
+  });
+
+  test("arriving_today for suite pre check-in on arrival day", () => {
+    expect(
+      classifyInboxRosterSegment({
+        arrival_date: today,
+        departure_date: tomorrow,
+        status: "expected",
+        room_type: "suite",
+        room: "רובי 14",
+      }),
+    ).toBe("arriving_today");
+  });
+
+  test("checked_in day_guest is not in_resort segment", () => {
+    expect(
+      classifyInboxRosterSegment({
+        arrival_date: yesterday,
+        departure_date: tomorrow,
+        status: "checked_in",
+        room_type: "day_guest",
+        room: "Premium Day 1",
+      }),
+    ).toBe("future");
+  });
+
+  test("suite expected on arrival day is not in_resort until checked_in", () => {
+    expect(
+      classifyInboxRosterSegment({
+        arrival_date: today,
+        departure_date: tomorrow,
+        status: "room_ready",
+        room_type: "suite",
+        room: "אוניקס 7",
+      }),
+    ).toBe("arriving_today");
   });
 
   test("tomorrow for arrival in 1 day", () => {
@@ -117,6 +155,8 @@ describe("classifyInboxRosterSegment", () => {
       arrival_date: today,
       departure_date: tomorrow,
       status: "expected",
+      room: null,
+      room_type: null,
     });
   });
 });
@@ -270,5 +310,29 @@ describe("getGuestArrivalRosterLabel — departed vs stale checked_in", () => {
       status: "checked_in",
     };
     expect(getGuestTimingBadge(guest).label).toBe("⚪ אורח לאחר עזיבה");
+  });
+
+  test("checked_in suite in stay shows בריזורט", () => {
+    const guest = {
+      arrival_date: weekAgo,
+      departure_date: israelDateOffsetStr(1),
+      status: "checked_in",
+      room_type: "suite",
+      room: "אמטיסט 8",
+    };
+    expect(getGuestArrivalRosterLabel(guest).label).toBe("🟢 בריזורט");
+    expect(getGuestTimingBadge(guest).label).toBe("🟢 אורח בריזורט");
+  });
+
+  test("suite pre-arrival today shows מגיעים היום not בריזורט", () => {
+    const guest = {
+      arrival_date: israelTodayStr(),
+      departure_date: israelDateOffsetStr(2),
+      status: "expected",
+      room_type: "suite",
+      room: "רובי 14",
+    };
+    expect(getGuestArrivalRosterLabel(guest).label).toBe("🌅 מגיעים היום");
+    expect(getGuestTimingBadge(guest).label).toBe("🌅 מגיעים היום");
   });
 });

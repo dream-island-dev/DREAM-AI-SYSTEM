@@ -1,8 +1,10 @@
 // Resort-wide operational counters — single source for ResortPulseBar + Dashboard hooks.
 import {
-  classifyInboxRosterSegment,
   isGuestDeparted,
   israelTodayStr,
+  isPreArrivalTodayGuest,
+  isSuiteGuestProfile,
+  isSuiteInResortToday,
 } from "./guestTiming";
 
 /** Last-9-digit key — same convention as Inbox phone map. */
@@ -51,9 +53,9 @@ export function computeResortPulse(guests, extras = {}) {
 
   for (const g of guests ?? []) {
     if (!g || g.status === "cancelled") continue;
-    if (g.arrival_date === today) arrivalsToday += 1;
+    if (isSuiteGuestProfile(g) && isPreArrivalTodayGuest(g)) arrivalsToday += 1;
     if (g.departure_date === today && g.status !== "checked_out") departingToday += 1;
-    if (classifyInboxRosterSegment(g) === "in_resort") inResort += 1;
+    if (isSuiteInResortToday(g)) inResort += 1;
   }
 
   return {

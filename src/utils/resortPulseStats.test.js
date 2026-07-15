@@ -8,15 +8,16 @@ import { israelTodayStr } from "./guestTiming";
 describe("computeResortPulse", () => {
   const today = israelTodayStr();
 
-  it("counts arrivals today and in-resort guests", () => {
+  it("counts suite arrivals today (pre check-in) and checked-in suite in-resort", () => {
     const guests = [
-      { status: "expected", arrival_date: today, departure_date: today },
-      { status: "checked_in", arrival_date: today, departure_date: today },
-      { status: "cancelled", arrival_date: today, departure_date: today },
+      { status: "expected", arrival_date: today, departure_date: today, room_type: "suite", room: "אמטיסט 8" },
+      { status: "checked_in", arrival_date: today, departure_date: today, room_type: "suite", room: "רובי 14" },
+      { status: "expected", arrival_date: today, departure_date: today, room_type: "day_guest", room: "Premium Day 1" },
+      { status: "cancelled", arrival_date: today, departure_date: today, room_type: "suite" },
     ];
     const stats = computeResortPulse(guests);
-    expect(stats.arrivalsToday).toBe(2);
-    expect(stats.inResort).toBeGreaterThanOrEqual(1);
+    expect(stats.arrivalsToday).toBe(1);
+    expect(stats.inResort).toBe(1);
   });
 
   it("uses inboxAlertsCount extra — not stale guest flags", () => {

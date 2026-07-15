@@ -4,7 +4,7 @@ import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import { computeResortPulse, buildGuestsByPhoneKey, countActiveInboxAlerts } from "../utils/resortPulseStats";
 
 const GUEST_SELECT =
-  "phone, status, arrival_date, departure_date";
+  "phone, status, arrival_date, departure_date, room, room_type";
 
 export default function ResortPulseBar({ onAction, className = "" }) {
   const [stats, setStats] = useState(null);

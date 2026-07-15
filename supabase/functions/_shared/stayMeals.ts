@@ -34,6 +34,24 @@ function normalizePlan(raw?: string | null): string {
   return p in MEAL_PLAN_LABELS ? p : "none";
 }
 
+export function inferMealPlanFromHints(hints: {
+  meal_plan?: string | null;
+  meal_plan_label?: string | null;
+  package_label?: string | null;
+  guest_type_reason?: string | null;
+} = {}): string {
+  const normalized = normalizePlan(hints.meal_plan);
+  if (normalized !== "none") return normalized;
+
+  const hay = [hints.meal_plan_label, hints.package_label, hints.guest_type_reason]
+    .filter(Boolean)
+    .join(" ");
+  if (/\bFB\b|Full[\s-]?Board|פנסיון\s*מלא/i.test(hay)) return "full_board";
+  if (/\bHB\b|Half[\s-]?Board|חצי\s*פנסיון/i.test(hay)) return "half_board";
+  if (/ארוחת\s*ערב\s*בלבד|dinner\s*only/i.test(hay)) return "dinner_only";
+  return "none";
+}
+
 export function buildMealsItinerary(guest: GuestMealRow): { icon: string; label: string; value: string }[] {
   const plan = normalizePlan(guest.meal_plan);
   const location = (guest.meal_location ?? "").trim() || null;
@@ -45,9 +63,9 @@ export function buildMealsItinerary(guest: GuestMealRow): { icon: string; label:
   const rows: { icon: string; label: string; value: string }[] = [];
 
   if (plan !== "none") {
-    rows.push({ icon: "🍴", label: "בסיס אירוח", value: MEAL_PLAN_LABELS[plan] });
+    rows.push({ icon: "🍴", label: "פנסיון", value: MEAL_PLAN_LABELS[plan] });
   } else if (location) {
-    rows.push({ icon: "🍴", label: "בסיס אירוח", value: location });
+    rows.push({ icon: "🍴", label: "פנסיון", value: location });
   }
 
   for (const slot of SLOTS_BY_PLAN[plan] ?? []) {

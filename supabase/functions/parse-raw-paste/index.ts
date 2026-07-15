@@ -86,13 +86,16 @@ function buildPrompt(rawText: string, contextDate: string | null): string {
 • "suite_guest" — לינה בסוויטה / אורח לילה: מזוהים BB, HB, FB, חצי פנסיון, פנסיון מלא, טיפולי ספא לדיירי סוויטות, מספר לילות, צ'ק-אין לסוויטה.
 • "day_guest" — בילוי יומי בלבד: קלאסיק, דלאקס, Premium Day, ארוחת צהריים בלבד, חבילת יום, בלי לינה.
 
-מיפוי פנסיון ל-meal_plan:
-• FB / פנסיון מלא → full_board
-• HB / חצי פנסיון → half_board
-• BB / ארוחת בוקר (עם לינה) → half_board
+מיפוי פנסיון ל-meal_plan (חובה כשמופיע בטקסט — גם בלי שעות ארוחה):
+• HB / Half Board / חצי פנסיון → half_board
+  (לינה + ארוחת בוקר + ארוחת ערב — אין שעות ספציפיות בדוח, רק סוג הפנסיון)
+• FB / Full Board / פנסיון מלא → full_board
+  (לינה + בוקר + צהריים + ערב)
+• BB / ארוחת בוקר עם לינה → half_board
 • ארוחת ערב בלבד / dinner only → dinner_only
 • ללא פנסיון → none
-שמור את הקיצור המקורי ב-meal_plan_label (למשל "HB").
+שמור את הקיצור המקורי ב-meal_plan_label (למשל "HB" או "FB").
+אל תמציא שעות ארוחה — רק את סוג הפנסיון.
 
 שעות: spa_time בפורמט HH:MM (24h). תאריכים: YYYY-MM-DD.
 טלפון: שמור כפי שמופיע (phone_raw) — אל תוסיף +972 בכוח.
@@ -133,6 +136,22 @@ function normalizeMealPlan(v: unknown): MealPlan | null {
   return MEAL_PLANS.has(s) ? (s as MealPlan) : null;
 }
 
+function inferMealPlanFromHints(raw: RawCandidate): MealPlan | null {
+  const direct = normalizeMealPlan(raw.meal_plan);
+  if (direct) return direct;
+
+  const hay = [
+    raw.meal_plan_label,
+    raw.package_label,
+    raw.guest_type_reason,
+  ].filter(Boolean).join(" ");
+
+  if (/\bFB\b|Full[\s-]?Board|פנסיון\s*מלא/i.test(hay)) return "full_board";
+  if (/\bHB\b|Half[\s-]?Board|חצי\s*פנסיון/i.test(hay)) return "half_board";
+  if (/ארוחת\s*ערב\s*בלבד|dinner\s*only/i.test(hay)) return "dinner_only";
+  return null;
+}
+
 function normalizeGuestType(v: unknown): GuestType {
   return String(v ?? "").trim() === "day_guest" ? "day_guest" : "suite_guest";
 }
@@ -164,7 +183,7 @@ function normalizeCandidate(raw: RawCandidate, idx: number) {
     phone_raw: String(raw.phone_raw ?? "").trim() || null,
     order_number: String(raw.order_number ?? "").trim() || null,
     arrival_date: normalizeDate(raw.arrival_date),
-    meal_plan: normalizeMealPlan(raw.meal_plan),
+    meal_plan: inferMealPlanFromHints(raw) ?? normalizeMealPlan(raw.meal_plan),
     meal_plan_label: String(raw.meal_plan_label ?? "").trim() || null,
     spa_date: normalizeDate(raw.spa_date),
     spa_time: normalizeTime(raw.spa_time),

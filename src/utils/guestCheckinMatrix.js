@@ -2,7 +2,7 @@
 // Reception check-in matrix — stay window + 15:00 Israel auto check-in (mirrors
 // automationSchedule.ts / whatsapp-cron). Pure functions, no Supabase calls.
 
-import { israelDateOffsetStr, israelTodayStr } from "./guestTiming";
+import { israelDateOffsetStr, israelTodayStr, isPreArrivalTodayGuest } from "./guestTiming";
 
 /** PMS timeline scopes for צ'ק-אין tab filter bar. */
 export const CHECKIN_TIMELINE_TODAY = "today";
@@ -188,9 +188,7 @@ export function formatCheckinArrivalDisplay(guest) {
 
 const PRE_ARRIVAL_STATUSES = new Set(["pending", "expected", "room_ready"]);
 
-export function isPreArrivalTodayGuest(guest, today = israelTodayStr()) {
-  return PRE_ARRIVAL_STATUSES.has(guest?.status) && guest?.arrival_date === today;
-}
+export { isPreArrivalTodayGuest };
 
 /** Shared roster sort — status → (ETA|room by scope) → name. */
 export function sortCheckinRosterGuests(guests, now = new Date(), roomResolver, options = {}) {

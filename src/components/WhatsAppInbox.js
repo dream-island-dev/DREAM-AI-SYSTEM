@@ -352,6 +352,7 @@ const T = {
     filterAll: "הכל",
     filterAlerts: "🔴 התראות",
     filterInResort: "🟢 בריזורט",
+    filterArrivingToday: "🌅 מגיעים היום",
     filterDeparted: "⚪ אחרי עזיבה",
     departedChannelHint: (n) => `${n} בשיחות עזיבה בערוץ זה`,
     filterTomorrow: "📅 מחר",
@@ -445,6 +446,7 @@ const T = {
     filterAll: "All",
     filterAlerts: "🔴 Alerts",
     filterInResort: "🟢 In resort",
+    filterArrivingToday: "🌅 Arriving today",
     filterDeparted: "⚪ After stay",
     departedChannelHint: (n) => `${n} after-stay chats on this channel`,
     filterTomorrow: "📅 Tomorrow",
@@ -837,6 +839,7 @@ function contactMatchesRosterFilter(contact, rosterFilter, readCursorsByPhone = 
   if (rosterFilter === "unread") return contactUnreadCount(contact, readCursorsByPhone) > 0;
   const seg = classifyInboxContactSegment(contact);
   if (rosterFilter === "in_resort") return seg === "in_resort";
+  if (rosterFilter === "arriving_today") return seg === "arriving_today";
   if (rosterFilter === "tomorrow") return seg === "tomorrow";
   if (rosterFilter === "in_2_days") return seg === "in_2_days";
   if (rosterFilter === "future") return seg === "future";
@@ -2888,7 +2891,7 @@ export default function WhatsAppInbox({
   const [dbSearchBusy, setDbSearchBusy] = useState(false); // full-inbox DB search in flight (see effect below)
   // Session 125 P2-H — one timeline, three surfaces: the צ'ק-אין/ניהול-אורחים
   // date filter (sessionStorage, useCheckinTimelineFilter) seeds the roster
-  // chip here (today→בריזורט, tomorrow→מחר) and chip clicks write it back.
+  // chip here (today→מגיעים היום, tomorrow→מחר) and chip clicks write it back.
   // Only an EXPLICITLY saved scope seeds the filter — a fresh session keeps
   // the "all" default so no conversation is ever hidden by surprise.
   const [rosterFilter, setRosterFilterState] = useState(() => {
@@ -2896,7 +2899,7 @@ export default function WhatsAppInbox({
       if (typeof sessionStorage !== "undefined" && sessionStorage.getItem(CHECKIN_FILTER_STORAGE_KEY)) {
         const { scope, customDate } = loadCheckinFilter();
         if (!customDate) {
-          if (scope === CHECKIN_TIMELINE_TODAY) return "in_resort";
+          if (scope === CHECKIN_TIMELINE_TODAY) return "arriving_today";
           if (scope === CHECKIN_TIMELINE_TOMORROW) return "tomorrow";
         }
       }
@@ -2905,7 +2908,8 @@ export default function WhatsAppInbox({
   });
   const setRosterFilter = useCallback((id) => {
     setRosterFilterState(id);
-    if (id === "in_resort") saveCheckinFilter({ scope: CHECKIN_TIMELINE_TODAY, customDate: null });
+    if (id === "arriving_today") saveCheckinFilter({ scope: CHECKIN_TIMELINE_TODAY, customDate: null });
+    else if (id === "in_resort") saveCheckinFilter({ scope: CHECKIN_TIMELINE_TODAY, customDate: null });
     else if (id === "tomorrow") saveCheckinFilter({ scope: CHECKIN_TIMELINE_TOMORROW, customDate: null });
   }, []);
   const [rosterSort, setRosterSort] = useState("activity"); // activity | arrival | name
@@ -4798,6 +4802,7 @@ export default function WhatsAppInbox({
     { id: "all", label: t.filterAll },
     { id: "alerts", label: t.filterAlerts, badge: alertContacts.length },
     { id: "in_resort", label: t.filterInResort },
+    { id: "arriving_today", label: t.filterArrivingToday },
     { id: "tomorrow", label: t.filterTomorrow },
     { id: "in_2_days", label: t.filterIn2Days },
     { id: "future", label: t.filterFuture },

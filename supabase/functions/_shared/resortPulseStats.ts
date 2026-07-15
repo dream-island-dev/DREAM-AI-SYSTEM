@@ -33,12 +33,22 @@ export function isGuestDeparted(guest: GuestRow | null | undefined): boolean {
 /** Mirrors guestTiming.js isGuestInResortToday. */
 function isGuestInResortToday(guest: GuestRow): boolean {
   if (!guest.arrival_date) return false;
-  if (guest.status === "cancelled") return false;
+  if (guest.status !== "checked_in") return false;
+  if (isGuestDeparted(guest)) return false;
   const today = israelTodayStr();
-  if (guest.status === "checked_in") return true;
   if (guest.arrival_date > today) return false;
-  if (!guest.departure_date || guest.departure_date >= today) return true;
-  return false;
+  if (guest.departure_date && guest.departure_date < today) return false;
+  return true;
+}
+
+const PRE_ARRIVAL_STATUSES = new Set(["pending", "expected", "room_ready"]);
+
+function isPreArrivalTodayGuest(guest: GuestRow, today = israelTodayStr()): boolean {
+  return PRE_ARRIVAL_STATUSES.has(guest.status ?? "") && guest.arrival_date === today;
+}
+
+function isSuiteInResortToday(guest: GuestRow): boolean {
+  return isEffectiveSuiteGuest(guest) && isGuestInResortToday(guest);
 }
 
 export type ResortBriefTaskCounts = {
@@ -64,14 +74,14 @@ export function computeResortBriefStats(inputs: ResortBriefInputs) {
 
   for (const g of inputs.guests) {
     if (!g || g.status === "cancelled") continue;
-    if (g.arrival_date === today) {
-      arrivalsToday += 1;
-      if (!isEffectiveSuiteGuest(g)) dayPassToday += 1;
+    if (isPreArrivalTodayGuest(g)) {
+      if (isEffectiveSuiteGuest(g)) arrivalsToday += 1;
+      else dayPassToday += 1;
     }
     if (g.departure_date === today && g.status !== "checked_out") departingToday += 1;
-    if (isGuestInResortToday(g)) {
+    if (isSuiteInResortToday(g)) {
       inResort += 1;
-      if (isEffectiveSuiteGuest(g)) suiteInResort += 1;
+      suiteInResort += 1;
     }
   }
 
@@ -126,8 +136,8 @@ export async function fetchResortBrief(supabase: SupabaseClient): Promise<string
 
   const lines = [
     `📊 מצב הריזורט — ${israelTodayStr()}`,
-    `הגעות היום: ${stats.arrivalsToday} (סוויטות: ${stats.arrivalsToday - stats.dayPassToday} | דיי-פס: ${stats.dayPassToday})`,
-    `בריזורט כרגע: ${stats.inResort} (סוויטות: ${stats.suiteInResort})`,
+    `מגיעים היום (סוויטות): ${stats.arrivalsToday}${stats.dayPassToday ? ` | דיי-פס: ${stats.dayPassToday}` : ""}`,
+    `בריזורט כרגע (סוויטות): ${stats.suiteInResort}`,
     `עוזבים היום: ${stats.departingToday}`,
     `משימות פתוחות: ${stats.openTasks}${stats.pendingApprovalTasks ? ` (+${stats.pendingApprovalTasks} ממתינות לאישור)` : ""}`,
     `התראות בתיבה: ${stats.inboxAlertsCount}`,

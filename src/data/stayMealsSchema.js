@@ -80,6 +80,23 @@ export function mealPlanLabel(planId) {
   return labelById(MEAL_PLANS, normalizeMealPlan(planId));
 }
 
+/** Infer meal_plan from EZGO abbreviations / Hebrew when DB enum not set yet. */
+export function inferMealPlanFromHints({
+  meal_plan,
+  meal_plan_label,
+  package_label,
+  guest_type_reason,
+} = {}) {
+  const normalized = normalizeMealPlan(meal_plan);
+  if (normalized !== "none") return normalized;
+
+  const hay = [meal_plan_label, package_label, guest_type_reason].filter(Boolean).join(" ");
+  if (/\bFB\b|Full[\s-]?Board|פנסיון\s*מלא/i.test(hay)) return "full_board";
+  if (/\bHB\b|Half[\s-]?Board|חצי\s*פנסיון/i.test(hay)) return "half_board";
+  if (/ארוחת\s*ערב\s*בלבד|dinner\s*only/i.test(hay)) return "dinner_only";
+  return "none";
+}
+
 /** Rows for guest portal itinerary (only slots with time or plan implies them). */
 export function buildMealsItinerary(guest) {
   const plan = normalizeMealPlan(guest?.meal_plan);
@@ -91,11 +108,11 @@ export function buildMealsItinerary(guest) {
   if (plan !== "none") {
     rows.push({
       icon: "🍴",
-      label: "בסיס אירוח",
+      label: "פנסיון",
       value: mealPlanLabel(plan),
     });
   } else if (location) {
-    rows.push({ icon: "🍴", label: "בסיס אירוח", value: location });
+    rows.push({ icon: "🍴", label: "פנסיון", value: location });
   }
 
   for (const slot of slots) {

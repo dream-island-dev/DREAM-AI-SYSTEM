@@ -1,4 +1,8 @@
+2026-07-15 | Inbox בריזורט/מגיעים היום — סוויטות בלבד | `isGuestInResortToday` = `checked_in` בלבד; סגמנט `arriving_today` לסוויטות בטרום-צ'ק-אין; צ'יפ חדש ב-WhatsAppInbox; ResortPulseBar מיושר; 29 tests.
+
 2026-07-15 | Orit CS Agent — Graph M365 live path + UI connect | migration 208 `provider=microsoft`; `mailIngest.ts` Graph לפני IMAP; `OritCustomerServicePanel` כפתורי «חברי Outlook 365» + «סנכרן עכשיו» + תיקון טעינה; functions deployed; `docs/orit_outlook_connect.md` עודכן.
+
+2026-07-15 | Smart Paste meal plan — HB/FB → `חצי פנסיון`/`פנסיון מלא` in portal (no meal times required); `inferMealPlanFromHints`; parse-raw-paste prompt hardened | stayMealsSchema + parse-raw-paste redeploy.
 
 2026-07-15 | Smart Paste pipeline — `parse-raw-paste` Edge Function (Gemini 2.5 Flash JSON schema, suite_guest/day_guest); `SmartPastePanel` + fuzzy `match_guest_fuzzy` scenarios (enrich / missing alert / day guest) on DataSyncPage | migration 207 + functions deploy.
 
