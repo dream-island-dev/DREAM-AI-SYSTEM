@@ -2,11 +2,6 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 
-const MAILBOX_COLUMNS = [
-  "id", "profile_id", "owner_email", "email_address", "provider", "connection_status",
-  "read_only_mode", "last_sync_at", "sla_hours", "digest_enabled", "connection_error",
-].join(", ");
-
 const URGENCY_META = {
   critical: { label: "🔴 קריטי", bg: "#FEE2E2", color: "#B91C1C" },
   high:     { label: "🟠 דחוף", bg: "#FFEDD5", color: "#C2410C" },
@@ -98,22 +93,6 @@ export default function OritCustomerServicePanel({ user }) {
     return boot.mailbox;
   }, [showDemo, showToast]);
 
-  const loadThreads = useCallback(async () => {
-    if (!mailbox?.id) return;
-    let q = supabase
-      .from("orit_agent_threads")
-      .select("*")
-      .eq("mailbox_id", mailbox.id)
-      .order("received_at", { ascending: false });
-    if (!showDemo) q = q.eq("is_demo", false);
-    const { data, error } = await q;
-    if (error) {
-      showToast("err", error.message);
-      return;
-    }
-    setThreads(sortThreads(data ?? []));
-  }, [mailbox?.id, showDemo, showToast]);
-
   const loadThreadDetail = useCallback(async (threadId) => {
     if (!threadId) {
       setMessages([]);
@@ -185,7 +164,6 @@ export default function OritCustomerServicePanel({ user }) {
       const onFocus = async () => {
         window.removeEventListener("focus", onFocus);
         await loadMailbox();
-        await loadThreads();
       };
       window.addEventListener("focus", onFocus);
     } catch (e) {
@@ -205,7 +183,6 @@ export default function OritCustomerServicePanel({ user }) {
         return;
       }
       await loadMailbox();
-      await loadThreads();
       const n = data?.synced ?? 0;
       showToast("ok", n > 0 ? `סונכרנו ${n} הודעות חדשות` : "סנכרון הושלם — אין הודעות חדשות");
     } catch (e) {
@@ -225,7 +202,7 @@ export default function OritCustomerServicePanel({ user }) {
       if (error) throw error;
       if (!data?.ok) throw new Error(data?.error || "ניתוח נכשל");
       showToast("ok", "✨ הסוכן עדכן סיכום והצעות");
-      await loadThreads();
+      await loadMailbox();
       await loadThreadDetail(selectedId);
     } catch (e) {
       showToast("err", e.message);
@@ -244,7 +221,7 @@ export default function OritCustomerServicePanel({ user }) {
       if (error) throw error;
       showToast("ok", "נדחה — תוכלי לחזור אליו מאוחר יותר");
       setSelectedId(null);
-      await loadThreads();
+      await loadMailbox();
     } catch (e) {
       showToast("err", e.message);
     } finally {
@@ -283,7 +260,7 @@ export default function OritCustomerServicePanel({ user }) {
         if (error) throw error;
       }
       showToast("ok", "סומן כטופל");
-      await loadThreads();
+      await loadMailbox();
       setSelectedId(null);
     } catch (e) {
       showToast("err", e.message);
