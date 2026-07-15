@@ -5,7 +5,7 @@
 // (2) groupByPhone: strict latest-message-desc (Mike: «פעילות») — no unread/
 //     alert reordering in the base roster order.
 
-import { mergeThreadRows, groupByPhone, groupByPhoneUnified, contactMatchesChannelFilter, inferDefaultReplyChannel, resolveClaimChannel, buildChannelClaimsState } from "./WhatsAppInbox";
+import { mergeThreadRows, groupByPhone, groupByPhoneUnified, resolveContactInboxChannels, contactMatchesChannelFilter, inferDefaultReplyChannel, resolveClaimChannel, buildChannelClaimsState } from "./WhatsAppInbox";
 
 function msg(id, createdAt, extra = {}) {
   return {
@@ -119,6 +119,20 @@ describe("groupByPhoneUnified — one thread per phone", () => {
     expect(contacts[0].inbox_channel).toBe("unified");
     expect(contacts[0].channelsPresent.sort()).toEqual(["meta", "whapi"]);
     expect(contacts[0].messages.map((m) => m.id)).toEqual(["m1", "w1"]);
+  });
+});
+
+describe("resolveContactInboxChannels — dismiss/read cursor targets", () => {
+  test("unified thread clears both meta and whapi (not the virtual unified key)", () => {
+    expect(resolveContactInboxChannels({
+      inbox_channel: "unified",
+      channelsPresent: ["meta", "whapi"],
+    }).sort()).toEqual(["meta", "whapi"]);
+  });
+
+  test("single-channel threads keep their real inbox_channel", () => {
+    expect(resolveContactInboxChannels({ inbox_channel: "whapi" })).toEqual(["whapi"]);
+    expect(resolveContactInboxChannels({ inbox_channel: "meta" })).toEqual(["meta"]);
   });
 });
 

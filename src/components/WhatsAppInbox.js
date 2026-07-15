@@ -1013,6 +1013,14 @@ export function groupByPhoneUnified(rows) {
   });
 }
 
+/** Real DB inbox_channel values for a roster contact (unified → meta + whapi). */
+export function resolveContactInboxChannels(contact) {
+  if (contact?.inbox_channel === "unified") {
+    return contact.channelsPresent?.length ? [...contact.channelsPresent] : ["meta", "whapi"];
+  }
+  return [contact?.inbox_channel ?? "meta"];
+}
+
 export function contactMatchesChannelFilter(contact, channelFilter) {
   if (channelFilter === "all") return true;
   if (contact.inbox_channel === "unified") {
@@ -3224,9 +3232,7 @@ export default function WhatsAppInbox({
   const markPhoneInboundRead = useCallback((contact) => {
     const phone = contact?.phone;
     if (!phone) return;
-    const channels = contact?.inbox_channel === "unified"
-      ? (contact.channelsPresent?.length ? contact.channelsPresent : ["meta", "whapi"])
-      : [contact?.inbox_channel ?? "meta"];
+    const channels = resolveContactInboxChannels(contact);
     const now = new Date().toISOString();
     for (const inboxChannel of channels) {
       const threadKey = contact?.threadKey ?? inboxReadCursorKey(phone, inboxChannel);
@@ -3646,12 +3652,14 @@ export default function WhatsAppInbox({
   const dismissHumanRequest = useCallback(async (contact) => {
     const bare = contact.phone; // canonicalizePhone() already applied — "972XXXXXXXXX"
     const variants = phoneVariants(bare);
+    const channels = resolveContactInboxChannels(contact);
+    const channelSet = new Set(channels);
     try {
       const [{ error: convErr }, { error: guestErr }] = await Promise.all([
         supabase.from("whatsapp_conversations")
           .update({ human_requested: false })
           .in("phone", variants)
-          .eq("inbox_channel", contact.inbox_channel ?? "meta")
+          .in("inbox_channel", channels)
           .eq("human_requested", true),
         supabase.from("guests")
           .update({ needs_callback: false })
@@ -3664,7 +3672,7 @@ export default function WhatsAppInbox({
       // (fetchSince() only re-fetches rows newer than the last poll, so an
       // UPDATE to an old row's flag wouldn't otherwise be picked up here).
       allMsgsRef.current = allMsgsRef.current.map((m) =>
-        m.phone === bare && (m.inbox_channel ?? "meta") === (contact.inbox_channel ?? "meta")
+        m.phone === bare && channelSet.has(m.inbox_channel ?? "meta")
           ? { ...m, human_requested: false }
           : m
       );

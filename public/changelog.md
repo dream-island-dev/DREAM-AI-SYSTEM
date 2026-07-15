@@ -1,3 +1,5 @@
+2026-07-15 | Inbox dismiss red alert — `dismissHumanRequest` on unified threads now clears meta+whapi (was filtering `inbox_channel=unified`, a UI-only key) | WhatsAppInbox.js + tests.
+
 2026-07-15 | Whapi truncated-reply guard + facility typo (מסטאג) + Inbox dual-channel mute (🤖/🏨 per device, auto-claim on staff send) | whapi-webhook deploy + frontend push.
 
 2026-07-15 | Facility reviews via guest bot — migration 212 `guest_feedback.facility_category`+`rating`; `_shared/guestFacilityReview.ts` tier-0 + `log_facility_review` LLM tool (Meta); Whapi tier-0; Feedback → משוב חופשי: facility filter chips (מסעדה מודגשת) + דירוג | whatsapp-webhook + whapi-webhook deploy + db push.
