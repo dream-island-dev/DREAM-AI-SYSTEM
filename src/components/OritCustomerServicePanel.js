@@ -70,6 +70,15 @@ export default function OritCustomerServicePanel({ user }) {
       return null;
     }
     setLoadError(null);
+
+    const { data: boot, error: bootErr } = await supabase.functions.invoke("orit-cs-bootstrap", { body: {} });
+    if (!bootErr && boot?.ok && boot?.mailbox) {
+      setMailbox(boot.mailbox);
+      return boot.mailbox;
+    }
+    if (bootErr) console.warn("[orit-cs] bootstrap:", bootErr);
+    if (boot && !boot.ok) console.warn("[orit-cs] bootstrap:", boot.error);
+
     const { data: rpcRows, error: rpcErr } = await supabase.rpc("get_orit_cs_mailbox");
     if (rpcErr) {
       console.error("[orit-cs] mailbox rpc:", rpcErr);
@@ -96,8 +105,9 @@ export default function OritCustomerServicePanel({ user }) {
       data = (rows ?? []).find((m) => m.connection_status === "active") ?? rows?.[0] ?? null;
     }
     if (!data) {
-      setLoadError("אין שורת mailbox או שאין הרשאה — בדוק ניהול משתמשים (orit_cs_agent_access)");
-      console.warn("[orit-cs] mailbox row not visible");
+      const errDetail = boot?.error || rpcErr?.message || "unknown";
+      setLoadError(`לא נמצאה תיבה (${errDetail}) — נסה להתנתק ולהתחבר מחדש`);
+      console.warn("[orit-cs] mailbox row not visible", { boot, rpcErr });
     }
     let next = data;
     if (data?.profile_id == null && user?.id) {
