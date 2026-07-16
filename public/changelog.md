@@ -1,3 +1,5 @@
+2026-07-16 | Doc 2 mapping UX — approve bar no longer buried under paste textareas | `ArrivalImportPanel`: mapping gate moved directly under Doc 2 upload; auto-collapse EZGO email paste + scroll; `MappingReviewPanel` sticky approve bar; `DataSyncPage` Smart Paste below import hub. Frontend-only.
+
 2026-07-16 | Housekeeping WA parser — multi-room list + action on next line (Adir `4,5` + `צ׳ק אין`) | `housekeepingWaParse.ts` pending-rooms across lines; comma/space lists; same for ready/checkout. Deploy: `whapi-webhook`.
 
 2026-07-16 | Multi-suite room_ready — per-room WA send on GuestsPage + suite_rooms repair | migration 222; `suiteRoomReady.js` + GuestsPage per-room buttons; `suiteRoomReady.ts` canonical label match; profile shows per-room sent status. Deploy: `db push` + `whatsapp-send` + frontend.

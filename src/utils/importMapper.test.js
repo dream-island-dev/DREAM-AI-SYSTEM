@@ -6,6 +6,9 @@ import {
   isValidHmTime,
   isDefaultEditableField,
   SUITE_ARRIVALS_SCHEMA,
+  detectEzgoArrivalsPreset,
+  normalizeImportRows,
+  normalizeImportHeaderKey,
 } from "./importMapper";
 
 describe("importMapper — field defaults", () => {
@@ -61,5 +64,26 @@ describe("importMapper — field defaults", () => {
     const parsed = parseMappingMemory(flat);
     expect(parsed.mapping).toEqual(flat);
     expect(parsed.fieldDefaults).toEqual({});
+  });
+});
+
+describe("importMapper — EZGO preset + header normalize", () => {
+  test("normalizeImportHeaderKey strips BOM and spaces", () => {
+    expect(normalizeImportHeaderKey("\ufeffiOrderId")).toBe("iOrderId");
+    expect(normalizeImportHeaderKey(" sTel1 ")).toBe("sTel1");
+  });
+
+  test("detectEzgoArrivalsPreset matches BOM-prefixed Excel headers", () => {
+    const headers = [
+      "\ufeffiOrderId", "sTel1", "sRemark", "sClientFullName",
+      "sSubItemName", "sRoomName", "iResLineId",
+    ];
+    expect(detectEzgoArrivalsPreset(headers)?.orderNumber).toBe("iOrderId");
+  });
+
+  test("normalizeImportRows rewrites keys for aggregateGuestProfiles", () => {
+    const rows = normalizeImportRows([{ "\ufeffiOrderId": "99", " sTel1 ": "525" }]);
+    expect(rows[0].iOrderId).toBe("99");
+    expect(rows[0].sTel1).toBe("525");
   });
 });

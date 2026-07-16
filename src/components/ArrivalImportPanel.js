@@ -29,7 +29,7 @@ import {
   normalizeGuestPhoneEdit,
 } from "../utils/ezgoParser";
 import { mergeCandidates, classifyDbMatch, buildExistingGuestsLookup, findExistingGuestRow, buildMultiRoomLineIndexMap, formatMultiRoomLineLabel, bookingGuestKey, getDbMatchDiffLabels, buildEnrichGuestPatch, resolveCandidateRoomDisplay, buildCombinedRoomLabel, buildDoc2SyncActionLabel } from "../utils/guestImportIntelligence";
-import { SUITE_ARRIVALS_SCHEMA, buildMaskedSample, detectSuiteArrivalsPreset, detectEzgoArrivalsPreset, applyFieldDefaultsToProfiles, parseMappingMemory, packMappingMemory } from "../utils/importMapper";
+import { SUITE_ARRIVALS_SCHEMA, buildMaskedSample, detectSuiteArrivalsPreset, detectEzgoArrivalsPreset, applyFieldDefaultsToProfiles, parseMappingMemory, packMappingMemory, normalizeImportRows, normalizeImportHeaderKey } from "../utils/importMapper";
 import {
   isDetailedReservationFormat,
   parseDetailedReservationRows,
@@ -46,7 +46,7 @@ import { resolveEzgoHtmlFromUpload, looksLikeEml } from "../utils/ezgoEmailHtml"
 // Sorted, joined header signature — matches import_mapping_memory.header_signature (migration 049).
 // Not a hash: exact string equality is enough here and avoids a client-side hash dependency.
 function _headerSignature(headers) {
-  return [...headers].sort().join("␟");
+  return [...headers].map(normalizeImportHeaderKey).sort().join("␟");
 }
 
 // ── Date / phone helpers ──────────────────────────────────────────────────────
@@ -1473,6 +1473,44 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     );
   }, [merged, importSource, doc2SyncMode, importBadgeByIdx, existingGuestsLookup, dbMatchByIdx, dbDiffByIdx, multiRoomLineIndexMap, syncActionByIdx, importWithoutAutomation, groupCourtesyAutomation]);
 
+  const _applyDoc2Mapping = useCallback((finalMapping, appliedDefaults, rows, fallback, { saveMemory = true } = {}) => {
+    const profileMap = aggregateGuestProfiles(rows, finalMapping, fallback);
+    applyFieldDefaultsToProfiles(profileMap, appliedDefaults);
+    if (appliedDefaults.arrivalDate) {
+      for (const profile of profileMap.values()) {
+        if (!profile.arrivalDate) profile.arrivalDate = appliedDefaults.arrivalDate;
+      }
+    }
+    for (const profile of profileMap.values()) {
+      profile.arrivalDate = fallback;
+    }
+    if (!profileMap.size) return 0;
+
+    setDoc2Map(profileMap);
+    setImportSource(null);
+    setMappingStage("idle");
+    setAiSuggestion(null);
+    setAiError(null);
+
+    if (saveMemory && supabase) {
+      const signature = _headerSignature(Object.keys(rows[0] ?? {}));
+      supabase.from("import_mapping_memory")
+        .upsert(
+          {
+            schema_key: "suite_arrivals",
+            header_signature: signature,
+            approved_mapping: packMappingMemory(finalMapping, appliedDefaults),
+            last_used_at: new Date().toISOString(),
+          },
+          { onConflict: "schema_key,header_signature" },
+        )
+        .then(({ error }) => {
+          if (error) console.warn("[ArrivalImportPanel] failed to save mapping memory:", error.message);
+        });
+    }
+    return profileMap.size;
+  }, []);
+
   // ── Parse Doc 2: Suite CSV → AI-suggested column mapping → review screen ──
   // The AI only proposes; aggregateGuestProfiles() runs unchanged once the
   // admin approves a mapping in MappingReviewPanel (see handleMappingApprove).
@@ -1507,6 +1545,8 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
         showToast("err", "הקובץ ריק");
         return;
       }
+
+      rows = normalizeImportRows(rows);
 
       const headers = Object.keys(rows[0]);
       setRawDoc2Rows(rows);
@@ -1557,12 +1597,22 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
       }
 
       if (rememberedMapping) {
+        const count = _applyDoc2Mapping(
+          rememberedMapping,
+          rememberedFieldDefaults,
+          rows,
+          detectedDate || arrivalDate || _todayISO(),
+        );
+        if (count) {
+          showToast("ok", `✓ מיפוי מוכר — נטענו ${count} פרופילים`);
+          return;
+        }
         setAiSuggestion({
           mapping: rememberedMapping,
           defaults: {},
           fieldDefaults: rememberedFieldDefaults,
           confidence: {}, engine: "memory",
-          recommendations: ["✓ זוהה כפורמט קובץ שאושר בעבר — מיפוי נטען מהזיכרון, יש לאשר מחדש"],
+          recommendations: ["⚠ זיכרון מיפוי לא ייצר פרופילים — בדוק/י ידנית ואשר"],
         });
         setAiError(null);
       } else {
@@ -1573,11 +1623,21 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
         const ezgoPreset = detectEzgoArrivalsPreset(headers);
         const preset = ezgoPreset || detectSuiteArrivalsPreset(headers);
         if (preset) {
+          const count = _applyDoc2Mapping(
+            preset,
+            {},
+            rows,
+            detectedDate || arrivalDate || _todayISO(),
+          );
+          if (count) {
+            showToast("ok", `✓ מיפוי EZGO אוטומטי — נטענו ${count} פרופילים`);
+            return;
+          }
           setAiSuggestion({
             mapping: preset, defaults: {}, confidence: {}, engine: "preset",
             recommendations: [ezgoPreset
-              ? "✓ זוהה קובץ EZGO Suites CSV גולמי (iOrderId/sTel1/sRemark) — מיפוי מוכן מראש"
-              : "✓ זוהה דוח PMS מתקדם (מקור הגעה / שם מלא / טלפון) — מיפוי מוכן מראש"],
+              ? "⚠ מיפוי EZGO מוכן אך לא נמצאו פרופילים — בדוק/י ידנית"
+              : "⚠ מיפוי PMS מוכן אך לא נמצאו פרופילים — בדוק/י ידנית"],
           });
           setAiError(null);
         } else try {
@@ -1600,53 +1660,18 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
       showToast("err", "שגיאה בקריאת Suite CSV: " + err.message);
       setMappingStage("idle");
     }
-  }, [arrivalDate]);
+  }, [arrivalDate, _applyDoc2Mapping]);
 
-  // ── Admin approved a mapping in the review screen — run the unchanged
-  // extraction/grid/RPC pipeline with it, and remember it for next time. ──
   const handleMappingApprove = useCallback((finalMapping, appliedDefaults) => {
     if (!rawDoc2Rows) return;
-    const profileMap = aggregateGuestProfiles(rawDoc2Rows, finalMapping, doc2Fallback);
-    applyFieldDefaultsToProfiles(profileMap, appliedDefaults);
-    if (appliedDefaults.arrivalDate) {
-      for (const profile of profileMap.values()) {
-        if (!profile.arrivalDate) profile.arrivalDate = appliedDefaults.arrivalDate;
-      }
-    }
-    // Deterministic dates: the staff-set picker (doc2Fallback, captured at upload
-    // time) is the ONLY arrival date source, full stop — even if the AI mapped some
-    // column to the "arrivalDate" role and it parsed to a real value. Force it here
-    // rather than relying on every upstream priority order to agree.
-    for (const profile of profileMap.values()) {
-      profile.arrivalDate = doc2Fallback;
-    }
-    if (!profileMap.size) {
+    const count = _applyDoc2Mapping(finalMapping, appliedDefaults, rawDoc2Rows, doc2Fallback);
+    if (!count) {
       showToast("err", "לא נמצאו פרופילים — בדוק את המיפוי או שהקובץ ריק");
       setMappingStage("review");
       return;
     }
-    setDoc2Map(profileMap);
-    setImportSource(null);
-    setMappingStage("idle");
-
-    // Best-effort — never blocks the import if this fails
-    if (supabase) {
-      const signature = _headerSignature(Object.keys(rawDoc2Rows[0] ?? {}));
-      supabase.from("import_mapping_memory")
-        .upsert(
-          {
-            schema_key: "suite_arrivals",
-            header_signature: signature,
-            approved_mapping: packMappingMemory(finalMapping, appliedDefaults),
-            last_used_at: new Date().toISOString(),
-          },
-          { onConflict: "schema_key,header_signature" },
-        )
-        .then(({ error }) => {
-          if (error) console.warn("[ArrivalImportPanel] failed to save mapping memory:", error.message);
-        });
-    }
-  }, [rawDoc2Rows, doc2Fallback]);
+    showToast("ok", `נטענו ${count} פרופילים — ערוך בטבלה ולחץ סנכרן`);
+  }, [rawDoc2Rows, doc2Fallback, _applyDoc2Mapping]);
 
   const handleMappingCancel = useCallback(() => {
     setMappingStage("idle");

@@ -43,6 +43,23 @@ export function isAutomationMutedLeadSource(leadSource) {
   return String(leadSource ?? "").trim() === SALES_DEPT_LEAD_SOURCE;
 }
 
+/** Trim + strip BOM — Excel/CSV headers often carry invisible prefix/spaces. */
+export function normalizeImportHeaderKey(raw) {
+  return String(raw ?? "").trim().replace(/^\uFEFF/, "");
+}
+
+/** Rewrite row keys so preset detection and columnMapping use stable names. */
+export function normalizeImportRows(rows) {
+  if (!rows?.length) return [];
+  return rows.map((row) => {
+    const out = {};
+    for (const [k, v] of Object.entries(row ?? {})) {
+      out[normalizeImportHeaderKey(k)] = v;
+    }
+    return out;
+  });
+}
+
 /**
  * Preset column mapping for the advanced PMS export (e.g. 01.7.26.csv):
  * שם מלא, טלפון, מס. הזמנה, מס. לקוח, ת. התחלה, לילות, מקור הגעה.
@@ -50,12 +67,16 @@ export function isAutomationMutedLeadSource(leadSource) {
  */
 export function detectSuiteArrivalsPreset(headers) {
   if (!headers?.length) return null;
-  const set = new Set(headers);
+  const set = new Set(headers.map(normalizeImportHeaderKey));
   if (!set.has("מקור הגעה") || !set.has("שם מלא") || !set.has("טלפון")
       || !set.has("מס. הזמנה") || !set.has("מס. לקוח") || !set.has("ת. התחלה")) {
     return null;
   }
-  const priceCol = headers.find((h) => h === "מחיר" || /^מחיר/.test(h)) ?? "מחיר";
+  const priceCol = headers.find((h) => {
+    const n = normalizeImportHeaderKey(h);
+    return n === "מחיר" || /^מחיר/.test(n);
+  });
+  const priceKey = priceCol ? normalizeImportHeaderKey(priceCol) : "מחיר";
   return {
     orderNumber: "מס. הזמנה",
     resLineId:   "מס. לקוח",
@@ -64,7 +85,7 @@ export function detectSuiteArrivalsPreset(headers) {
     guestPhone:  "טלפון",
     roomName:    "חדרים",
     nights:      "לילות",
-    price:       priceCol,
+    price:       priceKey,
     arrivalDate: "ת. התחלה",
     leadSource:  "מקור הגעה",
   };
@@ -85,7 +106,7 @@ export function detectSuiteArrivalsPreset(headers) {
  */
 export function detectEzgoArrivalsPreset(headers) {
   if (!headers?.length) return null;
-  const set = new Set(headers);
+  const set = new Set(headers.map(normalizeImportHeaderKey));
   const required = ["iOrderId", "sTel1", "sRemark", "sClientFullName", "sSubItemName", "sRoomName", "iResLineId"];
   if (!required.every((h) => set.has(h))) return null;
   const mapping = {
