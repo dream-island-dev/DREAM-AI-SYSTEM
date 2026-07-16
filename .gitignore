@@ -28,3 +28,6 @@ make-blueprint-spa.json
 # include tokens/secrets typed during a session (e.g. curl with Bearer header).
 # Never commit — local-machine only.
 .claude/settings.local.json
+
+# Cursor IDE session/recovery dumps — contain session headers/token-like keys, never commit
+docs/cursor_*.json

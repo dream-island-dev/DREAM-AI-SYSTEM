@@ -1,3 +1,7 @@
+2026-07-16 | Webhook inbound auth — Meta HMAC + Whapi shared secret | `metaWebhookSignature.ts` verifies `X-Hub-Signature-256` on Meta POST (`META_APP_SECRET`); `whapiWebhookAuth.ts` gates Whapi POST via `X-Whapi-Secret` (`WHAPI_WEBHOOK_SECRET`). Fail closed if secret missing. `guestBotLlm` logs failover to `ai_failover_events` for Whapi DM path too. Deploy: `whatsapp-webhook`, `whapi-webhook` + set secrets + PATCH Whapi settings headers.
+
+2026-07-16 | Eliad daily digest — compact team KPIs section | `composeDigestTeamOpsSection` appended to daily `resort-digest-cron` + `get_ops_digest_now`: Adir presence/operational %, team avg resolve time, checkout→ready avg/median. `teamOpsDigestFetch.ts` shared fetch. Deploy: `resort-digest-cron`, `whapi-webhook` (executiveAssistant), `staff-notify-preview`.
+
 2026-07-16 | Orit CS mobile detail scroll fix | Removed fixed-height + nested scroll trap on email detail — full page scroll + sticky back + pulse hidden on detail. Frontend-only.
 
 2026-07-16 | AddGuestModal multi-room picker + suite_rooms manual sync | `+ חדר נוסף` per SUITE_REGISTRY; save → `guests.room` combined + `syncGuestSuiteRoomsFromSelection` (manual-* rows only; never deletes EZGO import rows). GuestsPage room column shows all suite_rooms. Frontend-only.
@@ -446,4 +450,5 @@
 2026-06-29 | futureSuiteRoomServiceRouting.ts + guest-portal-ops-request + sla-escalation-cron | Future suite room-service alerts → Whapi group 120363429859248777@g.us (replaces 972504025317 DM).
 2026-06-29 | WhatsAppInbox.js | Bulk "ניקוי כל ההתראות": confirm guard, clears human_requested + needs_callback for visible alert contacts, optimistic roster update.
 2026-07-07 | docs/xos_agent_playbook.md | session-131 Prompt-engineering hygiene: added §6 step 5b (spawn Plan agent for external verify on high-stakes changes instead of self-check only) + §6.1 Reset-on-Drift Protocol (stop and start fresh session instead of self-correcting mid-hallucination). Rest of the "role/task/constraints/examples/verify" formula was already covered by existing rules.
+2026-07-17 | WhatsAppInbox.js + inboxSendErrors.js | Inbox: באנר + שגיאה כשחלון 24ש׳ Dream Bot סגור — «בחר מכשיר הסוויטות»; בדיקת Meta inbound בלבד.
 2026-07-07 | docs/xos_agent_playbook.md | session-131b Anti-laziness hygiene: §6 step 1b Design Mode (3 architecture options, no code, before new/unclear features); step 3 reuse-first discipline; step 5 exact-match self-verify (flag shortcuts, no silent easier-version); new §6.2 QA (Mike names edge cases, self-review = first pass only on automation/payment/RLS); §7 No Auto-Piloting made an explicit hard rule (git/db/functions need approval, local build/test do not, one phase at a time).

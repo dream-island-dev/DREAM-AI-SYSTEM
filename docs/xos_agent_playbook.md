@@ -417,7 +417,7 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 ## 10. Learnings Log
 
 ### 2026-07-16 — Staff Group Analytics: chitchat is data, not noise
-- **Presence % requires logging ALL group messages** — `whapi-webhook` previously dropped `CHITCHAT` with zero DB row; Eliad's "what % of group messages is Adir" was impossible. Fix: `staff_group_messages` ingest before the chitchat `continue`, plus operational_kind on task/reaction/HK paths (`staffGroupIngest.ts`).
+- **Webhook POST auth (2026-07-16):** Meta POST must pass `X-Hub-Signature-256` (`META_APP_SECRET`); Whapi POST must carry `X-Whapi-Secret` matching `WHAPI_WEBHOOK_SECRET` (configure via Whapi `PATCH /settings` → `webhooks[].headers`). Both fail closed if secret missing — deploy secrets *before* functions or traffic stops. Bypass only for local sim: `WHATSAPP_SIMULATION` / `WHAPI_WEBHOOK_SKIP_AUTH`.
 - **Split "presence" from "operational impact"** — message share ≠ work done. `teamOpsAnalytics.ts` reports both: presence from `staff_group_messages`, operational share from `tasks` + `housekeeping_wa_events` + 👍 reactions. Executive assistant answers with `get_team_ops_analytics`, not raw SQL.
 - **Historical presence is forward-only** — tasks/HK events are backfillable; message presence starts at deploy. Tool must say so (`coverageNote`) to avoid CEO trusting a partial %.
 

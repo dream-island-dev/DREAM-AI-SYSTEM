@@ -163,6 +163,7 @@ inbox_reply          → checks wa_window_expires_at BEFORE calling Meta
 ❌ .single()         → NEVER use — always .maybeSingle() (throws on null)
 ❌ fetch() raw       → NEVER to Edge Functions — use supabase.functions.invoke() only
 ❌ RLS changes       → always verify existing access not broken before applying
+✅ Webhook POST auth → Meta: X-Hub-Signature-256 + META_APP_SECRET; Whapi: X-Whapi-Secret + WHAPI_WEBHOOK_SECRET (configure header via Whapi PATCH /settings)
 ```
 
 **Always:** HTTP 200 from every Edge Function — errors in `{ ok: false, error: "..." }` body.
