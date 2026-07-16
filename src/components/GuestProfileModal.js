@@ -28,6 +28,7 @@ import {
   fetchGuestSuiteRooms,
   formatSuiteRoomLine,
 } from "../utils/guestStaySummary";
+import { isSuiteRoomReadySent, resolveSuiteRoomDisplayLabel } from "../utils/suiteRoomReady";
 
 const ATTENTION_HEADINGS = {
   date_change:    "🗓️ ביקש/ה שינוי בתאריך",
@@ -255,11 +256,25 @@ export default function GuestProfileModal({
                 <div style={{ fontSize: 11, fontWeight: 700, color: "var(--gold-dark)", marginBottom: 4 }}>
                   {suiteRooms.length} חדרים בהזמנה
                 </div>
-                {suiteRooms.map((row) => (
-                  <div key={row.res_line_id} style={{ fontSize: 12, padding: "4px 0", borderTop: "1px solid var(--border)" }}>
-                    🛏️ {formatSuiteRoomLine(row)}
-                  </div>
-                ))}
+                {suiteRooms.map((row) => {
+                  const roomLabel = resolveSuiteRoomDisplayLabel(row);
+                  const sent = isSuiteRoomReadySent(row);
+                  return (
+                    <div key={row.res_line_id} style={{ fontSize: 12, padding: "4px 0", borderTop: "1px solid var(--border)" }}>
+                      🛏️ {formatSuiteRoomLine(row)}
+                      {sent && (
+                        <span style={{ fontSize: 10, color: "#16A34A", fontWeight: 700, marginRight: 6 }}>
+                          · ✅ חדר מוכן נשלח
+                        </span>
+                      )}
+                      {!sent && roomLabel && (
+                        <span style={{ fontSize: 10, color: "var(--text-muted)", marginRight: 6 }}>
+                          · ממתין לשליחה
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
             {!roomsLoading && suiteRooms.length === 1 && (

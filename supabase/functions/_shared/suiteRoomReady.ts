@@ -1,7 +1,7 @@
 // Per-room room_ready idempotency on suite_rooms (multi-room same guest/phone).
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { guestRoomMatchesSuiteId } from "./guestRoomResolve.ts";
+import { guestRoomMatchesSuiteId, resolveSuiteFromEzgoFields } from "./guestRoomResolve.ts";
 
 export interface SuiteRoomReadyRow {
   id: number;
@@ -16,6 +16,15 @@ export interface SuiteRoomReadyRow {
 
 function normalizeRoomLabel(value: string | null | undefined): string {
   return String(value ?? "").trim();
+}
+
+function rowCanonicalLabel(r: SuiteRoomReadyRow): string {
+  const display = normalizeRoomLabel(r.room_display);
+  if (display) return display;
+  const resolved = normalizeRoomLabel(
+    resolveSuiteFromEzgoFields(r.room_name, r.suite_type),
+  );
+  return resolved || normalizeRoomLabel(r.room_name) || normalizeRoomLabel(r.suite_type);
 }
 
 /** Resolve the suite_rooms row for a room_ready send (by canonical room label). */
@@ -40,12 +49,12 @@ export async function findSuiteRoomForGuestRoom(
   }
 
   const rows = (data ?? []) as SuiteRoomReadyRow[];
-  const exact = rows.find((r) => normalizeRoomLabel(r.room_display) === target);
+  const exact = rows.find((r) => rowCanonicalLabel(r) === target);
   if (exact) return exact;
 
   const fuzzy = rows.find((r) =>
     guestRoomMatchesSuiteId(
-      { room: r.room_display ?? r.room_name ?? r.suite_type, suite_name: r.suite_type },
+      { room: rowCanonicalLabel(r), suite_name: r.suite_type },
       target,
     )
   );
@@ -69,9 +78,17 @@ export async function markSuiteRoomReadySent(
 ): Promise<void> {
   const row = await findSuiteRoomForGuestRoom(supabase, guestId, roomLabel);
   if (row?.id) {
+    const canonical = rowCanonicalLabel(row);
+    const patch: Record<string, unknown> = {
+      room_ready_notified: true,
+      msg_room_ready_sent: true,
+    };
+    if (canonical && !normalizeRoomLabel(row.room_display)) {
+      patch.room_display = canonical;
+    }
     const { error } = await supabase
       .from("suite_rooms")
-      .update({ room_ready_notified: true, msg_room_ready_sent: true })
+      .update(patch)
       .eq("id", row.id);
     if (error) console.warn("[suiteRoomReady] suite_rooms update failed:", error.message);
     return;

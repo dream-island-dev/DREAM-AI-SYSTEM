@@ -6,6 +6,7 @@
 //
 // Invoke: GET/POST .../front-desk-morning-cron
 // Manual re-send: ?force=1 (bypasses idempotency for today)
+// Capabilities guide only: ?onboarding_only=1 (resends onboarding; skips daily brief)
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -73,17 +74,39 @@ serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
   try {
-    if (!frontDeskMorningEnabled()) {
-      return json({ ok: true, skipped: true, reason: "FRONT_DESK_MORNING_ENABLED=false" });
-    }
-
     const url = new URL(req.url);
     const force = url.searchParams.get("force") === "1";
+    const onboardingOnly = url.searchParams.get("onboarding_only") === "1";
+
+    if (!onboardingOnly && !frontDeskMorningEnabled()) {
+      return json({ ok: true, skipped: true, reason: "FRONT_DESK_MORNING_ENABLED=false" });
+    }
 
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
     );
+
+    const phone = resolveAdirNotifyPhoneDigits();
+    const templates = await loadStaffNotifyTemplates(supabase);
+
+    if (onboardingOnly) {
+      const onboardingBody = buildFrontDeskCapabilitiesOnboardingMessage(templates);
+      const onboardingWamid = await sendWhapiText(phone, onboardingBody, { noLinkPreview: true });
+      if (!onboardingWamid) {
+        console.warn("[front-desk-morning-cron] onboarding_only whapi send failed");
+        return json({ ok: false, error: "onboarding_whapi_send_failed" });
+      }
+      await logOutbound(supabase, phone, onboardingBody, onboardingWamid);
+      await markOnboardingSent(supabase);
+      return json({
+        ok: true,
+        sent: true,
+        type: "onboarding_only",
+        phone,
+        wa_message_id: onboardingWamid,
+      });
+    }
 
     const digestDate = israelYmd();
 
@@ -98,8 +121,6 @@ serve(async (req: Request) => {
       }
     }
 
-    const phone = resolveAdirNotifyPhoneDigits();
-    const templates = await loadStaffNotifyTemplates(supabase);
     const onboardingAlreadySent = await isOnboardingSent(supabase);
     let onboardingSentNow = false;
 

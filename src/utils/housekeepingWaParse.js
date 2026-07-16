@@ -5,6 +5,8 @@
 const MIN_ROOM = 1;
 const MAX_ROOM = 26;
 
+const ROOM_LIST_FRAGMENT = "[\\d\\s,/|&\\-]+";
+
 const HEBREW_TSADI_QOF_APOSTROPHE = "[''\\u2019\\u2018\\u05F3\\u02BC\\u0060\\u00B4\\u2032]";
 
 function normalizeHousekeepingLine(line) {
@@ -16,10 +18,6 @@ function normalizeHousekeepingLine(line) {
 
 const FORWARDED_RE = /הועברה/i;
 
-// ✅ always takes priority over check-in phrasing in the same line: in practice
-// ✅ arrives first (room turned over), and "N צ'ק אין" is typed later, on its
-// own, once the guest actually walks in. Line has ✅ → ready only, never
-// check-in. Line has check-in phrasing with NO ✅ → check-in only.
 const HAS_CHECKMARK_RE = /✅/;
 
 const READY_EXCLUDE_LINE_RE =
@@ -41,7 +39,17 @@ const CHECKIN_SUFFIX_RE = new RegExp(
   "i",
 );
 
-// Hebrew has no JS \w word-chars — never put \b after Hebrew alternatives.
+const CHECKIN_INLINE_MULTI_SUFFIX_RE = new RegExp(
+  `^(?:room\\s*)?(${ROOM_LIST_FRAGMENT})\\s+(?:צק\\s*אין|ci|check\\s*in)$`,
+  "i",
+);
+const CHECKIN_INLINE_MULTI_PREFIX_RE = new RegExp(
+  `^(?:צק\\s*אין|ci|check\\s*in)\\s+(${ROOM_LIST_FRAGMENT})$`,
+  "i",
+);
+
+const CHECKIN_ACTION_ONLY_RE = /^(?:ci|check\s*in|צק\s*אין)$/i;
+
 const CHECKOUT_TOKEN_PREFIX =
   "(?:co|check\\s*[- ]?\\s*out|צ['׳']ק\\s*אא?וט|צק\\s*אא?וט)";
 const CHECKOUT_TOKEN_SUFFIX =
@@ -62,6 +70,28 @@ const CHECKOUT_INLINE_RE = new RegExp(
   "i",
 );
 
+const CHECKOUT_INLINE_MULTI_SUFFIX_RE = new RegExp(
+  `^(?:room\\s*)?(${ROOM_LIST_FRAGMENT})\\s+(?:co|check\\s*out|צק\\s*אא?וט)$`,
+  "i",
+);
+const CHECKOUT_INLINE_MULTI_PREFIX_RE = new RegExp(
+  `^(?:co|check\\s*out|צק\\s*אא?וט)\\s+(${ROOM_LIST_FRAGMENT})$`,
+  "i",
+);
+
+const CHECKOUT_ACTION_ONLY_RE = /^(?:co|check\s*out|צק\s*אא?וט)$/i;
+
+const READY_INLINE_MULTI_CHECKMARK_RE = new RegExp(
+  `^(?:room\\s*)?(${ROOM_LIST_FRAGMENT})\\s*✅$`,
+  "i",
+);
+const READY_INLINE_MULTI_WORD_RE = new RegExp(
+  `^(?:room\\s*)?(${ROOM_LIST_FRAGMENT})\\s+(?:מוכן|ready|is\\s+ready|si\\s+ready)$`,
+  "i",
+);
+
+const READY_ACTION_ONLY_RE = /^(?:מוכן|ready|is\s+ready|si\s+ready|✅)$/i;
+
 function inSuiteRange(n) {
   return Number.isInteger(n) && n >= MIN_ROOM && n <= MAX_ROOM;
 }
@@ -69,6 +99,32 @@ function inSuiteRange(n) {
 function addRoom(rooms, raw) {
   const n = parseInt(String(raw ?? ""), 10);
   if (inSuiteRange(n)) rooms.add(n);
+}
+
+function addRoomsFromList(rooms, fragment) {
+  for (const part of fragment.split(/[\s,/|&\-]+/)) {
+    const t = part.trim();
+    if (!t) continue;
+    const n = parseInt(t, 10);
+    if (inSuiteRange(n)) rooms.add(n);
+  }
+}
+
+function extractBareRoomNumbers(line) {
+  const m = line.match(new RegExp(`^(?:room\\s*)?(${ROOM_LIST_FRAGMENT})$`, "i"));
+  if (!m) return [];
+  const out = [];
+  for (const part of m[1].split(/[\s,/|&\-]+/)) {
+    const t = part.trim();
+    if (!t) continue;
+    const n = parseInt(t, 10);
+    if (inSuiteRange(n)) out.push(n);
+  }
+  return out;
+}
+
+function applyPendingRooms(rooms, pending) {
+  for (const n of pending) rooms.add(n);
 }
 
 function matchCheckInRoom(line) {
@@ -82,7 +138,9 @@ function matchCheckInRoom(line) {
 }
 
 function isCheckInLine(line) {
-  return matchCheckInRoom(line) !== undefined;
+  if (matchCheckInRoom(line) !== undefined) return true;
+  if (CHECKIN_INLINE_MULTI_SUFFIX_RE.test(line) || CHECKIN_INLINE_MULTI_PREFIX_RE.test(line)) return true;
+  return CHECKIN_ACTION_ONLY_RE.test(line);
 }
 
 export function parseHousekeepingCheckInRoomNumbers(text) {
@@ -90,23 +148,54 @@ export function parseHousekeepingCheckInRoomNumbers(text) {
   if (!body || FORWARDED_RE.test(body)) return [];
 
   const rooms = new Set();
+  let pending = [];
+
   for (const line of body.split(/\r?\n/)) {
     const t = normalizeHousekeepingLine(line.trim());
     if (!t) continue;
-    // ✅ wins — a line with a checkmark is a ready signal, not a check-in one.
     if (HAS_CHECKMARK_RE.test(t)) continue;
+
     const room = matchCheckInRoom(t);
-    if (room) addRoom(rooms, room);
+    if (room) {
+      addRoom(rooms, room);
+      continue;
+    }
+
+    const multiSuffix = t.match(CHECKIN_INLINE_MULTI_SUFFIX_RE);
+    if (multiSuffix) {
+      addRoomsFromList(rooms, multiSuffix[1]);
+      pending = [];
+      continue;
+    }
+    const multiPrefix = t.match(CHECKIN_INLINE_MULTI_PREFIX_RE);
+    if (multiPrefix) {
+      addRoomsFromList(rooms, multiPrefix[1]);
+      pending = [];
+      continue;
+    }
+
+    if (CHECKIN_ACTION_ONLY_RE.test(t) && pending.length) {
+      applyPendingRooms(rooms, pending);
+      pending = [];
+      continue;
+    }
+
+    const bare = extractBareRoomNumbers(t);
+    if (bare.length) {
+      pending.push(...bare);
+    }
   }
+
   return [...rooms].sort((a, b) => a - b);
 }
 
-/** "Co 23" / "24 co" / Hebrew צ'ק אאוט — staff physical checkout signal. */
 export function parseHousekeepingCheckOutRoomNumbers(text) {
   const body = String(text ?? "").trim();
   if (!body || FORWARDED_RE.test(body)) return [];
 
   const rooms = new Set();
+  let pending = [];
+
   for (const line of body.split(/\r?\n/)) {
     const t = normalizeHousekeepingLine(line.trim());
     if (!t) continue;
@@ -124,8 +213,36 @@ export function parseHousekeepingCheckOutRoomNumbers(text) {
       continue;
     }
     m = t.match(CHECKOUT_INLINE_RE);
-    if (m) addRoom(rooms, m[1]);
+    if (m) {
+      addRoom(rooms, m[1]);
+      continue;
+    }
+
+    m = t.match(CHECKOUT_INLINE_MULTI_SUFFIX_RE);
+    if (m) {
+      addRoomsFromList(rooms, m[1]);
+      pending = [];
+      continue;
+    }
+    m = t.match(CHECKOUT_INLINE_MULTI_PREFIX_RE);
+    if (m) {
+      addRoomsFromList(rooms, m[1]);
+      pending = [];
+      continue;
+    }
+
+    if (CHECKOUT_ACTION_ONLY_RE.test(t) && pending.length) {
+      applyPendingRooms(rooms, pending);
+      pending = [];
+      continue;
+    }
+
+    const bare = extractBareRoomNumbers(t);
+    if (bare.length) {
+      pending.push(...bare);
+    }
   }
+
   return [...rooms].sort((a, b) => a - b);
 }
 
@@ -134,11 +251,11 @@ export function parseHousekeepingReadyRoomNumbers(text) {
   if (!body || FORWARDED_RE.test(body)) return [];
 
   const rooms = new Set();
+  let pending = [];
 
   for (const line of body.split(/\r?\n/)) {
     const t = normalizeHousekeepingLine(line.trim());
     if (!t || READY_EXCLUDE_LINE_RE.test(t)) continue;
-    // Skip check-in-only lines — but ✅ always overrides check-in phrasing.
     if (isCheckInLine(t) && !HAS_CHECKMARK_RE.test(t)) continue;
     if (CHECKOUT_PREFIX_RE.test(t) || CHECKOUT_SUFFIX_RE.test(t)) continue;
 
@@ -148,9 +265,29 @@ export function parseHousekeepingReadyRoomNumbers(text) {
       continue;
     }
 
+    m = t.match(READY_INLINE_MULTI_CHECKMARK_RE);
+    if (m) {
+      addRoomsFromList(rooms, m[1]);
+      pending = [];
+      continue;
+    }
+
     m = t.match(/^(?:room\s*)?(\d{1,2})\s*(?:מוכן|ready|is\s+ready|si\s+ready)\b/i);
     if (m) {
       addRoom(rooms, m[1]);
+      continue;
+    }
+
+    m = t.match(READY_INLINE_MULTI_WORD_RE);
+    if (m) {
+      addRoomsFromList(rooms, m[1]);
+      pending = [];
+      continue;
+    }
+
+    if (READY_ACTION_ONLY_RE.test(t) && pending.length) {
+      applyPendingRooms(rooms, pending);
+      pending = [];
       continue;
     }
 
@@ -163,6 +300,12 @@ export function parseHousekeepingReadyRoomNumbers(text) {
     m = t.match(/(?:^|\s)(?:room\s*)?(\d{1,2})\s+(?:מוכן|ready|is\s+ready|si\s+ready)\s*✅?/i);
     if (m) {
       addRoom(rooms, m[1]);
+      continue;
+    }
+
+    const bare = extractBareRoomNumbers(t);
+    if (bare.length) {
+      pending.push(...bare);
     }
   }
 

@@ -94,7 +94,7 @@ export function isGuestEligibleForInHouseOpsDispatch(
   return status === "room_ready" || status === "expected" || status === "pending";
 }
 
-export function israelYmd(now: Date): string {
+export function israelYmd(now: Date = new Date()): string {
   return now.toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
 }
 

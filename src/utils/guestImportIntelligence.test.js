@@ -20,6 +20,7 @@ import {
   getDbMatchDiffLabels,
   buildEnrichGuestPatch,
   buildCombinedRoomLabel,
+  splitCombinedRoomLabel,
   buildDoc2SyncActionLabel,
   resolveCandidateRoomDisplay,
   pickEnrichValue,
@@ -463,6 +464,12 @@ describe("Guest Import Intelligence — golden cases", () => {
 
   test("buildCombinedRoomLabel: dedupes and joins multi-room labels", () => {
     expect(buildCombinedRoomLabel(["אמטיסט 8", "וילה 3", "אמטיסט 8"])).toBe("אמטיסט 8 · וילה 3");
+  });
+
+  test("splitCombinedRoomLabel: inverse of buildCombinedRoomLabel", () => {
+    expect(splitCombinedRoomLabel("אמטיסט 8 · וילה 3")).toEqual(["אמטיסט 8", "וילה 3"]);
+    expect(splitCombinedRoomLabel("אמטיסט 8")).toEqual(["אמטיסט 8"]);
+    expect(splitCombinedRoomLabel("")).toEqual([]);
   });
 
   test("buildDoc2SyncActionLabel: enrich skips existing room", () => {

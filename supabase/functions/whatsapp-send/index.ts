@@ -3800,7 +3800,7 @@ serve(async (req: Request) => {
     const pipelineScriptFallback = PIPELINE_SESSION_SCRIPT[trigger] ?? "";
     if ((isManualPipelineDispatch || useWhapiForPipeline || daypassSessionPreferred) && !forceMetaTemplate &&
         (stageRow?.session_message_script_key || stageRow?.session_message_script_key_shabbat || pipelineScriptFallback)) {
-      if (forceSessionMessage || forceWhapiSession || useWhapiForPipeline || force === true || isWindowOpen(guest.wa_window_expires_at) || daypassSessionPreferred) {
+      if (forceSessionMessage || forceWhapiSession || useWhapiForPipeline || force === true || isManualPipelineDispatch || isWindowOpen(guest.wa_window_expires_at) || daypassSessionPreferred) {
         const pipelineScriptKey = resolveShabbatAwareScriptKey(
           stageRow,
           pipelineIsShabbat,

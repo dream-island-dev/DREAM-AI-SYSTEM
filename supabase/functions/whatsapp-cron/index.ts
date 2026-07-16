@@ -192,8 +192,10 @@ Deno.serve(async (req: Request) => {
     }
 
     const catchUp = await catchUpDepartedTodaySuiteCheckoutSurveys(supabase);
-    if (catchUp.queued > 0) {
-      console.log(`[whatsapp-cron] post_checkout_survey catch-up queued=${catchUp.queued}`);
+    if (catchUp.queued > 0 || catchUp.retried > 0) {
+      console.log(
+        `[whatsapp-cron] post_checkout_survey catch-up queued=${catchUp.queued} retried=${catchUp.retried}`,
+      );
     }
 
     const postCheckoutSurveyResults = await processDuePostCheckoutSurveys(supabase, supabaseUrl, anon);

@@ -38,11 +38,24 @@ export function formatSuiteRoomLine(row) {
   return `${label}${adults}`;
 }
 
+const SUITE_ROOM_SELECT =
+  "id, guest_id, res_line_id, order_number, room_name, suite_type, room_display, adults, nights, arrival_date, room_ready_notified, msg_room_ready_sent, is_day_guest";
+
 export async function fetchGuestSuiteRooms(supabase, guest) {
   if (!supabase || !guest) return [];
+
+  if (guest.id) {
+    const { data: byGuestId, error: byGuestErr } = await supabase
+      .from("suite_rooms")
+      .select(SUITE_ROOM_SELECT)
+      .eq("guest_id", guest.id)
+      .order("res_line_id", { ascending: true });
+    if (!byGuestErr && byGuestId?.length) return byGuestId;
+  }
+
   let query = supabase
     .from("suite_rooms")
-    .select("res_line_id, room_name, suite_type, adults, nights, arrival_date, order_number")
+    .select(SUITE_ROOM_SELECT)
     .order("res_line_id", { ascending: true });
 
   if (guest.order_number && guest.arrival_date) {

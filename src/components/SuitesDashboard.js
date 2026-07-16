@@ -5,6 +5,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { supabase } from "../supabaseClient";
+import { resolveSuiteRoomDisplayLabel } from "../utils/suiteRoomReady";
 import QuietHoursGate from "./QuietHoursGate";
 import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
 
@@ -112,7 +113,7 @@ export default function SuitesDashboard() {
       // Optimistically stamp per-room flag locally so the button flips to ✅ without reload.
       setRooms((prev) =>
         prev.map((row) =>
-          row.guest_phone === phone && (roomId ? (row.room_display || row.room_name) === roomId : true)
+          row.guest_phone === phone && (roomId ? resolveSuiteRoomDisplayLabel(row) === roomId : true)
             ? { ...row, room_ready_notified: true, msg_room_ready_sent: true }
             : row,
         ),
@@ -347,7 +348,7 @@ export default function SuitesDashboard() {
                     {/* ── Room Ready dispatch button — Date guardrail (DNA §0.2 Disable Don't Hide) ── */}
                     {r.guest_phone && (() => {
                       const gs        = guestStatus[r.guest_phone];
-                      const roomLabel = r.room_display || r.room_name || "";
+                      const roomLabel = resolveSuiteRoomDisplayLabel(r);
                       const isToday   = r.arrival_date === today;
                       const hasGuest  = !!gs?.id;
                       const sent      = !!(r.room_ready_notified || r.msg_room_ready_sent);

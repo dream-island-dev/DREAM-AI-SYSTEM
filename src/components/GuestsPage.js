@@ -32,7 +32,15 @@ import { formatSpaSchedule } from "../utils/israeliTime";
 import {
   performSuiteCheckIn,
   performSuiteCheckInRevert,
+  markGuestRoomReadyAfterNotify,
 } from "../utils/suiteCheckinSync";
+import {
+  fetchSuiteRoomsForGuestIds,
+  isSuiteRoomReadySent,
+  resolveSuiteRoomDisplayLabel,
+  sendGuestRoomReadyMessage,
+} from "../utils/suiteRoomReady";
+import { formatSuiteRoomLine } from "../utils/guestStaySummary";
 
 export default function GuestsPage({
   initialTimelineScope = null,
@@ -61,6 +69,7 @@ export default function GuestsPage({
   const [deleteBusy, setDeleteBusy]     = useState(false);
   const [editGuest,     setEditGuest]    = useState(null);  // {} = new guest, {id,...} = existing
   const [roomByPhone,    setRoomByPhone]    = useState({});  // phone → { roomName, suiteType, isDayGuest } — fallback display only; the room dropdown itself uses SUITE_REGISTRY
+  const [suiteRoomsByGuestId, setSuiteRoomsByGuestId] = useState({});
 
   const {
     timelineScope,
@@ -110,6 +119,8 @@ export default function GuestsPage({
     else {
       const synced = await applyReceptionMatrixSync(data ?? []);
       setGuests(synced);
+      const suiteMap = await fetchSuiteRoomsForGuestIds(supabase, synced);
+      setSuiteRoomsByGuestId(suiteMap);
     }
     setLoading(false);
   }, [applyReceptionMatrixSync]);
@@ -149,7 +160,67 @@ export default function GuestsPage({
     return () => clearInterval(id);
   }, [fetchGuests]);
 
-  const setStatus = async (guest, status) => {
+  const getGuestSuiteRooms = (guest) => suiteRoomsByGuestId[guest?.id] ?? [];
+
+  const patchSuiteRoomReadyLocal = (guestId, roomLabel) => {
+    setSuiteRoomsByGuestId((prev) => {
+      const rows = prev[guestId];
+      if (!rows?.length) return prev;
+      const nextRows = rows.map((row) => {
+        const label = resolveSuiteRoomDisplayLabel(row);
+        if (label !== roomLabel) return row;
+        return { ...row, room_ready_notified: true, msg_room_ready_sent: true };
+      });
+      return { ...prev, [guestId]: nextRows };
+    });
+  };
+
+  const sendRoomReadyForSuiteRoom = async (guest, roomRow) => {
+    if (!supabase || !guest?.id) return;
+    const roomLabel = resolveSuiteRoomDisplayLabel(roomRow);
+    if (!roomLabel) {
+      showToast("err", "לא ניתן לזהות את שם החדר — ערוך את פרופיל האורח");
+      return;
+    }
+    if (!ensureCanSend()) {
+      showToast("err", "שליחה חסומה בשעות שקט — סמן אישור למעלה");
+      return;
+    }
+    setBusy(`${guest.id}:${roomLabel}`);
+    try {
+      const { data: waData, error: waError } = await sendGuestRoomReadyMessage(supabase, {
+        guestId: guest.id,
+        roomLabel,
+      });
+      if (waError || waData?.ok === false) {
+        const reason = waData?.error ?? waError?.message ?? "שגיאה לא ידועה";
+        showToast("err", `שליחת WA ל${roomLabel} נכשלה: ${reason}`);
+        return;
+      }
+      if (waData?.skipped) {
+        patchSuiteRoomReadyLocal(guest.id, roomLabel);
+        showToast("ok", `ℹ ${roomLabel} — ההודעה כבר נשלחה קודם`);
+      } else {
+        patchSuiteRoomReadyLocal(guest.id, roomLabel);
+        await markGuestRoomReadyAfterNotify(supabase, guest.id);
+        setGuests((prev) => prev.map((g) => (
+          g.id === guest.id && g.status !== "checked_in"
+            ? { ...g, status: "room_ready" }
+            : g
+        )));
+        showToast(
+          "ok",
+          `✅ חדר מוכן (${roomLabel}) + הודעת WA נשלחה ל${guest.name}${waData?.simulation ? " (סימולציה)" : ""}`,
+        );
+      }
+    } catch (e) {
+      showToast("err", `שליחת WA ל${roomLabel} נכשלה: ${e?.message ?? String(e)}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const setStatus = async (guest, status, roomLabel = null) => {
     if (!supabase) return;
     setBusy(guest.id);
 
@@ -188,16 +259,33 @@ export default function GuestsPage({
     setGuests((prev) => prev.map((g) => (g.id === guest.id ? { ...g, ...patch } : g)));
 
     // Room Ready → fire WhatsApp room_ready trigger (suites only).
-    // Uses isSuite() so legacy guests without explicit room_type are covered.
+    // Multi-room: caller passes roomLabel; single-room uses guests.room.
     if (status === "room_ready" && isSuite(guest)) {
+      const suiteRooms = getGuestSuiteRooms(guest);
+      if (suiteRooms.length > 1) {
+        const targetRow = roomLabel
+          ? suiteRooms.find((row) => resolveSuiteRoomDisplayLabel(row) === roomLabel)
+          : suiteRooms.find((row) => !isSuiteRoomReadySent(row));
+        if (!targetRow) {
+          showToast("err", "כל החדרים כבר קיבלו הודעת חדר מוכן");
+          setBusy(null);
+          return;
+        }
+        await sendRoomReadyForSuiteRoom(guest, targetRow);
+        setBusy(null);
+        return;
+      }
+
       if (!ensureCanSend()) {
         showToast("err", "חדר סומן כמוכן — אך שליחת WA חסומה בשעות שקט (סמן אישור למעלה)");
         setBusy(null);
         return;
       }
+      const singleRoomLabel = roomLabel || guest.room || resolveSuiteRoomDisplayLabel(suiteRooms[0]) || undefined;
       try {
-        const { data: waData, error: waError } = await supabase.functions.invoke("whatsapp-send", {
-          body: { trigger: "room_ready", guestId: guest.id, roomId: guest.room || undefined },
+        const { data: waData, error: waError } = await sendGuestRoomReadyMessage(supabase, {
+          guestId: guest.id,
+          roomLabel: singleRoomLabel,
         });
         if (waError || !waData?.ok) {
           const reason = waData?.error ?? waError?.message ?? "שגיאה לא ידועה";
@@ -229,7 +317,10 @@ export default function GuestsPage({
   const DAY_GUEST_ROOM_VALUES = new Set(["Premium Day 1", "Premium Day 2"]);
   const isDayGuest = (g) =>
     DAY_GUEST_ROOM_VALUES.has(g.room) || !!roomByPhone[g.phone]?.isDayGuest;
-  const hasRoomAssigned = (g) => !!(g.room || roomByPhone[g.phone]?.roomName);
+  const hasRoomAssigned = (g) => {
+    if (g.room || roomByPhone[g.phone]?.roomName) return true;
+    return getGuestSuiteRooms(g).length > 0;
+  };
   const roomMissing = (g) => !isDayGuest(g) && !hasRoomAssigned(g);
 
   // ── Batch selection helpers ──────────────────────────────────────────────────
@@ -240,8 +331,17 @@ export default function GuestsPage({
     setSelectedIds((prev) => prev.size === displayGuests.length ? new Set() : new Set(displayGuests.map((g) => g.id)));
 
   const roomNameFor = useCallback(
-    (g) => g.room || roomByPhone[g.phone]?.roomName || "",
-    [roomByPhone],
+    (g) => {
+      const rows = suiteRoomsByGuestId[g?.id];
+      if (rows?.length > 1) {
+        return rows.map(resolveSuiteRoomDisplayLabel).filter(Boolean).join(" · ");
+      }
+      if (rows?.length === 1) {
+        return resolveSuiteRoomDisplayLabel(rows[0]) || g.room || "";
+      }
+      return g.room || roomByPhone[g.phone]?.roomName || "";
+    },
+    [roomByPhone, suiteRoomsByGuestId],
   );
 
   // ── Reception matrix filters — PMS timeline scopes ─────────────────────
@@ -360,6 +460,95 @@ export default function GuestsPage({
     }
   };
 
+  const renderRoomReadyActions = (g, rowStatus) => {
+    const suiteRooms = getGuestSuiteRooms(g);
+    const multiRoom = suiteRooms.length > 1;
+
+    if (multiRoom) {
+      const pendingRooms = suiteRooms.filter((row) => !isSuiteRoomReadySent(row));
+      const allSent = pendingRooms.length === 0;
+
+      return (
+        <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 148 }}>
+          {suiteRooms.map((row) => {
+            const roomLabel = resolveSuiteRoomDisplayLabel(row);
+            const sent = isSuiteRoomReadySent(row);
+            const waKey = `${g.id}:${roomLabel}`;
+            const isDisabled = sent || busy === waKey || !canSend || rowStatus === "checked_in";
+            let tip = "";
+            if (sent) tip = "כבר נשלחה הודעת חדר מוכן לחדר זה";
+            else if (!canSend) tip = "שליחה חסומה בשעות שקט — סמן אישור למעלה";
+            else if (rowStatus === "checked_in") tip = "האורח כבר בצ'ק-אין";
+
+            return (
+              <button
+                key={row.res_line_id ?? row.id ?? roomLabel}
+                className="btn btn-sm"
+                disabled={isDisabled}
+                title={tip || `שלח חדר מוכן — ${formatSuiteRoomLine(row)}`}
+                onClick={() => sendRoomReadyForSuiteRoom(g, row)}
+                style={{
+                  background: sent ? "#E8F5EF" : isDisabled ? "#F5F5F5" : "#E8F5EF",
+                  color: sent ? "#16A34A" : isDisabled ? "#AAAAAA" : "#1A7A4A",
+                  cursor: isDisabled ? "not-allowed" : "pointer",
+                  fontSize: 11,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {busy === waKey ? "⏳…" : sent ? `✅ ${roomLabel}` : `✓ ${roomLabel}`}
+              </button>
+            );
+          })}
+          {allSent && rowStatus === "room_ready" && (
+            <button
+              className="btn btn-sm"
+              disabled={busy === g.id}
+              onClick={() => setStatus(g, "expected")}
+              style={{ background: "#FFF0EE", color: "#C0392B", fontSize: 11 }}
+            >
+              ↩ בטל חדר מוכן
+            </button>
+          )}
+        </div>
+      );
+    }
+
+    if (rowStatus === "room_ready") {
+      return (
+        <button className="btn btn-sm" disabled={busy === g.id}
+          onClick={() => setStatus(g, "expected")}
+          style={{ background: "#FFF0EE", color: "#C0392B" }}>
+          ↩ בטל חדר מוכן
+        </button>
+      );
+    }
+    if (rowStatus === "checked_in") {
+      return (
+        <button className="btn btn-sm" disabled
+          title="האורח כבר בצ'ק-אין"
+          style={{ background: "#F5F5F5", color: "#AAAAAA", cursor: "not-allowed" }}>
+          ✓ חדר מוכן
+        </button>
+      );
+    }
+    return (
+      <button className="btn btn-sm" disabled={busy === g.id || roomMissing(g) || !canSend}
+        onClick={() => setStatus(g, "room_ready")}
+        title={
+          !canSend ? "שליחה חסומה בשעות שקט — סמן אישור למעלה"
+            : roomMissing(g) ? "יש לשבץ חדר לפני סימון כמוכן — לחץ ✏️ לעריכה"
+            : undefined
+        }
+        style={{
+          background: roomMissing(g) || !canSend ? "#F5F5F5" : "#E8F5EF",
+          color:      roomMissing(g) || !canSend ? "#AAAAAA" : "#1A7A4A",
+          cursor:     roomMissing(g) || !canSend ? "not-allowed" : "pointer",
+        }}>
+        ✓ חדר מוכן
+      </button>
+    );
+  };
+
   /** Shared action buttons — desktop table + mobile cards (Disable Don't Hide §0.2). */
   const renderGuestActions = (g, rowStatus) => (
     <>
@@ -370,34 +559,7 @@ export default function GuestsPage({
         style={{ background: "var(--ivory)", color: "var(--gold-dark)", fontWeight: 700, border: "1px solid var(--gold)" }}>
         ✏️
       </button>
-      {rowStatus === "room_ready" ? (
-        <button className="btn btn-sm" disabled={busy === g.id}
-          onClick={() => setStatus(g, "expected")}
-          style={{ background: "#FFF0EE", color: "#C0392B" }}>
-          ↩ בטל חדר מוכן
-        </button>
-      ) : rowStatus === "checked_in" ? (
-        <button className="btn btn-sm" disabled
-          title="האורח כבר בצ'ק-אין"
-          style={{ background: "#F5F5F5", color: "#AAAAAA", cursor: "not-allowed" }}>
-          ✓ חדר מוכן
-        </button>
-      ) : (
-        <button className="btn btn-sm" disabled={busy === g.id || roomMissing(g) || !canSend}
-          onClick={() => setStatus(g, "room_ready")}
-          title={
-            !canSend ? "שליחה חסומה בשעות שקט — סמן אישור למעלה"
-              : roomMissing(g) ? "יש לשבץ חדר לפני סימון כמוכן — לחץ ✏️ לעריכה"
-              : undefined
-          }
-          style={{
-            background: roomMissing(g) || !canSend ? "#F5F5F5" : "#E8F5EF",
-            color:      roomMissing(g) || !canSend ? "#AAAAAA" : "#1A7A4A",
-            cursor:     roomMissing(g) || !canSend ? "not-allowed" : "pointer",
-          }}>
-          ✓ חדר מוכן
-        </button>
-      )}
+      {renderRoomReadyActions(g, rowStatus)}
       {rowStatus === "checked_in" ? (
         <button className="btn btn-sm" disabled={busy === g.id}
           onClick={() => setStatus(g, "expected")}

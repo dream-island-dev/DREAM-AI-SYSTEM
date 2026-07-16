@@ -10,7 +10,7 @@
 // Caller contract: only mount this when `guest` is truthy, e.g.
 //   {editGuest && <AddGuestModal guest={editGuest} onClose={...} onSaved={...} showToast={...} />}
 // guest = {} → new guest (no id); guest = {id, ...} → edit existing.
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { supabase } from "../supabaseClient";
 import { SUITE_REGISTRY, SUITE_SECTIONS } from "../data/suiteRegistry";
 import GuestProfileModal from "./GuestProfileModal";
@@ -23,12 +23,24 @@ import {
   normalizeMealPlan,
   applyLegacyMealColumns,
 } from "../data/stayMealsSchema";
+import { buildCombinedRoomLabel, splitCombinedRoomLabel } from "../utils/guestImportIntelligence";
+import { fetchGuestSuiteRooms } from "../utils/guestStaySummary";
+import {
+  resolveSuiteRoomDisplayLabel,
+  syncGuestSuiteRoomsFromSelection,
+} from "../utils/suiteRoomReady";
 
 // ── Smart room_type inference ─────────────────────────────────────────────────
 // Deterministic mapping from the room <select> value to DB room_type.
 // Returns null when the value is blank (no auto-change) so a manager who
 // intentionally left room empty can still set room_type manually.
 const _SUITE_SET = new Set(SUITE_REGISTRY);
+const DAY_PACKAGE_ROOMS = new Set(["Premium Day 1", "Premium Day 2"]);
+const MAX_SUITE_ROOMS = 8;
+
+function isDayPackageRoom(roomValue) {
+  return DAY_PACKAGE_ROOMS.has(roomValue) || String(roomValue ?? "").includes("Premium");
+}
 function inferRoomType(roomValue) {
   if (!roomValue) return null;
   // "Premium Day 1" / "Premium Day 2" — English values set by ArrivalImportPanel
@@ -77,8 +89,51 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
   const [saving, setSaving] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [liveGuest, setLiveGuest] = useState(guest);
+  const [selectedRooms, setSelectedRooms] = useState(() => {
+    const split = splitCombinedRoomLabel(guest.room);
+    return split.length > 0 ? split : [""];
+  });
+
+  useEffect(() => {
+    if (!isEdit || !supabase || !guest?.id) return;
+    let cancelled = false;
+    (async () => {
+      const rows = await fetchGuestSuiteRooms(supabase, guest);
+      if (cancelled || !rows.length) return;
+      const labels = rows.map(resolveSuiteRoomDisplayLabel).filter(Boolean);
+      if (labels.length) setSelectedRooms(labels);
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- refetch only when identity keys change
+  }, [isEdit, guest?.id, guest?.order_number, guest?.arrival_date, guest?.phone]);
 
   const setField = (field, value) => setForm((p) => ({ ...p, [field]: value }));
+
+  const setRoomAt = (index, value) => {
+    setSelectedRooms((prev) => {
+      const next = [...prev];
+      next[index] = value;
+      if (isDayPackageRoom(value)) return [value];
+      return next;
+    });
+    const inferred = inferRoomType(value);
+    if (inferred) setForm((p) => ({ ...p, room_type: inferred }));
+  };
+
+  const addRoomSlot = () => {
+    setSelectedRooms((prev) => {
+      if (prev.some(isDayPackageRoom)) return prev;
+      if (prev.length >= MAX_SUITE_ROOMS) return prev;
+      return [...prev, ""];
+    });
+  };
+
+  const removeRoomSlot = (index) => {
+    setSelectedRooms((prev) => {
+      if (prev.length <= 1) return [""];
+      return prev.filter((_, i) => i !== index);
+    });
+  };
 
   const handleSave = async () => {
     if (!supabase) return;
@@ -91,6 +146,7 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
       let spaDate = form.spa_date || null;
       const spaTime = form.spa_time || null;
       if (spaTime && !spaDate && form.arrival_date) spaDate = form.arrival_date;
+      const roomLabels = splitCombinedRoomLabel(buildCombinedRoomLabel(selectedRooms));
       const patch = {
         name:               form.name.trim() || null,
         arrival_date:       form.arrival_date  || null,
@@ -104,7 +160,7 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
         status:             form.status,
         requires_attention: !!form.requires_attention,
         needs_callback:     !!form.needs_callback,
-        room:               form.room || null,
+        room:               buildCombinedRoomLabel(roomLabels) || null,
         room_type:          form.room_type || null,
         lead_source:        (form.lead_source ?? "").trim() || null,
         ...applyLegacyMealColumns(
@@ -119,19 +175,39 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
         automation_muted:   !!form.automation_muted,
       };
 
+      let savedGuest;
       if (isEdit) {
         const { error } = await supabase.from("guests").update(patch).eq("id", guest.id);
         if (error) throw error;
-        onSaved?.({ ...guest, ...patch });
-        showToast?.("ok", "✅ פרופיל אורח עודכן בהצלחה");
+        savedGuest = { ...guest, ...patch };
+        onSaved?.(savedGuest);
       } else {
         const phone = (form.phone ?? "").trim();
         if (!phone) { showToast?.("err", "מספר טלפון הוא שדה חובה"); setSaving(false); return; }
         const { data: created, error } = await supabase
           .from("guests").insert({ ...patch, phone }).select().maybeSingle();
         if (error) throw error;
+        savedGuest = created;
         onSaved?.(created);
-        showToast?.("ok", "✅ אורח נוסף בהצלחה");
+      }
+
+      const isDayGuestRoom =
+        roomLabels.some(isDayPackageRoom)
+        || form.room_type === "day_guest"
+        || form.room_type === "premium_day_guest";
+      const syncResult = await syncGuestSuiteRoomsFromSelection(supabase, {
+        guestId: savedGuest.id,
+        guestPhone: savedGuest.phone,
+        guestName: savedGuest.name,
+        orderNumber: savedGuest.order_number,
+        arrivalDate: savedGuest.arrival_date,
+        roomLabels,
+        isDayGuest: isDayGuestRoom,
+      });
+      if (!syncResult.ok) {
+        showToast?.("err", `אורח נשמר — סנכרון suite_rooms נכשל: ${syncResult.error}`);
+      } else {
+        showToast?.("ok", isEdit ? "✅ פרופיל אורח עודכן בהצלחה" : "✅ אורח נוסף בהצלחה");
       }
       onClose?.();
     } catch (e) {
@@ -357,41 +433,73 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
           />
         </div>
 
-        {/* Room / suite selector — SUITE_REGISTRY is the single source for every
-            "assign a room" UI in the app (this modal + ArrivalImportPanel's grid). */}
+        {/* Room / suite selector — SUITE_REGISTRY; multi-room → suite_rooms sync on save */}
         <div style={{ marginBottom: 14 }}>
-          <label style={{ fontSize: 12, fontWeight: 700, display: "block", marginBottom: 4 }}>חדר / חבילה</label>
-          <select
-            value={form.room ?? ""}
-            onChange={(e) => {
-              const newRoom = e.target.value;
-              const inferred = inferRoomType(newRoom);
-              setForm((p) => ({
-                ...p,
-                room: newRoom,
-                ...(inferred ? { room_type: inferred } : {}),
-              }));
-            }}
-            disabled={saving}
-            style={{
-              width: "100%", padding: "9px 12px", border: "1px solid var(--border,#ddd)",
-              borderRadius: 8, fontSize: 14, fontFamily: "Heebo,sans-serif",
-              background: "var(--card-bg,#fff)", cursor: "pointer",
-            }}
-          >
-            <option value="">— ללא חדר —</option>
-            <optgroup label="⭐ בילוי יומי">
-              <option value="Premium Day 1">חבילת פרימיום בילוי יומי 1</option>
-              <option value="Premium Day 2">חבילת פרימיום בילוי יומי 2</option>
-            </optgroup>
-            {SUITE_SECTIONS.map((sec) => (
-              <optgroup key={sec.label} label={`${sec.icon} ${sec.label}`}>
-                {SUITE_REGISTRY
-                  .filter((s) => sec.prefix.some((p) => s.startsWith(p)))
-                  .map((s) => <option key={s} value={s}>{s}</option>)}
-              </optgroup>
-            ))}
-          </select>
+          <label style={{ fontSize: 12, fontWeight: 700, display: "block", marginBottom: 4 }}>
+            חדר / חבילה
+            {selectedRooms.length > 1 && (
+              <span style={{ fontWeight: 600, color: "var(--text-muted)", marginRight: 6 }}>
+                ({selectedRooms.length} חדרים)
+              </span>
+            )}
+          </label>
+          {selectedRooms.map((roomValue, idx) => (
+            <div key={`room-slot-${idx}`} style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center" }}>
+              <select
+                value={roomValue ?? ""}
+                onChange={(e) => setRoomAt(idx, e.target.value)}
+                disabled={saving}
+                style={{
+                  flex: 1, padding: "9px 12px", border: "1px solid var(--border,#ddd)",
+                  borderRadius: 8, fontSize: 14, fontFamily: "Heebo,sans-serif",
+                  background: "var(--card-bg,#fff)", cursor: "pointer",
+                }}
+              >
+                <option value="">— ללא חדר —</option>
+                <optgroup label="⭐ בילוי יומי">
+                  <option value="Premium Day 1">חבילת פרימיום בילוי יומי 1</option>
+                  <option value="Premium Day 2">חבילת פרימיום בילוי יומי 2</option>
+                </optgroup>
+                {SUITE_SECTIONS.map((sec) => (
+                  <optgroup key={sec.label} label={`${sec.icon} ${sec.label}`}>
+                    {SUITE_REGISTRY
+                      .filter((s) => sec.prefix.some((p) => s.startsWith(p)))
+                      .map((s) => <option key={s} value={s}>{s}</option>)}
+                  </optgroup>
+                ))}
+              </select>
+              {selectedRooms.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() => removeRoomSlot(idx)}
+                  disabled={saving}
+                  title="הסר חדר מההזמנה"
+                  style={{
+                    padding: "8px 10px", borderRadius: 8, border: "1px solid var(--border,#ddd)",
+                    background: "#FFF0EE", color: "#C0392B", cursor: saving ? "not-allowed" : "pointer",
+                    fontFamily: "Heebo,sans-serif", fontSize: 12, fontWeight: 700,
+                  }}
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          ))}
+          {!selectedRooms.some(isDayPackageRoom) && selectedRooms.length < MAX_SUITE_ROOMS && (
+            <button
+              type="button"
+              onClick={addRoomSlot}
+              disabled={saving}
+              style={{
+                padding: "6px 12px", borderRadius: 8, border: "1px dashed var(--gold,#C9A96E)",
+                background: "transparent", color: "var(--gold-dark,#A8843A)",
+                fontFamily: "Heebo,sans-serif", fontSize: 12, fontWeight: 700,
+                cursor: saving ? "not-allowed" : "pointer",
+              }}
+            >
+              + חדר נוסף
+            </button>
+          )}
         </div>
 
         {/* Room type — drives day_guest/premium_day_guest/suite badges + tab bucketing

@@ -690,6 +690,14 @@ export function buildCombinedRoomLabel(labels = []) {
   return out.join(" · ");
 }
 
+/** Inverse of buildCombinedRoomLabel — for loading guests.room into multi-select UI. */
+export function splitCombinedRoomLabel(combined = "") {
+  const s = String(combined ?? "").trim();
+  if (!s) return [];
+  if (s.includes(" · ")) return s.split(" · ").map((x) => x.trim()).filter(Boolean);
+  return [s];
+}
+
 /**
  * Grid preview: what Doc 2 sync will do for this row (enrich vs full).
  * @param {object} opts

@@ -94,6 +94,19 @@ describe("housekeepingWaParse", () => {
     expect(parseHousekeepingReadyRoomNumbers(text)).toEqual([7, 9, 13, 16, 18]);
   });
 
+  test("Adir-style room list then action on next line", () => {
+    expect(parseHousekeepingCheckInRoomNumbers("4,5\nצ׳ק אין")).toEqual([4, 5]);
+    expect(parseHousekeepingCheckInRoomNumbers("4 5\nצק אין")).toEqual([4, 5]);
+    expect(parseHousekeepingCheckInRoomNumbers("4\n5\nצ׳ק אין")).toEqual([4, 5]);
+    expect(parseHousekeepingCheckInRoomNumbers("4,5 צ׳ק אין")).toEqual([4, 5]);
+    expect(parseHousekeepingCheckInRoomNumbers("צק אין\n4,5")).toEqual([]);
+    expect(parseHousekeepingReadyRoomNumbers("4,5\n✅")).toEqual([4, 5]);
+    expect(parseHousekeepingReadyRoomNumbers("4,5\nמוכן")).toEqual([4, 5]);
+    expect(parseHousekeepingReadyRoomNumbers("4,5 ✅")).toEqual([4, 5]);
+    expect(parseHousekeepingCheckOutRoomNumbers("4,5\nco")).toEqual([4, 5]);
+    expect(parseHousekeepingCheckOutRoomNumbers("4,5 co")).toEqual([4, 5]);
+  });
+
   test("group ack message for fresh bell triggers", () => {
     expect(buildHousekeepingGroupAckMessage(["רובי 14"])).toBe(
       "✅ רובי 14 מוכן — ממתין לאישור מנהל לשליחת הודעה 🔔",

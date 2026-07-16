@@ -153,14 +153,20 @@ export async function processDuePostCheckoutSurveys(
           guestId,
           trigger: "checkout_fb",
           housekeeping_co: true,
+          // Bypass stage_inactive / closed Meta window / duplicate guards — enqueue
+          // already dedupes msg_checkout_fb_sent + one pending row per guest.
+          force: true,
         }),
       });
-      const body = await res.json().catch(() => ({}));
+      const body = await res.json().catch(() => ({})) as Record<string, unknown>;
       const sent =
         res.ok &&
         (body.ok === true || body.status === "sent" || body.status === "simulated") &&
         body.skipped !== true;
-      const ok = sent || (body.skipped === true && body.reason === "already_sent");
+      const ok =
+        sent ||
+        (body.skipped === true && body.reason === "already_sent") ||
+        body.status === "duplicate_blocked";
       if (ok) {
         await supabase.from("post_checkout_survey_queue").update({
           status: "sent",
@@ -168,7 +174,18 @@ export async function processDuePostCheckoutSurveys(
         }).eq("id", queueId);
         results.push({ queueId, guestId, ok: true });
       } else {
-        const errText = String(body.error ?? body.reason ?? `http_${res.status}`).slice(0, 500);
+        const errText = [
+          body.error,
+          body.reason,
+          body.duplicate_reason,
+          body.status,
+          body.skipped === true ? "skipped" : null,
+          body.halted === true ? "halted" : null,
+        ]
+          .filter((v) => v != null && String(v).trim() !== "")
+          .map(String)
+          .join(" | ")
+          .slice(0, 500) || `http_${res.status}`;
         await supabase.from("post_checkout_survey_queue").update({
           status: "failed",
           error_text: errText,
@@ -194,8 +211,25 @@ export async function processDuePostCheckoutSurveys(
  */
 export async function catchUpDepartedTodaySuiteCheckoutSurveys(
   supabase: SupabaseClient,
-): Promise<{ scanned: number; queued: number }> {
+): Promise<{ scanned: number; queued: number; retried: number }> {
   const today = israelYmd(new Date());
+
+  // After a deploy fix, reopen today's failed catch-up rows (guest still unsent).
+  const { data: retriedRows } = await supabase
+    .from("post_checkout_survey_queue")
+    .update({
+      status: "pending",
+      send_after: new Date().toISOString(),
+      error_text: null,
+    })
+    .eq("status", "failed")
+    .in("source", ["catchup_departed_today", "housekeeping_wa"])
+    .gte("created_at", `${today}T00:00:00.000Z`)
+    .select("id");
+  const retried = retriedRows?.length ?? 0;
+  if (retried > 0) {
+    console.log(`[postCheckoutSurvey] reopened ${retried} failed row(s) for retry`);
+  }
   const { data: rows, error } = await supabase
     .from("guests")
     .select(
@@ -208,7 +242,7 @@ export async function catchUpDepartedTodaySuiteCheckoutSurveys(
     .limit(50);
   if (error) {
     console.error("[postCheckoutSurvey] catch-up lookup failed:", error.message);
-    return { scanned: 0, queued: 0 };
+    return { scanned: 0, queued: 0, retried };
   }
 
   let queued = 0;
@@ -236,5 +270,5 @@ export async function catchUpDepartedTodaySuiteCheckoutSurveys(
   if (queued > 0) {
     console.log(`[postCheckoutSurvey] catch-up departed_today=${today} queued=${queued}`);
   }
-  return { scanned: rows?.length ?? 0, queued };
+  return { scanned: rows?.length ?? 0, queued, retried };
 }
