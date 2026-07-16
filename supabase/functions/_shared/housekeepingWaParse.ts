@@ -70,6 +70,12 @@ const CHECKOUT_SUFFIX_RE = new RegExp(
   "i",
 );
 
+/** Inline anywhere in line: "שילמו בקבלה 7 co" */
+const CHECKOUT_INLINE_RE = new RegExp(
+  `(?:^|\\s)(?:room\\s*)?(\\d{1,2})\\s+${CHECKOUT_TOKEN_SUFFIX}`,
+  "i",
+);
+
 function inSuiteRange(n: number): boolean {
   return Number.isInteger(n) && n >= MIN_ROOM && n <= MAX_ROOM;
 }
@@ -129,6 +135,11 @@ export function parseHousekeepingCheckOutRoomNumbers(text: string): number[] {
       continue;
     }
     m = t.match(CHECKOUT_SUFFIX_RE);
+    if (m) {
+      addRoom(rooms, m[1]);
+      continue;
+    }
+    m = t.match(CHECKOUT_INLINE_RE);
     if (m) addRoom(rooms, m[1]);
   }
   return [...rooms].sort((a, b) => a - b);

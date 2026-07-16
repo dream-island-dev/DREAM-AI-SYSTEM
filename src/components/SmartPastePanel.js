@@ -198,10 +198,12 @@ export default function SmartPastePanel({ showToast }) {
     }
     setBusyKey(item.candidate.id);
     try {
+      const arrival = c.arrival_date || contextDate || todayYmd();
       const row = {
         name: c.guest_name || "אורח יום",
         phone: c.phone_raw ? normalizeGuestPhoneEdit(c.phone_raw) : null,
-        arrival_date: c.arrival_date || contextDate || todayYmd(),
+        arrival_date: arrival,
+        departure_date: c.departure_date || arrival,
         room_type: "day_guest",
         room: c.package_label?.includes("2") ? "Premium Day 2" : "Premium Day 1",
         status: "expected",

@@ -56,7 +56,12 @@ export function assertPipelineLifecycleForTrigger(
     if (!guest.arrival_date) return "missing_arrival_date";
     if (!guest.departure_date) return "missing_departure_date";
     if (guest.arrival_date > todayStr) return "guest_not_arrived";
-    if (guest.departure_date >= todayStr) return "stay_not_ended";
+    // Future departure — not post-stay yet. Same-day checkout (housekeeping Co)
+    // is allowed once guests.status is already checked_out.
+    if (guest.departure_date > todayStr) return "stay_not_ended";
+    if (guest.departure_date === todayStr && guest.status !== "checked_out") {
+      return "stay_not_ended";
+    }
     if (guest.status === "pending" || guest.status === "expected") {
       return "guest_never_checked_in";
     }

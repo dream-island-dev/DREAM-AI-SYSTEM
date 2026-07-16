@@ -48,6 +48,16 @@ import {
   type DigestTaskRow,
 } from "./resortDigestStats.ts";
 import { loadStaffNotifyTemplates } from "./staffNotifyTemplates.ts";
+import {
+  composeTeamOpsMessage,
+  computeTeamOpsStats,
+  type GuestAlertRow,
+  type HousekeepingEventRow,
+  type StaffGroupMessageRow,
+  type TeamOpsPeriod,
+  type TeamOpsTaskRow,
+} from "./teamOpsAnalytics.ts";
+import type { StaffGroupKey } from "./staffGroupIngest.ts";
 
 const EXECUTIVE_GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash"];
 // 15s — voice notes already spent wall-clock on transcription before we
@@ -182,6 +192,7 @@ const DEFAULT_PERSONA_TEMPLATE = `
 • רשימת אורחים לפי תאריך — היום, מחר, או כל תאריך עתידי/עבר (list_guests_by_date).
 • איתור אורח לפי חדר/שם, כולל הערות, ספא/ארוחות ודגלי תשומת-לב.
 • לוח הבקשות (תלונות/ספא/שינוי תאריך/חיוב) ומצב חדרים תפעולי (פנוי/ניקיון/תחזוקה).
+• אנליטיקת צוות בקבוצות וואטסאפ — נוכחות, מעורבות תפעולית, זמני סגירת קריאות, checkout→מוכן (get_team_ops_analytics).
 • פתיחת משימת שטח, אישור ושיגור משימה ממתינה לצוות, סימון בטיפול/בוצעה/דחייה.
 • סימון "חדר מוכן" לאורח (כולל שליחת ההודעה לאורח בפועל, ביום ההגעה, סוויטות בלבד).
 • שליחת הודעה חופשית לאורח או לקבוצת המנהלות; עדכון הערה/החרגה על פרופיל אורח.
@@ -543,6 +554,26 @@ const EXECUTIVE_TOOLS: ToolDef[] = [
     },
   },
   {
+    name: "get_team_ops_analytics",
+    description:
+      "אנליטיקת צוות בקבוצות וואטסאפ — נוכחות (% הודעות), מעורבות תפעולית (פתיחות/סגירות קריאות, אותות חדרנות), " +
+      "זמן ממוצע לסגירת קריאה, זמן checkout→מוכן בחדרנות, בקשות אורחים. " +
+      "לשאלות כמו «מה אחוז המעורבות של אדיר בקבוצה», «כמה זמן לקח מצ׳ק-אאוט עד נקי», «מי הכי איטי בסגירת קריאות».",
+    schema: {
+      type: "object",
+      properties: {
+        period: { type: "string", enum: ["daily", "weekly", "monthly"], description: "טווח, ברירת מחדל weekly." },
+        person: { type: "string", description: "שם עובד לסינון — למשל אדיר, לידור." },
+        group: {
+          type: "string",
+          enum: ["all", "ops_calls", "housekeeping", "guest_requests", "managers"],
+          description: "קבוצה: ops_calls=קריאות, housekeeping=חדרנות, guest_requests=בקשות אורחים.",
+        },
+      },
+      required: [],
+    },
+  },
+  {
     name: "set_guest_status",
     description:
       "סימון \"חדר מוכן\" לאורח (guests.status→room_ready) — משגר גם את הודעת ה-WhatsApp הרגילה לאורח " +
@@ -603,6 +634,7 @@ const ARCHITECT_TOOL_NAMES = new Set(ARCHITECT_TOOL_DEFS.map((t) => t.name));
 const FRONT_DESK_FORBIDDEN_TOOL_NAMES = new Set([
   "ceo_guest_override",
   "get_ops_digest_now",
+  "get_team_ops_analytics",
   "notify_managers_group",
   "learn_executive_rule",
   ...ARCHITECT_TOOL_NAMES,
@@ -1616,6 +1648,100 @@ async function _execGetOpsDigestNow(supabase: SupabaseClient, args: Record<strin
   return { ok: true, period, period_date: range.periodDate, digest: body };
 }
 
+async function _execGetTeamOpsAnalytics(supabase: SupabaseClient, args: Record<string, unknown>): Promise<ToolResult> {
+  const period = String(args.period ?? "weekly") as TeamOpsPeriod;
+  if (!["daily", "weekly", "monthly"].includes(period)) return { ok: false, error: "invalid_period" };
+
+  const groupRaw = String(args.group ?? "all").trim();
+  const groupFilter = (
+    ["all", "ops_calls", "housekeeping", "guest_requests", "managers"].includes(groupRaw)
+      ? groupRaw
+      : "all"
+  ) as StaffGroupKey | "all";
+
+  const personFilter = args.person ? String(args.person).trim() : null;
+  const now = new Date();
+  const range = resolveDigestRange(period, now);
+  const rangeStartIso = range.rangeStart.toISOString();
+  const rangeEndIso = range.rangeEnd.toISOString();
+
+  const [messagesRes, tasksRes, hkRes, alertsRes] = await Promise.all([
+    supabase
+      .from("staff_group_messages")
+      .select("from_phone, from_name, profile_id, group_key, message_kind, is_operational, operational_kind, created_at")
+      .gte("created_at", rangeStartIso)
+      .lt("created_at", rangeEndIso),
+    supabase
+      .from("tasks")
+      .select("id, status, created_at, resolved_at, reporter_profile_id, resolved_by_phone, resolved_by_name, sla_deadline")
+      .gte("created_at", rangeStartIso)
+      .lt("created_at", rangeEndIso),
+    supabase
+      .from("housekeeping_wa_events")
+      .select("room_id, event_type, created_at, from_phone, from_name")
+      .gte("created_at", rangeStartIso)
+      .lt("created_at", rangeEndIso),
+    supabase
+      .from("guest_alerts")
+      .select("id, resolved, created_at, resolved_at, resolved_by")
+      .gte("created_at", rangeStartIso)
+      .lt("created_at", rangeEndIso),
+  ]);
+
+  if (messagesRes.error || tasksRes.error || hkRes.error || alertsRes.error) {
+    return {
+      ok: false,
+      error:
+        messagesRes.error?.message ??
+        tasksRes.error?.message ??
+        hkRes.error?.message ??
+        alertsRes.error?.message ??
+        "fetch_failed",
+    };
+  }
+
+  const tasks = (tasksRes.data ?? []) as TeamOpsTaskRow[];
+  const reporterIds = [
+    ...new Set(tasks.map((t) => t.reporter_profile_id).filter(Boolean)),
+  ] as string[];
+
+  const reporterNames = new Map<string, string>();
+  if (reporterIds.length) {
+    const { data: profiles } = await supabase
+      .from("profiles")
+      .select("id, name")
+      .in("id", reporterIds);
+    for (const p of profiles ?? []) {
+      const name = String((p as { name?: string | null }).name ?? "").trim();
+      if (name) reporterNames.set(p.id as string, name);
+    }
+  }
+
+  const stats = computeTeamOpsStats({
+    period,
+    now,
+    groupFilter,
+    personFilter,
+    messages: (messagesRes.data ?? []) as StaffGroupMessageRow[],
+    tasks,
+    hkEvents: (hkRes.data ?? []) as HousekeepingEventRow[],
+    guestAlerts: (alertsRes.data ?? []) as GuestAlertRow[],
+    reporterNames,
+  });
+
+  const report = composeTeamOpsMessage(stats);
+  return {
+    ok: true,
+    period,
+    period_label: range.label,
+    group: groupFilter,
+    person: personFilter,
+    stats,
+    report,
+    summary: report,
+  };
+}
+
 async function _execSetGuestStatus(supabase: SupabaseClient, args: Record<string, unknown>): Promise<ToolResult> {
   if (!args.guest_id && !args.room) return { ok: false, error: "guest_id_or_room_required" };
 
@@ -1802,6 +1928,7 @@ export async function executeExecutiveTool(
     case "list_guest_alerts": return await _execListGuestAlerts(supabase, args);
     case "get_room_status": return await _execGetRoomStatus(supabase, args);
     case "get_ops_digest_now": return await _execGetOpsDigestNow(supabase, args);
+    case "get_team_ops_analytics": return await _execGetTeamOpsAnalytics(supabase, args);
     case "set_guest_status": return await _execSetGuestStatus(supabase, args);
     case "get_system_health": return await _execGetSystemHealth(supabase);
     case "get_executive_action_log": return await _execGetExecutiveActionLog(supabase, args);

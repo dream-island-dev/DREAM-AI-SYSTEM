@@ -55,6 +55,20 @@ describe("assertPipelineLifecycleForTrigger — checkout_fb", () => {
     ).toBe("guest_never_checked_in");
   });
 
+  test("allows same-day checkout after housekeeping Co (checked_out)", () => {
+    expect(
+      assertPipelineLifecycleForTrigger(
+        "checkout_fb",
+        {
+          arrival_date: israelDateOffsetStr(-2, now),
+          departure_date: today,
+          status: "checked_out",
+        },
+        now,
+      ),
+    ).toBeNull();
+  });
+
   test("allows checked_out guest day after departure", () => {
     expect(
       assertPipelineLifecycleForTrigger(

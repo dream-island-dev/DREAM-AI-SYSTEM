@@ -108,7 +108,8 @@ export async function findDepartingGuestForSuite(
       "id, name, phone, spa_time, room, suite_name, status, arrival_date, departure_date, guest_notes, room_ready_notified, msg_room_ready_sent",
     )
     .neq("status", "cancelled")
-    .lte("departure_date", today)
+    .lte("arrival_date", today)
+    .or(`departure_date.lte.${today},and(departure_date.is.null,arrival_date.lte.${today})`)
     .in("status", [...CHECKOUT_CANDIDATE_STATUSES])
     .order("departure_date", { ascending: false })
     .limit(40);

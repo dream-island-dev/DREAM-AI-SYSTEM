@@ -35,6 +35,7 @@ const STATUS_SORT_ORDER = {
 
 export const AUTO_CHECKIN_LOCAL_HOUR = 15;
 export const AUTO_CHECKOUT_LOCAL_HOUR = 11;
+export const AUTO_CHECKOUT_DAYPASS_LOCAL_HOUR = 19;
 const AUTO_CHECKIN_ELIGIBLE = new Set(["pending", "expected", "room_ready"]);
 const AUTO_CHECKOUT_ELIGIBLE = new Set(["checked_in", "room_ready", "expected", "pending"]);
 
@@ -54,6 +55,14 @@ export function isPastAutoCheckinGateway(now = new Date()) {
 
 export function isPastAutoCheckoutGateway(now = new Date()) {
   return israelLocalHour(now) >= AUTO_CHECKOUT_LOCAL_HOUR;
+}
+
+export function isPastDayPassAutoCheckoutGateway(now = new Date()) {
+  return israelLocalHour(now) >= AUTO_CHECKOUT_DAYPASS_LOCAL_HOUR;
+}
+
+function isDayPassRoomType(roomType) {
+  return roomType === "day_guest" || roomType === "premium_day_guest";
 }
 
 /** DISABLED (2026-07-11) — always false. Housekeeping WA group is the sole
@@ -108,10 +117,18 @@ export function isPostStayArchiveGuest(guest, today = israelTodayStr(), now = ne
 }
 
 export function shouldAutoCheckoutGuest(guest, now = new Date()) {
-  if (!guest?.departure_date) return false;
   if (guest.status === "checked_out" || guest.status === "cancelled") return false;
   if (!AUTO_CHECKOUT_ELIGIBLE.has(guest.status)) return false;
   const today = israelTodayStr();
+
+  if (isDayPassRoomType(guest.room_type)) {
+    if (!guest.arrival_date) return false;
+    if (guest.arrival_date < today) return true;
+    if (guest.arrival_date === today) return isPastDayPassAutoCheckoutGateway(now);
+    return false;
+  }
+
+  if (!guest?.departure_date) return false;
   if (guest.departure_date < today) return true;
   if (guest.departure_date === today) return isPastAutoCheckoutGateway(now);
   return false;

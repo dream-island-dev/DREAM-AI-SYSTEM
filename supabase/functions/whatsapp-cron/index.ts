@@ -26,6 +26,7 @@ import {
   checkEligibility,
   CORE_PIPELINE_STAGE_KEYS,
   isPastAutoCheckoutGateway,
+  isPastDayPassAutoCheckoutGateway,
   israelYmd,
   isGuestStaffClaimActive,
   resolveAutomationScope,
@@ -39,6 +40,7 @@ import { isStageEffectivelyActive, primeGuestChannelConfig, isWhapiGuestSosActiv
 import { buildRetryStateMap, evaluateRetryGate, RETRY_LOOKBACK_HOURS, type RetryState } from "../_shared/automationRetryGate.ts";
 import { probeWhapiDeviceHealth, persistWhapiHealthToBotConfig } from "../_shared/whapiHealth.ts";
 import { INTER_SEND_DELAY_MS, sleep } from "../_shared/outboundThrottle.ts";
+import { processDuePostCheckoutSurveys, catchUpDepartedTodaySuiteCheckoutSurveys } from "../_shared/postCheckoutSurvey.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -122,9 +124,16 @@ Deno.serve(async (req: Request) => {
     // NULL row is itself a data gap that should get manual attention rather
     // than silent auto-archival.
     let autoCheckoutCount = 0;
+    const checkoutPatch = {
+      status: "checked_out",
+      checked_out_at: now.toISOString(),
+      room_ready_notified: false,
+      msg_room_ready_sent: false,
+      room_ready_at: null,
+    };
     const { data: overdueCheckout, error: overdueErr } = await supabase
       .from("guests")
-      .update({ status: "checked_out", room_ready_notified: false, msg_room_ready_sent: false, room_ready_at: null })
+      .update(checkoutPatch)
       .lt("departure_date", todayIsrael)
       .in("status", checkoutEligible)
       .not("room_type", "in", "(day_guest,premium_day_guest)")
@@ -138,7 +147,7 @@ Deno.serve(async (req: Request) => {
     if (isPastAutoCheckoutGateway(now)) {
       const { data: todayCheckout, error: todayCheckoutErr } = await supabase
         .from("guests")
-        .update({ status: "checked_out", room_ready_notified: false, msg_room_ready_sent: false, room_ready_at: null })
+        .update(checkoutPatch)
         .eq("departure_date", todayIsrael)
         .in("status", checkoutEligible)
         .not("room_type", "in", "(day_guest,premium_day_guest)")
@@ -151,6 +160,48 @@ Deno.serve(async (req: Request) => {
     }
     if (autoCheckoutCount > 0) {
       console.log(`[whatsapp-cron] auto_checkout archived ${autoCheckoutCount} guest(s) (today=${todayIsrael})`);
+    }
+
+    // Day-pass same-day visit — 19:00 Israel (never 11:00 suite checkout).
+    if (isPastDayPassAutoCheckoutGateway(now)) {
+      const { data: dayPassToday, error: dayPassTodayErr } = await supabase
+        .from("guests")
+        .update(checkoutPatch)
+        .in("room_type", ["day_guest", "premium_day_guest"])
+        .eq("arrival_date", todayIsrael)
+        .in("status", checkoutEligible)
+        .select("id");
+      if (dayPassTodayErr) {
+        console.error("[whatsapp-cron] auto_checkout (daypass today) FAILED:", dayPassTodayErr.message);
+      } else {
+        autoCheckoutCount += dayPassToday?.length ?? 0;
+      }
+
+      const { data: dayPassOverdue, error: dayPassOverdueErr } = await supabase
+        .from("guests")
+        .update(checkoutPatch)
+        .in("room_type", ["day_guest", "premium_day_guest"])
+        .lt("arrival_date", todayIsrael)
+        .in("status", checkoutEligible)
+        .select("id");
+      if (dayPassOverdueErr) {
+        console.error("[whatsapp-cron] auto_checkout (daypass overdue) FAILED:", dayPassOverdueErr.message);
+      } else {
+        autoCheckoutCount += dayPassOverdue?.length ?? 0;
+      }
+    }
+
+    const catchUp = await catchUpDepartedTodaySuiteCheckoutSurveys(supabase);
+    if (catchUp.queued > 0) {
+      console.log(`[whatsapp-cron] post_checkout_survey catch-up queued=${catchUp.queued}`);
+    }
+
+    const postCheckoutSurveyResults = await processDuePostCheckoutSurveys(supabase, supabaseUrl, anon);
+    if (postCheckoutSurveyResults.length > 0) {
+      console.log(
+        `[whatsapp-cron] post_checkout_survey processed=${postCheckoutSurveyResults.length} ` +
+        `ok=${postCheckoutSurveyResults.filter((r) => r.ok).length}`,
+      );
     }
 
     // is_active is NOT filtered in SQL anymore — a stage paused only because

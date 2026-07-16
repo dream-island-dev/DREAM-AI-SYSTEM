@@ -416,6 +416,11 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
+### 2026-07-16 — Staff Group Analytics: chitchat is data, not noise
+- **Presence % requires logging ALL group messages** — `whapi-webhook` previously dropped `CHITCHAT` with zero DB row; Eliad's "what % of group messages is Adir" was impossible. Fix: `staff_group_messages` ingest before the chitchat `continue`, plus operational_kind on task/reaction/HK paths (`staffGroupIngest.ts`).
+- **Split "presence" from "operational impact"** — message share ≠ work done. `teamOpsAnalytics.ts` reports both: presence from `staff_group_messages`, operational share from `tasks` + `housekeeping_wa_events` + 👍 reactions. Executive assistant answers with `get_team_ops_analytics`, not raw SQL.
+- **Historical presence is forward-only** — tasks/HK events are backfillable; message presence starts at deploy. Tool must say so (`coverageNote`) to avoid CEO trusting a partial %.
+
 ### 2026-07-15 — Cursor writes, Claude Code verifies (handoff saves tokens)
 - **Standing workflow (Mike-approved):** Cursor/Composer implements features + atomic diffs; Claude Code receives a **short handoff** (file list, test commands, deploy checklist — not full chat history), reads ground-truth files, runs `deno test`, fixes slips (e.g. missing `useState`, stale test assertions), then deploys only on explicit `תעלה`/`yes`.
 - **Handoff template:** Goal (1 para) → Files to read → Tests to run → Deploy commands → Do NOT mix (unrelated uncommitted paths) → Manual QA phrases.

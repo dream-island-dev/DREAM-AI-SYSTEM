@@ -4,6 +4,7 @@ import {
   getGuestArrivalRosterLabel,
   getGuestTimingBadge,
   hasSuiteRoomTypeConflict,
+  isGuestInResortToday,
   isSuiteGuestProfile,
   israelTodayStr,
   israelDateOffsetStr,
@@ -44,6 +45,33 @@ describe("hasSuiteRoomTypeConflict / effective suite classification", () => {
 
   test("standard room_type never flags conflict", () => {
     expect(hasSuiteRoomTypeConflict({ room: "אמטיסט 8", room_type: "standard" })).toBe(false);
+  });
+});
+
+describe("day-pass in-resort window", () => {
+  const today = israelTodayStr();
+  const yesterday = israelDateOffsetStr(-1);
+
+  test("day_guest checked_in today → in resort", () => {
+    expect(
+      isGuestInResortToday({
+        arrival_date: today,
+        departure_date: today,
+        status: "checked_in",
+        room_type: "day_guest",
+      }),
+    ).toBe(true);
+  });
+
+  test("day_guest checked_in yesterday → not in resort", () => {
+    expect(
+      isGuestInResortToday({
+        arrival_date: yesterday,
+        departure_date: yesterday,
+        status: "checked_in",
+        room_type: "day_guest",
+      }),
+    ).toBe(false);
   });
 });
 

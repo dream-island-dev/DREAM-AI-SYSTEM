@@ -1181,7 +1181,7 @@ async function guestThreadHasPriorOutbound(
   const { count, error } = await supabase
     .from("whatsapp_conversations")
     .select("id", { count: "exact", head: true })
-    .eq("inbox_channel", "meta")
+    .in("inbox_channel", ["meta", "whapi"])
     .eq("phone", phone)
     .eq("direction", "outbound")
     .not("message", "like", "[SYSTEM]%");

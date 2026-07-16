@@ -24,6 +24,13 @@ export const AUTO_CHECKIN_LOCAL_HOUR = 15;
 /** Israel-local hour when guests are auto-archived to checked_out on departure day. */
 export const AUTO_CHECKOUT_LOCAL_HOUR = 11;
 
+/** Day-pass same-day visit — auto checkout after resort closes (not 11:00 suites). */
+export const AUTO_CHECKOUT_DAYPASS_LOCAL_HOUR = 19;
+
+export function isPastDayPassAutoCheckoutGateway(now: Date): boolean {
+  return israelLocalHour(now) >= AUTO_CHECKOUT_DAYPASS_LOCAL_HOUR;
+}
+
 export const AUTO_CHECKIN_ELIGIBLE_STATUSES = new Set(["pending", "expected", "room_ready"]);
 
 export const AUTO_CHECKOUT_ELIGIBLE_STATUSES = new Set([
@@ -583,6 +590,11 @@ export function checkEligibility(
     const spaDateStr = String(guest.spa_date ?? "").trim().slice(0, 10);
     const arrivalStr = String(guest.arrival_date ?? "").trim().slice(0, 10);
     if (spaDateStr && spaDateStr === arrivalStr) return "superseded_by_survey";
+  }
+
+  // Suite post-stay survey is event-driven from housekeeping WA "Co" — never cron.
+  if (stage.stage_key === "checkout_fb" && effectiveSuite) {
+    return "suite_checkout_survey_via_housekeeping";
   }
 
   if (stage.stage_key === "spa_warmup_daypass") {

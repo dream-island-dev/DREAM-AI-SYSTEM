@@ -52,6 +52,7 @@ import {
   formatAdirGuestLabel,
 } from "../_shared/adirNotifyMessages.ts";
 import { loadStaffNotifyTemplates } from "../_shared/staffNotifyTemplates.ts";
+import { isLowValueCourtesyMessage } from "../_shared/automationSchedule.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -484,7 +485,7 @@ serve(async (req: Request) => {
     const softCutoffIso = softHandoffCutoffIso(SOFT_HANDOFF_SLA_MINUTES);
     const { data: softCandidates, error: softErr } = await supabase
       .from("whatsapp_conversations")
-      .select("id, phone, message, human_request_type, created_at, guest_id, guests(name, room)")
+      .select("id, phone, message, intent, human_request_type, created_at, guest_id, guests(name, room)")
       .eq("human_requested", true)
       .eq("direction", "inbound")
       .is("handoff_escalated_at", null)
@@ -495,6 +496,8 @@ serve(async (req: Request) => {
 
     const softResults: Array<{ conversationId: string | number; notified: boolean }> = [];
     for (const row of softCandidates ?? []) {
+      if (row.intent === "courtesy_ack") continue;
+      if (isLowValueCourtesyMessage(String(row.message ?? ""))) continue;
       if (!isSoftHandoffHumanRequestType(row.human_request_type as string | null)) continue;
 
       const softGuest = (row as { guests?: { name?: string; room?: string } | null }).guests;

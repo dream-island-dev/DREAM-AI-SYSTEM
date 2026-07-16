@@ -183,6 +183,9 @@ function normalizeCandidate(raw: RawCandidate, idx: number) {
     phone_raw: String(raw.phone_raw ?? "").trim() || null,
     order_number: String(raw.order_number ?? "").trim() || null,
     arrival_date: normalizeDate(raw.arrival_date),
+    departure_date: normalizeGuestType(raw.guest_type) === "day_guest"
+      ? (normalizeDate(raw.departure_date) ?? normalizeDate(raw.arrival_date))
+      : normalizeDate(raw.departure_date),
     meal_plan: inferMealPlanFromHints(raw) ?? normalizeMealPlan(raw.meal_plan),
     meal_plan_label: String(raw.meal_plan_label ?? "").trim() || null,
     spa_date: normalizeDate(raw.spa_date),

@@ -17,6 +17,7 @@ import { formatSpaScheduleDisplay, hasSpaBooking } from "../_shared/spaSchedule.
 import { buildMealsItinerary } from "../_shared/stayMeals.ts";
 import { normalizeGuestSurveyUi } from "../_shared/guestSurveyUi.ts";
 import { normalizeGuestClubUi } from "../_shared/guestClubUi.ts";
+import { isGuestPortalSurveyEligible } from "../_shared/guestSurveyEligibility.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -193,12 +194,8 @@ serve(async (req: Request) => {
     (maskedGuest as Record<string, unknown>).meals_itinerary = buildMealsItinerary(guest);
     const enableSpaRequestButton = spaToggleRow?.value_bool !== false;
 
-    // ── Guest Experience Survey — MVP audience: day-pass + spa that day ────
-    // Idempotent view: return existing scores when already completed instead
-    // of a blank form (guest-portal-survey enforces the actual UNIQUE(guest_id,
-    // visit_date) write-once constraint — this is just the read side).
-    const isDayPassRoomType = guest.room_type === "day_guest" || guest.room_type === "premium_day_guest";
-    const surveyEligible = isDayPassRoomType && hasSpaBookingFlag;
+    // Guest Experience Survey — day-pass+spa OR suite post-checkout (checkout_fb).
+    const surveyEligible = isGuestPortalSurveyEligible(guest);
     let surveyCompleted = false;
     let surveyScores: Record<string, unknown> | null = null;
     if (guest.id != null) {

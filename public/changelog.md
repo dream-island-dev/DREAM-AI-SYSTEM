@@ -1,3 +1,11 @@
+2026-07-16 | Suite checkout survey — portal eligibility + same-day catch-up | `guestSurveyEligibility.ts` (suite checked_out sees `#survey`); `catchUpDepartedTodaySuiteCheckoutSurveys` in cron; deploy also `guest-portal-data` + `guest-portal-survey`.
+
+2026-07-16 | Suite post-checkout survey after housekeeping Co (~15min) + stay fixes | migration 220: `post_checkout_survey_queue`, `checked_out_at`, `checkout_fb` portal script; Co→enqueue→cron→whatsapp-send; cron `checkout_fb` disabled for suites; day-pass 19:00 auto-checkout + departure backfill; HK inline `N co`, already-Co still לניקיון; emoji/SLA courtesy shield (meta+whapi prior outbound). Deploy: `db push` + `whapi-webhook`, `whatsapp-cron`, `whatsapp-send`, `sla-escalation-cron` + frontend if pushed.
+
+2026-07-16 | User Rules restored as 7 .mdc files (global ~/.cursor/rules + project .cursor/rules) | git-commit-safety, pull-requests, communication-style, etc.
+
+2026-07-16 | Cursor recovery — chat index (239 transcripts), composer headers export (201), user rules backup, recovery guide | `docs/cursor_*`, `scripts/cursor-*.py|mjs`.
+
 2026-07-16 | Orit CS Agent — mobile master-detail (list OR detail, back button, Android history) | `OritCustomerServicePanel.js` + `useIsMobile.js`; fixes cut-off detail pane on phone.
 
 2026-07-16 | Adir voice tasks — front_desk_voice source + [FRONT DESK] Whapi tag; room required; overlay lists create_executive_task | taskCard, executiveAssistant, migration 218.

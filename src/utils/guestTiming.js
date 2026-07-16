@@ -34,6 +34,11 @@ export function isPreArrivalTodayGuest(guest, today = israelTodayStr()) {
   return PRE_ARRIVAL_STATUSES.has(guest?.status) && guest?.arrival_date === today;
 }
 
+/** Day-pass / premium day visit — same calendar day only. */
+export function isDayPassRoomType(roomType) {
+  return roomType === "day_guest" || roomType === "premium_day_guest";
+}
+
 /** True when guest is physically in-house: checked_in + within stay window (Israel calendar). */
 export function isGuestInResortToday(guest) {
   if (!guest?.arrival_date) return false;
@@ -41,6 +46,11 @@ export function isGuestInResortToday(guest) {
   if (isGuestDeparted(guest)) return false;
   const today = israelTodayStr();
   if (guest.arrival_date > today) return false;
+  if (isDayPassRoomType(guest.room_type)) {
+    const departure = guest.departure_date || guest.arrival_date;
+    if (departure !== today) return false;
+    return guest.arrival_date === today;
+  }
   if (guest.departure_date && guest.departure_date < today) return false;
   return true;
 }

@@ -57,6 +57,11 @@ const CHECKOUT_SUFFIX_RE = new RegExp(
   "i",
 );
 
+const CHECKOUT_INLINE_RE = new RegExp(
+  `(?:^|\\s)(?:room\\s*)?(\\d{1,2})\\s+${CHECKOUT_TOKEN_SUFFIX}`,
+  "i",
+);
+
 function inSuiteRange(n) {
   return Number.isInteger(n) && n >= MIN_ROOM && n <= MAX_ROOM;
 }
@@ -114,6 +119,11 @@ export function parseHousekeepingCheckOutRoomNumbers(text) {
       continue;
     }
     m = t.match(CHECKOUT_SUFFIX_RE);
+    if (m) {
+      addRoom(rooms, m[1]);
+      continue;
+    }
+    m = t.match(CHECKOUT_INLINE_RE);
     if (m) addRoom(rooms, m[1]);
   }
   return [...rooms].sort((a, b) => a - b);

@@ -87,6 +87,7 @@ import { formatGuestProfileForAi } from "../_shared/guestProfile.ts";
 import { formatSpaScheduleDisplay } from "../_shared/spaSchedule.ts";
 import { isStaffAssistantInbound } from "../_shared/executiveIdentity.ts";
 import { handleExecutiveVoiceMessage } from "../_shared/executiveAssistant.ts";
+import { ingestStaffGroupMessage, resolveHousekeepingSender } from "../_shared/staffGroupIngest.ts";
 import {
   isGuestStaffClaimActive,
   isGuestGreetingMessage,
@@ -1459,9 +1460,21 @@ serve(async (req: Request) => {
       const { ok, error: doneErr } = await resolveTaskByReaction(supabase, task.id, r);
 
       if (!ok) console.error(`[whapi-webhook] 👍 reaction resolve failed for task ${task.id}:`, doneErr);
-      else console.log(
-        `[whapi-webhook] 👍 task ${task.id} resolved by reaction — matched=${task.matchedOn} from=${r.fromName || r.fromPhone}`,
-      );
+      else {
+        console.log(
+          `[whapi-webhook] 👍 task ${task.id} resolved by reaction — matched=${task.matchedOn} from=${r.fromName || r.fromPhone}`,
+        );
+        await ingestStaffGroupMessage(supabase, {
+          waMessageId: r.id,
+          chatId: r.chatId,
+          fromPhone: r.fromPhone,
+          fromName: r.fromName,
+          messageKind: "reaction",
+          bodyPreview: `👍 → task ${task.id}`,
+          isOperational: true,
+          operationalKind: "task_resolve_reaction",
+        });
+      }
       results.push({
         id: r.id,
         reaction: "thumbs_up",
@@ -1484,10 +1497,23 @@ serve(async (req: Request) => {
           continue;
         }
 
+        const hkSender = await resolveHousekeepingSender(supabase, msg.fromPhone, msg.fromName);
+
         const readyRooms = parseHousekeepingReadyRoomNumbers(msg.text);
         const checkInRooms = parseHousekeepingCheckInRoomNumbers(msg.text);
         const checkOutRooms = parseHousekeepingCheckOutRoomNumbers(msg.text);
         if (readyRooms.length === 0 && checkInRooms.length === 0 && checkOutRooms.length === 0) {
+          await ingestStaffGroupMessage(supabase, {
+            waMessageId: msg.id,
+            chatId: msg.chatId,
+            fromPhone: msg.fromPhone,
+            fromName: msg.fromName,
+            messageKind: "text",
+            bodyPreview: msg.text,
+            isOperational: false,
+            operationalKind: "hk_unparsed",
+            profileId: hkSender.profileId,
+          });
           results.push({
             id: msg.id,
             channel: "housekeeping",
@@ -1497,12 +1523,36 @@ serve(async (req: Request) => {
           continue;
         }
 
+        const hkOpKind = checkOutRooms.length
+          ? "hk_check_out"
+          : readyRooms.length
+          ? "hk_ready"
+          : "hk_check_in";
+        await ingestStaffGroupMessage(supabase, {
+          waMessageId: msg.id,
+          chatId: msg.chatId,
+          fromPhone: msg.fromPhone,
+          fromName: msg.fromName,
+          messageKind: "text",
+          bodyPreview: msg.text,
+          isOperational: true,
+          operationalKind: hkOpKind,
+          profileId: hkSender.profileId,
+        });
+
+        const senderOpts = {
+          fromPhone: hkSender.fromPhone,
+          fromName: hkSender.fromName,
+          profileId: hkSender.profileId,
+        };
+
         const readySignals = [];
         for (const roomNumber of readyRooms) {
           readySignals.push(await applyHousekeepingReadySignal(supabase, {
             roomNumber,
             waMessageId: msg.id,
             sourceLine: msg.text,
+            ...senderOpts,
           }));
         }
 
@@ -1512,6 +1562,7 @@ serve(async (req: Request) => {
             roomNumber,
             waMessageId: msg.id,
             sourceLine: msg.text,
+            ...senderOpts,
           }));
         }
 
@@ -1521,6 +1572,7 @@ serve(async (req: Request) => {
             roomNumber,
             waMessageId: msg.id,
             sourceLine: msg.text,
+            ...senderOpts,
           }));
         }
 
@@ -1617,12 +1669,33 @@ serve(async (req: Request) => {
         continue;
       }
 
-      // ── CHITCHAT → silence (no group reply, no DB) ─────────────────────────
+      // ── CHITCHAT → silence (no group reply, no DB task) — still logged for analytics
       if (!cls.is_task) {
+        await ingestStaffGroupMessage(supabase, {
+          waMessageId: msg.id,
+          chatId: msg.chatId,
+          fromPhone: msg.fromPhone,
+          fromName: msg.fromName,
+          messageKind: fromVoice ? "voice" : "text",
+          bodyPreview: msg.text,
+          isOperational: false,
+          operationalKind: "chitchat",
+        });
         console.log(`[whapi-webhook] CHITCHAT ignored — from=${msg.fromName || msg.fromPhone} text="${msg.text}"`);
         results.push({ id: msg.id, is_task: false, action: "ignored_chitchat" });
         continue;
       }
+
+      await ingestStaffGroupMessage(supabase, {
+        waMessageId: msg.id,
+        chatId: msg.chatId,
+        fromPhone: msg.fromPhone,
+        fromName: msg.fromName,
+        messageKind: fromVoice ? "voice" : "text",
+        bodyPreview: msg.text,
+        isOperational: true,
+        operationalKind: "task_open",
+      });
 
       // ── TASK → log + reply in-group ────────────────────────────────────────
       // Reporter profile (phone → profiles) for department + attribution.

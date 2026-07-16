@@ -18,6 +18,10 @@ import {
   LEGACY_SURVEY_CATEGORY_KEYS,
   normalizeGuestSurveyUi,
 } from "../_shared/guestSurveyUi.ts";
+import {
+  isGuestPortalSurveyEligible,
+  resolveSurveyVisitDate,
+} from "../_shared/guestSurveyEligibility.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -90,7 +94,7 @@ serve(async (req: Request) => {
 
     const { data: guest, error: guestErr } = await supabase
       .from("guests")
-      .select("id, phone, room_type, arrival_date, spa_date, status, club_status")
+      .select("id, phone, room, room_type, arrival_date, departure_date, spa_date, status, club_status")
       .eq("portal_token", token)
       .maybeSingle();
     if (guestErr) throw new Error(`lookup_error: ${guestErr.message}`);
@@ -107,16 +111,15 @@ serve(async (req: Request) => {
       );
     }
 
-    const isDayPassRoomType = guest.room_type === "day_guest" || guest.room_type === "premium_day_guest";
-    const spaDateStr = String((guest.spa_date as string | null) ?? "").trim().slice(0, 10);
-    const arrivalStr = String((guest.arrival_date as string | null) ?? "").trim().slice(0, 10);
-    if (!isDayPassRoomType || !spaDateStr || spaDateStr !== arrivalStr) {
+    if (!isGuestPortalSurveyEligible(guest)) {
       return new Response(
         JSON.stringify({ ok: false, error: "not_eligible" }),
         { status: 200, headers: { ...CORS, "Content-Type": "application/json" } },
       );
     }
-    if (!arrivalStr) {
+
+    const visitDate = resolveSurveyVisitDate(guest);
+    if (!visitDate) {
       return new Response(
         JSON.stringify({ ok: false, error: "missing_visit_date" }),
         { status: 200, headers: { ...CORS, "Content-Type": "application/json" } },
@@ -132,7 +135,7 @@ serve(async (req: Request) => {
     const insertRow: Record<string, unknown> = {
       guest_id: guest.id,
       phone: guest.phone,
-      visit_date: arrivalStr,
+      visit_date: visitDate,
       free_text: freeText,
       google_cta_shown: googleCtaShown,
       suites_cta_shown: suitesCtaShown,

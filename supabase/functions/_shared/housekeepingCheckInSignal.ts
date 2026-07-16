@@ -44,7 +44,14 @@ export function buildHousekeepingCheckInAckLine(result: HousekeepingCheckInResul
 
 export async function applyHousekeepingCheckInSignal(
   supabase: ReturnType<typeof createClient>,
-  opts: { roomNumber: number; waMessageId: string; sourceLine?: string },
+  opts: {
+    roomNumber: number;
+    waMessageId: string;
+    sourceLine?: string;
+    fromPhone?: string | null;
+    fromName?: string | null;
+    profileId?: string | null;
+  },
 ): Promise<HousekeepingCheckInResult> {
   const { roomNumber, waMessageId, sourceLine } = opts;
   const roomId = resolveSuiteFromEzgoFields(String(roomNumber), "", false);
@@ -59,6 +66,9 @@ export async function applyHousekeepingCheckInSignal(
     room_id: roomId,
     event_type: "check_in",
     source_line: sourceLine?.slice(0, 500) ?? null,
+    from_phone: opts.fromPhone ?? null,
+    from_name: opts.fromName ?? null,
+    profile_id: opts.profileId ?? null,
   });
 
   if (dedupErr) {

@@ -34,7 +34,10 @@ export function assertPipelineLifecycleForTrigger(trigger, guest, now = new Date
     if (!guest.arrival_date) return "missing_arrival_date";
     if (!guest.departure_date) return "missing_departure_date";
     if (guest.arrival_date > todayStr) return "guest_not_arrived";
-    if (guest.departure_date >= todayStr) return "stay_not_ended";
+    if (guest.departure_date > todayStr) return "stay_not_ended";
+    if (guest.departure_date === todayStr && guest.status !== "checked_out") {
+      return "stay_not_ended";
+    }
     if (guest.status === "pending" || guest.status === "expected") {
       return "guest_never_checked_in";
     }

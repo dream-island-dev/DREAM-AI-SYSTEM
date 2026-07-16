@@ -14,6 +14,7 @@
 import { assertEquals } from "https://deno.land/std@0.168.0/testing/asserts.ts";
 import {
   resolveStageSchedule,
+  checkEligibility,
   shouldAutoPromoteToCheckedIn,
   resolveEffectiveGuestStatus,
   isDepartureAssistRequest,
@@ -589,7 +590,12 @@ function nightBeforeDaypassStage(overrides: Partial<AutomationStage> = {}): Auto
 }
 
 Deno.test("night_before_daypass: no spa that day → no_spa_visit_today (spa cohort gate)", () => {
-  const guest = daypassSpaGuest({ arrival_date: "2026-07-14", spa_date: null, spa_time: null });
+  const guest = daypassSpaGuest({
+    arrival_date: "2026-07-14",
+    departure_date: "2026-07-14",
+    spa_date: null,
+    spa_time: null,
+  });
   const result = resolveStageSchedule(nightBeforeDaypassStage(), guest, israelInstant("2026-07-13", 19, 30));
   assertEquals(result.skipReason, "no_spa_visit_today");
 });
@@ -641,6 +647,26 @@ Deno.test("checkout_fb_daypass: stale prior-visit spa_date (not this visit) → 
   const result = resolveStageSchedule(checkoutFbDaypassStage(), guest, israelInstant("2026-07-14", 9, 0));
   assertEquals(result.skipReason, null);
   assertEquals(result.dueNow, true);
+});
+
+Deno.test("checkout_fb: suite guest → suite_checkout_survey_via_housekeeping (housekeeping Co only)", () => {
+  const stage: AutomationStage = {
+    ...nightBeforeStage(),
+    stage_key: "checkout_fb",
+    applies_to: "suite",
+    guest_flag_column: "msg_checkout_fb_sent",
+    session_message_script_key: "checkout_fb",
+  };
+  const guest = suiteGuest({
+    arrival_date: "2026-07-10",
+    departure_date: "2026-07-13",
+    status: "checked_out",
+    msg_checkout_fb_sent: false,
+  });
+  assertEquals(
+    checkEligibility(stage, guest, israelInstant("2026-07-14", 9, 0)),
+    "suite_checkout_survey_via_housekeeping",
+  );
 });
 
 // ── Anti-spam/anti-race latch (2026-07-13, automationRetryGate.ts) ─────────

@@ -45,6 +45,7 @@ const ELIAD_ONBOARDING_OVERLAY = `
 • "פתח משימה לתקן את המזגן בחדר 3" (create_executive_task)
 • "סמן חדר 5 כמוכן" (set_guest_status)
 • "מה פתוח בלוח הבקשות?" (list_guest_alerts)
+• "מה אחוז המעורבות של אדיר בקבוצה?" / "כמה זמן מצ׳ק-אאוט עד נקי?" (get_team_ops_analytics)
 • "תזכרי שתמיד תציגי לי VIP ראשון" (learn_executive_rule)
 אחרי ההסבר — שאלי בקצרה: "מה תרצה לבדוק עכשיו?"
 כשהוא שואל על תאריך עתידי — תמיד קראי ל-list_guests_by_date עם התאריך המדויק; אל תגידי שאין לך אפשרות.

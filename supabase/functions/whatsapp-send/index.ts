@@ -1386,7 +1386,7 @@ serve(async (req: Request) => {
 
   try {
     const body = await req.json();
-    const { trigger, guestId, roomId: requestRoomId, assignments, weekStart, waTemplateName, templateVariables, force, force_channel, manual_override, scheduled_for, is_test, phone: testPhone, image_url: requestImageUrl, pipeline_reconcile, target_channel } = body as {
+    const { trigger, guestId, roomId: requestRoomId, assignments, weekStart, waTemplateName, templateVariables, force, force_channel, manual_override, scheduled_for, is_test, phone: testPhone, image_url: requestImageUrl, pipeline_reconcile, target_channel, housekeeping_co } = body as {
       trigger:             string;
       guestId?:            string;
       roomId?:             string;    // room_ready — canonical suite label (multi-room)
@@ -1403,6 +1403,7 @@ serve(async (req: Request) => {
       image_url?:          string;    // optional IMAGE header (templates) or session caption image
       pipeline_reconcile?: boolean;   // cron catch-up for arrival_confirmed guests missing Stage 2
       target_channel?:     "meta" | "whapi"; // Manual staff choice for inbox_reply/broadcast — see guestWhapiRouting.ts
+      housekeeping_co?:    boolean;   // Suite survey after housekeeping group Co
     };
 
     if (!trigger) throw new Error("trigger is required");
@@ -1420,7 +1421,7 @@ serve(async (req: Request) => {
     // (and shift_assignment) stay blocked until AUTOMATION_ENABLED=true. The
     // periodic cron has its own independent CRON_ENABLED gate, so enabling
     // manual broadcasts here does NOT unleash the scheduled pipeline.
-    if (!MANUAL_TRIGGERS.has(trigger) && !force && Deno.env.get("AUTOMATION_ENABLED") !== "true") {
+    if (!MANUAL_TRIGGERS.has(trigger) && !force && housekeeping_co !== true && Deno.env.get("AUTOMATION_ENABLED") !== "true") {
       console.log(`[whatsapp-send] 🚫 HALTED — trigger "${trigger}" blocked. Set AUTOMATION_ENABLED=true in Supabase Secrets to re-enable.`);
       return new Response(
         JSON.stringify({ ok: false, halted: true, reason: "automation_disabled", trigger }),
@@ -3776,7 +3777,8 @@ serve(async (req: Request) => {
     //   • guest routes through Whapi (primary day-pass/suite transport), OR
     //   • day-pass + Meta channel + open 24h window (Option C session-first —
     //     avoids templates when morning/evening opener already got a reply).
-    const isManualPipelineDispatch = force === true || manual_override === true;
+    const housekeepingCheckoutSurvey = housekeeping_co === true && trigger === "checkout_fb";
+    const isManualPipelineDispatch = force === true || manual_override === true || housekeepingCheckoutSurvey;
     const pipelineArrivalYmd = normalizeArrivalDateYmd(guest.arrival_date);
     const pipelineIsShabbat = isShabbatArrivalDate(pipelineArrivalYmd);
     const useWhapiForPipeline = shouldUseWhapiForGuestAutomation(guest);
