@@ -1,5 +1,8 @@
 // supabase/functions/_shared/guestBotLlm.ts
 // Unified guest-chat LLM caller — Gemini/Claude routing + automatic failover.
+
+import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { logAiFailoverEvent } from "./aiFailoverLog.ts";
 // Whapi DM uses this module; Meta keeps tool-calling in whatsapp-webhook but
 // shares resolveGuestModelRoute() from guestBotModelRoute.ts.
 
@@ -198,6 +201,8 @@ export type GenerateGuestChatReplyOpts = {
   logTag?: string;
   /** Extra suffix appended only for Meta tool-calling path — Whapi omits. */
   toolInstructionsSuffix?: string;
+  /** When set, engine failover is logged to ai_failover_events (AiFailoverWidget). */
+  failoverLog?: { supabase: SupabaseClient; guestPhone?: string | null };
 };
 
 /**
@@ -215,11 +220,22 @@ export async function generateGuestChatReply(opts: GenerateGuestChatReplyOpts): 
   const tryClaude = () =>
     _callGuestClaude(opts.userMessage, opts.guestName, history, enrichedPrompt, route.claudeModel, logTag);
 
+  const logFailover = (from: string, to: string, err: Error) => {
+    if (!opts.failoverLog) return;
+    logAiFailoverEvent(opts.failoverLog.supabase, {
+      from_engine: from,
+      to_engine: to,
+      error_message: err.message,
+      guest_phone: opts.failoverLog.guestPhone ?? null,
+    });
+  };
+
   if (route.engine === "claude") {
     try {
       return await tryClaude();
     } catch (e1) {
       console.error(`[${logTag}] Claude failed → Gemini:`, (e1 as Error).message);
+      logFailover("claude", "gemini", e1 as Error);
       return await tryGemini();
     }
   }
@@ -228,6 +244,7 @@ export async function generateGuestChatReply(opts: GenerateGuestChatReplyOpts): 
     return await tryGemini();
   } catch (e1) {
     console.error(`[${logTag}] Gemini failed → Claude:`, (e1 as Error).message);
+    logFailover("gemini", "claude", e1 as Error);
     return await tryClaude();
   }
 }

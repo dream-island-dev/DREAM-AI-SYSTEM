@@ -24,8 +24,8 @@
 //   All messages logged with intent column in whatsapp_conversations.
 //
 // Required Supabase secrets:
-//   META_WEBHOOK_VERIFY_TOKEN | META_WHATSAPP_TOKEN | META_PHONE_NUMBER_ID
-//   GEMINI_API_KEY | SUPABASE_URL | SUPABASE_SERVICE_ROLE_KEY
+//   META_WEBHOOK_VERIFY_TOKEN | META_APP_SECRET (POST signature) | META_WHATSAPP_TOKEN
+//   META_PHONE_NUMBER_ID | GEMINI_API_KEY | SUPABASE_URL | SUPABASE_SERVICE_ROLE_KEY
 //
 // Ops-group 👍 task completion: whapi-webhook (not this Meta guest webhook).
 // Dual lookup: bot card (tasks.whapi_message_id) → trigger text (tasks.source_message_id).
@@ -171,6 +171,11 @@ import {
   sanitizeGuestBotReply,
   shouldHardDropGuestReply,
 } from "../_shared/guestBotSanitize.ts";
+import {
+  verifyMetaWebhookSignature,
+  shouldVerifyMetaWebhookSignature,
+} from "../_shared/metaWebhookSignature.ts";
+import { logAiFailoverEvent } from "../_shared/aiFailoverLog.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -2901,6 +2906,7 @@ Deno.serve(async (req: Request) => {
         webhook_url: `${Deno.env.get("SUPABASE_URL") ?? ""}/functions/v1/whatsapp-webhook`,
         secrets: {
           META_WEBHOOK_VERIFY_TOKEN: !!expected,
+          META_APP_SECRET: !!Deno.env.get("META_APP_SECRET"),
           META_WHATSAPP_TOKEN: !!(Deno.env.get("META_WHATSAPP_TOKEN") ?? Deno.env.get("WHATSAPP_TOKEN")),
           META_PHONE_NUMBER_ID: !!Deno.env.get("META_PHONE_NUMBER_ID"),
           SUPABASE_SERVICE_ROLE_KEY: !!Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"),
@@ -2921,10 +2927,25 @@ Deno.serve(async (req: Request) => {
     return new Response("Method not allowed", { status: 405 });
   }
 
+  const rawBody = await req.text();
+
+  if (shouldVerifyMetaWebhookSignature()) {
+    const appSecret = Deno.env.get("META_APP_SECRET")!.trim();
+    const sigOk = await verifyMetaWebhookSignature(
+      rawBody,
+      req.headers.get("X-Hub-Signature-256"),
+      appSecret,
+    );
+    if (!sigOk) {
+      console.warn("[webhook] ❌ Meta POST signature verification FAILED");
+      return new Response("Forbidden", { status: 403 });
+    }
+  }
+
   // Parse Meta payload
   let payload: Record<string, unknown>;
   try {
-    payload = await req.json();
+    payload = JSON.parse(rawBody) as Record<string, unknown>;
   } catch {
     return new Response("bad_json", { status: 400 });
   }
@@ -4350,11 +4371,11 @@ Deno.serve(async (req: Request) => {
           // never blocks the guest's reply on a logging failure. PostgREST's query
           // builder has no .catch(), only .then() (same gotcha documented elsewhere
           // in this file) — use .then(cb) instead of chaining .catch() directly.
-          supabase.from("ai_failover_events").insert([{
-            from_engine: route.engine, to_engine: fallbackEngine,
-            error_message: (e as Error).message, guest_phone: phone,
-          }]).then(({ error }: { error: { message: string } | null }) => {
-            if (error) console.warn("[webhook] ai_failover_events insert failed (non-blocking):", error.message);
+          logAiFailoverEvent(supabase, {
+            from_engine: route.engine,
+            to_engine: fallbackEngine,
+            error_message: (e as Error).message,
+            guest_phone: phone,
           });
           try {
             const result = route.engine === "claude"

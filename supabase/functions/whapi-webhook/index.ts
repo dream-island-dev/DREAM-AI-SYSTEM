@@ -33,7 +33,8 @@
 // then fed into the exact same parseDeterministic()/classifyWithAi() pipeline
 // a typed message uses below.
 //
-// Required secrets: WHAPI_TOKEN, ANTHROPIC_API_KEY, GEMINI_API_KEY (voice
+// Required secrets: WHAPI_TOKEN, WHAPI_WEBHOOK_SECRET (inbound POST header gate),
+//   ANTHROPIC_API_KEY, GEMINI_API_KEY (voice
 //   transcription + guest-DM FAQ fallback), SUPABASE_URL,
 //   SUPABASE_SERVICE_ROLE_KEY. Optional:
 //   WHAPI_GROUP_ID (ops «קריאות» group — tasks + 👍 reactions),
@@ -133,6 +134,11 @@ import {
 } from "../_shared/guestBotHandoff.ts";
 import { assembleGuestBrainPrompt } from "../_shared/guestBotSettings.ts";
 import { generateGuestChatReply } from "../_shared/guestBotLlm.ts";
+import {
+  verifyWhapiWebhookSecret,
+  readWhapiWebhookSecretHeader,
+  shouldVerifyWhapiWebhookSecret,
+} from "../_shared/whapiWebhookAuth.ts";
 import {
   formatWhapiSuitesConversationLog,
   stripOutboundDispatchTag,
@@ -1253,6 +1259,7 @@ async function handleGuestDirectMessage(
         systemPrompt: brain.systemPrompt,
         preferredModel: brain.preferredModel,
         logTag: "whapi-webhook",
+        failoverLog: { supabase, guestPhone: phone },
       });
     } catch (e) {
       console.error("[whapi-webhook] guest DM LLM reply failed:", (e as Error).message);
@@ -1278,6 +1285,19 @@ async function handleGuestDirectMessage(
 
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
+
+  if (req.method !== "POST") {
+    return new Response("Method not allowed", { status: 405, headers: CORS });
+  }
+
+  if (shouldVerifyWhapiWebhookSecret()) {
+    const expected = Deno.env.get("WHAPI_WEBHOOK_SECRET")!.trim();
+    if (!verifyWhapiWebhookSecret(readWhapiWebhookSecretHeader(req), expected)) {
+      console.warn("[whapi-webhook] ❌ inbound secret verification FAILED");
+      return new Response(JSON.stringify({ ok: false, error: "forbidden" }),
+        { status: 403, headers: { ...CORS, "Content-Type": "application/json" } });
+    }
+  }
 
   try {
     const payload = (await req.json().catch(() => ({}))) as Record<string, unknown>;
