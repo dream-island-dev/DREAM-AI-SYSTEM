@@ -53,7 +53,11 @@ import {
   isRecentlyActive,
   sortContactsRecentFirst,
 } from "../utils/inboxReadState";
-import { formatInboxOutboundError } from "../utils/inboxSendErrors";
+import {
+  formatInboxOutboundError,
+  isMetaSessionWindowOpenForContact,
+  resolveMetaWindowClosedHint,
+} from "../utils/inboxSendErrors";
 
 const HIT_STAFF = "var(--hit-target-staff, 44px)";
 const HIT_COMFORT = "var(--hit-target-comfort, 48px)";
@@ -1860,7 +1864,7 @@ function buildContextualMacros(contact) {
 }
 
 // ── New Conversation Modal ────────────────────────────────────────────────────
-function NewChatModal({ onClose, onSent }) {
+function NewChatModal({ onClose, onSent, whapiSosActive = false }) {
   const {
     quietActive,
     overrideChecked,
@@ -1954,8 +1958,8 @@ function NewChatModal({ onClose, onSent }) {
           failures.push({
             name: g.name, phone: g.phone,
             reason: data?.status === "window_closed"
-              ? "חלון 24ש׳ סגור"
-              : formatInboxOutboundError(data, error?.message).replace(/^שגיאת שליחה:\s*/, ""),
+              ? resolveMetaWindowClosedHint({ whapiSosActive })
+              : formatInboxOutboundError(data, error?.message, { whapiSosActive }).replace(/^שגיאת שליחה:\s*/, ""),
           });
         }
       } catch (e) {
@@ -2045,7 +2049,7 @@ function NewChatModal({ onClose, onSent }) {
         body: { trigger: "inbox_reply", phone: selectedGuest.phone, message: freeText.trim(), inbox_channel: sendChannel },
       });
       if (error || (data && !data.ok)) {
-        throw new Error(formatInboxOutboundError(data, error?.message ?? data?.error));
+        throw new Error(formatInboxOutboundError(data, error?.message ?? data?.error, { whapiSosActive }));
       }
 
       // whatsapp-send's inbox_reply branch already inserts the outbound row
@@ -2453,7 +2457,7 @@ function NewChatModal({ onClose, onSent }) {
                   display: "flex", alignItems: "center", gap: 4,
                 }}>
                   <span>⚠️</span>
-                  <span>שליחה חופשית אפשרית בתוך חלון 24 שעות לאחר הודעת הלקוח</span>
+                  <span>שליחה חופשית דרך Dream Bot בתוך חלון 24 שעות — אם החלון סגור, בחר «מכשיר הסוויטות» למעלה</span>
                 </div>
               </div>
 
@@ -4851,6 +4855,13 @@ export default function WhatsAppInbox({
   // ── Manual reply send ─────────────────────────────────────────────────────
   async function sendManualReply() {
     if (!reply.trim() || !active || !activeContact?.phone) return;
+    const sendCh = activeContact.inbox_channel === "unified"
+      ? replyChannel
+      : (activeContact.inbox_channel ?? "meta");
+    if (sendCh === "meta" && !isMetaSessionWindowOpenForContact(activeContact)) {
+      setError(resolveMetaWindowClosedHint({ whapiSosActive }));
+      return;
+    }
     if (!ensureCanSend()) {
       setError("שליחה חסומה בשעות שקט — סמן את האישור למטה");
       return;
@@ -4865,9 +4876,6 @@ export default function WhatsAppInbox({
     // time fetchSince()/realtime merges the new outbound row in below.
     nearBottomRef.current = true;
     try {
-      const sendCh = activeContact.inbox_channel === "unified"
-        ? replyChannel
-        : (activeContact.inbox_channel ?? "meta");
       const chClaims = buildChannelClaimsState(activeContact);
       const alreadyClaimed = sendCh === "whapi" ? chClaims.whapi.claimedBy : chClaims.meta.claimedBy;
       if (!alreadyClaimed) {
@@ -4882,7 +4890,7 @@ export default function WhatsAppInbox({
         },
       });
       if (fnErr || !data?.ok) {
-        throw new Error(formatInboxOutboundError(data, fnErr?.message ?? data?.error));
+        throw new Error(formatInboxOutboundError(data, fnErr?.message ?? data?.error, { whapiSosActive }));
       }
       setReply("");
       markPhoneInboundRead(activeContact);
@@ -6226,7 +6234,10 @@ export default function WhatsAppInbox({
           const outboundCh = activeContact.inbox_channel === "unified"
             ? replyChannel
             : (activeContact.inbox_channel ?? "meta");
+          const metaWindowClosed = outboundCh === "meta"
+            && !isMetaSessionWindowOpenForContact(activeContact);
           return (
+          <>
           <div style={{
             padding: isMobile ? "6px 12px 0" : "6px var(--space-md) 0",
             fontSize: 11,
@@ -6238,6 +6249,22 @@ export default function WhatsAppInbox({
               <span style={{ fontWeight: 600, color: "#0369A1", marginRight: 6 }}> · SOS פעיל</span>
             )}
           </div>
+          {metaWindowClosed && (
+            <div style={{
+              margin: isMobile ? "6px 12px 0" : "6px var(--space-md) 0",
+              padding: "8px 12px",
+              background: "#FEF3C7",
+              border: "1px solid #FCD34D",
+              borderRadius: 8,
+              fontSize: 12,
+              fontWeight: 600,
+              color: "#92400E",
+              lineHeight: 1.45,
+            }}>
+              ⚠️ {resolveMetaWindowClosedHint({ whapiSosActive })}
+            </div>
+          )}
+          </>
           );
         })()}
 
@@ -6813,6 +6840,7 @@ export default function WhatsAppInbox({
       {/* New Chat Modal */}
       {showNewChat && (
         <NewChatModal
+          whapiSosActive={whapiSosActive}
           onClose={() => setShowNewChat(false)}
           onSent={() => { setShowNewChat(false); setTimeout(fetchAll, 600); }}
         />
