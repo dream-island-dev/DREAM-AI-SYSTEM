@@ -1,3 +1,5 @@
+2026-07-16 | Orit CS mobile detail scroll fix | Removed fixed-height + nested scroll trap on email detail — full page scroll + sticky back + pulse hidden on detail. Frontend-only.
+
 2026-07-16 | AddGuestModal multi-room picker + suite_rooms manual sync | `+ חדר נוסף` per SUITE_REGISTRY; save → `guests.room` combined + `syncGuestSuiteRoomsFromSelection` (manual-* rows only; never deletes EZGO import rows). GuestsPage room column shows all suite_rooms. Frontend-only.
 
 2026-07-16 | Doc 2 root fix — restore iReservationsLineId (legacy EZGO column) for instant preset | Pre-Agent parser used `iReservationsLineId` not `iResLineId`; Resilient Agent required wrong column → AI fallback. Also `sGroupName`/`sOperationRemark`/`dtCheckIn`. Frontend-only.

@@ -874,6 +874,8 @@ const css = `
     /* Thread screen: drop the topbar entirely — the green thread header inside
        WhatsAppInbox.js already provides back-nav; nothing else needed here. */
     body.wa-inbox-mobile-thread .topbar { display: none !important; }
+    /* Orit CS — detail view scrolls with the page; hide pulse for more room */
+    body.orit-cs-mobile-detail .resort-pulse-bar { display: none !important; }
     .stat-grid {
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: var(--space-sm);

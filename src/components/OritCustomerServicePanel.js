@@ -214,6 +214,13 @@ export default function OritCustomerServicePanel({ user }) {
     }
   }, [isMobile, mobileScreen]);
 
+  useEffect(() => {
+    if (!isMobile) return undefined;
+    const onDetail = mobileScreen === "detail";
+    document.body.classList.toggle("orit-cs-mobile-detail", onDetail);
+    return () => { document.body.classList.remove("orit-cs-mobile-detail"); };
+  }, [isMobile, mobileScreen]);
+
   const selected = useMemo(
     () => threads.find((t) => t.id === selectedId) ?? null,
     [threads, selectedId],
@@ -531,6 +538,8 @@ export default function OritCustomerServicePanel({ user }) {
     </div>
   );
 
+  const detailScrollable = isMobile && mobileScreen === "detail";
+
   const detailPane = (
     <div
       className="card"
@@ -538,9 +547,10 @@ export default function OritCustomerServicePanel({ user }) {
         padding: 16,
         display: "flex",
         flexDirection: "column",
-        minHeight: isMobile ? 0 : 480,
-        flex: isMobile ? 1 : undefined,
-        overflow: "hidden",
+        minHeight: detailScrollable ? undefined : 480,
+        flex: isMobile && !detailScrollable ? 1 : undefined,
+        overflow: detailScrollable ? "visible" : "hidden",
+        paddingBottom: detailScrollable ? "calc(var(--safe-bottom-nav, 80px) + 12px)" : 16,
       }}
     >
       {onDetailMobile && (
@@ -555,13 +565,16 @@ export default function OritCustomerServicePanel({ user }) {
             padding: "10px 4px",
             minHeight: 44,
             border: "none",
-            background: "transparent",
+            background: "var(--card-bg)",
             cursor: "pointer",
             fontFamily: "Heebo, sans-serif",
             fontSize: 15,
             fontWeight: 700,
             color: "var(--gold-dark)",
             alignSelf: "flex-start",
+            position: "sticky",
+            top: 0,
+            zIndex: 2,
           }}
         >
           <span aria-hidden="true">→</span>
@@ -624,15 +637,15 @@ export default function OritCustomerServicePanel({ user }) {
           </div>
 
           <div style={{
-            flex: 1,
-            overflow: "auto",
-            WebkitOverflowScrolling: "touch",
+            flex: detailScrollable ? undefined : 1,
+            overflow: detailScrollable ? "visible" : "auto",
+            WebkitOverflowScrolling: detailScrollable ? undefined : "touch",
             border: "1px solid var(--border)",
             borderRadius: 10,
             padding: 12,
             marginBottom: 12,
             background: "#FAFAF9",
-            minHeight: isMobile ? 120 : undefined,
+            minHeight: detailScrollable ? undefined : (isMobile ? 120 : undefined),
           }}
           >
             {messages.map((m) => (
@@ -786,8 +799,7 @@ export default function OritCustomerServicePanel({ user }) {
       display: "flex",
       flexDirection: "column",
       gap: 16,
-      minHeight: 0,
-      height: onDetailMobile ? "calc(100dvh - 140px)" : undefined,
+      minHeight: onDetailMobile ? undefined : 0,
     }}
     >
       {toast && (
