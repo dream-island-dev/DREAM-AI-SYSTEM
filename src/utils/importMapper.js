@@ -58,17 +58,30 @@ function _findHeaderKey(headers, canonical) {
   return null;
 }
 
-/** Raw EZGO Suites Arrivals export column names -- the Tier-0 instant-path shape. */
-export const EZGO_REQUIRED_HEADERS = ["iOrderId", "sTel1", "sRemark", "sClientFullName", "sSubItemName", "sRoomName", "iResLineId"];
+/** Core EZGO Suites columns (every arrivals export). */
+export const EZGO_CORE_HEADERS = ["iOrderId", "sTel1", "sRemark", "sClientFullName", "sSubItemName", "sRoomName"];
 
-/** @returns {Record<string, string>|null} canonical EZGO field → actual row key */
+/** Line-id column — old ezgoParser used iReservationsLineId (global PMS key); some exports also have iResLineId. */
+export const EZGO_LINE_ID_HEADERS = ["iReservationsLineId", "iResLineId"];
+
+/** @deprecated use EZGO_CORE_HEADERS + EZGO_LINE_ID_HEADERS */
+export const EZGO_REQUIRED_HEADERS = [...EZGO_CORE_HEADERS, "iResLineId"];
+
+/** @returns {Record<string, string>|null} role → actual header key in this file */
 function _resolveEzgoHeaderKeys(headers) {
   const out = {};
-  for (const name of EZGO_REQUIRED_HEADERS) {
+  for (const name of EZGO_CORE_HEADERS) {
     const key = _findHeaderKey(headers, name);
     if (!key) return null;
     out[name] = key;
   }
+  let resLineKey = null;
+  for (const alias of EZGO_LINE_ID_HEADERS) {
+    resLineKey = _findHeaderKey(headers, alias);
+    if (resLineKey) break;
+  }
+  if (!resLineKey) return null;
+  out.resLineId = resLineKey;
   return out;
 }
 
@@ -81,13 +94,30 @@ function _resolveEzgoHeaderKeys(headers) {
  */
 export function diagnoseEzgoPresetMiss(headers) {
   const cleaned = (headers ?? []).map(normalizeImportHeaderKey).filter(Boolean);
-  const missing = EZGO_REQUIRED_HEADERS.filter((name) => !_findHeaderKey(cleaned, name));
+  const missingCore = EZGO_CORE_HEADERS.filter((name) => !_findHeaderKey(cleaned, name));
+  const hasLineId = EZGO_LINE_ID_HEADERS.some((name) => _findHeaderKey(cleaned, name));
+  const missing = [
+    ...missingCore,
+    ...(hasLineId ? [] : ["iReservationsLineId|iResLineId"]),
+  ];
+  const matchedCount = EZGO_CORE_HEADERS.length - missingCore.length + (hasLineId ? 1 : 0);
   return {
     headers: cleaned,
-    required: EZGO_REQUIRED_HEADERS,
+    required: [...EZGO_CORE_HEADERS, "iReservationsLineId|iResLineId"],
     missing,
-    matchedCount: EZGO_REQUIRED_HEADERS.length - missing.length,
+    matchedCount,
   };
+}
+
+/** Old pre-Agent path: normalize keys + sGroupName → sClientFullName when empty. */
+export function canonicalizeEzgoSuiteRows(rows) {
+  return normalizeImportRows(rows).map((row) => {
+    const out = { ...row };
+    if (!String(out.sClientFullName ?? "").trim() && String(out.sGroupName ?? "").trim()) {
+      out.sClientFullName = out.sGroupName;
+    }
+    return out;
+  });
 }
 
 /** Rewrite row keys so preset detection and columnMapping use stable names. */
@@ -205,7 +235,7 @@ export function detectEzgoArrivalsPreset(headers) {
   if (!keys) return null;
   const mapping = {
     orderNumber: keys.iOrderId,
-    resLineId:   keys.iResLineId,
+    resLineId:   keys.resLineId,
     coordName:   keys.sClientFullName,
     coordPhone:  keys.sTel1,
     remark:      keys.sRemark,
@@ -215,12 +245,23 @@ export function detectEzgoArrivalsPreset(headers) {
     nights:      _findHeaderKey(headers, "iNights") ?? "iNights",
     price:       _findHeaderKey(headers, "cPrice") ?? "cPrice",
   };
+  const opRemark = _findHeaderKey(headers, "sOperationRemark");
+  const adults = _findHeaderKey(headers, "iAdults");
+  const children = _findHeaderKey(headers, "iChilds");
+  const arrival = _findHeaderKey(headers, "dtCheckIn");
   const checkIn = _findHeaderKey(headers, "sCheckInTime");
   const checkOut = _findHeaderKey(headers, "sCheckOutTime");
-  if (checkIn)  mapping.checkinTime  = checkIn;
+  if (opRemark) mapping.opRemark = opRemark;
+  if (adults) mapping.adults = adults;
+  if (children) mapping.children = children;
+  if (arrival) mapping.arrivalDate = arrival;
+  if (checkIn) mapping.checkinTime = checkIn;
   if (checkOut) mapping.checkoutTime = checkOut;
   return mapping;
 }
+
+/** Alias — single entry for the Tier-0 instant Doc 2 path. */
+export const buildEzgoSuiteMapping = detectEzgoArrivalsPreset;
 
 /** Fields staff may type a session default for in MappingReviewPanel. */
 const TIME_DEFAULT_FIELDS = new Set(["checkinTime", "checkoutTime"]);

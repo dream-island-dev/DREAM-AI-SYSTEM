@@ -13,6 +13,7 @@ import {
   resolveImportMapping,
   matrixRowsFromHeaderScan,
   diagnoseEzgoPresetMiss,
+  canonicalizeEzgoSuiteRows,
 } from "./importMapper";
 
 describe("importMapper — field defaults", () => {
@@ -133,12 +134,35 @@ describe("importMapper — EZGO preset + header normalize", () => {
     expect(preset?.resLineId).toBe("iResLineId");
   });
 
+  test("detectEzgoArrivalsPreset accepts iReservationsLineId (legacy EZGO global line key)", () => {
+    const headers = [
+      "iOrderId", "sTel1", "sRemark", "sClientFullName",
+      "sSubItemName", "sRoomName", "iReservationsLineId",
+    ];
+    const preset = detectEzgoArrivalsPreset(headers);
+    expect(preset?.orderNumber).toBe("iOrderId");
+    expect(preset?.resLineId).toBe("iReservationsLineId");
+  });
+
+  test("detectEzgoArrivalsPreset prefers iReservationsLineId over iResLineId when both exist", () => {
+    const headers = [
+      "iOrderId", "sTel1", "sRemark", "sClientFullName",
+      "sSubItemName", "sRoomName", "iReservationsLineId", "iResLineId",
+    ];
+    expect(detectEzgoArrivalsPreset(headers)?.resLineId).toBe("iReservationsLineId");
+  });
+
+  test("canonicalizeEzgoSuiteRows copies sGroupName into empty sClientFullName", () => {
+    const rows = canonicalizeEzgoSuiteRows([{ sClientFullName: "", sGroupName: "עיריית ת״א", iOrderId: "1" }]);
+    expect(rows[0].sClientFullName).toBe("עיריית ת״א");
+  });
+
   test("diagnoseEzgoPresetMiss reports missing EZGO columns for FAIL VISIBLE banner", () => {
     const headers = ["iOrderId", "sTel1", "שם מלא"];
     const diag = diagnoseEzgoPresetMiss(headers);
     expect(diag.matchedCount).toBe(2);
     expect(diag.missing).toEqual(
-      expect.arrayContaining(["sRemark", "sClientFullName", "sSubItemName", "sRoomName", "iResLineId"]),
+      expect.arrayContaining(["sRemark", "sClientFullName", "sSubItemName", "sRoomName", "iReservationsLineId|iResLineId"]),
     );
     expect(diag.headers).toEqual(["iOrderId", "sTel1", "שם מלא"]);
   });

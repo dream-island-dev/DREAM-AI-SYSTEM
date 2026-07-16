@@ -29,7 +29,7 @@ import {
   normalizeGuestPhoneEdit,
 } from "../utils/ezgoParser";
 import { mergeCandidates, classifyDbMatch, buildExistingGuestsLookup, findExistingGuestRow, buildMultiRoomLineIndexMap, formatMultiRoomLineLabel, bookingGuestKey, getDbMatchDiffLabels, buildEnrichGuestPatch, resolveCandidateRoomDisplay, buildCombinedRoomLabel, buildDoc2SyncActionLabel } from "../utils/guestImportIntelligence";
-import { SUITE_ARRIVALS_SCHEMA, buildMaskedSample, detectSuiteArrivalsPreset, detectEzgoArrivalsPreset, applyFieldDefaultsToProfiles, parseMappingMemory, packMappingMemory, normalizeImportRows, normalizeImportHeaderKey, isMappingUsable, resolveImportMapping, matrixRowsFromHeaderScan, diagnoseEzgoPresetMiss } from "../utils/importMapper";
+import { SUITE_ARRIVALS_SCHEMA, buildMaskedSample, detectSuiteArrivalsPreset, detectEzgoArrivalsPreset, applyFieldDefaultsToProfiles, parseMappingMemory, packMappingMemory, normalizeImportRows, normalizeImportHeaderKey, isMappingUsable, resolveImportMapping, matrixRowsFromHeaderScan, diagnoseEzgoPresetMiss, canonicalizeEzgoSuiteRows, EZGO_CORE_HEADERS } from "../utils/importMapper";
 import {
   isDetailedReservationFormat,
   parseDetailedReservationRows,
@@ -1541,7 +1541,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
         const text = new TextDecoder("utf-8").decode(buf);
         const matrix = parseCsvText(text);
         const scanned = matrixRowsFromHeaderScan(matrix);
-        rows = scanned?.rows?.length ? scanned.rows : normalizeImportRows(csvTextToRowObjects(text));
+        rows = scanned?.rows?.length ? scanned.rows : canonicalizeEzgoSuiteRows(csvTextToRowObjects(text));
       } else {
         const XLSX = await import("xlsx");
         const wb   = XLSX.read(buf, { type: "array", raw: false });
@@ -1549,9 +1549,9 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
         const matrix = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
         const scanned = matrixRowsFromHeaderScan(matrix);
         if (scanned?.rows?.length) {
-          rows = scanned.rows;
+          rows = canonicalizeEzgoSuiteRows(scanned.rows);
         } else {
-          rows = normalizeImportRows(XLSX.utils.sheet_to_json(ws, { defval: "" }));
+          rows = canonicalizeEzgoSuiteRows(XLSX.utils.sheet_to_json(ws, { defval: "" }));
         }
       }
 
@@ -1591,7 +1591,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
       const ezgoPreset = detectEzgoArrivalsPreset(headers);
       const preset = ezgoPreset || detectSuiteArrivalsPreset(headers);
 
-      // ── Tier 0: EZGO/PMS preset — synchronous, no DB, no AI (the old fast path)
+      // ── Tier 0: EZGO/PMS preset — synchronous, no DB, no AI (restores pre-Agent path)
       if (preset) {
         setPresetMissDebug(null);
         const count = _applyDoc2Mapping(preset, {}, rows, fallback);
@@ -1604,10 +1604,17 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
         return;
       }
 
-      // FAIL VISIBLE: preset didn't match — record exactly which columns
-      // were found vs missing so this doesn't silently drop into AI/manual
-      // review with no explanation of why the instant path skipped it.
-      setPresetMissDebug(diagnoseEzgoPresetMiss(headers));
+      // EZGO-shaped file (most columns) but line-id alias mismatch — never send to AI
+      const ezgoDiag = diagnoseEzgoPresetMiss(headers);
+      if (ezgoDiag.matchedCount >= EZGO_CORE_HEADERS.length) {
+        showToast("err", `קובץ EZGO — חסרה עמודת מזהה שורה (iReservationsLineId או iResLineId). כותרות: ${ezgoDiag.headers.slice(0, 8).join(", ")}`);
+        setPresetMissDebug(ezgoDiag);
+        setMappingStage("idle");
+        return;
+      }
+
+      // FAIL VISIBLE: not EZGO — unknown shape may need AI/manual mapping
+      setPresetMissDebug(ezgoDiag);
 
       setMappingStage("suggesting");
 
