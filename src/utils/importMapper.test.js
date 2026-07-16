@@ -9,6 +9,8 @@ import {
   detectEzgoArrivalsPreset,
   normalizeImportRows,
   normalizeImportHeaderKey,
+  isMappingUsable,
+  resolveImportMapping,
 } from "./importMapper";
 
 describe("importMapper — field defaults", () => {
@@ -85,5 +87,16 @@ describe("importMapper — EZGO preset + header normalize", () => {
     const rows = normalizeImportRows([{ "\ufeffiOrderId": "99", " sTel1 ": "525" }]);
     expect(rows[0].iOrderId).toBe("99");
     expect(rows[0].sTel1).toBe("525");
+  });
+
+  test("isMappingUsable requires orderNumber + resLineId", () => {
+    expect(isMappingUsable({ orderNumber: "iOrderId", resLineId: "iResLineId" })).toBe(true);
+    expect(isMappingUsable({ orderNumber: "iOrderId" })).toBe(false);
+    expect(isMappingUsable({})).toBe(false);
+  });
+
+  test("detectEzgoArrivalsPreset is case-insensitive on headers", () => {
+    const headers = ["iorderid", "stel1", "sremark", "sclientfullname", "ssubitemname", "sroomname", "ireslineid"];
+    expect(detectEzgoArrivalsPreset(headers)?.orderNumber).toBe("iorderid");
   });
 });

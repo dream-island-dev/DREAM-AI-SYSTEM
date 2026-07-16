@@ -48,6 +48,26 @@ export function normalizeImportHeaderKey(raw) {
   return String(raw ?? "").trim().replace(/^\uFEFF/, "");
 }
 
+function _findHeaderKey(headers, canonical) {
+  const want = normalizeImportHeaderKey(canonical).toLowerCase();
+  for (const h of headers ?? []) {
+    if (normalizeImportHeaderKey(h).toLowerCase() === want) return normalizeImportHeaderKey(h);
+  }
+  return null;
+}
+
+/** @returns {Record<string, string>|null} canonical EZGO field → actual row key */
+function _resolveEzgoHeaderKeys(headers) {
+  const required = ["iOrderId", "sTel1", "sRemark", "sClientFullName", "sSubItemName", "sRoomName", "iResLineId"];
+  const out = {};
+  for (const name of required) {
+    const key = _findHeaderKey(headers, name);
+    if (!key) return null;
+    out[name] = key;
+  }
+  return out;
+}
+
 /** Rewrite row keys so preset detection and columnMapping use stable names. */
 export function normalizeImportRows(rows) {
   if (!rows?.length) return [];
@@ -58,6 +78,35 @@ export function normalizeImportRows(rows) {
     }
     return out;
   });
+}
+
+/** Mapping must include both hard keys before we trust memory or show approve. */
+export function isMappingUsable(mapping) {
+  if (!mapping || typeof mapping !== "object") return false;
+  const order = String(mapping.orderNumber ?? "").trim();
+  const resLine = String(mapping.resLineId ?? "").trim();
+  return !!(order && resLine);
+}
+
+/** Map stored column names onto actual row keys (memory / AI alias tolerance). */
+export function resolveImportColumn(mappingCol, headers, sampleRow) {
+  if (!mappingCol) return "";
+  const col = String(mappingCol).trim();
+  if (sampleRow && col in sampleRow) return col;
+  const norm = normalizeImportHeaderKey(col).toLowerCase();
+  for (const h of headers ?? []) {
+    if (normalizeImportHeaderKey(h).toLowerCase() === norm) return normalizeImportHeaderKey(h);
+  }
+  return col;
+}
+
+export function resolveImportMapping(mapping, headers, sampleRow) {
+  if (!mapping) return null;
+  const out = {};
+  for (const [k, v] of Object.entries(mapping)) {
+    out[k] = v ? resolveImportColumn(v, headers, sampleRow) : null;
+  }
+  return out;
 }
 
 /**
@@ -106,24 +155,24 @@ export function detectSuiteArrivalsPreset(headers) {
  */
 export function detectEzgoArrivalsPreset(headers) {
   if (!headers?.length) return null;
-  const set = new Set(headers.map(normalizeImportHeaderKey));
-  const required = ["iOrderId", "sTel1", "sRemark", "sClientFullName", "sSubItemName", "sRoomName", "iResLineId"];
-  if (!required.every((h) => set.has(h))) return null;
+  const keys = _resolveEzgoHeaderKeys(headers);
+  if (!keys) return null;
   const mapping = {
-    orderNumber: "iOrderId",
-    resLineId:   "iResLineId",
-    coordName:   "sClientFullName",
-    coordPhone:  "sTel1",
-    // guestPhone: intentionally omitted — see docstring above.
-    remark:      "sRemark",
-    suiteType:   "sSubItemName",
-    roomName:    "sRoomName",
-    groupId:     "Group_Id",
-    nights:      "iNights",
-    price:       "cPrice",
+    orderNumber: keys.iOrderId,
+    resLineId:   keys.iResLineId,
+    coordName:   keys.sClientFullName,
+    coordPhone:  keys.sTel1,
+    remark:      keys.sRemark,
+    suiteType:   keys.sSubItemName,
+    roomName:    keys.sRoomName,
+    groupId:     _findHeaderKey(headers, "Group_Id") ?? "Group_Id",
+    nights:      _findHeaderKey(headers, "iNights") ?? "iNights",
+    price:       _findHeaderKey(headers, "cPrice") ?? "cPrice",
   };
-  if (set.has("sCheckInTime"))  mapping.checkinTime  = "sCheckInTime";
-  if (set.has("sCheckOutTime")) mapping.checkoutTime = "sCheckOutTime";
+  const checkIn = _findHeaderKey(headers, "sCheckInTime");
+  const checkOut = _findHeaderKey(headers, "sCheckOutTime");
+  if (checkIn)  mapping.checkinTime  = checkIn;
+  if (checkOut) mapping.checkoutTime = checkOut;
   return mapping;
 }
 

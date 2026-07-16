@@ -15,6 +15,7 @@ import {
   isEmptyImportCell,
   isTimeDefaultField,
   isValidHmTime,
+  resolveImportColumn,
 } from "../utils/importMapper";
 
 const REQUIRED_META = {
@@ -38,7 +39,7 @@ function RequiredBadge({ level }) {
 
 function _buildRows(schema, headers, sampleRow, initialMapping, defaults, fieldDefaults, aiFailed) {
   return Object.entries(schema).map(([fieldKey, spec]) => {
-    const sourceHeader = initialMapping?.[fieldKey] ?? "";
+    const sourceHeader = resolveImportColumn(initialMapping?.[fieldKey], headers, sampleRow);
     const fileSample = sourceHeader ? String(sampleRow?.[sourceHeader] ?? "") : "";
     const defaultInfo = defaults?.[fieldKey] ?? (aiFailed ? clientSideDefault(fieldKey) : null);
     const defaultEditable = isDefaultEditableField(fieldKey, spec);
@@ -177,6 +178,16 @@ export default function MappingReviewPanel({
           padding: "8px 12px", marginBottom: 10, fontSize: 12, color: "#C0392B", fontWeight: 700,
         }}>
           ⚠ {validationError}
+        </div>
+      )}
+
+      {!canApprove && (
+        <div style={{
+          background: "#FFF0EE", border: "1px solid #C0392B", borderRadius: 8,
+          padding: "10px 12px", marginBottom: 10, fontSize: 12.5, color: "#C0392B", fontWeight: 700,
+        }}>
+          חסר מיפוי לשדות חיוניים: {missingHard.map((r) => r.fieldLabel).join(" · ")}
+          {" "}— בחר/י עמודת מקור בטבלה למטה
         </div>
       )}
 

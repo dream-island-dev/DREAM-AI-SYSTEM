@@ -29,7 +29,7 @@ import {
   normalizeGuestPhoneEdit,
 } from "../utils/ezgoParser";
 import { mergeCandidates, classifyDbMatch, buildExistingGuestsLookup, findExistingGuestRow, buildMultiRoomLineIndexMap, formatMultiRoomLineLabel, bookingGuestKey, getDbMatchDiffLabels, buildEnrichGuestPatch, resolveCandidateRoomDisplay, buildCombinedRoomLabel, buildDoc2SyncActionLabel } from "../utils/guestImportIntelligence";
-import { SUITE_ARRIVALS_SCHEMA, buildMaskedSample, detectSuiteArrivalsPreset, detectEzgoArrivalsPreset, applyFieldDefaultsToProfiles, parseMappingMemory, packMappingMemory, normalizeImportRows, normalizeImportHeaderKey } from "../utils/importMapper";
+import { SUITE_ARRIVALS_SCHEMA, buildMaskedSample, detectSuiteArrivalsPreset, detectEzgoArrivalsPreset, applyFieldDefaultsToProfiles, parseMappingMemory, packMappingMemory, normalizeImportRows, normalizeImportHeaderKey, isMappingUsable, resolveImportMapping } from "../utils/importMapper";
 import {
   isDetailedReservationFormat,
   parseDetailedReservationRows,
@@ -1474,7 +1474,10 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
   }, [merged, importSource, doc2SyncMode, importBadgeByIdx, existingGuestsLookup, dbMatchByIdx, dbDiffByIdx, multiRoomLineIndexMap, syncActionByIdx, importWithoutAutomation, groupCourtesyAutomation]);
 
   const _applyDoc2Mapping = useCallback((finalMapping, appliedDefaults, rows, fallback, { saveMemory = true } = {}) => {
-    const profileMap = aggregateGuestProfiles(rows, finalMapping, fallback);
+    const sampleRow = rows[0] ?? {};
+    const headers = Object.keys(sampleRow);
+    const resolvedMapping = resolveImportMapping(finalMapping, headers, sampleRow) ?? finalMapping;
+    const profileMap = aggregateGuestProfiles(rows, resolvedMapping, fallback);
     applyFieldDefaultsToProfiles(profileMap, appliedDefaults);
     if (appliedDefaults.arrivalDate) {
       for (const profile of profileMap.values()) {
@@ -1499,7 +1502,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           {
             schema_key: "suite_arrivals",
             header_signature: signature,
-            approved_mapping: packMappingMemory(finalMapping, appliedDefaults),
+            approved_mapping: packMappingMemory(resolvedMapping, appliedDefaults),
             last_used_at: new Date().toISOString(),
           },
           { onConflict: "schema_key,header_signature" },
@@ -1574,11 +1577,26 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
       // Snapshot for handleMappingApprove: use detected date if available,
       // else whatever the picker currently holds.
       setDoc2Fallback(detectedDate || arrivalDate || _todayISO());
+      const fallback = detectedDate || arrivalDate || _todayISO();
+
+      const ezgoPreset = detectEzgoArrivalsPreset(headers);
+      const preset = ezgoPreset || detectSuiteArrivalsPreset(headers);
+
+      // ── Tier 0: EZGO/PMS preset — synchronous, no DB, no AI (the old fast path)
+      if (preset) {
+        const count = _applyDoc2Mapping(preset, {}, rows, fallback);
+        if (count) {
+          showToast("ok", `✓ מיפוי EZGO אוטומטי — נטענו ${count} פרופילים`);
+          return;
+        }
+        showToast("err", `מיפוי EZGO זוהה אך לא נמצאו שורות נתונים (${rows.length} שורות בקובץ)`);
+        setMappingStage("idle");
+        return;
+      }
+
       setMappingStage("suggesting");
 
-      // ── Mapping memory: skip the AI call when this exact header set was
-      // approved before. The review screen still always shows — this only
-      // saves a round-trip to Gemini, never the human approval step.
+      // ── Tier 1: mapping memory (unknown header shape only — never blocks preset)
       const signature = _headerSignature(headers);
       let rememberedMapping = null;
       let rememberedFieldDefaults = {};
@@ -1591,8 +1609,10 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           .maybeSingle();
         if (mem?.approved_mapping) {
           const parsed = parseMappingMemory(mem.approved_mapping);
-          rememberedMapping = parsed.mapping;
-          rememberedFieldDefaults = parsed.fieldDefaults;
+          if (isMappingUsable(parsed.mapping)) {
+            rememberedMapping = parsed.mapping;
+            rememberedFieldDefaults = parsed.fieldDefaults;
+          }
         }
       }
 
@@ -1601,55 +1621,49 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
           rememberedMapping,
           rememberedFieldDefaults,
           rows,
-          detectedDate || arrivalDate || _todayISO(),
+          fallback,
         );
         if (count) {
           showToast("ok", `✓ מיפוי מוכר — נטענו ${count} פרופילים`);
           return;
         }
         setAiSuggestion({
-          mapping: rememberedMapping,
+          mapping: resolveImportMapping(rememberedMapping, headers, rows[0]) ?? rememberedMapping,
           defaults: {},
           fieldDefaults: rememberedFieldDefaults,
           confidence: {}, engine: "memory",
           recommendations: ["⚠ זיכרון מיפוי לא ייצר פרופילים — בדוק/י ידנית ואשר"],
         });
         setAiError(null);
-      } else {
-        // EZGO's own raw Suites CSV shape checked first — it's the primary
-        // source this panel is named for. detectSuiteArrivalsPreset (the
-        // separate "advanced PMS export" shape) uses a disjoint header set,
-        // so checking order between them doesn't matter for correctness.
-        const ezgoPreset = detectEzgoArrivalsPreset(headers);
-        const preset = ezgoPreset || detectSuiteArrivalsPreset(headers);
-        if (preset) {
-          const count = _applyDoc2Mapping(
-            preset,
-            {},
-            rows,
-            detectedDate || arrivalDate || _todayISO(),
-          );
-          if (count) {
-            showToast("ok", `✓ מיפוי EZGO אוטומטי — נטענו ${count} פרופילים`);
-            return;
-          }
+        setMappingStage("review");
+        return;
+      }
+
+      try {
+        const sample = buildMaskedSample(rows, headers, 3);
+        const { data, error } = await supabase.functions.invoke("suggest-import-mapping", {
+          body: { schemaKey: "suite_arrivals", headers, sampleRows: sample },
+        });
+        if (error) throw new Error(error.message);
+        if (!data?.ok) throw new Error(data?.error || "מיפוי AI נכשל");
+        const resolved = resolveImportMapping(data.mapping, headers, rows[0]);
+        setAiSuggestion({
+          ...data,
+          mapping: isMappingUsable(resolved) ? resolved : (data.mapping ?? {}),
+        });
+        setAiError(null);
+      } catch (e) {
+        const headerFallback = detectEzgoArrivalsPreset(headers) || detectSuiteArrivalsPreset(headers);
+        if (headerFallback) {
           setAiSuggestion({
-            mapping: preset, defaults: {}, confidence: {}, engine: "preset",
-            recommendations: [ezgoPreset
-              ? "⚠ מיפוי EZGO מוכן אך לא נמצאו פרופילים — בדוק/י ידנית"
-              : "⚠ מיפוי PMS מוכן אך לא נמצאו פרופילים — בדוק/י ידנית"],
+            mapping: resolveImportMapping(headerFallback, headers, rows[0]) ?? headerFallback,
+            defaults: {},
+            confidence: {},
+            engine: "preset",
+            recommendations: ["✓ AI נכשל — הוחל מיפוי EZGO מוכן מראש"],
           });
           setAiError(null);
-        } else try {
-          const sample = buildMaskedSample(rows, headers, 3);
-          const { data, error } = await supabase.functions.invoke("suggest-import-mapping", {
-            body: { schemaKey: "suite_arrivals", headers, sampleRows: sample },
-          });
-          if (error) throw new Error(error.message);
-          if (!data?.ok) throw new Error(data?.error || "מיפוי AI נכשל");
-          setAiSuggestion(data);
-          setAiError(null);
-        } catch (e) {
+        } else {
           setAiSuggestion(null);
           setAiError(e.message);
         }
