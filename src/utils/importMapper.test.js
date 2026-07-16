@@ -12,6 +12,7 @@ import {
   isMappingUsable,
   resolveImportMapping,
   matrixRowsFromHeaderScan,
+  diagnoseEzgoPresetMiss,
 } from "./importMapper";
 
 describe("importMapper — field defaults", () => {
@@ -111,5 +112,34 @@ describe("importMapper — EZGO preset + header normalize", () => {
     expect(hit?.headerIdx).toBe(1);
     expect(hit?.rows).toHaveLength(1);
     expect(hit?.rows[0].iOrderId).toBe("266932");
+  });
+
+  // Hebrew-locale Excel tends to wrap ASCII column names in invisible
+  // LRM/RLM direction marks (U+200E/U+200F) when a cell mixes RTL sheet
+  // direction with LTR text — this broke the exact-string preset match and
+  // silently dropped real EZGO files into the AI/manual-review screen.
+  test("normalizeImportHeaderKey strips embedded LRM/RLM direction marks", () => {
+    expect(normalizeImportHeaderKey("‏iOrderId‎")).toBe("iOrderId");
+    expect(normalizeImportHeaderKey("sTel‏1")).toBe("sTel1");
+  });
+
+  test("detectEzgoArrivalsPreset matches headers with embedded direction marks", () => {
+    const headers = [
+      "‏iOrderId", "sTel‏1", "sRemark", "sClientFullName",
+      "sSubItemName", "sRoomName", "iResLineId‎",
+    ];
+    const preset = detectEzgoArrivalsPreset(headers);
+    expect(preset?.orderNumber).toBe("iOrderId");
+    expect(preset?.resLineId).toBe("iResLineId");
+  });
+
+  test("diagnoseEzgoPresetMiss reports missing EZGO columns for FAIL VISIBLE banner", () => {
+    const headers = ["iOrderId", "sTel1", "שם מלא"];
+    const diag = diagnoseEzgoPresetMiss(headers);
+    expect(diag.matchedCount).toBe(2);
+    expect(diag.missing).toEqual(
+      expect.arrayContaining(["sRemark", "sClientFullName", "sSubItemName", "sRoomName", "iResLineId"]),
+    );
+    expect(diag.headers).toEqual(["iOrderId", "sTel1", "שם מלא"]);
   });
 });

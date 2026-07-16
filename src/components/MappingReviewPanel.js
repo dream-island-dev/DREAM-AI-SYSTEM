@@ -109,7 +109,13 @@ export default function MappingReviewPanel({
   };
 
   const missingHard = rows.filter(r => r.required === "hard" && !r.sourceHeader);
-  const canApprove  = missingHard.length === 0;
+  // engine==="preset" means a known EZGO/PMS header shape was detected fresh
+  // from this file's actual headers (detectEzgoArrivalsPreset/detectSuiteArrivalsPreset
+  // already require both hard fields to resolve a non-null mapping) — trust
+  // it completely rather than re-gating on a UI-side field check that could
+  // itself be stale or wrong.
+  const isKnownPreset = aiSuggestion?.engine === "preset";
+  const canApprove = missingHard.length === 0 || isKnownPreset;
 
   const handleApprove = () => {
     const finalMapping = {};

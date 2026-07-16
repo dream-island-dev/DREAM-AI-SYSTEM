@@ -29,7 +29,7 @@ import {
   normalizeGuestPhoneEdit,
 } from "../utils/ezgoParser";
 import { mergeCandidates, classifyDbMatch, buildExistingGuestsLookup, findExistingGuestRow, buildMultiRoomLineIndexMap, formatMultiRoomLineLabel, bookingGuestKey, getDbMatchDiffLabels, buildEnrichGuestPatch, resolveCandidateRoomDisplay, buildCombinedRoomLabel, buildDoc2SyncActionLabel } from "../utils/guestImportIntelligence";
-import { SUITE_ARRIVALS_SCHEMA, buildMaskedSample, detectSuiteArrivalsPreset, detectEzgoArrivalsPreset, applyFieldDefaultsToProfiles, parseMappingMemory, packMappingMemory, normalizeImportRows, normalizeImportHeaderKey, isMappingUsable, resolveImportMapping, matrixRowsFromHeaderScan } from "../utils/importMapper";
+import { SUITE_ARRIVALS_SCHEMA, buildMaskedSample, detectSuiteArrivalsPreset, detectEzgoArrivalsPreset, applyFieldDefaultsToProfiles, parseMappingMemory, packMappingMemory, normalizeImportRows, normalizeImportHeaderKey, isMappingUsable, resolveImportMapping, matrixRowsFromHeaderScan, diagnoseEzgoPresetMiss } from "../utils/importMapper";
 import {
   isDetailedReservationFormat,
   parseDetailedReservationRows,
@@ -1151,6 +1151,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
   const [aiSuggestion, setAiSuggestion] = useState(null);   // { mapping, defaults, recommendations, confidence, engine } | null
   const [aiError,      setAiError]      = useState(null);   // string | null — shown, never hidden, when the AI call failed
   const [autoDateBanner, setAutoDateBanner] = useState(null); // { date, source } | null — FAIL VISIBLE auto-detect notice
+  const [presetMissDebug, setPresetMissDebug] = useState(null); // { headers, required, missing, matchedCount } | null — FAIL VISIBLE when Tier-0 EZGO preset doesn't match
 
   // Shifts profile state
   const [shiftRows,    setShiftRows]    = useState([]);
@@ -1524,6 +1525,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     setDetailedFileName("");
     setDoc2Name(file.name);
     setResult(null);
+    setPresetMissDebug(null);
     try {
       const buf = await file.arrayBuffer();
       // .csv → quote-aware text parser (not SheetJS's own CSV auto-parse): a
@@ -1591,6 +1593,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
 
       // ── Tier 0: EZGO/PMS preset — synchronous, no DB, no AI (the old fast path)
       if (preset) {
+        setPresetMissDebug(null);
         const count = _applyDoc2Mapping(preset, {}, rows, fallback);
         if (count) {
           showToast("ok", `✓ מיפוי EZGO אוטומטי — נטענו ${count} פרופילים`);
@@ -1600,6 +1603,11 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
         setMappingStage("idle");
         return;
       }
+
+      // FAIL VISIBLE: preset didn't match — record exactly which columns
+      // were found vs missing so this doesn't silently drop into AI/manual
+      // review with no explanation of why the instant path skipped it.
+      setPresetMissDebug(diagnoseEzgoPresetMiss(headers));
 
       setMappingStage("suggesting");
 
@@ -1662,12 +1670,20 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
       } catch (e) {
         const headerFallback = detectEzgoArrivalsPreset(headers) || detectSuiteArrivalsPreset(headers);
         if (headerFallback) {
+          // Known preset, just the AI call itself failed — never show the
+          // human-approval gate for a shape we already trust completely.
+          setPresetMissDebug(null);
+          const count = _applyDoc2Mapping(headerFallback, {}, rows, fallback);
+          if (count) {
+            showToast("ok", `✓ AI נכשל — הוחל מיפוי EZGO מוכן מראש, נטענו ${count} פרופילים`);
+            return;
+          }
           setAiSuggestion({
             mapping: resolveImportMapping(headerFallback, headers, rows[0]) ?? headerFallback,
             defaults: {},
             confidence: {},
             engine: "preset",
-            recommendations: ["✓ AI נכשל — הוחל מיפוי EZGO מוכן מראש"],
+            recommendations: ["⚠ מיפוי EZGO מוכן מראש הוחל אך לא נמצאו שורות נתונים — בדוק/י ידנית ואשר"],
           });
           setAiError(null);
         } else {
@@ -1701,6 +1717,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     setAiSuggestion(null);
     setAiError(null);
     setDoc2Name("");
+    setPresetMissDebug(null);
   }, []);
 
   // ── Parse Doc 1: Comprehensive Daily Report (Excel or EZGO HTML / Gmail .eml) ─
@@ -2723,6 +2740,25 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
               optional
             />
           </div>
+
+          {/* FAIL VISIBLE: Tier-0 EZGO preset didn't match — show exactly what
+              headers were found vs expected, so this never silently lands in
+              the AI/manual review screen with no explanation. */}
+          {presetMissDebug && (mappingStage === "suggesting" || mappingStage === "review") && (
+            <div style={{
+              marginBottom: 14, padding: "10px 14px", borderRadius: 10,
+              background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.45)",
+              fontSize: 11.5, color: "#92400E", lineHeight: 1.7,
+            }}>
+              ⚠ מיפוי EZGO אוטומטי לא זוהה ({presetMissDebug.matchedCount}/{presetMissDebug.required.length} עמודות נדרשות נמצאו) — לכן עבר למיפוי AI/ידני.
+              <div style={{ marginTop: 6 }}>
+                <strong>חסרות:</strong> {presetMissDebug.missing.length ? presetMissDebug.missing.join(", ") : "—"}
+              </div>
+              <div style={{ marginTop: 4, fontFamily: "monospace", direction: "ltr", textAlign: "left", wordBreak: "break-all" }}>
+                כותרות בקובץ: {presetMissDebug.headers.join(" | ") || "(ריק)"}
+              </div>
+            </div>
+          )}
 
           {/* Doc 2 mapping gate — directly under upload so approve isn't buried under paste zones */}
           <div ref={mappingReviewRef}>

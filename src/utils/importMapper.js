@@ -45,7 +45,9 @@ export function isAutomationMutedLeadSource(leadSource) {
 
 /** Trim + strip BOM — Excel/CSV headers often carry invisible prefix/spaces. */
 export function normalizeImportHeaderKey(raw) {
-  return String(raw ?? "").trim().replace(/^\uFEFF/, "");
+  return String(raw ?? "")
+    .replace(/[\u200B-\u200F\u202A-\u202E\uFEFF]/g, "")
+    .trim();
 }
 
 function _findHeaderKey(headers, canonical) {
@@ -56,16 +58,36 @@ function _findHeaderKey(headers, canonical) {
   return null;
 }
 
+/** Raw EZGO Suites Arrivals export column names -- the Tier-0 instant-path shape. */
+export const EZGO_REQUIRED_HEADERS = ["iOrderId", "sTel1", "sRemark", "sClientFullName", "sSubItemName", "sRoomName", "iResLineId"];
+
 /** @returns {Record<string, string>|null} canonical EZGO field → actual row key */
 function _resolveEzgoHeaderKeys(headers) {
-  const required = ["iOrderId", "sTel1", "sRemark", "sClientFullName", "sSubItemName", "sRoomName", "iResLineId"];
   const out = {};
-  for (const name of required) {
+  for (const name of EZGO_REQUIRED_HEADERS) {
     const key = _findHeaderKey(headers, name);
     if (!key) return null;
     out[name] = key;
   }
   return out;
+}
+
+/**
+ * FAIL VISIBLE diagnostic for when neither EZGO preset matches a file's
+ * headers -- surfaced in ArrivalImportPanel.js so staff/dev see exactly
+ * what was in the file instead of silently landing in the AI/manual
+ * mapping screen with no explanation. Purely descriptive: never blocks or
+ * alters the import itself.
+ */
+export function diagnoseEzgoPresetMiss(headers) {
+  const cleaned = (headers ?? []).map(normalizeImportHeaderKey).filter(Boolean);
+  const missing = EZGO_REQUIRED_HEADERS.filter((name) => !_findHeaderKey(cleaned, name));
+  return {
+    headers: cleaned,
+    required: EZGO_REQUIRED_HEADERS,
+    missing,
+    matchedCount: EZGO_REQUIRED_HEADERS.length - missing.length,
+  };
 }
 
 /** Rewrite row keys so preset detection and columnMapping use stable names. */
@@ -114,7 +136,7 @@ export function resolveImportMapping(mapping, headers, sampleRow) {
  * Scan the first N matrix rows for a preset-matching header line.
  * @returns {{ rows: object[], headerIdx: number } | null}
  */
-export function matrixRowsFromHeaderScan(matrix, maxScan = 25) {
+export function matrixRowsFromHeaderScan(matrix, maxScan = 50) {
   if (!matrix?.length) return null;
   const limit = Math.min(matrix.length, maxScan);
   for (let i = 0; i < limit; i++) {
