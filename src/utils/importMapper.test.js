@@ -11,6 +11,7 @@ import {
   normalizeImportHeaderKey,
   isMappingUsable,
   resolveImportMapping,
+  matrixRowsFromHeaderScan,
 } from "./importMapper";
 
 describe("importMapper — field defaults", () => {
@@ -98,5 +99,17 @@ describe("importMapper — EZGO preset + header normalize", () => {
   test("detectEzgoArrivalsPreset is case-insensitive on headers", () => {
     const headers = ["iorderid", "stel1", "sremark", "sclientfullname", "ssubitemname", "sroomname", "ireslineid"];
     expect(detectEzgoArrivalsPreset(headers)?.orderNumber).toBe("iorderid");
+  });
+
+  test("matrixRowsFromHeaderScan skips Excel title rows before EZGO headers", () => {
+    const matrix = [
+      ["דוח כניסות", "", ""],
+      ["iOrderId", "sTel1", "sRemark", "sClientFullName", "sSubItemName", "sRoomName", "iResLineId"],
+      ["266932", "0501112222", "יעקב 052-1234567", "קבוצה", "אמטיסט", "8", "9821345"],
+    ];
+    const hit = matrixRowsFromHeaderScan(matrix);
+    expect(hit?.headerIdx).toBe(1);
+    expect(hit?.rows).toHaveLength(1);
+    expect(hit?.rows[0].iOrderId).toBe("266932");
   });
 });

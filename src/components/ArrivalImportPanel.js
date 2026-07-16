@@ -29,7 +29,7 @@ import {
   normalizeGuestPhoneEdit,
 } from "../utils/ezgoParser";
 import { mergeCandidates, classifyDbMatch, buildExistingGuestsLookup, findExistingGuestRow, buildMultiRoomLineIndexMap, formatMultiRoomLineLabel, bookingGuestKey, getDbMatchDiffLabels, buildEnrichGuestPatch, resolveCandidateRoomDisplay, buildCombinedRoomLabel, buildDoc2SyncActionLabel } from "../utils/guestImportIntelligence";
-import { SUITE_ARRIVALS_SCHEMA, buildMaskedSample, detectSuiteArrivalsPreset, detectEzgoArrivalsPreset, applyFieldDefaultsToProfiles, parseMappingMemory, packMappingMemory, normalizeImportRows, normalizeImportHeaderKey, isMappingUsable, resolveImportMapping } from "../utils/importMapper";
+import { SUITE_ARRIVALS_SCHEMA, buildMaskedSample, detectSuiteArrivalsPreset, detectEzgoArrivalsPreset, applyFieldDefaultsToProfiles, parseMappingMemory, packMappingMemory, normalizeImportRows, normalizeImportHeaderKey, isMappingUsable, resolveImportMapping, matrixRowsFromHeaderScan } from "../utils/importMapper";
 import {
   isDetailedReservationFormat,
   parseDetailedReservationRows,
@@ -38,6 +38,7 @@ import {
   detailedRowsToProfileMap,
   applyPriceResolutions,
   csvTextToRowObjects,
+  parseCsvText,
 } from "../utils/detailedReservationParser";
 import PriceDiscrepancyModal from "./PriceDiscrepancyModal";
 import { isSuiteGuestProfile } from "../utils/guestTiming";
@@ -1536,20 +1537,26 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
       let rows;
       if (isCsv) {
         const text = new TextDecoder("utf-8").decode(buf);
-        rows = csvTextToRowObjects(text);
+        const matrix = parseCsvText(text);
+        const scanned = matrixRowsFromHeaderScan(matrix);
+        rows = scanned?.rows?.length ? scanned.rows : normalizeImportRows(csvTextToRowObjects(text));
       } else {
         const XLSX = await import("xlsx");
         const wb   = XLSX.read(buf, { type: "array", raw: false });
         const ws   = wb.Sheets[wb.SheetNames[0]];
-        rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
+        const matrix = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+        const scanned = matrixRowsFromHeaderScan(matrix);
+        if (scanned?.rows?.length) {
+          rows = scanned.rows;
+        } else {
+          rows = normalizeImportRows(XLSX.utils.sheet_to_json(ws, { defval: "" }));
+        }
       }
 
       if (!rows.length) {
         showToast("err", "הקובץ ריק");
         return;
       }
-
-      rows = normalizeImportRows(rows);
 
       const headers = Object.keys(rows[0]);
       setRawDoc2Rows(rows);

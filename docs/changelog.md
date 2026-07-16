@@ -1,3 +1,5 @@
+2026-07-16 | Doc 2 Excel header-row scan — skip title rows before EZGO columns | `matrixRowsFromHeaderScan` in CSV/Excel parse; P0 handoff doc for Claude Code if still broken. Frontend-only.
+
 2026-07-16 | Doc 2 preset priority fix — stale memory no longer blocks instant EZGO load | Preset runs before DB/AI; broken `import_mapping_memory` ignored; case-insensitive EZGO headers; no review screen for standard Doc 2. Frontend-only.
 
 2026-07-16 | Doc 2 import regression — instant EZGO preset auto-load, no Claude gate | Preset/memory mapping skips MappingReviewPanel (direct grid); `normalizeImportRows` fixes Excel BOM/spaces; removed MappingReviewPanel useEffect that reset manual edits. Frontend-only.

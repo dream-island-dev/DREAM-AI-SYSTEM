@@ -110,6 +110,30 @@ export function resolveImportMapping(mapping, headers, sampleRow) {
 }
 
 /**
+ * EZGO exports often have title rows before the real header row (Excel especially).
+ * Scan the first N matrix rows for a preset-matching header line.
+ * @returns {{ rows: object[], headerIdx: number } | null}
+ */
+export function matrixRowsFromHeaderScan(matrix, maxScan = 25) {
+  if (!matrix?.length) return null;
+  const limit = Math.min(matrix.length, maxScan);
+  for (let i = 0; i < limit; i++) {
+    const headerCells = (matrix[i] ?? []).map((c) => normalizeImportHeaderKey(c));
+    if (!headerCells.some(Boolean)) continue;
+    if (!detectEzgoArrivalsPreset(headerCells) && !detectSuiteArrivalsPreset(headerCells)) continue;
+    const rows = matrix.slice(i + 1)
+      .map((row) => {
+        const obj = {};
+        headerCells.forEach((h, col) => { obj[h] = row?.[col] ?? ""; });
+        return obj;
+      })
+      .filter((row) => Object.values(row).some((v) => String(v ?? "").trim()));
+    return { rows: normalizeImportRows(rows), headerIdx: i };
+  }
+  return null;
+}
+
+/**
  * Preset column mapping for the advanced PMS export (e.g. 01.7.26.csv):
  * שם מלא, טלפון, מס. הזמנה, מס. לקוח, ת. התחלה, לילות, מקור הגעה.
  * Returns null when headers do not match this shape.
