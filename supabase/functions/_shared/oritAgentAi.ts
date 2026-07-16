@@ -1,6 +1,12 @@
 // AI analysis + reply drafts for Orit Customer Service Agent.
 
 import Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.20.0";
+import {
+  isGenericLeadFormSubject,
+  mergeTier0Category,
+  tier0ClassifyOritThread,
+  type Tier0OritHint,
+} from "./oritAgentClassify.ts";
 
 const GEMINI_MODEL = "gemini-2.5-flash";
 const CLAUDE_MODEL = "claude-sonnet-4-6";
@@ -16,7 +22,7 @@ export type ThreadAnalysisInput = {
 export type ThreadAnalysisResult = {
   urgency: "critical" | "high" | "normal" | "low";
   urgency_reason: string;
-  category: "complaint" | "booking" | "spa" | "vendor" | "internal" | "other";
+  category: "complaint" | "lead" | "booking" | "spa" | "vendor" | "internal" | "other";
   summary: string;
   suggestions: string[];
   engine: string;
@@ -26,27 +32,41 @@ const SYSTEM_PROMPT = `
 אתה סוכן שירות לקוחות של דרים איילנד — אתר נופש יוקרתי בבעלות אורית.
 תפקידך לנתח פניית מייל נכנסת ולעזור לאורית לנהל שירות לקוחות בנוחות.
 
+חשוב מאוד:
+• נושא המייל לעיתים קרובות קבוע מהאתר: «התקבלה פניה מלידים» — זה לא אומר שזה ליד!
+  סווגי לפי תוכן גוף ההודעה בלבד. תלונה ארוכה עם מילים כמו תלונה/אכזבה/פיצוי = complaint.
+• lead = פניית עניין / בקשת מידע / הזמנה חדשה ללא תלונה.
+• complaint = תלונה, אכזבה, בקשת פיצוי, חוויה שלילית — דחיפות high או critical.
+• booking = הזמנת לינה קיימת / שינוי הזמנה (לא תלונה).
+
 הנחיות:
 • עברית בלבד בכל השדות הטקסטואליים.
-• urgency: critical | high | normal | low — לפי חומרת הפנייה לשירות הלקוחות.
+• urgency: critical | high | normal | low
 • urgency_reason: 1–2 משפטים שמסבירים לאורית למה זה דחוף/לא.
-• category: complaint | booking | spa | vendor | internal | other
-• summary: 2–3 שורות — מה האורח רוצה, בלי המצאות.
-• suggestions: עד 3 טיוטות תשובה קצרות, חמות ומקצועיות, בשפה אחידה.
+• category: complaint | lead | booking | spa | vendor | internal | other
+• summary: 2–3 שורות — שם האורח (אם מופיע), מה הוא רוצה, בלי המצאות.
+• suggestions: עד 3 טיוטות תשובה קצרות.
+  - complaint: טון מתנצל ואמפתי, בלי הבטחות פיצוי שלא מופיעות בפנייה.
+  - lead/booking: טון חם ומזמין.
 • לעולם אל תמציא מחירים, שעות, הבטחות או אישורי ביטול שלא מופיעים בפנייה.
 • החזר JSON בלבד: {"urgency":"...","urgency_reason":"...","category":"...","summary":"...","suggestions":["...","...","..."]}
 `.trim();
 
-function buildUserPrompt(input: ThreadAnalysisInput): string {
+function buildUserPrompt(input: ThreadAnalysisInput, tier0: Tier0OritHint | null): string {
   const samples = input.styleSamples.slice(0, 8).map((s, i) =>
     `${i + 1}. קטגוריה: ${s.context_category}\n   נכנס: ${s.inbound_snippet}\n   נשלח: ${s.outbound_text}`
   ).join("\n");
 
+  const genericSubject = isGenericLeadFormSubject(input.subject);
+
   return [
-    `נושא: ${input.subject || "(ללא נושא)"}`,
+    genericSubject
+      ? `נושא המייל (קבוע מהאתר — התעלמי ממנו לסיווג): ${input.subject}`
+      : `נושא: ${input.subject || "(ללא נושא)"}`,
     `שולח: ${input.fromName || "לא ידוע"} <${input.fromEmail}>`,
+    tier0 ? `רמז סיווג מקדים (מילות מפתח): ${tier0.category} — ${tier0.urgency_reason}` : "",
     "",
-    "תוכן הפנייה:",
+    "תוכן הפנייה (מקור האמת לסיווג):",
     input.bodyText.slice(0, 4000) || "(ריק)",
     "",
     samples ? `דגימות סגנון אחרונות של אורית:\n${samples}` : "",
@@ -74,7 +94,7 @@ function normalizeAnalysis(obj: Record<string, unknown>): ThreadAnalysisResult |
   const urgency = String(obj.urgency || "normal");
   const category = String(obj.category || "other");
   const allowedUrgency = new Set(["critical", "high", "normal", "low"]);
-  const allowedCategory = new Set(["complaint", "booking", "spa", "vendor", "internal", "other"]);
+  const allowedCategory = new Set(["complaint", "lead", "booking", "spa", "vendor", "internal", "other"]);
   const suggestions = Array.isArray(obj.suggestions)
     ? obj.suggestions.map((s) => String(s).trim()).filter(Boolean).slice(0, 3)
     : [];
@@ -86,6 +106,20 @@ function normalizeAnalysis(obj: Record<string, unknown>): ThreadAnalysisResult |
     summary: String(obj.summary || "").trim() || "פניית אורח לטיפול.",
     suggestions: suggestions.length ? suggestions : ["שלום, קיבלנו את פנייתך ונחזור אליך בהקדם. תודה על סבלנותך."],
     engine: "parsed",
+  };
+}
+
+function applyTier0Merge(parsed: ThreadAnalysisResult, tier0: Tier0OritHint | null): ThreadAnalysisResult {
+  if (!tier0) return parsed;
+  const merged = mergeTier0Category(tier0, parsed.category, parsed.urgency);
+  const urgency_reason = merged.category === "complaint" && tier0.category === "complaint"
+    ? (parsed.urgency_reason.includes("ידנית") ? tier0.urgency_reason : parsed.urgency_reason)
+    : parsed.urgency_reason;
+  return {
+    ...parsed,
+    category: merged.category,
+    urgency: merged.urgency,
+    urgency_reason,
   };
 }
 
@@ -103,7 +137,7 @@ async function callGemini(userPrompt: string): Promise<string> {
         contents: [{ role: "user", parts: [{ text: userPrompt }] }],
         generationConfig: {
           maxOutputTokens: 900,
-          temperature: 0.4,
+          temperature: 0.35,
           responseMimeType: "application/json",
         },
       }),
@@ -129,7 +163,7 @@ async function callClaude(userPrompt: string): Promise<string> {
   const msg = await client.messages.create({
     model: CLAUDE_MODEL,
     max_tokens: 900,
-    temperature: 0.4,
+    temperature: 0.35,
     system: SYSTEM_PROMPT,
     messages: [{ role: "user", content: userPrompt }],
   });
@@ -138,12 +172,13 @@ async function callClaude(userPrompt: string): Promise<string> {
 }
 
 export async function analyzeOritThread(input: ThreadAnalysisInput): Promise<ThreadAnalysisResult> {
-  const userPrompt = buildUserPrompt(input);
+  const tier0 = tier0ClassifyOritThread(input.bodyText, input.subject);
+  const userPrompt = buildUserPrompt(input, tier0);
 
   try {
     const raw = await callGemini(userPrompt);
     const parsed = parseAnalysisJson(raw);
-    if (parsed) return { ...parsed, engine: "gemini" };
+    if (parsed) return { ...applyTier0Merge(parsed, tier0), engine: "gemini" };
   } catch (e) {
     console.warn("[oritAgentAi] gemini failed:", (e as Error).message);
   }
@@ -151,18 +186,29 @@ export async function analyzeOritThread(input: ThreadAnalysisInput): Promise<Thr
   try {
     const raw = await callClaude(userPrompt);
     const parsed = parseAnalysisJson(raw);
-    if (parsed) return { ...parsed, engine: "claude" };
+    if (parsed) return { ...applyTier0Merge(parsed, tier0), engine: "claude" };
   } catch (e) {
     console.warn("[oritAgentAi] claude failed:", (e as Error).message);
+  }
+
+  if (tier0) {
+    return {
+      urgency: tier0.urgency,
+      urgency_reason: tier0.urgency_reason,
+      category: tier0.category,
+      summary: tier0.summary,
+      suggestions: tier0.suggestions,
+      engine: "tier0",
+    };
   }
 
   return {
     urgency: "normal",
     urgency_reason: "לא ניתן לנתח אוטומטית — נדרשת בדיקה ידנית.",
-    category: "other",
+    category: isGenericLeadFormSubject(input.subject) ? "lead" : "other",
     summary: input.bodyText.slice(0, 280) || input.subject || "פניית אורח.",
     suggestions: [
-      "שלום, תודה על פנייתך. קיבלנו את ההודעה ונחזור אליך בהקדם.",
+      "שלום, קיבלנו את בקשתך, ניצור איתך קשר בהקדם.",
     ],
     engine: "fallback",
   };

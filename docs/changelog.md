@@ -1,3 +1,5 @@
+2026-07-16 | Orit CS Agent — לידים/תלונות tabs + tier-0 classify + Graph outbound send + auto-ack | migration 221; `oritAgentClassify.ts`, `oritAgentSend.ts`, `OritCustomerServicePanel.js`; deploy `db push` + `manager-mail-sync/send/auto-ack/analyze` + frontend.
+
 2026-07-16 | Suite checkout survey — portal eligibility + same-day catch-up | `guestSurveyEligibility.ts` (suite checked_out sees `#survey`); `catchUpDepartedTodaySuiteCheckoutSurveys` in cron; deploy also `guest-portal-data` + `guest-portal-survey`.
 
 2026-07-16 | Suite post-checkout survey after housekeeping Co (~15min) + stay fixes | migration 220: `post_checkout_survey_queue`, `checked_out_at`, `checkout_fb` portal script; Co→enqueue→cron→whatsapp-send; cron `checkout_fb` disabled for suites; day-pass 19:00 auto-checkout + departure backfill; HK inline `N co`, already-Co still לניקיון; emoji/SLA courtesy shield (meta+whapi prior outbound). Deploy: `db push` + `whapi-webhook`, `whatsapp-cron`, `whatsapp-send`, `sla-escalation-cron` + frontend if pushed.

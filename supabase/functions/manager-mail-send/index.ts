@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import type { OritMailboxRow } from "../_shared/oritAgentMail.ts";
+import { deliverOritThreadEmail } from "../_shared/oritAgentSend.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -27,7 +28,7 @@ serve(async (req: Request) => {
       });
     }
 
-    const { threadId, bodyText, markHandled } = await req.json();
+    const { threadId, bodyText, markHandled, sendOnly } = await req.json();
     if (!threadId || !bodyText) {
       return new Response(JSON.stringify({ ok: false, error: "threadId and bodyText required" }), {
         status: 200,
@@ -52,14 +53,28 @@ serve(async (req: Request) => {
     const finalText = String(bodyText).trim();
     const sentAt = new Date().toISOString();
 
-    if (thread.is_demo) {
-      await supabase.from("orit_agent_messages").insert({
-        thread_id: threadId,
-        external_key: `demo-manual-${sentAt}`,
-        direction: "outbound",
-        body_text: finalText,
-        received_at: sentAt,
-        message_kind: "manual_reply",
+    const delivery = await deliverOritThreadEmail(
+      supabase,
+      mailbox,
+      {
+        id: thread.id,
+        from_email: thread.from_email,
+        from_name: thread.from_name,
+        subject: thread.subject,
+        is_demo: thread.is_demo,
+      },
+      finalText,
+      "manual_reply",
+    );
+
+    if (!delivery.sent && !thread.is_demo && mailbox.read_only_mode === false) {
+      return new Response(JSON.stringify({
+        ok: false,
+        error: delivery.error || "send_failed",
+        hint: "שליחת המייל נכשלה — נסי להעתיק ולשלוח מ-Outlook",
+      }), {
+        status: 200,
+        headers: { ...CORS, "Content-Type": "application/json" },
       });
     }
 
@@ -70,7 +85,13 @@ serve(async (req: Request) => {
       outbound_text: finalText,
     });
 
-    if (markHandled !== false) {
+    if (delivery.sent) {
+      await supabase.from("orit_agent_drafts").update({ status: "sent" })
+        .eq("thread_id", threadId)
+        .eq("status", "suggested");
+    }
+
+    if (markHandled !== false && !sendOnly) {
       await supabase.from("orit_agent_threads").update({
         status: "handled",
         handled_at: sentAt,
@@ -79,8 +100,10 @@ serve(async (req: Request) => {
 
     return new Response(JSON.stringify({
       ok: true,
+      sent: delivery.sent,
       read_only_mode: mailbox?.read_only_mode !== false,
       saved_sample: true,
+      external_key: delivery.externalKey ?? null,
     }), {
       status: 200,
       headers: { ...CORS, "Content-Type": "application/json" },

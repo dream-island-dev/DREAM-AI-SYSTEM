@@ -6,6 +6,7 @@ import {
   type OritMailboxRow,
 } from "../_shared/oritAgentMail.ts";
 import { analyzeOritThread } from "../_shared/oritAgentAi.ts";
+import { trySendAutoAck } from "../_shared/oritAgentSend.ts";
 import { fetchMailboxInboxMessages, isMailboxIngestConfigured } from "../_shared/mailIngest.ts";
 import { isImapConfigured, resolveImapConfig, testImapConnection } from "../_shared/imapMail.ts";
 
@@ -133,6 +134,7 @@ serve(async (req: Request) => {
           if (existingThread?.status === "handled") continue;
 
           let threadId = existingThread?.id ?? null;
+          const isNewThread = !threadId;
 
           if (!threadId) {
             const slaDeadline = computeSlaDeadline(msg.receivedAt, mailbox.sla_hours);
@@ -176,6 +178,21 @@ serve(async (req: Request) => {
           if (msgErr) continue;
 
           synced += 1;
+
+          if (isNewThread && threadId) {
+            try {
+              await trySendAutoAck(supabase, mailbox, {
+                id: threadId,
+                from_email: msg.fromEmail,
+                from_name: msg.fromName,
+                subject: msg.subject,
+                is_demo: false,
+                auto_ack_sent_at: null,
+              });
+            } catch (ackErr) {
+              console.warn("[manager-mail-sync] auto-ack failed:", (ackErr as Error).message);
+            }
+          }
 
           try {
             await analyzeThread(supabase, mailbox.id, threadId);

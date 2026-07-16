@@ -1,6 +1,6 @@
 # חיבור תיבת אורית — Microsoft Graph (M365)
 
-אורית **לא שולחת** מהמערכת. היא מעתיקה טיוטות AI ושולחת מ-Outlook (`dream-island.co.il`).
+אורית **יכולה לשלוח** מהמערכת כש-`read_only_mode=false` (migration 221). אחרת — העתקה ל-Outlook.
 
 ## ארכיטקטורה
 
@@ -16,16 +16,18 @@
 
 | פעולה | איך |
 |--------|-----|
-| קריאת מיילים | Graph API כל 10 דק' (`orit-cs-mail-sync`) |
+| קריאת מיילים | Graph API כל 10 דק' (`manager-mail-sync`) |
+| סיווג ליד/תלונה | tier-0 + AI — מתעלם מנושא «פניה מלידים» |
 | סיכום + טיוטות | AI על כל פנייה חדשה |
+| אישור קבלה אוטומטי | «קיבלנו את בקשתך, ניצור איתך קשר בהקדם» — פנייה חדשה |
+| שליחה לאורח | **«שלחי לאורח»** מ-XOS (Graph `Mail.Send`) או העתקה ל-Outlook |
 | דייג'סט בוקר | Whatsapp ל-`profiles.phone` של אורית (06:30) |
-| שליחה לאורח | **ידנית** מ-Outlook — «העתיקי» → שלחי → «שלחתי — סמני כטופל» |
 
 ## 1. Azure App (אבי)
 
 - Redirect URI (Web): `https://bunohsdggxyyzruubvcd.supabase.co/functions/v1/manager-mail-oauth/callback`
 - Logout URL — **לא נדרש**
-- Admin consent: `Mail.Read`, `offline_access`, `User.Read`
+- Admin consent: `Mail.Read`, `Mail.ReadWrite`, `Mail.Send`, `offline_access`, `User.Read`
 - Forward: `orit@dream-island.co.il` → תיבת 365 (עם שמירת עותק)
 
 ## 2. Supabase Secrets

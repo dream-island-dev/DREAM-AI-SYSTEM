@@ -1,7 +1,15 @@
-// OritCustomerServicePanel.js — Suite owner CS agent: read-only inbox, AI drafts, manual reply.
+// OritCustomerServicePanel.js — Orit CS agent: inbox, AI classify, Graph send or copy fallback.
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import useIsMobile from "../utils/useIsMobile";
+import { isReadOnlyMailbox } from "../utils/oritAgentMail";
+import {
+  ORIT_CS_TABS,
+  threadMatchesTab,
+  threadDisplayTitle,
+  categoryMeta,
+  buildQuickAckText,
+} from "../utils/oritAgentClassify";
 
 const URGENCY_META = {
   critical: { label: "🔴 קריטי", bg: "#FEE2E2", color: "#B91C1C" },
@@ -57,6 +65,7 @@ export default function OritCustomerServicePanel({ user }) {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [replyText, setReplyText] = useState("");
+  const [activeTab, setActiveTab] = useState("all");
   const [toast, setToast] = useState(null);
 
   const showToast = useCallback((kind, text) => {
@@ -212,6 +221,28 @@ export default function OritCustomerServicePanel({ user }) {
 
   const openCount = threads.filter((t) => t.status === "awaiting_reply").length;
 
+  const canSendFromXos = useMemo(
+    () => mailbox
+      && !isReadOnlyMailbox(mailbox)
+      && mailbox.connection_status === "active"
+      && mailbox.provider === "microsoft",
+    [mailbox],
+  );
+
+  const filteredThreads = useMemo(
+    () => threads.filter((t) => threadMatchesTab(t, activeTab)),
+    [threads, activeTab],
+  );
+
+  const tabCounts = useMemo(() => {
+    const counts = { all: threads.length, leads: 0, complaints: 0, other: 0 };
+    for (const t of threads) {
+      const tab = categoryMeta(t.category).tab;
+      if (tab in counts) counts[tab] += 1;
+    }
+    return counts;
+  }, [threads]);
+
   const handleConnectOutlook = async () => {
     if (!mailbox?.id) return;
     setBusy(true);
@@ -304,14 +335,65 @@ export default function OritCustomerServicePanel({ user }) {
     try {
       await navigator.clipboard.writeText(value);
       setReplyText(value);
-      showToast("ok", "הועתק — שלחי את התשובה מ-Outlook שלך");
+      showToast("ok", canSendFromXos ? "הועתק ללוח" : "הועתק — שלחי את התשובה מ-Outlook שלך");
     } catch {
       showToast("err", "לא ניתן להעתיק — סמני והעתיקי ידנית");
     }
   };
 
+  const handleSendReply = async ({ markHandled = false, text } = {}) => {
+    const body = (text ?? replyText).trim();
+    if (!body || !selectedId) return;
+    setBusy(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("manager-mail-send", {
+        body: { threadId: selectedId, bodyText: body, markHandled, sendOnly: !markHandled },
+      });
+      if (error) throw error;
+      if (!data?.ok) throw new Error(data?.hint || data?.error || "שליחה נכשלה");
+
+      if (data.sent) {
+        showToast("ok", markHandled ? "נשלח לאורח וסומן כטופל" : "נשלח לאורח במייל");
+        if (markHandled) {
+          setReplyText("");
+          goBackToList();
+        }
+      } else {
+        await handleCopyReply(body);
+        if (markHandled) {
+          const { error: updErr } = await supabase.from("orit_agent_threads").update({
+            status: "handled",
+            handled_at: new Date().toISOString(),
+          }).eq("id", selectedId);
+          if (updErr) throw updErr;
+          setReplyText("");
+          goBackToList();
+        }
+      }
+      await loadMailbox();
+      if (!markHandled || data.sent) await loadThreadDetail(selectedId);
+    } catch (e) {
+      showToast("err", e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleQuickAck = async (sendNow = false) => {
+    if (!selected) return;
+    const text = buildQuickAckText(selected.from_name);
+    setReplyText(text);
+    if (sendNow && canSendFromXos) {
+      await handleSendReply({ markHandled: false, text });
+    }
+  };
+
   const handleMarkHandled = async () => {
     if (!selectedId) return;
+    if (replyText.trim() && canSendFromXos) {
+      await handleSendReply({ markHandled: true, text: replyText.trim() });
+      return;
+    }
     setBusy(true);
     try {
       if (replyText.trim()) {
@@ -378,11 +460,37 @@ export default function OritCustomerServicePanel({ user }) {
       }}
     >
       <div style={{ fontWeight: 700, marginBottom: 10 }}>תור עדיפויות</div>
-      {threads.length === 0 && (
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
+        {ORIT_CS_TABS.map((tab) => {
+          const count = tabCounts[tab.id] ?? 0;
+          const active = activeTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setActiveTab(tab.id)}
+              style={{
+                padding: "6px 12px",
+                borderRadius: 999,
+                border: active ? "2px solid var(--gold)" : "1px solid var(--border)",
+                background: active ? "#FFFBEB" : "var(--card-bg)",
+                fontWeight: active ? 700 : 500,
+                fontSize: 13,
+                cursor: "pointer",
+                minHeight: 36,
+              }}
+            >
+              {tab.label}{count > 0 ? ` (${count})` : ""}
+            </button>
+          );
+        })}
+      </div>
+      {filteredThreads.length === 0 && (
         <div style={{ color: "var(--text-muted)", padding: 16, textAlign: "center" }}>אין פניות להצגה</div>
       )}
-      {threads.map((t) => {
+      {filteredThreads.map((t) => {
         const um = urgencyMeta(t.urgency);
+        const cm = categoryMeta(t.category);
         const sla = slaLabel(t.sla_deadline_at);
         return (
           <button
@@ -401,13 +509,16 @@ export default function OritCustomerServicePanel({ user }) {
               minHeight: 44,
             }}
           >
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 12, padding: "2px 8px", borderRadius: 999, background: cm.bg, color: cm.color, fontWeight: 700 }}>
+                {cm.label}
+              </span>
               <span style={{ fontSize: 12, padding: "2px 8px", borderRadius: 999, background: um.bg, color: um.color, fontWeight: 700 }}>
                 {um.label}
               </span>
               {t.is_demo && <span style={{ fontSize: 11, color: "var(--text-muted)" }}>דמו</span>}
             </div>
-            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>{t.subject || "(ללא נושא)"}</div>
+            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>{threadDisplayTitle(t)}</div>
             <div style={{ fontSize: 13, color: "var(--text-muted)" }}>{t.from_name || t.from_email}</div>
             {sla && (
               <div style={{ fontSize: 12, marginTop: 6, color: sla.startsWith("עבר") ? "#B91C1C" : "#047857", fontWeight: 600 }}>
@@ -464,10 +575,42 @@ export default function OritCustomerServicePanel({ user }) {
       ) : (
         <>
           <div style={{ marginBottom: 12, flexShrink: 0 }}>
-            <div style={{ fontSize: isMobile ? 16 : 18, fontWeight: 800 }}>{selected.subject}</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
+              <span style={{
+                fontSize: 12,
+                padding: "4px 10px",
+                borderRadius: 999,
+                background: categoryMeta(selected.category).bg,
+                color: categoryMeta(selected.category).color,
+                fontWeight: 700,
+              }}>
+                {categoryMeta(selected.category).label}
+              </span>
+              <span style={{
+                fontSize: 12,
+                padding: "4px 10px",
+                borderRadius: 999,
+                background: urgencyMeta(selected.urgency).bg,
+                color: urgencyMeta(selected.urgency).color,
+                fontWeight: 700,
+              }}>
+                {urgencyMeta(selected.urgency).label}
+              </span>
+              {selected.auto_ack_sent_at && (
+                <span style={{ fontSize: 12, padding: "4px 10px", borderRadius: 999, background: "#DCFCE7", color: "#047857", fontWeight: 600 }}>
+                  ✉ אישור קבלה נשלח
+                </span>
+              )}
+            </div>
+            <div style={{ fontSize: isMobile ? 16 : 18, fontWeight: 800 }}>{threadDisplayTitle(selected)}</div>
             <div style={{ color: "var(--text-muted)", marginTop: 4, fontSize: isMobile ? 13 : 14 }}>
               {selected.from_name} · {selected.from_email} · {fmtDt(selected.received_at)}
             </div>
+            {selected.subject && (
+              <div style={{ color: "var(--text-muted)", marginTop: 4, fontSize: 12 }}>
+                נושא מייל: {selected.subject}
+              </div>
+            )}
             {selected.urgency_reason && (
               <div style={{ marginTop: 10, padding: 10, borderRadius: 8, background: "#FEF3C7", fontSize: 14 }}>
                 <strong>למה זה דחוף:</strong> {selected.urgency_reason}
@@ -516,6 +659,23 @@ export default function OritCustomerServicePanel({ user }) {
             <button type="button" className="btn btn-primary" disabled={busy} onClick={handleAnalyze} style={{ minHeight: 44 }}>
               ✨ הצעות תשובה
             </button>
+            {canSendFromXos && (
+              <button
+                type="button"
+                className="btn"
+                disabled={busy || !!selected.auto_ack_sent_at}
+                onClick={() => handleQuickAck(true)}
+                style={{ minHeight: 44 }}
+                title="שולח אוטומטית: קיבלנו את בקשתך, ניצור איתך קשר בהקדם"
+              >
+                📨 אישור קבלה מהיר
+              </button>
+            )}
+            {!canSendFromXos && (
+              <button type="button" className="btn" disabled={busy} onClick={() => handleQuickAck(false)} style={{ minHeight: 44 }}>
+                📝 הכיני אישור קבלה
+              </button>
+            )}
             <button type="button" className="btn" disabled={busy || selected.status === "handled"} onClick={handleMarkHandled} style={{ minHeight: 44 }}>
               ✅ שלחתי — סמני כטופל
             </button>
@@ -526,13 +686,25 @@ export default function OritCustomerServicePanel({ user }) {
 
           {drafts.length > 0 && (
             <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10, flexShrink: 0 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-muted)" }}>טיוטות להעתקה ל-Outlook</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-muted)" }}>
+                {canSendFromXos ? "טיוטות מוצעות" : "טיוטות להעתקה ל-Outlook"}
+              </div>
               {drafts.map((d) => (
                 <div key={d.id} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                   <div style={{ padding: 10, borderRadius: 10, border: "1px solid var(--border)", background: "#FFFBEB", whiteSpace: "pre-wrap", fontSize: 14 }}>
                     {d.suggested_text}
                   </div>
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    {canSendFromXos && (
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        style={{ minHeight: 44 }}
+                        onClick={() => handleSendReply({ markHandled: false, text: d.suggested_text })}
+                      >
+                        📧 שלחי
+                      </button>
+                    )}
                     <button
                       type="button"
                       className="btn"
@@ -547,7 +719,7 @@ export default function OritCustomerServicePanel({ user }) {
                       style={{ minHeight: 44 }}
                       onClick={() => setReplyText(d.suggested_text)}
                     >
-                      ✏️ ערכי לפני העתקה
+                      ✏️ ערכי לפני שליחה
                     </button>
                   </div>
                 </div>
@@ -558,7 +730,7 @@ export default function OritCustomerServicePanel({ user }) {
           <textarea
             value={replyText}
             onChange={(e) => setReplyText(e.target.value)}
-            placeholder="ערכי כאן טיוטה לפני העתקה ל-Outlook…"
+            placeholder={canSendFromXos ? "ערכי כאן את התשובה לפני שליחה לאורח…" : "ערכי כאן טיוטה לפני העתקה ל-Outlook…"}
             rows={isMobile ? 3 : 4}
             style={{
               width: "100%",
@@ -571,15 +743,39 @@ export default function OritCustomerServicePanel({ user }) {
               fontSize: 16,
             }}
           />
-          <button
-            type="button"
-            className="btn btn-primary"
-            disabled={busy || !replyText.trim()}
-            onClick={() => handleCopyReply()}
-            style={{ minHeight: 48, alignSelf: "flex-start", flexShrink: 0 }}
-          >
-            📋 העתיקי ללוח
-          </button>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, flexShrink: 0 }}>
+            {canSendFromXos && (
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={busy || !replyText.trim()}
+                onClick={() => handleSendReply({ markHandled: false })}
+                style={{ minHeight: 48 }}
+              >
+                📧 שלחי לאורח
+              </button>
+            )}
+            <button
+              type="button"
+              className="btn"
+              disabled={busy || !replyText.trim()}
+              onClick={() => handleCopyReply()}
+              style={{ minHeight: 48 }}
+            >
+              📋 העתיקי ללוח
+            </button>
+            {canSendFromXos && (
+              <button
+                type="button"
+                className="btn"
+                disabled={busy || !replyText.trim() || selected.status === "handled"}
+                onClick={() => handleSendReply({ markHandled: true })}
+                style={{ minHeight: 48 }}
+              >
+                📧 שלחי וסמני כטופל
+              </button>
+            )}
+          </div>
         </>
       )}
     </div>
@@ -667,7 +863,9 @@ export default function OritCustomerServicePanel({ user }) {
           )}
           {connected && !isMobile && (
             <div style={{ marginTop: 12, fontSize: 13, opacity: 0.85 }}>
-              קראי את הפנייה, לחצי «הצעות תשובה», העתיקי ל-Outlook ושלחי. אחרי שליחה — «שלחתי — סמני כטופל».
+              {canSendFromXos
+                ? "פניות חדשות מקבלות אישור קבלה אוטומטי. בחרי פנייה → «הצעות תשובה» → «שלחי לאורח» או ערכי ידנית."
+                : "קראי את הפנייה, לחצי «הצעות תשובה», העתיקי ל-Outlook ושלחי. אחרי שליחה — «שלחתי — סמני כטופל»."}
             </div>
           )}
           {mailbox.connection_error && (
