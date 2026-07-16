@@ -1,3 +1,7 @@
+2026-07-16 | Doc 2 mapping UX — approve bar no longer buried under paste textareas | `ArrivalImportPanel`: mapping gate moved directly under Doc 2 upload; auto-collapse EZGO email paste + scroll; `MappingReviewPanel` sticky approve bar; `DataSyncPage` Smart Paste below import hub. Frontend-only.
+
+2026-07-16 | Housekeeping WA parser — multi-room list + action on next line (Adir `4,5` + `צ׳ק אין`) | `housekeepingWaParse.ts` pending-rooms across lines; comma/space lists; same for ready/checkout. Deploy: `whapi-webhook`.
+
 2026-07-16 | Multi-suite room_ready — per-room WA send on GuestsPage + suite_rooms repair | migration 222; `suiteRoomReady.js` + GuestsPage per-room buttons; `suiteRoomReady.ts` canonical label match; profile shows per-room sent status. Deploy: `db push` + `whatsapp-send` + frontend.
 
 2026-07-16 | Orit CS Agent — לידים/תלונות tabs + tier-0 classify + Graph outbound send + auto-ack | migration 221; `oritAgentClassify.ts`, `oritAgentSend.ts`, `OritCustomerServicePanel.js`; deploy `db push` + `manager-mail-sync/send/auto-ack/analyze` + frontend.
@@ -12,6 +16,7 @@
 
 2026-07-16 | Orit CS Agent — mobile master-detail (list OR detail, back button, Android history) | `OritCustomerServicePanel.js` + `useIsMobile.js`; fixes cut-off detail pane on phone.
 
+2026-07-16 | Fix Adir morning brief cron — `israelYmd()` default `now`; manual send onboarding+brief to Adir | automationSchedule, front-desk-morning-cron deployed.
 2026-07-16 | Adir voice tasks — front_desk_voice source + [FRONT DESK] Whapi tag; room required; overlay lists create_executive_task | taskCard, executiveAssistant, migration 218.
 
 2026-07-16 | Adir morning brief — today only (no tomorrow line in DM); tomorrow stays in voice tool | frontDeskMorningBrief.

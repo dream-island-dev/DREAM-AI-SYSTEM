@@ -7,7 +7,7 @@
 // the existing aggregateGuestProfiles()/EditableGrid/sync_suite_arrivals path
 // unchanged.
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { EditableGrid } from "./EditableGrid";
 import {
   clientSideDefault,
@@ -76,6 +76,17 @@ export default function MappingReviewPanel({
     ),
   );
   const [validationError, setValidationError] = useState(null);
+
+  useEffect(() => {
+    setRows(_buildRows(
+      schema, headers, sampleRow,
+      aiSuggestion?.mapping,
+      aiSuggestion?.defaults,
+      aiSuggestion?.fieldDefaults,
+      !!aiError,
+    ));
+    setValidationError(null);
+  }, [schema, headers, sampleRow, aiSuggestion, aiError]);
 
   const headerOptions = useMemo(() => [
     { value: "", label: "— לא קיים בקובץ —" },
@@ -210,7 +221,13 @@ export default function MappingReviewPanel({
         ))}
       </div>
 
-      <div style={{ display: "flex", gap: 10 }}>
+      <div style={{
+        display: "flex", gap: 10,
+        position: "sticky", bottom: 8, zIndex: 30,
+        paddingTop: 10, marginTop: 4,
+        background: "linear-gradient(160deg, #161616, #0F0F0F)",
+        borderTop: "1px solid rgba(201,169,110,0.25)",
+      }}>
         <button
           onClick={handleApprove}
           disabled={!canApprove}

@@ -1141,6 +1141,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
   const [whapiPickError, setWhapiPickError] = useState(null);
   const doc2Ref = useRef();
   const doc1Ref = useRef();
+  const mappingReviewRef = useRef(null);
 
   // Resilient Import Agent — mapping review state (Doc 2 / Suite CSV only)
   const [mappingStage, setMappingStage] = useState("idle"); // "idle" | "suggesting" | "review"
@@ -1165,6 +1166,16 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
   const [priceConflictQueue, setPriceConflictQueue] = useState(null);
   const [priceConflictIdx, setPriceConflictIdx] = useState(0);
   const [priceResolutions, setPriceResolutions] = useState({});
+
+  // Keep mapping gate visible: collapse Doc 1 email paste + scroll to approve bar.
+  useEffect(() => {
+    if (mappingStage !== "suggesting" && mappingStage !== "review") return;
+    setEzgoEmailOpen(false);
+    const t = requestAnimationFrame(() => {
+      mappingReviewRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+    return () => cancelAnimationFrame(t);
+  }, [mappingStage]);
 
   const showToast = (type, msg) => {
     setToast({ type, msg });
@@ -2667,6 +2678,30 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
             />
           </div>
 
+          {/* Doc 2 mapping gate — directly under upload so approve isn't buried under paste zones */}
+          <div ref={mappingReviewRef}>
+            {mappingStage === "suggesting" && (
+              <div style={{
+                textAlign: "center", padding: "24px", color: "var(--gold-light)",
+                fontSize: 13, border: "1px dashed rgba(201,169,110,0.35)", borderRadius: 10, marginBottom: 14,
+              }}>
+                🤖 מנתח כותרות עמודות ומציע מיפוי...
+              </div>
+            )}
+            {mappingStage === "review" && rawDoc2Rows && (
+              <MappingReviewPanel
+                key={doc2Name || "doc2-mapping"}
+                schema={SUITE_ARRIVALS_SCHEMA}
+                headers={Object.keys(rawDoc2Rows[0] ?? {})}
+                sampleRow={rawDoc2Rows[0]}
+                aiSuggestion={aiSuggestion}
+                aiError={aiError}
+                onApprove={handleMappingApprove}
+                onCancel={handleMappingCancel}
+              />
+            )}
+          </div>
+
           {/* EZGO Operations email — Option A workflow */}
           <div style={{
             marginBottom: 14, borderRadius: 12,
@@ -2810,27 +2845,6 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
               total={priceConflictQueue.length}
               onChoose={handlePriceConflictChoice}
               onCancel={handlePriceConflictCancel}
-            />
-          )}
-
-          {/* Resilient Import Agent — mapping suggestion + review gate */}
-          {mappingStage === "suggesting" && (
-            <div style={{
-              textAlign: "center", padding: "24px", color: "var(--gold-light)",
-              fontSize: 13, border: "1px dashed rgba(201,169,110,0.35)", borderRadius: 10, marginBottom: 14,
-            }}>
-              🤖 מנתח כותרות עמודות ומציע מיפוי...
-            </div>
-          )}
-          {mappingStage === "review" && rawDoc2Rows && (
-            <MappingReviewPanel
-              schema={SUITE_ARRIVALS_SCHEMA}
-              headers={Object.keys(rawDoc2Rows[0] ?? {})}
-              sampleRow={rawDoc2Rows[0]}
-              aiSuggestion={aiSuggestion}
-              aiError={aiError}
-              onApprove={handleMappingApprove}
-              onCancel={handleMappingCancel}
             />
           )}
 

@@ -125,9 +125,9 @@ export default function DataSyncPage() {
         </div>
       )}
 
-      <SmartPastePanel showToast={showToast} />
-
       <ArrivalImportPanel defaultOpen />
+
+      <SmartPastePanel showToast={showToast} />
 
       <SpaActivitiesSyncSection />
     </div>
