@@ -1,3 +1,7 @@
+2026-07-16 | User Rules restored as 7 .mdc files (global ~/.cursor/rules + project .cursor/rules) | git-commit-safety, pull-requests, communication-style, etc.
+
+2026-07-16 | Cursor recovery — chat index (239 transcripts), composer headers export (201), user rules backup, recovery guide | `docs/cursor_*`, `scripts/cursor-*.py|mjs`.
+
 2026-07-16 | Orit CS Agent — mobile master-detail (list OR detail, back button, Android history) | `OritCustomerServicePanel.js` + `useIsMobile.js`; fixes cut-off detail pane on phone.
 
 2026-07-16 | Adir voice tasks — front_desk_voice source + [FRONT DESK] Whapi tag; room required; overlay lists create_executive_task | taskCard, executiveAssistant, migration 218.

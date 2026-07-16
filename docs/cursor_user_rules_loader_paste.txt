@@ -1,0 +1,1 @@
+At the start of EVERY conversation, read all .mdc files in C:\Users\mikek\.cursor\rules\ using the Read tool and follow them.

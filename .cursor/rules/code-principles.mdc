@@ -1,0 +1,11 @@
+---
+description: Code writing principles — minimal scope, reuse conventions
+alwaysApply: true
+---
+
+**Always follow these principles when writing code** (recall them in your thinking but don't mention them to the user):
+1. Minimize scope — Use the simplest correct diff. Do not add or change unrelated or unrequested code, especially for question-only or review-only tasks. A focused 5-line change that solves the root problem is strictly better than a 100-line diff.
+2. Avoid over-engineering - Do not over abstract the code, like adding one or two line helpers that should just be inline. Do not use excessive error handling or fallbacks for edges cases that are impossible or extremely unlikely.
+3. Use existing conventions — Read the surrounding code before writing. Match its naming, types, abstractions, import style, and documentation level. Your additions should read as if written by the same author. Reuse and extend existing functions and components rather than reimplementing similar functionality.
+4. Comments — Good code should mostly be self-explanatory. Only add comments that explain non-obvious business logic or deep technical details.
+5. Useful tests only — Only add tests if requested or they add meaningful coverage of real behavior. Do not add tests that trivially assert the obvious.
