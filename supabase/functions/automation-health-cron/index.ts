@@ -30,6 +30,16 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendWhapiText } from "../_shared/whapiSend.ts";
 import { probeWhapiDeviceHealth, persistWhapiHealthToBotConfig } from "../_shared/whapiHealth.ts";
+import { deliverExecutiveDmReply } from "../_shared/executiveAssistant.ts";
+import { ARCHITECT_PHONE_DIGITS } from "../_shared/executiveIdentity.ts";
+import {
+  ARCHITECT_RELEVANT_CHECK_KEYS,
+  composeArchitectHealthHint,
+  HUMAN_REQUESTED_ALERT_THRESHOLD,
+  isHumanRequestedSpike,
+  isPendingApprovalSpike,
+  PENDING_APPROVAL_ALERT_THRESHOLD,
+} from "../_shared/architectHealthHint.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -259,6 +269,76 @@ async function checkFailoverRate(
   };
 }
 
+// Architect-relevant checks (Mike's personal event-gated pulse — see architectHealthHint.ts).
+// Reuse the exact same queries already proven in executiveAssistant.ts's get_system_health tool.
+
+async function checkPendingApprovalSpike(
+  supabase: ReturnType<typeof createClient>,
+): Promise<CheckResult> {
+  const { data, error } = await supabase.from("tasks").select("id").eq("status", "pending_approval").limit(100);
+
+  if (error) {
+    console.warn("[automation-health-cron] tasks (pending_approval) read failed:", error.message);
+    return {
+      checkKey: "pending_approval_spike",
+      bad: true,
+      detail: { error: error.message },
+      badMessage: `⚠️ בריאות אוטומציה: לא ניתן לקרוא את tasks לבדיקת משימות pending_approval (${error.message}).`,
+      okMessage: "✅ בריאות אוטומציה: קריאת tasks (pending_approval) חזרה לתקין.",
+    };
+  }
+
+  const count = (data ?? []).length;
+  const bad = isPendingApprovalSpike(count);
+
+  return {
+    checkKey: "pending_approval_spike",
+    bad,
+    detail: { count, threshold: PENDING_APPROVAL_ALERT_THRESHOLD },
+    badMessage:
+      `🚨 בריאות אוטומציה: ${count} משימות ממתינות לאישור (סף: ${PENDING_APPROVAL_ALERT_THRESHOLD}) — ` +
+      `ייתכן שהצוות לא מספיק לאשר בזמן.`,
+    okMessage: "✅ בריאות אוטומציה: כמות המשימות הממתינות לאישור חזרה לתקין.",
+  };
+}
+
+async function checkHumanRequestedSpike(
+  supabase: ReturnType<typeof createClient>,
+): Promise<CheckResult> {
+  const { data, error } = await supabase
+    .from("whatsapp_conversations")
+    .select("phone")
+    .eq("direction", "inbound")
+    .eq("human_requested", true)
+    .limit(200);
+
+  if (error) {
+    console.warn("[automation-health-cron] whatsapp_conversations (human_requested) read failed:", error.message);
+    return {
+      checkKey: "human_requested_spike",
+      bad: true,
+      detail: { error: error.message },
+      badMessage: `⚠️ בריאות אוטומציה: לא ניתן לקרוא את whatsapp_conversations לבדיקת human_requested (${error.message}).`,
+      okMessage: "✅ בריאות אוטומציה: קריאת whatsapp_conversations (human_requested) חזרה לתקין.",
+    };
+  }
+
+  const count = new Set(
+    ((data ?? []) as Array<{ phone: string }>).map((r) => r.phone).filter(Boolean),
+  ).size;
+  const bad = isHumanRequestedSpike(count);
+
+  return {
+    checkKey: "human_requested_spike",
+    bad,
+    detail: { count, threshold: HUMAN_REQUESTED_ALERT_THRESHOLD },
+    badMessage:
+      `🚨 בריאות אוטומציה: ${count} שיחות עם human_requested פתוח (סף: ${HUMAN_REQUESTED_ALERT_THRESHOLD}) — ` +
+      `ייתכן שבקשות אורחים נתקעות ב-Inbox בלי מענה.`,
+    okMessage: "✅ בריאות אוטומציה: כמות שיחות ה-human_requested חזרה לתקין.",
+  };
+}
+
 // Template names come from automation_stages (live DB config) — NOT a
 // hardcoded copy of whatsapp-send's PIPELINE_TEMPLATE map, so this can never
 // drift from what's actually configured (DNA §0.5 single source of truth).
@@ -330,7 +410,7 @@ async function reconcileCheck(
   supabase: ReturnType<typeof createClient>,
   c: CheckResult,
   alertGroupId: string,
-): Promise<{ checkKey: string; status: "ok" | "alerting"; alerted: boolean; detail: Record<string, unknown> }> {
+): Promise<{ checkKey: string; status: "ok" | "alerting"; prevStatus: "ok" | "alerting"; alerted: boolean; detail: Record<string, unknown> }> {
   const { data: existing } = await supabase
     .from("automation_health_alerts")
     .select("status, first_detected_at, last_alerted_at")
@@ -410,7 +490,7 @@ async function reconcileCheck(
     }
   }
 
-  return { checkKey: c.checkKey, status: newStatus, alerted, detail: c.detail };
+  return { checkKey: c.checkKey, status: newStatus, prevStatus: prevStatus as "ok" | "alerting", alerted, detail: c.detail };
 }
 
 Deno.serve(async (req: Request) => {
@@ -458,6 +538,8 @@ Deno.serve(async (req: Request) => {
       await checkFailedRate(supabase),
       await checkFailoverRate(supabase),
       await checkWhapiDeviceHealth(supabase, { persist: !isPreview }),
+      await checkPendingApprovalSpike(supabase),
+      await checkHumanRequestedSpike(supabase),
       ...(await checkTemplateApprovals(supabase)),
     ];
 
@@ -475,7 +557,24 @@ Deno.serve(async (req: Request) => {
     const alertGroupId = await resolveAlertGroupId();
     const results = [];
     for (const c of checks) {
-      results.push(await reconcileCheck(supabase, c, alertGroupId));
+      const result = await reconcileCheck(supabase, c, alertGroupId);
+      results.push(result);
+
+      // Mike's personal architect pulse — only on a genuine ok<->alerting flip
+      // (result.alerted also fires on automation-health-cron's periodic repeat-ping
+      // for a still-open issue; prevStatus !== status excludes that on purpose).
+      if (
+        result.alerted &&
+        result.prevStatus !== result.status &&
+        ARCHITECT_RELEVANT_CHECK_KEYS.has(result.checkKey)
+      ) {
+        try {
+          const hint = composeArchitectHealthHint(result.checkKey, result.status === "ok", result.detail);
+          await deliverExecutiveDmReply(supabase, { phone: ARCHITECT_PHONE_DIGITS, replyText: hint });
+        } catch (e) {
+          console.error(`[automation-health-cron] architect DM failed for ${result.checkKey}:`, (e as Error).message);
+        }
+      }
     }
 
     return jsonResponse({ ok: true, checks: results });
