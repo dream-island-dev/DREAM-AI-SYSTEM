@@ -57,6 +57,7 @@ import {
   type TeamOpsPeriod,
   type TeamOpsTaskRow,
 } from "./teamOpsAnalytics.ts";
+import { fetchTeamOpsStatsForPeriod } from "./teamOpsDigestFetch.ts";
 import type { StaffGroupKey } from "./staffGroupIngest.ts";
 
 const EXECUTIVE_GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash"];
@@ -179,7 +180,11 @@ export async function executiveAlreadyRepliedSuccessfully(
 // Fallback when the row is missing/empty (never crash into a blank prompt).
 // ══════════════════════════════════════════════════════════════════════════════
 
-const DEFAULT_PERSONA_TEMPLATE = `
+/** Executive/architect only — blanked for front_desk in buildExecutivePersona (no substitute tool). */
+export const TEAM_ANALYTICS_BULLET =
+  "• אנליטיקת צוות בקבוצות וואטסאפ — נוכחות, מעורבות תפעולית, זמני סגירת קריאות, checkout→מוכן (get_team_ops_analytics).";
+
+export const DEFAULT_PERSONA_TEMPLATE = `
 אני העוזרת האישית של {{name}}, {{title}} ב-Dream Island.
 אני מדברת איתו ישירות בוואטסאפ (מכשיר הסוויטות) — שיחה פנימית עם {{name}}, לא עם אורח.
 
@@ -192,11 +197,11 @@ const DEFAULT_PERSONA_TEMPLATE = `
 • רשימת אורחים לפי תאריך — היום, מחר, או כל תאריך עתידי/עבר (list_guests_by_date).
 • איתור אורח לפי חדר/שם, כולל הערות, ספא/ארוחות ודגלי תשומת-לב.
 • לוח הבקשות (תלונות/ספא/שינוי תאריך/חיוב) ומצב חדרים תפעולי (פנוי/ניקיון/תחזוקה).
-• אנליטיקת צוות בקבוצות וואטסאפ — נוכחות, מעורבות תפעולית, זמני סגירת קריאות, checkout→מוכן (get_team_ops_analytics).
+{{team_analytics_bullet}}
 • פתיחת משימת שטח, אישור ושיגור משימה ממתינה לצוות, סימון בטיפול/בוצעה/דחייה.
 • סימון "חדר מוכן" לאורח (כולל שליחת ההודעה לאורח בפועל, ביום ההגעה, סוויטות בלבד).
 • שליחת הודעה חופשית לאורח או לקבוצת המנהלות; עדכון הערה/החרגה על פרופיל אורח.
-• לימוד העדפה קבועה שלך (learn_executive_rule) — פרטית לך, לא משפיעה על עוזר אחר.
+• לימוד העדפה קבועה שלך ({{learn_rule_tool}}) — פרטית לך, לא משפיעה על עוזר אחר.
 
 מתי אני שואלת שאלת הבהרה אחת (ולא מנחשת):
 • לא ברור באיזה חדר/אורח/משימה מדובר, או כלי החזיר כמה מועמדים מתאימים.
@@ -212,13 +217,19 @@ const DEFAULT_PERSONA_TEMPLATE = `
 • אל תמציאי נתונים — אם חסר מידע, קראי לכלי לפני שאת עונה.
 • לשאלות על "מחר" / "ביום X" / תאריך עתידי — חשב את התאריך (ישראל) וקרא ל-list_guests_by_date;
   לעולם אל תגיד שאין לך אפשרות לבדוק ימים עתידיים.
-• משפט כמו "תזכרי ש..." / "מעכשיו תמיד..." / "מהיום..." = קרא ל-learn_executive_rule
+• משפט כמו "תזכרי ש..." / "מעכשיו תמיד..." / "מהיום..." = קרא ל-{{learn_rule_tool}}
   כדי לשמור את זה כהעדפה קבועה שלך, אחרת תשכח אותה בפעם הבאה.
   זה חל גם על דוחות התפעול היומיים/שבועיים שאת שולחת לו — אם הוא מבקש לשנות
   משהו בדוח (מה להדגיש, מה להסיר), שמרי זאת ככלל ונציג את זה בדוחות הבאים.
 • לעולם אל תשלחי הודעה לאורח שסטטוסו cancelled — הכלים חוסמים זאת.
 • אם הבקשה לא ברורה — שאלי שאלת הבהרה קצרה אחת.
 • הודעות קוליות מגיעות כבר כטקסט מתומלל — לעולם אל תגידי «לא מבינה הקלטות».
+
+מודעות עצמית (בלי לפטפט, בלי להמציא):
+• מה שאת אומרת מבוסס רק על מה שבאמת קראת מהכלים ברגע הזה — אם לא בדקת, תגידי "בודקת עכשיו" ותקראי לכלי, לא תנחשי.
+• דאטה שנראית לא הגיונית — ⚠ גלוי, לא "הכל תקין" מתחת לשטיח.
+• את לא בוט שירות לקוחות: בלי "שלום", בלי "בשמחה לעזור", בלי איחולים גנריים. משפט חד או שנון כשמתאים — לא בכל תשובה.
+• תובנה יזומה (לא נשאלת) — לכל היותר אחת ביום, ורק אם היא נתמכת בדאטה אמיתי שכבר בדקת בשיחה זו.
 `.trim();
 
 const PERSONA_TTL_MS = 5 * 60 * 1000;
@@ -339,10 +350,15 @@ async function fetchExecutiveHistory(
 
 function buildExecutivePersona(profile: ExecutiveProfile, template: string): string {
   const title = profile.title || "מנהל";
+  const tier = resolveAssistantTier(profile);
+  const learnRuleTool = tier === "front_desk" ? "learn_front_desk_rule" : "learn_executive_rule";
+  const teamAnalyticsBullet = tier === "front_desk" ? "" : TEAM_ANALYTICS_BULLET;
   return template
     .replaceAll("{{name}}", profile.displayName)
     .replaceAll("{{title}}", title)
     .replaceAll("{{focus}}", profile.focus || "")
+    .replaceAll("{{learn_rule_tool}}", learnRuleTool)
+    .replaceAll("{{team_analytics_bullet}}", teamAnalyticsBullet)
     .trim();
 }
 
@@ -1640,10 +1656,18 @@ async function _execGetOpsDigestNow(supabase: SupabaseClient, args: Record<strin
     ((ruleRows.data ?? []) as Array<{ rule_text: string | null }>).map((r) => r.rule_text ?? ""),
   );
   const templates = await loadStaffNotifyTemplates(supabase);
+
+  let teamOps = null;
+  if (period === "daily") {
+    const teamRes = await fetchTeamOpsStatsForPeriod(supabase, period, now);
+    if (!teamRes.error) teamOps = teamRes.stats;
+  }
+
   const body = composeResortDigestMessage(stats, period, range.label, {
     assistantForName: "אליעד",
     learnedDigestNotes,
     templates,
+    teamOps,
   });
   return { ok: true, period, period_date: range.periodDate, digest: body };
 }

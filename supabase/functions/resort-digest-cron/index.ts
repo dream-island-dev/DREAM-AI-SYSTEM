@@ -23,6 +23,7 @@ import {
   type DigestTaskRow,
 } from "../_shared/resortDigestStats.ts";
 import { loadStaffNotifyTemplates } from "../_shared/staffNotifyTemplates.ts";
+import { fetchTeamOpsStatsForPeriod } from "../_shared/teamOpsDigestFetch.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -121,10 +122,22 @@ serve(async (req: Request) => {
     );
 
     const templates = await loadStaffNotifyTemplates(supabase);
+
+    let teamOps = null;
+    if (period === "daily") {
+      const teamRes = await fetchTeamOpsStatsForPeriod(supabase, period, now);
+      if (teamRes.error) {
+        console.warn("[resort-digest-cron] team ops fetch failed (non-blocking):", teamRes.error);
+      } else {
+        teamOps = teamRes.stats;
+      }
+    }
+
     const body = composeResortDigestMessage(stats, period, range.label, {
       assistantForName: "אליעד",
       learnedDigestNotes,
       templates,
+      teamOps,
     });
 
     const wamid = await sendWhapiText(CEO_PHONE_DIGITS, body, { noLinkPreview: true });

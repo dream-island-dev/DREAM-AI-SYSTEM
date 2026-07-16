@@ -3,6 +3,7 @@
 // Run: deno test supabase/functions/_shared/resortDigestStats.test.ts
 
 import { assertEquals } from "https://deno.land/std@0.168.0/testing/asserts.ts";
+import { computeTeamOpsStats } from "./teamOpsAnalytics.ts";
 import {
   ANOMALY_SAME_TYPE_THRESHOLD,
   bucketCheckinHour,
@@ -289,6 +290,41 @@ Deno.test("composeResortDigestMessage: includes the headline and an SLA complian
   assertEquals(body.includes("✅ הכל תקין"), true);
   assertEquals(body.includes("עמידה ביעדי זמן הטיפול: 100% (1/1)"), true);
   assertEquals(body.includes("👉 מצב שקט"), true);
+});
+
+Deno.test("composeResortDigestMessage: daily digest appends team ops section", () => {
+  const stats = computeResortDigestStats({ guests: [], tasks: [], now: SLA_NOW });
+  const teamOps = computeTeamOpsStats({
+    period: "daily",
+    now: SLA_NOW,
+    messages: [{
+      from_phone: "972546294885",
+      from_name: "Adir",
+      profile_id: null,
+      group_key: "ops_calls",
+      message_kind: "text",
+      is_operational: false,
+      operational_kind: "chitchat",
+      created_at: "2026-07-11T10:00:00.000Z",
+    }],
+    tasks: [{
+      id: "t1",
+      status: "done",
+      created_at: "2026-07-11T10:00:00.000Z",
+      resolved_at: "2026-07-11T10:18:00.000Z",
+      reporter_profile_id: null,
+      resolved_by_phone: "972546294885",
+      resolved_by_name: "Adir",
+      sla_deadline: null,
+    }],
+    hkEvents: [],
+    guestAlerts: [],
+  });
+  const dailyBody = composeResortDigestMessage(stats, "daily", "2026-07-11", { teamOps });
+  const weeklyBody = composeResortDigestMessage(stats, "weekly", "2026-07-04–2026-07-10", { teamOps });
+  assertEquals(dailyBody.includes("👥 צוות:"), true);
+  assertEquals(dailyBody.includes("אדיר:"), true);
+  assertEquals(weeklyBody.includes("👥 צוות:"), false);
 });
 
 Deno.test("filterDigestRelevantRules + compose learned notes", () => {

@@ -13,6 +13,7 @@ import {
   STAFF_TEMPLATE_KEYS,
   type StaffTemplateMap,
 } from "./staffNotifyTemplates.ts";
+import { composeDigestTeamOpsSection, type TeamOpsStats } from "./teamOpsAnalytics.ts";
 
 // Same value as guestAlertWhapiNotify.ts's STAFF_APP_ORIGIN — duplicated, not
 // imported. This module is deliberately zero-I/O / dependency-light (pure
@@ -470,6 +471,8 @@ export type ComposeResortDigestOpts = {
   learnedDigestNotes?: string[];
   /** DB-editable shell fragments. */
   templates?: StaffTemplateMap;
+  /** Optional team KPIs — appended on daily digest only (caller decides when to fetch). */
+  teamOps?: TeamOpsStats | null;
 };
 
 /** Composes the Hebrew WhatsApp body in the personal-assistant voice. Deterministic — no LLM. */
@@ -578,6 +581,10 @@ export function composeResortDigestMessage(
   if (notes.length) {
     lines.push("", "📌 לפי מה שלימדת אותי:");
     for (const n of notes) lines.push(`  • ${n}`);
+  }
+
+  if (period === "daily" && opts.teamOps) {
+    lines.push(...composeDigestTeamOpsSection(opts.teamOps));
   }
 
   lines.push(

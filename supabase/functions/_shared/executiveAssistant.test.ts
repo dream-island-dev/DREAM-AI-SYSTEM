@@ -17,6 +17,7 @@ import {
   fetchExecutiveRules,
   buildExecutiveSystemPrompt,
   resolveExecutiveToolDefs,
+  DEFAULT_PERSONA_TEMPLATE,
   type ToolExecCtx,
 } from "./executiveAssistant.ts";
 
@@ -570,6 +571,46 @@ Deno.test("buildExecutiveSystemPrompt — Adir overlay mentions the two new fron
   const prompt = buildExecutiveSystemPrompt(profile, "BASE {{name}} {{title}} {{focus}}", "", "", []);
   assertEquals(prompt.includes("request_missing_arrival_times"), true);
   assertEquals(prompt.includes("escalate_to_eliad"), true);
+});
+
+Deno.test("DEFAULT_PERSONA_TEMPLATE — includes the shared self-awareness kernel", () => {
+  assertEquals(DEFAULT_PERSONA_TEMPLATE.includes("מודעות עצמית"), true);
+  assertEquals(DEFAULT_PERSONA_TEMPLATE.includes("בלי להמציא"), true);
+});
+
+Deno.test("buildExecutiveSystemPrompt — self-awareness kernel present for all 3 tiers", async () => {
+  const eliad = await resolveExecutiveInbound("972505421751");
+  const mike = await resolveExecutiveInbound("972506842439");
+  const adir = await resolveStaffAssistantInbound("972546294885");
+  if (!eliad || !mike || !adir) throw new Error("expected all 3 profiles to resolve");
+
+  for (const profile of [eliad, mike, adir]) {
+    const prompt = buildExecutiveSystemPrompt(profile, DEFAULT_PERSONA_TEMPLATE, "", "", []);
+    assertEquals(prompt.includes("מודעות עצמית"), true);
+  }
+});
+
+Deno.test("buildExecutiveSystemPrompt — Adir never leaks executive/architect-only tool names (full persona)", async () => {
+  const profile = await resolveStaffAssistantInbound("972546294885");
+  if (!profile) throw new Error("expected Adir profile");
+  const prompt = buildExecutiveSystemPrompt(profile, DEFAULT_PERSONA_TEMPLATE, "", "", []);
+  const forbidden = [
+    "learn_executive_rule", "get_team_ops_analytics", "ceo_guest_override",
+    "get_ops_digest_now", "notify_managers_group",
+    "get_system_health", "get_executive_action_log", "list_executive_rules_audit",
+  ];
+  for (const name of forbidden) {
+    assertEquals(prompt.includes(name), false, `prompt leaked forbidden tool: ${name}`);
+  }
+  assertEquals(prompt.includes("learn_front_desk_rule"), true);
+});
+
+Deno.test("buildExecutiveSystemPrompt — Eliad still gets CEO tool names after tier tokens", async () => {
+  const profile = await resolveExecutiveInbound("972505421751");
+  if (!profile) throw new Error("expected Eliad profile");
+  const prompt = buildExecutiveSystemPrompt(profile, DEFAULT_PERSONA_TEMPLATE, "", "", []);
+  assertEquals(prompt.includes("learn_executive_rule"), true);
+  assertEquals(prompt.includes("get_team_ops_analytics"), true);
 });
 
 Deno.test("get_system_health — forbidden for Eliad", async () => {

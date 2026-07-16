@@ -9,6 +9,7 @@ import {
   computeTeamOpsStats,
   composeTeamOpsMessage,
   composeTeamOpsActionHint,
+  composeDigestTeamOpsSection,
   type HousekeepingEventRow,
   type StaffGroupMessageRow,
   type TeamOpsTaskRow,
@@ -127,4 +128,42 @@ Deno.test("composeTeamOpsActionHint: returns non-empty hint", () => {
   });
   const hint = composeTeamOpsActionHint(stats);
   assertEquals(hint.length > 0, true);
+});
+
+Deno.test("composeDigestTeamOpsSection: compact CEO lines for Adir + HK turnaround", () => {
+  const stats = computeTeamOpsStats({
+    period: "daily",
+    now: new Date("2026-07-16T07:00:00.000Z"),
+    messages: [
+      msg({ from_phone: "972546294885" }),
+      msg({ from_phone: "972546294885" }),
+      msg({ from_phone: "972504654306", from_name: "Lidor" }),
+    ],
+    tasks: [task()],
+    hkEvents: [
+      { room_id: "101", event_type: "check_out", created_at: "2026-07-15T08:00:00.000Z", from_phone: null, from_name: null },
+      { room_id: "101", event_type: "ready", created_at: "2026-07-15T10:30:00.000Z", from_phone: null, from_name: null },
+    ],
+    guestAlerts: [],
+  });
+  const lines = composeDigestTeamOpsSection(stats);
+  const body = lines.join("\n");
+  assertStringIncludes(body, "👥 צוות:");
+  assertStringIncludes(body, "אדיר:");
+  assertStringIncludes(body, "נוכחות");
+  assertStringIncludes(body, "מעורבות תפעולית");
+  assertStringIncludes(body, "checkout→מוכן");
+  assertStringIncludes(body, "זמן סגירת קריאה");
+});
+
+Deno.test("composeDigestTeamOpsSection: empty when no measurable data", () => {
+  const stats = computeTeamOpsStats({
+    period: "daily",
+    now: new Date("2026-07-16T07:00:00.000Z"),
+    messages: [],
+    tasks: [],
+    hkEvents: [],
+    guestAlerts: [],
+  });
+  assertEquals(composeDigestTeamOpsSection(stats).length, 0);
 });

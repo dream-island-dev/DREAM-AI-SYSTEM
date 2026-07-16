@@ -450,6 +450,78 @@ export function composeTeamOpsMessage(stats: TeamOpsStats): string {
   return lines.join("\n");
 }
 
+/**
+ * Compact team section for Eliad's daily resort digest — CEO KPIs only.
+ * Full drill-down remains via get_team_ops_analytics / composeTeamOpsMessage.
+ */
+export function composeDigestTeamOpsSection(stats: TeamOpsStats): string[] {
+  const hasPresence = stats.presence.length > 0;
+  const hasOperational = stats.operational.length > 0;
+  const hk = stats.housekeepingTurnaround;
+  const hasHk = hk.pairs > 0;
+  const hasResolve = stats.teamAvgResolveMinutes !== null;
+  const hasAlerts = stats.guestAlerts.opened > 0;
+
+  if (!hasPresence && !hasOperational && !hasHk && !hasResolve && !hasAlerts) {
+    return [];
+  }
+
+  const lines: string[] = ["", "👥 צוות:"];
+
+  if (stats.coverageNote && stats.loggedMessageCount < 10) {
+    lines.push(`  ${stats.coverageNote}`);
+  }
+
+  const adirPresence = stats.presence.find((p) => p.displayName === "אדיר");
+  const adirOp = stats.operational.find((o) => o.displayName === "אדיר");
+  if (adirPresence || adirOp) {
+    const parts: string[] = [];
+    if (adirPresence?.presencePct !== null && adirPresence?.presencePct !== undefined) {
+      parts.push(`נוכחות ${adirPresence.presencePct}%`);
+    }
+    if (adirOp?.operationalSharePct !== null && adirOp?.operationalSharePct !== undefined) {
+      parts.push(`מעורבות תפעולית ${adirOp.operationalSharePct}%`);
+    }
+    if (adirOp?.avgResolveMinutes !== null && adirOp?.avgResolveMinutes !== undefined) {
+      parts.push(`סגירה ממוצעת ${formatMinutes(adirOp.avgResolveMinutes)}`);
+    }
+    if (parts.length) lines.push(`  אדיר: ${parts.join(" · ")}`);
+  }
+
+  if (hasResolve) {
+    lines.push(`  ⏱️ זמן סגירת קריאה (צוות): ${formatMinutes(stats.teamAvgResolveMinutes)}`);
+  }
+
+  if (hasHk) {
+    lines.push(
+      `  🛏️ checkout→מוכן: ממוצע ${formatMinutes(hk.avgMinutes)}` +
+      ` · חציון ${formatMinutes(hk.medianMinutes)} (${hk.pairs} חדרים)`,
+    );
+    if (hk.slowest.length) {
+      const slow = hk.slowest
+        .slice(0, 2)
+        .map((s) => `${s.roomId} (${formatMinutes(s.minutes)})`)
+        .join(", ");
+      lines.push(`  איטיים: ${slow}`);
+    }
+  }
+
+  if (hasAlerts) {
+    const ga = stats.guestAlerts;
+    lines.push(
+      `  📋 בקשות אורחים: ${ga.resolved}/${ga.opened} נסגרו` +
+      (ga.avgResolveMinutes !== null ? ` · ממוצע ${formatMinutes(ga.avgResolveMinutes)}` : ""),
+    );
+  }
+
+  const hint = composeTeamOpsActionHint(stats);
+  if (hint && !hint.startsWith("✅")) {
+    lines.push(`  ${hint}`);
+  }
+
+  return lines;
+}
+
 export function composeTeamOpsActionHint(stats: TeamOpsStats): string {
   const person = stats.personFilter;
   const op = stats.operational[0];

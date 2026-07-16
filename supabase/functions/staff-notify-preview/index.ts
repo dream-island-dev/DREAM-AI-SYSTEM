@@ -26,6 +26,7 @@ import {
   type DigestPeriod,
   type DigestTaskRow,
 } from "../_shared/resortDigestStats.ts";
+import { fetchTeamOpsStatsForPeriod } from "../_shared/teamOpsDigestFetch.ts";
 import { israelYmd } from "../_shared/automationSchedule.ts";
 import {
   buildPreviewTemplateMap,
@@ -102,10 +103,18 @@ serve(async (req: Request) => {
       const learnedDigestNotes = filterDigestRelevantRules(
         ((ruleRows.data ?? []) as Array<{ rule_text: string | null }>).map((r) => r.rule_text ?? ""),
       );
+
+      let teamOps = null;
+      if (period === "daily") {
+        const teamRes = await fetchTeamOpsStatsForPeriod(supabase, period, now);
+        if (!teamRes.error) teamOps = teamRes.stats;
+      }
+
       const preview = composeResortDigestMessage(stats, period, range.label, {
         assistantForName: "אליעד",
         learnedDigestNotes,
         templates,
+        teamOps,
       });
       return json({ ok: true, preview_body: preview, data_source: "live", period });
     }
