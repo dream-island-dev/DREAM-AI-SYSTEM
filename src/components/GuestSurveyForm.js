@@ -4,6 +4,7 @@ import { useState } from "react";
 import {
   DEFAULT_GUEST_SURVEY_UI,
   SURVEY_SCORE_MAX,
+  SURVEY_SCORE_OPTIONS,
   normalizeGuestSurveyUi,
 } from "../utils/guestSurveyUi";
 
@@ -23,34 +24,55 @@ const STAFF = {
   inputBg: "var(--ivory)",
 };
 
-function RatingRow({ label, value, max, onChange, small, colors, readOnly }) {
-  const size = small ? 30 : 38;
+function EmojiRatingRow({ label, value, options, onChange, colors, readOnly }) {
   return (
-    <div style={{ marginBottom: 16 }}>
-      <div style={{ fontSize: 13, color: colors.text, marginBottom: 8, textAlign: "right", fontWeight: 600 }}>
+    <div style={{ marginBottom: 20 }}>
+      <div style={{ fontSize: 13, color: colors.text, marginBottom: 10, textAlign: "right", fontWeight: 600 }}>
         {label}
       </div>
-      <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", flexWrap: "wrap", flexDirection: "row-reverse" }}>
-        {Array.from({ length: max }, (_, i) => i + 1).map((n) => (
-          <button
-            key={n}
-            type="button"
-            disabled={readOnly}
-            onClick={() => !readOnly && onChange(n)}
-            style={{
-              width: size, height: size, borderRadius: "50%",
-              border: `1px solid ${n <= value ? colors.gold : colors.border}`,
-              background: n <= value
-                ? (colors === PORTAL ? "rgba(212,175,55,0.20)" : "rgba(212,175,55,0.15)")
-                : "transparent",
-              color: n <= value ? colors.gold : colors.muted,
-              fontSize: small ? 12 : 14, fontWeight: 700, fontFamily: "inherit",
-              cursor: readOnly ? "default" : "pointer", flexShrink: 0,
-            }}
-          >
-            {n}
-          </button>
-        ))}
+      <div style={{
+        display: "flex", gap: 8, justifyContent: "stretch",
+        flexDirection: "row-reverse", flexWrap: "wrap",
+      }}>
+        {options.map((opt) => {
+          const selected = value === opt.value;
+          return (
+            <button
+              key={opt.value}
+              type="button"
+              disabled={readOnly}
+              onClick={() => !readOnly && onChange(opt.value)}
+              style={{
+                flex: "1 1 88px",
+                minWidth: 88,
+                maxWidth: 140,
+                padding: "12px 8px",
+                borderRadius: 14,
+                border: `2px solid ${selected ? colors.gold : colors.border}`,
+                background: selected
+                  ? (colors === PORTAL ? "rgba(212,175,55,0.18)" : "rgba(212,175,55,0.12)")
+                  : "transparent",
+                cursor: readOnly ? "default" : "pointer",
+                fontFamily: "inherit",
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                gap: 6,
+              }}
+            >
+              <span style={{ fontSize: 28, lineHeight: 1 }} aria-hidden="true">{opt.emoji}</span>
+              <span style={{
+                fontSize: 11.5,
+                fontWeight: selected ? 700 : 600,
+                color: selected ? colors.gold : colors.muted,
+                lineHeight: 1.3,
+                textAlign: "center",
+              }}>
+                {opt.label}
+              </span>
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -93,6 +115,7 @@ export default function GuestSurveyForm({
   }
 
   const title = panelTitleOverride === undefined ? resolved.panel_title : panelTitleOverride;
+  const scoreOptions = SURVEY_SCORE_OPTIONS;
 
   return (
     <div>
@@ -121,22 +144,22 @@ export default function GuestSurveyForm({
 
       <div style={{ paddingTop: 4 }}>
         {resolved.categories.map((c) => (
-          <RatingRow
+          <EmojiRatingRow
             key={c.key}
             label={c.label}
             value={scores[c.key]}
-            max={SURVEY_SCORE_MAX}
-            small
+            options={scoreOptions}
             colors={colors}
+            readOnly={false}
             onChange={(n) => setScores((prev) => ({ ...prev, [c.key]: n }))}
           />
         ))}
-        <RatingRow
+        <EmojiRatingRow
           label={resolved.overall_label}
           value={overall}
-          max={SURVEY_SCORE_MAX}
-          small
+          options={scoreOptions}
           colors={colors}
+          readOnly={false}
           onChange={setOverall}
         />
         <div style={{ marginTop: 4, marginBottom: 16 }}>

@@ -15,9 +15,11 @@ import { serve }        from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { formatSpaScheduleDisplay, hasSpaBooking } from "../_shared/spaSchedule.ts";
 import { buildMealsItinerary } from "../_shared/stayMeals.ts";
-import { normalizeGuestSurveyUi } from "../_shared/guestSurveyUi.ts";
+import { DEFAULT_SUITES_CTA_URL, normalizeGuestSurveyUi } from "../_shared/guestSurveyUi.ts";
 import { normalizeGuestClubUi } from "../_shared/guestClubUi.ts";
 import { isGuestPortalSurveyEligible } from "../_shared/guestSurveyEligibility.ts";
+
+const GOOGLE_REVIEW_URL = Deno.env.get("GOOGLE_REVIEW_URL") ?? "";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -240,6 +242,30 @@ serve(async (req: Request) => {
       console.warn("[guest-portal-data] guest_club_ui fetch failed (defaults):", clubUiErr.message);
     }
     const clubUi = normalizeGuestClubUi(clubUiRow?.config_value ?? null);
+
+    // Thank-you CTAs persist after refresh (club + Google + suites).
+    let surveyThankYou: Record<string, unknown> | null = null;
+    if (surveyCompleted && surveyScores) {
+      const suitesCta = surveyScores.suites_cta_shown === true;
+      const googleCta = surveyScores.google_cta_shown === true;
+      const clubSt = String((guest as Record<string, unknown>).club_status ?? "").trim();
+      let clubOffer = suitesCta;
+      if (clubSt === "active" || clubSt === "declined" || clubSt === "opted_out") {
+        clubOffer = false;
+      }
+      if (suitesCta || googleCta || clubOffer) {
+        surveyThankYou = {
+          positiveReview: suitesCta,
+          googleCta,
+          reviewUrl: googleCta ? (GOOGLE_REVIEW_URL || "dream-island.co.il") : null,
+          suitesCta,
+          suitesUrl: suitesCta ? (surveyUi.suites_cta_url || DEFAULT_SUITES_CTA_URL) : null,
+          suitesCtaLabel: suitesCta ? surveyUi.suites_cta_label : null,
+          clubOffer,
+        };
+      }
+    }
+    (maskedGuest as Record<string, unknown>).survey_thank_you = surveyThankYou;
 
     return new Response(
       JSON.stringify({

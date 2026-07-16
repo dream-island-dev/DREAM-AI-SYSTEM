@@ -238,7 +238,7 @@ export type DigestSurveyRow = {
 export type SurveyDigestStats = {
   count: number;
   avgOverall: number | null;
-  /** Same threshold as guest-portal-survey's negative gate: any category <=2 OR overall <=4. */
+  /** Low score on 1-3 scale: overall 1 or any category 1. */
   lowScoreCount: number;
 };
 
@@ -247,8 +247,8 @@ const SURVEY_CATEGORY_KEYS = [
 ] as const;
 
 function isLowScoreSurveyRow(s: DigestSurveyRow): boolean {
-  if (s.overall_experience <= 4) return true;
-  return SURVEY_CATEGORY_KEYS.some((k) => s[k] <= 2);
+  if (s.overall_experience <= 1) return true;
+  return SURVEY_CATEGORY_KEYS.some((k) => s[k] <= 1);
 }
 
 /** Guest Experience Survey (day-pass + spa cohort) — additive, optional in the digest. */

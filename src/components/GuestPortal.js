@@ -166,7 +166,10 @@ function SurveySection({ guest, token, onToast, surveyUi, clubUi }) {
 
   if (!guest?.survey_eligible) return null;
 
-  if (guest.survey_completed && !result) {
+  const persistedThankYou = guest?.survey_thank_you ?? null;
+  const thankYou = result ?? persistedThankYou;
+
+  if (guest.survey_completed && !thankYou) {
     return (
       <div id="survey" style={{ padding: "0 16px 36px", scrollMarginTop: 24 }}>
         <GlassPanel title="📊 סקר חוויית אורח">
@@ -227,14 +230,14 @@ function SurveySection({ guest, token, onToast, surveyUi, clubUi }) {
     }
   }
 
-  if (result) {
-    const hasGoogle = result.googleCta && result.reviewUrl;
-    const showClub = result.clubOffer && !clubStatus;
+  if (thankYou) {
+    const hasGoogle = thankYou.googleCta && thankYou.reviewUrl;
+    const showClub = thankYou.clubOffer && !clubStatus;
     const showSuitesAfterJoin =
-      result.suitesCta && result.suitesUrl && (clubStatus === "active" || !result.clubOffer);
-    const suitesHref = result.suitesUrl?.startsWith("http")
-      ? result.suitesUrl
-      : `https://${result.suitesUrl}`;
+      thankYou.suitesCta && thankYou.suitesUrl && (clubStatus === "active" || !thankYou.clubOffer);
+    const suitesHref = thankYou.suitesUrl?.startsWith("http")
+      ? thankYou.suitesUrl
+      : `https://${thankYou.suitesUrl}`;
 
     return (
       <div id="survey" style={{ padding: "0 16px 36px", scrollMarginTop: 24 }}>
@@ -248,7 +251,7 @@ function SurveySection({ guest, token, onToast, surveyUi, clubUi }) {
             </div>
             {hasGoogle && (
               <a
-                href={result.reviewUrl.startsWith("http") ? result.reviewUrl : `https://${result.reviewUrl}`}
+                href={thankYou.reviewUrl.startsWith("http") ? thankYou.reviewUrl : `https://${thankYou.reviewUrl}`}
                 target="_blank"
                 rel="noopener noreferrer"
                 style={{
@@ -287,7 +290,7 @@ function SurveySection({ guest, token, onToast, surveyUi, clubUi }) {
                   color: "#0f172a", fontSize: 14, fontWeight: 700, textDecoration: "none",
                 }}
               >
-                {result.suitesCtaLabel || "🛏️ רוצים לחוות לינה בסוויטה?"}
+                {thankYou.suitesCtaLabel || "🛏️ רוצים לחוות לינה בסוויטה?"}
               </a>
             )}
           </div>

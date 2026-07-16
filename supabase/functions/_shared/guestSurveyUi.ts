@@ -10,10 +10,22 @@ export const LEGACY_SURVEY_CATEGORY_KEYS = [
   "cleaning_maintenance",
 ] as const;
 
+export const SURVEY_NEGATIVE_CATEGORY_MAX = 1;
+export const SURVEY_NEGATIVE_OVERALL_MAX = 1;
+export const SURVEY_SCORE_MIN = 1;
+export const SURVEY_SCORE_MAX = 3;
+export const SURVEY_POSITIVE_OVERALL_MIN = 2;
+
+export type SurveyScoreOption = { value: number; label: string; emoji: string };
+
+export const SURVEY_SCORE_OPTIONS: readonly SurveyScoreOption[] = [
+  { value: 1, label: "נהנתי במידה מסוימת", emoji: "👌" },
+  { value: 2, label: "חוויה טובה", emoji: "🙂" },
+  { value: 3, label: "היה מדהים!", emoji: "🤩" },
+];
+
 export const SURVEY_MAX_CATEGORIES = 12;
 export const SURVEY_MIN_CATEGORIES = 1;
-export const SURVEY_POSITIVE_AVG_MIN = 8.0;
-export const SURVEY_POSITIVE_OVERALL_MIN = 8;
 export const DEFAULT_SUITES_CTA_URL = "https://www.dream-island.co.il/suites";
 export const DEFAULT_SUITES_CTA_LABEL = "🛏️ רוצים לחוות לינה בסוויטה?";
 
@@ -32,7 +44,7 @@ export type GuestSurveyUi = {
 
 export const DEFAULT_GUEST_SURVEY_UI: GuestSurveyUi = {
   panel_title: "📊 ספרו לנו איך היה",
-  overall_label: "החוויה הכללית (1-10)",
+  overall_label: "החוויה הכללית",
   free_text_label: "רוצים להוסיף כמה מילים? (לא חובה)",
   free_text_placeholder: "ספרו לנו עוד...",
   submit_label: "📨 שליחת הסקר",
@@ -113,8 +125,10 @@ export function normalizeGuestSurveyUi(raw: unknown): GuestSurveyUi {
   };
 }
 
-export function isPositiveSurveyAverage(overall: number, categoryScores: number[]): boolean {
-  if (!categoryScores.length) return false;
-  const avg = categoryScores.reduce((s, n) => s + n, 0) / categoryScores.length;
-  return overall >= SURVEY_POSITIVE_OVERALL_MIN && avg >= SURVEY_POSITIVE_AVG_MIN;
+export function isPositiveSurveyAverage(overall: number, _categoryScores: number[]): boolean {
+  return overall >= SURVEY_POSITIVE_OVERALL_MIN && overall <= SURVEY_SCORE_MAX;
+}
+
+export function isValidSurveyScore(n: unknown): n is number {
+  return typeof n === "number" && Number.isInteger(n) && n >= SURVEY_SCORE_MIN && n <= SURVEY_SCORE_MAX;
 }

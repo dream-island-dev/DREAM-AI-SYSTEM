@@ -97,19 +97,19 @@ describe("guestSurveyUi dynamic categories", () => {
 
   test("isLowScoreSurveyRow uses ratings", () => {
     expect(isLowScoreSurveyRow({
-      overall_experience: 9,
-      ratings: { spa: 4 },
+      overall_experience: 3,
+      ratings: { spa: 1 },
     })).toBe(true);
     expect(isLowScoreSurveyRow({
-      overall_experience: 9,
-      ratings: { spa: 5 },
+      overall_experience: 3,
+      ratings: { spa: 2 },
     })).toBe(false);
   });
 
-  test("isPositiveSurveyAverage gate", () => {
-    expect(isPositiveSurveyAverage(8, [8, 8, 8])).toBe(true);
-    expect(isPositiveSurveyAverage(8, [7, 8, 8])).toBe(false);
-    expect(isPositiveSurveyAverage(7, [9, 9, 9])).toBe(false);
+  test("isPositiveSurveyAverage gate (1-3 scale)", () => {
+    expect(isPositiveSurveyAverage(3, [1, 1, 1])).toBe(true);
+    expect(isPositiveSurveyAverage(2, [3, 3, 3])).toBe(true);
+    expect(isPositiveSurveyAverage(1, [3, 3, 3])).toBe(false);
   });
 
   test("legacy keys still listed", () => {

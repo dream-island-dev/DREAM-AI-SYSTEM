@@ -25,7 +25,8 @@ Deno.test("normalizeGuestSurveyUi — defaults on empty categories", () => {
   }
 });
 
-Deno.test("isPositiveSurveyAverage", () => {
-  if (!isPositiveSurveyAverage(8, [8, 9, 8])) throw new Error("expected positive");
-  if (isPositiveSurveyAverage(8, [7, 7, 7])) throw new Error("expected not positive");
+Deno.test("isPositiveSurveyAverage (1-3 scale)", () => {
+  if (!isPositiveSurveyAverage(3, [1, 1, 1])) throw new Error("expected positive overall 3");
+  if (!isPositiveSurveyAverage(2, [3, 3, 3])) throw new Error("expected positive overall 2");
+  if (isPositiveSurveyAverage(1, [3, 3, 3])) throw new Error("expected not positive overall 1");
 });

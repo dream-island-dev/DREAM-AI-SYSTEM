@@ -6,7 +6,7 @@
 // (staff-editable, including custom keys). Scores stored in
 // guest_surveys.ratings jsonb; legacy six columns mirrored when present.
 //
-// Positive gate (overall≥8 AND avg categories≥8.0): Google review CTA +
+// Positive gate (overall 2 or 3): Google review CTA +
 // suites booking CTA (https://www.dream-island.co.il/suites).
 // Negative (any category≤4 OR overall≤4): guest_feedback mirror row.
 
@@ -15,29 +15,24 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   DEFAULT_SUITES_CTA_URL,
   isPositiveSurveyAverage,
+  isValidSurveyScore,
   LEGACY_SURVEY_CATEGORY_KEYS,
   normalizeGuestSurveyUi,
+  SURVEY_NEGATIVE_CATEGORY_MAX,
+  SURVEY_NEGATIVE_OVERALL_MAX,
 } from "../_shared/guestSurveyUi.ts";
 import {
   isGuestPortalSurveyEligible,
   resolveSurveyVisitDate,
 } from "../_shared/guestSurveyEligibility.ts";
+import { sendPostSurveyPositiveFeedbackWa } from "../_shared/postSurveyPositiveFeedback.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-const GOOGLE_CTA_MIN_OVERALL = 8;
-const GOOGLE_CTA_MIN_AVG_CATEGORY = 8.0;
-const NEGATIVE_CATEGORY_MAX = 4;
-const NEGATIVE_OVERALL_MAX = 4;
-
 const GOOGLE_REVIEW_URL = Deno.env.get("GOOGLE_REVIEW_URL") ?? "";
-
-function isValidScore(n: unknown): n is number {
-  return typeof n === "number" && Number.isInteger(n) && n >= 1 && n <= 10;
-}
 
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
@@ -73,7 +68,7 @@ serve(async (req: Request) => {
     const categoryValues: number[] = [];
     const ratings: Record<string, number> = {};
     for (const cat of surveyUi.categories) {
-      if (!isValidScore(scoreMap[cat.key])) {
+      if (!isValidSurveyScore(scoreMap[cat.key])) {
         return new Response(
           JSON.stringify({ ok: false, error: `invalid_score_${cat.key}` }),
           { status: 200, headers: { ...CORS, "Content-Type": "application/json" } },
@@ -83,7 +78,7 @@ serve(async (req: Request) => {
       categoryValues.push(v);
       ratings[cat.key] = v;
     }
-    if (!isValidScore(scoreMap.overall_experience)) {
+    if (!isValidSurveyScore(scoreMap.overall_experience)) {
       return new Response(
         JSON.stringify({ ok: false, error: "invalid_score_overall_experience" }),
         { status: 200, headers: { ...CORS, "Content-Type": "application/json" } },
@@ -126,11 +121,12 @@ serve(async (req: Request) => {
       );
     }
 
-    const avgCategory = categoryValues.reduce((sum, v) => sum + v, 0) / categoryValues.length;
     const overall = scoreMap.overall_experience as number;
-    const googleCtaShown = overall >= GOOGLE_CTA_MIN_OVERALL && avgCategory >= GOOGLE_CTA_MIN_AVG_CATEGORY;
-    const suitesCtaShown = isPositiveSurveyAverage(overall, categoryValues);
-    const isNegative = categoryValues.some((v) => v <= NEGATIVE_CATEGORY_MAX) || overall <= NEGATIVE_OVERALL_MAX;
+    const isPositive = isPositiveSurveyAverage(overall, categoryValues);
+    const googleCtaShown = isPositive;
+    const suitesCtaShown = isPositive;
+    const isNegative = categoryValues.some((v) => v <= SURVEY_NEGATIVE_CATEGORY_MAX)
+      || overall <= SURVEY_NEGATIVE_OVERALL_MAX;
 
     const insertRow: Record<string, unknown> = {
       guest_id: guest.id,
@@ -190,6 +186,30 @@ serve(async (req: Request) => {
       clubOffer = false;
     }
 
+    // Stamp completion + fire positive-feedback WA (same copy as «היה מושלם» button).
+    const completedAt = new Date().toISOString();
+    const { error: completedErr } = await supabase
+      .from("guests")
+      .update({ survey_completed_at: completedAt })
+      .eq("id", guest.id);
+    if (completedErr) {
+      console.warn("[guest-portal-survey] survey_completed_at update failed:", completedErr.message);
+    }
+
+    let waFollowUpSent = false;
+    if (suitesCtaShown && guest.phone) {
+      const waResult = await sendPostSurveyPositiveFeedbackWa(supabase, {
+        id: guest.id as number,
+        phone: guest.phone as string,
+        room_type: guest.room_type,
+        room: guest.room,
+      });
+      waFollowUpSent = waResult.sent;
+      if (!waResult.sent && waResult.error) {
+        console.warn("[guest-portal-survey] positive_feedback WA skipped:", waResult.error);
+      }
+    }
+
     return new Response(
       JSON.stringify({
         ok: true,
@@ -200,6 +220,7 @@ serve(async (req: Request) => {
         suitesUrl,
         suitesCtaLabel: suitesCtaShown ? surveyUi.suites_cta_label : null,
         clubOffer,
+        waFollowUpSent,
       }),
       { headers: { ...CORS, "Content-Type": "application/json" } },
     );

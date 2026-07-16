@@ -17,12 +17,19 @@ export const LEGACY_SURVEY_CATEGORY_KEYS = Object.freeze([
 /** @deprecated use LEGACY_SURVEY_CATEGORY_KEYS — kept for older imports/tests */
 export const SURVEY_CATEGORY_KEYS = LEGACY_SURVEY_CATEGORY_KEYS;
 
-export const SURVEY_NEGATIVE_CATEGORY_MAX = 4;
-export const SURVEY_NEGATIVE_OVERALL_MAX = 4;
-export const SURVEY_SCORE_MAX = 10;
-/** Same positive bar as Google CTA (1-10): avg categories + overall ≥ 8. */
-export const SURVEY_POSITIVE_AVG_MIN = 8.0;
-export const SURVEY_POSITIVE_OVERALL_MIN = 8;
+export const SURVEY_NEGATIVE_CATEGORY_MAX = 1;
+export const SURVEY_NEGATIVE_OVERALL_MAX = 1;
+export const SURVEY_SCORE_MIN = 1;
+export const SURVEY_SCORE_MAX = 3;
+/** Positive = חוויה כללית 2 (חוויה טובה) או 3 (מדהים). */
+export const SURVEY_POSITIVE_OVERALL_MIN = 2;
+
+/** 3-point emoji scale — shared by portal form + staff preview. */
+export const SURVEY_SCORE_OPTIONS = Object.freeze([
+  Object.freeze({ value: 1, label: "נהנתי במידה מסוימת", emoji: "👌" }),
+  Object.freeze({ value: 2, label: "חוויה טובה", emoji: "🙂" }),
+  Object.freeze({ value: 3, label: "היה מדהים!", emoji: "🤩" }),
+]);
 
 export const SURVEY_MAX_CATEGORIES = 12;
 export const SURVEY_MIN_CATEGORIES = 1;
@@ -32,7 +39,7 @@ export const DEFAULT_SUITES_CTA_LABEL = "🛏️ רוצים לחוות לינה 
 
 export const DEFAULT_GUEST_SURVEY_UI = Object.freeze({
   panel_title: "📊 ספרו לנו איך היה",
-  overall_label: "החוויה הכללית (1-10)",
+  overall_label: "החוויה הכללית",
   free_text_label: "רוצים להוסיף כמה מילים? (לא חובה)",
   free_text_placeholder: "ספרו לנו עוד...",
   submit_label: "📨 שליחת הסקר",
@@ -194,9 +201,11 @@ export function isLowScoreSurveyRow(row) {
   );
 }
 
-export function isPositiveSurveyAverage(overall, categoryScores) {
-  const vals = (categoryScores || []).filter((n) => typeof n === "number" && Number.isFinite(n));
-  if (!vals.length) return false;
-  const avg = vals.reduce((s, n) => s + n, 0) / vals.length;
-  return Number(overall) >= SURVEY_POSITIVE_OVERALL_MIN && avg >= SURVEY_POSITIVE_AVG_MIN;
+export function isPositiveSurveyAverage(overall, _categoryScores) {
+  const o = Number(overall);
+  return o >= SURVEY_POSITIVE_OVERALL_MIN && o <= SURVEY_SCORE_MAX;
+}
+
+export function isValidSurveyScore(n) {
+  return typeof n === "number" && Number.isInteger(n) && n >= SURVEY_SCORE_MIN && n <= SURVEY_SCORE_MAX;
 }
