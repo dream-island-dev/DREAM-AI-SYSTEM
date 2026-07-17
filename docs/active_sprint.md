@@ -1,5 +1,22 @@
 # XOS — Active Sprint Status
-> Last updated: 2026-07-14 (Day-pass spa warmup 30min + Whapi channel).
+> Last updated: 2026-07-17 (Stage-0 audit waves: drift close + claim-before-send completion).
+
+---
+
+## ✅ Deployed — Stage-0 audit W1+W2: git-drift close + claim-before-send on ALL dispatch blocks (2026-07-17)
+
+Read-only audit found prod↔git drift (deployed-but-uncommitted webhook auth + digest work) and the deferred Phase C claim gap. Mike approved wave-by-wave.
+
+| Wave | Result |
+|---|---|
+| W1 drift close | 5 commits pushed (`bc8db4a`..`ffe2720`): webhook inbound auth (Meta HMAC + Whapi secret + `aiFailoverLog`), digest team KPIs + persona migrations 223/224 (already applied on remote), architect health pulse, Inbox 24h-window guard, docs. `docs/cursor_*.json` (token-like keys) gitignored. |
+| W2 claim completion | `claimStageDispatch` wrapper wired into stage_2_arrival, night_before, all 3 morning blocks, room_ready + generic BRANCH D (`7ba0422`). `finalizeDispatchAttempt`: sent-collision with migration 088 index → `duplicate_blocked` + `actual_status` (no zombie processing rows). Deployed `whatsapp-send` from a clean worktree; smoke-tested live. 321/321 Deno. |
+| W3 | `docs/qa_whapi_failover.md` — E2E failover QA script for Mike (manual SOS / auto probe / env override + restore). |
+| W5 (open) | Meta day-pass templates still PENDING (see 2026-07-13 entries below); spa «יישור יום» live click-QA still pending. |
+
+**Mike QA:** run `docs/qa_whapi_failover.md` scenario 1 (5 min); ACC Override double-click same guest+stage → one message + `claim_conflict` in function logs.
+
+⚠️ **Session hygiene (2026-07-17):** two Claude sessions worked the same main repo dir concurrently — a `git stash` race pulled one session's late-checkout WIP into the other's tree. One session per repo dir; never `git stash` here (stack is shared, incl. worktrees).
 
 ---
 
@@ -174,7 +191,7 @@ Live incident: Stage 3 Shabbat morning script re-sent to «אוחיון רויט
 | Phase B — ACC + admin visibility | Live Queue `retryGate` field + `⏳ בהמתנה` / `🛑 מוצה` / `🔄 בתהליך שליחה` badges (Override still sends, Disable-Don't-Hide). `notifyAdminIfDispatchFailed` now also alerts on `timeout` (was silently excluded — the reason nobody caught this sooner). |
 | Phase C — migration 195 | Partial unique index on `notification_log(guest_id, trigger_type) WHERE status='processing'` — reuses the already-reserved but previously-unused `'processing'` status. |
 | Phase C — `_shared/automationClaim.ts` | `claimDispatchAttempt`/`finalizeDispatchAttempt` — claim before send, one row per attempt, 5min stale-claim reclaim, `force` bypass. Wired into `whatsapp-send`'s generic BRANCH D path this session (`pre_arrival_2d`, `mid_stay(+daypass)`, `checkout_fb(+daypass)`, `spa_warmup_daypass`, `survey_invite_daypass`, `night_before_daypass`). |
-| Explicit follow-up (not this session) | Same helper, wire into the remaining special-cased fast paths: `night_before`, `morning_suite`/`morning_welcome` (turns out to be 3 separate dispatch blocks — day-pass Meta fast-path, Whapi/force session block, Shabbat template block), `room_ready`, `stage_2_arrival`'s own dispatch (its reconcile-queue side is already covered). Confirmed 2026-07-13 (P0 SOS session) still missing — this is Phase B (this entry) that stopped the ban-causing storm, not Phase C; deferred as a tracked follow-up rather than rushed mid-incident, see P0 entry above for the forensic timeline proving Phase B alone was sufficient. |
+| Explicit follow-up (not this session) | ✅ **CLOSED 2026-07-17** (commit `7ba0422`, see Stage-0 audit W2 entry at top): `claimStageDispatch` wired into all 6 remaining fast-path blocks (`night_before`, 3× morning, `room_ready`, `stage_2_arrival`) + `finalizeDispatchAttempt` duplicate_blocked hardening. |
 | Tests | 61 new/updated Deno tests pass. `deno check` delta-clean (whatsapp-send +1 error — pre-existing loose-`guestId` typing pattern, already present twice in the same file, not a new class of issue). `npm run build` clean. |
 
 **Deployed:** migration 195 pushed; `whatsapp-cron`, `automation-queue`, `whatsapp-send` (`--no-verify-jwt`); frontend pushed to `main` (`46155bd`).
@@ -183,7 +200,7 @@ Live incident: Stage 3 Shabbat morning script re-sent to «אוחיון רויט
 
 ---
 
-## 🟡 Ready to deploy — Spa Board sticky-room + safe «יישור יום» (2026-07-13 / 2026-07-14)
+## ✅ Deployed — Spa Board sticky-room + safe «יישור יום» (2026-07-13/14, commits bc7c36b + b090f52 — audit correction 2026-07-17: this WAS pushed to main/Vercel on 07-14; live click-QA still pending)
 
 Follow-up on migration 193 (no migration this round — client logic only).
 
@@ -195,9 +212,7 @@ Follow-up on migration 193 (no migration this round — client logic only).
 | «🧭 יישור יום» | Seeds missing roster rows → applies safeMoves → applies swapPairs with parking hop → lists blocked with time/therapist + «סגור רשימה». Never blind UPDATE that expects 23P01. |
 | Tests | `spaStickyRoom` 21/21. No Edge Functions / DB migration. |
 
-**Not deployed** — awaiting Mike's `כן`/`תעלה`. Frontend-only.
-
-**Mike QA:** pick a busy past day → יישור יום → expect fewer red rows than before; mutual A↔B home swaps should resolve when another room is free at that slot; remaining blockers open «העבר אורח»; re-align after one manual move may clear more.
+**Mike QA (still pending live click-through):** pick a busy past day → יישור יום → expect fewer red rows than before; mutual A↔B home swaps should resolve when another room is free at that slot; remaining blockers open «העבר אורח»; re-align after one manual move may clear more.
 
 ---
 
