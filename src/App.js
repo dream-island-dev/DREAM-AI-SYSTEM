@@ -9,7 +9,8 @@ import ShiftGenerator from "./components/ShiftGenerator";
 import ShiftScheduleTab from "./components/ShiftScheduleTab";
 import EmployeesPage from "./components/EmployeesPage";
 import { isAdminUser, isSuperAdmin, loadDepartments, GOOGLE_AUTH_WHITELIST } from "./utils/admin";
-import { canAccessRoute, canSeeNavItem, filterNavItemsForUser } from "./utils/auth";
+import { canAccessRoute, canPerform, canSeeNavItem, filterNavItemsForUser } from "./utils/auth";
+import OperationalDashboard from "./components/OperationalDashboard";
 import OritCustomerServicePanel from "./components/OritCustomerServicePanel";
 import { consumeStaffDeepLink } from "./utils/staffDeepLink";
 import { saveCheckinFilter } from "./utils/checkinFilterStorage";
@@ -616,6 +617,8 @@ const css = `
     pointer-events: none;
   }
   .stat-card--tasks::before { background: linear-gradient(90deg, var(--status-warning), var(--gold)); }
+  .stat-card--requests::before { background: linear-gradient(90deg, var(--status-info), var(--gold-light)); }
+  button.stat-card { font: inherit; color: inherit; width: 100%; }
   .stat-card--checklist::before { background: linear-gradient(90deg, var(--status-success), var(--gold-light)); }
   .stat-card--depts::before { background: linear-gradient(90deg, var(--status-info), var(--gold)); }
   .stat-card--shifts::before { background: linear-gradient(90deg, var(--gold-dark), var(--gold-light)); }
@@ -1493,176 +1496,6 @@ function Sidebar({ user, active, setActive, openOpsCount, onLogout, isAdmin, isS
   );
 }
 
-function Dashboard({ shifts, tasks, checklist, employees }) {
-  const onShift = shifts.filter(
-    (s) => s.status === "פעיל" && s.date === todayStr
-  );
-  // Inclusion list, not an exclusion list — a "pending_approval" (awaiting
-  // staff review, not yet actionable) or "rejected" (discarded false
-  // positive) task must not inflate "open work" (migration 149, HITL gate).
-  const openTasks = tasks.filter((t) => t.status === "open" || t.status === "in_progress");
-  const urgentTasks = tasks.filter(
-    (t) => t.priority === "urgent" && (t.status === "open" || t.status === "in_progress")
-  );
-  const doneChecks = checklist.filter((c) => c.done).length;
-  const checkPct = checklist.length ? Math.round((doneChecks / checklist.length) * 100) : 0;
-
-  return (
-    <div className="dashboard-shell">
-      <div className="stat-grid">
-        <div className="stat-card stat-card--shifts">
-          <div className="stat-card-header">
-            <div className="stat-icon">👨‍💼</div>
-          </div>
-          <div className="stat-value">{onShift.length}</div>
-          <div className="stat-label">במשמרת עכשיו</div>
-          <div className="stat-sub stat-sub--success">
-            מתוך {employees.length} עובדים
-          </div>
-        </div>
-        <div className="stat-card stat-card--tasks">
-          <div className="stat-card-header">
-            <div className="stat-icon">🛠️</div>
-          </div>
-          <div className="stat-value">{openTasks.length}</div>
-          <div className="stat-label">משימות פתוחות</div>
-          {urgentTasks.length > 0 && (
-            <div className="stat-sub stat-sub--danger">
-              {urgentTasks.length} דחופות!
-            </div>
-          )}
-        </div>
-        <div className="stat-card stat-card--checklist">
-          <div className="stat-card-header">
-            <div className="stat-icon">✅</div>
-          </div>
-          <div className="stat-value">{checkPct}%</div>
-          <div className="stat-label">צ'קליסט הושלם</div>
-          <div style={{ marginTop: "var(--space-sm)" }}>
-            <div className="progress-bar">
-              <div
-                className="progress-fill"
-                style={{ width: `${checkPct}%` }}
-              />
-            </div>
-          </div>
-        </div>
-        <div className="stat-card stat-card--depts">
-          <div className="stat-card-header">
-            <div className="stat-icon">🏢</div>
-          </div>
-          <div className="stat-value">{DEPARTMENTS.length}</div>
-          <div className="stat-label">מחלקות פעילות</div>
-          <div className="stat-sub stat-sub--info">
-            כולן תקינות
-          </div>
-        </div>
-      </div>
-
-      {urgentTasks.length > 0 && (
-        <div className="dashboard-urgent">
-          <span style={{ fontSize: 24, flexShrink: 0 }}>🚨</span>
-          <div style={{ minWidth: 0 }}>
-            <div className="dashboard-urgent-title">
-              משימות דחופות ממתינות לטיפול!
-            </div>
-            <div className="dashboard-urgent-body">
-              {urgentTasks.map((t) => t.description).join(" • ")}
-            </div>
-          </div>
-        </div>
-      )}
-
-      <div className="dash-grid">
-        <div className="card">
-          <div className="card-header">
-            <div className="card-title">🕐 עובדים במשמרת עכשיו</div>
-          </div>
-          <div className="card-body">
-            {onShift.length === 0 ? (
-              <div className="dash-empty-state">
-                אין משמרות פעילות כרגע
-              </div>
-            ) : (
-              onShift.map((s) => (
-                <div key={s.id} className="dash-list-row">
-                  <div
-                    className="avatar"
-                    style={{ width: 32, height: 32, fontSize: 11 }}
-                  >
-                    {s.employeeName
-                      .split(" ")
-                      .map((n) => n[0])
-                      .join("")}
-                  </div>
-                  <div className="dash-row-main">
-                    <div className="dash-row-title">{s.employeeName}</div>
-                    <div className="dash-row-sub">
-                      {s.department} · {s.start}–{s.end}
-                    </div>
-                  </div>
-                  <span className="badge badge-green">פעיל</span>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-
-        <div className="card">
-          <div className="card-header">
-            <div className="card-title">🛠️ משימות אחרונות</div>
-          </div>
-          <div className="card-body">
-            {tasks.length === 0 ? (
-              <div className="dash-empty-state">אין משימות להצגה</div>
-            ) : (
-              tasks.slice(0, 4).map((t) => (
-                <div key={t.id} className="dash-list-row">
-                  <span
-                    className={`priority-dot dot-${
-                      t.priority === "urgent"
-                        ? "red"
-                        : t.priority === "normal"
-                        ? "orange"
-                        : "green"
-                    }`}
-                    style={{
-                      width: 8,
-                      height: 8,
-                      borderRadius: "50%",
-                      display: "block",
-                      flexShrink: 0,
-                    }}
-                  />
-                  <div className="dash-row-main">
-                    <div className="dash-row-title dash-row-title--clip">
-                      {t.description}
-                    </div>
-                    <div className="dash-row-sub">
-                      {t.department} · {new Date(t.created_at).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" })}
-                    </div>
-                  </div>
-                  <span
-                    className={`badge ${
-                      t.status === "done"
-                        ? "badge-green"
-                        : t.status === "in_progress"
-                        ? "badge-orange"
-                        : "badge-red"
-                    }`}
-                  >
-                    {t.status === "done" ? "בוצע" : t.status === "in_progress" ? "בטיפול" : "פתוח"}
-                  </span>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // Legacy local checklist UI — dashboard KPI still reads checklist_items from localStorage.
 // eslint-disable-next-line no-unused-vars
 function ChecklistPage({ checklist, setChecklist }) {
@@ -2049,9 +1882,7 @@ export default function App({ initialPage = "dashboard" }) {
   const [employees, setEmployees, empLoading, refetchEmployees] = usePersistentState("employees", initialEmployees);
   const [shifts, setShifts, shiftLoading]       = usePersistentState("shifts", initialShifts);
   const [checklist, setChecklist, checkLoading] = usePersistentState("checklist_items", initialChecklists);
-  // Sidebar badge count only — OperationsBoard.js fetches its own copy for
-  // the actual board (same duplicate-fetch tradeoff the old calls badge had).
-  const [tasks] = usePersistentState("tasks", []);
+  const [openOpsCount, setOpenOpsCount] = useState(0);
   const opsLoading = empLoading || shiftLoading || checkLoading;
   // agentProfile value itself is no longer read anywhere (the "agent" route now
   // renders InventoryHub) — kept write-only since the background load effect
@@ -2195,8 +2026,42 @@ export default function App({ initialPage = "dashboard" }) {
     return () => { active = false; };
   }, [user]);
 
-  // Inclusion list — see Dashboard()'s openTasks comment (migration 149, HITL gate).
-  const openOpsCount = tasks.filter((t) => t.status === "open" || t.status === "in_progress").length;
+  // Sidebar ops badge — live count from Supabase tasks (not localStorage).
+  useEffect(() => {
+    if (!user || !isSupabaseConfigured || !supabase) {
+      setOpenOpsCount(0);
+      return undefined;
+    }
+    const userDept = user?.department || "";
+    const canCreate = canPerform("create_ops_task", user);
+
+    const refreshOpenOpsCount = async () => {
+      let query = supabase
+        .from("tasks")
+        .select("id", { count: "exact", head: true })
+        .in("status", ["open", "in_progress"]);
+      if (!canCreate && userDept) {
+        query = query.eq("department", userDept);
+      }
+      const { count, error } = await query;
+      if (!error) setOpenOpsCount(count ?? 0);
+    };
+
+    refreshOpenOpsCount();
+    const ch = supabase
+      .channel("app-open-ops-count")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "tasks" },
+        () => refreshOpenOpsCount(),
+      )
+      .subscribe();
+    return () => {
+      supabase.removeChannel(ch);
+    };
+  }, [user]);
+
+  // Inclusion list — open + in_progress only (migration 149, HITL gate).
 
   const pageTitle = {
     dashboard:  "דאשבורד ראשי 📊",
@@ -2315,11 +2180,24 @@ export default function App({ initialPage = "dashboard" }) {
     switch (activePage) {
       case "dashboard":
         return (
-          <Dashboard
+          <OperationalDashboard
+            user={user}
             shifts={shifts}
-            tasks={tasks}
             checklist={checklist}
             employees={employees}
+            onNavigate={setActivePage}
+            onOpenDreamBotChat={openDreamBotChat}
+            onAttentionClick={() => {
+              setInboxRosterFocus("alerts");
+              setActivePage("wa_inbox");
+              setMobileMenuOpen(false);
+            }}
+            onArrivalsClick={() => openCheckinTab({ timelineScope: "today" })}
+            onAutomationClick={() => {
+              if (canAccessRoute("automation_center", user)) {
+                setActivePage("automation_center");
+              }
+            }}
           />
         );
       case "shifts":
