@@ -24,7 +24,7 @@ const TRIGGER_LABELS = {
   morning_of:        { label: "בוקר הגעה",       color: "#7C3AED", bg: "#F3F0FF" },
   ongoing:           { label: "שיחה שוטפת AI",   color: "#0369A1", bg: "#E0F2FE" },
   complaint:         { label: "תלונה",            color: "#C0392B", bg: "#FFF0EE" },
-  upsell:            { label: "שדרוג / Upsell",  color: "#92400E", bg: "#FEF3C7" },
+  upsell:            { label: "שדרוג / מכירה",  color: "#92400E", bg: "#FEF3C7" },
   fallback:          { label: "תגובת נפילה",      color: "#6B7280", bg: "#F3F4F6" },
   greeting:          { label: "ברכת פתיחה",       color: "#059669", bg: "#ECFDF5" },
   button_reply:      { label: "תגובת כפתור",      color: "#0E7490", bg: "#ECFEFF" },
@@ -162,7 +162,8 @@ export default function BotScriptEditor() {
             <div style={{ fontSize: 13, color: "var(--text-muted)", lineHeight: 1.6 }}>
               כאן ניתן לערוך את ההודעות שהבוט שולח לאורחים. שינויים נכנסים לתוקף בתוך עד 5 דקות (cache בצד השרת).{" "}
               <br />
-              Placeholders: <code style={{ background: "#F3F4F6", padding: "1px 4px", borderRadius: 3 }}>{"{{GUEST_NAME}}"}</code>{" "}
+              מציינים: <code style={{ background: "#F3F4F6", padding: "1px 4px", borderRadius: 3 }}>{"{{GUEST_NAME}}"}</code>{" "}
+              <span style={{ color: "var(--text-muted)", fontSize: 12 }}>(שם האורח)</span>{" "}
               <code style={{ background: "#F3F4F6", padding: "1px 4px", borderRadius: 3 }}>{"{{WORKSHOP_URL}}"}</code>{" "}
               <code style={{ background: "#F3F4F6", padding: "1px 4px", borderRadius: 3 }}>{"{{SPA_TIME}}"}</code>{" "}
               (שעה גולמית — אם אין לאורח ספא, כל המשפט המכיל אותה יימחק){" "}
@@ -231,7 +232,7 @@ export default function BotScriptEditor() {
                           fontSize: 11, fontWeight: 700, padding: "3px 8px", borderRadius: 20,
                           color: "#0369A1", background: "#E0F2FE", border: "1px solid #0369A180",
                         }}>
-                          Meta Template
+                          תבנית מטא
                         </span>
                       )}
                       {hasChanges && (
@@ -240,7 +241,7 @@ export default function BotScriptEditor() {
                     </div>
                     {script.meta_template_name && (
                       <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
-                        {script.meta_template_name}
+                        שם תבנית מטא (מזהה טכני): {script.meta_template_name}
                       </div>
                     )}
                   </div>
@@ -297,7 +298,7 @@ export default function BotScriptEditor() {
                     {script.trigger_event === "ongoing" && (
                       <div className="form-field" style={{ marginBottom: 16 }}>
                         <label style={{ fontWeight: 600, fontSize: 13, marginBottom: 6, display: "block" }}>
-                          🤖 System Prompt לבינה מלאכותית
+                          🤖 פרומפט מערכת לבינה מלאכותית
                         </label>
                         <textarea
                           rows={10}

@@ -674,7 +674,7 @@ async function fetchGuestDmBotScript(
 }
 
 const GUEST_DM_DEFAULT_GREETING_REPLY =
-  "שלום! 😊 ברוכים הבאים ל-Dream Island. במה אוכל לעזור לכם היום?";
+  "שלום! 😊 ברוכים הבאים לדרים איילנד. במה אוכל לעזור לכם היום?";
 
 function buildGuestDmGreetingReply(guestName: string | null, scriptText: string | null): string {
   const base = scriptText?.trim() || GUEST_DM_DEFAULT_GREETING_REPLY;

@@ -309,7 +309,7 @@ function buildPaymentReply(vars: {
     : `לפני ההגעה, נשארה יתרת תשלום בסך ${vars.paymentAmount} ₪ להסדרה — ניתן לסגור את זה בקליק אחד כאן:\n👉 ${vars.paymentLink}`;
   return (
     `מגיעים! 🎉 כבר מתרגשים מאד מהגעתכם, ${vars.guestName}!\n\n` +
-    `הצוות שלנו ב-Dream Island מכין את הכל ומחכה לכם עם חיוך גדול 🌴\n\n` +
+    `הצוות שלנו בדרים איילנד מכין את הכל ומחכה לכם עם חיוך גדול 🌴\n\n` +
     buildSpaSentence(vars.spaDate ?? null, vars.spaTime) +
     `\n\n${paymentLine}` +
     workshopLine +
@@ -864,7 +864,7 @@ const FALLBACK_REPLY =
   "אני אעביר אותה לצוות הקבלה שלנו, שישמח לסייע לך בהקדם האפשרי.";
 
 const DEFAULT_GREETING_REPLY =
-  "שלום! 😊 ברוכים הבאים ל-Dream Island. במה אוכל לעזור לכם היום?";
+  "שלום! 😊 ברוכים הבאים לדרים איילנד. במה אוכל לעזור לכם היום?";
 
 function buildGreetingReply(guestName: string | null, scriptText: string | null): string {
   const base = scriptText?.trim() || DEFAULT_GREETING_REPLY;
@@ -1739,7 +1739,7 @@ async function sendTemplate(
 }
 
 const SPA_MENU =
-  "🌿 *תפריט ספא Dream Island*\n\n" +
+  "🌿 *תפריט ספא דרים איילנד*\n\n" +
   "💆 *טיפולים זוגיים:*\n" +
   "• ספא בואטסו — 60 דק'\n" +
   "• חמאם ושמנים — 90 דק'\n" +
@@ -1802,7 +1802,7 @@ async function sendReply(to: string, body: string, opts?: SendReplyOpts): Promis
   if (!token || !phoneId) throw new Error("missing_meta_creds");
 
   const emptyFallback =
-    "מצטערים, נשמח לעזור 🙏 אפשר לנסח שוב? צוות Dream Island כאן בשבילכם.";
+    "מצטערים, נשמח לעזור 🙏 אפשר לנסח שוב? צוות דרים איילנד כאן בשבילכם.";
 
   let safeBody: string;
   if (opts?.scripted) {

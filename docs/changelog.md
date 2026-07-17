@@ -1,3 +1,5 @@
+2026-07-17 | Hebrew brand in guest scripts + BotScriptEditor labels | migration 227: Dream Island→דרים איילנד in bot_scripts; stage_3_morning meta_template_name→suite_welcome_morning; webhook greeting/spa fallbacks; עורך סקריפטים UI בעברית. Deploy: db push + whatsapp-webhook + whapi-webhook + frontend.
+
 2026-07-17 | KB conflict false-positives + spa RAG matching | `guestKnowledgeValidation`: compare hour-token sets (subset/superset) instead of raw string equality — fixes 4 spurious checkout/pool/spa/restaurant warnings when KB and bot_config agree. `guestRag`: Hebrew prefix stripping, booking synonym expansion (מזמינים↔הזמנת), per-line chunking for single-newline KB. Deploy: `whatsapp-cron` + consumers of `_shared` + frontend.
 
 2026-07-17 | BotConfigPanel KB-source banner + spa hint in BotSettings | When `bot_settings.knowledge_base` is non-empty, «ידע המלון» shows banner + link to מוח הבוט; DEFAULT_KB_HINT includes spa booking example. Frontend-only (not deployed).
