@@ -1,15 +1,20 @@
 // Apply a housekeeping "room ready" signal → room_status gate that AICopilot listens on.
-// Mirrors HousekeepingTabletView finishRoomClean/markClean. whapi-webhook sends a
-// short in-group ack only when status actually advances to ממתין לאישור (action=updated).
+// Turnover lifecycle (WA group + UI):
+//   Co N        → guests.checked_out + room_status.לניקיון
+//   N✅ / מוכן  → room_status.ממתין לאישור (bell only — guests stays pending/expected)
+//   AICopilot   → room_ready WA + guests.room_ready + room_status.פנוי
+//   N צק אין    → guests.checked_in + room_status.תפוס
+// Does NOT set guests.room_ready — manager approval is the guest-profile step.
 
 import type { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { resolveSuiteFromEzgoFields } from "./guestRoomResolve.ts";
-import { findArrivingTodayGuestForSuite } from "./housekeepingGuestLookup.ts";
+import { findArrivingTodayGuestForSuite, findActiveGuestForSuite } from "./housekeepingGuestLookup.ts";
 import { notifyRoomPendingApproval } from "./roomPendingApprovalPush.ts";
 
 export type HousekeepingReadyAction =
   | "updated"
   | "already_pending"
+  | "skipped_occupied"
   | "dedup"
   | "skipped_no_suite"
   | "error";
@@ -41,6 +46,13 @@ export function buildHousekeepingGroupAckMessage(items: HousekeepingReadyAckItem
     lines.push(`✅ ${id} מוכן${guestPart} — ממתין לאישור מנהל לשליחת הודעה 🔔`);
   }
   return lines.join("\n");
+}
+
+/** In-group ack when room is occupied by a continuing-stay guest — skip bell. */
+export function buildHousekeepingReadySkippedOccupiedLine(result: HousekeepingReadyResult): string | null {
+  if (result.action !== "skipped_occupied" || !result.roomId) return null;
+  const name = result.guestName?.trim();
+  return `ℹ️ חדר ${result.roomId} — אורח במשך שהות${name ? ` (${name})` : ""} · לא נדרש מוכן מחדש`;
 }
 
 export async function applyHousekeepingReadySignal(
@@ -86,6 +98,18 @@ export async function applyHousekeepingReadySignal(
     return {
       ok: false, roomNumber, roomId, guestId: null, guestName: null,
       action: "error", error: dedupErr.message,
+    };
+  }
+
+  const inStay = await findActiveGuestForSuite(supabase, roomId);
+  if (inStay?.status === "checked_in") {
+    return {
+      ok: true,
+      roomNumber,
+      roomId,
+      guestId: inStay.id,
+      guestName: inStay.name,
+      action: "skipped_occupied",
     };
   }
 

@@ -9,6 +9,7 @@ import { hasSuiteRoomTypeConflict } from "../utils/guestTiming";
 import AddGuestModal from "./AddGuestModal";
 import GuestAttentionBadge from "./GuestAttentionBadge";
 import GuestContextDrawer from "./GuestContextDrawer";
+import MissingDepartureBadge from "./MissingDepartureBadge";
 import QuietHoursGate from "./QuietHoursGate";
 import { STATUS_META } from "../utils/guestStatusMeta";
 import CheckinTimelineFilterBar from "./CheckinTimelineFilterBar";
@@ -844,8 +845,9 @@ export default function GuestsPage({
                     <span style={{ minWidth: 90, fontSize: 13, color: "var(--text-muted)" }}>
                       {roomNameFor(g) || "—"}
                     </span>
-                    <span style={{ flex: 1, fontSize: 14, fontWeight: 700, color: "var(--black)" }}>
+                    <span style={{ flex: 1, fontSize: 14, fontWeight: 700, color: "var(--black)", display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                       {g.name}
+                      <MissingDepartureBadge guest={g} />
                     </span>
                     <span style={{
                       fontSize: 11, fontWeight: 700, padding: "2px 9px", borderRadius: 20,

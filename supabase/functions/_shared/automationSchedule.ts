@@ -141,31 +141,60 @@ export function shouldAutoPromoteToCheckedIn(
   return false;
 }
 
-/** Auto checkout: 11:00 Israel on departure_date, or catch-up when departure_date passed. */
+/** DB auto-checkout disabled (2026-07-17) — housekeeping WA "Co N" is sole suite checkout writer. */
 export function shouldAutoCheckoutGuest(
-  guest: { departure_date?: string | null; status?: string | null },
-  now: Date,
+  _guest: { departure_date?: string | null; status?: string | null },
+  _now: Date,
 ): boolean {
-  if (!guest.departure_date) return false;
-  if (guest.status === "checked_out" || guest.status === "cancelled") return false;
-  if (!guest.status || !AUTO_CHECKOUT_ELIGIBLE_STATUSES.has(guest.status)) return false;
-  const today = israelYmd(now);
-  if (guest.departure_date < today) return true;
-  if (guest.departure_date === today) return isPastAutoCheckoutGateway(now);
   return false;
 }
 
-/** In-memory + routing status: auto checkout after 11:00 on departure day. Auto
- * check-in promotion is disabled — see shouldAutoPromoteToCheckedIn. */
+function getLateCheckoutUntil(guest: { guest_profile?: unknown }): string | null {
+  const gp = guest.guest_profile;
+  if (!gp || typeof gp !== "object") return null;
+  const stay = (gp as Record<string, unknown>).stay;
+  if (!stay || typeof stay !== "object") return null;
+  const until = (stay as Record<string, unknown>).late_checkout_until;
+  return typeof until === "string" && /^\d{2}:\d{2}$/.test(until) ? until : null;
+}
+
+function getDepartureCheckoutPromptHour(guest: { guest_profile?: unknown }): number {
+  const late = getLateCheckoutUntil(guest);
+  if (late) {
+    const h = parseInt(late.split(":")[0], 10);
+    if (!Number.isNaN(h)) return h;
+  }
+  return AUTO_CHECKOUT_LOCAL_HOUR;
+}
+
+/** Staff UI prompt — checked_in on/past departure after 11:00 (or late extension). */
+export function needsDepartureCheckoutPrompt(
+  guest: {
+    departure_date?: string | null;
+    status?: string | null;
+    room_type?: string | null;
+    guest_profile?: unknown;
+  },
+  now: Date,
+): boolean {
+  if (!guest || guest.status !== "checked_in") return false;
+  if (guest.room_type === "day_guest" || guest.room_type === "premium_day_guest") return false;
+  const today = israelYmd(now);
+  if (!guest.departure_date) return false;
+  if (guest.departure_date > today) return false;
+  if (guest.departure_date < today) return true;
+  return israelLocalHour(now) >= getDepartureCheckoutPromptHour(guest);
+}
+
+/** DB status only — no virtual checkout. */
 export function resolveEffectiveGuestStatus(
   guest: {
     status?: string | null;
     arrival_date?: string | null;
     departure_date?: string | null;
   },
-  now: Date,
+  _now: Date,
 ): string | null {
-  if (shouldAutoCheckoutGuest(guest, now)) return "checked_out";
   return guest.status ?? null;
 }
 

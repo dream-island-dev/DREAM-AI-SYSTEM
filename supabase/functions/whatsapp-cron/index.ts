@@ -106,23 +106,7 @@ Deno.serve(async (req: Request) => {
     const todayIsrael = israelYmd(now);
     const checkoutEligible = [...AUTO_CHECKOUT_ELIGIBLE_STATUSES];
 
-    // ── 11:00 Israel auto checkout — departure day (or catch-up if overdue) ──
-    // QA audit fix (2026-07-06): AUTO_CHECKOUT_LOCAL_HOUR (11:00) mirrors the
-    // SUITE/standard checkout time — it must never apply to day-pass guests,
-    // whose arrival_date === departure_date by definition (same-day visit,
-    // see automationSchedule.ts's "Day-pass courtesy check" comment). Without
-    // this exclusion, a day-pass guest still `pending`/`expected` at 11:00, or
-    // even already `checked_in` and physically on-site all afternoon, was
-    // silently archived as `checked_out` — permanently blocking every
-    // remaining pipeline stage (checkEligibility's blanket guest_checked_out
-    // skip) AND blocking in-visit operational request routing
-    // (isGuestEligibleForInHouseOpsDispatch returns false for checked_out).
-    // room_type IS NULL rows are also excluded from this update as a side
-    // effect of the NOT IN's SQL NULL semantics — acceptable: every guest
-    // written by this app gets an explicit room_type (migration 096 CHECK
-    // constraint enumerates day_guest/premium_day_guest/standard/suite), so a
-    // NULL row is itself a data gap that should get manual attention rather
-    // than silent auto-archival.
+    // Suite checkout: housekeeping WA group only (2026-07-17). No silent cron archival.
     let autoCheckoutCount = 0;
     const checkoutPatch = {
       status: "checked_out",
@@ -131,36 +115,6 @@ Deno.serve(async (req: Request) => {
       msg_room_ready_sent: false,
       room_ready_at: null,
     };
-    const { data: overdueCheckout, error: overdueErr } = await supabase
-      .from("guests")
-      .update(checkoutPatch)
-      .lt("departure_date", todayIsrael)
-      .in("status", checkoutEligible)
-      .not("room_type", "in", "(day_guest,premium_day_guest)")
-      .select("id");
-    if (overdueErr) {
-      console.error("[whatsapp-cron] auto_checkout (overdue) FAILED:", overdueErr.message);
-    } else {
-      autoCheckoutCount += overdueCheckout?.length ?? 0;
-    }
-
-    if (isPastAutoCheckoutGateway(now)) {
-      const { data: todayCheckout, error: todayCheckoutErr } = await supabase
-        .from("guests")
-        .update(checkoutPatch)
-        .eq("departure_date", todayIsrael)
-        .in("status", checkoutEligible)
-        .not("room_type", "in", "(day_guest,premium_day_guest)")
-        .select("id");
-      if (todayCheckoutErr) {
-        console.error("[whatsapp-cron] auto_checkout (today) FAILED:", todayCheckoutErr.message);
-      } else {
-        autoCheckoutCount += todayCheckout?.length ?? 0;
-      }
-    }
-    if (autoCheckoutCount > 0) {
-      console.log(`[whatsapp-cron] auto_checkout archived ${autoCheckoutCount} guest(s) (today=${todayIsrael})`);
-    }
 
     // Day-pass same-day visit — 19:00 Israel (never 11:00 suite checkout).
     if (isPastDayPassAutoCheckoutGateway(now)) {

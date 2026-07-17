@@ -3,6 +3,8 @@
 import type { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { resolveSuiteFromEzgoFields } from "./guestRoomResolve.ts";
 import { findActiveGuestForSuite } from "./housekeepingGuestLookup.ts";
+import { CHECKIN_ELIGIBLE_STATUSES } from "./housekeepingLifecycle.ts";
+import { performSuiteCheckIn } from "./suiteCheckinSync.ts";
 
 export type HousekeepingCheckInAction =
   | "updated"
@@ -10,6 +12,7 @@ export type HousekeepingCheckInAction =
   | "dedup"
   | "skipped_no_suite"
   | "no_guest"
+  | "guest_not_eligible"
   | "error";
 
 export interface HousekeepingCheckInResult {
@@ -22,11 +25,6 @@ export interface HousekeepingCheckInResult {
   error?: string;
 }
 
-function auditLine(text: string): string {
-  const ts = new Date().toLocaleString("he-IL", { timeZone: "Asia/Jerusalem", hour12: false });
-  return `[${ts}] ${text}`;
-}
-
 export function buildHousekeepingCheckInAckLine(result: HousekeepingCheckInResult): string | null {
   const { roomId, guestName, action } = result;
   if (!roomId) return null;
@@ -37,6 +35,8 @@ export function buildHousekeepingCheckInAckLine(result: HousekeepingCheckInResul
       return `ℹ️ חדר ${roomId} — כבר מסומן כצ'ק-אין`;
     case "no_guest":
       return `⚠️ חדר ${roomId} — צ'ק-אין: לא נמצא אורח פעיל בחדר`;
+    case "guest_not_eligible":
+      return `⚠️ חדר ${roomId} — אורח${guestName ? ` ${guestName}` : ""} לא במצב צ'ק-אין (סטטוס לא מתאים)`;
     default:
       return null;
   }
@@ -92,31 +92,27 @@ export async function applyHousekeepingCheckInSignal(
     };
   }
 
-  const now = new Date().toISOString();
-  const prevNotes = String(guest.guest_notes ?? "").trim();
-  const note = prevNotes
-    ? `${prevNotes}\n${auditLine("צ'ק-אין מקבוצת ניקיון (WhatsApp)")}`
-    : auditLine("צ'ק-אין מקבוצת ניקיון (WhatsApp)");
-
-  const { error: guestErr } = await supabase.from("guests").update({
-    status: "checked_in",
-    checkin_time: now,
-    guest_notes: note,
-  }).eq("id", guest.id);
-
-  if (guestErr) {
+  if (!CHECKIN_ELIGIBLE_STATUSES.has(guest.status)) {
     return {
-      ok: false, roomNumber, roomId, guestId: guest.id, guestName: guest.name,
-      action: "error", error: guestErr.message,
+      ok: false,
+      roomNumber,
+      roomId,
+      guestId: guest.id,
+      guestName: guest.name,
+      action: "guest_not_eligible",
     };
   }
 
-  const { error: roomErr } = await supabase.from("room_status").upsert(
-    { room_id: roomId, status: "תפוס", updated_at: now },
-    { onConflict: "room_id" },
-  );
-  if (roomErr) {
-    console.warn(`[housekeepingCheckIn] room_status upsert failed for ${roomId}:`, roomErr.message);
+  const sync = await performSuiteCheckIn(supabase, guest, {
+    roomId,
+    auditSource: "צ'ק-אין מקבוצת ניקיון (WhatsApp)",
+  });
+
+  if (!sync.ok) {
+    return {
+      ok: false, roomNumber, roomId, guestId: guest.id, guestName: guest.name,
+      action: "error", error: sync.error,
+    };
   }
 
   console.log(`[housekeepingCheckIn] ${roomId} (#${roomNumber}) guest=${guest.id} → checked_in`);

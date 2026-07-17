@@ -1098,18 +1098,27 @@ async function notifyAdminIfDispatchFailed(params: {
   guestName?: string | null;
   guestPhone?: string | null;
   dispatchType: "Template" | "Session";
+  /** When set, staff-initiated timeouts skip the 🚨 admin page (duplicate-risk UX). */
+  trigger?: string;
 }): Promise<void> {
   if (!params.error) return;
-  // "timeout" included (2026-07-13) — it was previously silently excluded
-  // here, which is exactly what let the Stage 3 Shabbat retry-storm run
-  // unnoticed: the one status causing the spam was also the one status that
-  // never paged anyone.
   if (params.status !== "failed" && params.status !== "blocked_by_meta" && params.status !== "timeout") return;
+  // Staff room_ready / inbox_reply: Whapi timeout often means "delivered but unconfirmed"
+  // — paging admin caused false alarms; UI shows uncertain-delivery copy instead.
+  if (params.status === "timeout" && (params.trigger === "room_ready" || params.trigger === "inbox_reply")) {
+    console.warn(
+      `[whatsapp-send] uncertain delivery (no admin page) trigger=${params.trigger} guest=${params.guestName ?? "?"}`,
+    );
+    return;
+  }
+  const errText = params.status === "timeout"
+    ? `לא ודאי אם ההודעה הגיעה — בדקו בוואטסאפ לפני שליחה חוזרת. (${String(params.error).slice(0, 300)})`
+    : String(params.error ?? "שגיאה לא ידועה").slice(0, 500);
   await alertAdminDispatchFailure({
     guestName: params.guestName,
     guestPhone: params.guestPhone,
     dispatchType: params.dispatchType,
-    errorMessage: params.error,
+    errorMessage: errText,
   });
 }
 
@@ -1858,6 +1867,7 @@ serve(async (req: Request) => {
               error: whapiMessage,
               guestPhone: targetPhone,
               dispatchType: "Session",
+              trigger: "inbox_reply",
             });
             return new Response(
               JSON.stringify({
@@ -1927,6 +1937,7 @@ serve(async (req: Request) => {
         error: replyErr,
         guestPhone: targetPhone,
         dispatchType: inboxChannel === "whapi" ? "Whapi" : "Session",
+        trigger: "inbox_reply",
       });
 
       // Insert outbound row so the inbox thread shows the message immediately.
@@ -3739,6 +3750,7 @@ serve(async (req: Request) => {
         guestName: guest.name as string,
         guestPhone: guest.phone as string,
         dispatchType: rrDispatch.channel === "template" ? "Template" : "Session",
+        trigger: "room_ready",
       });
 
       await finalizeDispatchAttempt(supabase, rrClaimRes.claim.logId, rrStatus, {

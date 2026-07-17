@@ -6,6 +6,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { supabase } from "../supabaseClient";
 import { resolveSuiteRoomDisplayLabel } from "../utils/suiteRoomReady";
+import MissingDepartureBadge from "./MissingDepartureBadge";
 import QuietHoursGate from "./QuietHoursGate";
 import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
 
@@ -56,7 +57,7 @@ export default function SuitesDashboard() {
       if (phones.length) {
         const { data: gd } = await supabase
           .from("guests")
-          .select("id, phone, status, arrival_confirmed, spa_time, meal_time, msg_room_ready_sent")
+          .select("id, phone, name, status, arrival_date, departure_date, room_type, arrival_confirmed, spa_time, meal_time, msg_room_ready_sent")
           .in("phone", phones);
         const sm = {};
         for (const g of (gd ?? [])) sm[g.phone] = g;
@@ -100,6 +101,10 @@ export default function SuitesDashboard() {
         body: { trigger: "room_ready", guestId, roomId: roomId || undefined },
       });
       if (error) throw new Error(error.message);
+      if (data?.status === "timeout") {
+        showToast("ℹ️ לא ודאי אם ההודעה הגיעה — בדקו בוואטסאפ לפני שליחה חוזרת");
+        return;
+      }
       if (!data?.ok) throw new Error(data?.error ?? "שגיאה לא ידועה");
       // Anti-duplication guard — a skipped send must never masquerade as a
       // fresh "sent" success toast (FAIL VISIBLE §0.3).
@@ -236,8 +241,12 @@ export default function SuitesDashboard() {
 
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 800, fontSize: 15,
-                  color: hasSuite ? "var(--gold-dark)" : "var(--text-muted)" }}>
+                  color: hasSuite ? "var(--gold-dark)" : "var(--text-muted)",
+                  display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                   {isDayOnly ? "☀️ בילוי יומי" : `🏨 ${suiteLabel || "סוויטה"}`}
+                  {guestStatus[firstRoom.guest_phone] && (
+                    <MissingDepartureBadge guest={guestStatus[firstRoom.guest_phone]} />
+                  )}
                 </div>
                 <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 3, lineHeight: 1.7 }}>
                   {roomList.length} חדרים · {totalAdults} אורחים ·

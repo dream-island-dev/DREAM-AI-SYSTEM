@@ -7,6 +7,7 @@
 // open for a day shows the guest's CURRENT state, not a stale one.
 
 import { SUITE_REGISTRY } from "../data/suiteRegistry";
+import { readSelectedSuiteRoomFromProfile } from "./guestSelectedSuiteRoom";
 
 /** Calendar today in Israel (YYYY-MM-DD) — matches DATE columns as hotel-local days. */
 export function israelTodayStr() {
@@ -355,9 +356,12 @@ const STRIPPED_GUEST_PROFILE = {
   metaClaimedAt: null,
   whapiClaimedBy: null,
   whapiClaimedAt: null,
+  guestProfile: null,
+  selectedSuiteRoom: null,
 };
 
 function guestProfileFromEntry(guestEntry) {
+  const guestProfile = guestEntry.guest_profile ?? null;
   return {
     guestId: guestEntry.id,
     guestName: guestEntry.name ?? null,
@@ -371,6 +375,8 @@ function guestProfileFromEntry(guestEntry) {
     portalToken: guestEntry.portal_token ?? null,
     mealTime: guestEntry.meal_time ?? null,
     mealLocation: guestEntry.meal_location ?? null,
+    guestProfile,
+    selectedSuiteRoom: readSelectedSuiteRoomFromProfile(guestProfile),
   };
 }
 

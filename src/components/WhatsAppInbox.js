@@ -22,6 +22,7 @@ import {
   rosterGuestFields,
   syncInboxContactWithGuestMap,
 } from "../utils/guestTiming";
+import { resolveEffectiveSelectedSuiteRoom } from "../utils/guestSelectedSuiteRoom";
 import {
   formatGuestReactionLabel,
   parseGuestReactionMessage,
@@ -682,7 +683,18 @@ function toGuestMapEntry(g) {
     meal_location: g.meal_location ?? null,
     claimed_by: g.claimed_by ?? null,
     claimed_at: g.claimed_at ?? null,
+    guest_profile: g.guest_profile ?? null,
   };
+}
+
+function inboxActiveSuiteRoom(contact) {
+  if (!contact) return null;
+  return resolveEffectiveSelectedSuiteRoom({
+    guestProfile: contact.guestProfile ?? null,
+    guestId: contact.guestId,
+    phone: contact.phone,
+    fallbackRoom: contact.room,
+  });
 }
 
 /** Resolve Whapi per-channel claim for a guest id (migration 171). */
@@ -4175,8 +4187,10 @@ export default function WhatsAppInbox({
     const definedText = [subCategoryLabel, note?.trim()].filter(Boolean).join(" — ");
     const context      = definedText || lastInbound?.message?.slice(0, 280) || "";
     try {
+      const activeRoom = inboxActiveSuiteRoom(contact);
       const { data: taskRow, error: insErr } = await supabase.from("tasks").insert({
-        room_number:         contact.room ?? null,
+        room_number:         activeRoom ?? contact.room ?? null,
+        guest_id:            contact.guestId ?? null,
         department:           isMaint ? "תפעול" : "משק",
         description:          `[מתיבת וואטסאפ — ${guestLabel}] ${context}`.trim(),
         priority:             "normal",
@@ -4288,7 +4302,7 @@ export default function WhatsAppInbox({
       .from("guests")
       .select(
         "id, name, phone, status, arrival_date, departure_date, room, room_type, " +
-        "spa_time, spa_date, portal_token, meal_time, meal_location, claimed_by, claimed_at",
+        "spa_time, spa_date, portal_token, meal_time, meal_location, claimed_by, claimed_at, guest_profile",
       )
       .not("phone", "is", null)
       .then(({ data }) => {
@@ -4822,7 +4836,7 @@ export default function WhatsAppInbox({
           body: {
             trigger: "room_ready",
             guestId: activeContact.guestId,
-            roomId: activeContact.room ?? undefined,
+            roomId: inboxActiveSuiteRoom(activeContact) ?? activeContact.room ?? undefined,
           },
         }));
       } else {

@@ -1,3 +1,7 @@
+2026-07-17 | Housekeeping WA turnover hardening — multi-room lookup + unified check-in | `housekeepingGuestLookup` matches `suite_rooms` (not only `guests.room`); lifecycle scoring (Co→✅→approve→צק אין); `_shared/suiteCheckinSync.ts` shared with WA check-in; `room-clean-notify` uses same lookup + passes `roomId` for multi-room WA. Deploy: `whapi-webhook`, `room-clean-notify`.
+
+2026-07-17 | Multi-room ops context + missing departure_date guard | Inbox suite room picker (`guest_profile.inbox.selected_suite_room`); Ops Board mandatory room on pending_approval; import blocks suite without departure (NIGHTS/iNights); UI ⚠ + `guest_alerts` `missing_departure_date` (migration 222); room_ready Whapi timeout → no admin 🚨 false alarm.
+
 2026-07-17 | Claim-before-send on ALL whatsapp-send dispatch blocks (Phase C completion) | `claimStageDispatch` wrapper wired into stage_2_arrival, night_before, 3× morning blocks, room_ready + generic BRANCH D (was BRANCH D only). `finalizeDispatchAttempt`: sent-collision with migration 088 unique index (force resend / per-room room_ready) → `duplicate_blocked` + `actual_status` payload instead of zombie processing row. Deploy: `whatsapp-send` (from clean worktree). Commit `7ba0422`.
 
 2026-07-17 | Whapi failover E2E QA script + docs realignment | New `docs/qa_whapi_failover.md` (manual SOS / auto probe failover / env override + restore, SQL checks). active_sprint refreshed to 07-17; spa sticky-room entry corrected — deployed since 07-14 (bc7c36b/b090f52), live QA pending. Docs-only.

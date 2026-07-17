@@ -15,11 +15,16 @@
 // the RELIABLE primary one (WhatsApp delivery is best-effort, see that
 // function's header comment for why).
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import { canPerform } from "../utils/auth";
 import ArrivalImportPanel from "./ArrivalImportPanel";
 import { getGuestTimingBadge } from "../utils/guestTiming";
+import { fetchGuestSuiteRooms } from "../utils/guestStaySummary";
+import {
+  suiteRoomCanonicalLabel,
+  taskNeedsRoomDisambiguation,
+} from "../utils/guestSelectedSuiteRoom";
 
 const HOTEL_DEPARTMENTS = ["תפעול", "משק", "קבלה", "ספא", 'מזמ"ש (F&B)', "הנהלה"];
 
@@ -292,6 +297,31 @@ function TaskCard({ task, onClaim, onMarkDone, onApprove, onReject, isUpdating, 
   const isPendingApproval = task.status === "pending_approval";
   const isRejected = task.status === "rejected";
   const src = SOURCE_META[task.source] ?? SOURCE_META.manual;
+  const [suiteRooms, setSuiteRooms] = useState([]);
+  const [pickedRoom, setPickedRoom] = useState(task.room_number ?? "");
+
+  useEffect(() => {
+    setPickedRoom(task.room_number ?? "");
+  }, [task.id, task.room_number]);
+
+  useEffect(() => {
+    if (!isPendingApproval || !task.guest_id || !supabase) {
+      setSuiteRooms([]);
+      return;
+    }
+    let active = true;
+    fetchGuestSuiteRooms(supabase, { id: task.guest_id, phone: task.guests?.phone })
+      .then((rows) => { if (active) setSuiteRooms(rows ?? []); })
+      .catch(() => { if (active) setSuiteRooms([]); });
+    return () => { active = false; };
+  }, [isPendingApproval, task.guest_id, task.guests?.phone]);
+
+  const suiteLabels = useMemo(
+    () => [...new Set((suiteRooms ?? []).map(suiteRoomCanonicalLabel).filter(Boolean))],
+    [suiteRooms],
+  );
+  const needsRoomPick = taskNeedsRoomDisambiguation(task, suiteLabels);
+  const approveBlocked = needsRoomPick && !String(pickedRoom ?? "").trim();
 
   // Human-in-the-Loop gate: seeded once from task.description, then respects
   // the staff member's own edits (does not re-sync from realtime updates to
@@ -390,19 +420,42 @@ function TaskCard({ task, onClaim, onMarkDone, onApprove, onReject, isUpdating, 
       )}
 
       {isPendingApproval ? (
-        <textarea
-          value={editedDesc}
-          onChange={(e) => setEditedDesc(e.target.value)}
-          rows={3}
-          placeholder="תיאור הבקשה..."
-          style={{
-            width: "100%", resize: "vertical", direction: "rtl",
-            fontSize: 15, fontWeight: 600, color: "var(--black)", marginBottom: 10,
-            lineHeight: 1.5, fontFamily: "Heebo, sans-serif",
-            padding: "10px 12px", borderRadius: 10, border: "1px solid var(--border)",
-            background: "#FFFDF7", boxSizing: "border-box",
-          }}
-        />
+        <>
+          {needsRoomPick && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 12, fontWeight: 800, color: "#B45309", marginBottom: 6 }}>
+                ⚠️ לאיזה חדר שייכת הבקשה? (חובה לפני אישור)
+              </div>
+              <select
+                value={pickedRoom}
+                onChange={(e) => setPickedRoom(e.target.value)}
+                style={{
+                  width: "100%", padding: "10px 12px", borderRadius: 10,
+                  border: `1px solid ${approveBlocked ? "#F59E0B" : "var(--border)"}`,
+                  fontFamily: "Heebo, sans-serif", fontSize: 14, background: "#FFFBEB",
+                }}
+              >
+                <option value="">— בחר סוויטה —</option>
+                {suiteLabels.map((label) => (
+                  <option key={label} value={label}>{label}</option>
+                ))}
+              </select>
+            </div>
+          )}
+          <textarea
+            value={editedDesc}
+            onChange={(e) => setEditedDesc(e.target.value)}
+            rows={3}
+            placeholder="תיאור הבקשה..."
+            style={{
+              width: "100%", resize: "vertical", direction: "rtl",
+              fontSize: 15, fontWeight: 600, color: "var(--black)", marginBottom: 10,
+              lineHeight: 1.5, fontFamily: "Heebo, sans-serif",
+              padding: "10px 12px", borderRadius: 10, border: "1px solid var(--border)",
+              background: "#FFFDF7", boxSizing: "border-box",
+            }}
+          />
+        </>
       ) : (
         <div style={{ fontSize: 15, fontWeight: 600, color: "var(--black)", marginBottom: 10, lineHeight: 1.5 }}>
           {task.description}
@@ -437,13 +490,14 @@ function TaskCard({ task, onClaim, onMarkDone, onApprove, onReject, isUpdating, 
             <>
               <button
                 className="u-touch-comfort"
-                onClick={() => onApprove(task.id, editedDesc)}
-                disabled={isUpdating}
+                onClick={() => onApprove(task.id, editedDesc, needsRoomPick ? pickedRoom : (pickedRoom || task.room_number))}
+                disabled={isUpdating || approveBlocked}
+                title={approveBlocked ? "בחר חדר לפני אישור" : undefined}
                 style={{
                   padding: "10px 18px", borderRadius: 10, border: "none",
-                  background: isUpdating ? "var(--border)" : "linear-gradient(135deg, #16A34A, #15803D)",
+                  background: (isUpdating || approveBlocked) ? "var(--border)" : "linear-gradient(135deg, #16A34A, #15803D)",
                   color: "#fff", fontFamily: "Heebo, sans-serif",
-                  fontSize: 14, fontWeight: 800, cursor: isUpdating ? "default" : "pointer",
+                  fontSize: 14, fontWeight: 800, cursor: (isUpdating || approveBlocked) ? "default" : "pointer",
                 }}
               >
                 {isUpdating ? "⏳" : "✅ אשר ושגר"}
@@ -692,10 +746,15 @@ export default function OperationsBoard({ user, isAdmin, onOpenDreamBotChat }) {
   // status flip has already committed server-side regardless of whether the
   // group card itself went out. Reflect that locally either way, but warn
   // distinctly if the card send failed so staff know to check the group.
-  const approveTask = useCallback(async (taskId, editedText) => {
+  const approveTask = useCallback(async (taskId, editedText, editedRoomNumber) => {
     setUpdatingId(taskId);
     const { data, error } = await supabase.functions.invoke("notify-manual-task", {
-      body: { taskId, editedDescription: editedText, reviewerId: user?.id ?? null },
+      body: {
+        taskId,
+        editedDescription: editedText,
+        editedRoomNumber: editedRoomNumber?.trim() || undefined,
+        reviewerId: user?.id ?? null,
+      },
     });
     if (error) {
       showToast("err", "שגיאה באישור: " + error.message);
@@ -705,7 +764,7 @@ export default function OperationsBoard({ user, isAdmin, onOpenDreamBotChat }) {
       showToast("err", "הבקשה כבר טופלה ע״י מישהו אחר");
       fetchTasks();
     } else {
-      applyTaskRowUpdate({ id: taskId, status: "open", description: editedText });
+      applyTaskRowUpdate({ id: taskId, status: "open", description: editedText, room_number: editedRoomNumber?.trim() || undefined });
       if (data?.notified === false) {
         showToast("err", `הבקשה אושרה, אך השליחה לקבוצה נכשלה (${data?.reason ?? "שגיאה"}) — בדקו ידנית`);
       } else {

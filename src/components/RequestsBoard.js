@@ -22,6 +22,7 @@ const TYPE_META = {
   financial_issue:     { label: "💳 בעיית חיוב",    bg: "#FFF0EE", color: "#C0392B" },
   spa_request:         { label: "💆 בקשת ספא",       bg: "#E8F0FE", color: "#1A56DB" },
   arrival_eta:         { label: "🕐 שעת הגעה",       bg: "#F3EEFF", color: "#5B3CC4" },
+  missing_departure_date: { label: "⚠️ חסר עזיבה",  bg: "#FEF2F2", color: "#B91C1C" },
 };
 // FAIL VISIBLE (CLAUDE.md §0.3): an unrecognized alert_type must show as a
 // visible warning, not silently fall back to a "looks fine" label.

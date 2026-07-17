@@ -35,6 +35,7 @@ const STATUS_SORT_ORDER = {
 
 export const AUTO_CHECKIN_LOCAL_HOUR = 15;
 export const AUTO_CHECKOUT_LOCAL_HOUR = 11;
+export const LATE_CHECKOUT_EXTENSION_UNTIL = "12:00";
 export const AUTO_CHECKOUT_DAYPASS_LOCAL_HOUR = 19;
 const AUTO_CHECKIN_ELIGIBLE = new Set(["pending", "expected", "room_ready"]);
 const AUTO_CHECKOUT_ELIGIBLE = new Set(["checked_in", "room_ready", "expected", "pending"]);
@@ -71,11 +72,28 @@ export function shouldAutoPromoteToCheckedIn(_guest, _now = new Date()) {
   return false;
 }
 
-/** Effective status for UI/routing — 11:00 auto checkout on departure day.
- * Auto check-in promotion is disabled — see shouldAutoPromoteToCheckedIn. */
-export function resolveEffectiveGuestStatus(guest, now = new Date()) {
-  if (shouldAutoCheckoutGuest(guest, now)) return "checked_out";
+/** DB status only — no virtual checkout (housekeeping WA is sole checkout writer). */
+export function resolveEffectiveGuestStatus(guest, _now = new Date()) {
   return guest?.status ?? null;
+}
+
+export function getLateCheckoutUntil(guest) {
+  const until = guest?.guest_profile?.stay?.late_checkout_until;
+  return typeof until === "string" && /^\d{2}:\d{2}$/.test(until) ? until : null;
+}
+
+/** Israel-local hour when departure-day checkout prompt fires (11:00 or extension). */
+export function getDepartureCheckoutPromptHour(guest) {
+  const late = getLateCheckoutUntil(guest);
+  if (late) {
+    const h = parseInt(late.split(":")[0], 10);
+    if (!Number.isNaN(h)) return h;
+  }
+  return AUTO_CHECKOUT_LOCAL_HOUR;
+}
+
+export function isPastDepartureCheckoutPromptGateway(guest, now = new Date()) {
+  return israelLocalHour(now) >= getDepartureCheckoutPromptHour(guest);
 }
 
 /** Guest is still within arrival_date..departure_date window (inclusive start). */
@@ -97,7 +115,8 @@ export function isActiveCheckinRosterGuest(guest, now = new Date()) {
   if (guest.departure_date && guest.departure_date < today) return false;
 
   if (effective === "checked_in") {
-    return isWithinStayWindow(guest, today);
+    if (guest.arrival_date && guest.arrival_date > today) return false;
+    return true;
   }
 
   if (guest.arrival_date === today && AUTO_CHECKIN_ELIGIBLE.has(guest.status)) {
@@ -107,31 +126,30 @@ export function isActiveCheckinRosterGuest(guest, now = new Date()) {
   return false;
 }
 
-/** Post-stay archive tab — departed or past 11:00 on departure day. */
-export function isPostStayArchiveGuest(guest, today = israelTodayStr(), now = new Date()) {
+/** Post-stay archive tab — explicit checkout or stay ended without check-in. */
+export function isPostStayArchiveGuest(guest, today = israelTodayStr()) {
   if (!guest) return false;
   if (guest.status === "checked_out") return true;
-  if (shouldAutoCheckoutGuest(guest, now)) return true;
-  if (guest.departure_date && guest.departure_date < today) return true;
+  if (guest.departure_date && guest.departure_date < today && guest.status !== "checked_in") {
+    return true;
+  }
   return false;
 }
 
-export function shouldAutoCheckoutGuest(guest, now = new Date()) {
-  if (guest.status === "checked_out" || guest.status === "cancelled") return false;
-  if (!AUTO_CHECKOUT_ELIGIBLE.has(guest.status)) return false;
+/** Suite still checked_in on/past departure day after 11:00 (or extension) — staff prompt only. */
+export function needsDepartureCheckoutPrompt(guest, now = new Date()) {
+  if (!guest || guest.status !== "checked_in") return false;
+  if (isDayPassRoomType(guest.room_type)) return false;
   const today = israelTodayStr();
-
-  if (isDayPassRoomType(guest.room_type)) {
-    if (!guest.arrival_date) return false;
-    if (guest.arrival_date < today) return true;
-    if (guest.arrival_date === today) return isPastDayPassAutoCheckoutGateway(now);
-    return false;
-  }
-
-  if (!guest?.departure_date) return false;
+  if (!guest.departure_date) return false;
+  if (guest.departure_date > today) return false;
   if (guest.departure_date < today) return true;
-  if (guest.departure_date === today) return isPastAutoCheckoutGateway(now);
-  return false;
+  return isPastDepartureCheckoutPromptGateway(guest, now);
+}
+
+/** @deprecated DB auto-checkout disabled — use needsDepartureCheckoutPrompt for UI. */
+export function shouldAutoCheckoutGuest(guest, now = new Date()) {
+  return needsDepartureCheckoutPrompt(guest, now);
 }
 
 /** Map arrival_date → best צ'ק-אין timeline scope (GuestDashboard → GuestsPage). */

@@ -1,4 +1,5 @@
 // Unified check-in sync — guests.status + room_status stay aligned (§0.5).
+// Deno mirror: supabase/functions/_shared/suiteCheckinSync.ts (keep in sync).
 
 export function resolveGuestRoomId(guest) {
   return String(guest?.room ?? guest?.suite_name ?? "").trim();

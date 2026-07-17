@@ -29,6 +29,7 @@ import {
   resolveSuiteRoomDisplayLabel,
   syncGuestSuiteRoomsFromSelection,
 } from "../utils/suiteRoomReady";
+import { ensureMissingDepartureAlert, isMissingSuiteDepartureDate } from "../utils/departureDateGuard";
 
 // ── Smart room_type inference ─────────────────────────────────────────────────
 // Deterministic mapping from the room <select> value to DB room_type.
@@ -141,6 +142,18 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
       showToast?.("err", "תאריך עזיבה לא יכול להיות לפני תאריך ההגעה");
       return;
     }
+    const roomLabelsPre = splitCombinedRoomLabel(buildCombinedRoomLabel(selectedRooms));
+    const isDayGuestRoomPre =
+      roomLabelsPre.some(isDayPackageRoom)
+      || form.room_type === "day_guest"
+      || form.room_type === "premium_day_guest";
+    const isSuiteGuestPre = !isDayGuestRoomPre && (
+      form.room_type === "suite" || roomLabelsPre.some((r) => r && !isDayPackageRoom(r))
+    );
+    if (isSuiteGuestPre && form.arrival_date && !form.departure_date) {
+      showToast?.("err", "תאריך עזיבה חובה לאורח סוויטה");
+      return;
+    }
     setSaving(true);
     try {
       let spaDate = form.spa_date || null;
@@ -208,6 +221,9 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
         showToast?.("err", `אורח נשמר — סנכרון suite_rooms נכשל: ${syncResult.error}`);
       } else {
         showToast?.("ok", isEdit ? "✅ פרופיל אורח עודכן בהצלחה" : "✅ אורח נוסף בהצלחה");
+      }
+      if (savedGuest?.id) {
+        await ensureMissingDepartureAlert(supabase, savedGuest);
       }
       onClose?.();
     } catch (e) {

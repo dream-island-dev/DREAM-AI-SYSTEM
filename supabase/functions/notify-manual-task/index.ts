@@ -61,9 +61,10 @@ serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
   try {
-    const { taskId, editedDescription, reviewerId } = (await req.json().catch(() => ({}))) as {
+    const { taskId, editedDescription, editedRoomNumber, reviewerId } = (await req.json().catch(() => ({}))) as {
       taskId?: string;
       editedDescription?: string;
+      editedRoomNumber?: string;
       reviewerId?: string;
     };
     if (!taskId) {
@@ -105,6 +106,7 @@ serve(async (req: Request) => {
           reviewed_at:    dispatchedAt,
           sla_deadline:   slaDeadline,
           ...(editedDescription?.trim() ? { description: editedDescription.trim() } : {}),
+          ...(editedRoomNumber?.trim() ? { room_number: editedRoomNumber.trim() } : {}),
         })
         .eq("id", taskId)
         .eq("status", "pending_approval") // guard — succeeds only if still pending

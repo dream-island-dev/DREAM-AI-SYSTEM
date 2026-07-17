@@ -12,6 +12,15 @@ import { getProfileDisplayChips, hasMeaningfulProfile } from "../data/guestProfi
 import GuestJourneyTimeline from "./GuestJourneyTimeline";
 import GuestProfileModal from "./GuestProfileModal";
 import GuestAttentionBadge from "./GuestAttentionBadge";
+import MissingDepartureBadge from "./MissingDepartureBadge";
+import { fetchGuestSuiteRooms } from "../utils/guestStaySummary";
+import {
+  mergeGuestProfileSelectedRoom,
+  resolveEffectiveSelectedSuiteRoom,
+  suiteRoomCanonicalLabel,
+  writeSelectedSuiteRoomSession,
+} from "../utils/guestSelectedSuiteRoom";
+import { ensureMissingDepartureAlert } from "../utils/departureDateGuard";
 
 const COLOR_FLAGS = [
   { value: "", label: "ללא סימון", bg: "var(--ivory)", fg: "var(--text-muted)" },
@@ -32,6 +41,7 @@ const ALERT_TYPE_META = {
   date_change_request: { label: "🗓️ שינוי תאריך", bg: "#E8F0FE", color: "#1A56DB" },
   request:             { label: "📝 בקשה",         bg: "#FFF5E8", color: "#B5600A" },
   upsell_opportunity:  { label: "🌴 מהפורטל",     bg: "#E8F5EF", color: "#1A7A4A" },
+  missing_departure_date: { label: "⚠️ חסר עזיבה", bg: "#FEF2F2", color: "#B91C1C" },
 };
 
 function alertTypeMeta(alertType) {
@@ -116,6 +126,9 @@ export default function GuestContextDrawer({
   const [loadingAlerts, setLoadingAlerts] = useState(false);
   const [showResolvedAlerts, setShowResolvedAlerts] = useState(false);
   const [auditOpen, setAuditOpen] = useState(false);
+  const [suiteRooms, setSuiteRooms] = useState([]);
+  const [selectedSuiteRoom, setSelectedSuiteRoom] = useState("");
+  const [roomPickSaving, setRoomPickSaving] = useState(false);
 
   const showToast = useCallback((msg, isErr = false) => {
     setToast({ msg, isErr });
@@ -169,6 +182,18 @@ export default function GuestContextDrawer({
       };
       setGuest(row);
       setInternalNotes(row.internal_notes ?? "");
+      setSelectedSuiteRoom(resolveEffectiveSelectedSuiteRoom({
+        guestProfile: row.guest_profile,
+        guestId: row.id,
+        phone: row.phone || contact.phone,
+        fallbackRoom: row.room,
+      }) ?? "");
+      if (row.id) {
+        fetchGuestSuiteRooms(supabase, row).then(setSuiteRooms).catch(() => setSuiteRooms([]));
+        ensureMissingDepartureAlert(supabase, row).catch(() => {});
+      } else {
+        setSuiteRooms([]);
+      }
 
       setQueueRows([]);
       if (row.id && supabase) {
@@ -224,7 +249,7 @@ export default function GuestContextDrawer({
       .eq("id", guest.id)
       .select(
         "id, name, phone, room, room_type, status, arrival_date, departure_date, " +
-        "claimed_by, claimed_at, automation_muted, staff_color_label, internal_notes, guest_notes"
+        "claimed_by, claimed_at, automation_muted, staff_color_label, internal_notes, guest_notes, guest_profile"
       )
       .maybeSingle();
     if (error) throw error;
@@ -275,6 +300,28 @@ export default function GuestContextDrawer({
     const claim = guest?.claimed_by !== user?.id;
     await onToggleClaim(contact, claim);
     await loadData();
+  };
+
+  const suiteRoomLabels = [...new Set((suiteRooms ?? []).map(suiteRoomCanonicalLabel).filter(Boolean))];
+  const showSuiteRoomPicker = suiteRoomLabels.length > 1;
+
+  const handleSuiteRoomPick = async (roomLabel) => {
+    if (!guest?.id) return;
+    setSelectedSuiteRoom(roomLabel);
+    writeSelectedSuiteRoomSession(guest.id, guest.phone, roomLabel);
+    setRoomPickSaving(true);
+    try {
+      const nextProfile = mergeGuestProfileSelectedRoom(guest.guest_profile, roomLabel);
+      const updated = await patchGuest({ guest_profile: nextProfile });
+      if (updated) {
+        onGuestUpdated?.({ ...updated, selectedSuiteRoom: roomLabel });
+        showToast(roomLabel ? `✓ חדר פעיל: ${roomLabel}` : "✓ בחירת חדר נוקתה");
+      }
+    } catch (e) {
+      showToast(e?.message ?? "שגיאה בשמירת חדר", true);
+    } finally {
+      setRoomPickSaving(false);
+    }
   };
 
   const handleProfileUpdated = (updated) => {
@@ -412,6 +459,7 @@ export default function GuestContextDrawer({
                     padding: "2px 7px", borderRadius: 8, fontWeight: 700,
                   }}>✓ אישר הגעה</span>
                 )}
+                {guest && <MissingDepartureBadge guest={guest} style={{ background: "rgba(255,255,255,0.2)", color: "#fff", border: "1px solid rgba(255,255,255,0.35)" }} />}
               </div>
               <div style={{ fontSize: 12, opacity: 0.85, marginTop: 4, direction: "ltr", textAlign: "right" }}>
                 {guest?.phone || contact?.phone}
@@ -461,8 +509,34 @@ export default function GuestContextDrawer({
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
                       <span style={{ color: "var(--text-muted)" }}>עזיבה</span>
-                      <strong>{fmtDate(guest?.departure_date)}</strong>
+                      <strong style={{ color: !guest?.departure_date && isSuiteGuestProfile(guest) ? "#B91C1C" : undefined }}>
+                        {fmtDate(guest?.departure_date)}
+                      </strong>
                     </div>
+                    {showSuiteRoomPicker && (
+                      <div style={{ marginTop: 8, paddingTop: 10, borderTop: "1px dashed var(--border)" }}>
+                        <div style={{ fontSize: 12, fontWeight: 800, color: "var(--gold-dark)", marginBottom: 6 }}>
+                          🚪 חדר פעיל לבקשות / קריאות
+                        </div>
+                        <select
+                          value={selectedSuiteRoom}
+                          disabled={roomPickSaving}
+                          onChange={(e) => handleSuiteRoomPick(e.target.value)}
+                          style={{
+                            width: "100%", padding: "10px 12px", borderRadius: 10,
+                            border: "1px solid var(--border)", fontFamily: "Heebo, sans-serif", fontSize: 14,
+                          }}
+                        >
+                          <option value="">— בחר סוויטה —</option>
+                          {suiteRoomLabels.map((label) => (
+                            <option key={label} value={label}>{label}</option>
+                          ))}
+                        </select>
+                        <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>
+                          בחירה זו תישמר לשיחה הנוכחית ותעבור לקריאות תפעול.
+                        </div>
+                      </div>
+                    )}
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
                       <span style={{ color: "var(--text-muted)" }}>סטטוס שהייה</span>
                       {timingBadge ? (

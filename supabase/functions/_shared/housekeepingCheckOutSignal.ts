@@ -1,4 +1,5 @@
 // Housekeeping group "Co N" / "N co" → guests.checked_out + room_status.לניקיון.
+// Turnover step 1 of 4 — next: N✅ (ממתין לאישור) → manager approve → צק אין.
 
 import type { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { resolveSuiteFromEzgoFields } from "./guestRoomResolve.ts";

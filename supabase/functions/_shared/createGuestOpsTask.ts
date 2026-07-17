@@ -16,6 +16,7 @@
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { resolveGuestOpsDepartment, guessGuestOpsSlaCategory } from "./automationSchedule.ts";
+import { isAmbiguousCombinedRoomLabel } from "./guestSelectedSuiteRoom.ts";
 import { resolveGuestRoomLabel } from "./guestRoomResolve.ts";
 
 export interface CreateGuestOpsTaskArgs {
@@ -104,7 +105,8 @@ export async function createGuestOpsTask(
   const resolvedRoom = await resolveGuestRoomLabel(supabase, {
     guestId, phone, roomHint: room, guestName,
   });
-  const roomForDb = resolvedRoom.startsWith("TBD") ? null : resolvedRoom;
+  let roomForDb = resolvedRoom.startsWith("TBD") ? null : resolvedRoom;
+  if (roomForDb && isAmbiguousCombinedRoomLabel(roomForDb)) roomForDb = null;
 
   const { data: task, error: insertErr } = await supabase
     .from("tasks")

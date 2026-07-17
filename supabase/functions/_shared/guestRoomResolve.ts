@@ -2,6 +2,7 @@
 // Mirrors src/data/suiteRegistry.js — duplicated at the Deno boundary (CLAUDE.md §3).
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { isAmbiguousCombinedRoomLabel, readInboxSelectedSuiteRoom } from "./guestSelectedSuiteRoom.ts";
 
 const SUITE_REGISTRY = [
   "ג׳ספר 1", "ג׳ספר 2", "ג׳ספר 3", "ג׳ספר 4", "ג׳ספר 5", "ג׳ספר 6",
@@ -113,12 +114,15 @@ export async function resolveGuestRoomLabel(
 
   const { data: guestRow } = await supabase
     .from("guests")
-    .select("room, arrival_date")
+    .select("room, arrival_date, guest_profile")
     .eq("id", args.guestId)
     .maybeSingle();
 
+  const selectedInbox = readInboxSelectedSuiteRoom(guestRow?.guest_profile);
+  if (selectedInbox) return selectedInbox;
+
   const fromGuest = (guestRow?.room as string | null | undefined)?.trim();
-  if (fromGuest) return fromGuest;
+  if (fromGuest && !isAmbiguousCombinedRoomLabel(fromGuest)) return fromGuest;
 
   const variants = phoneLookupVariants(args.phone);
   if (!variants.length) return formatGuestOpsRoomLabel(null, args.guestName);

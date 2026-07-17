@@ -42,6 +42,7 @@ import {
 } from "../utils/detailedReservationParser";
 import PriceDiscrepancyModal from "./PriceDiscrepancyModal";
 import { isSuiteGuestProfile } from "../utils/guestTiming";
+import { validateSuiteProfilesDeparture, ensureMissingDepartureAlert } from "../utils/departureDateGuard";
 import { resolveEzgoHtmlFromUpload, looksLikeEml } from "../utils/ezgoEmailHtml";
 
 // Sorted, joined header signature — matches import_mapping_memory.header_signature (migration 049).
@@ -1999,6 +2000,10 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
               : (g.hasDayBooking ? "day_use" : "suite");
             const isSuiteProfile = profileType === "suite";
             const profileArrivalDate = c.arrivalDate ?? g.arrivalDate ?? null;
+            const isDay = !isSuiteProfile;
+            const departureDate = isDay
+              ? profileArrivalDate
+              : (_addNights(profileArrivalDate, nights) ?? null);
             return {
               // Staff edit in grid wins at sync time (same rule as room, see
               // _resolveProfileRoomDisplay) — a phone typed into the DOCS2 grid
@@ -2007,7 +2012,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
               guestPhone:      (edited.guestPhone ?? c.guestPhone ?? g.guestPhone) || null,
               guestName:       edited.guestName ?? c.guestName ?? g.guestName ?? "",
               arrivalDate:     profileArrivalDate,
-              departureDate:   _addNights(profileArrivalDate, nights),
+              departureDate,
               orderNumber:     c.orderNumber ?? [...(g.orderNumbers ?? [])][0] ?? null,
               hasSuite:        isSuiteProfile,
               isDayGuest:      !isSuiteProfile,
@@ -2055,6 +2060,19 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
             slot.paymentAmount = (slot.paymentAmount || 0) + Number(profile.paymentAmount);
           }
           if ((profile.nights || 0) > (slot.nights || 0)) slot.nights = profile.nights;
+        }
+
+        const departureBlocked = validateSuiteProfilesDeparture(profiles);
+        if (departureBlocked.length > 0) {
+          const sample = departureBlocked
+            .slice(0, 3)
+            .map((b) => `${b.name} (הגעה ${b.arrivalDate}, לילות: ${b.nights ?? "?"})`)
+            .join(" · ");
+          showToast(
+            "err",
+            `חסר תאריך עזיבה ל-${departureBlocked.length} אורחי סוויטה — בדוק עמודת לילות / NIGHTS / iNights. ${sample}`,
+          );
+          return;
         }
 
         const indicesByGuestKey = _buildIndicesByGuestKey(syncIndices, merged, mergedCandidates, gridByProfileIdx);
