@@ -8,7 +8,7 @@ import GuestsPage from "./components/GuestsPage";
 import ShiftGenerator from "./components/ShiftGenerator";
 import ShiftScheduleTab from "./components/ShiftScheduleTab";
 import EmployeesPage from "./components/EmployeesPage";
-import { isAdminUser, isSuperAdmin, loadDepartments } from "./utils/admin";
+import { isAdminUser, isSuperAdmin, loadDepartments, GOOGLE_AUTH_WHITELIST } from "./utils/admin";
 import { canAccessRoute, canSeeNavItem, filterNavItemsForUser } from "./utils/auth";
 import OritCustomerServicePanel from "./components/OritCustomerServicePanel";
 import { consumeStaffDeepLink } from "./utils/staffDeepLink";
@@ -970,8 +970,7 @@ const css = `
 // COMPONENTS
 // ============================================================
 
-// Only these Google accounts may use Google Sign-In — everyone else is blocked.
-const GOOGLE_WHITELIST = ["tzalamnadlan@gmail.com", "promote7il@gmail.com"];
+// Google Sign-In — whitelist lives in utils/admin.js (GOOGLE_AUTH_WHITELIST).
 
 function LoginPage({ onLogin }) {
   const [email, setEmail] = useState("");
@@ -985,7 +984,7 @@ function LoginPage({ onLogin }) {
       const profile = decodeJwt(cred.credential);
       const gEmail = (profile.email || "").toLowerCase();
 
-      if (!GOOGLE_WHITELIST.includes(gEmail)) {
+      if (!GOOGLE_AUTH_WHITELIST.includes(gEmail)) {
         setError("✕ חשבון גוגל זה אינו מורשה במערכת. נא לפנות למנהל לרישום מסודר.");
         return;
       }

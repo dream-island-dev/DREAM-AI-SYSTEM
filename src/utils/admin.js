@@ -4,15 +4,32 @@
 // Client-side checks below mirror that logic for mock auth / instant UI.
 //
 // OWNER MODEL:
-//   tzalamnadlan@gmail.com  → super_admin (undisputed owner, manages everyone)
-//   promote7il@gmail.com    → admin       (legacy account, demoted from owner)
-//   everyone else           → staff       (default; super-admin can promote)
+//   tzalamnadlan@gmail.com  → super_admin (owner)
+//   mikeka13@gmail.com      → super_admin (co-owner)
+//   promote7il@gmail.com    → admin       (legacy)
+//   everyone else           → staff       (promotable by super_admin)
 
 /** The single, undisputed Super-Admin (owner). */
 export const SUPER_ADMIN_EMAIL = "tzalamnadlan@gmail.com";
 
-/** Emails that always receive at least the 'admin' tag (besides the owner). */
+/** Co-owner / system admin — same privileges as owner in UI + DB trigger. */
+export const CO_SUPER_ADMIN_EMAIL = "mikeka13@gmail.com";
+
+/** Emails allowed to use Google Sign-In on the login page (must exist in auth.users). */
+export const GOOGLE_AUTH_WHITELIST = [
+  SUPER_ADMIN_EMAIL,
+  CO_SUPER_ADMIN_EMAIL,
+  "promote7il@gmail.com",
+];
+
+/** Emails that always receive at least the 'admin' tag (besides super_admins). */
 export const ADMIN_EMAILS = ["promote7il@gmail.com"];
+
+const normalize = (email) => (email ?? "").trim().toLowerCase();
+
+const SUPER_ADMIN_EMAILS = new Set(
+  [SUPER_ADMIN_EMAIL, CO_SUPER_ADMIN_EMAIL].map(normalize),
+);
 
 /**
  * @deprecated kept for backwards-compat with older imports.
@@ -26,8 +43,6 @@ export const DEFAULT_DEPARTMENTS = [
 
 const DEPT_KEY = "di_departments";
 
-const normalize = (email) => (email ?? "").trim().toLowerCase();
-
 /** Returns true if the user has admin or super_admin privileges */
 export function isAdminUser(user) {
   if (!user) return false;
@@ -35,7 +50,7 @@ export function isAdminUser(user) {
   return (
     user.role === "admin" ||
     user.role === "super_admin" ||
-    email === SUPER_ADMIN_EMAIL ||
+    SUPER_ADMIN_EMAILS.has(email) ||
     ADMIN_EMAILS.includes(email)
   );
 }
@@ -43,10 +58,8 @@ export function isAdminUser(user) {
 /** Returns true ONLY for super_admin (the owner — can manage other users) */
 export function isSuperAdmin(user) {
   if (!user) return false;
-  return (
-    user.role === "super_admin" ||
-    normalize(user.email) === SUPER_ADMIN_EMAIL
-  );
+  const email = normalize(user.email);
+  return user.role === "super_admin" || SUPER_ADMIN_EMAILS.has(email);
 }
 
 /** Load departments from localStorage (falls back to defaults) */
