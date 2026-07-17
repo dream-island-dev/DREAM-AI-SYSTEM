@@ -2422,7 +2422,7 @@ export default function App({ initialPage = "dashboard" }) {
       case "bot_config":
         return guardPage(
           "bot_config",
-          <BotConfigPanel user={user} />
+          <BotConfigPanel user={user} onNavigate={setActivePage} />
         );
       case "bot_settings":
         return guardPage(

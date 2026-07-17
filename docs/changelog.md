@@ -1,3 +1,5 @@
+2026-07-17 | BotConfigPanel KB-source banner + spa hint in BotSettings | When `bot_settings.knowledge_base` is non-empty, «ידע המלון» shows banner + link to מוח הבוט; DEFAULT_KB_HINT includes spa booking example. Frontend-only (not deployed).
+
 2026-07-17 | Brain health card in BotSettings + on-demand hallucination audit | 🩺 card: audit status (`bot_config` `guest_hallucination_audit_*`), KB↔bot_config conflict count, KB presence; «הרץ בדיקה עכשיו» → `whatsapp-cron` body `{audit:true}` (functions.invoke can't pass query) — audit-only early return BEFORE `CRON_ENABLED` kill switch (zero sends, never triggers dispatch off-schedule); `?audit=1` URL still works; Sunday auto-run unchanged. Deploy: `whatsapp-cron` + frontend.
 
 2026-07-17 | Housekeeping check-in ack — silence already_checked_in | `already_checked_in` → no ℹ️ to WA group; quiet `room_status→תפוס` sync + log only. Deploy: `whapi-webhook`.

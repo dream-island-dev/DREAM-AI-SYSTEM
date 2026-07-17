@@ -140,13 +140,14 @@ function ConfigRow({ item, onChange, placeholder }) {
 }
 
 // ── Main component ───────────────────────────────────────────────────────────
-export default function BotConfigPanel({ user }) {
+export default function BotConfigPanel({ user, onNavigate }) {
   const [activeTab, setActiveTab] = useState("persona");
   const [config,    setConfig]    = useState({});   // key → item
   const [loading,   setLoading]   = useState(true);
   const [saving,    setSaving]    = useState(false);
   const [saved,     setSaved]     = useState(false);
   const [toast,     setToast]     = useState(null);
+  const [brainKbFilled, setBrainKbFilled] = useState(false);
 
   const showToast = useCallback((type, msg) => {
     setToast({ type, msg });
@@ -157,11 +158,10 @@ export default function BotConfigPanel({ user }) {
   const fetchConfig = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) { setLoading(false); return; }
     setLoading(true);
-    const { data, error } = await supabase
-      .from("bot_config")
-      .select("*")
-      .order("category")
-      .order("config_key");
+    const [{ data, error }, { data: brainRow }] = await Promise.all([
+      supabase.from("bot_config").select("*").order("category").order("config_key"),
+      supabase.from("bot_settings").select("knowledge_base").eq("id", 1).maybeSingle(),
+    ]);
     if (error) {
       showToast("err", "שגיאה בטעינת הגדרות: " + error.message);
     } else {
@@ -169,6 +169,7 @@ export default function BotConfigPanel({ user }) {
       (data ?? []).forEach(row => { map[row.config_key] = { ...row }; });
       setConfig(map);
     }
+    setBrainKbFilled(!!(brainRow?.knowledge_base ?? "").trim());
     setLoading(false);
   }, [showToast]);
 
@@ -320,6 +321,40 @@ export default function BotConfigPanel({ user }) {
             </div>
           ) : (
             <>
+              {activeTab === "knowledge" && brainKbFilled && (
+                <div
+                  role="status"
+                  style={{
+                    marginBottom: 20,
+                    padding: "12px 16px",
+                    borderRadius: 10,
+                    background: "rgba(245, 158, 11, 0.10)",
+                    border: "1px solid rgba(245, 158, 11, 0.45)",
+                    fontSize: 13,
+                    lineHeight: 1.7,
+                    color: "#92400e",
+                  }}
+                >
+                  <strong>ℹ️ בסיס ידע פעיל ב«מוח הבוט»</strong>
+                  {" — "}
+                  עובדות ושעות בצ'אט נלקחות בעיקר מ<strong>בסיס הידע</strong> שם.
+                  עריכת שעות כאן עלולה ליצור סתירה (תופיע אזהרה במוח הבוט).
+                  {typeof onNavigate === "function" && (
+                    <>
+                      {" "}
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => onNavigate("bot_settings")}
+                        style={{ marginTop: 8, padding: "4px 10px", fontSize: 12 }}
+                        title="פתח מסך מוח הבוט לעריכת בסיס הידע"
+                      >
+                        🧠 עבור למוח הבוט
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
               {activeTab === "knowledge" && arrivalHourItems.length > 0 && (
                 <ArrivalHoursPanel items={arrivalHourItems} onChange={handleChange} />
               )}
