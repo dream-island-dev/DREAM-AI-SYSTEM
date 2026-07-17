@@ -63,18 +63,21 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     if (!isSupabaseConfigured || !supabase) { setLoading(false); return; }
 
-    supabase.auth.getSession().then(async ({ data: { session: s } }) => {
+    supabase.auth.getSession().then(({ data: { session: s } }) => {
       setSession(s);
-      if (s) { scheduleRefresh(s); await refreshAal(); }
+      if (s) {
+        scheduleRefresh(s);
+        setTimeout(() => { refreshAal(); }, 0);
+      }
       setLoading(false);
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, s) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, s) => {
       setSession(s);
       if (s) {
         setSessionWarning(false);
         scheduleRefresh(s);
-        await refreshAal();
+        setTimeout(() => { refreshAal(); }, 0);
       } else {
         setAal({ currentLevel: null, nextLevel: null });
         if (refreshTimer.current) clearTimeout(refreshTimer.current);

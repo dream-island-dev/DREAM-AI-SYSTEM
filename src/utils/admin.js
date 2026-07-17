@@ -15,17 +15,22 @@ export const SUPER_ADMIN_EMAIL = "tzalamnadlan@gmail.com";
 /** Co-owner / system admin — same privileges as owner in UI + DB trigger. */
 export const CO_SUPER_ADMIN_EMAIL = "mikeka13@gmail.com";
 
+const normalize = (email) => (email ?? "").trim().toLowerCase();
+
 /** Emails allowed to use Google Sign-In on the login page (must exist in auth.users). */
 export const GOOGLE_AUTH_WHITELIST = [
   SUPER_ADMIN_EMAIL,
   CO_SUPER_ADMIN_EMAIL,
   "promote7il@gmail.com",
-];
+].map(normalize);
+
+/** Client-side gate before signInWithIdToken — case-insensitive. */
+export function isGoogleAuthAllowed(email) {
+  return GOOGLE_AUTH_WHITELIST.includes(normalize(email));
+}
 
 /** Emails that always receive at least the 'admin' tag (besides super_admins). */
 export const ADMIN_EMAILS = ["promote7il@gmail.com"];
-
-const normalize = (email) => (email ?? "").trim().toLowerCase();
 
 const SUPER_ADMIN_EMAILS = new Set(
   [SUPER_ADMIN_EMAIL, CO_SUPER_ADMIN_EMAIL].map(normalize),

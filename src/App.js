@@ -8,7 +8,7 @@ import GuestsPage from "./components/GuestsPage";
 import ShiftGenerator from "./components/ShiftGenerator";
 import ShiftScheduleTab from "./components/ShiftScheduleTab";
 import EmployeesPage from "./components/EmployeesPage";
-import { isAdminUser, isSuperAdmin, loadDepartments, GOOGLE_AUTH_WHITELIST } from "./utils/admin";
+import { isAdminUser, isSuperAdmin, loadDepartments, isGoogleAuthAllowed } from "./utils/admin";
 import { canAccessRoute, canPerform, canSeeNavItem, filterNavItemsForUser } from "./utils/auth";
 import OperationalDashboard from "./components/OperationalDashboard";
 import OritCustomerServicePanel from "./components/OritCustomerServicePanel";
@@ -973,37 +973,55 @@ const css = `
 // COMPONENTS
 // ============================================================
 
-// Google Sign-In — whitelist lives in utils/admin.js (GOOGLE_AUTH_WHITELIST).
+// Google Sign-In — whitelist lives in utils/admin.js (isGoogleAuthAllowed).
+
+function googleAuthErrorMessage(err) {
+  const m = (err?.message ?? "").toLowerCase();
+  if (m.includes("provider") && m.includes("not enabled")) {
+    return "ספק Google לא מופעל ב-Supabase — פנה למנהל.";
+  }
+  if (m.includes("audience") || m.includes("client_id") || m.includes("client id")) {
+    return "הגדרות Google OAuth לא תואמות (Client ID) — פנה למנהל.";
+  }
+  return err?.message ? `שגיאת התחברות: ${err.message}` : "שגיאה בהתחברות עם Google";
+}
 
 function LoginPage({ onLogin }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [googleReady, setGoogleReady] = useState(false);
+  const googleClientMissing = !process.env.REACT_APP_GOOGLE_CLIENT_ID;
 
   // אתחול כפתור Google Sign-In
   useEffect(() => {
+    if (googleClientMissing) return undefined;
+    let active = true;
     initGoogleSignIn(async (cred) => {
-      // Decode the JWT first so we can whitelist-check before any network call.
+      if (!active) return;
+      setError("");
       const profile = decodeJwt(cred.credential);
       const gEmail = (profile.email || "").toLowerCase();
 
-      if (!GOOGLE_AUTH_WHITELIST.includes(gEmail)) {
+      if (!isGoogleAuthAllowed(gEmail)) {
         setError("✕ חשבון גוגל זה אינו מורשה במערכת. נא לפנות למנהל לרישום מסודר.");
         return;
       }
 
-      // Whitelisted — exchange the Google ID token for a REAL Supabase session.
-      // App()'s onAuthStateChange then picks up the session and sets the user.
       if (isSupabaseConfigured && supabase) {
-        const { error } = await supabase.auth.signInWithIdToken({
+        const { error: authErr } = await supabase.auth.signInWithIdToken({
           provider: "google",
           token: cred.credential,
         });
-        if (!error) return; // onAuthStateChange handles setUser + profile load
-        console.error("signInWithIdToken failed → local fallback:", error.message);
+        if (authErr) {
+          console.error("signInWithIdToken failed:", authErr.message);
+          setError(googleAuthErrorMessage(authErr));
+          return;
+        }
+        return; // onAuthStateChange handles setUser + profile load
       }
 
-      // Fallback (offline/demo, or auth error): use decoded profile.
+      // Offline/demo only — no Supabase session.
       const name = profile.name || gEmail || "מנהל";
       const initials = name
         .split(" ")
@@ -1011,9 +1029,14 @@ function LoginPage({ onLogin }) {
         .join("")
         .slice(0, 2);
       onLogin({ id: Date.now(), name, role: "admin", email: gEmail, avatar: initials });
+    }).then(() => {
+      if (active) setGoogleReady(true);
+    }).catch(() => {
+      if (active) setError("לא ניתן לטעון את כפתור Google — נסה רענון או כניסה בסיסמה.");
     });
+    return () => { active = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [googleClientMissing]);
 
   const handleLogin = async () => {
     setError("");
@@ -1049,7 +1072,20 @@ function LoginPage({ onLogin }) {
         </div>
 
         {/* התחברות עם Google — לחשבונות מנהלים מורשים בלבד */}
-        <div className="gsi-wrap" id="gsi-button" />
+        {googleClientMissing ? (
+          <div className="login-error" style={{ marginBottom: 12 }}>
+            ⚠ כפתור Google לא זמין (חסר REACT_APP_GOOGLE_CLIENT_ID בבילד) — השתמש באימייל וסיסמה.
+          </div>
+        ) : (
+          <>
+            <div className="gsi-wrap" id="gsi-button" />
+            {!googleReady && (
+              <div style={{ fontSize: 12, color: "var(--text-muted)", textAlign: "center", marginBottom: 8 }}>
+                טוען כפתור Google...
+              </div>
+            )}
+          </>
+        )}
         <div className="login-or">או כניסה עם אימייל וסיסמה</div>
 
         <div className="login-field">
@@ -1722,16 +1758,25 @@ async function loadUserWithProfile(session, setUser) {
   const base = mapSupabaseUser(session);
   if (!base) return;
   try {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("profiles")
       .select("role, name, department, status, avatar, avatar_text, must_change_password, orit_cs_agent_access")
       .eq("id", base.id)
       .maybeSingle();
+    if (error) console.warn("[auth] profiles load:", error.message);
     setUser({ ...base, ...(data ?? {}) });
-  } catch {
-    // No profile row yet — use base (trigger will create it shortly)
+  } catch (e) {
+    console.warn("[auth] profiles load:", e?.message ?? e);
     setUser(base);
   }
+}
+
+/** Defer Supabase DB calls out of onAuthStateChange — avoids auth lock deadlock. */
+function scheduleLoadUserWithProfile(session, setUser) {
+  if (!session) return;
+  setTimeout(() => {
+    loadUserWithProfile(session, setUser);
+  }, 0);
 }
 
 // ============================================================
@@ -1946,14 +1991,15 @@ export default function App({ initialPage = "dashboard" }) {
     }
     // Restore session that already exists (survives F5)
     supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session) loadUserWithProfile(session, setUser);
+      if (session) scheduleLoadUserWithProfile(session, setUser);
       setIsLoading(false);
     });
-    // Keep state in sync with future sign-in / sign-out events
+    // Keep state in sync with future sign-in / sign-out events.
+    // Never await Supabase calls directly inside this callback (deadlock risk).
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (_event, session) => {
         if (session) {
-          loadUserWithProfile(session, setUser);
+          scheduleLoadUserWithProfile(session, setUser);
         } else {
           setUser(null);
         }

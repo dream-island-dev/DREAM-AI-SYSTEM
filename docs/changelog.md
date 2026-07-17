@@ -1,3 +1,5 @@
+2026-07-17 | Auth login deadlock fix | `onAuthStateChange` deferred `loadUserWithProfile` via `setTimeout(0)` (Supabase auth lock deadlock); Google login shows real errors (no mock fallback); `isGoogleAuthAllowed`; missing Google CLIENT_ID banner. Deploy: frontend.
+
 2026-07-17 | Operational Dashboard — live Supabase home | `OperationalDashboard.js`: tasks + guest_alerts + urgent signals (HITL, complaints, Inbox, missing ETA, Meta blocked); Realtime; sidebar ops badge from DB not localStorage. Deploy: frontend.
 
 2026-07-17 | Google login whitelist — mikeka13@gmail.com super_admin | `GOOGLE_AUTH_WHITELIST` in admin.js; migration 228 trigger; fixes blocked Google sign-in for existing co-owner account. Deploy: frontend + db push.
