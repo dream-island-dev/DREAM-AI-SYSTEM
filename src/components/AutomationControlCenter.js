@@ -96,7 +96,19 @@ const SKIP_REASON_LABELS = {
   awaiting_confirmation: "ממתין לאישור הגעה",
   stage_suppressed: "בוטל ידנית",
   missed_window: "פספס מועד — לשגר ידנית",
+  suite_checkout_survey_via_housekeeping: "נשלח אחרי Co מקבוצת חדרנות (לא לפי שעה קבועה)",
 };
+
+/** Suite post-checkout survey — delay after housekeeping «Co» (postCheckoutSurvey.ts). */
+const POST_CHECKOUT_SURVEY_DELAY_CONFIG_KEY = "post_checkout_survey_delay_minutes";
+const DEFAULT_POST_CHECKOUT_SURVEY_DELAY_MINUTES = 15;
+const POST_CHECKOUT_SURVEY_DELAY_MAX = 120;
+
+function clampPostCheckoutSurveyDelayMinutes(raw) {
+  const n = parseInt(String(raw ?? ""), 10);
+  if (!Number.isFinite(n) || n < 0) return DEFAULT_POST_CHECKOUT_SURVEY_DELAY_MINUTES;
+  return Math.min(n, POST_CHECKOUT_SURVEY_DELAY_MAX);
+}
 
 function queueYmd(d = new Date()) {
   return d.toISOString().slice(0, 10);
@@ -825,7 +837,7 @@ function MetaTemplatePreviewBox({ stage, metaTemplatesByName, previewTimings }) 
 function StageCard({
   stage, isOpen, onToggle, patchStage, scriptsByKey, saveSessionMessage,
   availableScriptKeys, addButton, updateButton, removeButton, convertToTemplate,
-  metaTemplatesByName,
+  metaTemplatesByName, postCheckoutSurveyDelayMinutes, savePostCheckoutSurveyDelay,
 }) {
   const nt = NODE_TYPE_META[stage.node_type] ?? NODE_TYPE_META.hybrid;
   const phaseLabel = JOURNEY_PHASE_LABELS[stage.journey_phase] ?? stage.journey_phase;
@@ -850,6 +862,19 @@ function StageCard({
 
   const [draftShabbatImageUrl, setDraftShabbatImageUrl] = useState(stage.session_message_image_url_shabbat ?? "");
   useEffect(() => { setDraftShabbatImageUrl(stage.session_message_image_url_shabbat ?? ""); }, [stage.session_message_image_url_shabbat]);
+
+  const [draftCheckoutDelay, setDraftCheckoutDelay] = useState(postCheckoutSurveyDelayMinutes);
+  useEffect(() => {
+    setDraftCheckoutDelay(postCheckoutSurveyDelayMinutes);
+  }, [postCheckoutSurveyDelayMinutes]);
+
+  const commitCheckoutDelay = () => {
+    const clamped = clampPostCheckoutSurveyDelayMinutes(draftCheckoutDelay);
+    setDraftCheckoutDelay(clamped);
+    if (clamped !== postCheckoutSurveyDelayMinutes) {
+      savePostCheckoutSurveyDelay(clamped);
+    }
+  };
 
   // Auto-fill state removed — arrival stages route deterministically via
   // DETERMINISTIC_ROUTE_STAGE_KEYS; no manual {{2}}/{{3}} injection needed.
@@ -882,8 +907,55 @@ function StageCard({
           {/* ── Timing ── */}
           <div>
             <label style={{ fontWeight: 600, fontSize: 13, marginBottom: 6, display: "block" }}>⏱ תזמון</label>
+            {stage.stage_key === "checkout_fb" && (
+              <div style={{
+                fontSize: 12.5, fontWeight: 700, color: "var(--black)", lineHeight: 1.55,
+                padding: "10px 12px", borderRadius: 10, marginBottom: 10,
+                background: "rgba(3,105,161,0.08)", border: "1px solid #0369A1",
+              }}>
+                🏨 סוויטות: הסקר נשלח אוטומטית אחרי <strong>Co</strong> מקבוצת «צ׳ק אין צ׳ק אאוט» —
+                לא לפי השעה הקבועה למטה. התור נבדק בכל ריצת cron (~15 דק׳).
+              </div>
+            )}
+            {stage.stage_key === "checkout_fb" && (
+              <div className="actr-timing-row" style={{
+                display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center",
+                marginBottom: 10, padding: "10px 12px", borderRadius: 10,
+                background: "rgba(201,169,110,0.1)", border: "1px solid var(--gold)",
+              }}>
+                <span style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 600 }}>
+                  השהייה אחרי Co מקבוצת חדרנות
+                </span>
+                <input
+                  type="number"
+                  min={0}
+                  max={POST_CHECKOUT_SURVEY_DELAY_MAX}
+                  step={5}
+                  value={draftCheckoutDelay}
+                  style={{ width: 80 }}
+                  title={`0–${POST_CHECKOUT_SURVEY_DELAY_MAX} דקות`}
+                  onChange={(e) => setDraftCheckoutDelay(e.target.value)}
+                  onBlur={commitCheckoutDelay}
+                />
+                <span style={{ fontSize: 12, color: "var(--text-muted)" }}>דקות (מומלץ: 30)</span>
+                <span style={{ fontSize: 11, color: "var(--text-muted)", fontStyle: "italic" }}>
+                  בפועל: ההשהייה + עד ~15 דק׳ עד ריצת cron הבאה
+                </span>
+              </div>
+            )}
             {stage.schedule_mode === "day_offset_with_time" && (
-              <div className="actr-timing-row" style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+              <div
+                className="actr-timing-row"
+                style={{
+                  display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center",
+                  opacity: stage.stage_key === "checkout_fb" ? 0.45 : 1,
+                }}
+              >
+                {stage.stage_key === "checkout_fb" && (
+                  <span style={{ fontSize: 11, color: "#92400E", fontWeight: 600, width: "100%" }}>
+                    ⏸ לא פעיל לסוויטות — נשאר לתאימות / שליחה ידנית בלבד
+                  </span>
+                )}
                 <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
                   {stage.anchor_event === "departure_date" ? "יחסית לתאריך עזיבה" : "יחסית לתאריך הגעה"}
                 </span>
@@ -1839,6 +1911,9 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
   const [toast, setToast] = useState(null);
   const [templateDraft, setTemplateDraft] = useState(null);
   const [metaTemplatesByName, setMetaTemplatesByName] = useState({});
+  const [postCheckoutSurveyDelayMinutes, setPostCheckoutSurveyDelayMinutes] = useState(
+    DEFAULT_POST_CHECKOUT_SURVEY_DELAY_MINUTES,
+  );
 
   // ── Live queue state ──────────────────────────────────────────────────────
   const [queueData, setQueueData] = useState(null);
@@ -1916,9 +1991,12 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
   const fetchStages = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) { setLoadingStages(false); return; }
     setLoadingStages(true);
-    const [{ data: stageRows, error: stageErr }, { data: scriptRows, error: scriptErr }] = await Promise.all([
+    const [{ data: stageRows, error: stageErr }, { data: scriptRows, error: scriptErr }, { data: delayRow }] = await Promise.all([
       supabase.from("automation_stages").select("*").order("sequence_order"),
       supabase.from("bot_scripts").select("script_key, message_text"),
+      supabase.from("bot_config").select("config_value")
+        .eq("config_key", POST_CHECKOUT_SURVEY_DELAY_CONFIG_KEY)
+        .maybeSingle(),
     ]);
     if (stageErr) showToast("err", "שגיאה בטעינת שלבים: " + stageErr.message);
     else {
@@ -1947,6 +2025,9 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
       setScriptsByKey(map);
       setAvailableScriptKeys((scriptRows ?? []).map((s) => s.script_key));
     }
+    setPostCheckoutSurveyDelayMinutes(
+      clampPostCheckoutSurveyDelayMinutes(delayRow?.config_value),
+    );
     setLoadingStages(false);
   }, [showToast]);
 
@@ -2037,6 +2118,20 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
       fetchQueue();
     }
   }, [showToast, fetchQueue]);
+
+  const savePostCheckoutSurveyDelay = useCallback(async (minutes) => {
+    const clamped = clampPostCheckoutSurveyDelayMinutes(minutes);
+    const { error } = await supabase
+      .from("bot_config")
+      .update({ config_value: String(clamped) })
+      .eq("config_key", POST_CHECKOUT_SURVEY_DELAY_CONFIG_KEY);
+    if (error) {
+      showToast("err", "שגיאה בשמירת השהיית סקר: " + error.message);
+      return;
+    }
+    setPostCheckoutSurveyDelayMinutes(clamped);
+    showToast("ok", `✅ סקר סוויטות: ${clamped} דקות אחרי Co`);
+  }, [showToast]);
 
   const probeWhapiDevice = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) return;
@@ -2616,6 +2711,8 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                         removeButton={removeButton}
                         convertToTemplate={convertToTemplate}
                         metaTemplatesByName={metaTemplatesByName}
+                        postCheckoutSurveyDelayMinutes={postCheckoutSurveyDelayMinutes}
+                        savePostCheckoutSurveyDelay={savePostCheckoutSurveyDelay}
                       />
                     ))}
                   </div>

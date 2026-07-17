@@ -1,3 +1,13 @@
+2026-07-17 | ACC Stage 5 — editable post-Co survey delay | `AutomationControlCenter.js`: Stage 5 (checkout_fb) shows housekeeping-Co trigger explainer + `post_checkout_survey_delay_minutes` editor (0–120 min, save on blur); legacy 20:30 timing greyed for suites. Deploy: frontend only.
+
+2026-07-17 | Staff Agents UI — persona cards (נועה/ליאת/סיגל/Dream Bot) | `StaffAgentsPanel` + `staffAgentRoster.js` in Executive Playbook tab «סוכנים»; live last push, preview, links to templates. Nav renamed «סוכנים חכמים». `staff-notify-preview` daily = morning pulse. Deploy: frontend + `staff-notify-preview`, `resort-digest-cron`, `whapi-webhook`.
+
+2026-07-17 | Eliad morning pulse (Wave 1) — short daily push, no task assignments | `composeExecutiveMorningPulse` replaces long daily digest: yesterday one-liner + today outlook + max 2 observational alerts (VIP/pending approval/anomaly). Removed `👉 מומלץ` from all push digests. `get_ops_digest_now` daily matches cron. Deploy: `resort-digest-cron`, `whapi-webhook`.
+
+2026-07-17 | Whapi guest DM anti-spam — burst + outbound cooldown | `_shared/guestInboundBurst.ts`: Meta-parity burst coalescing (1.8s/5s) on Whapi; identical outbound to same phone within 120s suppressed. Meta `whatsapp-webhook` refactored to same module. Deploy: `whapi-webhook` + `whatsapp-webhook`.
+
+2026-07-17 | Auth login deadlock fix | `onAuthStateChange` deferred `loadUserWithProfile` via `setTimeout(0)` (Supabase auth lock deadlock); Google login shows real errors (no mock fallback); `isGoogleAuthAllowed`; missing Google CLIENT_ID banner. Deploy: frontend.
+
 2026-07-17 | Operational Dashboard — live Supabase home | `OperationalDashboard.js`: tasks + guest_alerts + urgent signals (HITL, complaints, Inbox, missing ETA, Meta blocked); Realtime; sidebar ops badge from DB not localStorage. Deploy: frontend.
 
 2026-07-17 | Google login whitelist — mikeka13@gmail.com super_admin | `GOOGLE_AUTH_WHITELIST` in admin.js; migration 228 trigger; fixes blocked Google sign-in for existing co-owner account. Deploy: frontend + db push.
