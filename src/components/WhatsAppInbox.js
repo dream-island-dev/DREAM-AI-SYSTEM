@@ -4055,16 +4055,6 @@ export default function WhatsAppInbox({
     fetchThreadDbCount(contact.phone, contact.inbox_channel);
   }, [isMobile, markPhoneInboundRead, fetchThreadHistoryForContact, fetchThreadDbCount, whapiSosActive]);
 
-  // Unified thread: guest wrote on Whapi — don't leave staff on Meta with a false
-  // «no 24h window» block when Suites device can reply freely.
-  useEffect(() => {
-    if (!activeContact || activeContact.inbox_channel !== "unified" || whapiSosActive) return;
-    if (replyChannel !== "meta") return;
-    if (isMetaSessionWindowOpenForContact(activeContact)) return;
-    if (!isWhapiSessionWindowOpenForContact(activeContact)) return;
-    setReplyChannel("whapi");
-  }, [activeContact, activeContact?.messages, whapiSosActive, replyChannel]);
-
   useEffect(() => {
     if (mobileScreen === "list") {
       setMobileThreadMenuOpen(false);
@@ -4730,6 +4720,16 @@ export default function WhatsAppInbox({
     if (!whapiSosActive || activeInboxChannel !== "unified") return;
     setReplyChannel("meta");
   }, [whapiSosActive, activeInboxChannel, active]);
+
+  // Unified thread: guest wrote on Whapi — don't leave staff on Meta with a false
+  // «no 24h window» block when Suites device can reply freely.
+  useEffect(() => {
+    if (!activeContact || activeContact.inbox_channel !== "unified" || whapiSosActive) return;
+    if (replyChannel !== "meta") return;
+    if (isMetaSessionWindowOpenForContact(activeContact)) return;
+    if (!isWhapiSessionWindowOpenForContact(activeContact)) return;
+    setReplyChannel("whapi");
+  }, [activeContact, activeContact?.messages, whapiSosActive, replyChannel]);
 
   useEffect(() => {
     if (activeContact?.guestName) setNavGuestName(null);

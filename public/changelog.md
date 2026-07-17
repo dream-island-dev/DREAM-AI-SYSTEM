@@ -1,3 +1,5 @@
+2026-07-17 | Inbox blank-screen fix (TDZ crash) | `activeContact` useEffect moved below its `const` — dependency array evaluated before declaration caused `ReferenceError` on every mount. Deploy: frontend only.
+
 2026-07-17 | Inbox Meta 24h false block when guest wrote on Whapi | `inferDefaultReplyChannel` follows last guest inbound (not bot outbound); auto-switch unified threads to Whapi when Meta window closed but Suites inbound is fresh; banner/send guard via `shouldWarnMetaWindowClosed` (Meta path only). Deploy: frontend only.
 
 2026-07-17 | Stage 1 arrival copy — single source of truth in ACC (Option 2) | `Stage1ArrivalPanel` + `stage1ArrivalCopy.js`: ניהול חכם שלב 1 = מקור האמת ל-Whapi (`bot_scripts.pre_arrival_2d`); תצוגה «מה האורח באמת מקבל» (כולל CTA אוטומטי); מתג `bot_config.stage1_auto_append_cta`; זיהוי «כן מגיעים» גלוי; Override + BotScriptEditor preview. `whatsapp-send` מכבד מתג. migration 229. Deploy: frontend + `whatsapp-send` + `npx supabase db push`.
