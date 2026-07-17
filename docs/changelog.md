@@ -1,3 +1,5 @@
+2026-07-17 | KB conflict false-positives + spa RAG matching | `guestKnowledgeValidation`: compare hour-token sets (subset/superset) instead of raw string equality — fixes 4 spurious checkout/pool/spa/restaurant warnings when KB and bot_config agree. `guestRag`: Hebrew prefix stripping, booking synonym expansion (מזמינים↔הזמנת), per-line chunking for single-newline KB. Deploy: `whatsapp-cron` + consumers of `_shared` + frontend.
+
 2026-07-17 | BotConfigPanel KB-source banner + spa hint in BotSettings | When `bot_settings.knowledge_base` is non-empty, «ידע המלון» shows banner + link to מוח הבוט; DEFAULT_KB_HINT includes spa booking example. Frontend-only (not deployed).
 
 2026-07-17 | Brain health card in BotSettings + on-demand hallucination audit | 🩺 card: audit status (`bot_config` `guest_hallucination_audit_*`), KB↔bot_config conflict count, KB presence; «הרץ בדיקה עכשיו» → `whatsapp-cron` body `{audit:true}` (functions.invoke can't pass query) — audit-only early return BEFORE `CRON_ENABLED` kill switch (zero sends, never triggers dispatch off-schedule); `?audit=1` URL still works; Sunday auto-run unchanged. Deploy: `whatsapp-cron` + frontend.

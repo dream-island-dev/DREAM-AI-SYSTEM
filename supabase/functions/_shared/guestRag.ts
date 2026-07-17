@@ -17,6 +17,18 @@ const HEBREW_STOP = new Set([
   "the", "is", "a", "an", "to", "in", "of", "and", "or",
 ]);
 
+function stripHebrewPrefix(word: string): string {
+  return word.replace(/^[בלהמכש]['']?/u, "");
+}
+
+/** Booking / facility query expansions — helps audit probes and guest FAQ matching. */
+const QUERY_TOKEN_EXPANSIONS: Record<string, string[]> = {
+  מזמינים: ["הזמנת", "הזמנה", "לזמון", "זימון"],
+  בספא: ["ספא"],
+  בבריכה: ["בריכה", "בריכ"],
+  במסעדה: ["מסעדה", "מסעד"],
+};
+
 function tokenize(text: string): string[] {
   return text
     .toLowerCase()
@@ -25,12 +37,49 @@ function tokenize(text: string): string[] {
     .filter((w) => w.length > 1 && !HEBREW_STOP.has(w));
 }
 
+function tokenMatchesChunk(token: string, chunkTokens: Set<string>): boolean {
+  if (chunkTokens.has(token)) return true;
+
+  const stripped = stripHebrewPrefix(token);
+  if (stripped !== token && chunkTokens.has(stripped)) return true;
+
+  for (const ct of chunkTokens) {
+    const ctStripped = stripHebrewPrefix(ct);
+    if (
+      (stripped.length >= 3 && ct.includes(stripped))
+      || (ctStripped.length >= 3 && stripped.includes(ctStripped))
+    ) {
+      return true;
+    }
+  }
+
+  const expansions = QUERY_TOKEN_EXPANSIONS[token];
+  if (expansions?.some((alt) => chunkTokens.has(alt) || [...chunkTokens].some((ct) => ct.includes(alt)))) {
+    return true;
+  }
+
+  return false;
+}
+
 /** Split knowledge_base into paragraph chunks for retrieval. */
 export function chunkKnowledgeText(text: string): string[] {
-  return text
+  const byParagraph = text
     .split(/\n{2,}|(?=•\s)|(?=▸\s)/)
     .map((c) => c.trim())
     .filter((c) => c.length > 20);
+
+  if (byParagraph.length > 1) return byParagraph;
+
+  // Typical admin KB: one fact per line without blank lines — split for keyword hits.
+  const byLine = text
+    .split(/\n/)
+    .map((c) => c.trim())
+    .filter((c) => c.length > 20);
+
+  if (byLine.length > 0) return byLine;
+
+  const trimmed = text.trim();
+  return trimmed.length > 20 ? [trimmed] : [];
 }
 
 function scoreChunk(queryTokens: string[], chunk: string): number {
@@ -38,7 +87,7 @@ function scoreChunk(queryTokens: string[], chunk: string): number {
   const chunkTokens = new Set(tokenize(chunk));
   let hits = 0;
   for (const t of queryTokens) {
-    if (chunkTokens.has(t)) hits++;
+    if (tokenMatchesChunk(t, chunkTokens)) hits++;
   }
   return hits / queryTokens.length;
 }

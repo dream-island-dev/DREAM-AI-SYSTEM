@@ -36,8 +36,38 @@ const HOUR_KEYS: Array<{ configKey: string; label: string; kbPatterns: RegExp[] 
   },
 ];
 
+const HOUR_TOKEN_RE = /\d{1,2}:\d{2}/g;
+
 function normalizeHourToken(s: string): string {
-  return s.replace(/\s+/g, "").replace(/–/g, "-").trim();
+  return s
+    .replace(/\s+/g, "")
+    .replace(/[–—]/g, "-")
+    .replace(/[.,;:!?]+$/g, "")
+    .trim();
+}
+
+function extractHourTokens(s: string): string[] {
+  return [...new Set((s.match(HOUR_TOKEN_RE) ?? []))];
+}
+
+/** True when KB hours are compatible with bot_config (subset, superset, or identical). */
+function hourValuesCompatible(configVal: string, kbVal: string): boolean {
+  const configNorm = normalizeHourToken(configVal);
+  const kbNorm = normalizeHourToken(kbVal);
+  if (configNorm === kbNorm) return true;
+
+  const configTimes = extractHourTokens(configVal);
+  const kbTimes = extractHourTokens(kbVal);
+  if (kbTimes.length > 0 && configTimes.length > 0) {
+    const kbSubset = kbTimes.every((t) => configTimes.includes(t));
+    const configSubset = configTimes.every((t) => kbTimes.includes(t));
+    if (kbSubset || configSubset) return true;
+  }
+
+  // KB may summarize one slot (e.g. weekday checkout) while config lists variants.
+  if (kbTimes.length > 0 && kbTimes.every((t) => configVal.includes(t))) return true;
+
+  return false;
 }
 
 function extractKbValue(kb: string, patterns: RegExp[]): string | null {
@@ -65,7 +95,7 @@ export function detectKnowledgeConflicts(
     if (!configVal) continue;
     const kbVal = extractKbValue(kb, kbPatterns);
     if (!kbVal) continue;
-    if (normalizeHourToken(configVal) !== normalizeHourToken(kbVal)) {
+    if (!hourValuesCompatible(configVal, kbVal)) {
       conflicts.push({
         field: configKey,
         configValue: configVal,
