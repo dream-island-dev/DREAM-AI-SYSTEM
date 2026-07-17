@@ -57,6 +57,8 @@ import {
 import {
   formatInboxOutboundError,
   isMetaSessionWindowOpenForContact,
+  isWhapiSessionWindowOpenForContact,
+  shouldWarnMetaWindowClosed,
   resolveMetaWindowClosedHint,
 } from "../utils/inboxSendErrors";
 
@@ -1052,9 +1054,20 @@ export function inferDefaultReplyChannel(contact, whapiSosActive = false) {
     return contact.inbox_channel === "whapi" ? "whapi" : "meta";
   }
   if (whapiSosActive) return "meta";
+  // Last *guest* inbound sets the channel — bot outbound must not override
+  // (e.g. handoff on Meta after guest wrote on Whapi wrongly defaulted to Meta).
+  let lastInbound = null;
+  for (const m of contact.messages ?? []) {
+    if (m.direction !== "inbound" || !m.created_at) continue;
+    if (!lastInbound || m.created_at > lastInbound.created_at) lastInbound = m;
+  }
+  if (lastInbound) {
+    return lastInbound.inbox_channel === "whapi" || lastInbound.channel === "whapi"
+      ? "whapi"
+      : "meta";
+  }
   const last = contact.messages?.[contact.messages.length - 1];
-  const lastCh = last?.inbox_channel === "whapi" ? "whapi" : "meta";
-  return lastCh;
+  return last?.inbox_channel === "whapi" ? "whapi" : "meta";
 }
 
 /**
@@ -4042,6 +4055,16 @@ export default function WhatsAppInbox({
     fetchThreadDbCount(contact.phone, contact.inbox_channel);
   }, [isMobile, markPhoneInboundRead, fetchThreadHistoryForContact, fetchThreadDbCount, whapiSosActive]);
 
+  // Unified thread: guest wrote on Whapi — don't leave staff on Meta with a false
+  // «no 24h window» block when Suites device can reply freely.
+  useEffect(() => {
+    if (!activeContact || activeContact.inbox_channel !== "unified" || whapiSosActive) return;
+    if (replyChannel !== "meta") return;
+    if (isMetaSessionWindowOpenForContact(activeContact)) return;
+    if (!isWhapiSessionWindowOpenForContact(activeContact)) return;
+    setReplyChannel("whapi");
+  }, [activeContact, activeContact?.messages, whapiSosActive, replyChannel]);
+
   useEffect(() => {
     if (mobileScreen === "list") {
       setMobileThreadMenuOpen(false);
@@ -4872,8 +4895,11 @@ export default function WhatsAppInbox({
     const sendCh = activeContact.inbox_channel === "unified"
       ? replyChannel
       : (activeContact.inbox_channel ?? "meta");
-    if (sendCh === "meta" && !isMetaSessionWindowOpenForContact(activeContact)) {
-      setError(resolveMetaWindowClosedHint({ whapiSosActive }));
+    if (shouldWarnMetaWindowClosed(activeContact, sendCh)) {
+      setError(resolveMetaWindowClosedHint({
+        whapiSosActive,
+        whapiSessionOpen: isWhapiSessionWindowOpenForContact(activeContact),
+      }));
       return;
     }
     if (!ensureCanSend()) {
@@ -6248,8 +6274,8 @@ export default function WhatsAppInbox({
           const outboundCh = activeContact.inbox_channel === "unified"
             ? replyChannel
             : (activeContact.inbox_channel ?? "meta");
-          const metaWindowClosed = outboundCh === "meta"
-            && !isMetaSessionWindowOpenForContact(activeContact);
+          const whapiSessionOpen = isWhapiSessionWindowOpenForContact(activeContact);
+          const metaWindowClosed = shouldWarnMetaWindowClosed(activeContact, outboundCh);
           return (
           <>
           <div style={{
@@ -6275,7 +6301,7 @@ export default function WhatsAppInbox({
               color: "#92400E",
               lineHeight: 1.45,
             }}>
-              ⚠️ {resolveMetaWindowClosedHint({ whapiSosActive })}
+              ⚠️ {resolveMetaWindowClosedHint({ whapiSosActive, whapiSessionOpen })}
             </div>
           )}
           </>

@@ -36,9 +36,10 @@ import { translateTextForFieldOps } from "./fieldOpsTranslation.ts";
 import { SUITES_ROOM_SERVICE_GROUP_ID } from "./futureSuiteRoomServiceRouting.ts";
 import { loadActiveGuestById, type ActiveGuestRow } from "./guestOutboundGuard.ts";
 import { buildStaffAppDeepLink, phoneDigitsForDeepLink } from "./guestAlertWhapiNotify.ts";
-import { fetchResortBrief, israelTodayStr, addDaysYmd } from "./resortPulseStats.ts";
+import { fetchResortBrief, fetchExecutiveTodayOutlook, israelTodayStr, addDaysYmd } from "./resortPulseStats.ts";
 import { isEffectiveSuiteGuest } from "./suiteNames.ts";
 import {
+  composeExecutiveMorningPulse,
   composeResortDigestMessage,
   computeResortDigestStats,
   filterDigestRelevantRules,
@@ -57,7 +58,6 @@ import {
   type TeamOpsPeriod,
   type TeamOpsTaskRow,
 } from "./teamOpsAnalytics.ts";
-import { fetchTeamOpsStatsForPeriod } from "./teamOpsDigestFetch.ts";
 import type { StaffGroupKey } from "./staffGroupIngest.ts";
 
 const EXECUTIVE_GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash"];
@@ -1657,18 +1657,20 @@ async function _execGetOpsDigestNow(supabase: SupabaseClient, args: Record<strin
   );
   const templates = await loadStaffNotifyTemplates(supabase);
 
-  let teamOps = null;
+  let body: string;
   if (period === "daily") {
-    const teamRes = await fetchTeamOpsStatsForPeriod(supabase, period, now);
-    if (!teamRes.error) teamOps = teamRes.stats;
+    const todayOutlook = await fetchExecutiveTodayOutlook(supabase, now);
+    body = composeExecutiveMorningPulse(stats, range.periodDate, todayOutlook, {
+      assistantForName: "אליעד",
+      templates,
+    });
+  } else {
+    body = composeResortDigestMessage(stats, period, range.label, {
+      assistantForName: "אליעד",
+      learnedDigestNotes,
+      templates,
+    });
   }
-
-  const body = composeResortDigestMessage(stats, period, range.label, {
-    assistantForName: "אליעד",
-    learnedDigestNotes,
-    templates,
-    teamOps,
-  });
   return { ok: true, period, period_date: range.periodDate, digest: body };
 }
 

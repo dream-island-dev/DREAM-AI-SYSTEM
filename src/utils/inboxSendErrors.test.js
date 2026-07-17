@@ -3,8 +3,11 @@ import {
   isInboxOutboundTimeout,
   isInboxWindowClosed,
   isMetaSessionWindowOpenForContact,
+  isWhapiSessionWindowOpenForContact,
+  shouldWarnMetaWindowClosed,
   resolveMetaWindowClosedHint,
   META_WINDOW_CLOSED_WHAPI_HINT,
+  META_WINDOW_CLOSED_WHAPI_AVAILABLE_HINT,
 } from "./inboxSendErrors";
 
 describe("inboxSendErrors", () => {
@@ -53,6 +56,33 @@ describe("inboxSendErrors", () => {
     expect(isMetaSessionWindowOpenForContact({
       messages: [{ direction: "inbound", created_at: recent, inbox_channel: "meta" }],
     })).toBe(true);
+  });
+
+  test("isWhapiSessionWindowOpenForContact mirrors whapi inbound only", () => {
+    const recent = new Date(Date.now() - 3600 * 1000).toISOString();
+    expect(isWhapiSessionWindowOpenForContact({
+      messages: [{ direction: "inbound", created_at: recent, inbox_channel: "whapi" }],
+    })).toBe(true);
+    expect(isWhapiSessionWindowOpenForContact({
+      messages: [{ direction: "inbound", created_at: recent, inbox_channel: "meta" }],
+    })).toBe(false);
+  });
+
+  test("resolveMetaWindowClosedHint when whapi session is open", () => {
+    expect(resolveMetaWindowClosedHint({ whapiSessionOpen: true }))
+      .toBe(META_WINDOW_CLOSED_WHAPI_AVAILABLE_HINT);
+  });
+
+  test("shouldWarnMetaWindowClosed only when Meta path and Meta window shut", () => {
+    const recent = new Date(Date.now() - 3600 * 1000).toISOString();
+    const contact = {
+      messages: [{ direction: "inbound", created_at: recent, inbox_channel: "whapi" }],
+    };
+    expect(shouldWarnMetaWindowClosed(contact, "whapi")).toBe(false);
+    expect(shouldWarnMetaWindowClosed(contact, "meta")).toBe(true);
+    expect(shouldWarnMetaWindowClosed({
+      messages: [{ direction: "inbound", created_at: recent, inbox_channel: "meta" }],
+    }, "meta")).toBe(false);
   });
 
   test("resolveMetaWindowClosedHint SOS variant", () => {

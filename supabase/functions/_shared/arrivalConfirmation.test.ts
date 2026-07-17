@@ -44,6 +44,11 @@ Deno.test("ensureArrivalConfirmationCta: does not double-append when only 'מג�
   assertEquals(result, body);
 });
 
+Deno.test("ensureArrivalConfirmationCta: autoAppend=false leaves body unchanged even without CTA", () => {
+  const body = "שלום דני! מחכים לכם.";
+  assertEquals(ensureArrivalConfirmationCta(body, { autoAppend: false }), body);
+});
+
 Deno.test("regression: migration 100 seed CTA phrase still matches isArrivalConfirmationMessage", () => {
   assertEquals(isArrivalConfirmationMessage('כן, מגיעים!'), true);
 });

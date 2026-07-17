@@ -135,6 +135,10 @@ import {
 import { assembleGuestBrainPrompt } from "../_shared/guestBotSettings.ts";
 import { generateGuestChatReply } from "../_shared/guestBotLlm.ts";
 import {
+  coalesceGuestInboundBurstIfLeader,
+  isDuplicateGuestOutboundRecently,
+} from "../_shared/guestInboundBurst.ts";
+import {
   formatGuestContextLine,
   isPendingPortalSpaRequest,
   PENDING_PORTAL_SPA_LLM_SUFFIX,
@@ -692,24 +696,32 @@ async function sendGuestDmReply(
   guestId: number | null,
   replyText: string,
   staffMuted = false,
-): Promise<void> {
+): Promise<{ sent: boolean; reason?: string }> {
   if (staffMuted) {
     console.info("[whapi-webhook] guest_dm reply suppressed — staff claim active:", phone);
-    return;
+    return { sent: false, reason: "staff_muted" };
   }
   const guestBody = stripOutboundDispatchTag(replyText);
+  if (await isDuplicateGuestOutboundRecently(supabase, phone, guestBody, "whapi")) {
+    console.warn(
+      `[whapi-webhook] guest_dm outbound cooldown — duplicate suppressed phone:${phone} tail:"${guestBody.slice(-40)}"`,
+    );
+    return { sent: false, reason: "outbound_cooldown" };
+  }
   const taggedMessage = formatWhapiSuitesConversationLog(guestBody);
   let wamid: string | null = null;
   try {
     wamid = await sendWhapiText(cleanPhoneForMention(phone), guestBody);
   } catch (e) {
     console.error("[whapi-webhook] sendGuestDmReply send failed:", (e as Error).message);
+    return { sent: false, reason: "send_failed" };
   }
   const { error } = await supabase.from("whatsapp_conversations").insert({
     phone, guest_id: guestId, direction: "outbound", message: taggedMessage, wa_message_id: wamid,
     inbox_channel: "whapi", channel: "whapi",
   });
   if (error) console.warn("[whapi-webhook] sendGuestDmReply log insert failed:", error.message);
+  return { sent: true };
 }
 
 /** Shared escalation writer for the three "hand off to staff" Tier-0 shields
@@ -1428,9 +1440,25 @@ serve(async (req: Request) => {
         continue;
       }
 
+      // ── Rapid burst coalescing (Meta parity) — one auto-reply per cluster ──
+      const burst = await coalesceGuestInboundBurstIfLeader(supabase, phone, msg.id, "whapi");
+      if (!burst.proceed) {
+        results.push({
+          id: msg.id, channel: "guest_dm", phone, guest_id: guest?.id ?? null,
+          action: "burst_delegate_skip",
+        });
+        continue;
+      }
+      const effectiveText = burst.coalescedText.trim() || body.trim();
+      if (burst.coalescedText.trim() && burst.coalescedText.trim() !== body.trim()) {
+        console.info(
+          `[whapi-webhook] burst coalesced ${burst.coalescedText.split("\n").length} msgs — phone:${phone}`,
+        );
+      }
+
       await handleGuestDirectMessage(
         supabase,
-        { msgId: msg.id, phone, text: body.trim(), conversationId, guest },
+        { msgId: msg.id, phone, text: effectiveText, conversationId, guest },
         results,
       );
     }

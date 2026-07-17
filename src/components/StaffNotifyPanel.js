@@ -21,9 +21,9 @@ const RECIPIENT_TABS = [
   { id: "executive", label: "👔 אליעד — מנכ״ל" },
 ];
 
-export default function StaffNotifyPanel({ showToast }) {
+export default function StaffNotifyPanel({ showToast, initialRecipient = "front_desk" }) {
   const [panelTab, setPanelTab] = useState("editor");
-  const [recipient, setRecipient] = useState("front_desk");
+  const [recipient, setRecipient] = useState(initialRecipient);
   const [templates, setTemplates] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedKey, setSelectedKey] = useState(null);
@@ -38,6 +38,10 @@ export default function StaffNotifyPanel({ showToast }) {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [onboardingSent, setOnboardingSent] = useState(null);
   const [resettingOnboarding, setResettingOnboarding] = useState(false);
+
+  useEffect(() => {
+    setRecipient(initialRecipient);
+  }, [initialRecipient]);
 
   const filtered = useMemo(
     () => templates.filter((t) => t.recipient_role === recipient).sort((a, b) => a.sort_order - b.sort_order),
@@ -342,7 +346,7 @@ export default function StaffNotifyPanel({ showToast }) {
                     onChange={(e) => setDigestPeriod(e.target.value)}
                     style={{ fontSize: 12, padding: "4px 8px", borderRadius: 6 }}
                   >
-                    <option value="daily">תצוגה: דוח יומי</option>
+                    <option value="daily">תצוגה: פולס יומי (בוקר)</option>
                     <option value="weekly">תצוגה: דוח שבועי</option>
                     <option value="monthly">תצוגה: דוח חודשי</option>
                   </select>

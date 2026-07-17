@@ -58,7 +58,7 @@ import { sendImageMessage, sendInteractiveButtons } from "../_shared/interactive
 import { isArrivalTodayIsrael, israelTodayYmd } from "../_shared/israelDate.ts";
 import { sanitizeMetaRecipientPhone } from "../_shared/metaPhone.ts";
 import { sendWhapiText, sendWhapiImage, cleanPhoneForMention } from "../_shared/whapiSend.ts";
-import { ensureArrivalConfirmationCta } from "../_shared/arrivalConfirmation.ts";
+import { ensureArrivalConfirmationCta, loadStage1AutoAppendCta } from "../_shared/arrivalConfirmation.ts";
 import {
   DAYPASS_SESSION_FIRST_TRIGGERS,
   ensureDaypassWindowOpenerCta,
@@ -3839,6 +3839,9 @@ serve(async (req: Request) => {
     // guard so staff can send free-text to any guest on demand. useWhapiForPipeline
     // guests bypass it too — Whapi has no session-window concept at all.
     const pipelineScriptFallback = PIPELINE_SESSION_SCRIPT[trigger] ?? "";
+    const stage1AutoAppendCta = trigger === "pre_arrival_2d"
+      ? await loadStage1AutoAppendCta(supabase)
+      : true;
     if ((isManualPipelineDispatch || useWhapiForPipeline || daypassSessionPreferred) && !forceMetaTemplate &&
         (stageRow?.session_message_script_key || stageRow?.session_message_script_key_shabbat || pipelineScriptFallback)) {
       if (forceSessionMessage || forceWhapiSession || useWhapiForPipeline || force === true || isManualPipelineDispatch || isWindowOpen(guest.wa_window_expires_at) || daypassSessionPreferred) {
@@ -3869,7 +3872,7 @@ serve(async (req: Request) => {
           // does) — the typed CTA in the body is the guest's only path to
           // confirming. Defend against an ACC edit that drops the phrase.
           if (trigger === "pre_arrival_2d" && (forceWhapiSession || useWhapiForPipeline)) {
-            body = ensureArrivalConfirmationCta(body);
+            body = ensureArrivalConfirmationCta(body, { autoAppend: stage1AutoAppendCta });
           }
           // Day-pass evening/morning on Whapi: no Meta QR buttons — keep typed
           // window-opener CTA so Dream Bot backup can free-text later.

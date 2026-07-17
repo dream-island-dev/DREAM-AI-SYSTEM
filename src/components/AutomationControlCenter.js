@@ -35,6 +35,11 @@ import {
 } from "../utils/pipelineSegment";
 import { scriptKeyFriendly, isGarbledDbText, BOT_SCRIPT_FRIENDLY } from "../utils/botScriptLabels";
 import WhapiEmergencyBroadcastPanel from "./WhapiEmergencyBroadcastPanel";
+import {
+  Stage1ArrivalControlPanel,
+  Stage1DispatchPreview,
+} from "./Stage1ArrivalPanel";
+import { STAGE1_AUTO_APPEND_CTA_KEY, parseStage1AutoAppendCta } from "../utils/stage1ArrivalCopy";
 
 const JOURNEY_PHASE_LABELS = {
   pre_arrival: "🌴 לפני ההגעה",
@@ -838,6 +843,7 @@ function StageCard({
   stage, isOpen, onToggle, patchStage, scriptsByKey, saveSessionMessage,
   availableScriptKeys, addButton, updateButton, removeButton, convertToTemplate,
   metaTemplatesByName, postCheckoutSurveyDelayMinutes, savePostCheckoutSurveyDelay,
+  stage1AutoAppendCta, saveStage1AutoAppendCta,
 }) {
   const nt = NODE_TYPE_META[stage.node_type] ?? NODE_TYPE_META.hybrid;
   const phaseLabel = JOURNEY_PHASE_LABELS[stage.journey_phase] ?? stage.journey_phase;
@@ -1095,8 +1101,21 @@ function StageCard({
             </select>
           </div>
 
-          {/* ── Session message (only for session_message/hybrid) ── */}
-          {stage.node_type !== "meta_template" && (
+          {/* ── Stage 1 — single source of truth (Option 2) ── */}
+          {stage.stage_key === "pre_arrival_2d" && stage.node_type !== "meta_template" && (
+            <Stage1ArrivalControlPanel
+              draftText={draftText}
+              onDraftChange={setDraftText}
+              onSave={(text) => saveSessionMessage(stage.session_message_script_key ?? "pre_arrival_2d", text)}
+              autoAppendCta={stage1AutoAppendCta}
+              onAutoAppendChange={saveStage1AutoAppendCta}
+              metaTemplateBody={metaTemplatesByName[stage.meta_template_name]?.bodyText}
+              onCopyFromMeta={() => {}}
+            />
+          )}
+
+          {/* ── Session message (only for session_message/hybrid; Stage 1 uses panel above) ── */}
+          {stage.node_type !== "meta_template" && stage.stage_key !== "pre_arrival_2d" && (
             <div className="form-field" style={{ marginBottom: 0 }}>
               <label>🟢 הודעת סשן (חופשית, בתוך חלון 24ש׳)</label>
               <select
@@ -1212,7 +1231,16 @@ function StageCard({
           {/* wa_window_expires_at is still open, a session_message is sent instead of this template. */}
           {/* This dropdown controls only the Meta-template fallback path (window closed / hybrid).   */}
           <div className="form-field" style={{ marginBottom: 0 }}>
-            <label>🔵 תבנית Meta (Fallback)</label>
+            <label>🔵 תבנית Meta (Fallback — Dream Bot בלבד)</label>
+            {stage.stage_key === "pre_arrival_2d" && (
+              <div style={{
+                fontSize: 12, color: "#92400E", fontWeight: 600, lineHeight: 1.55,
+                padding: "8px 10px", borderRadius: 8, marginBottom: 8,
+                background: "#FFF8E7", border: "1px solid #D97706",
+              }}>
+                ⚠ עריכה כאן משפיעה רק על Dream Bot (Meta). אורחי סוויטות מקבלים את הטקסט מ«מקור האמת» למעלה.
+              </div>
+            )}
             {(() => {
               // Build option list: all templates from the live Meta fetch.
               // Non-approved templates are kept so the current selection always
@@ -1584,7 +1612,10 @@ async function invokeForcedDispatch({ guestId, stageKey, forceChannel, scheduled
   });
 }
 
-function ManualDispatchModal({ item, stages, onClose, onDispatched, showToast }) {
+function ManualDispatchModal({
+  item, stages, scriptsByKey, stage1AutoAppendCta, metaTemplatesByName,
+  onClose, onDispatched, showToast,
+}) {
   const {
     quietActive,
     overrideChecked,
@@ -1621,6 +1652,8 @@ function ManualDispatchModal({ item, stages, onClose, onDispatched, showToast })
 
   const selectedStage   = stages.find((s) => s.stage_key === stageKey);
   const hasScriptKey    = !!selectedStage?.session_message_script_key;
+  const stage1ScriptText = scriptsByKey?.[selectedStage?.session_message_script_key ?? "pre_arrival_2d"] ?? "";
+  const stage1MetaBody = metaTemplatesByName?.[selectedStage?.meta_template_name]?.bodyText;
   // night_before's Shabbat/holiday-aware fast-path now properly honors
   // force_channel (2026-07-09 fix) — Whapi is gated by hasScriptKey only,
   // same as every other stage, no more stage-specific exclusion here.
@@ -1799,6 +1832,18 @@ function ManualDispatchModal({ item, stages, onClose, onDispatched, showToast })
           </div>
         </div>
 
+        {stageKey === "pre_arrival_2d" && hasScriptKey && (
+          <div style={{ marginTop: -6 }}>
+            <Stage1DispatchPreview
+              scriptText={stage1ScriptText}
+              autoAppendCta={stage1AutoAppendCta}
+              channel={channel}
+              guestName={item.guestName}
+              metaTemplateBody={stage1MetaBody}
+            />
+          </div>
+        )}
+
         {/* Confirmation step */}
         {!confirmed && !result && (
           <div style={{
@@ -1914,6 +1959,7 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
   const [postCheckoutSurveyDelayMinutes, setPostCheckoutSurveyDelayMinutes] = useState(
     DEFAULT_POST_CHECKOUT_SURVEY_DELAY_MINUTES,
   );
+  const [stage1AutoAppendCta, setStage1AutoAppendCta] = useState(true);
 
   // ── Live queue state ──────────────────────────────────────────────────────
   const [queueData, setQueueData] = useState(null);
@@ -1991,11 +2037,14 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
   const fetchStages = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) { setLoadingStages(false); return; }
     setLoadingStages(true);
-    const [{ data: stageRows, error: stageErr }, { data: scriptRows, error: scriptErr }, { data: delayRow }] = await Promise.all([
+    const [{ data: stageRows, error: stageErr }, { data: scriptRows, error: scriptErr }, { data: delayRow }, { data: stage1CtaRow }] = await Promise.all([
       supabase.from("automation_stages").select("*").order("sequence_order"),
       supabase.from("bot_scripts").select("script_key, message_text"),
       supabase.from("bot_config").select("config_value")
         .eq("config_key", POST_CHECKOUT_SURVEY_DELAY_CONFIG_KEY)
+        .maybeSingle(),
+      supabase.from("bot_config").select("config_value")
+        .eq("config_key", STAGE1_AUTO_APPEND_CTA_KEY)
         .maybeSingle(),
     ]);
     if (stageErr) showToast("err", "שגיאה בטעינת שלבים: " + stageErr.message);
@@ -2028,6 +2077,7 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
     setPostCheckoutSurveyDelayMinutes(
       clampPostCheckoutSurveyDelayMinutes(delayRow?.config_value),
     );
+    setStage1AutoAppendCta(parseStage1AutoAppendCta(stage1CtaRow?.config_value));
     setLoadingStages(false);
   }, [showToast]);
 
@@ -2437,6 +2487,19 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
     else { setScriptsByKey((prev) => ({ ...prev, [scriptKey]: text })); showToast("ok", "✅ הודעת הסשן נשמרה"); }
   };
 
+  const saveStage1AutoAppendCta = useCallback(async (enabled) => {
+    const { error } = await supabase
+      .from("bot_config")
+      .update({ config_value: enabled ? "true" : "false" })
+      .eq("config_key", STAGE1_AUTO_APPEND_CTA_KEY);
+    if (error) {
+      showToast("err", "שגיאה בשמירת רשת הביטחון: " + error.message);
+    } else {
+      setStage1AutoAppendCta(enabled);
+      showToast("ok", enabled ? "✅ רשת ביטחון CTA פעילה" : "⏸ רשת ביטחון CTA כבויה");
+    }
+  }, [showToast]);
+
   const addButton = (stage) => {
     const buttons = stage.interactive_buttons ?? [];
     if (buttons.length >= 3) return;
@@ -2713,6 +2776,8 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                         metaTemplatesByName={metaTemplatesByName}
                         postCheckoutSurveyDelayMinutes={postCheckoutSurveyDelayMinutes}
                         savePostCheckoutSurveyDelay={savePostCheckoutSurveyDelay}
+                        stage1AutoAppendCta={stage1AutoAppendCta}
+                        saveStage1AutoAppendCta={saveStage1AutoAppendCta}
                       />
                     ))}
                   </div>
@@ -2802,6 +2867,9 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
               <ManualDispatchModal
                 item={manualDispatchItem}
                 stages={stages}
+                scriptsByKey={scriptsByKey}
+                stage1AutoAppendCta={stage1AutoAppendCta}
+                metaTemplatesByName={metaTemplatesByName}
                 showToast={showToast}
                 onClose={() => setManualDispatchItem(null)}
                 onDispatched={() => {

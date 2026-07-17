@@ -18,6 +18,7 @@ import {
 import { buildArrivalEtaAdirMessage } from "../_shared/arrivalEtaAdirNotify.ts";
 import { buildSoftHandoffManagerText } from "../_shared/handoffEscalation.ts";
 import {
+  composeExecutiveMorningPulse,
   composeResortDigestMessage,
   computeResortDigestStats,
   filterDigestRelevantRules,
@@ -26,7 +27,7 @@ import {
   type DigestPeriod,
   type DigestTaskRow,
 } from "../_shared/resortDigestStats.ts";
-import { fetchTeamOpsStatsForPeriod } from "../_shared/teamOpsDigestFetch.ts";
+import { fetchExecutiveTodayOutlook } from "../_shared/resortPulseStats.ts";
 import { israelYmd } from "../_shared/automationSchedule.ts";
 import {
   buildPreviewTemplateMap,
@@ -100,21 +101,24 @@ serve(async (req: Request) => {
         tasks: (tasksRes.data ?? []) as DigestTaskRow[],
         now,
       });
+
+      if (period === "daily") {
+        const todayOutlook = await fetchExecutiveTodayOutlook(supabase, now);
+        const preview = composeExecutiveMorningPulse(stats, range.periodDate, todayOutlook, {
+          assistantForName: "אליעד",
+          templates,
+        });
+        return json({ ok: true, preview_body: preview, data_source: "live", period });
+      }
+
       const learnedDigestNotes = filterDigestRelevantRules(
         ((ruleRows.data ?? []) as Array<{ rule_text: string | null }>).map((r) => r.rule_text ?? ""),
       );
-
-      let teamOps = null;
-      if (period === "daily") {
-        const teamRes = await fetchTeamOpsStatsForPeriod(supabase, period, now);
-        if (!teamRes.error) teamOps = teamRes.stats;
-      }
 
       const preview = composeResortDigestMessage(stats, period, range.label, {
         assistantForName: "אליעד",
         learnedDigestNotes,
         templates,
-        teamOps,
       });
       return json({ ok: true, preview_body: preview, data_source: "live", period });
     }

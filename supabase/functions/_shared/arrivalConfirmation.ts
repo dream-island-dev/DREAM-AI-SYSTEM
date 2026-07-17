@@ -94,10 +94,49 @@ function bodyAlreadyHasConfirmCta(text: string): boolean {
 /** Guarantees a Stage 1 Whapi session body always carries a confirmable CTA,
  * even if bot_scripts.pre_arrival_2d gets edited in ACC and the confirm
  * phrase is dropped — a guest with no way to trigger Stage 2 is a silent
- * pipeline dead-end. No-op when the phrase is already present. */
-export function ensureArrivalConfirmationCta(body: string): string {
+ * pipeline dead-end. No-op when the phrase is already present.
+ * bot_config stage1_auto_append_cta=false disables the safety net (ACC toggle). */
+export function ensureArrivalConfirmationCta(
+  body: string,
+  opts?: { autoAppend?: boolean },
+): string {
+  if (opts?.autoAppend === false) return body;
   if (bodyAlreadyHasConfirmCta(body)) return body;
   return `${body.trimEnd()}\n\n${ARRIVAL_CONFIRM_CTA_HE}`;
+}
+
+export const STAGE1_AUTO_APPEND_CTA_KEY = "stage1_auto_append_cta";
+
+let _stage1AutoAppendCache: boolean | null = null;
+let _stage1AutoAppendCacheAt = 0;
+const STAGE1_AUTO_APPEND_TTL_MS = 60_000;
+
+/** Loads ACC toggle — default ON unless bot_config is explicitly "false". */
+export async function loadStage1AutoAppendCta(
+  supabaseClient: { from: (t: string) => unknown },
+): Promise<boolean> {
+  const now = Date.now();
+  if (_stage1AutoAppendCache !== null && now - _stage1AutoAppendCacheAt < STAGE1_AUTO_APPEND_TTL_MS) {
+    return _stage1AutoAppendCache;
+  }
+  const supabase = supabaseClient as {
+    from: (t: string) => {
+      select: (cols: string) => {
+        eq: (col: string, val: string) => {
+          maybeSingle: () => Promise<{ data: { config_value?: string } | null }>;
+        };
+      };
+    };
+  };
+  const { data } = await supabase
+    .from("bot_config")
+    .select("config_value")
+    .eq("config_key", STAGE1_AUTO_APPEND_CTA_KEY)
+    .maybeSingle();
+  const enabled = String(data?.config_value ?? "true").trim().toLowerCase() !== "false";
+  _stage1AutoAppendCache = enabled;
+  _stage1AutoAppendCacheAt = now;
+  return enabled;
 }
 
 export function buildPhoneVariants(from: string): { phone: string; variants: string[] } {

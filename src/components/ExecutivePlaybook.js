@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import StaffNotifyPanel from "./StaffNotifyPanel";
+import StaffAgentsPanel from "./StaffAgentsPanel";
 
 /** Read-only mirror of executiveIdentity.ts KNOWN_FRONT_DESK — for admin visibility. */
 const ADIR_DESK_PROFILE = {
@@ -19,8 +20,9 @@ function formatDate(iso) {
   return new Date(iso).toLocaleString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
-export default function ExecutivePlaybook() {
-  const [mainTab, setMainTab] = useState("playbook");
+export default function ExecutivePlaybook({ onNavigateAppPage }) {
+  const [mainTab, setMainTab] = useState("agents");
+  const [staffNotifyRecipient, setStaffNotifyRecipient] = useState("front_desk");
   const [personaPrompt, setPersonaPrompt] = useState("");
   const [personaLoading, setPersonaLoading] = useState(true);
   const [personaSaving, setPersonaSaving] = useState(false);
@@ -167,30 +169,27 @@ export default function ExecutivePlaybook() {
         </div>
       )}
 
-      <div style={{ maxWidth: mainTab === "staff_notify" ? 1100 : 820 }}>
+      <div style={{ maxWidth: mainTab === "staff_notify" || mainTab === "agents" ? 1100 : 820 }}>
         <div style={{
           background: "linear-gradient(135deg, rgba(107,33,168,0.12) 0%, rgba(107,33,168,0.04) 100%)",
           border: "1px solid #6B21A8", borderRadius: 12,
           padding: "14px 20px", marginBottom: 24,
           display: "flex", alignItems: "flex-start", gap: 12,
         }}>
-          <span style={{ fontSize: 28 }}>👔</span>
+          <span style={{ fontSize: 28 }}>🧬</span>
           <div>
             <div style={{ fontWeight: 800, fontSize: 15, color: "#6B21A8", marginBottom: 4 }}>
-              עוזרות קוליות לצוות ניהול
+              סוכנים חכמים — עוזרות אישיות בשטח
             </div>
             <div style={{ fontSize: 13, color: "var(--text-muted)", lineHeight: 1.6 }}>
-              <strong>אליעד (מנכ"ל):</strong> העוזרת האישית שלו — הפרומפט הבסיסי למטה + דגש אישי בקוד (executiveIdentity.ts).
-              <br />
-              <strong>אדיר (דלפק):</strong> פרופיל נפרד — כרטיס למטה; הודעות ודוחות בלשונית «הודעות ודוחות».
-              <br />
-              כללים שנלמדו בקול: אליעד → module executive | אדיר → module front_desk.
+              דמויות חיות עם פולס, היסטוריה ושיחה ב-Whapi. נועה מלווה את אליעד · ליאת את אדיר · סיגל את אורית.
             </div>
           </div>
         </div>
 
         <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
           {[
+            { id: "agents", label: "🧬 סוכנים" },
             { id: "playbook", label: "🧠 פרומפט וכללים" },
             { id: "staff_notify", label: "📨 הודעות ודוחות" },
           ].map((t) => (
@@ -205,8 +204,18 @@ export default function ExecutivePlaybook() {
           ))}
         </div>
 
-        {mainTab === "staff_notify" ? (
-          <StaffNotifyPanel showToast={showToast} />
+        {mainTab === "agents" ? (
+          <StaffAgentsPanel
+            showToast={showToast}
+            onOpenStaffNotify={(recipient) => {
+              setStaffNotifyRecipient(recipient);
+              setMainTab("staff_notify");
+            }}
+            onOpenPlaybook={() => setMainTab("playbook")}
+            onOpenRoute={onNavigateAppPage}
+          />
+        ) : mainTab === "staff_notify" ? (
+          <StaffNotifyPanel showToast={showToast} initialRecipient={staffNotifyRecipient} />
         ) : (
         <>
         {/* ── Base system prompt (executive_bot_settings, migration 183) ──── */}

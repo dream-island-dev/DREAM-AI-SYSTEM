@@ -3,29 +3,55 @@
 const TIMEOUT_RE = /whapi_timeout|timeout_no_response/i;
 const WINDOW_CLOSED_RE = /window_closed/i;
 
+/** True when staff picked Meta but the Meta 24h session is closed. */
+export function shouldWarnMetaWindowClosed(contact, outboundCh) {
+  return outboundCh === "meta" && !isMetaSessionWindowOpenForContact(contact);
+}
+
 /** Staff-facing copy when Meta 24h session window is closed. */
 export const META_WINDOW_CLOSED_WHAPI_HINT =
   "אין חלון 24 שעות פעיל עם האורח ב-Dream Bot — לשליחת הודעה חופשית בחר «מכשיר הסוויטות» למעלה.";
 
+export const META_WINDOW_CLOSED_WHAPI_AVAILABLE_HINT =
+  "חלון Dream Bot סגור — האורח כתב דרך מכשיר הסוויטות. לשליחה חופשית בחר «מכשיר הסוויטות» למעלה.";
+
 export const META_WINDOW_CLOSED_SOS_HINT =
   "אין חלון 24 שעות פעיל עם האורח ב-Dream Bot — שליחה חופשית דרך Meta חסומה. השתמש בתבנית Meta מאושרת.";
 
-export function resolveMetaWindowClosedHint({ whapiSosActive = false } = {}) {
-  return whapiSosActive ? META_WINDOW_CLOSED_SOS_HINT : META_WINDOW_CLOSED_WHAPI_HINT;
+export function resolveMetaWindowClosedHint({
+  whapiSosActive = false,
+  whapiSessionOpen = false,
+} = {}) {
+  if (whapiSosActive) return META_WINDOW_CLOSED_SOS_HINT;
+  if (whapiSessionOpen) return META_WINDOW_CLOSED_WHAPI_AVAILABLE_HINT;
+  return META_WINDOW_CLOSED_WHAPI_HINT;
+}
+
+function lastInboundOnChannel(contact, channel) {
+  if (!contact?.messages?.length) return null;
+  let lastAt = null;
+  for (const m of contact.messages) {
+    if (m.direction !== "inbound" || !m.created_at) continue;
+    const ch = m.inbox_channel === "whapi" || m.channel === "whapi" ? "whapi" : "meta";
+    if (ch !== channel) continue;
+    if (!lastAt || m.created_at > lastAt) lastAt = m.created_at;
+  }
+  return lastAt;
 }
 
 /** Meta session open = last inbound on Dream Bot (meta) channel within 24h. */
 export function isMetaSessionWindowOpenForContact(contact) {
-  if (!contact?.messages?.length) return false;
-  let lastMetaInboundAt = null;
-  for (const m of contact.messages) {
-    if (m.direction !== "inbound" || !m.created_at) continue;
-    const ch = m.inbox_channel === "whapi" || m.channel === "whapi" ? "whapi" : "meta";
-    if (ch === "whapi") continue;
-    if (!lastMetaInboundAt || m.created_at > lastMetaInboundAt) lastMetaInboundAt = m.created_at;
-  }
+  const lastMetaInboundAt = lastInboundOnChannel(contact, "meta");
   if (!lastMetaInboundAt) return false;
   const ts = new Date(lastMetaInboundAt).getTime();
+  return Number.isFinite(ts) && Date.now() - ts < 24 * 3600 * 1000;
+}
+
+/** Whapi session open = last inbound on Suites device within 24h (no Meta template needed). */
+export function isWhapiSessionWindowOpenForContact(contact) {
+  const lastWhapiInboundAt = lastInboundOnChannel(contact, "whapi");
+  if (!lastWhapiInboundAt) return false;
+  const ts = new Date(lastWhapiInboundAt).getTime();
   return Number.isFinite(ts) && Date.now() - ts < 24 * 3600 * 1000;
 }
 

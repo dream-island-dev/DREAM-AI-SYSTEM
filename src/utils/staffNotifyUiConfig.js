@@ -11,12 +11,13 @@ export const STAFF_DIGEST_FIELD_LABELS = {
     power_hints: "בלוק «מה אפשר לבקש»",
   },
   eliad_digest_shell: {
-    opening_line: "שורת פתיחה ({{name}})",
-    period_line: "כותרת תקופה ({{period_he}}, {{period_label}})",
-    sla_label: "תווית עמידה ביעדי זמן",
-    footer_1: "שורת פוטר 1",
-    footer_2: "שורת פוטר 2",
-    action_hint_quiet: "רמז פעולה כשהכל שקט",
+    opening_line: "פתיחה ({{name}})",
+    footer_pulse: "שורת סיום פולס יומי",
+    period_line: "כותרת תקופה — שבועי/חודשי בלבד",
+    sla_label: "תווית עמידה ביעדי זמן — שבועי/חודשי",
+    footer_1: "פוטר 1 — שבועי/חודשי",
+    footer_2: "פוטר 2 — שבועי/חודשי",
+    action_hint_quiet: "(לא בשימוש — פולס יומי)",
   },
 };
 

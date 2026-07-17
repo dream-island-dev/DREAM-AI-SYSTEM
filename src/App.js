@@ -1488,8 +1488,8 @@ function Sidebar({ user, active, setActive, openOpsCount, onLogout, isAdmin, isS
               onClick={() => setActive("executive_playbook")}
               style={{ color: active === "executive_playbook" ? "var(--gold)" : "rgba(201,169,110,0.6)" }}
             >
-              <span className="icon">👔</span>
-              <span>עוזר קולי למנכ"ל</span>
+              <span className="icon">🧬</span>
+              <span>סוכנים חכמים</span>
             </button>
             <button
               className={`nav-item ${active === "routing_control_center" ? "active" : ""}`}
@@ -2132,7 +2132,7 @@ export default function App({ initialPage = "dashboard" }) {
     bot_settings:  "🧠 מוח הבוט",
     bot_scripts:   "📝 עורך סקריפטי הבוט",
     automation_center: "🎛️ בקרת אוטומציה",
-    executive_playbook: "👔 עוזר קולי למנכ\"ל",
+    executive_playbook: "🧬 סוכנים חכמים",
     routing_control_center: "🔀 מרכז ניתוב",
     data_sync:  "📥 סנכרון נתונים",
     portal_settings: "🎨 הגדרות פורטל",
@@ -2360,7 +2360,7 @@ export default function App({ initialPage = "dashboard" }) {
       case "executive_playbook":
         return guardPage(
           "executive_playbook",
-          <ExecutivePlaybook />
+          <ExecutivePlaybook onNavigateAppPage={setActivePage} />
         );
       case "automation_center":
         return guardPage(

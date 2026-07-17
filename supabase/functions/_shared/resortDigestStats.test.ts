@@ -9,18 +9,23 @@ import {
   bucketCheckinHour,
   computeAnomalies,
   computeArrivals,
+  computeExecutiveTodayOutlook,
   computeRequestsBySuite,
   computeResortDigestStats,
   computeRoomReadyTiming,
   computeSlaCompliance,
   composeExecutiveHeadline,
   composeExecutiveActionHint,
+  composeExecutiveMorningPulse,
+  composePulseAttentionLines,
   composeResortDigestMessage,
+  composeYesterdayPulseLine,
   filterDigestRelevantRules,
   formatCappedList,
   resolveDigestRange,
   type DigestGuestRow,
   type DigestTaskRow,
+  type TodayOutlookGuestRow,
 } from "./resortDigestStats.ts";
 
 function guestRow(overrides: Partial<DigestGuestRow> = {}): DigestGuestRow {
@@ -280,19 +285,20 @@ Deno.test("composeExecutiveActionHint — breached open tasks first priority", (
   assertEquals(hint.includes("לא נסגרו ביעד הזמן"), true);
 });
 
-Deno.test("composeResortDigestMessage: includes the headline and an SLA compliance line", () => {
+Deno.test("composeResortDigestMessage: includes the headline without task-assignment hints", () => {
   const stats = computeResortDigestStats({
     guests: [],
     tasks: [taskRow({ room_number: "A" })],
     now: SLA_NOW,
   });
-  const body = composeResortDigestMessage(stats, "daily", "2026-07-11");
+  const body = composeResortDigestMessage(stats, "weekly", "2026-07-05–2026-07-11");
   assertEquals(body.includes("✅ הכל תקין"), true);
   assertEquals(body.includes("עמידה ביעדי זמן הטיפול: 100% (1/1)"), true);
-  assertEquals(body.includes("👉 מצב שקט"), true);
+  assertEquals(body.includes("👉 מומלץ"), false);
+  assertEquals(body.includes("👉 מצב שקט"), false);
 });
 
-Deno.test("composeResortDigestMessage: daily digest appends team ops section", () => {
+Deno.test("composeResortDigestMessage: weekly digest appends team ops section", () => {
   const stats = computeResortDigestStats({ guests: [], tasks: [], now: SLA_NOW });
   const teamOps = computeTeamOpsStats({
     period: "daily",
@@ -320,10 +326,7 @@ Deno.test("composeResortDigestMessage: daily digest appends team ops section", (
     hkEvents: [],
     guestAlerts: [],
   });
-  const dailyBody = composeResortDigestMessage(stats, "daily", "2026-07-11", { teamOps });
   const weeklyBody = composeResortDigestMessage(stats, "weekly", "2026-07-04–2026-07-10", { teamOps });
-  assertEquals(dailyBody.includes("👥 צוות:"), true);
-  assertEquals(dailyBody.includes("אדיר:"), true);
   assertEquals(weeklyBody.includes("👥 צוות:"), false);
 });
 
@@ -360,16 +363,105 @@ Deno.test("computeResortDigestStats: wires all five sections together from raw r
   assertEquals(stats.anomalies.length, 0);
 });
 
-Deno.test("composeResortDigestMessage: renders period header, counts, and a FAIL VISIBLE unknown-room-ready line", () => {
+Deno.test("composeExecutiveMorningPulse: short daily voice, no task assignments", () => {
+  const yesterday = computeResortDigestStats({
+    guests: [
+      guestRow({
+        checkin_time: "2026-07-11T10:00:00.000Z",
+        room_ready_at: "2026-07-11T09:00:00.000Z",
+      }),
+    ],
+    tasks: [taskRow({ room_number: "אמטיסט 8" })],
+    now: SLA_NOW,
+  });
+  const today = computeExecutiveTodayOutlook(
+    [
+      {
+        status: "expected",
+        arrival_date: "2026-07-12",
+        departure_date: "2026-07-14",
+        arrival_time: null,
+        room: "יהלום 3",
+        room_type: "suite",
+        requires_attention: false,
+      },
+      {
+        status: "expected",
+        arrival_date: "2026-07-12",
+        departure_date: "2026-07-14",
+        arrival_time: "15:00",
+        room: "אמטיסט 8",
+        room_type: "suite",
+        requires_attention: true,
+      },
+    ] as TodayOutlookGuestRow[],
+    "2026-07-12",
+    { pendingApproval: 2 },
+  );
+  const body = composeExecutiveMorningPulse(yesterday, "2026-07-11", today, {
+    assistantForName: "אליעד",
+  });
+  const lineCount = body.split("\n").filter((l) => l.trim()).length;
+  assertEquals(lineCount <= 10, true);
+  assertEquals(body.includes("בוקר טוב אליעד"), true);
+  assertEquals(body.includes("אתמול (11.07):"), true);
+  assertEquals(body.includes("היום: 2 מגיעים"), true);
+  assertEquals(body.includes("בלי שעת הגעה (אדיר מטפל)"), true);
+  assertEquals(body.includes("🔔 2 ממתינות לאישורך"), true);
+  assertEquals(body.includes("⭐ 1 VIP מגיעים היום"), true);
+  assertEquals(body.includes("👉 מומלץ"), false);
+  assertEquals(body.includes("דוח תפעולי"), false);
+  assertEquals(body.includes("מוכנות חדרים"), false);
+});
+
+Deno.test("composeYesterdayPulseLine: one-line recap with readiness rate", () => {
+  const stats = computeResortDigestStats({
+    guests: [
+      guestRow({ checkin_time: "2026-07-11T10:00:00.000Z", room_ready_at: "2026-07-11T09:00:00.000Z" }),
+      guestRow({ id: 2, checkin_time: "2026-07-11T12:00:00.000Z", room_ready_at: null }),
+    ],
+    tasks: [],
+    now: SLA_NOW,
+  });
+  const line = composeYesterdayPulseLine(stats, "2026-07-11");
+  assertEquals(line.includes("2 הגעות"), true);
+  assertEquals(line.includes("מוכנות 50%"), true);
+});
+
+Deno.test("composePulseAttentionLines: observational, max 2, team handles ops", () => {
+  const stats = computeResortDigestStats({
+    guests: [],
+    tasks: [
+      taskRow({ room_number: "B", sla_category: "pest_control" }),
+      taskRow({ room_number: "B", sla_category: "pest_control" }),
+      taskRow({ room_number: "B", sla_category: "pest_control" }),
+    ],
+    now: SLA_NOW,
+  });
+  const lines = composePulseAttentionLines(stats, {
+    todayYmd: "2026-07-12",
+    arrivalsToday: 0,
+    arrivalsMissingEta: 0,
+    inResortSuites: 0,
+    departingToday: 0,
+    vipArrivingToday: 0,
+    humanRequestedInbox: 3,
+    pendingApproval: 1,
+  });
+  assertEquals(lines.length, 2);
+  assertEquals(lines[0].includes("לאישורך"), true);
+  assertEquals(lines.some((l) => l.includes("הצוות בטיפול")), true);
+  assertEquals(lines.some((l) => l.includes("לבדוק")), false);
+});
+
+Deno.test("composeResortDigestMessage: renders period header for weekly reports", () => {
   const stats = computeResortDigestStats({
     guests: [guestRow({ room: "אמטיסט 8", checkin_time: "2026-07-11T12:00:00.000Z", room_ready_at: null })],
     tasks: [],
   });
-  const body = composeResortDigestMessage(stats, "daily", "2026-07-11");
-  assertEquals(body.includes("דוח תפעולי יומי"), true);
-  assertEquals(body.includes("כאן העוזרת האישית שלך"), true);
-  assertEquals(body.includes("תזכרי ש"), true);
-  assertEquals(body.includes("2026-07-11"), true);
+  const body = composeResortDigestMessage(stats, "weekly", "2026-07-05–2026-07-11");
+  assertEquals(body.includes("דוח תפעולי שבועי"), true);
+  assertEquals(body.includes("בוקר טוב"), true);
   assertEquals(body.includes('לא סומן "חדר מוכן"'), true);
   assertEquals(body.includes("אין בקשות בתקופה זו."), true);
 });
@@ -424,7 +516,7 @@ Deno.test("formatCappedList: truncates and appends a '+N more' trailer over the 
   assertEquals(lines, ["#1", "#2", "#3", "#4", "#5", "  ...ועוד 2 נוספים"]);
 });
 
-Deno.test("composeResortDigestMessage: at real-world volume, caps the room-ready list instead of dumping every row (worst delay first)", () => {
+Deno.test("composeResortDigestMessage: at real-world volume, caps the room-ready list (weekly)", () => {
   const guests = Array.from({ length: 10 }, (_, i) =>
     guestRow({
       room: `חדר ${i}`,
@@ -433,7 +525,7 @@ Deno.test("composeResortDigestMessage: at real-world volume, caps the room-ready
     })
   );
   const stats = computeResortDigestStats({ guests, tasks: [], now: SLA_NOW });
-  const body = composeResortDigestMessage(stats, "daily", "2026-07-11");
+  const body = composeResortDigestMessage(stats, "weekly", "2026-07-05–2026-07-11");
   const lateLines = body.split("\n").filter((l) => l.includes("⏰"));
   assertEquals(lateLines.length, 5); // capped, not all 10
   assertEquals(lateLines[0].includes("חדר 9"), true); // worst delay (19 min) shown first

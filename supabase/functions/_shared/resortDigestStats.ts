@@ -14,6 +14,7 @@ import {
   type StaffTemplateMap,
 } from "./staffNotifyTemplates.ts";
 import { composeDigestTeamOpsSection, type TeamOpsStats } from "./teamOpsAnalytics.ts";
+import { isEffectiveSuiteGuest } from "./suiteNames.ts";
 
 // Same value as guestAlertWhapiNotify.ts's STAFF_APP_ORIGIN — duplicated, not
 // imported. This module is deliberately zero-I/O / dependency-light (pure
@@ -324,7 +325,8 @@ function taskCategoryLabelHe(category: string): string {
 }
 
 /**
- * One deterministic action line for the CEO — derived only from computed stats.
+ * @deprecated Removed from push messages — CEO pulse is observational, not task assignment.
+ * Kept for unit tests / on-demand deep reports until fully retired.
  */
 export function composeExecutiveActionHint(
   stats: ResortDigestStats,
@@ -355,6 +357,194 @@ export function composeExecutiveActionHint(
     return `👉 מומלץ היום: ${lowSurveys} סקרים עם ציון נמוך — כדאי לעבור על המשוב בלוח.`;
   }
   return quietFallback ?? "👉 מצב שקט — אין פעולה דחופה מהדוח. שאל אותי «מה מצב הריזורט?» לעדכון חי.";
+}
+
+export type TodayOutlookGuestRow = {
+  status?: string | null;
+  arrival_date?: string | null;
+  departure_date?: string | null;
+  arrival_time?: string | null;
+  room?: string | null;
+  room_type?: string | null;
+  requires_attention?: boolean | null;
+};
+
+export type ExecutiveTodayOutlook = {
+  todayYmd: string;
+  arrivalsToday: number;
+  arrivalsMissingEta: number;
+  inResortSuites: number;
+  departingToday: number;
+  vipArrivingToday: number;
+  humanRequestedInbox: number;
+  pendingApproval: number;
+};
+
+const PRE_ARRIVAL_STATUSES = new Set(["pending", "expected", "room_ready"]);
+
+function formatYmdHe(ymd: string): string {
+  const [, m, d] = ymd.split("-");
+  return `${d}.${m}`;
+}
+
+function isSuiteInResortToday(guest: TodayOutlookGuestRow, todayYmd: string): boolean {
+  if (!isEffectiveSuiteGuest(guest)) return false;
+  if (guest.status !== "checked_in") return false;
+  if (!guest.arrival_date || guest.arrival_date > todayYmd) return false;
+  if (guest.departure_date && guest.departure_date < todayYmd) return false;
+  return true;
+}
+
+/** Live today counters for the CEO morning pulse — pure, caller fetches guests. */
+export function computeExecutiveTodayOutlook(
+  guests: TodayOutlookGuestRow[],
+  todayYmd: string,
+  extras: { humanRequestedInbox?: number; pendingApproval?: number } = {},
+): ExecutiveTodayOutlook {
+  let arrivalsToday = 0;
+  let arrivalsMissingEta = 0;
+  let inResortSuites = 0;
+  let departingToday = 0;
+  let vipArrivingToday = 0;
+
+  for (const g of guests) {
+    if (!g || g.status === "cancelled") continue;
+    if (
+      isEffectiveSuiteGuest(g) &&
+      PRE_ARRIVAL_STATUSES.has(g.status ?? "") &&
+      g.arrival_date === todayYmd
+    ) {
+      arrivalsToday += 1;
+      if (!g.arrival_time?.trim()) arrivalsMissingEta += 1;
+      if (g.requires_attention) vipArrivingToday += 1;
+    }
+    if (isSuiteInResortToday(g, todayYmd)) inResortSuites += 1;
+    if (
+      isEffectiveSuiteGuest(g) &&
+      g.departure_date === todayYmd &&
+      g.status !== "checked_out"
+    ) {
+      departingToday += 1;
+    }
+  }
+
+  return {
+    todayYmd,
+    arrivalsToday,
+    arrivalsMissingEta,
+    inResortSuites,
+    departingToday,
+    vipArrivingToday,
+    humanRequestedInbox: extras.humanRequestedInbox ?? 0,
+    pendingApproval: extras.pendingApproval ?? 0,
+  };
+}
+
+/** One-line yesterday recap for the morning pulse. */
+export function composeYesterdayPulseLine(
+  stats: ResortDigestStats,
+  yesterdayYmd: string,
+): string {
+  const arrivals = stats.arrivals.length;
+  const ready = stats.roomReadyTiming;
+  const total = ready.length;
+  const onTime = ready.filter((r) => r.status === "on_time").length;
+  const rate = total > 0 ? Math.round((onTime / total) * 100) : null;
+  const tasksTotal = stats.requestsBySuite.reduce((sum, r) => sum + r.total, 0);
+  const tasksOpen = stats.requestsBySuite.reduce((sum, r) => sum + r.open, 0);
+
+  let line = `אתמול (${formatYmdHe(yesterdayYmd)}): ${arrivals} הגעות`;
+  if (rate !== null) line += ` · מוכנות ${rate}%`;
+  if (tasksTotal > 0) {
+    line += tasksOpen > 0
+      ? ` · ${tasksTotal} בקשות (${tasksOpen} עדיין פתוחות)`
+      : ` · ${tasksTotal} בקשות`;
+  }
+  return line;
+}
+
+/** Max 2 observational attention lines — never task assignments for the CEO. */
+export function composePulseAttentionLines(
+  stats: ResortDigestStats,
+  today: ExecutiveTodayOutlook,
+): string[] {
+  const lines: string[] = [];
+
+  if (today.pendingApproval > 0) {
+    lines.push(`🔔 ${today.pendingApproval} ממתינות לאישורך`);
+  }
+  if (today.vipArrivingToday > 0) {
+    lines.push(`⭐ ${today.vipArrivingToday} VIP מגיעים היום`);
+  }
+  if (stats.anomalies[0]) {
+    const a = stats.anomalies[0];
+    lines.push(
+      `⚠️ ${a.room} — ${a.count} בקשות ${taskCategoryLabelHe(a.category)} (הצוות בטיפול)`,
+    );
+  }
+  if (stats.surveys?.lowScoreCount) {
+    lines.push(`📉 ${stats.surveys.lowScoreCount} סקרים עם ציון נמוך אתמול`);
+  }
+  if (today.humanRequestedInbox > 0) {
+    lines.push(`💬 ${today.humanRequestedInbox} אורחים מבקשים נציג ב-Inbox`);
+  }
+  if (stats.slaCompliance.breachedStillOpen > 0 && lines.length < 2) {
+    lines.push(
+      `⏱️ ${stats.slaCompliance.breachedStillOpen} משימות פתוחות מעבר ליעד (הצוות בטיפול)`,
+    );
+  }
+
+  return lines.slice(0, 2);
+}
+
+export type ComposeExecutiveMorningPulseOpts = {
+  assistantForName?: string;
+  templates?: StaffTemplateMap;
+};
+
+/**
+ * Short CEO morning pulse (daily cron) — yesterday recap + today outlook.
+ * Observational voice; depth on demand via live assistant conversation.
+ */
+export function composeExecutiveMorningPulse(
+  yesterdayStats: ResortDigestStats,
+  yesterdayYmd: string,
+  today: ExecutiveTodayOutlook,
+  opts: ComposeExecutiveMorningPulseOpts = {},
+): string {
+  const forName = (opts.assistantForName ?? "אליעד").trim() || "אליעד";
+  const shellRow = resolveStaffTemplate(opts.templates, STAFF_TEMPLATE_KEYS.ELIAD_DIGEST_SHELL);
+  const shell = mergeDigestConfig(ELIAD_DIGEST_SHELL_DEFAULTS, shellRow?.digest_config);
+
+  const todayLine = today.arrivalsToday > 0
+    ? `היום: ${today.arrivalsToday} מגיעים` +
+      (today.arrivalsMissingEta > 0
+        ? ` · ${today.arrivalsMissingEta} בלי שעת הגעה (אדיר מטפל)`
+        : "")
+    : "היום: אין הגעות סוויטות";
+
+  const resortLine =
+    `בריזורט: ${today.inResortSuites} סוויטות` +
+    (today.departingToday > 0 ? ` · ${today.departingToday} עוזבים` : "");
+
+  const lines: string[] = [
+    applyStaffMessageTemplate(shell.opening_line, { name: forName }),
+    "",
+    composeYesterdayPulseLine(yesterdayStats, yesterdayYmd),
+    todayLine,
+    resortLine,
+  ];
+
+  const attention = composePulseAttentionLines(yesterdayStats, today);
+  if (attention.length) {
+    lines.push("");
+    lines.push(...attention);
+  } else {
+    lines.push("", "✅ יום שקט — הכל זורם.");
+  }
+
+  lines.push("", shell.footer_pulse ?? shell.footer_2);
+  return lines.join("\n");
 }
 
 export type DigestPeriod = "daily" | "weekly" | "monthly";
@@ -494,7 +684,6 @@ export function composeResortDigestMessage(
     }),
     "",
     composeExecutiveHeadline(stats),
-    composeExecutiveActionHint(stats, shell.action_hint_quiet),
   ];
 
   lines.push("", `הגעות (${stats.arrivals.length}):`);

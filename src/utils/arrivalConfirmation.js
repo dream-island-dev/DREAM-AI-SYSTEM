@@ -63,3 +63,22 @@ export function isArrivalConfirmationMessage(raw, opts = {}) {
   }
   return false;
 }
+
+/** Canonical Stage 1 CTA — Whapi has no Meta quick-reply buttons. */
+export const ARRIVAL_CONFIRM_CTA_HE =
+  'לאישור הגעה — כתבו לנו כאן "כן, מגיעים!" 🌴';
+
+export function bodyAlreadyHasConfirmCta(text) {
+  const heb = hebrewOnlyLetters(text);
+  return heb.includes("כן") && heb.includes("מגיעים");
+}
+
+/**
+ * @param {string} body
+ * @param {{ autoAppend?: boolean }} [opts]
+ */
+export function ensureArrivalConfirmationCta(body, opts = {}) {
+  if (opts.autoAppend === false) return body;
+  if (bodyAlreadyHasConfirmCta(body)) return body;
+  return `${body.trimEnd()}\n\n${ARRIVAL_CONFIRM_CTA_HE}`;
+}

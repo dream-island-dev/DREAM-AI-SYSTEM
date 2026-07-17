@@ -154,6 +154,7 @@ import {
   PENDING_PORTAL_SPA_LLM_SUFFIX,
 } from "../_shared/buildGuestContextForAi.ts";
 import { fetchGuestChatHistory } from "../_shared/guestConversationHistory.ts";
+import { coalesceGuestInboundBurstIfLeader } from "../_shared/guestInboundBurst.ts";
 import {
   runBalloonRoomRequestIntercept,
   runAdministrativeInHouseIntercept,
@@ -185,10 +186,6 @@ const CORS = {
 
 // ── Portal spa request — guests.attention_reason set by guest-portal-spa-request.
 // Portal spa — isPendingPortalSpaRequest + PENDING_PORTAL_SPA_LLM_SUFFIX in buildGuestContextForAi.ts
-
-// Rapid burst coalescing — two webhook invocations within ~2s share one LLM reply.
-const BURST_COALESCE_MS = 1800;
-const BURST_WINDOW_MS   = 5000;
 
 // Module-level cache: shared across requests within the same function instance
 let _configCache: Record<string, string> = {};
@@ -658,39 +655,6 @@ async function claimInboundWaMessage(
 
 // patchClaimedInbound — moved to _shared/guestInboundOrchestrator.ts. Imported above.
 
-/** Leader of a rapid burst orchestrates one LLM reply; followers log only. */
-async function coalesceBurstIfLeader(
-  supabase: ReturnType<typeof createClient>,
-  phone: string,
-  msgId: string,
-): Promise<{ proceed: boolean; coalescedText: string }> {
-  await new Promise((r) => setTimeout(r, BURST_COALESCE_MS));
-
-  const since = new Date(Date.now() - BURST_WINDOW_MS).toISOString();
-  const { data: recentInbound } = await supabase
-    .from("whatsapp_conversations")
-    .select("message, wa_message_id, created_at")
-    .eq("inbox_channel", "meta")
-    .eq("phone", phone)
-    .eq("direction", "inbound")
-    .gte("created_at", since)
-    .order("created_at", { ascending: true });
-
-  const burst = (recentInbound ?? []) as Array<{ message: string; wa_message_id: string | null }>;
-  if (burst.length === 0) return { proceed: true, coalescedText: "" };
-
-  const leaderId = burst[0]?.wa_message_id;
-  if (leaderId && leaderId !== msgId) {
-    console.info(
-      `[webhook] burst delegate skip — msg:${msgId.slice(-8)} leader:${leaderId.slice(-8)}`,
-    );
-    return { proceed: false, coalescedText: "" };
-  }
-
-  const coalescedText = burst.map((b) => b.message).filter(Boolean).join("\n");
-  return { proceed: true, coalescedText };
-}
-
 function applyInRoomStatusOverride(
   supabase: ReturnType<typeof createClient>,
   guestId: number,
@@ -1142,7 +1106,7 @@ async function handleOperationalInHouseIntercept(
 ): Promise<void> {
   const { phone, guestId, guest, text, msgId, claimedConversationId, sim } = opts;
   // text can be burst-coalesced (multiple guest messages within a 5s window,
-  // see coalesceBurstIfLeader) — buildOperationalRequestSummary intentionally
+  // see coalesceGuestInboundBurstIfLeader) — buildOperationalRequestSummary intentionally
   // still scores the full blob (drives the guest-facing reply + internal
   // attention_reason, a separate concern from the ops-group card). dispatchText
   // isolates just the line(s) that independently pass the allowlist, so an
@@ -3068,7 +3032,7 @@ Deno.serve(async (req: Request) => {
       }
 
       // ── Rapid burst coalescing — one LLM reply per back-to-back cluster ──
-      const burst = await coalesceBurstIfLeader(supabase, phone, msgId);
+      const burst = await coalesceGuestInboundBurstIfLeader(supabase, phone, msgId, "meta");
       if (!burst.proceed) continue;
 
       let effectiveText = burst.coalescedText.trim() || text;
@@ -3985,7 +3949,7 @@ Deno.serve(async (req: Request) => {
   // "Fire-and-forget" is not actually guaranteed on the Supabase/Deno Deploy
   // isolate model — once the HTTP Response below is returned, the runtime may
   // freeze/terminate the isolate before an un-awaited async task finishes.
-  // processAsync() routinely takes 2-5s+ (BURST_COALESCE_MS=1800 alone, plus
+  // processAsync() routinely takes 2-5s+ (GUEST_BURST_COALESCE_MS=1800 alone, plus
   // the Gemini/Claude round-trip) — comfortably longer than the best-effort
   // grace period, so replies were being silently cut off after the inbound
   // insert (which resolves fast) but before sendReply() ran. EdgeRuntime.

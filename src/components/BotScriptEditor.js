@@ -18,6 +18,8 @@
 import { useState, useEffect, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import { resolveBotScriptDisplayName, isGarbledDbText } from "../utils/botScriptLabels";
+import { Stage1TrueOutboundPreview } from "./Stage1ArrivalPanel";
+import { STAGE1_AUTO_APPEND_CTA_KEY, parseStage1AutoAppendCta } from "../utils/stage1ArrivalCopy";
 
 const TRIGGER_LABELS = {
   arrival_confirmed: { label: "אחרי אישור הגעה", color: "#1A7A4A", bg: "#E8F5EF" },
@@ -50,6 +52,7 @@ export default function BotScriptEditor() {
   const [expanded,   setExpanded]   = useState(null); // expanded script id
   const [drafts,     setDrafts]     = useState({});   // { [id]: { message_text, ai_system_prompt } }
   const [toast,      setToast]      = useState(null);
+  const [stage1AutoAppendCta, setStage1AutoAppendCta] = useState(true);
 
   const showToast = (type, msg) => {
     setToast({ type, msg });
@@ -59,10 +62,15 @@ export default function BotScriptEditor() {
   const fetchScripts = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) { setLoading(false); return; }
     setLoading(true);
-    const { data, error } = await supabase
-      .from("bot_scripts")
-      .select("id, script_key, display_name, trigger_event, is_meta_template, meta_template_name, message_text, ai_system_prompt, is_active, sort_order")
-      .order("sort_order");
+    const [{ data, error }, { data: stage1Row }] = await Promise.all([
+      supabase
+        .from("bot_scripts")
+        .select("id, script_key, display_name, trigger_event, is_meta_template, meta_template_name, message_text, ai_system_prompt, is_active, sort_order")
+        .order("sort_order"),
+      supabase.from("bot_config").select("config_value")
+        .eq("config_key", STAGE1_AUTO_APPEND_CTA_KEY)
+        .maybeSingle(),
+    ]);
     if (error) {
       showToast("err", "שגיאה בטעינה: " + error.message);
     } else {
@@ -74,6 +82,7 @@ export default function BotScriptEditor() {
       });
       setDrafts(initial);
     }
+    setStage1AutoAppendCta(parseStage1AutoAppendCta(stage1Row?.config_value));
     setLoading(false);
   }, []);
 
@@ -290,6 +299,18 @@ export default function BotScriptEditor() {
                       {d.message_text && (
                         <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
                           {d.message_text.length} תווים
+                        </div>
+                      )}
+                      {script.script_key === "pre_arrival_2d" && d.message_text && (
+                        <div style={{ marginTop: 12 }}>
+                          <div style={{ fontSize: 12, color: "#92400E", marginBottom: 8, lineHeight: 1.55 }}>
+                            עריכה מלאה + מתג רשת ביטחון ב<strong> ניהול חכם → שלב 1</strong>. כאן — תצוגה מה יוצא ממכשיר הסוויטות.
+                          </div>
+                          <Stage1TrueOutboundPreview
+                            draftText={d.message_text}
+                            autoAppendCta={stage1AutoAppendCta}
+                            channel="whapi"
+                          />
                         </div>
                       )}
                     </div>

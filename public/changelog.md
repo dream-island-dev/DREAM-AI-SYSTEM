@@ -1,3 +1,7 @@
+2026-07-17 | Inbox Meta 24h false block when guest wrote on Whapi | `inferDefaultReplyChannel` follows last guest inbound (not bot outbound); auto-switch unified threads to Whapi when Meta window closed but Suites inbound is fresh; banner/send guard via `shouldWarnMetaWindowClosed` (Meta path only). Deploy: frontend only.
+
+2026-07-17 | Stage 1 arrival copy — single source of truth in ACC (Option 2) | `Stage1ArrivalPanel` + `stage1ArrivalCopy.js`: ניהול חכם שלב 1 = מקור האמת ל-Whapi (`bot_scripts.pre_arrival_2d`); תצוגה «מה האורח באמת מקבל» (כולל CTA אוטומטי); מתג `bot_config.stage1_auto_append_cta`; זיהוי «כן מגיעים» גלוי; Override + BotScriptEditor preview. `whatsapp-send` מכבד מתג. migration 229. Deploy: frontend + `whatsapp-send` + `npx supabase db push`.
+
 2026-07-17 | ACC Stage 5 — editable post-Co survey delay | `AutomationControlCenter.js`: Stage 5 (checkout_fb) shows housekeeping-Co trigger explainer + `post_checkout_survey_delay_minutes` editor (0–120 min, save on blur); legacy 20:30 timing greyed for suites. Deploy: frontend only.
 
 2026-07-17 | Staff Agents UI — persona cards (נועה/ליאת/סיגל/Dream Bot) | `StaffAgentsPanel` + `staffAgentRoster.js` in Executive Playbook tab «סוכנים»; live last push, preview, links to templates. Nav renamed «סוכנים חכמים». `staff-notify-preview` daily = morning pulse. Deploy: frontend + `staff-notify-preview`, `resort-digest-cron`, `whapi-webhook`.

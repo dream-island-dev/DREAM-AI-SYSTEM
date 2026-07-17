@@ -153,6 +153,18 @@ describe("contactMatchesChannelFilter + inferDefaultReplyChannel", () => {
     expect(inferDefaultReplyChannel(unified, true)).toBe("meta");
     expect(inferDefaultReplyChannel(unified, false)).toBe("whapi");
   });
+
+  test("inferDefaultReplyChannel follows last guest inbound, not bot outbound", () => {
+    const thread = {
+      inbox_channel: "unified",
+      messages: [
+        { direction: "inbound", created_at: "2026-07-06T10:00:00Z", inbox_channel: "whapi" },
+        { direction: "outbound", created_at: "2026-07-06T10:01:00Z", inbox_channel: "meta" },
+        { direction: "inbound", created_at: "2026-07-06T10:02:00Z", inbox_channel: "whapi" },
+      ],
+    };
+    expect(inferDefaultReplyChannel(thread, false)).toBe("whapi");
+  });
 });
 
 describe("resolveClaimChannel — per-channel staff mute target", () => {

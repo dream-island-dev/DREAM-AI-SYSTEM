@@ -416,7 +416,13 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
+### 2026-07-17 — Stage 1 had two invisible text sources (Meta vs bot_scripts)
+- **Symptom:** Guest received «סופרים את הימים» from Whapi but ACC script editor showed different copy; CTA «כן, מגיעים» appeared without admin writing it.
+- **Root:** Hybrid pipeline — Whapi reads `bot_scripts.pre_arrival_2d`, Meta reads `dream_arrival_confirmation`; `ensureArrivalConfirmationCta` appended silently on Whapi only.
+- **Fix pattern:** Option 2 — ACC Stage 1 «מקור האמת» panel + true outbound preview (`Stage1ArrivalPanel` / `stage1ArrivalCopy.js`); toggle `bot_config.stage1_auto_append_cta`; keep `isArrivalConfirmationMessage` unchanged for intelligent inbound match.
+
 ### 2026-07-17 — Guest bot "one brain" = one prompt assembler + one context builder, not just shared DB rows
+- **Whapi DM spam:** inbound dedupe (`wa_message_id`) alone does not stop N auto-replies when Whapi delivers N distinct IDs in a burst. Meta had burst coalescing; Whapi did not until `_shared/guestInboundBurst.ts`. Belt: 120s outbound body cooldown on `sendGuestDmReply`.
 - **Duplicate fallback prompts are live contradictions, not tech debt:** Meta's local `buildSystemPrompt` vs Whapi's `guestBotPrompt.ts` produced different handoff sentences and hours when `bot_settings.system_prompt` was empty — guests on different channels got different answers for the same FAQ. Fix: delete the local fallback entirely; both channels call `assembleGuestBrainPrompt` only.
 - **Inbox-unified ≠ LLM-unified until history is merged:** UI already showed one thread per phone, but each webhook still fed the model only its own `inbox_channel` history — cross-channel amnesia. `fetchGuestChatHistory({ channel: "unified" })` is the minimal fix before pgvector RAG.
 - **Tier-0 parity is a checklist, not a comment:** Whapi's header comment said operational routing wasn't ported while the code already had it; balloon/admin were the real gaps. Extract intercepts to `_shared` and wire both adapters — don't copy-paste Meta blocks into Whapi again.

@@ -1,6 +1,6 @@
 // supabase/functions/resort-digest-cron/index.ts
 //
-// Resort Ops Digest — daily/weekly/monthly Hebrew summary to Eliad (CEO) via the
+// Resort Ops Digest — daily morning pulse + weekly/monthly summaries to Eliad (CEO) via the
 // Whapi Suites device. Same channel/pattern as the Executive Voice Assistant and
 // manager-morning-digest: aggregates existing operational data, no new capture.
 //
@@ -13,6 +13,7 @@ import { formatWhapiSuitesConversationLog } from "../_shared/outboundDispatchTag
 import { CEO_PHONE_DIGITS } from "../_shared/executiveIdentity.ts";
 import { israelYmd } from "../_shared/automationSchedule.ts";
 import {
+  composeExecutiveMorningPulse,
   composeResortDigestMessage,
   computeResortDigestStats,
   filterDigestRelevantRules,
@@ -23,7 +24,7 @@ import {
   type DigestTaskRow,
 } from "../_shared/resortDigestStats.ts";
 import { loadStaffNotifyTemplates } from "../_shared/staffNotifyTemplates.ts";
-import { fetchTeamOpsStatsForPeriod } from "../_shared/teamOpsDigestFetch.ts";
+import { fetchExecutiveTodayOutlook } from "../_shared/resortPulseStats.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -112,7 +113,7 @@ serve(async (req: Request) => {
       now,
     });
 
-    const { data: ruleRows } = await supabase
+    const { data: ruleRows } = period === "daily" ? { data: [] } : await supabase
       .from("xos_ai_rules")
       .select("rule_text")
       .eq("module", "executive")
@@ -123,22 +124,21 @@ serve(async (req: Request) => {
 
     const templates = await loadStaffNotifyTemplates(supabase);
 
-    let teamOps = null;
+    let body: string;
     if (period === "daily") {
-      const teamRes = await fetchTeamOpsStatsForPeriod(supabase, period, now);
-      if (teamRes.error) {
-        console.warn("[resort-digest-cron] team ops fetch failed (non-blocking):", teamRes.error);
-      } else {
-        teamOps = teamRes.stats;
-      }
-    }
+      const todayOutlook = await fetchExecutiveTodayOutlook(supabase, now);
 
-    const body = composeResortDigestMessage(stats, period, range.label, {
-      assistantForName: "אליעד",
-      learnedDigestNotes,
-      templates,
-      teamOps,
-    });
+      body = composeExecutiveMorningPulse(stats, range.periodDate, todayOutlook, {
+        assistantForName: "אליעד",
+        templates,
+      });
+    } else {
+      body = composeResortDigestMessage(stats, period, range.label, {
+        assistantForName: "אליעד",
+        learnedDigestNotes,
+        templates,
+      });
+    }
 
     const wamid = await sendWhapiText(CEO_PHONE_DIGITS, body, { noLinkPreview: true });
     if (!wamid) {

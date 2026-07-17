@@ -165,9 +165,10 @@ export const ADIR_MORNING_BRIEF_DEFAULTS: Record<string, string> = {
 
 /** Default digest_config keys for Eliad resort digest shell. */
 export const ELIAD_DIGEST_SHELL_DEFAULTS: Record<string, string> = {
-  opening_line: "📋 {{name}}, כאן העוזרת האישית שלך",
+  opening_line: "בוקר טוב {{name}} · נועה כאן",
   period_line: "דוח תפעולי {{period_he}} — {{period_label}}",
   sla_label: "עמידה ביעדי זמן הטיפול",
+  footer_pulse: "שאל «מה קורה?» לעדכון חי · «דוח שבועי» לסיכום מלא",
   footer_1: "רוצה לשנות משהו בדוחות? כתוב לי «תזכרי ש…» — אשמור להבא.",
   footer_2: "לעדכון חי: «מה מצב הריזורט?» או «תן לי דוח יומי עכשיו».",
   action_hint_quiet: "👉 מצב שקט — אין פעולה דחופה מהדוח. שאל אותי «מה מצב הריזורט?» לעדכון חי.",

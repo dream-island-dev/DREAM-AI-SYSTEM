@@ -5,6 +5,12 @@
 // tool to build a same-day Hebrew ops snapshot for the CEO.
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { israelYmd } from "./automationSchedule.ts";
+import {
+  computeExecutiveTodayOutlook,
+  type ExecutiveTodayOutlook,
+  type TodayOutlookGuestRow,
+} from "./resortDigestStats.ts";
 import { isEffectiveSuiteGuest } from "./suiteNames.ts";
 
 /** Calendar today in Israel (YYYY-MM-DD) — matches guestTiming.js's israelTodayStr. */
@@ -150,4 +156,47 @@ export async function fetchResortBrief(supabase: SupabaseClient): Promise<string
     `התראות בתיבה: ${stats.inboxAlertsCount}`,
   ];
   return lines.join("\n");
+}
+
+/** Live today counters for CEO morning pulse — shared by cron + get_ops_digest_now. */
+export async function fetchExecutiveTodayOutlook(
+  supabase: SupabaseClient,
+  now: Date = new Date(),
+): Promise<ExecutiveTodayOutlook> {
+  const todayYmd = israelYmd(now);
+
+  const [liveGuestsRes, pendingRes, inboxRes] = await Promise.all([
+    supabase
+      .from("guests")
+      .select("status, arrival_date, departure_date, arrival_time, room, room_type, requires_attention"),
+    supabase
+      .from("tasks")
+      .select("id", { count: "exact", head: true })
+      .eq("status", "pending_approval"),
+    supabase
+      .from("whatsapp_conversations")
+      .select("phone")
+      .eq("direction", "inbound")
+      .eq("human_requested", true)
+      .order("created_at", { ascending: false })
+      .limit(200),
+  ]);
+
+  const seenPhones = new Set<string>();
+  let humanRequestedInbox = 0;
+  for (const row of (inboxRes.data ?? []) as Array<{ phone: string }>) {
+    const key = (row.phone ?? "").replace(/\D/g, "").slice(-9);
+    if (!key || seenPhones.has(key)) continue;
+    seenPhones.add(key);
+    humanRequestedInbox += 1;
+  }
+
+  return computeExecutiveTodayOutlook(
+    (liveGuestsRes.data ?? []) as TodayOutlookGuestRow[],
+    todayYmd,
+    {
+      humanRequestedInbox,
+      pendingApproval: pendingRes.count ?? 0,
+    },
+  );
 }
