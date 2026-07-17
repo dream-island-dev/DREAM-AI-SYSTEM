@@ -32,7 +32,7 @@ export function buildHousekeepingCheckInAckLine(result: HousekeepingCheckInResul
     case "updated":
       return `✅ חדר ${roomId} — צ'ק-אין נקלט${guestName ? ` (${guestName})` : ""}`;
     case "already_checked_in":
-      return `ℹ️ חדר ${roomId} — כבר מסומן כצ'ק-אין`;
+      return null;
     case "no_guest":
       return `⚠️ חדר ${roomId} — צ'ק-אין: לא נמצא אורח פעיל בחדר`;
     case "guest_not_eligible":
@@ -87,6 +87,21 @@ export async function applyHousekeepingCheckInSignal(
   }
 
   if (guest.status === "checked_in") {
+    const now = new Date().toISOString();
+    const { error: roomErr } = await supabase.from("room_status").upsert(
+      { room_id: roomId, status: "תפוס", updated_at: now },
+      { onConflict: "room_id" },
+    );
+    if (roomErr) {
+      console.warn(
+        `[housekeepingCheckIn] already_checked_in — room_status sync failed for ${roomId}:`,
+        roomErr.message,
+      );
+    } else {
+      console.log(
+        `[housekeepingCheckIn] ${roomId} (#${roomNumber}) guest=${guest.id} — already_checked_in, room_status→תפוס`,
+      );
+    }
     return {
       ok: true, roomNumber, roomId, guestId: guest.id, guestName: guest.name, action: "already_checked_in",
     };

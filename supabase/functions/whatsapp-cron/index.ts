@@ -41,6 +41,7 @@ import { buildRetryStateMap, evaluateRetryGate, RETRY_LOOKBACK_HOURS, type Retry
 import { probeWhapiDeviceHealth, persistWhapiHealthToBotConfig } from "../_shared/whapiHealth.ts";
 import { INTER_SEND_DELAY_MS, sleep } from "../_shared/outboundThrottle.ts";
 import { processDuePostCheckoutSurveys, catchUpDepartedTodaySuiteCheckoutSurveys } from "../_shared/postCheckoutSurvey.ts";
+import { runWeeklyGuestHallucinationAudit } from "../_shared/guestHallucinationAudit.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -71,6 +72,37 @@ Deno.serve(async (req: Request) => {
     console.warn("[whatsapp-cron] heartbeat upsert failed (non-blocking):", (e as Error).message);
   }
 
+  // ── Manual hallucination audit — URL ?audit=1 OR POST body {audit:true} ────
+  // supabase.functions.invoke() can't pass a query string cleanly, so the
+  // BotSettings "בריאות המוח" card sends {audit:true} in the body instead.
+  // The audit is deterministic and sends ZERO guest messages, so an explicit
+  // audit call runs BEFORE the CRON_ENABLED kill switch and returns immediately
+  // — it must never trigger the outbound dispatch pipeline off-schedule.
+  let bodyAudit = false;
+  try {
+    const body = (await req.json()) as Record<string, unknown>;
+    bodyAudit = body?.audit === true || body?.audit === "1" || body?.audit === 1;
+  } catch { /* no JSON body — scheduled invocation */ }
+  const forceAudit = bodyAudit || new URL(req.url).searchParams.get("audit") === "1";
+  if (forceAudit) {
+    try {
+      const auditClient = createClient(
+        Deno.env.get("SUPABASE_URL")!,
+        Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+      );
+      const report = await runWeeklyGuestHallucinationAudit(auditClient);
+      return new Response(
+        JSON.stringify({ ok: true, audit_only: true, report }),
+        { headers: { ...CORS, "Content-Type": "application/json" } },
+      );
+    } catch (e) {
+      return new Response(
+        JSON.stringify({ ok: false, audit_only: true, error: (e as Error).message }),
+        { status: 500, headers: { ...CORS, "Content-Type": "application/json" } },
+      );
+    }
+  }
+
   // ── EMERGENCY KILL SWITCH ───────────────────────────────────────────────────
   // ALL automated outbound sends are halted until CRON_ENABLED=true is set
   // explicitly in Supabase Secrets (Project → Settings → Edge Functions → Secrets).
@@ -88,6 +120,20 @@ Deno.serve(async (req: Request) => {
     const anon = Deno.env.get("SUPABASE_ANON_KEY")!;
     const supabase = createClient(supabaseUrl, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
     await primeGuestChannelConfig(supabase);
+
+    // Weekly Sunday auto-run — forced audit (?audit=1 / body {audit:true}) is
+    // handled as an early return above the kill switch and never reaches here.
+    const isSundayIsrael = new Date().toLocaleString("en-US", { timeZone: "Asia/Jerusalem", weekday: "short" }) === "Sun";
+    if (isSundayIsrael) {
+      try {
+        const auditReport = await runWeeklyGuestHallucinationAudit(supabase);
+        console.info(
+          `[whatsapp-cron] guest hallucination audit — passed ${auditReport.passed}/${auditReport.total}`,
+        );
+      } catch (e) {
+        console.warn("[whatsapp-cron] guest hallucination audit failed (non-blocking):", (e as Error).message);
+      }
+    }
 
     // Whapi device probe (non-blocking) — persists bot_config for auto-failover.
     try {

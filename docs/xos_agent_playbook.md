@@ -416,6 +416,11 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
+### 2026-07-17 — Guest bot "one brain" = one prompt assembler + one context builder, not just shared DB rows
+- **Duplicate fallback prompts are live contradictions, not tech debt:** Meta's local `buildSystemPrompt` vs Whapi's `guestBotPrompt.ts` produced different handoff sentences and hours when `bot_settings.system_prompt` was empty — guests on different channels got different answers for the same FAQ. Fix: delete the local fallback entirely; both channels call `assembleGuestBrainPrompt` only.
+- **Inbox-unified ≠ LLM-unified until history is merged:** UI already showed one thread per phone, but each webhook still fed the model only its own `inbox_channel` history — cross-channel amnesia. `fetchGuestChatHistory({ channel: "unified" })` is the minimal fix before pgvector RAG.
+- **Tier-0 parity is a checklist, not a comment:** Whapi's header comment said operational routing wasn't ported while the code already had it; balloon/admin were the real gaps. Extract intercepts to `_shared` and wire both adapters — don't copy-paste Meta blocks into Whapi again.
+
 ### 2026-07-16 — Staff Group Analytics: chitchat is data, not noise
 - **Webhook POST auth (2026-07-16):** Meta POST must pass `X-Hub-Signature-256` (`META_APP_SECRET`); Whapi POST must carry `X-Whapi-Secret` matching `WHAPI_WEBHOOK_SECRET` (configure via Whapi `PATCH /settings` → `webhooks[].headers`). Both fail closed if secret missing — deploy secrets *before* functions or traffic stops. Bypass only for local sim: `WHATSAPP_SIMULATION` / `WHAPI_WEBHOOK_SKIP_AUTH`.
 - **Split "presence" from "operational impact"** — message share ≠ work done. `teamOpsAnalytics.ts` reports both: presence from `staff_group_messages`, operational share from `tasks` + `housekeeping_wa_events` + 👍 reactions. Executive assistant answers with `get_team_ops_analytics`, not raw SQL.

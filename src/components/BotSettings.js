@@ -8,8 +8,13 @@
 //
 // bot_config.bot_active / bot_active_whapi — per-channel on/off toggles below.
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
+import {
+  detectKnowledgeConflicts,
+  formatKnowledgeConflictWarning,
+  HOUR_CONFIG_KEYS,
+} from "../utils/guestKnowledgeValidation";
 
 const DEFAULT_PROMPT_HINT =
   'לדוגמה:\nאתה "DREAM CONCIERGE" — הקונסיירז\' הדיגיטלי הרשמי של Dream Island Resort & Spa.\n' +
@@ -56,6 +61,36 @@ const MODULE_LABELS = {
   routing: "ניתוב בקשות (Requests Board)",
 };
 
+// Mirrors HALLUCINATION_AUDIT_PROBES ids in _shared/guestHallucinationAudit.ts
+// (frontend can't import a Deno Edge module — same convention as MODEL_OPTIONS).
+// Unknown ids render as the raw id — FAIL VISIBLE, never hidden.
+const AUDIT_PROBE_LABELS = {
+  checkin_hours: "שעת צ'ק-אין",
+  pool_hours: "שעות בריכה",
+  wifi: "סיסמת WiFi",
+  rooftop_bar: "בר על הגג (בדיקת מלכודת)",
+  helicopter: "הזמנת מסוק (בדיקת מלכודת)",
+  spa_booking: "הזמנת טיפול ספא",
+  checkout: "שעת צ'ק-אאוט",
+  pets: "חיות מחמד (בדיקת מלכודת)",
+};
+
+const AUDIT_CONFIG_KEYS = [
+  "guest_hallucination_audit_last_run",
+  "guest_hallucination_audit_summary",
+];
+
+// bot_config stores the summary as JSON text; a malformed value is shown raw
+// in the card (FAIL VISIBLE) instead of being swallowed.
+function parseAuditSummary(raw) {
+  if (!raw) return null;
+  try {
+    const obj = JSON.parse(raw);
+    if (obj && typeof obj === "object") return obj;
+  } catch { /* fall through to raw */ }
+  return { parseError: true, raw };
+}
+
 function formatRuleDate(iso) {
   if (!iso) return "";
   try {
@@ -70,11 +105,15 @@ export default function BotSettings() {
   const [knowledgeBase, setKnowledgeBase] = useState("");
   const [preferredModel, setPreferredModel] = useState("");
   const [channelActive, setChannelActive] = useState({ bot_active: true, bot_active_whapi: true });
+  const [hourConfig, setHourConfig] = useState({});
   const [channelSaving, setChannelSaving] = useState(null);
   const [learnedRules, setLearnedRules] = useState([]);
   const [editingRuleId, setEditingRuleId] = useState(null);
   const [editingRuleText, setEditingRuleText] = useState("");
   const [ruleBusyId, setRuleBusyId] = useState(null);
+  const [auditLastRun, setAuditLastRun] = useState(null);
+  const [auditSummary, setAuditSummary] = useState(null);
+  const [auditRunning, setAuditRunning] = useState(false);
   const [loading,  setLoading]  = useState(true);
   const [rulesLoading, setRulesLoading] = useState(true);
   const [saving,   setSaving]   = useState(false);
@@ -88,9 +127,10 @@ export default function BotSettings() {
   const fetchSettings = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) { setLoading(false); return; }
     setLoading(true);
+    const configKeys = ["bot_active", "bot_active_whapi", ...HOUR_CONFIG_KEYS, ...AUDIT_CONFIG_KEYS];
     const [{ data, error }, { data: cfgRows }] = await Promise.all([
       supabase.from("bot_settings").select("system_prompt, knowledge_base, preferred_model").eq("id", 1).maybeSingle(),
-      supabase.from("bot_config").select("config_key, config_value").in("config_key", ["bot_active", "bot_active_whapi"]),
+      supabase.from("bot_config").select("config_key, config_value").in("config_key", configKeys),
     ]);
     if (error) {
       showToast("err", "שגיאה בטעינה: " + error.message);
@@ -104,8 +144,50 @@ export default function BotSettings() {
       bot_active: cfgMap.bot_active !== "false",
       bot_active_whapi: cfgMap.bot_active_whapi !== "false",
     });
+    const hours = {};
+    for (const key of HOUR_CONFIG_KEYS) {
+      if (cfgMap[key]) hours[key] = cfgMap[key];
+    }
+    setHourConfig(hours);
+    setAuditLastRun(cfgMap.guest_hallucination_audit_last_run ?? null);
+    setAuditSummary(parseAuditSummary(cfgMap.guest_hallucination_audit_summary));
     setLoading(false);
   }, []);
+
+  const runAuditNow = async () => {
+    if (!isSupabaseConfigured || !supabase) return showToast("err", "Supabase לא מחובר");
+    setAuditRunning(true);
+    // whatsapp-cron treats body {audit:true} as audit-only — deterministic KB
+    // probes, zero guest messages, returns before the dispatch pipeline.
+    const { data, error } = await supabase.functions.invoke("whatsapp-cron", {
+      body: { audit: true },
+    });
+    setAuditRunning(false);
+    if (error || !data?.ok || !data?.report) {
+      showToast("err", "בדיקת ההזיות נכשלה: " + (error?.message ?? data?.error ?? "תשובה לא צפויה"));
+      return;
+    }
+    const report = data.report;
+    setAuditLastRun(report.run_at);
+    setAuditSummary({
+      run_at: report.run_at,
+      passed: report.passed,
+      failed: report.failed,
+      total: report.total,
+      failed_probes: (report.rows ?? []).filter((r) => !r.passed).map((r) => r.probe_id),
+    });
+    showToast(
+      report.failed > 0 ? "err" : "ok",
+      report.failed > 0
+        ? `האודיט מצא ${report.failed} שאלות ללא כיסוי בבסיס הידע`
+        : `האודיט עבר — ${report.passed}/${report.total} שאלות מכוסות`,
+    );
+  };
+
+  const knowledgeConflicts = useMemo(
+    () => detectKnowledgeConflicts(hourConfig, knowledgeBase),
+    [hourConfig, knowledgeBase],
+  );
 
   const fetchLearnedRules = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) {
@@ -400,6 +482,137 @@ export default function BotSettings() {
                       ⚠️ ארוך מאוד — שקול לקצר לעיקרי הדברים
                     </span>
                   )}
+                </div>
+                {knowledgeConflicts.length > 0 && (
+                  <div
+                    role="alert"
+                    style={{
+                      marginTop: 12,
+                      padding: "10px 14px",
+                      borderRadius: 8,
+                      background: "rgba(245, 158, 11, 0.12)",
+                      border: "1px solid rgba(245, 158, 11, 0.45)",
+                      fontSize: 12,
+                      lineHeight: 1.7,
+                      color: "#92400e",
+                      whiteSpace: "pre-wrap",
+                    }}
+                  >
+                    <strong>⚠️ סתירות ידע בין bot_config לבסיס הידע:</strong>
+                    {"\n"}
+                    {formatKnowledgeConflictWarning(knowledgeConflicts)}
+                    {"\n"}
+                    במקרה של סתירה — knowledge_base גובר על שעות ב-bot_config.
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* ── Brain health — hallucination audit + knowledge conflicts ──── */}
+        <div className="card" style={{ marginBottom: 24 }}>
+          <div className="card-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+            <div>
+              <div className="card-title">🩺 בריאות המוח</div>
+              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                אודיט הזיות דטרמיניסטי (ללא עלות AI) — רץ אוטומטית כל יום ראשון
+              </span>
+            </div>
+            <button
+              type="button"
+              className="btn btn-sm btn-secondary"
+              onClick={runAuditNow}
+              disabled={auditRunning || loading}
+              title={
+                auditRunning
+                  ? "האודיט רץ כעת — המתן לסיום"
+                  : "מריץ את 8 שאלות הבדיקה מול בסיס הידע השמור בשרת (לא שולח שום הודעה לאורחים)"
+              }
+            >
+              {auditRunning ? "⏳ בודק…" : "🧪 הרץ בדיקה עכשיו"}
+            </button>
+          </div>
+          <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 10 }}>
+            {loading ? (
+              <div style={{ color: "var(--text-muted)", padding: "10px 0", textAlign: "center" }}>⏳ טוען...</div>
+            ) : (
+              <>
+                {/* Hallucination audit status */}
+                {auditSummary?.parseError ? (
+                  <div role="alert" style={{
+                    padding: "10px 14px", borderRadius: 8, fontSize: 12, lineHeight: 1.7,
+                    background: "rgba(239,68,68,0.10)", border: "1px solid rgba(239,68,68,0.45)", color: "#991b1b",
+                    whiteSpace: "pre-wrap", direction: "ltr", textAlign: "left",
+                  }}>
+                    <strong>⚠ סיכום אודיט לא תקין ב-bot_config (מוצג כפי שנשמר):</strong>
+                    {"\n"}{auditSummary.raw}
+                  </div>
+                ) : !auditSummary ? (
+                  <div style={{
+                    padding: "10px 14px", borderRadius: 8, fontSize: 13, lineHeight: 1.7,
+                    background: "rgba(245,158,11,0.10)", border: "1px solid rgba(245,158,11,0.45)", color: "#92400e",
+                  }}>
+                    🕐 אודיט הזיות טרם רץ — הרץ עכשיו או המתן לריצה האוטומטית ביום ראשון.
+                  </div>
+                ) : (
+                  <div style={{
+                    padding: "10px 14px", borderRadius: 8, fontSize: 13, lineHeight: 1.8,
+                    background: auditSummary.failed > 0 ? "rgba(239,68,68,0.08)" : "rgba(26,122,74,0.08)",
+                    border: `1px solid ${auditSummary.failed > 0 ? "rgba(239,68,68,0.4)" : "rgba(26,122,74,0.4)"}`,
+                    color: auditSummary.failed > 0 ? "#991b1b" : "#1A7A4A",
+                  }}>
+                    <div style={{ fontWeight: 700 }}>
+                      {auditSummary.failed > 0
+                        ? `❌ ${auditSummary.failed} מתוך ${auditSummary.total} שאלות בדיקה ללא כיסוי בבסיס הידע`
+                        : `✅ אודיט הזיות עבר — ${auditSummary.passed}/${auditSummary.total} שאלות מכוסות`}
+                      {auditLastRun && (
+                        <span style={{ fontWeight: 400, fontSize: 12, color: "var(--text-muted)", marginRight: 8 }}>
+                          (רץ לאחרונה: {formatRuleDate(auditLastRun)})
+                        </span>
+                      )}
+                    </div>
+                    {auditSummary.failed > 0 && (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+                        {(auditSummary.failed_probes ?? []).map((id) => (
+                          <span key={id} style={{
+                            fontSize: 12, padding: "3px 10px", borderRadius: 999,
+                            background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.35)",
+                          }}>
+                            {AUDIT_PROBE_LABELS[id] ?? id}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Knowledge conflicts (details in the KB card above) */}
+                <div style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 8 }}>
+                  {knowledgeConflicts.length > 0 ? (
+                    <span style={{ color: "#991b1b", fontWeight: 600 }}>
+                      ⚠️ {knowledgeConflicts.length} סתירות בין bot_config לבסיס הידע — פירוט בכרטיס בסיס הידע למעלה
+                    </span>
+                  ) : (
+                    <span style={{ color: "#1A7A4A" }}>✅ אין סתירות בין bot_config לבסיס הידע</span>
+                  )}
+                </div>
+
+                {/* KB presence */}
+                <div style={{ fontSize: 13 }}>
+                  {knowledgeBase.trim() ? (
+                    <span style={{ color: "#1A7A4A" }}>
+                      ✅ בסיס ידע פעיל ({knowledgeBase.length} תווים) — שליפת RAG לפי מילות מפתח
+                    </span>
+                  ) : (
+                    <span style={{ color: "#92400e", fontWeight: 600 }}>
+                      ⚠️ בסיס ידע ריק — הבוט נשען על שעות bot_config בלבד, ושאלות עובדתיות יופנו לצוות
+                    </span>
+                  )}
+                </div>
+                <div style={{ fontSize: 11, color: "var(--text-muted)", lineHeight: 1.6 }}>
+                  האודיט בודק שליפה מבסיס הידע בלבד (checkin, בריכה, WiFi, ספא, צ'ק-אאוט + 3 שאלות מלכודת) —
+                  שינוי בבסיס הידע דורש שמירה לפני הרצה כדי שייבדק הנוסח המעודכן.
                 </div>
               </>
             )}

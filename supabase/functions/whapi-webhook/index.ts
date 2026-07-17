@@ -84,8 +84,6 @@ import {
 } from "../_shared/daypassWindowOpener.ts";
 import { onGuestAlertInserted } from "../_shared/guestAlertWhapiNotify.ts";
 import { extractArrivalTimeFromText, persistGuestEta, insertArrivalEtaBoardAlert } from "../_shared/guestEta.ts";
-import { formatGuestProfileForAi } from "../_shared/guestProfile.ts";
-import { formatSpaScheduleDisplay } from "../_shared/spaSchedule.ts";
 import { isStaffAssistantInbound } from "../_shared/executiveIdentity.ts";
 import { handleExecutiveVoiceMessage } from "../_shared/executiveAssistant.ts";
 import { ingestStaffGroupMessage, resolveHousekeepingSender } from "../_shared/staffGroupIngest.ts";
@@ -109,6 +107,8 @@ import {
   buildDepartureAssistSummary,
   buildDepartureAssistReply,
   isReplyObviouslyTruncated,
+  shouldInterceptBalloonRoomRequest,
+  shouldInterceptAdministrativeInHouseRequest,
 } from "../_shared/automationSchedule.ts";
 import { createGuestOpsTask } from "../_shared/createGuestOpsTask.ts";
 import {
@@ -134,6 +134,16 @@ import {
 } from "../_shared/guestBotHandoff.ts";
 import { assembleGuestBrainPrompt } from "../_shared/guestBotSettings.ts";
 import { generateGuestChatReply } from "../_shared/guestBotLlm.ts";
+import {
+  formatGuestContextLine,
+  isPendingPortalSpaRequest,
+  PENDING_PORTAL_SPA_LLM_SUFFIX,
+} from "../_shared/buildGuestContextForAi.ts";
+import { fetchGuestChatHistory } from "../_shared/guestConversationHistory.ts";
+import {
+  runBalloonRoomRequestIntercept,
+  runAdministrativeInHouseIntercept,
+} from "../_shared/guestBalloonAdminIntercept.ts";
 import {
   verifyWhapiWebhookSecret,
   readWhapiWebhookSecretHeader,
@@ -621,17 +631,13 @@ async function mirrorWhapiOutboundDm(
 //   • bot_active_whapi — PORTED (§2, migration 170 stub ahead of §4's real
 //     toggle UI). Gates only the generic LLM/FAQ reply below, same position
 //     as Meta's bot_active gate.
-//   • Operational / administrative in-house routing and balloon-room-decor
-//     routing (Requests Board intercepts) — NOT ported. These requests reach
-//     the LLM fallback instead of creating a task/board row automatically.
 //   • Auto-away detection, in-room keyword override, 15:00 auto-checkin
-//     promotion, date-change regex — NOT ported.
+//     promotion, burst/multi-message aggregation — NOT ported (Meta only).
+//   • balloon + administrative in-house — PORTED (_shared/guestBalloonAdminIntercept).
 // Every one of these still works normally on the Meta channel; a guest who
 // also has a Meta thread is unaffected. Revisit this list before promoting
 // GUEST_WHAPI_SUITES_ENABLED beyond a pilot rollout.
 // ══════════════════════════════════════════════════════════════════════════════
-
-const GUEST_DM_HISTORY_LIMIT = 6;
 
 async function patchGuestDmInbound(
   supabase: ReturnType<typeof createClient>,
@@ -673,72 +679,6 @@ const GUEST_DM_DEFAULT_GREETING_REPLY =
 function buildGuestDmGreetingReply(guestName: string | null, scriptText: string | null): string {
   const base = scriptText?.trim() || GUEST_DM_DEFAULT_GREETING_REPLY;
   return base.replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, guestName?.trim() || "אורח יקר");
-}
-
-function buildWhapiGuestContextLine(guest: ActiveGuestRow | null): string {
-  if (!guest) return "";
-  const g = guest as ActiveGuestRow & {
-    arrival_date?: string | null;
-    departure_date?: string | null;
-    arrival_time?: string | null;
-    arrival_confirmed?: boolean | null;
-    spa_time?: string | null;
-    spa_date?: string | null;
-    guest_profile?: Record<string, unknown> | null;
-  };
-  const today = new Date().toISOString().split("T")[0];
-  const isCheckedIn = g.status === "checked_in";
-
-  // Same stage computation as whatsapp-webhook's buildGuestStageContext — keep
-  // the two channels' guest-awareness in sync (2026-07-10 parity pass).
-  let stage = "";
-  if (g.arrival_date) {
-    if (g.arrival_date > today) stage = "טרם הגעה";
-    else if (g.arrival_date === today) stage = "יום הגעה — האורח מגיע היום";
-    else stage = "בתוך השהות";
-  }
-
-  const parts: string[] = [];
-  if (g.name) parts.push(`שם: ${g.name}`);
-  if (stage) parts.push(`שלב האורח: ${stage}`);
-  if (g.arrival_date) parts.push(`תאריך הגעה: ${g.arrival_date}`);
-  if (g.departure_date) parts.push(`תאריך עזיבה: ${g.departure_date}`);
-  if (g.room && isCheckedIn) {
-    parts.push(`חדר: ${g.room}`);
-  } else if (g.room) {
-    parts.push("חדר: ייחשף בצ'ק-אין — לפני אז אסור לחשוף/להמציא שם חדר ספציפי, רק לציין שזו סוויטת יוקרה");
-  }
-  if (g.room_type === "suite") parts.push("סוג: סוויטה");
-  if (g.status) parts.push(`סטטוס: ${g.status}`);
-  if (g.arrival_confirmed) parts.push("אישר הגעה: כן");
-  if (g.spa_time || g.spa_date) {
-    const sched = formatSpaScheduleDisplay(g.spa_date, g.spa_time);
-    if (sched) parts.push(`טיפול ספא: ${sched}`);
-  }
-
-  const profileLine = formatGuestProfileForAi(g.guest_profile ?? null, g.arrival_time ?? null);
-  if (profileLine) parts.push(profileLine);
-
-  return parts.length ? `\n\nפרטי האורח הנוכחי: ${parts.join(" | ")}` : "";
-}
-
-async function fetchGuestDmHistory(
-  supabase: ReturnType<typeof createClient>,
-  phone: string,
-): Promise<Array<{ direction: string; message: string }>> {
-  const { data } = await supabase
-    .from("whatsapp_conversations")
-    .select("direction, message, created_at")
-    .eq("phone", phone)
-    .eq("inbox_channel", "whapi") // never blend in Meta-channel history for the same phone (migration 164)
-    .order("created_at", { ascending: false })
-    .limit(GUEST_DM_HISTORY_LIMIT);
-  return ((data ?? []) as Array<{ direction: string; message: string }>)
-    .map((h) => ({
-      direction: h.direction,
-      message: stripOutboundDispatchTag(h.message),
-    }))
-    .reverse();
 }
 
 /** staffMuted mirrors whatsapp-webhook's _suppressGuestRepliesStaffClaim contract
@@ -907,6 +847,15 @@ async function handleGuestDirectMessage(
     // (matches Meta's own cost-saving gate — no point generating a reply that
     // will be discarded).
     const staffMuted = isGuestStaffClaimActive(guestRecord, "whapi");
+
+    const whapiTier0Adapter = {
+      patchInbound: (patch: Record<string, unknown>) =>
+        patchGuestDmInbound(supabase, conversationId, patch),
+      sendReply: (replyText: string, _intent: string) =>
+        sendGuestDmReply(supabase, phone, guestId, replyText, staffMuted),
+      sourceLabel: "מכשיר הסוויטות",
+      logTag: "whapi-webhook",
+    };
 
     // ── Tier-0 greeting opener (היי / שלום) — before courtesy silent-exit,
     // same ordering whatsapp-webhook uses (a bare "היי" must never be swept
@@ -1197,6 +1146,28 @@ async function handleGuestDirectMessage(
       return;
     }
 
+    // ── Balloon room décor (Tier-0) — parity with Meta.
+    if (guestId && guestRecord && shouldInterceptBalloonRoomRequest(text)) {
+      await runBalloonRoomRequestIntercept(
+        supabase,
+        { phone, guestId, guest: guestRecord, text, conversationId },
+        whapiTier0Adapter,
+      );
+      results.push({ ...base, action: "balloon_room_request", muted: staffMuted });
+      return;
+    }
+
+    const guestStatus = (guestRecord?.status as string | null) ?? null;
+    if (guestId && guestRecord && shouldInterceptAdministrativeInHouseRequest(text, guestStatus)) {
+      await runAdministrativeInHouseIntercept(
+        supabase,
+        { phone, guestId, guest: guestRecord, text, conversationId },
+        whapiTier0Adapter,
+      );
+      results.push({ ...base, action: "administrative_in_house_request", muted: staffMuted });
+      return;
+    }
+
     // ── Human / callback request (Tier-0) — shared brain with Meta.
     // Guest asked staff to call them back or speak to a human — never LLM
     // invent "please contact us". Flag Inbox; reply is deterministic.
@@ -1243,27 +1214,37 @@ async function handleGuestDirectMessage(
       return;
     }
     const inHouse = guest?.status === "checked_in";
+    const history = await fetchGuestChatHistory(supabase, phone, { channel: "unified", limit: 6 });
+    const guestCtxLine = formatGuestContextLine(guestRecord, history, { forceInHouse: inHouse });
     const brain = await assembleGuestBrainPrompt(supabase, "whapi", {
-      guestContextLine: buildWhapiGuestContextLine(guest),
+      guestContextLine: guestCtxLine,
       inHouse,
+      userMessage: text,
     });
-    console.info(`[whapi-webhook] guest_dm prompt source: ${brain.promptSource} model_pref=${brain.preferredModel ?? "(default)"}`);
+    console.info(`[whapi-webhook] guest_dm prompt source: ${brain.promptSource} rag_conf=${brain.ragConfidence.toFixed(2)}`);
 
     let replyText: string;
-    try {
-      const history = await fetchGuestDmHistory(supabase, phone);
-      replyText = await generateGuestChatReply({
-        userMessage: text,
-        guestName: guestName,
-        history,
-        systemPrompt: brain.systemPrompt,
-        preferredModel: brain.preferredModel,
-        logTag: "whapi-webhook",
-        failoverLog: { supabase, guestPhone: phone },
-      });
-    } catch (e) {
-      console.error("[whapi-webhook] guest DM LLM reply failed:", (e as Error).message);
+    if (brain.lowConfidenceHandoff) {
       replyText = GUEST_STAFF_HANDOFF_SENTENCE;
+      console.info(`[whapi-webhook] 🛡️ RAG low-confidence handoff — phone:${phone}`);
+    } else {
+      try {
+        const enrichedPrompt = brain.systemPrompt
+          + (guestRecord && isPendingPortalSpaRequest(guestRecord)
+            ? `\n\n${PENDING_PORTAL_SPA_LLM_SUFFIX}` : "");
+        replyText = await generateGuestChatReply({
+          userMessage: text,
+          guestName: guestName,
+          history,
+          systemPrompt: enrichedPrompt,
+          preferredModel: brain.preferredModel,
+          logTag: "whapi-webhook",
+          failoverLog: { supabase, guestPhone: phone },
+        });
+      } catch (e) {
+        console.error("[whapi-webhook] guest DM LLM reply failed:", (e as Error).message);
+        replyText = GUEST_STAFF_HANDOFF_SENTENCE;
+      }
     }
     if (isReplyObviouslyTruncated(replyText)) {
       console.warn(

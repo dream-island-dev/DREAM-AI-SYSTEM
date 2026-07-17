@@ -6,9 +6,23 @@ import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.0
 import {
   GUEST_BRAIN_CONFIG_TTL_MS,
   buildSystemPromptFromBotConfig,
+  buildMinimalPersonaFromBotConfig,
   appendGuestBrainInvariantSuffixes,
   type GuestBrainChannel,
 } from "./guestBotPrompt.ts";
+import {
+  detectKnowledgeConflicts,
+  formatKnowledgeConflictWarning,
+  shouldUseConfigHoursInPrompt,
+} from "./guestKnowledgeValidation.ts";
+import {
+  retrieveGuestKnowledge,
+  formatRagContextBlock,
+  looksLikeFactualResortQuestion,
+  RAG_LOW_CONFIDENCE_THRESHOLD,
+  syncKnowledgeChunksToDb,
+} from "./guestRag.ts";
+import { GUEST_STAFF_HANDOFF_SENTENCE } from "./guestBotHandoff.ts";
 
 export type GuestBotSettingsRow = {
   system_prompt: string;
@@ -133,13 +147,19 @@ export type AssembledGuestBrain = {
   preferredModel: string | null;
   promptSource: "bot_settings" | "bot_scripts/ongoing_concierge" | "bot_config";
   routingSuffix: string;
+  ragConfidence: number;
+  lowConfidenceHandoff: boolean;
 };
 
 /** Same priority as whatsapp-webhook finalSystemPrompt (without per-message guestCtx). */
 export async function assembleGuestBrainPrompt(
   supabase: SupabaseClient,
   channel: GuestBrainChannel,
-  opts?: { guestContextLine?: string; inHouse?: boolean },
+  opts?: {
+    guestContextLine?: string;
+    inHouse?: boolean;
+    userMessage?: string;
+  },
 ): Promise<AssembledGuestBrain> {
   const [botConfig, botSettings, ongoingPrompt, learned] = await Promise.all([
     fetchGuestBotConfig(supabase),
@@ -148,12 +168,42 @@ export async function assembleGuestBrainPrompt(
     fetchGuestLearnedRulesSuffixes(supabase),
   ]);
 
-  const kbSuffix = botSettings.knowledge_base?.trim()
-    ? `\n\n══ בסיס ידע הריזורט ══\n${botSettings.knowledge_base.trim()}`
-    : "";
+  const kbRaw = botSettings.knowledge_base?.trim() ?? "";
+  const conflicts = detectKnowledgeConflicts(botConfig, kbRaw);
+  const conflictWarn = formatKnowledgeConflictWarning(conflicts);
+
+  let kbSuffix = "";
+  let ragConfidence = 1;
+  let lowConfidenceHandoff = false;
+
+  if (kbRaw) {
+    const rag = retrieveGuestKnowledge(kbRaw, opts?.userMessage ?? "");
+    ragConfidence = rag.confidence;
+    if (rag.chunks.length && rag.mode === "keyword") {
+      kbSuffix = formatRagContextBlock(rag.chunks);
+    } else if (rag.mode === "full_kb" || !opts?.userMessage?.trim()) {
+      kbSuffix = `\n\n══ בסיס ידע הריזורט ══\n${kbRaw}`;
+    } else {
+      kbSuffix = `\n\n══ בסיס ידע הריזורט ══\n${kbRaw}`;
+    }
+    if (
+      opts?.userMessage?.trim()
+      && looksLikeFactualResortQuestion(opts.userMessage)
+      && rag.confidence < RAG_LOW_CONFIDENCE_THRESHOLD
+      && rag.chunks.length === 0
+    ) {
+      lowConfidenceHandoff = true;
+    }
+    syncKnowledgeChunksToDb(supabase, kbRaw).catch(() => {});
+  }
+
+  kbSuffix += conflictWarn;
 
   let promptSource: AssembledGuestBrain["promptSource"] = "bot_config";
-  let base = buildSystemPromptFromBotConfig(botConfig) + kbSuffix;
+  const useConfigHours = shouldUseConfigHoursInPrompt(kbRaw);
+  let base = (useConfigHours
+    ? buildSystemPromptFromBotConfig(botConfig)
+    : buildMinimalPersonaFromBotConfig(botConfig)) + kbSuffix;
 
   if (botSettings.system_prompt?.trim()) {
     base = botSettings.system_prompt.trim() + kbSuffix;
@@ -172,5 +222,9 @@ export async function assembleGuestBrainPrompt(
     preferredModel: botSettings.preferred_model,
     promptSource,
     routingSuffix: learned.routingSuffix,
+    ragConfidence,
+    lowConfidenceHandoff,
   };
 }
+
+export { GUEST_STAFF_HANDOFF_SENTENCE };

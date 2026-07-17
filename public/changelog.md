@@ -1,6 +1,10 @@
+2026-07-17 | Housekeeping check-in ack — silence already_checked_in | `already_checked_in` → no ℹ️ to WA group; quiet `room_status→תפוס` sync + log only. Deploy: `whapi-webhook`.
+
+2026-07-17 | Guest bot brain unification (Meta + Whapi parity) | `assembleGuestBrainPrompt` + `buildGuestContextForAi` + unified `fetchGuestChatHistory` (6 msgs cross-channel); Meta FAQ → `generateGuestChatReplyWithTools`; Whapi balloon/admin Tier-0 ported; RAG keyword + low-confidence handoff; `guest_knowledge_chunks` (migration 226); weekly hallucination audit in `whatsapp-cron` (Sunday Israel); BotSettings ⚠ KB vs bot_config conflicts. Deploy: `whatsapp-webhook`, `whapi-webhook`, `whatsapp-cron`, `db push`, frontend.
+
 2026-07-17 | Housekeeping WA turnover hardening — multi-room lookup + unified check-in | `housekeepingGuestLookup` matches `suite_rooms` (not only `guests.room`); lifecycle scoring (Co→✅→approve→צק אין); `_shared/suiteCheckinSync.ts` shared with WA check-in; `room-clean-notify` uses same lookup + passes `roomId` for multi-room WA. Deploy: `whapi-webhook`, `room-clean-notify`.
 
-2026-07-17 | Multi-room ops context + missing departure_date guard | Inbox suite room picker (`guest_profile.inbox.selected_suite_room`); Ops Board mandatory room on pending_approval; import blocks suite without departure (NIGHTS/iNights); UI ⚠ + `guest_alerts` `missing_departure_date` (migration 222); room_ready Whapi timeout → no admin 🚨 false alarm.
+2026-07-17 | Multi-room ops context + missing departure_date guard | Inbox suite room picker (`guest_profile.inbox.selected_suite_room`); Ops Board mandatory room on pending_approval; import blocks suite without departure (NIGHTS/iNights); UI ⚠ + `guest_alerts` `missing_departure_date` (migration 225); room_ready Whapi timeout → no admin 🚨 false alarm.
 
 2026-07-17 | Claim-before-send on ALL whatsapp-send dispatch blocks (Phase C completion) | `claimStageDispatch` wrapper wired into stage_2_arrival, night_before, 3× morning blocks, room_ready + generic BRANCH D (was BRANCH D only). `finalizeDispatchAttempt`: sent-collision with migration 088 unique index (force resend / per-room room_ready) → `duplicate_blocked` + `actual_status` payload instead of zombie processing row. Deploy: `whatsapp-send` (from clean worktree). Commit `7ba0422`.
 

@@ -39,7 +39,6 @@
 // ══════════════════════════════════════════════════════════════════════════════
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import Anthropic        from "https://esm.sh/@anthropic-ai/sdk@0.20.0";
 import { sendCtaUrlButton } from "../_shared/interactiveSend.ts";
 import { persistGuestWaMedia } from "../_shared/metaMedia.ts";
 import {
@@ -54,7 +53,6 @@ import { sendWhapiText, cleanPhoneForMention } from "../_shared/whapiSend.ts";
 import { buildPreCheckinGuestRequestAdirText } from "../_shared/adirNotifyMessages.ts";
 import { loadStaffNotifyTemplates } from "../_shared/staffNotifyTemplates.ts";
 import { shouldRouteGuestOutboundViaWhapiSuites, primeGuestChannelConfig } from "../_shared/guestWhapiRouting.ts";
-import { formatGuestProfileForAi } from "../_shared/guestProfile.ts";
 import {
   shouldApplyInRoomContextOverride,
   shouldInterceptOperationalInHouseRequest,
@@ -65,8 +63,6 @@ import {
   isRequestsBoardEscalation,
   buildOperationalRequestSummary,
   buildOperationalDispatchReply,
-  buildAdministrativeRequestSummary,
-  buildAdministrativeDispatchReply,
   shouldInterceptBalloonRoomRequest,
   isBalloonRoomRequest,
   buildBalloonRoomRequestReply,
@@ -89,18 +85,13 @@ import {
   shouldInterceptDepartureAssistRequest,
   buildDepartureAssistSummary,
   buildDepartureAssistReply,
-  isRequestSummaryGrounded,
+  buildAdministrativeRequestSummary,
 } from "../_shared/automationSchedule.ts";
 import { createGuestOpsTask } from "../_shared/createGuestOpsTask.ts";
 import {
-  LOG_FACILITY_REVIEW_TOOL_NAME,
-  LOG_FACILITY_REVIEW_TOOL_DESCRIPTION,
-  LOG_FACILITY_REVIEW_JSON_SCHEMA,
-  FACILITY_REVIEW_TOOL_INSTRUCTIONS,
   classifyFacilityReview,
   buildFacilityReviewReply,
   saveGuestFacilityReview,
-  normalizeFacilityReviewToolArgs,
   type FacilityReviewCapture,
 } from "../_shared/guestFacilityReview.ts";
 import { onGuestAlertInserted } from "../_shared/guestAlertWhapiNotify.ts";
@@ -154,19 +145,26 @@ import {
   isGuestStaffHandoffReply,
 } from "../_shared/guestBotHandoff.ts";
 import {
-  CLAUDE_MODEL,
-  CLAUDE_MODEL_HAIKU,
-  GEMINI_MODELS,
-  resolveGuestModelRoute,
-} from "../_shared/guestBotModelRoute.ts";
-import {
   fetchGuestBotSettings,
-  fetchGuestLearnedRulesSuffixes,
+  assembleGuestBrainPrompt,
 } from "../_shared/guestBotSettings.ts";
 import {
-  FALLBACK_SYSTEM_PROMPT,
-  appendGuestBrainInvariantSuffixes,
-} from "../_shared/guestBotPrompt.ts";
+  formatGuestContextLine,
+  isPendingPortalSpaRequest,
+  PENDING_PORTAL_SPA_LLM_SUFFIX,
+} from "../_shared/buildGuestContextForAi.ts";
+import { fetchGuestChatHistory } from "../_shared/guestConversationHistory.ts";
+import {
+  runBalloonRoomRequestIntercept,
+  runAdministrativeInHouseIntercept,
+  logAdministrativeRequestAlert,
+} from "../_shared/guestBalloonAdminIntercept.ts";
+import {
+  generateGuestChatReplyWithTools,
+  filterToolLoggedRequest,
+  looksLikeToolOnlyAck,
+  type GuestAiReplyResult,
+} from "../_shared/guestBotLlmTools.ts";
 import {
   sanitizeGuestBotReply,
   shouldHardDropGuestReply,
@@ -175,7 +173,6 @@ import {
   verifyMetaWebhookSignature,
   shouldVerifyMetaWebhookSignature,
 } from "../_shared/metaWebhookSignature.ts";
-import { logAiFailoverEvent } from "../_shared/aiFailoverLog.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -187,20 +184,7 @@ const CORS = {
 // ══════════════════════════════════════════════════════════════════════════════
 
 // ── Portal spa request — guests.attention_reason set by guest-portal-spa-request.
-const PORTAL_SPA_ATTENTION_REASON = "בקשת טיפול בספא";
-
-function isPendingPortalSpaRequest(guest: Record<string, unknown> | null): boolean {
-  if (!guest || guest.requires_attention !== true) return false;
-  const reason = String(guest.attention_reason ?? "").trim();
-  return reason === PORTAL_SPA_ATTENTION_REASON || /טיפול בספא/.test(reason);
-}
-
-const PENDING_PORTAL_SPA_LLM_SUFFIX = [
-  "חשוב — בקשת ספא פעילה מהפורטל האישי: הצוות כבר קיבל את הבקשה.",
-  "אל תשלח קישורי הזמנת ספא, תפריט ספא, או אישורי תור.",
-  "אם האורח שואל על הספא, ציין בקצרה שהבקשה אצל הצוות ושאפשר להתקשר ל-08-6705600.",
-  "אל תפתח תהליך הזמנה חדש.",
-].join(" ");
+// Portal spa — isPendingPortalSpaRequest + PENDING_PORTAL_SPA_LLM_SUFFIX in buildGuestContextForAi.ts
 
 // Rapid burst coalescing — two webhook invocations within ~2s share one LLM reply.
 const BURST_COALESCE_MS = 1800;
@@ -611,139 +595,7 @@ async function fetchBotConfig(
   }
 }
 
-// resolveGuestModelRoute() lives in _shared/guestBotModelRoute.ts — BotSettings.js,
-// Meta webhook, and Whapi DM all share the same mapping.
-const resolveModelRoute = resolveGuestModelRoute;
-
-// buildSystemPrompt is the THIRD-priority fallback (after bot_settings.system_prompt
-// and bot_scripts.ongoing_concierge.ai_system_prompt). It reads ALL behavioral
-// content from bot_config rows — NO hardcoded marketing text or URLs are injected
-// here. If you want to change the bot's behavior, use BotSettings.js (UI source
-// of truth) or BotConfigPanel for individual config keys.
-function buildSystemPrompt(cfg: Record<string, string>): string {
-  if (!Object.keys(cfg).length) return FALLBACK_SYSTEM_PROMPT;
-
-  const botName    = cfg["bot_name"]        ?? "DREAM CONCIERGE";
-  const persona    = cfg["bot_personality"] ?? "";
-  const checkin    = cfg["hotel_checkin_time"]     ?? "15:00";
-  const entryTime  = (cfg["night_before_entry_time_weekday"] ?? "").trim() || "12:00";
-  const checkinWeekday = (cfg["night_before_checkin_time_weekday"] ?? "").trim() || checkin;
-  const checkinShabbat = (cfg["night_before_checkin_time_shabbat"] ?? "").trim() || "18:00";
-  const checkout   = cfg["hotel_checkout_time"]    ?? "11:00";
-  const pool       = cfg["hotel_pool_hours"]       ?? "08:00–20:00";
-  const spa        = cfg["hotel_spa_hours"]        ?? "09:00–21:00";
-  const restaurant = cfg["hotel_restaurant_hours"] ?? "07:00–22:00";
-  const fitness    = cfg["hotel_fitness_hours"]    ?? "";   // optional — set in BotConfigPanel
-  const bar        = cfg["hotel_bar_hours"]        ?? "";   // optional — set in BotConfigPanel
-  const wifi       = cfg["hotel_wifi"]             ?? "DreamIsland_Guest — סיסמה בקבלה";
-  const special    = cfg["hotel_special_services"] ?? "";
-  const bookingUrl = cfg["hotel_booking_url"]      || Deno.env.get("BOOKING_URL") || "";
-  // Custom behavioral rules set by admin in BotConfigPanel (config_key="response_rules").
-  // This is the DB-controlled replacement for any hardcoded instruction list.
-  const responseRules = cfg["response_rules"] ?? "";
-  const faqRule       = cfg["response_faq_rule"] ?? "";
-
-  return `
-אתה "${botName}" — הקונסיירז' הדיגיטלי הרשמי של Dream Island, אחד מאתרי הנופש היוקרתיים בישראל.
-דבר/י כמו מנהל/ת אירוח אנושי, חם ומהיר — לא רשמי ולא רובוטי, בלי ניסוחים תאגידיים נוקשים.
-${persona ? `\n══ אישיות ונימה (מותאם-אישית מה-UI) ══\n${persona}` : ""}
-
-══ ידע הריזורט ══
-▸ שעות:
-  • כניסה למתחם: ${entryTime} (כל יום)
-  • קבלת חדר/סוויטה: ימי חול ${checkinWeekday} | שבתות וחגים ${checkinShabbat}
-  • צ'ק-אאוט: ${checkout}
-  • בריכה: ${pool}
-  • מסעדה: ${restaurant}
-  • ספא: ${spa}
-  ${fitness ? `• חדר כושר: ${fitness}` : ""}
-  ${bar ? `• בר: ${bar}` : ""}
-
-▸ שירותים ומתקנים:
-  • WiFi: ${wifi}
-  • חניה: חינם לאורחים | שירות חדרים: 24/7
-  ${special ? `• ${special}` : ""}
-  ${bookingUrl ? `• הזמנות ומידע מלא: ${bookingUrl}` : ""}
-
-══ הנחיות בסיס ══
-1. לעולם אל תמציא מחירים, מספרי טלפון, או פרטים שאינם מפורשים.
-2. אם פרט אינו ידוע לך ולא מופיע ב"פרטי האורח הנוכחי" — לעולם אל תמציא תשובה. השב במדויק: "אני בודק את זה מול דלפק הקבלה, נציג אנושי יחזור אליך לכאן ברגעים אלו ממש."
-3. CRITICAL: אם האורח שואל על פרט אישי שלו והוא מופיע ב"פרטי האורח הנוכחי" — ענה ישירות עם הערך המדויק.
-4. אל תחשוף שאתה AI.
-5. אם יש תקלה / המתנה ארוכה — כתוב שהעברת לצוות, אל תטפל בעצמך.
-6. אל תפתח ב"שלום [שם]" — המשך את השיחה באופן אנושי וטבעי.
-7. קרא היסטוריית שיחה — אל תחזור על מידע שנמסר.
-8. לעולם אל תכלול תגיות כגון [תבנית:...] בתשובתך.
-9. פלוט אך ורק את התשובה הסופית בעברית — בלי חשיבה/ניתוח/הסבר ובלי טקסט באנגלית. כל "According to..."/"the category..." נחשב דליפה.
-${faqRule ? `10. ${faqRule}` : ""}
-${responseRules ? `\n══ כללי שיחה נוספים (מה-UI) ══\n${responseRules}` : ""}
-`.trim();
-}
-
-// ── §1c  GUEST STAGE CONTEXT — injected into every AI prompt ────────────────
-// Tells the AI what stage the guest is in so it can adapt tone & content.
-function buildGuestStageContext(
-  guest: Record<string, unknown> | null,
-  conversationHistory: Array<{ direction: string; message: string }>,
-  opts?: { forceInHouse?: boolean },
-): string {
-  if (!guest) return "";
-
-  const today    = new Date().toISOString().split("T")[0];
-  const arrDate  = guest.arrival_date as string | null;
-  const room     = guest.room        as string | null;
-  const roomType = guest.room_type   as string | null;
-  const confirmed = guest.arrival_confirmed as boolean | null;
-  const spaTime  = guest.spa_time    as string | null;
-  const spaDate  = guest.spa_date    as string | null;
-  const forceInHouse = opts?.forceInHouse === true;
-  const isCheckedIn = forceInHouse || guest.status === "checked_in";
-
-  let stage = "";
-  if (forceInHouse) {
-    stage = "בתוך השהות — האורח בחדר (זוהה לפי בקשת חדר/שירות)";
-  } else if (arrDate) {
-    if (arrDate > today)       stage = "טרם הגעה";
-    else if (arrDate === today) stage = "יום הגעה — האורח מגיע היום";
-    else                        stage = "בתוך השהות";
-  }
-
-  // Detect if conversation already has an opening template message so AI knows context
-  const hasStage2 = conversationHistory.some(
-    h => h.direction === "outbound" && h.message.includes("איזה כיף")
-  );
-  const hasStage3 = conversationHistory.some(
-    h => h.direction === "outbound" && h.message.includes("בוקר אור")
-  );
-
-  const parts: string[] = [];
-  if (stage)      parts.push(`שלב האורח: ${stage}`);
-  if (arrDate)    parts.push(`תאריך הגעה: ${arrDate}`);
-  if (room && isCheckedIn) {
-    parts.push(`חדר: ${room}`);
-  } else if (room) {
-    parts.push("חדר: ייחשף בצ'ק-אין — לפני אז אסור לחשוף/להמציא שם חדר ספציפי, רק לציין שזו סוויטת יוקרה");
-  }
-  if (roomType === "suite") parts.push("סוג: סוויטה");
-  if (confirmed)  parts.push("אישר הגעה: כן");
-  if (spaTime || spaDate) {
-    const sched = formatSpaScheduleDisplay(spaDate, spaTime);
-    if (sched) parts.push(`טיפול ספא: ${sched}`);
-  }
-  if (isPendingPortalSpaRequest(guest)) {
-    parts.push("בקשת טיפול ספא מהפורטל — ממתין לטיפול צוות (לא לשלוח קישורי הזמנה)");
-  }
-  if (hasStage2)  parts.push("כבר קיבל הודעת אישור+ספא");
-  if (hasStage3)  parts.push("כבר קיבל הודעת בוקר הגעה");
-
-  const profileLine = formatGuestProfileForAi(
-    guest.guest_profile as Record<string, unknown> | null,
-    guest.arrival_time as string | null,
-  );
-  if (profileLine) parts.push(profileLine);
-
-  return parts.length > 0 ? parts.join(" | ") : "";
-}
+// resolveGuestModelRoute — assembleGuestBrainPrompt handles model routing internally.
 
 function isUniqueViolation(error: { code?: string; message?: string } | null): boolean {
   if (!error) return false;
@@ -1127,45 +979,7 @@ async function flagGuestAlert(
 // _shared/createGuestOpsTask.ts — Meta, Whapi guest DM, and the Guest Portal
 // all call that one helper so every surface produces an identical task row.
 
-async function logAdministrativeRequestAlert(
-  supabase: ReturnType<typeof createClient>,
-  args: {
-    phone: string;
-    guestId: number;
-    room: string | null;
-    summary: string;
-    rawText: string;
-    conversationId?: number | null;
-    alertType?: string;
-    guestName?: string | null;
-  },
-): Promise<void> {
-  const alertType = args.alertType ?? "request";
-  const message = args.rawText?.trim() || args.summary;
-  const { error: insertErr } = await supabase.from("guest_alerts").insert({
-    guest_id:          args.guestId,
-    phone:             args.phone,
-    alert_type:        alertType,
-    message,
-    conversation_id:   args.conversationId ?? null,
-    resolved:          false,
-  });
-  if (insertErr) {
-    console.error("[webhook] 📋 admin request alert insert error:", insertErr.message);
-    return;
-  }
-  onGuestAlertInserted(supabase, {
-    guestId:        args.guestId,
-    phone:          args.phone,
-    conversationId: args.conversationId ?? null,
-    message,
-    alertType,
-    guestName:      args.guestName ?? null,
-    room:           args.room,
-    sourceLabel:    "WhatsApp Bot",
-  }).catch((e: Error) => console.warn("[webhook] 📋 admin request Whapi notify failed:", e.message));
-  console.info(`[webhook] 📋 admin request logged to Requests Board — guest:${args.guestId} type:${alertType}`);
-}
+// logAdministrativeRequestAlert → _shared/guestBalloonAdminIntercept.ts
 
 // ══════════════════════════════════════════════════════════════════════════════
 // §4a  DEFENSIVE SHIELD — Layer 2.1: emoji/courtesy-only pass. A message that
@@ -1480,156 +1294,7 @@ async function handleDepartureAssistIntercept(
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// §4b.1b BALLOON ROOM REQUEST — Requests Board only (guest_alerts), never ops.
-//       Reception coordinates with external balloon vendor.
-// ══════════════════════════════════════════════════════════════════════════════
-async function handleBalloonRoomRequestIntercept(
-  supabase: ReturnType<typeof createClient>,
-  opts: {
-    phone: string;
-    guestId: number;
-    guest: Record<string, unknown>;
-    text: string;
-    msgId: string;
-    claimedConversationId: number | null;
-    sim: boolean;
-  },
-): Promise<void> {
-  const { phone, guestId, guest, text, msgId, claimedConversationId, sim } = opts;
-  const guestName = (guest.name as string | null) ?? null;
-  const guestRoom = (guest.room as string | null) ?? null;
-  const reply = buildBalloonRoomRequestReply(guestName);
-
-  await patchClaimedInbound(supabase, claimedConversationId, msgId, {
-    guest_id: guestId,
-    intent: "balloon_room_request",
-  });
-
-  const { error: alertErr } = await supabase.from("guest_alerts").insert({
-    guest_id:        guestId,
-    phone,
-    alert_type:      "request",
-    message:         `🎈 בקשת בלונים לחדר${guestRoom ? ` (${guestRoom})` : ""}: ${text}`,
-    conversation_id: claimedConversationId,
-    resolved:        false,
-  });
-  if (alertErr) {
-    console.error("[webhook] 🎈 balloon guest_alerts insert FAILED:", alertErr.message);
-    return;
-  }
-
-  onGuestAlertInserted(supabase, {
-    guestId,
-    phone,
-    conversationId: claimedConversationId,
-    message: `🎈 בקשת בלונים לחדר${guestRoom ? ` (${guestRoom})` : ""}: ${text}`,
-    alertType: "request",
-    guestName,
-    room: guestRoom,
-    sourceLabel: "WhatsApp Bot",
-  }).catch((e: Error) => console.warn("[webhook] 🎈 balloon staff notify failed:", e.message));
-
-  if (BALLOON_VENDOR_PHONE) {
-    sendWhapiText(
-      BALLOON_VENDOR_PHONE,
-      `🎈 בקשת בלונים לחדר\nסוויטה: ${guestRoom ?? "—"}\nאורח: ${guestName ?? "—"}\n${text}\n\n(הועבר מ-DREAM BOT — צוות הקבלה ישלים פרטים)`,
-      { noLinkPreview: true },
-    ).catch((e: Error) =>
-      console.warn("[webhook] 🎈 balloon vendor Whapi alert failed (non-blocking):", e.message)
-    );
-  }
-
-  if (!sim) {
-    try {
-      await sendReply(phone, reply, { scripted: true });
-      await insertGuestOutboundIfNotMuted(supabase, {
-        phone,
-        guest_id:      guestId,
-        message:       reply,
-        wa_message_id: null,
-        intent:        "balloon_room_request",
-      });
-    } catch (e) {
-      console.error("[webhook] 🎈 balloon intercept reply failed:", (e as Error).message);
-    }
-  } else {
-    console.info(`[webhook] SIM — balloon room request from ${phone}`);
-  }
-
-  console.info(
-    `[webhook] 🎈 balloon room request — dispatch=requests_board phone:${phone} guest:${guestId} room:${guestRoom ?? "—"}`,
-  );
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// §4b.1a ADMINISTRATIVE IN-HOUSE ROUTING — spa / front-desk asks → Requests
-//       Board (guest_alerts) + Whapi "בקשות אורחים", not Operations tasks.
-// ══════════════════════════════════════════════════════════════════════════════
-async function handleAdministrativeInHouseIntercept(
-  supabase: ReturnType<typeof createClient>,
-  opts: {
-    phone: string;
-    guestId: number;
-    guest: Record<string, unknown>;
-    text: string;
-    msgId: string;
-    claimedConversationId: number | null;
-    sim: boolean;
-  },
-): Promise<void> {
-  const { phone, guestId, guest, text, msgId, claimedConversationId, sim } = opts;
-  const summary = buildAdministrativeRequestSummary(text);
-  const guestName = (guest.name as string | null) ?? null;
-  const guestRoom = (guest.room as string | null) ?? null;
-  const reply = buildAdministrativeDispatchReply(guestName);
-
-  await patchClaimedInbound(supabase, claimedConversationId, msgId, {
-    guest_id: guestId,
-    intent: "administrative_in_house_request",
-  });
-
-  const { error: guestErr } = await supabase.from("guests").update({
-    requires_attention:       true,
-    requires_attention_since: new Date().toISOString(),
-    attention_reason:         "request",
-  }).eq("id", guestId);
-  if (guestErr) {
-    console.error("[webhook] 📋 admin intercept guest update FAILED:", guestErr.message);
-  }
-
-  logAdministrativeRequestAlert(supabase, {
-    phone,
-    guestId,
-    room: guestRoom,
-    summary,
-    rawText: text,
-    conversationId: claimedConversationId,
-    guestName,
-  }).catch((e: Error) =>
-    console.error("[webhook] 📋 admin intercept logAdministrativeRequestAlert error:", e.message)
-  );
-
-  if (!sim) {
-    try {
-      await sendReply(phone, reply, { scripted: true });
-      await insertGuestOutboundIfNotMuted(supabase, {
-        phone,
-        guest_id:      guestId,
-        message:       reply,
-        wa_message_id: null,
-        intent:        "administrative_in_house_request",
-      });
-    } catch (e) {
-      console.error("[webhook] 📋 admin intercept reply failed:", (e as Error).message);
-    }
-  } else {
-    console.info(`[webhook] SIM — administrative in-house intercept from ${phone}: ${summary}`);
-  }
-
-  console.info(
-    `[webhook] 📋 administrative in-house intercept — phone:${phone} guest:${guestId} summary:${summary}`,
-  );
-}
+// §4b.1b BALLOON + ADMIN — _shared/guestBalloonAdminIntercept.ts (Meta + Whapi)
 
 // ══════════════════════════════════════════════════════════════════════════════
 // §4b.1b SEVERE COMPLAINT KILL-SWITCH — guest is furious / reports serious
@@ -1930,533 +1595,6 @@ async function isPremiumDaySlotAvailableToday(supabase: ReturnType<typeof create
   return takenSlots.size < 2;
 }
 
-// ── Gemini model auto-discovery (used only when all hardcoded models 404) ────
-let _discoveredModel: string | null = null;
-let _discoveredModelTime = 0;
-const DISCOVER_TTL_MS = 60 * 60 * 1000; // 1 hour
-
-async function discoverGeminiModel(apiKey: string): Promise<string | null> {
-  const now = Date.now();
-  if (_discoveredModel && now - _discoveredModelTime < DISCOVER_TTL_MS) return _discoveredModel;
-  try {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}&pageSize=100`,
-      { signal: AbortSignal.timeout(8000) },
-    );
-    if (!res.ok) return null;
-    const data = await res.json();
-    const candidates: string[] = ((data.models ?? []) as Array<{ name: string; supportedGenerationMethods?: string[] }>)
-      .filter(m => m.name.includes("flash") && m.supportedGenerationMethods?.includes("generateContent"))
-      .map(m => m.name.replace("models/", ""))
-      .sort((a, b) => b.localeCompare(a));
-    const chosen = candidates[0] ?? null;
-    if (chosen) { _discoveredModel = chosen; _discoveredModelTime = now; }
-    console.log(`[webhook] Gemini model discovery — candidates:${candidates.length} chosen:${chosen ?? "none"}`);
-    return chosen;
-  } catch (e) {
-    console.warn("[webhook] model discovery failed:", (e as Error).message);
-    return null;
-  }
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// §4b LOG_GUEST_REQUEST TOOL — Phase 2 request-handling (CLAUDE.md §0 "Tool
-//      Calling" sprint). Lets the model itself decide, per "faq"-intent
-//      message, whether the guest raised a specific fulfillable request
-//      (wine, flowers, towels...) or a hot sales lead (room upgrade, extra
-//      treatment) worth a staff ticket — vs. a plain question that shouldn't
-//      pollute the Requests Board (the gap in the old blanket-capture gate,
-//      which logged every single faq/fallback message as a "request").
-//
-// Defined once, wrapped per-provider below: Anthropic's input_schema (JSON
-// Schema) vs. Gemini's functionDeclarations.parameters (same JSON Schema
-// shape over the v1beta REST endpoint — NOT the protobuf Type-enum shape
-// used by Google's typed client SDKs, since we call the REST API directly).
-//
-// alert_type values map 1:1 onto RequestsBoard.js's existing TYPE_META keys
-// ("request" / "upsell_opportunity") — no frontend change needed.
-// ══════════════════════════════════════════════════════════════════════════════
-const LOG_REQUEST_TOOL_NAME = "log_guest_request";
-const LOG_REQUEST_TOOL_DESCRIPTION =
-  "Call ONLY when the guest asks for a physical in-room action that matches " +
-  "one of these allowlisted categories: (1) amenity delivery to the room " +
-  "(milk, water, coffee, towels, shampoo, soap, toilet paper, robe, pillow, " +
-  "blanket, capsules); (2) broken in-room infrastructure (AC not working/cooling, " +
-  "TV, remote, clog, no hot water, weak flow, broken light, safe locked, door stuck); " +
-  "(3) cleaning labor (room clean, trash removal, linen change, floor wash). " +
-  "NEVER call for informational questions (where/when/how/hours/location of bar, " +
-  "pool, slushie machine, spa, checkout time, WiFi). Those are answered in chat only.";
-
-const LOG_REQUEST_JSON_SCHEMA = {
-  type: "object",
-  properties: {
-    category: {
-      type: "string",
-      enum: ["request", "upsell_opportunity"],
-      description:
-        "'request' for a concrete fulfillable ask (item/service). " +
-        "'upsell_opportunity' for a sales lead (upgrade/extend/add-on interest).",
-    },
-    item_summary: {
-      type: "string",
-      description: "Short Hebrew summary of what the guest wants, 3-8 words.",
-    },
-  },
-  required: ["category", "item_summary"],
-};
-
-const CLAUDE_TOOLS = [
-  {
-    name: LOG_REQUEST_TOOL_NAME,
-    description: LOG_REQUEST_TOOL_DESCRIPTION,
-    input_schema: LOG_REQUEST_JSON_SCHEMA,
-  },
-  {
-    name: LOG_FACILITY_REVIEW_TOOL_NAME,
-    description: LOG_FACILITY_REVIEW_TOOL_DESCRIPTION,
-    input_schema: LOG_FACILITY_REVIEW_JSON_SCHEMA,
-  },
-];
-
-const GEMINI_TOOLS = [{
-  functionDeclarations: [
-    {
-      name: LOG_REQUEST_TOOL_NAME,
-      description: LOG_REQUEST_TOOL_DESCRIPTION,
-      parameters: LOG_REQUEST_JSON_SCHEMA,
-    },
-    {
-      name: LOG_FACILITY_REVIEW_TOOL_NAME,
-      description: LOG_FACILITY_REVIEW_TOOL_DESCRIPTION,
-      parameters: LOG_FACILITY_REVIEW_JSON_SCHEMA,
-    },
-  ],
-}];
-
-// Code-level only — deliberately NOT stored in bot_settings.system_prompt.
-// That field is Mike's human-edited business persona (BotSettings.js UI);
-// mixing mechanical "call this function" instructions into it risks an
-// innocent persona edit silently breaking tool invocation, with no way for
-// Mike to notice from the UI. Appended at call time instead, same pattern
-// already used for kbSuffix/guestCtx.
-const TOOL_USAGE_INSTRUCTIONS = `
-
-══ הנחיה טכנית (לא להציג לאורח) ══
-קרא ל-log_guest_request רק על בקשה פיזית מותרת: (1) ציוד/מזון לחדר — חלב, מים, קפה,
-מגבות, שמפו, סבון, נייר, חלוק, כרית, שמיכה, קפסולות; (2) תקלה/תחזוקה בחדר — מזגן,
-טלויזיה, שלט, סתימה, אין מים חמים, אור שבור, כספת, דלת; (3) ניקיון — ניקיון חדר,
-פינוי זבל, החלפת מצעים, שטיפת רצפה.
-אסור לקרוא לפונקציה על שאלות מידע (איפה/מתי/שעות/מיקום בר/בריכה/עמדת ברד/צק-אאוט/WiFi).
-אל תקרא כשהאורח רק מעדכן שעת הגעה.
-קרא לפונקציה רק על הבקשה בטקסט הנוכחי — לא על נושאים ישנים מהיסטוריה שכבר נענו.
-אם קראת — הוסף/י גם תשובה חמה; אל תכתוב שהבקשה "הועברה" בלי קריאה לפונקציה.${FACILITY_REVIEW_TOOL_INSTRUCTIONS}`;
-
-/** Server-side gate — model tool calls cannot bypass the physical-task allowlist. */
-function filterToolLoggedRequest(
-  rawText: string,
-  logged: AiReplyResult["loggedRequest"],
-): AiReplyResult["loggedRequest"] {
-  if (!logged) return null;
-  if (!isAllowlistedPhysicalTaskRequest(rawText)) {
-    console.info(
-      `[webhook] log_guest_request suppressed (not on physical allowlist) — summary:"${logged.summary}" text:"${rawText.slice(0, 80)}"`,
-    );
-    return null;
-  }
-  // ★ session 2026-07-11 fix: allowlist match alone isn't enough — the model
-  // can call the tool with a summary bled over from an earlier, already-
-  // resolved topic in conversation history (TOOL_USAGE_INSTRUCTIONS already
-  // warns against this, but nothing enforced it server-side). Reject any
-  // summary with zero grounding in the CURRENT message text.
-  if (!isRequestSummaryGrounded(logged.summary, rawText)) {
-    console.warn(
-      `[webhook] 🛡️ log_guest_request suppressed (ungrounded summary — likely history bleed) — summary:"${logged.summary}" text:"${rawText.slice(0, 80)}"`,
-    );
-    return null;
-  }
-  return logged;
-}
-
-/** Matches the fixed "העברתי את הבקשה (X)" template regardless of X — used to
- * catch a false confirmation left behind when the underlying tool call gets
- * filtered out by filterToolLoggedRequest above. */
-function _looksLikeToolOnlyAck(reply: string): boolean {
-  return /העברתי את הבקשה\s*\([^)]*\)/u.test(reply);
-}
-
-// Both askGemini/callClaude now return this shape instead of a bare string,
-// so the call site can act on a tool invocation alongside the reply text.
-interface AiReplyResult {
-  text: string;
-  loggedRequest: { category: "request" | "upsell_opportunity"; summary: string } | null;
-  loggedFacilityReview: FacilityReviewCapture | null;
-}
-
-// Validates/coerces raw tool-call args — never trust model output blindly.
-// Unexpected category values fall back to "request" (the more conservative
-// bucket) but are logged so a drifting model prompt doesn't go unnoticed
-// (FAIL VISIBLE, CLAUDE.md §0.3) rather than being silently miscategorized.
-function _normalizeLoggedRequest(raw: unknown): AiReplyResult["loggedRequest"] {
-  if (!raw || typeof raw !== "object") return null;
-  const obj = raw as Record<string, unknown>;
-  const rawCategory = String(obj.category ?? "");
-  if (rawCategory !== "request" && rawCategory !== "upsell_opportunity") {
-    console.warn(`[webhook] ${LOG_REQUEST_TOOL_NAME} unexpected category "${rawCategory}" — defaulting to "request"`);
-  }
-  const category: "request" | "upsell_opportunity" = rawCategory === "upsell_opportunity" ? "upsell_opportunity" : "request";
-  const summary = typeof obj.item_summary === "string" && obj.item_summary.trim()
-    ? obj.item_summary.trim()
-    : "(לא צוין פירוט)";
-  return { category, summary };
-}
-
-// Guarantees the guest is never left with an empty reply if the model calls
-// the tool but — despite TOOL_USAGE_INSTRUCTIONS — omits accompanying text.
-function _buildToolOnlyReply(loggedRequest: NonNullable<AiReplyResult["loggedRequest"]>): string {
-  return `בחירה מצוינת! העברתי את הבקשה (${loggedRequest.summary}) לצוות שלנו, ויחזרו אליך בהקדם. 🙏`;
-}
-
-function _extractAiToolResults(
-  rawParts: Array<Record<string, unknown>>,
-): Pick<AiReplyResult, "loggedRequest" | "loggedFacilityReview"> {
-  let loggedRequest: AiReplyResult["loggedRequest"] = null;
-  let loggedFacilityReview: FacilityReviewCapture | null = null;
-  for (const p of rawParts) {
-    const fc = p.functionCall as Record<string, unknown> | undefined;
-    if (!fc?.name) continue;
-    if (fc.name === LOG_REQUEST_TOOL_NAME) {
-      loggedRequest = _normalizeLoggedRequest(fc.args);
-    }
-    if (fc.name === LOG_FACILITY_REVIEW_TOOL_NAME) {
-      loggedFacilityReview = normalizeFacilityReviewToolArgs(fc.args);
-    }
-  }
-  return { loggedRequest, loggedFacilityReview };
-}
-
-function _extractClaudeToolResults(
-  blocks: Array<Record<string, unknown>>,
-): Pick<AiReplyResult, "loggedRequest" | "loggedFacilityReview"> {
-  let loggedRequest: AiReplyResult["loggedRequest"] = null;
-  let loggedFacilityReview: FacilityReviewCapture | null = null;
-  for (const b of blocks) {
-    if (b.type !== "tool_use") continue;
-    if (b.name === LOG_REQUEST_TOOL_NAME) {
-      loggedRequest = _normalizeLoggedRequest(b.input);
-    }
-    if (b.name === LOG_FACILITY_REVIEW_TOOL_NAME) {
-      loggedFacilityReview = normalizeFacilityReviewToolArgs(b.input);
-    }
-  }
-  return { loggedRequest, loggedFacilityReview };
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// §5  GEMINI — FAQ handler with conversation history context
-// ══════════════════════════════════════════════════════════════════════════════
-
-const GEMINI_FETCH_TIMEOUT_MS = 8000;
-// Retries before trying the next model or falling back to Claude — prefer burning
-// Google quota/credits over Anthropic on transient 429/503 bursts.
-const GEMINI_MAX_RETRIES = 3;
-const GEMINI_RETRY_BASE_MS = 1000;
-const GEMINI_RETRY_MAX_MS = 8000;
-
-function _sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function _isGeminiRetryableStatus(status: number): boolean {
-  return status === 429 || status === 408 || status === 500 || status === 502 || status === 503;
-}
-
-function _geminiRetryDelayMs(attempt: number, retryAfterHeader: string | null): number {
-  if (retryAfterHeader) {
-    const sec = Number(retryAfterHeader);
-    if (!Number.isNaN(sec) && sec > 0) return Math.min(sec * 1000, 30_000);
-  }
-  const exp = GEMINI_RETRY_BASE_MS * 2 ** attempt;
-  const jitter = Math.floor(Math.random() * 250);
-  return Math.min(exp + jitter, GEMINI_RETRY_MAX_MS);
-}
-
-function _isGeminiFetchTimeout(e: unknown): boolean {
-  const err = e as Error;
-  return err.name === "TimeoutError" || err.name === "AbortError"
-    || /timeout|aborted/i.test(err.message);
-}
-
-/** One generateContent call with exponential backoff on rate-limit / transient errors. */
-async function _geminiGenerateWithRetry(
-  apiKey: string,
-  model: string,
-  body: string,
-): Promise<
-  | { kind: "ok"; data: Record<string, unknown> }
-  | { kind: "not_found"; errBody: string }
-  | { kind: "fatal"; status: number; errBody: string }
-  | { kind: "retry_exhausted"; status: number; errBody: string }
-> {
-  let lastStatus = 0;
-  let lastErrBody = "";
-
-  for (let attempt = 0; attempt <= GEMINI_MAX_RETRIES; attempt++) {
-    try {
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body,
-          signal: AbortSignal.timeout(GEMINI_FETCH_TIMEOUT_MS),
-        },
-      );
-
-      if (res.status === 404) {
-        const errBody = await res.text();
-        return { kind: "not_found", errBody };
-      }
-
-      if (!res.ok) {
-        const errBody = await res.text();
-        lastStatus = res.status;
-        lastErrBody = errBody;
-
-        if (_isGeminiRetryableStatus(res.status) && attempt < GEMINI_MAX_RETRIES) {
-          const delay = _geminiRetryDelayMs(attempt, res.headers.get("Retry-After"));
-          console.warn(
-            `[webhook] Gemini ${res.status} model="${model}" attempt ${attempt + 1}/${GEMINI_MAX_RETRIES + 1} — retry in ${delay}ms`,
-          );
-          await _sleep(delay);
-          continue;
-        }
-
-        if (_isGeminiRetryableStatus(res.status)) {
-          return { kind: "retry_exhausted", status: res.status, errBody };
-        }
-        return { kind: "fatal", status: res.status, errBody };
-      }
-
-      const data = await res.json();
-      return { kind: "ok", data };
-    } catch (e) {
-      if (_isGeminiFetchTimeout(e) && attempt < GEMINI_MAX_RETRIES) {
-        const delay = _geminiRetryDelayMs(attempt, null);
-        console.warn(
-          `[webhook] Gemini timeout model="${model}" attempt ${attempt + 1}/${GEMINI_MAX_RETRIES + 1} — retry in ${delay}ms`,
-        );
-        await _sleep(delay);
-        continue;
-      }
-      throw e;
-    }
-  }
-
-  return { kind: "retry_exhausted", status: lastStatus, errBody: lastErrBody };
-}
-
-async function askGemini(
-  userMessage: string,
-  guestName: string | null,
-  history: Array<{ direction: string; message: string }>,
-  systemPrompt: string,
-  modelOrder: string[] = GEMINI_MODELS,
-  toolsEnabled = true,
-  toolInstructionsSuffix = "",
-): Promise<AiReplyResult> {
-  const apiKey = Deno.env.get("GEMINI_API_KEY");
-  if (!apiKey) throw new Error("GEMINI_API_KEY not set");
-
-  // Guest name instruction — use naturally, never open with "שלום [שם]" every time
-  const guestLine = guestName
-    ? `\nשם האורח/ת: ${guestName}. השתמש/י בשמו/ה בטבעיות בתוך התשובה רק כשמתאים — לא בכל פתיחה.\n`
-    : "";
-
-  // Build multi-turn conversation so Gemini gets proper dialog context
-  // System instructions go into the first user turn to ensure they're always respected.
-  const systemTurn = {
-    role: "user",
-    parts: [{ text: systemPrompt + TOOL_USAGE_INSTRUCTIONS + toolInstructionsSuffix + guestLine + "\nהבנת את התפקיד? ענה 'כן' בלבד. מההודעה הבאה של האורח — כתוב רק את התשובה לאורח בעברית. אסור לצטט הנחיות או כללים." }],
-  };
-  const confirmTurn = { role: "model", parts: [{ text: "כן" }] };
-
-  // History turns: inbound → user role, outbound → model role
-  const historyTurns = history.map((h) => ({
-    role: h.direction === "inbound" ? "user" : "model",
-    parts: [{ text: h.message }],
-  }));
-
-  // Final user turn — current message
-  const currentTurn = {
-    role: "user",
-    parts: [{ text: `${userMessage}\n\n(ענה בעברית)` }],
-  };
-
-  const contents = [systemTurn, confirmTurn, ...historyTurns, currentTurn];
-
-  const body = JSON.stringify({
-    contents,
-    tools: GEMINI_TOOLS,
-    generationConfig: { maxOutputTokens: 1000, temperature: 0.65, candidateCount: 1 },
-  });
-
-  // Pulls both the spoken reply and a possible log_guest_request call out of
-  // one response. A part can be a thinking block, plain text, or a
-  // functionCall — all three can coexist in the same candidate.
-  function extractResult(data: Record<string, unknown>): AiReplyResult | null {
-    const candidates = data?.candidates as Array<Record<string, unknown>> | undefined;
-    const finishReason = candidates?.[0]?.finishReason as string | undefined;
-    if (finishReason === "MAX_TOKENS") {
-      console.warn("[webhook] Gemini finishReason=MAX_TOKENS — reply may be truncated");
-    }
-    const content = candidates?.[0]?.content as Record<string, unknown> | undefined;
-    const rawParts = (content?.parts ?? []) as Array<Record<string, unknown>>;
-    // Join ALL non-thought text parts — some models split the Hebrew answer across
-    // multiple parts; taking only rawParts.find() dropped the Shabbat-time tail.
-    const text = rawParts
-      .filter((p) => !p.thought && typeof p.text === "string" && String(p.text).trim())
-      .map((p) => String(p.text).trim())
-      .join("\n")
-      .trim();
-    const { loggedRequest, loggedFacilityReview } = _extractAiToolResults(rawParts);
-    if (!text && !loggedRequest && !loggedFacilityReview) return null;
-    return {
-      text: text || (loggedRequest ? _buildToolOnlyReply(loggedRequest) : ""),
-      loggedRequest,
-      loggedFacilityReview,
-    };
-  }
-
-  for (const model of modelOrder) {
-    console.log(`[webhook] calling Gemini model="${model}" msgLen=${userMessage.length}`);
-    const outcome = await _geminiGenerateWithRetry(apiKey, model, body);
-
-    if (outcome.kind === "not_found") {
-      console.warn(`[webhook] Gemini model "${model}" not found — trying next. ${outcome.errBody.slice(0, 150)}`);
-      continue;
-    }
-
-    if (outcome.kind === "fatal") {
-      console.error(`[webhook] Gemini ${outcome.status} model="${model}" (non-retryable):`, outcome.errBody.slice(0, 400));
-      throw new Error(`gemini_${outcome.status}: ${outcome.errBody.slice(0, 200)}`);
-    }
-
-    if (outcome.kind === "retry_exhausted") {
-      console.warn(
-        `[webhook] Gemini ${outcome.status} model="${model}" — retries exhausted, trying next model. ${outcome.errBody.slice(0, 200)}`,
-      );
-      continue;
-    }
-
-    const result = extractResult(outcome.data);
-    if (!result) throw new Error("gemini_empty_response");
-    if (result.loggedRequest) {
-      console.info(`[webhook] 🔧 Gemini called ${LOG_REQUEST_TOOL_NAME}:`, JSON.stringify(result.loggedRequest));
-    }
-    if (result.loggedFacilityReview) {
-      console.info(`[webhook] 🍽️ Gemini called ${LOG_FACILITY_REVIEW_TOOL_NAME}:`, JSON.stringify(result.loggedFacilityReview));
-    }
-    console.log(`[webhook] Gemini OK model="${model}"`);
-    return result;
-  }
-
-  // All hardcoded models failed → query the API to find whatever is currently available
-  const discovered = await discoverGeminiModel(apiKey);
-  if (discovered && !modelOrder.includes(discovered)) {
-    console.log(`[webhook] trying auto-discovered model="${discovered}"`);
-    const outcome = await _geminiGenerateWithRetry(apiKey, discovered, body);
-    if (outcome.kind === "ok") {
-      const result = extractResult(outcome.data);
-      if (result) {
-        if (result.loggedRequest) {
-          console.info(`[webhook] 🔧 Gemini (discovered) called ${LOG_REQUEST_TOOL_NAME}:`, JSON.stringify(result.loggedRequest));
-        }
-        console.log(`[webhook] Gemini OK (discovered) model="${discovered}"`);
-        return result;
-      }
-    } else if (outcome.kind === "fatal") {
-      console.error(`[webhook] Gemini (discovered) ${outcome.status}:`, outcome.errBody.slice(0, 400));
-      throw new Error(`gemini_${outcome.status}: ${outcome.errBody.slice(0, 200)}`);
-    }
-  }
-
-  throw new Error("gemini_all_models_unavailable");
-}
-
-// ── Claude fallback — used when all Gemini models are unavailable ─────────────
-async function callClaude(
-  userMessage: string,
-  guestName: string | null,
-  history: Array<{ direction: string; message: string }>,
-  systemPrompt: string,
-  toolInstructionsSuffix = "",
-  modelId: string = CLAUDE_MODEL,
-): Promise<AiReplyResult> {
-  const key = Deno.env.get("ANTHROPIC_API_KEY");
-  if (!key) throw new Error("no_anthropic_key");
-
-  const system = systemPrompt
-    + TOOL_USAGE_INSTRUCTIONS
-    + toolInstructionsSuffix
-    + (guestName ? `\n\nשם האורח/ת: ${guestName}. פנה/י אליו/ה בשמו/ה.` : "")
-    + "\n\nענה תמיד בעברית.";
-
-  // Convert history to Claude alternating user/assistant format
-  const rawMessages = [
-    ...history.map((h) => ({
-      role: (h.direction === "inbound" ? "user" : "assistant") as "user" | "assistant",
-      content: h.message,
-    })),
-    { role: "user" as const, content: userMessage },
-  ];
-
-  // Merge consecutive messages with the same role (Claude requires strict alternation)
-  const messages = rawMessages.reduce<{ role: "user" | "assistant"; content: string }[]>(
-    (acc, msg) => {
-      if (acc.length && acc[acc.length - 1].role === msg.role) {
-        acc[acc.length - 1] = { ...acc[acc.length - 1], content: acc[acc.length - 1].content + "\n" + msg.content };
-      } else {
-        acc.push(msg);
-      }
-      return acc;
-    },
-    [],
-  );
-
-  const anthropic = new Anthropic({ apiKey: key });
-  // tools cast via `as any`: the pinned SDK version's TS types may predate
-  // tool-use fields, but the Messages API itself (api-version 2023-06-01)
-  // accepts `tools` regardless of client-library vintage — this is a
-  // passthrough request-body field, not a client-side feature gate.
-  const resp = await anthropic.messages.create({
-    model:      modelId,
-    max_tokens: 1000,
-    system,
-    messages,
-    tools: CLAUDE_TOOLS,
-  } as any);
-
-  // Claude can return text and tool_use blocks side by side in one response —
-  // collect both rather than assuming content[0] is always plain text.
-  const blocks = resp.content as Array<Record<string, unknown>>;
-  const text = blocks
-    .filter(b => b.type === "text")
-    .map(b => String(b.text ?? "").trim())
-    .filter(Boolean)
-    .join("\n");
-  const { loggedRequest, loggedFacilityReview } = _extractClaudeToolResults(blocks);
-  if (loggedRequest) {
-    console.info(`[webhook] 🔧 Claude called ${LOG_REQUEST_TOOL_NAME}:`, JSON.stringify(loggedRequest));
-  }
-  if (loggedFacilityReview) {
-    console.info(`[webhook] 🍽️ Claude called ${LOG_FACILITY_REVIEW_TOOL_NAME}:`, JSON.stringify(loggedFacilityReview));
-  }
-
-  const finalText = text || (loggedRequest ? _buildToolOnlyReply(loggedRequest) : "");
-  if (!finalText) throw new Error("claude_empty_response");
-  console.log(`[webhook] ✅ Claude OK (fallback) engine=${modelId}`);
-  return { text: finalText, loggedRequest, loggedFacilityReview };
-}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // §5b PRE-ARRIVAL CONFIRMATION — detect "כן" reply, send payment + workshop
@@ -2521,8 +1659,6 @@ const GOOGLE_REVIEW_URL   = Deno.env.get("GOOGLE_REVIEW_URL")   ?? "";
 // imported (Deno functions don't share modules across function boundaries
 // in this repo).
 const ADIR_PERSONAL_PHONE = "972546294885";
-/** Optional — Supabase secret; reception's balloon-vendor contact for best-effort heads-up. */
-const BALLOON_VENDOR_PHONE = (Deno.env.get("BALLOON_VENDOR_PHONE") ?? "").trim();
 
 // Pre-Arrival Guest Portal magic-link (migration 083, session 35) — base URL
 // for {{PORTAL_LINK}} below. Defaults to the documented live Vercel URL
@@ -3002,38 +2138,14 @@ Deno.serve(async (req: Request) => {
     await primeGuestChannelConfig(supabase);
 
     // Load all config in parallel — each has its own 5-min cache
-    const [botConfig, botSettings, scripts, learnedRules] = await Promise.all([
+    const [botConfig, botSettings, scripts] = await Promise.all([
       fetchBotConfig(supabase),
       fetchGuestBotSettings(supabase),
       fetchBotScripts(supabase),
-      fetchGuestLearnedRulesSuffixes(supabase),
     ]);
 
-    const systemPrompt = buildSystemPrompt(botConfig);
     // Human-handover flag: 'false' = bot paused, messages logged but not replied
     const botIsActive  = botConfig["bot_active"] !== "false"; // default true
-
-    const kbSuffix = botSettings.knowledge_base?.trim()
-      ? `\n\n══ בסיס ידע הריזורט ══\n${botSettings.knowledge_base.trim()}`
-      : "";
-
-    // System prompt priority (highest → lowest):
-    //   1. bot_settings.system_prompt (admin override via BotSettings UI)
-    //   2. bot_scripts[ongoing_concierge].ai_system_prompt (BotScriptEditor)
-    //   3. buildSystemPrompt(botConfig) (auto-built from bot_config values)
-    const ongoingScript = scripts["ongoing_concierge"];
-    const finalSystemPrompt =
-      botSettings.system_prompt?.trim()
-        ? botSettings.system_prompt.trim() + kbSuffix
-        : (ongoingScript?.ai_system_prompt?.trim()
-            ? ongoingScript.ai_system_prompt.trim() + kbSuffix
-            : systemPrompt + kbSuffix)
-      + learnedRules.chatSuffix;
-
-    console.info(`[webhook] prompt source: ${
-      botSettings.system_prompt?.trim() ? "bot_settings" :
-      ongoingScript?.ai_system_prompt?.trim() ? "bot_scripts/ongoing_concierge" : "bot_config"
-    }`);
 
     for (const msg of msgArr) {
       setSuppressGuestRepliesStaffClaim(false);
@@ -3865,14 +2977,24 @@ Deno.serve(async (req: Request) => {
         guest &&
         shouldInterceptBalloonRoomRequest(text)
       ) {
-        await handleBalloonRoomRequestIntercept(supabase, {
+        await runBalloonRoomRequestIntercept(supabase, {
           phone,
           guestId,
           guest: guest as Record<string, unknown>,
           text,
-          msgId,
-          claimedConversationId,
+          conversationId: claimedConversationId,
           sim,
+        }, {
+          patchInbound: async (patch) => patchClaimedInbound(supabase, claimedConversationId, msgId, patch),
+          sendReply: async (replyText, intent) => {
+            if (sim) return;
+            await sendReply(phone, replyText, { scripted: true });
+            await insertGuestOutboundIfNotMuted(supabase, {
+              phone, guest_id: guestId, message: replyText, wa_message_id: null, intent,
+            });
+          },
+          sourceLabel: "WhatsApp Bot",
+          logTag: "webhook",
         });
         continue;
       }
@@ -3884,14 +3006,24 @@ Deno.serve(async (req: Request) => {
         guest &&
         shouldInterceptAdministrativeInHouseRequest(text, statusForRouting)
       ) {
-        await handleAdministrativeInHouseIntercept(supabase, {
+        await runAdministrativeInHouseIntercept(supabase, {
           phone,
           guestId,
           guest: guest as Record<string, unknown>,
           text,
-          msgId,
-          claimedConversationId,
+          conversationId: claimedConversationId,
           sim,
+        }, {
+          patchInbound: async (patch) => patchClaimedInbound(supabase, claimedConversationId, msgId, patch),
+          sendReply: async (replyText, intent) => {
+            if (sim) return;
+            await sendReply(phone, replyText, { scripted: true });
+            await insertGuestOutboundIfNotMuted(supabase, {
+              phone, guest_id: guestId, message: replyText, wa_message_id: null, intent,
+            });
+          },
+          sourceLabel: "WhatsApp Bot",
+          logTag: "webhook",
         });
         continue;
       }
@@ -4064,14 +3196,24 @@ Deno.serve(async (req: Request) => {
         effectiveText !== text &&
         shouldInterceptBalloonRoomRequest(effectiveText)
       ) {
-        await handleBalloonRoomRequestIntercept(supabase, {
+        await runBalloonRoomRequestIntercept(supabase, {
           phone,
           guestId,
           guest: guest as Record<string, unknown>,
           text: effectiveText,
-          msgId,
-          claimedConversationId,
+          conversationId: claimedConversationId,
           sim,
+        }, {
+          patchInbound: async (patch) => patchClaimedInbound(supabase, claimedConversationId, msgId, patch),
+          sendReply: async (replyText, intent) => {
+            if (sim) return;
+            await sendReply(phone, replyText, { scripted: true });
+            await insertGuestOutboundIfNotMuted(supabase, {
+              phone, guest_id: guestId, message: replyText, wa_message_id: null, intent,
+            });
+          },
+          sourceLabel: "WhatsApp Bot",
+          logTag: "webhook",
         });
         continue;
       }
@@ -4084,14 +3226,24 @@ Deno.serve(async (req: Request) => {
         effectiveText !== text &&
         shouldInterceptAdministrativeInHouseRequest(effectiveText, statusAfterBurst)
       ) {
-        await handleAdministrativeInHouseIntercept(supabase, {
+        await runAdministrativeInHouseIntercept(supabase, {
           phone,
           guestId,
           guest: guest as Record<string, unknown>,
           text: effectiveText,
-          msgId,
-          claimedConversationId,
+          conversationId: claimedConversationId,
           sim,
+        }, {
+          patchInbound: async (patch) => patchClaimedInbound(supabase, claimedConversationId, msgId, patch),
+          sendReply: async (replyText, intent) => {
+            if (sim) return;
+            await sendReply(phone, replyText, { scripted: true });
+            await insertGuestOutboundIfNotMuted(supabase, {
+              phone, guest_id: guestId, message: replyText, wa_message_id: null, intent,
+            });
+          },
+          sourceLabel: "WhatsApp Bot",
+          logTag: "webhook",
         });
         continue;
       }
@@ -4216,19 +3368,10 @@ Deno.serve(async (req: Request) => {
 
       // ── Load conversation history early — used for context in ALL intents ──
       // Fetch last 20 rows, filter out system markers, keep last 10 real turns.
-      const { data: rawHistory } = await supabase
-        .from("whatsapp_conversations")
-        .select("direction, message")
-        .eq("phone", phone)
-        .order("created_at", { ascending: false })
-        .limit(20);
-
-      const orderedHistory = (
-        rawHistory as Array<{ direction: string; message: string }> | null ?? []
-      )
-        .filter((h) => !h.message.startsWith("["))
-        .slice(0, 10)
-        .reverse();
+      const orderedHistory = await fetchGuestChatHistory(supabase, phone, {
+        channel: "unified",
+        limit: 6,
+      });
 
       // ── Classify intent (< 1 ms, no AI cost) ─────────────────────────────
       const intent = classifyIntent(effectiveText);
@@ -4272,13 +3415,13 @@ Deno.serve(async (req: Request) => {
       let replyIsScripted = intent === "complaint" || intent === "upsell";
       // Set only inside the "faq" branch below when the model invokes
       // log_guest_request — drives the conditional guest_alerts gate further down.
-      let toolLoggedRequest: AiReplyResult["loggedRequest"] = null;
+      let toolLoggedRequest: GuestAiReplyResult["loggedRequest"] = null;
       let toolLoggedFacilityReview: FacilityReviewCapture | null = null;
       // Unfiltered tool call (before filterToolLoggedRequest's allowlist/grounding
       // gate) — kept only to detect a suppressed request that left a false
       // "העברתי את הבקשה (X)" ack baked into `reply` (see reply-integrity check
       // below, session 2026-07-11 fix).
-      let rawToolLoggedRequest: AiReplyResult["loggedRequest"] = null;
+      let rawToolLoggedRequest: GuestAiReplyResult["loggedRequest"] = null;
 
       // ── Tier-0 human/callback request — skip LLM on faq/fallback only.
       // Complaint/upsell keep their scripted paths. Never invent "please contact
@@ -4322,69 +3465,42 @@ Deno.serve(async (req: Request) => {
         }
 
       } else if (intent === "faq") {
-        // orderedHistory already loaded above (shared across all intents)
-        // Build rich guest-stage context for personalised responses
-        const guestCtx = buildGuestStageContext(
+        const guestCtxLine = formatGuestContextLine(
           guest as Record<string, unknown> | null,
           orderedHistory,
           { forceInHouse: inRoomOverride },
         );
+        const brain = await assembleGuestBrainPrompt(supabase, "meta", {
+          guestContextLine: guestCtxLine,
+          inHouse: inRoomOverride,
+          userMessage: effectiveText,
+        });
+        console.info(`[webhook] prompt source: ${brain.promptSource} rag_conf=${brain.ragConfidence.toFixed(2)}`);
 
-        const enrichedPrompt = finalSystemPrompt
-          + (guestCtx ? `\n\nפרטי האורח הנוכחי: ${guestCtx}` : "")
-          + (guest && isPendingPortalSpaRequest(guest as Record<string, unknown>)
-            ? `\n\n${PENDING_PORTAL_SPA_LLM_SUFFIX}` : "")
-          + appendGuestBrainInvariantSuffixes("meta", { inHouse: inRoomOverride });
+        if (brain.lowConfidenceHandoff) {
+          reply = GUEST_STAFF_HANDOFF_SENTENCE;
+          replyIsScripted = true;
+          console.info(`[webhook] 🛡️ RAG low-confidence handoff — phone:${phone}`);
+        } else {
+          const enrichedPrompt = brain.systemPrompt
+            + (guest && isPendingPortalSpaRequest(guest as Record<string, unknown>)
+              ? `\n\n${PENDING_PORTAL_SPA_LLM_SUFFIX}` : "");
 
-        // Dynamic engine routing (A/B testing & cost optimization) — preferred
-        // engine is tried first, with the other engine kept as an automatic
-        // safety net on failure so a restricted/expired key never goes silent.
-        const route = resolveModelRoute(botSettings.preferred_model);
-        console.info(`[webhook] model route: engine=${route.engine} preferred="${botSettings.preferred_model ?? "(unset)"}"`);
-
-        const routingLearnedSuffix = learnedRules.routingSuffix;
-
-        try {
-          const result = route.engine === "claude"
-            ? await callClaude(effectiveText, guestName, orderedHistory, enrichedPrompt, routingLearnedSuffix, route.claudeModel)
-            : await askGemini(effectiveText, guestName, orderedHistory, enrichedPrompt, route.geminiOrder, true, routingLearnedSuffix);
-          reply = sanitizeReply(result.text);
-          if (isReplyObviouslyTruncated(reply)) {
-            console.warn(
-              `[webhook] 🛡️ FAQ engine truncated — substituting check-in policy reply — phone:${phone}`,
-            );
-            reply = resolveTruncatedReplyFallback(
-              reply,
-              effectiveText,
-              botConfig,
-              (guest?.arrival_date as string) ?? null,
-              FALLBACK_REPLY,
-            );
-          }
-          rawToolLoggedRequest = result.loggedRequest;
-          toolLoggedRequest = filterToolLoggedRequest(effectiveText, result.loggedRequest);
-          toolLoggedFacilityReview = result.loggedFacilityReview;
-        } catch (e) {
-          const fallbackEngine = route.engine === "claude" ? "gemini" : "claude";
-          console.error(`[webhook] ${route.engine} failed → trying ${fallbackEngine}:`, (e as Error).message);
-          // Visibility for AiFailoverWidget.js (dashboard banner) — fire-and-forget,
-          // never blocks the guest's reply on a logging failure. PostgREST's query
-          // builder has no .catch(), only .then() (same gotcha documented elsewhere
-          // in this file) — use .then(cb) instead of chaining .catch() directly.
-          logAiFailoverEvent(supabase, {
-            from_engine: route.engine,
-            to_engine: fallbackEngine,
-            error_message: (e as Error).message,
-            guest_phone: phone,
-          });
           try {
-            const result = route.engine === "claude"
-              ? await askGemini(effectiveText, guestName, orderedHistory, enrichedPrompt, route.geminiOrder, true, routingLearnedSuffix)
-              : await callClaude(effectiveText, guestName, orderedHistory, enrichedPrompt, routingLearnedSuffix, route.claudeModel);
+            const result = await generateGuestChatReplyWithTools({
+              userMessage: effectiveText,
+              guestName,
+              history: orderedHistory,
+              systemPrompt: enrichedPrompt,
+              preferredModel: brain.preferredModel,
+              toolInstructionsSuffix: brain.routingSuffix,
+              logTag: "webhook",
+              failoverLog: { supabase, guestPhone: phone },
+            });
             reply = sanitizeReply(result.text);
             if (isReplyObviouslyTruncated(reply)) {
               console.warn(
-                `[webhook] 🛡️ FAQ failover truncated — substituting check-in policy reply — phone:${phone}`,
+                `[webhook] 🛡️ FAQ engine truncated — substituting check-in policy reply — phone:${phone}`,
               );
               reply = resolveTruncatedReplyFallback(
                 reply,
@@ -4397,8 +3513,8 @@ Deno.serve(async (req: Request) => {
             rawToolLoggedRequest = result.loggedRequest;
             toolLoggedRequest = filterToolLoggedRequest(effectiveText, result.loggedRequest);
             toolLoggedFacilityReview = result.loggedFacilityReview;
-          } catch (e2) {
-            console.error("[webhook] both engines failed:", (e2 as Error).message);
+          } catch (e) {
+            console.error("[webhook] generateGuestChatReplyWithTools failed:", (e as Error).message);
             reply = FALLBACK_REPLY;
           }
         }
@@ -4415,7 +3531,7 @@ Deno.serve(async (req: Request) => {
       // anyway). If the raw call was present and got filtered to null, and the
       // reply still carries that ack template, replace it with the canonical
       // staff handoff — truthful regardless of which board (if any) picks this up.
-      if (rawToolLoggedRequest && !toolLoggedRequest && _looksLikeToolOnlyAck(reply)) {
+      if (rawToolLoggedRequest && !toolLoggedRequest && looksLikeToolOnlyAck(reply)) {
         console.warn(
           `[webhook] 🛡️ ungrounded/suppressed tool ack replaced with handoff — summary:"${rawToolLoggedRequest.summary}" text:"${effectiveText.slice(0, 80)}"`,
         );
