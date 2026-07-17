@@ -1,4 +1,4 @@
--- Migration 222 — missing_departure_date alerts + routing seed + backfill
+-- Migration 225 — missing_departure_date alerts + routing seed + backfill
 
 INSERT INTO public.routing_config (intent_type, destination_board, enable_sla, label) VALUES
   ('alert_missing_departure_date', 'requests', TRUE, 'חסר תאריך עזיבה')
