@@ -15,13 +15,12 @@
 // completes, so one row = one attempt (no notification_log/Inbox flooding),
 // and the unique index naturally releases for the next attempt.
 //
-// This currently guards ONLY the generic BRANCH D pipeline path in
-// whatsapp-send/index.ts (pre_arrival_2d, mid_stay(+daypass),
-// checkout_fb(+daypass), spa_warmup_daypass, survey_invite_daypass) — see
-// docs/active_sprint.md / playbook §10 for the explicit follow-up list of
-// the remaining special-cased fast paths (night_before, morning_suite/
-// morning_welcome, room_ready, stage_2_arrival, day-pass morning) not yet
-// wired to this helper.
+// Guards ALL whatsapp-send dispatch paths (2026-07-17): the generic BRANCH D
+// pipeline path (pre_arrival_2d, mid_stay(+daypass), checkout_fb(+daypass),
+// spa_warmup_daypass, survey_invite_daypass, night_before_daypass) AND every
+// dedicated fast-path block — stage_2_arrival, night_before, the three
+// morning blocks (day-pass Meta, suite session, deterministic template), and
+// room_ready — via whatsapp-send's claimStageDispatch() wrapper.
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -124,7 +123,15 @@ export async function claimDispatchAttempt(
 }
 
 /** Finalizes a claimed attempt — UPDATEs the SAME row (never a second
- * insert), so one row = one attempt regardless of how the claim resolved. */
+ * insert), so one row = one attempt regardless of how the claim resolved.
+ *
+ * Sent/simulated collision (migration 088's uq_notif_guest_trigger_sent): a
+ * prior sent/simulated row for the same guest+trigger already exists — force
+ * resend, or a per-room repeat like multi-suite room_ready. Before
+ * claim-before-send that second audit row was silently dropped by the bare
+ * insert; here we keep the row but mark it duplicate_blocked (payload carries
+ * actual_status) instead of leaving a zombie 'processing' row that would
+ * later surface as a fake timeout in Automation History. */
 export async function finalizeDispatchAttempt(
   supabase: SupabaseClient,
   logId: number,
@@ -134,8 +141,27 @@ export async function finalizeDispatchAttempt(
   const { error } = await supabase
     .from("notification_log")
     .update({ status, payload, sent_at: new Date().toISOString() })
-    .eq("id", logId);
-  if (error) {
-    console.error(`[automationClaim] finalize failed for logId=${logId} status=${status}:`, error.message);
+    .eq("id", logId)
+    .select("id")
+    .maybeSingle();
+  if (!error) return;
+
+  if (isUniqueViolation(error) && (status === "sent" || status === "simulated")) {
+    const { error: fbErr } = await supabase
+      .from("notification_log")
+      .update({
+        status: "duplicate_blocked",
+        payload: { ...payload, resend_after_sent: true, actual_status: status },
+        sent_at: new Date().toISOString(),
+      })
+      .eq("id", logId)
+      .select("id")
+      .maybeSingle();
+    if (fbErr) {
+      console.error(`[automationClaim] finalize duplicate_blocked fallback failed for logId=${logId}:`, fbErr.message);
+    }
+    return;
   }
+
+  console.error(`[automationClaim] finalize failed for logId=${logId} status=${status}:`, error.message);
 }

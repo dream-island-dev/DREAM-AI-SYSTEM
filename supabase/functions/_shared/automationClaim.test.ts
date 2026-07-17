@@ -112,3 +112,36 @@ Deno.test("finalizeDispatchAttempt: updates the claimed row by id, does not inse
   const [firstArg] = calls[0].args as Array<[string, unknown]>;
   assertEquals(firstArg[0], "update");
 });
+
+Deno.test("finalizeDispatchAttempt: sent collides with a prior sent row (migration 088) → row re-marked duplicate_blocked, never left processing", async () => {
+  const { supabase, calls } = fakeSupabase([
+    { data: null, error: { code: "23505", message: "duplicate key value violates unique constraint \"uq_notif_guest_trigger_sent\"" } }, // finalize → sent
+    { data: { id: 42 }, error: null }, // fallback → duplicate_blocked succeeds
+  ]);
+  await finalizeDispatchAttempt(supabase as never, 42, "sent", { channel: "whapi_session", room_id: "וילה 3" });
+  assertEquals(calls.length, 2);
+  const fallbackArgs = calls[1].args as Array<[string, Record<string, unknown>]>;
+  const [op, patch] = fallbackArgs[0];
+  assertEquals(op, "update");
+  assertEquals(patch.status, "duplicate_blocked");
+  const payload = patch.payload as Record<string, unknown>;
+  assertEquals(payload.resend_after_sent, true);
+  assertEquals(payload.actual_status, "sent");
+  assertEquals(payload.room_id, "וילה 3"); // original payload preserved
+});
+
+Deno.test("finalizeDispatchAttempt: unique violation on a FAILED finalize is not a resend collision — no duplicate_blocked fallback", async () => {
+  const { supabase, calls } = fakeSupabase([
+    { data: null, error: { code: "23505", message: "duplicate key value violates unique constraint" } },
+  ]);
+  await finalizeDispatchAttempt(supabase as never, 43, "failed", { channel: "meta_template" });
+  assertEquals(calls.length, 1); // logged only — failed rows are not covered by the sent/simulated index
+});
+
+Deno.test("finalizeDispatchAttempt: non-unique update error → logged, no fallback attempted", async () => {
+  const { supabase, calls } = fakeSupabase([
+    { data: null, error: { message: "network hiccup" } },
+  ]);
+  await finalizeDispatchAttempt(supabase as never, 44, "sent", { channel: "meta_template" });
+  assertEquals(calls.length, 1);
+});

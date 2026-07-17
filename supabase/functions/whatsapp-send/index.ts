@@ -126,6 +126,41 @@ const CORS = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+// ── Phase C claim-before-send, shared wrapper (2026-07-17) ────────────────────
+// Wraps _shared/automationClaim.ts for every dedicated dispatch block AND the
+// generic BRANCH D path: claim the (guest, trigger) slot right before the send
+// attempt; on conflict return the same in_flight response everywhere so two
+// overlapping cron ticks (or a cron tick racing a manual Override) can never
+// dispatch the same guest+trigger concurrently. `force` (staff Override)
+// bypasses the uniqueness check but still creates the audit row.
+type StageClaim =
+  | { claim: { claimed: true; logId: number }; conflictResponse?: undefined }
+  | { claim?: undefined; conflictResponse: Response };
+
+async function claimStageDispatch(
+  supabase: ReturnType<typeof createClient>,
+  opts: { guestId: number; trigger: string; recipient: string; force: boolean; tag: string },
+): Promise<StageClaim> {
+  const claim = await claimDispatchAttempt(supabase, {
+    guestId: opts.guestId,
+    triggerType: opts.trigger,
+    recipient: opts.recipient,
+    force: opts.force,
+  });
+  if (!claim.claimed) {
+    console.log(
+      `[whatsapp-send] ${opts.tag} claim_conflict trigger="${opts.trigger}" guestId=${opts.guestId} reason=${claim.reason}`,
+    );
+    return {
+      conflictResponse: new Response(
+        JSON.stringify({ ok: true, skipped: true, status: "in_flight", reason: "claim_conflict" }),
+        { headers: { ...CORS, "Content-Type": "application/json" } },
+      ),
+    };
+  }
+  return { claim };
+}
+
 // Resort contact phone for {{2}} in templates that include a callback number.
 // Set RESORT_CONTACT_PHONE in Supabase Secrets to replace this placeholder.
 const RESORT_CONTACT_PHONE = Deno.env.get("RESORT_CONTACT_PHONE") ?? "054-0000000";
@@ -2488,6 +2523,12 @@ serve(async (req: Request) => {
         portalLink,
       });
 
+      const s2ClaimRes = await claimStageDispatch(supabase, {
+        guestId: Number(guestId), trigger: "stage_2_arrival", recipient: targetPhone,
+        force: force === true, tag: "STAGE2_ARRIVAL",
+      });
+      if (s2ClaimRes.conflictResponse) return s2ClaimRes.conflictResponse;
+
       let s2Status = "simulated";
       let s2Error: string | null = null;
       let s2WhapiWamid: string | null = null;
@@ -2509,17 +2550,10 @@ serve(async (req: Request) => {
         console.error(`[whatsapp-send] stage_2_arrival ${s2Status}:`, s2Error);
       }
 
-      await supabase.from("notification_log").insert({
-        guest_id: guestId,
-        recipient: targetPhone,
-        trigger_type: "stage_2_arrival",
-        channel: "whatsapp",
-        status: s2Status,
-        payload: {
-          channel: s2Channel === "whapi" ? "whapi_session" : "session_message",
-          force: !!force,
-          ...(s2Error ? { error: s2Error } : {}),
-        },
+      await finalizeDispatchAttempt(supabase, s2ClaimRes.claim.logId, s2Status, {
+        channel: s2Channel === "whapi" ? "whapi_session" : "session_message",
+        force: !!force,
+        ...(s2Error ? { error: s2Error } : {}),
       });
 
       if (s2Status === "sent" || s2Status === "simulated") {
@@ -2784,6 +2818,12 @@ serve(async (req: Request) => {
         `channel=${nightBeforeDispatch.channel}` +
         (nightBeforeDispatch.channel === "template" ? ` template=${nightBeforeDispatch.templateName}` : ""),
       );
+      const nbClaimRes = await claimStageDispatch(supabase, {
+        guestId: Number(guestId), trigger, recipient: String(guest.phone),
+        force: force === true, tag: "NIGHT_BEFORE",
+      });
+      if (nbClaimRes.conflictResponse) return nbClaimRes.conflictResponse;
+
       let nbStatus = "simulated";
       let nbError: string | null = null;
       let nbSessionKind: string | null = null;
@@ -2935,23 +2975,16 @@ serve(async (req: Request) => {
 
       // Log outcome — same shape as the existing pipeline log below so
       // Automation History renders it without special-casing.
-      await supabase.from("notification_log").insert({
-        guest_id:     guestId,
-        recipient:    guest.phone,
-        trigger_type: trigger,
-        channel:      "whatsapp",
-        status:       nbStatus,
-        payload: {
-          channel: nbPayloadChannel,
-          ...(nightBeforeDispatch.channel !== "template"
-            ? {
-                scriptKey: nightBeforeDispatch.freeTextKey,
-                ...(nbSessionKind ? { sessionKind: nbSessionKind } : {}),
-                ...(nbSessionImageUrl ? { image_url: nbSessionImageUrl } : {}),
-              }
-            : { template: nightBeforeDispatch.templateName, variables: nightBeforeDispatch.vars }),
-          ...(nbError ? { error: nbError } : {}),
-        },
+      await finalizeDispatchAttempt(supabase, nbClaimRes.claim.logId, nbStatus, {
+        channel: nbPayloadChannel,
+        ...(nightBeforeDispatch.channel !== "template"
+          ? {
+              scriptKey: nightBeforeDispatch.freeTextKey,
+              ...(nbSessionKind ? { sessionKind: nbSessionKind } : {}),
+              ...(nbSessionImageUrl ? { image_url: nbSessionImageUrl } : {}),
+            }
+          : { template: nightBeforeDispatch.templateName, variables: nightBeforeDispatch.vars }),
+        ...(nbError ? { error: nbError } : {}),
       });
 
       // Conversation thread (non-blocking).
@@ -3019,6 +3052,12 @@ serve(async (req: Request) => {
       const dpUseSession =
         !forceMetaTemplate &&
         ((force === true) || isWindowOpen(guest.wa_window_expires_at));
+      const dpClaimRes = await claimStageDispatch(supabase, {
+        guestId: Number(guestId), trigger, recipient: String(guest.phone),
+        force: force === true, tag: "MORNING_DAYPASS",
+      });
+      if (dpClaimRes.conflictResponse) return dpClaimRes.conflictResponse;
+
       let dpStatus = "simulated";
       let dpError: string | null = null;
       let dpChannel: "session_message" | "meta_template" = dpUseSession ? "session_message" : "meta_template";
@@ -3101,17 +3140,10 @@ serve(async (req: Request) => {
         dispatchType: dpChannel === "session_message" ? "Session" : "Template",
       });
 
-      await supabase.from("notification_log").insert({
-        guest_id:     guestId,
-        recipient:    guest.phone,
-        trigger_type: trigger,
-        channel:      "whatsapp",
-        status:       dpStatus,
-        payload:      {
-          channel:    dpChannel,
-          ...(dpChannel === "meta_template" ? { template: dpTemplate } : { scriptKey: "morning_daypass" }),
-          ...(dpError ? { error: dpError } : {}),
-        },
+      await finalizeDispatchAttempt(supabase, dpClaimRes.claim.logId, dpStatus, {
+        channel:    dpChannel,
+        ...(dpChannel === "meta_template" ? { template: dpTemplate } : { scriptKey: "morning_daypass" }),
+        ...(dpError ? { error: dpError } : {}),
       });
 
       if (dpStatus === "sent" || dpStatus === "simulated") {
@@ -3224,6 +3256,12 @@ serve(async (req: Request) => {
         const mgChannel: "whapi" | "meta" = useWhapiForMorning ? "whapi" : "meta";
         const mgImageUrl = resolveShabbatAwareSessionImageUrl(stageRow, mgIsShabbat, requestImageUrl);
 
+        const mgClaimRes = await claimStageDispatch(supabase, {
+          guestId: Number(guestId), trigger, recipient: String(guest.phone),
+          force: force === true, tag: "MORNING_SESSION",
+        });
+        if (mgClaimRes.conflictResponse) return mgClaimRes.conflictResponse;
+
         let mgStatus = "simulated";
         let mgError: string | null = null;
         let mgWhapiWamid: string | null = null;
@@ -3256,17 +3294,10 @@ serve(async (req: Request) => {
           dispatchType: "Session",
         });
 
-        await supabase.from("notification_log").insert({
-          guest_id:     guestId,
-          recipient:    guest.phone,
-          trigger_type: trigger,
-          channel:      "whatsapp",
-          status:       mgStatus,
-          payload: {
-            channel:   mgChannel === "whapi" ? "whapi_session" : "session_message",
-            scriptKey: mgScriptKey,
-            ...(mgError ? { error: mgError } : {}),
-          },
+        await finalizeDispatchAttempt(supabase, mgClaimRes.claim.logId, mgStatus, {
+          channel:   mgChannel === "whapi" ? "whapi_session" : "session_message",
+          scriptKey: mgScriptKey,
+          ...(mgError ? { error: mgError } : {}),
         });
 
         if (mgStatus === "sent" || mgStatus === "simulated") {
@@ -3359,6 +3390,12 @@ serve(async (req: Request) => {
 
     // ── Morning-of fast-path execution — early return ─────────────────────────
     if (morningDispatch !== null) {
+      const mdClaimRes = await claimStageDispatch(supabase, {
+        guestId: Number(guestId), trigger, recipient: String(guest.phone),
+        force: force === true, tag: "MORNING_TEMPLATE",
+      });
+      if (mdClaimRes.conflictResponse) return mdClaimRes.conflictResponse;
+
       let mdStatus = "simulated";
       let mdError: string | null = null;
       let usedMorningTemplate = morningDispatch.primaryTemplate;
@@ -3443,21 +3480,14 @@ serve(async (req: Request) => {
         dispatchType: "Template",
       });
 
-      await supabase.from("notification_log").insert({
-        guest_id:     guestId,
-        recipient:    guest.phone,
-        trigger_type: trigger,
-        channel:      "whatsapp",
-        status:       mdStatus,
-        payload: {
-          channel:   mdSessionFallbackBody ? "session_message" : "meta_template",
-          template:  mdDispatched?.templateName ?? usedMorningTemplate,
-          variables: mdDispatched?.variables ?? morningDispatch.vars,
-          ...(mdSessionFallbackBody
-            ? { shabbatSessionFallback: true, primaryAttempt: morningDispatch.primaryTemplate }
-            : {}),
-          ...(mdError ? { error: mdError } : {}),
-        },
+      await finalizeDispatchAttempt(supabase, mdClaimRes.claim.logId, mdStatus, {
+        channel:   mdSessionFallbackBody ? "session_message" : "meta_template",
+        template:  mdDispatched?.templateName ?? usedMorningTemplate,
+        variables: mdDispatched?.variables ?? morningDispatch.vars,
+        ...(mdSessionFallbackBody
+          ? { shabbatSessionFallback: true, primaryAttempt: morningDispatch.primaryTemplate }
+          : {}),
+        ...(mdError ? { error: mdError } : {}),
       });
 
       if (mdStatus === "sent" || mdStatus === "simulated") {
@@ -3622,6 +3652,12 @@ serve(async (req: Request) => {
           ? { channel: "text", freeTextKey: "room_ready_reminder", guestName: rrGuestName, roomName: rrRoomName }
           : { channel: "template", templateName: PIPELINE_TEMPLATE["room_ready"], vars: sanitizeTemplateVars([rrGuestName, rrRoomName]) };
 
+      const rrClaimRes = await claimStageDispatch(supabase, {
+        guestId: Number(guestId), trigger: "room_ready", recipient: String(guest.phone),
+        force: force === true, tag: "ROOM_READY",
+      });
+      if (rrClaimRes.conflictResponse) return rrClaimRes.conflictResponse;
+
       let rrStatus = "simulated";
       let rrError: string | null = null;
       let rrConvMessage = "";
@@ -3705,20 +3741,13 @@ serve(async (req: Request) => {
         dispatchType: rrDispatch.channel === "template" ? "Template" : "Session",
       });
 
-      await supabase.from("notification_log").insert({
-        guest_id:     guestId,
-        recipient:    guest.phone,
-        trigger_type: trigger,
-        channel:      "whatsapp",
-        status:       rrStatus,
-        payload: {
-          room_id: rrRoomNameRaw,
-          channel: rrDispatch.channel === "whapi" ? "whapi_session" : rrDispatch.channel === "text" ? "session_message" : "meta_template",
-          ...(rrDispatch.channel !== "template"
-            ? { scriptKey: rrDispatch.freeTextKey }
-            : { template: rrDispatch.templateName, variables: rrDispatch.vars }),
-          ...(rrError ? { error: rrError } : {}),
-        },
+      await finalizeDispatchAttempt(supabase, rrClaimRes.claim.logId, rrStatus, {
+        room_id: rrRoomNameRaw,
+        channel: rrDispatch.channel === "whapi" ? "whapi_session" : rrDispatch.channel === "text" ? "session_message" : "meta_template",
+        ...(rrDispatch.channel !== "template"
+          ? { scriptKey: rrDispatch.freeTextKey }
+          : { template: rrDispatch.templateName, variables: rrDispatch.vars }),
+        ...(rrError ? { error: rrError } : {}),
       });
 
       if (rrStatus === "sent" || rrStatus === "simulated") {
@@ -3860,22 +3889,15 @@ serve(async (req: Request) => {
 
     // Phase C claim-before-send (2026-07-13) — prevents two overlapping cron
     // ticks (or a cron tick racing a manual Override) from dispatching this
-    // exact guest+trigger concurrently. Scoped to this generic fallback path
-    // only this session — see automationClaim.ts header for the explicit
-    // follow-up list of the remaining special-cased fast paths.
-    const claim = await claimDispatchAttempt(supabase, {
-      guestId,
-      triggerType: trigger,
-      recipient: guest.phone as string,
-      force: force === true,
+    // exact guest+trigger concurrently. As of 2026-07-17 every dedicated
+    // fast-path block above (stage_2_arrival, night_before, the three morning
+    // blocks, room_ready) claims through the same claimStageDispatch wrapper.
+    const genClaimRes = await claimStageDispatch(supabase, {
+      guestId: Number(guestId), trigger, recipient: guest.phone as string,
+      force: force === true, tag: "BRANCH_D",
     });
-    if (!claim.claimed) {
-      console.log(`[whatsapp-send] BRANCH_D claim_conflict trigger="${trigger}" guestId=${guestId} reason=${claim.reason}`);
-      return new Response(
-        JSON.stringify({ ok: true, skipped: true, status: "in_flight", reason: "claim_conflict" }),
-        { headers: { ...CORS, "Content-Type": "application/json" } },
-      );
-    }
+    if (genClaimRes.conflictResponse) return genClaimRes.conflictResponse;
+    const claim = genClaimRes.claim;
 
     let status = "simulated";
     let sendError: string | null = null;
