@@ -99,7 +99,7 @@ import {
   isCheckInPolicyQuestion,
   buildCheckInPolicyReply,
   isDiningQuestion,
-  buildDiningReply,
+  buildDiningReplyForGuest,
   isMealDeclineOrApology,
   buildMealDeclineAck,
   isGuestEligibleForInHouseOpsDispatch,
@@ -142,7 +142,7 @@ import {
   detectGuestHumanRequest,
   isGuestStaffHandoffReply,
 } from "../_shared/guestBotHandoff.ts";
-import { assembleGuestBrainPrompt } from "../_shared/guestBotSettings.ts";
+import { assembleGuestBrainPrompt, fetchGuestBotSettings } from "../_shared/guestBotSettings.ts";
 import { generateGuestChatReply } from "../_shared/guestBotLlm.ts";
 import {
   coalesceGuestInboundBurstIfLeader,
@@ -936,8 +936,17 @@ async function handleGuestDirectMessage(
 
     if (isDiningQuestion(text)) {
       await patchGuestDmInbound(supabase, conversationId, { intent: "dining_faq" });
-      const cfg = await fetchGuestDmBotConfig(supabase);
-      await sendGuestDmReply(supabase, phone, guestId, buildDiningReply(cfg), staffMuted);
+      const [cfg, botSettings] = await Promise.all([
+        fetchGuestDmBotConfig(supabase),
+        fetchGuestBotSettings(supabase),
+      ]);
+      await sendGuestDmReply(
+        supabase,
+        phone,
+        guestId,
+        buildDiningReplyForGuest(cfg, text, guestRecord, botSettings.knowledge_base),
+        staffMuted,
+      );
       results.push({ ...base, action: "dining_faq", muted: staffMuted });
       return;
     }
@@ -1259,7 +1268,10 @@ async function handleGuestDirectMessage(
     // Meta's bot_active gates (whatsapp-webhook.js) — only the generic
     // LLM/FAQ reply below is gated; Stage 2 and record-only ETA above always
     // fire regardless, same invariant as Meta.
-    const botCfg = await fetchGuestDmBotConfig(supabase);
+    const [botCfg, botSettings] = await Promise.all([
+      fetchGuestDmBotConfig(supabase),
+      fetchGuestBotSettings(supabase),
+    ]);
     if (!isWhapiBotActive(botCfg)) {
       await patchGuestDmInbound(supabase, conversationId, { intent: "faq" });
       results.push({ ...base, action: "captured_bot_off_whapi" });
@@ -1318,6 +1330,8 @@ async function handleGuestDirectMessage(
         botCfg,
         (guestRecord?.arrival_date as string | null) ?? null,
         GUEST_STAFF_HANDOFF_SENTENCE,
+        guestRecord,
+        botSettings.knowledge_base,
       );
     }
     await flagGuestDmStaffHandoff(supabase, { phone, guestId, conversationId, replyText });

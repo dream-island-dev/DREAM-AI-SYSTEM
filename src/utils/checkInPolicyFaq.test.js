@@ -5,6 +5,7 @@ import {
   hasCompleteGuestMessageEnding,
   resolveTruncatedReplyFallback,
   buildCheckInPolicyReply,
+  buildDiningReplyForGuest,
 } from "./checkInPolicyFaq";
 
 const TRUNCATED_LIVE_SAMPLE =
@@ -93,6 +94,42 @@ describe("checkInPolicyFaq", () => {
     );
     expect(fixed).toContain("מסעדת ערמונים");
     expect(fixed).not.toContain("כניסה למתחם");
+    expect(fixed).not.toContain("חצי פנסיון");
     expect(isReplyObviouslyTruncated(fixed)).toBe(false);
+  });
+
+  test("generic dining question does not dump guest meal plan", () => {
+    const guest = {
+      meal_plan: "half_board",
+      breakfast_time: "08:00",
+      dinner_time: "19:30",
+      guest_profile: { dietary: { tags: ["vegetarian"], note: "" } },
+    };
+    const fixed = resolveTruncatedReplyFallback(
+      "מסעדה",
+      "יש אוכל בערב?",
+      { hotel_restaurant_hours: "בוקר 07:00–10:30 | ערב 18:30–22:00" },
+      null,
+      "fallback",
+      guest,
+    );
+    expect(fixed).not.toContain("08:00");
+    expect(fixed).not.toContain("צמחוני");
+    expect(fixed).toContain("19:30");
+  });
+
+  test("own breakfast question uses pension time not restaurant pipe hours", () => {
+    const kb =
+      "• עמדות אוכל: נשנושים חופשיים לאורך היום.\n" +
+      "• מסעדת ערמונים: ארוחת ערב 18:30–22:00, הזמנות מראש.";
+    const reply = buildDiningReplyForGuest(
+      { hotel_restaurant_hours: "בוקר 08:00–11:00 | ערב 18:30–22:00" },
+      "מתי ארוחת הבוקר שלנו?",
+      { meal_plan: "half_board", breakfast_time: "08:30", meal_location: "עמדת בוקר" },
+      kb,
+    );
+    expect(reply).toContain("08:30");
+    expect(reply).not.toContain("08:00–11:00");
+    expect(reply).not.toContain("שעות ארוחת הבוקר במסעדה");
   });
 });

@@ -3,6 +3,16 @@
  * for npm test coverage. Keep in sync when editing the Deno source.
  */
 
+import {
+  buildMealsItinerary,
+  extractRestaurantMealHours,
+  formatGuestMealsForAi,
+  formatRestaurantKnowledgeForReply,
+  getGuestDinnerSlot,
+  retrieveMealKnowledgeLines,
+} from "../data/stayMealsSchema";
+import { formatGuestDietaryBrief } from "../data/guestProfileSchema";
+
 export const CHECK_IN_POLICY_QUESTION_PATTERN =
   /(?:מה|מתי|איזו?\s*שעה|כמה|האם)\s+[\s\S]{0,60}?(?:צ.?ק.?אין|צ.?ק.?אא?וט|שעת?\s*(?:כניסה|עזיבה)|כניסה\s*(?:ל)?חדר|להיכנס\s*לחדר|הכנס\w*\s*לחדר|check.?in|check.?out)|שעות?\s*(?:ה)?כניסה|קבלת\s*חדר|מועד\s*כניסה|(?:אפשר|ניתן|מותר)\s+[\s\S]{0,40}?(?:להיכנס|כניסה|לחדר)|מתי\s+(?:מקבלים|נותנים|מוסרים)\s*(?:את\s*)?החדר|מה\s+שעות/i;
 
@@ -86,14 +96,109 @@ export function looksLikeDiningHoursReply(text) {
   return DINING_HOURS_REPLY_PATTERN.test(t);
 }
 
-export function buildDiningReply(cfg = {}) {
-  const restaurant = (cfg.hotel_restaurant_hours || "").trim() || "07:00–22:00";
-  return (
-    `שמח לעזור 🙏\n` +
-    `מסעדת ערמונים פתוחה ${restaurant}.\n` +
-    `שירות חדרים זמין 24/7 — ניתן להזמין ישירות לסוויטה.\n` +
-    `לשמירת מקום במסעדה או להזמנה — כתבו לנו ונדאג.`
+export const GUEST_OWN_MEAL_QUESTION_PATTERN =
+  /(?:שלנו|שלי|אצלנו|בהזמנה(?:\s*(?:שלנו|שלי))?)|(?:מה|איזה|האם)\s*[\s\S]{0,35}?(?:פנסיון|חצי\s*פנסיון|פנסיון\s*מלא|ארוח(?:ה|ות)(?:\s*(?:שלנו|שלי|כלולות))?)|(?:מתי|באיזה\s*שעה)\s*[\s\S]{0,30}?(?:ארוחת\s*(?:בוקר|צהריים|ערב)|הבוקר|הערב)(?:\s*שלנו)?|(?:האם|יש\s*ל(?:נו|י))\s*[\s\S]{0,25}?(?:פנסיון|ארוח(?:ה|ות)\s*כלול)|(?:אלרג|צמחונ|טבעונ|ללא\s*גלוטן|לקטוז|תזונה|כשר)|what(?:'s| is)\s*(?:included|our)|our\s*(?:meal|breakfast|dinner|lunch|board|plan)/iu;
+
+export function isGuestOwnMealQuestion(text) {
+  const t = String(text || "").trim();
+  if (!t) return false;
+  return GUEST_OWN_MEAL_QUESTION_PATTERN.test(t);
+}
+
+function formatGuestMealSummaryLine(guest) {
+  const mealSummary = formatGuestMealsForAi(guest);
+  if (!mealSummary) return null;
+  return mealSummary.replace(
+    /^ארוחות \(לפי הפנסיון בהזמנה\):\s*/,
+    "לפי הפנסיון שלכם: ",
   );
+}
+
+export function buildDiningReply(cfg = {}, guest = null, guestText = "", knowledgeBase = "") {
+  const kb = knowledgeBase || "";
+  const lines = [
+    "שמח לעזור 🙏",
+    formatRestaurantKnowledgeForReply(cfg, kb, guestText),
+    "שירות חדרים זמין 24/7 — ניתן להזמין ישירות לסוויטה.",
+    "לשמירת מקום במסעדה או להזמנה — כתבו לנו ונדאג.",
+  ];
+
+  const dinnerSlot = getGuestDinnerSlot(guest);
+  const mentionsEvening = guestText && /ערב|אוכל|ארוחה|dinner|evening|מסעדה/i.test(guestText);
+  if (dinnerSlot && mentionsEvening) {
+    lines.splice(2, 0, `ארוחת הערב שלכם לפי ההזמנה: ${dinnerSlot}.`);
+  }
+
+  return lines.join("\n");
+}
+
+export function buildGuestOwnMealReply(cfg = {}, guest, guestText, knowledgeBase = "") {
+  const t = String(guestText || "").trim();
+  const kb = knowledgeBase || "";
+  const lines = ["שמח לעזור 🙏"];
+  const rows = buildMealsItinerary(guest);
+  const byLabel = new Map(rows.map((r) => [r.label, r.value]));
+
+  const asksDiet = /אלרג|צמחונ|טבעונ|גלוטן|לקטוז|תזונה|כשר|diet|allerg/i.test(t);
+  const asksBreakfast = /בוקר|breakfast/i.test(t);
+  const asksDinner = /ערב|dinner/i.test(t);
+  const asksLunch = /צהריים|lunch/i.test(t);
+
+  if (asksDiet) {
+    const diet = formatGuestDietaryBrief(guest?.guest_profile ?? null);
+    lines.push(
+      diet
+        ? `ברשומה שלכם: ${diet}. הצוות במסעדה מודע.`
+        : "לא רשום אצלנו מגבלת תזונה — ספרו לנו ונדאג.",
+    );
+  }
+
+  if (asksBreakfast) {
+    const guestBreakfast = byLabel.get("ארוחת בוקר");
+    if (guestBreakfast) {
+      lines.push(`ארוחת הבוקר שלכם לפי ההזמנה: ${guestBreakfast}.`);
+    } else {
+      const breakfastKb = retrieveMealKnowledgeLines(kb, t, "breakfast");
+      if (breakfastKb.length) {
+        lines.push(breakfastKb.join("\n"));
+      }
+    }
+  } else if (asksLunch) {
+    const restaurantLunch = extractRestaurantMealHours(cfg, "lunch", kb, t);
+    if (restaurantLunch) lines.push(`שעות ארוחת הצהריים במסעדה: ${restaurantLunch}.`);
+    if (byLabel.has("ארוחת צהריים")) {
+      lines.push(`לפי הפנסיון שלכם — שעת הארוחה: ${byLabel.get("ארוחת צהריים")}.`);
+    }
+  } else if (asksDinner) {
+    const restaurantDinner = extractRestaurantMealHours(cfg, "dinner", kb, t);
+    if (restaurantDinner) lines.push(`שעות ארוחת הערב במסעדה: ${restaurantDinner}.`);
+    const guestDinner = byLabel.get("ארוחת ערב") ?? byLabel.get("ארוחה");
+    if (guestDinner) lines.push(`לפי הפנסיון שלכם — שעת הארוחה: ${guestDinner}.`);
+  }
+
+  const summaryLine = formatGuestMealSummaryLine(guest);
+  const answeredSlot = (asksBreakfast || asksLunch || asksDinner) && lines.length > 1;
+  if (!answeredSlot && !asksDiet) {
+    lines.push(
+      summaryLine ?? "לא מצאנו פרטי פנסיון/ארוחות ברשומה — נבדוק מול הקבלה ונחזור אליכם.",
+    );
+  } else if (!answeredSlot && asksDiet && summaryLine) {
+    lines.push(summaryLine);
+  } else if (lines.length === 1) {
+    lines.push(
+      summaryLine ?? "לא מצאנו פרטי ארוחות ברשומה — נבדוק מול הקבלה ונחזור אליכם.",
+    );
+  }
+
+  return lines.join("\n");
+}
+
+export function buildDiningReplyForGuest(cfg = {}, guestText = "", guest = null, knowledgeBase = "") {
+  const kb = knowledgeBase || "";
+  if (guest && isGuestOwnMealQuestion(guestText)) {
+    return buildGuestOwnMealReply(cfg, guest, guestText, kb);
+  }
+  return buildDiningReply(cfg, guest, guestText, kb);
 }
 
 export function resolveTruncatedReplyFallback(
@@ -102,15 +207,18 @@ export function resolveTruncatedReplyFallback(
   cfg,
   arrivalDateStr,
   genericFallback,
+  guest = null,
+  knowledgeBase = "",
 ) {
+  const kb = knowledgeBase || "";
   if (isDiningQuestion(guestText)) {
-    return buildDiningReply(cfg);
+    return buildDiningReplyForGuest(cfg, guestText, guest, kb);
   }
   if (isCheckInPolicyQuestion(guestText)) {
     return buildCheckInPolicyReply(cfg, arrivalDateStr);
   }
   if (looksLikeDiningHoursReply(replyText)) {
-    return buildDiningReply(cfg);
+    return buildDiningReplyForGuest(cfg, guestText, guest, kb);
   }
   if (looksLikeCheckInHoursReply(replyText)) {
     return buildCheckInPolicyReply(cfg, arrivalDateStr);

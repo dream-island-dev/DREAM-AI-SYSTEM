@@ -15,6 +15,16 @@
 import { assertPipelineLifecycleForTrigger } from "./pipelineLifecycle.ts";
 import { isEffectiveSuiteGuest } from "./suiteNames.ts";
 import { evaluateRetryGate, type RetryState } from "./automationRetryGate.ts";
+import type { GuestMealRow } from "./stayMeals.ts";
+import {
+  buildMealsItinerary,
+  extractRestaurantMealHours,
+  formatGuestMealsForAi,
+  formatRestaurantKnowledgeForReply,
+  getGuestDinnerSlot,
+} from "./stayMeals.ts";
+import { formatGuestDietaryBrief } from "./guestProfile.ts";
+import { retrieveMealKnowledgeLines } from "./guestRag.ts";
 
 export const ISRAEL_UTC_OFFSET_HOURS = 2;
 
@@ -1368,14 +1378,131 @@ export function looksLikeDiningHoursReply(text: string): boolean {
   return DINING_HOURS_REPLY_PATTERN.test(t);
 }
 
-export function buildDiningReply(cfg: Record<string, string>): string {
-  const restaurant = (cfg["hotel_restaurant_hours"] ?? "").trim() || "07:00–22:00";
-  return (
-    `שמח לעזור 🙏\n` +
-    `מסעדת ערמונים פתוחה ${restaurant}.\n` +
-    `שירות חדרים זמין 24/7 — ניתן להזמין ישירות לסוויטה.\n` +
-    `לשמירת מקום במסעדה או להזמנה — כתבו לנו ונדאג.`
+/** Guest asks about *their* meals/plan/diet — not generic restaurant hours. */
+export const GUEST_OWN_MEAL_QUESTION_PATTERN =
+  /(?:שלנו|שלי|אצלנו|בהזמנה(?:\s*(?:שלנו|שלי))?)|(?:מה|איזה|האם)\s*[\s\S]{0,35}?(?:פנסיון|חצי\s*פנסיון|פנסיון\s*מלא|ארוח(?:ה|ות)(?:\s*(?:שלנו|שלי|כלולות))?)|(?:מתי|באיזה\s*שעה)\s*[\s\S]{0,30}?(?:ארוחת\s*(?:בוקר|צהריים|ערב)|הבוקר|הערב)(?:\s*שלנו)?|(?:האם|יש\s*ל(?:נו|י))\s*[\s\S]{0,25}?(?:פנסיון|ארוח(?:ה|ות)\s*כלול)|(?:אלרג|צמחונ|טבעונ|ללא\s*גלוטן|לקטוז|תזונה|כשר)|what(?:'s| is)\s*(?:included|our)|our\s*(?:meal|breakfast|dinner|lunch|board|plan)/iu;
+
+export function isGuestOwnMealQuestion(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  return GUEST_OWN_MEAL_QUESTION_PATTERN.test(t);
+}
+
+export type DiningGuestHints = GuestMealRow & {
+  guest_profile?: Record<string, unknown> | null;
+};
+
+function formatGuestMealSummaryLine(guest: DiningGuestHints): string | null {
+  const mealSummary = formatGuestMealsForAi(guest);
+  if (!mealSummary) return null;
+  return mealSummary.replace(
+    /^ארוחות \(לפי הפנסיון בהזמנה\):\s*/,
+    "לפי הפנסיון שלכם: ",
   );
+}
+
+/** Generic restaurant / room-service — KB first, then bot_config; guest dinner when evening. */
+export function buildDiningReply(
+  cfg: Record<string, string>,
+  guest?: DiningGuestHints | null,
+  guestText?: string,
+  knowledgeBase?: string,
+): string {
+  const kb = knowledgeBase ?? "";
+  const lines = [
+    "שמח לעזור 🙏",
+    formatRestaurantKnowledgeForReply(cfg, kb, guestText ?? ""),
+    "שירות חדרים זמין 24/7 — ניתן להזמין ישירות לסוויטה.",
+    "לשמירת מקום במסעדה או להזמנה — כתבו לנו ונדאג.",
+  ];
+
+  const dinnerSlot = getGuestDinnerSlot(guest);
+  const mentionsEvening = guestText && /ערב|אוכל|ארוחה|dinner|evening|מסעדה/i.test(guestText);
+  if (dinnerSlot && mentionsEvening) {
+    lines.splice(2, 0, `ארוחת הערב שלכם לפי ההזמנה: ${dinnerSlot}.`);
+  }
+
+  return lines.join("\n");
+}
+
+/** Tier-0 answer when guest asks explicitly about their plan / meal times / diet. */
+export function buildGuestOwnMealReply(
+  cfg: Record<string, string>,
+  guest: DiningGuestHints,
+  guestText: string,
+  knowledgeBase?: string,
+): string {
+  const t = guestText.trim();
+  const kb = knowledgeBase ?? "";
+  const lines = ["שמח לעזור 🙏"];
+  const rows = buildMealsItinerary(guest);
+  const byLabel = new Map(rows.map((r) => [r.label, r.value]));
+
+  const asksDiet = /אלרג|צמחונ|טבעונ|גלוטן|לקטוז|תזונה|כשר|diet|allerg/i.test(t);
+  const asksBreakfast = /בוקר|breakfast/i.test(t);
+  const asksDinner = /ערב|dinner/i.test(t);
+  const asksLunch = /צהריים|lunch/i.test(t);
+
+  if (asksDiet) {
+    const diet = formatGuestDietaryBrief(guest.guest_profile ?? null);
+    lines.push(
+      diet
+        ? `ברשומה שלכם: ${diet}. הצוות במסעדה מודע.`
+        : "לא רשום אצלנו מגבלת תזונה — ספרו לנו ונדאג.",
+    );
+  }
+
+  if (asksBreakfast) {
+    const guestBreakfast = byLabel.get("ארוחת בוקר");
+    if (guestBreakfast) {
+      lines.push(`ארוחת הבוקר שלכם לפי ההזמנה: ${guestBreakfast}.`);
+    } else {
+      const breakfastKb = retrieveMealKnowledgeLines(kb, t, "breakfast");
+      if (breakfastKb.length) {
+        lines.push(breakfastKb.join("\n"));
+      }
+    }
+  } else if (asksLunch) {
+    const restaurantLunch = extractRestaurantMealHours(cfg, "lunch", kb, t);
+    if (restaurantLunch) lines.push(`שעות ארוחת הצהריים במסעדה: ${restaurantLunch}.`);
+    if (byLabel.has("ארוחת צהריים")) {
+      lines.push(`לפי הפנסיון שלכם — שעת הארוחה: ${byLabel.get("ארוחת צהריים")}.`);
+    }
+  } else if (asksDinner) {
+    const restaurantDinner = extractRestaurantMealHours(cfg, "dinner", kb, t);
+    if (restaurantDinner) lines.push(`שעות ארוחת הערב במסעדה: ${restaurantDinner}.`);
+    const guestDinner = byLabel.get("ארוחת ערב") ?? byLabel.get("ארוחה");
+    if (guestDinner) lines.push(`לפי הפנסיון שלכם — שעת הארוחה: ${guestDinner}.`);
+  }
+
+  const summaryLine = formatGuestMealSummaryLine(guest);
+  const answeredSlot = (asksBreakfast || asksLunch || asksDinner) && lines.length > 1;
+  if (!answeredSlot && !asksDiet) {
+    lines.push(
+      summaryLine ?? "לא מצאנו פרטי פנסיון/ארוחות ברשומה — נבדוק מול הקבלה ונחזור אליכם.",
+    );
+  } else if (!answeredSlot && asksDiet && summaryLine) {
+    lines.push(summaryLine);
+  } else if (lines.length === 1) {
+    lines.push(
+      summaryLine ?? "לא מצאנו פרטי ארוחות ברשומה — נבדוק מול הקבלה ונחזור אליכם.",
+    );
+  }
+
+  return lines.join("\n");
+}
+
+export function buildDiningReplyForGuest(
+  cfg: Record<string, string>,
+  guestText: string,
+  guest?: DiningGuestHints | null,
+  knowledgeBase?: string,
+): string {
+  const kb = knowledgeBase ?? "";
+  if (guest && isGuestOwnMealQuestion(guestText)) {
+    return buildGuestOwnMealReply(cfg, guest, guestText, kb);
+  }
+  return buildDiningReply(cfg, guest, guestText, kb);
 }
 
 // ── Meal decline / apology (Tier-0) — restaurant reservation threads ─────────
@@ -1441,17 +1568,19 @@ export function resolveTruncatedReplyFallback(
   cfg: Record<string, string>,
   arrivalDateStr: string | null,
   genericFallback: string,
+  guest?: DiningGuestHints | null,
+  knowledgeBase?: string,
 ): string {
   // Guest intent wins over reply-shape heuristics (dining truncations often share
   // "ימי חול / שבתות וחגים" tokens with check-in policy copy).
   if (isDiningQuestion(guestText)) {
-    return buildDiningReply(cfg);
+    return buildDiningReplyForGuest(cfg, guestText, guest, knowledgeBase);
   }
   if (isCheckInPolicyQuestion(guestText)) {
     return buildCheckInPolicyReply(cfg, arrivalDateStr);
   }
   if (looksLikeDiningHoursReply(replyText)) {
-    return buildDiningReply(cfg);
+    return buildDiningReplyForGuest(cfg, guestText, guest, knowledgeBase);
   }
   if (looksLikeCheckInHoursReply(replyText)) {
     return buildCheckInPolicyReply(cfg, arrivalDateStr);

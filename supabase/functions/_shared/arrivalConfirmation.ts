@@ -6,7 +6,7 @@ import { israelYmd } from "./automationSchedule.ts";
  */
 
 export const ARRIVAL_CONFIRM_GUEST_FIELDS =
-  "id, name, phone, arrival_confirmed, arrival_confirmed_at, msg_stage_2_arrival_sent, wa_window_expires_at, payment_amount, payment_link_url, direct_payment_url, ezgo_portal_url, payment_link_resolution_pending, msg_pre_arrival_2d_sent, needs_callback, requires_attention, attention_reason, arrival_date, departure_date, arrival_time, room, room_type, spa_time, spa_date, status, guest_notes, guest_profile, portal_token, automation_muted, automation_scope, claimed_by, dispatch_channel";
+  "id, name, phone, arrival_confirmed, arrival_confirmed_at, msg_stage_2_arrival_sent, wa_window_expires_at, payment_amount, payment_link_url, direct_payment_url, ezgo_portal_url, payment_link_resolution_pending, msg_pre_arrival_2d_sent, needs_callback, requires_attention, attention_reason, arrival_date, departure_date, arrival_time, room, room_type, spa_time, spa_date, status, guest_notes, guest_profile, portal_token, automation_muted, automation_scope, claimed_by, dispatch_channel, meal_plan, meal_location, breakfast_time, lunch_time, dinner_time, meal_time";
 
 /** Strip WhatsApp markdown / zero-width noise before matching. */
 export function normalizeInboundConfirmText(raw: string): string {

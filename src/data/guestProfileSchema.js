@@ -137,6 +137,14 @@ export function hasMeaningfulProfile(profile) {
 
 const labelById = (list, id) => list.find((x) => x.id === id)?.label ?? id;
 
+/** Dietary tags + free-text note — reused by profile line and dining Tier-0. */
+export function formatGuestDietaryBrief(profile) {
+  const p = normalizeGuestProfile(profile);
+  const tags = p.dietary.tags.map((t) => labelById(DIETARY_TAGS, t));
+  const note = p.dietary.note.trim();
+  return [tags.join(", "), note].filter(Boolean).join(" — ");
+}
+
 /** Hebrew one-liner for AI system context (frontend preview / debug). */
 export function formatGuestProfileForAi(profile, arrivalTime) {
   const p = normalizeGuestProfile(profile);
@@ -151,10 +159,8 @@ export function formatGuestProfileForAi(profile, arrivalTime) {
     parts.push(line);
   }
 
-  if (p.dietary.tags.length || p.dietary.note.trim()) {
-    const tags = p.dietary.tags.map((t) => labelById(DIETARY_TAGS, t)).join(", ");
-    parts.push(`תזונה: ${[tags, p.dietary.note.trim()].filter(Boolean).join(" — ")}`);
-  }
+  const dietLine = formatGuestDietaryBrief(profile);
+  if (dietLine) parts.push(`תזונה: ${dietLine}`);
 
   if (p.arrival_context.tags.length || p.arrival_context.note.trim()) {
     const tags = p.arrival_context.tags.map((t) => labelById(ARRIVAL_CONTEXT_TAGS, t)).join(", ");

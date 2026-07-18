@@ -29,6 +29,20 @@ const ARRIVAL_LABELS: Record<string, string> = {
   first_time: "ביקור ראשון",
 };
 
+/** Dietary tags + free-text note — reused by profile line and dining Tier-0. */
+export function formatGuestDietaryBrief(
+  profile: Record<string, unknown> | null | undefined,
+): string {
+  if (!profile || typeof profile !== "object") return "";
+  const diet = profile.dietary as Record<string, unknown> | undefined;
+  if (!diet || typeof diet !== "object") return "";
+  const tags = Array.isArray(diet.tags)
+    ? (diet.tags as string[]).map((t) => DIETARY_LABELS[t] ?? t).filter(Boolean)
+    : [];
+  const note = typeof diet.note === "string" ? diet.note.trim() : "";
+  return [tags.join(", "), note].filter(Boolean).join(" — ");
+}
+
 export function formatGuestProfileForAi(
   profile: Record<string, unknown> | null | undefined,
   arrivalTime?: string | null,
@@ -53,16 +67,8 @@ export function formatGuestProfileForAi(
     }
   }
 
-  const diet = profile.dietary as Record<string, unknown> | undefined;
-  if (diet && typeof diet === "object") {
-    const tags = Array.isArray(diet.tags)
-      ? (diet.tags as string[]).map((t) => DIETARY_LABELS[t] ?? t).filter(Boolean)
-      : [];
-    const note = typeof diet.note === "string" ? diet.note.trim() : "";
-    if (tags.length || note) {
-      parts.push(`תזונה: ${[tags.join(", "), note].filter(Boolean).join(" — ")}`);
-    }
-  }
+  const dietLine = formatGuestDietaryBrief(profile);
+  if (dietLine) parts.push(`תזונה: ${dietLine}`);
 
   const arr = profile.arrival_context as Record<string, unknown> | undefined;
   if (arr && typeof arr === "object") {

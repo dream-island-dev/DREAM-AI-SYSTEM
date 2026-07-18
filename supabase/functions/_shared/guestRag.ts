@@ -132,6 +132,50 @@ export function retrieveGuestKnowledge(
   };
 }
 
+const DINING_KB_QUERY_FALLBACK = "שעות מסעדה ארוחות בוקר צהריים ערב ערמונים שף";
+
+const DINING_KB_CHUNK_RE =
+  /מסעד|ארוח|אוכל|בוקר|צהריים|ערב|ערמונים|שף|פנסיון|room\s*service|שירות\s*חדרים/i;
+
+const MEAL_SLOT_QUERY: Record<string, string> = {
+  breakfast: "ארוחת בוקר עמדות אוכל נשנושים קולינריה",
+  lunch: "ארוחת צהריים",
+  dinner: "ארוחת ערב מסעדת ערמונים שף",
+};
+
+const MEAL_SLOT_CHUNK_RE: Record<string, RegExp> = {
+  breakfast: /בוקר|breakfast|עמדות\s*אוכל|נשנוש|קולינר/i,
+  lunch: /צהריים|lunch/i,
+  dinner: /ערב|dinner|ערמונים|מסעד/i,
+};
+
+/** KB slices for a specific meal slot — verbatim text, not parsed bot_config pipe hours. */
+export function retrieveMealKnowledgeLines(
+  knowledgeBase: string,
+  guestText: string,
+  slot: "breakfast" | "lunch" | "dinner",
+  topK = 2,
+): string[] {
+  const query = (guestText ?? "").trim() || MEAL_SLOT_QUERY[slot];
+  return retrieveDiningKnowledgeLines(knowledgeBase, query, topK + 2)
+    .filter((c) => MEAL_SLOT_CHUNK_RE[slot].test(c))
+    .slice(0, topK);
+}
+
+/** RAG slices from bot_settings.knowledge_base for Tier-0 dining (same brain as LLM). */
+export function retrieveDiningKnowledgeLines(
+  knowledgeBase: string,
+  guestText: string,
+  topK = 2,
+): string[] {
+  const kb = (knowledgeBase ?? "").trim();
+  if (!kb) return [];
+  const query = (guestText ?? "").trim() || DINING_KB_QUERY_FALLBACK;
+  const rag = retrieveGuestKnowledge(kb, query, topK + 2);
+  if (!rag.chunks.length) return [];
+  return rag.chunks.filter((c) => DINING_KB_CHUNK_RE.test(c)).slice(0, topK);
+}
+
 export function formatRagContextBlock(chunks: string[]): string {
   if (!chunks.length) return "";
   return `\n\n══ ידע רלוונטי (RAG) ══\n${chunks.join("\n\n")}`;

@@ -1,3 +1,5 @@
+2026-07-19 | Guest bot meals — breakfast ≠ Armonim pipe hours | Tier-0: "ארוחת הבוקר שלנו" → pension time from DB (+ meal_location); KB verbatim for food stations; never `bot_config` pipe "בוקר …" as breakfast. Dinner still KB + guest `dinner_time`. Deploy: `whatsapp-webhook` + `whapi-webhook`.
+
 2026-07-19 | Check-in guest profile 360 — merged edit + collapsible ETA board | GuestsPage: name click → `GuestContextDrawer` (not chat); לוח זמני הגעה collapsed by default (▶ toggle). `AddGuestModal` merged with smart profile (`GuestSmartProfileFields`) incl. `arrival_time`; drawer header 💬/✏️. Deploy: frontend only.
 
 2026-07-18 | Guest bot reliability — truncation + Tier-0 + ice ops + HK ציק + survey UI + checked_out modal | Phases 1–3: truncation guard + dining/meal Tier-0 + ice instant amenity dispatch. Phase 4: `ציק`→`צק` in housekeepingWaParse. Phase 5: AddGuestModal `checked_out`; survey badge decoupled from category low. Audit fix: `resolveTruncatedReplyFallback` guest-intent-first (dining vs check-in token collision). Deploy: `whatsapp-webhook` + `whapi-webhook` + frontend.

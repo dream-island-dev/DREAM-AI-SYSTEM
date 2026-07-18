@@ -27,6 +27,7 @@ import {
   isDiningQuestion,
   isMealDeclineOrApology,
   buildDiningReply,
+  buildDiningReplyForGuest,
   buildMealDeclineAck,
   isReplyObviouslyTruncated,
   endsWithMidWordHebrewCut,
@@ -768,9 +769,30 @@ Deno.test("isMealDeclineOrApology: restaurant cancellation threads", () => {
 });
 
 Deno.test("buildDiningReply + buildMealDeclineAck are complete messages", () => {
-  const dining = buildDiningReply({ hotel_restaurant_hours: "07:00–22:00" });
+  const cfg = { hotel_restaurant_hours: "בוקר 07:00–10:30 | ערב 18:30–22:00" };
+  const dining = buildDiningReply(cfg);
   assertEquals(looksLikeDiningHoursReply(dining), true);
   assertEquals(isReplyObviouslyTruncated(dining), false);
+  assertEquals(dining.includes("07:00–10:30"), true);
+  const personalized = buildDiningReplyForGuest(
+    cfg,
+    "מתי ארוחת הבוקר שלנו?",
+    {
+      meal_plan: "half_board",
+      breakfast_time: "08:00",
+      dinner_time: "19:30",
+      guest_profile: { dietary: { tags: ["vegetarian"], note: "" } },
+    },
+  );
+  assertEquals(personalized.includes("08:00"), true);
+  assertEquals(personalized.includes("ארוחת הבוקר שלכם"), true);
+  assertEquals(personalized.includes("07:00–10:30"), false);
+  assertEquals(isReplyObviouslyTruncated(personalized), false);
+  const evening = buildDiningReply(cfg, {
+    meal_plan: "half_board",
+    dinner_time: "19:30",
+  }, "יש אוכל בערב?");
+  assertEquals(evening.includes("19:30"), true);
   const meal = buildMealDeclineAck("דני");
   assertEquals(meal.includes("דני"), true);
   assertEquals(isReplyObviouslyTruncated(meal), false);

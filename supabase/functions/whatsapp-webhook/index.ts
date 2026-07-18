@@ -77,7 +77,7 @@ import {
   isCheckInPolicyQuestion,
   buildCheckInPolicyReply,
   isDiningQuestion,
-  buildDiningReply,
+  buildDiningReplyForGuest,
   isMealDeclineOrApology,
   buildMealDeclineAck,
   isReplyObviouslyTruncated,
@@ -1046,10 +1046,13 @@ async function handleDiningFaq(
     claimedConversationId: number | null;
     sim: boolean;
     cfg: Record<string, string>;
+    guest?: Record<string, unknown> | null;
+    guestText: string;
+    knowledgeBase?: string;
   },
 ): Promise<void> {
-  const { phone, guestId, msgId, claimedConversationId, sim, cfg } = opts;
-  const reply = buildDiningReply(cfg);
+  const { phone, guestId, msgId, claimedConversationId, sim, cfg, guest, guestText, knowledgeBase } = opts;
+  const reply = buildDiningReplyForGuest(cfg, guestText, guest, knowledgeBase);
   await patchClaimedInbound(supabase, claimedConversationId, msgId, {
     guest_id: guestId,
     intent: "dining_faq",
@@ -2899,6 +2902,9 @@ Deno.serve(async (req: Request) => {
           claimedConversationId,
           sim,
           cfg: botConfig,
+          guest: guest as Record<string, unknown> | null,
+          guestText: text,
+          knowledgeBase: botSettings.knowledge_base,
         });
         continue;
       }
@@ -3187,6 +3193,9 @@ Deno.serve(async (req: Request) => {
           claimedConversationId,
           sim,
           cfg: botConfig,
+          guest: guest as Record<string, unknown> | null,
+          guestText: effectiveText,
+          knowledgeBase: botSettings.knowledge_base,
         });
         continue;
       }
@@ -3527,6 +3536,8 @@ Deno.serve(async (req: Request) => {
                 botConfig,
                 (guest?.arrival_date as string) ?? null,
                 FALLBACK_REPLY,
+                guest as Record<string, unknown> | null,
+                botSettings.knowledge_base,
               );
             }
             rawToolLoggedRequest = result.loggedRequest;
@@ -3904,6 +3915,8 @@ Deno.serve(async (req: Request) => {
           botConfig,
           (guest?.arrival_date as string) ?? null,
           FALLBACK_REPLY,
+          guest as Record<string, unknown> | null,
+          botSettings.knowledge_base,
         );
       }
 

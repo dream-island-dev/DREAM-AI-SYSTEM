@@ -3,6 +3,7 @@
 
 import { formatGuestProfileForAi } from "./guestProfile.ts";
 import { formatSpaScheduleDisplay } from "./spaSchedule.ts";
+import { formatGuestMealsForAi } from "./stayMeals.ts";
 
 const PORTAL_SPA_ATTENTION_REASON = "בקשת טיפול בספא";
 
@@ -89,6 +90,16 @@ export function buildGuestContextForAi(
   }
   if (hasStage2) parts.push("כבר קיבל הודעת אישור+ספא");
   if (hasStage3) parts.push("כבר קיבל הודעת בוקר הגעה");
+
+  const mealsLine = formatGuestMealsForAi({
+    meal_plan: guest.meal_plan as string | null,
+    meal_location: guest.meal_location as string | null,
+    meal_time: guest.meal_time as string | null,
+    breakfast_time: guest.breakfast_time as string | null,
+    lunch_time: guest.lunch_time as string | null,
+    dinner_time: guest.dinner_time as string | null,
+  });
+  if (mealsLine) parts.push(mealsLine);
 
   const profileLine = formatGuestProfileForAi(
     guest.guest_profile as Record<string, unknown> | null,

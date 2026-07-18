@@ -140,6 +140,102 @@ export function buildMealsItinerary(guest) {
   return rows;
 }
 
+/** Compact Hebrew line for LLM guest context + dining Tier-0. */
+export function formatGuestMealsForAi(guest) {
+  const rows = buildMealsItinerary(guest);
+  if (!rows.length) return "";
+  const details = rows.map((r) => `${r.label}: ${r.value}`).join(", ");
+  return `ארוחות (לפי הפנסיון בהזמנה): ${details}`;
+}
+
+export function getGuestDinnerSlot(guest) {
+  if (!guest) return null;
+  const rows = buildMealsItinerary(guest);
+  const dinner = rows.find((r) => r.label === "ארוחת ערב" || r.label === "ארוחה");
+  return dinner?.value?.trim() || null;
+}
+
+export function retrieveDiningKnowledgeLines(knowledgeBase, _guestText, topK = 2) {
+  const kb = String(knowledgeBase || "").trim();
+  if (!kb) return [];
+  return kb
+    .split(/\n{2,}|(?=•\s)/)
+    .map((c) => c.trim())
+    .filter((c) => c.length > 20 && /מסעד|ארוח|אוכל|בוקר|צהריים|ערב|ערמונים|שף|פנסיון/i.test(c))
+    .slice(0, topK);
+}
+
+export function retrieveMealKnowledgeLines(knowledgeBase, guestText, slot, topK = 2) {
+  const queries = {
+    breakfast: "ארוחת בוקר עמדות אוכל נשנושים קולינריה",
+    lunch: "ארוחת צהריים",
+    dinner: "ארוחת ערב מסעדת ערמונים שף",
+  };
+  const chunkRes = {
+    breakfast: /בוקר|breakfast|עמדות\s*אוכל|נשנוש|קולינר/i,
+    lunch: /צהריים|lunch/i,
+    dinner: /ערב|dinner|ערמונים|מסעד/i,
+  };
+  const query = String(guestText || "").trim() || queries[slot];
+  return retrieveDiningKnowledgeLines(knowledgeBase, query, topK + 2)
+    .filter((c) => chunkRes[slot].test(c))
+    .slice(0, topK);
+}
+
+export function getGuestBreakfastSlot(guest) {
+  if (!guest) return null;
+  const rows = buildMealsItinerary(guest);
+  const breakfast = rows.find((r) => r.label === "ארוחת בוקר");
+  return breakfast?.value?.trim() || null;
+}
+
+export function extractRestaurantMealHours(cfg = {}, slot, knowledgeBase = "", guestText = "") {
+  const strictPatterns = {
+    breakfast: /(?:ארוחת?\s*)?בוקר\s*(?:[:：]\s*)?(\d{1,2}:\d{2}\s*[–—-]\s*\d{1,2}:\d{2})/iu,
+    lunch: /(?:ארוחת?\s*)?צהריים\s*(?:[:：]\s*)?(\d{1,2}:\d{2}\s*[–—-]\s*\d{1,2}:\d{2})/iu,
+    dinner: /(?:ארוחת?\s*)?ערב\s*(?:[:：]\s*)?(\d{1,2}:\d{2}\s*[–—-]\s*\d{1,2}:\d{2})/iu,
+  };
+
+  const tryText = (raw) => {
+    const t = String(raw || "").trim();
+    if (!t) return null;
+    const sm = t.match(strictPatterns[slot]);
+    if (sm?.[1]?.trim()) return sm[1].trim();
+    if (slot === "breakfast") return null;
+    const pipePatterns = {
+      lunch: /צהריים\s*([^|]+)/iu,
+      dinner: /ערב\s*([^|]+)/iu,
+    };
+    const pm = t.match(pipePatterns[slot]);
+    return pm?.[1]?.trim() || null;
+  };
+
+  const kb = String(knowledgeBase || "").trim();
+  if (kb) {
+    for (const line of retrieveMealKnowledgeLines(kb, guestText, slot)) {
+      const hit = tryText(line);
+      if (hit) return hit;
+    }
+    const fromKb = tryText(kb);
+    if (fromKb) return fromKb;
+  }
+
+  if (slot === "breakfast") return null;
+
+  return tryText(cfg.hotel_restaurant_hours);
+}
+
+export function formatRestaurantHoursLine(cfg = {}) {
+  const restaurant = (cfg.hotel_restaurant_hours || "").trim() || "07:00–22:00";
+  return `מסעדת ערמונים — שעות פעילות: ${restaurant}`;
+}
+
+export function formatRestaurantKnowledgeForReply(cfg = {}, knowledgeBase = "", guestText = "") {
+  const kbLines = retrieveDiningKnowledgeLines(knowledgeBase, guestText);
+  if (kbLines.length) return kbLines.join("\n");
+  return `${formatRestaurantHoursLine(cfg)}.`;
+}
+
 export function hasMealItinerary(guest) {
   return buildMealsItinerary(guest).length > 0;
 }

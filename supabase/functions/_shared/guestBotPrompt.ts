@@ -62,6 +62,14 @@ export const FOCUS_CURRENT_MESSAGE_SUFFIX = `
 • אם נושא קודם כבר נענה בתשובת צוות או בוט קודמת (למשל "יגיע אליכם", "הועבר לצוות", "מטפלים בזה") — אל תחזור/י עליו, אל תכתוב "שוב" ואל תעביר/י שוב את אותה בקשה.
 • היסטוריית השיחה היא להקשר בלבד — לא רשימת משימות פתוחות.`;
 
+export const GUEST_PROFILE_ON_DEMAND_SUFFIX = `
+
+══ פרופיל אורח — שימוש לפי דרישה ══
+• שעות מסעדת ערמונים (ערב) — מ"ידע הריזורט" / knowledge_base; בוקר = עמדות אוכל/פנסיון ב-KB, לא שעות pipe ב-bot_config.
+• שעות ארוחה ב"פרטי האורח" = הפנסיון/ההזמנה של האורח — הצג/י רק כששואלים על הארוחות שלו.
+• אם יש ארוחת ערב בפרופיל והאורח שואל על אוכל/ערב — ציין/י את שעת ארוחת הערב שלו.
+• בשאלה כללית על מסעדה — שעות מהידע הרשמי בלבד, בלי לפרט פנסיון שלא נשאל.`;
+
 /** Persona-only fallback when knowledge_base is the single source of factual hours. */
 export function buildMinimalPersonaFromBotConfig(cfg: Record<string, string>): string {
   if (!Object.keys(cfg).length) return FALLBACK_SYSTEM_PROMPT;
@@ -154,6 +162,7 @@ export function appendGuestBrainInvariantSuffixes(
     + (opts?.inHouse ? IN_HOUSE_TONE_SUFFIX : "")
     + ANTI_REASONING_LEAK_SUFFIX
     + FOCUS_CURRENT_MESSAGE_SUFFIX
+    + GUEST_PROFILE_ON_DEMAND_SUFFIX
     + routing
   );
 }
