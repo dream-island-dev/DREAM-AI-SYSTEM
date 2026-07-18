@@ -26,7 +26,10 @@ import {
   type GuestForSchedule,
 } from "../_shared/automationSchedule.ts";
 import {
+  getMissingRoomAssignmentSkipReason,
+  hasPremiumDayRoomTypeConflict,
   hasSuiteRoomTypeConflict,
+  isEffectiveDayPassGuest,
   isEffectiveSuiteGuest,
 } from "../_shared/suiteNames.ts";
 import {
@@ -54,6 +57,7 @@ const ymd = (d: Date) => d.toISOString().slice(0, 10);
 /** Guests matching these reasons must never appear in the live queue preview. */
 const PERMANENT_SKIP_REASONS = new Set([
   "wrong_room_type",
+  "missing_room_assignment",
   "guest_cancelled",
   "automation_muted",
   "automation_courtesy_only",
@@ -290,6 +294,8 @@ Deno.serve(async (req: Request) => {
           // Effective routing truth (suiteNames.ts) — the ACC chips/gates must
           // segment by THIS, not raw room_type, to match cron/send routing.
           effectiveSuite: isEffectiveSuiteGuest(guest),
+          effectiveDayPass: isEffectiveDayPassGuest(guest),
+          missingRoomAssignment: getMissingRoomAssignmentSkipReason(guest) != null,
           // Real outbound-channel truth (guestWhapiRouting.ts) — suite OR
           // day-pass when GUEST_WHAPI_SUITES_ENABLED, same gate whatsapp-send
           // actually dispatches on. effectiveSuite above is suite-only and
@@ -297,6 +303,7 @@ Deno.serve(async (req: Request) => {
           effectiveWhapiGuest: shouldRouteGuestOutboundViaWhapiSuites(guest),
           // FAIL VISIBLE: suite room + day-pass room_type — ⚠ badge in ACC.
           roomTypeConflict: hasSuiteRoomTypeConflict(guest),
+          premiumDayRoomTypeConflict: hasPremiumDayRoomTypeConflict(guest),
           arrivalDate: (guest as Record<string, unknown>).arrival_date ?? null,
           departureDate: (guest as Record<string, unknown>).departure_date ?? null,
           stageKey: stage.stage_key,

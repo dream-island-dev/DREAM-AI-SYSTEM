@@ -5,7 +5,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import { SUITE_REGISTRY } from "../data/suiteRegistry";
-import { hasSuiteRoomTypeConflict } from "../utils/guestTiming";
+import { hasSuiteRoomTypeConflict, hasPremiumDayRoomTypeConflict } from "../utils/guestTiming";
 import AddGuestModal from "./AddGuestModal";
 import GuestAttentionBadge from "./GuestAttentionBadge";
 import GuestContextDrawer from "./GuestContextDrawer";
@@ -1002,6 +1002,15 @@ export default function GuestsPage({
                             style={{ marginRight: 6, whiteSpace: "nowrap" }}
                           >
                             ⚠ סתירת סיווג
+                          </span>
+                        )}
+                        {hasPremiumDayRoomTypeConflict(g) && (
+                          <span
+                            className="badge badge-orange"
+                            title="סתירת סיווג: חבילת Premium Day אך סוג האורח מסומן סוויטה — האוטומציה מנתבת כיום-כיף. לחץ ✏️ ותקן את סוג החדר."
+                            style={{ marginRight: 6, whiteSpace: "nowrap" }}
+                          >
+                            ⚠ פרימיום דיי
                           </span>
                         )}
                       </td>

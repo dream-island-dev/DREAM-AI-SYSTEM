@@ -102,10 +102,13 @@ import {
 import { assertPipelineLifecycleForTrigger } from "../_shared/pipelineLifecycle.ts";
 import { getAutomationScopeTriggerBlockReason } from "../_shared/automationSchedule.ts";
 import {
+  getMissingRoomAssignmentSkipReason,
+  hasPremiumDayRoomTypeConflict,
   hasSuiteRoomTypeConflict,
   isCanonicalSuiteRoom,
   isEffectiveDayPassGuest,
   isEffectiveSuiteGuest,
+  type GuestRoomFields,
 } from "../_shared/suiteNames.ts";
 import { assertMetaMessageAccepted } from "../_shared/metaWamid.ts";
 import {
@@ -1139,9 +1142,8 @@ function resolvePipelineTemplateName(
   const fromMap = PIPELINE_TEMPLATE[trigger]?.trim();
 
   if (trigger === "pre_arrival_2d") {
-    // Suite-room guard: a mis-tagged day_guest occupying a real suite gets the
-    // suite/standard confirmation template, not the day-pass one (P0, s125).
-    if (guest.room_type === "day_guest" && !isCanonicalSuiteRoom(guest.room)) {
+    // Effective day-pass (Premium Day room or day_guest + label) — not suite template.
+    if (isEffectiveDayPassGuest(guest as GuestRoomFields)) {
       return "dream_checkin_reminder_v2";
     }
     return fromDb || fromMap || "dream_arrival_confirmation";
@@ -2313,6 +2315,27 @@ serve(async (req: Request) => {
         `is a canonical suite but room_type=${guest.room_type} — routing as SUITE`,
       );
     }
+    if (hasPremiumDayRoomTypeConflict(guest)) {
+      console.warn(
+        `[whatsapp-send] premium_day_room_type_conflict: guest_id=${guestId} room="${guest.room}" ` +
+        `is Premium Day but room_type=${guest.room_type} — routing as DAY-PASS`,
+      );
+    }
+
+    const ROOM_ASSIGNMENT_EXEMPT = new Set([...MANUAL_TRIGGERS, "room_ready"]);
+    const roomAssignmentBlock = !force && !ROOM_ASSIGNMENT_EXEMPT.has(trigger)
+      ? getMissingRoomAssignmentSkipReason(guest)
+      : null;
+    if (roomAssignmentBlock) {
+      console.log(
+        `[whatsapp-send] skipped trigger="${trigger}" guestId=${guestId} reason=${roomAssignmentBlock} ` +
+        `room="${guest.room ?? ""}" room_type=${guest.room_type ?? ""}`,
+      );
+      return new Response(
+        JSON.stringify({ ok: true, skipped: true, reason: roomAssignmentBlock }),
+        { headers: { ...CORS, "Content-Type": "application/json" } },
+      );
+    }
 
     const pipelineInactive = !force ? assertGuestEligibleForAutomation(guest, trigger) : null;
     if (pipelineInactive) {
@@ -2446,7 +2469,7 @@ serve(async (req: Request) => {
     // portal-button paths below, so every dispatch path for a day-pass
     // pre_arrival_2d picks this template without exception.
     let tmplName = resolvePipelineTemplateName(trigger, guest, stageRow);
-    if (guest.room_type === "day_guest" && !isCanonicalSuiteRoom(guest.room) && trigger === "pre_arrival_2d") {
+    if (isEffectiveDayPassGuest(guest as GuestRoomFields) && trigger === "pre_arrival_2d") {
       console.log(
         `[whatsapp-send] day_pass_template_override: stage=pre_arrival_2d → ` +
         `dream_checkin_reminder_v2 for guest_id=${guestId} (${String(guest.name ?? "?")})`,

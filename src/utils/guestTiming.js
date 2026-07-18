@@ -6,7 +6,7 @@
 // Truth: guests.status/arrival_date is the golden profile, so a request that sits
 // open for a day shows the guest's CURRENT state, not a stale one.
 
-import { SUITE_REGISTRY } from "../data/suiteRegistry";
+import { PREMIUM_DAY_ROOMS, SUITE_REGISTRY } from "../data/suiteRegistry";
 import { readSelectedSuiteRoomFromProfile } from "./guestSelectedSuiteRoom";
 
 /** Calendar today in Israel (YYYY-MM-DD) — matches DATE columns as hotel-local days. */
@@ -66,11 +66,21 @@ export function isSuiteArrivingToday(guest) {
   return isSuiteGuestProfile(guest) && isPreArrivalTodayGuest(guest);
 }
 
-/** Suite profile: explicit room_type or assigned room from SUITE_REGISTRY. */
+/** Premium Day inventory slot (not a physical suite). */
+export function isPremiumDayRoom(room) {
+  return PREMIUM_DAY_ROOMS.includes(String(room ?? "").trim());
+}
+
+function isCanonicalSuiteRoomLabel(room) {
+  const n = String(room ?? "").trim();
+  if (!n) return false;
+  return SUITE_REGISTRY.includes(n);
+}
+
+/** Suite profile: canonical physical suite room only — not room_type alone. */
 export function isSuiteGuestProfile({ room_type, room } = {}) {
-  if (room_type === "suite") return true;
-  if (room && SUITE_REGISTRY.includes(room)) return true;
-  return false;
+  if (isPremiumDayRoom(room)) return false;
+  return isCanonicalSuiteRoomLabel(room);
 }
 
 /**
@@ -81,7 +91,13 @@ export function isSuiteGuestProfile({ room_type, room } = {}) {
  */
 export function hasSuiteRoomTypeConflict({ room_type, room } = {}) {
   if (room_type !== "day_guest" && room_type !== "premium_day_guest") return false;
-  return !!room && SUITE_REGISTRY.includes(room);
+  return isCanonicalSuiteRoomLabel(room);
+}
+
+/** FAIL VISIBLE: Premium Day room but room_type is suite/standard — mis-import. */
+export function hasPremiumDayRoomTypeConflict({ room_type, room } = {}) {
+  if (!isPremiumDayRoom(room)) return false;
+  return room_type !== "day_guest" && room_type !== "premium_day_guest";
 }
 
 /**

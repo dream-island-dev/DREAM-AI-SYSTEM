@@ -416,6 +416,11 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
+### 2026-07-19 — Automation trusts `guests.room`, not `room_type` alone
+- **Symptom:** Premium Day guests received suite stages (`night_before`, `morning_suite`); guests with `room_type=suite` but empty `room` entered suite cron.
+- **Root:** `isEffectiveSuiteGuest` treated `room_type === "suite"` as sufficient; Premium Day 1/2 not recognized server-side; no `missing_room_assignment` gate.
+- **Fix pattern:** `_shared/suiteNames.ts` — suite = `isCanonicalSuiteRoom(room)` only; day-pass = `isPremiumDayRoom` OR `day_guest`+non-empty room; `getMissingRoomAssignmentSkipReason` in `checkEligibility` + `whatsapp-send` (exempt manual/room_ready). Mirror in `pipelineSegment.js` + `guestTiming.js`.
+
 ### 2026-07-17 — Stage 1 had two invisible text sources (Meta vs bot_scripts)
 - **Symptom:** Guest received «סופרים את הימים» from Whapi but ACC script editor showed different copy; CTA «כן, מגיעים» appeared without admin writing it.
 - **Root:** Hybrid pipeline — Whapi reads `bot_scripts.pre_arrival_2d`, Meta reads `dream_arrival_confirmation`; `ensureArrivalConfirmationCta` appended silently on Whapi only.

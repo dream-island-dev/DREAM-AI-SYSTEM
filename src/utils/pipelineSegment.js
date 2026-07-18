@@ -3,7 +3,7 @@
  * Mirrors supabase/functions/_shared/suiteNames.ts + automation-queue routing.
  */
 
-import { SUITE_REGISTRY } from "../data/suiteRegistry";
+import { PREMIUM_DAY_ROOMS, SUITE_REGISTRY } from "../data/suiteRegistry";
 
 export const SHARED_STAGE_KEYS = new Set(["pre_arrival_2d", "stage_2_arrival", "stage_2_pay"]);
 
@@ -24,13 +24,6 @@ export const DAYPASS_STAGE_KEYS = new Set([
   "checkout_fb_daypass",
 ]);
 
-/** Effective suite — room_type OR canonical suite room (same as suiteNames.ts). */
-export function isEffectiveSuiteGuest(guest) {
-  if (!guest) return false;
-  if (guest.room_type === "suite") return true;
-  return isCanonicalSuiteRoom(guest.room);
-}
-
 /** Normalize room for registry lookup (geresh variants). */
 export function normalizeSuiteRoomName(room) {
   return String(room ?? "")
@@ -46,10 +39,32 @@ export function isCanonicalSuiteRoom(room) {
   return SUITE_REGISTRY.some((s) => normalizeSuiteRoomName(s) === n);
 }
 
+export function isPremiumDayRoom(room) {
+  return PREMIUM_DAY_ROOMS.includes(String(room ?? "").trim());
+}
+
+/** Effective suite — canonical physical suite room only (suiteNames.ts). */
+export function isEffectiveSuiteGuest(guest) {
+  if (!guest) return false;
+  if (isPremiumDayRoom(guest.room)) return false;
+  return isCanonicalSuiteRoom(guest.room);
+}
+
+/** Effective day-pass — Premium Day or day_guest/premium_day_guest + room label. */
+export function isEffectiveDayPassGuest(guest) {
+  if (!guest) return false;
+  if (isCanonicalSuiteRoom(guest.room)) return false;
+  if (isPremiumDayRoom(guest.room)) return true;
+  const rt = guest.room_type;
+  if (rt !== "day_guest" && rt !== "premium_day_guest") return false;
+  return String(guest.room ?? "").trim() !== "";
+}
+
 /** Authoritative routing segment for cron + Live Queue display. */
 export function resolveGuestPipelineSegment(guest) {
-  if (isEffectiveSuiteGuest(guest) || isCanonicalSuiteRoom(guest?.room)) return "suite";
-  return "daypass";
+  if (isEffectiveSuiteGuest(guest)) return "suite";
+  if (isEffectiveDayPassGuest(guest)) return "daypass";
+  return "unassigned";
 }
 
 export function classifyStagePipelineSegment(stageKey, appliesTo) {
@@ -62,6 +77,7 @@ export function classifyStagePipelineSegment(stageKey, appliesTo) {
 /** Whether a queue row belongs on this guest's journey (never both pipelines). */
 export function queueItemAppliesToGuest(item, guest) {
   const guestSeg = resolveGuestPipelineSegment(guest);
+  if (guestSeg === "unassigned") return false;
   const stageSeg = classifyStagePipelineSegment(item.stageKey, item.appliesTo);
   if (stageSeg === "shared" || stageSeg === "other") return true;
   return stageSeg === guestSeg;

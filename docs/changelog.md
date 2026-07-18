@@ -1,3 +1,5 @@
+2026-07-19 | Automation room-assignment gate — no suite/day-pass room, no cron | `_shared/suiteNames.ts`: `isEffectiveSuiteGuest` = canonical suite room only; Premium Day always day-pass; `missing_room_assignment` blocks all pipeline stages in `checkEligibility` + `whatsapp-send` (manual/room_ready exempt). ACC: skip label + premium-day conflict badge. Deploy: `whatsapp-send` + `whatsapp-cron` + `automation-queue` + frontend.
+
 2026-07-19 | Guest bot meals — breakfast universal from KB, lunch/dinner from profile | Breakfast Tier-0 + LLM: `08:00–10:30` (etc.) from knowledge_base for all guests; `breakfast_time` ignored for replies. Lunch/dinner answers use `lunch_time`/`dinner_time` from guest profile only. Deploy: `whatsapp-webhook` + `whapi-webhook`.
 
 2026-07-19 | Guest bot dining fallback strips pipe breakfast segment | `formatRestaurantHoursLine` omits `בוקר … |` from bot_config when KB empty — Armonim fallback shows evening only. Deploy: `whatsapp-webhook` + `whapi-webhook`.

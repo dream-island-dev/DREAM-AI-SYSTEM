@@ -4,6 +4,7 @@ import {
   getGuestArrivalRosterLabel,
   getGuestTimingBadge,
   hasSuiteRoomTypeConflict,
+  hasPremiumDayRoomTypeConflict,
   isGuestInResortToday,
   isSuiteGuestProfile,
   israelTodayStr,
@@ -36,6 +37,18 @@ describe("hasSuiteRoomTypeConflict / effective suite classification", () => {
 
   test("consistent suite guest = no conflict", () => {
     expect(hasSuiteRoomTypeConflict({ room: "אמטיסט 8", room_type: "suite" })).toBe(false);
+    expect(isSuiteGuestProfile({ room: "אמטיסט 8", room_type: "suite" })).toBe(true);
+  });
+
+  test("room_type=suite without canonical room is NOT a suite profile", () => {
+    expect(isSuiteGuestProfile({ room_type: "suite", room: "" })).toBe(false);
+    expect(isSuiteGuestProfile({ room_type: "suite", room: null })).toBe(false);
+  });
+
+  test("Premium Day with room_type=suite routes as day-pass (not suite profile)", () => {
+    const g = { room: "Premium Day 1", room_type: "suite" };
+    expect(isSuiteGuestProfile(g)).toBe(false);
+    expect(hasPremiumDayRoomTypeConflict(g)).toBe(true);
   });
 
   test("day_guest without a room = no conflict", () => {

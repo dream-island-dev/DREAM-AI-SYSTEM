@@ -13,7 +13,7 @@
 // is preserved exactly as today's code computes it — not "fixed" here.
 
 import { assertPipelineLifecycleForTrigger } from "./pipelineLifecycle.ts";
-import { isEffectiveSuiteGuest } from "./suiteNames.ts";
+import { getMissingRoomAssignmentSkipReason, isEffectiveSuiteGuest } from "./suiteNames.ts";
 import { evaluateRetryGate, type RetryState } from "./automationRetryGate.ts";
 import type { GuestMealRow } from "./stayMeals.ts";
 import {
@@ -534,6 +534,8 @@ export function checkEligibility(
   now: Date,
 ): string | null {
   if (guest.status === "cancelled") return "guest_cancelled";
+  const roomAssignmentSkip = getMissingRoomAssignmentSkipReason(guest);
+  if (roomAssignmentSkip) return roomAssignmentSkip;
   // Post-stay feedback fires after checkout — checked_out is expected, not a block.
   const postStayStage =
     stage.stage_key === "checkout_fb" || stage.stage_key === "checkout_fb_daypass";

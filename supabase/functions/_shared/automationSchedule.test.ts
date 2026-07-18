@@ -418,7 +418,7 @@ function daypassSpaGuest(overrides: Partial<GuestForSchedule> = {}): GuestForSch
     arrival_date: "2026-07-13",
     departure_date: "2026-07-13",
     room_type: "day_guest",
-    room: null,
+    room: "Premium Day 1",
     status: "checked_in",
     checkin_time: null,
     arrival_confirmed: null,
@@ -831,4 +831,38 @@ Deno.test("resolveTruncatedReplyFallback: dining + check-in policy paths", () =>
   );
   assertEquals(looksLikeDiningHoursReply(fallback), true);
   assertEquals(isReplyObviouslyTruncated(fallback), false);
+});
+
+// ── Room assignment gate (P0, 2026-07-19) ─────────────────────────────────
+
+Deno.test("checkEligibility: suite room_type without room → missing_room_assignment", () => {
+  const guest = suiteGuest({ room_type: "suite", room: "" });
+  const result = checkEligibility(nightBeforeStage(), guest, israelInstant("2026-07-14", 19, 0));
+  assertEquals(result, "missing_room_assignment");
+});
+
+Deno.test("checkEligibility: Premium Day mis-tagged suite → daypass stage OK, suite stage wrong_room_type", () => {
+  const guest = suiteGuest({
+    room_type: "suite",
+    room: "Premium Day 1",
+    arrival_date: "2026-07-14",
+    departure_date: "2026-07-14",
+    spa_date: "2026-07-14",
+    spa_time: "14:00",
+  });
+  assertEquals(checkEligibility(nightBeforeStage(), guest, israelInstant("2026-07-13", 19, 0)), "wrong_room_type");
+  assertEquals(
+    checkEligibility(nightBeforeDaypassStage(), guest, israelInstant("2026-07-13", 19, 30)),
+    null,
+  );
+});
+
+Deno.test("checkEligibility: day_guest without room → missing_room_assignment on shared stage", () => {
+  const guest = suiteGuest({ room_type: "day_guest", room: "", arrival_date: "2026-07-14" });
+  const stage1 = nightBeforeStage({
+    stage_key: "pre_arrival_2d",
+    applies_to: "all",
+    guest_flag_column: "msg_pre_arrival_2d_sent",
+  });
+  assertEquals(checkEligibility(stage1, guest, israelInstant("2026-07-12", 10, 0)), "missing_room_assignment");
 });

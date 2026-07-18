@@ -81,6 +81,7 @@ const QUEUE_FINALIZED_STATUSES = new Set(["sent", "simulated", "skipped"]);
 /** Permanent ineligibility — never show in live queue (matches automation-queue). */
 const QUEUE_HIDDEN_SKIP_REASONS = new Set([
   "wrong_room_type",
+  "missing_room_assignment",
   "guest_cancelled",
   "automation_muted",
   "automation_courtesy_only",
@@ -101,6 +102,7 @@ const SKIP_REASON_LABELS = {
   awaiting_confirmation: "ממתין לאישור הגעה",
   stage_suppressed: "בוטל ידנית",
   missed_window: "פספס מועד — לשגר ידנית",
+  missing_room_assignment: "אין חדר/סוויטה משויכת — אוטומציה חסומה",
   suite_checkout_survey_via_housekeeping: "נשלח אחרי Co מקבוצת חדרנות (לא לפי שעה קבועה)",
 };
 
@@ -167,7 +169,9 @@ function groupQueueByArrivalDay(items, stages) {
         room: item.room,
         room_type: item.room_type,
         effectiveSuite: item.effectiveSuite,
+        effectiveDayPass: item.effectiveDayPass,
         roomTypeConflict: item.roomTypeConflict,
+        premiumDayRoomTypeConflict: item.premiumDayRoomTypeConflict,
         arrivalDate: item.arrivalDate,
         departureDate: item.departureDate,
         items: [],
@@ -482,6 +486,8 @@ function shortStageLabel(displayName, stageKey) {
  */
 function isDayPassQueueItem(q) {
   if (q?.effectiveSuite === true) return false;
+  if (q?.effectiveDayPass === true) return true;
+  if (q?.effectiveSuite === false && q?.effectiveDayPass === false) return false;
   return q?.room_type === "day_guest" || q?.room_type === "premium_day_guest";
 }
 
@@ -510,6 +516,18 @@ function RoomTypeConflictBadge({ compact = false }) {
       style={{ whiteSpace: "nowrap" }}
     >
       ⚠ {compact ? "סתירה" : "סתירת סיווג"}
+    </span>
+  );
+}
+
+function PremiumDayRoomTypeConflictBadge({ compact = false }) {
+  return (
+    <span
+      className="badge badge-orange"
+      title="סתירת סיווג: חבילת Premium Day אך סוג האורח מסומן סוויטה — השרת מנתב כיום-כיף. ערוך את האורח ותקן את סוג החדר."
+      style={{ whiteSpace: "nowrap" }}
+    >
+      ⚠ {compact ? "פרימיום" : "פרימיום דיי — סיווג שגוי"}
     </span>
   );
 }
@@ -3881,6 +3899,7 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                                 </span>
                               )}
                               {guest.roomTypeConflict && <RoomTypeConflictBadge />}
+                              {guest.premiumDayRoomTypeConflict && <PremiumDayRoomTypeConflictBadge />}
                               {guest.departureDate && (
                                 <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
                                   עזיבה: {new Date(`${guest.departureDate}T12:00:00`).toLocaleDateString("he-IL")}

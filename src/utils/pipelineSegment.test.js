@@ -1,6 +1,8 @@
 import {
   classifyStagePipelineSegment,
   filterQueueItemsForGuest,
+  isEffectiveDayPassGuest,
+  isEffectiveSuiteGuest,
   queueItemAppliesToGuest,
   resolveGuestPipelineSegment,
 } from "./pipelineSegment";
@@ -8,6 +10,8 @@ import {
 describe("pipelineSegment", () => {
   const suiteGuest = { room_type: "standard", room: "אקווה מרין 26" };
   const dayGuest = { room_type: "day_guest", room: "Premium Day 1" };
+  const unassignedGuest = { room_type: "suite", room: "" };
+  const misTaggedPremium = { room_type: "suite", room: "Premium Day 1" };
 
   test("suite room routes as suite", () => {
     expect(resolveGuestPipelineSegment(suiteGuest)).toBe("suite");
@@ -15,6 +19,23 @@ describe("pipelineSegment", () => {
 
   test("day guest routes as daypass", () => {
     expect(resolveGuestPipelineSegment(dayGuest)).toBe("daypass");
+  });
+
+  test("no room assignment routes as unassigned", () => {
+    expect(resolveGuestPipelineSegment(unassignedGuest)).toBe("unassigned");
+    expect(isEffectiveSuiteGuest(unassignedGuest)).toBe(false);
+    expect(isEffectiveDayPassGuest(unassignedGuest)).toBe(false);
+  });
+
+  test("Premium Day mis-tagged suite routes as daypass", () => {
+    expect(resolveGuestPipelineSegment(misTaggedPremium)).toBe("daypass");
+    expect(isEffectiveSuiteGuest(misTaggedPremium)).toBe(false);
+    expect(isEffectiveDayPassGuest(misTaggedPremium)).toBe(true);
+  });
+
+  test("unassigned guest sees no queue stages", () => {
+    expect(queueItemAppliesToGuest({ stageKey: "pre_arrival_2d" }, unassignedGuest)).toBe(false);
+    expect(queueItemAppliesToGuest({ stageKey: "morning_suite" }, unassignedGuest)).toBe(false);
   });
 
   test("suite guest never sees daypass-only stages", () => {
