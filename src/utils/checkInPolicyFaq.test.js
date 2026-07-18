@@ -6,6 +6,7 @@ import {
   resolveTruncatedReplyFallback,
   buildCheckInPolicyReply,
   buildDiningReplyForGuest,
+  isGuestOwnMealQuestion,
 } from "./checkInPolicyFaq";
 
 const TRUNCATED_LIVE_SAMPLE =
@@ -131,5 +132,40 @@ describe("checkInPolicyFaq", () => {
     expect(reply).toContain("08:30");
     expect(reply).not.toContain("08:00–11:00");
     expect(reply).not.toContain("שעות ארוחת הבוקר במסעדה");
+  });
+
+  test("audit: מתי ארוחת הבוקר without שלנו still routes to own-meal path", () => {
+    expect(isGuestOwnMealQuestion("מתי ארוחת הבוקר?")).toBe(true);
+    const reply = buildDiningReplyForGuest(
+      {},
+      "מתי ארוחת הבוקר?",
+      { meal_plan: "half_board", breakfast_time: "09:00" },
+      "",
+    );
+    expect(reply).toContain("09:00");
+    expect(reply).not.toContain("שעות ארוחת הבוקר במסעדה");
+  });
+
+  test("audit: no breakfast in profile falls back to KB food-station line", () => {
+    const kb = "• עמדות אוכל: נשנושים חופשיים לאורך היום.";
+    const reply = buildDiningReplyForGuest(
+      {},
+      "מתי ארוחת הבוקר שלנו?",
+      { meal_plan: "half_board" },
+      kb,
+    );
+    expect(reply).toContain("עמדות אוכל");
+    expect(reply).not.toContain("שעות ארוחת הבוקר במסעדה");
+  });
+
+  test("audit: generic dining without KB omits pipe breakfast segment", () => {
+    const reply = buildDiningReplyForGuest(
+      { hotel_restaurant_hours: "בוקר 08:00–11:00 | ערב 18:30–22:00" },
+      "יש מסעדה?",
+      null,
+      "",
+    );
+    expect(reply).toContain("18:30–22:00");
+    expect(reply).not.toContain("08:00–11:00");
   });
 });

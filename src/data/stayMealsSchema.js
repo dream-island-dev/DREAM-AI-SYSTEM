@@ -226,7 +226,9 @@ export function extractRestaurantMealHours(cfg = {}, slot, knowledgeBase = "", g
 }
 
 export function formatRestaurantHoursLine(cfg = {}) {
-  const restaurant = (cfg.hotel_restaurant_hours || "").trim() || "07:00–22:00";
+  const raw = (cfg.hotel_restaurant_hours || "").trim();
+  const withoutBreakfast = raw.replace(/בוקר\s*[^|]+\s*\|\s*/iu, "").trim();
+  const restaurant = withoutBreakfast || raw || "18:30–22:00";
   return `מסעדת ערמונים — שעות פעילות: ${restaurant}`;
 }
 
