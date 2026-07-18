@@ -13,6 +13,18 @@ const TRUNCATED_LIVE_SAMPLE =
 const STAGE2_PORTAL_SAMPLE =
   "איזה כיף, אנחנו כבר מחכים לכם! 🥰 כל הפרטים בקישור: https://dream-ai-system.vercel.app/portal/154d8ae3-362a-4c0f-bed5-038c17b296e0";
 
+const TRUNCATED_DINING_SAMPLE =
+  "שירות החדרים זמין בין השעות 12:00-17:00 ובין";
+
+const TRUNCATED_MEAL_ACK_SAMPLE =
+  "הכל בסדר גמור, קריסטינה. תודה רבה שיידעתם. אנחנו כאן לכל דבר אחר שתצטר";
+
+const COMPLETE_MEAL_ACK_SAMPLE =
+  "הכל בסדר גמור, קריסטינה. תודה רבה שיידעתם. אנחנו כאן לכל דבר אחר שתצטרכו";
+
+const CASUAL_FACT_NO_PERIOD =
+  "חניה חינם זמינה לכל האורחים לאורך כל ימות השבוע";
+
 describe("checkInPolicyFaq", () => {
   test("detects the live truncated check-in hours reply", () => {
     expect(isReplyObviouslyTruncated(TRUNCATED_LIVE_SAMPLE)).toBe(true);
@@ -47,5 +59,40 @@ describe("checkInPolicyFaq", () => {
   test("Stage 2 portal-link script is not flagged as truncated", () => {
     expect(hasCompleteGuestMessageEnding(STAGE2_PORTAL_SAMPLE)).toBe(true);
     expect(isReplyObviouslyTruncated(STAGE2_PORTAL_SAMPLE)).toBe(false);
+  });
+
+  test("detects live dining reply cut mid-sentence (#6)", () => {
+    expect(isReplyObviouslyTruncated(TRUNCATED_DINING_SAMPLE)).toBe(true);
+  });
+
+  test("detects live meal-ack reply cut mid-word (#7)", () => {
+    expect(isReplyObviouslyTruncated(TRUNCATED_MEAL_ACK_SAMPLE)).toBe(true);
+  });
+
+  test("complete meal-ack counterpart is not truncated (audit #4)", () => {
+    expect(isReplyObviouslyTruncated(COMPLETE_MEAL_ACK_SAMPLE)).toBe(false);
+  });
+
+  test("casual factual reply without terminal punctuation is not truncated (audit #4)", () => {
+    expect(isReplyObviouslyTruncated(CASUAL_FACT_NO_PERIOD)).toBe(false);
+  });
+
+  test("short complete ack without terminal punctuation is not truncated", () => {
+    expect(isReplyObviouslyTruncated("אנחנו כאן לכל דבר אחר שתצטרכו")).toBe(false);
+  });
+
+  test("dining guest intent wins over check-in-shaped truncated reply", () => {
+    const truncatedDining =
+      "מסעדת ערמונים פתוחה בימי חול, ובשבתות וחגים החל מה";
+    const fixed = resolveTruncatedReplyFallback(
+      truncatedDining,
+      "יש אוכל בערב?",
+      { hotel_restaurant_hours: "07:00–22:00" },
+      null,
+      "fallback",
+    );
+    expect(fixed).toContain("מסעדת ערמונים");
+    expect(fixed).not.toContain("כניסה למתחם");
+    expect(isReplyObviouslyTruncated(fixed)).toBe(false);
   });
 });

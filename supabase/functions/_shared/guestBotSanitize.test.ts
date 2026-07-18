@@ -15,6 +15,12 @@ Deno.test("looksLikePromptLeak — live Whapi leak 2026-07-11", () => {
   assertEquals(looksLikePromptLeak(LIVE_LEAK), true);
 });
 
+Deno.test("looksLikePromptLeak — live Whapi leak 2026-07-17 (Hebrew rules quiz)", () => {
+  const leak =
+    "אך ורק בעברית תקנית. רשום תמיד את שם הריזורט בעברית בלבד: 'דרים איילנד'";
+  assertEquals(looksLikePromptLeak(leak), true);
+});
+
 Deno.test("sanitizeGuestBotReply — drops live leak to empty", () => {
   assertEquals(sanitizeGuestBotReply(LIVE_LEAK), "");
 });

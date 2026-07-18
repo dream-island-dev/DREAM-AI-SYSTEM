@@ -1,3 +1,5 @@
+2026-07-18 | Guest bot reliability — truncation + Tier-0 + ice ops + HK ציק + survey UI + checked_out modal | Phases 1–3: truncation guard + dining/meal Tier-0 + ice instant amenity dispatch. Phase 4: `ציק`→`צק` in housekeepingWaParse. Phase 5: AddGuestModal `checked_out`; survey badge decoupled from category low. Audit fix: `resolveTruncatedReplyFallback` guest-intent-first (dining vs check-in token collision). Deploy: `whatsapp-webhook` + `whapi-webhook` + frontend.
+
 2026-07-17 | Inbox blank-screen fix (TDZ crash) | `activeContact` useEffect moved below its `const` — dependency array evaluated before declaration caused `ReferenceError` on every mount. Deploy: frontend only.
 
 2026-07-17 | Inbox Meta 24h false block when guest wrote on Whapi | `inferDefaultReplyChannel` follows last guest inbound (not bot outbound); auto-switch unified threads to Whapi when Meta window closed but Suites inbound is fresh; banner/send guard via `shouldWarnMetaWindowClosed` (Meta path only). Deploy: frontend only.

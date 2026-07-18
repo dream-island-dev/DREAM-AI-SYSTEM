@@ -192,6 +192,12 @@ export function resolveSurveyCategoryScores(row, categories) {
 export function isLowScoreSurveyRow(row) {
   if (!row || typeof row !== "object") return false;
   if (Number(row.overall_experience) <= SURVEY_NEGATIVE_OVERALL_MAX) return true;
+  return hasLowSurveyCategory(row);
+}
+
+/** Category score ≤1 — used for warning chip without marking overall-positive rows as failed. */
+export function hasLowSurveyCategory(row) {
+  if (!row || typeof row !== "object") return false;
   const scores = resolveSurveyCategoryScores(row, null)
     .map((c) => c.score)
     .filter((n) => typeof n === "number" && Number.isFinite(n));
@@ -199,6 +205,10 @@ export function isLowScoreSurveyRow(row) {
   return LEGACY_SURVEY_CATEGORY_KEYS.some(
     (key) => Number(row[key]) <= SURVEY_NEGATIVE_CATEGORY_MAX,
   );
+}
+
+export function isSurveyOverallLow(row) {
+  return Number(row?.overall_experience) <= SURVEY_NEGATIVE_OVERALL_MAX;
 }
 
 export function isPositiveSurveyAverage(overall, _categoryScores) {

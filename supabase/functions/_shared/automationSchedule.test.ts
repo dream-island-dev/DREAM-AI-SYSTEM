@@ -23,6 +23,15 @@ import {
   isRequestSummaryGrounded,
   buildDepartureAssistSummary,
   extractAllowlistedRequestLines,
+  isInstantAmenityOpsDispatch,
+  isDiningQuestion,
+  isMealDeclineOrApology,
+  buildDiningReply,
+  buildMealDeclineAck,
+  isReplyObviouslyTruncated,
+  endsWithMidWordHebrewCut,
+  resolveTruncatedReplyFallback,
+  looksLikeDiningHoursReply,
   type AutomationStage,
   type GuestForSchedule,
 } from "./automationSchedule.ts";
@@ -734,4 +743,69 @@ Deno.test("an in-flight (processing) claim → skipReason=in_flight, cron must n
   const result = resolveStageSchedule(stage, guest, israelInstant(SAT, 10, 0));
   assertEquals(result.dueNow, false);
   assertEquals(result.skipReason, "in_flight");
+});
+
+// ── Guest bot reliability sprint (2026-07-18) ────────────────────────────────
+
+Deno.test("isInstantAmenityOpsDispatch: ice → true; maintenance → false", () => {
+  assertEquals(isInstantAmenityOpsDispatch("אפשר עוד קרח לחדר"), true);
+  assertEquals(isInstantAmenityOpsDispatch("need ice please"), true);
+  assertEquals(isInstantAmenityOpsDispatch("יש תקלה במזגן"), false);
+  assertEquals(isInstantAmenityOpsDispatch("צריך ניקיון בחדר"), false);
+});
+
+Deno.test("isDiningQuestion: food / room-service asks", () => {
+  assertEquals(isDiningQuestion("יש אוכל בערב?"), true);
+  assertEquals(isDiningQuestion("אפשר להזמין לחדר?"), true);
+  assertEquals(isDiningQuestion("מתי המסעדה פתוחה?"), true);
+  assertEquals(isDiningQuestion("מה שעות הצ'ק אין?"), false);
+});
+
+Deno.test("isMealDeclineOrApology: restaurant cancellation threads", () => {
+  assertEquals(isMealDeclineOrApology("מתנצלים, לא נגיע לארוחת ערב"), true);
+  assertEquals(isMealDeclineOrApology("שכחתי להודיע שלא נבוא"), true);
+  assertEquals(isMealDeclineOrApology("תודה רבה על השהות"), false);
+});
+
+Deno.test("buildDiningReply + buildMealDeclineAck are complete messages", () => {
+  const dining = buildDiningReply({ hotel_restaurant_hours: "07:00–22:00" });
+  assertEquals(looksLikeDiningHoursReply(dining), true);
+  assertEquals(isReplyObviouslyTruncated(dining), false);
+  const meal = buildMealDeclineAck("דני");
+  assertEquals(meal.includes("דני"), true);
+  assertEquals(isReplyObviouslyTruncated(meal), false);
+});
+
+Deno.test("isReplyObviouslyTruncated: live samples #6 #7 + audit false-positives", () => {
+  assertEquals(
+    isReplyObviouslyTruncated(
+      "שמח לעזור 🙏 מסעדת ערמונים פתוחה בימי חול, ובשבתות וחגים החל מה",
+    ),
+    true,
+  );
+  assertEquals(
+    isReplyObviouslyTruncated("הכל בסדר גמור, תודה שעדכנתם 🙏 אנחנו כאן לכל דבר ובין"),
+    true,
+  );
+  assertEquals(
+    isReplyObviouslyTruncated("קיבלנו את הבקשה שלך, הצוות שלנו בודק ומטפל בה כעת 🙏"),
+    false,
+  );
+  assertEquals(endsWithMidWordHebrewCut("אנחנו כאן לכל דבר ושתצטר"), true);
+  assertEquals(endsWithMidWordHebrewCut("אנחנו כאן לכל דבר ושתצטרכו"), false);
+});
+
+Deno.test("resolveTruncatedReplyFallback: dining + check-in policy paths", () => {
+  const cfg = { hotel_restaurant_hours: "07:00–22:00", hotel_checkin_time: "15:00" };
+  const diningGuest = "יש אוכל בערב?";
+  const truncatedDining = "מסעדת ערמונים פתוחה בימי חול, ובשבתות וחגים החל מה";
+  const fallback = resolveTruncatedReplyFallback(
+    truncatedDining,
+    diningGuest,
+    cfg,
+    "2026-07-20",
+    "generic handoff",
+  );
+  assertEquals(looksLikeDiningHoursReply(fallback), true);
+  assertEquals(isReplyObviouslyTruncated(fallback), false);
 });

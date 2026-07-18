@@ -187,6 +187,12 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
         ),
         automation_muted:   !!form.automation_muted,
       };
+      if (form.status === "checked_out") {
+        patch.checked_out_at = guest?.checked_out_at || new Date().toISOString();
+        patch.room_ready_notified = false;
+        patch.msg_room_ready_sent = false;
+        patch.room_ready_at = null;
+      }
 
       let savedGuest;
       if (isEdit) {
@@ -563,6 +569,7 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
             <option value="expected">ממתין</option>
             <option value="room_ready">חדר מוכן</option>
             <option value="checked_in">צ'ק-אין</option>
+            <option value="checked_out">צ'ק-אאוט (עזב)</option>
             <option value="cancelled">❌ מבוטל</option>
           </select>
         </div>

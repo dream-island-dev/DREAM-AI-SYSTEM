@@ -24,10 +24,9 @@ const ROOM_LIST_FRAGMENT = "[\\d\\s,/|&\\-]+";
 const HEBREW_TSADI_QOF_APOSTROPHE = "[''\\u2019\\u2018\\u05F3\\u02BC\\u0060\\u00B4\\u2032]";
 
 function normalizeHousekeepingLine(line: string): string {
-  return line.replace(
-    new RegExp(`צ${HEBREW_TSADI_QOF_APOSTROPHE}ק`, "g"),
-    "צק",
-  );
+  return line
+    .replace(new RegExp(`צ${HEBREW_TSADI_QOF_APOSTROPHE}ק`, "g"), "צק")
+    .replace(/ציק/g, "צק");
 }
 
 /** Whole-message skip (forwarded bubbles). */

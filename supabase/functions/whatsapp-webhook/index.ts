@@ -76,6 +76,10 @@ import {
   isAutoAwayMessage,
   isCheckInPolicyQuestion,
   buildCheckInPolicyReply,
+  isDiningQuestion,
+  buildDiningReply,
+  isMealDeclineOrApology,
+  buildMealDeclineAck,
   isReplyObviouslyTruncated,
   resolveTruncatedReplyFallback,
   resolveEffectiveGuestStatus,
@@ -87,13 +91,18 @@ import {
   buildDepartureAssistReply,
   buildAdministrativeRequestSummary,
 } from "../_shared/automationSchedule.ts";
-import { createGuestOpsTask } from "../_shared/createGuestOpsTask.ts";
+import { createGuestOpsTask, createGuestOpsTaskWithInstantAmenityDispatch } from "../_shared/createGuestOpsTask.ts";
 import {
   classifyFacilityReview,
   buildFacilityReviewReply,
   saveGuestFacilityReview,
   type FacilityReviewCapture,
 } from "../_shared/guestFacilityReview.ts";
+import {
+  classifyGuestReflection,
+  buildReflectionReply,
+  saveGuestReflectionFeedback,
+} from "../_shared/guestReflection.ts";
 import { onGuestAlertInserted } from "../_shared/guestAlertWhapiNotify.ts";
 import {
   buildOptionalSpaText,
@@ -712,65 +721,6 @@ const UPSELL_PATTERNS: RegExp[] = [
   /upgrade(\s+my\s+room)?|better\s+room|larger\s+room|move\s+to\s+(a\s+)?suite/i,
 ];
 
-// ── Guest Feedback & Sentiment Dashboard — holistic stay/service reflections ──
-// Deliberately DISTINCT from COMPLAINT_PATTERNS above: those catch a specific
-// service-fault report ("the AC is broken") that belongs on the operational
-// Requests/Ops board. This catches a guest reflecting on the stay/experience
-// as a whole ("the stay was amazing", "we'll definitely come back") — that is
-// feedback/testimonial content, not an actionable fault, and clutters the ops
-// board without ever needing staff dispatch. Narrow vocabulary on purpose —
-// low overlap with maintenance-complaint wording keeps both classifiers clean.
-const REFLECTION_GATE_PATTERN =
-  /(ה)?שהות|(ה)?חופשה|(ה)?אירוח|(ה)?חוויה|(ה)?ביקור|(ה)?צוות\s*(היה|היו)|ממליצים|נחזור|(the\s*)?(stay|vacation|experience|visit)/i;
-
-/** Excludes plain questions about the stay ("when does the stay start?") from the reflection gate. */
-const REFLECTION_QUESTION_EXCLUSION = /^(?:מה|מתי|איך|למה|האם|כמה|איפה)\b/u;
-
-const POSITIVE_REFLECTION_PATTERNS: RegExp[] = [
-  /תודה\s*(רבה|ענקית|מהלב)?\s*על\s*(הכל|השהות|האירוח|החוויה|הכנסת\s*האורחים|הכנסת\s*אורחים)/i,
-  /(ה)?שהות\s*(שלנו\s*)?(הייתה|היתה)\s*(מדהימה|נהדרת|מושלמת|מעולה|פנטסטית|חלומית|מושקעת)/i,
-  /(ה)?(צוות|שירות)\s*(היה|היו)\s*(מדהים|נהדר|מעולה|מקצועי|אדיב|חם|קשוב)/i,
-  /ממליצים\s*(בחום|לכולם|מאוד)?/i,
-  /חוויה\s*(מדהימה|נהדרת|בלתי\s*נשכחת|מיוחדת)/i,
-  /נחזור\s*(בוודאות|בשמחה|בהחלט)|בטוח\s*נחזור/i,
-  /best\s*(hotel|stay|vacation|experience)|amazing\s*(stay|experience|service)|highly\s*recommend/i,
-];
-
-const NEGATIVE_REFLECTION_PATTERNS: RegExp[] = [
-  /(ה)?שהות\s*(שלנו\s*)?(הייתה|היתה)\s*(מאכזבת|גרועה|לא\s*טובה|לא\s*מספקת|לא\s*ברמה)/i,
-  /לא\s*(נחזור|נמליץ|נבוא\s*שוב)/i,
-  /(ה)?(צוות|שירות)\s*(היה|היו)\s*(גרוע|לא\s*מקצועי|לא\s*אדיב|מזלזל)/i,
-  /לא\s*היה\s*שווה\s*(את\s*)?ה(כסף|מחיר)/i,
-  /worst\s*(stay|experience|hotel|vacation)|disappointing\s*(stay|experience)|would\s*not\s*recommend/i,
-];
-
-/**
- * Returns the sentiment of a holistic stay/service reflection, or null if the
- * message isn't one (a plain FAQ, an operational ask, small talk, etc.).
- * Severe complaints and every other Tier-0 intercept already ran and `continue`d
- * before this is ever reached — this only sees what's left.
- */
-function classifyGuestReflection(text: string): "positive" | "negative" | "neutral" | null {
-  const t = text.trim();
-  if (t.length < 6 || t.endsWith("?") || REFLECTION_QUESTION_EXCLUSION.test(t)) return null;
-  if (!REFLECTION_GATE_PATTERN.test(t)) return null;
-  if (POSITIVE_REFLECTION_PATTERNS.some((p) => p.test(t))) return "positive";
-  if (NEGATIVE_REFLECTION_PATTERNS.some((p) => p.test(t))) return "negative";
-  return "neutral";
-}
-
-/** Deterministic ack only — never the LLM, same reasoning as every other Tier-0 shield reply. */
-function buildReflectionReply(sentiment: "positive" | "negative" | "neutral"): string {
-  if (sentiment === "positive") {
-    const reviewUrl = GOOGLE_REVIEW_URL || "dream-island.co.il";
-    return `איזה כיף לשמוע! 🌟 שמחים מאוד שנהניתם. אם תרצו לשתף את החוויה שלכם עם עוד אורחים — זה יעשה לנו את היום:\n${reviewUrl}\nתודה רבה ומחכים לראותכם שוב! 💫`;
-  }
-  if (sentiment === "negative") {
-    return "תודה שסיפרתם לנו על כך. 🙏 אנחנו מצטערים שהיה חלק מהשהות שלא עמד בציפיות, והדברים חשובים לנו מאוד. הצוות שלנו יבחן את זה כדי שנשתפר.";
-  }
-  return "תודה רבה ששיתפתם אותנו! 🙏 נשמח תמיד לשמוע עוד על השהות שלכם.";
-}
-
 /** Non-blocking-safe insert into guest_feedback — never throws into the caller. */
 async function saveGuestFeedback(
   supabase: ReturnType<typeof createClient>,
@@ -1087,6 +1037,70 @@ async function handleCheckInPolicyFaq(
   console.info(`[webhook] ✅ check-in policy FAQ (Tier-0) — phone:${phone}`);
 }
 
+async function handleDiningFaq(
+  supabase: ReturnType<typeof createClient>,
+  opts: {
+    phone: string;
+    guestId: number | null;
+    msgId: string;
+    claimedConversationId: number | null;
+    sim: boolean;
+    cfg: Record<string, string>;
+  },
+): Promise<void> {
+  const { phone, guestId, msgId, claimedConversationId, sim, cfg } = opts;
+  const reply = buildDiningReply(cfg);
+  await patchClaimedInbound(supabase, claimedConversationId, msgId, {
+    guest_id: guestId,
+    intent: "dining_faq",
+  });
+  if (!sim) {
+    try {
+      await sendReply(phone, reply, { scripted: true });
+      await insertGuestOutboundIfNotMuted(supabase, {
+        phone, guest_id: guestId, message: reply, wa_message_id: null, intent: "dining_faq",
+      });
+    } catch (e) {
+      console.error("[webhook] dining_faq reply failed:", (e as Error).message);
+    }
+  } else {
+    console.info(`[webhook] SIM — dining_faq to ${phone}`);
+  }
+  console.info(`[webhook] ✅ dining FAQ (Tier-0) — phone:${phone}`);
+}
+
+async function handleMealDeclineAck(
+  supabase: ReturnType<typeof createClient>,
+  opts: {
+    phone: string;
+    guestId: number | null;
+    guestName: string | null;
+    msgId: string;
+    claimedConversationId: number | null;
+    sim: boolean;
+  },
+): Promise<void> {
+  const { phone, guestId, guestName, msgId, claimedConversationId, sim } = opts;
+  const reply = buildMealDeclineAck(guestName);
+  await patchClaimedInbound(supabase, claimedConversationId, msgId, {
+    guest_id: guestId,
+    intent: "meal_decline_ack",
+  });
+  if (!sim) {
+    try {
+      await sendReply(phone, reply, { scripted: true });
+      await insertGuestOutboundIfNotMuted(supabase, {
+        phone, guest_id: guestId, message: reply, wa_message_id: null, intent: "meal_decline_ack",
+      });
+    } catch (e) {
+      console.error("[webhook] meal_decline_ack reply failed:", (e as Error).message);
+    }
+  } else {
+    console.info(`[webhook] SIM — meal_decline_ack to ${phone}`);
+  }
+  console.info(`[webhook] ✅ meal decline ack (Tier-0) — phone:${phone}`);
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // §4b.1  IMMEDIATE OPERATIONAL ROUTING — Tier-0 keyword intercept for guests
 //        already checked_in. Runs after wa_message_id dedup, before burst/LLM.
@@ -1143,7 +1157,7 @@ async function handleOperationalInHouseIntercept(
 
   // Operations Board (tasks) — pending_approval, same path as log_guest_request.
   // Awaits staff review/Approve in OperationsBoard.js before any Whapi dispatch.
-  createGuestOpsTask({
+  createGuestOpsTaskWithInstantAmenityDispatch({
     supabase,
     guestId,
     phone,
@@ -2876,6 +2890,19 @@ Deno.serve(async (req: Request) => {
         continue;
       }
 
+      // ── Dining / room-service FAQ — after complaint/stay/financial shields (Whapi parity)
+      if (!isButtonReply && isDiningQuestion(text)) {
+        await handleDiningFaq(supabase, {
+          phone,
+          guestId,
+          msgId,
+          claimedConversationId,
+          sim,
+          cfg: botConfig,
+        });
+        continue;
+      }
+
       // ── Date-change / cancellation request detection (typed text) ────────────
       // Guest says they can't make it, wants to change dates, or has a booking issue.
       // → Flag in DB, alert staff, send exact handoff message. No AI involved.
@@ -3151,6 +3178,19 @@ Deno.serve(async (req: Request) => {
         continue;
       }
 
+      // ── Dining FAQ (post-burst) — after complaint/stay/financial shields
+      if (!isButtonReply && effectiveText !== text && isDiningQuestion(effectiveText)) {
+        await handleDiningFaq(supabase, {
+          phone,
+          guestId,
+          msgId,
+          claimedConversationId,
+          sim,
+          cfg: botConfig,
+        });
+        continue;
+      }
+
       // ── Tier-0 balloon intercept (post-burst) ─────────────────────────────
       const statusAfterBurst = (guest?.status as string | null) ?? guestStatusAtLookup;
       if (
@@ -3260,6 +3300,19 @@ Deno.serve(async (req: Request) => {
         continue;
       }
 
+      // ── Meal decline / apology (Tier-0) — before facility review / LLM.
+      if (!isButtonReply && isMealDeclineOrApology(effectiveText)) {
+        await handleMealDeclineAck(supabase, {
+          phone,
+          guestId,
+          guestName,
+          msgId,
+          claimedConversationId,
+          sim,
+        });
+        continue;
+      }
+
       // ── Facility review capture (restaurant, spa, pool, etc.) — before
       // holistic stay reflections; more specific facility wins.
       if (!isButtonReply) {
@@ -3304,9 +3357,9 @@ Deno.serve(async (req: Request) => {
       if (!isButtonReply) {
         const reflectionSentiment = classifyGuestReflection(effectiveText);
         if (reflectionSentiment) {
-          await saveGuestFeedback(supabase, {
+          await saveGuestReflectionFeedback(supabase, {
             guestId, phone, sentiment: reflectionSentiment,
-            text: effectiveText, source: "freeform_reflection",
+            text: effectiveText,
           });
           await patchClaimedInbound(supabase, claimedConversationId, msgId, {
             guest_id: guestId,
@@ -3377,6 +3430,7 @@ Deno.serve(async (req: Request) => {
       const fallbackReplyText = scripts["fallback_reply"]?.message_text?.trim() || FALLBACK_REPLY;
       let reply = fallbackReplyText;
       let replyIsScripted = intent === "complaint" || intent === "upsell";
+      let faqLlmTruncated = false;
       // Set only inside the "faq" branch below when the model invokes
       // log_guest_request — drives the conditional guest_alerts gate further down.
       let toolLoggedRequest: GuestAiReplyResult["loggedRequest"] = null;
@@ -3462,9 +3516,10 @@ Deno.serve(async (req: Request) => {
               failoverLog: { supabase, guestPhone: phone },
             });
             reply = sanitizeReply(result.text);
-            if (isReplyObviouslyTruncated(reply)) {
+            faqLlmTruncated = result.llmTruncated;
+            if (faqLlmTruncated || isReplyObviouslyTruncated(reply)) {
               console.warn(
-                `[webhook] 🛡️ FAQ engine truncated — substituting check-in policy reply — phone:${phone}`,
+                `[webhook] 🛡️ FAQ engine truncated — substituting fallback — phone:${phone} llmTruncated:${faqLlmTruncated}`,
               );
               reply = resolveTruncatedReplyFallback(
                 reply,
@@ -3839,7 +3894,7 @@ Deno.serve(async (req: Request) => {
 
       // ── Truncation guard — LLM replies only; scripted complaint/upsell must not
       // be replaced (portal URLs / 🥰 endings are valid complete messages).
-      if (!replyIsScripted && isReplyObviouslyTruncated(reply)) {
+      if (!replyIsScripted && (faqLlmTruncated || isReplyObviouslyTruncated(reply))) {
         console.warn(
           `[webhook] 🛡️ truncated reply guard — phone:${phone} tail:"${reply.slice(-50)}"`,
         );

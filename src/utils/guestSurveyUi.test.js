@@ -13,6 +13,8 @@ import {
   resolveSurveyCategoryScores,
   serializeGuestSurveyUi,
   isLowScoreSurveyRow,
+  hasLowSurveyCategory,
+  isSurveyOverallLow,
 } from "./guestSurveyUi";
 
 describe("guestSurveyUi dynamic categories", () => {
@@ -104,6 +106,12 @@ describe("guestSurveyUi dynamic categories", () => {
       overall_experience: 3,
       ratings: { spa: 2 },
     })).toBe(false);
+  });
+
+  test("hasLowSurveyCategory without failing overall-positive rows", () => {
+    expect(hasLowSurveyCategory({ overall_experience: 3, ratings: { spa: 1 } })).toBe(true);
+    expect(isSurveyOverallLow({ overall_experience: 3, ratings: { spa: 1 } })).toBe(false);
+    expect(hasLowSurveyCategory({ overall_experience: 3, ratings: { spa: 2 } })).toBe(false);
   });
 
   test("isPositiveSurveyAverage gate (1-3 scale)", () => {

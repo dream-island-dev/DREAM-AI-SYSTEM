@@ -20,6 +20,9 @@ import {
   addSurveyCategory,
   cloneDefaultSurveyUi,
   isLowScoreSurveyRow,
+  hasLowSurveyCategory,
+  isSurveyOverallLow,
+  isPositiveSurveyAverage,
   normalizeGuestSurveyUi,
   removeSurveyCategory,
   resolveSurveyCategoryScores,
@@ -167,7 +170,7 @@ function SurveyLabelsEditorModal({ draft, onChange, onSave, onClose, saving }) {
         </div>
         <p style={{ fontSize: 12.5, color: "var(--text-muted)", lineHeight: 1.6, marginBottom: 16 }}>
           אפשר לשנות טקסטים, להוסיף קטגוריות דירוג חדשות או להסיר קיימות (מינימום {SURVEY_MIN_CATEGORIES}, מקסימום {SURVEY_MAX_CATEGORIES}).
-          אחרי דירוג חיובי (ממוצע ≥8 וחוויה כללית ≥8) האורח יראה הצעת מועדון (עם הסכמה ל-WhatsApp), ואחרי הצטרפות — קישור להזמנת סוויטה.
+          אחרי דירוג חיובי (חוויה כללית 2–3 מתוך 3) האורח יראה הצעת מועדון (עם הסכמה ל-WhatsApp), ואחרי הצטרפות — קישור להזמנת סוויטה.
           דרושה הרשאת admin / super_admin.
         </p>
 
@@ -758,12 +761,17 @@ function SurveysView() {
       ) : (
         <div style={{ display: "grid", gap: 12 }}>
           {sorted.map((s) => {
-            const low = isLowScoreSurveyRow(s);
+            const overallLow = isSurveyOverallLow(s);
+            const categoryLow = hasLowSurveyCategory(s);
+            const overallPositive = isPositiveSurveyAverage(s.overall_experience);
+            const borderColor = overallLow ? "#C0392B" : categoryLow ? "#C27A1A" : "#1A7A4A";
+            const badgeBg = overallLow ? "#FFF0EE" : overallPositive ? "#E8F5EF" : "#FFF8E6";
+            const badgeColor = overallLow ? "#C0392B" : overallPositive ? "#1A7A4A" : "#8A6A00";
             return (
               <div
                 key={s.id}
                 className="card"
-                style={{ borderInlineStart: `5px solid ${low ? "#C0392B" : "#1A7A4A"}`, padding: "16px 18px", background: "var(--card-bg)" }}
+                style={{ borderInlineStart: `5px solid ${borderColor}`, padding: "16px 18px", background: "var(--card-bg)" }}
               >
                 <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
                   <div style={{ minWidth: 0 }}>
@@ -776,15 +784,26 @@ function SurveysView() {
                   </div>
                   <span style={{
                     padding: "4px 10px", borderRadius: 20, fontSize: 12, fontWeight: 700,
-                    background: low ? "#FFF0EE" : "#E8F5EF", color: low ? "#C0392B" : "#1A7A4A", whiteSpace: "nowrap",
+                    background: badgeBg, color: badgeColor, whiteSpace: "nowrap",
                   }}>
                     חוויה כללית {s.overall_experience}/{SURVEY_SCORE_MAX}
                   </span>
                 </div>
 
+                {categoryLow && overallPositive && (
+                  <div style={{ fontSize: 11.5, color: "#C27A1A", marginBottom: 6, fontWeight: 600 }}>
+                    ⚠ יש קטגוריה עם ציון נמוך — בדקו פירוט למטה
+                  </div>
+                )}
+
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 8, margin: "10px 0" }}>
                   {resolveSurveyCategoryScores(s, surveyUi.categories).map((c) => (
-                    <span key={c.key} style={{ fontSize: 11.5, color: "var(--text-muted)", background: "var(--ivory)", padding: "3px 8px", borderRadius: 10 }}>
+                    <span key={c.key} style={{
+                      fontSize: 11.5,
+                      color: c.score != null && c.score <= 1 ? "#C0392B" : "var(--text-muted)",
+                      background: "var(--ivory)", padding: "3px 8px", borderRadius: 10,
+                      fontWeight: c.score != null && c.score <= 1 ? 700 : 400,
+                    }}>
                       {c.label}: {c.score != null ? `${c.score}/${SURVEY_SCORE_MAX}` : "—"}
                     </span>
                   ))}

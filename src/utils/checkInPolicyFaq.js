@@ -30,13 +30,22 @@ export function hasCompleteGuestMessageEnding(text) {
   return false;
 }
 
+const TRUNCATED_REPLY_TAIL_PATTERN =
+  /(?:^|[\s,])מה$|החל\s+מה$|ובשבתות\s+וחגים\s+החל\s+מה$|בימי\s+חול,?\s+ובשבתות\s+וחגים\s+החל\s+מה$|ובין$|בין\s+השעות?\s*$|שתצטר$/u;
+
+export function endsWithMidWordHebrewCut(text) {
+  const lastWord = String(text || "").trim().split(/\s+/).pop() ?? "";
+  if (lastWord.length < 5 || lastWord.length > 10) return false;
+  if (/[םןתהך]$/u.test(lastWord)) return false;
+  if (/[וכ]$/u.test(lastWord) && lastWord.length >= 7) return false;
+  return /[צקרפגדבשט]$/u.test(lastWord);
+}
+
 export function isReplyObviouslyTruncated(text) {
   const t = String(text || "").trim();
   if (!t || t.length < 25) return false;
-  if (/(?:^|[\s,])מה$|החל\s+מה$|ובשבתות\s+וחגים\s+החל\s+מה$|בימי\s+חול,?\s+ובשבתות\s+וחגים\s+החל\s+מה$/u.test(t)) {
-    return true;
-  }
-  if (t.length > 70 && !hasCompleteGuestMessageEnding(t)) return true;
+  if (TRUNCATED_REPLY_TAIL_PATTERN.test(t)) return true;
+  if (endsWithMidWordHebrewCut(t)) return true;
   return false;
 }
 
@@ -59,6 +68,34 @@ export function buildCheckInPolicyReply(cfg = {}, _arrivalDateStr) {
   );
 }
 
+export const DINING_QUESTION_PATTERN =
+  /(?:יש|פותח|פתוח|זמין)[\s\S]{0,50}?(?:אוכל|מסעדה|לאכול|ארוחה|ביס)|(?:שירות\s*חדרים|הזמין|להזמין|להזמנה)[\s\S]{0,40}?(?:חדר|אוכל|לחדר)|(?:מה|מתי|איזה?\s*שעה)[\s\S]{0,50}?(?:שעות|פתוח)[\s\S]{0,30}?(?:מסעדה|אוכל|ארוחה)|(?:מתי|מה\s*שעות?)\s*[\s\S]{0,25}?מסעדה|(?:אפשר|ניתן|מותר)[\s\S]{0,40}?(?:לאכול|להזמין|אוכל|ארוחה)|order\s*(?:food|to\s*room)|room\s*service|something\s*(?:to\s*)?eat|where\s*(?:can\s*)?(?:we\s*)?eat/i;
+
+export const DINING_HOURS_REPLY_PATTERN =
+  /שירות\s*חדרים|מסעדת?\s*ערמונים|שעות\s*(?:ה)?מסעדה|room\s*service/i;
+
+export function isDiningQuestion(text) {
+  const t = String(text || "").trim();
+  if (!t) return false;
+  return DINING_QUESTION_PATTERN.test(t);
+}
+
+export function looksLikeDiningHoursReply(text) {
+  const t = String(text || "").trim();
+  if (!t) return false;
+  return DINING_HOURS_REPLY_PATTERN.test(t);
+}
+
+export function buildDiningReply(cfg = {}) {
+  const restaurant = (cfg.hotel_restaurant_hours || "").trim() || "07:00–22:00";
+  return (
+    `שמח לעזור 🙏\n` +
+    `מסעדת ערמונים פתוחה ${restaurant}.\n` +
+    `שירות חדרים זמין 24/7 — ניתן להזמין ישירות לסוויטה.\n` +
+    `לשמירת מקום במסעדה או להזמנה — כתבו לנו ונדאג.`
+  );
+}
+
 export function resolveTruncatedReplyFallback(
   replyText,
   guestText,
@@ -66,7 +103,16 @@ export function resolveTruncatedReplyFallback(
   arrivalDateStr,
   genericFallback,
 ) {
-  if (isCheckInPolicyQuestion(guestText) || looksLikeCheckInHoursReply(replyText)) {
+  if (isDiningQuestion(guestText)) {
+    return buildDiningReply(cfg);
+  }
+  if (isCheckInPolicyQuestion(guestText)) {
+    return buildCheckInPolicyReply(cfg, arrivalDateStr);
+  }
+  if (looksLikeDiningHoursReply(replyText)) {
+    return buildDiningReply(cfg);
+  }
+  if (looksLikeCheckInHoursReply(replyText)) {
     return buildCheckInPolicyReply(cfg, arrivalDateStr);
   }
   return genericFallback;

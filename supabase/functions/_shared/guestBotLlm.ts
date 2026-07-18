@@ -56,6 +56,12 @@ function _stripHistoryTags(history: GuestChatHistoryTurn[]): GuestChatHistoryTur
   }));
 }
 
+export type GuestChatReplyResult = {
+  text: string;
+  /** Gemini finishReason=MAX_TOKENS or Claude stop_reason=max_tokens */
+  llmTruncated: boolean;
+};
+
 async function _askGuestGemini(
   userMessage: string,
   guestName: string | null,
@@ -63,7 +69,7 @@ async function _askGuestGemini(
   systemPrompt: string,
   modelOrder: string[],
   logTag: string,
-): Promise<string> {
+): Promise<GuestChatReplyResult> {
   const apiKey = Deno.env.get("GEMINI_API_KEY");
   if (!apiKey) throw new Error("GEMINI_API_KEY not set");
 
@@ -114,8 +120,9 @@ async function _askGuestGemini(
         }
         const data = await res.json();
         const finishReason = (data?.candidates?.[0]?.finishReason as string | undefined) ?? "";
-        if (finishReason === "MAX_TOKENS") {
-          console.warn(`[${logTag}] Gemini finishReason=MAX_TOKENS — reply may be truncated`);
+        const llmTruncated = finishReason === "MAX_TOKENS";
+        if (llmTruncated) {
+          console.warn(`[${logTag}] Gemini finishReason=MAX_TOKENS — reply flagged truncated`);
         }
         const parts = (data?.candidates?.[0]?.content?.parts ?? []) as Array<{ text?: string; thought?: boolean }>;
         const text = parts
@@ -125,7 +132,7 @@ async function _askGuestGemini(
           .trim();
         if (!text) throw new Error("gemini_empty_response");
         console.log(`[${logTag}] Gemini OK model="${model}"`);
-        return _sanitizeGuestReply(text);
+        return { text: _sanitizeGuestReply(text), llmTruncated };
       } catch (e) {
         if (attempt < GEMINI_MAX_RETRIES && (e as Error).name !== "AbortError") {
           await _sleep(GEMINI_RETRY_BASE_MS * 2 ** attempt);
@@ -146,7 +153,7 @@ async function _callGuestClaude(
   systemPrompt: string,
   modelId: string,
   logTag: string,
-): Promise<string> {
+): Promise<GuestChatReplyResult> {
   const key = Deno.env.get("ANTHROPIC_API_KEY");
   if (!key) throw new Error("no_anthropic_key");
 
@@ -188,8 +195,12 @@ async function _callGuestClaude(
     .filter(Boolean)
     .join("\n");
   if (!text) throw new Error("claude_empty_response");
+  const llmTruncated = (resp as { stop_reason?: string }).stop_reason === "max_tokens";
+  if (llmTruncated) {
+    console.warn(`[${logTag}] Claude stop_reason=max_tokens — reply flagged truncated`);
+  }
   console.log(`[${logTag}] Claude OK model="${modelId}"`);
-  return _sanitizeGuestReply(text);
+  return { text: _sanitizeGuestReply(text), llmTruncated };
 }
 
 export type GenerateGuestChatReplyOpts = {
@@ -209,7 +220,7 @@ export type GenerateGuestChatReplyOpts = {
  * Primary engine from bot_settings.preferred_model, with automatic failover to
  * the other engine — same contract as whatsapp-webhook FAQ branch.
  */
-export async function generateGuestChatReply(opts: GenerateGuestChatReplyOpts): Promise<string> {
+export async function generateGuestChatReply(opts: GenerateGuestChatReplyOpts): Promise<GuestChatReplyResult> {
   const logTag = opts.logTag ?? "guestBotLlm";
   const route = resolveGuestModelRoute(opts.preferredModel);
   const enrichedPrompt = opts.systemPrompt + (opts.toolInstructionsSuffix ?? "");
@@ -230,9 +241,26 @@ export async function generateGuestChatReply(opts: GenerateGuestChatReplyOpts): 
     });
   };
 
+  const failoverIfTruncated = async (
+    primary: GuestChatReplyResult,
+    secondary: () => Promise<GuestChatReplyResult>,
+    from: string,
+    to: string,
+  ): Promise<GuestChatReplyResult> => {
+    if (!primary.llmTruncated) return primary;
+    console.warn(`[${logTag}] ${from} truncated → retry ${to}`);
+    try {
+      return await secondary();
+    } catch (e) {
+      console.error(`[${logTag}] ${to} failover after truncation failed:`, (e as Error).message);
+      return primary;
+    }
+  };
+
   if (route.engine === "claude") {
     try {
-      return await tryClaude();
+      const primary = await tryClaude();
+      return await failoverIfTruncated(primary, tryGemini, "Claude", "Gemini");
     } catch (e1) {
       console.error(`[${logTag}] Claude failed → Gemini:`, (e1 as Error).message);
       logFailover("claude", "gemini", e1 as Error);
@@ -241,7 +269,8 @@ export async function generateGuestChatReply(opts: GenerateGuestChatReplyOpts): 
   }
 
   try {
-    return await tryGemini();
+    const primary = await tryGemini();
+    return await failoverIfTruncated(primary, tryClaude, "Gemini", "Claude");
   } catch (e1) {
     console.error(`[${logTag}] Gemini failed → Claude:`, (e1 as Error).message);
     logFailover("gemini", "claude", e1 as Error);

@@ -12,6 +12,12 @@ Deno.test("detectFacilityCategory — restaurant keywords", () => {
   assertEquals(detectFacilityCategory("ארוחת בוקר בערמונים"), "restaurant");
 });
 
+Deno.test("classifyFacilityReview — rejects incomplete praise list (live 2026-07-17)", () => {
+  assertEquals(classifyFacilityReview("הכל נהדר, החדר נפלא, הבריכה"), null);
+  const complete = classifyFacilityReview("הכל נהדר, החדר נפלא, הבריכה נפלאה!");
+  assertEquals(complete?.facility, "pool");
+});
+
 Deno.test("classifyFacilityReview — positive restaurant", () => {
   const r = classifyFacilityReview("האוכל במסעדה היה מדהים, תודה!");
   assertEquals(r?.facility, "restaurant");

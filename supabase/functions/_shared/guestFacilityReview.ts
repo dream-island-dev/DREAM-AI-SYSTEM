@@ -68,7 +68,7 @@ const FACILITY_PATTERNS: Array<{ facility: FacilityCategory; patterns: RegExp[] 
 ];
 
 const OPINION_GATE =
-  /(היה|היו|הייתה|היתה|מעולה|נהדר|מדהים|מושלם|פנטסטי|גרוע|מאכזב|מאכזבת|טעים|לא\s*טעים|אהבתי|לא\s*אהבתי|ממליץ|ממליצה|תודה\s*על|לא\s*נעים|לא\s*מרוצה|amazing|excellent|delicious|disappointing|worst|best)/i;
+  /(היה|היו|הייתה|היתה|מעולה|נהדר|מדהים|מושלם|פנטסטי|נפלא|נפלאה|גרוע|מאכזב|מאכזבת|טעים|לא\s*טעים|אהבתי|לא\s*אהבתי|ממליץ|ממליצה|תודה\s*על|לא\s*נעים|לא\s*מרוצה|amazing|excellent|delicious|disappointing|worst|best)/i;
 
 const POSITIVE_OPINION: RegExp[] = [
   /מעולה|נהדר|מדהים|מושלם|פנטסטי|טעים|אהבתי|ממליץ|תודה/i,
@@ -141,6 +141,20 @@ function classifySentiment(text: string, rating: number | null): FacilitySentime
   return "neutral";
 }
 
+function looksLikeIncompleteFacilityOpinion(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  if (/[,.…]\s*$/u.test(t)) return true;
+  if (/\.\.\.\s*$/u.test(t)) return true;
+  const lastClause = (t.split(/[,،]/).pop() ?? "").trim();
+  if (!lastClause) return false;
+  // Trailing list item that names a facility only — no adjective/rating yet.
+  if (/^(?:ה)?(?:בריכה|מסעדה|ספא|פטיו|בר|מטבח\s*חי)\s*[!.…]*$/iu.test(lastClause)) {
+    return true;
+  }
+  return false;
+}
+
 /**
  * Returns a facility review when the message expresses an opinion about a
  * resort facility — not a plain FAQ ("מתי נפתחת המסעדה?").
@@ -148,6 +162,7 @@ function classifySentiment(text: string, rating: number | null): FacilitySentime
 export function classifyFacilityReview(text: string): FacilityReviewCapture | null {
   const t = text.trim();
   if (t.length < 4 || t.endsWith("?") || QUESTION_EXCLUSION.test(t)) return null;
+  if (looksLikeIncompleteFacilityOpinion(t)) return null;
 
   const facility = detectFacilityCategory(t);
   if (!facility) return null;

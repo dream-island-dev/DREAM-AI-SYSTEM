@@ -12,7 +12,7 @@ const PHYSICAL_REQUEST_INTENT_PATTERN =
   /אפשר|אפשרו|בבקשה|צר[י]כ[הים]?|חסר|חסרה|תביאו|תביא|שלחו|שלח|מבקש|מבקשת|נוכל\s+לקבל|אפשר\s+לקבל|אשמח|דחוף|עזרו|עזרה|העבר|העבירו|עוד\s+(?:של|מ)|תוסיפו|need|please\s+(?:send|bring)|can\s+(?:i|we)\s+get/u;
 
 const ALLOWLIST_AMENITY_PATTERN =
-  /(?:חלב|קפה|מגבות|שמפו|סבון|נייר(?:\s*טואלט)?|חלוק(?:ים)?|כרית(?:ות)?|שמיכ(?:ה|ות)?|קפסולות)/u;
+  /(?:חלב|קפה|מגבות|שמפו|סבון|נייר(?:\s*טואלט)?|חלוק(?:ים)?|כרית(?:ות)?|שמיכ(?:ה|ות)?|קפסולות|(?<![א-ת])קרח(?![א-ת])|\bice\b)/iu;
 
 // Fixed session 2026-07-07 — see automationSchedule.ts for the full incident
 // writeup. JS `\b` never matches Hebrew letters, so bare "מים" used to match
@@ -123,6 +123,11 @@ describe("ALLOWLIST_MAINTENANCE_PATTERN — tightening + word-boundary fix", () 
   test("legitimate remote-control requests still match", () => {
     expect(isAllowlistedPhysicalTaskRequest("אין לי שלט בחדר")).toBe(true);
     expect(isAllowlistedPhysicalTaskRequest("השלט לא עובד")).toBe(true);
+  });
+
+  test("ice request matches amenity allowlist (live 2026-07-18)", () => {
+    expect(isAllowlistedPhysicalTaskRequest("אפשר עוד קרח")).toBe(true);
+    expect(isAllowlistedPhysicalTaskRequest("can we get ice please")).toBe(true);
   });
 });
 

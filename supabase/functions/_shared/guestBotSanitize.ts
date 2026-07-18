@@ -6,7 +6,7 @@ const COT_CUE =
   /^\s*(?:the\s+(?:user|guest|customer|client|category|response|reply|answer|message|intent|assistant|tone|request)\b|according\s+to\b|category\b|intent\b|output\b|response\s+should\b|i\s|i'|let'?s\b|let\s+me\b|first[,:]|now[,:]|okay\b|ok[,:]|so[,:]|well[,:]|based\s+on\b|since\b|given\b|considering\b|because\b|here'?s\b|here\s+is\b|in\s+this\s+case\b|as\s+an?\s+ai\b|we\s+(?:should|need|will|are)\b|they\s+(?:are|want|asked|asking|need)\b|this\s+(?:is|seems|appears|looks)\b|looking\s+at\b|to\s+(?:respond|reply|answer|address)\b|should\s+be\b|note[:]|reasoning\b|analysis\b|my\s+(?:response|reply|task|goal)\b|step\s+\d)/i;
 
 const PROMPT_LEAK_FRAGMENT =
-  /לעולם אל תציג|רב-מגדרית|הבנת את התפקיד|Under no circumstances should you output|CRITICAL:\s*Under no|══\s*הנחיות|פלוט אך ורק|אסור לכלול חשיבה|TOOL_USAGE|log_guest_request|system_prompt|ענה 'כן' בלבד/i;
+  /לעולם אל תציג|רב-מגדרית|הבנת את התפקיד|Under no circumstances should you output|CRITICAL:\s*Under no|══\s*הנחיות|פלוט אך ורק|אסור לכלול חשיבה|TOOL_USAGE|log_guest_request|system_prompt|ענה 'כן' בלבד|רשום תמיד|בעברית תקנית|שם הריזורט/i;
 
 /** Hebrew letter present (concierge must reply in Hebrew). */
 export function hasHebrew(s: string): boolean {

@@ -26,6 +26,8 @@ describe("housekeepingWaParse", () => {
   test("parses check-in patterns from live group export", () => {
     expect(parseHousekeepingCheckInRoomNumbers("2 צ׳ק אין")).toEqual([2]);
     expect(parseHousekeepingCheckInRoomNumbers("25 צק אין")).toEqual([25]);
+    expect(parseHousekeepingCheckInRoomNumbers("4 ציק אין")).toEqual([4]);
+    expect(parseHousekeepingCheckInRoomNumbers("4,5\nציק אין")).toEqual([4, 5]);
     expect(parseHousekeepingCheckInRoomNumbers("1 check in")).toEqual([1]);
     expect(parseHousekeepingCheckInRoomNumbers("17 צ'ק אין")).toEqual([17]);
     expect(parseHousekeepingCheckInRoomNumbers("16 צ\u2019ק אין")).toEqual([16]);

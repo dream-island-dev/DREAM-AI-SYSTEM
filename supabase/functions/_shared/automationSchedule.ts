@@ -67,7 +67,7 @@ const GUEST_OPS_PEST_KEYWORDS = [
 const GUEST_OPS_AMENITY_KEYWORDS = [
   "towel", "towels", "pillow", "pillows", "soap", "shampoo", "amenities",
   "minibar", "slipper", "slippers", "blanket", "sheet", "sheets", "water",
-  "מגבת", "מגבות", "כרית", "כריות", "סבון", "שמפו", "מצעים", "שמיכה", "מים", "חלב", "קפה",
+  "מגבת", "מגבות", "כרית", "כריות", "סבון", "שמפו", "מצעים", "שמיכה", "מים", "חלב", "קפה", "קרח", "ice",
 ];
 
 export interface GuestOpsEligibilityInput {
@@ -860,7 +860,7 @@ export const PHYSICAL_REQUEST_INTENT_PATTERN =
 
 /** Allowlist cat. 1 — concrete in-room amenity delivery. */
 const ALLOWLIST_AMENITY_PATTERN =
-  /(?:חלב|קפה|מגבות|שמפו|סבון|נייר(?:\s*טואלט)?|חלוק(?:ים)?|כרית(?:ות)?|שמיכ(?:ה|ות)?|קפסולות)/u;
+  /(?:חלב|קפה|מגבות|שמפו|סבון|נייר(?:\s*טואלט)?|חלוק(?:ים)?|כרית(?:ות)?|שמיכ(?:ה|ות)?|קפסולות|(?<![א-ת])קרח(?![א-ת])|\bice\b)/iu;
 
 // ★ session 2026-07-07 fix: JS/Deno regex `\b` is defined over ASCII `\w`
 // and never matches Hebrew letters, so a bare "מים" had zero word-boundary
@@ -906,6 +906,7 @@ const OPERATIONAL_NEED_LABELS: ReadonlyArray<{ pattern: RegExp; label: string }>
   { pattern: /מגבות/u, label: "מגבות" },
   { pattern: /קפה/u, label: "קפה" },
   { pattern: /מים/u, label: "מים" },
+  { pattern: /קרח|\bice\b/iu, label: "קרח" },
   { pattern: /קפסולות/u, label: "קפסולות" },
   { pattern: /סבון/u, label: "סבון" },
   { pattern: /שמפו/u, label: "שמפו" },
@@ -1116,6 +1117,14 @@ export function classifyGuestRequestDispatch(
 export function isRequestsBoardEscalation(text: string): boolean {
   return /(?:מנהל|מחיר|נציג)/u.test(text)
     || (/תקלה/u.test(text) && isAllowlistedPhysicalTaskRequest(text));
+}
+
+/** True when the guest ask is a low-risk amenity delivery — instant Whapi dispatch (no 7min HITL wait). */
+export function isInstantAmenityOpsDispatch(text: string): boolean {
+  const t = text.trim();
+  if (!isAllowlistedPhysicalTaskRequest(t)) return false;
+  if (ALLOWLIST_MAINTENANCE_PATTERN.test(t) || ALLOWLIST_CLEANING_PATTERN.test(t)) return false;
+  return ALLOWLIST_AMENITY_PATTERN.test(t) || ALLOWLIST_BOTTLED_WATER_PATTERN.test(t);
 }
 
 /** Staff-facing summary + guests.attention_reason (e.g. "בקשת חלב לחדר"). */
@@ -1339,6 +1348,53 @@ export function buildCheckInPolicyReply(
   );
 }
 
+// ── Dining / room-service FAQ (Tier-0) ─────────────────────────────────────
+
+export const DINING_QUESTION_PATTERN =
+  /(?:יש|פותח|פתוח|זמין)[\s\S]{0,50}?(?:אוכל|מסעדה|לאכול|ארוחה|ביס)|(?:שירות\s*חדרים|הזמין|להזמין|להזמנה)[\s\S]{0,40}?(?:חדר|אוכל|לחדר)|(?:מה|מתי|איזה?\s*שעה)[\s\S]{0,50}?(?:שעות|פתוח)[\s\S]{0,30}?(?:מסעדה|אוכל|ארוחה)|(?:מתי|מה\s*שעות?)\s*[\s\S]{0,25}?מסעדה|(?:אפשר|ניתן|מותר)[\s\S]{0,40}?(?:לאכול|להזמין|אוכל|ארוחה)|order\s*(?:food|to\s*room)|room\s*service|something\s*(?:to\s*)?eat|where\s*(?:can\s*)?(?:we\s*)?eat/i;
+
+export const DINING_HOURS_REPLY_PATTERN =
+  /שירות\s*חדרים|מסעדת?\s*ערמונים|שעות\s*(?:ה)?מסעדה|room\s*service/i;
+
+export function isDiningQuestion(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  return DINING_QUESTION_PATTERN.test(t);
+}
+
+export function looksLikeDiningHoursReply(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  return DINING_HOURS_REPLY_PATTERN.test(t);
+}
+
+export function buildDiningReply(cfg: Record<string, string>): string {
+  const restaurant = (cfg["hotel_restaurant_hours"] ?? "").trim() || "07:00–22:00";
+  return (
+    `שמח לעזור 🙏\n` +
+    `מסעדת ערמונים פתוחה ${restaurant}.\n` +
+    `שירות חדרים זמין 24/7 — ניתן להזמין ישירות לסוויטה.\n` +
+    `לשמירת מקום במסעדה או להזמנה — כתבו לנו ונדאג.`
+  );
+}
+
+// ── Meal decline / apology (Tier-0) — restaurant reservation threads ─────────
+
+export const MEAL_DECLINE_OR_APOLOGY_PATTERN =
+  /לא\s*נגיע(?:ים)?|לא\s*נבוא(?:ים)?|שכחתי\s*להודיע|שכחנו\s*להודיע|מתנצל(?:ת|ים)?|סליחה(?:\s*ש|,).*(?:שכחתי|לא\s*הודעתי|לא\s*עדכנתי)|(?:ארוחת|מסעדה|ערב|בוקר).{0,30}(?:לא|ביטול|מבטל)|(?:לא|ביטול|מבטל).{0,30}(?:ארוחת|מסעדה|ערב)/iu;
+
+export function isMealDeclineOrApology(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.length < 4) return false;
+  return MEAL_DECLINE_OR_APOLOGY_PATTERN.test(t);
+}
+
+export function buildMealDeclineAck(guestName: string | null | undefined): string {
+  const name = guestName?.trim();
+  const prefix = name ? `${name}, ` : "";
+  return `${prefix}הכל בסדר גמור, תודה שעדכנתם 🙏 אנחנו כאן לכל דבר.`;
+}
+
 /** True when text ends like a complete guest-facing message (not mid-sentence). */
 export function hasCompleteGuestMessageEnding(text: string): boolean {
   const t = text.trim();
@@ -1352,14 +1408,29 @@ export function hasCompleteGuestMessageEnding(text: string): boolean {
   return false;
 }
 
+/** Known live truncation tails — mid-hour list, mid-word cuts (2026-07-18). */
+const TRUNCATED_REPLY_TAIL_PATTERN =
+  /(?:^|[\s,])מה$|החל\s+מה$|ובשבתות\s+וחגים\s+החל\s+מה$|בימי\s+חול,?\s+ובשבתות\s+וחגים\s+החל\s+מה$|ובין$|בין\s+השעות?\s*$|שתצטר$/u;
+
+/**
+ * Last token looks cut mid-root (e.g. "שתצטר" vs complete "שתצטרכו") — avoids
+ * flagging whole messages that merely omit terminal punctuation (#4 audit).
+ */
+export function endsWithMidWordHebrewCut(text: string): boolean {
+  const lastWord = text.trim().split(/\s+/).pop() ?? "";
+  if (lastWord.length < 5 || lastWord.length > 10) return false;
+  if (/[םןתהך]$/u.test(lastWord)) return false;
+  // Common complete 2nd-person plural / future endings (תצטרכו, תוכלו, …).
+  if (/[וכ]$/u.test(lastWord) && lastWord.length >= 7) return false;
+  return /[צקרפגדבשט]$/u.test(lastWord);
+}
+
 /** Detect LLM replies cut mid-sentence before they reach the guest. */
 export function isReplyObviouslyTruncated(text: string): boolean {
   const t = text.trim();
   if (!t || t.length < 25) return false;
-  if (/(?:^|[\s,])מה$|החל\s+מה$|ובשבתות\s+וחגים\s+החל\s+מה$|בימי\s+חול,?\s+ובשבתות\s+וחגים\s+החל\s+מה$/u.test(t)) {
-    return true;
-  }
-  if (t.length > 70 && !hasCompleteGuestMessageEnding(t)) return true;
+  if (TRUNCATED_REPLY_TAIL_PATTERN.test(t)) return true;
+  if (endsWithMidWordHebrewCut(t)) return true;
   return false;
 }
 
@@ -1371,7 +1442,18 @@ export function resolveTruncatedReplyFallback(
   arrivalDateStr: string | null,
   genericFallback: string,
 ): string {
-  if (isCheckInPolicyQuestion(guestText) || looksLikeCheckInHoursReply(replyText)) {
+  // Guest intent wins over reply-shape heuristics (dining truncations often share
+  // "ימי חול / שבתות וחגים" tokens with check-in policy copy).
+  if (isDiningQuestion(guestText)) {
+    return buildDiningReply(cfg);
+  }
+  if (isCheckInPolicyQuestion(guestText)) {
+    return buildCheckInPolicyReply(cfg, arrivalDateStr);
+  }
+  if (looksLikeDiningHoursReply(replyText)) {
+    return buildDiningReply(cfg);
+  }
+  if (looksLikeCheckInHoursReply(replyText)) {
     return buildCheckInPolicyReply(cfg, arrivalDateStr);
   }
   return genericFallback;

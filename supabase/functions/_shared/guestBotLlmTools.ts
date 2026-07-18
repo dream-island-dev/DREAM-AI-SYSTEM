@@ -34,6 +34,8 @@ export type GuestAiReplyResult = {
   text: string;
   loggedRequest: { category: "request" | "upsell_opportunity"; summary: string } | null;
   loggedFacilityReview: FacilityReviewCapture | null;
+  /** Gemini finishReason=MAX_TOKENS or Claude stop_reason=max_tokens */
+  llmTruncated: boolean;
 };
 
 const LOG_REQUEST_TOOL_DESCRIPTION =
@@ -225,6 +227,11 @@ async function _askGeminiWithTools(
           throw new Error(lastErr);
         }
         const data = await res.json();
+        const finishReason = (data?.candidates?.[0]?.finishReason as string | undefined) ?? "";
+        const llmTruncated = finishReason === "MAX_TOKENS";
+        if (llmTruncated) {
+          console.warn(`[${logTag}] Gemini finishReason=MAX_TOKENS — reply flagged truncated`);
+        }
         const parts = (data?.candidates?.[0]?.content?.parts ?? []) as Array<Record<string, unknown>>;
         const text = parts
           .filter((p) => !p.thought && typeof p.text === "string" && String(p.text).trim())
@@ -235,7 +242,7 @@ async function _askGeminiWithTools(
         const finalText = text || (loggedRequest ? buildToolOnlyReply(loggedRequest) : "");
         if (!finalText && !loggedRequest && !loggedFacilityReview) throw new Error("gemini_empty_response");
         console.log(`[${logTag}] Gemini OK model="${model}"`);
-        return { text: _sanitize(finalText), loggedRequest, loggedFacilityReview };
+        return { text: _sanitize(finalText), loggedRequest, loggedFacilityReview, llmTruncated };
       } catch (e) {
         if (attempt < GEMINI_MAX_RETRIES && (e as Error).name !== "AbortError") {
           await _sleep(Math.min(GEMINI_RETRY_BASE_MS * 2 ** attempt, GEMINI_RETRY_MAX_MS));
@@ -298,8 +305,12 @@ async function _callClaudeWithTools(
   const { loggedRequest, loggedFacilityReview } = _extractClaudeToolResults(blocks);
   const finalText = text || (loggedRequest ? buildToolOnlyReply(loggedRequest) : "");
   if (!finalText) throw new Error("claude_empty_response");
+  const llmTruncated = (resp as { stop_reason?: string }).stop_reason === "max_tokens";
+  if (llmTruncated) {
+    console.warn(`[${logTag}] Claude stop_reason=max_tokens — reply flagged truncated`);
+  }
   console.log(`[${logTag}] Claude OK model="${modelId}"`);
-  return { text: _sanitize(finalText), loggedRequest, loggedFacilityReview };
+  return { text: _sanitize(finalText), loggedRequest, loggedFacilityReview, llmTruncated };
 }
 
 export type GenerateGuestChatReplyWithToolsOpts = {
@@ -338,9 +349,26 @@ export async function generateGuestChatReplyWithTools(
     });
   };
 
+  const failoverIfTruncated = async (
+    primary: GuestAiReplyResult,
+    secondary: () => Promise<GuestAiReplyResult>,
+    from: string,
+    to: string,
+  ): Promise<GuestAiReplyResult> => {
+    if (!primary.llmTruncated) return primary;
+    console.warn(`[${logTag}] ${from} truncated → retry ${to}`);
+    try {
+      return await secondary();
+    } catch (e) {
+      console.error(`[${logTag}] ${to} failover after truncation failed:`, (e as Error).message);
+      return primary;
+    }
+  };
+
   if (route.engine === "claude") {
     try {
-      return await tryClaude();
+      const primary = await tryClaude();
+      return await failoverIfTruncated(primary, tryGemini, "Claude", "Gemini");
     } catch (e1) {
       console.error(`[${logTag}] Claude failed → Gemini:`, (e1 as Error).message);
       logFailover("claude", "gemini", e1 as Error);
@@ -349,7 +377,8 @@ export async function generateGuestChatReplyWithTools(
   }
 
   try {
-    return await tryGemini();
+    const primary = await tryGemini();
+    return await failoverIfTruncated(primary, tryClaude, "Gemini", "Claude");
   } catch (e1) {
     console.error(`[${logTag}] Gemini failed → Claude:`, (e1 as Error).message);
     logFailover("gemini", "claude", e1 as Error);

@@ -15,7 +15,7 @@
 // after PENDING_APPROVAL_AUTO_APPROVE_MINUTES if reception never approves.
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { resolveGuestOpsDepartment, guessGuestOpsSlaCategory } from "./automationSchedule.ts";
+import { resolveGuestOpsDepartment, guessGuestOpsSlaCategory, isInstantAmenityOpsDispatch } from "./automationSchedule.ts";
 import { isAmbiguousCombinedRoomLabel } from "./guestSelectedSuiteRoom.ts";
 import { resolveGuestRoomLabel } from "./guestRoomResolve.ts";
 
@@ -136,4 +136,59 @@ export async function createGuestOpsTask(
     `[createGuestOpsTask] task ${task.id} guest:${guestId} room=${resolvedRoom} dept=${department} sla=${slaCategory} PENDING APPROVAL — awaiting staff review in OperationsBoard`,
   );
   return { created: true, duplicate: false, taskId: task.id as number };
+}
+
+/** Same Approve & Dispatch path as OperationsBoard / sla-escalation-cron. */
+export async function dispatchGuestOpsTaskImmediately(
+  taskId: number,
+): Promise<{ ok: boolean; notified: boolean; reason?: string }> {
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (!supabaseUrl || !serviceKey) {
+    console.warn("[createGuestOpsTask] instant dispatch skipped — missing Supabase env");
+    return { ok: false, notified: false, reason: "missing_supabase_env" };
+  }
+  try {
+    const res = await fetch(`${supabaseUrl}/functions/v1/notify-manual-task`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: serviceKey,
+        Authorization: `Bearer ${serviceKey}`,
+      },
+      body: JSON.stringify({ taskId, reviewerId: null }),
+    });
+    const json = await res.json().catch(() => ({})) as {
+      ok?: boolean;
+      notified?: boolean;
+      reason?: string;
+      error?: string;
+    };
+    const ok = res.ok && json?.ok !== false;
+    const notified = json?.notified === true;
+    if (ok && notified) {
+      console.info(`[createGuestOpsTask] instant amenity dispatch OK — task ${taskId}`);
+    } else {
+      console.warn(
+        `[createGuestOpsTask] instant amenity dispatch task ${taskId} — ok:${ok} notified:${notified} reason:${json?.reason ?? json?.error ?? "unknown"}`,
+      );
+    }
+    return { ok, notified, reason: json?.reason ?? json?.error };
+  } catch (e) {
+    const reason = (e as Error).message;
+    console.error(`[createGuestOpsTask] instant dispatch failed task ${taskId}:`, reason);
+    return { ok: false, notified: false, reason };
+  }
+}
+
+/** Creates task + auto-dispatches Whapi card for instant-amenity asks (ice, towels, …). */
+export async function createGuestOpsTaskWithInstantAmenityDispatch(
+  args: CreateGuestOpsTaskArgs,
+): Promise<CreateGuestOpsTaskResult> {
+  const result = await createGuestOpsTask(args);
+  const dispatchSrc = (args.dispatchText ?? args.rawText).trim();
+  if (result.created && isInstantAmenityOpsDispatch(dispatchSrc)) {
+    await dispatchGuestOpsTaskImmediately(result.taskId);
+  }
+  return result;
 }

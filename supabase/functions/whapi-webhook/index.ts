@@ -98,6 +98,10 @@ import {
   CANONICAL_FINANCIAL_HANDOFF_MSG,
   isCheckInPolicyQuestion,
   buildCheckInPolicyReply,
+  isDiningQuestion,
+  buildDiningReply,
+  isMealDeclineOrApology,
+  buildMealDeclineAck,
   isGuestEligibleForInHouseOpsDispatch,
   isAllowlistedPhysicalTaskRequest,
   extractAllowlistedRequestLines,
@@ -107,15 +111,21 @@ import {
   buildDepartureAssistSummary,
   buildDepartureAssistReply,
   isReplyObviouslyTruncated,
+  resolveTruncatedReplyFallback,
   shouldInterceptBalloonRoomRequest,
   shouldInterceptAdministrativeInHouseRequest,
 } from "../_shared/automationSchedule.ts";
-import { createGuestOpsTask } from "../_shared/createGuestOpsTask.ts";
+import { createGuestOpsTaskWithInstantAmenityDispatch } from "../_shared/createGuestOpsTask.ts";
 import {
   classifyFacilityReview,
   buildFacilityReviewReply,
   saveGuestFacilityReview,
 } from "../_shared/guestFacilityReview.ts";
+import {
+  classifyGuestReflection,
+  buildReflectionReply,
+  saveGuestReflectionFeedback,
+} from "../_shared/guestReflection.ts";
 import {
   canGuestConfirmArrival,
   runGuestArrivalConfirmation,
@@ -924,6 +934,14 @@ async function handleGuestDirectMessage(
       return;
     }
 
+    if (isDiningQuestion(text)) {
+      await patchGuestDmInbound(supabase, conversationId, { intent: "dining_faq" });
+      const cfg = await fetchGuestDmBotConfig(supabase);
+      await sendGuestDmReply(supabase, phone, guestId, buildDiningReply(cfg), staffMuted);
+      results.push({ ...base, action: "dining_faq", muted: staffMuted });
+      return;
+    }
+
     // ── "כן מגיעים" → Stage 2 arrival confirmation (P0 — ported from
     // whatsapp-webhook via _shared/guestInboundOrchestrator.ts). Must fire
     // regardless of staffMuted — same "Stage 2 not blocked by staff claim"
@@ -1056,7 +1074,7 @@ async function handleGuestDirectMessage(
       const summary = buildOperationalRequestSummary(text);
       const guestRoom = (guest?.room as string | null | undefined) ?? null;
 
-      createGuestOpsTask({
+      createGuestOpsTaskWithInstantAmenityDispatch({
         supabase, guestId, phone, guestName, room: guestRoom,
         summary, rawText: text, dispatchText,
       }).catch((e: Error) =>
@@ -1134,7 +1152,16 @@ async function handleGuestDirectMessage(
       return;
     }
 
+    // ── Meal decline / apology (Tier-0) — restaurant threads, no LLM truncation risk.
+    if (isMealDeclineOrApology(text)) {
+      await patchGuestDmInbound(supabase, conversationId, { intent: "meal_decline_ack" });
+      await sendGuestDmReply(supabase, phone, guestId, buildMealDeclineAck(guestName), staffMuted);
+      results.push({ ...base, action: "meal_decline_ack", muted: staffMuted });
+      return;
+    }
+
     // ── Facility review (restaurant, spa, pool…) — tier-0, no LLM cost.
+    // Meta parity: facility before holistic reflection ("more specific wins").
     const facilityCapture = classifyFacilityReview(text);
     if (facilityCapture) {
       await saveGuestFacilityReview(supabase, { guestId, phone, capture: facilityCapture });
@@ -1153,6 +1180,26 @@ async function handleGuestDirectMessage(
         action: "facility_review_captured",
         facility: facilityCapture.facility,
         sentiment: facilityCapture.sentiment,
+        muted: staffMuted,
+      });
+      return;
+    }
+
+    // ── Holistic stay reflection — after facility review (Meta parity).
+    const reflectionSentiment = classifyGuestReflection(text);
+    if (reflectionSentiment) {
+      await saveGuestReflectionFeedback(supabase, {
+        guestId, phone, sentiment: reflectionSentiment, text,
+      });
+      await patchGuestDmInbound(supabase, conversationId, {
+        guest_id: guestId,
+        intent: "guest_feedback",
+      });
+      await sendGuestDmReply(supabase, phone, guestId, buildReflectionReply(reflectionSentiment), staffMuted);
+      results.push({
+        ...base,
+        action: "guest_reflection_captured",
+        sentiment: reflectionSentiment,
         muted: staffMuted,
       });
       return;
@@ -1236,6 +1283,7 @@ async function handleGuestDirectMessage(
     console.info(`[whapi-webhook] guest_dm prompt source: ${brain.promptSource} rag_conf=${brain.ragConfidence.toFixed(2)}`);
 
     let replyText: string;
+    let llmTruncated = false;
     if (brain.lowConfidenceHandoff) {
       replyText = GUEST_STAFF_HANDOFF_SENTENCE;
       console.info(`[whapi-webhook] 🛡️ RAG low-confidence handoff — phone:${phone}`);
@@ -1244,7 +1292,7 @@ async function handleGuestDirectMessage(
         const enrichedPrompt = brain.systemPrompt
           + (guestRecord && isPendingPortalSpaRequest(guestRecord)
             ? `\n\n${PENDING_PORTAL_SPA_LLM_SUFFIX}` : "");
-        replyText = await generateGuestChatReply({
+        const llmResult = await generateGuestChatReply({
           userMessage: text,
           guestName: guestName,
           history,
@@ -1253,19 +1301,24 @@ async function handleGuestDirectMessage(
           logTag: "whapi-webhook",
           failoverLog: { supabase, guestPhone: phone },
         });
+        replyText = llmResult.text;
+        llmTruncated = llmResult.llmTruncated;
       } catch (e) {
         console.error("[whapi-webhook] guest DM LLM reply failed:", (e as Error).message);
         replyText = GUEST_STAFF_HANDOFF_SENTENCE;
       }
     }
-    if (isReplyObviouslyTruncated(replyText)) {
+    if (llmTruncated || isReplyObviouslyTruncated(replyText)) {
       console.warn(
-        `[whapi-webhook] 🛡️ truncated reply guard — phone:${phone} tail:"${replyText.slice(-50)}"`,
+        `[whapi-webhook] 🛡️ truncated reply guard — phone:${phone} tail:"${replyText.slice(-50)}" llmTruncated:${llmTruncated}`,
       );
-      const reclass = classifyFacilityReview(text);
-      replyText = reclass
-        ? buildFacilityReviewReply(reclass.facility, reclass.sentiment, reclass.rating)
-        : GUEST_STAFF_HANDOFF_SENTENCE;
+      replyText = resolveTruncatedReplyFallback(
+        replyText,
+        text,
+        botCfg,
+        (guestRecord?.arrival_date as string | null) ?? null,
+        GUEST_STAFF_HANDOFF_SENTENCE,
+      );
     }
     await flagGuestDmStaffHandoff(supabase, { phone, guestId, conversationId, replyText });
     await sendGuestDmReply(supabase, phone, guestId, replyText, staffMuted);
