@@ -13,9 +13,9 @@
 import { useState, useEffect } from "react";
 import { supabase } from "../supabaseClient";
 import { SUITE_REGISTRY, SUITE_SECTIONS } from "../data/suiteRegistry";
-import GuestProfileModal from "./GuestProfileModal";
+import GuestSmartProfileFields from "./GuestSmartProfileFields";
 import IsraeliTimeSelect from "./IsraeliTimeSelect";
-import { hasMeaningfulProfile } from "../data/guestProfileSchema";
+import { normalizeGuestProfile, serializeGuestProfile } from "../data/guestProfileSchema";
 import {
   MEAL_PLANS,
   MEAL_SLOTS_BY_PLAN,
@@ -55,7 +55,9 @@ function inferRoomType(roomValue) {
   return null;
 }
 
-export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock, onOpenDreamBotChat }) {
+export default function AddGuestModal({
+  guest, onClose, onSaved, showToast, dock, onOpenDreamBotChat, zIndex = 1000,
+}) {
   const isEdit = !!guest.id;
   const isDrawer = dock === "right";
   const [form, setForm] = useState({
@@ -86,10 +88,10 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
     meal_location:      guest.meal_location        ?? (isEdit ? "" : "מסעדת ערמונים"),
     lead_source:        guest.lead_source          ?? "",
     automation_muted:   !!guest.automation_muted,
+    arrival_time:       guest.arrival_time           ?? "",
   });
+  const [smartProfile, setSmartProfile] = useState(() => normalizeGuestProfile(guest?.guest_profile));
   const [saving, setSaving] = useState(false);
-  const [profileOpen, setProfileOpen] = useState(false);
-  const [liveGuest, setLiveGuest] = useState(guest);
   const [selectedRooms, setSelectedRooms] = useState(() => {
     const split = splitCombinedRoomLabel(guest.room);
     return split.length > 0 ? split : [""];
@@ -173,9 +175,12 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
         status:             form.status,
         requires_attention: !!form.requires_attention,
         needs_callback:     !!form.needs_callback,
+        ...(!form.requires_attention ? { attention_reason: null } : {}),
         room:               buildCombinedRoomLabel(roomLabels) || null,
         room_type:          form.room_type || null,
         lead_source:        (form.lead_source ?? "").trim() || null,
+        guest_profile:      serializeGuestProfile(smartProfile),
+        arrival_time:       (form.arrival_time ?? "").trim() || null,
         ...applyLegacyMealColumns(
           form.meal_plan,
           {
@@ -241,7 +246,10 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
 
   return (
     <div
-      onClick={() => !saving && onClose?.()}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (!saving) onClose?.();
+      }}
       style={{
         position: "fixed", inset: 0,
         // direction explicitly "ltr" here (overriding the inherited global
@@ -251,7 +259,7 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
         // only this outer positioning container needs the override.
         direction: "ltr",
         background: isDrawer ? "rgba(0,0,0,0.25)" : "rgba(0,0,0,0.5)",
-        zIndex: 1000, display: "flex",
+        zIndex: zIndex, display: "flex",
         alignItems: isDrawer ? "stretch" : "center",
         justifyContent: isDrawer ? "flex-end" : "center",
         padding: isDrawer ? 0 : 16,
@@ -262,12 +270,12 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
         onClick={(e) => e.stopPropagation()}
         style={isDrawer ? {
           background: "var(--card-bg,#fff)", borderRadius: 0,
-          padding: "28px 24px 22px", width: "100%", maxWidth: 420, height: "100%",
+          padding: "28px 24px 22px", width: "100%", maxWidth: 480, height: "100%",
           boxShadow: "-8px 0 32px rgba(0,0,0,0.18)", direction: "rtl",
           overflowY: "auto", animation: "agm-drawer-in 0.2s ease-out",
         } : {
           background: "var(--card-bg,#fff)", borderRadius: 18,
-          padding: "28px 24px 22px", width: "100%", maxWidth: 480,
+          padding: "28px 24px 22px", width: "100%",           maxWidth: 480,
           boxShadow: "0 24px 64px rgba(0,0,0,0.25)", direction: "rtl",
           maxHeight: "90vh", overflowY: "auto",
         }}
@@ -276,9 +284,29 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
           {isEdit ? "✏️ עריכת פרופיל אורח" : "➕ הוספת אורח ידני"}
         </div>
         {isEdit && (
-          <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 16, direction: "ltr" }}>
+          <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12, direction: "ltr" }}>
             {guest.phone}
           </div>
+        )}
+
+        {isEdit && guest.phone && onOpenDreamBotChat && (
+          <button
+            type="button"
+            onClick={() => {
+              onOpenDreamBotChat({ phone: guest.phone, guestName: guest.name });
+              onClose?.();
+            }}
+            disabled={saving}
+            style={{
+              width: "100%", minHeight: 44, marginBottom: 16, padding: "10px 14px",
+              borderRadius: 10, border: "2px solid var(--gold,#C9A96E)",
+              background: "linear-gradient(135deg, var(--ivory, #F5F0E8), rgba(201,169,110,0.22))",
+              color: "var(--gold-dark,#A8843A)", fontFamily: "Heebo, sans-serif",
+              fontSize: 13, fontWeight: 800, cursor: saving ? "not-allowed" : "pointer",
+            }}
+          >
+            💬 פתח שיחה ב-DREAM BOT
+          </button>
         )}
 
         {/* Phone — required for new guests only */}
@@ -626,23 +654,14 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
         </div>
 
         {isEdit && (
-          <div style={{ marginBottom: 14 }}>
-            <button
-              type="button"
-              onClick={() => setProfileOpen(true)}
-              disabled={saving}
-              title="פרופיל חכם — VIP, אירועים, תזונה, הגעה"
-              style={{
-                width: "100%", padding: "10px 14px", borderRadius: 10, cursor: "pointer",
-                border: "2px solid var(--gold)", background: "rgba(201,169,110,0.1)",
-                color: "var(--gold-dark)", fontWeight: 800, fontSize: 13,
-                fontFamily: "Heebo,sans-serif",
-              }}
-            >
-              📋 פרופיל אורח חכם
-              {hasMeaningfulProfile(liveGuest.guest_profile) ? " ✓" : ""}
-            </button>
-          </div>
+          <GuestSmartProfileFields
+            profile={smartProfile}
+            onProfileChange={setSmartProfile}
+            arrivalTime={form.arrival_time}
+            onArrivalTimeChange={(v) => setField("arrival_time", v)}
+            guest={guest}
+            saving={saving}
+          />
         )}
 
         <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 22 }}>
@@ -669,19 +688,6 @@ export default function AddGuestModal({ guest, onClose, onSaved, showToast, dock
           </button>
         </div>
       </div>
-      {profileOpen && isEdit && (
-        <GuestProfileModal
-          guest={liveGuest}
-          onClose={() => setProfileOpen(false)}
-          showMarkHandled={!!liveGuest.requires_attention}
-          onUpdated={(updated) => {
-            setLiveGuest(updated);
-            onSaved?.(updated);
-          }}
-          showToast={showToast}
-          onOpenDreamBotChat={onOpenDreamBotChat}
-        />
-      )}
     </div>
   );
 }

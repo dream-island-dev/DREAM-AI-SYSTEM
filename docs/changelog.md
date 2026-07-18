@@ -1,3 +1,5 @@
+2026-07-19 | Check-in guest profile 360 — merged edit + collapsible ETA board | GuestsPage: name click → `GuestContextDrawer` (not chat); לוח זמני הגעה collapsed by default (▶ toggle). `AddGuestModal` merged with smart profile (`GuestSmartProfileFields`) incl. `arrival_time`; drawer header 💬/✏️. Deploy: frontend only.
+
 2026-07-18 | Guest bot reliability — truncation + Tier-0 + ice ops + HK ציק + survey UI + checked_out modal | Phases 1–3: truncation guard + dining/meal Tier-0 + ice instant amenity dispatch. Phase 4: `ציק`→`צק` in housekeepingWaParse. Phase 5: AddGuestModal `checked_out`; survey badge decoupled from category low. Audit fix: `resolveTruncatedReplyFallback` guest-intent-first (dining vs check-in token collision). Deploy: `whatsapp-webhook` + `whapi-webhook` + frontend.
 
 2026-07-17 | Inbox blank-screen fix (TDZ crash) | `activeContact` useEffect moved below its `const` — dependency array evaluated before declaration caused `ReferenceError` on every mount. Deploy: frontend only.

@@ -2,7 +2,7 @@
 // absorbs CustomerProfilePane.js's Smart Guest Profile / guest_alerts / check-in
 // hand-off / portal stats). Opened from WhatsAppInbox roster+thread AND from the
 // 👤 icon in GuestsPage/GuestDashboard — one component, one guests-row shape.
-// Fetches fresh guests row + recent tasks; does not replace AddGuestModal (full CRUD).
+// Fetches fresh guests row + recent tasks; AddGuestModal is the unified edit surface.
 import { useCallback, useEffect, useState } from "react";
 import { supabase } from "../supabaseClient";
 import { getGuestTimingBadge, isSuiteGuestProfile } from "../utils/guestTiming";
@@ -10,7 +10,7 @@ import { resolveTimelineScopeForArrival } from "../utils/guestCheckinMatrix";
 import { formatSpaSchedule } from "../utils/israeliTime";
 import { getProfileDisplayChips, hasMeaningfulProfile } from "../data/guestProfileSchema";
 import GuestJourneyTimeline from "./GuestJourneyTimeline";
-import GuestProfileModal from "./GuestProfileModal";
+import AddGuestModal from "./AddGuestModal";
 import GuestAttentionBadge from "./GuestAttentionBadge";
 import MissingDepartureBadge from "./MissingDepartureBadge";
 import { fetchGuestSuiteRooms } from "../utils/guestStaySummary";
@@ -107,6 +107,8 @@ export default function GuestContextDrawer({
   claimBusy,
   onOpenCheckin,
   onOpenDreamBotChat,
+  autoOpenEdit = false,
+  onAutoOpenEditConsumed,
 }) {
   const [guest, setGuest] = useState(null);
   const [tasks, setTasks] = useState([]);
@@ -118,7 +120,7 @@ export default function GuestContextDrawer({
   const [colorSaving, setColorSaving] = useState(false);
   const [toast, setToast] = useState(null);
   const [queueRows, setQueueRows] = useState([]);
-  const [profileOpen, setProfileOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const [checkoutTime, setCheckoutTime] = useState(null);
   const [loadingCheckout, setLoadingCheckout] = useState(true);
   const [linkCopied, setLinkCopied] = useState(false);
@@ -154,7 +156,9 @@ export default function GuestContextDrawer({
         .select(
           "id, name, phone, room, room_type, status, arrival_date, departure_date, " +
           "claimed_by, claimed_at, automation_muted, staff_color_label, internal_notes, " +
-          "spa_time, spa_date, meal_time, arrival_time, needs_callback, requires_attention, " +
+          "spa_time, spa_date, treatment_count, order_number, payment_amount, payment_link_url, " +
+          "meal_plan, meal_location, breakfast_time, lunch_time, dinner_time, meal_time, " +
+          "arrival_time, needs_callback, requires_attention, attention_reason, lead_source, " +
           "portal_token, arrival_confirmed, guest_profile, guest_notes, " +
           "msg_pre_arrival_2d_sent, msg_stage_2_arrival_sent, msg_pre_arrival_sent, " +
           "msg_morning_suite_sent, msg_morning_welcome_sent, msg_mid_stay_sent, msg_checkout_fb_sent"
@@ -237,6 +241,17 @@ export default function GuestContextDrawer({
   }, [contact]);
 
   useEffect(() => { loadData(); }, [loadData]);
+
+  useEffect(() => {
+    if (autoOpenEdit && guest?.id && !loading) {
+      setEditOpen(true);
+      onAutoOpenEditConsumed?.();
+    }
+  }, [autoOpenEdit, guest?.id, loading, onAutoOpenEditConsumed]);
+
+  const openFullEdit = useCallback(() => {
+    if (guest?.id) setEditOpen(true);
+  }, [guest?.id]);
 
   const patchGuest = async (patch) => {
     if (!guest?.id) {
@@ -451,6 +466,7 @@ export default function GuestContextDrawer({
                     onUpdated={handleProfileUpdated}
                     showToast={showToastCompat}
                     onOpenDreamBotChat={onOpenDreamBotChat}
+                    onOpenFullEdit={openFullEdit}
                   />
                 )}
                 {guest?.arrival_confirmed && (
@@ -477,6 +493,36 @@ export default function GuestContextDrawer({
               ✕
             </button>
           </div>
+          {guest?.id && (
+            <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+              {onOpenDreamBotChat && guest.phone && (
+                <button
+                  type="button"
+                  onClick={() => onOpenDreamBotChat({ phone: guest.phone, guestName: guest.name })}
+                  style={{
+                    flex: 1, minWidth: 120, padding: "8px 12px", borderRadius: 8,
+                    border: "1px solid rgba(255,255,255,0.35)", background: "rgba(255,255,255,0.12)",
+                    color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer",
+                    fontFamily: "Heebo, sans-serif",
+                  }}
+                >
+                  💬 צ'אט
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={openFullEdit}
+                style={{
+                  flex: 1, minWidth: 120, padding: "8px 12px", borderRadius: 8,
+                  border: "1px solid var(--gold)", background: "rgba(201,169,110,0.25)",
+                  color: "#fff", fontSize: 12, fontWeight: 800, cursor: "pointer",
+                  fontFamily: "Heebo, sans-serif",
+                }}
+              >
+                ✏️ ערוך פרופיל
+              </button>
+            </div>
+          )}
         </header>
 
         <div style={{ padding: "18px 20px 28px", flex: 1 }}>
@@ -507,6 +553,12 @@ export default function GuestContextDrawer({
                       <span style={{ color: "var(--text-muted)" }}>הגעה</span>
                       <strong>{fmtDate(guest?.arrival_date)}</strong>
                     </div>
+                    {guest?.arrival_time && (
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                        <span style={{ color: "var(--text-muted)" }}>שעת הגעה (ETA)</span>
+                        <strong style={{ direction: "ltr" }}>🕐 {guest.arrival_time}</strong>
+                      </div>
+                    )}
                     <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
                       <span style={{ color: "var(--text-muted)" }}>עזיבה</span>
                       <strong style={{ color: !guest?.departure_date && isSuiteGuestProfile(guest) ? "#B91C1C" : undefined }}>
@@ -645,9 +697,9 @@ export default function GuestContextDrawer({
                     <span style={{ fontSize: 12, color: "var(--text-muted)" }}>תגיות VIP / אירוע / תזונה / הגעה</span>
                     <button
                       type="button"
-                      onClick={() => setProfileOpen(true)}
+                      onClick={openFullEdit}
                       disabled={!guest?.id}
-                      title={!guest?.id ? "צור פרופיל דרך ✏️ לפני עריכה" : undefined}
+                      title={!guest?.id ? "צור פרופיל דרך עריכה לפני הוספת תגיות" : undefined}
                       style={{
                         padding: "4px 10px", borderRadius: 8, border: "1px solid var(--gold)",
                         background: "rgba(201,169,110,0.12)", color: "var(--gold-dark)",
@@ -973,14 +1025,17 @@ export default function GuestContextDrawer({
         )}
       </div>
 
-      {profileOpen && guest && (
-        <GuestProfileModal
+      {editOpen && guest?.id && (
+        <AddGuestModal
           guest={guest}
-          onClose={() => setProfileOpen(false)}
-          onUpdated={handleProfileUpdated}
+          dock="right"
+          zIndex={1250}
+          onClose={() => setEditOpen(false)}
+          onSaved={(updated) => {
+            handleProfileUpdated(updated);
+            setEditOpen(false);
+          }}
           showToast={showToastCompat}
-          showMarkHandled={!!guest.requires_attention}
-          heading="📋 פרופיל אורח חכם"
           onOpenDreamBotChat={onOpenDreamBotChat}
         />
       )}

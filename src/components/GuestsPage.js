@@ -63,6 +63,10 @@ export default function GuestsPage({
   const [busy, setBusy]       = useState(null);
   const [toast, setToast]     = useState(null);
   const [profileGuest, setProfileGuest] = useState(null); // guest object or null — GuestContextDrawer
+  const [profileEditOnOpen, setProfileEditOnOpen] = useState(false);
+  const [etaBoardOpen, setEtaBoardOpen] = useState(() => {
+    try { return sessionStorage.getItem("checkin_eta_board_open") === "1"; } catch { return false; }
+  });
   const [badgeHover, setBadgeHover] = useState(null);
   const [paymentModal, setPaymentModal] = useState(null); // { id, name, phone, amount, link }
   const [paymentBusy, setPaymentBusy]   = useState(null); // guestId being sent
@@ -425,8 +429,20 @@ export default function GuestsPage({
     }
   };
 
-  const openEdit = (g) => setEditGuest(g);
+  const openProfile = (g, withEdit = false) => {
+    setProfileGuest(g);
+    setProfileEditOnOpen(withEdit);
+  };
+  const openEdit = (g) => openProfile(g, true);
   const openAdd  = () => setEditGuest({}); // empty = new guest (no id)
+
+  const toggleEtaBoard = () => {
+    setEtaBoardOpen((prev) => {
+      const next = !prev;
+      try { sessionStorage.setItem("checkin_eta_board_open", next ? "1" : "0"); } catch { /* ignore */ }
+      return next;
+    });
+  };
 
   const handleGuestSaved = (saved) => {
     setGuests((prev) => {
@@ -696,8 +712,8 @@ export default function GuestsPage({
         </div>
       )}
 
-      {/* ── Add/Edit guest profile modal — universal AddGuestModal ─────────── */}
-      {editGuest && (
+      {/* ── Add guest modal — edit existing guests opens via GuestContextDrawer ── */}
+      {editGuest && !editGuest.id && (
         <AddGuestModal
           guest={editGuest}
           onClose={() => setEditGuest(null)}
@@ -722,9 +738,11 @@ export default function GuestsPage({
             claimedBy: profileGuest.claimed_by,
             portalToken: profileGuest.portal_token,
           }}
-          onClose={() => setProfileGuest(null)}
+          onClose={() => { setProfileGuest(null); setProfileEditOnOpen(false); }}
           onOpenDreamBotChat={onOpenDreamBotChat}
           onOpenCheckin={onOpenCheckin}
+          autoOpenEdit={profileEditOnOpen}
+          onAutoOpenEditConsumed={() => setProfileEditOnOpen(false)}
           onGuestUpdated={(updated) => {
             setGuests((prev) => prev.map((x) => (x.id === updated.id ? { ...x, ...updated } : x)));
           }}
@@ -799,8 +817,18 @@ export default function GuestsPage({
 
       {timelineScope === CHECKIN_TIMELINE_TODAY && (
         <div className="card" style={{ padding: "16px 18px", marginBottom: 16 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
-            <div style={{ fontSize: 15, fontWeight: 800, color: "var(--black)" }}>
+          <button
+            type="button"
+            onClick={toggleEtaBoard}
+            style={{
+              display: "flex", justifyContent: "space-between", alignItems: "center",
+              width: "100%", marginBottom: etaBoardOpen ? 12 : 0, flexWrap: "wrap", gap: 8,
+              border: "none", background: "transparent", padding: 0, cursor: "pointer",
+              fontFamily: "Heebo, sans-serif", textAlign: "right",
+            }}
+          >
+            <div style={{ fontSize: 15, fontWeight: 800, color: "var(--black)", display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{etaBoardOpen ? "▼" : "▶"}</span>
               🕐 לוח זמני הגעה — היום ({etaBoardGuests.length})
             </div>
             {etaMissingCount > 0 && (
@@ -811,9 +839,9 @@ export default function GuestsPage({
                 ⚠ {etaMissingCount} ללא שעת הגעה
               </span>
             )}
-          </div>
+          </button>
 
-          {etaBoardGuests.length === 0 ? (
+          {etaBoardOpen && (etaBoardGuests.length === 0 ? (
             <div style={{ fontSize: 13, color: "var(--text-muted)", padding: "6px 2px" }}>
               אין אורחים בטרום-הגעה להיום.
             </div>
@@ -827,7 +855,7 @@ export default function GuestsPage({
                 return (
                   <div
                     key={g.id}
-                    onClick={() => setProfileGuest(g)}
+                    onClick={() => openProfile(g)}
                     title="הצג פרופיל אורח"
                     style={{
                       display: "flex", alignItems: "center", gap: 10,
@@ -859,7 +887,7 @@ export default function GuestsPage({
                 );
               })}
             </div>
-          )}
+          ))}
         </div>
       )}
 
@@ -938,29 +966,14 @@ export default function GuestsPage({
                           />
                         )}
                         <span
-                          onClick={() =>
-                            g.phone && onOpenDreamBotChat
-                              ? onOpenDreamBotChat({ phone: g.phone, guestName: g.name })
-                              : setProfileGuest(g)
-                          }
-                          title={g.phone && onOpenDreamBotChat ? "פתח שיחה ב-DREAM BOT" : "הצג פרופיל אורח"}
+                          onClick={() => openProfile(g)}
+                          title="הצג פרופיל אורח · הקשר 360°"
                           style={{ cursor: "pointer", textDecoration: "underline", textDecorationColor: "transparent" }}
                           onMouseEnter={(e) => (e.currentTarget.style.textDecorationColor = "var(--gold)")}
                           onMouseLeave={(e) => (e.currentTarget.style.textDecorationColor = "transparent")}
                         >
                           {g.name}
                         </span>
-                        <button
-                          type="button"
-                          onClick={() => setProfileGuest(g)}
-                          title="הצג פרופיל אורח"
-                          style={{
-                            border: "none", background: "transparent", cursor: "pointer",
-                            fontSize: 13, padding: "0 4px", verticalAlign: "middle", opacity: 0.75,
-                          }}
-                        >
-                          👤
-                        </button>
                         {g.arrival_confirmed && (
                           <span style={{ fontSize: 10, marginRight: 6, background: "#E8F5EF", color: "#1A7A4A", padding: "2px 6px", borderRadius: 8, fontWeight: 700, verticalAlign: "middle" }}>✓ אישר</span>
                         )}
@@ -968,6 +981,7 @@ export default function GuestsPage({
                           guest={g}
                           showToast={showToast}
                           onOpenDreamBotChat={onOpenDreamBotChat}
+                          onOpenFullEdit={(guestRow) => openProfile(guestRow, true)}
                           onUpdated={(updated) =>
                             setGuests((prev) => prev.map((x) => (x.id === updated.id ? { ...x, ...updated } : x)))
                           }
@@ -1061,7 +1075,7 @@ export default function GuestsPage({
                           />
                         )}
                         <span
-                          onClick={() => setProfileGuest(g)}
+                          onClick={() => openProfile(g)}
                           style={{ fontWeight: 800, fontSize: 16, cursor: "pointer" }}
                         >
                           {g.name}
@@ -1075,6 +1089,7 @@ export default function GuestsPage({
                         guest={g}
                         showToast={showToast}
                         onOpenDreamBotChat={onOpenDreamBotChat}
+                        onOpenFullEdit={(guestRow) => openProfile(guestRow, true)}
                         onUpdated={(updated) =>
                           setGuests((prev) => prev.map((x) => (x.id === updated.id ? { ...x, ...updated } : x)))
                         }

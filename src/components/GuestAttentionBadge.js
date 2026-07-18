@@ -1,5 +1,5 @@
 // src/components/GuestAttentionBadge.js
-// Red-alert entry point → Smart Guest Profile modal (§0.5 single guests row).
+// Red-alert entry point → full guest profile edit via parent (360 drawer + AddGuestModal).
 import { useState } from "react";
 import GuestProfileModal from "./GuestProfileModal";
 
@@ -13,7 +13,13 @@ const REASON_META = {
   fallback_no_match: { icon: "🔁", title: "הבוט לא מצא מענה מתאים והפנה לצוות הקבלה — לחץ לפרופיל" },
 };
 
-export default function GuestAttentionBadge({ guest, onUpdated, showToast, onOpenDreamBotChat }) {
+export default function GuestAttentionBadge({
+  guest,
+  onUpdated,
+  showToast,
+  onOpenDreamBotChat,
+  onOpenFullEdit,
+}) {
   const [open, setOpen] = useState(false);
 
   if (!guest?.requires_attention) return null;
@@ -23,16 +29,25 @@ export default function GuestAttentionBadge({ guest, onUpdated, showToast, onOpe
     title: "דורש טיפול — לחץ לפרופיל אורח",
   };
 
+  const handleClick = (e) => {
+    e.stopPropagation();
+    if (onOpenFullEdit) {
+      onOpenFullEdit(guest);
+      return;
+    }
+    setOpen(true);
+  };
+
   return (
     <>
       <span
-        onClick={() => setOpen(true)}
+        onClick={handleClick}
         title={reasonMeta.title}
         style={{ fontSize: 11, marginRight: 4, verticalAlign: "middle", cursor: "pointer" }}
       >
         {reasonMeta.icon}
       </span>
-      {open && (
+      {open && !onOpenFullEdit && (
         <GuestProfileModal
           guest={guest}
           onClose={() => setOpen(false)}
