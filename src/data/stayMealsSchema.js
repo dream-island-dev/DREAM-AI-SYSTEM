@@ -140,9 +140,9 @@ export function buildMealsItinerary(guest) {
   return rows;
 }
 
-/** Compact Hebrew line for LLM guest context + dining Tier-0. */
+/** Compact Hebrew line for LLM — lunch/dinner from profile; breakfast is resort-wide in KB. */
 export function formatGuestMealsForAi(guest) {
-  const rows = buildMealsItinerary(guest);
+  const rows = buildMealsItinerary(guest).filter((r) => r.label !== "ארוחת בוקר");
   if (!rows.length) return "";
   const details = rows.map((r) => `${r.label}: ${r.value}`).join(", ");
   return `ארוחות (לפי הפנסיון בהזמנה): ${details}`;
@@ -223,6 +223,20 @@ export function extractRestaurantMealHours(cfg = {}, slot, knowledgeBase = "", g
   if (slot === "breakfast") return null;
 
   return tryText(cfg.hotel_restaurant_hours);
+}
+
+export function formatResortBreakfastLine(knowledgeBase = "", guestText = "") {
+  const hours = extractRestaurantMealHours({}, "breakfast", knowledgeBase, guestText);
+  if (hours) return `ארוחת בוקר לכל האורחים: ${hours}.`;
+  const kbLines = retrieveMealKnowledgeLines(knowledgeBase, guestText || "ארוחת בוקר", "breakfast");
+  if (kbLines.length) return kbLines.join("\n");
+  return "";
+}
+
+export function formatGuestScheduledMealLine(label, value, missingFallback) {
+  return value?.trim()
+    ? `${label} לפי ההזמנה: ${value.trim()}.`
+    : missingFallback;
 }
 
 export function formatRestaurantHoursLine(cfg = {}) {

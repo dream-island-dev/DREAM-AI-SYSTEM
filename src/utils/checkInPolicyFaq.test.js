@@ -6,7 +6,6 @@ import {
   resolveTruncatedReplyFallback,
   buildCheckInPolicyReply,
   buildDiningReplyForGuest,
-  isGuestOwnMealQuestion,
 } from "./checkInPolicyFaq";
 
 const TRUNCATED_LIVE_SAMPLE =
@@ -119,43 +118,31 @@ describe("checkInPolicyFaq", () => {
     expect(fixed).toContain("19:30");
   });
 
-  test("own breakfast question uses pension time not restaurant pipe hours", () => {
+  test("own breakfast question uses KB resort hours not guest profile time", () => {
     const kb =
-      "• עמדות אוכל: נשנושים חופשיים לאורך היום.\n" +
+      "• ארוחת בוקר: 08:00–10:30 לכל האורחים.\n" +
       "• מסעדת ערמונים: ארוחת ערב 18:30–22:00, הזמנות מראש.";
     const reply = buildDiningReplyForGuest(
       { hotel_restaurant_hours: "בוקר 08:00–11:00 | ערב 18:30–22:00" },
       "מתי ארוחת הבוקר שלנו?",
-      { meal_plan: "half_board", breakfast_time: "08:30", meal_location: "עמדת בוקר" },
+      { meal_plan: "half_board", breakfast_time: "08:30", dinner_time: "19:30" },
       kb,
     );
-    expect(reply).toContain("08:30");
-    expect(reply).not.toContain("08:00–11:00");
+    expect(reply).toContain("08:00–10:30");
+    expect(reply).toContain("לכל האורחים");
+    expect(reply).not.toContain("08:30");
     expect(reply).not.toContain("שעות ארוחת הבוקר במסעדה");
   });
 
-  test("audit: מתי ארוחת הבוקר without שלנו still routes to own-meal path", () => {
-    expect(isGuestOwnMealQuestion("מתי ארוחת הבוקר?")).toBe(true);
+  test("own dinner question uses profile time only", () => {
     const reply = buildDiningReplyForGuest(
       {},
-      "מתי ארוחת הבוקר?",
-      { meal_plan: "half_board", breakfast_time: "09:00" },
+      "מתי ארוחת הערב שלנו?",
+      { meal_plan: "half_board", dinner_time: "19:30", meal_location: "מסעדת ערמונים" },
       "",
     );
-    expect(reply).toContain("09:00");
-    expect(reply).not.toContain("שעות ארוחת הבוקר במסעדה");
-  });
-
-  test("audit: no breakfast in profile falls back to KB food-station line", () => {
-    const kb = "• עמדות אוכל: נשנושים חופשיים לאורך היום.";
-    const reply = buildDiningReplyForGuest(
-      {},
-      "מתי ארוחת הבוקר שלנו?",
-      { meal_plan: "half_board" },
-      kb,
-    );
-    expect(reply).toContain("עמדות אוכל");
-    expect(reply).not.toContain("שעות ארוחת הבוקר במסעדה");
+    expect(reply).toContain("19:30");
+    expect(reply).not.toContain("שעות ארוחת הערב במסעדה");
   });
 
   test("audit: generic dining without KB omits pipe breakfast segment", () => {

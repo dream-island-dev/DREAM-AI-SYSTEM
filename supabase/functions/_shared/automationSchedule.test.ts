@@ -783,10 +783,11 @@ Deno.test("buildDiningReply + buildMealDeclineAck are complete messages", () => 
       dinner_time: "19:30",
       guest_profile: { dietary: { tags: ["vegetarian"], note: "" } },
     },
+    "• ארוחת בוקר: 08:00–10:30 לכל האורחים.",
   );
-  assertEquals(personalized.includes("08:00"), true);
-  assertEquals(personalized.includes("ארוחת הבוקר שלכם"), true);
-  assertEquals(personalized.includes("07:00–10:30"), false);
+  assertEquals(personalized.includes("08:00–10:30"), true);
+  assertEquals(personalized.includes("לכל האורחים"), true);
+  assertEquals(personalized.includes("ארוחת הבוקר שלכם לפי ההזמנה: 08:00"), false);
   assertEquals(isReplyObviouslyTruncated(personalized), false);
   const evening = buildDiningReply(cfg, {
     meal_plan: "half_board",

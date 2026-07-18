@@ -1,3 +1,7 @@
+2026-07-19 | Guest bot meals — breakfast universal from KB, lunch/dinner from profile | Breakfast Tier-0 + LLM: `08:00–10:30` (etc.) from knowledge_base for all guests; `breakfast_time` ignored for replies. Lunch/dinner answers use `lunch_time`/`dinner_time` from guest profile only. Deploy: `whatsapp-webhook` + `whapi-webhook`.
+
+2026-07-19 | Guest bot dining fallback strips pipe breakfast segment | `formatRestaurantHoursLine` omits `בוקר … |` from bot_config when KB empty — Armonim fallback shows evening only. Deploy: `whatsapp-webhook` + `whapi-webhook`.
+
 2026-07-19 | Guest bot meals — breakfast ≠ Armonim pipe hours | Tier-0: "ארוחת הבוקר שלנו" → pension time from DB (+ meal_location); KB verbatim for food stations; never `bot_config` pipe "בוקר …" as breakfast. Dinner still KB + guest `dinner_time`. Deploy: `whatsapp-webhook` + `whapi-webhook`.
 
 2026-07-19 | Check-in guest profile 360 — merged edit + collapsible ETA board | GuestsPage: name click → `GuestContextDrawer` (not chat); לוח זמני הגעה collapsed by default (▶ toggle). `AddGuestModal` merged with smart profile (`GuestSmartProfileFields`) incl. `arrival_time`; drawer header 💬/✏️. Deploy: frontend only.

@@ -20,11 +20,12 @@ import {
   buildMealsItinerary,
   extractRestaurantMealHours,
   formatGuestMealsForAi,
+  formatGuestScheduledMealLine,
+  formatResortBreakfastLine,
   formatRestaurantKnowledgeForReply,
   getGuestDinnerSlot,
 } from "./stayMeals.ts";
 import { formatGuestDietaryBrief } from "./guestProfile.ts";
-import { retrieveMealKnowledgeLines } from "./guestRag.ts";
 
 export const ISRAEL_UTC_OFFSET_HOURS = 2;
 
@@ -1422,6 +1423,12 @@ export function buildDiningReply(
     lines.splice(2, 0, `ארוחת הערב שלכם לפי ההזמנה: ${dinnerSlot}.`);
   }
 
+  const mentionsBreakfast = guestText && /בוקר|breakfast/i.test(guestText);
+  if (mentionsBreakfast) {
+    const breakfastLine = formatResortBreakfastLine(kb, guestText ?? "");
+    if (breakfastLine) lines.splice(2, 0, breakfastLine);
+  }
+
   return lines.join("\n");
 }
 
@@ -1453,26 +1460,32 @@ export function buildGuestOwnMealReply(
   }
 
   if (asksBreakfast) {
-    const guestBreakfast = byLabel.get("ארוחת בוקר");
-    if (guestBreakfast) {
-      lines.push(`ארוחת הבוקר שלכם לפי ההזמנה: ${guestBreakfast}.`);
+    const breakfastLine = formatResortBreakfastLine(kb, t);
+    if (breakfastLine) {
+      lines.push(breakfastLine);
     } else {
-      const breakfastKb = retrieveMealKnowledgeLines(kb, t, "breakfast");
-      if (breakfastKb.length) {
-        lines.push(breakfastKb.join("\n"));
-      }
+      lines.push("ארוחת בוקר — נבדוק מול הקבלה ונחזור אליכם.");
+    }
+    const plan = (guest.meal_plan ?? "").trim();
+    if (plan && plan !== "none" && plan !== "dinner_only") {
+      lines.push("לפי הפנסיון שלכם — ארוחת בוקר כלולה.");
     }
   } else if (asksLunch) {
-    const restaurantLunch = extractRestaurantMealHours(cfg, "lunch", kb, t);
-    if (restaurantLunch) lines.push(`שעות ארוחת הצהריים במסעדה: ${restaurantLunch}.`);
-    if (byLabel.has("ארוחת צהריים")) {
-      lines.push(`לפי הפנסיון שלכם — שעת הארוחה: ${byLabel.get("ארוחת צהריים")}.`);
-    }
+    lines.push(
+      formatGuestScheduledMealLine(
+        "ארוחת הצהריים שלכם",
+        byLabel.get("ארוחת צהריים"),
+        "לא מצאנו שעת צהריים ברשומה — נבדוק מול הקבלה ונחזור אליכם.",
+      ),
+    );
   } else if (asksDinner) {
-    const restaurantDinner = extractRestaurantMealHours(cfg, "dinner", kb, t);
-    if (restaurantDinner) lines.push(`שעות ארוחת הערב במסעדה: ${restaurantDinner}.`);
-    const guestDinner = byLabel.get("ארוחת ערב") ?? byLabel.get("ארוחה");
-    if (guestDinner) lines.push(`לפי הפנסיון שלכם — שעת הארוחה: ${guestDinner}.`);
+    lines.push(
+      formatGuestScheduledMealLine(
+        "ארוחת הערב שלכם",
+        byLabel.get("ארוחת ערב") ?? byLabel.get("ארוחה"),
+        "לא מצאנו שעת ערב ברשומה — נבדוק מול הקבלה ונחזור אליכם.",
+      ),
+    );
   }
 
   const summaryLine = formatGuestMealSummaryLine(guest);
