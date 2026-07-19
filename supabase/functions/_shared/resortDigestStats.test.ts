@@ -381,7 +381,7 @@ Deno.test("composeExecutiveMorningPulse: short daily voice, no task assignments"
         arrival_date: "2026-07-12",
         departure_date: "2026-07-14",
         arrival_time: null,
-        room: "יהלום 3",
+        room: "ג׳ספר 3",
         room_type: "suite",
         requires_attention: false,
       },

@@ -15,7 +15,7 @@ const NOW = new Date("2026-07-15T10:00:00+03:00");
 Deno.test("isArrivalEtaNotifyEligible — suite guest arriving today", () => {
   assertEquals(
     isArrivalEtaNotifyEligible(
-      { arrival_date: "2026-07-15", room_type: "suite", room: "אמטיסט 3", status: "expected" },
+      { arrival_date: "2026-07-15", room_type: "suite", room: "אמטיסט 8", status: "expected" },
       NOW,
     ),
     true,
@@ -35,7 +35,7 @@ Deno.test("isArrivalEtaNotifyEligible — rejects day-pass", () => {
 Deno.test("isArrivalEtaNotifyEligible — rejects arrival too far ahead", () => {
   assertEquals(
     isArrivalEtaNotifyEligible(
-      { arrival_date: "2026-07-20", room_type: "suite", room: "אמטיסט 1", status: "expected" },
+      { arrival_date: "2026-07-20", room_type: "suite", room: "אמטיסט 8", status: "expected" },
       NOW,
     ),
     false,

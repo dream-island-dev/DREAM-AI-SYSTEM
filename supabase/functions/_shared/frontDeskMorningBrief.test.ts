@@ -13,7 +13,7 @@ const NOW = new Date("2026-07-16T04:00:00.000Z"); // 07:00 Israel
 const ROWS: ArrivalDeskGuestRow[] = [
   {
     name: "יוסי",
-    room: "Suite 3",
+    room: "אמטיסט 8",
     room_type: "suite",
     status: "expected",
     arrival_date: "2026-07-16",
@@ -22,7 +22,7 @@ const ROWS: ArrivalDeskGuestRow[] = [
   },
   {
     name: "דנה",
-    room: "Suite 7",
+    room: "אוניקס 7",
     room_type: "suite",
     status: "expected",
     arrival_date: "2026-07-16",
@@ -31,7 +31,7 @@ const ROWS: ArrivalDeskGuestRow[] = [
   },
   {
     name: "מיכאל",
-    room: "Suite 1",
+    room: "ג׳ספר 1",
     room_type: "suite",
     status: "expected",
     arrival_date: "2026-07-17",
@@ -54,7 +54,7 @@ Deno.test("buildFrontDeskMorningMessage — includes power hints and stats, no t
   const body = buildFrontDeskMorningMessage({
     brief: composeArrivalDeskBrief(ROWS, NOW, { includeTomorrow: false }),
     openActionable: [
-      { id: 1, alert_type: "request", message: "מגבות נוספות", guests: { name: "דנה", room: "Suite 7" } },
+      { id: 1, alert_type: "request", message: "מגבות נוספות", guests: { name: "דנה", room: "אוניקס 7" } },
     ],
     openEtaCount: 2,
   });

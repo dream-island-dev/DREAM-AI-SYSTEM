@@ -17,6 +17,7 @@ import {
   checkEligibility,
   shouldAutoPromoteToCheckedIn,
   resolveEffectiveGuestStatus,
+  needsDepartureCheckoutPrompt,
   isDepartureAssistRequest,
   isInformationalGuestQuery,
   isSensitiveStayChangeRequest,
@@ -192,12 +193,20 @@ Deno.test("resolveEffectiveGuestStatus: expected guest at 16:00 stays expected (
   assertEquals(result, "expected");
 });
 
-Deno.test("resolveEffectiveGuestStatus: departure-day auto checkout still fires at 11:00", () => {
+Deno.test("resolveEffectiveGuestStatus: returns DB status only (no virtual checkout)", () => {
   const result = resolveEffectiveGuestStatus(
     { status: "checked_in", arrival_date: FRI, departure_date: SAT },
     israelInstant(SAT, 11, 30),
   );
-  assertEquals(result, "checked_out");
+  assertEquals(result, "checked_in");
+});
+
+Deno.test("needsDepartureCheckoutPrompt: departure-day checkout prompt fires at 11:00", () => {
+  const result = needsDepartureCheckoutPrompt(
+    { status: "checked_in", departure_date: SAT, room_type: "suite" },
+    israelInstant(SAT, 11, 30),
+  );
+  assertEquals(result, true);
 });
 
 // ── Departure / porter assist — session 2026-07-11 hallucination incident ──
@@ -773,7 +782,7 @@ Deno.test("buildDiningReply + buildMealDeclineAck are complete messages", () => 
   const dining = buildDiningReply(cfg);
   assertEquals(looksLikeDiningHoursReply(dining), true);
   assertEquals(isReplyObviouslyTruncated(dining), false);
-  assertEquals(dining.includes("07:00–10:30"), true);
+  assertEquals(dining.includes("18:30–22:00"), true);
   const personalized = buildDiningReplyForGuest(
     cfg,
     "מתי ארוחת הבוקר שלנו?",

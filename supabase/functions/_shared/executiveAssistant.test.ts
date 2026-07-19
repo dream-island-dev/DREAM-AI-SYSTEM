@@ -511,7 +511,7 @@ Deno.test("list_guests_by_date — returns arriving guests for date", async () =
   const supabase = mockSupabase({
     default: {
       data: [
-        { name: "כהן", room: "אמטיסט 3", room_type: "suite", status: "expected", arrival_time: "15:30", requires_attention: false },
+        { name: "כהן", room: "אמטיסט 8", room_type: "suite", status: "expected", arrival_time: "15:30", requires_attention: false },
       ],
       error: null,
     },
@@ -721,7 +721,7 @@ Deno.test("request_missing_arrival_times — sends to suite guests missing a tim
   const supabase = mockSupabaseByTable({
     guests: {
       data: [
-        { id: 1, name: "כהן", room: "אמטיסט 3", room_type: "suite", phone: "+972500000001", status: "expected" },
+        { id: 1, name: "כהן", room: "אמטיסט 8", room_type: "suite", phone: "+972500000001", status: "expected" },
         { id: 2, name: "לוי", room: "Premium Day 1", room_type: "day_guest", phone: "+972500000002", status: "expected" },
       ],
       error: null,
@@ -751,7 +751,7 @@ Deno.test("request_missing_arrival_times — skips a guest already asked today (
   const supabase = mockSupabaseByTable({
     guests: {
       data: [
-        { id: 1, name: "כהן", room: "אמטיסט 3", room_type: "suite", phone: "+972500000001", status: "expected" },
+        { id: 1, name: "כהן", room: "אמטיסט 8", room_type: "suite", phone: "+972500000001", status: "expected" },
       ],
       error: null,
     },

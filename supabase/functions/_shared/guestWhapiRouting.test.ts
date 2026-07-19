@@ -155,7 +155,7 @@ Deno.test("isStageEffectivelyActive: is_active=false + no guest context (event-i
 
 Deno.test("isStageEffectivelyActive: daypass=off HARD-BLOCKS a day-pass guest even when is_active=true", () => {
   withChannels("whapi", "off", () => {
-    const guest = { room: null, room_type: "day_guest" };
+    const guest = { room: "Premium Day 1", room_type: "day_guest" };
     assertEquals(isStageEffectivelyActive({ is_active: true }, guest), false);
   });
 });
