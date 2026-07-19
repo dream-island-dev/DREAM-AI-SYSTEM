@@ -10,6 +10,12 @@ import {
   sessionRoleLabel,
 } from "../../utils/restaurantShiftSession";
 
+const SHIFT_ROLES = [
+  { id: "hostess", label: "🛎️ מארחת", hint: "תיאום שעות ארוחה ושיחות עם אורחים" },
+  { id: "shift_manager", label: "👔 מנהל משמרת", hint: "פיקוח על משמרת והזמנות" },
+  { id: "waiter", label: "🍽️ מלצר/ית", hint: "לקיחת הזמנות מהאורחים" },
+];
+
 function NameChip({ label, selected, onClick }) {
   return (
     <button
@@ -33,7 +39,7 @@ export default function RestaurantShiftGate() {
   const nameInputRef = useRef(null);
   const [name, setName] = useState("");
   const [staffId, setStaffId] = useState(null);
-  const [role, setRole] = useState("waiter");
+  const [role, setRole] = useState("hostess");
   const [pin, setPin] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -64,12 +70,11 @@ export default function RestaurantShiftGate() {
     setError("");
     const match = rosterQuickPicks.find((r) => r.display_name === nextName);
     if (match?.can_be_shift_manager) setRole("shift_manager");
-    else if (!match) setRole("waiter");
   };
 
   const submit = async () => {
     if (!displayName) {
-      setError("הקליד/י את השם שלך");
+      setError("חובה להקליד שם — כך נתעד מי ביצע כל פעולה במשמרת");
       nameInputRef.current?.focus();
       return;
     }
@@ -108,10 +113,13 @@ export default function RestaurantShiftGate() {
 
         <label
           htmlFor="armonim-shift-name"
-          style={{ display: "block", fontWeight: 800, marginBottom: 8, textAlign: "right", fontSize: 15 }}
+          style={{ display: "block", fontWeight: 800, marginBottom: 4, textAlign: "right", fontSize: 15 }}
         >
-          מה השם שלך?
+          מה השם שלך? <span style={{ color: "#C0392B" }}>*</span>
         </label>
+        <p style={{ fontSize: 12, color: "#888", margin: "0 0 8px", textAlign: "right", lineHeight: 1.45 }}>
+          חובה בכל משמרת — לתיעוד הזמנות, וואטסאפ ושינויים
+        </p>
         <input
           id="armonim-shift-name"
           ref={nameInputRef}
@@ -173,25 +181,25 @@ export default function RestaurantShiftGate() {
         )}
 
         <p style={{ fontSize: 13, fontWeight: 700, color: "#666", marginBottom: 8, textAlign: "right" }}>
-          תפקיד במשמרת
+          תפקיד במשמרת <span style={{ color: "#C0392B" }}>*</span>
         </p>
-        <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
-          <button
-            type="button"
-            className={`armonim-role-btn${role === "waiter" ? " is-selected" : ""}`}
-            onClick={() => setRole("waiter")}
-          >
-            🍽️ מלצר/ית
-          </button>
-          {canPickManager && (
-            <button
-              type="button"
-              className={`armonim-role-btn${role === "shift_manager" ? " is-selected" : ""}`}
-              onClick={() => setRole("shift_manager")}
-            >
-              👔 מנהל משמרת
-            </button>
-          )}
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
+          {SHIFT_ROLES.map((opt) => {
+            if (opt.id === "shift_manager" && !canPickManager) return null;
+            const selected = role === opt.id;
+            return (
+              <button
+                key={opt.id}
+                type="button"
+                className={`armonim-role-btn${selected ? " is-selected" : ""}`}
+                onClick={() => setRole(opt.id)}
+                style={{ width: "100%", textAlign: "right", minHeight: 52 }}
+              >
+                <div style={{ fontWeight: 800 }}>{opt.label}</div>
+                <div style={{ fontSize: 11, fontWeight: 500, opacity: 0.75, marginTop: 2 }}>{opt.hint}</div>
+              </button>
+            );
+          })}
         </div>
 
         {role === "shift_manager" && kioskUi.shift_manager_pin && (

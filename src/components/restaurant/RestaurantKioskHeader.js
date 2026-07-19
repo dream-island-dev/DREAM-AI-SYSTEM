@@ -2,7 +2,11 @@
 
 import { ARMONIM_KOSHER_LABEL, ARMONIM_LOGO_HEADER } from "../../data/armonimBrand";
 import { useRestaurantShift } from "../../context/RestaurantShiftContext";
-import { formatShiftStartedAt, sessionRoleLabel } from "../../utils/restaurantShiftSession";
+import {
+  formatShiftStartedAt,
+  isRestaurantFloorLeadRole,
+  sessionRoleLabel,
+} from "../../utils/restaurantShiftSession";
 
 export default function RestaurantKioskHeader({
   tabs,
@@ -11,7 +15,8 @@ export default function RestaurantKioskHeader({
   onEndShift,
   endingShift,
 }) {
-  const { kioskUi, session, isShiftManager, activeOnFloor } = useRestaurantShift();
+  const { kioskUi, session, activeOnFloor } = useRestaurantShift();
+  const showFloorPanel = session && isRestaurantFloorLeadRole(session.sessionRole);
 
   return (
     <header className="armonim-kiosk-header">
@@ -50,7 +55,7 @@ export default function RestaurantKioskHeader({
       >
         {endingShift ? "…" : "סיום משמרת"}
       </button>
-      {isShiftManager && activeOnFloor.length > 1 && (
+      {showFloorPanel && activeOnFloor.length > 1 && (
         <div className="armonim-floor-panel" style={{ width: "100%", marginTop: 4 }}>
           <strong>על הרצפה:</strong>{" "}
           {activeOnFloor.map((s) => s.display_name).join(" · ")}

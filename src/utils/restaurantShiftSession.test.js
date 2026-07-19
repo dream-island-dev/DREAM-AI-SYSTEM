@@ -9,6 +9,7 @@ describe("restaurantShiftSession", () => {
   it("labels session roles in Hebrew", () => {
     expect(sessionRoleLabel("waiter")).toBe("מלצר/ית");
     expect(sessionRoleLabel("shift_manager")).toBe("מנהל משמרת");
+    expect(sessionRoleLabel("hostess")).toBe("מארחת");
   });
 
   it("formats shift start time", () => {

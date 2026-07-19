@@ -16,6 +16,7 @@ import {
 import {
   readLocalShiftSession,
   writeLocalShiftSession,
+  isRestaurantFloorLeadRole,
 } from "../utils/restaurantShiftSession";
 
 const RestaurantShiftContext = createContext(null);
@@ -224,6 +225,8 @@ export function RestaurantShiftProvider({ user, children }) {
     booting,
     activeOnFloor,
     isShiftManager: session?.sessionRole === "shift_manager",
+    isHostess: session?.sessionRole === "hostess",
+    isFloorLead: isRestaurantFloorLeadRole(session?.sessionRole),
     startShift,
     endShift,
     recordOrderSent,

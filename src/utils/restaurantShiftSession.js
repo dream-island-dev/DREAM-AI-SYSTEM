@@ -40,7 +40,7 @@ export function rememberRecentShiftName(name) {
   localStorage.setItem(RECENT_NAMES_KEY, JSON.stringify(next));
 }
 
-/** @typedef {'waiter' | 'shift_manager'} RestaurantSessionRole */
+/** @typedef {'waiter' | 'shift_manager' | 'hostess'} RestaurantSessionRole */
 
 /**
  * @typedef {Object} LocalShiftSession
@@ -73,8 +73,18 @@ export function writeLocalShiftSession(session) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
 }
 
+const SESSION_ROLE_LABELS = Object.freeze({
+  waiter: "מלצר/ית",
+  shift_manager: "מנהל משמרת",
+  hostess: "מארחת",
+});
+
 export function sessionRoleLabel(role) {
-  return role === "shift_manager" ? "מנהל משמרת" : "מלצר/ית";
+  return SESSION_ROLE_LABELS[role] ?? SESSION_ROLE_LABELS.waiter;
+}
+
+export function isRestaurantFloorLeadRole(role) {
+  return role === "shift_manager" || role === "hostess";
 }
 
 export function formatShiftStartedAt(iso) {
