@@ -11,8 +11,11 @@ import {
   getCoordinationSlotsForGuest,
   getLunchQuickSlots,
   guestNeedsMealCoordination,
+  getEffectiveMealPlanForRestaurant,
+  getGuestMealSlotTime,
 } from "../utils/restaurantDinnerGuests";
-import { mealPlanLabel, MEAL_SLOT_LABELS } from "../data/stayMealsSchema";
+import { mealPlanLabel, MEAL_SLOT_LABELS, normalizeMealPlan } from "../data/stayMealsSchema";
+import { isSuiteGuestProfile } from "../utils/guestTiming";
 import RestaurantWalkInModal from "./RestaurantWalkInModal";
 import RestaurantMenuAdminPanel from "./RestaurantMenuAdminPanel";
 import RestaurantOrderPanel from "./RestaurantOrderPanel";
@@ -108,7 +111,87 @@ function MessageTextarea({ label, value, onChange, onReset, disabled, rows = 5 }
   );
 }
 
-function GuestDinnerRow({ guest, user, msgConfig, onSaved, onError, onNotify }) {
+function GuestListRow({ guest, selected, onSelect, onOpenChat }) {
+  const vip = normalizeGuestProfile(guest.guest_profile).vip_status === "vip";
+  const needsTime = guestNeedsMealCoordination(guest);
+  const dinnerTime = getGuestMealSlotTime(guest, "dinner");
+  const lunchTime = getGuestMealSlotTime(guest, "lunch");
+  const isSuite = isSuiteGuestProfile(guest);
+  const hasPhone = Boolean(String(guest.phone ?? "").trim());
+  const effectivePlan = getEffectiveMealPlanForRestaurant(guest);
+
+  const handleNameClick = (e) => {
+    e.stopPropagation();
+    if (hasPhone && onOpenChat) {
+      onOpenChat(guest);
+      return;
+    }
+    onSelect?.(guest);
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect?.(guest)}
+      style={{
+        width: "100%", textAlign: "right", cursor: "pointer",
+        border: selected ? `2px solid ${GOLD_DARK}` : "1px solid var(--border, #E0D5C5)",
+        borderRadius: 10, padding: "10px 12px", marginBottom: 6,
+        background: selected ? "rgba(201,169,110,0.14)" : "var(--card-bg, #fff)",
+        fontFamily: "Heebo, sans-serif", transition: "background 0.15s",
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={handleNameClick}
+            onKeyDown={(e) => { if (e.key === "Enter") handleNameClick(e); }}
+            title={hasPhone ? "לחץ לפתיחת שיחת וואטסאפ לתיאום" : "אין טלפון — בחרו לעריכת שעות"}
+            style={{
+              fontWeight: 800, fontSize: 14, color: hasPhone ? "#1D4ED8" : "var(--black, #1A1A1A)",
+              textDecoration: hasPhone ? "underline" : "none",
+              textUnderlineOffset: 3, cursor: "pointer", marginBottom: 3,
+            }}
+          >
+            {vip && "⭐ "}{guest.name || "—"}
+            {hasPhone && <span style={{ marginRight: 4, fontSize: 11 }}>💬</span>}
+          </div>
+          <div style={{ fontSize: 11.5, color: "var(--text-muted)", lineHeight: 1.45 }}>
+            {guest.room ? `🏨 ${guest.room}` : "ללא חדר"}
+            {isSuite && !guest.room ? " · סוויטה" : ""}
+            {guest.status === "checked_in" ? " · בבריזורט" : ""}
+          </div>
+          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+            {mealPlanLabel(effectivePlan)}
+            {dinnerTime ? ` · ערב ${dinnerTime}` : ""}
+            {lunchTime ? ` · צהריים ${lunchTime}` : ""}
+          </div>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+          {needsTime ? (
+            <span style={{
+              fontSize: 10, fontWeight: 800, padding: "3px 8px", borderRadius: 12,
+              background: "rgba(220,38,38,0.1)", color: "#B91C1C",
+            }}>
+              חסרה שעה
+            </span>
+          ) : (
+            <span style={{
+              fontSize: 10, fontWeight: 800, padding: "3px 8px", borderRadius: 12,
+              background: "rgba(26,122,74,0.1)", color: "#1A7A4A",
+            }}>
+              ✓ מתואם
+            </span>
+          )}
+        </div>
+      </div>
+    </button>
+  );
+}
+
+function GuestDinnerRow({ guest, user, msgConfig, onSaved, onError, onNotify, onOpenChat }) {
   const cfg = normalizeRestaurantDinnerMessages(msgConfig);
   const offerSlots = cfg.offer_slots;
   const defaultAskSlots = cfg.default_ask_slots;
@@ -188,6 +271,8 @@ function GuestDinnerRow({ guest, user, msgConfig, onSaved, onError, onNotify }) 
 
   const dietary = formatGuestDietaryBrief(guest.guest_profile);
   const vip = normalizeGuestProfile(guest.guest_profile).vip_status === "vip";
+  const effectivePlan = getEffectiveMealPlanForRestaurant(guest);
+  const planUnset = normalizeMealPlan(guest.meal_plan) === "none" && effectivePlan !== "none";
 
   const persistGuest = async () => {
     const mealPatch = buildRestaurantDinnerMealPatch(guest, {
@@ -321,10 +406,23 @@ function GuestDinnerRow({ guest, user, msgConfig, onSaved, onError, onNotify }) 
     }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 10 }}>
         <div>
-          <div style={{ fontWeight: 800, fontSize: 15, color: "var(--black, #1A1A1A)" }}>
+          <button
+            type="button"
+            onClick={() => hasPhone && onOpenChat?.(guest)}
+            disabled={!hasPhone || !onOpenChat}
+            title={hasPhone ? "פתיחת שיחת וואטסאפ לתיאום שעה" : "אין טלפון"}
+            style={{
+              border: "none", background: "transparent", padding: 0, cursor: hasPhone && onOpenChat ? "pointer" : "default",
+              fontWeight: 800, fontSize: 15,
+              color: hasPhone && onOpenChat ? "#1D4ED8" : "var(--black, #1A1A1A)",
+              textDecoration: hasPhone && onOpenChat ? "underline" : "none",
+              textUnderlineOffset: 3, fontFamily: "Heebo, sans-serif", textAlign: "right",
+            }}
+          >
             {vip && <span title="VIP">⭐ </span>}
             {guest.name || "—"}
-          </div>
+            {hasPhone && onOpenChat && <span style={{ marginRight: 6, fontSize: 12 }}>💬</span>}
+          </button>
           <div style={{ fontSize: 12.5, color: "var(--text-muted, #666)", marginTop: 4 }}>
             {guest.room ? `🏨 ${guest.room}` : "ללא חדר"}
             {guest.status === "checked_in" ? " · בבריזורט" : guest.status === "expected" || guest.status === "pending" ? " · מגיע היום" : ""}
@@ -334,9 +432,18 @@ function GuestDinnerRow({ guest, user, msgConfig, onSaved, onError, onNotify }) 
           fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 20,
           background: "rgba(180,83,9,0.12)", color: "#9A7209",
         }}>
-          {mealPlanLabel(guest.meal_plan)}
+          {mealPlanLabel(effectivePlan)}
         </div>
       </div>
+
+      {planUnset && (
+        <div style={{
+          fontSize: 11.5, color: "#4338CA", background: "rgba(99,102,241,0.08)",
+          padding: "7px 10px", borderRadius: 8, marginBottom: 10,
+        }}>
+          פנסיון לא מוגדר בפרופיל — מוצג כ{mealPlanLabel(effectivePlan)}. שמירה תעדכן את הפרופיל.
+        </div>
+      )}
 
       {dietary && (
         <div style={{
@@ -604,7 +711,7 @@ function GuestDinnerRow({ guest, user, msgConfig, onSaved, onError, onNotify }) 
   );
 }
 
-export default function RestaurantDinnerBoard({ user, kioskMode = false, onLogout }) {
+export default function RestaurantDinnerBoard({ user, kioskMode = false, onLogout, onOpenDreamBotChat }) {
   const [boardTab, setBoardTab] = useState("coordination");
   const [mealPeriod, setMealPeriod] = useState("dinner");
   const [dayYmd, setDayYmd] = useState(israelTodayStr());
@@ -613,8 +720,18 @@ export default function RestaurantDinnerBoard({ user, kioskMode = false, onLogou
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
+  const [selectedGuestId, setSelectedGuestId] = useState(null);
   const [toast, setToast] = useState(null);
   const [walkInOpen, setWalkInOpen] = useState(false);
+  const [isNarrow, setIsNarrow] = useState(() => (
+    typeof window !== "undefined" ? window.innerWidth < 768 : false
+  ));
+
+  useEffect(() => {
+    const onResize = () => setIsNarrow(window.innerWidth < 768);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   const showToast = useCallback((type, msg) => {
     setToast({ type, msg });
@@ -675,9 +792,20 @@ export default function RestaurantDinnerBoard({ user, kioskMode = false, onLogou
     return () => { supabase.removeChannel(ch); };
   }, [fetchGuests]);
 
+  const openGuestChat = useCallback((guest) => {
+    const phone = String(guest?.phone ?? "").trim();
+    if (!phone) return;
+    if (onOpenDreamBotChat) {
+      onOpenDreamBotChat({ phone, guestName: guest.name });
+      return;
+    }
+    setSelectedGuestId(guest.id);
+  }, [onOpenDreamBotChat]);
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return guests.filter((g) => {
+      if (filter === "suites" && !isSuiteGuestProfile(g)) return false;
       if (filter === "needs_time" && !guestNeedsMealCoordination(g)) return false;
       if (filter === "has_time" && guestNeedsMealCoordination(g)) return false;
       if (!q) return true;
@@ -685,6 +813,23 @@ export default function RestaurantDinnerBoard({ user, kioskMode = false, onLogou
       return hay.includes(q);
     });
   }, [guests, search, filter]);
+
+  const selectedGuest = useMemo(
+    () => filtered.find((g) => g.id === selectedGuestId) ?? filtered[0] ?? null,
+    [filtered, selectedGuestId],
+  );
+
+  useEffect(() => {
+    if (!filtered.length) {
+      setSelectedGuestId(null);
+      return;
+    }
+    if (!selectedGuestId || !filtered.some((g) => g.id === selectedGuestId)) {
+      setSelectedGuestId(filtered[0].id);
+    }
+  }, [filtered, selectedGuestId]);
+
+  const suiteCount = guests.filter((g) => isSuiteGuestProfile(g)).length;
 
   const withTime = guests.filter((g) => !guestNeedsMealCoordination(g)).length;
   const withoutTime = guests.length - withTime;
@@ -827,6 +972,7 @@ export default function RestaurantDinnerBoard({ user, kioskMode = false, onLogou
         />
         {[
           ["all", `הכל (${guests.length})`],
+          ["suites", `סוויטות (${suiteCount})`],
           ["needs_time", `חסרה שעה (${withoutTime})`],
           ["has_time", `עם שעה (${withTime})`],
         ].map(([id, label]) => (
@@ -875,28 +1021,52 @@ export default function RestaurantDinnerBoard({ user, kioskMode = false, onLogou
           borderRadius: 12, color: "var(--text-muted)", fontSize: 14,
         }}>
           {guests.length === 0
-            ? "אין אורחים עם ארוחות לתיאום ליום זה. הוסיפו אורח ידני או בדקו תאריך אחר."
+            ? "אין אורחי סוויטות/פנסיון לתיאום ליום זה. הוסיפו אורח ידני או בדקו תאריך אחר."
             : "אין תוצאות לפילטר / חיפוש."}
         </div>
       ) : (
         <div style={{
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))",
-          gap: 12,
+          gridTemplateColumns: isNarrow ? "1fr" : "minmax(240px, 320px) 1fr",
+          gap: 14,
+          alignItems: "start",
         }}>
-          {filtered.map((g) => (
-            <GuestDinnerRow
-              key={g.id}
-              guest={g}
-              user={user}
-              msgConfig={msgConfig}
-              onSaved={(updated) => {
-                setGuests((prev) => prev.map((row) => (row.id === updated.id ? { ...row, ...updated } : row)));
-              }}
-              onError={(msg) => showToast("err", msg)}
-              onNotify={(msg) => showToast("ok", msg)}
-            />
-          ))}
+          <div style={{
+            position: isNarrow ? "static" : "sticky",
+            top: 8,
+            maxHeight: isNarrow ? "none" : "calc(100vh - 200px)",
+            overflowY: isNarrow ? "visible" : "auto",
+            paddingLeft: 2,
+          }}>
+            <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-muted)", marginBottom: 8 }}>
+              {filtered.length} אורחים · לחיצה על שם = צ׳אט לתיאום
+            </div>
+            {filtered.map((g) => (
+              <GuestListRow
+                key={g.id}
+                guest={g}
+                selected={selectedGuest?.id === g.id}
+                onSelect={(row) => setSelectedGuestId(row.id)}
+                onOpenChat={openGuestChat}
+              />
+            ))}
+          </div>
+          <div style={{ minWidth: 0 }}>
+            {selectedGuest ? (
+              <GuestDinnerRow
+                key={selectedGuest.id}
+                guest={selectedGuest}
+                user={user}
+                msgConfig={msgConfig}
+                onOpenChat={openGuestChat}
+                onSaved={(updated) => {
+                  setGuests((prev) => prev.map((row) => (row.id === updated.id ? { ...row, ...updated } : row)));
+                }}
+                onError={(msg) => showToast("err", msg)}
+                onNotify={(msg) => showToast("ok", msg)}
+              />
+            ) : null}
+          </div>
         </div>
       )}
 

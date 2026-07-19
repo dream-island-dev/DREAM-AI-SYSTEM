@@ -6,6 +6,7 @@ import {
   buildRestaurantDinnerMealPatch,
   getCoordinationSlotsForGuest,
   guestNeedsMealCoordination,
+  getEffectiveMealPlanForRestaurant,
 } from "./restaurantDinnerGuests";
 
 describe("restaurantDinnerGuests", () => {
@@ -63,13 +64,33 @@ describe("restaurantDinnerGuests", () => {
     expect(patch.meal_time).toBe("20:00");
   });
 
+  it("includes suite guest in resort without meal_plan", () => {
+    const g = {
+      status: "checked_in",
+      arrival_date: today,
+      departure_date: today,
+      meal_plan: "none",
+      room: "אמטיסט 8",
+      room_type: "suite",
+    };
+    expect(isRestaurantBoardGuest(g, today)).toBe(true);
+    expect(getCoordinationSlotsForGuest(g)).toEqual(["dinner"]);
+    expect(guestNeedsMealCoordination(g)).toBe(true);
+  });
+
+  it("getEffectiveMealPlanForRestaurant defaults suite to half_board", () => {
+    const g = { meal_plan: "none", room: "רובי 14" };
+    expect(getEffectiveMealPlanForRestaurant(g)).toBe("half_board");
+  });
+
   it("filterRestaurantDinnerGuests", () => {
     const rows = filterRestaurantDinnerGuests([
+      { status: "checked_in", arrival_date: today, departure_date: today, meal_plan: "none", room: "אמטיסט 8" },
       { status: "checked_in", arrival_date: today, departure_date: today, meal_plan: "none" },
       { status: "checked_in", arrival_date: today, departure_date: today, meal_plan: "dinner_only" },
       { status: "checked_in", arrival_date: today, departure_date: today, meal_plan: "full_board" },
     ], today);
-    expect(rows.length).toBe(2);
+    expect(rows.length).toBe(3);
   });
 
   it("includes walk-in guest flagged in profile", () => {

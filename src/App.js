@@ -2359,7 +2359,7 @@ export default function App({ initialPage = "dashboard" }) {
         return <SpaBoard onOpenDreamBotChat={openDreamBotChat} />;
       case "restaurant_dinner_board":
         return guardPage("restaurant_dinner_board", (
-          <RestaurantDinnerBoard user={user} />
+          <RestaurantDinnerBoard user={user} onOpenDreamBotChat={openDreamBotChat} />
         ));
       case "housekeeping_tablet":
         return <HousekeepingTabletView />;

@@ -1,16 +1,33 @@
 // Filter guests relevant for Restaurant Board (lunch + dinner meal scheduling).
 
-import { israelTodayStr } from "./guestTiming";
-import { MEAL_SLOTS_BY_PLAN, normalizeMealPlan } from "../data/stayMealsSchema";
+import { israelTodayStr, isSuiteGuestProfile } from "./guestTiming";
+import {
+  MEAL_SLOTS_BY_PLAN,
+  inferMealPlanFromHints,
+  normalizeMealPlan,
+} from "../data/stayMealsSchema";
 
 const MEAL_PLANS_WITH_BOARD = new Set(["dinner_only", "half_board", "full_board"]);
 const ACTIVE_STATUSES = new Set(["pending", "expected", "room_ready", "checked_in"]);
 
 const DEFAULT_LUNCH_QUICK_SLOTS = ["12:00", "12:30", "13:00", "13:30", "14:00"];
 
+/** Meal plan for board UI — infer HB/FB from profile hints; suite guests default half_board. */
+export function getEffectiveMealPlanForRestaurant(guest) {
+  const inferred = inferMealPlanFromHints({
+    meal_plan: guest?.meal_plan,
+    meal_plan_label: guest?.guest_profile?.meal_plan_label,
+    package_label: guest?.guest_profile?.package_label,
+    guest_type_reason: guest?.guest_type_reason,
+  });
+  if (inferred !== "none") return inferred;
+  if (isSuiteGuestProfile(guest)) return "half_board";
+  return "none";
+}
+
 /** Meal slots the restaurant coordinates (never breakfast — resort-wide hours). */
 export function getCoordinationSlotsForGuest(guest) {
-  const plan = normalizeMealPlan(guest?.meal_plan);
+  const plan = getEffectiveMealPlanForRestaurant(guest);
   return (MEAL_SLOTS_BY_PLAN[plan] ?? []).filter((slot) => slot !== "breakfast");
 }
 
@@ -33,7 +50,9 @@ function hasRestaurantMealReason(guest) {
   const lunch = String(guest?.lunch_time ?? "").trim();
   const dinner = String(guest?.dinner_time ?? guest?.meal_time ?? "").trim();
   if (lunch || dinner) return true;
-  return guestHasWalkInFlag(guest);
+  if (guestHasWalkInFlag(guest)) return true;
+  if (isSuiteGuestProfile(guest)) return true;
+  return getEffectiveMealPlanForRestaurant(guest) !== "none";
 }
 
 /** Per-slot time string from guest row. */
@@ -94,7 +113,9 @@ export function sortRestaurantDinnerGuests(guests) {
 }
 
 export function buildRestaurantDinnerMealPatch(guest, { lunchTime, dinnerTime, mealLocation, mealPlan }) {
-  const plan = normalizeMealPlan(mealPlan ?? guest.meal_plan);
+  const plan = normalizeMealPlan(
+    mealPlan ?? guest.meal_plan ?? getEffectiveMealPlanForRestaurant(guest),
+  );
   const lunch = String(lunchTime ?? guest.lunch_time ?? "").trim() || null;
   const dinner = String(dinnerTime ?? guest.dinner_time ?? guest.meal_time ?? "").trim() || null;
   const loc = String(mealLocation ?? guest.meal_location ?? "").trim() || null;
