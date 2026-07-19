@@ -119,6 +119,35 @@ export async function fetchRecentInboxMessages(accessToken: string, top = 25): P
   return (data?.value ?? []) as GraphMessage[];
 }
 
+/** Reply in-thread on an existing Graph message (keeps conversationId). */
+export async function sendGraphMessageReply(
+  accessToken: string,
+  graphMessageId: string,
+  bodyText: string,
+): Promise<string | null> {
+  const res = await fetch(`${GRAPH_BASE}/me/messages/${encodeURIComponent(graphMessageId)}/reply`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      message: {
+        body: { contentType: "Text", content: bodyText },
+      },
+    }),
+    signal: AbortSignal.timeout(25000),
+  });
+
+  if (!res.ok) {
+    const txt = await res.text();
+    throw new Error(`graph_reply_failed: ${txt.slice(0, 300)}`);
+  }
+
+  return `reply-${Date.now()}`;
+}
+
+/** New mail (breaks thread) — fallback when no anchor message id. */
 export async function sendGraphReply(
   accessToken: string,
   opts: { toEmail: string; toName?: string | null; subject: string; bodyText: string },

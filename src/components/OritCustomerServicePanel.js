@@ -349,6 +349,15 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
     [selected],
   );
 
+  const latestGuestInbound = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i].direction === "inbound") return (messages[i].body_text || "").trim();
+    }
+    return "";
+  }, [messages]);
+
+  const hasGuestPhone = Boolean((selected?.guest_contact_phone || "").replace(/\D/g, ""));
+
   const openCount = threads.filter((t) => isOritThreadOpen(t)).length;
   const handledCount = threads.filter((t) => isOritThreadClosed(t)).length;
 
@@ -576,6 +585,40 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
       }
       await loadMailbox();
       if (!markHandled || data.sent) await loadThreadDetail(selectedId);
+    } catch (e) {
+      showToast("err", e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleSendViaSuitesDevice = async ({ text, draftKind = "full_reply", draftId } = {}) => {
+    const body = (text ?? replyText).trim();
+    if (!body || !selectedId || !hasGuestPhone) return;
+    setBusy(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("manager-mail-send", {
+        body: {
+          threadId: selectedId,
+          bodyText: body,
+          channel: "whatsapp_bridge",
+          draftKind,
+          draftId: draftId ?? (draftKind === "ack" ? ackDraft?.id : fullReplyDraft?.id),
+        },
+      });
+      if (error) throw error;
+      if (!data?.ok) throw new Error(data?.hint || data?.error || "שליחה בוואטסאפ נכשלה");
+
+      showToast("ok", "📱 נשלחה הודעה לאורח במכשיר הסוויטות");
+      await loadMailbox();
+      await loadThreadDetail(selectedId);
+      if (data.inboxLink && onOpenDreamBotChat) {
+        onOpenDreamBotChat?.({
+          phone: selected.guest_contact_phone,
+          guestName: resolveOritReplyName(selected.from_name, selected.guest_contact_name),
+          inboxChannel: "whapi",
+        });
+      }
     } catch (e) {
       showToast("err", e.message);
     } finally {
@@ -942,6 +985,38 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
             )}
           </div>
 
+          {workflowMeta.guestReplied && !workflowMeta.closed && (
+            <div style={{
+              marginBottom: 12,
+              padding: 12,
+              borderRadius: 10,
+              background: "#FEF3C7",
+              border: "2px solid #F59E0B",
+              flexShrink: 0,
+            }}
+            >
+              <div style={{ fontWeight: 800, marginBottom: 6, fontSize: 15 }}>📩 האורח/ת השיב/ה למייל</div>
+              <div style={{ fontSize: 13, lineHeight: 1.5, marginBottom: latestGuestInbound ? 8 : 0 }}>
+                סיגל שלחה לך עדכון בוואטסאפ עם טיוטת המשך. ערכי ושלחי במייל או במכשיר הסוויטות.
+              </div>
+              {latestGuestInbound && (
+                <div style={{
+                  fontSize: 13,
+                  whiteSpace: "pre-wrap",
+                  background: "#fff",
+                  padding: 10,
+                  borderRadius: 8,
+                  border: "1px solid #FCD34D",
+                  maxHeight: 120,
+                  overflow: "auto",
+                }}
+                >
+                  {latestGuestInbound.length > 500 ? `${latestGuestInbound.slice(0, 500)}…` : latestGuestInbound}
+                </div>
+              )}
+            </div>
+          )}
+
           <div style={{
             flex: detailScrollable ? undefined : 1,
             overflow: detailScrollable ? "visible" : "auto",
@@ -957,7 +1032,9 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
             {messages.map((m) => (
               <div key={m.id} style={{ marginBottom: 12, textAlign: m.direction === "outbound" ? "left" : "right" }}>
                 <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>
-                  {m.direction === "outbound" ? "יוצא" : "נכנס"} · {m.message_kind} · {fmtDt(m.received_at)}
+                  {m.direction === "outbound" ? "יוצא" : "נכנס"}
+                  {m.external_key?.startsWith?.("wa-") ? " · 📱 מכשיר סוויטות" : ""}
+                  {" · "}{m.message_kind} · {fmtDt(m.received_at)}
                 </div>
                 <div style={{
                   display: "inline-block",
@@ -1025,7 +1102,7 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
             <button
               type="button"
               className="btn"
-              disabled={busy || !selected.guest_contact_phone || !onOpenDreamBotChat}
+              disabled={busy || !hasGuestPhone || !onOpenDreamBotChat}
               onClick={() => onOpenDreamBotChat?.({
                 phone: selected.guest_contact_phone,
                 guestName: resolveOritReplyName(selected.from_name, selected.guest_contact_name),
@@ -1037,6 +1114,21 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
                 : "לא זוהה טלפון בגוף הפנייה"}
             >
               💬 וואטסאפ באינבוקס
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={busy || !hasGuestPhone || (!replyText.trim() && !fullReplyDraft?.suggested_text && !ackText.trim())}
+              onClick={() => handleSendViaSuitesDevice({
+                text: replyText.trim() || fullReplyDraft?.suggested_text || ackText,
+                draftKind: !selected.auto_ack_sent_at && ackText.trim() ? "ack" : "full_reply",
+              })}
+              style={{ minHeight: 44 }}
+              title={hasGuestPhone
+                ? "שליחת הטיוטה לאורח במכשיר הסוויטות (לא מחליפה מייל רשמי)"
+                : "חסר טלפון אורח בפנייה"}
+            >
+              📱 שלח דרך מכשיר הסוויטות
             </button>
           </div>
 
@@ -1101,6 +1193,21 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
                         📧 שלחי מ-XOS
                       </button>
                     )}
+                    {hasGuestPhone && (
+                      <button
+                        type="button"
+                        className="btn"
+                        disabled={busy || selected.status === "handled"}
+                        onClick={() => handleSendViaSuitesDevice({
+                          text: fullReplyDraft.suggested_text,
+                          draftKind: "full_reply",
+                          draftId: fullReplyDraft.id,
+                        })}
+                        style={{ minHeight: 44 }}
+                      >
+                        📱 שלח דרך מכשיר הסוויטות
+                      </button>
+                    )}
                     <button
                       type="button"
                       className="btn"
@@ -1160,6 +1267,21 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
                     >
                       📋 העתיקי
                     </button>
+                    {hasGuestPhone && (
+                      <button
+                        type="button"
+                        className="btn"
+                        disabled={busy || !replyText.trim() || selected.status === "handled"}
+                        onClick={() => handleSendViaSuitesDevice({
+                          text: replyText,
+                          draftKind: "full_reply",
+                          draftId: fullReplyDraft?.id,
+                        })}
+                        style={{ minHeight: 44 }}
+                      >
+                        📱 שלח דרך מכשיר הסוויטות
+                      </button>
+                    )}
                   </div>
                 </>
               )}
@@ -1248,6 +1370,17 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
             >
               📋 העתיקי ללוח
             </button>
+            {hasGuestPhone && (
+              <button
+                type="button"
+                className="btn"
+                disabled={busy || !replyText.trim() || selected.status === "handled"}
+                onClick={() => handleSendViaSuitesDevice({ text: replyText, draftKind: "full_reply" })}
+                style={{ minHeight: 48 }}
+              >
+                📱 שלח דרך מכשיר הסוויטות
+              </button>
+            )}
             {canSendFromXos && (
               <button
                 type="button"

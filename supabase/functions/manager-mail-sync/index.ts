@@ -11,17 +11,22 @@ import {
 } from "../_shared/oritGuestContactExtract.ts";
 import { fetchMailboxInboxMessages, isMailboxIngestConfigured } from "../_shared/mailIngest.ts";
 import { isImapConfigured, resolveImapConfig, testImapConnection } from "../_shared/imapMail.ts";
-import { isOritThreadClosed } from "../_shared/closeOritThread.ts";
+import { reopenOritThread } from "../_shared/closeOritThread.ts";
+import {
+  findOritThreadForInbound,
+  wasThreadClosed,
+} from "../_shared/oritThreadMatch.ts";
 import {
   notifyOritGuestReplied,
   notifyOritSigalComplaintBriefing,
-  sendOritStaleComplaintReminders,
+  runSigalUrgentComplaintLoop,
   threadHasOutboundEmail,
   fetchOritDraftText,
 } from "../_shared/oritAgentWorkflow.ts";
 import {
   persistOritThreadAnalysis,
   runOritThreadAnalysis,
+  runOritThreadFollowUp,
 } from "../_shared/oritThreadAnalysis.ts";
 
 const CORS = {
@@ -106,15 +111,14 @@ serve(async (req: Request) => {
         for (const msg of messages) {
           if (!msg.fromEmail || !msg.threadKey) continue;
 
-          const { data: existingThread } = await supabase
-            .from("orit_agent_threads")
-            .select("id, status, sla_deadline_at, ai_analyzed_at, handled_at")
-            .eq("mailbox_id", mailbox.id)
-            .eq("external_thread_key", msg.threadKey)
-            .maybeSingle();
+          const { thread: matchedThread, matchedBy } = await findOritThreadForInbound(
+            supabase,
+            mailbox.id,
+            msg,
+          );
 
-          const threadWasClosed = isOritThreadClosed(existingThread);
-          let threadId = existingThread?.id ?? null;
+          const threadWasClosed = wasThreadClosed(matchedThread);
+          let threadId = matchedThread?.id ?? null;
 
           if (threadWasClosed && threadId) {
             const { data: existingMsg } = await supabase
@@ -127,6 +131,18 @@ serve(async (req: Request) => {
           }
 
           const isNewThread = !threadId;
+
+          let isNewInboundMsg = false;
+          if (threadId) {
+            const { data: existingMsg } = await supabase
+              .from("orit_agent_messages")
+              .select("id")
+              .eq("thread_id", threadId)
+              .eq("external_key", msg.id)
+              .maybeSingle();
+            isNewInboundMsg = !existingMsg;
+            if (!isNewInboundMsg) continue;
+          }
 
           if (!threadId) {
             const slaDeadline = computeSlaDeadline(msg.receivedAt, mailbox.sla_hours);
@@ -150,23 +166,24 @@ serve(async (req: Request) => {
             if (insertErr || !inserted) continue;
             threadId = inserted.id;
           } else {
-            await supabase.from("orit_agent_threads").update({
+            const threadPatch: Record<string, unknown> = {
               snippet: msg.bodyPreview,
               subject: msg.subject || undefined,
-              sla_deadline_at: existingThread.sla_deadline_at
+              sla_deadline_at: matchedThread?.sla_deadline_at
                 ?? computeSlaDeadline(msg.receivedAt, mailbox.sla_hours),
-            }).eq("id", threadId);
-          }
+            };
+            if (!isNewThread && isNewInboundMsg) {
+              threadPatch.received_at = msg.receivedAt;
+            }
+            if (matchedBy === "fallback") {
+              threadPatch.external_thread_key = msg.threadKey;
+              threadPatch.graph_conversation_id = msg.threadKey;
+            }
+            await supabase.from("orit_agent_threads").update(threadPatch).eq("id", threadId);
 
-          let isNewInboundMsg = false;
-          if (threadId) {
-            const { data: existingMsg } = await supabase
-              .from("orit_agent_messages")
-              .select("id")
-              .eq("thread_id", threadId)
-              .eq("external_key", msg.id)
-              .maybeSingle();
-            isNewInboundMsg = !existingMsg;
+            if (threadWasClosed) {
+              await reopenOritThread(supabase, threadId);
+            }
           }
 
           const { error: msgErr } = await supabase.from("orit_agent_messages").upsert({
@@ -190,14 +207,26 @@ serve(async (req: Request) => {
             }
           }
 
-          if (!isNewThread && isNewInboundMsg && threadId) {
-            await supabase.from("orit_agent_threads").update({ ai_analyzed_at: null }).eq("id", threadId);
-          }
-
           try {
-            await analyzeThread(supabase, mailbox.id, threadId, {
-              force: !isNewThread && isNewInboundMsg,
-            });
+            if (!isNewThread && isNewInboundMsg && threadId) {
+              const { data: threadRow } = await supabase
+                .from("orit_agent_threads")
+                .select("*")
+                .eq("id", threadId)
+                .maybeSingle();
+              if (threadRow) {
+                await runOritThreadFollowUp(
+                  supabase,
+                  mailbox.id,
+                  threadRow,
+                  msg.bodyText || msg.bodyPreview || "",
+                );
+              }
+            } else {
+              await analyzeThread(supabase, mailbox.id, threadId, {
+                force: false,
+              });
+            }
           } catch (aiErr) {
             console.warn("[manager-mail-sync] analyze failed:", (aiErr as Error).message);
           }
@@ -284,7 +313,7 @@ serve(async (req: Request) => {
         .limit(1)
         .maybeSingle();
       if (activeMb) {
-        await sendOritStaleComplaintReminders(supabase, activeMb);
+        await runSigalUrgentComplaintLoop(supabase, activeMb);
       }
     } catch (remErr) {
       console.warn("[manager-mail-sync] sigal reminders failed:", (remErr as Error).message);

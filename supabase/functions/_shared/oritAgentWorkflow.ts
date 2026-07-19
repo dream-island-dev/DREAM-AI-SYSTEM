@@ -20,6 +20,10 @@ import {
   composeSigalGuestReplyBriefing,
   composeSigalSimpleBriefing,
   composeSigalStaleReminder,
+  composeSigalLoopNudge,
+  resolveSigalLoopPhase,
+  sigalLoopTiming,
+  sigalReminderEscalationLevel,
   sigalGuestLabel,
   type SigalBriefingThread,
 } from "./oritSigalBriefing.ts";
@@ -410,13 +414,10 @@ export async function notifyOritGuestReplied(
 
   const guestMessage = (latestInbound?.body_text || inboundSnippet || "").trim();
   const followUp = await fetchOritDraftText(supabase, threadId, "full_reply");
-  if (!followUp?.text?.trim()) {
-    return { sent: false, reason: "briefing_not_ready" };
-  }
   const body = composeSigalGuestReplyBriefing(
     thread as SigalBriefingThread,
     guestMessage,
-    followUp.text,
+    followUp?.text ?? null,
   );
 
   const sent = await sendWhapiLongText(phone, body);
@@ -424,7 +425,7 @@ export async function notifyOritGuestReplied(
 
   const now = new Date().toISOString();
   await supabase.from("orit_agent_threads").update({
-    workflow_step: "awaiting_reply_approval",
+    workflow_step: "guest_replied",
     status: "awaiting_reply",
     guest_reply_notified_at: now,
     handled_at: null,
@@ -555,8 +556,8 @@ export async function tryHandleOritWorkflowAckApproval(
 const SIGAL_STALE_HOURS = 4;
 const SIGAL_REMINDER_COOLDOWN_HOURS = 4;
 
-/** Gentle Whapi nudge when open complaints sit without Orit action. */
-export async function sendOritStaleComplaintReminders(
+/** Smart Sigal loop — phase-aware nudges for urgent complaints until Orit closes. */
+export async function runSigalUrgentComplaintLoop(
   supabase: SupabaseClient,
   mailbox: OritAlertMailbox,
 ): Promise<{ sent: number; skipped: number }> {
@@ -565,15 +566,13 @@ export async function sendOritStaleComplaintReminders(
   const phone = await resolveOritAlertPhone(supabase, mailbox);
   if (!phone) return { sent: 0, skipped: 0 };
 
-  const staleBefore = new Date(Date.now() - SIGAL_STALE_HOURS * 3_600_000).toISOString();
   const { data: rows } = await supabase
     .from("orit_agent_threads")
-    .select("id, subject, from_name, from_email, category, urgency, ai_summary, guest_contact_name, guest_contact_phone, guest_contact_email, auto_ack_sent_at, full_reply_sent_at, workflow_step, received_at, orit_decision_prompted_at, sigal_last_reminder_at, status")
+    .select("id, subject, from_name, from_email, category, urgency, ai_summary, guest_contact_name, guest_contact_phone, guest_contact_email, auto_ack_sent_at, full_reply_sent_at, workflow_step, received_at, orit_decision_prompted_at, sigal_last_reminder_at, orit_wa_contact_at, status")
     .eq("mailbox_id", mailbox.id)
     .eq("category", "complaint")
     .eq("is_demo", false)
-    .in("status", ["awaiting_reply", "snoozed"])
-    .lt("received_at", staleBefore);
+    .in("status", ["awaiting_reply", "snoozed"]);
 
   let sent = 0;
   let skipped = 0;
@@ -585,10 +584,21 @@ export async function sendOritStaleComplaintReminders(
       continue;
     }
 
+    const urgent = isOritWorkflowComplaint(row.category, row.urgency);
+    const { staleHours, cooldownHours } = urgent
+      ? sigalLoopTiming(row.urgency)
+      : { staleHours: SIGAL_STALE_HOURS, cooldownHours: SIGAL_REMINDER_COOLDOWN_HOURS };
+
+    const receivedAt = row.received_at ? new Date(row.received_at).getTime() : now;
+    if (now - receivedAt < staleHours * 3_600_000) {
+      skipped += 1;
+      continue;
+    }
+
     const lastRem = row.sigal_last_reminder_at
       ? new Date(row.sigal_last_reminder_at).getTime()
       : 0;
-    if (lastRem && now - lastRem < SIGAL_REMINDER_COOLDOWN_HOURS * 3_600_000) {
+    if (lastRem && now - lastRem < cooldownHours * 3_600_000) {
       skipped += 1;
       continue;
     }
@@ -604,7 +614,15 @@ export async function sendOritStaleComplaintReminders(
       continue;
     }
 
-    const body = composeSigalStaleReminder(row as SigalBriefingThread);
+    const briefing = row as SigalBriefingThread;
+    const body = urgent
+      ? composeSigalLoopNudge(
+        briefing,
+        resolveSigalLoopPhase(briefing),
+        sigalReminderEscalationLevel(briefing),
+      )
+      : composeSigalStaleReminder(briefing);
+
     const ok = await sendWhapiLongText(phone, body);
     if (!ok) {
       skipped += 1;
@@ -618,4 +636,12 @@ export async function sendOritStaleComplaintReminders(
   }
 
   return { sent, skipped };
+}
+
+/** @deprecated use runSigalUrgentComplaintLoop */
+export async function sendOritStaleComplaintReminders(
+  supabase: SupabaseClient,
+  mailbox: OritAlertMailbox,
+): Promise<{ sent: number; skipped: number }> {
+  return runSigalUrgentComplaintLoop(supabase, mailbox);
 }

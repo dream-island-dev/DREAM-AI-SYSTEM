@@ -1,7 +1,7 @@
 // Shared Orit thread analysis (sync + manual) — tier0 for leads, LLM for complaints.
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { analyzeOritThread } from "./oritAgentAi.ts";
+import { analyzeOritThread, analyzeOritFollowUpDraft } from "./oritAgentAi.ts";
 import {
   bodyHasComplaintSignal,
   classifyOritThreadTier0,
@@ -19,6 +19,8 @@ export type OritThreadAnalysisRow = {
   from_email: string;
   snippet: string | null;
   category?: string | null;
+  urgency?: string | null;
+  ai_summary?: string | null;
   auto_ack_sent_at?: string | null;
   workflow_step?: string | null;
 };
@@ -174,5 +176,56 @@ export async function persistOritThreadAnalysis(
         ...(createdBy ? { created_by: createdBy } : {}),
       })),
     );
+  }
+}
+
+/** Guest replied on existing thread — no re-classification, one follow-up draft only. */
+export async function runOritThreadFollowUp(
+  supabase: SupabaseClient,
+  mailboxId: string,
+  thread: OritThreadAnalysisRow,
+  latestInboundSnippet: string,
+): Promise<void> {
+  const summaryLine = `↳ תשובת אורח: ${latestInboundSnippet.slice(0, 200)}`;
+  const ai_summary = [thread.ai_summary, summaryLine].filter(Boolean).join("\n").slice(0, 900);
+
+  await supabase.from("orit_agent_threads").update({
+    snippet: latestInboundSnippet.slice(0, 500),
+    ai_summary,
+    status: "awaiting_reply",
+    handled_at: null,
+    workflow_step: "guest_replied",
+    guest_reply_notified_at: null,
+  }).eq("id", thread.id);
+
+  const inbound = await fetchOritThreadInbound(supabase, thread.id);
+
+  const { data: samples } = await supabase
+    .from("orit_agent_style_samples")
+    .select("inbound_snippet, outbound_text, context_category")
+    .eq("mailbox_id", mailboxId)
+    .order("created_at", { ascending: false })
+    .limit(16);
+
+  const styleSamples = pickStyleSamplesForCategory(samples ?? [], thread.category || "complaint");
+  const followUp = await analyzeOritFollowUpDraft({
+    subject: thread.subject,
+    fromName: thread.from_name,
+    bodyText: inbound,
+    styleSamples,
+  });
+
+  await supabase.from("orit_agent_drafts").delete()
+    .eq("thread_id", thread.id)
+    .eq("draft_kind", "full_reply")
+    .in("status", ["suggested", "edited"]);
+
+  if (followUp?.trim()) {
+    await supabase.from("orit_agent_drafts").insert({
+      thread_id: thread.id,
+      suggested_text: followUp,
+      draft_kind: "full_reply",
+      status: "suggested",
+    });
   }
 }

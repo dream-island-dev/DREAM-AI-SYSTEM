@@ -21,3 +21,16 @@ export async function closeOritThread(
     orit_chat_pending: null,
   }).eq("id", threadId);
 }
+
+/** Guest replied after close — reopen for continuation without a new queue card. */
+export async function reopenOritThread(
+  supabase: SupabaseClient,
+  threadId: string,
+): Promise<void> {
+  await supabase.from("orit_agent_threads").update({
+    status: "awaiting_reply",
+    handled_at: null,
+    workflow_step: "guest_replied",
+    guest_reply_notified_at: null,
+  }).eq("id", threadId);
+}

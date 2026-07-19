@@ -246,6 +246,75 @@ export async function analyzeOritThread(
   };
 }
 
+const FOLLOW_UP_PROMPT = `
+אתה כותב בשם אורית חלפון, מנהלת שירות לאורח בדרים איילנד.
+יש שיחת מייל פתוחה — האורח/ת השיב/ה אחרי שכבר נשלחה תשובה או אישור קבלה.
+כתוב מכתב המשך אחד (6–14 פסקאות) בסגנון אורית — אמפתיה, עובדות, בלי הבטחות כספיות שלא בפנייה.
+עברית בלבד. JSON בלבד: {"suggestion":"..."}
+`.trim();
+
+export async function analyzeOritFollowUpDraft(
+  input: Pick<ThreadAnalysisInput, "subject" | "fromName" | "bodyText" | "styleSamples">,
+): Promise<string | null> {
+  const samples = input.styleSamples.slice(0, 4).map((s, i) =>
+    `${i + 1}. נכנס: ${s.inbound_snippet}\n   נשלח: ${truncateStyleSample(s.outbound_text)}`,
+  ).join("\n\n");
+
+  const userPrompt = [
+    `נושא: ${input.subject || "(ללא נושא)"}`,
+    `אורח/ת: ${input.fromName || "לא ידוע"}`,
+    "",
+    "שיחת המייל המלאה (כולל תשובת האורח האחרונה):",
+    input.bodyText.slice(0, 5000) || "(ריק)",
+    "",
+    samples ? `דגימות סגנון:\n${samples}` : "",
+    "החזר JSON עם suggestion אחד — מכתב המשך מלא.",
+  ].filter(Boolean).join("\n");
+
+  try {
+    const raw = await callGeminiFollowUp(userPrompt);
+    const parsed = JSON.parse(raw.trim().match(/\{[\s\S]*\}/)?.[0] || raw);
+    const text = String(parsed?.suggestion || "").trim();
+    return text || null;
+  } catch (e) {
+    console.warn("[oritAgentAi] follow-up draft failed:", (e as Error).message);
+    return null;
+  }
+}
+
+async function callGeminiFollowUp(userPrompt: string): Promise<string> {
+  const key = Deno.env.get("GEMINI_API_KEY");
+  if (!key) throw new Error("no_gemini_key");
+
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${key}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: FOLLOW_UP_PROMPT }] },
+        contents: [{ role: "user", parts: [{ text: userPrompt }] }],
+        generationConfig: {
+          maxOutputTokens: 2500,
+          temperature: 0.35,
+          responseMimeType: "application/json",
+        },
+      }),
+      signal: AbortSignal.timeout(35000),
+    },
+  );
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`gemini_http_${res.status}: ${body.slice(0, 200)}`);
+  }
+
+  const data = await res.json();
+  const parts = data?.candidates?.[0]?.content?.parts ?? [];
+  const textPart = parts.find((p: { thought?: boolean; text?: string }) => !p.thought && typeof p.text === "string");
+  return textPart?.text ?? "";
+}
+
 
 export type MorningDigestComplaintRow = {
   id: string;

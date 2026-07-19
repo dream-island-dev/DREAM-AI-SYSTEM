@@ -6,6 +6,10 @@ import { fetchOritThreadInbound } from "../_shared/oritThreadAnalysis.ts";
 import { loadOritCsAgentAccess } from "../_shared/oritCsAgentAccess.ts";
 import { closeOritThread } from "../_shared/closeOritThread.ts";
 import {
+  deliverOritGuestWhatsapp,
+  buildOritWaInboxLink,
+} from "../_shared/oritGuestOutbound.ts";
+import {
   notifyOritFullReplyReady,
   sendOritAckEmail,
   type OritAlertMailbox,
@@ -76,6 +80,7 @@ serve(async (req: Request) => {
       sendOnly,
       draftKind,
       draftId,
+      channel,
     } = await req.json();
 
     if (!threadId || !bodyText) {
@@ -111,6 +116,86 @@ serve(async (req: Request) => {
         .eq("id", draftId)
         .maybeSingle();
       suggestedText = draftRow?.suggested_text;
+    }
+
+    if (channel === "whatsapp_bridge") {
+      const waResult = await deliverOritGuestWhatsapp(
+        supabase,
+        thread.guest_contact_phone as string | null,
+        finalText,
+        threadId,
+      );
+      if (!waResult.sent) {
+        return new Response(JSON.stringify({
+          ok: false,
+          error: waResult.error || "whapi_failed",
+          hint: waResult.error === "no_phone"
+            ? "חסר טלפון אורח — הוסיפי במערכת או שלחי במייל"
+            : "שליחה במכשיר הסוויטות נכשלה",
+        }), {
+          status: 200,
+          headers: { ...CORS, "Content-Type": "application/json" },
+        });
+      }
+
+      const waSentAt = new Date().toISOString();
+      const threadUpdate: Record<string, unknown> = {
+        status: "awaiting_reply",
+        orit_wa_contact_at: thread.orit_wa_contact_at || waSentAt,
+        orit_decision: thread.orit_decision || "whatsapp",
+        orit_decision_at: thread.orit_decision_at || waSentAt,
+      };
+
+      if (kind === "ack") {
+        threadUpdate.auto_ack_sent_at = thread.auto_ack_sent_at || waSentAt;
+        threadUpdate.workflow_step = "awaiting_reply_approval";
+      } else {
+        threadUpdate.full_reply_sent_at = waSentAt;
+        threadUpdate.workflow_step = markHandled === true ? null : "reply_sent";
+      }
+
+      await supabase.from("orit_agent_threads").update(threadUpdate).eq("id", threadId);
+
+      if (markHandled === true) {
+        await closeOritThread(supabase, threadId, { handledAt: waSentAt });
+      }
+
+      await saveOritStyleSample(
+        supabase,
+        thread.mailbox_id,
+        threadId,
+        kind === "ack" ? "complaint_ack" : (thread.category || "complaint"),
+        finalText,
+        suggestedText,
+      );
+
+      if (draftId) {
+        await supabase.from("orit_agent_drafts").update({
+          status: "sent",
+          final_text: finalText,
+        }).eq("id", draftId);
+      }
+
+      const inboxLink = buildOritWaInboxLink({
+        id: thread.id,
+        from_email: thread.from_email,
+        from_name: thread.from_name,
+        guest_contact_email: thread.guest_contact_email,
+        guest_contact_phone: thread.guest_contact_phone,
+        guest_contact_name: thread.guest_contact_name,
+      });
+
+      return new Response(JSON.stringify({
+        ok: true,
+        sent: true,
+        channel: "whatsapp_bridge",
+        draftKind: kind,
+        inboxLink,
+        workflow_step: threadUpdate.workflow_step,
+      }), {
+        status: 200,
+        headers: { ...CORS, "Content-Type": "application/json" },
+      });
     }
 
     if (kind === "ack") {

@@ -1,7 +1,7 @@
 // Outbound email delivery for Orit CS Agent (Microsoft Graph).
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { resolveGraphAccessToken, sendGraphReply } from "./microsoftGraph.ts";
+import { resolveGraphAccessToken, sendGraphMessageReply, sendGraphReply } from "./microsoftGraph.ts";
 import {
   renderAutoAckTemplate,
   shouldAutoAckInbound,
@@ -12,6 +12,28 @@ import {
   resolveOritReplyName,
   isRelayOrSystemEmail,
 } from "./oritGuestContactExtract.ts";
+import { isRealGraphMessageId } from "./oritThreadMatch.ts";
+
+async function resolveAnchorGraphMessageId(
+  supabase: SupabaseClient,
+  threadId: string,
+): Promise<string | null> {
+  const { data: inbound } = await supabase
+    .from("orit_agent_messages")
+    .select("graph_message_id")
+    .eq("thread_id", threadId)
+    .eq("direction", "inbound")
+    .not("graph_message_id", "is", null)
+    .order("received_at", { ascending: true })
+    .limit(5);
+
+  for (const row of inbound ?? []) {
+    if (isRealGraphMessageId(row.graph_message_id)) {
+      return row.graph_message_id;
+    }
+  }
+  return null;
+}
 
 export type OritThreadSendTarget = {
   id: string;
@@ -69,12 +91,28 @@ export async function deliverOritThreadEmail(
       return { sent: false, error: "missing_reply_email" };
     }
 
-    const externalKey = await sendGraphReply(accessToken, {
-      toEmail,
-      toName,
-      subject: thread.subject,
-      bodyText: finalText,
-    });
+    const anchorId = await resolveAnchorGraphMessageId(supabase, thread.id);
+    let externalKey: string | null;
+    if (anchorId) {
+      try {
+        externalKey = await sendGraphMessageReply(accessToken, anchorId, finalText);
+      } catch (replyErr) {
+        console.warn("[oritAgentSend] graph reply failed, fallback sendMail:", (replyErr as Error).message);
+        externalKey = await sendGraphReply(accessToken, {
+          toEmail,
+          toName,
+          subject: thread.subject,
+          bodyText: finalText,
+        });
+      }
+    } else {
+      externalKey = await sendGraphReply(accessToken, {
+        toEmail,
+        toName,
+        subject: thread.subject,
+        bodyText: finalText,
+      });
+    }
 
     const key = externalKey || `outbound-${messageKind}-${sentAt}`;
 

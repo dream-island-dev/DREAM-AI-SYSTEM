@@ -8,6 +8,7 @@ import {
 import type { OritAlertThread } from "./oritAgentWhapiAlert.ts";
 import {
   composeSigalWaBridgeAdvice,
+  normalizeOritGuestPhoneDigits,
   resolveOritOutboundChannel,
 } from "./oritGuestOutbound.ts";
 
@@ -179,6 +180,9 @@ export function composeSigalGuestReplyBriefing(
     "",
   ];
 
+  const hasPhone = Boolean(normalizeOritGuestPhoneDigits(thread.guest_contact_phone));
+  const waHint = hasPhone ? " · «שלחי בוואטסאפ» — מכשיר הסוויטות" : "";
+
   if (followUpDraft?.trim()) {
     lines.push(
       "הכנתי לך המשך בסגנון שלך:",
@@ -186,13 +190,16 @@ export function composeSigalGuestReplyBriefing(
       truncate(followUpDraft, 1000),
       "─────────────",
       "",
-      "«תשובה מלאה» לראות שוב · «כן שלחי» לשלוח · «סיימתי» אם סגרת.",
+      `«תשובה מלאה» לראות שוב · «כן שלחי» למייל${waHint} · «סיימתי» אם סגרת.`,
       "",
       link,
     );
   } else {
     lines.push(
-      "אני מסיימת לנסח את התשובה — עני «תשובה מלאה» בעוד רגע.",
+      "אני מסיימת לנסח את התשובה — אפשר כבר לפתוח בממשק.",
+      "",
+      `«תשובה מלאה» בעוד רגע${waHint} · «סיימתי» אם סגרת.`,
+      "",
       link,
     );
   }
@@ -385,29 +392,100 @@ export function composeSigalAckSentFollowUp(guest: string): string {
 }
 
 export function composeSigalStaleReminder(thread: SigalBriefingThread): string {
+  return composeSigalLoopNudge(thread, resolveSigalLoopPhase(thread), sigalReminderEscalationLevel(thread));
+}
+
+export type SigalLoopPhase =
+  | "awaiting_ack"
+  | "awaiting_full_reply"
+  | "guest_replied"
+  | "awaiting_close";
+
+export function resolveSigalLoopPhase(thread: SigalBriefingThread): SigalLoopPhase {
+  if (thread.workflow_step === "guest_replied") return "guest_replied";
+  if (thread.full_reply_sent_at) return "awaiting_close";
+  if (thread.auto_ack_sent_at || thread.orit_wa_contact_at) return "awaiting_full_reply";
+  return "awaiting_ack";
+}
+
+export function sigalLoopTiming(urgency: string): { staleHours: number; cooldownHours: number } {
+  if (urgency === "critical") return { staleHours: 1.5, cooldownHours: 2 };
+  if (urgency === "high") return { staleHours: 2.5, cooldownHours: 3 };
+  return { staleHours: 4, cooldownHours: 4 };
+}
+
+export function sigalReminderEscalationLevel(thread: SigalBriefingThread): 1 | 2 | 3 {
+  const received = thread.received_at ? new Date(thread.received_at).getTime() : Date.now();
+  const hoursOpen = (Date.now() - received) / 3_600_000;
+  const urgency = thread.urgency || "normal";
+
+  if (urgency === "critical") {
+    if (hoursOpen >= 8) return 3;
+    if (hoursOpen >= 4) return 2;
+    return 1;
+  }
+  if (urgency === "high") {
+    if (hoursOpen >= 12) return 3;
+    if (hoursOpen >= 6) return 2;
+    return 1;
+  }
+  if (hoursOpen >= 24) return 3;
+  if (hoursOpen >= 12) return 2;
+  return 1;
+}
+
+function phaseNudge(phase: SigalLoopPhase, thread: SigalBriefingThread): string {
+  if (phase === "guest_replied") {
+    return "האורח/ת השיב/ה למייל — צריך מענה המשך";
+  }
+  if (phase === "awaiting_close") {
+    return "נשלחה תשובה — רק לוודא שסגרנו את הנושא";
+  }
+  if (phase === "awaiting_full_reply") {
+    return "אישור הקבלה יצא — מכתב התשובה המלא עדיין ממתין";
+  }
+  if (resolveOritOutboundChannel(thread) === "whatsapp_bridge") {
+    return "עדיין לא יצאה הודעה לוואטסאפ";
+  }
+  return "עדיין לא יצא אישור קבלה לאורח/ת";
+}
+
+function escalationPrefix(level: 1 | 2 | 3): string {
+  if (level === 3) return "אורית, זה דחוף — עדיין פתוח 🔴";
+  if (level === 2) return "אורית, עדיין ממתין לטיפול שלך 🟠";
+  return "אורית, רק מזכירה בעדינות 💜";
+}
+
+function phaseCtas(phase: SigalLoopPhase): string {
+  if (phase === "guest_replied") {
+    return "«תשובה מלאה» — טיוטת המשך · «כן שלחי» · «סיימתי» לסגירה.";
+  }
+  if (phase === "awaiting_close") {
+    return "«מה המצב» — איפה אנחנו · «סיימתי» — לסגור את הפנייה.";
+  }
+  if (phase === "awaiting_full_reply") {
+    return "«תשובה מלאה» — לראות טיוטה · «כן שלחי» לשלוח · «סיימתי» לסגור.";
+  }
+  return "«תראי לי» — אישור קבלה · «תשובה מלאה» — מכתב מלא · «סיימתי» לסגור.";
+}
+
+/** Phase-aware Sigal loop nudge until Orit marks handled. */
+export function composeSigalLoopNudge(
+  thread: SigalBriefingThread,
+  phase: SigalLoopPhase,
+  level: 1 | 2 | 3,
+): string {
   const guest = sigalGuestLabel(thread);
   const summary = truncate(thread.ai_summary?.trim() || thread.subject || "תלונה פתוחה", 200);
   const link = buildStaffAppDeepLink({ page: "orit_cs_agent", threadId: thread.id });
 
-  let nudge = "עדיין מחכה לטיפול שלך";
-  const initialSent = Boolean(thread.auto_ack_sent_at || thread.orit_wa_contact_at);
-  if (!initialSent) {
-    nudge = resolveOritOutboundChannel(thread) === "whatsapp_bridge"
-      ? "עדיין לא יצאה הודעה לוואטסאפ"
-      : "עדיין לא יצא אישור קבלה לאורח/ת";
-  } else if (!thread.full_reply_sent_at) {
-    nudge = "אישור הקבלה יצא — מכתב התשובה המלא עדיין ממתין";
-  } else {
-    nudge = "נשלחה תשובה — רק לוודא שסגרנו את הנושא";
-  }
-
   return [
-    "אורית, רק מזכירה בעדינות 💜",
+    escalationPrefix(level),
     "",
     `תלונה פתוחה מ־${guest}: ${summary}`,
-    nudge + ".",
+    `${phaseNudge(phase, thread)}.`,
     "",
-    "«מה המצב» — איפה אנחנו · «תשובה מלאה» — לראות טיוטה · «סיימתי» — לסגור.",
+    phaseCtas(phase),
     "",
     link,
   ].join("\n");

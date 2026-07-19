@@ -46,6 +46,8 @@ import { probeWhapiDeviceHealth, persistWhapiHealthToBotConfig } from "../_share
 import { INTER_SEND_DELAY_MS, sleep } from "../_shared/outboundThrottle.ts";
 import { processDuePostCheckoutSurveys, catchUpDepartedTodaySuiteCheckoutSurveys } from "../_shared/postCheckoutSurvey.ts";
 import { runWeeklyGuestHallucinationAudit } from "../_shared/guestHallucinationAudit.ts";
+import { managerMailEnabled } from "../_shared/oritAgentMail.ts";
+import { runSigalUrgentComplaintLoop } from "../_shared/oritAgentWorkflow.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -560,6 +562,27 @@ Deno.serve(async (req: Request) => {
           }),
         });
       } catch { /* best-effort — push failure must not break cron */ }
+    }
+
+    // ── Sigal urgent-complaint loop (Orit CS) — every cron tick ~15min ──
+    if (managerMailEnabled()) {
+      try {
+        const oritClient = createClient(
+          Deno.env.get("SUPABASE_URL")!,
+          Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+        );
+        const { data: activeMb } = await oritClient
+          .from("orit_agent_mailbox")
+          .select("id, profile_id, digest_whatsapp_phone, alert_enabled")
+          .eq("connection_status", "active")
+          .limit(1)
+          .maybeSingle();
+        if (activeMb) {
+          await runSigalUrgentComplaintLoop(oritClient, activeMb);
+        }
+      } catch (sigalErr) {
+        console.warn("[whatsapp-cron] sigal loop failed (non-blocking):", (sigalErr as Error).message);
+      }
     }
 
     return new Response(JSON.stringify({

@@ -125,6 +125,16 @@ export async function deliverOritGuestWhatsapp(
       wa_message_id: whapiId,
     });
 
+    const sentAt = new Date().toISOString();
+    await supabase.from("orit_agent_messages").insert({
+      thread_id: threadId,
+      external_key: `wa-${whapiId || sentAt}`,
+      direction: "outbound",
+      body_text: msg,
+      received_at: sentAt,
+      message_kind: "manual_reply",
+    });
+
     return { sent: true };
   } catch (e) {
     return { sent: false, error: (e as Error).message };
