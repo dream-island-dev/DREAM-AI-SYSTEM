@@ -13,12 +13,13 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { supabase } from "../supabaseClient";
 
 const MATCH_META = {
-  missing_in_provider: { label: "⚠️ חסר בדוח הספק — בדיקת הכנסה", color: "#791F1F", bg: "#FCEBEB", priority: 1 },
-  package_mismatch:    { label: "🟠 חבילה לא תואמת",              color: "#7A4A06", bg: "#FFF3DC", priority: 2 },
-  duplicate_match:     { label: "🟣 לא ניתן לבחור שובר",          color: "#5B21B6", bg: "#F3E8FF", priority: 3 },
-  missing_in_easygo:   { label: "🔵 חסר ב-EasyGo",                color: "#1E40AF", bg: "#E8F0FE", priority: 4 },
-  unparseable:         { label: "⚪ לא ניתן לפענוח",               color: "#4B5563", bg: "#F3F4F6", priority: 5 },
-  matched:             { label: "🟢 תואם",                        color: "#27500A", bg: "#EAF3DE", priority: 6 },
+  missing_in_provider: { label: "⚠️ הוזמן באיזיגו — לא מומש",     color: "#791F1F", bg: "#FCEBEB", priority: 1 },
+  over_redemption:   { label: "🟡 מימוש מעבר להזמנה",          color: "#92400E", bg: "#FEF3C7", priority: 2 },
+  package_mismatch:    { label: "🟠 חבילה לא תואמת",              color: "#7A4A06", bg: "#FFF3DC", priority: 3 },
+  duplicate_match:     { label: "🟣 לא ניתן לבחור שובר",          color: "#5B21B6", bg: "#F3E8FF", priority: 4 },
+  missing_in_easygo:   { label: "🔵 מומש בספק — לא באיזיגו",      color: "#1E40AF", bg: "#E8F0FE", priority: 5 },
+  unparseable:         { label: "⚪ לא ניתן לפענוח",               color: "#4B5563", bg: "#F3F4F6", priority: 6 },
+  matched:             { label: "🟢 תואם",                        color: "#27500A", bg: "#EAF3DE", priority: 7 },
 };
 
 const REVIEW_META = {
@@ -28,7 +29,10 @@ const REVIEW_META = {
   resolved: { label: "טופל",  bg: "#E8F0FE", color: "#1E40AF" },
 };
 
-const DEFAULT_MATCH_FILTER = new Set(["missing_in_provider", "package_mismatch", "duplicate_match", "missing_in_easygo", "unparseable"]);
+const DEFAULT_MATCH_FILTER = new Set([
+  "missing_in_provider", "over_redemption", "package_mismatch",
+  "duplicate_match", "missing_in_easygo", "unparseable",
+]);
 
 function fmtDate(d) {
   if (!d) return "—";
@@ -45,7 +49,7 @@ function fmtTimestamp(iso) {
   return d.toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit" }) + " " + d.toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" });
 }
 
-export default function VoucherExceptionsBoard({ user, filterRunId = null }) {
+export default function VoucherExceptionsBoard({ user, filterRunId = null, runStats = null }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [matchFilter, setMatchFilter] = useState(DEFAULT_MATCH_FILTER);
@@ -156,6 +160,29 @@ export default function VoucherExceptionsBoard({ user, filterRunId = null }) {
         })}
       </div>
 
+      {runStats && runFilter && (
+        <div style={{
+          background: "rgba(201,169,110,0.12)", border: "1px solid var(--border)", borderRadius: 10,
+          padding: "12px 14px", marginBottom: 16, fontSize: 12.5, lineHeight: 1.7,
+        }}>
+          <div style={{ fontWeight: 800, color: "var(--gold-dark)", marginBottom: 4 }}>סיכום ריצה — אימות איזיגו מול ספק</div>
+          <div>
+            איזיגו: <strong>{runStats.easygo_rows ?? "—"}</strong> שוברים שהוזמנו
+            {" · "}
+            ספק: <strong>{runStats.provider_rows ?? "—"}</strong> שורות מימוש
+            {(runStats.redemption_surplus ?? 0) > 0 && (
+              <> · <strong style={{ color: "#92400E" }}>+{runStats.redemption_surplus} מימושים מעבר להזמנות</strong></>
+            )}
+          </div>
+          <div style={{ color: "var(--text-muted)", marginTop: 4 }}>
+            🟢 {runStats.matched ?? 0} תואמים
+            {(runStats.over_redemption ?? 0) > 0 && <> · 🟡 {runStats.over_redemption} מימוש מעבר להזמנה</>}
+            {(runStats.missing_in_provider ?? 0) > 0 && <> · ⚠️ {runStats.missing_in_provider} הוזמנו ולא מומשו</>}
+            {(runStats.missing_in_easygo ?? 0) > 0 && <> · 🔵 {runStats.missing_in_easygo} מומשו בלי הזמנה באיזיגו</>}
+          </div>
+        </div>
+      )}
+
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
         <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
           {totalPending} ממתינים לטיפול בסה״כ
@@ -223,6 +250,13 @@ export default function VoucherExceptionsBoard({ user, filterRunId = null }) {
 
                 {r.discrepancy_note && (
                   <div style={{ fontSize: 12, color: meta.color, marginBottom: 8 }}>📝 {r.discrepancy_note}</div>
+                )}
+
+                {(pv?.package_type || eg?.package_type) && (
+                  <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginBottom: 8, lineHeight: 1.5 }}>
+                    {pv?.package_type && <div>ספק: {pv.package_type}</div>}
+                    {eg?.package_type && <div>איזיגו: {eg.package_type}</div>}
+                  </div>
                 )}
 
                 {isExpanded && (

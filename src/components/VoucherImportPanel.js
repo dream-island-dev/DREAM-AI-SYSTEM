@@ -27,12 +27,13 @@ const MAPPING_SOURCE_LABELS = {
 };
 
 const RECON_LABELS = [
-  { key: "missing_in_provider", label: "⚠️ חסר בדוח הספק",  color: "#791F1F", bg: "#FCEBEB" },
-  { key: "package_mismatch",    label: "🟠 חבילה לא תואמת", color: "#7A4A06", bg: "#FFF3DC" },
-  { key: "duplicate_match",     label: "🟣 התאמה כפולה",    color: "#5B21B6", bg: "#F3E8FF" },
-  { key: "missing_in_easygo",   label: "🔵 חסר ב-EasyGo",   color: "#1E40AF", bg: "#E8F0FE" },
-  { key: "unparseable",         label: "⚪ לא ניתן לפענוח", color: "#4B5563", bg: "#F3F4F6" },
-  { key: "matched",             label: "🟢 תואמים",         color: "#27500A", bg: "#EAF3DE" },
+  { key: "missing_in_provider", label: "⚠️ הוזמן — לא מומש",   color: "#791F1F", bg: "#FCEBEB" },
+  { key: "over_redemption",     label: "🟡 מימוש מעבר להזמנה", color: "#92400E", bg: "#FEF3C7" },
+  { key: "package_mismatch",    label: "🟠 חבילה לא תואמת",   color: "#7A4A06", bg: "#FFF3DC" },
+  { key: "duplicate_match",     label: "🟣 לא ניתן לבחור",     color: "#5B21B6", bg: "#F3E8FF" },
+  { key: "missing_in_easygo",   label: "🔵 מומש — לא באיזיגו", color: "#1E40AF", bg: "#E8F0FE" },
+  { key: "unparseable",         label: "⚪ לא ניתן לפענוח",     color: "#4B5563", bg: "#F3F4F6" },
+  { key: "matched",             label: "🟢 תואמים",             color: "#27500A", bg: "#EAF3DE" },
 ];
 
 function FileDropZone({ side, label, file, onFile, dragging, setDragging }) {
@@ -333,7 +334,19 @@ export default function VoucherImportPanel({ onViewExceptions }) {
           }}>
             ✅ ההתאמה רצה בהצלחה — ספק: <strong>{result.provider?.name}</strong>
             <br />
-            שורות: {result.rowsInserted?.provider} (ספק) / {result.rowsInserted?.easygo} (EasyGo)
+            <strong>מטרת הבדיקה:</strong> לוודא שמה שהוזמן באיזיגו מומש בפועל אצל הספק (ולהפך).
+            <br />
+            שורות בדוחות: <strong>{result.reconciliation?.easygo_rows ?? result.rowsInserted?.easygo}</strong> שוברים באיזיגו
+            {" · "}
+            <strong>{result.reconciliation?.provider_rows ?? result.rowsInserted?.provider}</strong> מימושים בדוח ספק
+            {(result.reconciliation?.redemption_surplus ?? 0) > 0 && (
+              <>
+                {" · "}
+                <span style={{ color: "#92400E", fontWeight: 800 }}>
+                  הפרש: +{result.reconciliation.redemption_surplus} מימושים מעבר להזמנות באיזיגו
+                </span>
+              </>
+            )}
             {result.mappingSource && (
               <>
                 <br />
@@ -365,7 +378,7 @@ export default function VoucherImportPanel({ onViewExceptions }) {
 
           <div style={{ display: "flex", gap: 10 }}>
             <button
-              onClick={() => onViewExceptions(result.reconciliation?.reconciliation_run_id)}
+              onClick={() => onViewExceptions(result.reconciliation?.reconciliation_run_id, result.reconciliation)}
               style={{ flex: 1, border: "none", borderRadius: 10, padding: "12px 16px", background: "linear-gradient(135deg,var(--gold),var(--gold-dark))", color: "#0F0F0F", fontFamily: "Heebo, sans-serif", fontSize: 14, fontWeight: 800, cursor: "pointer" }}
             >
               📋 עבור לדוח חריגים

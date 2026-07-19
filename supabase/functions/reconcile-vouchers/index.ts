@@ -593,8 +593,11 @@ serve(async (req: Request) => {
           nofshonitIndex.byNationalId,
         );
         if (nationalId) {
+          extras._provider_client_id = rawId;
           if (resolvedFrom === "coupon_lookup") extras._provider_coupon_no = rawId;
-          else if (resolvedFrom === "direct_tz" && rawId !== nationalId) {
+          else if (nofshonitIndex.couponToNationalId.has(normalizeVoucherIdDigits(rawId))) {
+            extras._provider_coupon_no = rawId;
+          } else if (resolvedFrom === "direct_tz" && rawId !== nationalId) {
             extras._provider_original_id = rawId;
           }
           voucherNumber = nationalId;
