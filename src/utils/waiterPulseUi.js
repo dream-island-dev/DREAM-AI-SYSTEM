@@ -30,8 +30,8 @@ export const DEFAULT_WAITER_PULSE_UI = Object.freeze({
   questions: Object.freeze([
     Object.freeze({
       key: "service_bottleneck",
-      type: "single_choice",
-      label: "מהו צוואר הבקבוק העיקרי שמעכב את מהירות השירות שלכם כרגע?",
+      type: "multi_choice",
+      label: "מהם צווארי הבקבוק שמעכבים את מהירות השירות שלכם כרגע? (ניתן לבחור כמה)",
       required: true,
       options: Object.freeze([
         Object.freeze({
@@ -54,8 +54,8 @@ export const DEFAULT_WAITER_PULSE_UI = Object.freeze({
     }),
     Object.freeze({
       key: "recurring_guest_complaint",
-      type: "single_choice",
-      label: "מהי התלונה או הבקשה החוזרת ביותר שאתם שומעים מהאורחים במשמרת?",
+      type: "multi_choice",
+      label: "מהן התלונות או הבקשות החוזרות שאתם שומעים מהאורחים במשמרת? (ניתן לבחור כמה)",
       required: true,
       options: Object.freeze([
         Object.freeze({

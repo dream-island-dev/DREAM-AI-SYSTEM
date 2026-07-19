@@ -1,3 +1,4 @@
+2026-07-20 | Waiter pulse — multi-select choice questions | שאלות צוואר בקבוק + תלונה חוזרת → `multi_choice` (migration 253); defaults ב-`waiterPulseUi.js`/`waiterPulseUi.ts`.
 2026-07-20 | Guest ops Tier-0 quality — safe allowlist expansion | `automationSchedule.ts`: bare amenity shorthand (checked_in only), כוסות/צלחות, ניקיון בבקשה, portal OPS CTA trust; Whapi uses `shouldInterceptOperationalInHouseRequest`; portal → `createGuestOpsTaskWithInstantAmenityDispatch`.
 2026-07-19 | Orit CS — Sigal↔UI comfort loop (link + auto-drafts + send sync) | לינק ממשק בכל התראת סיגל; פתיחה מלינק → ניתוח אוטומטי רק בלי טיוטות (LLM לתלונות בלבד); אחרי שליחה מהממשק → WA «שלחת ✓» לסיגל (`oritSigalUiNotify.ts`).
 2026-07-19 | Orit CS — restore AI suggestion cards in inbox UI | `OritCustomerServicePanel.js` — כרטיסי הצעות (עד 2 וריאנטים) מעל compose; «הצעות» = `forceLlm` + טעינת הצעה ראשונה; `manager-mail-analyze` מכבד `forceLlm` ב-body.

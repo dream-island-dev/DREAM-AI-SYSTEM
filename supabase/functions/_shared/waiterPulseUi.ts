@@ -15,8 +15,8 @@ export const DEFAULT_WAITER_PULSE_UI = {
   questions: [
     {
       key: "service_bottleneck",
-      type: "single_choice",
-      label: "מהו צוואר הבקבוק העיקרי שמעכב את מהירות השירות שלכם כרגע?",
+      type: "multi_choice",
+      label: "מהם צווארי הבקבוק שמעכבים את מהירות השירות שלכם כרגע? (ניתן לבחור כמה)",
       required: true,
       options: [
         { id: "kitchen_bar_timing", label: "⏱️ זמני יציאת מנות/משקאות מהמטבח והבר" },
@@ -27,8 +27,8 @@ export const DEFAULT_WAITER_PULSE_UI = {
     },
     {
       key: "recurring_guest_complaint",
-      type: "single_choice",
-      label: "מהי התלונה או הבקשה החוזרת ביותר שאתם שומעים מהאורחים במשמרת?",
+      type: "multi_choice",
+      label: "מהן התלונות או הבקשות החוזרות שאתם שומעים מהאורחים במשמרת? (ניתן לבחור כמה)",
       required: true,
       options: [
         { id: "slow_response", label: '💬 "לוקח זמן רב מדי לקבל חשבון או מענה מהמלצר"' },

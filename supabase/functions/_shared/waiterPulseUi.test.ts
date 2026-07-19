@@ -13,8 +13,8 @@ Deno.test("normalizeWaiterPulseUi — keeps default questions", () => {
 Deno.test("validateWaiterPulseAnswers — requires one_improvement min length", () => {
   const ui = normalizeWaiterPulseUi(null);
   const err = validateWaiterPulseAnswers(ui, {
-    service_bottleneck: "kitchen_bar_timing",
-    recurring_guest_complaint: "slow_response",
+    service_bottleneck: ["kitchen_bar_timing"],
+    recurring_guest_complaint: ["slow_response"],
     one_improvement: "קצר",
   });
   assertEquals(typeof err, "string");
@@ -23,8 +23,8 @@ Deno.test("validateWaiterPulseAnswers — requires one_improvement min length", 
 Deno.test("validateWaiterPulseAnswers — passes complete answers", () => {
   const ui = normalizeWaiterPulseUi(null);
   const err = validateWaiterPulseAnswers(ui, {
-    service_bottleneck: "systems_sync",
-    recurring_guest_complaint: "no_complaints",
+    service_bottleneck: ["systems_sync", "workload_split"],
+    recurring_guest_complaint: ["no_complaints"],
     one_improvement: "לוח ערב משותף עם קבלה בזמן אמת לכל שולחן",
   });
   assertEquals(err, null);

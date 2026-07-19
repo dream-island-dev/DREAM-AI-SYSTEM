@@ -14,8 +14,8 @@ describe("waiterPulseUi", () => {
   it("validates required text min length", () => {
     const ui = normalizeWaiterPulseUi(null);
     const err = validateWaiterPulseAnswers(ui, {
-      service_bottleneck: "kitchen_bar_timing",
-      recurring_guest_complaint: "slow_response",
+      service_bottleneck: ["kitchen_bar_timing"],
+      recurring_guest_complaint: ["slow_response"],
       one_improvement: "קצר",
     });
     expect(err).toBeTruthy();
