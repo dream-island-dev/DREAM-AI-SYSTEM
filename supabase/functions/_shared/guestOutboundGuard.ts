@@ -53,7 +53,7 @@ export function assertGuestEligibleForAutomation(
 }
 
 const ACTIVE_GUEST_SELECT =
-  "id, phone, status, name, wa_window_expires_at, portal_token, automation_muted, automation_scope, claimed_by, room, room_type";
+  "id, phone, status, name, wa_window_expires_at, portal_token, automation_muted, automation_scope, claimed_by, claimed_at, guest_profile, room, room_type";
 
 export async function loadActiveGuestById(
   supabase: SupabaseClient,

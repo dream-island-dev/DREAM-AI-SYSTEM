@@ -91,6 +91,12 @@ import {
   buildDepartureAssistReply,
   buildAdministrativeRequestSummary,
 } from "../_shared/automationSchedule.ts";
+import {
+  isGuestStaffClaimActive,
+  parseInboxClaimIdleReleaseMinutes,
+  touchStaffClaimActivity,
+  DEFAULT_INBOX_CLAIM_IDLE_RELEASE_MINUTES,
+} from "../_shared/guestStaffClaim.ts";
 import { createGuestOpsTask, createGuestOpsTaskWithInstantAmenityDispatch } from "../_shared/createGuestOpsTask.ts";
 import {
   classifyFacilityReview,
@@ -183,6 +189,7 @@ import {
   verifyMetaWebhookSignature,
   shouldVerifyMetaWebhookSignature,
 } from "../_shared/metaWebhookSignature.ts";
+import { applyTimeGreetingToGuestReply } from "../_shared/guestTimeGreeting.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -782,11 +789,12 @@ const DEFAULT_GREETING_REPLY =
 
 function buildGreetingReply(guestName: string | null, scriptText: string | null): string {
   const base = scriptText?.trim() || DEFAULT_GREETING_REPLY;
-  return resolvePlaceholders(base, {
+  const resolved = resolvePlaceholders(base, {
     guestName: guestName ?? "אורח יקר",
     spaTime: null,
     workshopUrl: "",
   });
+  return applyTimeGreetingToGuestReply(resolved);
 }
 
 function buildComplaintReply(guestName: string | null): string {
@@ -1865,14 +1873,18 @@ function setSuppressGuestRepliesStaffClaim(active: boolean): void {
   _suppressGuestRepliesStaffClaim = active;
 }
 
-function isStaffClaimMutingGuest(guest: Record<string, unknown> | null | undefined): boolean {
-  return guest?.claimed_by != null && guest.claimed_by !== "";
+function isStaffClaimMutingGuest(
+  guest: Record<string, unknown> | null | undefined,
+  idleReleaseMinutes = DEFAULT_INBOX_CLAIM_IDLE_RELEASE_MINUTES,
+): boolean {
+  return isGuestStaffClaimActive(guest, "meta", { idleReleaseMinutes });
 }
 
 /** Re-read guests.claimed_by after burst wait — closes staff-claim race window. */
 async function refreshStaffClaimMuteFromDb(
   supabase: ReturnType<typeof createClient>,
   guestId: number | string | null,
+  idleReleaseMinutes = DEFAULT_INBOX_CLAIM_IDLE_RELEASE_MINUTES,
 ): Promise<boolean> {
   if (guestId == null) {
     setSuppressGuestRepliesStaffClaim(false);
@@ -1880,16 +1892,17 @@ async function refreshStaffClaimMuteFromDb(
   }
   const { data, error } = await supabase
     .from("guests")
-    .select("claimed_by")
+    .select("claimed_by, claimed_at, guest_profile")
     .eq("id", guestId)
     .maybeSingle();
   if (error) {
     console.warn("[webhook] claimed_by re-fetch failed:", error.message);
     return _suppressGuestRepliesStaffClaim;
   }
-  const active = isStaffClaimMutingGuest(data as Record<string, unknown> | null);
+  const active = isGuestStaffClaimActive(data as Record<string, unknown> | null, "meta", { idleReleaseMinutes });
   setSuppressGuestRepliesStaffClaim(active);
   if (active) {
+    await touchStaffClaimActivity(supabase, guestId, "meta");
     console.info(`[webhook] 🔇 staff claim active (re-fetch) guest_id=${guestId}`);
   }
   return active;
@@ -2127,6 +2140,7 @@ Deno.serve(async (req: Request) => {
 
     // Human-handover flag: 'false' = bot paused, messages logged but not replied
     const botIsActive  = botConfig["bot_active"] !== "false"; // default true
+    const claimIdleMinutes = parseInboxClaimIdleReleaseMinutes(botConfig);
 
     for (const msg of msgArr) {
       setSuppressGuestRepliesStaffClaim(false);
@@ -2411,8 +2425,11 @@ Deno.serve(async (req: Request) => {
       // 15:00 Israel auto check-in DISABLED (2026-07-11) — housekeeping WA
       // group is the sole check-in source for suites; see whatsapp-cron.
 
-      const staffClaimActive = isStaffClaimMutingGuest(guest as Record<string, unknown> | null);
+      const staffClaimActive = isStaffClaimMutingGuest(guest as Record<string, unknown> | null, claimIdleMinutes);
       setSuppressGuestRepliesStaffClaim(staffClaimActive);
+      if (staffClaimActive && guestId) {
+        await touchStaffClaimActivity(supabase, guestId, "meta");
+      }
       if (staffClaimActive) {
         console.info(`[webhook] 🔇 staff claim active — bot muted for guest_id=${guestId} phone:${phone}`);
       }
@@ -3108,7 +3125,7 @@ Deno.serve(async (req: Request) => {
       }
 
       // ── Post-burst staff-claim re-fetch (closes 1.8s race with Inbox mute) ──
-      if (guestId && await refreshStaffClaimMuteFromDb(supabase, guestId)) {
+      if (guestId && await refreshStaffClaimMuteFromDb(supabase, guestId, claimIdleMinutes)) {
         console.info(
           `[webhook] 🔇 staff claim active — post-burst early exit phone:${phone} guest:${guestId}`,
         );

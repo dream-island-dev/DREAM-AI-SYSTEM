@@ -100,7 +100,12 @@ import {
   loadGuestByPhoneForStaffReply,
 } from "../_shared/guestOutboundGuard.ts";
 import { assertPipelineLifecycleForTrigger } from "../_shared/pipelineLifecycle.ts";
-import { getAutomationScopeTriggerBlockReason } from "../_shared/automationSchedule.ts";
+import { getAutomationScopeTriggerBlockReason, isGuestStaffClaimActive } from "../_shared/automationSchedule.ts";
+import {
+  INBOX_CLAIM_IDLE_RELEASE_CONFIG_KEY,
+  parseInboxClaimIdleReleaseMinutes,
+  touchStaffClaimActivity,
+} from "../_shared/guestStaffClaim.ts";
 import {
   getMissingRoomAssignmentSkipReason,
   hasPremiumDayRoomTypeConflict,
@@ -1965,6 +1970,7 @@ serve(async (req: Request) => {
       // Staff manual reply closes the attention loop — prevents the bot from
       // re-mentioning a topic the team already handled in a prior outbound turn.
       if (staffGuest?.id && replyStatus !== "failed") {
+        await touchStaffClaimActivity(supabase, staffGuest.id, deliveredChannel);
         const { error: guestClearErr } = await supabase.from("guests").update({
           requires_attention:       false,
           attention_reason:         null,
@@ -2380,11 +2386,20 @@ serve(async (req: Request) => {
     // Staff "קח שיחה" — block autonomous pipeline/cron triggers only; manual
     // inbox/broadcast and deliberate room_ready approval still allowed.
     const STAFF_CLAIM_AUTOMATION_EXEMPT = new Set([...MANUAL_TRIGGERS, "room_ready"]);
+    const { data: claimCfgRow } = await supabase
+      .from("bot_config")
+      .select("config_value")
+      .eq("config_key", INBOX_CLAIM_IDLE_RELEASE_CONFIG_KEY)
+      .maybeSingle();
+    const claimIdleMinutes = parseInboxClaimIdleReleaseMinutes(
+      claimCfgRow?.config_value
+        ? { [INBOX_CLAIM_IDLE_RELEASE_CONFIG_KEY]: String(claimCfgRow.config_value) }
+        : {},
+    );
     if (
       !force &&
       !pipeline_reconcile &&
-      guest.claimed_by != null &&
-      guest.claimed_by !== "" &&
+      isGuestStaffClaimActive(guest, "meta", { idleReleaseMinutes: claimIdleMinutes }) &&
       !STAFF_CLAIM_AUTOMATION_EXEMPT.has(trigger)
     ) {
       console.log(`[whatsapp-send] skipped trigger="${trigger}" guestId=${guestId} reason=staff_claim_active`);

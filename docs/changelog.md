@@ -1,3 +1,4 @@
+2026-07-19 | Inbox staff-claim idle auto-release + bot_disabled pin | `_shared/guestStaffClaim.ts` — TTL on `claimed_at` (default 60m, `bot_config.inbox_claim_idle_release_minutes`); activity touch on inbound/outbound; cron cleanup in `whatsapp-cron`; permanent mute via `guest_profile.inbox.bot_disabled` in GuestContextDrawer; countdown in Inbox mute button.
 2026-07-19 | Orit CS — Sigal intro summary for Orit | what Sigal does + how to get help on every alert and «עזרה»; voice «מה את עושה».
 2026-07-19 | Orit CS — Sigal plain Hebrew guide + voice intents | numbered steps א׳/ב׳; `oritSigalGuide.ts`; voice phrases («בסדר תשלחי», «מה היא כתבה»).
 2026-07-19 | Orit CS — Sigal guest-reply loop until closed | guest inbound → WA with full message + follow-up draft; coach via chat; «סיימתי» closes; case stays open after send until Orit confirms; UI link fallback only.

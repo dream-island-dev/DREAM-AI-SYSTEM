@@ -135,8 +135,12 @@ import {
   isRecordOnlyArrivalTimeUpdate,
   RECORD_ONLY_ARRIVAL_REPLY,
   isWhapiBotActive,
-  fetchChannelClaim,
+  fetchChannelClaimDetails,
 } from "../_shared/guestInboundOrchestrator.ts";
+import {
+  parseInboxClaimIdleReleaseMinutes,
+  touchStaffClaimActivity,
+} from "../_shared/guestStaffClaim.ts";
 import {
   GUEST_STAFF_HANDOFF_SENTENCE,
   buildGuestHumanRequestReply,
@@ -857,13 +861,18 @@ async function handleGuestDirectMessage(
       return;
     }
 
+    const dmBotConfig = await fetchGuestDmBotConfig(supabase);
+    const claimIdleMinutes = parseInboxClaimIdleReleaseMinutes(dmBotConfig);
+
     const guestName = guest?.name ?? null;
     // Per-channel claim (migration 171, §4) — Whapi's OWN claim, never
     // guests.claimed_by (that's the Meta claim; claiming a Meta thread must
     // not mute this channel, and vice versa).
     const guestRecord = (guest as unknown) as Record<string, unknown> | null;
-    if (guestRecord) {
-      guestRecord.claimed_by_whapi = await fetchChannelClaim(supabase, guestId, "whapi");
+    if (guestRecord && guestId) {
+      const whapiClaim = await fetchChannelClaimDetails(supabase, guestId, "whapi");
+      guestRecord.claimed_by_whapi = whapiClaim?.claimed_by ?? null;
+      guestRecord.claimed_at_whapi = whapiClaim?.claimed_at ?? null;
     }
     // Mirrors whatsapp-webhook's staff-claim contract: mute the REPLY, not the
     // shields' DB side-effects (guest_alerts/requires_attention still fire —
@@ -871,7 +880,10 @@ async function handleGuestDirectMessage(
     // the thread). Only the expensive LLM call is skipped outright when muted
     // (matches Meta's own cost-saving gate — no point generating a reply that
     // will be discarded).
-    const staffMuted = isGuestStaffClaimActive(guestRecord, "whapi");
+    const staffMuted = isGuestStaffClaimActive(guestRecord, "whapi", { idleReleaseMinutes: claimIdleMinutes });
+    if (staffMuted && guestId) {
+      await touchStaffClaimActivity(supabase, guestId, "whapi");
+    }
 
     const whapiTier0Adapter = {
       patchInbound: (patch: Record<string, unknown>) =>

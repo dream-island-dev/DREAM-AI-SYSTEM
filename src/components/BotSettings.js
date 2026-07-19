@@ -15,6 +15,11 @@ import {
   formatKnowledgeConflictWarning,
   HOUR_CONFIG_KEYS,
 } from "../utils/guestKnowledgeValidation";
+import {
+  INBOX_CLAIM_IDLE_RELEASE_CONFIG_KEY,
+  DEFAULT_INBOX_CLAIM_IDLE_RELEASE_MINUTES,
+  parseInboxClaimIdleReleaseMinutes,
+} from "../utils/guestStaffClaim";
 
 const DEFAULT_PROMPT_HINT =
   'לדוגמה:\nאתה "DREAM CONCIERGE" — הקונסיירז\' הדיגיטלי הרשמי של Dream Island Resort & Spa.\n' +
@@ -106,6 +111,8 @@ export default function BotSettings() {
   const [knowledgeBase, setKnowledgeBase] = useState("");
   const [preferredModel, setPreferredModel] = useState("");
   const [channelActive, setChannelActive] = useState({ bot_active: true, bot_active_whapi: true });
+  const [claimIdleMinutes, setClaimIdleMinutes] = useState(DEFAULT_INBOX_CLAIM_IDLE_RELEASE_MINUTES);
+  const [claimIdleSaving, setClaimIdleSaving] = useState(false);
   const [hourConfig, setHourConfig] = useState({});
   const [channelSaving, setChannelSaving] = useState(null);
   const [learnedRules, setLearnedRules] = useState([]);
@@ -128,7 +135,7 @@ export default function BotSettings() {
   const fetchSettings = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) { setLoading(false); return; }
     setLoading(true);
-    const configKeys = ["bot_active", "bot_active_whapi", ...HOUR_CONFIG_KEYS, ...AUDIT_CONFIG_KEYS];
+    const configKeys = ["bot_active", "bot_active_whapi", INBOX_CLAIM_IDLE_RELEASE_CONFIG_KEY, ...HOUR_CONFIG_KEYS, ...AUDIT_CONFIG_KEYS];
     const [{ data, error }, { data: cfgRows }] = await Promise.all([
       supabase.from("bot_settings").select("system_prompt, knowledge_base, preferred_model").eq("id", 1).maybeSingle(),
       supabase.from("bot_config").select("config_key, config_value").in("config_key", configKeys),
@@ -145,6 +152,7 @@ export default function BotSettings() {
       bot_active: cfgMap.bot_active !== "false",
       bot_active_whapi: cfgMap.bot_active_whapi !== "false",
     });
+    setClaimIdleMinutes(parseInboxClaimIdleReleaseMinutes(cfgMap));
     const hours = {};
     for (const key of HOUR_CONFIG_KEYS) {
       if (cfgMap[key]) hours[key] = cfgMap[key];
@@ -280,6 +288,24 @@ export default function BotSettings() {
     }
   };
 
+  const handleSaveClaimIdleMinutes = async () => {
+    if (!isSupabaseConfigured || !supabase) return showToast("err", "Supabase לא מחובר");
+    const normalized = parseInboxClaimIdleReleaseMinutes({
+      [INBOX_CLAIM_IDLE_RELEASE_CONFIG_KEY]: String(claimIdleMinutes),
+    });
+    setClaimIdleSaving(true);
+    const { error } = await supabase.from("bot_config").upsert(
+      { config_key: INBOX_CLAIM_IDLE_RELEASE_CONFIG_KEY, config_value: String(normalized) },
+      { onConflict: "config_key" },
+    );
+    setClaimIdleSaving(false);
+    if (error) showToast("err", "שגיאה בשמירה: " + error.message);
+    else {
+      setClaimIdleMinutes(normalized);
+      showToast("ok", `✓ שחרור בוט אוטומטי — ${normalized} דקות שקט`);
+    }
+  };
+
   const handleSave = async () => {
     if (!isSupabaseConfigured || !supabase) return showToast("err", "Supabase לא מחובר");
     setSaving(true);
@@ -372,6 +398,40 @@ export default function BotSettings() {
                 </div>
               );
             })}
+            <div
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
+                padding: "12px 14px", borderRadius: 10, border: "1px solid var(--border)",
+                background: "var(--ivory)",
+              }}
+            >
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 14 }}>⏱️ שחרור בוט אחרי שקט (Inbox claim)</div>
+                <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
+                  אחרי שליחה מהאינבוקס הבוט מושתק — חוזר אוטומטית אם אין הודעות בשיחה (5–1440 דק׳)
+                </div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input
+                  type="number"
+                  min={5}
+                  max={1440}
+                  value={claimIdleMinutes}
+                  disabled={loading || claimIdleSaving}
+                  onChange={(e) => setClaimIdleMinutes(e.target.value)}
+                  style={{ width: 72, padding: "6px 8px", borderRadius: 8, border: "1px solid var(--border)" }}
+                />
+                <span style={{ fontSize: 12, color: "var(--text-muted)" }}>דק׳</span>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-secondary"
+                  onClick={handleSaveClaimIdleMinutes}
+                  disabled={loading || claimIdleSaving}
+                >
+                  {claimIdleSaving ? "…" : "שמור"}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
 

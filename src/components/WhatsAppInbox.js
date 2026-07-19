@@ -13,6 +13,11 @@ import QuietHoursGate from "./QuietHoursGate";
 import { getSuiteSection } from "../data/suiteRegistry";
 import { COMPOSER_EMOJIS } from "../utils/emojiPickerData";
 import {
+  parseInboxClaimIdleReleaseMinutes,
+  minutesUntilStaffClaimRelease,
+  INBOX_CLAIM_IDLE_RELEASE_CONFIG_KEY,
+} from "../utils/guestStaffClaim";
+import {
   classifyInboundMessageAlert,
   classifyInboxContactSegment,
   getGuestArrivalRosterLabel,
@@ -1519,6 +1524,8 @@ const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobil
 function ChannelMuteButton({
   channel,
   claimedBy,
+  claimedAt,
+  claimIdleMinutes = 60,
   claimedByName,
   userId,
   claimBusy,
@@ -1532,12 +1539,16 @@ function ChannelMuteButton({
   const isClaimed = !!claimedBy;
   const isMeta = channel === "meta";
   const shortLabel = isMeta ? "🤖" : "🏨";
+  const releaseMins = isClaimed
+    ? minutesUntilStaffClaimRelease(claimedAt, new Date(), claimIdleMinutes)
+    : null;
+  const autoReleaseHint = releaseMins != null ? ` · בוט יחזור בעוד ~${releaseMins} דק׳` : "";
   const title = disabled
     ? disabledTitle
     : isMine
-      ? (isMeta ? `${t.claimedByMe} (Dream Bot)` : `${t.claimedByMe} (מכשיר הסוויטות)`)
+      ? (isMeta ? `${t.claimedByMe} (Dream Bot)${autoReleaseHint}` : `${t.claimedByMe} (מכשיר הסוויטות)${autoReleaseHint}`)
       : isClaimed
-        ? t.claimedBadge(claimedByName ?? "—")
+        ? `${t.claimedBadge(claimedByName ?? "—")}${autoReleaseHint}`
         : isMeta
           ? `${t.claimChat} — Dream Bot`
           : `${t.claimChat} — מכשיר הסוויטות`;
@@ -3058,6 +3069,8 @@ export default function WhatsAppInbox({
   // ── Per-channel toggle (§4) — מכשיר הסוויטות (Whapi) ──────────────────────
   const [botActiveWhapi, setBotActiveWhapi]     = useState(true);
   const [togglingBotWhapi, setTogglingBotWhapi] = useState(false);
+  const [claimIdleMinutes, setClaimIdleMinutes] = useState(60);
+  const [claimCountdownTick, setClaimCountdownTick] = useState(0);
   // ── Realtime connection status ────────────────────────────────────────────
   const [realtimeOk, setRealtimeOk]   = useState(false);
   const [lastUpdated, setLastUpdated] = useState(null);
@@ -4518,9 +4531,11 @@ export default function WhatsAppInbox({
     supabase
       .from("bot_config")
       .select("config_key, config_value")
-      .in("config_key", ["bot_active", "bot_active_whapi", "whapi_guest_sos_active"])
+      .in("config_key", ["bot_active", "bot_active_whapi", "whapi_guest_sos_active", INBOX_CLAIM_IDLE_RELEASE_CONFIG_KEY])
       .then(({ data }) => {
+        const cfgMap = {};
         (data ?? []).forEach((row) => {
+          cfgMap[row.config_key] = row.config_value;
           if (row.config_key === "bot_active") setBotActive(row.config_value !== "false");
           if (row.config_key === "bot_active_whapi") setBotActiveWhapi(row.config_value !== "false");
           if (row.config_key === "whapi_guest_sos_active") {
@@ -4529,7 +4544,13 @@ export default function WhatsAppInbox({
             if (sosOn) setReplyChannel("meta");
           }
         });
+        setClaimIdleMinutes(parseInboxClaimIdleReleaseMinutes(cfgMap));
       });
+  }, []);
+
+  useEffect(() => {
+    const id = setInterval(() => setClaimCountdownTick((n) => n + 1), 30_000);
+    return () => clearInterval(id);
   }, []);
 
   // ── Toggle bot active flag — Dream Bot (Meta). Also mirrors bot_active_meta
@@ -5523,10 +5544,12 @@ export default function WhatsAppInbox({
           )}
           {/* Per-channel claim — unified threads get one mute per device (§4). */}
           {activeContact && activeContact.inbox_channel === "unified" && (
-            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }} key={claimCountdownTick}>
               <ChannelMuteButton
                 channel="meta"
                 claimedBy={activeChannelClaims.meta.claimedBy}
+                claimedAt={activeChannelClaims.meta.claimedAt}
+                claimIdleMinutes={claimIdleMinutes}
                 claimedByName={activeContact.metaClaimedByName}
                 userId={user?.id}
                 claimBusy={claimBusy}
@@ -5537,6 +5560,8 @@ export default function WhatsAppInbox({
               <ChannelMuteButton
                 channel="whapi"
                 claimedBy={activeChannelClaims.whapi.claimedBy}
+                claimedAt={activeChannelClaims.whapi.claimedAt}
+                claimIdleMinutes={claimIdleMinutes}
                 claimedByName={activeContact.whapiClaimedByName}
                 userId={user?.id}
                 claimBusy={claimBusy}
@@ -5552,6 +5577,8 @@ export default function WhatsAppInbox({
             <ChannelMuteButton
               channel={activeContact.inbox_channel === "whapi" ? "whapi" : "meta"}
               claimedBy={activeContact.claimedBy}
+              claimedAt={activeContact.claimedAt}
+              claimIdleMinutes={claimIdleMinutes}
               claimedByName={activeContact.claimedByName}
               userId={user?.id}
               claimBusy={claimBusy}

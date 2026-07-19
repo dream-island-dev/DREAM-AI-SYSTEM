@@ -34,6 +34,10 @@ import {
   type AutomationStage,
   type GuestForSchedule,
 } from "../_shared/automationSchedule.ts";
+import {
+  parseInboxClaimIdleReleaseMinutes,
+  releaseStaleStaffClaims,
+} from "../_shared/guestStaffClaim.ts";
 import { reconcileMissedArrivalConfirmations } from "../_shared/arrivalConfirmation.ts";
 import { loadGuestByIdForPipeline } from "../_shared/guestOutboundGuard.ts";
 import { isStageEffectivelyActive, primeGuestChannelConfig, isWhapiGuestSosActive } from "../_shared/guestWhapiRouting.ts";
@@ -120,6 +124,27 @@ Deno.serve(async (req: Request) => {
     const anon = Deno.env.get("SUPABASE_ANON_KEY")!;
     const supabase = createClient(supabaseUrl, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
     await primeGuestChannelConfig(supabase);
+
+    const { data: claimCfgRow } = await supabase
+      .from("bot_config")
+      .select("config_value")
+      .eq("config_key", "inbox_claim_idle_release_minutes")
+      .maybeSingle();
+    const claimIdleMinutes = parseInboxClaimIdleReleaseMinutes(
+      claimCfgRow?.config_value
+        ? { inbox_claim_idle_release_minutes: String(claimCfgRow.config_value) }
+        : {},
+    );
+    try {
+      const released = await releaseStaleStaffClaims(supabase, claimIdleMinutes);
+      if (released.metaReleased > 0 || released.whapiReleased > 0) {
+        console.log(
+          `[whatsapp-cron] stale staff claims released meta=${released.metaReleased} whapi=${released.whapiReleased}`,
+        );
+      }
+    } catch (e) {
+      console.warn("[whatsapp-cron] releaseStaleStaffClaims failed (non-blocking):", (e as Error).message);
+    }
 
     // Weekly Sunday auto-run — forced audit (?audit=1 / body {audit:true}) is
     // handled as an early return above the kill switch and never reaches here.
@@ -224,7 +249,7 @@ Deno.serve(async (req: Request) => {
     // needs_callback is selected for observability only — NOT used in eligibility
     // (checkEligibility in automationSchedule.ts; session 59 decouple).
     const GUEST_SELECT =
-      "id, name, phone, arrival_date, departure_date, room, room_type, status, checkin_time, needs_callback, automation_muted, automation_scope, claimed_by, arrival_confirmed, arrival_confirmed_at, spa_date, spa_time, msg_stage_2_arrival_sent, msg_pre_arrival_2d_sent, msg_pre_arrival_sent, msg_morning_suite_sent, msg_morning_welcome_sent, msg_mid_stay_sent, msg_checkout_fb_sent, msg_spa_warmup_sent, msg_survey_invite_sent";
+      "id, name, phone, arrival_date, departure_date, room, room_type, status, checkin_time, needs_callback, automation_muted, automation_scope, claimed_by, claimed_at, guest_profile, arrival_confirmed, arrival_confirmed_at, spa_date, spa_time, msg_stage_2_arrival_sent, msg_pre_arrival_2d_sent, msg_pre_arrival_sent, msg_morning_suite_sent, msg_morning_welcome_sent, msg_mid_stay_sent, msg_checkout_fb_sent, msg_spa_warmup_sent, msg_survey_invite_sent";
 
     const { data: guests = [] } = await supabase.from("guests").select(GUEST_SELECT);
 
@@ -439,7 +464,7 @@ Deno.serve(async (req: Request) => {
           if (guest.status === "cancelled" || guest.status === "checked_out") continue;
           if (resolveAutomationScope(guest) !== "full") continue;
           if (!guest.arrival_confirmed && !guest.arrival_confirmed_at) continue;
-          if (isGuestStaffClaimActive(guest)) continue;
+          if (isGuestStaffClaimActive(guest, "meta", { idleReleaseMinutes: claimIdleMinutes })) continue;
           const gId = guest.id as number;
           if (stage2ActuallySent.has(gId)) continue;
           if (dueKey(gId, "stage_2_arrival")) continue;

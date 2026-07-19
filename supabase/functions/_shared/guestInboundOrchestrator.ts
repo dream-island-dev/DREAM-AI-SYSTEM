@@ -220,11 +220,13 @@ export async function dispatchStage2ViaPipeline(
 // guests.claimed_by only ever means the Meta claim (unchanged, read directly
 // by every existing caller) — this is the lookup for every OTHER channel
 // (today: Whapi only). Returns null when nothing is claimed on that channel.
-export async function fetchChannelClaim(
+export type ChannelClaimRow = { claimed_by: string | null; claimed_at: string | null };
+
+export async function fetchChannelClaimDetails(
   supabaseClient: { from: (t: string) => unknown },
   guestId: number | string | null,
   channel: "meta" | "whapi",
-): Promise<string | null> {
+): Promise<ChannelClaimRow | null> {
   if (guestId == null || guestId === "") return null;
   const id = Number(guestId);
   if (!Number.isFinite(id)) return null;
@@ -233,7 +235,7 @@ export async function fetchChannelClaim(
       select: (cols: string) => {
         eq: (col: string, val: unknown) => {
           eq: (col: string, val: unknown) => {
-            maybeSingle: () => Promise<{ data: { claimed_by: string | null } | null; error: { message: string } | null }>;
+            maybeSingle: () => Promise<{ data: ChannelClaimRow | null; error: { message: string } | null }>;
           };
         };
       };
@@ -241,15 +243,24 @@ export async function fetchChannelClaim(
   };
   const { data, error } = await supabase
     .from("guest_channel_claims")
-    .select("claimed_by")
+    .select("claimed_by, claimed_at")
     .eq("guest_id", id)
     .eq("inbox_channel", channel)
     .maybeSingle();
   if (error) {
-    console.warn("[guestInboundOrchestrator] fetchChannelClaim failed:", error.message);
+    console.warn("[guestInboundOrchestrator] fetchChannelClaimDetails failed:", error.message);
     return null;
   }
-  return data?.claimed_by ?? null;
+  return data ?? null;
+}
+
+export async function fetchChannelClaim(
+  supabaseClient: { from: (t: string) => unknown },
+  guestId: number | string | null,
+  channel: "meta" | "whapi",
+): Promise<string | null> {
+  const row = await fetchChannelClaimDetails(supabaseClient, guestId, channel);
+  return row?.claimed_by ?? null;
 }
 
 // ── bot_active, per channel ───────────────────────────────────────────────

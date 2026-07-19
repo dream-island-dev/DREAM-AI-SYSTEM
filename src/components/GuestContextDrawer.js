@@ -20,6 +20,10 @@ import {
   suiteRoomCanonicalLabel,
   writeSelectedSuiteRoomSession,
 } from "../utils/guestSelectedSuiteRoom";
+import {
+  isGuestBotConversationDisabled,
+  mergeGuestProfileBotDisabled,
+} from "../utils/guestStaffClaim";
 import { ensureMissingDepartureAlert } from "../utils/departureDateGuard";
 
 const COLOR_FLAGS = [
@@ -117,6 +121,7 @@ export default function GuestContextDrawer({
   const [internalNotes, setInternalNotes] = useState("");
   const [notesSaving, setNotesSaving] = useState(false);
   const [muteSaving, setMuteSaving] = useState(false);
+  const [botDisabledSaving, setBotDisabledSaving] = useState(false);
   const [colorSaving, setColorSaving] = useState(false);
   const [toast, setToast] = useState(null);
   const [queueRows, setQueueRows] = useState([]);
@@ -307,6 +312,22 @@ export default function GuestContextDrawer({
       showToast(e?.message ?? "שגיאה בעדכון השתקה", true);
     } finally {
       setMuteSaving(false);
+    }
+  };
+
+  const handleBotConversationDisabled = async () => {
+    if (!guest) return;
+    const nextDisabled = !isGuestBotConversationDisabled(guest);
+    setBotDisabledSaving(true);
+    try {
+      await patchGuest({
+        guest_profile: mergeGuestProfileBotDisabled(guest.guest_profile, nextDisabled),
+      });
+      showToast(nextDisabled ? "🔒 בוט שיחה כבוי לאורח זה" : "✓ בוט שיחה הופעל מחדש");
+    } catch (e) {
+      showToast(e?.message ?? "שגיאה בעדכון בוט", true);
+    } finally {
+      setBotDisabledSaving(false);
     }
   };
 
@@ -872,7 +893,7 @@ export default function GuestContextDrawer({
                         <strong>🔇 השתקת בוט (claimed_by)</strong>
                         <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
                           {isClaimed
-                            ? (isClaimedByMe ? "אתה מטפל — הבוט מושתק" : `בטיפול: ${claimedByName ?? "צוות"}`)
+                            ? (isClaimedByMe ? "אתה מטפל — הבוט מושתק (משתחרר אוטומטית אחרי שקט)" : `בטיפול: ${claimedByName ?? "צוות"}`)
                             : "לחץ לקחת שיחה ולהשתיק את הבוט"}
                         </div>
                       </span>
@@ -884,6 +905,29 @@ export default function GuestContextDrawer({
                       </span>
                     </button>
                   )}
+
+                  <button
+                    type="button"
+                    disabled={botDisabledSaving || !guest?.id}
+                    onClick={handleBotConversationDisabled}
+                    style={{
+                      display: "flex", alignItems: "center", justifyContent: "space-between",
+                      padding: "12px 14px", borderRadius: 10, border: "1px solid var(--border)",
+                      background: isGuestBotConversationDisabled(guest) ? "#FEE2E2" : "var(--card-bg)",
+                      cursor: botDisabledSaving || !guest?.id ? "not-allowed" : "pointer",
+                      opacity: botDisabledSaving ? 0.7 : 1, fontFamily: "Heebo, sans-serif", fontSize: 14,
+                    }}
+                  >
+                    <span>
+                      <strong>🔒 בוט שיחה כבוי (קבוע)</strong>
+                      <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
+                        חוסם תשובות בוט בשיחה — לא מתאפס אוטומטית (חריג VIP/תלונה)
+                      </div>
+                    </span>
+                    <span style={{ fontWeight: 800, fontSize: 12 }}>
+                      {botDisabledSaving ? "⏳" : isGuestBotConversationDisabled(guest) ? "כבוי" : "פעיל"}
+                    </span>
+                  </button>
 
                   <button
                     type="button"
