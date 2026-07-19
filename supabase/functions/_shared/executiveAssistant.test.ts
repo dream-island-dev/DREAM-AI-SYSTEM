@@ -541,7 +541,8 @@ Deno.test("buildExecutiveSystemPrompt — Mike overlay includes architect contex
   const profile = await resolveExecutiveInbound("972506842439");
   if (!profile) throw new Error("expected Mike profile");
   const prompt = buildExecutiveSystemPrompt(profile, "BASE", "", "", []);
-  assertEquals(prompt.includes("ארכיטקט ומפתח XOS"), true);
+  assertEquals(prompt.includes("מאיה"), true);
+  assertEquals(prompt.includes("ארכיטקטית ומפתחת XOS"), true);
   assertEquals(prompt.includes("get_system_health"), true);
 });
 
@@ -576,6 +577,17 @@ Deno.test("buildExecutiveSystemPrompt — Adir overlay mentions the two new fron
 Deno.test("DEFAULT_PERSONA_TEMPLATE — includes the shared self-awareness kernel", () => {
   assertEquals(DEFAULT_PERSONA_TEMPLATE.includes("מודעות עצמית"), true);
   assertEquals(DEFAULT_PERSONA_TEMPLATE.includes("בלי להמציא"), true);
+});
+
+Deno.test("buildExecutiveSystemPrompt — each profile introduces itself by its own assistant name", async () => {
+  const eliad = await resolveExecutiveInbound("972505421751");
+  const mike = await resolveExecutiveInbound("972506842439");
+  const adir = await resolveStaffAssistantInbound("972546294885");
+  if (!eliad || !mike || !adir) throw new Error("expected all 3 profiles to resolve");
+
+  assertEquals(buildExecutiveSystemPrompt(eliad, DEFAULT_PERSONA_TEMPLATE, "", "", []).includes("אני נועה,"), true);
+  assertEquals(buildExecutiveSystemPrompt(mike, DEFAULT_PERSONA_TEMPLATE, "", "", []).includes("אני מאיה,"), true);
+  assertEquals(buildExecutiveSystemPrompt(adir, DEFAULT_PERSONA_TEMPLATE, "", "", []).includes("אני ליאת,"), true);
 });
 
 Deno.test("buildExecutiveSystemPrompt — self-awareness kernel present for all 3 tiers", async () => {

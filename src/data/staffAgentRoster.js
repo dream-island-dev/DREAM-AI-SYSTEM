@@ -41,8 +41,8 @@ export const STAFF_AGENTS = [
     staffNotifyRecipient: "front_desk",
   },
   {
-    id: "noa_mike",
-    name: "נועה",
+    id: "maya_mike",
+    name: "מאיה",
     emoji: "🔧",
     accent: "#2563EB",
     accentSoft: "rgba(37,99,235,0.12)",

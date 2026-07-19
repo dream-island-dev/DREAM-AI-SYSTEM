@@ -1483,14 +1483,16 @@ function Sidebar({ user, active, setActive, openOpsCount, onLogout, isAdmin, isS
               <span className="icon">🎛️</span>
               <span>בקרת אוטומציה</span>
             </button>
-            <button
-              className={`nav-item ${active === "executive_playbook" ? "active" : ""}`}
-              onClick={() => setActive("executive_playbook")}
-              style={{ color: active === "executive_playbook" ? "var(--gold)" : "rgba(201,169,110,0.6)" }}
-            >
-              <span className="icon">🧬</span>
-              <span>סוכנים חכמים</span>
-            </button>
+            {isSuperAdminUser && (
+              <button
+                className={`nav-item ${active === "executive_playbook" ? "active" : ""}`}
+                onClick={() => setActive("executive_playbook")}
+                style={{ color: active === "executive_playbook" ? "var(--gold)" : "rgba(201,169,110,0.6)" }}
+              >
+                <span className="icon">🧬</span>
+                <span>סוכנים חכמים</span>
+              </button>
+            )}
             <button
               className={`nav-item ${active === "routing_control_center" ? "active" : ""}`}
               onClick={() => setActive("routing_control_center")}

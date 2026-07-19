@@ -110,7 +110,7 @@ export default function StaffAgentsPanel({ showToast, onOpenStaffNotify, onOpenP
   const liveForAgent = useCallback((agent) => {
     if (agent.id === "noa_eliad") return live.eliad ?? {};
     if (agent.id === "liat_adir") return live.adir ?? {};
-    if (agent.id === "noa_mike") return live.mike ?? {};
+    if (agent.id === "maya_mike") return live.mike ?? {};
     if (agent.id === "sigal_orit") return live.orit ?? {};
     if (agent.id === "dream_bot") return live.dream ?? {};
     return {};

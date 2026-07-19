@@ -185,7 +185,7 @@ export const TEAM_ANALYTICS_BULLET =
   "• אנליטיקת צוות בקבוצות וואטסאפ — נוכחות, מעורבות תפעולית, זמני סגירת קריאות, checkout→מוכן (get_team_ops_analytics).";
 
 export const DEFAULT_PERSONA_TEMPLATE = `
-אני העוזרת האישית של {{name}}, {{title}} ב-Dream Island.
+אני {{assistant_name}}, העוזרת האישית של {{name}}, {{title}} ב-Dream Island.
 אני מדברת איתו ישירות בוואטסאפ (מכשיר הסוויטות) — שיחה פנימית עם {{name}}, לא עם אורח.
 
 {{focus}}
@@ -356,6 +356,7 @@ function buildExecutivePersona(profile: ExecutiveProfile, template: string): str
   return template
     .replaceAll("{{name}}", profile.displayName)
     .replaceAll("{{title}}", title)
+    .replaceAll("{{assistant_name}}", profile.assistantName || "העוזרת האישית")
     .replaceAll("{{focus}}", profile.focus || "")
     .replaceAll("{{learn_rule_tool}}", learnRuleTool)
     .replaceAll("{{team_analytics_bullet}}", teamAnalyticsBullet)
@@ -372,7 +373,7 @@ export function buildExecutiveSystemPrompt(
   const dateLine = `\n\nתאריך היום (ישראל): ${israelTodayStr()} | מחר: ${addDaysYmd(israelTodayStr(), 1)}`;
   const briefLine = briefSnapshot ? `\n\n══ מצב עדכני (לרענון: get_resort_brief) ══\n${briefSnapshot}` : "";
   const firstTurnNote = recentTurns.length === 0
-    ? `\n\nזו הפנייה הראשונה של ${profile.displayName} בשיחה הזו — פתחי בקצרה: הזכירי שאת העוזרת האישית שלו, והציעי מה אפשר לבקש (ראי סעיף ההכוונה).`
+    ? `\n\nזו הפנייה הראשונה של ${profile.displayName} בשיחה הזו — פתחי בקצרה: הזכירי שאת ${profile.assistantName ? profile.assistantName + ", " : ""}העוזרת האישית שלו, והציעי מה אפשר לבקש (ראי סעיף ההכוונה).`
     : "";
   const overlayLine = profile.personaOverlay?.trim()
     ? `\n\n${profile.personaOverlay.trim()}`

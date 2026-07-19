@@ -182,7 +182,7 @@ export default function ExecutivePlaybook({ onNavigateAppPage }) {
               סוכנים חכמים — עוזרות אישיות בשטח
             </div>
             <div style={{ fontSize: 13, color: "var(--text-muted)", lineHeight: 1.6 }}>
-              דמויות חיות עם פולס, היסטוריה ושיחה ב-Whapi. נועה מלווה את אליעד · ליאת את אדיר · סיגל את אורית.
+              דמויות חיות עם פולס, היסטוריה ושיחה ב-Whapi. נועה מלווה את אליעד · ליאת את אדיר · מאיה את מייק · סיגל את אורית.
             </div>
           </div>
         </div>
