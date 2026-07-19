@@ -30,10 +30,10 @@ Deno.test("detectVoucherEasygoPreset — EZGO coupons export (CouponNo)", () => 
   assertEquals(preset?.guestName, "שם לקוח");
 });
 
-Deno.test("detectVoucherEasygoPreset — Nofshonit uses CouponNo (מספר שובר) not מזהה", () => {
+Deno.test("detectVoucherEasygoPreset — Nofshonit uses מזהה (ת.ז.) not CouponNo", () => {
   const headers = ["CouponNo", "CouponDesc", "מזהה", "שם לקוח", "חברת שוברים"];
   const preset = detectVoucherEasygoPreset(headers, "Nofshonit");
-  assertEquals(preset?.voucherNumber, "CouponNo");
+  assertEquals(preset?.voucherNumber, "מזהה");
 });
 
 Deno.test("detectVoucherProviderPreset — Multi-Pass CSV (שם = voucher id)", () => {
@@ -101,7 +101,7 @@ Deno.test("assessVoucherParseQuality — flags bad mapping", () => {
   assertEquals(bad.ok, false);
 });
 
-Deno.test("csvUtf8BytesToMatrix — Hebrew BOM + embedded quote in company name", () => {
+Deno.test("csvUtf8BytesToMatrix — Hebrew BOM + doubled quote in company name", () => {
   const csv = '\uFEFF"CouponNo","חברת שוברים","חברת שוברים","מזהה"\n"1","11448*1061","נופשונית ח.מ תשורות חן (1987) בע""מ","203232623"';
   const matrix = csvUtf8BytesToMatrix(new TextEncoder().encode(csv));
   assertEquals(matrix.length, 2);
@@ -110,19 +110,36 @@ Deno.test("csvUtf8BytesToMatrix — Hebrew BOM + embedded quote in company name"
   assertEquals(String(rows[0]["חברת שוברים"]).includes("נופשונית"), true);
 });
 
-Deno.test("estimateReconciliationJoin — detects good Nofshonit CouponNo join", () => {
-  const providerRows = [{ "מזהה לקוח": "203554126", "וריאנט": "classic deluxe" }];
-  const easygoRows = [{ CouponNo: "203554126", CouponDesc: "swish דלאקס 2026" }];
+Deno.test("csvUtf8BytesToMatrix — EZGO בע\"מ gershayim does not truncate trailing columns", () => {
+  const csv = [
+    '"RefType","חברת שוברים","חברת שוברים","מזהה","שם לקוח"',
+    '"Reservation","1061","נופשונית ח.מ תשורות חן (1987) בע"מ","203232623","ישראל ישראלי"',
+  ].join("\n");
+  const matrix = csvUtf8BytesToMatrix(new TextEncoder().encode(csv));
+  assertEquals(matrix[0].length, 5);
+  assertEquals(matrix[1].length, 5);
+  const { rows } = matrixToVoucherRows(matrix);
+  assertEquals(rows[0]["מזהה"], "203232623");
+  assertEquals(rows[0]["שם לקוח"], "ישראל ישראלי");
+  assertEquals(String(rows[0]["חברת שוברים"]).includes("בע"), true);
+});
+
+Deno.test("estimateReconciliationJoin — detects good Nofshonit ת.ז. join", () => {
+  const providerRows = [{ "מזהה לקוח": "203232623", "וריאנט": "classic deluxe" }];
+  const easygoRows = [{ מזהה: "203232623", CouponDesc: "swish דלאקס 2026", CouponNo: "203554126" }];
   const provMap = { voucherNumber: "מזהה לקוח", packageType: "וריאנט" };
-  const ezMap = { voucherNumber: "CouponNo", packageType: "CouponDesc" };
+  const ezMap = { voucherNumber: "מזהה", packageType: "CouponDesc" };
   const est = estimateReconciliationJoin(providerRows, easygoRows, provMap, ezMap, "exact");
   assertEquals(est.ok, true);
   assertEquals(est.providerHits, 1);
 });
 
-Deno.test("estimateReconciliationJoin — flags wrong column mapping", () => {
-  const providerRows = [{ "מזהה לקוח": "203554126", "וריאנט": "x" }];
-  const easygoRows = [{ מזהה: "203232623", CouponDesc: "y" }];
+Deno.test("estimateReconciliationJoin — flags wrong Nofshonit column (CouponNo vs מזהה)", () => {
+  const providerRows = Array.from({ length: 6 }, (_, i) => ({
+    "מזהה לקוח": `90000${i}`,
+    "וריאנט": "x",
+  }));
+  const easygoRows = [{ מזהה: "203232623", CouponDesc: "y", CouponNo: "203554126" }];
   const provMap = { voucherNumber: "מזהה לקוח", packageType: "וריאנט" };
   const ezMap = { voucherNumber: "מזהה", packageType: "CouponDesc" };
   const est = estimateReconciliationJoin(providerRows, easygoRows, provMap, ezMap, "exact");

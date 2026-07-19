@@ -54,6 +54,7 @@ import {
   matrixToVoucherRows,
   normalizeImportHeaderKey,
   normalizeVoucherNumber,
+  normalizeVoucherIdDigits,
   type VoucherMapping,
   type VoucherRow,
 } from "../_shared/voucherImport.ts";
@@ -62,6 +63,10 @@ import {
   resolveVoucherStrategy,
   strategySummaryForApi,
 } from "../_shared/voucherReconciliationStrategy.ts";
+import {
+  buildNofshonitEasygoIndex,
+  resolveNofshonitProviderToNationalId,
+} from "../_shared/nofshonitNationalId.ts";
 import {
   heverPdfRowsToMatrix,
   parseHeverPolicePdfText,
@@ -545,8 +550,26 @@ serve(async (req: Request) => {
     }
 
     const strategy = resolveVoucherStrategy(providerRow.provider_name);
+    const isNofshonit = strategy?.key === "Nofshonit";
+    const nofshonitIndex = isNofshonit
+      ? buildNofshonitEasygoIndex(easygoCompanyFiltered)
+      : null;
+
+    const providerForJoin = nofshonitIndex
+      ? providerFiltered.map((row) => {
+          const vCol = providerResolution.mapping.voucherNumber!;
+          const raw = row[vCol];
+          const { nationalId } = resolveNofshonitProviderToNationalId(
+            raw,
+            nofshonitIndex.couponToNationalId,
+            nofshonitIndex.byNationalId,
+          );
+          return nationalId ? { ...row, [vCol]: nationalId } : row;
+        })
+      : providerFiltered;
+
     const joinEstimate = estimateReconciliationJoin(
-      providerFiltered,
+      providerForJoin,
       easygoFiltered,
       providerResolution.mapping,
       easygoResolution.mapping,
@@ -560,10 +583,28 @@ serve(async (req: Request) => {
       const { fields, extras } = extractFields(row, providerResolution.mapping, PROVIDER_FIELDS);
       const purchaseDate = toDateOrNull(fields.purchaseDate);
       if (fields.purchaseDate && !purchaseDate) extras._unparsed_purchaseDate = fields.purchaseDate;
+
+      let voucherNumber = normalizeVoucherNumber(fields.voucherNumber);
+      if (nofshonitIndex && fields.voucherNumber != null && String(fields.voucherNumber).trim()) {
+        const rawId = String(fields.voucherNumber).trim();
+        const { nationalId, resolvedFrom } = resolveNofshonitProviderToNationalId(
+          rawId,
+          nofshonitIndex.couponToNationalId,
+          nofshonitIndex.byNationalId,
+        );
+        if (nationalId) {
+          if (resolvedFrom === "coupon_lookup") extras._provider_coupon_no = rawId;
+          else if (resolvedFrom === "direct_tz" && rawId !== nationalId) {
+            extras._provider_original_id = rawId;
+          }
+          voucherNumber = nationalId;
+        }
+      }
+
       return {
         import_batch:     providerBatch,
         provider_id:      providerRow.id,
-        voucher_number:   normalizeVoucherNumber(fields.voucherNumber),
+        voucher_number:   voucherNumber,
         guest_name:       cleanStr(fields.guestName),
         package_type:     cleanStr(fields.packageType),
         amount:           toNumberOrNull(fields.amount),
@@ -578,10 +619,18 @@ serve(async (req: Request) => {
       const { fields, extras } = extractFields(row, easygoResolution.mapping, EASYGO_FIELDS);
       const arrivalDate = toDateOrNull(fields.arrivalDate);
       if (fields.arrivalDate && !arrivalDate) extras._unparsed_arrivalDate = fields.arrivalDate;
+
+      const couponNo = cleanStr(row["CouponNo"] ?? extras.CouponNo);
+      if (couponNo) extras.CouponNo = couponNo;
+
+      const voucherNumber = isNofshonit
+        ? normalizeVoucherIdDigits(String(fields.voucherNumber ?? row["מזהה"] ?? "")) || null
+        : normalizeVoucherNumber(fields.voucherNumber);
+
       return {
         import_batch:     easygoBatch,
         provider_id:      null, // intentionally unset — run_voucher_reconciliation tries every relevant provider when NULL (migration 091 §3 comment)
-        voucher_number:   normalizeVoucherNumber(fields.voucherNumber),
+        voucher_number:   voucherNumber,
         guest_name:       cleanStr(fields.guestName),
         phone:            toE164OrNull(fields.phone),
         order_number:     cleanStr(fields.orderNumber),

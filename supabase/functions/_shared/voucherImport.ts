@@ -118,7 +118,7 @@ function detectMultipassProviderPreset(headers: string[], rows: VoucherRow[]): V
   };
 }
 
-/** Nofshonit redemption xlsx — "מזהה לקוח" is the voucher/coupon number (↔ EZGO CouponNo); אסמכתא → raw_extras. */
+/** Nofshonit redemption xlsx — מזהה לקוח may be ת.ז. or CouponNo (resolved to ת.ז. at import). */
 function detectNofshonitProviderPreset(headers: string[]): VoucherMapping | null {
   const idCol = findHeaderByAliases(headers, ["מזהה לקוח", "תעודת זהות", "מספר זהות"]);
   const variantCol = findHeaderByAliases(headers, ["וריאנט", "חבילה", "סוג חבילה"]);
@@ -388,6 +388,11 @@ function parseCsvLine(line: string): string[] {
         i++;
         continue;
       }
+      // EZGO exports `בע"מ` with unescaped gershayim inside quotes — next char is Hebrew, not field end.
+      if (inQ && line[i + 1] !== '"' && line[i + 1] !== "," && /[\u0590-\u05FF]/.test(line[i + 1] ?? "")) {
+        cur += '"';
+        continue;
+      }
       inQ = !inQ;
       continue;
     }
@@ -418,6 +423,7 @@ export function csvUtf8BytesToMatrix(bytes: Uint8Array): unknown[][] {
   const matrix: unknown[][] = [headerCells];
   for (const line of lines.slice(1)) {
     const cells = parseCsvLine(line).map((c) => c.replace(/^"|"$/g, ""));
+    while (cells.length < headerCells.length) cells.push("");
     matrix.push(cells);
   }
   return matrix;

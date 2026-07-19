@@ -1,3 +1,5 @@
+2026-07-19 | Voucher reconciliation — Nofshonit match by ת.ז. + CSV בע"מ fix | `nofshonitNationalId.ts`: EZGO `מזהה`=ת.ז., provider `מזהה לקוח`→ת.ז. (direct or CouponNo lookup); migration 236 package disambiguation; `csvUtf8BytesToMatrix` gershayim fix restores trailing columns. Deploy: db push + `reconcile-vouchers` + frontend.
+
 2026-07-19 | Voucher reconciliation — fix false missing_in_easygo (multiline Nofshonit) | migration 235: provider multiple אסמכתא per same CouponNo re-use EasyGo row instead of missing_in_easygo.
 
 2026-07-19 | Voucher reconciliation — per-provider strategy engine | `_shared/voucherReconciliationStrategy.ts`: rules per ספק (join, columns, formats); provider-first preset routing; `estimateReconciliationJoin` pre-flight; UI strategy card + join % on complete.
