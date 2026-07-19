@@ -67,6 +67,7 @@ import {
   buildNofshonitEasygoIndex,
   resolveNofshonitProviderToNationalId,
 } from "../_shared/nofshonitNationalId.ts";
+import { buildVoucherQuantityAudit } from "../_shared/voucherQuantityAudit.ts";
 import {
   heverPdfRowsToMatrix,
   parseHeverPolicePdfText,
@@ -663,6 +664,12 @@ serve(async (req: Request) => {
     });
     if (rpcErr) throw new Error(`reconciliation_error: ${rpcErr.message}`);
 
+    const quantityAudit = buildVoucherQuantityAudit(
+      easygoRowsToInsert,
+      providerRowsToInsert,
+    );
+    const quantityIssues = quantityAudit.filter((l) => l.status !== "ok");
+
     return new Response(
       JSON.stringify({
         ok:             true,
@@ -680,7 +687,11 @@ serve(async (req: Request) => {
           packageMismatches: joinEstimate.packageMismatches,
         },
         strategy:       strategy ? strategySummaryForApi(strategy) : null,
-        reconciliation, // the JSONB run_voucher_reconciliation() returns, unchanged
+        reconciliation: {
+          ...reconciliation,
+          quantity_audit: quantityAudit,
+          quantity_issues: quantityIssues.length,
+        },
       }),
       { headers: { ...CORS, "Content-Type": "application/json" } },
     );

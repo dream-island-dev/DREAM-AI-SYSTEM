@@ -28,7 +28,7 @@ const MAPPING_SOURCE_LABELS = {
 
 const RECON_LABELS = [
   { key: "missing_in_provider", label: "⚠️ הוזמן — לא מומש",   color: "#791F1F", bg: "#FCEBEB" },
-  { key: "over_redemption",     label: "🟡 מימוש מעבר להזמנה", color: "#92400E", bg: "#FEF3C7" },
+  { key: "over_redemption",     label: "🟡 מעבר לכמות באיזיגו", color: "#92400E", bg: "#FEF3C7" },
   { key: "package_mismatch",    label: "🟠 חבילה לא תואמת",   color: "#7A4A06", bg: "#FFF3DC" },
   { key: "duplicate_match",     label: "🟣 לא ניתן לבחור",     color: "#5B21B6", bg: "#F3E8FF" },
   { key: "missing_in_easygo",   label: "🔵 מומש — לא באיזיגו", color: "#1E40AF", bg: "#E8F0FE" },
@@ -363,6 +363,24 @@ export default function VoucherImportPanel({ onViewExceptions }) {
                 {result.joinEstimate.packageMismatches > 0 && (
                   <> · {result.joinEstimate.packageMismatches} חשד לחבילה לא תואמת</>
                 )}
+              </>
+            )}
+            {(result.reconciliation?.quantity_issues ?? 0) > 0 && (
+              <>
+                <br />
+                <span style={{ color: "#92400E", fontWeight: 700 }}>
+                  פערי כמות לפי שובר/חבילה ({result.reconciliation.quantity_issues}):
+                </span>
+                {(result.reconciliation.quantity_audit || [])
+                  .filter((l) => l.status !== "ok")
+                  .slice(0, 4)
+                  .map((line) => (
+                    <div key={line.key} style={{ fontSize: 11.5, color: "#92400E" }}>
+                      {line.couponNo ? `שובר ${line.couponNo}` : `ת.ז. ${line.nationalId}`}
+                      {" — איזיגו "}{line.easygoCount}{" / ספק "}{line.providerCount}
+                      {line.surplus > 0 && ` (+${line.surplus})`}
+                    </div>
+                  ))}
               </>
             )}
           </div>

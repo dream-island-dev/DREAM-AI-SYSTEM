@@ -11,10 +11,11 @@
 
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { supabase } from "../supabaseClient";
+import { packageTypesMatchEnhanced, packageMatchGroup, PACKAGE_GROUP_LABEL_HE } from "../utils/voucherPackageMatch";
 
 const MATCH_META = {
   missing_in_provider: { label: "⚠️ הוזמן באיזיגו — לא מומש",     color: "#791F1F", bg: "#FCEBEB", priority: 1 },
-  over_redemption:   { label: "🟡 מימוש מעבר להזמנה",          color: "#92400E", bg: "#FEF3C7", priority: 2 },
+  over_redemption:   { label: "🟡 מימוש מעבר לכמות באיזיגו",  color: "#92400E", bg: "#FEF3C7", priority: 2 },
   package_mismatch:    { label: "🟠 חבילה לא תואמת",              color: "#7A4A06", bg: "#FFF3DC", priority: 3 },
   duplicate_match:     { label: "🟣 לא ניתן לבחור שובר",          color: "#5B21B6", bg: "#F3E8FF", priority: 4 },
   missing_in_easygo:   { label: "🔵 מומש בספק — לא באיזיגו",      color: "#1E40AF", bg: "#E8F0FE", priority: 5 },
@@ -176,10 +177,28 @@ export default function VoucherExceptionsBoard({ user, filterRunId = null, runSt
           </div>
           <div style={{ color: "var(--text-muted)", marginTop: 4 }}>
             🟢 {runStats.matched ?? 0} תואמים
-            {(runStats.over_redemption ?? 0) > 0 && <> · 🟡 {runStats.over_redemption} מימוש מעבר להזמנה</>}
+            {(runStats.over_redemption ?? 0) > 0 && <> · 🟡 {runStats.over_redemption} מעבר לכמות באיזיגו</>}
             {(runStats.missing_in_provider ?? 0) > 0 && <> · ⚠️ {runStats.missing_in_provider} הוזמנו ולא מומשו</>}
             {(runStats.missing_in_easygo ?? 0) > 0 && <> · 🔵 {runStats.missing_in_easygo} מומשו בלי הזמנה באיזיגו</>}
           </div>
+          {Array.isArray(runStats.quantity_audit) && runStats.quantity_issues > 0 && (
+            <div style={{ marginTop: 10, fontSize: 11.5 }}>
+              <div style={{ fontWeight: 700, color: "#92400E", marginBottom: 4 }}>פערי כמות לפי שובר / חבילה:</div>
+              {runStats.quantity_audit.filter((l) => l.status !== "ok").slice(0, 6).map((line) => (
+                <div key={line.key} style={{ marginBottom: 3 }}>
+                  {line.couponNo ? `שובר ${line.couponNo}` : `ת.ז. ${line.nationalId}`}
+                  {" · "}
+                  {PACKAGE_GROUP_LABEL_HE[line.packageGroup] || line.packageLabel?.slice(0, 40)}
+                  {": "}
+                  <strong>איזיגו {line.easygoCount}</strong>
+                  {" / "}
+                  <strong>ספק {line.providerCount}</strong>
+                  {line.surplus > 0 && <span style={{ color: "#92400E" }}> (+{line.surplus})</span>}
+                  {line.surplus < 0 && <span style={{ color: "#1E40AF" }}> ({line.surplus})</span>}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -224,6 +243,10 @@ export default function VoucherExceptionsBoard({ user, filterRunId = null, runSt
             const guestName = eg?.guest_name || pv?.guest_name || "—";
             const providerName = r.voucher_providers?.provider_name || "—";
 
+            const pkgMatch = pv?.package_type && eg?.package_type
+              && packageTypesMatchEnhanced(pv.package_type, eg.package_type);
+            const pkgGroup = packageMatchGroup(pv?.package_type || eg?.package_type);
+
             return (
               <div key={r.id} style={{ border: `1px solid ${meta.color}30`, borderRight: `4px solid ${meta.color}`, borderRadius: 10, padding: "14px 16px", background: "var(--card-bg)" }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
@@ -256,6 +279,17 @@ export default function VoucherExceptionsBoard({ user, filterRunId = null, runSt
                   <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginBottom: 8, lineHeight: 1.5 }}>
                     {pv?.package_type && <div>ספק: {pv.package_type}</div>}
                     {eg?.package_type && <div>איזיגו: {eg.package_type}</div>}
+                    {pkgMatch && (
+                      <div style={{ color: "#27500A", fontWeight: 700, marginTop: 4 }}>
+                        ✓ אותה חבילה
+                        {pkgGroup && PACKAGE_GROUP_LABEL_HE[pkgGroup] ? ` (${PACKAGE_GROUP_LABEL_HE[pkgGroup]})` : ""}
+                      </div>
+                    )}
+                    {r.match_status === "over_redemption" && pkgMatch && (
+                      <div style={{ color: "#92400E", marginTop: 2 }}>
+                        מימוש נוסף מעבר למה שהוזמן באיזיגו לאותה חבילה
+                      </div>
+                    )}
                   </div>
                 )}
 

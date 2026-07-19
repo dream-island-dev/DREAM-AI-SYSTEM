@@ -1,3 +1,4 @@
+2026-07-19 | Voucher reconciliation — package aliases + quantity per שובר | migration 239: `package_match_group` (night↔dinner, צהרים↔כל השבוע); `_shared/voucherQuantityAudit.ts` counts per CouponNo/ת.ז.+חבילה; UI «✓ אותה חבילה» on `over_redemption` + פערי כמות. Deploy: db push + `reconcile-vouchers` + frontend; re-import both files after deploy.
 2026-07-19 | Voucher reconciliation — fix false package_mismatch + over_redemption | migration 238: CouponNo-first match; no wrong-tier pairing; `over_redemption` for extra provider lines; volume summary (איזיגו vs ספק). Deploy: db push + `reconcile-vouchers` + frontend.
 
 2026-07-19 | Voucher reconciliation — multi-package FIFO (not duplicate_match) | migration 237: same ת.ז. + multiple EZGO vouchers → one match per provider line by package FIFO + CouponNo; package_mismatch when וריאנט doesn't match any remaining row.
