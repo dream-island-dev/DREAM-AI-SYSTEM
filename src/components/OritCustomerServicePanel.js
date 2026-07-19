@@ -239,9 +239,8 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
     setMessages(msgs ?? []);
     setDrafts(drs ?? []);
     const ackDraft = (drs ?? []).find((d) => d.draft_kind === "ack");
-    const fullDraft = (drs ?? []).find((d) => d.draft_kind === "full_reply" || !d.draft_kind);
     setAckText(sanitizeOritAckDraft(ackDraft?.final_text || ackDraft?.suggested_text || ""));
-    setReplyText(fullDraft?.final_text || fullDraft?.suggested_text || "");
+    // replyText is filled only when Orit explicitly edits/copies — never auto from draft
   }, []);
 
   useEffect(() => {
@@ -574,26 +573,20 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
 
   const handleMarkHandled = async () => {
     if (!selectedId) return;
-    if (replyText.trim() && canSendFromXos) {
-      await handleSendReply({ markHandled: true, text: replyText.trim() });
-      return;
+    if (replyText.trim()) {
+      const ok = window.confirm(
+        "הפנייה תסומן כטופלת בלי לשלוח מייל מהמערכת.\nהמייל כבר נשלח?",
+      );
+      if (!ok) return;
     }
     setBusy(true);
     try {
-      if (replyText.trim()) {
-        const { data, error } = await supabase.functions.invoke("manager-mail-send", {
-          body: { threadId: selectedId, bodyText: replyText.trim(), markHandled: true },
-        });
-        if (error) throw error;
-        if (!data?.ok) throw new Error(data?.error || "שמירה נכשלה");
-        setReplyText("");
-      } else {
-        const { error } = await supabase.from("orit_agent_threads").update({
-          status: "handled",
-          handled_at: new Date().toISOString(),
-        }).eq("id", selectedId);
-        if (error) throw error;
-      }
+      const { error } = await supabase.from("orit_agent_threads").update({
+        status: "handled",
+        handled_at: new Date().toISOString(),
+      }).eq("id", selectedId);
+      if (error) throw error;
+      setReplyText("");
       showToast("ok", "סומן כטופל");
       await loadMailbox();
       goBackToList();
@@ -963,8 +956,15 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
                 📝 הכיני אישור קבלה
               </button>
             )}
-            <button type="button" className="btn" disabled={busy || selected.status === "handled"} onClick={handleMarkHandled} style={{ minHeight: 44 }}>
-              ✅ שלחתי — סמני כטופל
+            <button
+              type="button"
+              className="btn"
+              disabled={busy || selected.status === "handled"}
+              onClick={handleMarkHandled}
+              style={{ minHeight: 44 }}
+              title="סימון בלבד — לא שולח מייל מהמערכת"
+            >
+              ✓ סיימתי — סמן כטופל
             </button>
             <button type="button" className="btn" disabled={busy} onClick={handleSnooze} style={{ minHeight: 44 }} title="דחי למחר / מאוחר יותר">
               😴 דחי למחר
@@ -1026,43 +1026,90 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
               <div style={{ fontSize: 13, fontWeight: 700, color: "#1D4ED8" }}>
                 שלב 2 — תשובה מלאה לאורח/ת
               </div>
-              <textarea
-                value={replyText}
-                onChange={(e) => setReplyText(e.target.value)}
-                placeholder={canSendFromXos ? "ערכי כאן את התשובה המלאה לפני שליחה לאורח…" : "ערכי כאן טיוטה לפני העתקה ל-Outlook…"}
-                rows={isMobile ? 6 : 8}
-                style={{
-                  width: "100%",
-                  borderRadius: 10,
-                  border: "1px solid var(--border)",
-                  padding: 12,
-                  fontSize: 14,
-                  lineHeight: 1.5,
-                  background: "#FFFBEB",
-                }}
-              />
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                {canSendFromXos && (
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    disabled={busy || !replyText.trim() || selected.status === "handled"}
-                    onClick={() => handleSendReply({ markHandled: false, text: replyText, draftKind: "full_reply" })}
-                    style={{ minHeight: 44 }}
-                  >
-                    ✉ אשרי ושלחי תשובה (סיגל תעדכן עד «סיימתי»)
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={busy || !replyText.trim()}
-                  onClick={() => handleCopyReply(replyText)}
-                  style={{ minHeight: 44 }}
-                >
-                  📋 העתיקי
-                </button>
-              </div>
+              {!replyText.trim() && fullReplyDraft?.suggested_text && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  <div style={{ padding: 10, borderRadius: 10, border: "1px solid var(--border)", background: "#FFFBEB", whiteSpace: "pre-wrap", fontSize: 14 }}>
+                    {fullReplyDraft.suggested_text}
+                  </div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    {canSendFromXos && (
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        disabled={busy || selected.status === "handled"}
+                        onClick={() => handleSendReply({
+                          markHandled: false,
+                          text: fullReplyDraft.suggested_text,
+                          draftKind: "full_reply",
+                          draftId: fullReplyDraft.id,
+                        })}
+                        style={{ minHeight: 44 }}
+                      >
+                        📧 שלחי מ-XOS
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={busy}
+                      onClick={() => { setReplyText(fullReplyDraft.suggested_text); handleCopyReply(fullReplyDraft.suggested_text); }}
+                      style={{ minHeight: 44 }}
+                    >
+                      📋 העתיקי
+                    </button>
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={busy}
+                      onClick={() => setReplyText(fullReplyDraft.suggested_text)}
+                      style={{ minHeight: 44 }}
+                    >
+                      ✏️ ערכי לפני שליחה
+                    </button>
+                  </div>
+                </div>
+              )}
+              {(replyText.trim() || !fullReplyDraft?.suggested_text) && (
+                <>
+                  <textarea
+                    value={replyText}
+                    onChange={(e) => setReplyText(e.target.value)}
+                    placeholder={canSendFromXos ? "ערכי כאן את התשובה המלאה לפני שליחה לאורח…" : "ערכי כאן טיוטה לפני העתקה ל-Outlook…"}
+                    rows={isMobile ? 6 : 8}
+                    style={{
+                      width: "100%",
+                      borderRadius: 10,
+                      border: "1px solid var(--border)",
+                      padding: 12,
+                      fontSize: 14,
+                      lineHeight: 1.5,
+                      background: "#FFFBEB",
+                    }}
+                  />
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    {canSendFromXos && (
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        disabled={busy || !replyText.trim() || selected.status === "handled"}
+                        onClick={() => handleSendReply({ markHandled: false, text: replyText, draftKind: "full_reply", draftId: fullReplyDraft?.id })}
+                        style={{ minHeight: 44 }}
+                      >
+                        ✉ אשרי ושלחי תשובה (סיגל תעדכן עד «סיימתי»)
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={busy || !replyText.trim()}
+                      onClick={() => handleCopyReply(replyText)}
+                      style={{ minHeight: 44 }}
+                    >
+                      📋 העתיקי
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           )}
 
@@ -1084,7 +1131,7 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
                         style={{ minHeight: 44 }}
                         onClick={() => handleSendReply({ markHandled: false, text: d.suggested_text })}
                       >
-                        📧 שלחי
+                        📧 שלחי מ-XOS
                       </button>
                     )}
                     <button
@@ -1136,7 +1183,7 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
                 onClick={() => handleSendReply({ markHandled: false })}
                 style={{ minHeight: 48 }}
               >
-                📧 שלחי לאורח
+                📧 שלחי מ-XOS
               </button>
             )}
             <button
@@ -1156,7 +1203,7 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
                 onClick={() => handleSendReply({ markHandled: true })}
                 style={{ minHeight: 48 }}
               >
-                📧 שלחי וסמני כטופל
+                📧 שלחי מ-XOS וסמן כטופל
               </button>
             )}
           </div>
@@ -1289,8 +1336,8 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
           {connected && !isMobile && (
             <div style={{ marginTop: 12, fontSize: 13, opacity: 0.85 }}>
               {canSendFromXos
-                ? "פניות חדשות מקבלות אישור קבלה אוטומטי. בחרי פנייה → «הצעות תשובה» → «שלחי לאורח» או ערכי ידנית."
-                : "קראי את הפנייה, לחצי «הצעות תשובה», העתיקי ל-Outlook ושלחי. אחרי שליחה — «שלחתי — סמני כטופל»."}
+                ? "בחרי פנייה → «הצעות תשובה» → «שלחי מ-XOS» או העתיקי ל-Outlook. אחרי שליחה — «סיימתי — סמן כטופל» (בלי שליחה נוספת)."
+                : "קראי את הפנייה, לחצי «הצעות תשובה», העתיקי ל-Outlook ושלחי. אחרי שליחה — «סיימתי — סמן כטופל»."}
             </div>
           )}
           {mailbox.connection_error && (
