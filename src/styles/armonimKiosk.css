@@ -1,0 +1,171 @@
+/* Armonim restaurant kiosk — scoped under .armonim-kiosk */
+
+.armonim-kiosk {
+  --armonim-brown: #5D3A1A;
+  --armonim-brown-dark: #4B2C0F;
+  --armonim-teal: #008080;
+  --armonim-header-bg: #1A1410;
+  --armonim-content-bg: #FAF8F5;
+  --armonim-border: rgba(93, 58, 26, 0.18);
+  min-height: 100vh;
+  background: var(--armonim-content-bg);
+  font-family: Heebo, sans-serif;
+  color: var(--armonim-brown-dark);
+}
+
+.armonim-kiosk-header {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: var(--armonim-header-bg);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.armonim-kiosk-header img.armonim-logo-header {
+  height: 36px;
+  width: auto;
+  object-fit: contain;
+}
+
+.armonim-kiosk-badge {
+  font-size: 10px;
+  font-weight: 800;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(0, 128, 128, 0.25);
+  color: #7fd4d4;
+  border: 1px solid rgba(0, 128, 128, 0.45);
+}
+
+.armonim-kiosk-session {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.75);
+  flex: 1;
+  min-width: 140px;
+  text-align: right;
+}
+
+.armonim-kiosk-tab {
+  padding: 8px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: transparent;
+  color: rgba(255, 255, 255, 0.85);
+  font-family: Heebo, sans-serif;
+  font-weight: 700;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.armonim-kiosk-tab.is-active {
+  border-color: var(--armonim-teal);
+  background: rgba(0, 128, 128, 0.2);
+  color: #fff;
+}
+
+.armonim-kiosk-btn-ghost {
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 8px;
+  padding: 8px 12px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.9);
+  cursor: pointer;
+  font-family: Heebo, sans-serif;
+  font-weight: 700;
+  font-size: 12px;
+}
+
+.armonim-shift-gate {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  background: linear-gradient(180deg, #FAF8F5 0%, #F0EBE3 100%);
+}
+
+.armonim-shift-gate-card {
+  width: 100%;
+  max-width: 420px;
+  background: #fff;
+  border-radius: 20px;
+  padding: 28px 24px;
+  box-shadow: 0 24px 64px rgba(26, 20, 16, 0.12);
+  border: 1px solid var(--armonim-border);
+  text-align: center;
+}
+
+.armonim-shift-gate-card img.armonim-logo-welcome {
+  max-width: 200px;
+  height: auto;
+  margin: 0 auto 16px;
+  display: block;
+}
+
+.armonim-name-btn {
+  width: 100%;
+  min-height: 52px;
+  border-radius: 12px;
+  border: 1.5px solid var(--armonim-border);
+  background: var(--armonim-content-bg);
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: Heebo, sans-serif;
+  color: var(--armonim-brown-dark);
+}
+
+.armonim-name-btn:hover {
+  border-color: var(--armonim-teal);
+  background: rgba(0, 128, 128, 0.06);
+}
+
+.armonim-role-btn {
+  flex: 1;
+  min-height: 56px;
+  border-radius: 12px;
+  border: 2px solid var(--armonim-border);
+  background: #fff;
+  font-weight: 800;
+  font-size: 14px;
+  cursor: pointer;
+  font-family: Heebo, sans-serif;
+}
+
+.armonim-role-btn.is-selected {
+  border-color: var(--armonim-teal);
+  background: rgba(0, 128, 128, 0.08);
+}
+
+.armonim-primary-btn {
+  width: 100%;
+  min-height: 52px;
+  border: none;
+  border-radius: 12px;
+  background: linear-gradient(135deg, var(--armonim-brown) 0%, var(--armonim-brown-dark) 100%);
+  color: #fff;
+  font-weight: 800;
+  font-size: 16px;
+  cursor: pointer;
+  font-family: Heebo, sans-serif;
+}
+
+.armonim-primary-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.armonim-floor-panel {
+  background: rgba(0, 128, 128, 0.08);
+  border: 1px solid rgba(0, 128, 128, 0.2);
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--armonim-brown-dark);
+  margin-bottom: 10px;
+}

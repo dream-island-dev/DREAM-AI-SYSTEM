@@ -1,3 +1,4 @@
+2026-07-20 | Armonim kiosk — shift gate + branding (256) | `RestaurantShiftGate`/`RestaurantKioskHeader`/`RestaurantShiftContext`; roster + `restaurant_shift_sessions`; הזמנות עם `waiter_name_snap`; חתימת WA מ-`bot_config.restaurant_kiosk_ui`; migration 256.
 2026-07-20 | Restaurant kiosk — שיחות WA + תבניות | `RestaurantKioskShell` — לוח מסעדה + Inbox; עריכת נוסחי WA בקיוסק; לחיצה על שם → שיחה.
 2026-07-20 | מחלקת מסעדה — מקור אמת מסונכרן | `src/data/hotelDepartments.js` — «מסעדה» באונבורדינג/UserManagement/תפעול; בחירה באונבורדינג → `role=restaurant` + `restaurant_access`; legacy `מזמ"ש (F&B)` ממופה לתצוגה.
 2026-07-20 | Restaurant role kiosk-only access | `profiles.role=restaurant` + migration 254; קיוסק לוח מסעדה בלבד (כמו cleaner); `restaurant_access` לעובד staff; בלי סיידבר/Inbox/דאשבורד.

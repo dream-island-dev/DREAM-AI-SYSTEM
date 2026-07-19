@@ -50,6 +50,8 @@ serve(async (req: Request) => {
       table_label?: string | null;
       meal_period?: string;
       kitchen_notes?: string | null;
+      waiter_name_snap?: string | null;
+      shift_session_id?: string | null;
       lines?: LineInput[];
     };
 
@@ -179,6 +181,9 @@ serve(async (req: Request) => {
     );
     if (numErr) throw new Error(numErr.message);
 
+    const waiterNameSnap = String(body.waiter_name_snap ?? "").trim().slice(0, 120) || null;
+    const shiftSessionId = String(body.shift_session_id ?? "").trim() || null;
+
     const { data: order, error: orderErr } = await supabase
       .from("restaurant_orders")
       .insert({
@@ -193,6 +198,8 @@ serve(async (req: Request) => {
         dietary_snap: dietarySnap,
         vip_snap: vipSnap,
         waiter_id: user.id,
+        waiter_name_snap: waiterNameSnap,
+        shift_session_id: shiftSessionId,
         kitchen_notes: body.kitchen_notes?.trim()?.slice(0, 500) || null,
       })
       .select("id, display_number, day_ymd, status, submitted_at")
@@ -209,7 +216,11 @@ serve(async (req: Request) => {
       order_id: order.id,
       event_type: "submitted",
       actor_id: user.id,
-      payload: { line_count: orderLines.length },
+      payload: {
+        line_count: orderLines.length,
+        waiter_name_snap: waiterNameSnap,
+        shift_session_id: shiftSessionId,
+      },
     });
 
     return new Response(

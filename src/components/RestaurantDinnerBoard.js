@@ -31,11 +31,12 @@ import {
   sendRestaurantGuestWa,
 } from "../utils/restaurantDinnerMessaging";
 import RestaurantDinnerTemplatesPanel from "./RestaurantDinnerTemplatesPanel";
+import { useRestaurantShift } from "../context/RestaurantShiftContext";
 
 const GOLD = "#C9A96E";
 const GOLD_DARK = "#A8843A";
 
-function mergeRestaurantAudit(profile, user) {
+function mergeRestaurantAudit(profile, user, shiftDisplayName = null) {
   const p = normalizeGuestProfile(profile);
   return {
     ...p,
@@ -43,9 +44,16 @@ function mergeRestaurantAudit(profile, user) {
       ...(p.restaurant && typeof p.restaurant === "object" ? p.restaurant : {}),
       meals_updated_at: new Date().toISOString(),
       meals_updated_by: user?.id ?? null,
-      meals_updated_by_name: user?.name ?? null,
+      meals_updated_by_name: shiftDisplayName ?? user?.name ?? null,
     },
   };
+}
+
+function appendWaSignature(message, signature) {
+  const text = String(message ?? "").trim();
+  const sig = String(signature ?? "").trim();
+  if (!text || !sig || text.includes(sig)) return text;
+  return `${text}\n\n— ${sig}`;
 }
 
 function SlotChip({ label, selected, onClick, disabled, title }) {
@@ -203,7 +211,19 @@ function GuestListRow({ guest, selected, onSelect, onOpenChat, onSetMealTime, ki
   );
 }
 
-function GuestDinnerRow({ guest, user, msgConfig, onSaved, onError, onNotify, onOpenChat, kioskMode = false }) {
+function GuestDinnerRow({
+  guest,
+  user,
+  msgConfig,
+  onSaved,
+  onError,
+  onNotify,
+  onOpenChat,
+  kioskMode = false,
+  shiftDisplayName = null,
+  waSignature = "",
+  onWaSent,
+}) {
   const cfg = normalizeRestaurantDinnerMessages(msgConfig);
   const offerSlots = cfg.offer_slots;
   const defaultAskSlots = cfg.default_ask_slots;
@@ -301,7 +321,7 @@ function GuestDinnerRow({ guest, user, msgConfig, onSaved, onError, onNotify, on
       .maybeSingle();
     if (readErr) throw new Error(readErr.message);
 
-    const guest_profile = mergeRestaurantAudit(current?.guest_profile, user);
+    const guest_profile = mergeRestaurantAudit(current?.guest_profile, user, shiftDisplayName);
 
     const { error } = await supabase
       .from("guests")
@@ -344,7 +364,8 @@ function GuestDinnerRow({ guest, user, msgConfig, onSaved, onError, onNotify, on
     setSendingWa(true);
     try {
       await persistGuest();
-      await sendRestaurantGuestWa(supabase, guest, msg);
+      await sendRestaurantGuestWa(supabase, guest, appendWaSignature(msg, waSignature));
+      onWaSent?.();
       onNotify?.("נשמר בפרופיל + אישור נשלח לאורח");
     } catch (e) {
       onError?.(e?.message ?? "שגיאה");
@@ -363,7 +384,8 @@ function GuestDinnerRow({ guest, user, msgConfig, onSaved, onError, onNotify, on
     }
     setSendingWa(true);
     try {
-      await sendRestaurantGuestWa(supabase, guest, msg);
+      await sendRestaurantGuestWa(supabase, guest, appendWaSignature(msg, waSignature));
+      onWaSent?.();
       onNotify?.(successLabel);
     } catch (e) {
       onError?.(e?.message ?? "שגיאה בשליחה");
@@ -762,11 +784,13 @@ function GuestDinnerRow({ guest, user, msgConfig, onSaved, onError, onNotify, on
 export default function RestaurantDinnerBoard({
   user,
   kioskMode = false,
+  brandedShell = false,
   onLogout,
   onOpenDreamBotChat,
   initialSelectedGuestId = null,
   onReturnGuestConsumed,
 }) {
+  const shiftCtx = useRestaurantShift();
   const [boardTab, setBoardTab] = useState("coordination");
   const [mealPeriod, setMealPeriod] = useState("dinner");
   const [dayYmd, setDayYmd] = useState(israelTodayStr());
@@ -905,9 +929,14 @@ export default function RestaurantDinnerBoard({
   const withTime = guests.filter((g) => !guestNeedsMealCoordination(g)).length;
   const withoutTime = guests.length - withTime;
 
-  const shellStyle = kioskMode
-    ? { minHeight: "100vh", background: "var(--ivory, #F5F0E8)", padding: "16px 14px 32px" }
-    : { padding: "0 4px 24px" };
+  const shellStyle = brandedShell
+    ? { padding: "12px 14px 24px", background: "transparent" }
+    : kioskMode
+      ? { minHeight: "100vh", background: "var(--ivory, #F5F0E8)", padding: "16px 14px 32px" }
+      : { padding: "0 4px 24px" };
+
+  const shiftDisplayName = brandedShell ? shiftCtx?.session?.displayName ?? null : null;
+  const waSignature = brandedShell ? shiftCtx?.kioskUi?.wa_signature ?? "" : "";
 
   const showMenuAdmin = canManageRestaurantMenu(user);
   const showTemplates = canEditRestaurantDinnerTemplates(user);
@@ -932,33 +961,35 @@ export default function RestaurantDinnerBoard({
         </div>
       )}
 
-      <div style={{
-        display: "flex", justifyContent: "space-between", alignItems: "flex-start",
-        gap: 12, flexWrap: "wrap", marginBottom: 16,
-      }}>
-        <div>
-          <h1 style={{ margin: 0, fontSize: kioskMode ? 22 : 20, fontWeight: 800, color: "#9A7209" }}>
-            🍽️ לוח מסעדה
-          </h1>
-          <p style={{ margin: "6px 0 0", fontSize: 13, color: "var(--text-muted, #666)", lineHeight: 1.5 }}>
-            {kioskMode
-              ? "תיאום שעות · הזמנות · שיחות וואטסאפ עם אורחים."
-              : "תיאום צהריים וערב בפרופיל האורח — מסתנכרן לפורטל והבוט. אפשר גם לשאול בוואטסאפ."}
-          </p>
+      {!brandedShell && (
+        <div style={{
+          display: "flex", justifyContent: "space-between", alignItems: "flex-start",
+          gap: 12, flexWrap: "wrap", marginBottom: 16,
+        }}>
+          <div>
+            <h1 style={{ margin: 0, fontSize: kioskMode ? 22 : 20, fontWeight: 800, color: "#9A7209" }}>
+              🍽️ לוח מסעדה
+            </h1>
+            <p style={{ margin: "6px 0 0", fontSize: 13, color: "var(--text-muted, #666)", lineHeight: 1.5 }}>
+              {kioskMode
+                ? "תיאום שעות · הזמנות · שיחות וואטסאפ עם אורחים."
+                : "תיאום צהריים וערב בפרופיל האורח — מסתנכרן לפורטל והבוט. אפשר גם לשאול בוואטסאפ."}
+            </p>
+          </div>
+          {kioskMode && onLogout && !onOpenDreamBotChat && (
+            <button
+              type="button"
+              onClick={onLogout}
+              style={{
+                border: "1px solid var(--border)", borderRadius: 8, padding: "8px 14px",
+                background: "#fff", cursor: "pointer", fontFamily: "Heebo, sans-serif", fontWeight: 700,
+              }}
+            >
+              יציאה
+            </button>
+          )}
         </div>
-        {kioskMode && onLogout && !onOpenDreamBotChat && (
-          <button
-            type="button"
-            onClick={onLogout}
-            style={{
-              border: "1px solid var(--border)", borderRadius: 8, padding: "8px 14px",
-              background: "#fff", cursor: "pointer", fontFamily: "Heebo, sans-serif", fontWeight: 700,
-            }}
-          >
-            יציאה
-          </button>
-        )}
-      </div>
+      )}
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
         {BOARD_TABS.map((tab) => (
@@ -1009,6 +1040,8 @@ export default function RestaurantDinnerBoard({
           guests={guests}
           mealPeriod={mealPeriod}
           onToast={showToast}
+          shiftSession={brandedShell ? shiftCtx?.session ?? null : null}
+          onOrderSent={brandedShell ? shiftCtx?.recordOrderSent : undefined}
         />
       )}
 
@@ -1139,6 +1172,9 @@ export default function RestaurantDinnerBoard({
                 user={user}
                 msgConfig={msgConfig}
                 kioskMode={kioskMode}
+                shiftDisplayName={shiftDisplayName}
+                waSignature={waSignature}
+                onWaSent={brandedShell ? shiftCtx?.recordWaSent : undefined}
                 onOpenChat={onOpenDreamBotChat ? openGuestChat : (kioskMode ? null : openGuestChat)}
                 onSaved={(updated) => {
                   setGuests((prev) => prev.map((row) => (row.id === updated.id ? { ...row, ...updated } : row)));

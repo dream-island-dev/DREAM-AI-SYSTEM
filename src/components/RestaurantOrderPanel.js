@@ -24,7 +24,13 @@ function QtyButton({ label, onClick, disabled }) {
   );
 }
 
-export default function RestaurantOrderPanel({ guests, onToast, mealPeriod = "dinner" }) {
+export default function RestaurantOrderPanel({
+  guests,
+  onToast,
+  mealPeriod = "dinner",
+  shiftSession = null,
+  onOrderSent,
+}) {
   const [menu, setMenu] = useState(null);
   const [loadingMenu, setLoadingMenu] = useState(true);
   const [search, setSearch] = useState("");
@@ -99,12 +105,15 @@ export default function RestaurantOrderPanel({ guests, onToast, mealPeriod = "di
           table_label: selectedGuest ? null : tableOnly.trim(),
           meal_period: mealPeriod,
           kitchen_notes: kitchenNotes.trim() || null,
+          waiter_name_snap: shiftSession?.displayName ?? null,
+          shift_session_id: shiftSession?.sessionId ?? null,
           lines,
         },
       });
       if (error || !data?.ok) {
         throw new Error(data?.error ?? error?.message ?? "שגיאה בשליחה");
       }
+      onOrderSent?.();
       setDoneOrder(data.order);
       setCart({});
       setKitchenNotes("");
