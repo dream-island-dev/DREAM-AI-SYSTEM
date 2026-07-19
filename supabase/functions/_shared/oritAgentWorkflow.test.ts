@@ -37,6 +37,7 @@ Deno.test("composeOritWorkflowAlert — problem + ack draft", () => {
   if (!body.includes("ניקיון")) throw new Error("missing summary");
   if (!body.includes("קיבלנו את פנייתך")) throw new Error("missing ack draft");
   if (!body.includes("תראי לי")) throw new Error("missing guide step 1");
+  if (!body.includes("מה אני עושה בשבילך")) throw new Error("missing intro summary");
   if (!body.includes("כן שלחי")) throw new Error("missing guide step 3");
   assertEquals(body.includes("thread=869b0a98"), true);
 });

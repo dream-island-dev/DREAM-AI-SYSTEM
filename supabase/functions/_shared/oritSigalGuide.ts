@@ -1,5 +1,16 @@
 // Plain Hebrew copy + voice-friendly intent for Orit ↔ Sigal WhatsApp chat.
 
+/** Short onboarding — what Sigal does + how to use her. */
+export const SIGAL_INTRO_SUMMARY = [
+  "מה אני עושה בשבילך:",
+  "• קוראת תלונות במייל ומכינה טיוטות בסגנון שלך",
+  "• מראה לך כל נוסח לפני שליחה — כלום לא יוצא בלי אישור שלך",
+  "• מעדכנת כשאורח/ת משיב/ה, ועוזרת לסגור את הנושא",
+  "",
+  "איך להיעזר בי:",
+  "כתבי או הקליטי לי כאן — «עזרה» לכל הפקודות",
+].join("\n");
+
 export const SIGAL_GUIDE_ACK = [
   "שלב א׳ — מייל «קיבלנו את פנייתך»:",
   "① «תראי לי» — אראה את הנוסח",
@@ -17,7 +28,11 @@ export const SIGAL_GUIDE_FULL = [
 ].join("\n");
 
 export const SIGAL_GUIDE_HELP = [
-  "היי אורית 💜 אני סיגל — העוזרת שלך כאן.",
+  "היי אורית 💜 אני סיגל — העוזרת שלך בוואטסאפ.",
+  "",
+  SIGAL_INTRO_SUMMARY,
+  "",
+  "איך שולחים מיילים:",
   "",
   SIGAL_GUIDE_ACK,
   "",
@@ -46,7 +61,8 @@ export type OritSigalIntent =
   | "status"
   | "mark_done"
   | "help"
-  | "link";
+  | "link"
+  | "intro";
 
 function stripForIntent(text: string): string {
   return (text || "")
@@ -64,6 +80,10 @@ export function resolveOritSigalIntent(text: string): OritSigalIntent | null {
 
   if (/(עזרה|מה לעשות|איך .*מתקדמ|איך .*עובד|מה אפשר|פקודות|help)/.test(t)) {
     return "help";
+  }
+
+  if (/(מה את עושה|מי את|איך את עוזר|מה התפקיד|מה את מסבירה)/.test(t)) {
+    return "intro";
   }
 
   if (/(^|\s)(סיימתי|טופל|סגרתי|הנושא נסגר|טיפלתי בזה|done)(\s|$)/.test(t)) {

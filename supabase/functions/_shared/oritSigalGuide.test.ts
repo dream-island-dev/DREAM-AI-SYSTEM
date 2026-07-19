@@ -18,3 +18,8 @@ Deno.test("resolveOritSigalIntent — voice-style phrases", () => {
   assertEquals(resolveOritSigalIntent("איך אני מתקדמת"), "help");
   assertEquals(resolveOritSigalIntent("תשלחי לי את התשובה המלאה"), "show_full");
 });
+
+Deno.test("resolveOritSigalIntent — intro question", () => {
+  assertEquals(resolveOritSigalIntent("מה את עושה בשבילי"), "intro");
+  assertEquals(resolveOritSigalIntent("איך את עוזרת לי"), "intro");
+});

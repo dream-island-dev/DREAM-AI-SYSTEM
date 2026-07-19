@@ -21,6 +21,7 @@ import {
   SIGAL_GUIDE_ACK,
   SIGAL_GUIDE_AFTER_ACK,
   SIGAL_GUIDE_FULL,
+  SIGAL_INTRO_SUMMARY,
 } from "./oritSigalGuide.ts";
 
 export type OritWorkflowStep =
@@ -82,7 +83,12 @@ export function composeOritWorkflowAlert(
 
   return [
     "היי אורית 💜",
-    "כאן סיגל — תלונה דחופה שממתינה לטיפול שלך.",
+    "כאן סיגל.",
+    "",
+    SIGAL_INTRO_SUMMARY,
+    "",
+    "───",
+    "תלונה דחופה שממתינה לטיפול:",
     "",
     ...guestContactLines(thread),
     urgencyHeadline(thread.category, thread.urgency),
@@ -119,6 +125,7 @@ export function composeOritFullReplyReadyMessage(
   return [
     "היי אורית 💜",
     `✓ אישור הקבלה נשלח ל־${label}.`,
+    "עכשיו אכין ואציג לך מכתב תשובה מלא — רק אחרי שתאשרי נשלח.",
     "",
     "שלב ב׳ — מכתב תשובה מלא (תצוגה מקוצרת):",
     "─────────────",
@@ -142,6 +149,8 @@ export function composeSigalGuestReplyCoaching(
 
   const lines = [
     "היי אורית 💜",
+    SIGAL_INTRO_SUMMARY,
+    "",
     `📩 ${label} השיב/ה למייל:`,
     "─────────────",
     guestMessage.trim(),

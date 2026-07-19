@@ -23,6 +23,7 @@ import {
   SIGAL_GUIDE_CONFIRM,
   SIGAL_GUIDE_FULL,
   SIGAL_GUIDE_HELP,
+  SIGAL_INTRO_SUMMARY,
   resolveOritSigalIntent,
 } from "./oritSigalGuide.ts";
 
@@ -536,6 +537,15 @@ export async function handleOritSigalChat(
     return;
   }
 
+  if (intent === "intro") {
+    await sendWhapiText(phoneDigits, [
+      voicePrefix ? `${voicePrefix}${SIGAL_INTRO_SUMMARY}` : SIGAL_INTRO_SUMMARY,
+      "",
+      "לפקודות מלאות — עני «עזרה».",
+    ].join("\n"), { noLinkPreview: true });
+    return;
+  }
+
   if (intent === "link" && active) {
     await sendWhapiText(phoneDigits, threadLink(String(active.thread.id)), { noLinkPreview: true });
     return;
@@ -602,8 +612,16 @@ export async function handleOritSigalChat(
   await sendWhapiText(phoneDigits, [
     "היי אורית 💜",
     active
-      ? [`${workflowStatusLine(active.thread)}`, "", SIGAL_GUIDE_ACK, "", "עזרה? עני «עזרה»."].join("\n")
-      : "אין כרגע פנייה פתוחה. אעדכן כשתגיע תלונה או תשובת אורח.",
+      ? [
+        `${workflowStatusLine(active.thread)}`,
+        "",
+        SIGAL_INTRO_SUMMARY,
+        "",
+        SIGAL_GUIDE_ACK,
+        "",
+        "עזרה? עני «עזרה».",
+      ].join("\n")
+      : [SIGAL_INTRO_SUMMARY, "", "אין כרגע פנייה פתוחה. אעדכן כשתגיע תלונה."].join("\n"),
   ].join("\n"), { noLinkPreview: true });
 }
 
