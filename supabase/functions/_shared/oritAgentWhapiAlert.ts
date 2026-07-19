@@ -44,8 +44,8 @@ export const URGENCY_HE: Record<string, string> = {
   low: "נמוך",
 };
 
-export function isOritThreadAlertWorthy(category: string, _urgency?: string): boolean {
-  return category === "complaint";
+export function isOritThreadAlertWorthy(category: string, urgency?: string): boolean {
+  return category === "complaint" && (urgency === "critical" || urgency === "high");
 }
 
 function guestLabel(thread: OritAlertThread): string {

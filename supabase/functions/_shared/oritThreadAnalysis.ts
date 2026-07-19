@@ -10,6 +10,7 @@ import {
   tier0ToAnalysisResult,
 } from "./oritAgentAnalyzePolicy.ts";
 import { isGenericLeadFormSubject } from "./oritAgentClassify.ts";
+import { isOritWorkflowComplaint } from "./oritAgentWorkflow.ts";
 
 export type OritThreadAnalysisRow = {
   id: string;
@@ -18,7 +19,25 @@ export type OritThreadAnalysisRow = {
   from_email: string;
   snippet: string | null;
   category?: string | null;
+  auto_ack_sent_at?: string | null;
+  workflow_step?: string | null;
 };
+
+function buildFallbackAckSuggestion(guestName: string): string {
+  const name = guestName?.trim() && !guestName.includes("@") ? guestName : "שלום רב";
+  return [
+    `${name},`,
+    "",
+    "תודה שפניתם אלינו ושיתפתם אותנו בחווייתכם.",
+    "קיבלנו את פנייתך ואנו מתייחסים לכך ברצינות רבה.",
+    "ניצור איתך קשר בתוך 72 השעות הקרובות.",
+    "",
+    "בברכה,",
+    "אורית חלפון",
+    "מנהלת שירות לאורח",
+    "דרים איילנד — אתר הנופש",
+  ].join("\n");
+}
 
 export async function fetchOritThreadInbound(
   supabase: SupabaseClient,
@@ -86,22 +105,53 @@ export async function persistOritThreadAnalysis(
   threadId: string,
   analysis: Awaited<ReturnType<typeof analyzeOritThread>>,
   createdBy?: string,
+  threadMeta?: Pick<OritThreadAnalysisRow, "from_name" | "auto_ack_sent_at" | "workflow_step">,
 ): Promise<void> {
-  await supabase.from("orit_agent_threads").update({
+  const workflowComplaint = isOritWorkflowComplaint(analysis.category, analysis.urgency);
+  const ackAlreadySent = Boolean(threadMeta?.auto_ack_sent_at);
+
+  const threadUpdate: Record<string, unknown> = {
     urgency: analysis.urgency,
     urgency_reason: analysis.urgency_reason,
     category: analysis.category,
     ai_summary: analysis.summary,
     ai_analyzed_at: new Date().toISOString(),
-  }).eq("id", threadId);
+  };
 
-  await supabase.from("orit_agent_drafts").delete().eq("thread_id", threadId).eq("status", "suggested");
+  if (workflowComplaint && !ackAlreadySent) {
+    threadUpdate.workflow_step = "awaiting_ack_approval";
+  }
+
+  await supabase.from("orit_agent_threads").update(threadUpdate).eq("id", threadId);
+
+  if (!ackAlreadySent) {
+    await supabase.from("orit_agent_drafts").delete()
+      .eq("thread_id", threadId)
+      .eq("draft_kind", "ack")
+      .in("status", ["suggested", "edited"]);
+
+    const ackText = analysis.ackSuggestion
+      || buildFallbackAckSuggestion(threadMeta?.from_name || "");
+    await supabase.from("orit_agent_drafts").insert({
+      thread_id: threadId,
+      suggested_text: ackText,
+      draft_kind: "ack",
+      status: "suggested",
+      ...(createdBy ? { created_by: createdBy } : {}),
+    });
+  }
+
+  await supabase.from("orit_agent_drafts").delete()
+    .eq("thread_id", threadId)
+    .eq("draft_kind", "full_reply")
+    .in("status", ["suggested", "edited"]);
 
   if (analysis.suggestions.length) {
     await supabase.from("orit_agent_drafts").insert(
       analysis.suggestions.map((text) => ({
         thread_id: threadId,
         suggested_text: text,
+        draft_kind: "full_reply",
         status: "suggested",
         ...(createdBy ? { created_by: createdBy } : {}),
       })),

@@ -53,7 +53,11 @@ serve(async (req: Request) => {
 
     const forceLlm = thread.category === "complaint";
     const analysis = await runOritThreadAnalysis(supabase, thread.mailbox_id, thread, { forceLlm });
-    await persistOritThreadAnalysis(supabase, threadId, analysis, userData.user.id);
+    await persistOritThreadAnalysis(supabase, threadId, analysis, userData.user.id, {
+      from_name: thread.from_name,
+      auto_ack_sent_at: thread.auto_ack_sent_at,
+      workflow_step: thread.workflow_step,
+    });
 
     return new Response(JSON.stringify({
       ok: true,

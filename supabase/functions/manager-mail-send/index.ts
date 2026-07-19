@@ -2,11 +2,43 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import type { OritMailboxRow } from "../_shared/oritAgentMail.ts";
 import { deliverOritThreadEmail } from "../_shared/oritAgentSend.ts";
+import { fetchOritThreadInbound } from "../_shared/oritThreadAnalysis.ts";
+import {
+  notifyOritFullReplyReady,
+  sendOritAckEmail,
+  type OritAlertMailbox,
+} from "../_shared/oritAgentWorkflow.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
+
+async function saveOritStyleSample(
+  supabase: ReturnType<typeof createClient>,
+  mailboxId: string,
+  threadId: string,
+  category: string,
+  outboundText: string,
+  suggestedText?: string,
+): Promise<void> {
+  const inbound = await fetchOritThreadInbound(supabase, threadId);
+  await supabase.from("orit_agent_style_samples").insert({
+    mailbox_id: mailboxId,
+    context_category: category || "other",
+    inbound_snippet: (inbound || "").slice(0, 300),
+    outbound_text: outboundText,
+  });
+
+  if (suggestedText && suggestedText.trim() !== outboundText.trim()) {
+    await supabase.from("orit_agent_style_samples").insert({
+      mailbox_id: mailboxId,
+      context_category: `${category || "other"}_corrected`,
+      inbound_snippet: (inbound || "").slice(0, 300),
+      outbound_text: outboundText,
+    });
+  }
+}
 
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
@@ -28,7 +60,15 @@ serve(async (req: Request) => {
       });
     }
 
-    const { threadId, bodyText, markHandled, sendOnly } = await req.json();
+    const {
+      threadId,
+      bodyText,
+      markHandled,
+      sendOnly,
+      draftKind,
+      draftId,
+    } = await req.json();
+
     if (!threadId || !bodyText) {
       return new Response(JSON.stringify({ ok: false, error: "threadId and bodyText required" }), {
         status: 200,
@@ -52,6 +92,86 @@ serve(async (req: Request) => {
     const mailbox = thread.orit_agent_mailbox as OritMailboxRow;
     const finalText = String(bodyText).trim();
     const sentAt = new Date().toISOString();
+    const kind = draftKind === "ack" ? "ack" : "full_reply";
+
+    let suggestedText: string | undefined;
+    if (draftId) {
+      const { data: draftRow } = await supabase
+        .from("orit_agent_drafts")
+        .select("suggested_text")
+        .eq("id", draftId)
+        .maybeSingle();
+      suggestedText = draftRow?.suggested_text;
+    }
+
+    if (kind === "ack") {
+      if (thread.is_demo) {
+        await supabase.from("orit_agent_messages").insert({
+          thread_id: threadId,
+          external_key: `demo-auto_ack-${sentAt}`,
+          direction: "outbound",
+          body_text: finalText,
+          received_at: sentAt,
+          message_kind: "auto_ack",
+        });
+        await supabase.from("orit_agent_threads").update({
+          auto_ack_sent_at: sentAt,
+          workflow_step: "awaiting_reply_approval",
+        }).eq("id", threadId);
+      } else if (mailbox.read_only_mode !== false) {
+        return new Response(JSON.stringify({
+          ok: false,
+          error: "read_only_mode",
+          hint: "תיבה במצב קריאה בלבד — העתיקי ל-Outlook",
+        }), {
+          status: 200,
+          headers: { ...CORS, "Content-Type": "application/json" },
+        });
+      } else {
+        const ackResult = await sendOritAckEmail(supabase, mailbox, thread, finalText, draftId);
+        if (!ackResult.sent) {
+          return new Response(JSON.stringify({
+            ok: false,
+            error: ackResult.error || "send_failed",
+            hint: "שליחת אישור הקבלה נכשלה",
+          }), {
+            status: 200,
+            headers: { ...CORS, "Content-Type": "application/json" },
+          });
+        }
+      }
+
+      await saveOritStyleSample(
+        supabase,
+        thread.mailbox_id,
+        threadId,
+        "complaint_ack",
+        finalText,
+        suggestedText,
+      );
+
+      const mailboxAlert: OritAlertMailbox = {
+        id: mailbox.id,
+        digest_whatsapp_phone: mailbox.digest_whatsapp_phone,
+        alert_enabled: mailbox.alert_enabled !== false,
+        profile_id: mailbox.profile_id,
+      };
+      try {
+        await notifyOritFullReplyReady(supabase, mailboxAlert, threadId);
+      } catch (notifyErr) {
+        console.warn("[manager-mail-send] full-reply-ready notify failed:", (notifyErr as Error).message);
+      }
+
+      return new Response(JSON.stringify({
+        ok: true,
+        sent: true,
+        draftKind: "ack",
+        workflow_step: "awaiting_reply_approval",
+      }), {
+        status: 200,
+        headers: { ...CORS, "Content-Type": "application/json" },
+      });
+    }
 
     const delivery = await deliverOritThreadEmail(
       supabase,
@@ -80,24 +200,40 @@ serve(async (req: Request) => {
       });
     }
 
-    await supabase.from("orit_agent_style_samples").insert({
-      mailbox_id: thread.mailbox_id,
-      context_category: thread.category || "other",
-      inbound_snippet: (thread.snippet || "").slice(0, 300),
-      outbound_text: finalText,
-    });
+    if (delivery.sent || thread.is_demo) {
+      await saveOritStyleSample(
+        supabase,
+        thread.mailbox_id,
+        threadId,
+        thread.category || "complaint",
+        finalText,
+        suggestedText,
+      );
 
-    if (delivery.sent) {
-      await supabase.from("orit_agent_drafts").update({ status: "sent" })
-        .eq("thread_id", threadId)
-        .eq("status", "suggested");
-    }
+      if (draftId) {
+        await supabase.from("orit_agent_drafts").update({
+          status: "sent",
+          final_text: finalText,
+        }).eq("id", draftId);
+      } else {
+        await supabase.from("orit_agent_drafts").update({
+          status: "sent",
+          final_text: finalText,
+        })
+          .eq("thread_id", threadId)
+          .eq("draft_kind", "full_reply")
+          .in("status", ["suggested", "edited"]);
+      }
 
-    if (markHandled !== false && !sendOnly) {
-      await supabase.from("orit_agent_threads").update({
-        status: "handled",
-        handled_at: sentAt,
-      }).eq("id", threadId);
+      const threadUpdate: Record<string, unknown> = {
+        workflow_step: "reply_sent",
+        full_reply_sent_at: sentAt,
+      };
+      if (markHandled !== false && !sendOnly) {
+        threadUpdate.status = "handled";
+        threadUpdate.handled_at = sentAt;
+      }
+      await supabase.from("orit_agent_threads").update(threadUpdate).eq("id", threadId);
     }
 
     return new Response(JSON.stringify({
@@ -106,6 +242,8 @@ serve(async (req: Request) => {
       read_only_mode: mailbox?.read_only_mode !== false,
       saved_sample: true,
       external_key: delivery.externalKey ?? null,
+      draftKind: "full_reply",
+      workflow_step: "reply_sent",
     }), {
       status: 200,
       headers: { ...CORS, "Content-Type": "application/json" },

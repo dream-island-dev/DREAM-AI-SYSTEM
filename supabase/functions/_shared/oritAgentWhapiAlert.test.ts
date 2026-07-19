@@ -6,8 +6,10 @@ import {
   isOritThreadAlertWorthy,
 } from "./oritAgentWhapiAlert.ts";
 
-Deno.test("isOritThreadAlertWorthy — complaints only", () => {
-  assertEquals(isOritThreadAlertWorthy("complaint", "normal"), true);
+Deno.test("isOritThreadAlertWorthy — serious complaints only", () => {
+  assertEquals(isOritThreadAlertWorthy("complaint", "critical"), true);
+  assertEquals(isOritThreadAlertWorthy("complaint", "high"), true);
+  assertEquals(isOritThreadAlertWorthy("complaint", "normal"), false);
   assertEquals(isOritThreadAlertWorthy("lead", "normal"), false);
   assertEquals(isOritThreadAlertWorthy("booking", "critical"), false);
 });

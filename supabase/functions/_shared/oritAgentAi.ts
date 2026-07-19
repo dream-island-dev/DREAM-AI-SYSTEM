@@ -43,11 +43,12 @@ ${ORIT_VOICE_BLOCK}
 • urgency_reason: 1–2 משפטים לאורית.
 • category: complaint | lead | booking | spa | vendor | internal | other
 • summary: 2–3 שורות — שם האורח, מה קרה, בלי המצאות.
+• ack_suggestion: אם category=complaint — מייל קצר (3–6 פסקאות) בסגנון אורית: אמפתיה + «קיבלנו את פנייתך» + «ניצור איתך קשר בתוך 72 שעות» — בלי פתרון מלא ובלי הבטחות כספיות.
 • suggestions:
   - אם category=complaint: מכתב שלם אחד (8–18 פסקאות) בסגנון אורית, מבוסס על דגימות הסגנון. אפשר עד 2 וריאנטים במערך.
   - אחרת: עד 2 טיוטות קצרות.
 • אל תמציא מחירים, שעות, החזרים או הבטחות שלא בפנייה.
-• JSON בלבד: {"urgency":"...","urgency_reason":"...","category":"...","summary":"...","suggestions":["..."]}
+• JSON בלבד: {"urgency":"...","urgency_reason":"...","category":"...","summary":"...","ack_suggestion":"...","suggestions":["..."]}
 `.trim();
 
 export type ThreadAnalysisInput = {
@@ -64,6 +65,7 @@ export type ThreadAnalysisResult = {
   urgency_reason: string;
   category: "complaint" | "lead" | "booking" | "spa" | "vendor" | "internal" | "other";
   summary: string;
+  ackSuggestion?: string;
   suggestions: string[];
   engine: string;
 };
@@ -135,6 +137,7 @@ function normalizeAnalysis(obj: Record<string, unknown>): ThreadAnalysisResult |
     urgency_reason: String(obj.urgency_reason || "").trim() || "פנייה שדורשת בדיקה.",
     category: (allowedCategory.has(category) ? category : "other") as ThreadAnalysisResult["category"],
     summary: String(obj.summary || "").trim() || "פניית אורח לטיפול.",
+    ackSuggestion: String(obj.ack_suggestion || obj.ackSuggestion || "").trim() || undefined,
     suggestions: suggestions.length ? suggestions : ["שלום, קיבלנו את פנייתך ונחזור אליך בהקדם. תודה על סבלנותך."],
     engine: "parsed",
   };

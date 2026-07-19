@@ -72,6 +72,23 @@ function isThreadReceivedToday(iso) {
     && d.getFullYear() === now.getFullYear();
 }
 
+function workflowStepMeta(step, thread) {
+  const ackDone = Boolean(thread?.auto_ack_sent_at);
+  const replyDone = Boolean(thread?.full_reply_sent_at);
+  const guestReplied = step === "guest_replied" || thread?.workflow_step === "guest_replied";
+  return {
+    ackDone,
+    replyDone,
+    guestReplied,
+    label: guestReplied
+      ? "📩 האורח/ת השיב/ה — ממתינה לתשובה"
+      : !ackDone
+        ? "⏳ שלב 1: אישור קבלה (72 שעות)"
+        : !replyDone
+          ? "✏️ שלב 2: תשובה מלאה לאישור"
+          : "✅ נשלחה תשובה מלאה",
+  };
+}
 function fmtReceivedLabel(iso) {
   if (!iso) return "—";
   const d = new Date(iso);
@@ -110,6 +127,7 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
   const [threads, setThreads] = useState([]);
   const [messages, setMessages] = useState([]);
   const [drafts, setDrafts] = useState([]);
+  const [ackText, setAckText] = useState("");
   const [selectedId, setSelectedId] = useState(null);
   const [whatsappPhone, setWhatsappPhone] = useState("");
   const [alertEnabled, setAlertEnabled] = useState(true);
@@ -132,6 +150,7 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
     setMobileScreen("list");
     setSelectedId(null);
     setReplyText("");
+    setAckText("");
   }, []);
 
   const goBackToList = useCallback(() => {
@@ -150,6 +169,7 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
     }
     setSelectedId(threadId);
     setReplyText("");
+    setAckText("");
     if (isMobile) {
       setMobileScreen("detail");
       if (typeof window !== "undefined" && window.history) {
@@ -208,14 +228,19 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
     if (!threadId) {
       setMessages([]);
       setDrafts([]);
+      setAckText("");
       return;
     }
     const [{ data: msgs }, { data: drs }] = await Promise.all([
       supabase.from("orit_agent_messages").select("*").eq("thread_id", threadId).order("received_at", { ascending: true }),
-      supabase.from("orit_agent_drafts").select("*").eq("thread_id", threadId).eq("status", "suggested").order("created_at", { ascending: false }),
+      supabase.from("orit_agent_drafts").select("*").eq("thread_id", threadId).in("status", ["suggested", "edited"]).order("created_at", { ascending: false }),
     ]);
     setMessages(msgs ?? []);
     setDrafts(drs ?? []);
+    const ackDraft = (drs ?? []).find((d) => d.draft_kind === "ack");
+    const fullDraft = (drs ?? []).find((d) => d.draft_kind === "full_reply" || !d.draft_kind);
+    setAckText(ackDraft?.final_text || ackDraft?.suggested_text || "");
+    setReplyText(fullDraft?.final_text || fullDraft?.suggested_text || "");
   }, []);
 
   useEffect(() => {
@@ -288,6 +313,21 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
   const selected = useMemo(
     () => threads.find((t) => t.id === selectedId) ?? null,
     [threads, selectedId],
+  );
+
+  const ackDraft = useMemo(
+    () => drafts.find((d) => d.draft_kind === "ack") ?? null,
+    [drafts],
+  );
+
+  const fullReplyDraft = useMemo(
+    () => drafts.find((d) => d.draft_kind === "full_reply" || !d.draft_kind) ?? null,
+    [drafts],
+  );
+
+  const workflowMeta = useMemo(
+    () => workflowStepMeta(selected?.workflow_step, selected),
+    [selected],
   );
 
   const openCount = threads.filter((t) => t.status === "awaiting_reply").length;
@@ -467,21 +507,30 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
     }
   };
 
-  const handleSendReply = async ({ markHandled = false, text } = {}) => {
+  const handleSendReply = async ({ markHandled = false, text, draftKind = "full_reply", draftId } = {}) => {
     const body = (text ?? replyText).trim();
     if (!body || !selectedId) return;
     setBusy(true);
     try {
       const { data, error } = await supabase.functions.invoke("manager-mail-send", {
-        body: { threadId: selectedId, bodyText: body, markHandled, sendOnly: !markHandled },
+        body: {
+          threadId: selectedId,
+          bodyText: body,
+          markHandled,
+          sendOnly: !markHandled,
+          draftKind,
+          draftId: draftId ?? (draftKind === "ack" ? ackDraft?.id : fullReplyDraft?.id),
+        },
       });
       if (error) throw error;
       if (!data?.ok) throw new Error(data?.hint || data?.error || "שליחה נכשלה");
 
       if (data.sent) {
         const targetEmail = selected ? resolveOritReplyEmail(selected.from_email, selected.guest_contact_email) : "";
-        const sentLabel = targetEmail ? `נשלח ל־${targetEmail}` : "נשלח לאורח במייל";
-        showToast("ok", markHandled ? `${sentLabel} וסומן כטופל` : sentLabel);
+        const phaseLabel = draftKind === "ack" ? "אישור קבלה נשלח" : "תשובה מלאה נשלחה";
+        const sentLabel = targetEmail ? `${phaseLabel} ל־${targetEmail}` : `${phaseLabel} לאורח במייל`;
+        const ackFollowUp = draftKind === "ack" ? " — שלב 2 מוכן לעריכה" : "";
+        showToast("ok", markHandled ? `${sentLabel} וסומן כטופל` : `${sentLabel}${ackFollowUp}`);
         if (markHandled) {
           setReplyText("");
           goBackToList();
@@ -505,6 +554,12 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
     } finally {
       setBusy(false);
     }
+  };
+
+  const handleSendAck = async () => {
+    const body = ackText.trim();
+    if (!body || !selectedId) return;
+    await handleSendReply({ markHandled: false, text: body, draftKind: "ack", draftId: ackDraft?.id });
   };
 
   const handleQuickAck = async (sendNow = false) => {
@@ -775,19 +830,24 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
               }}>
                 {urgencyMeta(selected.urgency).label}
               </span>
+              {selected.workflow_step && selected.category === "complaint" && (
+                <span style={{ fontSize: 12, padding: "4px 10px", borderRadius: 999, background: "#EDE9FE", color: "#5B21B6", fontWeight: 600 }}>
+                  {workflowMeta.label}
+                </span>
+              )}
+              {selected.full_reply_sent_at && (
+                <span style={{ fontSize: 12, padding: "4px 10px", borderRadius: 999, background: "#DCFCE7", color: "#047857", fontWeight: 600 }}>
+                  ✉ תשובה מלאה נשלחה · {fmtDt(selected.full_reply_sent_at)}
+                </span>
+              )}
               {selected.auto_ack_sent_at && (
                 <span style={{ fontSize: 12, padding: "4px 10px", borderRadius: 999, background: "#DCFCE7", color: "#047857", fontWeight: 600 }}>
-                  ✉ אישור קבלה נשלח לאורח
+                  ✉ אישור קבלה · {fmtDt(selected.auto_ack_sent_at)}
                 </span>
               )}
-              {selected.orit_decision === "pending" && !selected.auto_ack_sent_at && (
+              {selected.workflow_step === "awaiting_ack_approval" && !selected.auto_ack_sent_at && (
                 <span style={{ fontSize: 12, padding: "4px 10px", borderRadius: 999, background: "#FEF3C7", color: "#92400E", fontWeight: 600 }}>
-                  ⏳ ממתינה לבחירתך בוואטסאפ (1=מייל / 2=וואטסאפ)
-                </span>
-              )}
-              {selected.orit_decision === "whatsapp" && !selected.auto_ack_sent_at && (
-                <span style={{ fontSize: 12, padding: "4px 10px", borderRadius: 999, background: "#DBEAFE", color: "#1D4ED8", fontWeight: 600 }}>
-                  💬 נבחר וואטסאפ — בלי מייל אוטומטי
+                  ⏳ ממתינה לאישור — סיגל ב-WA: «תראי לי» / «אשרי» → «כן שלחי»
                 </span>
               )}
             </div>
@@ -823,6 +883,14 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
             {selected.ai_summary && (
               <div style={{ marginTop: 10, padding: 10, borderRadius: 8, background: "var(--ivory)", fontSize: 14 }}>
                 <strong>סיכום הסוכן:</strong> {selected.ai_summary}
+              </div>
+            )}
+            {selected.category === "complaint" && (selected.urgency === "high" || selected.urgency === "critical") && (
+              <div style={{ marginTop: 10, padding: 10, borderRadius: 8, background: "#F5F3FF", fontSize: 13, lineHeight: 1.6 }}>
+                <div style={{ fontWeight: 700, marginBottom: 6 }}>מסלול טיפול</div>
+                <div>{workflowMeta.ackDone ? "✅" : "①"} אישור קבלה (72 שעות)</div>
+                <div>{workflowMeta.replyDone ? "✅" : "②"} תשובה מלאה לאורח/ת</div>
+                <div>{workflowMeta.guestReplied ? "📩" : "③"} מעקב תשובת אורח</div>
               </div>
             )}
           </div>
@@ -866,14 +934,16 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
             <button
               type="button"
               className="btn"
-              disabled={busy || selected.status === "handled" || selected.category !== "complaint"}
+              disabled={busy || selected.status === "handled" || selected.category !== "complaint" || !["high", "critical"].includes(selected.urgency)}
               onClick={() => handleSendWhapiAlert(selected.id, { force: true })}
               style={{ minHeight: 44 }}
-              title={selected.category === "complaint"
-                ? "שליחת הודעת סיגל לאורית בוואטסאפ עם בחירה: מייל אוטומטי או וואטסאפ"
-                : "וואטסאפ לאורית — רק לתלונות (לא לידים)"}
+              title={selected.category !== "complaint"
+                ? "וואטסאפ לאורית — רק לתלונות"
+                : !["high", "critical"].includes(selected.urgency)
+                  ? "התראת וואטסאפ — תלונות דחופות/קריטיות בלבד"
+                  : "שליחת התראה לסיגל בוואטסאפ עם טיוטת אישור קבלה"}
             >
-              📱 שאלי את אורית (וואטסאפ)
+              📱 התראה לסיגל (וואטסאפ)
             </button>
             {canSendFromXos && (
               <button
@@ -916,7 +986,86 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
             </button>
           </div>
 
-          {drafts.length > 0 && (
+          {!selected.auto_ack_sent_at && (ackDraft || ackText) && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10, flexShrink: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#92400E" }}>
+                שלב 1 — אישור קבלה (72 שעות)
+              </div>
+              <textarea
+                value={ackText}
+                onChange={(e) => setAckText(e.target.value)}
+                placeholder="ערכי את אישור הקבלה לפני שליחה…"
+                rows={isMobile ? 4 : 5}
+                style={{
+                  width: "100%",
+                  borderRadius: 10,
+                  border: "1px solid #FCD34D",
+                  padding: 12,
+                  fontSize: 14,
+                  lineHeight: 1.5,
+                  background: "#FFFBEB",
+                }}
+              />
+              {canSendFromXos && (
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  disabled={busy || !ackText.trim() || !resolveOritReplyEmail(selected.from_email, selected.guest_contact_email)}
+                  onClick={handleSendAck}
+                  style={{ minHeight: 44 }}
+                >
+                  ✉ אשרי ושלחי אישור קבלה
+                </button>
+              )}
+            </div>
+          )}
+
+          {selected.auto_ack_sent_at && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10, flexShrink: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#1D4ED8" }}>
+                שלב 2 — תשובה מלאה לאורח/ת
+              </div>
+              <textarea
+                value={replyText}
+                onChange={(e) => setReplyText(e.target.value)}
+                placeholder={canSendFromXos ? "ערכי כאן את התשובה המלאה לפני שליחה לאורח…" : "ערכי כאן טיוטה לפני העתקה ל-Outlook…"}
+                rows={isMobile ? 6 : 8}
+                style={{
+                  width: "100%",
+                  borderRadius: 10,
+                  border: "1px solid var(--border)",
+                  padding: 12,
+                  fontSize: 14,
+                  lineHeight: 1.5,
+                  background: "#FFFBEB",
+                }}
+              />
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {canSendFromXos && (
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    disabled={busy || !replyText.trim() || selected.status === "handled"}
+                    onClick={() => handleSendReply({ markHandled: true, text: replyText, draftKind: "full_reply" })}
+                    style={{ minHeight: 44 }}
+                  >
+                    ✉ אשרי ושלחי תשובה מלאה
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={busy || !replyText.trim()}
+                  onClick={() => handleCopyReply(replyText)}
+                  style={{ minHeight: 44 }}
+                >
+                  📋 העתיקי
+                </button>
+              </div>
+            </div>
+          )}
+
+          {!selected.auto_ack_sent_at && !ackDraft && drafts.length > 0 && (
             <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10, flexShrink: 0 }}>
               <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-muted)" }}>
                 {canSendFromXos ? "טיוטות מוצעות" : "טיוטות להעתקה ל-Outlook"}
@@ -959,6 +1108,8 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
             </div>
           )}
 
+          {!(selected.category === "complaint" && ["high", "critical"].includes(selected.urgency)) && (
+          <>
           <textarea
             value={replyText}
             onChange={(e) => setReplyText(e.target.value)}
@@ -1008,6 +1159,8 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
               </button>
             )}
           </div>
+          </>
+          )}
         </>
       )}
     </div>

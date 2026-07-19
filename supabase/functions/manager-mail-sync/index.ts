@@ -13,6 +13,12 @@ import { fetchMailboxInboxMessages, isMailboxIngestConfigured } from "../_shared
 import { isImapConfigured, resolveImapConfig, testImapConnection } from "../_shared/imapMail.ts";
 import { notifyOritThreadDecisionPrompt } from "../_shared/oritAgentOritDecision.ts";
 import {
+  isOritWorkflowComplaint,
+  notifyOritGuestReplied,
+  notifyOritWorkflowAlert,
+  threadHasOutboundEmail,
+} from "../_shared/oritAgentWorkflow.ts";
+import {
   persistOritThreadAnalysis,
   runOritThreadAnalysis,
 } from "../_shared/oritThreadAnalysis.ts";
@@ -35,7 +41,11 @@ async function analyzeThread(
   if (!thread || thread.ai_analyzed_at) return;
 
   const analysis = await runOritThreadAnalysis(supabase, mailboxId, thread);
-  await persistOritThreadAnalysis(supabase, threadId, analysis);
+  await persistOritThreadAnalysis(supabase, threadId, analysis, undefined, {
+    from_name: thread.from_name,
+    auto_ack_sent_at: thread.auto_ack_sent_at,
+    workflow_step: thread.workflow_step,
+  });
 }
 
 serve(async (req: Request) => {
@@ -178,25 +188,50 @@ serve(async (req: Request) => {
 
           if (isNewThread && threadId) {
             try {
-              await notifyOritThreadDecisionPrompt(supabase, {
+              const { data: analyzed } = await supabase
+                .from("orit_agent_threads")
+                .select("category, urgency")
+                .eq("id", threadId)
+                .maybeSingle();
+              const mailboxAlert = {
                 id: mailbox.id,
                 profile_id: (mailbox as { profile_id?: string | null }).profile_id ?? null,
                 digest_whatsapp_phone: (mailbox as { digest_whatsapp_phone?: string | null }).digest_whatsapp_phone ?? null,
                 alert_enabled: (mailbox as { alert_enabled?: boolean | null }).alert_enabled ?? true,
-              }, threadId);
+              };
+              if (analyzed && isOritWorkflowComplaint(analyzed.category, analyzed.urgency)) {
+                await notifyOritWorkflowAlert(supabase, mailboxAlert, threadId);
+              } else if (analyzed?.category === "complaint") {
+                await notifyOritThreadDecisionPrompt(supabase, mailboxAlert, threadId);
+              }
             } catch (promptErr) {
-              console.warn("[manager-mail-sync] orit decision prompt failed:", (promptErr as Error).message);
+              console.warn("[manager-mail-sync] orit alert failed:", (promptErr as Error).message);
             }
           } else if (!isNewThread && isNewInboundMsg && threadId) {
             try {
-              await notifyOritThreadDecisionPrompt(supabase, {
+              const mailboxAlert = {
                 id: mailbox.id,
                 profile_id: (mailbox as { profile_id?: string | null }).profile_id ?? null,
                 digest_whatsapp_phone: (mailbox as { digest_whatsapp_phone?: string | null }).digest_whatsapp_phone ?? null,
                 alert_enabled: (mailbox as { alert_enabled?: boolean | null }).alert_enabled ?? true,
-              }, threadId, { force: false });
+              };
+              const hadOutbound = await threadHasOutboundEmail(supabase, threadId);
+              if (hadOutbound) {
+                await notifyOritGuestReplied(supabase, mailboxAlert, threadId, msg.bodyText || msg.bodyPreview || "");
+              } else {
+                const { data: analyzed } = await supabase
+                  .from("orit_agent_threads")
+                  .select("category, urgency")
+                  .eq("id", threadId)
+                  .maybeSingle();
+                if (analyzed && isOritWorkflowComplaint(analyzed.category, analyzed.urgency)) {
+                  await notifyOritWorkflowAlert(supabase, mailboxAlert, threadId, { force: true });
+                } else if (analyzed?.category === "complaint") {
+                  await notifyOritThreadDecisionPrompt(supabase, mailboxAlert, threadId, { force: false });
+                }
+              }
             } catch (promptErr) {
-              console.warn("[manager-mail-sync] orit decision re-prompt failed:", (promptErr as Error).message);
+              console.warn("[manager-mail-sync] orit re-alert failed:", (promptErr as Error).message);
             }
           }
         }

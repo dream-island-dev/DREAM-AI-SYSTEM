@@ -1491,7 +1491,7 @@ serve(async (req: Request) => {
       );
 
       // ── Orit CS (Sigal) — reply 1/2 before executive assistant ──
-      if (await tryHandleOritCsWhapiReply(supabase, phone, body.trim())) {
+      if (await tryHandleOritCsWhapiReply(supabase, phone, body.trim(), { fromVoice })) {
         results.push({
           id: msg.id, channel: "guest_dm", phone, action: "orit_cs_decision",
         });

@@ -16,6 +16,7 @@ import {
   URGENCY_HE,
 } from "./oritAgentWhapiAlert.ts";
 import { sendWhapiText } from "./whapiSend.ts";
+import { isOritCsStaffPhone } from "./oritAgentStaffPhone.ts";
 
 export type OritDecisionChoice = "email_ack" | "whatsapp" | "manual";
 
@@ -194,35 +195,6 @@ function extractThreadRefFromText(text: string): string | null {
   return m?.[1]?.toLowerCase() ?? null;
 }
 
-export async function isOritCsStaffPhone(
-  supabase: SupabaseClient,
-  phoneDigits: string,
-): Promise<boolean> {
-  const digits = phoneDigits.replace(/\D/g, "");
-  if (!digits) return false;
-
-  const { data: mailboxes } = await supabase
-    .from("orit_agent_mailbox")
-    .select("digest_whatsapp_phone, profile_id")
-    .eq("connection_status", "active");
-
-  for (const mb of mailboxes ?? []) {
-    const fromMb = (mb.digest_whatsapp_phone ?? "").replace(/\D/g, "");
-    if (fromMb && fromMb === digits) return true;
-
-    if (mb.profile_id) {
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("phone")
-        .eq("id", mb.profile_id)
-        .maybeSingle();
-      const fromProfile = (profile?.phone ?? "").replace(/\D/g, "");
-      if (fromProfile && fromProfile === digits) return true;
-    }
-  }
-  return false;
-}
-
 async function findPendingThreadForOrit(
   supabase: SupabaseClient,
   threadRef: string | null,
@@ -364,29 +336,9 @@ export async function tryHandleOritCsWhapiReply(
   supabase: SupabaseClient,
   phoneDigits: string,
   text: string,
+  opts: { fromVoice?: boolean } = {},
 ): Promise<boolean> {
   if (!(await isOritCsStaffPhone(supabase, phoneDigits))) return false;
-
-  const choice = parseOritCsDecisionReply(text);
-  if (!choice) return false;
-
-  const threadRef = extractThreadRefFromText(text);
-  const pending = await findPendingThreadForOrit(supabase, threadRef);
-  if (!pending) {
-    await sendWhapiText(
-      phoneDigits,
-      "לא מצאתי פנייה ממתינה לבחירה. פתחי את הקישור מההודעה האחרונה שלי או מהמערכת.",
-      { noLinkPreview: true },
-    );
-    return true;
-  }
-
-  const result = await executeOritDecision(
-    supabase,
-    pending.mailbox,
-    pending.thread,
-    choice,
-  );
-  await sendWhapiText(phoneDigits, result.message, { noLinkPreview: true });
-  return true;
+  const { tryHandleOritSigalInbound } = await import("./oritAgentSigalChat.ts");
+  return tryHandleOritSigalInbound(supabase, phoneDigits, text, opts);
 }
