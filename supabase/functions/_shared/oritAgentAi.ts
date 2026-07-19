@@ -7,10 +7,48 @@ import {
   tier0ClassifyOritThread,
   type Tier0OritHint,
 } from "./oritAgentClassify.ts";
+import {
+  bodyHasComplaintSignal,
+  shouldAnalyzeOritWithLlm,
+  tier0ToAnalysisResult,
+} from "./oritAgentAnalyzePolicy.ts";
 import { buildStaffAppDeepLink } from "./guestAlertWhapiNotify.ts";
 
 const GEMINI_MODEL = "gemini-2.5-flash";
 const CLAUDE_MODEL = "claude-sonnet-4-6";
+
+const ORIT_VOICE_BLOCK = `
+סגנון כתיבה של אורית חלפון (מנהלת שירות לאורח) — לתלונות:
+• פתיחה אישית: «שלום רב [שם]», «תודה שפניתם אלינו ושיתפתם…»
+• אמפתיה מיידית: «אנו מצרים לשמוע…», «תחושת אכזבה» — בלי להיות מתנשאת.
+• גוף המכתב: פסקאות לפי נושא; «חשוב לנו להתייחס לנקודות שהעליתם»; עובדות מבדיקה («מבדיקתנו…», «לאחר בירור…»).
+• כשאין דיווח בזמן אמת: «לא התקבלה פנייה בזמן אמת / לא הייתה לנו אפשרות לתת מענה מיידי» — רק אם מתאים לעובדות בפנייה.
+• לא מבטיחים פיצוי כספי, הנחה או החזר שלא אושרו במפורש על ידי ההנהלה.
+• סיום: «בברכה» או «יום נפלא», חתימה «אורית חלפון», «מנהלת שירות לאורח» (או «מנהלת קשרי לקוחות»).
+`.trim();
+
+const SYSTEM_PROMPT = `
+אתה סוכן שירות לקוחות של דרים איילנד — אתר נופש יוקרתי. אורית חלפון היא מנהלת שירות לאורח.
+תפקידך לנתח פניית מייל נכנסת (בעיקר תלונות) ולהכין טיוטות מענה בסגנון אורית.
+
+חשוב מאוד:
+• נושא המייל לעיתים קבוע מהאתר: «התקבלה פניה מלידים» — לא אומר שזה ליד! סווגי לפי גוף ההודעה.
+• lead = עניין / מידע / הזמנה חדשה ללא תלונה. complaint = אכזבה, תלונה, פיצוי, חוויה שלילית.
+
+${ORIT_VOICE_BLOCK}
+
+הנחיות פלט:
+• עברית בלבד.
+• urgency: critical | high | normal | low
+• urgency_reason: 1–2 משפטים לאורית.
+• category: complaint | lead | booking | spa | vendor | internal | other
+• summary: 2–3 שורות — שם האורח, מה קרה, בלי המצאות.
+• suggestions:
+  - אם category=complaint: מכתב שלם אחד (8–18 פסקאות) בסגנון אורית, מבוסס על דגימות הסגנון. אפשר עד 2 וריאנטים במערך.
+  - אחרת: עד 2 טיוטות קצרות.
+• אל תמציא מחירים, שעות, החזרים או הבטחות שלא בפנייה.
+• JSON בלבד: {"urgency":"...","urgency_reason":"...","category":"...","summary":"...","suggestions":["..."]}
+`.trim();
 
 export type ThreadAnalysisInput = {
   subject: string;
@@ -18,6 +56,7 @@ export type ThreadAnalysisInput = {
   fromEmail: string;
   bodyText: string;
   styleSamples: Array<{ inbound_snippet: string; outbound_text: string; context_category: string }>;
+  draftCategory?: string;
 };
 
 export type ThreadAnalysisResult = {
@@ -29,34 +68,22 @@ export type ThreadAnalysisResult = {
   engine: string;
 };
 
-const SYSTEM_PROMPT = `
-אתה סוכן שירות לקוחות של דרים איילנד — אתר נופש יוקרתי בבעלות אורית.
-תפקידך לנתח פניית מייל נכנסת ולעזור לאורית לנהל שירות לקוחות בנוחות.
+const STYLE_SAMPLE_OUTBOUND_MAX = 2800;
 
-חשוב מאוד:
-• נושא המייל לעיתים קרובות קבוע מהאתר: «התקבלה פניה מלידים» — זה לא אומר שזה ליד!
-  סווגי לפי תוכן גוף ההודעה בלבד. תלונה ארוכה עם מילים כמו תלונה/אכזבה/פיצוי = complaint.
-• lead = פניית עניין / בקשת מידע / הזמנה חדשה ללא תלונה.
-• complaint = תלונה, אכזבה, בקשת פיצוי, חוויה שלילית — דחיפות high או critical.
-• booking = הזמנת לינה קיימת / שינוי הזמנה (לא תלונה).
-
-הנחיות:
-• עברית בלבד בכל השדות הטקסטואליים.
-• urgency: critical | high | normal | low
-• urgency_reason: 1–2 משפטים שמסבירים לאורית למה זה דחוף/לא.
-• category: complaint | lead | booking | spa | vendor | internal | other
-• summary: 2–3 שורות — שם האורח (אם מופיע), מה הוא רוצה, בלי המצאות.
-• suggestions: עד 3 טיוטות תשובה קצרות.
-  - complaint: טון מתנצל ואמפתי, בלי הבטחות פיצוי שלא מופיעות בפנייה.
-  - lead/booking: טון חם ומזמין.
-• לעולם אל תמציא מחירים, שעות, הבטחות או אישורי ביטול שלא מופיעים בפנייה.
-• החזר JSON בלבד: {"urgency":"...","urgency_reason":"...","category":"...","summary":"...","suggestions":["...","...","..."]}
-`.trim();
+function truncateStyleSample(text: string): string {
+  const t = (text || "").trim();
+  if (t.length <= STYLE_SAMPLE_OUTBOUND_MAX) return t;
+  return `${t.slice(0, STYLE_SAMPLE_OUTBOUND_MAX)}\n[…]`;
+}
 
 function buildUserPrompt(input: ThreadAnalysisInput, tier0: Tier0OritHint | null): string {
-  const samples = input.styleSamples.slice(0, 8).map((s, i) =>
-    `${i + 1}. קטגוריה: ${s.context_category}\n   נכנס: ${s.inbound_snippet}\n   נשלח: ${s.outbound_text}`
-  ).join("\n");
+  const isComplaintDraft = input.draftCategory === "complaint"
+    || tier0?.category === "complaint"
+    || bodyHasComplaintSignal(input.bodyText);
+
+  const samples = input.styleSamples.slice(0, 6).map((s, i) =>
+    `${i + 1}. קטגוריה: ${s.context_category}\n   נכנס: ${s.inbound_snippet}\n   נשלח: ${truncateStyleSample(s.outbound_text)}`,
+  ).join("\n\n");
 
   const genericSubject = isGenericLeadFormSubject(input.subject);
 
@@ -70,8 +97,11 @@ function buildUserPrompt(input: ThreadAnalysisInput, tier0: Tier0OritHint | null
     "תוכן הפנייה (מקור האמת לסיווג):",
     input.bodyText.slice(0, 4000) || "(ריק)",
     "",
-    samples ? `דגימות סגנון אחרונות של אורית:\n${samples}` : "",
+    samples ? `דגימות סגנון כתיבה של אורית (חקי את המבנה והטון):\n${samples}` : "",
     "",
+    isComplaintDraft
+      ? "זו תלונה — suggestions חייב לכלול מכתב מלא אחד לפחות בסגנון אורית (פסקאות מופרדות)."
+      : "",
     "נתח והחזר JSON בלבד.",
   ].filter(Boolean).join("\n");
 }
@@ -97,7 +127,7 @@ function normalizeAnalysis(obj: Record<string, unknown>): ThreadAnalysisResult |
   const allowedUrgency = new Set(["critical", "high", "normal", "low"]);
   const allowedCategory = new Set(["complaint", "lead", "booking", "spa", "vendor", "internal", "other"]);
   const suggestions = Array.isArray(obj.suggestions)
-    ? obj.suggestions.map((s) => String(s).trim()).filter(Boolean).slice(0, 3)
+    ? obj.suggestions.map((s) => String(s).trim()).filter(Boolean).slice(0, category === "complaint" ? 2 : 3)
     : [];
 
   return {
@@ -124,7 +154,7 @@ function applyTier0Merge(parsed: ThreadAnalysisResult, tier0: Tier0OritHint | nu
   };
 }
 
-async function callGemini(userPrompt: string): Promise<string> {
+async function callGemini(userPrompt: string, maxOutputTokens: number): Promise<string> {
   const key = Deno.env.get("GEMINI_API_KEY");
   if (!key) throw new Error("no_gemini_key");
 
@@ -137,12 +167,12 @@ async function callGemini(userPrompt: string): Promise<string> {
         systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
         contents: [{ role: "user", parts: [{ text: userPrompt }] }],
         generationConfig: {
-          maxOutputTokens: 900,
+          maxOutputTokens,
           temperature: 0.35,
           responseMimeType: "application/json",
         },
       }),
-      signal: AbortSignal.timeout(25000),
+      signal: AbortSignal.timeout(maxOutputTokens > 2000 ? 45000 : 25000),
     },
   );
 
@@ -157,13 +187,13 @@ async function callGemini(userPrompt: string): Promise<string> {
   return textPart?.text ?? "";
 }
 
-async function callClaude(userPrompt: string): Promise<string> {
+async function callClaude(userPrompt: string, maxOutputTokens: number): Promise<string> {
   const key = Deno.env.get("ANTHROPIC_API_KEY");
   if (!key) throw new Error("no_claude_key");
   const client = new Anthropic({ apiKey: key });
   const msg = await client.messages.create({
     model: CLAUDE_MODEL,
-    max_tokens: 900,
+    max_tokens: maxOutputTokens,
     temperature: 0.35,
     system: SYSTEM_PROMPT,
     messages: [{ role: "user", content: userPrompt }],
@@ -172,12 +202,19 @@ async function callClaude(userPrompt: string): Promise<string> {
   return block && "text" in block ? block.text : "";
 }
 
-export async function analyzeOritThread(input: ThreadAnalysisInput): Promise<ThreadAnalysisResult> {
+export async function analyzeOritThread(
+  input: ThreadAnalysisInput,
+  _opts: { forceLlm?: boolean } = {},
+): Promise<ThreadAnalysisResult> {
   const tier0 = tier0ClassifyOritThread(input.bodyText, input.subject);
   const userPrompt = buildUserPrompt(input, tier0);
+  const isComplaintDraft = input.draftCategory === "complaint"
+    || tier0?.category === "complaint"
+    || bodyHasComplaintSignal(input.bodyText);
+  const maxTokens = isComplaintDraft ? 4096 : 900;
 
   try {
-    const raw = await callGemini(userPrompt);
+    const raw = await callGemini(userPrompt, maxTokens);
     const parsed = parseAnalysisJson(raw);
     if (parsed) return { ...applyTier0Merge(parsed, tier0), engine: "gemini" };
   } catch (e) {
@@ -185,23 +222,14 @@ export async function analyzeOritThread(input: ThreadAnalysisInput): Promise<Thr
   }
 
   try {
-    const raw = await callClaude(userPrompt);
+    const raw = await callClaude(userPrompt, maxTokens);
     const parsed = parseAnalysisJson(raw);
     if (parsed) return { ...applyTier0Merge(parsed, tier0), engine: "claude" };
   } catch (e) {
     console.warn("[oritAgentAi] claude failed:", (e as Error).message);
   }
 
-  if (tier0) {
-    return {
-      urgency: tier0.urgency,
-      urgency_reason: tier0.urgency_reason,
-      category: tier0.category,
-      summary: tier0.summary,
-      suggestions: tier0.suggestions,
-      engine: "tier0",
-    };
-  }
+  if (tier0) return tier0ToAnalysisResult(tier0);
 
   return {
     urgency: "normal",

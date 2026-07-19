@@ -116,6 +116,9 @@ export async function notifyOritThreadDecisionPrompt(
     .maybeSingle();
 
   if (!thread || thread.is_demo) return { sent: false, reason: "no_thread" };
+  if (thread.category !== "complaint") {
+    return { sent: false, reason: "not_complaint" };
+  }
   if (thread.status === "handled" || thread.status === "archived") {
     return { sent: false, reason: "closed" };
   }

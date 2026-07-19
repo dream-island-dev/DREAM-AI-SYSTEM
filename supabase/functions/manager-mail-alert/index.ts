@@ -57,6 +57,7 @@ serve(async (req: Request) => {
         .from("orit_agent_threads")
         .select("id, category, urgency")
         .eq("mailbox_id", mailbox.id)
+        .eq("category", "complaint")
         .eq("status", "awaiting_reply")
         .eq("is_demo", false);
 

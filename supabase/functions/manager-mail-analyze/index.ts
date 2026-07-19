@@ -1,6 +1,9 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { analyzeOritThread } from "../_shared/oritAgentAi.ts";
+import {
+  persistOritThreadAnalysis,
+  runOritThreadAnalysis,
+} from "../_shared/oritThreadAnalysis.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -48,50 +51,15 @@ serve(async (req: Request) => {
       });
     }
 
-    const { data: msgs } = await supabase
-      .from("orit_agent_messages")
-      .select("body_text, direction")
-      .eq("thread_id", threadId)
-      .order("received_at", { ascending: true });
+    const forceLlm = thread.category === "complaint";
+    const analysis = await runOritThreadAnalysis(supabase, thread.mailbox_id, thread, { forceLlm });
+    await persistOritThreadAnalysis(supabase, threadId, analysis, userData.user.id);
 
-    const inbound = (msgs ?? []).filter((m) => m.direction === "inbound").map((m) => m.body_text).join("\n");
-
-    const { data: samples } = await supabase
-      .from("orit_agent_style_samples")
-      .select("inbound_snippet, outbound_text, context_category")
-      .eq("mailbox_id", thread.mailbox_id)
-      .order("created_at", { ascending: false })
-      .limit(8);
-
-    const analysis = await analyzeOritThread({
-      subject: thread.subject,
-      fromName: thread.from_name,
-      fromEmail: thread.from_email,
-      bodyText: inbound || thread.snippet || "",
-      styleSamples: samples ?? [],
-    });
-
-    await supabase.from("orit_agent_threads").update({
-      urgency: analysis.urgency,
-      urgency_reason: analysis.urgency_reason,
-      category: analysis.category,
-      ai_summary: analysis.summary,
-      ai_analyzed_at: new Date().toISOString(),
-    }).eq("id", threadId);
-
-    await supabase.from("orit_agent_drafts").delete().eq("thread_id", threadId).eq("status", "suggested");
-    if (analysis.suggestions.length) {
-      await supabase.from("orit_agent_drafts").insert(
-        analysis.suggestions.map((text) => ({
-          thread_id: threadId,
-          suggested_text: text,
-          status: "suggested",
-          created_by: userData.user.id,
-        })),
-      );
-    }
-
-    return new Response(JSON.stringify({ ok: true, analysis }), {
+    return new Response(JSON.stringify({
+      ok: true,
+      analysis,
+      llm_skipped: analysis.engine === "tier0-no-llm",
+    }), {
       status: 200,
       headers: { ...CORS, "Content-Type": "application/json" },
     });

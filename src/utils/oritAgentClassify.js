@@ -23,6 +23,7 @@ export function categoryMeta(category) {
 }
 
 export const ORIT_CS_TABS = [
+  { id: "recent", label: "אחרונים" },
   { id: "all", label: "הכל" },
   { id: "leads", label: "לידים" },
   { id: "complaints", label: "תלונות" },
@@ -30,7 +31,7 @@ export const ORIT_CS_TABS = [
 ];
 
 export function threadMatchesTab(thread, tabId) {
-  if (tabId === "all") return true;
+  if (tabId === "all" || tabId === "recent") return true;
   const meta = categoryMeta(thread.category);
   return meta.tab === tabId;
 }

@@ -42,15 +42,52 @@ function slaLabel(deadlineAt) {
   return `נשארו ${hours} ש' ל-72h`;
 }
 
-function sortThreads(rows) {
-  const rank = { critical: 0, high: 1, normal: 2, low: 3 };
+function sortThreads(rows, mode = "recent") {
+  if (mode === "priority") {
+    const rank = { critical: 0, high: 1, normal: 2, low: 3 };
+    return [...rows].sort((a, b) => {
+      const aOver = a.sla_deadline_at && new Date(a.sla_deadline_at) < new Date();
+      const bOver = b.sla_deadline_at && new Date(b.sla_deadline_at) < new Date();
+      if (aOver !== bOver) return aOver ? -1 : 1;
+      const urg = (rank[a.urgency] ?? 9) - (rank[b.urgency] ?? 9);
+      if (urg !== 0) return urg;
+      return new Date(b.received_at).getTime() - new Date(a.received_at).getTime();
+    });
+  }
+
+  const statusRank = { awaiting_reply: 0, snoozed: 1, handled: 2, archived: 3 };
   return [...rows].sort((a, b) => {
-    const aOver = a.sla_deadline_at && new Date(a.sla_deadline_at) < new Date();
-    const bOver = b.sla_deadline_at && new Date(b.sla_deadline_at) < new Date();
-    if (aOver !== bOver) return aOver ? -1 : 1;
-    const urg = (rank[a.urgency] ?? 9) - (rank[b.urgency] ?? 9);
-    if (urg !== 0) return urg;
-    return new Date(b.received_at).getTime() - new Date(a.received_at).getTime();
+    const byReceived = new Date(b.received_at).getTime() - new Date(a.received_at).getTime();
+    if (byReceived !== 0) return byReceived;
+    return (statusRank[a.status] ?? 9) - (statusRank[b.status] ?? 9);
+  });
+}
+
+function isThreadReceivedToday(iso) {
+  if (!iso) return false;
+  const d = new Date(iso);
+  const now = new Date();
+  return d.getDate() === now.getDate()
+    && d.getMonth() === now.getMonth()
+    && d.getFullYear() === now.getFullYear();
+}
+
+function fmtReceivedLabel(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  const now = new Date();
+  const sameDay = d.getDate() === now.getDate()
+    && d.getMonth() === now.getMonth()
+    && d.getFullYear() === now.getFullYear();
+  if (sameDay) {
+    return `היום ${d.toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" })}`;
+  }
+  return d.toLocaleString("he-IL", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
   });
 }
 
@@ -80,7 +117,8 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [replyText, setReplyText] = useState("");
-  const [activeTab, setActiveTab] = useState("all");
+  const [activeTab, setActiveTab] = useState("recent");
+  const [queueSort, setQueueSort] = useState("recent");
   const [toast, setToast] = useState(null);
 
   const showToast = useCallback((kind, text) => {
@@ -155,7 +193,7 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
       setMailbox(boot.mailbox);
       setWhatsappPhone(boot.mailbox.digest_whatsapp_phone ?? "");
       setAlertEnabled(boot.mailbox.alert_enabled !== false);
-      setThreads(sortThreads(boot.threads ?? []));
+      setThreads(sortThreads(boot.threads ?? [], "recent"));
       return boot.mailbox;
     } catch (e) {
       console.error("[orit-cs] loadMailbox unexpected exception:", e);
@@ -262,13 +300,14 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
     [mailbox],
   );
 
-  const filteredThreads = useMemo(
-    () => threads.filter((t) => threadMatchesTab(t, activeTab)),
-    [threads, activeTab],
-  );
+  const filteredThreads = useMemo(() => {
+    const sortMode = activeTab === "complaints" ? "priority" : queueSort;
+    const rows = threads.filter((t) => threadMatchesTab(t, activeTab));
+    return sortThreads(rows, sortMode);
+  }, [threads, activeTab, queueSort]);
 
   const tabCounts = useMemo(() => {
-    const counts = { all: threads.length, leads: 0, complaints: 0, other: 0 };
+    const counts = { recent: threads.length, all: threads.length, leads: 0, complaints: 0, other: 0 };
     for (const t of threads) {
       const tab = categoryMeta(t.category).tab;
       if (tab in counts) counts[tab] += 1;
@@ -334,7 +373,11 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
       });
       if (error) throw error;
       if (!data?.ok) throw new Error(data?.error || "ניתוח נכשל");
-      showToast("ok", "✨ הסוכן עדכן סיכום והצעות");
+      if (data.llm_skipped) {
+        showToast("ok", "ליד/שגרתי — סווג בלי AI (חיסכון בקרדיטים). לתלונה: סמני קטגוריה תלונה ונסי שוב.");
+      } else {
+        showToast("ok", "✨ הסוכן עדכן סיכום וטיוטות בסגנון אורית");
+      }
       await loadMailbox();
       await loadThreadDetail(selectedId);
     } catch (e) {
@@ -398,9 +441,12 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
       if (data.sent) {
         showToast("ok", "📱 סיגל שלחה התראה לוואטסאפ של אורית");
       } else {
-        showToast("err", data.reason === "no_phone"
+        const reasonMsg = data.reason === "no_phone"
           ? "חסר מספר וואטסאפ — שמרי למטה"
-          : `לא נשלח: ${data.reason || "לא ידוע"}`);
+          : data.reason === "not_complaint"
+            ? "וואטסאפ לאורית — רק לתלונות (לא לידים)"
+            : `לא נשלח: ${data.reason || "לא ידוע"}`;
+        showToast("err", reasonMsg);
       }
     } catch (e) {
       showToast("err", e.message);
@@ -541,7 +587,43 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
         minHeight: isMobile ? 0 : undefined,
       }}
     >
-      <div style={{ fontWeight: 700, marginBottom: 10 }}>תור עדיפויות</div>
+      <div style={{ fontWeight: 700, marginBottom: 10 }}>תור פניות — מיון לפי זמן קבלה למערכת</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8, alignItems: "center" }}>
+        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>מיון:</span>
+        <button
+          type="button"
+          onClick={() => setQueueSort("recent")}
+          style={{
+            padding: "4px 10px",
+            borderRadius: 999,
+            border: queueSort === "recent" ? "2px solid var(--gold)" : "1px solid var(--border)",
+            background: queueSort === "recent" ? "#FFFBEB" : "var(--card-bg)",
+            fontSize: 12,
+            fontWeight: queueSort === "recent" ? 700 : 500,
+            cursor: "pointer",
+          }}
+        >
+          🕐 אחרונים קודם
+        </button>
+        <button
+          type="button"
+          onClick={() => setQueueSort("priority")}
+          style={{
+            padding: "4px 10px",
+            borderRadius: 999,
+            border: queueSort === "priority" ? "2px solid var(--gold)" : "1px solid var(--border)",
+            background: queueSort === "priority" ? "#FFFBEB" : "var(--card-bg)",
+            fontSize: 12,
+            fontWeight: queueSort === "priority" ? 700 : 500,
+            cursor: "pointer",
+          }}
+        >
+          ⚡ לפי דחיפות
+        </button>
+        {activeTab === "complaints" && (
+          <span style={{ fontSize: 11, color: "var(--text-muted)" }}>תלונות: מיון דחיפות אוטומטי</span>
+        )}
+      </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
         {ORIT_CS_TABS.map((tab) => {
           const count = tabCounts[tab.id] ?? 0;
@@ -595,9 +677,19 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
               <span style={{ fontSize: 12, padding: "2px 8px", borderRadius: 999, background: cm.bg, color: cm.color, fontWeight: 700 }}>
                 {cm.label}
               </span>
-              <span style={{ fontSize: 12, padding: "2px 8px", borderRadius: 999, background: um.bg, color: um.color, fontWeight: 700 }}>
-                {um.label}
-              </span>
+              <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                {isThreadReceivedToday(t.received_at) && (
+                  <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 999, background: "#DBEAFE", color: "#1D4ED8", fontWeight: 700 }}>
+                    חדש היום
+                  </span>
+                )}
+                <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-muted)" }}>
+                  📥 {fmtReceivedLabel(t.received_at)}
+                </span>
+                <span style={{ fontSize: 12, padding: "2px 8px", borderRadius: 999, background: um.bg, color: um.color, fontWeight: 700 }}>
+                  {um.label}
+                </span>
+              </div>
             </div>
             <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>{threadDisplayTitle(t)}</div>
             <div style={{ fontSize: 13, color: "var(--text-muted)" }}>{oritThreadGuestLabel(t)}</div>
@@ -774,10 +866,12 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
             <button
               type="button"
               className="btn"
-              disabled={busy || selected.status === "handled"}
+              disabled={busy || selected.status === "handled" || selected.category !== "complaint"}
               onClick={() => handleSendWhapiAlert(selected.id, { force: true })}
               style={{ minHeight: 44 }}
-              title="שליחת הודעת סיגל לאורית בוואטסאפ עם בחירה: מייל אוטומטי או וואטסאפ"
+              title={selected.category === "complaint"
+                ? "שליחת הודעת סיגל לאורית בוואטסאפ עם בחירה: מייל אוטומטי או וואטסאפ"
+                : "וואטסאפ לאורית — רק לתלונות (לא לידים)"}
             >
               📱 שאלי את אורית (וואטסאפ)
             </button>
