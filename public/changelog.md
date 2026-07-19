@@ -1,4 +1,4 @@
-2026-07-19 | Orit CS — scheduled guest sends + Sigal quiet hours | migration 251 `orit_agent_scheduled_sends`; UI toggle ⏰ + באנר; `oritScheduleSend.ts` + cron dispatch; Sigal ברכת זמן + 21:00–05:00 → «תזמני למחר» ב-WA.
+2026-07-19 | Waiter pulse survey v2 — תפעול ושיפור שירות | 3 שאלות (צוואר בקבוק / תלונה חוזרת / שיפור אחד); migration 252 + `waiterPulseUi` defaults.
 2026-07-19 | Orit CS — Sigal↔UI comfort loop (link + auto-drafts + send sync) | לינק ממשק בכל התראת סיגל; פתיחה מלינק → ניתוח אוטומטי רק בלי טיוטות (LLM לתלונות בלבד); אחרי שליחה מהממשק → WA «שלחת ✓» לסיגל (`oritSigalUiNotify.ts`).
 2026-07-19 | Orit CS — restore AI suggestion cards in inbox UI | `OritCustomerServicePanel.js` — כרטיסי הצעות (עד 2 וריאנטים) מעל compose; «הצעות» = `forceLlm` + טעינת הצעה ראשונה; `manager-mail-analyze` מכבד `forceLlm` ב-body.
 2026-07-19 | Orit Sigal — two-phase ack genius | `composeSigalComplaintBriefing` phase-aware: שלב 1 «קיבלנו את פנייתך» דחוף בלבד → שלב 2 מכתב מלא אחרי ack; loop/status/guide מיושרים.

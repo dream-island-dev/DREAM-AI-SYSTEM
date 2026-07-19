@@ -570,7 +570,10 @@ export default function WaiterPulseAdminPanel({ user }) {
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           {filteredResponses.map((row) => {
             const answers = row.answers ?? {};
-            const ideaQ = ui.questions.find((q) => q.key === "one_idea") ?? ui.questions.find((q) => q.type === "text" && q.required);
+            const ideaQ =
+              ui.questions.find((q) => q.key === "one_improvement") ??
+              ui.questions.find((q) => q.key === "one_idea") ??
+              ui.questions.find((q) => q.type === "text" && q.required);
             return (
               <div key={row.id} style={{ border: "1px solid var(--border)", borderRadius: 12, padding: 16, background: "var(--card-bg)" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>

@@ -20,73 +20,70 @@ export const WAITER_PULSE_MAX_QUESTIONS = 12;
 export const WAITER_PULSE_MIN_QUESTIONS = 1;
 
 export const DEFAULT_WAITER_PULSE_UI = Object.freeze({
-  panel_title: "מה ראיתם מהרצפה?",
+  panel_title: "שאלון תפעול ושיפור שירות למלצרים",
   intro_text:
-    "אנחנו לא בודקים אתכם — רוצים לשמוע מה אתם רואים מול האורחים: מה מפריע לשירות טוב, ומה הייתם משנים.",
-  submit_label: "📨 שליחת התשובות",
-  thank_you_title: "תודה — שמענו אתכם",
-  thank_you_body: "ההנהלה עוברת על התשובות וחוזרת עם עדכון.",
+    "צוות יקר, נשמח לדעת מה אתם חווים ומזהים מול האורחים בשטח: מה מפריע ומעכב אתכם מלתת את השירות המושלם, ואיזה שינוי או כלי יעזרו לכם להצליח יותר?",
+  submit_label: "✉️ שרידת משוב ותובנות צוות",
+  thank_you_title: "תודה על השותפות והחזון! 🙏",
+  thank_you_body:
+    "המשוב הגיע ישירות להנהלה. התשובות ינותחו כדי לבצע התאמות, לשפר את זרימת העבודה בשטח ולתת לכם את הכלים הטובים ביותר.",
   questions: Object.freeze([
     Object.freeze({
-      key: "system_friction",
-      type: "multi_choice",
-      label: "מה הכי מפריע היום לתת שירות טוב לאורח?",
-      required: true,
-      options: Object.freeze([
-        Object.freeze({ id: "no_guest_info", label: "אין מידע על אלרגיות / פנסיון לפני שהאורח יושב" }),
-        Object.freeze({ id: "no_table_time", label: "אורחים לא יודעים מתי השולחן / מגיעים לא בזמן" }),
-        Object.freeze({ id: "peak_load", label: "עומס בשעות שיא בלי תגבור" }),
-        Object.freeze({ id: "kitchen_comms", label: "תקשורת עם מטבח / מעבר פנימי" }),
-        Object.freeze({ id: "menu_availability", label: "תפריט / זמינות מנים" }),
-        Object.freeze({ id: "unclear_expectations", label: "ציפיות לא ברורות של האורח (מה כלול, מה לא)" }),
-      ]),
-      allow_other: true,
-      other_label: "משהו אחר",
-    }),
-    Object.freeze({
-      key: "guest_pain_point",
+      key: "service_bottleneck",
       type: "single_choice",
-      label: "איפה האורח הכי מתוסכל אצלנו?",
+      label: "מהו צוואר הבקבוק העיקרי שמעכב את מהירות השירות שלכם כרגע?",
       required: true,
       options: Object.freeze([
-        Object.freeze({ id: "arrival", label: "הגעה למסעדה" }),
-        Object.freeze({ id: "waiting", label: "המתנה לשולחן" }),
-        Object.freeze({ id: "menu_explain", label: "הסבר על התפריט / מה כלול" }),
-        Object.freeze({ id: "speed", label: "מהירות שירות" }),
-        Object.freeze({ id: "warmth", label: "חום / יחס אישי" }),
-        Object.freeze({ id: "checkout", label: "סיום / חשבון" }),
-        Object.freeze({ id: "other", label: "אחר" }),
+        Object.freeze({
+          id: "kitchen_bar_timing",
+          label: "⏱️ זמני יציאת מנות/משקאות מהמטבח והבר",
+        }),
+        Object.freeze({
+          id: "walking_equipment",
+          label: "🏃‍♂️ מרחקי הליכה וחוסר בציוד עזר זמין בשטח",
+        }),
+        Object.freeze({
+          id: "systems_sync",
+          label: "🖥️ עיכובים או חוסר סנכרון במערכות המחשוב/הזמנות",
+        }),
+        Object.freeze({
+          id: "workload_split",
+          label: "👥 חלוקת גזרות עבודה או עומס חריג בנקודות קצה",
+        }),
       ]),
     }),
     Object.freeze({
-      key: "change_tomorrow",
-      type: "text",
-      label: "מה הייתם משנים מחר בבוקר?",
+      key: "recurring_guest_complaint",
+      type: "single_choice",
+      label: "מהי התלונה או הבקשה החוזרת ביותר שאתם שומעים מהאורחים במשמרת?",
       required: true,
-      placeholder: "למשל: לשלוח לנו שעת שולחן לפני הערב…",
-      min_length: 15,
+      options: Object.freeze([
+        Object.freeze({
+          id: "slow_response",
+          label: '💬 "לוקח זמן רב מדי לקבל חשבון או מענה מהמלצר"',
+        }),
+        Object.freeze({
+          id: "menu_dietary",
+          label: '🍽️ "חסר גיוון או התאמה לרגישויות בתפריט"',
+        }),
+        Object.freeze({
+          id: "food_quality",
+          label: '🌡️ "טמפרטורת המנה או איכות ההגשה לא היו אחידות"',
+        }),
+        Object.freeze({
+          id: "no_complaints",
+          label: "✨ האורחים מרוצים לחלוטין ואין תלונות חוזרות",
+        }),
+      ]),
     }),
     Object.freeze({
-      key: "one_idea",
+      key: "one_improvement",
       type: "text",
-      label: "רעיון אחד ששווה לנסות",
+      label:
+        "אם הייתם יכולים לשנות, להוסיף או לשפר דבר אחד קטן במשמרת כדי להפוך את העבודה ליותר חלקה ואת האורח ליותר שמח — מה זה היה?",
       required: true,
-      placeholder: "אם הייתם מנהלים לשבוע — מה הייתם מנסים?",
+      placeholder: "למשל: עוד מגשים בשירות, עדכון מהיר יותר על מנות שנגמרו…",
       min_length: 15,
-    }),
-    Object.freeze({
-      key: "example_story",
-      type: "text",
-      label: "דוגמה מהשבוע האחרון (אופציונלי)",
-      required: false,
-      placeholder: "מקרה אחד שבו הרגשתם שאפשר היה לעשות יותר טוב — בלי שמות אורח",
-    }),
-    Object.freeze({
-      key: "submitter_name",
-      type: "text",
-      label: "שם (אופציונלי — עוזר לחזור אליכם)",
-      required: false,
-      placeholder: "שם פרטי או ראשי תיבות",
     }),
   ]),
 });

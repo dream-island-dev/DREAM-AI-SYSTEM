@@ -7,16 +7,16 @@ import {
 describe("waiterPulseUi", () => {
   it("normalizes default survey", () => {
     const ui = normalizeWaiterPulseUi(null);
-    expect(ui.questions.length).toBeGreaterThanOrEqual(5);
+    expect(ui.questions).toHaveLength(3);
+    expect(ui.panel_title).toContain("שאלון תפעול");
   });
 
   it("validates required text min length", () => {
     const ui = normalizeWaiterPulseUi(null);
     const err = validateWaiterPulseAnswers(ui, {
-      system_friction: ["peak_load"],
-      guest_pain_point: "waiting",
-      change_tomorrow: "קצר",
-      one_idea: "רעיון ארוך מספיק לבדיקה",
+      service_bottleneck: "kitchen_bar_timing",
+      recurring_guest_complaint: "slow_response",
+      one_improvement: "קצר",
     });
     expect(err).toBeTruthy();
   });
