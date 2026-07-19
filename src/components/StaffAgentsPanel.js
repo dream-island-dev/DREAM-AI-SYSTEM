@@ -47,6 +47,7 @@ export default function StaffAgentsPanel({ showToast, onOpenStaffNotify, onOpenP
       eliadDigest,
       adirBrief,
       oritDigest,
+      oritAlert,
       rulesExec,
       rulesDesk,
       botActive,
@@ -56,6 +57,7 @@ export default function StaffAgentsPanel({ showToast, onOpenStaffNotify, onOpenP
       supabase.from("resort_digest_log").select("body_sent, sent_at, period").eq("period", "daily").order("sent_at", { ascending: false }).limit(1).maybeSingle(),
       supabase.from("front_desk_morning_log").select("body_sent, sent_at, digest_date").order("sent_at", { ascending: false }).limit(1).maybeSingle(),
       supabase.from("orit_agent_digest_log").select("body_sent, sent_at, digest_date").order("sent_at", { ascending: false }).limit(1).maybeSingle(),
+      supabase.from("orit_agent_alert_log").select("body_sent, sent_at").order("sent_at", { ascending: false }).limit(1).maybeSingle(),
       supabase.from("xos_ai_rules").select("id", { count: "exact", head: true }).eq("module", "executive"),
       supabase.from("xos_ai_rules").select("id", { count: "exact", head: true }).eq("module", "front_desk"),
       supabase.from("bot_config").select("config_value").eq("config_key", "bot_active").maybeSingle(),
@@ -71,6 +73,10 @@ export default function StaffAgentsPanel({ showToast, onOpenStaffNotify, onOpenP
       const res = actionLogs[i];
       actionByPhone[a.phoneDigits] = res?.data ?? [];
     });
+
+    const oritDigestAt = oritDigest.data?.sent_at ? new Date(oritDigest.data.sent_at).getTime() : 0;
+    const oritAlertAt = oritAlert.data?.sent_at ? new Date(oritAlert.data.sent_at).getTime() : 0;
+    const oritUseAlert = oritAlertAt >= oritDigestAt && oritAlertAt > 0;
 
     setLive({
       eliad: {
@@ -94,8 +100,12 @@ export default function StaffAgentsPanel({ showToast, onOpenStaffNotify, onOpenP
         actions24h: actionByPhone["972506842439"]?.length ?? 0,
       },
       orit: {
-        lastAt: oritDigest.data?.sent_at ?? null,
-        lastBody: oritDigest.data?.body_sent ?? null,
+        lastAt: oritUseAlert
+          ? oritAlert.data?.sent_at ?? null
+          : oritDigest.data?.sent_at ?? oritAlert.data?.sent_at ?? null,
+        lastBody: oritUseAlert
+          ? oritAlert.data?.body_sent ?? null
+          : oritDigest.data?.body_sent ?? oritAlert.data?.body_sent ?? null,
       },
       dream: {
         metaOn: String(botActive.data?.config_value ?? "true").toLowerCase() !== "false",

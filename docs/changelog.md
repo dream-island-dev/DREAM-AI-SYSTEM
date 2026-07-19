@@ -1,3 +1,5 @@
+2026-07-19 | Sigal alert copy — warm personal intro for Orit | `composeOritUrgentAlert`: «היי אורית, כאן סיגל…», guest+phone, מה עשיתי בשבילך, CTA; morning digest same tone. Deploy: `manager-mail-sync` + `manager-mail-alert` + `manager-morning-digest`.
+
 2026-07-19 | Sigal Pulse — Orit urgent Whapi alerts + deep link | migration 232 `digest_whatsapp_phone`/`alert_enabled`/`orit_agent_alert_log`; `_shared/oritAgentWhapiAlert.ts` + `manager-mail-alert`; sync fires on complaint/critical/high (+ re-alert on new inbound); morning digest: open complaints + leads 24h; UI phone field; deep link `?page=orit_cs_agent&thread=UUID`; demo hidden. Deploy: db push + functions + frontend.
 
 2026-07-19 | Orit CS — guest contact extract from form body + WhatsApp inbox link | migration 231 `guest_contact_*` on `orit_agent_threads`; `_shared/oritGuestContactExtract.ts` parses שם/טלפון/דוא"ל from website form emails; «שלחי» + auto-ack reply to extracted email; sync backfills existing threads; UI shows guest details + «💬 וואטסאפ באינבוקס» (Whapi). Deploy: db push + `manager-mail-sync` + `manager-mail-send` + `manager-mail-auto-ack` + frontend.

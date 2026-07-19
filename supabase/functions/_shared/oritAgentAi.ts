@@ -247,7 +247,8 @@ export async function composeMorningDigestBullet(data: {
   handledYesterday: number;
 }): Promise<string> {
   const lines: string[] = [
-    "🌅 בוקר טוב אורית — סיגל",
+    "היי אורית 💜",
+    "כאן סיגל — סיכום הבוקר שלך.",
     `📅 ${new Date().toLocaleDateString("he-IL", { timeZone: "Asia/Jerusalem" })}`,
     "",
     `📈 לידים ב-24 שעות האחרונות: ${data.leadsLast24h}`,

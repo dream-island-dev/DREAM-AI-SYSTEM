@@ -12,18 +12,23 @@ Deno.test("isOritThreadAlertWorthy — complaint always", () => {
   assertEquals(isOritThreadAlertWorthy("booking", "critical"), true);
 });
 
-Deno.test("composeOritUrgentAlert includes deep link and summary", () => {
+Deno.test("composeOritUrgentAlert — warm Sigal intro + CTA", () => {
   const body = composeOritUrgentAlert({
-    id: "1012cdc6-38c1-4151-8875-11a7f9b62a07",
-    subject: "פניה מלידים",
-    from_name: "guest@example.com",
-    guest_contact_name: "הדר ומתן גואז",
-    category: "complaint",
-    urgency: "critical",
-    ai_summary: "תלונה על אוכל בארוחת ערב",
+    id: "869b0a98-781a-4f3a-954c-7c263232d7b5",
+    subject: "ביטול הזמנה",
+    from_name: "neomih@gmail.com",
+    guest_contact_name: "נעמי",
+    guest_contact_phone: "+972546206621",
+    category: "booking",
+    urgency: "high",
+    auto_ack_sent_at: "2026-07-19T08:00:00Z",
+    ai_summary: "נעמי מבקשת לבטל הזמנה למחר. יש לאמת שהביטול בוצע.",
   });
-  if (!body.includes("סיגל")) throw new Error("missing sigal header");
-  if (!body.includes("הדר ומתן גואז")) throw new Error("missing guest");
-  if (!body.includes("thread=1012cdc6")) throw new Error("missing deep link");
-  if (!body.includes("תלונה על אוכל")) throw new Error("missing summary");
+  if (!body.includes("היי אורית")) throw new Error("missing greeting");
+  if (!body.includes("סיגל")) throw new Error("missing sigal intro");
+  if (!body.includes("נעמי")) throw new Error("missing guest");
+  if (!body.includes("054-620-6621")) throw new Error("missing phone");
+  if (!body.includes("אישור קבלה")) throw new Error("missing ack line");
+  if (!body.includes("thread=869b0a98")) throw new Error("missing deep link");
+  if (!body.includes("ביטול")) throw new Error("missing summary");
 });

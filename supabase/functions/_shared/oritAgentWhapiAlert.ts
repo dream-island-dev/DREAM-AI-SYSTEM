@@ -20,6 +20,9 @@ export type OritAlertThread = {
   urgency: string;
   ai_summary: string | null;
   guest_contact_name?: string | null;
+  guest_contact_phone?: string | null;
+  guest_contact_email?: string | null;
+  auto_ack_sent_at?: string | null;
   status?: string;
   is_demo?: boolean;
 };
@@ -54,31 +57,72 @@ function guestLabel(thread: OritAlertThread): string {
   return "אורח";
 }
 
+function formatGuestContactLine(thread: OritAlertThread): string {
+  const name = guestLabel(thread);
+  const phone = (thread.guest_contact_phone ?? "").replace(/\D/g, "");
+  const phoneFmt = phone.startsWith("972") && phone.length >= 11
+    ? `0${phone.slice(3, 5)}-${phone.slice(5, 8)}-${phone.slice(8)}`
+    : phone.startsWith("05") && phone.length === 10
+      ? `${phone.slice(0, 3)}-${phone.slice(3, 6)}-${phone.slice(6)}`
+      : phone || null;
+  const parts = [`👤 ${name}`];
+  if (phoneFmt) parts.push(`(${phoneFmt})`);
+  return parts.join(" ");
+}
+
+function alertHeadline(category: string, urgency: string): string {
+  const emoji = urgencyEmoji(urgency);
+  const categoryHe = CATEGORY_HE[category] ?? "פנייה";
+  const urgencyHe = URGENCY_HE[urgency] ?? urgency;
+  if (category === "complaint") {
+    return `${emoji} תלונה ${urgency === "critical" ? "קריטית" : "שדורשת טיפול"}`;
+  }
+  if (category === "booking") {
+    return `${emoji} ${urgencyHe === "דחוף" || urgencyHe === "קריטי" ? "בקשת הזמנה דחופה" : "בקשת הזמנה"}`;
+  }
+  return `${emoji} ${categoryHe} · ${urgencyHe}`;
+}
+
+function sigalDoneLines(thread: OritAlertThread): string[] {
+  const lines = [
+    "✓ סיווגתי וסיכמתי את הפנייה",
+  ];
+  if (thread.auto_ack_sent_at) {
+    lines.push("✓ שלחתי לאורח/ת אישור קבלה אוטומטי");
+  }
+  lines.push("✓ הכנתי לך קישור ישיר לתשובה במערכת");
+  return lines;
+}
+
+export function composeOritUrgentAlert(thread: OritAlertThread): string {
+  const summary = thread.ai_summary?.trim()
+    || thread.subject?.trim()
+    || "פנייה שדורשת את תשומת לבך.";
+  const link = buildStaffAppDeepLink({ page: "orit_cs_agent", threadId: thread.id });
+
+  return [
+    "היי אורית 💜",
+    "כאן סיגל — העוזרת האישית שלך לתיבת השירות.",
+    "",
+    "יש פנייה שממתינה לטיפול שלך:",
+    "",
+    formatGuestContactLine(thread),
+    alertHeadline(thread.category, thread.urgency),
+    "",
+    summary,
+    "",
+    "מה עשיתי בשבילך:",
+    ...sigalDoneLines(thread),
+    "",
+    "👉 לחצי כאן לפתיחה, תשובה וסימון כטופל:",
+    link,
+  ].join("\n");
+}
+
 function urgencyEmoji(urgency: string): string {
   if (urgency === "critical") return "🔴";
   if (urgency === "high") return "🟠";
   return "🟡";
-}
-
-export function composeOritUrgentAlert(thread: OritAlertThread): string {
-  const categoryHe = CATEGORY_HE[thread.category] ?? "פנייה";
-  const urgencyHe = URGENCY_HE[thread.urgency] ?? thread.urgency;
-  const summary = thread.ai_summary?.trim()
-    || thread.subject?.trim()
-    || "(ללא סיכום)";
-  const link = buildStaffAppDeepLink({ page: "orit_cs_agent", threadId: thread.id });
-
-  return [
-    "📧 סיגל — דחוף לאורית",
-    "",
-    `${urgencyEmoji(thread.urgency)} ${categoryHe} · ${urgencyHe}`,
-    guestLabel(thread),
-    "",
-    summary,
-    "",
-    "▶️ לטיפול:",
-    link,
-  ].join("\n");
 }
 
 export async function resolveOritAlertPhone(
@@ -139,7 +183,7 @@ export async function notifyOritUrgentThread(
 
   const { data: thread } = await supabase
     .from("orit_agent_threads")
-    .select("id, subject, from_name, from_email, category, urgency, ai_summary, guest_contact_name, status, is_demo")
+    .select("id, subject, from_name, from_email, category, urgency, ai_summary, guest_contact_name, guest_contact_phone, guest_contact_email, auto_ack_sent_at, status, is_demo")
     .eq("id", threadId)
     .maybeSingle();
 
