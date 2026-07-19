@@ -9,6 +9,9 @@ Deno.test("resolveOritSigalIntent — typed commands", () => {
   assertEquals(resolveOritSigalIntent("כן שלחי"), "confirm_send");
   assertEquals(resolveOritSigalIntent("מה כתבה"), "show_guest");
   assertEquals(resolveOritSigalIntent("סיימתי"), "mark_done");
+  assertEquals(resolveOritSigalIntent("טיפלתי בזה"), "mark_done");
+  assertEquals(resolveOritSigalIntent("סמן כטופל"), "mark_done");
+  assertEquals(resolveOritSigalIntent("שלחי בוואטסאפ"), "send_whatsapp");
 });
 
 Deno.test("resolveOritSigalIntent — voice-style phrases", () => {

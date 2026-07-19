@@ -34,13 +34,13 @@ Deno.test("composeSigalConfirmPrompt — full text before send", () => {
   assertEquals(body.includes("naomi@example.com"), true);
 });
 
-Deno.test("composeSigalAckSentMessage — view thread link", () => {
+Deno.test("composeSigalAckSentMessage — ack follow-up", () => {
   const body = composeSigalAckSentMessage(
     "נעמי",
     "naomi@example.com",
     "שלום נעמי, קיבלנו את פנייתך.",
     "869b0a98-781a-4f3a-954c-7c263232d7b5",
   );
-  if (!body.includes("נשלח")) throw new Error("missing sent");
-  assertEquals(body.includes("thread=869b0a98"), true);
+  if (!body.includes("שלחתי")) throw new Error("missing sent");
+  if (!body.includes("תשובה מלאה")) throw new Error("missing full hint");
 });

@@ -70,6 +70,14 @@ export const GUEST_PROFILE_ON_DEMAND_SUFFIX = `
 • שעות מסעדת ערמונים (פתיחה כללית) — מ-knowledge_base; לא לערבב עם שעת הארוחה האישית.
 • בשאלה כללית על מסעדה — שעות מהידע הרשמי בלבד, בלי לפרט פנסיון שלא נשאל.`;
 
+export const TIME_AWARENESS_SUFFIX = `
+
+══ מודעות לזמן (חובה) ══
+• ב"פרטי האורח הנוכחי" מופיעים שעה בישראל וברכת זמן מתאימה (בוקר טוב / צהריים טובים / ערב טוב / לילה טוב).
+• מותר להשתמש בברכת הזמן פעם אחת כשהאורח פותח שיחה או מברך (היי/שלום) — לא בכל תשובה.
+• בשאלה עובדתית (שעות, מיקום, בקשה) — ענה ישירות בלי ברכת זמן מיותרת.
+• לעולם אל תנחש שעה — הסתמך רק על השעה שצורפה להקשר.`;
+
 /** Persona-only fallback when knowledge_base is the single source of factual hours. */
 export function buildMinimalPersonaFromBotConfig(cfg: Record<string, string>): string {
   if (!Object.keys(cfg).length) return FALLBACK_SYSTEM_PROMPT;
@@ -163,6 +171,7 @@ export function appendGuestBrainInvariantSuffixes(
     + ANTI_REASONING_LEAK_SUFFIX
     + FOCUS_CURRENT_MESSAGE_SUFFIX
     + GUEST_PROFILE_ON_DEMAND_SUFFIX
+    + TIME_AWARENESS_SUFFIX
     + routing
   );
 }

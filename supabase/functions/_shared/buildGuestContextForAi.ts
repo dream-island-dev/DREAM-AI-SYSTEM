@@ -4,6 +4,7 @@
 import { formatGuestProfileForAi } from "./guestProfile.ts";
 import { formatSpaScheduleDisplay } from "./spaSchedule.ts";
 import { formatGuestMealsForAi } from "./stayMeals.ts";
+import { formatIsraelClockLabel, getIsraelTimeGreeting } from "./guestTimeGreeting.ts";
 
 const PORTAL_SPA_ATTENTION_REASON = "בקשת טיפול בספא";
 
@@ -67,6 +68,7 @@ export function buildGuestContextForAi(
   );
 
   const parts: string[] = [];
+  parts.push(`שעה בישראל: ${formatIsraelClockLabel()} | ברכת זמן מתאימה: ${getIsraelTimeGreeting()}`);
   if (name?.trim()) parts.push(`שם: ${name.trim()}`);
   if (stage) parts.push(`שלב האורח: ${stage}`);
   if (arrDate) parts.push(`תאריך הגעה: ${arrDate}`);

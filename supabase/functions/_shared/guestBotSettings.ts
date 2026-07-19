@@ -151,6 +151,43 @@ export type AssembledGuestBrain = {
   lowConfidenceHandoff: boolean;
 };
 
+export type GuestBrainKnowledgeInjection = {
+  kbSuffix: string;
+  ragConfidence: number;
+  lowConfidenceHandoff: boolean;
+};
+
+/**
+ * Single injection point for knowledge_base → LLM prompt.
+ * Keyword RAG hits only; full KB when message empty; zero hits on chitchat → persona-only.
+ */
+export function resolveGuestBrainKnowledgeInjection(
+  knowledgeBase: string,
+  userMessage?: string,
+): GuestBrainKnowledgeInjection {
+  const kbRaw = (knowledgeBase ?? "").trim();
+  if (!kbRaw) {
+    return { kbSuffix: "", ragConfidence: 1, lowConfidenceHandoff: false };
+  }
+
+  const rag = retrieveGuestKnowledge(kbRaw, userMessage ?? "");
+  let kbSuffix = "";
+  if (rag.chunks.length && rag.mode === "keyword") {
+    kbSuffix = formatRagContextBlock(rag.chunks);
+  } else if (rag.mode === "full_kb" || !userMessage?.trim()) {
+    kbSuffix = `\n\n══ בסיס ידע הריזורט ══\n${kbRaw}`;
+  }
+
+  const lowConfidenceHandoff = !!(
+    userMessage?.trim()
+    && looksLikeFactualResortQuestion(userMessage)
+    && rag.confidence < RAG_LOW_CONFIDENCE_THRESHOLD
+    && rag.chunks.length === 0
+  );
+
+  return { kbSuffix, ragConfidence: rag.confidence, lowConfidenceHandoff };
+}
+
 /** Same priority as whatsapp-webhook finalSystemPrompt (without per-message guestCtx). */
 export async function assembleGuestBrainPrompt(
   supabase: SupabaseClient,
@@ -172,28 +209,13 @@ export async function assembleGuestBrainPrompt(
   const conflicts = detectKnowledgeConflicts(botConfig, kbRaw);
   const conflictWarn = formatKnowledgeConflictWarning(conflicts);
 
-  let kbSuffix = "";
-  let ragConfidence = 1;
-  let lowConfidenceHandoff = false;
+  const knowledgeInjection = kbRaw
+    ? resolveGuestBrainKnowledgeInjection(kbRaw, opts?.userMessage)
+    : { kbSuffix: "", ragConfidence: 1, lowConfidenceHandoff: false };
+  const { kbSuffix: kbSuffixBase, ragConfidence, lowConfidenceHandoff } = knowledgeInjection;
+  let kbSuffix = kbSuffixBase;
 
   if (kbRaw) {
-    const rag = retrieveGuestKnowledge(kbRaw, opts?.userMessage ?? "");
-    ragConfidence = rag.confidence;
-    if (rag.chunks.length && rag.mode === "keyword") {
-      kbSuffix = formatRagContextBlock(rag.chunks);
-    } else if (rag.mode === "full_kb" || !opts?.userMessage?.trim()) {
-      kbSuffix = `\n\n══ בסיס ידע הריזורט ══\n${kbRaw}`;
-    } else {
-      kbSuffix = `\n\n══ בסיס ידע הריזורט ══\n${kbRaw}`;
-    }
-    if (
-      opts?.userMessage?.trim()
-      && looksLikeFactualResortQuestion(opts.userMessage)
-      && rag.confidence < RAG_LOW_CONFIDENCE_THRESHOLD
-      && rag.chunks.length === 0
-    ) {
-      lowConfidenceHandoff = true;
-    }
     syncKnowledgeChunksToDb(supabase, kbRaw).catch(() => {});
   }
 

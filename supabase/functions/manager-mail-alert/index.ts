@@ -1,11 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { managerMailEnabled } from "../_shared/oritAgentMail.ts";
-import { notifyOritThreadDecisionPrompt } from "../_shared/oritAgentOritDecision.ts";
-import {
-  isOritWorkflowComplaint,
-  notifyOritWorkflowAlert,
-} from "../_shared/oritAgentWorkflow.ts";
+import { notifyOritSigalComplaintBriefing } from "../_shared/oritAgentWorkflow.ts";
 import type { OritAlertMailbox } from "../_shared/oritAgentWhapiAlert.ts";
 
 const CORS = {
@@ -49,15 +45,7 @@ serve(async (req: Request) => {
     }
 
     if (threadId) {
-      const { data: thread } = await supabase
-        .from("orit_agent_threads")
-        .select("category, urgency")
-        .eq("id", threadId)
-        .maybeSingle();
-
-      const result = thread && isOritWorkflowComplaint(thread.category, thread.urgency)
-        ? await notifyOritWorkflowAlert(supabase, mailbox, threadId, { force })
-        : await notifyOritThreadDecisionPrompt(supabase, mailbox, threadId, { force });
+      const result = await notifyOritSigalComplaintBriefing(supabase, mailbox, threadId, { force });
 
       return new Response(JSON.stringify({ ok: true, ...result }), {
         status: 200,
@@ -77,7 +65,7 @@ serve(async (req: Request) => {
       let sent = 0;
       const skipped: string[] = [];
       for (const row of openThreads ?? []) {
-        const result = await notifyOritThreadDecisionPrompt(supabase, mailbox, row.id);
+        const result = await notifyOritSigalComplaintBriefing(supabase, mailbox, row.id);
         if (result.sent) sent += 1;
         else skipped.push(`${row.id}:${result.reason}`);
       }

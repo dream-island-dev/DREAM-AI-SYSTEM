@@ -10,10 +10,19 @@ import {
 } from "./oritGuestContactExtract.ts";
 import { isOritCsStaffPhone } from "./oritAgentStaffPhone.ts";
 import {
+  composeSigalAckSentFollowUp,
+  sigalGuestLabel,
+} from "./oritSigalBriefing.ts";
+import {
+  buildOritWaInboxLink,
+  composeSigalWaSentFollowUp,
+  deliverOritGuestWhatsapp,
+  resolveOritOutboundChannel,
+} from "./oritGuestOutbound.ts";
+import {
   fetchLatestGuestInbound,
   fetchOritDraftText,
   isOritWorkflowComplaint,
-  notifyOritFullReplyReady,
   sendOritAckEmail,
   type OritAlertMailbox,
 } from "./oritAgentWorkflow.ts";
@@ -30,7 +39,7 @@ import {
 } from "./oritSigalGuide.ts";
 
 export type OritChatPending = {
-  action: "confirm_ack" | "confirm_full";
+  action: "confirm_ack" | "confirm_full" | "confirm_whatsapp_ack" | "confirm_whatsapp_full";
   body_text: string;
   shown_at: string;
 };
@@ -74,7 +83,12 @@ function threadLink(threadId: string): string {
 export function threadNeedsAckBeforeFullReply(thread: Record<string, unknown>): boolean {
   const category = String(thread.category ?? "");
   const urgency = String(thread.urgency ?? "normal");
-  return isOritWorkflowComplaint(category, urgency) && !thread.auto_ack_sent_at;
+  const initialSent = Boolean(thread.auto_ack_sent_at || thread.orit_wa_contact_at);
+  return isOritWorkflowComplaint(category, urgency) && !initialSent;
+}
+
+export function hasOritInitialContactSent(thread: Record<string, unknown>): boolean {
+  return Boolean(thread.auto_ack_sent_at || thread.orit_wa_contact_at);
 }
 
 function guestLabel(thread: Record<string, unknown>): string {
@@ -215,15 +229,19 @@ async function learnFromOutbound(
 }
 
 export function composeSigalConfirmPrompt(
-  action: "confirm_ack" | "confirm_full",
+  action: OritChatPending["action"],
   guest: string,
-  email: string,
+  contactLabel: string,
   bodyText: string,
   threadId: string,
 ): string {
-  const phase = action === "confirm_ack" ? "אישור קבלה" : "תשובה מלאה";
+  const viaWa = action === "confirm_whatsapp_ack" || action === "confirm_whatsapp_full";
+  const phase = action === "confirm_ack" || action === "confirm_whatsapp_ack"
+    ? "אישור קבלה"
+    : "תשובה מלאה";
+  const dest = viaWa ? "בוואטסאפ" : "במייל";
   return [
-    `📨 ${phase} — כך יישלח ל־${guest}${email ? ` (${email})` : ""} בשמך:`,
+    `📨 ${phase} — כך יישלח ל־${guest}${contactLabel ? ` (${contactLabel})` : ""} ${dest} בשמך:`,
     "─────────────",
     bodyText.trim(),
     "─────────────",
@@ -235,21 +253,11 @@ export function composeSigalConfirmPrompt(
 
 export function composeSigalAckSentMessage(
   guest: string,
-  email: string,
-  bodySent: string,
-  threadId: string,
+  _email: string,
+  _bodySent: string,
+  _threadId: string,
 ): string {
-  return [
-    `✓ נשלח לאורח/ת ${guest}${email ? ` (${email})` : ""}.`,
-    "",
-    bodySent.trim().slice(0, 1200) + (bodySent.length > 1200 ? "\n[…]" : ""),
-    "",
-    "השלב הבא — מכתב תשובה מלא:",
-    SIGAL_GUIDE_FULL,
-    "",
-    "לצפייה בשרשור:",
-    threadLink(threadId),
-  ].join("\n");
+  return composeSigalAckSentFollowUp(guest);
 }
 
 async function prepareAckConfirm(
@@ -269,32 +277,76 @@ async function prepareAckConfirm(
     return;
   }
 
+  const channel = resolveOritOutboundChannel(thread as Parameters<typeof resolveOritOutboundChannel>[0]);
+  if (channel === "blocked") {
+    await sendWhapiText(phone, "⚠ חסרים מייל וטלפון — הוסיפי פרטי קשר במערכת.", { noLinkPreview: true });
+    return;
+  }
+
+  if (channel === "whatsapp_bridge") {
+    await prepareWhatsappConfirm(supabase, phone, thread, "confirm_whatsapp_ack", draft, bodyOverride);
+    return;
+  }
+
   const email = resolveOritReplyEmail(
     String(thread.from_email ?? ""),
     thread.guest_contact_email as string | null,
   );
   if (!email) {
-    await sendWhapiText(phone, "⚠ אין מייל אורח תקין — לא ניתן לשלוח. פתחי במערכת.", { noLinkPreview: true });
+    await sendWhapiText(phone, "⚠ אין מייל אורח תקין — אם יש טלפון, עני «שלחי בוואטסאפ».", { noLinkPreview: true });
     return;
   }
 
   if (bodyOverride) await saveDraftBody(supabase, threadId, "ack", draft);
 
-  const pending: OritChatPending = {
+  await setChatPending(supabase, threadId, {
     action: "confirm_ack",
     body_text: draft,
     shown_at: new Date().toISOString(),
-  };
-  await setChatPending(supabase, threadId, pending);
+  });
 
-  const msg = composeSigalConfirmPrompt(
+  await sendWhapiLongText(phone, composeSigalConfirmPrompt(
     "confirm_ack",
     guestLabel(thread),
     email,
     draft,
     threadId,
-  );
-  await sendWhapiLongText(phone, msg);
+  ));
+}
+
+async function prepareWhatsappConfirm(
+  supabase: SupabaseClient,
+  phone: string,
+  thread: Record<string, unknown>,
+  action: "confirm_whatsapp_ack" | "confirm_whatsapp_full",
+  draft: string,
+  bodyOverride?: string,
+): Promise<void> {
+  const threadId = String(thread.id);
+  const channel = resolveOritOutboundChannel(thread as Parameters<typeof resolveOritOutboundChannel>[0]);
+  if (channel !== "whatsapp_bridge") {
+    await sendWhapiText(phone, "יש מייל — שולחים במייל: «תראי לי» → «כן שלחי».", { noLinkPreview: true });
+    return;
+  }
+
+  if (bodyOverride) {
+    await saveDraftBody(supabase, threadId, action === "confirm_whatsapp_ack" ? "ack" : "full_reply", draft);
+  }
+
+  const contact = thread.guest_contact_phone as string;
+  await setChatPending(supabase, threadId, {
+    action,
+    body_text: draft,
+    shown_at: new Date().toISOString(),
+  });
+
+  await sendWhapiLongText(phone, composeSigalConfirmPrompt(
+    action,
+    guestLabel(thread),
+    contact,
+    draft,
+    threadId,
+  ));
 }
 
 async function prepareFullConfirm(
@@ -305,7 +357,11 @@ async function prepareFullConfirm(
 ): Promise<void> {
   const threadId = String(thread.id);
   if (threadNeedsAckBeforeFullReply(thread)) {
-    await sendWhapiText(phone, "קודם שולחים אישור קבלה (שלב א׳). עני «תראי לי».", { noLinkPreview: true });
+    const channel = resolveOritOutboundChannel(thread as Parameters<typeof resolveOritOutboundChannel>[0]);
+    const hint = channel === "whatsapp_bridge"
+      ? "קודם «שלחי בוואטסאפ» לאישור קבלה."
+      : "קודם שולחים אישור קבלה. עני «תראי לי».";
+    await sendWhapiText(phone, hint, { noLinkPreview: true });
     return;
   }
 
@@ -318,10 +374,21 @@ async function prepareFullConfirm(
     return;
   }
 
+  const channel = resolveOritOutboundChannel(thread as Parameters<typeof resolveOritOutboundChannel>[0]);
   const email = resolveOritReplyEmail(
     String(thread.from_email ?? ""),
     thread.guest_contact_email as string | null,
   );
+
+  if (channel === "whatsapp_bridge" && !email) {
+    await prepareWhatsappConfirm(supabase, phone, thread, "confirm_whatsapp_full", draft, bodyOverride);
+    return;
+  }
+
+  if (!email) {
+    await sendWhapiText(phone, "⚠ אין מייל — «שלחי בוואטסאפ» אם יש טלפון.", { noLinkPreview: true });
+    return;
+  }
 
   if (bodyOverride) await saveDraftBody(supabase, threadId, "full_reply", draft);
 
@@ -334,7 +401,7 @@ async function prepareFullConfirm(
   await sendWhapiLongText(phone, composeSigalConfirmPrompt(
     "confirm_full",
     guestLabel(thread),
-    email || "",
+    email,
     draft,
     threadId,
   ));
@@ -352,9 +419,49 @@ async function executePendingSend(
     thread.guest_contact_email as string | null,
   );
   const guest = guestLabel(thread);
-  const originalDraft = pending.action === "confirm_ack"
+  const originalDraft = pending.action === "confirm_ack" || pending.action === "confirm_whatsapp_ack"
     ? (await fetchOritDraftText(supabase, threadId, "ack"))?.text
     : (await fetchOritDraftText(supabase, threadId, "full_reply"))?.text;
+
+  if (pending.action === "confirm_whatsapp_ack" || pending.action === "confirm_whatsapp_full") {
+    const result = await deliverOritGuestWhatsapp(
+      supabase,
+      thread.guest_contact_phone as string,
+      pending.body_text,
+      threadId,
+    );
+    if (!result.sent) {
+      await sendWhapiText(phone, `❌ השליחה נכשלה: ${result.error || "שגיאה"}`, { noLinkPreview: true });
+      return;
+    }
+
+    const sentAt = new Date().toISOString();
+    const inboxLink = buildOritWaInboxLink(thread as Parameters<typeof buildOritWaInboxLink>[0]) || "";
+
+    if (pending.action === "confirm_whatsapp_ack") {
+      await supabase.from("orit_agent_threads").update({
+        orit_wa_contact_at: sentAt,
+        orit_decision: "whatsapp",
+        orit_decision_at: sentAt,
+        workflow_step: "awaiting_reply_approval",
+        status: "awaiting_reply",
+      }).eq("id", threadId);
+      await learnFromOutbound(supabase, mailbox.id, threadId, String(thread.category ?? "complaint"), pending.body_text, originalDraft);
+      await setChatPending(supabase, threadId, null);
+      await sendWhapiLongText(phone, composeSigalWaSentFollowUp(guest, inboxLink, "ack"));
+      return;
+    }
+
+    await supabase.from("orit_agent_threads").update({
+      full_reply_sent_at: sentAt,
+      workflow_step: "reply_sent",
+      status: "awaiting_reply",
+      orit_chat_pending: null,
+    }).eq("id", threadId);
+    await learnFromOutbound(supabase, mailbox.id, threadId, String(thread.category ?? "complaint"), pending.body_text, originalDraft);
+    await sendWhapiLongText(phone, composeSigalWaSentFollowUp(guest, inboxLink, "full"));
+    return;
+  }
 
   if (pending.action === "confirm_ack") {
     const result = await sendOritAckEmail(supabase, mailbox, thread, pending.body_text);
@@ -372,20 +479,11 @@ async function executePendingSend(
     );
     await setChatPending(supabase, threadId, null);
 
-    await sendWhapiLongText(phone, composeSigalAckSentMessage(
-      guest,
-      email || "",
-      pending.body_text,
-      threadId,
-    ));
+    await supabase.from("orit_agent_threads").update({
+      workflow_step: "awaiting_reply_approval",
+    }).eq("id", threadId);
 
-    const mailboxAlert: OritAlertMailbox = {
-      id: mailbox.id,
-      digest_whatsapp_phone: mailbox.digest_whatsapp_phone,
-      alert_enabled: mailbox.alert_enabled !== false,
-      profile_id: mailbox.profile_id,
-    };
-    await notifyOritFullReplyReady(supabase, mailboxAlert, threadId);
+    await sendWhapiLongText(phone, composeSigalAckSentFollowUp(guest));
     return;
   }
 
@@ -437,15 +535,22 @@ async function executePendingSend(
 
 function workflowStatusLine(thread: Record<string, unknown>): string {
   const guest = guestLabel(thread);
-  const ack = thread.auto_ack_sent_at ? "✓ נשלח" : "ממתין";
-  const full = thread.full_reply_sent_at ? "✓ נשלחה" : "טרם נשלחה";
+  const viaWa = Boolean(thread.orit_wa_contact_at);
+  const ack = hasOritInitialContactSent(thread) ? "נשלח ✓" : "עדיין לא נשלח";
+  const full = thread.full_reply_sent_at ? "נשלחה ✓" : "ממתינה";
   const step = String(thread.workflow_step ?? "");
   let phase = "בטיפול";
-  if (step === "awaiting_ack_approval") phase = "ממתינה לאישור קבלה";
-  else if (step === "awaiting_reply_approval") phase = "ממתינה לתשובה לאורח/ת";
-  else if (step === "guest_replied") phase = "האורח/ת השיב/ה — ממתינה לתשובה שלך";
-  else if (step === "reply_sent") phase = "נשלחה תשובה — ממתינה לסגירה או לתגובת אורח";
-  return `👤 ${guest}\nאישור קבלה: ${ack}\nתשובה מלאה: ${full}\nמצב: ${phase}`;
+  if (step === "awaiting_ack_approval") {
+    phase = viaWa ? "מחכה שתאשרי שליחה בוואטסאפ" : "מחכה שתאשרי את אישור הקבלה";
+  } else if (step === "awaiting_reply_approval") phase = "מחכה לתשובה המלאה לאורח/ת";
+  else if (step === "guest_replied") phase = "האורח/ת השיב/ה — צריך תשובה שלך";
+  else if (step === "reply_sent") phase = "נשלחה תשובה — אפשר לסגור עם «סיימתי»";
+  return [
+    `👤 ${guest}`,
+    `${viaWa ? "וואטסאפ" : "מייל"} — אישור ראשון: ${ack}`,
+    `תשובה מלאה: ${full}`,
+    phase,
+  ].join("\n");
 }
 
 async function markThreadClosed(
@@ -457,9 +562,8 @@ async function markThreadClosed(
   await closeOritThread(supabase, threadId);
 
   await sendWhapiText(phone, [
-    `✓ סימנתי את פניית ${guestLabel(thread)} כטופלה (מסונכרן עם המערכת).`,
-    "במחשב זה אותו דבר כמו «סיימתי — סמן כטופל».",
-    "אעדכן אותך אם יגיע מייל חדש מאותו שרשור.",
+    `✓ סימנתי את פניית ${guestLabel(thread)} כטופלה.`,
+    "אעדכן אם יגיע מייל חדש מאותו שרשור.",
   ].join("\n"), { noLinkPreview: true });
 }
 
@@ -507,8 +611,14 @@ export async function handleOritSigalChat(
     }
     if (isLikelyCustomDraft(t)) {
       const action = pendingRow.pending.action;
-      if (action === "confirm_ack") {
-        await prepareAckConfirm(supabase, phoneDigits, pendingRow.thread, pendingRow.mailbox, t);
+      if (action === "confirm_ack" || action === "confirm_whatsapp_ack") {
+        if (action === "confirm_whatsapp_ack") {
+          await prepareWhatsappConfirm(supabase, phoneDigits, pendingRow.thread, action, t);
+        } else {
+          await prepareAckConfirm(supabase, phoneDigits, pendingRow.thread, pendingRow.mailbox, t);
+        }
+      } else if (action === "confirm_whatsapp_full") {
+        await prepareWhatsappConfirm(supabase, phoneDigits, pendingRow.thread, action, t);
       } else {
         await prepareFullConfirm(supabase, phoneDigits, pendingRow.thread, t);
       }
@@ -569,19 +679,42 @@ export async function handleOritSigalChat(
 
     if (intent === "show_ack") {
       if (threadNeedsAckBeforeFullReply(active.thread)) {
+        const channel = resolveOritOutboundChannel(active.thread as Parameters<typeof resolveOritOutboundChannel>[0]);
         const draft = (await fetchOritDraftText(supabase, String(active.thread.id), "ack"))?.text || "";
+        const guide = channel === "whatsapp_bridge"
+          ? "«שלחי בוואטסאפ» → «כן שלחי»"
+          : SIGAL_GUIDE_ACK;
         await sendWhapiLongText(phoneDigits, draft
           ? [
-            "נוסח אישור הקבלה:",
+            channel === "whatsapp_bridge" ? "נוסח לוואטסאפ:" : "נוסח אישור הקבלה:",
             "─────────────",
             draft,
             "─────────────",
             "",
-            SIGAL_GUIDE_ACK,
+            guide,
           ].join("\n")
           : "אין עדיין נוסח — חכי לסנכרון או עני «קישור» במחשב.");
       } else {
         await prepareFullConfirm(supabase, phoneDigits, active.thread);
+      }
+      return;
+    }
+
+    if (intent === "send_whatsapp") {
+      if (threadNeedsAckBeforeFullReply(active.thread)) {
+        const draft = (await fetchOritDraftText(supabase, String(active.thread.id), "ack"))?.text || "";
+        if (!draft) {
+          await sendWhapiText(phoneDigits, "אין עדיין טיוטה — חכי לסנכרון.", { noLinkPreview: true });
+          return;
+        }
+        await prepareWhatsappConfirm(supabase, phoneDigits, active.thread, "confirm_whatsapp_ack", draft);
+      } else {
+        const draft = (await fetchOritDraftText(supabase, String(active.thread.id), "full_reply"))?.text || "";
+        if (!draft) {
+          await sendWhapiText(phoneDigits, "אין טיוטת תשובה מלאה.", { noLinkPreview: true });
+          return;
+        }
+        await prepareWhatsappConfirm(supabase, phoneDigits, active.thread, "confirm_whatsapp_full", draft);
       }
       return;
     }

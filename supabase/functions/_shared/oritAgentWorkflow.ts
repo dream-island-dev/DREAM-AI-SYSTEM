@@ -1,28 +1,29 @@
 // Orit CS — two-phase complaint workflow: ack approval → full reply approval.
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { buildStaffAppDeepLink } from "./guestAlertWhapiNotify.ts";
 import { deliverOritThreadEmail } from "./oritAgentSend.ts";
 import type { OritMailboxRow } from "./oritAgentMail.ts";
 import {
   resolveOritReplyEmail,
-  resolveOritReplyName,
 } from "./oritGuestContactExtract.ts";
 import {
   resolveOritAlertPhone,
   type OritAlertMailbox,
   type OritAlertThread,
-  CATEGORY_HE,
-  URGENCY_HE,
 } from "./oritAgentWhapiAlert.ts";
 import { sendWhapiText } from "./whapiSend.ts";
 import { sanitizeOritAckDraft } from "./oritThreadAnalysis.ts";
 import {
-  SIGAL_GUIDE_ACK,
-  SIGAL_GUIDE_AFTER_ACK,
-  SIGAL_GUIDE_FULL,
-  SIGAL_INTRO_SUMMARY,
-} from "./oritSigalGuide.ts";
+  areSigalBriefingDraftsReady,
+  composeSigalAckSentFollowUp,
+  composeSigalComplaintBriefing,
+  composeSigalGuestReplyBriefing,
+  composeSigalSimpleBriefing,
+  composeSigalStaleReminder,
+  sigalGuestLabel,
+  type SigalBriefingThread,
+} from "./oritSigalBriefing.ts";
+import { resolveOritOutboundChannel } from "./oritGuestOutbound.ts";
 
 export type OritWorkflowStep =
   | "awaiting_ack_approval"
@@ -41,102 +42,22 @@ export function truncateForWhapi(text: string, max = 420): string {
   return `${t.slice(0, max - 1)}…`;
 }
 
-function guestContactLines(thread: OritAlertThread): string[] {
-  const lines: string[] = [];
-  const name = resolveOritReplyName(thread.from_name, thread.guest_contact_name);
-  if (name && !name.includes("@")) lines.push(`👤 ${name}`);
-  const replyEmail = resolveOritReplyEmail(thread.from_email ?? "", thread.guest_contact_email);
-  if (replyEmail) lines.push(`📧 ${replyEmail}`);
-  const phone = (thread.guest_contact_phone ?? "").replace(/\D/g, "");
-  if (phone) {
-    const fmt = phone.startsWith("972") && phone.length >= 11
-      ? `0${phone.slice(3, 5)}-${phone.slice(5, 8)}-${phone.slice(8)}`
-      : phone.startsWith("05") && phone.length === 10
-        ? `${phone.slice(0, 3)}-${phone.slice(3, 6)}-${phone.slice(6)}`
-        : phone;
-    lines.push(`📱 ${fmt}`);
-  }
-  return lines.length ? lines : ["👤 אורח/ת"];
-}
-
-function urgencyHeadline(category: string, urgency: string): string {
-  if (category === "complaint") {
-    return urgency === "critical" ? "🔴 תלונה קריטית" : "🟠 תלונה דחופה";
-  }
-  const categoryHe = CATEGORY_HE[category] ?? "פנייה";
-  const urgencyHe = URGENCY_HE[urgency] ?? urgency;
-  return `🟡 ${categoryHe} · ${urgencyHe}`;
-}
-
 export function composeOritWorkflowAlert(
   thread: OritAlertThread,
   ackDraft: string,
+  fullReplyDraft?: string,
 ): string {
-  const summary = thread.ai_summary?.trim()
-    || thread.subject?.trim()
-    || "פנייה שדורשת טיפול.";
-  const threadLink = buildStaffAppDeepLink({ page: "orit_cs_agent", threadId: thread.id });
-  const shortRef = thread.id.slice(0, 8);
-  const replyEmail = resolveOritReplyEmail(thread.from_email ?? "", thread.guest_contact_email);
-
-  const ackBlock = truncateForWhapi(ackDraft, 480);
-
-  return [
-    "היי אורית 💜",
-    "כאן סיגל.",
-    "",
-    SIGAL_INTRO_SUMMARY,
-    "",
-    "───",
-    "תלונה דחופה שממתינה לטיפול:",
-    "",
-    ...guestContactLines(thread),
-    urgencyHeadline(thread.category, thread.urgency),
-    "",
-    "📋 הבעיה:",
-    truncateForWhapi(summary, 320),
-    "",
-    "שלב 1 — אישור קבלה למייל (בסגנון שלך):",
-    "─────────────",
-    ackBlock,
-    "─────────────",
-    "",
-    replyEmail
-      ? SIGAL_GUIDE_ACK
-      : "⚠ אין מייל אורח תקין — עני «קישור» לפתיחה במחשב.",
-    "",
-    SIGAL_GUIDE_AFTER_ACK,
-    "",
-    `(קוד פנייה: ${shortRef})`,
-    "",
-    "רק אם צריך את המחשב:",
-    threadLink,
-  ].join("\n");
+  if (fullReplyDraft?.trim()) {
+    return composeSigalComplaintBriefing(thread, ackDraft, fullReplyDraft);
+  }
+  return composeSigalComplaintBriefing(thread, ackDraft, ackDraft);
 }
 
 export function composeOritFullReplyReadyMessage(
   thread: OritAlertThread,
-  fullReplyPreview: string,
+  _fullReplyPreview: string,
 ): string {
-  const threadLink = buildStaffAppDeepLink({ page: "orit_cs_agent", threadId: thread.id });
-  const guestName = resolveOritReplyName(thread.from_name, thread.guest_contact_name);
-  const label = guestName && !guestName.includes("@") ? guestName : "האורח/ת";
-
-  return [
-    "היי אורית 💜",
-    `✓ אישור הקבלה נשלח ל־${label}.`,
-    "עכשיו אכין ואציג לך מכתב תשובה מלא — רק אחרי שתאשרי נשלח.",
-    "",
-    "שלב ב׳ — מכתב תשובה מלא (תצוגה מקוצרת):",
-    "─────────────",
-    truncateForWhapi(fullReplyPreview, 400),
-    "─────────────",
-    "",
-    SIGAL_GUIDE_FULL,
-    "",
-    "רק אם צריך לערוך במחשב:",
-    threadLink,
-  ].join("\n");
+  return composeSigalAckSentFollowUp(sigalGuestLabel(thread));
 }
 
 export function composeSigalGuestReplyCoaching(
@@ -144,43 +65,7 @@ export function composeSigalGuestReplyCoaching(
   guestMessage: string,
   followUpDraft: string | null,
 ): string {
-  const guestName = resolveOritReplyName(thread.from_name, thread.guest_contact_name);
-  const label = guestName && !guestName.includes("@") ? guestName : "האורח/ת";
-
-  const lines = [
-    "היי אורית 💜",
-    SIGAL_INTRO_SUMMARY,
-    "",
-    `📩 ${label} השיב/ה למייל:`,
-    "─────────────",
-    guestMessage.trim(),
-    "─────────────",
-    "",
-  ];
-
-  if (followUpDraft?.trim()) {
-    lines.push(
-      "הכנתי לך תשובה מוצעת (בסגנון שלך):",
-      "─────────────",
-      truncateForWhapi(followUpDraft, 900),
-      "─────────────",
-      "",
-      SIGAL_GUIDE_FULL,
-      "",
-      "או הדביקי ניסוח משלך — אעדכן ואציג שוב.",
-      "כשסגרנו את הנושא — עני «סיימתי».",
-      "",
-      "רק אם צריך — פתיחה במערכת:",
-      buildStaffAppDeepLink({ page: "orit_cs_agent", threadId: thread.id }),
-    );
-  } else {
-    lines.push(
-      "עדיין מכינה את המכתב — עני «תשובה מלאה» בעוד רגע.",
-      buildStaffAppDeepLink({ page: "orit_cs_agent", threadId: thread.id }),
-    );
-  }
-
-  return lines.join("\n");
+  return composeSigalGuestReplyBriefing(thread, guestMessage, followUpDraft);
 }
 
 export function composeOritGuestRepliedAlert(
@@ -276,7 +161,7 @@ export async function notifyOritWorkflowAlert(
 
   const { data: thread } = await supabase
     .from("orit_agent_threads")
-    .select("id, subject, from_name, from_email, category, urgency, ai_summary, guest_contact_name, guest_contact_phone, guest_contact_email, auto_ack_sent_at, status, is_demo, workflow_step")
+    .select("id, subject, from_name, from_email, category, urgency, ai_summary, guest_contact_name, guest_contact_phone, guest_contact_email, auto_ack_sent_at, orit_wa_contact_at, status, is_demo, workflow_step")
     .eq("id", threadId)
     .maybeSingle();
 
@@ -287,7 +172,7 @@ export async function notifyOritWorkflowAlert(
   if (thread.status === "handled" || thread.status === "archived") {
     return { sent: false, reason: "closed" };
   }
-  if (thread.auto_ack_sent_at) {
+  if (thread.auto_ack_sent_at || thread.orit_wa_contact_at) {
     return { sent: false, reason: "ack_already_sent" };
   }
 
@@ -303,16 +188,23 @@ export async function notifyOritWorkflowAlert(
   }
 
   const ackDraft = await fetchOritDraftText(supabase, threadId, "ack");
-  if (!ackDraft?.text) {
-    return { sent: false, reason: "no_ack_draft" };
+  const fullDraft = await fetchOritDraftText(supabase, threadId, "full_reply");
+  const channel = resolveOritOutboundChannel(thread as SigalBriefingThread);
+  const draftsReady = channel === "whatsapp_bridge"
+    ? Boolean(ackDraft?.text?.trim())
+    : areSigalBriefingDraftsReady(ackDraft?.text, fullDraft?.text, true);
+  if (!draftsReady) {
+    return { sent: false, reason: "briefing_not_ready" };
   }
 
   const phone = await resolveOritAlertPhone(supabase, mailbox);
   if (!phone) return { sent: false, reason: "no_phone" };
 
-  const body = composeOritWorkflowAlert(thread as OritAlertThread, ackDraft.text);
-  const whapiId = await sendWhapiText(phone, body, { noLinkPreview: true });
-  if (!whapiId) return { sent: false, reason: "whapi_failed" };
+  const body = channel === "whatsapp_bridge"
+    ? composeSigalComplaintBriefing(thread as SigalBriefingThread, ackDraft!.text, fullDraft?.text || ackDraft!.text)
+    : composeSigalComplaintBriefing(thread as SigalBriefingThread, ackDraft!.text, fullDraft!.text);
+  const sent = await sendWhapiLongText(phone, body);
+  if (!sent) return { sent: false, reason: "whapi_failed" };
 
   const now = new Date().toISOString();
   await supabase.from("orit_agent_threads").update({
@@ -324,8 +216,70 @@ export async function notifyOritWorkflowAlert(
   await supabase.from("orit_agent_alert_log").upsert({
     mailbox_id: mailbox.id,
     thread_id: threadId,
-    body_sent: body,
-    whapi_message_id: whapiId,
+    body_sent: body.slice(0, 4000),
+    whapi_message_id: null,
+    sent_at: now,
+  }, { onConflict: "thread_id" });
+
+  return { sent: true };
+}
+
+/** Sigal briefing for any open complaint (replaces legacy 1/2/3 decision prompt). */
+export async function notifyOritSigalComplaintBriefing(
+  supabase: SupabaseClient,
+  mailbox: OritAlertMailbox,
+  threadId: string,
+  opts: { force?: boolean } = {},
+): Promise<{ sent: boolean; reason?: string }> {
+  if (mailbox.alert_enabled === false) return { sent: false, reason: "alert_disabled" };
+
+  const { data: thread } = await supabase
+    .from("orit_agent_threads")
+    .select("id, subject, from_name, from_email, category, urgency, ai_summary, guest_contact_name, guest_contact_phone, guest_contact_email, auto_ack_sent_at, orit_wa_contact_at, status, is_demo, workflow_step")
+    .eq("id", threadId)
+    .maybeSingle();
+
+  if (!thread || thread.is_demo || thread.category !== "complaint") {
+    return { sent: false, reason: "not_complaint" };
+  }
+  if (thread.status === "handled" || thread.status === "archived") {
+    return { sent: false, reason: "closed" };
+  }
+  if (isOritWorkflowComplaint(thread.category, thread.urgency)) {
+    return notifyOritWorkflowAlert(supabase, mailbox, threadId, opts);
+  }
+
+  if (!opts.force) {
+    const { data: existing } = await supabase
+      .from("orit_agent_alert_log")
+      .select("sent_at")
+      .eq("thread_id", threadId)
+      .maybeSingle();
+    if (existing?.sent_at) return { sent: false, reason: "already_sent" };
+  }
+
+  const ackDraft = await fetchOritDraftText(supabase, threadId, "ack");
+  const fullDraft = await fetchOritDraftText(supabase, threadId, "full_reply");
+  const replyText = fullDraft?.text || ackDraft?.text;
+  if (!replyText?.trim()) return { sent: false, reason: "briefing_not_ready" };
+
+  const phone = await resolveOritAlertPhone(supabase, mailbox);
+  if (!phone) return { sent: false, reason: "no_phone" };
+
+  const body = composeSigalSimpleBriefing(thread as SigalBriefingThread, replyText);
+  const sent = await sendWhapiLongText(phone, body);
+  if (!sent) return { sent: false, reason: "whapi_failed" };
+
+  const now = new Date().toISOString();
+  await supabase.from("orit_agent_threads").update({
+    orit_decision_prompted_at: now,
+  }).eq("id", threadId);
+
+  await supabase.from("orit_agent_alert_log").upsert({
+    mailbox_id: mailbox.id,
+    thread_id: threadId,
+    body_sent: body.slice(0, 4000),
+    whapi_message_id: null,
     sent_at: now,
   }, { onConflict: "thread_id" });
 
@@ -456,10 +410,13 @@ export async function notifyOritGuestReplied(
 
   const guestMessage = (latestInbound?.body_text || inboundSnippet || "").trim();
   const followUp = await fetchOritDraftText(supabase, threadId, "full_reply");
-  const body = composeSigalGuestReplyCoaching(
-    thread as OritAlertThread,
+  if (!followUp?.text?.trim()) {
+    return { sent: false, reason: "briefing_not_ready" };
+  }
+  const body = composeSigalGuestReplyBriefing(
+    thread as SigalBriefingThread,
     guestMessage,
-    followUp?.text ?? null,
+    followUp.text,
   );
 
   const sent = await sendWhapiLongText(phone, body);
@@ -546,6 +503,17 @@ export async function tryHandleOritWorkflowAckApproval(
     String(pending.thread.from_email ?? ""),
     pending.thread.guest_contact_email as string | null,
   );
+  const channel = resolveOritOutboundChannel(pending.thread as SigalBriefingThread);
+
+  if (!replyEmail && channel === "whatsapp_bridge") {
+    await sendWhapiText(
+      phoneDigits,
+      "אין מייל — עני «שלחי בוואטסאפ» לאישור קבלה.",
+      { noLinkPreview: true },
+    );
+    return true;
+  }
+
   if (!replyEmail) {
     await sendWhapiText(phoneDigits, "❌ אין מייל אורח תקין — פתחי במערכת לטיפול ידני.", { noLinkPreview: true });
     return true;
@@ -578,8 +546,76 @@ export async function tryHandleOritWorkflowAckApproval(
 
   await sendWhapiText(
     phoneDigits,
-    `✓ נשלח אישור קבלה ל־${replyEmail}.\nהכנתי את התשובה המלאה — פתחי את הקישור מההודעה הבאה.`,
+    composeSigalAckSentFollowUp(sigalGuestLabel(pending.thread as OritAlertThread)),
     { noLinkPreview: true },
   );
   return true;
+}
+
+const SIGAL_STALE_HOURS = 4;
+const SIGAL_REMINDER_COOLDOWN_HOURS = 4;
+
+/** Gentle Whapi nudge when open complaints sit without Orit action. */
+export async function sendOritStaleComplaintReminders(
+  supabase: SupabaseClient,
+  mailbox: OritAlertMailbox,
+): Promise<{ sent: number; skipped: number }> {
+  if (mailbox.alert_enabled === false) return { sent: 0, skipped: 0 };
+
+  const phone = await resolveOritAlertPhone(supabase, mailbox);
+  if (!phone) return { sent: 0, skipped: 0 };
+
+  const staleBefore = new Date(Date.now() - SIGAL_STALE_HOURS * 3_600_000).toISOString();
+  const { data: rows } = await supabase
+    .from("orit_agent_threads")
+    .select("id, subject, from_name, from_email, category, urgency, ai_summary, guest_contact_name, guest_contact_phone, guest_contact_email, auto_ack_sent_at, full_reply_sent_at, workflow_step, received_at, orit_decision_prompted_at, sigal_last_reminder_at, status")
+    .eq("mailbox_id", mailbox.id)
+    .eq("category", "complaint")
+    .eq("is_demo", false)
+    .in("status", ["awaiting_reply", "snoozed"])
+    .lt("received_at", staleBefore);
+
+  let sent = 0;
+  let skipped = 0;
+  const now = Date.now();
+
+  for (const row of rows ?? []) {
+    if (row.status === "handled" || row.status === "archived") {
+      skipped += 1;
+      continue;
+    }
+
+    const lastRem = row.sigal_last_reminder_at
+      ? new Date(row.sigal_last_reminder_at).getTime()
+      : 0;
+    if (lastRem && now - lastRem < SIGAL_REMINDER_COOLDOWN_HOURS * 3_600_000) {
+      skipped += 1;
+      continue;
+    }
+
+    const { data: alertLog } = await supabase
+      .from("orit_agent_alert_log")
+      .select("sent_at")
+      .eq("thread_id", row.id)
+      .maybeSingle();
+
+    if (!alertLog?.sent_at && !row.orit_decision_prompted_at) {
+      skipped += 1;
+      continue;
+    }
+
+    const body = composeSigalStaleReminder(row as SigalBriefingThread);
+    const ok = await sendWhapiLongText(phone, body);
+    if (!ok) {
+      skipped += 1;
+      continue;
+    }
+
+    await supabase.from("orit_agent_threads").update({
+      sigal_last_reminder_at: new Date().toISOString(),
+    }).eq("id", row.id);
+    sent += 1;
+  }
+
+  return { sent, skipped };
 }

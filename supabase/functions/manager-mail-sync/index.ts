@@ -11,13 +11,13 @@ import {
 } from "../_shared/oritGuestContactExtract.ts";
 import { fetchMailboxInboxMessages, isMailboxIngestConfigured } from "../_shared/mailIngest.ts";
 import { isImapConfigured, resolveImapConfig, testImapConnection } from "../_shared/imapMail.ts";
-import { notifyOritThreadDecisionPrompt } from "../_shared/oritAgentOritDecision.ts";
 import { isOritThreadClosed } from "../_shared/closeOritThread.ts";
 import {
-  isOritWorkflowComplaint,
   notifyOritGuestReplied,
-  notifyOritWorkflowAlert,
+  notifyOritSigalComplaintBriefing,
+  sendOritStaleComplaintReminders,
   threadHasOutboundEmail,
+  fetchOritDraftText,
 } from "../_shared/oritAgentWorkflow.ts";
 import {
   persistOritThreadAnalysis,
@@ -33,15 +33,18 @@ async function analyzeThread(
   supabase: ReturnType<typeof createClient>,
   mailboxId: string,
   threadId: string,
+  opts: { force?: boolean } = {},
 ): Promise<void> {
   const { data: thread } = await supabase
     .from("orit_agent_threads")
     .select("*")
     .eq("id", threadId)
     .maybeSingle();
-  if (!thread || thread.ai_analyzed_at) return;
+  if (!thread || (thread.ai_analyzed_at && !opts.force)) return;
 
-  const analysis = await runOritThreadAnalysis(supabase, mailboxId, thread);
+  const analysis = await runOritThreadAnalysis(supabase, mailboxId, thread, {
+    forceLlm: opts.force === true || thread.category === "complaint",
+  });
   await persistOritThreadAnalysis(supabase, threadId, analysis, undefined, {
     from_name: thread.from_name,
     auto_ack_sent_at: thread.auto_ack_sent_at,
@@ -192,7 +195,9 @@ serve(async (req: Request) => {
           }
 
           try {
-            await analyzeThread(supabase, mailbox.id, threadId);
+            await analyzeThread(supabase, mailbox.id, threadId, {
+              force: !isNewThread && isNewInboundMsg,
+            });
           } catch (aiErr) {
             console.warn("[manager-mail-sync] analyze failed:", (aiErr as Error).message);
           }
@@ -210,10 +215,12 @@ serve(async (req: Request) => {
                 digest_whatsapp_phone: (mailbox as { digest_whatsapp_phone?: string | null }).digest_whatsapp_phone ?? null,
                 alert_enabled: (mailbox as { alert_enabled?: boolean | null }).alert_enabled ?? true,
               };
-              if (analyzed && isOritWorkflowComplaint(analyzed.category, analyzed.urgency)) {
-                await notifyOritWorkflowAlert(supabase, mailboxAlert, threadId);
-              } else if (analyzed?.category === "complaint") {
-                await notifyOritThreadDecisionPrompt(supabase, mailboxAlert, threadId);
+              if (analyzed?.category === "complaint") {
+                let alertResult = await notifyOritSigalComplaintBriefing(supabase, mailboxAlert, threadId);
+                if (!alertResult.sent && alertResult.reason === "briefing_not_ready") {
+                  await analyzeThread(supabase, mailbox.id, threadId, { force: true });
+                  await notifyOritSigalComplaintBriefing(supabase, mailboxAlert, threadId);
+                }
               }
             } catch (promptErr) {
               console.warn("[manager-mail-sync] orit alert failed:", (promptErr as Error).message);
@@ -238,10 +245,8 @@ serve(async (req: Request) => {
                   .select("category, urgency")
                   .eq("id", threadId)
                   .maybeSingle();
-                if (analyzed && isOritWorkflowComplaint(analyzed.category, analyzed.urgency)) {
-                  await notifyOritWorkflowAlert(supabase, mailboxAlert, threadId, { force: true });
-                } else if (analyzed?.category === "complaint") {
-                  await notifyOritThreadDecisionPrompt(supabase, mailboxAlert, threadId, { force: false });
+                if (analyzed?.category === "complaint") {
+                  await notifyOritSigalComplaintBriefing(supabase, mailboxAlert, threadId, { force: true });
                 }
               }
               }
@@ -269,6 +274,20 @@ serve(async (req: Request) => {
           connection_error: (mbErr as Error).message.slice(0, 500),
         }).eq("id", mailbox.id);
       }
+    }
+
+    try {
+      const { data: activeMb } = await supabase
+        .from("orit_agent_mailbox")
+        .select("id, profile_id, digest_whatsapp_phone, alert_enabled")
+        .eq("connection_status", "active")
+        .limit(1)
+        .maybeSingle();
+      if (activeMb) {
+        await sendOritStaleComplaintReminders(supabase, activeMb);
+      }
+    } catch (remErr) {
+      console.warn("[manager-mail-sync] sigal reminders failed:", (remErr as Error).message);
     }
 
     return new Response(JSON.stringify({ ok: true, synced, backfilled }), {

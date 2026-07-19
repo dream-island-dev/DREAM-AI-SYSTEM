@@ -85,6 +85,7 @@ import {
 import { onGuestAlertInserted } from "../_shared/guestAlertWhapiNotify.ts";
 import { extractArrivalTimeFromText, persistGuestEta, insertArrivalEtaBoardAlert } from "../_shared/guestEta.ts";
 import { tryHandleOritCsWhapiReply } from "../_shared/oritAgentOritDecision.ts";
+import { tryHandleOritGuestWaInbound } from "../_shared/oritGuestWaBridge.ts";
 import { isStaffAssistantInbound } from "../_shared/executiveIdentity.ts";
 import { handleExecutiveVoiceMessage } from "../_shared/executiveAssistant.ts";
 import { ingestStaffGroupMessage, resolveHousekeepingSender } from "../_shared/staffGroupIngest.ts";
@@ -1502,7 +1503,15 @@ serve(async (req: Request) => {
         `[whapi-webhook] guest_dm inbound phone:${phone} guest:${guest?.id ?? "unlinked"} conv:${conversationId ?? "?"}`,
       );
 
-      // ── Orit CS (Sigal) — reply 1/2 before executive assistant ──
+      // ── Orit guest WA bridge — before staff Sigal commands ──
+      if (await tryHandleOritGuestWaInbound(supabase, phone, body.trim())) {
+        results.push({
+          id: msg.id, channel: "guest_dm", phone, action: "orit_guest_wa_bridge",
+        });
+        continue;
+      }
+
+      // ── Orit CS (Sigal) — staff commands ──
       if (await tryHandleOritCsWhapiReply(supabase, phone, body.trim(), { fromVoice })) {
         results.push({
           id: msg.id, channel: "guest_dm", phone, action: "orit_cs_decision",
