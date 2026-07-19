@@ -105,7 +105,7 @@ import {
   isMealDeclineOrApology,
   buildMealDeclineAck,
   isGuestEligibleForInHouseOpsDispatch,
-  isAllowlistedPhysicalTaskRequest,
+  shouldInterceptOperationalInHouseRequest,
   extractAllowlistedRequestLines,
   buildOperationalRequestSummary,
   buildOperationalDispatchReply,
@@ -1085,7 +1085,8 @@ async function handleGuestDirectMessage(
     // Whapi thread (staffMuted contract, see sendGuestDmReply doc above).
     if (
       guestId
-      && isGuestEligibleForInHouseOpsDispatch(
+      && shouldInterceptOperationalInHouseRequest(
+        text,
         {
           status:         (guestRecord?.status as string | null) ?? null,
           arrival_date:   (guestRecord?.arrival_date as string | null) ?? null,
@@ -1093,9 +1094,13 @@ async function handleGuestDirectMessage(
         },
         new Date(),
       )
-      && isAllowlistedPhysicalTaskRequest(text)
     ) {
-      const dispatchText = extractAllowlistedRequestLines(text);
+      const guestOpsCtx = {
+        status:         (guestRecord?.status as string | null) ?? null,
+        arrival_date:   (guestRecord?.arrival_date as string | null) ?? null,
+        departure_date: (guestRecord?.departure_date as string | null) ?? null,
+      };
+      const dispatchText = extractAllowlistedRequestLines(text, guestOpsCtx);
       const summary = buildOperationalRequestSummary(text);
       const guestRoom = (guest?.room as string | null | undefined) ?? null;
 

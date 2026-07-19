@@ -4,9 +4,8 @@
 // Two routes, same as Meta/Whapi's classifyGuestRequestDispatch:
 //   - In-house eligible guest (checked_in, or on-property arrival day) +
 //     upsellLabel matches the allowlisted physical categories (amenity /
-//     maintenance / cleaning) → _shared/createGuestOpsTask.ts (Operations
-//     Board, pending_approval, SLA-tracked) — same task shape Meta/Whapi
-//     already produce.
+//     maintenance / cleaning) OR a trusted portal OPS_REQUEST CTA label →
+//     _shared/createGuestOpsTask.ts (Operations Board, pending_approval).
 //   - Everything else (not yet on property, or a non-allowlisted / generic
 //     ask like today's single "הזמנת שירות לחדר — ארמונים" CTA) → Requests
 //     Board (guest_alerts, alert_type=portal_room_service) + Whapi "בקשות
@@ -15,8 +14,8 @@
 import { serve }        from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { onGuestAlertInserted } from "../_shared/guestAlertWhapiNotify.ts";
-import { createGuestOpsTask } from "../_shared/createGuestOpsTask.ts";
-import { isGuestEligibleForInHouseOpsDispatch, isAllowlistedPhysicalTaskRequest } from "../_shared/automationSchedule.ts";
+import { createGuestOpsTask, createGuestOpsTaskWithInstantAmenityDispatch } from "../_shared/createGuestOpsTask.ts";
+import { isGuestEligibleForInHouseOpsDispatch, isAllowlistedPhysicalTaskRequest, isPortalTrustedOpsLabel } from "../_shared/automationSchedule.ts";
 
 function futureArrivalTag(arrivalDateStr: string | null, status: string | null): string | null {
   if (!arrivalDateStr || status === "checked_in") return null;
@@ -90,8 +89,8 @@ serve(async (req: Request) => {
       new Date(),
     );
 
-    if (eligible && isAllowlistedPhysicalTaskRequest(upsellLabel)) {
-      const result = await createGuestOpsTask({
+    if (eligible && (isAllowlistedPhysicalTaskRequest(upsellLabel) || isPortalTrustedOpsLabel(upsellLabel))) {
+      const result = await createGuestOpsTaskWithInstantAmenityDispatch({
         supabase,
         guestId: guest.id as number,
         phone: guest.phone as string,

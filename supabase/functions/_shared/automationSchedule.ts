@@ -866,7 +866,14 @@ export const PHYSICAL_REQUEST_INTENT_PATTERN =
 
 /** Allowlist cat. 1 — concrete in-room amenity delivery. */
 const ALLOWLIST_AMENITY_PATTERN =
-  /(?:חלב|קפה|מגבות|שמפו|סבון|נייר(?:\s*טואלט)?|חלוק(?:ים)?|כרית(?:ות)?|שמיכ(?:ה|ות)?|קפסולות|(?<![א-ת])קרח(?![א-ת])|\bice\b)/iu;
+  /(?:חלב|קפה|מגבות|שמפו|סבון|נייר(?:\s*טואלט)?|חלוק(?:ים)?|כרית(?:ות)?|שמיכ(?:ה|ות)?|קפסולות|כוסות?|צלחות?|(?<![א-ת])קרח(?![א-ת])|\bice\b)/iu;
+
+/** checked_in only — bare noun or qty+noun ("מגבות", "2 כוסות"); not questions. */
+const BARE_IN_ROOM_AMENITY_SHORTHAND_RE =
+  /^(?:\d{1,2}\s+)?(?:מגבות?|מגבת|חלב|קפה|שמפו|סבון|נייר(?:\s*טואלט)?|חלוק(?:ים)?|כרית(?:ות)?|שמיכ(?:ה|ות)?|קפסולות|כוסות?|צלחת|צלחות|קרח|\bice\b|(?:(?<![א-ת])|(?<=(?<![א-ת])[הושבכלמ]))מים(?![א-ת]))$/iu;
+
+/** Portal OPS_REQUEST CTA taps — explicit button label, not free-text LLM guess. */
+const PORTAL_TRUSTED_OPS_LABEL_RE = /^הזמנת\s+שירות\s+לחדר\b/u;
 
 // ★ session 2026-07-07 fix: JS/Deno regex `\b` is defined over ASCII `\w`
 // and never matches Hebrew letters, so a bare "מים" had zero word-boundary
@@ -905,7 +912,7 @@ const ALLOWLIST_MAINTENANCE_PATTERN =
 
 /** Allowlist cat. 3 — cleaning / physical labor. */
 const ALLOWLIST_CLEANING_PATTERN =
-  /(?:ניקיון\s+חדר|לפנות\s+זבל|להחליף\s+מצעים|החלפת\s+מצעים|שטיפת\s+רצפה|פינוי\s+זבל)/u;
+  /(?:ניקיון(?:\s+(?:חדר|לחדר|בחדר|בסוויטה|לסוויטה|בבקשה))?|לפנות\s+זבל|להחליף\s+מצעים|החלפת\s+מצעים|שטיפת\s+רצפה|פינוי\s+זבל)/u;
 
 const OPERATIONAL_NEED_LABELS: ReadonlyArray<{ pattern: RegExp; label: string }> = [
   { pattern: /חלב/u, label: "חלב" },
@@ -914,6 +921,8 @@ const OPERATIONAL_NEED_LABELS: ReadonlyArray<{ pattern: RegExp; label: string }>
   { pattern: /מים/u, label: "מים" },
   { pattern: /קרח|\bice\b/iu, label: "קרח" },
   { pattern: /קפסולות/u, label: "קפסולות" },
+  { pattern: /כוס/u, label: "כוסות" },
+  { pattern: /צלח/u, label: "צלחות" },
   { pattern: /סבון/u, label: "סבון" },
   { pattern: /שמפו/u, label: "שמפו" },
   { pattern: /נייר/u, label: "נייר טואלט" },
@@ -988,6 +997,42 @@ export function isAllowlistedPhysicalTaskRequest(text: string): boolean {
   return false;
 }
 
+/** checked_in guests — "מגבות" / "2 כוסות" without "אפשר…" (Tier-0 only, not LLM tool path). */
+export function isBareInRoomAmenityShorthand(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.length > 40) return false;
+  if (isInformationalGuestQuery(t)) return false;
+  if (/\?/.test(t)) return false;
+  return BARE_IN_ROOM_AMENITY_SHORTHAND_RE.test(t);
+}
+
+/** Portal button OPS_REQUEST labels — trusted tap intent (guest-portal-ops-request). */
+export function isPortalTrustedOpsLabel(label: string): boolean {
+  const t = label.trim();
+  if (!t) return false;
+  if (PORTAL_TRUSTED_OPS_LABEL_RE.test(t)) return true;
+  return isAllowlistedPhysicalTaskRequest(t);
+}
+
+function lineMatchesInHouseOpsRequest(
+  line: string,
+  guest: GuestOpsEligibilityInput,
+): boolean {
+  if (isAllowlistedPhysicalTaskRequest(line)) return true;
+  if (!isCheckedInGuestStatus(guest.status ?? null)) return false;
+  return isBareInRoomAmenityShorthand(line);
+}
+
+function textMatchesInHouseOpsRequest(
+  text: string,
+  guest: GuestOpsEligibilityInput,
+): boolean {
+  if (lineMatchesInHouseOpsRequest(text.trim(), guest)) return true;
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  if (lines.length <= 1) return false;
+  return lines.some((line) => lineMatchesInHouseOpsRequest(line, guest));
+}
+
 /**
  * Burst-coalesced guest text can be several distinct messages joined by "\n"
  * (whatsapp-webhook's coalesceBurstIfLeader — same-phone inbound messages
@@ -1000,10 +1045,15 @@ export function isAllowlistedPhysicalTaskRequest(text: string): boolean {
  * (defensive — never silently drops a legitimate request, CLAUDE.md §0.1
  * Zero Data Loss).
  */
-export function extractAllowlistedRequestLines(text: string): string {
+export function extractAllowlistedRequestLines(
+  text: string,
+  guest?: GuestOpsEligibilityInput,
+): string {
   const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
   if (lines.length <= 1) return text.trim();
-  const relevant = lines.filter((line) => isAllowlistedPhysicalTaskRequest(line));
+  const relevant = lines.filter((line) =>
+    guest ? lineMatchesInHouseOpsRequest(line, guest) : isAllowlistedPhysicalTaskRequest(line),
+  );
   if (relevant.length === 0) {
     console.warn(
       `[automationSchedule] extractAllowlistedRequestLines — no single line isolated from a ${lines.length}-line burst, falling back to full text`,
@@ -1052,7 +1102,8 @@ export function shouldInterceptOperationalInHouseRequest(
   guest: GuestOpsEligibilityInput,
   now: Date = new Date(),
 ): boolean {
-  return isGuestEligibleForInHouseOpsDispatch(guest, now) && isActionableOperationalInHouseRequest(text);
+  return isGuestEligibleForInHouseOpsDispatch(guest, now)
+    && textMatchesInHouseOpsRequest(text, guest);
 }
 
 /** True when staff should get tasks + Whapi card + requires_attention. */

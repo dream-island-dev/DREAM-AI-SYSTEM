@@ -1138,7 +1138,11 @@ async function handleOperationalInHouseIntercept(
   // unrelated adjacent message never dominates/confuses the translated Whapi
   // card (root cause of the "אמרו לנו שאפשר ב-11" false-positive incident).
   const summary = buildOperationalRequestSummary(text);
-  const dispatchText = extractAllowlistedRequestLines(text);
+  const dispatchText = extractAllowlistedRequestLines(text, {
+    status: (guest.status as string | null) ?? null,
+    arrival_date: (guest.arrival_date as string | null) ?? null,
+    departure_date: (guest.departure_date as string | null) ?? null,
+  });
   const guestName = (guest.name as string | null) ?? null;
   const guestRoom = (guest.room as string | null) ?? null;
   const reply = buildOperationalDispatchReply(summary, guestName);
@@ -3741,7 +3745,7 @@ Deno.serve(async (req: Request) => {
           // effectiveText may be burst-coalesced — narrow to the allowlisted
           // line(s) before classification, same as the Tier-0 path in
           // handleOperationalInHouseIntercept (see extractAllowlistedRequestLines).
-          const dispatchText = extractAllowlistedRequestLines(effectiveText);
+          const dispatchText = extractAllowlistedRequestLines(effectiveText, guestOpsCtx);
           createGuestOpsTask({
             supabase,
             guestId,

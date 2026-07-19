@@ -33,6 +33,10 @@ import {
   isReplyObviouslyTruncated,
   endsWithMidWordHebrewCut,
   resolveTruncatedReplyFallback,
+  isBareInRoomAmenityShorthand,
+  isPortalTrustedOpsLabel,
+  shouldInterceptOperationalInHouseRequest,
+  isAllowlistedPhysicalTaskRequest,
   looksLikeDiningHoursReply,
   type AutomationStage,
   type GuestForSchedule,
@@ -874,4 +878,38 @@ Deno.test("checkEligibility: day_guest without room → missing_room_assignment 
     guest_flag_column: "msg_pre_arrival_2d_sent",
   });
   assertEquals(checkEligibility(stage1, guest, israelInstant("2026-07-12", 10, 0)), "missing_room_assignment");
+});
+
+// ── Tier-0 quality expansion (2026-07-20) — safe allowlist only, no LLM widening ──
+
+Deno.test("isBareInRoomAmenityShorthand: checked_in-style bare nouns", () => {
+  assertEquals(isBareInRoomAmenityShorthand("מגבות"), true);
+  assertEquals(isBareInRoomAmenityShorthand("2 כוסות"), true);
+  assertEquals(isBareInRoomAmenityShorthand("איפה המגבות?"), false);
+  assertEquals(isBareInRoomAmenityShorthand("בפעמים הקודמות"), false);
+});
+
+Deno.test("shouldInterceptOperationalInHouseRequest: bare amenity only when checked_in", () => {
+  const onProperty = { status: "checked_in", arrival_date: "2026-07-14", departure_date: "2026-07-16" };
+  const expected = { status: "expected", arrival_date: "2026-07-14", departure_date: "2026-07-16" };
+  assertEquals(shouldInterceptOperationalInHouseRequest("מגבות", onProperty), true);
+  assertEquals(shouldInterceptOperationalInHouseRequest("מגבות", expected), false);
+  assertEquals(shouldInterceptOperationalInHouseRequest("אפשר מגבות לחדר", expected), true);
+});
+
+Deno.test("isAllowlistedPhysicalTaskRequest: cups/plates + cleaning בבקשה", () => {
+  assertEquals(isAllowlistedPhysicalTaskRequest("אפשר כוסות לחדר"), true);
+  assertEquals(isAllowlistedPhysicalTaskRequest("ניקיון בבקשה"), true);
+  assertEquals(isAllowlistedPhysicalTaskRequest("מגבות"), false);
+});
+
+Deno.test("isPortalTrustedOpsLabel: portal OPS CTA", () => {
+  assertEquals(isPortalTrustedOpsLabel("הזמנת שירות לחדר — ארמונים"), true);
+  assertEquals(isPortalTrustedOpsLabel("בקשת שדרוג סוויטה"), false);
+});
+
+Deno.test("extractAllowlistedRequestLines: burst with bare amenity line when checked_in", () => {
+  const burst = "שלום\nמגבות";
+  const guest = { status: "checked_in" };
+  assertEquals(extractAllowlistedRequestLines(burst, guest), "מגבות");
 });
