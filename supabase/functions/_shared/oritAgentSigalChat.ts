@@ -18,6 +18,13 @@ import {
 } from "./oritAgentWorkflow.ts";
 import { deliverOritThreadEmail } from "./oritAgentSend.ts";
 import { sendWhapiText } from "./whapiSend.ts";
+import {
+  SIGAL_GUIDE_ACK,
+  SIGAL_GUIDE_CONFIRM,
+  SIGAL_GUIDE_FULL,
+  SIGAL_GUIDE_HELP,
+  resolveOritSigalIntent,
+} from "./oritSigalGuide.ts";
 
 export type OritChatPending = {
   action: "confirm_ack" | "confirm_full";
@@ -25,16 +32,8 @@ export type OritChatPending = {
   shown_at: string;
 };
 
-const CONFIRM_RE = /^(כן(\s+שלחי)?|שלחי|מאשרת|אישור|אשרי\s*ולשלוח|yes|ok|go)$/i;
-const CANCEL_RE = /^(לא|בטלי|עצרי|ביטול|cancel|stop)$/i;
-const SHOW_ACK_RE = /(תראי|הציגי|מה\s*הטקסט|אישור\s*קבלה|שלב\s*1|טיוטה)/i;
-const SHOW_FULL_RE = /(תשובה\s*מלאה|שלב\s*2|מכתב\s*מלא)/i;
-const LINK_RE = /(קישור|פתחי|מערכת|לינק)/i;
-const HELP_RE = /(עזרה|מה\s*אפשר|פקודות|help)/i;
-const SHOW_GUEST_RE = /(מה\s*כתב|מה\s*כתבה|הודעת\s*האורח|מה\s*השיב|מה\s*השיבה)/i;
-const STATUS_RE = /(מה\s*המצב|סטטוס|איפה\s*אנחנו)/i;
-const MARK_DONE_RE = /^(סיימתי|טופל|הנושא\s*נסגר|סגרתי|done)$/i;
-const PREPARE_ACK_RE = /^אשרי$/i;
+const CONFIRM_RE = /^(כן(\s+שלחי)?|שלחי|מאשרת|אישור|אשרי\s*ולשלוח|yes|ok|go|כן תשלחי|בסדר תשלחי|יאללה שלחי)$/i;
+const CANCEL_RE = /^(לא|בטלי|עצרי|ביטול|cancel|stop|תעצרי)$/i;
 
 async function sendWhapiLongText(phone: string, text: string): Promise<void> {
   const max = 3400;
@@ -218,8 +217,8 @@ export function composeSigalConfirmPrompt(
     "─────────────",
     bodyText.trim(),
     "─────────────",
-    "עני «כן שלחי» לאישור · «לא» לביטול",
-    "או ערכי במערכת:",
+    SIGAL_GUIDE_CONFIRM,
+    "לעריכה במחשב:",
     threadLink(threadId),
   ].join("\n");
 }
@@ -231,11 +230,14 @@ export function composeSigalAckSentMessage(
   threadId: string,
 ): string {
   return [
-    `✓ נשלח לאורח/ת ${guest}${email ? ` (${email})` : ""}:`,
+    `✓ נשלח לאורח/ת ${guest}${email ? ` (${email})` : ""}.`,
     "",
     bodySent.trim().slice(0, 1200) + (bodySent.length > 1200 ? "\n[…]" : ""),
     "",
-    "לצפייה בשרשור ובהמשך טיפול בנושא:",
+    "השלב הבא — מכתב תשובה מלא:",
+    SIGAL_GUIDE_FULL,
+    "",
+    "לצפייה בשרשור:",
     threadLink(threadId),
   ].join("\n");
 }
@@ -293,7 +295,7 @@ async function prepareFullConfirm(
 ): Promise<void> {
   const threadId = String(thread.id);
   if (!thread.auto_ack_sent_at) {
-    await sendWhapiText(phone, "קודם צריך לשלוח אישור קבלה (שלב 1). עני «תראי לי» לטיוטה.", { noLinkPreview: true });
+    await sendWhapiText(phone, "קודם שולחים אישור קבלה (שלב א׳). עני «תראי לי».", { noLinkPreview: true });
     return;
   }
 
@@ -479,26 +481,26 @@ export async function handleOritSigalChat(
 ): Promise<void> {
   const t = (text || "").trim();
   const voicePrefix = opts.fromVoice ? "🎤 " : "";
+  const intent = resolveOritSigalIntent(t);
 
   if (!t) {
-    await sendWhapiText(phoneDigits, "לא שמעתי טקסט — נסי שוב או הקליטי הודעה קולית.", { noLinkPreview: true });
+    await sendWhapiText(phoneDigits, "לא שמעתי טקסט — נסי שוב או הקליטי הודעה.", { noLinkPreview: true });
     return;
   }
 
   const pendingRow = await findThreadWithPending(supabase);
   if (pendingRow) {
-    if (CONFIRM_RE.test(t)) {
+    if (intent === "confirm_send" || CONFIRM_RE.test(t)) {
       await executePendingSend(supabase, phoneDigits, pendingRow);
       return;
     }
-    if (CANCEL_RE.test(t)) {
+    if (intent === "cancel" || CANCEL_RE.test(t)) {
       await setChatPending(supabase, String(pendingRow.thread.id), null);
-      await sendWhapiText(phoneDigits, "בוטל — לא שלחתי כלום. עני «תראי לי» כשתרצי שוב.", { noLinkPreview: true });
+      await sendWhapiText(phoneDigits, "בוטל — לא שלחתי כלום.", { noLinkPreview: true });
       return;
     }
     if (isLikelyCustomDraft(t)) {
       const action = pendingRow.pending.action;
-      const threadId = String(pendingRow.thread.id);
       if (action === "confirm_ack") {
         await prepareAckConfirm(supabase, phoneDigits, pendingRow.thread, pendingRow.mailbox, t);
       } else {
@@ -506,64 +508,66 @@ export async function handleOritSigalChat(
       }
       return;
     }
-  }
-
-  const active = await findActiveOritThread(supabase);
-
-  if (MARK_DONE_RE.test(t) && active) {
-    await markThreadClosed(supabase, phoneDigits, active.thread);
-    return;
-  }
-
-  if (STATUS_RE.test(t) && active) {
-    await sendWhapiText(phoneDigits, workflowStatusLine(active.thread), { noLinkPreview: true });
-    return;
-  }
-
-  if (HELP_RE.test(t)) {
     await sendWhapiText(phoneDigits, [
-      `${voicePrefix}היי אורית 💜 כאן סיגל.`,
-      "",
-      "פקודות:",
-      "• «תראי לי» — טיוטת אישור קבלה (שלב 1)",
-      "• «אשרי» — הכנה לשליחה (תראי טקסט מלא → «כן שלחי»)",
-      "• «תשובה מלאה» — טיוטת מכתב מלא (שלב 2)",
-      "• «מה כתבה» — הודעת האורח/ת האחרונה",
-      "• «מה המצב» — סטטוס הפנייה",
-      "• «סיימתי» — סגירת הנושא",
-      "• «קישור» — רק אם צריך את הממשק",
-      "• הקליטי הודעה קולית — אני מבינה ומנסחת",
-      "",
-      active ? `פנייה פעילה: ${guestLabel(active.thread)}` : "אין פנייה דחופה פתוחה כרגע.",
+      "לפני שליחה — ודאי שקראת את הטקסט למעלה.",
+      SIGAL_GUIDE_CONFIRM,
     ].join("\n"), { noLinkPreview: true });
     return;
   }
 
-  if (LINK_RE.test(t) && active) {
+  const active = await findActiveOritThread(supabase);
+
+  if (intent === "mark_done" && active) {
+    await markThreadClosed(supabase, phoneDigits, active.thread);
+    return;
+  }
+
+  if (intent === "status" && active) {
+    await sendWhapiText(phoneDigits, workflowStatusLine(active.thread), { noLinkPreview: true });
+    return;
+  }
+
+  if (intent === "help") {
+    await sendWhapiText(phoneDigits, [
+      voicePrefix ? `${voicePrefix}${SIGAL_GUIDE_HELP}` : SIGAL_GUIDE_HELP,
+      "",
+      active ? `פנייה פעילה: ${guestLabel(active.thread)}` : "",
+    ].filter(Boolean).join("\n"), { noLinkPreview: true });
+    return;
+  }
+
+  if (intent === "link" && active) {
     await sendWhapiText(phoneDigits, threadLink(String(active.thread.id)), { noLinkPreview: true });
     return;
   }
 
   if (active) {
-    if (SHOW_GUEST_RE.test(t)) {
+    if (intent === "show_guest") {
       await showGuestLatestMessage(supabase, phoneDigits, String(active.thread.id));
       return;
     }
 
-    if (SHOW_FULL_RE.test(t)) {
+    if (intent === "show_full") {
       await prepareFullConfirm(supabase, phoneDigits, active.thread);
       return;
     }
 
-    if (SHOW_ACK_RE.test(t)) {
+    if (intent === "show_ack") {
       const draft = (await fetchOritDraftText(supabase, String(active.thread.id), "ack"))?.text || "";
       await sendWhapiLongText(phoneDigits, draft
-        ? [`טיוטת אישור קבלה:`, "─────────────", draft, "─────────────", `עני «אשרי» להכנה לשליחה או ערכי:`, threadLink(String(active.thread.id))].join("\n")
-        : "אין טיוטה עדיין.");
+        ? [
+          "נוסח אישור הקבלה:",
+          "─────────────",
+          draft,
+          "─────────────",
+          "",
+          SIGAL_GUIDE_ACK,
+        ].join("\n")
+        : "אין עדיין נוסח — חכי לסנכרון או עני «קישור» במחשב.");
       return;
     }
 
-    if (PREPARE_ACK_RE.test(t)) {
+    if (intent === "prepare_ack") {
       if (!active.thread.auto_ack_sent_at) {
         await prepareAckConfirm(supabase, phoneDigits, active.thread, active.mailbox);
       } else {
@@ -583,19 +587,23 @@ export async function handleOritSigalChat(
   }
 
   if (opts.fromVoice) {
+    const snippet = t.length > 100 ? `${t.slice(0, 100)}…` : t;
     await sendWhapiText(phoneDigits, [
-      `${voicePrefix}קיבלתי. ${active ? `לגבי ${guestLabel(active.thread)} —` : ""}`,
-      "עני «תראי לי» לטיוטה · «אשרי» לשליחה · או הדביקי את הניסוח המלא בהודעה הבאה.",
-    ].join(" "), { noLinkPreview: true });
+      `${voicePrefix}שמעתי: «${snippet}»`,
+      "",
+      active ? `לגבי ${guestLabel(active.thread)}:` : "",
+      SIGAL_GUIDE_ACK,
+      "",
+      "לא בטוחה? עני «עזרה» — אסביר הכל.",
+    ].filter(Boolean).join("\n"), { noLinkPreview: true });
     return;
   }
 
   await sendWhapiText(phoneDigits, [
     "היי אורית 💜",
     active
-      ? `${workflowStatusLine(active.thread)}\n\nעני «תראי לי» / «אשרי» / «מה כתבה» / «סיימתי».`
+      ? [`${workflowStatusLine(active.thread)}`, "", SIGAL_GUIDE_ACK, "", "עזרה? עני «עזרה»."].join("\n")
       : "אין כרגע פנייה פתוחה. אעדכן כשתגיע תלונה או תשובת אורח.",
-    "עזרה? עני «עזרה».",
   ].join("\n"), { noLinkPreview: true });
 }
 

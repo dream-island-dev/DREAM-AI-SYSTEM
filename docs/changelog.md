@@ -1,4 +1,4 @@
-2026-07-19 | Orit CS — ack draft: no third-person Orit in body | sanitize + prompt fix; first-person only («אבחן ואיצור קשר»); strip «אורית תבחן/תיצור» lines.
+2026-07-19 | Orit CS — Sigal plain Hebrew guide + voice intents | numbered steps א׳/ב׳; `oritSigalGuide.ts`; voice phrases («בסדר תשלחי», «מה היא כתבה»).
 2026-07-19 | Orit CS — Sigal guest-reply loop until closed | guest inbound → WA with full message + follow-up draft; coach via chat; «סיימתי» closes; case stays open after send until Orit confirms; UI link fallback only.
 2026-07-19 | Orit CS — two-phase HITL workflow (ack → full reply) | migration 242 `workflow_step` + `draft_kind`; `oritAgentWorkflow.ts` — WA alert with ack draft; UI timeline + «אשרי ושלחי» per phase.
 2026-07-19 | Orit CS inbox — recent emails first in queue | default tab «אחרונים», sort by `received_at`, received time on cards + «חדש היום» badge; toggle דחיפות/אחרונים. Frontend only.

@@ -26,6 +26,8 @@ Deno.test("composeOritWorkflowAlert — problem + ack draft", () => {
     id: "869b0a98-781a-4f3a-954c-7c263232d7b5",
     subject: "תלונה",
     from_name: "נעמי",
+    from_email: "relay@richkid.co.il",
+    guest_contact_email: "naomi@example.com",
     category: "complaint",
     urgency: "high",
     ai_summary: "אורחת מתלוננת על ניקיון החדר.",
@@ -34,7 +36,8 @@ Deno.test("composeOritWorkflowAlert — problem + ack draft", () => {
   if (!body.includes("שלב 1")) throw new Error("missing step 1");
   if (!body.includes("ניקיון")) throw new Error("missing summary");
   if (!body.includes("קיבלנו את פנייתך")) throw new Error("missing ack draft");
-  if (!body.includes("אשרי")) throw new Error("missing approve CTA");
+  if (!body.includes("תראי לי")) throw new Error("missing guide step 1");
+  if (!body.includes("כן שלחי")) throw new Error("missing guide step 3");
   assertEquals(body.includes("thread=869b0a98"), true);
 });
 

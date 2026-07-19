@@ -17,6 +17,11 @@ import {
 } from "./oritAgentWhapiAlert.ts";
 import { sendWhapiText } from "./whapiSend.ts";
 import { sanitizeOritAckDraft } from "./oritThreadAnalysis.ts";
+import {
+  SIGAL_GUIDE_ACK,
+  SIGAL_GUIDE_AFTER_ACK,
+  SIGAL_GUIDE_FULL,
+} from "./oritSigalGuide.ts";
 
 export type OritWorkflowStep =
   | "awaiting_ack_approval"
@@ -91,13 +96,14 @@ export function composeOritWorkflowAlert(
     "─────────────",
     "",
     replyEmail
-      ? "עני «תראי לי» לראות את המייל המלא · «אשרי» להכנה לשליחה (ואז «כן שלחי» אחרי שתראי את הטקסט)"
-      : "⚠ אין מייל אורח תקין — פתחי במערכת לטיפול ידני.",
-    "מכתב תשובה מלא מוכין במערכת אחרי שלב זה.",
+      ? SIGAL_GUIDE_ACK
+      : "⚠ אין מייל אורח תקין — עני «קישור» לפתיחה במחשב.",
+    "",
+    SIGAL_GUIDE_AFTER_ACK,
     "",
     `(קוד פנייה: ${shortRef})`,
     "",
-    "👉 לפתיחה ועריכה:",
+    "רק אם צריך את המחשב:",
     threadLink,
   ].join("\n");
 }
@@ -113,15 +119,16 @@ export function composeOritFullReplyReadyMessage(
   return [
     "היי אורית 💜",
     `✓ אישור הקבלה נשלח ל־${label}.`,
-    "ניתן לראות את המייל והשרשור בקישור:",
-    threadLink,
     "",
-    "שלב 2 — טיוטת תשובה מלאה (תצוגה מקוצרת):",
+    "שלב ב׳ — מכתב תשובה מלא (תצוגה מקוצרת):",
     "─────────────",
     truncateForWhapi(fullReplyPreview, 400),
     "─────────────",
     "",
-    "עני «תשובה מלאה» לראות הכל · «אשרי» לשליחה · או ערכי בקישור.",
+    SIGAL_GUIDE_FULL,
+    "",
+    "רק אם צריך לערוך במחשב:",
+    threadLink,
   ].join("\n");
 }
 
@@ -149,16 +156,17 @@ export function composeSigalGuestReplyCoaching(
       truncateForWhapi(followUpDraft, 900),
       "─────────────",
       "",
-      "עני «תראי לי» לטקסט המלא · «אשרי» להכנה לשליחה · «כן שלחי» אחרי שתאשרי",
+      SIGAL_GUIDE_FULL,
+      "",
       "או הדביקי ניסוח משלך — אעדכן ואציג שוב.",
-      "כשהנושא נסגר: «סיימתי».",
+      "כשסגרנו את הנושא — עני «סיימתי».",
       "",
       "רק אם צריך — פתיחה במערכת:",
       buildStaffAppDeepLink({ page: "orit_cs_agent", threadId: thread.id }),
     );
   } else {
     lines.push(
-      "עדיין מכינה תשובה — עני «תשובה מלאה» בעוד רגע, או פתחי:",
+      "עדיין מכינה את המכתב — עני «תשובה מלאה» בעוד רגע.",
       buildStaffAppDeepLink({ page: "orit_cs_agent", threadId: thread.id }),
     );
   }

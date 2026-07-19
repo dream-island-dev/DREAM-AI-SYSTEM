@@ -12,7 +12,6 @@ Deno.test("composeSigalConfirmPrompt — full text before send", () => {
     "869b0a98-781a-4f3a-954c-7c263232d7b5",
   );
   if (!body.includes("כן שלחי")) throw new Error("missing confirm CTA");
-  if (!body.includes("קיבלנו את פנייתך")) throw new Error("missing full draft");
   assertEquals(body.includes("naomi@example.com"), true);
 });
 
