@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { supabase } from "../supabaseClient";
 import {
   fetchDraftRestaurantMenuVersion,
+  MENU_KIND_LABELS,
   publishRestaurantDraft,
 } from "../utils/restaurantMenu";
 import RestaurantMenuImportPanel from "./RestaurantMenuImportPanel";
@@ -12,6 +13,7 @@ const GOLD = "#C9A96E";
 const GOLD_DARK = "#A8843A";
 
 export default function RestaurantMenuAdminPanel({ user, onToast }) {
+  const [menuKind, setMenuKind] = useState("standard");
   const [version, setVersion] = useState(null);
   const [sections, setSections] = useState([]);
   const [kdsToken, setKdsToken] = useState(null);
@@ -24,7 +26,7 @@ export default function RestaurantMenuAdminPanel({ user, onToast }) {
   const load = useCallback(async () => {
     if (!supabase) return;
     setLoading(true);
-    const { version: v, sections: secs, error } = await fetchDraftRestaurantMenuVersion();
+    const { version: v, sections: secs, error } = await fetchDraftRestaurantMenuVersion(menuKind);
     if (error) onToast?.("err", error);
     setVersion(v);
     setSections(secs ?? []);
@@ -37,7 +39,7 @@ export default function RestaurantMenuAdminPanel({ user, onToast }) {
       .maybeSingle();
     setKdsToken(kds);
     setLoading(false);
-  }, [onToast]);
+  }, [menuKind, onToast]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -75,8 +77,8 @@ export default function RestaurantMenuAdminPanel({ user, onToast }) {
     if (!version?.id) return;
     setPublishing(true);
     try {
-      await publishRestaurantDraft(version.id, user?.id);
-      onToast?.("ok", "התפריט פורסם — המלצרים רואים אותו עכשיו");
+      await publishRestaurantDraft(version.id, user?.id, menuKind);
+      onToast?.("ok", `${MENU_KIND_LABELS[menuKind]} פורסם — המלצרים רואים אותו בטאב הזמנה`);
       load();
     } catch (e) {
       onToast?.("err", e?.message ?? "שגיאה בפרסום");
@@ -108,15 +110,15 @@ export default function RestaurantMenuAdminPanel({ user, onToast }) {
     }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10, marginBottom: 12 }}>
         <div>
-          <div style={{ fontWeight: 800, fontSize: 14, color: "#9A7209" }}>📋 ניהול תפריט (מנהל)</div>
+          <div style={{ fontWeight: 800, fontSize: 14, color: "#9A7209" }}>📋 ניהול תפריט (מנהל משמרת)</div>
           <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}>
-            ערכו טיוטה → «פרסם» — המלצרים רואים רק תפריט שפורסם.
+            התפריט כאן = מה שהמלצר רואה ב«בחרו מנות». סנכרון מאתר או ייבוא AI → פרסום.
           </div>
         </div>
         <button
           type="button"
           onClick={publish}
-          disabled={publishing || !version}
+          disabled={publishing || !version || allItems.length === 0}
           style={{
             padding: "8px 16px", borderRadius: 8, border: "none",
             background: `linear-gradient(135deg, ${GOLD}, ${GOLD_DARK})`,
@@ -124,8 +126,26 @@ export default function RestaurantMenuAdminPanel({ user, onToast }) {
             fontFamily: "Heebo, sans-serif",
           }}
         >
-          {publishing ? "מפרסם…" : "✓ פרסם תפריט"}
+          {publishing ? "מפרסם…" : `✓ פרסם ${MENU_KIND_LABELS[menuKind]}`}
         </button>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+        {["standard", "special"].map((kind) => (
+          <button
+            key={kind}
+            type="button"
+            onClick={() => setMenuKind(kind)}
+            style={{
+              padding: "8px 14px", borderRadius: 20, fontWeight: 700, fontSize: 12,
+              border: menuKind === kind ? `2px solid ${GOLD_DARK}` : "1px solid var(--border)",
+              background: menuKind === kind ? "rgba(201,169,110,0.2)" : "#fff",
+              cursor: "pointer", fontFamily: "Heebo, sans-serif",
+            }}
+          >
+            {MENU_KIND_LABELS[kind]}
+          </button>
+        ))}
       </div>
 
       {kdsUrl && (
@@ -140,7 +160,12 @@ export default function RestaurantMenuAdminPanel({ user, onToast }) {
         </div>
       )}
 
-      <RestaurantMenuImportPanel user={user} onToast={onToast} onApplied={load} />
+      <RestaurantMenuImportPanel
+        user={user}
+        menuKind={menuKind}
+        onToast={onToast}
+        onApplied={load}
+      />
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
         <input
@@ -180,7 +205,9 @@ export default function RestaurantMenuAdminPanel({ user, onToast }) {
       </div>
 
       {allItems.length === 0 ? (
-        <div style={{ fontSize: 13, color: "var(--text-muted)" }}>אין מנות בטיוטה — הוסיפו מנה ופרסמו.</div>
+        <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
+          אין מנות בטיוטה — סנכרנו מאתר או העלו תמונה/PDF ולחצו פרסום.
+        </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           {allItems.map((item) => (

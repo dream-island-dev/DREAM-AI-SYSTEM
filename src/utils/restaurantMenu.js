@@ -2,13 +2,36 @@
 
 import { supabase } from "../supabaseClient";
 
-export async function fetchPublishedRestaurantMenu() {
+export const MENU_KIND_LABELS = {
+  standard: "תפריט רגיל",
+  special: "תפריט ספיישל",
+};
+
+/** @typedef {'standard' | 'special'} RestaurantMenuKind */
+
+export async function fetchPublishedMenuKinds() {
+  if (!supabase) return { kinds: [], error: "no_client" };
+
+  const { data, error } = await supabase
+    .from("restaurant_menu_versions")
+    .select("menu_kind")
+    .eq("status", "published");
+
+  if (error) return { kinds: [], error: error.message };
+
+  const kinds = [...new Set((data ?? []).map((r) => r.menu_kind).filter(Boolean))];
+  kinds.sort((a, b) => (a === "standard" ? -1 : b === "standard" ? 1 : 0));
+  return { kinds, error: null };
+}
+
+export async function fetchPublishedRestaurantMenu(menuKind = "standard") {
   if (!supabase) return { menu: null, error: "no_client" };
 
   const { data: version, error: verErr } = await supabase
     .from("restaurant_menu_versions")
-    .select("id, label, published_at")
+    .select("id, label, published_at, menu_kind")
     .eq("status", "published")
+    .eq("menu_kind", menuKind)
     .maybeSingle();
 
   if (verErr) return { menu: null, error: verErr.message };
@@ -46,6 +69,7 @@ export async function fetchPublishedRestaurantMenu() {
     menu: {
       version_id: version.id,
       label: version.label,
+      menu_kind: version.menu_kind ?? menuKind,
       sections: (sections ?? []).map((s) => ({
         ...s,
         items: bySection[s.id] ?? [],
@@ -55,13 +79,14 @@ export async function fetchPublishedRestaurantMenu() {
   };
 }
 
-export async function fetchDraftRestaurantMenuVersion() {
+export async function fetchDraftRestaurantMenuVersion(menuKind = "standard") {
   if (!supabase) return { version: null, sections: [], error: "no_client" };
 
   let { data: version, error: verErr } = await supabase
     .from("restaurant_menu_versions")
-    .select("id, label, status")
+    .select("id, label, status, menu_kind")
     .eq("status", "draft")
+    .eq("menu_kind", menuKind)
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -69,10 +94,13 @@ export async function fetchDraftRestaurantMenuVersion() {
   if (verErr) return { version: null, sections: [], error: verErr.message };
 
   if (!version) {
+    const label = menuKind === "special"
+      ? `תפריט ספיישל — טיוטה`
+      : "תפריט ערמונים — טיוטה";
     const { data: created, error: createErr } = await supabase
       .from("restaurant_menu_versions")
-      .insert({ label: "תפריט — טיוטה", status: "draft" })
-      .select("id, label, status")
+      .insert({ label, status: "draft", menu_kind: menuKind })
+      .select("id, label, status, menu_kind")
       .maybeSingle();
     if (createErr) return { version: null, sections: [], error: createErr.message };
     version = created;
@@ -119,13 +147,14 @@ export async function fetchDraftRestaurantMenuVersion() {
   };
 }
 
-export async function publishRestaurantDraft(versionId, userId) {
+export async function publishRestaurantDraft(versionId, userId, menuKind = "standard") {
   if (!supabase) throw new Error("no_client");
 
   await supabase
     .from("restaurant_menu_versions")
     .update({ status: "archived" })
-    .eq("status", "published");
+    .eq("status", "published")
+    .eq("menu_kind", menuKind);
 
   const { error } = await supabase
     .from("restaurant_menu_versions")
@@ -133,6 +162,7 @@ export async function publishRestaurantDraft(versionId, userId) {
       status: "published",
       published_at: new Date().toISOString(),
       published_by: userId ?? null,
+      menu_kind: menuKind,
     })
     .eq("id", versionId);
 

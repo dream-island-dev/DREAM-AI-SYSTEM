@@ -1,13 +1,16 @@
 // Waiter tablet — take order and send to kitchen. Phase 2B.
 
+import "../styles/restaurantOrder.css";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "../supabaseClient";
-import { fetchPublishedRestaurantMenu } from "../utils/restaurantMenu";
+import {
+  fetchPublishedMenuKinds,
+  fetchPublishedRestaurantMenu,
+  MENU_KIND_LABELS,
+} from "../utils/restaurantMenu";
 import { formatGuestDietaryBrief, normalizeGuestProfile } from "../data/guestProfileSchema";
 import RestaurantMenuQrModal from "./restaurant/RestaurantMenuQrModal";
 import { ARMONIM_EXTERNAL_MENU_URL } from "../utils/restaurantKioskUi";
-
-const GOLD_DARK = "#A8843A";
 
 function QtyButton({ label, onClick, disabled }) {
   return (
@@ -15,11 +18,7 @@ function QtyButton({ label, onClick, disabled }) {
       type="button"
       onClick={onClick}
       disabled={disabled}
-      style={{
-        width: 44, height: 44, borderRadius: 10, border: "2px solid var(--border)",
-        background: "#fff", fontSize: 20, fontWeight: 800, cursor: disabled ? "not-allowed" : "pointer",
-        fontFamily: "Heebo, sans-serif",
-      }}
+      className="armonim-order-qty-btn"
     >
       {label}
     </button>
@@ -34,9 +33,12 @@ export default function RestaurantOrderPanel({
   onOrderSent,
   externalMenuUrl = ARMONIM_EXTERNAL_MENU_URL,
 }) {
+  const [menuKind, setMenuKind] = useState("standard");
+  const [availableKinds, setAvailableKinds] = useState([]);
   const [menu, setMenu] = useState(null);
   const [loadingMenu, setLoadingMenu] = useState(true);
   const [search, setSearch] = useState("");
+  const [dishSearch, setDishSearch] = useState("");
   const [selectedGuest, setSelectedGuest] = useState(null);
   const [tableOnly, setTableOnly] = useState("");
   const [cart, setCart] = useState({});
@@ -46,16 +48,42 @@ export default function RestaurantOrderPanel({
   const [activeSection, setActiveSection] = useState(null);
   const [menuQrOpen, setMenuQrOpen] = useState(false);
 
-  const loadMenu = useCallback(async () => {
+  const loadKinds = useCallback(async () => {
+    const { kinds, error } = await fetchPublishedMenuKinds();
+    if (error) onToast?.("err", error);
+    setAvailableKinds(kinds);
+    if (kinds.length && !kinds.includes(menuKind)) {
+      setMenuKind(kinds.includes("standard") ? "standard" : kinds[0]);
+    }
+    return kinds;
+  }, [menuKind, onToast]);
+
+  const loadMenu = useCallback(async (kind = menuKind) => {
     setLoadingMenu(true);
-    const { menu: m, error } = await fetchPublishedRestaurantMenu();
+    const { menu: m, error } = await fetchPublishedRestaurantMenu(kind);
     if (error) onToast?.("err", error);
     setMenu(m);
     if (m?.sections?.[0]) setActiveSection(m.sections[0].id);
     setLoadingMenu(false);
-  }, [onToast]);
+  }, [menuKind, onToast]);
 
-  useEffect(() => { loadMenu(); }, [loadMenu]);
+  useEffect(() => {
+    loadKinds().then((kinds) => {
+      const kind = kinds?.includes(menuKind) ? menuKind : (kinds?.[0] ?? "standard");
+      loadMenu(kind);
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (availableKinds.includes(menuKind)) loadMenu(menuKind);
+  }, [menuKind, availableKinds, loadMenu]);
+
+  const switchMenuKind = (kind) => {
+    if (kind === menuKind) return;
+    setMenuKind(kind);
+    setCart({});
+    setDishSearch("");
+  };
 
   const filteredGuests = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -73,6 +101,31 @@ export default function RestaurantOrderPanel({
   }, [cart]);
 
   const totalItems = cartLines.reduce((s, l) => s + l.qty, 0);
+
+  const dishQuery = dishSearch.trim().toLowerCase();
+
+  const visibleSections = useMemo(() => {
+    if (!menu?.sections) return [];
+    if (!dishQuery) return menu.sections;
+    return menu.sections
+      .map((s) => ({
+        ...s,
+        items: (s.items ?? []).filter((item) => {
+          const hay = `${item.name ?? ""} ${item.description ?? ""}`.toLowerCase();
+          return hay.includes(dishQuery);
+        }),
+      }))
+      .filter((s) => s.items.length > 0);
+  }, [menu, dishQuery]);
+
+  const activeSec = useMemo(() => {
+    if (dishQuery) return visibleSections[0] ?? null;
+    return visibleSections.find((s) => s.id === activeSection) ?? visibleSections[0] ?? null;
+  }, [visibleSections, activeSection, dishQuery]);
+
+  const itemsToShow = dishQuery
+    ? visibleSections.flatMap((s) => s.items.map((item) => ({ ...item, sectionName: s.name })))
+    : (activeSec?.items ?? []).map((item) => ({ ...item, sectionName: activeSec.name }));
 
   const setQty = (item, delta) => {
     setCart((prev) => {
@@ -131,7 +184,7 @@ export default function RestaurantOrderPanel({
 
   if (doneOrder) {
     return (
-      <div style={{ textAlign: "center", padding: 32 }}>
+      <div className="armonim-order-done">
         <div style={{ fontSize: 48, marginBottom: 12 }}>✅</div>
         <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 8 }}>
           הזמנה #{doneOrder.display_number} נשלחה למטבח
@@ -139,11 +192,7 @@ export default function RestaurantOrderPanel({
         <button
           type="button"
           onClick={() => { setDoneOrder(null); setSelectedGuest(null); setTableOnly(""); }}
-          style={{
-            marginTop: 16, padding: "12px 24px", borderRadius: 10, border: "none",
-            background: "#1A7A4A", color: "#fff", fontWeight: 800, fontSize: 15,
-            cursor: "pointer", fontFamily: "Heebo, sans-serif",
-          }}
+          className="armonim-order-submit-btn"
         >
           הזמנה חדשה
         </button>
@@ -152,54 +201,56 @@ export default function RestaurantOrderPanel({
   }
 
   if (loadingMenu) {
-    return <div style={{ padding: 24, textAlign: "center", color: "var(--text-muted)" }}>טוען תפריט…</div>;
+    return <div className="armonim-order-loading">טוען תפריט…</div>;
   }
 
-  if (!menu) {
+  if (!menu || !availableKinds.length) {
     return (
-      <div style={{
-        padding: 24, textAlign: "center", border: "1px dashed var(--border)",
-        borderRadius: 12, color: "var(--text-muted)",
-      }}>
-        אין תפריט שפורסם. מנהל צריך להוסיף מנות וללחוץ «פרסם תפריט».
-      </div>
-    );
-  }
-
-  const activeSec = menu.sections.find((s) => s.id === activeSection) ?? menu.sections[0];
-  const dietary = selectedGuest ? formatGuestDietaryBrief(selectedGuest.guest_profile) : null;
-  const vip = selectedGuest && normalizeGuestProfile(selectedGuest.guest_profile).vip_status === "vip";
-
-  return (
-    <div>
-      <div style={{
-        display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14,
-        padding: "12px 14px", borderRadius: 12,
-        background: "rgba(0, 128, 128, 0.08)", border: "1px solid rgba(0, 128, 128, 0.22)",
-      }}>
-        <button
-          type="button"
-          onClick={() => setMenuQrOpen(true)}
-          style={{
-            flex: "1 1 200px", minHeight: 52, padding: "12px 16px", borderRadius: 12,
-            border: "none", background: "linear-gradient(135deg, #008080, #006666)",
-            color: "#fff", fontWeight: 800, fontSize: 15, cursor: "pointer",
-            fontFamily: "Heebo, sans-serif",
-          }}
-        >
-          📱 תפריט לאורח — הצג QR לסריקה
-        </button>
+      <div className="armonim-order-empty">
+        <div style={{ fontSize: 36, marginBottom: 10 }}>📋</div>
+        <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 8 }}>אין תפריט פעיל למלצרים</div>
+        <p style={{ fontSize: 13, lineHeight: 1.5, margin: "0 0 12px", color: "var(--text-muted)" }}>
+          מנהל משמרת: לחצו «סנכרן מאתר ופרסם» בניהול תפריט למעלה — או ייבאו תפריט ספיישל מתמונה/PDF.
+        </p>
         <a
           href={externalMenuUrl}
           target="_blank"
           rel="noopener noreferrer"
-          style={{
-            flex: "0 1 auto", alignSelf: "center", fontSize: 12, fontWeight: 700,
-            color: "#008080", textDecoration: "underline", padding: "8px 4px",
-          }}
+          style={{ fontWeight: 700, color: "#008080" }}
         >
-          תפריט באתר ↗
+          תפריט לאורחים באתר ↗
         </a>
+      </div>
+    );
+  }
+
+  const dietary = selectedGuest ? formatGuestDietaryBrief(selectedGuest.guest_profile) : null;
+  const vip = selectedGuest && normalizeGuestProfile(selectedGuest.guest_profile).vip_status === "vip";
+  const hasTableOrGuest = Boolean(selectedGuest || tableOnly.trim());
+
+  return (
+    <div className="armonim-order-panel">
+      <div className="armonim-order-guest-bar">
+        <button type="button" onClick={() => setMenuQrOpen(true)} className="armonim-order-qr-btn">
+          📱 תפריט לאורח — QR
+        </button>
+        {availableKinds.length > 1 && (
+          <div className="armonim-order-kind-tabs">
+            {availableKinds.map((kind) => (
+              <button
+                key={kind}
+                type="button"
+                onClick={() => switchMenuKind(kind)}
+                className={`armonim-order-kind-tab${menuKind === kind ? " is-active" : ""}`}
+              >
+                {MENU_KIND_LABELS[kind] ?? kind}
+              </button>
+            ))}
+          </div>
+        )}
+        {menu.label && (
+          <div className="armonim-order-menu-label">{menu.label}</div>
+        )}
       </div>
 
       {menuQrOpen && (
@@ -209,30 +260,22 @@ export default function RestaurantOrderPanel({
         />
       )}
 
-      <div style={{ marginBottom: 14 }}>
-        <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 8 }}>1. למי ההזמנה?</div>
+      <section className="armonim-order-step">
+        <div className="armonim-order-step-title">1. למי ההזמנה?</div>
         <input
           type="search"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="חפשו שם או חדר…"
-          style={{
-            width: "100%", boxSizing: "border-box", padding: "10px 12px",
-            borderRadius: 8, border: "1px solid var(--border)", marginBottom: 8,
-          }}
+          placeholder="חפשו שם או חדר (סוויטה)…"
+          className="armonim-order-input"
         />
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+        <div className="armonim-order-guest-chips">
           {filteredGuests.map((g) => (
             <button
               key={g.id}
               type="button"
               onClick={() => { setSelectedGuest(g); setTableOnly(""); }}
-              style={{
-                padding: "8px 12px", borderRadius: 20, fontSize: 12, fontWeight: 700,
-                border: selectedGuest?.id === g.id ? `2px solid ${GOLD_DARK}` : "1px solid var(--border)",
-                background: selectedGuest?.id === g.id ? "rgba(201,169,110,0.2)" : "#fff",
-                cursor: "pointer", fontFamily: "Heebo, sans-serif",
-              }}
+              className={`armonim-order-chip${selectedGuest?.id === g.id ? " is-selected" : ""}`}
             >
               {g.name}{g.room ? ` · ${g.room}` : ""}
             </button>
@@ -242,92 +285,114 @@ export default function RestaurantOrderPanel({
           type="text"
           value={tableOnly}
           onChange={(e) => { setTableOnly(e.target.value); setSelectedGuest(null); }}
-          placeholder="או: שולחן / אורח ללא רשימה (למשל שולחן 12)"
-          style={{
-            width: "100%", boxSizing: "border-box", padding: "9px 10px",
-            borderRadius: 8, border: "1px solid var(--border)",
-          }}
+          placeholder="או: שולחן / אורח כללי (למשל שולחן 12)"
+          className="armonim-order-input"
         />
         {selectedGuest && (dietary || vip) && (
-          <div style={{
-            marginTop: 8, padding: "8px 10px", borderRadius: 8,
-            background: "rgba(180,83,9,0.1)", fontSize: 12, color: "#9A7209",
-          }}>
+          <div className="armonim-order-dietary">
             {vip && "⭐ VIP "}{dietary && `🥗 ${dietary}`}
           </div>
         )}
-      </div>
+      </section>
 
-      <div style={{ marginBottom: 14 }}>
-        <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 8 }}>2. בחרו מנות</div>
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
-          {menu.sections.map((s) => (
-            <button
-              key={s.id}
-              type="button"
-              onClick={() => setActiveSection(s.id)}
-              style={{
-                padding: "8px 14px", borderRadius: 20, fontWeight: 700, fontSize: 12,
-                border: activeSec?.id === s.id ? `2px solid ${GOLD_DARK}` : "1px solid var(--border)",
-                background: activeSec?.id === s.id ? "rgba(201,169,110,0.18)" : "#fff",
-                cursor: "pointer", fontFamily: "Heebo, sans-serif",
-              }}
-            >
-              {s.name}
-            </button>
-          ))}
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {(activeSec?.items ?? []).map((item) => {
-            const qty = cart[item.id]?.qty ?? 0;
-            return (
-              <div
-                key={item.id}
-                style={{
-                  display: "flex", alignItems: "center", gap: 10, padding: "10px 12px",
-                  borderRadius: 10, border: "1px solid var(--border)", background: "#fff",
-                }}
+      <section className="armonim-order-step">
+        <div className="armonim-order-step-title">2. בחרו מנות מהתפריט</div>
+        <input
+          type="search"
+          value={dishSearch}
+          onChange={(e) => setDishSearch(e.target.value)}
+          placeholder="חיפוש מנה…"
+          className="armonim-order-input armonim-order-dish-search"
+        />
+        {!dishQuery && (
+          <div className="armonim-order-section-tabs">
+            {visibleSections.map((s) => (
+              <button
+                key={s.id}
+                type="button"
+                onClick={() => setActiveSection(s.id)}
+                className={`armonim-order-section-tab${activeSec?.id === s.id ? " is-active" : ""}`}
               >
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 700, fontSize: 14 }}>{item.name}</div>
-                  {item.price != null && (
-                    <div style={{ fontSize: 12, color: "var(--text-muted)" }}>₪{item.price}</div>
-                  )}
+                {s.name}
+                <span className="armonim-order-section-count">{s.items?.length ?? 0}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        {dishQuery && (
+          <div className="armonim-order-search-hint">
+            {itemsToShow.length} תוצאות ל«{dishSearch.trim()}»
+          </div>
+        )}
+        <div className="armonim-order-items">
+          {itemsToShow.length === 0 ? (
+            <div className="armonim-order-no-items">לא נמצאו מנות</div>
+          ) : (
+            itemsToShow.map((item) => {
+              const qty = cart[item.id]?.qty ?? 0;
+              return (
+                <div
+                  key={item.id}
+                  className={`armonim-order-item${qty > 0 ? " has-qty" : ""}`}
+                >
+                  <div className="armonim-order-item-body">
+                    <div className="armonim-order-item-name">{item.name}</div>
+                    {dishQuery && item.sectionName && (
+                      <div className="armonim-order-item-section">{item.sectionName}</div>
+                    )}
+                    {item.description && (
+                      <div className="armonim-order-item-desc">{item.description}</div>
+                    )}
+                    {item.price != null && (
+                      <div className="armonim-order-item-price">₪{item.price}</div>
+                    )}
+                  </div>
+                  <div className="armonim-order-item-qty">
+                    <QtyButton label="−" onClick={() => setQty(item, -1)} disabled={qty <= 0} />
+                    <span className="armonim-order-qty-num">{qty}</span>
+                    <QtyButton label="+" onClick={() => setQty(item, 1)} disabled={qty >= 20} />
+                  </div>
                 </div>
-                <QtyButton label="−" onClick={() => setQty(item, -1)} disabled={qty <= 0} />
-                <span style={{ fontWeight: 800, minWidth: 24, textAlign: "center" }}>{qty}</span>
-                <QtyButton label="+" onClick={() => setQty(item, 1)} disabled={qty >= 20} />
-              </div>
-            );
-          })}
+              );
+            })
+          )}
         </div>
-      </div>
+      </section>
 
-      <div style={{ marginBottom: 14 }}>
-        <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>3. הערה למטבח (אופציונלי)</div>
+      <section className="armonim-order-step">
+        <div className="armonim-order-step-title">3. הערה למטבח (אופציונלי)</div>
         <input
           type="text"
           value={kitchenNotes}
           onChange={(e) => setKitchenNotes(e.target.value)}
           placeholder="למשל: בלי בצל"
-          style={{
-            width: "100%", boxSizing: "border-box", padding: "9px 10px",
-            borderRadius: 8, border: "1px solid var(--border)",
-          }}
+          className="armonim-order-input"
         />
-      </div>
+      </section>
+
+      {totalItems > 0 && (
+        <div className="armonim-order-cart-strip">
+          <div className="armonim-order-cart-summary">
+            <strong>{totalItems}</strong> מנות בסל
+            {!hasTableOrGuest && (
+              <span className="armonim-order-cart-warn"> — בחרו אורח או שולחן</span>
+            )}
+          </div>
+          <div className="armonim-order-cart-names">
+            {cartLines.map((l) => (
+              <span key={l.itemId} className="armonim-order-cart-pill">
+                {l.name} ×{l.qty}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       <button
         type="button"
         onClick={submit}
         disabled={!canSubmit}
-        style={{
-          width: "100%", padding: "16px 20px", borderRadius: 12, border: "none",
-          background: canSubmit ? "#1A7A4A" : "var(--border)",
-          color: canSubmit ? "#fff" : "#888",
-          fontWeight: 800, fontSize: 16, cursor: canSubmit ? "pointer" : "not-allowed",
-          fontFamily: "Heebo, sans-serif",
-        }}
+        className={`armonim-order-submit-btn${canSubmit ? "" : " is-disabled"}`}
       >
         {submitting ? "שולח למטבח…" : `✅ שלח למטבח${totalItems ? ` (${totalItems} מנות)` : ""}`}
       </button>

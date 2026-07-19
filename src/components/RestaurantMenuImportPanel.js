@@ -8,18 +8,17 @@ import {
   arrayBufferToBase64,
   ensureDraftForImport,
   extractDocxText,
+  importWebsiteMenuAndApply,
   invokeRestaurantMenuImport,
   normalizeParsedMenuSections,
   replaceDraftMenuContent,
   syncMenuFromWebsite,
 } from "../utils/restaurantMenuImport";
+import { MENU_KIND_LABELS } from "../utils/restaurantMenu";
 
-const GOLD_DARK = "#A8843A";
-
-export default function RestaurantMenuImportPanel({ user, onApplied, onToast }) {
+export default function RestaurantMenuImportPanel({ user, menuKind = "standard", onApplied, onToast }) {
   const fileRef = useRef(null);
   const cameraRef = useRef(null);
-  const [menuKind, setMenuKind] = useState("standard");
   const [busy, setBusy] = useState(false);
   const [preview, setPreview] = useState(null);
   const [warnings, setWarnings] = useState([]);
@@ -51,6 +50,27 @@ export default function RestaurantMenuImportPanel({ user, onApplied, onToast }) 
       handleParsed(data);
     } catch (e) {
       onToast?.("err", e?.message ?? "שגיאה בסנכרון מהאתר");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runWebsiteSyncAndPublish = async () => {
+    if (menuKind !== "standard") {
+      onToast?.("err", "סנכרון מאתר זמין רק לתפריט רגיל");
+      return;
+    }
+    setBusy(true);
+    resetPreview();
+    try {
+      const result = await importWebsiteMenuAndApply("standard", user?.id);
+      onToast?.("ok", `פורסם למלצרים: ${result.items} מנות מ-${result.sections} קטגוריות`);
+      if (result.warnings?.length) {
+        onToast?.("err", result.warnings[0]);
+      }
+      onApplied?.();
+    } catch (e) {
+      onToast?.("err", e?.message ?? "שגיאה בסנכרון ופרסום");
     } finally {
       setBusy(false);
     }
@@ -110,7 +130,7 @@ export default function RestaurantMenuImportPanel({ user, onApplied, onToast }) 
     try {
       const version = await ensureDraftForImport(menuKind);
       const stats = await replaceDraftMenuContent(version.id, preview);
-      onToast?.("ok", `הוחל על טיוטה: ${stats.sections} קטגוריות, ${stats.items} מנות — לחצו «פרסם תפריט»`);
+      onToast?.("ok", `הוחל על טיוטה: ${stats.sections} קטגוריות, ${stats.items} מנות — לחצו «פרסם»`);
       resetPreview();
       onApplied?.();
     } catch (e) {
@@ -121,6 +141,7 @@ export default function RestaurantMenuImportPanel({ user, onApplied, onToast }) 
   };
 
   const previewItems = preview?.flatMap((s) => s.items.map((i) => ({ ...i, sectionName: s.name }))) ?? [];
+  const kindLabel = MENU_KIND_LABELS[menuKind] ?? menuKind;
 
   return (
     <div style={{
@@ -128,43 +149,35 @@ export default function RestaurantMenuImportPanel({ user, onApplied, onToast }) 
       border: "1px solid rgba(0,128,128,0.25)", background: "rgba(0,128,128,0.05)",
     }}>
       <div style={{ fontWeight: 800, fontSize: 14, color: "#006666", marginBottom: 4 }}>
-        ✨ ייבוא תפריט חכם (AI)
+        ✨ ייבוא תפריט חכם — {kindLabel}
       </div>
       <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "0 0 12px", lineHeight: 1.5 }}>
-        סנכרון מאתר ערמונים, צילום תפריט, או העלאת PDF — הבינה מנתחת ויוצרת טיוטה ללוח המסעדה.
+        {menuKind === "standard"
+          ? "סנכרון מאתר ערמונים (אחד-לאחד) או העלאת קובץ — יופיע בטאב הזמנה אחרי פרסום."
+          : "צלמו או העלו תפריט ספיישל — AI מנתח → פרסום → המלצרים יכולים לעבור ל«תפריט ספיישל»."}
       </p>
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
-        {[
-          ["standard", "תפריט רגיל"],
-          ["special", "תפריט ספיישל"],
-        ].map(([id, label]) => (
-          <button
-            key={id}
-            type="button"
-            disabled={busy}
-            onClick={() => { setMenuKind(id); resetPreview(); }}
-            style={{
-              padding: "8px 14px", borderRadius: 20, fontWeight: 700, fontSize: 12,
-              border: menuKind === id ? `2px solid ${GOLD_DARK}` : "1px solid var(--border)",
-              background: menuKind === id ? "rgba(201,169,110,0.2)" : "#fff",
-              cursor: busy ? "not-allowed" : "pointer", fontFamily: "Heebo, sans-serif",
-            }}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
-        <button
-          type="button"
-          disabled={busy}
-          onClick={runWebsiteSync}
-          style={actionBtnStyle}
-        >
-          {busy ? "מנתח…" : "🌐 סנכרן מאתר ערמונים"}
-        </button>
+        {menuKind === "standard" && (
+          <>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={runWebsiteSyncAndPublish}
+              style={{ ...actionBtnStyle, background: "#1A7A4A", color: "#fff", border: "none" }}
+            >
+              {busy ? "מנתח…" : "⚡ סנכרן מאתר ופרסם למלצרים"}
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={runWebsiteSync}
+              style={actionBtnStyle}
+            >
+              🌐 תצוגה מקדימה מהאתר
+            </button>
+          </>
+        )}
         <button
           type="button"
           disabled={busy}

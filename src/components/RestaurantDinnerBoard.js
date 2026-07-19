@@ -20,7 +20,7 @@ import RestaurantWalkInModal from "./RestaurantWalkInModal";
 import RestaurantMenuAdminPanel from "./RestaurantMenuAdminPanel";
 import RestaurantOrderPanel from "./RestaurantOrderPanel";
 import RestaurantActiveOrdersPanel from "./RestaurantActiveOrdersPanel";
-import { canManageRestaurantMenu, canEditRestaurantDinnerTemplates } from "../utils/auth";
+import { canManageRestaurantMenuSession, canEditRestaurantDinnerTemplates } from "../utils/auth";
 import { formatGuestDietaryBrief, normalizeGuestProfile } from "../data/guestProfileSchema";
 import {
   composeAskMessage,
@@ -998,7 +998,7 @@ export default function RestaurantDinnerBoard({
   const shiftDisplayName = brandedShell ? shiftCtx?.session?.displayName ?? null : null;
   const waSignature = brandedShell ? shiftCtx?.kioskUi?.wa_signature ?? "" : "";
 
-  const showMenuAdmin = canManageRestaurantMenu(user);
+  const showMenuAdmin = canManageRestaurantMenuSession(user, shiftCtx?.session ?? null);
   const showTemplates = canEditRestaurantDinnerTemplates(user);
 
   const BOARD_TABS = [
@@ -1091,7 +1091,7 @@ export default function RestaurantDinnerBoard({
         )}
       </div>
 
-      {showMenuAdmin && boardTab !== "active" && (
+      {showMenuAdmin && boardTab === "order" && (
         <RestaurantMenuAdminPanel user={user} onToast={showToast} />
       )}
 

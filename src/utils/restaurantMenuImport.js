@@ -2,6 +2,7 @@
 
 import { supabase } from "../supabaseClient";
 import { ARMONIM_EXTERNAL_MENU_URL } from "./restaurantKioskUi";
+import { publishRestaurantDraft } from "./restaurantMenu";
 
 const VALID_COURSES = new Set(["starter", "main", "dessert", "drink", "kids", "side", "other"]);
 
@@ -93,8 +94,9 @@ export async function ensureDraftForImport(menuKind = "standard") {
 
   let { data: version, error: verErr } = await supabase
     .from("restaurant_menu_versions")
-    .select("id, label, status")
+    .select("id, label, status, menu_kind")
     .eq("status", "draft")
+    .eq("menu_kind", menuKind)
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -104,8 +106,8 @@ export async function ensureDraftForImport(menuKind = "standard") {
   if (!version) {
     const { data: created, error: createErr } = await supabase
       .from("restaurant_menu_versions")
-      .insert({ label, status: "draft" })
-      .select("id, label, status")
+      .insert({ label, status: "draft", menu_kind: menuKind })
+      .select("id, label, status, menu_kind")
       .maybeSingle();
     if (createErr) throw new Error(createErr.message);
     version = created;
@@ -164,4 +166,26 @@ export async function replaceDraftMenuContent(versionId, sections) {
 
   const itemCount = normalized.reduce((n, s) => n + s.items.length, 0);
   return { sections: normalized.length, items: itemCount };
+}
+
+/** Website sync → draft → optional publish in one flow (manager setup). */
+export async function importWebsiteMenuAndApply(menuKind = "standard", userId = null) {
+  const data = await syncMenuFromWebsite(menuKind);
+  const sections = normalizeParsedMenuSections(data.menu?.sections ?? []);
+  if (!sections.length) throw new Error("לא נמצאו מנות באתר");
+
+  const version = await ensureDraftForImport(menuKind);
+  const stats = await replaceDraftMenuContent(version.id, sections);
+
+  if (userId) {
+    await publishRestaurantDraft(version.id, userId, menuKind);
+  }
+
+  return {
+    sections: stats.sections,
+    items: stats.items,
+    warnings: data.menu?.warnings ?? [],
+    published: Boolean(userId),
+    versionId: version.id,
+  };
 }

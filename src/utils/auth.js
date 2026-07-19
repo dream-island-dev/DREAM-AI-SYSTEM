@@ -98,6 +98,12 @@ export function canManageRestaurantMenu(user) {
   return ["manager", "admin", "super_admin"].includes(role);
 }
 
+/** Kiosk shift manager may publish/import menu without XOS manager role. */
+export function canManageRestaurantMenuSession(user, session = null) {
+  if (canManageRestaurantMenu(user)) return true;
+  return session?.sessionRole === "shift_manager";
+}
+
 /** Restaurant Board — לוח מסעדה. */
 export function canAccessRestaurantDinnerBoard(user) {
   if (!user) return false;
