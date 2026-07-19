@@ -1378,6 +1378,10 @@ function Sidebar({ user, active, setActive, openOpsCount, onLogout, isAdmin, isS
     ? "🏢 מנהל מחלקה"
     : user.role === "receptionist"
     ? "🛎️ פקיד/ת קבלה"
+    : user.role === "restaurant"
+    ? "🍽️ מסעדה"
+    : user.role === "cleaner"
+    ? "🧹 חדרנות"
     : "👤 עובד";
 
   return (
@@ -1768,10 +1772,10 @@ async function loadUserWithProfile(session, setUser) {
       .eq("id", base.id)
       .maybeSingle();
     if (error) console.warn("[auth] profiles load:", error.message);
-    setUser({ ...base, ...(data ?? {}) });
+    setUser({ ...base, ...(data ?? {}), _profileLoaded: true });
   } catch (e) {
     console.warn("[auth] profiles load:", e?.message ?? e);
-    setUser(base);
+    setUser({ ...base, _profileLoaded: true });
   }
 }
 
@@ -1875,21 +1879,45 @@ export default function App({ initialPage = "dashboard" }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   // Deep-link from Requests Board (etc.) → open a specific WA thread in DREAM BOT.
   const [inboxFocus, setInboxFocus] = useState(null); // { phone, guestName?, inboxChannel? } | null
+  const [inboxReturn, setInboxReturn] = useState(null); // { page, guestId?, label? } — back from Inbox thread
+  const [restaurantReturnGuestId, setRestaurantReturnGuestId] = useState(null);
   const [oritFocus, setOritFocus] = useState(null); // { threadId } | null
   const [inboxRosterFocus, setInboxRosterFocus] = useState(null); // roster filter chip id | null
   const [checkinFocus, setCheckinFocus] = useState(null); // { timelineScope, customArrivalDate? } | null
   const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false);
-  const openDreamBotChat = useCallback(({ phone, guestName, inboxChannel } = {}) => {
+  const openDreamBotChat = useCallback(({ phone, guestName, inboxChannel, returnPage, returnGuestId, returnPageLabel } = {}) => {
     if (phone) {
       setInboxFocus({
         phone,
         guestName: guestName ?? null,
         inboxChannel: inboxChannel ?? null,
       });
+      if (returnPage) {
+        setInboxReturn({
+          page: returnPage,
+          guestId: returnGuestId ?? null,
+          label: returnPageLabel ?? null,
+        });
+      } else {
+        setInboxReturn(null);
+      }
     }
     setActivePage("wa_inbox");
     setMobileMenuOpen(false);
   }, []);
+
+  const returnFromInbox = useCallback(() => {
+    const ret = inboxReturn;
+    setInboxReturn(null);
+    setInboxFocus(null);
+    if (ret?.page) {
+      if (ret.page === "restaurant_dinner_board" && ret.guestId) {
+        setRestaurantReturnGuestId(ret.guestId);
+      }
+      setActivePage(ret.page);
+      setMobileMenuOpen(false);
+    }
+  }, [inboxReturn]);
   const openCheckinTab = useCallback(({ timelineScope = "today", customArrivalDate = null } = {}) => {
     saveCheckinFilter({ scope: timelineScope, customDate: customArrivalDate });
     setCheckinFocus({ timelineScope, customArrivalDate });
@@ -2025,6 +2053,8 @@ export default function App({ initialPage = "dashboard" }) {
     const pending = consumeStaffDeepLink();
     if (!pending?.page) return;
     if (!canAccessRoute(pending.page, user)) return;
+    if ((user.role === "restaurant" || isRestaurantFocusedUser(user))
+      && pending.page !== "restaurant_dinner_board") return;
     if (pending.phone) {
       setInboxFocus({
         phone: pending.phone,
@@ -2210,6 +2240,28 @@ export default function App({ initialPage = "dashboard" }) {
       </>
     );
 
+  if (user && isSupabaseConfigured && !user._profileLoaded)
+    return (
+      <>
+        <style>{css}</style>
+        <style>{`@keyframes di-spin { to { transform: rotate(360deg); } }`}</style>
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "center",
+          height: "100vh", background: "#0a0a0a", flexDirection: "column", gap: 16,
+          fontFamily: "Heebo, sans-serif",
+        }}>
+          <div style={{
+            width: 48, height: 48,
+            border: "4px solid #2a2a2a",
+            borderTop: "4px solid #C9A96E",
+            borderRadius: "50%",
+            animation: "di-spin 0.8s linear infinite",
+          }} />
+          <div style={{ color: "#C9A96E", fontSize: 14 }}>טוען פרופיל...</div>
+        </div>
+      </>
+    );
+
   // ── Cleaner kiosk — full-screen Housekeeping Tablet View, no sidebar ───
   // Session 28: swapped from RoomBoard's 6-status kiosk mode to the
   // dedicated 3-button fat-finger tablet view (HousekeepingTabletView.js).
@@ -2226,8 +2278,8 @@ export default function App({ initialPage = "dashboard" }) {
       </>
     );
 
-  // Restaurant kiosk — dinner board only (profiles.restaurant_access, no admin/manager/receptionist)
-  if (isRestaurantFocusedUser(user))
+  // Restaurant kiosk — לוח מסעדה בלבד (role=restaurant או restaurant_access לעובד)
+  if (user.role === "restaurant" || isRestaurantFocusedUser(user))
     return (
       <>
         <style>{css}</style>
@@ -2308,6 +2360,9 @@ export default function App({ initialPage = "dashboard" }) {
             focusGuestName={inboxFocus?.guestName ?? null}
             focusInboxChannel={inboxFocus?.inboxChannel ?? null}
             onFocusConsumed={() => setInboxFocus(null)}
+            returnPage={inboxReturn?.page ?? null}
+            returnPageLabel={inboxReturn?.label ?? null}
+            onReturnToSource={inboxReturn?.page ? returnFromInbox : null}
             initialRosterFilter={inboxRosterFocus}
             onRosterFilterConsumed={() => setInboxRosterFocus(null)}
           />
@@ -2359,7 +2414,12 @@ export default function App({ initialPage = "dashboard" }) {
         return <SpaBoard onOpenDreamBotChat={openDreamBotChat} />;
       case "restaurant_dinner_board":
         return guardPage("restaurant_dinner_board", (
-          <RestaurantDinnerBoard user={user} onOpenDreamBotChat={openDreamBotChat} />
+          <RestaurantDinnerBoard
+            user={user}
+            onOpenDreamBotChat={openDreamBotChat}
+            initialSelectedGuestId={restaurantReturnGuestId}
+            onReturnGuestConsumed={() => setRestaurantReturnGuestId(null)}
+          />
         ));
       case "housekeeping_tablet":
         return <HousekeepingTabletView />;

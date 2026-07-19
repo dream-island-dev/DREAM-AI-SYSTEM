@@ -1486,6 +1486,18 @@ serve(async (req: Request) => {
     );
     await primeGuestChannelConfig(supabase);
 
+    if (MANUAL_TRIGGERS.has(trigger)) {
+      const { assertStaffManualWhatsappTrigger } = await import("../_shared/staffManualMessagingAuth.ts");
+      const authBlock = await assertStaffManualWhatsappTrigger(req, trigger, supabase);
+      if (authBlock) {
+        const payload = await authBlock.text();
+        return new Response(payload, {
+          status: authBlock.status,
+          headers: { ...CORS, "Content-Type": "application/json" },
+        });
+      }
+    }
+
     const sim = isSimulation();
 
     const overridePayloadExtras = (manual_override === true || force === true)

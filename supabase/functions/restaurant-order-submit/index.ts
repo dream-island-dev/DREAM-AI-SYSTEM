@@ -91,7 +91,8 @@ serve(async (req: Request) => {
       .maybeSingle();
 
     const canSubmit = staffProfile && (
-      staffProfile.restaurant_access === true
+      staffProfile.role === "restaurant"
+      || staffProfile.restaurant_access === true
       || ["manager", "admin", "super_admin"].includes(staffProfile.role as string)
     );
     if (!canSubmit) {

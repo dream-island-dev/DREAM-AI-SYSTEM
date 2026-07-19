@@ -43,7 +43,7 @@ export function resolveRestaurantGuestWaChannel(guest) {
 
 export function formatWaSendError(data, fallback) {
   if (data?.status === "window_closed") {
-    return "חלון 24 שעות סגור — שלחו תבנית מ-Inbox או חכו להודעה מהאורח.";
+    return "חלון 24 שעות סגור ב-Dream Bot — המתינו לתשובת האורח או פנו לקבלה. לסוויטות נשלח דרך מכשיר הסוויטות.";
   }
   if (data?.status === "whapi_disabled") {
     return data?.error ?? "מכשיר הסוויטות כבוי כרגע.";

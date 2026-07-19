@@ -111,7 +111,7 @@ function MessageTextarea({ label, value, onChange, onReset, disabled, rows = 5 }
   );
 }
 
-function GuestListRow({ guest, selected, onSelect, onOpenChat }) {
+function GuestListRow({ guest, selected, onSelect, onOpenChat, onSetMealTime, kioskMode = false }) {
   const vip = normalizeGuestProfile(guest.guest_profile).vip_status === "vip";
   const needsTime = guestNeedsMealCoordination(guest);
   const dinnerTime = getGuestMealSlotTime(guest, "dinner");
@@ -122,19 +122,17 @@ function GuestListRow({ guest, selected, onSelect, onOpenChat }) {
 
   const handleNameClick = (e) => {
     e.stopPropagation();
-    if (hasPhone && onOpenChat) {
+    if (!kioskMode && hasPhone && onOpenChat) {
       onOpenChat(guest);
       return;
     }
-    onSelect?.(guest);
+    onSetMealTime?.(guest);
   };
 
   return (
-    <button
-      type="button"
-      onClick={() => onSelect?.(guest)}
+    <div
       style={{
-        width: "100%", textAlign: "right", cursor: "pointer",
+        width: "100%", textAlign: "right",
         border: selected ? `2px solid ${GOLD_DARK}` : "1px solid var(--border, #E0D5C5)",
         borderRadius: 10, padding: "10px 12px", marginBottom: 6,
         background: selected ? "rgba(201,169,110,0.14)" : "var(--card-bg, #fff)",
@@ -148,15 +146,16 @@ function GuestListRow({ guest, selected, onSelect, onOpenChat }) {
             tabIndex={0}
             onClick={handleNameClick}
             onKeyDown={(e) => { if (e.key === "Enter") handleNameClick(e); }}
-            title={hasPhone ? "לחץ לפתיחת שיחת וואטסאפ לתיאום" : "אין טלפון — בחרו לעריכת שעות"}
+            title={kioskMode ? "הגדרת שעות ארוחה" : hasPhone ? "לחץ לפתיחת שיחת וואטסאפ לתיאום" : "אין טלפון — הגדרת שעות"}
             style={{
-              fontWeight: 800, fontSize: 14, color: hasPhone ? "#1D4ED8" : "var(--black, #1A1A1A)",
-              textDecoration: hasPhone ? "underline" : "none",
+              fontWeight: 800, fontSize: 14,
+              color: !kioskMode && hasPhone ? "#1D4ED8" : "var(--black, #1A1A1A)",
+              textDecoration: !kioskMode && hasPhone ? "underline" : "none",
               textUnderlineOffset: 3, cursor: "pointer", marginBottom: 3,
             }}
           >
             {vip && "⭐ "}{guest.name || "—"}
-            {hasPhone && <span style={{ marginRight: 4, fontSize: 11 }}>💬</span>}
+            {!kioskMode && hasPhone && <span style={{ marginRight: 4, fontSize: 11 }}>💬</span>}
           </div>
           <div style={{ fontSize: 11.5, color: "var(--text-muted)", lineHeight: 1.45 }}>
             {guest.room ? `🏨 ${guest.room}` : "ללא חדר"}
@@ -169,7 +168,7 @@ function GuestListRow({ guest, selected, onSelect, onOpenChat }) {
             {lunchTime ? ` · צהריים ${lunchTime}` : ""}
           </div>
         </div>
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
           {needsTime ? (
             <span style={{
               fontSize: 10, fontWeight: 800, padding: "3px 8px", borderRadius: 12,
@@ -185,19 +184,30 @@ function GuestListRow({ guest, selected, onSelect, onOpenChat }) {
               ✓ מתואם
             </span>
           )}
+          <button
+            type="button"
+            onClick={() => onSetMealTime?.(guest)}
+            style={{
+              padding: "5px 10px", borderRadius: 8, border: `1.5px solid ${GOLD_DARK}`,
+              background: selected ? "rgba(201,169,110,0.25)" : "#fff",
+              color: "#9A7209", fontSize: 11, fontWeight: 800, cursor: "pointer",
+              fontFamily: "Heebo, sans-serif", whiteSpace: "nowrap",
+            }}
+          >
+            🕐 הגדר שעה
+          </button>
         </div>
       </div>
-    </button>
+    </div>
   );
 }
 
-function GuestDinnerRow({ guest, user, msgConfig, onSaved, onError, onNotify, onOpenChat }) {
+function GuestDinnerRow({ guest, user, msgConfig, onSaved, onError, onNotify, onOpenChat, kioskMode = false }) {
   const cfg = normalizeRestaurantDinnerMessages(msgConfig);
   const offerSlots = cfg.offer_slots;
   const defaultAskSlots = cfg.default_ask_slots;
   const lunchQuickSlots = getLunchQuickSlots(cfg);
   const coordinationSlots = getCoordinationSlotsForGuest(guest);
-  const showLunch = coordinationSlots.includes("lunch");
   const showDinner = coordinationSlots.includes("dinner")
     || (!coordinationSlots.length && Boolean(guest.guest_profile?.restaurant?.walk_in));
 
@@ -215,9 +225,11 @@ function GuestDinnerRow({ guest, user, msgConfig, onSaved, onError, onNotify, on
   const [saving, setSaving] = useState(false);
   const [sendingWa, setSendingWa] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false);
+  const [waOpen, setWaOpen] = useState(kioskMode);
 
   const savedTime = String(guest.dinner_time ?? guest.meal_time ?? "").trim();
   const hasPhone = Boolean(String(guest.phone ?? "").trim());
+  const showWaMessaging = hasPhone && (showDinner || kioskMode);
   const loc = (mealLocation || "מסעדת ערמונים").trim();
   const effectiveTime = String(dinnerTime || savedTime).trim();
 
@@ -406,6 +418,12 @@ function GuestDinnerRow({ guest, user, msgConfig, onSaved, onError, onNotify, on
     }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 10 }}>
         <div>
+          {kioskMode ? (
+            <div style={{ fontWeight: 800, fontSize: 15, color: "var(--black, #1A1A1A)" }}>
+              {vip && <span title="VIP">⭐ </span>}
+              {guest.name || "—"}
+            </div>
+          ) : (
           <button
             type="button"
             onClick={() => hasPhone && onOpenChat?.(guest)}
@@ -423,6 +441,7 @@ function GuestDinnerRow({ guest, user, msgConfig, onSaved, onError, onNotify, on
             {guest.name || "—"}
             {hasPhone && onOpenChat && <span style={{ marginRight: 6, fontSize: 12 }}>💬</span>}
           </button>
+          )}
           <div style={{ fontSize: 12.5, color: "var(--text-muted, #666)", marginTop: 4 }}>
             {guest.room ? `🏨 ${guest.room}` : "ללא חדר"}
             {guest.status === "checked_in" ? " · בבריזורט" : guest.status === "expected" || guest.status === "pending" ? " · מגיע היום" : ""}
@@ -454,27 +473,55 @@ function GuestDinnerRow({ guest, user, msgConfig, onSaved, onError, onNotify, on
         </div>
       )}
 
-      <div style={{ marginBottom: 10 }}>
-        <label style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
-          שולחן / מיקום
-        </label>
-        <input
-          type="text"
-          value={mealLocation}
-          onChange={(e) => setMealLocation(e.target.value)}
-          disabled={busy}
-          placeholder="מסעדת ערמונים"
-          style={{
-            width: "100%", boxSizing: "border-box", padding: "9px 10px",
-            borderRadius: 8, border: "1px solid var(--border, #ddd)", fontSize: 14,
-          }}
-        />
-      </div>
+      <div style={{
+        border: `1.5px solid ${GOLD_DARK}`,
+        borderRadius: 12,
+        padding: "14px 14px 12px",
+        marginBottom: 12,
+        background: "rgba(201,169,110,0.08)",
+      }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 12 }}>
+          <div>
+            <div style={{ fontWeight: 900, fontSize: 15, color: "#9A7209" }}>🕐 הגדר שעת ארוחה</div>
+            <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 4, lineHeight: 1.45 }}>
+              נשמר בפרופיל האורח — מסתנכרן לפורטל והבוט
+            </div>
+          </div>
+          {hasPhone && onOpenChat && !kioskMode && (
+            <button
+              type="button"
+              onClick={() => onOpenChat(guest)}
+              style={{
+                padding: "7px 11px", borderRadius: 8, border: "1.5px solid #4338CA",
+                background: "#fff", color: "#4338CA", fontSize: 11.5, fontWeight: 800,
+                cursor: "pointer", fontFamily: "Heebo, sans-serif", whiteSpace: "nowrap",
+              }}
+            >
+              💬 צ׳אט
+            </button>
+          )}
+        </div>
 
-      {showLunch && (
         <div style={{ marginBottom: 10 }}>
           <label style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
-            {MEAL_SLOT_LABELS.lunch}
+            שולחן / מיקום
+          </label>
+          <input
+            type="text"
+            value={mealLocation}
+            onChange={(e) => setMealLocation(e.target.value)}
+            disabled={busy}
+            placeholder="מסעדת ערמונים"
+            style={{
+              width: "100%", boxSizing: "border-box", padding: "9px 10px",
+              borderRadius: 8, border: "1px solid var(--border, #ddd)", fontSize: 14,
+            }}
+          />
+        </div>
+
+        <div style={{ marginBottom: 10 }}>
+          <label style={{ fontSize: 12, fontWeight: 800, color: "var(--black, #1A1A1A)", display: "block", marginBottom: 6 }}>
+            🌞 {MEAL_SLOT_LABELS.lunch}
           </label>
           <IsraeliTimeSelect
             value={lunchTime}
@@ -498,56 +545,99 @@ function GuestDinnerRow({ guest, user, msgConfig, onSaved, onError, onNotify, on
             ))}
           </div>
         </div>
-      )}
 
-      {showDinner && (
-        <>
-          <div style={{ marginBottom: 8 }}>
-            <label style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
-              {MEAL_SLOT_LABELS.dinner}
-            </label>
-            <IsraeliTimeSelect
-              value={dinnerTime}
-              onChange={setDinnerTime}
-              disabled={busy}
-              emptyLabel="ללא שעה"
-              startHour={18}
-              endHour={22}
-              stepMinutes={30}
-            />
+        <div style={{ marginBottom: 12 }}>
+          <label style={{ fontSize: 12, fontWeight: 800, color: "var(--black, #1A1A1A)", display: "block", marginBottom: 6 }}>
+            🌙 {MEAL_SLOT_LABELS.dinner}
+          </label>
+          <IsraeliTimeSelect
+            value={dinnerTime}
+            onChange={setDinnerTime}
+            disabled={busy}
+            emptyLabel="ללא שעה"
+            startHour={18}
+            endHour={22}
+            stepMinutes={30}
+          />
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+            {offerSlots.map((slot) => (
+              <SlotChip
+                key={slot}
+                label={slot}
+                selected={dinnerTime === slot}
+                disabled={busy}
+                title="קבע שעת ערב"
+                onClick={() => setDinnerTime(slot)}
+              />
+            ))}
           </div>
-          <div style={{ marginBottom: 10 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", marginBottom: 6 }}>
-              בחירה מהירה — ערב
-            </div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              {offerSlots.map((slot) => (
-                <SlotChip
-                  key={slot}
-                  label={slot}
-                  selected={dinnerTime === slot}
-                  disabled={busy}
-                  title="קבע שעת ערב"
-                  onClick={() => setDinnerTime(slot)}
-                />
-              ))}
-            </div>
-          </div>
-        </>
-      )}
+        </div>
 
-      {!hasPhone && showDinner && (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button
+            type="button"
+            onClick={save}
+            disabled={busy || !dirty}
+            title={!dirty ? "אין שינוי לשמירה" : "שמירה לפרופיל אורח"}
+            style={{
+              flex: "1 1 120px", padding: "11px 14px", borderRadius: 10, border: "none",
+              background: !dirty ? "var(--border, #ddd)" : `linear-gradient(135deg, ${GOLD}, ${GOLD_DARK})`,
+              color: !dirty ? "#888" : "#0F0F0F",
+              fontWeight: 800, fontSize: 13, cursor: !dirty || busy ? "not-allowed" : "pointer",
+              fontFamily: "Heebo, sans-serif", opacity: saving ? 0.7 : 1,
+            }}
+          >
+            {saving && !sendingWa ? "שומר…" : savedFlash ? "✓ נשמר בפרופיל" : "💾 שמור שעות"}
+          </button>
+          {showWaMessaging && (
+            <button
+              type="button"
+              onClick={saveAndNotify}
+              disabled={busy || !String(dinnerTime ?? "").trim()}
+              title="שומר שעה בפרופיל + שולח אישור לאורח"
+              style={{
+                flex: "1 1 160px", padding: "11px 14px", borderRadius: 10, border: "none",
+                background: !String(dinnerTime ?? "").trim()
+                  ? "var(--border, #ddd)"
+                  : "linear-gradient(135deg, #1A7A4A, #0d5c38)",
+                color: !String(dinnerTime ?? "").trim() ? "#888" : "#fff",
+                fontWeight: 800, fontSize: 13,
+                cursor: busy || !String(dinnerTime ?? "").trim() ? "not-allowed" : "pointer",
+                fontFamily: "Heebo, sans-serif",
+              }}
+            >
+              {saving && sendingWa ? "שומר ושולח…" : "💾📩 שמור + הודע לאורח"}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {!hasPhone && (
         <div style={{
           fontSize: 12, color: "#9A7209", background: "rgba(180,83,9,0.08)",
           padding: "8px 10px", borderRadius: 8, marginBottom: 10,
         }}>
-          ⚠️ אין טלפון — אפשר לעדכן שעה בפרופיל, בלי שליחת וואטסאפ
+          ⚠️ אין טלפון — אפשר לעדכן שעות בפרופיל, בלי שליחת וואטסאפ
         </div>
       )}
 
-      {hasPhone && showDinner && (
+          {showWaMessaging && (
+        <div style={{ marginBottom: 4 }}>
+          <button
+            type="button"
+            onClick={() => setWaOpen((v) => !v)}
+            style={{
+              width: "100%", padding: "10px 12px", borderRadius: 10,
+              border: "1px solid rgba(99,102,241,0.35)", background: "rgba(99,102,241,0.06)",
+              color: "#4338CA", fontWeight: 800, fontSize: 12.5, cursor: "pointer",
+              fontFamily: "Heebo, sans-serif", textAlign: "right",
+            }}
+          >
+            {waOpen ? "▾" : "▸"} 💬 שלח הודעת וואטסאפ (תבניות)
+          </button>
+          {waOpen && (
         <div style={{
-          marginBottom: 10, padding: "10px 12px", borderRadius: 10,
+          marginTop: 8, padding: "10px 12px", borderRadius: 10,
           background: "rgba(99,102,241,0.06)", border: "1px solid rgba(99,102,241,0.2)",
         }}>
           <div style={{ fontSize: 11, fontWeight: 800, color: "#4338CA", marginBottom: 8 }}>
@@ -668,50 +758,21 @@ function GuestDinnerRow({ guest, user, msgConfig, onSaved, onError, onNotify, on
             </>
           )}
         </div>
+          )}
+        </div>
       )}
-
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <button
-          type="button"
-          onClick={save}
-          disabled={busy || !dirty}
-          title={!dirty ? "אין שינוי לשמירה" : "שמירה לפרופיל אורח"}
-          style={{
-            flex: "1 1 120px", padding: "10px 14px", borderRadius: 10, border: "none",
-            background: !dirty ? "var(--border, #ddd)" : `linear-gradient(135deg, ${GOLD}, ${GOLD_DARK})`,
-            color: !dirty ? "#888" : "#0F0F0F",
-            fontWeight: 800, fontSize: 13, cursor: !dirty || busy ? "not-allowed" : "pointer",
-            fontFamily: "Heebo, sans-serif", opacity: saving ? 0.7 : 1,
-          }}
-        >
-          {saving && !sendingWa ? "שומר…" : savedFlash ? "✓ נשמר" : "💾 שמור"}
-        </button>
-        {hasPhone && showDinner && (
-          <button
-            type="button"
-            onClick={saveAndNotify}
-            disabled={busy || !String(dinnerTime ?? "").trim()}
-            title="שומר שעה בפרופיל + שולח אישור לאורח"
-            style={{
-              flex: "1 1 160px", padding: "10px 14px", borderRadius: 10, border: "none",
-              background: !String(dinnerTime ?? "").trim()
-                ? "var(--border, #ddd)"
-                : "linear-gradient(135deg, #1A7A4A, #0d5c38)",
-              color: !String(dinnerTime ?? "").trim() ? "#888" : "#fff",
-              fontWeight: 800, fontSize: 13,
-              cursor: busy || !String(dinnerTime ?? "").trim() ? "not-allowed" : "pointer",
-              fontFamily: "Heebo, sans-serif",
-            }}
-          >
-            {saving && sendingWa ? "שומר ושולח…" : "💾📩 שמור + הודע לאורח"}
-          </button>
-        )}
-      </div>
     </div>
   );
 }
 
-export default function RestaurantDinnerBoard({ user, kioskMode = false, onLogout, onOpenDreamBotChat }) {
+export default function RestaurantDinnerBoard({
+  user,
+  kioskMode = false,
+  onLogout,
+  onOpenDreamBotChat,
+  initialSelectedGuestId = null,
+  onReturnGuestConsumed,
+}) {
   const [boardTab, setBoardTab] = useState("coordination");
   const [mealPeriod, setMealPeriod] = useState("dinner");
   const [dayYmd, setDayYmd] = useState(israelTodayStr());
@@ -796,11 +857,27 @@ export default function RestaurantDinnerBoard({ user, kioskMode = false, onLogou
     const phone = String(guest?.phone ?? "").trim();
     if (!phone) return;
     if (onOpenDreamBotChat) {
-      onOpenDreamBotChat({ phone, guestName: guest.name });
+      onOpenDreamBotChat({
+        phone,
+        guestName: guest.name,
+        returnPage: "restaurant_dinner_board",
+        returnGuestId: guest.id,
+        returnPageLabel: "לוח מסעדה",
+      });
       return;
     }
     setSelectedGuestId(guest.id);
   }, [onOpenDreamBotChat]);
+
+  const selectGuestForMealTime = useCallback((guest) => {
+    setSelectedGuestId(guest.id);
+  }, []);
+
+  useEffect(() => {
+    if (!initialSelectedGuestId) return;
+    setSelectedGuestId(initialSelectedGuestId);
+    onReturnGuestConsumed?.();
+  }, [initialSelectedGuestId, onReturnGuestConsumed]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -869,7 +946,9 @@ export default function RestaurantDinnerBoard({ user, kioskMode = false, onLogou
             🍽️ לוח מסעדה
           </h1>
           <p style={{ margin: "6px 0 0", fontSize: 13, color: "var(--text-muted, #666)", lineHeight: 1.5 }}>
-            תיאום צהריים וערב בפרופיל האורח — מסתנכרן לפורטל והבוט. אפשר גם לשאול בוואטסאפ.
+            {kioskMode
+              ? "תיאום שעות ארוחה · הזמנות · מסך מטבח — ללא גישה לשאר המערכת."
+              : "תיאום צהריים וערב בפרופיל האורח — מסתנכרן לפורטל והבוט. אפשר גם לשאול בוואטסאפ."}
           </p>
         </div>
         {kioskMode && onLogout && (
@@ -944,12 +1023,14 @@ export default function RestaurantDinnerBoard({ user, kioskMode = false, onLogou
 
       {boardTab === "coordination" && (
       <>
+      {!kioskMode && canManageRestaurantMenu(user) && (
       <RestaurantDinnerTemplatesPanel
         config={msgConfig}
         onChange={setMsgConfig}
         onSaved={(msg) => showToast("ok", msg)}
         onError={(msg) => showToast("err", msg)}
       />
+      )}
 
       <div style={{
         display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 14,
@@ -1039,15 +1120,19 @@ export default function RestaurantDinnerBoard({ user, kioskMode = false, onLogou
             paddingLeft: 2,
           }}>
             <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-muted)", marginBottom: 8 }}>
-              {filtered.length} אורחים · לחיצה על שם = צ׳אט לתיאום
+              {kioskMode
+                ? `${filtered.length} אורחים · «הגדר שעה» + שליחת וואטסאפ מהלוח`
+                : `${filtered.length} אורחים · שם = צ׳אט · «הגדר שעה» = עריכת שעות`}
             </div>
             {filtered.map((g) => (
               <GuestListRow
                 key={g.id}
                 guest={g}
                 selected={selectedGuest?.id === g.id}
-                onSelect={(row) => setSelectedGuestId(row.id)}
-                onOpenChat={openGuestChat}
+                onSelect={selectGuestForMealTime}
+                onSetMealTime={selectGuestForMealTime}
+                onOpenChat={kioskMode ? null : openGuestChat}
+                kioskMode={kioskMode}
               />
             ))}
           </div>
@@ -1058,7 +1143,8 @@ export default function RestaurantDinnerBoard({ user, kioskMode = false, onLogou
                 guest={selectedGuest}
                 user={user}
                 msgConfig={msgConfig}
-                onOpenChat={openGuestChat}
+                kioskMode={kioskMode}
+                onOpenChat={kioskMode ? null : openGuestChat}
                 onSaved={(updated) => {
                   setGuests((prev) => prev.map((row) => (row.id === updated.id ? { ...row, ...updated } : row)));
                 }}

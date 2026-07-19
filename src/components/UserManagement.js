@@ -29,6 +29,7 @@ const ROLES = [
   { value: "manager",     label: "🏢 מנהל" },
   { value: "staff",       label: "👤 עובד" },
   { value: "receptionist", label: "🛎️ פקיד/ת קבלה" },
+  { value: "restaurant",  label: "🍽️ מסעדה (לוח בלבד)" },
   { value: "cleaner",     label: "🧹 חדרנית/ת" },
 ];
 
@@ -38,6 +39,7 @@ const ROLE_META = {
   manager:     { bg: "#EEF4FF",               color: "#2952A3",          label: "🏢 מנהל" },
   staff:       { bg: "var(--ivory)",           color: "var(--text-muted)",label: "👤 עובד" },
   receptionist:{ bg: "#FFF5E8",               color: "#B5600A",          label: "🛎️ פקיד/ת קבלה" },
+  restaurant:  { bg: "#FFF8ED",               color: "#9A7209",          label: "🍽️ מסעדה" },
   cleaner:     { bg: "#E8F5EF",               color: "#1A7A4A",          label: "🧹 חדרנית/ת" },
 };
 
@@ -239,7 +241,7 @@ function UserCard({ u, isSelf, saving, canEdit, onUpdate, onToggle }) {
                 onChange={() => onUpdate(u.id, "restaurant_access", !u.restaurant_access)}
                 style={{ width: 20, height: 20, accentColor: "var(--gold)" }}
               />
-              <span style={{ fontSize: 14 }}>גישה ללוח מסעדה — מסך קיוסק בלבד לעובד מסעדה</span>
+              <span style={{ fontSize: 14 }}>גישה ללוח מסעדה — קיוסק (או הגדירו תפקיד «מסעדה»)</span>
             </label>
           ) : (
             <div style={{ padding: "10px 0", fontSize: 14, color: "var(--text-muted)" }}>
@@ -453,14 +455,23 @@ export default function UserManagement({ currentUser }) {
     if (!canEdit) return showToast("err", "נדרשות הרשאות super_admin");
     if (!supabase) return showToast("err", "Supabase לא מחובר");
     setSaving((s) => ({ ...s, [userId]: field }));
+    const patch = { [field]: value, updated_at: new Date().toISOString() };
+    if (field === "role" && value === "restaurant") {
+      patch.restaurant_access = true;
+    }
     const { error } = await supabase
       .from("profiles")
-      .update({ [field]: value, updated_at: new Date().toISOString() })
+      .update(patch)
       .eq("id", userId);
     if (error) {
       showToast("err", `שגיאה: ${error.message}`);
     } else {
-      setUsers((prev) => prev.map((u) => u.id === userId ? { ...u, [field]: value } : u));
+      setUsers((prev) => prev.map((u) => {
+        if (u.id !== userId) return u;
+        const next = { ...u, [field]: value };
+        if (field === "role" && value === "restaurant") next.restaurant_access = true;
+        return next;
+      }));
       showToast("ok", "עודכן ✓");
     }
     setSaving((s) => ({ ...s, [userId]: null }));

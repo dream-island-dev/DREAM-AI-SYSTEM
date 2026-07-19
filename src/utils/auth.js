@@ -13,7 +13,14 @@ export function getRole(user) {
   if (isAdminUser(user))  return "admin";
   if (user.role === "manager") return "manager";
   if (user.role === "receptionist") return "receptionist";
+  if (user.role === "restaurant") return "restaurant";
+  if (user.role === "cleaner") return "cleaner";
   return "staff";
+}
+
+/** Dedicated restaurant kiosk role (profiles.role = restaurant). */
+export function isRestaurantRole(user) {
+  return user?.role === "restaurant";
 }
 
 export function isReceptionist(user) {
@@ -85,16 +92,17 @@ export function canManageRestaurantMenu(user) {
 /** Restaurant Board — לוח מסעדה. */
 export function canAccessRestaurantDinnerBoard(user) {
   if (!user) return false;
+  if (isRestaurantRole(user)) return true;
   if (isSuperAdmin(user) || isAdminUser(user) || user.role === "manager") return true;
   return user.restaurant_access === true;
 }
 
-/** Restaurant-only kiosk user — sees dinner board only (not full XOS). */
+/** Restaurant-only kiosk — לוח מסעדה בלבד (לא דאשבורד / Inbox / סוויטות). */
 export function isRestaurantFocusedUser(user) {
   if (!user) return false;
-  if (isSuperAdmin(user) || isAdminUser(user) || user.role === "manager" || user.role === "receptionist") {
-    return false;
-  }
+  if (isSuperAdmin(user) || isAdminUser(user)) return false;
+  if (user.role === "manager" || user.role === "receptionist") return false;
+  if (isRestaurantRole(user)) return true;
   return user.restaurant_access === true;
 }
 
@@ -107,9 +115,11 @@ export function canPerform(action, user) {
 /** Sidebar nav visibility — staff sees open items; receptionist also gets receptionistOk. */
 export function canSeeNavItem(item, user) {
   if (!user) return false;
+  if (isRestaurantFocusedUser(user) || isRestaurantRole(user)) {
+    return item.id === "restaurant_dinner_board";
+  }
   if (item.oritCsAgentOnly) return canAccessOritCsAgent(user);
   if (item.restaurantBoardOnly) return canAccessRestaurantDinnerBoard(user);
-  if (isRestaurantFocusedUser(user)) return item.id === "restaurant_dinner_board";
   if (isSuperAdmin(user) || isAdminUser(user) || user.role === "manager") return true;
   if (user.role === "receptionist") {
     return !item.managerOnly || item.receptionistOk === true;

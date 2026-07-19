@@ -3035,6 +3035,9 @@ export default function WhatsAppInbox({
   focusGuestName,
   focusInboxChannel,
   onFocusConsumed,
+  returnPage,
+  returnPageLabel,
+  onReturnToSource,
   initialRosterFilter,
   onRosterFilterConsumed,
 }) {
@@ -4092,13 +4095,18 @@ export default function WhatsAppInbox({
   // case. Falls back to an immediate closeThread() otherwise (desktop, or no
   // history entry was pushed for this thread).
   const goBackToList = useCallback(() => {
+    if (returnPage && onReturnToSource) {
+      threadHistoryPushedRef.current = false;
+      onReturnToSource();
+      return;
+    }
     if (isMobile && threadHistoryPushedRef.current && typeof window !== "undefined" && window.history) {
       threadHistoryPushedRef.current = false;
       window.history.back();
       return;
     }
     closeThread();
-  }, [isMobile, closeThread]);
+  }, [isMobile, closeThread, returnPage, onReturnToSource]);
 
   useEffect(() => {
     if (isMobile && mobileScreen === "thread" && !active) {
@@ -4121,11 +4129,15 @@ export default function WhatsAppInbox({
     if (!isMobile) return undefined;
     const onPopState = () => {
       threadHistoryPushedRef.current = false;
+      if (returnPage && onReturnToSource) {
+        onReturnToSource();
+        return;
+      }
       closeThread();
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
-  }, [isMobile, closeThread]);
+  }, [isMobile, closeThread, returnPage, onReturnToSource]);
 
   // Phase 3B (option A) — preserve the roster's scroll position across a
   // thread visit. The list/thread panes are mounted exclusively (ternary), so
@@ -5467,11 +5479,25 @@ export default function WhatsAppInbox({
           <button
             type="button"
             onClick={goBackToList}
-            aria-label={t.back}
+            aria-label={returnPageLabel || t.back}
             className="u-touch-comfort wa-mobile-back"
           >
             <span className="wa-mobile-back-icon" aria-hidden="true">{t.dir === "rtl" ? "›" : "‹"}</span>
-            <span className="wa-mobile-back-label">{t.backShort}</span>
+            <span className="wa-mobile-back-label">{returnPageLabel || t.backShort}</span>
+          </button>
+        )}
+        {!isMobile && returnPage && onReturnToSource && (
+          <button
+            type="button"
+            onClick={goBackToList}
+            style={{
+              border: "1px solid rgba(255,255,255,0.45)", borderRadius: 8,
+              background: "rgba(0,0,0,0.12)", color: "#fff", padding: "6px 10px",
+              fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "Heebo, sans-serif",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {returnPageLabel ? `← ${returnPageLabel}` : "← חזרה"}
           </button>
         )}
         <button
