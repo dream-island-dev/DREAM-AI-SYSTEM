@@ -1,6 +1,6 @@
 // Restaurant Board (לוח מסעדה) — תיאום צהריים + ערב בפרופיל אורח (מסנכרן לבוט + פורטל).
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import IsraeliTimeSelect from "./IsraeliTimeSelect";
 import { israelTodayStr } from "../utils/guestTiming";
@@ -119,7 +119,7 @@ function MessageTextarea({ label, value, onChange, onReset, disabled, rows = 5 }
   );
 }
 
-function GuestListRow({ guest, selected, onSelect, onOpenChat, onSetMealTime, kioskMode = false }) {
+function GuestListRow({ guest, selected, onOpenChat, onSetMealTime, kioskMode = false }) {
   const vip = normalizeGuestProfile(guest.guest_profile).vip_status === "vip";
   const needsTime = guestNeedsMealCoordination(guest);
   const dinnerTime = getGuestMealSlotTime(guest, "dinner");
@@ -195,7 +195,10 @@ function GuestListRow({ guest, selected, onSelect, onOpenChat, onSetMealTime, ki
           )}
           <button
             type="button"
-            onClick={() => onSetMealTime?.(guest)}
+            onClick={(e) => {
+              e.stopPropagation();
+              onSetMealTime?.(guest);
+            }}
             style={{
               padding: "5px 10px", borderRadius: 8, border: `1.5px solid ${GOLD_DARK}`,
               background: selected ? "rgba(201,169,110,0.25)" : "#fff",
@@ -223,6 +226,8 @@ function GuestDinnerRow({
   shiftDisplayName = null,
   waSignature = "",
   onWaSent,
+  mealPeriodFocus = "dinner",
+  onBack,
 }) {
   const cfg = normalizeRestaurantDinnerMessages(msgConfig);
   const offerSlots = cfg.offer_slots;
@@ -247,6 +252,8 @@ function GuestDinnerRow({
   const [sendingWa, setSendingWa] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false);
   const [waOpen, setWaOpen] = useState(kioskMode);
+  const lunchSectionRef = useRef(null);
+  const dinnerSectionRef = useRef(null);
 
   const savedTime = String(guest.dinner_time ?? guest.meal_time ?? "").trim();
   const hasPhone = Boolean(String(guest.phone ?? "").trim());
@@ -301,6 +308,11 @@ function GuestDinnerRow({
     if (!confirmDirty) setConfirmText(regenConfirm());
     if (!customDirty) setCustomText(regenCustom());
   }, [msgConfig]);
+
+  useEffect(() => {
+    const target = mealPeriodFocus === "lunch" ? lunchSectionRef.current : dinnerSectionRef.current;
+    target?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [guest.id, mealPeriodFocus]);
 
   const dietary = formatGuestDietaryBrief(guest.guest_profile);
   const vip = normalizeGuestProfile(guest.guest_profile).vip_status === "vip";
@@ -440,7 +452,21 @@ function GuestDinnerRow({
       transition: "background 0.25s",
     }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 10 }}>
-        <div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          {onBack && (
+            <button
+              type="button"
+              onClick={onBack}
+              style={{
+                marginBottom: 8, padding: "6px 10px", borderRadius: 8,
+                border: "1px solid var(--border, #ddd)", background: "#fff",
+                color: "var(--text-muted)", fontSize: 12, fontWeight: 700,
+                cursor: "pointer", fontFamily: "Heebo, sans-serif",
+              }}
+            >
+              ← חזרה לרשימה
+            </button>
+          )}
           <button
             type="button"
             onClick={() => hasPhone && onOpenChat?.(guest)}
@@ -535,7 +561,16 @@ function GuestDinnerRow({
           />
         </div>
 
-        <div style={{ marginBottom: 10 }}>
+        <div
+          ref={lunchSectionRef}
+          style={{
+            marginBottom: 10,
+            padding: mealPeriodFocus === "lunch" ? "10px 10px 8px" : 0,
+            borderRadius: 10,
+            border: mealPeriodFocus === "lunch" ? `2px solid ${GOLD_DARK}` : "2px solid transparent",
+            background: mealPeriodFocus === "lunch" ? "rgba(201,169,110,0.12)" : "transparent",
+          }}
+        >
           <label style={{ fontSize: 12, fontWeight: 800, color: "var(--black, #1A1A1A)", display: "block", marginBottom: 6 }}>
             🌞 {MEAL_SLOT_LABELS.lunch}
           </label>
@@ -562,7 +597,16 @@ function GuestDinnerRow({
           </div>
         </div>
 
-        <div style={{ marginBottom: 12 }}>
+        <div
+          ref={dinnerSectionRef}
+          style={{
+            marginBottom: 12,
+            padding: mealPeriodFocus === "dinner" ? "10px 10px 8px" : 0,
+            borderRadius: 10,
+            border: mealPeriodFocus === "dinner" ? `2px solid ${GOLD_DARK}` : "2px solid transparent",
+            background: mealPeriodFocus === "dinner" ? "rgba(201,169,110,0.12)" : "transparent",
+          }}
+        >
           <label style={{ fontSize: 12, fontWeight: 800, color: "var(--black, #1A1A1A)", display: "block", marginBottom: 6 }}>
             🌙 {MEAL_SLOT_LABELS.dinner}
           </label>
@@ -805,6 +849,8 @@ export default function RestaurantDinnerBoard({
   const [isNarrow, setIsNarrow] = useState(() => (
     typeof window !== "undefined" ? window.innerWidth < 768 : false
   ));
+  const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
+  const detailPanelRef = useRef(null);
 
   useEffect(() => {
     const onResize = () => setIsNarrow(window.innerWidth < 768);
@@ -889,13 +935,25 @@ export default function RestaurantDinnerBoard({
 
   const selectGuestForMealTime = useCallback((guest) => {
     setSelectedGuestId(guest.id);
+    if (isNarrow) {
+      setMobileDetailOpen(true);
+      return;
+    }
+    requestAnimationFrame(() => {
+      detailPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }, [isNarrow]);
+
+  const closeMobileDetail = useCallback(() => {
+    setMobileDetailOpen(false);
   }, []);
 
   useEffect(() => {
     if (!initialSelectedGuestId) return;
     setSelectedGuestId(initialSelectedGuestId);
+    if (isNarrow) setMobileDetailOpen(true);
     onReturnGuestConsumed?.();
-  }, [initialSelectedGuestId, onReturnGuestConsumed]);
+  }, [initialSelectedGuestId, onReturnGuestConsumed, isNarrow]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -917,12 +975,14 @@ export default function RestaurantDinnerBoard({
   useEffect(() => {
     if (!filtered.length) {
       setSelectedGuestId(null);
+      setMobileDetailOpen(false);
       return;
     }
     if (!selectedGuestId || !filtered.some((g) => g.id === selectedGuestId)) {
       setSelectedGuestId(filtered[0].id);
+      if (isNarrow) setMobileDetailOpen(false);
     }
-  }, [filtered, selectedGuestId]);
+  }, [filtered, selectedGuestId, isNarrow]);
 
   const suiteCount = guests.filter((g) => isSuiteGuestProfile(g)).length;
 
@@ -1134,6 +1194,28 @@ export default function RestaurantDinnerBoard({
             : "אין תוצאות לפילטר / חיפוש."}
         </div>
       ) : (
+        isNarrow && mobileDetailOpen && selectedGuest ? (
+          <div ref={detailPanelRef}>
+            <GuestDinnerRow
+              key={selectedGuest.id}
+              guest={selectedGuest}
+              user={user}
+              msgConfig={msgConfig}
+              kioskMode={kioskMode}
+              mealPeriodFocus={mealPeriod}
+              shiftDisplayName={shiftDisplayName}
+              waSignature={waSignature}
+              onWaSent={brandedShell ? shiftCtx?.recordWaSent : undefined}
+              onOpenChat={onOpenDreamBotChat ? openGuestChat : (kioskMode ? null : openGuestChat)}
+              onBack={closeMobileDetail}
+              onSaved={(updated) => {
+                setGuests((prev) => prev.map((row) => (row.id === updated.id ? { ...row, ...updated } : row)));
+              }}
+              onError={(msg) => showToast("err", msg)}
+              onNotify={(msg) => showToast("ok", msg)}
+            />
+          </div>
+        ) : (
         <div style={{
           display: "grid",
           gridTemplateColumns: isNarrow ? "1fr" : "minmax(240px, 320px) 1fr",
@@ -1149,7 +1231,7 @@ export default function RestaurantDinnerBoard({
           }}>
             <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text-muted)", marginBottom: 8 }}>
               {kioskMode
-                ? `${filtered.length} אורחים · «הגדר שעה» + שליחת וואטסאפ מהלוח`
+                ? `${filtered.length} אורחים · לחצו «הגדר שעה» לעריכה`
                 : `${filtered.length} אורחים · שם = צ׳אט · «הגדר שעה» = עריכת שעות`}
             </div>
             {filtered.map((g) => (
@@ -1157,14 +1239,14 @@ export default function RestaurantDinnerBoard({
                 key={g.id}
                 guest={g}
                 selected={selectedGuest?.id === g.id}
-                onSelect={selectGuestForMealTime}
                 onSetMealTime={selectGuestForMealTime}
                 onOpenChat={onOpenDreamBotChat ? openGuestChat : (kioskMode ? null : openGuestChat)}
                 kioskMode={kioskMode}
               />
             ))}
           </div>
-          <div style={{ minWidth: 0 }}>
+          {!isNarrow && (
+          <div ref={detailPanelRef} style={{ minWidth: 0 }}>
             {selectedGuest ? (
               <GuestDinnerRow
                 key={selectedGuest.id}
@@ -1172,6 +1254,7 @@ export default function RestaurantDinnerBoard({
                 user={user}
                 msgConfig={msgConfig}
                 kioskMode={kioskMode}
+                mealPeriodFocus={mealPeriod}
                 shiftDisplayName={shiftDisplayName}
                 waSignature={waSignature}
                 onWaSent={brandedShell ? shiftCtx?.recordWaSent : undefined}
@@ -1182,9 +1265,18 @@ export default function RestaurantDinnerBoard({
                 onError={(msg) => showToast("err", msg)}
                 onNotify={(msg) => showToast("ok", msg)}
               />
-            ) : null}
+            ) : (
+              <div style={{
+                textAlign: "center", padding: 36, border: "1px dashed var(--border)",
+                borderRadius: 12, color: "var(--text-muted)", fontSize: 14,
+              }}>
+                בחרו אורח מהרשימה או לחצו «הגדר שעה»
+              </div>
+            )}
           </div>
+          )}
         </div>
+        )
       )}
 
       </>
