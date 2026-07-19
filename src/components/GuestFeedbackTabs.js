@@ -11,6 +11,7 @@ import GuestSurveyForm from "./GuestSurveyForm";
 import GuestClubOfferCard from "./GuestClubOfferCard";
 import GuestClubBroadcastPanel from "./GuestClubBroadcastPanel";
 import SurveyInviteTestPanel from "./SurveyInviteTestPanel";
+import WaiterPulseAdminPanel from "./WaiterPulseAdminPanel";
 import {
   BOT_CONFIG_SURVEY_UI_KEY,
   DEFAULT_GUEST_SURVEY_UI,
@@ -828,10 +829,13 @@ function SurveysView() {
 }
 
 export default function GuestFeedbackTabs({ user }) {
-  // Deep link: ?page=feedback_dashboard&tab=surveys — read once on mount.
-  const [view, setView]                 = useState(() =>
-    new URLSearchParams(window.location.search).get("tab") === "surveys" ? "surveys" : "feedback",
-  );
+  // Deep link: ?page=feedback_dashboard&tab=surveys|waiter_pulse
+  const [view, setView]                 = useState(() => {
+    const tab = new URLSearchParams(window.location.search).get("tab");
+    if (tab === "surveys") return "surveys";
+    if (tab === "waiter_pulse") return "waiter_pulse";
+    return "feedback";
+  });
   const [feedback, setFeedback]         = useState([]);
   const [loading, setLoading]           = useState(true);
   const [toast, setToast]               = useState(null);
@@ -978,9 +982,24 @@ export default function GuestFeedbackTabs({ user }) {
         >
           📊 סקרים
         </button>
+        <button
+          type="button"
+          onClick={() => setView("waiter_pulse")}
+          style={{
+            padding: "9px 18px", borderRadius: 20, fontSize: 13, fontWeight: 700,
+            border: `1.5px solid ${view === "waiter_pulse" ? "var(--gold-dark)" : "var(--border)"}`,
+            background: view === "waiter_pulse" ? "var(--ivory)" : "var(--card-bg)",
+            color: view === "waiter_pulse" ? "var(--gold-dark)" : "var(--text-muted)",
+            cursor: "pointer", fontFamily: "inherit", minHeight: 40,
+          }}
+        >
+          🍽️ סבב מלצרים
+        </button>
       </div>
 
-      {view === "surveys" ? (
+      {view === "waiter_pulse" ? (
+        <WaiterPulseAdminPanel user={user} />
+      ) : view === "surveys" ? (
         <SurveysView />
       ) : (
       <>

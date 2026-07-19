@@ -5,6 +5,8 @@ import "./styles.css";
 import App from "./App";
 import GuestPortal from "./components/GuestPortal";
 import InventoryPortal from "./components/InventoryPortal";
+import WaiterPulsePortal from "./components/WaiterPulsePortal";
+import KitchenDisplayScreen from "./components/KitchenDisplayScreen";
 import { captureStaffDeepLinkFromUrl } from "./utils/staffDeepLink";
 
 const rootElement = document.getElementById("root");
@@ -24,9 +26,11 @@ const portalMatch = window.location.pathname.match(/^\/portal\/([^/?#]+)/);
 // Inventory Smart-Intake Module — same no-auth-chain reasoning as the Guest
 // Portal above, for the employee's daily-fill phone screen.
 const inventoryMatch = window.location.pathname.match(/^\/inv\/([^/?#]+)/);
+const pulseMatch = window.location.pathname.match(/^\/pulse\/([^/?#]+)/);
+const kdsMatch = window.location.pathname.match(/^\/kds\/([^/?#]+)/);
 const adminUpdatesPath = /^\/admin\/updates\/?$/.test(window.location.pathname);
 
-if (!portalMatch && !inventoryMatch) {
+if (!portalMatch && !inventoryMatch && !pulseMatch && !kdsMatch) {
   captureStaffDeepLinkFromUrl();
 }
 
@@ -36,6 +40,10 @@ root.render(
       <GuestPortal token={portalMatch[1]} />
     ) : inventoryMatch ? (
       <InventoryPortal token={inventoryMatch[1]} />
+    ) : pulseMatch ? (
+      <WaiterPulsePortal token={pulseMatch[1]} />
+    ) : kdsMatch ? (
+      <KitchenDisplayScreen token={kdsMatch[1]} />
     ) : (
       <App initialPage={adminUpdatesPath ? "admin_updates" : "dashboard"} />
     )}

@@ -2,6 +2,7 @@
 2026-07-19 | Orit CS — restore AI suggestion cards in inbox UI | `OritCustomerServicePanel.js` — כרטיסי הצעות (עד 2 וריאנטים) מעל compose; «הצעות» = `forceLlm` + טעינת הצעה ראשונה; `manager-mail-analyze` מכבד `forceLlm` ב-body.
 2026-07-19 | Orit Sigal — two-phase ack genius | `composeSigalComplaintBriefing` phase-aware: שלב 1 «קיבלנו את פנייתך» דחוף בלבד → שלב 2 מכתב מלא אחרי ack; loop/status/guide מיושרים.
 2026-07-19 | Orit Sigal — softer WA copy + mobile app link | `oritSigalBriefing`/`oritSigalGuide` ניסוח שיחה; `buildOritCsThreadDeepLink` + לינק `orit_cs_agent&thread=` בהתראה/תזכורות/«מה המצב»; WA מהיר + ממשק בפלאפון לעריכה.
+2026-07-19 | Restaurant menu + orders + KDS (250) | migration 250: תפריט CMS, הזמנות מלצר, מסך מטבח `/kds/:token` + צליל; טאבים בלוח מסעדה; Edge: `restaurant-menu-data`, `restaurant-order-submit`, `restaurant-kds-data`, `restaurant-order-status`.
 2026-07-19 | Restaurant board phase 1 | שם «לוח מסעדה»; תיאום צהריים (פנסיון מלא) + ערב; אורח ידני (`RestaurantWalkInModal`); סינכרון `lunch_time`/`dinner_time` לפורטל+בוט.
 2026-07-19 | Restaurant dinner editable WA paths | 5 מסלולים (שאל/אישור/חופשי/שמור/שמור+הודע) + עריכת טקסט per-send + נוסחי ברירת מחדל ב-bot_config (migration 249).
 2026-07-19 | Restaurant dinner board WA coordination | לוח ערב: שאלת אורח («מתי נוח?» + סלוטים), שמור+הודע, אישור — `restaurantDinnerMessaging.js` + `inbox_reply`.

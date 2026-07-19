@@ -9,7 +9,7 @@ import ShiftGenerator from "./components/ShiftGenerator";
 import ShiftScheduleTab from "./components/ShiftScheduleTab";
 import EmployeesPage from "./components/EmployeesPage";
 import { isAdminUser, isSuperAdmin, loadDepartments, isGoogleAuthAllowed } from "./utils/admin";
-import { canAccessRoute, canPerform, canSeeNavItem, filterNavItemsForUser } from "./utils/auth";
+import { canAccessRoute, canPerform, canSeeNavItem, filterNavItemsForUser, isRestaurantFocusedUser } from "./utils/auth";
 import OperationalDashboard from "./components/OperationalDashboard";
 import OritCustomerServicePanel from "./components/OritCustomerServicePanel";
 import { consumeStaffDeepLink } from "./utils/staffDeepLink";
@@ -47,6 +47,7 @@ import GlobalCommandPalette from "./components/GlobalCommandPalette";
 import RoutingControlCenter from "./components/RoutingControlCenter";
 import AdminChangelogDashboard from "./components/AdminChangelogDashboard";
 import ReceptionChecklist from "./components/ReceptionChecklist";
+import RestaurantDinnerBoard from "./components/RestaurantDinnerBoard";
 
 // ============================================================
 // Departments are editable by admin via AdminPanel — stored in localStorage
@@ -1357,6 +1358,7 @@ function Sidebar({ user, active, setActive, openOpsCount, onLogout, isAdmin, isS
     { id: "guests",     icon: "🛎️", label: "צ'ק-אין",                               managerOnly: true },
     { id: "room_board",   icon: "🏨", label: "לוח סוויטות",                            managerOnly: false },
     { id: "spa_board",  icon: "💆", label: "לוח ספא",                                 managerOnly: true, receptionistOk: true },
+    { id: "restaurant_dinner_board", icon: "🍽️", label: "לוח מסעדה", restaurantBoardOnly: true, managerOnly: true, receptionistOk: true },
     { id: "housekeeping_tablet", icon: "🧹", label: "לוח ניקיון (טאבלט)",              managerOnly: false },
     { id: "feedback_dashboard", icon: "🌟", label: "משוב אורחים",                     managerOnly: true, receptionistOk: true },
     { id: "scheduler",   icon: "🪄", label: "מחולל משמרות",                           managerOnly: true },
@@ -1762,7 +1764,7 @@ async function loadUserWithProfile(session, setUser) {
   try {
     const { data, error } = await supabase
       .from("profiles")
-      .select("role, name, department, status, avatar, avatar_text, must_change_password, orit_cs_agent_access")
+      .select("role, name, department, status, avatar, avatar_text, must_change_password, orit_cs_agent_access, restaurant_access")
       .eq("id", base.id)
       .maybeSingle();
     if (error) console.warn("[auth] profiles load:", error.message);
@@ -2140,6 +2142,7 @@ export default function App({ initialPage = "dashboard" }) {
     calls:      "🛠️ תפעול ואחזקה",
     room_board:    "🏨 לוח סוויטות",
     spa_board:     "💆 לוח ספא",
+    restaurant_dinner_board: "🍽️ לוח מסעדה",
     housekeeping_tablet: "🧹 לוח ניקיון (טאבלט)",
     requests_board: "📋 לוח בקשות",
     orit_cs_agent: "👑 סוכן שירות לקוחות",
@@ -2219,6 +2222,17 @@ export default function App({ initialPage = "dashboard" }) {
         <style>{`@keyframes di-spin { to { transform: rotate(360deg); } }`}</style>
         <div style={{ background: "var(--ivory)", minHeight: "100vh" }}>
           <HousekeepingTabletView isKioskMode onLogout={handleLogout} />
+        </div>
+      </>
+    );
+
+  // Restaurant kiosk — dinner board only (profiles.restaurant_access, no admin/manager/receptionist)
+  if (isRestaurantFocusedUser(user))
+    return (
+      <>
+        <style>{css}</style>
+        <div style={{ background: "var(--ivory)", minHeight: "100vh" }}>
+          <RestaurantDinnerBoard user={user} kioskMode onLogout={handleLogout} />
         </div>
       </>
     );
@@ -2343,6 +2357,10 @@ export default function App({ initialPage = "dashboard" }) {
         return <RoomBoard />;
       case "spa_board":
         return <SpaBoard onOpenDreamBotChat={openDreamBotChat} />;
+      case "restaurant_dinner_board":
+        return guardPage("restaurant_dinner_board", (
+          <RestaurantDinnerBoard user={user} />
+        ));
       case "housekeeping_tablet":
         return <HousekeepingTabletView />;
       case "requests_board":

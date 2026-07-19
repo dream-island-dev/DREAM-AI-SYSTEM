@@ -75,6 +75,29 @@ export function canAccessOritCsAgent(user) {
   return user.orit_cs_agent_access === true;
 }
 
+/** Manager/admin — restaurant menu CMS + KDS tokens. */
+export function canManageRestaurantMenu(user) {
+  if (!user) return false;
+  const role = getRole(user);
+  return ["manager", "admin", "super_admin"].includes(role);
+}
+
+/** Restaurant Board — לוח מסעדה. */
+export function canAccessRestaurantDinnerBoard(user) {
+  if (!user) return false;
+  if (isSuperAdmin(user) || isAdminUser(user) || user.role === "manager") return true;
+  return user.restaurant_access === true;
+}
+
+/** Restaurant-only kiosk user — sees dinner board only (not full XOS). */
+export function isRestaurantFocusedUser(user) {
+  if (!user) return false;
+  if (isSuperAdmin(user) || isAdminUser(user) || user.role === "manager" || user.role === "receptionist") {
+    return false;
+  }
+  return user.restaurant_access === true;
+}
+
 // ── Main gate ────────────────────────────────────────────────────────────────
 export function canPerform(action, user) {
   const role = getRole(user);
@@ -85,6 +108,8 @@ export function canPerform(action, user) {
 export function canSeeNavItem(item, user) {
   if (!user) return false;
   if (item.oritCsAgentOnly) return canAccessOritCsAgent(user);
+  if (item.restaurantBoardOnly) return canAccessRestaurantDinnerBoard(user);
+  if (isRestaurantFocusedUser(user)) return item.id === "restaurant_dinner_board";
   if (isSuperAdmin(user) || isAdminUser(user) || user.role === "manager") return true;
   if (user.role === "receptionist") {
     return !item.managerOnly || item.receptionistOk === true;
@@ -96,6 +121,8 @@ export function canSeeNavItem(item, user) {
 export function canAccessRoute(routeId, user) {
   if (!user) return false;
   if (routeId === "orit_cs_agent") return canAccessOritCsAgent(user);
+  if (routeId === "restaurant_dinner_board") return canAccessRestaurantDinnerBoard(user);
+  if (isRestaurantFocusedUser(user)) return routeId === "restaurant_dinner_board";
   const allowed = ROUTE_ACCESS[routeId];
   if (!allowed) return true;
   const role = getRole(user);
