@@ -6,6 +6,7 @@ import {
   fetchDraftRestaurantMenuVersion,
   publishRestaurantDraft,
 } from "../utils/restaurantMenu";
+import RestaurantMenuImportPanel from "./RestaurantMenuImportPanel";
 
 const GOLD = "#C9A96E";
 const GOLD_DARK = "#A8843A";
@@ -138,6 +139,8 @@ export default function RestaurantMenuAdminPanel({ user, onToast }) {
           </button>
         </div>
       )}
+
+      <RestaurantMenuImportPanel user={user} onToast={onToast} onApplied={load} />
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
         <input
