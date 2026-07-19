@@ -15,6 +15,7 @@ import {
   resolveOritReplyEmail,
   resolveOritReplyName,
 } from "../utils/oritGuestContactExtract";
+import { sanitizeOritAckDraft } from "../utils/oritAckSanitize";
 
 const URGENCY_META = {
   critical: { label: "🔴 קריטי", bg: "#FEE2E2", color: "#B91C1C" },
@@ -239,7 +240,7 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
     setDrafts(drs ?? []);
     const ackDraft = (drs ?? []).find((d) => d.draft_kind === "ack");
     const fullDraft = (drs ?? []).find((d) => d.draft_kind === "full_reply" || !d.draft_kind);
-    setAckText(ackDraft?.final_text || ackDraft?.suggested_text || "");
+    setAckText(sanitizeOritAckDraft(ackDraft?.final_text || ackDraft?.suggested_text || ""));
     setReplyText(fullDraft?.final_text || fullDraft?.suggested_text || "");
   }, []);
 
@@ -1046,10 +1047,10 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
                     type="button"
                     className="btn btn-primary"
                     disabled={busy || !replyText.trim() || selected.status === "handled"}
-                    onClick={() => handleSendReply({ markHandled: true, text: replyText, draftKind: "full_reply" })}
+                    onClick={() => handleSendReply({ markHandled: false, text: replyText, draftKind: "full_reply" })}
                     style={{ minHeight: 44 }}
                   >
-                    ✉ אשרי ושלחי תשובה מלאה
+                    ✉ אשרי ושלחי תשובה (סיגל תעדכן עד «סיימתי»)
                   </button>
                 )}
                 <button

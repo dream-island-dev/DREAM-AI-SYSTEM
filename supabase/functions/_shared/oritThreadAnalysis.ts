@@ -30,13 +30,27 @@ function buildFallbackAckSuggestion(guestName: string): string {
     "",
     "תודה שפניתם אלינו ושיתפתם אותנו בחווייתכם.",
     "קיבלנו את פנייתך ואנו מתייחסים לכך ברצינות רבה.",
-    "ניצור איתך קשר בתוך 72 השעות הקרובות.",
+    "אבחן את הנושא ואיצור עמך קשר טלפוני בתוך 72 השעות הקרובות.",
     "",
     "בברכה,",
     "אורית חלפון",
     "מנהלת שירות לאורח",
     "דרים איילנד — אתר הנופש",
   ].join("\n");
+}
+
+/** Strip third-person self-references — illogical when the mail is signed as Orit. */
+export function sanitizeOritAckDraft(text: string): string {
+  const lines = (text || "").split(/\n/);
+  const filtered = lines.filter((line) => {
+    const t = line.trim();
+    if (!t) return true;
+    if (/מנהלת\s+שירות\s+לאורח.*אורית\s+חלפון.*(תבחן|תיצור|תצור|תחזור)/i.test(t)) return false;
+    if (/אורית\s+חלפון.*(תבחן|תיצור|תצור|תחזור|תיצמד)/i.test(t)) return false;
+    if (/^מנהלת\s+שירות\s+לאורח,\s*אורית\s+חלפון,/i.test(t)) return false;
+    return true;
+  });
+  return filtered.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 export async function fetchOritThreadInbound(
@@ -120,6 +134,9 @@ export async function persistOritThreadAnalysis(
 
   if (workflowComplaint && !ackAlreadySent) {
     threadUpdate.workflow_step = "awaiting_ack_approval";
+  } else if (ackAlreadySent) {
+    threadUpdate.workflow_step = "awaiting_reply_approval";
+    threadUpdate.status = "awaiting_reply";
   }
 
   await supabase.from("orit_agent_threads").update(threadUpdate).eq("id", threadId);
@@ -130,8 +147,9 @@ export async function persistOritThreadAnalysis(
       .eq("draft_kind", "ack")
       .in("status", ["suggested", "edited"]);
 
-    const ackText = analysis.ackSuggestion
-      || buildFallbackAckSuggestion(threadMeta?.from_name || "");
+    const ackText = sanitizeOritAckDraft(
+      analysis.ackSuggestion || buildFallbackAckSuggestion(threadMeta?.from_name || ""),
+    );
     await supabase.from("orit_agent_drafts").insert({
       thread_id: threadId,
       suggested_text: ackText,

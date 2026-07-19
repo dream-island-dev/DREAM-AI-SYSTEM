@@ -16,6 +16,7 @@ import {
   URGENCY_HE,
 } from "./oritAgentWhapiAlert.ts";
 import { sendWhapiText } from "./whapiSend.ts";
+import { sanitizeOritAckDraft } from "./oritThreadAnalysis.ts";
 
 export type OritWorkflowStep =
   | "awaiting_ack_approval"
@@ -124,23 +125,53 @@ export function composeOritFullReplyReadyMessage(
   ].join("\n");
 }
 
-export function composeOritGuestRepliedAlert(
+export function composeSigalGuestReplyCoaching(
   thread: OritAlertThread,
-  inboundSnippet: string,
+  guestMessage: string,
+  followUpDraft: string | null,
 ): string {
-  const threadLink = buildStaffAppDeepLink({ page: "orit_cs_agent", threadId: thread.id });
   const guestName = resolveOritReplyName(thread.from_name, thread.guest_contact_name);
   const label = guestName && !guestName.includes("@") ? guestName : "האורח/ת";
 
-  return [
+  const lines = [
     "היי אורית 💜",
     `📩 ${label} השיב/ה למייל:`,
+    "─────────────",
+    guestMessage.trim(),
+    "─────────────",
     "",
-    truncateForWhapi(inboundSnippet, 500),
-    "",
-    "👉 לצפייה בשיחה ותשובה:",
-    threadLink,
-  ].join("\n");
+  ];
+
+  if (followUpDraft?.trim()) {
+    lines.push(
+      "הכנתי לך תשובה מוצעת (בסגנון שלך):",
+      "─────────────",
+      truncateForWhapi(followUpDraft, 900),
+      "─────────────",
+      "",
+      "עני «תראי לי» לטקסט המלא · «אשרי» להכנה לשליחה · «כן שלחי» אחרי שתאשרי",
+      "או הדביקי ניסוח משלך — אעדכן ואציג שוב.",
+      "כשהנושא נסגר: «סיימתי».",
+      "",
+      "רק אם צריך — פתיחה במערכת:",
+      buildStaffAppDeepLink({ page: "orit_cs_agent", threadId: thread.id }),
+    );
+  } else {
+    lines.push(
+      "עדיין מכינה תשובה — עני «תשובה מלאה» בעוד רגע, או פתחי:",
+      buildStaffAppDeepLink({ page: "orit_cs_agent", threadId: thread.id }),
+    );
+  }
+
+  return lines.join("\n");
+}
+
+export function composeOritGuestRepliedAlert(
+  thread: OritAlertThread,
+  inboundSnippet: string,
+  followUpDraft?: string | null,
+): string {
+  return composeSigalGuestReplyCoaching(thread, inboundSnippet, followUpDraft ?? null);
 }
 
 export async function fetchOritDraftText(
@@ -159,8 +190,9 @@ export async function fetchOritDraftText(
     .maybeSingle();
 
   if (!data) return null;
-  const text = (data.final_text || data.suggested_text || "").trim();
+  let text = (data.final_text || data.suggested_text || "").trim();
   if (!text) return null;
+  if (kind === "ack") text = sanitizeOritAckDraft(text);
   return { id: data.id, text };
 }
 
@@ -172,6 +204,7 @@ export async function sendOritAckEmail(
   draftId?: string,
 ): Promise<{ sent: boolean; error?: string }> {
   const threadId = String(thread.id);
+  const sanitized = sanitizeOritAckDraft(bodyText.trim());
   const result = await deliverOritThreadEmail(supabase, mailbox, {
     id: threadId,
     from_email: String(thread.from_email ?? ""),
@@ -180,7 +213,7 @@ export async function sendOritAckEmail(
     guest_contact_name: thread.guest_contact_name as string | null,
     subject: String(thread.subject ?? ""),
     is_demo: Boolean(thread.is_demo),
-  }, bodyText.trim(), "auto_ack");
+  }, sanitized, "auto_ack");
 
   if (!result.sent) return { sent: false, error: result.error };
 
@@ -196,7 +229,7 @@ export async function sendOritAckEmail(
   if (draftId) {
     await supabase.from("orit_agent_drafts").update({
       status: "sent",
-      final_text: bodyText.trim(),
+      final_text: sanitized,
     }).eq("id", draftId);
   } else {
     await supabase.from("orit_agent_drafts").update({ status: "sent" })
@@ -314,6 +347,58 @@ export async function notifyOritFullReplyReady(
   return { sent: true };
 }
 
+async function sendWhapiLongText(phone: string, text: string): Promise<boolean> {
+  const max = 3400;
+  const body = text.trim();
+  if (!body) return false;
+  if (body.length <= max) {
+    const id = await sendWhapiText(phone, body, { noLinkPreview: true });
+    return Boolean(id);
+  }
+  const paragraphs = body.split(/\n{2,}/);
+  let chunk = "";
+  for (const p of paragraphs) {
+    const next = chunk ? `${chunk}\n\n${p}` : p;
+    if (next.length > max) {
+      if (chunk) {
+        const id = await sendWhapiText(phone, chunk, { noLinkPreview: true });
+        if (!id) return false;
+      }
+      if (p.length > max) {
+        for (let i = 0; i < p.length; i += max) {
+          const id = await sendWhapiText(phone, p.slice(i, i + max), { noLinkPreview: true });
+          if (!id) return false;
+        }
+        chunk = "";
+      } else {
+        chunk = p;
+      }
+    } else {
+      chunk = next;
+    }
+  }
+  if (chunk) {
+    const id = await sendWhapiText(phone, chunk, { noLinkPreview: true });
+    return Boolean(id);
+  }
+  return true;
+}
+
+export async function fetchLatestGuestInbound(
+  supabase: SupabaseClient,
+  threadId: string,
+): Promise<string> {
+  const { data } = await supabase
+    .from("orit_agent_messages")
+    .select("body_text")
+    .eq("thread_id", threadId)
+    .eq("direction", "inbound")
+    .order("received_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  return (data?.body_text ?? "").trim();
+}
+
 export async function notifyOritGuestReplied(
   supabase: SupabaseClient,
   mailbox: OritAlertMailbox,
@@ -332,7 +417,7 @@ export async function notifyOritGuestReplied(
 
   const { data: latestInbound } = await supabase
     .from("orit_agent_messages")
-    .select("received_at")
+    .select("received_at, body_text")
     .eq("thread_id", threadId)
     .eq("direction", "inbound")
     .order("received_at", { ascending: false })
@@ -352,15 +437,23 @@ export async function notifyOritGuestReplied(
   const phone = await resolveOritAlertPhone(supabase, mailbox);
   if (!phone) return { sent: false, reason: "no_phone" };
 
-  const body = composeOritGuestRepliedAlert(thread as OritAlertThread, inboundSnippet);
-  const whapiId = await sendWhapiText(phone, body, { noLinkPreview: true });
-  if (!whapiId) return { sent: false, reason: "whapi_failed" };
+  const guestMessage = (latestInbound?.body_text || inboundSnippet || "").trim();
+  const followUp = await fetchOritDraftText(supabase, threadId, "full_reply");
+  const body = composeSigalGuestReplyCoaching(
+    thread as OritAlertThread,
+    guestMessage,
+    followUp?.text ?? null,
+  );
+
+  const sent = await sendWhapiLongText(phone, body);
+  if (!sent) return { sent: false, reason: "whapi_failed" };
 
   const now = new Date().toISOString();
   await supabase.from("orit_agent_threads").update({
-    workflow_step: "guest_replied",
+    workflow_step: "awaiting_reply_approval",
     status: "awaiting_reply",
     guest_reply_notified_at: now,
+    handled_at: null,
   }).eq("id", threadId);
 
   return { sent: true };

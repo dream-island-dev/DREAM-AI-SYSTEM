@@ -10,6 +10,7 @@ import {
 } from "./oritGuestContactExtract.ts";
 import { isOritCsStaffPhone } from "./oritAgentStaffPhone.ts";
 import {
+  fetchLatestGuestInbound,
   fetchOritDraftText,
   notifyOritFullReplyReady,
   sendOritAckEmail,
@@ -30,7 +31,10 @@ const SHOW_ACK_RE = /(תראי|הציגי|מה\s*הטקסט|אישור\s*קבל�
 const SHOW_FULL_RE = /(תשובה\s*מלאה|שלב\s*2|מכתב\s*מלא)/i;
 const LINK_RE = /(קישור|פתחי|מערכת|לינק)/i;
 const HELP_RE = /(עזרה|מה\s*אפשר|פקודות|help)/i;
-const PREPARE_ACK_RE = /^(אשרי|1|מייל|שלחי\s*אישור)/i;
+const SHOW_GUEST_RE = /(מה\s*כתב|מה\s*כתבה|הודעת\s*האורח|מה\s*השיב|מה\s*השיבה)/i;
+const STATUS_RE = /(מה\s*המצב|סטטוס|איפה\s*אנחנו)/i;
+const MARK_DONE_RE = /^(סיימתי|טופל|הנושא\s*נסגר|סגרתי|done)$/i;
+const PREPARE_ACK_RE = /^אשרי$/i;
 
 async function sendWhapiLongText(phone: string, text: string): Promise<void> {
   const max = 3400;
@@ -83,14 +87,25 @@ async function findActiveOritThread(
   const { data: rows } = await supabase
     .from("orit_agent_threads")
     .select("*, orit_agent_mailbox(*)")
-    .in("workflow_step", ["awaiting_ack_approval", "awaiting_reply_approval", "guest_replied"])
     .eq("is_demo", false)
     .neq("status", "handled")
     .neq("status", "archived")
-    .order("received_at", { ascending: false })
-    .limit(5);
+    .order("updated_at", { ascending: false })
+    .limit(12);
 
-  const row = rows?.[0];
+  const open = (rows ?? []).filter((row) => {
+    const step = row.workflow_step as string | null;
+    if (step && [
+      "awaiting_ack_approval",
+      "awaiting_reply_approval",
+      "guest_replied",
+      "reply_sent",
+      "ack_sent",
+    ].includes(step)) return true;
+    return row.status === "awaiting_reply";
+  });
+
+  const row = open[0];
   if (!row) return null;
   return { thread: row, mailbox: row.orit_agent_mailbox as OritMailboxRow };
 }
@@ -387,8 +402,7 @@ async function executePendingSend(
   await supabase.from("orit_agent_threads").update({
     workflow_step: "reply_sent",
     full_reply_sent_at: sentAt,
-    status: "handled",
-    handled_at: sentAt,
+    status: "awaiting_reply",
     orit_chat_pending: null,
   }).eq("id", threadId);
 
@@ -402,11 +416,54 @@ async function executePendingSend(
   );
 
   await sendWhapiLongText(phone, [
-    `✓ התשובה המלאה נשלחה ל־${guest}${email ? ` (${email})` : ""}.`,
+    `✓ התשובה נשלחה ל־${guest}${email ? ` (${email})` : ""}.`,
     "",
-    "לצפייה בשרשור:",
-    threadLink(threadId),
+    "אעדכן אותך אם האורח/ת ישיב/ה.",
+    "כשהנושא נסגר לגמרי — עני «סיימתי».",
   ].join("\n"));
+}
+
+function workflowStatusLine(thread: Record<string, unknown>): string {
+  const guest = guestLabel(thread);
+  const ack = thread.auto_ack_sent_at ? "✓ נשלח" : "ממתין";
+  const full = thread.full_reply_sent_at ? "✓ נשלחה" : "טרם נשלחה";
+  const step = String(thread.workflow_step ?? "");
+  let phase = "בטיפול";
+  if (step === "awaiting_ack_approval") phase = "ממתינה לאישור קבלה";
+  else if (step === "awaiting_reply_approval") phase = "ממתינה לתשובה לאורח/ת";
+  else if (step === "guest_replied") phase = "האורח/ת השיב/ה — ממתינה לתשובה שלך";
+  else if (step === "reply_sent") phase = "נשלחה תשובה — ממתינה לסגירה או לתגובת אורח";
+  return `👤 ${guest}\nאישור קבלה: ${ack}\nתשובה מלאה: ${full}\nמצב: ${phase}`;
+}
+
+async function markThreadClosed(
+  supabase: SupabaseClient,
+  phone: string,
+  thread: Record<string, unknown>,
+): Promise<void> {
+  const threadId = String(thread.id);
+  await supabase.from("orit_agent_threads").update({
+    status: "handled",
+    handled_at: new Date().toISOString(),
+    workflow_step: null,
+    orit_chat_pending: null,
+  }).eq("id", threadId);
+
+  await sendWhapiText(phone, [
+    `✓ סימנתי את פניית ${guestLabel(thread)} כטופלה.`,
+    "אעדכן אותך אם יגיע מייל חדש מאותו שרשור.",
+  ].join("\n"), { noLinkPreview: true });
+}
+
+async function showGuestLatestMessage(
+  supabase: SupabaseClient,
+  phone: string,
+  threadId: string,
+): Promise<void> {
+  const body = await fetchLatestGuestInbound(supabase, threadId);
+  await sendWhapiLongText(phone, body
+    ? ["הודעת האורח/ת האחרונה:", "─────────────", body, "─────────────"].join("\n")
+    : "אין הודעה נכנסת אחרונה.");
 }
 
 function isLikelyCustomDraft(text: string): boolean {
@@ -453,6 +510,16 @@ export async function handleOritSigalChat(
 
   const active = await findActiveOritThread(supabase);
 
+  if (MARK_DONE_RE.test(t) && active) {
+    await markThreadClosed(supabase, phoneDigits, active.thread);
+    return;
+  }
+
+  if (STATUS_RE.test(t) && active) {
+    await sendWhapiText(phoneDigits, workflowStatusLine(active.thread), { noLinkPreview: true });
+    return;
+  }
+
   if (HELP_RE.test(t)) {
     await sendWhapiText(phoneDigits, [
       `${voicePrefix}היי אורית 💜 כאן סיגל.`,
@@ -461,7 +528,10 @@ export async function handleOritSigalChat(
       "• «תראי לי» — טיוטת אישור קבלה (שלב 1)",
       "• «אשרי» — הכנה לשליחה (תראי טקסט מלא → «כן שלחי»)",
       "• «תשובה מלאה» — טיוטת מכתב מלא (שלב 2)",
-      "• «קישור» — פתיחה במערכת",
+      "• «מה כתבה» — הודעת האורח/ת האחרונה",
+      "• «מה המצב» — סטטוס הפנייה",
+      "• «סיימתי» — סגירת הנושא",
+      "• «קישור» — רק אם צריך את הממשק",
       "• הקליטי הודעה קולית — אני מבינה ומנסחת",
       "",
       active ? `פנייה פעילה: ${guestLabel(active.thread)}` : "אין פנייה דחופה פתוחה כרגע.",
@@ -475,6 +545,11 @@ export async function handleOritSigalChat(
   }
 
   if (active) {
+    if (SHOW_GUEST_RE.test(t)) {
+      await showGuestLatestMessage(supabase, phoneDigits, String(active.thread.id));
+      return;
+    }
+
     if (SHOW_FULL_RE.test(t)) {
       await prepareFullConfirm(supabase, phoneDigits, active.thread);
       return;
@@ -489,7 +564,11 @@ export async function handleOritSigalChat(
     }
 
     if (PREPARE_ACK_RE.test(t)) {
-      await prepareAckConfirm(supabase, phoneDigits, active.thread, active.mailbox);
+      if (!active.thread.auto_ack_sent_at) {
+        await prepareAckConfirm(supabase, phoneDigits, active.thread, active.mailbox);
+      } else {
+        await prepareFullConfirm(supabase, phoneDigits, active.thread);
+      }
       return;
     }
 
@@ -514,8 +593,8 @@ export async function handleOritSigalChat(
   await sendWhapiText(phoneDigits, [
     "היי אורית 💜",
     active
-      ? `יש פנייה פעילה (${guestLabel(active.thread)}). עני «תראי לי» / «אשרי» / «קישור».`
-      : "אין כרגע פנייה דחופה פתוחה. אעדכן כשתגיע תלונה.",
+      ? `${workflowStatusLine(active.thread)}\n\nעני «תראי לי» / «אשרי» / «מה כתבה» / «סיימתי».`
+      : "אין כרגע פנייה פתוחה. אעדכן כשתגיע תלונה או תשובת אורח.",
     "עזרה? עני «עזרה».",
   ].join("\n"), { noLinkPreview: true });
 }

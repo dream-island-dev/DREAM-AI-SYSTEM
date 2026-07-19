@@ -228,9 +228,9 @@ serve(async (req: Request) => {
       const threadUpdate: Record<string, unknown> = {
         workflow_step: "reply_sent",
         full_reply_sent_at: sentAt,
+        status: markHandled === true ? "handled" : "awaiting_reply",
       };
-      if (markHandled !== false && !sendOnly) {
-        threadUpdate.status = "handled";
+      if (markHandled === true) {
         threadUpdate.handled_at = sentAt;
       }
       await supabase.from("orit_agent_threads").update(threadUpdate).eq("id", threadId);
