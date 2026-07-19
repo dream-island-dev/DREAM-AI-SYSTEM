@@ -21,7 +21,8 @@
 | סיכום + טיוטות | AI על כל פנייה חדשה |
 | אישור קבלה אוטומטי | «קיבלנו את בקשתך, ניצור איתך קשר בהקדם» — פנייה חדשה |
 | שליחה לאורח | **«שלחי לאורח»** מ-XOS (Graph `Mail.Send`) או העתקה ל-Outlook |
-| דייג'סט בוקר | Whatsapp ל-`profiles.phone` של אורית (06:30) |
+| דייג'סט בוקר | Whatsapp ל-`digest_whatsapp_phone` (או `profiles.phone`) — 06:30 |
+| התראות דחופות (Sigal Pulse) | Whapi מיידי על תלונה / critical / high + קישור `?page=orit_cs_agent&thread=UUID` |
 
 ## 1. Azure App (אבי)
 
@@ -46,7 +47,7 @@ npx supabase secrets set MANAGER_DIGEST_ENABLED=true
 
 ```bash
 npx supabase db push
-npx supabase functions deploy manager-mail-oauth manager-mail-sync manager-mail-analyze manager-mail-send manager-morning-digest manager-mail-auto-ack --no-verify-jwt
+npx supabase functions deploy manager-mail-oauth manager-mail-sync manager-mail-analyze manager-mail-send manager-morning-digest manager-mail-auto-ack manager-mail-alert orit-cs-bootstrap --no-verify-jwt
 npm run build && git push origin main
 ```
 

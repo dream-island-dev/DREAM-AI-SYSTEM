@@ -13,6 +13,7 @@ import {
 } from "../_shared/oritGuestContactExtract.ts";
 import { fetchMailboxInboxMessages, isMailboxIngestConfigured } from "../_shared/mailIngest.ts";
 import { isImapConfigured, resolveImapConfig, testImapConnection } from "../_shared/imapMail.ts";
+import { notifyOritUrgentThread } from "../_shared/oritAgentWhapiAlert.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -171,6 +172,17 @@ serve(async (req: Request) => {
             }).eq("id", threadId);
           }
 
+          let isNewInboundMsg = false;
+          if (threadId) {
+            const { data: existingMsg } = await supabase
+              .from("orit_agent_messages")
+              .select("id")
+              .eq("thread_id", threadId)
+              .eq("external_key", msg.id)
+              .maybeSingle();
+            isNewInboundMsg = !existingMsg;
+          }
+
           const { error: msgErr } = await supabase.from("orit_agent_messages").upsert({
             thread_id: threadId,
             external_key: msg.id,
@@ -215,10 +227,25 @@ serve(async (req: Request) => {
             }
           }
 
+          if (!isNewThread && isNewInboundMsg && threadId) {
+            await supabase.from("orit_agent_threads").update({ ai_analyzed_at: null }).eq("id", threadId);
+          }
+
           try {
             await analyzeThread(supabase, mailbox.id, threadId);
           } catch (aiErr) {
             console.warn("[manager-mail-sync] analyze failed:", (aiErr as Error).message);
+          }
+
+          try {
+            await notifyOritUrgentThread(supabase, {
+              id: mailbox.id,
+              profile_id: (mailbox as { profile_id?: string | null }).profile_id ?? null,
+              digest_whatsapp_phone: (mailbox as { digest_whatsapp_phone?: string | null }).digest_whatsapp_phone ?? null,
+              alert_enabled: (mailbox as { alert_enabled?: boolean | null }).alert_enabled ?? true,
+            }, threadId);
+          } catch (alertErr) {
+            console.warn("[manager-mail-sync] orit alert failed:", (alertErr as Error).message);
           }
         }
 

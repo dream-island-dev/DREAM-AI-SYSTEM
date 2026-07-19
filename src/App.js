@@ -1873,6 +1873,7 @@ export default function App({ initialPage = "dashboard" }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   // Deep-link from Requests Board (etc.) → open a specific WA thread in DREAM BOT.
   const [inboxFocus, setInboxFocus] = useState(null); // { phone, guestName?, inboxChannel? } | null
+  const [oritFocus, setOritFocus] = useState(null); // { threadId } | null
   const [inboxRosterFocus, setInboxRosterFocus] = useState(null); // roster filter chip id | null
   const [checkinFocus, setCheckinFocus] = useState(null); // { timelineScope, customArrivalDate? } | null
   const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false);
@@ -2028,6 +2029,9 @@ export default function App({ initialPage = "dashboard" }) {
         guestName: pending.guestName ?? null,
         inboxChannel: pending.inboxChannel ?? null,
       });
+    }
+    if (pending.threadId) {
+      setOritFocus({ threadId: pending.threadId });
     }
     setActivePage(pending.page);
     setMobileMenuOpen(false);
@@ -2344,7 +2348,14 @@ export default function App({ initialPage = "dashboard" }) {
       case "requests_board":
         return <RequestsBoard user={user} onOpenDreamBotChat={openDreamBotChat} />;
       case "orit_cs_agent":
-        return guardPage("orit_cs_agent", <OritCustomerServicePanel user={user} onOpenDreamBotChat={openDreamBotChat} />);
+        return guardPage("orit_cs_agent", (
+          <OritCustomerServicePanel
+            user={user}
+            onOpenDreamBotChat={openDreamBotChat}
+            focusThreadId={oritFocus?.threadId ?? null}
+            onFocusConsumed={() => setOritFocus(null)}
+          />
+        ));
       case "feedback_dashboard":
         return <GuestFeedbackTabs user={user} />;
       case "suites":

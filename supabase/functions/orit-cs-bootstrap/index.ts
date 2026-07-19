@@ -61,7 +61,7 @@ serve(async (req: Request) => {
 
     const { data: mailboxes, error: mbErr } = await supabase
       .from("orit_agent_mailbox")
-      .select("id, profile_id, owner_email, email_address, provider, connection_status, read_only_mode, last_sync_at, sla_hours, digest_enabled, connection_error")
+      .select("id, profile_id, owner_email, email_address, provider, connection_status, read_only_mode, last_sync_at, sla_hours, digest_enabled, digest_whatsapp_phone, alert_enabled, connection_error")
       .order("connection_status", { ascending: true })
       .order("last_sync_at", { ascending: false })
       .limit(5);
@@ -86,13 +86,12 @@ serve(async (req: Request) => {
       mailbox.profile_id = userData.user.id;
     }
 
-    const includeDemo = (await req.json().catch(() => ({}))).includeDemo === true;
     let threadsQ = supabase
       .from("orit_agent_threads")
       .select("*")
       .eq("mailbox_id", mailbox.id)
+      .eq("is_demo", false)
       .order("received_at", { ascending: false });
-    if (!includeDemo) threadsQ = threadsQ.eq("is_demo", false);
     const { data: threads, error: thErr } = await threadsQ;
     if (thErr) {
       return new Response(JSON.stringify({ ok: false, error: thErr.message }), {

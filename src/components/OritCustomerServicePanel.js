@@ -54,7 +54,15 @@ function sortThreads(rows) {
   });
 }
 
-export default function OritCustomerServicePanel({ user, onOpenDreamBotChat }) {
+function normalizeWhatsappPhoneInput(raw) {
+  const digits = String(raw ?? "").replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.startsWith("972")) return `+${digits}`;
+  if (digits.startsWith("0")) return `+972${digits.slice(1)}`;
+  return `+${digits}`;
+}
+
+export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, focusThreadId = null, onFocusConsumed }) {
   const isMobile = useIsMobile(768);
   const [mobileScreen, setMobileScreen] = useState("list"); // "list" | "detail"
   const detailHistoryPushedRef = useRef(false);
@@ -66,7 +74,9 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat }) {
   const [messages, setMessages] = useState([]);
   const [drafts, setDrafts] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
-  const [showDemo, setShowDemo] = useState(true);
+  const [whatsappPhone, setWhatsappPhone] = useState("");
+  const [alertEnabled, setAlertEnabled] = useState(true);
+  const focusAppliedRef = useRef(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [replyText, setReplyText] = useState("");
@@ -120,7 +130,7 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat }) {
 
     try {
       const { data: boot, error: bootErr } = await supabase.functions.invoke("orit-cs-bootstrap", {
-        body: { includeDemo: showDemo },
+        body: {},
       });
 
       if (bootErr) {
@@ -143,6 +153,8 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat }) {
       }
 
       setMailbox(boot.mailbox);
+      setWhatsappPhone(boot.mailbox.digest_whatsapp_phone ?? "");
+      setAlertEnabled(boot.mailbox.alert_enabled !== false);
       setThreads(sortThreads(boot.threads ?? []));
       return boot.mailbox;
     } catch (e) {
@@ -152,7 +164,7 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat }) {
       showToast("err", msg);
       return null;
     }
-  }, [showDemo, showToast]);
+  }, [showToast]);
 
   const loadThreadDetail = useCallback(async (threadId) => {
     if (!threadId) {
@@ -180,6 +192,15 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat }) {
     })();
     return () => { cancelled = true; };
   }, [loadMailbox]);
+
+  useEffect(() => {
+    if (!focusThreadId || focusAppliedRef.current || !threads.length) return;
+    const hit = threads.find((t) => t.id === focusThreadId);
+    if (!hit) return;
+    focusAppliedRef.current = true;
+    openThread(focusThreadId);
+    onFocusConsumed?.();
+  }, [focusThreadId, threads, openThread, onFocusConsumed]);
 
   useEffect(() => {
     loadThreadDetail(selectedId);
@@ -334,6 +355,53 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat }) {
       showToast("ok", "נדחה — תוכלי לחזור אליו מאוחר יותר");
       goBackToList();
       await loadMailbox();
+    } catch (e) {
+      showToast("err", e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleSaveAlertSettings = async () => {
+    if (!mailbox?.id) return;
+    setBusy(true);
+    try {
+      const normalized = normalizeWhatsappPhoneInput(whatsappPhone);
+      const { error } = await supabase.from("orit_agent_mailbox").update({
+        digest_whatsapp_phone: normalized || null,
+        alert_enabled: alertEnabled,
+      }).eq("id", mailbox.id);
+      if (error) throw error;
+      setWhatsappPhone(normalized);
+      setMailbox((prev) => prev ? {
+        ...prev,
+        digest_whatsapp_phone: normalized || null,
+        alert_enabled: alertEnabled,
+      } : prev);
+      showToast("ok", "הגדרות סיגל נשמרו");
+    } catch (e) {
+      showToast("err", e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleSendWhapiAlert = async (threadId = selectedId, { force = false } = {}) => {
+    if (!threadId) return;
+    setBusy(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("manager-mail-alert", {
+        body: { threadId, force },
+      });
+      if (error) throw error;
+      if (!data?.ok) throw new Error(data?.error || "שליחת התראה נכשלה");
+      if (data.sent) {
+        showToast("ok", "📱 סיגל שלחה התראה לוואטסאפ של אורית");
+      } else {
+        showToast("err", data.reason === "no_phone"
+          ? "חסר מספר וואטסאפ — שמרי למטה"
+          : `לא נשלח: ${data.reason || "לא ידוע"}`);
+      }
     } catch (e) {
       showToast("err", e.message);
     } finally {
@@ -530,7 +598,6 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat }) {
               <span style={{ fontSize: 12, padding: "2px 8px", borderRadius: 999, background: um.bg, color: um.color, fontWeight: 700 }}>
                 {um.label}
               </span>
-              {t.is_demo && <span style={{ fontSize: 11, color: "var(--text-muted)" }}>דמו</span>}
             </div>
             <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>{threadDisplayTitle(t)}</div>
             <div style={{ fontSize: 13, color: "var(--text-muted)" }}>{oritThreadGuestLabel(t)}</div>
@@ -693,6 +760,16 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat }) {
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10, flexShrink: 0 }}>
             <button type="button" className="btn btn-primary" disabled={busy} onClick={handleAnalyze} style={{ minHeight: 44 }}>
               ✨ הצעות תשובה
+            </button>
+            <button
+              type="button"
+              className="btn"
+              disabled={busy || selected.status === "handled"}
+              onClick={() => handleSendWhapiAlert(selected.id, { force: true })}
+              style={{ minHeight: 44 }}
+              title="שליחת התראת וואטסאפ לאורית עם קישור לפנייה"
+            >
+              📱 שלחי התראה לאורית
             </button>
             {canSendFromXos && (
               <button
@@ -875,10 +952,50 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat }) {
             {mailbox.email_address && (
               <span style={{ fontSize: 12, opacity: 0.75, wordBreak: "break-all" }}>{mailbox.email_address}</span>
             )}
-            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer", minHeight: 44 }}>
-              <input type="checkbox" checked={showDemo} onChange={(e) => setShowDemo(e.target.checked)} />
-              הצג דמו לתרגול
-            </label>
+          </div>
+          <div style={{
+            marginTop: 14,
+            padding: "12px 14px",
+            borderRadius: 10,
+            background: "rgba(255,255,255,0.06)",
+            border: "1px solid rgba(212,175,55,0.25)",
+          }}
+          >
+            <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>📱 סיגל → וואטסאפ של אורית</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "flex-end" }}>
+              <label style={{ flex: "1 1 200px", fontSize: 12 }}>
+                <span style={{ display: "block", marginBottom: 4, opacity: 0.85 }}>מספר וואטסאפ</span>
+                <input
+                  type="tel"
+                  className="input"
+                  dir="ltr"
+                  value={whatsappPhone}
+                  onChange={(e) => setWhatsappPhone(e.target.value)}
+                  placeholder="0504056101"
+                  style={{ width: "100%", minHeight: 40 }}
+                />
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer", minHeight: 40 }}>
+                <input
+                  type="checkbox"
+                  checked={alertEnabled}
+                  onChange={(e) => setAlertEnabled(e.target.checked)}
+                />
+                התראות דחופות
+              </label>
+              <button
+                type="button"
+                className="btn"
+                disabled={busy}
+                onClick={handleSaveAlertSettings}
+                style={{ minHeight: 40 }}
+              >
+                💾 שמרי
+              </button>
+            </div>
+            <div style={{ fontSize: 11, opacity: 0.75, marginTop: 8, lineHeight: 1.5 }}>
+              תלונות ופניות דחופות — Whapi מיידי עם קישור. בוקר 06:30: תלונות פתוחות + לידים ב-24ש&apos;.
+            </div>
           </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
             {needsOAuth && (

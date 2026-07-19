@@ -3,7 +3,7 @@
 
 const STORAGE_KEY = "xos_staff_deep_link";
 
-export function buildStaffDeepLink({ page = "wa_inbox", phone = null, guestName = null } = {}) {
+export function buildStaffDeepLink({ page = "wa_inbox", phone = null, guestName = null, threadId = null } = {}) {
   const origin =
     typeof window !== "undefined" && window.location?.origin
       ? window.location.origin
@@ -12,6 +12,7 @@ export function buildStaffDeepLink({ page = "wa_inbox", phone = null, guestName 
   params.set("page", page);
   if (phone) params.set("phone", String(phone).replace(/\D/g, ""));
   if (guestName) params.set("guestName", guestName);
+  if (threadId) params.set("thread", threadId);
   return `${origin}/?${params.toString()}`;
 }
 
@@ -25,6 +26,7 @@ export function captureStaffDeepLinkFromUrl() {
     page,
     phone: params.get("phone") || null,
     guestName: params.get("guestName") || null,
+    threadId: params.get("thread") || null,
   };
   try {
     sessionStorage.setItem(STORAGE_KEY, JSON.stringify(payload));

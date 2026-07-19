@@ -2,6 +2,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { composeMorningDigestBullet } from "../_shared/oritAgentAi.ts";
 import { managerDigestEnabled } from "../_shared/oritAgentMail.ts";
+import { resolveOritAlertPhone } from "../_shared/oritAgentWhapiAlert.ts";
 import { sendWhapiText } from "../_shared/whapiSend.ts";
 
 const CORS = {
@@ -12,6 +13,8 @@ const CORS = {
 function israelYmd(d = new Date()): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jerusalem" }).format(d);
 }
+
+const URGENCY_RANK: Record<string, number> = { critical: 0, high: 1, normal: 2, low: 3 };
 
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
@@ -30,31 +33,35 @@ serve(async (req: Request) => {
     );
 
     const digestDate = israelYmd();
+    const force = (await req.json().catch(() => ({}))).force === true;
+
     const { data: mailboxes } = await supabase
       .from("orit_agent_mailbox")
-      .select("id, profile_id, digest_enabled")
+      .select("id, profile_id, digest_enabled, digest_whatsapp_phone, alert_enabled")
       .eq("digest_enabled", true);
+
+    const now = Date.now();
+    const since24h = new Date(now - 24 * 3_600_000).toISOString();
+
+    const yesterdayStart = new Date();
+    yesterdayStart.setDate(yesterdayStart.getDate() - 1);
+    yesterdayStart.setHours(0, 0, 0, 0);
+    const yesterdayEnd = new Date(yesterdayStart);
+    yesterdayEnd.setHours(23, 59, 59, 999);
 
     let sent = 0;
     for (const mailbox of mailboxes ?? []) {
-      const { data: existing } = await supabase
-        .from("orit_agent_digest_log")
-        .select("id")
-        .eq("mailbox_id", mailbox.id)
-        .eq("digest_date", digestDate)
-        .maybeSingle();
-      if (existing) continue;
-
-      let phone: string | null = null;
-      if (mailbox.profile_id) {
-        const { data: profile } = await supabase
-          .from("profiles")
-          .select("phone")
-          .eq("id", mailbox.profile_id)
+      if (!force) {
+        const { data: existing } = await supabase
+          .from("orit_agent_digest_log")
+          .select("id")
+          .eq("mailbox_id", mailbox.id)
+          .eq("digest_date", digestDate)
           .maybeSingle();
-        phone = profile?.phone ?? null;
+        if (existing) continue;
       }
 
+      const phone = await resolveOritAlertPhone(supabase, mailbox);
       if (!phone) {
         console.warn("[manager-morning-digest] no phone for mailbox", mailbox.id);
         continue;
@@ -62,33 +69,43 @@ serve(async (req: Request) => {
 
       const { data: openThreads } = await supabase
         .from("orit_agent_threads")
-        .select("subject, from_name, sla_deadline_at, status, auto_ack_sent_at, handled_at, received_at")
+        .select("id, subject, from_name, guest_contact_name, category, urgency, ai_summary, sla_deadline_at, status, received_at")
         .eq("mailbox_id", mailbox.id)
         .eq("status", "awaiting_reply")
         .eq("is_demo", false);
 
-      const now = Date.now();
-      const overdue = (openThreads ?? []).filter((t) => t.sla_deadline_at && new Date(t.sla_deadline_at).getTime() < now)
-        .map((t) => ({
-          subject: t.subject,
-          from_name: t.from_name,
-          hours_over: Math.max(1, Math.round((now - new Date(t.sla_deadline_at!).getTime()) / 3_600_000)),
-        }));
+      const openComplaints = (openThreads ?? [])
+        .filter((t) => t.category === "complaint")
+        .map((t) => {
+          const deadlineMs = t.sla_deadline_at ? new Date(t.sla_deadline_at).getTime() : null;
+          const overdue = deadlineMs != null && deadlineMs < now;
+          return {
+            id: t.id,
+            subject: t.subject,
+            from_name: t.from_name,
+            guest_contact_name: t.guest_contact_name,
+            urgency: t.urgency,
+            ai_summary: t.ai_summary,
+            overdue,
+            hours_over: overdue && deadlineMs
+              ? Math.max(1, Math.round((now - deadlineMs) / 3_600_000))
+              : undefined,
+            hours_left: !overdue && deadlineMs
+              ? Math.max(1, Math.round((deadlineMs - now) / 3_600_000))
+              : undefined,
+          };
+        })
+        .sort((a, b) => (URGENCY_RANK[a.urgency] ?? 9) - (URGENCY_RANK[b.urgency] ?? 9));
 
-      const waiting = (openThreads ?? []).filter((t) => !t.sla_deadline_at || new Date(t.sla_deadline_at).getTime() >= now)
-        .map((t) => ({
-          subject: t.subject,
-          from_name: t.from_name,
-          hours_left: t.sla_deadline_at
-            ? Math.max(1, Math.round((new Date(t.sla_deadline_at).getTime() - now) / 3_600_000))
-            : 72,
-        }));
+      const otherOpenCount = (openThreads ?? []).filter((t) => t.category !== "complaint").length;
 
-      const yesterdayStart = new Date();
-      yesterdayStart.setDate(yesterdayStart.getDate() - 1);
-      yesterdayStart.setHours(0, 0, 0, 0);
-      const yesterdayEnd = new Date(yesterdayStart);
-      yesterdayEnd.setHours(23, 59, 59, 999);
+      const { count: leadsLast24h } = await supabase
+        .from("orit_agent_threads")
+        .select("id", { count: "exact", head: true })
+        .eq("mailbox_id", mailbox.id)
+        .eq("is_demo", false)
+        .eq("category", "lead")
+        .gte("received_at", since24h);
 
       const { count: handledYesterday } = await supabase
         .from("orit_agent_threads")
@@ -98,33 +115,27 @@ serve(async (req: Request) => {
         .gte("handled_at", yesterdayStart.toISOString())
         .lte("handled_at", yesterdayEnd.toISOString());
 
-      const { count: newYesterday } = await supabase
-        .from("orit_agent_threads")
-        .select("id", { count: "exact", head: true })
-        .eq("mailbox_id", mailbox.id)
-        .eq("is_demo", false)
-        .gte("received_at", yesterdayStart.toISOString())
-        .lte("received_at", yesterdayEnd.toISOString());
-
       const body = await composeMorningDigestBullet({
-        overdue,
-        waiting,
+        openComplaints,
+        leadsLast24h: leadsLast24h ?? 0,
+        otherOpenCount,
         handledYesterday: handledYesterday ?? 0,
-        newYesterday: newYesterday ?? 0,
       });
 
-      const whapiId = await sendWhapiText(phone.replace(/\D/g, ""), body, { noLinkPreview: true });
+      const whapiId = await sendWhapiText(phone, body, { noLinkPreview: true });
       if (!whapiId) {
         console.warn("[manager-morning-digest] whapi send failed");
         continue;
       }
 
-      await supabase.from("orit_agent_digest_log").insert({
+      await supabase.from("orit_agent_digest_log").upsert({
         mailbox_id: mailbox.id,
         digest_date: digestDate,
         body_sent: body,
         whapi_message_id: whapiId,
-      });
+        sent_at: new Date().toISOString(),
+      }, { onConflict: "mailbox_id,digest_date" });
+
       sent += 1;
     }
 

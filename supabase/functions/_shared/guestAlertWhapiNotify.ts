@@ -59,12 +59,14 @@ export function buildStaffAppDeepLink(opts: {
   page: string;
   phone?: string | null;
   guestName?: string | null;
+  threadId?: string | null;
 }): string {
   const params = new URLSearchParams();
   params.set("page", opts.page);
   const digits = phoneDigitsForDeepLink(opts.phone);
   if (digits) params.set("phone", digits);
   if (opts.guestName?.trim()) params.set("guestName", opts.guestName.trim());
+  if (opts.threadId?.trim()) params.set("thread", opts.threadId.trim());
   return `${STAFF_APP_ORIGIN}/?${params.toString()}`;
 }
 

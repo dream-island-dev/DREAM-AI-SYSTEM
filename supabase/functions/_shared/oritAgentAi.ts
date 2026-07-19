@@ -7,6 +7,7 @@ import {
   tier0ClassifyOritThread,
   type Tier0OritHint,
 } from "./oritAgentClassify.ts";
+import { buildStaffAppDeepLink } from "./guestAlertWhapiNotify.ts";
 
 const GEMINI_MODEL = "gemini-2.5-flash";
 const CLAUDE_MODEL = "claude-sonnet-4-6";
@@ -214,38 +215,75 @@ export async function analyzeOritThread(input: ThreadAnalysisInput): Promise<Thr
   };
 }
 
+
+export type MorningDigestComplaintRow = {
+  id: string;
+  subject: string;
+  from_name: string | null;
+  guest_contact_name?: string | null;
+  urgency: string;
+  ai_summary: string | null;
+  hours_over?: number;
+  hours_left?: number;
+  overdue: boolean;
+};
+
+function morningGuestLabel(row: MorningDigestComplaintRow): string {
+  const name = row.guest_contact_name?.trim() || row.from_name?.trim();
+  if (name && !name.includes("@")) return name;
+  return "אורח";
+}
+
+function morningUrgencyEmoji(urgency: string): string {
+  if (urgency === "critical") return "🔴";
+  if (urgency === "high") return "🟠";
+  return "🟡";
+}
+
 export async function composeMorningDigestBullet(data: {
-  overdue: Array<{ subject: string; from_name: string | null; hours_over: number }>;
-  waiting: Array<{ subject: string; from_name: string | null; hours_left: number }>;
+  openComplaints: MorningDigestComplaintRow[];
+  leadsLast24h: number;
+  otherOpenCount: number;
   handledYesterday: number;
-  newYesterday: number;
 }): Promise<string> {
   const lines: string[] = [
-    "🌅 סיכום שירות לקוחות — דרים איילנד",
-    `📅 ${new Date().toLocaleDateString("he-IL")}`,
+    "🌅 בוקר טוב אורית — סיגל",
+    `📅 ${new Date().toLocaleDateString("he-IL", { timeZone: "Asia/Jerusalem" })}`,
+    "",
+    `📈 לידים ב-24 שעות האחרונות: ${data.leadsLast24h}`,
     "",
   ];
 
-  if (data.overdue.length) {
-    lines.push(`🔴 עבר SLA / דחוף (${data.overdue.length}):`);
-    for (const row of data.overdue.slice(0, 5)) {
-      lines.push(`• ${row.from_name || "אורח"} — ${row.subject} (עברו ${row.hours_over}ש')`);
+  if (data.openComplaints.length) {
+    lines.push(`😤 תלונות פתוחות לטיפול (${data.openComplaints.length}):`);
+    for (const row of data.openComplaints.slice(0, 6)) {
+      const sla = row.overdue
+        ? `(עבר SLA · ${row.hours_over}ש')`
+        : row.hours_left != null
+          ? `(נשארו ${row.hours_left}ש')`
+          : "";
+      const summary = (row.ai_summary || row.subject || "").split("\n")[0].slice(0, 90);
+      lines.push(
+        `${morningUrgencyEmoji(row.urgency)} ${morningGuestLabel(row)} ${sla}`,
+        `   ${summary}`,
+        `   ${buildStaffAppDeepLink({ page: "orit_cs_agent", threadId: row.id })}`,
+      );
     }
+    lines.push("");
+  } else {
+    lines.push("✅ אין תלונות פתוחות — יופי!");
     lines.push("");
   }
 
-  if (data.waiting.length) {
-    lines.push(`🟠 ממתין לתשובתך (${data.waiting.length}):`);
-    for (const row of data.waiting.slice(0, 5)) {
-      lines.push(`• ${row.from_name || "אורח"} — ${row.subject} (נשארו ${row.hours_left}ש')`);
-    }
+  if (data.otherOpenCount > 0) {
+    lines.push(`📬 פניות אחרות פתוחות (לא תלונה): ${data.otherOpenCount}`);
     lines.push("");
   }
 
   lines.push(`✅ טופל אתמול: ${data.handledYesterday}`);
-  lines.push(`📥 פניות חדשות אתמול: ${data.newYesterday}`);
   lines.push("");
-  lines.push("🔗 dream-ai-system.vercel.app");
+  lines.push("▶️ לכל התיבה:");
+  lines.push(buildStaffAppDeepLink({ page: "orit_cs_agent" }));
 
   return lines.join("\n");
 }
