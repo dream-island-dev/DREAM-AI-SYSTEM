@@ -1,6 +1,44 @@
 // Local persistence for active Armonim floor shift (pairs with restaurant_shift_sessions row).
 
 const STORAGE_KEY = "armonim_shift_session_v1";
+const RECENT_NAMES_KEY = "armonim_shift_recent_names_v1";
+const RECENT_NAMES_MAX = 8;
+
+/** Seed roster labels — not useful as quick-pick buttons; type a real name instead. */
+const GENERIC_ROSTER_RE = /^מלצר(?:\/ית)?\s*\d+$/i;
+
+export function isGenericRosterPlaceholder(name) {
+  const t = String(name ?? "").trim();
+  if (!t) return true;
+  if (GENERIC_ROSTER_RE.test(t)) return true;
+  if (t === "מנהל משמרת") return true;
+  return false;
+}
+
+/** @returns {string[]} */
+export function readRecentShiftNames() {
+  try {
+    const raw = localStorage.getItem(RECENT_NAMES_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((n) => String(n ?? "").trim())
+      .filter((n) => n && !isGenericRosterPlaceholder(n))
+      .slice(0, RECENT_NAMES_MAX);
+  } catch {
+    return [];
+  }
+}
+
+/** @param {string} name */
+export function rememberRecentShiftName(name) {
+  const t = String(name ?? "").trim();
+  if (!t || isGenericRosterPlaceholder(t)) return;
+  const prev = readRecentShiftNames().filter((n) => n !== t);
+  const next = [t, ...prev].slice(0, RECENT_NAMES_MAX);
+  localStorage.setItem(RECENT_NAMES_KEY, JSON.stringify(next));
+}
 
 /** @typedef {'waiter' | 'shift_manager'} RestaurantSessionRole */
 
