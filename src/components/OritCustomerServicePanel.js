@@ -9,6 +9,8 @@ import {
   threadDisplayTitle,
   categoryMeta,
   buildQuickAckText,
+  isOritThreadClosed,
+  isOritThreadOpen,
 } from "../utils/oritAgentClassify";
 import {
   oritThreadGuestLabel,
@@ -77,17 +79,34 @@ function workflowStepMeta(step, thread) {
   const ackDone = Boolean(thread?.auto_ack_sent_at);
   const replyDone = Boolean(thread?.full_reply_sent_at);
   const guestReplied = step === "guest_replied" || thread?.workflow_step === "guest_replied";
+  const closed = isOritThreadClosed(thread);
   return {
     ackDone,
     replyDone,
     guestReplied,
+    closed,
+    shortLabel: closed
+      ? "✓ טופל"
+      : guestReplied
+        ? "📩 אורח השיב"
+        : step === "awaiting_ack_approval"
+          ? "⏳ אישור קבלה"
+          : step === "awaiting_reply_approval"
+            ? "✏️ תשובה מלאה"
+            : step === "reply_sent"
+              ? "ממתין לסגירה"
+              : ackDone && !replyDone
+                ? "אחרי קבלה"
+                : null,
     label: guestReplied
       ? "📩 האורח/ת השיב/ה — ממתינה לתשובה"
-      : !ackDone
-        ? "⏳ שלב 1: אישור קבלה (72 שעות)"
-        : !replyDone
-          ? "✏️ שלב 2: תשובה מלאה לאישור"
-          : "✅ נשלחה תשובה מלאה",
+      : closed
+        ? "✓ הפנייה נסגרה"
+        : !ackDone
+          ? "⏳ שלב 1: אישור קבלה (72 שעות)"
+          : !replyDone
+            ? "✏️ שלב 2: תשובה מלאה לאישור"
+            : "✅ נשלחה תשובה מלאה — סגרי כשהנושא הסתיים",
   };
 }
 function fmtReceivedLabel(iso) {
@@ -330,7 +349,8 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
     [selected],
   );
 
-  const openCount = threads.filter((t) => t.status === "awaiting_reply").length;
+  const openCount = threads.filter((t) => isOritThreadOpen(t)).length;
+  const handledCount = threads.filter((t) => isOritThreadClosed(t)).length;
 
   const canSendFromXos = useMemo(
     () => mailbox
@@ -347,8 +367,13 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
   }, [threads, activeTab, queueSort]);
 
   const tabCounts = useMemo(() => {
-    const counts = { recent: threads.length, all: threads.length, leads: 0, complaints: 0, other: 0 };
+    const counts = { recent: 0, handled: 0, all: threads.length, leads: 0, complaints: 0, other: 0 };
     for (const t of threads) {
+      if (isOritThreadClosed(t)) {
+        counts.handled += 1;
+        continue;
+      }
+      counts.recent += 1;
       const tab = categoryMeta(t.category).tab;
       if (tab in counts) counts[tab] += 1;
     }
@@ -541,6 +566,8 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
           const { error: updErr } = await supabase.from("orit_agent_threads").update({
             status: "handled",
             handled_at: new Date().toISOString(),
+            workflow_step: null,
+            orit_chat_pending: null,
           }).eq("id", selectedId);
           if (updErr) throw updErr;
           setReplyText("");
@@ -584,6 +611,8 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
       const { error } = await supabase.from("orit_agent_threads").update({
         status: "handled",
         handled_at: new Date().toISOString(),
+        workflow_step: null,
+        orit_chat_pending: null,
       }).eq("id", selectedId);
       if (error) throw error;
       setReplyText("");
@@ -705,6 +734,8 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
         const um = urgencyMeta(t.urgency);
         const cm = categoryMeta(t.category);
         const sla = slaLabel(t.sla_deadline_at);
+        const closed = isOritThreadClosed(t);
+        const wf = workflowStepMeta(t.workflow_step, t);
         return (
           <button
             key={t.id}
@@ -717,7 +748,12 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
               borderRadius: 12,
               padding: 12,
               marginBottom: 8,
-              background: selectedId === t.id ? "#FFFBEB" : "var(--card-bg)",
+              background: selectedId === t.id
+                ? "#FFFBEB"
+                : closed
+                  ? "#F9FAFB"
+                  : "var(--card-bg)",
+              opacity: closed ? 0.82 : 1,
               cursor: "pointer",
               minHeight: 44,
             }}
@@ -727,7 +763,17 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
                 {cm.label}
               </span>
               <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-                {isThreadReceivedToday(t.received_at) && (
+                {closed && (
+                  <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 999, background: "#E5E7EB", color: "#374151", fontWeight: 700 }}>
+                    ✓ טופל{t.handled_at ? ` · ${fmtDt(t.handled_at)}` : ""}
+                  </span>
+                )}
+                {!closed && wf.shortLabel && (
+                  <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 999, background: "#FEF3C7", color: "#92400E", fontWeight: 700 }}>
+                    {wf.shortLabel}
+                  </span>
+                )}
+                {!closed && isThreadReceivedToday(t.received_at) && (
                   <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 999, background: "#DBEAFE", color: "#1D4ED8", fontWeight: 700 }}>
                     חדש היום
                   </span>
@@ -740,9 +786,11 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
                 </span>
               </div>
             </div>
-            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>{threadDisplayTitle(t)}</div>
+            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4, color: closed ? "var(--text-muted)" : undefined }}>
+              {threadDisplayTitle(t)}
+            </div>
             <div style={{ fontSize: 13, color: "var(--text-muted)" }}>{oritThreadGuestLabel(t)}</div>
-            {sla && (
+            {!closed && sla && (
               <div style={{ fontSize: 12, marginTop: 6, color: sla.startsWith("עבר") ? "#B91C1C" : "#047857", fontWeight: 600 }}>
                 {sla}
               </div>
@@ -824,9 +872,14 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
               }}>
                 {urgencyMeta(selected.urgency).label}
               </span>
-              {selected.workflow_step && selected.category === "complaint" && (
+              {selected.category === "complaint" && !workflowMeta.closed && (
                 <span style={{ fontSize: 12, padding: "4px 10px", borderRadius: 999, background: "#EDE9FE", color: "#5B21B6", fontWeight: 600 }}>
                   {workflowMeta.label}
+                </span>
+              )}
+              {workflowMeta.closed && (
+                <span style={{ fontSize: 12, padding: "4px 10px", borderRadius: 999, background: "#E5E7EB", color: "#374151", fontWeight: 700 }}>
+                  ✓ טופל · {selected.handled_at ? fmtDt(selected.handled_at) : "—"}
                 </span>
               )}
               {selected.full_reply_sent_at && (
@@ -1240,7 +1293,9 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
           <div style={{ opacity: 0.9, marginBottom: 12, fontSize: isMobile ? 14 : undefined }}>
             {openCount > 0
               ? `יש ${openCount} פניות שממתינות לטיפולך`
-              : "אין פניות פתוחות כרגע — כל הכבוד!"}
+              : handledCount > 0
+                ? `אין פניות פתוחות — ${handledCount} טופלו (טאב «טופלו»)`
+                : "אין פניות כרגע"}
           </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
             <span style={{
@@ -1336,8 +1391,8 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
           {connected && !isMobile && (
             <div style={{ marginTop: 12, fontSize: 13, opacity: 0.85 }}>
               {canSendFromXos
-                ? "בחרי פנייה → «הצעות תשובה» → «שלחי מ-XOS» או העתיקי ל-Outlook. אחרי שליחה — «סיימתי — סמן כטופל» (בלי שליחה נוספת)."
-                : "קראי את הפנייה, לחצי «הצעות תשובה», העתיקי ל-Outlook ושלחי. אחרי שליחה — «סיימתי — סמן כטופל»."}
+                ? "טאב «פתוחות» = תור פעיל. אחרי שליחה — «סיימתי — סמן כטופל» (מסונכרן עם סיגל). טופלו עובר לטאב «טופלו»; מייל חדש מאורח פותח מחדש + התראה."
+                : "טאב «פתוחות» = תור פעיל. אחרי שליחה מ-Outlook — «סיימתי — סמן כטופל». טופלו בטאב «טופלו»."}
             </div>
           )}
           {mailbox.connection_error && (

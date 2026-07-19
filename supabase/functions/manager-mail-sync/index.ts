@@ -12,6 +12,7 @@ import {
 import { fetchMailboxInboxMessages, isMailboxIngestConfigured } from "../_shared/mailIngest.ts";
 import { isImapConfigured, resolveImapConfig, testImapConnection } from "../_shared/imapMail.ts";
 import { notifyOritThreadDecisionPrompt } from "../_shared/oritAgentOritDecision.ts";
+import { isOritThreadClosed } from "../_shared/closeOritThread.ts";
 import {
   isOritWorkflowComplaint,
   notifyOritGuestReplied,
@@ -104,14 +105,24 @@ serve(async (req: Request) => {
 
           const { data: existingThread } = await supabase
             .from("orit_agent_threads")
-            .select("id, status, sla_deadline_at, ai_analyzed_at")
+            .select("id, status, sla_deadline_at, ai_analyzed_at, handled_at")
             .eq("mailbox_id", mailbox.id)
             .eq("external_thread_key", msg.threadKey)
             .maybeSingle();
 
-          if (existingThread?.status === "handled") continue;
-
+          const threadWasClosed = isOritThreadClosed(existingThread);
           let threadId = existingThread?.id ?? null;
+
+          if (threadWasClosed && threadId) {
+            const { data: existingMsg } = await supabase
+              .from("orit_agent_messages")
+              .select("id")
+              .eq("thread_id", threadId)
+              .eq("external_key", msg.id)
+              .maybeSingle();
+            if (existingMsg) continue;
+          }
+
           const isNewThread = !threadId;
 
           if (!threadId) {
@@ -215,6 +226,9 @@ serve(async (req: Request) => {
                 digest_whatsapp_phone: (mailbox as { digest_whatsapp_phone?: string | null }).digest_whatsapp_phone ?? null,
                 alert_enabled: (mailbox as { alert_enabled?: boolean | null }).alert_enabled ?? true,
               };
+              if (threadWasClosed) {
+                await notifyOritGuestReplied(supabase, mailboxAlert, threadId, msg.bodyText || msg.bodyPreview || "");
+              } else {
               const hadOutbound = await threadHasOutboundEmail(supabase, threadId);
               if (hadOutbound) {
                 await notifyOritGuestReplied(supabase, mailboxAlert, threadId, msg.bodyText || msg.bodyPreview || "");
@@ -229,6 +243,7 @@ serve(async (req: Request) => {
                 } else if (analyzed?.category === "complaint") {
                   await notifyOritThreadDecisionPrompt(supabase, mailboxAlert, threadId, { force: false });
                 }
+              }
               }
             } catch (promptErr) {
               console.warn("[manager-mail-sync] orit re-alert failed:", (promptErr as Error).message);

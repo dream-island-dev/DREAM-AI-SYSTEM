@@ -7,6 +7,7 @@ import {
   threadMatchesTab,
   threadDisplayTitle,
   categoryMeta,
+  isOritThreadClosed,
 } from "./oritAgentClassify";
 
 describe("oritAgentClassify", () => {
@@ -38,5 +39,17 @@ describe("oritAgentClassify", () => {
     });
     expect(title).toContain("תלונה חמורה");
     expect(title).not.toContain("לידים");
+  });
+
+  test("handled threads only on handled or all tabs", () => {
+    const closed = { category: "complaint", status: "handled", subject: "x" };
+    const open = { category: "complaint", status: "awaiting_reply", subject: "y" };
+    expect(isOritThreadClosed(closed)).toBe(true);
+    expect(threadMatchesTab(closed, "handled")).toBe(true);
+    expect(threadMatchesTab(closed, "recent")).toBe(false);
+    expect(threadMatchesTab(closed, "complaints")).toBe(false);
+    expect(threadMatchesTab(closed, "all")).toBe(true);
+    expect(threadMatchesTab(open, "recent")).toBe(true);
+    expect(threadMatchesTab(open, "handled")).toBe(false);
   });
 });

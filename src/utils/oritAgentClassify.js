@@ -23,15 +23,27 @@ export function categoryMeta(category) {
 }
 
 export const ORIT_CS_TABS = [
-  { id: "recent", label: "אחרונים" },
+  { id: "recent", label: "פתוחות" },
+  { id: "handled", label: "טופלו" },
   { id: "all", label: "הכל" },
   { id: "leads", label: "לידים" },
   { id: "complaints", label: "תלונות" },
   { id: "other", label: "אחר" },
 ];
 
+export function isOritThreadClosed(thread) {
+  const s = thread?.status;
+  return s === "handled" || s === "archived";
+}
+
+export function isOritThreadOpen(thread) {
+  return !isOritThreadClosed(thread);
+}
+
 export function threadMatchesTab(thread, tabId) {
-  if (tabId === "all" || tabId === "recent") return true;
+  if (tabId === "handled") return isOritThreadClosed(thread);
+  if (isOritThreadClosed(thread)) return tabId === "all";
+  if (tabId === "recent" || tabId === "all") return true;
   const meta = categoryMeta(thread.category);
   return meta.tab === tabId;
 }

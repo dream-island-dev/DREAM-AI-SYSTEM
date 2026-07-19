@@ -18,6 +18,7 @@ import {
   type OritAlertMailbox,
 } from "./oritAgentWorkflow.ts";
 import { deliverOritThreadEmail } from "./oritAgentSend.ts";
+import { closeOritThread } from "./closeOritThread.ts";
 import { sendWhapiText } from "./whapiSend.ts";
 import {
   SIGAL_GUIDE_ACK,
@@ -453,12 +454,7 @@ async function markThreadClosed(
   thread: Record<string, unknown>,
 ): Promise<void> {
   const threadId = String(thread.id);
-  await supabase.from("orit_agent_threads").update({
-    status: "handled",
-    handled_at: new Date().toISOString(),
-    workflow_step: null,
-    orit_chat_pending: null,
-  }).eq("id", threadId);
+  await closeOritThread(supabase, threadId);
 
   await sendWhapiText(phone, [
     `✓ סימנתי את פניית ${guestLabel(thread)} כטופלה (מסונכרן עם המערכת).`,

@@ -4,6 +4,7 @@ import type { OritMailboxRow } from "../_shared/oritAgentMail.ts";
 import { deliverOritThreadEmail } from "../_shared/oritAgentSend.ts";
 import { fetchOritThreadInbound } from "../_shared/oritThreadAnalysis.ts";
 import { loadOritCsAgentAccess } from "../_shared/oritCsAgentAccess.ts";
+import { closeOritThread } from "../_shared/closeOritThread.ts";
 import {
   notifyOritFullReplyReady,
   sendOritAckEmail,
@@ -233,15 +234,15 @@ serve(async (req: Request) => {
           .in("status", ["suggested", "edited"]);
       }
 
-      const threadUpdate: Record<string, unknown> = {
-        workflow_step: "reply_sent",
+      const sentAt = new Date().toISOString();
+      await supabase.from("orit_agent_threads").update({
+        workflow_step: markHandled === true ? null : "reply_sent",
         full_reply_sent_at: sentAt,
-        status: markHandled === true ? "handled" : "awaiting_reply",
-      };
+        ...(markHandled === true ? {} : { status: "awaiting_reply" }),
+      }).eq("id", threadId);
       if (markHandled === true) {
-        threadUpdate.handled_at = sentAt;
+        await closeOritThread(supabase, threadId, { handledAt: sentAt });
       }
-      await supabase.from("orit_agent_threads").update(threadUpdate).eq("id", threadId);
     }
 
     return new Response(JSON.stringify({
