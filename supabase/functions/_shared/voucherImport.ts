@@ -4,8 +4,9 @@
 
 import {
   resolveVoucherProviderProfile,
+  resolveVoucherStrategy,
   type VoucherProviderProfile,
-} from "./voucherProviderConfig.ts";
+} from "./voucherReconciliationStrategy.ts";
 
 export type VoucherMapping = Record<string, string | null>;
 export type VoucherRow = Record<string, unknown>;
@@ -117,7 +118,7 @@ function detectMultipassProviderPreset(headers: string[], rows: VoucherRow[]): V
   };
 }
 
-/** Nofshonit redemption xlsx — voucher = מזהה לקוח (national id). */
+/** Nofshonit redemption xlsx — "מזהה לקוח" is the voucher/coupon number (↔ EZGO CouponNo); אסמכתא → raw_extras. */
 function detectNofshonitProviderPreset(headers: string[]): VoucherMapping | null {
   const idCol = findHeaderByAliases(headers, ["מזהה לקוח", "תעודת זהות", "מספר זהות"]);
   const variantCol = findHeaderByAliases(headers, ["וריאנט", "חבילה", "סוג חבילה"]);
@@ -186,6 +187,31 @@ export function detectVoucherProviderPreset(
 ): VoucherMapping | null {
   if (!headers?.length) return null;
 
+  const strategy = providerName ? resolveVoucherStrategy(providerName) : null;
+
+  // Provider-selected strategy runs first — each report style on its own path.
+  if (strategy) {
+    switch (strategy.presetKind) {
+      case "nofshonit": {
+        const p = detectNofshonitProviderPreset(headers);
+        if (p?.voucherNumber) return p;
+        break;
+      }
+      case "multipass": {
+        const p = detectMultipassProviderPreset(headers, rows);
+        if (p?.voucherNumber) return p;
+        break;
+      }
+      case "hever_pdf": {
+        const p = detectHeverPdfProviderPreset(headers);
+        if (p?.voucherNumber) return p;
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
   const pdfPreset = detectHeverPdfProviderPreset(headers);
   if (pdfPreset?.voucherNumber) return pdfPreset;
 
@@ -198,8 +224,7 @@ export function detectVoucherProviderPreset(
   const mapping = buildPreset(headers, PROVIDER_VOUCHER_ALIASES);
   if (mapping.voucherNumber) return mapping;
 
-  // Provider hint fallback
-  const profile = providerName ? resolveVoucherProviderProfile(providerName) : null;
+  const profile = strategy?.profile ?? (providerName ? resolveVoucherProviderProfile(providerName) : null);
   if (profile?.easygoVoucherHeader && headerHas(headers, profile.easygoVoucherHeader)) {
     mapping.voucherNumber = profile.easygoVoucherHeader;
   }
@@ -294,9 +319,13 @@ export function filterEasygoRowsByProvider(
   if (!profile?.easygoCompanyPatterns.length) return rows;
   const patterns = profile.easygoCompanyPatterns;
   return rows.filter((row) => {
-    const company = String(row[companyHeader] ?? row["חברת שוברים"] ?? "").trim();
-    if (!company) return false;
-    return patterns.some((re) => re.test(company));
+    const direct = String(row[companyHeader] ?? row["חברת שוברים"] ?? "").trim();
+    if (direct && patterns.some((re) => re.test(direct))) return true;
+    // Duplicate-header EZGO CSV — company name may land in any column value
+    return Object.values(row).some((v) => {
+      const s = String(v ?? "").trim();
+      return s.length >= 4 && patterns.some((re) => re.test(s));
+    });
   });
 }
 
@@ -344,6 +373,80 @@ export function packageTypesMatch(a: string | null | undefined, b: string | null
 
 function rowHasData(row: VoucherRow): boolean {
   return Object.values(row).some((v) => String(v ?? "").trim().length > 0);
+}
+
+/** Parse one CSV line — supports quoted fields and doubled-quote escapes (`""`). */
+function parseCsvLine(line: string): string[] {
+  const out: string[] = [];
+  let cur = "";
+  let inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === '"') {
+      if (inQ && line[i + 1] === '"') {
+        cur += '"';
+        i++;
+        continue;
+      }
+      inQ = !inQ;
+      continue;
+    }
+    if (c === "," && !inQ) {
+      out.push(cur);
+      cur = "";
+      continue;
+    }
+    cur += c;
+  }
+  out.push(cur);
+  return out;
+}
+
+/**
+ * UTF-8 CSV → matrix. EZGO exports use BOM, embedded quotes in `בע"מ`, and
+ * duplicate header names (`חברת שוברים` twice) — XLSX.read on .csv garbles Hebrew.
+ */
+export function csvUtf8BytesToMatrix(bytes: Uint8Array): unknown[][] {
+  const text = new TextDecoder("utf-8").decode(bytes).replace(/^\uFEFF/, "");
+  const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
+  if (!lines.length) return [];
+  const headerCells = parseCsvLine(lines[0]).map((h) => normalizeImportHeaderKey(h.replace(/^"|"$/g, "")));
+  const colKeys = headerCells.map((h, i) => {
+    const base = h || `col_${i}`;
+    return headerCells.slice(0, i).filter((x) => x === h).length ? `${base}__${i}` : base;
+  });
+  const matrix: unknown[][] = [headerCells];
+  for (const line of lines.slice(1)) {
+    const cells = parseCsvLine(line).map((c) => c.replace(/^"|"$/g, ""));
+    matrix.push(cells);
+  }
+  return matrix;
+}
+
+/** Build row objects from matrix; resolves duplicate EZGO headers (חברת שוברים, מזהה). */
+export function matrixToVoucherRows(matrix: unknown[][]): { headers: string[]; rows: VoucherRow[] } {
+  if (!matrix?.length) return { headers: [], rows: [] };
+  const headerCells = (matrix[0] ?? []).map((c) => normalizeImportHeaderKey(c));
+  const colKeys = headerCells.map((h, i) => {
+    const base = h || `col_${i}`;
+    return headerCells.slice(0, i).filter((x) => x === h).length ? `${base}__${i}` : base;
+  });
+  const rows = matrix.slice(1).map((row) => {
+    const obj: VoucherRow = {};
+    colKeys.forEach((h, col) => { obj[h] = (row as unknown[])?.[col] ?? ""; });
+    const companyCols = colKeys.filter((k) => k === "חברת שוברים" || k.startsWith("חברת שוברים__"));
+    if (companyCols.length) {
+      const vals = companyCols.map((k) => String(obj[k] ?? "").trim()).filter(Boolean);
+      obj["חברת שוברים"] = vals.find((v) => /נופשונית|חבר|שוטר|פיס|דולצ|hightech|הייטק/i.test(v)) ?? vals[vals.length - 1] ?? "";
+    }
+    const idCols = colKeys.filter((k) => k === "מזהה" || k.startsWith("מזהה__"));
+    if (idCols.length) {
+      const vals = idCols.map((k) => String(obj[k] ?? "").trim()).filter(Boolean);
+      obj["מזהה"] = vals[vals.length - 1] ?? "";
+    }
+    return obj;
+  }).filter(rowHasData);
+  return { headers: headerCells, rows: normalizeRowKeys(rows) };
 }
 
 function matrixToObjects(matrix: unknown[][], headerCells: string[]): VoucherRow[] {
@@ -426,4 +529,83 @@ export function assessVoucherParseQuality(
     };
   }
   return { ok: true, parsedRatio: ratio };
+}
+
+type MappedVoucherRow = { voucher_number: string | null; package_type: string | null };
+
+function mapSideForJoin(
+  rows: VoucherRow[],
+  mapping: VoucherMapping,
+): MappedVoucherRow[] {
+  const vCol = mapping.voucherNumber;
+  const pCol = mapping.packageType;
+  return rows.map((row) => ({
+    voucher_number: vCol ? normalizeVoucherNumber(row[vCol]) : null,
+    package_type: pCol ? String(row[pCol] ?? "").trim() || null : null,
+  }));
+}
+
+/**
+ * Pre-flight join estimate — catches wrong column mapping before DB write.
+ */
+export function estimateReconciliationJoin(
+  providerRows: VoucherRow[],
+  easygoRows: VoucherRow[],
+  providerMapping: VoucherMapping,
+  easygoMapping: VoucherMapping,
+  matchMode: string,
+): {
+  providerSample: number;
+  providerHits: number;
+  hitRate: number;
+  packageMismatches: number;
+  ok: boolean;
+  warning?: string;
+} {
+  const prov = mapSideForJoin(providerRows, providerMapping).filter((r) => r.voucher_number);
+  const ez = mapSideForJoin(easygoRows, easygoMapping).filter((r) => r.voucher_number);
+
+  if (!prov.length || !ez.length) {
+    return {
+      providerSample: prov.length,
+      providerHits: 0,
+      hitRate: 0,
+      packageMismatches: 0,
+      ok: false,
+      warning: "אין מספיק שורות עם מספר שובר לבדיקת הצלבה",
+    };
+  }
+
+  const sample = prov.slice(0, Math.min(prov.length, 40));
+  let hits = 0;
+  let pkgMismatch = 0;
+
+  for (const p of sample) {
+    const candidates = ez.filter((e) =>
+      voucherNumbersMatchLocal(matchMode, p.voucher_number, e.voucher_number)
+    );
+    if (!candidates.length) continue;
+    hits++;
+    const partner = candidates[0];
+    if (
+      p.package_type && partner.package_type
+      && !packageTypesMatch(p.package_type, partner.package_type)
+    ) {
+      pkgMismatch++;
+    }
+  }
+
+  const hitRate = sample.length ? hits / sample.length : 0;
+  const ok = hitRate >= 0.15 || sample.length < 5;
+
+  return {
+    providerSample: sample.length,
+    providerHits: hits,
+    hitRate,
+    packageMismatches: pkgMismatch,
+    ok,
+    warning: ok
+      ? undefined
+      : `רק ${Math.round(hitRate * 100)}% משורות הספק (${hits}/${sample.length}) נמצאו באיזיגו — ייתכן שמיפוי העמודות או בחירת הספק שגויים`,
+  };
 }

@@ -13,6 +13,7 @@ import { useState, useEffect, useCallback } from "react";
 import { supabase } from "../supabaseClient";
 import MappingReviewPanel from "./MappingReviewPanel";
 import { VOUCHER_PROVIDER_SCHEMA, VOUCHER_EASYGO_SCHEMA } from "../utils/importMapper";
+import { resolveVoucherStrategyUi, VOUCHER_FLOW_EXPLAINER } from "../utils/voucherReconciliationStrategies";
 
 const SIDE_META = {
   provider: { schema: VOUCHER_PROVIDER_SCHEMA, title: "📄 דוח הספק (מה שמומש בפועל)" },
@@ -179,8 +180,14 @@ export default function VoucherImportPanel({ onViewExceptions }) {
 
   const canSubmit = !!providerName && !!easygoFile && !!providerFile;
 
+  const strategyUi = resolveVoucherStrategyUi(providerName);
+
   return (
     <div>
+      <p style={{ fontSize: 12.5, color: "var(--text-muted)", marginBottom: 16, lineHeight: 1.6 }}>
+        {VOUCHER_FLOW_EXPLAINER}
+      </p>
+
       {toast && (
         <div style={{
           position: "fixed", top: 20, left: "50%", transform: "translateX(-50%)",
@@ -209,6 +216,28 @@ export default function VoucherImportPanel({ onViewExceptions }) {
                 <option key={p.provider_name} value={p.provider_name}>{p.provider_name}</option>
               ))}
             </select>
+            {strategyUi && (
+              <div style={{
+                marginTop: 12, padding: "12px 14px", borderRadius: 10,
+                background: "rgba(201,169,110,0.1)", border: "1px solid var(--border)",
+                fontSize: 11.5, color: "var(--text-muted)", lineHeight: 1.65,
+              }}>
+                <div style={{ fontWeight: 800, color: "var(--gold-dark)", marginBottom: 6 }}>
+                  כללי התאמה — {strategyUi.key}
+                </div>
+                <div><strong>איזיגו:</strong> {strategyUi.easygoRole}</div>
+                <div><strong>דוח ספק:</strong> {strategyUi.providerRole}</div>
+                <div style={{ marginTop: 6 }}><strong>מפתח שובר:</strong> {strategyUi.joinRule}</div>
+                <div><strong>חבילה:</strong> {strategyUi.packageRule}</div>
+                <div style={{ marginTop: 4, fontSize: 11 }}>
+                  עמודות: {strategyUi.providerColumns} ↔ {strategyUi.easygoColumns}
+                  {strategyUi.filterNote ? ` · ${strategyUi.filterNote}` : ""}
+                </div>
+                <div style={{ marginTop: 4, fontSize: 11 }}>
+                  פורמטים: {strategyUi.acceptedFormats.join(", ").toUpperCase()} · מצב: {strategyUi.matchMode}
+                </div>
+              </div>
+            )}
           </div>
 
           {stage === "idle" && (
@@ -311,6 +340,16 @@ export default function VoucherImportPanel({ onViewExceptions }) {
                 קריאת קבצים: EasyGo — {MAPPING_SOURCE_LABELS[result.mappingSource.easygo] || result.mappingSource.easygo}
                 {" · "}
                 ספק — {MAPPING_SOURCE_LABELS[result.mappingSource.provider] || result.mappingSource.provider}
+              </>
+            )}
+            {result.joinEstimate && (
+              <>
+                <br />
+                בדיקת הצלבה מקדימה: {Math.round((result.joinEstimate.hitRate || 0) * 100)}%
+                ({result.joinEstimate.providerHits}/{result.joinEstimate.providerSample} שורות ספק נמצאו באיזיגו)
+                {result.joinEstimate.packageMismatches > 0 && (
+                  <> · {result.joinEstimate.packageMismatches} חשד לחבילה לא תואמת</>
+                )}
               </>
             )}
           </div>

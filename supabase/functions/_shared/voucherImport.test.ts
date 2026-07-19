@@ -2,11 +2,14 @@
 import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import {
   assessVoucherParseQuality,
+  csvUtf8BytesToMatrix,
   detectVoucherEasygoPreset,
   detectVoucherProviderPreset,
+  estimateReconciliationJoin,
   filterEasygoRowsByProvider,
   findHeaderByAliases,
   matrixRowsFromVoucherHeaderScan,
+  matrixToVoucherRows,
   normalizeVoucherNumber,
   packageTypesMatch,
   voucherNumbersMatchLocal,
@@ -27,10 +30,10 @@ Deno.test("detectVoucherEasygoPreset — EZGO coupons export (CouponNo)", () => 
   assertEquals(preset?.guestName, "שם לקוח");
 });
 
-Deno.test("detectVoucherEasygoPreset — Nofshonit uses מזהה not CouponNo", () => {
+Deno.test("detectVoucherEasygoPreset — Nofshonit uses CouponNo (מספר שובר) not מזהה", () => {
   const headers = ["CouponNo", "CouponDesc", "מזהה", "שם לקוח", "חברת שוברים"];
   const preset = detectVoucherEasygoPreset(headers, "Nofshonit");
-  assertEquals(preset?.voucherNumber, "מזהה");
+  assertEquals(preset?.voucherNumber, "CouponNo");
 });
 
 Deno.test("detectVoucherProviderPreset — Multi-Pass CSV (שם = voucher id)", () => {
@@ -54,8 +57,9 @@ Deno.test("voucherNumbersMatchLocal — suffix_5 Hever/Police", () => {
   assertEquals(voucherNumbersMatchLocal("suffix_5", "11162", "311162"), true);
 });
 
-Deno.test("voucherNumbersMatchLocal — exact Nofshonit id leading zeros", () => {
-  assertEquals(voucherNumbersMatchLocal("exact", "22616940", "022616940"), true);
+Deno.test("voucherNumbersMatchLocal — Nofshonit CouponNo leading zeros", () => {
+  assertEquals(voucherNumbersMatchLocal("exact", "32257537", "032257537"), true);
+  assertEquals(voucherNumbersMatchLocal("exact", "203554126", "203554126"), true);
 });
 
 Deno.test("voucherNumbersMatchLocal — truncate_4 Multi-Pass", () => {
@@ -97,7 +101,41 @@ Deno.test("assessVoucherParseQuality — flags bad mapping", () => {
   assertEquals(bad.ok, false);
 });
 
-Deno.test("findHeaderByAliases — substring fallback", () => {
-  const h = findHeaderByAliases(["מספר שובר / קופון"], ["מספר שובר"]);
-  assertEquals(h, "מספר שובר / קופון");
+Deno.test("csvUtf8BytesToMatrix — Hebrew BOM + embedded quote in company name", () => {
+  const csv = '\uFEFF"CouponNo","חברת שוברים","חברת שוברים","מזהה"\n"1","11448*1061","נופשונית ח.מ תשורות חן (1987) בע""מ","203232623"';
+  const matrix = csvUtf8BytesToMatrix(new TextEncoder().encode(csv));
+  assertEquals(matrix.length, 2);
+  const { rows } = matrixToVoucherRows(matrix);
+  assertEquals(rows[0]["מזהה"], "203232623");
+  assertEquals(String(rows[0]["חברת שוברים"]).includes("נופשונית"), true);
+});
+
+Deno.test("estimateReconciliationJoin — detects good Nofshonit CouponNo join", () => {
+  const providerRows = [{ "מזהה לקוח": "203554126", "וריאנט": "classic deluxe" }];
+  const easygoRows = [{ CouponNo: "203554126", CouponDesc: "swish דלאקס 2026" }];
+  const provMap = { voucherNumber: "מזהה לקוח", packageType: "וריאנט" };
+  const ezMap = { voucherNumber: "CouponNo", packageType: "CouponDesc" };
+  const est = estimateReconciliationJoin(providerRows, easygoRows, provMap, ezMap, "exact");
+  assertEquals(est.ok, true);
+  assertEquals(est.providerHits, 1);
+});
+
+Deno.test("estimateReconciliationJoin — flags wrong column mapping", () => {
+  const providerRows = [{ "מזהה לקוח": "203554126", "וריאנט": "x" }];
+  const easygoRows = [{ מזהה: "203232623", CouponDesc: "y" }];
+  const provMap = { voucherNumber: "מזהה לקוח", packageType: "וריאנט" };
+  const ezMap = { voucherNumber: "מזהה", packageType: "CouponDesc" };
+  const est = estimateReconciliationJoin(providerRows, easygoRows, provMap, ezMap, "exact");
+  assertEquals(est.ok, false);
+  assertEquals(est.providerHits, 0);
+});
+
+Deno.test("filterEasygoRowsByProvider — duplicate-header row values", () => {
+  const rows = [
+    { "חברת שוברים__21": "11448*1061", "חברת שוברים__22": "נופשונית ח.מ תשורות חן (1987) בע\"מ", מזהה: "1" },
+    { "חברת שוברים": "חבר משרתי הקבע והגמלאים בע\"מ", מזהה: "2" },
+  ];
+  const filtered = filterEasygoRowsByProvider(rows, "Nofshonit");
+  assertEquals(filtered.length, 1);
+  assertEquals(filtered[0].מזהה, "1");
 });

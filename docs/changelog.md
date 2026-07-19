@@ -1,3 +1,7 @@
+2026-07-19 | Voucher reconciliation — per-provider strategy engine | `_shared/voucherReconciliationStrategy.ts`: rules per ספק (join, columns, formats); provider-first preset routing; `estimateReconciliationJoin` pre-flight; UI strategy card + join % on complete.
+
+2026-07-19 | Voucher reconciliation — Nofshonit join fix (מזהה לקוח↔CouponNo) | Ground truth: Nofshonit `מזהה לקוח` = EZGO `CouponNo`; package `וריאנט`↔`CouponDesc`; stale mapping memory override; CSV UTF-8.
+
 2026-07-19 | Voucher reconciliation — real provider formats (נופשונית/מולטי פס/חבר/PDF) | migration 234 `suffix_5`+`Police Funds`; `_shared/voucherProviderConfig.ts`+`voucherPdfParse.ts`; EZGO company filter; presets for CouponNo/מזהה/מולטי פס/נופשונית; PDF provider upload. Deploy: db push + `reconcile-vouchers` + frontend.
 
 2026-07-19 | Voucher reconciliation — smarter report reading + matching | `_shared/voucherImport.ts`: Hebrew header presets, title-row scan, voucher normalize; migration 233: suffix-4 match, fuzzy `package_types_match`, separator-tolerant exact; `reconcile-vouchers` auto-maps known columns; exceptions board filters by run. Deploy: db push + `reconcile-vouchers` + frontend.

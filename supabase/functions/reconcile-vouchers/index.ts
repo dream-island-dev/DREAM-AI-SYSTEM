@@ -44,17 +44,24 @@ import { createClient }  from "https://esm.sh/@supabase/supabase-js@2";
 import * as XLSX         from "https://esm.sh/xlsx@0.18.5";
 import {
   assessVoucherParseQuality,
+  csvUtf8BytesToMatrix,
   detectVoucherEasygoPreset,
   detectVoucherProviderPreset,
+  estimateReconciliationJoin,
   filterEasygoRowsByProvider,
   filterVoucherDataRows,
   matrixRowsFromVoucherHeaderScan,
+  matrixToVoucherRows,
   normalizeImportHeaderKey,
   normalizeVoucherNumber,
   type VoucherMapping,
   type VoucherRow,
 } from "../_shared/voucherImport.ts";
 import { resolveVoucherProviderProfile } from "../_shared/voucherProviderConfig.ts";
+import {
+  resolveVoucherStrategy,
+  strategySummaryForApi,
+} from "../_shared/voucherReconciliationStrategy.ts";
 import {
   heverPdfRowsToMatrix,
   parseHeverPolicePdfText,
@@ -184,6 +191,11 @@ async function pdfToMatrix(file: File, providerName: string | null): Promise<unk
   return heverPdfRowsToMatrix(rows);
 }
 
+function isCsvFile(file: File): boolean {
+  const name = file.name.toLowerCase();
+  return name.endsWith(".csv") || file.type === "text/csv";
+}
+
 function matrixFromWorkbook(bytes: Uint8Array, fileName: string): unknown[][] {
   const workbook = XLSX.read(bytes, { type: "array" });
   const sheetName = workbook.SheetNames[0];
@@ -207,7 +219,9 @@ async function parseUploadedFile(
   const bytes = new Uint8Array(await file.arrayBuffer());
   const matrix = side === "provider" && isPdfFile(file)
     ? await pdfToMatrix(file, providerName)
-    : matrixFromWorkbook(bytes, file.name);
+    : isCsvFile(file)
+      ? csvUtf8BytesToMatrix(bytes)
+      : matrixFromWorkbook(bytes, file.name);
 
   const detectEasygo = (headers: string[]) => detectVoucherEasygoPreset(headers, providerName);
   const detectProvider = (headers: string[]) => {
@@ -223,6 +237,13 @@ async function parseUploadedFile(
   const scanned = matrixRowsFromVoucherHeaderScan(matrix, detectPreset);
   if (scanned) {
     return { headers: scanned.headers, rows: scanned.rows as Row[], mappingPreset: detectPreset(scanned.headers) };
+  }
+
+  if (isCsvFile(file)) {
+    const { headers, rows } = matrixToVoucherRows(matrix);
+    const preset = detectPreset(headers);
+    if (!rows.length) throw new Error(`empty_sheet: "${file.name}" has no data rows after CSV parse`);
+    return { headers, rows: rows as Row[], mappingPreset: preset };
   }
 
   const headerCells = (matrix[0] ?? []).map((c) => normalizeImportHeaderKey(c));
@@ -281,8 +302,10 @@ async function resolveSideMapping(
   rows: Row[],
   explicitMapping: Mapping | null,
   presetMapping: Mapping | null,
+  providerName: string | null = null,
 ): Promise<ResolvedMapping | PendingReview> {
   const signature = headerSignature(headers);
+  const profile = providerName ? resolveVoucherProviderProfile(providerName) : null;
 
   if (explicitMapping) {
     const { error } = await supabase.from("import_mapping_memory").upsert(
@@ -302,6 +325,26 @@ async function resolveSideMapping(
   if (memErr) console.warn(`[reconcile-vouchers] mapping memory lookup failed for ${schemaKey}:`, memErr.message);
 
   if (mem?.approved_mapping) {
+    const memMapping = mem.approved_mapping as Mapping;
+    const profileVoucher = profile?.easygoVoucherHeader;
+    const staleEasygoMemory = schemaKey === "voucher_easygo_report"
+      && profileVoucher
+      && presetMapping?.voucherNumber === profileVoucher
+      && memMapping.voucherNumber
+      && memMapping.voucherNumber !== profileVoucher;
+
+    if (staleEasygoMemory) {
+      console.warn(
+        `[reconcile-vouchers] overriding stale easygo mapping memory (${memMapping.voucherNumber} → ${profileVoucher}) for provider "${providerName}"`,
+      );
+      const { error } = await supabase.from("import_mapping_memory").upsert(
+        { schema_key: schemaKey, header_signature: signature, approved_mapping: presetMapping, last_used_at: new Date().toISOString() },
+        { onConflict: "schema_key,header_signature" },
+      );
+      if (error) console.warn(`[reconcile-vouchers] failed to refresh stale mapping for ${schemaKey}:`, error.message);
+      return { resolved: true, mapping: presetMapping!, source: "preset" };
+    }
+
     // Best-effort, non-blocking — a failed bump never blocks the import.
     supabase.from("import_mapping_memory")
       .update({ last_used_at: new Date().toISOString() })
@@ -458,11 +501,13 @@ serve(async (req: Request) => {
       supabase, supabaseUrl, anonKey,
       "voucher_provider_report", "דוחות שוברים מספקים חיצוניים",
       providerParsed.headers, providerParsed.rows, explicitProviderMapping, providerParsed.mappingPreset,
+      providerRow.provider_name,
     );
     const easygoResolution = await resolveSideMapping(
       supabase, supabaseUrl, anonKey,
       "voucher_easygo_report", "דוח השוברים של EasyGo",
       easygoParsed.headers, easygoParsed.rows, explicitEasygoMapping, easygoParsed.mappingPreset,
+      providerRow.provider_name,
     );
 
     if (!providerResolution.resolved || !easygoResolution.resolved) {
@@ -497,6 +542,18 @@ serve(async (req: Request) => {
     if (!providerQuality.ok || !easygoQuality.ok) {
       const msgs = [providerQuality.message, easygoQuality.message].filter(Boolean);
       throw new Error(`parse_quality: ${msgs.join(" · ")}`);
+    }
+
+    const strategy = resolveVoucherStrategy(providerRow.provider_name);
+    const joinEstimate = estimateReconciliationJoin(
+      providerFiltered,
+      easygoFiltered,
+      providerResolution.mapping,
+      easygoResolution.mapping,
+      providerRow.match_mode,
+    );
+    if (!joinEstimate.ok) {
+      throw new Error(`parse_quality: ${joinEstimate.warning}`);
     }
 
     const providerRowsToInsert = providerFiltered.map((row) => {
@@ -564,6 +621,13 @@ serve(async (req: Request) => {
         rowsInserted:   { provider: providerRowsToInsert.length, easygo: easygoRowsToInsert.length },
         mappingSource:  { provider: providerResolution.source, easygo: easygoResolution.source },
         parseQuality:   { provider: providerQuality.parsedRatio, easygo: easygoQuality.parsedRatio },
+        joinEstimate:   {
+          hitRate: joinEstimate.hitRate,
+          providerHits: joinEstimate.providerHits,
+          providerSample: joinEstimate.providerSample,
+          packageMismatches: joinEstimate.packageMismatches,
+        },
+        strategy:       strategy ? strategySummaryForApi(strategy) : null,
         reconciliation, // the JSONB run_voucher_reconciliation() returns, unchanged
       }),
       { headers: { ...CORS, "Content-Type": "application/json" } },

@@ -378,6 +378,7 @@ export const VOUCHER_EASYGO_SCHEMA = {
 
 // Voucher preset aliases — mirrored in supabase/functions/_shared/voucherImport.ts.
 // reconcile-vouchers uses the server copy; these exports document the same rules.
+// Nofshonit: provider `מזהה לקוח` ↔ EZGO `CouponNo`; package `וריאנט` ↔ `CouponDesc`.
 export const VOUCHER_EASYGO_HEADER_ALIASES = {
   voucherNumber: ["מספר שובר", "מס שובר", "קוד שובר", "מספר קופון", "שובר", "CouponNo", "מזהה", "מזהה שובר"],
   packageType:   ["חבילה", "סוג חבילה", "סוג שובר", "שם חבילה", "package", "מוצר", "CouponDesc", "SIName"],
