@@ -15,7 +15,7 @@ import { supabase } from "../supabaseClient";
 const MATCH_META = {
   missing_in_provider: { label: "⚠️ חסר בדוח הספק — בדיקת הכנסה", color: "#791F1F", bg: "#FCEBEB", priority: 1 },
   package_mismatch:    { label: "🟠 חבילה לא תואמת",              color: "#7A4A06", bg: "#FFF3DC", priority: 2 },
-  duplicate_match:     { label: "🟣 התאמה כפולה",                 color: "#5B21B6", bg: "#F3E8FF", priority: 3 },
+  duplicate_match:     { label: "🟣 לא ניתן לבחור שובר",          color: "#5B21B6", bg: "#F3E8FF", priority: 3 },
   missing_in_easygo:   { label: "🔵 חסר ב-EasyGo",                color: "#1E40AF", bg: "#E8F0FE", priority: 4 },
   unparseable:         { label: "⚪ לא ניתן לפענוח",               color: "#4B5563", bg: "#F3F4F6", priority: 5 },
   matched:             { label: "🟢 תואם",                        color: "#27500A", bg: "#EAF3DE", priority: 6 },

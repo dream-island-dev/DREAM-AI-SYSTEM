@@ -62,7 +62,7 @@ const STRATEGIES: Record<VoucherProviderKey, VoucherReconciliationStrategy> = {
     ui: {
       easygoRole: "שוברים שהוזמנו במערכת — זיהוי לפי ת.ז. (מזהה)",
       providerRole: "מימושים בפועל — מזהה לקוח = ת.ז. (או CouponNo שממופה לת.ז.)",
-      joinRule: "תעודת זהות: מזהה (איזיגו) = מזהה לקוח (ספק) · כפילויות נפרדות לפי חבילה",
+      joinRule: "תעודת זהות: מזהה (איזיגו) = מזהה לקוח (ספק) · כפילויות לפי חבילה",
       easygoColumns: "מזהה (ת.ז.) · CouponDesc · מס. הזמנה",
       providerColumns: "מזהה לקוח · וריאנט · אסמכתא",
       packageRule: "וריאנט ↔ CouponDesc (דלאקס/קלאסיק) — מפריד כמה שוברים לאותה הזמנה",
