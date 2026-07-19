@@ -3022,6 +3022,7 @@ export default function WhatsAppInbox({
   user,
   focusPhone,
   focusGuestName,
+  focusInboxChannel,
   onFocusConsumed,
   initialRosterFilter,
   onRosterFilterConsumed,
@@ -3144,7 +3145,7 @@ export default function WhatsAppInbox({
   const guestMapReadyRef = useRef(false); // true after initial guests fetch — avoids stripping before load
   const profilesMapRef   = useRef(new Map()); // profiles.id → profiles.name, for claimedBy display
   const alertsReadyRef   = useRef(false); // skip sounds until initial fetchAll completes
-  const pendingFocusRef  = useRef(null);   // { phone, guestName? } — Requests Board deep-link
+  const pendingFocusRef  = useRef(null);   // { phone, guestName?, inboxChannel? } — deep-link
   const [navGuestName, setNavGuestName]   = useState(null); // header hint until contact hydrates
 
   // ── Pagination / on-demand history state (perf sprint) ───────────────────
@@ -4131,9 +4132,10 @@ export default function WhatsAppInbox({
     pendingFocusRef.current = {
       phone: canonicalizePhone(focusPhone),
       guestName: focusGuestName ?? null,
+      inboxChannel: focusInboxChannel === "whapi" ? "whapi" : "meta",
     };
     onFocusConsumed?.();
-  }, [focusPhone, focusGuestName, onFocusConsumed]);
+  }, [focusPhone, focusGuestName, focusInboxChannel, onFocusConsumed]);
 
   useEffect(() => {
     if (!initialRosterFilter) return;
@@ -4155,8 +4157,11 @@ export default function WhatsAppInbox({
     // Deterministically prefer the Meta thread (primary/default channel) so
     // the same phone always opens the same thread, instead of whichever one
     // happened to sort first in the roster array.
+    const preferredChannel = pending.inboxChannel === "whapi" ? "whapi" : "meta";
     const match =
-      phoneMatches.find((c) => (c.inbox_channel ?? "meta") === "meta") ?? phoneMatches[0];
+      phoneMatches.find((c) => (c.inbox_channel ?? "meta") === preferredChannel)
+      ?? phoneMatches.find((c) => (c.inbox_channel ?? "meta") === "meta")
+      ?? phoneMatches[0];
 
     if (match) {
       openContact(match);
@@ -4166,9 +4171,11 @@ export default function WhatsAppInbox({
     }
 
     if (!loading) {
-      // No thread exists for this phone on either channel yet — Meta is the
-      // primary/default channel, so a brand-new synthetic contact opens there.
-      openContact({ threadKey: `${pending.phone}::meta`, phone: pending.phone, inbox_channel: "meta" });
+      openContact({
+        threadKey: `${pending.phone}::${preferredChannel}`,
+        phone: pending.phone,
+        inbox_channel: preferredChannel,
+      });
       if (pending.guestName) setNavGuestName(pending.guestName);
       pendingFocusRef.current = null;
     }

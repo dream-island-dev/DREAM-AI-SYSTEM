@@ -1872,12 +1872,18 @@ export default function App({ initialPage = "dashboard" }) {
   // of duplicating nav logic.
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   // Deep-link from Requests Board (etc.) → open a specific WA thread in DREAM BOT.
-  const [inboxFocus, setInboxFocus] = useState(null); // { phone, guestName? } | null
+  const [inboxFocus, setInboxFocus] = useState(null); // { phone, guestName?, inboxChannel? } | null
   const [inboxRosterFocus, setInboxRosterFocus] = useState(null); // roster filter chip id | null
   const [checkinFocus, setCheckinFocus] = useState(null); // { timelineScope, customArrivalDate? } | null
   const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false);
-  const openDreamBotChat = useCallback(({ phone, guestName } = {}) => {
-    if (phone) setInboxFocus({ phone, guestName: guestName ?? null });
+  const openDreamBotChat = useCallback(({ phone, guestName, inboxChannel } = {}) => {
+    if (phone) {
+      setInboxFocus({
+        phone,
+        guestName: guestName ?? null,
+        inboxChannel: inboxChannel ?? null,
+      });
+    }
     setActivePage("wa_inbox");
     setMobileMenuOpen(false);
   }, []);
@@ -2017,7 +2023,11 @@ export default function App({ initialPage = "dashboard" }) {
     if (!pending?.page) return;
     if (!canAccessRoute(pending.page, user)) return;
     if (pending.phone) {
-      setInboxFocus({ phone: pending.phone, guestName: pending.guestName ?? null });
+      setInboxFocus({
+        phone: pending.phone,
+        guestName: pending.guestName ?? null,
+        inboxChannel: pending.inboxChannel ?? null,
+      });
     }
     setActivePage(pending.page);
     setMobileMenuOpen(false);
@@ -2278,6 +2288,7 @@ export default function App({ initialPage = "dashboard" }) {
             user={user}
             focusPhone={inboxFocus?.phone ?? null}
             focusGuestName={inboxFocus?.guestName ?? null}
+            focusInboxChannel={inboxFocus?.inboxChannel ?? null}
             onFocusConsumed={() => setInboxFocus(null)}
             initialRosterFilter={inboxRosterFocus}
             onRosterFilterConsumed={() => setInboxRosterFocus(null)}
@@ -2333,7 +2344,7 @@ export default function App({ initialPage = "dashboard" }) {
       case "requests_board":
         return <RequestsBoard user={user} onOpenDreamBotChat={openDreamBotChat} />;
       case "orit_cs_agent":
-        return guardPage("orit_cs_agent", <OritCustomerServicePanel user={user} />);
+        return guardPage("orit_cs_agent", <OritCustomerServicePanel user={user} onOpenDreamBotChat={openDreamBotChat} />);
       case "feedback_dashboard":
         return <GuestFeedbackTabs user={user} />;
       case "suites":

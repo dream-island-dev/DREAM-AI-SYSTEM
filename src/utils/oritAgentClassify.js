@@ -43,7 +43,7 @@ export function threadDisplayTitle(thread) {
     }
   }
   const cat = categoryMeta(thread.category);
-  const who = thread.from_name || thread.from_email || "אורח";
+  const who = thread.guest_contact_name || thread.from_name || thread.guest_contact_email || thread.from_email || "אורח";
   if (isGenericLeadFormSubject(thread.subject)) {
     return `${who} — ${cat.label}`;
   }

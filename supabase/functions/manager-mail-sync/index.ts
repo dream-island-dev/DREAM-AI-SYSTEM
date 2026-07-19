@@ -7,6 +7,10 @@ import {
 } from "../_shared/oritAgentMail.ts";
 import { analyzeOritThread } from "../_shared/oritAgentAi.ts";
 import { trySendAutoAck } from "../_shared/oritAgentSend.ts";
+import {
+  backfillOritGuestContacts,
+  enrichOritThreadGuestContact,
+} from "../_shared/oritGuestContactExtract.ts";
 import { fetchMailboxInboxMessages, isMailboxIngestConfigured } from "../_shared/mailIngest.ts";
 import { isImapConfigured, resolveImapConfig, testImapConnection } from "../_shared/imapMail.ts";
 
@@ -93,6 +97,7 @@ serve(async (req: Request) => {
       .in("connection_status", ["active", "disconnected", "error"]);
 
     let synced = 0;
+    let backfilled = 0;
     for (const rawMailbox of mailboxes ?? []) {
       const mailbox = rawMailbox as OritMailboxRow;
       if (!isMailboxIngestConfigured(mailbox)) continue;
@@ -179,15 +184,31 @@ serve(async (req: Request) => {
 
           synced += 1;
 
+          if (threadId) {
+            try {
+              await enrichOritThreadGuestContact(supabase, threadId, msg.bodyText);
+            } catch (extractErr) {
+              console.warn("[manager-mail-sync] guest contact extract failed:", (extractErr as Error).message);
+            }
+          }
+
           if (isNewThread && threadId) {
+            const { data: threadRow } = await supabase
+              .from("orit_agent_threads")
+              .select("from_email, from_name, guest_contact_email, guest_contact_name, subject, auto_ack_sent_at")
+              .eq("id", threadId)
+              .maybeSingle();
+
             try {
               await trySendAutoAck(supabase, mailbox, {
                 id: threadId,
-                from_email: msg.fromEmail,
-                from_name: msg.fromName,
-                subject: msg.subject,
+                from_email: threadRow?.from_email ?? msg.fromEmail,
+                from_name: threadRow?.from_name ?? msg.fromName,
+                guest_contact_email: threadRow?.guest_contact_email ?? null,
+                guest_contact_name: threadRow?.guest_contact_name ?? null,
+                subject: threadRow?.subject ?? msg.subject,
                 is_demo: false,
-                auto_ack_sent_at: null,
+                auto_ack_sent_at: threadRow?.auto_ack_sent_at ?? null,
               });
             } catch (ackErr) {
               console.warn("[manager-mail-sync] auto-ack failed:", (ackErr as Error).message);
@@ -199,6 +220,12 @@ serve(async (req: Request) => {
           } catch (aiErr) {
             console.warn("[manager-mail-sync] analyze failed:", (aiErr as Error).message);
           }
+        }
+
+        try {
+          backfilled += await backfillOritGuestContacts(supabase, mailbox.id);
+        } catch (bfErr) {
+          console.warn("[manager-mail-sync] guest contact backfill failed:", (bfErr as Error).message);
         }
 
         await supabase.from("orit_agent_mailbox").update({
@@ -215,7 +242,7 @@ serve(async (req: Request) => {
       }
     }
 
-    return new Response(JSON.stringify({ ok: true, synced }), {
+    return new Response(JSON.stringify({ ok: true, synced, backfilled }), {
       status: 200,
       headers: { ...CORS, "Content-Type": "application/json" },
     });

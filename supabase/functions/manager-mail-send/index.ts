@@ -60,6 +60,8 @@ serve(async (req: Request) => {
         id: thread.id,
         from_email: thread.from_email,
         from_name: thread.from_name,
+        guest_contact_email: thread.guest_contact_email ?? null,
+        guest_contact_name: thread.guest_contact_name ?? null,
         subject: thread.subject,
         is_demo: thread.is_demo,
       },

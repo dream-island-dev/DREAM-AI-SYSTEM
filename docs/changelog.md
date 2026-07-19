@@ -1,3 +1,7 @@
+2026-07-19 | Orit CS — guest contact extract from form body + WhatsApp inbox link | migration 231 `guest_contact_*` on `orit_agent_threads`; `_shared/oritGuestContactExtract.ts` parses שם/טלפון/דוא"ל from website form emails; «שלחי» + auto-ack reply to extracted email; sync backfills existing threads; UI shows guest details + «💬 וואטסאפ באינבוקס» (Whapi). Deploy: db push + `manager-mail-sync` + `manager-mail-send` + `manager-mail-auto-ack` + frontend.
+
+2026-07-19 | Guest bot time greetings + tighter RAG injection | `_shared/guestTimeGreeting.ts`: Israel time-of-day greetings (Tier-0 היי/שלום Meta+Whapi + LLM context line); `resolveGuestBrainKnowledgeInjection` — no full KB dump on chitchat RAG miss (factual miss still handoff). Deploy: `whatsapp-webhook` + `whapi-webhook`.
+
 2026-07-19 | Automation room-assignment gate — no suite/day-pass room, no cron | `_shared/suiteNames.ts`: `isEffectiveSuiteGuest` = canonical suite room only; Premium Day always day-pass; `missing_room_assignment` blocks all pipeline stages in `checkEligibility` + `whatsapp-send` (manual/room_ready exempt). ACC: skip label + premium-day conflict badge. Deploy: `whatsapp-send` + `whatsapp-cron` + `automation-queue` + frontend.
 
 2026-07-19 | Guest bot meals — breakfast universal from KB, lunch/dinner from profile | Breakfast Tier-0 + LLM: `08:00–10:30` (etc.) from knowledge_base for all guests; `breakfast_time` ignored for replies. Lunch/dinner answers use `lunch_time`/`dinner_time` from guest profile only. Deploy: `whatsapp-webhook` + `whapi-webhook`.

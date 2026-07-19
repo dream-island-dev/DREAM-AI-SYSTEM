@@ -7,11 +7,17 @@ import {
   shouldAutoAckInbound,
   type OritMailboxRow,
 } from "./oritAgentMail.ts";
+import {
+  resolveOritReplyEmail,
+  resolveOritReplyName,
+} from "./oritGuestContactExtract.ts";
 
 export type OritThreadSendTarget = {
   id: string;
   from_email: string;
   from_name: string | null;
+  guest_contact_email?: string | null;
+  guest_contact_name?: string | null;
   subject: string;
   is_demo: boolean;
 };
@@ -56,9 +62,13 @@ export async function deliverOritThreadEmail(
       }).eq("id", mailbox.id);
     });
 
+    const toEmail = resolveOritReplyEmail(thread.from_email, thread.guest_contact_email);
+    const toName = resolveOritReplyName(thread.from_name, thread.guest_contact_name);
+    if (!toEmail) return { sent: false, error: "missing_reply_email" };
+
     const externalKey = await sendGraphReply(accessToken, {
-      toEmail: thread.from_email,
-      toName: thread.from_name,
+      toEmail,
+      toName,
       subject: thread.subject,
       bodyText: finalText,
     });
@@ -89,11 +99,12 @@ export async function trySendAutoAck(
 ): Promise<boolean> {
   if (!mailbox.auto_ack_enabled) return false;
   if (thread.auto_ack_sent_at) return false;
-  if (!shouldAutoAckInbound(thread.from_email, thread.is_demo, thread.subject)) return false;
+  const replyEmail = resolveOritReplyEmail(thread.from_email, thread.guest_contact_email);
+  if (!shouldAutoAckInbound(replyEmail, thread.is_demo, thread.subject)) return false;
 
   const body = renderAutoAckTemplate(
     mailbox.auto_ack_template,
-    thread.from_name || "",
+    resolveOritReplyName(thread.from_name, thread.guest_contact_name) || "",
     thread.subject,
   );
 

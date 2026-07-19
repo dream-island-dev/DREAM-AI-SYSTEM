@@ -10,6 +10,11 @@ import {
   categoryMeta,
   buildQuickAckText,
 } from "../utils/oritAgentClassify";
+import {
+  oritThreadGuestLabel,
+  resolveOritReplyEmail,
+  resolveOritReplyName,
+} from "../utils/oritGuestContactExtract";
 
 const URGENCY_META = {
   critical: { label: "🔴 קריטי", bg: "#FEE2E2", color: "#B91C1C" },
@@ -49,7 +54,7 @@ function sortThreads(rows) {
   });
 }
 
-export default function OritCustomerServicePanel({ user }) {
+export default function OritCustomerServicePanel({ user, onOpenDreamBotChat }) {
   const isMobile = useIsMobile(768);
   const [mobileScreen, setMobileScreen] = useState("list"); // "list" | "detail"
   const detailHistoryPushedRef = useRef(false);
@@ -360,7 +365,9 @@ export default function OritCustomerServicePanel({ user }) {
       if (!data?.ok) throw new Error(data?.hint || data?.error || "שליחה נכשלה");
 
       if (data.sent) {
-        showToast("ok", markHandled ? "נשלח לאורח וסומן כטופל" : "נשלח לאורח במייל");
+        const targetEmail = selected ? resolveOritReplyEmail(selected.from_email, selected.guest_contact_email) : "";
+        const sentLabel = targetEmail ? `נשלח ל־${targetEmail}` : "נשלח לאורח במייל";
+        showToast("ok", markHandled ? `${sentLabel} וסומן כטופל` : sentLabel);
         if (markHandled) {
           setReplyText("");
           goBackToList();
@@ -388,7 +395,7 @@ export default function OritCustomerServicePanel({ user }) {
 
   const handleQuickAck = async (sendNow = false) => {
     if (!selected) return;
-    const text = buildQuickAckText(selected.from_name);
+    const text = buildQuickAckText(resolveOritReplyName(selected.from_name, selected.guest_contact_name));
     setReplyText(text);
     if (sendNow && canSendFromXos) {
       await handleSendReply({ markHandled: false, text });
@@ -526,7 +533,7 @@ export default function OritCustomerServicePanel({ user }) {
               {t.is_demo && <span style={{ fontSize: 11, color: "var(--text-muted)" }}>דמו</span>}
             </div>
             <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>{threadDisplayTitle(t)}</div>
-            <div style={{ fontSize: 13, color: "var(--text-muted)" }}>{t.from_name || t.from_email}</div>
+            <div style={{ fontSize: 13, color: "var(--text-muted)" }}>{oritThreadGuestLabel(t)}</div>
             {sla && (
               <div style={{ fontSize: 12, marginTop: 6, color: sla.startsWith("עבר") ? "#B91C1C" : "#047857", fontWeight: 600 }}>
                 {sla}
@@ -617,8 +624,23 @@ export default function OritCustomerServicePanel({ user }) {
             </div>
             <div style={{ fontSize: isMobile ? 16 : 18, fontWeight: 800 }}>{threadDisplayTitle(selected)}</div>
             <div style={{ color: "var(--text-muted)", marginTop: 4, fontSize: isMobile ? 13 : 14 }}>
-              {selected.from_name} · {selected.from_email} · {fmtDt(selected.received_at)}
+              {oritThreadGuestLabel(selected)} · {fmtDt(selected.received_at)}
             </div>
+            {(selected.guest_contact_email || selected.guest_contact_phone || selected.guest_contact_name) && (
+              <div style={{ marginTop: 10, padding: 10, borderRadius: 8, background: "#EFF6FF", fontSize: 13, lineHeight: 1.5 }}>
+                <div style={{ fontWeight: 700, marginBottom: 4 }}>פרטי אורח מהפנייה</div>
+                {selected.guest_contact_name && <div>שם: {selected.guest_contact_name}</div>}
+                {selected.guest_contact_email && (
+                  <div>מייל: {selected.guest_contact_email}</div>
+                )}
+                {selected.guest_contact_phone && (
+                  <div>טלפון: {selected.guest_contact_phone}</div>
+                )}
+                <div style={{ marginTop: 6, color: "#1D4ED8", fontWeight: 600 }}>
+                  שליחת מייל תגיע ל: {resolveOritReplyEmail(selected.from_email, selected.guest_contact_email)}
+                </div>
+              </div>
+            )}
             {selected.subject && (
               <div style={{ color: "var(--text-muted)", marginTop: 4, fontSize: 12 }}>
                 נושא מייל: {selected.subject}
@@ -694,6 +716,22 @@ export default function OritCustomerServicePanel({ user }) {
             </button>
             <button type="button" className="btn" disabled={busy} onClick={handleSnooze} style={{ minHeight: 44 }} title="דחי למחר / מאוחר יותר">
               😴 דחי למחר
+            </button>
+            <button
+              type="button"
+              className="btn"
+              disabled={busy || !selected.guest_contact_phone || !onOpenDreamBotChat}
+              onClick={() => onOpenDreamBotChat?.({
+                phone: selected.guest_contact_phone,
+                guestName: resolveOritReplyName(selected.from_name, selected.guest_contact_name),
+                inboxChannel: "whapi",
+              })}
+              style={{ minHeight: 44 }}
+              title={selected.guest_contact_phone
+                ? "פתיחת שיחת וואטסאפ באינבוקס (מכשיר הסוויטות)"
+                : "לא זוהה טלפון בגוף הפנייה"}
+            >
+              💬 וואטסאפ באינבוקס
             </button>
           </div>
 
