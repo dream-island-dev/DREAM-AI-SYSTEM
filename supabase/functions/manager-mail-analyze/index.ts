@@ -38,7 +38,7 @@ serve(async (req: Request) => {
       });
     }
 
-    const { threadId } = await req.json();
+    const { threadId, forceLlm: forceLlmBody } = await req.json();
     if (!threadId) {
       return new Response(JSON.stringify({ ok: false, error: "threadId required" }), {
         status: 200,
@@ -59,7 +59,7 @@ serve(async (req: Request) => {
       });
     }
 
-    const forceLlm = thread.category === "complaint";
+    const forceLlm = forceLlmBody === true || thread.category === "complaint";
     const analysis = await runOritThreadAnalysis(supabase, thread.mailbox_id, thread, { forceLlm });
     await persistOritThreadAnalysis(supabase, threadId, analysis, userData.user.id, {
       from_name: thread.from_name,

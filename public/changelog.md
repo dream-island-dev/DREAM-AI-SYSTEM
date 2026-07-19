@@ -1,3 +1,14 @@
+2026-07-19 | Orit CS — Sigal↔UI comfort loop (link + auto-drafts + send sync) | לינק ממשק בכל התראת סיגל; פתיחה מלינק → ניתוח אוטומטי רק בלי טיוטות (LLM לתלונות בלבד); אחרי שליחה מהממשק → WA «שלחת ✓» לסיגל (`oritSigalUiNotify.ts`).
+2026-07-19 | Orit CS — restore AI suggestion cards in inbox UI | `OritCustomerServicePanel.js` — כרטיסי הצעות (עד 2 וריאנטים) מעל compose; «הצעות» = `forceLlm` + טעינת הצעה ראשונה; `manager-mail-analyze` מכבד `forceLlm` ב-body.
+2026-07-19 | Orit Sigal — two-phase ack genius | `composeSigalComplaintBriefing` phase-aware: שלב 1 «קיבלנו את פנייתך» דחוף בלבד → שלב 2 מכתב מלא אחרי ack; loop/status/guide מיושרים.
+2026-07-19 | Orit Sigal — softer WA copy + mobile app link | `oritSigalBriefing`/`oritSigalGuide` ניסוח שיחה; `buildOritCsThreadDeepLink` + לינק `orit_cs_agent&thread=` בהתראה/תזכורות/«מה המצב»; WA מהיר + ממשק בפלאפון לעריכה.
+2026-07-19 | Restaurant board phase 1 | שם «לוח מסעדה»; תיאום צהריים (פנסיון מלא) + ערב; אורח ידני (`RestaurantWalkInModal`); סינכרון `lunch_time`/`dinner_time` לפורטל+בוט.
+2026-07-19 | Restaurant dinner editable WA paths | 5 מסלולים (שאל/אישור/חופשי/שמור/שמור+הודע) + עריכת טקסט per-send + נוסחי ברירת מחדל ב-bot_config (migration 249).
+2026-07-19 | Restaurant dinner board WA coordination | לוח ערב: שאלת אורח («מתי נוח?» + סלוטים), שמור+הודע, אישור — `restaurantDinnerMessaging.js` + `inbox_reply`.
+2026-07-19 | Restaurant dinner board + waiter service pulse | `restaurant_dinner_board` kiosk (`profiles.restaurant_access`) — עדכון `dinner_time`/`meal_location` בפרופיל אורח (בוט+פורטל); סקר מלצרים ציבורי `/pulse/:token` (עריכה ב-משוב→סבב מלצרים); migration 248 + `waiter-pulse-data`/`waiter-pulse-submit`.
+2026-07-19 | Orit CS — Sigal pulse WA (no wall-of-text) | התראות תלונה = pulse קצר (שלב ①/② + פקודות); טיוטות רק ב«תראי לי»/«תשובה מלאה»/«כן שלחי».
+2026-07-19 | Orit CS — Sigal AI draft refine on instruction | `refineOritDraftByInstruction` + `isOritRefineInstruction` — אורית «תסדרי…» ב-WA → טיוטה מחודשת → אישור «כן שלחי»; שמירה ל-`orit_agent_drafts`.
+2026-07-19 | Orit CS — Inbox mode UI | `OritCustomerServicePanel.js` — היסטוריה גלילה + compose יחיד למטה (ack/full_reply); כפתורי שליחה צמודים לטקסט; פרטי פנייה מתקפלים; בועות אורח/אורית + 📧/📱.
 2026-07-19 | Orit CS P0 — תשובת אורח + שליחה בסוויטות | `notifyOritGuestReplied` בלי חסימת טיוטה; באנר `guest_replied` ב-UI; כפתור «שלח דרך מכשיר הסוויטות» + `manager-mail-send` channel `whatsapp_bridge`; WA outbound ב-`orit_agent_messages`.
 2026-07-19 | Orit CS — שרשור מייל + לולאת סיגל דחופות | Graph `/reply` על הודעה מקורית (`oritThreadMatch.ts` fallback אימייל+נושא); תשובת אורח → אותו thread + `runOritThreadFollowUp` (בלי סיווג מחדש); `runSigalUrgentComplaintLoop` phase-aware כל ~15דק ב-`whatsapp-cron` + mail-sync.
 2026-07-19 | Orit CS — Sigal evening digest + morning 07:00 | migration 247 `digest_kind` + cron `0 4`/`0 15` UTC; `manager-evening-digest` + `composeSigalEveningActionPlan`; morning moved from 06:30 to 07:00 Israel.
@@ -547,3 +558,4 @@
 2026-07-19 | _shared/*.test.ts | Test fixtures aligned with canonical suite rooms (`isEffectiveSuiteGuest`) and dining/checkout behavior changes; 348/348 _shared tests pass.
 2026-07-19 | auth.js + oritCsAgentAccess.ts + migration 244 + manager-mail-* + orit-cs-bootstrap | Orit CS Agent: `super_admin` תמיד; שאר המשתמשים רק עם `orit_cs_agent_access` (עמודת סוכן אורית); בוטל bypass ל-admin רגיל; RLS + Edge Functions מיושרים.
 2026-07-19 | closeOritThread.ts + OritCustomerServicePanel + oritAgentClassify + manager-mail-sync/send + oritAgentSigalChat | תור פתוח/טופלו: סגירה אחידה (UI+סיגל), טאב «טופלו», פתיחה מחדש כשאורח משיב אחרי סגירה.
+2026-07-19 | oritSigalBriefing + oritAgentSigalChat + oritSigalGuide + oritAgentAi | סיגל→אורית בוואטסאפ בלבד: בלי «לעריכה במחשב»/קישורי orit_cs_agent; «תסדרי…»/«מה המצב»/«עזרה» מהטלפון.

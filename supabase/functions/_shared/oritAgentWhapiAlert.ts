@@ -1,7 +1,7 @@
 // Sigal → Orit urgent Whapi DM when a classified email needs attention.
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { buildStaffAppDeepLink } from "./guestAlertWhapiNotify.ts";
+import { composeOritCsMobileLinkLine } from "./oritGuestOutbound.ts";
 import { sendWhapiText } from "./whapiSend.ts";
 
 export type OritAlertMailbox = {
@@ -81,43 +81,25 @@ function alertHeadline(category: string, urgency: string): string {
   return `${emoji} ${categoryHe} · ${urgencyHe}`;
 }
 
-function sigalDoneLines(thread: OritAlertThread): string[] {
-  const lines = [
-    "✓ סיווגתי וסיכמתי את הפנייה",
-  ];
-  if (thread.auto_ack_sent_at) {
-    lines.push("✓ שלחתי לאורח/ת אישור קבלה במייל (לפי בחירתך)");
-  } else if ((thread as { orit_decision?: string | null }).orit_decision === "whatsapp") {
-    lines.push("✓ בחרת לטפל בוואטסאפ — לא שלחתי מייל אוטומטי");
-  } else {
-    lines.push("✓ ממתינה לבחירתך: מייל אוטומטי או וואטסאפ");
-  }
-  lines.push("✓ הכנתי לך קישור ישיר לתשובה במערכת");
-  return lines;
+function truncate(text: string, max: number): string {
+  const t = (text || "").trim();
+  if (t.length <= max) return t;
+  return `${t.slice(0, max)}…`;
 }
 
 export function composeOritUrgentAlert(thread: OritAlertThread): string {
-  const summary = thread.ai_summary?.trim()
-    || thread.subject?.trim()
-    || "פנייה שדורשת את תשומת לבך.";
-  const link = buildStaffAppDeepLink({ page: "orit_cs_agent", threadId: thread.id });
+  const summary = truncate(
+    thread.ai_summary?.trim() || thread.subject?.trim() || "פנייה שדורשת טיפול.",
+    120,
+  );
+  const urg = thread.urgency === "critical" ? "🔴" : thread.urgency === "high" ? "🟠" : "🟡";
 
   return [
-    "היי אורית 💜",
-    "כאן סיגל — העוזרת האישית שלך לתיבת השירות.",
-    "",
-    "יש פנייה שממתינה לטיפול שלך:",
-    "",
+    `היי אורית 💜 ${urg} ${alertHeadline(thread.category, thread.urgency)}`,
     formatGuestContactLine(thread),
-    alertHeadline(thread.category, thread.urgency),
-    "",
     summary,
-    "",
-    "מה עשיתי בשבילך:",
-    ...sigalDoneLines(thread),
-    "",
-    "👉 לחצי כאן לפתיחה, תשובה וסימון כטופל:",
-    link,
+    "אעדכן כאן עם השלבים — «תראי לי» / «תשובה מלאה»",
+    composeOritCsMobileLinkLine(thread.id),
   ].join("\n");
 }
 

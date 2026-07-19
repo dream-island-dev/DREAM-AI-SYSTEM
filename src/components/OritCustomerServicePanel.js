@@ -128,6 +128,7 @@ function fmtReceivedLabel(iso) {
 }
 
 const BUBBLE_PREVIEW_MAX = 480;
+const SUGGESTION_PREVIEW_MAX = 420;
 
 function messageBubbleMeta(m) {
   const wa = m.external_key?.startsWith?.("wa-");
@@ -160,11 +161,14 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
   const [whatsappPhone, setWhatsappPhone] = useState("");
   const [alertEnabled, setAlertEnabled] = useState(true);
   const focusAppliedRef = useRef(false);
+  const autoAnalyzeRef = useRef(null);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [replyText, setReplyText] = useState("");
   const [detailsExpanded, setDetailsExpanded] = useState(false);
   const [expandedMessages, setExpandedMessages] = useState({});
+  const [expandedSuggestions, setExpandedSuggestions] = useState({});
   const [activeTab, setActiveTab] = useState("recent");
   const [queueSort, setQueueSort] = useState("recent");
   const [toast, setToast] = useState(null);
@@ -259,17 +263,23 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
       setMessages([]);
       setDrafts([]);
       setAckText("");
+      setDetailLoading(false);
       return;
     }
-    const [{ data: msgs }, { data: drs }] = await Promise.all([
-      supabase.from("orit_agent_messages").select("*").eq("thread_id", threadId).order("received_at", { ascending: true }),
-      supabase.from("orit_agent_drafts").select("*").eq("thread_id", threadId).in("status", ["suggested", "edited"]).order("created_at", { ascending: false }),
-    ]);
-    setMessages(msgs ?? []);
-    setDrafts(drs ?? []);
-    const ackDraft = (drs ?? []).find((d) => d.draft_kind === "ack");
-    setAckText(sanitizeOritAckDraft(ackDraft?.final_text || ackDraft?.suggested_text || ""));
-    // replyText is filled only when Orit explicitly edits/copies — never auto from draft
+    setDetailLoading(true);
+    try {
+      const [{ data: msgs }, { data: drs }] = await Promise.all([
+        supabase.from("orit_agent_messages").select("*").eq("thread_id", threadId).order("received_at", { ascending: true }),
+        supabase.from("orit_agent_drafts").select("*").eq("thread_id", threadId).in("status", ["suggested", "edited"]).order("created_at", { ascending: false }),
+      ]);
+      setMessages(msgs ?? []);
+      setDrafts(drs ?? []);
+      const ackDraftRow = (drs ?? []).find((d) => d.draft_kind === "ack");
+      setAckText(sanitizeOritAckDraft(ackDraftRow?.final_text || ackDraftRow?.suggested_text || ""));
+      // replyText is filled only when Orit explicitly edits/copies — never auto from draft
+    } finally {
+      setDetailLoading(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -297,6 +307,7 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
   useEffect(() => {
     loadThreadDetail(selectedId);
     setExpandedMessages({});
+    setExpandedSuggestions({});
     setDetailsExpanded(false);
   }, [selectedId, loadThreadDetail]);
 
@@ -351,9 +362,14 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
     [drafts],
   );
 
-  const fullReplyDraft = useMemo(
-    () => drafts.find((d) => d.draft_kind === "full_reply" || !d.draft_kind) ?? null,
+  const fullReplyDrafts = useMemo(
+    () => drafts.filter((d) => d.draft_kind === "full_reply" || !d.draft_kind),
     [drafts],
+  );
+
+  const fullReplyDraft = useMemo(
+    () => fullReplyDrafts[0] ?? null,
+    [fullReplyDrafts],
   );
 
   const workflowMeta = useMemo(
@@ -379,6 +395,13 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
     return "full_reply";
   }, [selected?.auto_ack_sent_at]);
 
+  const composeSuggestions = useMemo(() => {
+    if (composePhase === "ack") {
+      return ackDraft ? [ackDraft] : [];
+    }
+    return fullReplyDrafts;
+  }, [composePhase, ackDraft, fullReplyDrafts]);
+
   const composeText = composePhase === "ack" ? ackText : replyText;
   const setComposeText = composePhase === "ack" ? setAckText : setReplyText;
 
@@ -388,15 +411,19 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
       ? "תשובה לאורח/ת — ערכי ושלחי…"
       : "טיוטה לפני העתקה ל-Outlook…";
 
-  const loadDraftToCompose = useCallback(() => {
-    if (composePhase === "ack" && ackDraft?.suggested_text) {
-      setAckText(sanitizeOritAckDraft(ackDraft.suggested_text));
+  const loadDraftToCompose = useCallback((draft) => {
+    const target = draft || (composePhase === "ack" ? ackDraft : fullReplyDraft);
+    if (!target?.suggested_text) return;
+    if (composePhase === "ack") {
+      setAckText(sanitizeOritAckDraft(target.suggested_text));
       return;
     }
-    if (fullReplyDraft?.suggested_text) {
-      setReplyText(fullReplyDraft.suggested_text);
-    }
+    setReplyText(target.suggested_text);
   }, [composePhase, ackDraft, fullReplyDraft]);
+
+  const toggleSuggestionExpanded = useCallback((draftId) => {
+    setExpandedSuggestions((prev) => ({ ...prev, [draftId]: !prev[draftId] }));
+  }, []);
 
   const toggleMessageExpanded = useCallback((msgId) => {
     setExpandedMessages((prev) => ({ ...prev, [msgId]: !prev[msgId] }));
@@ -471,28 +498,74 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
     }
   };
 
-  const handleAnalyze = async () => {
-    if (!selectedId) return;
+  const runThreadAnalyze = useCallback(async ({ silent = false, forceLlm = true } = {}) => {
+    if (!selectedId) return false;
     setBusy(true);
     try {
       const { data, error } = await supabase.functions.invoke("manager-mail-analyze", {
-        body: { threadId: selectedId },
+        body: { threadId: selectedId, forceLlm },
       });
       if (error) throw error;
       if (!data?.ok) throw new Error(data?.error || "ניתוח נכשל");
       if (data.llm_skipped) {
-        showToast("ok", "ליד/שגרתי — סווג בלי AI (חיסכון בקרדיטים). לתלונה: סמני קטגוריה תלונה ונסי שוב.");
+        if (!silent) {
+          showToast("ok", "ליד/שגרתי — סווג בלי AI (חיסכון בקרדיטים). לתלונה: סמני קטגוריה תלונה ונסי שוב.");
+        }
       } else {
-        showToast("ok", "✨ הסוכן עדכן סיכום וטיוטות בסגנון אורית");
+        if (!silent) {
+          showToast("ok", "✨ הסוכן עדכן סיכום וטיוטות בסגנון אורית");
+        } else {
+          showToast("ok", "✨ הוכנו הצעות AI בממשק");
+        }
+        const phase = selected?.auto_ack_sent_at ? "full_reply" : "ack";
+        const suggestions = Array.isArray(data.analysis?.suggestions) ? data.analysis.suggestions : [];
+        if (phase === "full_reply" && suggestions[0] && !replyText.trim()) {
+          setReplyText(suggestions[0]);
+        } else if (phase === "ack" && data.analysis?.ackSuggestion && !ackText.trim()) {
+          setAckText(sanitizeOritAckDraft(data.analysis.ackSuggestion));
+        }
       }
       await loadMailbox();
       await loadThreadDetail(selectedId);
+      return true;
     } catch (e) {
-      showToast("err", e.message);
+      if (!silent) showToast("err", e.message);
+      return false;
     } finally {
       setBusy(false);
     }
-  };
+  }, [selectedId, selected, replyText, ackText, loadMailbox, loadThreadDetail, showToast]);
+
+  const handleAnalyze = () => runThreadAnalyze({ silent: false, forceLlm: true });
+
+  useEffect(() => {
+    if (!focusThreadId || selectedId !== focusThreadId) return;
+    if (!selected || isOritThreadClosed(selected)) return;
+    if (loading || detailLoading || busy) return;
+    if (autoAnalyzeRef.current === selectedId) return;
+
+    const needsAckDraft = !selected.auto_ack_sent_at;
+    const hasDrafts = needsAckDraft
+      ? drafts.some((d) => d.draft_kind === "ack")
+      : drafts.some((d) => d.draft_kind === "full_reply" || !d.draft_kind);
+
+    autoAnalyzeRef.current = selectedId;
+    if (hasDrafts) return;
+
+    runThreadAnalyze({
+      silent: true,
+      forceLlm: selected.category === "complaint",
+    });
+  }, [
+    focusThreadId,
+    selectedId,
+    selected,
+    drafts,
+    loading,
+    detailLoading,
+    busy,
+    runThreadAnalyze,
+  ]);
 
   const handleSnooze = async () => {
     if (!selectedId) return;
@@ -1129,7 +1202,7 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
                   📱 סיגל
                 </button>
                 {(composePhase === "ack" ? ackDraft?.suggested_text : fullReplyDraft?.suggested_text) && (
-                  <button type="button" className="btn" disabled={busy} onClick={loadDraftToCompose} style={{ minHeight: 36, fontSize: 13 }}>
+                  <button type="button" className="btn" disabled={busy} onClick={() => loadDraftToCompose()} style={{ minHeight: 36, fontSize: 13 }}>
                     📝 טעני טיוטה
                   </button>
                 )}
@@ -1159,6 +1232,129 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
                   💬 אינבוקס
                 </button>
               </div>
+
+              {composeSuggestions.length > 0 && (
+                <div style={{ marginBottom: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-muted)" }}>
+                    ✨ הצעות AI ({composeSuggestions.length})
+                    {composeSuggestions.length > 1 ? " — בחרי וריאנט" : ""}
+                  </div>
+                  {composeSuggestions.map((draft, index) => {
+                    const text = draft.suggested_text || "";
+                    const expanded = expandedSuggestions[draft.id];
+                    const needsExpand = text.length > SUGGESTION_PREVIEW_MAX;
+                    const preview = expanded || !needsExpand
+                      ? text
+                      : `${text.slice(0, SUGGESTION_PREVIEW_MAX)}…`;
+                    const variantLabel = composeSuggestions.length > 1
+                      ? (index === 0 ? "הצעה מומלצת" : `וריאנט ${index + 1}`)
+                      : "הצעה";
+                    return (
+                      <div
+                        key={draft.id}
+                        style={{
+                          border: "1px solid var(--border)",
+                          borderRadius: 10,
+                          background: index === 0 ? "#FFFBEB" : "#F9FAFB",
+                          padding: 10,
+                        }}
+                      >
+                        <div style={{ fontSize: 11, fontWeight: 700, color: "#92400E", marginBottom: 6 }}>
+                          {variantLabel}
+                        </div>
+                        <div style={{ whiteSpace: "pre-wrap", fontSize: 14, lineHeight: 1.5, marginBottom: 8 }}>
+                          {preview}
+                        </div>
+                        {needsExpand && (
+                          <button
+                            type="button"
+                            onClick={() => toggleSuggestionExpanded(draft.id)}
+                            style={{
+                              border: "none",
+                              background: "transparent",
+                              color: "#1D4ED8",
+                              fontSize: 12,
+                              fontWeight: 600,
+                              cursor: "pointer",
+                              padding: 0,
+                              marginBottom: 8,
+                              fontFamily: "Heebo, sans-serif",
+                            }}
+                          >
+                            {expanded ? "הצג פחות ▲" : "הצג הכל ▼"}
+                          </button>
+                        )}
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                          <button
+                            type="button"
+                            className="btn"
+                            disabled={busy}
+                            onClick={() => loadDraftToCompose(draft)}
+                            style={{ minHeight: 36, fontSize: 13 }}
+                          >
+                            ✏️ ערכי
+                          </button>
+                          <button
+                            type="button"
+                            className="btn"
+                            disabled={busy}
+                            onClick={() => handleCopyReply(text)}
+                            style={{ minHeight: 36, fontSize: 13 }}
+                          >
+                            📋 העתקי
+                          </button>
+                          {canSendFromXos && (
+                            <button
+                              type="button"
+                              className="btn btn-primary"
+                              disabled={
+                                busy
+                                || selected.status === "handled"
+                                || (composePhase === "ack" && !resolveOritReplyEmail(selected.from_email, selected.guest_contact_email))
+                              }
+                              onClick={() => {
+                                if (composePhase === "ack") {
+                                  handleSendReply({
+                                    markHandled: false,
+                                    text,
+                                    draftKind: "ack",
+                                    draftId: draft.id,
+                                  });
+                                } else {
+                                  handleSendReply({
+                                    markHandled: false,
+                                    text,
+                                    draftKind: "full_reply",
+                                    draftId: draft.id,
+                                  });
+                                }
+                              }}
+                              style={{ minHeight: 36, fontSize: 13 }}
+                            >
+                              📧 שלחי מ-XOS
+                            </button>
+                          )}
+                          {hasGuestPhone && (
+                            <button
+                              type="button"
+                              className="btn"
+                              disabled={busy || selected.status === "handled"}
+                              onClick={() => handleSendViaSuitesDevice({
+                                text,
+                                draftKind: composePhase === "ack" ? "ack" : "full_reply",
+                                draftId: draft.id,
+                              })}
+                              style={{ minHeight: 36, fontSize: 13 }}
+                            >
+                              📱 שלח בסוויטות
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
 
               <textarea
                 value={composeText}

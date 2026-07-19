@@ -2,7 +2,6 @@
 // Full transparency: show exact outbound text → explicit confirm → send.
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { buildStaffAppDeepLink } from "./guestAlertWhapiNotify.ts";
 import type { OritMailboxRow } from "./oritAgentMail.ts";
 import {
   resolveOritReplyEmail,
@@ -11,10 +10,12 @@ import {
 import { isOritCsStaffPhone } from "./oritAgentStaffPhone.ts";
 import {
   composeSigalAckSentFollowUp,
+  SIGAL_ACK_GUEST_PHRASE,
   sigalGuestLabel,
 } from "./oritSigalBriefing.ts";
 import {
   buildOritWaInboxLink,
+  composeOritCsMobileLinkLine,
   composeSigalWaSentFollowUp,
   deliverOritGuestWhatsapp,
   resolveOritOutboundChannel,
@@ -27,6 +28,9 @@ import {
   type OritAlertMailbox,
 } from "./oritAgentWorkflow.ts";
 import { deliverOritThreadEmail } from "./oritAgentSend.ts";
+import { refineOritDraftByInstruction } from "./oritAgentAi.ts";
+import { fetchOritThreadInbound } from "./oritThreadAnalysis.ts";
+import { pickStyleSamplesForCategory } from "./oritAgentAnalyzePolicy.ts";
 import { closeOritThread } from "./closeOritThread.ts";
 import { sendWhapiText } from "./whapiSend.ts";
 import {
@@ -36,6 +40,8 @@ import {
   SIGAL_GUIDE_HELP,
   SIGAL_INTRO_SUMMARY,
   resolveOritSigalIntent,
+  isLikelyCustomDraft,
+  isOritRefineInstruction,
 } from "./oritSigalGuide.ts";
 
 export type OritChatPending = {
@@ -75,11 +81,30 @@ async function sendWhapiLongText(phone: string, text: string): Promise<void> {
   if (chunk) await sendWhapiText(phone, chunk, { noLinkPreview: true });
 }
 
-function threadLink(threadId: string): string {
-  return buildStaffAppDeepLink({ page: "orit_cs_agent", threadId });
+export function composeSigalConfirmPrompt(
+  action: OritChatPending["action"],
+  guest: string,
+  contactLabel: string,
+  bodyText: string,
+  _threadId: string,
+): string {
+  const viaWa = action === "confirm_whatsapp_ack" || action === "confirm_whatsapp_full";
+  const phase = action === "confirm_ack" || action === "confirm_whatsapp_ack"
+    ? `הודעה ראשונה — «${SIGAL_ACK_GUEST_PHRASE}»`
+    : "מכתב מלא";
+  const dest = viaWa ? "בוואטסאפ" : "במייל";
+  const lines = [
+    `📨 ${phase} — כך יישלח ל־${guest}${contactLabel ? ` (${contactLabel})` : ""} ${dest} בשמך:`,
+    "─────────────",
+    bodyText.trim(),
+    "─────────────",
+    SIGAL_GUIDE_CONFIRM,
+    "«תסדרי…» לעריכה · «לא» לביטול",
+  ];
+  const tid = _threadId?.trim();
+  if (tid) lines.push(composeOritCsMobileLinkLine(tid));
+  return lines.join("\n");
 }
-
-/** Complaint high/critical must send ack (step 1) before full reply. Leads/other = single step. */
 export function threadNeedsAckBeforeFullReply(thread: Record<string, unknown>): boolean {
   const category = String(thread.category ?? "");
   const urgency = String(thread.urgency ?? "normal");
@@ -228,29 +253,6 @@ async function learnFromOutbound(
   }
 }
 
-export function composeSigalConfirmPrompt(
-  action: OritChatPending["action"],
-  guest: string,
-  contactLabel: string,
-  bodyText: string,
-  threadId: string,
-): string {
-  const viaWa = action === "confirm_whatsapp_ack" || action === "confirm_whatsapp_full";
-  const phase = action === "confirm_ack" || action === "confirm_whatsapp_ack"
-    ? "אישור קבלה"
-    : "תשובה מלאה";
-  const dest = viaWa ? "בוואטסאפ" : "במייל";
-  return [
-    `📨 ${phase} — כך יישלח ל־${guest}${contactLabel ? ` (${contactLabel})` : ""} ${dest} בשמך:`,
-    "─────────────",
-    bodyText.trim(),
-    "─────────────",
-    SIGAL_GUIDE_CONFIRM,
-    "לעריכה במחשב:",
-    threadLink(threadId),
-  ].join("\n");
-}
-
 export function composeSigalAckSentMessage(
   guest: string,
   _email: string,
@@ -273,13 +275,13 @@ async function prepareAckConfirm(
     || "";
 
   if (!draft) {
-    await sendWhapiText(phone, "אין עדיין טיוטת אישור קבלה — פתחי במערכת או חכי לסנכרון.", { noLinkPreview: true });
+    await sendWhapiText(phone, "אין עדיין טיוטת אישור קבלה — חכי לסנכרון או עני «עזרה».", { noLinkPreview: true });
     return;
   }
 
   const channel = resolveOritOutboundChannel(thread as Parameters<typeof resolveOritOutboundChannel>[0]);
   if (channel === "blocked") {
-    await sendWhapiText(phone, "⚠ חסרים מייל וטלפון — הוסיפי פרטי קשר במערכת.", { noLinkPreview: true });
+    await sendWhapiText(phone, "⚠ חסרים מייל וטלפון — כתבי לי את פרטי האורח/ת.", { noLinkPreview: true });
     return;
   }
 
@@ -370,7 +372,7 @@ async function prepareFullConfirm(
     || "";
 
   if (!draft) {
-    await sendWhapiText(phone, "אין טיוטת תשובה מלאה — פתחי במערכת.", { noLinkPreview: true });
+    await sendWhapiText(phone, "אין טיוטת תשובה מלאה — חכי לסנכרון או עני «תשובה מלאה».", { noLinkPreview: true });
     return;
   }
 
@@ -526,10 +528,8 @@ async function executePendingSend(
   );
 
   await sendWhapiLongText(phone, [
-    `✓ התשובה נשלחה ל־${guest}${email ? ` (${email})` : ""}.`,
-    "",
-    "אעדכן אותך אם האורח/ת ישיב/ה.",
-    "כשהנושא נסגר לגמרי — עני «סיימתי».",
+    `✓ שלב ② נשלח ל־${guest}${email ? ` (${email})` : ""}.`,
+    "«סיימתי» לסגירה · אעדכן אם יש תשובה",
   ].join("\n"));
 }
 
@@ -540,17 +540,30 @@ function workflowStatusLine(thread: Record<string, unknown>): string {
   const full = thread.full_reply_sent_at ? "נשלחה ✓" : "ממתינה";
   const step = String(thread.workflow_step ?? "");
   let phase = "בטיפול";
-  if (step === "awaiting_ack_approval") {
-    phase = viaWa ? "מחכה שתאשרי שליחה בוואטסאפ" : "מחכה שתאשרי את אישור הקבלה";
-  } else if (step === "awaiting_reply_approval") phase = "מחכה לתשובה המלאה לאורח/ת";
-  else if (step === "guest_replied") phase = "האורח/ת השיב/ה — צריך תשובה שלך";
-  else if (step === "reply_sent") phase = "נשלחה תשובה — אפשר לסגור עם «סיימתי»";
-  return [
+  if (!hasOritInitialContactSent(thread)) {
+    phase = viaWa
+      ? "שלב 1 — האורח מחכה להודעה קצרה בוואטסאפ"
+      : `שלב 1 — האורח מחכה ל«${SIGAL_ACK_GUEST_PHRASE}»`;
+  } else if (!thread.full_reply_sent_at) {
+    phase = "שלב 2 — המכתב המלא ממתין";
+  } else if (step === "guest_replied") {
+    phase = "האורח/ת השיב/ה — צריך תשובה שלך";
+  } else if (step === "reply_sent") {
+    phase = "נשלחה תשובה — אפשר לסגור עם \"סיימתי\"";
+  }
+  const lines = [
     `👤 ${guest}`,
     `${viaWa ? "וואטסאפ" : "מייל"} — אישור ראשון: ${ack}`,
     `תשובה מלאה: ${full}`,
     phase,
-  ].join("\n");
+  ];
+  const threadId = String(thread.id ?? "").trim();
+  if (threadId) lines.push("", composeOritCsMobileLinkLine(threadId));
+  return lines.join("\n");
+}
+
+export function composeOritWorkflowStatusLine(thread: Record<string, unknown>): string {
+  return workflowStatusLine(thread);
 }
 
 async function markThreadClosed(
@@ -578,9 +591,135 @@ async function showGuestLatestMessage(
     : "אין הודעה נכנסת אחרונה.");
 }
 
-function isLikelyCustomDraft(text: string): boolean {
-  const t = text.trim();
-  return t.length >= 60 && (/שלום|תודה|אורית|בברכה|קיבלנו/i.test(t));
+async function refineDraftForThread(
+  supabase: SupabaseClient,
+  thread: Record<string, unknown>,
+  mailbox: OritMailboxRow,
+  instruction: string,
+  baseDraft: string,
+  draftKind: "ack" | "full_reply",
+): Promise<string | null> {
+  const inbound = await fetchOritThreadInbound(supabase, String(thread.id));
+  const { data: samples } = await supabase
+    .from("orit_agent_style_samples")
+    .select("inbound_snippet, outbound_text, context_category")
+    .eq("mailbox_id", mailbox.id)
+    .order("created_at", { ascending: false })
+    .limit(24);
+
+  const styleSamples = pickStyleSamplesForCategory(
+    samples ?? [],
+    String(thread.category ?? "complaint"),
+  );
+
+  return refineOritDraftByInstruction({
+    currentDraft: baseDraft,
+    instruction,
+    guestName: resolveOritReplyName(
+      thread.from_name as string | null,
+      thread.guest_contact_name as string | null,
+    ),
+    subject: String(thread.subject ?? ""),
+    inboundSnippet: inbound,
+    draftKind,
+    styleSamples,
+  });
+}
+
+async function showConfirmAfterRefine(
+  supabase: SupabaseClient,
+  phone: string,
+  thread: Record<string, unknown>,
+  mailbox: OritMailboxRow,
+  refined: string,
+  pendingAction?: OritChatPending["action"],
+): Promise<void> {
+  const threadId = String(thread.id);
+  const draftKind: "ack" | "full_reply" = pendingAction === "confirm_ack"
+    || pendingAction === "confirm_whatsapp_ack"
+    ? "ack"
+    : pendingAction === "confirm_full" || pendingAction === "confirm_whatsapp_full"
+      ? "full_reply"
+      : (threadNeedsAckBeforeFullReply(thread) ? "ack" : "full_reply");
+
+  await saveDraftBody(supabase, threadId, draftKind, refined);
+
+  if (pendingAction === "confirm_whatsapp_ack") {
+    await prepareWhatsappConfirm(supabase, phone, thread, pendingAction, refined, refined);
+    return;
+  }
+  if (pendingAction === "confirm_whatsapp_full") {
+    await prepareWhatsappConfirm(supabase, phone, thread, pendingAction, refined, refined);
+    return;
+  }
+  if (pendingAction === "confirm_ack") {
+    await prepareAckConfirm(supabase, phone, thread, mailbox, refined);
+    return;
+  }
+  if (pendingAction === "confirm_full") {
+    await prepareFullConfirm(supabase, phone, thread, refined);
+    return;
+  }
+
+  if (threadNeedsAckBeforeFullReply(thread)) {
+    await prepareAckConfirm(supabase, phone, thread, mailbox, refined);
+  } else {
+    await prepareFullConfirm(supabase, phone, thread, refined);
+  }
+}
+
+async function handleRefineInstruction(
+  supabase: SupabaseClient,
+  phone: string,
+  thread: Record<string, unknown>,
+  mailbox: OritMailboxRow,
+  instruction: string,
+  pending?: OritChatPending | null,
+): Promise<void> {
+  const threadId = String(thread.id);
+  let draftKind: "ack" | "full_reply";
+  let baseDraft: string;
+
+  if (pending?.body_text) {
+    baseDraft = pending.body_text;
+    draftKind = pending.action === "confirm_ack" || pending.action === "confirm_whatsapp_ack"
+      ? "ack"
+      : "full_reply";
+  } else {
+    draftKind = threadNeedsAckBeforeFullReply(thread) ? "ack" : "full_reply";
+    baseDraft = (await fetchOritDraftText(supabase, threadId, draftKind))?.text || "";
+  }
+
+  if (!baseDraft.trim()) {
+    await sendWhapiText(
+      phone,
+      "אין עדיין טיוטה — עני «תראי לי» או «תשובה מלאה» קודם.",
+      { noLinkPreview: true },
+    );
+    return;
+  }
+
+  await sendWhapiText(phone, "✍️ מסדרת לפי ההוראה שלך…", { noLinkPreview: true });
+
+  const refined = await refineDraftForThread(
+    supabase,
+    thread,
+    mailbox,
+    instruction,
+    baseDraft,
+    draftKind,
+  );
+
+  if (!refined?.trim()) {
+    await sendWhapiText(
+      phone,
+      "לא הצלחתי לערוך — נסי שוב או הדביקי את הטקסט המלא.",
+      { noLinkPreview: true },
+    );
+    return;
+  }
+
+  await showConfirmAfterRefine(supabase, phone, thread, mailbox, refined, pending?.action);
 }
 
 export async function handleOritSigalChat(
@@ -607,6 +746,17 @@ export async function handleOritSigalChat(
     if (intent === "cancel" || CANCEL_RE.test(t)) {
       await setChatPending(supabase, String(pendingRow.thread.id), null);
       await sendWhapiText(phoneDigits, "בוטל — לא שלחתי כלום.", { noLinkPreview: true });
+      return;
+    }
+    if (isOritRefineInstruction(t)) {
+      await handleRefineInstruction(
+        supabase,
+        phoneDigits,
+        pendingRow.thread,
+        pendingRow.mailbox,
+        t,
+        pendingRow.pending,
+      );
       return;
     }
     if (isLikelyCustomDraft(t)) {
@@ -644,25 +794,12 @@ export async function handleOritSigalChat(
   }
 
   if (intent === "help") {
-    await sendWhapiText(phoneDigits, [
-      voicePrefix ? `${voicePrefix}${SIGAL_GUIDE_HELP}` : SIGAL_GUIDE_HELP,
-      "",
-      active ? `פנייה פעילה: ${guestLabel(active.thread)}` : "",
-    ].filter(Boolean).join("\n"), { noLinkPreview: true });
+    await sendWhapiText(phoneDigits, SIGAL_GUIDE_HELP, { noLinkPreview: true });
     return;
   }
 
   if (intent === "intro") {
-    await sendWhapiText(phoneDigits, [
-      voicePrefix ? `${voicePrefix}${SIGAL_INTRO_SUMMARY}` : SIGAL_INTRO_SUMMARY,
-      "",
-      "לפקודות מלאות — עני «עזרה».",
-    ].join("\n"), { noLinkPreview: true });
-    return;
-  }
-
-  if (intent === "link" && active) {
-    await sendWhapiText(phoneDigits, threadLink(String(active.thread.id)), { noLinkPreview: true });
+    await sendWhapiText(phoneDigits, SIGAL_INTRO_SUMMARY, { noLinkPreview: true });
     return;
   }
 
@@ -686,14 +823,16 @@ export async function handleOritSigalChat(
           : SIGAL_GUIDE_ACK;
         await sendWhapiLongText(phoneDigits, draft
           ? [
-            channel === "whatsapp_bridge" ? "נוסח לוואטסאפ:" : "נוסח אישור הקבלה:",
+            channel === "whatsapp_bridge"
+              ? "הודעה ראשונה לוואטסאפ:"
+              : `הודעה ראשונה — «${SIGAL_ACK_GUEST_PHRASE}»:`,
             "─────────────",
             draft,
             "─────────────",
             "",
             guide,
           ].join("\n")
-          : "אין עדיין נוסח — חכי לסנכרון או עני «קישור» במחשב.");
+          : "אין עדיין נוסח — חכי לסנכרון או עני «תראי לי».");
       } else {
         await prepareFullConfirm(supabase, phoneDigits, active.thread);
       }
@@ -728,6 +867,17 @@ export async function handleOritSigalChat(
       return;
     }
 
+    if (isOritRefineInstruction(t)) {
+      await handleRefineInstruction(
+        supabase,
+        phoneDigits,
+        active.thread,
+        active.mailbox,
+        t,
+      );
+      return;
+    }
+
     if (isLikelyCustomDraft(t)) {
       if (threadNeedsAckBeforeFullReply(active.thread)) {
         await prepareAckConfirm(supabase, phoneDigits, active.thread, active.mailbox, t);
@@ -739,32 +889,21 @@ export async function handleOritSigalChat(
   }
 
   if (opts.fromVoice) {
-    const snippet = t.length > 100 ? `${t.slice(0, 100)}…` : t;
+    const snippet = t.length > 80 ? `${t.slice(0, 80)}…` : t;
     await sendWhapiText(phoneDigits, [
       `${voicePrefix}שמעתי: «${snippet}»`,
-      "",
-      active ? `לגבי ${guestLabel(active.thread)}:` : "",
-      SIGAL_GUIDE_ACK,
-      "",
-      "לא בטוחה? עני «עזרה» — אסביר הכל.",
-    ].filter(Boolean).join("\n"), { noLinkPreview: true });
+      active ? `פנייה: ${guestLabel(active.thread)} — «עזרה» לפקודות` : "«עזרה» לפקודות",
+    ].join("\n"), { noLinkPreview: true });
     return;
   }
 
-  await sendWhapiText(phoneDigits, [
-    "היי אורית 💜",
-    active
-      ? [
-        `${workflowStatusLine(active.thread)}`,
-        "",
-        SIGAL_INTRO_SUMMARY,
-        "",
-        SIGAL_GUIDE_ACK,
-        "",
-        "עזרה? עני «עזרה».",
-      ].join("\n")
-      : [SIGAL_INTRO_SUMMARY, "", "אין כרגע פנייה פתוחה. אעדכן כשתגיע תלונה."].join("\n"),
-  ].join("\n"), { noLinkPreview: true });
+  await sendWhapiText(phoneDigits, active
+    ? [
+      `היי אורית 💜 ${guestLabel(active.thread)}`,
+      workflowStatusLine(active.thread).split("\n").slice(-1)[0] || "",
+      "«תראי לי» / «תשובה מלאה» · «עזרה»",
+    ].join("\n")
+    : "היי אורית 💜 אין פנייה פתוחה כרגע.", { noLinkPreview: true });
 }
 
 export async function tryHandleOritSigalInbound(

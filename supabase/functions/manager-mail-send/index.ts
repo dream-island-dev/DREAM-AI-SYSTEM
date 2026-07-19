@@ -14,6 +14,7 @@ import {
   sendOritAckEmail,
   type OritAlertMailbox,
 } from "../_shared/oritAgentWorkflow.ts";
+import { notifyOritSigalUiSend } from "../_shared/oritSigalUiNotify.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -185,6 +186,18 @@ serve(async (req: Request) => {
         guest_contact_name: thread.guest_contact_name,
       });
 
+      const mailboxAlert: OritAlertMailbox = {
+        id: mailbox.id,
+        digest_whatsapp_phone: mailbox.digest_whatsapp_phone,
+        alert_enabled: mailbox.alert_enabled !== false,
+        profile_id: mailbox.profile_id,
+      };
+      try {
+        await notifyOritSigalUiSend(supabase, mailboxAlert, thread, kind, "whatsapp_bridge");
+      } catch (notifyErr) {
+        console.warn("[manager-mail-send] sigal ui-send notify failed:", (notifyErr as Error).message);
+      }
+
       return new Response(JSON.stringify({
         ok: true,
         sent: true,
@@ -327,6 +340,18 @@ serve(async (req: Request) => {
       }).eq("id", threadId);
       if (markHandled === true) {
         await closeOritThread(supabase, threadId, { handledAt: sentAt });
+      }
+
+      const mailboxAlert: OritAlertMailbox = {
+        id: mailbox.id,
+        digest_whatsapp_phone: mailbox.digest_whatsapp_phone,
+        alert_enabled: mailbox.alert_enabled !== false,
+        profile_id: mailbox.profile_id,
+      };
+      try {
+        await notifyOritSigalUiSend(supabase, mailboxAlert, thread, "full_reply", "email");
+      } catch (notifyErr) {
+        console.warn("[manager-mail-send] sigal ui-send notify failed:", (notifyErr as Error).message);
       }
     }
 

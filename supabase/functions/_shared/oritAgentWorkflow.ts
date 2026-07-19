@@ -61,7 +61,7 @@ export function composeOritFullReplyReadyMessage(
   thread: OritAlertThread,
   _fullReplyPreview: string,
 ): string {
-  return composeSigalAckSentFollowUp(sigalGuestLabel(thread));
+  return composeSigalAckSentFollowUp(sigalGuestLabel(thread), thread.id);
 }
 
 export function composeSigalGuestReplyCoaching(
@@ -496,7 +496,7 @@ export async function tryHandleOritWorkflowAckApproval(
   const threadId = String(pending.thread.id);
   const ackDraft = await fetchOritDraftText(supabase, threadId, "ack");
   if (!ackDraft?.text) {
-    await sendWhapiText(phoneDigits, "לא מצאתי טיוטת אישור קבלה — פתחי במערכת.", { noLinkPreview: true });
+    await sendWhapiText(phoneDigits, "לא מצאתי טיוטת אישור קבלה — חכי לסנכרון או עני «עזרה».", { noLinkPreview: true });
     return true;
   }
 
@@ -516,7 +516,7 @@ export async function tryHandleOritWorkflowAckApproval(
   }
 
   if (!replyEmail) {
-    await sendWhapiText(phoneDigits, "❌ אין מייל אורח תקין — פתחי במערכת לטיפול ידני.", { noLinkPreview: true });
+    await sendWhapiText(phoneDigits, "❌ אין מייל אורח תקין — עני «שלחי בוואטסאפ» אם יש טלפון.", { noLinkPreview: true });
     return true;
   }
 

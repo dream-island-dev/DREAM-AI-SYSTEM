@@ -1,44 +1,30 @@
 // Plain Hebrew copy + voice-friendly intent for Orit ↔ Sigal WhatsApp chat.
 
 /** Warm intro — daughter-assistant tone. */
-export const SIGAL_INTRO_SUMMARY = [
-  "אני כאן כדי לחסוך לך זמן:",
-  "קוראת את המיילים, מסכמת, ומכינה טיוטות בסגנון שלך.",
-  "שום דבר לא יוצא לאורח בלי שאת מאשרת.",
-].join("\n");
+export const SIGAL_INTRO_SUMMARY = "אני מכינה טיוטות בסגנון שלך — שום דבר לא יוצא בלי אישור שלך.";
 
 export const SIGAL_GUIDE_ACK = [
-  "לשלוח את אישור הקבלה:",
-  "«תראי לי» → «כן שלחי»",
+  "שלב 1 — הודעה קצרה «קיבלנו את פנייתך»:",
+  '"תראי לי" לראות · "כן שלחי" לשליחה',
 ].join("\n");
 
 export const SIGAL_GUIDE_AFTER_ACK = "";
 
 export const SIGAL_GUIDE_FULL = [
-  "לשלוח את התשובה המלאה:",
-  "«תשובה מלאה» → «כן שלחי»",
+  "שלב 2 — המכתב המלא לאורח:",
+  '"תשובה מלאה" — ואז "כן שלחי"',
   "",
-  "לידים ופניות רגילות — שלב אחד: «תראי לי» או «תשובה מלאה».",
+  "לידים ופניות רגילות — שלב אחד בלבד.",
 ].join("\n");
 
 export const SIGAL_GUIDE_HELP = [
-  "היי אורית 💜 אני סיגל — העוזרת שלך.",
-  "",
-  SIGAL_INTRO_SUMMARY,
-  "",
-  "מה אפשר לבקש:",
-  "• «תראי לי» / «תשובה מלאה» — לראות טיוטה לפני שליחה",
-  "• «כן שלחי» — לשלוח (רק אחרי שראית)",
-  "• «מה כתבה» — מה האורח/ת כתב/ה",
-  "• «מה המצב» — איפה אנחנו עם הפנייה",
-  "• «סיימתי» / «טיפלתי בזה» — לסגור את הנושא",
-  "• «שלחי בוואטסאפ» — כשאין מייל אבל יש טלפון",
-  "• «קישור» — לפתוח במחשב",
-  "",
-  "אפשר גם להקליט — אני מבינה דיבור.",
+  "תלונה = שני שלבים:",
+  "1) «קיבלנו את פנייתך» — דחוף, \"תראי לי\"",
+  "2) מכתב מלא — \"תשובה מלאה\"",
+  '"כן שלחי" · "תסדרי…" · "סיימתי" · "קישור" (לממשק)',
 ].join("\n");
 
-export const SIGAL_GUIDE_CONFIRM = "מוכנה לשלוח? עני «כן שלחי» · לביטול — «לא»";
+export const SIGAL_GUIDE_CONFIRM = 'מוכנה לשלוח? עני "כן שלחי" · לביטול — "לא"';
 
 export type OritSigalIntent =
   | "confirm_send"
@@ -50,7 +36,6 @@ export type OritSigalIntent =
   | "status"
   | "mark_done"
   | "help"
-  | "link"
   | "intro"
   | "send_whatsapp";
 
@@ -83,7 +68,7 @@ export function resolveOritSigalIntent(text: string): OritSigalIntent | null {
     return "mark_done";
   }
 
-  if (/(מה המצב|איפה אנחנו|מה הסטטוס|מה קורה עם|סטטוס הפנייה)/.test(t)) {
+  if (/(מה המצב|איפה אנחנו|מה הסטטוס|מה קורה עם|סטטוס הפנייה|קישור|פתחי במערכת|לינק|בממשק|באפליקציה)/.test(t)) {
     return "status";
   }
 
@@ -95,12 +80,15 @@ export function resolveOritSigalIntent(text: string): OritSigalIntent | null {
     return "show_full";
   }
 
-  if (/(שלחי בוואטסאפ|שלחי וואטסאפ|וואטסאפ|whatsapp)/.test(t) && !/אינבוקס|שיחה/.test(t)) {
-    return "send_whatsapp";
+  if (
+    /(קיבלנו|אישור קבלה|ההודעה הראשונה|הודעה ראשונה|שלב 1|שלב א)/.test(t)
+    && !/מלאה|מכתב מלא/.test(t)
+  ) {
+    return "show_ack";
   }
 
-  if (/(קישור|פתחי במערכת|לינק|למחשב)/.test(t)) {
-    return "link";
+  if (/(שלחי בוואטסאפ|שלחי וואטסאפ|וואטסאפ|whatsapp)/.test(t) && !/אינבוקס|שיחה/.test(t)) {
+    return "send_whatsapp";
   }
 
   if (/(^|\s)(לא|בטלי|עצרי|ביטול|תעצרי|cancel|stop)(\s|$)/.test(t)) {
@@ -126,4 +114,19 @@ export function resolveOritSigalIntent(text: string): OritSigalIntent | null {
   }
 
   return null;
+}
+
+/** Orit pasted a full replacement letter — not an edit instruction. */
+export function isLikelyCustomDraft(text: string): boolean {
+  const t = text.trim();
+  return t.length >= 60 && (/שלום|תודה|אורית|בברכה|קיבלנו/i.test(t));
+}
+
+/** Short verbal edit request — route to AI refine (not a full paste). */
+export function isOritRefineInstruction(text: string): boolean {
+  const t = (text || "").trim();
+  if (t.length < 6) return false;
+  if (isLikelyCustomDraft(t)) return false;
+  if (resolveOritSigalIntent(t)) return false;
+  return /(תסדר|תכתב|תערכ|תשנ|תוסיפ|תוריד|תקצר|יותר\s+אישי|יותר\s+רך|פחות\s+רשמי|התנצל|סגנון|נוסח|טון|כתבי|סדרי|ערכי|תעדכן|תהפוך|תשנה|תעשי|תוסיפי|תחזר)/i.test(t);
 }

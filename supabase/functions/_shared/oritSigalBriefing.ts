@@ -1,18 +1,14 @@
 // Sigal → Orit human briefing copy (analyze first, then one warm package).
 
-import { buildStaffAppDeepLink } from "./guestAlertWhapiNotify.ts";
 import {
   resolveOritReplyEmail,
   resolveOritReplyName,
 } from "./oritGuestContactExtract.ts";
 import type { OritAlertThread } from "./oritAgentWhapiAlert.ts";
 import {
-  composeSigalWaBridgeAdvice,
-  normalizeOritGuestPhoneDigits,
+  composeOritCsMobileLinkLine,
   resolveOritOutboundChannel,
-} from "./oritGuestOutbound.ts";
-
-export type SigalBriefingThread = OritAlertThread & {
+} from "./oritGuestOutbound.ts"; = OritAlertThread & {
   received_at?: string | null;
   auto_ack_sent_at?: string | null;
   full_reply_sent_at?: string | null;
@@ -53,74 +49,97 @@ export function sigalGuestLabel(thread: SigalBriefingThread): string {
   return email || "האורח/ת";
 }
 
-function urgencyLead(urgency: string): string {
-  if (urgency === "critical") return "זו תלונה חמורה שדורשת אותך";
-  if (urgency === "high") return "זו תלונה דחופה";
-  return "יש פנייה שכדאי לטפל בה";
+function urgencyEmoji(urgency: string): string {
+  if (urgency === "critical") return "🔴";
+  if (urgency === "high") return "🟠";
+  return "🟡";
 }
 
-/** Initial complaint briefing — ack + full reply ready before WA to Orit. */
+function draftReadyLabel(text: string | null | undefined): string {
+  return text?.trim() ? "מוכן" : "בהכנה";
+}
+
+function sigalMobileAppLink(thread: SigalBriefingThread): string | null {
+  const id = thread.id?.trim();
+  return id ? composeOritCsMobileLinkLine(id) : null;
+}
+
+function hasInitialAckSent(thread: SigalBriefingThread): boolean {
+  return Boolean(thread.auto_ack_sent_at || thread.orit_wa_contact_at);
+}
+
+/** Guest-facing ack line — what Orit approves first (before full letter). */
+export const SIGAL_ACK_GUEST_PHRASE = "קיבלנו את פנייתך";
+
+/** Initial complaint alert — pulse only; drafts on demand via «תראי לי» / «תשובה מלאה». */
 export function composeSigalComplaintBriefing(
   thread: SigalBriefingThread,
   ackDraft: string,
   fullReplyDraft: string,
 ): string {
   const guest = sigalGuestLabel(thread);
-  const summary = thread.ai_summary?.trim() || thread.subject?.trim() || "פנייה שדורשת טיפול";
-  const link = buildStaffAppDeepLink({ page: "orit_cs_agent", threadId: thread.id });
+  const summary = truncate(thread.ai_summary?.trim() || thread.subject?.trim() || "תלונה", 120);
   const channel = resolveOritOutboundChannel(thread);
+  const urg = urgencyEmoji(thread.urgency);
 
-  const lines = [
-    "היי אורית 💜",
-    `קראתי את המייל מ־${guest}. ${urgencyLead(thread.urgency)}.`,
-    "",
-    "בקצרה מה שקרה:",
-    summary,
-    "",
-  ];
-
-  if (channel === "whatsapp_bridge") {
-    lines.push(composeSigalWaBridgeAdvice(thread), "");
-    lines.push("הכנתי הודעה מסוגננת לוואטסאפ:", "─────────────");
-    lines.push(truncate(ackDraft, 800), "─────────────", "");
-    lines.push(
-      "«שלחי בוואטסאפ» → «כן שלחי»",
-      "אחרי שטיפלת — «סיימתי».",
-      "",
-      link,
-    );
-    return lines.join("\n");
-  }
+  const appLink = sigalMobileAppLink(thread);
 
   if (channel === "blocked") {
-    lines.push(
-      "⚠ חסרים מייל וטלפון תקינים — הוסיפי פרטי קשר במערכת:",
-      link,
-    );
+    return [
+      `${urg} תלונה מ${guest}`,
+      summary,
+      "⚠ חסרים מייל וטלפון — כתבי לי את פרטי האורח/ת",
+    ].join("\n");
+  }
+
+  if (channel === "whatsapp_bridge") {
+    if (!hasInitialAckSent(thread)) {
+      const lines = [
+        `היי אורית 💜 ${urg} תלונה מ${guest}`,
+        summary,
+        `שלב 1 — האורח מחכה להודעה קצרה (${draftReadyLabel(ackDraft)}).`,
+        `"שלחי בוואטסאפ" ואז "כן שלחי".`,
+        "אחרי זה נכין את המכתב המלא.",
+      ];
+      if (appLink) lines.push(appLink);
+      return lines.join("\n");
+    }
+    const lines = [
+      `היי אורית 💜 ${guest} — ההודעה הראשונה בוואטסאפ יצאה ✓`,
+      `עכשיו המכתב המלא (${draftReadyLabel(fullReplyDraft)}) — "תשובה מלאה".`,
+      '"סיימתי" לסגירה',
+    ];
+    if (appLink) lines.push(appLink);
     return lines.join("\n");
   }
 
-  lines.push(
-    "הכנתי לך הכל בסגנון שלך — קודם מייל קצר «קיבלנו את פנייתך», ואחריו מכתב מלא שמטפל בנקודות שהעלו.",
-    "",
-    "א׳ — אישור קבלה (לשליחה ראשונה):",
-    "─────────────",
-    truncate(ackDraft, 600),
-    "─────────────",
-    "",
-    "ב׳ — מכתב תשובה מלא (אחרי שאישור הקבלה יצא):",
-    "─────────────",
-    truncate(fullReplyDraft, 1000),
-    "─────────────",
-    "",
-    "איך נתקדם?",
-    "• לשלוח את הקבלה — «תראי לי» ואז «כן שלחי»",
-    "• לראות שוב את התשובה המלאה — «תשובה מלאה»",
-    "• אחרי שטיפלת (גם בטלפון) — «סיימתי» או «טיפלתי בזה»",
-    "",
-    "לעריכה נוחה במחשב:",
-    link,
-  );
+  if (!hasInitialAckSent(thread)) {
+    const lines = [
+      `היי אורית 💜 ${urg} תלונה מ${guest}`,
+      summary,
+      `שלב 1 (דחוף): הודעה קצרה «${SIGAL_ACK_GUEST_PHRASE}» — ${draftReadyLabel(ackDraft)}.`,
+      '"תראי לי" לראות ולשלוח · אחר כך נכין את המכתב המלא.',
+      '"תסדרי…" לשינוי נוסח',
+    ];
+    if (appLink) lines.push(appLink);
+    return lines.join("\n");
+  }
+
+  if (!thread.full_reply_sent_at) {
+    const lines = [
+      `היי אורית 💜 ${guest} — «${SIGAL_ACK_GUEST_PHRASE}» כבר נשלח ✓`,
+      `שלב 2: המכתב המלא (${draftReadyLabel(fullReplyDraft)}) — "תשובה מלאה".`,
+      '"סיימתי" לסגירה',
+    ];
+    if (appLink) lines.push(appLink);
+    return lines.join("\n");
+  }
+
+  const lines = [
+    `היי אורית 💜 ${guest} — נשלחו שתי ההודעות ✓`,
+    'רק לוודא שסגרנו — "סיימתי"',
+  ];
+  if (appLink) lines.push(appLink);
   return lines.join("\n");
 }
 
@@ -130,80 +149,49 @@ export function composeSigalSimpleBriefing(
   replyDraft: string,
 ): string {
   const guest = sigalGuestLabel(thread);
-  const summary = thread.ai_summary?.trim() || thread.subject?.trim() || "פנייה חדשה";
-  const link = buildStaffAppDeepLink({ page: "orit_cs_agent", threadId: thread.id });
-
+  const summary = truncate(thread.ai_summary?.trim() || thread.subject?.trim() || "פנייה חדשה", 120);
   const channel = resolveOritOutboundChannel(thread);
-  const lines = [
-    "היי אורית 💜",
-    `הגיע מייל מ־${guest}.`,
-    "",
-    summary,
-    "",
-  ];
+  const ready = draftReadyLabel(replyDraft);
+
+  const appLink = sigalMobileAppLink(thread);
 
   if (channel === "whatsapp_bridge") {
-    lines.push(composeSigalWaBridgeAdvice(thread), "", "הכנתי טיוטה:", "─────────────");
-    lines.push(truncate(replyDraft, 1200), "─────────────", "", "«שלחי בוואטסאפ» → «כן שלחי»", "", link);
+    const lines = [
+      `היי אורית 💜 פנייה מ${guest}`,
+      summary,
+      `טיוטה ${ready} — "שלחי בוואטסאפ" ואז "כן שלחי".`,
+    ];
+    if (appLink) lines.push(appLink);
     return lines.join("\n");
   }
 
-  return [
-    ...lines,
-    "הכנתי לך טיוטת מענה:",
-    "─────────────",
-    truncate(replyDraft, 1200),
-    "─────────────",
-    "",
-    "«תראי לי» / «תשובה מלאה» — ואז «כן שלחי» לשליחה.",
-    "«סיימתי» כשסגרנו את הנושא.",
-    "",
-    link,
-  ].join("\n");
+  const lines = [
+    `היי אורית 💜 פנייה מ${guest}`,
+    summary,
+    `טיוטה ${ready} — "תראי לי" לשליחה · "סיימתי" לסגירה`,
+  ];
+  if (appLink) lines.push(appLink);
+  return lines.join("\n");
 }
 
-/** Guest replied after outbound — warm coaching with draft. */
+/** Guest replied after outbound — pulse + on-demand draft. */
 export function composeSigalGuestReplyBriefing(
   thread: SigalBriefingThread,
   guestMessage: string,
   followUpDraft: string | null,
 ): string {
   const guest = sigalGuestLabel(thread);
-  const link = buildStaffAppDeepLink({ page: "orit_cs_agent", threadId: thread.id });
+  const snippet = truncate(guestMessage.trim(), 160);
+  const ready = draftReadyLabel(followUpDraft);
 
+  const appLink = sigalMobileAppLink(thread);
   const lines = [
-    "היי אורית 💜",
-    `${guest} השיב/ה למייל:`,
-    "─────────────",
-    guestMessage.trim(),
-    "─────────────",
-    "",
+    `היי אורית 💜 ${guest} השיב/ה:`,
+    `"${snippet}"`,
+    `טיוטת המשך ${ready} — "תשובה מלאה" ואז "כן שלחי".`,
+    '"סיימתי" לסגירה',
   ];
-
-  const hasPhone = Boolean(normalizeOritGuestPhoneDigits(thread.guest_contact_phone));
-  const waHint = hasPhone ? " · «שלחי בוואטסאפ» — מכשיר הסוויטות" : "";
-
-  if (followUpDraft?.trim()) {
-    lines.push(
-      "הכנתי לך המשך בסגנון שלך:",
-      "─────────────",
-      truncate(followUpDraft, 1000),
-      "─────────────",
-      "",
-      `«תשובה מלאה» לראות שוב · «כן שלחי» למייל${waHint} · «סיימתי» אם סגרת.`,
-      "",
-      link,
-    );
-  } else {
-    lines.push(
-      "אני מסיימת לנסח את התשובה — אפשר כבר לפתוח בממשק.",
-      "",
-      `«תשובה מלאה» בעוד רגע${waHint} · «סיימתי» אם סגרת.`,
-      "",
-      link,
-    );
-  }
-
+  if (appLink) lines.push(appLink);
   return lines.join("\n");
 }
 
@@ -215,32 +203,14 @@ export function composeSigalGuestWaReplyBriefing(
   inboxLink: string | null,
 ): string {
   const guest = sigalGuestLabel(thread);
+  const snippet = truncate(guestMessage.trim(), 160);
+  const ready = draftReadyLabel(followUpDraft);
   const lines = [
-    "היי אורית 💜",
-    `${guest} השיב/ה בוואטסאפ:`,
-    "─────────────",
-    guestMessage.trim(),
-    "─────────────",
-    "",
-    "בואי נסגור את זה במייל כשאפשר.",
+    `היי אורית 💜 ${guest} בוואטסאפ:`,
+    `«${snippet}»`,
+    `טיוטת המשך ${ready} — «תשובה מלאה» → «כן שלחי»`,
   ];
-
-  if (followUpDraft?.trim()) {
-    lines.push(
-      "",
-      "הכנתי לך המשך בסגנון שלך:",
-      "─────────────",
-      truncate(followUpDraft, 1000),
-      "─────────────",
-      "",
-      "«תשובה מלאה» · «כן שלחי» · «סיימתי»",
-    );
-  }
-
-  if (inboxLink) {
-    lines.push("", "👉 לשיחה באינבוקס:", inboxLink);
-  }
-
+  if (inboxLink) lines.push(inboxLink);
   return lines.join("\n");
 }
 
@@ -320,7 +290,7 @@ export function composeSigalMorningActionPlan(data: {
   }
 
   lines.push(`✅ טופל אתמול: ${data.handledYesterday}`);
-  lines.push("", "▶️ לכל התיבה:", buildStaffAppDeepLink({ page: "orit_cs_agent" }));
+  lines.push("", "«מה המצב» לסטטוס + לינק לממשק · «עזרה» לפקודות");
 
   return lines.join("\n");
 }
@@ -375,20 +345,20 @@ export function composeSigalEveningActionPlan(data: {
   }
 
   lines.push(`✅ טופל היום: ${data.handledToday}`);
-  lines.push("", "מחר בבוקר אשלח שוב תוכנית פעולה.", "");
-  lines.push("▶️ לכל התיבה:", buildStaffAppDeepLink({ page: "orit_cs_agent" }));
+  lines.push("", "מחר בבוקר אשלח שוב תוכנית פעולה.", "«עזרה» לפקודות");
 
   return lines.join("\n");
 }
 
-export function composeSigalAckSentFollowUp(guest: string): string {
-  return [
-    `✓ שלחתי ל־${guest} את אישור הקבלה.`,
-    "",
-    "המכתב המלא כבר מוכן מראש (ראית אותו בהודעה הראשונה).",
-    "כשתרצי לשלוח — «תשובה מלאה» ואז «כן שלחי».",
-    "אם טיפלת בטלפון או סגרת אחרת — «סיימתי».",
-  ].join("\n");
+export function composeSigalAckSentFollowUp(guest: string, threadId?: string | null): string {
+  const lines = [
+    `✓ «${SIGAL_ACK_GUEST_PHRASE}» נשלח ל${guest}.`,
+    "עכשיו שלב 2 — המכתב המלא: \"תשובה מלאה\" או ערכי בממשק.",
+    '"סיימתי" כשסגרנו את הנושא',
+  ];
+  const id = threadId?.trim();
+  if (id) lines.push(composeOritCsMobileLinkLine(id));
+  return lines.join("\n");
 }
 
 export function composeSigalStaleReminder(thread: SigalBriefingThread): string {
@@ -442,31 +412,25 @@ function phaseNudge(phase: SigalLoopPhase, thread: SigalBriefingThread): string 
     return "נשלחה תשובה — רק לוודא שסגרנו את הנושא";
   }
   if (phase === "awaiting_full_reply") {
-    return "אישור הקבלה יצא — מכתב התשובה המלא עדיין ממתין";
+    return `«${SIGAL_ACK_GUEST_PHRASE}» כבר יצא — המכתב המלא עדיין ממתין`;
   }
   if (resolveOritOutboundChannel(thread) === "whatsapp_bridge") {
-    return "עדיין לא יצאה הודעה לוואטסאפ";
+    return "האורח עדיין לא קיבל הודעה ראשונה בוואטסאפ";
   }
-  return "עדיין לא יצא אישור קבלה לאורח/ת";
+  return `האורח עדיין לא קיבל «${SIGAL_ACK_GUEST_PHRASE}»`;
+}
+
+function phaseCtas(phase: SigalLoopPhase): string {
+  if (phase === "guest_replied") return '"תשובה מלאה" · "סיימתי"';
+  if (phase === "awaiting_close") return '"סיימתי" לסגירה';
+  if (phase === "awaiting_full_reply") return '"תשובה מלאה" למכתב המלא';
+  return '"תראי לי" לשליחת «קיבלנו את פנייתך»';
 }
 
 function escalationPrefix(level: 1 | 2 | 3): string {
   if (level === 3) return "אורית, זה דחוף — עדיין פתוח 🔴";
   if (level === 2) return "אורית, עדיין ממתין לטיפול שלך 🟠";
   return "אורית, רק מזכירה בעדינות 💜";
-}
-
-function phaseCtas(phase: SigalLoopPhase): string {
-  if (phase === "guest_replied") {
-    return "«תשובה מלאה» — טיוטת המשך · «כן שלחי» · «סיימתי» לסגירה.";
-  }
-  if (phase === "awaiting_close") {
-    return "«מה המצב» — איפה אנחנו · «סיימתי» — לסגור את הפנייה.";
-  }
-  if (phase === "awaiting_full_reply") {
-    return "«תשובה מלאה» — לראות טיוטה · «כן שלחי» לשלוח · «סיימתי» לסגור.";
-  }
-  return "«תראי לי» — אישור קבלה · «תשובה מלאה» — מכתב מלא · «סיימתי» לסגור.";
 }
 
 /** Phase-aware Sigal loop nudge until Orit marks handled. */
@@ -477,18 +441,18 @@ export function composeSigalLoopNudge(
 ): string {
   const guest = sigalGuestLabel(thread);
   const summary = truncate(thread.ai_summary?.trim() || thread.subject || "תלונה פתוחה", 200);
-  const link = buildStaffAppDeepLink({ page: "orit_cs_agent", threadId: thread.id });
 
-  return [
+  const lines = [
     escalationPrefix(level),
     "",
-    `תלונה פתוחה מ־${guest}: ${summary}`,
+    `תלונה פתוחה מ${guest}: ${summary}`,
     `${phaseNudge(phase, thread)}.`,
     "",
     phaseCtas(phase),
-    "",
-    link,
-  ].join("\n");
+  ];
+  const appLink = sigalMobileAppLink(thread);
+  if (appLink) lines.push("", appLink);
+  return lines.join("\n");
 }
 
 export function areSigalBriefingDraftsReady(
