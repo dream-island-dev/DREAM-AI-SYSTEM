@@ -13,10 +13,14 @@ Deno.test("extractGuestContactFromFormBody — website lead form", () => {
   assertEquals(c.email, "sharonozan@gmail.com");
 });
 
-Deno.test("resolveOritReplyEmail — prefers extracted guest email", () => {
+Deno.test("resolveOritReplyEmail — prefers extracted guest email, blocks relay", () => {
   assertEquals(
-    resolveOritReplyEmail("noreply@dream-island.co.il", "sharonozan@gmail.com"),
+    resolveOritReplyEmail("ads9@richkid.co.il", "sharonozan@gmail.com"),
     "sharonozan@gmail.com",
+  );
+  assertEquals(
+    resolveOritReplyEmail("ads9@richkid.co.il", null),
+    "",
   );
   assertEquals(
     resolveOritReplyEmail("guest@example.com", null),

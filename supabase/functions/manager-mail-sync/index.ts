@@ -6,14 +6,13 @@ import {
   type OritMailboxRow,
 } from "../_shared/oritAgentMail.ts";
 import { analyzeOritThread } from "../_shared/oritAgentAi.ts";
-import { trySendAutoAck } from "../_shared/oritAgentSend.ts";
 import {
   backfillOritGuestContacts,
   enrichOritThreadGuestContact,
 } from "../_shared/oritGuestContactExtract.ts";
 import { fetchMailboxInboxMessages, isMailboxIngestConfigured } from "../_shared/mailIngest.ts";
 import { isImapConfigured, resolveImapConfig, testImapConnection } from "../_shared/imapMail.ts";
-import { notifyOritUrgentThread } from "../_shared/oritAgentWhapiAlert.ts";
+import { notifyOritThreadDecisionPrompt } from "../_shared/oritAgentOritDecision.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -204,29 +203,6 @@ serve(async (req: Request) => {
             }
           }
 
-          if (isNewThread && threadId) {
-            const { data: threadRow } = await supabase
-              .from("orit_agent_threads")
-              .select("from_email, from_name, guest_contact_email, guest_contact_name, subject, auto_ack_sent_at")
-              .eq("id", threadId)
-              .maybeSingle();
-
-            try {
-              await trySendAutoAck(supabase, mailbox, {
-                id: threadId,
-                from_email: threadRow?.from_email ?? msg.fromEmail,
-                from_name: threadRow?.from_name ?? msg.fromName,
-                guest_contact_email: threadRow?.guest_contact_email ?? null,
-                guest_contact_name: threadRow?.guest_contact_name ?? null,
-                subject: threadRow?.subject ?? msg.subject,
-                is_demo: false,
-                auto_ack_sent_at: threadRow?.auto_ack_sent_at ?? null,
-              });
-            } catch (ackErr) {
-              console.warn("[manager-mail-sync] auto-ack failed:", (ackErr as Error).message);
-            }
-          }
-
           if (!isNewThread && isNewInboundMsg && threadId) {
             await supabase.from("orit_agent_threads").update({ ai_analyzed_at: null }).eq("id", threadId);
           }
@@ -237,15 +213,28 @@ serve(async (req: Request) => {
             console.warn("[manager-mail-sync] analyze failed:", (aiErr as Error).message);
           }
 
-          try {
-            await notifyOritUrgentThread(supabase, {
-              id: mailbox.id,
-              profile_id: (mailbox as { profile_id?: string | null }).profile_id ?? null,
-              digest_whatsapp_phone: (mailbox as { digest_whatsapp_phone?: string | null }).digest_whatsapp_phone ?? null,
-              alert_enabled: (mailbox as { alert_enabled?: boolean | null }).alert_enabled ?? true,
-            }, threadId);
-          } catch (alertErr) {
-            console.warn("[manager-mail-sync] orit alert failed:", (alertErr as Error).message);
+          if (isNewThread && threadId) {
+            try {
+              await notifyOritThreadDecisionPrompt(supabase, {
+                id: mailbox.id,
+                profile_id: (mailbox as { profile_id?: string | null }).profile_id ?? null,
+                digest_whatsapp_phone: (mailbox as { digest_whatsapp_phone?: string | null }).digest_whatsapp_phone ?? null,
+                alert_enabled: (mailbox as { alert_enabled?: boolean | null }).alert_enabled ?? true,
+              }, threadId);
+            } catch (promptErr) {
+              console.warn("[manager-mail-sync] orit decision prompt failed:", (promptErr as Error).message);
+            }
+          } else if (!isNewThread && isNewInboundMsg && threadId) {
+            try {
+              await notifyOritThreadDecisionPrompt(supabase, {
+                id: mailbox.id,
+                profile_id: (mailbox as { profile_id?: string | null }).profile_id ?? null,
+                digest_whatsapp_phone: (mailbox as { digest_whatsapp_phone?: string | null }).digest_whatsapp_phone ?? null,
+                alert_enabled: (mailbox as { alert_enabled?: boolean | null }).alert_enabled ?? true,
+              }, threadId, { force: false });
+            } catch (promptErr) {
+              console.warn("[manager-mail-sync] orit decision re-prompt failed:", (promptErr as Error).message);
+            }
           }
         }
 

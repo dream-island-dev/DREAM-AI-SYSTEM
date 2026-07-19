@@ -84,6 +84,7 @@ import {
 } from "../_shared/daypassWindowOpener.ts";
 import { onGuestAlertInserted } from "../_shared/guestAlertWhapiNotify.ts";
 import { extractArrivalTimeFromText, persistGuestEta, insertArrivalEtaBoardAlert } from "../_shared/guestEta.ts";
+import { tryHandleOritCsWhapiReply } from "../_shared/oritAgentOritDecision.ts";
 import { isStaffAssistantInbound } from "../_shared/executiveIdentity.ts";
 import { handleExecutiveVoiceMessage } from "../_shared/executiveAssistant.ts";
 import { ingestStaffGroupMessage, resolveHousekeepingSender } from "../_shared/staffGroupIngest.ts";
@@ -167,6 +168,7 @@ import {
   formatWhapiSuitesConversationLog,
   stripOutboundDispatchTag,
 } from "../_shared/outboundDispatchTag.ts";
+import { applyTimeGreetingToGuestReply } from "../_shared/guestTimeGreeting.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -692,7 +694,8 @@ const GUEST_DM_DEFAULT_GREETING_REPLY =
 
 function buildGuestDmGreetingReply(guestName: string | null, scriptText: string | null): string {
   const base = scriptText?.trim() || GUEST_DM_DEFAULT_GREETING_REPLY;
-  return base.replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, guestName?.trim() || "אורח יקר");
+  const resolved = base.replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, guestName?.trim() || "אורח יקר");
+  return applyTimeGreetingToGuestReply(resolved);
 }
 
 /** staffMuted mirrors whatsapp-webhook's _suppressGuestRepliesStaffClaim contract
@@ -1486,6 +1489,14 @@ serve(async (req: Request) => {
       console.log(
         `[whapi-webhook] guest_dm inbound phone:${phone} guest:${guest?.id ?? "unlinked"} conv:${conversationId ?? "?"}`,
       );
+
+      // ── Orit CS (Sigal) — reply 1/2 before executive assistant ──
+      if (await tryHandleOritCsWhapiReply(supabase, phone, body.trim())) {
+        results.push({
+          id: msg.id, channel: "guest_dm", phone, action: "orit_cs_decision",
+        });
+        continue;
+      }
 
       // ── Staff Assistant (CEO + Front Desk) — intercept before guest LLM ──
       // Runs AFTER claimWhapiGuestInbound (ZERO DATA LOSS — already logged to

@@ -685,7 +685,17 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
               </span>
               {selected.auto_ack_sent_at && (
                 <span style={{ fontSize: 12, padding: "4px 10px", borderRadius: 999, background: "#DCFCE7", color: "#047857", fontWeight: 600 }}>
-                  ✉ אישור קבלה נשלח
+                  ✉ אישור קבלה נשלח לאורח
+                </span>
+              )}
+              {selected.orit_decision === "pending" && !selected.auto_ack_sent_at && (
+                <span style={{ fontSize: 12, padding: "4px 10px", borderRadius: 999, background: "#FEF3C7", color: "#92400E", fontWeight: 600 }}>
+                  ⏳ ממתינה לבחירתך בוואטסאפ (1=מייל / 2=וואטסאפ)
+                </span>
+              )}
+              {selected.orit_decision === "whatsapp" && !selected.auto_ack_sent_at && (
+                <span style={{ fontSize: 12, padding: "4px 10px", borderRadius: 999, background: "#DBEAFE", color: "#1D4ED8", fontWeight: 600 }}>
+                  💬 נבחר וואטסאפ — בלי מייל אוטומטי
                 </span>
               )}
             </div>
@@ -704,7 +714,7 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
                   <div>טלפון: {selected.guest_contact_phone}</div>
                 )}
                 <div style={{ marginTop: 6, color: "#1D4ED8", fontWeight: 600 }}>
-                  שליחת מייל תגיע ל: {resolveOritReplyEmail(selected.from_email, selected.guest_contact_email)}
+                  שליחת מייל תגיע ל: {resolveOritReplyEmail(selected.from_email, selected.guest_contact_email) || "⚠ אין מייל אורח — רק וואטסאפ/ידני"}
                 </div>
               </div>
             )}
@@ -767,20 +777,20 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
               disabled={busy || selected.status === "handled"}
               onClick={() => handleSendWhapiAlert(selected.id, { force: true })}
               style={{ minHeight: 44 }}
-              title="שליחת התראת וואטסאפ לאורית עם קישור לפנייה"
+              title="שליחת הודעת סיגל לאורית בוואטסאפ עם בחירה: מייל אוטומטי או וואטסאפ"
             >
-              📱 שלחי התראה לאורית
+              📱 שאלי את אורית (וואטסאפ)
             </button>
             {canSendFromXos && (
               <button
                 type="button"
                 className="btn"
-                disabled={busy || !!selected.auto_ack_sent_at}
+                disabled={busy || !!selected.auto_ack_sent_at || !resolveOritReplyEmail(selected.from_email, selected.guest_contact_email)}
                 onClick={() => handleQuickAck(true)}
                 style={{ minHeight: 44 }}
-                title="שולח אוטומטית: קיבלנו את בקשתך, ניצור איתך קשר בהקדם"
+                title="שליחה ידנית לאורח — רק למייל שחולץ מהפנייה (לא כתובת הממסר)"
               >
-                📨 אישור קבלה מהיר
+                📨 אישור קבלה ידני (מייל)
               </button>
             )}
             {!canSendFromXos && (

@@ -1,3 +1,4 @@
+2026-07-19 | Orit CS — Sigal asks Orit before auto-ack; relay email fix | migration 240 `orit_decision`; no auto email on sync; Whapi prompt «1=מייל / 2=וואטסאפ»; `oritAgentOritDecision.ts` + whapi handler; `richkid.co.il` relay blocked in `resolveOritReplyEmail`. Deploy: db push + `manager-mail-sync` + `manager-mail-alert` + `whapi-webhook` + frontend.
 2026-07-19 | Voucher reconciliation — package aliases + quantity per שובר | migration 239: `package_match_group` (night↔dinner, צהרים↔כל השבוע); `_shared/voucherQuantityAudit.ts` counts per CouponNo/ת.ז.+חבילה; UI «✓ אותה חבילה» on `over_redemption` + פערי כמות. Deploy: db push + `reconcile-vouchers` + frontend; re-import both files after deploy.
 2026-07-19 | Voucher reconciliation — fix false package_mismatch + over_redemption | migration 238: CouponNo-first match; no wrong-tier pairing; `over_redemption` for extra provider lines; volume summary (איזיגו vs ספק). Deploy: db push + `reconcile-vouchers` + frontend.
 

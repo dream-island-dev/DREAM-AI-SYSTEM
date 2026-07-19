@@ -1,11 +1,8 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { managerMailEnabled } from "../_shared/oritAgentMail.ts";
-import {
-  isOritThreadAlertWorthy,
-  notifyOritUrgentThread,
-  type OritAlertMailbox,
-} from "../_shared/oritAgentWhapiAlert.ts";
+import { notifyOritThreadDecisionPrompt } from "../_shared/oritAgentOritDecision.ts";
+import type { OritAlertMailbox } from "../_shared/oritAgentWhapiAlert.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -48,7 +45,7 @@ serve(async (req: Request) => {
     }
 
     if (threadId) {
-      const result = await notifyOritUrgentThread(supabase, mailbox, threadId, { force });
+      const result = await notifyOritThreadDecisionPrompt(supabase, mailbox, threadId, { force });
       return new Response(JSON.stringify({ ok: true, ...result }), {
         status: 200,
         headers: { ...CORS, "Content-Type": "application/json" },
@@ -66,8 +63,7 @@ serve(async (req: Request) => {
       let sent = 0;
       const skipped: string[] = [];
       for (const row of openThreads ?? []) {
-        if (!isOritThreadAlertWorthy(row.category, row.urgency)) continue;
-        const result = await notifyOritUrgentThread(supabase, mailbox, row.id);
+        const result = await notifyOritThreadDecisionPrompt(supabase, mailbox, row.id);
         if (result.sent) sent += 1;
         else skipped.push(`${row.id}:${result.reason}`);
       }

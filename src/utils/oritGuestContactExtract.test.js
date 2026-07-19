@@ -15,8 +15,10 @@ describe("oritGuestContactExtract", () => {
     expect(c.email).toBe("sharonozan@gmail.com");
   });
 
-  test("resolveOritReplyEmail prefers guest contact", () => {
-    expect(resolveOritReplyEmail("noreply@site.com", "sharonozan@gmail.com")).toBe("sharonozan@gmail.com");
+  test("resolveOritReplyEmail prefers guest contact and blocks relay", () => {
+    expect(resolveOritReplyEmail("ads9@richkid.co.il", "sharonozan@gmail.com")).toBe("sharonozan@gmail.com");
+    expect(resolveOritReplyEmail("ads9@richkid.co.il", null)).toBe("");
+    expect(resolveOritReplyEmail("guest@example.com", null)).toBe("guest@example.com");
   });
 
   test("oritThreadGuestLabel shows extracted guest", () => {

@@ -10,6 +10,7 @@ import {
 import {
   resolveOritReplyEmail,
   resolveOritReplyName,
+  isRelayOrSystemEmail,
 } from "./oritGuestContactExtract.ts";
 
 export type OritThreadSendTarget = {
@@ -64,7 +65,9 @@ export async function deliverOritThreadEmail(
 
     const toEmail = resolveOritReplyEmail(thread.from_email, thread.guest_contact_email);
     const toName = resolveOritReplyName(thread.from_name, thread.guest_contact_name);
-    if (!toEmail) return { sent: false, error: "missing_reply_email" };
+    if (!toEmail || isRelayOrSystemEmail(toEmail)) {
+      return { sent: false, error: "missing_reply_email" };
+    }
 
     const externalKey = await sendGraphReply(accessToken, {
       toEmail,
@@ -100,11 +103,14 @@ export async function trySendAutoAck(
   if (!mailbox.auto_ack_enabled) return false;
   if (thread.auto_ack_sent_at) return false;
   const replyEmail = resolveOritReplyEmail(thread.from_email, thread.guest_contact_email);
+  if (!replyEmail) return false;
   if (!shouldAutoAckInbound(replyEmail, thread.is_demo, thread.subject)) return false;
 
+  const guestName = resolveOritReplyName(thread.from_name, thread.guest_contact_name);
+  const displayName = guestName && !guestName.includes("@") ? guestName : "שלום";
   const body = renderAutoAckTemplate(
     mailbox.auto_ack_template,
-    resolveOritReplyName(thread.from_name, thread.guest_contact_name) || "",
+    displayName,
     thread.subject,
   );
 

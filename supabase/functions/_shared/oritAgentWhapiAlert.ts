@@ -27,7 +27,7 @@ export type OritAlertThread = {
   is_demo?: boolean;
 };
 
-const CATEGORY_HE: Record<string, string> = {
+export const CATEGORY_HE: Record<string, string> = {
   complaint: "תלונה",
   lead: "ליד",
   booking: "הזמנה",
@@ -37,7 +37,7 @@ const CATEGORY_HE: Record<string, string> = {
   other: "פנייה",
 };
 
-const URGENCY_HE: Record<string, string> = {
+export const URGENCY_HE: Record<string, string> = {
   critical: "קריטי",
   high: "דחוף",
   normal: "רגיל",
@@ -88,7 +88,11 @@ function sigalDoneLines(thread: OritAlertThread): string[] {
     "✓ סיווגתי וסיכמתי את הפנייה",
   ];
   if (thread.auto_ack_sent_at) {
-    lines.push("✓ שלחתי לאורח/ת אישור קבלה אוטומטי");
+    lines.push("✓ שלחתי לאורח/ת אישור קבלה במייל (לפי בחירתך)");
+  } else if ((thread as { orit_decision?: string | null }).orit_decision === "whatsapp") {
+    lines.push("✓ בחרת לטפל בוואטסאפ — לא שלחתי מייל אוטומטי");
+  } else {
+    lines.push("✓ ממתינה לבחירתך: מייל אוטומטי או וואטסאפ");
   }
   lines.push("✓ הכנתי לך קישור ישיר לתשובה במערכת");
   return lines;

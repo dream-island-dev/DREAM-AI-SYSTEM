@@ -2,8 +2,31 @@
  * Mirrors supabase/functions/_shared/oritGuestContactExtract.ts — keep in sync for UI.
  */
 
-const EMAIL_RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/;
 const IL_MOBILE_RE = /(0(?:5[0-9])[-. ]?\d{3}[-. ]?\d{4})(?!\d)/;
+
+const NOREPLY_RE = /^(no[-_.]?reply|donotreply|do[-_.]?not[-_.]?reply|mailer-daemon|postmaster)@/i;
+const INTERNAL_DOMAIN_RE = /@dream-island\.co\.il$/i;
+const RELAY_DOMAIN_RE = /@(?:richkid\.co\.il|forms\.gle|wixpress\.com)$/i;
+
+export function isRelayOrSystemEmail(email) {
+  const e = (email || "").trim().toLowerCase();
+  if (!e || !e.includes("@")) return true;
+  if (NOREPLY_RE.test(e)) return true;
+  if (INTERNAL_DOMAIN_RE.test(e)) return true;
+  if (RELAY_DOMAIN_RE.test(e)) return true;
+  return false;
+}
+
+function findGuestEmailInText(text, exclude = new Set()) {
+  const re = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+  for (const m of text.matchAll(re)) {
+    const email = m[0].toLowerCase();
+    if (exclude.has(email)) continue;
+    if (isRelayOrSystemEmail(email)) continue;
+    return email;
+  }
+  return null;
+}
 
 function decodeHtmlEntities(text) {
   return text
@@ -39,14 +62,14 @@ export function extractGuestContactFromFormBody(bodyText) {
   const phoneMatch = text.match(/טלפון\s*:\s*((?:0|\+972)[\d\- ]{8,14})/i);
   if (phoneMatch?.[1]) phone = normalizeILPhone(phoneMatch[1]);
 
-  const emailMatch = text.match(/דוא["']?ל\s*:\s*([^\s]+@[^\s]+)/i);
+  const emailMatch = text.match(/(?:דוא["']?ל|דואר\s*אלקטרוני|email)\s*:\s*([^\s]+@[^\s]+)/i);
   if (emailMatch?.[1]) {
-    email = emailMatch[1].replace(/[.,;]+$/, "").trim().toLowerCase();
+    const candidate = emailMatch[1].replace(/[.,;]+$/, "").trim().toLowerCase();
+    if (!isRelayOrSystemEmail(candidate)) email = candidate;
   }
 
   if (!email) {
-    const generic = text.match(EMAIL_RE);
-    if (generic?.[0]) email = generic[0].toLowerCase();
+    email = findGuestEmailInText(text);
   }
 
   if (!phone) {
@@ -59,15 +82,18 @@ export function extractGuestContactFromFormBody(bodyText) {
 
 export function resolveOritReplyEmail(fromEmail, guestContactEmail) {
   const guest = (guestContactEmail || "").trim().toLowerCase();
-  if (guest && guest.includes("@")) return guest;
-  return (fromEmail || "").trim();
+  if (guest && guest.includes("@") && !isRelayOrSystemEmail(guest)) return guest;
+  const from = (fromEmail || "").trim().toLowerCase();
+  if (from && !isRelayOrSystemEmail(from)) return from;
+  return "";
 }
 
 export function resolveOritReplyName(fromName, guestContactName) {
   const guest = (guestContactName || "").trim();
-  if (guest) return guest;
+  if (guest && !guest.includes("@")) return guest;
   const from = (fromName || "").trim();
-  return from || null;
+  if (from && !from.includes("@")) return from;
+  return guest || from || null;
 }
 
 export function oritThreadGuestLabel(thread) {
