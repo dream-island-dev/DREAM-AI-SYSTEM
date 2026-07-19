@@ -1,3 +1,5 @@
+2026-07-19 | Voucher reconciliation — fix false missing_in_easygo (multiline Nofshonit) | migration 235: provider multiple אסמכתא per same CouponNo re-use EasyGo row instead of missing_in_easygo.
+
 2026-07-19 | Voucher reconciliation — per-provider strategy engine | `_shared/voucherReconciliationStrategy.ts`: rules per ספק (join, columns, formats); provider-first preset routing; `estimateReconciliationJoin` pre-flight; UI strategy card + join % on complete.
 
 2026-07-19 | Voucher reconciliation — Nofshonit join fix (מזהה לקוח↔CouponNo) | Ground truth: Nofshonit `מזהה לקוח` = EZGO `CouponNo`; package `וריאנט`↔`CouponDesc`; stale mapping memory override; CSV UTF-8.
