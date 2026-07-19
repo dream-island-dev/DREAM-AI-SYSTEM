@@ -11,6 +11,7 @@ import VoucherExceptionsBoard from "./VoucherExceptionsBoard";
 
 export default function VoucherReconciliationHub({ user }) {
   const [subTab, setSubTab] = useState("import"); // "import" | "exceptions"
+  const [lastRunId, setLastRunId] = useState(null);
 
   return (
     <div>
@@ -36,8 +37,15 @@ export default function VoucherReconciliationHub({ user }) {
         ))}
       </div>
 
-      {subTab === "import"     && <VoucherImportPanel onViewExceptions={() => setSubTab("exceptions")} />}
-      {subTab === "exceptions" && <VoucherExceptionsBoard user={user} />}
+      {subTab === "import"     && (
+        <VoucherImportPanel
+          onViewExceptions={(runId) => {
+            if (runId) setLastRunId(runId);
+            setSubTab("exceptions");
+          }}
+        />
+      )}
+      {subTab === "exceptions" && <VoucherExceptionsBoard user={user} filterRunId={lastRunId} />}
     </div>
   );
 }

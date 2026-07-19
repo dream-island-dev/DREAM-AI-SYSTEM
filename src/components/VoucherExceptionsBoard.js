@@ -45,33 +45,40 @@ function fmtTimestamp(iso) {
   return d.toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit" }) + " " + d.toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" });
 }
 
-export default function VoucherExceptionsBoard({ user }) {
+export default function VoucherExceptionsBoard({ user, filterRunId = null }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [matchFilter, setMatchFilter] = useState(DEFAULT_MATCH_FILTER);
   const [showResolved, setShowResolved] = useState(false);
+  const [runFilter, setRunFilter] = useState(filterRunId);
   const [expandedId, setExpandedId] = useState(null);
   const [toast, setToast] = useState(null);
+
+  useEffect(() => {
+    if (filterRunId) setRunFilter(filterRunId);
+  }, [filterRunId]);
 
   const showToast = (type, msg) => { setToast({ type, msg }); setTimeout(() => setToast(null), 3500); };
 
   const fetchRows = useCallback(async () => {
     if (!supabase) { setLoading(false); return; }
     setLoading(true);
-    const { data, error } = await supabase
+    let query = supabase
       .from("voucher_reconciliation_results")
       .select(`
-        id, match_status, match_basis, discrepancy_note, review_status, reviewed_at, review_note, created_at,
+        id, reconciliation_run_id, match_status, match_basis, discrepancy_note, review_status, reviewed_at, review_note, created_at,
         voucher_provider_reports ( voucher_number, guest_name, package_type, amount, purchase_date, source_file_name ),
         voucher_easygo_records ( voucher_number, guest_name, phone, order_number, package_type, amount, arrival_date, source_file_name ),
         voucher_providers ( provider_name )
       `)
       .order("created_at", { ascending: false })
       .limit(500);
+    if (runFilter) query = query.eq("reconciliation_run_id", runFilter);
+    const { data, error } = await query;
     if (error) showToast("err", "שגיאה בטעינת דוח החריגים: " + error.message);
     else setRows(data ?? []);
     setLoading(false);
-  }, []);
+  }, [runFilter]);
 
   useEffect(() => { fetchRows(); }, [fetchRows]);
 
@@ -150,8 +157,20 @@ export default function VoucherExceptionsBoard({ user }) {
       </div>
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
-        <div style={{ fontSize: 13, color: "var(--text-muted)" }}>{totalPending} ממתינים לטיפול בסה״כ</div>
+        <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
+          {totalPending} ממתינים לטיפול בסה״כ
+          {runFilter && <span style={{ marginRight: 8 }}> · מסונן לריצה אחרונה</span>}
+        </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {runFilter && (
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={() => setRunFilter(null)}
+              title="הצג את כל ריצות ההתאמה"
+            >
+              הצג הכל
+            </button>
+          )}
           <label style={{ fontSize: 13, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
             <input type="checkbox" checked={showResolved} onChange={(e) => setShowResolved(e.target.checked)} style={{ accentColor: "var(--gold)" }} />
             הצג גם טופלו

@@ -1,3 +1,7 @@
+2026-07-19 | Voucher reconciliation — real provider formats (נופשונית/מולטי פס/חבר/PDF) | migration 234 `suffix_5`+`Police Funds`; `_shared/voucherProviderConfig.ts`+`voucherPdfParse.ts`; EZGO company filter; presets for CouponNo/מזהה/מולטי פס/נופשונית; PDF provider upload. Deploy: db push + `reconcile-vouchers` + frontend.
+
+2026-07-19 | Voucher reconciliation — smarter report reading + matching | `_shared/voucherImport.ts`: Hebrew header presets, title-row scan, voucher normalize; migration 233: suffix-4 match, fuzzy `package_types_match`, separator-tolerant exact; `reconcile-vouchers` auto-maps known columns; exceptions board filters by run. Deploy: db push + `reconcile-vouchers` + frontend.
+
 2026-07-19 | Sigal alert copy — warm personal intro for Orit | `composeOritUrgentAlert`: «היי אורית, כאן סיגל…», guest+phone, מה עשיתי בשבילך, CTA; morning digest same tone. Deploy: `manager-mail-sync` + `manager-mail-alert` + `manager-morning-digest`.
 
 2026-07-19 | Sigal Pulse — Orit urgent Whapi alerts + deep link | migration 232 `digest_whatsapp_phone`/`alert_enabled`/`orit_agent_alert_log`; `_shared/oritAgentWhapiAlert.ts` + `manager-mail-alert`; sync fires on complaint/critical/high (+ re-alert on new inbound); morning digest: open complaints + leads 24h; UI phone field; deep link `?page=orit_cs_agent&thread=UUID`; demo hidden. Deploy: db push + functions + frontend.

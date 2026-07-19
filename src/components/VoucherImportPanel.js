@@ -15,8 +15,14 @@ import MappingReviewPanel from "./MappingReviewPanel";
 import { VOUCHER_PROVIDER_SCHEMA, VOUCHER_EASYGO_SCHEMA } from "../utils/importMapper";
 
 const SIDE_META = {
-  provider: { schema: VOUCHER_PROVIDER_SCHEMA, title: "📄 דוח הספק" },
-  easygo:   { schema: VOUCHER_EASYGO_SCHEMA,   title: "📄 דוח השוברים של EasyGo" },
+  provider: { schema: VOUCHER_PROVIDER_SCHEMA, title: "📄 דוח הספק (מה שמומש בפועל)" },
+  easygo:   { schema: VOUCHER_EASYGO_SCHEMA,   title: "📄 דוח שוברים EasyGo (מה שהוזמן למימוש)" },
+};
+
+const MAPPING_SOURCE_LABELS = {
+  preset:   "זיהוי אוטומטי של עמודות",
+  memory:   "מיפוי שנשמר מייבוא קודם",
+  explicit: "מיפוי שאושר ידנית",
 };
 
 const RECON_LABELS = [
@@ -64,13 +70,13 @@ function FileDropZone({ side, label, file, onFile, dragging, setDragging }) {
         ) : (
           <>
             <div style={{ fontSize: 24, marginBottom: 6 }}>📥</div>
-            <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>גרור קובץ או לחץ — Excel/CSV</div>
+            <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>גרור קובץ או לחץ — Excel / CSV / PDF</div>
           </>
         )}
         <input
           id={inputId}
           type="file"
-          accept=".xlsx,.xls,.csv"
+          accept=".xlsx,.xls,.csv,.pdf"
           style={{ display: "none" }}
           onChange={(e) => onFile(e.target.files?.[0] ?? null)}
         />
@@ -145,7 +151,11 @@ export default function VoucherImportPanel({ onViewExceptions }) {
       setStage("complete");
       showToast("ok", "✅ ההתאמה הושלמה");
     } catch (e) {
-      showToast("err", "שגיאה בהתאמה: " + e.message);
+      const raw = e.message || String(e);
+      const msg = raw.startsWith("parse_quality:")
+        ? "לא הצלחנו לקרוא את מספרי השובר מהקובץ — " + raw.replace(/^parse_quality:\s*/, "")
+        : raw;
+      showToast("err", "שגיאה בהתאמה: " + msg);
       setStage(review ? "review" : "idle");
     }
   }, [easygoFile, providerFile, providerName, review, showToast]);
@@ -205,12 +215,12 @@ export default function VoucherImportPanel({ onViewExceptions }) {
             <>
               <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 18 }}>
                 <FileDropZone
-                  side="easygo" label="דוח השוברים של EasyGo (מה שהוזמן בפועל)"
+                  side="easygo" label="דוח שוברים EasyGo — מספר שובר + חבילה שהוזמנה למימוש"
                   file={easygoFile} onFile={setEasygoFile}
                   dragging={dragging} setDragging={setDragging}
                 />
                 <FileDropZone
-                  side="provider" label="דוח הספק החיצוני (מקור האמת לתשלום)"
+                  side="provider" label="דוח ספק — מה שמומש בפועל באתר הספק"
                   file={providerFile} onFile={setProviderFile}
                   dragging={dragging} setDragging={setDragging}
                 />
@@ -290,9 +300,19 @@ export default function VoucherImportPanel({ onViewExceptions }) {
         <div>
           <div style={{
             background: "#E8F5EF", border: "1px solid #1A7A4A", borderRadius: 10,
-            padding: "14px 16px", marginBottom: 16, fontSize: 13, color: "#1A7A4A",
+            padding: "14px 16px", marginBottom: 16, fontSize: 13, color: "#1A7A4A", lineHeight: 1.7,
           }}>
-            ✅ ההתאמה רצה בהצלחה — ספק: <strong>{result.provider?.name}</strong> · שורות שנוספו: {result.rowsInserted?.provider} (ספק) / {result.rowsInserted?.easygo} (EasyGo)
+            ✅ ההתאמה רצה בהצלחה — ספק: <strong>{result.provider?.name}</strong>
+            <br />
+            שורות: {result.rowsInserted?.provider} (ספק) / {result.rowsInserted?.easygo} (EasyGo)
+            {result.mappingSource && (
+              <>
+                <br />
+                קריאת קבצים: EasyGo — {MAPPING_SOURCE_LABELS[result.mappingSource.easygo] || result.mappingSource.easygo}
+                {" · "}
+                ספק — {MAPPING_SOURCE_LABELS[result.mappingSource.provider] || result.mappingSource.provider}
+              </>
+            )}
           </div>
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 10, marginBottom: 20 }}>
@@ -306,7 +326,7 @@ export default function VoucherImportPanel({ onViewExceptions }) {
 
           <div style={{ display: "flex", gap: 10 }}>
             <button
-              onClick={onViewExceptions}
+              onClick={() => onViewExceptions(result.reconciliation?.reconciliation_run_id)}
               style={{ flex: 1, border: "none", borderRadius: 10, padding: "12px 16px", background: "linear-gradient(135deg,var(--gold),var(--gold-dark))", color: "#0F0F0F", fontFamily: "Heebo, sans-serif", fontSize: 14, fontWeight: 800, cursor: "pointer" }}
             >
               📋 עבור לדוח חריגים

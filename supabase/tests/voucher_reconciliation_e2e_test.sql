@@ -97,7 +97,7 @@ END;
 $$;
 
 -- ────────────────────────────────────────────────────────────────────────────
--- SCENARIO B: Hever / exact — MUST fail to match (yields 2 "missing" rows)
+-- SCENARIO B: Hever / suffix_5 — 6-digit EasyGo must match 5-digit provider
 -- ────────────────────────────────────────────────────────────────────────────
 DO $$
 DECLARE
@@ -111,28 +111,21 @@ BEGIN
 
   INSERT INTO public.voucher_provider_reports
     (import_batch, provider_id, voucher_number, guest_name)
-  VALUES (v_prov_batch, v_hev_id, '999888', 'שרה כהן');
+  VALUES (v_prov_batch, v_hev_id, '34781', 'שרה כהן');
 
   INSERT INTO public.voucher_easygo_records
     (import_batch, voucher_number, guest_name)
-  VALUES (v_ego_batch, '999888-4321', 'שרה כהן');
+  VALUES (v_ego_batch, '434781', 'שרה כהן');
 
   SELECT public.run_voucher_reconciliation(v_prov_batch, v_ego_batch) INTO v_rpc_result;
   v_run_id := (v_rpc_result->>'reconciliation_run_id')::UUID;
   RAISE NOTICE 'SCENARIO B RPC result: %', v_rpc_result;
 
-  -- Assert: 0 matched, 1 missing_in_easygo (from provider side), 1 missing_in_provider (from easygo side)
-  IF (v_rpc_result->>'matched')::INT <> 0 THEN
-    RAISE EXCEPTION 'SCENARIO B FAIL: Hever exact mode should not match — got matched=%', v_rpc_result->>'matched';
-  END IF;
-  IF (v_rpc_result->>'missing_in_easygo')::INT <> 1 THEN
-    RAISE EXCEPTION 'SCENARIO B FAIL: expected missing_in_easygo=1, got %', v_rpc_result->>'missing_in_easygo';
-  END IF;
-  IF (v_rpc_result->>'missing_in_provider')::INT <> 1 THEN
-    RAISE EXCEPTION 'SCENARIO B FAIL: expected missing_in_provider=1, got %', v_rpc_result->>'missing_in_provider';
+  IF (v_rpc_result->>'matched')::INT <> 1 THEN
+    RAISE EXCEPTION 'SCENARIO B FAIL: Hever suffix_5 should match 434781 vs 34781 — got matched=%', v_rpc_result->>'matched';
   END IF;
 
-  RAISE NOTICE '✅ SCENARIO B PASSED — Hever exact mode correctly rejects "999888-4321" vs "999888"';
+  RAISE NOTICE '✅ SCENARIO B PASSED — Hever suffix_5 matches 434781 vs 34781';
 
   DELETE FROM public.voucher_reconciliation_results WHERE reconciliation_run_id = v_run_id;
   DELETE FROM public.voucher_easygo_records   WHERE import_batch = v_ego_batch;

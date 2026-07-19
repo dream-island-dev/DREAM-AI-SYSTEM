@@ -376,6 +376,13 @@ export const VOUCHER_EASYGO_SCHEMA = {
   arrivalDate:   { label: "תאריך הגעה",                                required: "optional", example: "18/06/2026" },
 };
 
+// Voucher preset aliases — mirrored in supabase/functions/_shared/voucherImport.ts.
+// reconcile-vouchers uses the server copy; these exports document the same rules.
+export const VOUCHER_EASYGO_HEADER_ALIASES = {
+  voucherNumber: ["מספר שובר", "מס שובר", "קוד שובר", "מספר קופון", "שובר", "CouponNo", "מזהה", "מזהה שובר"],
+  packageType:   ["חבילה", "סוג חבילה", "סוג שובר", "שם חבילה", "package", "מוצר", "CouponDesc", "SIName"],
+};
+
 /**
  * deriveParLevel(currentQuantity, parLevel, restockColumn)
  * If the sheet had a visible target column, that value wins as-is. Otherwise,

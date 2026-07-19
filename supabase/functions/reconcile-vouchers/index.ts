@@ -42,6 +42,25 @@
 import { serve }         from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient }  from "https://esm.sh/@supabase/supabase-js@2";
 import * as XLSX         from "https://esm.sh/xlsx@0.18.5";
+import {
+  assessVoucherParseQuality,
+  detectVoucherEasygoPreset,
+  detectVoucherProviderPreset,
+  filterEasygoRowsByProvider,
+  filterVoucherDataRows,
+  matrixRowsFromVoucherHeaderScan,
+  normalizeImportHeaderKey,
+  normalizeVoucherNumber,
+  type VoucherMapping,
+  type VoucherRow,
+} from "../_shared/voucherImport.ts";
+import { resolveVoucherProviderProfile } from "../_shared/voucherProviderConfig.ts";
+import {
+  heverPdfRowsToMatrix,
+  parseHeverPolicePdfText,
+} from "../_shared/voucherPdfParse.ts";
+// pdf-parse@1.1.1 — same lib used in local probe script for חבר/השוטרים PDFs
+import pdfParse from "npm:pdf-parse@1.1.1";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -59,7 +78,7 @@ const INSERT_CHUNK_SIZE = 500;
 const PROVIDER_FIELDS = ["voucherNumber", "guestName", "packageType", "amount", "purchaseDate"] as const;
 const EASYGO_FIELDS   = ["voucherNumber", "guestName", "phone", "orderNumber", "packageType", "amount", "arrivalDate"] as const;
 
-type Mapping = Record<string, string | null>;
+type Mapping = VoucherMapping;
 type Row     = Record<string, unknown>;
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -143,30 +162,101 @@ function chunk<T>(arr: T[], size: number): T[][] {
 //     dependency, used here purely as a buffer→rows reader (no filesystem
 //     access), so no Deno-specific build target is needed.
 // ══════════════════════════════════════════════════════════════════════════════
-async function parseUploadedFile(file: File): Promise<{ headers: string[]; rows: Row[] }> {
+function isPdfFile(file: File): boolean {
+  const name = file.name.toLowerCase();
+  return name.endsWith(".pdf") || file.type === "application/pdf";
+}
+
+async function pdfToMatrix(file: File, providerName: string | null): Promise<unknown[][]> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const parsed = await pdfParse(bytes);
+  const text = String(parsed?.text ?? "");
+  if (!text.trim()) throw new Error(`empty_pdf: "${file.name}" has no extractable text`);
+
+  let rows = parseHeverPolicePdfText(text);
+  const profile = providerName ? resolveVoucherProviderProfile(providerName) : null;
+  if (profile?.pdfOrgFilter) {
+    rows = rows.filter((r) => profile.pdfOrgFilter!.test(r.org));
+  }
+  if (!rows.length) {
+    throw new Error(`empty_pdf: no voucher rows found in "${file.name}" for provider "${providerName ?? "?"}"`);
+  }
+  return heverPdfRowsToMatrix(rows);
+}
+
+function matrixFromWorkbook(bytes: Uint8Array, fileName: string): unknown[][] {
+  const workbook = XLSX.read(bytes, { type: "array" });
+  const sheetName = workbook.SheetNames[0];
+  if (!sheetName) throw new Error(`empty_workbook: "${fileName}" has no sheets`);
+  const sheet = workbook.Sheets[sheetName];
+  const matrix = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" }) as unknown[][];
+  if (!matrix.length) throw new Error(`empty_sheet: "${fileName}" has no data rows`);
+  return matrix;
+}
+
+async function parseUploadedFile(
+  file: File,
+  side: "provider" | "easygo",
+  providerName: string | null = null,
+): Promise<{ headers: string[]; rows: Row[]; mappingPreset: Mapping | null }> {
   if (file.size === 0) throw new Error(`empty_file: "${file.name}" has no content`);
   if (file.size > MAX_FILE_BYTES) {
     throw new Error(`file_too_large: "${file.name}" is ${Math.round(file.size / 1024 / 1024)}MB, max is ${MAX_FILE_BYTES / 1024 / 1024}MB`);
   }
 
   const bytes = new Uint8Array(await file.arrayBuffer());
+  const matrix = side === "provider" && isPdfFile(file)
+    ? await pdfToMatrix(file, providerName)
+    : matrixFromWorkbook(bytes, file.name);
+
+  const detectEasygo = (headers: string[]) => detectVoucherEasygoPreset(headers, providerName);
+  const detectProvider = (headers: string[]) => {
+    const sampleRows = matrix.slice(1, 12).map((row) => {
+      const obj: VoucherRow = {};
+      headers.forEach((h, col) => { obj[h] = (row as unknown[])?.[col] ?? ""; });
+      return obj;
+    });
+    return detectVoucherProviderPreset(headers, sampleRows, providerName);
+  };
+  const detectPreset = side === "easygo" ? detectEasygo : detectProvider;
+
+  const scanned = matrixRowsFromVoucherHeaderScan(matrix, detectPreset);
+  if (scanned) {
+    return { headers: scanned.headers, rows: scanned.rows as Row[], mappingPreset: detectPreset(scanned.headers) };
+  }
+
+  const headerCells = (matrix[0] ?? []).map((c) => normalizeImportHeaderKey(c));
+  const preset = detectPreset(headerCells);
+  if (preset) {
+    const rows = matrix.slice(1).map((row) => {
+      const obj: Row = {};
+      headerCells.forEach((h, col) => { obj[h] = (row as unknown[])?.[col] ?? ""; });
+      return obj;
+    }).filter((row) => Object.values(row).some((v) => String(v ?? "").trim()));
+    if (!rows.length) throw new Error(`empty_sheet: "${file.name}" has no data rows after header detection`);
+    return { headers: headerCells, rows, mappingPreset: preset };
+  }
+
   const workbook = XLSX.read(bytes, { type: "array" });
   const sheetName = workbook.SheetNames[0];
   if (!sheetName) throw new Error(`empty_workbook: "${file.name}" has no sheets`);
-
   const sheet = workbook.Sheets[sheetName];
   const rows = XLSX.utils.sheet_to_json(sheet, { defval: "", raw: false }) as Row[];
   if (rows.length === 0) throw new Error(`empty_sheet: "${file.name}" has no data rows`);
-
-  const headers = Object.keys(rows[0]);
-  return { headers, rows };
+  const normalized = rows.map((row) => {
+    const out: Row = {};
+    for (const [k, v] of Object.entries(row)) out[normalizeImportHeaderKey(k)] = v;
+    return out;
+  });
+  const headers = Object.keys(normalized[0] ?? {});
+  return { headers, rows: normalized, mappingPreset: detectPreset(headers) };
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
 // §4  MAPPING RESOLUTION — explicit (human-approved) → memory → AI proposal
 //     (review-only, no write). See file header for the full rationale.
 // ══════════════════════════════════════════════════════════════════════════════
-type ResolvedMapping = { resolved: true; mapping: Mapping; source: "explicit" | "memory" };
+type ResolvedMapping = { resolved: true; mapping: Mapping; source: "explicit" | "memory" | "preset" };
 type PendingReview = {
   resolved: false;
   proposal: {
@@ -190,6 +280,7 @@ async function resolveSideMapping(
   headers: string[],
   rows: Row[],
   explicitMapping: Mapping | null,
+  presetMapping: Mapping | null,
 ): Promise<ResolvedMapping | PendingReview> {
   const signature = headerSignature(headers);
 
@@ -219,6 +310,15 @@ async function resolveSideMapping(
         if (res.error) console.warn(`[reconcile-vouchers] failed to bump last_used_at for ${schemaKey}:`, res.error.message);
       });
     return { resolved: true, mapping: mem.approved_mapping as Mapping, source: "memory" };
+  }
+
+  if (presetMapping?.voucherNumber) {
+    const { error } = await supabase.from("import_mapping_memory").upsert(
+      { schema_key: schemaKey, header_signature: signature, approved_mapping: presetMapping, last_used_at: new Date().toISOString() },
+      { onConflict: "schema_key,header_signature" },
+    );
+    if (error) console.warn(`[reconcile-vouchers] failed to save preset mapping for ${schemaKey}:`, error.message);
+    return { resolved: true, mapping: presetMapping, source: "preset" };
   }
 
   // No remembered mapping — ask suggest-import-mapping for a proposal. Sample
@@ -350,19 +450,19 @@ serve(async (req: Request) => {
     }
 
     // ── 4. Parse both files ────────────────────────────────────────────────
-    const providerParsed = await parseUploadedFile(providerFile);
-    const easygoParsed   = await parseUploadedFile(easygoFile);
+    const providerParsed = await parseUploadedFile(providerFile, "provider", providerName);
+    const easygoParsed   = await parseUploadedFile(easygoFile, "easygo", providerName);
 
     // ── 5. Resolve column mapping for each side ────────────────────────────
     const providerResolution = await resolveSideMapping(
       supabase, supabaseUrl, anonKey,
       "voucher_provider_report", "דוחות שוברים מספקים חיצוניים",
-      providerParsed.headers, providerParsed.rows, explicitProviderMapping,
+      providerParsed.headers, providerParsed.rows, explicitProviderMapping, providerParsed.mappingPreset,
     );
     const easygoResolution = await resolveSideMapping(
       supabase, supabaseUrl, anonKey,
       "voucher_easygo_report", "דוח השוברים של EasyGo",
-      easygoParsed.headers, easygoParsed.rows, explicitEasygoMapping,
+      easygoParsed.headers, easygoParsed.rows, explicitEasygoMapping, easygoParsed.mappingPreset,
     );
 
     if (!providerResolution.resolved || !easygoResolution.resolved) {
@@ -382,14 +482,31 @@ serve(async (req: Request) => {
     const providerBatch = crypto.randomUUID();
     const easygoBatch    = crypto.randomUUID();
 
-    const providerRowsToInsert = providerParsed.rows.map((row) => {
+    const providerFiltered = filterVoucherDataRows(providerParsed.rows, providerResolution.mapping);
+    const easygoCompanyFiltered = filterEasygoRowsByProvider(easygoParsed.rows, providerRow.provider_name);
+    const easygoFiltered   = filterVoucherDataRows(easygoCompanyFiltered, easygoResolution.mapping);
+
+    if (!easygoFiltered.length) {
+      throw new Error(
+        `parse_quality: לא נמצאו שורות איזיגו לספק "${providerRow.provider_name}" — בדוק שחברת השוברים בדוח תואמת`,
+      );
+    }
+
+    const providerQuality = assessVoucherParseQuality(providerFiltered, providerResolution.mapping);
+    const easygoQuality   = assessVoucherParseQuality(easygoFiltered, easygoResolution.mapping);
+    if (!providerQuality.ok || !easygoQuality.ok) {
+      const msgs = [providerQuality.message, easygoQuality.message].filter(Boolean);
+      throw new Error(`parse_quality: ${msgs.join(" · ")}`);
+    }
+
+    const providerRowsToInsert = providerFiltered.map((row) => {
       const { fields, extras } = extractFields(row, providerResolution.mapping, PROVIDER_FIELDS);
       const purchaseDate = toDateOrNull(fields.purchaseDate);
       if (fields.purchaseDate && !purchaseDate) extras._unparsed_purchaseDate = fields.purchaseDate;
       return {
         import_batch:     providerBatch,
         provider_id:      providerRow.id,
-        voucher_number:   cleanStr(fields.voucherNumber),
+        voucher_number:   normalizeVoucherNumber(fields.voucherNumber),
         guest_name:       cleanStr(fields.guestName),
         package_type:     cleanStr(fields.packageType),
         amount:           toNumberOrNull(fields.amount),
@@ -400,14 +517,14 @@ serve(async (req: Request) => {
       };
     });
 
-    const easygoRowsToInsert = easygoParsed.rows.map((row) => {
+    const easygoRowsToInsert = easygoFiltered.map((row) => {
       const { fields, extras } = extractFields(row, easygoResolution.mapping, EASYGO_FIELDS);
       const arrivalDate = toDateOrNull(fields.arrivalDate);
       if (fields.arrivalDate && !arrivalDate) extras._unparsed_arrivalDate = fields.arrivalDate;
       return {
         import_batch:     easygoBatch,
         provider_id:      null, // intentionally unset — run_voucher_reconciliation tries every relevant provider when NULL (migration 091 §3 comment)
-        voucher_number:   cleanStr(fields.voucherNumber),
+        voucher_number:   normalizeVoucherNumber(fields.voucherNumber),
         guest_name:       cleanStr(fields.guestName),
         phone:            toE164OrNull(fields.phone),
         order_number:     cleanStr(fields.orderNumber),
@@ -446,6 +563,7 @@ serve(async (req: Request) => {
         easygoBatch,
         rowsInserted:   { provider: providerRowsToInsert.length, easygo: easygoRowsToInsert.length },
         mappingSource:  { provider: providerResolution.source, easygo: easygoResolution.source },
+        parseQuality:   { provider: providerQuality.parsedRatio, easygo: easygoQuality.parsedRatio },
         reconciliation, // the JSONB run_voucher_reconciliation() returns, unchanged
       }),
       { headers: { ...CORS, "Content-Type": "application/json" } },
