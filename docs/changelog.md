@@ -1,3 +1,4 @@
+2026-07-19 | Orit CS — Inbox mode UI | `OritCustomerServicePanel.js` — היסטוריה גלילה + compose יחיד למטה (ack/full_reply); כפתורי שליחה צמודים לטקסט; פרטי פנייה מתקפלים; בועות אורח/אורית + 📧/📱.
 2026-07-19 | Orit CS P0 — תשובת אורח + שליחה בסוויטות | `notifyOritGuestReplied` בלי חסימת טיוטה; באנר `guest_replied` ב-UI; כפתור «שלח דרך מכשיר הסוויטות» + `manager-mail-send` channel `whatsapp_bridge`; WA outbound ב-`orit_agent_messages`.
 2026-07-19 | Orit CS — שרשור מייל + לולאת סיגל דחופות | Graph `/reply` על הודעה מקורית (`oritThreadMatch.ts` fallback אימייל+נושא); תשובת אורח → אותו thread + `runOritThreadFollowUp` (בלי סיווג מחדש); `runSigalUrgentComplaintLoop` phase-aware כל ~15דק ב-`whatsapp-cron` + mail-sync.
 2026-07-19 | Orit CS — Sigal evening digest + morning 07:00 | migration 247 `digest_kind` + cron `0 4`/`0 15` UTC; `manager-evening-digest` + `composeSigalEveningActionPlan`; morning moved from 06:30 to 07:00 Israel.

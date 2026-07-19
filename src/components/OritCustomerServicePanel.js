@@ -8,7 +8,6 @@ import {
   threadMatchesTab,
   threadDisplayTitle,
   categoryMeta,
-  buildQuickAckText,
   isOritThreadClosed,
   isOritThreadOpen,
 } from "../utils/oritAgentClassify";
@@ -128,6 +127,15 @@ function fmtReceivedLabel(iso) {
   });
 }
 
+const BUBBLE_PREVIEW_MAX = 480;
+
+function messageBubbleMeta(m) {
+  const wa = m.external_key?.startsWith?.("wa-");
+  const channel = wa ? "📱" : "📧";
+  const who = m.direction === "outbound" ? "אורית" : "אורח/ת";
+  return `${who} · ${channel} · ${fmtDt(m.received_at)}`;
+}
+
 function normalizeWhatsappPhoneInput(raw) {
   const digits = String(raw ?? "").replace(/\D/g, "");
   if (!digits) return "";
@@ -155,6 +163,8 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [replyText, setReplyText] = useState("");
+  const [detailsExpanded, setDetailsExpanded] = useState(false);
+  const [expandedMessages, setExpandedMessages] = useState({});
   const [activeTab, setActiveTab] = useState("recent");
   const [queueSort, setQueueSort] = useState("recent");
   const [toast, setToast] = useState(null);
@@ -286,6 +296,8 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
 
   useEffect(() => {
     loadThreadDetail(selectedId);
+    setExpandedMessages({});
+    setDetailsExpanded(false);
   }, [selectedId, loadThreadDetail]);
 
   useEffect(() => {
@@ -349,13 +361,6 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
     [selected],
   );
 
-  const latestGuestInbound = useMemo(() => {
-    for (let i = messages.length - 1; i >= 0; i -= 1) {
-      if (messages[i].direction === "inbound") return (messages[i].body_text || "").trim();
-    }
-    return "";
-  }, [messages]);
-
   const hasGuestPhone = Boolean((selected?.guest_contact_phone || "").replace(/\D/g, ""));
 
   const openCount = threads.filter((t) => isOritThreadOpen(t)).length;
@@ -368,6 +373,34 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
       && mailbox.provider === "microsoft",
     [mailbox],
   );
+
+  const composePhase = useMemo(() => {
+    if (!selected?.auto_ack_sent_at) return "ack";
+    return "full_reply";
+  }, [selected?.auto_ack_sent_at]);
+
+  const composeText = composePhase === "ack" ? ackText : replyText;
+  const setComposeText = composePhase === "ack" ? setAckText : setReplyText;
+
+  const composePlaceholder = composePhase === "ack"
+    ? "אישור קבלה לאורח/ת — ערכי ושלחי…"
+    : canSendFromXos
+      ? "תשובה לאורח/ת — ערכי ושלחי…"
+      : "טיוטה לפני העתקה ל-Outlook…";
+
+  const loadDraftToCompose = useCallback(() => {
+    if (composePhase === "ack" && ackDraft?.suggested_text) {
+      setAckText(sanitizeOritAckDraft(ackDraft.suggested_text));
+      return;
+    }
+    if (fullReplyDraft?.suggested_text) {
+      setReplyText(fullReplyDraft.suggested_text);
+    }
+  }, [composePhase, ackDraft, fullReplyDraft]);
+
+  const toggleMessageExpanded = useCallback((msgId) => {
+    setExpandedMessages((prev) => ({ ...prev, [msgId]: !prev[msgId] }));
+  }, []);
 
   const filteredThreads = useMemo(() => {
     const sortMode = activeTab === "complaints" ? "priority" : queueSort;
@@ -632,15 +665,6 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
     await handleSendReply({ markHandled: false, text: body, draftKind: "ack", draftId: ackDraft?.id });
   };
 
-  const handleQuickAck = async (sendNow = false) => {
-    if (!selected) return;
-    const text = buildQuickAckText(resolveOritReplyName(selected.from_name, selected.guest_contact_name));
-    setReplyText(text);
-    if (sendNow && canSendFromXos) {
-      await handleSendReply({ markHandled: false, text });
-    }
-  };
-
   const handleMarkHandled = async () => {
     if (!selectedId) return;
     if (replyText.trim()) {
@@ -854,6 +878,7 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
         display: "flex",
         flexDirection: "column",
         minHeight: detailScrollable ? undefined : 480,
+        maxHeight: detailScrollable ? undefined : "85vh",
         flex: isMobile && !detailScrollable ? 1 : undefined,
         overflow: detailScrollable ? "visible" : "hidden",
         paddingBottom: detailScrollable ? "calc(var(--safe-bottom-nav, 80px) + 12px)" : 16,
@@ -893,8 +918,8 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
         </div>
       ) : (
         <>
-          <div style={{ marginBottom: 12, flexShrink: 0 }}>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
+          <div style={{ marginBottom: 8, flexShrink: 0 }}>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 8, alignItems: "center" }}>
               <span style={{
                 fontSize: 12,
                 padding: "4px 10px",
@@ -925,97 +950,73 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
                   ✓ טופל · {selected.handled_at ? fmtDt(selected.handled_at) : "—"}
                 </span>
               )}
-              {selected.full_reply_sent_at && (
-                <span style={{ fontSize: 12, padding: "4px 10px", borderRadius: 999, background: "#DCFCE7", color: "#047857", fontWeight: 600 }}>
-                  ✉ תשובה מלאה נשלחה · {fmtDt(selected.full_reply_sent_at)}
-                </span>
-              )}
               {selected.auto_ack_sent_at && (
                 <span style={{ fontSize: 12, padding: "4px 10px", borderRadius: 999, background: "#DCFCE7", color: "#047857", fontWeight: 600 }}>
-                  ✉ אישור קבלה · {fmtDt(selected.auto_ack_sent_at)}
+                  ✉ אישור קבלה
                 </span>
               )}
-              {selected.workflow_step === "awaiting_ack_approval" && !selected.auto_ack_sent_at && (
-                <span style={{ fontSize: 12, padding: "4px 10px", borderRadius: 999, background: "#FEF3C7", color: "#92400E", fontWeight: 600 }}>
-                  ⏳ ממתינה לאישור — סיגל ב-WA: «תראי לי» / «אשרי» → «כן שלחי»
+              {selected.full_reply_sent_at && (
+                <span style={{ fontSize: 12, padding: "4px 10px", borderRadius: 999, background: "#DCFCE7", color: "#047857", fontWeight: 600 }}>
+                  ✉ תשובה נשלחה
                 </span>
               )}
+              <button
+                type="button"
+                onClick={() => setDetailsExpanded((v) => !v)}
+                style={{
+                  marginRight: "auto",
+                  border: "1px solid var(--border)",
+                  background: "#fff",
+                  borderRadius: 999,
+                  padding: "4px 12px",
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  fontFamily: "Heebo, sans-serif",
+                }}
+              >
+                {detailsExpanded ? "הסתירי פרטים ▲" : "פרטי פנייה ▼"}
+              </button>
             </div>
             <div style={{ fontSize: isMobile ? 16 : 18, fontWeight: 800 }}>{threadDisplayTitle(selected)}</div>
             <div style={{ color: "var(--text-muted)", marginTop: 4, fontSize: isMobile ? 13 : 14 }}>
               {oritThreadGuestLabel(selected)} · {fmtDt(selected.received_at)}
             </div>
-            {(selected.guest_contact_email || selected.guest_contact_phone || selected.guest_contact_name) && (
-              <div style={{ marginTop: 10, padding: 10, borderRadius: 8, background: "#EFF6FF", fontSize: 13, lineHeight: 1.5 }}>
-                <div style={{ fontWeight: 700, marginBottom: 4 }}>פרטי אורח מהפנייה</div>
-                {selected.guest_contact_name && <div>שם: {selected.guest_contact_name}</div>}
-                {selected.guest_contact_email && (
-                  <div>מייל: {selected.guest_contact_email}</div>
+            {detailsExpanded && (
+              <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+                {(selected.guest_contact_email || selected.guest_contact_phone || selected.guest_contact_name) && (
+                  <div style={{ padding: 10, borderRadius: 8, background: "#EFF6FF", fontSize: 13, lineHeight: 1.5 }}>
+                    <div style={{ fontWeight: 700, marginBottom: 4 }}>פרטי אורח</div>
+                    {selected.guest_contact_name && <div>שם: {selected.guest_contact_name}</div>}
+                    {selected.guest_contact_email && <div>מייל: {selected.guest_contact_email}</div>}
+                    {selected.guest_contact_phone && <div>טלפון: {selected.guest_contact_phone}</div>}
+                    <div style={{ marginTop: 6, color: "#1D4ED8", fontWeight: 600 }}>
+                      שליחת מייל ל: {resolveOritReplyEmail(selected.from_email, selected.guest_contact_email) || "⚠ אין מייל — רק וואטסאפ"}
+                    </div>
+                  </div>
                 )}
-                {selected.guest_contact_phone && (
-                  <div>טלפון: {selected.guest_contact_phone}</div>
+                {selected.subject && (
+                  <div style={{ color: "var(--text-muted)", fontSize: 12 }}>נושא: {selected.subject}</div>
                 )}
-                <div style={{ marginTop: 6, color: "#1D4ED8", fontWeight: 600 }}>
-                  שליחת מייל תגיע ל: {resolveOritReplyEmail(selected.from_email, selected.guest_contact_email) || "⚠ אין מייל אורח — רק וואטסאפ/ידני"}
-                </div>
-              </div>
-            )}
-            {selected.subject && (
-              <div style={{ color: "var(--text-muted)", marginTop: 4, fontSize: 12 }}>
-                נושא מייל: {selected.subject}
-              </div>
-            )}
-            {selected.urgency_reason && (
-              <div style={{ marginTop: 10, padding: 10, borderRadius: 8, background: "#FEF3C7", fontSize: 14 }}>
-                <strong>למה זה דחוף:</strong> {selected.urgency_reason}
-              </div>
-            )}
-            {selected.ai_summary && (
-              <div style={{ marginTop: 10, padding: 10, borderRadius: 8, background: "var(--ivory)", fontSize: 14 }}>
-                <strong>סיכום הסוכן:</strong> {selected.ai_summary}
-              </div>
-            )}
-            {selected.category === "complaint" && (selected.urgency === "high" || selected.urgency === "critical") && (
-              <div style={{ marginTop: 10, padding: 10, borderRadius: 8, background: "#F5F3FF", fontSize: 13, lineHeight: 1.6 }}>
-                <div style={{ fontWeight: 700, marginBottom: 6 }}>מסלול טיפול</div>
-                <div>{workflowMeta.ackDone ? "✅" : "①"} אישור קבלה (72 שעות)</div>
-                <div>{workflowMeta.replyDone ? "✅" : "②"} תשובה מלאה לאורח/ת</div>
-                <div>{workflowMeta.guestReplied ? "📩" : "③"} מעקב תשובת אורח</div>
+                {selected.urgency_reason && (
+                  <div style={{ padding: 10, borderRadius: 8, background: "#FEF3C7", fontSize: 13 }}>
+                    <strong>למה דחוף:</strong> {selected.urgency_reason}
+                  </div>
+                )}
+                {selected.ai_summary && (
+                  <div style={{ padding: 10, borderRadius: 8, background: "var(--ivory)", fontSize: 13 }}>
+                    <strong>סיכום:</strong> {selected.ai_summary}
+                  </div>
+                )}
+                {selected.category === "complaint" && (selected.urgency === "high" || selected.urgency === "critical") && (
+                  <div style={{ padding: 10, borderRadius: 8, background: "#F5F3FF", fontSize: 13, lineHeight: 1.6 }}>
+                    <div style={{ fontWeight: 700, marginBottom: 4 }}>מסלול טיפול</div>
+                    <div>{workflowMeta.ackDone ? "✅" : "①"} אישור קבלה · {workflowMeta.replyDone ? "✅" : "②"} תשובה מלאה · {workflowMeta.guestReplied ? "📩" : "③"} מעקב אורח</div>
+                  </div>
+                )}
               </div>
             )}
           </div>
-
-          {workflowMeta.guestReplied && !workflowMeta.closed && (
-            <div style={{
-              marginBottom: 12,
-              padding: 12,
-              borderRadius: 10,
-              background: "#FEF3C7",
-              border: "2px solid #F59E0B",
-              flexShrink: 0,
-            }}
-            >
-              <div style={{ fontWeight: 800, marginBottom: 6, fontSize: 15 }}>📩 האורח/ת השיב/ה למייל</div>
-              <div style={{ fontSize: 13, lineHeight: 1.5, marginBottom: latestGuestInbound ? 8 : 0 }}>
-                סיגל שלחה לך עדכון בוואטסאפ עם טיוטת המשך. ערכי ושלחי במייל או במכשיר הסוויטות.
-              </div>
-              {latestGuestInbound && (
-                <div style={{
-                  fontSize: 13,
-                  whiteSpace: "pre-wrap",
-                  background: "#fff",
-                  padding: 10,
-                  borderRadius: 8,
-                  border: "1px solid #FCD34D",
-                  maxHeight: 120,
-                  overflow: "auto",
-                }}
-                >
-                  {latestGuestInbound.length > 500 ? `${latestGuestInbound.slice(0, 500)}…` : latestGuestInbound}
-                </div>
-              )}
-            </div>
-          )}
 
           <div style={{
             flex: detailScrollable ? undefined : 1,
@@ -1024,376 +1025,230 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
             border: "1px solid var(--border)",
             borderRadius: 10,
             padding: 12,
-            marginBottom: 12,
+            marginBottom: 8,
             background: "#FAFAF9",
-            minHeight: detailScrollable ? undefined : (isMobile ? 120 : undefined),
+            minHeight: detailScrollable ? undefined : (isMobile ? 120 : 160),
           }}
           >
-            {messages.map((m) => (
-              <div key={m.id} style={{ marginBottom: 12, textAlign: m.direction === "outbound" ? "left" : "right" }}>
-                <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>
-                  {m.direction === "outbound" ? "יוצא" : "נכנס"}
-                  {m.external_key?.startsWith?.("wa-") ? " · 📱 מכשיר סוויטות" : ""}
-                  {" · "}{m.message_kind} · {fmtDt(m.received_at)}
+            {messages.length === 0 && (
+              <div style={{ textAlign: "center", color: "var(--text-muted)", padding: 24, fontSize: 14 }}>
+                אין הודעות עדיין
+              </div>
+            )}
+            {messages.map((m) => {
+              const body = m.body_text || "";
+              const isLong = body.length > BUBBLE_PREVIEW_MAX;
+              const expanded = expandedMessages[m.id];
+              const shown = isLong && !expanded ? `${body.slice(0, BUBBLE_PREVIEW_MAX)}…` : body;
+              return (
+                <div key={m.id} style={{ marginBottom: 12, textAlign: m.direction === "outbound" ? "left" : "right" }}>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>
+                    {messageBubbleMeta(m)}
+                  </div>
+                  <div style={{
+                    display: "inline-block",
+                    maxWidth: "90%",
+                    padding: "10px 12px",
+                    borderRadius: m.direction === "outbound" ? "10px 10px 2px 10px" : "10px 10px 10px 2px",
+                    background: m.direction === "outbound" ? "#DCFCE7" : "#fff",
+                    border: "1px solid var(--border)",
+                    whiteSpace: "pre-wrap",
+                    fontSize: 14,
+                    lineHeight: 1.5,
+                    textAlign: "right",
+                  }}>
+                    {shown}
+                    {isLong && (
+                      <button
+                        type="button"
+                        onClick={() => toggleMessageExpanded(m.id)}
+                        style={{
+                          display: "block",
+                          marginTop: 6,
+                          border: "none",
+                          background: "transparent",
+                          color: "#1D4ED8",
+                          fontWeight: 600,
+                          fontSize: 12,
+                          cursor: "pointer",
+                          padding: 0,
+                          fontFamily: "Heebo, sans-serif",
+                        }}
+                      >
+                        {expanded ? "הציגי פחות" : "הציגי הכל"}
+                      </button>
+                    )}
+                  </div>
                 </div>
+              );
+            })}
+          </div>
+
+          {!workflowMeta.closed && (
+            <div style={{
+              flexShrink: 0,
+              borderTop: "2px solid var(--border)",
+              paddingTop: 10,
+              background: "#fff",
+              position: detailScrollable ? "sticky" : undefined,
+              bottom: detailScrollable ? "calc(var(--safe-bottom-nav, 80px) + 8px)" : undefined,
+              zIndex: detailScrollable ? 2 : undefined,
+            }}
+            >
+              {workflowMeta.guestReplied && (
                 <div style={{
-                  display: "inline-block",
-                  maxWidth: "90%",
-                  padding: "10px 12px",
-                  borderRadius: 10,
-                  background: m.direction === "outbound" ? "#DCFCE7" : "#fff",
-                  border: "1px solid var(--border)",
-                  whiteSpace: "pre-wrap",
-                }}>
-                  {m.body_text}
+                  marginBottom: 8,
+                  padding: "8px 10px",
+                  borderRadius: 8,
+                  background: "#FEF3C7",
+                  border: "1px solid #F59E0B",
+                  fontSize: 13,
+                  lineHeight: 1.4,
+                }}
+                >
+                  <strong>📩 האורח/ת השיב/ה</strong> — ערכי ושלחי המשך למטה
                 </div>
-              </div>
-            ))}
-          </div>
+              )}
 
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10, flexShrink: 0 }}>
-            <button type="button" className="btn btn-primary" disabled={busy} onClick={handleAnalyze} style={{ minHeight: 44 }}>
-              ✨ הצעות תשובה
-            </button>
-            <button
-              type="button"
-              className="btn"
-              disabled={busy || selected.status === "handled" || selected.category !== "complaint" || !["high", "critical"].includes(selected.urgency)}
-              onClick={() => handleSendWhapiAlert(selected.id, { force: true })}
-              style={{ minHeight: 44 }}
-              title={selected.category !== "complaint"
-                ? "וואטסאפ לאורית — רק לתלונות"
-                : !["high", "critical"].includes(selected.urgency)
-                  ? "התראת וואטסאפ — תלונות דחופות/קריטיות בלבד"
-                  : "שליחת התראה לסיגל בוואטסאפ עם טיוטת אישור קבלה"}
-            >
-              📱 התראה לסיגל (וואטסאפ)
-            </button>
-            {canSendFromXos && (
-              <button
-                type="button"
-                className="btn"
-                disabled={busy || !!selected.auto_ack_sent_at || !resolveOritReplyEmail(selected.from_email, selected.guest_contact_email)}
-                onClick={() => handleQuickAck(true)}
-                style={{ minHeight: 44 }}
-                title="שליחה ידנית לאורח — רק למייל שחולץ מהפנייה (לא כתובת הממסר)"
-              >
-                📨 אישור קבלה ידני (מייל)
-              </button>
-            )}
-            {!canSendFromXos && (
-              <button type="button" className="btn" disabled={busy} onClick={() => handleQuickAck(false)} style={{ minHeight: 44 }}>
-                📝 הכיני אישור קבלה
-              </button>
-            )}
-            <button
-              type="button"
-              className="btn"
-              disabled={busy || selected.status === "handled"}
-              onClick={handleMarkHandled}
-              style={{ minHeight: 44 }}
-              title="סימון בלבד — מסונכרן עם סיגל בוואטסאפ («סיימתי»)"
-            >
-              ✓ סיימתי — סמן כטופל
-            </button>
-            <button type="button" className="btn" disabled={busy} onClick={handleSnooze} style={{ minHeight: 44 }} title="דחי למחר / מאוחר יותר">
-              😴 דחי למחר
-            </button>
-            <button
-              type="button"
-              className="btn"
-              disabled={busy || !hasGuestPhone || !onOpenDreamBotChat}
-              onClick={() => onOpenDreamBotChat?.({
-                phone: selected.guest_contact_phone,
-                guestName: resolveOritReplyName(selected.from_name, selected.guest_contact_name),
-                inboxChannel: "whapi",
-              })}
-              style={{ minHeight: 44 }}
-              title={selected.guest_contact_phone
-                ? "פתיחת שיחת וואטסאפ באינבוקס (מכשיר הסוויטות)"
-                : "לא זוהה טלפון בגוף הפנייה"}
-            >
-              💬 וואטסאפ באינבוקס
-            </button>
-            <button
-              type="button"
-              className="btn btn-primary"
-              disabled={busy || !hasGuestPhone || (!replyText.trim() && !fullReplyDraft?.suggested_text && !ackText.trim())}
-              onClick={() => handleSendViaSuitesDevice({
-                text: replyText.trim() || fullReplyDraft?.suggested_text || ackText,
-                draftKind: !selected.auto_ack_sent_at && ackText.trim() ? "ack" : "full_reply",
-              })}
-              style={{ minHeight: 44 }}
-              title={hasGuestPhone
-                ? "שליחת הטיוטה לאורח במכשיר הסוויטות (לא מחליפה מייל רשמי)"
-                : "חסר טלפון אורח בפנייה"}
-            >
-              📱 שלח דרך מכשיר הסוויטות
-            </button>
-          </div>
-
-          {!selected.auto_ack_sent_at && (ackDraft || ackText) && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10, flexShrink: 0 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#92400E" }}>
-                שלב 1 — אישור קבלה (72 שעות)
+              <div style={{ fontSize: 12, fontWeight: 700, color: composePhase === "ack" ? "#92400E" : "#1D4ED8", marginBottom: 6 }}>
+                {composePhase === "ack" ? "אישור קבלה (שלב 1)" : "תשובה לאורח/ת"}
               </div>
+
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                <button type="button" className="btn" disabled={busy} onClick={handleAnalyze} style={{ minHeight: 36, fontSize: 13 }}>
+                  ✨ הצעות
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={busy || selected.category !== "complaint" || !["high", "critical"].includes(selected.urgency)}
+                  onClick={() => handleSendWhapiAlert(selected.id, { force: true })}
+                  style={{ minHeight: 36, fontSize: 13 }}
+                  title="התראה לסיגל בוואטסאפ"
+                >
+                  📱 סיגל
+                </button>
+                {(composePhase === "ack" ? ackDraft?.suggested_text : fullReplyDraft?.suggested_text) && (
+                  <button type="button" className="btn" disabled={busy} onClick={loadDraftToCompose} style={{ minHeight: 36, fontSize: 13 }}>
+                    📝 טעני טיוטה
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={busy || selected.status === "handled"}
+                  onClick={handleMarkHandled}
+                  style={{ minHeight: 36, fontSize: 13 }}
+                >
+                  ✓ סיימתי
+                </button>
+                <button type="button" className="btn" disabled={busy} onClick={handleSnooze} style={{ minHeight: 36, fontSize: 13 }}>
+                  😴 דחי
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={busy || !hasGuestPhone || !onOpenDreamBotChat}
+                  onClick={() => onOpenDreamBotChat?.({
+                    phone: selected.guest_contact_phone,
+                    guestName: resolveOritReplyName(selected.from_name, selected.guest_contact_name),
+                    inboxChannel: "whapi",
+                  })}
+                  style={{ minHeight: 36, fontSize: 13 }}
+                >
+                  💬 אינבוקס
+                </button>
+              </div>
+
               <textarea
-                value={ackText}
-                onChange={(e) => setAckText(e.target.value)}
-                placeholder="ערכי את אישור הקבלה לפני שליחה…"
-                rows={isMobile ? 4 : 5}
+                value={composeText}
+                onChange={(e) => setComposeText(e.target.value)}
+                placeholder={composePlaceholder}
+                rows={isMobile ? 3 : 4}
                 style={{
                   width: "100%",
                   borderRadius: 10,
-                  border: "1px solid #FCD34D",
+                  border: composePhase === "ack" ? "1px solid #FCD34D" : "1px solid var(--border)",
                   padding: 12,
-                  fontSize: 14,
+                  fontSize: 15,
                   lineHeight: 1.5,
                   background: "#FFFBEB",
+                  fontFamily: "Heebo, sans-serif",
+                  marginBottom: 8,
+                  resize: "vertical",
                 }}
               />
-              {canSendFromXos && (
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  disabled={busy || !ackText.trim() || !resolveOritReplyEmail(selected.from_email, selected.guest_contact_email)}
-                  onClick={handleSendAck}
-                  style={{ minHeight: 44 }}
-                >
-                  ✉ אשרי ושלחי אישור קבלה
-                </button>
-              )}
-            </div>
-          )}
 
-          {selected.auto_ack_sent_at && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10, flexShrink: 0 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#1D4ED8" }}>
-                שלב 2 — תשובה מלאה לאורח/ת
-              </div>
-              {!replyText.trim() && fullReplyDraft?.suggested_text && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  <div style={{ padding: 10, borderRadius: 10, border: "1px solid var(--border)", background: "#FFFBEB", whiteSpace: "pre-wrap", fontSize: 14 }}>
-                    {fullReplyDraft.suggested_text}
-                  </div>
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    {canSendFromXos && (
-                      <button
-                        type="button"
-                        className="btn btn-primary"
-                        disabled={busy || selected.status === "handled"}
-                        onClick={() => handleSendReply({
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {canSendFromXos && (
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    disabled={
+                      busy
+                      || !composeText.trim()
+                      || (composePhase === "ack" && !resolveOritReplyEmail(selected.from_email, selected.guest_contact_email))
+                      || (composePhase === "full_reply" && selected.status === "handled")
+                    }
+                    onClick={() => {
+                      if (composePhase === "ack") {
+                        handleSendAck();
+                      } else {
+                        handleSendReply({
                           markHandled: false,
-                          text: fullReplyDraft.suggested_text,
-                          draftKind: "full_reply",
-                          draftId: fullReplyDraft.id,
-                        })}
-                        style={{ minHeight: 44 }}
-                      >
-                        📧 שלחי מ-XOS
-                      </button>
-                    )}
-                    {hasGuestPhone && (
-                      <button
-                        type="button"
-                        className="btn"
-                        disabled={busy || selected.status === "handled"}
-                        onClick={() => handleSendViaSuitesDevice({
-                          text: fullReplyDraft.suggested_text,
-                          draftKind: "full_reply",
-                          draftId: fullReplyDraft.id,
-                        })}
-                        style={{ minHeight: 44 }}
-                      >
-                        📱 שלח דרך מכשיר הסוויטות
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      className="btn"
-                      disabled={busy}
-                      onClick={() => { setReplyText(fullReplyDraft.suggested_text); handleCopyReply(fullReplyDraft.suggested_text); }}
-                      style={{ minHeight: 44 }}
-                    >
-                      📋 העתיקי
-                    </button>
-                    <button
-                      type="button"
-                      className="btn"
-                      disabled={busy}
-                      onClick={() => setReplyText(fullReplyDraft.suggested_text)}
-                      style={{ minHeight: 44 }}
-                    >
-                      ✏️ ערכי לפני שליחה
-                    </button>
-                  </div>
-                </div>
-              )}
-              {(replyText.trim() || !fullReplyDraft?.suggested_text) && (
-                <>
-                  <textarea
-                    value={replyText}
-                    onChange={(e) => setReplyText(e.target.value)}
-                    placeholder={canSendFromXos ? "ערכי כאן את התשובה המלאה לפני שליחה לאורח…" : "ערכי כאן טיוטה לפני העתקה ל-Outlook…"}
-                    rows={isMobile ? 6 : 8}
-                    style={{
-                      width: "100%",
-                      borderRadius: 10,
-                      border: "1px solid var(--border)",
-                      padding: 12,
-                      fontSize: 14,
-                      lineHeight: 1.5,
-                      background: "#FFFBEB",
-                    }}
-                  />
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    {canSendFromXos && (
-                      <button
-                        type="button"
-                        className="btn btn-primary"
-                        disabled={busy || !replyText.trim() || selected.status === "handled"}
-                        onClick={() => handleSendReply({ markHandled: false, text: replyText, draftKind: "full_reply", draftId: fullReplyDraft?.id })}
-                        style={{ minHeight: 44 }}
-                      >
-                        ✉ אשרי ושלחי תשובה (סיגל תעדכן עד «סיימתי»)
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      className="btn"
-                      disabled={busy || !replyText.trim()}
-                      onClick={() => handleCopyReply(replyText)}
-                      style={{ minHeight: 44 }}
-                    >
-                      📋 העתיקי
-                    </button>
-                    {hasGuestPhone && (
-                      <button
-                        type="button"
-                        className="btn"
-                        disabled={busy || !replyText.trim() || selected.status === "handled"}
-                        onClick={() => handleSendViaSuitesDevice({
-                          text: replyText,
+                          text: composeText,
                           draftKind: "full_reply",
                           draftId: fullReplyDraft?.id,
-                        })}
-                        style={{ minHeight: 44 }}
-                      >
-                        📱 שלח דרך מכשיר הסוויטות
-                      </button>
-                    )}
-                  </div>
-                </>
-              )}
-            </div>
-          )}
-
-          {!selected.auto_ack_sent_at && !ackDraft && drafts.length > 0 && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10, flexShrink: 0 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-muted)" }}>
-                {canSendFromXos ? "טיוטות מוצעות" : "טיוטות להעתקה ל-Outlook"}
+                        });
+                      }
+                    }}
+                    style={{ minHeight: 44, flex: isMobile ? "1 1 100%" : undefined }}
+                  >
+                    📧 שלחי מ-XOS
+                  </button>
+                )}
+                {hasGuestPhone && (
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={busy || !composeText.trim() || selected.status === "handled"}
+                    onClick={() => handleSendViaSuitesDevice({
+                      text: composeText,
+                      draftKind: composePhase === "ack" ? "ack" : "full_reply",
+                      draftId: composePhase === "ack" ? ackDraft?.id : fullReplyDraft?.id,
+                    })}
+                    style={{ minHeight: 44, flex: isMobile ? "1 1 100%" : undefined }}
+                  >
+                    📱 שלח בסוויטות
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={busy || !composeText.trim()}
+                  onClick={() => handleCopyReply(composeText)}
+                  style={{ minHeight: 44 }}
+                >
+                  📋 העתקה
+                </button>
+                {canSendFromXos && composePhase === "full_reply" && (
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={busy || !composeText.trim() || selected.status === "handled"}
+                    onClick={() => handleSendReply({
+                      markHandled: true,
+                      text: composeText,
+                      draftKind: "full_reply",
+                      draftId: fullReplyDraft?.id,
+                    })}
+                    style={{ minHeight: 44 }}
+                  >
+                    📧 שלחי וסמני טופל
+                  </button>
+                )}
               </div>
-              {drafts.map((d) => (
-                <div key={d.id} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  <div style={{ padding: 10, borderRadius: 10, border: "1px solid var(--border)", background: "#FFFBEB", whiteSpace: "pre-wrap", fontSize: 14 }}>
-                    {d.suggested_text}
-                  </div>
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    {canSendFromXos && (
-                      <button
-                        type="button"
-                        className="btn btn-primary"
-                        style={{ minHeight: 44 }}
-                        onClick={() => handleSendReply({ markHandled: false, text: d.suggested_text })}
-                      >
-                        📧 שלחי מ-XOS
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      className="btn"
-                      style={{ minHeight: 44 }}
-                      onClick={() => { setReplyText(d.suggested_text); handleCopyReply(d.suggested_text); }}
-                    >
-                      📋 העתיקי
-                    </button>
-                    <button
-                      type="button"
-                      className="btn"
-                      style={{ minHeight: 44 }}
-                      onClick={() => setReplyText(d.suggested_text)}
-                    >
-                      ✏️ ערכי לפני שליחה
-                    </button>
-                  </div>
-                </div>
-              ))}
             </div>
-          )}
-
-          {!(selected.category === "complaint" && ["high", "critical"].includes(selected.urgency)) && (
-          <>
-          <textarea
-            value={replyText}
-            onChange={(e) => setReplyText(e.target.value)}
-            placeholder={canSendFromXos ? "ערכי כאן את התשובה לפני שליחה לאורח…" : "ערכי כאן טיוטה לפני העתקה ל-Outlook…"}
-            rows={isMobile ? 3 : 4}
-            style={{
-              width: "100%",
-              borderRadius: 10,
-              border: "1px solid var(--border)",
-              padding: 12,
-              fontFamily: "Heebo, sans-serif",
-              marginBottom: 10,
-              flexShrink: 0,
-              fontSize: 16,
-            }}
-          />
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, flexShrink: 0 }}>
-            {canSendFromXos && (
-              <button
-                type="button"
-                className="btn btn-primary"
-                disabled={busy || !replyText.trim()}
-                onClick={() => handleSendReply({ markHandled: false })}
-                style={{ minHeight: 48 }}
-              >
-                📧 שלחי מ-XOS
-              </button>
-            )}
-            <button
-              type="button"
-              className="btn"
-              disabled={busy || !replyText.trim()}
-              onClick={() => handleCopyReply()}
-              style={{ minHeight: 48 }}
-            >
-              📋 העתיקי ללוח
-            </button>
-            {hasGuestPhone && (
-              <button
-                type="button"
-                className="btn"
-                disabled={busy || !replyText.trim() || selected.status === "handled"}
-                onClick={() => handleSendViaSuitesDevice({ text: replyText, draftKind: "full_reply" })}
-                style={{ minHeight: 48 }}
-              >
-                📱 שלח דרך מכשיר הסוויטות
-              </button>
-            )}
-            {canSendFromXos && (
-              <button
-                type="button"
-                className="btn"
-                disabled={busy || !replyText.trim() || selected.status === "handled"}
-                onClick={() => handleSendReply({ markHandled: true })}
-                style={{ minHeight: 48 }}
-              >
-                📧 שלחי מ-XOS וסמן כטופל
-              </button>
-            )}
-          </div>
-          </>
           )}
         </>
       )}
