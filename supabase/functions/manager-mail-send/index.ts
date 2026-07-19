@@ -15,6 +15,12 @@ import {
   type OritAlertMailbox,
 } from "../_shared/oritAgentWorkflow.ts";
 import { notifyOritSigalUiSend } from "../_shared/oritSigalUiNotify.ts";
+import {
+  cancelPendingScheduledSendsForThread,
+  createOritScheduledSend,
+  notifyAfterScheduleCreated,
+  type OritScheduleChannel,
+} from "../_shared/oritScheduleSend.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -82,9 +88,37 @@ serve(async (req: Request) => {
       draftKind,
       draftId,
       channel,
+      scheduledFor,
+      cancelSchedule,
     } = await req.json();
 
-    if (!threadId || !bodyText) {
+    if (!threadId) {
+      return new Response(JSON.stringify({ ok: false, error: "threadId required" }), {
+        status: 200,
+        headers: { ...CORS, "Content-Type": "application/json" },
+      });
+    }
+
+    if (cancelSchedule === true) {
+      const { data: threadForCancel } = await supabase
+        .from("orit_agent_threads")
+        .select("id")
+        .eq("id", threadId)
+        .maybeSingle();
+      if (!threadForCancel) {
+        return new Response(JSON.stringify({ ok: false, error: "thread_not_found" }), {
+          status: 200,
+          headers: { ...CORS, "Content-Type": "application/json" },
+        });
+      }
+      await cancelPendingScheduledSendsForThread(supabase, threadId);
+      return new Response(JSON.stringify({ ok: true, cancelled: true }), {
+        status: 200,
+        headers: { ...CORS, "Content-Type": "application/json" },
+      });
+    }
+
+    if (!bodyText) {
       return new Response(JSON.stringify({ ok: false, error: "threadId and bodyText required" }), {
         status: 200,
         headers: { ...CORS, "Content-Type": "application/json" },
@@ -108,6 +142,87 @@ serve(async (req: Request) => {
     const finalText = String(bodyText).trim();
     const sentAt = new Date().toISOString();
     const kind = draftKind === "ack" ? "ack" : "full_reply";
+
+    if (scheduledFor) {
+      const when = new Date(String(scheduledFor));
+      if (Number.isNaN(when.getTime())) {
+        return new Response(JSON.stringify({ ok: false, error: "invalid_schedule" }), {
+          status: 200,
+          headers: { ...CORS, "Content-Type": "application/json" },
+        });
+      }
+
+      const scheduleChannel: OritScheduleChannel = channel === "whatsapp_bridge"
+        ? "whatsapp_bridge"
+        : "email";
+
+      if (kind === "ack" && scheduleChannel === "email" && mailbox.read_only_mode !== false && !thread.is_demo) {
+        return new Response(JSON.stringify({
+          ok: false,
+          error: "read_only_mode",
+          hint: "תיבה במצב קריאה בלבד — לא ניתן לתזמן מייל",
+        }), {
+          status: 200,
+          headers: { ...CORS, "Content-Type": "application/json" },
+        });
+      }
+
+      const created = await createOritScheduledSend(supabase, {
+        threadId,
+        mailboxId: thread.mailbox_id,
+        channel: scheduleChannel,
+        draftKind: kind,
+        bodyText: finalText,
+        scheduledFor: when,
+        markHandled: markHandled === true,
+        draftId: draftId ?? null,
+        createdBy: userData.user.id,
+        source: "ui",
+      });
+
+      if (!created.ok) {
+        return new Response(JSON.stringify({
+          ok: false,
+          error: created.error || "schedule_failed",
+          hint: created.error === "schedule_too_soon"
+            ? "בחרי שעה לפחות דקה קדימה"
+            : "תזמון נכשל",
+        }), {
+          status: 200,
+          headers: { ...CORS, "Content-Type": "application/json" },
+        });
+      }
+
+      const mailboxAlert: OritAlertMailbox = {
+        id: mailbox.id,
+        digest_whatsapp_phone: mailbox.digest_whatsapp_phone,
+        alert_enabled: mailbox.alert_enabled !== false,
+        profile_id: mailbox.profile_id,
+      };
+      try {
+        await notifyAfterScheduleCreated(
+          supabase,
+          mailboxAlert,
+          thread,
+          created.scheduledFor!,
+          scheduleChannel,
+          kind,
+        );
+      } catch (notifyErr) {
+        console.warn("[manager-mail-send] schedule notify failed:", (notifyErr as Error).message);
+      }
+
+      return new Response(JSON.stringify({
+        ok: true,
+        scheduled: true,
+        scheduledFor: created.scheduledFor,
+        draftKind: kind,
+        channel: scheduleChannel,
+      }), {
+        status: 200,
+        headers: { ...CORS, "Content-Type": "application/json" },
+      });
+    }
 
     let suggestedText: string | undefined;
     if (draftId) {

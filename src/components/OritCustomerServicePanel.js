@@ -17,6 +17,13 @@ import {
   resolveOritReplyName,
 } from "../utils/oritGuestContactExtract";
 import { sanitizeOritAckDraft } from "../utils/oritAckSanitize";
+import {
+  defaultOritScheduleLocalInput,
+  formatOritScheduleLabel,
+  isOritQuietHours,
+  localInputToIso,
+  ORIT_QUIET_HOURS_HINT,
+} from "../utils/oritScheduleUi";
 
 const URGENCY_META = {
   critical: { label: "🔴 קריטי", bg: "#FEE2E2", color: "#B91C1C" },
@@ -172,6 +179,9 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
   const [activeTab, setActiveTab] = useState("recent");
   const [queueSort, setQueueSort] = useState("recent");
   const [toast, setToast] = useState(null);
+  const [scheduleEnabled, setScheduleEnabled] = useState(() => isOritQuietHours());
+  const [scheduleAt, setScheduleAt] = useState(() => defaultOritScheduleLocalInput());
+  const [pendingSchedule, setPendingSchedule] = useState(null);
 
   const showToast = useCallback((kind, text) => {
     setToast({ kind, text });
@@ -263,17 +273,20 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
       setMessages([]);
       setDrafts([]);
       setAckText("");
+      setPendingSchedule(null);
       setDetailLoading(false);
       return;
     }
     setDetailLoading(true);
     try {
-      const [{ data: msgs }, { data: drs }] = await Promise.all([
+      const [{ data: msgs }, { data: drs }, { data: sched }] = await Promise.all([
         supabase.from("orit_agent_messages").select("*").eq("thread_id", threadId).order("received_at", { ascending: true }),
         supabase.from("orit_agent_drafts").select("*").eq("thread_id", threadId).in("status", ["suggested", "edited"]).order("created_at", { ascending: false }),
+        supabase.from("orit_agent_scheduled_sends").select("*").eq("thread_id", threadId).eq("status", "pending").order("scheduled_for", { ascending: true }).limit(1).maybeSingle(),
       ]);
       setMessages(msgs ?? []);
       setDrafts(drs ?? []);
+      setPendingSchedule(sched ?? null);
       const ackDraftRow = (drs ?? []).find((d) => d.draft_kind === "ack");
       setAckText(sanitizeOritAckDraft(ackDraftRow?.final_text || ackDraftRow?.suggested_text || ""));
       // replyText is filled only when Orit explicitly edits/copies — never auto from draft
@@ -647,9 +660,46 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
     }
   };
 
-  const handleSendReply = async ({ markHandled = false, text, draftKind = "full_reply", draftId } = {}) => {
+  useEffect(() => {
+    if (isOritQuietHours()) {
+      setScheduleEnabled(true);
+      setScheduleAt(defaultOritScheduleLocalInput());
+    }
+  }, [selectedId]);
+
+  const handleCancelSchedule = async () => {
+    if (!selectedId) return;
+    setBusy(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("manager-mail-send", {
+        body: { threadId: selectedId, cancelSchedule: true },
+      });
+      if (error) throw error;
+      if (!data?.ok) throw new Error(data?.hint || data?.error || "ביטול נכשל");
+      setPendingSchedule(null);
+      showToast("ok", "התזמון בוטל");
+      await loadThreadDetail(selectedId);
+    } catch (e) {
+      showToast("err", e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleSendReply = async ({
+    markHandled = false,
+    text,
+    draftKind = "full_reply",
+    draftId,
+    viaWhatsapp = false,
+  } = {}) => {
     const body = (text ?? replyText).trim();
     if (!body || !selectedId) return;
+    const scheduledIso = scheduleEnabled ? localInputToIso(scheduleAt) : null;
+    if (scheduleEnabled && !scheduledIso) {
+      showToast("err", "שעת תזמון לא תקינה");
+      return;
+    }
     setBusy(true);
     try {
       const { data, error } = await supabase.functions.invoke("manager-mail-send", {
@@ -660,10 +710,20 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
           sendOnly: !markHandled,
           draftKind,
           draftId: draftId ?? (draftKind === "ack" ? ackDraft?.id : fullReplyDraft?.id),
+          ...(viaWhatsapp ? { channel: "whatsapp_bridge" } : {}),
+          ...(scheduledIso ? { scheduledFor: scheduledIso } : {}),
         },
       });
       if (error) throw error;
       if (!data?.ok) throw new Error(data?.hint || data?.error || "שליחה נכשלה");
+
+      if (data.scheduled) {
+        const when = formatOritScheduleLabel(data.scheduledFor);
+        const dest = viaWhatsapp ? "בוואטסאפ" : "במייל";
+        showToast("ok", `📅 מתוזמן ל${when} (${dest}) — סיגל תעדכן`);
+        await loadThreadDetail(selectedId);
+        return;
+      }
 
       if (data.sent) {
         const targetEmail = selected ? resolveOritReplyEmail(selected.from_email, selected.guest_contact_email) : "";
@@ -689,6 +749,13 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
           goBackToList();
         }
       }
+      if (viaWhatsapp && data.sent && data.inboxLink && onOpenDreamBotChat && selected) {
+        onOpenDreamBotChat?.({
+          phone: selected.guest_contact_phone,
+          guestName: resolveOritReplyName(selected.from_name, selected.guest_contact_name),
+          inboxChannel: "whapi",
+        });
+      }
       await loadMailbox();
       if (!markHandled || data.sent) await loadThreadDetail(selectedId);
     } catch (e) {
@@ -701,35 +768,13 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
   const handleSendViaSuitesDevice = async ({ text, draftKind = "full_reply", draftId } = {}) => {
     const body = (text ?? replyText).trim();
     if (!body || !selectedId || !hasGuestPhone) return;
-    setBusy(true);
-    try {
-      const { data, error } = await supabase.functions.invoke("manager-mail-send", {
-        body: {
-          threadId: selectedId,
-          bodyText: body,
-          channel: "whatsapp_bridge",
-          draftKind,
-          draftId: draftId ?? (draftKind === "ack" ? ackDraft?.id : fullReplyDraft?.id),
-        },
-      });
-      if (error) throw error;
-      if (!data?.ok) throw new Error(data?.hint || data?.error || "שליחה בוואטסאפ נכשלה");
-
-      showToast("ok", "📱 נשלחה הודעה לאורח במכשיר הסוויטות");
-      await loadMailbox();
-      await loadThreadDetail(selectedId);
-      if (data.inboxLink && onOpenDreamBotChat) {
-        onOpenDreamBotChat?.({
-          phone: selected.guest_contact_phone,
-          guestName: resolveOritReplyName(selected.from_name, selected.guest_contact_name),
-          inboxChannel: "whapi",
-        });
-      }
-    } catch (e) {
-      showToast("err", e.message);
-    } finally {
-      setBusy(false);
-    }
+    await handleSendReply({
+      markHandled: false,
+      text: body,
+      draftKind,
+      draftId: draftId ?? (draftKind === "ack" ? ackDraft?.id : fullReplyDraft?.id),
+      viaWhatsapp: true,
+    });
   };
 
   const handleSendAck = async () => {
@@ -1168,6 +1213,33 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
               zIndex: detailScrollable ? 2 : undefined,
             }}
             >
+              {pendingSchedule && (
+                <div style={{
+                  marginBottom: 8,
+                  padding: "8px 10px",
+                  borderRadius: 8,
+                  background: "#EFF6FF",
+                  border: "1px solid #93C5FD",
+                  fontSize: 13,
+                  lineHeight: 1.4,
+                  display: "flex",
+                  flexWrap: "wrap",
+                  gap: 8,
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                }}
+                >
+                  <span>
+                    📅 מתוזמן ל{formatOritScheduleLabel(pendingSchedule.scheduled_for)}
+                    {" · "}
+                    {pendingSchedule.channel === "whatsapp_bridge" ? "וואטסאפ" : "מייל"}
+                  </span>
+                  <button type="button" className="btn" disabled={busy} onClick={handleCancelSchedule} style={{ minHeight: 32, fontSize: 12 }}>
+                    בטלי תזמון
+                  </button>
+                </div>
+              )}
+
               {workflowMeta.guestReplied && (
                 <div style={{
                   marginBottom: 8,
@@ -1375,6 +1447,43 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
                 }}
               />
 
+              <div style={{
+                marginBottom: 10,
+                padding: "8px 10px",
+                borderRadius: 8,
+                background: scheduleEnabled ? "#F0F9FF" : "#F9FAFB",
+                border: `1px solid ${scheduleEnabled ? "#7DD3FC" : "var(--border)"}`,
+              }}
+              >
+                <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer", marginBottom: scheduleEnabled ? 8 : 0 }}>
+                  <input
+                    type="checkbox"
+                    checked={scheduleEnabled}
+                    onChange={(e) => setScheduleEnabled(e.target.checked)}
+                    disabled={busy || Boolean(pendingSchedule)}
+                  />
+                  ⏰ שליחה מתוזמנת
+                  {isOritQuietHours() && (
+                    <span style={{ fontSize: 11, color: "#0369A1" }}>(מומלץ עכשיו)</span>
+                  )}
+                </label>
+                {scheduleEnabled && (
+                  <div>
+                    <input
+                      type="datetime-local"
+                      className="input"
+                      value={scheduleAt}
+                      onChange={(e) => setScheduleAt(e.target.value)}
+                      disabled={busy || Boolean(pendingSchedule)}
+                      style={{ width: "100%", maxWidth: 280, minHeight: 40 }}
+                    />
+                    <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+                      {ORIT_QUIET_HOURS_HINT}
+                    </div>
+                  </div>
+                )}
+              </div>
+
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                 {canSendFromXos && (
                   <button
@@ -1400,7 +1509,7 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
                     }}
                     style={{ minHeight: 44, flex: isMobile ? "1 1 100%" : undefined }}
                   >
-                    📧 שלחי מ-XOS
+                    {scheduleEnabled ? "📅 תזמני מייל" : "📧 שלחי מ-XOS"}
                   </button>
                 )}
                 {hasGuestPhone && (
@@ -1415,7 +1524,7 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
                     })}
                     style={{ minHeight: 44, flex: isMobile ? "1 1 100%" : undefined }}
                   >
-                    📱 שלח בסוויטות
+                    {scheduleEnabled ? "📅 תזמן בוואטסאפ" : "📱 שלח בסוויטות"}
                   </button>
                 )}
                 <button
@@ -1440,7 +1549,7 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
                     })}
                     style={{ minHeight: 44 }}
                   >
-                    📧 שלחי וסמני טופל
+                    {scheduleEnabled ? "📅 תזמני וסמני טופל" : "📧 שלחי וסמני טופל"}
                   </button>
                 )}
               </div>

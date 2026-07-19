@@ -22,6 +22,8 @@ export const SIGAL_GUIDE_HELP = [
   "1) «קיבלנו את פנייתך» — דחוף, \"תראי לי\"",
   "2) מכתב מלא — \"תשובה מלאה\"",
   '"כן שלחי" · "תסדרי…" · "סיימתי" · "קישור" (לממשק)',
+  "21:00–05:00 — \"תזמני למחר 8\" במקום שליחה מיידית",
+  '"מה מתוזמן" · "בטלי תזמון"',
 ].join("\n");
 
 export const SIGAL_GUIDE_CONFIRM = 'מוכנה לשלוח? עני "כן שלחי" · לביטול — "לא"';
@@ -37,7 +39,11 @@ export type OritSigalIntent =
   | "mark_done"
   | "help"
   | "intro"
-  | "send_whatsapp";
+  | "send_whatsapp"
+  | "schedule_send"
+  | "show_schedule"
+  | "cancel_schedule"
+  | "confirm_schedule";
 
 function stripForIntent(text: string): string {
   return (text || "")
@@ -91,8 +97,27 @@ export function resolveOritSigalIntent(text: string): OritSigalIntent | null {
     return "send_whatsapp";
   }
 
+  if (/(מה מתוזמן|תזמונים|מתוזמן|לוח זמנים)/.test(t)) {
+    return "show_schedule";
+  }
+
+  if (/(בטלי תזמון|בטל תזמון|ביטול תזמון)/.test(t)) {
+    return "cancel_schedule";
+  }
+
+  if (/(תזמן|תזמני|למחר|בבוקר)/.test(t)) {
+    return "schedule_send";
+  }
+
   if (/(^|\s)(לא|בטלי|עצרי|ביטול|תעצרי|cancel|stop)(\s|$)/.test(t)) {
     return "cancel";
+  }
+
+  if (
+    /^(כן(\s+תזמני)?|כן תזמני|בסדר תזמני|תזמני)$/i.test(t)
+    || /(כן|מאשר|בסדר).*(תזמן|תזמון)/.test(t)
+  ) {
+    return "confirm_schedule";
   }
 
   if (

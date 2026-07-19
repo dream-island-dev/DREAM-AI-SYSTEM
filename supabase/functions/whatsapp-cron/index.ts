@@ -48,6 +48,7 @@ import { processDuePostCheckoutSurveys, catchUpDepartedTodaySuiteCheckoutSurveys
 import { runWeeklyGuestHallucinationAudit } from "../_shared/guestHallucinationAudit.ts";
 import { managerMailEnabled } from "../_shared/oritAgentMail.ts";
 import { runSigalUrgentComplaintLoop } from "../_shared/oritAgentWorkflow.ts";
+import { dispatchDueOritScheduledSends } from "../_shared/oritScheduleSend.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -579,6 +580,10 @@ Deno.serve(async (req: Request) => {
           .maybeSingle();
         if (activeMb) {
           await runSigalUrgentComplaintLoop(oritClient, activeMb);
+          const oritScheduled = await dispatchDueOritScheduledSends(oritClient);
+          if (oritScheduled > 0) {
+            console.log(`[whatsapp-cron] orit scheduled sends dispatched: ${oritScheduled}`);
+          }
         }
       } catch (sigalErr) {
         console.warn("[whatsapp-cron] sigal loop failed (non-blocking):", (sigalErr as Error).message);

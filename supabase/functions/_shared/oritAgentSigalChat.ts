@@ -43,14 +43,38 @@ import {
   isLikelyCustomDraft,
   isOritRefineInstruction,
 } from "./oritSigalGuide.ts";
+import {
+  cancelPendingScheduledSendsForThread,
+  composeSigalTimeGreeting,
+  createOritScheduledSend,
+  defaultOritScheduleInstant,
+  formatOritScheduleLabel,
+  getPendingScheduledSendForThread,
+  isOritQuietHours,
+  notifyAfterScheduleCreated,
+  parseOritScheduleFromText,
+  pendingActionToScheduleMeta,
+  type OritScheduleChannel,
+  type OritScheduleDraftKind,
+} from "./oritScheduleSend.ts";
 
 export type OritChatPending = {
-  action: "confirm_ack" | "confirm_full" | "confirm_whatsapp_ack" | "confirm_whatsapp_full";
+  action:
+    | "confirm_ack"
+    | "confirm_full"
+    | "confirm_whatsapp_ack"
+    | "confirm_whatsapp_full"
+    | "confirm_schedule";
   body_text: string;
   shown_at: string;
+  scheduled_for?: string;
+  channel?: OritScheduleChannel;
+  draft_kind?: OritScheduleDraftKind;
+  mark_handled?: boolean;
 };
 
 const CONFIRM_RE = /^(כן(\s+שלחי)?|שלחי|מאשרת|אישור|אשרי\s*ולשלוח|yes|ok|go|כן תשלחי|בסדר תשלחי|יאללה שלחי)$/i;
+const CONFIRM_SCHEDULE_RE = /^(כן(\s+תזמני)?|כן תזמני|תזמני|בסדר תזמני|מאשרת תזמון)$/i;
 const CANCEL_RE = /^(לא|בטלי|עצרי|ביטול|cancel|stop|תעצרי)$/i;
 
 async function sendWhapiLongText(phone: string, text: string): Promise<void> {
@@ -87,19 +111,25 @@ export function composeSigalConfirmPrompt(
   contactLabel: string,
   bodyText: string,
   _threadId: string,
+  scheduleIso?: string,
 ): string {
-  const viaWa = action === "confirm_whatsapp_ack" || action === "confirm_whatsapp_full";
+  const viaWa = action === "confirm_whatsapp_ack"
+    || action === "confirm_whatsapp_full"
+    || (action === "confirm_schedule" && contactLabel === "whatsapp");
   const phase = action === "confirm_ack" || action === "confirm_whatsapp_ack"
     ? `הודעה ראשונה — «${SIGAL_ACK_GUEST_PHRASE}»`
-    : "מכתב מלא";
+    : action === "confirm_schedule"
+      ? `תזמון ${scheduleIso ? `ל${formatOritScheduleLabel(scheduleIso)}` : "למחר בבוקר"}`
+      : "מכתב מלא";
   const dest = viaWa ? "בוואטסאפ" : "במייל";
   const lines = [
-    `📨 ${phase} — כך יישלח ל־${guest}${contactLabel ? ` (${contactLabel})` : ""} ${dest} בשמך:`,
+    `📨 ${phase} — כך יישלח ל־${guest}${contactLabel && action !== "confirm_schedule" ? ` (${contactLabel})` : ""} ${dest} בשמך:`,
     "─────────────",
     bodyText.trim(),
     "─────────────",
-    SIGAL_GUIDE_CONFIRM,
-    "«תסדרי…» לעריכה · «לא» לביטול",
+    action === "confirm_schedule"
+      ? 'מוכנה לתזמן? עני "כן תזמני" · "תזמני למחר 9" לשעה אחרת · "לא" לביטול'
+      : `${SIGAL_GUIDE_CONFIRM}\n«תסדרי…» לעריכה · «לא» לביטול`,
   ];
   const tid = _threadId?.trim();
   if (tid) lines.push(composeOritCsMobileLinkLine(tid));
@@ -409,6 +439,175 @@ async function prepareFullConfirm(
   ));
 }
 
+async function executeScheduleFromPending(
+  supabase: SupabaseClient,
+  phone: string,
+  row: { thread: Record<string, unknown>; mailbox: OritMailboxRow; pending: OritChatPending },
+): Promise<void> {
+  const { thread, mailbox, pending } = row;
+  const threadId = String(thread.id);
+  const scheduledFor = pending.scheduled_for
+    ? new Date(pending.scheduled_for)
+    : defaultOritScheduleInstant();
+  const channel = pending.channel ?? "email";
+  const draftKind = pending.draft_kind ?? "full_reply";
+  const guest = guestLabel(thread);
+
+  const result = await createOritScheduledSend(supabase, {
+    threadId,
+    mailboxId: mailbox.id,
+    channel,
+    draftKind,
+    bodyText: pending.body_text,
+    scheduledFor,
+    markHandled: pending.mark_handled === true,
+    source: "sigal_wa",
+  });
+
+  if (!result.ok) {
+    await sendWhapiText(phone, `❌ לא הצלחתי לתזמן: ${result.error || "שגיאה"}`, { noLinkPreview: true });
+    return;
+  }
+
+  await setChatPending(supabase, threadId, null);
+
+  const mailboxAlert: OritAlertMailbox = {
+    id: mailbox.id,
+    digest_whatsapp_phone: mailbox.digest_whatsapp_phone,
+    alert_enabled: mailbox.alert_enabled !== false,
+    profile_id: mailbox.profile_id,
+  };
+  await notifyAfterScheduleCreated(
+    supabase,
+    mailboxAlert,
+    thread,
+    result.scheduledFor!,
+    channel,
+    draftKind,
+  );
+
+  const dest = channel === "whatsapp_bridge" ? "בוואטסאפ" : "במייל";
+  await sendWhapiText(phone, [
+    `✓ מתוזמן — ${guest} ${dest}`,
+    `🕐 ${formatOritScheduleLabel(result.scheduledFor!)}`,
+    "אעדכן אותך כשיישלח.",
+  ].join("\n"), { noLinkPreview: true });
+}
+
+async function promptQuietHoursSchedule(
+  supabase: SupabaseClient,
+  phone: string,
+  row: { thread: Record<string, unknown>; mailbox: OritMailboxRow; pending: OritChatPending },
+): Promise<void> {
+  const { thread, pending } = row;
+  const threadId = String(thread.id);
+  const meta = pendingActionToScheduleMeta(pending.action);
+  if (!meta) {
+    await executePendingSend(supabase, phone, row);
+    return;
+  }
+
+  const scheduledFor = defaultOritScheduleInstant();
+  const nextPending: OritChatPending = {
+    action: "confirm_schedule",
+    body_text: pending.body_text,
+    shown_at: new Date().toISOString(),
+    scheduled_for: scheduledFor.toISOString(),
+    channel: meta.channel,
+    draft_kind: meta.draftKind,
+    mark_handled: pending.mark_handled,
+  };
+  await setChatPending(supabase, threadId, nextPending);
+
+  const contactLabel = meta.channel === "whatsapp_bridge" ? "whatsapp" : (
+    resolveOritReplyEmail(
+      String(thread.from_email ?? ""),
+      thread.guest_contact_email as string | null,
+    ) || ""
+  );
+
+  await sendWhapiLongText(phone, [
+    `${composeSigalTimeGreeting()} 🌙`,
+    "בשעות 21:00–05:00 עדיף לא לשלוח לאורח עכשיו.",
+    composeSigalConfirmPrompt(
+      "confirm_schedule",
+      guestLabel(thread),
+      contactLabel,
+      pending.body_text,
+      threadId,
+      scheduledFor.toISOString(),
+    ),
+  ].join("\n\n"));
+}
+
+async function prepareScheduleConfirm(
+  supabase: SupabaseClient,
+  phone: string,
+  thread: Record<string, unknown>,
+  mailbox: OritMailboxRow,
+  bodyText: string,
+  opts: {
+    channel?: OritScheduleChannel;
+    draftKind?: OritScheduleDraftKind;
+    scheduledFor?: Date;
+  } = {},
+): Promise<void> {
+  const threadId = String(thread.id);
+  const draftKind = opts.draftKind
+    ?? (threadNeedsAckBeforeFullReply(thread) ? "ack" : "full_reply");
+  const channel = opts.channel
+    ?? (resolveOritOutboundChannel(thread as Parameters<typeof resolveOritOutboundChannel>[0]) === "whatsapp_bridge"
+      ? "whatsapp_bridge"
+      : "email");
+  const scheduledFor = opts.scheduledFor ?? defaultOritScheduleInstant();
+  const email = resolveOritReplyEmail(
+    String(thread.from_email ?? ""),
+    thread.guest_contact_email as string | null,
+  );
+
+  if (channel === "email" && !email) {
+    await sendWhapiText(phone, "⚠ אין מייל — «שלחי בוואטסאפ» אם יש טלפון.", { noLinkPreview: true });
+    return;
+  }
+
+  await setChatPending(supabase, threadId, {
+    action: "confirm_schedule",
+    body_text: bodyText,
+    shown_at: new Date().toISOString(),
+    scheduled_for: scheduledFor.toISOString(),
+    channel,
+    draft_kind: draftKind,
+  });
+
+  const contactLabel = channel === "whatsapp_bridge" ? "whatsapp" : (email || "");
+  await sendWhapiLongText(phone, composeSigalConfirmPrompt(
+    "confirm_schedule",
+    guestLabel(thread),
+    contactLabel,
+    bodyText,
+    threadId,
+    scheduledFor.toISOString(),
+  ));
+}
+
+async function showPendingScheduleStatus(
+  supabase: SupabaseClient,
+  phone: string,
+  threadId: string,
+): Promise<void> {
+  const pending = await getPendingScheduledSendForThread(supabase, threadId);
+  if (!pending) {
+    await sendWhapiText(phone, "אין תזמון פעיל לפנייה הזו.", { noLinkPreview: true });
+    return;
+  }
+  const dest = pending.channel === "whatsapp_bridge" ? "וואטסאפ" : "מייל";
+  await sendWhapiText(phone, [
+    `📅 מתוזמן ל${formatOritScheduleLabel(pending.scheduled_for)}`,
+    `${pending.draft_kind === "ack" ? "אישור קבלה" : "תשובה מלאה"} · ${dest}`,
+    '"בטלי תזמון" לביטול',
+  ].join("\n"), { noLinkPreview: true });
+}
+
 async function executePendingSend(
   supabase: SupabaseClient,
   phone: string,
@@ -416,6 +615,17 @@ async function executePendingSend(
 ): Promise<void> {
   const { thread, mailbox, pending } = row;
   const threadId = String(thread.id);
+
+  if (pending.action === "confirm_schedule") {
+    await executeScheduleFromPending(supabase, phone, row);
+    return;
+  }
+
+  if (isOritQuietHours()) {
+    await promptQuietHoursSchedule(supabase, phone, row);
+    return;
+  }
+
   const email = resolveOritReplyEmail(
     String(thread.from_email ?? ""),
     thread.guest_contact_email as string | null,
@@ -739,6 +949,39 @@ export async function handleOritSigalChat(
 
   const pendingRow = await findThreadWithPending(supabase);
   if (pendingRow) {
+    const parsedSchedule = parseOritScheduleFromText(t);
+    if (parsedSchedule && pendingRow.pending.action === "confirm_schedule") {
+      const updated: OritChatPending = {
+        ...pendingRow.pending,
+        scheduled_for: parsedSchedule.toISOString(),
+        shown_at: new Date().toISOString(),
+      };
+      await setChatPending(supabase, String(pendingRow.thread.id), updated);
+      const contactLabel = updated.channel === "whatsapp_bridge" ? "whatsapp" : (
+        resolveOritReplyEmail(
+          String(pendingRow.thread.from_email ?? ""),
+          pendingRow.thread.guest_contact_email as string | null,
+        ) || ""
+      );
+      await sendWhapiLongText(phoneDigits, composeSigalConfirmPrompt(
+        "confirm_schedule",
+        guestLabel(pendingRow.thread),
+        contactLabel,
+        updated.body_text,
+        String(pendingRow.thread.id),
+        updated.scheduled_for,
+      ));
+      return;
+    }
+
+    if (
+      pendingRow.pending.action === "confirm_schedule"
+      && (intent === "confirm_schedule" || CONFIRM_SCHEDULE_RE.test(t))
+    ) {
+      await executeScheduleFromPending(supabase, phoneDigits, pendingRow);
+      return;
+    }
+
     if (intent === "confirm_send" || CONFIRM_RE.test(t)) {
       await executePendingSend(supabase, phoneDigits, pendingRow);
       return;
@@ -785,6 +1028,17 @@ export async function handleOritSigalChat(
 
   if (intent === "mark_done" && active) {
     await markThreadClosed(supabase, phoneDigits, active.thread);
+    return;
+  }
+
+  if (intent === "cancel_schedule" && active) {
+    await cancelPendingScheduledSendsForThread(supabase, String(active.thread.id));
+    await sendWhapiText(phoneDigits, "✓ ביטלתי את התזמון.", { noLinkPreview: true });
+    return;
+  }
+
+  if (intent === "show_schedule" && active) {
+    await showPendingScheduleStatus(supabase, phoneDigits, String(active.thread.id));
     return;
   }
 
@@ -836,6 +1090,28 @@ export async function handleOritSigalChat(
       } else {
         await prepareFullConfirm(supabase, phoneDigits, active.thread);
       }
+      return;
+    }
+
+    if (intent === "schedule_send") {
+      const parsed = parseOritScheduleFromText(t) ?? defaultOritScheduleInstant();
+      const draftKind = threadNeedsAckBeforeFullReply(active.thread) ? "ack" : "full_reply";
+      const draft = (await fetchOritDraftText(supabase, String(active.thread.id), draftKind))?.text || "";
+      if (!draft.trim()) {
+        await sendWhapiText(phoneDigits, "אין טיוטה — «תראי לי» או «תשובה מלאה» קודם.", { noLinkPreview: true });
+        return;
+      }
+      const channel = resolveOritOutboundChannel(active.thread as Parameters<typeof resolveOritOutboundChannel>[0]) === "whatsapp_bridge"
+        ? "whatsapp_bridge"
+        : "email";
+      await prepareScheduleConfirm(
+        supabase,
+        phoneDigits,
+        active.thread,
+        active.mailbox,
+        draft,
+        { channel, draftKind, scheduledFor: parsed },
+      );
       return;
     }
 
@@ -899,11 +1175,11 @@ export async function handleOritSigalChat(
 
   await sendWhapiText(phoneDigits, active
     ? [
-      `היי אורית 💜 ${guestLabel(active.thread)}`,
+      `${composeSigalTimeGreeting()} 💜 ${guestLabel(active.thread)}`,
       workflowStatusLine(active.thread).split("\n").slice(-1)[0] || "",
-      "«תראי לי» / «תשובה מלאה» · «עזרה»",
+      isOritQuietHours() ? "🌙 שעות שקט — «תזמני למחר 8»" : "«תראי לי» / «תשובה מלאה» · «עזרה»",
     ].join("\n")
-    : "היי אורית 💜 אין פנייה פתוחה כרגע.", { noLinkPreview: true });
+    : `${composeSigalTimeGreeting()} 💜 אין פנייה פתוחה כרגע.`, { noLinkPreview: true });
 }
 
 export async function tryHandleOritSigalInbound(
