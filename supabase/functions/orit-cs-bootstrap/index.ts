@@ -1,19 +1,11 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { hasOritCsAgentAccess } from "../_shared/oritCsAgentAccess.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
-
-const ORIT_EMAILS = new Set(["orit@dream.io", "orit@dream-island.co.il"]);
-
-function canUseOritAgent(role: string | null | undefined, flag: boolean | null | undefined, email: string | null | undefined): boolean {
-  if (role === "super_admin" || role === "admin") return true;
-  if (flag === true) return true;
-  const e = (email || "").toLowerCase().trim();
-  return ORIT_EMAILS.has(e);
-}
 
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
@@ -43,16 +35,15 @@ serve(async (req: Request) => {
 
     const { data: profile } = await supabase
       .from("profiles")
-      .select("role, orit_cs_agent_access, email")
+      .select("orit_cs_agent_access, role")
       .eq("id", userData.user.id)
       .maybeSingle();
 
-    const userEmail = profile?.email ?? userData.user.email ?? "";
-    if (!canUseOritAgent(profile?.role, profile?.orit_cs_agent_access, userEmail)) {
+    if (!hasOritCsAgentAccess(profile)) {
       return new Response(JSON.stringify({
         ok: false,
         error: "forbidden",
-        hint: `אין הרשאה לסוכן (role=${profile?.role ?? "?"})`,
+        hint: "אין הרשאה לסוכן שירות לקוחות — פנה למנהל מערכת",
       }), {
         status: 200,
         headers: { ...CORS, "Content-Type": "application/json" },

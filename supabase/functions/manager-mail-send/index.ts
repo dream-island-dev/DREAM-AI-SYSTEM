@@ -3,6 +3,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import type { OritMailboxRow } from "../_shared/oritAgentMail.ts";
 import { deliverOritThreadEmail } from "../_shared/oritAgentSend.ts";
 import { fetchOritThreadInbound } from "../_shared/oritThreadAnalysis.ts";
+import { loadOritCsAgentAccess } from "../_shared/oritCsAgentAccess.ts";
 import {
   notifyOritFullReplyReady,
   sendOritAckEmail,
@@ -55,6 +56,13 @@ serve(async (req: Request) => {
     const { data: userData, error: userErr } = await supabase.auth.getUser(jwt);
     if (userErr || !userData?.user) {
       return new Response(JSON.stringify({ ok: false, error: "unauthorized" }), {
+        status: 200,
+        headers: { ...CORS, "Content-Type": "application/json" },
+      });
+    }
+
+    if (!(await loadOritCsAgentAccess(supabase, userData.user.id))) {
+      return new Response(JSON.stringify({ ok: false, error: "forbidden" }), {
         status: 200,
         headers: { ...CORS, "Content-Type": "application/json" },
       });

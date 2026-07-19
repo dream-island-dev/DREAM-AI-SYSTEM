@@ -66,21 +66,13 @@ const ROUTE_ACCESS = {
   data_sync:              ["admin", "super_admin", "receptionist"],
   voucher_reconciliation: ["admin", "super_admin", "receptionist"],
   routing_control_center: ["admin", "super_admin"],
-  orit_cs_agent:          ["admin", "super_admin"],
 };
 
-/** Orit CS Agent — owner mailbox only (+ super_admin for support). */
-const ORIT_CS_AGENT_EMAILS = new Set([
-  "orit@dream-island.co.il",
-  "orit@dream.io", // XOS login (Supabase Auth)
-]);
-
+/** Orit CS Agent — super_admin always; others only if flagged in User Management (סוכן אורית ✓). */
 export function canAccessOritCsAgent(user) {
   if (!user) return false;
-  if (isSuperAdmin(user) || isAdminUser(user)) return true;
-  if (user.orit_cs_agent_access === true) return true;
-  const email = (user.email || "").toLowerCase().trim();
-  return ORIT_CS_AGENT_EMAILS.has(email);
+  if (isSuperAdmin(user)) return true;
+  return user.orit_cs_agent_access === true;
 }
 
 // ── Main gate ────────────────────────────────────────────────────────────────
