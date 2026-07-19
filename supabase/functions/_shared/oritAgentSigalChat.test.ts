@@ -1,7 +1,26 @@
 // Run: deno test --allow-env supabase/functions/_shared/oritAgentSigalChat.test.ts
 
 import { assertEquals } from "https://deno.land/std@0.208.0/assert/mod.ts";
-import { composeSigalAckSentMessage, composeSigalConfirmPrompt } from "./oritAgentSigalChat.ts";
+import {
+  composeSigalAckSentMessage,
+  composeSigalConfirmPrompt,
+  threadNeedsAckBeforeFullReply,
+} from "./oritAgentSigalChat.ts";
+
+Deno.test("threadNeedsAckBeforeFullReply — complaint high needs ack", () => {
+  assertEquals(
+    threadNeedsAckBeforeFullReply({ category: "complaint", urgency: "high", auto_ack_sent_at: null }),
+    true,
+  );
+  assertEquals(
+    threadNeedsAckBeforeFullReply({ category: "complaint", urgency: "high", auto_ack_sent_at: "2026-01-01" }),
+    false,
+  );
+  assertEquals(
+    threadNeedsAckBeforeFullReply({ category: "lead", urgency: "normal", auto_ack_sent_at: null }),
+    false,
+  );
+});
 
 Deno.test("composeSigalConfirmPrompt — full text before send", () => {
   const body = composeSigalConfirmPrompt(

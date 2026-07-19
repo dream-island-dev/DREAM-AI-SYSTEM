@@ -1,3 +1,4 @@
+2026-07-19 | Orit CS — Sigal sync + lead single-step WA | `oritAgentSigalChat.ts` — `threadNeedsAckBeforeFullReply`; לידים/רגיל ב-WA בלי שלב ack; «סיימתי» מסונכרן עם UI.
 2026-07-19 | Orit CS — «סמן כטופל» לא שולח מייל | `OritCustomerServicePanel.js` — `handleMarkHandled` = DB בלבד; בלי מילוי אוטומטי של `replyText` מהטיוטה; כפתורים «שלחי מ-XOS» vs «סיימתי — סמן כטופל».
 2026-07-19 | Inbox staff-claim idle auto-release + bot_disabled pin | `_shared/guestStaffClaim.ts` — TTL on `claimed_at` (default 60m, `bot_config.inbox_claim_idle_release_minutes`); activity touch on inbound/outbound; cron cleanup in `whatsapp-cron`; permanent mute via `guest_profile.inbox.bot_disabled` in GuestContextDrawer; countdown in Inbox mute button.
 2026-07-19 | Orit CS — Sigal intro summary for Orit | what Sigal does + how to get help on every alert and «עזרה»; voice «מה את עושה».

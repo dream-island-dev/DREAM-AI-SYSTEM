@@ -12,6 +12,7 @@ import { isOritCsStaffPhone } from "./oritAgentStaffPhone.ts";
 import {
   fetchLatestGuestInbound,
   fetchOritDraftText,
+  isOritWorkflowComplaint,
   notifyOritFullReplyReady,
   sendOritAckEmail,
   type OritAlertMailbox,
@@ -66,6 +67,13 @@ async function sendWhapiLongText(phone: string, text: string): Promise<void> {
 
 function threadLink(threadId: string): string {
   return buildStaffAppDeepLink({ page: "orit_cs_agent", threadId });
+}
+
+/** Complaint high/critical must send ack (step 1) before full reply. Leads/other = single step. */
+export function threadNeedsAckBeforeFullReply(thread: Record<string, unknown>): boolean {
+  const category = String(thread.category ?? "");
+  const urgency = String(thread.urgency ?? "normal");
+  return isOritWorkflowComplaint(category, urgency) && !thread.auto_ack_sent_at;
 }
 
 function guestLabel(thread: Record<string, unknown>): string {
@@ -295,7 +303,7 @@ async function prepareFullConfirm(
   bodyOverride?: string,
 ): Promise<void> {
   const threadId = String(thread.id);
-  if (!thread.auto_ack_sent_at) {
+  if (threadNeedsAckBeforeFullReply(thread)) {
     await sendWhapiText(phone, "קודם שולחים אישור קבלה (שלב א׳). עני «תראי לי».", { noLinkPreview: true });
     return;
   }
@@ -453,7 +461,8 @@ async function markThreadClosed(
   }).eq("id", threadId);
 
   await sendWhapiText(phone, [
-    `✓ סימנתי את פניית ${guestLabel(thread)} כטופלה.`,
+    `✓ סימנתי את פניית ${guestLabel(thread)} כטופלה (מסונכרן עם המערכת).`,
+    "במחשב זה אותו דבר כמו «סיימתי — סמן כטופל».",
     "אעדכן אותך אם יגיע מייל חדש מאותו שרשור.",
   ].join("\n"), { noLinkPreview: true });
 }
@@ -563,22 +572,26 @@ export async function handleOritSigalChat(
     }
 
     if (intent === "show_ack") {
-      const draft = (await fetchOritDraftText(supabase, String(active.thread.id), "ack"))?.text || "";
-      await sendWhapiLongText(phoneDigits, draft
-        ? [
-          "נוסח אישור הקבלה:",
-          "─────────────",
-          draft,
-          "─────────────",
-          "",
-          SIGAL_GUIDE_ACK,
-        ].join("\n")
-        : "אין עדיין נוסח — חכי לסנכרון או עני «קישור» במחשב.");
+      if (threadNeedsAckBeforeFullReply(active.thread)) {
+        const draft = (await fetchOritDraftText(supabase, String(active.thread.id), "ack"))?.text || "";
+        await sendWhapiLongText(phoneDigits, draft
+          ? [
+            "נוסח אישור הקבלה:",
+            "─────────────",
+            draft,
+            "─────────────",
+            "",
+            SIGAL_GUIDE_ACK,
+          ].join("\n")
+          : "אין עדיין נוסח — חכי לסנכרון או עני «קישור» במחשב.");
+      } else {
+        await prepareFullConfirm(supabase, phoneDigits, active.thread);
+      }
       return;
     }
 
     if (intent === "prepare_ack") {
-      if (!active.thread.auto_ack_sent_at) {
+      if (threadNeedsAckBeforeFullReply(active.thread)) {
         await prepareAckConfirm(supabase, phoneDigits, active.thread, active.mailbox);
       } else {
         await prepareFullConfirm(supabase, phoneDigits, active.thread);
@@ -587,7 +600,7 @@ export async function handleOritSigalChat(
     }
 
     if (isLikelyCustomDraft(t)) {
-      if (!active.thread.auto_ack_sent_at) {
+      if (threadNeedsAckBeforeFullReply(active.thread)) {
         await prepareAckConfirm(supabase, phoneDigits, active.thread, active.mailbox, t);
       } else {
         await prepareFullConfirm(supabase, phoneDigits, active.thread, t);

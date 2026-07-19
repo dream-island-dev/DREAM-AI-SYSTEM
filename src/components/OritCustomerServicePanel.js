@@ -962,7 +962,7 @@ export default function OritCustomerServicePanel({ user, onOpenDreamBotChat, foc
               disabled={busy || selected.status === "handled"}
               onClick={handleMarkHandled}
               style={{ minHeight: 44 }}
-              title="סימון בלבד — לא שולח מייל מהמערכת"
+              title="סימון בלבד — מסונכרן עם סיגל בוואטסאפ («סיימתי»)"
             >
               ✓ סיימתי — סמן כטופל
             </button>
