@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "../supabaseClient";
 import { fetchPublishedRestaurantMenu } from "../utils/restaurantMenu";
 import { formatGuestDietaryBrief, normalizeGuestProfile } from "../data/guestProfileSchema";
+import RestaurantMenuQrModal from "./restaurant/RestaurantMenuQrModal";
+import { ARMONIM_EXTERNAL_MENU_URL } from "../utils/restaurantKioskUi";
 
 const GOLD_DARK = "#A8843A";
 
@@ -30,6 +32,7 @@ export default function RestaurantOrderPanel({
   mealPeriod = "dinner",
   shiftSession = null,
   onOrderSent,
+  externalMenuUrl = ARMONIM_EXTERNAL_MENU_URL,
 }) {
   const [menu, setMenu] = useState(null);
   const [loadingMenu, setLoadingMenu] = useState(true);
@@ -41,6 +44,7 @@ export default function RestaurantOrderPanel({
   const [submitting, setSubmitting] = useState(false);
   const [doneOrder, setDoneOrder] = useState(null);
   const [activeSection, setActiveSection] = useState(null);
+  const [menuQrOpen, setMenuQrOpen] = useState(false);
 
   const loadMenu = useCallback(async () => {
     setLoadingMenu(true);
@@ -168,6 +172,43 @@ export default function RestaurantOrderPanel({
 
   return (
     <div>
+      <div style={{
+        display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14,
+        padding: "12px 14px", borderRadius: 12,
+        background: "rgba(0, 128, 128, 0.08)", border: "1px solid rgba(0, 128, 128, 0.22)",
+      }}>
+        <button
+          type="button"
+          onClick={() => setMenuQrOpen(true)}
+          style={{
+            flex: "1 1 200px", minHeight: 52, padding: "12px 16px", borderRadius: 12,
+            border: "none", background: "linear-gradient(135deg, #008080, #006666)",
+            color: "#fff", fontWeight: 800, fontSize: 15, cursor: "pointer",
+            fontFamily: "Heebo, sans-serif",
+          }}
+        >
+          📱 תפריט לאורח — הצג QR לסריקה
+        </button>
+        <a
+          href={externalMenuUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{
+            flex: "0 1 auto", alignSelf: "center", fontSize: 12, fontWeight: 700,
+            color: "#008080", textDecoration: "underline", padding: "8px 4px",
+          }}
+        >
+          תפריט באתר ↗
+        </a>
+      </div>
+
+      {menuQrOpen && (
+        <RestaurantMenuQrModal
+          menuUrl={externalMenuUrl}
+          onClose={() => setMenuQrOpen(false)}
+        />
+      )}
+
       <div style={{ marginBottom: 14 }}>
         <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 8 }}>1. למי ההזמנה?</div>
         <input

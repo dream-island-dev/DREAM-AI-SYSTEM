@@ -1,3 +1,5 @@
+2026-07-20 | Armonim guest menu QR | טאב הזמנה: «תפריט לאורח — QR»; קישור `https://armmonim.co.il/תפריט/`; migration 258.
+2026-07-20 | Armonim shift gate — תפקיד מארחת | migration 257 `hostess` session_role; 3 תפקידים במסך פתיחה; שם חובה לתיעוד.
 2026-07-20 | Armonim shift gate — type your name | `RestaurantShiftGate` — שדה שם ראשון (לא מלצר 1/2); שמות אחרונים בטאבלט; מסך אחד שם+תפקיד.
 2026-07-20 | Restaurant board — «הגדר שעה» mobile fix | `RestaurantDinnerBoard.js` — במסך צר: לחיצה פותחת מסך עריכה מלא + «חזרה לרשימה»; בדסקטופ: גלילה לפאנל; הדגשת צהריים/ערב לפי toggle.
 2026-07-20 | Armonim kiosk — shift gate + branding (256) | `RestaurantShiftGate`/`RestaurantKioskHeader`/`RestaurantShiftContext`; roster + `restaurant_shift_sessions`; הזמנות עם `waiter_name_snap`; חתימת WA מ-`bot_config.restaurant_kiosk_ui`; migration 256.

@@ -1102,6 +1102,7 @@ export default function RestaurantDinnerBoard({
           onToast={showToast}
           shiftSession={brandedShell ? shiftCtx?.session ?? null : null}
           onOrderSent={brandedShell ? shiftCtx?.recordOrderSent : undefined}
+          externalMenuUrl={brandedShell ? shiftCtx?.kioskUi?.external_menu_url : undefined}
         />
       )}
 

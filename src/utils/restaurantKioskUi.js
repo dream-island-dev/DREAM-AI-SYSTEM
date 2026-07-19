@@ -2,11 +2,14 @@
 
 export const BOT_CONFIG_RESTAURANT_KIOSK_UI_KEY = "restaurant_kiosk_ui";
 
+/** Canonical Armonim website menu page (guest QR + kiosk link). */
+export const ARMONIM_EXTERNAL_MENU_URL = "https://armmonim.co.il/תפריט/";
+
 export const DEFAULT_RESTAURANT_KIOSK_UI = Object.freeze({
   welcome_line: "ברוכים הבאים למשמרת ערב",
   evening_hours_line: "שירות ערב — תיאום שעות ארוחה",
   kosher_badge: true,
-  external_menu_url: "https://armmonim.co.il/",
+  external_menu_url: ARMONIM_EXTERNAL_MENU_URL,
   shift_manager_pin: "",
   wa_signature: "צוות מסעדת ערמונים",
 });
