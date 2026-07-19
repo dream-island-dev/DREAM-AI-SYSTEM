@@ -20,7 +20,7 @@ import RestaurantWalkInModal from "./RestaurantWalkInModal";
 import RestaurantMenuAdminPanel from "./RestaurantMenuAdminPanel";
 import RestaurantOrderPanel from "./RestaurantOrderPanel";
 import RestaurantActiveOrdersPanel from "./RestaurantActiveOrdersPanel";
-import { canManageRestaurantMenu } from "../utils/auth";
+import { canManageRestaurantMenu, canEditRestaurantDinnerTemplates } from "../utils/auth";
 import { formatGuestDietaryBrief, normalizeGuestProfile } from "../data/guestProfileSchema";
 import {
   composeAskMessage,
@@ -119,10 +119,11 @@ function GuestListRow({ guest, selected, onSelect, onOpenChat, onSetMealTime, ki
   const isSuite = isSuiteGuestProfile(guest);
   const hasPhone = Boolean(String(guest.phone ?? "").trim());
   const effectivePlan = getEffectiveMealPlanForRestaurant(guest);
+  const canOpenChat = Boolean(onOpenChat && hasPhone);
 
   const handleNameClick = (e) => {
     e.stopPropagation();
-    if (!kioskMode && hasPhone && onOpenChat) {
+    if (canOpenChat) {
       onOpenChat(guest);
       return;
     }
@@ -146,16 +147,16 @@ function GuestListRow({ guest, selected, onSelect, onOpenChat, onSetMealTime, ki
             tabIndex={0}
             onClick={handleNameClick}
             onKeyDown={(e) => { if (e.key === "Enter") handleNameClick(e); }}
-            title={kioskMode ? "הגדרת שעות ארוחה" : hasPhone ? "לחץ לפתיחת שיחת וואטסאפ לתיאום" : "אין טלפון — הגדרת שעות"}
+            title={canOpenChat ? "לחץ לפתיחת שיחת וואטסאפ" : "הגדרת שעות ארוחה"}
             style={{
               fontWeight: 800, fontSize: 14,
-              color: !kioskMode && hasPhone ? "#1D4ED8" : "var(--black, #1A1A1A)",
-              textDecoration: !kioskMode && hasPhone ? "underline" : "none",
+              color: canOpenChat ? "#1D4ED8" : "var(--black, #1A1A1A)",
+              textDecoration: canOpenChat ? "underline" : "none",
               textUnderlineOffset: 3, cursor: "pointer", marginBottom: 3,
             }}
           >
             {vip && "⭐ "}{guest.name || "—"}
-            {!kioskMode && hasPhone && <span style={{ marginRight: 4, fontSize: 11 }}>💬</span>}
+            {canOpenChat && <span style={{ marginRight: 4, fontSize: 11 }}>💬</span>}
           </div>
           <div style={{ fontSize: 11.5, color: "var(--text-muted)", lineHeight: 1.45 }}>
             {guest.room ? `🏨 ${guest.room}` : "ללא חדר"}
@@ -418,17 +419,11 @@ function GuestDinnerRow({ guest, user, msgConfig, onSaved, onError, onNotify, on
     }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 10 }}>
         <div>
-          {kioskMode ? (
-            <div style={{ fontWeight: 800, fontSize: 15, color: "var(--black, #1A1A1A)" }}>
-              {vip && <span title="VIP">⭐ </span>}
-              {guest.name || "—"}
-            </div>
-          ) : (
           <button
             type="button"
             onClick={() => hasPhone && onOpenChat?.(guest)}
             disabled={!hasPhone || !onOpenChat}
-            title={hasPhone ? "פתיחת שיחת וואטסאפ לתיאום שעה" : "אין טלפון"}
+            title={hasPhone && onOpenChat ? "פתיחת שיחת וואטסאפ" : hasPhone ? "אין גישה לשיחות" : "אין טלפון"}
             style={{
               border: "none", background: "transparent", padding: 0, cursor: hasPhone && onOpenChat ? "pointer" : "default",
               fontWeight: 800, fontSize: 15,
@@ -441,7 +436,6 @@ function GuestDinnerRow({ guest, user, msgConfig, onSaved, onError, onNotify, on
             {guest.name || "—"}
             {hasPhone && onOpenChat && <span style={{ marginRight: 6, fontSize: 12 }}>💬</span>}
           </button>
-          )}
           <div style={{ fontSize: 12.5, color: "var(--text-muted, #666)", marginTop: 4 }}>
             {guest.room ? `🏨 ${guest.room}` : "ללא חדר"}
             {guest.status === "checked_in" ? " · בבריזורט" : guest.status === "expected" || guest.status === "pending" ? " · מגיע היום" : ""}
@@ -487,7 +481,7 @@ function GuestDinnerRow({ guest, user, msgConfig, onSaved, onError, onNotify, on
               נשמר בפרופיל האורח — מסתנכרן לפורטל והבוט
             </div>
           </div>
-          {hasPhone && onOpenChat && !kioskMode && (
+          {hasPhone && onOpenChat && (
             <button
               type="button"
               onClick={() => onOpenChat(guest)}
@@ -916,6 +910,7 @@ export default function RestaurantDinnerBoard({
     : { padding: "0 4px 24px" };
 
   const showMenuAdmin = canManageRestaurantMenu(user);
+  const showTemplates = canEditRestaurantDinnerTemplates(user);
 
   const BOARD_TABS = [
     { id: "coordination", label: "🕐 תיאום שעות" },
@@ -947,11 +942,11 @@ export default function RestaurantDinnerBoard({
           </h1>
           <p style={{ margin: "6px 0 0", fontSize: 13, color: "var(--text-muted, #666)", lineHeight: 1.5 }}>
             {kioskMode
-              ? "תיאום שעות ארוחה · הזמנות · מסך מטבח — ללא גישה לשאר המערכת."
+              ? "תיאום שעות · הזמנות · שיחות וואטסאפ עם אורחים."
               : "תיאום צהריים וערב בפרופיל האורח — מסתנכרן לפורטל והבוט. אפשר גם לשאול בוואטסאפ."}
           </p>
         </div>
-        {kioskMode && onLogout && (
+        {kioskMode && onLogout && !onOpenDreamBotChat && (
           <button
             type="button"
             onClick={onLogout}
@@ -1023,7 +1018,7 @@ export default function RestaurantDinnerBoard({
 
       {boardTab === "coordination" && (
       <>
-      {!kioskMode && canManageRestaurantMenu(user) && (
+      {showTemplates && (
       <RestaurantDinnerTemplatesPanel
         config={msgConfig}
         onChange={setMsgConfig}
@@ -1131,7 +1126,7 @@ export default function RestaurantDinnerBoard({
                 selected={selectedGuest?.id === g.id}
                 onSelect={selectGuestForMealTime}
                 onSetMealTime={selectGuestForMealTime}
-                onOpenChat={kioskMode ? null : openGuestChat}
+                onOpenChat={onOpenDreamBotChat ? openGuestChat : (kioskMode ? null : openGuestChat)}
                 kioskMode={kioskMode}
               />
             ))}
@@ -1144,7 +1139,7 @@ export default function RestaurantDinnerBoard({
                 user={user}
                 msgConfig={msgConfig}
                 kioskMode={kioskMode}
-                onOpenChat={kioskMode ? null : openGuestChat}
+                onOpenChat={onOpenDreamBotChat ? openGuestChat : (kioskMode ? null : openGuestChat)}
                 onSaved={(updated) => {
                   setGuests((prev) => prev.map((row) => (row.id === updated.id ? { ...row, ...updated } : row)));
                 }}

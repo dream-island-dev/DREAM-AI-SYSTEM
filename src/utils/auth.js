@@ -40,9 +40,18 @@ export const RECEPTIONIST_FOCUS_NAV_IDS = new Set([
   "voucher_reconciliation",
 ]);
 
+/** Restaurant kiosk — לוח מסעדה + שיחות WA בלבד. */
+export const RESTAURANT_FOCUS_NAV_IDS = new Set([
+  "restaurant_dinner_board",
+  "wa_inbox",
+]);
+
 export function filterNavItemsForUser(items, user) {
-  if (!isReceptionist(user)) return items;
-  return items.filter((item) => RECEPTIONIST_FOCUS_NAV_IDS.has(item.id));
+  if (isRestaurantFocusedUser(user)) {
+    return items.filter((item) => RESTAURANT_FOCUS_NAV_IDS.has(item.id));
+  }
+  if (isReceptionist(user)) return items.filter((item) => RECEPTIONIST_FOCUS_NAV_IDS.has(item.id));
+  return items;
 }
 
 // ── Permissions matrix ───────────────────────────────────────────────────────
@@ -97,6 +106,14 @@ export function canAccessRestaurantDinnerBoard(user) {
   return user.restaurant_access === true;
 }
 
+/** Edit default WA templates on restaurant board (kiosk + managers). */
+export function canEditRestaurantDinnerTemplates(user) {
+  if (!user) return false;
+  if (isRestaurantRole(user)) return true;
+  if (user.role === "staff" && user.restaurant_access === true) return true;
+  return canManageRestaurantMenu(user);
+}
+
 /** Restaurant-only kiosk — לוח מסעדה בלבד (לא דאשבורד / Inbox / סוויטות). */
 export function isRestaurantFocusedUser(user) {
   if (!user) return false;
@@ -116,7 +133,7 @@ export function canPerform(action, user) {
 export function canSeeNavItem(item, user) {
   if (!user) return false;
   if (isRestaurantFocusedUser(user) || isRestaurantRole(user)) {
-    return item.id === "restaurant_dinner_board";
+    return RESTAURANT_FOCUS_NAV_IDS.has(item.id);
   }
   if (item.oritCsAgentOnly) return canAccessOritCsAgent(user);
   if (item.restaurantBoardOnly) return canAccessRestaurantDinnerBoard(user);
@@ -132,7 +149,9 @@ export function canAccessRoute(routeId, user) {
   if (!user) return false;
   if (routeId === "orit_cs_agent") return canAccessOritCsAgent(user);
   if (routeId === "restaurant_dinner_board") return canAccessRestaurantDinnerBoard(user);
-  if (isRestaurantFocusedUser(user)) return routeId === "restaurant_dinner_board";
+  if (isRestaurantFocusedUser(user)) {
+    return RESTAURANT_FOCUS_NAV_IDS.has(routeId);
+  }
   const allowed = ROUTE_ACCESS[routeId];
   if (!allowed) return true;
   const role = getRole(user);

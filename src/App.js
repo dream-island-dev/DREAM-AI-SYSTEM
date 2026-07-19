@@ -9,7 +9,7 @@ import ShiftGenerator from "./components/ShiftGenerator";
 import ShiftScheduleTab from "./components/ShiftScheduleTab";
 import EmployeesPage from "./components/EmployeesPage";
 import { isAdminUser, isSuperAdmin, loadDepartments, isGoogleAuthAllowed } from "./utils/admin";
-import { canAccessRoute, canPerform, canSeeNavItem, filterNavItemsForUser, isRestaurantFocusedUser } from "./utils/auth";
+import { canAccessRoute, canPerform, canSeeNavItem, filterNavItemsForUser, isRestaurantFocusedUser, RESTAURANT_FOCUS_NAV_IDS } from "./utils/auth";
 import {
   ONBOARDING_DEPARTMENTS,
   RESTAURANT_DEPARTMENT,
@@ -53,6 +53,7 @@ import RoutingControlCenter from "./components/RoutingControlCenter";
 import AdminChangelogDashboard from "./components/AdminChangelogDashboard";
 import ReceptionChecklist from "./components/ReceptionChecklist";
 import RestaurantDinnerBoard from "./components/RestaurantDinnerBoard";
+import RestaurantKioskShell from "./components/RestaurantKioskShell";
 
 // ============================================================
 // Departments are editable by admin via AdminPanel — stored in localStorage
@@ -2078,7 +2079,7 @@ export default function App({ initialPage = "dashboard" }) {
     if (!pending?.page) return;
     if (!canAccessRoute(pending.page, user)) return;
     if ((user.role === "restaurant" || isRestaurantFocusedUser(user))
-      && pending.page !== "restaurant_dinner_board") return;
+      && !RESTAURANT_FOCUS_NAV_IDS.has(pending.page)) return;
     if (pending.phone) {
       setInboxFocus({
         phone: pending.phone,
@@ -2302,14 +2303,12 @@ export default function App({ initialPage = "dashboard" }) {
       </>
     );
 
-  // Restaurant kiosk — לוח מסעדה בלבד (role=restaurant או restaurant_access לעובד)
+  // Restaurant kiosk — לוח מסעדה + שיחות WA (role=restaurant או restaurant_access לעובד)
   if (user.role === "restaurant" || isRestaurantFocusedUser(user))
     return (
       <>
         <style>{css}</style>
-        <div style={{ background: "var(--ivory)", minHeight: "100vh" }}>
-          <RestaurantDinnerBoard user={user} kioskMode onLogout={handleLogout} />
-        </div>
+        <RestaurantKioskShell user={user} onLogout={handleLogout} />
       </>
     );
 
