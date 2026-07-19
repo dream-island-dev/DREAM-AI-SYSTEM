@@ -8,7 +8,9 @@ import type { OritAlertThread } from "./oritAgentWhapiAlert.ts";
 import {
   composeOritCsMobileLinkLine,
   resolveOritOutboundChannel,
-} from "./oritGuestOutbound.ts"; = OritAlertThread & {
+} from "./oritGuestOutbound.ts";
+
+export type SigalBriefingThread = OritAlertThread & {
   received_at?: string | null;
   auto_ack_sent_at?: string | null;
   full_reply_sent_at?: string | null;
