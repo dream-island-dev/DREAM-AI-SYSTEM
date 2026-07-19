@@ -7,22 +7,13 @@ import { useState, useEffect, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import { canPerform } from "../utils/auth";
 import { loadDepartments } from "../utils/admin";
+import { DEPARTMENT_COLORS, normalizeDepartmentLabel } from "../data/hotelDepartments";
 import ManageEmployeeModal from "./ManageEmployeeModal";
 import ShiftScheduleTab from "./ShiftScheduleTab";
 
-// Department → accent color
-const DEPT_COLOR = {
-  "קבלה":         "#378ADD",
-  "ספא":          "#639922",
-  "תפעול":        "#BA7517",
-  "משק":          "#888780",
-  "הנהלה":        "#C9A96E",
-  'מזמ"ש (F&B)':  "#E24B4A",
-  "סוויטות":      "#9B59B6",
-};
-
 function deptBadgeStyle(dept) {
-  const c = DEPT_COLOR[dept] ?? "#888780";
+  const label = normalizeDepartmentLabel(dept);
+  const c = DEPARTMENT_COLORS[dept] ?? DEPARTMENT_COLORS[label] ?? "#888780";
   return {
     display: "inline-block", fontSize: 11, fontWeight: 700,
     padding: "3px 9px", borderRadius: 20,
@@ -305,7 +296,7 @@ function EmployeeCard({ emp, canEdit, onEdit }) {
         {/* Badges */}
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: emp.phone ? 10 : 0 }}>
           {emp.department && (
-            <span style={deptBadgeStyle(emp.department)}>{emp.department}</span>
+            <span style={deptBadgeStyle(emp.department)}>{normalizeDepartmentLabel(emp.department)}</span>
           )}
           <span style={{
             display: "inline-block", fontSize: 11, fontWeight: 700,

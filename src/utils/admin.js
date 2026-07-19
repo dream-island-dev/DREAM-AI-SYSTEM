@@ -9,6 +9,10 @@
 //   promote7il@gmail.com    → admin       (legacy)
 //   everyone else           → staff       (promotable by super_admin)
 
+import { DEFAULT_DEPARTMENTS } from "../data/hotelDepartments";
+
+export { DEFAULT_DEPARTMENTS };
+
 /** The single, undisputed Super-Admin (owner). */
 export const SUPER_ADMIN_EMAIL = "tzalamnadlan@gmail.com";
 
@@ -41,10 +45,6 @@ const SUPER_ADMIN_EMAILS = new Set(
  * Points at the owner email.
  */
 export const ADMIN_EMAIL = SUPER_ADMIN_EMAIL;
-
-export const DEFAULT_DEPARTMENTS = [
-  "תפעול", "משק", "קבלה", "ספא", 'מזמ"ש (F&B)', "הנהלה", "סוויטות",
-];
 
 const DEPT_KEY = "di_departments";
 

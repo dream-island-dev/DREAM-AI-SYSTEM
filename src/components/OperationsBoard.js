@@ -26,7 +26,7 @@ import {
   taskNeedsRoomDisambiguation,
 } from "../utils/guestSelectedSuiteRoom";
 
-const HOTEL_DEPARTMENTS = ["תפעול", "משק", "קבלה", "ספא", 'מזמ"ש (F&B)', "הנהלה"];
+import { ONBOARDING_DEPARTMENTS, DEPARTMENT_ICONS } from "../data/hotelDepartments";
 
 const PRIORITY_CONFIG = {
   urgent: { label: "🔴 דחוף",  bg: "#FEF2F2", color: "#DC2626", border: "#FECACA" },
@@ -185,7 +185,7 @@ export function NewTaskForm({ user, managerDept, onCreated }) {
             <label>מחלקה *</label>
             <select value={form.department} onChange={e => set("department", e.target.value)}>
               <option value="">בחר מחלקה...</option>
-              {HOTEL_DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}
+              {ONBOARDING_DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}
             </select>
           </div>
           <div className="form-field" style={{ marginBottom: 0 }}>
@@ -281,14 +281,6 @@ export function NewTaskForm({ user, managerDept, onCreated }) {
 }
 
 // ── Task Card — now 3-state (open/in_progress/done) with SLA badge ──────────
-const DEPT_ICONS = {
-  "תפעול": "🔧",
-  "משק": "📦",
-  "קבלה": "🛎️",
-  "ספא": "💆",
-  'מזמ"ש (F&B)': "🍽️",
-  "הנהלה": "👔",
-};
 
 function TaskCard({ task, onClaim, onMarkDone, onApprove, onReject, isUpdating, onOpenDreamBotChat }) {
   const prio = PRIORITY_CONFIG[task.priority] ?? PRIORITY_CONFIG.normal;
@@ -464,7 +456,7 @@ function TaskCard({ task, onClaim, onMarkDone, onApprove, onReject, isUpdating, 
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
         <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
-          {DEPT_ICONS[task.department] ?? "🏢"} {task.department}
+          {DEPARTMENT_ICONS[task.department] ?? "🏢"} {task.department}
         </span>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           {task.guests?.phone && onOpenDreamBotChat && (

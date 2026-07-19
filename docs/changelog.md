@@ -1,3 +1,4 @@
+2026-07-20 | מחלקת מסעדה — מקור אמת מסונכרן | `src/data/hotelDepartments.js` — «מסעדה» באונבורדינג/UserManagement/תפעול; בחירה באונבורדינג → `role=restaurant` + `restaurant_access`; legacy `מזמ"ש (F&B)` ממופה לתצוגה.
 2026-07-20 | Restaurant role kiosk-only access | `profiles.role=restaurant` + migration 254; קיוסק לוח מסעדה בלבד (כמו cleaner); `restaurant_access` לעובד staff; בלי סיידבר/Inbox/דאשבורד.
 2026-07-20 | Guest ops Tier-0 quality — safe allowlist expansion | `automationSchedule.ts`: bare amenity shorthand (checked_in only), כוסות/צלחות, ניקיון בבקשה, portal OPS CTA trust; Whapi uses `shouldInterceptOperationalInHouseRequest`; portal → `createGuestOpsTaskWithInstantAmenityDispatch`.
 2026-07-19 | Orit CS — Sigal↔UI comfort loop (link + auto-drafts + send sync) | לינק ממשק בכל התראת סיגל; פתיחה מלינק → ניתוח אוטומטי רק בלי טיוטות (LLM לתלונות בלבד); אחרי שליחה מהממשק → WA «שלחת ✓» לסיגל (`oritSigalUiNotify.ts`).

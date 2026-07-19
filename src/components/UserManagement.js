@@ -6,6 +6,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { supabase } from "../supabaseClient";
 import { isSuperAdmin } from "../utils/admin";
+import { DEFAULT_DEPARTMENTS, isRestaurantDepartment, RESTAURANT_DEPARTMENT } from "../data/hotelDepartments";
 
 // ── Responsive hook ───────────────────────────────────────────────────────────
 
@@ -48,16 +49,6 @@ const STATUS_META = {
   suspended: { bg: "#FFF0EE", color: "#C0392B", label: "מושעה" },
   pending:   { bg: "#FFF5E8", color: "#B5600A", label: "ממתין" },
 };
-
-const DEPARTMENTS = [
-  "תפעול",
-  "משק",
-  "קבלה",
-  "ספא",
-  'מזמ"ש (F&B)',
-  "הנהלה",
-  "סוויטות",
-];
 
 // ── Shared UI atoms ───────────────────────────────────────────────────────────
 
@@ -195,7 +186,7 @@ function UserCard({ u, isSelf, saving, canEdit, onUpdate, onToggle }) {
               }}
             >
               <option value="">— ללא מחלקה —</option>
-              {DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}
+              {DEFAULT_DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}
             </select>
           ) : (
             <div style={{ padding: "10px 0", fontSize: 14, color: "var(--text-muted)" }}>
@@ -351,7 +342,7 @@ function InviteForm({ onSubmit, onCancel, busy }) {
             מחלקה
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {DEPARTMENTS.map((d) => (
+            {DEFAULT_DEPARTMENTS.map((d) => (
               <label key={d} style={{
                 display: "flex", alignItems: "center", gap: 5,
                 cursor: "pointer", fontSize: 13, fontWeight: form.department === d ? 700 : 500,
@@ -459,6 +450,14 @@ export default function UserManagement({ currentUser }) {
     if (field === "role" && value === "restaurant") {
       patch.restaurant_access = true;
     }
+    if (field === "department" && isRestaurantDepartment(value)) {
+      patch.department = RESTAURANT_DEPARTMENT;
+      patch.restaurant_access = true;
+      const u = users.find((x) => x.id === userId);
+      if (u && (u.role === "staff" || !u.role)) {
+        patch.role = "restaurant";
+      }
+    }
     const { error } = await supabase
       .from("profiles")
       .update(patch)
@@ -470,6 +469,11 @@ export default function UserManagement({ currentUser }) {
         if (u.id !== userId) return u;
         const next = { ...u, [field]: value };
         if (field === "role" && value === "restaurant") next.restaurant_access = true;
+        if (field === "department" && isRestaurantDepartment(value)) {
+          next.department = RESTAURANT_DEPARTMENT;
+          next.restaurant_access = true;
+          if (next.role === "staff" || !next.role) next.role = "restaurant";
+        }
         return next;
       }));
       showToast("ok", "עודכן ✓");
@@ -705,7 +709,7 @@ export default function UserManagement({ currentUser }) {
                             }}
                           >
                             <option value="">— ללא —</option>
-                            {DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}
+                            {DEFAULT_DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}
                           </select>
                         ) : (
                           <span style={{ fontSize: 13, color: "var(--text-muted)" }}>{u.department ?? "—"}</span>

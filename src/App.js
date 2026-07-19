@@ -10,6 +10,11 @@ import ShiftScheduleTab from "./components/ShiftScheduleTab";
 import EmployeesPage from "./components/EmployeesPage";
 import { isAdminUser, isSuperAdmin, loadDepartments, isGoogleAuthAllowed } from "./utils/admin";
 import { canAccessRoute, canPerform, canSeeNavItem, filterNavItemsForUser, isRestaurantFocusedUser } from "./utils/auth";
+import {
+  ONBOARDING_DEPARTMENTS,
+  RESTAURANT_DEPARTMENT,
+  isRestaurantDepartment,
+} from "./data/hotelDepartments";
 import OperationalDashboard from "./components/OperationalDashboard";
 import OritCustomerServicePanel from "./components/OritCustomerServicePanel";
 import { consumeStaffDeepLink } from "./utils/staffDeepLink";
@@ -1118,11 +1123,6 @@ function LoginPage({ onLogin }) {
   );
 }
 
-// ── Hebrew department options (canonical list used across the whole app) ────────
-const HOTEL_DEPARTMENTS = [
-  "תפעול", "משק", "קבלה", "ספא", 'מזמ"ש (F&B)', "הנהלה",
-];
-
 // ── Smart onboarding modal — 3-step wizard for new users ────────────────────────
 // Step 0: Department selection
 // Step 1: Job title input
@@ -1139,31 +1139,37 @@ function DepartmentOnboardingModal({ user, onComplete }) {
   const firstName = (user.name || "").split(" ")[0] || "עמית";
 
   const handleSave = async () => {
-    if (!dept || !roleChoice) return;
+    if (!dept || (!roleChoice && !isRestaurantDepartment(dept))) return;
     setSaving(true);
     setError("");
+    const restaurantDept = isRestaurantDepartment(dept);
+    const savedDept = restaurantDept ? RESTAURANT_DEPARTMENT : dept;
+    const savedRole = restaurantDept ? "restaurant" : roleChoice;
     try {
       if (isSupabaseConfigured && supabase) {
-        // upsert, not update — a brand-new auth user may not have a profiles
-        // row yet (the on_auth_user_created trigger that's supposed to create
-        // one was missing from every migration until 052). update() would
-        // silently match zero rows with no error, and the onboarding modal
-        // would reappear on every refresh forever ("onboarding loop").
-        // role is intentionally omitted: on conflict it leaves the existing
-        // role untouched; on insert it falls back to the column DEFAULT
-        // ('staff') — DB trigger + admin promote manage role, not this modal.
+        const profilePatch = {
+          id:         user.id,
+          name:       user.name,
+          email:      user.email,
+          department: savedDept,
+          job_title:  jobTitle.trim() || null,
+        };
+        if (restaurantDept) {
+          profilePatch.role = "restaurant";
+          profilePatch.restaurant_access = true;
+        }
         const { error: saveErr } = await supabase
           .from("profiles")
-          .upsert({
-            id:         user.id,
-            name:       user.name,
-            email:      user.email,
-            department: dept,
-            job_title:  jobTitle.trim() || null,
-          });
+          .upsert(profilePatch);
         if (saveErr) throw saveErr;
       }
-      onComplete({ ...user, department: dept, job_title: jobTitle.trim(), role: roleChoice });
+      onComplete({
+        ...user,
+        department: savedDept,
+        job_title: jobTitle.trim(),
+        role: savedRole,
+        ...(restaurantDept ? { restaurant_access: true } : {}),
+      });
     } catch (e) {
       console.error("[onboarding] save failed:", e);
       setError(e?.message || "שגיאה בשמירה — נסה שוב או פנה למנהל המערכת");
@@ -1238,7 +1244,7 @@ function DepartmentOnboardingModal({ user, onComplete }) {
             style={{ ...inputStyle, color: dept ? "var(--text-main)" : "var(--text-muted)", cursor: "pointer" }}
           >
             <option value="">בחר מחלקה...</option>
-            {HOTEL_DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}
+            {ONBOARDING_DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}
           </select>
           <button onClick={() => setStep(1)} disabled={!dept} style={btnPrimary(!dept)}>
             המשך ←
@@ -1292,6 +1298,23 @@ function DepartmentOnboardingModal({ user, onComplete }) {
             {dept}{jobTitle ? ` · ${jobTitle}` : ""}
           </div>
           <ProgressDots />
+          {isRestaurantDepartment(dept) ? (
+            <div style={{ marginBottom: 20, textAlign: "right" }}>
+              <div style={{
+                width: "100%", padding: "16px", borderRadius: 12,
+                border: "2px solid var(--gold)",
+                background: "rgba(201,169,110,0.1)",
+                fontFamily: "Heebo, sans-serif",
+              }}>
+                <div style={{ fontWeight: 800, fontSize: 15, color: "var(--black)", marginBottom: 4 }}>
+                  🍽️ לוח מסעדה
+                </div>
+                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                  תיאום שעות ארוחה, הודעות וואטסאפ לאורחים — גישה ללוח המסעדה בלבד
+                </div>
+              </div>
+            </div>
+          ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 20 }}>
             {[
               { value: "manager", icon: "🏢", title: "מנהל מחלקה", desc: "גישה מלאה לניהול, משמרות, עובדים ודוחות" },
@@ -1315,6 +1338,7 @@ function DepartmentOnboardingModal({ user, onComplete }) {
               </button>
             ))}
           </div>
+          )}
           {error && (
             <div style={{
               background: "#FFF0EE", border: "1px solid #C0392B", borderRadius: 8,
@@ -1331,8 +1355,8 @@ function DepartmentOnboardingModal({ user, onComplete }) {
             }}>→ חזור</button>
             <button
               onClick={handleSave}
-              disabled={!roleChoice || saving}
-              style={{ ...btnPrimary(!roleChoice || saving), flex: 2 }}
+              disabled={(!roleChoice && !isRestaurantDepartment(dept)) || saving}
+              style={{ ...btnPrimary((!roleChoice && !isRestaurantDepartment(dept)) || saving), flex: 2 }}
             >
               {saving ? "⏳ שומר..." : "✅ כניסה למערכת"}
             </button>
