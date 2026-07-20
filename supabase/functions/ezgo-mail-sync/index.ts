@@ -9,8 +9,9 @@ import {
 import {
   ezgoMailSyncEnabled,
   fetchEzgoInboxMessages,
-  isSenderAllowed,
+  isEzgoInboundAllowed,
   parseAllowlist,
+  parseRelayAllowlist,
   resolveEzgoImapConfig,
 } from "../_shared/ezgoMailImap.ts";
 import {
@@ -155,6 +156,7 @@ serve(async (req: Request) => {
     );
 
     const allowlist = parseAllowlist();
+    const relayAllowlist = parseRelayAllowlist();
     const messages = await fetchEzgoInboxMessages(cfg, 40);
 
     let processed = 0;
@@ -163,7 +165,7 @@ serve(async (req: Request) => {
     const details: Array<{ id: string; result: string }> = [];
 
     for (const msg of messages) {
-      if (!isSenderAllowed(msg.fromEmail, allowlist)) {
+      if (!isEzgoInboundAllowed(msg, allowlist, relayAllowlist)) {
         skipped += 1;
         continue;
       }

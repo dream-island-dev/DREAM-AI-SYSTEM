@@ -1,6 +1,7 @@
 // Gmail / IMAP fetch for EZGO mail sync — preserves HTML body for Doc1 parsing.
 
 import { ImapFlow } from "npm:imapflow@1.0.168";
+import { classifyEzgoMailContent, looksLikeDoc1Html } from "./ezgoDoc1Parser.ts";
 
 export type EzgoInboundMail = {
   id: string;
@@ -36,10 +37,23 @@ export function ezgoMailSyncEnabled(): boolean {
   return Deno.env.get("EZGO_MAIL_SYNC_ENABLED") === "true";
 }
 
+/** Owner inbox may forward Operations reports into promote7il as a backup path. */
+export const DEFAULT_EZGO_MAIL_RELAY_ALLOWLIST = ["tzalamnadlan@gmail.com"];
+
 export function parseAllowlist(): string[] {
   const raw = (Deno.env.get("EZGO_MAIL_ALLOWLIST") || "").trim();
   if (!raw) return [];
   return raw.split(/[,;]/).map((s) => s.trim().toLowerCase()).filter(Boolean);
+}
+
+/** Relay forwarders — only accepted when the message looks like EZGO Doc1. */
+export function parseRelayAllowlist(): string[] {
+  const raw = (Deno.env.get("EZGO_MAIL_RELAY_ALLOWLIST") || "").trim().toLowerCase();
+  if (raw === "off" || raw === "false" || raw === "0") return [];
+  if (raw) {
+    return raw.split(/[,;]/).map((s) => s.trim().toLowerCase()).filter(Boolean);
+  }
+  return [...DEFAULT_EZGO_MAIL_RELAY_ALLOWLIST];
 }
 
 export function isSenderAllowed(fromEmail: string, allowlist: string[]): boolean {
@@ -48,6 +62,33 @@ export function isSenderAllowed(fromEmail: string, allowlist: string[]): boolean
   if (/^(no[-_.]?reply|donotreply|mailer-daemon)@/i.test(email)) return false;
   if (!allowlist.length) return true;
   return allowlist.some((a) => email === a || email.endsWith(`@${a}`));
+}
+
+export function looksLikeEzgoOperationsSubject(subject: string): boolean {
+  const s = String(subject || "").trim();
+  return /operations/i.test(s)
+    || /dream\s*island/i.test(s)
+    || /הוספת\s*טיפולים/i.test(s);
+}
+
+export function looksLikeEzgoMailPayload(bodyHtml: string, bodyText: string): boolean {
+  const html = String(bodyHtml || "");
+  const text = String(bodyText || "");
+  if (classifyEzgoMailContent(html, text).reportType !== "unknown") return true;
+  return (/<table[\s>]/i.test(html) && looksLikeDoc1Html(html))
+    || (text.includes("\t") && classifyEzgoMailContent("", text).reportType !== "unknown");
+}
+
+/** Primary senders (Hagar) OR trusted relay forward with EZGO-shaped content. */
+export function isEzgoInboundAllowed(
+  msg: { fromEmail: string; subject: string; bodyHtml: string; bodyText: string },
+  senderAllowlist: string[],
+  relayAllowlist: string[] = parseRelayAllowlist(),
+): boolean {
+  if (isSenderAllowed(msg.fromEmail, senderAllowlist)) return true;
+  if (!isSenderAllowed(msg.fromEmail, relayAllowlist)) return false;
+  return looksLikeEzgoOperationsSubject(msg.subject)
+    && looksLikeEzgoMailPayload(msg.bodyHtml, msg.bodyText);
 }
 
 function decodeQuotedPrintable(input: string): string {
