@@ -7,6 +7,7 @@ import ArrivalImportPanel from "./ArrivalImportPanel";
 import ActivitiesImportZone from "./spa/ActivitiesImportZone";
 import SmartPastePanel from "./SmartPastePanel";
 import SpaUpsellDispatchPanel from "./SpaUpsellDispatchPanel";
+import DayPassRoomBulkFixPanel from "./DayPassRoomBulkFixPanel";
 import { israelTodayYmd } from "../utils/spaUpsellAudience";
 
 const TABS = [
@@ -74,6 +75,7 @@ function SpaActivitiesSyncSection() {
 export default function DataSyncPage() {
   const [activeTab, setActiveTab] = useState("import");
   const [spaUpsellDate, setSpaUpsellDate] = useState(todayYmd());
+  const [spaUpsellRefreshKey, setSpaUpsellRefreshKey] = useState(0);
   const [toast, setToast] = useState(null);
 
   const showToast = (msg, type = "ok") => {
@@ -161,11 +163,19 @@ export default function DataSyncPage() {
       )}
 
       {activeTab === "spa_upsell" && (
-        <SpaUpsellDispatchPanel
-          key={spaUpsellDate}
-          initialDate={spaUpsellDate}
-          onToast={showToast}
-        />
+        <>
+          <DayPassRoomBulkFixPanel
+            arrivalDate={spaUpsellDate}
+            onDateChange={setSpaUpsellDate}
+            onToast={showToast}
+            onFixed={() => setSpaUpsellRefreshKey((k) => k + 1)}
+          />
+          <SpaUpsellDispatchPanel
+            key={`${spaUpsellDate}-${spaUpsellRefreshKey}`}
+            initialDate={spaUpsellDate}
+            onToast={showToast}
+          />
+        </>
       )}
     </div>
   );

@@ -21,7 +21,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { supabase } from "../supabaseClient";
 import { EditableGrid, BulkEditBar, exportToExcel } from "./EditableGrid";
 import MappingReviewPanel from "./MappingReviewPanel";
-import { SUITE_REGISTRY, resolveSuiteFromEzgoFields } from "../data/suiteRegistry";
+import { SUITE_REGISTRY, resolveSuiteFromEzgoFields, GENERIC_DAY_PASS_ROOM } from "../data/suiteRegistry";
 import {
   aggregateGuestProfiles,
   profilesToArray,
@@ -103,6 +103,7 @@ function _sanitizeE164(raw) {
 // Single source for every "assign a room" UI in the app (this panel + GuestsPage).
 const ROOM_OPTIONS = [
   { value: "", label: "— ללא חדר —" },
+  { value: GENERIC_DAY_PASS_ROOM, label: "🏊 בילוי יומי (ללא פרימיום)" },
   { value: "Premium Day 1", label: "⭐ חבילת פרימיום בילוי יומי 1" },
   { value: "Premium Day 2", label: "⭐ חבילת פרימיום בילוי יומי 2" },
   ...SUITE_REGISTRY.map(s => ({ value: s, label: s })),
@@ -2467,7 +2468,7 @@ export default function ArrivalImportPanel({ defaultOpen = false, onSpaUpsellNav
             arrival_date: recArrivalDate,
             departure_date: recArrivalDate,
             room_type: "day_guest",
-            room: "Premium Day 1",
+            room: GENERIC_DAY_PASS_ROOM,
             status: "pending",
             order_number: rec.order_number || null,
             treatment_count: rec.treatment_count ?? 0,

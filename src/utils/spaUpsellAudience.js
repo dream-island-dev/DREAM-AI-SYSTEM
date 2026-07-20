@@ -1,4 +1,4 @@
-/** Day-pass guest with a room assignment — eligible cohort for spa upsell. */
+import { GENERIC_DAY_PASS_ROOM, PREMIUM_DAY_ROOMS } from "../data/suiteRegistry";
 export function isDayPassGuestForUpsell(guest) {
   return (
     (guest?.room_type === "day_guest" || guest?.room_type === "premium_day_guest")
@@ -49,4 +49,44 @@ export async function fetchSpaUpsellAudience(supabase, { arrivalDate }) {
 
 export function israelTodayYmd() {
   return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
+}
+
+/** Guests wrongly tagged Premium Day 1/2 (bulk fix after import bug). */
+export async function fetchPremiumDayMisassignedGuests(supabase, { arrivalDate }) {
+  if (!supabase || !arrivalDate) return { guests: [], error: null };
+
+  const { data, error } = await supabase
+    .from("guests")
+    .select("id, name, phone, room, room_type, arrival_date, status")
+    .eq("arrival_date", arrivalDate)
+    .in("room", [...PREMIUM_DAY_ROOMS])
+    .neq("status", "cancelled")
+    .order("name");
+
+  if (error) return { guests: [], error };
+
+  return {
+    guests: (data ?? []).map((g) => ({
+      id: g.id,
+      name: g.name,
+      phone: g.phone,
+      room: g.room,
+      room_type: g.room_type,
+    })),
+    error: null,
+  };
+}
+
+/** Promote mis-tagged Premium Day rows → plain בילוי יומי + day_guest. */
+export async function bulkConvertPremiumDayToGenericDayPass(supabase, guestIds) {
+  if (!supabase || !guestIds?.length) return { updated: 0, error: null };
+
+  const { error } = await supabase
+    .from("guests")
+    .update({ room: GENERIC_DAY_PASS_ROOM, room_type: "day_guest" })
+    .in("id", guestIds);
+
+  if (error) return { updated: 0, error };
+
+  return { updated: guestIds.length, error: null };
 }

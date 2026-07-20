@@ -2,6 +2,7 @@ import {
   resolveSuiteFromEzgoFields,
   roomsCanonicallyMatch,
   guestRoomMatchesSuiteId,
+  GENERIC_DAY_PASS_ROOM,
 } from "./suiteRegistry";
 
 describe("suiteRegistry — EZGO room resolution", () => {
@@ -11,6 +12,15 @@ describe("suiteRegistry — EZGO room resolution", () => {
 
   test("resolveSuiteFromEzgoFields: premium day 2", () => {
     expect(resolveSuiteFromEzgoFields("", "Premium Day 2", true)).toBe("Premium Day 2");
+  });
+
+  test("resolveSuiteFromEzgoFields: plain day visit → בילוי יומי (not Premium Day)", () => {
+    expect(resolveSuiteFromEzgoFields("", "", true)).toBe(GENERIC_DAY_PASS_ROOM);
+    expect(resolveSuiteFromEzgoFields("", "בילוי יומי", true)).toBe(GENERIC_DAY_PASS_ROOM);
+  });
+
+  test("resolveSuiteFromEzgoFields: premium package Hebrew", () => {
+    expect(resolveSuiteFromEzgoFields("", "חבילת פרימיום בילוי יומי 1", true)).toBe("Premium Day 1");
   });
 
   test("roomsCanonicallyMatch: bare number vs registry name", () => {

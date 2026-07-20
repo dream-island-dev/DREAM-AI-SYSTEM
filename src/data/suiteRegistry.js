@@ -32,6 +32,9 @@ export function getSuiteSection(suiteName) {
 
 export const PREMIUM_DAY_ROOMS = ["Premium Day 1", "Premium Day 2"];
 
+/** Plain day-visit guests (no premium package) — not Premium Day inventory. */
+export const GENERIC_DAY_PASS_ROOM = "בילוי יומי";
+
 /** Strip Hebrew "סוויטת" prefix for brand matching against registry names. */
 function _suiteBrandKey(name) {
   return String(name ?? "").trim().replace(/^סוויטת\s+/i, "");
@@ -46,10 +49,14 @@ export function resolveSuiteFromEzgoFields(roomName, suiteType, isDayGuest = fal
   const rn = String(roomName ?? "").trim();
   const st = String(suiteType ?? "").trim();
 
-  if (isDayGuest || /premium\s*day|day\s*guest|בילוי.*יומי/i.test(st)) {
-    if (/premium\s*day\s*2|פרימיום.*2|day\s*2/i.test(st)) return "Premium Day 2";
-    if (/premium\s*day|פרימיום|day\s*guest|בילוי.*יומי/i.test(st)) return "Premium Day 1";
-    return "";
+  // Premium packages only — explicit "פרימיום" / "Premium Day N" in EZGO text.
+  if (/premium\s*day\s*2|פרימיום.*2|חבילת\s*פרימיום.*2/i.test(st)) return "Premium Day 2";
+  if (/premium\s*day\s*1|פרימיום.*1|חבילת\s*פרימיום/i.test(st)) return "Premium Day 1";
+  if (/premium\s*day/i.test(st)) return "Premium Day 1";
+
+  // Plain day visit (בילוי יומי בלי חבילת פרימיום) — NOT a Premium Day slot.
+  if (isDayGuest || /בילוי\s*יומי|day\s*guest/i.test(st)) {
+    return GENERIC_DAY_PASS_ROOM;
   }
 
   const num = rn.match(/\d+/)?.[0];

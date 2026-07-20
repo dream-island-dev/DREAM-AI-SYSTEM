@@ -506,7 +506,8 @@ export default function AddGuestModal({
                 }}
               >
                 <option value="">— ללא חדר —</option>
-                <optgroup label="⭐ בילוי יומי">
+                <optgroup label="🏊 בילוי יומי">
+                  <option value="בילוי יומי">בילוי יומי (ללא פרימיום)</option>
                   <option value="Premium Day 1">חבילת פרימיום בילוי יומי 1</option>
                   <option value="Premium Day 2">חבילת פרימיום בילוי יומי 2</option>
                 </optgroup>

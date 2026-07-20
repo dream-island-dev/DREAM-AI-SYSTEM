@@ -26,6 +26,7 @@
 // explicit priority so a missing-time row isn't mislabeled "room_unmapped".
 
 import { normalizeActivitiesPhone, collectGuestNameHints, resolveSpaGuestDisplayName } from "./ezgoSpaActivitiesParser";
+import { GENERIC_DAY_PASS_ROOM } from "../data/suiteRegistry";
 
 /** Spa cohort automation — muted on sync until staff unsuppresses in ACC (opt-in). */
 const SPA_AUTOMATION_STAGE_KEYS = ["spa_warmup_daypass", "survey_invite_daypass"];
@@ -344,7 +345,7 @@ export async function syncEzgoSpaActivities(parsedRows, appointmentDate, { supab
           phone: `+${row.phone}`,
           name: displayName,
           room_type: "day_guest",
-          room: "Premium Day 1",
+          room: GENERIC_DAY_PASS_ROOM,
           arrival_date: appointmentDate,
           departure_date: appointmentDate,
           status: "expected",

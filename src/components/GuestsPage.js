@@ -319,7 +319,7 @@ export default function GuestsPage({
   // ── Room-prerequisite gating for check-in actions ───────────────────────────
   // Day packages (Premium Day 1/2, or any suite_rooms row flagged is_day_guest)
   // never get an actual room — they're exempt from the room requirement.
-  const DAY_GUEST_ROOM_VALUES = new Set(["Premium Day 1", "Premium Day 2"]);
+  const DAY_GUEST_ROOM_VALUES = new Set(["Premium Day 1", "Premium Day 2", "בילוי יומי"]);
   const isDayGuest = (g) =>
     DAY_GUEST_ROOM_VALUES.has(g.room) || !!roomByPhone[g.phone]?.isDayGuest;
   const hasRoomAssigned = (g) => {
