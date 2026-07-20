@@ -86,6 +86,8 @@ function LineCard({
   const isUpsell = workflow === "daypass_upsell";
   const canUpsell = isUpsell && line.match_guest_id;
   const canCreateSend = workflow === "daypass_create" && rec.phone;
+  const canCreateProfile = (isCreate || (isUpsell && rec.phone))
+    && line.action !== "no_match";
   const canApprove = !isCreate && !isUpsell
     && line.action !== "no_match"
     && workflow !== "noop"
@@ -106,7 +108,7 @@ function LineCard({
         }}>
           {badge.text}
         </span>
-        <strong style={{ fontSize: 14, color: "var(--gold-light)" }}>
+        <strong style={{ fontSize: 14, color: "#E8C98A" }}>
           {rec.guest_name || "—"}
           {rec.order_number ? ` · #${rec.order_number}` : ""}
         </strong>
@@ -140,14 +142,17 @@ function LineCard({
                 💆 שלח הצעת ספא
               </button>
             )}
-            {isCreate && (
+            {canCreateProfile && (
               <button
                 type="button"
                 disabled={busy}
                 onClick={() => onCreate(line)}
+                title={isUpsell && line.match_guest_id
+                  ? "פרופיל קיים — סמן כטופל בלי לשלוח הצעת ספא"
+                  : "צור פרופיל בילוי יומי מהדוח — בלי שליחת הצעת ספא"}
                 style={{ ...BTN.create, cursor: busy ? "wait" : "pointer" }}
               >
-                ☀️ צור פרופיל
+                {isUpsell && line.match_guest_id ? "✓ ללא שליחה" : "☀️ צור פרופיל"}
               </button>
             )}
             {canCreateSend && (
@@ -411,6 +416,70 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
     }
   };
 
+  const dismissUpsellWithoutSend = async (line, { silent = false, skipReload = false } = {}) => {
+    await supabase.from("ezgo_mail_import_lines").update({
+      status: "applied",
+      applied_at: new Date().toISOString(),
+      match_label: `${line.match_label || ""} · ללא שליחת הצעת ספא`.trim(),
+      proposed_patch: { _workflow: resolveLineWorkflow(line, reportDate) },
+    }).eq("id", line.id);
+    if (!silent) {
+      showToast?.(`סומן ללא שליחה: ${line.guests?.name || line.parsed_json?.guest_name}`, "ok");
+    }
+    if (!skipReload) {
+      await loadLines(selectedId);
+      await loadIngests();
+    }
+  };
+
+  const handleCreateProfile = async (line) => {
+    const workflow = resolveLineWorkflow(line, reportDate);
+    if (workflow === "daypass_upsell" && line.match_guest_id) {
+      setBusy(true);
+      try {
+        await dismissUpsellWithoutSend(line);
+      } catch (e) {
+        showToast?.(e.message, "err");
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+    await createLine(line);
+  };
+
+  const createProfileBatch = async (workflowId) => {
+    const pending = (grouped[workflowId] || []).filter(
+      (l) => l.status === "pending_review" && l.parsed_json?.phone,
+    );
+    if (!pending.length) {
+      showToast?.("אין שורות לטיפול", "err");
+      return;
+    }
+    setBusy(true);
+    let ok = 0;
+    try {
+      for (const line of pending) {
+        try {
+          if (workflowId === "daypass_upsell" && line.match_guest_id) {
+            await dismissUpsellWithoutSend(line, { silent: true, skipReload: true });
+          } else if (
+            line.action === "create"
+            || resolveLineWorkflow(line, reportDate).startsWith("daypass_create")
+          ) {
+            await createLineInternal(line);
+          }
+          ok += 1;
+        } catch { /* continue */ }
+      }
+      showToast?.(`טופלו ${ok} שורות (ללא שליחת הצעת ספא)`, "ok");
+      await loadLines(selectedId);
+      await loadIngests();
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const createLine = async (line) => {
     setBusy(true);
     try {
@@ -662,17 +731,30 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
                           </div>
                         )}
                         {section.id === "daypass_upsell" && pendingInSection > 0 && (
-                          <button
-                            type="button"
-                            disabled={busy || upsellSending}
-                            onClick={() => upsellBatchForSection("daypass_upsell")}
-                            style={{
-                              marginRight: "auto", padding: "5px 10px", borderRadius: 8, border: "none",
-                              background: "#A21CAF", color: "#fff", fontWeight: 700, fontSize: 11,
-                            }}
-                          >
-                            💆 שלח / תזמן לכולם ({pendingInSection})
-                          </button>
+                          <div style={{ marginRight: "auto", display: "flex", gap: 6, flexWrap: "wrap" }}>
+                            <button
+                              type="button"
+                              disabled={busy || upsellSending}
+                              onClick={() => createProfileBatch("daypass_upsell")}
+                              style={{
+                                padding: "5px 10px", borderRadius: 8, border: "none",
+                                background: "#0e7490", color: "#fff", fontWeight: 700, fontSize: 11,
+                              }}
+                            >
+                              ☀️ ללא שליחה ({pendingInSection})
+                            </button>
+                            <button
+                              type="button"
+                              disabled={busy || upsellSending}
+                              onClick={() => upsellBatchForSection("daypass_upsell")}
+                              style={{
+                                padding: "5px 10px", borderRadius: 8, border: "none",
+                                background: "#A21CAF", color: "#fff", fontWeight: 700, fontSize: 11,
+                              }}
+                            >
+                              💆 שלח / תזמן לכולם ({pendingInSection})
+                            </button>
+                          </div>
                         )}
                       </div>
                       {sectionLines.map((line) => (
@@ -682,7 +764,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
                           reportDate={reportDate}
                           busy={busy || upsellSending}
                           onApply={applyLine}
-                          onCreate={createLine}
+                          onCreate={handleCreateProfile}
                           onCreateAndUpsell={createAndUpsellLine}
                           onReject={rejectLine}
                           onUpsell={upsellLine}

@@ -1,3 +1,4 @@
+2026-07-20 | EZGO mail — create profile without spa send in upsell section | `EzgoMailSyncPanel`: `✓ ללא שליחה` per upsell row + batch; guest name color `#E8C98A`.
 2026-07-20 | EZGO mail UI — inline create + spa upsell | `EzgoMailSyncPanel`: action buttons in name row (אשר / צור / צור+שלח / שלח הצעת ספא); `SpaUpsellConfirmModal` inline per-line + batch per workflow section; `spaUpsellDispatch.js` shared send/schedule.
 2026-07-20 | EZGO mail — Doc1 Excel attachments | `ezgo-mail-sync` extracts `.xlsx`/`.xls` from MIME (incl. forwards) via lazy `xlsx@0.18.5` + `parseDoc1FromExcelBuffer` when HTML/TSV empty — same 3 workflow lanes; `report_type=doc1_excel`.
 2026-07-20 | EZGO mail — 3 workflow lanes in UI | `ezgoMailLineWorkflow`: suite_spa_sync (order#) · daypass_upsell (guest.id) · daypass_create/create_spa (phone+date); EzgoMailSyncPanel sections + batch actions + link to spa upsell tab; ArrivalImportPanel creates daypass with spa too.
