@@ -351,9 +351,10 @@ export function looksLikeDoc1Tsv(text: string): boolean {
 }
 
 export type EzgoMailClassification = {
-  reportType: "doc1_html" | "doc1_tsv" | "unknown";
+  reportType: "doc1_html" | "doc1_tsv" | "doc1_excel" | "unknown";
   html?: string;
   tsv?: string;
+  excelFilename?: string;
 };
 
 export function classifyEzgoMailContent(bodyHtml: string, bodyText: string): EzgoMailClassification {
@@ -382,6 +383,53 @@ export function parseDoc1FromClassification(
     return parseTsvDailyReport(classified.tsv, opts);
   }
   return [];
+}
+
+type XlsxModule = {
+  read: (data: Uint8Array, opts: { type: string; raw?: boolean }) => { Sheets: Record<string, unknown>; SheetNames: string[] };
+  utils: {
+    sheet_to_json: (ws: unknown, opts: { defval: null; header: 1 }) => unknown[];
+  };
+};
+
+let xlsxLoader: Promise<XlsxModule> | null = null;
+
+function loadXlsx(): Promise<XlsxModule> {
+  if (!xlsxLoader) {
+    xlsxLoader = import("https://esm.sh/xlsx@0.18.5") as Promise<XlsxModule>;
+  }
+  return xlsxLoader;
+}
+
+/** EZGO operations Excel — order cells like `269731: Name - 05...` in column B. */
+export function looksLikeDoc1ExcelRows(rows: unknown[]): boolean {
+  if (!rows?.length) return false;
+  let orderHits = 0;
+  for (const row of rows) {
+    if (!Array.isArray(row)) continue;
+    for (const cell of row) {
+      if (cell == null) continue;
+      const s = String(cell).trim();
+      if (/^\d+:/.test(s) || /\n\d+:/.test(s)) orderHits += 1;
+    }
+    if (orderHits >= 2) return true;
+  }
+  return orderHits >= 1;
+}
+
+export async function parseDoc1FromExcelBuffer(
+  buf: Uint8Array,
+  opts: Doc1ParseOpts = defaultDoc1ParseOpts(true),
+): Promise<Doc1Record[]> {
+  const XLSX = await loadXlsx();
+  const wb = XLSX.read(buf, { type: "array", raw: false });
+  const sheetName = wb.SheetNames[0];
+  if (!sheetName) return [];
+  const ws = wb.Sheets[sheetName];
+  if (!ws) return [];
+  const rows = XLSX.utils.sheet_to_json(ws, { defval: null, header: 1 }) as RowTuple[];
+  if (!looksLikeDoc1ExcelRows(rows)) return [];
+  return parseComprehensiveReport(rows, opts);
 }
 
 /** Doc1 enrichment patch — never overwrites stay dates or room. */

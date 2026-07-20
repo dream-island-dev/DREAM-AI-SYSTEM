@@ -2,6 +2,11 @@
 
 import { ImapFlow } from "npm:imapflow@1.0.168";
 
+export type EzgoMailExcelAttachment = {
+  filename: string;
+  data: Uint8Array;
+};
+
 export type EzgoInboundMail = {
   id: string;
   fromEmail: string;
@@ -11,6 +16,7 @@ export type EzgoInboundMail = {
   bodyPreview: string;
   bodyText: string;
   bodyHtml: string;
+  excelAttachments: EzgoMailExcelAttachment[];
 };
 
 export type EzgoImapConfig = {
@@ -80,7 +86,64 @@ function stripHtmlToText(html: string): string {
     .trim();
 }
 
-type ParsedMimeEmail = { html?: string; text?: string; attachments?: Array<{ mimeType?: string; content?: unknown }> };
+type ParsedMimeAttachment = {
+  mimeType?: string;
+  filename?: string;
+  content?: unknown;
+};
+
+type ParsedMimeEmail = {
+  html?: string;
+  text?: string;
+  attachments?: ParsedMimeAttachment[];
+};
+
+function attachmentToBytes(content: unknown): Uint8Array | null {
+  if (content instanceof Uint8Array) return content;
+  if (content instanceof ArrayBuffer) return new Uint8Array(content);
+  if (typeof content === "string") {
+    try {
+      const bin = atob(content.replace(/\s/g, ""));
+      return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function isExcelAttachment(att: ParsedMimeAttachment): boolean {
+  const fn = String(att.filename || "").toLowerCase();
+  const mt = String(att.mimeType || "").toLowerCase();
+  if (/\.xlsx?$/i.test(fn)) return true;
+  return mt.includes("spreadsheet")
+    || mt.includes("excel")
+    || mt === "application/vnd.ms-excel";
+}
+
+async function collectExcelAttachments(email: ParsedMimeEmail | null): Promise<EzgoMailExcelAttachment[]> {
+  if (!email) return [];
+  const out: EzgoMailExcelAttachment[] = [];
+
+  for (const att of email.attachments || []) {
+    if (att.mimeType === "message/rfc822") {
+      const raw = attachmentToBytes(att.content);
+      if (raw) {
+        const nested = await parseMimeSource(raw);
+        out.push(...await collectExcelAttachments(nested));
+      }
+      continue;
+    }
+    if (!isExcelAttachment(att)) continue;
+    const data = attachmentToBytes(att.content);
+    if (!data?.length) continue;
+    out.push({
+      filename: att.filename || "attachment.xlsx",
+      data,
+    });
+  }
+  return out;
+}
 
 type PostalMimeClass = { parse: (source: Uint8Array | string) => Promise<ParsedMimeEmail> };
 
@@ -113,23 +176,21 @@ async function parseMimeSource(source: Uint8Array | string): Promise<ParsedMimeE
  */
 export async function extractBodiesFromSource(
   source: Uint8Array | string,
-): Promise<{ text: string; html: string; preview: string }> {
+): Promise<{ text: string; html: string; preview: string; excelAttachments: EzgoMailExcelAttachment[] }> {
   let html = "";
   let text = "";
+  let excelAttachments: EzgoMailExcelAttachment[] = [];
 
   const email = await parseMimeSource(source);
   if (email) {
     html = email.html || "";
     text = email.text || "";
+    excelAttachments = await collectExcelAttachments(email);
 
     if (!/<table[\s>]/i.test(html)) {
       for (const att of email.attachments || []) {
         if (att.mimeType !== "message/rfc822") continue;
-        const raw = att.content instanceof ArrayBuffer
-          ? new Uint8Array(att.content)
-          : typeof att.content === "string"
-            ? att.content
-            : null;
+        const raw = attachmentToBytes(att.content);
         if (!raw) continue;
         const nested = await parseMimeSource(raw);
         if (nested?.html && /<table[\s>]/i.test(nested.html)) {
@@ -148,7 +209,12 @@ export async function extractBodiesFromSource(
   if (!text && html) text = stripHtmlToText(html);
 
   const preview = (text || stripHtmlToText(html)).replace(/\s+/g, " ").slice(0, 500);
-  return { text: text.slice(0, 12000), html: html.slice(0, 500_000), preview };
+  return {
+    text: text.slice(0, 12000),
+    html: html.slice(0, 500_000),
+    preview,
+    excelAttachments,
+  };
 }
 
 function buildGmailFromQuery(allowlist: string[]): string {
@@ -206,7 +272,9 @@ async function messageFromFetch(
   const fromEmail = fromRaw?.address?.toLowerCase() ?? "";
   if (!fromEmail || !isSenderAllowed(fromEmail, allowlist)) return null;
 
-  const { text, html, preview } = await extractBodiesFromSource(msg.source || new Uint8Array());
+  const { text, html, preview, excelAttachments } = await extractBodiesFromSource(
+    msg.source || new Uint8Array(),
+  );
   const headers = msg.headers;
   const messageId = (headers instanceof Map
     ? headers.get("message-id")
@@ -222,6 +290,7 @@ async function messageFromFetch(
     bodyPreview: preview,
     bodyText: text,
     bodyHtml: html,
+    excelAttachments,
   };
 }
 

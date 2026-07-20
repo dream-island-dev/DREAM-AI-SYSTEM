@@ -4,7 +4,9 @@ import {
   classifyEzgoMailContent,
   defaultDoc1ParseOpts,
   parseDoc1FromClassification,
+  parseDoc1FromExcelBuffer,
   type Doc1Record,
+  type EzgoMailClassification,
 } from "../_shared/ezgoDoc1Parser.ts";
 import {
   ezgoMailSyncEnabled,
@@ -12,6 +14,7 @@ import {
   isSenderAllowed,
   parseAllowlist,
   resolveEzgoImapConfig,
+  type EzgoMailExcelAttachment,
 } from "../_shared/ezgoMailImap.ts";
 import {
   loadGuestCacheForReport,
@@ -84,6 +87,29 @@ async function assertEzgoMailStaff(
   return null;
 }
 
+async function resolveDoc1FromMessage(msg: {
+  bodyHtml: string;
+  bodyText: string;
+  excelAttachments?: EzgoMailExcelAttachment[];
+}): Promise<{ classified: EzgoMailClassification; records: Doc1Record[] }> {
+  const opts = defaultDoc1ParseOpts(true);
+  let classified = classifyEzgoMailContent(msg.bodyHtml, msg.bodyText);
+  let records = parseDoc1FromClassification(classified, opts);
+
+  if (!records.length && msg.excelAttachments?.length) {
+    for (const att of msg.excelAttachments) {
+      const parsed = await parseDoc1FromExcelBuffer(att.data, opts);
+      if (parsed.length) {
+        classified = { reportType: "doc1_excel", excelFilename: att.filename };
+        records = parsed;
+        break;
+      }
+    }
+  }
+
+  return { classified, records };
+}
+
 async function processIngest(
   supabase: ReturnType<typeof createClient>,
   msg: {
@@ -95,6 +121,7 @@ async function processIngest(
     bodyPreview: string;
     bodyText: string;
     bodyHtml: string;
+    excelAttachments?: EzgoMailExcelAttachment[];
   },
 ): Promise<{ ok: boolean; ingestId?: string; lines?: number; reason?: string }> {
   const { data: existing } = await supabase
@@ -104,8 +131,8 @@ async function processIngest(
     .maybeSingle();
   if (existing) return { ok: true, reason: "duplicate" };
 
-  const classified = classifyEzgoMailContent(msg.bodyHtml, msg.bodyText);
-  if (classified.reportType === "unknown") {
+  const { classified, records } = await resolveDoc1FromMessage(msg);
+  if (classified.reportType === "unknown" && !records.length) {
     const { data: skipped } = await supabase.from("ezgo_mail_ingest").insert({
       external_message_id: msg.id,
       from_email: msg.fromEmail,
@@ -114,13 +141,12 @@ async function processIngest(
       received_at: msg.receivedAt,
       report_type: "unknown",
       parse_status: "skipped",
-      parse_error: "לא זוהה דוח EZGO (Doc1 HTML/טבלה)",
+      parse_error: "לא זוהה דוח EZGO (Doc1 HTML/טבלה/Excel)",
       body_preview: msg.bodyPreview,
     }).select("id").maybeSingle();
     return { ok: true, ingestId: skipped?.id, reason: "unknown_format" };
   }
 
-  const records = parseDoc1FromClassification(classified, defaultDoc1ParseOpts(true));
   if (!records.length) {
     const { data: failed } = await supabase.from("ezgo_mail_ingest").insert({
       external_message_id: msg.id,

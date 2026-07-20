@@ -9527,6 +9527,8 @@
     "https://esm.sh/iceberg-js@0.8.1?target=denonext": "58c849d7fe2bf4eca4a84eb501e83c161a7d8c34ca1bec15a962b3bec3062633",
     "https://esm.sh/node-gyp-build@4.8.4/denonext/node-gyp-build.mjs": "9a86f2d044fc77bd60aaa3d697c2ba1b818da5fb1b9aaeedec59a40b8e908803",
     "https://esm.sh/node-gyp-build@4.8.4?target=denonext": "261a6cedf1fdbf159798141ba1e2311ac1510682c5c8b55dacc8cf5fdee4aa06",
+    "https://esm.sh/postal-mime@2.4.3": "b63d1945459222a1d195d6695d357be34780b68d7f08427871db31f203d208d3",
+    "https://esm.sh/postal-mime@2.4.3/denonext/postal-mime.mjs": "2fa9652d588e4f4405fe01cabb04e4e0338585d31c9cb0639a6dfb55304d7139",
     "https://esm.sh/tr46@0.0.3/denonext/tr46.mjs": "5753ec0a99414f4055f0c1f97691100f13d88e48a8443b00aebb90a512785fa2",
     "https://esm.sh/tr46@0.0.3?target=denonext": "19cb9be0f0d418a0c3abb81f2df31f080e9540a04e43b0f699bce1149cba0cbb",
     "https://esm.sh/tslib@2.8.1/denonext/tslib.mjs": "c38da5dd6da6281964435002ce204cd586634fe3bdfb24a0ee116f48cf3292e9",
@@ -9537,7 +9539,9 @@
     "https://esm.sh/whatwg-url@5.0.0/denonext/whatwg-url.mjs": "29b16d74ee72624c915745bbd25b617cfd2248c6af0f5120d131e232a9a9af79",
     "https://esm.sh/whatwg-url@5.0.0?target=denonext": "f001a2cadf81312d214ca330033f474e74d81a003e21e8c5d70a1f46dc97b02d",
     "https://esm.sh/ws@8.21.0/denonext/ws.mjs": "2123ca54b24f3afe1eaf408d9e6b39147b05cda4c3c0c7773465e44c86964671",
-    "https://esm.sh/ws@8.21.0?target=denonext": "bbe46738716c3f43e77c16cd757403a4a9e8bcca1559f405c06fe59e5b6f3de5"
+    "https://esm.sh/ws@8.21.0?target=denonext": "bbe46738716c3f43e77c16cd757403a4a9e8bcca1559f405c06fe59e5b6f3de5",
+    "https://esm.sh/xlsx@0.18.5": "feaad96c2697fd87d8d2cbf00030869f6f3cb87afc6f58c92602f1e33309dc03",
+    "https://esm.sh/xlsx@0.18.5/denonext/xlsx.mjs": "ecfb971768f8e7758bc4a4b817cd421771935a7e0d3c9819e7cdc4cbecc55dd8"
   },
   "workspace": {
     "packageJson": {
