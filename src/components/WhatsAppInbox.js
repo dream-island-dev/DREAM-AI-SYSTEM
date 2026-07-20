@@ -1247,7 +1247,7 @@ function contactItemPropsEqual(prev, next) {
   return contactUnreadCount(a, prev.readCursorsByPhone) === contactUnreadCount(b, next.readCursorsByPhone);
 }
 
-const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobile, t, lang, dir, readCursorsByPhone, onClick, onProfileClick, onDismiss, onArchive, onMarkRead, scriptsByKey, templatesByWaName }) {
+const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobile, t, lang, dir, readCursorsByPhone, onClick, onProfileClick, onDismiss, onFlag, onArchive, onMarkRead, scriptsByKey, templatesByWaName }) {
   const last  = contact.messages[contact.messages.length - 1];
   const unread = contactUnreadCount(contact, readCursorsByPhone);
 
@@ -1259,7 +1259,9 @@ const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobil
     ? "🔴 מבקש שיחת טלפון"
     : contact.humanRequestType === "guest_alert"
       ? "🔴 בקשה חדשה בלוח הבקשות"
-      : "🔴 מבקש מענה אנושי";
+      : contact.humanRequestType === "manual"
+        ? "🚩 סומן ידנית לתשומת לב"
+        : "🔴 מבקש מענה אנושי";
   const identity = identityMeta(contact, lang);
   const roomChip = roomChipMeta(contact);
   const active   = recentlyActive(contact);
@@ -1431,6 +1433,24 @@ const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobil
           {/* Right side: WA button + time + unread */}
           <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, flexShrink: 0 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              {!contact.humanRequested && (
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); onFlag?.(contact); }}
+                  title="סמן שיחה כדורשת מענה אנושי — הקפצה ידנית"
+                  aria-label="סמן שיחה כדורשת מענה אנושי"
+                  className={isMobile ? "u-touch-staff" : undefined}
+                  style={{
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    width: isMobile ? HIT_STAFF : 26, height: isMobile ? HIT_STAFF : 26, borderRadius: "50%",
+                    border: "1px solid var(--status-danger)",
+                    background: "var(--card-bg)", color: "var(--status-danger)",
+                    fontSize: 13, cursor: "pointer", flexShrink: 0, padding: 0,
+                  }}
+                >
+                  🚩
+                </button>
+              )}
               <a
                 href={`https://wa.me/${waPhone}`}
                 target="_blank"
@@ -3728,6 +3748,46 @@ export default function WhatsAppInbox({
     }
   }, [applyGrouping]);
 
+  // ── Manually flag a conversation as needing human attention ───────────────
+  // Staff-initiated "bump" — reuses the exact same human_requested/human_request_type
+  // machinery the bot uses (red row, pulsing dot, «🔴 התראות» filter, ✓ dismiss)
+  // instead of a parallel flag. groupByPhone()/groupByPhoneUnified() only honour
+  // human_requested on inbound rows (see above), so this writes to the last
+  // inbound message rather than inserting a synthetic row.
+  const flagHumanRequest = useCallback(async (contact) => {
+    const bare = contact.phone;
+    const channels = resolveContactInboxChannels(contact);
+    const channelSet = new Set(channels);
+    const lastInbound = [...contact.messages].reverse()
+      .find((m) => m.direction === "inbound" && channelSet.has(m.inbox_channel ?? "meta"));
+    if (!lastInbound?.id) {
+      setError("אין הודעה נכנסת בשיחה זו לסימון");
+      return;
+    }
+    const variants = phoneVariants(bare);
+    try {
+      const [{ error: convErr }, { error: guestErr }] = await Promise.all([
+        supabase.from("whatsapp_conversations")
+          .update({ human_requested: true, human_request_type: "manual" })
+          .eq("id", lastInbound.id),
+        supabase.from("guests")
+          .update({ needs_callback: true })
+          .in("phone", variants),
+      ]);
+      if (convErr) throw convErr;
+      if (guestErr) throw guestErr;
+
+      allMsgsRef.current = allMsgsRef.current.map((m) =>
+        m.id === lastInbound.id
+          ? { ...m, human_requested: true, human_request_type: "manual" }
+          : m
+      );
+      setContacts(applyGrouping(allMsgsRef.current));
+    } catch (e) {
+      setError("שגיאה בסימון השיחה: " + (e?.message ?? e));
+    }
+  }, [applyGrouping]);
+
   // ── Bulk dismiss — all human-request alerts in the visible roster ─────────
   const dismissAllAlerts = useCallback(async (alertContacts) => {
     if (!alertContacts.length) return;
@@ -5404,6 +5464,7 @@ export default function WhatsAppInbox({
                     onClick={openContact}
                     onProfileClick={openGuestContextDrawer}
                     onDismiss={dismissHumanRequest}
+                    onFlag={flagHumanRequest}
                     onArchive={archiveContact}
                     onMarkRead={markPhoneInboundRead}
                   />
@@ -5426,6 +5487,7 @@ export default function WhatsAppInbox({
                 onClick={openContact}
                 onProfileClick={openGuestContextDrawer}
                 onDismiss={dismissHumanRequest}
+                onFlag={flagHumanRequest}
                 onArchive={archiveContact}
                 onMarkRead={markPhoneInboundRead}
               />
