@@ -1,3 +1,4 @@
+2026-07-20 | EZGO mail IMAP — messages scope hotfix | `let messages` moved outside try block — fixes `messages is not defined` ReferenceError on scan.
 2026-07-20 | EZGO mail IMAP — Gmail fetch fix | `ezgoMailImap`: `gmailRaw from:` search + sequence scan fallback (like Orit); UID fetch as comma string; nested forward HTML extraction; API returns `imap` meta; toast shows mailbox debug when 0 hits.
 2026-07-20 | EZGO mail sync CORS + toast fix | `ezgo-mail-sync` full CORS headers + staff auth; IMAP 55s budget; `EzgoMailSyncPanel` showToast arg order fixed.
 2026-07-20 | EZGO mail senders — Hagar + tzalamnadlan primary | `parseAllowlist` always includes `hagar.mesilati@dream-island.co.il` + `tzalamnadlan@gmail.com`; IMAP `SEARCH FROM` per sender (faster); relay-only gate removed.

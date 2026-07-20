@@ -309,6 +309,8 @@ export async function fetchEzgoInboxMessages(
     afterAllowlist: 0,
   };
 
+  let messages: EzgoInboundMail[] = [];
+
   await client.connect();
   try {
     const mailbox = await client.mailboxOpen("INBOX");
@@ -318,7 +320,6 @@ export async function fetchEzgoInboxMessages(
     meta.searchMethod = method;
     meta.searchUids = uids.length;
 
-    let messages: EzgoInboundMail[] = [];
     if (uids.length > 0) {
       messages = await fetchMessagesByUidList(client, uids, allowlist, meta);
     }
