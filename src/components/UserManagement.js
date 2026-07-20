@@ -7,6 +7,11 @@ import { useState, useEffect, useCallback } from "react";
 import { supabase } from "../supabaseClient";
 import { isSuperAdmin } from "../utils/admin";
 import { DEFAULT_DEPARTMENTS, isRestaurantDepartment, RESTAURANT_DEPARTMENT } from "../data/hotelDepartments";
+import {
+  BOT_CONFIG_RESTAURANT_KIOSK_UI_KEY,
+  normalizeRestaurantKioskUi,
+  serializeRestaurantKioskUi,
+} from "../utils/restaurantKioskUi";
 
 // ── Responsive hook ───────────────────────────────────────────────────────────
 
@@ -380,6 +385,111 @@ function InviteForm({ onSubmit, onCancel, busy }) {
   );
 }
 
+// ── Restaurant shift-manager kiosk PIN (super_admin only) ────────────────────
+
+function ShiftManagerPinCard() {
+  const [kioskUi, setKioskUi] = useState(null); // full bot_config.restaurant_kiosk_ui, for read-merge-write
+  const [pin, setPin] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState(null); // { type: 'ok'|'err', msg }
+
+  useEffect(() => {
+    (async () => {
+      if (!supabase) { setLoading(false); return; }
+      const { data, error } = await supabase
+        .from("bot_config")
+        .select("config_value")
+        .eq("config_key", BOT_CONFIG_RESTAURANT_KIOSK_UI_KEY)
+        .maybeSingle();
+      if (error) {
+        setStatus({ type: "err", msg: `שגיאה בטעינת קוד מנהל משמרת: ${error.message}` });
+        setLoading(false);
+        return;
+      }
+      let raw = data?.config_value;
+      if (typeof raw === "string") {
+        try { raw = JSON.parse(raw); } catch { raw = null; }
+      }
+      const normalized = normalizeRestaurantKioskUi(raw);
+      setKioskUi(normalized);
+      setPin(normalized.shift_manager_pin);
+      setLoading(false);
+    })();
+  }, []);
+
+  const dirty = kioskUi != null && pin.trim() !== kioskUi.shift_manager_pin;
+
+  async function save() {
+    if (!supabase || !kioskUi) return;
+    setSaving(true);
+    setStatus(null);
+    const next = { ...kioskUi, shift_manager_pin: pin.trim() };
+    const { error } = await supabase
+      .from("bot_config")
+      .update({ config_value: serializeRestaurantKioskUi(next) })
+      .eq("config_key", BOT_CONFIG_RESTAURANT_KIOSK_UI_KEY);
+    setSaving(false);
+    if (error) {
+      setStatus({ type: "err", msg: `שגיאה בשמירה: ${error.message}` });
+      return;
+    }
+    setKioskUi(next);
+    setStatus({ type: "ok", msg: next.shift_manager_pin ? "✅ קוד מנהל משמרת נשמר" : "✅ הדרישה לקוד בוטלה" });
+  }
+
+  return (
+    <div className="card" style={{ marginBottom: 20, border: "1.5px solid var(--gold)" }}>
+      <div className="card-header">
+        <div className="card-title">🔐 קוד כניסה — מנהל משמרת (קיוסק מסעדה)</div>
+      </div>
+      <div style={{ padding: "16px 20px" }}>
+        <p style={{ fontSize: 13, color: "var(--text-muted)", margin: "0 0 14px", lineHeight: 1.6 }}>
+          כשמוגדר קוד, בחירת תפקיד «👔 מנהל משמרת» במסך פתיחת המשמרת בקיוסק המסעדה תדרוש אותו.
+          השאירו ריק כדי לבטל את הדרישה — אז כל מי שבוחר את התפקיד יכול להיכנס בלי קוד.
+        </p>
+        {loading ? (
+          <div style={{ fontSize: 13, color: "var(--text-muted)" }}>טוען...</div>
+        ) : (
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <input
+              type="text"
+              inputMode="numeric"
+              maxLength={8}
+              value={pin}
+              onChange={(e) => setPin(e.target.value.replace(/\s/g, ""))}
+              placeholder="ללא קוד"
+              style={{
+                padding: "10px 14px", minWidth: 160,
+                border: "1.5px solid var(--border)", borderRadius: 8,
+                fontFamily: "Heebo, sans-serif", fontSize: 15, fontWeight: 700,
+                letterSpacing: 3, textAlign: "center", outline: "none",
+                background: "var(--card-bg)", color: "var(--text-main)",
+              }}
+            />
+            <button
+              className="btn btn-primary btn-sm"
+              disabled={saving || !dirty}
+              onClick={save}
+              style={{ minWidth: 100 }}
+            >
+              {saving ? "שומר..." : "💾 שמור"}
+            </button>
+            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+              {kioskUi?.shift_manager_pin ? "קוד פעיל" : "אין קוד — הדרישה כבויה"}
+            </span>
+          </div>
+        )}
+        {status && (
+          <div style={{ marginTop: 10, fontSize: 13, fontWeight: 700, color: status.type === "ok" ? "#1A7A4A" : "#C0392B" }}>
+            {status.msg}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function UserManagement({ currentUser }) {
@@ -594,6 +704,9 @@ export default function UserManagement({ currentUser }) {
           </button>
         </div>
       </div>
+
+      {/* Shift-manager kiosk PIN — super_admin only */}
+      {canEdit && <ShiftManagerPinCard />}
 
       {/* Invite form */}
       {showInvite && (

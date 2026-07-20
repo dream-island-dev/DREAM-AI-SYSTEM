@@ -191,15 +191,20 @@ export default function BotConfigPanel({ user, onNavigate }) {
     }
     setSaving(true);
     try {
-      const rows = Object.values(config).map(item => ({
-        id:           item.id,
-        config_key:   item.config_key,
-        config_value: item.config_value,
-        category:     item.category,
-        label:        item.label,
-        updated_by:   user?.id ?? null,
-        updated_at:   new Date().toISOString(),
-      }));
+      // Only push rows this panel actually renders (persona/knowledge/rules) — other
+      // categories (e.g. restaurant_kiosk_ui) live here in `config` just because it's
+      // fetched with select("*"), and must never be blind-rewritten on an unrelated save.
+      const rows = Object.values(config)
+        .filter(item => CATEGORIES.some(c => c.id === item.category))
+        .map(item => ({
+          id:           item.id,
+          config_key:   item.config_key,
+          config_value: item.config_value,
+          category:     item.category,
+          label:        item.label,
+          updated_by:   user?.id ?? null,
+          updated_at:   new Date().toISOString(),
+        }));
 
       const { error } = await supabase
         .from("bot_config")
