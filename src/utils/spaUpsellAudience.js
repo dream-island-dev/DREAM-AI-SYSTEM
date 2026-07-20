@@ -3,7 +3,7 @@ import { GENERIC_DAY_PASS_ROOM, PREMIUM_DAY_ROOMS } from "../data/suiteRegistry"
 /** Outbound channel pins for spa upsell manual dispatch (whatsapp-send force_channel). */
 export const SPA_UPSELL_CHANNEL_WHAPI = "whapi_session";
 export const SPA_UPSELL_CHANNEL_META = "meta_template";
-export const SPA_UPSELL_META_TEMPLATE = "dream_spa_package";
+export const SPA_UPSELL_META_TEMPLATE = "spa_upsell_daypass";
 
 export const SPA_UPSELL_CHANNEL_OPTIONS = [
   {
@@ -14,14 +14,13 @@ export const SPA_UPSELL_CHANNEL_OPTIONS = [
   {
     id: SPA_UPSELL_CHANNEL_META,
     label: "🔵 Dream Bot (Meta)",
-    hint: "תבנית dream_spa_package — דורש אישור Meta",
+    hint: "תבנית spa_upsell_daypass — דורש אישור Meta",
     templateName: SPA_UPSELL_META_TEMPLATE,
   },
 ];
 
-export function previewSpaUpsellMetaTemplate(guestName) {
-  const name = String(guestName ?? "").trim() || "אורח יקר";
-  return `היי ${name} 💆\nלקראת הגעתכם למתחם, נשמח להציע לכם עיסוי מרגיע של 45 דק׳ להזמנה שלכם ב-300 ₪ לאדם בלבד (מחיר מלא 370 ₪).\nהשיבו לנו כאן וניצור עימכם קשר לצורך תיאום 🙏`;
+export function previewSpaUpsellMetaTemplate(_guestName) {
+  return `היי 💆\nלקראת הגעתכם לריזורט , נשמח להציע לכם טיפול ספא מרגיע של 45 דק׳ להזמנה שלכם במחיר מיוחד. עבורכם -300 ₪ לאדם בלבד (מחיר מלא 370 ₪).\nהשיבו לנו כאן וניצור עימכם קשר לצורך תיאום 🙏`;
 }
 
 export function isDayPassGuestForUpsell(guest) {

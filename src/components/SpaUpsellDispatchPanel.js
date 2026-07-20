@@ -179,7 +179,7 @@ export default function SpaUpsellDispatchPanel({ initialDate, onToast }) {
           </div>
           <div style={{ fontSize: 12.5, color: "#701A75", lineHeight: 1.6, maxWidth: 520 }}>
             אורחי בילוי יומי ללא טיפול ספא ביום ההגעה — שליחה ידנית או מתוזמנת.
-            בחרו ערוץ: <strong>מכשיר סוויטות</strong> (מיד) או <strong>Dream Bot</strong> (תבנית dream_spa_package).
+            בחרו ערוץ: <strong>מכשיר סוויטות</strong> (מיד) או <strong>Dream Bot</strong> (תבנית spa_upsell_daypass).
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>

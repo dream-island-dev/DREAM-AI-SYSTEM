@@ -201,9 +201,17 @@ const TEMPLATES: Template[] = [
     name: "dream_spa_warmup", category: "UTILITY", language: "he",
     components: [
       { type: "BODY",
-        text: "היי {{1}}, עוד קצת ומתחיל הטיפול המפנק שלכם בספא ({{2}}) 💆✨\n\nזה הזמן להירגע, לנשום עמוק ולהתחיל לעבור למצב פינוק. ניפגש בקרוב!",
-        example: { body_text: [["ישראל ישראלי", "11:00"]] } },
+        text: "היי {{1}}, עוד קצת ומתחיל הטיפול המפנק שלכם בספא 🧘‍♀️✨\nזה הזמן להירגע, לנשום עמוק ולהתחיל לעבור למצב פינוק. ניפגש בקרוב!",
+        example: { body_text: [["ישראל ישראלי"]] } },
     ],
+  },
+
+  // Day-pass spa upsell — manual DataSync dispatch (Dream Bot path; Whapi = bot_scripts).
+  {
+    name: "spa_upsell_daypass", category: "MARKETING", language: "he",
+    components: [{ type: "BODY",
+      text: "היי 💆\nלקראת הגעתכם לריזורט , נשמח להציע לכם טיפול ספא מרגיע של 45 דק׳ להזמנה שלכם במחיר מיוחד. עבורכם -300 ₪ לאדם בלבד (מחיר מלא 370 ₪).\nהשיבו לנו כאן וניצור עימכם קשר לצורך תיאום 🙏",
+      example: { body_text: [[]] } }],
   },
 
   // Day-pass + spa survey invite (Mike lock 2026-07-13). Body exact — no

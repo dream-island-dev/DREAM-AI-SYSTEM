@@ -39,8 +39,14 @@ Deno.test("buildTwoParamRoomVars: name + room", () => {
   if (vars[0] !== "Test" || vars[1] !== "Suite 1") throw new Error("room vars mismatch");
 });
 
-Deno.test("resolveExpectedBodyParamCount: dream_room_ready1 fallback is 1", async () => {
+Deno.test("resolveExpectedBodyParamCount: dream_spa_warmup fallback is 1", async () => {
   clearExpectedParamCountCache();
-  const count = await resolveExpectedBodyParamCount("dream_room_ready1");
-  if (count !== 1) throw new Error(`dream_room_ready1 expected 1, got ${count}`);
+  const count = await resolveExpectedBodyParamCount("dream_spa_warmup");
+  if (count !== 1) throw new Error(`dream_spa_warmup expected 1, got ${count}`);
+});
+
+Deno.test("resolveExpectedBodyParamCount: spa_upsell_daypass fallback is 0", async () => {
+  clearExpectedParamCountCache();
+  const count = await resolveExpectedBodyParamCount("spa_upsell_daypass");
+  if (count !== 0) throw new Error(`spa_upsell_daypass expected 0, got ${count}`);
 });

@@ -296,7 +296,7 @@ const PIPELINE_TEMPLATE: Record<string, string> = {
   night_before_daypass: "dream_daypass_eve",           // day-pass T-1 — QR opens Meta 24h window
   survey_invite_daypass: "dream_survey_invite",        // day-pass+spa 17:00 survey — URL btn → portal/#survey
   spa_warmup_daypass: "dream_spa_warmup",              // spa_time − X min (ACC; default 30) — Meta backup when Whapi/window fails
-  spa_upsell_daypass: "dream_spa_package",             // manual day-pass spa upsell — Meta template (Whapi = bot_scripts session)
+  spa_upsell_daypass: "spa_upsell_daypass",            // manual day-pass spa upsell — Meta template (Whapi = bot_scripts session)
 };
 
 /** Hardcoded bot_scripts keys when automation_stages.session_message_script_key
@@ -392,11 +392,8 @@ const PIPELINE_VARS: Record<string, (g: Record<string, unknown>) => string[]> = 
   checkout_fb_daypass: (g) => [String(g.name ?? "")],
   night_before_daypass: (g) => [String(g.name ?? "")],
   survey_invite_daypass: (g) => [String(g.name ?? "")],
-  spa_warmup_daypass: (g) => [
-    String(g.name ?? ""),
-    normalizeHmTime(g.spa_time) || "10:00",
-  ],
-  spa_upsell_daypass: (g) => [String(g.name ?? "")],
+  spa_warmup_daypass: (g) => [String(g.name ?? "")],
+  spa_upsell_daypass: () => [],
 };
 
 // Maps each pipeline trigger to the DB flag it atomically stamps.
@@ -525,6 +522,12 @@ const ONE_PARAM_NAME_TEMPLATES = new Set([
   "night_before_suites",
   "night_before_suites_shabbat",
   "dream_spa_package",
+  "dream_spa_warmup",
+]);
+
+/** Static-body Meta templates — no {{N}} placeholders in approved body. */
+const ZERO_PARAM_BODY_TEMPLATES = new Set([
+  "spa_upsell_daypass",
 ]);
 
 function buildNameOnlyTemplateVars(guest: Record<string, unknown>): string[] {
@@ -554,6 +557,9 @@ function ensureTemplateBodyVars(
   vars: string[],
   guest: Record<string, unknown>,
 ): string[] {
+  if (ZERO_PARAM_BODY_TEMPLATES.has(templateName)) {
+    return [];
+  }
   if (ONE_PARAM_NAME_TEMPLATES.has(templateName)) {
     return buildNameOnlyTemplateVars(guest);
   }
@@ -651,6 +657,7 @@ const TEMPLATE_NO_HEADER = new Set([
   "dream_survey_invite",
   "dream_spa_warmup",
   "dream_daypass_eve",
+  "spa_upsell_daypass",
 ]);
 
 function templateExpectsImageHeader(templateName: string): boolean {
@@ -1185,6 +1192,9 @@ function resolveTemplateVars(
   guest: Record<string, unknown>,
   templateName: string,
 ): string[] {
+  if (ZERO_PARAM_BODY_TEMPLATES.has(templateName)) {
+    return [];
+  }
   if (ONE_PARAM_NAME_TEMPLATES.has(templateName)) {
     return buildNameOnlyTemplateVars(guest);
   }
