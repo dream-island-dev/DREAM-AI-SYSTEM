@@ -26,6 +26,10 @@ import {
   getGuestDinnerSlot,
 } from "./stayMeals.ts";
 import { formatGuestDietaryBrief } from "./guestProfile.ts";
+import {
+  getAppliesToSkipReason,
+  type AppliesTo,
+} from "./automationCohort.ts";
 
 export const ISRAEL_UTC_OFFSET_HOURS = 2;
 
@@ -212,7 +216,7 @@ export function resolveEffectiveGuestStatus(
 export type ScheduleMode = "day_offset_with_time" | "hours_after_event" | "event_immediate";
 export type NodeType = "meta_template" | "session_message" | "hybrid";
 export type AnchorEvent = "arrival_date" | "departure_date" | "arrival_confirmed_at" | "checkin_time" | "spa_time";
-export type AppliesTo = "all" | "suite" | "non_suite";
+export type { AppliesTo };
 
 export interface InteractiveButton {
   type: "quick_reply" | "url";
@@ -565,12 +569,10 @@ export function checkEligibility(
   if (retryGate) return retryGate;
   if (stage.guest_flag_column && guest[stage.guest_flag_column] === true) return "already_sent";
 
-  // Effective classification (P0, session 125): room_type OR canonical suite
-  // room name — a suite-room guest mis-tagged day_guest routes as SUITE, never
-  // to day-pass stages (and vice-versa). Same truth as the UI's isSuite().
+  const appliesToSkip = getAppliesToSkipReason(stage.applies_to, stage.stage_key, guest);
+  if (appliesToSkip) return appliesToSkip;
+
   const effectiveSuite = isEffectiveSuiteGuest(guest);
-  if (stage.applies_to === "suite" && !effectiveSuite) return "wrong_room_type";
-  if (stage.applies_to === "non_suite" && effectiveSuite) return "wrong_room_type";
 
   const lifecycleBlock = assertPipelineLifecycleForTrigger(stage.stage_key, guest, now);
   if (lifecycleBlock) return lifecycleBlock;
@@ -597,34 +599,6 @@ export function checkEligibility(
         return "not_on_property";
       }
     }
-  }
-
-  // Day-pass Guest Experience Survey cohort (spa_warmup_daypass /
-  // survey_invite_daypass) — applies_to='non_suite' alone can't express the
-  // additional "has spa that day" audience narrowing; spa_date is written
-  // through from the Spa Board sync (guest_profile.spa / CLAUDE.md §2
-  // spa_board), so comparing it to the same-day visit's arrival_date is the
-  // existing source of truth, not a new join.
-  if (
-    stage.stage_key === "night_before_daypass" ||
-    stage.stage_key === "spa_warmup_daypass" ||
-    stage.stage_key === "survey_invite_daypass"
-  ) {
-    const spaDateStr = String(guest.spa_date ?? "").trim().slice(0, 10);
-    const arrivalStr = String(guest.arrival_date ?? "").trim().slice(0, 10);
-    if (!spaDateStr || spaDateStr !== arrivalStr) return "no_spa_visit_today";
-  }
-
-  // Dedupe vs. the structured survey (Mike lock, 2026-07-13): a day-pass+spa
-  // guest is survey-eligible (same spa-cohort test as the block above) and
-  // already gets survey_invite_daypass as their one post-visit touch — the
-  // older, unscoped checkout_fb_daypass would otherwise double up on them.
-  // Non-spa day-pass guests are untouched — checkout_fb_daypass stays their
-  // only feedback channel.
-  if (stage.stage_key === "checkout_fb_daypass") {
-    const spaDateStr = String(guest.spa_date ?? "").trim().slice(0, 10);
-    const arrivalStr = String(guest.arrival_date ?? "").trim().slice(0, 10);
-    if (spaDateStr && spaDateStr === arrivalStr) return "superseded_by_survey";
   }
 
   // Suite post-stay survey is event-driven from housekeeping WA "Co" — never cron.

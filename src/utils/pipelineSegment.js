@@ -22,7 +22,28 @@ export const DAYPASS_STAGE_KEYS = new Set([
   "morning_daypass",
   "mid_stay_daypass",
   "checkout_fb_daypass",
+  "spa_warmup_daypass",
+  "survey_invite_daypass",
+  "spa_upsell_daypass",
 ]);
+
+/** Legacy non_suite → daypass umbrella (mirrors automationCohort.ts). */
+export function normalizeAppliesTo(appliesTo) {
+  if (appliesTo === "non_suite") return "daypass";
+  return appliesTo ?? "all";
+}
+
+function isSuiteAppliesTo(appliesTo) {
+  const a = normalizeAppliesTo(appliesTo);
+  return a === "suite" || a === "suite_spa" || a === "suite_no_spa";
+}
+
+function isDaypassAppliesTo(appliesTo) {
+  const a = normalizeAppliesTo(appliesTo);
+  return a === "daypass" || a === "daypass_spa" || a === "daypass_no_spa";
+}
+
+export { isSuiteAppliesTo, isDaypassAppliesTo };
 
 /** Normalize room for registry lookup (geresh variants). */
 export function normalizeSuiteRoomName(room) {
@@ -69,8 +90,9 @@ export function resolveGuestPipelineSegment(guest) {
 
 export function classifyStagePipelineSegment(stageKey, appliesTo) {
   if (SHARED_STAGE_KEYS.has(stageKey)) return "shared";
-  if (SUITE_STAGE_KEYS.has(stageKey) || appliesTo === "suite") return "suite";
-  if (DAYPASS_STAGE_KEYS.has(stageKey) || appliesTo === "non_suite") return "daypass";
+  const at = normalizeAppliesTo(appliesTo);
+  if (SUITE_STAGE_KEYS.has(stageKey) || isSuiteAppliesTo(at)) return "suite";
+  if (DAYPASS_STAGE_KEYS.has(stageKey) || isDaypassAppliesTo(at)) return "daypass";
   return "other";
 }
 

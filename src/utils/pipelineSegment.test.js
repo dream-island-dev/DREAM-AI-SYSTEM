@@ -68,5 +68,7 @@ describe("pipelineSegment", () => {
   test("classify by applies_to fallback", () => {
     expect(classifyStagePipelineSegment("custom_stage", "suite")).toBe("suite");
     expect(classifyStagePipelineSegment("custom_stage", "non_suite")).toBe("daypass");
+    expect(classifyStagePipelineSegment("custom_stage", "daypass_spa")).toBe("daypass");
+    expect(classifyStagePipelineSegment("custom_stage", "suite_no_spa")).toBe("suite");
   });
 });

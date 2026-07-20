@@ -46,6 +46,10 @@ import {
   RETRY_LOOKBACK_HOURS,
   type RetryState,
 } from "../_shared/automationRetryGate.ts";
+import {
+  pipelineSegmentFromAppliesTo,
+  stageAppliesToGuestPipeline,
+} from "../_shared/automationCohort.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -243,12 +247,8 @@ Deno.serve(async (req: Request) => {
     };
 
     /** Hard pipeline gate — never surface the wrong journey in Live Queue. */
-    const stageMatchesGuestPipeline = (stage: AutomationStage, guest: GuestForSchedule): boolean => {
-      const effectiveSuite = isEffectiveSuiteGuest(guest);
-      if (stage.applies_to === "suite") return effectiveSuite;
-      if (stage.applies_to === "non_suite") return !effectiveSuite;
-      return true;
-    };
+    const stageMatchesGuestPipeline = (stage: AutomationStage, guest: GuestForSchedule): boolean =>
+      stageAppliesToGuestPipeline(stage.applies_to, guest);
 
     const queue: Record<string, unknown>[] = [];
     for (const stage of stages) {
@@ -308,11 +308,7 @@ Deno.serve(async (req: Request) => {
           departureDate: (guest as Record<string, unknown>).departure_date ?? null,
           stageKey: stage.stage_key,
           appliesTo: stage.applies_to,
-          pipelineSegment: stage.applies_to === "suite"
-            ? "suite"
-            : stage.applies_to === "non_suite"
-            ? "daypass"
-            : "shared",
+          pipelineSegment: pipelineSegmentFromAppliesTo(stage.applies_to),
           sequenceOrder: stage.sequence_order ?? 999,
           displayName: stage.display_name,
           journeyPhase: stage.journey_phase,

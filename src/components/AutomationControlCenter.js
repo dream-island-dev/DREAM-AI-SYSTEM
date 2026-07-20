@@ -32,6 +32,8 @@ import {
   filterQueueItemsForGuest,
   partitionGuestQueueItems,
   resolveGuestPipelineSegment,
+  isSuiteAppliesTo,
+  isDaypassAppliesTo,
 } from "../utils/pipelineSegment";
 import { scriptKeyFriendly, isGarbledDbText, BOT_SCRIPT_FRIENDLY } from "../utils/botScriptLabels";
 import WhapiEmergencyBroadcastPanel from "./WhapiEmergencyBroadcastPanel";
@@ -54,7 +56,16 @@ const NODE_TYPE_META = {
   hybrid:          { label: "היברידי — סשן או תבנית", bg: "#F3F0FF", color: "#7C3AED" },
 };
 
-const APPLIES_TO_LABELS = { all: "כל האורחים", suite: "סוויטות בלבד", non_suite: "לא-סוויטות" };
+const APPLIES_TO_LABELS = {
+  all: "כל האורחים",
+  suite: "סוויטות (כל)",
+  suite_spa: "סוויטות עם טיפול ספא",
+  suite_no_spa: "סוויטות בלי טיפול ספא",
+  daypass: "בילוי יומי (כל)",
+  daypass_spa: "בילוי יומי עם טיפול ספא",
+  daypass_no_spa: "בילוי יומי בלי טיפול ספא",
+  non_suite: "בילוי יומי (כל) — legacy",
+};
 
 // Pipeline grouping for Timeline tab — mirrors migration 094/099 bifurcation.
 const SHARED_STAGE_KEYS = new Set(["pre_arrival_2d", "stage_2_arrival", "stage_2_pay"]);
@@ -63,6 +74,7 @@ const SUITE_PIPELINE_KEYS = new Set([
 ]);
 const DAYPASS_PIPELINE_KEYS = new Set([
   "night_before_daypass", "morning_welcome", "mid_stay_daypass", "checkout_fb_daypass",
+  "spa_warmup_daypass", "survey_invite_daypass", "spa_upsell_daypass",
 ]);
 
 // Must stay in sync with CORE_PIPELINE_STAGE_KEYS in automationSchedule.ts.
@@ -633,8 +645,8 @@ function mergeQueueWithStages(queue, stages) {
 
 function classifyStagePipeline(stage) {
   if (SHARED_STAGE_KEYS.has(stage.stage_key)) return "shared";
-  if (DAYPASS_PIPELINE_KEYS.has(stage.stage_key) || stage.applies_to === "non_suite") return "daypass";
-  if (SUITE_PIPELINE_KEYS.has(stage.stage_key) || stage.applies_to === "suite") return "suite";
+  if (DAYPASS_PIPELINE_KEYS.has(stage.stage_key) || isDaypassAppliesTo(stage.applies_to)) return "daypass";
+  if (SUITE_PIPELINE_KEYS.has(stage.stage_key) || isSuiteAppliesTo(stage.applies_to)) return "suite";
   return "other";
 }
 
