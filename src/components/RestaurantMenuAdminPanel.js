@@ -112,7 +112,7 @@ export default function RestaurantMenuAdminPanel({ user, onToast }) {
         <div>
           <div style={{ fontWeight: 800, fontSize: 14, color: "#9A7209" }}>📋 ניהול תפריט (מנהל משמרת)</div>
           <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}>
-            התפריט כאן = מה שהמלצר רואה ב«בחרו מנות». סנכרון מאתר או ייבוא AI → פרסום.
+            התפריט כאן = מה שהמלצר רואה ב«בחרו מנות». עריכה ידנית לתפריט הרגיל, AI לתפריט ספיישל.
           </div>
         </div>
         <button
@@ -160,12 +160,9 @@ export default function RestaurantMenuAdminPanel({ user, onToast }) {
         </div>
       )}
 
-      <RestaurantMenuImportPanel
-        user={user}
-        menuKind={menuKind}
-        onToast={onToast}
-        onApplied={load}
-      />
+      {menuKind === "special" && (
+        <RestaurantMenuImportPanel onToast={onToast} onApplied={load} />
+      )}
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
         <input
@@ -206,7 +203,9 @@ export default function RestaurantMenuAdminPanel({ user, onToast }) {
 
       {allItems.length === 0 ? (
         <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
-          אין מנות בטיוטה — סנכרנו מאתר או העלו תמונה/PDF ולחצו פרסום.
+          {menuKind === "special"
+            ? "אין מנות בטיוטה — צלמו/העלו תפריט ספיישל למעלה ולחצו «החל על טיוטה»."
+            : "אין מנות בטיוטה — הוסיפו מנה למעלה."}
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>

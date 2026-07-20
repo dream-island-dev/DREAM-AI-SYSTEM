@@ -1,8 +1,7 @@
-// AI menu import helpers — normalize Gemini output + apply to draft version.
+// AI menu import helpers — special menu from photo/PDF/doc → normalize → apply to draft.
+// Standard menu is seeded once (migration 260) and edited manually in ניהול תפריט.
 
 import { supabase } from "../supabaseClient";
-import { ARMONIM_EXTERNAL_MENU_URL } from "./restaurantKioskUi";
-import { publishRestaurantDraft } from "./restaurantMenu";
 
 const VALID_COURSES = new Set(["starter", "main", "dessert", "drink", "kids", "side", "other"]);
 
@@ -77,15 +76,7 @@ export async function invokeRestaurantMenuImport(payload) {
   return data;
 }
 
-export async function syncMenuFromWebsite(menuKind = "standard") {
-  return invokeRestaurantMenuImport({
-    mode: "website",
-    menu_kind: menuKind,
-    website_url: ARMONIM_EXTERNAL_MENU_URL,
-  });
-}
-
-export async function ensureDraftForImport(menuKind = "standard") {
+export async function ensureDraftForImport(menuKind = "special") {
   if (!supabase) throw new Error("לא מחובר");
 
   const label = menuKind === "special"
@@ -166,26 +157,4 @@ export async function replaceDraftMenuContent(versionId, sections) {
 
   const itemCount = normalized.reduce((n, s) => n + s.items.length, 0);
   return { sections: normalized.length, items: itemCount };
-}
-
-/** Website sync → draft → optional publish in one flow (manager setup). */
-export async function importWebsiteMenuAndApply(menuKind = "standard", userId = null) {
-  const data = await syncMenuFromWebsite(menuKind);
-  const sections = normalizeParsedMenuSections(data.menu?.sections ?? []);
-  if (!sections.length) throw new Error("לא נמצאו מנות באתר");
-
-  const version = await ensureDraftForImport(menuKind);
-  const stats = await replaceDraftMenuContent(version.id, sections);
-
-  if (userId) {
-    await publishRestaurantDraft(version.id, userId, menuKind);
-  }
-
-  return {
-    sections: stats.sections,
-    items: stats.items,
-    warnings: data.menu?.warnings ?? [],
-    published: Boolean(userId),
-    versionId: version.id,
-  };
 }

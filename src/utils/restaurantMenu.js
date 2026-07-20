@@ -104,11 +104,49 @@ export async function fetchDraftRestaurantMenuVersion(menuKind = "standard") {
       .maybeSingle();
     if (createErr) return { version: null, sections: [], error: createErr.message };
     version = created;
-    await supabase.from("restaurant_menu_sections").insert({
-      version_id: version.id,
-      name: "עיקריות",
-      sort_order: 10,
-    });
+
+    // Editing a menu that only exists as published (e.g. the seeded standard menu) —
+    // clone its current content into the new draft so admins edit real data, not a blank slate.
+    const { data: published } = await supabase
+      .from("restaurant_menu_versions")
+      .select("id")
+      .eq("status", "published")
+      .eq("menu_kind", menuKind)
+      .maybeSingle();
+
+    if (published?.id) {
+      const { data: pubSections } = await supabase
+        .from("restaurant_menu_sections")
+        .select("id, name, sort_order, is_active")
+        .eq("version_id", published.id)
+        .order("sort_order", { ascending: true });
+
+      for (const sec of pubSections ?? []) {
+        const { data: newSec } = await supabase
+          .from("restaurant_menu_sections")
+          .insert({ version_id: version.id, name: sec.name, sort_order: sec.sort_order, is_active: sec.is_active })
+          .select("id")
+          .maybeSingle();
+        if (!newSec?.id) continue;
+
+        const { data: pubItems } = await supabase
+          .from("restaurant_menu_items")
+          .select("name, description, price, course, allergens, tags, is_available, sort_order")
+          .eq("section_id", sec.id);
+
+        if (pubItems?.length) {
+          await supabase.from("restaurant_menu_items").insert(
+            pubItems.map((i) => ({ ...i, section_id: newSec.id })),
+          );
+        }
+      }
+    } else {
+      await supabase.from("restaurant_menu_sections").insert({
+        version_id: version.id,
+        name: "עיקריות",
+        sort_order: 10,
+      });
+    }
   }
 
   const { data: sections, error: secErr } = await supabase

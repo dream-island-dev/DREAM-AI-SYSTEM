@@ -1,4 +1,5 @@
-// AI menu import UI — website sync, camera/upload, special menu, review before draft apply.
+// AI special-menu import — camera/upload, AI parses, manager reviews before draft apply.
+// Standard menu is seeded once and edited manually — no live website fetch here.
 
 import { useCallback, useRef, useState } from "react";
 import { supabase } from "../supabaseClient";
@@ -8,15 +9,12 @@ import {
   arrayBufferToBase64,
   ensureDraftForImport,
   extractDocxText,
-  importWebsiteMenuAndApply,
   invokeRestaurantMenuImport,
   normalizeParsedMenuSections,
   replaceDraftMenuContent,
-  syncMenuFromWebsite,
 } from "../utils/restaurantMenuImport";
-import { MENU_KIND_LABELS } from "../utils/restaurantMenu";
 
-export default function RestaurantMenuImportPanel({ user, menuKind = "standard", onApplied, onToast }) {
+export default function RestaurantMenuImportPanel({ onApplied, onToast }) {
   const fileRef = useRef(null);
   const cameraRef = useRef(null);
   const [busy, setBusy] = useState(false);
@@ -30,7 +28,7 @@ export default function RestaurantMenuImportPanel({ user, menuKind = "standard",
     setSummary(null);
   };
 
-  const handleParsed = (data) => {
+  const handleParsed = useCallback((data) => {
     const sections = normalizeParsedMenuSections(data.menu?.sections ?? []);
     if (!sections.length) {
       onToast?.("err", "לא נמצאו מנות בניתוח");
@@ -40,41 +38,7 @@ export default function RestaurantMenuImportPanel({ user, menuKind = "standard",
     setWarnings(data.menu?.warnings ?? []);
     setSummary(data.summary ?? null);
     onToast?.("ok", `נותחו ${sections.length} קטגוריות · ${data.summary?.items ?? "?"} מנות — בדקו ואשרו`);
-  };
-
-  const runWebsiteSync = async () => {
-    setBusy(true);
-    resetPreview();
-    try {
-      const data = await syncMenuFromWebsite(menuKind);
-      handleParsed(data);
-    } catch (e) {
-      onToast?.("err", e?.message ?? "שגיאה בסנכרון מהאתר");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const runWebsiteSyncAndPublish = async () => {
-    if (menuKind !== "standard") {
-      onToast?.("err", "סנכרון מאתר זמין רק לתפריט רגיל");
-      return;
-    }
-    setBusy(true);
-    resetPreview();
-    try {
-      const result = await importWebsiteMenuAndApply("standard", user?.id);
-      onToast?.("ok", `פורסם למלצרים: ${result.items} מנות מ-${result.sections} קטגוריות`);
-      if (result.warnings?.length) {
-        onToast?.("err", result.warnings[0]);
-      }
-      onApplied?.();
-    } catch (e) {
-      onToast?.("err", e?.message ?? "שגיאה בסנכרון ופרסום");
-    } finally {
-      setBusy(false);
-    }
-  };
+  }, [onToast]);
 
   const processFile = useCallback(async (file) => {
     if (!file || !supabase) return;
@@ -104,7 +68,7 @@ export default function RestaurantMenuImportPanel({ user, menuKind = "standard",
 
       const data = await invokeRestaurantMenuImport({
         mode: "upload",
-        menu_kind: menuKind,
+        menu_kind: "special",
         fileName: file.name,
         mimeType: isText ? "text/plain" : mime,
         content,
@@ -116,7 +80,7 @@ export default function RestaurantMenuImportPanel({ user, menuKind = "standard",
     } finally {
       setBusy(false);
     }
-  }, [menuKind, onToast]);
+  }, [handleParsed, onToast]);
 
   const onFileChange = (e) => {
     const file = e.target.files?.[0];
@@ -128,9 +92,9 @@ export default function RestaurantMenuImportPanel({ user, menuKind = "standard",
     if (!preview?.length) return;
     setBusy(true);
     try {
-      const version = await ensureDraftForImport(menuKind);
+      const version = await ensureDraftForImport("special");
       const stats = await replaceDraftMenuContent(version.id, preview);
-      onToast?.("ok", `הוחל על טיוטה: ${stats.sections} קטגוריות, ${stats.items} מנות — לחצו «פרסם»`);
+      onToast?.("ok", `הוחל על טיוטת ספיישל: ${stats.sections} קטגוריות, ${stats.items} מנות — לחצו «פרסם»`);
       resetPreview();
       onApplied?.();
     } catch (e) {
@@ -141,7 +105,6 @@ export default function RestaurantMenuImportPanel({ user, menuKind = "standard",
   };
 
   const previewItems = preview?.flatMap((s) => s.items.map((i) => ({ ...i, sectionName: s.name }))) ?? [];
-  const kindLabel = MENU_KIND_LABELS[menuKind] ?? menuKind;
 
   return (
     <div style={{
@@ -149,49 +112,17 @@ export default function RestaurantMenuImportPanel({ user, menuKind = "standard",
       border: "1px solid rgba(0,128,128,0.25)", background: "rgba(0,128,128,0.05)",
     }}>
       <div style={{ fontWeight: 800, fontSize: 14, color: "#006666", marginBottom: 4 }}>
-        ✨ ייבוא תפריט חכם — {kindLabel}
+        ✨ תפריט ספיישל חכם (AI)
       </div>
       <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "0 0 12px", lineHeight: 1.5 }}>
-        {menuKind === "standard"
-          ? "סנכרון מאתר ערמונים (אחד-לאחד) או העלאת קובץ — יופיע בטאב הזמנה אחרי פרסום."
-          : "צלמו או העלו תפריט ספיישל — AI מנתח → פרסום → המלצרים יכולים לעבור ל«תפריט ספיישל»."}
+        צלמו את התפריט הכתוב, או העלו PDF / תמונה / מסמך — הבינה מנתחת ומרכיבה תפריט מובנה לבדיקה.
       </p>
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
-        {menuKind === "standard" && (
-          <>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={runWebsiteSyncAndPublish}
-              style={{ ...actionBtnStyle, background: "#1A7A4A", color: "#fff", border: "none" }}
-            >
-              {busy ? "מנתח…" : "⚡ סנכרן מאתר ופרסם למלצרים"}
-            </button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={runWebsiteSync}
-              style={actionBtnStyle}
-            >
-              🌐 תצוגה מקדימה מהאתר
-            </button>
-          </>
-        )}
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => cameraRef.current?.click()}
-          style={actionBtnStyle}
-        >
+        <button type="button" disabled={busy} onClick={() => cameraRef.current?.click()} style={actionBtnStyle}>
           📷 צלם תפריט
         </button>
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => fileRef.current?.click()}
-          style={actionBtnStyle}
-        >
+        <button type="button" disabled={busy} onClick={() => fileRef.current?.click()} style={actionBtnStyle}>
           📄 העלה קובץ
         </button>
       </div>
@@ -211,6 +142,10 @@ export default function RestaurantMenuImportPanel({ user, menuKind = "standard",
         style={{ display: "none" }}
         onChange={onFileChange}
       />
+
+      {busy && !preview && (
+        <div style={{ fontSize: 12, color: "#006666" }}>מנתח...</div>
+      )}
 
       {summary && (
         <div style={{ fontSize: 12, color: "#006666", marginBottom: 8 }}>
