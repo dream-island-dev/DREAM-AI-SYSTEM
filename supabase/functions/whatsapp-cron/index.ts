@@ -50,6 +50,7 @@ import { managerMailEnabled } from "../_shared/oritAgentMail.ts";
 import { runSigalUrgentComplaintLoop } from "../_shared/oritAgentWorkflow.ts";
 import { dispatchDueOritScheduledSends } from "../_shared/oritScheduleSend.ts";
 import { dispatchDueSpaUpsellScheduledTasks } from "../_shared/spaUpsellSchedule.ts";
+import { ezgoMailSyncEnabled } from "../_shared/ezgoMailImap.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -580,6 +581,26 @@ Deno.serve(async (req: Request) => {
       }
     } catch (spaSchedErr) {
       console.warn("[whatsapp-cron] spa upsell schedule dispatch failed (non-blocking):", (spaSchedErr as Error).message);
+    }
+
+    // ── EZGO mail ingest (Doc1 from Gmail) — every cron tick ──
+    if (ezgoMailSyncEnabled()) {
+      try {
+        const ezgoMailRes = await fetch(`${supabaseUrl}/functions/v1/ezgo-mail-sync`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!}`,
+            "Content-Type": "application/json",
+          },
+          body: "{}",
+        });
+        const ezgoMailJson = await ezgoMailRes.json().catch(() => ({}));
+        if (ezgoMailJson?.processed > 0) {
+          console.log(`[whatsapp-cron] ezgo-mail-sync processed=${ezgoMailJson.processed}`);
+        }
+      } catch (ezgoMailErr) {
+        console.warn("[whatsapp-cron] ezgo-mail-sync failed (non-blocking):", (ezgoMailErr as Error).message);
+      }
     }
 
     // ── Sigal urgent-complaint loop (Orit CS) — every cron tick ~15min ──

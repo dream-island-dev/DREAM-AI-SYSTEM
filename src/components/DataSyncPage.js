@@ -8,10 +8,12 @@ import ActivitiesImportZone from "./spa/ActivitiesImportZone";
 import SmartPastePanel from "./SmartPastePanel";
 import SpaUpsellDispatchPanel from "./SpaUpsellDispatchPanel";
 import DayPassRoomBulkFixPanel from "./DayPassRoomBulkFixPanel";
+import EzgoMailSyncPanel from "./EzgoMailSyncPanel";
 import { israelTodayYmd } from "../utils/spaUpsellAudience";
 
 const TABS = [
   { id: "import", label: "📥 ייבוא דוחות", hint: "Doc 1/2, Smart Paste, פעילויות ספא" },
+  { id: "ezgo_mail", label: "📧 מייל EZGO", hint: "דוחות מהגר — אישור ידני" },
   { id: "spa_upsell", label: "💆 הצעת ספא — בילוי יומי", hint: "שליחה לאורחים ללא טיפול" },
 ];
 
@@ -160,6 +162,10 @@ export default function DataSyncPage() {
           <SmartPastePanel showToast={showToast} />
           <SpaActivitiesSyncSection />
         </>
+      )}
+
+      {activeTab === "ezgo_mail" && (
+        <EzgoMailSyncPanel showToast={showToast} />
       )}
 
       {activeTab === "spa_upsell" && (

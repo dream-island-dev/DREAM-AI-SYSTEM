@@ -155,6 +155,7 @@
         "npm:@supabase/supabase-js@^2.45.0",
         "npm:ajv@^8.17.1",
         "npm:mammoth@^1.12.0",
+        "npm:qrcode@^1.5.4",
         "npm:react-dom@19",
         "npm:react-markdown@^9.0.1",
         "npm:react-scripts@5",
