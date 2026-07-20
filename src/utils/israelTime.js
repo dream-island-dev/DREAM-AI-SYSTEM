@@ -29,6 +29,32 @@ export function israelTodayYmd() {
   return israelYmdFromIso(new Date().toISOString());
 }
 
+/** Tomorrow's calendar date YYYY-MM-DD in Israel. */
+export function israelTomorrowYmd() {
+  return israelAddDaysYmd(1);
+}
+
+/** Add N calendar days to a YYYY-MM-DD string (Israel calendar). */
+export function israelAddDaysYmd(days, baseYmd = null) {
+  const base = baseYmd || israelTodayYmd();
+  const [y, m, d] = String(base).split("-").map(Number);
+  if (!y || !m || !d) return base;
+  const utc = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+  utc.setUTCDate(utc.getUTCDate() + days);
+  return israelYmdFromIso(utc.toISOString()) || base;
+}
+
+/**
+ * Default schedule date for missed-window / late-import queue rows —
+ * never returns a past date (uses tomorrow when projected/arrival already passed).
+ */
+export function futureScheduleDateYmd(item, todayYmd = israelTodayYmd) {
+  const today = typeof todayYmd === "function" ? todayYmd() : todayYmd;
+  const resolved = resolveQueueScheduleDateYmd(item, () => today);
+  if (resolved >= today) return resolved;
+  return israelTomorrowYmd();
+}
+
 /** YYYY-MM-DD in Israel for an ISO instant (queue schedule date picker default). */
 export function israelYmdFromIso(isoString) {
   if (!isoString) return "";

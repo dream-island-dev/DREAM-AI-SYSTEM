@@ -26,7 +26,7 @@ import ScheduledOverrideConfirmModal from "./ScheduledOverrideConfirmModal";
 import QueueBulkScheduleModal from "./QueueBulkScheduleModal";
 import QuietHoursGate from "./QuietHoursGate";
 import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
-import { formatIsraelDateTime, isFutureScheduledQueueItem } from "../utils/israelTime";
+import { formatIsraelDateTime, isFutureScheduledQueueItem, israelTomorrowYmd } from "../utils/israelTime";
 import { isSendWindowInvalid, normalizeStageTimingPatch } from "../utils/sendWindow";
 import {
   filterQueueItemsForGuest,
@@ -2032,8 +2032,15 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
   // Meta bulk-send above, switched to force_channel="whapi_session" per item.
   const [dispatchViaWhapi, setDispatchViaWhapi] = useState(false);
   const [showScheduleModal, setShowScheduleModal] = useState(false);
+  const [scheduleInitial, setScheduleInitial] = useState(null);
   const [scheduling, setScheduling] = useState(false);
   const [scheduleError, setScheduleError] = useState(null);
+
+  const openScheduleModal = useCallback((preset = null) => {
+    setScheduleError(null);
+    setScheduleInitial(preset);
+    setShowScheduleModal(true);
+  }, []);
 
   // ── Opt-in automation: bulk unmute after import ───────────────────────────
   const [mutedGuests, setMutedGuests] = useState([]);
@@ -2668,6 +2675,7 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
       const count = typeof data === "number" ? data : payload.length;
       showToast("ok", `📅 נשמר תזמון ל-${count} הודעות — ה-cron ישלח בזמן`);
       setShowScheduleModal(false);
+      setScheduleInitial(null);
       setSelectedItems(new Set());
       fetchQueue();
     } catch (err) {
@@ -2911,13 +2919,17 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
 
             {showScheduleModal && (
               <QueueBulkScheduleModal
+                key={scheduleInitial ? `${scheduleInitial.date}_${scheduleInitial.time}` : "default"}
                 items={displayQueue.filter((q) => selectedItems.has(`${q.guestId}_${q.stageKey}`))}
                 dayLabels={Object.fromEntries(arrivalDayGroups.map((d) => [d.dateKey, d.label]))}
+                initialDate={scheduleInitial?.date}
+                initialTime={scheduleInitial?.time}
                 saving={scheduling}
                 error={scheduleError}
                 onClose={() => {
                   if (!scheduling) {
                     setShowScheduleModal(false);
+                    setScheduleInitial(null);
                     setScheduleError(null);
                   }
                 }}
@@ -3963,15 +3975,21 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                 </span>
                 <button
                   className="btn btn-primary"
-                  onClick={() => {
-                    setScheduleError(null);
-                    setShowScheduleModal(true);
-                  }}
+                  onClick={() => openScheduleModal({ date: israelTomorrowYmd(), time: "08:00" })}
                   disabled={dispatching || scheduling}
                   style={{ minWidth: 150, background: "var(--gold-dark)", borderColor: "var(--gold-dark)" }}
-                  title="שמור שעות שליחה — ה-cron ישלח אוטומטית"
+                  title="תזמן לכל הנבחרים — ברירת מחדל מחר 08:00"
                 >
-                  📅 תזמן שליחה
+                  🌅 מחר בבוקר
+                </button>
+                <button
+                  className="btn btn-ghost"
+                  onClick={() => openScheduleModal()}
+                  disabled={dispatching || scheduling}
+                  style={{ minWidth: 130 }}
+                  title="בחר תאריך ושעה מותאמים"
+                >
+                  📅 שעה אחרת
                 </button>
                 <button
                   className="btn btn-primary"
