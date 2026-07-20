@@ -416,6 +416,11 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
+### 2026-07-20 — `supabase functions deploy` bundles the disk, not git — uncommitted `_shared` changes ride along silently
+- **Symptom:** Deploying `whapi-webhook` for an unrelated feature (spa upsell offer) also uploaded `_shared/oritGuestOutbound.ts`, `oritAgentOritDecision.ts`, and `oritAgentAi.ts` — files with substantial uncommitted edits from a prior, unfinished session (96 insertions / 55 deletions), because `whapi-webhook` imports them.
+- **Root:** The CLI reads the current working tree, not `git status` or `HEAD` — every transitive `_shared` import gets bundled regardless of commit state. There is no warning when a deploy target's dependency graph includes dirty files unrelated to the task at hand.
+- **Fix pattern:** Before deploying any function, check `git status` for modified `_shared/*` files and, if any appear that aren't part of the current task, flag them to Mike explicitly rather than deploying silently — he may want to review/revert them first. `git stash`-ing unrelated dirty files before a deploy (then popping after) is the safe move when the risk is real; for low-risk/legible diffs, disclosure after the fact is the minimum bar.
+
 ### 2026-07-20 — A settings panel that `select("*")`s a table must never blind-upsert the whole map back
 - **Symptom found while scoping a fix, not from a bug report:** `BotConfigPanel.js` fetches every `bot_config` row (`select("*")`, all categories) into one `config` map so it can render three tabs, but `handleSave` re-upserted `Object.values(config)` — every row, including categories the panel never displays (e.g. `restaurant_kiosk_ui`, `guest_club_ui`). Any admin saving Persona/Knowledge/Rules silently rewrote unrelated settings rows with their already-loaded (usually unchanged) values.
 - **Why it mattered here:** adding a RESTRICTIVE RLS policy to lock one `config_key` to `super_admin` only (migration 262, shift-manager kiosk PIN) would have broken every `admin`-role save in this panel, since the batched upsert statement fails atomically if RLS rejects any single row in it.
