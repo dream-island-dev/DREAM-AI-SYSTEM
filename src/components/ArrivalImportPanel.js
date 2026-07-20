@@ -44,6 +44,7 @@ import PriceDiscrepancyModal from "./PriceDiscrepancyModal";
 import { isSuiteGuestProfile } from "../utils/guestTiming";
 import { validateSuiteProfilesDeparture, ensureMissingDepartureAlert } from "../utils/departureDateGuard";
 import { resolveEzgoHtmlFromUpload, looksLikeEml } from "../utils/ezgoEmailHtml";
+import { isSpaUpsellEligible } from "../utils/spaUpsellAudience";
 
 // Sorted, joined header signature — matches import_mapping_memory.header_signature (migration 049).
 // Not a hash: exact string equality is enough here and avoids a client-side hash dependency.
@@ -1102,7 +1103,7 @@ function DropZone({ label, hint, loaded, fileName, onFile, inputRef, optional, a
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
+export default function ArrivalImportPanel({ defaultOpen = false, onSpaUpsellNavigate } = {}) {
   const [open,     setOpen]     = useState(defaultOpen);
   const [tab,      setTab]      = useState("suites"); // "suites" | "shifts"
 
@@ -1149,13 +1150,6 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
   const [daypassCreateSelected, setDaypassCreateSelected] = useState(new Set());
   const [daypassCreating, setDaypassCreating] = useState(false);
   const [daypassCreateError, setDaypassCreateError] = useState(null);
-  // Day-pass guests (existing + just-created) with no spa booked today — the
-  // audience for the manual "Send Offer Now" spa upsell dispatch.
-  const [spaUpsellCandidates, setSpaUpsellCandidates] = useState([]);
-  const [spaUpsellSelected, setSpaUpsellSelected] = useState(new Set());
-  const [spaUpsellSending, setSpaUpsellSending] = useState(false);
-  const [spaUpsellProgress, setSpaUpsellProgress] = useState(null);
-  const [spaUpsellSummary, setSpaUpsellSummary] = useState(null);
   const doc2Ref = useRef();
   const doc1Ref = useRef();
   const mappingReviewRef = useRef(null);
@@ -2332,7 +2326,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
         } else {
         const allPhones = doc1Rec.filter(r => r.phone).map(r => r.phone);
         let updated = 0, skipped = 0;
-        const upsellCandidates = [];
+        let upsellCount = 0;
         const daypassCandidates = [];
 
         if (allPhones.length > 0) {
@@ -2363,15 +2357,14 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
               const { error } = await supabase.from("guests").update(patch).eq("phone", rec.phone);
               if (!error) updated++; else skipped++;
 
-              // Spa upsell audience: day-pass guest, no spa booked today (this
-              // report didn't carry a spa_time AND the existing row's spa_date
-              // isn't today either), not cancelled, offer not sent yet.
               const recArrival = rec.arrival_date || existing.arrival_date || arrivalDate;
-              const isDayPass = (existing.room_type === "day_guest" || existing.room_type === "premium_day_guest")
-                && !!existing.room;
-              const hasSpaToday = !!rec.spa_time || (!!existing.spa_date && existing.spa_date === recArrival);
-              if (isDayPass && !hasSpaToday && !existing.msg_spa_upsell_sent && existing.status !== "cancelled") {
-                upsellCandidates.push({ id: existing.id, name: rec.guest_name || existing.name, phone: rec.phone });
+              if (
+                isSpaUpsellEligible(
+                  { ...existing, spa_time: rec.spa_time || existing.spa_time, spa_date: rec.spa_time ? (rec.arrival_date || existing.spa_date) : existing.spa_date },
+                  recArrival,
+                )
+              ) {
+                upsellCount++;
               }
             } else if (!rec.spa_time) {
               // No existing profile AND no spa this visit — candidate for a
@@ -2387,11 +2380,9 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
         } else {
           skipped = doc1Rec.length;
         }
-        setSpaUpsellCandidates(upsellCandidates);
-        setSpaUpsellSelected(new Set(upsellCandidates.map(c => c.id)));
         setDaypassCreateCandidates(daypassCandidates);
         setDaypassCreateSelected(new Set(daypassCandidates.map((_, i) => i)));
-        setResult({ mode: "spa", updated, skipped, upsellCount: upsellCandidates.length, daypassCandidateCount: daypassCandidates.length });
+        setResult({ mode: "spa", updated, skipped, upsellCount, daypassCandidateCount: daypassCandidates.length, arrivalDate });
         }
       }
 
@@ -2499,9 +2490,7 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
         }
       }
       if (created.length > 0) {
-        setSpaUpsellCandidates((prev) => [...prev, ...created]);
-        setSpaUpsellSelected((prev) => new Set([...prev, ...created.map((g) => g.id)]));
-        showToast("ok", `☀️ נוצרו ${created.length} פרופילי בילוי יומי`);
+        showToast("ok", `☀️ נוצרו ${created.length} פרופילי בילוי יומי — עברו ללשונית «הצעת ספא» לשליחה`);
       }
       setDaypassCreateCandidates((prev) => prev.filter((_, i) => !daypassCreateSelected.has(i)));
       setDaypassCreateSelected(new Set());
@@ -2510,63 +2499,6 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     } finally {
       setDaypassCreating(false);
     }
-  };
-
-  // ── Spa upsell offer — manual dispatch only (day-pass Whapi automation is
-  // permanently disabled for ban-prevention, migration 205) — same
-  // force_channel="whapi_session" escape hatch as AutomationControlCenter's
-  // manual dispatch, paced at the same 2.5s cadence as whatsapp-cron. ────────
-  const SPA_UPSELL_SEND_PULSE_MS = 2500;
-  const toggleSpaUpsell = (id) => {
-    setSpaUpsellSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-  };
-  const toggleSpaUpsellAll = () => {
-    setSpaUpsellSelected((prev) =>
-      prev.size === spaUpsellCandidates.length
-        ? new Set()
-        : new Set(spaUpsellCandidates.map((g) => g.id)),
-    );
-  };
-  const handleSendSpaUpsellOffer = async () => {
-    if (!supabase || spaUpsellSelected.size === 0) return;
-    setSpaUpsellSending(true);
-    setSpaUpsellSummary(null);
-    const targets = spaUpsellCandidates.filter((g) => spaUpsellSelected.has(g.id));
-    const results = [];
-    for (let i = 0; i < targets.length; i++) {
-      const guest = targets[i];
-      setSpaUpsellProgress({ current: i + 1, total: targets.length });
-      try {
-        const { data, error } = await supabase.functions.invoke("whatsapp-send", {
-          body: { trigger: "spa_upsell_daypass", guestId: guest.id, force: true, force_channel: "whapi_session" },
-        });
-        if (error) results.push({ guest, result: "error", error: error.message });
-        else if (data?.skipped) results.push({ guest, result: "skipped", reason: data.reason });
-        else if (data?.ok) results.push({ guest, result: "sent" });
-        else results.push({ guest, result: "failed", error: data?.error ?? "unknown" });
-      } catch (e) {
-        results.push({ guest, result: "error", error: e?.message ?? String(e) });
-      }
-      if (i < targets.length - 1) {
-        await new Promise((r) => setTimeout(r, SPA_UPSELL_SEND_PULSE_MS));
-      }
-    }
-    const sentIds = new Set(results.filter((r) => r.result === "sent").map((r) => r.guest.id));
-    setSpaUpsellCandidates((prev) => prev.filter((g) => !sentIds.has(g.id)));
-    setSpaUpsellSelected(new Set());
-    setSpaUpsellSending(false);
-    setSpaUpsellProgress(null);
-    setSpaUpsellSummary({
-      total: results.length,
-      sent: results.filter((r) => r.result === "sent").length,
-      skipped: results.filter((r) => r.result === "skipped").length,
-      failed: results.filter((r) => r.result === "failed" || r.result === "error").length,
-      details: results,
-    });
   };
 
   const reset = () => {
@@ -2580,7 +2512,6 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     setSyncedGuestsForWhapiPick([]); setWhapiPickSelected(new Set());
     setWhapiPickDone(false); setWhapiPickError(null);
     setDaypassCreateCandidates([]); setDaypassCreateSelected(new Set()); setDaypassCreateError(null);
-    setSpaUpsellCandidates([]); setSpaUpsellSelected(new Set()); setSpaUpsellSummary(null);
     setMappingStage("idle"); setRawDoc2Rows(null); setDoc2Fallback(null);
     setAiSuggestion(null); setAiError(null); setAutoDateBanner(null);
     setImportSource(null); setDetailedFileName("");
@@ -3679,9 +3610,29 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                     </div>
                   )}
                   {result.mode === "spa" && (result.daypassCandidateCount > 0 || result.upsellCount > 0) && (
-                    <div style={{ fontSize: 12.5, color: "#8a6d1a", marginTop: 8, fontWeight: 700 }}>
+                    <div style={{ fontSize: 12.5, color: "#8a6d1a", marginTop: 8, fontWeight: 700, lineHeight: 1.6 }}>
                       {result.daypassCandidateCount > 0 && <>☀️ {result.daypassCandidateCount} מועמדים לפרופיל בילוי יומי חדש (ללא טיפול ספא) · </>}
-                      {result.upsellCount > 0 && <>💆 {result.upsellCount} אורחי בילוי יומי ללא ספא — ראה למטה</>}
+                      {result.upsellCount > 0 && (
+                        <>
+                          💆 {result.upsellCount} אורחי בילוי יומי ללא ספא
+                          {onSpaUpsellNavigate && (
+                            <>
+                              {" — "}
+                              <button
+                                type="button"
+                                onClick={() => onSpaUpsellNavigate(result.arrivalDate)}
+                                style={{
+                                  background: "none", border: "none", padding: 0,
+                                  color: "#6d28d9", fontWeight: 800, cursor: "pointer",
+                                  textDecoration: "underline", fontSize: "inherit",
+                                }}
+                              >
+                                עבור לשליחת הצעות ספא →
+                              </button>
+                            </>
+                          )}
+                        </>
+                      )}
                     </div>
                   )}
                 </div>
@@ -3819,60 +3770,6 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
             </div>
           )}
 
-          {spaUpsellCandidates.length > 0 && (
-            <div style={{
-              marginTop: 16, background: "#FDF4FF", border: "1px solid #A21CAF",
-              borderRadius: 12, padding: "18px 20px",
-            }}>
-              <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 6, color: "#86198F" }}>
-                💆 הצעת טיפול ספא — בילוי יומי ({spaUpsellCandidates.length} ללא הזמנה)
-              </div>
-              <div style={{ fontSize: 12.5, color: "#701A75", marginBottom: 12, lineHeight: 1.6 }}>
-                שיגור ידני דרך מכשיר הסוויטות — 45 דק׳ עיסוי ב-300 ₪ במקום 370 ₪. הטקסט ערוך בעריכת סקריפטים (מפתח: spa_upsell_daypass).
-                בפעימות של {SPA_UPSELL_SEND_PULSE_MS / 1000} שניות בין הודעה להודעה.
-              </div>
-              {spaUpsellSummary && (
-                <div style={{ background: "#F3E8FF", border: "1px solid #A21CAF", borderRadius: 8, padding: "8px 12px", color: "#701A75", fontSize: 12.5, marginBottom: 10 }}>
-                  ✅ נשלחו {spaUpsellSummary.sent} · דולגו {spaUpsellSummary.skipped} · נכשלו {spaUpsellSummary.failed} מתוך {spaUpsellSummary.total}
-                </div>
-              )}
-              {spaUpsellSending && spaUpsellProgress && (
-                <div style={{ fontSize: 12.5, color: "#701A75", marginBottom: 10 }}>
-                  ⏳ שולח {spaUpsellProgress.current}/{spaUpsellProgress.total}...
-                </div>
-              )}
-              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-                <button type="button" onClick={toggleSpaUpsellAll} style={{ fontSize: 12, padding: "4px 10px", borderRadius: 8, border: "1px solid #A21CAF", background: "#fff", cursor: "pointer" }}>
-                  {spaUpsellSelected.size === spaUpsellCandidates.length ? "נקה בחירה" : "בחר הכל"}
-                </button>
-                <span style={{ fontSize: 12, color: "#701A75" }}>{spaUpsellSelected.size} נבחרו</span>
-              </div>
-              <div style={{ maxHeight: 220, overflowY: "auto", border: "1px solid #E9D5FF", borderRadius: 8, background: "#fff" }}>
-                {spaUpsellCandidates.map((g) => (
-                  <label key={g.id} style={{
-                    display: "flex", alignItems: "center", gap: 10, padding: "8px 12px",
-                    borderBottom: "1px solid #F3E8FF", fontSize: 13, cursor: "pointer",
-                  }}>
-                    <input type="checkbox" checked={spaUpsellSelected.has(g.id)} onChange={() => toggleSpaUpsell(g.id)} />
-                    <span style={{ fontWeight: 600 }}>{g.name || "—"}</span>
-                    <span style={{ color: "#A21CAF" }}>{g.phone}</span>
-                  </label>
-                ))}
-              </div>
-              <button
-                onClick={handleSendSpaUpsellOffer}
-                disabled={spaUpsellSending || spaUpsellSelected.size === 0}
-                style={{
-                  marginTop: 12, padding: "8px 18px", borderRadius: 8, border: "none",
-                  background: spaUpsellSending || spaUpsellSelected.size === 0 ? "#E9D5FF" : "#A21CAF",
-                  color: "#fff", fontWeight: 700, fontSize: 13,
-                  cursor: spaUpsellSending || spaUpsellSelected.size === 0 ? "not-allowed" : "pointer",
-                }}
-              >
-                {spaUpsellSending ? "⏳ שולח..." : `💆 שלח הצעת ספא ל-${spaUpsellSelected.size || ""} אורחים`}
-              </button>
-            </div>
-          )}
           </>)}
 
           {tab === "shifts" && (<>

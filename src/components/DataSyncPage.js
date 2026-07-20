@@ -1,22 +1,21 @@
 // src/components/DataSyncPage.js
 // Standalone Admin entry point for the existing import engine (ArrivalImportPanel.js).
-// No parsing/upsert logic lives here — this is a thin, dedicated-page wrapper so
-// admins can reach "סנכרון נתונים" directly from the Sidebar instead of opening it
-// inside Operations board (see CLAUDE.md §10 session — ArrivalImportPanel remains
-// the SOLE import engine; this view does not duplicate it).
-//
-// Second mount point, same rule: <ActivitiesImportZone> + syncEzgoSpaActivities
-// are the SAME component/engine SpaBoard.js uses — spa reception's primary
-// entry point stays SpaBoard, this is the general admin alternative (one
-// engine, two entry points, per the Smart Spa Board planning doc).
+// Spa upsell dispatch lives in SpaUpsellDispatchPanel (separate tab — not tied to import session).
 
 import { useState } from "react";
 import ArrivalImportPanel from "./ArrivalImportPanel";
 import ActivitiesImportZone from "./spa/ActivitiesImportZone";
 import SmartPastePanel from "./SmartPastePanel";
+import SpaUpsellDispatchPanel from "./SpaUpsellDispatchPanel";
+import { israelTodayYmd } from "../utils/spaUpsellAudience";
+
+const TABS = [
+  { id: "import", label: "📥 ייבוא דוחות", hint: "Doc 1/2, Smart Paste, פעילויות ספא" },
+  { id: "spa_upsell", label: "💆 הצעת ספא — בילוי יומי", hint: "שליחה לאורחים ללא טיפול" },
+];
 
 function todayYmd() {
-  return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
+  return israelTodayYmd();
 }
 
 function SpaActivitiesSyncSection() {
@@ -73,10 +72,18 @@ function SpaActivitiesSyncSection() {
 }
 
 export default function DataSyncPage() {
+  const [activeTab, setActiveTab] = useState("import");
+  const [spaUpsellDate, setSpaUpsellDate] = useState(todayYmd());
   const [toast, setToast] = useState(null);
+
   const showToast = (msg, type = "ok") => {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 4500);
+  };
+
+  const goToSpaUpsell = (dateYmd) => {
+    if (dateYmd) setSpaUpsellDate(dateYmd);
+    setActiveTab("spa_upsell");
   };
 
   return (
@@ -89,7 +96,7 @@ export default function DataSyncPage() {
         border: "1px solid rgba(201,169,110,0.25)",
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 22 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 18 }}>
         <div
           style={{
             width: 52, height: 52, borderRadius: 16,
@@ -109,9 +116,29 @@ export default function DataSyncPage() {
             סנכרון נתונים
           </div>
           <div style={{ fontSize: 13, color: "rgba(232,201,138,0.6)", marginTop: 3 }}>
-            ייבוא דוחות EZGO (כניסות + ספא) וסידור משמרות — ישירות למאגר האורחים
+            ייבוא דוחות EZGO · הצעת ספא לבילוי יומי — בממשקים נפרדים
           </div>
         </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
+        {TABS.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => setActiveTab(tab.id)}
+            style={{
+              padding: "10px 16px", borderRadius: 12, cursor: "pointer",
+              border: activeTab === tab.id ? "1px solid var(--gold)" : "1px solid rgba(201,169,110,0.25)",
+              background: activeTab === tab.id ? "rgba(201,169,110,0.15)" : "rgba(0,0,0,0.2)",
+              color: activeTab === tab.id ? "var(--gold-light)" : "rgba(232,201,138,0.65)",
+              fontWeight: activeTab === tab.id ? 800 : 600,
+              fontSize: 13,
+            }}
+          >
+            {tab.label}
+          </button>
+        ))}
       </div>
 
       {toast && (
@@ -125,11 +152,21 @@ export default function DataSyncPage() {
         </div>
       )}
 
-      <ArrivalImportPanel defaultOpen />
+      {activeTab === "import" && (
+        <>
+          <ArrivalImportPanel defaultOpen onSpaUpsellNavigate={goToSpaUpsell} />
+          <SmartPastePanel showToast={showToast} />
+          <SpaActivitiesSyncSection />
+        </>
+      )}
 
-      <SmartPastePanel showToast={showToast} />
-
-      <SpaActivitiesSyncSection />
+      {activeTab === "spa_upsell" && (
+        <SpaUpsellDispatchPanel
+          key={spaUpsellDate}
+          initialDate={spaUpsellDate}
+          onToast={showToast}
+        />
+      )}
     </div>
   );
 }

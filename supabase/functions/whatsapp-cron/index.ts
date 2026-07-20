@@ -49,6 +49,7 @@ import { runWeeklyGuestHallucinationAudit } from "../_shared/guestHallucinationA
 import { managerMailEnabled } from "../_shared/oritAgentMail.ts";
 import { runSigalUrgentComplaintLoop } from "../_shared/oritAgentWorkflow.ts";
 import { dispatchDueOritScheduledSends } from "../_shared/oritScheduleSend.ts";
+import { dispatchDueSpaUpsellScheduledTasks } from "../_shared/spaUpsellSchedule.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -565,6 +566,22 @@ Deno.serve(async (req: Request) => {
       } catch { /* best-effort — push failure must not break cron */ }
     }
 
+    // Staff-scheduled spa upsell (DataSyncPage) — manual-only stage, not in cron scan.
+    let spaUpsellScheduledDispatched = 0;
+    try {
+      spaUpsellScheduledDispatched = await dispatchDueSpaUpsellScheduledTasks(
+        supabase,
+        supabaseUrl,
+        anon,
+        now,
+      );
+      if (spaUpsellScheduledDispatched > 0) {
+        console.log(`[whatsapp-cron] spa upsell scheduled dispatched: ${spaUpsellScheduledDispatched}`);
+      }
+    } catch (spaSchedErr) {
+      console.warn("[whatsapp-cron] spa upsell schedule dispatch failed (non-blocking):", (spaSchedErr as Error).message);
+    }
+
     // ── Sigal urgent-complaint loop (Orit CS) — every cron tick ~15min ──
     if (managerMailEnabled()) {
       try {
@@ -596,6 +613,7 @@ Deno.serve(async (req: Request) => {
       auto_checkout_archived: autoCheckoutCount,
       fired: results.length,
       stage2_reconcile_queued: stage2ReconcileQueued,
+      spa_upsell_scheduled_dispatched: spaUpsellScheduledDispatched,
       throttled: due.length > 1,
       dispatch_batch_size: DISPATCH_BATCH_SIZE,
       inter_send_delay_ms: INTER_SEND_DELAY_MS,
