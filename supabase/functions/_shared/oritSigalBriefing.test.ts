@@ -21,33 +21,55 @@ const thread = {
   ai_summary: "אורחת מתלוננת על ניקיון החדר.",
 };
 
-Deno.test("composeSigalComplaintBriefing — warm package with ack + full", () => {
+const PULSE_MAX = 720;
+
+Deno.test("composeSigalComplaintBriefing — pulse only, no inline drafts", () => {
   const body = composeSigalComplaintBriefing(
     thread,
     "שלום נעמי,\nקיבלנו את פנייתך.",
     "שלום נעמי,\nאנחנו מטפלים בניקיון.",
   );
 
-  if (!body.includes("היי אורית")) throw new Error("missing greeting");
+  if (!body.includes("נעמי")) throw new Error("missing guest");
   if (!body.includes("ניקיון")) throw new Error("missing summary");
-  if (!body.includes("קיבלנו את פנייתך")) throw new Error("missing ack");
-  if (!body.includes("מטפלים בניקיון")) throw new Error("missing full reply");
-  if (!body.includes("כן שלחי")) throw new Error("missing send CTA");
-  if (!body.includes("סיימתי")) throw new Error("missing close CTA");
-  assertEquals(body.includes("thread=869b0a98"), true);
+  if (!body.includes("תראי לי")) throw new Error("missing ack CTA");
+  if (!body.includes("קיבלנו את פנייתך")) throw new Error("missing ack phrase");
+  if (!body.includes("שלב 1")) throw new Error("missing step 1 focus");
+  if (body.includes("שלב 2")) throw new Error("phase 1 should not push full letter yet");
+  if (!body.includes("orit_cs_agent")) throw new Error("missing app deep link");
+  if (!body.includes("thread=")) throw new Error("missing thread id in link");
+  if (body.includes("קיבלנו את פנייתך.\n")) throw new Error("should not inline ack draft");
+  if (body.includes("מטפלים בניקיון")) throw new Error("should not inline full draft");
+  if (body.length > PULSE_MAX) throw new Error(`pulse too long: ${body.length}`);
+  assertEquals(body.includes("תסדרי"), true);
+  assertEquals(body.includes("במחשב"), false);
 });
 
-Deno.test("composeSigalGuestReplyBriefing — guest reply + draft", () => {
+Deno.test("composeSigalComplaintBriefing — phase 2 after ack sent", () => {
+  const body = composeSigalComplaintBriefing(
+    { ...thread, auto_ack_sent_at: "2026-07-19T10:00:00Z", full_reply_sent_at: null },
+    "שלום נעמי,\nקיבלנו את פנייתך.",
+    "שלום נעמי,\nאנחנו מטפלים בניקיון.",
+  );
+
+  if (!body.includes("כבר נשלח")) throw new Error("missing ack sent marker");
+  if (!body.includes("שלב 2")) throw new Error("missing step 2");
+  if (!body.includes("תשובה מלאה")) throw new Error("missing full CTA");
+  if (body.includes("שלב 1 (דחוף)")) throw new Error("should not repeat step 1");
+});
+
+Deno.test("composeSigalGuestReplyBriefing — snippet only", () => {
   const body = composeSigalGuestReplyBriefing(
     thread,
     "תודה, אבל עדיין לא קיבלתי החזר.",
     "שלום נעמי,\nאני בודקת את הנושא מול הנהלה.",
   );
 
-  if (!body.includes("השיב/ה למייל")) throw new Error("missing guest reply header");
-  if (!body.includes("לא קיבלתי החזר")) throw new Error("missing guest text");
-  if (!body.includes("בודקת את הנושא")) throw new Error("missing follow-up draft");
-  if (!body.includes("סיימתי")) throw new Error("missing close CTA");
+  if (!body.includes("השיב/ה")) throw new Error("missing guest reply header");
+  if (!body.includes("לא קיבלתי החזר")) throw new Error("missing guest snippet");
+  if (body.includes("בודקת את הנושא")) throw new Error("should not inline follow-up draft");
+  if (!body.includes("תשובה מלאה")) throw new Error("missing CTA");
+  if (body.length > PULSE_MAX) throw new Error(`pulse too long: ${body.length}`);
 });
 
 Deno.test("composeSigalStaleReminder — gentle nudge", () => {
@@ -57,13 +79,13 @@ Deno.test("composeSigalStaleReminder — gentle nudge", () => {
     full_reply_sent_at: null,
   });
   if (!body.includes("מזכירה בעדינות")) throw new Error("missing reminder tone");
-  if (!body.includes("אישור קבלה")) throw new Error("missing ack nudge");
+  if (!body.includes("תראי לי")) throw new Error("missing ack nudge");
 });
 
 Deno.test("composeSigalAckSentFollowUp", () => {
   const body = composeSigalAckSentFollowUp("נעמי");
-  if (!body.includes("שלחתי")) throw new Error("missing sent ack");
-  if (!body.includes("תשובה מלאה")) throw new Error("missing full reply hint");
+  if (!body.includes("קיבלנו את פנייתך")) throw new Error("missing ack phrase");
+  if (!body.includes("שלב 2")) throw new Error("missing step 2 hint");
 });
 
 Deno.test("areSigalBriefingDraftsReady", () => {
@@ -89,9 +111,6 @@ Deno.test("composeSigalEveningActionPlan — open items + handled today", () => 
     otherOpenCount: 1,
     handledToday: 2,
   });
-
-  if (!body.includes("סיכום ערב")) throw new Error("missing evening header");
   if (!body.includes("נשאר פתוח")) throw new Error("missing open section");
   if (!body.includes("טופל היום: 2")) throw new Error("missing handled count");
-  if (!body.includes("מחר בבוקר")) throw new Error("missing tomorrow hint");
 });

@@ -62,41 +62,19 @@ function categoryHeadline(category: string, urgency: string): string {
 }
 
 export function composeOritThreadDecisionPrompt(thread: OritAlertThread): string {
-  const summary = thread.ai_summary?.trim()
-    || thread.subject?.trim()
-    || "פנייה חדשה שממתינה לטיפול.";
-  const threadLink = buildStaffAppDeepLink({ page: "orit_cs_agent", threadId: thread.id });
+  const summary = (thread.ai_summary?.trim() || thread.subject?.trim() || "פנייה חדשה").slice(0, 120);
   const replyEmail = resolveOritReplyEmail(thread.from_email ?? "", thread.guest_contact_email);
   const hasPhone = Boolean((thread.guest_contact_phone ?? "").replace(/\D/g, ""));
-  const shortRef = thread.id.slice(0, 8);
-
-  const emailOption = replyEmail
-    ? "📧 1 — שלחי לאורח/ת מייל «קיבלנו את בקשתך, נחזור אלייך בהקדם»"
-    : "📧 1 — אין מייל אורח תקין (לא ניתן לשלוח אישור במייל)";
-
-  const waOption = hasPhone
-    ? "💬 2 — אני מתכתבת איתו/ה בוואטסאפ עכשיו"
-    : "💬 2 — אין טלפון בפנייה (רק מייל/מערכת)";
 
   return [
-    "היי אורית 💜",
-    "כאן סיגל — יש פנייה חדשה בתיבת השירות.",
-    "",
+    `היי אורית 💜 ${categoryHeadline(thread.category, thread.urgency)}`,
     ...guestContactBlock(thread),
-    categoryHeadline(thread.category, thread.urgency),
-    "",
     summary,
-    "",
-    "איך תרצי לטפל?",
-    "",
-    emailOption,
-    waOption,
-    "",
-    `עני «1» או «מייל» · «2» או «וואטסאפ»`,
-    `(קוד פנייה: ${shortRef})`,
-    "",
-    "👉 לפתיחה במערכת:",
-    threadLink,
+    replyEmail
+      ? "«1» מייל אוטומטי · «2» וואטסאפ"
+      : hasPhone
+        ? "«2» וואטסאפ (אין מייל)"
+        : "כתבי לי מייל/טלפון של האורח/ת",
   ].join("\n");
 }
 
@@ -248,7 +226,7 @@ async function executeOritDecision(
     if (!replyEmail) {
       return {
         ok: false,
-        message: "❌ אין מייל אורח תקין בפנייה — לא שלחתי מייל. עני «2» לוואטסאפ או פתחי במערכת.",
+        message: "❌ אין מייל אורח תקין — לא שלחתי מייל. עני «2» לוואטסאפ.",
       };
     }
     if (thread.auto_ack_sent_at) {
@@ -293,7 +271,7 @@ async function executeOritDecision(
     if (!digits) {
       return {
         ok: false,
-        message: "❌ אין טלפון אורח בפנייה. עני «1» למייל או פתחי במערכת.",
+        message: "❌ אין טלפון אורח בפנייה. עני «1» למייל.",
       };
     }
 
@@ -325,10 +303,9 @@ async function executeOritDecision(
     orit_decision_at: now,
   }).eq("id", threadId);
 
-  const threadLink = buildStaffAppDeepLink({ page: "orit_cs_agent", threadId });
   return {
     ok: true,
-    message: `✓ בסדר — לא שלחתי מייל אוטומטי. טפלי ידנית במערכת:\n${threadLink}`,
+    message: "✓ בסדר — לא שלחתי מייל אוטומטי. «תראי לי» כשתרצי לטפל.",
   };
 }
 

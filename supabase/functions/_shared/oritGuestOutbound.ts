@@ -55,6 +55,15 @@ export function buildOritWaInboxLink(thread: OritGuestContactThread): string | n
   });
 }
 
+/** Deep link to Orit CS panel on mobile — opens thread for edit/send. */
+export function buildOritCsThreadDeepLink(threadId: string): string {
+  return buildStaffAppDeepLink({ page: "orit_cs_agent", threadId });
+}
+
+export function composeOritCsMobileLinkLine(threadId: string): string {
+  return `👉 לפתיחה בממשק (לעריכה): ${buildOritCsThreadDeepLink(threadId)}`;
+}
+
 const WA_EMAIL_ASK = "נשמח לקבל כתובת מייל להמשך התכתבות ולסגירת הפנייה.";
 
 /** Shorten email-style draft for WhatsApp; ask for email on bridge sends. */
@@ -74,13 +83,8 @@ export function adaptDraftForWhatsApp(text: string, opts: { bridge?: boolean } =
 
 export function composeSigalWaBridgeAdvice(thread: OritGuestContactThread): string {
   const phone = formatGuestPhoneDisplay(thread.guest_contact_phone);
-  if (!phone) return "חסרים מייל וטלפון — הוסיפי פרטי קשר במערכת.";
-  return [
-    `אין כתובת מייל, אבל יש טלפון ${phone}.`,
-    "אני יכולה לשלוח עבורך הודעה מסוגננת בוואטסאפ.",
-    "המטרה עדיין לסגור את הסיפור במייל כשיהיה לנו כתובת.",
-    "«שלחי בוואטסאפ» → «כן שלחי»",
-  ].join("\n");
+  if (!phone) return "חסרים מייל וטלפון — כתבי לי את פרטי האורח/ת.";
+  return `אין מייל — אפשר בוואטסאפ (${phone}): «שלחי בוואטסאפ».`;
 }
 
 export function composeSigalWaSentFollowUp(
@@ -88,16 +92,17 @@ export function composeSigalWaSentFollowUp(
   inboxLink: string,
   phase: "ack" | "full",
 ): string {
-  const label = phase === "ack" ? "אישור קבלה" : "תשובה";
+  if (phase === "ack") {
+    return [
+      `✓ שלב ① נשלח ל־${guest} בוואטסאפ.`,
+      "שלב ②: «תשובה מלאה» → «כן שלחי»",
+      inboxLink,
+    ].join("\n");
+  }
   return [
-    `✓ נשלחה ${label} ל־${guest} בוואטסאפ.`,
-    "",
-    "👉 לפתיחת השיחה באינבוקס:",
+    `✓ שלב ② נשלח ל־${guest} בוואטסאפ.`,
+    "«סיימתי» לסגירה",
     inboxLink,
-    "",
-    phase === "ack"
-      ? "כשתרצי את המכתב המלא — «תשובה מלאה» ואז «כן שלחי» (מייל אם יש, אחרת וואטסאפ)."
-      : "אעדכן אם האורח/ת ישיב/ה. כשהנושא נסגר — «סיימתי».",
   ].join("\n");
 }
 

@@ -12,8 +12,6 @@ import {
   shouldAnalyzeOritWithLlm,
   tier0ToAnalysisResult,
 } from "./oritAgentAnalyzePolicy.ts";
-import { buildStaffAppDeepLink } from "./guestAlertWhapiNotify.ts";
-
 const GEMINI_MODEL = "gemini-2.5-flash";
 const CLAUDE_MODEL = "claude-sonnet-4-6";
 
@@ -283,6 +281,68 @@ export async function analyzeOritFollowUpDraft(
 }
 
 async function callGeminiFollowUp(userPrompt: string): Promise<string> {
+  return callGeminiJson(FOLLOW_UP_PROMPT, userPrompt, 2500);
+}
+
+const REFINE_DRAFT_PROMPT = `
+אתה עורך טיוטות מכתבים בשם אורית חלפון, מנהלת שירות לאורח בדרים איילנד.
+אורית נתנה הוראת עריכה קצרה על הטיוטה — החזירי את המכתב המלא אחרי העריכה.
+כתבי בגוף ראשון כאילו אורית כותבת (חתימה «אורית חלפון» בתחתית בלבד).
+שמרי על עובדות מהטיוטה המקורית — אל תמציאי פיצוי, מחירים או הבטחות חדשות.
+${ORIT_VOICE_BLOCK}
+עברית בלבד. JSON בלבד: {"suggestion":"..."}
+`.trim();
+
+export type RefineOritDraftInput = {
+  currentDraft: string;
+  instruction: string;
+  guestName: string | null;
+  subject: string;
+  inboundSnippet: string;
+  draftKind: "ack" | "full_reply";
+  styleSamples: Array<{ inbound_snippet: string; outbound_text: string; context_category: string }>;
+};
+
+export async function refineOritDraftByInstruction(
+  input: RefineOritDraftInput,
+): Promise<string | null> {
+  const samples = input.styleSamples.slice(0, 4).map((s, i) =>
+    `${i + 1}. נכנס: ${s.inbound_snippet}\n   נשלח: ${truncateStyleSample(s.outbound_text)}`,
+  ).join("\n\n");
+
+  const userPrompt = [
+    `סוג: ${input.draftKind === "ack" ? "אישור קבלה (קצר)" : "תשובה מלאה לאורח/ת"}`,
+    `אורח/ת: ${input.guestName || "לא ידוע"}`,
+    `נושא: ${input.subject || "(ללא נושא)"}`,
+    input.inboundSnippet
+      ? `רקע מהפנייה:\n${input.inboundSnippet.slice(0, 1500)}`
+      : "",
+    "",
+    "הטיוטה הנוכחית:",
+    input.currentDraft.slice(0, 4000),
+    "",
+    `הוראת עריכה מאורית: ${input.instruction}`,
+    "",
+    samples ? `דגימות סגנון:\n${samples}` : "",
+    "החזר JSON עם suggestion — המכתב המלא אחרי העריכה.",
+  ].filter(Boolean).join("\n");
+
+  try {
+    const raw = await callGeminiJson(REFINE_DRAFT_PROMPT, userPrompt, 2800);
+    const parsed = JSON.parse(raw.trim().match(/\{[\s\S]*\}/)?.[0] || raw);
+    const text = String(parsed?.suggestion || "").trim();
+    return text || null;
+  } catch (e) {
+    console.warn("[oritAgentAi] refine draft failed:", (e as Error).message);
+    return null;
+  }
+}
+
+async function callGeminiJson(
+  systemPrompt: string,
+  userPrompt: string,
+  maxOutputTokens: number,
+): Promise<string> {
   const key = Deno.env.get("GEMINI_API_KEY");
   if (!key) throw new Error("no_gemini_key");
 
@@ -292,10 +352,10 @@ async function callGeminiFollowUp(userPrompt: string): Promise<string> {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        systemInstruction: { parts: [{ text: FOLLOW_UP_PROMPT }] },
+        systemInstruction: { parts: [{ text: systemPrompt }] },
         contents: [{ role: "user", parts: [{ text: userPrompt }] }],
         generationConfig: {
-          maxOutputTokens: 2500,
+          maxOutputTokens,
           temperature: 0.35,
           responseMimeType: "application/json",
         },
@@ -367,7 +427,7 @@ export async function composeMorningDigestBullet(data: {
       lines.push(
         `${morningUrgencyEmoji(row.urgency)} ${morningGuestLabel(row)} ${sla}`,
         `   ${summary}`,
-        `   ${buildStaffAppDeepLink({ page: "orit_cs_agent", threadId: row.id })}`,
+        "   «תראי לי» / «תשובה מלאה»",
       );
     }
     lines.push("");
@@ -383,8 +443,7 @@ export async function composeMorningDigestBullet(data: {
 
   lines.push(`✅ טופל אתמול: ${data.handledYesterday}`);
   lines.push("");
-  lines.push("▶️ לכל התיבה:");
-  lines.push(buildStaffAppDeepLink({ page: "orit_cs_agent" }));
+  lines.push("«מה המצב» לסטטוס · «עזרה» לפקודות");
 
   return lines.join("\n");
 }

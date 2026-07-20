@@ -32,7 +32,7 @@ Deno.test("sigalLoopTiming — critical is faster", () => {
   assertEquals(critical.cooldownHours <= normal.cooldownHours, true);
 });
 
-Deno.test("composeSigalLoopNudge — guest replied CTA", () => {
+Deno.test("composeSigalLoopNudge — guest replied CTA + app link", () => {
   const body = composeSigalLoopNudge(
     { ...baseThread, workflow_step: "guest_replied" },
     "guest_replied",
@@ -40,5 +40,6 @@ Deno.test("composeSigalLoopNudge — guest replied CTA", () => {
   );
   if (!body.includes("השיב")) throw new Error("missing guest reply nudge");
   if (!body.includes("תשובה מלאה")) throw new Error("missing CTA");
-  assertEquals(body.includes("thread=869b0a98"), true);
+  assertEquals(body.includes("orit_cs_agent"), true);
+  assertEquals(body.includes("thread="), true);
 });

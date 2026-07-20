@@ -21,7 +21,7 @@ Deno.test("parseOritWorkflowAckApproval", () => {
   assertEquals(parseOritWorkflowAckApproval("לא"), false);
 });
 
-Deno.test("composeOritWorkflowAlert — problem + ack draft", () => {
+Deno.test("composeOritWorkflowAlert — pulse steps, no inline drafts", () => {
   const body = composeOritWorkflowAlert({
     id: "869b0a98-781a-4f3a-954c-7c263232d7b5",
     subject: "תלונה",
@@ -33,16 +33,15 @@ Deno.test("composeOritWorkflowAlert — problem + ack draft", () => {
     ai_summary: "אורחת מתלוננת על ניקיון החדר.",
   }, "שלום נעמי,\nקיבלנו את פנייתך.\nניצור איתך קשר ב-72 שעות.", "שלום נעמי,\nאנחנו מטפלים בניקיון.");
 
-  if (!body.includes("היי אורית")) throw new Error("missing greeting");
   if (!body.includes("ניקיון")) throw new Error("missing summary");
-  if (!body.includes("קיבלנו את פנייתך")) throw new Error("missing ack draft");
-  if (!body.includes("א׳ — אישור קבלה")) throw new Error("missing ack section");
-  if (!body.includes("ב׳ — מכתב תשובה מלא")) throw new Error("missing full section");
-  if (!body.includes("כן שלחי")) throw new Error("missing send CTA");
-  assertEquals(body.includes("thread=869b0a98"), true);
+  if (!body.includes("שלב 1")) throw new Error("missing step 1");
+  if (!body.includes("תראי לי")) throw new Error("missing ack CTA");
+  if (body.includes("קיבלנו את פנייתך.\n")) throw new Error("should not inline ack draft");
+  if (!body.includes("תראי לי")) throw new Error("missing ack CTA");
+  assertEquals(body.includes("תסדרי"), true);
 });
 
-Deno.test("composeSigalGuestReplyCoaching — guest message + follow-up draft", () => {
+Deno.test("composeSigalGuestReplyCoaching — snippet only", () => {
   const body = composeSigalGuestReplyCoaching(
     {
       id: "869b0a98-781a-4f3a-954c-7c263232d7b5",
@@ -54,8 +53,7 @@ Deno.test("composeSigalGuestReplyCoaching — guest message + follow-up draft", 
     "שלום נעמי,\nאני בודקת את הנושא מול הנהלה.",
   );
 
-  if (!body.includes("השיב/ה למייל")) throw new Error("missing guest reply header");
-  if (!body.includes("לא קיבלתי החזר")) throw new Error("missing guest text");
-  if (!body.includes("בודקת את הנושא")) throw new Error("missing follow-up draft");
-  if (!body.includes("סיימתי")) throw new Error("missing close CTA");
+  if (!body.includes("לא קיבלתי החזר")) throw new Error("missing guest snippet");
+  if (body.includes("בודקת את הנושא")) throw new Error("should not inline draft");
+  if (!body.includes("תשובה מלאה")) throw new Error("missing CTA");
 });

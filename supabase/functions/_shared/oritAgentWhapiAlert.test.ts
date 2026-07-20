@@ -27,10 +27,10 @@ Deno.test("composeOritUrgentAlert — warm Sigal intro + CTA", () => {
     ai_summary: "נעמי מבקשת לבטל הזמנה למחר. יש לאמת שהביטול בוצע.",
   });
   if (!body.includes("היי אורית")) throw new Error("missing greeting");
-  if (!body.includes("סיגל")) throw new Error("missing sigal intro");
   if (!body.includes("נעמי")) throw new Error("missing guest");
   if (!body.includes("054-620-6621")) throw new Error("missing phone");
-  if (!body.includes("אישור קבלה")) throw new Error("missing ack line");
-  if (!body.includes("thread=869b0a98")) throw new Error("missing deep link");
+  if (!body.includes("תראי לי")) throw new Error("missing CTA");
   if (!body.includes("ביטול")) throw new Error("missing summary");
+  assertEquals(body.includes("orit_cs_agent"), true);
+  assertEquals(body.includes("thread="), true);
 });
