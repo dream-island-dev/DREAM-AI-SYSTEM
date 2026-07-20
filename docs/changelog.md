@@ -1,3 +1,4 @@
+2026-07-20 | EZGO mail — lazy postal-mime (fix 503 boot) | static `npm:postal-mime` import crashed Supabase Edge cold start (503/no CORS); switched to dynamic `import("https://esm.sh/postal-mime@2.4.3")` inside `parseMimeSource` only.
 2026-07-20 | EZGO mail — proper MIME parser for forwards | `ezgoMailImap.ts` hand-rolled regex MIME body extraction replaced with `postal-mime` (handles nested multipart, quoted-printable/base64, charsets, and message/rfc822-attached forwards correctly) — fixes forwarded Operations emails landing as `skipped`/0 rows.
 2026-07-20 | EZGO mail IMAP — messages scope hotfix | `let messages` moved outside try block — fixes `messages is not defined` ReferenceError on scan.
 2026-07-20 | EZGO mail IMAP — Gmail fetch fix | `ezgoMailImap`: `gmailRaw from:` search + sequence scan fallback (like Orit); UID fetch as comma string; nested forward HTML extraction; API returns `imap` meta; toast shows mailbox debug when 0 hits.

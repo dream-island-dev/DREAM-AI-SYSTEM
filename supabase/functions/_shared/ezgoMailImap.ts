@@ -1,7 +1,6 @@
 // Gmail / IMAP fetch for EZGO mail sync — preserves HTML body for Doc1 parsing.
 
 import { ImapFlow } from "npm:imapflow@1.0.168";
-import PostalMime from "npm:postal-mime@2";
 
 export type EzgoInboundMail = {
   id: string;
@@ -83,9 +82,25 @@ function stripHtmlToText(html: string): string {
 
 type ParsedMimeEmail = { html?: string; text?: string; attachments?: Array<{ mimeType?: string; content?: unknown }> };
 
+type PostalMimeClass = { parse: (source: Uint8Array | string) => Promise<ParsedMimeEmail> };
+
+let postalMimeLoader: Promise<PostalMimeClass> | null = null;
+
+/** Lazy-load postal-mime — static npm import crashes Supabase Edge cold start (503). */
+function loadPostalMime(): Promise<PostalMimeClass> {
+  if (!postalMimeLoader) {
+    postalMimeLoader = import("https://esm.sh/postal-mime@2.4.3").then((mod) => {
+      const candidate = (mod as { default?: PostalMimeClass }).default ?? mod;
+      return candidate as PostalMimeClass;
+    });
+  }
+  return postalMimeLoader;
+}
+
 async function parseMimeSource(source: Uint8Array | string): Promise<ParsedMimeEmail | null> {
   try {
-    return await PostalMime.parse(source) as ParsedMimeEmail;
+    const PostalMime = await loadPostalMime();
+    return await PostalMime.parse(source);
   } catch {
     return null;
   }
