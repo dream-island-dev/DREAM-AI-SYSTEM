@@ -1,6 +1,13 @@
 import { useMemo, useState } from "react";
 import IsraeliTimeSelect from "./IsraeliTimeSelect";
 import { formatIsraelDateTime, israelTodayYmd } from "../utils/israelTime";
+import {
+  SPA_UPSELL_CHANNEL_META,
+  SPA_UPSELL_CHANNEL_OPTIONS,
+  SPA_UPSELL_CHANNEL_WHAPI,
+  SPA_UPSELL_META_TEMPLATE,
+  previewSpaUpsellMetaTemplate,
+} from "../utils/spaUpsellAudience";
 
 function previewSpaUpsellText(template, guestName) {
   const name = String(guestName ?? "").trim() || "אורח יקר";
@@ -17,20 +24,29 @@ export default function SpaUpsellConfirmModal({
   scriptText,
   pulseSeconds,
   sending,
+  metaTemplateStatus,
   onClose,
   onSendNow,
   onSchedule,
 }) {
   const [sendMode, setSendMode] = useState("now");
+  const [dispatchChannel, setDispatchChannel] = useState(SPA_UPSELL_CHANNEL_WHAPI);
   const [scheduleDate, setScheduleDate] = useState(israelTodayYmd);
   const [scheduleTime, setScheduleTime] = useState("10:00");
   const [confirmed, setConfirmed] = useState(false);
 
   const sampleGuest = targets[0];
-  const previewBody = useMemo(
-    () => previewSpaUpsellText(scriptText, sampleGuest?.name),
-    [scriptText, sampleGuest?.name],
-  );
+  const isMetaChannel = dispatchChannel === SPA_UPSELL_CHANNEL_META;
+  const metaNotApproved = isMetaChannel && metaTemplateStatus && metaTemplateStatus !== "APPROVED";
+
+  const previewBody = useMemo(() => {
+    if (isMetaChannel) return previewSpaUpsellMetaTemplate(sampleGuest?.name);
+    return previewSpaUpsellText(scriptText, sampleGuest?.name);
+  }, [isMetaChannel, scriptText, sampleGuest?.name]);
+
+  const channelLabel = isMetaChannel
+    ? SPA_UPSELL_CHANNEL_OPTIONS[1].label
+    : SPA_UPSELL_CHANNEL_OPTIONS[0].label;
 
   const scheduleIsoPreview = useMemo(() => {
     if (!scheduleDate || !scheduleTime) return null;
@@ -43,14 +59,14 @@ export default function SpaUpsellConfirmModal({
     ? new Date(scheduleIsoPreview).getTime() <= Date.now()
     : false;
 
-  const canConfirm = confirmed && !sending && (
+  const canConfirm = confirmed && !sending && !metaNotApproved && (
     sendMode === "now" || (scheduleDate && scheduleTime && !scheduleInPast)
   );
 
   const handleConfirm = () => {
     if (!canConfirm) return;
     if (sendMode === "now") {
-      onSendNow();
+      onSendNow(dispatchChannel);
       return;
     }
     const payload = targets.map((g) => ({
@@ -58,6 +74,7 @@ export default function SpaUpsellConfirmModal({
       stage_key: "spa_upsell_daypass",
       schedule_date: scheduleDate,
       schedule_time: scheduleTime,
+      force_channel: dispatchChannel,
     }));
     onSchedule(payload);
   };
@@ -77,23 +94,68 @@ export default function SpaUpsellConfirmModal({
           💆 אישור שליחת הצעת ספא
         </div>
         <p style={{ fontSize: 12.5, color: "#701A75", lineHeight: 1.55, margin: "0 0 14px" }}>
-          {targets.length} אורחים · מכשיר הסוויטות (Whapi) · {pulseSeconds} שניות בין הודעה להודעה.
-          לעריכת הטקסט: <strong>עורך סקריפטים → spa_upsell_daypass</strong>.
+          {targets.length} אורחים · {pulseSeconds} שניות בין הודעה להודעה.
         </p>
+
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "#6B21A8", marginBottom: 8 }}>
+            ערוץ שליחה
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {[SPA_UPSELL_CHANNEL_OPTIONS[0], SPA_UPSELL_CHANNEL_OPTIONS[1]].map((ch) => (
+              <button
+                key={ch.id}
+                type="button"
+                disabled={sending}
+                onClick={() => setDispatchChannel(ch.id)}
+                style={{
+                  padding: "8px 14px", borderRadius: 10, cursor: sending ? "not-allowed" : "pointer",
+                  border: dispatchChannel === ch.id ? "2px solid #A21CAF" : "1px solid #E9D5FF",
+                  background: dispatchChannel === ch.id ? "#F3E8FF" : "#fff",
+                  fontWeight: dispatchChannel === ch.id ? 800 : 500,
+                  fontSize: 12.5, textAlign: "right",
+                }}
+              >
+                <div>{ch.label}</div>
+                <div style={{ fontSize: 11, color: "#9D174D", fontWeight: 500, marginTop: 2 }}>
+                  {ch.hint}
+                </div>
+              </button>
+            ))}
+          </div>
+          {isMetaChannel && metaTemplateStatus && (
+            <div style={{
+              marginTop: 8, fontSize: 12, padding: "8px 10px", borderRadius: 8,
+              background: metaTemplateStatus === "APPROVED" ? "#E8F5EF" : "#FFF8E1",
+              color: metaTemplateStatus === "APPROVED" ? "#1A7A4A" : "#B5600A",
+              border: `1px solid ${metaTemplateStatus === "APPROVED" ? "#1A7A4A" : "#F59E0B"}`,
+            }}>
+              {metaTemplateStatus === "APPROVED"
+                ? `✅ ${SPA_UPSELL_META_TEMPLATE} מאושרת ב-Meta`
+                : `⏳ ${SPA_UPSELL_META_TEMPLATE} — ${metaTemplateStatus} (בחרו מכשיר סוויטות עד לאישור)`}
+            </div>
+          )}
+        </div>
 
         <div style={{
           background: "#FAF5FF", border: "1px solid #D8B4FE", borderRadius: 10,
           padding: "12px 14px", marginBottom: 14,
         }}>
           <div style={{ fontWeight: 700, fontSize: 12, color: "#6B21A8", marginBottom: 8 }}>
-            תצוגה מקדימה {sampleGuest?.name ? `(דוגמה: ${sampleGuest.name})` : ""}
+            תצוגה מקדימה ({channelLabel})
+            {sampleGuest?.name ? ` · ${sampleGuest.name}` : ""}
           </div>
           <pre style={{
             margin: 0, whiteSpace: "pre-wrap", fontFamily: "inherit",
             fontSize: 13, lineHeight: 1.55, color: "#4C1D95",
           }}>
-            {previewBody || "— אין טקסט ב-bot_scripts.spa_upsell_daypass — ערכו לפני השליחה"}
+            {previewBody || "— אין טקסט — ערכו bot_scripts או אשרו תבנית Meta"}
           </pre>
+          {!isMetaChannel && (
+            <div style={{ fontSize: 11, color: "#9D174D", marginTop: 8 }}>
+              עריכה: <strong>עורך סקריפטים → spa_upsell_daypass</strong>
+            </div>
+          )}
         </div>
 
         <details style={{ marginBottom: 14, fontSize: 12.5 }}>
@@ -186,7 +248,7 @@ export default function SpaUpsellConfirmModal({
             style={{ marginTop: 3 }}
           />
           <span>
-            קראתי את הטקסט ואת רשימת הנמענים — מאשר/ת {sendMode === "now" ? "שליחה מיידית" : "תזמון"} דרך מכשיר הסוויטות.
+            קראתי את הטקסט ואת רשימת הנמענים — מאשר/ת {sendMode === "now" ? "שליחה מיידית" : "תזמון"} דרך {channelLabel}.
           </span>
         </label>
 

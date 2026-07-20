@@ -2,7 +2,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import SpaUpsellConfirmModal from "./SpaUpsellConfirmModal";
-import { fetchSpaUpsellAudience, israelTodayYmd } from "../utils/spaUpsellAudience";
+import {
+  fetchSpaUpsellAudience,
+  israelTodayYmd,
+  SPA_UPSELL_CHANNEL_META,
+  SPA_UPSELL_CHANNEL_WHAPI,
+  SPA_UPSELL_META_TEMPLATE,
+} from "../utils/spaUpsellAudience";
 
 const SPA_UPSELL_SEND_PULSE_MS = 2500;
 
@@ -17,6 +23,7 @@ export default function SpaUpsellDispatchPanel({ initialDate, onToast }) {
   const [progress, setProgress] = useState(null);
   const [summary, setSummary] = useState(null);
   const [modalOpen, setModalOpen] = useState(false);
+  const [metaTemplateStatus, setMetaTemplateStatus] = useState(null);
 
   const toast = useCallback((type, msg) => {
     onToast?.(msg, type);
@@ -28,18 +35,22 @@ export default function SpaUpsellDispatchPanel({ initialDate, onToast }) {
     setLoadError(null);
     setSummary(null);
     try {
-      const [{ guests, error }, scriptRes] = await Promise.all([
+      const [{ guests, error }, scriptRes, tmplRes] = await Promise.all([
         fetchSpaUpsellAudience(supabase, { arrivalDate }),
         supabase
           .from("bot_scripts")
           .select("message_text")
           .eq("script_key", "spa_upsell_daypass")
           .maybeSingle(),
+        supabase.functions.invoke("get-wa-templates", { body: { all: true } }),
       ]);
       if (error) throw error;
       setCandidates(guests);
       setSelected(new Set(guests.map((g) => g.id)));
       setScriptText(scriptRes.data?.message_text ?? "");
+      const templates = tmplRes.data?.templates ?? [];
+      const spaPkg = templates.find((t) => t.name === SPA_UPSELL_META_TEMPLATE);
+      setMetaTemplateStatus(spaPkg?.status ?? null);
     } catch (e) {
       const msg = e?.message ?? String(e);
       setLoadError(msg);
@@ -72,11 +83,12 @@ export default function SpaUpsellDispatchPanel({ initialDate, onToast }) {
 
   const targets = candidates.filter((g) => selected.has(g.id));
 
-  const handleSendNow = async () => {
+  const handleSendNow = async (forceChannel) => {
     if (!supabase || targets.length === 0) return;
     setSending(true);
     setSummary(null);
     const results = [];
+    const channel = forceChannel || SPA_UPSELL_CHANNEL_WHAPI;
     for (let i = 0; i < targets.length; i++) {
       const guest = targets[i];
       setProgress({ current: i + 1, total: targets.length });
@@ -86,7 +98,7 @@ export default function SpaUpsellDispatchPanel({ initialDate, onToast }) {
             trigger: "spa_upsell_daypass",
             guestId: guest.id,
             force: true,
-            force_channel: "whapi_session",
+            force_channel: channel,
           },
         });
         if (error) results.push({ guest, result: "error", error: error.message });
@@ -113,7 +125,10 @@ export default function SpaUpsellDispatchPanel({ initialDate, onToast }) {
       skipped: results.filter((r) => r.result === "skipped").length,
       failed: results.filter((r) => r.result === "failed" || r.result === "error").length,
     });
-    if (sent > 0) toast("ok", `💆 נשלחו ${sent} הצעות ספא`);
+    if (sent > 0) {
+      const via = channel === SPA_UPSELL_CHANNEL_META ? "Dream Bot" : "מכשיר הסוויטות";
+      toast("ok", `💆 נשלחו ${sent} הצעות ספא (${via})`);
+    }
   };
 
   const handleSchedule = async (payload) => {
@@ -163,8 +178,8 @@ export default function SpaUpsellDispatchPanel({ initialDate, onToast }) {
             💆 הצעת ספא — בילוי יומי
           </div>
           <div style={{ fontSize: 12.5, color: "#701A75", lineHeight: 1.6, maxWidth: 520 }}>
-            אורחי בילוי יומי ללא טיפול ספא ביום ההגעה — שליחה ידנית או מתוזמנת דרך מכשיר הסוויטות.
-            הטקסט ב-<strong>עורך סקריפטים → spa_upsell_daypass</strong>.
+            אורחי בילוי יומי ללא טיפול ספא ביום ההגעה — שליחה ידנית או מתוזמנת.
+            בחרו ערוץ: <strong>מכשיר סוויטות</strong> (מיד) או <strong>Dream Bot</strong> (תבנית dream_spa_package).
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -280,6 +295,7 @@ export default function SpaUpsellDispatchPanel({ initialDate, onToast }) {
           scriptText={scriptText}
           pulseSeconds={SPA_UPSELL_SEND_PULSE_MS / 1000}
           sending={sending}
+          metaTemplateStatus={metaTemplateStatus}
           onClose={() => { if (!sending) setModalOpen(false); }}
           onSendNow={handleSendNow}
           onSchedule={handleSchedule}

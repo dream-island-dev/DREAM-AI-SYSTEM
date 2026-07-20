@@ -19,6 +19,7 @@ const PRODUCTION_PARAM_COUNT_FALLBACK: Record<string, number> = {
   dream_room_ready1: 1,
   dream_survey_invite: 1,
   dream_spa_warmup: 2,
+  dream_spa_package: 1,
   dream_daypass_eve: 1,
 };
 
@@ -34,6 +35,8 @@ const TEMPLATE_BODY_PARAM_SNAPSHOTS: Record<string, string> = {
     "היי{{1}}, תודה שביליתם איתנו היום! 🌴\n\nנשמח שתדרגו את החוויה שלכם במתחם 🙏🏽",
   dream_spa_warmup:
     "היי {{1}}, עוד קצת ומתחיל הטיפול המפנק שלכם בספא ({{2}}) 💆✨\n\nזה הזמן להירגע, לנשום עמוק ולהתחיל לעבור למצב פינוק. ניפגש בקרוב!",
+  dream_spa_package:
+    "היי {{1}} 💆\nלקראת הגעתכם למתחם, נשמח להציע לכם עיסוי מרגיע של 45 דק׳ להזמנה שלכם ב-300 ₪ לאדם בלבד (מחיר מלא 370 ₪).\nהשיבו לנו כאן וניצור עימכם קשר לצורך תיאום 🙏",
   dream_daypass_eve:
     "היי {{1}}, מחר מחכה לכם יום מדהים בדרים איילנד! ☀️",
 };

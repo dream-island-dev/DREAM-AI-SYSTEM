@@ -296,6 +296,7 @@ const PIPELINE_TEMPLATE: Record<string, string> = {
   night_before_daypass: "dream_daypass_eve",           // day-pass T-1 — QR opens Meta 24h window
   survey_invite_daypass: "dream_survey_invite",        // day-pass+spa 17:00 survey — URL btn → portal/#survey
   spa_warmup_daypass: "dream_spa_warmup",              // spa_time − X min (ACC; default 30) — Meta backup when Whapi/window fails
+  spa_upsell_daypass: "dream_spa_package",             // manual day-pass spa upsell — Meta template (Whapi = bot_scripts session)
 };
 
 /** Hardcoded bot_scripts keys when automation_stages.session_message_script_key
@@ -313,6 +314,7 @@ const PIPELINE_SESSION_SCRIPT: Record<string, string> = {
   checkout_fb_daypass:  "checkout_fb_daypass",
   spa_warmup_daypass:   "spa_warmup_daypass",
   survey_invite_daypass: "survey_invite_daypass",
+  spa_upsell_daypass:   "spa_upsell_daypass",
 };
 
 // ── Synchronous day-of-week aware timing helper ───────────────────────────────
@@ -394,6 +396,7 @@ const PIPELINE_VARS: Record<string, (g: Record<string, unknown>) => string[]> = 
     String(g.name ?? ""),
     normalizeHmTime(g.spa_time) || "10:00",
   ],
+  spa_upsell_daypass: (g) => [String(g.name ?? "")],
 };
 
 // Maps each pipeline trigger to the DB flag it atomically stamps.
@@ -411,6 +414,7 @@ const GUEST_FLAG: Record<string, string> = {
   stage_2_arrival:     "msg_stage_2_arrival_sent",
   survey_invite_daypass: "msg_survey_invite_sent",
   spa_warmup_daypass:    "msg_spa_warmup_sent",
+  spa_upsell_daypass:    "msg_spa_upsell_sent",
 };
 
 // ── Stage 2.5 (night_before) — Sabbath/Holiday-aware entry/check-in times ───
@@ -520,6 +524,7 @@ const THREE_PARAM_TIMING_TEMPLATES = new Set([
 const ONE_PARAM_NAME_TEMPLATES = new Set([
   "night_before_suites",
   "night_before_suites_shabbat",
+  "dream_spa_package",
 ]);
 
 function buildNameOnlyTemplateVars(guest: Record<string, unknown>): string[] {

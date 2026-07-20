@@ -92,11 +92,8 @@ const TEMPLATES = [
     name: "dream_spa_package", category: "MARKETING", language: "he",
     components: [{
       type: "BODY",
-      text: "שלום {{1}}, חשבנו עליכם — " +
-            "חבילות הספא של דרים איילנד מושלמות לבריחה קצרה. " +
-            "Classic & More, Deluxe עם טיפול ספא, Special Dream זוגי עם ואטסו או חמאם. " +
-            "הכל כולל מסעדת ערמונים. לפרטים ולהזמנה: {{2}} — שמרו מקום",
-      example: { body_text: [["ישראל ישראלי", "https://dream-island.co.il/spa"]] },
+      text: "היי {{1}} 💆\nלקראת הגעתכם למתחם, נשמח להציע לכם עיסוי מרגיע של 45 דק׳ להזמנה שלכם ב-300 ₪ לאדם בלבד (מחיר מלא 370 ₪).\nהשיבו לנו כאן וניצור עימכם קשר לצורך תיאום 🙏",
+      example: { body_text: [["ישראל ישראלי"]] },
     }],
   },
 
