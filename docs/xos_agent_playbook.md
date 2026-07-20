@@ -416,6 +416,11 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
+### 2026-07-20 — Hand-rolled MIME regex parsing breaks on real Gmail forwards; use a real parser
+- **Symptom:** `ezgo-mail-sync` found forwarded Operations emails via IMAP (mailbox scan worked) but every one landed as `skipped`/0 rows — the EZGO HTML table never made it out of the raw message source.
+- **Root:** `extractBodiesFromSource` hand-parsed MIME with regex (boundary splitting, manual quoted-printable/base64 decode). This is fragile against real-world Gmail forwards: nested multipart (`multipart/mixed` → `multipart/related` → `multipart/alternative`), inline images, and occasionally the original message forwarded as a raw `message/rfc822` part rather than inlined HTML — none of which a single regex pass reliably survives.
+- **Fix pattern:** Replaced the regex parser with `npm:postal-mime` (works natively in Deno, zero Node-specific deps) — `PostalMime.parse(rawBytes)` returns decoded `.html`/`.text` directly, and correctly recurses into `message/rfc822` attachments when needed. Don't hand-roll MIME/RFC822 parsing for anything that has to survive real mail clients' quirks (Gmail, Outlook, forwards, nested parts) — always reach for a maintained parser library first.
+
 ### 2026-07-20 — `supabase functions deploy` bundles the disk, not git — uncommitted `_shared` changes ride along silently
 - **Symptom:** Deploying `whapi-webhook` for an unrelated feature (spa upsell offer) also uploaded `_shared/oritGuestOutbound.ts`, `oritAgentOritDecision.ts`, and `oritAgentAi.ts` — files with substantial uncommitted edits from a prior, unfinished session (96 insertions / 55 deletions), because `whapi-webhook` imports them.
 - **Root:** The CLI reads the current working tree, not `git status` or `HEAD` — every transitive `_shared` import gets bundled regardless of commit state. There is no warning when a deploy target's dependency graph includes dirty files unrelated to the task at hand.
