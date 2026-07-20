@@ -32,7 +32,7 @@ Deno.test("unknown sender is blocked when allowlist is set", () => {
   if (ok) throw new Error("expected unknown sender to be blocked");
 });
 
-Deno.test("extractBodiesFromSource picks nested forward HTML with EZGO table", () => {
+Deno.test("extractBodiesFromSource picks nested forward HTML with EZGO table (base64)", async () => {
   const mime = [
     "Content-Type: multipart/alternative; boundary=abc",
     "",
@@ -47,8 +47,30 @@ Deno.test("extractBodiesFromSource picks nested forward HTML with EZGO table", (
     btoa('<html><body><div class="gmail_quote"><table><tr><td>276034:</td></tr></table></div></body></html>'),
     "--abc--",
   ].join("\r\n");
-  const { html } = extractBodiesFromSource(mime);
+  const { html } = await extractBodiesFromSource(mime);
   if (!html.includes("276034")) {
     throw new Error("expected EZGO table html from forwarded mime");
+  }
+});
+
+Deno.test("extractBodiesFromSource picks nested forward HTML with EZGO table (quoted-printable)", async () => {
+  const mime = [
+    "Content-Type: multipart/alternative; boundary=abc",
+    "",
+    "--abc",
+    "Content-Type: text/plain",
+    "",
+    "forward wrapper",
+    "--abc",
+    "Content-Type: text/html; charset=utf-8",
+    "Content-Transfer-Encoding: quoted-printable",
+    "",
+    '<html><body><div class=3D"gmail_quote"><table><tr><td>276034:</td></tr=',
+    "></table></div></body></html>",
+    "--abc--",
+  ].join("\r\n");
+  const { html } = await extractBodiesFromSource(mime);
+  if (!html.includes("276034")) {
+    throw new Error("expected EZGO table html from quoted-printable forwarded mime");
   }
 });

@@ -1,6 +1,7 @@
 // Gmail / IMAP fetch for EZGO mail sync — preserves HTML body for Doc1 parsing.
 
 import { ImapFlow } from "npm:imapflow@1.0.168";
+import PostalMime from "npm:postal-mime@2";
 
 export type EzgoInboundMail = {
   id: string;
@@ -71,43 +72,6 @@ export function isSenderAllowed(fromEmail: string, allowlist: string[]): boolean
   return allowlist.some((a) => email === a || email.endsWith(`@${a}`));
 }
 
-function decodeQuotedPrintable(input: string): string {
-  const softBreaks = String(input).replace(/=\r?\n/g, "");
-  const bytes: number[] = [];
-  for (let i = 0; i < softBreaks.length; i++) {
-    if (softBreaks[i] === "=" && i + 2 < softBreaks.length) {
-      const hex = softBreaks.slice(i + 1, i + 3);
-      if (/^[0-9A-Fa-f]{2}$/.test(hex)) {
-        bytes.push(parseInt(hex, 16));
-        i += 2;
-        continue;
-      }
-    }
-    bytes.push(softBreaks.charCodeAt(i) & 0xff);
-  }
-  try {
-    return new TextDecoder("utf-8").decode(new Uint8Array(bytes));
-  } catch {
-    return String.fromCharCode(...bytes);
-  }
-}
-
-function decodePartBody(raw: string, cte: string | undefined): string {
-  const body = raw.trim();
-  const enc = (cte || "").toLowerCase();
-  if (enc === "quoted-printable") return decodeQuotedPrintable(body);
-  if (enc === "base64") {
-    try {
-      const bin = atob(body.replace(/\s/g, ""));
-      const arr = Uint8Array.from(bin, (c) => c.charCodeAt(0));
-      return new TextDecoder("utf-8").decode(arr);
-    } catch {
-      return "";
-    }
-  }
-  return body;
-}
-
 function stripHtmlToText(html: string): string {
   return html
     .replace(/<style[\s\S]*?<\/style>/gi, " ")
@@ -117,40 +81,56 @@ function stripHtmlToText(html: string): string {
     .trim();
 }
 
-/** Walk all MIME text/html parts — prefer longest part that contains an EZGO table (forwards). */
-export function extractBodiesFromSource(source: string): { text: string; html: string; preview: string } {
-  let text = "";
+type ParsedMimeEmail = { html?: string; text?: string; attachments?: Array<{ mimeType?: string; content?: unknown }> };
+
+async function parseMimeSource(source: Uint8Array | string): Promise<ParsedMimeEmail | null> {
+  try {
+    return await PostalMime.parse(source) as ParsedMimeEmail;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Decode raw RFC822 source via postal-mime — handles nested multipart, quoted-printable/
+ * base64, and charsets correctly. Forwards that attach the original message as a raw
+ * message/rfc822 part are unwrapped recursively to reach the EZGO table.
+ */
+export async function extractBodiesFromSource(
+  source: Uint8Array | string,
+): Promise<{ text: string; html: string; preview: string }> {
   let html = "";
+  let text = "";
 
-  const htmlPartRe =
-    /Content-Type:\s*text\/html[^\n]*\n(?:[^\n]*\n)*?\n([\s\S]*?)(?=\r?\n--[^\r\n]+|\r?\nContent-Type:|\r?\n\.\r?\n|$)/gi;
-  let htmlMatch: RegExpExecArray | null;
-  while ((htmlMatch = htmlPartRe.exec(source)) !== null) {
-    const partHeader = htmlMatch[0].slice(0, htmlMatch[0].indexOf("\n\n") + 2);
-    const cte = partHeader.match(/content-transfer-encoding:\s*([^\s;]+)/i)?.[1];
-    const body = decodePartBody(htmlMatch[1], cte);
-    if (body && /<table[\s>]/i.test(body) && body.length > html.length) html = body;
+  const email = await parseMimeSource(source);
+  if (email) {
+    html = email.html || "";
+    text = email.text || "";
+
+    if (!/<table[\s>]/i.test(html)) {
+      for (const att of email.attachments || []) {
+        if (att.mimeType !== "message/rfc822") continue;
+        const raw = att.content instanceof ArrayBuffer
+          ? new Uint8Array(att.content)
+          : typeof att.content === "string"
+            ? att.content
+            : null;
+        if (!raw) continue;
+        const nested = await parseMimeSource(raw);
+        if (nested?.html && /<table[\s>]/i.test(nested.html)) {
+          html = nested.html;
+          if (!text) text = nested.text || "";
+          break;
+        }
+      }
+    }
   }
 
-  const textPartRe =
-    /Content-Type:\s*text\/plain[^\n]*\n(?:[^\n]*\n)*?\n([\s\S]*?)(?=\r?\n--[^\r\n]+|\r?\nContent-Type:|\r?\n\.\r?\n|$)/gi;
-  let textMatch: RegExpExecArray | null;
-  while ((textMatch = textPartRe.exec(source)) !== null) {
-    const partHeader = textMatch[0].slice(0, textMatch[0].indexOf("\n\n") + 2);
-    const cte = partHeader.match(/content-transfer-encoding:\s*([^\s;]+)/i)?.[1];
-    const body = decodePartBody(textMatch[1], cte);
-    if (body && body.length > text.length) text = body;
-  }
-
-  if (!html) {
-    const inline = source.match(/<html[\s\S]*?<\/html>/i);
+  if (!html && text) {
+    const inline = text.match(/<html[\s\S]*?<\/html>/i);
     if (inline && /<table[\s>]/i.test(inline[0])) html = inline[0];
   }
   if (!text && html) text = stripHtmlToText(html);
-  if (!text) {
-    const afterHeaders = source.split(/\r?\n\r?\n/).slice(1).join("\n\n");
-    text = afterHeaders.slice(0, 12000).trim();
-  }
 
   const preview = (text || stripHtmlToText(html)).replace(/\s+/g, " ").slice(0, 500);
   return { text: text.slice(0, 12000), html: html.slice(0, 500_000), preview };
@@ -197,7 +177,7 @@ async function searchAllowlistedUids(
   return { uids: [], method: "sequence_scan" };
 }
 
-function messageFromFetch(
+async function messageFromFetch(
   msg: {
     uid?: number;
     envelope?: { from?: Array<{ address?: string; name?: string }>; subject?: string; date?: Date };
@@ -205,14 +185,13 @@ function messageFromFetch(
     headers?: Map<string, string> | Headers;
   },
   allowlist: string[],
-): EzgoInboundMail | null {
+): Promise<EzgoInboundMail | null> {
   const env = msg.envelope;
   const fromRaw = env?.from?.[0];
   const fromEmail = fromRaw?.address?.toLowerCase() ?? "";
   if (!fromEmail || !isSenderAllowed(fromEmail, allowlist)) return null;
 
-  const sourceStr = msg.source ? new TextDecoder().decode(msg.source) : "";
-  const { text, html, preview } = extractBodiesFromSource(sourceStr);
+  const { text, html, preview } = await extractBodiesFromSource(msg.source || new Uint8Array());
   const headers = msg.headers;
   const messageId = (headers instanceof Map
     ? headers.get("message-id")
@@ -248,7 +227,7 @@ async function fetchMessagesByUidList(
     headers: ["message-id"],
   })) {
     meta.scannedRaw += 1;
-    const parsed = messageFromFetch(msg, allowlist);
+    const parsed = await messageFromFetch(msg, allowlist);
     if (!parsed) continue;
     meta.afterAllowlist += 1;
     out.push(parsed);
@@ -277,7 +256,7 @@ async function fetchRecentBySequence(
     headers: ["message-id"],
   })) {
     meta.scannedRaw += 1;
-    const parsed = messageFromFetch(msg, allowlist);
+    const parsed = await messageFromFetch(msg, allowlist);
     if (!parsed) continue;
     meta.afterAllowlist += 1;
     out.push(parsed);
