@@ -39,7 +39,7 @@ export default function EzgoMailSyncPanel({ showToast }) {
       .order("received_at", { ascending: false })
       .limit(30);
     if (error) {
-      showToast?.("err", error.message);
+      showToast?.(error.message, "err");
       return;
     }
     setIngests(data ?? []);
@@ -54,7 +54,7 @@ export default function EzgoMailSyncPanel({ showToast }) {
       .eq("ingest_id", ingestId)
       .order("line_index", { ascending: true });
     if (error) {
-      showToast?.("err", error.message);
+      showToast?.(error.message, "err");
       return;
     }
     setLines(data ?? []);
@@ -72,10 +72,10 @@ export default function EzgoMailSyncPanel({ showToast }) {
       const msg = data?.skipped
         ? "סנכרון מייל כבוי (EZGO_MAIL_SYNC_ENABLED)"
         : `נסרקו ${data.scanned ?? 0} מיילים · חדשים ${data.processed ?? 0}`;
-      showToast?.("ok", msg);
+      showToast?.(msg, "ok");
       await loadIngests();
     } catch (e) {
-      showToast?.("err", e.message);
+      showToast?.(e.message, "err");
     } finally {
       setSyncing(false);
     }
@@ -83,13 +83,13 @@ export default function EzgoMailSyncPanel({ showToast }) {
 
   const applyLine = async (line) => {
     if (!line.match_guest_id || line.action === "no_match") {
-      showToast?.("err", "אין פרופיל לעדכון — ייבא Doc2 או צור אורח ידנית");
+      showToast?.("אין פרופיל לעדכון — ייבא Doc2 או צור אורח ידנית", "err");
       return;
     }
     const patch = line.proposed_patch || {};
     if (!Object.keys(patch).length) {
       await supabase.from("ezgo_mail_import_lines").update({ status: "skipped" }).eq("id", line.id);
-      showToast?.("ok", "אין שדות חדשים — דולג");
+      showToast?.("אין שדות חדשים — דולג", "ok");
       await loadLines(selectedId);
       return;
     }
@@ -106,7 +106,7 @@ export default function EzgoMailSyncPanel({ showToast }) {
       const safePatch = buildDoc1EnrichmentPatch(line.parsed_json, guest);
       if (!Object.keys(safePatch).length) {
         await supabase.from("ezgo_mail_import_lines").update({ status: "skipped" }).eq("id", line.id);
-        showToast?.("ok", "אין שדות חדשים");
+        showToast?.("אין שדות חדשים", "ok");
         await loadLines(selectedId);
         return;
       }
@@ -120,11 +120,11 @@ export default function EzgoMailSyncPanel({ showToast }) {
         proposed_patch: safePatch,
       }).eq("id", line.id);
 
-      showToast?.("ok", `עודכן: ${guest.name}`);
+      showToast?.(`עודכן: ${guest.name}`, "ok");
       await loadLines(selectedId);
       await loadIngests();
     } catch (e) {
-      showToast?.("err", e.message);
+      showToast?.(e.message, "err");
     } finally {
       setBusy(false);
     }
@@ -143,7 +143,7 @@ export default function EzgoMailSyncPanel({ showToast }) {
         && Object.keys(l.proposed_patch || {}).length > 0,
     );
     if (!pending.length) {
-      showToast?.("err", "אין שורות בטוחות לאישור אוטומטי");
+      showToast?.("אין שורות בטוחות לאישור אוטומטי", "err");
       return;
     }
     setBusy(true);
@@ -155,7 +155,7 @@ export default function EzgoMailSyncPanel({ showToast }) {
       } catch { /* continue */ }
     }
     setBusy(false);
-    showToast?.("ok", `אושרו ${ok} שורות`);
+    showToast?.(`אושרו ${ok} שורות`, "ok");
   };
 
   const selected = ingests.find((i) => i.id === selectedId);

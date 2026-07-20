@@ -1,3 +1,4 @@
+2026-07-20 | EZGO mail sync CORS + toast fix | `ezgo-mail-sync` full CORS headers + staff auth; IMAP 55s budget; `EzgoMailSyncPanel` showToast arg order fixed.
 2026-07-20 | EZGO mail senders — Hagar + tzalamnadlan primary | `parseAllowlist` always includes `hagar.mesilati@dream-island.co.il` + `tzalamnadlan@gmail.com`; IMAP `SEARCH FROM` per sender (faster); relay-only gate removed.
 2026-07-20 | EZGO mail relay — tzalamnadlan forward backup | superseded by primary sender list above.
 2026-07-20 | EZGO Doc1 classify — DIV order cells | `looksLikeDoc1Html` accepts `276034:` inside `<DIV>` (not only line-start); fixes Operations HTML emails skipped as `unknown` by `ezgo-mail-sync`.

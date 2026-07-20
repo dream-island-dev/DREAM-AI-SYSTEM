@@ -18,10 +18,71 @@ import {
   matchDoc1Record,
 } from "../_shared/ezgoMailMatch.ts";
 
-const CORS = {
+const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type, prefer, x-supabase-api-version",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+  });
+}
+
+const IMAP_BUDGET_MS = 55_000;
+
+async function withImapBudget<T>(fn: () => Promise<T>): Promise<T> {
+  return await Promise.race([
+    fn(),
+    new Promise<T>((_, reject) => {
+      setTimeout(
+        () => reject(new Error("IMAP timeout — נסה שוב בעוד דקה או המתן ל-cron")),
+        IMAP_BUDGET_MS,
+      );
+    }),
+  ]);
+}
+
+async function assertEzgoMailStaff(
+  req: Request,
+  supabase: ReturnType<typeof createClient>,
+): Promise<Response | null> {
+  const authHeader = req.headers.get("Authorization") || "";
+  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+  // whatsapp-cron invokes with service role — skip user gate.
+  if (serviceKey && authHeader === `Bearer ${serviceKey}`) return null;
+
+  if (!authHeader.startsWith("Bearer ")) {
+    return jsonResponse({ ok: false, error: "נדרשת התחברות" }, 401);
+  }
+
+  const userClient = createClient(
+    Deno.env.get("SUPABASE_URL")!,
+    Deno.env.get("SUPABASE_ANON_KEY")!,
+    { global: { headers: { Authorization: authHeader } } },
+  );
+  const { data: { user }, error: userErr } = await userClient.auth.getUser();
+  if (userErr || !user) {
+    return jsonResponse({ ok: false, error: "סשן לא תקין — התחבר מחדש" }, 401);
+  }
+
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("role, status")
+    .eq("id", user.id)
+    .maybeSingle();
+
+  if (!profile || profile.status === "suspended") {
+    return jsonResponse({ ok: false, error: "אין הרשאה" }, 403);
+  }
+  if (!["super_admin", "admin", "manager", "staff"].includes(String(profile.role || ""))) {
+    return jsonResponse({ ok: false, error: "אין הרשאה לסנכרון מייל EZGO" }, 403);
+  }
+  return null;
+}
 
 async function processIngest(
   supabase: ReturnType<typeof createClient>,
@@ -131,31 +192,36 @@ async function processIngest(
 }
 
 serve(async (req: Request) => {
-  if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
+  if (req.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
+  }
+
+  if (req.method !== "POST") {
+    return jsonResponse({ ok: false, error: "method_not_allowed" }, 405);
+  }
 
   try {
-    if (!ezgoMailSyncEnabled()) {
-      return new Response(JSON.stringify({ ok: true, skipped: true, reason: "EZGO_MAIL_SYNC_ENABLED=false" }), {
-        status: 200,
-        headers: { ...CORS, "Content-Type": "application/json" },
-      });
-    }
-
-    const cfg = resolveEzgoImapConfig();
-    if (!cfg) {
-      return new Response(JSON.stringify({ ok: false, error: "EZGO_MAIL_IMAP not configured" }), {
-        status: 200,
-        headers: { ...CORS, "Content-Type": "application/json" },
-      });
-    }
-
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
     );
 
+    const authBlock = await assertEzgoMailStaff(req, supabase);
+    if (authBlock) return authBlock;
+
+    if (!ezgoMailSyncEnabled()) {
+      return jsonResponse({ ok: true, skipped: true, reason: "EZGO_MAIL_SYNC_ENABLED=false" });
+    }
+
+    const cfg = resolveEzgoImapConfig();
+    if (!cfg) {
+      return jsonResponse({ ok: false, error: "EZGO_MAIL_IMAP not configured" });
+    }
+
     const allowlist = parseAllowlist();
-    const messages = await fetchEzgoInboxMessages(cfg, 25, allowlist);
+    const messages = await withImapBudget(() =>
+      fetchEzgoInboxMessages(cfg, 25, allowlist)
+    );
 
     let processed = 0;
     let skipped = 0;
@@ -180,22 +246,16 @@ serve(async (req: Request) => {
       }
     }
 
-    return new Response(JSON.stringify({
+    return jsonResponse({
       ok: true,
       processed,
       skipped,
       failed,
       scanned: messages.length,
       details: details.slice(0, 10),
-    }), {
-      status: 200,
-      headers: { ...CORS, "Content-Type": "application/json" },
     });
   } catch (e) {
     console.error("[ezgo-mail-sync]", e);
-    return new Response(JSON.stringify({ ok: false, error: (e as Error).message }), {
-      status: 200,
-      headers: { ...CORS, "Content-Type": "application/json" },
-    });
+    return jsonResponse({ ok: false, error: (e as Error).message });
   }
 });
