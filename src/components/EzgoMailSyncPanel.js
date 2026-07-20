@@ -1,6 +1,7 @@
 // EzgoMailSyncPanel — review + apply EZGO mail import lines (Doc1).
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "../supabaseClient";
+import SpaUpsellConfirmModal from "./SpaUpsellConfirmModal";
 import { buildDoc1EnrichmentPatch } from "../utils/guestImportIntelligence";
 import {
   WORKFLOW_META,
@@ -8,6 +9,12 @@ import {
   resolveLineWorkflow,
   stripWorkflowPatch,
 } from "../utils/ezgoMailLineWorkflow";
+import {
+  fetchSpaUpsellDispatchMeta,
+  scheduleSpaUpsellTasks,
+  sendSpaUpsellBatch,
+  SPA_UPSELL_SEND_PULSE_MS,
+} from "../utils/spaUpsellDispatch";
 
 const WORKFLOW_SECTIONS = [
   { id: "suite_spa_sync", title: "🛏️ סנכרון שעות ספא — סוויטות", hint: "מזהה: מס׳ הזמנה → פרופיל סוויטה" },
@@ -33,8 +40,42 @@ function workflowBadge(workflow) {
   return WORKFLOW_META[workflow] || WORKFLOW_META.enrich;
 }
 
+function guestTargetFromLine(line) {
+  if (!line?.match_guest_id) return null;
+  const g = line.guests;
+  return {
+    id: line.match_guest_id,
+    name: g?.name ?? line.parsed_json?.guest_name ?? null,
+    phone: g?.phone ?? line.parsed_json?.phone ?? null,
+  };
+}
+
+const BTN = {
+  approve: {
+    padding: "4px 10px", borderRadius: 8, border: "none",
+    background: "var(--gold)", color: "#fff", fontWeight: 700, fontSize: 11,
+  },
+  create: {
+    padding: "4px 10px", borderRadius: 8, border: "none",
+    background: "#0e7490", color: "#fff", fontWeight: 700, fontSize: 11,
+  },
+  createSend: {
+    padding: "4px 10px", borderRadius: 8, border: "none",
+    background: "#155E75", color: "#fff", fontWeight: 700, fontSize: 11,
+  },
+  upsell: {
+    padding: "4px 10px", borderRadius: 8, border: "none",
+    background: "#A21CAF", color: "#fff", fontWeight: 700, fontSize: 11,
+  },
+  skip: {
+    padding: "4px 10px", borderRadius: 8,
+    border: "1px solid rgba(201,169,110,0.4)",
+    background: "transparent", color: "#ccc", fontSize: 11,
+  },
+};
+
 function LineCard({
-  line, reportDate, busy, onApply, onCreate, onReject, onGoUpsell,
+  line, reportDate, busy, onApply, onCreate, onCreateAndUpsell, onReject, onUpsell,
 }) {
   const rec = line.parsed_json || {};
   const workflow = resolveLineWorkflow(line, reportDate);
@@ -43,6 +84,12 @@ function LineCard({
   const done = ["applied", "rejected", "skipped"].includes(line.status);
   const isCreate = line.action === "create" || workflow.startsWith("daypass_create");
   const isUpsell = workflow === "daypass_upsell";
+  const canUpsell = isUpsell && line.match_guest_id;
+  const canCreateSend = workflow === "daypass_create" && rec.phone;
+  const canApprove = !isCreate && !isUpsell
+    && line.action !== "no_match"
+    && workflow !== "noop"
+    && line.match_guest_id;
 
   return (
     <div
@@ -59,13 +106,69 @@ function LineCard({
         }}>
           {badge.text}
         </span>
-        <strong style={{ fontSize: 14 }}>
+        <strong style={{ fontSize: 14, color: "var(--gold-light)" }}>
           {rec.guest_name || "—"}
           {rec.order_number ? ` · #${rec.order_number}` : ""}
         </strong>
         {rec.phone && <span style={{ fontSize: 12, color: "#aaa" }}>{rec.phone}</span>}
+        {rec.spa_time && (
+          <span style={{ fontSize: 11, color: "#7dd3fc" }}>ספא {rec.spa_time}</span>
+        )}
         {line.status !== "pending_review" && (
           <span style={{ fontSize: 11, color: "#888" }}>{line.status}</span>
+        )}
+
+        {line.status === "pending_review" && (
+          <div style={{ marginRight: "auto", display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {canApprove && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => onApply(line)}
+                style={{ ...BTN.approve, cursor: busy ? "wait" : "pointer" }}
+              >
+                ✓ אשר
+              </button>
+            )}
+            {canUpsell && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => onUpsell(line)}
+                style={{ ...BTN.upsell, cursor: busy ? "wait" : "pointer" }}
+              >
+                💆 שלח הצעת ספא
+              </button>
+            )}
+            {isCreate && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => onCreate(line)}
+                style={{ ...BTN.create, cursor: busy ? "wait" : "pointer" }}
+              >
+                ☀️ צור פרופיל
+              </button>
+            )}
+            {canCreateSend && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => onCreateAndUpsell(line)}
+                style={{ ...BTN.createSend, cursor: busy ? "wait" : "pointer" }}
+              >
+                ☀️💆 צור + שלח
+              </button>
+            )}
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => onReject(line)}
+              style={{ ...BTN.skip, cursor: busy ? "wait" : "pointer" }}
+            >
+              ✗ דלג
+            </button>
+          </div>
         )}
       </div>
       <div style={{ fontSize: 12, color: "#bbb", marginTop: 6 }}>
@@ -75,63 +178,6 @@ function LineCard({
       {labels.length > 0 && (
         <div style={{ fontSize: 12, marginTop: 6, color: "var(--gold-light)" }}>
           יתווסף: {labels.join(" · ")}
-        </div>
-      )}
-      {line.status === "pending_review" && (
-        <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-          {isUpsell && (
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => onGoUpsell(reportDate)}
-              style={{
-                padding: "6px 12px", borderRadius: 8, border: "none",
-                background: "#0e7490", color: "#fff", fontWeight: 700, fontSize: 12,
-                cursor: busy ? "wait" : "pointer",
-              }}
-            >
-              💆 עבור להצעת ספא
-            </button>
-          )}
-          {isCreate ? (
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => onCreate(line)}
-              style={{
-                padding: "6px 12px", borderRadius: 8, border: "none",
-                background: "#0e7490", color: "#fff", fontWeight: 700, fontSize: 12,
-                cursor: busy ? "wait" : "pointer",
-              }}
-            >
-              ☀️ צור פרופיל
-            </button>
-          ) : (
-            <button
-              type="button"
-              disabled={busy || line.action === "no_match" || workflow === "noop"}
-              onClick={() => onApply(line)}
-              style={{
-                padding: "6px 12px", borderRadius: 8, border: "none",
-                background: (line.action === "no_match" || workflow === "noop") ? "#ccc" : "var(--gold)",
-                color: "#fff", fontWeight: 700, fontSize: 12, cursor: busy ? "wait" : "pointer",
-              }}
-            >
-              ✓ אשר
-            </button>
-          )}
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => onReject(line)}
-            style={{
-              padding: "6px 12px", borderRadius: 8,
-              border: "1px solid rgba(201,169,110,0.4)",
-              background: "transparent", color: "#ccc", fontSize: 12, cursor: "pointer",
-            }}
-          >
-            ✗ דלג
-          </button>
         </div>
       )}
     </div>
@@ -144,6 +190,11 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
   const [lines, setLines] = useState([]);
   const [busy, setBusy] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [upsellModal, setUpsellModal] = useState(null);
+  const [scriptText, setScriptText] = useState("");
+  const [metaTemplateStatus, setMetaTemplateStatus] = useState(null);
+  const [upsellSending, setUpsellSending] = useState(false);
+  const [upsellProgress, setUpsellProgress] = useState(null);
 
   const loadIngests = useCallback(async () => {
     const { data, error } = await supabase
@@ -265,24 +316,106 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
     }
   };
 
-  const createLine = async (line) => {
+  const createLineInternal = async (line) => {
     const rec = line.parsed_json || {};
-    if (!rec.phone) {
-      showToast?.("חסר טלפון — לא ניתן ליצור פרופיל", "err");
-      return;
-    }
-    setBusy(true);
-    try {
-      const inserted = await createDaypassGuestFromRec(supabase, rec, reportDate);
+    if (!rec.phone) throw new Error("חסר טלפון — לא ניתן ליצור פרופיל");
+    const inserted = await createDaypassGuestFromRec(supabase, rec, reportDate);
+    await supabase.from("ezgo_mail_import_lines").update({
+      status: "applied",
+      applied_at: new Date().toISOString(),
+      match_guest_id: inserted?.id ?? null,
+      match_method: "manual",
+      match_label: `נוצר פרופיל · ${inserted?.name || rec.guest_name || rec.phone}`,
+      proposed_patch: { _workflow: resolveLineWorkflow(line, reportDate) },
+    }).eq("id", line.id);
+    return inserted;
+  };
+
+  const markUpsellLinesApplied = async (guestIds, lineIds = []) => {
+    const guestSet = new Set(guestIds);
+    const lineSet = new Set(lineIds);
+    const toMark = lines.filter((l) => {
+      if (l.status !== "pending_review") return false;
+      if (lineSet.has(l.id)) return true;
+      return l.match_guest_id
+        && guestSet.has(l.match_guest_id)
+        && resolveLineWorkflow(l, reportDate) === "daypass_upsell";
+    });
+    for (const line of toMark) {
       await supabase.from("ezgo_mail_import_lines").update({
         status: "applied",
         applied_at: new Date().toISOString(),
-        match_guest_id: inserted?.id ?? null,
-        match_method: "manual",
-        match_label: `נוצר פרופיל · ${inserted?.name || rec.guest_name || rec.phone}`,
-        proposed_patch: { _workflow: resolveLineWorkflow(line, reportDate) },
+        match_label: `${line.match_label || ""} · הצעת ספא נשלחה`.trim(),
       }).eq("id", line.id);
-      showToast?.(`נוצר: ${inserted?.name || rec.guest_name}`, "ok");
+    }
+  };
+
+  const openUpsellModal = async (targets, lineIds = []) => {
+    if (!targets?.length) {
+      showToast?.("אין אורחים לשליחת הצעת ספא", "err");
+      return;
+    }
+    const meta = await fetchSpaUpsellDispatchMeta(supabase);
+    setScriptText(meta.scriptText);
+    setMetaTemplateStatus(meta.metaTemplateStatus);
+    setUpsellModal({ targets, lineIds });
+  };
+
+  const handleUpsellSendNow = async (channel) => {
+    if (!upsellModal?.targets?.length) return;
+    setUpsellSending(true);
+    try {
+      const results = await sendSpaUpsellBatch(
+        supabase,
+        upsellModal.targets,
+        channel,
+        setUpsellProgress,
+      );
+      const sentIds = results.filter((r) => r.result === "sent").map((r) => r.guest.id);
+      if (sentIds.length) {
+        await markUpsellLinesApplied(sentIds, upsellModal.lineIds);
+        showToast?.(`💆 נשלחו ${sentIds.length} הצעות ספא`, "ok");
+      } else {
+        showToast?.("לא נשלחה אף הודעה", "err");
+      }
+      setUpsellModal(null);
+      await loadLines(selectedId);
+      await loadIngests();
+    } catch (e) {
+      showToast?.(e.message, "err");
+    } finally {
+      setUpsellSending(false);
+      setUpsellProgress(null);
+    }
+  };
+
+  const handleUpsellSchedule = async (payload) => {
+    if (!payload?.length) return;
+    setUpsellSending(true);
+    try {
+      const { count, error } = await scheduleSpaUpsellTasks(supabase, payload);
+      if (error) throw error;
+      const guestIds = payload.map((p) => p.guest_id);
+      await markUpsellLinesApplied(guestIds, upsellModal?.lineIds ?? []);
+      const whenLabel = payload[0] ? `${payload[0].schedule_date} ${payload[0].schedule_time}` : null;
+      showToast?.(whenLabel
+        ? `📅 תוזמנו ${count} הצעות ספא ל-${whenLabel}`
+        : `📅 תוזמנו ${count} הצעות ספא`, "ok");
+      setUpsellModal(null);
+      await loadLines(selectedId);
+      await loadIngests();
+    } catch (e) {
+      showToast?.(e.message, "err");
+    } finally {
+      setUpsellSending(false);
+    }
+  };
+
+  const createLine = async (line) => {
+    setBusy(true);
+    try {
+      const inserted = await createLineInternal(line);
+      showToast?.(`נוצר: ${inserted?.name || line.parsed_json?.guest_name}`, "ok");
       await loadLines(selectedId);
       await loadIngests();
     } catch (e) {
@@ -290,6 +423,45 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
     } finally {
       setBusy(false);
     }
+  };
+
+  const createAndUpsellLine = async (line) => {
+    setBusy(true);
+    try {
+      const inserted = await createLineInternal(line);
+      showToast?.(`נוצר: ${inserted?.name || line.parsed_json?.guest_name}`, "ok");
+      await loadLines(selectedId);
+      await loadIngests();
+      if (inserted?.id) {
+        await openUpsellModal(
+          [{ id: inserted.id, name: inserted.name, phone: inserted.phone }],
+          [line.id],
+        );
+      }
+    } catch (e) {
+      showToast?.(e.message, "err");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const upsellLine = async (line) => {
+    const target = guestTargetFromLine(line);
+    if (!target) {
+      showToast?.("אין פרופיל מקושר", "err");
+      return;
+    }
+    await openUpsellModal([target], [line.id]);
+  };
+
+  const upsellBatchForSection = async (workflowId) => {
+    const pending = (grouped[workflowId] || []).filter((l) => l.status === "pending_review");
+    const targets = pending
+      .map((l) => guestTargetFromLine(l))
+      .filter((t) => t?.id);
+    const unique = [...new Map(targets.map((t) => [t.id, t])).values()];
+    const lineIds = pending.map((l) => l.id);
+    await openUpsellModal(unique, lineIds);
   };
 
   const rejectLine = async (line) => {
@@ -327,16 +499,41 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
     let ok = 0;
     for (const line of pending) {
       try {
-        await createLine(line);
+        await createLineInternal(line);
         ok += 1;
       } catch { /* continue */ }
     }
     showToast?.(`נוצרו ${ok} פרופילים`, "ok");
+    await loadLines(selectedId);
+    await loadIngests();
   };
 
-  const goUpsell = (dateYmd) => {
-    onSpaUpsellNavigate?.(dateYmd || reportDate);
-    showToast?.("עברת ללשונית הצעת ספא", "ok");
+  const createBatchThenUpsell = async (workflowId) => {
+    const pending = grouped[workflowId]?.filter((l) => l.status === "pending_review" && l.action === "create") || [];
+    if (!pending.length) {
+      showToast?.("אין פרופילים ליצירה", "err");
+      return;
+    }
+    setBusy(true);
+    const created = [];
+    const lineIds = [];
+    try {
+      for (const line of pending) {
+        try {
+          const inserted = await createLineInternal(line);
+          if (inserted?.id) {
+            created.push({ id: inserted.id, name: inserted.name, phone: inserted.phone });
+            lineIds.push(line.id);
+          }
+        } catch { /* continue */ }
+      }
+      showToast?.(`נוצרו ${created.length} פרופילים`, "ok");
+      await loadLines(selectedId);
+      await loadIngests();
+      if (created.length) await openUpsellModal(created, lineIds);
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -437,29 +634,44 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
                           </button>
                         )}
                         {(section.id === "daypass_create" || section.id === "daypass_create_spa") && pendingInSection > 0 && (
-                          <button
-                            type="button"
-                            disabled={busy}
-                            onClick={() => createBatch(section.id)}
-                            style={{
-                              marginRight: "auto", padding: "5px 10px", borderRadius: 8, border: "none",
-                              background: "#0e7490", color: "#fff", fontWeight: 700, fontSize: 11,
-                            }}
-                          >
-                            צור הכל ({pendingInSection})
-                          </button>
+                          <div style={{ marginRight: "auto", display: "flex", gap: 6, flexWrap: "wrap" }}>
+                            <button
+                              type="button"
+                              disabled={busy || upsellSending}
+                              onClick={() => createBatch(section.id)}
+                              style={{
+                                padding: "5px 10px", borderRadius: 8, border: "none",
+                                background: "#0e7490", color: "#fff", fontWeight: 700, fontSize: 11,
+                              }}
+                            >
+                              צור הכל ({pendingInSection})
+                            </button>
+                            {section.id === "daypass_create" && (
+                              <button
+                                type="button"
+                                disabled={busy || upsellSending}
+                                onClick={() => createBatchThenUpsell(section.id)}
+                                style={{
+                                  padding: "5px 10px", borderRadius: 8, border: "none",
+                                  background: "#155E75", color: "#fff", fontWeight: 700, fontSize: 11,
+                                }}
+                              >
+                                ☀️💆 צור הכל + תזמן/שלח ({pendingInSection})
+                              </button>
+                            )}
+                          </div>
                         )}
                         {section.id === "daypass_upsell" && pendingInSection > 0 && (
                           <button
                             type="button"
-                            disabled={busy}
-                            onClick={() => goUpsell(reportDate)}
+                            disabled={busy || upsellSending}
+                            onClick={() => upsellBatchForSection("daypass_upsell")}
                             style={{
                               marginRight: "auto", padding: "5px 10px", borderRadius: 8, border: "none",
-                              background: "#0e7490", color: "#fff", fontWeight: 700, fontSize: 11,
+                              background: "#A21CAF", color: "#fff", fontWeight: 700, fontSize: 11,
                             }}
                           >
-                            💆 פתח הצעת ספא
+                            💆 שלח / תזמן לכולם ({pendingInSection})
                           </button>
                         )}
                       </div>
@@ -468,11 +680,12 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
                           key={line.id}
                           line={line}
                           reportDate={reportDate}
-                          busy={busy}
+                          busy={busy || upsellSending}
                           onApply={applyLine}
                           onCreate={createLine}
+                          onCreateAndUpsell={createAndUpsellLine}
                           onReject={rejectLine}
-                          onGoUpsell={goUpsell}
+                          onUpsell={upsellLine}
                         />
                       ))}
                     </div>
@@ -485,6 +698,28 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
           )}
         </div>
       </div>
+
+      {upsellModal && (
+        <SpaUpsellConfirmModal
+          targets={upsellModal.targets}
+          scriptText={scriptText}
+          pulseSeconds={SPA_UPSELL_SEND_PULSE_MS / 1000}
+          sending={upsellSending}
+          metaTemplateStatus={metaTemplateStatus}
+          onClose={() => { if (!upsellSending) setUpsellModal(null); }}
+          onSendNow={handleUpsellSendNow}
+          onSchedule={handleUpsellSchedule}
+        />
+      )}
+      {upsellSending && upsellProgress && (
+        <div style={{
+          position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)",
+          background: "#4C1D95", color: "#fff", padding: "10px 18px", borderRadius: 10,
+          fontSize: 13, fontWeight: 700, zIndex: 10060,
+        }}>
+          ⏳ שולח הצעת ספא {upsellProgress.current}/{upsellProgress.total}...
+        </div>
+      )}
     </div>
   );
 }
