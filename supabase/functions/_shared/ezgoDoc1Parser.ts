@@ -339,7 +339,9 @@ export function defaultDoc1ParseOpts(fullReport = true): Doc1ParseOpts {
 
 export function looksLikeDoc1Html(text: string): boolean {
   const s = String(text || "").trimStart().replace(/^\uFEFF/, "");
-  return /<!DOCTYPE\s+html|<html[\s>]|<table[\s>]/i.test(s) && /^\d+:/m.test(s.replace(/<[^>]+>/g, " "));
+  const plain = s.replace(/<[^>]+>/g, " ");
+  // Order cells are often inside <DIV>276034: — not at line start after tag strip.
+  return /<!DOCTYPE\s+html|<html[\s>]|<table[\s>]/i.test(s) && /(?:^|\s)\d+:/m.test(plain);
 }
 
 export function looksLikeDoc1Tsv(text: string): boolean {
