@@ -416,6 +416,11 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
+### 2026-07-20 — A settings panel that `select("*")`s a table must never blind-upsert the whole map back
+- **Symptom found while scoping a fix, not from a bug report:** `BotConfigPanel.js` fetches every `bot_config` row (`select("*")`, all categories) into one `config` map so it can render three tabs, but `handleSave` re-upserted `Object.values(config)` — every row, including categories the panel never displays (e.g. `restaurant_kiosk_ui`, `guest_club_ui`). Any admin saving Persona/Knowledge/Rules silently rewrote unrelated settings rows with their already-loaded (usually unchanged) values.
+- **Why it mattered here:** adding a RESTRICTIVE RLS policy to lock one `config_key` to `super_admin` only (migration 262, shift-manager kiosk PIN) would have broken every `admin`-role save in this panel, since the batched upsert statement fails atomically if RLS rejects any single row in it.
+- **Fix pattern:** scope the save payload to the categories the panel actually owns (`rows.filter(item => CATEGORIES.some(c => c.id === item.category))`) before upserting. Any panel that loads a superset of a table for convenience must write back only the subset it's actually responsible for.
+
 ### 2026-07-19 — Automation trusts `guests.room`, not `room_type` alone
 - **Symptom:** Premium Day guests received suite stages (`night_before`, `morning_suite`); guests with `room_type=suite` but empty `room` entered suite cron.
 - **Root:** `isEffectiveSuiteGuest` treated `room_type === "suite"` as sufficient; Premium Day 1/2 not recognized server-side; no `missing_room_assignment` gate.
