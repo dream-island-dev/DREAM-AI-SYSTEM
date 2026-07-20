@@ -28,7 +28,7 @@ import {
   enrichProfilesFromExcel,
   normalizeGuestPhoneEdit,
 } from "../utils/ezgoParser";
-import { mergeCandidates, classifyDbMatch, buildExistingGuestsLookup, findExistingGuestRow, buildMultiRoomLineIndexMap, formatMultiRoomLineLabel, bookingGuestKey, getDbMatchDiffLabels, buildEnrichGuestPatch, resolveCandidateRoomDisplay, buildCombinedRoomLabel, buildDoc2SyncActionLabel } from "../utils/guestImportIntelligence";
+import { mergeCandidates, classifyDbMatch, buildExistingGuestsLookup, findExistingGuestRow, findGuestForDoc1Enrichment, buildDoc1EnrichmentPatch, buildMultiRoomLineIndexMap, formatMultiRoomLineLabel, bookingGuestKey, getDbMatchDiffLabels, buildEnrichGuestPatch, resolveCandidateRoomDisplay, buildCombinedRoomLabel, buildDoc2SyncActionLabel } from "../utils/guestImportIntelligence";
 import { SUITE_ARRIVALS_SCHEMA, buildMaskedSample, detectSuiteArrivalsPreset, detectEzgoArrivalsPreset, applyFieldDefaultsToProfiles, parseMappingMemory, packMappingMemory, normalizeImportRows, normalizeImportHeaderKey, isMappingUsable, resolveImportMapping, matrixRowsFromHeaderScan, diagnoseEzgoPresetMiss, canonicalizeEzgoSuiteRows, EZGO_CORE_HEADERS } from "../utils/importMapper";
 import {
   isDetailedReservationFormat,
@@ -2333,29 +2333,21 @@ export default function ArrivalImportPanel({ defaultOpen = false, onSpaUpsellNav
         if (allPhones.length > 0) {
           const { data: existingRows } = await supabase
             .from("guests")
-            .select("id, phone, name, room_type, room, spa_date, arrival_date, status, msg_spa_upsell_sent")
+            .select("id, phone, name, room_type, room, spa_date, arrival_date, departure_date, order_number, status, msg_spa_upsell_sent")
             .in("phone", allPhones);
-          const existingByPhone = new Map((existingRows ?? []).map(g => [g.phone, g]));
+          const existingList = existingRows ?? [];
 
           for (const rec of doc1Rec) {
             if (!rec.phone) { skipped++; continue; }
 
-            const existing = existingByPhone.get(rec.phone);
+            const existing = findGuestForDoc1Enrichment(existingList, rec);
             if (existing) {
-              const patch = {};
-              if (rec.spa_time) {
-                patch.spa_time = rec.spa_time;
-                if (rec.arrival_date) patch.spa_date = rec.arrival_date;
+              const patch = buildDoc1EnrichmentPatch(rec, existing);
+              if (Object.keys(patch).length === 0) {
+                skipped++;
+                continue;
               }
-              // meal_time and meal_location are independent: board-basis guests have
-              // meal_location ("חצי פנסיון" etc.) with meal_time=null — both must be
-              // written separately so plan labels reach the DB even without a time.
-              if (rec.meal_time)       patch.meal_time       = rec.meal_time;
-              if (rec.meal_location)   patch.meal_location   = rec.meal_location;
-              if (rec.treatment_count) patch.treatment_count = rec.treatment_count;
-              if (rec.order_number)    patch.order_number    = rec.order_number;
-              if (rec.arrival_date)    patch.arrival_date    = rec.arrival_date;
-              const { error } = await supabase.from("guests").update(patch).eq("phone", rec.phone);
+              const { error } = await supabase.from("guests").update(patch).eq("id", existing.id);
               if (!error) updated++; else skipped++;
 
               const recArrival = rec.arrival_date || existing.arrival_date || arrivalDate;

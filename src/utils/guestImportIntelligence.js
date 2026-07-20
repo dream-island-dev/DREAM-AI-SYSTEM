@@ -468,6 +468,87 @@ export function buildExistingGuestsLookup(rows = []) {
  * @param {ReturnType<typeof buildExistingGuestsLookup>} lookup
  * @param {{guestPhone?:string|null, orderNumber?:string|null, arrivalDate?:string|null}} candidate
  */
+/**
+ * True when a Doc 1 daily-report row date falls within the guest's stay window.
+ * Multi-night suite guests keep their Doc 2 arrival/departure — Doc 1 only enriches spa/meals on report day.
+ * @param {{ arrival_date?: string|null, departure_date?: string|null }} guest
+ * @param {string|null|undefined} reportDateYmd
+ */
+export function reportDateWithinGuestStay(guest, reportDateYmd) {
+  if (!guest?.arrival_date || !reportDateYmd) return false;
+  const arr = String(guest.arrival_date).slice(0, 10);
+  const dep = String(guest.departure_date || guest.arrival_date).slice(0, 10);
+  const day = String(reportDateYmd).slice(0, 10);
+  return day >= arr && day <= dep;
+}
+
+/**
+ * Resolve an existing guest for Doc 1 enrichment (spa/meals only — never overwrites stay dates).
+ * Doc 1 `arrival_date` is the report day, not necessarily the booking check-in from Doc 2.
+ * @param {Array<{id?:string, phone?:string, order_number?:string, arrival_date?:string, departure_date?:string}>} existingRows
+ * @param {{ phone?: string|null, order_number?: string|null, arrival_date?: string|null }} rec
+ */
+export function findGuestForDoc1Enrichment(existingRows, rec) {
+  if (!rec || !existingRows?.length) return null;
+  const reportDate = rec.arrival_date ? String(rec.arrival_date).slice(0, 10) : null;
+  const phone = rec.phone || null;
+  const order = rec.order_number || null;
+
+  const pickFromOverlap = (rows) => {
+    if (!rows.length) return null;
+    if (!reportDate) return rows.length === 1 ? rows[0] : null;
+    const inStay = rows.filter((g) => reportDateWithinGuestStay(g, reportDate));
+    if (inStay.length === 1) return inStay[0];
+    if (inStay.length > 1 && phone) {
+      const hit = inStay.find((g) => g.phone === phone);
+      if (hit) return hit;
+    }
+    const sameDay = rows.filter(
+      (g) => String(g.arrival_date).slice(0, 10) === reportDate,
+    );
+    if (sameDay.length === 1) return sameDay[0];
+    return null;
+  };
+
+  if (order) {
+    const byOrder = existingRows.filter((g) => g.order_number === order);
+    if (byOrder.length === 1) {
+      const only = byOrder[0];
+      if (!reportDate || reportDateWithinGuestStay(only, reportDate)) return only;
+      if (String(only.arrival_date).slice(0, 10) === reportDate) return only;
+      return null;
+    }
+    const hit = pickFromOverlap(byOrder);
+    if (hit) return hit;
+  }
+
+  if (phone) {
+    const byPhone = existingRows.filter((g) => g.phone === phone);
+    const hit = pickFromOverlap(byPhone);
+    if (hit) return hit;
+  }
+
+  return null;
+}
+
+/**
+ * Doc 1 PATCH — enrichment fields only. Never mutates arrival_date, departure_date, room, or nights.
+ * @param {{ spa_time?: string|null, arrival_date?: string|null, meal_time?: string|null, meal_location?: string|null, treatment_count?: number|null, order_number?: string|null }} rec
+ * @param {{ order_number?: string|null }} existing
+ */
+export function buildDoc1EnrichmentPatch(rec, existing) {
+  const patch = {};
+  if (rec.spa_time) {
+    patch.spa_time = rec.spa_time;
+    if (rec.arrival_date) patch.spa_date = rec.arrival_date;
+  }
+  if (rec.meal_time) patch.meal_time = rec.meal_time;
+  if (rec.meal_location) patch.meal_location = rec.meal_location;
+  if (rec.treatment_count) patch.treatment_count = rec.treatment_count;
+  if (rec.order_number && !existing?.order_number) patch.order_number = rec.order_number;
+  return patch;
+}
+
 export function findExistingGuestRow(lookup, candidate) {
   if (!candidate || !lookup) return null;
   const { byPhoneDate, byOrderDatePhone, byOrderDate } = lookup;

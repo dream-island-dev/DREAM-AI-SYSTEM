@@ -25,6 +25,9 @@ import {
   resolveCandidateRoomDisplay,
   pickEnrichValue,
   bookingGuestKey,
+  reportDateWithinGuestStay,
+  findGuestForDoc1Enrichment,
+  buildDoc1EnrichmentPatch,
 } from "./guestImportIntelligence";
 
 const ARRIVALS_MAPPING = {
@@ -518,5 +521,59 @@ describe("bookingGuestKey — no-phone guests still get a stable grouping key", 
     const noPhoneKey = bookingGuestKey({ orderNumber: "300300", arrivalDate: "2026-09-01", guestPhone: null });
     const withPhoneKey = bookingGuestKey({ orderNumber: "300300", arrivalDate: "2026-09-01", guestPhone: "+972501234567" });
     expect(noPhoneKey).not.toBe(withPhoneKey);
+  });
+});
+
+describe("Doc 1 enrichment — preserve multi-night stay dates", () => {
+  const suiteGuest = {
+    id: "g1",
+    phone: "+972501111111",
+    order_number: "400500",
+    arrival_date: "2026-07-18",
+    departure_date: "2026-07-20",
+    room: "אמטיסט 8",
+  };
+
+  test("reportDateWithinGuestStay: middle night of 2-night stay", () => {
+    expect(reportDateWithinGuestStay(suiteGuest, "2026-07-19")).toBe(true);
+    expect(reportDateWithinGuestStay(suiteGuest, "2026-07-17")).toBe(false);
+    expect(reportDateWithinGuestStay(suiteGuest, "2026-07-21")).toBe(false);
+  });
+
+  test("findGuestForDoc1Enrichment: matches by order when report day is mid-stay", () => {
+    const rec = {
+      phone: "+972501111111",
+      order_number: "400500",
+      arrival_date: "2026-07-19",
+      spa_time: "14:00",
+    };
+    expect(findGuestForDoc1Enrichment([suiteGuest], rec)).toEqual(suiteGuest);
+  });
+
+  test("findGuestForDoc1Enrichment: skips when report day outside stay", () => {
+    const rec = {
+      phone: "+972501111111",
+      order_number: "400500",
+      arrival_date: "2026-07-25",
+      spa_time: "14:00",
+    };
+    expect(findGuestForDoc1Enrichment([suiteGuest], rec)).toBeNull();
+  });
+
+  test("buildDoc1EnrichmentPatch: never includes arrival_date", () => {
+    const rec = {
+      arrival_date: "2026-07-19",
+      spa_time: "14:00",
+      meal_location: "חצי פנסיון",
+      order_number: "400500",
+    };
+    const patch = buildDoc1EnrichmentPatch(rec, suiteGuest);
+    expect(patch).toEqual({
+      spa_time: "14:00",
+      spa_date: "2026-07-19",
+      meal_location: "חצי פנסיון",
+    });
+    expect(patch.arrival_date).toBeUndefined();
+    expect(patch.departure_date).toBeUndefined();
   });
 });
