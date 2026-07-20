@@ -185,7 +185,7 @@ export default function EzgoMailSyncPanel({ showToast }) {
         padding: "10px 12px", borderRadius: 8, background: "rgba(0,0,0,0.2)",
         border: "1px solid rgba(201,169,110,0.2)",
       }}>
-        הגר שולחת דוח תפעול (Doc1) לתיבת Gmail המוגדרת → לחצי «סרוק מייל» או המתיני ל-cron.
+        הגר או צלם נדלן שולחים דוח תפעול (Doc1) ל־promote7il → לחצי «סרוק מייל» או המתיני ל-cron.
         כל שורה דורשת אישור לפני עדכון פרופיל. מיפוי: מס׳ הזמנה → טלפון.
       </div>
 

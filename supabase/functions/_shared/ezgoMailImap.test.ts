@@ -1,42 +1,32 @@
 import {
-  isEzgoInboundAllowed,
-  looksLikeEzgoOperationsSubject,
+  DEFAULT_EZGO_MAIL_SENDERS,
+  isSenderAllowed,
+  parseAllowlist,
 } from "./ezgoMailImap.ts";
 
 const HAGAR = "hagar.mesilati@dream-island.co.il";
 const MIKE = "tzalamnadlan@gmail.com";
-const SAMPLE_HTML = "<html><table><tr><td><div>276034: guest</div></td></tr></table></html>";
 
-Deno.test("relay forward from owner is allowed when payload looks like Doc1", () => {
-  const ok = isEzgoInboundAllowed(
-    {
-      fromEmail: MIKE,
-      subject: "Fwd: Dream Island - Spa & Health Resort | Operations",
-      bodyHtml: SAMPLE_HTML,
-      bodyText: "",
-    },
-    [HAGAR],
-    [MIKE],
-  );
-  if (!ok) throw new Error("expected relay forward to be allowed");
-});
-
-Deno.test("relay forward is blocked for unrelated mail", () => {
-  const ok = isEzgoInboundAllowed(
-    {
-      fromEmail: MIKE,
-      subject: "שלום",
-      bodyHtml: "<html><body>hi</body></html>",
-      bodyText: "hi",
-    },
-    [HAGAR],
-    [MIKE],
-  );
-  if (ok) throw new Error("expected unrelated forward to be blocked");
-});
-
-Deno.test("operations subject heuristic", () => {
-  if (!looksLikeEzgoOperationsSubject("Fwd: Dream Island | Operations")) {
-    throw new Error("expected operations subject match");
+Deno.test("default allowlist includes Hagar and tzalamnadlan", () => {
+  const prev = Deno.env.get("EZGO_MAIL_ALLOWLIST");
+  try {
+    Deno.env.delete("EZGO_MAIL_ALLOWLIST");
+    const list = parseAllowlist();
+    if (!list.includes(HAGAR) || !list.includes(MIKE)) {
+      throw new Error(`expected both senders, got ${list.join(",")}`);
+    }
+  } finally {
+    if (prev === undefined) Deno.env.delete("EZGO_MAIL_ALLOWLIST");
+    else Deno.env.set("EZGO_MAIL_ALLOWLIST", prev);
   }
+});
+
+Deno.test("tzalamnadlan is a primary sender without relay gates", () => {
+  const ok = isSenderAllowed(MIKE, DEFAULT_EZGO_MAIL_SENDERS);
+  if (!ok) throw new Error("expected tzalamnadlan on primary allowlist");
+});
+
+Deno.test("unknown sender is blocked when allowlist is set", () => {
+  const ok = isSenderAllowed("spam@example.com", DEFAULT_EZGO_MAIL_SENDERS);
+  if (ok) throw new Error("expected unknown sender to be blocked");
 });

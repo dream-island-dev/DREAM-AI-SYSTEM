@@ -1,7 +1,6 @@
 // Gmail / IMAP fetch for EZGO mail sync — preserves HTML body for Doc1 parsing.
 
 import { ImapFlow } from "npm:imapflow@1.0.168";
-import { classifyEzgoMailContent, looksLikeDoc1Html } from "./ezgoDoc1Parser.ts";
 
 export type EzgoInboundMail = {
   id: string;
@@ -22,6 +21,12 @@ export type EzgoImapConfig = {
   password: string;
 };
 
+/** Built-in EZGO report senders — merged with EZGO_MAIL_ALLOWLIST extras. */
+export const DEFAULT_EZGO_MAIL_SENDERS = [
+  "hagar.mesilati@dream-island.co.il",
+  "tzalamnadlan@gmail.com",
+];
+
 export function resolveEzgoImapConfig(): EzgoImapConfig | null {
   const host = (Deno.env.get("EZGO_MAIL_IMAP_HOST") || "imap.gmail.com").trim();
   const user = (Deno.env.get("EZGO_MAIL_IMAP_USER") || "").trim();
@@ -37,58 +42,20 @@ export function ezgoMailSyncEnabled(): boolean {
   return Deno.env.get("EZGO_MAIL_SYNC_ENABLED") === "true";
 }
 
-/** Owner inbox may forward Operations reports into promote7il as a backup path. */
-export const DEFAULT_EZGO_MAIL_RELAY_ALLOWLIST = ["tzalamnadlan@gmail.com"];
-
 export function parseAllowlist(): string[] {
   const raw = (Deno.env.get("EZGO_MAIL_ALLOWLIST") || "").trim();
-  if (!raw) return [];
-  return raw.split(/[,;]/).map((s) => s.trim().toLowerCase()).filter(Boolean);
-}
-
-/** Relay forwarders — only accepted when the message looks like EZGO Doc1. */
-export function parseRelayAllowlist(): string[] {
-  const raw = (Deno.env.get("EZGO_MAIL_RELAY_ALLOWLIST") || "").trim().toLowerCase();
-  if (raw === "off" || raw === "false" || raw === "0") return [];
-  if (raw) {
-    return raw.split(/[,;]/).map((s) => s.trim().toLowerCase()).filter(Boolean);
-  }
-  return [...DEFAULT_EZGO_MAIL_RELAY_ALLOWLIST];
+  const fromEnv = raw
+    ? raw.split(/[,;]/).map((s) => s.trim().toLowerCase()).filter(Boolean)
+    : [];
+  return [...new Set([...DEFAULT_EZGO_MAIL_SENDERS, ...fromEnv])];
 }
 
 export function isSenderAllowed(fromEmail: string, allowlist: string[]): boolean {
   const email = (fromEmail || "").trim().toLowerCase();
   if (!email) return false;
   if (/^(no[-_.]?reply|donotreply|mailer-daemon)@/i.test(email)) return false;
-  if (!allowlist.length) return true;
+  if (!allowlist.length) return false;
   return allowlist.some((a) => email === a || email.endsWith(`@${a}`));
-}
-
-export function looksLikeEzgoOperationsSubject(subject: string): boolean {
-  const s = String(subject || "").trim();
-  return /operations/i.test(s)
-    || /dream\s*island/i.test(s)
-    || /הוספת\s*טיפולים/i.test(s);
-}
-
-export function looksLikeEzgoMailPayload(bodyHtml: string, bodyText: string): boolean {
-  const html = String(bodyHtml || "");
-  const text = String(bodyText || "");
-  if (classifyEzgoMailContent(html, text).reportType !== "unknown") return true;
-  return (/<table[\s>]/i.test(html) && looksLikeDoc1Html(html))
-    || (text.includes("\t") && classifyEzgoMailContent("", text).reportType !== "unknown");
-}
-
-/** Primary senders (Hagar) OR trusted relay forward with EZGO-shaped content. */
-export function isEzgoInboundAllowed(
-  msg: { fromEmail: string; subject: string; bodyHtml: string; bodyText: string },
-  senderAllowlist: string[],
-  relayAllowlist: string[] = parseRelayAllowlist(),
-): boolean {
-  if (isSenderAllowed(msg.fromEmail, senderAllowlist)) return true;
-  if (!isSenderAllowed(msg.fromEmail, relayAllowlist)) return false;
-  return looksLikeEzgoOperationsSubject(msg.subject)
-    && looksLikeEzgoMailPayload(msg.bodyHtml, msg.bodyText);
 }
 
 function decodeQuotedPrintable(input: string): string {
@@ -174,9 +141,40 @@ function extractBodiesFromSource(source: string): { text: string; html: string; 
   return { text: text.slice(0, 12000), html: html.slice(0, 500_000), preview };
 }
 
+async function resolveFetchUids(
+  client: ImapFlow,
+  allowlist: string[],
+  limit: number,
+): Promise<number[]> {
+  const uidSet = new Set<number>();
+  for (const sender of allowlist) {
+    try {
+      const found = await client.search({ from: sender }, { uid: true });
+      for (const uid of found || []) uidSet.add(uid);
+    } catch {
+      // Gmail may reject some FROM patterns — continue with other senders.
+    }
+  }
+
+  if (uidSet.size > 0) {
+    return [...uidSet].sort((a, b) => b - a).slice(0, limit);
+  }
+
+  const mailbox = client.mailbox;
+  const total = mailbox?.exists ?? 0;
+  if (total === 0) return [];
+  const startSeq = Math.max(1, total - limit + 1);
+  const fallbackUids: number[] = [];
+  for await (const msg of client.fetch(`${startSeq}:*`, { uid: true })) {
+    if (msg.uid) fallbackUids.push(msg.uid);
+  }
+  return fallbackUids.sort((a, b) => b - a).slice(0, limit);
+}
+
 export async function fetchEzgoInboxMessages(
   config: EzgoImapConfig,
-  limit = 40,
+  limit = 25,
+  allowlist: string[] = parseAllowlist(),
 ): Promise<EzgoInboundMail[]> {
   const client = new ImapFlow({
     host: config.host,
@@ -191,14 +189,11 @@ export async function fetchEzgoInboxMessages(
 
   await client.connect();
   try {
-    const mailbox = await client.mailboxOpen("INBOX");
-    const total = mailbox.exists ?? 0;
-    if (total === 0) return out;
+    await client.mailboxOpen("INBOX");
+    const uids = await resolveFetchUids(client, allowlist, limit);
+    if (!uids.length) return out;
 
-    const startSeq = Math.max(1, total - limit + 1);
-    const range = `${startSeq}:*`;
-
-    for await (const msg of client.fetch(range, {
+    for await (const msg of client.fetch(uids, {
       uid: true,
       envelope: true,
       source: true,
@@ -207,7 +202,7 @@ export async function fetchEzgoInboxMessages(
       const env = msg.envelope;
       const fromRaw = env?.from?.[0];
       const fromEmail = fromRaw?.address?.toLowerCase() ?? "";
-      if (!fromEmail) continue;
+      if (!fromEmail || !isSenderAllowed(fromEmail, allowlist)) continue;
 
       const sourceStr = msg.source ? new TextDecoder().decode(msg.source) : "";
       const { text, html, preview } = extractBodiesFromSource(sourceStr);
