@@ -219,7 +219,7 @@ serve(async (req: Request) => {
     }
 
     const allowlist = parseAllowlist();
-    const messages = await withImapBudget(() =>
+    const { messages, meta: imapMeta } = await withImapBudget(() =>
       fetchEzgoInboxMessages(cfg, 25, allowlist)
     );
 
@@ -252,6 +252,7 @@ serve(async (req: Request) => {
       skipped,
       failed,
       scanned: messages.length,
+      imap: imapMeta,
       details: details.slice(0, 10),
     });
   } catch (e) {

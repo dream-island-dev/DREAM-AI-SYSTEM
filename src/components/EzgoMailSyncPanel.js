@@ -69,9 +69,12 @@ export default function EzgoMailSyncPanel({ showToast }) {
       const { data, error } = await supabase.functions.invoke("ezgo-mail-sync");
       if (error) throw error;
       if (!data?.ok && !data?.skipped) throw new Error(data?.error || "סנכרון נכשל");
+      const imap = data?.imap;
       const msg = data?.skipped
         ? "סנכרון מייל כבוי (EZGO_MAIL_SYNC_ENABLED)"
-        : `נסרקו ${data.scanned ?? 0} מיילים · חדשים ${data.processed ?? 0}`;
+        : (data.scanned ?? 0) === 0 && imap
+          ? `נסרקו 0 · תיבה ${imap.mailboxTotal} · נבדקו ${imap.scannedRaw} (${imap.searchMethod})`
+          : `נסרקו ${data.scanned ?? 0} מיילים · חדשים ${data.processed ?? 0}`;
       showToast?.(msg, "ok");
       await loadIngests();
     } catch (e) {

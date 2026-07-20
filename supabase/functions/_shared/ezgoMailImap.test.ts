@@ -1,5 +1,6 @@
 import {
   DEFAULT_EZGO_MAIL_SENDERS,
+  extractBodiesFromSource,
   isSenderAllowed,
   parseAllowlist,
 } from "./ezgoMailImap.ts";
@@ -29,4 +30,25 @@ Deno.test("tzalamnadlan is a primary sender without relay gates", () => {
 Deno.test("unknown sender is blocked when allowlist is set", () => {
   const ok = isSenderAllowed("spam@example.com", DEFAULT_EZGO_MAIL_SENDERS);
   if (ok) throw new Error("expected unknown sender to be blocked");
+});
+
+Deno.test("extractBodiesFromSource picks nested forward HTML with EZGO table", () => {
+  const mime = [
+    "Content-Type: multipart/alternative; boundary=abc",
+    "",
+    "--abc",
+    "Content-Type: text/plain",
+    "",
+    "forward wrapper",
+    "--abc",
+    "Content-Type: text/html; charset=utf-8",
+    "Content-Transfer-Encoding: base64",
+    "",
+    btoa('<html><body><div class="gmail_quote"><table><tr><td>276034:</td></tr></table></div></body></html>'),
+    "--abc--",
+  ].join("\r\n");
+  const { html } = extractBodiesFromSource(mime);
+  if (!html.includes("276034")) {
+    throw new Error("expected EZGO table html from forwarded mime");
+  }
 });
