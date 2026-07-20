@@ -2359,14 +2359,9 @@ export default function ArrivalImportPanel({ defaultOpen = false, onSpaUpsellNav
               ) {
                 upsellCount++;
               }
-            } else if (!rec.spa_time) {
-              // No existing profile AND no spa this visit — candidate for a
-              // brand-new day-pass guest profile (staff reviews before create).
+            } else if (!existing) {
+              // No profile — day-pass create (with or without spa on visit day).
               daypassCandidates.push(rec);
-              skipped++;
-            } else {
-              // Has a spa booking but no matching guest yet — enrichment-only
-              // path, never insert (unusual: spa without a profile at all).
               skipped++;
             }
           }
@@ -2452,9 +2447,7 @@ export default function ArrivalImportPanel({ defaultOpen = false, onSpaUpsellNav
       const created = [];
       for (const rec of rows) {
         const recArrivalDate = rec.arrival_date || arrivalDate;
-        const { data: inserted, error } = await supabase
-          .from("guests")
-          .insert({
+        const insert = {
             phone: rec.phone,
             name: rec.guest_name || null,
             arrival_date: recArrivalDate,
@@ -2466,7 +2459,14 @@ export default function ArrivalImportPanel({ defaultOpen = false, onSpaUpsellNav
             treatment_count: rec.treatment_count ?? 0,
             meal_time: rec.meal_time || null,
             meal_location: rec.meal_location || null,
-          })
+          };
+        if (rec.spa_time) {
+          insert.spa_time = rec.spa_time;
+          insert.spa_date = recArrivalDate;
+        }
+        const { data: inserted, error } = await supabase
+          .from("guests")
+          .insert(insert)
           .select("id, name, phone")
           .maybeSingle();
         if (error) { setDaypassCreateError(error.message); continue; }
@@ -3719,7 +3719,7 @@ export default function ArrivalImportPanel({ defaultOpen = false, onSpaUpsellNav
               borderRadius: 12, padding: "18px 20px",
             }}>
               <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 6, color: "#0e7490" }}>
-                ☀️ פרופילי בילוי יומי חדשים — ללא טיפול ספא ({daypassCreateCandidates.length})
+                ☀️ פרופילי בילוי יומי חדשים ({daypassCreateCandidates.length})
               </div>
               <div style={{ fontSize: 12.5, color: "#155e75", marginBottom: 12, lineHeight: 1.6 }}>
                 הזמנות מהדוח שאין להן פרופיל אורח קיים לפי מספר טלפון, וללא שעת ספא. סמן מי ליצור בפועל.

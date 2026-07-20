@@ -6,29 +6,24 @@ import {
   type Doc1Record,
   reportDateWithinGuestStay,
 } from "./ezgoDoc1Parser.ts";
+import {
+  classifyEzgoMailWorkflow,
+  type GuestWorkflowRow,
+} from "./ezgoMailLineWorkflow.ts";
 
-export type GuestRow = {
-  id: number;
-  name: string | null;
-  phone: string | null;
-  order_number: string | null;
-  arrival_date: string | null;
-  departure_date: string | null;
-  room: string | null;
-  spa_time: string | null;
-  meal_location: string | null;
-  meal_time: string | null;
-  treatment_count: number | null;
-};
+export type GuestRow = GuestWorkflowRow;
 
 export type MatchResult = {
   guest: GuestRow | null;
   method: "order" | "phone" | "fuzzy" | "none";
   confidence: number;
   label: string;
-  action: "enrich" | "no_match" | "conflict";
+  action: "enrich" | "create" | "no_match" | "conflict";
   patch: Record<string, unknown>;
 };
+
+const GUEST_SELECT =
+  "id, name, phone, order_number, arrival_date, departure_date, room, room_type, spa_time, spa_date, meal_location, meal_time, treatment_count, msg_spa_upsell_sent";
 
 function pickFromOverlap(
   rows: GuestRow[],
@@ -80,32 +75,24 @@ export function findGuestForDoc1Enrichment(
   return null;
 }
 
-function patchHasChanges(patch: Record<string, unknown>): boolean {
-  return Object.keys(patch).length > 0;
-}
-
-function nameConflict(rec: Doc1Record, guest: GuestRow): boolean {
-  if (!rec.guest_name || !guest.name) return false;
-  return rec.guest_name.trim() !== String(guest.name).trim();
-}
-
 export async function matchDoc1Record(
   supabase: SupabaseClient,
   rec: Doc1Record,
   guestCache: GuestRow[],
+  reportDateYmd: string | null = null,
 ): Promise<MatchResult> {
-  const reportDate = rec.arrival_date ? String(rec.arrival_date).slice(0, 10) : null;
+  const reportDate = rec.arrival_date
+    ? String(rec.arrival_date).slice(0, 10)
+    : reportDateYmd?.slice(0, 10) ?? null;
+
   let guest = findGuestForDoc1Enrichment(guestCache, rec);
   let method: MatchResult["method"] = guest ? "order" : "none";
   let confidence = guest ? 0.95 : 0;
-  let label = guest
-    ? `מס׳ הזמנה ${rec.order_number}${guest.name ? ` → ${guest.name}` : ""}`
-    : "לא נמצא פרופיל";
 
   if (!guest && rec.phone && reportDate) {
     const { data: byPhone } = await supabase
       .from("guests")
-      .select("id, name, phone, order_number, arrival_date, departure_date, room, spa_time, meal_location, meal_time, treatment_count")
+      .select(GUEST_SELECT)
       .eq("phone", rec.phone)
       .gte("arrival_date", reportDate)
       .lte("arrival_date", reportDate)
@@ -114,38 +101,33 @@ export async function matchDoc1Record(
       guest = byPhone[0] as GuestRow;
       method = "phone";
       confidence = 0.85;
-      label = `טלפון ${rec.phone} → ${guest.name}`;
     }
   }
 
-  // Fuzzy name match runs client-side (match_guest_fuzzy requires auth.uid).
+  const classified = classifyEzgoMailWorkflow(rec, guest, reportDateYmd);
 
-  if (!guest) {
+  if (!guest && method === "none") {
     return {
       guest: null,
       method: "none",
       confidence: 0,
-      label: "אין פרופיל מתאים — צור ידנית או ייבא Doc2",
-      action: "no_match",
-      patch: {},
+      label: classified.label,
+      action: classified.action,
+      patch: classified.patch,
     };
   }
 
-  const patch = buildDoc1EnrichmentPatch(rec, guest);
-  const conflict = nameConflict(rec, guest);
-  const action = conflict ? "conflict" : (patchHasChanges(patch) ? "enrich" : "enrich");
-
-  if (!patchHasChanges(patch) && !conflict) {
-    label = `${label} · אין שדות חדשים`;
+  if (guest && method === "order" && classified.label.includes("מס׳")) {
+    // keep workflow label from classifier
   }
 
   return {
     guest,
-    method,
-    confidence,
-    label,
-    action: conflict ? "conflict" : action,
-    patch,
+    method: guest ? method : "none",
+    confidence: guest ? confidence : 0,
+    label: classified.label,
+    action: classified.action,
+    patch: classified.patch,
   };
 }
 
@@ -156,7 +138,7 @@ export async function loadGuestCacheForReport(
   if (!reportDateYmd) {
     const { data } = await supabase
       .from("guests")
-      .select("id, name, phone, order_number, arrival_date, departure_date, room, spa_time, meal_location, meal_time, treatment_count")
+      .select(GUEST_SELECT)
       .neq("status", "cancelled")
       .order("arrival_date", { ascending: false })
       .limit(800);
@@ -166,14 +148,14 @@ export async function loadGuestCacheForReport(
   const day = reportDateYmd.slice(0, 10);
   const { data: arriving } = await supabase
     .from("guests")
-    .select("id, name, phone, order_number, arrival_date, departure_date, room, spa_time, meal_location, meal_time, treatment_count")
+    .select(GUEST_SELECT)
     .neq("status", "cancelled")
     .eq("arrival_date", day)
     .limit(400);
 
   const { data: inStay } = await supabase
     .from("guests")
-    .select("id, name, phone, order_number, arrival_date, departure_date, room, spa_time, meal_location, meal_time, treatment_count")
+    .select(GUEST_SELECT)
     .neq("status", "cancelled")
     .lt("arrival_date", day)
     .gte("departure_date", day)
@@ -185,3 +167,6 @@ export async function loadGuestCacheForReport(
   }
   return [...byId.values()];
 }
+
+// Re-export for tests
+export { buildDoc1EnrichmentPatch };

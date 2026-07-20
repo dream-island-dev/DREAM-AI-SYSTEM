@@ -1,30 +1,144 @@
 // EzgoMailSyncPanel — review + apply EZGO mail import lines (Doc1).
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "../supabaseClient";
 import { buildDoc1EnrichmentPatch } from "../utils/guestImportIntelligence";
+import {
+  WORKFLOW_META,
+  createDaypassGuestFromRec,
+  resolveLineWorkflow,
+  stripWorkflowPatch,
+} from "../utils/ezgoMailLineWorkflow";
+
+const WORKFLOW_SECTIONS = [
+  { id: "suite_spa_sync", title: "🛏️ סנכרון שעות ספא — סוויטות", hint: "מזהה: מס׳ הזמנה → פרופיל סוויטה" },
+  { id: "daypass_upsell", title: "💆 הצעת ספא — בילוי יומי ללא טיפול", hint: "מזהה: guests.id · אחרי אישור עבור ללשונית הצעת ספא" },
+  { id: "daypass_create_spa", title: "☀️ צור בילוי יומי + ספא", hint: "מזהה: טלפון + תאריך דוח · אין פרופיל ב-DB" },
+  { id: "daypass_create", title: "☀️ צור בילוי יומי (ללא ספא)", hint: "מזהה: טלפון · לאחר יצירה → הצעת ספא" },
+  { id: "other", title: "📋 אחר", hint: "העשרה / בדיקה / ללא שינוי" },
+];
 
 function patchLabels(patch) {
+  const clean = stripWorkflowPatch(patch || {});
   const labels = [];
-  if (patch.spa_time) labels.push(`ספא ${patch.spa_time}`);
-  if (patch.spa_date) labels.push(`תאריך ספא ${patch.spa_date}`);
-  if (patch.meal_location) labels.push(patch.meal_location);
-  if (patch.meal_time) labels.push(`ארוחה ${patch.meal_time}`);
-  if (patch.order_number) labels.push(`הזמנה ${patch.order_number}`);
-  if (patch.treatment_count) labels.push(`טיפולים: ${patch.treatment_count}`);
+  if (clean.spa_time) labels.push(`ספא ${clean.spa_time}`);
+  if (clean.spa_date) labels.push(`תאריך ספא ${clean.spa_date}`);
+  if (clean.meal_location) labels.push(clean.meal_location);
+  if (clean.meal_time) labels.push(`ארוחה ${clean.meal_time}`);
+  if (clean.order_number) labels.push(`הזמנה ${clean.order_number}`);
+  if (clean.treatment_count) labels.push(`טיפולים: ${clean.treatment_count}`);
   return labels;
 }
 
-function actionBadge(action) {
-  const map = {
-    enrich: { text: "העשרה", color: "#1E40AF", bg: "#DBEAFE" },
-    no_match: { text: "אין פרופיל", color: "#92400E", bg: "#FEF3C7" },
-    conflict: { text: "בדוק", color: "#A32D2D", bg: "#FCEBEB" },
-    skip: { text: "דלג", color: "#666", bg: "#eee" },
-  };
-  return map[action] || map.enrich;
+function workflowBadge(workflow) {
+  return WORKFLOW_META[workflow] || WORKFLOW_META.enrich;
 }
 
-export default function EzgoMailSyncPanel({ showToast }) {
+function LineCard({
+  line, reportDate, busy, onApply, onCreate, onReject, onGoUpsell,
+}) {
+  const rec = line.parsed_json || {};
+  const workflow = resolveLineWorkflow(line, reportDate);
+  const badge = workflowBadge(workflow);
+  const labels = patchLabels(line.proposed_patch || {});
+  const done = ["applied", "rejected", "skipped"].includes(line.status);
+  const isCreate = line.action === "create" || workflow.startsWith("daypass_create");
+  const isUpsell = workflow === "daypass_upsell";
+
+  return (
+    <div
+      style={{
+        border: "1px solid rgba(201,169,110,0.2)", borderRadius: 10,
+        padding: "10px 12px", marginBottom: 10, background: "rgba(0,0,0,0.12)",
+        opacity: done ? 0.65 : 1,
+      }}
+    >
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <span style={{
+          fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20,
+          background: badge.bg, color: badge.color,
+        }}>
+          {badge.text}
+        </span>
+        <strong style={{ fontSize: 14 }}>
+          {rec.guest_name || "—"}
+          {rec.order_number ? ` · #${rec.order_number}` : ""}
+        </strong>
+        {rec.phone && <span style={{ fontSize: 12, color: "#aaa" }}>{rec.phone}</span>}
+        {line.status !== "pending_review" && (
+          <span style={{ fontSize: 11, color: "#888" }}>{line.status}</span>
+        )}
+      </div>
+      <div style={{ fontSize: 12, color: "#bbb", marginTop: 6 }}>
+        {line.match_label}
+        {line.guests?.room ? ` · ${line.guests.room}` : ""}
+      </div>
+      {labels.length > 0 && (
+        <div style={{ fontSize: 12, marginTop: 6, color: "var(--gold-light)" }}>
+          יתווסף: {labels.join(" · ")}
+        </div>
+      )}
+      {line.status === "pending_review" && (
+        <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+          {isUpsell && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => onGoUpsell(reportDate)}
+              style={{
+                padding: "6px 12px", borderRadius: 8, border: "none",
+                background: "#0e7490", color: "#fff", fontWeight: 700, fontSize: 12,
+                cursor: busy ? "wait" : "pointer",
+              }}
+            >
+              💆 עבור להצעת ספא
+            </button>
+          )}
+          {isCreate ? (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => onCreate(line)}
+              style={{
+                padding: "6px 12px", borderRadius: 8, border: "none",
+                background: "#0e7490", color: "#fff", fontWeight: 700, fontSize: 12,
+                cursor: busy ? "wait" : "pointer",
+              }}
+            >
+              ☀️ צור פרופיל
+            </button>
+          ) : (
+            <button
+              type="button"
+              disabled={busy || line.action === "no_match" || workflow === "noop"}
+              onClick={() => onApply(line)}
+              style={{
+                padding: "6px 12px", borderRadius: 8, border: "none",
+                background: (line.action === "no_match" || workflow === "noop") ? "#ccc" : "var(--gold)",
+                color: "#fff", fontWeight: 700, fontSize: 12, cursor: busy ? "wait" : "pointer",
+              }}
+            >
+              ✓ אשר
+            </button>
+          )}
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => onReject(line)}
+            style={{
+              padding: "6px 12px", borderRadius: 8,
+              border: "1px solid rgba(201,169,110,0.4)",
+              background: "transparent", color: "#ccc", fontSize: 12, cursor: "pointer",
+            }}
+          >
+            ✗ דלג
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
   const [ingests, setIngests] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [lines, setLines] = useState([]);
@@ -50,7 +164,7 @@ export default function EzgoMailSyncPanel({ showToast }) {
     if (!ingestId) { setLines([]); return; }
     const { data, error } = await supabase
       .from("ezgo_mail_import_lines")
-      .select("*, guests!match_guest_id(id, name, room, phone, order_number)")
+      .select("*, guests!match_guest_id(id, name, room, room_type, phone, order_number, spa_date, spa_time, msg_spa_upsell_sent, departure_date)")
       .eq("ingest_id", ingestId)
       .order("line_index", { ascending: true });
     if (error) {
@@ -62,6 +176,24 @@ export default function EzgoMailSyncPanel({ showToast }) {
 
   useEffect(() => { loadIngests(); }, [loadIngests]);
   useEffect(() => { loadLines(selectedId); }, [selectedId, loadLines]);
+
+  const selected = ingests.find((i) => i.id === selectedId);
+  const reportDate = selected?.report_date_ymd || null;
+
+  const grouped = useMemo(() => {
+    const buckets = Object.fromEntries(WORKFLOW_SECTIONS.map((s) => [s.id, []]));
+    for (const line of lines) {
+      const w = resolveLineWorkflow(line, reportDate);
+      if (w === "suite_spa_sync") buckets.suite_spa_sync.push(line);
+      else if (w === "daypass_upsell") buckets.daypass_upsell.push(line);
+      else if (w === "daypass_create_spa") buckets.daypass_create_spa.push(line);
+      else if (w === "daypass_create") buckets.daypass_create.push(line);
+      else buckets.other.push(line);
+    }
+    return buckets;
+  }, [lines, reportDate]);
+
+  const pendingCount = lines.filter((l) => l.status === "pending_review").length;
 
   const triggerSync = async () => {
     setSyncing(true);
@@ -86,10 +218,10 @@ export default function EzgoMailSyncPanel({ showToast }) {
 
   const applyLine = async (line) => {
     if (!line.match_guest_id || line.action === "no_match") {
-      showToast?.("אין פרופיל לעדכון — ייבא Doc2 או צור אורח ידנית", "err");
+      showToast?.("אין פרופיל לעדכון", "err");
       return;
     }
-    const patch = line.proposed_patch || {};
+    const patch = stripWorkflowPatch(line.proposed_patch || {});
     if (!Object.keys(patch).length) {
       await supabase.from("ezgo_mail_import_lines").update({ status: "skipped" }).eq("id", line.id);
       showToast?.("אין שדות חדשים — דולג", "ok");
@@ -120,10 +252,37 @@ export default function EzgoMailSyncPanel({ showToast }) {
       await supabase.from("ezgo_mail_import_lines").update({
         status: "applied",
         applied_at: new Date().toISOString(),
-        proposed_patch: safePatch,
+        proposed_patch: { ...safePatch, _workflow: resolveLineWorkflow(line, reportDate) },
       }).eq("id", line.id);
 
       showToast?.(`עודכן: ${guest.name}`, "ok");
+      await loadLines(selectedId);
+      await loadIngests();
+    } catch (e) {
+      showToast?.(e.message, "err");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const createLine = async (line) => {
+    const rec = line.parsed_json || {};
+    if (!rec.phone) {
+      showToast?.("חסר טלפון — לא ניתן ליצור פרופיל", "err");
+      return;
+    }
+    setBusy(true);
+    try {
+      const inserted = await createDaypassGuestFromRec(supabase, rec, reportDate);
+      await supabase.from("ezgo_mail_import_lines").update({
+        status: "applied",
+        applied_at: new Date().toISOString(),
+        match_guest_id: inserted?.id ?? null,
+        match_method: "manual",
+        match_label: `נוצר פרופיל · ${inserted?.name || rec.guest_name || rec.phone}`,
+        proposed_patch: { _workflow: resolveLineWorkflow(line, reportDate) },
+      }).eq("id", line.id);
+      showToast?.(`נוצר: ${inserted?.name || rec.guest_name}`, "ok");
       await loadLines(selectedId);
       await loadIngests();
     } catch (e) {
@@ -138,18 +297,17 @@ export default function EzgoMailSyncPanel({ showToast }) {
     await loadLines(selectedId);
   };
 
-  const applyAllSafe = async () => {
-    const pending = lines.filter(
+  const applyBatch = async (workflowId) => {
+    const pending = grouped[workflowId]?.filter(
       (l) => l.status === "pending_review"
         && l.match_guest_id
         && l.match_method === "order"
-        && Object.keys(l.proposed_patch || {}).length > 0,
-    );
+        && Object.keys(stripWorkflowPatch(l.proposed_patch || {})).length > 0,
+    ) || [];
     if (!pending.length) {
-      showToast?.("אין שורות בטוחות לאישור אוטומטי", "err");
+      showToast?.("אין שורות בטוחות לאישור", "err");
       return;
     }
-    setBusy(true);
     let ok = 0;
     for (const line of pending) {
       try {
@@ -157,12 +315,29 @@ export default function EzgoMailSyncPanel({ showToast }) {
         ok += 1;
       } catch { /* continue */ }
     }
-    setBusy(false);
     showToast?.(`אושרו ${ok} שורות`, "ok");
   };
 
-  const selected = ingests.find((i) => i.id === selectedId);
-  const pendingCount = lines.filter((l) => l.status === "pending_review").length;
+  const createBatch = async (workflowId) => {
+    const pending = grouped[workflowId]?.filter((l) => l.status === "pending_review" && l.action === "create") || [];
+    if (!pending.length) {
+      showToast?.("אין פרופילים ליצירה", "err");
+      return;
+    }
+    let ok = 0;
+    for (const line of pending) {
+      try {
+        await createLine(line);
+        ok += 1;
+      } catch { /* continue */ }
+    }
+    showToast?.(`נוצרו ${ok} פרופילים`, "ok");
+  };
+
+  const goUpsell = (dateYmd) => {
+    onSpaUpsellNavigate?.(dateYmd || reportDate);
+    showToast?.("עברת ללשונית הצעת ספא", "ok");
+  };
 
   return (
     <div style={{ marginTop: 28, direction: "rtl", fontFamily: "Heebo, sans-serif" }}>
@@ -188,12 +363,14 @@ export default function EzgoMailSyncPanel({ showToast }) {
         padding: "10px 12px", borderRadius: 8, background: "rgba(0,0,0,0.2)",
         border: "1px solid rgba(201,169,110,0.2)",
       }}>
-        הגר או צלם נדלן שולחים דוח תפעול (Doc1) ל־promote7il → לחצי «סרוק מייל» או המתיני ל-cron.
-        כל שורה דורשת אישור לפני עדכון פרופיל. מיפוי: מס׳ הזמנה → טלפון.
+        הגר / צלם נדלן → promote7il → סריקה. שלושה מסלולים:
+        {" "}(1) סוויטות — סנכרון שעת ספא לפי מס׳ הזמנה ·
+        (2) בילוי יומי בלי ספא — הצעת ספא ·
+        (3) בילוי יומי חדש — יצירת פרופיל (עם/בלי ספא).
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "minmax(220px, 1fr) 2fr", gap: 14 }}>
-        <div style={{ border: "1px solid rgba(201,169,110,0.25)", borderRadius: 12, padding: 10, maxHeight: 420, overflowY: "auto" }}>
+        <div style={{ border: "1px solid rgba(201,169,110,0.25)", borderRadius: 12, padding: 10, maxHeight: 520, overflowY: "auto" }}>
           {ingests.length === 0 && (
             <div style={{ fontSize: 13, color: "#888", padding: 8 }}>אין מיילים ממתינים</div>
           )}
@@ -225,91 +402,79 @@ export default function EzgoMailSyncPanel({ showToast }) {
               <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
                 <strong style={{ color: "var(--gold-light)" }}>{selected.subject}</strong>
                 <span style={{ fontSize: 12, color: "#888" }}>
-                  {pendingCount} ממתינות לאישור
+                  {pendingCount} ממתינות · דוח {reportDate || "—"}
                 </span>
-                <button
-                  type="button"
-                  disabled={busy || !pendingCount}
-                  onClick={applyAllSafe}
-                  style={{
-                    marginRight: "auto", padding: "6px 12px", borderRadius: 8, border: "none",
-                    background: pendingCount ? "#3B6D11" : "#ccc", color: "#fff", fontWeight: 700, fontSize: 12,
-                    cursor: busy ? "wait" : "pointer",
-                  }}
-                >
-                  אשר הכל (מס׳ הזמנה בלבד)
-                </button>
               </div>
 
-              <div style={{ maxHeight: 360, overflowY: "auto" }}>
-                {lines.map((line) => {
-                  const rec = line.parsed_json || {};
-                  const badge = actionBadge(line.action);
-                  const labels = patchLabels(line.proposed_patch || {});
-                  const done = line.status === "applied" || line.status === "rejected" || line.status === "skipped";
-
+              <div style={{ maxHeight: 460, overflowY: "auto" }}>
+                {WORKFLOW_SECTIONS.map((section) => {
+                  const sectionLines = grouped[section.id] || [];
+                  if (!sectionLines.length) return null;
+                  const pendingInSection = sectionLines.filter((l) => l.status === "pending_review").length;
                   return (
-                    <div
-                      key={line.id}
-                      style={{
-                        border: "1px solid rgba(201,169,110,0.2)", borderRadius: 10,
-                        padding: "10px 12px", marginBottom: 10, background: "rgba(0,0,0,0.12)",
-                        opacity: done ? 0.65 : 1,
-                      }}
-                    >
-                      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                        <span style={{
-                          fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20,
-                          background: badge.bg, color: badge.color,
-                        }}>
-                          {badge.text}
-                        </span>
-                        <strong style={{ fontSize: 14 }}>
-                          {rec.guest_name || "—"}
-                          {rec.order_number ? ` · #${rec.order_number}` : ""}
-                        </strong>
-                        {rec.phone && <span style={{ fontSize: 12, color: "#aaa" }}>{rec.phone}</span>}
-                        {line.status !== "pending_review" && (
-                          <span style={{ fontSize: 11, color: "#888" }}>{line.status}</span>
-                        )}
-                      </div>
-                      <div style={{ fontSize: 12, color: "#bbb", marginTop: 6 }}>
-                        {line.match_label}
-                        {line.guests?.room ? ` · ${line.guests.room}` : ""}
-                      </div>
-                      {labels.length > 0 && (
-                        <div style={{ fontSize: 12, marginTop: 6, color: "var(--gold-light)" }}>
-                          יתווסף: {labels.join(" · ")}
+                    <div key={section.id} style={{ marginBottom: 16 }}>
+                      <div style={{
+                        display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap",
+                        paddingBottom: 6, borderBottom: "1px solid rgba(201,169,110,0.15)",
+                      }}>
+                        <div>
+                          <div style={{ fontWeight: 800, fontSize: 13, color: "var(--gold-light)" }}>
+                            {section.title} ({sectionLines.length})
+                          </div>
+                          <div style={{ fontSize: 10, color: "#888" }}>{section.hint}</div>
                         </div>
-                      )}
-                      {line.status === "pending_review" && (
-                        <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-                          <button
-                            type="button"
-                            disabled={busy || line.action === "no_match"}
-                            onClick={() => applyLine(line)}
-                            style={{
-                              padding: "6px 12px", borderRadius: 8, border: "none",
-                              background: line.action === "no_match" ? "#ccc" : "var(--gold)",
-                              color: "#fff", fontWeight: 700, fontSize: 12, cursor: busy ? "wait" : "pointer",
-                            }}
-                          >
-                            ✓ אשר
-                          </button>
+                        {section.id === "suite_spa_sync" && pendingInSection > 0 && (
                           <button
                             type="button"
                             disabled={busy}
-                            onClick={() => rejectLine(line)}
+                            onClick={() => applyBatch("suite_spa_sync")}
                             style={{
-                              padding: "6px 12px", borderRadius: 8,
-                              border: "1px solid rgba(201,169,110,0.4)",
-                              background: "transparent", color: "#ccc", fontSize: 12, cursor: "pointer",
+                              marginRight: "auto", padding: "5px 10px", borderRadius: 8, border: "none",
+                              background: "#3B6D11", color: "#fff", fontWeight: 700, fontSize: 11,
                             }}
                           >
-                            ✗ דלג
+                            אשר הכל (מס׳ הזמנה)
                           </button>
-                        </div>
-                      )}
+                        )}
+                        {(section.id === "daypass_create" || section.id === "daypass_create_spa") && pendingInSection > 0 && (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => createBatch(section.id)}
+                            style={{
+                              marginRight: "auto", padding: "5px 10px", borderRadius: 8, border: "none",
+                              background: "#0e7490", color: "#fff", fontWeight: 700, fontSize: 11,
+                            }}
+                          >
+                            צור הכל ({pendingInSection})
+                          </button>
+                        )}
+                        {section.id === "daypass_upsell" && pendingInSection > 0 && (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => goUpsell(reportDate)}
+                            style={{
+                              marginRight: "auto", padding: "5px 10px", borderRadius: 8, border: "none",
+                              background: "#0e7490", color: "#fff", fontWeight: 700, fontSize: 11,
+                            }}
+                          >
+                            💆 פתח הצעת ספא
+                          </button>
+                        )}
+                      </div>
+                      {sectionLines.map((line) => (
+                        <LineCard
+                          key={line.id}
+                          line={line}
+                          reportDate={reportDate}
+                          busy={busy}
+                          onApply={applyLine}
+                          onCreate={createLine}
+                          onReject={rejectLine}
+                          onGoUpsell={goUpsell}
+                        />
+                      ))}
                     </div>
                   );
                 })}

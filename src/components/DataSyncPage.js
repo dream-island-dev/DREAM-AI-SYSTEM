@@ -165,7 +165,7 @@ export default function DataSyncPage() {
       )}
 
       {activeTab === "ezgo_mail" && (
-        <EzgoMailSyncPanel showToast={showToast} />
+        <EzgoMailSyncPanel showToast={showToast} onSpaUpsellNavigate={goToSpaUpsell} />
       )}
 
       {activeTab === "spa_upsell" && (

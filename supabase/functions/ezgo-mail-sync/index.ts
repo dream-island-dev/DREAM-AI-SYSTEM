@@ -164,7 +164,7 @@ async function processIngest(
   const lineRows = [];
   for (let i = 0; i < records.length; i++) {
     const rec = records[i] as Doc1Record;
-    const match = await matchDoc1Record(supabase, rec, guestCache);
+    const match = await matchDoc1Record(supabase, rec, guestCache, reportDate);
     lineRows.push({
       ingest_id: ingest.id,
       line_index: i,
@@ -173,7 +173,7 @@ async function processIngest(
       match_method: match.method === "none" ? null : match.method,
       match_confidence: match.confidence,
       match_label: match.label,
-      action: match.action === "no_match" ? "no_match" : match.action,
+      action: match.action,
       proposed_patch: match.patch,
       status: "pending_review",
     });
