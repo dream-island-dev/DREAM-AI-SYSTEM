@@ -6,6 +6,7 @@ import {
   buildAdministrativeDispatchReply,
   buildAdministrativeRequestSummary,
   buildBalloonRoomRequestReply,
+  buildSpaUpsellAcceptanceReply,
 } from "./automationSchedule.ts";
 import { onGuestAlertInserted } from "./guestAlertWhapiNotify.ts";
 import { sendWhapiText } from "./whapiSend.ts";
@@ -185,5 +186,72 @@ export async function runAdministrativeInHouseIntercept(
 
   console.info(
     `[${adapter.logTag}] administrative in-house intercept — phone:${phone} guest:${guestId} summary:${summary}`,
+  );
+}
+
+/**
+ * Day-pass guest accepts the manual spa upsell offer (300₪/45min, DataSyncPage
+ * "Send Offer Now" — migration 263). Lands on the Requests Board like every
+ * other administrative alert; reception books the actual slot on the Spa
+ * Board. Caller (whatsapp-webhook / whapi-webhook) is responsible for the
+ * msg_spa_upsell_sent + no-spa-yet gate before calling this — see
+ * isSpaUpsellAcceptanceReply's docblock.
+ */
+export async function runSpaUpsellAcceptanceIntercept(
+  supabase: SupabaseClient,
+  opts: {
+    phone: string;
+    guestId: number;
+    guest: Record<string, unknown>;
+    text: string;
+    conversationId: number | null;
+    sim?: boolean;
+  },
+  adapter: GuestTier0InboundAdapter,
+): Promise<void> {
+  const { phone, guestId, guest, text, conversationId, sim = false } = opts;
+  const guestName = (guest.name as string | null) ?? null;
+  const guestRoom = (guest.room as string | null) ?? null;
+  const reply = buildSpaUpsellAcceptanceReply(guestName);
+  const summary = `🧖 אישר/ה הצעת טיפול ספא (300₪/45 דק׳) — לתאם שעה ולשבץ בלוח הספא`;
+
+  await adapter.patchInbound({
+    guest_id: guestId,
+    intent: "spa_upsell_accept",
+  });
+
+  const { error: guestErr } = await supabase.from("guests").update({
+    requires_attention: true,
+    requires_attention_since: new Date().toISOString(),
+    attention_reason: "request",
+  }).eq("id", guestId);
+  if (guestErr) {
+    console.error(`[${adapter.logTag}] spa upsell accept guest update FAILED:`, guestErr.message);
+  }
+
+  await logAdministrativeRequestAlert(supabase, {
+    phone,
+    guestId,
+    room: guestRoom,
+    summary,
+    rawText: text,
+    conversationId,
+    alertType: "spa_upsell_accept",
+    guestName,
+    sourceLabel: adapter.sourceLabel,
+  });
+
+  if (!sim) {
+    try {
+      await adapter.sendReply(reply, "spa_upsell_accept");
+    } catch (e) {
+      console.error(`[${adapter.logTag}] spa upsell accept reply failed:`, (e as Error).message);
+    }
+  } else {
+    console.info(`[${adapter.logTag}] SIM — spa upsell acceptance from ${phone}: ${summary}`);
+  }
+
+  console.info(
+    `[${adapter.logTag}] spa upsell acceptance intercept — phone:${phone} guest:${guestId}`,
   );
 }

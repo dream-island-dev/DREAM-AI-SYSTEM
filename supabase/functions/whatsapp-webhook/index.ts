@@ -57,6 +57,7 @@ import {
   shouldApplyInRoomContextOverride,
   shouldInterceptOperationalInHouseRequest,
   shouldInterceptAdministrativeInHouseRequest,
+  isSpaUpsellAcceptanceReply,
   isAdministrativeInHouseRequest,
   isAllowlistedPhysicalTaskRequest,
   classifyGuestRequestDispatch,
@@ -173,6 +174,7 @@ import { coalesceGuestInboundBurstIfLeader } from "../_shared/guestInboundBurst.
 import {
   runBalloonRoomRequestIntercept,
   runAdministrativeInHouseIntercept,
+  runSpaUpsellAcceptanceIntercept,
   logAdministrativeRequestAlert,
 } from "../_shared/guestBalloonAdminIntercept.ts";
 import {
@@ -3017,6 +3019,41 @@ Deno.serve(async (req: Request) => {
         continue;
       }
 
+      // ── Spa upsell acceptance (day-pass, manual offer) — must run before the
+      // generic administrative-in-house check below, since a bare "כן"/"רוצה"
+      // reply would otherwise fall straight through to the LLM. Tightly scoped
+      // to guests who actually received the offer and still have no spa today.
+      if (
+        !isButtonReply &&
+        guestId &&
+        guest &&
+        (guest as Record<string, unknown>).msg_spa_upsell_sent === true &&
+        String((guest as Record<string, unknown>).spa_date ?? "").slice(0, 10) !==
+          String((guest as Record<string, unknown>).arrival_date ?? "").slice(0, 10) &&
+        isSpaUpsellAcceptanceReply(text)
+      ) {
+        await runSpaUpsellAcceptanceIntercept(supabase, {
+          phone,
+          guestId,
+          guest: guest as Record<string, unknown>,
+          text,
+          conversationId: claimedConversationId,
+          sim,
+        }, {
+          patchInbound: async (patch) => patchClaimedInbound(supabase, claimedConversationId, msgId, patch),
+          sendReply: async (replyText, intent) => {
+            if (sim) return;
+            await sendReply(phone, replyText, { scripted: true });
+            await insertGuestOutboundIfNotMuted(supabase, {
+              phone, guest_id: guestId, message: replyText, wa_message_id: null, intent,
+            });
+          },
+          sourceLabel: "WhatsApp Bot",
+          logTag: "webhook",
+        });
+        continue;
+      }
+
       // ── Tier-0 administrative in-house (spa / front desk) — tasks only ─────
       if (
         !isButtonReply &&
@@ -3231,6 +3268,39 @@ Deno.serve(async (req: Request) => {
         shouldInterceptBalloonRoomRequest(effectiveText)
       ) {
         await runBalloonRoomRequestIntercept(supabase, {
+          phone,
+          guestId,
+          guest: guest as Record<string, unknown>,
+          text: effectiveText,
+          conversationId: claimedConversationId,
+          sim,
+        }, {
+          patchInbound: async (patch) => patchClaimedInbound(supabase, claimedConversationId, msgId, patch),
+          sendReply: async (replyText, intent) => {
+            if (sim) return;
+            await sendReply(phone, replyText, { scripted: true });
+            await insertGuestOutboundIfNotMuted(supabase, {
+              phone, guest_id: guestId, message: replyText, wa_message_id: null, intent,
+            });
+          },
+          sourceLabel: "WhatsApp Bot",
+          logTag: "webhook",
+        });
+        continue;
+      }
+
+      // ── Spa upsell acceptance (post-burst) ───────────────────────────────
+      if (
+        !isButtonReply &&
+        guestId &&
+        guest &&
+        effectiveText !== text &&
+        (guest as Record<string, unknown>).msg_spa_upsell_sent === true &&
+        String((guest as Record<string, unknown>).spa_date ?? "").slice(0, 10) !==
+          String((guest as Record<string, unknown>).arrival_date ?? "").slice(0, 10) &&
+        isSpaUpsellAcceptanceReply(effectiveText)
+      ) {
+        await runSpaUpsellAcceptanceIntercept(supabase, {
           phone,
           guestId,
           guest: guest as Record<string, unknown>,

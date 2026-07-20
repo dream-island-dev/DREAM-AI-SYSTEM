@@ -1230,6 +1230,24 @@ export function buildAdministrativeDispatchReply(_guestName?: string | null): st
   return "הבקשתך הועברה לצוות הקבלה שלנו, והם יצרו איתך קשר בהקדם. 🙏";
 }
 
+// ── Spa upsell acceptance (day-pass, manual "Send Offer Now" dispatch) ─────
+// Whapi free-text has no reply buttons, so a guest who wants the massage
+// simply replies "כן"/"רוצה"/etc. — anchored on the WHOLE trimmed message
+// (not a substring match) so this never hijacks an unrelated "כן" mid-sentence
+// or answering a different question. Callers MUST additionally gate this on
+// guest.msg_spa_upsell_sent === true AND no spa booked yet for today — see
+// runSpaUpsellAcceptanceIntercept in guestBalloonAdminIntercept.ts.
+export const SPA_UPSELL_ACCEPT_PATTERN =
+  /^(כן|כן\s*בבקשה|בבקשה|בטח|רוצה|רוצים|מעוניין|מעוניינת|מעוניינים|בשמחה|אשמח|סבבה|מגניב|למה\s*לא|תוסיפו|כן\s*תודה|אוקיי?|okay?|yes|sure)[\s!.,🙏😊👍❤️💆]*$/iu;
+
+export function isSpaUpsellAcceptanceReply(text: string): boolean {
+  return SPA_UPSELL_ACCEPT_PATTERN.test(text.trim());
+}
+
+export function buildSpaUpsellAcceptanceReply(_guestName?: string | null): string {
+  return "מעולה! 💆 נדאג לשבץ אתכם לטיפול היום ונעדכן אתכם בהקדם עם השעה המדויקת 🙏";
+}
+
 /** True when pre-arrival DB status contradicts an obvious in-room request. */
 export function shouldApplyInRoomContextOverride(
   text: string,

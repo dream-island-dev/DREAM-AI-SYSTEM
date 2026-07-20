@@ -2442,20 +2442,21 @@ serve(async (req: Request) => {
     const DAY_PASS_ALLOWED_TRIGGERS = new Set([
       "pre_arrival_2d", "stage_2_arrival", "night_before_daypass", "morning_welcome",
       "mid_stay_daypass", "checkout_fb_daypass", "spa_warmup_daypass", "survey_invite_daypass",
+      "spa_upsell_daypass",
     ]);
     // isEffectiveDayPassGuest (not raw room_type): a suite-room guest mis-tagged
     // day_guest must NOT be run through day-pass restrictions (P0, session 125).
     if (!force && isEffectiveDayPassGuest(guest) && !DAY_PASS_ALLOWED_TRIGGERS.has(trigger)) {
       console.warn(
         `[whatsapp-send] day_pass_stage_gate: trigger="${trigger}" blocked for ` +
-        `guest_id=${guestId} (room_type=${guest.room_type}) — allowed: pre_arrival_2d, stage_2_arrival, night_before_daypass, morning_welcome, mid_stay_daypass, checkout_fb_daypass, spa_warmup_daypass, survey_invite_daypass`,
+        `guest_id=${guestId} (room_type=${guest.room_type}) — allowed: pre_arrival_2d, stage_2_arrival, night_before_daypass, morning_welcome, mid_stay_daypass, checkout_fb_daypass, spa_warmup_daypass, survey_invite_daypass, spa_upsell_daypass`,
       );
       return new Response(
         JSON.stringify({
           ok: false,
           status: "blocked",
           reason: "day_pass_stage_gate",
-          error: `שלב "${trigger}" אינו מורשה לאורחי יום-כיף — מותרים: אישור הגעה, שלב 2, תזכורת ערב לפני (בילוי יומי), בוקר הגעה, ומשוב`,
+          error: `שלב "${trigger}" אינו מורשה לאורחי יום-כיף — מותרים: אישור הגעה, שלב 2, תזכורת ערב לפני (בילוי יומי), בוקר הגעה, משוב, והצעת ספא`,
         }),
         { headers: { ...CORS, "Content-Type": "application/json" } },
       );
@@ -2467,7 +2468,7 @@ serve(async (req: Request) => {
     // for the misrouting incident (suite guest got morning_daypass content).
     const DAYPASS_ONLY_TRIGGERS = new Set([
       "night_before_daypass", "morning_daypass", "mid_stay_daypass", "checkout_fb_daypass",
-      "spa_warmup_daypass", "survey_invite_daypass",
+      "spa_warmup_daypass", "survey_invite_daypass", "spa_upsell_daypass",
     ]);
     if (!force && isEffectiveSuiteGuest(guest) && DAYPASS_ONLY_TRIGGERS.has(trigger)) {
       console.warn(

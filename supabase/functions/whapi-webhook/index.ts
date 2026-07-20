@@ -116,6 +116,7 @@ import {
   resolveTruncatedReplyFallback,
   shouldInterceptBalloonRoomRequest,
   shouldInterceptAdministrativeInHouseRequest,
+  isSpaUpsellAcceptanceReply,
 } from "../_shared/automationSchedule.ts";
 import { createGuestOpsTaskWithInstantAmenityDispatch } from "../_shared/createGuestOpsTask.ts";
 import {
@@ -163,6 +164,7 @@ import { fetchGuestChatHistory } from "../_shared/guestConversationHistory.ts";
 import {
   runBalloonRoomRequestIntercept,
   runAdministrativeInHouseIntercept,
+  runSpaUpsellAcceptanceIntercept,
 } from "../_shared/guestBalloonAdminIntercept.ts";
 import {
   verifyWhapiWebhookSecret,
@@ -1243,6 +1245,25 @@ async function handleGuestDirectMessage(
         whapiTier0Adapter,
       );
       results.push({ ...base, action: "balloon_room_request", muted: staffMuted });
+      return;
+    }
+
+    // ── Spa upsell acceptance (day-pass, manual offer) — must run before the
+    // generic administrative-in-house check below, since a bare "כן"/"רוצה"
+    // reply would otherwise fall straight through to the LLM. Tightly scoped
+    // to guests who actually received the offer and still have no spa today.
+    if (
+      guestId && guestRecord &&
+      guestRecord.msg_spa_upsell_sent === true &&
+      String(guestRecord.spa_date ?? "").slice(0, 10) !== String(guestRecord.arrival_date ?? "").slice(0, 10) &&
+      isSpaUpsellAcceptanceReply(text)
+    ) {
+      await runSpaUpsellAcceptanceIntercept(
+        supabase,
+        { phone, guestId, guest: guestRecord, text, conversationId },
+        whapiTier0Adapter,
+      );
+      results.push({ ...base, action: "spa_upsell_accept", muted: staffMuted });
       return;
     }
 

@@ -1141,6 +1141,21 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
   const [whapiPickSaving, setWhapiPickSaving] = useState(false);
   const [whapiPickDone, setWhapiPickDone] = useState(false);
   const [whapiPickError, setWhapiPickError] = useState(null);
+
+  // ── Spa upsell for day-pass guests without a treatment (Doc 1 "spa" mode) ──
+  // Review-before-commit list of Doc 1 rows with no existing guest match and no
+  // spa_time — staff confirms before any guests row is created (Zero Data Loss).
+  const [daypassCreateCandidates, setDaypassCreateCandidates] = useState([]);
+  const [daypassCreateSelected, setDaypassCreateSelected] = useState(new Set());
+  const [daypassCreating, setDaypassCreating] = useState(false);
+  const [daypassCreateError, setDaypassCreateError] = useState(null);
+  // Day-pass guests (existing + just-created) with no spa booked today — the
+  // audience for the manual "Send Offer Now" spa upsell dispatch.
+  const [spaUpsellCandidates, setSpaUpsellCandidates] = useState([]);
+  const [spaUpsellSelected, setSpaUpsellSelected] = useState(new Set());
+  const [spaUpsellSending, setSpaUpsellSending] = useState(false);
+  const [spaUpsellProgress, setSpaUpsellProgress] = useState(null);
+  const [spaUpsellSummary, setSpaUpsellSummary] = useState(null);
   const doc2Ref = useRef();
   const doc1Ref = useRef();
   const mappingReviewRef = useRef(null);
@@ -2317,16 +2332,21 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
         } else {
         const allPhones = doc1Rec.filter(r => r.phone).map(r => r.phone);
         let updated = 0, skipped = 0;
+        const upsellCandidates = [];
+        const daypassCandidates = [];
 
         if (allPhones.length > 0) {
           const { data: existingRows } = await supabase
-            .from("guests").select("phone").in("phone", allPhones);
-          const existingPhones = new Set((existingRows ?? []).map(g => g.phone));
+            .from("guests")
+            .select("id, phone, name, room_type, room, spa_date, arrival_date, status, msg_spa_upsell_sent")
+            .in("phone", allPhones);
+          const existingByPhone = new Map((existingRows ?? []).map(g => [g.phone, g]));
 
           for (const rec of doc1Rec) {
             if (!rec.phone) { skipped++; continue; }
 
-            if (existingPhones.has(rec.phone)) {
+            const existing = existingByPhone.get(rec.phone);
+            if (existing) {
               const patch = {};
               if (rec.spa_time) {
                 patch.spa_time = rec.spa_time;
@@ -2342,15 +2362,36 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
               if (rec.arrival_date)    patch.arrival_date    = rec.arrival_date;
               const { error } = await supabase.from("guests").update(patch).eq("phone", rec.phone);
               if (!error) updated++; else skipped++;
+
+              // Spa upsell audience: day-pass guest, no spa booked today (this
+              // report didn't carry a spa_time AND the existing row's spa_date
+              // isn't today either), not cancelled, offer not sent yet.
+              const recArrival = rec.arrival_date || existing.arrival_date || arrivalDate;
+              const isDayPass = (existing.room_type === "day_guest" || existing.room_type === "premium_day_guest")
+                && !!existing.room;
+              const hasSpaToday = !!rec.spa_time || (!!existing.spa_date && existing.spa_date === recArrival);
+              if (isDayPass && !hasSpaToday && !existing.msg_spa_upsell_sent && existing.status !== "cancelled") {
+                upsellCandidates.push({ id: existing.id, name: rec.guest_name || existing.name, phone: rec.phone });
+              }
+            } else if (!rec.spa_time) {
+              // No existing profile AND no spa this visit — candidate for a
+              // brand-new day-pass guest profile (staff reviews before create).
+              daypassCandidates.push(rec);
+              skipped++;
             } else {
-              // Guest not found — enrichment-only path, never insert.
+              // Has a spa booking but no matching guest yet — enrichment-only
+              // path, never insert (unusual: spa without a profile at all).
               skipped++;
             }
           }
         } else {
           skipped = doc1Rec.length;
         }
-        setResult({ mode: "spa", updated, skipped });
+        setSpaUpsellCandidates(upsellCandidates);
+        setSpaUpsellSelected(new Set(upsellCandidates.map(c => c.id)));
+        setDaypassCreateCandidates(daypassCandidates);
+        setDaypassCreateSelected(new Set(daypassCandidates.map((_, i) => i)));
+        setResult({ mode: "spa", updated, skipped, upsellCount: upsellCandidates.length, daypassCandidateCount: daypassCandidates.length });
         }
       }
 
@@ -2403,6 +2444,131 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     }
   };
 
+  // ── Day-pass profile creation from unmatched Doc 1 rows (no phone match, no spa) ──
+  const toggleDaypassCreate = (idx) => {
+    setDaypassCreateSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx); else next.add(idx);
+      return next;
+    });
+  };
+  const toggleDaypassCreateAll = () => {
+    setDaypassCreateSelected((prev) =>
+      prev.size === daypassCreateCandidates.length
+        ? new Set()
+        : new Set(daypassCreateCandidates.map((_, i) => i)),
+    );
+  };
+  const handleCreateDaypassProfiles = async () => {
+    if (!supabase || daypassCreateSelected.size === 0) return;
+    setDaypassCreating(true);
+    setDaypassCreateError(null);
+    try {
+      const rows = [...daypassCreateSelected].map((i) => daypassCreateCandidates[i]).filter(Boolean);
+      const created = [];
+      for (const rec of rows) {
+        const recArrivalDate = rec.arrival_date || arrivalDate;
+        const { data: inserted, error } = await supabase
+          .from("guests")
+          .insert({
+            phone: rec.phone,
+            name: rec.guest_name || null,
+            arrival_date: recArrivalDate,
+            departure_date: recArrivalDate,
+            room_type: "day_guest",
+            room: "Premium Day 1",
+            status: "pending",
+            order_number: rec.order_number || null,
+            treatment_count: rec.treatment_count ?? 0,
+            meal_time: rec.meal_time || null,
+            meal_location: rec.meal_location || null,
+          })
+          .select("id, name, phone")
+          .maybeSingle();
+        if (error) { setDaypassCreateError(error.message); continue; }
+        if (inserted) {
+          created.push(inserted);
+          // bookings.phone is digits-only, no "+" (Meta webhook convention).
+          await supabase.from("bookings").upsert({
+            phone: rec.phone.replace(/^\+/, ""),
+            guest_name: rec.guest_name || null,
+            arrival_date: recArrivalDate,
+            status: "expected",
+            room_count: 1,
+          }, { onConflict: "phone,arrival_date" });
+        }
+      }
+      if (created.length > 0) {
+        setSpaUpsellCandidates((prev) => [...prev, ...created]);
+        setSpaUpsellSelected((prev) => new Set([...prev, ...created.map((g) => g.id)]));
+        showToast("ok", `☀️ נוצרו ${created.length} פרופילי בילוי יומי`);
+      }
+      setDaypassCreateCandidates((prev) => prev.filter((_, i) => !daypassCreateSelected.has(i)));
+      setDaypassCreateSelected(new Set());
+    } catch (err) {
+      setDaypassCreateError(err?.message ?? String(err));
+    } finally {
+      setDaypassCreating(false);
+    }
+  };
+
+  // ── Spa upsell offer — manual dispatch only (day-pass Whapi automation is
+  // permanently disabled for ban-prevention, migration 205) — same
+  // force_channel="whapi_session" escape hatch as AutomationControlCenter's
+  // manual dispatch, paced at the same 2.5s cadence as whatsapp-cron. ────────
+  const SPA_UPSELL_SEND_PULSE_MS = 2500;
+  const toggleSpaUpsell = (id) => {
+    setSpaUpsellSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+  const toggleSpaUpsellAll = () => {
+    setSpaUpsellSelected((prev) =>
+      prev.size === spaUpsellCandidates.length
+        ? new Set()
+        : new Set(spaUpsellCandidates.map((g) => g.id)),
+    );
+  };
+  const handleSendSpaUpsellOffer = async () => {
+    if (!supabase || spaUpsellSelected.size === 0) return;
+    setSpaUpsellSending(true);
+    setSpaUpsellSummary(null);
+    const targets = spaUpsellCandidates.filter((g) => spaUpsellSelected.has(g.id));
+    const results = [];
+    for (let i = 0; i < targets.length; i++) {
+      const guest = targets[i];
+      setSpaUpsellProgress({ current: i + 1, total: targets.length });
+      try {
+        const { data, error } = await supabase.functions.invoke("whatsapp-send", {
+          body: { trigger: "spa_upsell_daypass", guestId: guest.id, force: true, force_channel: "whapi_session" },
+        });
+        if (error) results.push({ guest, result: "error", error: error.message });
+        else if (data?.skipped) results.push({ guest, result: "skipped", reason: data.reason });
+        else if (data?.ok) results.push({ guest, result: "sent" });
+        else results.push({ guest, result: "failed", error: data?.error ?? "unknown" });
+      } catch (e) {
+        results.push({ guest, result: "error", error: e?.message ?? String(e) });
+      }
+      if (i < targets.length - 1) {
+        await new Promise((r) => setTimeout(r, SPA_UPSELL_SEND_PULSE_MS));
+      }
+    }
+    const sentIds = new Set(results.filter((r) => r.result === "sent").map((r) => r.guest.id));
+    setSpaUpsellCandidates((prev) => prev.filter((g) => !sentIds.has(g.id)));
+    setSpaUpsellSelected(new Set());
+    setSpaUpsellSending(false);
+    setSpaUpsellProgress(null);
+    setSpaUpsellSummary({
+      total: results.length,
+      sent: results.filter((r) => r.result === "sent").length,
+      skipped: results.filter((r) => r.result === "skipped").length,
+      failed: results.filter((r) => r.result === "failed" || r.result === "error").length,
+      details: results,
+    });
+  };
+
   const reset = () => {
     setDoc2Map(null); setDoc1Rec(null); setRawDoc1Payload(null);
     setDoc2Name(""); setDoc1Name("");
@@ -2413,6 +2579,8 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
     setDetailedRoomFilter("all"); setSelectedIds(new Set()); setResult(null);
     setSyncedGuestsForWhapiPick([]); setWhapiPickSelected(new Set());
     setWhapiPickDone(false); setWhapiPickError(null);
+    setDaypassCreateCandidates([]); setDaypassCreateSelected(new Set()); setDaypassCreateError(null);
+    setSpaUpsellCandidates([]); setSpaUpsellSelected(new Set()); setSpaUpsellSummary(null);
     setMappingStage("idle"); setRawDoc2Rows(null); setDoc2Fallback(null);
     setAiSuggestion(null); setAiError(null); setAutoDateBanner(null);
     setImportSource(null); setDetailedFileName("");
@@ -3510,6 +3678,12 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                       {result.skipped} רשומות דולגו (ללא טלפון, לא נמצאו במערכת, או שגיאה)
                     </div>
                   )}
+                  {result.mode === "spa" && (result.daypassCandidateCount > 0 || result.upsellCount > 0) && (
+                    <div style={{ fontSize: 12.5, color: "#8a6d1a", marginTop: 8, fontWeight: 700 }}>
+                      {result.daypassCandidateCount > 0 && <>☀️ {result.daypassCandidateCount} מועמדים לפרופיל בילוי יומי חדש (ללא טיפול ספא) · </>}
+                      {result.upsellCount > 0 && <>💆 {result.upsellCount} אורחי בילוי יומי ללא ספא — ראה למטה</>}
+                    </div>
+                  )}
                 </div>
               )}
               <button onClick={reset} style={{
@@ -3591,6 +3765,111 @@ export default function ArrivalImportPanel({ defaultOpen = false } = {}) {
                 }}
               >
                 {whapiPickSaving ? "⏳ שומר..." : `📱 שייך ${whapiPickSelected.size || ""} למכשיר הסוויטות`}
+              </button>
+            </div>
+          )}
+
+          {daypassCreateCandidates.length > 0 && (
+            <div style={{
+              marginTop: 16, background: "#ecfeff", border: "1px solid #0e7490",
+              borderRadius: 12, padding: "18px 20px",
+            }}>
+              <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 6, color: "#0e7490" }}>
+                ☀️ פרופילי בילוי יומי חדשים — ללא טיפול ספא ({daypassCreateCandidates.length})
+              </div>
+              <div style={{ fontSize: 12.5, color: "#155e75", marginBottom: 12, lineHeight: 1.6 }}>
+                הזמנות מהדוח שאין להן פרופיל אורח קיים לפי מספר טלפון, וללא שעת ספא. סמן מי ליצור בפועל.
+              </div>
+              {daypassCreateError && (
+                <div style={{ background: "#FFF0EE", border: "1px solid #C0392B", borderRadius: 8, padding: "8px 12px", color: "#C0392B", fontSize: 12.5, marginBottom: 10 }}>
+                  ⚠️ {daypassCreateError}
+                </div>
+              )}
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                <button type="button" onClick={toggleDaypassCreateAll} style={{ fontSize: 12, padding: "4px 10px", borderRadius: 8, border: "1px solid #0e7490", background: "#fff", cursor: "pointer" }}>
+                  {daypassCreateSelected.size === daypassCreateCandidates.length ? "נקה בחירה" : "בחר הכל"}
+                </button>
+                <span style={{ fontSize: 12, color: "#155e75" }}>{daypassCreateSelected.size} נבחרו</span>
+              </div>
+              <div style={{ maxHeight: 220, overflowY: "auto", border: "1px solid #A5E4EF", borderRadius: 8, background: "#fff" }}>
+                {daypassCreateCandidates.map((rec, i) => (
+                  <label key={`${rec.phone}_${i}`} style={{
+                    display: "flex", alignItems: "center", gap: 10, padding: "8px 12px",
+                    borderBottom: "1px solid #E0F5FA", fontSize: 13, cursor: "pointer",
+                  }}>
+                    <input type="checkbox" checked={daypassCreateSelected.has(i)} onChange={() => toggleDaypassCreate(i)} />
+                    <span style={{ fontWeight: 600 }}>{rec.guest_name || "—"}</span>
+                    <span style={{ color: "#0e7490" }}>{rec.phone}</span>
+                    {rec.order_number && <span style={{ color: "#8a8266", fontSize: 12 }}>הזמנה #{rec.order_number}</span>}
+                  </label>
+                ))}
+              </div>
+              <button
+                onClick={handleCreateDaypassProfiles}
+                disabled={daypassCreating || daypassCreateSelected.size === 0}
+                style={{
+                  marginTop: 12, padding: "8px 18px", borderRadius: 8, border: "none",
+                  background: daypassCreating || daypassCreateSelected.size === 0 ? "#A5E4EF" : "#0e7490",
+                  color: "#fff", fontWeight: 700, fontSize: 13,
+                  cursor: daypassCreating || daypassCreateSelected.size === 0 ? "not-allowed" : "pointer",
+                }}
+              >
+                {daypassCreating ? "⏳ יוצר..." : `☀️ צור ${daypassCreateSelected.size || ""} פרופילי בילוי יומי`}
+              </button>
+            </div>
+          )}
+
+          {spaUpsellCandidates.length > 0 && (
+            <div style={{
+              marginTop: 16, background: "#FDF4FF", border: "1px solid #A21CAF",
+              borderRadius: 12, padding: "18px 20px",
+            }}>
+              <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 6, color: "#86198F" }}>
+                💆 הצעת טיפול ספא — בילוי יומי ({spaUpsellCandidates.length} ללא הזמנה)
+              </div>
+              <div style={{ fontSize: 12.5, color: "#701A75", marginBottom: 12, lineHeight: 1.6 }}>
+                שיגור ידני דרך מכשיר הסוויטות — 45 דק׳ עיסוי ב-300 ₪ במקום 370 ₪. הטקסט ערוך בעריכת סקריפטים (מפתח: spa_upsell_daypass).
+                בפעימות של {SPA_UPSELL_SEND_PULSE_MS / 1000} שניות בין הודעה להודעה.
+              </div>
+              {spaUpsellSummary && (
+                <div style={{ background: "#F3E8FF", border: "1px solid #A21CAF", borderRadius: 8, padding: "8px 12px", color: "#701A75", fontSize: 12.5, marginBottom: 10 }}>
+                  ✅ נשלחו {spaUpsellSummary.sent} · דולגו {spaUpsellSummary.skipped} · נכשלו {spaUpsellSummary.failed} מתוך {spaUpsellSummary.total}
+                </div>
+              )}
+              {spaUpsellSending && spaUpsellProgress && (
+                <div style={{ fontSize: 12.5, color: "#701A75", marginBottom: 10 }}>
+                  ⏳ שולח {spaUpsellProgress.current}/{spaUpsellProgress.total}...
+                </div>
+              )}
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                <button type="button" onClick={toggleSpaUpsellAll} style={{ fontSize: 12, padding: "4px 10px", borderRadius: 8, border: "1px solid #A21CAF", background: "#fff", cursor: "pointer" }}>
+                  {spaUpsellSelected.size === spaUpsellCandidates.length ? "נקה בחירה" : "בחר הכל"}
+                </button>
+                <span style={{ fontSize: 12, color: "#701A75" }}>{spaUpsellSelected.size} נבחרו</span>
+              </div>
+              <div style={{ maxHeight: 220, overflowY: "auto", border: "1px solid #E9D5FF", borderRadius: 8, background: "#fff" }}>
+                {spaUpsellCandidates.map((g) => (
+                  <label key={g.id} style={{
+                    display: "flex", alignItems: "center", gap: 10, padding: "8px 12px",
+                    borderBottom: "1px solid #F3E8FF", fontSize: 13, cursor: "pointer",
+                  }}>
+                    <input type="checkbox" checked={spaUpsellSelected.has(g.id)} onChange={() => toggleSpaUpsell(g.id)} />
+                    <span style={{ fontWeight: 600 }}>{g.name || "—"}</span>
+                    <span style={{ color: "#A21CAF" }}>{g.phone}</span>
+                  </label>
+                ))}
+              </div>
+              <button
+                onClick={handleSendSpaUpsellOffer}
+                disabled={spaUpsellSending || spaUpsellSelected.size === 0}
+                style={{
+                  marginTop: 12, padding: "8px 18px", borderRadius: 8, border: "none",
+                  background: spaUpsellSending || spaUpsellSelected.size === 0 ? "#E9D5FF" : "#A21CAF",
+                  color: "#fff", fontWeight: 700, fontSize: 13,
+                  cursor: spaUpsellSending || spaUpsellSelected.size === 0 ? "not-allowed" : "pointer",
+                }}
+              >
+                {spaUpsellSending ? "⏳ שולח..." : `💆 שלח הצעת ספא ל-${spaUpsellSelected.size || ""} אורחים`}
               </button>
             </div>
           )}
