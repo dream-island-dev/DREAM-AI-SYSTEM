@@ -583,6 +583,19 @@ export function checkEligibility(
 
   const effectiveSuite = isEffectiveSuiteGuest(guest);
 
+  // Suite Stage 5 — event-driven from housekeeping «Co»; never cron day_offset.
+  // Evaluated before generic post-stay lifecycle so Live Queue shows
+  // suite_checkout_survey_via_housekeeping instead of misleading stay_not_ended.
+  if (stage.stage_key === "checkout_fb" && effectiveSuite) {
+    if (!guest.departure_date) return "missing_departure_date";
+    const todayStr = israelYmd(now);
+    if (guest.arrival_date && guest.arrival_date > todayStr) return "guest_not_arrived";
+    if (guest.status === "pending" || guest.status === "expected") {
+      return "guest_never_checked_in";
+    }
+    return "suite_checkout_survey_via_housekeeping";
+  }
+
   const lifecycleBlock = assertPipelineLifecycleForTrigger(stage.stage_key, guest, now);
   if (lifecycleBlock) return lifecycleBlock;
 
@@ -608,11 +621,6 @@ export function checkEligibility(
         return "not_on_property";
       }
     }
-  }
-
-  // Suite post-stay survey is event-driven from housekeeping WA "Co" — never cron.
-  if (stage.stage_key === "checkout_fb" && effectiveSuite) {
-    return "suite_checkout_survey_via_housekeeping";
   }
 
   if (stage.stage_key === "spa_warmup_daypass") {
@@ -645,13 +653,18 @@ export function computeScheduledInstant(
 ): Date | null {
   if (stage.schedule_mode === "event_immediate") return null;
 
+  // Suite checkout_fb uses post_checkout_survey_queue (Co + delay) — no legacy departure clock.
+  if (stage.stage_key === "checkout_fb" && isEffectiveSuiteGuest(guest)) return null;
+
   if (stage.schedule_mode === "day_offset_with_time") {
     const anchorDateStr = stage.anchor_event === "departure_date" ? guest.departure_date : guest.arrival_date;
     if (!anchorDateStr) return null;
     const targetDateStr = targetYmdFromAnchor(anchorDateStr, effectiveStageDayOffset(stage, guest));
     const stageLocalTime = effectiveStageLocalTime(stage, guest);
-    const floorUtcHour = stageLocalTime ? parseLocalTimeToUtcHour(stageLocalTime) : 0;
-    return utcHourToTimestamp(targetDateStr, floorUtcHour);
+    if (stageLocalTime) {
+      return israelLocalDateTimeToUtc(targetDateStr, stageLocalTime);
+    }
+    return utcHourToTimestamp(targetDateStr, 0);
   }
 
   if (stage.schedule_mode === "hours_after_event") {
@@ -800,8 +813,10 @@ export function resolveStageSchedule(
     const targetDateStr = targetYmdFromAnchor(anchorDateStr, effectiveStageDayOffset(stage, guest));
     const todayStr = israelYmd(now);
     const stageLocalTime = effectiveStageLocalTime(stage, guest);
-    const floorUtcHour = stageLocalTime ? parseLocalTimeToUtcHour(stageLocalTime) : 0;
-    const scheduledFor = scheduledForPreview ?? utcHourToTimestamp(targetDateStr, floorUtcHour);
+    const scheduledFor = scheduledForPreview
+      ?? (stageLocalTime
+        ? israelLocalDateTimeToUtc(targetDateStr, stageLocalTime)
+        : utcHourToTimestamp(targetDateStr, 0));
 
     if (targetDateStr !== todayStr) {
       if (targetDateStr > todayStr) {

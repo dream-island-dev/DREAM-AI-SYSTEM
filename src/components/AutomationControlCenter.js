@@ -115,7 +115,7 @@ const SKIP_REASON_LABELS = {
   stage_suppressed: "בוטל ידנית",
   missed_window: "פספס מועד — לשגר ידנית",
   missing_room_assignment: "אין חדר/סוויטה משויכת — אוטומציה חסומה",
-  suite_checkout_survey_via_housekeeping: "נשלח אחרי Co מקבוצת חדרנות (לא לפי שעה קבועה)",
+  suite_checkout_survey_via_housekeeping: "ממתין ל-Co מקבוצת חדרנות",
 };
 
 /** Suite post-checkout survey — delay after housekeeping «Co» (postCheckoutSurvey.ts). */
@@ -218,7 +218,25 @@ function groupQueueByArrivalDay(items, stages) {
     });
 }
 
-function formatQueueScheduleCell(q) {
+function formatQueueScheduleCell(q, checkoutSurveyDelayMinutes = DEFAULT_POST_CHECKOUT_SURVEY_DELAY_MINUTES) {
+  if (q.stageKey === "checkout_fb" && q.effectiveSuite) {
+    if (q.scheduledFor) {
+      const when = new Date(q.scheduledFor).toLocaleString("he-IL", {
+        day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit",
+      });
+      const title = q.checkoutSurveyQueued
+        ? `Co + ${checkoutSurveyDelayMinutes} דק׳ (תור חדרנות)`
+        : formatIsraelDateTime(q.scheduledFor);
+      return (
+        <span title={title}>
+          {q.checkoutSurveyQueued ? `Co +${checkoutSurveyDelayMinutes}ד׳ · ${when}` : when}
+        </span>
+      );
+    }
+    if (q.skipReason === "suite_checkout_survey_via_housekeeping") {
+      return `אחרי Co + ${checkoutSurveyDelayMinutes} דק׳`;
+    }
+  }
   if (q.scheduledFor) {
     const when = new Date(q.scheduledFor).toLocaleString("he-IL", {
       day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit",
@@ -251,7 +269,12 @@ function queueStatusBadge(q) {
   if (q.status === "duplicate_blocked") return { cls: "badge-orange", text: "🔁 כפילות נחסמה" };
   if (q.status === "blocked_by_meta") return { cls: "badge-orange", text: "🟠 ממתין לאישור" };
   if (q.status === "failed_missing_link") return { cls: "badge-red", text: "❌ חסר קישור תשלום" };
-  if (q.dueNow && q.status === "pending") return { cls: "badge-gold", text: "⚡ מוכן לשליחה" };
+  if (q.dueNow && q.status === "pending") {
+    return {
+      cls: "badge-gold",
+      text: q.checkoutSurveyQueued ? "⚡ מוכן לשליחה (Co)" : "⚡ מוכן לשליחה",
+    };
+  }
   if (q.skipReason === "missed_window") return { cls: "badge-orange", text: "⚠ פספס מועד — לשגר ידנית" };
   if (q.staffScheduled && isFutureScheduledQueueItem(q)) return { cls: "badge-blue", text: "📅 מתוזמן" };
   if (q.skipReason && SKIP_REASON_LABELS[q.skipReason]) {
@@ -309,6 +332,8 @@ function renderGuestQueueRows({
   onSuppressStage,
   onUnsuppressStage,
   suppressBusyKey,
+  onScheduleMissed,
+  checkoutSurveyDelayMinutes,
 }) {
   return items.map((q) => {
     const itemKey = `${q.guestId}_${q.stageKey}`;
@@ -350,7 +375,7 @@ function renderGuestQueueRows({
           )}
         </td>
         <td style={{ fontSize: 13, fontWeight: 600 }}>{q.displayName}</td>
-        <td style={{ fontSize: 12 }}>{formatQueueScheduleCell(q)}</td>
+        <td style={{ fontSize: 12 }}>{formatQueueScheduleCell(q, checkoutSurveyDelayMinutes)}</td>
         <td>
           <span style={{
             fontSize: 10, padding: "2px 7px", borderRadius: 10,
@@ -377,6 +402,18 @@ function renderGuestQueueRows({
         </td>
         <td style={{ textAlign: "center" }}>
           <div style={{ display: "flex", gap: 4, justifyContent: "center", flexWrap: "wrap" }}>
+            {q.skipReason === "missed_window" && canDispatch && !isGated && onScheduleMissed && (
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                title="תזמן לשעה מותאמת"
+                onClick={() => onScheduleMissed(itemKey)}
+                disabled={sendNowSending}
+                style={{ fontSize: 10, padding: "3px 7px", color: "#D97706", fontWeight: 700 }}
+              >
+                📅 תזמן
+              </button>
+            )}
             {canDispatch && (
               <button
                 type="button"
@@ -545,12 +582,21 @@ function PremiumDayRoomTypeConflictBadge({ compact = false }) {
 }
 
 /** Per-day chips: one entry per stage_key with dispatchable item keys. */
-function buildDayStageChips(day, isDispatchable, dayPassAllowedStages) {
+function queueItemKey(q) {
+  return `${q.guestId}_${q.stageKey}`;
+}
+
+function isMissedWindowQueueItem(q) {
+  return q?.skipReason === "missed_window";
+}
+
+function buildDayStageChips(day, isDispatchable, dayPassAllowedStages, itemFilter = null) {
   const byStage = new Map();
   for (const guest of day.guests) {
     for (const q of guest.items) {
       if (!isDispatchable(q) || isQueueItemGated(q, dayPassAllowedStages)) continue;
-      const itemKey = `${q.guestId}_${q.stageKey}`;
+      if (itemFilter && !itemFilter(q)) continue;
+      const itemKey = queueItemKey(q);
       if (!byStage.has(q.stageKey)) {
         byStage.set(q.stageKey, {
           stageKey: q.stageKey,
@@ -563,6 +609,12 @@ function buildDayStageChips(day, isDispatchable, dayPassAllowedStages) {
     }
   }
   return [...byStage.values()].sort((a, b) => a.sequenceOrder - b.sequenceOrder);
+}
+
+function collectGuestMissedKeys(guest, isDispatchable, dayPassAllowedStages) {
+  return (guest.items ?? [])
+    .filter((q) => isDispatchable(q) && !isQueueItemGated(q, dayPassAllowedStages) && isMissedWindowQueueItem(q))
+    .map(queueItemKey);
 }
 
 function attentionItemKey(r) {
@@ -2033,12 +2085,15 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
   const [dispatchViaWhapi, setDispatchViaWhapi] = useState(false);
   const [showScheduleModal, setShowScheduleModal] = useState(false);
   const [scheduleInitial, setScheduleInitial] = useState(null);
+  const [scheduleItemKeys, setScheduleItemKeys] = useState(null);
   const [scheduling, setScheduling] = useState(false);
   const [scheduleError, setScheduleError] = useState(null);
 
-  const openScheduleModal = useCallback((preset = null) => {
+  const openScheduleModal = useCallback((preset = null, itemKeys = null) => {
     setScheduleError(null);
     setScheduleInitial(preset);
+    setScheduleItemKeys(itemKeys?.length ? itemKeys : null);
+    if (itemKeys?.length) setSelectedItems(new Set(itemKeys));
     setShowScheduleModal(true);
   }, []);
 
@@ -2676,6 +2731,7 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
       showToast("ok", `📅 נשמר תזמון ל-${count} הודעות — ה-cron ישלח בזמן`);
       setShowScheduleModal(false);
       setScheduleInitial(null);
+      setScheduleItemKeys(null);
       setSelectedItems(new Set());
       fetchQueue();
     } catch (err) {
@@ -2898,6 +2954,29 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
           whiteSpace: "nowrap",
         });
 
+        const missedChipStyle = (allSel, someSel) => ({
+          fontSize: 12,
+          padding: "5px 12px",
+          borderRadius: 20,
+          cursor: "pointer",
+          border: allSel ? "1px solid #D97706" : someSel ? "1px dashed #D97706" : "1px solid #FDBA74",
+          background: allSel ? "rgba(217,119,6,0.22)" : someSel ? "rgba(217,119,6,0.1)" : "#FFFBEB",
+          color: allSel ? "#B45309" : "#92400E",
+          fontWeight: allSel ? 700 : 500,
+          whiteSpace: "nowrap",
+        });
+
+        const scheduleModalItems = displayQueue.filter((q) => {
+          const k = queueItemKey(q);
+          if (scheduleItemKeys?.length) return scheduleItemKeys.includes(k);
+          return selectedItems.has(k);
+        });
+
+        const selectedMissedCount = [...selectedItems].filter((k) => {
+          const q = displayQueue.find((row) => queueItemKey(row) === k);
+          return q && isMissedWindowQueueItem(q);
+        }).length;
+
         return (
           <div>
             {/* ── Manual Dispatch Modal ── */}
@@ -2920,16 +2999,18 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
             {showScheduleModal && (
               <QueueBulkScheduleModal
                 key={scheduleInitial ? `${scheduleInitial.date}_${scheduleInitial.time}` : "default"}
-                items={displayQueue.filter((q) => selectedItems.has(`${q.guestId}_${q.stageKey}`))}
+                items={scheduleModalItems}
                 dayLabels={Object.fromEntries(arrivalDayGroups.map((d) => [d.dateKey, d.label]))}
                 initialDate={scheduleInitial?.date}
                 initialTime={scheduleInitial?.time}
+                missedWindowMode={scheduleModalItems.length > 0 && scheduleModalItems.every(isMissedWindowQueueItem)}
                 saving={scheduling}
                 error={scheduleError}
                 onClose={() => {
                   if (!scheduling) {
                     setShowScheduleModal(false);
                     setScheduleInitial(null);
+                    setScheduleItemKeys(null);
                     setScheduleError(null);
                   }
                 }}
@@ -3818,50 +3899,110 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
 
                         {!isCollapsed && (() => {
                           const stageChips = buildDayStageChips(day, isDispatchable, DAY_PASS_ALLOWED_STAGES);
+                          const missedStageChips = buildDayStageChips(
+                            day,
+                            isDispatchable,
+                            DAY_PASS_ALLOWED_STAGES,
+                            isMissedWindowQueueItem,
+                          );
                           const dayKeys = stageChips.flatMap((s) => s.itemKeys);
+                          const missedDayKeys = missedStageChips.flatMap((s) => s.itemKeys);
                           const allDaySel = dayKeys.length > 0 && dayKeys.every((k) => selectedItems.has(k));
                           const someDaySel = !allDaySel && dayKeys.some((k) => selectedItems.has(k));
-                          if (stageChips.length === 0) return null;
+                          const allMissedDaySel = missedDayKeys.length > 0 && missedDayKeys.every((k) => selectedItems.has(k));
+                          const someMissedDaySel = !allMissedDaySel && missedDayKeys.some((k) => selectedItems.has(k));
+                          if (stageChips.length === 0 && missedStageChips.length === 0) return null;
                           return (
                             <div
                               style={{ padding: "10px 16px", borderBottom: `1px solid ${dayBorder}`, background: "var(--ivory)" }}
                               onClick={(e) => e.stopPropagation()}
                             >
-                              <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", marginBottom: 8 }}>
-                                בחירה מהירה לפי שלב
-                              </div>
-                              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
-                                <button
-                                  type="button"
-                                  style={stageChipStyle(allDaySel, someDaySel)}
-                                  onClick={() => toggleStageKeys(dayKeys)}
-                                >
-                                  {allDaySel ? "✓" : someDaySel ? "◐" : "☐"}{" "}
-                                  כל היום ({dayKeys.length})
-                                </button>
-                                {stageChips.map(({ stageKey, displayName, itemKeys }) => {
-                                  const allSel = itemKeys.length > 0 && itemKeys.every((k) => selectedItems.has(k));
-                                  const someSel = !allSel && itemKeys.some((k) => selectedItems.has(k));
-                                  return (
+                              {stageChips.length > 0 && (
+                                <>
+                                  <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", marginBottom: 8 }}>
+                                    בחירה מהירה לפי שלב
+                                  </div>
+                                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", marginBottom: missedStageChips.length > 0 ? 10 : 0 }}>
                                     <button
-                                      key={stageKey}
                                       type="button"
-                                      style={stageChipStyle(allSel, someSel)}
-                                      onClick={() => toggleStageKeys(itemKeys)}
-                                      title={displayName}
+                                      style={stageChipStyle(allDaySel, someDaySel)}
+                                      onClick={() => toggleStageKeys(dayKeys)}
                                     >
-                                      {allSel ? "✓" : someSel ? "◐" : "☐"}{" "}
-                                      {shortStageLabel(displayName, stageKey)} ({itemKeys.length})
+                                      {allDaySel ? "✓" : someDaySel ? "◐" : "☐"}{" "}
+                                      כל היום ({dayKeys.length})
                                     </button>
-                                  );
-                                })}
-                              </div>
+                                    {stageChips.map(({ stageKey, displayName, itemKeys }) => {
+                                      const allSel = itemKeys.length > 0 && itemKeys.every((k) => selectedItems.has(k));
+                                      const someSel = !allSel && itemKeys.some((k) => selectedItems.has(k));
+                                      return (
+                                        <button
+                                          key={stageKey}
+                                          type="button"
+                                          style={stageChipStyle(allSel, someSel)}
+                                          onClick={() => toggleStageKeys(itemKeys)}
+                                          title={displayName}
+                                        >
+                                          {allSel ? "✓" : someSel ? "◐" : "☐"}{" "}
+                                          {shortStageLabel(displayName, stageKey)} ({itemKeys.length})
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                </>
+                              )}
+                              {missedStageChips.length > 0 && (
+                                <>
+                                  <div style={{ fontSize: 11, fontWeight: 700, color: "#B45309", marginBottom: 8 }}>
+                                    ⚠ פספס מועד — בחירה לפי שלב
+                                  </div>
+                                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+                                    <button
+                                      type="button"
+                                      style={missedChipStyle(allMissedDaySel, someMissedDaySel)}
+                                      onClick={() => toggleStageKeys(missedDayKeys)}
+                                    >
+                                      {allMissedDaySel ? "✓" : someMissedDaySel ? "◐" : "☐"}{" "}
+                                      כל הפספוסים ({missedDayKeys.length})
+                                    </button>
+                                    {missedStageChips.map(({ stageKey, displayName, itemKeys }) => {
+                                      const allSel = itemKeys.length > 0 && itemKeys.every((k) => selectedItems.has(k));
+                                      const someSel = !allSel && itemKeys.some((k) => selectedItems.has(k));
+                                      return (
+                                        <button
+                                          key={`missed_${stageKey}`}
+                                          type="button"
+                                          style={missedChipStyle(allSel, someSel)}
+                                          onClick={() => toggleStageKeys(itemKeys)}
+                                          title={`${displayName} — פספס מועד`}
+                                        >
+                                          {allSel ? "✓" : someSel ? "◐" : "☐"}{" "}
+                                          {shortStageLabel(displayName, stageKey)} ({itemKeys.length})
+                                        </button>
+                                      );
+                                    })}
+                                    <button
+                                      type="button"
+                                      className="btn btn-ghost btn-sm"
+                                      style={{ fontSize: 11, color: "#B45309", fontWeight: 700 }}
+                                      onClick={() => openScheduleModal(null, missedDayKeys)}
+                                      title="תזמן את כל הפספוסים ביום לשעה שתבחר"
+                                    >
+                                      📅 תזמן הכל
+                                    </button>
+                                  </div>
+                                </>
+                              )}
                             </div>
                           );
                         })()}
 
                         {!isCollapsed && day.guests.map((guest) => {
                           const health = summarizeGuestQueueHealth(guest.items);
+                          const guestMissedKeys = collectGuestMissedKeys(
+                            guest,
+                            isDispatchable,
+                            DAY_PASS_ALLOWED_STAGES,
+                          );
                           const { shared: sharedItems, pipeline: pipelineItems, segment } =
                             partitionGuestQueueItems(guest.items, guest);
                           const queueRowProps = {
@@ -3875,6 +4016,8 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                             onSuppressStage: suppressGuestStage,
                             onUnsuppressStage: unsuppressGuestStage,
                             suppressBusyKey,
+                            onScheduleMissed: (itemKey) => openScheduleModal(null, [itemKey]),
+                            checkoutSurveyDelayMinutes: postCheckoutSurveyDelayMinutes,
                           };
                           return (
                           <div
@@ -3929,6 +4072,17 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                                   עזיבה: {new Date(`${guest.departureDate}T12:00:00`).toLocaleDateString("he-IL")}
                                 </span>
                               )}
+                              {guestMissedKeys.length > 0 && (
+                                <button
+                                  type="button"
+                                  className="btn btn-ghost btn-sm"
+                                  onClick={() => openScheduleModal(null, guestMissedKeys)}
+                                  title="תזמן את כל השלבים שפספסו מועד לאורח זה"
+                                  style={{ fontSize: 11, color: "#B45309", fontWeight: 700 }}
+                                >
+                                  📅 תזמן פספס ({guestMissedKeys.length})
+                                </button>
+                              )}
                               <span style={{ marginRight: "auto", fontSize: 11, color: "var(--text-muted)" }}>
                                 {guest.items.length} שלבים · ✕ לביטול שלב בודד
                               </span>
@@ -3972,6 +4126,11 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
               }}>
                 <span style={{ fontWeight: 700, fontSize: 14 }}>
                   ✅ {selectedItems.size} נבחרו
+                  {selectedMissedCount > 0 && (
+                    <span style={{ color: "#B45309", marginRight: 6 }}>
+                      ({selectedMissedCount} פספס מועד)
+                    </span>
+                  )}
                 </span>
                 <button
                   className="btn btn-primary"
@@ -3983,13 +4142,17 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                   🌅 מחר בבוקר
                 </button>
                 <button
-                  className="btn btn-ghost"
+                  className="btn btn-primary"
                   onClick={() => openScheduleModal()}
                   disabled={dispatching || scheduling}
-                  style={{ minWidth: 130 }}
-                  title="בחר תאריך ושעה מותאמים"
+                  style={{
+                    minWidth: 160,
+                    background: selectedMissedCount > 0 ? "#D97706" : undefined,
+                    borderColor: selectedMissedCount > 0 ? "#D97706" : undefined,
+                  }}
+                  title="בחר תאריך ושעה מותאמים לכל הנבחרים"
                 >
-                  📅 שעה אחרת
+                  📅 תזמן לשעה שתבחר
                 </button>
                 <button
                   className="btn btn-primary"

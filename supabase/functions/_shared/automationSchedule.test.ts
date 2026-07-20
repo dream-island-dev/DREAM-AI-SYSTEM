@@ -15,6 +15,7 @@ import { assertEquals } from "https://deno.land/std@0.168.0/testing/asserts.ts";
 import {
   resolveStageSchedule,
   checkEligibility,
+  computeScheduledInstant,
   shouldAutoPromoteToCheckedIn,
   resolveEffectiveGuestStatus,
   needsDepartureCheckoutPrompt,
@@ -784,6 +785,59 @@ Deno.test("checkout_fb: suite guest → suite_checkout_survey_via_housekeeping (
     checkEligibility(stage, guest, israelInstant("2026-07-14", 9, 0)),
     "suite_checkout_survey_via_housekeeping",
   );
+});
+
+Deno.test("checkout_fb: suite guest on departure day before Co → suite_checkout_survey (not stay_not_ended)", () => {
+  const stage: AutomationStage = {
+    ...nightBeforeStage(),
+    stage_key: "checkout_fb",
+    applies_to: "suite",
+    guest_flag_column: "msg_checkout_fb_sent",
+    schedule_mode: "day_offset_with_time",
+    anchor_event: "departure_date",
+    day_offset: 0,
+    local_time: "20:30",
+  };
+  const guest = suiteGuest({
+    arrival_date: "2026-07-18",
+    departure_date: "2026-07-21",
+    status: "checked_in",
+    msg_checkout_fb_sent: false,
+  });
+  const result = resolveStageSchedule(stage, guest, israelInstant("2026-07-21", 14, 0));
+  assertEquals(result.skipReason, "suite_checkout_survey_via_housekeeping");
+  assertEquals(result.scheduledFor, null);
+  assertEquals(result.dueNow, false);
+});
+
+Deno.test("checkout_fb: suite guest — computeScheduledInstant ignores legacy departure clock", () => {
+  const stage: AutomationStage = {
+    ...nightBeforeStage(),
+    stage_key: "checkout_fb",
+    schedule_mode: "day_offset_with_time",
+    anchor_event: "departure_date",
+    day_offset: 0,
+    local_time: "20:30",
+  };
+  const guest = suiteGuest({ departure_date: "2026-07-21" });
+  assertEquals(
+    computeScheduledInstant(stage, guest, israelInstant("2026-07-21", 10, 0)),
+    null,
+  );
+});
+
+Deno.test("day_offset_with_time: computeScheduledInstant preserves minutes in local_time", () => {
+  const stage: AutomationStage = {
+    ...nightBeforeStage(),
+    stage_key: "mid_stay",
+    schedule_mode: "day_offset_with_time",
+    anchor_event: "arrival_date",
+    day_offset: 1,
+    local_time: "10:30",
+  };
+  const guest = suiteGuest({ arrival_date: "2026-07-20" });
+  const instant = computeScheduledInstant(stage, guest, israelInstant("2026-07-21", 8, 0));
+  assertEquals(instant?.toISOString(), "2026-07-21T08:30:00.000Z");
 });
 
 // ── Anti-spam/anti-race latch (2026-07-13, automationRetryGate.ts) ─────────

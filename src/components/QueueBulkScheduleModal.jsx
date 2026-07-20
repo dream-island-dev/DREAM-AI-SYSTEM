@@ -45,6 +45,7 @@ export default function QueueBulkScheduleModal({
   dayLabels = {},
   initialDate,
   initialTime,
+  missedWindowMode = false,
   onClose,
   onConfirm,
   saving,
@@ -261,9 +262,13 @@ export default function QueueBulkScheduleModal({
         maxWidth: 560, width: "100%", maxHeight: "90vh", overflowY: "auto",
         direction: "rtl", boxShadow: "0 16px 48px rgba(0,0,0,0.25)",
       }}>
-        <div style={{ fontWeight: 800, fontSize: 18, marginBottom: 8 }}>📅 תזמון שליחה</div>
+        <div style={{ fontWeight: 800, fontSize: 18, marginBottom: 8 }}>
+          {missedWindowMode ? "⚠ תזמון שלבים שפספסו מועד" : "📅 תזמון שליחה"}
+        </div>
         <p style={{ fontSize: 13, color: "var(--text-muted)", lineHeight: 1.6, margin: "0 0 14px" }}>
-          {items.length} הודעות נבחרו — בחרו מועד מהיר או הגדירו תאריך ושעה. מתאים להודעות שפספסו חלון (למשל אישור הגעה אחרי ייבוא מאוחר).
+          {missedWindowMode
+            ? `${items.length} שלבים שפספסו חלון שליחה — בחרו מועד מהיר או תאריך ושעה מותאמים. ה-cron ישלח בזמן שנקבע (לא מיידית).`
+            : `${items.length} הודעות נבחרו — בחרו מועד מהיר או הגדירו תאריך ושעה. מתאים גם להודעות שפספסו חלון (למשל אישור הגעה אחרי ייבוא מאוחר).`}
         </p>
 
         <div style={{ marginBottom: 16 }}>

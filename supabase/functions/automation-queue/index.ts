@@ -94,6 +94,8 @@ const QUEUE_PREVIEW_VISIBLE_SKIP_REASONS = new Set([
   "cooldown",
   "exhausted",
   "in_flight",
+  // Suite Stage 5 — always visible; send_after merged from post_checkout_survey_queue.
+  "suite_checkout_survey_via_housekeeping",
 ]);
 
 Deno.serve(async (req: Request) => {
@@ -207,6 +209,22 @@ Deno.serve(async (req: Request) => {
       });
     }
 
+    const { data: surveyQueueRows, error: surveyQueueErr } = await supabase
+      .from("post_checkout_survey_queue")
+      .select("guest_id, send_after, source")
+      .eq("status", "pending")
+      .in("guest_id", guestIds.length ? guestIds : [-1]);
+    if (surveyQueueErr) {
+      throw new Error(`post_checkout_survey_queue_lookup_error: ${surveyQueueErr.message}`);
+    }
+    const pendingSurveyByGuestId = new Map<number, { send_after: string; source: string }>();
+    for (const row of surveyQueueRows ?? []) {
+      pendingSurveyByGuestId.set(row.guest_id as number, {
+        send_after: row.send_after as string,
+        source: String(row.source ?? "housekeeping_wa"),
+      });
+    }
+
     const { data: suppressionRows, error: suppressErr } = await supabase
       .from("guest_pipeline_stage_suppressions")
       .select("guest_id, stage_key")
@@ -285,6 +303,21 @@ Deno.serve(async (req: Request) => {
           }
         }
 
+        // Suite checkout_fb — real send time lives in post_checkout_survey_queue (Co + delay).
+        if (
+          stage.stage_key === "checkout_fb"
+          && isEffectiveSuiteGuest(guest)
+          && !staffScheduled
+        ) {
+          const pendingSurvey = pendingSurveyByGuestId.get(guest.id as number);
+          if (pendingSurvey) {
+            scheduledForIso = pendingSurvey.send_after;
+            dueNow = new Date(pendingSurvey.send_after).getTime() <= now.getTime()
+              && guest.status === "checked_out"
+              && !logRow;
+          }
+        }
+
         queue.push({
           guestId: guest.id,
           guestName: (guest as Record<string, unknown>).name ?? null,
@@ -333,6 +366,9 @@ Deno.serve(async (req: Request) => {
             result.skipReason && PERMANENT_SKIP_REASONS.has(result.skipReason) ? "skipped" : "pending"
           ),
           skipReason: logRow ? null : result.skipReason,
+          checkoutSurveyQueued: stage.stage_key === "checkout_fb"
+            && isEffectiveSuiteGuest(guest)
+            && pendingSurveyByGuestId.has(guest.id as number),
           // Additive, independent of skipReason's existing "null once a log
           // row exists" semantics above (other consumers may depend on that) —
           // this is the one place "why isn't cron retrying right now" survives
