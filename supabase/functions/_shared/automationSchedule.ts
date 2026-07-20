@@ -710,6 +710,60 @@ function pastWindowSkipReason(stageKey: string): "missed_window" | "quiet_hours_
     : "quiet_hours_passed";
 }
 
+const LATE_IMPORT_CATCHUP_STAGE_KEYS = new Set<string>([
+  "pre_arrival_2d",
+  "night_before",
+  "night_before_daypass",
+  "morning_suite",
+  "morning_welcome",
+  "mid_stay",
+  "mid_stay_daypass",
+  "checkout_fb_daypass",
+  // checkout_fb (suites) — housekeeping Co only; never day-schedule catch-up
+]);
+
+function isValidScheduleYmd(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+/**
+ * Late EZGO / manual import: target calendar day already passed but guest journey
+ * still active → surface missed_window in Live Queue (manual Whapi bulk only).
+ * Mirrors pre_arrival_2d catch-up (2026-07-14) across the full suite/day-pass cron pipeline.
+ */
+export function isLateImportCatchupEligible(
+  stage: AutomationStage,
+  guest: GuestForSchedule,
+  todayStr: string,
+): boolean {
+  if (!LATE_IMPORT_CATCHUP_STAGE_KEYS.has(stage.stage_key)) return false;
+  if (stage.guest_flag_column && guest[stage.guest_flag_column] === true) return false;
+
+  const arrival = String(guest.arrival_date ?? "").trim().slice(0, 10);
+  const departure = String(guest.departure_date ?? "").trim().slice(0, 10);
+
+  switch (stage.stage_key) {
+    case "pre_arrival_2d":
+    case "night_before":
+    case "night_before_daypass":
+      return isValidScheduleYmd(arrival) && arrival >= todayStr;
+
+    case "morning_suite":
+    case "morning_welcome":
+      if (!isValidScheduleYmd(arrival) || arrival > todayStr) return false;
+      if (isValidScheduleYmd(departure)) return departure >= todayStr;
+      return true;
+
+    case "mid_stay":
+    case "mid_stay_daypass":
+    case "checkout_fb_daypass":
+      return isValidScheduleYmd(departure) && departure >= todayStr;
+
+    default:
+      return false;
+  }
+}
+
 /**
  * Resolves the exact instant a stage is scheduled to fire for a guest, and
  * whether it is due right now. `now` is injected (not read internally) so
@@ -754,15 +808,9 @@ export function resolveStageSchedule(
         return { scheduledFor, dueNow: false, skipReason: null };
       }
       // targetDateStr < todayStr — window day already passed.
-      // Stage 1 catch-up (late EZGO import): guest still arrives today or later,
-      // confirmation request was never sent → surface as missed_window for Live
-      // Queue / manual Whapi bulk. dueNow stays false so cron does NOT auto-spam.
-      const arrivalYmd = String(guest.arrival_date ?? "").trim().slice(0, 10);
-      if (
-        stage.stage_key === "pre_arrival_2d"
-        && /^\d{4}-\d{2}-\d{2}$/.test(arrivalYmd)
-        && arrivalYmd >= todayStr
-      ) {
+      // Late-import catch-up: guest journey still active + flag not sent →
+      // missed_window for Live Queue / manual bulk (never cron auto-spam).
+      if (isLateImportCatchupEligible(stage, guest, todayStr)) {
         return { scheduledFor, dueNow: false, skipReason: "missed_window" };
       }
       return { scheduledFor, dueNow: false, skipReason: "date_passed" };

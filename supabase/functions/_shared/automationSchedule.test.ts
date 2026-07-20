@@ -38,6 +38,7 @@ import {
   shouldInterceptOperationalInHouseRequest,
   isAllowlistedPhysicalTaskRequest,
   looksLikeDiningHoursReply,
+  isLateImportCatchupEligible,
   type AutomationStage,
   type GuestForSchedule,
 } from "./automationSchedule.ts";
@@ -347,12 +348,105 @@ Deno.test("pre_arrival_2d: on T-2 day → dueNow (normal cron path)", () => {
   assertEquals(result.dueNow, true);
 });
 
-Deno.test("night_before after window: still date_passed (no Stage-1-style catch-up)", () => {
-  // night_before day_offset -1; arrival 07-13 → target 07-12; evaluating 07-13 → passed.
-  const guest = suiteGuest({ arrival_date: "2026-07-13", msg_pre_arrival_sent: false });
+Deno.test("night_before: late import on arrival day → missed_window catch-up", () => {
+  // night_before day_offset -1; arrival 07-13 → target 07-12; evaluating 07-13 → passed day.
+  const guest = suiteGuest({
+    arrival_date: "2026-07-13",
+    departure_date: "2026-07-15",
+    msg_pre_arrival_sent: false,
+  });
+  const result = resolveStageSchedule(nightBeforeStage(), guest, israelInstant("2026-07-13", 10, 0));
+  assertEquals(result.skipReason, "missed_window");
+  assertEquals(result.dueNow, false);
+});
+
+Deno.test("night_before: guest already departed → date_passed", () => {
+  const guest = suiteGuest({
+    arrival_date: "2026-07-10",
+    departure_date: "2026-07-11",
+    msg_pre_arrival_sent: false,
+  });
   const result = resolveStageSchedule(nightBeforeStage(), guest, israelInstant("2026-07-13", 10, 0));
   assertEquals(result.skipReason, "date_passed");
+});
+
+Deno.test("morning_suite: morning day passed, guest still in resort → missed_window", () => {
+  const guest = suiteGuest({
+    arrival_date: "2026-07-20",
+    departure_date: "2026-07-22",
+    msg_morning_suite_sent: false,
+  });
+  const result = resolveStageSchedule(morningSuiteStage(), guest, israelInstant("2026-07-21", 10, 0));
+  assertEquals(result.skipReason, "missed_window");
   assertEquals(result.dueNow, false);
+});
+
+function midStayStage(overrides: Partial<AutomationStage> = {}): AutomationStage {
+  return {
+    stage_key: "mid_stay",
+    display_name: "Stage 4 — שיחות נימוסים (סוויטות)",
+    journey_phase: "mid_stay",
+    sequence_order: 300,
+    node_type: "hybrid",
+    schedule_mode: "day_offset_with_time",
+    anchor_event: "arrival_date",
+    day_offset: 1,
+    local_time: "17:00",
+    local_time_end: null,
+    offset_hours: null,
+    applies_to: "suite",
+    meta_template_name: "dream_mid_stay_check",
+    session_message_script_key: "mid_stay",
+    interactive_buttons: [],
+    guest_flag_column: "msg_mid_stay_sent",
+    is_active: true,
+    require_checked_in: true,
+    ...overrides,
+  };
+}
+
+Deno.test("mid_stay: past courtesy day, checked in, still in resort → missed_window", () => {
+  const guest = suiteGuest({
+    arrival_date: "2026-07-18",
+    departure_date: "2026-07-22",
+    status: "checked_in",
+    msg_mid_stay_sent: false,
+  });
+  const result = resolveStageSchedule(midStayStage(), guest, israelInstant("2026-07-21", 10, 0));
+  assertEquals(result.skipReason, "missed_window");
+  assertEquals(result.dueNow, false);
+});
+
+Deno.test("mid_stay: not checked in yet → not_checked_in but scheduledFor visible", () => {
+  const guest = suiteGuest({
+    arrival_date: "2026-07-20",
+    departure_date: "2026-07-22",
+    status: "expected",
+    msg_mid_stay_sent: false,
+  });
+  const result = resolveStageSchedule(midStayStage(), guest, israelInstant("2026-07-20", 22, 0));
+  assertEquals(result.skipReason, "not_checked_in");
+  assertEquals(result.scheduledFor != null, true);
+});
+
+Deno.test("mid_stay: past target day + departed → date_passed", () => {
+  const guest = suiteGuest({
+    arrival_date: "2026-07-18",
+    departure_date: "2026-07-19",
+    status: "checked_out",
+    msg_mid_stay_sent: false,
+  });
+  const result = resolveStageSchedule(midStayStage(), guest, israelInstant("2026-07-21", 10, 0));
+  assertEquals(result.skipReason, "guest_already_departed");
+});
+
+Deno.test("isLateImportCatchupEligible: 1-night stay mid_stay window still catch-up eligible", () => {
+  const guest = suiteGuest({
+    arrival_date: "2026-07-20",
+    departure_date: "2026-07-21",
+    msg_mid_stay_sent: false,
+  });
+  assertEquals(isLateImportCatchupEligible(midStayStage(), guest, "2026-07-21"), true);
 });
 
 function morningSuiteStage(overrides: Partial<AutomationStage> = {}): AutomationStage {
