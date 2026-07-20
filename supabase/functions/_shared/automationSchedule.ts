@@ -27,6 +27,15 @@ import {
 } from "./stayMeals.ts";
 import { formatGuestDietaryBrief } from "./guestProfile.ts";
 import {
+  isGuestStaffClaimActive,
+  isGuestBotConversationDisabled,
+  parseInboxClaimIdleReleaseMinutes,
+  releaseStaleStaffClaims,
+  touchStaffClaimActivity,
+  INBOX_CLAIM_IDLE_RELEASE_CONFIG_KEY,
+  DEFAULT_INBOX_CLAIM_IDLE_RELEASE_MINUTES,
+} from "./guestStaffClaim.ts";
+import {
   getAppliesToSkipReason,
   type AppliesTo,
 } from "./automationCohort.ts";
@@ -349,7 +358,7 @@ export {
   touchStaffClaimActivity,
   INBOX_CLAIM_IDLE_RELEASE_CONFIG_KEY,
   DEFAULT_INBOX_CLAIM_IDLE_RELEASE_MINUTES,
-} from "./guestStaffClaim.ts";
+};
 
 export interface ScheduleResult {
   scheduledFor: Date | null;
