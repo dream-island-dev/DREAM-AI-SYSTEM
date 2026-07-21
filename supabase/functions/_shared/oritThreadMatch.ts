@@ -25,7 +25,7 @@ export type OritThreadMatchRow = {
 
 export function normalizeOritSubject(subject: string): string {
   return (subject || "")
-    .replace(/^(re|fwd?|fw):\s*/gi, "")
+    .replace(/^(?:(?:re|fwd?|fw):\s*)+/gi, "")
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();

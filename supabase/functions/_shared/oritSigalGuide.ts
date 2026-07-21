@@ -105,19 +105,19 @@ export function resolveOritSigalIntent(text: string): OritSigalIntent | null {
     return "cancel_schedule";
   }
 
+  if (
+    /^(כן(\s+תזמני)?|כן תזמני|בסדר תזמני|תזמני)$/i.test(t)
+    || /(כן|מאשר|בסדר).*(תזמן|תזמון)/.test(t)
+  ) {
+    return "confirm_schedule";
+  }
+
   if (/(תזמן|תזמני|למחר|בבוקר)/.test(t)) {
     return "schedule_send";
   }
 
   if (/(^|\s)(לא|בטלי|עצרי|ביטול|תעצרי|cancel|stop)(\s|$)/.test(t)) {
     return "cancel";
-  }
-
-  if (
-    /^(כן(\s+תזמני)?|כן תזמני|בסדר תזמני|תזמני)$/i.test(t)
-    || /(כן|מאשר|בסדר).*(תזמן|תזמון)/.test(t)
-  ) {
-    return "confirm_schedule";
   }
 
   if (

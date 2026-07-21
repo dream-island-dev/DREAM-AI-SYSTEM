@@ -1,11 +1,33 @@
+import fs from "fs";
+import path from "path";
 import {
   parseHousekeepingReadyRoomNumbers,
   parseHousekeepingCheckInRoomNumbers,
   parseHousekeepingCheckOutRoomNumbers,
 } from "./housekeepingWaParse";
 import { buildHousekeepingGroupAckMessage } from "./housekeepingReadySignal";
+import { buildHousekeepingCheckInAckLine } from "./housekeepingCheckInSignal";
+
+const REPO_ROOT = path.resolve(__dirname, "../..");
+
+function listMirrorConstNames(source) {
+  return [...source.matchAll(/^const ([A-Z][A-Z0-9_]+) = /gm)].map((m) => m[1]).sort();
+}
+
+function listMirrorExportNames(source) {
+  return [...source.matchAll(/^export function (\w+)/gm)].map((m) => m[1]).sort();
+}
 
 describe("housekeepingWaParse", () => {
+  test("TS/JS mirror — same const + export surface", () => {
+    const ts = fs.readFileSync(
+      path.join(REPO_ROOT, "supabase/functions/_shared/housekeepingWaParse.ts"),
+      "utf8",
+    );
+    const js = fs.readFileSync(path.join(__dirname, "housekeepingWaParse.js"), "utf8");
+    expect(listMirrorConstNames(ts)).toEqual(listMirrorConstNames(js));
+    expect(listMirrorExportNames(ts)).toEqual(listMirrorExportNames(js));
+  });
   test("parses compact ready patterns from live group export", () => {
     expect(parseHousekeepingReadyRoomNumbers("7✅")).toEqual([7]);
     expect(parseHousekeepingReadyRoomNumbers("13✅\n16✅")).toEqual([13, 16]);
@@ -120,5 +142,22 @@ describe("housekeepingWaParse", () => {
       "✅ רובי 14 מוכן — אורח: ישראל ישראלי — ממתין לאישור מנהל לשליחת הודעה 🔔\n✅ רובי 15 מוכן — ממתין לאישור מנהל לשליחת הודעה 🔔",
     );
     expect(buildHousekeepingGroupAckMessage([])).toBe("");
+  });
+
+  test("check-in group ack lines", () => {
+    expect(buildHousekeepingCheckInAckLine({
+      roomId: "רובי 14",
+      guestName: "ישראל",
+      action: "updated",
+    })).toBe("✅ חדר רובי 14 — צ'ק-אין נקלט (ישראל)");
+    expect(buildHousekeepingCheckInAckLine({
+      roomId: "רובי 14",
+      guestName: "ישראל",
+      action: "already_checked_in",
+    })).toBe("ℹ️ חדר רובי 14 — כבר מסומן כצ'ק-אין (ישראל)");
+    expect(buildHousekeepingCheckInAckLine({
+      roomId: "רובי 14",
+      action: "dedup",
+    })).toBe(null);
   });
 });

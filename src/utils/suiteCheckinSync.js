@@ -107,6 +107,49 @@ export async function releaseApprovalGateOnly(supabase, roomId) {
   return upsertRoomStatus(supabase, roomId, "פנוי");
 }
 
+/** Room only — idempotent housekeeping Co when guest already checked_out. */
+export async function syncRoomToCleaning(supabase, roomId) {
+  return upsertRoomStatus(supabase, roomId, "לניקיון");
+}
+
+/** Synced check-out: guests.checked_out + room_status.לניקיון */
+export async function performSuiteCheckOut(supabase, guest, opts = {}) {
+  if (!supabase || !guest?.id) return { ok: false, error: "אורח חסר" };
+
+  const roomId = opts.roomId ?? resolveGuestRoomId(guest);
+  const now = new Date().toISOString();
+  const auditSource = opts.auditSource ?? "צ'ק-אאוט מסונכרן";
+  const prevNotes = String(guest.guest_notes ?? "").trim();
+  const guestPatch = {
+    status: "checked_out",
+    checked_out_at: now,
+    room_ready_notified: false,
+    msg_room_ready_sent: false,
+    room_ready_at: null,
+    guest_notes: prevNotes
+      ? `${prevNotes}\n${auditLine(auditSource)}`
+      : auditLine(auditSource),
+  };
+
+  const { error: guestErr } = await supabase.from("guests").update(guestPatch).eq("id", guest.id);
+  if (guestErr) return { ok: false, error: guestErr.message };
+
+  if (!roomId) {
+    return { ok: true, guestPatch, roomId: null, roomStatus: null, noRoomLinked: true };
+  }
+
+  const roomResult = await upsertRoomStatus(supabase, roomId, "לניקיון");
+  if (!roomResult.ok) return { ok: false, error: roomResult.error, partial: true };
+
+  return {
+    ok: true,
+    guestPatch,
+    roomId: roomResult.roomId,
+    roomStatus: roomResult.roomStatus,
+    noRoomLinked: false,
+  };
+}
+
 /** After room_ready WA — guest room_ready (not checked_in); skip if already in-house */
 export async function markGuestRoomReadyAfterNotify(supabase, guestId) {
   if (!supabase || !guestId) return { ok: false, error: "אורח חסר" };

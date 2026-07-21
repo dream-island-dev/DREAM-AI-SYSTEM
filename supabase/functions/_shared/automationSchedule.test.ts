@@ -435,7 +435,7 @@ Deno.test("mid_stay: not checked in yet → not_checked_in but scheduledFor visi
   assertEquals(result.scheduledFor != null, true);
 });
 
-Deno.test("mid_stay: past target day + departed → date_passed", () => {
+Deno.test("mid_stay: past target day + departed → guest_checked_out", () => {
   const guest = suiteGuest({
     arrival_date: "2026-07-18",
     departure_date: "2026-07-19",
@@ -443,7 +443,9 @@ Deno.test("mid_stay: past target day + departed → date_passed", () => {
     msg_mid_stay_sent: false,
   });
   const result = resolveStageSchedule(midStayStage(), guest, israelInstant("2026-07-21", 10, 0));
-  assertEquals(result.skipReason, "guest_already_departed");
+  // checkEligibility's universal checked_out gate (any non-post-stay stage)
+  // fires before mid_stay's own departure-date check.
+  assertEquals(result.skipReason, "guest_checked_out");
 });
 
 Deno.test("isLateImportCatchupEligible: 1-night stay mid_stay window still catch-up eligible", () => {
@@ -528,6 +530,7 @@ Deno.test("night_before: past same-day quiet ceiling → missed_window (manual o
 function daypassSpaGuest(overrides: Partial<GuestForSchedule> = {}): GuestForSchedule {
   return {
     id: 2,
+    phone: "+972501234567",
     arrival_date: "2026-07-13",
     departure_date: "2026-07-13",
     room_type: "day_guest",
@@ -1059,11 +1062,15 @@ Deno.test("isBareInRoomAmenityShorthand: checked_in-style bare nouns", () => {
 });
 
 Deno.test("shouldInterceptOperationalInHouseRequest: bare amenity only when checked_in", () => {
+  // Pinned to the guests' arrival day — isGuestEligibleForInHouseOpsDispatch's
+  // future/past-stay guard otherwise inherits the real wall clock and drifts
+  // stale once today passes departure_date (2026-07-16).
+  const now = israelInstant("2026-07-14", 10, 0);
   const onProperty = { status: "checked_in", arrival_date: "2026-07-14", departure_date: "2026-07-16" };
   const expected = { status: "expected", arrival_date: "2026-07-14", departure_date: "2026-07-16" };
-  assertEquals(shouldInterceptOperationalInHouseRequest("מגבות", onProperty), true);
-  assertEquals(shouldInterceptOperationalInHouseRequest("מגבות", expected), false);
-  assertEquals(shouldInterceptOperationalInHouseRequest("אפשר מגבות לחדר", expected), true);
+  assertEquals(shouldInterceptOperationalInHouseRequest("מגבות", onProperty, now), true);
+  assertEquals(shouldInterceptOperationalInHouseRequest("מגבות", expected, now), false);
+  assertEquals(shouldInterceptOperationalInHouseRequest("אפשר מגבות לחדר", expected, now), true);
 });
 
 Deno.test("isAllowlistedPhysicalTaskRequest: cups/plates + cleaning בבקשה", () => {

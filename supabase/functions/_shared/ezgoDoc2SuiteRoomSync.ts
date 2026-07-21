@@ -48,8 +48,12 @@ export function guestRoomLabelsInclude(
 }
 
 export function isSameDoc2Booking(rec: Doc2Record, guest: Doc2GuestRow): boolean {
-  if (rec.order_number && guest.order_number && rec.order_number === guest.order_number) {
-    return true;
+  // An explicit order-number mismatch is authoritative — a shared phone/date
+  // between two genuinely different bookings (e.g. a repeat guest with a new
+  // reservation) must never fall through to the softer phone/date heuristic
+  // below and get silently merged as "another room" on the wrong profile.
+  if (rec.order_number && guest.order_number) {
+    return rec.order_number === guest.order_number;
   }
   const recDate = rec.arrival_date ? String(rec.arrival_date).slice(0, 10) : null;
   const guestDate = guest.arrival_date ? String(guest.arrival_date).slice(0, 10) : null;

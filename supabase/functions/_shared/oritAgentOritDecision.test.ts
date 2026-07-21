@@ -27,7 +27,7 @@ Deno.test("composeOritThreadDecisionPrompt — asks Orit to choose", () => {
     urgency: "high",
     ai_summary: "תלונה על אוכל בארוחת ערב.",
   });
-  if (!body.includes("איך תרצי לטפל")) throw new Error("missing choice prompt");
+  if (!body.includes("מייל אוטומטי")) throw new Error("missing choice prompt");
   if (!body.includes("hadar@example.com")) throw new Error("missing guest email");
   if (!body.includes("1")) throw new Error("missing option 1");
   if (!body.includes("2")) throw new Error("missing option 2");

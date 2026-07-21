@@ -34,6 +34,8 @@ Deno.test("resolveOritSigalIntent — schedule commands", () => {
   assertEquals(resolveOritSigalIntent("בטלי תזמון"), "cancel_schedule");
   assertEquals(resolveOritSigalIntent("כן תזמני"), "confirm_schedule");
 });
+
+Deno.test("resolveOritSigalIntent — intro question", () => {
   assertEquals(resolveOritSigalIntent("מה את עושה בשבילי"), "intro");
   assertEquals(resolveOritSigalIntent("איך את עוזרת לי"), "intro");
 });

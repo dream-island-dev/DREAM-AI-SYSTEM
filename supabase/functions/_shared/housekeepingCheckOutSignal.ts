@@ -8,6 +8,7 @@ import {
   findDepartingGuestForSuite,
 } from "./housekeepingGuestLookup.ts";
 import { enqueueSuitePostCheckoutSurvey } from "./postCheckoutSurvey.ts";
+import { performSuiteCheckOut, syncRoomToCleaning } from "./suiteCheckinSync.ts";
 
 export type HousekeepingCheckOutAction =
   | "updated"
@@ -27,25 +28,6 @@ export interface HousekeepingCheckOutResult {
   noGuestHint?: string;
   surveyQueued?: boolean;
   error?: string;
-}
-
-function auditLine(text: string): string {
-  const ts = new Date().toLocaleString("he-IL", { timeZone: "Asia/Jerusalem", hour12: false });
-  return `[${ts}] ${text}`;
-}
-
-async function upsertRoomToCleaning(
-  supabase: ReturnType<typeof createClient>,
-  roomId: string,
-  now: string,
-): Promise<void> {
-  const { error: roomErr } = await supabase.from("room_status").upsert(
-    { room_id: roomId, status: "לניקיון", updated_at: now },
-    { onConflict: "room_id" },
-  );
-  if (roomErr) {
-    console.warn(`[housekeepingCheckOut] room_status upsert failed for ${roomId}:`, roomErr.message);
-  }
 }
 
 export function buildHousekeepingCheckOutAckLine(result: HousekeepingCheckOutResult): string | null {
@@ -116,10 +98,11 @@ export async function applyHousekeepingCheckOutSignal(
     };
   }
 
-  const now = new Date().toISOString();
-
   if (guest.status === "checked_out") {
-    await upsertRoomToCleaning(supabase, roomId, now);
+    const roomSync = await syncRoomToCleaning(supabase, roomId);
+    if (!roomSync.ok) {
+      console.warn(`[housekeepingCheckOut] room_status sync failed for ${roomId}:`, roomSync.error);
+    }
     const survey = await enqueueSuitePostCheckoutSurvey(supabase, {
       guestId: guest.id,
       roomId,
@@ -136,28 +119,17 @@ export async function applyHousekeepingCheckOutSignal(
     };
   }
 
-  const prevNotes = String(guest.guest_notes ?? "").trim();
-  const note = prevNotes
-    ? `${prevNotes}\n${auditLine("צ'ק-אאוט מקבוצת ניקיון (WhatsApp)")}`
-    : auditLine("צ'ק-אאוט מקבוצת ניקיון (WhatsApp)");
+  const sync = await performSuiteCheckOut(supabase, guest, {
+    roomId,
+    auditSource: "צ'ק-אאוט מקבוצת ניקיון (WhatsApp)",
+  });
 
-  const { error: guestErr } = await supabase.from("guests").update({
-    status: "checked_out",
-    checked_out_at: now,
-    room_ready_notified: false,
-    msg_room_ready_sent: false,
-    room_ready_at: null,
-    guest_notes: note,
-  }).eq("id", guest.id);
-
-  if (guestErr) {
+  if (!sync.ok) {
     return {
       ok: false, roomNumber, roomId, guestId: guest.id, guestName: guest.name,
-      action: "error", error: guestErr.message,
+      action: "error", error: sync.error,
     };
   }
-
-  await upsertRoomToCleaning(supabase, roomId, now);
 
   const survey = await enqueueSuitePostCheckoutSurvey(supabase, {
     guestId: guest.id,

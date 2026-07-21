@@ -622,8 +622,12 @@ export function checkEligibility(
   if (stage.stage_key === "mid_stay" || stage.stage_key === "mid_stay_daypass") {
     if (stage.stage_key === "mid_stay") {
       const requireCheckedIn = stage.require_checked_in !== false;
-      if (requireCheckedIn && guest.status !== "checked_in") return "not_checked_in";
+      // Departed check first — a never-checked-in guest (e.g. no-show) whose
+      // departure has already passed is more accurately "already departed"
+      // than "not_checked_in" (checkEligibility's own checked_out gate above
+      // already catches the common case of a guest who did check out).
       if (!guest.departure_date || guest.departure_date < ymd(now)) return "guest_already_departed";
+      if (requireCheckedIn && guest.status !== "checked_in") return "not_checked_in";
     } else {
       // Day-pass courtesy check — same-day visit; eligible once checked in or expected on arrival day.
       const todayStr = ymd(now);
@@ -930,7 +934,9 @@ const BARE_IN_ROOM_AMENITY_SHORTHAND_RE =
   /^(?:\d{1,2}\s+)?(?:מגבות?|מגבת|חלב|קפה|שמפו|סבון|נייר(?:\s*טואלט)?|חלוק(?:ים)?|כרית(?:ות)?|שמיכ(?:ה|ות)?|קפסולות|כוסות?|צלחת|צלחות|קרח|\bice\b|(?:(?<![א-ת])|(?<=(?<![א-ת])[הושבכלמ]))מים(?![א-ת]))$/iu;
 
 /** Portal OPS_REQUEST CTA taps — explicit button label, not free-text LLM guess. */
-const PORTAL_TRUSTED_OPS_LABEL_RE = /^הזמנת\s+שירות\s+לחדר\b/u;
+// `\b` never matches after a Hebrew letter (JS \w is ASCII-only) — see the
+// "מים" word-boundary fix note below; use a Hebrew-letter lookahead instead.
+const PORTAL_TRUSTED_OPS_LABEL_RE = /^הזמנת\s+שירות\s+לחדר(?![א-ת])/u;
 
 // ★ session 2026-07-07 fix: JS/Deno regex `\b` is defined over ASCII `\w`
 // and never matches Hebrew letters, so a bare "מים" had zero word-boundary
