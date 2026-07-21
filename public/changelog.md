@@ -1,3 +1,4 @@
+2026-07-21 | EZGO mail — fix auto-sync crash (const records) | `processIngest` used `records = enrichRecordsPhoneFromDb` on const — broke every new IMAP ingest; fixed to `enriched`; removed `.eml` UI button (auto sync only).
 2026-07-21 | Guest profile — editable phone in AddGuestModal | `AddGuestModal` phone field editable on edit (was read-only); `normalizeGuestPhoneEdit` + `updateGuestPhoneCascade` syncs suite_rooms/bookings/alerts/whatsapp_conversations/inbox_read_cursors/guest_club_members.
 2026-07-21 | Waiter pulse — Armonim anonymous survey v3 (11 topics / 12 fields) | `waiterPulseUi` defaults + migration 270: tenure/management/tips/training/cross-team + optional Q11; Q7 split א+ב with `help_text`; `WaiterPulseForm` pre-line intro + help blocks; admin editor supports help_text.
 2026-07-21 | EZGO mail — noreply in:anywhere + @ezgo.co.il domain | Gmail `in:anywhere` per sender; allow any `@ezgo.co.il`; resolve Sender header; sync toast shows per-sender counts.

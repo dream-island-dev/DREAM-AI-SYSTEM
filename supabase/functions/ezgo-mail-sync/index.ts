@@ -288,9 +288,9 @@ async function processIngest(
     return { ok: false, ingestId: failed?.id, reason: "no_rows" };
   }
 
-  records = await enrichRecordsPhoneFromDb(supabase, records);
+  const enriched = await enrichRecordsPhoneFromDb(supabase, records);
 
-  const reportDate = records.find((r) => r.arrival_date)?.arrival_date ?? null;
+  const reportDate = enriched.find((r) => r.arrival_date)?.arrival_date ?? null;
   const guestCache = await loadGuestCacheForReport(supabase, reportDate);
 
   const { data: ingest, error: ingestErr } = await supabase
@@ -304,8 +304,8 @@ async function processIngest(
       report_type: classified.reportType,
       parse_status: "parsed",
       report_date_ymd: reportDate,
-      line_count: records.length,
-      pending_count: records.length,
+      line_count: enriched.length,
+      pending_count: enriched.length,
       body_preview: msg.bodyPreview,
       ...bodySnapshot,
     })
@@ -316,7 +316,7 @@ async function processIngest(
     return { ok: false, reason: ingestErr?.message ?? "ingest_insert_failed" };
   }
 
-  const linesResult = await insertIngestLines(supabase, ingest.id, records, reportDate, guestCache);
+  const linesResult = await insertIngestLines(supabase, ingest.id, enriched, reportDate, guestCache);
   if (!linesResult.ok) {
     await supabase.from("ezgo_mail_ingest").update({
       parse_status: "failed",
@@ -325,7 +325,7 @@ async function processIngest(
     return { ok: false, reason: linesResult.reason };
   }
 
-  return { ok: true, ingestId: ingest.id, lines: records.length };
+  return { ok: true, ingestId: ingest.id, lines: enriched.length };
 }
 
 async function reparseIngest(
