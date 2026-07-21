@@ -207,7 +207,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
       .select("*")
       .in("parse_status", ["parsed", "failed", "skipped"])
       .order("received_at", { ascending: false })
-      .limit(30);
+      .limit(50);
     if (error) {
       showToast?.(error.message, "err");
       return;
@@ -258,11 +258,15 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
       if (error) throw error;
       if (!data?.ok && !data?.skipped) throw new Error(data?.error || "סנכרון נכשל");
       const imap = data?.imap;
+      const bySender = data?.by_sender || {};
+      const senderBits = Object.entries(bySender)
+        .map(([k, v]) => `${k.split("@")[0]}:${v}`)
+        .join(" · ");
       const msg = data?.skipped
         ? "סנכרון מייל כבוי (EZGO_MAIL_SYNC_ENABLED)"
         : (data.scanned ?? 0) === 0 && imap
           ? `נסרקו 0 · תיבה ${imap.mailboxTotal} · נבדקו ${imap.scannedRaw} (${imap.searchMethod})`
-          : `נסרקו ${data.scanned ?? 0} מיילים · חדשים ${data.processed ?? 0}`;
+          : `נסרקו ${data.scanned ?? 0} · חדשים ${data.processed ?? 0}${senderBits ? ` · ${senderBits}` : ""}`;
       showToast?.(msg, "ok");
       await loadIngests();
     } catch (e) {

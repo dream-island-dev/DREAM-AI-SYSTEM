@@ -70,12 +70,34 @@ export function parseAllowlist(): string[] {
   return [...new Set([...DEFAULT_EZGO_MAIL_SENDERS, ...fromEnv])];
 }
 
+export function normalizeEzgoMailAddress(raw: string): string {
+  return String(raw || "").trim().toLowerCase().replace(/[\u200E\u200F\u202A-\u202E]/g, "");
+}
+
+/** Extract first email from a RFC5322 address header value. */
+export function extractEmailFromHeaderValue(raw: unknown): string {
+  const s = String(raw ?? "").trim();
+  if (!s) return "";
+  const angle = s.match(/<([^>]+)>/);
+  if (angle?.[1]) return normalizeEzgoMailAddress(angle[1]);
+  const plain = normalizeEzgoMailAddress(s);
+  return plain.includes("@") ? plain : "";
+}
+
 export function isSenderAllowed(fromEmail: string, allowlist: string[]): boolean {
-  const email = (fromEmail || "").trim().toLowerCase().replace(/[\u200E\u200F\u202A-\u202E]/g, "");
+  const email = normalizeEzgoMailAddress(fromEmail);
   if (!email) return false;
   if (!allowlist.length) return false;
-  const onAllowlist = allowlist.some((a) => email === a || email.endsWith(`@${a}`));
+  const normalizedAllow = allowlist.map((a) => normalizeEzgoMailAddress(a));
+  const onAllowlist = normalizedAllow.some((a) => email === a || email.endsWith(`@${a}`));
   if (onAllowlist) return true;
+  // Direct EZGO domain (Operations reports may use variants of noreply@).
+  if (
+    normalizedAllow.includes("noreply@ezgo.co.il")
+    && email.endsWith("@ezgo.co.il")
+  ) {
+    return true;
+  }
   if (/^(no[-_.]?reply|donotreply|mailer-daemon)@/i.test(email)) return false;
   return false;
 }
@@ -121,7 +143,9 @@ function isExcelAttachment(att: ParsedMimeAttachment): boolean {
   if (/\.xlsx?$/i.test(fn)) return true;
   return mt.includes("spreadsheet")
     || mt.includes("excel")
-    || mt === "application/vnd.ms-excel";
+    || mt === "application/vnd.ms-excel"
+    || mt === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    || mt === "application/octet-stream" && /\.xlsx?$/i.test(fn);
 }
 
 async function collectExcelAttachments(email: ParsedMimeEmail | null): Promise<EzgoMailExcelAttachment[]> {
@@ -221,7 +245,38 @@ export async function extractBodiesFromSource(
 }
 
 function buildGmailFromQuery(allowlist: string[]): string {
-  return allowlist.map((s) => `from:${s}`).join(" OR ");
+  const parts = allowlist.map((s) => `from:${s}`);
+  if (allowlist.some((s) => s.includes("@ezgo.co.il"))) {
+    parts.push("from:ezgo.co.il");
+  }
+  return `in:anywhere (${parts.join(" OR ")})`;
+}
+
+async function searchUidsForSender(
+  client: ImapFlow,
+  sender: string,
+  perSender: number,
+): Promise<number[]> {
+  const caps = Math.max(perSender, 1);
+  const queries: Array<Record<string, unknown>> = [
+    { gmailRaw: `in:anywhere from:${sender}` },
+    { from: sender },
+  ];
+  if (sender.includes("@ezgo.co.il")) {
+    queries.unshift({ gmailRaw: "in:anywhere from:ezgo.co.il" });
+  }
+  const uidSet = new Set<number>();
+  for (const query of queries) {
+    try {
+      const found = await client.search(query, { uid: true });
+      const sorted = [...(found || [])].sort((a, b) => b - a);
+      for (const uid of sorted.slice(0, caps)) uidSet.add(uid);
+      if (uidSet.size >= caps) break;
+    } catch {
+      // try next query shape
+    }
+  }
+  return [...uidSet].sort((a, b) => b - a).slice(0, caps);
 }
 
 /** Fair quota per direct sender — avoids one inbox (e.g. forwards) starving others. */
@@ -239,18 +294,14 @@ async function searchAllowlistedUids(
   const uidSet = new Set<number>();
 
   for (const sender of allowlist) {
-    try {
-      const found = await client.search({ from: sender }, { uid: true });
-      const sorted = [...(found || [])].sort((a, b) => b - a).slice(0, perSender);
-      for (const uid of sorted) uidSet.add(uid);
-    } catch {
-      // continue
-    }
+    const uids = await searchUidsForSender(client, sender, perSender);
+    for (const uid of uids) uidSet.add(uid);
   }
+
   if (uidSet.size > 0) {
     return {
       uids: [...uidSet].sort((a, b) => b - a),
-      method: "per_sender",
+      method: "per_sender_anywhere",
     };
   }
 
@@ -273,21 +324,48 @@ async function searchAllowlistedUids(
 async function messageFromFetch(
   msg: {
     uid?: number;
-    envelope?: { from?: Array<{ address?: string; name?: string }>; subject?: string; date?: Date };
+    envelope?: {
+      from?: Array<{ address?: string; name?: string }>;
+      sender?: Array<{ address?: string; name?: string }>;
+      subject?: string;
+      date?: Date;
+    };
     source?: Buffer | Uint8Array;
     headers?: Map<string, string> | Headers;
   },
   allowlist: string[],
 ): Promise<EzgoInboundMail | null> {
   const env = msg.envelope;
-  const fromRaw = env?.from?.[0];
-  const fromEmail = fromRaw?.address?.toLowerCase() ?? "";
+  const headers = msg.headers;
+  const headerFrom = headers instanceof Map
+    ? headers.get("from")
+    : headers?.get?.("from");
+  const headerSender = headers instanceof Map
+    ? headers.get("sender")
+    : headers?.get?.("sender");
+
+  const candidates = [
+    env?.from?.[0]?.address,
+    env?.sender?.[0]?.address,
+    extractEmailFromHeaderValue(headerSender),
+    extractEmailFromHeaderValue(headerFrom),
+  ].map((v) => normalizeEzgoMailAddress(String(v ?? ""))).filter(Boolean);
+
+  let fromEmail = "";
+  for (const c of candidates) {
+    if (isSenderAllowed(c, allowlist)) {
+      fromEmail = c;
+      break;
+    }
+  }
+  if (!fromEmail) fromEmail = candidates[0] ?? "";
   if (!fromEmail || !isSenderAllowed(fromEmail, allowlist)) return null;
+
+  const fromRaw = env?.from?.[0];
 
   const { text, html, preview, excelAttachments } = await extractBodiesFromSource(
     msg.source || new Uint8Array(),
   );
-  const headers = msg.headers;
   const messageId = (headers instanceof Map
     ? headers.get("message-id")
     : headers?.get?.("message-id"))?.toString();

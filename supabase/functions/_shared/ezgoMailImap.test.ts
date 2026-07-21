@@ -2,6 +2,7 @@ import {
   DEFAULT_EZGO_MAIL_SENDERS,
   EZGO_MAIL_PER_SENDER_MIN,
   extractBodiesFromSource,
+  extractEmailFromHeaderValue,
   isSenderAllowed,
   parseAllowlist,
 } from "./ezgoMailImap.ts";
@@ -9,6 +10,18 @@ import {
 const EZGO_NOREPLY = "noreply@ezgo.co.il";
 const HAGAR = "hagar.mesilati@dream-island.co.il";
 const MIKE = "tzalamnadlan@gmail.com";
+
+Deno.test("ezgo.co.il domain allowed when noreply is on allowlist", () => {
+  const ok = isSenderAllowed("operations@ezgo.co.il", DEFAULT_EZGO_MAIL_SENDERS);
+  if (!ok) throw new Error("expected @ezgo.co.il domain sender");
+});
+
+Deno.test("extractEmailFromHeaderValue parses angle-bracket address", () => {
+  const email = extractEmailFromHeaderValue("EZGO Operations <noreply@ezgo.co.il>");
+  if (email !== "noreply@ezgo.co.il") {
+    throw new Error(`expected noreply@ezgo.co.il, got ${email}`);
+  }
+});
 
 Deno.test("per-sender scan budget is at least 12 for three direct senders", () => {
   if (EZGO_MAIL_PER_SENDER_MIN < 12) {

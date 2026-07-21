@@ -352,11 +352,14 @@ serve(async (req: Request) => {
     let processed = 0;
     let skipped = 0;
     let failed = 0;
-    const details: Array<{ id: string; result: string }> = [];
+    const bySender: Record<string, number> = {};
+    const details: Array<{ id: string; from: string; result: string }> = [];
 
     for (const msg of messages) {
+      bySender[msg.fromEmail] = (bySender[msg.fromEmail] || 0) + 1;
       if (!isSenderAllowed(msg.fromEmail, allowlist)) {
         skipped += 1;
+        details.push({ id: msg.id, from: msg.fromEmail, result: "sender_blocked" });
         continue;
       }
 
@@ -365,10 +368,14 @@ serve(async (req: Request) => {
         if (result.reason === "duplicate") skipped += 1;
         else if (result.ok) processed += 1;
         else failed += 1;
-        details.push({ id: msg.id, result: result.reason ?? (result.ok ? "ok" : "fail") });
+        details.push({
+          id: msg.id,
+          from: msg.fromEmail,
+          result: result.reason ?? (result.ok ? "ok" : "fail"),
+        });
       } catch (err) {
         failed += 1;
-        details.push({ id: msg.id, result: (err as Error).message });
+        details.push({ id: msg.id, from: msg.fromEmail, result: (err as Error).message });
       }
     }
 
@@ -378,8 +385,9 @@ serve(async (req: Request) => {
       skipped,
       failed,
       scanned: messages.length,
+      by_sender: bySender,
       imap: imapMeta,
-      details: details.slice(0, 10),
+      details: details.slice(0, 15),
     });
   } catch (e) {
     console.error("[ezgo-mail-sync]", e);
