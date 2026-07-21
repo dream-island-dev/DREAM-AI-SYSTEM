@@ -624,10 +624,21 @@ export default function GuestContextDrawer({
                         <strong>⚠ {guest?.status ?? "לא ידוע"}</strong>
                       )}
                     </div>
-                    {(guest?.spa_time || guest?.spa_date) && (
+                    {(guest?.spa_time || guest?.spa_date || guest?.guest_profile?.spa?.doc1_slots?.length) && (
                       <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
                         <span style={{ color: "var(--text-muted)" }}>ספא</span>
-                        <strong>{formatSpaSchedule(guest.spa_date, guest.spa_time) ?? "—"}</strong>
+                        <strong>
+                          {(() => {
+                            const slots = guest?.guest_profile?.spa?.doc1_slots;
+                            if (Array.isArray(slots) && slots.length > 1) {
+                              return slots.map((s) => (s.count > 1 ? `${s.time} (×${s.count})` : s.time)).join(", ");
+                            }
+                            if (guest?.treatment_count > 1 && guest?.spa_time) {
+                              return `${formatSpaSchedule(guest.spa_date, guest.spa_time) ?? guest.spa_time} · ${guest.treatment_count} טיפולים`;
+                            }
+                            return formatSpaSchedule(guest.spa_date, guest.spa_time) ?? "—";
+                          })()}
+                        </strong>
                       </div>
                     )}
                   </div>

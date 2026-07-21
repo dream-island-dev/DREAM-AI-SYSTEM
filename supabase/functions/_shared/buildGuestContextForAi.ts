@@ -3,6 +3,7 @@
 
 import { formatGuestProfileForAi } from "./guestProfile.ts";
 import { formatSpaScheduleDisplay } from "./spaSchedule.ts";
+import { formatDoc1SpaSlotsForAi } from "./doc1SpaSlots.ts";
 import { formatGuestMealsForAi } from "./stayMeals.ts";
 import { formatIsraelClockLabel, getIsraelTimeGreeting } from "./guestTimeGreeting.ts";
 
@@ -83,7 +84,19 @@ export function buildGuestContextForAi(
   if (roomType === "suite") parts.push("סוג: סוויטה");
   if (status) parts.push(`סטטוס: ${status}`);
   if (confirmed) parts.push("אישר הגעה: כן");
-  if (spaTime || spaDate) {
+  const profileSpa = (guest.guest_profile as Record<string, unknown> | null)?.spa as Record<string, unknown> | undefined;
+  const doc1Slots = Array.isArray(profileSpa?.doc1_slots)
+    ? (profileSpa.doc1_slots as Array<{ time?: string; count?: number }>)
+    : null;
+  const multiSpaLine = formatDoc1SpaSlotsForAi(
+    doc1Slots,
+    spaDate,
+    spaTime,
+    typeof guest.treatment_count === "number" ? guest.treatment_count : null,
+  );
+  if (multiSpaLine) {
+    parts.push(`טיפולי ספא: ${multiSpaLine}`);
+  } else if (spaTime || spaDate) {
     const sched = formatSpaScheduleDisplay(spaDate, spaTime);
     if (sched) parts.push(`טיפול ספא: ${sched}`);
   }

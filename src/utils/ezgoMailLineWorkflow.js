@@ -2,6 +2,7 @@
 
 import { GENERIC_DAY_PASS_ROOM } from "../data/suiteRegistry";
 import { buildDoc1EnrichmentPatch } from "./guestImportIntelligence";
+import { buildGuestProfileDoc1SlotsPatch } from "./doc1SpaSlots.js";
 import { isCanonicalSuiteRoom, isPremiumDayRoom } from "./pipelineSegment";
 
 export const WORKFLOW_META = {
@@ -205,6 +206,13 @@ export async function createDaypassGuestFromRec(supabase, rec, reportDateYmd) {
   if (rec.spa_time) {
     insert.spa_time = rec.spa_time;
     insert.spa_date = recArrivalDate;
+  }
+  if (rec.spa_slots?.length) {
+    insert.guest_profile = buildGuestProfileDoc1SlotsPatch(
+      null,
+      rec.spa_slots,
+      recArrivalDate,
+    );
   }
 
   const { data: inserted, error } = await supabase

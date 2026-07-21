@@ -1,4 +1,5 @@
 import { roomsCanonicallyMatch, resolveSuiteFromEzgoFields } from "../data/suiteRegistry";
+import { buildGuestProfileDoc1SlotsPatch } from "./doc1SpaSlots.js";
 // ── Guest Import Intelligence Layer — canonical contract (Sprint 0) ──────────
 // Pure data transformation — zero Supabase calls, zero side effects, zero DOM.
 //
@@ -533,8 +534,8 @@ export function findGuestForDoc1Enrichment(existingRows, rec) {
 
 /**
  * Doc 1 PATCH — enrichment fields only. Never mutates arrival_date, departure_date, room, or nights.
- * @param {{ spa_time?: string|null, arrival_date?: string|null, meal_time?: string|null, meal_location?: string|null, treatment_count?: number|null, order_number?: string|null }} rec
- * @param {{ order_number?: string|null }} existing
+ * @param {{ spa_time?: string|null, spa_slots?: {time:string,count:number}[], arrival_date?: string|null, meal_time?: string|null, meal_location?: string|null, treatment_count?: number|null, order_number?: string|null }} rec
+ * @param {{ order_number?: string|null, guest_profile?: object|null }} existing
  */
 export function buildDoc1EnrichmentPatch(rec, existing) {
   const patch = {};
@@ -546,6 +547,14 @@ export function buildDoc1EnrichmentPatch(rec, existing) {
   if (rec.meal_location) patch.meal_location = rec.meal_location;
   if (rec.treatment_count) patch.treatment_count = rec.treatment_count;
   if (rec.order_number && !existing?.order_number) patch.order_number = rec.order_number;
+  if (rec.spa_slots?.length) {
+    const spaDate = rec.arrival_date ? String(rec.arrival_date).slice(0, 10) : null;
+    patch.guest_profile = buildGuestProfileDoc1SlotsPatch(
+      existing?.guest_profile,
+      rec.spa_slots,
+      spaDate,
+    );
+  }
   return patch;
 }
 

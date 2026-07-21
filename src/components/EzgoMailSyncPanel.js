@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "../supabaseClient";
 import SpaUpsellConfirmModal from "./SpaUpsellConfirmModal";
 import { buildDoc1EnrichmentPatch } from "../utils/guestImportIntelligence";
+import { spaSlotsWarningLabel } from "../utils/doc1SpaSlots";
 import {
   WORKFLOW_META,
   createDaypassGuestFromRec,
@@ -41,7 +42,14 @@ function patchLabels(patch) {
   if (clean.meal_time) labels.push(`ארוחה ${clean.meal_time}`);
   if (clean.order_number) labels.push(`הזמנה ${clean.order_number}`);
   if (clean.treatment_count) labels.push(`טיפולים: ${clean.treatment_count}`);
+  const slots = clean.guest_profile?.spa?.doc1_slots;
+  const warn = spaSlotsWarningLabel(slots, clean.treatment_count ?? 0);
+  if (warn) labels.push(warn);
   return labels;
+}
+
+function recSpaWarning(rec) {
+  return spaSlotsWarningLabel(rec?.spa_slots, rec?.treatment_count ?? 0);
 }
 
 function workflowBadge(workflow, isDoc2) {
@@ -140,6 +148,14 @@ function LineCard({
         )}
         {rec.spa_time && (
           <span style={{ fontSize: 11, color: "#7dd3fc" }}>ספא {rec.spa_time}</span>
+        )}
+        {recSpaWarning(rec) && (
+          <span style={{
+            fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20,
+            background: "#FEF3C7", color: "#92400E",
+          }}>
+            {recSpaWarning(rec)}
+          </span>
         )}
         {line.status !== "pending_review" && (
           <span style={{ fontSize: 11, color: "#888" }}>{line.status}</span>
@@ -378,7 +394,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
     try {
       const { data: guest, error: gErr } = await supabase
         .from("guests")
-        .select("id, name, phone, order_number, arrival_date, departure_date, spa_time, spa_date, meal_time, meal_location, treatment_count")
+        .select("id, name, phone, order_number, arrival_date, departure_date, spa_time, spa_date, meal_time, meal_location, treatment_count, guest_profile")
         .eq("id", line.match_guest_id)
         .maybeSingle();
       if (gErr || !guest) throw gErr || new Error("אורח לא נמצא");

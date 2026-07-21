@@ -99,6 +99,7 @@ Deno.test("mergeDoc1PhoneFromSecondary fills missing phones by order", () => {
     phone: null,
     arrival_date: "2026-07-23",
     spa_time: "11:00",
+    spa_slots: [{ time: "11:00", count: 1 }],
     treatment_count: 1,
     meal_time: null,
     meal_location: null,
@@ -109,12 +110,48 @@ Deno.test("mergeDoc1PhoneFromSecondary fills missing phones by order", () => {
     phone: "+972505475000",
     arrival_date: "2026-07-23",
     spa_time: null,
+    spa_slots: [],
     treatment_count: 0,
     meal_time: null,
     meal_location: null,
   }];
   const merged = mergeDoc1PhoneFromSecondary(primary, secondary);
   assertEquals(merged[0].phone, "+972505475000");
+});
+
+Deno.test("parseHtmlDailyReport collects multiple spa times into spa_slots", () => {
+  const html = [
+    "<table><tr>",
+    "<td>280001: זוג בדיקה<br>050-1111111</td>",
+    "<td>1 - 14:00 - טיפול 45 דקות</td>",
+    "<td></td><td></td>",
+    "</tr><tr>",
+    "<td></td>",
+    "<td>1 - 16:00 - טיפול 45 דקות</td>",
+    "<td></td><td></td>",
+    "</tr></table>",
+  ].join("");
+  const records = parseHtmlDailyReport(html, defaultDoc1ParseOpts(true));
+  assertEquals(records.length, 1);
+  assertEquals(records[0].spa_time, "14:00");
+  assertEquals(records[0].treatment_count, 2);
+  assertEquals(records[0].spa_slots, [
+    { time: "14:00", count: 1 },
+    { time: "16:00", count: 1 },
+  ]);
+});
+
+Deno.test("parseHtmlDailyReport sums same-time treatments", () => {
+  const html = [
+    "<table><tr>",
+    "<td>280002: זוג<br>050-2222222</td>",
+    "<td>2 - 14:00 - טיפול 45 דקות</td>",
+    "<td></td><td></td>",
+    "</tr></table>",
+  ].join("");
+  const records = parseHtmlDailyReport(html, defaultDoc1ParseOpts(true));
+  assertEquals(records[0].treatment_count, 2);
+  assertEquals(records[0].spa_slots, [{ time: "14:00", count: 2 }]);
 });
 
 Deno.test("looksLikeDoc1ExcelRows detects order column cells", () => {

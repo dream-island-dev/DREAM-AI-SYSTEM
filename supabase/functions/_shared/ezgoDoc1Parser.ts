@@ -1,12 +1,24 @@
 // EZGO Doc1 (daily operations report) parser — shared Edge + tests.
 // Mirrors ArrivalImportPanel.js parseComprehensiveReport / parseHtmlDailyReport.
 
+import {
+  addSpaSlot,
+  buildGuestProfileDoc1SlotsPatch,
+  earliestSpaTime,
+  mergeSpaSlotArrays,
+  type SpaSlot,
+  totalTreatmentCount,
+} from "./doc1SpaSlots.ts";
+
+export type { SpaSlot };
+
 export type Doc1Record = {
   order_number: string | null;
   guest_name: string | null;
   phone: string | null;
   arrival_date: string | null;
   spa_time: string | null;
+  spa_slots: SpaSlot[];
   treatment_count: number;
   meal_time: string | null;
   meal_location: string | null;
@@ -149,6 +161,13 @@ function splitReportLines(raw: string): string[] {
   return String(raw).split(/\r?\n|<BR\s*\/?>/gi);
 }
 
+function applySpaSlotToBlock(block: Doc1Record, time: string, count: number): void {
+  block.spa_slots = addSpaSlot(block.spa_slots ?? [], time, count);
+  block.treatment_count = totalTreatmentCount(block.spa_slots);
+  const earliest = earliestSpaTime(block.spa_slots);
+  if (earliest) block.spa_time = earliest;
+}
+
 function extractExtras(
   block: Doc1Record,
   raw: string,
@@ -165,8 +184,7 @@ function extractExtras(
     if (suiteSpaOnly && !suiteLabelRe.test(clean)) continue;
     const count = parseInt(m[1], 10);
     const time = `${m[2].padStart(2, "0")}:${m[3]}`;
-    block.treatment_count += count;
-    if (!block.spa_time || time < block.spa_time) block.spa_time = time;
+    applySpaSlotToBlock(block, time, count);
   }
 }
 
@@ -233,6 +251,7 @@ export function parseComprehensiveReport(
         phone: identity.phone,
         arrival_date: arrivalDate,
         spa_time: null,
+        spa_slots: [],
         treatment_count: 0,
         meal_time: null,
         meal_location: null,
@@ -256,8 +275,15 @@ export function parseComprehensiveReport(
   if (current) blocks.push(current);
 
   const mergeBlock = (ex: Doc1Record, b: Doc1Record) => {
-    ex.treatment_count += b.treatment_count;
-    if (b.spa_time && (!ex.spa_time || b.spa_time < ex.spa_time)) ex.spa_time = b.spa_time;
+    if (b.spa_slots?.length) {
+      ex.spa_slots = mergeSpaSlotArrays(ex.spa_slots ?? [], b.spa_slots);
+      ex.treatment_count = totalTreatmentCount(ex.spa_slots);
+      const earliest = earliestSpaTime(ex.spa_slots);
+      if (earliest) ex.spa_time = earliest;
+    } else {
+      ex.treatment_count += b.treatment_count;
+      if (b.spa_time && (!ex.spa_time || b.spa_time < ex.spa_time)) ex.spa_time = b.spa_time;
+    }
     if (b.meal_time && (!ex.meal_time || b.meal_time < ex.meal_time)) ex.meal_time = b.meal_time;
     if (!ex.phone && b.phone) ex.phone = b.phone;
     if (!ex.guest_name && b.guest_name) ex.guest_name = b.guest_name;
@@ -596,7 +622,7 @@ export async function parseDoc1FromExcelBuffer(
 /** Doc1 enrichment patch — never overwrites stay dates or room. */
 export function buildDoc1EnrichmentPatch(
   rec: Doc1Record,
-  existing: { order_number?: string | null },
+  existing: { order_number?: string | null; guest_profile?: unknown },
 ): Record<string, unknown> {
   const patch: Record<string, unknown> = {};
   if (rec.spa_time) {
@@ -607,6 +633,14 @@ export function buildDoc1EnrichmentPatch(
   if (rec.meal_location) patch.meal_location = rec.meal_location;
   if (rec.treatment_count) patch.treatment_count = rec.treatment_count;
   if (rec.order_number && !existing?.order_number) patch.order_number = rec.order_number;
+  if (rec.spa_slots?.length) {
+    const spaDate = rec.arrival_date ? String(rec.arrival_date).slice(0, 10) : null;
+    patch.guest_profile = buildGuestProfileDoc1SlotsPatch(
+      existing?.guest_profile as Record<string, unknown> | null,
+      rec.spa_slots,
+      spaDate,
+    );
+  }
   return patch;
 }
 
