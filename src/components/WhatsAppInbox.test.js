@@ -5,7 +5,7 @@
 // (2) groupByPhone: strict latest-message-desc (Mike: «פעילות») — no unread/
 //     alert reordering in the base roster order.
 
-import { mergeThreadRows, groupByPhone, groupByPhoneUnified, resolveContactInboxChannels, contactMatchesChannelFilter, inferDefaultReplyChannel, resolveClaimChannel, buildChannelClaimsState } from "./WhatsAppInbox";
+import { mergeThreadRows, groupByPhone, groupByPhoneUnified, resolveContactInboxChannels, contactMatchesChannelFilter, contactMatchesAudienceFilter, contactIsDaypassAudience, contactIsSuiteAudience, inferDefaultReplyChannel, resolveClaimChannel, buildChannelClaimsState } from "./WhatsAppInbox";
 
 function msg(id, createdAt, extra = {}) {
   return {
@@ -190,5 +190,27 @@ describe("buildChannelClaimsState — dual claim snapshot", () => {
     const state = buildChannelClaimsState(contact);
     expect(state.meta.claimedBy).toBe("meta-uuid");
     expect(state.whapi.claimedBy).toBe("whapi-uuid");
+  });
+});
+
+describe("contactMatchesAudienceFilter — never hide human_requested", () => {
+  test("suite filter keeps suite guests", () => {
+    const suite = { room: "אמטיסט 8", roomType: "suite", humanRequested: false };
+    expect(contactIsSuiteAudience(suite)).toBe(true);
+    expect(contactMatchesAudienceFilter(suite, "suite")).toBe(true);
+    expect(contactMatchesAudienceFilter(suite, "daypass")).toBe(false);
+  });
+
+  test("daypass filter keeps Premium Day / day_guest", () => {
+    const day = { room: "Premium Day 1", roomType: "day_guest", humanRequested: false };
+    expect(contactIsDaypassAudience(day)).toBe(true);
+    expect(contactMatchesAudienceFilter(day, "daypass")).toBe(true);
+    expect(contactMatchesAudienceFilter(day, "suite")).toBe(false);
+  });
+
+  test("human_requested daypass still matches suite audience (FAIL VISIBLE)", () => {
+    const waiting = { room: "Premium Day 1", roomType: "day_guest", humanRequested: true };
+    expect(contactMatchesAudienceFilter(waiting, "suite")).toBe(true);
+    expect(contactMatchesAudienceFilter(waiting, "daypass")).toBe(true);
   });
 });

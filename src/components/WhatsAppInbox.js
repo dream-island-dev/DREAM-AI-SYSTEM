@@ -23,7 +23,10 @@ import {
   getGuestArrivalRosterLabel,
   getInboxRosterSegmentMeta,
   INBOX_ROSTER_SEGMENT_ORDER,
+  isDayPassRoomType,
   isGuestDeparted,
+  isPremiumDayRoom,
+  isSuiteGuestProfile,
   rosterGuestFields,
   syncInboxContactWithGuestMap,
 } from "../utils/guestTiming";
@@ -54,6 +57,7 @@ import {
   applyAllReadCursors,
   buildGroupedRosterSections,
   buildReadCursorsMap,
+  compareContactsByActivity,
   contactUnreadCount,
   inboxReadCursorKey,
   isRecentlyActive,
@@ -371,6 +375,12 @@ const T = {
     filterIn2Days: "📅 יומיים",
     filterFuture: "📅 עתיד",
     filterSpaDaypass: "☀️ ספא יום",
+    filterAudienceSuite: "👑 סוויטות",
+    filterAudienceDaypass: "☀️ בילוי יומי",
+    filterAudienceAll: "כל הקהלים",
+    audienceHint: "קהל",
+    waitingOtherAudience: (n, label) => `🔴 ${n} ממתינים למענה ב«${label}» — לחץ לעבור`,
+    waitingOtherAudienceUnread: (n, label) => `💬 ${n} לא נקראו ב«${label}» — לחץ לעבור`,
     filterClaimed: "🔒 בטיפול",
     filterUnread: "💬 לא נקרא",
     markRead: "נקרא",
@@ -465,6 +475,12 @@ const T = {
     filterIn2Days: "📅 2 days",
     filterFuture: "📅 Future",
     filterSpaDaypass: "☀️ Spa day-pass",
+    filterAudienceSuite: "👑 Suites",
+    filterAudienceDaypass: "☀️ Day-pass",
+    filterAudienceAll: "All audiences",
+    audienceHint: "Audience",
+    waitingOtherAudience: (n, label) => `🔴 ${n} waiting in «${label}» — tap to switch`,
+    waitingOtherAudienceUnread: (n, label) => `💬 ${n} unread in «${label}» — tap to switch`,
     filterClaimed: "🔒 Claimed",
     filterUnread: "💬 Unread",
     markRead: "Read",
@@ -849,9 +865,52 @@ function hasRecentInboundOnThread(contact, windowMs = DEPARTED_ROSTER_RECENCY_MS
 // Inbox separation). UI-only split on the existing meta/whapi threads, no new
 // channel — same guest.room_type + spa_date truth guest-portal-data reads.
 function contactIsDaypassSpaCohort(contact) {
-  const rt = contact?.roomType;
-  if (rt !== "day_guest" && rt !== "premium_day_guest") return false;
+  if (!contactIsDaypassAudience(contact)) return false;
   return !!String(contact?.spaDate ?? "").trim();
+}
+
+/** Day-pass / Premium Day audience (spa upsell + day guests). */
+export function contactIsDaypassAudience(contact) {
+  if (isDayPassRoomType(contact?.roomType)) return true;
+  return isPremiumDayRoom(contact?.room);
+}
+
+/** Physical suite audience — canonical room label (not room_type alone). */
+export function contactIsSuiteAudience(contact) {
+  return isSuiteGuestProfile({ room_type: contact?.roomType, room: contact?.room });
+}
+
+/**
+ * Audience filter for inbox roster.
+ * HARD RULE: human_requested always matches — guest waiting for human must
+ * never vanish behind suite/daypass browsing (bot reply ≠ human done).
+ */
+export function contactMatchesAudienceFilter(contact, audienceFilter) {
+  if (!audienceFilter || audienceFilter === "all") return true;
+  if (contact?.humanRequested) return true;
+  if (audienceFilter === "suite") return contactIsSuiteAudience(contact);
+  if (audienceFilter === "daypass") return contactIsDaypassAudience(contact);
+  return true;
+}
+
+const INBOX_AUDIENCE_STORAGE_KEY = "xos_inbox_audience_filter";
+
+function loadInboxAudienceFilter() {
+  try {
+    const v = typeof localStorage !== "undefined"
+      ? localStorage.getItem(INBOX_AUDIENCE_STORAGE_KEY)
+      : null;
+    if (v === "suite" || v === "daypass" || v === "all") return v;
+  } catch { /* private mode */ }
+  return "suite";
+}
+
+function saveInboxAudienceFilter(id) {
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(INBOX_AUDIENCE_STORAGE_KEY, id);
+    }
+  } catch { /* private mode */ }
 }
 
 function contactMatchesRosterFilter(contact, rosterFilter, readCursorsByPhone = null) {
@@ -881,19 +940,12 @@ function sortRosterContacts(contacts, sortMode) {
       const da = a.arrivalDate || "9999-99-99";
       const db = b.arrivalDate || "9999-99-99";
       if (da !== db) return da.localeCompare(db);
-      const aLast = a.messages[a.messages.length - 1]?.created_at ?? "";
-      const bLast = b.messages[b.messages.length - 1]?.created_at ?? "";
-      return bLast.localeCompare(aLast);
+      return compareContactsByActivity(a, b);
     });
   }
-  // Strict latest-message-desc — WhatsApp convention (Mike, session 125:
-  // «פעילות»). Unread/alert state surfaces via badges, the 🚨 section and the
-  // «לא נקרא»/«התראות» filter chips — never by reordering recency.
-  return arr.sort((a, b) => {
-    const aLast = a.messages[a.messages.length - 1]?.created_at ?? "";
-    const bLast = b.messages[b.messages.length - 1]?.created_at ?? "";
-    return bLast.localeCompare(aLast);
-  });
+  // Activity = last guest inbound first; outbound-only (spa blast) sinks.
+  // Unread/alert surface via badges + 🚨 section — never by reordering alone.
+  return arr.sort(compareContactsByActivity);
 }
 
 /**
@@ -3072,6 +3124,13 @@ export default function WhatsAppInbox({
   const [contacts, setContacts]   = useState([]); // grouped by phone+channel
   const [active, setActive]       = useState(null); // selected threadKey
   const [channelFilter, setChannelFilter] = useState("all"); // all | meta | whapi
+  // Suite vs day-pass browsing — default suite so spa blasts don't drown desk ops.
+  // human_requested always bypasses (see contactMatchesAudienceFilter).
+  const [audienceFilter, setAudienceFilterState] = useState(loadInboxAudienceFilter);
+  const setAudienceFilter = useCallback((id) => {
+    setAudienceFilterState(id);
+    saveInboxAudienceFilter(id);
+  }, []);
   const [replyChannel, setReplyChannel] = useState("meta"); // outbound channel for unified threads
   const [whapiSosActive, setWhapiSosActive] = useState(false);
   const [loading, setLoading]     = useState(true);
@@ -5075,21 +5134,52 @@ export default function WhatsAppInbox({
   const activeRosterContacts = visibleContacts.filter(
     (c) =>
       (!contactDeparted(c) || contactUnreadCount(c, readCursorsByPhone) > 0 || hasRecentInboundOnThread(c))
-      && !contactIsDaypassSpaCohort(c),
+      // Spa day-pass stays in its tab — EXCEPT human_requested (never bury waiting guests).
+      && (!contactIsDaypassSpaCohort(c) || c.humanRequested),
   );
   const departedContacts = visibleContacts.filter(
     (c) => contactDeparted(c) && contactUnreadCount(c, readCursorsByPhone) === 0 && !hasRecentInboundOnThread(c),
   );
   // Day-pass + spa cohort — its own tab, excluded from "all" (Inbox separation).
   const spaDaypassContacts = visibleContacts.filter((c) => contactIsDaypassSpaCohort(c));
-  const alertContacts = activeRosterContacts.filter((c) => c.humanRequested);
+  // All day-pass (with or without spa) — audience browsing + waiting counts.
+  const daypassAudienceContacts = visibleContacts.filter((c) =>
+    contactIsDaypassAudience(c)
+    && (!contactDeparted(c) || contactUnreadCount(c, readCursorsByPhone) > 0 || hasRecentInboundOnThread(c)),
+  );
+  const suiteAudienceContacts = visibleContacts.filter((c) =>
+    contactIsSuiteAudience(c)
+    && (!contactDeparted(c) || contactUnreadCount(c, readCursorsByPhone) > 0 || hasRecentInboundOnThread(c)),
+  );
+  // Alerts span EVERY audience — bot reply must never hide a human-waiting guest.
+  const alertContacts = visibleContacts.filter((c) => c.humanRequested && !archivedPhones.has(c.threadKey ?? c.phone));
   const rosterSource =
     rosterFilter === "departed" ? departedContacts :
     rosterFilter === "spa_daypass" ? spaDaypassContacts :
+    rosterFilter === "alerts" ? alertContacts :
+    // Day-pass audience includes spa cohort (otherwise spa blast recipients vanish).
+    audienceFilter === "daypass" ? daypassAudienceContacts :
     activeRosterContacts;
   const channelScopedRosterSource = rosterSource.filter((c) =>
     channelFilter === "all" ? true : contactMatchesChannelFilter(c, channelFilter),
   );
+  // Audience filter AFTER channel; alerts / spa tab already span or isolate.
+  // Inject any human_requested missing from this slice (FAIL VISIBLE — never bury).
+  const audienceScopedRosterSource = (() => {
+    if (rosterFilter === "alerts" || rosterFilter === "spa_daypass" || rosterFilter === "departed") {
+      return channelScopedRosterSource;
+    }
+    let list = channelScopedRosterSource.filter((c) => contactMatchesAudienceFilter(c, audienceFilter));
+    const keys = new Set(list.map((c) => c.threadKey ?? c.phone));
+    for (const c of alertContacts) {
+      const k = c.threadKey ?? c.phone;
+      if (keys.has(k)) continue;
+      if (channelFilter !== "all" && !contactMatchesChannelFilter(c, channelFilter)) continue;
+      list = [...list, c];
+      keys.add(k);
+    }
+    return list;
+  })();
   // Departed contacts hidden by the current channel filter — surfaced as a
   // count hint (not silently invisible) so staff filtering to "מכשיר
   // הסוויטות" know older Whapi conversations exist under "אחרי עזיבה"
@@ -5097,8 +5187,31 @@ export default function WhatsAppInbox({
   const departedContactsForChannel = channelFilter === "all"
     ? departedContacts
     : departedContacts.filter((c) => contactMatchesChannelFilter(c, channelFilter));
+
+  // FAIL VISIBLE: other audience has guests waiting for human / unread inbound.
+  const otherAudienceWaiting = useMemo(() => {
+    if (audienceFilter === "all" || rosterFilter === "alerts" || rosterFilter === "spa_daypass") {
+      return null;
+    }
+    const otherId = audienceFilter === "suite" ? "daypass" : "suite";
+    const otherLabel = otherId === "suite" ? t.filterAudienceSuite : t.filterAudienceDaypass;
+    const pool = otherId === "suite" ? suiteAudienceContacts : daypassAudienceContacts;
+    const waiting = pool.filter((c) => c.humanRequested);
+    if (waiting.length > 0) {
+      return { kind: "alerts", count: waiting.length, otherId, otherLabel };
+    }
+    const unreadN = pool.reduce((sum, c) => sum + contactUnreadCount(c, readCursorsByPhone), 0);
+    if (unreadN > 0) {
+      return { kind: "unread", count: unreadN, otherId, otherLabel };
+    }
+    return null;
+  }, [
+    audienceFilter, rosterFilter, suiteAudienceContacts, daypassAudienceContacts,
+    readCursorsByPhone, t.filterAudienceSuite, t.filterAudienceDaypass,
+  ]);
+
   const displayContacts = useMemo(() => {
-    let list = channelScopedRosterSource;
+    let list = audienceScopedRosterSource;
     const q = rosterSearch.trim().toLowerCase();
     if (q) {
       const qDigits = q.replace(/\D/g, "");
@@ -5108,9 +5221,12 @@ export default function WhatsAppInbox({
         return hay.includes(q) || (qDigits.length >= 3 && phoneDigits.includes(qDigits));
       });
     }
-    list = list.filter((c) => contactMatchesRosterFilter(c, rosterFilter, readCursorsByPhone));
+    // alerts already sourced; other chips still apply on audience-scoped list
+    if (rosterFilter !== "alerts" && rosterFilter !== "spa_daypass" && rosterFilter !== "departed") {
+      list = list.filter((c) => contactMatchesRosterFilter(c, rosterFilter, readCursorsByPhone));
+    }
     return sortContactsRecentFirst(list, rosterSort, sortRosterContacts);
-  }, [channelScopedRosterSource, rosterSearch, rosterFilter, rosterSort, readCursorsByPhone]);
+  }, [audienceScopedRosterSource, rosterSearch, rosterFilter, rosterSort, readCursorsByPhone]);
 
   const rosterGroupedSections = useMemo(() => {
     if (rosterFilter !== "all" || rosterSearch.trim()) return null;
@@ -5177,8 +5293,8 @@ export default function WhatsAppInbox({
       }}>
         <span style={{ fontWeight: 700, fontSize: 12, color: "var(--text-muted)" }}>
           {t.listCount(displayContacts.length)}
-          {(rosterSearch.trim() || rosterFilter !== "all") && displayContacts.length !== rosterSource.length && (
-            <span style={{ opacity: 0.75 }}> / {rosterSource.length}</span>
+          {(rosterSearch.trim() || rosterFilter !== "all" || audienceFilter !== "all") && displayContacts.length !== audienceScopedRosterSource.length && (
+            <span style={{ opacity: 0.75 }}> / {audienceScopedRosterSource.length}</span>
           )}
           {rosterFilter === "all" && channelFilter === "all" && departedContacts.length > 0 && (
             <span style={{ opacity: 0.75 }}> · {departedContacts.length} {t.filterDeparted.replace(/^⚪\s*/, "")}</span>
@@ -5267,7 +5383,7 @@ export default function WhatsAppInbox({
             <button
               type="button"
               onClick={() => setRosterFilterPanelOpen((o) => !o)}
-              className={`wa-sort-chip${rosterFilterPanelOpen || channelFilter !== "all" ? " wa-sort-chip--active" : ""}`}
+              className={`wa-sort-chip${rosterFilterPanelOpen || channelFilter !== "all" || audienceFilter !== "suite" ? " wa-sort-chip--active" : ""}`}
               style={{ flexShrink: 0 }}
               title="ערוץ + מיון"
             >
@@ -5299,6 +5415,23 @@ export default function WhatsAppInbox({
           </div>
           {rosterFilterPanelOpen && (
             <>
+              <div style={{ display: "flex", gap: 6, marginTop: 6, alignItems: "center", overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+                <span style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 600, flexShrink: 0 }}>{t.audienceHint}</span>
+                {[
+                  { id: "suite", label: t.filterAudienceSuite },
+                  { id: "daypass", label: t.filterAudienceDaypass },
+                  { id: "all", label: t.filterAudienceAll },
+                ].map((chip) => (
+                  <button
+                    key={chip.id}
+                    type="button"
+                    onClick={() => setAudienceFilter(chip.id)}
+                    className={`wa-sort-chip${audienceFilter === chip.id ? " wa-sort-chip--active" : ""}`}
+                  >
+                    {chip.label}
+                  </button>
+                ))}
+              </div>
               <div style={{ display: "flex", gap: 6, marginTop: 6, overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
                 {[
                   { id: "all", label: "כל הערוצים" },
@@ -5374,6 +5507,23 @@ export default function WhatsAppInbox({
               </button>
             ))}
           </div>
+          <div style={{ display: "flex", gap: 6, marginTop: 5, alignItems: "center", flexWrap: "nowrap", overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+            <span style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 600, flexShrink: 0 }}>{t.audienceHint}</span>
+            {[
+              { id: "suite", label: t.filterAudienceSuite },
+              { id: "daypass", label: t.filterAudienceDaypass },
+              { id: "all", label: t.filterAudienceAll },
+            ].map((chip) => (
+              <button
+                key={chip.id}
+                type="button"
+                onClick={() => setAudienceFilter(chip.id)}
+                className={`wa-sort-chip${audienceFilter === chip.id ? " wa-sort-chip--active" : ""}`}
+              >
+                {chip.label}
+              </button>
+            ))}
+          </div>
           <div style={{ display: "flex", gap: 6, marginTop: 5, flexWrap: "nowrap", overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
             {[
               { id: "all", label: "כל הערוצים" },
@@ -5406,6 +5556,33 @@ export default function WhatsAppInbox({
             </div>
           )}
         </div>
+      )}
+      {otherAudienceWaiting && (
+        <button
+          type="button"
+          onClick={() => {
+            setAudienceFilter(otherAudienceWaiting.otherId);
+            if (otherAudienceWaiting.kind === "alerts") setRosterFilter("alerts");
+            else setRosterFilter("unread");
+          }}
+          style={{
+            width: "100%",
+            textAlign: "start",
+            border: "none",
+            borderBottom: "1px solid var(--border)",
+            padding: "8px var(--space-md)",
+            background: otherAudienceWaiting.kind === "alerts" ? "rgba(220,38,38,0.08)" : "rgba(201,169,110,0.12)",
+            color: otherAudienceWaiting.kind === "alerts" ? "var(--status-danger)" : "var(--gold-dark)",
+            fontSize: 12,
+            fontWeight: 700,
+            fontFamily: "inherit",
+            cursor: "pointer",
+          }}
+        >
+          {otherAudienceWaiting.kind === "alerts"
+            ? t.waitingOtherAudience(otherAudienceWaiting.count, otherAudienceWaiting.otherLabel)
+            : t.waitingOtherAudienceUnread(otherAudienceWaiting.count, otherAudienceWaiting.otherLabel)}
+        </button>
       )}
       {loading && visibleContacts.length === 0 ? (
         <RosterSkeleton />

@@ -40,11 +40,42 @@ export function contactLastMessageAt(contact) {
   return last?.created_at ?? null;
 }
 
+/** Latest guest inbound timestamp — used so outbound blasts (spa upsell) don't pin threads. */
+export function contactLastInboundAt(contact) {
+  let last = null;
+  for (const m of contact?.messages ?? []) {
+    if (m.direction !== "inbound" || !m.created_at) continue;
+    if (!last || m.created_at > last) last = m.created_at;
+  }
+  return last;
+}
+
+/**
+ * «פעילות אחרונה» / activity sort — guest spoke recently.
+ * Outbound-only threads (staff blast, bot ack) are NOT "recent activity".
+ */
 export function isRecentlyActive(contact, nowMs = Date.now(), windowMs = INBOX_RECENT_ACTIVITY_MS) {
-  const at = contactLastMessageAt(contact);
+  const at = contactLastInboundAt(contact);
   if (!at) return false;
   const ts = new Date(at).getTime();
   return Number.isFinite(ts) && nowMs - ts < windowMs;
+}
+
+/**
+ * Activity-sort key: inbound first (tier 0), outbound-only sinks below (tier 1).
+ * Prevents spa/campaign blasts from burying real guest replies.
+ */
+export function contactActivitySortKey(contact) {
+  const inbound = contactLastInboundAt(contact);
+  if (inbound) return { tier: 0, at: inbound };
+  return { tier: 1, at: contactLastMessageAt(contact) || "" };
+}
+
+export function compareContactsByActivity(a, b) {
+  const ka = contactActivitySortKey(a);
+  const kb = contactActivitySortKey(b);
+  if (ka.tier !== kb.tier) return ka.tier - kb.tier;
+  return (kb.at || "").localeCompare(ka.at || "");
 }
 
 /**
@@ -153,7 +184,9 @@ export function buildGroupedRosterSections(contacts, sortMode, lang, options = {
     sections.push({
       key: "recent",
       label: lang === "en" ? "🕐 Recent activity" : "🕐 פעילות אחרונה",
-      hint: lang === "en" ? "Last 24 hours — all guests" : "24 שעות אחרונות — כל האורחים",
+      hint: lang === "en"
+        ? "Last 24h — guest replied (outbound blasts ignored)"
+        : "24 שעות — תשובת אורח (שליחות יוצאות לא מציפות)",
       contacts: sortRosterContacts(recent, "activity"),
     });
   }

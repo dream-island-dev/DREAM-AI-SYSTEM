@@ -2,6 +2,8 @@ import {
   applyAllReadCursors,
   buildGroupedRosterSections,
   buildReadCursorsMap,
+  compareContactsByActivity,
+  contactLastInboundAt,
   contactUnreadCount,
   countUnreadInbound,
   getReadCursorAt,
@@ -126,6 +128,32 @@ describe("isRecentlyActive", () => {
     const now = Date.now();
     const c = contact("+972501", new Date(now - 3600_000).toISOString());
     expect(isRecentlyActive(c, now)).toBe(true);
+  });
+
+  test("outbound-only blast is NOT recent (spa upsell must not pin)", () => {
+    const now = Date.now();
+    const c = {
+      phone: "+972501",
+      messages: [
+        { id: 1, direction: "outbound", created_at: new Date(now - 1000).toISOString() },
+      ],
+    };
+    expect(contactLastInboundAt(c)).toBe(null);
+    expect(isRecentlyActive(c, now)).toBe(false);
+  });
+});
+
+describe("compareContactsByActivity — inbound before outbound-only", () => {
+  test("guest reply ranks above spa blast thread", () => {
+    const olderInbound = {
+      phone: "+972501",
+      messages: [{ id: 1, direction: "inbound", created_at: "2026-07-21T08:00:00Z" }],
+    };
+    const newerOutboundOnly = {
+      phone: "+972502",
+      messages: [{ id: 2, direction: "outbound", created_at: "2026-07-21T10:00:00Z" }],
+    };
+    expect(compareContactsByActivity(olderInbound, newerOutboundOnly)).toBeLessThan(0);
   });
 });
 
