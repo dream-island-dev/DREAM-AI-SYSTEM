@@ -67,9 +67,11 @@ function extractNameFromOpsTail(tail: string, phone: string | null): string {
         break;
       }
     }
-    const dashIdx = name.lastIndexOf(" - ");
-    if (dashIdx >= 0) name = name.slice(0, dashIdx).trim();
   }
+  // Dangling separator left behind once the phone (or its synthetic " - {phone}" suffix
+  // from the two-pass parse) was sliced off — e.g. "דור חליף -" → "דור חליף".
+  // Must run before SOURCE_RE so "Hotel WebSite -" alone doesn't eat the real name.
+  name = name.replace(/\s*-\s*$/, "").trim();
   return name.replace(SOURCE_RE, "").trim();
 }
 
