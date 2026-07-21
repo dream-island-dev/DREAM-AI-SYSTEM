@@ -16,74 +16,165 @@ export const WAITER_PULSE_MANAGEMENT_STATUSES = Object.freeze([
 ]);
 
 const QUESTION_KEY_RE = /^[a-z][a-z0-9_]{0,48}$/;
-export const WAITER_PULSE_MAX_QUESTIONS = 12;
+export const WAITER_PULSE_MAX_QUESTIONS = 15;
 export const WAITER_PULSE_MIN_QUESTIONS = 1;
 
 export const DEFAULT_WAITER_PULSE_UI = Object.freeze({
-  panel_title: "שאלון תפעול ושיפור שירות למלצרים",
+  panel_title: "שאלון מלצרים - מסעדת ערמונים",
   intro_text:
-    "צוות יקר, נשמח לדעת מה אתם חווים ומזהים מול האורחים בשטח: מה מפריע ומעכב אתכם מלתת את השירות המושלם, ואיזה שינוי או כלי יעזרו לכם להצליח יותר?",
-  submit_label: "✉️ שרידת משוב ותובנות צוות",
-  thank_you_title: "תודה על השותפות והחזון! 🙏",
+    "שאלון זה הינו אנונימי לחלוטין!\n\nהמטרה שלנו היא לשפר את סביבת העבודה, התקשורת והחוויה של כולנו במסעדה. נשמח לתשובות הכנות שלך.",
+  submit_label: "📋 שליחת השאלון",
+  thank_you_title: "תודה על המשוב! 🙏",
   thank_you_body:
-    "המשוב הגיע ישירות להנהלה. התשובות ינותחו כדי לבצע התאמות, לשפר את זרימת העבודה בשטח ולתת לכם את הכלים הטובים ביותר.",
+    "התשובות נשלחו באופן אנונימי להנהלה. נשתמש בהן כדי לשפר את סביבת העבודה, התקשורת והחוויה של כולנו במסעדה.",
   questions: Object.freeze([
     Object.freeze({
-      key: "service_bottleneck",
-      type: "multi_choice",
-      label: "מהם צווארי הבקבוק שמעכבים את מהירות השירות שלכם כרגע? (ניתן לבחור כמה)",
+      key: "tenure",
+      type: "single_choice",
+      label: "1. כמה זמן אתה עובד במסעדת ערמונים? (בחירה אחת)",
       required: true,
       options: Object.freeze([
-        Object.freeze({
-          id: "kitchen_bar_timing",
-          label: "⏱️ זמני יציאת מנות/משקאות מהמטבח והבר",
-        }),
-        Object.freeze({
-          id: "walking_equipment",
-          label: "🏃‍♂️ מרחקי הליכה וחוסר בציוד עזר זמין בשטח",
-        }),
-        Object.freeze({
-          id: "systems_sync",
-          label: "🖥️ עיכובים או חוסר סנכרון במערכות המחשוב/הזמנות",
-        }),
-        Object.freeze({
-          id: "workload_split",
-          label: "👥 חלוקת גזרות עבודה או עומס חריג בנקודות קצה",
-        }),
+        Object.freeze({ id: "less_3_months", label: "פחות מ-3 חודשים" }),
+        Object.freeze({ id: "3_6_months", label: "3–6 חודשים" }),
+        Object.freeze({ id: "half_to_year", label: "חצי שנה עד שנה" }),
+        Object.freeze({ id: "over_year", label: "מעל שנה" }),
       ]),
     }),
     Object.freeze({
-      key: "recurring_guest_complaint",
-      type: "multi_choice",
-      label: "מהן התלונות או הבקשות החוזרות שאתם שומעים מהאורחים במשמרת? (ניתן לבחור כמה)",
+      key: "manager_presence",
+      type: "single_choice",
+      label: "2. האם אתה מרגיש שהמנהל נוכח במשמרת?",
       required: true,
       options: Object.freeze([
-        Object.freeze({
-          id: "slow_response",
-          label: '💬 "לוקח זמן רב מדי לקבל חשבון או מענה מהמלצר"',
-        }),
-        Object.freeze({
-          id: "menu_dietary",
-          label: '🍽️ "חסר גיוון או התאמה לרגישויות בתפריט"',
-        }),
-        Object.freeze({
-          id: "food_quality",
-          label: '🌡️ "טמפרטורת המנה או איכות ההגשה לא היו אחידות"',
-        }),
-        Object.freeze({
-          id: "no_complaints",
-          label: "✨ האורחים מרוצים לחלוטין ואין תלונות חוזרות",
-        }),
+        Object.freeze({ id: "yes", label: "כן" }),
+        Object.freeze({ id: "no", label: "לא" }),
       ]),
+      allow_other: true,
+      other_label: "אחר / פירוט",
     }),
     Object.freeze({
-      key: "one_improvement",
-      type: "text",
+      key: "manager_respect",
+      type: "single_choice",
+      label: "3. האם אתה מרגיש שהמנהלים מתייחסים אליך בכבוד?",
+      required: true,
+      options: Object.freeze([
+        Object.freeze({ id: "yes", label: "כן" }),
+        Object.freeze({ id: "no", label: "לא" }),
+      ]),
+      allow_other: true,
+      other_label: "אחר / פירוט",
+    }),
+    Object.freeze({
+      key: "manager_improvements",
+      type: "multi_choice",
       label:
-        "אם הייתם יכולים לשנות, להוסיף או לשפר דבר אחד קטן במשמרת כדי להפוך את העבודה ליותר חלקה ואת האורח ליותר שמח — מה זה היה?",
+        "4. מה לדעתך המנהלים יכולים לעשות טוב יותר? (ניתן לסמן מספר אפשרויות ו/או לפרט בחופשיות)",
       required: true,
-      placeholder: "למשל: עוד מגשים בשירות, עדכון מהיר יותר על מנות שנגמרו…",
-      min_length: 15,
+      options: Object.freeze([
+        Object.freeze({ id: "clear_communication", label: "תקשורת ברורה ופתוחה יותר מול הצוות" }),
+        Object.freeze({ id: "physical_support", label: "תמיכה וסיוע פיזי במהלך סרוויס עמוס" }),
+        Object.freeze({ id: "positive_feedback", label: "מתן משוב חיובי/בונה בסיום משמרת" }),
+        Object.freeze({ id: "fair_shifts", label: "חלוקה צודקת ומאוזנת של משמרות" }),
+        Object.freeze({ id: "more_training", label: "הגדלת הדרכות ומקצועיות" }),
+      ]),
+      allow_other: true,
+      other_label: "אחר / פירוט חופשי",
+    }),
+    Object.freeze({
+      key: "team_cooperation",
+      type: "single_choice",
+      label: "5. האם יש שיתוף פעולה בין חברי הצוות?",
+      required: true,
+      options: Object.freeze([
+        Object.freeze({ id: "yes", label: "כן" }),
+        Object.freeze({ id: "no", label: "לא" }),
+      ]),
+      allow_other: true,
+      other_label: "אחר / פירוט",
+    }),
+    Object.freeze({
+      key: "tip_agreement_awareness",
+      type: "single_choice",
+      label: "6. האם אתה יודע שקיימת הסכמה בין המלצרים לגבי לקיחת טיפים?",
+      required: true,
+      options: Object.freeze([
+        Object.freeze({ id: "yes", label: "כן" }),
+        Object.freeze({ id: "no", label: "לא" }),
+      ]),
+      allow_other: true,
+      other_label: "אחר / פירוט",
+    }),
+    Object.freeze({
+      key: "tips_policy_aware",
+      type: "single_choice",
+      label: "7. חלוקת טיפים במשמרת — א. האם אתה מודע להגדרה זו?",
+      help_text:
+        "כהגדרה, טיפים המתקבלים מהלקוחות בכל שעות המשמרת הם טיפים משותפים לכלל המלצרים.",
+      required: true,
+      options: Object.freeze([
+        Object.freeze({ id: "yes", label: "כן" }),
+        Object.freeze({ id: "no", label: "לא" }),
+      ]),
+    }),
+    Object.freeze({
+      key: "tips_policy_change",
+      type: "single_choice",
+      label: "7. חלוקת טיפים במשמרת — ב. האם היית רוצה לשנות את השיטה הנוכחית?",
+      required: true,
+      options: Object.freeze([
+        Object.freeze({ id: "no_change", label: "לא, השיטה טובה בעיניי" }),
+      ]),
+      allow_other: true,
+      other_label: "כן (נמק מה היית משנה)",
+    }),
+    Object.freeze({
+      key: "training_sufficient",
+      type: "single_choice",
+      label: "8. האם אתה מרגיש שקיבלת הכשרה מספקת מהמנהלים?",
+      required: true,
+      options: Object.freeze([
+        Object.freeze({ id: "yes", label: "כן" }),
+        Object.freeze({ id: "no", label: "לא" }),
+      ]),
+      allow_other: true,
+      other_label: "פירוט (מה היה חסר בהכשרה?)",
+    }),
+    Object.freeze({
+      key: "service_knowledge_gaps",
+      type: "multi_choice",
+      label: "9. האם אתה מרגיש צורך בחיזוק ידע במתן שירות?",
+      required: true,
+      options: Object.freeze([
+        Object.freeze({ id: "confident", label: "לא, מרגיש שולט בחומר" }),
+        Object.freeze({ id: "food_menu", label: "כן – בתפריט האוכל / ספיישלים" }),
+        Object.freeze({ id: "wine_bar", label: "כן – בתפריט היין, האלכוהול והקוקטיילים" }),
+        Object.freeze({ id: "pos_system", label: "כן – תפעול קופה / מערכת ההזמנות" }),
+        Object.freeze({ id: "complaints", label: "כן – התמודדות עם תלונות לקוח וסרוויס מורכב" }),
+      ]),
+      allow_other: true,
+      other_label: "פירוט נוסף",
+    }),
+    Object.freeze({
+      key: "cross_team_difficulty",
+      type: "multi_choice",
+      label: "10. האם אתה מרגיש קושי בעבודה מול המטבח / הבר / המארחות?",
+      required: true,
+      options: Object.freeze([
+        Object.freeze({ id: "no_difficulty", label: "לא, העבודה זורמת מצוין מול כולם" }),
+        Object.freeze({ id: "kitchen", label: "כן – קושי מול המטבח" }),
+        Object.freeze({ id: "bar", label: "כן – קושי מול הבר" }),
+        Object.freeze({ id: "hosts", label: "כן – קושי מול צוות המארחות" }),
+      ]),
+      allow_other: true,
+      other_label: "פירוט (מה מורכב/מה מפריע לך?)",
+    }),
+    Object.freeze({
+      key: "additional_comments",
+      type: "text",
+      label: "11. משהו נוסף שהיית רוצה להוסיף או לשנות? (כתיבה חופשית)",
+      required: false,
+      placeholder: "כתבו כאן בחופשיות…",
+      min_length: 0,
     }),
   ]),
 });
@@ -99,6 +190,7 @@ function plainDefaultUi() {
       key: q.key,
       type: q.type,
       label: q.label,
+      help_text: q.help_text ?? "",
       required: q.required === true,
       placeholder: q.placeholder ?? "",
       min_length: q.min_length ?? 0,
@@ -137,6 +229,7 @@ function normalizeQuestion(raw, idx) {
     key,
     type,
     label,
+    help_text: String(raw?.help_text ?? "").trim(),
     required: raw?.required === true,
     placeholder: String(raw?.placeholder ?? "").trim(),
     min_length: Math.max(0, Number(raw?.min_length) || 0),

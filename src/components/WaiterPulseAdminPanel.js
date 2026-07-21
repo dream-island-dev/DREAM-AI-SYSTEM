@@ -150,6 +150,18 @@ function SurveyEditorModal({ draft, onChange, onSave, onClose, saving, canEdit }
               }}
               style={{ ...fieldInputStyle, marginBottom: 8, fontWeight: 700 }}
             />
+            <input
+              value={q.help_text ?? ""}
+              disabled={!canEdit}
+              placeholder="טקסט עזר (אופציונלי)"
+              onChange={(e) => {
+                const questions = draft.questions.map((row, i) =>
+                  i === idx ? { ...row, help_text: e.target.value } : row,
+                );
+                onChange({ ...draft, questions });
+              }}
+              style={{ ...fieldInputStyle, marginBottom: 8, fontSize: 12 }}
+            />
             <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, fontSize: 13 }}>
               <input
                 type="checkbox"

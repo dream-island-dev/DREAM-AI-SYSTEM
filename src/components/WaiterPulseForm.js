@@ -55,13 +55,26 @@ function QuestionBlock({ question, answers, setAnswers, colors, readOnly }) {
   const otherKey = `${question.key}_other`;
   const otherVal = answers[otherKey] ?? "";
 
+  const labelBlock = (
+    <>
+      <div style={{ fontSize: 14, fontWeight: 700, color: colors.text, marginBottom: question.help_text ? 6 : 10, textAlign: "right" }}>
+        {question.label}
+        {question.required && <span style={{ color: "#E74C3C" }}> *</span>}
+      </div>
+      {question.help_text && (
+        <p style={{
+          fontSize: 13, color: colors.muted, lineHeight: 1.55, margin: "0 0 10px", textAlign: "right",
+        }}>
+          {question.help_text}
+        </p>
+      )}
+    </>
+  );
+
   if (question.type === "text") {
     return (
       <label style={{ display: "block", marginBottom: 20 }}>
-        <div style={{ fontSize: 14, fontWeight: 700, color: colors.text, marginBottom: 8, textAlign: "right" }}>
-          {question.label}
-          {question.required && <span style={{ color: "#E74C3C" }}> *</span>}
-        </div>
+        {labelBlock}
         <textarea
           value={val ?? ""}
           disabled={readOnly}
@@ -90,10 +103,7 @@ function QuestionBlock({ question, answers, setAnswers, colors, readOnly }) {
   if (question.type === "single_choice") {
     return (
       <div style={{ marginBottom: 20 }}>
-        <div style={{ fontSize: 14, fontWeight: 700, color: colors.text, marginBottom: 10, textAlign: "right" }}>
-          {question.label}
-          {question.required && <span style={{ color: "#E74C3C" }}> *</span>}
-        </div>
+        {labelBlock}
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {(question.options ?? []).map((opt) => (
             <ChoiceChip
@@ -152,10 +162,7 @@ function QuestionBlock({ question, answers, setAnswers, colors, readOnly }) {
     };
     return (
       <div style={{ marginBottom: 20 }}>
-        <div style={{ fontSize: 14, fontWeight: 700, color: colors.text, marginBottom: 10, textAlign: "right" }}>
-          {question.label}
-          {question.required && <span style={{ color: "#E74C3C" }}> *</span>}
-        </div>
+        {labelBlock}
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {(question.options ?? []).map((opt) => (
             <ChoiceChip
@@ -236,7 +243,7 @@ export default function WaiterPulseForm({
         {resolved.panel_title}
       </h1>
       {resolved.intro_text && (
-        <p style={{ fontSize: 14, color: colors.muted, lineHeight: 1.65, margin: "0 0 22px", textAlign: "right" }}>
+        <p style={{ fontSize: 14, color: colors.muted, lineHeight: 1.65, margin: "0 0 22px", textAlign: "right", whiteSpace: "pre-line" }}>
           {resolved.intro_text}
         </p>
       )}
