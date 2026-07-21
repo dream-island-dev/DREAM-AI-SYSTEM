@@ -2,6 +2,10 @@
 
 import type { Doc2Record } from "./ezgoDoc2Parser.ts";
 import {
+  guestRoomLabelsInclude,
+  isSameDoc2Booking,
+} from "./ezgoDoc2SuiteRoomSync.ts";
+import {
   isCanonicalSuiteRoom,
   isPremiumDayRoom,
   roomsCanonicallyMatch,
@@ -11,6 +15,7 @@ export type Doc2MailWorkflow =
   | "suite_arrival_create"
   | "suite_arrival_enrich"
   | "suite_room_assign"
+  | "suite_room_add"
   | "daypass_create"
   | "conflict"
   | "no_match"
@@ -53,7 +58,7 @@ export function buildDoc2EnrichmentPatch(
   const patch: Record<string, unknown> = {};
 
   const room = rec.room || null;
-  if (room) {
+  if (room && !guest.room) {
     const picked = pickEnrichValue(room, guest.room);
     if (picked !== undefined) patch.room = picked;
   }
@@ -149,6 +154,33 @@ export function classifyDoc2MailWorkflow(
       action: "conflict",
       label: `⚠ בדוק שם+חדר · DB: ${guest.name} / ${guest.room || "—"}`,
       patch: withWorkflowMeta({}, "conflict"),
+    };
+  }
+
+  if (rec.room && guestRoomLabelsInclude(guest.room, rec.room)) {
+    const patch = buildDoc2EnrichmentPatch(rec, guest);
+    if (!patchHasChanges(patch)) {
+      return {
+        workflow: "noop",
+        action: "enrich",
+        label: `${guest.name || "אורח"} · חדר ${rec.room} כבר קיים`,
+        patch: withWorkflowMeta(patch, "noop"),
+      };
+    }
+    return {
+      workflow: "suite_arrival_enrich",
+      action: "enrich",
+      label: `השלמת חסר · ${guest.name || rec.guest_name} · מס׳ ${rec.order_number || "—"}`,
+      patch: withWorkflowMeta(patch, "suite_arrival_enrich"),
+    };
+  }
+
+  if (roomConflict(rec, guest) && isSameDoc2Booking(rec, guest) && rec.room) {
+    return {
+      workflow: "suite_room_add",
+      action: "enrich",
+      label: `➕ חדר נוסף · ${guest.name || rec.guest_name} → ${rec.room}`,
+      patch: withWorkflowMeta({ _add_room: rec.room }, "suite_room_add"),
     };
   }
 

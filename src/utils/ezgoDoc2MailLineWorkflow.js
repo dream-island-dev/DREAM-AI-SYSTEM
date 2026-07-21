@@ -1,13 +1,19 @@
 // Mirror of supabase/functions/_shared/ezgoDoc2MailLineWorkflow.ts (frontend).
 
-import { GENERIC_DAY_PASS_ROOM } from "../data/suiteRegistry";
+import { GENERIC_DAY_PASS_ROOM, roomsCanonicallyMatch } from "../data/suiteRegistry";
 import { isCanonicalSuiteRoom, isPremiumDayRoom } from "./pipelineSegment";
 import { createDaypassGuestFromRec, stripWorkflowPatch } from "./ezgoMailLineWorkflow";
+import {
+  createDoc2SuiteArrival,
+  guestRoomLabelsInclude,
+  isSameDoc2Booking,
+} from "./ezgoDoc2SuiteRoomSync";
 
 export const DOC2_WORKFLOW_META = {
   suite_arrival_create: { text: "צור סוויטה", color: "#1E40AF", bg: "#DBEAFE" },
   suite_arrival_enrich: { text: "השלמת חסר", color: "#0E7490", bg: "#CFFAFE" },
   suite_room_assign: { text: "שיבוץ חדר", color: "#92400E", bg: "#FEF3C7" },
+  suite_room_add: { text: "חדר נוסף", color: "#166534", bg: "#DCFCE7" },
   daypass_create: { text: "צור בילוי יומי", color: "#155E75", bg: "#A5E4EF" },
   conflict: { text: "בדוק", color: "#A32D2D", bg: "#FCEBEB" },
   no_match: { text: "אין פרופיל", color: "#92400E", bg: "#FEF3C7" },
@@ -16,7 +22,8 @@ export const DOC2_WORKFLOW_META = {
 
 export const DOC2_WORKFLOW_SECTIONS = [
   { id: "suite_arrival_create", title: "🆕 כניסות חדשות — צור פרופיל סוויטה", hint: "אין פרופיל ב-DB · טלפון + חדר מזוהים" },
-  { id: "suite_arrival_enrich", title: "📥 השלמת חסר — אורח קיים", hint: "ממלא רק שדות ריקים (חדר / תאריכים / פנסיון)" },
+  { id: "suite_room_add", title: "➕ חדר נוסף — אותה הזמנה", hint: "מוסיף suite_rooms + מעדכן תווית משולבת ב-guests.room" },
+  { id: "suite_arrival_enrich", title: "📥 השלמת חסר — אורח קיים", hint: "ממלא רק שדות ריקים (תאריכים / פנסיון)" },
   { id: "suite_room_assign", title: "🏨 שיבוץ חדר", hint: "פרופיל קיים בלי חדר" },
   { id: "daypass_create", title: "☀️ צור בילוי יומי", hint: "Premium Day / בילוי יומי" },
   { id: "conflict", title: "⚠ בדוק", hint: "התנגשות שם/חדר — אישור ידני בלבד" },
@@ -25,6 +32,10 @@ export const DOC2_WORKFLOW_SECTIONS = [
 
 function patchHasChanges(patch) {
   return Object.keys(patch || {}).filter((k) => !k.startsWith("_")).length > 0;
+}
+
+function withWorkflowMeta(patch, workflow) {
+  return { ...patch, _workflow: workflow };
 }
 
 function pickEnrichValue(importVal, existingVal) {
@@ -36,7 +47,7 @@ function pickEnrichValue(importVal, existingVal) {
 export function buildDoc2EnrichmentPatch(rec, guest) {
   if (!guest) return {};
   const patch = {};
-  if (rec.room) {
+  if (rec.room && !guest.room) {
     const picked = pickEnrichValue(rec.room, guest.room);
     if (picked !== undefined) patch.room = picked;
   }
@@ -63,13 +74,23 @@ export function buildDoc2EnrichmentPatch(rec, guest) {
   return patch;
 }
 
+function nameConflict(rec, guest) {
+  if (!rec.guest_name || !guest.name) return false;
+  return rec.guest_name.trim() !== String(guest.name).trim();
+}
+
+function roomConflict(rec, guest) {
+  if (!rec.room || !guest.room) return false;
+  return !roomsCanonicallyMatch(rec.room, guest.room);
+}
+
 export function classifyDoc2MailWorkflow(rec, guest) {
   if (rec?.section === "departure") {
     return {
       workflow: "noop",
       action: "enrich",
       label: "יציאה — ללא פעולה אוטומטית",
-      patch: { _workflow: "noop" },
+      patch: withWorkflowMeta({}, "noop"),
     };
   }
   if (!rec?.phone) {
@@ -77,7 +98,7 @@ export function classifyDoc2MailWorkflow(rec, guest) {
       workflow: "no_match",
       action: "no_match",
       label: "חסר טלפון — לא ניתן ליצור/לעדכן",
-      patch: { _workflow: "no_match" },
+      patch: withWorkflowMeta({}, "no_match"),
     };
   }
   if (!rec.room && !rec.is_day_guest) {
@@ -85,7 +106,7 @@ export function classifyDoc2MailWorkflow(rec, guest) {
       workflow: "no_match",
       action: "no_match",
       label: `חדר לא מזוהה · ${rec.room_raw || "—"}`,
-      patch: { _workflow: "no_match" },
+      patch: withWorkflowMeta({}, "no_match"),
     };
   }
   if (!guest) {
@@ -94,39 +115,86 @@ export function classifyDoc2MailWorkflow(rec, guest) {
         workflow: "daypass_create",
         action: "create",
         label: `צור בילוי יומי · ${rec.guest_name || rec.phone}`,
-        patch: { _workflow: "daypass_create" },
+        patch: withWorkflowMeta({}, "daypass_create"),
       };
     }
     return {
       workflow: "suite_arrival_create",
       action: "create",
-      label: `צור סוויטה · ${rec.guest_name || "—"} · ${rec.room}`,
-      patch: { _workflow: "suite_arrival_create" },
+      label: `צור סוויטה · ${rec.guest_name || "—"} · ${rec.room} · מס׳ ${rec.order_number || "—"}`,
+      patch: withWorkflowMeta({}, "suite_arrival_create"),
     };
   }
 
-  const patch = buildDoc2EnrichmentPatch(rec, guest);
+  if (nameConflict(rec, guest) && roomConflict(rec, guest)) {
+    return {
+      workflow: "conflict",
+      action: "conflict",
+      label: `⚠ בדוק שם+חדר · DB: ${guest.name} / ${guest.room || "—"}`,
+      patch: withWorkflowMeta({}, "conflict"),
+    };
+  }
+
+  if (rec.room && guestRoomLabelsInclude(guest.room, rec.room)) {
+    const patch = buildDoc2EnrichmentPatch(rec, guest);
+    if (!patchHasChanges(patch)) {
+      return {
+        workflow: "noop",
+        action: "enrich",
+        label: `${guest.name || "אורח"} · חדר ${rec.room} כבר קיים`,
+        patch: withWorkflowMeta(patch, "noop"),
+      };
+    }
+    return {
+      workflow: "suite_arrival_enrich",
+      action: "enrich",
+      label: `השלמת חסר · ${guest.name || rec.guest_name} · מס׳ ${rec.order_number || "—"}`,
+      patch: withWorkflowMeta(patch, "suite_arrival_enrich"),
+    };
+  }
+
+  if (roomConflict(rec, guest) && isSameDoc2Booking(rec, guest) && rec.room) {
+    return {
+      workflow: "suite_room_add",
+      action: "enrich",
+      label: `➕ חדר נוסף · ${guest.name || rec.guest_name} → ${rec.room}`,
+      patch: withWorkflowMeta({ _add_room: rec.room }, "suite_room_add"),
+    };
+  }
+
   if (!guest.room && rec.room && isCanonicalSuiteRoom(rec.room)) {
     return {
       workflow: "suite_room_assign",
       action: "enrich",
       label: `שיבוץ חדר · ${guest.name || rec.guest_name} → ${rec.room}`,
-      patch: { ...patch, room: rec.room, _workflow: "suite_room_assign" },
+      patch: withWorkflowMeta({ room: rec.room }, "suite_room_assign"),
     };
   }
+
+  if (roomConflict(rec, guest)) {
+    return {
+      workflow: "conflict",
+      action: "conflict",
+      label: `⚠ חדר שונה · DB: ${guest.room} · דוח: ${rec.room}`,
+      patch: withWorkflowMeta({}, "conflict"),
+    };
+  }
+
+  const patch = buildDoc2EnrichmentPatch(rec, guest);
   if (!patchHasChanges(patch)) {
     return {
       workflow: "noop",
       action: "enrich",
       label: `${guest.name || "אורח"} · אין שדות חדשים`,
-      patch: { _workflow: "noop" },
+      patch: withWorkflowMeta(patch, "noop"),
     };
   }
+
   return {
     workflow: "suite_arrival_enrich",
     action: "enrich",
-    label: `השלמת חסר · ${guest.name || rec.guest_name}`,
-    patch: { ...patch, _workflow: "suite_arrival_enrich" },
+    label: `השלמת חסר · ${guest.name || rec.guest_name} · מס׳ ${rec.order_number || "—"}`,
+    patch: withWorkflowMeta(patch, "suite_arrival_enrich"),
   };
 }
 
@@ -145,40 +213,7 @@ export function resolveDoc2LineWorkflow(line, reportDateYmd) {
 }
 
 export async function createSuiteArrivalFromRec(supabase, rec, reportDateYmd) {
-  const arrival = rec.arrival_date || reportDateYmd;
-  const insert = {
-    phone: rec.phone,
-    name: rec.guest_name || null,
-    arrival_date: arrival,
-    departure_date: rec.departure_date || arrival,
-    room: rec.room,
-    room_type: rec.is_premium_day ? "premium_day_guest" : (rec.is_day_guest ? "day_guest" : "suite"),
-    status: "expected",
-    order_number: rec.order_number || null,
-    meal_location: rec.meal_location || null,
-  };
-  if (rec.is_day_guest && !rec.is_premium_day) {
-    insert.room = GENERIC_DAY_PASS_ROOM;
-  }
-
-  const { data: inserted, error } = await supabase
-    .from("guests")
-    .insert(insert)
-    .select("id, name, phone")
-    .maybeSingle();
-  if (error) throw error;
-
-  if (inserted?.phone) {
-    await supabase.from("bookings").upsert({
-      phone: inserted.phone.replace(/^\+/, ""),
-      guest_name: rec.guest_name || null,
-      arrival_date: arrival,
-      status: "expected",
-      room_count: 1,
-    }, { onConflict: "phone,arrival_date" });
-  }
-
-  return inserted;
+  return createDoc2SuiteArrival(supabase, rec, reportDateYmd);
 }
 
 export async function createDoc2LineFromRec(supabase, rec, reportDateYmd) {

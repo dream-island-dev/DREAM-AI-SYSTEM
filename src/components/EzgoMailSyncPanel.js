@@ -16,6 +16,7 @@ import {
   createDoc2LineFromRec,
   resolveDoc2LineWorkflow,
 } from "../utils/ezgoDoc2MailLineWorkflow";
+import { applyDoc2SuiteRoomAdd, findGuestForDoc2SuiteCreate } from "../utils/ezgoDoc2SuiteRoomSync";
 import {
   fetchSpaUpsellDispatchMeta,
   scheduleSpaUpsellTasks,
@@ -268,6 +269,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
       const w = lineWorkflow(line, reportDate, isDoc2Ingest);
       if (isDoc2Ingest) {
         if (w === "suite_arrival_create") buckets.suite_arrival_create.push(line);
+        else if (w === "suite_room_add") buckets.suite_room_add.push(line);
         else if (w === "suite_arrival_enrich") buckets.suite_arrival_enrich.push(line);
         else if (w === "suite_room_assign") buckets.suite_room_assign.push(line);
         else if (w === "daypass_create") buckets.daypass_create.push(line);
@@ -336,8 +338,36 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
       showToast?.("אין פרופיל לעדכון", "err");
       return;
     }
+
+    const workflow = wf(line);
+    const rec = line.parsed_json || {};
+
+    if (isDoc2Ingest && workflow === "suite_room_add") {
+      setBusy(true);
+      try {
+        const result = await applyDoc2SuiteRoomAdd(supabase, {
+          guestId: line.match_guest_id,
+          rec,
+          reportDateYmd: reportDate,
+        });
+        await supabase.from("ezgo_mail_import_lines").update({
+          status: "applied",
+          applied_at: new Date().toISOString(),
+          proposed_patch: { _workflow: workflow, _add_room: rec.room || null },
+        }).eq("id", line.id);
+        showToast?.(`חדר נוסף: ${result.name} · ${result.room || rec.room}`, "ok");
+        await loadLines(selectedId);
+        await loadIngests();
+      } catch (e) {
+        showToast?.(e.message, "err");
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+
     const patch = stripWorkflowPatch(line.proposed_patch || {});
-    if (!Object.keys(patch).length) {
+    if (!Object.keys(patch).length && workflow !== "suite_room_assign") {
       await supabase.from("ezgo_mail_import_lines").update({ status: "skipped" }).eq("id", line.id);
       showToast?.("אין שדות חדשים — דולג", "ok");
       await loadLines(selectedId);
@@ -348,10 +378,27 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
     try {
       const { data: guest, error: gErr } = await supabase
         .from("guests")
-        .select("id, name, phone, order_number, arrival_date, spa_time, spa_date, meal_time, meal_location, treatment_count")
+        .select("id, name, phone, order_number, arrival_date, departure_date, spa_time, spa_date, meal_time, meal_location, treatment_count")
         .eq("id", line.match_guest_id)
         .maybeSingle();
       if (gErr || !guest) throw gErr || new Error("אורח לא נמצא");
+
+      if (isDoc2Ingest && workflow === "suite_room_assign") {
+        const result = await applyDoc2SuiteRoomAdd(supabase, {
+          guestId: guest.id,
+          rec,
+          reportDateYmd: reportDate,
+        });
+        await supabase.from("ezgo_mail_import_lines").update({
+          status: "applied",
+          applied_at: new Date().toISOString(),
+          proposed_patch: { room: result.room || rec.room, _workflow: workflow },
+        }).eq("id", line.id);
+        showToast?.(`שובץ חדר: ${result.name} → ${result.room || rec.room}`, "ok");
+        await loadLines(selectedId);
+        await loadIngests();
+        return;
+      }
 
       const safePatch = isDoc2Ingest
         ? buildDoc2EnrichmentPatch(line.parsed_json, guest)
@@ -369,7 +416,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
       await supabase.from("ezgo_mail_import_lines").update({
         status: "applied",
         applied_at: new Date().toISOString(),
-        proposed_patch: { ...safePatch, _workflow: wf(line) },
+        proposed_patch: { ...safePatch, _workflow: workflow },
       }).eq("id", line.id);
 
       showToast?.(`עודכן: ${guest.name}`, "ok");
@@ -386,14 +433,18 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
     const rec = line.parsed_json || {};
     if (isDoc2Ingest) {
       if (!rec.phone) throw new Error("חסר טלפון — לא ניתן ליצור פרופיל");
+      const existing = await findGuestForDoc2SuiteCreate(supabase, rec, reportDate);
       const inserted = await createDoc2LineFromRec(supabase, rec, reportDate);
+      const label = existing
+        ? `חדר נוסף · ${inserted?.name || rec.guest_name} → ${rec.room}`
+        : `נוצר פרופיל · ${inserted?.name || rec.guest_name || rec.phone}`;
       await supabase.from("ezgo_mail_import_lines").update({
         status: "applied",
         applied_at: new Date().toISOString(),
         match_guest_id: inserted?.id ?? null,
-        match_method: "manual",
-        match_label: `נוצר פרופיל · ${inserted?.name || rec.guest_name || rec.phone}`,
-        proposed_patch: { _workflow: wf(line) },
+        match_method: existing ? "order" : "manual",
+        match_label: label,
+        proposed_patch: { _workflow: existing ? "suite_room_add" : wf(line) },
       }).eq("id", line.id);
       return inserted;
     }
@@ -617,7 +668,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
       if (l.status !== "pending_review" || !l.match_guest_id) return false;
       const patchKeys = Object.keys(stripWorkflowPatch(l.proposed_patch || {}));
       if (!patchKeys.length) return false;
-      if (workflowId === "suite_arrival_enrich" || workflowId === "suite_room_assign") {
+      if (workflowId === "suite_arrival_enrich" || workflowId === "suite_room_assign" || workflowId === "suite_room_add") {
         return true;
       }
       return l.match_method === "order";
