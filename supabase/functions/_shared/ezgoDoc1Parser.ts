@@ -109,7 +109,7 @@ export function sanitizeE164(raw: string | null | undefined): string | null {
   return c.length >= 9 ? `+${c}` : null;
 }
 
-function parseSlashDate(raw: string): string | null {
+export function parseSlashDate(raw: string): string | null {
   const m = raw.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
   if (!m) return null;
   const [, a, b, y] = m;
@@ -462,8 +462,17 @@ export function looksLikeDoc1Tsv(text: string): boolean {
   return /^\d+:/m.test(s) && /(הזמנה|תוספות|לאורחי|HB|BB|טיפול)/.test(s);
 }
 
+function looksLikeDoc2Html(text: string): boolean {
+  const s = String(text || "");
+  if (!/<table[\s>]/i.test(s)) return false;
+  const plain = s.replace(/<[^>]+>/g, " ");
+  return /מס\.?\s*הזמנה/.test(plain)
+    && /סוג יחידה/.test(plain)
+    && /(כניסה|יציאה)/.test(plain);
+}
+
 export type EzgoMailClassification = {
-  reportType: "doc1_html" | "doc1_tsv" | "doc1_excel" | "unknown";
+  reportType: "doc1_html" | "doc1_tsv" | "doc1_excel" | "doc2_html" | "unknown";
   html?: string;
   tsv?: string;
   excelFilename?: string;
@@ -472,11 +481,18 @@ export type EzgoMailClassification = {
 export function classifyEzgoMailContent(bodyHtml: string, bodyText: string): EzgoMailClassification {
   const html = (bodyHtml || "").trim();
   const text = (bodyText || "").trim();
+  // Doc2 arrivals table must be checked before Doc1 (both are HTML tables).
+  if (html && looksLikeDoc2Html(html)) {
+    return { reportType: "doc2_html", html };
+  }
   if (html && looksLikeDoc1Html(html)) {
     return { reportType: "doc1_html", html };
   }
   if (looksLikeDoc1Tsv(text)) {
     return { reportType: "doc1_tsv", tsv: text };
+  }
+  if (looksLikeDoc2Html(text)) {
+    return { reportType: "doc2_html", html: text };
   }
   if (looksLikeDoc1Html(text)) {
     return { reportType: "doc1_html", html: text };

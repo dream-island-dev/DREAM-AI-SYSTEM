@@ -10,6 +10,13 @@ import {
   stripWorkflowPatch,
 } from "../utils/ezgoMailLineWorkflow";
 import {
+  DOC2_WORKFLOW_META,
+  DOC2_WORKFLOW_SECTIONS,
+  buildDoc2EnrichmentPatch,
+  createDoc2LineFromRec,
+  resolveDoc2LineWorkflow,
+} from "../utils/ezgoDoc2MailLineWorkflow";
+import {
   fetchSpaUpsellDispatchMeta,
   scheduleSpaUpsellTasks,
   sendSpaUpsellBatch,
@@ -36,8 +43,15 @@ function patchLabels(patch) {
   return labels;
 }
 
-function workflowBadge(workflow) {
+function workflowBadge(workflow, isDoc2) {
+  if (isDoc2) return DOC2_WORKFLOW_META[workflow] || DOC2_WORKFLOW_META.noop;
   return WORKFLOW_META[workflow] || WORKFLOW_META.enrich;
+}
+
+function lineWorkflow(line, reportDate, isDoc2) {
+  return isDoc2
+    ? resolveDoc2LineWorkflow(line, reportDate)
+    : resolveLineWorkflow(line, reportDate);
 }
 
 function guestTargetFromLine(line) {
@@ -75,22 +89,26 @@ const BTN = {
 };
 
 function LineCard({
-  line, reportDate, busy, onApply, onCreate, onCreateAndUpsell, onReject, onUpsell,
+  line, reportDate, busy, onApply, onCreate, onCreateAndUpsell, onReject, onUpsell, isDoc2,
 }) {
   const rec = line.parsed_json || {};
-  const workflow = resolveLineWorkflow(line, reportDate);
-  const badge = workflowBadge(workflow);
+  const workflow = lineWorkflow(line, reportDate, isDoc2);
+  const badge = workflowBadge(workflow, isDoc2);
   const labels = patchLabels(line.proposed_patch || {});
   const done = ["applied", "rejected", "skipped"].includes(line.status);
-  const isCreate = line.action === "create" || workflow.startsWith("daypass_create");
+  const isCreate = line.action === "create"
+    || workflow.startsWith("daypass_create")
+    || workflow === "suite_arrival_create";
   const isUpsell = workflow === "daypass_upsell";
   const canUpsell = isUpsell && line.match_guest_id;
   const canCreateSend = workflow === "daypass_create" && rec.phone;
   const canCreateProfile = (isCreate || (isUpsell && rec.phone))
-    && line.action !== "no_match";
+    && line.action !== "no_match"
+    && workflow !== "conflict";
   const canApprove = !isCreate && !isUpsell
     && line.action !== "no_match"
     && workflow !== "noop"
+    && workflow !== "conflict"
     && line.match_guest_id;
 
   return (
@@ -113,6 +131,12 @@ function LineCard({
           {rec.order_number ? ` · #${rec.order_number}` : ""}
         </strong>
         {rec.phone && <span style={{ fontSize: 12, color: "#aaa" }}>{rec.phone}</span>}
+        {(rec.room || rec.room_raw) && (
+          <span style={{ fontSize: 11, color: "#c4b5fd" }}>
+            {rec.room || rec.room_raw}
+            {rec.nights ? ` · ${rec.nights} לילות` : ""}
+          </span>
+        )}
         {rec.spa_time && (
           <span style={{ fontSize: 11, color: "#7dd3fc" }}>ספא {rec.spa_time}</span>
         )}
@@ -235,21 +259,31 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
 
   const selected = ingests.find((i) => i.id === selectedId);
   const reportDate = selected?.report_date_ymd || null;
+  const isDoc2Ingest = selected?.report_type === "doc2_arrivals";
+  const activeSections = isDoc2Ingest ? DOC2_WORKFLOW_SECTIONS : WORKFLOW_SECTIONS;
 
   const grouped = useMemo(() => {
-    const buckets = Object.fromEntries(WORKFLOW_SECTIONS.map((s) => [s.id, []]));
+    const buckets = Object.fromEntries(activeSections.map((s) => [s.id, []]));
     for (const line of lines) {
-      const w = resolveLineWorkflow(line, reportDate);
-      if (w === "suite_spa_sync") buckets.suite_spa_sync.push(line);
+      const w = lineWorkflow(line, reportDate, isDoc2Ingest);
+      if (isDoc2Ingest) {
+        if (w === "suite_arrival_create") buckets.suite_arrival_create.push(line);
+        else if (w === "suite_arrival_enrich") buckets.suite_arrival_enrich.push(line);
+        else if (w === "suite_room_assign") buckets.suite_room_assign.push(line);
+        else if (w === "daypass_create") buckets.daypass_create.push(line);
+        else if (w === "conflict") buckets.conflict.push(line);
+        else buckets.other.push(line);
+      } else if (w === "suite_spa_sync") buckets.suite_spa_sync.push(line);
       else if (w === "daypass_upsell") buckets.daypass_upsell.push(line);
       else if (w === "daypass_create_spa") buckets.daypass_create_spa.push(line);
       else if (w === "daypass_create") buckets.daypass_create.push(line);
       else buckets.other.push(line);
     }
     return buckets;
-  }, [lines, reportDate]);
+  }, [lines, reportDate, isDoc2Ingest, activeSections]);
 
   const pendingCount = lines.filter((l) => l.status === "pending_review").length;
+  const wf = (line) => lineWorkflow(line, reportDate, isDoc2Ingest);
 
   const triggerSync = async () => {
     setSyncing(true);
@@ -319,7 +353,9 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
         .maybeSingle();
       if (gErr || !guest) throw gErr || new Error("אורח לא נמצא");
 
-      const safePatch = buildDoc1EnrichmentPatch(line.parsed_json, guest);
+      const safePatch = isDoc2Ingest
+        ? buildDoc2EnrichmentPatch(line.parsed_json, guest)
+        : buildDoc1EnrichmentPatch(line.parsed_json, guest);
       if (!Object.keys(safePatch).length) {
         await supabase.from("ezgo_mail_import_lines").update({ status: "skipped" }).eq("id", line.id);
         showToast?.("אין שדות חדשים", "ok");
@@ -333,7 +369,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
       await supabase.from("ezgo_mail_import_lines").update({
         status: "applied",
         applied_at: new Date().toISOString(),
-        proposed_patch: { ...safePatch, _workflow: resolveLineWorkflow(line, reportDate) },
+        proposed_patch: { ...safePatch, _workflow: wf(line) },
       }).eq("id", line.id);
 
       showToast?.(`עודכן: ${guest.name}`, "ok");
@@ -348,6 +384,19 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
 
   const createLineInternal = async (line) => {
     const rec = line.parsed_json || {};
+    if (isDoc2Ingest) {
+      if (!rec.phone) throw new Error("חסר טלפון — לא ניתן ליצור פרופיל");
+      const inserted = await createDoc2LineFromRec(supabase, rec, reportDate);
+      await supabase.from("ezgo_mail_import_lines").update({
+        status: "applied",
+        applied_at: new Date().toISOString(),
+        match_guest_id: inserted?.id ?? null,
+        match_method: "manual",
+        match_label: `נוצר פרופיל · ${inserted?.name || rec.guest_name || rec.phone}`,
+        proposed_patch: { _workflow: wf(line) },
+      }).eq("id", line.id);
+      return inserted;
+    }
     if (!rec.phone) throw new Error("חסר טלפון — לא ניתן ליצור פרופיל");
     const inserted = await createDaypassGuestFromRec(supabase, rec, reportDate);
     await supabase.from("ezgo_mail_import_lines").update({
@@ -356,7 +405,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
       match_guest_id: inserted?.id ?? null,
       match_method: "manual",
       match_label: `נוצר פרופיל · ${inserted?.name || rec.guest_name || rec.phone}`,
-      proposed_patch: { _workflow: resolveLineWorkflow(line, reportDate) },
+      proposed_patch: { _workflow: wf(line) },
     }).eq("id", line.id);
     return inserted;
   };
@@ -369,7 +418,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
       if (lineSet.has(l.id)) return true;
       return l.match_guest_id
         && guestSet.has(l.match_guest_id)
-        && resolveLineWorkflow(l, reportDate) === "daypass_upsell";
+        && wf(l) === "daypass_upsell";
     });
     for (const line of toMark) {
       await supabase.from("ezgo_mail_import_lines").update({
@@ -446,7 +495,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
       status: "applied",
       applied_at: new Date().toISOString(),
       match_label: `${line.match_label || ""} · ללא שליחת הצעת ספא`.trim(),
-      proposed_patch: { _workflow: resolveLineWorkflow(line, reportDate) },
+      proposed_patch: { _workflow: wf(line) },
     }).eq("id", line.id);
     if (!silent) {
       showToast?.(`סומן ללא שליחה: ${line.guests?.name || line.parsed_json?.guest_name}`, "ok");
@@ -458,7 +507,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
   };
 
   const handleCreateProfile = async (line) => {
-    const workflow = resolveLineWorkflow(line, reportDate);
+    const workflow = wf(line);
     if (workflow === "daypass_upsell" && line.match_guest_id) {
       setBusy(true);
       try {
@@ -490,7 +539,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
             await dismissUpsellWithoutSend(line, { silent: true, skipReload: true });
           } else if (
             line.action === "create"
-            || resolveLineWorkflow(line, reportDate).startsWith("daypass_create")
+            || wf(line).startsWith("daypass_create")
           ) {
             await createLineInternal(line);
           }
@@ -564,12 +613,15 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
   };
 
   const applyBatch = async (workflowId) => {
-    const pending = grouped[workflowId]?.filter(
-      (l) => l.status === "pending_review"
-        && l.match_guest_id
-        && l.match_method === "order"
-        && Object.keys(stripWorkflowPatch(l.proposed_patch || {})).length > 0,
-    ) || [];
+    const pending = grouped[workflowId]?.filter((l) => {
+      if (l.status !== "pending_review" || !l.match_guest_id) return false;
+      const patchKeys = Object.keys(stripWorkflowPatch(l.proposed_patch || {}));
+      if (!patchKeys.length) return false;
+      if (workflowId === "suite_arrival_enrich" || workflowId === "suite_room_assign") {
+        return true;
+      }
+      return l.match_method === "order";
+    }) || [];
     if (!pending.length) {
       showToast?.("אין שורות בטוחות לאישור", "err");
       return;
@@ -654,11 +706,8 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
         padding: "10px 12px", borderRadius: 8, background: "rgba(0,0,0,0.2)",
         border: "1px solid rgba(201,169,110,0.2)",
       }}>
-        noreply@ezgo.co.il (ישיר) · הגר / צלם נדלן (העברה) → סריקה אוטומטית מ-[Gmail]/All Mail כולל «עדכונים».
-        {" "}שלושה מסלולים:
-        {" "}(1) סוויטות — סנכרון שעת ספא לפי מס׳ הזמנה ·
-        (2) בילוי יומי בלי ספא — הצעת ספא ·
-        (3) בילוי יומי חדש — יצירת פרופיל (עם/בלי ספא).
+        noreply@ezgo.co.il · דוח כניסות (Doc2) · דוח תפעול (Doc1) → סריקה אוטומטית + אישור ידני.
+        {" "}Doc2: צור פרופיל / השלמת חסר / שיבוץ חדר · Doc1: ספא / בילוי יומי.
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "minmax(220px, 1fr) 2fr", gap: 14 }}>
@@ -683,7 +732,9 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
               <div style={{ fontSize: 11, opacity: 0.75, marginTop: 4 }}>
                 {ing.from_email} · {ing.report_date_ymd || "—"} · {ing.line_count} שורות
               </div>
-              <div style={{ fontSize: 10, marginTop: 4, opacity: 0.65 }}>{ing.parse_status}</div>
+              <div style={{ fontSize: 10, marginTop: 4, opacity: 0.65 }}>
+                {ing.report_type} · {ing.parse_status}
+              </div>
             </button>
           ))}
         </div>
@@ -713,7 +764,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
               </div>
 
               <div style={{ maxHeight: 460, overflowY: "auto" }}>
-                {WORKFLOW_SECTIONS.map((section) => {
+                {activeSections.map((section) => {
                   const sectionLines = grouped[section.id] || [];
                   if (!sectionLines.length) return null;
                   const pendingInSection = sectionLines.filter((l) => l.status === "pending_review").length;
@@ -729,6 +780,32 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
                           </div>
                           <div style={{ fontSize: 10, color: "#888" }}>{section.hint}</div>
                         </div>
+                        {section.id === "suite_arrival_enrich" && pendingInSection > 0 && (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => applyBatch("suite_arrival_enrich")}
+                            style={{
+                              marginRight: "auto", padding: "5px 10px", borderRadius: 8, border: "none",
+                              background: "#3B6D11", color: "#fff", fontWeight: 700, fontSize: 11,
+                            }}
+                          >
+                            אשר השלמת חסר ({pendingInSection})
+                          </button>
+                        )}
+                        {section.id === "suite_arrival_create" && pendingInSection > 0 && (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => createBatch("suite_arrival_create")}
+                            style={{
+                              marginRight: "auto", padding: "5px 10px", borderRadius: 8, border: "none",
+                              background: "#1E40AF", color: "#fff", fontWeight: 700, fontSize: 11,
+                            }}
+                          >
+                            צור הכל ({pendingInSection})
+                          </button>
+                        )}
                         {section.id === "suite_spa_sync" && pendingInSection > 0 && (
                           <button
                             type="button"
@@ -808,6 +885,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
                           onCreateAndUpsell={createAndUpsellLine}
                           onReject={rejectLine}
                           onUpsell={upsellLine}
+                          isDoc2={isDoc2Ingest}
                         />
                       ))}
                     </div>

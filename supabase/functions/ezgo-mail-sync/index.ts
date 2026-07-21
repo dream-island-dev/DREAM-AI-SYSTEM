@@ -22,10 +22,25 @@ import {
   type EzgoInboundMail,
 } from "../_shared/ezgoMailImap.ts";
 import {
+  parseDoc2FromClassification,
+  type Doc2Record,
+} from "../_shared/ezgoDoc2Parser.ts";
+import { matchDoc2Record } from "../_shared/ezgoDoc2MailMatch.ts";
+import {
   enrichRecordsPhoneFromDb,
   loadGuestCacheForReport,
   matchDoc1Record,
 } from "../_shared/ezgoMailMatch.ts";
+
+type MailResolveResult =
+  | { kind: "doc1"; classified: EzgoMailClassification; records: Doc1Record[] }
+  | { kind: "doc2"; classified: EzgoMailClassification; records: Doc2Record[] }
+  | { kind: "unknown"; classified: EzgoMailClassification; records: [] };
+
+function ingestReportType(classified: EzgoMailClassification): string {
+  if (classified.reportType === "doc2_html") return "doc2_arrivals";
+  return classified.reportType;
+}
 
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -93,13 +108,19 @@ async function assertEzgoMailStaff(
   return null;
 }
 
-async function resolveDoc1FromMessage(msg: {
+async function resolveEzgoMailFromMessage(msg: {
   bodyHtml: string;
   bodyText: string;
   excelAttachments?: EzgoMailExcelAttachment[];
-}): Promise<{ classified: EzgoMailClassification; records: Doc1Record[] }> {
-  const opts = defaultDoc1ParseOpts(true);
+}): Promise<MailResolveResult> {
   let classified = classifyEzgoMailContent(msg.bodyHtml, msg.bodyText);
+
+  if (classified.reportType === "doc2_html") {
+    const records = parseDoc2FromClassification(classified);
+    return { kind: "doc2", classified, records };
+  }
+
+  const opts = defaultDoc1ParseOpts(true);
   let records = parseDoc1FromClassification(classified, opts);
 
   let excelRecords: Doc1Record[] = [];
@@ -121,7 +142,26 @@ async function resolveDoc1FromMessage(msg: {
     records = mergeDoc1PhoneFromSecondary(records, excelRecords);
   }
 
-  return { classified, records };
+  if (!records.length && classified.reportType === "unknown") {
+    return { kind: "unknown", classified, records: [] };
+  }
+  return { kind: "doc1", classified, records };
+}
+
+/** @deprecated use resolveEzgoMailFromMessage */
+async function resolveDoc1FromMessage(msg: {
+  bodyHtml: string;
+  bodyText: string;
+  excelAttachments?: EzgoMailExcelAttachment[];
+}): Promise<{ classified: EzgoMailClassification; records: Doc1Record[] }> {
+  const resolved = await resolveEzgoMailFromMessage(msg);
+  if (resolved.kind === "doc2") {
+    return { classified: resolved.classified, records: [] };
+  }
+  if (resolved.kind === "unknown") {
+    return { classified: resolved.classified, records: [] };
+  }
+  return { classified: resolved.classified, records: resolved.records };
 }
 
 type IngestMsg = {
@@ -136,7 +176,7 @@ type IngestMsg = {
   excelAttachments?: EzgoMailExcelAttachment[];
 };
 
-async function insertIngestLines(
+async function insertDoc1IngestLines(
   supabase: ReturnType<typeof createClient>,
   ingestId: string,
   records: Doc1Record[],
@@ -166,6 +206,61 @@ async function insertIngestLines(
   return { ok: true };
 }
 
+async function insertDoc2IngestLines(
+  supabase: ReturnType<typeof createClient>,
+  ingestId: string,
+  records: Doc2Record[],
+  reportDate: string | null,
+  guestCache: Awaited<ReturnType<typeof loadGuestCacheForReport>>,
+): Promise<{ ok: boolean; reason?: string }> {
+  const lineRows = [];
+  for (let i = 0; i < records.length; i++) {
+    const rec = records[i];
+    const match = await matchDoc2Record(supabase, rec, guestCache, reportDate);
+    lineRows.push({
+      ingest_id: ingestId,
+      line_index: i,
+      parsed_json: rec,
+      match_guest_id: match.guest?.id ?? null,
+      match_method: match.method === "none" ? null : match.method,
+      match_confidence: match.confidence,
+      match_label: match.label,
+      action: match.action,
+      proposed_patch: match.patch,
+      status: "pending_review",
+    });
+  }
+
+  const { error: linesErr } = await supabase.from("ezgo_mail_import_lines").insert(lineRows);
+  if (linesErr) return { ok: false, reason: linesErr.message };
+  return { ok: true };
+}
+
+async function insertIngestLines(
+  supabase: ReturnType<typeof createClient>,
+  ingestId: string,
+  resolved: MailResolveResult & { records: Doc1Record[] | Doc2Record[] },
+  reportDate: string | null,
+  guestCache: Awaited<ReturnType<typeof loadGuestCacheForReport>>,
+): Promise<{ ok: boolean; reason?: string }> {
+  if (resolved.kind === "doc2") {
+    return await insertDoc2IngestLines(
+      supabase,
+      ingestId,
+      resolved.records,
+      reportDate,
+      guestCache,
+    );
+  }
+  return await insertDoc1IngestLines(
+    supabase,
+    ingestId,
+    resolved.records as Doc1Record[],
+    reportDate,
+    guestCache,
+  );
+}
+
 /** Reparse in-place — never DELETE ingest row (prevents vanishing on IMAP miss). */
 async function processIngestReplace(
   supabase: ReturnType<typeof createClient>,
@@ -177,29 +272,34 @@ async function processIngestReplace(
     body_text: msg.bodyText?.slice(0, 12_000) || null,
   };
 
-  const { classified, records } = await resolveDoc1FromMessage(msg);
-  if (classified.reportType === "unknown" && !records.length) {
+  const resolved = await resolveEzgoMailFromMessage(msg);
+  const { classified } = resolved;
+  if (resolved.kind === "unknown" && !resolved.records.length) {
     await supabase.from("ezgo_mail_ingest").update({
       parse_status: "skipped",
-      parse_error: "לא זוהה דוח EZGO (Doc1 HTML/טבלה/Excel)",
+      parse_error: "לא זוהה דוח EZGO (Doc1/Doc2 HTML/טבלה/Excel)",
       report_type: "unknown",
       ...bodySnapshot,
     }).eq("id", existingIngestId);
     return { ok: true, ingestId: existingIngestId, reason: "unknown_format" };
   }
 
-  if (!records.length) {
+  if (!resolved.records.length) {
     await supabase.from("ezgo_mail_ingest").update({
       parse_status: "failed",
       parse_error: "לא נמצאו שורות הזמנה בדוח",
-      report_type: classified.reportType,
+      report_type: ingestReportType(classified),
       ...bodySnapshot,
     }).eq("id", existingIngestId);
     return { ok: false, ingestId: existingIngestId, reason: "no_rows" };
   }
 
-  const enriched = await enrichRecordsPhoneFromDb(supabase, records);
-  const reportDate = enriched.find((r) => r.arrival_date)?.arrival_date ?? null;
+  let records = resolved.records;
+  if (resolved.kind === "doc1") {
+    records = await enrichRecordsPhoneFromDb(supabase, records as Doc1Record[]);
+  }
+
+  const reportDate = records.find((r) => r.arrival_date)?.arrival_date ?? null;
   const guestCache = await loadGuestCacheForReport(supabase, reportDate);
 
   await supabase.from("ezgo_mail_import_lines").delete().eq("ingest_id", existingIngestId);
@@ -209,12 +309,12 @@ async function processIngestReplace(
     from_name: msg.fromName,
     subject: msg.subject,
     received_at: msg.receivedAt,
-    report_type: classified.reportType,
+    report_type: ingestReportType(classified),
     parse_status: "parsed",
     parse_error: null,
     report_date_ymd: reportDate,
-    line_count: enriched.length,
-    pending_count: enriched.length,
+    line_count: records.length,
+    pending_count: records.length,
     body_preview: msg.bodyPreview,
     ...bodySnapshot,
   }).eq("id", existingIngestId);
@@ -224,7 +324,7 @@ async function processIngestReplace(
   const linesResult = await insertIngestLines(
     supabase,
     existingIngestId,
-    enriched,
+    { ...resolved, records },
     reportDate,
     guestCache,
   );
@@ -236,7 +336,7 @@ async function processIngestReplace(
     return { ok: false, ingestId: existingIngestId, reason: linesResult.reason };
   }
 
-  return { ok: true, ingestId: existingIngestId, lines: enriched.length };
+  return { ok: true, ingestId: existingIngestId, lines: records.length };
 }
 
 async function processIngest(
@@ -255,8 +355,9 @@ async function processIngest(
     .maybeSingle();
   if (existing) return { ok: true, reason: "duplicate" };
 
-  const { classified, records } = await resolveDoc1FromMessage(msg);
-  if (classified.reportType === "unknown" && !records.length) {
+  const resolved = await resolveEzgoMailFromMessage(msg);
+  const { classified } = resolved;
+  if (resolved.kind === "unknown" && !resolved.records.length) {
     const { data: skipped } = await supabase.from("ezgo_mail_ingest").insert({
       external_message_id: msg.id,
       from_email: msg.fromEmail,
@@ -265,21 +366,21 @@ async function processIngest(
       received_at: msg.receivedAt,
       report_type: "unknown",
       parse_status: "skipped",
-      parse_error: "לא זוהה דוח EZGO (Doc1 HTML/טבלה/Excel)",
+      parse_error: "לא זוהה דוח EZGO (Doc1/Doc2 HTML/טבלה/Excel)",
       body_preview: msg.bodyPreview,
       ...bodySnapshot,
     }).select("id").maybeSingle();
     return { ok: true, ingestId: skipped?.id, reason: "unknown_format" };
   }
 
-  if (!records.length) {
+  if (!resolved.records.length) {
     const { data: failed } = await supabase.from("ezgo_mail_ingest").insert({
       external_message_id: msg.id,
       from_email: msg.fromEmail,
       from_name: msg.fromName,
       subject: msg.subject,
       received_at: msg.receivedAt,
-      report_type: classified.reportType,
+      report_type: ingestReportType(classified),
       parse_status: "failed",
       parse_error: "לא נמצאו שורות הזמנה בדוח",
       body_preview: msg.bodyPreview,
@@ -288,9 +389,12 @@ async function processIngest(
     return { ok: false, ingestId: failed?.id, reason: "no_rows" };
   }
 
-  const enriched = await enrichRecordsPhoneFromDb(supabase, records);
+  let records = resolved.records;
+  if (resolved.kind === "doc1") {
+    records = await enrichRecordsPhoneFromDb(supabase, records as Doc1Record[]);
+  }
 
-  const reportDate = enriched.find((r) => r.arrival_date)?.arrival_date ?? null;
+  const reportDate = records.find((r) => r.arrival_date)?.arrival_date ?? null;
   const guestCache = await loadGuestCacheForReport(supabase, reportDate);
 
   const { data: ingest, error: ingestErr } = await supabase
@@ -301,11 +405,11 @@ async function processIngest(
       from_name: msg.fromName,
       subject: msg.subject,
       received_at: msg.receivedAt,
-      report_type: classified.reportType,
+      report_type: ingestReportType(classified),
       parse_status: "parsed",
       report_date_ymd: reportDate,
-      line_count: enriched.length,
-      pending_count: enriched.length,
+      line_count: records.length,
+      pending_count: records.length,
       body_preview: msg.bodyPreview,
       ...bodySnapshot,
     })
@@ -316,7 +420,13 @@ async function processIngest(
     return { ok: false, reason: ingestErr?.message ?? "ingest_insert_failed" };
   }
 
-  const linesResult = await insertIngestLines(supabase, ingest.id, enriched, reportDate, guestCache);
+  const linesResult = await insertIngestLines(
+    supabase,
+    ingest.id,
+    { ...resolved, records },
+    reportDate,
+    guestCache,
+  );
   if (!linesResult.ok) {
     await supabase.from("ezgo_mail_ingest").update({
       parse_status: "failed",
@@ -325,7 +435,7 @@ async function processIngest(
     return { ok: false, reason: linesResult.reason };
   }
 
-  return { ok: true, ingestId: ingest.id, lines: enriched.length };
+  return { ok: true, ingestId: ingest.id, lines: records.length };
 }
 
 async function reparseIngest(

@@ -50,6 +50,55 @@ export function isPremiumDayRoom(room: unknown): boolean {
   return PREMIUM_DAY_SET.has(String(room ?? "").trim());
 }
 
+const EZGO_SUITE_BRAND_ALIASES: Record<string, string> = {
+  "אקוומרין": "אקווה מרין",
+  "אקווהמרין": "אקווה מרין",
+};
+
+/** Map EZGO mail/CSV room label ("סוויטת אמטיסט - 8") → canonical SUITE_REGISTRY name. */
+export function resolveSuiteRoomFromEzgoLabel(raw: unknown): string {
+  const label = String(raw ?? "").trim();
+  if (!label) return "";
+  if (/premium\s*day\s*2|פרימיום.*2/i.test(label)) return "Premium Day 2";
+  if (/premium\s*day\s*1|פרימיום/i.test(label)) return "Premium Day 1";
+  if (/בילוי\s*יומי/i.test(label)) return "בילוי יומי";
+
+  let text = label.replace(/^סוויטת\s+/i, "").trim();
+  for (const [alias, canon] of Object.entries(EZGO_SUITE_BRAND_ALIASES)) {
+    if (text.includes(alias)) text = text.replace(alias, canon);
+  }
+
+  const numMatch = text.match(/(?:^|[\s\-–])(\d{1,2})(?:\s|$|סוויטה)/)
+    ?? text.match(/(\d{1,2})\s*$/);
+  const num = numMatch?.[1];
+  if (!num) return "";
+
+  const candidates = CANONICAL_SUITE_NAMES.filter((s) => s.endsWith(` ${num}`));
+  if (candidates.length === 1) return candidates[0];
+
+  const brandChunk = text.split(/[-–]/)[0]?.trim() || text;
+  const brandNorm = normalizeRoomName(brandChunk);
+  const narrowed = candidates.filter((s) => {
+    const suiteBrand = normalizeRoomName(s.replace(/ \d+$/, ""));
+    return suiteBrand.includes(brandNorm) || brandNorm.includes(suiteBrand);
+  });
+  if (narrowed.length === 1) return narrowed[0];
+  return "";
+}
+
+export function roomsCanonicallyMatch(incoming: unknown, stored: unknown): boolean {
+  const a = String(incoming ?? "").trim();
+  const b = String(stored ?? "").trim();
+  if (!a || !b) return true;
+  if (a === b) return true;
+  const canonA = resolveSuiteRoomFromEzgoLabel(a) || a;
+  const canonB = resolveSuiteRoomFromEzgoLabel(b) || b;
+  if (canonA && canonB && canonA === canonB) return true;
+  const numA = a.match(/(\d+)\s*$/)?.[1];
+  const numB = b.match(/(\d+)\s*$/)?.[1];
+  return !!(numA && numB && numA === numB);
+}
+
 export interface GuestRoomFields {
   room?: unknown;
   room_type?: unknown;
