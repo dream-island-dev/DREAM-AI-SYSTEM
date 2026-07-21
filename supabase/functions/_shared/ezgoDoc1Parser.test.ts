@@ -3,13 +3,45 @@ import {
 } from "https://deno.land/std@0.168.0/testing/asserts.ts";
 import {
   parseTsvDailyReport,
+  parseHtmlDailyReport,
   sanitizeE164,
+  extractPhoneFromOpsText,
+  parseOrderIdentityFromCell,
   defaultDoc1ParseOpts,
   looksLikeDoc1ExcelRows,
 } from "./ezgoDoc1Parser.ts";
 
 Deno.test("sanitizeE164 strips leading question mark", () => {
   assertEquals(sanitizeE164("?0548082123"), "+972548082123");
+});
+
+Deno.test("parseOrderIdentityFromCell finds phone on second line in cell", () => {
+  const id = parseOrderIdentityFromCell("266141: נועה שני\n050-5475000");
+  assertEquals(id.order_number, "266141");
+  assertEquals(id.guest_name, "נועה שני");
+  assertEquals(id.phone, "+972505475000");
+});
+
+Deno.test("extractPhoneFromOpsText finds IL mobile without dash separator", () => {
+  assertEquals(
+    extractPhoneFromOpsText("דור בידרמן050-1234567"),
+    "+972501234567",
+  );
+});
+
+Deno.test("parseHtmlDailyReport extracts phone from multiline order td", () => {
+  const html = [
+    "<table><tr>",
+    "<td>266141: נועה שני<br>050-5475000</td>",
+    "<td>1 - 12:00 - טיפול 45 דקות</td>",
+    "<td></td><td></td>",
+    "</tr></table>",
+  ].join("");
+  const records = parseHtmlDailyReport(html, defaultDoc1ParseOpts(true));
+  assertEquals(records.length, 1);
+  assertEquals(records[0].order_number, "266141");
+  assertEquals(records[0].phone, "+972505475000");
+  assertEquals(records[0].spa_time, "12:00");
 });
 
 Deno.test("parseTsvDailyReport extracts suite spa and HB", () => {

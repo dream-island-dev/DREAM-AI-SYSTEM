@@ -24,6 +24,77 @@ const SOURCE_RE = /^(Hotel\s+WebSite|Booking\s+Collect|Booking\.com|Booking|Expe
 const SUITE_SPA_RE = /לאורחי הסוויטות|לשובר סוויטה|שובר סוויטה/i;
 const SUITE_GUEST_SPA_LABEL_RE = /לאורחי הסוויטות/;
 const GROUP_SPA_RE = /לקבוצות|קבוצות בלבד/i;
+/** Same IL-mobile dialect as ezgoParser.js / guestImportIntelligence.js */
+const IL_MOBILE_RE = /(0(?:5[0-9])[-. ]?\d{3}[-. ]?\d{4})(?!\d)/g;
+
+export function extractPhoneFromOpsText(text: string): string | null {
+  if (!text?.trim()) return null;
+  const dashTail = text.match(/\s+-\s+([+\d?][\d\s\-+?]{7,})\s*$/);
+  if (dashTail) {
+    const p = sanitizeE164(dashTail[1]);
+    if (p) return p;
+  }
+  IL_MOBILE_RE.lastIndex = 0;
+  for (const m of text.matchAll(IL_MOBILE_RE)) {
+    const p = sanitizeE164(m[1]);
+    if (p) return p;
+  }
+  const intl = text.match(/(?:\+972|972)[\s\-]?(5\d{8})/);
+  if (intl) {
+    const p = sanitizeE164(intl[0].replace(/\s/g, ""));
+    if (p) return p;
+  }
+  return null;
+}
+
+function phoneLocalVariants(phone: string): string[] {
+  const out = new Set<string>([phone]);
+  if (phone.startsWith("+972")) {
+    const local = `0${phone.slice(4)}`;
+    out.add(local);
+    out.add(local.replace(/-/g, ""));
+  }
+  return [...out];
+}
+
+function extractNameFromOpsTail(tail: string, phone: string | null): string {
+  let name = tail.trim();
+  if (phone) {
+    for (const variant of phoneLocalVariants(phone)) {
+      const idx = name.lastIndexOf(variant);
+      if (idx >= 0) {
+        name = name.slice(0, idx).trim();
+        break;
+      }
+    }
+    const dashIdx = name.lastIndexOf(" - ");
+    if (dashIdx >= 0) name = name.slice(0, dashIdx).trim();
+  }
+  return name.replace(SOURCE_RE, "").trim();
+}
+
+/** Parse order# + name + phone from a Doc1 order cell (supports multiline cells). */
+export function parseOrderIdentityFromCell(cellRaw: string): {
+  order_number: string | null;
+  guest_name: string | null;
+  phone: string | null;
+} {
+  const raw = String(cellRaw || "").trim();
+  if (!raw) return { order_number: null, guest_name: null, phone: null };
+  const lines = raw.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  const orderLine = lines.find((s) => /^\d+:/.test(s)) ?? raw;
+  if (!/^\d+:/.test(orderLine)) {
+    return { order_number: null, guest_name: null, phone: null };
+  }
+  const orderMatch = orderLine.match(/^(\d+):/);
+  const order_number = orderMatch ? orderMatch[1] : null;
+  const afterId = orderLine.replace(/^\d+:\s*/, "").trim();
+  const siblingText = lines.filter((l) => l !== orderLine).join("\n");
+  const phoneSource = [afterId, siblingText].filter(Boolean).join("\n");
+  const phone = extractPhoneFromOpsText(phoneSource);
+  const guest_name = extractNameFromOpsTail(afterId, phone) || null;
+  return { order_number, guest_name, phone };
+}
 
 export function sanitizeE164(raw: string | null | undefined): string | null {
   if (!raw) return null;
@@ -36,17 +107,34 @@ export function sanitizeE164(raw: string | null | undefined): string | null {
   return c.length >= 9 ? `+${c}` : null;
 }
 
+function parseSlashDate(raw: string): string | null {
+  const m = raw.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (!m) return null;
+  const [, a, b, y] = m;
+  const nA = Number(a);
+  const nB = Number(b);
+  let day: string;
+  let month: string;
+  if (nB > 12) {
+    month = a;
+    day = b;
+  } else if (nA > 12) {
+    day = a;
+    month = b;
+  } else {
+    day = a;
+    month = b;
+  }
+  return `${y}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+}
+
 function parseDateYmd(raw: unknown): string | null {
   if (!raw) return null;
   const s = String(raw).trim();
   if (!s) return null;
   if (/^\d{4}[-/]\d{2}[-/]\d{2}/.test(s)) return s.slice(0, 10).replace(/\//g, "-");
-  const dmy = s.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})/);
-  if (dmy) {
-    const [, d, m, y] = dmy;
-    const year = y.length === 2 ? `20${y}` : y;
-    return `${year}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
-  }
+  const slash = parseSlashDate(s);
+  if (slash) return slash;
   const serial = parseFloat(s);
   if (!isNaN(serial) && serial > 40000) {
     const dt = new Date(Math.round((serial - 25569) * 86_400_000));
@@ -131,21 +219,16 @@ export function parseComprehensiveReport(
       }
     }
 
-    const orderLine = c1 && typeof c1 === "string" ? orderLineFromCell(c1) : null;
+    const orderCell = c1 && typeof c1 === "string" ? c1 : null;
+    const orderLine = orderCell ? orderLineFromCell(orderCell) : null;
 
     if (orderLine && /^\d+:/.test(orderLine)) {
       if (current) blocks.push(current);
-      const orderMatch = orderLine.match(/^(\d+):/);
-      const phoneMatch = orderLine.match(/\s+-\s+([+\d?][\d\s\-+?]{7,})\s*$/);
-      const phone = phoneMatch ? sanitizeE164(phoneMatch[1]) : null;
-      const afterId = orderLine.replace(/^\d+:\s*/, "");
-      const nameRaw = phoneMatch
-        ? afterId.slice(0, afterId.lastIndexOf(phoneMatch[0])).trim()
-        : afterId.trim();
+      const identity = parseOrderIdentityFromCell(orderCell!);
       current = {
-        order_number: orderMatch ? orderMatch[1] : null,
-        guest_name: nameRaw.replace(SOURCE_RE, "").trim() || null,
-        phone,
+        order_number: identity.order_number,
+        guest_name: identity.guest_name,
+        phone: identity.phone,
         arrival_date: arrivalDate,
         spa_time: null,
         treatment_count: 0,
@@ -205,10 +288,7 @@ function htmlCellText(html: string): string {
 }
 
 function extractArrivalDateFromHtml(htmlText: string): string | null {
-  const dmY = htmlText.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
-  if (!dmY) return null;
-  const [, d, m, y] = dmY;
-  return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+  return parseSlashDate(htmlText);
 }
 
 export function parseHtmlDailyReport(htmlText: string, opts: Doc1ParseOpts = {}): Doc1Record[] {
@@ -217,8 +297,8 @@ export function parseHtmlDailyReport(htmlText: string, opts: Doc1ParseOpts = {})
   for (const m of thMatches) {
     if (arrivalDate) break;
     const txt = htmlCellText(m[1]);
-    const dateM = txt.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
-    if (dateM) arrivalDate = `${dateM[3]}-${dateM[2].padStart(2, "0")}-${dateM[1].padStart(2, "0")}`;
+    const parsed = parseSlashDate(txt);
+    if (parsed) arrivalDate = parsed;
   }
   if (!arrivalDate) arrivalDate = extractArrivalDateFromHtml(htmlText);
 
@@ -235,8 +315,8 @@ export function parseHtmlDailyReport(htmlText: string, opts: Doc1ParseOpts = {})
     const board = tdMatches.length > 2 ? htmlCellText(tdMatches[2][1]) : "";
     const meals = tdMatches.length > 3 ? htmlCellText(tdMatches[3][1]) : "";
 
-    const orderLine = orderRaw.split(/\r?\n/).map((s) => s.trim()).find((s) => /^\d+:/.test(s));
-    if (!orderLine) continue;
+    const identity = parseOrderIdentityFromCell(orderRaw);
+    if (!identity.order_number) continue;
 
     const bUpper = `${board} ${meals}`.trim().toUpperCase();
     let mealDefault: { meal_time: string | null; meal_location: string } | null = null;
@@ -244,12 +324,11 @@ export function parseHtmlDailyReport(htmlText: string, opts: Doc1ParseOpts = {})
     else if (/\bHB\b/.test(bUpper)) mealDefault = { meal_time: null, meal_location: "חצי פנסיון" };
     else if (/\bBB\b/.test(bUpper)) mealDefault = { meal_time: null, meal_location: "רק ארוחת בוקר" };
 
-    if (mealDefault) {
-      const pm = orderLine.match(/\s+-\s+([+\d?][\d\s\-+?]{7,})\s*$/);
-      const e164 = pm ? sanitizeE164(pm[1]) : null;
-      if (e164) boardDefaults.set(e164, mealDefault);
+    if (mealDefault && identity.phone) {
+      boardDefaults.set(identity.phone, mealDefault);
     }
 
+    const orderLine = `${identity.order_number}: ${identity.guest_name || ""}${identity.phone ? ` - ${identity.phone}` : ""}`.trim();
     pseudoRows.push([null, orderLine, extras || null]);
   }
 
@@ -289,26 +368,34 @@ export function parseTsvDailyReport(tsvText: string, opts: Doc1ParseOpts = {}): 
       arrivalDate = parseDateYmd(c0);
     }
 
-    const orderLine = c1 ? orderLineFromCell(c1) : "";
-    if (orderLine && /^\d+:/.test(orderLine)) {
-      const bUpper = `${board} ${meals} ${c2}`.trim().toUpperCase();
+    const orderInC1 = c1 && /^\d+:/.test(orderLineFromCell(c1));
+    const orderInC0 = !orderInC1 && c0 && /^\d+:/.test(orderLineFromCell(c0));
+    const orderCell = orderInC1 ? c1 : (orderInC0 ? c0 : null);
+    const extrasCol = orderInC1 ? c2 : (orderInC0 ? (c1 || c2) : null);
+
+    if (orderCell) {
+      const identity = parseOrderIdentityFromCell(orderCell);
+      const bUpper = `${board} ${meals} ${extrasCol || ""}`.trim().toUpperCase();
       let mealDefault: { meal_location: string } | null = null;
       if (/\bFB\b/.test(bUpper)) mealDefault = { meal_location: "פנסיון מלא" };
       else if (/\bHB\b/.test(bUpper)) mealDefault = { meal_location: "חצי פנסיון" };
       else if (/\bBB\b/.test(bUpper)) mealDefault = { meal_location: "רק ארוחת בוקר" };
-      if (mealDefault) {
-        const pm = orderLine.match(/\s+-\s+([+\d?][\d\s\-+?]{7,})\s*$/);
-        const e164 = pm ? sanitizeE164(pm[1]) : null;
-        if (e164) boardDefaults.set(e164, mealDefault);
+      if (mealDefault && identity.phone) {
+        boardDefaults.set(identity.phone, mealDefault);
       }
-      pseudoRows.push([c0 || null, orderLine, c2 || null]);
+      const syntheticLine = `${identity.order_number}: ${identity.guest_name || ""}${identity.phone ? ` - ${identity.phone}` : ""}`.trim();
+      const rowDateCell = orderInC0 ? null : (c0 || null);
+      pseudoRows.push([rowDateCell, syntheticLine, extrasCol || null]);
       continue;
     }
 
-    if (pseudoRows.length > 0 && c2) {
-      const last = pseudoRows[pseudoRows.length - 1];
-      const prevExtras = String(last[2] ?? "");
-      last[2] = prevExtras ? `${prevExtras}\n${c2}` : c2;
+    if (pseudoRows.length > 0) {
+      const extraChunk = c2 || c1;
+      if (extraChunk) {
+        const last = pseudoRows[pseudoRows.length - 1];
+        const prevExtras = String(last[2] ?? "");
+        last[2] = prevExtras ? `${prevExtras}\n${extraChunk}` : extraChunk;
+      }
     }
   }
 

@@ -42,7 +42,29 @@ function pickFromOverlap(
     (g) => String(g.arrival_date).slice(0, 10) === reportDate,
   );
   if (sameDay.length === 1) return sameDay[0];
+  if (sameDay.length > 1 && phone) {
+    const hit = sameDay.find((g) => g.phone === phone);
+    if (hit) return hit;
+  }
   return null;
+}
+
+function normalizeGuestName(name: string | null | undefined): string {
+  return String(name || "").trim().replace(/\s+/g, " ");
+}
+
+function findGuestByExactNameOnDate(
+  rows: GuestRow[],
+  guestName: string | null,
+  reportDate: string | null,
+): GuestRow | null {
+  const target = normalizeGuestName(guestName);
+  if (!target || !reportDate) return null;
+  const hits = rows.filter((g) =>
+    normalizeGuestName(g.name) === target
+    && String(g.arrival_date).slice(0, 10) === reportDate
+  );
+  return hits.length === 1 ? hits[0] : null;
 }
 
 export function findGuestForDoc1Enrichment(
@@ -89,6 +111,21 @@ export async function matchDoc1Record(
   let method: MatchResult["method"] = guest ? "order" : "none";
   let confidence = guest ? 0.95 : 0;
 
+  if (!guest && rec.order_number && reportDate) {
+    const { data: byOrder } = await supabase
+      .from("guests")
+      .select(GUEST_SELECT)
+      .eq("order_number", rec.order_number)
+      .neq("status", "cancelled")
+      .limit(8);
+    const hit = pickFromOverlap((byOrder ?? []) as GuestRow[], reportDate, rec.phone);
+    if (hit) {
+      guest = hit;
+      method = "order";
+      confidence = 0.92;
+    }
+  }
+
   if (!guest && rec.phone && reportDate) {
     const { data: byPhone } = await supabase
       .from("guests")
@@ -101,6 +138,30 @@ export async function matchDoc1Record(
       guest = byPhone[0] as GuestRow;
       method = "phone";
       confidence = 0.85;
+    }
+  }
+
+  if (!guest) {
+    const cacheHit = findGuestByExactNameOnDate(guestCache, rec.guest_name, reportDate);
+    if (cacheHit) {
+      guest = cacheHit;
+      method = "fuzzy";
+      confidence = 0.8;
+    }
+  }
+
+  if (!guest && rec.guest_name && reportDate) {
+    const { data: byName } = await supabase
+      .from("guests")
+      .select(GUEST_SELECT)
+      .eq("arrival_date", reportDate)
+      .eq("name", normalizeGuestName(rec.guest_name))
+      .neq("status", "cancelled")
+      .limit(2);
+    if (byName?.length === 1) {
+      guest = byName[0] as GuestRow;
+      method = "fuzzy";
+      confidence = 0.78;
     }
   }
 
