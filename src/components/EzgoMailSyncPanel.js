@@ -1,5 +1,5 @@
 // EzgoMailSyncPanel — review + apply EZGO mail import lines (Doc1).
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../supabaseClient";
 import SpaUpsellConfirmModal from "./SpaUpsellConfirmModal";
 import { buildDoc1EnrichmentPatch } from "../utils/guestImportIntelligence";
@@ -200,6 +200,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
   const [metaTemplateStatus, setMetaTemplateStatus] = useState(null);
   const [upsellSending, setUpsellSending] = useState(false);
   const [upsellProgress, setUpsellProgress] = useState(null);
+  const emlInputRef = useRef(null);
 
   const loadIngests = useCallback(async () => {
     const { data, error } = await supabase
@@ -265,14 +266,45 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
       const msg = data?.skipped
         ? "סנכרון מייל כבוי (EZGO_MAIL_SYNC_ENABLED)"
         : (data.scanned ?? 0) === 0 && imap
-          ? `נסרקו 0 · תיבה ${imap.mailboxTotal} · נבדקו ${imap.scannedRaw} (${imap.searchMethod})`
-          : `נסרקו ${data.scanned ?? 0} · חדשים ${data.processed ?? 0}${senderBits ? ` · ${senderBits}` : ""}`;
+          ? `נסרקו 0 · תיבה ${imap.mailboxTotal} (${imap.mailboxName || "INBOX"}) · ${data.imap_user || ""} · נבדקו ${imap.scannedRaw} (${imap.searchMethod})`
+          : `נסרקו ${data.scanned ?? 0} · חדשים ${data.processed ?? 0}${senderBits ? ` · ${senderBits}` : ""}${data.imap_user ? ` · ${data.imap_user}` : ""}`;
       showToast?.(msg, "ok");
       await loadIngests();
     } catch (e) {
       showToast?.(e.message, "err");
     } finally {
       setSyncing(false);
+    }
+  };
+
+  const triggerEmlIngest = async (file) => {
+    if (!file) return;
+    setSyncing(true);
+    try {
+      const buf = await file.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      let binary = "";
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+      const eml_base64 = btoa(binary);
+      const { data, error } = await supabase.functions.invoke("ezgo-mail-sync", {
+        body: { eml_base64 },
+      });
+      if (error) throw error;
+      if (!data?.ok) {
+        throw new Error(data?.reason || data?.error || "ייבוא EML נכשל");
+      }
+      if (data.reason === "duplicate") {
+        showToast?.("מייל זה כבר קיים ברשימה", "ok");
+      } else {
+        showToast?.(`יובא מ-EML · ${data.lines ?? 0} שורות`, "ok");
+      }
+      await loadIngests();
+      if (data.ingestId) setSelectedId(data.ingestId);
+    } catch (e) {
+      showToast?.(e.message, "err");
+    } finally {
+      setSyncing(false);
+      if (emlInputRef.current) emlInputRef.current.value = "";
     }
   };
 
@@ -647,6 +679,27 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
         >
           {syncing ? "סורק תיבה…" : "🔄 סרוק מייל עכשיו"}
         </button>
+        <input
+          ref={emlInputRef}
+          type="file"
+          accept=".eml"
+          style={{ display: "none" }}
+          onChange={(e) => triggerEmlIngest(e.target.files?.[0])}
+        />
+        <button
+          type="button"
+          onClick={() => emlInputRef.current?.click()}
+          disabled={syncing}
+          title="הורד מייל מ-Gmail כ-.eml וייבא ידנית (מומלץ ל-noreply@ezgo.co.il)"
+          style={{
+            padding: "8px 14px", borderRadius: 8,
+            border: "1px solid rgba(201,169,110,0.45)",
+            background: "transparent", color: "var(--gold-light)", fontWeight: 700,
+            cursor: syncing ? "wait" : "pointer",
+          }}
+        >
+          📎 ייבא .eml
+        </button>
       </div>
 
       <div style={{
@@ -654,7 +707,9 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
         padding: "10px 12px", borderRadius: 8, background: "rgba(0,0,0,0.2)",
         border: "1px solid rgba(201,169,110,0.2)",
       }}>
-        noreply@ezgo.co.il (ישיר) · הגר / צלם נדלן (העברה) → סריקה. שלושה מסלולים:
+        noreply@ezgo.co.il (ישיר) · הגר / צלם נדלן (העברה) → סריקה מ-[Gmail]/All Mail כולל «עדכונים».
+        אם מייל ישיר לא מופיע — לחץ <strong>📎 ייבא .eml</strong> (⋮ → הורד הודעה מ-Gmail).
+        {" "}שלושה מסלולים:
         {" "}(1) סוויטות — סנכרון שעת ספא לפי מס׳ הזמנה ·
         (2) בילוי יומי בלי ספא — הצעת ספא ·
         (3) בילוי יומי חדש — יצירת פרופיל (עם/בלי ספא).

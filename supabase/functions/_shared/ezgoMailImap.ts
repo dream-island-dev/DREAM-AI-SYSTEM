@@ -29,6 +29,8 @@ export type EzgoImapConfig = {
 
 export type EzgoImapFetchMeta = {
   mailboxTotal: number;
+  mailboxName: string;
+  imapUser: string;
   searchMethod: string;
   searchUids: number;
   scannedRaw: number;
@@ -121,7 +123,26 @@ type ParsedMimeEmail = {
   html?: string;
   text?: string;
   attachments?: ParsedMimeAttachment[];
+  from?: { address?: string; name?: string };
+  subject?: string;
+  date?: string;
+  messageId?: string;
 };
+
+const IMAP_SEARCH_MAILBOXES = ["[Gmail]/All Mail", "INBOX"];
+
+async function openSearchMailbox(client: ImapFlow): Promise<string> {
+  for (const name of IMAP_SEARCH_MAILBOXES) {
+    try {
+      await client.mailboxOpen(name);
+      return name;
+    } catch {
+      // try next
+    }
+  }
+  const mailbox = await client.mailboxOpen("INBOX");
+  return mailbox.path || "INBOX";
+}
 
 function attachmentToBytes(content: unknown): Uint8Array | null {
   if (content instanceof Uint8Array) return content;
@@ -244,6 +265,33 @@ export async function extractBodiesFromSource(
   };
 }
 
+/** Parse a downloaded .eml (same postal-mime path as IMAP fetch). */
+export async function parseEmlSourceToInboundMail(
+  source: Uint8Array | string,
+  allowlist: string[] = parseAllowlist(),
+): Promise<EzgoInboundMail | null> {
+  const email = await parseMimeSource(source);
+  if (!email) return null;
+
+  const fromEmail = extractEmailFromHeaderValue(email.from?.address || "");
+  if (!fromEmail || !isSenderAllowed(fromEmail, allowlist)) return null;
+
+  const { text, html, preview, excelAttachments } = await extractBodiesFromSource(source);
+  const id = email.messageId?.replace(/^<|>$/g, "") || `eml-${Date.now()}`;
+
+  return {
+    id,
+    fromEmail,
+    fromName: email.from?.name || null,
+    subject: email.subject ?? "",
+    receivedAt: email.date ? new Date(email.date).toISOString() : new Date().toISOString(),
+    bodyPreview: preview,
+    bodyText: text,
+    bodyHtml: html,
+    excelAttachments,
+  };
+}
+
 function buildGmailFromQuery(allowlist: string[]): string {
   const parts = allowlist.map((s) => `from:${s}`);
   if (allowlist.some((s) => s.includes("@ezgo.co.il"))) {
@@ -260,10 +308,14 @@ async function searchUidsForSender(
   const caps = Math.max(perSender, 1);
   const queries: Array<Record<string, unknown>> = [
     { gmailRaw: `in:anywhere from:${sender}` },
+    { gmailRaw: `in:anywhere category:updates from:${sender}` },
     { from: sender },
   ];
   if (sender.includes("@ezgo.co.il")) {
-    queries.unshift({ gmailRaw: "in:anywhere from:ezgo.co.il" });
+    queries.unshift(
+      { gmailRaw: "in:anywhere from:ezgo.co.il" },
+      { gmailRaw: "in:anywhere category:updates from:ezgo.co.il" },
+    );
   }
   const uidSet = new Set<number>();
   for (const query of queries) {
@@ -460,6 +512,8 @@ export async function fetchEzgoMessageById(
 
   const meta: EzgoImapFetchMeta = {
     mailboxTotal: 0,
+    mailboxName: "INBOX",
+    imapUser: config.user,
     searchMethod: "by_id",
     searchUids: 0,
     scannedRaw: 0,
@@ -468,7 +522,7 @@ export async function fetchEzgoMessageById(
 
   await client.connect();
   try {
-    await client.mailboxOpen("INBOX");
+    meta.mailboxName = await openSearchMailbox(client);
     meta.mailboxTotal = client.mailbox?.exists ?? 0;
 
     const uidMatch = /^uid-(\d+)$/i.exec(targetId);
@@ -529,6 +583,8 @@ export async function fetchEzgoInboxMessages(
 
   const meta: EzgoImapFetchMeta = {
     mailboxTotal: 0,
+    mailboxName: "INBOX",
+    imapUser: config.user,
     searchMethod: "none",
     searchUids: 0,
     scannedRaw: 0,
@@ -539,8 +595,8 @@ export async function fetchEzgoInboxMessages(
 
   await client.connect();
   try {
-    const mailbox = await client.mailboxOpen("INBOX");
-    meta.mailboxTotal = mailbox.exists ?? 0;
+    meta.mailboxName = await openSearchMailbox(client);
+    meta.mailboxTotal = client.mailbox?.exists ?? 0;
 
     const { uids, method } = await searchAllowlistedUids(client, allowlist, limit);
     meta.searchMethod = method;

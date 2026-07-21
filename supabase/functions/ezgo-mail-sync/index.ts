@@ -16,6 +16,7 @@ import {
   fetchEzgoMessageById,
   isSenderAllowed,
   parseAllowlist,
+  parseEmlSourceToInboundMail,
   resolveEzgoImapConfig,
   type EzgoMailExcelAttachment,
   type EzgoInboundMail,
@@ -123,19 +124,124 @@ async function resolveDoc1FromMessage(msg: {
   return { classified, records };
 }
 
+type IngestMsg = {
+  id: string;
+  fromEmail: string;
+  fromName: string | null;
+  subject: string;
+  receivedAt: string;
+  bodyPreview: string;
+  bodyText: string;
+  bodyHtml: string;
+  excelAttachments?: EzgoMailExcelAttachment[];
+};
+
+async function insertIngestLines(
+  supabase: ReturnType<typeof createClient>,
+  ingestId: string,
+  records: Doc1Record[],
+  reportDate: string | null,
+  guestCache: Awaited<ReturnType<typeof loadGuestCacheForReport>>,
+): Promise<{ ok: boolean; reason?: string }> {
+  const lineRows = [];
+  for (let i = 0; i < records.length; i++) {
+    const rec = records[i] as Doc1Record;
+    const match = await matchDoc1Record(supabase, rec, guestCache, reportDate);
+    lineRows.push({
+      ingest_id: ingestId,
+      line_index: i,
+      parsed_json: rec,
+      match_guest_id: match.guest?.id ?? null,
+      match_method: match.method === "none" ? null : match.method,
+      match_confidence: match.confidence,
+      match_label: match.label,
+      action: match.action,
+      proposed_patch: match.patch,
+      status: "pending_review",
+    });
+  }
+
+  const { error: linesErr } = await supabase.from("ezgo_mail_import_lines").insert(lineRows);
+  if (linesErr) return { ok: false, reason: linesErr.message };
+  return { ok: true };
+}
+
+/** Reparse in-place — never DELETE ingest row (prevents vanishing on IMAP miss). */
+async function processIngestReplace(
+  supabase: ReturnType<typeof createClient>,
+  msg: IngestMsg,
+  existingIngestId: string,
+): Promise<{ ok: boolean; ingestId?: string; lines?: number; reason?: string }> {
+  const bodySnapshot = {
+    body_html: msg.bodyHtml?.slice(0, 500_000) || null,
+    body_text: msg.bodyText?.slice(0, 12_000) || null,
+  };
+
+  const { classified, records } = await resolveDoc1FromMessage(msg);
+  if (classified.reportType === "unknown" && !records.length) {
+    await supabase.from("ezgo_mail_ingest").update({
+      parse_status: "skipped",
+      parse_error: "לא זוהה דוח EZGO (Doc1 HTML/טבלה/Excel)",
+      report_type: "unknown",
+      ...bodySnapshot,
+    }).eq("id", existingIngestId);
+    return { ok: true, ingestId: existingIngestId, reason: "unknown_format" };
+  }
+
+  if (!records.length) {
+    await supabase.from("ezgo_mail_ingest").update({
+      parse_status: "failed",
+      parse_error: "לא נמצאו שורות הזמנה בדוח",
+      report_type: classified.reportType,
+      ...bodySnapshot,
+    }).eq("id", existingIngestId);
+    return { ok: false, ingestId: existingIngestId, reason: "no_rows" };
+  }
+
+  const enriched = await enrichRecordsPhoneFromDb(supabase, records);
+  const reportDate = enriched.find((r) => r.arrival_date)?.arrival_date ?? null;
+  const guestCache = await loadGuestCacheForReport(supabase, reportDate);
+
+  await supabase.from("ezgo_mail_import_lines").delete().eq("ingest_id", existingIngestId);
+
+  const { error: updErr } = await supabase.from("ezgo_mail_ingest").update({
+    from_email: msg.fromEmail,
+    from_name: msg.fromName,
+    subject: msg.subject,
+    received_at: msg.receivedAt,
+    report_type: classified.reportType,
+    parse_status: "parsed",
+    parse_error: null,
+    report_date_ymd: reportDate,
+    line_count: enriched.length,
+    pending_count: enriched.length,
+    body_preview: msg.bodyPreview,
+    ...bodySnapshot,
+  }).eq("id", existingIngestId);
+
+  if (updErr) return { ok: false, reason: updErr.message };
+
+  const linesResult = await insertIngestLines(
+    supabase,
+    existingIngestId,
+    enriched,
+    reportDate,
+    guestCache,
+  );
+  if (!linesResult.ok) {
+    await supabase.from("ezgo_mail_ingest").update({
+      parse_status: "failed",
+      parse_error: linesResult.reason,
+    }).eq("id", existingIngestId);
+    return { ok: false, ingestId: existingIngestId, reason: linesResult.reason };
+  }
+
+  return { ok: true, ingestId: existingIngestId, lines: enriched.length };
+}
+
 async function processIngest(
   supabase: ReturnType<typeof createClient>,
-  msg: {
-    id: string;
-    fromEmail: string;
-    fromName: string | null;
-    subject: string;
-    receivedAt: string;
-    bodyPreview: string;
-    bodyText: string;
-    bodyHtml: string;
-    excelAttachments?: EzgoMailExcelAttachment[];
-  },
+  msg: IngestMsg,
 ): Promise<{ ok: boolean; ingestId?: string; lines?: number; reason?: string }> {
   const bodySnapshot = {
     body_html: msg.bodyHtml?.slice(0, 500_000) || null,
@@ -210,31 +316,13 @@ async function processIngest(
     return { ok: false, reason: ingestErr?.message ?? "ingest_insert_failed" };
   }
 
-  const lineRows = [];
-  for (let i = 0; i < records.length; i++) {
-    const rec = records[i] as Doc1Record;
-    const match = await matchDoc1Record(supabase, rec, guestCache, reportDate);
-    lineRows.push({
-      ingest_id: ingest.id,
-      line_index: i,
-      parsed_json: rec,
-      match_guest_id: match.guest?.id ?? null,
-      match_method: match.method === "none" ? null : match.method,
-      match_confidence: match.confidence,
-      match_label: match.label,
-      action: match.action,
-      proposed_patch: match.patch,
-      status: "pending_review",
-    });
-  }
-
-  const { error: linesErr } = await supabase.from("ezgo_mail_import_lines").insert(lineRows);
-  if (linesErr) {
+  const linesResult = await insertIngestLines(supabase, ingest.id, records, reportDate, guestCache);
+  if (!linesResult.ok) {
     await supabase.from("ezgo_mail_ingest").update({
       parse_status: "failed",
-      parse_error: linesErr.message,
+      parse_error: linesResult.reason,
     }).eq("id", ingest.id);
-    return { ok: false, reason: linesErr.message };
+    return { ok: false, reason: linesResult.reason };
   }
 
   return { ok: true, ingestId: ingest.id, lines: records.length };
@@ -286,13 +374,7 @@ async function reparseIngest(
     };
   }
 
-  const { error: delErr } = await supabase
-    .from("ezgo_mail_ingest")
-    .delete()
-    .eq("id", ingestId);
-  if (delErr) return { ok: false, reason: delErr.message };
-
-  return await processIngest(supabase, msg);
+  return await processIngestReplace(supabase, msg, ingestId);
 }
 
 serve(async (req: Request) => {
@@ -313,7 +395,7 @@ serve(async (req: Request) => {
     const authBlock = await assertEzgoMailStaff(req, supabase);
     if (authBlock) return authBlock;
 
-    let body: { reparse_ingest_id?: string } = {};
+    let body: { reparse_ingest_id?: string; eml_base64?: string } = {};
     try {
       body = await req.json();
     } catch {
@@ -324,12 +406,39 @@ serve(async (req: Request) => {
       return jsonResponse({ ok: true, skipped: true, reason: "EZGO_MAIL_SYNC_ENABLED=false" });
     }
 
+    const allowlist = parseAllowlist();
     const cfg = resolveEzgoImapConfig();
+
+    if (body.eml_base64) {
+      try {
+        const bin = Uint8Array.from(
+          atob(String(body.eml_base64).replace(/\s/g, "")),
+          (c) => c.charCodeAt(0),
+        );
+        const msg = await parseEmlSourceToInboundMail(bin, allowlist);
+        if (!msg) {
+          return jsonResponse({
+            ok: false,
+            error: "eml_parse_failed",
+            reason: "לא נמצא דוח EZGO בקובץ או שולח לא מאושר",
+          });
+        }
+        const result = await processIngest(supabase, msg);
+        return jsonResponse({
+          ok: result.ok,
+          ingest_eml: true,
+          imap_user: cfg?.user ?? null,
+          ...result,
+        });
+      } catch (e) {
+        console.error("[ezgo-mail-sync] eml ingest", e);
+        return jsonResponse({ ok: false, error: (e as Error).message });
+      }
+    }
+
     if (!cfg) {
       return jsonResponse({ ok: false, error: "EZGO_MAIL_IMAP not configured" });
     }
-
-    const allowlist = parseAllowlist();
 
     if (body.reparse_ingest_id) {
       try {
@@ -387,6 +496,7 @@ serve(async (req: Request) => {
       scanned: messages.length,
       by_sender: bySender,
       imap: imapMeta,
+      imap_user: cfg.user,
       details: details.slice(0, 15),
     });
   } catch (e) {
