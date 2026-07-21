@@ -5,21 +5,32 @@ import {
   parseAllowlist,
 } from "./ezgoMailImap.ts";
 
+const EZGO_NOREPLY = "noreply@ezgo.co.il";
 const HAGAR = "hagar.mesilati@dream-island.co.il";
 const MIKE = "tzalamnadlan@gmail.com";
 
-Deno.test("default allowlist includes Hagar and tzalamnadlan", () => {
+Deno.test("default allowlist includes EZGO noreply, Hagar and tzalamnadlan", () => {
   const prev = Deno.env.get("EZGO_MAIL_ALLOWLIST");
   try {
     Deno.env.delete("EZGO_MAIL_ALLOWLIST");
     const list = parseAllowlist();
-    if (!list.includes(HAGAR) || !list.includes(MIKE)) {
-      throw new Error(`expected both senders, got ${list.join(",")}`);
+    if (!list.includes(EZGO_NOREPLY) || !list.includes(HAGAR) || !list.includes(MIKE)) {
+      throw new Error(`expected all primary senders, got ${list.join(",")}`);
     }
   } finally {
     if (prev === undefined) Deno.env.delete("EZGO_MAIL_ALLOWLIST");
     else Deno.env.set("EZGO_MAIL_ALLOWLIST", prev);
   }
+});
+
+Deno.test("noreply@ezgo.co.il is allowed on primary allowlist", () => {
+  const ok = isSenderAllowed(EZGO_NOREPLY, DEFAULT_EZGO_MAIL_SENDERS);
+  if (!ok) throw new Error("expected EZGO noreply on primary allowlist");
+});
+
+Deno.test("generic noreply outside allowlist stays blocked", () => {
+  const ok = isSenderAllowed("noreply@spam.example", DEFAULT_EZGO_MAIL_SENDERS);
+  if (ok) throw new Error("expected unknown noreply to be blocked");
 });
 
 Deno.test("tzalamnadlan is a primary sender without relay gates", () => {

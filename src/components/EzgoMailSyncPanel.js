@@ -629,7 +629,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
         padding: "10px 12px", borderRadius: 8, background: "rgba(0,0,0,0.2)",
         border: "1px solid rgba(201,169,110,0.2)",
       }}>
-        הגר / צלם נדלן → promote7il → סריקה. שלושה מסלולים:
+        noreply@ezgo.co.il (ישיר) · הגר / צלם נדלן (העברה) → סריקה. שלושה מסלולים:
         {" "}(1) סוויטות — סנכרון שעת ספא לפי מס׳ הזמנה ·
         (2) בילוי יומי בלי ספא — הצעת ספא ·
         (3) בילוי יומי חדש — יצירת פרופיל (עם/בלי ספא).

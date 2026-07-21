@@ -42,6 +42,7 @@ export type EzgoImapFetchResult = {
 
 /** Built-in EZGO report senders — merged with EZGO_MAIL_ALLOWLIST extras. */
 export const DEFAULT_EZGO_MAIL_SENDERS = [
+  "noreply@ezgo.co.il",
   "hagar.mesilati@dream-island.co.il",
   "tzalamnadlan@gmail.com",
 ];
@@ -70,11 +71,13 @@ export function parseAllowlist(): string[] {
 }
 
 export function isSenderAllowed(fromEmail: string, allowlist: string[]): boolean {
-  const email = (fromEmail || "").trim().toLowerCase();
+  const email = (fromEmail || "").trim().toLowerCase().replace(/[\u200E\u200F\u202A-\u202E]/g, "");
   if (!email) return false;
-  if (/^(no[-_.]?reply|donotreply|mailer-daemon)@/i.test(email)) return false;
   if (!allowlist.length) return false;
-  return allowlist.some((a) => email === a || email.endsWith(`@${a}`));
+  const onAllowlist = allowlist.some((a) => email === a || email.endsWith(`@${a}`));
+  if (onAllowlist) return true;
+  if (/^(no[-_.]?reply|donotreply|mailer-daemon)@/i.test(email)) return false;
+  return false;
 }
 
 function stripHtmlToText(html: string): string {
