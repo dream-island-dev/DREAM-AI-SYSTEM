@@ -62,6 +62,7 @@ const ymd = (d: Date) => d.toISOString().slice(0, 10);
 const PERMANENT_SKIP_REASONS = new Set([
   "wrong_room_type",
   "missing_room_assignment",
+  "missing_phone",
   "guest_cancelled",
   "automation_muted",
   "automation_courtesy_only",

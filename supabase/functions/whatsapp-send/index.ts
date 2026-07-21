@@ -56,7 +56,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendImageMessage, sendInteractiveButtons } from "../_shared/interactiveSend.ts";
 import { isArrivalTodayIsrael, israelTodayYmd } from "../_shared/israelDate.ts";
-import { sanitizeMetaRecipientPhone } from "../_shared/metaPhone.ts";
+import { hasDialableGuestPhone, sanitizeMetaRecipientPhone } from "../_shared/metaPhone.ts";
 import { sendWhapiText, sendWhapiImage, cleanPhoneForMention } from "../_shared/whapiSend.ts";
 import { ensureArrivalConfirmationCta, loadStage1AutoAppendCta } from "../_shared/arrivalConfirmation.ts";
 import {
@@ -1066,9 +1066,13 @@ function resolveDynamicUrlButtonParam(
 }
 
 function safeGuestPhone(phone: unknown): string {
-  const digits = String(phone ?? "").replace(/\D/g, "");
-  if (!digits) return "";
+  if (!hasDialableGuestPhone(phone)) return "";
   return sanitizeMetaRecipientPhone(phone);
+}
+
+function isGuestPhoneDataError(error: string | null | undefined): boolean {
+  const e = String(error ?? "");
+  return e.includes("guest_no_phone") || e.includes("invalid_meta_recipient_phone");
 }
 
 /** Mask phone for logs — keep country prefix + last 4 digits only. */
@@ -1124,6 +1128,13 @@ async function notifyAdminIfDispatchFailed(params: {
 }): Promise<void> {
   if (!params.error) return;
   if (params.status !== "failed" && params.status !== "blocked_by_meta" && params.status !== "timeout") return;
+  // Permanent profile gap — visible in ACC / guest edit; paging admin every cron tick is noise.
+  if (isGuestPhoneDataError(params.error)) {
+    console.warn(
+      `[whatsapp-send] skip admin page — guest phone data issue (${params.dispatchType}): ${String(params.error).slice(0, 200)}`,
+    );
+    return;
+  }
   // Staff room_ready / inbox_reply: Whapi timeout often means "delivered but unconfirmed"
   // — paging admin caused false alarms; UI shows uncertain-delivery copy instead.
   if (params.status === "timeout" && (params.trigger === "room_ready" || params.trigger === "inbox_reply")) {
@@ -2381,6 +2392,22 @@ serve(async (req: Request) => {
       console.log(`[whatsapp-send] skipped trigger="${trigger}" guestId=${guestId} reason=${pipelineInactive}`);
       return new Response(
         JSON.stringify({ ok: true, skipped: true, reason: pipelineInactive }),
+        { headers: { ...CORS, "Content-Type": "application/json" } },
+      );
+    }
+
+    if (!hasDialableGuestPhone(guest.phone)) {
+      const guestNoPhoneMsg =
+        `guest_no_phone: guest id=${guestId} (${String(guest.name ?? "?")}) has no phone on file`;
+      console.warn(`[whatsapp-send] missing_phone trigger="${trigger}" — ${guestNoPhoneMsg}`);
+      return new Response(
+        JSON.stringify({
+          ok: !force,
+          skipped: !force,
+          status: force ? "failed" : "skipped",
+          reason: "missing_phone",
+          error: guestNoPhoneMsg,
+        }),
         { headers: { ...CORS, "Content-Type": "application/json" } },
       );
     }

@@ -94,6 +94,7 @@ const QUEUE_FINALIZED_STATUSES = new Set(["sent", "simulated", "skipped"]);
 const QUEUE_HIDDEN_SKIP_REASONS = new Set([
   "wrong_room_type",
   "missing_room_assignment",
+  "missing_phone",
   "guest_cancelled",
   "automation_muted",
   "automation_courtesy_only",
@@ -115,6 +116,7 @@ const SKIP_REASON_LABELS = {
   stage_suppressed: "בוטל ידנית",
   missed_window: "פספס מועד — לשגר ידנית",
   missing_room_assignment: "אין חדר/סוויטה משויכת — אוטומציה חסומה",
+  missing_phone: "אין טלפון בפרופיל — עדכנו בפרופיל 360",
   suite_checkout_survey_via_housekeeping: "ממתין ל-Co מקבוצת חדרנות",
 };
 

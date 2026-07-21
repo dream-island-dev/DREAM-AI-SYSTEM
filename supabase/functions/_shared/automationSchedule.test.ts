@@ -40,6 +40,9 @@ import {
   isAllowlistedPhysicalTaskRequest,
   looksLikeDiningHoursReply,
   isLateImportCatchupEligible,
+  isCheckInPolicyQuestion,
+  isInRoomDeliveryRequest,
+  shouldHandoffUnrecognizedInRoomRequest,
   type AutomationStage,
   type GuestForSchedule,
 } from "./automationSchedule.ts";
@@ -73,6 +76,7 @@ function nightBeforeStage(overrides: Partial<AutomationStage> = {}): AutomationS
 function suiteGuest(overrides: Partial<GuestForSchedule> = {}): GuestForSchedule {
   return {
     id: 1,
+    phone: "+972501234567",
     arrival_date: null,
     departure_date: null,
     room_type: "suite",
@@ -1028,6 +1032,22 @@ Deno.test("checkEligibility: day_guest without room → missing_room_assignment 
   assertEquals(checkEligibility(stage1, guest, israelInstant("2026-07-12", 10, 0)), "missing_room_assignment");
 });
 
+Deno.test("checkEligibility: guest without dialable phone → missing_phone", () => {
+  const guest = suiteGuest({ phone: null });
+  assertEquals(
+    checkEligibility(nightBeforeStage(), guest, israelInstant("2026-07-13", 19, 0)),
+    "missing_phone",
+  );
+});
+
+Deno.test("checkEligibility: phone with only non-digits → missing_phone", () => {
+  const guest = suiteGuest({ phone: "לא ידוע" });
+  assertEquals(
+    checkEligibility(nightBeforeStage(), guest, israelInstant("2026-07-13", 19, 0)),
+    "missing_phone",
+  );
+});
+
 // ── Tier-0 quality expansion (2026-07-20) — safe allowlist only, no LLM widening ──
 
 Deno.test("isBareInRoomAmenityShorthand: checked_in-style bare nouns", () => {
@@ -1056,8 +1076,51 @@ Deno.test("isPortalTrustedOpsLabel: portal OPS CTA", () => {
   assertEquals(isPortalTrustedOpsLabel("בקשת שדרוג סוויטה"), false);
 });
 
+Deno.test("isAllowlistedPhysicalTaskRequest: נשמח לקבל + quantity towels", () => {
+  assertEquals(
+    isAllowlistedPhysicalTaskRequest("נשמח לקבל שתי מגבות נוספות"),
+    true,
+  );
+  assertEquals(
+    isAllowlistedPhysicalTaskRequest("היי / נשמח לקבל שתי מגבות נוספות / תודה"),
+    true,
+  );
+});
+
+Deno.test("shouldInterceptOperationalInHouseRequest: slash-separated towel ask", () => {
+  const onProperty = { status: "checked_in", arrival_date: "2026-07-14", departure_date: "2026-07-16" };
+  const msg = "היי / נשמח לקבל שתי מגבות נוספות / תודה";
+  assertEquals(shouldInterceptOperationalInHouseRequest(msg, onProperty), true);
+});
+
+Deno.test("extractAllowlistedRequestLines: slash-separated burst isolates towel line", () => {
+  const guest = { status: "checked_in" };
+  const burst = "היי / נשמח לקבל שתי מגבות נוספות / תודה";
+  assertEquals(
+    extractAllowlistedRequestLines(burst, guest),
+    "נשמח לקבל שתי מגבות נוספות",
+  );
+});
+
 Deno.test("extractAllowlistedRequestLines: burst with bare amenity line when checked_in", () => {
   const burst = "שלום\nמגבות";
   const guest = { status: "checked_in" };
   assertEquals(extractAllowlistedRequestLines(burst, guest), "מגבות");
+});
+
+const ZERO_BOTTLES_MSG = "היי, אם אפשר נשמח לקבל 2 בקבוקי זירו לחדר, תודה";
+
+Deno.test("isCheckInPolicyQuestion: room-service delivery is not entry-policy FAQ", () => {
+  assertEquals(isCheckInPolicyQuestion(ZERO_BOTTLES_MSG), false);
+  assertEquals(isInRoomDeliveryRequest(ZERO_BOTTLES_MSG), true);
+  assertEquals(isAllowlistedPhysicalTaskRequest(ZERO_BOTTLES_MSG), true);
+  assertEquals(shouldHandoffUnrecognizedInRoomRequest(ZERO_BOTTLES_MSG), false);
+});
+
+Deno.test("shouldHandoffUnrecognizedInRoomRequest: unknown in-room ask escalates", () => {
+  assertEquals(
+    shouldHandoffUnrecognizedInRoomRequest("נשמח לקבל מטען לחדר בבקשה"),
+    true,
+  );
+  assertEquals(shouldHandoffUnrecognizedInRoomRequest("מה שעות הכניסה?"), false);
 });

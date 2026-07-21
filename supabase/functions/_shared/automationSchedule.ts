@@ -39,6 +39,7 @@ import {
   getAppliesToSkipReason,
   type AppliesTo,
 } from "./automationCohort.ts";
+import { hasDialableGuestPhone } from "./metaPhone.ts";
 
 export const ISRAEL_UTC_OFFSET_HOURS = 2;
 
@@ -263,6 +264,8 @@ export interface AutomationStage {
 // signature — mirrors how whatsapp-cron selects a fixed flag-column list today.
 export interface GuestForSchedule {
   id: number | string;
+  /** E.164 or national — required for any outbound automation dispatch. */
+  phone?: string | null;
   arrival_date: string | null;
   departure_date: string | null;
   room_type: string | null;
@@ -542,6 +545,7 @@ export function checkEligibility(
   if (guest.status === "cancelled") return "guest_cancelled";
   const roomAssignmentSkip = getMissingRoomAssignmentSkipReason(guest);
   if (roomAssignmentSkip) return roomAssignmentSkip;
+  if (!hasDialableGuestPhone(guest.phone)) return "missing_phone";
   // Post-stay feedback fires after checkout — checked_out is expected, not a block.
   const postStayStage =
     stage.stage_key === "checkout_fb" || stage.stage_key === "checkout_fb_daypass";
@@ -908,11 +912,11 @@ export const INFORMATIONAL_GUEST_QUERY_PATTERN =
 
 /** Guest wants physical action — not merely asking for information. */
 export const PHYSICAL_REQUEST_INTENT_PATTERN =
-  /אפשר|אפשרו|בבקשה|צר[י]כ[הים]?|חסר|חסרה|תביאו|תביא|שלחו|שלח|מבקש|מבקשת|נוכל\s+לקבל|אפשר\s+לקבל|אשמח|דחוף|עזרו|עזרה|העבר|העבירו|עוד\s+(?:של|מ)|תוסיפו|need|please\s+(?:send|bring)|can\s+(?:i|we)\s+get/u;
+  /אפשר|אפשרו|בבקשה|צר[י]כ[הים]?|חסר|חסרה|תביאו|תביא|שלחו|שלח|מבקש(?:ים|ת)?|נוכל(?:ים)?\s+לקבל|אפשר\s+לקבל|(?:א|נ)שמח|נשמח\s+לקבל|נוספ(?:ות|ים|ה|ף)?|דחוף|עזרו|עזרה|העבר|העבירו|עוד\s+(?:של|מ)|תוסיפו|need|please\s+(?:send|bring)|can\s+(?:i|we)\s+get/u;
 
 /** Allowlist cat. 1 — concrete in-room amenity delivery. */
 const ALLOWLIST_AMENITY_PATTERN =
-  /(?:חלב|קפה|מגבות|שמפו|סבון|נייר(?:\s*טואלט)?|חלוק(?:ים)?|כרית(?:ות)?|שמיכ(?:ה|ות)?|קפסולות|כוסות?|צלחות?|(?<![א-ת])קרח(?![א-ת])|\bice\b)/iu;
+  /(?:חלב|קפה|מגבות|שמפו|סבון|נייר(?:\s*טואלט)?|חלוק(?:ים)?|כרית(?:ות)?|שמיכ(?:ה|ות)?|קפסולות|כוסות?|צלחות?|בקבוק(?:י)?|זירו|קולה|קוקה|משק(?:ה|אות)|ספרייט|פאנטה|(?<![א-ת])קרח(?![א-ת])|\bice\b)/iu;
 
 /** checked_in only — bare noun or qty+noun ("מגבות", "2 כוסות"); not questions. */
 const BARE_IN_ROOM_AMENITY_SHORTHAND_RE =
@@ -969,6 +973,7 @@ const OPERATIONAL_NEED_LABELS: ReadonlyArray<{ pattern: RegExp; label: string }>
   { pattern: /קפסולות/u, label: "קפסולות" },
   { pattern: /כוס/u, label: "כוסות" },
   { pattern: /צלח/u, label: "צלחות" },
+  { pattern: /בקבוק|זירו|קולה|משקה/u, label: "משקה" },
   { pattern: /סבון/u, label: "סבון" },
   { pattern: /שמפו/u, label: "שמפו" },
   { pattern: /נייר/u, label: "נייר טואלט" },
@@ -1037,7 +1042,8 @@ export function isAllowlistedPhysicalTaskRequest(text: string): boolean {
 
   if (ALLOWLIST_AMENITY_PATTERN.test(t) || ALLOWLIST_BOTTLED_WATER_PATTERN.test(t)) {
     return PHYSICAL_REQUEST_INTENT_PATTERN.test(t)
-      || /(?:לחדר|לסוויטה|בחדר|בסוויטה|עוד\s+)/u.test(t);
+      || /(?:לחדר|לסוויטה|בחדר|בסוויטה|עוד\s+)/u.test(t)
+      || /(?:שתי|שלוש|ארבע|חמש|שישה|שבע|שמונה|תשע|עשר|\d{1,2})\s+/u.test(t);
   }
 
   return false;
@@ -1060,6 +1066,19 @@ export function isPortalTrustedOpsLabel(label: string): boolean {
   return isAllowlistedPhysicalTaskRequest(t);
 }
 
+/** Split burst / multi-thought guest text (newline or " / " separators). */
+export function splitGuestInboundLines(text: string): string[] {
+  return text
+    .split(/\n+|(?:\s*\/\s*)+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+/** Canonical ops-routing input — same line splitting everywhere Tier-0 runs. */
+export function normalizeGuestInboundForOps(text: string): string {
+  return splitGuestInboundLines(text).join("\n");
+}
+
 function lineMatchesInHouseOpsRequest(
   line: string,
   guest: GuestOpsEligibilityInput,
@@ -1073,8 +1092,9 @@ function textMatchesInHouseOpsRequest(
   text: string,
   guest: GuestOpsEligibilityInput,
 ): boolean {
-  if (lineMatchesInHouseOpsRequest(text.trim(), guest)) return true;
-  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  const trimmed = text.trim();
+  if (trimmed && lineMatchesInHouseOpsRequest(trimmed, guest)) return true;
+  const lines = splitGuestInboundLines(text);
   if (lines.length <= 1) return false;
   return lines.some((line) => lineMatchesInHouseOpsRequest(line, guest));
 }
@@ -1095,7 +1115,7 @@ export function extractAllowlistedRequestLines(
   text: string,
   guest?: GuestOpsEligibilityInput,
 ): string {
-  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  const lines = splitGuestInboundLines(text);
   if (lines.length <= 1) return text.trim();
   const relevant = lines.filter((line) =>
     guest ? lineMatchesInHouseOpsRequest(line, guest) : isAllowlistedPhysicalTaskRequest(line),
@@ -1428,7 +1448,38 @@ export function buildDepartureAssistReply(_guestName?: string | null): string {
 // LLM with incomplete bot_config knowledge (only hotel_checkin_time=15:00).
 
 export const CHECK_IN_POLICY_QUESTION_PATTERN =
-  /(?:מה|מתי|איזו?\s*שעה|כמה|האם)\s+[\s\S]{0,60}?(?:צ.?ק.?אין|צ.?ק.?אא?וט|שעת?\s*(?:כניסה|עזיבה)|כניסה\s*(?:ל)?חדר|להיכנס\s*לחדר|הכנס\w*\s*לחדר|check.?in|check.?out)|שעות?\s*(?:ה)?כניסה|קבלת\s*חדר|מועד\s*כניסה|(?:אפשר|ניתן|מותר)\s+[\s\S]{0,40}?(?:להיכנס|כניסה|לחדר)|מתי\s+(?:מקבלים|נותנים|מוסרים)\s*(?:את\s*)?החדר|מה\s+שעות/i;
+  /(?:מה|מתי|איזו?\s*שעה|כמה|האם)\s+[\s\S]{0,60}?(?:צ.?ק.?אין|צ.?ק.?אא?וט|שעת?\s*(?:כניסה|עזיבה)|כניסה\s*(?:ל)?חדר|להיכנס\s*לחדר|הכנס\w*\s*לחדר|check.?in|check.?out)|שעות?\s*(?:ה)?כניסה|קבלת\s*חדר|מועד\s*כניסה|(?:אפשר|ניתן|מותר)\s+[\s\S]{0,40}?(?:להיכנס|כניסה\s*(?:ל)?חדר)|מתי\s+(?:מקבלים|נותנים|מוסרים)\s*(?:את\s*)?החדר|מה\s+שעות/i;
+
+/** Delivery to the suite ("2 בקבוקי זירו לחדר") — not an entry-policy question. */
+const CHECK_IN_ENTRY_CONTEXT_PATTERN =
+  /(?:להיכנס|כניסה|מקבלים|נותנים|מוסרים|שעת?\s*כניסה|מועד\s*כניסה|צ.?ק.?אין|check.?in)/iu;
+
+export function isInRoomDeliveryRequest(text: string): boolean {
+  const t = text.trim();
+  if (!t || !PHYSICAL_REQUEST_INTENT_PATTERN.test(t)) return false;
+  if (!/(?:לחדר|לסוויטה|בחדר|בסוויטה)/u.test(t)) return false;
+  if (CHECK_IN_ENTRY_CONTEXT_PATTERN.test(t)) return false;
+  return true;
+}
+
+/**
+ * Guest asks for something physical in-room that Tier-0 cannot classify —
+ * hand off to staff instead of FAQ/LLM guesswork.
+ */
+export function shouldHandoffUnrecognizedInRoomRequest(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.length < 4) return false;
+  if (!PHYSICAL_REQUEST_INTENT_PATTERN.test(t)) return false;
+  if (isInformationalGuestQuery(t)) return false;
+  if (isCheckInPolicyQuestion(t)) return false;
+  if (isDiningQuestion(t)) return false;
+  if (isAllowlistedPhysicalTaskRequest(t)) return false;
+  if (isDepartureAssistRequest(t)) return false;
+  if (isBalloonRoomRequest(t)) return false;
+  if (isAdministrativeInHouseRequest(t)) return false;
+  if (isMealDeclineOrApology(t)) return false;
+  return true;
+}
 
 /** LLM replies about resort entry hours — used when truncation guard fires on reply text. */
 export const CHECK_IN_HOURS_REPLY_PATTERN =
@@ -1443,6 +1494,7 @@ export function looksLikeCheckInHoursReply(text: string): boolean {
 export function isCheckInPolicyQuestion(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
+  if (isInRoomDeliveryRequest(t)) return false;
   return CHECK_IN_POLICY_QUESTION_PATTERN.test(t);
 }
 
@@ -1701,6 +1753,9 @@ export function resolveTruncatedReplyFallback(
   }
   if (isCheckInPolicyQuestion(guestText)) {
     return buildCheckInPolicyReply(cfg, arrivalDateStr);
+  }
+  if (shouldHandoffUnrecognizedInRoomRequest(guestText) || isInRoomDeliveryRequest(guestText)) {
+    return genericFallback;
   }
   if (looksLikeDiningHoursReply(replyText)) {
     return buildDiningReplyForGuest(cfg, guestText, guest, knowledgeBase);
