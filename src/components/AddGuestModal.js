@@ -30,6 +30,8 @@ import {
   syncGuestSuiteRoomsFromSelection,
 } from "../utils/suiteRoomReady";
 import { ensureMissingDepartureAlert, isMissingSuiteDepartureDate } from "../utils/departureDateGuard";
+import { normalizeGuestPhoneEdit } from "../utils/ezgoParser";
+import { preflightGuestPhoneChange, updateGuestPhoneCascade } from "../utils/updateGuestPhoneCascade";
 
 // ── Smart room_type inference ─────────────────────────────────────────────────
 // Deterministic mapping from the room <select> value to DB room_type.
@@ -199,17 +201,59 @@ export default function AddGuestModal({
         patch.room_ready_at = null;
       }
 
+      const { value: normalizedPhone, valid: phoneValid } = normalizeGuestPhoneEdit(
+        (form.phone ?? "").trim(),
+      );
+      if (!phoneValid) {
+        showToast?.("err", `מספר טלפון לא תקין — "${(form.phone ?? "").trim()}"`);
+        setSaving(false);
+        return;
+      }
+      if (!isEdit && !normalizedPhone) {
+        showToast?.("err", "מספר טלפון הוא שדה חובה");
+        setSaving(false);
+        return;
+      }
+
+      const oldPhone = guest.phone || null;
+      const phoneChanged = isEdit && normalizedPhone !== oldPhone;
+
       let savedGuest;
       if (isEdit) {
+        if (phoneChanged) {
+          const preflight = await preflightGuestPhoneChange(supabase, {
+            guestId: guest.id,
+            oldPhone,
+            newPhone: normalizedPhone,
+            arrivalDate: patch.arrival_date || guest.arrival_date,
+            guestIndex: guest.guest_index ?? 0,
+          });
+          if (!preflight.ok) {
+            showToast?.("err", preflight.error);
+            setSaving(false);
+            return;
+          }
+          patch.phone = normalizedPhone;
+        }
         const { error } = await supabase.from("guests").update(patch).eq("id", guest.id);
         if (error) throw error;
+        if (phoneChanged) {
+          const cascade = await updateGuestPhoneCascade(supabase, {
+            guestId: guest.id,
+            oldPhone,
+            newPhone: normalizedPhone,
+            arrivalDate: patch.arrival_date || guest.arrival_date,
+            guestIndex: guest.guest_index ?? 0,
+          });
+          if (!cascade.ok) {
+            showToast?.("err", `טלפון עודכן בפרופיל — סנכרון משנה נכשל: ${cascade.error}`);
+          }
+        }
         savedGuest = { ...guest, ...patch };
         onSaved?.(savedGuest);
       } else {
-        const phone = (form.phone ?? "").trim();
-        if (!phone) { showToast?.("err", "מספר טלפון הוא שדה חובה"); setSaving(false); return; }
         const { data: created, error } = await supabase
-          .from("guests").insert({ ...patch, phone }).select().maybeSingle();
+          .from("guests").insert({ ...patch, phone: normalizedPhone }).select().maybeSingle();
         if (error) throw error;
         savedGuest = created;
         onSaved?.(created);
@@ -283,17 +327,40 @@ export default function AddGuestModal({
         <div style={{ fontWeight: 800, fontSize: 17, marginBottom: 4 }}>
           {isEdit ? "✏️ עריכת פרופיל אורח" : "➕ הוספת אורח ידני"}
         </div>
-        {isEdit && (
-          <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12, direction: "ltr" }}>
-            {guest.phone}
+
+        <div style={{ marginBottom: 14 }}>
+          <label style={{ fontSize: 12, fontWeight: 700, display: "block", marginBottom: 4 }}>
+            טלפון {!isEdit && <span style={{ color: "#C0392B" }}>*</span>}
+          </label>
+          <input
+            type="tel"
+            value={form.phone ?? ""}
+            onChange={(e) => setField("phone", e.target.value)}
+            placeholder="+972501234567"
+            disabled={saving}
+            style={{
+              width: "100%", padding: "9px 12px", boxSizing: "border-box",
+              border: "1px solid var(--border,#ddd)", borderRadius: 8, fontSize: 14,
+              direction: "ltr", fontFamily: "Heebo,sans-serif",
+            }}
+          />
+        </div>
+
+        {isEdit && guest.phone && normalizeGuestPhoneEdit((form.phone ?? "").trim()).value !== guest.phone && (
+          <div style={{
+            fontSize: 12, color: "#92400E", marginBottom: 12, padding: "8px 10px",
+            background: "#FEF3C7", borderRadius: 8, lineHeight: 1.45,
+          }}>
+            שינוי מספר יעדכן גם שיחות WhatsApp, התראות ו-suite_rooms. היסטוריה תישאר מקושרת לאורח.
           </div>
         )}
 
-        {isEdit && guest.phone && onOpenDreamBotChat && (
+        {isEdit && (form.phone || guest.phone) && onOpenDreamBotChat && (
           <button
             type="button"
             onClick={() => {
-              onOpenDreamBotChat({ phone: guest.phone, guestName: guest.name });
+              const chatPhone = normalizeGuestPhoneEdit((form.phone ?? "").trim()).value || guest.phone;
+              onOpenDreamBotChat({ phone: chatPhone, guestName: guest.name });
               onClose?.();
             }}
             disabled={saving}
@@ -307,27 +374,6 @@ export default function AddGuestModal({
           >
             💬 פתח שיחה ב-DREAM BOT
           </button>
-        )}
-
-        {/* Phone — required for new guests only */}
-        {!isEdit && (
-          <div style={{ marginBottom: 14 }}>
-            <label style={{ fontSize: 12, fontWeight: 700, display: "block", marginBottom: 4 }}>
-              טלפון <span style={{ color: "#C0392B" }}>*</span>
-            </label>
-            <input
-              type="tel"
-              value={form.phone ?? ""}
-              onChange={(e) => setField("phone", e.target.value)}
-              placeholder="+972501234567"
-              disabled={saving}
-              style={{
-                width: "100%", padding: "9px 12px", boxSizing: "border-box",
-                border: "1px solid var(--border,#ddd)", borderRadius: 8, fontSize: 14,
-                direction: "ltr", fontFamily: "Heebo,sans-serif",
-              }}
-            />
-          </div>
         )}
 
         {/* Text fields */}
