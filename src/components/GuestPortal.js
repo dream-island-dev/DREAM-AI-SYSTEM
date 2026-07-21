@@ -161,6 +161,7 @@ function SurveySection({ guest, token, onToast, surveyUi, clubUi }) {
   const [result, setResult] = useState(null); // thank-you payload after successful submit
   const [clubStatus, setClubStatus] = useState(guest?.club_status ?? null); // active | declined | null
   const [clubBusy, setClubBusy] = useState(false);
+  const [waReviewSent, setWaReviewSent] = useState(false);
   const ui = normalizeGuestSurveyUi(surveyUi ?? DEFAULT_GUEST_SURVEY_UI);
   const club = normalizeGuestClubUi(clubUi ?? DEFAULT_GUEST_CLUB_UI);
 
@@ -209,22 +210,32 @@ function SurveySection({ guest, token, onToast, surveyUi, clubUi }) {
     }
   }
 
-  async function handleClubAction(action) {
+  async function handleClubAction(action, profile) {
     if (clubBusy) return;
     setClubBusy(true);
     try {
       const { data, error } = await supabase.functions.invoke("guest-portal-club", {
-        body: { token, action },
+        body: { token, action, ...profile },
       });
-      if (error || !data?.ok) throw new Error(data?.error ?? error?.message ?? "שגיאה");
+      if (error || !data?.ok) {
+        if (data?.error === "guest_birthday_required") {
+          throw new Error("guest_birthday_required");
+        }
+        throw new Error(data?.error ?? error?.message ?? "שגיאה");
+      }
       setClubStatus(data.status || (action === "join" ? "active" : "declined"));
+      if (data.waFollowUpSent) setWaReviewSent(true);
       onToast(
         action === "join"
-          ? "✅ נרשמתם למועדון — נשמח לעדכן אתכם בהצעות בלעדיות"
+          ? "✅ נרשמתם למועדון — נשמח לעדכן אתכם בהצעות והטבות בלעדיות"
           : "בסדר גמור — תודה בכל זאת 🙏",
       );
-    } catch (_e) {
-      onToast("⚠️ לא הצלחנו לעדכן — נסו שוב מאוחר יותר");
+    } catch (e) {
+      onToast(
+        e?.message === "guest_birthday_required"
+          ? "נא למלא תאריך לידה כדי להצטרף למועדון"
+          : "⚠️ לא הצלחנו לעדכן — נסו שוב מאוחר יותר",
+      );
     } finally {
       setClubBusy(false);
     }
@@ -234,7 +245,8 @@ function SurveySection({ guest, token, onToast, surveyUi, clubUi }) {
     const hasGoogle = thankYou.googleCta && thankYou.reviewUrl;
     const showClub = thankYou.clubOffer && !clubStatus;
     const showSuitesAfterJoin =
-      thankYou.suitesCta && thankYou.suitesUrl && (clubStatus === "active" || !thankYou.clubOffer);
+      thankYou.suitesCta && thankYou.suitesUrl
+      && (clubStatus === "active" || clubStatus === "declined" || !thankYou.clubOffer);
     const suitesHref = thankYou.suitesUrl?.startsWith("http")
       ? thankYou.suitesUrl
       : `https://${thankYou.suitesUrl}`;
@@ -274,7 +286,12 @@ function SurveySection({ guest, token, onToast, surveyUi, clubUi }) {
               />
             )}
             {clubStatus === "active" && (
-              <GuestClubOfferCard ui={club} status="active" />
+              <GuestClubOfferCard ui={club} status="active" showWaHint={waReviewSent} />
+            )}
+            {clubStatus === "declined" && waReviewSent && club.wa_review_hint && (
+              <div style={{ fontSize: 11, color: XOS_MUTED, marginTop: 10, lineHeight: 1.6 }}>
+                {club.wa_review_hint}
+              </div>
             )}
             {showSuitesAfterJoin && (
               <a

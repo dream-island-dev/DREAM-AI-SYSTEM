@@ -224,11 +224,36 @@ function buildGmailFromQuery(allowlist: string[]): string {
   return allowlist.map((s) => `from:${s}`).join(" OR ");
 }
 
+/** Fair quota per direct sender — avoids one inbox (e.g. forwards) starving others. */
+export const EZGO_MAIL_PER_SENDER_MIN = 12;
+
 async function searchAllowlistedUids(
   client: ImapFlow,
   allowlist: string[],
   limit: number,
 ): Promise<{ uids: number[]; method: string }> {
+  const perSender = Math.max(
+    EZGO_MAIL_PER_SENDER_MIN,
+    Math.ceil(limit / Math.max(allowlist.length, 1)),
+  );
+  const uidSet = new Set<number>();
+
+  for (const sender of allowlist) {
+    try {
+      const found = await client.search({ from: sender }, { uid: true });
+      const sorted = [...(found || [])].sort((a, b) => b - a).slice(0, perSender);
+      for (const uid of sorted) uidSet.add(uid);
+    } catch {
+      // continue
+    }
+  }
+  if (uidSet.size > 0) {
+    return {
+      uids: [...uidSet].sort((a, b) => b - a),
+      method: "per_sender",
+    };
+  }
+
   const gmailQuery = buildGmailFromQuery(allowlist);
   try {
     const found = await client.search({ gmailRaw: gmailQuery }, { uid: true });
@@ -240,22 +265,6 @@ async function searchAllowlistedUids(
     }
   } catch {
     // fall through
-  }
-
-  const uidSet = new Set<number>();
-  for (const sender of allowlist) {
-    try {
-      const found = await client.search({ from: sender }, { uid: true });
-      for (const uid of found || []) uidSet.add(uid);
-    } catch {
-      // continue
-    }
-  }
-  if (uidSet.size > 0) {
-    return {
-      uids: [...uidSet].sort((a, b) => b - a).slice(0, limit),
-      method: "from",
-    };
   }
 
   return { uids: [], method: "sequence_scan" };
@@ -353,9 +362,82 @@ async function fetchRecentBySequence(
   return out;
 }
 
+/** Fetch one message by stored external_message_id (Message-ID or uid-N fallback). */
+export async function fetchEzgoMessageById(
+  config: EzgoImapConfig,
+  externalMessageId: string,
+  allowlist: string[] = parseAllowlist(),
+): Promise<EzgoInboundMail | null> {
+  const targetId = String(externalMessageId || "").trim();
+  if (!targetId) return null;
+
+  const client = new ImapFlow({
+    host: config.host,
+    port: config.port,
+    secure: config.secure,
+    auth: { user: config.user, pass: config.password },
+    logger: false,
+    emitLogs: false,
+  });
+
+  const meta: EzgoImapFetchMeta = {
+    mailboxTotal: 0,
+    searchMethod: "by_id",
+    searchUids: 0,
+    scannedRaw: 0,
+    afterAllowlist: 0,
+  };
+
+  await client.connect();
+  try {
+    await client.mailboxOpen("INBOX");
+    meta.mailboxTotal = client.mailbox?.exists ?? 0;
+
+    const uidMatch = /^uid-(\d+)$/i.exec(targetId);
+    if (uidMatch) {
+      const uid = Number(uidMatch[1]);
+      const msgs = await fetchMessagesByUidList(client, [uid], allowlist, meta);
+      if (msgs[0]) return msgs[0];
+    }
+
+    const idVariants = [
+      targetId,
+      `<${targetId.replace(/^<|>$/g, "")}>`,
+      targetId.replace(/^<|>$/g, ""),
+    ];
+    const tried = new Set<string>();
+    for (const mid of idVariants) {
+      const key = mid.toLowerCase();
+      if (!key || tried.has(key)) continue;
+      tried.add(key);
+      try {
+        const found = await client.search({ header: { "message-id": mid } }, { uid: true });
+        if (found?.length) {
+          const msgs = await fetchMessagesByUidList(client, [found[0]], allowlist, meta);
+          if (msgs[0]) return msgs[0];
+        }
+      } catch {
+        // continue
+      }
+    }
+
+    const { uids } = await searchAllowlistedUids(client, allowlist, 150);
+    meta.searchUids = uids.length;
+    if (uids.length) {
+      const msgs = await fetchMessagesByUidList(client, uids, allowlist, meta);
+      const hit = msgs.find((m) => m.id === targetId);
+      if (hit) return hit;
+    }
+
+    return null;
+  } finally {
+    await client.logout();
+  }
+}
+
 export async function fetchEzgoInboxMessages(
   config: EzgoImapConfig,
-  limit = 25,
+  limit = 36,
   allowlist: string[] = parseAllowlist(),
 ): Promise<EzgoImapFetchResult> {
   const client = new ImapFlow({
@@ -390,10 +472,20 @@ export async function fetchEzgoInboxMessages(
       messages = await fetchMessagesByUidList(client, uids, allowlist, meta);
     }
 
-    // Gmail SEARCH can miss fresh forwards — always scan recent INBOX as backup.
+    // Supplement: recent INBOX catches forwards Gmail SEARCH may miss.
+    const supplement = await fetchRecentBySequence(client, allowlist, 15, meta);
+    const seen = new Set(messages.map((m) => m.id));
+    for (const m of supplement) {
+      if (!seen.has(m.id)) {
+        messages.push(m);
+        seen.add(m.id);
+      }
+    }
     if (messages.length === 0) {
-      meta.searchMethod = uids.length > 0 ? `${method}+sequence_scan` : "sequence_scan";
+      meta.searchMethod = "sequence_scan";
       messages = await fetchRecentBySequence(client, allowlist, limit, meta);
+    } else if (supplement.length > 0 && method !== "sequence_scan") {
+      meta.searchMethod = `${method}+sequence_supplement`;
     }
   } finally {
     await client.logout();

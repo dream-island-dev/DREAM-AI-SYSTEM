@@ -1,5 +1,6 @@
 import {
   DEFAULT_EZGO_MAIL_SENDERS,
+  EZGO_MAIL_PER_SENDER_MIN,
   extractBodiesFromSource,
   isSenderAllowed,
   parseAllowlist,
@@ -8,6 +9,15 @@ import {
 const EZGO_NOREPLY = "noreply@ezgo.co.il";
 const HAGAR = "hagar.mesilati@dream-island.co.il";
 const MIKE = "tzalamnadlan@gmail.com";
+
+Deno.test("per-sender scan budget is at least 12 for three direct senders", () => {
+  if (EZGO_MAIL_PER_SENDER_MIN < 12) {
+    throw new Error(`expected per-sender min >= 12, got ${EZGO_MAIL_PER_SENDER_MIN}`);
+  }
+  if (DEFAULT_EZGO_MAIL_SENDERS.length < 3) {
+    throw new Error("expected three primary EZGO senders");
+  }
+});
 
 Deno.test("default allowlist includes EZGO noreply, Hagar and tzalamnadlan", () => {
   const prev = Deno.env.get("EZGO_MAIL_ALLOWLIST");

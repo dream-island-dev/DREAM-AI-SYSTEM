@@ -274,7 +274,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
 
   const triggerReparse = async () => {
     if (!selectedId) return;
-    if (!window.confirm("לפרסר מחדש את המייל? שורות שלא טופלו יימחקו וייטענו מחדש מהתיבה.")) return;
+    if (!window.confirm("לפרסר מחדש את המייל? שורות שלא טופלו יוחלפו. אם המייל לא יימצא בתיבה — ייעשה שימוש בעותק השמור.")) return;
     setSyncing(true);
     try {
       const { data, error } = await supabase.functions.invoke("ezgo-mail-sync", {

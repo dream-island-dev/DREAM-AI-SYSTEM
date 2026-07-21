@@ -336,9 +336,20 @@ function ClubLabelsEditorModal({ draft, onChange, onSave, onClose, saving }) {
   const fields = [
     ["title", "כותרת"],
     ["body", "טקסט גוף"],
-    ["join_label", "כפתור הצטרפות"],
+    ["benefits_hint", "הסבר הטבות"],
+    ["profile_step_title", "כותרת שלב פרטים"],
+    ["guest_birthday_label", "תווית תאריך לידה"],
+    ["guest_birthday_hint", "רמז תאריך לידה"],
+    ["partner_toggle_label", "תיבת בן/בת זוג"],
+    ["partner_birthday_label", "תווית יום הולדת בן/בת זוג"],
+    ["anniversary_label", "תווית יום נישואין"],
+    ["optional_suffix", "סיומת «לא חובה»"],
+    ["continue_label", "כפתור המשך"],
+    ["submit_profile_label", "כפתור הצטרפות סופי"],
+    ["consent_line", "שורת אישור שיווק"],
     ["decline_label", "כפתור סירוב"],
     ["joined_confirm", "הודעה אחרי הצטרפות"],
+    ["wa_review_hint", "רמז הודעת וואטסאפ לביקורת"],
   ];
   return (
     <div
@@ -473,7 +484,7 @@ function SurveysView() {
     if (!isSupabaseConfigured || !supabase) return;
     const { data, error } = await supabase
       .from("guest_club_members")
-      .select("id, phone, status, opted_in_at, declined_at, source, guests(name)")
+      .select("id, phone, status, opted_in_at, declined_at, source, guest_birthday, partner_birthday, wedding_anniversary, guests(name)")
       .eq("status", "active")
       .order("opted_in_at", { ascending: false })
       .limit(100);
@@ -681,7 +692,7 @@ function SurveysView() {
           ✏️ עריכת מועדון
         </button>
         <span style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
-          סקר + מועדון — עריכה לפני שליחה לאורחים. אחרי ציון חיובי יופיע קישור לסוויטות; אחרי הסקר — הצעת מועדון.
+          סקר חיובי → ביקורת גוגל → הצטרפות למועדון (תאריכים להטבות) → הודעת WA לביקורת.
         </span>
       </div>
 
@@ -720,9 +731,18 @@ function SurveysView() {
                 fontSize: 13, padding: "8px 10px", borderRadius: 10, background: "var(--ivory)",
                 border: "1px solid var(--border)",
               }}>
-                <span style={{ fontWeight: 700, color: "var(--black)" }}>
-                  {m.guests?.name || "אורח"} · {m.phone}
-                </span>
+                <div>
+                  <span style={{ fontWeight: 700, color: "var(--black)" }}>
+                    {m.guests?.name || "אורח"} · {m.phone}
+                  </span>
+                  {(m.guest_birthday || m.partner_birthday || m.wedding_anniversary) && (
+                    <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+                      {m.guest_birthday ? `🎂 ${m.guest_birthday}` : ""}
+                      {m.partner_birthday ? ` · 💑 ${m.partner_birthday}` : ""}
+                      {m.wedding_anniversary ? ` · 💍 ${m.wedding_anniversary}` : ""}
+                    </div>
+                  )}
+                </div>
                 <span style={{ color: "var(--text-muted)", fontSize: 12 }}>
                   {m.opted_in_at ? new Date(m.opted_in_at).toLocaleString("he-IL") : "—"}
                 </span>

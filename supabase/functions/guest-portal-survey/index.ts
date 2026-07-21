@@ -197,7 +197,9 @@ serve(async (req: Request) => {
     }
 
     let waFollowUpSent = false;
-    if (suitesCtaShown && guest.phone) {
+    // Defer Google-review WA until club flow completes when club offer is shown.
+    // If already a member (no club offer), send immediately.
+    if (suitesCtaShown && guest.phone && !clubOffer) {
       const waResult = await sendPostSurveyPositiveFeedbackWa(supabase, {
         id: guest.id as number,
         phone: guest.phone as string,

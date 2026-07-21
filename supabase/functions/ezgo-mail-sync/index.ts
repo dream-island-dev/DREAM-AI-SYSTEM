@@ -13,10 +13,12 @@ import {
 import {
   ezgoMailSyncEnabled,
   fetchEzgoInboxMessages,
+  fetchEzgoMessageById,
   isSenderAllowed,
   parseAllowlist,
   resolveEzgoImapConfig,
   type EzgoMailExcelAttachment,
+  type EzgoInboundMail,
 } from "../_shared/ezgoMailImap.ts";
 import {
   enrichRecordsPhoneFromDb,
@@ -135,6 +137,11 @@ async function processIngest(
     excelAttachments?: EzgoMailExcelAttachment[];
   },
 ): Promise<{ ok: boolean; ingestId?: string; lines?: number; reason?: string }> {
+  const bodySnapshot = {
+    body_html: msg.bodyHtml?.slice(0, 500_000) || null,
+    body_text: msg.bodyText?.slice(0, 12_000) || null,
+  };
+
   const { data: existing } = await supabase
     .from("ezgo_mail_ingest")
     .select("id")
@@ -154,6 +161,7 @@ async function processIngest(
       parse_status: "skipped",
       parse_error: "לא זוהה דוח EZGO (Doc1 HTML/טבלה/Excel)",
       body_preview: msg.bodyPreview,
+      ...bodySnapshot,
     }).select("id").maybeSingle();
     return { ok: true, ingestId: skipped?.id, reason: "unknown_format" };
   }
@@ -169,6 +177,7 @@ async function processIngest(
       parse_status: "failed",
       parse_error: "לא נמצאו שורות הזמנה בדוח",
       body_preview: msg.bodyPreview,
+      ...bodySnapshot,
     }).select("id").maybeSingle();
     return { ok: false, ingestId: failed?.id, reason: "no_rows" };
   }
@@ -192,6 +201,7 @@ async function processIngest(
       line_count: records.length,
       pending_count: records.length,
       body_preview: msg.bodyPreview,
+      ...bodySnapshot,
     })
     .select("id")
     .maybeSingle();
@@ -238,28 +248,49 @@ async function reparseIngest(
 ): Promise<{ ok: boolean; ingestId?: string; lines?: number; reason?: string }> {
   const { data: ingest } = await supabase
     .from("ezgo_mail_ingest")
-    .select("id, external_message_id, subject")
+    .select(
+      "id, external_message_id, subject, from_email, from_name, received_at, body_preview, body_html, body_text",
+    )
     .eq("id", ingestId)
     .maybeSingle();
   if (!ingest) return { ok: false, reason: "ingest_not_found" };
 
-  const targetId = ingest.external_message_id;
+  let msg: EzgoInboundMail | null = null;
+  try {
+    msg = await withImapBudget(() =>
+      fetchEzgoMessageById(cfg, ingest.external_message_id, allowlist)
+    );
+  } catch (e) {
+    console.warn("[ezgo-mail-sync] reparse IMAP lookup failed:", (e as Error).message);
+  }
+
+  if (!msg && ingest.body_html) {
+    msg = {
+      id: ingest.external_message_id,
+      fromEmail: ingest.from_email,
+      fromName: ingest.from_name,
+      subject: ingest.subject,
+      receivedAt: ingest.received_at,
+      bodyPreview: ingest.body_preview || "",
+      bodyText: ingest.body_text || "",
+      bodyHtml: ingest.body_html,
+      excelAttachments: [],
+    };
+  }
+
+  if (!msg) {
+    return {
+      ok: false,
+      reason:
+        "המייל לא נמצא בתיבה ואין עותק שמור — הרץ «סנכרון מייל» לפני פרסור מחדש",
+    };
+  }
+
   const { error: delErr } = await supabase
     .from("ezgo_mail_ingest")
     .delete()
     .eq("id", ingestId);
   if (delErr) return { ok: false, reason: delErr.message };
-
-  const { messages } = await withImapBudget(() =>
-    fetchEzgoInboxMessages(cfg, 50, allowlist)
-  );
-  const msg = messages.find((m) => m.id === targetId);
-  if (!msg) {
-    return {
-      ok: false,
-      reason: `המייל לא נמצא בתיבה (message-id: ${targetId.slice(0, 40)}…) — נסה להעביר שוב מ-Gmail`,
-    };
-  }
 
   return await processIngest(supabase, msg);
 }
@@ -315,7 +346,7 @@ serve(async (req: Request) => {
     }
 
     const { messages, meta: imapMeta } = await withImapBudget(() =>
-      fetchEzgoInboxMessages(cfg, 25, allowlist)
+      fetchEzgoInboxMessages(cfg, 36, allowlist)
     );
 
     let processed = 0;
