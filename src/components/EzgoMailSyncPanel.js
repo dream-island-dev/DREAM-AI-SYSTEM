@@ -272,6 +272,27 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
     }
   };
 
+  const triggerReparse = async () => {
+    if (!selectedId) return;
+    if (!window.confirm("לפרסר מחדש את המייל? שורות שלא טופלו יימחקו וייטענו מחדש מהתיבה.")) return;
+    setSyncing(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("ezgo-mail-sync", {
+        body: { reparse_ingest_id: selectedId },
+      });
+      if (error) throw error;
+      if (!data?.ok) throw new Error(data?.error || data?.reason || "פרסור מחדש נכשל");
+      showToast?.(`פרסור מחדש הושלם · ${data.lines ?? 0} שורות`, "ok");
+      await loadIngests();
+      if (data.ingestId) setSelectedId(data.ingestId);
+      else await loadLines(selectedId);
+    } catch (e) {
+      showToast?.(e.message, "err");
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   const applyLine = async (line) => {
     if (!line.match_guest_id || line.action === "no_match") {
       showToast?.("אין פרופיל לעדכון", "err");
@@ -670,6 +691,20 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
                 <span style={{ fontSize: 12, color: "#888" }}>
                   {pendingCount} ממתינות · דוח {reportDate || "—"}
                 </span>
+                <button
+                  type="button"
+                  onClick={triggerReparse}
+                  disabled={syncing || busy}
+                  title="מוחק את הייבוא הנוכחי ומפרסר שוב מהתיבה (טלפונים חסרים / מייל ישן)"
+                  style={{
+                    marginRight: "auto", padding: "4px 10px", borderRadius: 8,
+                    border: "1px solid rgba(201,169,110,0.4)",
+                    background: "transparent", color: "#ccc", fontSize: 11,
+                    cursor: syncing || busy ? "wait" : "pointer",
+                  }}
+                >
+                  🔁 פרסר מחדש
+                </button>
               </div>
 
               <div style={{ maxHeight: 460, overflowY: "auto" }}>

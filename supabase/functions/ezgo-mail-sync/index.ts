@@ -2,7 +2,9 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   classifyEzgoMailContent,
+  countDoc1RecordsMissingPhone,
   defaultDoc1ParseOpts,
+  mergeDoc1PhoneFromSecondary,
   parseDoc1FromClassification,
   parseDoc1FromExcelBuffer,
   type Doc1Record,
@@ -17,6 +19,7 @@ import {
   type EzgoMailExcelAttachment,
 } from "../_shared/ezgoMailImap.ts";
 import {
+  enrichRecordsPhoneFromDb,
   loadGuestCacheForReport,
   matchDoc1Record,
 } from "../_shared/ezgoMailMatch.ts";
@@ -96,15 +99,23 @@ async function resolveDoc1FromMessage(msg: {
   let classified = classifyEzgoMailContent(msg.bodyHtml, msg.bodyText);
   let records = parseDoc1FromClassification(classified, opts);
 
-  if (!records.length && msg.excelAttachments?.length) {
+  let excelRecords: Doc1Record[] = [];
+  if (msg.excelAttachments?.length) {
     for (const att of msg.excelAttachments) {
       const parsed = await parseDoc1FromExcelBuffer(att.data, opts);
       if (parsed.length) {
-        classified = { reportType: "doc1_excel", excelFilename: att.filename };
-        records = parsed;
+        excelRecords = parsed;
+        if (!records.length) {
+          classified = { reportType: "doc1_excel", excelFilename: att.filename };
+          records = parsed;
+        }
         break;
       }
     }
+  }
+
+  if (records.length && excelRecords.length && countDoc1RecordsMissingPhone(records) > 0) {
+    records = mergeDoc1PhoneFromSecondary(records, excelRecords);
   }
 
   return { classified, records };
@@ -162,6 +173,8 @@ async function processIngest(
     return { ok: false, ingestId: failed?.id, reason: "no_rows" };
   }
 
+  records = await enrichRecordsPhoneFromDb(supabase, records);
+
   const reportDate = records.find((r) => r.arrival_date)?.arrival_date ?? null;
   const guestCache = await loadGuestCacheForReport(supabase, reportDate);
 
@@ -217,6 +230,40 @@ async function processIngest(
   return { ok: true, ingestId: ingest.id, lines: records.length };
 }
 
+async function reparseIngest(
+  supabase: ReturnType<typeof createClient>,
+  ingestId: string,
+  cfg: NonNullable<ReturnType<typeof resolveEzgoImapConfig>>,
+  allowlist: string[],
+): Promise<{ ok: boolean; ingestId?: string; lines?: number; reason?: string }> {
+  const { data: ingest } = await supabase
+    .from("ezgo_mail_ingest")
+    .select("id, external_message_id, subject")
+    .eq("id", ingestId)
+    .maybeSingle();
+  if (!ingest) return { ok: false, reason: "ingest_not_found" };
+
+  const targetId = ingest.external_message_id;
+  const { error: delErr } = await supabase
+    .from("ezgo_mail_ingest")
+    .delete()
+    .eq("id", ingestId);
+  if (delErr) return { ok: false, reason: delErr.message };
+
+  const { messages } = await withImapBudget(() =>
+    fetchEzgoInboxMessages(cfg, 50, allowlist)
+  );
+  const msg = messages.find((m) => m.id === targetId);
+  if (!msg) {
+    return {
+      ok: false,
+      reason: `המייל לא נמצא בתיבה (message-id: ${targetId.slice(0, 40)}…) — נסה להעביר שוב מ-Gmail`,
+    };
+  }
+
+  return await processIngest(supabase, msg);
+}
+
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: CORS_HEADERS });
@@ -235,6 +282,13 @@ serve(async (req: Request) => {
     const authBlock = await assertEzgoMailStaff(req, supabase);
     if (authBlock) return authBlock;
 
+    let body: { reparse_ingest_id?: string } = {};
+    try {
+      body = await req.json();
+    } catch {
+      body = {};
+    }
+
     if (!ezgoMailSyncEnabled()) {
       return jsonResponse({ ok: true, skipped: true, reason: "EZGO_MAIL_SYNC_ENABLED=false" });
     }
@@ -245,6 +299,21 @@ serve(async (req: Request) => {
     }
 
     const allowlist = parseAllowlist();
+
+    if (body.reparse_ingest_id) {
+      try {
+        const result = await reparseIngest(supabase, body.reparse_ingest_id, cfg, allowlist);
+        return jsonResponse({
+          ok: result.ok,
+          reparse: true,
+          ...result,
+        });
+      } catch (e) {
+        console.error("[ezgo-mail-sync] reparse", e);
+        return jsonResponse({ ok: false, error: (e as Error).message });
+      }
+    }
+
     const { messages, meta: imapMeta } = await withImapBudget(() =>
       fetchEzgoInboxMessages(cfg, 25, allowlist)
     );

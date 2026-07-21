@@ -99,7 +99,7 @@ export function parseOrderIdentityFromCell(cellRaw: string): {
 export function sanitizeE164(raw: string | null | undefined): string | null {
   if (!raw) return null;
   const c = String(raw).replace(/[^\d+?]/g, "").replace(/\?/g, "");
-  if (!c) return null;
+  if (!c || /^0+$/.test(c)) return null;
   if (c.startsWith("+")) return c.length >= 10 ? c : null;
   if (/^5\d{8}$/.test(c)) return `+972${c}`;
   if (/^05\d{8}$/.test(c)) return `+972${c.slice(1)}`;
@@ -242,6 +242,10 @@ export function parseComprehensiveReport(
       continue;
     }
     if (!current) continue;
+    if (orderCell && !/^\d+:/.test(orderLine!)) {
+      const phoneOnly = extractPhoneFromOpsText(orderCell);
+      if (phoneOnly && !current.phone) current.phone = phoneOnly;
+    }
     if (c2 && typeof c2 === "string") {
       extractExtras(current, c2, extractOpts);
       extractMealTime(current, c2);
@@ -281,10 +285,19 @@ export function parseComprehensiveReport(
 function htmlCellText(html: string): string {
   return html
     .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/div>\s*<div[^>]*>/gi, "\n")
+    .replace(/<\/p>\s*<p[^>]*>/gi, "\n")
     .replace(/<[^>]+>/g, "")
     .replace(/&nbsp;/gi, " ")
     .replace(/\u00a0/g, " ")
     .trim();
+}
+
+function appendToLastPseudoOrderCell(pseudoRows: RowTuple[], fragment: string): void {
+  if (!pseudoRows.length || !fragment.trim()) return;
+  const last = pseudoRows[pseudoRows.length - 1];
+  const prev = String(last[1] ?? "").trim();
+  last[1] = prev ? `${prev}\n${fragment.trim()}` : fragment.trim();
 }
 
 function extractArrivalDateFromHtml(htmlText: string): string | null {
@@ -316,7 +329,17 @@ export function parseHtmlDailyReport(htmlText: string, opts: Doc1ParseOpts = {})
     const meals = tdMatches.length > 3 ? htmlCellText(tdMatches[3][1]) : "";
 
     const identity = parseOrderIdentityFromCell(orderRaw);
-    if (!identity.order_number) continue;
+    if (!identity.order_number) {
+      const phoneOnly = extractPhoneFromOpsText(orderRaw);
+      if (phoneOnly) {
+        appendToLastPseudoOrderCell(pseudoRows, orderRaw);
+      } else if (extras && pseudoRows.length) {
+        const last = pseudoRows[pseudoRows.length - 1];
+        const prevExtras = String(last[2] ?? "");
+        last[2] = prevExtras ? `${prevExtras}\n${extras}` : extras;
+      }
+      continue;
+    }
 
     const bUpper = `${board} ${meals}`.trim().toUpperCase();
     let mealDefault: { meal_time: string | null; meal_location: string } | null = null;
@@ -470,6 +493,39 @@ export function parseDoc1FromClassification(
     return parseTsvDailyReport(classified.tsv, opts);
   }
   return [];
+}
+
+/** Fill missing phones (and names) on primary rows from Excel/secondary Doc1 parse — keyed by order_number. */
+export function mergeDoc1PhoneFromSecondary(
+  primary: Doc1Record[],
+  secondary: Doc1Record[],
+): Doc1Record[] {
+  if (!primary.length || !secondary.length) return primary;
+  const byOrder = new Map<string, Doc1Record>();
+  for (const rec of secondary) {
+    if (!rec.order_number) continue;
+    const prev = byOrder.get(rec.order_number);
+    if (!prev) {
+      byOrder.set(rec.order_number, rec);
+      continue;
+    }
+    if (!prev.phone && rec.phone) prev.phone = rec.phone;
+    if (!prev.guest_name && rec.guest_name) prev.guest_name = rec.guest_name;
+  }
+  return primary.map((rec) => {
+    if (rec.phone || !rec.order_number) return rec;
+    const hit = byOrder.get(rec.order_number);
+    if (!hit?.phone) return rec;
+    return {
+      ...rec,
+      phone: hit.phone,
+      guest_name: rec.guest_name || hit.guest_name,
+    };
+  });
+}
+
+export function countDoc1RecordsMissingPhone(records: Doc1Record[]): number {
+  return records.filter((r) => r.order_number && !r.phone).length;
 }
 
 type XlsxModule = {

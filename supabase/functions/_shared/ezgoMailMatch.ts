@@ -97,6 +97,44 @@ export function findGuestForDoc1Enrichment(
   return null;
 }
 
+export async function enrichRecordsPhoneFromDb(
+  supabase: SupabaseClient,
+  records: Doc1Record[],
+): Promise<Doc1Record[]> {
+  const orderNums = [
+    ...new Set(
+      records
+        .filter((r) => !r.phone && r.order_number)
+        .map((r) => r.order_number as string),
+    ),
+  ];
+  if (!orderNums.length) return records;
+
+  const { data: guests } = await supabase
+    .from("guests")
+    .select("order_number, phone")
+    .in("order_number", orderNums)
+    .not("phone", "is", null)
+    .neq("status", "cancelled");
+
+  const phoneByOrder = new Map<string, string>();
+  for (const row of guests ?? []) {
+    const order = row.order_number ? String(row.order_number) : "";
+    const phone = row.phone ? String(row.phone) : "";
+    if (order && phone && !phoneByOrder.has(order)) {
+      phoneByOrder.set(order, phone);
+    }
+  }
+
+  if (!phoneByOrder.size) return records;
+
+  return records.map((rec) => {
+    if (rec.phone || !rec.order_number) return rec;
+    const phone = phoneByOrder.get(rec.order_number);
+    return phone ? { ...rec, phone } : rec;
+  });
+}
+
 export async function matchDoc1Record(
   supabase: SupabaseClient,
   rec: Doc1Record,
