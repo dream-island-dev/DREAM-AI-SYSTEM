@@ -27,6 +27,16 @@ function phoneVariants(bare: string): string[] {
   return [...new Set([`+${noPlus}`, noPlus, `0${noPlus.slice(3)}`])];
 }
 
+export type InboxAlertChannel = "meta" | "whapi";
+
+/** Channel order for red-alert lookup — preferred first, then fallback. */
+export function inboxAlertChannelLookupOrder(
+  preferred?: InboxAlertChannel | null,
+): InboxAlertChannel[] {
+  if (preferred === "whapi") return ["whapi", "meta"];
+  return ["meta"];
+}
+
 export async function triggerInboxRedAlert(
   supabase: SupabaseClient,
   opts: {
@@ -34,10 +44,18 @@ export async function triggerInboxRedAlert(
     phone: string;
     conversationId?: number | null;
     summary?: string | null;
+    /** Suite portal flows pass "whapi" so the red dot lands on the Suites thread. */
+    preferredInboxChannel?: InboxAlertChannel | null;
   },
 ): Promise<void> {
-  const { guestId, phone, conversationId, summary } = opts;
+  const { guestId, phone, conversationId, summary, preferredInboxChannel } = opts;
   if (!phone) return;
+
+  const markerChannel: InboxAlertChannel =
+    preferredInboxChannel === "whapi" ? "whapi" : "meta";
+  const markerMessage = summary
+    ? `[מערכת] ${summary}`
+    : "[מערכת] בקשה חדשה נוצרה בלוח הבקשות.";
 
   try {
     // Fast path — the caller already knows the exact inbound row that
@@ -53,39 +71,38 @@ export async function triggerInboxRedAlert(
     }
 
     const variants = phoneVariants(phone);
-    const { data: latestInbound, error: lookupErr } = await supabase
-      .from("whatsapp_conversations")
-      .select("id")
-      .in("phone", variants)
-      .eq("inbox_channel", "meta")
-      .eq("direction", "inbound")
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (lookupErr) {
-      console.warn("[inboxRedAlert] latest-inbound lookup failed:", lookupErr.message);
-    }
-
-    if (latestInbound?.id) {
-      const { error } = await supabase
+    for (const channel of inboxAlertChannelLookupOrder(preferredInboxChannel)) {
+      const { data: latestInbound, error: lookupErr } = await supabase
         .from("whatsapp_conversations")
-        .update({ human_requested: true, human_request_type: "guest_alert" })
-        .eq("id", latestInbound.id);
-      if (error) console.warn("[inboxRedAlert] flag latest inbound failed:", error.message);
-      return;
+        .select("id")
+        .in("phone", variants)
+        .eq("inbox_channel", channel)
+        .eq("direction", "inbound")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (lookupErr) {
+        console.warn(`[inboxRedAlert] latest-inbound lookup failed (${channel}):`, lookupErr.message);
+        continue;
+      }
+      if (latestInbound?.id) {
+        const { error } = await supabase
+          .from("whatsapp_conversations")
+          .update({ human_requested: true, human_request_type: "guest_alert" })
+          .eq("id", latestInbound.id);
+        if (error) console.warn("[inboxRedAlert] flag latest inbound failed:", error.message);
+        return;
+      }
     }
 
-    // No inbound history at all for this guest (e.g. a Guest Portal click
-    // from someone who never messaged the bot) — without an inbound row the
-    // guest never surfaces in the Inbox roster at all (groupByPhone groups
-    // off whatsapp_conversations, and only inbound rows can carry the red
-    // flag). Insert one minimal system marker row so the guest appears.
+    // No inbound history — insert a system marker on the guest's primary channel
+    // so they surface in the unified Inbox roster with the red flag.
     const { error } = await supabase.from("whatsapp_conversations").insert({
       phone,
       guest_id:   guestId,
-      inbox_channel: "meta",
+      inbox_channel: markerChannel,
       direction:  "inbound",
-      message:    summary ? `[מערכת] ${summary}` : "[מערכת] בקשה חדשה נוצרה בלוח הבקשות.",
+      message:    markerMessage,
       wa_message_id: null,
       human_requested: true,
       human_request_type: "guest_alert",

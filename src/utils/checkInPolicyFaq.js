@@ -14,16 +14,31 @@ import {
 import { formatGuestDietaryBrief } from "../data/guestProfileSchema";
 
 export const CHECK_IN_POLICY_QUESTION_PATTERN =
-  /(?:מה|מתי|איזו?\s*שעה|כמה|האם)\s+[\s\S]{0,60}?(?:צ.?ק.?אין|צ.?ק.?אא?וט|שעת?\s*(?:כניסה|עזיבה)|כניסה\s*(?:ל)?חדר|להיכנס\s*לחדר|הכנס\w*\s*לחדר|check.?in|check.?out)|שעות?\s*(?:ה)?כניסה|קבלת\s*חדר|מועד\s*כניסה|(?:אפשר|ניתן|מותר)\s+[\s\S]{0,40}?(?:להיכנס|כניסה|לחדר)|מתי\s+(?:מקבלים|נותנים|מוסרים)\s*(?:את\s*)?החדר|מה\s+שעות/i;
+  /(?:מה|מתי|איזו?\s*שעה|כמה|האם)\s+[\s\S]{0,60}?(?:צ.?ק.?אין|צ.?ק.?אא?וט|שעת?\s*(?:כניסה|עזיבה)|כניסה\s*(?:ל)?חדר|להיכנס\s*לחדר|הכנס\w*\s*לחדר|check.?in|check.?out)|שעות?\s*(?:ה)?כניסה|קבלת\s*חדר|מועד\s*כניסה|(?:אפשר|ניתן|מותר)\s+[\s\S]{0,40}?(?:להיכנס|כניסה\s*(?:ל)?חדר)|מתי\s+(?:מקבלים|נותנים|מוסרים)\s*(?:את\s*)?החדר|מה\s+שעות/i;
 
-export const CHECK_IN_HOURS_REPLY_PATTERN =
-  /שעות?\s*(?:ה)?כניסה|כניסה\s*ל(?:חדר|מתחם)|קבלת\s*חדר|ימי\s*חול|שבתות\s*וחגים|החל\s*מהשעה/i;
+const PHYSICAL_REQUEST_INTENT_PATTERN =
+  /אפשר|אפשרו|בבקשה|צר[י]כ[הים]?|חסר|חסרה|תביאו|תביא|שלחו|שלח|מבקש(?:ים|ת)?|נוכל(?:ים)?\s+לקבל|אפשר\s+לקבל|(?:א|נ)שמח|נשמח\s+לקבל|נוספ(?:ות|ים|ה|ף)?|דחוף|עזרו|עזרה|העבר|העבירו|עוד\s+(?:של|מ)|תוסיפו|need|please\s+(?:send|bring)|can\s+(?:i|we)\s+get/u;
+
+const CHECK_IN_ENTRY_CONTEXT_PATTERN =
+  /(?:להיכנס|כניסה|מקבלים|נותנים|מוסרים|שעת?\s*כניסה|מועד\s*כניסה|צ.?ק.?אין|check.?in)/iu;
+
+export function isInRoomDeliveryRequest(text) {
+  const t = String(text || "").trim();
+  if (!t || !PHYSICAL_REQUEST_INTENT_PATTERN.test(t)) return false;
+  if (!/(?:לחדר|לסוויטה|בחדר|בסוויטה)/u.test(t)) return false;
+  if (CHECK_IN_ENTRY_CONTEXT_PATTERN.test(t)) return false;
+  return true;
+}
 
 export function isCheckInPolicyQuestion(text) {
   const t = String(text || "").trim();
   if (!t) return false;
+  if (isInRoomDeliveryRequest(t)) return false;
   return CHECK_IN_POLICY_QUESTION_PATTERN.test(t);
 }
+
+export const CHECK_IN_HOURS_REPLY_PATTERN =
+  /שעות?\s*(?:ה)?כניסה|כניסה\s*ל(?:חדר|מתחם)|קבלת\s*חדר|ימי\s*חול|שבתות\s*וחגים|החל\s*מהשעה/i;
 
 export function looksLikeCheckInHoursReply(text) {
   const t = String(text || "").trim();
@@ -228,6 +243,9 @@ export function resolveTruncatedReplyFallback(
   }
   if (isCheckInPolicyQuestion(guestText)) {
     return buildCheckInPolicyReply(cfg, arrivalDateStr);
+  }
+  if (isInRoomDeliveryRequest(guestText)) {
+    return genericFallback;
   }
   if (looksLikeDiningHoursReply(replyText)) {
     return buildDiningReplyForGuest(cfg, guestText, guest, kb);

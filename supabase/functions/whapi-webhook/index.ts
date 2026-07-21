@@ -109,6 +109,7 @@ import {
   extractAllowlistedRequestLines,
   buildOperationalRequestSummary,
   buildOperationalDispatchReply,
+  normalizeGuestInboundForOps,
   isDepartureAssistRequest,
   buildDepartureAssistSummary,
   buildDepartureAssistReply,
@@ -117,8 +118,9 @@ import {
   shouldInterceptBalloonRoomRequest,
   shouldInterceptAdministrativeInHouseRequest,
   isSpaUpsellAcceptanceReply,
+  shouldHandoffUnrecognizedInRoomRequest,
 } from "../_shared/automationSchedule.ts";
-import { createGuestOpsTaskWithInstantAmenityDispatch } from "../_shared/createGuestOpsTask.ts";
+import { createGuestOpsTaskWithInstantAmenityDispatch, backstopGuestOpsTaskIfAllowlisted } from "../_shared/createGuestOpsTask.ts";
 import {
   classifyFacilityReview,
   buildFacilityReviewReply,
@@ -944,14 +946,6 @@ async function handleGuestDirectMessage(
       return;
     }
 
-    if (isCheckInPolicyQuestion(text)) {
-      await patchGuestDmInbound(supabase, conversationId, { intent: "check_in_policy_faq" });
-      const cfg = await fetchGuestDmBotConfig(supabase);
-      await sendGuestDmReply(supabase, phone, guestId, buildCheckInPolicyReply(cfg), staffMuted);
-      results.push({ ...base, action: "checkin_policy_faq", muted: staffMuted });
-      return;
-    }
-
     if (isDiningQuestion(text)) {
       await patchGuestDmInbound(supabase, conversationId, { intent: "dining_faq" });
       const [cfg, botSettings] = await Promise.all([
@@ -1088,7 +1082,7 @@ async function handleGuestDirectMessage(
     if (
       guestId
       && shouldInterceptOperationalInHouseRequest(
-        text,
+        normalizeGuestInboundForOps(text),
         {
           status:         (guestRecord?.status as string | null) ?? null,
           arrival_date:   (guestRecord?.arrival_date as string | null) ?? null,
@@ -1102,13 +1096,14 @@ async function handleGuestDirectMessage(
         arrival_date:   (guestRecord?.arrival_date as string | null) ?? null,
         departure_date: (guestRecord?.departure_date as string | null) ?? null,
       };
-      const dispatchText = extractAllowlistedRequestLines(text, guestOpsCtx);
-      const summary = buildOperationalRequestSummary(text);
+      const opsText = normalizeGuestInboundForOps(text);
+      const dispatchText = extractAllowlistedRequestLines(opsText, guestOpsCtx);
+      const summary = buildOperationalRequestSummary(opsText);
       const guestRoom = (guest?.room as string | null | undefined) ?? null;
 
       createGuestOpsTaskWithInstantAmenityDispatch({
         supabase, guestId, phone, guestName, room: guestRoom,
-        summary, rawText: text, dispatchText,
+        summary, rawText: opsText, dispatchText,
       }).catch((e: Error) =>
         console.error("[whapi-webhook] guest_dm operational intercept createGuestOpsTask error:", e.message),
       );
@@ -1181,6 +1176,27 @@ async function handleGuestDirectMessage(
 
       await sendGuestDmReply(supabase, phone, guestId, buildDepartureAssistReply(guestName), staffMuted);
       results.push({ ...base, action: "departure_assist_request", muted: staffMuted });
+      return;
+    }
+
+    if (shouldHandoffUnrecognizedInRoomRequest(text)) {
+      await escalateGuestDm(supabase, {
+        phone, guestId, guestName, text, conversationId,
+        attentionReason: "בקשת שירות לחדר",
+        alertType: "guest_request",
+        humanRequestType: "staff_handoff",
+        staffMuted,
+        replyText: GUEST_STAFF_HANDOFF_SENTENCE,
+      });
+      results.push({ ...base, action: "unrecognized_in_room_handoff", muted: staffMuted });
+      return;
+    }
+
+    if (isCheckInPolicyQuestion(text)) {
+      await patchGuestDmInbound(supabase, conversationId, { intent: "check_in_policy_faq" });
+      const cfg = await fetchGuestDmBotConfig(supabase);
+      await sendGuestDmReply(supabase, phone, guestId, buildCheckInPolicyReply(cfg), staffMuted);
+      results.push({ ...base, action: "checkin_policy_faq", muted: staffMuted });
       return;
     }
 
@@ -1375,6 +1391,39 @@ async function handleGuestDirectMessage(
         guestRecord,
         botSettings.knowledge_base,
       );
+    }
+    if (guestId) {
+      const guestOpsCtx = {
+        status:         (guestRecord?.status as string | null) ?? null,
+        arrival_date:   (guestRecord?.arrival_date as string | null) ?? null,
+        departure_date: (guestRecord?.departure_date as string | null) ?? null,
+      };
+      const guestRoom = (guest?.room as string | null | undefined) ?? null;
+      const backstop = await backstopGuestOpsTaskIfAllowlisted({
+        supabase,
+        guestId,
+        phone,
+        guestName,
+        room: guestRoom,
+        summary: "",
+        rawText: text,
+        guestOpsCtx,
+        logTag: "whapi-webhook",
+      });
+      if (backstop?.created || backstop?.duplicate) {
+        await patchGuestDmInbound(supabase, conversationId, {
+          guest_id: guestId,
+          intent: "operational_in_house_request",
+          human_requested: true,
+          human_request_type: "operational_request",
+        });
+        const summary = buildOperationalRequestSummary(normalizeGuestInboundForOps(text));
+        await supabase.from("guests").update({
+          requires_attention:       true,
+          requires_attention_since: new Date().toISOString(),
+          attention_reason:         summary,
+        }).eq("id", guestId);
+      }
     }
     await flagGuestDmStaffHandoff(supabase, { phone, guestId, conversationId, replyText });
     await sendGuestDmReply(supabase, phone, guestId, replyText, staffMuted);

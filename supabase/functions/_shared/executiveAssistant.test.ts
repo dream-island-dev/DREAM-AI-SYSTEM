@@ -544,11 +544,16 @@ Deno.test("buildExecutiveSystemPrompt — Mike overlay includes architect contex
   assertEquals(prompt.includes("מאיה"), true);
   assertEquals(prompt.includes("ארכיטקטית ומפתחת XOS"), true);
   assertEquals(prompt.includes("get_system_health"), true);
+  assertEquals(prompt.includes("send_executive_brief"), true);
+  assertEquals(prompt.includes("── טיוטה ──"), true);
 });
 
 Deno.test("resolveExecutiveToolDefs — Mike gets architect tools, Eliad does not", () => {
-  assertEquals(resolveExecutiveToolDefs("972506842439", "architect").some((t) => t.name === "get_system_health"), true);
+  const mikeDefs = resolveExecutiveToolDefs("972506842439", "architect");
+  assertEquals(mikeDefs.some((t) => t.name === "get_system_health"), true);
+  assertEquals(mikeDefs.some((t) => t.name === "send_executive_brief"), true);
   assertEquals(resolveExecutiveToolDefs("972505421751", "executive").some((t) => t.name === "get_system_health"), false);
+  assertEquals(resolveExecutiveToolDefs("972505421751", "executive").some((t) => t.name === "send_executive_brief"), false);
 });
 
 Deno.test("resolveExecutiveToolDefs — Adir gets front desk tools, not CEO override", () => {
@@ -610,6 +615,7 @@ Deno.test("buildExecutiveSystemPrompt — Adir never leaks executive/architect-o
     "learn_executive_rule", "get_team_ops_analytics", "ceo_guest_override",
     "get_ops_digest_now", "notify_managers_group",
     "get_system_health", "get_executive_action_log", "list_executive_rules_audit",
+    "send_executive_brief",
   ];
   for (const name of forbidden) {
     assertEquals(prompt.includes(name), false, `prompt leaked forbidden tool: ${name}`);
@@ -700,6 +706,52 @@ Deno.test("escalate_to_eliad — sends a DM to Eliad's phone with the summary", 
     assertEquals(sentTo, "972505421751");
     assertEquals(sentBody.includes("האורח מבקש פיצוי"), true);
     assertEquals(sentBody.includes("אמטיסט 9"), true);
+  });
+});
+
+Deno.test("send_executive_brief — requires message_he", async () => {
+  const result = await executeExecutiveTool(mockSupabaseByTable({}), "send_executive_brief", {}, MIKE_CTX);
+  assertEquals(result.ok, false);
+  assertEquals(result.error, "message_he_required");
+});
+
+Deno.test("send_executive_brief — forbidden for Eliad and Adir", async () => {
+  const eliad = await executeExecutiveTool(mockSupabaseByTable({}), "send_executive_brief", { message_he: "x" }, CTX);
+  assertEquals(eliad.ok, false);
+  assertEquals(eliad.error, "tool_forbidden_for_role");
+  const adir = await executeExecutiveTool(mockSupabaseByTable({}), "send_executive_brief", { message_he: "x" }, ADIR_CTX);
+  assertEquals(adir.ok, false);
+  assertEquals(adir.error, "tool_forbidden_for_role");
+});
+
+Deno.test("send_executive_brief — sends clean DM to Eliad without attribution headers", async () => {
+  const supabase = mockSupabaseByTable({ whatsapp_conversations: { data: null, error: null } });
+  await withEnvs({ WHAPI_TOKEN: "test-token" }, async () => {
+    let sentBody = "";
+    await withFetch(
+      (_input, init) => {
+        const parsed = JSON.parse(String((init as RequestInit | undefined)?.body ?? "{}"));
+        sentBody = String(parsed.body ?? "");
+        return Promise.resolve(new Response(JSON.stringify({ id: "wamid-brief" }), { status: 200 }));
+      },
+      async () => {
+        const result = await executeExecutiveTool(
+          supabase,
+          "send_executive_brief",
+          {
+            message_he: "דגש ממייק\n💆 4 בקשות ספא מהפורטל פתוחות.\nמה אתה מעדיף?",
+            mode: "decision",
+          },
+          MIKE_CTX,
+        );
+        assertEquals(result.ok, true);
+        assertEquals(result.sent, true);
+      },
+    );
+    assertEquals(sentBody.includes("דגש ממייק"), false);
+    assertEquals(sentBody.includes("📣 עדכון מאדיר"), false);
+    assertEquals(sentBody.startsWith("אליעד,"), true);
+    assertEquals(sentBody.includes("4 בקשות ספא"), true);
   });
 });
 

@@ -14,7 +14,8 @@ import { isEffectiveSuiteGuest } from "../_shared/suiteNames.ts";
 
 export const PORTAL_SPA_ATTENTION_REASON = "בקשת טיפול בספא";
 
-export const PORTAL_SPA_GUEST_REPLY = "היי, תרצו לתאם טיפול בספא?";
+export const PORTAL_SPA_GUEST_REPLY =
+  "היי, למתי תרצו לתאם טיפול בספא? נדאג שנציג מטעמנו יחזור אליכם בהקדם";
 
 const PORTAL_SPA_AUDIT_LINE =
   "\n[System] האורח ביקש טיפול בספא דרך הפורטל האישי.";
@@ -109,6 +110,15 @@ serve(async (req: Request) => {
       .eq("id", guest.id);
     if (updErr) throw new Error(`guest_update_error: ${updErr.message}`);
 
+    // Suite portal spa replies always target the physical Suites device —
+    // independent of ACC guest_suites_channel (automation cohort toggle).
+    // portal_spa_whapi bypasses that gate in whatsapp-send inbox_reply;
+    // SOS mode still blocks Whapi. Day-pass follows cohort routing.
+    const forceSuiteWhapi = isEffectiveSuiteGuest(guest);
+    const outboundChannel =
+      forceSuiteWhapi || shouldRouteGuestOutboundViaWhapiSuites(guest) ? "whapi" : "meta";
+    const alertInboxChannel = outboundChannel;
+
     const tag = futureArrivalTag(guest.arrival_date as string | null, guest.status as string | null);
     const alertMessage =
       `[פורטל אורח — בקשת ספא${guest.room ? " — " + guest.room : ""}]` +
@@ -136,15 +146,8 @@ serve(async (req: Request) => {
       room: guest.room as string | null,
       sourceLabel: "Guest Portal",
       alsoPersonalDm: true,
+      preferredInboxChannel: alertInboxChannel,
     }).catch((e: Error) => console.warn("[guest-portal-spa-request] staff notify failed:", e.message));
-
-    // Suite portal spa replies always target the physical Suites device —
-    // independent of ACC guest_suites_channel (automation cohort toggle).
-    // portal_spa_whapi bypasses that gate in whatsapp-send inbox_reply;
-    // SOS mode still blocks Whapi. Day-pass follows cohort routing.
-    const forceSuiteWhapi = isEffectiveSuiteGuest(guest);
-    const outboundChannel =
-      forceSuiteWhapi || shouldRouteGuestOutboundViaWhapiSuites(guest) ? "whapi" : "meta";
 
     let conciergeReplySent = false;
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
@@ -162,6 +165,7 @@ serve(async (req: Request) => {
           message: PORTAL_SPA_GUEST_REPLY,
           inbox_channel: outboundChannel,
           portal_spa_whapi: forceSuiteWhapi,
+          preserve_attention: true,
         }),
         signal: AbortSignal.timeout(28000),
       });

@@ -107,12 +107,19 @@ export function isGuestEligibleForInHouseOpsDispatch(
   now: Date,
 ): boolean {
   const status = guest.status ?? null;
-  if (status === "checked_in") return true;
   if (status === "cancelled" || status === "checked_out") return false;
 
   const today = israelYmd(now);
   const arrival = guest.arrival_date ?? null;
   const departure = guest.departure_date ?? null;
+
+  // A future arrival_date means this stay hasn't started yet regardless of
+  // status — protects against a stale/incorrect checked_in flag left behind
+  // when a guest's dates were later corrected (e.g. re-import) without
+  // reverting status, which would otherwise dispatch a real ops task to a
+  // room nobody is actually in yet.
+  if (status === "checked_in") return !arrival || arrival <= today;
+
   if (!arrival || arrival > today) return false;
   if (departure && departure < today) return false;
 

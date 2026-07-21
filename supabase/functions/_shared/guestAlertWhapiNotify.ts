@@ -7,7 +7,7 @@
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendWhapiText } from "./whapiSend.ts";
 import { alertIntentType, resolveRequestsWhapiGroupId } from "./routingConfig.ts";
-import { triggerInboxRedAlert } from "./inboxRedAlert.ts";
+import { triggerInboxRedAlert, type InboxAlertChannel } from "./inboxRedAlert.ts";
 
 const STAFF_APP_ORIGIN = "https://dream-ai-system.vercel.app";
 
@@ -44,6 +44,8 @@ export type GuestAlertNotifyOpts = {
   alsoPersonalDm?: boolean;
   /** Informational board rows (e.g. arrival_eta) — no Inbox red-dot / no Whapi group spam. */
   boardOnly?: boolean;
+  /** Portal / cohort-aware flows — flag the Suites thread instead of default Meta. */
+  preferredInboxChannel?: InboxAlertChannel | null;
 };
 
 export function guestAlertTypeLabelHe(alertType: string): string {
@@ -193,6 +195,7 @@ export async function onGuestAlertInserted(
     phone:          opts.phone,
     conversationId: opts.conversationId ?? null,
     summary:        opts.message.slice(0, 200),
+    preferredInboxChannel: opts.preferredInboxChannel ?? null,
   }).catch((e: Error) =>
     console.warn("[guestAlertWhapiNotify] red-alert failed:", e.message),
   );

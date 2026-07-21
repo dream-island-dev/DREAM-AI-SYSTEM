@@ -416,6 +416,12 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
+### 2026-07-21 — `status='checked_in'` alone is not proof a guest is physically in the room
+- **Symptom:** A drink-request ops task (`בקשת משקה לחדר`) went out to «אוניקס 7» ops group for a guest whose own `arrival_date` was 2 days in the future — nobody was in the room yet.
+- **Root:** `isGuestEligibleForInHouseOpsDispatch` (`_shared/automationSchedule.ts`) trusted `status==="checked_in"` unconditionally, with zero date sanity check — only the `pending`/`expected`/`room_ready` branch checked `arrival_date`/`departure_date`. A guest whose dates were corrected (re-import/edit) after an earlier housekeeping check-in event kept a stale `checked_in` flag from the old dates.
+- **Fix pattern:** even the `checked_in` branch now requires `!arrival_date || arrival_date <= today`. Single choke point (`isGuestEligibleForInHouseOpsDispatch`) — used by Meta Tier-0, Meta LLM-tool path (`classifyGuestRequestDispatch`), Whapi Tier-0, and both channels' departure-assist intercept — so the guard covers all 6+ call sites for free. Guests failing the check still route gracefully to `requests_board` (existing future-guest path), never silently dropped.
+- **General lesson:** any "is guest physically present" gate keyed off a status enum needs to also sanity-check the stay-date window, not just trust the status value — statuses can go stale when dates are edited after the fact without a matching status revert.
+
 ### 2026-07-20 — Hand-rolled MIME regex parsing breaks on real Gmail forwards; use a real parser
 - **Symptom:** `ezgo-mail-sync` found forwarded Operations emails via IMAP (mailbox scan worked) but every one landed as `skipped`/0 rows — the EZGO HTML table never made it out of the raw message source.
 - **Root:** `extractBodiesFromSource` hand-parsed MIME with regex (boundary splitting, manual quoted-printable/base64 decode). This is fragile against real-world Gmail forwards: nested multipart (`multipart/mixed` → `multipart/related` → `multipart/alternative`), inline images, and occasionally the original message forwarded as a raw `message/rfc822` part rather than inlined HTML — none of which a single regex pass reliably survives.

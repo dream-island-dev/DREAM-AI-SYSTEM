@@ -50,6 +50,9 @@ describe("checkInPolicyFaq", () => {
     expect(isCheckInPolicyQuestion("מתי מקבלים את החדר?")).toBe(true);
     expect(isCheckInPolicyQuestion("אפשר להיכנס לחדר ב-12?")).toBe(true);
     expect(isCheckInPolicyQuestion("יש מגבת בחדר")).toBe(false);
+    expect(
+      isCheckInPolicyQuestion("היי, אם אפשר נשמח לקבל 2 בקבוקי זירו לחדר, תודה"),
+    ).toBe(false);
   });
 
   test("complete policy reply is not flagged as truncated", () => {

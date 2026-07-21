@@ -157,7 +157,7 @@ const ARRIVAL_TIME_QUESTION_RE =
 
 /** Guest stating an estimated arrival time (not a date-change request). */
 const ARRIVAL_TIME_UPDATE_RE =
-  /שעת\s*הגעה|נגיע|ניגיע|מגיעים?|מתכנ(?:ן|נת|נים|נות)\s*להגיע|להגיע\s+(?:לקראת|בסביבות|בערך|ב[-–]?\s*\d)|הגעה\s|צפו[ייה]\s*להגיע|מתוכנן|לקראת|בסביבות|בערך|arriving\s+at|planning\s+to\s+arrive|around\s+\d/i;
+  /שעת\s*הגעה|נגיע|ניגיע|מגיעים?|מתכנ(?:ן|נת|נים|נות)\s*להגיע|להגיע\s+(?:לקראת|בסביבות|בערך|בין|ב[-–]?\s*\d)|הגעה\s|צפוי(?:ים|ות|ה|ם)?\s*להגיע|מתוכנן|לקראת|בסביבות|בערך|בין\s+\d|arriving\s+at|planning\s+to\s+arrive|around\s+\d|between\s+\d/i;
 
 export function isRecordOnlyArrivalTimeUpdate(text: string): boolean {
   if (DATE_CHANGE_RE.test(text)) return false;

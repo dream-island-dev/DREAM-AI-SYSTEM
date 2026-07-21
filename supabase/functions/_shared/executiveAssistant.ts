@@ -644,6 +644,31 @@ const ARCHITECT_TOOL_DEFS: ToolDef[] = [
       required: [],
     },
   },
+  {
+    name: "send_executive_brief",
+    description:
+      "שליחת עדכון ניהולי נקי לאליעד (מנכ\"ל) בוואטסאפ — מסקנה תפעולית בסגנון פולס בוקר, לא העתקה גולמית ממייק. " +
+      "להשתמש רק אחרי שמייק אישר במפורש את הטיוטה (כן/שלח/yes). " +
+      "לפני הקריאה — לשאוב נתונים רלוונטיים (list_guest_alerts, query_open_tasks, get_system_health וכו'). " +
+      "אסור: שוברים/נופשונית, כותרות «דגש ממייק», ז'רגון טכני.",
+    schema: {
+      type: "object",
+      properties: {
+        message_he: {
+          type: "string",
+          description:
+            "הטקסט המלא שיישלח לאליעד — פותח ב«אליעד,», 2–4 שורות מסקנה, אמוג'י אחד לנושא.",
+        },
+        mode: {
+          type: "string",
+          enum: ["observation", "decision"],
+          description:
+            "observation=תצפית בלבד (בלי שאלה בסוף). decision=נדרשת החלטה — לכלול שאלת סגירה.",
+        },
+      },
+      required: ["message_he"],
+    },
+  },
 ];
 
 const ARCHITECT_TOOL_NAMES = new Set(ARCHITECT_TOOL_DEFS.map((t) => t.name));
@@ -1219,6 +1244,34 @@ async function _execEscalateToEliad(supabase: SupabaseClient, args: Record<strin
   });
   if (!delivery.sent) return { ok: false, error: delivery.error ?? "send_failed" };
   return { ok: true, sent: true, escalated_to: "אליעד" };
+}
+
+const EXEC_BRIEF_FORBIDDEN_LINE_RE =
+  /דגש\s*ממייק|עדכון\s*ממייק|הודעה\s*ממערכת|📣\s*עדכון\s*מאדיר|voucher|נופשונית|שוברים/i;
+
+function _sanitizeExecutiveBriefBody(raw: string): string {
+  return String(raw ?? "")
+    .split("\n")
+    .filter((line) => !EXEC_BRIEF_FORBIDDEN_LINE_RE.test(line.trim()))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+async function _execSendExecutiveBrief(supabase: SupabaseClient, args: Record<string, unknown>): Promise<ToolResult> {
+  let messageHe = _sanitizeExecutiveBriefBody(String(args.message_he ?? ""));
+  if (!messageHe) return { ok: false, error: "message_he_required" };
+
+  if (!/^אליעד[,.]?\s*/i.test(messageHe)) {
+    messageHe = `אליעד,\n\n${messageHe}`;
+  }
+
+  const delivery = await deliverExecutiveDmReply(supabase, {
+    phone: CEO_PHONE_DIGITS,
+    replyText: messageHe,
+  });
+  if (!delivery.sent) return { ok: false, error: delivery.error ?? "send_failed" };
+  return { ok: true, sent: true, recipient: "אליעד", preview: messageHe.slice(0, 200) };
 }
 
 async function _execNotifyManagersGroup(args: Record<string, unknown>): Promise<ToolResult> {
@@ -1965,6 +2018,7 @@ export async function executeExecutiveTool(
     case "learn_front_desk_rule": return await _execLearnRule(supabase, args, ctx, "front_desk");
     case "request_missing_arrival_times": return await _execRequestMissingArrivalTimes(supabase);
     case "escalate_to_eliad": return await _execEscalateToEliad(supabase, args);
+    case "send_executive_brief": return await _execSendExecutiveBrief(supabase, args);
     default: return { ok: false, error: `unknown_tool:${name}` };
   }
 }

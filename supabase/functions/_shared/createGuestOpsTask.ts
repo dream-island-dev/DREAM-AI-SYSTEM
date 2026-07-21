@@ -15,7 +15,7 @@
 // after PENDING_APPROVAL_AUTO_APPROVE_MINUTES if reception never approves.
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { resolveGuestOpsDepartment, guessGuestOpsSlaCategory, isInstantAmenityOpsDispatch } from "./automationSchedule.ts";
+import { resolveGuestOpsDepartment, guessGuestOpsSlaCategory, isInstantAmenityOpsDispatch, shouldInterceptOperationalInHouseRequest, extractAllowlistedRequestLines, buildOperationalRequestSummary, normalizeGuestInboundForOps, type GuestOpsEligibilityInput } from "./automationSchedule.ts";
 import { isAmbiguousCombinedRoomLabel } from "./guestSelectedSuiteRoom.ts";
 import { resolveGuestRoomLabel } from "./guestRoomResolve.ts";
 
@@ -191,4 +191,32 @@ export async function createGuestOpsTaskWithInstantAmenityDispatch(
     await dispatchGuestOpsTaskImmediately(result.taskId);
   }
   return result;
+}
+
+export type { GuestOpsEligibilityInput };
+
+/**
+ * Whapi LLM path has no log_guest_request tools — if Tier-0 missed an
+ * allowlisted ask, still open the Ops Board task before the guest-facing ack
+ * ships (prevents "הועברה לצוות" hallucinations with zero backend action).
+ */
+export async function backstopGuestOpsTaskIfAllowlisted(
+  args: CreateGuestOpsTaskArgs & {
+    guestOpsCtx: GuestOpsEligibilityInput;
+    logTag?: string;
+  },
+): Promise<CreateGuestOpsTaskResult | null> {
+  const opsText = normalizeGuestInboundForOps(args.rawText);
+  if (!shouldInterceptOperationalInHouseRequest(opsText, args.guestOpsCtx)) return null;
+
+  const dispatchText = extractAllowlistedRequestLines(opsText, args.guestOpsCtx);
+  const summary = buildOperationalRequestSummary(opsText);
+  const tag = args.logTag ?? "createGuestOpsTask";
+  console.info(`[${tag}] allowlist backstop — guest:${args.guestId} summary:${summary}`);
+  return createGuestOpsTaskWithInstantAmenityDispatch({
+    ...args,
+    rawText: opsText,
+    dispatchText,
+    summary,
+  });
 }

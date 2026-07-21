@@ -37,6 +37,7 @@ import {
   isBareInRoomAmenityShorthand,
   isPortalTrustedOpsLabel,
   shouldInterceptOperationalInHouseRequest,
+  isGuestEligibleForInHouseOpsDispatch,
   isAllowlistedPhysicalTaskRequest,
   looksLikeDiningHoursReply,
   isLateImportCatchupEligible,
@@ -1091,6 +1092,24 @@ Deno.test("shouldInterceptOperationalInHouseRequest: slash-separated towel ask",
   const onProperty = { status: "checked_in", arrival_date: "2026-07-14", departure_date: "2026-07-16" };
   const msg = "היי / נשמח לקבל שתי מגבות נוספות / תודה";
   assertEquals(shouldInterceptOperationalInHouseRequest(msg, onProperty), true);
+});
+
+// ── Live incident (2026-07-21) — stale checked_in status with a future arrival_date must not dispatch ──
+
+Deno.test("isGuestEligibleForInHouseOpsDispatch: checked_in with future arrival_date is ineligible", () => {
+  const now = israelInstant("2026-07-21", 20, 0);
+  const staleCheckedIn = { status: "checked_in", arrival_date: "2026-07-23", departure_date: "2026-07-24" };
+  assertEquals(isGuestEligibleForInHouseOpsDispatch(staleCheckedIn, now), false);
+});
+
+Deno.test("isGuestEligibleForInHouseOpsDispatch: checked_in with past/today arrival_date stays eligible", () => {
+  const now = israelInstant("2026-07-21", 20, 0);
+  const realCheckedIn = { status: "checked_in", arrival_date: "2026-07-19", departure_date: "2026-07-24" };
+  const arrivingToday = { status: "checked_in", arrival_date: "2026-07-21", departure_date: "2026-07-24" };
+  const noArrivalOnFile = { status: "checked_in", arrival_date: null, departure_date: null };
+  assertEquals(isGuestEligibleForInHouseOpsDispatch(realCheckedIn, now), true);
+  assertEquals(isGuestEligibleForInHouseOpsDispatch(arrivingToday, now), true);
+  assertEquals(isGuestEligibleForInHouseOpsDispatch(noArrivalOnFile, now), true);
 });
 
 Deno.test("extractAllowlistedRequestLines: slash-separated burst isolates towel line", () => {

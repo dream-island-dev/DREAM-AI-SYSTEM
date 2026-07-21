@@ -84,3 +84,18 @@ Deno.test("ETA — bare 15:30 still record-only", () => {
 Deno.test("ETA — arrival-time question is NOT record-only", () => {
   assertEquals(isRecordOnlyArrivalTimeUpdate("מה שעת ההגעה?"), false);
 });
+
+Deno.test("ETA — בין X ל Y range takes earliest (live miss 2026-07-21)", () => {
+  const text = "בוקר אור, אנחנו צפויים להגיע בין 13:00 ל 13:30";
+  assertEquals(extractArrivalTimeFromText(text), "13:00");
+  assertEquals(isRecordOnlyArrivalTimeUpdate(text), true);
+});
+
+Deno.test("ETA — range variants take earliest", () => {
+  assertEquals(extractArrivalTimeFromText("בין 14:00 ל-15:30"), "14:00");
+  assertEquals(extractArrivalTimeFromText("בין 15 ל 16"), "15:00");
+  assertEquals(extractArrivalTimeFromText("נגיע 13:30-14:00"), "13:30");
+  assertEquals(extractArrivalTimeFromText("בין 14:00 ל 13:00"), "13:00");
+  assertEquals(isRecordOnlyArrivalTimeUpdate("צפויות להגיע בין 11:00 ל 11:45"), true);
+  assertEquals(isRecordOnlyArrivalTimeUpdate("בין 16:00 ל 16:30"), true);
+});

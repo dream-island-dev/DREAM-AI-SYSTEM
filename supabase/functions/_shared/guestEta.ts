@@ -16,12 +16,47 @@ export function isValidHhMm(time: string): boolean {
   return h >= 0 && h <= 23 && min >= 0 && min <= 59;
 }
 
+function hhMmFromParts(hRaw: string, mRaw?: string | null): string | null {
+  const h = parseInt(hRaw, 10);
+  const m = mRaw != null && mRaw !== "" ? parseInt(mRaw, 10) : 0;
+  if (Number.isNaN(h) || Number.isNaN(m)) return null;
+  if (h < 0 || h > 23 || m < 0 || m > 59) return null;
+  return padHhMm(h, m);
+}
+
+function earlierHhMm(a: string, b: string): string {
+  const [ah, am] = a.split(":").map((x) => parseInt(x, 10));
+  const [bh, bm] = b.split(":").map((x) => parseInt(x, 10));
+  return ah * 60 + am <= bh * 60 + bm ? a : b;
+}
+
 /**
  * Extract HH:MM from guest text (Hebrew + English, 24h + AM/PM).
+ * Ranges ("בין 13:00 ל 13:30") → earliest time (ops prepares for first arrival).
  * Returns null when no confident time found.
  */
 export function extractArrivalTimeFromText(text: string): string | null {
   const t = text.trim();
+
+  // Range with HH:MM … HH:MM (בין / between / dash) — prefer earliest.
+  const rangeColon = t.match(
+    /(\d{1,2})\s*[:.׳·]\s*(\d{2})\s*(?:ל[-–]?\s*|[-–]|עד\s+|to\s+|and\s+)(\d{1,2})\s*[:.׳·]\s*(\d{2})/i,
+  );
+  if (rangeColon) {
+    const a = hhMmFromParts(rangeColon[1], rangeColon[2]);
+    const b = hhMmFromParts(rangeColon[3], rangeColon[4]);
+    if (a && b) return earlierHhMm(a, b);
+  }
+
+  // Range hour-only: בין 13 ל 14 / בין 13-14
+  const rangeHour = t.match(
+    /(?:בין\s+|between\s+)(\d{1,2})\s*(?:ל[-–]?\s*|[-–]|עד\s+|to\s+|and\s+)(\d{1,2})(?:\s|$|[^\d:])/i,
+  );
+  if (rangeHour) {
+    const a = hhMmFromParts(rangeHour[1]);
+    const b = hhMmFromParts(rangeHour[2]);
+    if (a && b) return earlierHhMm(a, b);
+  }
 
   const ampm = t.match(
     /(?:^|[^\d])(\d{1,2})(?:\s*[:.]\s*(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)\b/i,

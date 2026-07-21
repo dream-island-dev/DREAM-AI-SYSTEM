@@ -86,11 +86,13 @@ import {
   resolveEffectiveGuestStatus,
   isGuestEligibleForInHouseOpsDispatch,
   extractAllowlistedRequestLines,
+  normalizeGuestInboundForOps,
   resolveAutomationScope,
   shouldInterceptDepartureAssistRequest,
   buildDepartureAssistSummary,
   buildDepartureAssistReply,
   buildAdministrativeRequestSummary,
+  shouldHandoffUnrecognizedInRoomRequest,
 } from "../_shared/automationSchedule.ts";
 import {
   isGuestStaffClaimActive,
@@ -2859,20 +2861,6 @@ Deno.serve(async (req: Request) => {
         }
       }
 
-      // ── Check-in / entry policy FAQ — Tier-0, before LLM (complete hours) ──
-      if (!isButtonReply && isCheckInPolicyQuestion(text)) {
-        await handleCheckInPolicyFaq(supabase, {
-          phone,
-          guestId,
-          guest: guest as Record<string, unknown> | null,
-          msgId,
-          claimedConversationId,
-          sim,
-          cfg: botConfig,
-        });
-        continue;
-      }
-
       // ── Severe complaint kill-switch — checked first, before any other Tier-0
       // classifier or LLM. A furious/serious complaint must never be routed
       // into date-change/upsell/generic-complaint copy or free-text LLM output —
@@ -3089,13 +3077,13 @@ Deno.serve(async (req: Request) => {
         !isButtonReply &&
         guestId &&
         guest &&
-        shouldInterceptOperationalInHouseRequest(text, guestOpsEligibility(guest as Record<string, unknown>, statusForRouting), nowForGuest)
+        shouldInterceptOperationalInHouseRequest(normalizeGuestInboundForOps(text), guestOpsEligibility(guest as Record<string, unknown>, statusForRouting), nowForGuest)
       ) {
         await handleOperationalInHouseIntercept(supabase, {
           phone,
           guestId,
           guest: guest as Record<string, unknown>,
-          text,
+          text: normalizeGuestInboundForOps(text),
           msgId,
           claimedConversationId,
           sim,
@@ -3118,6 +3106,49 @@ Deno.serve(async (req: Request) => {
           msgId,
           claimedConversationId,
           sim,
+        });
+        continue;
+      }
+
+      if (!isButtonReply && shouldHandoffUnrecognizedInRoomRequest(text)) {
+        await patchClaimedInbound(supabase, claimedConversationId, msgId, {
+          guest_id: guestId,
+          intent: "unrecognized_in_room_request",
+          human_requested: true,
+          human_request_type: "staff_handoff",
+        });
+        if (guestId) {
+          await supabase.from("guests").update({
+            requires_attention: true,
+            requires_attention_since: new Date().toISOString(),
+            needs_callback: true,
+            attention_reason: "בקשת שירות לחדר",
+          }).eq("id", guestId);
+        }
+        if (!sim) {
+          try {
+            await sendReply(phone, GUEST_STAFF_HANDOFF_SENTENCE, { scripted: true });
+            await insertGuestOutboundIfNotMuted(supabase, {
+              phone, guest_id: guestId, message: GUEST_STAFF_HANDOFF_SENTENCE, wa_message_id: null,
+              intent: "unrecognized_in_room_request",
+            });
+          } catch (e) {
+            console.error("[webhook] unrecognized in-room handoff reply failed:", (e as Error).message);
+          }
+        }
+        console.info(`[webhook] 🛎️ unrecognized in-room request — staff handoff — phone:${phone}`);
+        continue;
+      }
+
+      if (!isButtonReply && isCheckInPolicyQuestion(text)) {
+        await handleCheckInPolicyFaq(supabase, {
+          phone,
+          guestId,
+          guest: guest as Record<string, unknown> | null,
+          msgId,
+          claimedConversationId,
+          sim,
+          cfg: botConfig,
         });
         continue;
       }
@@ -3359,7 +3390,7 @@ Deno.serve(async (req: Request) => {
         guest &&
         effectiveText !== text &&
         shouldInterceptOperationalInHouseRequest(
-          effectiveText,
+          normalizeGuestInboundForOps(effectiveText),
           guestOpsEligibility(guest as Record<string, unknown>, statusAfterBurst),
           nowForGuest,
         )
@@ -3368,7 +3399,7 @@ Deno.serve(async (req: Request) => {
           phone,
           guestId,
           guest: guest as Record<string, unknown>,
-          text: effectiveText,
+          text: normalizeGuestInboundForOps(effectiveText),
           msgId,
           claimedConversationId,
           sim,

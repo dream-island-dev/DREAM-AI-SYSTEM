@@ -2013,7 +2013,10 @@ serve(async (req: Request) => {
 
       // Staff manual reply closes the attention loop — prevents the bot from
       // re-mentioning a topic the team already handled in a prior outbound turn.
-      if (staffGuest?.id && replyStatus !== "failed") {
+      // Portal spa auto-replies set preserve_attention — the alert stays open
+      // until staff actually schedules the treatment.
+      const preserveAttention = b.preserve_attention === true;
+      if (staffGuest?.id && replyStatus !== "failed" && !preserveAttention) {
         await touchStaffClaimActivity(supabase, staffGuest.id, deliveredChannel);
         const { error: guestClearErr } = await supabase.from("guests").update({
           requires_attention:       false,
