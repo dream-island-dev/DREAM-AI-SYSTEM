@@ -152,6 +152,69 @@ function SpaRequestButton({ onClick, busy }) {
   );
 }
 
+function SpaRequestConfirmModal({ open, busy, onConfirm, onCancel }) {
+  if (!open) return null;
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="spa-request-confirm-title"
+      style={{
+        position: "fixed", inset: 0, zIndex: 1000,
+        background: "rgba(9,9,11,0.72)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        padding: 20,
+      }}
+      onClick={busy ? undefined : onCancel}
+    >
+      <div
+        style={{
+          width: "100%", maxWidth: 360, borderRadius: 18,
+          background: "linear-gradient(180deg, #1a2235 0%, #0f172a 100%)",
+          border: `1px solid ${XOS_GOLD}`,
+          padding: "22px 20px 18px",
+          boxShadow: "0 18px 48px rgba(0,0,0,0.45)",
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div id="spa-request-confirm-title" style={{ fontSize: 17, fontWeight: 800, color: "#f8fafc", marginBottom: 10 }}>
+          לשלוח בקשה לטיפול בספא?
+        </div>
+        <p style={{ margin: "0 0 18px", fontSize: 14, lineHeight: 1.7, color: XOS_MUTED }}>
+          נעביר את הבקשה לצוות הספא ונשלח לכם הודעה בוואטסאפ לתיאום.
+        </p>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={busy}
+            style={{
+              flex: 1, padding: "12px 14px", borderRadius: 12, border: "none",
+              background: busy ? "rgba(212,175,55,0.35)" : XOS_GOLD,
+              color: "#0f172a", fontWeight: 800, fontSize: 14, cursor: busy ? "not-allowed" : "pointer",
+            }}
+          >
+            {busy ? "שולחים…" : "כן, שלחו"}
+          </button>
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={busy}
+            style={{
+              flex: 1, padding: "12px 14px", borderRadius: 12,
+              border: `1px solid rgba(148,163,184,0.35)`,
+              background: "transparent", color: "#e2e8f0", fontWeight: 600, fontSize: 14,
+              cursor: busy ? "not-allowed" : "pointer",
+            }}
+          >
+            ביטול
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Guest Experience Survey ────────────────────────────────────────────────
 // MVP audience: day-pass + spa that day (guest.survey_eligible, server-
 // authoritative — guest-portal-data). Labels from portalConfig.survey_ui
@@ -857,6 +920,7 @@ export default function GuestPortal({ token }) {
   });
   const [upsellBusy, setUpsellBusy]       = useState(null);
   const [spaBusy, setSpaBusy]           = useState(false);
+  const [spaConfirmOpen, setSpaConfirmOpen] = useState(false);
   const [toast, setToast]               = useState(null);
   const toastTimer = useRef(null);
 
@@ -905,13 +969,19 @@ export default function GuestPortal({ token }) {
     toastTimer.current = setTimeout(() => setToast(null), 4200);
   }, []);
 
-  async function handleSpaRequest() {
+  function openSpaRequestConfirm() {
+    if (spaBusy || portalConfig.has_spa_booking || portalConfig.enable_spa_request_button === false) return;
+    setSpaConfirmOpen(true);
+  }
+
+  async function submitSpaRequest() {
     if (spaBusy || portalConfig.has_spa_booking || portalConfig.enable_spa_request_button === false) return;
     setSpaBusy(true);
     try {
       const { data, error } = await supabase.functions.invoke("guest-portal-spa-request", { body: { token } });
       if (error || !data?.ok) throw new Error(data?.error ?? error?.message ?? "שגיאה");
-      showToast("הבקשה נשלחה לצוות. ניצור איתכם קשר בהקדם.");
+      setSpaConfirmOpen(false);
+      showToast("הבקשה נשלחה. נשלח לכם הודעה בוואטסאפ לתיאום.");
     } catch {
       showToast("⚠️ לא הצלחנו לשלוח את הבקשה — נסו שוב או התקשרו ל-08-6705600");
     } finally {
@@ -924,7 +994,7 @@ export default function GuestPortal({ token }) {
     if (upsellBusy || spaBusy) return;
     if (actionType !== "OPS_REQUEST" && SPA_PORTAL_UPSELL_RE.test(upsellLabel ?? "")) {
       if (portalConfig.has_spa_booking || portalConfig.enable_spa_request_button === false) return;
-      await handleSpaRequest();
+      openSpaRequestConfirm();
       return;
     }
     setUpsellBusy(upsellLabel);
@@ -1014,7 +1084,7 @@ export default function GuestPortal({ token }) {
           onToast={showToast}
           onUpsell={handlePhotoTourUpsell}
           upsellBusy={upsellBusy}
-          onSpaRequest={handleSpaRequest}
+          onSpaRequest={openSpaRequestConfirm}
           spaBusy={spaBusy}
           showSpaRequest={showSpaRequest}
           scenes={portalScenes}
@@ -1031,7 +1101,7 @@ export default function GuestPortal({ token }) {
           onToast={showToast}
           onUpsell={handlePhotoTourUpsell}
           upsellBusy={upsellBusy}
-          onSpaRequest={handleSpaRequest}
+          onSpaRequest={openSpaRequestConfirm}
           spaBusy={spaBusy}
           showSpaRequest={showSpaRequest}
           scenes={portalScenes}
@@ -1049,7 +1119,7 @@ export default function GuestPortal({ token }) {
           onToast={showToast}
           onUpsell={handlePhotoTourUpsell}
           upsellBusy={upsellBusy}
-          onSpaRequest={handleSpaRequest}
+          onSpaRequest={openSpaRequestConfirm}
           spaBusy={spaBusy}
           showSpaRequest={showSpaRequest}
           scenes={portalScenes}
@@ -1057,6 +1127,13 @@ export default function GuestPortal({ token }) {
           clubUi={portalConfig.club_ui}
         />
       )}
+
+      <SpaRequestConfirmModal
+        open={spaConfirmOpen}
+        busy={spaBusy}
+        onConfirm={submitSpaRequest}
+        onCancel={() => { if (!spaBusy) setSpaConfirmOpen(false); }}
+      />
 
       {/* Luxury toast — shared across all views */}
       {toast && (

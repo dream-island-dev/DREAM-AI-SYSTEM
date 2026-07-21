@@ -127,6 +127,7 @@ import {
   isMetaGuestTemplateAllowed,
   primeGuestChannelConfig,
   whapiDisabledReasonHe,
+  isWhapiGuestSosActive,
 } from "../_shared/guestWhapiRouting.ts";
 
 const CORS = {
@@ -1853,9 +1854,14 @@ serve(async (req: Request) => {
       // null below) — conversation history is the contract, not the profile.
       const staffGuest = await loadGuestByPhoneForStaffReply(supabase, targetPhone);
 
-      // Thread-bound channel (inbox_channel) decides routing. Whapi still
-      // requires GUEST_WHAPI_SUITES_ENABLED (FAIL VISIBLE if off).
-      if (inboxChannel === "whapi" && !isGuestWhapiSuitesEnabled()) {
+      // Thread-bound channel (inbox_channel) decides routing. Whapi normally
+      // requires guest_suites_channel=whapi (FAIL VISIBLE if off). Portal spa
+      // requests from suite guests bypass that cohort gate — still blocked on SOS.
+      const portalSpaWhapiBypass = b.portal_spa_whapi === true;
+      const whapiChannelAllowed = portalSpaWhapiBypass
+        ? !isWhapiGuestSosActive()
+        : isGuestWhapiSuitesEnabled();
+      if (inboxChannel === "whapi" && !whapiChannelAllowed) {
         return new Response(
           JSON.stringify({
             ok: false,

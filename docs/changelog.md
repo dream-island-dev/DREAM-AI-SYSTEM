@@ -1,3 +1,4 @@
+2026-07-21 | Portal spa request — Whapi + confirm modal | `GuestPortal.js` confirm before send; `guest-portal-spa-request` forces Suites Whapi for suite guests (`portal_spa_whapi` bypass in `whatsapp-send` inbox_reply) + reply «היי, תרצו לתאם טיפול בספא?».
 2026-07-21 | EZGO mail — Doc2 arrivals report (דוח כניסות) | `ezgoDoc2Parser` + `matchDoc2Record` + mail UI lanes: צור סוויטה / השלמת חסר / שיבוץ חדר; auto IMAP classify `doc2_arrivals`.
 2026-07-21 | EZGO mail — fix auto-sync crash (const records) | `processIngest` used `records = enrichRecordsPhoneFromDb` on const — broke every new IMAP ingest; fixed to `enriched`; removed `.eml` UI button (auto sync only).
 2026-07-21 | Guest profile — editable phone in AddGuestModal | `AddGuestModal` phone field editable on edit (was read-only); `normalizeGuestPhoneEdit` + `updateGuestPhoneCascade` syncs suite_rooms/bookings/alerts/whatsapp_conversations/inbox_read_cursors/guest_club_members.
