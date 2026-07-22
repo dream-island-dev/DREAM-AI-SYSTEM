@@ -29,13 +29,14 @@
 //
 // Ops-group 👍 task completion: whapi-webhook (not this Meta guest webhook).
 // Dual lookup: bot card (tasks.whapi_message_id) → trigger text (tasks.source_message_id).
-// Field-ops guest requests (operational intercept + LLM tool-calling path) no
-// longer dispatch to the Whapi ops group from this file at all — they only
-// create a pending_approval task (_shared/createGuestOpsTask.ts). Gemini EN
-// translation + the actual Whapi send happen later, only after a staff member
-// approves in OperationsBoard.js, via the extended notify-manual-task function
-// (2026-07-07 Human-in-the-Loop gate — see git history for the prior
-// unsupervised routeGuestRequestToOpsGroup).
+// Field-ops guest requests (operational intercept + LLM tool-calling path,
+// 2026-07-22 Human-First cutover): the bot never opens an Operations Board
+// task on its own anymore — false-positive keyword hits were creating noise
+// tickets in the field-ops queue. It only flags the Inbox red dot
+// (human_requested + guests.needs_callback) so staff see the request in
+// WhatsAppInbox.js and decide whether a task is even warranted; a genuine
+// field-ops ticket now only gets created by a staff member (manually, or via
+// the Guest Portal's trusted-button path, _shared/createGuestOpsTask.ts).
 // ══════════════════════════════════════════════════════════════════════════════
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -63,7 +64,6 @@ import {
   classifyGuestRequestDispatch,
   isRequestsBoardEscalation,
   buildOperationalRequestSummary,
-  buildOperationalDispatchReply,
   shouldInterceptBalloonRoomRequest,
   isBalloonRoomRequest,
   buildBalloonRoomRequestReply,
@@ -85,22 +85,21 @@ import {
   resolveTruncatedReplyFallback,
   resolveEffectiveGuestStatus,
   isGuestEligibleForInHouseOpsDispatch,
-  extractAllowlistedRequestLines,
   normalizeGuestInboundForOps,
   resolveAutomationScope,
-  shouldInterceptDepartureAssistRequest,
-  buildDepartureAssistSummary,
-  buildDepartureAssistReply,
   buildAdministrativeRequestSummary,
   shouldHandoffUnrecognizedInRoomRequest,
 } from "../_shared/automationSchedule.ts";
+import {
+  flagGuestOperationalInboxHandoff,
+  OPERATIONAL_INBOX_HUMAN_REQUEST_TYPE,
+} from "../_shared/flagGuestOperationalInboxHandoff.ts";
 import {
   isGuestStaffClaimActive,
   parseInboxClaimIdleReleaseMinutes,
   touchStaffClaimActivity,
   DEFAULT_INBOX_CLAIM_IDLE_RELEASE_MINUTES,
 } from "../_shared/guestStaffClaim.ts";
-import { createGuestOpsTask, createGuestOpsTaskWithInstantAmenityDispatch } from "../_shared/createGuestOpsTask.ts";
 import {
   classifyFacilityReview,
   buildFacilityReviewReply,
@@ -124,8 +123,10 @@ import {
 import {
   buildPhoneVariants,
   isArrivalConfirmationMessage,
+  isArrivalDeclineMessage,
   lookupGuestByPhone,
 } from "../_shared/arrivalConfirmation.ts";
+import { resolveArrivalConfirmation, resolveArrivalConfirmationIntent, isArrivalConfirmationTier0 } from "../_shared/arrivalConfirmationResolve.ts";
 import {
   DAYPASS_WINDOW_OPENER_ACK_HE,
   isDaypassWindowOpenerMessage,
@@ -153,6 +154,7 @@ import {
   patchClaimedInbound,
   dispatchStage2ViaPipeline,
   runGuestArrivalConfirmation,
+  handleGuestArrivalDeclineHandoff,
   type AutomationStageRow,
   type GuestOutboundRow,
 } from "../_shared/guestInboundOrchestrator.ts";
@@ -875,35 +877,16 @@ async function flagGuestAlert(
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// §4b  DUAL-ROUTING TRIGGER — Session 26 Sprint 3.1. Bridges a guest's
-//      log_guest_request tool call straight into the staff ops Whapi group
-//      (the same `tasks` table + group the Ops & Maintenance Board already
-//      uses, CLAUDE.md §0.4 Universal Architecture — not a parallel ticket
-//      system). guest_alerts (flagGuestAlert's sibling insert at the call
-//      site) keeps logging every request to the dashboard regardless; this
-//      is purely an ADDITIONAL fast-path for suite guests so staff see it
-//      in WhatsApp without anyone opening the dashboard.
-//
-//      Suite-Only Profile Filter: day-guest ("בילוי יומי") and standard-room
-//      requests never call this — they stay dashboard-only by design (the
-//      ops group is a 24/7-reachable real-time channel; flooding it with
-//      every day-pass ask would erode its signal for the genuinely time-
-//      sensitive suite-guest case this exists for).
-//
-//      Non-blocking / best-effort: a Whapi failure here must never affect
-//      the guest's own reply (already sent by the time this runs) or the
-//      guest_alerts dashboard row (already inserted independently).
+// §4b  LOG_GUEST_REQUEST DISPATCH — a guest's log_guest_request tool call
+//      (Session 26 Sprint 3.1, re-scoped 2026-07-22 Human-First cutover).
+//      This branch used to open an automatic Operations Board task; keyword/
+//      LLM false positives were creating noise tickets, so it now only
+//      flags the Inbox red dot + guests.needs_callback (same signal as every
+//      other guest-detected operational need) and leaves opening a real
+//      _shared/createGuestOpsTask.ts ticket to a staff member's judgment.
+//      guest_alerts (flagGuestAlert's sibling insert at the call site) keeps
+//      logging every request to the dashboard regardless.
 // ══════════════════════════════════════════════════════════════════════════════
-// Human-in-the-Loop approval gate (2026-07-07): guest-initiated physical
-// requests only ever create a pending_approval task; the bot has no
-// authority to dispatch this route unsupervised. A staff member reviews
-// (and can edit) the description in OperationsBoard.js and taps "✅ אשר ושגר"
-// (Approve & Dispatch), which invokes the extended notify-manual-task Edge
-// Function — that is the ONLY place translation + the actual Whapi send now
-// happen for this source. The actual insert (room resolution, department/SLA
-// classification, duplicate guard) lives in the shared
-// _shared/createGuestOpsTask.ts — Meta, Whapi guest DM, and the Guest Portal
-// all call that one helper so every surface produces an identical task row.
 
 // logAdministrativeRequestAlert → _shared/guestBalloonAdminIntercept.ts
 
@@ -1119,7 +1102,11 @@ async function handleMealDeclineAck(
 // ══════════════════════════════════════════════════════════════════════════════
 // §4b.1  IMMEDIATE OPERATIONAL ROUTING — Tier-0 keyword intercept for guests
 //        already checked_in. Runs after wa_message_id dedup, before burst/LLM.
-//        No LLM — deterministic luxury dispatch reply + tasks + guest flags.
+//        No LLM, no automatic Operations Board task (2026-07-22 Human-First
+//        cutover — keyword hits were opening noise tickets) — deterministic
+//        reply + Inbox human-handoff flags only. Staff review the flagged
+//        conversation in WhatsAppInbox.js and open a real task themselves
+//        (_shared/createGuestOpsTask.ts) only when the request is genuine.
 // ══════════════════════════════════════════════════════════════════════════════
 async function handleOperationalInHouseIntercept(
   supabase: ReturnType<typeof createClient>,
@@ -1133,61 +1120,24 @@ async function handleOperationalInHouseIntercept(
     sim: boolean;
   },
 ): Promise<void> {
-  const { phone, guestId, guest, text, msgId, claimedConversationId, sim } = opts;
-  // text can be burst-coalesced (multiple guest messages within a 5s window,
-  // see coalesceGuestInboundBurstIfLeader) — buildOperationalRequestSummary intentionally
-  // still scores the full blob (drives the guest-facing reply + internal
-  // attention_reason, a separate concern from the ops-group card). dispatchText
-  // isolates just the line(s) that independently pass the allowlist, so an
-  // unrelated adjacent message never dominates/confuses the translated Whapi
-  // card (root cause of the "אמרו לנו שאפשר ב-11" false-positive incident).
+  const { phone, guestId, text, msgId, claimedConversationId, sim } = opts;
+  // attention_reason keeps the scored summary for staff; guest-facing copy is
+  // always the canonical handoff sentence (no "team is handling it" claim).
   const summary = buildOperationalRequestSummary(text);
-  const dispatchText = extractAllowlistedRequestLines(text, {
-    status: (guest.status as string | null) ?? null,
-    arrival_date: (guest.arrival_date as string | null) ?? null,
-    departure_date: (guest.departure_date as string | null) ?? null,
-  });
-  const guestName = (guest.name as string | null) ?? null;
-  const guestRoom = (guest.room as string | null) ?? null;
-  const reply = buildOperationalDispatchReply(summary, guestName);
+  const reply = GUEST_STAFF_HANDOFF_SENTENCE;
 
-  // human_requested/human_request_type also flag the SAME inbound row so
-  // WhatsAppInbox.js's red "🔴 מבקש מענה אנושי" dot lights up here too — this
-  // path only ever reached guests.requires_attention (a different badge, on
-  // GuestsPage/GuestDashboard) and the Ops Board's own pending_approval queue,
-  // never the Inbox's per-message flag, unlike every guest_alerts-based Tier-0
-  // shield (severe complaint / stay-change / financial / balloon / admin) which
-  // already gets it for free via onGuestAlertInserted→triggerInboxRedAlert.
   await patchClaimedInbound(supabase, claimedConversationId, msgId, {
     guest_id: guestId,
     intent: "operational_in_house_request",
     human_requested: true,
-    human_request_type: "operational_request",
+    human_request_type: OPERATIONAL_INBOX_HUMAN_REQUEST_TYPE,
   });
 
-  const { error: guestErr } = await supabase.from("guests").update({
-    requires_attention:       true,
-    requires_attention_since: new Date().toISOString(),
-    attention_reason:         summary,
-  }).eq("id", guestId);
-  if (guestErr) {
-    console.error("[webhook] 🛎️ operational intercept guest update FAILED:", guestErr.message);
-  }
-
-  // Operations Board (tasks) — pending_approval, same path as log_guest_request.
-  // Awaits staff review/Approve in OperationsBoard.js before any Whapi dispatch.
-  createGuestOpsTaskWithInstantAmenityDispatch({
-    supabase,
+  await flagGuestOperationalInboxHandoff(supabase, {
     guestId,
-    phone,
-    guestName,
-    room: guestRoom,
-    summary,
-    rawText: text,
-    dispatchText,
-  }).catch((e: Error) =>
-    console.error("[webhook] 🛎️ operational intercept createGuestOpsTask error:", e.message)
-  );
+    attentionReason: summary,
+    logTag: "webhook",
+  });
 
   if (!sim) {
     try {
@@ -1207,86 +1157,7 @@ async function handleOperationalInHouseIntercept(
   }
 
   console.info(
-    `[webhook] 🛎️ operational in-house intercept — dispatch=operational_field_ops phone:${phone} guest:${guestId} summary:${summary}`,
-  );
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// §4b.1c DEPARTURE / PORTER ASSIST — checkout+luggage help, Tier-0, before LLM.
-//        Distinct from the sensitive stay-change shield (late checkout /
-//        extension): this guest IS leaving on schedule and needs someone to
-//        carry bags to reception — an Ops Board task, same path as towels/AC
-//        (session 2026-07-11 hallucination incident: this used to fall
-//        through to the LLM, which invented a "towels & robe" ack from stale
-//        history instead of routing the actual luggage request).
-// ══════════════════════════════════════════════════════════════════════════════
-async function handleDepartureAssistIntercept(
-  supabase: ReturnType<typeof createClient>,
-  opts: {
-    phone: string;
-    guestId: number;
-    guest: Record<string, unknown>;
-    text: string;
-    msgId: string;
-    claimedConversationId: number | null;
-    sim: boolean;
-  },
-): Promise<void> {
-  const { phone, guestId, guest, text, msgId, claimedConversationId, sim } = opts;
-  const summary = buildDepartureAssistSummary(text);
-  const guestName = (guest.name as string | null) ?? null;
-  const guestRoom = (guest.room as string | null) ?? null;
-  const reply = buildDepartureAssistReply(guestName);
-
-  await patchClaimedInbound(supabase, claimedConversationId, msgId, {
-    guest_id: guestId,
-    intent: "departure_assist_request",
-    human_requested: true,
-    human_request_type: "operational_request",
-  });
-
-  const { error: guestErr } = await supabase.from("guests").update({
-    requires_attention:       true,
-    requires_attention_since: new Date().toISOString(),
-    attention_reason:         summary,
-  }).eq("id", guestId);
-  if (guestErr) {
-    console.error("[webhook] 🧳 departure assist intercept guest update FAILED:", guestErr.message);
-  }
-
-  // Operations Board (tasks) — pending_approval, same path as the operational
-  // in-house intercept. Awaits staff review/Approve in OperationsBoard.js.
-  createGuestOpsTask({
-    supabase,
-    guestId,
-    phone,
-    guestName,
-    room: guestRoom,
-    summary,
-    rawText: text,
-  }).catch((e: Error) =>
-    console.error("[webhook] 🧳 departure assist intercept createGuestOpsTask error:", e.message)
-  );
-
-  if (!sim) {
-    try {
-      await sendReply(phone, reply, { scripted: true });
-      await insertGuestOutboundIfNotMuted(supabase, {
-        phone,
-        guest_id:      guestId,
-        message:       reply,
-        wa_message_id: null,
-        intent:        "departure_assist_request",
-      });
-    } catch (e) {
-      console.error("[webhook] 🧳 departure assist intercept reply failed:", (e as Error).message);
-    }
-  } else {
-    console.info(`[webhook] SIM — departure assist intercept from ${phone}: ${summary}`);
-  }
-
-  console.info(
-    `[webhook] 🧳 departure assist intercept — dispatch=operational_field_ops phone:${phone} guest:${guestId} summary:${summary}`,
+    `[webhook] 🛎️ operational in-house intercept — Inbox handoff phone:${phone} guest:${guestId} summary:${summary}`,
   );
 }
 
@@ -1631,7 +1502,7 @@ async function tryArrivalConfirmationIntercept(
 ): Promise<boolean> {
   const isConfirm = ctx.isButtonReply
     ? isArrivalConfirmationMessage(ctx.buttonTitle, { buttonTitle: ctx.buttonTitle, buttonId: ctx.buttonId })
-    : isArrivalConfirmationMessage(ctx.text);
+    : isArrivalConfirmationTier0(ctx.text);
   if (!isConfirm || !canGuestConfirmArrival(ctx.guest)) return false;
 
   await handleStage2ArrivalConfirmation(supabaseClient, {
@@ -1646,6 +1517,73 @@ async function tryArrivalConfirmationIntercept(
     msgId: ctx.msgId,
   });
   console.info(`[webhook] ✅ arrival confirmed (${ctx.lane}) — phone:${ctx.phone} guest:${ctx.guestId}`);
+  return true;
+}
+
+/** Stage 1 funnel — confirm → Stage 2, decline → staff handoff (Tier-0 + AI). */
+async function routeStage1ArrivalReply(
+  supabaseClient: ReturnType<typeof createClient>,
+  ctx: {
+    scripts: Record<string, BotScript>;
+    phone: string;
+    guestId: number | null;
+    guest: Record<string, unknown> | null;
+    sim: boolean;
+    isButtonReply: boolean;
+    buttonTitle: string;
+    buttonId: string;
+    text: string;
+    claimedConversationId: number | null;
+    msgId: string;
+    source: "text" | "burst";
+  },
+): Promise<boolean> {
+  const intent = await resolveArrivalConfirmationIntent(ctx.text, ctx.guest, {
+    isButtonReply: ctx.isButtonReply,
+    buttonTitle: ctx.buttonTitle,
+    buttonId: ctx.buttonId,
+  });
+  if (intent === "none") return false;
+
+  if (intent === "decline") {
+    const declineSource = isArrivalDeclineMessage(ctx.text) ? "text" : "ai";
+    await handleGuestArrivalDeclineHandoff(supabaseClient, {
+      phone: ctx.phone,
+      guestId: ctx.guestId,
+      text: ctx.text,
+      msgId: ctx.msgId,
+      claimedConversationId: ctx.claimedConversationId,
+      sim: ctx.sim,
+      source: declineSource,
+    }, {
+      sendReply: async (body) => { await sendReply(ctx.phone, body, { scripted: true }); },
+      insertOutbound: async (row) => { await insertGuestOutboundIfNotMuted(supabaseClient, row); },
+      notifyAlert: async (o) => {
+        await onGuestAlertInserted(supabaseClient, {
+          guestId: o.guestId,
+          phone: o.phone,
+          conversationId: o.conversationId,
+          message: o.message,
+          alertType: "date_change_request",
+          sourceLabel: "WhatsApp Bot",
+        });
+      },
+    });
+    return true;
+  }
+
+  await handleStage2ArrivalConfirmation(supabaseClient, {
+    scripts: ctx.scripts,
+    phone: ctx.phone,
+    guestId: ctx.guestId,
+    guest: ctx.guest,
+    sim: ctx.sim,
+    source: ctx.isButtonReply ? "button" : ctx.source,
+    buttonTitle: ctx.isButtonReply ? ctx.buttonTitle : undefined,
+    claimedConversationId: ctx.claimedConversationId,
+    msgId: ctx.msgId,
+  });
+  console.info(`[webhook] ✅ pre-arrival confirmed (${ctx.source}) — phone:${ctx.phone} guest:${ctx.guestId}`);
   return true;
 }
 
@@ -2361,7 +2299,7 @@ Deno.serve(async (req: Request) => {
         console.info("[webhook] dedup skip (claim):", msgId);
         const isConfirmDedup = isButtonReply
           ? isArrivalConfirmationMessage(buttonTitle, { buttonTitle, buttonId })
-          : isArrivalConfirmationMessage(text);
+          : await resolveArrivalConfirmation(text, guest as Record<string, unknown> | null);
         if (isConfirmDedup) {
           const guestIdDedup = (guest?.id as number) ?? null;
           if (guestIdDedup && canGuestConfirmArrival(guest as Record<string, unknown> | null)) {
@@ -2756,19 +2694,21 @@ Deno.serve(async (req: Request) => {
       // decide what (if anything) to send.
       if (
         !isButtonReply &&
-        isArrivalConfirmationMessage(text)
-      ) {
-        await handleStage2ArrivalConfirmation(supabase, {
+        await routeStage1ArrivalReply(supabase, {
           scripts,
           phone,
           guestId,
           guest: guest as Record<string, unknown> | null,
           sim,
-          source: "text",
+          isButtonReply,
+          buttonTitle,
+          buttonId,
+          text,
           claimedConversationId,
           msgId,
-        });
-        console.info(`[webhook] ✅ pre-arrival confirmed (text) — phone:${phone} guest:${guestId}`);
+          source: "text",
+        })
+      ) {
         continue;
       }
 
@@ -3091,25 +3031,6 @@ Deno.serve(async (req: Request) => {
         continue;
       }
 
-      // ── Tier-0 departure / porter assist intercept (checkout + luggage help) ──
-      if (
-        !isButtonReply &&
-        guestId &&
-        guest &&
-        shouldInterceptDepartureAssistRequest(text, guestOpsEligibility(guest as Record<string, unknown>, statusForRouting), nowForGuest)
-      ) {
-        await handleDepartureAssistIntercept(supabase, {
-          phone,
-          guestId,
-          guest: guest as Record<string, unknown>,
-          text,
-          msgId,
-          claimedConversationId,
-          sim,
-        });
-        continue;
-      }
-
       if (!isButtonReply && shouldHandoffUnrecognizedInRoomRequest(text)) {
         await patchClaimedInbound(supabase, claimedConversationId, msgId, {
           guest_id: guestId,
@@ -3180,19 +3101,21 @@ Deno.serve(async (req: Request) => {
       // silent repeat), so a repeat confirm never falls through to the LLM.
       if (
         !isButtonReply &&
-        isArrivalConfirmationMessage(effectiveText)
-      ) {
-        await handleStage2ArrivalConfirmation(supabase, {
+        await routeStage1ArrivalReply(supabase, {
           scripts,
           phone,
           guestId,
           guest: guest as Record<string, unknown> | null,
           sim,
-          source: "burst",
+          isButtonReply,
+          buttonTitle,
+          buttonId,
+          text: effectiveText,
           claimedConversationId,
           msgId,
-        });
-        console.info(`[webhook] ✅ pre-arrival confirmed (post-burst) — phone:${phone} guest:${guestId}`);
+          source: "burst",
+        })
+      ) {
         continue;
       }
 
@@ -3400,30 +3323,6 @@ Deno.serve(async (req: Request) => {
           guestId,
           guest: guest as Record<string, unknown>,
           text: normalizeGuestInboundForOps(effectiveText),
-          msgId,
-          claimedConversationId,
-          sim,
-        });
-        continue;
-      }
-
-      // ── Tier-0 departure / porter assist intercept (post-burst) ───────────
-      if (
-        !isButtonReply &&
-        guestId &&
-        guest &&
-        effectiveText !== text &&
-        shouldInterceptDepartureAssistRequest(
-          effectiveText,
-          guestOpsEligibility(guest as Record<string, unknown>, statusAfterBurst),
-          nowForGuest,
-        )
-      ) {
-        await handleDepartureAssistIntercept(supabase, {
-          phone,
-          guestId,
-          guest: guest as Record<string, unknown>,
-          text: effectiveText,
           msgId,
           claimedConversationId,
           sim,
@@ -3842,30 +3741,21 @@ Deno.serve(async (req: Request) => {
           && isRequestsBoardEscalation(effectiveText);
 
         if (toolLoggedRequest && guestId && dispatchRoute === "operational_field_ops") {
-          const guestRoom = (guest as Record<string, unknown> | null)?.room as string | null ?? null;
-          // effectiveText may be burst-coalesced — narrow to the allowlisted
-          // line(s) before classification, same as the Tier-0 path in
-          // handleOperationalInHouseIntercept (see extractAllowlistedRequestLines).
-          const dispatchText = extractAllowlistedRequestLines(effectiveText, guestOpsCtx);
-          createGuestOpsTask({
-            supabase,
-            guestId,
-            phone,
-            guestName,
-            room: guestRoom,
-            summary: toolLoggedRequest.summary,
-            rawText: effectiveText,
-            dispatchText,
-          }).catch((e: Error) => console.error("[webhook] 🛋️ createGuestOpsTask error:", e.message));
-          // Same Inbox red-dot flag as the Tier-0 operational intercept above —
-          // this LLM-tool path (log_guest_request) never went through guest_alerts
-          // either, so it was equally invisible in WhatsAppInbox.js until now.
+          // 2026-07-22 Human-First — Inbox handoff only; never invent a task.
+          // Force canonical handoff copy so the guest never hears "העברתי לקריאות".
+          reply = GUEST_STAFF_HANDOFF_SENTENCE;
+          replyIsScripted = true;
           patchClaimedInbound(supabase, claimedConversationId, msgId, {
             human_requested: true,
-            human_request_type: "operational_request",
+            human_request_type: OPERATIONAL_INBOX_HUMAN_REQUEST_TYPE,
           }).catch((e: Error) => console.warn("[webhook] 🛋️ operational LLM-path inbox flag failed:", e.message));
+          flagGuestOperationalInboxHandoff(supabase, {
+            guestId,
+            attentionReason: toolLoggedRequest.summary,
+            logTag: "webhook-llm",
+          }).catch((e: Error) => console.error("[webhook] 🛋️ operational LLM-path guest flag failed:", e.message));
           console.info(
-            `[webhook] dispatch=operational_field_ops (LLM path, PENDING APPROVAL) phone:${phone} guest:${guestId} room:${guestRoom ?? "—"}`,
+            `[webhook] dispatch=operational_field_ops (LLM path, Inbox handoff) phone:${phone} guest:${guestId}`,
           );
         } else if (
           guestId

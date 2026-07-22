@@ -2,20 +2,27 @@
 //
 // Single writer for guest-initiated physical in-house ops tasks (amenity /
 // maintenance / cleaning) — extracted from whatsapp-webhook's former
-// createPendingOpsApprovalTask so Meta, Whapi guest DM, and the Guest Portal
-// all produce byte-identical `tasks` rows: same room resolution, same
-// sla_category/department classification, same source tag, same fields
-// notify-manual-task + _shared/taskCard.ts already expect. Do not duplicate
-// this insert block at a new call site — call this instead.
+// createPendingOpsApprovalTask. Same room resolution, same sla_category/
+// department classification, same source tag, same fields notify-manual-task
+// + _shared/taskCard.ts already expect. Do not duplicate this insert block at
+// a new call site — call this instead.
 //
 // Human-in-the-Loop gate (2026-07-07, unchanged here): always inserts
 // status='pending_approval'. Never dispatches to Whapi directly — staff
 // review/edit/approve in OperationsBoard.js is what triggers notify-manual-task.
 // Failsafe (2026-07-11): sla-escalation-cron auto-invokes that same function
 // after PENDING_APPROVAL_AUTO_APPROVE_MINUTES if reception never approves.
+//
+// Callers (2026-07-22 Human-First cutover): only the Guest Portal's trusted-
+// button path (guest-portal-ops-request — deterministic taps on allowlisted
+// labels, never free-text guessing) and manual staff action call this.
+// whatsapp-webhook / whapi-webhook no longer call this automatically from
+// guest free-text — keyword/LLM false positives were opening noise tickets,
+// so they only flag the Inbox human-handoff signal (human_requested +
+// guests.needs_callback) and leave opening a real task to a staff member.
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { resolveGuestOpsDepartment, guessGuestOpsSlaCategory, isInstantAmenityOpsDispatch, shouldInterceptOperationalInHouseRequest, extractAllowlistedRequestLines, buildOperationalRequestSummary, normalizeGuestInboundForOps, type GuestOpsEligibilityInput } from "./automationSchedule.ts";
+import { resolveGuestOpsDepartment, guessGuestOpsSlaCategory, isInstantAmenityOpsDispatch } from "./automationSchedule.ts";
 import { isAmbiguousCombinedRoomLabel } from "./guestSelectedSuiteRoom.ts";
 import { resolveGuestRoomLabel } from "./guestRoomResolve.ts";
 
@@ -193,30 +200,3 @@ export async function createGuestOpsTaskWithInstantAmenityDispatch(
   return result;
 }
 
-export type { GuestOpsEligibilityInput };
-
-/**
- * Whapi LLM path has no log_guest_request tools — if Tier-0 missed an
- * allowlisted ask, still open the Ops Board task before the guest-facing ack
- * ships (prevents "הועברה לצוות" hallucinations with zero backend action).
- */
-export async function backstopGuestOpsTaskIfAllowlisted(
-  args: CreateGuestOpsTaskArgs & {
-    guestOpsCtx: GuestOpsEligibilityInput;
-    logTag?: string;
-  },
-): Promise<CreateGuestOpsTaskResult | null> {
-  const opsText = normalizeGuestInboundForOps(args.rawText);
-  if (!shouldInterceptOperationalInHouseRequest(opsText, args.guestOpsCtx)) return null;
-
-  const dispatchText = extractAllowlistedRequestLines(opsText, args.guestOpsCtx);
-  const summary = buildOperationalRequestSummary(opsText);
-  const tag = args.logTag ?? "createGuestOpsTask";
-  console.info(`[${tag}] allowlist backstop — guest:${args.guestId} summary:${summary}`);
-  return createGuestOpsTaskWithInstantAmenityDispatch({
-    ...args,
-    rawText: opsText,
-    dispatchText,
-    summary,
-  });
-}

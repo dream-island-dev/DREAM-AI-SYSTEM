@@ -77,7 +77,8 @@ import {
 } from "../_shared/housekeepingCheckOutSignal.ts";
 import { isGuestWhapiSuitesEnabled, isWhapiGuestSosActive, shouldAutoReplyGuestWhapiDm, primeGuestChannelConfig } from "../_shared/guestWhapiRouting.ts";
 import { type ActiveGuestRow } from "../_shared/guestOutboundGuard.ts";
-import { resolveGuestByInboundPhone, isArrivalConfirmationMessage } from "../_shared/arrivalConfirmation.ts";
+import { resolveGuestByInboundPhone } from "../_shared/arrivalConfirmation.ts";
+import { resolveArrivalConfirmationIntent } from "../_shared/arrivalConfirmationResolve.ts";
 import {
   DAYPASS_WINDOW_OPENER_ACK_HE,
   isDaypassWindowOpenerMessage,
@@ -104,15 +105,9 @@ import {
   buildDiningReplyForGuest,
   isMealDeclineOrApology,
   buildMealDeclineAck,
-  isGuestEligibleForInHouseOpsDispatch,
   shouldInterceptOperationalInHouseRequest,
-  extractAllowlistedRequestLines,
   buildOperationalRequestSummary,
-  buildOperationalDispatchReply,
   normalizeGuestInboundForOps,
-  isDepartureAssistRequest,
-  buildDepartureAssistSummary,
-  buildDepartureAssistReply,
   isReplyObviouslyTruncated,
   resolveTruncatedReplyFallback,
   shouldInterceptBalloonRoomRequest,
@@ -120,7 +115,10 @@ import {
   isSpaUpsellAcceptanceReply,
   shouldHandoffUnrecognizedInRoomRequest,
 } from "../_shared/automationSchedule.ts";
-import { createGuestOpsTaskWithInstantAmenityDispatch, backstopGuestOpsTaskIfAllowlisted } from "../_shared/createGuestOpsTask.ts";
+import {
+  flagGuestOperationalInboxHandoff,
+  OPERATIONAL_INBOX_HUMAN_REQUEST_TYPE,
+} from "../_shared/flagGuestOperationalInboxHandoff.ts";
 import {
   classifyFacilityReview,
   buildFacilityReviewReply,
@@ -134,6 +132,7 @@ import {
 import {
   canGuestConfirmArrival,
   runGuestArrivalConfirmation,
+  handleGuestArrivalDeclineHandoff,
   patchClaimedInbound,
   dispatchStage2ViaPipeline,
   isRecordOnlyArrivalTimeUpdate,
@@ -968,7 +967,31 @@ async function handleGuestDirectMessage(
     // regardless of staffMuted — same "Stage 2 not blocked by staff claim"
     // guarantee the Meta path has, which is why this check runs BEFORE the
     // staffMuted gate below applies to anything. ───────────────────────────
-    if (isArrivalConfirmationMessage(text) && canGuestConfirmArrival(guestRecord)) {
+    const arrivalIntent = await resolveArrivalConfirmationIntent(text, guestRecord);
+    if (arrivalIntent === "decline") {
+      await handleGuestArrivalDeclineHandoff(supabase, {
+        phone, guestId, text, msgId, claimedConversationId: conversationId, sim: false,
+        source: "ai",
+      }, {
+        sendReply: async (body) => { await sendWhapiText(cleanPhoneForMention(phone), body); },
+        insertOutbound: async (row) => {
+          const { error } = await supabase.from("whatsapp_conversations").insert({
+            phone: row.phone, guest_id: row.guest_id, inbox_channel: "whapi", channel: "whapi",
+            direction: "outbound", message: row.message, wa_message_id: row.wa_message_id, intent: row.intent,
+          });
+          if (error) console.error("[whapi-webhook] arrival decline outbound log failed:", error.message);
+        },
+        notifyAlert: async (o) => {
+          await onGuestAlertInserted(supabase, {
+            guestId: o.guestId, phone: o.phone, conversationId: o.conversationId,
+            message: o.message, alertType: "date_change_request", sourceLabel: "WhatsApp Bot (Whapi)",
+          });
+        },
+      });
+      results.push({ ...base, action: "stage1_arrival_decline" });
+      return;
+    }
+    if (arrivalIntent === "confirm" && canGuestConfirmArrival(guestRecord)) {
       const stage2ScriptText = await fetchGuestDmBotScript(supabase, "stage_2_arrival");
       const result = await runGuestArrivalConfirmation(
         supabase,
@@ -1072,13 +1095,15 @@ async function handleGuestDirectMessage(
     // ── Physical in-house ops request (Tier-0) — parity with Meta's
     // handleOperationalInHouseIntercept (whatsapp-webhook). A checked-in / on-
     // property-arrival-day suite guest asking for an allowlisted amenity,
-    // maintenance, or cleaning item creates a pending_approval Operations
-    // Board task via the shared _shared/createGuestOpsTask.ts helper — same
-    // room/department/SLA classification and task shape Meta already
-    // produces. Runs before the LLM fallback so this never costs a model
-    // call. DB side effects always run (matches every shield above); only
-    // the guest-facing reply is suppressed when staff has claimed this
-    // Whapi thread (staffMuted contract, see sendGuestDmReply doc above).
+    // maintenance, or cleaning item flags the Inbox human-handoff signal
+    // (human_requested + guests.needs_callback) — no automatic Operations
+    // Board task since the 2026-07-22 Human-First cutover (keyword hits were
+    // opening noise tickets). Runs before the LLM fallback so this never
+    // costs a model call. DB side effects always run (matches every shield
+    // above); only the guest-facing reply is suppressed when staff has
+    // claimed this Whapi thread (staffMuted contract, see sendGuestDmReply
+    // doc above). A staff member opens a real task themselves
+    // (_shared/createGuestOpsTask.ts) when the flagged request is genuine.
     if (
       guestId
       && shouldInterceptOperationalInHouseRequest(
@@ -1091,91 +1116,24 @@ async function handleGuestDirectMessage(
         new Date(),
       )
     ) {
-      const guestOpsCtx = {
-        status:         (guestRecord?.status as string | null) ?? null,
-        arrival_date:   (guestRecord?.arrival_date as string | null) ?? null,
-        departure_date: (guestRecord?.departure_date as string | null) ?? null,
-      };
       const opsText = normalizeGuestInboundForOps(text);
-      const dispatchText = extractAllowlistedRequestLines(opsText, guestOpsCtx);
       const summary = buildOperationalRequestSummary(opsText);
-      const guestRoom = (guest?.room as string | null | undefined) ?? null;
-
-      createGuestOpsTaskWithInstantAmenityDispatch({
-        supabase, guestId, phone, guestName, room: guestRoom,
-        summary, rawText: opsText, dispatchText,
-      }).catch((e: Error) =>
-        console.error("[whapi-webhook] guest_dm operational intercept createGuestOpsTask error:", e.message),
-      );
 
       await patchGuestDmInbound(supabase, conversationId, {
         guest_id: guestId,
         intent: "operational_in_house_request",
         human_requested: true,
-        human_request_type: "operational_request",
+        human_request_type: OPERATIONAL_INBOX_HUMAN_REQUEST_TYPE,
       });
 
-      const { error: guestUpdErr } = await supabase.from("guests").update({
-        requires_attention:       true,
-        requires_attention_since: new Date().toISOString(),
-        attention_reason:         summary,
-      }).eq("id", guestId);
-      if (guestUpdErr) {
-        console.error("[whapi-webhook] guest_dm operational intercept guest update failed:", guestUpdErr.message);
-      }
+      await flagGuestOperationalInboxHandoff(supabase, {
+        guestId,
+        attentionReason: summary,
+        logTag: "whapi-webhook",
+      });
 
-      await sendGuestDmReply(supabase, phone, guestId, buildOperationalDispatchReply(summary, guestName), staffMuted);
+      await sendGuestDmReply(supabase, phone, guestId, GUEST_STAFF_HANDOFF_SENTENCE, staffMuted);
       results.push({ ...base, action: "operational_in_house_request", muted: staffMuted });
-      return;
-    }
-
-    // ── Departure / porter assist (Tier-0) — parity with Meta's
-    // handleDepartureAssistIntercept (whatsapp-webhook). A checkout+luggage
-    // help request from an on-property guest — distinct from the stay-change
-    // shield above (late checkout/extension), which already returned if
-    // matched. Creates the same pending_approval Ops Board task as the
-    // physical in-house intercept, never a fake "forwarded" ack (session
-    // 2026-07-11 hallucination incident).
-    if (
-      guestId
-      && isGuestEligibleForInHouseOpsDispatch(
-        {
-          status:         (guestRecord?.status as string | null) ?? null,
-          arrival_date:   (guestRecord?.arrival_date as string | null) ?? null,
-          departure_date: (guestRecord?.departure_date as string | null) ?? null,
-        },
-        new Date(),
-      )
-      && isDepartureAssistRequest(text)
-    ) {
-      const summary = buildDepartureAssistSummary(text);
-      const guestRoom = (guest?.room as string | null | undefined) ?? null;
-
-      createGuestOpsTask({
-        supabase, guestId, phone, guestName, room: guestRoom,
-        summary, rawText: text,
-      }).catch((e: Error) =>
-        console.error("[whapi-webhook] guest_dm departure assist createGuestOpsTask error:", e.message),
-      );
-
-      await patchGuestDmInbound(supabase, conversationId, {
-        guest_id: guestId,
-        intent: "departure_assist_request",
-        human_requested: true,
-        human_request_type: "operational_request",
-      });
-
-      const { error: guestUpdErr } = await supabase.from("guests").update({
-        requires_attention:       true,
-        requires_attention_since: new Date().toISOString(),
-        attention_reason:         summary,
-      }).eq("id", guestId);
-      if (guestUpdErr) {
-        console.error("[whapi-webhook] guest_dm departure assist guest update failed:", guestUpdErr.message);
-      }
-
-      await sendGuestDmReply(supabase, phone, guestId, buildDepartureAssistReply(guestName), staffMuted);
-      results.push({ ...base, action: "departure_assist_request", muted: staffMuted });
       return;
     }
 
@@ -1392,37 +1350,35 @@ async function handleGuestDirectMessage(
         botSettings.knowledge_base,
       );
     }
+    // Backstop — this Whapi LLM path has no log_guest_request tool-calling,
+    // so if Tier-0 missed an allowlisted ask, still flag the Inbox
+    // human-handoff before the reply ships (prevents "הועברה לצוות"
+    // hallucinations with zero staff visibility). No automatic Ops Board
+    // task here either (2026-07-22 Human-First cutover) — matches Tier-0.
     if (guestId) {
+      const opsText = normalizeGuestInboundForOps(text);
       const guestOpsCtx = {
         status:         (guestRecord?.status as string | null) ?? null,
         arrival_date:   (guestRecord?.arrival_date as string | null) ?? null,
         departure_date: (guestRecord?.departure_date as string | null) ?? null,
       };
-      const guestRoom = (guest?.room as string | null | undefined) ?? null;
-      const backstop = await backstopGuestOpsTaskIfAllowlisted({
-        supabase,
-        guestId,
-        phone,
-        guestName,
-        room: guestRoom,
-        summary: "",
-        rawText: text,
-        guestOpsCtx,
-        logTag: "whapi-webhook",
-      });
-      if (backstop?.created || backstop?.duplicate) {
+      if (shouldInterceptOperationalInHouseRequest(opsText, guestOpsCtx)) {
+        const summary = buildOperationalRequestSummary(opsText);
+        console.info(`[whapi-webhook] allowlist backstop — guest:${guestId} summary:${summary}`);
         await patchGuestDmInbound(supabase, conversationId, {
           guest_id: guestId,
           intent: "operational_in_house_request",
           human_requested: true,
-          human_request_type: "operational_request",
+          human_request_type: OPERATIONAL_INBOX_HUMAN_REQUEST_TYPE,
         });
-        const summary = buildOperationalRequestSummary(normalizeGuestInboundForOps(text));
-        await supabase.from("guests").update({
-          requires_attention:       true,
-          requires_attention_since: new Date().toISOString(),
-          attention_reason:         summary,
-        }).eq("id", guestId);
+        await flagGuestOperationalInboxHandoff(supabase, {
+          guestId,
+          attentionReason: summary,
+          logTag: "whapi-webhook-backstop",
+        });
+        if (!isGuestStaffHandoffReply(replyText)) {
+          replyText = GUEST_STAFF_HANDOFF_SENTENCE;
+        }
       }
     }
     await flagGuestDmStaffHandoff(supabase, { phone, guestId, conversationId, replyText });

@@ -28,7 +28,7 @@ const CONFIRMATION_RE =
   /^[\s🎉✨😊🙂🙏💫🌴]*(?:כן[,!\s.]*)?(?:מגיעים|אנחנו מגיעים|כן מגיעים|כן,מגיעים|כן! מגיעים|כן|אישור|yes|מאשר|מאשרת|כן תודה|כן אישור|אישורי)[\s🎉✨😊🙂🙏💫🌴!.,✨]*$/iu;
 
 /** Explicit negatives — template «לא, שינוי בתאריך» must never confirm. */
-function isExplicitArrivalDecline(raw: string): boolean {
+export function isArrivalDeclineMessage(raw: string): boolean {
   const t = normalizeInboundConfirmText(raw);
   if (!t) return false;
   if (t.includes("שינוי בתאריך")) return true;
@@ -43,7 +43,7 @@ export function isArrivalConfirmationMessage(
   opts?: { buttonTitle?: string; buttonId?: string },
 ): boolean {
   const text = normalizeInboundConfirmText(raw);
-  if (text && isExplicitArrivalDecline(text)) return false;
+  if (text && isArrivalDeclineMessage(text)) return false;
 
   if (text && CONFIRMATION_RE.test(text)) return true;
 

@@ -16,20 +16,20 @@ import {
   buildSoftHandoffManagerText,
 } from "./handoffEscalation.ts";
 
-Deno.test("isUrgentOpsHumanRequestType — only operational_request", () => {
-  assertEquals(isUrgentOpsHumanRequestType("operational_request"), true);
+Deno.test("isUrgentOpsHumanRequestType — empty since Human-First cutover (2026-07-22)", () => {
+  assertEquals(isUrgentOpsHumanRequestType("operational_request"), false);
   assertEquals(isUrgentOpsHumanRequestType("staff_handoff"), false);
   assertEquals(isUrgentOpsHumanRequestType("date_change"), false);
   assertEquals(isUrgentOpsHumanRequestType(null), false);
 });
 
-Deno.test("isSoftHandoffHumanRequestType — spa/date/finance soft; ops hard", () => {
+Deno.test("isSoftHandoffHumanRequestType — spa/date/finance/ops all soft", () => {
   assertEquals(isSoftHandoffHumanRequestType("date_change"), true);
   assertEquals(isSoftHandoffHumanRequestType("financial_issue"), true);
   assertEquals(isSoftHandoffHumanRequestType("staff_handoff"), true);
   assertEquals(isSoftHandoffHumanRequestType("callback"), true);
   assertEquals(isSoftHandoffHumanRequestType(null), true); // unknown → soft
-  assertEquals(isSoftHandoffHumanRequestType("operational_request"), false);
+  assertEquals(isSoftHandoffHumanRequestType("operational_request"), true);
 });
 
 Deno.test("isOlderThanMinutes — boundary inclusive at exact threshold", () => {

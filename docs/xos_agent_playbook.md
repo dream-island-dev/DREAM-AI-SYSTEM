@@ -416,6 +416,11 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
+### 2026-07-22 — WhatsApp free-text must not auto-open field-ops tickets; portal button taps may
+- **Symptom:** Bot keyword/LLM hits opened noise `guest_request` tasks (and sometimes instant Whapi amenity cards) for irrelevant guest chat.
+- **Pattern:** Split by intent certainty — free-text WA → Inbox `human_requested` + handoff sentence only (`flagGuestOperationalInboxHandoff`); explicit portal allowlist taps → `createGuestOpsTask` OK. Drop special-case auto paths (e.g. departure/luggage intercept) that still invent tickets.
+- **SLA:** Once ops no longer auto-creates a task, `operational_request` must ride the soft handoff clock (20m reception ping), not the hard pending_approval watcher.
+
 ### 2026-07-21 — Full `deno test` sweep (not just the touched file) caught 5 real, silently-broken bugs from the last 2 days
 - **Trigger:** Mike asked for a health scan after a transient `automation-queue` network error made him suspicious of recent sessions. Running the full `_shared` suite (515 tests) instead of only the files a given prior commit touched surfaced 5 real regressions across 4 files, none caught before commit: a syntax error in `oritSigalGuide.test.ts` (a stray `});` left the whole file's 5 tests silently never running — `deno test` errors out on a parse failure before executing anything, which looks identical to "no tests found" if you don't check exit status), a Hebrew `\b`-after-Hebrew-letter regex bug reintroduced in a brand-new pattern despite the exact same bug class already being documented elsewhere in the same file (2026-07-07's "מים" fix), a booking-merge heuristic (`isSameDoc2Booking`) that let phone+date override an explicit order-number mismatch, a global-flag regex (`^(re|fwd?|fw):`) that can't repeat because `^` only anchors once even with `/g`, and an intent-classifier check-order bug where a broad pattern (`תזמן|תזמני`) shadowed a more specific one (`כן תזמני`) checked later.
 - **General lesson:** Running only the test file for the module you just edited is not enough — a change in one shared module (e.g. `automationSchedule.ts`'s new `missing_phone` gate) breaks unrelated modules' *existing* fixtures with zero edit to those files. Periodically run the entire `_shared` suite (`deno test --no-check --allow-env <all *.test.ts except ezgoMailImap.test.ts, which needs a real `npm install` for `imapflow`>`) and triage every failure by git-blaming the touched production file/line, not just the test — most failures were 1-2 days old, not ancient baseline noise, and each had a concrete, low-risk one-line fix.
@@ -451,6 +456,11 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 - **Symptom:** Premium Day guests received suite stages (`night_before`, `morning_suite`); guests with `room_type=suite` but empty `room` entered suite cron.
 - **Root:** `isEffectiveSuiteGuest` treated `room_type === "suite"` as sufficient; Premium Day 1/2 not recognized server-side; no `missing_room_assignment` gate.
 - **Fix pattern:** `_shared/suiteNames.ts` — suite = `isCanonicalSuiteRoom(room)` only; day-pass = `isPremiumDayRoom` OR `day_guest`+non-empty room; `getMissingRoomAssignmentSkipReason` in `checkEligibility` + `whatsapp-send` (exempt manual/room_ready). Mirror in `pipelineSegment.js` + `guestTiming.js`.
+
+### 2026-07-22 — Stage 1 confirm: semantic AI, not keyword sprawl
+- **Symptom:** Guest «בטח מגיעים. אשמח לקבל את כל ההצעה» after Stage 1 → generic handoff, no Stage 2 portal.
+- **Root:** `isArrivalConfirmationMessage` required exact template / `כן`+`מגיעים` in full string — natural affirmatives + compound messages fell through to general LLM.
+- **Fix pattern:** `resolveArrivalConfirmation` — Tier-0 for buttons/exact phrases; Gemini `classifyArrivalConfirmationWithAi` only when `msg_pre_arrival_2d_sent && !arrival_confirmed` (context gate prevents «בסדר» false positives). Early webhook intercept = Tier-0 only; AI runs once on text path (+ memo 120s). Never expand global keyword lists for this.
 
 ### 2026-07-17 — Stage 1 had two invisible text sources (Meta vs bot_scripts)
 - **Symptom:** Guest received «סופרים את הימים» from Whapi but ACC script editor showed different copy; CTA «כן, מגיעים» appeared without admin writing it.

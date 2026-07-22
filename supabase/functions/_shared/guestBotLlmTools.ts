@@ -88,7 +88,8 @@ export const TOOL_USAGE_INSTRUCTIONS = `
 אסור לקרוא לפונקציה על שאלות מידע (איפה/מתי/שעות/מיקום בר/בריכה/עמדת ברד/צק-אאוט/WiFi).
 אל תקרא כשהאורח רק מעדכן שעת הגעה.
 קרא לפונקציה רק על הבקשה בטקסט הנוכחי — לא על נושאים ישנים מהיסטוריה שכבר נענו.
-אם קראת — הוסף/י גם תשובה חמה; אל תכתוב שהבקשה "הועברה" בלי קריאה לפונקציה.${FACILITY_REVIEW_TOOL_INSTRUCTIONS}`;
+אם קראת — השב במדויק: "אני בודק את זה מול הצוות שלנו ונחזור אליך בהקדם 🙏".
+אל תכתוב שהבקשה "הועברה לקריאות" או שצוות שטח בדרך.${FACILITY_REVIEW_TOOL_INSTRUCTIONS}`;
 
 const GEMINI_FETCH_TIMEOUT_MS = 8000;
 const GEMINI_MAX_RETRIES = 3;
@@ -121,8 +122,15 @@ function _normalizeLoggedRequest(raw: unknown): GuestAiReplyResult["loggedReques
   return { category, summary };
 }
 
-export function buildToolOnlyReply(loggedRequest: NonNullable<GuestAiReplyResult["loggedRequest"]>): string {
-  return `בחירה מצוינת! העברתי את הבקשה (${loggedRequest.summary}) לצוות שלנו, ויחזרו אליך בהקדם. 🙏`;
+/** Fallback when the model only called log_guest_request with no guest text.
+ * Generic staff-handoff copy (Human-First 2026-07-22) — never claim a field
+ * ticket was opened; Inbox red-dot is the real signal. */
+export function buildToolOnlyReply(
+  _loggedRequest: NonNullable<GuestAiReplyResult["loggedRequest"]>,
+): string {
+  // Imported lazily would cycle; keep the canonical sentence in sync with
+  // guestBotHandoff.GUEST_STAFF_HANDOFF_SENTENCE.
+  return "אני בודק את זה מול הצוות שלנו ונחזור אליך בהקדם 🙏";
 }
 
 export function looksLikeToolOnlyAck(reply: string): boolean {

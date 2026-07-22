@@ -1,16 +1,13 @@
 // supabase/functions/guest-portal-ops-request/index.ts
 // Pre-Arrival / In-Stay Guest Portal — in-scroll room-service request dispatch.
 //
-// Two routes, same as Meta/Whapi's classifyGuestRequestDispatch:
-//   - In-house eligible guest (checked_in, or on-property arrival day) +
-//     upsellLabel matches the allowlisted physical categories (amenity /
-//     maintenance / cleaning) OR a trusted portal OPS_REQUEST CTA label →
-//     _shared/createGuestOpsTask.ts (Operations Board, pending_approval).
-//   - Everything else (not yet on property, or a non-allowlisted / generic
-//     ask like today's single "הזמנת שירות לחדר — ארמונים" CTA) → Requests
-//     Board (guest_alerts, alert_type=portal_room_service) + Whapi "בקשות
-//     אורחים" group, unchanged from before this cutover (Zero Data Loss —
-//     every request still lands somewhere, never silently dropped).
+// Two routes, same as Meta/Whapi's classifyGuestRequestDispatch — BUT unlike
+// WhatsApp free-text (Human-First 2026-07-22: Inbox handoff only), the portal
+// IS allowed to open an Ops Board task because the guest tapped an explicit
+// allowlisted button (not keyword-guessed free text):
+//   - In-house eligible guest + allowlisted physical label OR trusted portal
+//     OPS_REQUEST CTA → _shared/createGuestOpsTask.ts (pending_approval).
+//   - Everything else → Requests Board (guest_alerts) + Whapi "בקשות אורחים".
 import { serve }        from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { onGuestAlertInserted } from "../_shared/guestAlertWhapiNotify.ts";

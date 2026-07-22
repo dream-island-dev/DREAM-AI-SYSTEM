@@ -18,7 +18,7 @@ function hebrewOnlyLetters(s) {
 const CONFIRMATION_RE =
   /^[\s🎉✨😊🙂🙏💫🌴]*(?:כן[,!\s.]*)?(?:מגיעים|אנחנו מגיעים|כן מגיעים|כן,מגיעים|כן! מגיעים|כן|אישור|yes|מאשר|מאשרת|כן תודה|כן אישור|אישורי)[\s🎉✨😊🙂🙏💫🌴!.,✨]*$/iu;
 
-function isExplicitArrivalDecline(raw) {
+function isArrivalDeclineMessage(raw) {
   const t = normalizeInboundConfirmText(raw);
   if (!t) return false;
   if (t.includes("שינוי בתאריך")) return true;
@@ -29,7 +29,7 @@ function isExplicitArrivalDecline(raw) {
 
 export function isArrivalConfirmationMessage(raw, opts = {}) {
   const text = normalizeInboundConfirmText(raw);
-  if (text && isExplicitArrivalDecline(text)) return false;
+  if (text && isArrivalDeclineMessage(text)) return false;
 
   if (text && CONFIRMATION_RE.test(text)) return true;
 

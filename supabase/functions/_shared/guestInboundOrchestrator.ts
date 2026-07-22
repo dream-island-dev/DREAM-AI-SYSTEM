@@ -185,6 +185,97 @@ export async function patchClaimedInbound(
   if (error) console.warn("[guestInboundOrchestrator] patchClaimedInbound failed:", error.message);
 }
 
+/** Same copy as Meta date-change button / typed DATE_CHANGE_RE path. */
+export const STAGE1_ARRIVAL_DECLINE_REPLY_HE =
+  "העברתי את בקשתך לצוות הסוויטות שלנו, בנתיים תכתוב לי באיזה תאריכים תרצו ואנחנו נבדוק זמינות עבורכם וניצור קשר בהקדם. 🙏";
+
+export type ArrivalDeclineHandoffAdapter = {
+  sendReply: (body: string) => Promise<void>;
+  insertOutbound: (row: GuestOutboundRow) => Promise<void>;
+  notifyAlert?: (opts: {
+    guestId: number | null;
+    phone: string;
+    message: string;
+    conversationId: number | null;
+  }) => Promise<void>;
+};
+
+/** Stage 1 «לא מגיעים» / AI decline — staff alert + scripted reply (not Stage 2). */
+export async function handleGuestArrivalDeclineHandoff(
+  supabaseClient: ReturnType<typeof createClient>,
+  opts: {
+    phone: string;
+    guestId: number | null;
+    text: string;
+    msgId: string;
+    claimedConversationId: number | null;
+    sim: boolean;
+    source: "button" | "text" | "ai";
+  },
+  adapter: ArrivalDeclineHandoffAdapter,
+): Promise<void> {
+  const { phone, guestId, text, msgId, claimedConversationId, sim, source } = opts;
+
+  await patchClaimedInbound(supabaseClient, claimedConversationId, msgId, {
+    guest_id: guestId,
+    intent: "date_change_request",
+    human_requested: true,
+    human_request_type: "date_change",
+  });
+
+  if (guestId) {
+    const { error } = await supabaseClient.from("guests").update({
+      requires_attention: true,
+      requires_attention_since: new Date().toISOString(),
+      needs_callback: true,
+      attention_reason: "date_change",
+    }).eq("id", guestId);
+    if (error) {
+      console.error("[guestInboundOrchestrator] arrival decline guest update FAILED:", error.message);
+    }
+  }
+
+  const { error: alertErr } = await supabaseClient.from("guest_alerts").insert({
+    guest_id: guestId,
+    phone,
+    alert_type: "date_change_request",
+    message: text,
+    conversation_id: claimedConversationId,
+    resolved: false,
+  });
+  if (alertErr) {
+    console.warn("[guestInboundOrchestrator] arrival decline guest_alerts error:", alertErr.message);
+  } else if (adapter.notifyAlert) {
+    await adapter.notifyAlert({
+      guestId,
+      phone,
+      message: text,
+      conversationId: claimedConversationId,
+    }).catch((e: Error) => {
+      console.warn("[guestInboundOrchestrator] arrival decline notify failed:", e.message);
+    });
+  }
+
+  if (!sim) {
+    try {
+      await adapter.sendReply(STAGE1_ARRIVAL_DECLINE_REPLY_HE);
+      await adapter.insertOutbound({
+        phone,
+        guest_id: guestId,
+        message: STAGE1_ARRIVAL_DECLINE_REPLY_HE,
+        wa_message_id: null,
+        intent: "date_change_request",
+      });
+    } catch (e) {
+      console.error("[guestInboundOrchestrator] arrival decline reply failed:", (e as Error).message);
+    }
+  }
+
+  console.info(
+    `[guestInboundOrchestrator] 🗓️ arrival decline (${source}) — phone:${phone} guest:${guestId ?? "unknown"}`,
+  );
+}
+
 // ── whatsapp-send pipeline fallback (moved from whatsapp-webhook/index.ts) ──
 // NOTE: whatsapp-send's own stage_2_arrival "pipeline_reconcile" branch is
 // Meta-only today (§3 of this rollout fixes that) — this fallback is a rare

@@ -27,15 +27,20 @@ export const SOFT_HANDOFF_SLA_MINUTES = 20;
 /**
  * human_request_type values that already have (or should have) a physical
  * ops task — hard path is the pending_approval watcher, not this soft clock.
+ * Empty since the 2026-07-22 Human-First cutover: the bot no longer opens an
+ * automatic Ops Board task for "operational_request" (see
+ * _shared/createGuestOpsTask.ts header) — a staff member may still open one
+ * manually, but that no longer needs a dedicated escalation path here, since
+ * the Inbox flag itself is now covered by the soft clock below.
  */
-export const URGENT_OPS_HUMAN_REQUEST_TYPES = new Set([
-  "operational_request",
-]);
+export const URGENT_OPS_HUMAN_REQUEST_TYPES = new Set<string>([]);
 
 /**
  * Soft / reception-owned handoffs — page duty manager only, never field ops.
  * Anything not in URGENT_OPS and not listed here still counts as soft
- * (fail-safe: unknown types must not open Whapi ops cards).
+ * (fail-safe: unknown types must not open Whapi ops cards). "operational_request"
+ * moved here 2026-07-22 — it no longer creates a task, so without this it had
+ * no escalation clock at all if staff missed the Inbox red dot.
  */
 export const SOFT_HANDOFF_HUMAN_REQUEST_TYPES = new Set([
   "staff_handoff",
@@ -46,6 +51,7 @@ export const SOFT_HANDOFF_HUMAN_REQUEST_TYPES = new Set([
   "chat",
   "guest_alert",
   "fallback_no_match",
+  "operational_request",
 ]);
 
 export function isUrgentOpsHumanRequestType(type: string | null | undefined): boolean {
