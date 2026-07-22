@@ -35,12 +35,50 @@ export type EzgoImapFetchMeta = {
   searchUids: number;
   scannedRaw: number;
   afterAllowlist: number;
+  /** Already in ezgo_mail_ingest — envelope checked, source not downloaded. */
+  skippedKnown: number;
+  /** Full MIME bodies fetched (postal-mime). */
+  downloadedSource: number;
+};
+
+export type EzgoImapFetchOptions = {
+  /** Message-IDs already ingested — skip source download. */
+  knownMessageIds?: Set<string>;
+  /** Wider search window (no newer_than, larger limits). */
+  fullSync?: boolean;
 };
 
 export type EzgoImapFetchResult = {
   messages: EzgoInboundMail[];
   meta: EzgoImapFetchMeta;
 };
+
+/** Default Gmail lookback for incremental sync (override via EZGO_MAIL_SEARCH_DAYS). */
+export const EZGO_MAIL_SEARCH_DAYS_DEFAULT = 7;
+
+export function resolveEzgoMailSearchDays(): number {
+  const raw = Number(Deno.env.get("EZGO_MAIL_SEARCH_DAYS") || EZGO_MAIL_SEARCH_DAYS_DEFAULT);
+  if (!Number.isFinite(raw) || raw <= 0) return EZGO_MAIL_SEARCH_DAYS_DEFAULT;
+  return Math.min(Math.floor(raw), 30);
+}
+
+export function normalizeMessageId(raw: string | undefined | null): string {
+  return String(raw || "").replace(/^<|>$/g, "").trim().toLowerCase();
+}
+
+function emptyFetchMeta(imapUser: string): EzgoImapFetchMeta {
+  return {
+    mailboxTotal: 0,
+    mailboxName: "INBOX",
+    imapUser,
+    searchMethod: "none",
+    searchUids: 0,
+    scannedRaw: 0,
+    afterAllowlist: 0,
+    skippedKnown: 0,
+    downloadedSource: 0,
+  };
+}
 
 /** Built-in EZGO report senders — merged with EZGO_MAIL_ALLOWLIST extras. */
 export const DEFAULT_EZGO_MAIL_SENDERS = [
@@ -292,29 +330,36 @@ export async function parseEmlSourceToInboundMail(
   };
 }
 
-function buildGmailFromQuery(allowlist: string[]): string {
+function buildGmailFromQuery(allowlist: string[], searchDays: number | null): string {
   const parts = allowlist.map((s) => `from:${s}`);
   if (allowlist.some((s) => s.includes("@ezgo.co.il"))) {
     parts.push("from:ezgo.co.il");
   }
-  return `in:anywhere (${parts.join(" OR ")})`;
+  const recency = searchDays ? `newer_than:${searchDays}d ` : "";
+  return `in:anywhere ${recency}(${parts.join(" OR ")})`.replace(/\s+/g, " ").trim();
+}
+
+function gmailRecencyClause(searchDays: number | null): string {
+  return searchDays ? `newer_than:${searchDays}d ` : "";
 }
 
 async function searchUidsForSender(
   client: ImapFlow,
   sender: string,
   perSender: number,
+  searchDays: number | null,
 ): Promise<number[]> {
   const caps = Math.max(perSender, 1);
+  const recency = gmailRecencyClause(searchDays);
   const queries: Array<Record<string, unknown>> = [
-    { gmailRaw: `in:anywhere from:${sender}` },
-    { gmailRaw: `in:anywhere category:updates from:${sender}` },
+    { gmailRaw: `in:anywhere ${recency}from:${sender}`.replace(/\s+/g, " ").trim() },
+    { gmailRaw: `in:anywhere ${recency}category:updates from:${sender}`.replace(/\s+/g, " ").trim() },
     { from: sender },
   ];
   if (sender.includes("@ezgo.co.il")) {
     queries.unshift(
-      { gmailRaw: "in:anywhere from:ezgo.co.il" },
-      { gmailRaw: "in:anywhere category:updates from:ezgo.co.il" },
+      { gmailRaw: `in:anywhere ${recency}from:ezgo.co.il`.replace(/\s+/g, " ").trim() },
+      { gmailRaw: `in:anywhere ${recency}category:updates from:ezgo.co.il`.replace(/\s+/g, " ").trim() },
     );
   }
   const uidSet = new Set<number>();
@@ -338,6 +383,7 @@ async function searchAllowlistedUids(
   client: ImapFlow,
   allowlist: string[],
   limit: number,
+  searchDays: number | null,
 ): Promise<{ uids: number[]; method: string }> {
   const perSender = Math.max(
     EZGO_MAIL_PER_SENDER_MIN,
@@ -346,24 +392,27 @@ async function searchAllowlistedUids(
   const uidSet = new Set<number>();
 
   for (const sender of allowlist) {
-    const uids = await searchUidsForSender(client, sender, perSender);
+    const uids = await searchUidsForSender(client, sender, perSender, searchDays);
     for (const uid of uids) uidSet.add(uid);
   }
 
   if (uidSet.size > 0) {
+    const method = searchDays
+      ? `per_sender_newer_than_${searchDays}d`
+      : "per_sender_anywhere";
     return {
       uids: [...uidSet].sort((a, b) => b - a),
-      method: "per_sender_anywhere",
+      method,
     };
   }
 
-  const gmailQuery = buildGmailFromQuery(allowlist);
+  const gmailQuery = buildGmailFromQuery(allowlist, searchDays);
   try {
     const found = await client.search({ gmailRaw: gmailQuery }, { uid: true });
     if (found?.length) {
       return {
         uids: [...found].sort((a, b) => b - a).slice(0, limit),
-        method: "gmailRaw",
+        method: searchDays ? `gmailRaw_newer_than_${searchDays}d` : "gmailRaw",
       };
     }
   } catch {
@@ -373,20 +422,30 @@ async function searchAllowlistedUids(
   return { uids: [], method: "sequence_scan" };
 }
 
-async function messageFromFetch(
-  msg: {
-    uid?: number;
-    envelope?: {
-      from?: Array<{ address?: string; name?: string }>;
-      sender?: Array<{ address?: string; name?: string }>;
-      subject?: string;
-      date?: Date;
-    };
-    source?: Buffer | Uint8Array;
-    headers?: Map<string, string> | Headers;
-  },
+type ImapFetchMsg = {
+  uid?: number;
+  envelope?: {
+    from?: Array<{ address?: string; name?: string }>;
+    sender?: Array<{ address?: string; name?: string }>;
+    subject?: string;
+    date?: Date;
+  };
+  source?: Buffer | Uint8Array;
+  headers?: Map<string, string> | Headers;
+};
+
+function resolveMessageIdFromFetch(msg: ImapFetchMsg): string {
+  const headers = msg.headers;
+  const messageId = (headers instanceof Map
+    ? headers.get("message-id")
+    : headers?.get?.("message-id"))?.toString();
+  return normalizeMessageId(messageId) || `uid-${msg.uid}`;
+}
+
+function resolveAllowlistedSender(
+  msg: ImapFetchMsg,
   allowlist: string[],
-): Promise<EzgoInboundMail | null> {
+): { fromEmail: string; fromName: string | null } | null {
   const env = msg.envelope;
   const headers = msg.headers;
   const headerFrom = headers instanceof Map
@@ -403,30 +462,31 @@ async function messageFromFetch(
     extractEmailFromHeaderValue(headerFrom),
   ].map((v) => normalizeEzgoMailAddress(String(v ?? ""))).filter(Boolean);
 
-  let fromEmail = "";
   for (const c of candidates) {
     if (isSenderAllowed(c, allowlist)) {
-      fromEmail = c;
-      break;
+      return { fromEmail: c, fromName: env?.from?.[0]?.name || null };
     }
   }
-  if (!fromEmail) fromEmail = candidates[0] ?? "";
-  if (!fromEmail || !isSenderAllowed(fromEmail, allowlist)) return null;
+  return null;
+}
 
-  const fromRaw = env?.from?.[0];
+async function messageFromFetch(
+  msg: ImapFetchMsg,
+  allowlist: string[],
+): Promise<EzgoInboundMail | null> {
+  const sender = resolveAllowlistedSender(msg, allowlist);
+  if (!sender) return null;
 
+  const env = msg.envelope;
   const { text, html, preview, excelAttachments } = await extractBodiesFromSource(
     msg.source || new Uint8Array(),
   );
-  const messageId = (headers instanceof Map
-    ? headers.get("message-id")
-    : headers?.get?.("message-id"))?.toString();
-  const id = messageId?.replace(/^<|>$/g, "") || `uid-${msg.uid}`;
+  const id = resolveMessageIdFromFetch(msg);
 
   return {
     id,
-    fromEmail,
-    fromName: fromRaw?.name || null,
+    fromEmail: sender.fromEmail,
+    fromName: sender.fromName,
     subject: env?.subject ?? "",
     receivedAt: env?.date?.toISOString() ?? new Date().toISOString(),
     bodyPreview: preview,
@@ -441,55 +501,82 @@ async function fetchMessagesByUidList(
   uids: number[],
   allowlist: string[],
   meta: EzgoImapFetchMeta,
+  knownMessageIds: Set<string> = new Set(),
 ): Promise<EzgoInboundMail[]> {
-  const out: EzgoInboundMail[] = [];
-  if (!uids.length) return out;
+  if (!uids.length) return [];
 
   const range = uids.join(",");
+  const downloadUids: number[] = [];
+
+  // Phase 1 — envelope + Message-ID only (fast dedup).
   for await (const msg of client.fetch(range, {
+    uid: true,
+    envelope: true,
+    headers: ["message-id"],
+  })) {
+    meta.scannedRaw += 1;
+    if (!resolveAllowlistedSender(msg, allowlist)) continue;
+    meta.afterAllowlist += 1;
+    const id = resolveMessageIdFromFetch(msg);
+    if (knownMessageIds.has(id)) {
+      meta.skippedKnown += 1;
+      continue;
+    }
+    if (msg.uid) downloadUids.push(msg.uid);
+  }
+
+  if (!downloadUids.length) return [];
+
+  const out: EzgoInboundMail[] = [];
+  // Phase 2 — full source only for new allowlisted messages.
+  for await (const msg of client.fetch(downloadUids.join(","), {
     uid: true,
     envelope: true,
     source: true,
     headers: ["message-id"],
   })) {
-    meta.scannedRaw += 1;
+    meta.downloadedSource += 1;
     const parsed = await messageFromFetch(msg, allowlist);
-    if (!parsed) continue;
-    meta.afterAllowlist += 1;
-    out.push(parsed);
+    if (parsed) out.push(parsed);
   }
   return out;
 }
 
-async function fetchRecentBySequence(
+/** Envelope-only scan of recent messages — finds forwarded EZGO mail Gmail SEARCH may miss. */
+async function fetchRecentAllowlistedUids(
   client: ImapFlow,
   allowlist: string[],
   limit: number,
   meta: EzgoImapFetchMeta,
-): Promise<EzgoInboundMail[]> {
-  const out: EzgoInboundMail[] = [];
+  knownMessageIds: Set<string>,
+  scanCountCap = 28,
+): Promise<number[]> {
   const total = client.mailbox?.exists ?? 0;
   meta.mailboxTotal = total;
-  if (total === 0) return out;
+  if (total === 0) return [];
 
-  const scanCount = Math.min(total, Math.max(limit * 6, 60));
+  const scanCount = Math.min(total, Math.max(limit * 3, scanCountCap));
   const startSeq = Math.max(1, total - scanCount + 1);
+  const candidateUids: number[] = [];
 
   for await (const msg of client.fetch(`${startSeq}:*`, {
     uid: true,
     envelope: true,
-    source: true,
     headers: ["message-id"],
   })) {
     meta.scannedRaw += 1;
-    const parsed = await messageFromFetch(msg, allowlist);
-    if (!parsed) continue;
+    if (!resolveAllowlistedSender(msg, allowlist)) continue;
     meta.afterAllowlist += 1;
-    out.push(parsed);
-    if (out.length >= limit) break;
+    const id = resolveMessageIdFromFetch(msg);
+    if (knownMessageIds.has(id)) {
+      meta.skippedKnown += 1;
+      continue;
+    }
+    if (msg.uid) candidateUids.push(msg.uid);
+    if (candidateUids.length >= limit) break;
   }
 
-  return out;
+  return candidateUids;
 }
 
 /** Fetch one message by stored external_message_id (Message-ID or uid-N fallback). */
@@ -510,15 +597,8 @@ export async function fetchEzgoMessageById(
     emitLogs: false,
   });
 
-  const meta: EzgoImapFetchMeta = {
-    mailboxTotal: 0,
-    mailboxName: "INBOX",
-    imapUser: config.user,
-    searchMethod: "by_id",
-    searchUids: 0,
-    scannedRaw: 0,
-    afterAllowlist: 0,
-  };
+  const meta = emptyFetchMeta(config.user);
+  meta.searchMethod = "by_id";
 
   await client.connect();
   try {
@@ -553,11 +633,13 @@ export async function fetchEzgoMessageById(
       }
     }
 
-    const { uids } = await searchAllowlistedUids(client, allowlist, 150);
+    const searchDays = resolveEzgoMailSearchDays();
+    const { uids } = await searchAllowlistedUids(client, allowlist, 48, searchDays);
     meta.searchUids = uids.length;
     if (uids.length) {
       const msgs = await fetchMessagesByUidList(client, uids, allowlist, meta);
-      const hit = msgs.find((m) => m.id === targetId);
+      const normTarget = normalizeMessageId(targetId);
+      const hit = msgs.find((m) => normalizeMessageId(m.id) === normTarget);
       if (hit) return hit;
     }
 
@@ -569,9 +651,15 @@ export async function fetchEzgoMessageById(
 
 export async function fetchEzgoInboxMessages(
   config: EzgoImapConfig,
-  limit = 36,
+  limit = 24,
   allowlist: string[] = parseAllowlist(),
+  options: EzgoImapFetchOptions = {},
 ): Promise<EzgoImapFetchResult> {
+  const fullSync = options.fullSync === true;
+  const searchDays = fullSync ? null : resolveEzgoMailSearchDays();
+  const knownMessageIds = options.knownMessageIds ?? new Set<string>();
+  const fetchLimit = fullSync ? Math.max(limit, 36) : limit;
+
   const client = new ImapFlow({
     host: config.host,
     port: config.port,
@@ -581,15 +669,7 @@ export async function fetchEzgoInboxMessages(
     emitLogs: false,
   });
 
-  const meta: EzgoImapFetchMeta = {
-    mailboxTotal: 0,
-    mailboxName: "INBOX",
-    imapUser: config.user,
-    searchMethod: "none",
-    searchUids: 0,
-    scannedRaw: 0,
-    afterAllowlist: 0,
-  };
+  const meta = emptyFetchMeta(config.user);
 
   let messages: EzgoInboundMail[] = [];
 
@@ -598,28 +678,76 @@ export async function fetchEzgoInboxMessages(
     meta.mailboxName = await openSearchMailbox(client);
     meta.mailboxTotal = client.mailbox?.exists ?? 0;
 
-    const { uids, method } = await searchAllowlistedUids(client, allowlist, limit);
+    const { uids, method } = await searchAllowlistedUids(
+      client,
+      allowlist,
+      fetchLimit,
+      searchDays,
+    );
     meta.searchMethod = method;
     meta.searchUids = uids.length;
 
     if (uids.length > 0) {
-      messages = await fetchMessagesByUidList(client, uids, allowlist, meta);
+      messages = await fetchMessagesByUidList(
+        client,
+        uids,
+        allowlist,
+        meta,
+        knownMessageIds,
+      );
     }
 
-    // Supplement: recent INBOX catches forwards Gmail SEARCH may miss.
-    const supplement = await fetchRecentBySequence(client, allowlist, 15, meta);
+    // Supplement: envelope-only recent scan — forwards Gmail SEARCH may miss.
+    const supplementUids = await fetchRecentAllowlistedUids(
+      client,
+      allowlist,
+      fullSync ? 12 : 8,
+      meta,
+      knownMessageIds,
+      fullSync ? 40 : 28,
+    );
     const seen = new Set(messages.map((m) => m.id));
-    for (const m of supplement) {
-      if (!seen.has(m.id)) {
-        messages.push(m);
-        seen.add(m.id);
+    const extraUids = supplementUids.filter((uid) => {
+      // avoid re-downloading UIDs already fetched in primary search
+      return !uids.includes(uid);
+    });
+    if (extraUids.length) {
+      const supplementMsgs = await fetchMessagesByUidList(
+        client,
+        extraUids,
+        allowlist,
+        meta,
+        knownMessageIds,
+      );
+      for (const m of supplementMsgs) {
+        if (!seen.has(m.id)) {
+          messages.push(m);
+          seen.add(m.id);
+        }
       }
     }
-    if (messages.length === 0) {
+
+    if (messages.length === 0 && uids.length === 0) {
       meta.searchMethod = "sequence_scan";
-      messages = await fetchRecentBySequence(client, allowlist, limit, meta);
-    } else if (supplement.length > 0 && method !== "sequence_scan") {
-      meta.searchMethod = `${method}+sequence_supplement`;
+      const fallbackUids = await fetchRecentAllowlistedUids(
+        client,
+        allowlist,
+        fetchLimit,
+        meta,
+        knownMessageIds,
+        fullSync ? 60 : 36,
+      );
+      if (fallbackUids.length) {
+        messages = await fetchMessagesByUidList(
+          client,
+          fallbackUids,
+          allowlist,
+          meta,
+          knownMessageIds,
+        );
+      }
+    } else if (supplementUids.length > 0 && method !== "sequence_scan") {
+      meta.searchMethod = `${method}+envelope_supplement`;
     }
   } finally {
     await client.logout();

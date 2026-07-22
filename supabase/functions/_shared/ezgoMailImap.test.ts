@@ -1,10 +1,13 @@
 import {
   DEFAULT_EZGO_MAIL_SENDERS,
   EZGO_MAIL_PER_SENDER_MIN,
+  EZGO_MAIL_SEARCH_DAYS_DEFAULT,
   extractBodiesFromSource,
   extractEmailFromHeaderValue,
   isSenderAllowed,
+  normalizeMessageId,
   parseAllowlist,
+  resolveEzgoMailSearchDays,
 } from "./ezgoMailImap.ts";
 
 const EZGO_NOREPLY = "noreply@ezgo.co.il";
@@ -20,6 +23,26 @@ Deno.test("extractEmailFromHeaderValue parses angle-bracket address", () => {
   const email = extractEmailFromHeaderValue("EZGO Operations <noreply@ezgo.co.il>");
   if (email !== "noreply@ezgo.co.il") {
     throw new Error(`expected noreply@ezgo.co.il, got ${email}`);
+  }
+});
+
+Deno.test("normalizeMessageId strips angle brackets and lowercases", () => {
+  const id = normalizeMessageId("<ABC@ezgo.co.il>");
+  if (id !== "abc@ezgo.co.il") {
+    throw new Error(`expected abc@ezgo.co.il, got ${id}`);
+  }
+});
+
+Deno.test("resolveEzgoMailSearchDays defaults to 7", () => {
+  const prev = Deno.env.get("EZGO_MAIL_SEARCH_DAYS");
+  try {
+    Deno.env.delete("EZGO_MAIL_SEARCH_DAYS");
+    if (resolveEzgoMailSearchDays() !== EZGO_MAIL_SEARCH_DAYS_DEFAULT) {
+      throw new Error("expected default search days");
+    }
+  } finally {
+    if (prev === undefined) Deno.env.delete("EZGO_MAIL_SEARCH_DAYS");
+    else Deno.env.set("EZGO_MAIL_SEARCH_DAYS", prev);
   }
 });
 

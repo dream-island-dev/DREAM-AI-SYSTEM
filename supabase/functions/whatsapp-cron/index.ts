@@ -112,6 +112,27 @@ Deno.serve(async (req: Request) => {
     }
   }
 
+  // ── EZGO mail ingest — independent of CRON_ENABLED outbound kill switch ──
+  if (ezgoMailSyncEnabled()) {
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    try {
+      const ezgoMailRes = await fetch(`${supabaseUrl}/functions/v1/ezgo-mail-sync`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!}`,
+          "Content-Type": "application/json",
+        },
+        body: "{}",
+      });
+      const ezgoMailJson = await ezgoMailRes.json().catch(() => ({}));
+      if (ezgoMailJson?.processed > 0) {
+        console.log(`[whatsapp-cron] ezgo-mail-sync processed=${ezgoMailJson.processed}`);
+      }
+    } catch (ezgoMailErr) {
+      console.warn("[whatsapp-cron] ezgo-mail-sync failed (non-blocking):", (ezgoMailErr as Error).message);
+    }
+  }
+
   // ── EMERGENCY KILL SWITCH ───────────────────────────────────────────────────
   // ALL automated outbound sends are halted until CRON_ENABLED=true is set
   // explicitly in Supabase Secrets (Project → Settings → Edge Functions → Secrets).
@@ -581,26 +602,6 @@ Deno.serve(async (req: Request) => {
       }
     } catch (spaSchedErr) {
       console.warn("[whatsapp-cron] spa upsell schedule dispatch failed (non-blocking):", (spaSchedErr as Error).message);
-    }
-
-    // ── EZGO mail ingest (Doc1 from Gmail) — every cron tick ──
-    if (ezgoMailSyncEnabled()) {
-      try {
-        const ezgoMailRes = await fetch(`${supabaseUrl}/functions/v1/ezgo-mail-sync`, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!}`,
-            "Content-Type": "application/json",
-          },
-          body: "{}",
-        });
-        const ezgoMailJson = await ezgoMailRes.json().catch(() => ({}));
-        if (ezgoMailJson?.processed > 0) {
-          console.log(`[whatsapp-cron] ezgo-mail-sync processed=${ezgoMailJson.processed}`);
-        }
-      } catch (ezgoMailErr) {
-        console.warn("[whatsapp-cron] ezgo-mail-sync failed (non-blocking):", (ezgoMailErr as Error).message);
-      }
     }
 
     // ── Sigal urgent-complaint loop (Orit CS) — every cron tick ~15min ──

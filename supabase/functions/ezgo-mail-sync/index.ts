@@ -15,6 +15,7 @@ import {
   fetchEzgoInboxMessages,
   fetchEzgoMessageById,
   isSenderAllowed,
+  normalizeMessageId,
   parseAllowlist,
   parseEmlSourceToInboundMail,
   resolveEzgoImapConfig,
@@ -57,6 +58,51 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 const IMAP_BUDGET_MS = 55_000;
+
+async function loadKnownMessageIds(
+  supabase: ReturnType<typeof createClient>,
+): Promise<Set<string>> {
+  const since = new Date();
+  since.setDate(since.getDate() - 35);
+  const { data, error } = await supabase
+    .from("ezgo_mail_ingest")
+    .select("external_message_id")
+    .gte("received_at", since.toISOString());
+  if (error) {
+    console.warn("[ezgo-mail-sync] known ids lookup failed:", error.message);
+    return new Set();
+  }
+  const ids = new Set<string>();
+  for (const row of data || []) {
+    const id = normalizeMessageId(row.external_message_id);
+    if (id) ids.add(id);
+  }
+  return ids;
+}
+
+function resolveEzgoMailRetentionDays(): number {
+  const raw = Number(Deno.env.get("EZGO_MAIL_RETENTION_DAYS") || "3");
+  if (!Number.isFinite(raw) || raw <= 0) return 3;
+  return Math.min(Math.floor(raw), 30);
+}
+
+async function purgeStaleEzgoMailIngest(
+  supabase: ReturnType<typeof createClient>,
+): Promise<number> {
+  const retentionDays = resolveEzgoMailRetentionDays();
+  const { data, error } = await supabase.rpc("purge_stale_ezgo_mail_ingest", {
+    retention_days: retentionDays,
+  });
+  if (error) {
+    console.warn("[ezgo-mail-sync] purge failed:", error.message);
+    return 0;
+  }
+  const purged = Number(data) || 0;
+  if (purged > 0) {
+    console.log(`[ezgo-mail-sync] purged ${purged} stale ingests (>${retentionDays}d)`);
+  }
+  return purged;
+}
 
 async function withImapBudget<T>(fn: () => Promise<T>): Promise<T> {
   return await Promise.race([
@@ -505,7 +551,7 @@ serve(async (req: Request) => {
     const authBlock = await assertEzgoMailStaff(req, supabase);
     if (authBlock) return authBlock;
 
-    let body: { reparse_ingest_id?: string; eml_base64?: string } = {};
+    let body: { reparse_ingest_id?: string; eml_base64?: string; full_sync?: boolean } = {};
     try {
       body = await req.json();
     } catch {
@@ -564,8 +610,16 @@ serve(async (req: Request) => {
       }
     }
 
+    const fullSync = body.full_sync === true;
+    const knownMessageIds = fullSync
+      ? new Set<string>()
+      : await loadKnownMessageIds(supabase);
+
     const { messages, meta: imapMeta } = await withImapBudget(() =>
-      fetchEzgoInboxMessages(cfg, 36, allowlist)
+      fetchEzgoInboxMessages(cfg, fullSync ? 36 : 24, allowlist, {
+        knownMessageIds,
+        fullSync,
+      })
     );
 
     let processed = 0;
@@ -598,11 +652,14 @@ serve(async (req: Request) => {
       }
     }
 
+    const purged = await purgeStaleEzgoMailIngest(supabase);
+
     return jsonResponse({
       ok: true,
       processed,
       skipped,
       failed,
+      purged,
       scanned: messages.length,
       by_sender: bySender,
       imap: imapMeta,

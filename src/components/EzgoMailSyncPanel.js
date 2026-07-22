@@ -272,6 +272,24 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
   }, [showToast]);
 
   useEffect(() => { loadIngests(); }, [loadIngests]);
+
+  // Auto-refresh ingest list (cron / background sync) without re-scanning IMAP.
+  useEffect(() => {
+    const pollId = setInterval(() => { loadIngests(); }, 90_000);
+    const channel = supabase
+      .channel("ezgo-mail-ingest-live")
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "ezgo_mail_ingest" },
+        () => { loadIngests(); },
+      )
+      .subscribe();
+    return () => {
+      clearInterval(pollId);
+      supabase.removeChannel(channel);
+    };
+  }, [loadIngests]);
+
   useEffect(() => { loadLines(selectedId); }, [selectedId, loadLines]);
 
   const selected = ingests.find((i) => i.id === selectedId);
@@ -314,11 +332,17 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
       const senderBits = Object.entries(bySender)
         .map(([k, v]) => `${k.split("@")[0]}:${v}`)
         .join(" · ");
+      const imapBits = imap
+        ? [
+          imap.downloadedSource != null ? `הורדו ${imap.downloadedSource}` : null,
+          imap.skippedKnown ? `ידועים ${imap.skippedKnown}` : null,
+        ].filter(Boolean).join(" · ")
+        : "";
       const msg = data?.skipped
         ? "סנכרון מייל כבוי (EZGO_MAIL_SYNC_ENABLED)"
         : (data.scanned ?? 0) === 0 && imap
-          ? `נסרקו 0 · תיבה ${imap.mailboxTotal} (${imap.mailboxName || "INBOX"}) · ${data.imap_user || ""} · נבדקו ${imap.scannedRaw} (${imap.searchMethod})`
-          : `נסרקו ${data.scanned ?? 0} · חדשים ${data.processed ?? 0}${senderBits ? ` · ${senderBits}` : ""}${data.imap_user ? ` · ${data.imap_user}` : ""}`;
+          ? `אין חדשים · תיבה ${imap.mailboxTotal} (${imap.mailboxName || "INBOX"}) · ${imap.searchMethod}${imap.skippedKnown ? ` · דולגו ${imap.skippedKnown} ידועים` : ""}`
+          : `חדשים ${data.processed ?? 0} · נבדקו ${data.scanned ?? 0}${imapBits ? ` · ${imapBits}` : ""}${senderBits ? ` · ${senderBits}` : ""}`;
       showToast?.(msg, "ok");
       await loadIngests();
     } catch (e) {
@@ -774,6 +798,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
         border: "1px solid rgba(201,169,110,0.2)",
       }}>
         noreply@ezgo.co.il · דוח כניסות (Doc2) · דוח תפעול (Doc1) → סריקה אוטומטית + אישור ידני.
+        {" "}סנכרון מהיר: 7 ימים אחרונים, מוריד גוף מלא רק למיילים חדשים · רשימה מתעדכנת לבד כל ~90ש׳ · מיילים שטופלו נמחקים אחרי 3 ימים.
         {" "}Doc2: צור פרופיל / השלמת חסר / שיבוץ חדר · Doc1: ספא / בילוי יומי.
       </div>
 
