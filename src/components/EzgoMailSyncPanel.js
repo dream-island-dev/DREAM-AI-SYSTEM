@@ -324,7 +324,9 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
   const triggerSync = async () => {
     setSyncing(true);
     try {
-      const { data, error } = await supabase.functions.invoke("ezgo-mail-sync");
+      const { data, error } = await supabase.functions.invoke("ezgo-mail-sync", {
+        body: { manual: true },
+      });
       if (error) throw error;
       if (!data?.ok && !data?.skipped) throw new Error(data?.error || "סנכרון נכשל");
       const imap = data?.imap;
@@ -334,16 +336,21 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
         .join(" · ");
       const imapBits = imap
         ? [
+          imap.searchUids != null ? `UIDs ${imap.searchUids}` : null,
           imap.downloadedSource != null ? `הורדו ${imap.downloadedSource}` : null,
           imap.skippedKnown ? `ידועים ${imap.skippedKnown}` : null,
         ].filter(Boolean).join(" · ")
         : "";
-      const msg = data?.skipped
-        ? "סנכרון מייל כבוי (EZGO_MAIL_SYNC_ENABLED)"
-        : (data.scanned ?? 0) === 0 && imap
-          ? `אין חדשים · תיבה ${imap.mailboxTotal} (${imap.mailboxName || "INBOX"}) · ${imap.searchMethod}${imap.skippedKnown ? ` · דולגו ${imap.skippedKnown} ידועים` : ""}`
-          : `חדשים ${data.processed ?? 0} · נבדקו ${data.scanned ?? 0}${imapBits ? ` · ${imapBits}` : ""}${senderBits ? ` · ${senderBits}` : ""}`;
-      showToast?.(msg, "ok");
+      const accountHint = data?.imap_user ? ` · תיבה ${data.imap_user}` : "";
+      let msg;
+      if (data?.skipped) {
+        msg = "סנכרון מייל כבוי (EZGO_MAIL_SYNC_ENABLED)";
+      } else if ((data.processed ?? 0) === 0 && (data.scanned ?? 0) === 0) {
+        msg = `לא נמצאו מיילי EZGO חדשים${accountHint} · ${imap?.searchMethod || "—"}${imapBits ? ` · ${imapBits}` : ""} — ודא שהמייל באותה תיבת Gmail`;
+      } else {
+        msg = `חדשים ${data.processed ?? 0} · נבדקו ${data.scanned ?? 0}${imapBits ? ` · ${imapBits}` : ""}${senderBits ? ` · ${senderBits}` : ""}${accountHint}`;
+      }
+      showToast?.(msg, (data.processed ?? 0) > 0 ? "ok" : "err");
       await loadIngests();
     } catch (e) {
       showToast?.(e.message, "err");

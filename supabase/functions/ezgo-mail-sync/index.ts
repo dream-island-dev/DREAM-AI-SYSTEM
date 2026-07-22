@@ -551,7 +551,7 @@ serve(async (req: Request) => {
     const authBlock = await assertEzgoMailStaff(req, supabase);
     if (authBlock) return authBlock;
 
-    let body: { reparse_ingest_id?: string; eml_base64?: string; full_sync?: boolean } = {};
+    let body: { reparse_ingest_id?: string; eml_base64?: string; full_sync?: boolean; manual?: boolean } = {};
     try {
       body = await req.json();
     } catch {
@@ -611,14 +611,16 @@ serve(async (req: Request) => {
     }
 
     const fullSync = body.full_sync === true;
+    const manual = body.manual === true;
     const knownMessageIds = fullSync
       ? new Set<string>()
       : await loadKnownMessageIds(supabase);
 
     const { messages, meta: imapMeta } = await withImapBudget(() =>
-      fetchEzgoInboxMessages(cfg, fullSync ? 36 : 24, allowlist, {
+      fetchEzgoInboxMessages(cfg, manual || fullSync ? 36 : 24, allowlist, {
         knownMessageIds,
         fullSync,
+        manual,
       })
     );
 
