@@ -321,36 +321,67 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
   const pendingCount = lines.filter((l) => l.status === "pending_review").length;
   const wf = (line) => lineWorkflow(line, reportDate, isDoc2Ingest);
 
-  const triggerSync = async () => {
+  const buildSyncToast = (data, { fullSync = false } = {}) => {
+    const imap = data?.imap;
+    const bySender = data?.by_sender || {};
+    const senderBits = Object.entries(bySender)
+      .map(([k, v]) => `${k.split("@")[0]}:${v}`)
+      .join(" · ");
+    const imapBits = imap
+      ? [
+        imap.searchUids != null ? `UIDs ${imap.searchUids}` : null,
+        imap.downloadedSource != null ? `הורדו ${imap.downloadedSource}` : null,
+        imap.skippedKnown ? `ידועים ${imap.skippedKnown}` : null,
+      ].filter(Boolean).join(" · ")
+      : "";
+    const accountHint = data?.imap_user ? ` · תיבה ${data.imap_user}` : "";
+    const processed = data?.processed ?? 0;
+    const scanned = data?.scanned ?? 0;
+    const skippedKnown = imap?.skippedKnown ?? 0;
+    const searchUids = imap?.searchUids ?? 0;
+
+    if (data?.skipped) {
+      return { msg: "סנכרון מייל כבוי (EZGO_MAIL_SYNC_ENABLED)", tone: "err" };
+    }
+    if (processed > 0) {
+      const prefix = fullSync ? "סריקה מלאה · " : "";
+      return {
+        msg: `${prefix}חדשים ${processed} · נבדקו ${scanned}${imapBits ? ` · ${imapBits}` : ""}${senderBits ? ` · ${senderBits}` : ""}${accountHint}`,
+        tone: "ok",
+      };
+    }
+    if (skippedKnown > 0) {
+      return {
+        msg: `הכל מסונכרן · ${skippedKnown} מיילים כבר ב-DB · אין חדשים${imapBits ? ` · ${imapBits}` : ""}${accountHint}`,
+        tone: "ok",
+      };
+    }
+    if (searchUids === 0 && skippedKnown === 0) {
+      return {
+        msg: `לא נמצאו מיילי EZGO${accountHint} · ${imap?.searchMethod || "—"}${imapBits ? ` · ${imapBits}` : ""} — ודא שהמייל באותה תיבת Gmail`,
+        tone: "err",
+      };
+    }
+    const prefix = fullSync ? "סריקה מלאה · " : "";
+    return {
+      msg: `${prefix}אין מיילים חדשים · נבדקו ${scanned}${imapBits ? ` · ${imapBits}` : ""}${accountHint}`,
+      tone: "ok",
+    };
+  };
+
+  const triggerSync = async ({ fullSync = false } = {}) => {
+    if (fullSync && !window.confirm(
+      "סריקה מלאה — ללא dedup, חלון זמן רחב יותר. עלול לקחת דקה. להמשיך?",
+    )) return;
     setSyncing(true);
     try {
       const { data, error } = await supabase.functions.invoke("ezgo-mail-sync", {
-        body: { manual: true },
+        body: { manual: true, full_sync: fullSync },
       });
       if (error) throw error;
       if (!data?.ok && !data?.skipped) throw new Error(data?.error || "סנכרון נכשל");
-      const imap = data?.imap;
-      const bySender = data?.by_sender || {};
-      const senderBits = Object.entries(bySender)
-        .map(([k, v]) => `${k.split("@")[0]}:${v}`)
-        .join(" · ");
-      const imapBits = imap
-        ? [
-          imap.searchUids != null ? `UIDs ${imap.searchUids}` : null,
-          imap.downloadedSource != null ? `הורדו ${imap.downloadedSource}` : null,
-          imap.skippedKnown ? `ידועים ${imap.skippedKnown}` : null,
-        ].filter(Boolean).join(" · ")
-        : "";
-      const accountHint = data?.imap_user ? ` · תיבה ${data.imap_user}` : "";
-      let msg;
-      if (data?.skipped) {
-        msg = "סנכרון מייל כבוי (EZGO_MAIL_SYNC_ENABLED)";
-      } else if ((data.processed ?? 0) === 0 && (data.scanned ?? 0) === 0) {
-        msg = `לא נמצאו מיילי EZGO חדשים${accountHint} · ${imap?.searchMethod || "—"}${imapBits ? ` · ${imapBits}` : ""} — ודא שהמייל באותה תיבת Gmail`;
-      } else {
-        msg = `חדשים ${data.processed ?? 0} · נבדקו ${data.scanned ?? 0}${imapBits ? ` · ${imapBits}` : ""}${senderBits ? ` · ${senderBits}` : ""}${accountHint}`;
-      }
-      showToast?.(msg, (data.processed ?? 0) > 0 ? "ok" : "err");
+      const { msg, tone } = buildSyncToast(data, { fullSync });
+      showToast?.(msg, tone);
       await loadIngests();
     } catch (e) {
       showToast?.(e.message, "err");
@@ -786,17 +817,33 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
         <div style={{ fontSize: 17, fontWeight: 800, color: "var(--gold-light)" }}>
           📧 סנכרון ממייל EZGO
         </div>
-        <button
-          type="button"
-          onClick={triggerSync}
-          disabled={syncing}
-          style={{
-            marginRight: "auto", padding: "8px 14px", borderRadius: 8, border: "none",
-            background: "var(--gold,#C9A96E)", color: "#fff", fontWeight: 700, cursor: syncing ? "wait" : "pointer",
-          }}
-        >
-          {syncing ? "סורק תיבה…" : "🔄 סרוק מייל עכשיו"}
-        </button>
+        <div style={{ marginRight: "auto", display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button
+            type="button"
+            onClick={() => triggerSync()}
+            disabled={syncing}
+            style={{
+              padding: "8px 14px", borderRadius: 8, border: "none",
+              background: "var(--gold,#C9A96E)", color: "#fff", fontWeight: 700, cursor: syncing ? "wait" : "pointer",
+            }}
+          >
+            {syncing ? "סורק תיבה…" : "🔄 סרוק מייל עכשיו"}
+          </button>
+          <button
+            type="button"
+            onClick={() => triggerSync({ fullSync: true })}
+            disabled={syncing}
+            title="סריקה רחבה ללא dedup — למיילים שלא נכנסו בסריקה הרגילה"
+            style={{
+              padding: "8px 14px", borderRadius: 8,
+              border: "1px solid rgba(201,169,110,0.45)",
+              background: "transparent", color: "var(--gold-light)", fontWeight: 600,
+              cursor: syncing ? "wait" : "pointer", fontSize: 12,
+            }}
+          >
+            🔍 סריקה מלאה
+          </button>
+        </div>
       </div>
 
       <div style={{
@@ -805,7 +852,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
         border: "1px solid rgba(201,169,110,0.2)",
       }}>
         noreply@ezgo.co.il · דוח כניסות (Doc2) · דוח תפעול (Doc1) → סריקה אוטומטית + אישור ידני.
-        {" "}סנכרון מהיר: 7 ימים אחרונים, מוריד גוף מלא רק למיילים חדשים · רשימה מתעדכנת לבד כל ~90ש׳ · מיילים שטופלו נמחקים אחרי 3 ימים.
+        {" "}סנכרון מהיר: 7 ימים אחרונים, מוריד גוף מלא רק למיילים חדשים · «סריקה מלאה» ללא dedup אם משהו חסר · רשימה מתעדכנת לבד כל ~90ש׳ · מיילים שטופלו נמחקים אחרי 3 ימים.
         {" "}Doc2: צור פרופיל / השלמת חסר / שיבוץ חדר · Doc1: ספא / בילוי יומי.
       </div>
 
