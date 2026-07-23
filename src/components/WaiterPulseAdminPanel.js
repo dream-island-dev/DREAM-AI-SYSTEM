@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import { canPerform } from "../utils/auth";
 import WaiterPulseForm from "./WaiterPulseForm";
+import WaiterPulseDispatchPanel from "./WaiterPulseDispatchPanel";
 import {
   BOT_CONFIG_WAITER_PULSE_UI_KEY,
   WAITER_PULSE_MANAGEMENT_STATUSES,
@@ -544,6 +545,12 @@ export default function WaiterPulseAdminPanel({ user }) {
           </div>
         </div>
       </div>
+
+      <WaiterPulseDispatchPanel
+        pulseUrl={activeLink ? pulsePublicUrl(activeLink.token) : null}
+        canEdit={canEdit}
+        onToast={showToast}
+      />
 
       <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 10 }}>
         תשובות מלצרים
