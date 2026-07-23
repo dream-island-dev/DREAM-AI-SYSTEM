@@ -2029,6 +2029,19 @@ function NewChatModal({ onClose, onSent, whapiSosActive = false }) {
   const [tmplBulkFailures,   setTmplBulkFailures]   = useState([]); // [{ name, phone, reason }] — same FAIL VISIBLE convention as bulkFailures
   const [tmplSyncOk,        setTmplSyncOk]        = useState(false); // brief "✓ עודכן" flash after manual sync
 
+  // Multi-recipient distribution — Whapi is hard-blocked here (not queued):
+  // a same-body blast to many recipients from a manually-typed Inbox message
+  // is exactly the pattern that got the Suites device restricted on
+  // 2026-07-23. Meta templates are the only channel for real distribution;
+  // Whapi stays available for true 1:1 (mode==="free" with one recipient).
+  const isBulkDistribution = mode === "bulk" || (mode === "template" && tmplMode === "audience");
+
+  // Never let a channel choice made in single-recipient mode carry into a
+  // blocked bulk context — reset to Meta the moment the mode/tab changes.
+  useEffect(() => {
+    if (isBulkDistribution && sendChannel === "whapi") setSendChannel("meta");
+  }, [isBulkDistribution, sendChannel]);
+
   // Load guests for bulk mode whenever filter changes
   useEffect(() => {
     if (mode !== "bulk" || !supabase) return;
@@ -2045,6 +2058,7 @@ function NewChatModal({ onClose, onSent, whapiSosActive = false }) {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   async function handleSendBulk() {
+    if (sendChannel === "whapi")  return setErr("תפוצה דרך Whapi חסומה — הגנה על מכשיר הסוויטות. עבור ל-Meta Template.");
     if (!bulkText.trim())        return setErr("נא לכתוב הודעה");
     if (bulkGuests.length === 0) return setErr("אין נמענים בסינון הנוכחי");
     if (!ensureCanSend())        return setErr("שליחה חסומה בשעות שקט — סמן את האישור למטה");
@@ -2227,6 +2241,7 @@ function NewChatModal({ onClose, onSent, whapiSosActive = false }) {
 
   // ── Template audience bulk send ─────────────────────────────────────────────
   async function handleSendTemplateAudience() {
+    if (sendChannel === "whapi")    return setErr("תפוצה דרך Whapi חסומה — הגנה על מכשיר הסוויטות. עבור ל-Meta Template.");
     if (!selectedTmpl)              return setErr("נא לבחור תבנית");
     if (tmplAudienceGuests.length === 0) return setErr("אין נמענים בסינון הנוכחי");
     if (!ensureCanSend())           return setErr("שליחה חסומה בשעות שקט — סמן את האישור למטה");
@@ -2367,16 +2382,28 @@ function NewChatModal({ onClose, onSent, whapiSosActive = false }) {
               >🤖 Dream Bot (Meta)</button>
               <button
                 type="button"
-                onClick={() => setSendChannel("whapi")}
+                onClick={() => !isBulkDistribution && setSendChannel("whapi")}
+                disabled={isBulkDistribution}
+                title={isBulkDistribution
+                  ? "חסום לתפוצה — הודעה זהה לכמה נמענים דרך Whapi עלולה לחסום את המכשיר. תפוצה רק דרך Meta Template."
+                  : undefined}
                 style={{
                   flex: 1, padding: "8px 12px", borderRadius: 10,
                   border: `2px solid ${sendChannel === "whapi" ? "#1A7A4A" : "#ddd"}`,
-                  background: sendChannel === "whapi" ? "rgba(26,122,74,0.08)" : "#fff",
-                  fontWeight: sendChannel === "whapi" ? 700 : 400, cursor: "pointer", fontSize: 13,
+                  background: sendChannel === "whapi" ? "rgba(26,122,74,0.08)" : (isBulkDistribution ? "#F3F4F6" : "#fff"),
+                  fontWeight: sendChannel === "whapi" ? 700 : 400,
+                  cursor: isBulkDistribution ? "not-allowed" : "pointer",
+                  opacity: isBulkDistribution ? 0.55 : 1,
+                  fontSize: 13,
                 }}
               >📱 מכשיר הסוויטות (Whapi)</button>
             </div>
-            {sendChannel === "whapi" && mode === "template" && (
+            {isBulkDistribution && (
+              <div style={{ marginTop: 6, fontSize: 11.5, color: "#92400E", background: "#FFF8E7", border: "1px solid #C9A96E", borderRadius: 8, padding: "6px 10px" }}>
+                ⚠ תפוצה לכמה נמענים נשלחת רק דרך Meta Template — הגנה על מכשיר הסוויטות מפני חסימה.
+              </div>
+            )}
+            {sendChannel === "whapi" && mode === "template" && !isBulkDistribution && (
               <div style={{ marginTop: 6, fontSize: 11.5, color: "#92400E", background: "#FFF8E7", border: "1px solid #C9A96E", borderRadius: 8, padding: "6px 10px" }}>
                 ⚠ דרך Whapi התבנית נשלחת כטקסט חופשי — ללא כפתורים, וייתכן פער מהניסוח המדויק שאושר ב-Meta.
               </div>

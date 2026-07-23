@@ -15,8 +15,10 @@
 
 import { serve }        from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { sendWhapiText, cleanPhoneForMention } from "../_shared/whapiSend.ts";
+import { cleanPhoneForMention } from "../_shared/whapiSend.ts";
 import { INTER_SEND_DELAY_MS, sleep } from "../_shared/outboundThrottle.ts";
+import { loadWhapiVelocityLimits, sendWhapiTextGuarded, WhapiRateLimitedError } from "../_shared/whapiVelocityGuard.ts";
+import { appendWhapiUniqueRef } from "../_shared/whapiMessagePersonalize.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -130,6 +132,12 @@ serve(async (req: Request) => {
     let failed = 0;
     let skipped = 0;
 
+    // Bulk (up to HARD_MAX recipients) same-body Whapi campaign — jitter
+    // between sends instead of a fixed gap, same anti-fingerprint reasoning
+    // as _shared/whapiOutboundQueue.ts. Meta template sends keep the fixed
+    // INTER_SEND_DELAY_MS pace below (different risk profile).
+    const whapiLimits = channel === "whapi" ? await loadWhapiVelocityLimits(supabase) : null;
+
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
       const phone = String(row.phone ?? "").trim();
@@ -142,13 +150,19 @@ serve(async (req: Request) => {
 
       try {
         if (channel === "whapi") {
-          const text = personalize(message, name);
-          if (!text) {
+          const personalized = personalize(message, name);
+          if (!personalized) {
             skipped++;
             results.push({ phone, name, status: "skipped_empty_body" });
             continue;
           }
-          const wamid = await sendWhapiText(cleanPhoneForMention(phone), text);
+          // rows.length can reach HARD_MAX (80) — always fingerprint so a
+          // same-body campaign never repeats the 2026-07-23 identical-text
+          // pattern that got the Suites device restricted.
+          const text = appendWhapiUniqueRef(personalized);
+          const wamid = await sendWhapiTextGuarded(supabase, cleanPhoneForMention(phone), text, {
+            sendClass: "guest", trigger: "club_broadcast", source: "guest-club-broadcast",
+          });
           await supabase.from("notification_log").insert({
             guest_id: row.guest_id,
             recipient: phone,
@@ -210,10 +224,22 @@ serve(async (req: Request) => {
           results.push({ phone, name, status: String(json.status ?? "sent") });
         }
       } catch (e) {
-        failed++;
-        results.push({ phone, name, status: "failed", error: (e as Error).message });
+        if (e instanceof WhapiRateLimitedError) {
+          failed++;
+          results.push({ phone, name, status: "rate_limited", error: e.message });
+        } else {
+          failed++;
+          results.push({ phone, name, status: "failed", error: (e as Error).message });
+        }
       }
-      if (i < rows.length - 1) await sleep(INTER_SEND_DELAY_MS);
+      if (i < rows.length - 1) {
+        if (channel === "whapi" && whapiLimits) {
+          const jitterMs = (whapiLimits.jitter_min_sec + Math.random() * (whapiLimits.jitter_max_sec - whapiLimits.jitter_min_sec)) * 1000;
+          await sleep(jitterMs);
+        } else {
+          await sleep(INTER_SEND_DELAY_MS);
+        }
+      }
     }
 
     return new Response(

@@ -1,13 +1,20 @@
-// Bulk survey-link dispatch to waiter roster via Whapi (suites device).
-import { useCallback, useEffect, useState } from "react";
+// Bulk survey-link dispatch to waiter roster — enqueues to whapi_outbound_jobs
+// (whapi-bulk-dispatch Edge Function) and polls for progress. A browser
+// for-loop used to send these directly at a fixed 2.5s gap; that pattern is
+// exactly what got the Suites device restricted on 2026-07-23 (identical
+// body, ~40 recipients, no server-side pacing/jitter). whapi-queue-drain
+// (1-min pg_cron) now does the actual paced sending server-side, so the
+// batch keeps going even if this tab closes.
+import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
-import { formatInboxOutboundError } from "../utils/inboxSendErrors";
 import {
   DEFAULT_WAITER_PULSE_INVITE_MESSAGE,
-  WAITER_PULSE_SEND_DELAY_MS,
   parseWaiterPulsePaste,
   personalizeWaiterPulseInvite,
 } from "../utils/waiterPulseContacts";
+
+const BATCH_POLL_INTERVAL_MS = 4000;
+const BATCH_POLL_MAX_ATTEMPTS = 150; // ~10 minutes ceiling
 
 export default function WaiterPulseDispatchPanel({ pulseUrl, canEdit, onToast }) {
   const [contacts, setContacts] = useState([]);
@@ -19,12 +26,15 @@ export default function WaiterPulseDispatchPanel({ pulseUrl, canEdit, onToast })
   const [importing, setImporting] = useState(false);
   const [sending, setSending] = useState(false);
   const [progress, setProgress] = useState(null);
+  const [etaMinutes, setEtaMinutes] = useState(null);
   const [summary, setSummary] = useState(null);
   const [failures, setFailures] = useState([]);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [editingName, setEditingName] = useState("");
   const [savingNameId, setSavingNameId] = useState(null);
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
 
   const toast = useCallback((type, msg) => onToast?.(type, msg), [onToast]);
 
@@ -150,57 +160,84 @@ export default function WaiterPulseDispatchPanel({ pulseUrl, canEdit, onToast })
     }
   };
 
+  const pollBatch = useCallback((batchId, total) => {
+    let attempts = 0;
+    const tick = async () => {
+      if (!mountedRef.current) return;
+      attempts += 1;
+      const { data: jobs, error } = await supabase
+        .from("whapi_outbound_jobs")
+        .select("phone, name, status, last_error")
+        .eq("batch_id", batchId);
+      if (error) {
+        if (!mountedRef.current) return;
+        setSending(false);
+        setProgress(null);
+        toast("err", `שגיאה במעקב אחר השליחה: ${error.message}`);
+        return;
+      }
+      const rows = jobs ?? [];
+      const doneRows = rows.filter((j) => j.status === "sent" || j.status === "failed" || j.status === "cancelled");
+      if (!mountedRef.current) return;
+      setProgress({ current: doneRows.length, total });
+
+      if (doneRows.length < total && attempts < BATCH_POLL_MAX_ATTEMPTS) {
+        setTimeout(tick, BATCH_POLL_INTERVAL_MS);
+        return;
+      }
+
+      const sentCount = rows.filter((j) => j.status === "sent").length;
+      const failedRows = rows
+        .filter((j) => j.status === "failed" || j.status === "cancelled")
+        .map((j) => ({ contact: { name: j.name, phone: j.phone }, reason: j.last_error || "שגיאה" }));
+      const stillPending = total - doneRows.length;
+      setFailures(failedRows);
+      setSummary({ total, sent: sentCount, failed: failedRows.length, pending: stillPending });
+      setSending(false);
+      setProgress(null);
+      if (sentCount > 0) toast("ok", `📱 נשלחו ${sentCount} הודעות דרך מכשיר הסוויטות`);
+      if (failedRows.length > 0) toast("err", `${failedRows.length} לא נשלחו — ראה רשימה למטה`);
+      if (stillPending > 0) toast("err", `${stillPending} עדיין בתור — ימשיכו להישלח ברקע`);
+    };
+    tick();
+  }, [toast]);
+
   const handleSend = async () => {
     if (!supabase || !pulseUrl || targets.length === 0) return;
     setConfirmOpen(false);
     setSending(true);
     setSummary(null);
     setFailures([]);
-    const results = [];
+    setEtaMinutes(null);
+    setProgress({ current: 0, total: targets.length });
 
-    for (let i = 0; i < targets.length; i++) {
-      const contact = targets[i];
-      setProgress({ current: i + 1, total: targets.length });
-      const message = personalizeWaiterPulseInvite(messageTemplate, {
-        name: contact.name,
-        link: pulseUrl,
+    // {{קישור}} is resolved here (per-batch, not per-recipient); {{שם}} stays
+    // in the template — the server personalizes it per recipient at send
+    // time (also required for the >=3-recipient name-placeholder check).
+    const messageForEnqueue = messageTemplate.replace(/\{\{קישור\}\}/g, pulseUrl || "");
+
+    try {
+      const { data, error } = await supabase.functions.invoke("whapi-bulk-dispatch", {
+        body: {
+          phones: targets.map((c) => ({ phone: c.phone, name: c.name })),
+          message_template: messageForEnqueue,
+          trigger: "waiter_pulse",
+          source: "WaiterPulseDispatchPanel",
+        },
       });
-      try {
-        const { data, error } = await supabase.functions.invoke("whatsapp-send", {
-          body: {
-            trigger: "inbox_reply",
-            phone: contact.phone,
-            message,
-            inbox_channel: "whapi",
-          },
-        });
-        if (error) {
-          results.push({ contact, ok: false, reason: error.message });
-        } else if (data?.ok) {
-          results.push({ contact, ok: true });
-        } else {
-          results.push({
-            contact,
-            ok: false,
-            reason: formatInboxOutboundError(data, data?.error, { opLabel: "" }).trim() || "שגיאה",
-          });
-        }
-      } catch (e) {
-        results.push({ contact, ok: false, reason: e?.message ?? "שגיאה" });
+      if (error || !data?.ok) {
+        setSending(false);
+        setProgress(null);
+        toast("err", error?.message || data?.error || "שגיאה בתזמון השליחה");
+        return;
       }
-      if (i < targets.length - 1) {
-        await new Promise((r) => setTimeout(r, WAITER_PULSE_SEND_DELAY_MS));
-      }
+      setEtaMinutes(data.etaMinutes ?? null);
+      pollBatch(data.batchId, data.queued ?? targets.length);
+    } catch (e) {
+      setSending(false);
+      setProgress(null);
+      toast("err", e?.message ?? "שגיאה בתזמון השליחה");
     }
-
-    const sent = results.filter((r) => r.ok).length;
-    const failedRows = results.filter((r) => !r.ok);
-    setFailures(failedRows);
-    setSummary({ total: results.length, sent, failed: failedRows.length });
-    setSending(false);
-    setProgress(null);
-    if (sent > 0) toast("ok", `📱 נשלחו ${sent} הודעות דרך מכשיר הסוויטות`);
-    if (failedRows.length > 0) toast("err", `${failedRows.length} לא נשלחו — ראה רשימה למטה`);
   };
 
   const previewSample = targets[0]
@@ -220,8 +257,8 @@ export default function WaiterPulseDispatchPanel({ pulseUrl, canEdit, onToast })
         📱 שליחת קישור הסקר למלצרים
       </div>
       <p style={{ fontSize: 12.5, color: "#166534", lineHeight: 1.6, marginBottom: 14, maxWidth: 640 }}>
-        שליחה ידנית דרך <strong>מכשיר הסוויטות (Whapi)</strong> — בלי אוטומציות, בלי טבלת אורחים.
-        מרווח {WAITER_PULSE_SEND_DELAY_MS / 1000} שניות בין הודעות.
+        שליחה דרך <strong>מכשיר הסוויטות (Whapi)</strong> — בלי אוטומציות, בלי טבלת אורחים.
+        השליחה נכנסת לתור מדורג (שניות בודדות בין הודעה להודעה) כדי להגן על המכשיר — ממשיכה ברקע גם אם הדף נסגר.
       </p>
 
       {!pulseUrl && (
@@ -239,12 +276,14 @@ export default function WaiterPulseDispatchPanel({ pulseUrl, canEdit, onToast })
           padding: "8px 12px", fontSize: 12.5, color: "#14532D", marginBottom: 12,
         }}>
           ✅ נשלחו {summary.sent} · נכשלו {summary.failed} מתוך {summary.total}
+          {summary.pending > 0 ? ` · ${summary.pending} עדיין בתור (ימשיכו ברקע)` : ""}
         </div>
       )}
 
       {sending && progress && (
         <div style={{ fontSize: 12.5, color: "#166534", marginBottom: 10 }}>
-          ⏳ שולח {progress.current}/{progress.total}…
+          ⏳ נשלחו {progress.current}/{progress.total} מהתור
+          {etaMinutes != null ? ` · משך משוער כולל: ~${etaMinutes} דק'` : ""}…
         </div>
       )}
 
@@ -483,9 +522,8 @@ export default function WaiterPulseDispatchPanel({ pulseUrl, canEdit, onToast })
           >
             <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 10 }}>לאשר שליחה?</div>
             <p style={{ fontSize: 13, lineHeight: 1.6, marginBottom: 16 }}>
-              יישלחו <strong>{targets.length}</strong> הודעות דרך מכשיר הסוויטות,
-              עם מרווח {WAITER_PULSE_SEND_DELAY_MS / 1000} שניות בין כל אחת.
-              משך משוער: ~{Math.ceil((targets.length * WAITER_PULSE_SEND_DELAY_MS) / 60000)} דקות.
+              יישלחו <strong>{targets.length}</strong> הודעות דרך מכשיר הסוויטות, בתור מדורג ובטוח —
+              הדף לא צריך להישאר פתוח עד הסוף.
             </p>
             <div style={{ display: "flex", gap: 10 }}>
               <button type="button" onClick={handleSend} style={{ ...btnPrimary, flex: 1 }}>

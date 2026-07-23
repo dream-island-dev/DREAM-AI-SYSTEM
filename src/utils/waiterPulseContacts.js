@@ -2,8 +2,6 @@
 
 import { normalizeWhatsAppPhone } from "./ezgoParser";
 
-export const WAITER_PULSE_SEND_DELAY_MS = 2500;
-
 export const DEFAULT_WAITER_PULSE_INVITE_MESSAGE = `היי {{שם}}! 🙏
 אנחנו שמחים שאתם חלק ממשפחת דרים איילנד!
 

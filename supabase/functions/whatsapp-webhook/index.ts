@@ -51,6 +51,7 @@ import {
   PAYMENT_LINK_FAILURE_LABEL,
 } from "../_shared/paymentLinkGuard.ts";
 import { sendWhapiText, cleanPhoneForMention } from "../_shared/whapiSend.ts";
+import { sendWhapiTextGuarded, WhapiRateLimitedError } from "../_shared/whapiVelocityGuard.ts";
 import { buildPreCheckinGuestRequestAdirText } from "../_shared/adirNotifyMessages.ts";
 import { loadStaffNotifyTemplates } from "../_shared/staffNotifyTemplates.ts";
 import { shouldRouteGuestOutboundViaWhapiSuites, primeGuestChannelConfig } from "../_shared/guestWhapiRouting.ts";
@@ -473,7 +474,9 @@ async function sendStage2PayReply(
   try {
     let payWamid: string | null = null;
     if (whapiEligiblePay) {
-      payWamid = await sendWhapiText(cleanPhoneForMention(phone), finalPaymentReply);
+      payWamid = await sendWhapiTextGuarded(supabaseClient, cleanPhoneForMention(phone), finalPaymentReply, {
+        sendClass: "guest", trigger: "stage_2_pay", source: "whatsapp-webhook",
+      });
     } else if (paymentButton?.url) {
       if (_suppressGuestRepliesStaffClaim) {
         console.info(`[webhook] 💳 Stage 2 Pay CTA suppressed — staff claim active guest_id=${guestId ?? "?"}`);
@@ -505,7 +508,8 @@ async function sendStage2PayReply(
     console.info(`[webhook] ✅ payment reply sent to ${phone}`);
   } catch (e) {
     const errMsg = (e as Error).message;
-    const replyStatus = errMsg.startsWith("timeout_no_response") ? "timeout" : "failed";
+    const replyStatus = e instanceof WhapiRateLimitedError ? "rate_limited"
+      : errMsg.startsWith("timeout_no_response") ? "timeout" : "failed";
     console.error(`[webhook] ❌ payment reply ${replyStatus} to ${phone}:`, errMsg);
     try {
       const { error: logErr } = await supabaseClient.from("notification_log").insert({
@@ -556,7 +560,11 @@ async function handleStage2ArrivalConfirmation(
     },
     {
       sendMessage: (p, body, useWhapi) =>
-        useWhapi ? sendWhapiText(cleanPhoneForMention(p), body) : sendReply(p, body, { scripted: true }),
+        useWhapi
+          ? sendWhapiTextGuarded(supabaseClient, cleanPhoneForMention(p), body, {
+              sendClass: "guest", trigger: "stage_2_arrival", source: "whatsapp-webhook",
+            })
+          : sendReply(p, body, { scripted: true }),
       insertOutboundIfNotMuted: (row) => insertGuestOutboundIfNotMuted(supabaseClient, row),
       dispatchFallbackPipeline: dispatchStage2ViaPipeline,
       withStaffMuteSuspended: async (fn) => {

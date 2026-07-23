@@ -55,6 +55,7 @@ import { serve }         from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient }  from "https://esm.sh/@supabase/supabase-js@2";
 import Anthropic         from "https://esm.sh/@anthropic-ai/sdk@0.20.0";
 import { sendWhapiText, cleanPhoneForMention } from "../_shared/whapiSend.ts";
+import { sendWhapiTextGuarded, WhapiRateLimitedError } from "../_shared/whapiVelocityGuard.ts";
 import { buildTaskCard } from "../_shared/taskCard.ts";
 import { fetchWhapiMedia } from "../_shared/whapiMedia.ts";
 import { containsHebrew, translateTextForFieldOps } from "../_shared/fieldOpsTranslation.ts";
@@ -732,8 +733,14 @@ async function sendGuestDmReply(
   const taggedMessage = formatWhapiSuitesConversationLog(guestBody);
   let wamid: string | null = null;
   try {
-    wamid = await sendWhapiText(cleanPhoneForMention(phone), guestBody);
+    wamid = await sendWhapiTextGuarded(supabase, cleanPhoneForMention(phone), guestBody, {
+      sendClass: "guest", trigger: "guest_dm_reply", source: "whapi-webhook",
+    });
   } catch (e) {
+    if (e instanceof WhapiRateLimitedError) {
+      console.warn("[whapi-webhook] sendGuestDmReply rate_limited:", e.message);
+      return { sent: false, reason: "rate_limited" };
+    }
     console.error("[whapi-webhook] sendGuestDmReply send failed:", (e as Error).message);
     return { sent: false, reason: "send_failed" };
   }
@@ -973,7 +980,11 @@ async function handleGuestDirectMessage(
         phone, guestId, text, msgId, claimedConversationId: conversationId, sim: false,
         source: "ai",
       }, {
-        sendReply: async (body) => { await sendWhapiText(cleanPhoneForMention(phone), body); },
+        sendReply: async (body) => {
+          await sendWhapiTextGuarded(supabase, cleanPhoneForMention(phone), body, {
+            sendClass: "guest", trigger: "arrival_decline_handoff", source: "whapi-webhook",
+          });
+        },
         insertOutbound: async (row) => {
           const { error } = await supabase.from("whatsapp_conversations").insert({
             phone: row.phone, guest_id: row.guest_id, inbox_channel: "whapi", channel: "whapi",
@@ -1001,7 +1012,9 @@ async function handleGuestDirectMessage(
           claimedConversationId: conversationId, msgId, channel: "whapi",
         },
         {
-          sendMessage: (p, body) => sendWhapiText(cleanPhoneForMention(p), body),
+          sendMessage: (p, body) => sendWhapiTextGuarded(supabase, cleanPhoneForMention(p), body, {
+            sendClass: "guest", trigger: "stage_2_arrival", source: "whapi-webhook",
+          }),
           insertOutboundIfNotMuted: async (row) => {
             const { error } = await supabase.from("whatsapp_conversations").insert({
               phone: row.phone, guest_id: row.guest_id, inbox_channel: "whapi", channel: "whapi",
@@ -1024,7 +1037,9 @@ async function handleGuestDirectMessage(
     // Day-pass window opener («מחכים לכם!») — soft ack; inbound refreshed window.
     if (isDaypassWindowOpenerMessage(text)) {
       try {
-        await sendWhapiText(cleanPhoneForMention(phone), DAYPASS_WINDOW_OPENER_ACK_HE);
+        await sendWhapiTextGuarded(supabase, cleanPhoneForMention(phone), DAYPASS_WINDOW_OPENER_ACK_HE, {
+          sendClass: "guest", trigger: "daypass_window_opener_ack", source: "whapi-webhook",
+        });
       } catch (e) {
         console.error("[whapi-webhook] daypass window-opener ack failed:", (e as Error).message);
       }

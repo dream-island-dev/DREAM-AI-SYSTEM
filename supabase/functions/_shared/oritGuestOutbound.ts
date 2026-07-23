@@ -6,7 +6,7 @@ import {
   resolveOritReplyEmail,
   resolveOritReplyName,
 } from "./oritGuestContactExtract.ts";
-import { sendWhapiText } from "./whapiSend.ts";
+import { sendWhapiTextGuarded } from "./whapiVelocityGuard.ts";
 import type { OritAlertThread } from "./oritAgentWhapiAlert.ts";
 
 export type OritOutboundChannel = "email" | "whatsapp_bridge" | "blocked";
@@ -117,7 +117,9 @@ export async function deliverOritGuestWhatsapp(
 
   const msg = adaptDraftForWhatsApp(body, { bridge: true });
   try {
-    const whapiId = await sendWhapiText(digits, msg, { noLinkPreview: true });
+    const whapiId = await sendWhapiTextGuarded(supabase, digits, msg, {
+      sendClass: "guest", trigger: "orit_guest_bridge", source: "oritGuestOutbound", noLinkPreview: true,
+    });
     if (!whapiId) return { sent: false, error: "whapi_failed" };
 
     const phoneE164 = digits;

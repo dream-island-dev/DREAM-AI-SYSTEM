@@ -58,6 +58,7 @@ import { sendImageMessage, sendInteractiveButtons } from "../_shared/interactive
 import { isArrivalTodayIsrael, israelTodayYmd } from "../_shared/israelDate.ts";
 import { hasDialableGuestPhone, sanitizeMetaRecipientPhone } from "../_shared/metaPhone.ts";
 import { sendWhapiText, sendWhapiImage, cleanPhoneForMention } from "../_shared/whapiSend.ts";
+import { sendWhapiTextGuarded, sendWhapiImageGuarded, WhapiRateLimitedError } from "../_shared/whapiVelocityGuard.ts";
 import { ensureArrivalConfirmationCta, loadStage1AutoAppendCta } from "../_shared/arrivalConfirmation.ts";
 import {
   DAYPASS_SESSION_FIRST_TRIGGERS,
@@ -894,14 +895,17 @@ function metaTemplateBlockedForWhapiGuestResponse(): Response {
 }
 
 async function dispatchWhapiSessionMessage(
+  supabase: ReturnType<typeof createClient>,
   phone: string,
   body: string,
-  imageUrl?: string,
+  imageUrl: string | undefined,
+  trigger: string,
 ): Promise<string | null> {
   const target = cleanPhoneForMention(phone);
   const link = String(imageUrl ?? "").trim();
-  if (link) return sendWhapiImage(target, link, body);
-  return sendWhapiText(target, body);
+  const opts = { sendClass: "guest" as const, trigger, source: "whatsapp-send" };
+  if (link) return sendWhapiImageGuarded(supabase, target, link, body, opts);
+  return sendWhapiTextGuarded(supabase, target, body, opts);
 }
 
 /** Expand bot_script placeholders for free-text session messages. */
@@ -1902,11 +1906,26 @@ serve(async (req: Request) => {
             // Whapi requires bare digits for a 1:1 contact "to" (no leading
             // "+", unlike guests.phone's stored E.164 form) — cleanPhoneForMention
             // is the existing digit-stripping helper, reused here for that reason.
-            replyWamid = await sendWhapiText(cleanPhoneForMention(targetPhone), inboxMsg);
+            replyWamid = await sendWhapiTextGuarded(supabase, cleanPhoneForMention(targetPhone), inboxMsg, {
+              sendClass: "guest", trigger: "inbox_reply", source: "whatsapp-send",
+            });
           }
           replyStatus = sim ? "simulated" : "sent";
           replyChannel = "whapi_suites";
         } catch (e) {
+          if (e instanceof WhapiRateLimitedError) {
+            // Deliberate block, not a channel failure — never silently fall
+            // back to Meta here (that would just move the same volume to a
+            // different channel without staff realizing there's a velocity
+            // problem). Same early-return shape as the timeout branch below.
+            // Never page the admin Whapi DM for a rate_limited block — that
+            // would add another send on the very device we're protecting.
+            console.warn("[whatsapp] inbox_reply Whapi Suites rate_limited:", e.message);
+            return new Response(
+              JSON.stringify({ ok: false, status: "rate_limited", error: e.message, retry_after_sec: e.retryAfterSec }),
+              { headers: { ...CORS, "Content-Type": "application/json" } },
+            );
+          }
           const whapiMessage = (e as Error).message;
           if (whapiMessage.startsWith("timeout_no_response")) {
             // Delivery genuinely unknown — never auto-retry on a second real
@@ -2105,7 +2124,9 @@ serve(async (req: Request) => {
       try {
         if (!sim) {
           if (whapiEligiblePay) {
-            payWhapiWamid = await sendWhapiText(cleanPhoneForMention(String(guest.phone)), whapiPayBody!);
+            payWhapiWamid = await sendWhapiTextGuarded(supabase, cleanPhoneForMention(String(guest.phone)), whapiPayBody!, {
+              sendClass: "guest", trigger: "payment_and_workshops", source: "whatsapp-send",
+            });
           } else {
             await sendViaTemplate(
               String(guest.phone),
@@ -2118,9 +2139,15 @@ serve(async (req: Request) => {
           status = "sent";
         }
       } catch (e) {
-        sendError = (e as Error).message;
-        console.error("[whatsapp] payment_and_workshops send failed:", sendError);
-        status = sendError.startsWith("timeout_no_response") ? "timeout" : "failed";
+        if (e instanceof WhapiRateLimitedError) {
+          status = "rate_limited";
+          sendError = e.message;
+          console.warn("[whatsapp] payment_and_workshops rate_limited:", sendError);
+        } else {
+          sendError = (e as Error).message;
+          console.error("[whatsapp] payment_and_workshops send failed:", sendError);
+          status = sendError.startsWith("timeout_no_response") ? "timeout" : "failed";
+        }
       }
 
       await notifyAdminIfDispatchFailed({
@@ -2648,7 +2675,9 @@ serve(async (req: Request) => {
       try {
         if (!sim) {
           if (s2Channel === "whapi") {
-            s2WhapiWamid = await sendWhapiText(cleanPhoneForMention(targetPhone), body);
+            s2WhapiWamid = await sendWhapiTextGuarded(supabase, cleanPhoneForMention(targetPhone), body, {
+              sendClass: "guest", trigger: "stage_2_arrival", source: "whatsapp-send",
+            });
           } else {
             await sendStageSessionMessage(
               targetPhone, body, undefined, [],
@@ -2658,9 +2687,15 @@ serve(async (req: Request) => {
           s2Status = "sent";
         }
       } catch (e) {
-        s2Error = (e as Error).message;
-        s2Status = s2Error.startsWith("timeout_no_response") ? "timeout" : "failed";
-        console.error(`[whatsapp-send] stage_2_arrival ${s2Status}:`, s2Error);
+        if (e instanceof WhapiRateLimitedError) {
+          s2Status = "rate_limited";
+          s2Error = e.message;
+          console.warn("[whatsapp-send] stage_2_arrival rate_limited:", s2Error);
+        } else {
+          s2Error = (e as Error).message;
+          s2Status = s2Error.startsWith("timeout_no_response") ? "timeout" : "failed";
+          console.error(`[whatsapp-send] stage_2_arrival ${s2Status}:`, s2Error);
+        }
       }
 
       await finalizeDispatchAttempt(supabase, s2ClaimRes.claim.logId, s2Status, {
@@ -3020,9 +3055,11 @@ serve(async (req: Request) => {
               if (isWhapi) {
                 nbConvMessage = buildWhapiSuitesConversationLog(textBody);
                 nbWhapiWamid = await dispatchWhapiSessionMessage(
+                  supabase,
                   String(guest.phone),
                   textBody,
                   nbSessionImageUrl,
+                  "night_before",
                 );
                 nbSessionKind = "whapi";
               } else {
@@ -3064,11 +3101,17 @@ serve(async (req: Request) => {
           nbStatus = "sent";
         }
       } catch (e) {
-        nbError = (e as Error).message;
-        nbStatus = nbError.startsWith("timeout_no_response") ? "timeout"
-                 : isMetaTemplateError(nbError) ? "blocked_by_meta"
-                 : "failed";
-        console.error(`[whatsapp-send] night_before dispatch ${nbStatus}:`, nbError);
+        if (e instanceof WhapiRateLimitedError) {
+          nbStatus = "rate_limited";
+          nbError = e.message;
+          console.warn("[whatsapp-send] night_before rate_limited:", nbError);
+        } else {
+          nbError = (e as Error).message;
+          nbStatus = nbError.startsWith("timeout_no_response") ? "timeout"
+                   : isMetaTemplateError(nbError) ? "blocked_by_meta"
+                   : "failed";
+          console.error(`[whatsapp-send] night_before dispatch ${nbStatus}:`, nbError);
+        }
       }
 
       // Three-way payload/log channel label, computed once and reused below —
@@ -3382,9 +3425,11 @@ serve(async (req: Request) => {
           if (!sim) {
             if (mgChannel === "whapi") {
               mgWhapiWamid = await dispatchWhapiSessionMessage(
+                supabase,
                 String(guest.phone),
                 mgBody,
                 mgImageUrl,
+                trigger,
               );
             } else {
               await sendViaMeta(String(guest.phone), mgBody, mgImageUrl);
@@ -3392,11 +3437,17 @@ serve(async (req: Request) => {
             mgStatus = "sent";
           }
         } catch (e) {
-          mgError = (e as Error).message;
-          mgStatus = mgError.startsWith("timeout_no_response") ? "timeout"
-                   : isMetaTemplateError(mgError) ? "blocked_by_meta"
-                   : "failed";
-          console.error(`[whatsapp-send] morning session-message ${mgStatus}:`, mgError);
+          if (e instanceof WhapiRateLimitedError) {
+            mgStatus = "rate_limited";
+            mgError = e.message;
+            console.warn("[whatsapp-send] morning session-message rate_limited:", mgError);
+          } else {
+            mgError = (e as Error).message;
+            mgStatus = mgError.startsWith("timeout_no_response") ? "timeout"
+                     : isMetaTemplateError(mgError) ? "blocked_by_meta"
+                     : "failed";
+            console.error(`[whatsapp-send] morning session-message ${mgStatus}:`, mgError);
+          }
         }
 
         await notifyAdminIfDispatchFailed({
@@ -3817,7 +3868,9 @@ serve(async (req: Request) => {
                 .replace(/\{\{\s*ROOM_NAME\s*\}\}/gi,   rrDispatch.roomName);
               if (rrDispatch.channel === "whapi") {
                 rrConvMessage = buildWhapiSuitesConversationLog(textBody);
-                rrWhapiWamid = await sendWhapiText(cleanPhoneForMention(String(guest.phone)), textBody);
+                rrWhapiWamid = await sendWhapiTextGuarded(supabase, cleanPhoneForMention(String(guest.phone)), textBody, {
+                  sendClass: "guest", trigger: "room_ready", source: "whatsapp-send",
+                });
               } else {
                 rrConvMessage = buildSessionConversationLog(textBody);
                 await sendViaMeta(String(guest.phone), textBody, stageRow?.session_message_image_url);
@@ -3839,11 +3892,17 @@ serve(async (req: Request) => {
           rrStatus = "sent";
         }
       } catch (e) {
-        rrError = (e as Error).message;
-        rrStatus = rrError.startsWith("timeout_no_response") ? "timeout"
-                 : isMetaTemplateError(rrError) ? "blocked_by_meta"
-                 : "failed";
-        console.error(`[whatsapp-send] room_ready dispatch ${rrStatus}:`, rrError);
+        if (e instanceof WhapiRateLimitedError) {
+          rrStatus = "rate_limited";
+          rrError = e.message;
+          console.warn("[whatsapp-send] room_ready rate_limited:", rrError);
+        } else {
+          rrError = (e as Error).message;
+          rrStatus = rrError.startsWith("timeout_no_response") ? "timeout"
+                   : isMetaTemplateError(rrError) ? "blocked_by_meta"
+                   : "failed";
+          console.error(`[whatsapp-send] room_ready dispatch ${rrStatus}:`, rrError);
+        }
       }
 
       await notifyAdminIfDispatchFailed({
@@ -4032,9 +4091,11 @@ serve(async (req: Request) => {
             // carried over here (pre-existing sendWhapiText characteristic,
             // same as the broadcast-template Whapi path above).
             dispatchedWamid = await dispatchWhapiSessionMessage(
+              supabase,
               guest.phone as string,
               sessionBody!,
               sessionImageUrl ?? undefined,
+              trigger,
             );
             console.log(`[whatsapp-send] ${trigger}: session dispatch via Whapi`);
           } else {
@@ -4051,49 +4112,61 @@ serve(async (req: Request) => {
           status = "sent";
         }
       } catch (e) {
-        sessionFailureNote = (e as Error).message;
-        if (forceWhapiSession) {
-          // Staff explicitly chose Whapi — do NOT silently fall back to Meta
-          // (FAIL VISIBLE §0.3). Autonomous Whapi failure → Dream Bot below.
-          console.error(`[whatsapp] pipeline Whapi session send failed for stage "${trigger}":`, sessionFailureNote);
-          sendError = sessionFailureNote;
-          status = sessionFailureNote.startsWith("timeout_no_response") ? "timeout" : "failed";
-        } else if (useWhapiForPipeline) {
-          // Option C: Whapi down / ban → Dream Bot backup.
-          // Prefer Meta session when 24h window is open; else Meta template.
-          console.error(
-            `[whatsapp] pipeline Whapi failed for "${trigger}" — Dream Bot fallback:`,
-            sessionFailureNote,
-          );
-          usedDreamBotFallback = true;
-          if (isWindowOpen(guest.wa_window_expires_at) && sessionBody) {
-            try {
-              if (!sim) {
-                const sessionResult = await sendStageSessionMessage(
-                  guest.phone as string,
-                  sessionBody!,
-                  sessionImageUrl ?? undefined,
-                  sessionButtons,
-                  `stage="${trigger}" guest_id=${guestId} dream_bot_fallback`,
+        if (e instanceof WhapiRateLimitedError) {
+          // Deliberate guard block, not a device failure — never fall back to
+          // Dream Bot here (that would just reroute the same volume to Meta
+          // and hide the pacing signal). No msg_*_sent stamp below and
+          // rate_limited sits outside automationRetryGate's cooldown/
+          // exhaustion accounting, so the next cron tick retries naturally.
+          sessionFailureNote = e.message;
+          sendError = e.message;
+          status = "rate_limited";
+          console.warn(`[whatsapp] pipeline Whapi rate_limited for stage "${trigger}":`, sessionFailureNote);
+        } else {
+          sessionFailureNote = (e as Error).message;
+          if (forceWhapiSession) {
+            // Staff explicitly chose Whapi — do NOT silently fall back to Meta
+            // (FAIL VISIBLE §0.3). Autonomous Whapi failure → Dream Bot below.
+            console.error(`[whatsapp] pipeline Whapi session send failed for stage "${trigger}":`, sessionFailureNote);
+            sendError = sessionFailureNote;
+            status = sessionFailureNote.startsWith("timeout_no_response") ? "timeout" : "failed";
+          } else if (useWhapiForPipeline) {
+            // Option C: Whapi down / ban → Dream Bot backup.
+            // Prefer Meta session when 24h window is open; else Meta template.
+            console.error(
+              `[whatsapp] pipeline Whapi failed for "${trigger}" — Dream Bot fallback:`,
+              sessionFailureNote,
+            );
+            usedDreamBotFallback = true;
+            if (isWindowOpen(guest.wa_window_expires_at) && sessionBody) {
+              try {
+                if (!sim) {
+                  const sessionResult = await sendStageSessionMessage(
+                    guest.phone as string,
+                    sessionBody!,
+                    sessionImageUrl ?? undefined,
+                    sessionButtons,
+                    `stage="${trigger}" guest_id=${guestId} dream_bot_fallback`,
+                  );
+                  dispatchedWamid = sessionResult.wamid;
+                  status = "sent";
+                  console.log(`[whatsapp-send] ${trigger}: Dream Bot session fallback after Whapi fail`);
+                }
+              } catch (metaSessionErr) {
+                console.error(
+                  `[whatsapp] Dream Bot session fallback failed — trying Meta template:`,
+                  (metaSessionErr as Error).message,
                 );
-                dispatchedWamid = sessionResult.wamid;
-                status = "sent";
-                console.log(`[whatsapp-send] ${trigger}: Dream Bot session fallback after Whapi fail`);
+                usedSessionMessage = false;
               }
-            } catch (metaSessionErr) {
-              console.error(
-                `[whatsapp] Dream Bot session fallback failed — trying Meta template:`,
-                (metaSessionErr as Error).message,
-              );
+            } else {
               usedSessionMessage = false;
             }
           } else {
+            // Meta session path failure → template retry.
+            console.error(`[whatsapp] pipeline session-message send failed — falling back to Meta template:`, sessionFailureNote);
             usedSessionMessage = false;
           }
-        } else {
-          // Meta session path failure → template retry.
-          console.error(`[whatsapp] pipeline session-message send failed — falling back to Meta template:`, sessionFailureNote);
-          usedSessionMessage = false;
         }
       }
     }

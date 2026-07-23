@@ -22,7 +22,8 @@ import {
   getGuestSuitesChannel,
   getGuestDaypassChannel,
 } from "./guestWhapiRouting.ts";
-import { sendWhapiText, cleanPhoneForMention } from "./whapiSend.ts";
+import { cleanPhoneForMention } from "./whapiSend.ts";
+import { loadWhapiVelocityLimits, sendWhapiTextGuarded } from "./whapiVelocityGuard.ts";
 import { formatWhapiSuitesConversationLog, stripOutboundDispatchTag } from "./outboundDispatchTag.ts";
 import { CLAUDE_MODEL } from "./guestBotModelRoute.ts";
 import {
@@ -101,7 +102,9 @@ export async function deliverExecutiveDmReply(
   for (const to of targets) {
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
-        wamid = await sendWhapiText(to, body);
+        wamid = await sendWhapiTextGuarded(supabase, to, body, {
+          sendClass: "staff", trigger: "executive_dm_reply", source: "executiveAssistant",
+        });
         lastErr = undefined;
         break;
       } catch (e) {
@@ -1083,7 +1086,9 @@ async function _sendGuestWhapiMessage(
 ): Promise<{ sent: boolean; wamid: string | null; error?: string }> {
   let wamid: string | null = null;
   try {
-    wamid = await sendWhapiText(cleanPhoneForMention(guest.phone), message);
+    wamid = await sendWhapiTextGuarded(supabase, cleanPhoneForMention(guest.phone), message, {
+      sendClass: "guest", trigger: "executive_send_guest_message", source: "executiveAssistant",
+    });
   } catch (e) {
     return { sent: false, wamid: null, error: (e as Error).message };
   }
@@ -1185,7 +1190,14 @@ async function _execRequestMissingArrivalTimes(supabase: SupabaseClient): Promis
   let sentCount = 0;
   const failedNames: string[] = [];
   const sentNames: string[] = [];
-  for (const g of toSend) {
+  // Each send now runs through _sendGuestWhapiMessage's velocity guard
+  // (global_min_gap_sec) — without pacing this loop, guest #2 onward would
+  // hit that gap back-to-back and get rate_limited instead of sent, an
+  // identical-body loop across every today-arriving suite guest missing a
+  // time (2026-07-23 finding — this call site had zero throttling before).
+  const arrivalEtaLimits = toSend.length > 1 ? await loadWhapiVelocityLimits(supabase) : null;
+  for (let i = 0; i < toSend.length; i++) {
+    const g = toSend[i];
     const result = await _sendGuestWhapiMessage(
       supabase,
       { id: g.id, phone: g.phone as string },
@@ -1197,6 +1209,9 @@ async function _execRequestMissingArrivalTimes(supabase: SupabaseClient): Promis
     } else {
       failedNames.push(g.name ?? g.room ?? "אורח");
       console.warn(`[executiveAssistant] arrival-eta request failed for guest ${g.id}:`, result.error);
+    }
+    if (arrivalEtaLimits && i < toSend.length - 1) {
+      await _sleep(arrivalEtaLimits.global_min_gap_sec * 1000);
     }
   }
 
@@ -1274,12 +1289,14 @@ async function _execSendExecutiveBrief(supabase: SupabaseClient, args: Record<st
   return { ok: true, sent: true, recipient: "אליעד", preview: messageHe.slice(0, 200) };
 }
 
-async function _execNotifyManagersGroup(args: Record<string, unknown>): Promise<ToolResult> {
+async function _execNotifyManagersGroup(supabase: SupabaseClient, args: Record<string, unknown>): Promise<ToolResult> {
   const messageHe = String(args.message_he ?? "").trim();
   if (!messageHe) return { ok: false, error: "message_he_required" };
   const english = await translateTextForFieldOps(messageHe, { style: "description_only" });
   try {
-    await sendWhapiText(SUITES_ROOM_SERVICE_GROUP_ID, english);
+    await sendWhapiTextGuarded(supabase, SUITES_ROOM_SERVICE_GROUP_ID, english, {
+      sendClass: "group", trigger: "notify_managers_group", source: "executiveAssistant",
+    });
   } catch (e) {
     console.error("[executiveAssistant] notify_managers_group failed:", (e as Error).message);
     return { ok: false, error: (e as Error).message };
@@ -2001,7 +2018,7 @@ export async function executeExecutiveTool(
     case "list_guests_by_date": return await _execListGuestsByDate(supabase, args);
     case "ceo_guest_override": return await _execCeoGuestOverride(supabase, args);
     case "send_guest_message": return await _execSendGuestMessage(supabase, args);
-    case "notify_managers_group": return await _execNotifyManagersGroup(args);
+    case "notify_managers_group": return await _execNotifyManagersGroup(supabase, args);
     case "learn_executive_rule": return await _execLearnExecutiveRule(supabase, args, ctx);
     case "query_open_tasks": return await _execQueryOpenTasks(supabase, args);
     case "update_task_status": return await _execUpdateTaskStatus(supabase, args);
