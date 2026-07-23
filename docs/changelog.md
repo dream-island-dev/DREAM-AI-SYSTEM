@@ -1,3 +1,4 @@
+2026-07-23 | Inbox — service-fallback quick action | ⚡ drawer «🌴 פתיחת חלון שירות» sends `dream_service_fallback` via Meta to active thread (opens 24h window; Whapi SOS). Frontend only.
 2026-07-23 | Waiter pulse contacts — Hebrew names + inline edit | migration 273 Hebrew name fixes; `WaiterPulseDispatchPanel` ✏️ name edit per row. Deploy: `db push` + frontend.
 2026-07-23 | Waiter pulse — bulk survey dispatch via Whapi | `waiter_pulse_contacts` (migration 272) + `WaiterPulseDispatchPanel` in Feedback→סבב מלצרים: roster import, `{{שם}}`/`{{קישור}}` template, sequential `inbox_reply` Whapi @2.5s — no guests/automation. Seed 40 contacts. Deploy: `db push` + frontend.
 2026-07-23 | Inbox quiet hours — 01:00–07:00 IL | `quietHours.js`: manual WA send gate narrowed from 22:00–08:00 to 01:00–07:00 (room service until 01:00). Frontend only.

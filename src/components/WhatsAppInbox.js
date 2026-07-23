@@ -170,6 +170,9 @@ const ROOM_READY_TEMPLATE_FALLBACK =
 
 const ROOM_READY_WA_NAMES = ["dream_room_ready1", "dream_room_ready"];
 
+/** Whapi-outage / closed Meta window — opens 24h service chat (see serviceFallbackTemplate.ts). */
+const SERVICE_FALLBACK_TEMPLATE = "dream_service_fallback";
+
 /** Same 24h rule as whatsapp-send room_ready fast-path (last inbound in thread). */
 function isSessionWindowOpenForContact(contact) {
   if (!contact?.messages?.length) return false;
@@ -5048,6 +5051,56 @@ export default function WhatsAppInbox({
     }
   }
 
+  // ── Service fallback quick action (dream_service_fallback via Meta) ───────
+  // Sends the approved UTILITY template immediately — works outside the 24h
+  // window and when Whapi is banned (SOS). Guest button/text reply re-opens chat.
+  async function sendServiceFallbackMessage() {
+    if (!active || !activeContact?.phone) return;
+    if (!ensureCanSend()) {
+      setError("שליחה חסומה בשעות שקט — סמן את האישור למטה");
+      return;
+    }
+
+    const guestName = String(
+      activeContact?.guestName ?? activeContact?.pushName ?? "",
+    ).trim() || "אורח יקר";
+
+    setSending(true);
+    setError(null);
+    try {
+      const payload = activeContact?.guestId
+        ? {
+            trigger: "broadcast",
+            guestId: activeContact.guestId,
+            waTemplateName: SERVICE_FALLBACK_TEMPLATE,
+            templateVariables: [guestName],
+            target_channel: "meta",
+          }
+        : {
+            trigger: "broadcast",
+            phone: activeContact.phone,
+            waTemplateName: SERVICE_FALLBACK_TEMPLATE,
+            templateVariables: [guestName],
+            target_channel: "meta",
+          };
+
+      const { data, error: fnErr } = await supabase.functions.invoke("whatsapp-send", { body: payload });
+
+      if (fnErr || !data?.ok) {
+        throw new Error(formatInboxOutboundError(data, fnErr?.message ?? data?.error, {
+          opLabel: "שגיאת שליחה (גיבוי שירות)",
+          whapiSosActive,
+        }));
+      }
+      setQuickOpen(false);
+      await fetchSince();
+    } catch (err) {
+      setError(err?.message ?? "שגיאת שליחה (גיבוי שירות): שגיאה לא ידועה");
+    } finally {
+      setSending(false);
+    }
+  }
+
   // ── Manual reply send ─────────────────────────────────────────────────────
   async function sendManualReply() {
     if (!reply.trim() || !active || !activeContact?.phone) return;
@@ -6265,6 +6318,25 @@ export default function WhatsAppInbox({
                 }}
               >
                 🛎️ חדר מוכן
+              </button>
+              <button
+                onClick={sendServiceFallbackMessage}
+                disabled={sending || !activeContact?.phone}
+                title={
+                  !activeContact?.phone
+                    ? "אין מספר טלפון לשיחה זו"
+                    : "שולח תבנית dream_service_fallback דרך Dream Bot — פותח חלון 24ש׳ (גם כש-Whapi חסום)"
+                }
+                style={{
+                  padding: "8px 14px", borderRadius: 20, border: "1.5px solid #0369A1",
+                  background: (sending || !activeContact?.phone) ? "#F3F0EA" : "linear-gradient(135deg, #E0F2FE, #BAE6FD)",
+                  color: (sending || !activeContact?.phone) ? "var(--text-muted)" : "#0369A1",
+                  fontSize: 12, fontWeight: 700,
+                  cursor: (sending || !activeContact?.phone) ? "not-allowed" : "pointer",
+                  minHeight: isMobile ? HIT_STAFF : "auto",
+                }}
+              >
+                🌴 פתיחת חלון שירות
               </button>
             </div>
 
