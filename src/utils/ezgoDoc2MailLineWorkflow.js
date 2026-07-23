@@ -21,7 +21,7 @@ export const DOC2_WORKFLOW_META = {
 };
 
 export const DOC2_WORKFLOW_SECTIONS = [
-  { id: "suite_arrival_create", title: "🆕 כניסות חדשות — צור פרופיל סוויטה", hint: "אין פרופיל ב-DB · טלפון + חדר מזוהים" },
+  { id: "suite_arrival_create", title: "🆕 כניסות חדשות — צור פרופיל סוויטה", hint: "טלפון חובה · חדר אופציונלי (יישוב מאוחר)" },
   { id: "suite_room_add", title: "➕ חדר נוסף — אותה הזמנה", hint: "מוסיף suite_rooms + מעדכן תווית משולבת ב-guests.room" },
   { id: "suite_arrival_enrich", title: "📥 השלמת חסר — אורח קיים", hint: "ממלא רק שדות ריקים (תאריכים / פנסיון)" },
   { id: "suite_room_assign", title: "🏨 שיבוץ חדר", hint: "פרופיל קיים בלי חדר" },
@@ -101,14 +101,6 @@ export function classifyDoc2MailWorkflow(rec, guest) {
       patch: withWorkflowMeta({}, "no_match"),
     };
   }
-  if (!rec.room && !rec.is_day_guest) {
-    return {
-      workflow: "no_match",
-      action: "no_match",
-      label: `חדר לא מזוהה · ${rec.room_raw || "—"}`,
-      patch: withWorkflowMeta({}, "no_match"),
-    };
-  }
   if (!guest) {
     if (rec.is_day_guest || isPremiumDayRoom(rec.room)) {
       return {
@@ -118,11 +110,45 @@ export function classifyDoc2MailWorkflow(rec, guest) {
         patch: withWorkflowMeta({}, "daypass_create"),
       };
     }
+    if (rec.room) {
+      return {
+        workflow: "suite_arrival_create",
+        action: "create",
+        label: `צור סוויטה · ${rec.guest_name || "—"} · ${rec.room} · מס׳ ${rec.order_number || "—"}`,
+        patch: withWorkflowMeta({}, "suite_arrival_create"),
+      };
+    }
+    if (rec.phone && (rec.guest_name || rec.order_number)) {
+      return {
+        workflow: "suite_arrival_create",
+        action: "create",
+        label: `צור סוויטה · ${rec.guest_name || "—"} · חדר יישוב מאוחר · מס׳ ${rec.order_number || "—"}`,
+        patch: withWorkflowMeta({}, "suite_arrival_create"),
+      };
+    }
     return {
-      workflow: "suite_arrival_create",
-      action: "create",
-      label: `צור סוויטה · ${rec.guest_name || "—"} · ${rec.room} · מס׳ ${rec.order_number || "—"}`,
-      patch: withWorkflowMeta({}, "suite_arrival_create"),
+      workflow: "no_match",
+      action: "no_match",
+      label: `חסר פרטים ליצירה · ${rec.room_raw || "—"}`,
+      patch: withWorkflowMeta({}, "no_match"),
+    };
+  }
+
+  if (!rec.room) {
+    const patch = buildDoc2EnrichmentPatch(rec, guest);
+    if (!patchHasChanges(patch)) {
+      return {
+        workflow: "noop",
+        action: "enrich",
+        label: `${guest.name || "אורח"} · אין שדות חדשים`,
+        patch: withWorkflowMeta(patch, "noop"),
+      };
+    }
+    return {
+      workflow: "suite_arrival_enrich",
+      action: "enrich",
+      label: `השלמת חסר · ${guest.name || rec.guest_name} · מס׳ ${rec.order_number || "—"}`,
+      patch: withWorkflowMeta(patch, "suite_arrival_enrich"),
     };
   }
 

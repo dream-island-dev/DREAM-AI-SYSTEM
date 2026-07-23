@@ -6,6 +6,8 @@ import {
   parseClientCell,
   parseHtmlArrivalsReport,
 } from "./ezgoDoc2Parser.ts";
+import { classifyEzgoMailContent } from "./ezgoDoc1Parser.ts";
+import { classifyDoc2MailWorkflow } from "./ezgoDoc2MailLineWorkflow.ts";
 
 const SAMPLE_ROW_HTML = `
 <table><tr><td>כניסה</td><td>21/07/2026</td></tr>
@@ -32,4 +34,33 @@ Deno.test("parseHtmlArrivalsReport extracts suite row", () => {
   assertEquals(rows[0].meal_location, "חצי פנסיון");
   assertEquals(rows[0].arrival_date, "2026-07-21");
   assertEquals(rows[0].departure_date, "2026-07-22");
+});
+
+Deno.test("fixture EML (דוח כניסות ויציאות 2026-07-25) → doc2_html, >=14 rows, room-less row creates", async () => {
+  const { readFileSync } = await import("node:fs");
+  const postalMimeMod = await import("https://esm.sh/postal-mime@2.4.3");
+  const PostalMime = (postalMimeMod as { default?: { parse: (s: Uint8Array) => Promise<{ html?: string; text?: string }> } })
+    .default ?? postalMimeMod;
+
+  const raw = readFileSync(
+    new URL("../../../scripts/fixtures/ezgo-doc2-arrivals-2026-07-25.eml", import.meta.url),
+  );
+  const email = await (PostalMime as { parse: (s: Uint8Array) => Promise<{ html?: string; text?: string }> })
+    .parse(raw);
+
+  const classified = classifyEzgoMailContent(email.html ?? "", email.text ?? "");
+  assertEquals(classified.reportType, "doc2_html");
+
+  const rows = parseHtmlArrivalsReport(classified.html ?? "");
+  if (rows.length < 14) {
+    throw new Error(`expected >=14 rows, got ${rows.length}`);
+  }
+
+  const noRoomRow = rows.find((r) => !r.room);
+  if (!noRoomRow) throw new Error("expected at least one room-less row in fixture");
+
+  const wf = classifyDoc2MailWorkflow(noRoomRow, null);
+  if (wf.workflow !== "suite_arrival_create") {
+    throw new Error(`expected suite_arrival_create for room-less row, got ${wf.workflow}`);
+  }
 });

@@ -1,5 +1,7 @@
 import {
+  buildEzgoReportSearchQueries,
   DEFAULT_EZGO_MAIL_SENDERS,
+  EZGO_MAIL_PER_SENDER_MANUAL_CAP,
   EZGO_MAIL_PER_SENDER_MIN,
   EZGO_MAIL_SEARCH_DAYS_DEFAULT,
   extractBodiesFromSource,
@@ -7,6 +9,7 @@ import {
   isSenderAllowed,
   normalizeMessageId,
   parseAllowlist,
+  resolveEzgoMailGmailLabel,
   resolveEzgoMailSearchDays,
 } from "./ezgoMailImap.ts";
 
@@ -46,12 +49,54 @@ Deno.test("resolveEzgoMailSearchDays defaults to 7", () => {
   }
 });
 
-Deno.test("per-sender scan budget is at least 12 for three direct senders", () => {
-  if (EZGO_MAIL_PER_SENDER_MIN < 12) {
-    throw new Error(`expected per-sender min >= 12, got ${EZGO_MAIL_PER_SENDER_MIN}`);
+Deno.test("per-sender scan budget is at least 21 for three direct senders", () => {
+  if (EZGO_MAIL_PER_SENDER_MIN < 21) {
+    throw new Error(`expected per-sender min >= 21, got ${EZGO_MAIL_PER_SENDER_MIN}`);
   }
   if (DEFAULT_EZGO_MAIL_SENDERS.length < 3) {
     throw new Error("expected three primary EZGO senders");
+  }
+});
+
+Deno.test("manual/full_sync per-sender cap is wider than the default min", () => {
+  if (EZGO_MAIL_PER_SENDER_MANUAL_CAP < 36) {
+    throw new Error(`expected manual cap >= 36, got ${EZGO_MAIL_PER_SENDER_MANUAL_CAP}`);
+  }
+  if (EZGO_MAIL_PER_SENDER_MANUAL_CAP <= EZGO_MAIL_PER_SENDER_MIN) {
+    throw new Error("manual cap must exceed the default per-sender min");
+  }
+});
+
+Deno.test("buildEzgoReportSearchQueries returns subject-based queries for ezgo.co.il senders", () => {
+  const queries = buildEzgoReportSearchQueries(EZGO_NOREPLY, 7);
+  const joined = queries.map((q) => q.gmailRaw).join(" | ");
+  if (!queries.length) throw new Error("expected report-type queries for ezgo.co.il sender");
+  if (!joined.includes("subject:כניסות")) throw new Error("expected arrivals subject query");
+  if (!joined.includes("subject:ויציאות")) throw new Error("expected departures subject query");
+  if (!/subject:Operations/i.test(joined)) throw new Error("expected Operations subject query");
+  if (!joined.includes("has:attachment filename:xlsx")) {
+    throw new Error("expected xlsx attachment query");
+  }
+  if (!joined.includes("from:ezgo.co.il")) throw new Error("expected domain-scoped from clause");
+});
+
+Deno.test("buildEzgoReportSearchQueries returns nothing for non-EZGO senders", () => {
+  const queries = buildEzgoReportSearchQueries(HAGAR, 7);
+  if (queries.length !== 0) {
+    throw new Error(`expected no report queries for non-ezgo.co.il sender, got ${queries.length}`);
+  }
+});
+
+Deno.test("resolveEzgoMailGmailLabel reads EZGO_MAIL_GMAIL_LABEL and defaults to null", () => {
+  const prev = Deno.env.get("EZGO_MAIL_GMAIL_LABEL");
+  try {
+    Deno.env.delete("EZGO_MAIL_GMAIL_LABEL");
+    if (resolveEzgoMailGmailLabel() !== null) throw new Error("expected null when unset");
+    Deno.env.set("EZGO_MAIL_GMAIL_LABEL", "EZGO");
+    if (resolveEzgoMailGmailLabel() !== "EZGO") throw new Error("expected configured label");
+  } finally {
+    if (prev === undefined) Deno.env.delete("EZGO_MAIL_GMAIL_LABEL");
+    else Deno.env.set("EZGO_MAIL_GMAIL_LABEL", prev);
   }
 });
 

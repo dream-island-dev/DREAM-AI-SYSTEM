@@ -1,9 +1,10 @@
 // EzgoMailSyncPanel — review + apply EZGO mail import lines (Doc1).
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../supabaseClient";
 import SpaUpsellConfirmModal from "./SpaUpsellConfirmModal";
 import { buildDoc1EnrichmentPatch } from "../utils/guestImportIntelligence";
 import { spaSlotsWarningLabel } from "../utils/doc1SpaSlots";
+import { israelTodayYmd, israelTomorrowYmd } from "../utils/israelTime";
 import {
   WORKFLOW_META,
   createDaypassGuestFromRec,
@@ -241,6 +242,8 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
   const [metaTemplateStatus, setMetaTemplateStatus] = useState(null);
   const [upsellSending, setUpsellSending] = useState(false);
   const [upsellProgress, setUpsellProgress] = useState(null);
+  const [emlUploading, setEmlUploading] = useState(false);
+  const fileInputRef = useRef(null);
 
   const loadIngests = useCallback(async () => {
     const { data, error } = await supabase
@@ -297,6 +300,17 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
   const isDoc2Ingest = selected?.report_type === "doc2_arrivals";
   const activeSections = isDoc2Ingest ? DOC2_WORKFLOW_SECTIONS : WORKFLOW_SECTIONS;
 
+  // Ledger — flag when today's/tomorrow's arrivals report never arrived (Gmail miss or send delay).
+  const missingDoc2ReportDate = useMemo(() => {
+    const today = israelTodayYmd();
+    const tomorrow = israelTomorrowYmd();
+    const hasReport = ingests.some((ing) => (
+      ing.report_type === "doc2_arrivals"
+      && (ing.report_date_ymd === today || ing.report_date_ymd === tomorrow)
+    ));
+    return hasReport ? null : today;
+  }, [ingests]);
+
   const grouped = useMemo(() => {
     const buckets = Object.fromEntries(activeSections.map((s) => [s.id, []]));
     for (const line of lines) {
@@ -327,11 +341,17 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
     const senderBits = Object.entries(bySender)
       .map(([k, v]) => `${k.split("@")[0]}:${v}`)
       .join(" · ");
+    const foundByType = imap?.foundByReportType;
+    const foundByTypeBit = foundByType && (foundByType.doc1 || foundByType.doc2 || foundByType.other)
+      ? `Doc1:${foundByType.doc1} Doc2:${foundByType.doc2} אחר:${foundByType.other}`
+      : null;
     const imapBits = imap
       ? [
         imap.searchUids != null ? `UIDs ${imap.searchUids}` : null,
         imap.downloadedSource != null ? `הורדו ${imap.downloadedSource}` : null,
         imap.skippedKnown ? `ידועים ${imap.skippedKnown}` : null,
+        foundByTypeBit,
+        imap.searchMethod ? `שיטה: ${imap.searchMethod}` : null,
       ].filter(Boolean).join(" · ")
       : "";
     const accountHint = data?.imap_user ? ` · תיבה ${data.imap_user}` : "";
@@ -358,7 +378,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
     }
     if (searchUids === 0 && skippedKnown === 0) {
       return {
-        msg: `לא נמצאו מיילי EZGO${accountHint} · ${imap?.searchMethod || "—"}${imapBits ? ` · ${imapBits}` : ""} — ודא שהמייל באותה תיבת Gmail`,
+        msg: `לא נמצאו מיילי EZGO${accountHint}${imapBits ? ` · ${imapBits}` : ""} — ודא שהמייל באותה תיבת Gmail`,
         tone: "err",
       };
     }
@@ -387,6 +407,39 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
       showToast?.(e.message, "err");
     } finally {
       setSyncing(false);
+    }
+  };
+
+  const handleEmlFileSelected = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setEmlUploading(true);
+    try {
+      const buf = await file.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      let binary = "";
+      const chunkSize = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+      }
+      const eml_base64 = btoa(binary);
+      const { data, error } = await supabase.functions.invoke("ezgo-mail-sync", {
+        body: { eml_base64 },
+      });
+      if (error) throw error;
+      if (!data?.ok) throw new Error(data?.error || data?.reason || "העלאת הקובץ נכשלה");
+      if (data.reason === "duplicate") {
+        showToast?.("המייל כבר קיים במערכת", "ok");
+      } else {
+        showToast?.(`הועלה ונקלט · ${data.lines ?? 0} שורות`, "ok");
+      }
+      await loadIngests();
+      if (data.ingestId) setSelectedId(data.ingestId);
+    } catch (err) {
+      showToast?.(err.message, "err");
+    } finally {
+      setEmlUploading(false);
     }
   };
 
@@ -843,8 +896,39 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
           >
             🔍 סריקה מלאה
           </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".eml"
+            style={{ display: "none" }}
+            onChange={handleEmlFileSelected}
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={emlUploading}
+            title="העלה קובץ .eml ידנית — למייל שלא נמצא בתיבה/בסריקה האוטומטית"
+            style={{
+              padding: "8px 14px", borderRadius: 8,
+              border: "1px solid rgba(201,169,110,0.45)",
+              background: "transparent", color: "var(--gold-light)", fontWeight: 600,
+              cursor: emlUploading ? "wait" : "pointer", fontSize: 12,
+            }}
+          >
+            {emlUploading ? "מעלה…" : "📎 העלה .eml"}
+          </button>
         </div>
       </div>
+
+      {missingDoc2ReportDate && (
+        <div style={{
+          fontSize: 12, color: "#92400E", marginBottom: 14, fontWeight: 700,
+          padding: "10px 12px", borderRadius: 8, background: "#FEF3C7",
+          border: "1px solid rgba(146,64,14,0.35)",
+        }}>
+          ⚠ לא התקבל דוח כניסות ל-{missingDoc2ReportDate} — בדוק תיבת Gmail או העלה .eml ידנית
+        </div>
+      )}
 
       <div style={{
         fontSize: 12, color: "rgba(232,201,138,0.65)", marginBottom: 14,

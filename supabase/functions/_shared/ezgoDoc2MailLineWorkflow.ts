@@ -122,15 +122,6 @@ export function classifyDoc2MailWorkflow(
     };
   }
 
-  if (!rec.room && !rec.is_day_guest) {
-    return {
-      workflow: "no_match",
-      action: "no_match",
-      label: `חדר לא מזוהה · ${rec.room_raw || "—"}`,
-      patch: withWorkflowMeta({}, "no_match"),
-    };
-  }
-
   if (!guest) {
     if (rec.is_day_guest || isPremiumDayRoom(rec.room)) {
       return {
@@ -140,11 +131,45 @@ export function classifyDoc2MailWorkflow(
         patch: withWorkflowMeta({}, "daypass_create"),
       };
     }
+    if (rec.room) {
+      return {
+        workflow: "suite_arrival_create",
+        action: "create",
+        label: `צור סוויטה · ${rec.guest_name || "—"} · ${rec.room} · מס׳ ${rec.order_number || "—"}`,
+        patch: withWorkflowMeta({}, "suite_arrival_create"),
+      };
+    }
+    if (rec.phone && (rec.guest_name || rec.order_number)) {
+      return {
+        workflow: "suite_arrival_create",
+        action: "create",
+        label: `צור סוויטה · ${rec.guest_name || "—"} · חדר יישוב מאוחר · מס׳ ${rec.order_number || "—"}`,
+        patch: withWorkflowMeta({}, "suite_arrival_create"),
+      };
+    }
     return {
-      workflow: "suite_arrival_create",
-      action: "create",
-      label: `צור סוויטה · ${rec.guest_name || "—"} · ${rec.room} · מס׳ ${rec.order_number || "—"}`,
-      patch: withWorkflowMeta({}, "suite_arrival_create"),
+      workflow: "no_match",
+      action: "no_match",
+      label: `חסר פרטים ליצירה · ${rec.room_raw || "—"}`,
+      patch: withWorkflowMeta({}, "no_match"),
+    };
+  }
+
+  if (!rec.room) {
+    const patch = buildDoc2EnrichmentPatch(rec, guest);
+    if (!patchHasChanges(patch)) {
+      return {
+        workflow: "noop",
+        action: "enrich",
+        label: `${guest.name || "אורח"} · אין שדות חדשים`,
+        patch: withWorkflowMeta(patch, "noop"),
+      };
+    }
+    return {
+      workflow: "suite_arrival_enrich",
+      action: "enrich",
+      label: `השלמת חסר · ${guest.name || rec.guest_name} · מס׳ ${rec.order_number || "—"}`,
+      patch: withWorkflowMeta(patch, "suite_arrival_enrich"),
     };
   }
 

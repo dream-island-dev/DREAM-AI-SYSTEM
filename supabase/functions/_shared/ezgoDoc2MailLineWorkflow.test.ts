@@ -20,15 +20,22 @@ const shacharGuest = {
 };
 
 const shacharSecondRoom = {
-  _report: "doc2",
-  section: "arrival",
+  _report: "doc2" as const,
+  section: "arrival" as const,
   order_number: "275896",
+  room_raw: "סוויטת אמטיסט - 11",
+  room: "אמטיסט 11",
+  board_basis: null,
+  meal_location: null,
+  arrival_time: null,
+  nights: null,
+  guest_count: null,
   guest_name: "שחר יובל",
   phone: "+972535235010",
+  amount: null,
+  notes: null,
   arrival_date: "2026-07-21",
   departure_date: "2026-07-23",
-  room: "אמטיסט 11",
-  room_raw: "סוויטת אמטיסט - 11",
   is_day_guest: false,
   is_premium_day: false,
 };
@@ -96,5 +103,85 @@ Deno.test("different booking same phone → conflict", () => {
   const r = classifyDoc2MailWorkflow(rec, otherGuest);
   if (r.workflow !== "conflict") {
     throw new Error(`expected conflict got ${r.workflow}`);
+  }
+});
+
+const noRoomOrderOnly = {
+  _report: "doc2" as const,
+  section: "arrival" as const,
+  order_number: "278993",
+  room_raw: "סוויטת אמטיסט -",
+  room: null,
+  board_basis: "BB",
+  meal_location: "רק ארוחת בוקר",
+  arrival_time: null,
+  nights: 1,
+  guest_count: "2",
+  guest_name: "לימור ניסני",
+  phone: "+972542203442",
+  amount: "1,805₪",
+  notes: null,
+  arrival_date: "2026-07-25",
+  departure_date: "2026-07-26",
+  is_day_guest: false,
+  is_premium_day: false,
+};
+
+Deno.test("no room but phone+order number, no existing guest → suite_arrival_create", () => {
+  const r = classifyDoc2MailWorkflow(noRoomOrderOnly, null);
+  if (r.workflow !== "suite_arrival_create") {
+    throw new Error(`expected suite_arrival_create got ${r.workflow}`);
+  }
+  if (r.action !== "create") throw new Error("expected create action");
+});
+
+Deno.test("no room but phone+name (no order number), no existing guest → suite_arrival_create", () => {
+  const rec = { ...noRoomOrderOnly, order_number: null };
+  const r = classifyDoc2MailWorkflow(rec, null);
+  if (r.workflow !== "suite_arrival_create") {
+    throw new Error(`expected suite_arrival_create got ${r.workflow}`);
+  }
+});
+
+Deno.test("no room, no name, no order number, no existing guest → no_match (missing details)", () => {
+  const rec = { ...noRoomOrderOnly, order_number: null, guest_name: null };
+  const r = classifyDoc2MailWorkflow(rec, null);
+  if (r.workflow !== "no_match") {
+    throw new Error(`expected no_match got ${r.workflow}`);
+  }
+});
+
+Deno.test("guest exists, no room in report row → suite_arrival_enrich (room untouched)", () => {
+  const guest = { ...shacharGuest, order_number: null };
+  const rec = { ...noRoomOrderOnly, phone: shacharGuest.phone, guest_name: shacharGuest.name };
+  const r = classifyDoc2MailWorkflow(rec, guest);
+  if (r.workflow !== "suite_arrival_enrich") {
+    throw new Error(`expected suite_arrival_enrich got ${r.workflow}`);
+  }
+  if ("room" in r.patch) throw new Error("room must not be touched when rec.room is null");
+});
+
+Deno.test("guest exists, no room in report, nothing new to enrich → noop", () => {
+  const guestAlreadyComplete = {
+    id: 5,
+    name: "לימור ניסני",
+    phone: "+972542203442",
+    order_number: "278993",
+    arrival_date: "2026-07-25",
+    departure_date: "2026-07-26",
+    room: "אמטיסט 8",
+    room_type: "suite",
+    meal_location: "רק ארוחת בוקר",
+  };
+  const r = classifyDoc2MailWorkflow(noRoomOrderOnly, guestAlreadyComplete);
+  if (r.workflow !== "noop") {
+    throw new Error(`expected noop got ${r.workflow}`);
+  }
+});
+
+Deno.test("fixture row 278993 (אמטיסט בלי מספר) → suite_arrival_create", () => {
+  const r = classifyDoc2MailWorkflow(noRoomOrderOnly, null);
+  if (r.workflow !== "suite_arrival_create") {
+    throw new Error(`expected suite_arrival_create got ${r.workflow}`);
   }
 });

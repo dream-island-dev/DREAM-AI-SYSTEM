@@ -39,6 +39,10 @@ export type EzgoImapFetchMeta = {
   skippedKnown: number;
   /** Full MIME bodies fetched (postal-mime). */
   downloadedSource: number;
+  /** Query "kinds" that returned at least one UID (transparency — which search shape found mail). */
+  reportQueriesUsed: string[];
+  /** Downloaded messages classified by subject — doc1/doc2/other. */
+  foundByReportType: { doc1: number; doc2: number; other: number };
 };
 
 export type EzgoImapFetchOptions = {
@@ -79,7 +83,17 @@ function emptyFetchMeta(imapUser: string): EzgoImapFetchMeta {
     afterAllowlist: 0,
     skippedKnown: 0,
     downloadedSource: 0,
+    reportQueriesUsed: [],
+    foundByReportType: { doc1: 0, doc2: 0, other: 0 },
   };
+}
+
+/** Classify a fetched message by subject only — cheap transparency counter, not the real classifier. */
+function classifySubjectReportType(subject: string): "doc1" | "doc2" | "other" {
+  const s = String(subject || "");
+  if (/כניסות|יציאות/.test(s)) return "doc2";
+  if (/Operations/i.test(s)) return "doc1";
+  return "other";
 }
 
 /** Built-in EZGO report senders — merged with EZGO_MAIL_ALLOWLIST extras. */
@@ -180,8 +194,18 @@ function imapSinceDate(searchDays: number | null): Date | null {
   return since;
 }
 
+/** Optional Gmail label to search first (e.g. a filter that auto-labels EZGO mail "EZGO") — much faster than scanning All Mail. */
+export function resolveEzgoMailGmailLabel(): string | null {
+  const raw = (Deno.env.get("EZGO_MAIL_GMAIL_LABEL") || "").trim();
+  return raw || null;
+}
+
 async function openSearchMailbox(client: ImapFlow): Promise<string> {
-  for (const name of IMAP_SEARCH_MAILBOXES) {
+  const label = resolveEzgoMailGmailLabel();
+  const candidates = label
+    ? [`[Gmail]/Label/${label}`, label, `[Gmail]/${label}`, ...IMAP_SEARCH_MAILBOXES]
+    : IMAP_SEARCH_MAILBOXES;
+  for (const name of candidates) {
     try {
       await client.mailboxOpen(name);
       return name;
@@ -354,61 +378,105 @@ function gmailRecencyClause(searchDays: number | null): string {
   return searchDays ? `newer_than:${searchDays}d ` : "";
 }
 
+/**
+ * Dedicated report-type searches for EZGO's own domain — subject-based, so they still find
+ * the daily Doc1/Doc2 report even when the generic "from:" queries above miss it in a busy
+ * inbox (Gmail search relevance can drop older-looking mail from a >500-message window).
+ */
+export function buildEzgoReportSearchQueries(
+  sender: string,
+  searchDays: number | null,
+): Array<{ kind: string; gmailRaw: string }> {
+  if (!sender.includes("@ezgo.co.il") && sender !== "ezgo.co.il") return [];
+  const recency = gmailRecencyClause(searchDays);
+  const base = `in:anywhere ${recency}from:ezgo.co.il`.replace(/\s+/g, " ").trim();
+  return [
+    { kind: "report_subject_arrivals", gmailRaw: `${base} subject:כניסות` },
+    { kind: "report_subject_departures", gmailRaw: `${base} subject:ויציאות` },
+    { kind: "report_subject_operations", gmailRaw: `${base} subject:Operations` },
+    { kind: "report_xlsx_attachment", gmailRaw: `${base} has:attachment filename:xlsx` },
+  ];
+}
+
 async function searchUidsForSender(
   client: ImapFlow,
   sender: string,
   perSender: number,
   searchDays: number | null,
+  meta?: EzgoImapFetchMeta,
 ): Promise<number[]> {
   const caps = Math.max(perSender, 1);
   const recency = gmailRecencyClause(searchDays);
-  const queries: Array<Record<string, unknown>> = [
-    { gmailRaw: `in:anywhere ${recency}from:${sender}`.replace(/\s+/g, " ").trim() },
-    { gmailRaw: `in:anywhere ${recency}category:updates from:${sender}`.replace(/\s+/g, " ").trim() },
-    { from: sender },
+  const queries: Array<{ kind: string; search: Record<string, unknown> }> = [
+    { kind: "direct_from", search: { gmailRaw: `in:anywhere ${recency}from:${sender}`.replace(/\s+/g, " ").trim() } },
+    { kind: "category_updates", search: { gmailRaw: `in:anywhere ${recency}category:updates from:${sender}`.replace(/\s+/g, " ").trim() } },
+    { kind: "imap_from", search: { from: sender } },
   ];
   if (sender.includes("@ezgo.co.il")) {
     queries.unshift(
-      { gmailRaw: `in:anywhere ${recency}from:ezgo.co.il`.replace(/\s+/g, " ").trim() },
-      { gmailRaw: `in:anywhere ${recency}category:updates from:ezgo.co.il`.replace(/\s+/g, " ").trim() },
-      { gmailRaw: `in:anywhere ${recency}category:promotions from:ezgo.co.il`.replace(/\s+/g, " ").trim() },
+      { kind: "ezgo_domain", search: { gmailRaw: `in:anywhere ${recency}from:ezgo.co.il`.replace(/\s+/g, " ").trim() } },
+      { kind: "ezgo_domain_updates", search: { gmailRaw: `in:anywhere ${recency}category:updates from:ezgo.co.il`.replace(/\s+/g, " ").trim() } },
+      { kind: "ezgo_domain_promotions", search: { gmailRaw: `in:anywhere ${recency}category:promotions from:ezgo.co.il`.replace(/\s+/g, " ").trim() } },
     );
+    for (const q of buildEzgoReportSearchQueries(sender, searchDays)) {
+      queries.push({ kind: q.kind, search: { gmailRaw: q.gmailRaw } });
+    }
   }
-  const since = imapSinceDate(searchDays);
-  if (since) {
-    queries.push({ since, from: sender });
-  }
+
   const uidSet = new Set<number>();
-  for (const query of queries) {
+  for (const { kind, search } of queries) {
     try {
-      const found = await client.search(query, { uid: true });
+      const found = await client.search(search, { uid: true });
       const sorted = [...(found || [])].sort((a, b) => b - a);
+      if (sorted.length) meta?.reportQueriesUsed.push(kind);
       for (const uid of sorted.slice(0, caps)) uidSet.add(uid);
       if (uidSet.size >= caps) break;
     } catch {
       // try next query shape
     }
   }
+
+  // SINCE supplement — always runs (not gated behind the cap break above). Gmail's
+  // newer_than-based relevance search can miss mail that's a few days old once the
+  // inbox has 500+ non-EZGO messages in that window; a raw IMAP SINCE date search
+  // against this sender catches it.
+  const since = imapSinceDate(searchDays);
+  if (since) {
+    try {
+      const found = await client.search({ since, from: sender }, { uid: true });
+      const sorted = [...(found || [])].sort((a, b) => b - a);
+      if (sorted.length) meta?.reportQueriesUsed.push("since_supplement");
+      for (const uid of sorted.slice(0, caps)) uidSet.add(uid);
+    } catch {
+      // ignore — supplement only
+    }
+  }
+
   return [...uidSet].sort((a, b) => b - a).slice(0, caps);
 }
 
 /** Fair quota per direct sender — avoids one inbox (e.g. forwards) starving others. */
-export const EZGO_MAIL_PER_SENDER_MIN = 12;
+export const EZGO_MAIL_PER_SENDER_MIN = 21;
+
+/** Wider per-sender budget for manual UI scans / full_sync — worth the extra IMAP round-trips. */
+export const EZGO_MAIL_PER_SENDER_MANUAL_CAP = 36;
 
 async function searchAllowlistedUids(
   client: ImapFlow,
   allowlist: string[],
   limit: number,
   searchDays: number | null,
+  meta?: EzgoImapFetchMeta,
+  perSenderCapOverride?: number,
 ): Promise<{ uids: number[]; method: string }> {
-  const perSender = Math.max(
+  const perSender = perSenderCapOverride ?? Math.max(
     EZGO_MAIL_PER_SENDER_MIN,
     Math.ceil(limit / Math.max(allowlist.length, 1)),
   );
   const uidSet = new Set<number>();
 
   for (const sender of allowlist) {
-    const uids = await searchUidsForSender(client, sender, perSender, searchDays);
+    const uids = await searchUidsForSender(client, sender, perSender, searchDays, meta);
     for (const uid of uids) uidSet.add(uid);
   }
 
@@ -630,6 +698,8 @@ type EzgoFetchPassOpts = {
   searchDays: number | null;
   supplementLimit: number;
   supplementScanCap: number;
+  /** Per-sender UID cap override — wider for manual scans / full_sync (EZGO_MAIL_PER_SENDER_MANUAL_CAP). */
+  perSenderCap?: number;
 };
 
 async function runEzgoFetchPass(
@@ -648,6 +718,8 @@ async function runEzgoFetchPass(
     allowlist,
     pass.fetchLimit,
     pass.searchDays,
+    meta,
+    pass.perSenderCap,
   );
 
   const messages: EzgoInboundMail[] = [];
@@ -826,6 +898,7 @@ export async function fetchEzgoInboxMessages(
       searchDays,
       supplementLimit: manual ? 16 : 10,
       supplementScanCap: manual ? 120 : 60,
+      perSenderCap: (manual || fullSync) ? EZGO_MAIL_PER_SENDER_MANUAL_CAP : undefined,
     });
     messages = pass1.messages;
     meta.searchMethod = pass1.method;
@@ -841,6 +914,7 @@ export async function fetchEzgoInboxMessages(
         searchDays: null,
         supplementLimit: 20,
         supplementScanCap: 180,
+        perSenderCap: EZGO_MAIL_PER_SENDER_MANUAL_CAP,
       });
       meta.searchUids = Math.max(meta.searchUids, pass2.uids.length);
       const seen = new Set(messages.map((m) => m.id));
@@ -861,6 +935,11 @@ export async function fetchEzgoInboxMessages(
   messages.sort(
     (a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime(),
   );
+
+  meta.reportQueriesUsed = [...new Set(meta.reportQueriesUsed)];
+  for (const m of messages) {
+    meta.foundByReportType[classifySubjectReportType(m.subject)] += 1;
+  }
 
   return { messages, meta };
 }
