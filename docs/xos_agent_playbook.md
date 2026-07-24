@@ -1,6 +1,6 @@
 # XOS Agent Playbook — Smart Dev Environment
 > **Living document.** Mike + every Cursor agent reads this with `CLAUDE.md` and `docs/active_sprint.md`.
-> Last updated: 2026-07-12 (session pipeline — Research→Diagnostic→Execute→QA + thin Cursor rule; agent auto-routes by task type).
+> Last updated: 2026-07-24 (Claude Code Desktop — 3 subagents + `/xos-qa` `/xos-security` skills; Mike magic workflow §13).
 >
 > **When you learn something new that works** → add a bullet here + 1 line in `docs/changelog.md` + refresh `CLAUDE.md` §13 if architecture changed.
 
@@ -14,6 +14,8 @@
 | `docs/active_sprint.md` | Current blockers + priorities |
 | `RESORT_UI_MANIFEST.md` | UI/UX philosophy + tab readiness |
 | **`docs/xos_agent_playbook.md`** | **How to work with Mike + how agents should behave** |
+| **`.claude/agents/`** | **Claude Code subagents** — `maya-partner`, `qa-gate`, `security-sentinel` (project-scoped, git-committed) |
+| **`.claude/skills/`** | **Claude Code slash skills** — `/xos-qa`, `/xos-security` (user-invoked gates) |
 
 This playbook captures **process knowledge** that is not code — communication, phases, corrected assumptions, and copy-paste prompts.
 
@@ -416,6 +418,13 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 
 ## 10. Learnings Log
 
+### 2026-07-24 — Claude Code Desktop: 3 dev subagents beat one mega-prompt
+- **Goal:** Mike describes a need in Hebrew; agents plan, build, QA, deploy — minimal friction.
+- **Decision:** Project-scoped `.claude/agents/` (`maya-partner`, `qa-gate`, `security-sentinel`) + user skills `/xos-qa` `/xos-security`. Shared memory stays in `CLAUDE.md` + this playbook — do not duplicate architecture into each agent file.
+- **Why not one agent:** Self-review misses logic bugs at this codebase size (§6.2); qa-gate is read-only with `disallowedTools: Edit, Write` and runs in a **separate Desktop session** for fresh context.
+- **Cursor + Claude Code:** same playbook; never parallel-edit same repo dir from both tools (index.lock incident §10 2026-07-07).
+- **Not staff agents:** נועה/ליאת/סיגל = product WhatsApp personas; maya/qa-gate/security-sentinel = Mike's dev workflow only.
+
 ### 2026-07-23 — Whapi ban #2: a 2.5s client-side gap is not ban protection; velocity is server-enforced now
 - **Symptom:** The Suites Whapi device took a ~24h restriction after `WaiterPulseDispatchPanel` sent an identical survey-invite body to ~40 waiters, one browser `for`-loop iteration every 2.5s. Same failure shape as the 2026-07-13 retry-storm ban (CLAUDE.md §1 / this file's 2026-07-13 entry), different trigger — that time it was a cron retry storm on `guests`; this time it was a manual bulk UI with no server-side pacing at all, and the recipients (waiters) aren't in `guests` so none of the existing guest-outbound guards (`guestOutboundGuard.ts`, `automationRetryGate.ts`, SOS routing) ever saw the traffic.
 - **Root:** Every prior Whapi safety mechanism (SOS fallback, per-cohort channel control, retry-gate cooldown) is keyed off a `guests` row or an automation trigger. A UI that sends 1:1 DMs to an arbitrary phone list — waiter roster, club members, anyone not in `guests` — bypassed all of it. Client-side `setTimeout` between sends only rate-limits a well-behaved browser tab; it does nothing once the pattern (identical body, tight fixed gap, no jitter, no per-recipient history) is what WhatsApp's own detection is looking at.
@@ -704,6 +713,9 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 │    תעלה        = דחוף לפרודקשן (Vercel)                 │
 │                                                         │
 │  אחרי תעלה → בדוק בטלפון → כן / תקן: …                  │
+│                                                         │
+│  Claude Code: 3 sessions — מאיה / בודק / שומר (§13)    │
+│  לפני תעלה על backend: /xos-qa + /xos-security         │
 └─────────────────────────────────────────────────────────┘
 
 
@@ -776,3 +788,74 @@ Do NOT write code in the first reply unless Mike already said כן below.
 
 Mike says now:
 כן — התחל Phase 0. אחרי כל שינוי תראה לי בדפדפן ותחכה לאישור לפני commit/push.
+
+---
+
+## 13. Claude Code Desktop — Mike's Magic Workflow (3 Agents)
+
+Mike's goal: **describe a need in Hebrew → agents plan, build, QA, deploy** — with minimal friction and maximum safety.
+
+Cursor and Claude Code Desktop share the same brain: `CLAUDE.md` + this playbook. Use **both** tools; never edit the same files in parallel in two sessions on the same repo dir (playbook §10 2026-07-07 index.lock incident).
+
+### 13.1 The three agents
+
+| Agent | File | Role | Tools |
+|---|---|---|---|
+| **מאיה** | `.claude/agents/maya-partner.md` | Daily partner — Hebrew chat, pipeline routing, atomic Execute, browser approval loop | Full (Read/Edit/Bash/…) |
+| **בודק** | `.claude/agents/qa-gate.md` | Independent QA — read-only, P0 table or `PASSED QA` | Read/Grep/Glob/Bash only |
+| **שומר** | `.claude/agents/security-sentinel.md` | Security before backend deploy | Read/Grep/Glob/Bash only |
+
+Slash skills (user-invoked): `/xos-qa` → qa-gate checklist · `/xos-security` → security-sentinel checklist.
+
+**Not** the same as staff product agents (נועה/ליאת/סיגל in `staffAgentRoster.js`) — those serve resort staff on WhatsApp; these serve **Mike's development**.
+
+### 13.2 Desktop setup (one-time)
+
+1. Open Claude Code Desktop → project folder `DREAM-AI-SYSTEM`.
+2. `npm start` running (or use `.claude/launch.json` debug config `dream-ai-react`).
+3. Create **3 sessions** (`Ctrl+N`): name them `מאיה`, `בודק`, `שומר`.
+4. After editing agent files on disk → **restart session** to reload (or use `/agents` UI — changes apply immediately).
+5. Verify `@qa-gate` and `@security-sentinel` appear in @-mention typeahead.
+
+### 13.3 Daily flow ("אני מבקש והקסם קורה")
+
+```
+Mike (מאיה session):  "רוצה ש…"
+מאיה:                 Diagnostic (3 options) → wait כן
+מאיה:                 ONE small change → "תסתכל ב-localhost:3000 → Inbox"
+Mike:                 כן
+מאיה (optional):      "לפני תעלה — פתח session בודק"
+Mike (בודק session):  /xos-qa   OR   @qa-gate בדוק את השינויים
+בודק:                 PASSED QA  OR  P0 table
+Mike (שומר session): /xos-security   (if functions/migrations/webhooks touched)
+שומר:                 SECURITY PASSED
+Mike (מאיה session):  תעלה
+מאיה:                 build → commit → push → functions deploy (checklist §6)
+```
+
+**Mike only needs 4 words:** `כן` · `תקן: …` · `עצור` · `תעלה`
+
+### 13.4 When to use which session
+
+| Task | Session | Invoke |
+|---|---|---|
+| Feature, bugfix, UI, planning | **מאיה** | default — or `@maya-partner` |
+| After Execute on automation/webhooks/RLS/Shabbat | **בודק** | `/xos-qa` or `@qa-gate` — **separate session** (fresh context) |
+| Before deploy of functions/migrations | **שומר** | `/xos-security` or `@security-sentinel` |
+| "How does X work?" | **מאיה** | Stage 0 only — `רק research` |
+| Large multi-file refactor | **מאיה** | Claude Code `/batch` (parallel worktrees) |
+
+### 13.5 Cursor ↔ Claude Code split
+
+| Tool | Best for |
+|---|---|
+| **Cursor** (this chat) | Fast UI tweaks, inline edits, `@` file context, Bugbot/security subagents |
+| **Claude Code Desktop** | Long sessions, `/batch`, subagent orchestration, parallel sessions with worktrees |
+
+Both read `CLAUDE.md`. Both follow §6 pipeline. **One session per tool per repo dir at a time.**
+
+### 13.6 Hard rules (same as §7)
+
+- Never `git push` / `db push` / `functions deploy` without Mike's `תעלה` / `yes deploy`.
+- QA in the **same** session that wrote the code is a weak gate — prefer **בודק** session.
+- If agent drifts → fresh session (§6.1 Reset-on-Drift).
