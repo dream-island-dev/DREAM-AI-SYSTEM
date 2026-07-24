@@ -2,7 +2,7 @@
 // Guest / daily check-in management. Fetch-on-mount (F5-proof).
 // Manager can flip a guest to "Room Ready" → fires WhatsApp Trigger 3
 // (suites) immediately via the whatsapp-send edge function.
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import { SUITE_REGISTRY } from "../data/suiteRegistry";
 import { hasSuiteRoomTypeConflict, hasPremiumDayRoomTypeConflict } from "../utils/guestTiming";
@@ -60,7 +60,10 @@ export default function GuestsPage({
 
   const [guests, setGuests]   = useState([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [busy, setBusy]       = useState(null);
+  const skipRealtimeUntilRef = useRef(0);
+  const realtimeDebounceRef = useRef(null);
   const [toast, setToast]     = useState(null);
   const [profileGuest, setProfileGuest] = useState(null); // guest object or null — GuestContextDrawer
   const [profileEditOnOpen, setProfileEditOnOpen] = useState(false);
@@ -112,9 +115,16 @@ export default function GuestsPage({
     return anyChanged ? next : guestList;
   }, []);
 
-  const fetchGuests = useCallback(async () => {
-    setLoading(true);
-    if (!isSupabaseConfigured || !supabase) { setLoading(false); return; }
+  const suppressRealtimeRefresh = useCallback((ms = 2500) => {
+    skipRealtimeUntilRef.current = Date.now() + ms;
+  }, []);
+
+  const loadGuests = useCallback(async ({ showSpinner = false } = {}) => {
+    if (showSpinner) setLoading(true);
+    if (!isSupabaseConfigured || !supabase) {
+      if (showSpinner) setLoading(false);
+      return;
+    }
     const { data, error } = await supabase
       .from("guests")
       .select("*")
@@ -127,8 +137,16 @@ export default function GuestsPage({
       const suiteMap = await fetchSuiteRoomsForGuestIds(supabase, synced);
       setSuiteRoomsByGuestId(suiteMap);
     }
-    setLoading(false);
+    if (showSpinner) setLoading(false);
   }, [applyReceptionMatrixSync]);
+
+  const fetchGuestsSilent = useCallback(() => loadGuests(), [loadGuests]);
+
+  const fetchGuestsManual = useCallback(async () => {
+    setRefreshing(true);
+    await loadGuests();
+    setRefreshing(false);
+  }, [loadGuests]);
 
   const fetchRooms = useCallback(async () => {
     if (!supabase) return;
@@ -148,22 +166,33 @@ export default function GuestsPage({
     setRoomByPhone(map);
   }, []);
 
-  useEffect(() => { fetchGuests(); fetchRooms(); }, [fetchGuests, fetchRooms]);
+  useEffect(() => { loadGuests({ showSpinner: true }); fetchRooms(); }, [loadGuests, fetchRooms]);
 
   useEffect(() => {
     if (!supabase) return;
+    const scheduleRealtimeRefresh = () => {
+      if (Date.now() < skipRealtimeUntilRef.current) return;
+      clearTimeout(realtimeDebounceRef.current);
+      realtimeDebounceRef.current = setTimeout(() => {
+        if (Date.now() < skipRealtimeUntilRef.current) return;
+        fetchGuestsSilent();
+      }, 400);
+    };
     const ch = supabase
       .channel("guests-page-rt")
-      .on("postgres_changes", { event: "*", schema: "public", table: "guests" }, fetchGuests)
+      .on("postgres_changes", { event: "*", schema: "public", table: "guests" }, scheduleRealtimeRefresh)
       .subscribe();
-    return () => supabase.removeChannel(ch);
-  }, [fetchGuests]);
+    return () => {
+      clearTimeout(realtimeDebounceRef.current);
+      supabase.removeChannel(ch);
+    };
+  }, [fetchGuestsSilent]);
 
   // Re-evaluate 15:00 gateway + departure checkout every minute.
   useEffect(() => {
-    const id = setInterval(() => { fetchGuests(); }, 60_000);
+    const id = setInterval(() => { fetchGuestsSilent(); }, 60_000);
     return () => clearInterval(id);
-  }, [fetchGuests]);
+  }, [fetchGuestsSilent]);
 
   const getGuestSuiteRooms = (guest) => suiteRoomsByGuestId[guest?.id] ?? [];
 
@@ -208,6 +237,7 @@ export default function GuestsPage({
       } else {
         patchSuiteRoomReadyLocal(guest.id, roomLabel);
         await markGuestRoomReadyAfterNotify(supabase, guest.id);
+        suppressRealtimeRefresh();
         setGuests((prev) => prev.map((g) => (
           g.id === guest.id && g.status !== "checked_in"
             ? { ...g, status: "room_ready" }
@@ -236,6 +266,7 @@ export default function GuestsPage({
         setBusy(null);
         return;
       }
+      suppressRealtimeRefresh();
       setGuests((prev) => prev.map((g) => (g.id === guest.id ? { ...g, ...result.guestPatch } : g)));
       showToast("ok", result.noRoomLinked
         ? "צ'ק-אין ✓ (לא שובץ חדר בלוח סוויטות)"
@@ -251,6 +282,7 @@ export default function GuestsPage({
         setBusy(null);
         return;
       }
+      suppressRealtimeRefresh();
       setGuests((prev) => prev.map((g) => (g.id === guest.id ? { ...g, ...result.guestPatch } : g)));
       showToast("ok", result.revertStatus === "room_ready" ? "הוחזר לחדר מוכן ↩" : "הוחזר לממתין ↩");
       setBusy(null);
@@ -261,6 +293,7 @@ export default function GuestsPage({
     if (status === "expected") patch.checkin_time = null;
     const { error } = await supabase.from("guests").update(patch).eq("id", guest.id);
     if (error) { showToast("err", "שגיאה: " + error.message); setBusy(null); return; }
+    suppressRealtimeRefresh();
     setGuests((prev) => prev.map((g) => (g.id === guest.id ? { ...g, ...patch } : g)));
 
     // Room Ready → fire WhatsApp room_ready trigger (suites only).
@@ -809,8 +842,8 @@ export default function GuestsPage({
             }}>
             + הוסף אורח
           </button>
-          <button className="btn btn-ghost btn-sm" onClick={fetchGuests} disabled={loading}>
-            {loading ? "..." : "↺ רענון"}
+          <button className="btn btn-ghost btn-sm" onClick={fetchGuestsManual} disabled={loading || refreshing}>
+            {refreshing ? "..." : "↺ רענון"}
           </button>
         </div>
       </div>
