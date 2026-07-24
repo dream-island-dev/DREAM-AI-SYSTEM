@@ -36,7 +36,8 @@ import {
   isDaypassAppliesTo,
 } from "../utils/pipelineSegment";
 import { scriptKeyFriendly, isGarbledDbText, BOT_SCRIPT_FRIENDLY } from "../utils/botScriptLabels";
-import WhapiEmergencyBroadcastPanel from "./WhapiEmergencyBroadcastPanel";
+import DreamBotGuestControlPanel from "./DreamBotGuestControlPanel";
+import { israelTodayStr, israelDateOffsetStr } from "../utils/guestTiming";
 import {
   Stage1ArrivalControlPanel,
   Stage1DispatchPreview,
@@ -552,6 +553,20 @@ function isDayPassQueueItem(q) {
  */
 function isWhapiRoutedQueueItem(q) {
   return q?.effectiveWhapiGuest ?? q?.effectiveSuite === true;
+}
+
+/** Suite guests in-resort or arriving today/tomorrow — Dream Bot outreach cohort. */
+function isActiveOutreachQueueItem(q) {
+  if (!q?.effectiveSuite) return false;
+  const today = israelTodayStr();
+  const tomorrow = israelDateOffsetStr(1);
+  const { arrivalDate, departureDate, guestStatus } = q;
+  if (guestStatus === "checked_in" && arrivalDate && arrivalDate <= today) {
+    if (!departureDate || departureDate >= today) return true;
+  }
+  if (arrivalDate === tomorrow && guestStatus !== "cancelled" && guestStatus !== "checked_out") return true;
+  if (arrivalDate === today && guestStatus !== "cancelled" && guestStatus !== "checked_out") return true;
+  return false;
 }
 
 function isQueueItemGated(q, dayPassAllowedStages) {
@@ -2090,6 +2105,7 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
   const [scheduleItemKeys, setScheduleItemKeys] = useState(null);
   const [scheduling, setScheduling] = useState(false);
   const [scheduleError, setScheduleError] = useState(null);
+  const [ensuringDreamBot, setEnsuringDreamBot] = useState(false);
 
   const openScheduleModal = useCallback((preset = null, itemKeys = null) => {
     setScheduleError(null);
@@ -2232,6 +2248,29 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
       setLoadingQueue(false);
     }
   }, [queuePreviewDate]);
+
+  const ensureDreamBotMode = useCallback(async () => {
+    if (!supabase) return;
+    setEnsuringDreamBot(true);
+    try {
+      const { error: chErr } = await supabase
+        .from("bot_config")
+        .update({ config_value: "meta" })
+        .eq("config_key", "guest_suites_channel");
+      if (chErr) throw chErr;
+      const { error: sosErr } = await supabase
+        .from("bot_config")
+        .update({ config_value: "true" })
+        .eq("config_key", "whapi_guest_sos_active");
+      if (sosErr) throw sosErr;
+      showToast("ok", "✅ Dream Bot פעיל — SOS + ערוץ Meta לסוויטות");
+      fetchQueue();
+    } catch (err) {
+      showToast("err", "שגיאה: " + (err?.message ?? String(err)));
+    } finally {
+      setEnsuringDreamBot(false);
+    }
+  }, [showToast, fetchQueue]);
 
   // Suites {whapi|meta} / Day-pass {off|whapi|meta} channel selectors (P0,
   // 2026-07-13) — direct bot_config write (same RLS pattern as patchStage's
@@ -3397,10 +3436,31 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                       {" "}אקרוקת חדרנות (N✅) עדיין תלויה במכשיר הפיזי.
                     </div>
                   )}
-                  {(queueData.systemStatus.whapiGuestSosActive
-                    || queueData.systemStatus.whapiDevice?.healthy === false) && (
-                    <WhapiEmergencyBroadcastPanel onToast={showToast} />
-                  )}
+                  <DreamBotGuestControlPanel
+                    onToast={showToast}
+                    systemStatus={queueData.systemStatus}
+                    onEnsureDreamBot={ensureDreamBotMode}
+                    ensuringDreamBot={ensuringDreamBot}
+                    onQuickScheduleTomorrow={() => {
+                      const isDispatchableLocal = (q) =>
+                        q.guestId
+                        && !["sent", "simulated", "skipped"].includes(q.status)
+                        && !QUEUE_HIDDEN_SKIP_REASONS.has(q.skipReason)
+                        && q.skipReason !== "awaiting_confirmation"
+                        && q.skipReason !== "stage_suppressed";
+                      const allQ = mergeQueueWithStages(queueData?.queue, stages).filter(isActiveQueueItem);
+                      const suiteQ = allQ.filter((q) => !isDayPassQueueItem(q));
+                      const keys = suiteQ
+                        .filter((q) => isActiveOutreachQueueItem(q) && isDispatchableLocal(q))
+                        .map((q) => `${q.guestId}_${q.stageKey}`);
+                      if (!keys.length) {
+                        showToast("err", "אין שורות ממתינות לבריזורט/מגיעים היום-מחר");
+                        return;
+                      }
+                      openScheduleModal({ date: israelTomorrowYmd(), time: "08:00" }, keys);
+                      showToast("ok", `נבחרו ${keys.length} שורות — אשר תזמון מחר 08:00`);
+                    }}
+                  />
                   {/* ── Whapi device status + failover controls ── */}
                   <div style={{
                     display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center",
@@ -4177,9 +4237,11 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                     setDispatchViaWhapi(true);
                     setShowDispatchConfirm(true);
                   }}
-                  disabled={dispatching || scheduling}
-                  style={{ minWidth: 200, background: "#1A7A4A", borderColor: "#1A7A4A" }}
-                  title="שגר את הנבחרים דרך מכשיר הסוויטות (Whapi) במקום Dream Bot — שלבים שאינם נתמכים עדיין ידולגו"
+                  disabled={dispatching || scheduling || queueData?.systemStatus?.whapiGuestSosActive}
+                  style={{ minWidth: 200, background: "#1A7A4A", borderColor: "#1A7A4A", opacity: queueData?.systemStatus?.whapiGuestSosActive ? 0.45 : 1 }}
+                  title={queueData?.systemStatus?.whapiGuestSosActive
+                    ? "Whapi חסום — שליחה רק דרך Dream Bot"
+                    : "שגר את הנבחרים דרך מכשיר הסוויטות (Whapi) במקום Dream Bot — שלבים שאינם נתמכים עדיין ידולגו"}
                 >
                   {dispatching && dispatchViaWhapi
                     ? (dispatchProgress

@@ -340,6 +340,11 @@ Deno.serve(async (req: Request) => {
           premiumDayRoomTypeConflict: hasPremiumDayRoomTypeConflict(guest),
           arrivalDate: (guest as Record<string, unknown>).arrival_date ?? null,
           departureDate: (guest as Record<string, unknown>).departure_date ?? null,
+          guestStatus: (guest as Record<string, unknown>).status ?? null,
+          metaWindowOpen: (() => {
+            const exp = (guest as Record<string, unknown>).wa_window_expires_at as string | null;
+            return exp ? new Date(exp).getTime() > now.getTime() : false;
+          })(),
           stageKey: stage.stage_key,
           appliesTo: stage.applies_to,
           pipelineSegment: pipelineSegmentFromAppliesTo(stage.applies_to),

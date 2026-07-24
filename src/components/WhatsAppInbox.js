@@ -4692,19 +4692,27 @@ export default function WhatsAppInbox({
     supabase
       .from("bot_config")
       .select("config_key, config_value")
-      .in("config_key", ["bot_active", "bot_active_whapi", "whapi_guest_sos_active", INBOX_CLAIM_IDLE_RELEASE_CONFIG_KEY])
+      .in("config_key", [
+        "bot_active",
+        "bot_active_whapi",
+        "whapi_guest_sos_active",
+        "whapi_auto_failover",
+        "whapi_device_healthy",
+        INBOX_CLAIM_IDLE_RELEASE_CONFIG_KEY,
+      ])
       .then(({ data }) => {
         const cfgMap = {};
         (data ?? []).forEach((row) => {
           cfgMap[row.config_key] = row.config_value;
           if (row.config_key === "bot_active") setBotActive(row.config_value !== "false");
           if (row.config_key === "bot_active_whapi") setBotActiveWhapi(row.config_value !== "false");
-          if (row.config_key === "whapi_guest_sos_active") {
-            const sosOn = row.config_value === "true";
-            setWhapiSosActive(sosOn);
-            if (sosOn) setReplyChannel("meta");
-          }
         });
+        const sosManual = cfgMap.whapi_guest_sos_active === "true";
+        const autoFailover = cfgMap.whapi_auto_failover !== "false";
+        const deviceUnhealthy = cfgMap.whapi_device_healthy === "false";
+        const sosEffective = sosManual || (autoFailover && deviceUnhealthy);
+        setWhapiSosActive(sosEffective);
+        if (sosEffective) setReplyChannel("meta");
         setClaimIdleMinutes(parseInboxClaimIdleReleaseMinutes(cfgMap));
       });
   }, []);
