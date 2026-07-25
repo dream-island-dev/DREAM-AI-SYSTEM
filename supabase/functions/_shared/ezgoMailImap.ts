@@ -2,6 +2,11 @@
 
 import { ImapFlow } from "npm:imapflow@1.0.168";
 
+export type EzgoMailCsvAttachment = {
+  filename: string;
+  data: Uint8Array;
+};
+
 export type EzgoMailExcelAttachment = {
   filename: string;
   data: Uint8Array;
@@ -17,6 +22,7 @@ export type EzgoInboundMail = {
   bodyText: string;
   bodyHtml: string;
   excelAttachments: EzgoMailExcelAttachment[];
+  csvAttachments: EzgoMailCsvAttachment[];
 };
 
 export type EzgoImapConfig = {
@@ -41,6 +47,13 @@ export type EzgoImapFetchMeta = {
   downloadedSource: number;
   /** Query "kinds" that returned at least one UID (transparency — which search shape found mail). */
   reportQueriesUsed: string[];
+  /**
+   * Query kinds that threw (previously swallowed silently — FAIL VISIBLE per project rules).
+   * A `gmailRaw`/`X-GM-RAW` query throws `MissingServerExtension` if the IMAP session doesn't
+   * report the X-GM-EXT-1 capability; when that happens every Gmail-syntax query in the plan
+   * fails the same way and the sync falls back entirely on the slow envelope-scan supplement.
+   */
+  searchErrors: string[];
   /** Downloaded messages classified by subject — doc1/doc2/other. */
   foundByReportType: { doc1: number; doc2: number; other: number };
 };
@@ -68,6 +81,15 @@ export function resolveEzgoMailSearchDays(): number {
   return Math.min(Math.floor(raw), 30);
 }
 
+/**
+ * Wide-but-bounded search window for full_sync and the auto-escalation retry — NOT
+ * unbounded. `searchDays: null` drops the `newer_than:` clause entirely, turning every
+ * gmailRaw query into a full-account-history search; against a real mailbox that is
+ * slow enough by itself to blow the 55s IMAP budget, especially once multiplied across
+ * several senders/domains. 45 days is still far wider than the 7-day default.
+ */
+export const EZGO_MAIL_FULL_SYNC_SEARCH_DAYS = 45;
+
 export function normalizeMessageId(raw: string | undefined | null): string {
   return String(raw || "").replace(/^<|>$/g, "").trim().toLowerCase();
 }
@@ -84,14 +106,16 @@ function emptyFetchMeta(imapUser: string): EzgoImapFetchMeta {
     skippedKnown: 0,
     downloadedSource: 0,
     reportQueriesUsed: [],
+    searchErrors: [],
     foundByReportType: { doc1: 0, doc2: 0, other: 0 },
   };
 }
 
-/** Classify a fetched message by subject only — cheap transparency counter, not the real classifier. */
-function classifySubjectReportType(subject: string): "doc1" | "doc2" | "other" {
+/** Classify a fetched message by subject / attachment hint — cheap transparency counter. */
+function classifySubjectReportType(subject: string, hasCsvAttachment = false): "doc1" | "doc2" | "other" {
   const s = String(subject || "");
   if (/כניסות|יציאות/.test(s)) return "doc2";
+  if (hasCsvAttachment) return "doc2";
   if (/Operations/i.test(s)) return "doc1";
   return "other";
 }
@@ -100,6 +124,7 @@ function classifySubjectReportType(subject: string): "doc1" | "doc2" | "other" {
 export const DEFAULT_EZGO_MAIL_SENDERS = [
   "noreply@ezgo.co.il",
   "hagar.mesilati@dream-island.co.il",
+  "reception@dream-island.co.il",
   "tzalamnadlan@gmail.com",
 ];
 
@@ -154,6 +179,12 @@ export function isSenderAllowed(fromEmail: string, allowlist: string[]): boolean
   ) {
     return true;
   }
+  if (
+    normalizedAllow.some((a) => a.endsWith("@dream-island.co.il"))
+    && email.endsWith("@dream-island.co.il")
+  ) {
+    return true;
+  }
   if (/^(no[-_.]?reply|donotreply|mailer-daemon)@/i.test(email)) return false;
   return false;
 }
@@ -200,6 +231,20 @@ export function resolveEzgoMailGmailLabel(): string | null {
   return raw || null;
 }
 
+/**
+ * Mailbox candidates for the envelope-only supplement/fallback scan, label first.
+ * The primary gmailRaw searches use `in:anywhere`, which Gmail treats as "search
+ * everything" regardless of which mailbox is open, so a configured label doesn't
+ * speed those up. This envelope scan is different — it fetches raw messages from
+ * whichever mailbox is opened, so a small label mailbox here is the one place the
+ * label actually cuts scan volume (label mail only, instead of all of INBOX/All Mail).
+ */
+export function resolveSupplementMailboxCandidates(): string[] {
+  const label = resolveEzgoMailGmailLabel();
+  if (!label) return SUPPLEMENT_MAILBOXES;
+  return [`[Gmail]/Label/${label}`, label, `[Gmail]/${label}`, ...SUPPLEMENT_MAILBOXES];
+}
+
 async function openSearchMailbox(client: ImapFlow): Promise<string> {
   const label = resolveEzgoMailGmailLabel();
   const candidates = label
@@ -240,6 +285,40 @@ function isExcelAttachment(att: ParsedMimeAttachment): boolean {
     || mt === "application/vnd.ms-excel"
     || mt === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     || mt === "application/octet-stream" && /\.xlsx?$/i.test(fn);
+}
+
+function isCsvAttachment(att: ParsedMimeAttachment): boolean {
+  const fn = String(att.filename || "").toLowerCase();
+  const mt = String(att.mimeType || "").toLowerCase();
+  if (/\.csv$/i.test(fn)) return true;
+  return mt === "text/csv"
+    || mt === "application/csv"
+    || mt === "text/comma-separated-values"
+    || (mt === "application/octet-stream" && /\.csv$/i.test(fn));
+}
+
+async function collectCsvAttachments(email: ParsedMimeEmail | null): Promise<EzgoMailCsvAttachment[]> {
+  if (!email) return [];
+  const out: EzgoMailCsvAttachment[] = [];
+
+  for (const att of email.attachments || []) {
+    if (att.mimeType === "message/rfc822") {
+      const raw = attachmentToBytes(att.content);
+      if (raw) {
+        const nested = await parseMimeSource(raw);
+        out.push(...await collectCsvAttachments(nested));
+      }
+      continue;
+    }
+    if (!isCsvAttachment(att)) continue;
+    const data = attachmentToBytes(att.content);
+    if (!data?.length) continue;
+    out.push({
+      filename: att.filename || "attachment.csv",
+      data,
+    });
+  }
+  return out;
 }
 
 async function collectExcelAttachments(email: ParsedMimeEmail | null): Promise<EzgoMailExcelAttachment[]> {
@@ -297,16 +376,24 @@ async function parseMimeSource(source: Uint8Array | string): Promise<ParsedMimeE
  */
 export async function extractBodiesFromSource(
   source: Uint8Array | string,
-): Promise<{ text: string; html: string; preview: string; excelAttachments: EzgoMailExcelAttachment[] }> {
+): Promise<{
+  text: string;
+  html: string;
+  preview: string;
+  excelAttachments: EzgoMailExcelAttachment[];
+  csvAttachments: EzgoMailCsvAttachment[];
+}> {
   let html = "";
   let text = "";
   let excelAttachments: EzgoMailExcelAttachment[] = [];
+  let csvAttachments: EzgoMailCsvAttachment[] = [];
 
   const email = await parseMimeSource(source);
   if (email) {
     html = email.html || "";
     text = email.text || "";
     excelAttachments = await collectExcelAttachments(email);
+    csvAttachments = await collectCsvAttachments(email);
 
     if (!/<table[\s>]/i.test(html)) {
       for (const att of email.attachments || []) {
@@ -335,6 +422,7 @@ export async function extractBodiesFromSource(
     html: html.slice(0, 500_000),
     preview,
     excelAttachments,
+    csvAttachments,
   };
 }
 
@@ -349,7 +437,7 @@ export async function parseEmlSourceToInboundMail(
   const fromEmail = extractEmailFromHeaderValue(email.from?.address || "");
   if (!fromEmail || !isSenderAllowed(fromEmail, allowlist)) return null;
 
-  const { text, html, preview, excelAttachments } = await extractBodiesFromSource(source);
+  const { text, html, preview, excelAttachments, csvAttachments } = await extractBodiesFromSource(source);
   const id = email.messageId?.replace(/^<|>$/g, "") || `eml-${Date.now()}`;
 
   return {
@@ -362,6 +450,7 @@ export async function parseEmlSourceToInboundMail(
     bodyText: text,
     bodyHtml: html,
     excelAttachments,
+    csvAttachments,
   };
 }
 
@@ -369,6 +458,9 @@ function buildGmailFromQuery(allowlist: string[], searchDays: number | null): st
   const parts = allowlist.map((s) => `from:${s}`);
   if (allowlist.some((s) => s.includes("@ezgo.co.il"))) {
     parts.push("from:ezgo.co.il");
+  }
+  if (allowlist.some((s) => s.includes("@dream-island.co.il"))) {
+    parts.push("from:dream-island.co.il");
   }
   const recency = searchDays ? `newer_than:${searchDays}d ` : "";
   return `in:anywhere ${recency}(${parts.join(" OR ")})`.replace(/\s+/g, " ").trim();
@@ -379,9 +471,14 @@ function gmailRecencyClause(searchDays: number | null): string {
 }
 
 /**
- * Dedicated report-type searches for EZGO's own domain — subject-based, so they still find
- * the daily Doc1/Doc2 report even when the generic "from:" queries above miss it in a busy
- * inbox (Gmail search relevance can drop older-looking mail from a >500-message window).
+ * Gmail-only best-effort attachment search — `has:attachment filename:X` has no native
+ * IMAP equivalent, so this stays on the X-GM-RAW extension. It is now a SUPPLEMENTARY
+ * tier only (see buildSenderSearchQueryPlan): the daily report is found primarily via
+ * the native from+subject/since search below, which doesn't depend on this extension.
+ * If the IMAP session doesn't report X-GM-EXT-1, `client.search` throws
+ * `MissingServerExtension` for every gmailRaw query at once — previously that was
+ * silently swallowed, which meant the ENTIRE search plan quietly produced zero results
+ * and the sync fell back to the slow raw envelope scan with no visible error anywhere.
  */
 export function buildEzgoReportSearchQueries(
   sender: string,
@@ -391,55 +488,140 @@ export function buildEzgoReportSearchQueries(
   const recency = gmailRecencyClause(searchDays);
   const base = `in:anywhere ${recency}from:ezgo.co.il`.replace(/\s+/g, " ").trim();
   return [
-    { kind: "report_subject_arrivals", gmailRaw: `${base} subject:כניסות` },
-    { kind: "report_subject_departures", gmailRaw: `${base} subject:ויציאות` },
-    { kind: "report_subject_operations", gmailRaw: `${base} subject:Operations` },
-    { kind: "report_xlsx_attachment", gmailRaw: `${base} has:attachment filename:xlsx` },
+    {
+      kind: "report_attachment_gmailraw",
+      gmailRaw: `${base} (has:attachment filename:xlsx OR has:attachment filename:csv)`,
+    },
   ];
 }
 
-async function searchUidsForSender(
+/** Same reasoning as buildEzgoReportSearchQueries — gmailRaw-only supplementary tier. */
+export function buildDreamIslandReportSearchQueries(
+  sender: string,
+  searchDays: number | null,
+): Array<{ kind: string; gmailRaw: string }> {
+  if (!sender.includes("@dream-island.co.il") && sender !== "dream-island.co.il") return [];
+  const recency = gmailRecencyClause(searchDays);
+  const base = `in:anywhere ${recency}from:dream-island.co.il`.replace(/\s+/g, " ").trim();
+  return [
+    { kind: "dream_island_attachment_gmailraw", gmailRaw: `${base} has:attachment` },
+  ];
+}
+
+/**
+ * Ordered search-query plan for one sender — priority order (the loop below stops once
+ * the per-sender cap fills). Native IMAP criteria (`from`/`subject`/`since`/`or`) come
+ * FIRST and are extension-independent: imapflow's search-compiler maps them straight to
+ * standard RFC 3501 SEARCH keys, unlike `gmailRaw` (X-GM-RAW) which requires the Gmail
+ * X-GM-EXT-1 capability and throws if it's unavailable. Gmail-only attachment/category
+ * queries (no native equivalent) come after, as best-effort extras — if the extension
+ * ever isn't available, the native queries have already done the real work of finding
+ * the report. Exported so the priority order and query shapes are unit-testable without
+ * a live IMAP connection.
+ */
+export function buildSenderSearchQueryPlan(
+  sender: string,
+  searchDays: number | null,
+): Array<{ kind: string; search: Record<string, unknown> }> {
+  const since = imapSinceDate(searchDays);
+  const recency = gmailRecencyClause(searchDays);
+  const queries: Array<{ kind: string; search: Record<string, unknown> }> = [];
+
+  if (sender.includes("@ezgo.co.il")) {
+    const subjectSearch: Record<string, unknown> = {
+      from: "ezgo.co.il",
+      or: [{ subject: "כניסות" }, { subject: "ויציאות" }, { subject: "Operations" }],
+    };
+    if (since) subjectSearch.since = since;
+    queries.push({ kind: "report_subject_native", search: subjectSearch });
+
+    const domainSearch: Record<string, unknown> = { from: "ezgo.co.il" };
+    if (since) domainSearch.since = since;
+    queries.push({ kind: "ezgo_domain_native", search: domainSearch });
+
+    for (const q of buildEzgoReportSearchQueries(sender, searchDays)) {
+      queries.push({ kind: q.kind, search: { gmailRaw: q.gmailRaw } });
+    }
+    queries.push(
+      {
+        kind: "ezgo_domain_updates",
+        search: { gmailRaw: `in:anywhere ${recency}category:updates from:ezgo.co.il`.replace(/\s+/g, " ").trim() },
+      },
+      {
+        kind: "ezgo_domain_promotions",
+        search: { gmailRaw: `in:anywhere ${recency}category:promotions from:ezgo.co.il`.replace(/\s+/g, " ").trim() },
+      },
+    );
+  }
+
+  if (sender.includes("@dream-island.co.il")) {
+    const domainSearch: Record<string, unknown> = { from: "dream-island.co.il" };
+    if (since) domainSearch.since = since;
+    queries.push({ kind: "dream_island_domain_native", search: domainSearch });
+
+    for (const q of buildDreamIslandReportSearchQueries(sender, searchDays)) {
+      queries.push({ kind: q.kind, search: { gmailRaw: q.gmailRaw } });
+    }
+  }
+
+  // No sender-specific native `{from: sender, since}` entry here — the unconditional
+  // SINCE supplement below already runs that exact search for every sender regardless
+  // of what happens in this loop, so adding it here too would just be a duplicate round trip.
+  queries.push(
+    {
+      kind: "category_updates",
+      search: { gmailRaw: `in:anywhere ${recency}category:updates from:${sender}`.replace(/\s+/g, " ").trim() },
+    },
+    { kind: "imap_from", search: { from: sender } },
+  );
+
+  return queries;
+}
+
+/**
+ * `searchUidsForSender` is exported (in addition to being called internally) so its
+ * cross-sender query cache is unit-testable with a fake IMAP client — see
+ * ezgoMailImap.test.ts for the case two dream-island.co.il senders share a query.
+ */
+export async function searchUidsForSender(
   client: ImapFlow,
   sender: string,
   perSender: number,
   searchDays: number | null,
   meta?: EzgoImapFetchMeta,
+  /** Shared across senders within one searchAllowlistedUids pass — same-domain senders (e.g. two @dream-island.co.il addresses) issue byte-identical domain-wide queries otherwise, doubling round trips for zero extra recall. */
+  queryCache?: Map<string, number[]>,
 ): Promise<number[]> {
   const caps = Math.max(perSender, 1);
-  const recency = gmailRecencyClause(searchDays);
-  const queries: Array<{ kind: string; search: Record<string, unknown> }> = [
-    { kind: "direct_from", search: { gmailRaw: `in:anywhere ${recency}from:${sender}`.replace(/\s+/g, " ").trim() } },
-    { kind: "category_updates", search: { gmailRaw: `in:anywhere ${recency}category:updates from:${sender}`.replace(/\s+/g, " ").trim() } },
-    { kind: "imap_from", search: { from: sender } },
-  ];
-  if (sender.includes("@ezgo.co.il")) {
-    queries.unshift(
-      { kind: "ezgo_domain", search: { gmailRaw: `in:anywhere ${recency}from:ezgo.co.il`.replace(/\s+/g, " ").trim() } },
-      { kind: "ezgo_domain_updates", search: { gmailRaw: `in:anywhere ${recency}category:updates from:ezgo.co.il`.replace(/\s+/g, " ").trim() } },
-      { kind: "ezgo_domain_promotions", search: { gmailRaw: `in:anywhere ${recency}category:promotions from:ezgo.co.il`.replace(/\s+/g, " ").trim() } },
-    );
-    for (const q of buildEzgoReportSearchQueries(sender, searchDays)) {
-      queries.push({ kind: q.kind, search: { gmailRaw: q.gmailRaw } });
-    }
-  }
+  const plan = buildSenderSearchQueryPlan(sender, searchDays);
 
   const uidSet = new Set<number>();
-  for (const { kind, search } of queries) {
+  for (const { kind, search } of plan) {
+    const cacheKey = JSON.stringify(search);
     try {
-      const found = await client.search(search, { uid: true });
-      const sorted = [...(found || [])].sort((a, b) => b - a);
+      let sorted: number[];
+      if (queryCache?.has(cacheKey)) {
+        sorted = queryCache.get(cacheKey)!;
+      } else {
+        const found = await client.search(search, { uid: true });
+        sorted = [...(found || [])].sort((a, b) => b - a);
+        queryCache?.set(cacheKey, sorted);
+      }
       if (sorted.length) meta?.reportQueriesUsed.push(kind);
       for (const uid of sorted.slice(0, caps)) uidSet.add(uid);
       if (uidSet.size >= caps) break;
-    } catch {
-      // try next query shape
+    } catch (e) {
+      // FAIL VISIBLE — a gmailRaw query throws MissingServerExtension when X-GM-EXT-1
+      // isn't available; recording it (instead of silently trying the next query shape)
+      // is what lets the sync toast explain a total miss instead of looking like nothing
+      // was wrong.
+      meta?.searchErrors.push(`${kind}: ${(e as Error).message}`);
     }
   }
 
-  // SINCE supplement — always runs (not gated behind the cap break above). Gmail's
-  // newer_than-based relevance search can miss mail that's a few days old once the
-  // inbox has 500+ non-EZGO messages in that window; a raw IMAP SINCE date search
-  // against this sender catches it.
+  // SINCE supplement — always runs (not gated behind the cap break above), and is
+  // itself a fully native `{since, from}` search with no gmailRaw dependency. Catches
+  // mail the cap-break above may have missed for this specific sender.
   const since = imapSinceDate(searchDays);
   if (since) {
     try {
@@ -447,8 +629,8 @@ async function searchUidsForSender(
       const sorted = [...(found || [])].sort((a, b) => b - a);
       if (sorted.length) meta?.reportQueriesUsed.push("since_supplement");
       for (const uid of sorted.slice(0, caps)) uidSet.add(uid);
-    } catch {
-      // ignore — supplement only
+    } catch (e) {
+      meta?.searchErrors.push(`since_supplement: ${(e as Error).message}`);
     }
   }
 
@@ -474,9 +656,10 @@ async function searchAllowlistedUids(
     Math.ceil(limit / Math.max(allowlist.length, 1)),
   );
   const uidSet = new Set<number>();
+  const queryCache = new Map<string, number[]>();
 
   for (const sender of allowlist) {
-    const uids = await searchUidsForSender(client, sender, perSender, searchDays, meta);
+    const uids = await searchUidsForSender(client, sender, perSender, searchDays, meta, queryCache);
     for (const uid of uids) uidSet.add(uid);
   }
 
@@ -499,8 +682,8 @@ async function searchAllowlistedUids(
         method: searchDays ? `gmailRaw_newer_than_${searchDays}d` : "gmailRaw",
       };
     }
-  } catch {
-    // fall through
+  } catch (e) {
+    meta?.searchErrors.push(`gmailraw_fallback: ${(e as Error).message}`);
   }
 
   return { uids: [], method: "sequence_scan" };
@@ -562,7 +745,7 @@ async function messageFromFetch(
   if (!sender) return null;
 
   const env = msg.envelope;
-  const { text, html, preview, excelAttachments } = await extractBodiesFromSource(
+  const { text, html, preview, excelAttachments, csvAttachments } = await extractBodiesFromSource(
     msg.source || new Uint8Array(),
   );
   const id = resolveMessageIdFromFetch(msg);
@@ -577,6 +760,7 @@ async function messageFromFetch(
     bodyText: text,
     bodyHtml: html,
     excelAttachments,
+    csvAttachments,
   };
 }
 
@@ -671,7 +855,7 @@ async function fetchRecentAllowlistedUidsAcrossMailboxes(
   scanCountCap: number,
 ): Promise<number[]> {
   const uidSet = new Set<number>();
-  for (const mailboxName of SUPPLEMENT_MAILBOXES) {
+  for (const mailboxName of resolveSupplementMailboxCandidates()) {
     try {
       await client.mailboxOpen(mailboxName);
       meta.mailboxName = mailboxName;
@@ -700,6 +884,13 @@ type EzgoFetchPassOpts = {
   supplementScanCap: number;
   /** Per-sender UID cap override — wider for manual scans / full_sync (EZGO_MAIL_PER_SENDER_MANUAL_CAP). */
   perSenderCap?: number;
+  /**
+   * Skip the envelope-scan supplement/fallback entirely — surgical mode. Native SEARCH
+   * (per-sender query plan) is extension-independent and already covers subject/domain/
+   * since; the linear mailbox scan below is a manual-only safety net for stray forwards,
+   * not something an unattended cron tick should pay for every 15 minutes.
+   */
+  skipSupplement?: boolean;
 };
 
 async function runEzgoFetchPass(
@@ -739,55 +930,63 @@ async function runEzgoFetchPass(
     }
   }
 
-  const supplementUids = await fetchRecentAllowlistedUidsAcrossMailboxes(
-    client,
-    allowlist,
-    pass.supplementLimit,
-    meta,
-    knownMessageIds,
-    pass.supplementScanCap,
-  );
-  const extraUids = supplementUids.filter((uid) => !uids.includes(uid));
-  if (extraUids.length) {
-    const supplementMsgs = await fetchMessagesByUidList(
-      client,
-      extraUids,
-      allowlist,
-      meta,
-      knownMessageIds,
-    );
-    for (const m of supplementMsgs) {
-      if (!seen.has(m.id)) {
-        messages.push(m);
-        seen.add(m.id);
-      }
-    }
-  }
-
-  if (messages.length === 0 && meta.downloadedSource === downloadedBefore) {
-    const fallbackUids = await fetchRecentAllowlistedUidsAcrossMailboxes(
+  // Envelope-scan supplement/fallback — a blunt linear mailbox scan kept only as a
+  // manual-trigger safety net for stray forwards the native SEARCH criteria might miss.
+  // Skipped on unattended cron ticks (pass.skipSupplement=true) so the automatic sync
+  // stays surgical: native per-sender SEARCH only, no full-mailbox envelope scan every
+  // 15 minutes regardless of whether anything new actually arrived.
+  let supplementUids: number[] = [];
+  if (!pass.skipSupplement) {
+    supplementUids = await fetchRecentAllowlistedUidsAcrossMailboxes(
       client,
       allowlist,
-      pass.fetchLimit,
+      pass.supplementLimit,
       meta,
       knownMessageIds,
-      Math.max(pass.supplementScanCap, 80),
+      pass.supplementScanCap,
     );
-    if (fallbackUids.length) {
-      const fallbackMsgs = await fetchMessagesByUidList(
+    const extraUids = supplementUids.filter((uid) => !uids.includes(uid));
+    if (extraUids.length) {
+      const supplementMsgs = await fetchMessagesByUidList(
         client,
-        fallbackUids,
+        extraUids,
         allowlist,
         meta,
         knownMessageIds,
       );
-      for (const m of fallbackMsgs) {
+      for (const m of supplementMsgs) {
         if (!seen.has(m.id)) {
           messages.push(m);
           seen.add(m.id);
         }
       }
-      return { messages, uids, method: `${method}+mailbox_fallback` };
+    }
+
+    if (messages.length === 0 && meta.downloadedSource === downloadedBefore) {
+      const fallbackUids = await fetchRecentAllowlistedUidsAcrossMailboxes(
+        client,
+        allowlist,
+        pass.fetchLimit,
+        meta,
+        knownMessageIds,
+        Math.max(pass.supplementScanCap, 80),
+      );
+      if (fallbackUids.length) {
+        const fallbackMsgs = await fetchMessagesByUidList(
+          client,
+          fallbackUids,
+          allowlist,
+          meta,
+          knownMessageIds,
+        );
+        for (const m of fallbackMsgs) {
+          if (!seen.has(m.id)) {
+            messages.push(m);
+            seen.add(m.id);
+          }
+        }
+        return { messages, uids, method: `${method}+mailbox_fallback` };
+      }
     }
   }
 
@@ -867,6 +1066,28 @@ export async function fetchEzgoMessageById(
   }
 }
 
+/**
+ * Escalation re-runs the search at a much wider window/cap plus a full mailbox
+ * envelope scan — it must stay a rare, manual-only safety net. It used to also fire
+ * whenever the plain SEARCH found any UID at all (`pass1.uids.length > 0`), which is
+ * true on almost every cron tick once a single report has ever been seen (old,
+ * already-known UIDs keep matching the domain/subject SEARCH even when nothing new
+ * arrived) — that turned a "should be rare" fallback into a 45-day rescan + wide
+ * mailbox scan on ~every 15-minute cron tick, forever. Exported so the condition is
+ * unit-testable without a live IMAP client.
+ */
+export function shouldEscalate(opts: {
+  manual: boolean;
+  fullSync: boolean;
+  messagesFound: number;
+  downloadedSource: number;
+}): boolean {
+  return opts.manual
+    && !opts.fullSync
+    && opts.messagesFound === 0
+    && opts.downloadedSource === 0;
+}
+
 export async function fetchEzgoInboxMessages(
   config: EzgoImapConfig,
   limit = 24,
@@ -877,7 +1098,7 @@ export async function fetchEzgoInboxMessages(
   const manual = options.manual === true;
   const knownMessageIds = options.knownMessageIds ?? new Set<string>();
   const fetchLimit = fullSync || manual ? Math.max(limit, 36) : limit;
-  const searchDays = fullSync ? null : resolveEzgoMailSearchDays();
+  const searchDays = fullSync ? EZGO_MAIL_FULL_SYNC_SEARCH_DAYS : resolveEzgoMailSearchDays();
 
   const client = new ImapFlow({
     host: config.host,
@@ -899,22 +1120,28 @@ export async function fetchEzgoInboxMessages(
       supplementLimit: manual ? 16 : 10,
       supplementScanCap: manual ? 120 : 60,
       perSenderCap: (manual || fullSync) ? EZGO_MAIL_PER_SENDER_MANUAL_CAP : undefined,
+      // Surgical by default — the linear mailbox envelope scan only runs for an
+      // explicit human-triggered manual/full_sync request, never on a silent cron tick.
+      skipSupplement: !(manual || fullSync),
     });
     messages = pass1.messages;
     meta.searchMethod = pass1.method;
     meta.searchUids = pass1.uids.length;
 
-    // Escalate when Gmail found old UIDs but missed new mail (common with newer_than + busy inbox).
-    const needsEscalation = messages.length === 0
-      && meta.downloadedSource === 0
-      && (manual || fullSync || pass1.uids.length > 0);
+    const needsEscalation = shouldEscalate({
+      manual,
+      fullSync,
+      messagesFound: messages.length,
+      downloadedSource: meta.downloadedSource,
+    });
     if (needsEscalation) {
       const pass2 = await runEzgoFetchPass(client, allowlist, knownMessageIds, meta, {
         fetchLimit: Math.max(fetchLimit, 48),
-        searchDays: null,
+        searchDays: EZGO_MAIL_FULL_SYNC_SEARCH_DAYS,
         supplementLimit: 20,
         supplementScanCap: 180,
         perSenderCap: EZGO_MAIL_PER_SENDER_MANUAL_CAP,
+        skipSupplement: false,
       });
       meta.searchUids = Math.max(meta.searchUids, pass2.uids.length);
       const seen = new Set(messages.map((m) => m.id));
@@ -925,7 +1152,7 @@ export async function fetchEzgoInboxMessages(
         }
       }
       if (pass2.messages.length > 0 || pass2.uids.length > pass1.uids.length) {
-        meta.searchMethod = `${pass1.method}+escalated_unbounded`;
+        meta.searchMethod = `${pass1.method}+escalated_${EZGO_MAIL_FULL_SYNC_SEARCH_DAYS}d`;
       }
     }
   } finally {
@@ -937,8 +1164,9 @@ export async function fetchEzgoInboxMessages(
   );
 
   meta.reportQueriesUsed = [...new Set(meta.reportQueriesUsed)];
+  meta.searchErrors = [...new Set(meta.searchErrors)].slice(0, 8);
   for (const m of messages) {
-    meta.foundByReportType[classifySubjectReportType(m.subject)] += 1;
+    meta.foundByReportType[classifySubjectReportType(m.subject, (m.csvAttachments?.length ?? 0) > 0)] += 1;
   }
 
   return { messages, meta };
