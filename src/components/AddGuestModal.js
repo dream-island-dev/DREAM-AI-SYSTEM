@@ -29,7 +29,7 @@ import {
   resolveSuiteRoomDisplayLabel,
   syncGuestSuiteRoomsFromSelection,
 } from "../utils/suiteRoomReady";
-import { ensureMissingDepartureAlert, isMissingSuiteDepartureDate } from "../utils/departureDateGuard";
+import { ensureMissingDepartureAlert } from "../utils/departureDateGuard";
 import { normalizeGuestPhoneEdit } from "../utils/ezgoParser";
 import { preflightGuestPhoneChange, updateGuestPhoneCascade } from "../utils/updateGuestPhoneCascade";
 

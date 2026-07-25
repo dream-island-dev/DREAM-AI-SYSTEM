@@ -38,7 +38,6 @@ export const AUTO_CHECKOUT_LOCAL_HOUR = 11;
 export const LATE_CHECKOUT_EXTENSION_UNTIL = "12:00";
 export const AUTO_CHECKOUT_DAYPASS_LOCAL_HOUR = 19;
 const AUTO_CHECKIN_ELIGIBLE = new Set(["pending", "expected", "room_ready"]);
-const AUTO_CHECKOUT_ELIGIBLE = new Set(["checked_in", "room_ready", "expected", "pending"]);
 
 export function israelLocalHour(now = new Date()) {
   return Number(
@@ -220,8 +219,6 @@ export function formatCheckinArrivalDisplay(guest) {
     eta: (guest?.arrival_time ?? "").trim() || null,
   };
 }
-
-const PRE_ARRIVAL_STATUSES = new Set(["pending", "expected", "room_ready"]);
 
 export { isPreArrivalTodayGuest };
 

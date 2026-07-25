@@ -3,7 +3,6 @@
 import {
   composeAskMessage,
   composeConfirmMessage,
-  composeCustomMessage,
 } from "./restaurantDinnerMessagesConfig";
 
 export {

@@ -144,7 +144,7 @@ export function getGuestArrivalRosterLabel(guest, lang = "he") {
   }
 
   const today = israelTodayStr();
-  const { arrival_date: arrival, departure_date: departure, status } = guest;
+  const { arrival_date: arrival } = guest;
 
   // Departed must win over checked_in / inStay — stale status must not show «בריזורט».
   if (isGuestDeparted(guest)) {

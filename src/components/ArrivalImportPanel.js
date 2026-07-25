@@ -29,7 +29,7 @@ import {
   normalizeGuestPhoneEdit,
 } from "../utils/ezgoParser";
 import { mergeCandidates, classifyDbMatch, buildExistingGuestsLookup, findExistingGuestRow, findGuestForDoc1Enrichment, buildDoc1EnrichmentPatch, buildMultiRoomLineIndexMap, formatMultiRoomLineLabel, bookingGuestKey, getDbMatchDiffLabels, buildEnrichGuestPatch, resolveCandidateRoomDisplay, buildCombinedRoomLabel, buildDoc2SyncActionLabel } from "../utils/guestImportIntelligence";
-import { SUITE_ARRIVALS_SCHEMA, buildMaskedSample, detectSuiteArrivalsPreset, detectEzgoArrivalsPreset, applyFieldDefaultsToProfiles, parseMappingMemory, packMappingMemory, normalizeImportRows, normalizeImportHeaderKey, isMappingUsable, resolveImportMapping, matrixRowsFromHeaderScan, diagnoseEzgoPresetMiss, canonicalizeEzgoSuiteRows, EZGO_CORE_HEADERS } from "../utils/importMapper";
+import { SUITE_ARRIVALS_SCHEMA, buildMaskedSample, detectSuiteArrivalsPreset, detectEzgoArrivalsPreset, applyFieldDefaultsToProfiles, parseMappingMemory, packMappingMemory, normalizeImportHeaderKey, isMappingUsable, resolveImportMapping, matrixRowsFromHeaderScan, diagnoseEzgoPresetMiss, canonicalizeEzgoSuiteRows, EZGO_CORE_HEADERS } from "../utils/importMapper";
 import {
   isDetailedReservationFormat,
   parseDetailedReservationRows,
@@ -42,7 +42,7 @@ import {
 } from "../utils/detailedReservationParser";
 import PriceDiscrepancyModal from "./PriceDiscrepancyModal";
 import { isSuiteGuestProfile } from "../utils/guestTiming";
-import { validateSuiteProfilesDeparture, ensureMissingDepartureAlert } from "../utils/departureDateGuard";
+import { validateSuiteProfilesDeparture } from "../utils/departureDateGuard";
 import { resolveEzgoHtmlFromUpload, looksLikeEml } from "../utils/ezgoEmailHtml";
 import { isSpaUpsellEligible } from "../utils/spaUpsellAudience";
 

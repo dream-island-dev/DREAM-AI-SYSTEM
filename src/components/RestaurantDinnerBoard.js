@@ -267,9 +267,15 @@ function GuestDinnerRow({
     setMealLocation(guest.meal_location ?? "מסעדת ערמונים");
   }, [guest.id, guest.lunch_time, guest.dinner_time, guest.meal_time, guest.meal_location]);
 
+  // cfg (and defaultAskSlots) is a fresh array/object every render — depending on
+  // defaultAskSlots directly would re-run this on every render and stomp the
+  // manager's slot selection while just typing. The joined string is a stable
+  // proxy for "the slot contents actually changed".
+  const defaultAskSlotsKey = defaultAskSlots.join(",");
   useEffect(() => {
     setOfferSlotsSelected([...defaultAskSlots]);
-  }, [guest.id, defaultAskSlots.join(",")]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [guest.id, defaultAskSlotsKey]);
 
   const regenAsk = useCallback(() => {
     return composeAskMessage(cfg, {
@@ -303,10 +309,15 @@ function GuestDinnerRow({
     if (!customDirty) setCustomText(regenCustom());
   }, [customDirty, regenCustom]);
 
+  // Intentionally keyed on msgConfig alone — resync non-dirty fields when the
+  // shared template config changes externally. askDirty/confirmDirty/customDirty
+  // and regenAsk/regenConfirm/regenCustom already have their own effects above;
+  // listing them here too would re-fire this effect on every dirty-flag toggle.
   useEffect(() => {
     if (!askDirty) setAskText(regenAsk());
     if (!confirmDirty) setConfirmText(regenConfirm());
     if (!customDirty) setCustomText(regenCustom());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [msgConfig]);
 
   useEffect(() => {

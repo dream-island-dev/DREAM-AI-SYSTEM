@@ -3,7 +3,6 @@
 import { useState } from "react";
 import {
   DEFAULT_GUEST_SURVEY_UI,
-  SURVEY_SCORE_MAX,
   SURVEY_SCORE_OPTIONS,
   normalizeGuestSurveyUi,
 } from "../utils/guestSurveyUi";
