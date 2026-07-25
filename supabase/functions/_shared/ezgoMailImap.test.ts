@@ -13,6 +13,8 @@ import {
   isSenderAllowed,
   normalizeMessageId,
   parseAllowlist,
+  gmailDateRangeClause,
+  parseSearchDateYmd,
   resolveEzgoMailGmailLabel,
   resolveEzgoMailSearchDays,
   resolveSupplementMailboxCandidates,
@@ -468,6 +470,55 @@ Deno.test("shouldEscalate does not fire once anything was actually downloaded", 
     downloadedSource: 3,
   });
   if (fires) throw new Error("expected no escalation once new messages were already downloaded");
+});
+
+Deno.test("shouldEscalate does not fire on day-scoped manual scan", () => {
+  const fires = shouldEscalate({
+    manual: true,
+    fullSync: false,
+    messagesFound: 0,
+    downloadedSource: 0,
+    searchDateYmd: "2026-07-25",
+  });
+  if (fires) throw new Error("day-scoped scan must not escalate — user picked the window");
+});
+
+Deno.test("shouldEscalate does not fire when search found only already-known UIDs", () => {
+  const fires = shouldEscalate({
+    manual: true,
+    fullSync: false,
+    messagesFound: 0,
+    downloadedSource: 0,
+    skippedKnown: 5,
+    searchUids: 5,
+  });
+  if (fires) throw new Error("known-only hit should not trigger heavy 45d escalation");
+});
+
+Deno.test("parseSearchDateYmd returns since/before for one calendar day", () => {
+  const range = parseSearchDateYmd("2026-07-25");
+  if (!range) throw new Error("expected valid range");
+  if (range.since.toISOString() !== "2026-07-25T00:00:00.000Z") {
+    throw new Error(`unexpected since: ${range.since.toISOString()}`);
+  }
+  if (range.before.toISOString() !== "2026-07-26T00:00:00.000Z") {
+    throw new Error(`unexpected before: ${range.before.toISOString()}`);
+  }
+});
+
+Deno.test("gmailDateRangeClause emits after/before for Gmail raw search", () => {
+  const clause = gmailDateRangeClause("2026-07-25");
+  if (!clause.includes("after:2026/7/25") || !clause.includes("before:2026/7/26")) {
+    throw new Error(`unexpected gmail date clause: ${clause}`);
+  }
+});
+
+Deno.test("buildSenderSearchQueryPlan applies since/before on native queries for a day", () => {
+  const plan = buildSenderSearchQueryPlan(EZGO_NOREPLY, null, "2026-07-25");
+  const subject = plan.find((q) => q.kind === "report_subject_native");
+  if (!subject?.search.since || !subject?.search.before) {
+    throw new Error("expected native subject query to include since+before for day scope");
+  }
 });
 
 Deno.test("extractBodiesFromSource picks nested forward HTML with EZGO table (quoted-printable)", async () => {

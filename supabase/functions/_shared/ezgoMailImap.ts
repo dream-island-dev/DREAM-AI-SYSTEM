@@ -56,6 +56,8 @@ export type EzgoImapFetchMeta = {
   searchErrors: string[];
   /** Downloaded messages classified by subject — doc1/doc2/other. */
   foundByReportType: { doc1: number; doc2: number; other: number };
+  /** Day-scoped search filter (YYYY-MM-DD) when set. */
+  searchDateYmd: string | null;
 };
 
 export type EzgoImapFetchOptions = {
@@ -65,6 +67,8 @@ export type EzgoImapFetchOptions = {
   fullSync?: boolean;
   /** Manual UI scan — wider supplement + auto-escalate when nothing new downloads. */
   manual?: boolean;
+  /** YYYY-MM-DD (Israel calendar) — narrow IMAP/Gmail search to one day only. */
+  searchDateYmd?: string | null;
 };
 
 export type EzgoImapFetchResult = {
@@ -108,6 +112,7 @@ function emptyFetchMeta(imapUser: string): EzgoImapFetchMeta {
     reportQueriesUsed: [],
     searchErrors: [],
     foundByReportType: { doc1: 0, doc2: 0, other: 0 },
+    searchDateYmd: null,
   };
 }
 
@@ -223,6 +228,60 @@ function imapSinceDate(searchDays: number | null): Date | null {
   since.setDate(since.getDate() - searchDays);
   since.setHours(0, 0, 0, 0);
   return since;
+}
+
+/** Single-calendar-day IMAP bounds (SINCE inclusive, BEFORE exclusive). */
+export function parseSearchDateYmd(ymd: string): { since: Date; before: Date } | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(ymd || "").trim());
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  if (!y || mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  const since = new Date(Date.UTC(y, mo - 1, d, 0, 0, 0));
+  const before = new Date(Date.UTC(y, mo - 1, d + 1, 0, 0, 0));
+  return { since, before };
+}
+
+/** Gmail after:/before: clause for one calendar day (used in gmailRaw supplementary tier). */
+export function gmailDateRangeClause(searchDateYmd: string | null | undefined): string {
+  const range = searchDateYmd ? parseSearchDateYmd(searchDateYmd) : null;
+  if (!range) return "";
+  const since = range.since;
+  const before = range.before;
+  const y = since.getUTCFullYear();
+  const mo = since.getUTCMonth() + 1;
+  const d = since.getUTCDate();
+  const ny = before.getUTCFullYear();
+  const nmo = before.getUTCMonth() + 1;
+  const nd = before.getUTCDate();
+  return `after:${y}/${mo}/${d} before:${ny}/${nmo}/${nd} `;
+}
+
+function applyImapDateBounds(
+  search: Record<string, unknown>,
+  searchDays: number | null,
+  searchDateYmd: string | null | undefined,
+): void {
+  if (searchDateYmd) {
+    const range = parseSearchDateYmd(searchDateYmd);
+    if (range) {
+      search.since = range.since;
+      search.before = range.before;
+    }
+    return;
+  }
+  const since = imapSinceDate(searchDays);
+  if (since) search.since = since;
+}
+
+function gmailRecencyOrDateClause(
+  searchDays: number | null,
+  searchDateYmd: string | null | undefined,
+): string {
+  const dateClause = gmailDateRangeClause(searchDateYmd);
+  if (dateClause) return dateClause;
+  return gmailRecencyClause(searchDays);
 }
 
 /** Optional Gmail label to search first (e.g. a filter that auto-labels EZGO mail "EZGO") — much faster than scanning All Mail. */
@@ -454,7 +513,11 @@ export async function parseEmlSourceToInboundMail(
   };
 }
 
-function buildGmailFromQuery(allowlist: string[], searchDays: number | null): string {
+function buildGmailFromQuery(
+  allowlist: string[],
+  searchDays: number | null,
+  searchDateYmd: string | null = null,
+): string {
   const parts = allowlist.map((s) => `from:${s}`);
   if (allowlist.some((s) => s.includes("@ezgo.co.il"))) {
     parts.push("from:ezgo.co.il");
@@ -462,7 +525,7 @@ function buildGmailFromQuery(allowlist: string[], searchDays: number | null): st
   if (allowlist.some((s) => s.includes("@dream-island.co.il"))) {
     parts.push("from:dream-island.co.il");
   }
-  const recency = searchDays ? `newer_than:${searchDays}d ` : "";
+  const recency = gmailRecencyOrDateClause(searchDays, searchDateYmd);
   return `in:anywhere ${recency}(${parts.join(" OR ")})`.replace(/\s+/g, " ").trim();
 }
 
@@ -483,9 +546,10 @@ function gmailRecencyClause(searchDays: number | null): string {
 export function buildEzgoReportSearchQueries(
   sender: string,
   searchDays: number | null,
+  searchDateYmd: string | null = null,
 ): Array<{ kind: string; gmailRaw: string }> {
   if (!sender.includes("@ezgo.co.il") && sender !== "ezgo.co.il") return [];
-  const recency = gmailRecencyClause(searchDays);
+  const recency = gmailRecencyOrDateClause(searchDays, searchDateYmd);
   const base = `in:anywhere ${recency}from:ezgo.co.il`.replace(/\s+/g, " ").trim();
   return [
     {
@@ -499,9 +563,10 @@ export function buildEzgoReportSearchQueries(
 export function buildDreamIslandReportSearchQueries(
   sender: string,
   searchDays: number | null,
+  searchDateYmd: string | null = null,
 ): Array<{ kind: string; gmailRaw: string }> {
   if (!sender.includes("@dream-island.co.il") && sender !== "dream-island.co.il") return [];
-  const recency = gmailRecencyClause(searchDays);
+  const recency = gmailRecencyOrDateClause(searchDays, searchDateYmd);
   const base = `in:anywhere ${recency}from:dream-island.co.il`.replace(/\s+/g, " ").trim();
   return [
     { kind: "dream_island_attachment_gmailraw", gmailRaw: `${base} has:attachment` },
@@ -522,9 +587,9 @@ export function buildDreamIslandReportSearchQueries(
 export function buildSenderSearchQueryPlan(
   sender: string,
   searchDays: number | null,
+  searchDateYmd: string | null = null,
 ): Array<{ kind: string; search: Record<string, unknown> }> {
-  const since = imapSinceDate(searchDays);
-  const recency = gmailRecencyClause(searchDays);
+  const recency = gmailRecencyOrDateClause(searchDays, searchDateYmd);
   const queries: Array<{ kind: string; search: Record<string, unknown> }> = [];
 
   if (sender.includes("@ezgo.co.il")) {
@@ -532,14 +597,14 @@ export function buildSenderSearchQueryPlan(
       from: "ezgo.co.il",
       or: [{ subject: "כניסות" }, { subject: "ויציאות" }, { subject: "Operations" }],
     };
-    if (since) subjectSearch.since = since;
+    applyImapDateBounds(subjectSearch, searchDays, searchDateYmd);
     queries.push({ kind: "report_subject_native", search: subjectSearch });
 
     const domainSearch: Record<string, unknown> = { from: "ezgo.co.il" };
-    if (since) domainSearch.since = since;
+    applyImapDateBounds(domainSearch, searchDays, searchDateYmd);
     queries.push({ kind: "ezgo_domain_native", search: domainSearch });
 
-    for (const q of buildEzgoReportSearchQueries(sender, searchDays)) {
+    for (const q of buildEzgoReportSearchQueries(sender, searchDays, searchDateYmd)) {
       queries.push({ kind: q.kind, search: { gmailRaw: q.gmailRaw } });
     }
     queries.push(
@@ -556,10 +621,10 @@ export function buildSenderSearchQueryPlan(
 
   if (sender.includes("@dream-island.co.il")) {
     const domainSearch: Record<string, unknown> = { from: "dream-island.co.il" };
-    if (since) domainSearch.since = since;
+    applyImapDateBounds(domainSearch, searchDays, searchDateYmd);
     queries.push({ kind: "dream_island_domain_native", search: domainSearch });
 
-    for (const q of buildDreamIslandReportSearchQueries(sender, searchDays)) {
+    for (const q of buildDreamIslandReportSearchQueries(sender, searchDays, searchDateYmd)) {
       queries.push({ kind: q.kind, search: { gmailRaw: q.gmailRaw } });
     }
   }
@@ -591,9 +656,10 @@ export async function searchUidsForSender(
   meta?: EzgoImapFetchMeta,
   /** Shared across senders within one searchAllowlistedUids pass — same-domain senders (e.g. two @dream-island.co.il addresses) issue byte-identical domain-wide queries otherwise, doubling round trips for zero extra recall. */
   queryCache?: Map<string, number[]>,
+  searchDateYmd: string | null = null,
 ): Promise<number[]> {
   const caps = Math.max(perSender, 1);
-  const plan = buildSenderSearchQueryPlan(sender, searchDays);
+  const plan = buildSenderSearchQueryPlan(sender, searchDays, searchDateYmd);
 
   const uidSet = new Set<number>();
   for (const { kind, search } of plan) {
@@ -619,18 +685,24 @@ export async function searchUidsForSender(
     }
   }
 
-  // SINCE supplement — always runs (not gated behind the cap break above), and is
-  // itself a fully native `{since, from}` search with no gmailRaw dependency. Catches
-  // mail the cap-break above may have missed for this specific sender.
-  const since = imapSinceDate(searchDays);
-  if (since) {
+  // SINCE/BEFORE supplement — always runs (not gated behind the cap break above).
+  const dateRange = searchDateYmd ? parseSearchDateYmd(searchDateYmd) : null;
+  const sinceOnly = !dateRange ? imapSinceDate(searchDays) : null;
+  if (dateRange || sinceOnly) {
     try {
-      const found = await client.search({ since, from: sender }, { uid: true });
+      const sinceSearch: Record<string, unknown> = { from: sender };
+      if (dateRange) {
+        sinceSearch.since = dateRange.since;
+        sinceSearch.before = dateRange.before;
+      } else if (sinceOnly) {
+        sinceSearch.since = sinceOnly;
+      }
+      const found = await client.search(sinceSearch, { uid: true });
       const sorted = [...(found || [])].sort((a, b) => b - a);
-      if (sorted.length) meta?.reportQueriesUsed.push("since_supplement");
+      if (sorted.length) meta?.reportQueriesUsed.push(dateRange ? "date_supplement" : "since_supplement");
       for (const uid of sorted.slice(0, caps)) uidSet.add(uid);
     } catch (e) {
-      meta?.searchErrors.push(`since_supplement: ${(e as Error).message}`);
+      meta?.searchErrors.push(`${dateRange ? "date_supplement" : "since_supplement"}: ${(e as Error).message}`);
     }
   }
 
@@ -650,6 +722,7 @@ async function searchAllowlistedUids(
   searchDays: number | null,
   meta?: EzgoImapFetchMeta,
   perSenderCapOverride?: number,
+  searchDateYmd: string | null = null,
 ): Promise<{ uids: number[]; method: string }> {
   const perSender = perSenderCapOverride ?? Math.max(
     EZGO_MAIL_PER_SENDER_MIN,
@@ -659,21 +732,25 @@ async function searchAllowlistedUids(
   const queryCache = new Map<string, number[]>();
 
   for (const sender of allowlist) {
-    const uids = await searchUidsForSender(client, sender, perSender, searchDays, meta, queryCache);
+    const uids = await searchUidsForSender(
+      client, sender, perSender, searchDays, meta, queryCache, searchDateYmd,
+    );
     for (const uid of uids) uidSet.add(uid);
   }
 
   if (uidSet.size > 0) {
-    const method = searchDays
-      ? `per_sender_newer_than_${searchDays}d`
-      : "per_sender_anywhere";
+    const method = searchDateYmd
+      ? `per_sender_date_${searchDateYmd}`
+      : searchDays
+        ? `per_sender_newer_than_${searchDays}d`
+        : "per_sender_anywhere";
     return {
       uids: [...uidSet].sort((a, b) => b - a),
       method,
     };
   }
 
-  const gmailQuery = buildGmailFromQuery(allowlist, searchDays);
+  const gmailQuery = buildGmailFromQuery(allowlist, searchDays, searchDateYmd);
   try {
     const found = await client.search({ gmailRaw: gmailQuery }, { uid: true });
     if (found?.length) {
@@ -880,6 +957,7 @@ async function fetchRecentAllowlistedUidsAcrossMailboxes(
 type EzgoFetchPassOpts = {
   fetchLimit: number;
   searchDays: number | null;
+  searchDateYmd: string | null;
   supplementLimit: number;
   supplementScanCap: number;
   /** Per-sender UID cap override — wider for manual scans / full_sync (EZGO_MAIL_PER_SENDER_MANUAL_CAP). */
@@ -911,6 +989,7 @@ async function runEzgoFetchPass(
     pass.searchDays,
     meta,
     pass.perSenderCap,
+    pass.searchDateYmd,
   );
 
   const messages: EzgoInboundMail[] = [];
@@ -1081,7 +1160,12 @@ export function shouldEscalate(opts: {
   fullSync: boolean;
   messagesFound: number;
   downloadedSource: number;
+  searchDateYmd?: string | null;
+  skippedKnown?: number;
+  searchUids?: number;
 }): boolean {
+  if (opts.searchDateYmd) return false;
+  if ((opts.skippedKnown ?? 0) > 0 && (opts.searchUids ?? 0) > 0) return false;
   return opts.manual
     && !opts.fullSync
     && opts.messagesFound === 0
@@ -1097,8 +1181,12 @@ export async function fetchEzgoInboxMessages(
   const fullSync = options.fullSync === true;
   const manual = options.manual === true;
   const knownMessageIds = options.knownMessageIds ?? new Set<string>();
-  const fetchLimit = fullSync || manual ? Math.max(limit, 36) : limit;
-  const searchDays = fullSync ? EZGO_MAIL_FULL_SYNC_SEARCH_DAYS : resolveEzgoMailSearchDays();
+  const searchDateYmd = options.searchDateYmd?.trim() || null;
+  const dayScoped = !!(searchDateYmd && parseSearchDateYmd(searchDateYmd));
+  const fetchLimit = dayScoped ? 16 : (fullSync || manual ? Math.max(limit, 36) : limit);
+  const searchDays = fullSync
+    ? EZGO_MAIL_FULL_SYNC_SEARCH_DAYS
+    : (dayScoped ? null : resolveEzgoMailSearchDays());
 
   const client = new ImapFlow({
     host: config.host,
@@ -1110,6 +1198,7 @@ export async function fetchEzgoInboxMessages(
   });
 
   const meta = emptyFetchMeta(config.user);
+  meta.searchDateYmd = dayScoped ? searchDateYmd : null;
   let messages: EzgoInboundMail[] = [];
 
   await client.connect();
@@ -1117,12 +1206,13 @@ export async function fetchEzgoInboxMessages(
     const pass1 = await runEzgoFetchPass(client, allowlist, knownMessageIds, meta, {
       fetchLimit,
       searchDays,
-      supplementLimit: manual ? 16 : 10,
-      supplementScanCap: manual ? 120 : 60,
-      perSenderCap: (manual || fullSync) ? EZGO_MAIL_PER_SENDER_MANUAL_CAP : undefined,
-      // Surgical by default — the linear mailbox envelope scan only runs for an
-      // explicit human-triggered manual/full_sync request, never on a silent cron tick.
-      skipSupplement: !(manual || fullSync),
+      searchDateYmd: dayScoped ? searchDateYmd : null,
+      supplementLimit: dayScoped ? 8 : (manual ? 16 : 10),
+      supplementScanCap: dayScoped ? 32 : (manual ? 120 : 60),
+      perSenderCap: dayScoped
+        ? 12
+        : ((manual || fullSync) ? EZGO_MAIL_PER_SENDER_MANUAL_CAP : undefined),
+      skipSupplement: dayScoped || !(manual || fullSync),
     });
     messages = pass1.messages;
     meta.searchMethod = pass1.method;
@@ -1133,11 +1223,15 @@ export async function fetchEzgoInboxMessages(
       fullSync,
       messagesFound: messages.length,
       downloadedSource: meta.downloadedSource,
+      searchDateYmd: dayScoped ? searchDateYmd : null,
+      skippedKnown: meta.skippedKnown,
+      searchUids: pass1.uids.length,
     });
     if (needsEscalation) {
       const pass2 = await runEzgoFetchPass(client, allowlist, knownMessageIds, meta, {
         fetchLimit: Math.max(fetchLimit, 48),
         searchDays: EZGO_MAIL_FULL_SYNC_SEARCH_DAYS,
+        searchDateYmd: null,
         supplementLimit: 20,
         supplementScanCap: 180,
         perSenderCap: EZGO_MAIL_PER_SENDER_MANUAL_CAP,

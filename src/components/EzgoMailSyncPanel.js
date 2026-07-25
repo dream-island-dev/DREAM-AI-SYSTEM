@@ -4,7 +4,7 @@ import { supabase } from "../supabaseClient";
 import SpaUpsellConfirmModal from "./SpaUpsellConfirmModal";
 import { buildDoc1EnrichmentPatch } from "../utils/guestImportIntelligence";
 import { spaSlotsWarningLabel } from "../utils/doc1SpaSlots";
-import { israelTodayYmd, israelTomorrowYmd } from "../utils/israelTime";
+import { israelTodayYmd, israelTomorrowYmd, israelAddDaysYmd } from "../utils/israelTime";
 import {
   WORKFLOW_META,
   createDaypassGuestFromRec,
@@ -237,6 +237,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
   const [lines, setLines] = useState([]);
   const [busy, setBusy] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [scanDate, setScanDate] = useState(israelTodayYmd);
   const [upsellModal, setUpsellModal] = useState(null);
   const [scriptText, setScriptText] = useState("");
   const [metaTemplateStatus, setMetaTemplateStatus] = useState(null);
@@ -335,7 +336,8 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
   const pendingCount = lines.filter((l) => l.status === "pending_review").length;
   const wf = (line) => lineWorkflow(line, reportDate, isDoc2Ingest);
 
-  const buildSyncToast = (data, { fullSync = false } = {}) => {
+  const buildSyncToast = (data, { fullSync = false, searchDate } = {}) => {
+    const datePrefix = searchDate && !fullSync ? `יום ${searchDate} · ` : "";
     const imap = data?.imap;
     const bySender = data?.by_sender || {};
     const senderBits = Object.entries(bySender)
@@ -373,7 +375,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
       return { msg: "סנכרון מייל כבוי (EZGO_MAIL_SYNC_ENABLED)", tone: "err" };
     }
     if (processed > 0) {
-      const prefix = fullSync ? "סריקה מלאה · " : "";
+      const prefix = fullSync ? "סריקה מלאה · " : datePrefix;
       return {
         msg: `${prefix}חדשים ${processed} · נבדקו ${scanned}${imapBits ? ` · ${imapBits}` : ""}${senderBits ? ` · ${senderBits}` : ""}${accountHint}${errorSuffix}`,
         tone: toneWithErrors("ok"),
@@ -381,35 +383,39 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
     }
     if (skippedKnown > 0) {
       return {
-        msg: `הכל מסונכרן · ${skippedKnown} מיילים כבר ב-DB · אין חדשים${imapBits ? ` · ${imapBits}` : ""}${accountHint}${errorSuffix}`,
+        msg: `${datePrefix}הכל מסונכרן · ${skippedKnown} מיילים כבר ב-DB · אין חדשים${imapBits ? ` · ${imapBits}` : ""}${accountHint}${errorSuffix}`,
         tone: toneWithErrors("ok"),
       };
     }
     if (searchUids === 0 && skippedKnown === 0) {
       return {
-        msg: `לא נמצאו מיילי EZGO${accountHint}${imapBits ? ` · ${imapBits}` : ""}${errorSuffix || " — ודא שהמייל באותה תיבת Gmail"}`,
+        msg: `${datePrefix}לא נמצאו מיילי EZGO${accountHint}${imapBits ? ` · ${imapBits}` : ""}${errorSuffix || " — ודא שהמייל באותה תיבת Gmail"}`,
         tone: "err",
       };
     }
-    const prefix = fullSync ? "סריקה מלאה · " : "";
+    const prefix = fullSync ? "סריקה מלאה · " : datePrefix;
     return {
       msg: `${prefix}אין מיילים חדשים · נבדקו ${scanned}${imapBits ? ` · ${imapBits}` : ""}${accountHint}${errorSuffix}`,
       tone: toneWithErrors("ok"),
     };
   };
 
-  const triggerSync = async ({ fullSync = false } = {}) => {
+  const triggerSync = async ({ fullSync = false, searchDate = scanDate } = {}) => {
     if (fullSync && !window.confirm(
       "סריקה מלאה — ללא dedup, חלון זמן רחב יותר. עלול לקחת דקה. להמשיך?",
     )) return;
     setSyncing(true);
     try {
       const { data, error } = await supabase.functions.invoke("ezgo-mail-sync", {
-        body: { manual: true, full_sync: fullSync },
+        body: {
+          manual: true,
+          full_sync: fullSync,
+          ...(fullSync ? {} : { search_date_ymd: searchDate }),
+        },
       });
       if (error) throw error;
       if (!data?.ok && !data?.skipped) throw new Error(data?.error || "סנכרון נכשל");
-      const { msg, tone } = buildSyncToast(data, { fullSync });
+      const { msg, tone } = buildSyncToast(data, { fullSync, searchDate: fullSync ? null : searchDate });
       showToast?.(msg, tone);
       await loadIngests();
     } catch (e) {
@@ -879,7 +885,46 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
         <div style={{ fontSize: 17, fontWeight: 800, color: "var(--gold-light)" }}>
           📧 סנכרון ממייל EZGO
         </div>
-        <div style={{ marginRight: "auto", display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <div style={{ marginRight: "auto", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#bbb" }}>
+            <span>יום:</span>
+            <input
+              type="date"
+              value={scanDate}
+              onChange={(e) => setScanDate(e.target.value || israelTodayYmd())}
+              disabled={syncing}
+              style={{
+                padding: "6px 8px", borderRadius: 6,
+                border: "1px solid rgba(201,169,110,0.35)",
+                background: "rgba(0,0,0,0.25)", color: "#eee", fontSize: 12,
+              }}
+            />
+          </label>
+          <button
+            type="button"
+            onClick={() => setScanDate(israelTodayYmd())}
+            disabled={syncing}
+            style={{
+              padding: "6px 10px", borderRadius: 6,
+              border: "1px solid rgba(201,169,110,0.35)",
+              background: scanDate === israelTodayYmd() ? "rgba(201,169,110,0.2)" : "transparent",
+              color: "var(--gold-light)", fontSize: 11, cursor: syncing ? "wait" : "pointer",
+            }}
+          >
+            היום
+          </button>
+          <button
+            type="button"
+            onClick={() => setScanDate(israelAddDaysYmd(-1))}
+            disabled={syncing}
+            style={{
+              padding: "6px 10px", borderRadius: 6,
+              border: "1px solid rgba(201,169,110,0.35)",
+              background: "transparent", color: "#ccc", fontSize: 11, cursor: syncing ? "wait" : "pointer",
+            }}
+          >
+            אתמול
+          </button>
           <button
             type="button"
             onClick={() => triggerSync()}
@@ -945,7 +990,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
         border: "1px solid rgba(201,169,110,0.2)",
       }}>
         noreply@ezgo.co.il · דוח כניסות (Doc2) · דוח תפעול (Doc1) → סריקה אוטומטית + אישור ידני.
-        {" "}סנכרון מהיר: 7 ימים אחרונים, מוריד גוף מלא רק למיילים חדשים · «סריקה מלאה» ללא dedup אם משהו חסר · רשימה מתעדכנת לבד כל ~90ש׳ · מיילים שטופלו נמחקים אחרי 3 ימים.
+        {" "}סריקה ידנית: לפי יום נבחר (ברירת מחדל היום) — מהיר ולא מעמיס · «סריקה מלאה» ל-45 יום אם משהו חסר · רשימה מתעדכנת לבד כל ~90ש׳.
         {" "}Doc2: צור פרופיל / השלמת חסר / שיבוץ חדר · Doc1: ספא / בילוי יומי.
       </div>
 

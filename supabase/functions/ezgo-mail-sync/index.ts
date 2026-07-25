@@ -34,6 +34,7 @@ import {
   loadGuestCacheForReport,
   matchDoc1Record,
 } from "../_shared/ezgoMailMatch.ts";
+import { israelTodayYmd } from "../_shared/israelDate.ts";
 
 type MailResolveResult =
   | { kind: "doc1"; classified: EzgoMailClassification; records: Doc1Record[] }
@@ -591,7 +592,13 @@ serve(async (req: Request) => {
     const authBlock = await assertEzgoMailStaff(req, supabase);
     if (authBlock) return authBlock;
 
-    let body: { reparse_ingest_id?: string; eml_base64?: string; full_sync?: boolean; manual?: boolean } = {};
+    let body: {
+      reparse_ingest_id?: string;
+      eml_base64?: string;
+      full_sync?: boolean;
+      manual?: boolean;
+      search_date_ymd?: string;
+    } = {};
     try {
       body = await req.json();
     } catch {
@@ -652,6 +659,9 @@ serve(async (req: Request) => {
 
     const fullSync = body.full_sync === true;
     const manual = body.manual === true;
+    const searchDateYmd = fullSync
+      ? null
+      : (String(body.search_date_ymd || "").trim() || (manual ? israelTodayYmd() : null));
     const knownMessageIds = fullSync
       ? new Set<string>()
       : await loadKnownMessageIds(supabase);
@@ -661,6 +671,7 @@ serve(async (req: Request) => {
         knownMessageIds,
         fullSync,
         manual,
+        searchDateYmd,
       })
     );
 
