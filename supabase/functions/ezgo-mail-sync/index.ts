@@ -19,6 +19,7 @@ import {
   parseAllowlist,
   parseEmlSourceToInboundMail,
   resolveEzgoImapConfig,
+  type EzgoMailCsvAttachment,
   type EzgoMailExcelAttachment,
   type EzgoInboundMail,
 } from "../_shared/ezgoMailImap.ts";
@@ -27,6 +28,7 @@ import {
   type Doc2Record,
 } from "../_shared/ezgoDoc2Parser.ts";
 import { matchDoc2Record } from "../_shared/ezgoDoc2MailMatch.ts";
+import { parseSuiteArrivalsCsvBuffer } from "../_shared/ezgoDoc2SuiteCsvParser.ts";
 import {
   enrichRecordsPhoneFromDb,
   loadGuestCacheForReport,
@@ -39,7 +41,9 @@ type MailResolveResult =
   | { kind: "unknown"; classified: EzgoMailClassification; records: [] };
 
 function ingestReportType(classified: EzgoMailClassification): string {
-  if (classified.reportType === "doc2_html") return "doc2_arrivals";
+  if (classified.reportType === "doc2_html" || classified.reportType === "doc2_csv") {
+    return "doc2_arrivals";
+  }
   return classified.reportType;
 }
 
@@ -158,7 +162,21 @@ async function resolveEzgoMailFromMessage(msg: {
   bodyHtml: string;
   bodyText: string;
   excelAttachments?: EzgoMailExcelAttachment[];
+  csvAttachments?: EzgoMailCsvAttachment[];
 }): Promise<MailResolveResult> {
+  if (msg.csvAttachments?.length) {
+    for (const att of msg.csvAttachments) {
+      const records = parseSuiteArrivalsCsvBuffer(att.data, att.filename);
+      if (records.length) {
+        return {
+          kind: "doc2",
+          classified: { reportType: "doc2_csv", csvFilename: att.filename },
+          records,
+        };
+      }
+    }
+  }
+
   let classified = classifyEzgoMailContent(msg.bodyHtml, msg.bodyText);
 
   if (classified.reportType === "doc2_html") {
@@ -199,6 +217,7 @@ async function resolveDoc1FromMessage(msg: {
   bodyHtml: string;
   bodyText: string;
   excelAttachments?: EzgoMailExcelAttachment[];
+  csvAttachments?: EzgoMailCsvAttachment[];
 }): Promise<{ classified: EzgoMailClassification; records: Doc1Record[] }> {
   const resolved = await resolveEzgoMailFromMessage(msg);
   if (resolved.kind === "doc2") {
@@ -220,6 +239,7 @@ type IngestMsg = {
   bodyText: string;
   bodyHtml: string;
   excelAttachments?: EzgoMailExcelAttachment[];
+  csvAttachments?: EzgoMailCsvAttachment[];
 };
 
 async function insertDoc1IngestLines(
@@ -367,13 +387,23 @@ async function processIngestReplace(
 
   if (updErr) return { ok: false, reason: updErr.message };
 
-  const linesResult = await insertIngestLines(
-    supabase,
-    existingIngestId,
-    { ...resolved, records },
-    reportDate,
-    guestCache,
-  );
+  // A thrown exception here (not just a returned {ok:false}) must still leave the
+  // ingest row FAIL VISIBLE, not stuck at the "parsed" status the update above just
+  // set with a line_count that was never actually inserted — that combination reads
+  // as done-but-empty in the UI and, worse, permanently blocks re-fetch since the
+  // message-id is already "known" once this row exists.
+  let linesResult: { ok: boolean; reason?: string };
+  try {
+    linesResult = await insertIngestLines(
+      supabase,
+      existingIngestId,
+      { ...resolved, records },
+      reportDate,
+      guestCache,
+    );
+  } catch (e) {
+    linesResult = { ok: false, reason: (e as Error).message };
+  }
   if (!linesResult.ok) {
     await supabase.from("ezgo_mail_ingest").update({
       parse_status: "failed",
@@ -466,19 +496,28 @@ async function processIngest(
     return { ok: false, reason: ingestErr?.message ?? "ingest_insert_failed" };
   }
 
-  const linesResult = await insertIngestLines(
-    supabase,
-    ingest.id,
-    { ...resolved, records },
-    reportDate,
-    guestCache,
-  );
+  // Same reasoning as processIngestReplace: an exception thrown here must not leave
+  // the row insert above (parse_status: "parsed", line_count: records.length) stuck
+  // as a phantom — done-looking with zero actual ezgo_mail_import_lines rows, and
+  // permanently "known" so it's never re-fetched even after the underlying bug is fixed.
+  let linesResult: { ok: boolean; reason?: string };
+  try {
+    linesResult = await insertIngestLines(
+      supabase,
+      ingest.id,
+      { ...resolved, records },
+      reportDate,
+      guestCache,
+    );
+  } catch (e) {
+    linesResult = { ok: false, reason: (e as Error).message };
+  }
   if (!linesResult.ok) {
     await supabase.from("ezgo_mail_ingest").update({
       parse_status: "failed",
       parse_error: linesResult.reason,
     }).eq("id", ingest.id);
-    return { ok: false, reason: linesResult.reason };
+    return { ok: false, ingestId: ingest.id, reason: linesResult.reason };
   }
 
   return { ok: true, ingestId: ingest.id, lines: records.length };
@@ -519,6 +558,7 @@ async function reparseIngest(
       bodyText: ingest.body_text || "",
       bodyHtml: ingest.body_html,
       excelAttachments: [],
+      csvAttachments: [],
     };
   }
 

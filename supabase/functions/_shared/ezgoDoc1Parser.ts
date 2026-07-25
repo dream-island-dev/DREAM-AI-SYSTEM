@@ -498,10 +498,11 @@ function looksLikeDoc2Html(text: string): boolean {
 }
 
 export type EzgoMailClassification = {
-  reportType: "doc1_html" | "doc1_tsv" | "doc1_excel" | "doc2_html" | "unknown";
+  reportType: "doc1_html" | "doc1_tsv" | "doc1_excel" | "doc2_html" | "doc2_csv" | "unknown";
   html?: string;
   tsv?: string;
   excelFilename?: string;
+  csvFilename?: string;
 };
 
 export function classifyEzgoMailContent(bodyHtml: string, bodyText: string): EzgoMailClassification {

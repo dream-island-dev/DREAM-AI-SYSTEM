@@ -359,6 +359,15 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
     const scanned = data?.scanned ?? 0;
     const skippedKnown = imap?.skippedKnown ?? 0;
     const searchUids = imap?.searchUids ?? 0;
+    // FAIL VISIBLE: previously a thrown search error (e.g. missing Gmail X-GM-EXT-1
+    // extension) was swallowed silently — the toast just said "nothing found" or timed
+    // out with no clue why. Surface it and force red even when some mail was still found,
+    // since a real query failure means the sync isn't actually healthy.
+    const searchErrors = imap?.searchErrors || [];
+    const errorSuffix = searchErrors.length
+      ? ` · ⚠ ${searchErrors.length} שאילתות נכשלו: ${searchErrors.slice(0, 2).join(" | ")}`
+      : "";
+    const toneWithErrors = (tone) => (searchErrors.length ? "err" : tone);
 
     if (data?.skipped) {
       return { msg: "סנכרון מייל כבוי (EZGO_MAIL_SYNC_ENABLED)", tone: "err" };
@@ -366,26 +375,26 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
     if (processed > 0) {
       const prefix = fullSync ? "סריקה מלאה · " : "";
       return {
-        msg: `${prefix}חדשים ${processed} · נבדקו ${scanned}${imapBits ? ` · ${imapBits}` : ""}${senderBits ? ` · ${senderBits}` : ""}${accountHint}`,
-        tone: "ok",
+        msg: `${prefix}חדשים ${processed} · נבדקו ${scanned}${imapBits ? ` · ${imapBits}` : ""}${senderBits ? ` · ${senderBits}` : ""}${accountHint}${errorSuffix}`,
+        tone: toneWithErrors("ok"),
       };
     }
     if (skippedKnown > 0) {
       return {
-        msg: `הכל מסונכרן · ${skippedKnown} מיילים כבר ב-DB · אין חדשים${imapBits ? ` · ${imapBits}` : ""}${accountHint}`,
-        tone: "ok",
+        msg: `הכל מסונכרן · ${skippedKnown} מיילים כבר ב-DB · אין חדשים${imapBits ? ` · ${imapBits}` : ""}${accountHint}${errorSuffix}`,
+        tone: toneWithErrors("ok"),
       };
     }
     if (searchUids === 0 && skippedKnown === 0) {
       return {
-        msg: `לא נמצאו מיילי EZGO${accountHint}${imapBits ? ` · ${imapBits}` : ""} — ודא שהמייל באותה תיבת Gmail`,
+        msg: `לא נמצאו מיילי EZGO${accountHint}${imapBits ? ` · ${imapBits}` : ""}${errorSuffix || " — ודא שהמייל באותה תיבת Gmail"}`,
         tone: "err",
       };
     }
     const prefix = fullSync ? "סריקה מלאה · " : "";
     return {
-      msg: `${prefix}אין מיילים חדשים · נבדקו ${scanned}${imapBits ? ` · ${imapBits}` : ""}${accountHint}`,
-      tone: "ok",
+      msg: `${prefix}אין מיילים חדשים · נבדקו ${scanned}${imapBits ? ` · ${imapBits}` : ""}${accountHint}${errorSuffix}`,
+      tone: toneWithErrors("ok"),
     };
   };
 
