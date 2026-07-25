@@ -35,8 +35,8 @@ Deno.test("composeSigalConfirmPrompt — full text before send", () => {
   assertEquals(body.includes("קיבלנו את פנייתך"), true);
   assertEquals(body.includes("naomi@example.com"), true);
   assertEquals(body.includes("תסדרי"), true);
-  assertEquals(body.includes("orit_cs_agent"), true);
-  assertEquals(body.includes("thread="), true);
+  assertEquals(body.includes("לפתיחה בממשק"), true);
+  assertEquals(body.includes("orit_cs_agent"), false);
 });
 
 Deno.test("composeOritWorkflowStatusLine — includes mobile app link", () => {
@@ -47,10 +47,10 @@ Deno.test("composeOritWorkflowStatusLine — includes mobile app link", () => {
     auto_ack_sent_at: null,
     full_reply_sent_at: null,
   });
-  assertEquals(body.includes("orit_cs_agent"), true);
-  assertEquals(body.includes("בממשק"), true);
+  assertEquals(body.includes("לפתיחה בממשק"), true);
   assertEquals(body.includes("שלב 1"), true);
   assertEquals(body.includes("במחשב"), false);
+  assertEquals(body.includes("orit_cs_agent"), false);
 });
 
 Deno.test("composeSigalAckSentMessage — ack follow-up", () => {

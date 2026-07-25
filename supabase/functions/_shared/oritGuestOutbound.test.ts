@@ -4,6 +4,8 @@ import { assertEquals } from "https://deno.land/std@0.208.0/assert/mod.ts";
 import {
   adaptDraftForWhatsApp,
   buildOritCsThreadDeepLink,
+  composeOritCsMobileLinkLine,
+  composeOritCsMobileLinkUrl,
   formatGuestPhoneDisplay,
   normalizeOritGuestPhoneDigits,
   resolveOritOutboundChannel,
@@ -62,6 +64,18 @@ Deno.test("buildOritCsThreadDeepLink — mobile orit panel", () => {
   assertEquals(url.includes("thread=869b0a98"), true);
 });
 
+Deno.test("composeOritCsMobileLinkUrl — separate follow-up message body", () => {
+  const url = composeOritCsMobileLinkUrl("869b0a98-781a-4f3a-954c-7c263232d7b5");
+  assertEquals(url.includes("page=orit_cs_agent"), true);
+  assertEquals(url.startsWith("\u200E"), true);
+});
+
+Deno.test("composeOritCsMobileLinkLine — no inline URL", () => {
+  const line = composeOritCsMobileLinkLine("869b0a98-781a-4f3a-954c-7c263232d7b5");
+  assertEquals(line.includes("https://"), false);
+  assertEquals(line.includes("לפתיחה בממשק"), true);
+});
+
 Deno.test("composeSigalComplaintBriefing — WA bridge copy", () => {
   const body = composeSigalComplaintBriefing(
     {
@@ -81,6 +95,7 @@ Deno.test("composeSigalComplaintBriefing — WA bridge copy", () => {
   );
   if (!body.includes("וואטסאפ")) throw new Error("missing WA draft line");
   if (!body.includes("שלחי בוואטסאפ")) throw new Error("missing WA CTA");
-  if (!body.includes("orit_cs_agent")) throw new Error("missing app link");
+  if (!body.includes("לפתיחה בממשק")) throw new Error("missing app link label");
+  if (body.includes("orit_cs_agent")) throw new Error("URL must be sent in a separate message");
   if (body.includes("קיבלנו את פנייתך")) throw new Error("should not inline draft");
 });

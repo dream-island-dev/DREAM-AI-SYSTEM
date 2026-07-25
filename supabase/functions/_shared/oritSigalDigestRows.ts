@@ -75,3 +75,19 @@ export async function buildSigalOpenComplaintRows(
   );
   return rows;
 }
+
+export async function fetchSigalOpenThreadsForMailbox(
+  supabase: SupabaseClient,
+  mailboxId: string,
+): Promise<SigalDigestOpenThread[]> {
+  const { data } = await supabase
+    .from("orit_agent_threads")
+    .select(
+      "id, subject, from_name, from_email, guest_contact_name, guest_contact_phone, guest_contact_email, category, urgency, ai_summary, sla_deadline_at, auto_ack_sent_at, orit_wa_contact_at",
+    )
+    .eq("mailbox_id", mailboxId)
+    .in("status", ["awaiting_reply", "snoozed"])
+    .eq("is_demo", false);
+
+  return (data ?? []) as SigalDigestOpenThread[];
+}

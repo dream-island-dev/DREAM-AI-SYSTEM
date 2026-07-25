@@ -7,9 +7,10 @@ import {
   resolveOritReplyEmail,
   resolveOritReplyName,
 } from "./oritGuestContactExtract.ts";
-import { isOritCsStaffPhone } from "./oritAgentStaffPhone.ts";
+import { isOritCsStaffPhone, resolveOritMailboxForStaffPhone } from "./oritAgentStaffPhone.ts";
 import {
   composeSigalAckSentFollowUp,
+  composeSigalOpenComplaintsPulse,
   SIGAL_ACK_GUEST_PHRASE,
   sigalGuestLabel,
 } from "./oritSigalBriefing.ts";
@@ -33,6 +34,11 @@ import { fetchOritThreadInbound } from "./oritThreadAnalysis.ts";
 import { pickStyleSamplesForCategory } from "./oritAgentAnalyzePolicy.ts";
 import { closeOritThread } from "./closeOritThread.ts";
 import { sendWhapiText } from "./whapiSend.ts";
+import { sendOritSigalWhapiLongText, sendOritSigalWhapiText } from "./oritSigalWhapiSend.ts";
+import {
+  buildSigalOpenComplaintRows,
+  fetchSigalOpenThreadsForMailbox,
+} from "./oritSigalDigestRows.ts";
 import {
   SIGAL_GUIDE_ACK,
   SIGAL_GUIDE_CONFIRM,
@@ -77,32 +83,12 @@ const CONFIRM_RE = /^(כן(\s+שלחי)?|שלחי|מאשרת|אישור|אשרי
 const CONFIRM_SCHEDULE_RE = /^(כן(\s+תזמני)?|כן תזמני|תזמני|בסדר תזמני|מאשרת תזמון)$/i;
 const CANCEL_RE = /^(לא|בטלי|עצרי|ביטול|cancel|stop|תעצרי)$/i;
 
-async function sendWhapiLongText(phone: string, text: string): Promise<void> {
-  const max = 3400;
-  const body = text.trim();
-  if (body.length <= max) {
-    await sendWhapiText(phone, body, { noLinkPreview: true });
-    return;
-  }
-  const paragraphs = body.split(/\n{2,}/);
-  let chunk = "";
-  for (const p of paragraphs) {
-    const next = chunk ? `${chunk}\n\n${p}` : p;
-    if (next.length > max) {
-      if (chunk) await sendWhapiText(phone, chunk, { noLinkPreview: true });
-      if (p.length > max) {
-        for (let i = 0; i < p.length; i += max) {
-          await sendWhapiText(phone, p.slice(i, i + max), { noLinkPreview: true });
-        }
-        chunk = "";
-      } else {
-        chunk = p;
-      }
-    } else {
-      chunk = next;
-    }
-  }
-  if (chunk) await sendWhapiText(phone, chunk, { noLinkPreview: true });
+async function sendSigalLongText(
+  phone: string,
+  text: string,
+  threadId?: string | null,
+): Promise<void> {
+  await sendOritSigalWhapiLongText(phone, text, threadId ? { threadId } : undefined);
 }
 
 export function composeSigalConfirmPrompt(
@@ -287,9 +273,9 @@ export function composeSigalAckSentMessage(
   guest: string,
   _email: string,
   _bodySent: string,
-  _threadId: string,
+  threadId: string,
 ): string {
-  return composeSigalAckSentFollowUp(guest);
+  return composeSigalAckSentFollowUp(guest, threadId);
 }
 
 async function prepareAckConfirm(
@@ -337,13 +323,13 @@ async function prepareAckConfirm(
     shown_at: new Date().toISOString(),
   });
 
-  await sendWhapiLongText(phone, composeSigalConfirmPrompt(
+  await sendSigalLongText(phone, composeSigalConfirmPrompt(
     "confirm_ack",
     guestLabel(thread),
     email,
     draft,
     threadId,
-  ));
+  ), threadId);
 }
 
 async function prepareWhatsappConfirm(
@@ -372,13 +358,13 @@ async function prepareWhatsappConfirm(
     shown_at: new Date().toISOString(),
   });
 
-  await sendWhapiLongText(phone, composeSigalConfirmPrompt(
+  await sendSigalLongText(phone, composeSigalConfirmPrompt(
     action,
     guestLabel(thread),
     contact,
     draft,
     threadId,
-  ));
+  ), threadId);
 }
 
 async function prepareFullConfirm(
@@ -430,13 +416,13 @@ async function prepareFullConfirm(
     shown_at: new Date().toISOString(),
   });
 
-  await sendWhapiLongText(phone, composeSigalConfirmPrompt(
+  await sendSigalLongText(phone, composeSigalConfirmPrompt(
     "confirm_full",
     guestLabel(thread),
     email,
     draft,
     threadId,
-  ));
+  ), threadId);
 }
 
 async function executeScheduleFromPending(
@@ -526,7 +512,7 @@ async function promptQuietHoursSchedule(
     ) || ""
   );
 
-  await sendWhapiLongText(phone, [
+  await sendSigalLongText(phone, [
     `${composeSigalTimeGreeting()} 🌙`,
     "בשעות 21:00–05:00 עדיף לא לשלוח לאורח עכשיו.",
     composeSigalConfirmPrompt(
@@ -537,7 +523,7 @@ async function promptQuietHoursSchedule(
       threadId,
       scheduledFor.toISOString(),
     ),
-  ].join("\n\n"));
+  ].join("\n\n"), threadId);
 }
 
 async function prepareScheduleConfirm(
@@ -580,14 +566,14 @@ async function prepareScheduleConfirm(
   });
 
   const contactLabel = channel === "whatsapp_bridge" ? "whatsapp" : (email || "");
-  await sendWhapiLongText(phone, composeSigalConfirmPrompt(
+  await sendSigalLongText(phone, composeSigalConfirmPrompt(
     "confirm_schedule",
     guestLabel(thread),
     contactLabel,
     bodyText,
     threadId,
     scheduledFor.toISOString(),
-  ));
+  ), threadId);
 }
 
 async function showPendingScheduleStatus(
@@ -660,7 +646,7 @@ async function executePendingSend(
       }).eq("id", threadId);
       await learnFromOutbound(supabase, mailbox.id, threadId, String(thread.category ?? "complaint"), pending.body_text, originalDraft);
       await setChatPending(supabase, threadId, null);
-      await sendWhapiLongText(phone, composeSigalWaSentFollowUp(guest, inboxLink, "ack"));
+      await sendSigalLongText(phone, composeSigalWaSentFollowUp(guest, inboxLink, "ack"));
       return;
     }
 
@@ -671,7 +657,7 @@ async function executePendingSend(
       orit_chat_pending: null,
     }).eq("id", threadId);
     await learnFromOutbound(supabase, mailbox.id, threadId, String(thread.category ?? "complaint"), pending.body_text, originalDraft);
-    await sendWhapiLongText(phone, composeSigalWaSentFollowUp(guest, inboxLink, "full"));
+    await sendSigalLongText(phone, composeSigalWaSentFollowUp(guest, inboxLink, "full"));
     return;
   }
 
@@ -695,7 +681,7 @@ async function executePendingSend(
       workflow_step: "awaiting_reply_approval",
     }).eq("id", threadId);
 
-    await sendWhapiLongText(phone, composeSigalAckSentFollowUp(guest));
+    await sendSigalLongText(phone, composeSigalAckSentFollowUp(guest, threadId), threadId);
     return;
   }
 
@@ -737,7 +723,7 @@ async function executePendingSend(
     originalDraft,
   );
 
-  await sendWhapiLongText(phone, [
+  await sendSigalLongText(phone, [
     `✓ שלב ② נשלח ל־${guest}${email ? ` (${email})` : ""}.`,
     "«סיימתי» לסגירה · אעדכן אם יש תשובה",
   ].join("\n"));
@@ -776,6 +762,24 @@ export function composeOritWorkflowStatusLine(thread: Record<string, unknown>): 
   return workflowStatusLine(thread);
 }
 
+async function showOpenComplaintsPulse(
+  supabase: SupabaseClient,
+  phoneDigits: string,
+): Promise<void> {
+  const mailboxId = await resolveOritMailboxForStaffPhone(supabase, phoneDigits);
+  if (!mailboxId) {
+    await sendWhapiText(phoneDigits, "לא מצאתי תיבת מייל מחוברת.", { noLinkPreview: true });
+    return;
+  }
+
+  const openThreads = await fetchSigalOpenThreadsForMailbox(supabase, mailboxId);
+  const now = Date.now();
+  const openComplaints = await buildSigalOpenComplaintRows(supabase, openThreads, now);
+  const otherOpenCount = openThreads.filter((t) => t.category !== "complaint").length;
+  const body = composeSigalOpenComplaintsPulse(openComplaints, otherOpenCount);
+  await sendOritSigalWhapiLongText(phoneDigits, body);
+}
+
 async function markThreadClosed(
   supabase: SupabaseClient,
   phone: string,
@@ -796,7 +800,7 @@ async function showGuestLatestMessage(
   threadId: string,
 ): Promise<void> {
   const body = await fetchLatestGuestInbound(supabase, threadId);
-  await sendWhapiLongText(phone, body
+  await sendSigalLongText(phone, body
     ? ["הודעת האורח/ת האחרונה:", "─────────────", body, "─────────────"].join("\n")
     : "אין הודעה נכנסת אחרונה.");
 }
@@ -963,14 +967,14 @@ export async function handleOritSigalChat(
           pendingRow.thread.guest_contact_email as string | null,
         ) || ""
       );
-      await sendWhapiLongText(phoneDigits, composeSigalConfirmPrompt(
+      await sendSigalLongText(phoneDigits, composeSigalConfirmPrompt(
         "confirm_schedule",
         guestLabel(pendingRow.thread),
         contactLabel,
         updated.body_text,
         String(pendingRow.thread.id),
         updated.scheduled_for,
-      ));
+      ), String(pendingRow.thread.id));
       return;
     }
 
@@ -1042,8 +1046,19 @@ export async function handleOritSigalChat(
     return;
   }
 
+  if (intent === "list_open_complaints") {
+    await showOpenComplaintsPulse(supabase, phoneDigits);
+    return;
+  }
+
   if (intent === "status" && active) {
-    await sendWhapiText(phoneDigits, workflowStatusLine(active.thread), { noLinkPreview: true });
+    const threadId = String(active.thread.id);
+    await sendOritSigalWhapiText(phoneDigits, workflowStatusLine(active.thread), { threadId });
+    return;
+  }
+
+  if (intent === "status") {
+    await showOpenComplaintsPulse(supabase, phoneDigits);
     return;
   }
 
@@ -1075,7 +1090,7 @@ export async function handleOritSigalChat(
         const guide = channel === "whatsapp_bridge"
           ? "«שלחי בוואטסאפ» → «כן שלחי»"
           : SIGAL_GUIDE_ACK;
-        await sendWhapiLongText(phoneDigits, draft
+        await sendSigalLongText(phoneDigits, draft
           ? [
             channel === "whatsapp_bridge"
               ? "הודעה ראשונה לוואטסאפ:"
@@ -1176,10 +1191,13 @@ export async function handleOritSigalChat(
   await sendWhapiText(phoneDigits, active
     ? [
       `${composeSigalTimeGreeting()} 💜 ${guestLabel(active.thread)}`,
-      workflowStatusLine(active.thread).split("\n").slice(-1)[0] || "",
-      isOritQuietHours() ? "🌙 שעות שקט — «תזמני למחר 8»" : "«תראי לי» / «תשובה מלאה» · «עזרה»",
+      "«מה המצב» לסטטוס · «תלונות פתוחות» לרשימה · «עזרה»",
+      isOritQuietHours() ? "🌙 שעות שקט — «תזמני למחר 8»" : "«תראי לי» / «תשובה מלאה»",
     ].join("\n")
-    : `${composeSigalTimeGreeting()} 💜 אין פנייה פתוחה כרגע.`, { noLinkPreview: true });
+    : [
+      `${composeSigalTimeGreeting()} 💜`,
+      "«תלונות פתוחות» לרשימה · «עזרה» לפקודות",
+    ].join("\n"), { noLinkPreview: true });
 }
 
 export async function tryHandleOritSigalInbound(

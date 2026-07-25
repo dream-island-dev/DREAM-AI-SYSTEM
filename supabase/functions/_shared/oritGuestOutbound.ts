@@ -60,8 +60,21 @@ export function buildOritCsThreadDeepLink(threadId: string): string {
   return buildStaffAppDeepLink({ page: "orit_cs_agent", threadId });
 }
 
-export function composeOritCsMobileLinkLine(threadId: string): string {
-  return `👉 לפתיחה בממשק (לעריכה): ${buildOritCsThreadDeepLink(threadId)}`;
+/** Label line in the main Hebrew message — URL goes in a separate Whapi message. */
+export const ORIT_CS_MOBILE_LINK_LABEL = "👉 לפתיחה בממשק (לעריכה) — הקישור בהודעה הבאה ↓";
+
+/** URL-only body for follow-up message (LTR mark for iOS WhatsApp). */
+export function composeOritCsMobileLinkUrl(threadId: string): string {
+  return `\u200E${buildOritCsThreadDeepLink(threadId)}`;
+}
+
+/** Hebrew hint in the primary message; never inline the URL (RTL breaks tap targets). */
+export function composeOritCsMobileLinkLine(_threadId?: string | null): string {
+  return ORIT_CS_MOBILE_LINK_LABEL;
+}
+
+export function messageExpectsOritCsLinkFollowUp(body: string): boolean {
+  return (body || "").includes(ORIT_CS_MOBILE_LINK_LABEL);
 }
 
 const WA_EMAIL_ASK = "נשמח לקבל כתובת מייל להמשך התכתבות ולסגירת הפנייה.";

@@ -297,6 +297,41 @@ export function composeSigalMorningActionPlan(data: {
   return lines.join("\n");
 }
 
+/** On-demand WhatsApp pulse — all open complaints (Sigal chat «תלונות פתוחות»). */
+export function composeSigalOpenComplaintsPulse(
+  openComplaints: MorningActionRow[],
+  otherOpenCount = 0,
+): string {
+  const lines: string[] = [];
+
+  if (!openComplaints.length) {
+    lines.push("✅ אין תלונות פתוחות כרגע — יופי!");
+    if (otherOpenCount > 0) {
+      lines.push(`📬 יש ${otherOpenCount} פניות אחרות פתוחות (לא תלונה).`);
+    }
+    lines.push("", "«עזרה» לפקודות");
+    return lines.join("\n");
+  }
+
+  lines.push(`😤 תלונות פתוחות (${openComplaints.length}):`);
+  for (const row of openComplaints.slice(0, 8)) {
+    const summary = (row.ai_summary || row.subject || "").split("\n")[0].slice(0, 70);
+    lines.push(morningActionLine(row));
+    if (summary) lines.push(`   ${summary}`);
+  }
+  if (openComplaints.length > 8) {
+    lines.push(`… ועוד ${openComplaints.length - 8}`);
+  }
+  if (otherOpenCount > 0) {
+    lines.push("", `📬 פניות אחרות פתוחות: ${otherOpenCount}`);
+  }
+  lines.push(
+    "",
+    "«מה המצב» לפנייה פעילה · «תראי לי» / «תשובה מלאה» · «עזרה»",
+  );
+  return lines.join("\n");
+}
+
 function eveningStatusLine(row: MorningActionRow): string {
   const guest = morningGuestLabel(row);
   if (!row.initialSent) {

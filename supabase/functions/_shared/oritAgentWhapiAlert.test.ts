@@ -31,6 +31,7 @@ Deno.test("composeOritUrgentAlert — warm Sigal intro + CTA", () => {
   if (!body.includes("054-620-6621")) throw new Error("missing phone");
   if (!body.includes("תראי לי")) throw new Error("missing CTA");
   if (!body.includes("ביטול")) throw new Error("missing summary");
-  assertEquals(body.includes("orit_cs_agent"), true);
-  assertEquals(body.includes("thread="), true);
+  assertEquals(body.includes("תראי לי"), true);
+  assertEquals(body.includes("ביטול"), true);
+  assertEquals(body.includes("orit_cs_agent"), false);
 });

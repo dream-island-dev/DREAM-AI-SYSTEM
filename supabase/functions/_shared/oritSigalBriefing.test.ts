@@ -7,6 +7,7 @@ import {
   composeSigalComplaintBriefing,
   composeSigalGuestReplyBriefing,
   composeSigalEveningActionPlan,
+  composeSigalOpenComplaintsPulse,
   composeSigalStaleReminder,
 } from "./oritSigalBriefing.ts";
 
@@ -36,13 +37,14 @@ Deno.test("composeSigalComplaintBriefing — pulse only, no inline drafts", () =
   if (!body.includes("קיבלנו את פנייתך")) throw new Error("missing ack phrase");
   if (!body.includes("שלב 1")) throw new Error("missing step 1 focus");
   if (body.includes("שלב 2")) throw new Error("phase 1 should not push full letter yet");
-  if (!body.includes("orit_cs_agent")) throw new Error("missing app deep link");
-  if (!body.includes("thread=")) throw new Error("missing thread id in link");
+  if (!body.includes("לפתיחה בממשק")) throw new Error("missing app link label");
+  if (body.includes("orit_cs_agent")) throw new Error("URL must be sent in a separate message");
   if (body.includes("קיבלנו את פנייתך.\n")) throw new Error("should not inline ack draft");
   if (body.includes("מטפלים בניקיון")) throw new Error("should not inline full draft");
   if (body.length > PULSE_MAX) throw new Error(`pulse too long: ${body.length}`);
-  assertEquals(body.includes("תסדרי"), true);
+  assertEquals(body.includes("תראי לי"), true);
   assertEquals(body.includes("במחשב"), false);
+  assertEquals(body.includes("orit_cs_agent"), false);
 });
 
 Deno.test("composeSigalComplaintBriefing — phase 2 after ack sent", () => {
@@ -92,6 +94,31 @@ Deno.test("areSigalBriefingDraftsReady", () => {
   assertEquals(areSigalBriefingDraftsReady("ack", "full", true), true);
   assertEquals(areSigalBriefingDraftsReady("ack", "", true), false);
   assertEquals(areSigalBriefingDraftsReady("", "full", false), true);
+});
+
+Deno.test("composeSigalOpenComplaintsPulse — lists open complaints", () => {
+  const body = composeSigalOpenComplaintsPulse([
+    {
+      id: "t1",
+      subject: "ניקיון",
+      from_name: "נעמי",
+      urgency: "high",
+      ai_summary: "תלונה על ניקיון בחדר",
+      overdue: false,
+      hasAckDraft: true,
+      hasFullDraft: true,
+      channel: "email",
+      initialSent: false,
+    },
+  ]);
+  if (!body.includes("תלונות פתוחות (1)")) throw new Error("missing count");
+  if (!body.includes("נעמי")) throw new Error("missing guest");
+  if (!body.includes("ניקיון")) throw new Error("missing summary");
+});
+
+Deno.test("composeSigalOpenComplaintsPulse — empty queue", () => {
+  const body = composeSigalOpenComplaintsPulse([]);
+  assertEquals(body.includes("אין תלונות פתוחות"), true);
 });
 
 Deno.test("composeSigalEveningActionPlan — open items + handled today", () => {

@@ -16,8 +16,8 @@ const THREAD = {
 Deno.test("composeSigalUiSendConfirmation — ack email includes app link", () => {
   const body = composeSigalUiSendConfirmation(THREAD, "ack", "email");
   if (!body.includes("שלחת מהממשק")) throw new Error("missing ui send label");
-  assertEquals(body.includes("orit_cs_agent"), true);
-  assertEquals(body.includes("thread="), true);
+  assertEquals(body.includes("לפתיחה בממשק"), true);
+  assertEquals(body.includes("orit_cs_agent"), false);
 });
 
 Deno.test("composeSigalUiSendConfirmation — full reply whatsapp", () => {

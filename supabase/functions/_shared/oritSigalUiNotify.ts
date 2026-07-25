@@ -6,13 +6,13 @@ import {
   type OritAlertMailbox,
 } from "./oritAgentWhapiAlert.ts";
 import { composeOritCsMobileLinkLine } from "./oritGuestOutbound.ts";
+import { sendOritSigalWhapiText } from "./oritSigalWhapiSend.ts";
 import { sigalGuestLabel, type SigalBriefingThread } from "./oritSigalBriefing.ts";
 import {
   formatOritScheduleLabel,
   type OritScheduleChannel,
   type OritScheduleDraftKind,
 } from "./oritScheduleSend.ts";
-import { sendWhapiText } from "./whapiSend.ts";
 
 export type OritUiSendVia = "email" | "whatsapp_bridge";
 
@@ -56,8 +56,8 @@ export async function notifyOritSigalUiSend(
   if (!phone) return { sent: false, reason: "no_phone" };
 
   const body = composeSigalUiSendConfirmation(thread, kind, via);
-  const whapiId = await sendWhapiText(phone, body, { noLinkPreview: true });
-  if (!whapiId) return { sent: false, reason: "whapi_failed" };
+  const sent = await sendOritSigalWhapiText(phone, body, { threadId: thread.id });
+  if (!sent) return { sent: false, reason: "whapi_failed" };
 
   return { sent: true };
 }
@@ -93,8 +93,8 @@ export async function notifyOritScheduleCreated(
   const phone = await resolveOritAlertPhone(supabase, mailbox);
   if (!phone) return { sent: false, reason: "no_phone" };
   const body = composeSigalScheduleCreated(thread, scheduledForIso, channel, draftKind);
-  const whapiId = await sendWhapiText(phone, body, { noLinkPreview: true });
-  if (!whapiId) return { sent: false, reason: "whapi_failed" };
+  const sent = await sendOritSigalWhapiText(phone, body, { threadId: thread.id });
+  if (!sent) return { sent: false, reason: "whapi_failed" };
   return { sent: true };
 }
 
@@ -120,7 +120,7 @@ export async function notifyOritScheduledDispatched(
   const phone = await resolveOritAlertPhone(supabase, mailbox);
   if (!phone) return { sent: false, reason: "no_phone" };
   const body = composeSigalScheduledDispatched(thread, channel, draftKind);
-  const whapiId = await sendWhapiText(phone, body, { noLinkPreview: true });
-  if (!whapiId) return { sent: false, reason: "whapi_failed" };
+  const sent = await sendOritSigalWhapiText(phone, body);
+  if (!sent) return { sent: false, reason: "whapi_failed" };
   return { sent: true };
 }

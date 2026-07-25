@@ -40,6 +40,6 @@ Deno.test("composeSigalLoopNudge — guest replied CTA + app link", () => {
   );
   if (!body.includes("השיב")) throw new Error("missing guest reply nudge");
   if (!body.includes("תשובה מלאה")) throw new Error("missing CTA");
-  assertEquals(body.includes("orit_cs_agent"), true);
-  assertEquals(body.includes("thread="), true);
+  assertEquals(body.includes("לפתיחה בממשק"), true);
+  assertEquals(body.includes("orit_cs_agent"), false);
 });

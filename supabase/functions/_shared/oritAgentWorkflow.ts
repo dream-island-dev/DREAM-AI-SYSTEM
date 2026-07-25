@@ -11,6 +11,7 @@ import {
   type OritAlertMailbox,
   type OritAlertThread,
 } from "./oritAgentWhapiAlert.ts";
+import { sendOritSigalWhapiLongText, sendOritSigalWhapiText } from "./oritSigalWhapiSend.ts";
 import { sendWhapiText } from "./whapiSend.ts";
 import { sanitizeOritAckDraft } from "./oritThreadAnalysis.ts";
 import {
@@ -207,7 +208,7 @@ export async function notifyOritWorkflowAlert(
   const body = channel === "whatsapp_bridge"
     ? composeSigalComplaintBriefing(thread as SigalBriefingThread, ackDraft!.text, fullDraft?.text || ackDraft!.text)
     : composeSigalComplaintBriefing(thread as SigalBriefingThread, ackDraft!.text, fullDraft!.text);
-  const sent = await sendWhapiLongText(phone, body);
+  const sent = await sendOritSigalWhapiLongText(phone, body, { threadId });
   if (!sent) return { sent: false, reason: "whapi_failed" };
 
   const now = new Date().toISOString();
@@ -271,7 +272,7 @@ export async function notifyOritSigalComplaintBriefing(
   if (!phone) return { sent: false, reason: "no_phone" };
 
   const body = composeSigalSimpleBriefing(thread as SigalBriefingThread, replyText);
-  const sent = await sendWhapiLongText(phone, body);
+  const sent = await sendOritSigalWhapiLongText(phone, body, { threadId });
   if (!sent) return { sent: false, reason: "whapi_failed" };
 
   const now = new Date().toISOString();
@@ -312,51 +313,14 @@ export async function notifyOritFullReplyReady(
   if (!phone) return { sent: false, reason: "no_phone" };
 
   const body = composeOritFullReplyReadyMessage(thread as OritAlertThread, fullDraft.text);
-  const whapiId = await sendWhapiText(phone, body, { noLinkPreview: true });
-  if (!whapiId) return { sent: false, reason: "whapi_failed" };
+  const sent = await sendOritSigalWhapiText(phone, body, { threadId });
+  if (!sent) return { sent: false, reason: "whapi_failed" };
 
   await supabase.from("orit_agent_threads").update({
     workflow_step: "awaiting_reply_approval",
   }).eq("id", threadId);
 
   return { sent: true };
-}
-
-async function sendWhapiLongText(phone: string, text: string): Promise<boolean> {
-  const max = 3400;
-  const body = text.trim();
-  if (!body) return false;
-  if (body.length <= max) {
-    const id = await sendWhapiText(phone, body, { noLinkPreview: true });
-    return Boolean(id);
-  }
-  const paragraphs = body.split(/\n{2,}/);
-  let chunk = "";
-  for (const p of paragraphs) {
-    const next = chunk ? `${chunk}\n\n${p}` : p;
-    if (next.length > max) {
-      if (chunk) {
-        const id = await sendWhapiText(phone, chunk, { noLinkPreview: true });
-        if (!id) return false;
-      }
-      if (p.length > max) {
-        for (let i = 0; i < p.length; i += max) {
-          const id = await sendWhapiText(phone, p.slice(i, i + max), { noLinkPreview: true });
-          if (!id) return false;
-        }
-        chunk = "";
-      } else {
-        chunk = p;
-      }
-    } else {
-      chunk = next;
-    }
-  }
-  if (chunk) {
-    const id = await sendWhapiText(phone, chunk, { noLinkPreview: true });
-    return Boolean(id);
-  }
-  return true;
 }
 
 export async function fetchLatestGuestInbound(
@@ -420,7 +384,7 @@ export async function notifyOritGuestReplied(
     followUp?.text ?? null,
   );
 
-  const sent = await sendWhapiLongText(phone, body);
+  const sent = await sendOritSigalWhapiLongText(phone, body, { threadId });
   if (!sent) return { sent: false, reason: "whapi_failed" };
 
   const now = new Date().toISOString();
@@ -623,7 +587,7 @@ export async function runSigalUrgentComplaintLoop(
       )
       : composeSigalStaleReminder(briefing);
 
-    const ok = await sendWhapiLongText(phone, body);
+    const ok = await sendOritSigalWhapiLongText(phone, body, { threadId: row.id });
     if (!ok) {
       skipped += 1;
       continue;

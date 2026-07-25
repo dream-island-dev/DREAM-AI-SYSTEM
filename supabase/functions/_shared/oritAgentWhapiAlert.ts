@@ -2,7 +2,7 @@
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { composeOritCsMobileLinkLine } from "./oritGuestOutbound.ts";
-import { sendWhapiText } from "./whapiSend.ts";
+import { sendOritSigalWhapiText } from "./oritSigalWhapiSend.ts";
 
 export type OritAlertMailbox = {
   id: string;
@@ -183,16 +183,16 @@ export async function notifyOritUrgentThread(
   if (!phone) return { sent: false, reason: "no_phone" };
 
   const body = composeOritUrgentAlert(thread as OritAlertThread);
-  const whapiId = await sendWhapiText(phone, body, { noLinkPreview: true });
-  if (!whapiId) return { sent: false, reason: "whapi_failed" };
+  const sent = await sendOritSigalWhapiText(phone, body, { threadId });
+  if (!sent) return { sent: false, reason: "whapi_failed" };
 
   await supabase.from("orit_agent_alert_log").upsert({
     mailbox_id: mailbox.id,
     thread_id: threadId,
     body_sent: body,
-    whapi_message_id: whapiId,
+    whapi_message_id: null,
     sent_at: new Date().toISOString(),
   }, { onConflict: "thread_id" });
 
-  return { sent: true, whapiMessageId: whapiId };
+  return { sent: true };
 }
