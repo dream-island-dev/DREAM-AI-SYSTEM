@@ -355,10 +355,11 @@ Deno.test("searchUidsForSender reuses a shared query cache across same-domain se
     throw new Error("expected the cached UIDs to also apply to the second (reception) sender");
   }
   const sharedQueryCallCount = calls.filter((c) => c.from === "dream-island.co.il").length;
-  if (sharedQueryCallCount !== 1) {
+  // subject-native + domain-native are two distinct cached shapes (both from dream-island.co.il)
+  if (sharedQueryCallCount !== 2) {
     throw new Error(
-      `expected the identical dream-island native domain query to hit the IMAP client only once ` +
-        `across both senders (cache reuse), but it was called ${sharedQueryCallCount} times`,
+      `expected subject+domain native queries to hit IMAP once each across both senders (cache reuse), ` +
+        `but dream-island.co.il searches ran ${sharedQueryCallCount} times`,
     );
   }
 });
@@ -495,13 +496,14 @@ Deno.test("shouldEscalate does not fire when search found only already-known UID
   if (fires) throw new Error("known-only hit should not trigger heavy 45d escalation");
 });
 
-Deno.test("parseSearchDateYmd returns since/before for one calendar day", () => {
+Deno.test("parseSearchDateYmd returns Israel-midnight since/before bounds", () => {
   const range = parseSearchDateYmd("2026-07-25");
   if (!range) throw new Error("expected valid range");
-  if (range.since.toISOString() !== "2026-07-25T00:00:00.000Z") {
+  // Asia/Jerusalem midnight on 2026-07-25 = 2026-07-24T21:00:00.000Z (UTC+3, DST)
+  if (range.since.toISOString() !== "2026-07-24T21:00:00.000Z") {
     throw new Error(`unexpected since: ${range.since.toISOString()}`);
   }
-  if (range.before.toISOString() !== "2026-07-26T00:00:00.000Z") {
+  if (range.before.toISOString() !== "2026-07-25T21:00:00.000Z") {
     throw new Error(`unexpected before: ${range.before.toISOString()}`);
   }
 });
@@ -519,6 +521,20 @@ Deno.test("buildSenderSearchQueryPlan applies since/before on native queries for
   if (!subject?.search.since || !subject?.search.before) {
     throw new Error("expected native subject query to include since+before for day scope");
   }
+});
+
+Deno.test("buildSenderSearchQueryPlan includes dream-island כניסות subject query for Hagar", () => {
+  const plan = buildSenderSearchQueryPlan(HAGAR, null, "2026-07-27");
+  const subject = plan.find((q) => q.kind === "dream_island_report_subject_native");
+  if (!subject?.search.since || !subject?.search.before) {
+    throw new Error("expected dream-island subject query with date bounds");
+  }
+  const or = subject.search.or as Array<Record<string, string>>;
+  if (!or?.some((o) => o.subject === "כניסות")) {
+    throw new Error("expected כניסות in dream-island subject or");
+  }
+  const unbounded = plan.find((q) => q.kind === "imap_from");
+  if (unbounded) throw new Error("day-scoped plan must not include unbounded imap_from");
 });
 
 Deno.test("extractBodiesFromSource picks nested forward HTML with EZGO table (quoted-printable)", async () => {
