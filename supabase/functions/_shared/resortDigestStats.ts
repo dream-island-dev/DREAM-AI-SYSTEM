@@ -15,6 +15,10 @@ import {
 } from "./staffNotifyTemplates.ts";
 import { composeDigestTeamOpsSection, type TeamOpsStats } from "./teamOpsAnalytics.ts";
 import { isEffectiveSuiteGuest } from "./suiteNames.ts";
+import {
+  FEEDBACK_DASHBOARD_LINK_LABEL,
+  feedbackDashboardNegativeInlineLinkLine,
+} from "./feedbackDashboardLink.ts";
 
 // Same value as guestAlertWhapiNotify.ts's STAFF_APP_ORIGIN — duplicated, not
 // imported. This module is deliberately zero-I/O / dependency-light (pure
@@ -495,6 +499,37 @@ export function composePulseAttentionLines(
   }
 
   return lines.slice(0, 2);
+}
+
+export type ComposeSundayFeedbackNudgeOpts = {
+  /** When true, embed URL in the same message (Eliad). When false, label only (Sigal → follow-up). */
+  inlineUrl?: boolean;
+  /** When true, omit link line (caller already added daily feedback link). */
+  skipLink?: boolean;
+};
+
+/** Sunday morning block — guest feedback dashboard link for resort pulse. */
+export function composeSundayFeedbackNudge(
+  surveys: SurveyDigestStats | null | undefined,
+  opts: ComposeSundayFeedbackNudgeOpts = {},
+): string {
+  const lines: string[] = ["", "📊 משוב אורחים — סיכום שבוע"];
+  const sv = surveys;
+  if (sv?.count) {
+    const avg = sv.avgOverall !== null ? sv.avgOverall.toFixed(1) : "—";
+    lines.push(`אתמול: ${sv.count} סקרים · ממוצע ${avg}/3`);
+    if (sv.lowScoreCount) lines.push(`ציונים נמוכים: ${sv.lowScoreCount}`);
+  } else {
+    lines.push("אין סקרים חדשים אתמול — כדאי לעבור על המשוב השבועי בלוח.");
+  }
+  if (!opts.skipLink) {
+    lines.push(
+      opts.inlineUrl
+        ? feedbackDashboardNegativeInlineLinkLine()
+        : FEEDBACK_DASHBOARD_LINK_LABEL,
+    );
+  }
+  return lines.join("\n");
 }
 
 export type ComposeExecutiveMorningPulseOpts = {

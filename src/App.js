@@ -1907,6 +1907,7 @@ export default function App({ initialPage = "dashboard" }) {
   const [inboxReturn, setInboxReturn] = useState(null); // { page, guestId?, label? } — back from Inbox thread
   const [restaurantReturnGuestId, setRestaurantReturnGuestId] = useState(null);
   const [oritFocus, setOritFocus] = useState(null); // { threadId } | null
+  const [feedbackDeepLink, setFeedbackDeepLink] = useState(null); // { focus, tab } | null
   const [inboxRosterFocus, setInboxRosterFocus] = useState(null); // roster filter chip id | null
   const [checkinFocus, setCheckinFocus] = useState(null); // { timelineScope, customArrivalDate? } | null
   const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false);
@@ -2089,6 +2090,9 @@ export default function App({ initialPage = "dashboard" }) {
     }
     if (pending.threadId) {
       setOritFocus({ threadId: pending.threadId });
+    }
+    if (pending.focus || pending.tab) {
+      setFeedbackDeepLink({ focus: pending.focus, tab: pending.tab });
     }
     setActivePage(pending.page);
     setMobileMenuOpen(false);
@@ -2458,7 +2462,14 @@ export default function App({ initialPage = "dashboard" }) {
           />
         ));
       case "feedback_dashboard":
-        return <GuestFeedbackTabs user={user} />;
+        return (
+          <GuestFeedbackTabs
+            user={user}
+            initialFocus={feedbackDeepLink?.focus}
+            initialTab={feedbackDeepLink?.tab}
+            onDeepLinkConsumed={() => setFeedbackDeepLink(null)}
+          />
+        );
       case "suites":
         return <SuitesDashboard />;
       // "tasks"/"calls" kept as deep-link aliases (same pattern as session

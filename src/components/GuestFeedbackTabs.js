@@ -30,6 +30,10 @@ import {
   serializeGuestSurveyUi,
 } from "../utils/guestSurveyUi";
 import {
+  defaultReportDateRange,
+  exportFeedbackServiceReport,
+} from "../utils/feedbackReportExport";
+import {
   BOT_CONFIG_CLUB_UI_KEY,
   cloneDefaultClubUi,
   normalizeGuestClubUi,
@@ -848,23 +852,73 @@ function SurveysView() {
   );
 }
 
-export default function GuestFeedbackTabs({ user }) {
-  // Deep link: ?page=feedback_dashboard&tab=surveys|waiter_pulse
+export default function GuestFeedbackTabs({ user, initialFocus, initialTab, onDeepLinkConsumed }) {
+  const defaultRange = defaultReportDateRange();
+  // Deep link: ?page=feedback_dashboard&tab=surveys|waiter_pulse&focus=negative
   const [view, setView]                 = useState(() => {
+    if (initialTab === "surveys") return "surveys";
+    if (initialTab === "waiter_pulse") return "waiter_pulse";
     const tab = new URLSearchParams(window.location.search).get("tab");
     if (tab === "surveys") return "surveys";
     if (tab === "waiter_pulse") return "waiter_pulse";
     return "feedback";
   });
   const [feedback, setFeedback]         = useState([]);
+  const [surveys, setSurveys]           = useState([]);
   const [loading, setLoading]           = useState(true);
+  const [exporting, setExporting]       = useState(false);
+  const [reportFromYmd, setReportFromYmd] = useState(defaultRange.fromYmd);
+  const [reportToYmd, setReportToYmd]     = useState(defaultRange.toYmd);
   const [toast, setToast]               = useState(null);
-  const [tab, setTab]                   = useState("negative"); // most actionable stream first
+  const [tab, setTab]                   = useState(() => (
+    initialFocus === "negative" ? "negative" : "negative"
+  ));
   const [facilityFilter, setFacilityFilter] = useState("all");
   const [showArchived, setShowArchived] = useState(false);
   const [archivingId, setArchivingId]   = useState(null);
 
+  useEffect(() => {
+    if (initialFocus === "negative") {
+      setTab("negative");
+      setView("feedback");
+    }
+    if (initialTab === "surveys") setView("surveys");
+    if (initialTab === "waiter_pulse") setView("waiter_pulse");
+    onDeepLinkConsumed?.();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- apply deep link once on mount
+
   const showToast = (type, msg) => { setToast({ type, msg }); setTimeout(() => setToast(null), 3500); };
+
+  const fetchSurveyUi = useCallback(async () => {
+    if (!isSupabaseConfigured || !supabase) return cloneDefaultSurveyUi();
+    const { data, error } = await supabase
+      .from("bot_config")
+      .select("config_value")
+      .eq("config_key", BOT_CONFIG_SURVEY_UI_KEY)
+      .maybeSingle();
+    if (error) {
+      console.warn("[GuestFeedbackTabs] survey ui:", error.message);
+      return cloneDefaultSurveyUi();
+    }
+    const ui = normalizeGuestSurveyUi(data?.config_value ?? DEFAULT_GUEST_SURVEY_UI);
+    return ui;
+  }, []);
+
+  const fetchSurveys = useCallback(async () => {
+    if (!isSupabaseConfigured || !supabase) return [];
+    const { data, error } = await supabase
+      .from("guest_surveys")
+      .select("*, guests(name, room)")
+      .order("visit_date", { ascending: false })
+      .order("created_at", { ascending: false });
+    if (error) {
+      showToast("err", "שגיאה בטעינת סקרים: " + error.message);
+      return [];
+    }
+    const rows = data ?? [];
+    setSurveys(rows);
+    return rows;
+  }, []);
 
   const fetchFeedback = useCallback(async () => {
     setLoading(true);
@@ -873,10 +927,42 @@ export default function GuestFeedbackTabs({ user }) {
       .from("guest_feedback")
       .select("*, guests(name, room)")
       .order("created_at", { ascending: false });
+    await Promise.all([fetchSurveys(), fetchSurveyUi()]);
     if (error) showToast("err", "שגיאה בטעינה: " + error.message);
     else setFeedback(data ?? []);
     setLoading(false);
-  }, []);
+  }, [fetchSurveys, fetchSurveyUi]);
+
+  const handleExportReport = async () => {
+    if (exporting) return;
+    if (!reportFromYmd || !reportToYmd || reportFromYmd > reportToYmd) {
+      showToast("err", "בחר טווח תאריכים תקין לדוח");
+      return;
+    }
+    setExporting(true);
+    try {
+      const [ui, surveyRows] = await Promise.all([
+        fetchSurveyUi(),
+        surveys.length ? Promise.resolve(surveys) : fetchSurveys(),
+      ]);
+      const result = await exportFeedbackServiceReport({
+        feedback,
+        surveys: surveyRows,
+        surveyUi: ui,
+        fromYmd: reportFromYmd,
+        toYmd: reportToYmd,
+        includeArchived: showArchived,
+      });
+      showToast(
+        "ok",
+        `✅ הדוח הורד (${result.counts.negative} שליליים · ${result.counts.feedback} משוב · ${result.counts.surveys} סקרים)`,
+      );
+    } catch (e) {
+      showToast("err", "שגיאה בייצוא: " + (e?.message || "לא ידוע"));
+    } finally {
+      setExporting(false);
+    }
+  };
 
   useEffect(() => { fetchFeedback(); }, [fetchFeedback]);
 
@@ -973,6 +1059,44 @@ export default function GuestFeedbackTabs({ user }) {
             </span>
           )}
         </div>
+      </div>
+
+      <div style={{
+        display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center",
+        marginBottom: 18, padding: "12px 14px", background: "var(--ivory)",
+        borderRadius: 12, border: "1px solid var(--border)",
+      }}>
+        <span style={{ fontSize: 12, fontWeight: 800, color: "var(--text-muted)" }}>דוח לשיפור שירות:</span>
+        <label style={{ fontSize: 12, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 6 }}>
+          מ-
+          <input
+            type="date"
+            value={reportFromYmd}
+            onChange={(e) => setReportFromYmd(e.target.value)}
+            style={{ padding: "6px 8px", borderRadius: 8, border: "1px solid var(--border)", fontFamily: "inherit" }}
+          />
+        </label>
+        <label style={{ fontSize: 12, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 6 }}>
+          עד
+          <input
+            type="date"
+            value={reportToYmd}
+            onChange={(e) => setReportToYmd(e.target.value)}
+            style={{ padding: "6px 8px", borderRadius: 8, border: "1px solid var(--border)", fontFamily: "inherit" }}
+          />
+        </label>
+        <button
+          type="button"
+          className="btn btn-sm"
+          disabled={exporting || loading}
+          onClick={handleExportReport}
+          style={{
+            background: "var(--gold-dark)", color: "#fff", fontWeight: 800,
+            borderRadius: 10, minHeight: 38, marginInlineStart: "auto",
+          }}
+        >
+          {exporting ? "מייצא…" : "📥 דוח משוב לשיפור שירות"}
+        </button>
       </div>
 
       <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>

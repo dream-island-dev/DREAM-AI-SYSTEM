@@ -27,6 +27,8 @@ export function captureStaffDeepLinkFromUrl() {
     phone: params.get("phone") || null,
     guestName: params.get("guestName") || null,
     threadId: params.get("thread") || null,
+    focus: params.get("focus") || null,
+    tab: params.get("tab") || null,
   };
   try {
     sessionStorage.setItem(STORAGE_KEY, JSON.stringify(payload));

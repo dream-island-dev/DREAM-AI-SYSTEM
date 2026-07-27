@@ -15,6 +15,7 @@ import { israelYmd } from "../_shared/automationSchedule.ts";
 import {
   composeExecutiveMorningPulse,
   composeResortDigestMessage,
+  composeSundayFeedbackNudge,
   computeResortDigestStats,
   filterDigestRelevantRules,
   resolveDigestRange,
@@ -23,6 +24,12 @@ import {
   type DigestSurveyRow,
   type DigestTaskRow,
 } from "../_shared/resortDigestStats.ts";
+import { isIsraelSunday } from "../_shared/feedbackDashboardLink.ts";
+import {
+  composeEliadDailyFeedbackLinkBlock,
+  composeEliadFeedbackIntroOneShot,
+  fetchGuestFeedbackDigestStats,
+} from "../_shared/guestFeedbackDigest.ts";
 import { loadStaffNotifyTemplates } from "../_shared/staffNotifyTemplates.ts";
 import { fetchExecutiveTodayOutlook } from "../_shared/resortPulseStats.ts";
 
@@ -44,16 +51,37 @@ serve(async (req: Request) => {
 
   try {
     const url = new URL(req.url);
+    const supabase = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+    );
+
+    // One-shot intro — ?feedback_intro=1 (bypasses digest idempotency).
+    if (url.searchParams.get("feedback_intro") === "1") {
+      const feedbackStats = await fetchGuestFeedbackDigestStats(supabase);
+      const body = composeEliadFeedbackIntroOneShot(feedbackStats);
+      const wamid = await sendWhapiText(CEO_PHONE_DIGITS, body, { noLinkPreview: true });
+      if (!wamid) {
+        return json({ ok: false, error: "whapi_send_failed" });
+      }
+      const { error: convError } = await supabase.from("whatsapp_conversations").insert({
+        phone: CEO_PHONE_DIGITS,
+        guest_id: null,
+        direction: "outbound",
+        message: formatWhapiSuitesConversationLog(body),
+        wa_message_id: wamid,
+        inbox_channel: "whapi",
+        channel: "whapi",
+      });
+      if (convError) console.warn("[resort-digest-cron] feedback_intro log failed:", convError.message);
+      return json({ ok: true, sent: true, mode: "feedback_intro", stats: feedbackStats });
+    }
+
     const periodParam = url.searchParams.get("period");
     if (!isDigestPeriod(periodParam)) {
       return json({ ok: false, error: "invalid_period", hint: "?period=daily|weekly|monthly" }, 400);
     }
     const period = periodParam;
-
-    const supabase = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
-    );
 
     const now = new Date();
     const range = resolveDigestRange(period, now);
@@ -132,6 +160,11 @@ serve(async (req: Request) => {
         assistantForName: "אליעד",
         templates,
       });
+      const feedbackStats = await fetchGuestFeedbackDigestStats(supabase);
+      body += composeEliadDailyFeedbackLinkBlock(feedbackStats);
+      if (isIsraelSunday(now)) {
+        body += composeSundayFeedbackNudge(stats.surveys, { inlineUrl: true, skipLink: true });
+      }
     } else {
       body = composeResortDigestMessage(stats, period, range.label, {
         assistantForName: "אליעד",
