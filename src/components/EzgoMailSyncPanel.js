@@ -402,7 +402,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
 
   const triggerSync = async ({ fullSync = false, searchDate = scanDate } = {}) => {
     if (fullSync && !window.confirm(
-      "סריקה מלאה — ללא dedup, חלון זמן רחב יותר. עלול לקחת דקה. להמשיך?",
+      "סריקה מלאה — ללא dedup, חלון זמן רחב יותר. עלולה לקחת עד כדקה וחצי. להמשיך?",
     )) return;
     setSyncing(true);
     try {

@@ -63,6 +63,16 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 const IMAP_BUDGET_MS = 55_000;
+// Manual "סריקה מלאה" explicitly disables dedup and widens the window to 45 days
+// (see fullSync branch below) — inherently the heaviest possible request (up to 36
+// full message downloads + envelope supplement, no known-id skip). The UI's own
+// confirm dialog already warns the user it "may take a minute", but the shared
+// IMAP_BUDGET_MS (sized for a 15-min unattended cron tick that must not block the
+// rest of whatsapp-cron) cut it off at 55s — shorter than what the UI itself
+// promised, so a full sync could reliably time out doing exactly its job. Manual
+// and full-sync calls are user-initiated and don't block anything else, so they
+// get a wider budget; unattended cron ticks keep the tight one.
+const IMAP_BUDGET_MS_MANUAL = 100_000;
 
 async function loadKnownMessageIds(
   supabase: ReturnType<typeof createClient>,
@@ -109,13 +119,13 @@ async function purgeStaleEzgoMailIngest(
   return purged;
 }
 
-async function withImapBudget<T>(fn: () => Promise<T>): Promise<T> {
+async function withImapBudget<T>(fn: () => Promise<T>, budgetMs = IMAP_BUDGET_MS): Promise<T> {
   return await Promise.race([
     fn(),
     new Promise<T>((_, reject) => {
       setTimeout(
         () => reject(new Error("IMAP timeout — נסה שוב בעוד דקה או המתן ל-cron")),
-        IMAP_BUDGET_MS,
+        budgetMs,
       );
     }),
   ]);
@@ -670,13 +680,15 @@ serve(async (req: Request) => {
       ? new Set<string>()
       : await loadKnownMessageIds(supabase);
 
-    const { messages, meta: imapMeta } = await withImapBudget(() =>
-      fetchEzgoInboxMessages(cfg, manual || fullSync ? 36 : 24, allowlist, {
-        knownMessageIds,
-        fullSync,
-        manual,
-        searchDateYmd,
-      })
+    const { messages, meta: imapMeta } = await withImapBudget(
+      () =>
+        fetchEzgoInboxMessages(cfg, manual || fullSync ? 36 : 24, allowlist, {
+          knownMessageIds,
+          fullSync,
+          manual,
+          searchDateYmd,
+        }),
+      manual || fullSync ? IMAP_BUDGET_MS_MANUAL : IMAP_BUDGET_MS,
     );
 
     let processed = 0;
