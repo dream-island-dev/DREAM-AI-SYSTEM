@@ -44,7 +44,12 @@ import { isStageEffectivelyActive, primeGuestChannelConfig, isWhapiGuestSosActiv
 import { buildRetryStateMap, evaluateRetryGate, RETRY_LOOKBACK_HOURS, type RetryState } from "../_shared/automationRetryGate.ts";
 import { probeWhapiDeviceHealth, persistWhapiHealthToBotConfig } from "../_shared/whapiHealth.ts";
 import { INTER_SEND_DELAY_MS, sleep } from "../_shared/outboundThrottle.ts";
-import { processDuePostCheckoutSurveys, catchUpDepartedTodaySuiteCheckoutSurveys } from "../_shared/postCheckoutSurvey.ts";
+import {
+  processDuePostCheckoutSurveys,
+  catchUpDepartedTodaySuiteCheckoutSurveys,
+  enqueueSuiteDepartureDaySurveyFallback,
+} from "../_shared/postCheckoutSurvey.ts";
+import { processDueGuestClubWaInvites } from "../_shared/guestClubWaInvite.ts";
 import { runWeeklyGuestHallucinationAudit } from "../_shared/guestHallucinationAudit.ts";
 import { managerMailEnabled } from "../_shared/oritAgentMail.ts";
 import { runSigalUrgentComplaintLoop } from "../_shared/oritAgentWorkflow.ts";
@@ -249,11 +254,26 @@ Deno.serve(async (req: Request) => {
       );
     }
 
+    const departureFallback = await enqueueSuiteDepartureDaySurveyFallback(supabase);
+    if (departureFallback.queued > 0) {
+      console.log(
+        `[whatsapp-cron] post_checkout_survey departure_fallback queued=${departureFallback.queued}`,
+      );
+    }
+
     const postCheckoutSurveyResults = await processDuePostCheckoutSurveys(supabase, supabaseUrl, anon);
     if (postCheckoutSurveyResults.length > 0) {
       console.log(
         `[whatsapp-cron] post_checkout_survey processed=${postCheckoutSurveyResults.length} ` +
         `ok=${postCheckoutSurveyResults.filter((r) => r.ok).length}`,
+      );
+    }
+
+    const clubInviteResults = await processDueGuestClubWaInvites(supabase, supabaseUrl, anon);
+    if (clubInviteResults.length > 0) {
+      console.log(
+        `[whatsapp-cron] guest_club_invite processed=${clubInviteResults.length} ` +
+        `ok=${clubInviteResults.filter((r) => r.ok).length}`,
       );
     }
 

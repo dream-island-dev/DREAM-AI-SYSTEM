@@ -662,10 +662,98 @@ export function buildSenderSearchQueryPlan(
   return queries;
 }
 
+/** Widen a sender to its domain for query grouping ("noreply@ezgo.co.il" → "ezgo.co.il"); other senders (e.g. tzalamnadlan@gmail.com) stay exact. */
+export function domainOrSenderKey(sender: string): string {
+  const s = String(sender || "").trim().toLowerCase();
+  if (s.endsWith("@ezgo.co.il") || s === "ezgo.co.il") return "ezgo.co.il";
+  if (s.endsWith("@dream-island.co.il") || s === "dream-island.co.il") return "dream-island.co.il";
+  return s;
+}
+
+const COMBINED_SUBJECT_VARIANTS: Record<string, string[]> = {
+  "ezgo.co.il": ["כניסות", "ויציאות", "Operations"],
+  "dream-island.co.il": ["כניסות", "ויציאות"],
+};
+
+/**
+ * Collapses the whole allowlist into 1-2 native IMAP queries instead of looping
+ * `buildSenderSearchQueryPlan` once per sender (previously ~5-8 round trips PER sender,
+ * ~20+ total for the default 4-sender allowlist — see ezgoMailImap.test.ts's
+ * "each extra query is a real IMAP round trip" comment on buildEzgoReportSearchQueries).
+ * With whatsapp-cron invoking ezgo-mail-sync on every 15-minute tick (unconditionally,
+ * outside CRON_ENABLED — see whatsapp-cron/index.ts), that per-sender fan-out ran ~20
+ * serial IMAP SEARCH round trips roughly 96 times/day even when nothing new had arrived,
+ * which is what made the 55s IMAP_BUDGET_MS budget (ezgo-mail-sync/index.ts) an
+ * intermittent, load-dependent trip rather than a rare one. IMAP `or` accepts an N-ary
+ * array (already relied on for the 3-way subject OR in buildSenderSearchQueryPlan), so
+ * every sender's criteria can be ORed together into ONE query instead of one query per
+ * sender. Native `from`/`subject`/`since`/`before` keys are extension-independent (same
+ * reasoning as buildSenderSearchQueryPlan) so this doesn't depend on Gmail's X-GM-RAW.
+ */
+export function buildCombinedAllowlistSearchPlan(
+  allowlist: string[],
+  searchDays: number | null,
+  searchDateYmd: string | null = null,
+): Array<{ kind: string; search: Record<string, unknown> }> {
+  const keys = [...new Set(allowlist.map(domainOrSenderKey).filter(Boolean))];
+  if (!keys.length) return [];
+
+  const queries: Array<{ kind: string; search: Record<string, unknown> }> = [];
+
+  // Tier 1 — subject-prioritized, ONE query per report domain (not merged across domains).
+  // Each query reuses the exact `{from, or: [{subject}, ...]}` shape buildSenderSearchQueryPlan
+  // already ran successfully in production — merging multiple domains into a single query
+  // would require nesting that shape inside an outer `or` (or-of-or), which is a structurally
+  // different, never-proven-live query shape; keeping one query per domain avoids that risk
+  // entirely while still cutting round trips from one-per-SENDER to one-per-DOMAIN.
+  for (const k of keys) {
+    const variants = COMBINED_SUBJECT_VARIANTS[k];
+    if (!variants) continue;
+    const subjectSearch: Record<string, unknown> = {
+      from: k,
+      or: variants.map((subject) => ({ subject })),
+    };
+    applyImapDateBounds(subjectSearch, searchDays, searchDateYmd);
+    queries.push({ kind: `combined_report_subject_native_${k}`, search: subjectSearch });
+  }
+
+  // Tier 2 — plain combined from-OR (flat, no nesting), always runs (superset safety net;
+  // also the only tier for allowlist entries outside the ezgo/dream-island domains).
+  const domainGroups = keys.map((k) => ({ from: k }));
+  const domainSearch: Record<string, unknown> = domainGroups.length === 1
+    ? domainGroups[0]
+    : { or: domainGroups };
+  applyImapDateBounds(domainSearch, searchDays, searchDateYmd);
+  queries.push({ kind: "combined_domain_native", search: domainSearch });
+
+  return queries;
+}
+
+/**
+ * Gmail-only best-effort attachment supplement — one combined round trip covering both
+ * report domains, replacing the old per-sender buildEzgoReportSearchQueries/
+ * buildDreamIslandReportSearchQueries calls (2 more round trips per matching sender).
+ * Same X-GM-EXT-1 caveat as buildEzgoReportSearchQueries — caller must catch/record.
+ */
+export function buildCombinedAttachmentGmailQuery(
+  allowlist: string[],
+  searchDays: number | null,
+  searchDateYmd: string | null = null,
+): string | null {
+  const keys = [...new Set(allowlist.map(domainOrSenderKey))]
+    .filter((k) => k === "ezgo.co.il" || k === "dream-island.co.il");
+  if (!keys.length) return null;
+  const recency = gmailRecencyOrDateClause(searchDays, searchDateYmd);
+  const fromClause = keys.map((k) => `from:${k}`).join(" OR ");
+  return `in:anywhere ${recency}(${fromClause}) has:attachment`.replace(/\s+/g, " ").trim();
+}
+
 /**
  * `searchUidsForSender` is exported (in addition to being called internally) so its
  * cross-sender query cache is unit-testable with a fake IMAP client — see
  * ezgoMailImap.test.ts for the case two dream-island.co.il senders share a query.
+ * Kept as the fallback path behind buildCombinedAllowlistSearchPlan (see
+ * searchAllowlistedUids) for the rare case the combined queries find nothing at all.
  */
 export async function searchUidsForSender(
   client: ImapFlow,
@@ -743,6 +831,47 @@ async function searchAllowlistedUids(
   perSenderCapOverride?: number,
   searchDateYmd: string | null = null,
 ): Promise<{ uids: number[]; method: string }> {
+  // Combined tier — 2-3 total IMAP round trips for the whole allowlist (see
+  // buildCombinedAllowlistSearchPlan) instead of one pass per sender. This is the fast
+  // path taken on virtually every call, cron or manual, since domain-wide date-bounded
+  // queries almost always match SOMETHING once any report has ever been seen.
+  const combinedUidSet = new Set<number>();
+  const combinedPlan = buildCombinedAllowlistSearchPlan(allowlist, searchDays, searchDateYmd);
+  for (const { kind, search } of combinedPlan) {
+    try {
+      const found = await client.search(search, { uid: true });
+      const sorted = [...(found || [])].sort((a, b) => b - a);
+      if (sorted.length) meta?.reportQueriesUsed.push(kind);
+      for (const uid of sorted) combinedUidSet.add(uid);
+    } catch (e) {
+      meta?.searchErrors.push(`${kind}: ${(e as Error).message}`);
+    }
+  }
+  const attachmentQuery = buildCombinedAttachmentGmailQuery(allowlist, searchDays, searchDateYmd);
+  if (attachmentQuery) {
+    try {
+      const found = await client.search({ gmailRaw: attachmentQuery }, { uid: true });
+      const sorted = [...(found || [])].sort((a, b) => b - a);
+      if (sorted.length) meta?.reportQueriesUsed.push("combined_attachment_gmailraw");
+      for (const uid of sorted) combinedUidSet.add(uid);
+    } catch (e) {
+      meta?.searchErrors.push(`combined_attachment_gmailraw: ${(e as Error).message}`);
+    }
+  }
+
+  if (combinedUidSet.size > 0) {
+    const method = searchDateYmd
+      ? `combined_date_${searchDateYmd}`
+      : searchDays
+        ? `combined_newer_than_${searchDays}d`
+        : "combined_anywhere";
+    const cap = Math.max(limit, perSenderCapOverride ?? EZGO_MAIL_PER_SENDER_MANUAL_CAP);
+    return { uids: [...combinedUidSet].sort((a, b) => b - a).slice(0, cap), method };
+  }
+
+  // Fallback — the old, more expensive per-sender loop. Only reached when the combined
+  // queries above found literally nothing (e.g. a genuinely quiet day-scoped scan, or an
+  // allowlist entry whose grouping the combined tier missed); kept intact as a safety net.
   const perSender = perSenderCapOverride ?? Math.max(
     EZGO_MAIL_PER_SENDER_MIN,
     Math.ceil(limit / Math.max(allowlist.length, 1)),

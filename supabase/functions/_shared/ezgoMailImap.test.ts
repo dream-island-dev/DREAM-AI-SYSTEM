@@ -1,9 +1,12 @@
 import type { ImapFlow } from "npm:imapflow@1.0.168";
 import {
+  buildCombinedAllowlistSearchPlan,
+  buildCombinedAttachmentGmailQuery,
   buildDreamIslandReportSearchQueries,
   buildEzgoReportSearchQueries,
   buildSenderSearchQueryPlan,
   DEFAULT_EZGO_MAIL_SENDERS,
+  domainOrSenderKey,
   EZGO_MAIL_FULL_SYNC_SEARCH_DAYS,
   EZGO_MAIL_PER_SENDER_MANUAL_CAP,
   EZGO_MAIL_PER_SENDER_MIN,
@@ -535,6 +538,101 @@ Deno.test("buildSenderSearchQueryPlan includes dream-island כניסות subject
   }
   const unbounded = plan.find((q) => q.kind === "imap_from");
   if (unbounded) throw new Error("day-scoped plan must not include unbounded imap_from");
+});
+
+Deno.test("domainOrSenderKey widens ezgo.co.il and dream-island.co.il senders to their domain", () => {
+  if (domainOrSenderKey(EZGO_NOREPLY) !== "ezgo.co.il") throw new Error("expected ezgo.co.il grouping");
+  if (domainOrSenderKey(HAGAR) !== "dream-island.co.il") throw new Error("expected dream-island.co.il grouping");
+  if (domainOrSenderKey(RECEPTION) !== "dream-island.co.il") throw new Error("expected dream-island.co.il grouping");
+  if (domainOrSenderKey(MIKE) !== MIKE) throw new Error("expected non-report sender to stay exact");
+});
+
+Deno.test("buildCombinedAllowlistSearchPlan collapses the full default allowlist into a bounded, domain-sized query count", () => {
+  // Root-cause fix: the old per-sender loop issued ~5-8 IMAP round trips PER sender
+  // (~20+ total for these 4 senders) on every whatsapp-cron tick (every 15 minutes,
+  // unconditionally — see whatsapp-cron/index.ts). This is what intermittently blew the
+  // 55s IMAP_BUDGET_MS budget. The combined plan must stay bounded by the number of
+  // distinct DOMAINS (not senders) — one subject query per report domain, plus one
+  // flat combined domain-wide query — never merging domains into a single nested query
+  // (see the comment in buildCombinedAllowlistSearchPlan on why nesting `or` inside `or`
+  // is avoided: it's a query shape never proven against the real IMAP server).
+  const plan = buildCombinedAllowlistSearchPlan(DEFAULT_EZGO_MAIL_SENDERS, 7);
+  if (plan.length > 4) {
+    throw new Error(`expected a small, domain-bounded query count, got ${plan.length}`);
+  }
+  if (plan.length < 1) throw new Error("expected at least one combined query");
+  for (const q of plan) {
+    const orGroup = q.search.or as Array<Record<string, unknown>> | undefined;
+    if (orGroup?.some((entry) => "or" in entry)) {
+      throw new Error(
+        `${q.kind} nests an "or" inside another "or" entry — this shape was the suspected ` +
+          "cause of a live regression (queries silently returning nothing) and must not reappear",
+      );
+    }
+  }
+});
+
+Deno.test("buildCombinedAllowlistSearchPlan's domain-native tier ORs every distinct sender/domain together", () => {
+  const plan = buildCombinedAllowlistSearchPlan(DEFAULT_EZGO_MAIL_SENDERS, 7);
+  const domainQuery = plan.find((p) => p.kind === "combined_domain_native");
+  if (!domainQuery) throw new Error("expected combined_domain_native in the plan");
+  if ("gmailRaw" in domainQuery.search) {
+    throw new Error("combined_domain_native must use native from/or criteria, not gmailRaw");
+  }
+  const orGroup = domainQuery.search.or as Array<{ from: string }> | undefined;
+  const froms = (orGroup || []).map((o) => o.from);
+  for (const expected of ["ezgo.co.il", "dream-island.co.il", MIKE]) {
+    if (!froms.includes(expected)) {
+      throw new Error(`expected combined domain OR-group to include "${expected}", got ${froms.join(",")}`);
+    }
+  }
+  // dream-island.co.il must appear once even though two senders share that domain.
+  if (froms.filter((f) => f === "dream-island.co.il").length !== 1) {
+    throw new Error("expected dream-island.co.il to be deduped to a single OR entry");
+  }
+});
+
+Deno.test("buildCombinedAllowlistSearchPlan emits one subject query per report domain (not merged, not for gmail.com)", () => {
+  const plan = buildCombinedAllowlistSearchPlan(DEFAULT_EZGO_MAIL_SENDERS, 7);
+  const ezgoSubject = plan.find((p) => p.kind === "combined_report_subject_native_ezgo.co.il");
+  const dreamIslandSubject = plan.find((p) => p.kind === "combined_report_subject_native_dream-island.co.il");
+  if (!ezgoSubject) throw new Error("expected a dedicated ezgo.co.il subject query");
+  if (!dreamIslandSubject) throw new Error("expected a dedicated dream-island.co.il subject query");
+  if (ezgoSubject.search.from !== "ezgo.co.il") throw new Error("expected native from:ezgo.co.il, not merged into an outer or");
+  if (dreamIslandSubject.search.from !== "dream-island.co.il") {
+    throw new Error("expected native from:dream-island.co.il, not merged into an outer or");
+  }
+  if (plan.some((p) => p.kind.includes(MIKE))) {
+    throw new Error("gmail.com sender has no report subject convention and must not get a subject query");
+  }
+});
+
+Deno.test("buildCombinedAllowlistSearchPlan applies since/before bounds for a day-scoped scan", () => {
+  const plan = buildCombinedAllowlistSearchPlan(DEFAULT_EZGO_MAIL_SENDERS, null, "2026-07-25");
+  for (const q of plan) {
+    if (!q.search.since || !q.search.before) {
+      throw new Error(`expected since/before on every combined query, missing on ${q.kind}`);
+    }
+  }
+});
+
+Deno.test("buildCombinedAllowlistSearchPlan returns nothing for an empty allowlist", () => {
+  const plan = buildCombinedAllowlistSearchPlan([], 7);
+  if (plan.length !== 0) throw new Error("expected no queries for an empty allowlist");
+});
+
+Deno.test("buildCombinedAttachmentGmailQuery merges both report domains into a single OR query", () => {
+  const query = buildCombinedAttachmentGmailQuery(DEFAULT_EZGO_MAIL_SENDERS, 7);
+  if (!query) throw new Error("expected a combined attachment query");
+  if (!query.includes("from:ezgo.co.il") || !query.includes("from:dream-island.co.il")) {
+    throw new Error(`expected both domains in one query, got: ${query}`);
+  }
+  if (!query.includes("has:attachment")) throw new Error("expected has:attachment clause");
+});
+
+Deno.test("buildCombinedAttachmentGmailQuery returns null when no report-domain sender is allowlisted", () => {
+  const query = buildCombinedAttachmentGmailQuery([MIKE], 7);
+  if (query !== null) throw new Error("expected null for a gmail.com-only allowlist");
 });
 
 Deno.test("extractBodiesFromSource picks nested forward HTML with EZGO table (quoted-printable)", async () => {

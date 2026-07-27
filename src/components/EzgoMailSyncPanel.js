@@ -1012,7 +1012,16 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
                 color: "var(--gold-light)",
               }}
             >
-              <div style={{ fontWeight: 700, fontSize: 13 }}>{ing.subject || "(ללא נושא)"}</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                <div style={{ fontWeight: 700, fontSize: 13 }}>{ing.subject || "(ללא נושא)"}</div>
+                <span style={{
+                  fontSize: 9, fontWeight: 700, padding: "1px 7px", borderRadius: 20,
+                  background: ing.source === "manual_eml" ? "#7C2D12" : "#14532D",
+                  color: ing.source === "manual_eml" ? "#FDBA74" : "#86EFAC",
+                }}>
+                  {ing.source === "manual_eml" ? "📎 הועלה ידנית" : "📧 נמצא בסריקה"}
+                </span>
+              </div>
               <div style={{ fontSize: 11, opacity: 0.75, marginTop: 4 }}>
                 {ing.from_email} · {ing.report_date_ymd || "—"} · {ing.line_count} שורות
               </div>

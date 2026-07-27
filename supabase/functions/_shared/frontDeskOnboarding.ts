@@ -9,6 +9,20 @@ import {
 } from "./staffNotifyTemplates.ts";
 
 export const FRONT_DESK_ONBOARDING_CONFIG_KEY = "front_desk_onboarding_sent";
+export const FRONT_DESK_ATTENTION_LABEL_NOTICE_KEY = "front_desk_attention_label_notice_sent";
+
+/** One-time correction — old briefs tagged requires_attention as «VIP». */
+export function buildFrontDeskAttentionLabelNoticeMessage(): string {
+  return [
+    "אדיר, עדכון חד-פעמי 📌",
+    "",
+    "עד עכשיו בסיכום הבוקר סימנתי לפעמים אורחים עם ⚠VIP — זו הייתה תווית שגויה.",
+    "⚠ = דורש תשומת לב (בקשה, תלונה, שאלה שהבוט העביר לצוות) — לא VIP אמיתי.",
+    "VIP אמיתי (⭐) מוגדר רק בפרופיל האורח במערכת.",
+    "",
+    "מעכשיו התג יופיע כ-⚠דורש תשומת לב.",
+  ].join("\n");
+}
 
 /** Full Hebrew guide — deterministic, no LLM. */
 export function buildFrontDeskCapabilitiesOnboardingMessage(

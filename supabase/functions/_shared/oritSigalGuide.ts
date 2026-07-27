@@ -23,6 +23,7 @@ export const SIGAL_GUIDE_HELP = [
   "2) מכתב מלא — \"תשובה מלאה\"",
   '"כן שלחי" · "תסדרי…" · "סיימתי" · "קישור" (לממשק)',
   '"תלונות פתוחות" / "מה יש לטיפול" — רשימה',
+  '"משוב אורחים" / "מה חדש במשוב" — לוח משוב + וואטסאפ',
   "21:00–05:00 — \"תזמני למחר 8\" במקום שליחה מיידית",
   '"מה מתוזמן" · "בטלי תזמון"',
 ].join("\n");
@@ -45,7 +46,8 @@ export type OritSigalIntent =
   | "show_schedule"
   | "cancel_schedule"
   | "confirm_schedule"
-  | "list_open_complaints";
+  | "list_open_complaints"
+  | "guest_feedback";
 
 function stripForIntent(text: string): string {
   return (text || "")
@@ -80,6 +82,12 @@ export function resolveOritSigalIntent(text: string): OritSigalIntent | null {
     /(מה התלונות|תלונות פתוחות|רשימת תלונות|כמה תלונות|מה פתוח|מה יש לטיפול|מה ממתין|מה מחכה לטיפול)/.test(t)
   ) {
     return "list_open_complaints";
+  }
+
+  if (
+    /(משוב אורחים|מה חדש במשוב|לוח משוב|משובי אורחים|ביקורות אורחים|מה נכתב במשוב)/.test(t)
+  ) {
+    return "guest_feedback";
   }
 
   if (/(מה המצב|איפה אנחנו|מה הסטטוס|מה קורה עם|סטטוס הפנייה|קישור|פתחי במערכת|לינק|בממשק|באפליקציה)/.test(t)) {

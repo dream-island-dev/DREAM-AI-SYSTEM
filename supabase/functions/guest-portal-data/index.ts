@@ -17,6 +17,10 @@ import { formatSpaScheduleDisplay, hasSpaBooking } from "../_shared/spaSchedule.
 import { buildMealsItinerary } from "../_shared/stayMeals.ts";
 import { DEFAULT_SUITES_CTA_URL, normalizeGuestSurveyUi } from "../_shared/guestSurveyUi.ts";
 import { normalizeGuestClubUi } from "../_shared/guestClubUi.ts";
+import {
+  loadGuestClubWaSettings,
+  shouldOfferClubInPortal,
+} from "../_shared/guestClubWaSettings.ts";
 import { isGuestPortalSurveyEligible } from "../_shared/guestSurveyEligibility.ts";
 
 const GOOGLE_REVIEW_URL = Deno.env.get("GOOGLE_REVIEW_URL") ?? "";
@@ -242,6 +246,8 @@ serve(async (req: Request) => {
       console.warn("[guest-portal-data] guest_club_ui fetch failed (defaults):", clubUiErr.message);
     }
     const clubUi = normalizeGuestClubUi(clubUiRow?.config_value ?? null);
+    const clubWaSettings = await loadGuestClubWaSettings(supabase);
+    const portalClubEnabled = shouldOfferClubInPortal(clubWaSettings);
 
     // Thank-you CTAs persist after refresh (club + Google + suites).
     let surveyThankYou: Record<string, unknown> | null = null;
@@ -249,7 +255,7 @@ serve(async (req: Request) => {
       const suitesCta = surveyScores.suites_cta_shown === true;
       const googleCta = surveyScores.google_cta_shown === true;
       const clubSt = String((guest as Record<string, unknown>).club_status ?? "").trim();
-      let clubOffer = suitesCta;
+      let clubOffer = suitesCta && portalClubEnabled;
       if (clubSt === "active" || clubSt === "declined" || clubSt === "opted_out") {
         clubOffer = false;
       }
@@ -278,6 +284,7 @@ serve(async (req: Request) => {
           enable_spa_request_button: enableSpaRequestButton,
           survey_ui: surveyUi,
           club_ui: clubUi,
+          portal_offer_enabled: portalClubEnabled,
         },
       }),
       { headers: { ...CORS, "Content-Type": "application/json" } }

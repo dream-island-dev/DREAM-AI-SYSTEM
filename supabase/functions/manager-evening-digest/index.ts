@@ -3,11 +3,19 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { composeSigalEveningActionPlan } from "../_shared/oritSigalBriefing.ts";
 import { managerDigestEnabled } from "../_shared/oritAgentMail.ts";
 import { resolveOritAlertPhone } from "../_shared/oritAgentWhapiAlert.ts";
+import {
+  composeFeedbackDashboardLinkUrl,
+  messageExpectsFeedbackDashboardLinkFollowUp,
+} from "../_shared/feedbackDashboardLink.ts";
 import { sendWhapiText } from "../_shared/whapiSend.ts";
 import {
   buildSigalOpenComplaintRows,
   israelDigestYmd,
 } from "../_shared/oritSigalDigestRows.ts";
+import {
+  composeSigalGuestFeedbackEveningReminder,
+  fetchGuestFeedbackDigestStats,
+} from "../_shared/guestFeedbackDigest.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -43,6 +51,11 @@ serve(async (req: Request) => {
     todayStart.setHours(0, 0, 0, 0);
     const todayEnd = new Date(todayStart);
     todayEnd.setHours(23, 59, 59, 999);
+
+    const guestFeedbackStats = await fetchGuestFeedbackDigestStats(supabase);
+    const guestFeedbackEveningReminder = composeSigalGuestFeedbackEveningReminder(
+      guestFeedbackStats.openNegative,
+    );
 
     let sent = 0;
     for (const mailbox of mailboxes ?? []) {
@@ -81,16 +94,20 @@ serve(async (req: Request) => {
         .gte("handled_at", todayStart.toISOString())
         .lte("handled_at", todayEnd.toISOString());
 
-      const body = composeSigalEveningActionPlan({
+      let body = composeSigalEveningActionPlan({
         openComplaints,
         otherOpenCount,
         handledToday: handledToday ?? 0,
       });
+      body += guestFeedbackEveningReminder;
 
       const whapiId = await sendWhapiText(phone, body, { noLinkPreview: true });
       if (!whapiId) {
         console.warn("[manager-evening-digest] whapi send failed");
         continue;
+      }
+      if (messageExpectsFeedbackDashboardLinkFollowUp(body)) {
+        await sendWhapiText(phone, composeFeedbackDashboardLinkUrl(), { noLinkPreview: true });
       }
 
       await supabase.from("orit_agent_digest_log").upsert({

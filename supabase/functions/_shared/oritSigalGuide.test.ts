@@ -41,6 +41,12 @@ Deno.test("resolveOritSigalIntent — open complaints list", () => {
   assertEquals(resolveOritSigalIntent("מה יש לטיפול"), "list_open_complaints");
 });
 
+Deno.test("resolveOritSigalIntent — guest feedback pulse", () => {
+  assertEquals(resolveOritSigalIntent("משוב אורחים"), "guest_feedback");
+  assertEquals(resolveOritSigalIntent("מה חדש במשוב"), "guest_feedback");
+  assertEquals(resolveOritSigalIntent("לוח משוב"), "guest_feedback");
+});
+
 Deno.test("resolveOritSigalIntent — intro question", () => {
   assertEquals(resolveOritSigalIntent("מה את עושה בשבילי"), "intro");
   assertEquals(resolveOritSigalIntent("איך את עוזרת לי"), "intro");

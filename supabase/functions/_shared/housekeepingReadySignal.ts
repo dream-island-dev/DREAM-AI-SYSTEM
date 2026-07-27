@@ -55,6 +55,24 @@ export function buildHousekeepingReadySkippedOccupiedLine(result: HousekeepingRe
   return `ℹ️ חדר ${result.roomId} — אורח במשך שהות${name ? ` (${name})` : ""} · לא נדרש מוכן מחדש`;
 }
 
+/** Per-room in-group ack after ready signal — short, all sync outcomes. */
+export function buildHousekeepingReadyAckLine(result: HousekeepingReadyResult): string | null {
+  const { roomId, guestName, action } = result;
+  if (!roomId) return null;
+  const guestPart = guestName?.trim() ? ` — אורח: ${guestName.trim()}` : "";
+  switch (action) {
+    case "updated":
+      return `✅ ${roomId} מוכן${guestPart} — ממתין לאישור מנהל 🔔`;
+    case "already_pending":
+      return `ℹ️ ${roomId} — כבר ממתין לאישור`;
+    case "skipped_occupied":
+      const name = guestName?.trim();
+      return `ℹ️ ${roomId} — אורח במשך שהות${name ? ` (${name})` : ""}`;
+    default:
+      return null;
+  }
+}
+
 export async function applyHousekeepingReadySignal(
   supabase: ReturnType<typeof createClient>,
   opts: {

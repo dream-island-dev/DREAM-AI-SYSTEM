@@ -419,6 +419,7 @@ async function processIngestReplace(
 async function processIngest(
   supabase: ReturnType<typeof createClient>,
   msg: IngestMsg,
+  source: "imap_scan" | "manual_eml" = "imap_scan",
 ): Promise<{ ok: boolean; ingestId?: string; lines?: number; reason?: string }> {
   const bodySnapshot = {
     body_html: msg.bodyHtml?.slice(0, 500_000) || null,
@@ -445,6 +446,7 @@ async function processIngest(
       parse_status: "skipped",
       parse_error: "לא זוהה דוח EZGO (Doc1/Doc2 HTML/טבלה/Excel)",
       body_preview: msg.bodyPreview,
+      source,
       ...bodySnapshot,
     }).select("id").maybeSingle();
     return { ok: true, ingestId: skipped?.id, reason: "unknown_format" };
@@ -461,6 +463,7 @@ async function processIngest(
       parse_status: "failed",
       parse_error: "לא נמצאו שורות הזמנה בדוח",
       body_preview: msg.bodyPreview,
+      source,
       ...bodySnapshot,
     }).select("id").maybeSingle();
     return { ok: false, ingestId: failed?.id, reason: "no_rows" };
@@ -488,6 +491,7 @@ async function processIngest(
       line_count: records.length,
       pending_count: records.length,
       body_preview: msg.bodyPreview,
+      source,
       ...bodySnapshot,
     })
     .select("id")
@@ -626,7 +630,7 @@ serve(async (req: Request) => {
             reason: "לא נמצא דוח EZGO בקובץ או שולח לא מאושר",
           });
         }
-        const result = await processIngest(supabase, msg);
+        const result = await processIngest(supabase, msg, "manual_eml");
         return jsonResponse({
           ok: result.ok,
           ingest_eml: true,

@@ -16,9 +16,9 @@ Read:
 1. Review changes via `git diff` (branch + uncommitted) or files Mike lists.
 2. For `_shared/` changes, run:
    ```bash
-   deno test --no-check --allow-env supabase/functions/_shared/*.test.ts
+   deno test --no-check --allow-env --allow-sys --allow-read supabase/functions/_shared/*.test.ts
    ```
-   (Skip `ezgoMailImap.test.ts` if imapflow/npm deps unavailable — note in report.)
+   (`--allow-sys` is required — without it, `ezgoMailImap.test.ts`'s `imapflow`→`pino` dependency chain throws `NotCapable: Requires sys access to "hostname"` and the whole file aborts with 0 tests run, which looks like "no tests found" rather than a permission gap. Not an npm/deps issue — no need to skip the file. `--allow-read` is required for `ezgoDoc2Parser.test.ts`, which reads a real `.eml` fixture from `scripts/fixtures/`. Expect exactly 2 pre-existing failures in `oritScheduleSend.test.ts` — flagged to Mike, a deliberate `ISRAEL_UTC_OFFSET_HOURS=2, no DST` tradeoff, not a regression.)
 3. Verify strictly:
    - Duplicate functions / missed reuse of `_shared` helpers?
    - **Silence Rule:** `needs_callback` / `human_requested` must NOT mute cron/webhooks/bot?

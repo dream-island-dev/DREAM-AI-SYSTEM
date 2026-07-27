@@ -689,7 +689,7 @@ const FRONT_DESK_EXTRA_TOOL_DEFS: ToolDef[] = [
   {
     name: "get_arrival_desk_brief",
     description:
-      "לוח הגעות דלפק סוויטות — היום ומחר: מי מגיע, מי עם שעת הגעה, מי עדיין בלי שעה (⚠), VIP. " +
+      "לוח הגעות דלפק סוויטות — היום ומחר: מי מגיע, מי עם שעת הגעה, מי עדיין בלי שעה (⚠), דורש תשומת לב (לא VIP). " +
       "לשאלות «מי מגיע היום», «מי בלי שעה», «לוח הגעות».",
     schema: { type: "object", properties: {}, required: [] },
   },

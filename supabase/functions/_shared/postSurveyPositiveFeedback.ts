@@ -2,6 +2,11 @@
 // (same copy as webhook "היה מושלם!" button handler).
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { enqueueGuestClubWaInvite } from "./guestClubWaInvite.ts";
+import {
+  loadGuestClubWaSettings,
+  shouldOfferClubViaWa,
+} from "./guestClubWaSettings.ts";
 import {
   primeGuestChannelConfig,
   shouldRouteGuestOutboundViaWhapiSuites,
@@ -82,6 +87,16 @@ export async function sendPostSurveyPositiveFeedbackWa(
     console.log(
       `[postSurveyPositiveFeedback] sent guest=${guest.id} channel=${channel}`,
     );
+    const settings = await loadGuestClubWaSettings(supabase);
+    if (shouldOfferClubViaWa(settings)) {
+      const clubQueue = await enqueueGuestClubWaInvite(supabase, {
+        guestId: guest.id,
+        source: "positive_feedback_wa",
+      });
+      if (clubQueue.queued) {
+        console.log(`[postSurveyPositiveFeedback] club invite queued guest=${guest.id}`);
+      }
+    }
     return { sent: true };
   } catch (e) {
     const msg = (e as Error).message;

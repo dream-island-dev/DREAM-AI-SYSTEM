@@ -22,6 +22,8 @@
 | אישור קבלה אוטומטי | «קיבלנו את בקשתך, ניצור איתך קשר בהקדם» — פנייה חדשה |
 | שליחה לאורח | **«שלחי לאורח»** מ-XOS (Graph `Mail.Send`) או העתקה ל-Outlook |
 | דייג'סט בוקר | Whatsapp ל-`digest_whatsapp_phone` (או `profiles.phone`) — 06:30 |
+| דייג'סט ערב | 18:00 — סיכום פתוחות |
+| משוב אורחים (יומי) | בלוק בדייג'סט בוקר + תזכורת ערב אם שליליים פתוחים; «משוב אורחים» בסיגל; קישור `/?page=feedback_dashboard` |
 | התראות דחופות (Sigal Pulse) | Whapi מיידי על תלונה / critical / high + קישור `?page=orit_cs_agent&thread=UUID` |
 
 ## 1. Azure App (אבי)

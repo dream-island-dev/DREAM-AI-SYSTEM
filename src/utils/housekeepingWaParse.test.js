@@ -4,8 +4,10 @@ import {
   parseHousekeepingReadyRoomNumbers,
   parseHousekeepingCheckInRoomNumbers,
   parseHousekeepingCheckOutRoomNumbers,
+  looksLikeHousekeepingNearMiss,
+  buildHousekeepingNearMissClarification,
 } from "./housekeepingWaParse";
-import { buildHousekeepingGroupAckMessage } from "./housekeepingReadySignal";
+import { buildHousekeepingGroupAckMessage, buildHousekeepingReadyAckLine } from "./housekeepingReadySignal";
 import { buildHousekeepingCheckInAckLine } from "./housekeepingCheckInSignal";
 
 const REPO_ROOT = path.resolve(__dirname, "../..");
@@ -98,8 +100,23 @@ describe("housekeepingWaParse", () => {
     expect(parseHousekeepingCheckInRoomNumbers("CI 17")).toEqual([17]);
   });
 
-  test("ignores forwarded bubbles", () => {
-    expect(parseHousekeepingReadyRoomNumbers("הועברה\n14✅")).toEqual([]);
+  test("parses checkmark-before-number (✅ 23)", () => {
+    expect(parseHousekeepingReadyRoomNumbers("✅ 23")).toEqual([23]);
+    expect(parseHousekeepingReadyRoomNumbers("✅23")).toEqual([23]);
+    expect(parseHousekeepingReadyRoomNumbers("✅ 6,11,14")).toEqual([6, 11, 14]);
+  });
+
+  test("parses forwarded bubbles — strips label, keeps room signal", () => {
+    expect(parseHousekeepingReadyRoomNumbers("הועברה\n14✅")).toEqual([14]);
+    expect(parseHousekeepingReadyRoomNumbers("הועברה\n✅ 23")).toEqual([23]);
+    expect(parseHousekeepingCheckInRoomNumbers("הועברה\n17 צק אין")).toEqual([17]);
+  });
+
+  test("near-miss gate — short HK anchor only, not long chat", () => {
+    expect(looksLikeHousekeepingNearMiss("✅")).toBe(true);
+    expect(looksLikeHousekeepingNearMiss("מה יש לארוחת צהריים היום בערמונים")).toBe(false);
+    expect(looksLikeHousekeepingNearMiss("14✅")).toBe(false);
+    expect(buildHousekeepingNearMissClarification("✅")).toBe("⚠️ איזה חדר מוכן? (למשל 6✅)");
   });
 
   test("clamps to suite numbers 1–26", () => {
@@ -142,6 +159,18 @@ describe("housekeepingWaParse", () => {
       "✅ רובי 14 מוכן — אורח: ישראל ישראלי — ממתין לאישור מנהל לשליחת הודעה 🔔\n✅ רובי 15 מוכן — ממתין לאישור מנהל לשליחת הודעה 🔔",
     );
     expect(buildHousekeepingGroupAckMessage([])).toBe("");
+  });
+
+  test("ready ack lines for sync outcomes", () => {
+    expect(buildHousekeepingReadyAckLine({
+      roomId: "רובי 14",
+      guestName: "ישראל",
+      action: "updated",
+    })).toBe("✅ רובי 14 מוכן — אורח: ישראל — ממתין לאישור מנהל 🔔");
+    expect(buildHousekeepingReadyAckLine({
+      roomId: "רובי 6",
+      action: "already_pending",
+    })).toBe("ℹ️ רובי 6 — כבר ממתין לאישור");
   });
 
   test("check-in group ack lines", () => {

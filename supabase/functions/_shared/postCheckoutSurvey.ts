@@ -3,6 +3,10 @@
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { israelYmd } from "./automationSchedule.ts";
+import {
+  isPastIsraelLocalTime,
+  loadGuestClubWaSettings,
+} from "./guestClubWaSettings.ts";
 import { isEffectiveSuiteGuest } from "./suiteNames.ts";
 
 export const DEFAULT_POST_CHECKOUT_SURVEY_DELAY_MINUTES = 15;
@@ -271,4 +275,67 @@ export async function catchUpDepartedTodaySuiteCheckoutSurveys(
     console.log(`[postCheckoutSurvey] catch-up departed_today=${today} queued=${queued}`);
   }
   return { scanned: rows?.length ?? 0, queued, retried };
+}
+
+/**
+ * Departure-day fallback: suite guests who never got checkout_fb (no housekeeping Co)
+ * — enqueue survey at configured local time (default 19:00) on departure_date.
+ */
+export async function enqueueSuiteDepartureDaySurveyFallback(
+  supabase: SupabaseClient,
+  now: Date = new Date(),
+): Promise<{ scanned: number; queued: number; skipped?: string }> {
+  const settings = await loadGuestClubWaSettings(supabase);
+  if (!settings.departure_fallback_enabled) {
+    return { scanned: 0, queued: 0, skipped: "fallback_disabled" };
+  }
+  if (!isPastIsraelLocalTime(now, settings.departure_fallback_time)) {
+    return { scanned: 0, queued: 0, skipped: "before_fallback_time" };
+  }
+
+  const today = israelYmd(now);
+  const { data: rows, error } = await supabase
+    .from("guests")
+    .select(
+      "id, status, room, room_type, phone, msg_checkout_fb_sent, msg_survey_invite_sent, departure_date",
+    )
+    .eq("departure_date", today)
+    .eq("msg_checkout_fb_sent", false)
+    .not("phone", "is", null)
+    .neq("status", "cancelled")
+    .in("status", ["checked_in", "checked_out", "room_ready"])
+    .limit(50);
+  if (error) {
+    console.error("[postCheckoutSurvey] departure fallback lookup failed:", error.message);
+    return { scanned: 0, queued: 0, skipped: "lookup_error" };
+  }
+
+  let queued = 0;
+  for (const guest of rows ?? []) {
+    if (!isEffectiveSuiteGuest(guest)) continue;
+    if (guest.msg_survey_invite_sent === true) continue;
+
+    const { data: pending } = await supabase
+      .from("post_checkout_survey_queue")
+      .select("id")
+      .eq("guest_id", guest.id)
+      .eq("status", "pending")
+      .maybeSingle();
+    if (pending) continue;
+
+    const result = await enqueueSuitePostCheckoutSurvey(supabase, {
+      guestId: guest.id,
+      roomId: guest.room ? String(guest.room) : null,
+      source: "departure_day_fallback",
+      delayMinutes: 0,
+    });
+    if (result.queued) queued += 1;
+  }
+
+  if (queued > 0) {
+    console.log(
+      `[postCheckoutSurvey] departure fallback ${today} @${settings.departure_fallback_time} queued=${queued}`,
+    );
+  }
+  return { scanned: rows?.length ?? 0, queued };
 }

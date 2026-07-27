@@ -51,6 +51,7 @@ import {
   PAYMENT_LINK_FAILURE_LABEL,
 } from "../_shared/paymentLinkGuard.ts";
 import { sendWhapiText, cleanPhoneForMention } from "../_shared/whapiSend.ts";
+import { enqueueGuestClubWaInvite } from "../_shared/guestClubWaInvite.ts";
 import { sendWhapiTextGuarded, WhapiRateLimitedError } from "../_shared/whapiVelocityGuard.ts";
 import { buildPreCheckinGuestRequestAdirText } from "../_shared/adirNotifyMessages.ts";
 import { loadStaffNotifyTemplates } from "../_shared/staffNotifyTemplates.ts";
@@ -2566,13 +2567,29 @@ Deno.serve(async (req: Request) => {
           const feedbackReply = scripts["positive_feedback_reply"]?.message_text?.trim()
             ? scripts["positive_feedback_reply"]!.message_text!.replace(/\{\{\s*GOOGLE_REVIEW_URL\s*\}\}/gi, reviewUrl)
             : `שמחנו מאוד לשמוע! 🌟 אם תרצו לשתף את החוויה שלכם — זה יאיר לנו את היום:\n${reviewUrl}\nתודה ענקית ומחכים לכם בפעם הבאה! 💫`;
-          try { await sendReply(phone, feedbackReply, { scripted: true }); } catch (e) { console.error("[webhook] reply error:", (e as Error).message); }
+          let feedbackReplySent = false;
+          try {
+            await sendReply(phone, feedbackReply, { scripted: true });
+            feedbackReplySent = true;
+          } catch (e) { console.error("[webhook] reply error:", (e as Error).message); }
           await insertGuestOutboundIfNotMuted(supabase, {
             phone, guest_id: guestId, message: feedbackReply, wa_message_id: null, intent: "button_reply",
           });
           await saveGuestFeedback(supabase, {
             guestId, phone, sentiment: "positive", text: buttonTitle, source: "post_stay_button",
           });
+          // Only queue the club invite once the guest actually received the positive-feedback
+          // reply — queuing it after a failed send would offer club membership out of context,
+          // with no preceding message the guest can trace it back to.
+          if (guestId && feedbackReplySent) {
+            const clubQueue = await enqueueGuestClubWaInvite(supabase, {
+              guestId,
+              source: "post_stay_button",
+            });
+            if (clubQueue.queued) {
+              console.log(`[webhook] guest_club_invite queued guest=${guestId} source=post_stay_button`);
+            }
+          }
 
         // ── "יש מקום לשיפור 💬" — negative feedback → collect + flag ────────
         } else if (buttonTitle.includes("לשיפור") || buttonTitle.includes("שיפור")) {

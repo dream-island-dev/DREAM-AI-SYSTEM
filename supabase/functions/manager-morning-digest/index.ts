@@ -3,7 +3,19 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { composeSigalMorningActionPlan } from "../_shared/oritSigalBriefing.ts";
 import { managerDigestEnabled } from "../_shared/oritAgentMail.ts";
 import { resolveOritAlertPhone } from "../_shared/oritAgentWhapiAlert.ts";
+import {
+  composeFeedbackDashboardLinkUrl,
+  isIsraelSunday,
+  messageExpectsFeedbackDashboardLinkFollowUp,
+} from "../_shared/feedbackDashboardLink.ts";
 import { sendWhapiText } from "../_shared/whapiSend.ts";
+import { israelYmd } from "../_shared/automationSchedule.ts";
+import { addDaysYmd } from "../_shared/resortPulseStats.ts";
+import {
+  composeSundayFeedbackNudge,
+  computeSurveyDigestStats,
+  type DigestSurveyRow,
+} from "../_shared/resortDigestStats.ts";
 import { fetchOritDraftText } from "../_shared/oritAgentWorkflow.ts";
 import {
   persistOritThreadAnalysis,
@@ -13,6 +25,10 @@ import {
   buildSigalOpenComplaintRows,
   israelDigestYmd,
 } from "../_shared/oritSigalDigestRows.ts";
+import {
+  composeSigalGuestFeedbackMorningNudge,
+  fetchGuestFeedbackDigestStats,
+} from "../_shared/guestFeedbackDigest.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -51,6 +67,9 @@ serve(async (req: Request) => {
     yesterdayStart.setHours(0, 0, 0, 0);
     const yesterdayEnd = new Date(yesterdayStart);
     yesterdayEnd.setHours(23, 59, 59, 999);
+
+    const guestFeedbackStats = await fetchGuestFeedbackDigestStats(supabase);
+    const guestFeedbackMorningNudge = composeSigalGuestFeedbackMorningNudge(guestFeedbackStats);
 
     let sent = 0;
     for (const mailbox of mailboxes ?? []) {
@@ -116,17 +135,37 @@ serve(async (req: Request) => {
         .gte("handled_at", yesterdayStart.toISOString())
         .lte("handled_at", yesterdayEnd.toISOString());
 
-      const body = composeSigalMorningActionPlan({
+      let body = composeSigalMorningActionPlan({
         openComplaints,
         leadsLast24h: leadsLast24h ?? 0,
         otherOpenCount,
         handledYesterday: handledYesterday ?? 0,
       });
 
+      if (isIsraelSunday(new Date())) {
+        const yesterdayYmd = addDaysYmd(israelYmd(), -1);
+        const { data: surveyRows, error: surveyErr } = await supabase
+          .from("guest_surveys")
+          .select("overall_experience, patio, live_kitchen, chestnut_restaurant, service_team, spa, cleaning_maintenance")
+          .eq("visit_date", yesterdayYmd);
+        if (surveyErr) {
+          console.warn("[manager-morning-digest] guest_surveys fetch failed (non-blocking):", surveyErr.message);
+        }
+        const surveyStats = computeSurveyDigestStats(
+          (surveyRows ?? []) as DigestSurveyRow[],
+        );
+        body += composeSundayFeedbackNudge(surveyStats, { inlineUrl: false });
+      }
+
+      body += guestFeedbackMorningNudge;
+
       const whapiId = await sendWhapiText(phone, body, { noLinkPreview: true });
       if (!whapiId) {
         console.warn("[manager-morning-digest] whapi send failed");
         continue;
+      }
+      if (messageExpectsFeedbackDashboardLinkFollowUp(body)) {
+        await sendWhapiText(phone, composeFeedbackDashboardLinkUrl(), { noLinkPreview: true });
       }
 
       await supabase.from("orit_agent_digest_log").upsert({

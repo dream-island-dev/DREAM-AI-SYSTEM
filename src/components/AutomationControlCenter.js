@@ -37,6 +37,11 @@ import {
 } from "../utils/pipelineSegment";
 import { scriptKeyFriendly, isGarbledDbText, BOT_SCRIPT_FRIENDLY } from "../utils/botScriptLabels";
 import DreamBotGuestControlPanel from "./DreamBotGuestControlPanel";
+import GuestClubWaControlPanel, { GUEST_CLUB_WA_SETTINGS_KEY, serializeGuestClubWaSettings } from "./GuestClubWaControlPanel";
+import {
+  DEFAULT_GUEST_CLUB_WA_SETTINGS,
+  normalizeGuestClubWaSettings,
+} from "../utils/guestClubWaSettings";
 import { israelTodayStr, israelDateOffsetStr } from "../utils/guestTiming";
 import {
   Stage1ArrivalControlPanel,
@@ -69,7 +74,7 @@ const APPLIES_TO_LABELS = {
 };
 
 // Pipeline grouping for Timeline tab — mirrors migration 094/099 bifurcation.
-const SHARED_STAGE_KEYS = new Set(["pre_arrival_2d", "stage_2_arrival", "stage_2_pay"]);
+const SHARED_STAGE_KEYS = new Set(["pre_arrival_2d", "stage_2_arrival", "stage_2_pay", "guest_club_invite"]);
 const SUITE_PIPELINE_KEYS = new Set([
   "night_before", "morning_suite", "mid_stay", "checkout_fb", "room_ready",
 ]);
@@ -119,6 +124,7 @@ const SKIP_REASON_LABELS = {
   missing_room_assignment: "אין חדר/סוויטה משויכת — אוטומציה חסומה",
   missing_phone: "אין טלפון בפרופיל — עדכנו בפרופיל 360",
   suite_checkout_survey_via_housekeeping: "ממתין ל-Co מקבוצת חדרנות",
+  departure_day_fallback: "fallback יום עזיבה (ללא Co)",
 };
 
 /** Suite post-checkout survey — delay after housekeeping «Co» (postCheckoutSurvey.ts). */
@@ -1012,6 +1018,16 @@ function StageCard({
           {/* ── Timing ── */}
           <div>
             <label style={{ fontWeight: 600, fontSize: 13, marginBottom: 6, display: "block" }}>⏱ תזמון</label>
+            {stage.stage_key === "guest_club_invite" && (
+              <div style={{
+                fontSize: 12.5, fontWeight: 700, color: "var(--black)", lineHeight: 1.55,
+                padding: "10px 12px", borderRadius: 10, marginBottom: 10,
+                background: "rgba(201,169,110,0.12)", border: "1px solid var(--gold)",
+              }}>
+                🌴 נשלח אוטומטית אחרי הודעת ביקורת גוגל (positive_feedback_reply).
+                השהייה נקבעת בלוח «מועדון + משוב» למעלה. קישור בפורטל: #club
+              </div>
+            )}
             {stage.stage_key === "checkout_fb" && (
               <div style={{
                 fontSize: 12.5, fontWeight: 700, color: "var(--black)", lineHeight: 1.55,
@@ -1019,7 +1035,7 @@ function StageCard({
                 background: "rgba(3,105,161,0.08)", border: "1px solid #0369A1",
               }}>
                 🏨 סוויטות: הסקר נשלח אוטומטית אחרי <strong>Co</strong> מקבוצת «צ׳ק אין צ׳ק אאוט» —
-                לא לפי השעה הקבועה למטה. התור נבדק בכל ריצת cron (~15 דק׳).
+                או ב-fallback ביום העזיבה (הגדרה בלוח «מועדון + משוב» למעלה). התור נבדק בכל ריצת cron (~15 דק׳).
               </div>
             )}
             {stage.stage_key === "checkout_fb" && (
@@ -2058,6 +2074,7 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
   const [postCheckoutSurveyDelayMinutes, setPostCheckoutSurveyDelayMinutes] = useState(
     DEFAULT_POST_CHECKOUT_SURVEY_DELAY_MINUTES,
   );
+  const [clubWaSettings, setClubWaSettings] = useState(DEFAULT_GUEST_CLUB_WA_SETTINGS);
   const [stage1AutoAppendCta, setStage1AutoAppendCta] = useState(true);
 
   // ── Live queue state ──────────────────────────────────────────────────────
@@ -2147,7 +2164,7 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
   const fetchStages = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) { setLoadingStages(false); return; }
     setLoadingStages(true);
-    const [{ data: stageRows, error: stageErr }, { data: scriptRows, error: scriptErr }, { data: delayRow }, { data: stage1CtaRow }] = await Promise.all([
+    const [{ data: stageRows, error: stageErr }, { data: scriptRows, error: scriptErr }, { data: delayRow }, { data: stage1CtaRow }, { data: clubWaRow }] = await Promise.all([
       supabase.from("automation_stages").select("*").order("sequence_order"),
       supabase.from("bot_scripts").select("script_key, message_text"),
       supabase.from("bot_config").select("config_value")
@@ -2155,6 +2172,9 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
         .maybeSingle(),
       supabase.from("bot_config").select("config_value")
         .eq("config_key", STAGE1_AUTO_APPEND_CTA_KEY)
+        .maybeSingle(),
+      supabase.from("bot_config").select("config_value")
+        .eq("config_key", GUEST_CLUB_WA_SETTINGS_KEY)
         .maybeSingle(),
     ]);
     if (stageErr) showToast("err", "שגיאה בטעינת שלבים: " + stageErr.message);
@@ -2187,6 +2207,7 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
     setPostCheckoutSurveyDelayMinutes(
       clampPostCheckoutSurveyDelayMinutes(delayRow?.config_value),
     );
+    setClubWaSettings(normalizeGuestClubWaSettings(clubWaRow?.config_value));
     setStage1AutoAppendCta(parseStage1AutoAppendCta(stage1CtaRow?.config_value));
     setLoadingStages(false);
   }, [showToast]);
@@ -2315,6 +2336,20 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
     setPostCheckoutSurveyDelayMinutes(clamped);
     showToast("ok", `✅ סקר סוויטות: ${clamped} דקות אחרי Co`);
   }, [showToast]);
+
+  const saveGuestClubWaSettings = useCallback(async (nextSettings) => {
+    const normalized = normalizeGuestClubWaSettings(nextSettings ?? clubWaSettings);
+    const { error } = await supabase
+      .from("bot_config")
+      .update({ config_value: serializeGuestClubWaSettings(normalized) })
+      .eq("config_key", GUEST_CLUB_WA_SETTINGS_KEY);
+    if (error) {
+      showToast("err", "שגיאה בשמירת הגדרות מועדון: " + error.message);
+      return;
+    }
+    setClubWaSettings(normalized);
+    showToast("ok", "✅ הגדרות מועדון + משוב נשמרו");
+  }, [showToast, clubWaSettings]);
 
   const probeWhapiDevice = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) return;
@@ -2856,8 +2891,17 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
             ⚙️ עריכת תזמון/תוכן כאן <strong>חיה</strong> — whatsapp-cron ו-whatsapp-send קוראים בפועל מהטבלה הזו ומחליטים לפיה
             מתי ומה לשלוח לאורחים. הפעלה/כיבוי או שינוי שלב כאן משפיע ישירות על מה שהאורח מקבל בוואטסאפ, לא רק על מה שמוצג בלוח.
             <br />
-            שלב 1 (אישור הגעה): אם האורח סונכרן אחרי מועד ה-T-2 — השלב מופיע כ־«⚠ פספס מועד» עם כפתור «שלח» / בחירה מרובה + «📱 שגר דרך מכשיר הסוויטות». ה-cron לא שולח אוטומטית אחרי שפספס (למנוע ספאם). שלב 2: נשלח מיד כשהאורח לוחץ «כן מגיעים», מופיע גם ב<strong>תור חי</strong> לאורחים שאישרו וטרם קיבלו. <code>offset_hours</code> משפיע רק על תזמון cron/תור (גיבוי), לא על לחיצת האורח.
+            שלב 1 (אישור הגעה): אם האורח סונכרן אחרי מועד ה-T-2 — השלב מופיע כ־«⚠ פספס מועד» עם כפתור «שלח» / בחירה מרובה + «📱 שגר דרך מכשיר הסוויטות». ה-cron לא שולח אוטומטית אחרי שפספס (למנוע ספאם).             שלב 2: נשלח מיד כשהאורח לוחץ «כן מגיעים», מופיע גם ב<strong>תור חי</strong> לאורחים שאישרו וטרם קיבלו. <code>offset_hours</code> משפיע רק על תזמון cron/תור (גיבוי), לא על לחיצת האורח.
           </div>
+
+          <GuestClubWaControlPanel
+            settings={clubWaSettings}
+            onSettingsChange={setClubWaSettings}
+            onSaveSettings={(next) => saveGuestClubWaSettings(next)}
+            checkoutDelayMinutes={postCheckoutSurveyDelayMinutes}
+            onCheckoutDelayChange={setPostCheckoutSurveyDelayMinutes}
+            onCheckoutDelaySave={() => savePostCheckoutSurveyDelay(postCheckoutSurveyDelayMinutes)}
+          />
 
           {loadingStages ? (
             <div style={{ textAlign: "center", padding: 60, color: "var(--text-muted)" }}>⏳ טוען שלבים...</div>

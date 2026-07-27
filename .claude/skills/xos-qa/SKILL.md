@@ -11,7 +11,7 @@ Invoke the **qa-gate** subagent (or act as qa-gate if unavailable).
 ## Steps
 1. Read `CLAUDE.md` and `docs/xos_agent_playbook.md` §8.3.
 2. Run `git diff` on branch changes (committed + uncommitted).
-3. If `_shared/` touched: `deno test --no-check --allow-env supabase/functions/_shared/*.test.ts`
+3. If `_shared/` touched: `deno test --no-check --allow-env --allow-sys --allow-read supabase/functions/_shared/*.test.ts`
 4. Apply §8.3 checklist strictly.
 5. Output P0 table or **`PASSED QA`**.
 

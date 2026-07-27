@@ -317,6 +317,7 @@ const PIPELINE_SESSION_SCRIPT: Record<string, string> = {
   spa_warmup_daypass:   "spa_warmup_daypass",
   survey_invite_daypass: "survey_invite_daypass",
   spa_upsell_daypass:   "spa_upsell_daypass",
+  guest_club_invite:    "guest_club_invite",
 };
 
 // ── Synchronous day-of-week aware timing helper ───────────────────────────────
@@ -412,6 +413,7 @@ const GUEST_FLAG: Record<string, string> = {
   night_before_daypass: "msg_pre_arrival_sent",
   stage_2_arrival:     "msg_stage_2_arrival_sent",
   survey_invite_daypass: "msg_survey_invite_sent",
+  guest_club_invite:     "msg_club_invite_sent",
   spa_warmup_daypass:    "msg_spa_warmup_sent",
   spa_upsell_daypass:    "msg_spa_upsell_sent",
 };
@@ -2520,7 +2522,7 @@ serve(async (req: Request) => {
     const DAY_PASS_ALLOWED_TRIGGERS = new Set([
       "pre_arrival_2d", "stage_2_arrival", "night_before_daypass", "morning_welcome",
       "mid_stay_daypass", "checkout_fb_daypass", "spa_warmup_daypass", "survey_invite_daypass",
-      "spa_upsell_daypass",
+      "spa_upsell_daypass", "guest_club_invite",
     ]);
     // isEffectiveDayPassGuest (not raw room_type): a suite-room guest mis-tagged
     // day_guest must NOT be run through day-pass restrictions (P0, session 125).

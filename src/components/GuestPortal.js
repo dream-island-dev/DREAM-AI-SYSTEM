@@ -215,6 +215,70 @@ function SpaRequestConfirmModal({ open, busy, onConfirm, onCancel }) {
   );
 }
 
+// ── Guest Club deep link (#club from WA invite) ─────────────────────────────
+function ClubDeepLinkSection({ guest, token, clubUi, onToast }) {
+  const [clubStatus, setClubStatus] = useState(guest?.club_status ?? null);
+  const [clubBusy, setClubBusy] = useState(false);
+  const club = normalizeGuestClubUi(clubUi ?? DEFAULT_GUEST_CLUB_UI);
+  const showHashClub = typeof window !== "undefined"
+    && window.location.hash.replace("#", "").toLowerCase() === "club";
+
+  useEffect(() => {
+    if (!showHashClub) return;
+    const el = document.getElementById("club");
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [showHashClub, guest?.id]);
+
+  if (!showHashClub || guest?.status === "cancelled") return null;
+
+  const effectiveStatus = clubStatus || guest?.club_status;
+  if (effectiveStatus === "declined" || effectiveStatus === "opted_out") return null;
+
+  async function handleClubAction(action, profile) {
+    if (clubBusy) return;
+    setClubBusy(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("guest-portal-club", {
+        body: { token, action, ...profile },
+      });
+      if (error || !data?.ok) {
+        if (data?.error === "guest_birthday_required") throw new Error("guest_birthday_required");
+        throw new Error(data?.error ?? error?.message ?? "שגיאה");
+      }
+      setClubStatus(data.status || (action === "join" ? "active" : "declined"));
+      onToast(
+        action === "join"
+          ? "✅ נרשמתם למועדון — נשמח לעדכן אתכם בהצעות והטבות בלעדיות"
+          : "בסדר גמור — תודה בכל זאת 🙏",
+      );
+    } catch (e) {
+      onToast(
+        e?.message === "guest_birthday_required"
+          ? "נא למלא תאריך לידה כדי להצטרף למועדון"
+          : "⚠️ לא הצלחנו לעדכן — נסו שוב מאוחר יותר",
+      );
+    } finally {
+      setClubBusy(false);
+    }
+  }
+
+  return (
+    <div id="club" style={{ padding: "0 16px 36px", scrollMarginTop: 24 }}>
+      <GlassPanel title={club.title}>
+        {effectiveStatus === "active" ? (
+          <div style={{ padding: "16px" }}>
+            <GuestClubOfferCard ui={club} status="active" />
+          </div>
+        ) : (
+          <div style={{ padding: "8px 12px 16px" }}>
+            <GuestClubOfferCard ui={club} busy={clubBusy} onAction={handleClubAction} />
+          </div>
+        )}
+      </GlassPanel>
+    </div>
+  );
+}
+
 // ── Guest Experience Survey ────────────────────────────────────────────────
 // MVP audience: day-pass + spa that day (guest.survey_eligible, server-
 // authoritative — guest-portal-data). Labels from portalConfig.survey_ui
@@ -803,6 +867,7 @@ function SuiteView({ guest, phase, countdown, upsellItems, token, onToast, onUps
       <ItineraryPanel guest={guest} onSpaRequest={onSpaRequest} spaBusy={spaBusy} showSpaRequest={showSpaRequest} />
       <SecurePaymentButton guest={guest} />
       <SurveySection guest={guest} token={token} onToast={onToast} surveyUi={surveyUi} clubUi={clubUi} />
+      <ClubDeepLinkSection guest={guest} token={token} clubUi={clubUi} onToast={onToast} />
       <SuiteQuickActions />
 
       {/* Pre-Order module (DB-driven, suite + all items) */}
@@ -878,6 +943,7 @@ function DayUseView({ guest, phase, countdown, upsellItems, token, onToast, onUp
 
       <SecurePaymentButton guest={guest} />
       <SurveySection guest={guest} token={token} onToast={onToast} surveyUi={surveyUi} clubUi={clubUi} />
+      <ClubDeepLinkSection guest={guest} token={token} clubUi={clubUi} onToast={onToast} />
 
       {/* Focused activity info panel */}
       <div style={{ padding: "0 16px 20px" }}>

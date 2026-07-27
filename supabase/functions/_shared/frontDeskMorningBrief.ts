@@ -44,6 +44,9 @@ const ALERT_TYPE_LABEL_HE: Record<string, string> = {
   arrival_eta: "🕐 שעת הגעה",
 };
 
+/** Shown next to arrival lines when guests.requires_attention — not guest_profile.vip_status. */
+export const ARRIVAL_DESK_ATTENTION_TAG = " ⚠דורש תשומת לב";
+
 const GUEST_STATUS_LABEL_HE: Record<string, string> = {
   pending:     "ממתין",
   expected:    "צפוי",
@@ -54,7 +57,7 @@ const GUEST_STATUS_LABEL_HE: Record<string, string> = {
 };
 
 function formatGuestLine(g: ArrivalDeskGuestRow, dayLabel: string): string {
-  const attn = g.requires_attention ? " ⚠VIP" : "";
+  const attn = g.requires_attention ? ARRIVAL_DESK_ATTENTION_TAG : "";
   const time = g.arrival_time?.trim() ? ` ${g.arrival_time}` : "";
   const status = GUEST_STATUS_LABEL_HE[g.status] ?? g.status;
   return `• ${g.name ?? "—"} — ${g.room ?? "—"} (${dayLabel})${time}${attn} [${status}]`;

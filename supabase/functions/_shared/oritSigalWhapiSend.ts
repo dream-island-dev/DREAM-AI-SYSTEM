@@ -4,6 +4,10 @@ import {
   composeOritCsMobileLinkUrl,
   messageExpectsOritCsLinkFollowUp,
 } from "./oritGuestOutbound.ts";
+import {
+  composeFeedbackDashboardLinkUrl,
+  messageExpectsFeedbackDashboardLinkFollowUp,
+} from "./feedbackDashboardLink.ts";
 import { sendWhapiText } from "./whapiSend.ts";
 
 export type OritSigalWhapiSendOpts = { threadId?: string | null };
@@ -25,8 +29,14 @@ async function maybeSendLinkFollowUp(
   opts?: OritSigalWhapiSendOpts,
 ): Promise<boolean> {
   const threadId = opts?.threadId?.trim();
-  if (!threadId || !messageExpectsOritCsLinkFollowUp(body)) return true;
-  return sendOritCsMobileLinkFollowUp(phone, threadId);
+  if (threadId && messageExpectsOritCsLinkFollowUp(body)) {
+    if (!await sendOritCsMobileLinkFollowUp(phone, threadId)) return false;
+  }
+  if (messageExpectsFeedbackDashboardLinkFollowUp(body)) {
+    const whapiId = await sendWhapiText(phone, composeFeedbackDashboardLinkUrl(), { noLinkPreview: true });
+    if (!whapiId) return false;
+  }
+  return true;
 }
 
 export async function sendOritSigalWhapiText(

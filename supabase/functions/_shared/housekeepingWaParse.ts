@@ -1,5 +1,5 @@
 // Parse signals from the housekeeping WhatsApp group (צ'ק אין צ'ק אאוט).
-// Ready: N✅ / ready / מוכן → bell (ממתין לאישור).
+// Ready: N✅ / ✅ N / ready / מוכן → bell (ממתין לאישור).
 // Check-in: N צ'ק אין / CI N / check in → guests.checked_in + room תפוס.
 // Check-out: Co N / N co / צ'ק אאוט → guests.checked_out + room לניקיון.
 //
@@ -7,12 +7,11 @@
 // e.g. "4,5\nצ׳ק אין" or "4 5\n✅". Pending rooms accumulate across bare-number
 // lines until an action-only or inline-multi line consumes them.
 //
+// Forwarded bubbles ("הועברה") are stripped — content is parsed, not skipped.
+//
 // ✅ is the primary, authoritative signal that a room is clean/ready — it always
 // wins. A line that happens to mention "צ'ק אין" (check-in) alongside a ✅ is
-// still a READY signal, not a check-in one: in practice ✅ always arrives first
-// (room turned over), and staff only type "N צ'ק אין" later, in its own message
-// with no ✅, once the guest actually walks in. So: line has ✅ → ready only,
-// never check-in. Line has check-in phrasing with NO ✅ → check-in only.
+// still a READY signal, not a check-in one.
 
 const MIN_ROOM = 1;
 const MAX_ROOM = 26;
@@ -29,11 +28,16 @@ function normalizeHousekeepingLine(line: string): string {
     .replace(/ציק/g, "צק");
 }
 
-/** Whole-message skip (forwarded bubbles). */
-const FORWARDED_RE = /הועברה/i;
+/** Strip forwarded label lines/prefixes — do not drop the room signal. */
+const FORWARDED_LINE_RE = /^(?:הועברה|forwarded)$/i;
+const FORWARDED_PREFIX_RE = /^הועברה\s*/i;
 
 /** ✅ always takes priority over check-in phrasing in the same line — see header note. */
 const HAS_CHECKMARK_RE = /✅/;
+
+/** Housekeeping anchor tokens — used for near-miss gate (not LLM). */
+const HK_ANCHOR_RE =
+  /✅|מוכן|\bready\b|\bco\b|check\s*[- ]?\s*(?:in|out)|צק\s*א(?:ין|אוט)/i;
 
 /** Per-line exclusions for READY parser only (check-in / check-out have their own parsers). */
 const READY_EXCLUDE_LINE_RE =
@@ -112,6 +116,11 @@ const READY_INLINE_MULTI_CHECKMARK_RE = new RegExp(
   `^(?:room\\s*)?(${ROOM_LIST_FRAGMENT})\\s*✅$`,
   "i",
 );
+/** "✅ 4,5" / "✅ 4 5" */
+const READY_CHECKMARK_BEFORE_LIST_RE = new RegExp(
+  `^✅\\s*(?:room\\s*)?(${ROOM_LIST_FRAGMENT})$`,
+  "i",
+);
 const READY_INLINE_MULTI_WORD_RE = new RegExp(
   `^(?:room\\s*)?(${ROOM_LIST_FRAGMENT})\\s+(?:מוכן|ready|is\\s+ready|si\\s+ready)$`,
   "i",
@@ -155,6 +164,30 @@ function applyPendingRooms(rooms: Set<number>, pending: number[]): void {
   for (const n of pending) rooms.add(n);
 }
 
+function stripForwardedLine(line: string): string {
+  const t = line.trim();
+  if (!t) return "";
+  if (FORWARDED_LINE_RE.test(t)) return "";
+  return t.replace(FORWARDED_PREFIX_RE, "").trim();
+}
+
+/** Remove forwarded noise; keep room signals from staff forwards. */
+export function normalizeHousekeepingBody(text: string): string {
+  const lines = String(text ?? "")
+    .split(/\r?\n/)
+    .map(stripForwardedLine)
+    .filter(Boolean);
+  return lines.join("\n").trim();
+}
+
+function hasSuiteRangeNumber(body: string): boolean {
+  for (const m of body.matchAll(/\b(\d{1,2})\b/g)) {
+    const n = parseInt(m[1], 10);
+    if (inSuiteRange(n)) return true;
+  }
+  return false;
+}
+
 function matchCheckInRoom(line: string): string | undefined {
   let m = line.match(CHECKIN_LINE_RE);
   if (m) return m[1];
@@ -171,18 +204,91 @@ function isCheckInLine(line: string): boolean {
   return CHECKIN_ACTION_ONLY_RE.test(line);
 }
 
-/** Exported for tests via src/utils mirror — keep patterns in sync. */
-export function parseHousekeepingCheckInRoomNumbers(text: string): number[] {
-  const body = String(text ?? "").trim();
-  if (!body || FORWARDED_RE.test(body)) return [];
+function parseReadyFromNormalizedBody(body: string): number[] {
+  const rooms = new Set<number>();
+  let pending: number[] = [];
 
+  for (const line of body.split(/\r?\n/)) {
+    const t = normalizeHousekeepingLine(line.trim());
+    if (!t || READY_EXCLUDE_LINE_RE.test(t)) continue;
+    if (isCheckInLine(t) && !HAS_CHECKMARK_RE.test(t)) continue;
+    if (CHECKOUT_PREFIX_RE.test(t) || CHECKOUT_SUFFIX_RE.test(t)) continue;
+
+    // "14✅", "7 ✅", "Room 14 ✅"
+    let m = t.match(/^(?:room\s*)?(\d{1,2})\s*✅/i);
+    if (m) {
+      addRoom(rooms, m[1]);
+      continue;
+    }
+
+    // "✅ 14", "✅23"
+    m = t.match(/^✅\s*(?:room\s*)?(\d{1,2})$/i);
+    if (m) {
+      addRoom(rooms, m[1]);
+      continue;
+    }
+
+    m = t.match(READY_INLINE_MULTI_CHECKMARK_RE);
+    if (m) {
+      addRoomsFromList(rooms, m[1]);
+      pending = [];
+      continue;
+    }
+
+    m = t.match(READY_CHECKMARK_BEFORE_LIST_RE);
+    if (m) {
+      addRoomsFromList(rooms, m[1]);
+      pending = [];
+      continue;
+    }
+
+    m = t.match(/^(?:room\s*)?(\d{1,2})\s*(?:מוכן|ready|is\s+ready|si\s+ready)\b/i);
+    if (m) {
+      addRoom(rooms, m[1]);
+      continue;
+    }
+
+    m = t.match(READY_INLINE_MULTI_WORD_RE);
+    if (m) {
+      addRoomsFromList(rooms, m[1]);
+      pending = [];
+      continue;
+    }
+
+    if (READY_ACTION_ONLY_RE.test(t) && pending.length) {
+      applyPendingRooms(rooms, pending);
+      pending = [];
+      continue;
+    }
+
+    m = t.match(/^room\s+(\d{1,2})\s*✅/i);
+    if (m) {
+      addRoom(rooms, m[1]);
+      continue;
+    }
+
+    m = t.match(/(?:^|\s)(?:room\s*)?(\d{1,2})\s+(?:מוכן|ready|is\s+ready|si\s+ready)\s*✅?/i);
+    if (m) {
+      addRoom(rooms, m[1]);
+      continue;
+    }
+
+    const bare = extractBareRoomNumbers(t);
+    if (bare.length) {
+      pending.push(...bare);
+    }
+  }
+
+  return [...rooms].sort((a, b) => a - b);
+}
+
+function parseCheckInFromNormalizedBody(body: string): number[] {
   const rooms = new Set<number>();
   let pending: number[] = [];
 
   for (const line of body.split(/\r?\n/)) {
     const t = normalizeHousekeepingLine(line.trim());
     if (!t) continue;
-    // ✅ wins — a line with a checkmark is a ready signal, not a check-in one.
     if (HAS_CHECKMARK_RE.test(t)) continue;
 
     const room = matchCheckInRoom(t);
@@ -219,11 +325,7 @@ export function parseHousekeepingCheckInRoomNumbers(text: string): number[] {
   return [...rooms].sort((a, b) => a - b);
 }
 
-/** "Co 23" / "24 co" / Hebrew צ'ק אאוט — staff physical checkout signal. */
-export function parseHousekeepingCheckOutRoomNumbers(text: string): number[] {
-  const body = String(text ?? "").trim();
-  if (!body || FORWARDED_RE.test(body)) return [];
-
+function parseCheckOutFromNormalizedBody(body: string): number[] {
   const rooms = new Set<number>();
   let pending: number[] = [];
 
@@ -231,7 +333,6 @@ export function parseHousekeepingCheckOutRoomNumbers(text: string): number[] {
     const t = normalizeHousekeepingLine(line.trim());
     if (!t) continue;
     if (HAS_CHECKMARK_RE.test(t)) continue;
-    // Never steal a check-in line.
     if (isCheckInLine(t)) continue;
 
     let m = t.match(CHECKOUT_PREFIX_RE);
@@ -278,75 +379,51 @@ export function parseHousekeepingCheckOutRoomNumbers(text: string): number[] {
   return [...rooms].sort((a, b) => a - b);
 }
 
+/** Exported for tests via src/utils mirror — keep patterns in sync. */
+export function parseHousekeepingCheckInRoomNumbers(text: string): number[] {
+  const body = normalizeHousekeepingBody(text);
+  if (!body) return [];
+  return parseCheckInFromNormalizedBody(body);
+}
+
+/** "Co 23" / "24 co" / Hebrew צ'ק אאוט — staff physical checkout signal. */
+export function parseHousekeepingCheckOutRoomNumbers(text: string): number[] {
+  const body = normalizeHousekeepingBody(text);
+  if (!body) return [];
+  return parseCheckOutFromNormalizedBody(body);
+}
+
 export function parseHousekeepingReadyRoomNumbers(text: string): number[] {
-  const body = String(text ?? "").trim();
-  if (!body || FORWARDED_RE.test(body)) return [];
+  const body = normalizeHousekeepingBody(text);
+  if (!body) return [];
+  return parseReadyFromNormalizedBody(body);
+}
 
-  const rooms = new Set<number>();
-  let pending: number[] = [];
+/**
+ * Near-miss gate — short messages with HK anchor but no successful parse.
+ * Long multi-line chat / prose → silent (no clarification spam).
+ */
+export function looksLikeHousekeepingNearMiss(text: string): boolean {
+  const body = normalizeHousekeepingBody(text);
+  if (!body) return false;
 
-  for (const line of body.split(/\r?\n/)) {
-    const t = normalizeHousekeepingLine(line.trim());
-    if (!t || READY_EXCLUDE_LINE_RE.test(t)) continue;
-    // Skip lines that are check-in-only (handled separately) — but ✅ always
-    // overrides check-in phrasing in the same line (see header note).
-    if (isCheckInLine(t) && !HAS_CHECKMARK_RE.test(t)) continue;
-    // Skip checkout-only lines (handled by check-out parser).
-    if (CHECKOUT_PREFIX_RE.test(t) || CHECKOUT_SUFFIX_RE.test(t)) continue;
+  const lineCount = body.split(/\r?\n/).filter(Boolean).length;
+  if (lineCount > 4 || body.length > 120) return false;
+  if (!HK_ANCHOR_RE.test(body)) return false;
 
-    // "14✅", "7 ✅", "Room 14 ✅"
-    let m = t.match(/^(?:room\s*)?(\d{1,2})\s*✅/i);
-    if (m) {
-      addRoom(rooms, m[1]);
-      continue;
-    }
+  if (parseHousekeepingReadyRoomNumbers(text).length > 0) return false;
+  if (parseHousekeepingCheckInRoomNumbers(text).length > 0) return false;
+  if (parseHousekeepingCheckOutRoomNumbers(text).length > 0) return false;
 
-    m = t.match(READY_INLINE_MULTI_CHECKMARK_RE);
-    if (m) {
-      addRoomsFromList(rooms, m[1]);
-      pending = [];
-      continue;
-    }
+  if (HAS_CHECKMARK_RE.test(body) && !hasSuiteRangeNumber(body)) return true;
+  return hasSuiteRangeNumber(body);
+}
 
-    // "14 מוכן", "22 ready", "Room 2 is ready ✅", "6 si ready ✅"
-    m = t.match(/^(?:room\s*)?(\d{1,2})\s*(?:מוכן|ready|is\s+ready|si\s+ready)\b/i);
-    if (m) {
-      addRoom(rooms, m[1]);
-      continue;
-    }
-
-    m = t.match(READY_INLINE_MULTI_WORD_RE);
-    if (m) {
-      addRoomsFromList(rooms, m[1]);
-      pending = [];
-      continue;
-    }
-
-    if (READY_ACTION_ONLY_RE.test(t) && pending.length) {
-      applyPendingRooms(rooms, pending);
-      pending = [];
-      continue;
-    }
-
-    // "Room 7 ✅" / "Room 10 ✅" (number after Room)
-    m = t.match(/^room\s+(\d{1,2})\s*✅/i);
-    if (m) {
-      addRoom(rooms, m[1]);
-      continue;
-    }
-
-    // Inline: "22 ready ✅" mid-sentence
-    m = t.match(/(?:^|\s)(?:room\s*)?(\d{1,2})\s+(?:מוכן|ready|is\s+ready|si\s+ready)\s*✅?/i);
-    if (m) {
-      addRoom(rooms, m[1]);
-      continue;
-    }
-
-    const bare = extractBareRoomNumbers(t);
-    if (bare.length) {
-      pending.push(...bare);
-    }
+/** One-line Hebrew clarification — only when looksLikeHousekeepingNearMiss is true. */
+export function buildHousekeepingNearMissClarification(text: string): string {
+  const body = normalizeHousekeepingBody(text);
+  if (HAS_CHECKMARK_RE.test(body) && !hasSuiteRangeNumber(body)) {
+    return "⚠️ איזה חדר מוכן? (למשל 6✅)";
   }
-
-  return [...rooms].sort((a, b) => a - b);
+  return "⚠️ לא הבנתי — איזה חדר? (למשל 6✅ / 6 צק אין / 6 co)";
 }

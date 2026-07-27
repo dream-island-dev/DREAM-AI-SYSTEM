@@ -40,6 +40,10 @@ import {
   fetchSigalOpenThreadsForMailbox,
 } from "./oritSigalDigestRows.ts";
 import {
+  composeSigalGuestFeedbackPulse,
+  fetchGuestFeedbackDigestStats,
+} from "./guestFeedbackDigest.ts";
+import {
   SIGAL_GUIDE_ACK,
   SIGAL_GUIDE_CONFIRM,
   SIGAL_GUIDE_FULL,
@@ -780,6 +784,15 @@ async function showOpenComplaintsPulse(
   await sendOritSigalWhapiLongText(phoneDigits, body);
 }
 
+async function showGuestFeedbackPulse(
+  supabase: SupabaseClient,
+  phoneDigits: string,
+): Promise<void> {
+  const stats = await fetchGuestFeedbackDigestStats(supabase);
+  const body = composeSigalGuestFeedbackPulse(stats);
+  await sendOritSigalWhapiLongText(phoneDigits, body);
+}
+
 async function markThreadClosed(
   supabase: SupabaseClient,
   phone: string,
@@ -1048,6 +1061,11 @@ export async function handleOritSigalChat(
 
   if (intent === "list_open_complaints") {
     await showOpenComplaintsPulse(supabase, phoneDigits);
+    return;
+  }
+
+  if (intent === "guest_feedback") {
+    await showGuestFeedbackPulse(supabase, phoneDigits);
     return;
   }
 

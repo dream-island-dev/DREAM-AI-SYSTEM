@@ -47,7 +47,7 @@ Deno.test("composeArrivalDeskBrief — splits today/tomorrow and missing time", 
   assertEquals(brief.todayMissingTime, 1);
   assertEquals(brief.tomorrowTotal, 1);
   assertEquals(brief.summary.includes("בלי שעה (1)"), true);
-  assertEquals(brief.summary.includes("⚠VIP"), true);
+  assertEquals(brief.summary.includes("⚠דורש תשומת לב"), true);
 });
 
 Deno.test("buildFrontDeskMorningMessage — includes power hints and stats, no tomorrow clutter", () => {

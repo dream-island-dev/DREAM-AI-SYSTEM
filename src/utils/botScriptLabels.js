@@ -24,6 +24,8 @@ export const BOT_SCRIPT_FRIENDLY = {
   mid_stay_daypass:         "בדיקת שלום באמצע הביקור (שלב 4 — בילוי יומי)",
   checkout_fb:              "בקשת משוב לאחר העזיבה (שלב 5 — טקסט חופשי)",
   checkout_fb_daypass:      "בקשת משוב לאחר הביקור (שלב 5 — בילוי יומי)",
+  guest_club_invite:        "הצטרפות למועדון (אחרי ביקורת חיובית)",
+  survey_invite_daypass:    "סקר חוויית אורח (בילוי יומי)",
   night_before_daypass:     "תזכורת ערב לפני — בילוי יומי (שלב 2.5)",
   morning_daypass:          "בוקר הגעה — בילוי יומי (שלב 3)",
 };

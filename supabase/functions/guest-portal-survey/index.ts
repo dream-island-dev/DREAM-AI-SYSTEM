@@ -26,6 +26,10 @@ import {
   resolveSurveyVisitDate,
 } from "../_shared/guestSurveyEligibility.ts";
 import { sendPostSurveyPositiveFeedbackWa } from "../_shared/postSurveyPositiveFeedback.ts";
+import {
+  loadGuestClubWaSettings,
+  shouldOfferClubInPortal,
+} from "../_shared/guestClubWaSettings.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin":  "*",
@@ -172,8 +176,11 @@ serve(async (req: Request) => {
       ? (surveyUi.suites_cta_url || DEFAULT_SUITES_CTA_URL)
       : null;
 
-    // Club offer only after a positive survey (same gate as suites CTA).
-    let clubOffer = suitesCtaShown;
+    const clubWaSettings = await loadGuestClubWaSettings(supabase);
+    const portalClubEnabled = shouldOfferClubInPortal(clubWaSettings);
+
+    // Club offer in portal only when staff enables portal_offer (default: WA-only after review).
+    let clubOffer = suitesCtaShown && portalClubEnabled;
     const { data: clubRow } = await supabase
       .from("guest_club_members")
       .select("status")
@@ -197,8 +204,8 @@ serve(async (req: Request) => {
     }
 
     let waFollowUpSent = false;
-    // Defer Google-review WA until club flow completes when club offer is shown.
-    // If already a member (no club offer), send immediately.
+    // Defer Google-review WA until club flow completes when portal club offer is shown.
+    // WA-only club path: send positive_feedback immediately (club invite queues after).
     if (suitesCtaShown && guest.phone && !clubOffer) {
       const waResult = await sendPostSurveyPositiveFeedbackWa(supabase, {
         id: guest.id as number,

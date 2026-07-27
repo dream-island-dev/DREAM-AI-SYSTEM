@@ -7,6 +7,7 @@
 // Invoke: GET/POST .../front-desk-morning-cron
 // Manual re-send: ?force=1 (bypasses idempotency for today)
 // Capabilities guide only: ?onboarding_only=1 (resends onboarding; skips daily brief)
+// Attention-label correction only: ?attention_notice_only=1
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -21,7 +22,9 @@ import {
 } from "../_shared/frontDeskMorningBrief.ts";
 import {
   buildFrontDeskCapabilitiesOnboardingMessage,
+  buildFrontDeskAttentionLabelNoticeMessage,
   FRONT_DESK_ONBOARDING_CONFIG_KEY,
+  FRONT_DESK_ATTENTION_LABEL_NOTICE_KEY,
 } from "../_shared/frontDeskOnboarding.ts";
 import { loadStaffNotifyTemplates } from "../_shared/staffNotifyTemplates.ts";
 
@@ -51,6 +54,35 @@ async function markOnboardingSent(supabase: ReturnType<typeof createClient>): Pr
   if (error) console.warn("[front-desk-morning-cron] onboarding flag upsert failed:", error.message);
 }
 
+async function isAttentionLabelNoticeSent(supabase: ReturnType<typeof createClient>): Promise<boolean> {
+  const { data } = await supabase
+    .from("bot_config")
+    .select("config_value")
+    .eq("config_key", FRONT_DESK_ATTENTION_LABEL_NOTICE_KEY)
+    .maybeSingle();
+  return String(data?.config_value ?? "").trim().toLowerCase() === "true";
+}
+
+async function markAttentionLabelNoticeSent(supabase: ReturnType<typeof createClient>): Promise<void> {
+  const { error } = await supabase.from("bot_config").upsert(
+    { config_key: FRONT_DESK_ATTENTION_LABEL_NOTICE_KEY, config_value: "true" },
+    { onConflict: "config_key" },
+  );
+  if (error) console.warn("[front-desk-morning-cron] attention-label notice flag upsert failed:", error.message);
+}
+
+async function sendAttentionLabelNotice(
+  supabase: ReturnType<typeof createClient>,
+  phone: string,
+): Promise<{ sent: boolean; wamid: string | null }> {
+  const body = buildFrontDeskAttentionLabelNoticeMessage();
+  const wamid = await sendWhapiText(phone, body, { noLinkPreview: true });
+  if (!wamid) return { sent: false, wamid: null };
+  await logOutbound(supabase, phone, body, wamid);
+  await markAttentionLabelNoticeSent(supabase);
+  return { sent: true, wamid };
+}
+
 async function logOutbound(
   supabase: ReturnType<typeof createClient>,
   phone: string,
@@ -77,8 +109,9 @@ serve(async (req: Request) => {
     const url = new URL(req.url);
     const force = url.searchParams.get("force") === "1";
     const onboardingOnly = url.searchParams.get("onboarding_only") === "1";
+    const attentionNoticeOnly = url.searchParams.get("attention_notice_only") === "1";
 
-    if (!onboardingOnly && !frontDeskMorningEnabled()) {
+    if (!onboardingOnly && !attentionNoticeOnly && !frontDeskMorningEnabled()) {
       return json({ ok: true, skipped: true, reason: "FRONT_DESK_MORNING_ENABLED=false" });
     }
 
@@ -89,6 +122,20 @@ serve(async (req: Request) => {
 
     const phone = resolveAdirNotifyPhoneDigits();
     const templates = await loadStaffNotifyTemplates(supabase);
+
+    if (attentionNoticeOnly) {
+      const { sent, wamid } = await sendAttentionLabelNotice(supabase, phone);
+      if (!sent) {
+        return json({ ok: false, error: "attention_notice_whapi_send_failed" });
+      }
+      return json({
+        ok: true,
+        sent: true,
+        type: "attention_notice_only",
+        phone,
+        wa_message_id: wamid,
+      });
+    }
 
     if (onboardingOnly) {
       const onboardingBody = buildFrontDeskCapabilitiesOnboardingMessage(templates);
@@ -123,6 +170,18 @@ serve(async (req: Request) => {
 
     const onboardingAlreadySent = await isOnboardingSent(supabase);
     let onboardingSentNow = false;
+
+    const attentionNoticeAlreadySent = await isAttentionLabelNoticeSent(supabase);
+    let attentionNoticeSentNow = false;
+
+    if (!attentionNoticeAlreadySent) {
+      const { sent } = await sendAttentionLabelNotice(supabase, phone);
+      if (!sent) {
+        return json({ ok: false, error: "attention_notice_whapi_send_failed" });
+      }
+      attentionNoticeSentNow = true;
+      await new Promise((r) => setTimeout(r, 2500));
+    }
 
     if (!onboardingAlreadySent) {
       const onboardingBody = buildFrontDeskCapabilitiesOnboardingMessage(templates);
@@ -167,6 +226,7 @@ serve(async (req: Request) => {
       today_arrivals: stats.brief.todayTotal,
       missing_time: stats.brief.todayMissingTime,
       onboarding_sent_now: onboardingSentNow,
+      attention_notice_sent_now: attentionNoticeSentNow,
       forced: force,
     });
   } catch (e) {

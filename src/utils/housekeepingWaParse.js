@@ -15,9 +15,13 @@ function normalizeHousekeepingLine(line) {
     .replace(/ציק/g, "צק");
 }
 
-const FORWARDED_RE = /הועברה/i;
+const FORWARDED_LINE_RE = /^(?:הועברה|forwarded)$/i;
+const FORWARDED_PREFIX_RE = /^הועברה\s*/i;
 
 const HAS_CHECKMARK_RE = /✅/;
+
+const HK_ANCHOR_RE =
+  /✅|מוכן|\bready\b|\bco\b|check\s*[- ]?\s*(?:in|out)|צק\s*א(?:ין|אוט)/i;
 
 const READY_EXCLUDE_LINE_RE =
   /ממתין|\bcheck\s*[- ]?\s*out\b|\bco\b|\bout\b|יצאו|צ['׳']ק\s*אא?וט|צק\s*אא?וט/i;
@@ -84,6 +88,10 @@ const READY_INLINE_MULTI_CHECKMARK_RE = new RegExp(
   `^(?:room\\s*)?(${ROOM_LIST_FRAGMENT})\\s*✅$`,
   "i",
 );
+const READY_CHECKMARK_BEFORE_LIST_RE = new RegExp(
+  `^✅\\s*(?:room\\s*)?(${ROOM_LIST_FRAGMENT})$`,
+  "i",
+);
 const READY_INLINE_MULTI_WORD_RE = new RegExp(
   `^(?:room\\s*)?(${ROOM_LIST_FRAGMENT})\\s+(?:מוכן|ready|is\\s+ready|si\\s+ready)$`,
   "i",
@@ -126,6 +134,29 @@ function applyPendingRooms(rooms, pending) {
   for (const n of pending) rooms.add(n);
 }
 
+function stripForwardedLine(line) {
+  const t = line.trim();
+  if (!t) return "";
+  if (FORWARDED_LINE_RE.test(t)) return "";
+  return t.replace(FORWARDED_PREFIX_RE, "").trim();
+}
+
+export function normalizeHousekeepingBody(text) {
+  const lines = String(text ?? "")
+    .split(/\r?\n/)
+    .map(stripForwardedLine)
+    .filter(Boolean);
+  return lines.join("\n").trim();
+}
+
+function hasSuiteRangeNumber(body) {
+  for (const m of body.matchAll(/\b(\d{1,2})\b/g)) {
+    const n = parseInt(m[1], 10);
+    if (inSuiteRange(n)) return true;
+  }
+  return false;
+}
+
 function matchCheckInRoom(line) {
   let m = line.match(CHECKIN_LINE_RE);
   if (m) return m[1];
@@ -142,10 +173,83 @@ function isCheckInLine(line) {
   return CHECKIN_ACTION_ONLY_RE.test(line);
 }
 
-export function parseHousekeepingCheckInRoomNumbers(text) {
-  const body = String(text ?? "").trim();
-  if (!body || FORWARDED_RE.test(body)) return [];
+function parseReadyFromNormalizedBody(body) {
+  const rooms = new Set();
+  let pending = [];
 
+  for (const line of body.split(/\r?\n/)) {
+    const t = normalizeHousekeepingLine(line.trim());
+    if (!t || READY_EXCLUDE_LINE_RE.test(t)) continue;
+    if (isCheckInLine(t) && !HAS_CHECKMARK_RE.test(t)) continue;
+    if (CHECKOUT_PREFIX_RE.test(t) || CHECKOUT_SUFFIX_RE.test(t)) continue;
+
+    let m = t.match(/^(?:room\s*)?(\d{1,2})\s*✅/i);
+    if (m) {
+      addRoom(rooms, m[1]);
+      continue;
+    }
+
+    m = t.match(/^✅\s*(?:room\s*)?(\d{1,2})$/i);
+    if (m) {
+      addRoom(rooms, m[1]);
+      continue;
+    }
+
+    m = t.match(READY_INLINE_MULTI_CHECKMARK_RE);
+    if (m) {
+      addRoomsFromList(rooms, m[1]);
+      pending = [];
+      continue;
+    }
+
+    m = t.match(READY_CHECKMARK_BEFORE_LIST_RE);
+    if (m) {
+      addRoomsFromList(rooms, m[1]);
+      pending = [];
+      continue;
+    }
+
+    m = t.match(/^(?:room\s*)?(\d{1,2})\s*(?:מוכן|ready|is\s+ready|si\s+ready)\b/i);
+    if (m) {
+      addRoom(rooms, m[1]);
+      continue;
+    }
+
+    m = t.match(READY_INLINE_MULTI_WORD_RE);
+    if (m) {
+      addRoomsFromList(rooms, m[1]);
+      pending = [];
+      continue;
+    }
+
+    if (READY_ACTION_ONLY_RE.test(t) && pending.length) {
+      applyPendingRooms(rooms, pending);
+      pending = [];
+      continue;
+    }
+
+    m = t.match(/^room\s+(\d{1,2})\s*✅/i);
+    if (m) {
+      addRoom(rooms, m[1]);
+      continue;
+    }
+
+    m = t.match(/(?:^|\s)(?:room\s*)?(\d{1,2})\s+(?:מוכן|ready|is\s+ready|si\s+ready)\s*✅?/i);
+    if (m) {
+      addRoom(rooms, m[1]);
+      continue;
+    }
+
+    const bare = extractBareRoomNumbers(t);
+    if (bare.length) {
+      pending.push(...bare);
+    }
+  }
+
+  return [...rooms].sort((a, b) => a - b);
+}
+
+function parseCheckInFromNormalizedBody(body) {
   const rooms = new Set();
   let pending = [];
 
@@ -188,10 +292,7 @@ export function parseHousekeepingCheckInRoomNumbers(text) {
   return [...rooms].sort((a, b) => a - b);
 }
 
-export function parseHousekeepingCheckOutRoomNumbers(text) {
-  const body = String(text ?? "").trim();
-  if (!body || FORWARDED_RE.test(body)) return [];
-
+function parseCheckOutFromNormalizedBody(body) {
   const rooms = new Set();
   let pending = [];
 
@@ -245,68 +346,44 @@ export function parseHousekeepingCheckOutRoomNumbers(text) {
   return [...rooms].sort((a, b) => a - b);
 }
 
+export function parseHousekeepingCheckInRoomNumbers(text) {
+  const body = normalizeHousekeepingBody(text);
+  if (!body) return [];
+  return parseCheckInFromNormalizedBody(body);
+}
+
+export function parseHousekeepingCheckOutRoomNumbers(text) {
+  const body = normalizeHousekeepingBody(text);
+  if (!body) return [];
+  return parseCheckOutFromNormalizedBody(body);
+}
+
 export function parseHousekeepingReadyRoomNumbers(text) {
-  const body = String(text ?? "").trim();
-  if (!body || FORWARDED_RE.test(body)) return [];
+  const body = normalizeHousekeepingBody(text);
+  if (!body) return [];
+  return parseReadyFromNormalizedBody(body);
+}
 
-  const rooms = new Set();
-  let pending = [];
+export function looksLikeHousekeepingNearMiss(text) {
+  const body = normalizeHousekeepingBody(text);
+  if (!body) return false;
 
-  for (const line of body.split(/\r?\n/)) {
-    const t = normalizeHousekeepingLine(line.trim());
-    if (!t || READY_EXCLUDE_LINE_RE.test(t)) continue;
-    if (isCheckInLine(t) && !HAS_CHECKMARK_RE.test(t)) continue;
-    if (CHECKOUT_PREFIX_RE.test(t) || CHECKOUT_SUFFIX_RE.test(t)) continue;
+  const lineCount = body.split(/\r?\n/).filter(Boolean).length;
+  if (lineCount > 4 || body.length > 120) return false;
+  if (!HK_ANCHOR_RE.test(body)) return false;
 
-    let m = t.match(/^(?:room\s*)?(\d{1,2})\s*✅/i);
-    if (m) {
-      addRoom(rooms, m[1]);
-      continue;
-    }
+  if (parseHousekeepingReadyRoomNumbers(text).length > 0) return false;
+  if (parseHousekeepingCheckInRoomNumbers(text).length > 0) return false;
+  if (parseHousekeepingCheckOutRoomNumbers(text).length > 0) return false;
 
-    m = t.match(READY_INLINE_MULTI_CHECKMARK_RE);
-    if (m) {
-      addRoomsFromList(rooms, m[1]);
-      pending = [];
-      continue;
-    }
+  if (HAS_CHECKMARK_RE.test(body) && !hasSuiteRangeNumber(body)) return true;
+  return hasSuiteRangeNumber(body);
+}
 
-    m = t.match(/^(?:room\s*)?(\d{1,2})\s*(?:מוכן|ready|is\s+ready|si\s+ready)\b/i);
-    if (m) {
-      addRoom(rooms, m[1]);
-      continue;
-    }
-
-    m = t.match(READY_INLINE_MULTI_WORD_RE);
-    if (m) {
-      addRoomsFromList(rooms, m[1]);
-      pending = [];
-      continue;
-    }
-
-    if (READY_ACTION_ONLY_RE.test(t) && pending.length) {
-      applyPendingRooms(rooms, pending);
-      pending = [];
-      continue;
-    }
-
-    m = t.match(/^room\s+(\d{1,2})\s*✅/i);
-    if (m) {
-      addRoom(rooms, m[1]);
-      continue;
-    }
-
-    m = t.match(/(?:^|\s)(?:room\s*)?(\d{1,2})\s+(?:מוכן|ready|is\s+ready|si\s+ready)\s*✅?/i);
-    if (m) {
-      addRoom(rooms, m[1]);
-      continue;
-    }
-
-    const bare = extractBareRoomNumbers(t);
-    if (bare.length) {
-      pending.push(...bare);
-    }
+export function buildHousekeepingNearMissClarification(text) {
+  const body = normalizeHousekeepingBody(text);
+  if (HAS_CHECKMARK_RE.test(body) && !hasSuiteRangeNumber(body)) {
+    return "⚠️ איזה חדר מוכן? (למשל 6✅)";
   }
-
-  return [...rooms].sort((a, b) => a - b);
+  return "⚠️ לא הבנתי — איזה חדר? (למשל 6✅ / 6 צק אין / 6 co)";
 }

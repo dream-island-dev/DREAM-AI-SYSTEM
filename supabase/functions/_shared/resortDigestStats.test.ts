@@ -19,6 +19,7 @@ import {
   composeExecutiveMorningPulse,
   composePulseAttentionLines,
   composeResortDigestMessage,
+  composeSundayFeedbackNudge,
   composeYesterdayPulseLine,
   filterDigestRelevantRules,
   formatCappedList,
@@ -544,4 +545,20 @@ Deno.test("composeResortDigestMessage: renders anomaly line when present", () =>
   const body = composeResortDigestMessage(stats, "weekly", "2026-07-05–2026-07-11");
   assertEquals(body.includes("🚩 חריגות:"), true);
   assertEquals(body.includes("A — 3× הדברה"), true);
+});
+
+Deno.test("composeSundayFeedbackNudge — inline URL for Eliad, label for Sigal", () => {
+  const withSurveys = composeSundayFeedbackNudge(
+    { count: 2, avgOverall: 2.5, lowScoreCount: 1 },
+    { inlineUrl: true },
+  );
+  assertEquals(withSurveys.includes("משוב אורחים"), true);
+  assertEquals(withSurveys.includes("אתמול: 2 סקרים"), true);
+  assertEquals(withSurveys.includes("page=feedback_dashboard"), true);
+  assertEquals(withSurveys.includes("הקישור בהודעה הבאה"), false);
+
+  const sigal = composeSundayFeedbackNudge(null, { inlineUrl: false });
+  assertEquals(sigal.includes("אין סקרים חדשים אתמול"), true);
+  assertEquals(sigal.includes("הקישור בהודעה הבאה"), true);
+  assertEquals(sigal.includes("page=feedback_dashboard"), false);
 });

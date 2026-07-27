@@ -15,3 +15,20 @@ export function buildHousekeepingGroupAckMessage(items) {
   }
   return lines.join("\n");
 }
+
+export function buildHousekeepingReadyAckLine(result) {
+  const { roomId, guestName, action } = result ?? {};
+  if (!roomId) return null;
+  const guestPart = guestName?.trim() ? ` — אורח: ${guestName.trim()}` : "";
+  switch (action) {
+    case "updated":
+      return `✅ ${roomId} מוכן${guestPart} — ממתין לאישור מנהל 🔔`;
+    case "already_pending":
+      return `ℹ️ ${roomId} — כבר ממתין לאישור`;
+    case "skipped_occupied":
+      const name = guestName?.trim();
+      return `ℹ️ ${roomId} — אורח במשך שהות${name ? ` (${name})` : ""}`;
+    default:
+      return null;
+  }
+}

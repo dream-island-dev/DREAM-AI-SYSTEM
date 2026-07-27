@@ -63,10 +63,12 @@ import {
   parseHousekeepingReadyRoomNumbers,
   parseHousekeepingCheckInRoomNumbers,
   parseHousekeepingCheckOutRoomNumbers,
+  looksLikeHousekeepingNearMiss,
+  buildHousekeepingNearMissClarification,
 } from "../_shared/housekeepingWaParse.ts";
 import {
   applyHousekeepingReadySignal,
-  buildHousekeepingGroupAckMessage,
+  buildHousekeepingReadyAckLine,
 } from "../_shared/housekeepingReadySignal.ts";
 import {
   applyHousekeepingCheckInSignal,
@@ -1677,6 +1679,16 @@ serve(async (req: Request) => {
         const checkInRooms = parseHousekeepingCheckInRoomNumbers(msg.text);
         const checkOutRooms = parseHousekeepingCheckOutRoomNumbers(msg.text);
         if (readyRooms.length === 0 && checkInRooms.length === 0 && checkOutRooms.length === 0) {
+          let nearMissAck = false;
+          if (looksLikeHousekeepingNearMiss(msg.text)) {
+            const clarify = buildHousekeepingNearMissClarification(msg.text);
+            try {
+              await sendWhapiText(msg.chatId, clarify, { noLinkPreview: true });
+              nearMissAck = true;
+            } catch (e) {
+              console.warn(`[whapi-webhook] housekeeping near-miss ack failed for ${msg.id}:`, (e as Error).message);
+            }
+          }
           await ingestStaffGroupMessage(supabase, {
             waMessageId: msg.id,
             chatId: msg.chatId,
@@ -1691,7 +1703,7 @@ serve(async (req: Request) => {
           results.push({
             id: msg.id,
             channel: "housekeeping",
-            ignored: "no_housekeeping_pattern",
+            ignored: nearMissAck ? "hk_near_miss_clarify" : "no_housekeeping_pattern",
             chat_id: msg.chatId,
           });
           continue;
@@ -1751,11 +1763,7 @@ serve(async (req: Request) => {
         }
 
         const ackLines = [
-          ...buildHousekeepingGroupAckMessage(
-            readySignals
-              .filter((s) => s.action === "updated" && s.roomId)
-              .map((s) => ({ roomId: s.roomId as string, guestName: s.guestName })),
-          ).split("\n").filter(Boolean),
+          ...readySignals.map(buildHousekeepingReadyAckLine).filter((l): l is string => !!l),
           ...checkInSignals.map(buildHousekeepingCheckInAckLine).filter((l): l is string => !!l),
           ...checkOutSignals.map(buildHousekeepingCheckOutAckLine).filter((l): l is string => !!l),
         ];
