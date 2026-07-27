@@ -9,13 +9,18 @@ import {
 Deno.test("normalizeGuestClubWaSettings defaults", () => {
   const s = normalizeGuestClubWaSettings(null);
   assertEquals(s.wa_invite_enabled, true);
-  assertEquals(s.portal_offer_enabled, false);
+  assertEquals(s.portal_offer_enabled, true);
   assertEquals(s.departure_fallback_time, "19:00");
 });
 
 Deno.test("shouldOfferClubViaWa respects wa_invite_enabled", () => {
   const s = normalizeGuestClubWaSettings({ wa_invite_enabled: false });
   assertEquals(shouldOfferClubViaWa(s), false);
+  assertEquals(shouldOfferClubInPortal(s), true);
+});
+
+Deno.test("shouldOfferClubInPortal respects portal_offer_enabled opt-out", () => {
+  const s = normalizeGuestClubWaSettings({ portal_offer_enabled: false });
   assertEquals(shouldOfferClubInPortal(s), false);
 });
 

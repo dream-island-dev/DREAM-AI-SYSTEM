@@ -55,7 +55,8 @@ export default function GuestClubWaControlPanel({
         🌴 מועדון לקוחות + משוב אחרי עזיבה
       </div>
       <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.65, marginBottom: 14 }}>
-        זרימה מומלצת: סקר משוב (Co או fallback 19:00) → ביקורת גוגל ב-WA → הצעת מועדון ב-WA עם קישור לפורטל.
+        זרימה מומלצת: הצטרפות למועדון בפורטל (ברירת מחדל) → גוגל ב-WA אחרי join/decline.
+        WA עם קישור #club נשאר גיבוי למי שלא עבר בפורטל.
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -80,7 +81,7 @@ export default function GuestClubWaControlPanel({
               onSaveSettings?.(next);
             }}
           />
-          הצג מועדון גם בפורטל (במקביל ל-WA — בדרך כלל כבוי)
+          הצג מועדון בפורטל (ערוץ ראשי — מומלץ דלוק)
         </label>
 
         <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>

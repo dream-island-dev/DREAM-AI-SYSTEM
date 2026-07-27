@@ -5,7 +5,7 @@ export const GUEST_CLUB_WA_SETTINGS_KEY = "guest_club_wa_settings";
 export const DEFAULT_GUEST_CLUB_WA_SETTINGS = {
   wa_invite_enabled: true,
   wa_invite_delay_minutes: 3,
-  portal_offer_enabled: false,
+  portal_offer_enabled: true,
   departure_fallback_enabled: true,
   departure_fallback_time: "19:00",
 };
@@ -31,7 +31,7 @@ export function normalizeGuestClubWaSettings(raw) {
   return {
     wa_invite_enabled: parsed.wa_invite_enabled !== false,
     wa_invite_delay_minutes: delay,
-    portal_offer_enabled: parsed.portal_offer_enabled === true,
+    portal_offer_enabled: parsed.portal_offer_enabled !== false,
     departure_fallback_enabled: parsed.departure_fallback_enabled !== false,
     departure_fallback_time,
   };

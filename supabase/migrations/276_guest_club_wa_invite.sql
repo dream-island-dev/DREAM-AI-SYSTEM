@@ -37,7 +37,7 @@ CREATE POLICY "guest_club_invite_queue_auth_all"
 INSERT INTO public.bot_config (config_key, config_value, category, label)
 VALUES (
   'guest_club_wa_settings',
-  '{"wa_invite_enabled":true,"wa_invite_delay_minutes":3,"portal_offer_enabled":false,"departure_fallback_enabled":true,"departure_fallback_time":"19:00"}',
+  '{"wa_invite_enabled":true,"wa_invite_delay_minutes":3,"portal_offer_enabled":true,"departure_fallback_enabled":true,"departure_fallback_time":"19:00"}',
   'automation',
   'מועדון לקוחות — הצעה ב-WA + fallback סקר עזיבה (JSON)'
 )

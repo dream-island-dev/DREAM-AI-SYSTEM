@@ -215,37 +215,37 @@ function SpaRequestConfirmModal({ open, busy, onConfirm, onCancel }) {
   );
 }
 
-// ── Guest Club deep link (#club from WA invite) ─────────────────────────────
-function ClubDeepLinkSection({ guest, token, clubUi, onToast }) {
+// ── Guest Club (portal-first + #club WA deep link) ───────────────────────────
+const CLUB_TERMINAL_STATUSES = new Set(["declined", "opted_out"]);
+
+async function submitGuestPortalClub(token, { action, ...profile }) {
+  const { data, error } = await supabase.functions.invoke("guest-portal-club", {
+    body: { token, action, ...profile },
+  });
+  if (error || !data?.ok) {
+    if (data?.error === "guest_birthday_required") throw new Error("guest_birthday_required");
+    throw new Error(data?.error ?? error?.message ?? "שגיאה");
+  }
+  return data;
+}
+
+function ClubJoinPanel({
+  guest, token, clubUi, onToast, onStatusChange, onWaReviewSent, panelTitle,
+}) {
   const [clubStatus, setClubStatus] = useState(guest?.club_status ?? null);
   const [clubBusy, setClubBusy] = useState(false);
   const club = normalizeGuestClubUi(clubUi ?? DEFAULT_GUEST_CLUB_UI);
-  const showHashClub = typeof window !== "undefined"
-    && window.location.hash.replace("#", "").toLowerCase() === "club";
-
-  useEffect(() => {
-    if (!showHashClub) return;
-    const el = document.getElementById("club");
-    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
-  }, [showHashClub, guest?.id]);
-
-  if (!showHashClub || guest?.status === "cancelled") return null;
-
   const effectiveStatus = clubStatus || guest?.club_status;
-  if (effectiveStatus === "declined" || effectiveStatus === "opted_out") return null;
 
   async function handleClubAction(action, profile) {
     if (clubBusy) return;
     setClubBusy(true);
     try {
-      const { data, error } = await supabase.functions.invoke("guest-portal-club", {
-        body: { token, action, ...profile },
-      });
-      if (error || !data?.ok) {
-        if (data?.error === "guest_birthday_required") throw new Error("guest_birthday_required");
-        throw new Error(data?.error ?? error?.message ?? "שגיאה");
-      }
-      setClubStatus(data.status || (action === "join" ? "active" : "declined"));
+      const data = await submitGuestPortalClub(token, { action, ...profile });
+      const nextStatus = data.status || (action === "join" ? "active" : "declined");
+      setClubStatus(nextStatus);
+      onStatusChange?.(nextStatus);
+      if (data.waFollowUpSent) onWaReviewSent?.(true);
       onToast(
         action === "join"
           ? "✅ נרשמתם למועדון — נשמח לעדכן אתכם בהצעות והטבות בלעדיות"
@@ -264,7 +264,7 @@ function ClubDeepLinkSection({ guest, token, clubUi, onToast }) {
 
   return (
     <div id="club" style={{ padding: "0 16px 36px", scrollMarginTop: 24 }}>
-      <GlassPanel title={club.title}>
+      <GlassPanel title={panelTitle ?? club.title}>
         {effectiveStatus === "active" ? (
           <div style={{ padding: "16px" }}>
             <GuestClubOfferCard ui={club} status="active" />
@@ -279,11 +279,61 @@ function ClubDeepLinkSection({ guest, token, clubUi, onToast }) {
   );
 }
 
+/** WA invite lands on portal_url#club — works even when portal_offer is off in ACC. */
+function ClubHashSection({ guest, token, clubUi, onToast }) {
+  const showHashClub = typeof window !== "undefined"
+    && window.location.hash.replace("#", "").toLowerCase() === "club";
+
+  useEffect(() => {
+    if (!showHashClub) return;
+    const el = document.getElementById("club");
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [showHashClub, guest?.id]);
+
+  if (!showHashClub || guest?.status === "cancelled") return null;
+
+  const clubSt = String(guest?.club_status ?? "").trim();
+  if (CLUB_TERMINAL_STATUSES.has(clubSt)) return null;
+
+  return (
+    <ClubJoinPanel
+      guest={guest}
+      token={token}
+      clubUi={clubUi}
+      onToast={onToast}
+    />
+  );
+}
+
+/** Persistent club entry when ACC portal_offer_enabled (default on). */
+function ClubBrowseSection({
+  guest, token, clubUi, onToast, portalOfferEnabled, surveyClubOfferActive,
+}) {
+  if (!portalOfferEnabled || guest?.status === "cancelled" || surveyClubOfferActive) return null;
+
+  const onClubHash = typeof window !== "undefined"
+    && window.location.hash.replace("#", "").toLowerCase() === "club";
+  if (onClubHash) return null;
+
+  const clubSt = String(guest?.club_status ?? "").trim();
+  if (CLUB_TERMINAL_STATUSES.has(clubSt)) return null;
+
+  return (
+    <ClubJoinPanel
+      guest={guest}
+      token={token}
+      clubUi={clubUi}
+      onToast={onToast}
+      panelTitle="🌴 מועדון הטבות"
+    />
+  );
+}
+
 // ── Guest Experience Survey ────────────────────────────────────────────────
 // MVP audience: day-pass + spa that day (guest.survey_eligible, server-
 // authoritative — guest-portal-data). Labels from portalConfig.survey_ui
 // (bot_config) with shared GuestSurveyForm (staff preview uses the same UI).
-function SurveySection({ guest, token, onToast, surveyUi, clubUi }) {
+function SurveySection({ guest, token, onToast, surveyUi, clubUi, onSurveyClubOfferActive }) {
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState(null); // thank-you payload after successful submit
   const [clubStatus, setClubStatus] = useState(guest?.club_status ?? null); // active | declined | null
@@ -292,10 +342,22 @@ function SurveySection({ guest, token, onToast, surveyUi, clubUi }) {
   const ui = normalizeGuestSurveyUi(surveyUi ?? DEFAULT_GUEST_SURVEY_UI);
   const club = normalizeGuestClubUi(clubUi ?? DEFAULT_GUEST_CLUB_UI);
 
-  if (!guest?.survey_eligible) return null;
-
   const persistedThankYou = guest?.survey_thank_you ?? null;
   const thankYou = result ?? persistedThankYou;
+
+  const surveyShowsClub = !!(
+    guest?.survey_eligible
+    && thankYou?.clubOffer
+    && !clubStatus
+    && !CLUB_TERMINAL_STATUSES.has(String(guest?.club_status ?? "").trim())
+    && guest?.club_status !== "active"
+  );
+
+  useEffect(() => {
+    onSurveyClubOfferActive?.(surveyShowsClub);
+  }, [surveyShowsClub, onSurveyClubOfferActive]);
+
+  if (!guest?.survey_eligible) return null;
 
   if (guest.survey_completed && !thankYou) {
     return (
@@ -341,15 +403,7 @@ function SurveySection({ guest, token, onToast, surveyUi, clubUi }) {
     if (clubBusy) return;
     setClubBusy(true);
     try {
-      const { data, error } = await supabase.functions.invoke("guest-portal-club", {
-        body: { token, action, ...profile },
-      });
-      if (error || !data?.ok) {
-        if (data?.error === "guest_birthday_required") {
-          throw new Error("guest_birthday_required");
-        }
-        throw new Error(data?.error ?? error?.message ?? "שגיאה");
-      }
+      const data = await submitGuestPortalClub(token, { action, ...profile });
       setClubStatus(data.status || (action === "join" ? "active" : "declined"));
       if (data.waFollowUpSent) setWaReviewSent(true);
       onToast(
@@ -860,14 +914,25 @@ function SuiteQuickActions() {
 }
 
 // ── SUITE VIEW — full portal ──────────────────────────────────────────────────
-function SuiteView({ guest, phase, countdown, upsellItems, token, onToast, onUpsell, upsellBusy, onSpaRequest, spaBusy, showSpaRequest, scenes, surveyUi, clubUi }) {
+function SuiteView({
+  guest, phase, countdown, upsellItems, token, onToast, onUpsell, upsellBusy,
+  onSpaRequest, spaBusy, showSpaRequest, scenes, surveyUi, clubUi,
+  portalOfferEnabled, surveyClubOfferActive, onSurveyClubOfferActive,
+}) {
   return (
     <>
       <PortalHero guest={guest} phase={phase} countdown={countdown} />
       <ItineraryPanel guest={guest} onSpaRequest={onSpaRequest} spaBusy={spaBusy} showSpaRequest={showSpaRequest} />
       <SecurePaymentButton guest={guest} />
-      <SurveySection guest={guest} token={token} onToast={onToast} surveyUi={surveyUi} clubUi={clubUi} />
-      <ClubDeepLinkSection guest={guest} token={token} clubUi={clubUi} onToast={onToast} />
+      <SurveySection
+        guest={guest} token={token} onToast={onToast} surveyUi={surveyUi} clubUi={clubUi}
+        onSurveyClubOfferActive={onSurveyClubOfferActive}
+      />
+      <ClubBrowseSection
+        guest={guest} token={token} clubUi={clubUi} onToast={onToast}
+        portalOfferEnabled={portalOfferEnabled} surveyClubOfferActive={surveyClubOfferActive}
+      />
+      <ClubHashSection guest={guest} token={token} clubUi={clubUi} onToast={onToast} />
       <SuiteQuickActions />
 
       {/* Pre-Order module (DB-driven, suite + all items) */}
@@ -880,7 +945,11 @@ function SuiteView({ guest, phase, countdown, upsellItems, token, onToast, onUps
 }
 
 // ── DAY-USE VIEW — focused (Spa / Meals / Activities) ────────────────────────
-function DayUseView({ guest, phase, countdown, upsellItems, token, onToast, onUpsell, upsellBusy, onSpaRequest, spaBusy, showSpaRequest, scenes, surveyUi, clubUi }) {
+function DayUseView({
+  guest, phase, countdown, upsellItems, token, onToast, onUpsell, upsellBusy,
+  onSpaRequest, spaBusy, showSpaRequest, scenes, surveyUi, clubUi,
+  portalOfferEnabled, surveyClubOfferActive, onSurveyClubOfferActive,
+}) {
 
   return (
     <>
@@ -942,8 +1011,15 @@ function DayUseView({ guest, phase, countdown, upsellItems, token, onToast, onUp
       </div>
 
       <SecurePaymentButton guest={guest} />
-      <SurveySection guest={guest} token={token} onToast={onToast} surveyUi={surveyUi} clubUi={clubUi} />
-      <ClubDeepLinkSection guest={guest} token={token} clubUi={clubUi} onToast={onToast} />
+      <SurveySection
+        guest={guest} token={token} onToast={onToast} surveyUi={surveyUi} clubUi={clubUi}
+        onSurveyClubOfferActive={onSurveyClubOfferActive}
+      />
+      <ClubBrowseSection
+        guest={guest} token={token} clubUi={clubUi} onToast={onToast}
+        portalOfferEnabled={portalOfferEnabled} surveyClubOfferActive={surveyClubOfferActive}
+      />
+      <ClubHashSection guest={guest} token={token} clubUi={clubUi} onToast={onToast} />
 
       {/* Focused activity info panel */}
       <div style={{ padding: "0 16px 20px" }}>
@@ -983,7 +1059,9 @@ export default function GuestPortal({ token }) {
     enable_spa_request_button: true,
     survey_ui: DEFAULT_GUEST_SURVEY_UI,
     club_ui: DEFAULT_GUEST_CLUB_UI,
+    portal_offer_enabled: true,
   });
+  const [surveyClubOfferActive, setSurveyClubOfferActive] = useState(false);
   const [upsellBusy, setUpsellBusy]       = useState(null);
   const [spaBusy, setSpaBusy]           = useState(false);
   const [spaConfirmOpen, setSpaConfirmOpen] = useState(false);
@@ -1017,6 +1095,7 @@ export default function GuestPortal({ token }) {
               enable_spa_request_button: data.portalConfig.enable_spa_request_button !== false,
               survey_ui: normalizeGuestSurveyUi(data.portalConfig.survey_ui),
               club_ui: normalizeGuestClubUi(data.portalConfig.club_ui),
+              portal_offer_enabled: data.portalConfig.portal_offer_enabled !== false,
             });
           }
         }
@@ -1137,6 +1216,12 @@ export default function GuestPortal({ token }) {
   // Both regular and premium day-pass guests get the DayUseView (focused portal).
   // Unknown room_type falls through to SuiteView (safe default — shows more).
   const isDayUse = guest.room_type === "day_guest" || guest.room_type === "premium_day_guest";
+  const portalOfferEnabled = portalConfig.portal_offer_enabled !== false;
+  const clubPortalProps = {
+    portalOfferEnabled,
+    surveyClubOfferActive,
+    onSurveyClubOfferActive: setSurveyClubOfferActive,
+  };
 
   return (
     <div style={pageStyle}>
@@ -1156,6 +1241,7 @@ export default function GuestPortal({ token }) {
           scenes={portalScenes}
           surveyUi={portalConfig.survey_ui}
           clubUi={portalConfig.club_ui}
+          {...clubPortalProps}
         />
       ) : isDayUse ? (
         <DayUseView
@@ -1173,6 +1259,7 @@ export default function GuestPortal({ token }) {
           scenes={portalScenes}
           surveyUi={portalConfig.survey_ui}
           clubUi={portalConfig.club_ui}
+          {...clubPortalProps}
         />
       ) : (
         /* Unknown room_type: safe default = SuiteView (shows more, not less) */
@@ -1191,6 +1278,7 @@ export default function GuestPortal({ token }) {
           scenes={portalScenes}
           surveyUi={portalConfig.survey_ui}
           clubUi={portalConfig.club_ui}
+          {...clubPortalProps}
         />
       )}
 

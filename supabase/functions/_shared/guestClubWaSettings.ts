@@ -15,7 +15,7 @@ export type GuestClubWaSettings = {
 export const DEFAULT_GUEST_CLUB_WA_SETTINGS: GuestClubWaSettings = {
   wa_invite_enabled: true,
   wa_invite_delay_minutes: 3,
-  portal_offer_enabled: false,
+  portal_offer_enabled: true,
   departure_fallback_enabled: true,
   departure_fallback_time: "19:00",
 };
@@ -42,7 +42,7 @@ export function normalizeGuestClubWaSettings(raw: unknown): GuestClubWaSettings 
   return {
     wa_invite_enabled: o.wa_invite_enabled !== false,
     wa_invite_delay_minutes: delay,
-    portal_offer_enabled: o.portal_offer_enabled === true,
+    portal_offer_enabled: o.portal_offer_enabled !== false,
     departure_fallback_enabled: o.departure_fallback_enabled !== false,
     departure_fallback_time,
   };
