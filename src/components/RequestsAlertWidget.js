@@ -131,6 +131,7 @@ export default function RequestsAlertWidget({ onNavigate }) {
             row.alert_type === "complaint" ? "🔴 תקלה"
             : row.alert_type === "arrival_eta" ? "🕐 שעת הגעה"
             : row.alert_type === "spa_request" ? "💆 ספא"
+            : row.alert_type === "spa_upsell_accept" ? "💆 הצעת ספא"
             : row.alert_type === "upsell_opportunity" ? "🌴 פורטל"
             : "📝 בקשה";
           showToast(`${typeLabel} חדשה: ${String(row.message ?? "").slice(0, 60)}`);

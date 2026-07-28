@@ -1310,17 +1310,33 @@ export function buildAdministrativeDispatchReply(_guestName?: string | null): st
 }
 
 // ── Spa upsell acceptance (day-pass, manual "Send Offer Now" dispatch) ─────
-// Whapi free-text has no reply buttons, so a guest who wants the massage
-// simply replies "כן"/"רוצה"/etc. — anchored on the WHOLE trimmed message
-// (not a substring match) so this never hijacks an unrelated "כן" mid-sentence
-// or answering a different question. Callers MUST additionally gate this on
-// guest.msg_spa_upsell_sent === true AND no spa booked yet for today — see
-// runSpaUpsellAcceptanceIntercept in guestBalloonAdminIntercept.ts.
-export const SPA_UPSELL_ACCEPT_PATTERN =
+// Tier-0 before LLM. Short whole-line affirmatives OR explicit scheduling
+// phrases ("אשמח לתאם", "אשמח שיחזרו אליי"). Callers MUST gate with
+// isSpaUpsellAcceptanceEligible — see runSpaUpsellAcceptanceIntercept.
+export const SPA_UPSELL_ACCEPT_SHORT_PATTERN =
   /^(כן|כן\s*בבקשה|בבקשה|בטח|רוצה|רוצים|מעוניין|מעוניינת|מעוניינים|בשמחה|אשמח|סבבה|מגניב|למה\s*לא|תוסיפו|כן\s*תודה|אוקיי?|okay?|yes|sure)[\s!.,🙏😊👍❤️💆]*$/iu;
 
+/** @deprecated alias — use SPA_UPSELL_ACCEPT_SHORT_PATTERN */
+export const SPA_UPSELL_ACCEPT_PATTERN = SPA_UPSELL_ACCEPT_SHORT_PATTERN;
+
+const SPA_UPSELL_ACCEPT_PHRASE_PATTERN =
+  /אשמח.{0,40}(שיחזר|תחזר|תאם|לתאם|להזמין|לטיפול|לעיסוי)|(?:שיחזרו|תחזרו).{0,25}(אלי|אליכם|בחזרה)|(?:רוצה|מעוניין|מעוניינת|מעוניינים).{0,30}(ספא|עיסוי|טיפול|מסאז)|(?:לתאם|תיאום).{0,25}(ספא|עיסוי|טיפול|מסאז)/iu;
+
 export function isSpaUpsellAcceptanceReply(text: string): boolean {
-  return SPA_UPSELL_ACCEPT_PATTERN.test(text.trim());
+  const t = text.trim();
+  if (!t) return false;
+  if (SPA_UPSELL_ACCEPT_SHORT_PATTERN.test(t)) return true;
+  return SPA_UPSELL_ACCEPT_PHRASE_PATTERN.test(t);
+}
+
+/** Guest received manual upsell and still has no spa slot on arrival day. */
+export function isSpaUpsellAcceptanceEligible(guest: Record<string, unknown>): boolean {
+  if (guest.msg_spa_upsell_sent !== true) return false;
+  const arrival = String(guest.arrival_date ?? "").slice(0, 10);
+  const spaDate = String(guest.spa_date ?? "").slice(0, 10);
+  if (spaDate && spaDate === arrival) return false;
+  if (guest.spa_time) return false;
+  return true;
 }
 
 export function buildSpaUpsellAcceptanceReply(_guestName?: string | null): string {

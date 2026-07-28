@@ -116,6 +116,7 @@ import {
   shouldInterceptBalloonRoomRequest,
   shouldInterceptAdministrativeInHouseRequest,
   isSpaUpsellAcceptanceReply,
+  isSpaUpsellAcceptanceEligible,
   shouldHandoffUnrecognizedInRoomRequest,
 } from "../_shared/automationSchedule.ts";
 import {
@@ -1245,8 +1246,7 @@ async function handleGuestDirectMessage(
     // to guests who actually received the offer and still have no spa today.
     if (
       guestId && guestRecord &&
-      guestRecord.msg_spa_upsell_sent === true &&
-      String(guestRecord.spa_date ?? "").slice(0, 10) !== String(guestRecord.arrival_date ?? "").slice(0, 10) &&
+      isSpaUpsellAcceptanceEligible(guestRecord as Record<string, unknown>) &&
       isSpaUpsellAcceptanceReply(text)
     ) {
       await runSpaUpsellAcceptanceIntercept(

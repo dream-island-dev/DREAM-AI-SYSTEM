@@ -21,6 +21,7 @@ const TYPE_META = {
   portal_room_service: { label: "🍽️ שירות לחדר (פורטל)", bg: "#FFF5E8", color: "#A8843A" },
   financial_issue:     { label: "💳 בעיית חיוב",    bg: "#FFF0EE", color: "#C0392B" },
   spa_request:         { label: "💆 בקשת ספא",       bg: "#E8F0FE", color: "#1A56DB" },
+  spa_upsell_accept:   { label: "💆 אישור הצעת ספא", bg: "#F3E8FF", color: "#7C3AED" },
   arrival_eta:         { label: "🕐 שעת הגעה",       bg: "#F3EEFF", color: "#5B3CC4" },
   missing_departure_date: { label: "⚠️ חסר עזיבה",  bg: "#FEF2F2", color: "#B91C1C" },
 };

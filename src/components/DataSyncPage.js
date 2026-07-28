@@ -1,12 +1,12 @@
 // src/components/DataSyncPage.js
 // Standalone Admin entry point for the existing import engine (ArrivalImportPanel.js).
-// Spa upsell dispatch lives in SpaUpsellDispatchPanel (separate tab — not tied to import session).
+// Spa upsell — SpaUpsellHub (send + leads tabs).
 
 import { useState } from "react";
 import ArrivalImportPanel from "./ArrivalImportPanel";
 import ActivitiesImportZone from "./spa/ActivitiesImportZone";
 import SmartPastePanel from "./SmartPastePanel";
-import SpaUpsellDispatchPanel from "./SpaUpsellDispatchPanel";
+import SpaUpsellHub from "./SpaUpsellHub";
 import DayPassRoomBulkFixPanel from "./DayPassRoomBulkFixPanel";
 import EzgoMailSyncPanel from "./EzgoMailSyncPanel";
 import { israelTodayYmd } from "../utils/spaUpsellAudience";
@@ -176,7 +176,7 @@ export default function DataSyncPage() {
             onToast={showToast}
             onFixed={() => setSpaUpsellRefreshKey((k) => k + 1)}
           />
-          <SpaUpsellDispatchPanel
+          <SpaUpsellHub
             key={`${spaUpsellDate}-${spaUpsellRefreshKey}`}
             initialDate={spaUpsellDate}
             onToast={showToast}

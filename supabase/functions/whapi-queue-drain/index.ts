@@ -20,6 +20,7 @@ import {
 } from "../_shared/whapiOutboundQueue.ts";
 import { loadWhapiVelocityLimits, sendWhapiTextGuarded, WhapiRateLimitedError } from "../_shared/whapiVelocityGuard.ts";
 import { personalizeWhapiBody } from "../_shared/whapiMessagePersonalize.ts";
+import { applySpaUpsellWhapiSentSideEffects } from "../_shared/spaUpsellWhapiSideEffects.ts";
 import { cleanPhoneForMention } from "../_shared/whapiSend.ts";
 
 const CORS = {
@@ -61,6 +62,16 @@ serve(async (req: Request) => {
           { sendClass: "guest", trigger: job.trigger ?? undefined, source: job.source ?? undefined },
         );
         await finalizeWhapiJobSent(supabase, job.id, wamid);
+        if (job.trigger === "spa_upsell_daypass") {
+          await applySpaUpsellWhapiSentSideEffects(supabase, {
+            phone: job.phone,
+            name: job.name,
+            messageTemplate: job.message_template,
+            wamid,
+          }).catch((e: Error) =>
+            console.warn("[whapi-queue-drain] spa upsell side effects failed:", e.message),
+          );
+        }
         sent++;
         // Pace ourselves before claiming the next one, mirroring
         // whatsapp-cron's sequential INTER_SEND_DELAY_MS convention.

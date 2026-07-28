@@ -44,6 +44,8 @@ import {
   isCheckInPolicyQuestion,
   isInRoomDeliveryRequest,
   shouldHandoffUnrecognizedInRoomRequest,
+  isSpaUpsellAcceptanceReply,
+  isSpaUpsellAcceptanceEligible,
   type AutomationStage,
   type GuestForSchedule,
 } from "./automationSchedule.ts";
@@ -1149,4 +1151,30 @@ Deno.test("shouldHandoffUnrecognizedInRoomRequest: unknown in-room ask escalates
     true,
   );
   assertEquals(shouldHandoffUnrecognizedInRoomRequest("מה שעות הכניסה?"), false);
+});
+
+Deno.test("isSpaUpsellAcceptanceReply: scheduling phrases", () => {
+  assertEquals(isSpaUpsellAcceptanceReply("אשמח לתאם"), true);
+  assertEquals(isSpaUpsellAcceptanceReply("אשמח שיחזרו אליי"), true);
+  assertEquals(isSpaUpsellAcceptanceReply("כן"), true);
+  assertEquals(isSpaUpsellAcceptanceReply("אשמח לתאם טיפול ספא"), true);
+  assertEquals(isSpaUpsellAcceptanceReply("מה שעות הכניסה?"), false);
+});
+
+Deno.test("isSpaUpsellAcceptanceEligible: sent flag + no spa on arrival", () => {
+  const eligible = {
+    msg_spa_upsell_sent: true,
+    arrival_date: "2026-07-28",
+    spa_date: null,
+    spa_time: null,
+  };
+  assertEquals(isSpaUpsellAcceptanceEligible(eligible), true);
+  assertEquals(
+    isSpaUpsellAcceptanceEligible({ ...eligible, spa_time: "14:00" }),
+    false,
+  );
+  assertEquals(
+    isSpaUpsellAcceptanceEligible({ ...eligible, msg_spa_upsell_sent: false }),
+    false,
+  );
 });

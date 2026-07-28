@@ -1306,7 +1306,7 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
     const { data, error } = await supabase
       .from("guest_alerts")
       .select("*, guests(name, phone, room, arrival_date, departure_date, status, guest_profile)")
-      .eq("alert_type", "spa_request")
+      .in("alert_type", ["spa_request", "spa_upsell_accept"])
       .eq("resolved", false)
       .order("created_at", { ascending: false });
     if (error) showToast("שגיאה בטעינת בקשות ספא: " + error.message, "err");
@@ -1683,14 +1683,18 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
           <div style={{ padding: "16px 0", color: "var(--text-muted)", fontSize: 13 }}>אין בקשות ספא פתוחות 🎉</div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {spaAlerts.map((alert) => (
+            {spaAlerts.map((alert) => {
+              const isUpsellAccept = alert.alert_type === "spa_upsell_accept";
+              return (
               <div key={alert.id} style={{
                 display: "flex", justifyContent: "space-between", alignItems: "center",
-                background: "var(--card-bg)", border: "1px solid var(--border)", borderRight: "4px solid #1A56DB",
+                background: "var(--card-bg)", border: "1px solid var(--border)",
+                borderRight: `4px solid ${isUpsellAccept ? "#7C3AED" : "#1A56DB"}`,
                 borderRadius: 10, padding: "10px 14px", flexWrap: "wrap", gap: 10,
               }}>
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontWeight: 700, fontSize: 14 }}>
+                    {isUpsellAccept && <span style={{ fontSize: 11, color: "#7C3AED", marginRight: 6 }}>הצעת ספא</span>}
                     {alert.guests?.name ?? "אורח"}{alert.guests?.room ? ` · ${alert.guests.room}` : ""}
                   </div>
                   <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>{alert.message}</div>
@@ -1707,7 +1711,8 @@ export default function SpaBoard({ onOpenDreamBotChat }) {
                   </button>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

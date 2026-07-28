@@ -23,6 +23,7 @@ const ALERT_TYPE_META = {
   portal_room_service: { label: "🍽️ שירות לחדר" },
   financial_issue: { label: "💳 בעיית חיוב" },
   spa_request: { label: "💆 בקשת ספא" },
+  spa_upsell_accept: { label: "💆 אישור הצעת ספא" },
   arrival_eta: { label: "🕐 שעת הגעה" },
 };
 

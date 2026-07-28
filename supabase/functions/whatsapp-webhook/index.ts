@@ -61,6 +61,7 @@ import {
   shouldInterceptOperationalInHouseRequest,
   shouldInterceptAdministrativeInHouseRequest,
   isSpaUpsellAcceptanceReply,
+  isSpaUpsellAcceptanceEligible,
   isAdministrativeInHouseRequest,
   isAllowlistedPhysicalTaskRequest,
   classifyGuestRequestDispatch,
@@ -2980,9 +2981,7 @@ Deno.serve(async (req: Request) => {
         !isButtonReply &&
         guestId &&
         guest &&
-        (guest as Record<string, unknown>).msg_spa_upsell_sent === true &&
-        String((guest as Record<string, unknown>).spa_date ?? "").slice(0, 10) !==
-          String((guest as Record<string, unknown>).arrival_date ?? "").slice(0, 10) &&
+        isSpaUpsellAcceptanceEligible(guest as Record<string, unknown>) &&
         isSpaUpsellAcceptanceReply(text)
       ) {
         await runSpaUpsellAcceptanceIntercept(supabase, {
@@ -3274,9 +3273,7 @@ Deno.serve(async (req: Request) => {
         guestId &&
         guest &&
         effectiveText !== text &&
-        (guest as Record<string, unknown>).msg_spa_upsell_sent === true &&
-        String((guest as Record<string, unknown>).spa_date ?? "").slice(0, 10) !==
-          String((guest as Record<string, unknown>).arrival_date ?? "").slice(0, 10) &&
+        isSpaUpsellAcceptanceEligible(guest as Record<string, unknown>) &&
         isSpaUpsellAcceptanceReply(effectiveText)
       ) {
         await runSpaUpsellAcceptanceIntercept(supabase, {

@@ -20,6 +20,7 @@ export const GUEST_ALERT_TYPE_LABEL_HE: Record<string, string> = {
   upsell_opportunity:   "🌴 בקשה מהפורטל",
   portal_room_service:  "🍽️ שירות לחדר (פורטל)",
   spa_request:          "💆 בקשת ספא",
+  spa_upsell_accept:      "💆 אישור הצעת ספא",
   financial_issue:      "💳 בעיית חיוב",
   arrival_eta:          "🕐 שעת הגעה",
 };
