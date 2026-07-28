@@ -334,7 +334,7 @@ Deno.serve(async (req: Request) => {
           // day-pass when GUEST_WHAPI_SUITES_ENABLED, same gate whatsapp-send
           // actually dispatches on. effectiveSuite above is suite-only and
           // under-reports Whapi-eligible day-pass guests in ACC chips/gates.
-          effectiveWhapiGuest: shouldRouteGuestOutboundViaWhapiSuites(guest),
+          effectiveWhapiGuest: shouldRouteGuestOutboundViaWhapiSuites(guest, stage.stage_key),
           // FAIL VISIBLE: suite room + day-pass room_type — ⚠ badge in ACC.
           roomTypeConflict: hasSuiteRoomTypeConflict(guest),
           premiumDayRoomTypeConflict: hasPremiumDayRoomTypeConflict(guest),

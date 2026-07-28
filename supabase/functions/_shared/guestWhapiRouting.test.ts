@@ -15,8 +15,10 @@ import {
   isStageEffectivelyActive,
   isMetaGuestTemplateAllowed,
   isGuestWhapiSuitesEnabled,
+  canStaffSendViaWhapiSuites,
   isWhapiGuestSosActive,
   shouldAutoReplyGuestWhapiDm,
+  SUITE_STAGE1_WHAPI_TRIGGER,
   __setGuestChannelsForTest,
   __setWhapiFailoverForTest,
 } from "./guestWhapiRouting.ts";
@@ -71,6 +73,17 @@ Deno.test("suite guest routes Meta when guest_suites_channel=meta (DreamBot)", (
   withChannels("meta", "whapi", () => {
     const guest = { room: "אמטיסט 8", room_type: "suite" };
     assertEquals(shouldRouteGuestOutboundViaWhapiSuites(guest), false);
+    assertEquals(shouldRouteGuestOutboundViaWhapiSuites(guest, "night_before"), false);
+  });
+});
+
+Deno.test("suite guest Stage 1 routes Whapi even when guest_suites_channel=meta", () => {
+  withChannels("meta", "off", () => {
+    const guest = { room: "אמטיסט 8", room_type: "suite" };
+    assertEquals(
+      shouldRouteGuestOutboundViaWhapiSuites(guest, SUITE_STAGE1_WHAPI_TRIGGER),
+      true,
+    );
   });
 });
 
@@ -131,10 +144,14 @@ Deno.test("isStageEffectivelyActive: is_active=false + day-pass guest, daypass=m
   });
 });
 
-Deno.test("isStageEffectivelyActive: is_active=false + suite guest, suites=meta (feature off for suites) stays paused", () => {
+Deno.test("isStageEffectivelyActive: is_active=false + suite guest, suites=meta stays paused except Stage 1", () => {
   withChannels("meta", "off", () => {
     const guest = { room: "אמטיסט 8", room_type: "suite" };
-    assertEquals(isStageEffectivelyActive({ is_active: false }, guest), false);
+    assertEquals(isStageEffectivelyActive({ is_active: false, stage_key: "night_before" }, guest), false);
+    assertEquals(
+      isStageEffectivelyActive({ is_active: false, stage_key: SUITE_STAGE1_WHAPI_TRIGGER }, guest),
+      true,
+    );
   });
 });
 
@@ -265,15 +282,28 @@ Deno.test("shouldRouteGuestOutboundViaWhapiSuites: SOS on sends a day-pass guest
   });
 });
 
-// room_ready (whatsapp-send/index.ts) reads isGuestWhapiSuitesEnabled()
-// directly rather than going through shouldRouteGuestOutboundViaWhapiSuites —
-// this is the exact case the P0 SOS work required covering without a
-// per-caller edit, still true after the cohort-channel refactor.
-Deno.test("isGuestWhapiSuitesEnabled: SOS on covers the room_ready direct-read path too", () => {
+// room_ready follows automation cohort (not manual gate).
+Deno.test("room_ready automation: suites=meta routes Meta; suites=whapi routes Whapi", () => {
+  withChannels("meta", "off", () => {
+    const guest = { room: "אמטיסט 8", room_type: "suite" };
+    assertEquals(shouldRouteGuestOutboundViaWhapiSuites(guest, "room_ready"), false);
+  });
+  withChannels("whapi", "off", () => {
+    const guest = { room: "אמטיסט 8", room_type: "suite" };
+    assertEquals(shouldRouteGuestOutboundViaWhapiSuites(guest, "room_ready"), true);
+  });
+});
+
+Deno.test("canStaffSendViaWhapiSuites: true when suites=meta (manual independent of automation channel)", () => {
+  withChannels("meta", "off", () => {
+    assertEquals(canStaffSendViaWhapiSuites(), true);
+  });
+});
+
+Deno.test("canStaffSendViaWhapiSuites: SOS blocks manual Whapi", () => {
   withSos(true, () => {
-    withChannels("whapi", "off", () => {
-      const useWhapiForRoomReady = isGuestWhapiSuitesEnabled();
-      assertEquals(useWhapiForRoomReady, false);
+    withChannels("meta", "off", () => {
+      assertEquals(canStaffSendViaWhapiSuites(), false);
     });
   });
 });
@@ -291,6 +321,15 @@ Deno.test("shouldAutoReplyGuestWhapiDm: SOS on silences the Whapi DM auto-reply 
     withChannels("whapi", "off", () => {
       const guest = { status: "checked_in" };
       assertEquals(shouldAutoReplyGuestWhapiDm(guest), false);
+    });
+  });
+});
+
+Deno.test("shouldAutoReplyGuestWhapiDm: suites=meta still allows auto-reply (manual device always on)", () => {
+  withSos(false, () => {
+    withChannels("meta", "off", () => {
+      const guest = { status: "expected" };
+      assertEquals(shouldAutoReplyGuestWhapiDm(guest), true);
     });
   });
 });

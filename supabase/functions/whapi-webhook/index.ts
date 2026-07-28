@@ -78,7 +78,7 @@ import {
   applyHousekeepingCheckOutSignal,
   buildHousekeepingCheckOutAckLine,
 } from "../_shared/housekeepingCheckOutSignal.ts";
-import { isGuestWhapiSuitesEnabled, isWhapiGuestSosActive, shouldAutoReplyGuestWhapiDm, primeGuestChannelConfig } from "../_shared/guestWhapiRouting.ts";
+import { isWhapiGuestSosActive, shouldAutoReplyGuestWhapiDm, primeGuestChannelConfig } from "../_shared/guestWhapiRouting.ts";
 import { type ActiveGuestRow } from "../_shared/guestOutboundGuard.ts";
 import { resolveGuestByInboundPhone } from "../_shared/arrivalConfirmation.ts";
 import { resolveArrivalConfirmationIntent } from "../_shared/arrivalConfirmationResolve.ts";
@@ -868,7 +868,6 @@ async function handleGuestDirectMessage(
 
     if (!shouldAutoReplyGuestWhapiDm(guest)) {
       const reason = isWhapiGuestSosActive() ? "sos_active"
-        : !isGuestWhapiSuitesEnabled() ? "feature_disabled"
         : (guest ? "guest_inactive" : "no_guest_match");
       await patchGuestDmInbound(supabase, conversationId, { intent: "captured_no_autoreply" });
       results.push({ ...base, action: "captured_no_autoreply", reason });

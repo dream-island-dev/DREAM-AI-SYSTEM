@@ -45,8 +45,8 @@ Deno.test("resolveExpectedBodyParamCount: dream_spa_warmup fallback is 1", async
   if (count !== 1) throw new Error(`dream_spa_warmup expected 1, got ${count}`);
 });
 
-Deno.test("resolveExpectedBodyParamCount: spa_upsell_daypass fallback is 0", async () => {
+Deno.test("resolveExpectedBodyParamCount: spa_upsell_daypass fallback is 1", async () => {
   clearExpectedParamCountCache();
   const count = await resolveExpectedBodyParamCount("spa_upsell_daypass");
-  if (count !== 0) throw new Error(`spa_upsell_daypass expected 0, got ${count}`);
+  if (count !== 1) throw new Error(`spa_upsell_daypass expected 1, got ${count}`);
 });

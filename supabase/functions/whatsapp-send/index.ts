@@ -123,7 +123,7 @@ import {
   syncGuestRoomReadyAggregate,
 } from "../_shared/suiteRoomReady.ts";
 import {
-  isGuestWhapiSuitesEnabled,
+  canStaffSendViaWhapiSuites,
   shouldRouteGuestOutboundViaWhapiSuites,
   isMetaGuestTemplateAllowed,
   primeGuestChannelConfig,
@@ -396,7 +396,7 @@ const PIPELINE_VARS: Record<string, (g: Record<string, unknown>) => string[]> = 
   night_before_daypass: (g) => [String(g.name ?? "")],
   survey_invite_daypass: (g) => [String(g.name ?? "")],
   spa_warmup_daypass: (g) => [String(g.name ?? "")],
-  spa_upsell_daypass: () => [],
+  spa_upsell_daypass: (g) => [String(g.name ?? "")],
 };
 
 // Maps each pipeline trigger to the DB flag it atomically stamps.
@@ -527,12 +527,11 @@ const ONE_PARAM_NAME_TEMPLATES = new Set([
   "night_before_suites_shabbat",
   "dream_spa_package",
   "dream_spa_warmup",
+  "spa_upsell_daypass",
 ]);
 
 /** Static-body Meta templates — no {{N}} placeholders in approved body. */
-const ZERO_PARAM_BODY_TEMPLATES = new Set([
-  "spa_upsell_daypass",
-]);
+const ZERO_PARAM_BODY_TEMPLATES = new Set([]);
 
 function buildNameOnlyTemplateVars(guest: Record<string, unknown>): string[] {
   return sanitizeTemplateVars([String(guest.name ?? "")]);
@@ -866,14 +865,12 @@ function resolveShabbatAwareSessionImageUrl(
   return resolveStageSessionImageUrl(stageRow, requestImageUrl);
 }
 
-/** Route suite + day-pass guest automation through the Whapi Suites device —
- * applies uniformly regardless of arrival day-of-week or dispatch_channel
- * (owner decisions 2026-07-10 suite, 2026-07-12 day-pass). Meta templates are
- * not used for these guests while GUEST_WHAPI_SUITES_ENABLED is on. */
+/** Route suite guest AUTOMATION through Whapi when cohort/trigger says so. */
 function shouldUseWhapiForGuestAutomation(
   guest: Record<string, unknown>,
+  automationTrigger?: string,
 ): boolean {
-  return shouldRouteGuestOutboundViaWhapiSuites(guest);
+  return shouldRouteGuestOutboundViaWhapiSuites(guest, automationTrigger);
 }
 
 // Phase 3 hard-fail (2026-07-13) — staff explicitly forced force_channel=
@@ -1735,7 +1732,7 @@ serve(async (req: Request) => {
       // text). Non-eligible guests (flag off, or genuinely non-suite/
       // non-daypass) keep the original contract: Whapi only on explicit
       // target_channel="whapi".
-      if (target_channel === "whapi" && !isGuestWhapiSuitesEnabled()) {
+      if (target_channel === "whapi" && !canStaffSendViaWhapiSuites()) {
         return new Response(
           JSON.stringify({
             ok: false,
@@ -1877,7 +1874,7 @@ serve(async (req: Request) => {
       const portalSpaWhapiBypass = b.portal_spa_whapi === true;
       const whapiChannelAllowed = portalSpaWhapiBypass
         ? !isWhapiGuestSosActive()
-        : isGuestWhapiSuitesEnabled();
+        : canStaffSendViaWhapiSuites();
       if (inboxChannel === "whapi" && !whapiChannelAllowed) {
         return new Response(
           JSON.stringify({
@@ -2347,7 +2344,7 @@ serve(async (req: Request) => {
     // (AutomationControlCenter's ManualDispatchModal) — explicit staff choice
     // only, same two-gate contract as inbox_reply/broadcast above.
     const forceWhapiSession   = force === true && force_channel === "whapi_session";
-    if (forceWhapiSession && !isGuestWhapiSuitesEnabled()) {
+    if (forceWhapiSession && !canStaffSendViaWhapiSuites()) {
       throw new Error(`whapi_disabled: ${whapiDisabledReasonHe()}`);
     }
     // stage_2_arrival, night_before, morning_suite/morning_welcome, and
@@ -2381,7 +2378,10 @@ serve(async (req: Request) => {
     // Whapi-eligible suite guests bypass a Meta-template-only pause — same
     // shared gate whatsapp-cron/automation-queue use (isStageEffectivelyActive).
     // Manual force=true is untouched (admin explicitly testing a paused stage).
-    if (!force && stageRow && !isStageEffectivelyActive(stageRow as { is_active: boolean }, guest)) {
+    if (!force && stageRow && !isStageEffectivelyActive(
+      stageRow as { is_active: boolean; stage_key?: string },
+      guest,
+    )) {
       console.log(`[whatsapp-send] skipped trigger="${trigger}" guestId=${guestId} reason=stage_inactive`);
       return new Response(
         JSON.stringify({ ok: true, skipped: true, reason: "stage_inactive" }),
@@ -2627,7 +2627,7 @@ serve(async (req: Request) => {
       // All autonomous suite-guest automation routes through Whapi when the
       // feature flag is on (owner decision, 2026-07-10) — no dispatch_channel
       // gate. Manual force_channel="whapi_session" still applies on top.
-      const useWhapiDispatchChannel = shouldUseWhapiForGuestAutomation(guest);
+      const useWhapiDispatchChannel = shouldUseWhapiForGuestAutomation(guest, "stage_2_arrival");
       const s2Channel: "meta" | "whapi" = (forceWhapiSession || useWhapiDispatchChannel) ? "whapi" : "meta";
 
       const confirmFresh = !!guest.arrival_confirmed_at &&
@@ -2951,7 +2951,7 @@ serve(async (req: Request) => {
         // dispatch_channel defaults to "meta" until §4's staff picker sets
         // it, so buildTemplateDispatch() (and the Shabbat anti-hijack rule
         // above) stays the only path for every guest that hasn't opted in.
-        const useWhapiAutonomous = shouldUseWhapiForGuestAutomation(guest);
+        const useWhapiAutonomous = shouldUseWhapiForGuestAutomation(guest, "night_before");
         nightBeforeDispatch = useWhapiAutonomous
           ? { channel: "whapi", freeTextKey: sessionScriptKey, guestName, sessionImageUrl: sessionImage }
           : buildTemplateDispatch();
@@ -3200,7 +3200,7 @@ serve(async (req: Request) => {
     if (
       trigger === "morning_welcome" &&
       isEffectiveDayPassGuest(guest) &&
-      !shouldUseWhapiForGuestAutomation(guest)
+      !shouldUseWhapiForGuestAutomation(guest, "morning_welcome")
     ) {
       const dpGuestName = sanitizeTemplateVars([String(guest.name ?? "")])[0];
       const dpArrivalYmd = normalizeArrivalDateYmd(guest.arrival_date);
@@ -3356,7 +3356,7 @@ serve(async (req: Request) => {
     const mgIsShabbat = isShabbatArrivalDate(mgArrivalYmd);
     const useWhapiForMorning =
       (trigger === "morning_suite" || trigger === "morning_welcome") &&
-      shouldUseWhapiForGuestAutomation(guest);
+      shouldUseWhapiForGuestAutomation(guest, trigger);
     const useMorningSession = (force === true && !forceMetaTemplate) || useWhapiForMorning;
 
     // No longer gated on stageRow having a configured session_message_script_key
@@ -3810,7 +3810,7 @@ serve(async (req: Request) => {
       // template path after Whapi-first, so "חדר מוכן" failed on Facebook
       // template errors while the Suites device was healthy. Flag-off keeps
       // the legacy Meta session/template split.
-      const useWhapiForRoomReady = isGuestWhapiSuitesEnabled();
+      const useWhapiForRoomReady = shouldRouteGuestOutboundViaWhapiSuites(guest, "room_ready");
 
       const rrDispatch: RoomReadyDispatch = useWhapiForRoomReady
         ? { channel: "whapi", freeTextKey: "room_ready_reminder", guestName: rrGuestName, roomName: rrRoomName }
@@ -3985,7 +3985,7 @@ serve(async (req: Request) => {
     const isManualPipelineDispatch = force === true || manual_override === true || housekeepingCheckoutSurvey;
     const pipelineArrivalYmd = normalizeArrivalDateYmd(guest.arrival_date);
     const pipelineIsShabbat = isShabbatArrivalDate(pipelineArrivalYmd);
-    const useWhapiForPipeline = shouldUseWhapiForGuestAutomation(guest);
+    const useWhapiForPipeline = shouldUseWhapiForGuestAutomation(guest, trigger);
     const daypassSessionPreferred =
       !forceMetaTemplate &&
       isEffectiveDayPassGuest(guest) &&

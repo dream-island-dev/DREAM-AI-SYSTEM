@@ -30,7 +30,7 @@ export default function SpaUpsellConfirmModal({
   onSchedule,
 }) {
   const [sendMode, setSendMode] = useState("now");
-  const [dispatchChannel, setDispatchChannel] = useState(SPA_UPSELL_CHANNEL_WHAPI);
+  const [dispatchChannel, setDispatchChannel] = useState(SPA_UPSELL_CHANNEL_META);
   const [scheduleDate, setScheduleDate] = useState(israelTodayYmd);
   const [scheduleTime, setScheduleTime] = useState("10:00");
   const [confirmed, setConfirmed] = useState(false);
@@ -45,8 +45,8 @@ export default function SpaUpsellConfirmModal({
   }, [isMetaChannel, scriptText, sampleGuest?.name]);
 
   const channelLabel = isMetaChannel
-    ? SPA_UPSELL_CHANNEL_OPTIONS[1].label
-    : SPA_UPSELL_CHANNEL_OPTIONS[0].label;
+    ? SPA_UPSELL_CHANNEL_OPTIONS[0].label
+    : SPA_UPSELL_CHANNEL_OPTIONS[1].label;
 
   const scheduleIsoPreview = useMemo(() => {
     if (!scheduleDate || !scheduleTime) return null;
@@ -102,7 +102,7 @@ export default function SpaUpsellConfirmModal({
             ערוץ שליחה
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {[SPA_UPSELL_CHANNEL_OPTIONS[0], SPA_UPSELL_CHANNEL_OPTIONS[1]].map((ch) => (
+            {SPA_UPSELL_CHANNEL_OPTIONS.map((ch) => (
               <button
                 key={ch.id}
                 type="button"

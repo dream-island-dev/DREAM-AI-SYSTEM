@@ -5,22 +5,27 @@ export const SPA_UPSELL_CHANNEL_WHAPI = "whapi_session";
 export const SPA_UPSELL_CHANNEL_META = "meta_template";
 export const SPA_UPSELL_META_TEMPLATE = "spa_upsell_daypass";
 
+/** Live Meta body for spa_upsell_daypass — {{1}} = guest name. */
+export const SPA_UPSELL_META_BODY_TEMPLATE =
+  "היי {{1}}💆\nלקראת הגעתכם לריזורט, נשמח להציע לכם טיפול ספא מרגיע של 45 דק׳ להזמנה שלכם במחיר מיוחד. עבורכם -300 ₪ לאדם בלבד (מחיר מלא 370 ₪).\nהשיבו לנו כאן וניצור עימכם קשר לצורך תיאום 🙏";
+
 export const SPA_UPSELL_CHANNEL_OPTIONS = [
-  {
-    id: SPA_UPSELL_CHANNEL_WHAPI,
-    label: "📱 מכשיר סוויטות (Whapi)",
-    hint: "טקסט חופשי מ-bot_scripts.spa_upsell_daypass — זמין מיד",
-  },
   {
     id: SPA_UPSELL_CHANNEL_META,
     label: "🔵 Dream Bot (Meta)",
-    hint: "תבנית spa_upsell_daypass — דורש אישור Meta",
+    hint: "תבנית spa_upsell_daypass — {{1}} שם (ברירת מחדל לבילוי יומי)",
     templateName: SPA_UPSELL_META_TEMPLATE,
+  },
+  {
+    id: SPA_UPSELL_CHANNEL_WHAPI,
+    label: "📱 מכשיר סוויטות (Whapi)",
+    hint: "טקסט חופשי מ-bot_scripts.spa_upsell_daypass",
   },
 ];
 
-export function previewSpaUpsellMetaTemplate(_guestName) {
-  return `היי 💆\nלקראת הגעתכם לריזורט , נשמח להציע לכם טיפול ספא מרגיע של 45 דק׳ להזמנה שלכם במחיר מיוחד. עבורכם -300 ₪ לאדם בלבד (מחיר מלא 370 ₪).\nהשיבו לנו כאן וניצור עימכם קשר לצורך תיאום 🙏`;
+export function previewSpaUpsellMetaTemplate(guestName) {
+  const name = String(guestName ?? "").trim() || "אורח יקר";
+  return SPA_UPSELL_META_BODY_TEMPLATE.replace(/\{\{1\}\}/g, name);
 }
 
 export function isDayPassGuestForUpsell(guest) {

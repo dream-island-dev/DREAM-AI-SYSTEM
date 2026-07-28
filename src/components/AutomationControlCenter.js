@@ -3560,16 +3560,19 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
                   {/* ── Guest channel selectors (P0, 2026-07-13) — independent per cohort ── */}
                   <div style={{ display: "flex", gap: 24, flexWrap: "wrap", fontSize: 13, marginBottom: 10 }}>
                     <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <span>🏨 ערוץ סוויטות:</span>
+                      <span>🏨 ערוץ אוטומציה סוויטות:</span>
                       <select
                         value={queueData.systemStatus.guestSuitesChannel ?? "meta"}
-                        onChange={(e) => updateGuestChannel("guest_suites_channel", e.target.value, "ערוץ סוויטות")}
+                        onChange={(e) => updateGuestChannel("guest_suites_channel", e.target.value, "ערוץ אוטומציה סוויטות")}
                         style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid var(--border)", fontFamily: "inherit", fontSize: 13 }}
                       >
                         <option value="whapi">📱 Whapi (מכשיר סוויטות)</option>
-                        <option value="meta">🔵 DreamBot (Meta)</option>
+                        <option value="meta">🔵 DreamBot (Meta) — מומלץ</option>
                       </select>
                     </label>
+                    <span style={{ fontSize: 12, color: "var(--text-muted)", alignSelf: "center", maxWidth: 420, lineHeight: 1.5 }}>
+                      שלב 1 (אישור הגעה) תמיד דרך Whapi · שליחה ידנית מ-Inbox תמיד דרך מכשיר הסוויטות (חוץ מ-SOS)
+                    </span>
                     <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <span>☀️ ערוץ יום-כיף:</span>
                       <select

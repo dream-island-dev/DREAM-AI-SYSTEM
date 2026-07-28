@@ -1,9 +1,11 @@
 // supabase/functions/_shared/guestWhapiRouting.ts
 //
-// Single source of truth for "should this guest's manual outbound message go
-// out through Whapi instead of Meta Cloud API?" (Phase 1 of the guest-outbound
-// Whapi rollout — see CLAUDE.md / project memory
-// project-whapi-guest-outbound-rollout).
+// Single source of truth for guest outbound channel routing (automation vs
+// manual staff sends). See CLAUDE.md / project-whapi-guest-outbound-rollout.
+//
+// Two independent gates (2026-07-28):
+//   • AUTOMATION — guest_suites_channel + Stage-1 Whapi exception (pre_arrival_2d)
+//   • MANUAL STAFF — canStaffSendViaWhapiSuites() — always Whapi unless SOS
 //
 // Uses the ALREADY-CONNECTED Whapi device (the same WHAPI_TOKEN channel that
 // today handles the internal staff-ops group) — not a separate token/device.
@@ -45,6 +47,9 @@ import { fetchGuestBotConfig } from "./guestBotSettings.ts";
  */
 type SuitesChannel = "whapi" | "meta";
 type DaypassChannel = "off" | "whapi" | "meta";
+
+/** Stage 1 always routes suite automation via Whapi (low volume, ban-safe). */
+export const SUITE_STAGE1_WHAPI_TRIGGER = "pre_arrival_2d";
 
 let _suitesChannel: SuitesChannel = "meta";
 let _daypassChannel: DaypassChannel = "off";
@@ -148,15 +153,8 @@ export function isWhapiGuestSosActive(): boolean {
 }
 
 /**
- * SOS check lives here (not scattered at call sites) so every one of this
- * function's ~10 callers — including room_ready, which reads this directly
- * rather than through shouldRouteGuestOutboundViaWhapiSuites — automatically
- * falls back to Meta the instant SOS is active, with no per-caller changes.
- *
- * Suites-specific: room_ready and the other standalone (non-guest) callers
- * of this function are historically suite-only contexts, so this maps to
- * the Suites cohort channel. Day-pass has its own independent channel value
- * — see shouldRouteGuestOutboundViaWhapiSuites, which is cohort-aware.
+ * ACC cohort toggle — automation default channel for suite guests only.
+ * Manual staff sends use canStaffSendViaWhapiSuites() instead.
  */
 export function isGuestWhapiSuitesEnabled(): boolean {
   if (isWhapiGuestSosActive()) return false;
@@ -164,20 +162,32 @@ export function isGuestWhapiSuitesEnabled(): boolean {
 }
 
 /**
- * Guest outbound via Suites Whapi device (not Meta templates) — cohort-aware
- * (P0, 2026-07-13): suite guests follow guest_suites_channel, day-pass guests
- * follow guest_daypass_channel independently. Content still comes from
- * stage-specific bot_scripts (night_before_daypass, morning_daypass, …);
- * this gate only picks the transport.
+ * Manual staff outbound (Inbox, Override whapi_session, broadcast target_channel=whapi).
+ * Independent of guest_suites_channel — only SOS blocks the physical device.
+ */
+export function canStaffSendViaWhapiSuites(): boolean {
+  return !isWhapiGuestSosActive();
+}
+
+/**
+ * AUTOMATION routing — suite guests follow guest_suites_channel except
+ * pre_arrival_2d (Stage 1 arrival confirmation), which always uses Whapi
+ * when not in SOS. Day-pass never uses Whapi (migration 205).
+ *
+ * @param automationTrigger — pipeline stage_key (e.g. pre_arrival_2d, night_before)
  */
 export function shouldRouteGuestOutboundViaWhapiSuites(
   guest: GuestRoomFields | null | undefined,
+  automationTrigger?: string,
 ): boolean {
   if (isWhapiGuestSosActive() || !guest) return false;
   // P0 (migration 205): day-pass / spa cohort never uses the physical Whapi
   // device for automated guest outbound — Meta Dream Bot only (ban prevention).
   if (isEffectiveDayPassGuest(guest)) return false;
-  if (isEffectiveSuiteGuest(guest)) return _suitesChannel === "whapi";
+  if (isEffectiveSuiteGuest(guest)) {
+    if (automationTrigger === SUITE_STAGE1_WHAPI_TRIGGER) return true;
+    return _suitesChannel === "whapi";
+  }
   return false;
 }
 
@@ -206,11 +216,12 @@ export function shouldRouteGuestOutboundViaWhapiSuites(
  * Stage 1 Whapi incident already came from).
  */
 export function isStageEffectivelyActive(
-  stage: { is_active: boolean },
+  stage: { is_active: boolean; stage_key?: string },
   guest: GuestRoomFields | null | undefined,
 ): boolean {
   if (isEffectiveDayPassGuest(guest) && _daypassChannel === "off") return false;
-  return stage.is_active === true || shouldRouteGuestOutboundViaWhapiSuites(guest);
+  return stage.is_active === true ||
+    shouldRouteGuestOutboundViaWhapiSuites(guest, stage.stage_key);
 }
 
 /**
@@ -231,7 +242,7 @@ export function isStageEffectivelyActive(
 export function shouldAutoReplyGuestWhapiDm(
   guest: { status?: string | null } | null | undefined,
 ): boolean {
-  return isGuestWhapiSuitesEnabled() && isGuestActiveForOutbound(guest);
+  return canStaffSendViaWhapiSuites() && isGuestActiveForOutbound(guest);
 }
 
 /**
@@ -265,5 +276,5 @@ export function whapiDisabledReasonHe(): string {
     return `🚨 Failover אוטומטי ל-Dream Bot — מכשיר Whapi לא זמין (סטטוס: ${_whapiDeviceStatusText}). ` +
       "שליחה ידנית דרך Whapi חסומה כרגע — יש להשתמש ב-Meta Template.";
   }
-  return "ערוץ Whapi נבחר אך אינו מופעל כרגע (הגדרת ערוץ ב-ACC) — ההודעה לא נשלחה.";
+  return "מכשיר הסוויטות (Whapi) אינו זמין כרגע — ההודעה לא נשלחה.";
 }
