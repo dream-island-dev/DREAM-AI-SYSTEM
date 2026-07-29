@@ -18,6 +18,8 @@ import {
   mergePastedSpaUpsellContacts,
   spaUpsellScriptToWhapiTemplate,
 } from "../utils/spaUpsellHub";
+import { createDaypassGuestsBatch } from "../utils/daypassGuestCreate";
+import { isSpaUpsellEligible } from "../utils/spaUpsellAudience";
 
 const BATCH_POLL_INTERVAL_MS = 4000;
 const BATCH_POLL_MAX_ATTEMPTS = 150;
@@ -55,6 +57,7 @@ export default function SpaUpsellHub({ initialDate, onToast }) {
   const [pasteText, setPasteText] = useState("");
   const [pastePreview, setPastePreview] = useState(null);
   const [pasteMerging, setPasteMerging] = useState(false);
+  const [pasteCreating, setPasteCreating] = useState(false);
 
   const mountedRef = useRef(true);
   useEffect(() => () => { mountedRef.current = false; }, []);
@@ -310,23 +313,73 @@ export default function SpaUpsellHub({ initialDate, onToast }) {
     }
   };
 
+  const addMergedPasteRows = (mergedRows) => {
+    if (!mergedRows?.length) return 0;
+    const existingIds = new Set(candidates.map((c) => c.id));
+    const toAdd = mergedRows.filter((m) => !existingIds.has(m.id));
+    if (!toAdd.length) return 0;
+    setCandidates((prev) => [...prev, ...toAdd]);
+    setSelected((prev) => {
+      const next = new Set(prev);
+      toAdd.forEach((m) => next.add(m.id));
+      return next;
+    });
+    return toAdd.length;
+  };
+
   const handleImportPaste = () => {
     if (!pastePreview?.merged?.length) return;
-    const existingIds = new Set(candidates.map((c) => c.id));
-    const toAdd = pastePreview.merged.filter((m) => !existingIds.has(m.id));
-    if (toAdd.length) {
-      setCandidates((prev) => [...prev, ...toAdd]);
-      setSelected((prev) => {
-        const next = new Set(prev);
-        toAdd.forEach((m) => next.add(m.id));
-        return next;
-      });
-      toast("ok", `נוספו ${toAdd.length} אורחים מההדבקה`);
+    const added = addMergedPasteRows(pastePreview.merged);
+    if (added > 0) {
+      toast("ok", `נוספו ${added} אורחים מההדבקה`);
+      setPasteText("");
+      setPastePreview(null);
     } else {
       toast("err", "כל השורות כבר ברשימה");
     }
-    setPasteText("");
-    setPastePreview(null);
+  };
+
+  const handleCreateProfilesFromPaste = async () => {
+    if (!supabase || !pastePreview?.notFound?.length) return;
+    setPasteCreating(true);
+    try {
+      const { created, errors } = await createDaypassGuestsBatch(
+        supabase,
+        pastePreview.notFound,
+        arrivalDate,
+      );
+      if (errors.length > 0 && created.length === 0) {
+        toast("err", `לא נוצרו פרופילים: ${errors[0].error}`);
+        return;
+      }
+      const { data: freshGuests } = await supabase
+        .from("guests")
+        .select("id, phone, name, room_type, room, spa_date, spa_time, arrival_date, status, msg_spa_upsell_sent")
+        .in("id", created.map((g) => g.id));
+      const eligible = (freshGuests ?? [])
+        .filter((g) => isSpaUpsellEligible(g, arrivalDate))
+        .map((g) => ({ id: g.id, name: g.name, phone: g.phone, room: g.room, source: "paste" }));
+      const added = addMergedPasteRows(eligible);
+      const createdPhones = new Set(created.map((g) => g.phone));
+      if (created.length > 0) {
+        toast(
+          errors.length > 0 ? "err" : "ok",
+          `☀️ נוצרו ${created.length} פרופילי בילוי יומי${added ? ` · ${added} נוספו לרשימה` : ""}${errors.length ? ` · ${errors.length} נכשלו` : ""}`,
+        );
+      }
+      setPastePreview((prev) => (prev ? {
+        ...prev,
+        notFound: prev.notFound.filter((r) => !createdPhones.has(r.phone)),
+        merged: [...(prev.merged ?? []), ...eligible],
+      } : null));
+      if (created.length > 0 && errors.length === 0) {
+        setPasteText("");
+      }
+    } catch (e) {
+      toast("err", e?.message ?? "שגיאה ביצירת פרופילים");
+    } finally {
+      setPasteCreating(false);
+    }
   };
 
   const resolveLead = async (leadId) => {
@@ -480,17 +533,34 @@ export default function SpaUpsellHub({ initialDate, onToast }) {
                 }}
               />
               <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-                <button type="button" onClick={handleParsePaste} disabled={pasteMerging} style={btnSecondary}>
+                <button type="button" onClick={handleParsePaste} disabled={pasteMerging || pasteCreating} style={btnSecondary}>
                   {pasteMerging ? "בודק…" : "בדוק שורות"}
                 </button>
                 <button
                   type="button"
                   onClick={handleImportPaste}
-                  disabled={!pastePreview?.merged?.length}
+                  disabled={!pastePreview?.merged?.length || pasteCreating}
                   style={btnPrimary}
                 >
                   הוסף {pastePreview?.merged?.length ?? 0} לרשימה
                 </button>
+                {pastePreview?.notFound?.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleCreateProfilesFromPaste}
+                    disabled={pasteCreating}
+                    style={{
+                      ...btnSecondary,
+                      borderColor: "#0e7490",
+                      color: "#0e7490",
+                      fontWeight: 800,
+                    }}
+                  >
+                    {pasteCreating
+                      ? "⏳ יוצר פרופילים…"
+                      : `☀️ צור ${pastePreview.notFound.length} פרופילי בילוי יומי`}
+                  </button>
+                )}
               </div>
               {pastePreview && (
                 <div style={{ fontSize: 12, marginTop: 8, color: "#6B21A8", lineHeight: 1.5 }}>
@@ -499,11 +569,26 @@ export default function SpaUpsellHub({ initialDate, onToast }) {
                     <span style={{ color: "#B5600A" }}> · ⚠ {pastePreview.ineligible.length} לא מתאימים</span>
                   )}
                   {pastePreview.notFound?.length > 0 && (
-                    <span style={{ color: "#C0392B" }}> · {pastePreview.notFound.length} ללא פרופיל</span>
+                    <span style={{ color: "#C0392B" }}> · {pastePreview.notFound.length} ללא פרופיל — לחץ «צור פרופיל»</span>
                   )}
                   {pastePreview.invalid?.length > 0 && (
                     <span style={{ color: "#C0392B" }}> · {pastePreview.invalid.length} לא תקינים</span>
                   )}
+                </div>
+              )}
+              {pastePreview?.notFound?.length > 0 && (
+                <div style={{
+                  marginTop: 10, padding: "10px 12px", borderRadius: 8,
+                  background: "#ecfeff", border: "1px solid #A5E4EF", fontSize: 12.5,
+                }}>
+                  <div style={{ fontWeight: 700, color: "#0e7490", marginBottom: 6 }}>
+                    ללא פרופיל ב-DB (ייווצרו כבילוי יומי · הגעה {arrivalDate})
+                  </div>
+                  {pastePreview.notFound.map((r) => (
+                    <div key={r.phone} style={{ padding: "4px 0", color: "#155e75" }}>
+                      {r.name || "—"} · {r.phone}
+                    </div>
+                  ))}
                 </div>
               )}
             </div>

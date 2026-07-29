@@ -285,8 +285,8 @@ const PIPELINE_TEMPLATE: Record<string, string> = {
   // still carrying its OLD content (OnceHub button) — unrelated to Stage 2.5,
   // not touched here.
   night_before:    "dream_suite_reminder",
-  morning_suite:   "suite_welcome_morning",        // suite AM    → "בוקר אור, היום מגיעים"
-  morning_welcome: "suite_welcome_morning",        // standard AM → same template
+  morning_suite:   "suite_welcome_morning",        // suite AM    → Shabbat-aware pair at dispatch
+  morning_welcome: "dream_checkin_reminder_v2",    // day-pass AM → fixed (session morning_daypass preferred)
   room_ready:      "dream_room_ready1",            // manual UI   → dedicated key-handover template
                                                      // (dream_room_ready1 is the approved Meta name;
                                                      // the fast-path below sends a free-text bot_script
@@ -1181,13 +1181,17 @@ function resolvePipelineTemplateName(
     return fromDb || fromMap || "dream_arrival_confirmation";
   }
 
-  if (trigger === "morning_suite" || trigger === "morning_welcome") {
-    // Always route to the approved Shabbat-aware pair — ignore automation_stages.
-    // meta_template_name (migration 102 left the weekday name there). Honoring the
-    // DB value before the Shabbat check let a manual force_channel=meta_template
-    // dispatch quote the weekday 15:00 check-in to a Saturday-arrival guest; the
-    // autonomous morningDispatch fast-path already computes this pair directly and
-    // night_before below follows the same ignore-the-DB rule.
+  if (trigger === "morning_suite") {
+    // Suite Stage 3 only — Shabbat-aware pair; ignore automation_stages.meta_template_name.
+    const isShabbat = isShabbatArrivalDate(String(guest.arrival_date ?? ""));
+    return isShabbat ? "suite_welcome_morning_shabbat" : "suite_welcome_morning";
+  }
+
+  if (trigger === "morning_welcome") {
+    // Day-pass Stage 3 — fixed template; no arrival-day routing (suites use morning_suite).
+    if (isEffectiveDayPassGuest(guest as GuestRoomFields)) {
+      return "dream_checkin_reminder_v2";
+    }
     const isShabbat = isShabbatArrivalDate(String(guest.arrival_date ?? ""));
     return isShabbat ? "suite_welcome_morning_shabbat" : "suite_welcome_morning";
   }
@@ -3189,12 +3193,9 @@ serve(async (req: Request) => {
     }
 
     // ── Morning day-pass fast-path (Stage 3 — בוקר הגעה, בילוי יומי) ──────────
-    // Meta template path ONLY when Whapi routing is off. When
-    // GUEST_WHAPI_SUITES_ENABLED, day-pass falls through to the shared Whapi
-    // morning session block below (morning_daypass script) — same transport
-    // as suites (owner 2026-07-12). Autonomous Meta here used to retry
-    // forever on broken dream_checkin_reminder_v2 / URL-button templates.
-    // Session morning_daypass also on manual force (force===true) for Meta-bound.
+    // Fixed morning_daypass content — no Shabbat template routing (suites use morning_suite).
+    // Session when 24h window open (night_before_daypass CTA) or staff force;
+    // Meta dream_checkin_reminder_v2 only when window closed (cold-start edge case).
     // isEffectiveDayPassGuest — a suite-room guest mis-tagged day_guest falls
     // through to the generic (suite-template) morning path below (P0, s125).
     if (
@@ -3204,8 +3205,7 @@ serve(async (req: Request) => {
     ) {
       const dpGuestName = sanitizeTemplateVars([String(guest.name ?? "")])[0];
       const dpArrivalYmd = normalizeArrivalDateYmd(guest.arrival_date);
-      const dpIsShabbat = isShabbatArrivalDate(dpArrivalYmd);
-      const dpTemplate = dpIsShabbat ? "suite_welcome_morning_shabbat" : "suite_welcome_morning";
+      const dpTemplate = "dream_checkin_reminder_v2";
       // Option C: open Meta window → free-text morning_daypass + QR; else template.
       const dpUseSession =
         !forceMetaTemplate &&
@@ -3249,12 +3249,9 @@ serve(async (req: Request) => {
               const dpPortalUrl = guest.portal_token
                 ? `${PORTAL_BASE_URL}/portal/${guest.portal_token as string}`
                 : "";
-              const body = applySaturdayCheckInTimeOverride(
-                rawText
-                  .replace(/\{\{GUEST_NAME\}\}/gi, dpGuestName)
-                  .replace(/\{\{\s*portal_url\s*\}\}/gi, dpPortalUrl),
-                dpArrivalYmd,
-              );
+              const body = rawText
+                .replace(/\{\{GUEST_NAME\}\}/gi, dpGuestName)
+                .replace(/\{\{\s*portal_url\s*\}\}/gi, dpPortalUrl);
               const buttons = (stageRow?.interactive_buttons ?? []) as InteractiveButtonDef[];
               dpConvMessage = buildSessionConversationLog(body, buttons);
               await sendStageSessionMessage(
@@ -3268,7 +3265,7 @@ serve(async (req: Request) => {
           } else {
             console.log(
               `[whatsapp-send] morning_welcome day_pass: route=meta_template guest_id=${guestId} ` +
-              `arrival=${dpArrivalYmd} template=${dpTemplate} isShabbat=${dpIsShabbat}`,
+              `arrival=${dpArrivalYmd} template=${dpTemplate}`,
             );
             const dpTmplDispatched = await sendViaTemplate(
               String(guest.phone), dpTemplate, [dpGuestName], "he",
@@ -3527,8 +3524,7 @@ serve(async (req: Request) => {
     //   (stage_3_morning) + applySaturdayCheckInTimeOverride — never the weekday
     //   Meta template (that would quote 15:00 check-in on a Saturday arrival).
     //
-    // Applies to: morning_suite + morning_welcome for NON-day_guest guests.
-    // Day-pass guests (morning_welcome) are handled by the early-return above.
+    // Applies to: morning_suite only (suites). Day-pass morning_welcome handled above.
     // All other triggers fall through (morningDispatch stays null).
     type MorningDispatch = {
       primaryTemplate:  string;
@@ -3538,7 +3534,7 @@ serve(async (req: Request) => {
     };
     let morningDispatch: MorningDispatch | null = null;
 
-    if (trigger === "morning_suite" || trigger === "morning_welcome") {
+    if (trigger === "morning_suite") {
       const arrivalDateStr = normalizeArrivalDateYmd(guest.arrival_date);
       const isShabbat = isShabbatArrivalDate(arrivalDateStr);
       const guestName = sanitizeTemplateVars([String(guest.name ?? "")])[0];
@@ -4024,13 +4020,16 @@ serve(async (req: Request) => {
           const portalUrl = guest.portal_token
             ? `${PORTAL_BASE_URL}/portal/${guest.portal_token as string}`
             : "";
-          let body = applySaturdayCheckInTimeOverride(
-            rawText
-              .replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, guestName)
-              .replace(/\{\{\s*portal_url\s*\}\}/gi, portalUrl)
-              .replace(/\{\{\s*SPA_TIME\s*\}\}/gi, normalizeHmTime(guest.spa_time) || ""),
-            String(guest.arrival_date ?? ""),
-          );
+          let body = rawText
+            .replace(/\{\{\s*GUEST_NAME\s*\}\}/gi, guestName)
+            .replace(/\{\{\s*portal_url\s*\}\}/gi, portalUrl)
+            .replace(/\{\{\s*SPA_TIME\s*\}\}/gi, normalizeHmTime(guest.spa_time) || "");
+          if (!(trigger === "morning_welcome" && isEffectiveDayPassGuest(guest as GuestRoomFields))) {
+            body = applySaturdayCheckInTimeOverride(
+              body,
+              String(guest.arrival_date ?? ""),
+            );
+          }
           // Stage 1 over Whapi has no interactive buttons (Meta's template
           // does) — the typed CTA in the body is the guest's only path to
           // confirming. Defend against an ACC edit that drops the phrase.

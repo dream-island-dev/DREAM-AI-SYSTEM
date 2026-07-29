@@ -654,9 +654,17 @@ const SPA_WARMUP_DEFAULT_MINUTES = 30;
 const SPA_WARMUP_MIN_MINUTES = 5;
 const SPA_WARMUP_MAX_MINUTES = 180;
 
+/** survey_invite_daypass — ACC edits "minutes after spa_time"; DB stores offset_hours (positive). */
+const SURVEY_AFTER_SPA_DEFAULT_MINUTES = 60;
+const SURVEY_AFTER_SPA_MIN_MINUTES = 15;
+const SURVEY_AFTER_SPA_MAX_MINUTES = 180;
+
 function isSpaWarmupTimingStage(stage) {
-  return stage?.stage_key === "spa_warmup_daypass"
-    || (stage?.schedule_mode === "hours_after_event" && stage?.anchor_event === "spa_time");
+  return stage?.stage_key === "spa_warmup_daypass";
+}
+
+function isSurveyInviteTimingStage(stage) {
+  return stage?.stage_key === "survey_invite_daypass";
 }
 
 function clampSpaWarmupMinutes(raw) {
@@ -677,6 +685,22 @@ function spaWarmupOffsetHoursFromMinutes(minutes) {
   return -(clampSpaWarmupMinutes(minutes) / 60);
 }
 
+function clampSurveyAfterSpaMinutes(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return SURVEY_AFTER_SPA_DEFAULT_MINUTES;
+  return Math.min(SURVEY_AFTER_SPA_MAX_MINUTES, Math.max(SURVEY_AFTER_SPA_MIN_MINUTES, Math.round(n)));
+}
+
+function surveyAfterSpaMinutesFromOffset(offsetHours) {
+  const h = Number(offsetHours);
+  if (!Number.isFinite(h) || h <= 0) return SURVEY_AFTER_SPA_DEFAULT_MINUTES;
+  return clampSurveyAfterSpaMinutes(h * 60);
+}
+
+function surveyOffsetHoursFromMinutes(minutes) {
+  return clampSurveyAfterSpaMinutes(minutes) / 60;
+}
+
 /** One-time repair when DB row was edited via legacy "hours after arrival" UI. */
 function spaWarmupTimingRepairPatch(stage) {
   if (stage?.stage_key !== "spa_warmup_daypass") return null;
@@ -686,6 +710,18 @@ function spaWarmupTimingRepairPatch(stage) {
   const oh = Number(stage.offset_hours);
   if (!Number.isFinite(oh) || oh >= 0) {
     patch.offset_hours = spaWarmupOffsetHoursFromMinutes(SPA_WARMUP_DEFAULT_MINUTES);
+  }
+  return Object.keys(patch).length ? patch : null;
+}
+
+function surveyInviteTimingRepairPatch(stage) {
+  if (stage?.stage_key !== "survey_invite_daypass") return null;
+  const patch = {};
+  if (stage.schedule_mode !== "hours_after_event") patch.schedule_mode = "hours_after_event";
+  if (stage.anchor_event !== "spa_time") patch.anchor_event = "spa_time";
+  const oh = Number(stage.offset_hours);
+  if (!Number.isFinite(oh) || oh <= 0) {
+    patch.offset_hours = surveyOffsetHoursFromMinutes(SURVEY_AFTER_SPA_DEFAULT_MINUTES);
   }
   return Object.keys(patch).length ? patch : null;
 }
@@ -802,7 +838,7 @@ const SAMPLE_VALUES = {
 // (separate weekday vs Shabbat templates), so manual variable injection in the UI
 // is both unnecessary and misleading. The auto-fill panel is replaced by a
 // read-only routing info panel for these stage keys.
-const DETERMINISTIC_ROUTE_STAGE_KEYS = new Set(["night_before", "morning_suite", "morning_welcome"]);
+const DETERMINISTIC_ROUTE_STAGE_KEYS = new Set(["night_before", "morning_suite"]);
 /** Stages with a separate Shabbat bot_script + optional image (migration 172). */
 const SHABBAT_VARIANT_STAGE_KEYS = new Set(["night_before", "morning_suite"]);
 function resolveSampleText(template) {
@@ -1154,7 +1190,42 @@ function StageCard({
                 </span>
               </div>
             )}
-            {stage.schedule_mode === "hours_after_event" && !isSpaWarmupTimingStage(stage) && (
+            {isSurveyInviteTimingStage(stage) && (
+              <div className="actr-timing-row" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <div style={{
+                  fontSize: 12.5, fontWeight: 700, color: "var(--black)", lineHeight: 1.5,
+                  padding: "8px 10px", borderRadius: 10, background: "rgba(124,58,237,0.08)",
+                  border: "1px solid #A78BFA",
+                }}>
+                  📊 מקושר לשעת הטיפול (`spa_time`) — קישור סקר מהפורטל (`#survey`).
+                </div>
+                <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>שלח</span>
+                  <input
+                    type="number"
+                    min={15}
+                    max={180}
+                    step={5}
+                    value={surveyAfterSpaMinutesFromOffset(stage.offset_hours)}
+                    style={{ width: 80 }}
+                    title="ברירת מחדל 60 — ניתן לשנות (15–180)"
+                    onChange={(e) => {
+                      const mins = clampSurveyAfterSpaMinutes(parseInt(e.target.value, 10));
+                      patchStage(stage, {
+                        schedule_mode: "hours_after_event",
+                        anchor_event: "spa_time",
+                        offset_hours: surveyOffsetHoursFromMinutes(mins),
+                      });
+                    }}
+                  />
+                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>דקות אחרי שעת הטיפול</span>
+                </div>
+                <span style={{ fontSize: 11, color: "var(--text-muted)", lineHeight: 1.5 }}>
+                  דוגמה: טיפול ב־16:00 + 60 דק׳ → סקר ב־17:00. רק קוהורט ספא בילוי-יומי.
+                </span>
+              </div>
+            )}
+            {stage.schedule_mode === "hours_after_event" && !isSpaWarmupTimingStage(stage) && !isSurveyInviteTimingStage(stage) && (
               <div className="actr-timing-row" style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                 <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
                   {stage.offset_hours ?? 0} שעות אחרי {stage.anchor_event === "checkin_time" ? "צ׳ק-אין" : "אישור הגעה"}
@@ -1393,9 +1464,8 @@ function StageCard({
                 {" — "}ערוך תוכן בלשונית &quot;📋 תבניות Meta&quot;
               </div>
             )}
-            {/* Deterministic routing info — night_before / morning_suite / morning_welcome.
-                Template selection is automatic (arrival day-of-week → template name).
-                Variables {{2}}/{{3}} are removed; times are baked into the template body. */}
+            {/* Deterministic routing info — night_before / morning_suite (suites only).
+                Day-pass morning_welcome uses fixed morning_daypass — no Shabbat routing. */}
             {stage.meta_template_name && DETERMINISTIC_ROUTE_STAGE_KEYS.has(stage.stage_key) && (
               <div style={{
                 marginTop: 10, padding: "10px 14px",
@@ -2181,7 +2251,12 @@ export default function AutomationControlCenter({ onOpenDreamBotChat }) {
     else {
       const rows = stageRows ?? [];
       const repairs = rows
-        .map((s) => ({ stage: s, patch: spaWarmupTimingRepairPatch(s) }))
+        .map((s) => {
+          const warmup = spaWarmupTimingRepairPatch(s);
+          const survey = surveyInviteTimingRepairPatch(s);
+          const patch = warmup ? { ...warmup, ...(survey ?? {}) } : survey;
+          return { stage: s, patch };
+        })
         .filter((x) => x.patch);
       if (repairs.length > 0 && supabase) {
         await Promise.all(

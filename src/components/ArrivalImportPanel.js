@@ -45,6 +45,7 @@ import { isSuiteGuestProfile } from "../utils/guestTiming";
 import { validateSuiteProfilesDeparture } from "../utils/departureDateGuard";
 import { resolveEzgoHtmlFromUpload, looksLikeEml } from "../utils/ezgoEmailHtml";
 import { isSpaUpsellEligible } from "../utils/spaUpsellAudience";
+import { createDaypassGuestProfile } from "../utils/daypassGuestCreate";
 
 // Sorted, joined header signature — matches import_mapping_memory.header_signature (migration 049).
 // Not a hash: exact string equality is enough here and avoids a client-side hash dependency.
@@ -2446,40 +2447,15 @@ export default function ArrivalImportPanel({ defaultOpen = false, onSpaUpsellNav
       const rows = [...daypassCreateSelected].map((i) => daypassCreateCandidates[i]).filter(Boolean);
       const created = [];
       for (const rec of rows) {
-        const recArrivalDate = rec.arrival_date || arrivalDate;
-        const insert = {
-            phone: rec.phone,
-            name: rec.guest_name || null,
-            arrival_date: recArrivalDate,
-            departure_date: recArrivalDate,
-            room_type: "day_guest",
-            room: GENERIC_DAY_PASS_ROOM,
-            status: "pending",
-            order_number: rec.order_number || null,
-            treatment_count: rec.treatment_count ?? 0,
-            meal_time: rec.meal_time || null,
-            meal_location: rec.meal_location || null,
-          };
-        if (rec.spa_time) {
-          insert.spa_time = rec.spa_time;
-          insert.spa_date = recArrivalDate;
-        }
-        const { data: inserted, error } = await supabase
-          .from("guests")
-          .insert(insert)
-          .select("id, name, phone")
-          .maybeSingle();
-        if (error) { setDaypassCreateError(error.message); continue; }
-        if (inserted) {
-          created.push(inserted);
-          // bookings.phone is digits-only, no "+" (Meta webhook convention).
-          await supabase.from("bookings").upsert({
-            phone: rec.phone.replace(/^\+/, ""),
-            guest_name: rec.guest_name || null,
-            arrival_date: recArrivalDate,
-            status: "expected",
-            room_count: 1,
-          }, { onConflict: "phone,arrival_date" });
+        try {
+          const inserted = await createDaypassGuestProfile(
+            supabase,
+            rec,
+            rec.arrival_date || arrivalDate,
+          );
+          if (inserted) created.push(inserted);
+        } catch (err) {
+          setDaypassCreateError(err?.message ?? String(err));
         }
       }
       if (created.length > 0) {

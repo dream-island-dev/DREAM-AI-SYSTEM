@@ -20,12 +20,14 @@ Read-only audit found prod↔git drift (deployed-but-uncommitted webhook auth + 
 
 ---
 
-## ✅ Day-pass journey — evening + spa warmup X min + survey (2026-07-14)
+## ✅ Day-pass journey — evening + spa warmup X min + survey after spa (2026-07-14, updated 2026-07-28)
 
 | Piece | Status |
 |---|---|
-| Migration 203 | `spa_warmup_daypass.offset_hours = -0.5` (30 min before) ✅ pushed |
-| ACC UI | «דקות לפני שעת הטיפול» (5–180) — **DEPLOYED** ce84783 + migration 204 |
+| Migration 203 | `spa_warmup_daypass.offset_hours = -0.5` (30 min before) ✅ |
+| Migration 279 | `survey_invite_daypass` → spa_time + 1h (was 17:00 arrival day) — **needs `db push`** |
+| ACC UI | «דקות לפני שעת הטיפול» (warmup) + «דקות אחרי שעת הטיפול» (survey) |
+| `morning_welcome` | re-enabled for daypass (`migration 279`) |
 | `guest_daypass_channel` | **whapi** |
 | Survey invite QA | Feedback → סקרים → «הודעת סקר בוואטסאפ + קישור» (preview + open + 1 guest send) |
 | Intentional OFF | `morning_welcome`, `mid_stay_daypass`, `checkout_fb_daypass` |

@@ -578,17 +578,17 @@ function spaWarmupStage(overrides: Partial<AutomationStage> = {}): AutomationSta
 function surveyInviteStage(overrides: Partial<AutomationStage> = {}): AutomationStage {
   return {
     stage_key: "survey_invite_daypass",
-    display_name: "סקר חוויית אורח (בילוי יומי)",
+    display_name: "סקר חוויית אורח (שעה אחרי ספא)",
     journey_phase: "post_stay",
     sequence_order: 410,
     node_type: "session_message",
-    schedule_mode: "day_offset_with_time",
-    anchor_event: "arrival_date",
-    day_offset: 0,
-    local_time: "17:00",
+    schedule_mode: "hours_after_event",
+    anchor_event: "spa_time",
+    day_offset: null,
+    local_time: null,
     local_time_end: null,
-    offset_hours: null,
-    applies_to: "non_suite",
+    offset_hours: 1,
+    applies_to: "daypass_spa",
     meta_template_name: null,
     session_message_script_key: "survey_invite_daypass",
     interactive_buttons: [],
@@ -672,14 +672,32 @@ Deno.test("spa_warmup_daypass: already sent → already_sent (idempotent)", () =
   assertEquals(result.skipReason, "already_sent");
 });
 
-Deno.test("survey_invite_daypass: dueNow at/after 17:00, not before (comfortable margin)", () => {
-  // Comfortable margin either side of the 17:00 floor — see DST-margin note above.
-  const guest = daypassSpaGuest();
-  const before = resolveStageSchedule(surveyInviteStage(), guest, israelInstant("2026-07-13", 14, 0));
+Deno.test("survey_invite_daypass: dueNow at spa_time+1h, not before", () => {
+  const guest = daypassSpaGuest({ spa_time: "16:00" }); // survey instant = 17:00 Israel
+  const before = resolveStageSchedule(surveyInviteStage(), guest, israelInstant("2026-07-13", 16, 59));
   assertEquals(before.dueNow, false);
-  const due = resolveStageSchedule(surveyInviteStage(), guest, israelInstant("2026-07-13", 20, 0));
+  assertEquals(before.skipReason, null);
+  const due = resolveStageSchedule(surveyInviteStage(), guest, israelInstant("2026-07-13", 17, 0));
   assertEquals(due.dueNow, true);
   assertEquals(due.skipReason, null);
+});
+
+Deno.test("survey_invite_daypass: corrupted anchor_event still schedules from spa_time", () => {
+  const guest = daypassSpaGuest({ spa_time: "14:00" });
+  const corrupted = surveyInviteStage({
+    anchor_event: "arrival_date",
+    offset_hours: 1,
+  });
+  const due = resolveStageSchedule(corrupted, guest, israelInstant("2026-07-13", 15, 0));
+  assertEquals(due.dueNow, true);
+  assertEquals(due.skipReason, null);
+});
+
+Deno.test("survey_invite_daypass: custom offset after spa (ACC offset_hours)", () => {
+  const guest = daypassSpaGuest({ spa_time: "16:00" });
+  const stage = surveyInviteStage({ offset_hours: 1.5 }); // 17:30
+  assertEquals(resolveStageSchedule(stage, guest, israelInstant("2026-07-13", 17, 29)).dueNow, false);
+  assertEquals(resolveStageSchedule(stage, guest, israelInstant("2026-07-13", 17, 30)).dueNow, true);
 });
 
 Deno.test("survey_invite_daypass: no spa that day → no_spa_visit_today (audience gate)", () => {
@@ -694,7 +712,7 @@ Deno.test("survey_invite_daypass: cancelled guest never fires (Zero-Spam)", () =
   assertEquals(result.skipReason, "guest_cancelled");
 });
 
-Deno.test("survey_invite_daypass: suite guest blocked by applies_to=non_suite", () => {
+Deno.test("survey_invite_daypass: suite guest blocked by applies_to=daypass_spa", () => {
   const guest = daypassSpaGuest({ room_type: "suite", room: "אמטיסט 8" });
   const result = resolveStageSchedule(surveyInviteStage(), guest, israelInstant("2026-07-13", 17, 0));
   assertEquals(result.skipReason, "wrong_room_type");
