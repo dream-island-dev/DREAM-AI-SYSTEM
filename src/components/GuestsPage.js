@@ -25,7 +25,6 @@ import {
   getCheckinRowHighlight,
   isPreArrivalTodayGuest,
   resolveEffectiveGuestStatus,
-  shouldAutoCheckoutGuest,
   sortCheckinRosterGuests,
 } from "../utils/guestCheckinMatrix";
 import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
@@ -94,27 +93,6 @@ export default function GuestsPage({
 
   const showToast = (type, msg) => { setToast({ type, msg }); setTimeout(() => setToast(null), 3500); };
 
-  /** Departure-day auto checkout — mirrors whatsapp-cron. 15:00 auto check-in
-   * DISABLED (2026-07-11): housekeeping WA group is the sole check-in source. */
-  const applyReceptionMatrixSync = useCallback(async (guestList) => {
-    if (!supabase || !guestList?.length) return guestList;
-    const now = new Date();
-    let next = guestList;
-    let anyChanged = false;
-
-    for (const g of guestList) {
-      if (shouldAutoCheckoutGuest(g, now)) {
-        const patch = { status: "checked_out", room_ready_notified: false, msg_room_ready_sent: false };
-        const { error } = await supabase.from("guests").update(patch).eq("id", g.id);
-        if (!error) {
-          next = next.map((x) => (x.id === g.id ? { ...x, ...patch } : x));
-          anyChanged = true;
-        }
-      }
-    }
-    return anyChanged ? next : guestList;
-  }, []);
-
   const suppressRealtimeRefresh = useCallback((ms = 2500) => {
     skipRealtimeUntilRef.current = Date.now() + ms;
   }, []);
@@ -132,13 +110,13 @@ export default function GuestsPage({
       .order("id", { ascending: true });
     if (error) showToast("err", "שגיאה: " + error.message);
     else {
-      const synced = await applyReceptionMatrixSync(data ?? []);
-      setGuests(synced);
-      const suiteMap = await fetchSuiteRoomsForGuestIds(supabase, synced);
+      const rows = data ?? [];
+      setGuests(rows);
+      const suiteMap = await fetchSuiteRoomsForGuestIds(supabase, rows);
       setSuiteRoomsByGuestId(suiteMap);
     }
     if (showSpinner) setLoading(false);
-  }, [applyReceptionMatrixSync]);
+  }, []);
 
   const fetchGuestsSilent = useCallback(() => loadGuests(), [loadGuests]);
 

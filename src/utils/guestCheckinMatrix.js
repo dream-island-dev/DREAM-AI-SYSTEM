@@ -146,9 +146,9 @@ export function needsDepartureCheckoutPrompt(guest, now = new Date()) {
   return isPastDepartureCheckoutPromptGateway(guest, now);
 }
 
-/** @deprecated DB auto-checkout disabled — use needsDepartureCheckoutPrompt for UI. */
-export function shouldAutoCheckoutGuest(guest, now = new Date()) {
-  return needsDepartureCheckoutPrompt(guest, now);
+/** DB auto-checkout disabled (2026-07-17) — housekeeping WA "Co N" is sole suite checkout writer. */
+export function shouldAutoCheckoutGuest(_guest, _now = new Date()) {
+  return false;
 }
 
 /** Map arrival_date → best צ'ק-אין timeline scope (GuestDashboard → GuestsPage). */

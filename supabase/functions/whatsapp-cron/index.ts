@@ -49,6 +49,7 @@ import {
   catchUpDepartedTodaySuiteCheckoutSurveys,
   enqueueSuiteDepartureDaySurveyFallback,
 } from "../_shared/postCheckoutSurvey.ts";
+import { autoCheckoutMissedSuiteDepartures } from "../_shared/suiteDepartureAutoCheckout.ts";
 import { processDueGuestClubWaInvites } from "../_shared/guestClubWaInvite.ts";
 import { runWeeklyGuestHallucinationAudit } from "../_shared/guestHallucinationAudit.ts";
 import { managerMailEnabled } from "../_shared/oritAgentMail.ts";
@@ -245,6 +246,14 @@ Deno.serve(async (req: Request) => {
       } else {
         autoCheckoutCount += dayPassOverdue?.length ?? 0;
       }
+    }
+
+    const missedSuiteCheckout = await autoCheckoutMissedSuiteDepartures(supabase, now);
+    if (missedSuiteCheckout.checkedOut > 0) {
+      console.log(
+        `[whatsapp-cron] suite_departure_auto_checkout checked_out=${missedSuiteCheckout.checkedOut} ` +
+        `survey_queued=${missedSuiteCheckout.surveyQueued}`,
+      );
     }
 
     const catchUp = await catchUpDepartedTodaySuiteCheckoutSurveys(supabase);
