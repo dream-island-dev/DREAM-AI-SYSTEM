@@ -1,11 +1,21 @@
 // src/components/GuestsPage.js
-// Guest / daily check-in management. Fetch-on-mount (F5-proof).
+// Guest / daily check-in management. Scoped fetch + cross-mount memory cache.
 // Manager can flip a guest to "Room Ready" → fires WhatsApp Trigger 3
 // (suites) immediately via the whatsapp-send edge function.
 import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import { SUITE_REGISTRY } from "../data/suiteRegistry";
 import { hasSuiteRoomTypeConflict, hasPremiumDayRoomTypeConflict } from "../utils/guestTiming";
+import { loadCheckinFilter } from "../utils/checkinFilterStorage";
+import {
+  fetchCheckinGuestsForScope,
+  fetchCheckinRoomByPhone,
+  fetchCheckinScopeCounts,
+  getCheckinScopeCacheKey,
+  guestsPageMemoryCache,
+  readCachedCheckinScope,
+  writeCachedCheckinScope,
+} from "../utils/checkinGuestsFetch";
 import AddGuestModal from "./AddGuestModal";
 import GuestAttentionBadge from "./GuestAttentionBadge";
 import GuestContextDrawer from "./GuestContextDrawer";
@@ -20,7 +30,6 @@ import {
   CHECKIN_TIMELINE_TOMORROW,
   CHECKIN_TIMELINE_WEEK7,
   applyCheckinRosterFilter,
-  countCheckinScopeTotals,
   formatCheckinArrivalDisplay,
   getCheckinRowHighlight,
   isPreArrivalTodayGuest,
@@ -49,6 +58,11 @@ export default function GuestsPage({
   onOpenDreamBotChat,
   onOpenCheckin,
 }) {
+  const bootFilter = loadCheckinFilter();
+  const bootScope = initialTimelineScope || bootFilter.scope || CHECKIN_TIMELINE_TODAY;
+  const bootDate = initialCustomArrivalDate ?? bootFilter.customDate ?? null;
+  const bootCache = readCachedCheckinScope(bootScope, bootDate);
+
   const {
     quietActive,
     overrideChecked,
@@ -57,9 +71,10 @@ export default function GuestsPage({
     canSend,
   } = useQuietHoursSend();
 
-  const [guests, setGuests]   = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [guests, setGuests]   = useState(() => bootCache?.guests ?? []);
+  const [loading, setLoading] = useState(() => bootCache === null);
   const [refreshing, setRefreshing] = useState(false);
+  const [scopeCounts, setScopeCounts] = useState(() => bootCache?.scopeCounts ?? {});
   const [busy, setBusy]       = useState(null);
   const skipRealtimeUntilRef = useRef(0);
   const realtimeDebounceRef = useRef(null);
@@ -75,8 +90,8 @@ export default function GuestsPage({
   const [selectedIds, setSelectedIds]   = useState(new Set()); // batch selection
   const [deleteBusy, setDeleteBusy]     = useState(false);
   const [editGuest,     setEditGuest]    = useState(null);  // {} = new guest, {id,...} = existing
-  const [roomByPhone,    setRoomByPhone]    = useState({});  // phone → { roomName, suiteType, isDayGuest } — fallback display only; the room dropdown itself uses SUITE_REGISTRY
-  const [suiteRoomsByGuestId, setSuiteRoomsByGuestId] = useState({});
+  const [roomByPhone,    setRoomByPhone]    = useState(() => bootCache?.roomByPhone ?? guestsPageMemoryCache.roomByPhone ?? {});
+  const [suiteRoomsByGuestId, setSuiteRoomsByGuestId] = useState(() => bootCache?.suiteRoomsByGuestId ?? {});
 
   const {
     timelineScope,
@@ -93,58 +108,78 @@ export default function GuestsPage({
 
   const showToast = (type, msg) => { setToast({ type, msg }); setTimeout(() => setToast(null), 3500); };
 
+  const persistScopeCache = useCallback((rows, suiteMap) => {
+    writeCachedCheckinScope(timelineScope, customArrivalDate, {
+      guests: rows,
+      suiteRoomsByGuestId: suiteMap,
+    });
+  }, [timelineScope, customArrivalDate]);
+
   const suppressRealtimeRefresh = useCallback((ms = 2500) => {
     skipRealtimeUntilRef.current = Date.now() + ms;
   }, []);
 
-  const loadGuests = useCallback(async ({ showSpinner = false } = {}) => {
-    if (showSpinner) setLoading(true);
+  const loadGuests = useCallback(async ({ showSpinner = false, forceScopeCounts = false } = {}) => {
+    const cacheKey = getCheckinScopeCacheKey(timelineScope, customArrivalDate);
+    const hasCachedScope = Object.prototype.hasOwnProperty.call(
+      guestsPageMemoryCache.guestsByScope,
+      cacheKey,
+    );
+
+    if (showSpinner && !hasCachedScope) setLoading(true);
     if (!isSupabaseConfigured || !supabase) {
-      if (showSpinner) setLoading(false);
+      if (showSpinner && !hasCachedScope) setLoading(false);
       return;
     }
-    const { data, error } = await supabase
-      .from("guests")
-      .select("*")
-      .order("arrival_date", { ascending: true })
-      .order("id", { ascending: true });
-    if (error) showToast("err", "שגיאה: " + error.message);
-    else {
-      const rows = data ?? [];
+
+    const [guestsRes, countsRes] = await Promise.all([
+      fetchCheckinGuestsForScope(supabase, { scope: timelineScope, customArrivalDate }),
+      fetchCheckinScopeCounts(supabase, { force: forceScopeCounts }),
+    ]);
+
+    if (countsRes.counts) setScopeCounts(countsRes.counts);
+    if (guestsRes.error) {
+      showToast("err", "שגיאה: " + guestsRes.error.message);
+    } else {
+      const rows = guestsRes.data ?? [];
       setGuests(rows);
       const suiteMap = await fetchSuiteRoomsForGuestIds(supabase, rows);
       setSuiteRoomsByGuestId(suiteMap);
+      persistScopeCache(rows, suiteMap);
     }
-    if (showSpinner) setLoading(false);
-  }, []);
+    if (showSpinner && !hasCachedScope) setLoading(false);
+  }, [timelineScope, customArrivalDate, persistScopeCache]);
 
   const fetchGuestsSilent = useCallback(() => loadGuests(), [loadGuests]);
 
   const fetchGuestsManual = useCallback(async () => {
     setRefreshing(true);
-    await loadGuests();
+    await loadGuests({ forceScopeCounts: true });
+    if (supabase) {
+      const map = await fetchCheckinRoomByPhone(supabase);
+      setRoomByPhone(map);
+    }
     setRefreshing(false);
   }, [loadGuests]);
 
-  const fetchRooms = useCallback(async () => {
-    if (!supabase) return;
-    const { data } = await supabase
-      .from("suite_rooms")
-      .select("room_name, suite_type, arrival_date, guest_phone, is_day_guest")
-      .order("arrival_date", { ascending: true })
-      .order("room_name",    { ascending: true });
-    const rows = data ?? [];
-    // Build phone → room lookup so the table can show room for CSV-imported guests
-    const map = {};
-    for (const r of rows) {
-      if (r.guest_phone && !map[r.guest_phone]) {
-        map[r.guest_phone] = { roomName: r.room_name, suiteType: r.suite_type, isDayGuest: !!r.is_day_guest };
-      }
+  useEffect(() => {
+    const cached = readCachedCheckinScope(timelineScope, customArrivalDate);
+    if (cached) {
+      setGuests(cached.guests);
+      setSuiteRoomsByGuestId(cached.suiteRoomsByGuestId);
+      setLoading(false);
     }
-    setRoomByPhone(map);
-  }, []);
+    loadGuests({ showSpinner: !cached });
+  }, [timelineScope, customArrivalDate, loadGuests]);
 
-  useEffect(() => { loadGuests({ showSpinner: true }); fetchRooms(); }, [loadGuests, fetchRooms]);
+  useEffect(() => {
+    if (!supabase) return;
+    if (guestsPageMemoryCache.roomByPhone) {
+      setRoomByPhone(guestsPageMemoryCache.roomByPhone);
+      return;
+    }
+    fetchCheckinRoomByPhone(supabase).then(setRoomByPhone);
+  }, []);
 
   useEffect(() => {
     if (!supabase) return;
@@ -362,7 +397,6 @@ export default function GuestsPage({
 
   // ── Reception matrix filters — PMS timeline scopes ─────────────────────
   const suiteGuests = guests.filter((g) => isSuite(g));
-  const scopeCounts = countCheckinScopeTotals(suiteGuests);
   const displayGuests = sortCheckinRosterGuests(
     applyCheckinRosterFilter(suiteGuests, { scope: timelineScope, customArrivalDate }),
     new Date(),
