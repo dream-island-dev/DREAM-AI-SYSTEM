@@ -3,7 +3,7 @@
 
 import type { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { israelYmd } from "./automationSchedule.ts";
-import { guestRoomMatchesSuiteId } from "./guestRoomResolve.ts";
+import { guestRoomMatchesSuiteId, isDayPassRoomLabel } from "./guestRoomResolve.ts";
 import {
   scoreGuestForCheckIn,
   scoreGuestForCheckout,
@@ -33,6 +33,7 @@ interface SuiteRoomLink {
   room_name: string | null;
   suite_type: string | null;
   arrival_date: string | null;
+  is_day_guest?: boolean | null;
 }
 
 const GUEST_SELECT =
@@ -40,19 +41,30 @@ const GUEST_SELECT =
 
 const ACTIVE_STATUSES = ["pending", "expected", "room_ready", "checked_in"] as const;
 
+function isDayPassSuiteLink(sr: SuiteRoomLink): boolean {
+  if (sr.is_day_guest === true) return true;
+  return (
+    isDayPassRoomLabel(sr.room_display) ||
+    isDayPassRoomLabel(sr.room_name) ||
+    isDayPassRoomLabel(sr.suite_type)
+  );
+}
+
 function guestMatchesRoom(
   guest: SuiteGuestRow,
   roomId: string,
   suiteLinks: SuiteRoomLink[],
 ): boolean {
+  if (isDayPassRoomLabel(guest.room) || isDayPassRoomLabel(guest.suite_name)) return false;
   if (guestRoomMatchesSuiteId(guest, roomId)) return true;
   const links = suiteLinks.filter((sr) => Number(sr.guest_id) === Number(guest.id));
-  return links.some((sr) =>
-    guestRoomMatchesSuiteId(
+  return links.some((sr) => {
+    if (isDayPassSuiteLink(sr)) return false;
+    return guestRoomMatchesSuiteId(
       { room: sr.room_display ?? sr.room_name, suite_name: sr.suite_type },
       roomId,
-    )
-  );
+    );
+  });
 }
 
 async function loadSuiteRoomLinks(
@@ -62,7 +74,7 @@ async function loadSuiteRoomLinks(
   if (!guestIds.length) return [];
   const { data, error } = await supabase
     .from("suite_rooms")
-    .select("guest_id, room_display, room_name, suite_type, arrival_date")
+    .select("guest_id, room_display, room_name, suite_type, arrival_date, is_day_guest")
     .in("guest_id", guestIds);
   if (error) {
     console.warn("[housekeepingGuestLookup] suite_rooms load failed:", error.message);
@@ -78,7 +90,7 @@ async function loadGuestsBySuiteRoomToday(
 ): Promise<{ guests: SuiteGuestRow[]; links: SuiteRoomLink[] }> {
   const { data: suiteRows, error } = await supabase
     .from("suite_rooms")
-    .select("guest_id, room_display, room_name, suite_type, arrival_date")
+    .select("guest_id, room_display, room_name, suite_type, arrival_date, is_day_guest")
     .eq("arrival_date", today)
     .not("guest_id", "is", null);
 

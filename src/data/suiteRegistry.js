@@ -35,6 +35,17 @@ export const PREMIUM_DAY_ROOMS = ["Premium Day 1", "Premium Day 2"];
 /** Plain day-visit guests (no premium package) — not Premium Day inventory. */
 export const GENERIC_DAY_PASS_ROOM = "בילוי יומי";
 
+/** Day-pass inventory — must never match a physical suite via trailing room number. */
+export function isDayPassRoomLabel(label) {
+  const s = String(label ?? "").trim();
+  if (!s) return false;
+  if (s === GENERIC_DAY_PASS_ROOM) return true;
+  if (PREMIUM_DAY_ROOMS.includes(s)) return true;
+  if (/^premium\s*day\b/i.test(s)) return true;
+  if (/בילוי\s*יומי/i.test(s) && !/premium/i.test(s)) return true;
+  return false;
+}
+
 /** Strip Hebrew "סוויטת" prefix for brand matching against registry names. */
 function _suiteBrandKey(name) {
   return String(name ?? "").trim().replace(/^סוויטת\s+/i, "");
@@ -57,6 +68,13 @@ export function resolveSuiteFromEzgoFields(roomName, suiteType, isDayGuest = fal
   // Plain day visit (בילוי יומי בלי חבילת פרימיום) — NOT a Premium Day slot.
   if (isDayGuest || /בילוי\s*יומי|day\s*guest/i.test(st)) {
     return GENERIC_DAY_PASS_ROOM;
+  }
+
+  // guests.room may already be canonical day-pass — do not parse trailing digits as suite #.
+  if (isDayPassRoomLabel(rn)) {
+    if (/premium\s*day\s*2/i.test(rn)) return "Premium Day 2";
+    if (rn === GENERIC_DAY_PASS_ROOM) return GENERIC_DAY_PASS_ROOM;
+    return "Premium Day 1";
   }
 
   const num = rn.match(/\d+/)?.[0];
@@ -88,8 +106,9 @@ export function resolveSuiteFromEzgoFields(roomName, suiteType, isDayGuest = fal
 export function roomsCanonicallyMatch(incoming, stored) {
   const a = String(incoming ?? "").trim();
   const b = String(stored ?? "").trim();
-  if (!a || !b) return true;
+  if (!a || !b) return false;
   if (a === b) return true;
+  if (isDayPassRoomLabel(a) || isDayPassRoomLabel(b)) return false;
   const numA = a.match(/(\d+)\s*$/)?.[1] ?? a.match(/^(\d+)$/)?.[1];
   const numB = b.match(/(\d+)\s*$/)?.[1];
   if (numA && numB && numA === numB) return true;

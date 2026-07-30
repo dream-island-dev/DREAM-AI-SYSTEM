@@ -13,6 +13,20 @@ const SUITE_REGISTRY = [
   "אקווה מרין 24", "אקווה מרין 25", "אקווה מרין 26",
 ] as const;
 
+const PREMIUM_DAY_ROOMS = ["Premium Day 1", "Premium Day 2"] as const;
+const GENERIC_DAY_PASS_ROOM = "בילוי יומי";
+
+/** Day-pass inventory — must never match a physical suite via trailing room number. */
+export function isDayPassRoomLabel(label: string | null | undefined): boolean {
+  const s = String(label ?? "").trim();
+  if (!s) return false;
+  if (s === GENERIC_DAY_PASS_ROOM) return true;
+  if ((PREMIUM_DAY_ROOMS as readonly string[]).includes(s)) return true;
+  if (/^premium\s*day\b/i.test(s)) return true;
+  if (/בילוי\s*יומי/i.test(s) && !/premium/i.test(s)) return true;
+  return false;
+}
+
 function _suiteBrandKey(name: string): string {
   return String(name ?? "").trim().replace(/^סוויטת\s+/i, "");
 }
@@ -29,6 +43,12 @@ export function resolveSuiteFromEzgoFields(
     if (/premium\s*day\s*2|פרימיום.*2|day\s*2/i.test(st)) return "Premium Day 2";
     if (/premium\s*day|פרימיום|day\s*guest|בילוי.*יומי/i.test(st)) return "Premium Day 1";
     return "";
+  }
+
+  if (isDayPassRoomLabel(rn)) {
+    if (/premium\s*day\s*2/i.test(rn)) return "Premium Day 2";
+    if (rn === GENERIC_DAY_PASS_ROOM) return GENERIC_DAY_PASS_ROOM;
+    return "Premium Day 1";
   }
 
   const num = rn.match(/\d+/)?.[0];
@@ -59,6 +79,7 @@ export function roomsCanonicallyMatch(incoming: string, stored: string): boolean
   const b = String(stored ?? "").trim();
   if (!a || !b) return false;
   if (a === b) return true;
+  if (isDayPassRoomLabel(a) || isDayPassRoomLabel(b)) return false;
   const numA = a.match(/(\d+)\s*$/)?.[1] ?? a.match(/^(\d+)$/)?.[1];
   const numB = b.match(/(\d+)\s*$/)?.[1];
   if (numA && numB && numA === numB) return true;

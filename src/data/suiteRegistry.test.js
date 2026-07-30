@@ -2,6 +2,7 @@ import {
   resolveSuiteFromEzgoFields,
   roomsCanonicallyMatch,
   guestRoomMatchesSuiteId,
+  isDayPassRoomLabel,
   GENERIC_DAY_PASS_ROOM,
 } from "./suiteRegistry";
 
@@ -32,5 +33,13 @@ describe("suiteRegistry — EZGO room resolution", () => {
     expect(guestRoomMatchesSuiteId({ room: "14" }, "רובי 14")).toBe(true);
     expect(guestRoomMatchesSuiteId({ room: "רובי 14" }, "רובי 14")).toBe(true);
     expect(guestRoomMatchesSuiteId({ room: "15" }, "רובי 14")).toBe(false);
+  });
+
+  test("Premium Day must not match physical suite by trailing digit", () => {
+    expect(isDayPassRoomLabel("Premium Day 1")).toBe(true);
+    expect(roomsCanonicallyMatch("ג׳ספר 1", "Premium Day 1")).toBe(false);
+    expect(guestRoomMatchesSuiteId({ room: "Premium Day 1" }, "ג׳ספר 1")).toBe(false);
+    expect(resolveSuiteFromEzgoFields("Premium Day 1", "", false)).toBe("Premium Day 1");
+    expect(guestRoomMatchesSuiteId({ room: "בילוי יומי" }, "ג׳ספר 1")).toBe(false);
   });
 });
