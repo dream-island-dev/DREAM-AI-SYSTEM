@@ -177,6 +177,64 @@ export async function findArrivingTodayGuestForSuite(
   return pickBestMatch(merged, roomId, suiteLinks, scoreGuestForReadyBell);
 }
 
+/** Arriving today — eligible for physical check-in from WA group. */
+export async function findIncomingGuestForSuiteCheckIn(
+  supabase: ReturnType<typeof createClient>,
+  roomId: string,
+): Promise<SuiteGuestRow | null> {
+  const today = israelYmd(new Date());
+
+  const [{ data: rows, error }, viaSuite] = await Promise.all([
+    supabase
+      .from("guests")
+      .select(GUEST_SELECT)
+      .eq("arrival_date", today)
+      .neq("status", "cancelled")
+      .in("status", [...CHECKIN_ELIGIBLE_STATUSES]),
+    loadGuestsBySuiteRoomToday(supabase, roomId, today),
+  ]);
+
+  if (error) {
+    console.warn(`[housekeepingGuestLookup] incoming check-in lookup failed for ${roomId}:`, error.message);
+    return null;
+  }
+
+  const merged = mergeGuestRows((rows ?? []) as SuiteGuestRow[], viaSuite.guests);
+  const suiteLinks = mergeSuiteLinks(
+    await loadSuiteRoomLinks(supabase, merged.map((g) => g.id)),
+    viaSuite.links,
+  );
+
+  return pickBestMatch(merged, roomId, suiteLinks, scoreGuestForCheckIn);
+}
+
+/** In-house guest who should have left — turnover when new arrival checks in same room. */
+export async function findInHouseDepartingGuestForSuite(
+  supabase: ReturnType<typeof createClient>,
+  roomId: string,
+): Promise<SuiteGuestRow | null> {
+  const today = israelYmd(new Date());
+
+  const { data: rows, error } = await supabase
+    .from("guests")
+    .select(GUEST_SELECT)
+    .eq("status", "checked_in")
+    .neq("status", "cancelled")
+    .not("departure_date", "is", null)
+    .lte("departure_date", today)
+    .order("departure_date", { ascending: false })
+    .limit(40);
+
+  if (error) {
+    console.warn(`[housekeepingGuestLookup] in-house departing lookup failed for ${roomId}:`, error.message);
+    return null;
+  }
+
+  const candidates = (rows ?? []) as SuiteGuestRow[];
+  const suiteLinks = await loadSuiteRoomLinks(supabase, candidates.map((g) => g.id));
+  return pickBestMatch(candidates, roomId, suiteLinks, scoreGuestForCheckout);
+}
+
 /** In-stay window guest — check-in from WA group. */
 export async function findActiveGuestForSuite(
   supabase: ReturnType<typeof createClient>,

@@ -32,3 +32,18 @@ export function scoreGuestForReadyBell(g: SuiteGuestRow): number {
   if (g.status === "pending") return 2;
   return 9;
 }
+
+/** Same-day turnover: outgoing checked_in (departure ≤ today) + incoming arriving today. */
+export function shouldHousekeepingTurnover(
+  incoming: SuiteGuestRow | null,
+  outgoing: SuiteGuestRow | null,
+  today: string,
+): boolean {
+  if (!incoming || !outgoing) return false;
+  if (incoming.id === outgoing.id) return false;
+  if (incoming.arrival_date !== today) return false;
+  if (!CHECKIN_ELIGIBLE_STATUSES.has(incoming.status)) return false;
+  if (outgoing.status !== "checked_in") return false;
+  if (!outgoing.departure_date || outgoing.departure_date > today) return false;
+  return true;
+}

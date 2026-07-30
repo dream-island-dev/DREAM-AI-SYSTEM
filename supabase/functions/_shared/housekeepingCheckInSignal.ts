@@ -1,9 +1,17 @@
 // Housekeeping group "צ'ק אין" → guests.checked_in + room_status.תפוס (§0.5).
+// Same-day turnover: if outgoing guest is checked_in (departure ≤ today) and a new
+// guest arrives today, auto check-out the old guest then check-in the new one.
 
 import type { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { israelYmd } from "./automationSchedule.ts";
 import { resolveSuiteFromEzgoFields } from "./guestRoomResolve.ts";
-import { findActiveGuestForSuite } from "./housekeepingGuestLookup.ts";
-import { CHECKIN_ELIGIBLE_STATUSES } from "./housekeepingLifecycle.ts";
+import {
+  findActiveGuestForSuite,
+  findIncomingGuestForSuiteCheckIn,
+  findInHouseDepartingGuestForSuite,
+} from "./housekeepingGuestLookup.ts";
+import { CHECKIN_ELIGIBLE_STATUSES, shouldHousekeepingTurnover } from "./housekeepingLifecycle.ts";
+import { applyHousekeepingCheckOutSignal } from "./housekeepingCheckOutSignal.ts";
 import { performSuiteCheckIn } from "./suiteCheckinSync.ts";
 
 export type HousekeepingCheckInAction =
@@ -21,6 +29,8 @@ export interface HousekeepingCheckInResult {
   roomId: string | null;
   guestId: number | null;
   guestName: string | null;
+  previousGuestId?: number | null;
+  previousGuestName?: string | null;
   action: HousekeepingCheckInAction;
   error?: string;
 }
@@ -81,7 +91,79 @@ export async function applyHousekeepingCheckInSignal(
     };
   }
 
-  const guest = await findActiveGuestForSuite(supabase, roomId);
+  const today = israelYmd(new Date());
+  const [incoming, outgoing] = await Promise.all([
+    findIncomingGuestForSuiteCheckIn(supabase, roomId),
+    findInHouseDepartingGuestForSuite(supabase, roomId),
+  ]);
+
+  if (shouldHousekeepingTurnover(incoming, outgoing, today)) {
+    const senderOpts = {
+      fromPhone: opts.fromPhone ?? null,
+      fromName: opts.fromName ?? null,
+      profileId: opts.profileId ?? null,
+    };
+
+    // Implicit Co — same pipeline as explicit checkout (audit row, checkout, survey queue).
+    const coResult = await applyHousekeepingCheckOutSignal(supabase, {
+      roomNumber,
+      waMessageId,
+      sourceLine: sourceLine?.slice(0, 500) ?? null,
+      ...senderOpts,
+    });
+    if (
+      !coResult.ok &&
+      coResult.action !== "already_checked_out"
+    ) {
+      return {
+        ok: false,
+        roomNumber,
+        roomId,
+        guestId: incoming!.id,
+        guestName: incoming!.name,
+        previousGuestId: outgoing!.id,
+        previousGuestName: outgoing!.name,
+        action: "error",
+        error: coResult.error ?? `checkout_failed:${coResult.action}`,
+      };
+    }
+
+    const ciSync = await performSuiteCheckIn(supabase, incoming!, {
+      roomId,
+      auditSource: "צ'ק-אין מקבוצת ניקיון (WhatsApp)",
+    });
+    if (!ciSync.ok) {
+      return {
+        ok: false,
+        roomNumber,
+        roomId,
+        guestId: incoming!.id,
+        guestName: incoming!.name,
+        previousGuestId: outgoing!.id,
+        previousGuestName: outgoing!.name,
+        action: "error",
+        error: ciSync.error,
+      };
+    }
+
+    console.log(
+      `[housekeepingCheckIn] ${roomId} (#${roomNumber}) implicit_co out=${outgoing!.id} ` +
+      `(${outgoing!.name}) in=${incoming!.id} (${incoming!.name}) co_action=${coResult.action}`,
+    );
+
+    return {
+      ok: true,
+      roomNumber,
+      roomId,
+      guestId: incoming!.id,
+      guestName: incoming!.name,
+      previousGuestId: outgoing!.id,
+      previousGuestName: outgoing!.name,
+      action: "updated",
+    };
+  }
+
+  const guest = incoming ?? await findActiveGuestForSuite(supabase, roomId);
   if (!guest) {
     return { ok: false, roomNumber, roomId, guestId: null, guestName: null, action: "no_guest" };
   }
