@@ -1895,11 +1895,6 @@ serve(async (req: Request) => {
       let replyErr: string | null = null;
       let replyWamid: string | null = null;
       let replyChannel: "meta" | "whapi_suites" = "meta";
-      // Set only when the Whapi attempt below hits a CONFIRMED failure (not a
-      // timeout) and we fall through to Meta — surfaced only if Meta then also
-      // fails, so a successful fallback stays silent to the caller (still
-      // console.warn'd for anyone reading Edge Function logs).
-      let whapiFallbackNote: string | null = null;
 
       if (routeViaWhapiSuites) {
         try {
@@ -1951,15 +1946,29 @@ serve(async (req: Request) => {
               { headers: { ...CORS, "Content-Type": "application/json" } },
             );
           }
-          // Confirmed failure (non-2xx, missing token, etc.) — degrade to the
-          // existing Meta path below rather than hard-failing the send.
-          console.warn("[whatsapp] inbox_reply Whapi Suites send failed, falling back to Meta:", whapiMessage);
-          whapiFallbackNote = whapiMessage;
+          // Staff explicitly chose Whapi — never silently fall back to Meta
+          // (that made UI show success while the Suites phone had no trace).
+          console.error("[whatsapp] inbox_reply Whapi Suites send failed (no Meta fallback):", whapiMessage);
+          await notifyAdminIfDispatchFailed({
+            status: "failed",
+            error: whapiMessage,
+            guestPhone: targetPhone,
+            dispatchType: "Whapi",
+            trigger: "inbox_reply",
+          });
+          return new Response(
+            JSON.stringify({
+              ok: false,
+              status: "whapi_failed",
+              requested_channel: "whapi",
+              error: `whapi_failed: ${whapiMessage}`,
+            }),
+            { headers: { ...CORS, "Content-Type": "application/json" } },
+          );
         }
       }
 
-      // Meta path — unchanged behavior. Taken whenever not routing via Whapi
-      // at all, OR when the Whapi attempt above hit a confirmed failure.
+      // Meta path — when staff chose Dream Bot, or default meta routing.
       if (replyChannel !== "whapi_suites") {
         // ── 24-Hour Interaction Window Guard ───────────────────────────────
         // inbox_reply sends raw free text — previously unchecked here, so a
@@ -1978,9 +1987,7 @@ serve(async (req: Request) => {
             JSON.stringify({
               ok: false,
               status: "window_closed",
-              error: whapiFallbackNote
-                ? `whapi_failed: ${whapiFallbackNote}; window_closed: חלון 24 השעות סגור — האורח לא הגיב ב-24 השעות האחרונות, לא ניתן לשלוח הודעה חופשית. נדרשת תבנית מאושרת.`
-                : "window_closed: חלון 24 השעות סגור — האורח לא הגיב ב-24 השעות האחרונות, לא ניתן לשלוח הודעה חופשית. נדרשת תבנית מאושרת.",
+              error: "window_closed: חלון 24 השעות סגור — האורח לא הגיב ב-24 השעות האחרונות, לא ניתן לשלוח הודעה חופשית. נדרשת תבנית מאושרת.",
             }),
             { headers: { ...CORS, "Content-Type": "application/json" } },
           );
@@ -1995,13 +2002,6 @@ serve(async (req: Request) => {
           replyErr = (e as Error).message;
           console.error("[whatsapp] inbox_reply send failed:", replyErr);
           replyStatus = "failed";
-        }
-
-        if (whapiFallbackNote && replyErr) {
-          // Both channels were attempted and both failed — combine so the
-          // admin alert and caller-visible error carry full context instead
-          // of losing the Whapi attempt to a console.warn nobody reads.
-          replyErr = `whapi_failed: ${whapiFallbackNote}; meta_failed: ${replyErr}`;
         }
       }
 
@@ -2052,9 +2052,12 @@ serve(async (req: Request) => {
 
       return new Response(
         JSON.stringify({
-          ok:         replyStatus !== "failed",
-          simulation: sim,
-          status:     replyStatus,
+          ok:               replyStatus !== "failed",
+          simulation:       sim,
+          status:           replyStatus,
+          requested_channel: inboxChannel,
+          delivered_channel: deliveredChannel,
+          ...(replyWamid ? { wa_message_id: replyWamid } : {}),
           ...(replyErr ? { error: replyErr } : {}),
         }),
         { headers: { ...CORS, "Content-Type": "application/json" } }

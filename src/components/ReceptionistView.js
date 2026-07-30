@@ -3,8 +3,7 @@
 // "receptionist", mirroring how user.role==="cleaner" gets HousekeepingTabletView
 // instead of the full Sidebar (App.js). Exactly two tools, per the sprint's
 // explicit scope — no admin/config panels, no full OperationsBoard/WhatsAppInbox:
-//   1. 📨 שלח הודעה לאורח — guest search + free-text WhatsApp send (same
-//      inbox_reply contract WhatsAppInbox.js's manual reply already uses).
+//   1. 📨 שלח הודעה לאורח — guest search + GuestOutboundModal (channel + templates).
 //   2. 🛎️ פתח קריאת שירות — the exact same NewTaskForm component
 //      OperationsBoard.js's managers use (exported from there, not forked —
 //      CLAUDE.md §0.4 Universal Architecture), so a receptionist-opened
@@ -12,13 +11,14 @@
 import { useState, useEffect } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import { NewTaskForm } from "./OperationsBoard";
+import GuestOutboundModal from "./GuestOutboundModal";
+import GuestWhapiQuickTestPanel from "./GuestWhapiQuickTestPanel";
 
 function GuestMessagePanel() {
   const [guestSearch,  setGuestSearch]  = useState("");
   const [guestResults, setGuestResults] = useState([]);
   const [selectedGuest, setSelectedGuest] = useState(null);
-  const [message,      setMessage]      = useState("");
-  const [sending,      setSending]      = useState(false);
+  const [composeOpen,  setComposeOpen]  = useState(false);
   const [toast,        setToast]        = useState(null);
 
   useEffect(() => {
@@ -26,7 +26,7 @@ function GuestMessagePanel() {
     const q = guestSearch.trim();
     supabase
       .from("guests")
-      .select("id, name, phone, room, status")
+      .select("id, name, phone, room, room_type, arrival_date, status, wa_window_expires_at")
       .or(`name.ilike.%${q}%,phone.ilike.%${q}%`)
       .limit(8)
       .then(({ data }) => setGuestResults(data ?? []));
@@ -37,32 +37,9 @@ function GuestMessagePanel() {
     setTimeout(() => setToast(null), 5000);
   }
 
-  async function handleSend() {
-    if (!selectedGuest)       return showToast("err", "נא לבחור אורח");
-    if (!selectedGuest.phone) return showToast("err", "לאורח זה אין מספר טלפון");
-    if (!message.trim())      return showToast("err", "נא לכתוב הודעה");
-
-    setSending(true);
-    try {
-      const { data, error } = await supabase.functions.invoke("whatsapp-send", {
-        body: { trigger: "inbox_reply", phone: selectedGuest.phone, message: message.trim() },
-      });
-      if (error) throw new Error(error.message);
-      if (data && data.ok === false) throw new Error(data.error ?? "שגיאה בשליחה");
-
-      await supabase.from("whatsapp_conversations").insert({
-        phone: selectedGuest.phone, direction: "outbound", message: message.trim(), wa_message_id: null,
-      });
-      showToast("ok", `✅ ההודעה נשלחה ל${selectedGuest.name}`);
-      setMessage("");
-    } catch (e) {
-      showToast("err", e.message ?? "שגיאה בשליחה");
-    } finally {
-      setSending(false);
-    }
-  }
-
   return (
+    <>
+      <GuestWhapiQuickTestPanel onToast={showToast} />
     <div className="card" style={{ marginBottom: 24 }}>
       <div className="card-header"><div className="card-title">📨 שלח הודעה לאורח</div></div>
       <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 14 }}>
@@ -77,7 +54,7 @@ function GuestMessagePanel() {
 
         {selectedGuest ? (
           <div style={{
-            display: "flex", alignItems: "center", justifyContent: "space-between",
+            display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10,
             border: "1px solid var(--border)", borderRadius: 10, padding: "10px 14px",
           }}>
             <div>
@@ -86,9 +63,17 @@ function GuestMessagePanel() {
                 {selectedGuest.phone}{selectedGuest.room ? ` · חדר ${selectedGuest.room}` : ""}
               </div>
             </div>
-            <button className="btn btn-ghost btn-sm" onClick={() => { setSelectedGuest(null); setGuestSearch(""); }}>
-              ✕ החלף אורח
-            </button>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={() => setComposeOpen(true)}
+              >
+                💬 שלח הודעה
+              </button>
+              <button className="btn btn-ghost btn-sm" onClick={() => { setSelectedGuest(null); setGuestSearch(""); setComposeOpen(false); }}>
+                ✕ החלף אורח
+              </button>
+            </div>
           </div>
         ) : (
           <div className="form-field" style={{ marginBottom: 0 }}>
@@ -119,26 +104,21 @@ function GuestMessagePanel() {
           </div>
         )}
 
-        <div className="form-field" style={{ marginBottom: 0 }}>
-          <label>תוכן ההודעה</label>
-          <textarea
-            rows={4} value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            placeholder="כתוב הודעה לאורח..."
-            style={{ resize: "vertical", direction: "rtl" }}
+        {composeOpen && selectedGuest && (
+          <GuestOutboundModal
+            guest={selectedGuest}
+            onClose={() => setComposeOpen(false)}
+            onSent={(g, result) => {
+              const sim = result?.simulation;
+              const ch = result?.channelLabel ? ` · ${result.channelLabel}` : "";
+              showToast("ok", `✅ ההודעה נשלחה ל${g.name}${ch}${sim ? " (סימולציה)" : ""}`);
+              setComposeOpen(false);
+            }}
           />
-        </div>
-
-        <button
-          className="btn btn-primary"
-          disabled={sending || !selectedGuest || !message.trim()}
-          onClick={handleSend}
-          style={{ alignSelf: "flex-end", minWidth: 160 }}
-        >
-          {sending ? "⏳ שולח..." : "📨 שלח הודעה"}
-        </button>
+        )}
       </div>
     </div>
+    </>
   );
 }
 

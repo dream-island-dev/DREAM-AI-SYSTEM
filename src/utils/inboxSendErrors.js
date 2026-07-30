@@ -68,12 +68,21 @@ export function isInboxWindowClosed(data, rawMessage) {
   return WINDOW_CLOSED_RE.test(String(msg));
 }
 
+export function isWhapiSendFailed(data, rawMessage) {
+  if (data?.status === "whapi_failed") return true;
+  const msg = rawMessage ?? data?.error ?? "";
+  return /whapi_failed/i.test(String(msg));
+}
+
 /**
  * Staff-facing Hebrew for failed/uncertain Inbox sends.
  * Timeout: instruct check-before-resend (duplicate risk). Hard fail: keep op label + detail.
  */
 export function formatInboxOutboundError(data, fallbackMsg, { opLabel = "שגיאת שליחה", whapiSosActive = false } = {}) {
   const raw = data?.error ?? fallbackMsg ?? "שגיאה לא ידועה";
+  if (isWhapiSendFailed(data, raw)) {
+    return "שליחה דרך מכשיר הסוויטות נכשלה — ההודעה לא יצאה. בדוק סטטוס Whapi ב-ACC Pulse (🟢/🔴) ונסה שוב.";
+  }
   if (isInboxWindowClosed(data, raw)) {
     return resolveMetaWindowClosedHint({ whapiSosActive });
   }

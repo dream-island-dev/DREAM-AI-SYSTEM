@@ -32,6 +32,8 @@ import {
 import { useCheckinTimelineFilter } from "../hooks/useCheckinTimelineFilter";
 import { formatSpaSchedule } from "../utils/israeliTime";
 import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
+import GuestOutboundModal from "./GuestOutboundModal";
+import GuestWhapiQuickTestPanel from "./GuestWhapiQuickTestPanel";
 
 // ── Date helpers (local time) ─────────────────────────────────────────────────
 function localISO(offsetDays = 0) {
@@ -111,67 +113,6 @@ function RoomTypeBadge({ type }) {
   );
 }
 
-// ── WA compose modal ──────────────────────────────────────────────────────────
-function WAModal({ guest, onClose, onSend, isSending }) {
-  const [msg, setMsg] = useState(
-    `שלום ${guest.name}! 👋\nכאן Dream Island — `
-  );
-  return (
-    <div style={{
-      position: "fixed", inset: 0, zIndex: 9998,
-      background: "rgba(0,0,0,0.45)", display: "flex",
-      alignItems: "center", justifyContent: "center", padding: 20,
-    }} onClick={onClose}>
-      <div style={{
-        background: "var(--card-bg)", borderRadius: 16, padding: 24,
-        width: "100%", maxWidth: 420, boxShadow: "0 16px 48px rgba(0,0,0,0.2)",
-        direction: "rtl",
-      }} onClick={(e) => e.stopPropagation()}>
-        <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 4 }}>
-          💬 הודעה ל{guest.name}
-        </div>
-        <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 14 }}>
-          {guest.phone}
-        </div>
-        <textarea
-          autoFocus
-          rows={5}
-          value={msg}
-          onChange={(e) => setMsg(e.target.value)}
-          style={{
-            width: "100%", borderRadius: 10, border: "1px solid var(--border)",
-            padding: "10px 12px", fontSize: 14, fontFamily: "Heebo, sans-serif",
-            direction: "rtl", resize: "vertical", boxSizing: "border-box",
-            background: "var(--ivory)",
-          }}
-        />
-        <div style={{ display: "flex", gap: 10, marginTop: 14, justifyContent: "flex-end" }}>
-          <button
-            onClick={onClose}
-            style={{
-              padding: "10px 20px", borderRadius: 8, border: "1px solid var(--border)",
-              background: "var(--card-bg)", cursor: "pointer", fontFamily: "Heebo, sans-serif",
-              fontSize: 14, color: "var(--text-muted)",
-            }}
-          >ביטול</button>
-          <button
-            onClick={() => onSend(msg)}
-            disabled={isSending || !msg.trim()}
-            style={{
-              padding: "10px 24px", borderRadius: 8, border: "none",
-              background: isSending ? "#ccc" : "linear-gradient(135deg, var(--gold), var(--gold-dark))",
-              color: "#fff", fontFamily: "Heebo, sans-serif", fontWeight: 700,
-              fontSize: 14, cursor: isSending ? "default" : "pointer",
-            }}
-          >
-            {isSending ? "⏳ שולח..." : "📤 שלח"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ── Main component ────────────────────────────────────────────────────────────
 export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat }) {
   const {
@@ -186,7 +127,6 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
   const [loading,     setLoading]     = useState(true);
   const [toast,       setToast]       = useState(null);
   const [loadingId,   setLoadingId]   = useState(null);  // room_ready pipeline
-  const [sendingWAId, setSendingWAId] = useState(null);  // individual WA
   const [deletingId,  setDeletingId]  = useState(null);  // delete
 
   const [activeTab,   setActiveTab]   = useState("all"); // all | day_guest | suite
@@ -218,7 +158,7 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
       .select(
         "id, name, phone, room, room_type, arrival_date, departure_date, status, " +
         "msg_pre_arrival_sent, msg_room_ready_sent, msg_post_checkin_sent, " +
-        "requires_attention, guest_notes, guest_profile, arrival_time, attention_reason, arrival_confirmed, spa_time, spa_date, " +
+        "requires_attention, guest_notes, guest_profile, arrival_time, attention_reason, arrival_confirmed, wa_window_expires_at, spa_time, spa_date, " +
         "meal_time, meal_location, meal_plan, breakfast_time, lunch_time, dinner_time, treatment_count, order_number, payment_amount, " +
         "payment_link_url, needs_callback, portal_token, lead_source, automation_muted"
       )
@@ -257,27 +197,6 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
       setLoadingId(null);
     }
   }, [loadingId, showToast, ensureCanSend]);
-
-  // ── Send WA to a specific guest (free-text via inbox_reply) ─────────────
-  const sendWAToGuest = useCallback(async (guest, message) => {
-    if (!message?.trim()) return showToast("err", "נא להזין הודעה");
-    if (!guest.phone)     return showToast("err", "לאורח זה אין מספר טלפון");
-    if (!ensureCanSend()) return showToast("err", "שליחה חסומה בשעות שקט — סמן את האישור למעלה");
-    setSendingWAId(guest.id);
-    try {
-      const { data, error } = await supabase.functions.invoke("whatsapp-send", {
-        body: { trigger: "inbox_reply", phone: guest.phone, message: message.trim() },
-      });
-      if (error) throw new Error(data?.error ?? error.message ?? "edge_function_error");
-      if (!data?.ok) throw new Error(data?.error ?? "שגיאה בשליחה");
-      showToast("ok", `✅ הודעה נשלחה ל${guest.name}${data.simulation ? " (סימולציה)" : ""}`);
-      setWaModal(null);
-    } catch (err) {
-      showToast("err", "שגיאה: " + (err?.message ?? String(err)));
-    } finally {
-      setSendingWAId(null);
-    }
-  }, [showToast, ensureCanSend]);
 
   // ── Delete guest ──────────────────────────────────────────────────────────
   const deleteGuest = useCallback(async (guest) => {
@@ -394,14 +313,19 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
 
       {/* WA compose modal */}
       {waModal && (
-        <WAModal
+        <GuestOutboundModal
           guest={waModal}
-          isSending={sendingWAId === waModal.id}
           onClose={() => setWaModal(null)}
-          onSend={(msg) => sendWAToGuest(waModal, msg)}
+          onSent={(g, result) => {
+            const sim = result?.simulation;
+            const ch = result?.channelLabel ? ` · ${result.channelLabel}` : "";
+            showToast("ok", `✅ הודעה נשלחה ל${g.name}${ch}${sim ? " (סימולציה)" : ""}`);
+            setWaModal(null);
+          }}
         />
       )}
 
+      <GuestWhapiQuickTestPanel onToast={showToast} />
 
       {/* Stats bar */}
       <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
@@ -740,15 +664,14 @@ export default function GuestDashboard({ user, onOpenCheckin, onOpenDreamBotChat
                       {/* Individual WA send button */}
                       <button
                         onClick={() => setWaModal(guest)}
-                        disabled={sendingWAId === guest.id}
-                        title="שלח הודעת WhatsApp"
+                        title="שלח הודעת WhatsApp (ערוץ + תבנית)"
                         style={{
                           padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700,
                           border: "1px solid #22C55E", background: "#F0FDF4",
                           color: "#15803D", cursor: "pointer",
                         }}
                       >
-                        {sendingWAId === guest.id ? "⏳" : "💬 WA"}
+                        💬 WA
                       </button>
                     </>
                   ) : (
