@@ -454,6 +454,11 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 - **Fix pattern:** even the `checked_in` branch now requires `!arrival_date || arrival_date <= today`. Single choke point (`isGuestEligibleForInHouseOpsDispatch`) — used by Meta Tier-0, Meta LLM-tool path (`classifyGuestRequestDispatch`), Whapi Tier-0, and both channels' departure-assist intercept — so the guard covers all 6+ call sites for free. Guests failing the check still route gracefully to `requests_board` (existing future-guest path), never silently dropped.
 - **General lesson:** any "is guest physically present" gate keyed off a status enum needs to also sanity-check the stay-date window, not just trust the status value — statuses can go stale when dates are edited after the fact without a matching status revert.
 
+### 2026-07-31 — Supabase egress: pause staff UI sync when tab hidden; EZGO cron opt-in
+- **Symptom:** Free-tier project hit `exceed_egress_quota`; staff couldn't log in; mail sync ran ~96×/day even when broken.
+- **Root:** Background tabs kept Realtime subscriptions + 5s Inbox poll + unconditional `ezgo-mail-sync` from `whatsapp-cron` (outside `CRON_ENABLED`).
+- **Fix pattern:** `usePageVisibility` — detach Realtime / clear poll intervals when `document.hidden`; reconnect + `fetchSince` on return. Inbox: 200-row initial window, 30s poll fallback. EZGO background IMAP requires explicit `EZGO_MAIL_BACKGROUND_SYNC=true` + `shouldInvokeEzgoMailFromCron` (business hours + 2h min gap); manual «סרוק מייל» unchanged.
+
 ### 2026-07-22 — EZGO IMAP sync: envelope-first dedup before postal-mime; never download 36 full bodies every tick
 - **Symptom:** Manual «סרוק מייל» hit `IMAP timeout — נסה שוב בעוד דקה` (~55s budget); user waited for `noreply@ezgo.co.il` reports that never appeared.
 - **Root:** Each sync downloaded full RFC822 `source` for up to 36 allowlisted UIDs **plus** a supplement that pulled full bodies from the last ~60 mailbox messages (filtering by From only after download). Re-parsed every known ingest with `postal-mime` on every cron tick. EZGO mail cron was gated behind `CRON_ENABLED`, so background ingest stopped when outbound was halted.

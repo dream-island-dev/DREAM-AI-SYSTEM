@@ -16,6 +16,7 @@
 // function's header comment for why).
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { usePageVisibility } from "../hooks/usePageVisibility";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import { canPerform } from "../utils/auth";
 import ArrivalImportPanel from "./ArrivalImportPanel";
@@ -586,6 +587,7 @@ function TaskCard({ task, onClaim, onMarkDone, onApprove, onReject, isUpdating, 
 
 // ── Main component ────────────────────────────────────────────────────────────
 export default function OperationsBoard({ user, isAdmin, onOpenDreamBotChat }) {
+  const pageVisible = usePageVisibility();
   const [tasks,       setTasks]       = useState([]);
   const [loading,     setLoading]     = useState(true);
   const [updatingId,  setUpdatingId]  = useState(null);
@@ -672,7 +674,7 @@ export default function OperationsBoard({ user, isAdmin, onOpenDreamBotChat }) {
   // ── Live sync: Whapi 👍🏼 reaction → tasks.status='done' without refresh.
   // NOTE: requires `tasks` in supabase_realtime (migration 111).
   useEffect(() => {
-    if (!isSupabaseConfigured || !supabase) return;
+    if (!pageVisible || !isSupabaseConfigured || !supabase) return undefined;
     const ch = supabase
       .channel("ops-board-tasks-rt")
       .on(
@@ -687,7 +689,7 @@ export default function OperationsBoard({ user, isAdmin, onOpenDreamBotChat }) {
       )
       .subscribe();
     return () => { supabase.removeChannel(ch); };
-  }, [applyTaskRowUpdate]);
+  }, [applyTaskRowUpdate, pageVisible]);
 
   const claimTask = useCallback(async (taskId) => {
     setUpdatingId(taskId);

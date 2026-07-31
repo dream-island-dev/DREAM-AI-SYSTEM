@@ -56,7 +56,7 @@ import { managerMailEnabled } from "../_shared/oritAgentMail.ts";
 import { runSigalUrgentComplaintLoop } from "../_shared/oritAgentWorkflow.ts";
 import { dispatchDueOritScheduledSends } from "../_shared/oritScheduleSend.ts";
 import { dispatchDueSpaUpsellScheduledTasks } from "../_shared/spaUpsellSchedule.ts";
-import { ezgoMailSyncEnabled } from "../_shared/ezgoMailImap.ts";
+import { shouldInvokeEzgoMailFromCron } from "../_shared/ezgoMailImap.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -118,24 +118,41 @@ Deno.serve(async (req: Request) => {
     }
   }
 
-  // ── EZGO mail ingest — independent of CRON_ENABLED outbound kill switch ──
-  if (ezgoMailSyncEnabled()) {
-    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+  // ── EZGO mail ingest — opt-in background only (EZGO_MAIL_BACKGROUND_SYNC=true) ──
+  // Manual «סרוק מייל» from DataSync still invokes ezgo-mail-sync directly.
+  {
+    const hbClient = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+    );
+    let lastEzgoMailRun: string | null = null;
     try {
-      const ezgoMailRes = await fetch(`${supabaseUrl}/functions/v1/ezgo-mail-sync`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!}`,
-          "Content-Type": "application/json",
-        },
-        body: "{}",
-      });
-      const ezgoMailJson = await ezgoMailRes.json().catch(() => ({}));
-      if (ezgoMailJson?.processed > 0) {
-        console.log(`[whatsapp-cron] ezgo-mail-sync processed=${ezgoMailJson.processed}`);
+      const { data: hbRow } = await hbClient
+        .from("cron_heartbeats")
+        .select("last_run_at")
+        .eq("job_name", "ezgo-mail-sync")
+        .maybeSingle();
+      lastEzgoMailRun = hbRow?.last_run_at ?? null;
+    } catch { /* non-blocking */ }
+
+    if (shouldInvokeEzgoMailFromCron({ lastBackgroundRunAt: lastEzgoMailRun })) {
+      const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+      try {
+        const ezgoMailRes = await fetch(`${supabaseUrl}/functions/v1/ezgo-mail-sync`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!}`,
+            "Content-Type": "application/json",
+          },
+          body: "{}",
+        });
+        const ezgoMailJson = await ezgoMailRes.json().catch(() => ({}));
+        if (ezgoMailJson?.processed > 0) {
+          console.log(`[whatsapp-cron] ezgo-mail-sync processed=${ezgoMailJson.processed}`);
+        }
+      } catch (ezgoMailErr) {
+        console.warn("[whatsapp-cron] ezgo-mail-sync failed (non-blocking):", (ezgoMailErr as Error).message);
       }
-    } catch (ezgoMailErr) {
-      console.warn("[whatsapp-cron] ezgo-mail-sync failed (non-blocking):", (ezgoMailErr as Error).message);
     }
   }
 

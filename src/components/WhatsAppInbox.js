@@ -51,6 +51,7 @@ import {
   playOffResortGuestAlert,
 } from "../utils/inboxAlertSounds";
 import { useQuietHoursSend } from "../hooks/useQuietHoursSend";
+import { usePageVisibility } from "../hooks/usePageVisibility";
 import { buildStaffDeepLink, qrCodeImageUrl } from "../utils/staffDeepLink";
 import { buildSpaWhenPhrase, formatSpaSchedule } from "../utils/israeliTime";
 import {
@@ -74,14 +75,14 @@ import {
 const HIT_STAFF = "var(--hit-target-staff, 44px)";
 const HIT_COMFORT = "var(--hit-target-comfort, 48px)";
 
-const POLL_MS = 5000; // fallback polling interval (realtime is primary) — 5s safe minimum
+const POLL_MS = 30_000; // fallback when Realtime is down — tab must be visible
 
 // ── Performance tuning (Sprint: Inbox render/fetch speed) ────────────────────
 // INITIAL_FETCH_LIMIT bounds the first paint to a recent-activity window
 // instead of the whole table — see fetchAll() below for why the previous
 // ascending+limit(2000) query was actually fetching the OLDEST 2000 rows,
 // not the newest, once total row count passed 2000.
-const INITIAL_FETCH_LIMIT  = 400;  // recent-window rows for fast first paint
+const INITIAL_FETCH_LIMIT  = 200;  // recent-window rows for fast first paint
 const OLDER_BATCH_LIMIT    = 400;  // additional rows per "load older" click
 const THREAD_HISTORY_LIMIT = 1500; // full-history cap for a single opened contact
 
@@ -3150,6 +3151,8 @@ export default function WhatsAppInbox({
     ensureCanSend,
     canSend,
   } = useQuietHoursSend();
+  const pageVisible = usePageVisibility();
+  const inboxLiveSessionRef = useRef(false);
 
   const [contacts, setContacts]   = useState([]); // grouped by phone+channel
   const [active, setActive]       = useState(null); // selected threadKey
@@ -4572,7 +4575,17 @@ export default function WhatsAppInbox({
   // fetchSince already has for the polling/Realtime path, just triggered once
   // more on remount to catch anything that arrived while unmounted.
   useEffect(() => {
+    if (!pageVisible) {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+        console.log("[WA-inbox] Paused fallback polling — tab hidden");
+      }
+      return undefined;
+    }
+
     function startPolling() {
+      if (pollRef.current) clearInterval(pollRef.current);
       pollRef.current = setInterval(() => {
         console.log("[WA-inbox] 📋 Polling tick (fallback)");
         fetchSince();
@@ -4591,10 +4604,21 @@ export default function WhatsAppInbox({
       setLoading(false);
       alertsReadyRef.current = true;
     }
-    // Always fetchAll on mount — cache is paint-only; skipping fetchAll left stale
-    // watermarks and missed new rows after tab switches (session 124e).
+
+    if (inboxLiveSessionRef.current) {
+      fetchSince();
+      startPolling();
+      return () => {
+        if (pollRef.current) {
+          clearInterval(pollRef.current);
+          pollRef.current = null;
+        }
+      };
+    }
+
     console.log("[WA-inbox] Mount revalidate: fetchAll() + polling...");
     fetchAll().then(() => {
+      inboxLiveSessionRef.current = true;
       fetchSince();
       console.log(`[WA-inbox] ✓ fetchAll complete — fallback polling every ${POLL_MS}ms`);
       startPolling();
@@ -4602,10 +4626,11 @@ export default function WhatsAppInbox({
     return () => {
       if (pollRef.current) {
         clearInterval(pollRef.current);
+        pollRef.current = null;
         console.log("[WA-inbox] Cleared fallback polling on unmount");
       }
     };
-  }, [fetchAll, fetchSince, applyGrouping]);
+  }, [fetchAll, fetchSince, applyGrouping, pageVisible]);
 
   // Per-staff read cursors — unread survives refresh; opening / «נקרא» persists to DB.
   // Keys are phone::channel (buildReadCursorsMap) so Meta and Whapi stay independent.
@@ -4757,7 +4782,10 @@ export default function WhatsAppInbox({
   // (migration 107) — otherwise this subscribes successfully but silently
   // never receives an event (same failure mode as guests migration 082).
   useEffect(() => {
-    if (!isSupabaseConfigured || !supabase) return;
+    if (!pageVisible || !isSupabaseConfigured || !supabase) {
+      setRealtimeOk(false);
+      return undefined;
+    }
     let reconnectTimer = null;
     let intentionalCleanup = false;
 
@@ -4828,7 +4856,7 @@ export default function WhatsAppInbox({
       clearTimeout(reconnectTimer);
       supabase.removeChannel(channel);
     };
-  }, [fetchSince, mergeIncomingRows, applyGrouping]);
+  }, [fetchSince, mergeIncomingRows, applyGrouping, pageVisible]);
 
   // ── Realtime subscription on `guests` — cross-tab claim/assignment sync ──
   // Deliberately a SEPARATE channel from wa-inbox-rt-v2 above (not folded
@@ -4845,6 +4873,7 @@ export default function WhatsAppInbox({
   // never receives an event, the same failure mode migration 059 documented
   // for guest_alerts.
   useEffect(() => {
+    if (!pageVisible) return undefined;
     const ch = supabase
       .channel("wa-inbox-guests-rt")
       .on(
@@ -4864,22 +4893,22 @@ export default function WhatsAppInbox({
       )
       .subscribe();
     return () => { supabase.removeChannel(ch); };
-  }, [applyGuestRowUpdate, applyGuestRowDelete]);
+  }, [applyGuestRowUpdate, applyGuestRowDelete, pageVisible]);
 
   // ── Re-fetch immediately when the browser tab becomes visible again ──────
   // Handles the common case where staff switch away and miss incoming messages.
   useEffect(() => {
+    if (!pageVisible) return undefined;
     function onVisible() {
       if (document.visibilityState === "visible") fetchSince();
     }
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
-  }, [fetchSince]);
+  }, [fetchSince, pageVisible]);
 
   // ── Alert + one-shot sync when Realtime is down for 3s ─────────────────────
-  // If realtime subscription is not SUBSCRIBED for >3s, trigger immediate sync
-  // but DO NOT start an aggressive polling loop — rely on the 5s fallback polling.
   useEffect(() => {
+    if (!pageVisible) return undefined;
     if (realtimeOk) {
       console.log("[WA-inbox] ✅ Realtime is healthy — no need for emergency sync");
       return;
@@ -4889,7 +4918,7 @@ export default function WhatsAppInbox({
       fetchAll().then(() => fetchSince());
     }, 3000);
     return () => clearTimeout(timer);
-  }, [realtimeOk, fetchAll, fetchSince]);
+  }, [realtimeOk, fetchAll, fetchSince, pageVisible]);
 
   // ── Auto-scroll to bottom of thread ─────────────────────────────────────
   // Moved below derived `thread` — scroll when active chat grows (realtime/poll).

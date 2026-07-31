@@ -149,6 +149,57 @@ export function ezgoMailSyncEnabled(): boolean {
   return Deno.env.get("EZGO_MAIL_SYNC_ENABLED") === "true";
 }
 
+/** Cron background IMAP — opt-in only (manual UI scan still works when sync enabled). */
+export function ezgoMailBackgroundSyncEnabled(): boolean {
+  return Deno.env.get("EZGO_MAIL_BACKGROUND_SYNC") === "true";
+}
+
+export const EZGO_MAIL_BACKGROUND_MIN_HOURS_DEFAULT = 2;
+
+export function resolveEzgoMailBackgroundMinHours(): number {
+  const raw = Number(Deno.env.get("EZGO_MAIL_BACKGROUND_MIN_HOURS") || EZGO_MAIL_BACKGROUND_MIN_HOURS_DEFAULT);
+  if (!Number.isFinite(raw) || raw <= 0) return EZGO_MAIL_BACKGROUND_MIN_HOURS_DEFAULT;
+  return raw;
+}
+
+export function israelLocalHour(now: Date = new Date()): number {
+  const h = Number(
+    new Date(now).toLocaleString("en-US", {
+      timeZone: "Asia/Jerusalem",
+      hour: "numeric",
+      hour12: false,
+    }),
+  );
+  return Number.isFinite(h) ? h : 0;
+}
+
+export function isEzgoMailBusinessHours(now: Date = new Date()): boolean {
+  const start = Number(Deno.env.get("EZGO_MAIL_BUSINESS_HOUR_START") || "7");
+  const end = Number(Deno.env.get("EZGO_MAIL_BUSINESS_HOUR_END") || "20");
+  const h = israelLocalHour(now);
+  return h >= start && h < end;
+}
+
+/**
+ * Gate for whatsapp-cron → ezgo-mail-sync. Manual panel invokes ezgo-mail-sync directly.
+ * Requires EZGO_MAIL_SYNC_ENABLED + EZGO_MAIL_BACKGROUND_SYNC, business hours, min gap.
+ */
+export function shouldInvokeEzgoMailFromCron(opts?: {
+  now?: Date;
+  lastBackgroundRunAt?: string | null;
+}): boolean {
+  if (!ezgoMailSyncEnabled()) return false;
+  if (!ezgoMailBackgroundSyncEnabled()) return false;
+  const now = opts?.now ?? new Date();
+  if (!isEzgoMailBusinessHours(now)) return false;
+  const last = opts?.lastBackgroundRunAt;
+  if (last) {
+    const ageMs = now.getTime() - new Date(last).getTime();
+    if (ageMs < resolveEzgoMailBackgroundMinHours() * 3_600_000) return false;
+  }
+  return true;
+}
+
 export function parseAllowlist(): string[] {
   const raw = (Deno.env.get("EZGO_MAIL_ALLOWLIST") || "").trim();
   const fromEnv = raw
@@ -997,7 +1048,8 @@ function envelopeMatchesSearchDate(
   return israelYmdFromInstant(msg.envelope?.date) === searchDateYmd;
 }
 
-async function fetchMessagesByUidList(
+/** Exported so the client.fetch() UID-mode calling convention is unit-testable — see ezgoMailImap.test.ts. */
+export async function fetchMessagesByUidList(
   client: ImapFlow,
   uids: number[],
   allowlist: string[],
@@ -1011,11 +1063,24 @@ async function fetchMessagesByUidList(
   const downloadUids: number[] = [];
 
   // Phase 1 — envelope + Message-ID only (fast dedup).
+  //
+  // `range` here is a list of IMAP UIDs (from a UID SEARCH), not sequence numbers.
+  // imapflow's fetch() only sends `UID FETCH` (vs. plain `FETCH`, which treats `range`
+  // as sequence numbers) when the THIRD argument's `.uid` is true — `uid: true` inside
+  // the second (query) argument only asks the server to include the UID field in the
+  // response, it does not select UID mode (see imapflow lib/imap-flow.js `fetch()`,
+  // which reads `options.uid`, and lib/commands/fetch.js which sends `options.uid ?
+  // 'UID FETCH' : 'FETCH'`). Without this third argument, real UIDs get sent as a
+  // sequence-number range; Gmail silently returns zero matches once a UID exceeds the
+  // mailbox's current EXISTS count, which is every UID search result in a mailbox with
+  // any history of expunges/archiving — this was the root cause of ezgo-mail-sync
+  // finding SEARCH matches (searchUids > 0) but downloading nothing (scannedRaw:
+  // downloadedSource: 0) for every automated cron tick.
   for await (const msg of client.fetch(range, {
     uid: true,
     envelope: true,
     headers: ["message-id"],
-  })) {
+  }, { uid: true })) {
     meta.scannedRaw += 1;
     if (!resolveAllowlistedSender(msg, allowlist)) continue;
     meta.afterAllowlist += 1;
@@ -1031,13 +1096,14 @@ async function fetchMessagesByUidList(
   if (!downloadUids.length) return [];
 
   const out: EzgoInboundMail[] = [];
-  // Phase 2 — full source only for new allowlisted messages.
+  // Phase 2 — full source only for new allowlisted messages. Same UID-mode requirement
+  // as phase 1 above.
   for await (const msg of client.fetch(downloadUids.join(","), {
     uid: true,
     envelope: true,
     source: true,
     headers: ["message-id"],
-  })) {
+  }, { uid: true })) {
     meta.downloadedSource += 1;
     const parsed = await messageFromFetch(msg, allowlist);
     if (parsed) out.push(parsed);

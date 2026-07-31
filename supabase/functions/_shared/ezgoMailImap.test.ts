@@ -13,7 +13,10 @@ import {
   EZGO_MAIL_SEARCH_DAYS_DEFAULT,
   extractBodiesFromSource,
   extractEmailFromHeaderValue,
+  fetchMessagesByUidList,
   isSenderAllowed,
+  isEzgoMailBusinessHours,
+  shouldInvokeEzgoMailFromCron,
   normalizeMessageId,
   parseAllowlist,
   gmailDateRangeClause,
@@ -411,6 +414,74 @@ Deno.test("searchUidsForSender records gmailRaw failures into meta.searchErrors 
   }
 });
 
+/**
+ * Regression test for the 2026-07-30 incident: ezgo-mail-sync's UID SEARCH found real
+ * matches (searchUids > 0 in every cron heartbeat) but downloaded nothing at all
+ * (scannedRaw/downloadedSource stayed 0) for 3 straight days. Root cause: imapflow's
+ * `fetch(range, query, options)` only sends `UID FETCH` (interpreting `range` as UIDs)
+ * when `options.uid` — the THIRD argument — is true; `uid: true` inside the second
+ * (query) argument only requests the UID field back in the response, it does not select
+ * UID mode (see imapflow lib/imap-flow.js `fetch()` and lib/commands/fetch.js). Without
+ * the third argument, real UIDs from `client.search(..., {uid:true})` were sent as a
+ * plain sequence-number range — silently matching nothing once a UID exceeds the
+ * mailbox's current EXISTS count. This fake client mirrors that real IMAP behavior
+ * (only yields a message when `options?.uid` is true) so this test fails against the
+ * pre-fix calling convention and passes against the fix.
+ */
+Deno.test("fetchMessagesByUidList calls client.fetch() in UID mode (options.uid), not sequence mode", async () => {
+  const calls: Array<{ range: unknown; query: Record<string, unknown>; options?: { uid?: boolean } }> = [];
+  const fakeClient = {
+    fetch(range: unknown, query: Record<string, unknown>, options?: { uid?: boolean }) {
+      calls.push({ range, query, options });
+      return (async function* () {
+        // Phase 2 (source download) — yield nothing so this test never touches
+        // messageFromFetch/postal-mime, keeping it a pure calling-convention check.
+        if (query.source) return;
+        // Phase 1 (envelope) — mirrors real Gmail IMAP: a plain (non-UID) FETCH given
+        // large UID values as if they were sequence numbers matches nothing.
+        if (!options?.uid) return;
+        yield {
+          uid: 555,
+          envelope: {
+            from: [{ address: EZGO_NOREPLY, name: "EZGO" }],
+            subject: "Operations",
+            date: new Date(),
+          },
+          headers: new Map([["message-id", "<abc123@ezgo.co.il>"]]),
+        };
+      })();
+    },
+  };
+  const meta = emptyMetaForTest();
+
+  await fetchMessagesByUidList(
+    fakeClient as unknown as ImapFlow,
+    [555],
+    DEFAULT_EZGO_MAIL_SENDERS,
+    meta,
+  );
+
+  if (calls.length < 1 || calls[0].options?.uid !== true) {
+    throw new Error(
+      "expected phase 1 (envelope) client.fetch() call to pass { uid: true } as the THIRD " +
+        "argument (options), not just inside the query object — this is what makes imapflow " +
+        "send UID FETCH instead of a plain sequence-based FETCH",
+    );
+  }
+  if (meta.scannedRaw !== 1) {
+    throw new Error(
+      `expected phase 1 to find the 1 UID-matched envelope (meta.scannedRaw === 1), got ${meta.scannedRaw} — ` +
+        "this is exactly the production symptom: searchUids > 0 but scannedRaw stays 0",
+    );
+  }
+  if (calls.length < 2 || calls[1].options?.uid !== true) {
+    throw new Error(
+      "expected phase 2 (source download) client.fetch() call to also pass { uid: true } as " +
+        "the third argument",
+    );
+  }
+});
+
 Deno.test("extractBodiesFromSource picks nested forward HTML with EZGO table (base64)", async () => {
   const mime = [
     "Content-Type: multipart/alternative; boundary=abc",
@@ -633,6 +704,42 @@ Deno.test("buildCombinedAttachmentGmailQuery merges both report domains into a s
 Deno.test("buildCombinedAttachmentGmailQuery returns null when no report-domain sender is allowlisted", () => {
   const query = buildCombinedAttachmentGmailQuery([MIKE], 7);
   if (query !== null) throw new Error("expected null for a gmail.com-only allowlist");
+});
+
+Deno.test("shouldInvokeEzgoMailFromCron defaults off without EZGO_MAIL_BACKGROUND_SYNC", () => {
+  const prevSync = Deno.env.get("EZGO_MAIL_SYNC_ENABLED");
+  const prevBg = Deno.env.get("EZGO_MAIL_BACKGROUND_SYNC");
+  try {
+    Deno.env.set("EZGO_MAIL_SYNC_ENABLED", "true");
+    Deno.env.delete("EZGO_MAIL_BACKGROUND_SYNC");
+    if (shouldInvokeEzgoMailFromCron({ now: new Date("2026-07-21T10:00:00+03:00") })) {
+      throw new Error("expected false without background sync opt-in");
+    }
+    Deno.env.set("EZGO_MAIL_BACKGROUND_SYNC", "true");
+    if (!shouldInvokeEzgoMailFromCron({ now: new Date("2026-07-21T10:00:00+03:00") })) {
+      throw new Error("expected true during business hours with background opt-in");
+    }
+    if (shouldInvokeEzgoMailFromCron({
+      now: new Date("2026-07-21T10:00:00+03:00"),
+      lastBackgroundRunAt: new Date("2026-07-21T09:30:00+03:00").toISOString(),
+    })) {
+      throw new Error("expected min-gap block within 2h");
+    }
+  } finally {
+    if (prevSync === undefined) Deno.env.delete("EZGO_MAIL_SYNC_ENABLED");
+    else Deno.env.set("EZGO_MAIL_SYNC_ENABLED", prevSync);
+    if (prevBg === undefined) Deno.env.delete("EZGO_MAIL_BACKGROUND_SYNC");
+    else Deno.env.set("EZGO_MAIL_BACKGROUND_SYNC", prevBg);
+  }
+});
+
+Deno.test("isEzgoMailBusinessHours respects Israel local hour window", () => {
+  if (!isEzgoMailBusinessHours(new Date("2026-07-21T10:00:00+03:00"))) {
+    throw new Error("expected 10:00 Israel to be inside default business window");
+  }
+  if (isEzgoMailBusinessHours(new Date("2026-07-21T22:00:00+03:00"))) {
+    throw new Error("expected 22:00 Israel to be outside default business window");
+  }
 });
 
 Deno.test("extractBodiesFromSource picks nested forward HTML with EZGO table (quoted-printable)", async () => {

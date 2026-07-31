@@ -3,6 +3,7 @@
 // Manager can flip a guest to "Room Ready" → fires WhatsApp Trigger 3
 // (suites) immediately via the whatsapp-send edge function.
 import { useState, useEffect, useCallback, useRef } from "react";
+import { usePageVisibility } from "../hooks/usePageVisibility";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
 import { SUITE_REGISTRY } from "../data/suiteRegistry";
 import { hasSuiteRoomTypeConflict, hasPremiumDayRoomTypeConflict } from "../utils/guestTiming";
@@ -182,30 +183,60 @@ export default function GuestsPage({
   }, []);
 
   useEffect(() => {
-    if (!supabase) return;
+    if (!supabase) return undefined;
+    const pageVisible = () => typeof document === "undefined" || document.visibilityState !== "hidden";
+
     const scheduleRealtimeRefresh = () => {
+      if (!pageVisible()) return;
       if (Date.now() < skipRealtimeUntilRef.current) return;
       clearTimeout(realtimeDebounceRef.current);
       realtimeDebounceRef.current = setTimeout(() => {
+        if (!pageVisible()) return;
         if (Date.now() < skipRealtimeUntilRef.current) return;
         fetchGuestsSilent();
       }, 400);
     };
-    const ch = supabase
-      .channel("guests-page-rt")
-      .on("postgres_changes", { event: "*", schema: "public", table: "guests" }, scheduleRealtimeRefresh)
-      .subscribe();
+
+    let ch = null;
+    const attachRealtime = () => {
+      if (!pageVisible() || ch) return;
+      ch = supabase
+        .channel("guests-page-rt")
+        .on("postgres_changes", { event: "*", schema: "public", table: "guests" }, scheduleRealtimeRefresh)
+        .subscribe();
+    };
+    const detachRealtime = () => {
+      if (!ch) return;
+      supabase.removeChannel(ch);
+      ch = null;
+    };
+
+    const onVisibility = () => {
+      if (pageVisible()) {
+        attachRealtime();
+        fetchGuestsSilent();
+      } else {
+        clearTimeout(realtimeDebounceRef.current);
+        detachRealtime();
+      }
+    };
+
+    attachRealtime();
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       clearTimeout(realtimeDebounceRef.current);
-      supabase.removeChannel(ch);
+      document.removeEventListener("visibilitychange", onVisibility);
+      detachRealtime();
     };
   }, [fetchGuestsSilent]);
 
-  // Re-evaluate 15:00 gateway + departure checkout every minute.
+  const pageVisible = usePageVisibility();
   useEffect(() => {
+    if (!pageVisible) return undefined;
+    fetchGuestsSilent();
     const id = setInterval(() => { fetchGuestsSilent(); }, 60_000);
     return () => clearInterval(id);
-  }, [fetchGuestsSilent]);
+  }, [fetchGuestsSilent, pageVisible]);
 
   const getGuestSuiteRooms = (guest) => suiteRoomsByGuestId[guest?.id] ?? [];
 

@@ -1,6 +1,7 @@
 // EzgoMailSyncPanel — review + apply EZGO mail import lines (Doc1).
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../supabaseClient";
+import { usePageVisibility } from "../hooks/usePageVisibility";
 import SpaUpsellConfirmModal from "./SpaUpsellConfirmModal";
 import { buildDoc1EnrichmentPatch } from "../utils/guestImportIntelligence";
 import { spaSlotsWarningLabel } from "../utils/doc1SpaSlots";
@@ -278,7 +279,9 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
   useEffect(() => { loadIngests(); }, [loadIngests]);
 
   // Auto-refresh ingest list (cron / background sync) without re-scanning IMAP.
+  const pageVisible = usePageVisibility();
   useEffect(() => {
+    if (!pageVisible) return undefined;
     const pollId = setInterval(() => { loadIngests(); }, 90_000);
     const channel = supabase
       .channel("ezgo-mail-ingest-live")
@@ -292,7 +295,7 @@ export default function EzgoMailSyncPanel({ showToast, onSpaUpsellNavigate }) {
       clearInterval(pollId);
       supabase.removeChannel(channel);
     };
-  }, [loadIngests]);
+  }, [loadIngests, pageVisible]);
 
   useEffect(() => { loadLines(selectedId); }, [selectedId, loadLines]);
 

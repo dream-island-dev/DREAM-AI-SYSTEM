@@ -1,6 +1,7 @@
 // Operational home — live tasks + guest_alerts + urgent signals from Supabase.
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
+import { usePageVisibility } from "../hooks/usePageVisibility";
 import { canPerform } from "../utils/auth";
 import {
   computeResortPulse,
@@ -88,6 +89,7 @@ export default function OperationalDashboard({
   onArrivalsClick,
   onAutomationClick,
 }) {
+  const pageVisible = usePageVisibility();
   const [loading, setLoading] = useState(true);
   const [tasks, setTasks] = useState([]);
   const [requests, setRequests] = useState([]);
@@ -285,6 +287,7 @@ export default function OperationalDashboard({
   }, [canCreate, userDept]);
 
   useEffect(() => {
+    if (!pageVisible) return undefined;
     refresh();
     if (!isSupabaseConfigured || !supabase) return undefined;
 
@@ -327,7 +330,7 @@ export default function OperationalDashboard({
       supabase.removeChannel(chGuests);
       supabase.removeChannel(chWa);
     };
-  }, [refresh]);
+  }, [refresh, pageVisible]);
 
   if (loading && !tasks.length && !requests.length) {
     return (
