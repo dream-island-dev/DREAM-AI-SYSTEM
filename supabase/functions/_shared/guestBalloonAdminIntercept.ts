@@ -224,6 +224,7 @@ export async function runSpaUpsellAcceptanceIntercept(
     requires_attention: true,
     requires_attention_since: new Date().toISOString(),
     attention_reason: "request",
+    msg_spa_upsell_sent: true,
   }).eq("id", guestId);
   if (guestErr) {
     console.error(`[${adapter.logTag}] spa upsell accept guest update FAILED:`, guestErr.message);

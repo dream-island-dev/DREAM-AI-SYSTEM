@@ -61,7 +61,7 @@ import {
   shouldInterceptOperationalInHouseRequest,
   shouldInterceptAdministrativeInHouseRequest,
   isSpaUpsellAcceptanceReply,
-  isSpaUpsellAcceptanceEligible,
+  resolveSpaUpsellAcceptanceEligible,
   isAdministrativeInHouseRequest,
   isAllowlistedPhysicalTaskRequest,
   classifyGuestRequestDispatch,
@@ -140,6 +140,7 @@ import {
   SERVICE_FALLBACK_REQUEST_ACK_HE,
 } from "../_shared/serviceFallbackTemplate.ts";
 import { sanitizeMetaRecipientPhone } from "../_shared/metaPhone.ts";
+import { resolveMetaTemplateImageHeaderUrl } from "../_shared/metaTemplateVars.ts";
 import {
   extractArrivalTimeFromText,
   persistGuestEta,
@@ -167,6 +168,7 @@ import {
   detectGuestHumanRequest,
   isGuestStaffHandoffReply,
 } from "../_shared/guestBotHandoff.ts";
+import { flagGuestStaffHandoff } from "../_shared/flagGuestStaffHandoff.ts";
 import {
   fetchGuestBotSettings,
   assembleGuestBrainPrompt,
@@ -1621,14 +1623,7 @@ function _isAbortError(e: unknown): boolean {
   return e instanceof Error && (e.name === "AbortError" || e.name === "TimeoutError");
 }
 
-// buttonUrlParam: if set, passes a dynamic URL suffix to button index 0
-// Templates with a Media Header (IMAGE) require a `header` component —
-// Meta error without it: "Format mismatch, expected IMAGE, received UNKNOWN".
-const _TEMPLATE_IMAGE_HEADERS: Record<string, string> = {
-  dream_suite_reminder:        "https://tzalamnadlan.co.il/wp-content/uploads/2026/default-resort.jpg",
-  night_before_suites:         "https://tzalamnadlan.co.il/wp-content/uploads/2026/default-resort.jpg",
-  night_before_suites_shabbat: "https://tzalamnadlan.co.il/wp-content/uploads/2026/default-resort.jpg",
-};
+// IMAGE header resolved live via Meta API (see resolveMetaTemplateImageHeaderUrl).
 
 async function sendTemplate(
   to: string,
@@ -1644,7 +1639,7 @@ async function sendTemplate(
   const recipient = sanitizeMetaRecipientPhone(to);
 
   const components: unknown[] = [];
-  const headerImageUrl = _TEMPLATE_IMAGE_HEADERS[templateName];
+  const headerImageUrl = await resolveMetaTemplateImageHeaderUrl(templateName);
   if (headerImageUrl) {
     components.push({ type: "header", parameters: [{ type: "image", image: { link: headerImageUrl } }] });
   }
@@ -2981,7 +2976,7 @@ Deno.serve(async (req: Request) => {
         !isButtonReply &&
         guestId &&
         guest &&
-        isSpaUpsellAcceptanceEligible(guest as Record<string, unknown>) &&
+        (await resolveSpaUpsellAcceptanceEligible(supabase, guest as Record<string, unknown>)) &&
         isSpaUpsellAcceptanceReply(text)
       ) {
         await runSpaUpsellAcceptanceIntercept(supabase, {
@@ -3273,7 +3268,7 @@ Deno.serve(async (req: Request) => {
         guestId &&
         guest &&
         effectiveText !== text &&
-        isSpaUpsellAcceptanceEligible(guest as Record<string, unknown>) &&
+        (await resolveSpaUpsellAcceptanceEligible(supabase, guest as Record<string, unknown>)) &&
         isSpaUpsellAcceptanceReply(effectiveText)
       ) {
         await runSpaUpsellAcceptanceIntercept(supabase, {
@@ -3982,22 +3977,27 @@ Deno.serve(async (req: Request) => {
           });
       }
 
-      if (isLowConfidenceFaqMiss || isGenericFallbackHandoff) {
-        // Mirrors every guest_alerts-based Tier-0 shield, which already gets
-        // this for free via onGuestAlertInserted→triggerInboxRedAlert — these
-        // two deflection paths never insert a guest_alerts row, so they need
-        // the same flag set directly on the inbound row.
-        patchClaimedInbound(supabase, claimedConversationId, msgId, {
-          human_requested: true,
-          human_request_type: "staff_handoff",
-        }).catch((e: Error) => console.warn("[webhook] 🤔 deflection-handoff inbox flag failed:", e.message));
-      }
-
       if (isLowConfidenceFaqMiss) {
         console.info(
           `[webhook] 🤔 low-confidence FAQ miss — sending handoff message + staff flagged — phone:${phone} guest:${guestId ?? "unknown"}`,
         );
+      } else if (isGenericFallbackHandoff) {
+        // Generic fallback copy is not the canonical handoff sentence — flag separately.
+        await patchClaimedInbound(supabase, claimedConversationId, msgId, {
+          human_requested: true,
+          human_request_type: "staff_handoff",
+        });
       }
+
+      // Backstop — any outbound handoff copy must light Inbox red (Whapi parity).
+      await flagGuestStaffHandoff(supabase, {
+        phone,
+        guestId,
+        claimedConversationId,
+        waMessageId: msgId,
+        replyText: reply,
+        logTag: "webhook-handoff-backstop",
+      });
 
       if (guest && (guest as Record<string, unknown>).status === "cancelled") {
         // Zero-Spam Policy (§CORE BUSINESS LOGIC): cancelled guests never receive bot messages.

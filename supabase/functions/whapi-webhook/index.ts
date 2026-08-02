@@ -40,7 +40,7 @@
 //   WHAPI_GROUP_ID (ops «קריאות» group — tasks + 👍 reactions),
 //   WHAPI_HOUSEKEEPING_GROUP_ID (צ'ק אין צ'ק אאוט — ready → ממתין לאישור 🔔;
 //   check-in → guests.checked_in + תפוס; Co N / N co → guests.checked_out + לניקיון;
-//   short Hebrew ack in-group on success),
+//   silent observer by default — no in-group reply unless HOUSEKEEPING_WA_GROUP_REPLY=true),
 //   WHAPI_API_URL, GUEST_WHAPI_SUITES_ENABLED (see GUEST DIRECT MESSAGE
 //   HANDLING below — gates guest-DM auto-reply; off = capture-only).
 //   EXECUTIVE_PHONES / EXECUTIVE_PHONE (972-prefixed digits, no "+",
@@ -65,6 +65,7 @@ import {
   parseHousekeepingCheckOutRoomNumbers,
   looksLikeHousekeepingNearMiss,
   buildHousekeepingNearMissClarification,
+  isHousekeepingGroupReplyEnabled,
 } from "../_shared/housekeepingWaParse.ts";
 import {
   applyHousekeepingReadySignal,
@@ -116,7 +117,7 @@ import {
   shouldInterceptBalloonRoomRequest,
   shouldInterceptAdministrativeInHouseRequest,
   isSpaUpsellAcceptanceReply,
-  isSpaUpsellAcceptanceEligible,
+  resolveSpaUpsellAcceptanceEligible,
   shouldHandoffUnrecognizedInRoomRequest,
 } from "../_shared/automationSchedule.ts";
 import {
@@ -154,6 +155,7 @@ import {
   detectGuestHumanRequest,
   isGuestStaffHandoffReply,
 } from "../_shared/guestBotHandoff.ts";
+import { flagGuestStaffHandoff } from "../_shared/flagGuestStaffHandoff.ts";
 import { assembleGuestBrainPrompt, fetchGuestBotSettings } from "../_shared/guestBotSettings.ts";
 import { generateGuestChatReply } from "../_shared/guestBotLlm.ts";
 import {
@@ -813,29 +815,13 @@ async function flagGuestDmStaffHandoff(
     replyText: string;
   },
 ): Promise<void> {
-  if (!isGuestStaffHandoffReply(opts.replyText)) return;
-
-  await patchGuestDmInbound(supabase, opts.conversationId, {
-    guest_id: opts.guestId,
-    human_requested: true,
-    human_request_type: "staff_handoff",
+  await flagGuestStaffHandoff(supabase, {
+    phone: opts.phone,
+    guestId: opts.guestId,
+    claimedConversationId: opts.conversationId,
+    replyText: opts.replyText,
+    logTag: "whapi-webhook",
   });
-
-  if (opts.guestId) {
-    const { error } = await supabase.from("guests").update({
-      requires_attention:       true,
-      requires_attention_since: new Date().toISOString(),
-      needs_callback:           true,
-      attention_reason:         "שאלה מורכבת לצוות",
-    }).eq("id", opts.guestId);
-    if (error) {
-      console.error("[whapi-webhook] guest_dm staff_handoff guest update failed:", error.message);
-    }
-  }
-
-  console.info(
-    `[whapi-webhook] 🤔 staff handoff — red alert flagged — phone:${opts.phone} guest:${opts.guestId ?? "unknown"}`,
-  );
 }
 
 /**
@@ -1245,7 +1231,7 @@ async function handleGuestDirectMessage(
     // to guests who actually received the offer and still have no spa today.
     if (
       guestId && guestRecord &&
-      isSpaUpsellAcceptanceEligible(guestRecord as Record<string, unknown>) &&
+      (await resolveSpaUpsellAcceptanceEligible(supabase, guestRecord as Record<string, unknown>)) &&
       isSpaUpsellAcceptanceReply(text)
     ) {
       await runSpaUpsellAcceptanceIntercept(
@@ -1660,9 +1646,10 @@ serve(async (req: Request) => {
     }
 
     // ── Housekeeping group (Phase 1) — parse ready signals, write room_status →
-    // ממתין לאישור, optional Hebrew ack in-group when a new bell fires. Parallel
-    // to the ops group; no tasks / no LLM.
+    // ממתין לאישור; updates XOS only — no in-group reply unless env opt-in.
+    // Parallel to the ops group; no tasks / no LLM.
     if (hkGroup) {
+      const hkGroupReply = isHousekeepingGroupReplyEnabled();
       for (const msg of messages) {
         if (msg.fromMe) continue;
         if (!msg.chatId.endsWith("@g.us") || msg.chatId !== hkGroup) continue;
@@ -1679,7 +1666,7 @@ serve(async (req: Request) => {
         const checkOutRooms = parseHousekeepingCheckOutRoomNumbers(msg.text);
         if (readyRooms.length === 0 && checkInRooms.length === 0 && checkOutRooms.length === 0) {
           let nearMissAck = false;
-          if (looksLikeHousekeepingNearMiss(msg.text)) {
+          if (hkGroupReply && looksLikeHousekeepingNearMiss(msg.text)) {
             const clarify = buildHousekeepingNearMissClarification(msg.text);
             try {
               await sendWhapiText(msg.chatId, clarify, { noLinkPreview: true });
@@ -1768,7 +1755,7 @@ serve(async (req: Request) => {
         ];
         const ackText = ackLines.join("\n");
         let ackSent = false;
-        if (ackText) {
+        if (hkGroupReply && ackText) {
           try {
             await sendWhapiText(msg.chatId, ackText, { noLinkPreview: true });
             ackSent = true;
@@ -1778,7 +1765,7 @@ serve(async (req: Request) => {
         }
 
         console.log(
-          `[whapi-webhook] housekeeping ${msg.id} chat=${msg.chatId} ready=${readyRooms.join(",")} checkin=${checkInRooms.join(",")} checkout=${checkOutRooms.join(",")} ack=${ackSent}`,
+          `[whapi-webhook] housekeeping ${msg.id} chat=${msg.chatId} ready=${readyRooms.join(",")} checkin=${checkInRooms.join(",")} checkout=${checkOutRooms.join(",")} ack=${ackSent} reply=${hkGroupReply}`,
         );
         results.push({
           id: msg.id,
@@ -1791,6 +1778,7 @@ serve(async (req: Request) => {
           checkInSignals,
           checkOutSignals,
           ackSent,
+          groupReplyEnabled: hkGroupReply,
         });
       }
     }

@@ -31,6 +31,11 @@ import {
   syncInboxContactWithGuestMap,
 } from "../utils/guestTiming";
 import { resolveEffectiveSelectedSuiteRoom } from "../utils/guestSelectedSuiteRoom";
+import { isGuestStaffHandoffReply } from "../utils/guestBotHandoff";
+import {
+  addManualSpaUpsellLeadFromInbox,
+  fetchOpenSpaUpsellLeadForGuest,
+} from "../utils/spaUpsellLeadManual";
 import {
   formatGuestReactionLabel,
   parseGuestReactionMessage,
@@ -249,6 +254,20 @@ function parseOutboundDispatch(raw) {
     body = body.replace(INTERACTIVE_BUTTONS_SUFFIX, "").trimEnd();
   }
   return { channel, body, hasInteractiveButtons, buttonLabels };
+}
+
+/** Inbound human_requested flag, or outbound canonical staff-handoff copy. */
+function messageHumanRequestState(row) {
+  if (row.human_requested && row.direction === "inbound") {
+    return { requested: true, type: row.human_request_type ?? null };
+  }
+  if (row.direction === "outbound") {
+    const { body } = parseOutboundDispatch(row.message);
+    if (isGuestStaffHandoffReply(body)) {
+      return { requested: true, type: "staff_handoff" };
+    }
+  }
+  return { requested: false, type: null };
 }
 
 /** Resolve legacy `[סקריפט:…]` / `[תבנית:…]` inbox rows to human-readable text. */
@@ -1008,11 +1027,11 @@ export function groupByPhone(rows) {
     const contact = map.get(threadKey);
     contact.messages.push(row);
     if (row.push_name) contact.pushName = row.push_name;
-    // Flag contact if any inbound message is a human request
-    if (row.human_requested && row.direction === "inbound") {
+    const humanReq = messageHumanRequestState(row);
+    if (humanReq.requested) {
       contact.humanRequested = true;
-      if (row.human_request_type && !contact.humanRequestType) {
-        contact.humanRequestType = row.human_request_type;
+      if (humanReq.type && !contact.humanRequestType) {
+        contact.humanRequestType = humanReq.type;
       }
     }
   }
@@ -1069,10 +1088,11 @@ export function groupByPhoneUnified(rows) {
     }
     contact.messages.push(row);
     if (row.push_name) contact.pushName = row.push_name;
-    if (row.human_requested && row.direction === "inbound") {
+    const humanReq = messageHumanRequestState(row);
+    if (humanReq.requested) {
       contact.humanRequested = true;
-      if (row.human_request_type && !contact.humanRequestType) {
-        contact.humanRequestType = row.human_request_type;
+      if (humanReq.type && !contact.humanRequestType) {
+        contact.humanRequestType = humanReq.type;
       }
     }
   }
@@ -1441,7 +1461,7 @@ const ContactItem = React.memo(function ContactItem({ contact, isActive, isMobil
                   className="u-guest-name-link"
                   style={{
                     fontWeight: 600, fontSize: 14,
-                    color: "var(--text-main)",
+                    color: contact.humanRequested ? "var(--status-danger)" : "var(--text-main)",
                   }}
                 >
                   {displayName(contact)}
@@ -2029,7 +2049,6 @@ function NewChatModal({ onClose, onSent, whapiSosActive = false }) {
   const [tmplBulkDone,       setTmplBulkDone]       = useState(false);
   const [tmplBulkFailures,   setTmplBulkFailures]   = useState([]); // [{ name, phone, reason }] — same FAIL VISIBLE convention as bulkFailures
   const [tmplSyncOk,        setTmplSyncOk]        = useState(false); // brief "✓ עודכן" flash after manual sync
-
   // Multi-recipient distribution — Whapi is hard-blocked here (not queued):
   // a same-body blast to many recipients from a manually-typed Inbox message
   // is exactly the pattern that got the Suites device restricted on
@@ -3170,6 +3189,8 @@ export default function WhatsAppInbox({
   const [sending, setSending]     = useState(false);
   const [reply, setReply]         = useState("");
   const [error, setError]         = useState(null);
+  const [spaLeadOnFile, setSpaLeadOnFile] = useState(false);
+  const [spaLeadAdding, setSpaLeadAdding] = useState(false);
   // Tracks the exact banner text last set by a background *load* operation
   // (fetchAll/fetchSince/fetchOlder polling) so its own next success can
   // safely clear it — without ever clobbering a different, still-relevant
@@ -4943,6 +4964,44 @@ export default function WhatsAppInbox({
   }, [activeContact, thread.length, lastUpdated, fetchThreadDbCount]);
 
   useEffect(() => {
+    if (!activeContact?.guestId || !supabase) {
+      setSpaLeadOnFile(false);
+      return undefined;
+    }
+    let cancelled = false;
+    fetchOpenSpaUpsellLeadForGuest(supabase, activeContact.guestId, activeContact.phone)
+      .then((open) => { if (!cancelled) setSpaLeadOnFile(open); })
+      .catch(() => { if (!cancelled) setSpaLeadOnFile(false); });
+    return () => { cancelled = true; };
+  }, [activeContact?.guestId, activeContact?.phone, lastUpdated]);
+
+  const addSpaUpsellLeadFromInbox = useCallback(async () => {
+    if (!activeContact?.guestId || !supabase) return;
+    const lastInbound = [...(activeContact.messages ?? [])].reverse()
+      .find((m) => m.direction === "inbound");
+    const rawMsg = String(lastInbound?.message ?? "")
+      .replace(/^\[(META|WHAPI|SESSION|WHAPI SESSION)\]\s*/i, "")
+      .trim();
+    setSpaLeadAdding(true);
+    try {
+      const data = await addManualSpaUpsellLeadFromInbox(supabase, {
+        guestId: activeContact.guestId,
+        phone: activeContact.phone,
+        message: rawMsg || "נוסף ידנית מ-Inbox",
+        conversationId: lastInbound?.id ?? null,
+      });
+      setSpaLeadOnFile(true);
+      if (data?.alreadyExists) {
+        setError("האורח כבר ברשימת לידים ספא 💆");
+      }
+    } catch (e) {
+      setError("שגיאה בהוספה ללידים ספא: " + (e?.message ?? e));
+    } finally {
+      setSpaLeadAdding(false);
+    }
+  }, [activeContact]);
+
+  useEffect(() => {
     if (!whapiSosActive || activeInboxChannel !== "unified") return;
     setReplyChannel("meta");
   }, [whapiSosActive, activeInboxChannel, active]);
@@ -6347,6 +6406,32 @@ export default function WhatsAppInbox({
               >
                 🔗 שלח קישור לפורטל האורחים
               </button>
+              {contactIsDaypassAudience(activeContact) && (
+                <button
+                  type="button"
+                  onClick={addSpaUpsellLeadFromInbox}
+                  disabled={sending || spaLeadAdding || !activeContact?.guestId || spaLeadOnFile}
+                  title={
+                    !activeContact?.guestId
+                      ? "השיחה אינה משויכת לפרופיל אורח"
+                      : spaLeadOnFile
+                        ? "האורח כבר ברשימת לידים ספא — ראה «לידים ספא»"
+                        : "מוסיף את האורח לרשימת לידים ספא לפי תאריך ההגעה (גיבוי אם הבוט לא תפס)"
+                  }
+                  style={{
+                    padding: "8px 14px", borderRadius: 20,
+                    border: spaLeadOnFile ? "1.5px solid #C4B5FD" : "1.5px solid #7C3AED",
+                    background: spaLeadOnFile ? "#F5F3FF" : "linear-gradient(135deg, #F3E8FF, #EDE9FE)",
+                    color: spaLeadOnFile ? "#9CA3AF" : "#5B21B6",
+                    fontSize: 12, fontWeight: 700,
+                    cursor: (sending || spaLeadAdding || !activeContact?.guestId || spaLeadOnFile)
+                      ? "not-allowed" : "pointer",
+                    minHeight: isMobile ? HIT_STAFF : "auto",
+                  }}
+                >
+                  {spaLeadAdding ? "מוסיף…" : spaLeadOnFile ? "✓ בלידים ספא" : "💆 הוסף ללידים ספא"}
+                </button>
+              )}
               <button
                 onClick={preloadStage2ArrivalMessage}
                 disabled={sending || !activeContact?.guestId}

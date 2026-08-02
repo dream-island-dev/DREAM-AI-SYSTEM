@@ -1329,15 +1329,11 @@ export function isSpaUpsellAcceptanceReply(text: string): boolean {
   return SPA_UPSELL_ACCEPT_PHRASE_PATTERN.test(t);
 }
 
-/** Guest received manual upsell and still has no spa slot on arrival day. */
-export function isSpaUpsellAcceptanceEligible(guest: Record<string, unknown>): boolean {
-  if (guest.msg_spa_upsell_sent !== true) return false;
-  const arrival = String(guest.arrival_date ?? "").slice(0, 10);
-  const spaDate = String(guest.spa_date ?? "").slice(0, 10);
-  if (spaDate && spaDate === arrival) return false;
-  if (guest.spa_time) return false;
-  return true;
-}
+export {
+  isSpaUpsellAcceptanceEligible,
+  resolveSpaUpsellAcceptanceEligible,
+  guestHasNoSpaSlotOnArrival,
+} from "./spaUpsellAcceptance.ts";
 
 export function buildSpaUpsellAcceptanceReply(_guestName?: string | null): string {
   return "מעולה! 💆 נדאג לשבץ אתכם לטיפול היום ונעדכן אתכם בהקדם עם השעה המדויקת 🙏";

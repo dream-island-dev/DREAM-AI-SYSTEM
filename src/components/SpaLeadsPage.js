@@ -8,6 +8,7 @@ import {
   fmtLeadTime,
   resolveSpaUpsellLead,
 } from "../utils/spaUpsellHub";
+import { isManualSpaUpsellLeadMessage } from "../utils/spaUpsellLeadManual";
 
 const FILTER_ALL = "all";
 const FILTER_TODAY = "today";
@@ -18,6 +19,35 @@ function tomorrowYmd() {
   const d = new Date();
   d.setDate(d.getDate() + 1);
   return d.toISOString().slice(0, 10);
+}
+
+function formatPhoneTel(phone) {
+  const raw = String(phone ?? "").trim();
+  if (!raw) return null;
+  if (raw.startsWith("+")) return raw.replace(/[^\d+]/g, "");
+  const digits = raw.replace(/\D/g, "");
+  if (!digits) return null;
+  if (digits.startsWith("972")) return `+${digits}`;
+  if (digits.startsWith("0")) return `+972${digits.slice(1)}`;
+  return `+${digits}`;
+}
+
+function formatPhoneDisplay(phone) {
+  const raw = String(phone ?? "").trim();
+  if (!raw) return "—";
+  const digits = raw.replace(/\D/g, "");
+  let local = "";
+  if (digits.startsWith("972") && digits.length >= 11) local = `0${digits.slice(3)}`;
+  else if (digits.startsWith("0") && digits.length === 10) local = digits;
+  else return raw.startsWith("+") ? raw : raw;
+  if (local.length === 10) {
+    return `${local.slice(0, 3)}-${local.slice(3, 6)}-${local.slice(6)}`;
+  }
+  return raw;
+}
+
+function resolveLeadPhone(lead) {
+  return lead.phone || lead.guests?.phone || "";
 }
 
 function fmtArrivalDate(ymd) {
@@ -32,7 +62,7 @@ export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
   const [resolvingId, setResolvingId] = useState(null);
-  const [dateFilter, setDateFilter] = useState(FILTER_ALL);
+  const [dateFilter, setDateFilter] = useState(FILTER_TODAY);
   const [customDate, setCustomDate] = useState(israelTodayYmd());
 
   const loadLeads = useCallback(async () => {
@@ -290,31 +320,74 @@ export default function SpaLeadsPage({ onOpenDreamBotChat, onNavigate }) {
                     }}
                   >
                     <div style={{ minWidth: 0, flex: 1 }}>
-                      <div style={{ fontWeight: 800, fontSize: 16, color: "#1F2937" }}>
-                        {lead.guests?.name || "אורח"}
-                        {lead.guests?.room ? (
-                          <span style={{ fontWeight: 600, color: "#6B7280", fontSize: 14 }}> · {lead.guests.room}</span>
-                        ) : null}
+                      <div style={{
+                        display: "grid",
+                        gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+                        gap: "10px 16px",
+                        marginBottom: 10,
+                        padding: "10px 12px",
+                        background: "#FAF5FF",
+                        borderRadius: 10,
+                        border: "1px solid #EDE9FE",
+                      }}
+                      >
+                        <div>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: "#9CA3AF", marginBottom: 2 }}>שם מלא</div>
+                          <div style={{ fontWeight: 800, fontSize: 16, color: "#1F2937", lineHeight: 1.3 }}>
+                            {isManualSpaUpsellLeadMessage(lead.message) && (
+                              <span style={{
+                                fontSize: 10, fontWeight: 800, color: "#92400E",
+                                background: "#FEF3C7", padding: "2px 8px", borderRadius: 8,
+                                marginLeft: 6, verticalAlign: "middle",
+                              }}
+                              >
+                                ידני
+                              </span>
+                            )}
+                            {lead.guests?.name || "אורח"}
+                          </div>
+                          {lead.guests?.room ? (
+                            <div style={{ fontSize: 12, color: "#6B7280", marginTop: 2 }}>{lead.guests.room}</div>
+                          ) : null}
+                        </div>
+                        <div>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: "#9CA3AF", marginBottom: 2 }}>טלפון</div>
+                          {formatPhoneTel(resolveLeadPhone(lead)) ? (
+                            <a
+                              href={`tel:${formatPhoneTel(resolveLeadPhone(lead))}`}
+                              style={{ fontWeight: 800, fontSize: 15, color: "#5B21B6", textDecoration: "none" }}
+                            >
+                              {formatPhoneDisplay(resolveLeadPhone(lead))}
+                            </a>
+                          ) : (
+                            <span style={{ fontWeight: 700, color: "#9CA3AF" }}>—</span>
+                          )}
+                        </div>
+                        <div>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: "#9CA3AF", marginBottom: 2 }}>תאריך הגעה</div>
+                          <div style={{ fontWeight: 800, fontSize: 15, color: "#6B21A8" }}>
+                            {fmtArrivalDate(lead.guests?.arrival_date)}
+                          </div>
+                        </div>
                       </div>
                       <div style={{
                         fontSize: 14,
                         color: "#4C1D95",
-                        marginTop: 6,
                         lineHeight: 1.5,
                         fontStyle: "italic",
                       }}>
-                        «{String(lead.message ?? "").trim() || "אשמח לתאם"}»
+                        «{String(lead.message ?? "").trim().replace(/^\[ידני מ-Inbox\]\s*/i, "") || "אשמח לתאם"}»
                       </div>
                       <div style={{ fontSize: 12, color: "#9CA3AF", marginTop: 8 }}>
-                        התקבל {fmtLeadTime(lead.created_at)} · {lead.phone}
+                        התקבל {fmtLeadTime(lead.created_at)}
                       </div>
                     </div>
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                      {onOpenDreamBotChat && lead.phone && (
+                      {onOpenDreamBotChat && resolveLeadPhone(lead) && (
                         <button
                           type="button"
                           onClick={() => onOpenDreamBotChat({
-                            phone: lead.phone,
+                            phone: resolveLeadPhone(lead),
                             guestName: lead.guests?.name,
                             returnPage: "spa_leads",
                             returnPageLabel: "לידים ספא",

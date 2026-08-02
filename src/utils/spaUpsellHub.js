@@ -24,7 +24,10 @@ export function buildSpaUpsellStaffCopy(leads, arrivalDate) {
     leads.forEach((row, idx) => {
       const name = row.guests?.name || "אורח";
       const room = row.guests?.room ? ` · ${row.guests.room}` : "";
-      lines.push(`${idx + 1}. ${name}${room} · ${row.phone}`);
+      const phone = row.phone || row.guests?.phone || "—";
+      const arrival = row.guests?.arrival_date || "—";
+      lines.push(`${idx + 1}. ${name}${room}`);
+      lines.push(`   📅 ${arrival} · 📱 ${phone}`);
       lines.push(`   «${String(row.message ?? "").trim()}»`);
     });
     lines.push("", "לשבץ בלוח הספא ולהחזיר לאורח עם שעה מדויקת 🙏");
