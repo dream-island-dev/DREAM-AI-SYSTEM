@@ -2,10 +2,13 @@
 // Turnover step 1 of 4 — next: N✅ (ממתין לאישור) → manager approve → צק אין.
 
 import type { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { israelYmd } from "./automationSchedule.ts";
 import { resolveSuiteFromEzgoFields } from "./guestRoomResolve.ts";
 import {
   findActiveGuestForSuite,
   findDepartingGuestForSuite,
+  findIncomingGuestForSuiteCheckIn,
+  formatAmbiguousGuestHint,
 } from "./housekeepingGuestLookup.ts";
 import { enqueueSuitePostCheckoutSurvey } from "./postCheckoutSurvey.ts";
 import { performSuiteCheckOut, syncRoomToCleaning } from "./suiteCheckinSync.ts";
@@ -16,6 +19,7 @@ export type HousekeepingCheckOutAction =
   | "dedup"
   | "skipped_no_suite"
   | "no_guest"
+  | "ambiguous_guest"
   | "error";
 
 export interface HousekeepingCheckOutResult {
@@ -24,24 +28,46 @@ export interface HousekeepingCheckOutResult {
   roomId: string | null;
   guestId: number | null;
   guestName: string | null;
+  incomingGuestName?: string | null;
   action: HousekeepingCheckOutAction;
   noGuestHint?: string;
   surveyQueued?: boolean;
   error?: string;
 }
 
+function formatTurnoverIncomingHint(incomingGuestName?: string | null): string {
+  const name = incomingGuestName?.trim();
+  return name ? ` · מגיע היום: ${name}` : "";
+}
+
+async function loadIncomingTurnoverName(
+  supabase: ReturnType<typeof createClient>,
+  roomId: string,
+  excludeGuestId?: number | null,
+): Promise<string | null> {
+  const incomingPick = await findIncomingGuestForSuiteCheckIn(supabase, roomId);
+  if (incomingPick.ambiguous.length) return null;
+  const incoming = incomingPick.guest;
+  if (!incoming) return null;
+  if (excludeGuestId && Number(incoming.id) === Number(excludeGuestId)) return null;
+  return incoming.name?.trim() || null;
+}
+
 export function buildHousekeepingCheckOutAckLine(result: HousekeepingCheckOutResult): string | null {
-  const { roomId, guestName, action, noGuestHint } = result;
+  const { roomId, guestName, action, noGuestHint, incomingGuestName } = result;
   if (!roomId) return null;
+  const incomingHint = formatTurnoverIncomingHint(incomingGuestName);
   switch (action) {
     case "updated":
-      return `✅ חדר ${roomId} — צ'ק-אאוט נקלט${guestName ? ` (${guestName})` : ""} · חדר לניקיון`;
+      return `✅ חדר ${roomId} — צ'ק-אאוט נקלט${guestName ? ` (${guestName})` : ""} · חדר לניקיון${incomingHint}`;
     case "already_checked_out":
-      return `ℹ️ חדר ${roomId} — כבר מסומן כצ'ק-אאוט · חדר לניקיון`;
+      return `ℹ️ חדר ${roomId} — כבר מסומן כצ'ק-אאוט · חדר לניקיון${incomingHint}`;
     case "no_guest":
       return noGuestHint
         ? `⚠️ חדר ${roomId} — לא נמצא אורח שעוזב היום. ${noGuestHint}`
         : `⚠️ חדר ${roomId} — צ'ק-אאוט: לא נמצא אורח שעוזב היום בחדר`;
+    case "ambiguous_guest":
+      return `⚠️ חדר ${roomId} — כמה אורחים עם עזיבה היום. בדקו ב-XOS.${guestName ? ` (${guestName})` : ""}`;
     default:
       return null;
   }
@@ -86,15 +112,45 @@ export async function applyHousekeepingCheckOutSignal(
     };
   }
 
-  const guest = await findDepartingGuestForSuite(supabase, roomId);
-  if (!guest) {
-    const active = await findActiveGuestForSuite(supabase, roomId);
-    const noGuestHint = active
-      ? `בחדר: ${active.name ?? "—"} (סטטוס ${active.status}, עזיבה ${active.departure_date ?? "לא מוגדרת"})`
-      : undefined;
+  const departingPick = await findDepartingGuestForSuite(supabase, roomId);
+  if (departingPick.ambiguous.length) {
     return {
-      ok: false, roomNumber, roomId, guestId: null, guestName: null,
-      action: "no_guest", noGuestHint,
+      ok: false,
+      roomNumber,
+      roomId,
+      guestId: null,
+      guestName: formatAmbiguousGuestHint(departingPick.ambiguous),
+      action: "ambiguous_guest",
+    };
+  }
+
+  const guest = departingPick.guest;
+  if (!guest) {
+    const [activePick, incomingName] = await Promise.all([
+      findActiveGuestForSuite(supabase, roomId),
+      loadIncomingTurnoverName(supabase, roomId),
+    ]);
+    const active = activePick.guest;
+    let noGuestHint: string | undefined;
+    if (active) {
+      const dep = active.departure_date ?? "לא מוגדרת";
+      if (active.departure_date && active.departure_date > israelYmd(new Date())) {
+        noGuestHint = `בחדר: ${active.name ?? "—"} (עזיבה ${dep} — לא היום)`;
+      } else {
+        noGuestHint = `בחדר: ${active.name ?? "—"} (סטטוס ${active.status}, עזיבה ${dep})`;
+      }
+    } else if (incomingName) {
+      noGuestHint = `אין אורח יוצא פעיל — מגיע היום: ${incomingName}`;
+    }
+    return {
+      ok: false,
+      roomNumber,
+      roomId,
+      guestId: null,
+      guestName: null,
+      incomingGuestName: incomingName,
+      action: "no_guest",
+      noGuestHint,
     };
   }
 
@@ -108,12 +164,14 @@ export async function applyHousekeepingCheckOutSignal(
       roomId,
       source: "housekeeping_wa",
     });
+    const incomingGuestName = await loadIncomingTurnoverName(supabase, roomId, guest.id);
     return {
       ok: true,
       roomNumber,
       roomId,
       guestId: guest.id,
       guestName: guest.name,
+      incomingGuestName,
       action: "already_checked_out",
       surveyQueued: survey.queued,
     };
@@ -141,12 +199,15 @@ export async function applyHousekeepingCheckOutSignal(
     `[housekeepingCheckOut] ${roomId} (#${roomNumber}) guest=${guest.id} → checked_out + לניקיון survey=${survey.queued}`,
   );
 
+  const incomingGuestName = await loadIncomingTurnoverName(supabase, roomId, guest.id);
+
   return {
     ok: true,
     roomNumber,
     roomId,
     guestId: guest.id,
     guestName: guest.name,
+    incomingGuestName,
     action: "updated",
     surveyQueued: survey.queued,
   };

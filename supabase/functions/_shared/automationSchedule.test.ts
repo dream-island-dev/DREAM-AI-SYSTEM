@@ -1176,6 +1176,7 @@ Deno.test("isSpaUpsellAcceptanceReply: scheduling phrases", () => {
   assertEquals(isSpaUpsellAcceptanceReply("אשמח שיחזרו אליי"), true);
   assertEquals(isSpaUpsellAcceptanceReply("כן"), true);
   assertEquals(isSpaUpsellAcceptanceReply("אשמח לתאם טיפול ספא"), true);
+  assertEquals(isSpaUpsellAcceptanceReply("אשמח"), false);
   assertEquals(isSpaUpsellAcceptanceReply("מה שעות הכניסה?"), false);
 });
 

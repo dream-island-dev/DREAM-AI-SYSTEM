@@ -119,19 +119,20 @@ export async function applyHousekeepingReadySignal(
     };
   }
 
-  const inStay = await findActiveGuestForSuite(supabase, roomId);
-  if (inStay?.status === "checked_in") {
+  const inStayPick = await findActiveGuestForSuite(supabase, roomId);
+  if (inStayPick.guest?.status === "checked_in") {
     return {
       ok: true,
       roomNumber,
       roomId,
-      guestId: inStay.id,
-      guestName: inStay.name,
+      guestId: inStayPick.guest.id,
+      guestName: inStayPick.guest.name,
       action: "skipped_occupied",
     };
   }
 
-  const guest = await findArrivingTodayGuestForSuite(supabase, roomId);
+  const arrivingPick = await findArrivingTodayGuestForSuite(supabase, roomId);
+  const guest = arrivingPick.guest;
   const guestId = guest?.id ?? null;
   const guestName = guest?.name ?? null;
 

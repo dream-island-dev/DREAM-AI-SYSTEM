@@ -7,6 +7,13 @@
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendWhapiText } from "./whapiSend.ts";
 import { ARCHITECT_PHONE_DIGITS, normalizeExecutivePhoneDigits } from "./executiveIdentity.ts";
+import {
+  buildSpaUpsellAcceptForwardLine,
+  formatSpaUpsellOfferLabel,
+  resolveSpaUpsellPricing,
+  SPA_UPSELL_DEFAULT_DURATION_MIN,
+  SPA_UPSELL_DEFAULT_OFFER_PRICE,
+} from "./spaUpsellPricing.ts";
 import { alertIntentType, resolveRequestsWhapiGroupId } from "./routingConfig.ts";
 import { triggerInboxRedAlert, type InboxAlertChannel } from "./inboxRedAlert.ts";
 
@@ -153,12 +160,19 @@ export function buildSpaUpsellAcceptOwnerDm(opts: {
   room?: string | null;
   arrivalDate?: string | null;
   guestReply: string;
+  offerLabel?: string | null;
 }): string {
   const name = opts.guestName?.trim() || "אורח";
   const room = opts.room?.trim() || "בילוי יומי";
   const arrivalHe = formatArrivalDateHe(opts.arrivalDate);
   const phoneDisplay = formatGuestPhoneForStaffWa(opts.phone);
   const reply = opts.guestReply.trim() || "אישור";
+  const offerLabel = opts.offerLabel?.trim()
+    || formatSpaUpsellOfferLabel({
+      offerPrice: SPA_UPSELL_DEFAULT_OFFER_PRICE,
+      fullPrice: 380,
+      durationMin: SPA_UPSELL_DEFAULT_DURATION_MIN,
+    });
   const inboxUrl = buildStaffAppDeepLink({
     page: "wa_inbox",
     phone: opts.phone,
@@ -176,7 +190,7 @@ export function buildSpaUpsellAcceptOwnerDm(opts: {
     name,
     phoneDisplay,
     `${room} · הגעה ${arrivalHe}`,
-    "מעוניין/ת בטיפול ספא (300₪/45 דק׳) — לתאם שעה",
+    buildSpaUpsellAcceptForwardLine(offerLabel),
     "",
     `💬 שיחה: ${inboxUrl}`,
   ].join("\n");
@@ -204,7 +218,9 @@ export async function notifySpaUpsellAcceptOwnerDm(
   },
 ): Promise<boolean> {
   const target = resolveSpaUpsellNotifyPhone();
-  const body = buildSpaUpsellAcceptOwnerDm(opts);
+  const pricing = await resolveSpaUpsellPricing(_supabase);
+  const offerLabel = formatSpaUpsellOfferLabel(pricing);
+  const body = buildSpaUpsellAcceptOwnerDm({ ...opts, offerLabel });
   try {
     await sendWhapiText(target, body);
     return true;

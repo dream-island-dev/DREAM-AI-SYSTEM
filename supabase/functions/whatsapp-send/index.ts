@@ -79,6 +79,7 @@ import {
   buildTwoParamRoomVars,
   fitVarsToExpectedCount,
   resolveExpectedBodyParamCount,
+  resolveMetaTemplateImageHeaderUrl,
   TWO_PARAM_ROOM_TEMPLATES,
 } from "../_shared/metaTemplateVars.ts";
 import {
@@ -635,56 +636,7 @@ function guestRoomIdForApprovalGate(guest: Record<string, unknown>): string {
   return String(guest.room ?? guest.suite_name ?? "").trim();
 }
 
-// Templates whose Meta definition includes a Media (IMAGE) header — must inject
-// header component or Meta returns "Format mismatch, expected IMAGE, received UNKNOWN".
-const TEMPLATE_IMAGE_HEADER_DEFAULTS: Record<string, string> = {
-  dream_suite_reminder:        "https://tzalamnadlan.co.il/wp-content/uploads/2026/default-resort.jpg",
-  night_before_suites:         "https://tzalamnadlan.co.il/wp-content/uploads/2026/default-resort.jpg",
-  night_before_suites_shabbat: "https://tzalamnadlan.co.il/wp-content/uploads/2026/default-resort.jpg",
-};
-
-/** Confirmed text-only / no-header templates — never inject header components. */
-const TEMPLATE_NO_HEADER = new Set([
-  "suite_welcome_morning",
-  "suite_welcome_morning_shabbat",
-  "dream_arrival_confirmation",
-  "dream_checkin_reminder_v2",
-  "dream_mid_stay_check",
-  "dream_checkout_feedback",
-  "dream_payment_and_workshops",
-  "dream_room_ready",
-  "dream_room_ready1",
-  "dream_welcome_morning",
-  "dream_welcome_morning_shabbat",
-  "dream_handover_agent_v2",
-  "dream_survey_invite",
-  "dream_spa_warmup",
-  "dream_daypass_eve",
-  "spa_upsell_daypass",
-]);
-
-function templateExpectsImageHeader(templateName: string): boolean {
-  return Object.prototype.hasOwnProperty.call(TEMPLATE_IMAGE_HEADER_DEFAULTS, templateName);
-}
-
-// ── Meta payload builders — structural validation before every send ───────────
-function resolveTemplateHeaderImageUrl(
-  templateName: string,
-  override?: string | null,
-): string | undefined {
-  const explicit = String(override ?? "").trim();
-  if (!templateExpectsImageHeader(templateName)) {
-    if (explicit) {
-      console.warn(
-        `[whatsapp-send] template="${templateName}": header image override ignored` +
-        ` — Meta template has no IMAGE header (session images use sendViaMeta only)`,
-      );
-    }
-    return undefined;
-  }
-  if (explicit) return explicit;
-  return TEMPLATE_IMAGE_HEADER_DEFAULTS[templateName];
-}
+// IMAGE header URLs resolved live via resolveMetaTemplateImageHeaderUrl (Meta API components).
 
 /** Build validated free-text or image+caption session payload for Meta API. */
 function buildFreeTextPayload(
@@ -738,25 +690,20 @@ function buildFreeTextPayload(
 function buildTemplateComponents(
   templateName: string,
   rawVars: string[],
-  opts: { buttonUrlParam?: string; headerImageUrl?: string | null } = {},
+  opts: {
+    buttonUrlParam?: string;
+    /** Pre-resolved from resolveMetaTemplateImageHeaderUrl — omit header when undefined. */
+    resolvedHeaderUrl?: string | undefined;
+  } = {},
 ): { components: unknown[]; resolvedVars: string[] } {
   const components: unknown[] = [];
-  const headerUrl = resolveTemplateHeaderImageUrl(templateName, opts.headerImageUrl);
+  const headerUrl = opts.resolvedHeaderUrl;
 
   if (headerUrl) {
     components.push({
       type: "header",
       parameters: [{ type: "image", image: { link: headerUrl } }],
     });
-  } else if (templateExpectsImageHeader(templateName)) {
-    console.warn(
-      `[whatsapp-send] template="${templateName}": IMAGE header required by Meta but no URL resolved` +
-      ` (check TEMPLATE_IMAGE_HEADER_DEFAULTS or pass image_url for IMAGE-header templates only)`,
-    );
-  } else if (TEMPLATE_NO_HEADER.has(templateName) && opts.headerImageUrl) {
-    console.warn(
-      `[whatsapp-send] template="${templateName}": headerImageUrl ignored — template is registered as no-header`,
-    );
   }
 
   let variables = sanitizeTemplateVars(rawVars.map((v) => String(v ?? "")));
@@ -1037,13 +984,7 @@ async function sendViaMeta(to: string, body: string, imageUrl?: string | null): 
 // buttonUrlParam: dynamic suffix for the first URL button (index 0) — used by
 //   dream_payment_and_workshops whose payment link ends with /r/{{1}}.
 //
-// Templates with a Media Header (IMAGE) require a `header` component in the
-// components array — Meta rejects without it: "Format mismatch, expected IMAGE,
-// received UNKNOWN". See TEMPLATE_IMAGE_HEADER_DEFAULTS above (defined before payload builders).
-//
-// Only names in TEMPLATE_IMAGE_HEADER_DEFAULTS get a header component injected.
-
-// Only these approved templates have a dynamic URL button at index 0.
+// IMAGE header: resolved live via resolveMetaTemplateImageHeaderUrl (Meta API components).
 // night_before_suites[_shabbat] have no button component — do not inject one.
 const TEMPLATE_HAS_DYNAMIC_URL_BUTTON = new Set([
   "dream_suite_reminder",
@@ -1272,9 +1213,14 @@ async function sendViaTemplate(
     );
   }
 
+  const resolvedHeaderUrl = await resolveMetaTemplateImageHeaderUrl(
+    templateName,
+    headerImageUrlOverride,
+  );
+
   const { components, resolvedVars } = buildTemplateComponents(templateName, fittedVars, {
     buttonUrlParam,
-    headerImageUrl: headerImageUrlOverride,
+    resolvedHeaderUrl,
   });
 
   const recipient = sanitizeMetaRecipientPhone(to);
@@ -1291,13 +1237,12 @@ async function sendViaTemplate(
 
   const isNightBeforeSuites =
     templateName === "night_before_suites" || templateName === "night_before_suites_shabbat";
-  const resolvedHeader = resolveTemplateHeaderImageUrl(templateName, headerImageUrlOverride);
 
   try {
     logMetaOutboundPayload(
       `template="${templateName}" to=${maskPhoneForLog(recipient)}` +
       (isNightBeforeSuites
-        ? ` [Stage2.5] bodyVars=${variables.length} hasHeader=${!!resolvedHeader}` +
+        ? ` [Stage2.5] bodyVars=${variables.length} hasHeader=${!!resolvedHeaderUrl}` +
           ` hasButton=${buttonUrlParam !== undefined} components=${components.length}`
         : ""),
       payload,
@@ -3099,7 +3044,11 @@ serve(async (req: Request) => {
               nightBeforeDispatch.vars,
               "he",
               undefined,
-              stageRow?.session_message_image_url ?? requestImageUrl,
+              resolveShabbatAwareSessionImageUrl(
+                stageRow,
+                isNightBeforeShabbatBundleArrival(normalizeArrivalDateYmd(guest.arrival_date)),
+                requestImageUrl,
+              ),
             );
             nbConvMessage = await buildConversationLogFromTemplate(
               supabase,

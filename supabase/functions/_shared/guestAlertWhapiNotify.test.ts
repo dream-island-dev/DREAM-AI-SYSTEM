@@ -86,7 +86,7 @@ Deno.test("buildSpaUpsellAcceptOwnerDm: forward block + inbox link", () => {
   assertStringIncludes(dm, "נירה או אוליאל · 0509939988");
   assertStringIncludes(dm, "«אשמח לתאם»");
   assertStringIncludes(dm, "── להעברה לצוות הספא ──");
-  assertStringIncludes(dm, "מעוניין/ת בטיפול ספא");
+  assertStringIncludes(dm, "מעוניין/ת בטיפול ספא (280₪/45 דק׳)");
   assertStringIncludes(dm, "💬 שיחה: https://dream-ai-system.vercel.app/?page=wa_inbox&phone=972509939988");
 });
 

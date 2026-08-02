@@ -9,6 +9,7 @@ import {
   findActiveGuestForSuite,
   findIncomingGuestForSuiteCheckIn,
   findInHouseDepartingGuestForSuite,
+  formatAmbiguousGuestHint,
 } from "./housekeepingGuestLookup.ts";
 import { CHECKIN_ELIGIBLE_STATUSES, shouldHousekeepingTurnover } from "./housekeepingLifecycle.ts";
 import { applyHousekeepingCheckOutSignal } from "./housekeepingCheckOutSignal.ts";
@@ -20,6 +21,7 @@ export type HousekeepingCheckInAction =
   | "dedup"
   | "skipped_no_suite"
   | "no_guest"
+  | "ambiguous_guest"
   | "guest_not_eligible"
   | "error";
 
@@ -36,15 +38,20 @@ export interface HousekeepingCheckInResult {
 }
 
 export function buildHousekeepingCheckInAckLine(result: HousekeepingCheckInResult): string | null {
-  const { roomId, guestName, action } = result;
+  const { roomId, guestName, action, previousGuestName } = result;
   if (!roomId) return null;
   switch (action) {
     case "updated":
+      if (previousGuestName?.trim()) {
+        return `✅ חדר ${roomId} — צ'ק-אין נקלט (${guestName ?? "—"}) · יצא קודם: ${previousGuestName.trim()}`;
+      }
       return `✅ חדר ${roomId} — צ'ק-אין נקלט${guestName ? ` (${guestName})` : ""}`;
     case "already_checked_in":
       return `ℹ️ חדר ${roomId} — כבר מסומן כצ'ק-אין${guestName ? ` (${guestName})` : ""}`;
     case "no_guest":
       return `⚠️ חדר ${roomId} — צ'ק-אין: לא נמצא אורח פעיל בחדר`;
+    case "ambiguous_guest":
+      return `⚠️ חדר ${roomId} — כמה אורחים מתאימים (תאריכים חופפים). בדקו ב-XOS וסמנו ידנית.${guestName ? ` (${guestName})` : ""}`;
     case "guest_not_eligible":
       return `⚠️ חדר ${roomId} — אורח${guestName ? ` ${guestName}` : ""} לא במצב צ'ק-אין (סטטוס לא מתאים)`;
     default:
@@ -92,10 +99,24 @@ export async function applyHousekeepingCheckInSignal(
   }
 
   const today = israelYmd(new Date());
-  const [incoming, outgoing] = await Promise.all([
+  const [incomingPick, outgoingPick] = await Promise.all([
     findIncomingGuestForSuiteCheckIn(supabase, roomId),
     findInHouseDepartingGuestForSuite(supabase, roomId),
   ]);
+
+  if (incomingPick.ambiguous.length) {
+    return {
+      ok: false,
+      roomNumber,
+      roomId,
+      guestId: null,
+      guestName: formatAmbiguousGuestHint(incomingPick.ambiguous),
+      action: "ambiguous_guest",
+    };
+  }
+
+  const incoming = incomingPick.guest;
+  const outgoing = outgoingPick.guest;
 
   if (shouldHousekeepingTurnover(incoming, outgoing, today)) {
     const senderOpts = {
@@ -163,7 +184,22 @@ export async function applyHousekeepingCheckInSignal(
     };
   }
 
-  const guest = incoming ?? await findActiveGuestForSuite(supabase, roomId);
+  const activePick = incoming
+    ? { guest: incoming, ambiguous: [] as typeof incomingPick.ambiguous }
+    : await findActiveGuestForSuite(supabase, roomId);
+
+  if (activePick.ambiguous.length) {
+    return {
+      ok: false,
+      roomNumber,
+      roomId,
+      guestId: null,
+      guestName: formatAmbiguousGuestHint(activePick.ambiguous),
+      action: "ambiguous_guest",
+    };
+  }
+
+  const guest = activePick.guest;
   if (!guest) {
     return { ok: false, roomNumber, roomId, guestId: null, guestName: null, action: "no_guest" };
   }

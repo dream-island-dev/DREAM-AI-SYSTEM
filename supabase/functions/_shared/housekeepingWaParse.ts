@@ -427,3 +427,8 @@ export function buildHousekeepingNearMissClarification(text: string): string {
   }
   return "⚠️ לא הבנתי — איזה חדר? (למשל 6✅ / 6 צק אין / 6 co)";
 }
+
+/** In-group Hebrew ack/clarify — off by default; set HOUSEKEEPING_WA_GROUP_REPLY=true to re-enable. */
+export function isHousekeepingGroupReplyEnabled(): boolean {
+  return (Deno.env.get("HOUSEKEEPING_WA_GROUP_REPLY") ?? "false").toLowerCase() === "true";
+}

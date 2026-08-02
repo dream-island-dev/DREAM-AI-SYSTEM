@@ -9,6 +9,10 @@ import {
   buildSpaUpsellAcceptanceReply,
 } from "./automationSchedule.ts";
 import { onGuestAlertInserted, notifySpaUpsellAcceptOwnerDm } from "./guestAlertWhapiNotify.ts";
+import {
+  buildSpaUpsellAcceptSummary,
+  resolveSpaUpsellOfferLabel,
+} from "./spaUpsellPricing.ts";
 import { sendWhapiText } from "./whapiSend.ts";
 
 const BALLOON_VENDOR_PHONE = (Deno.env.get("BALLOON_VENDOR_PHONE") ?? "").trim();
@@ -190,7 +194,7 @@ export async function runAdministrativeInHouseIntercept(
 }
 
 /**
- * Day-pass guest accepts the manual spa upsell offer (300₪/45min, DataSyncPage
+ * Day-pass guest accepts the manual spa upsell offer (DataSyncPage
  * "Send Offer Now" — migration 263). Lands on the Requests Board like every
  * other administrative alert; reception books the actual slot on the Spa
  * Board. Caller (whatsapp-webhook / whapi-webhook) is responsible for the
@@ -213,7 +217,8 @@ export async function runSpaUpsellAcceptanceIntercept(
   const guestName = (guest.name as string | null) ?? null;
   const guestRoom = (guest.room as string | null) ?? null;
   const reply = buildSpaUpsellAcceptanceReply(guestName);
-  const summary = `🧖 אישר/ה הצעת טיפול ספא (300₪/45 דק׳) — לתאם שעה ולשבץ בלוח הספא`;
+  const offerLabel = await resolveSpaUpsellOfferLabel(supabase);
+  const summary = buildSpaUpsellAcceptSummary(offerLabel);
 
   await adapter.patchInbound({
     guest_id: guestId,

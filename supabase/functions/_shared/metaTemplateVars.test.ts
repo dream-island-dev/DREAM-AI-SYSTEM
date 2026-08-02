@@ -3,6 +3,7 @@ import {
   clearExpectedParamCountCache,
   countMetaBodyParams,
   fitVarsToExpectedCount,
+  metaTemplateHasImageHeader,
   resolveExpectedBodyParamCount,
 } from "./metaTemplateVars.ts";
 
@@ -49,4 +50,13 @@ Deno.test("resolveExpectedBodyParamCount: spa_upsell_daypass fallback is 1", asy
   clearExpectedParamCountCache();
   const count = await resolveExpectedBodyParamCount("spa_upsell_daypass");
   if (count !== 1) throw new Error(`spa_upsell_daypass expected 1, got ${count}`);
+});
+
+Deno.test("metaTemplateHasImageHeader: HEADER IMAGE vs body-only", () => {
+  if (!metaTemplateHasImageHeader([{ type: "HEADER", format: "IMAGE" }])) {
+    throw new Error("expected IMAGE header detected");
+  }
+  if (metaTemplateHasImageHeader([{ type: "BODY", text: "היי {{1}}" }])) {
+    throw new Error("body-only should not have IMAGE header");
+  }
 });

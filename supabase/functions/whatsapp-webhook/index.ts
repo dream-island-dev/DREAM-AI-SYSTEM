@@ -2642,6 +2642,33 @@ Deno.serve(async (req: Request) => {
             message: declineReply, wa_message_id: null, intent: "button_reply",
           });
 
+        // ── Spa upsell day-pass — «אשמח לתאם» Meta quick-reply button ────────
+        } else if (
+          guestId &&
+          guest &&
+          (await resolveSpaUpsellAcceptanceEligible(supabase, guest as Record<string, unknown>)) &&
+          isSpaUpsellAcceptanceReply(buttonTitle)
+        ) {
+          await runSpaUpsellAcceptanceIntercept(supabase, {
+            phone,
+            guestId,
+            guest: guest as Record<string, unknown>,
+            text: buttonTitle,
+            conversationId: claimedConversationId,
+            sim,
+          }, {
+            patchInbound: async (patch) => patchClaimedInbound(supabase, claimedConversationId, msgId, patch),
+            sendReply: async (replyText, intent) => {
+              if (sim) return;
+              await sendReply(phone, replyText, { scripted: true });
+              await insertGuestOutboundIfNotMuted(supabase, {
+                phone, guest_id: guestId, message: replyText, wa_message_id: null, intent,
+              });
+            },
+            sourceLabel: "WhatsApp Bot",
+            logTag: "webhook",
+          });
+
         // ── Unrecognized button — generic reply so no button is ever silent ──
         } else {
           console.warn(`[webhook] ⚠️ unmatched button title="${buttonTitle}" id="${buttonId}" — sending generic reply`);

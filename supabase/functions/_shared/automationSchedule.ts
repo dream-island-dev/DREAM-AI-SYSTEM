@@ -1314,7 +1314,7 @@ export function buildAdministrativeDispatchReply(_guestName?: string | null): st
 // phrases ("אשמח לתאם", "אשמח שיחזרו אליי"). Callers MUST gate with
 // isSpaUpsellAcceptanceEligible — see runSpaUpsellAcceptanceIntercept.
 export const SPA_UPSELL_ACCEPT_SHORT_PATTERN =
-  /^(כן|כן\s*בבקשה|בבקשה|בטח|רוצה|רוצים|מעוניין|מעוניינת|מעוניינים|בשמחה|אשמח|סבבה|מגניב|למה\s*לא|תוסיפו|כן\s*תודה|אוקיי?|okay?|yes|sure)[\s!.,🙏😊👍❤️💆]*$/iu;
+  /^(כן|כן\s*בבקשה|בבקשה|בטח|רוצה|רוצים|מעוניין|מעוניינת|מעוניינים|בשמחה|סבבה|מגניב|למה\s*לא|תוסיפו|כן\s*תודה|אוקיי?|okay?|yes|sure)[\s!.,🙏😊👍❤️💆]*$/iu;
 
 /** @deprecated alias — use SPA_UPSELL_ACCEPT_SHORT_PATTERN */
 export const SPA_UPSELL_ACCEPT_PATTERN = SPA_UPSELL_ACCEPT_SHORT_PATTERN;
@@ -1336,7 +1336,7 @@ export {
 } from "./spaUpsellAcceptance.ts";
 
 export function buildSpaUpsellAcceptanceReply(_guestName?: string | null): string {
-  return "מעולה! 💆 נדאג לשבץ אתכם לטיפול היום ונעדכן אתכם בהקדם עם השעה המדויקת 🙏";
+  return "תודה! נציג מטעמנו יחזור אליכם בהקדם לתיאום הטיפול 🙏";
 }
 
 /** True when pre-arrival DB status contradicts an obvious in-room request. */

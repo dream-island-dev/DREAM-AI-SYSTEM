@@ -1,5 +1,6 @@
 // Live guest ↔ suite matching for housekeeping WA signals (ready / check-in / check-out).
 // Matches guests.room AND suite_rooms rows (multi-room) — mirrors roomBoardGuestResolve.js.
+// Primary gate: arrival_date + departure_date stay window; status is tie-break only.
 
 import type { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { israelYmd } from "./automationSchedule.ts";
@@ -8,8 +9,10 @@ import {
   scoreGuestForCheckIn,
   scoreGuestForCheckout,
   scoreGuestForReadyBell,
+  scoreGuestForInHouseStay,
   CHECKIN_ELIGIBLE_STATUSES,
   READY_GUEST_STATUSES,
+  HOUSEKEEPING_SCORE_OUT_OF_RANGE,
 } from "./housekeepingLifecycle.ts";
 
 export interface SuiteGuestRow {
@@ -25,6 +28,11 @@ export interface SuiteGuestRow {
   guest_notes: string | null;
   room_ready_notified: boolean | null;
   msg_room_ready_sent: boolean | null;
+}
+
+export interface GuestLookupResult {
+  guest: SuiteGuestRow | null;
+  ambiguous: SuiteGuestRow[];
 }
 
 interface SuiteRoomLink {
@@ -50,18 +58,48 @@ function isDayPassSuiteLink(sr: SuiteRoomLink): boolean {
   );
 }
 
+function roomLabelSegments(room: string | null | undefined): string[] {
+  const s = String(room ?? "").trim();
+  if (!s) return [];
+  if (s.includes(" · ")) {
+    return s.split(/\s*·\s*/).map((p) => p.trim()).filter(Boolean);
+  }
+  return [s];
+}
+
+function labelMatchesSuiteId(
+  label: string | null | undefined,
+  suiteType: string | null | undefined,
+  roomId: string,
+): boolean {
+  if (isDayPassRoomLabel(label) || isDayPassRoomLabel(suiteType)) return false;
+  return guestRoomMatchesSuiteId(
+    { room: label, suite_name: suiteType },
+    roomId,
+  );
+}
+
 function guestMatchesRoom(
   guest: SuiteGuestRow,
   roomId: string,
   suiteLinks: SuiteRoomLink[],
 ): boolean {
   if (isDayPassRoomLabel(guest.room) || isDayPassRoomLabel(guest.suite_name)) return false;
-  if (guestRoomMatchesSuiteId(guest, roomId)) return true;
+
+  for (const seg of roomLabelSegments(guest.room)) {
+    if (labelMatchesSuiteId(seg, null, roomId)) return true;
+  }
+  for (const seg of roomLabelSegments(guest.suite_name)) {
+    if (labelMatchesSuiteId(seg, null, roomId)) return true;
+  }
+  if (labelMatchesSuiteId(guest.room, guest.suite_name, roomId)) return true;
+
   const links = suiteLinks.filter((sr) => Number(sr.guest_id) === Number(guest.id));
   return links.some((sr) => {
     if (isDayPassSuiteLink(sr)) return false;
-    return guestRoomMatchesSuiteId(
-      { room: sr.room_display ?? sr.room_name, suite_name: sr.suite_type },
+    return labelMatchesSuiteId(
+      sr.room_display ?? sr.room_name,
+      sr.suite_type,
       roomId,
     );
   });
@@ -83,6 +121,45 @@ async function loadSuiteRoomLinks(
   return (data ?? []) as SuiteRoomLink[];
 }
 
+/** Guests departing today/overdue with a suite_rooms row in this physical room. */
+async function loadGuestsDepartingBySuiteRoom(
+  supabase: ReturnType<typeof createClient>,
+  roomId: string,
+  today: string,
+): Promise<{ guests: SuiteGuestRow[]; links: SuiteRoomLink[] }> {
+  const { data: suiteRows, error } = await supabase
+    .from("suite_rooms")
+    .select("guest_id, room_display, room_name, suite_type, arrival_date, is_day_guest")
+    .not("guest_id", "is", null);
+
+  if (error) {
+    console.warn("[housekeepingGuestLookup] suite_rooms departing scan failed:", error.message);
+    return { guests: [], links: [] };
+  }
+
+  const links = ((suiteRows ?? []) as SuiteRoomLink[]).filter((sr) => {
+    if (isDayPassSuiteLink(sr)) return false;
+    return labelMatchesSuiteId(sr.room_display ?? sr.room_name, sr.suite_type, roomId);
+  });
+  const guestIds = [...new Set(links.map((sr) => Number(sr.guest_id)).filter(Boolean))];
+  if (!guestIds.length) return { guests: [], links };
+
+  const { data: guests, error: guestErr } = await supabase
+    .from("guests")
+    .select(GUEST_SELECT)
+    .in("id", guestIds)
+    .neq("status", "cancelled")
+    .not("departure_date", "is", null)
+    .lte("departure_date", today)
+    .in("status", [...CHECKOUT_CANDIDATE_STATUSES]);
+
+  if (guestErr) {
+    console.warn("[housekeepingGuestLookup] departing guests by suite_rooms failed:", guestErr.message);
+    return { guests: [], links };
+  }
+  return { guests: (guests ?? []) as SuiteGuestRow[], links };
+}
+
 async function loadGuestsBySuiteRoomToday(
   supabase: ReturnType<typeof createClient>,
   roomId: string,
@@ -99,12 +176,10 @@ async function loadGuestsBySuiteRoomToday(
     return { guests: [], links: [] };
   }
 
-  const links = ((suiteRows ?? []) as SuiteRoomLink[]).filter((sr) =>
-    guestRoomMatchesSuiteId(
-      { room: sr.room_display ?? sr.room_name, suite_name: sr.suite_type },
-      roomId,
-    )
-  );
+  const links = ((suiteRows ?? []) as SuiteRoomLink[]).filter((sr) => {
+    if (isDayPassSuiteLink(sr)) return false;
+    return labelMatchesSuiteId(sr.room_display ?? sr.room_name, sr.suite_type, roomId);
+  });
   const guestIds = [...new Set(links.map((sr) => Number(sr.guest_id)).filter(Boolean))];
   if (!guestIds.length) return { guests: [], links };
 
@@ -129,39 +204,61 @@ function mergeGuestRows(primary: SuiteGuestRow[], extra: SuiteGuestRow[]): Suite
   return [...byId.values()];
 }
 
+function mergeSuiteLinks(a: SuiteRoomLink[], b: SuiteRoomLink[]): SuiteRoomLink[] {
+  const seen = new Set<string>();
+  const out: SuiteRoomLink[] = [];
+  for (const sr of [...a, ...b]) {
+    const key = `${sr.guest_id}:${sr.room_display ?? ""}:${sr.room_name ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(sr);
+  }
+  return out;
+}
+
 function pickBestMatch(
   rows: SuiteGuestRow[],
   roomId: string,
   suiteLinks: SuiteRoomLink[],
-  scoreFn: (g: SuiteGuestRow) => number,
-): SuiteGuestRow | null {
-  const matches = rows.filter((g) => guestMatchesRoom(g, roomId, suiteLinks));
-  if (!matches.length) return null;
-  if (matches.length === 1) return matches[0];
+  today: string,
+  scoreFn: (g: SuiteGuestRow, today: string) => number,
+): GuestLookupResult {
+  const matches = rows
+    .filter((g) => guestMatchesRoom(g, roomId, suiteLinks))
+    .map((g) => ({ g, score: scoreFn(g, today) }))
+    .filter(({ score }) => score < HOUSEKEEPING_SCORE_OUT_OF_RANGE);
+
+  if (!matches.length) return { guest: null, ambiguous: [] };
+  if (matches.length === 1) return { guest: matches[0].g, ambiguous: [] };
 
   matches.sort((a, b) => {
-    const sa = scoreFn(a);
-    const sb = scoreFn(b);
-    if (sa !== sb) return sa - sb;
-    return (b.arrival_date ?? "").localeCompare(a.arrival_date ?? "");
+    if (a.score !== b.score) return a.score - b.score;
+    const depCmp = (b.g.departure_date ?? "").localeCompare(a.g.departure_date ?? "");
+    if (depCmp !== 0) return depCmp;
+    return (b.g.arrival_date ?? "").localeCompare(a.g.arrival_date ?? "");
   });
 
-  const best = matches[0];
-  const tied = matches.filter((g) => scoreFn(g) === scoreFn(best));
+  const bestScore = matches[0].score;
+  const tied = matches.filter((m) => m.score === bestScore).map((m) => m.g);
+
   if (tied.length > 1) {
     console.warn(
-      `[housekeepingGuestLookup] ambiguous match for ${roomId}:`,
-      tied.map((g) => `${g.id}:${g.name}:${g.status}`).join(", "),
+      `[housekeepingGuestLookup] ambiguous match for ${roomId} (score=${bestScore}):`,
+      tied.map((g) =>
+        `${g.id}:${g.name}:${g.status}:arr=${g.arrival_date}:dep=${g.departure_date ?? "—"}`
+      ).join(", "),
     );
+    return { guest: null, ambiguous: tied };
   }
-  return best;
+
+  return { guest: matches[0].g, ambiguous: [] };
 }
 
 /** Guest with arrival_date = today (Israel) — room-ready bell + WA ack. */
 export async function findArrivingTodayGuestForSuite(
   supabase: ReturnType<typeof createClient>,
   roomId: string,
-): Promise<SuiteGuestRow | null> {
+): Promise<GuestLookupResult> {
   const today = israelYmd(new Date());
 
   const [{ data: rows, error }, viaSuite] = await Promise.all([
@@ -176,7 +273,7 @@ export async function findArrivingTodayGuestForSuite(
 
   if (error) {
     console.warn(`[housekeepingGuestLookup] today lookup failed for ${roomId}:`, error.message);
-    return null;
+    return { guest: null, ambiguous: [] };
   }
 
   const merged = mergeGuestRows((rows ?? []) as SuiteGuestRow[], viaSuite.guests);
@@ -186,14 +283,14 @@ export async function findArrivingTodayGuestForSuite(
     viaSuite.links,
   );
 
-  return pickBestMatch(merged, roomId, suiteLinks, scoreGuestForReadyBell);
+  return pickBestMatch(merged, roomId, suiteLinks, today, scoreGuestForReadyBell);
 }
 
 /** Arriving today — eligible for physical check-in from WA group. */
 export async function findIncomingGuestForSuiteCheckIn(
   supabase: ReturnType<typeof createClient>,
   roomId: string,
-): Promise<SuiteGuestRow | null> {
+): Promise<GuestLookupResult> {
   const today = israelYmd(new Date());
 
   const [{ data: rows, error }, viaSuite] = await Promise.all([
@@ -208,7 +305,7 @@ export async function findIncomingGuestForSuiteCheckIn(
 
   if (error) {
     console.warn(`[housekeepingGuestLookup] incoming check-in lookup failed for ${roomId}:`, error.message);
-    return null;
+    return { guest: null, ambiguous: [] };
   }
 
   const merged = mergeGuestRows((rows ?? []) as SuiteGuestRow[], viaSuite.guests);
@@ -217,14 +314,14 @@ export async function findIncomingGuestForSuiteCheckIn(
     viaSuite.links,
   );
 
-  return pickBestMatch(merged, roomId, suiteLinks, scoreGuestForCheckIn);
+  return pickBestMatch(merged, roomId, suiteLinks, today, scoreGuestForCheckIn);
 }
 
 /** In-house guest who should have left — turnover when new arrival checks in same room. */
 export async function findInHouseDepartingGuestForSuite(
   supabase: ReturnType<typeof createClient>,
   roomId: string,
-): Promise<SuiteGuestRow | null> {
+): Promise<GuestLookupResult> {
   const today = israelYmd(new Date());
 
   const { data: rows, error } = await supabase
@@ -234,56 +331,71 @@ export async function findInHouseDepartingGuestForSuite(
     .neq("status", "cancelled")
     .not("departure_date", "is", null)
     .lte("departure_date", today)
+    .lte("arrival_date", today)
     .order("departure_date", { ascending: false })
     .limit(40);
 
   if (error) {
     console.warn(`[housekeepingGuestLookup] in-house departing lookup failed for ${roomId}:`, error.message);
-    return null;
+    return { guest: null, ambiguous: [] };
   }
 
   const candidates = (rows ?? []) as SuiteGuestRow[];
   const suiteLinks = await loadSuiteRoomLinks(supabase, candidates.map((g) => g.id));
-  return pickBestMatch(candidates, roomId, suiteLinks, scoreGuestForCheckout);
+  return pickBestMatch(candidates, roomId, suiteLinks, today, scoreGuestForCheckout);
 }
 
-/** In-stay window guest — check-in from WA group. */
+/**
+ * In-stay checked_in guest (ready: skip bell) OR late check-in fallback (arrival < today).
+ * Never returns stale expected rows outside the departure window.
+ */
 export async function findActiveGuestForSuite(
   supabase: ReturnType<typeof createClient>,
   roomId: string,
-): Promise<SuiteGuestRow | null> {
+): Promise<GuestLookupResult> {
   const today = israelYmd(new Date());
 
-  const { data: rows, error } = await supabase
-    .from("guests")
-    .select(GUEST_SELECT)
-    .neq("status", "cancelled")
-    .lte("arrival_date", today)
-    .or(`departure_date.is.null,departure_date.gte.${today}`)
-    .order("arrival_date", { ascending: false })
-    .limit(40);
+  const [{ data: inHouse }, { data: lateCheckIn }] = await Promise.all([
+    supabase
+      .from("guests")
+      .select(GUEST_SELECT)
+      .eq("status", "checked_in")
+      .neq("status", "cancelled")
+      .lte("arrival_date", today)
+      .or(`departure_date.is.null,departure_date.gte.${today}`)
+      .order("arrival_date", { ascending: false })
+      .limit(20),
+    supabase
+      .from("guests")
+      .select(GUEST_SELECT)
+      .neq("status", "cancelled")
+      .lt("arrival_date", today)
+      .not("departure_date", "is", null)
+      .gte("departure_date", today)
+      .in("status", [...CHECKIN_ELIGIBLE_STATUSES])
+      .order("arrival_date", { ascending: false })
+      .limit(20),
+  ]);
 
-  if (error) {
-    console.warn(`[housekeepingGuestLookup] active lookup failed for ${roomId}:`, error.message);
-    return null;
-  }
-
-  const inScope = (rows ?? []).filter((g) =>
-    ACTIVE_STATUSES.includes(g.status as typeof ACTIVE_STATUSES[number]) ||
-    CHECKIN_ELIGIBLE_STATUSES.has(g.status)
-  ) as SuiteGuestRow[];
+  const merged = mergeGuestRows(
+    (inHouse ?? []) as SuiteGuestRow[],
+    (lateCheckIn ?? []) as SuiteGuestRow[],
+  );
 
   const viaSuite = await loadGuestsBySuiteRoomToday(supabase, roomId, today);
-  const merged = mergeGuestRows(inScope, viaSuite.guests.filter((g) =>
-    CHECKIN_ELIGIBLE_STATUSES.has(g.status) || g.status === "checked_in"
+  const withSuite = mergeGuestRows(merged, viaSuite.guests.filter((g) =>
+    g.status === "checked_in" || CHECKIN_ELIGIBLE_STATUSES.has(g.status),
   ));
 
   const suiteLinks = mergeSuiteLinks(
-    await loadSuiteRoomLinks(supabase, merged.map((g) => g.id)),
+    await loadSuiteRoomLinks(supabase, withSuite.map((g) => g.id)),
     viaSuite.links,
   );
 
-  return pickBestMatch(merged, roomId, suiteLinks, scoreGuestForCheckIn);
+  const inStay = pickBestMatch(withSuite, roomId, suiteLinks, today, scoreGuestForInHouseStay);
+  if (inStay.guest) return inStay;
+
+  return pickBestMatch(withSuite, roomId, suiteLinks, today, scoreGuestForCheckIn);
 }
 
 const CHECKOUT_CANDIDATE_STATUSES = [
@@ -294,56 +406,59 @@ const CHECKOUT_CANDIDATE_STATUSES = [
   "checked_out",
 ] as const;
 
-function mergeSuiteLinks(a: SuiteRoomLink[], b: SuiteRoomLink[]): SuiteRoomLink[] {
-  const seen = new Set<string>();
-  const out: SuiteRoomLink[] = [];
-  for (const sr of [...a, ...b]) {
-    const key = `${sr.guest_id}:${sr.room_display ?? ""}:${sr.room_name ?? ""}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(sr);
-  }
-  return out;
-}
-
 /**
  * Guest due to leave today (or overdue) in this suite — WA "Co N" check-out.
- * Includes already-checked_out so the signal can ack idempotently.
+ * Requires departure_date — no Co without a defined departure.
  */
 export async function findDepartingGuestForSuite(
   supabase: ReturnType<typeof createClient>,
   roomId: string,
-): Promise<SuiteGuestRow | null> {
+): Promise<GuestLookupResult> {
   const today = israelYmd(new Date());
 
-  const { data: rows, error } = await supabase
-    .from("guests")
-    .select(GUEST_SELECT)
-    .neq("status", "cancelled")
-    .lte("arrival_date", today)
-    .or(`departure_date.lte.${today},and(departure_date.is.null,arrival_date.lte.${today})`)
-    .in("status", [...CHECKOUT_CANDIDATE_STATUSES])
-    .order("departure_date", { ascending: false })
-    .limit(40);
+  const [{ data: rows, error }, viaSuite] = await Promise.all([
+    supabase
+      .from("guests")
+      .select(GUEST_SELECT)
+      .neq("status", "cancelled")
+      .lte("arrival_date", today)
+      .not("departure_date", "is", null)
+      .lte("departure_date", today)
+      .in("status", [...CHECKOUT_CANDIDATE_STATUSES])
+      .order("departure_date", { ascending: false })
+      .limit(40),
+    loadGuestsDepartingBySuiteRoom(supabase, roomId, today),
+  ]);
 
   if (error) {
     console.warn(`[housekeepingGuestLookup] departing lookup failed for ${roomId}:`, error.message);
-    return null;
+    return { guest: null, ambiguous: [] };
   }
 
-  const candidates = (rows ?? []) as SuiteGuestRow[];
-  const suiteLinks = await loadSuiteRoomLinks(supabase, candidates.map((g) => g.id));
+  const candidates = mergeGuestRows((rows ?? []) as SuiteGuestRow[], viaSuite.guests);
+  const suiteLinks = mergeSuiteLinks(
+    await loadSuiteRoomLinks(supabase, candidates.map((g) => g.id)),
+    viaSuite.links,
+  );
 
-  const matched = pickBestMatch(candidates, roomId, suiteLinks, scoreGuestForCheckout);
-  if (!matched) return null;
+  const picked = pickBestMatch(candidates, roomId, suiteLinks, today, scoreGuestForCheckout);
+  if (!picked.guest) return picked;
 
-  if (matched.status === "checked_out") {
+  if (picked.guest.status === "checked_out") {
     const active = candidates.find(
       (g) =>
         guestMatchesRoom(g, roomId, suiteLinks) &&
-        ACTIVE_STATUSES.includes(g.status as typeof ACTIVE_STATUSES[number]),
+        ACTIVE_STATUSES.includes(g.status as typeof ACTIVE_STATUSES[number]) &&
+        g.status !== "checked_out" &&
+        scoreGuestForCheckout(g, today) < HOUSEKEEPING_SCORE_OUT_OF_RANGE,
     );
-    if (active) return active;
+    if (active) return { guest: active, ambiguous: [] };
   }
-  return matched;
+  return picked;
+}
+
+export function formatAmbiguousGuestHint(candidates: SuiteGuestRow[]): string {
+  return candidates
+    .map((g) => `${g.name ?? "—"} (הגעה ${g.arrival_date ?? "?"}, עזיבה ${g.departure_date ?? "?"})`)
+    .join(" · ");
 }

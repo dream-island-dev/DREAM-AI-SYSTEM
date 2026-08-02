@@ -684,6 +684,11 @@ When any session discovers a **durable lesson**, the closing agent MUST:
 ### 2026-07-04 — Session 102b (Stage 3 morning Shabbat routing)
 - **Same rule as Stage 2.5:** autonomous `morning_suite`/`morning_welcome` → `suite_welcome_morning` / `suite_welcome_morning_shabbat` Meta templates only. No `stage_3_morning` session hijack on open 24h window. Day-pass `morning_welcome` aligned. Shabbat template failure → session script + `applySaturdayCheckInTimeOverride`, **not** weekday Meta (15:00 leak).
 
+### 2026-07-31 — night_before Meta #132018 + live IMAGE header detection
+- **Symptom:** Cron 15:00 batch — `meta_template_400` #132018 «header: Template does not contain title component» for Meta-cohort suite guests on `night_before`.
+- **Root:** Static `TEMPLATE_IMAGE_HEADER_DEFAULTS` injected IMAGE header while approved template was body-only.
+- **Fix:** `resolveMetaTemplateImageHeaderUrl` in `metaTemplateVars.ts` — queries live Meta `components`; injects header only when approved version has `HEADER`+`IMAGE`. `night_before_suites_shabbat` pending IMAGE approval → auto uses `suiteshabat.jpeg` URL once Meta flips live. Send text-only **now** before FB approves new version; no second deploy needed after approval.
+
 ### 2026-07-04 — Session 102 (Stage 2.5 Shabbat routing)
 - **Autonomous night_before must never hijack to session text on open 24h window.** Cron/default → `night_before_suites` / `night_before_suites_shabbat` Meta templates (times baked in). Session `bot_scripts` only on manual `force` / `force_channel=session_message`. Open window + weekday script = 12:00/15:00 leak on Saturday arrivals.
 

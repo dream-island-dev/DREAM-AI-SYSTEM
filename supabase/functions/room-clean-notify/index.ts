@@ -26,7 +26,7 @@ serve(async (req) => {
     const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(supabaseUrl, serviceKey);
 
-    const guest = await findArrivingTodayGuestForSuite(supabase, String(room_id).trim());
+    const guest = (await findArrivingTodayGuestForSuite(supabase, String(room_id).trim())).guest;
     if (!guest?.id) {
       return new Response(
         JSON.stringify({ ok: true, notified: false, reason: "no guest arriving today in room" }),

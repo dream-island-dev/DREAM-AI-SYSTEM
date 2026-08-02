@@ -6048,26 +6048,6 @@ export default function WhatsAppInbox({
           {!isMobile && (
             <>
               <button
-                type="button"
-                onClick={addSpaUpsellLeadFromInbox}
-                disabled={spaLeadDisabled}
-                title={spaLeadTitle}
-                style={{
-                  background: spaLeadOnFile ? "rgba(255,255,255,0.35)" : "#7C3AED",
-                  border: "2px solid rgba(255,255,255,0.9)",
-                  color: "white",
-                  borderRadius: "var(--radius-sm)",
-                  fontSize: 12,
-                  fontWeight: 800,
-                  cursor: spaLeadDisabled ? "not-allowed" : "pointer",
-                  padding: "6px 12px",
-                  whiteSpace: "nowrap",
-                  opacity: spaLeadDisabled && !spaLeadOnFile ? 0.55 : 1,
-                }}
-              >
-                {spaLeadAdding ? "…" : spaLeadOnFile ? "✓ לידים ספא" : "💆 לידים ספא"}
-              </button>
-              <button
                 onClick={() => activeContact?.guestId && openGuestEditor(activeContact)}
                 disabled={editGuestLoading || !activeContact?.guestId}
                 title={!activeContact?.guestId ? t.editGuestNoProfile : t.editGuest}
@@ -6133,15 +6113,6 @@ export default function WhatsAppInbox({
                     border: "1px solid var(--border)",
                     overflow: "hidden",
                   }}>
-                    <button
-                      type="button"
-                      onClick={() => { addSpaUpsellLeadFromInbox(); setMobileThreadMenuOpen(false); }}
-                      disabled={spaLeadDisabled}
-                      className="wa-thread-menu-item"
-                      style={{ fontWeight: 800, color: "#5B21B6" }}
-                    >
-                      {spaLeadLabel}
-                    </button>
                     <button
                       type="button"
                       onClick={() => { if (activeContact?.guestId) { openGuestEditor(activeContact); setMobileThreadMenuOpen(false); } }}
@@ -6434,7 +6405,7 @@ export default function WhatsAppInbox({
               {activeContact && (
                 <button
                   type="button"
-                  onClick={addSpaUpsellLeadFromInbox}
+                  onClick={() => { addSpaUpsellLeadFromInbox(); setQuickOpen(false); }}
                   disabled={spaLeadDisabled}
                   title={spaLeadTitle}
                   style={{
@@ -6884,37 +6855,6 @@ export default function WhatsAppInbox({
           </>
           );
         })()}
-
-        {activeContact && (
-          <div style={{
-            padding: isMobile ? "8px 12px 0" : "8px var(--space-md) 0",
-            background: "#F3E8FF",
-            borderTop: "2px solid #7C3AED",
-          }}
-          >
-            <button
-              type="button"
-              onClick={addSpaUpsellLeadFromInbox}
-              disabled={spaLeadDisabled}
-              title={spaLeadTitle}
-              style={{
-                width: "100%",
-                padding: "12px 16px",
-                borderRadius: 12,
-                border: spaLeadOnFile ? "1.5px solid #C4B5FD" : "2px solid #7C3AED",
-                background: spaLeadOnFile ? "#F5F3FF" : "#fff",
-                color: spaLeadOnFile ? "#9CA3AF" : "#5B21B6",
-                fontSize: 15,
-                fontWeight: 800,
-                cursor: spaLeadDisabled ? "not-allowed" : "pointer",
-                minHeight: isMobile ? HIT_STAFF : 44,
-                fontFamily: "Heebo, sans-serif",
-              }}
-            >
-              {spaLeadAdding ? "מוסיף ללידים ספא…" : spaLeadOnFile ? "✓ כבר בלידים ספא" : "💆 הוסף ללידים ספא"}
-            </button>
-          </div>
-        )}
 
         <div
           className={isMobile ? "wa-mobile-composer" : undefined}

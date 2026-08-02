@@ -131,6 +131,29 @@ async function withImapBudget<T>(fn: () => Promise<T>, budgetMs = IMAP_BUDGET_MS
   ]);
 }
 
+/**
+ * Diagnostic-only heartbeat (2026-07-30) — ezgo-mail-sync had zero imap_scan-sourced
+ * ezgo_mail_ingest rows for 3 days (last one 2026-07-27, right after the combined-query
+ * IMAP search refactor shipped) with no visible signal anywhere why: whatsapp-cron only
+ * console.logs when processed>0, and there is no `functions logs` access in this
+ * environment. Reuses the existing cron_heartbeats table (see whatsapp-cron) so the
+ * outcome of every invocation — cron tick or manual/full-sync — is queryable from the DB
+ * instead of invisible. Never allowed to throw or affect the response.
+ */
+async function writeSyncHeartbeat(
+  supabase: ReturnType<typeof createClient>,
+  meta: Record<string, unknown>,
+): Promise<void> {
+  try {
+    await supabase.from("cron_heartbeats").upsert(
+      { job_name: "ezgo-mail-sync", last_run_at: new Date().toISOString(), meta },
+      { onConflict: "job_name" },
+    );
+  } catch (e) {
+    console.warn("[ezgo-mail-sync] heartbeat upsert failed (non-blocking):", (e as Error).message);
+  }
+}
+
 async function assertEzgoMailStaff(
   req: Request,
   supabase: ReturnType<typeof createClient>,
@@ -680,16 +703,34 @@ serve(async (req: Request) => {
       ? new Set<string>()
       : await loadKnownMessageIds(supabase);
 
-    const { messages, meta: imapMeta } = await withImapBudget(
-      () =>
-        fetchEzgoInboxMessages(cfg, manual || fullSync ? 36 : 24, allowlist, {
-          knownMessageIds,
-          fullSync,
-          manual,
-          searchDateYmd,
-        }),
-      manual || fullSync ? IMAP_BUDGET_MS_MANUAL : IMAP_BUDGET_MS,
-    );
+    const scanStartedAt = Date.now();
+    let messages: EzgoInboundMail[];
+    let imapMeta: Awaited<ReturnType<typeof fetchEzgoInboxMessages>>["meta"];
+    try {
+      const result = await withImapBudget(
+        () =>
+          fetchEzgoInboxMessages(cfg, manual || fullSync ? 36 : 24, allowlist, {
+            knownMessageIds,
+            fullSync,
+            manual,
+            searchDateYmd,
+          }),
+        manual || fullSync ? IMAP_BUDGET_MS_MANUAL : IMAP_BUDGET_MS,
+      );
+      messages = result.messages;
+      imapMeta = result.meta;
+    } catch (e) {
+      await writeSyncHeartbeat(supabase, {
+        ok: false,
+        stage: "imap_fetch",
+        error: (e as Error).message,
+        manual,
+        fullSync,
+        searchDateYmd,
+        elapsedMs: Date.now() - scanStartedAt,
+      });
+      throw e;
+    }
 
     let processed = 0;
     let skipped = 0;
@@ -722,6 +763,20 @@ serve(async (req: Request) => {
     }
 
     const purged = await purgeStaleEzgoMailIngest(supabase);
+
+    await writeSyncHeartbeat(supabase, {
+      ok: true,
+      manual,
+      fullSync,
+      searchDateYmd,
+      processed,
+      skipped,
+      failed,
+      scanned: messages.length,
+      by_sender: bySender,
+      imap: imapMeta,
+      elapsedMs: Date.now() - scanStartedAt,
+    });
 
     return jsonResponse({
       ok: true,

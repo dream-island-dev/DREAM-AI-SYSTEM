@@ -22,7 +22,7 @@ export async function notifyRoomPendingApproval(
     return { notified: false, guestName: null, reason: "not_pending_approval" };
   }
 
-  const guest = await findArrivingTodayGuestForSuite(supabase, trimmed);
+  const guest = (await findArrivingTodayGuestForSuite(supabase, trimmed)).guest;
   const guestName = guest?.name?.trim() || null;
   const guestLabel = guestName ? `${trimmed} — ${guestName}` : trimmed;
   const sourceNote = opts.source === "housekeeping_wa"
