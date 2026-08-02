@@ -23,7 +23,7 @@ const CORS = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-const ALLOWED_ROLES = ["staff", "manager", "admin"];
+const ALLOWED_ROLES = ["staff", "manager", "admin", "receptionist"];
 
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });

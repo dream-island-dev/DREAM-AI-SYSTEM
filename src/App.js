@@ -9,7 +9,7 @@ import ShiftGenerator from "./components/ShiftGenerator";
 import ShiftScheduleTab from "./components/ShiftScheduleTab";
 import EmployeesPage from "./components/EmployeesPage";
 import { isAdminUser, isSuperAdmin, loadDepartments, isGoogleAuthAllowed } from "./utils/admin";
-import { canAccessRoute, canPerform, canSeeNavItem, filterNavItemsForUser, isRestaurantFocusedUser, RESTAURANT_FOCUS_NAV_IDS } from "./utils/auth";
+import { canAccessRoute, canPerform, canSeeNavItem, filterNavItemsForUser, isRestaurantFocusedUser, isSpaFocusedUser, RESTAURANT_FOCUS_NAV_IDS, SPA_FOCUS_NAV_IDS } from "./utils/auth";
 import {
   ONBOARDING_DEPARTMENTS,
   RESTAURANT_DEPARTMENT,
@@ -43,6 +43,7 @@ import RequestsAlertWidget from "./components/RequestsAlertWidget";
 import AiFailoverWidget from "./components/AiFailoverWidget";
 import SuitesDashboard from "./components/SuitesDashboard";
 import DataSyncPage from "./components/DataSyncPage";
+import SpaLeadsPage from "./components/SpaLeadsPage";
 import PortalSettingsPanel from "./components/PortalSettingsPanel";
 import CMSGate from "./components/cms/CMSGate";
 import CMSSecurityPanel from "./components/cms/CMSSecurityPanel";
@@ -1368,9 +1369,10 @@ function DepartmentOnboardingModal({ user, onComplete }) {
   );
 }
 
-function Sidebar({ user, active, setActive, openOpsCount, onLogout, isAdmin, isSuperAdminUser, mobileOpen, onCloseMobile }) {
+function Sidebar({ user, active, setActive, openOpsCount, spaLeadsCount, onLogout, isAdmin, isSuperAdminUser, mobileOpen, onCloseMobile }) {
   const allNavItems = [
     { id: "dashboard",  icon: "📊", label: "דאשבורד" },
+    { id: "spa_leads",  icon: "💆", label: "לידים ספא", badge: spaLeadsCount, managerOnly: true, receptionistOk: true },
     { id: "shifts",     icon: "🕐", label: "משמרות" },
     { id: "employees",  icon: "👥", label: "עובדים",                                 managerOnly: true },
     { id: "checklist",  icon: "✅", label: "צ'קליסטים",                              managerOnly: true },
@@ -1402,7 +1404,7 @@ function Sidebar({ user, active, setActive, openOpsCount, onLogout, isAdmin, isS
     : user.role === "manager"
     ? "🏢 מנהל מחלקה"
     : user.role === "receptionist"
-    ? "🛎️ פקיד/ת קבלה"
+    ? isSpaFocusedUser(user) ? "💆 צוות ספא" : "🛎️ פקיד/ת קבלה"
     : user.role === "restaurant"
     ? "🍽️ מסעדה"
     : user.role === "cleaner"
@@ -1993,6 +1995,7 @@ export default function App({ initialPage = "dashboard" }) {
   const [shifts, setShifts, shiftLoading]       = usePersistentState("shifts", initialShifts);
   const [checklist, setChecklist, checkLoading] = usePersistentState("checklist_items", initialChecklists);
   const [openOpsCount, setOpenOpsCount] = useState(0);
+  const [spaLeadsCount, setSpaLeadsCount] = useState(0);
   const opsLoading = empLoading || shiftLoading || checkLoading;
   // agentProfile value itself is no longer read anywhere (the "agent" route now
   // renders InventoryHub) — kept write-only since the background load effect
@@ -2081,6 +2084,7 @@ export default function App({ initialPage = "dashboard" }) {
     if (!canAccessRoute(pending.page, user)) return;
     if ((user.role === "restaurant" || isRestaurantFocusedUser(user))
       && !RESTAURANT_FOCUS_NAV_IDS.has(pending.page)) return;
+    if (isSpaFocusedUser(user) && !SPA_FOCUS_NAV_IDS.has(pending.page)) return;
     if (pending.phone) {
       setInboxFocus({
         phone: pending.phone,
@@ -2184,6 +2188,41 @@ export default function App({ initialPage = "dashboard" }) {
     };
   }, [user]);
 
+  // Sidebar spa leads badge — open spa_upsell_accept alerts.
+  useEffect(() => {
+    if (!user || !isSupabaseConfigured || !supabase) {
+      setSpaLeadsCount(0);
+      return undefined;
+    }
+    const refreshSpaLeadsCount = async () => {
+      const { count, error } = await supabase
+        .from("guest_alerts")
+        .select("id", { count: "exact", head: true })
+        .eq("alert_type", "spa_upsell_accept")
+        .eq("resolved", false);
+      if (!error) setSpaLeadsCount(count ?? 0);
+    };
+    refreshSpaLeadsCount();
+    const ch = supabase
+      .channel("app-spa-leads-count")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "guest_alerts" },
+        () => refreshSpaLeadsCount(),
+      )
+      .subscribe();
+    return () => {
+      supabase.removeChannel(ch);
+    };
+  }, [user]);
+
+  // Spa team lands on leads board first.
+  useEffect(() => {
+    if (!user || isLoading) return;
+    if (!isSpaFocusedUser(user)) return;
+    if (activePage === "dashboard") setActivePage("spa_leads");
+  }, [user, isLoading]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Inclusion list — open + in_progress only (migration 149, HITL gate).
 
   const pageTitle = {
@@ -2200,6 +2239,7 @@ export default function App({ initialPage = "dashboard" }) {
     tasks:      "🛠️ תפעול ואחזקה",
     calls:      "🛠️ תפעול ואחזקה",
     room_board:    "🏨 לוח סוויטות",
+    spa_leads:     "💆 לידים לתיאום ספא",
     spa_board:     "💆 לוח ספא",
     restaurant_dinner_board: "🍽️ לוח מסעדה",
     housekeeping_tablet: "🧹 לוח ניקיון (טאבלט)",
@@ -2437,6 +2477,13 @@ export default function App({ initialPage = "dashboard" }) {
         return <SpaStagingPanel />;
       case "room_board":
         return <RoomBoard />;
+      case "spa_leads":
+        return (
+          <SpaLeadsPage
+            onOpenDreamBotChat={openDreamBotChat}
+            onNavigate={setActivePage}
+          />
+        );
       case "spa_board":
         return <SpaBoard onOpenDreamBotChat={openDreamBotChat} />;
       case "restaurant_dinner_board":
@@ -2556,6 +2603,7 @@ export default function App({ initialPage = "dashboard" }) {
             active={activePage}
             setActive={(id) => { setActivePage(id); setMobileMenuOpen(false); }}
             openOpsCount={openOpsCount}
+            spaLeadsCount={spaLeadsCount}
             onLogout={handleLogout}
             isAdmin={isAdmin}
             isSuperAdminUser={isSuperAdminUser}

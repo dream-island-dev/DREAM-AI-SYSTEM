@@ -21,6 +21,7 @@ import {
   mergePastedSpaUpsellContacts,
   spaUpsellScriptToWhapiTemplate,
   updateSpaUpsellGuestName,
+  resolveSpaUpsellLead,
 } from "../utils/spaUpsellHub";
 import { createDaypassGuestsBatch } from "../utils/daypassGuestCreate";
 import { isSpaUpsellEligible } from "../utils/spaUpsellAudience";
@@ -425,14 +426,7 @@ export default function SpaUpsellHub({ initialDate, onToast }) {
   const resolveLead = async (leadId) => {
     if (!supabase) return;
     setResolvingId(leadId);
-    const { data: authData } = await supabase.auth.getUser();
-    const patch = {
-      resolved: true,
-      resolved_by: authData?.user?.id ?? null,
-      resolved_at: new Date().toISOString(),
-      resolution_notes: "סגור ממרכז הצעת ספא",
-    };
-    const { error } = await supabase.from("guest_alerts").update(patch).eq("id", leadId);
+    const { error } = await resolveSpaUpsellLead(supabase, leadId, "סגור ממרכז הצעת ספא");
     setResolvingId(null);
     if (error) toast("err", error.message);
     else {

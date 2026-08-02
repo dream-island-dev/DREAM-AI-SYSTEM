@@ -27,9 +27,18 @@ export function isReceptionist(user) {
   return user?.role === "receptionist";
 }
 
+/** Spa coordinator — leads + board + inbox only (department ספא). */
+export const SPA_FOCUS_NAV_IDS = new Set([
+  "spa_leads",
+  "spa_board",
+  "wa_inbox",
+  "requests_board",
+]);
+
 /** Receptionist-focused sidebar — core front-desk routes only. */
 export const RECEPTIONIST_FOCUS_NAV_IDS = new Set([
   "dashboard",
+  "spa_leads",
   "wa_inbox",
   "guests",
   "vip_guests",
@@ -37,6 +46,7 @@ export const RECEPTIONIST_FOCUS_NAV_IDS = new Set([
   "ops_board",
   "feedback_dashboard",
   "data_sync",
+  "spa_board",
   "voucher_reconciliation",
 ]);
 
@@ -46,9 +56,23 @@ export const RESTAURANT_FOCUS_NAV_IDS = new Set([
   "wa_inbox",
 ]);
 
+export function isSpaDepartment(user) {
+  return String(user?.department ?? "").trim() === "ספא";
+}
+
+/** Spa team member — slim nav, lands on leads board. */
+export function isSpaFocusedUser(user) {
+  if (!user) return false;
+  if (isSuperAdmin(user) || isAdminUser(user) || user.role === "manager") return false;
+  return isSpaDepartment(user);
+}
+
 export function filterNavItemsForUser(items, user) {
   if (isRestaurantFocusedUser(user)) {
     return items.filter((item) => RESTAURANT_FOCUS_NAV_IDS.has(item.id));
+  }
+  if (isSpaFocusedUser(user)) {
+    return items.filter((item) => SPA_FOCUS_NAV_IDS.has(item.id));
   }
   if (isReceptionist(user)) return items.filter((item) => RECEPTIONIST_FOCUS_NAV_IDS.has(item.id));
   return items;
@@ -157,6 +181,9 @@ export function canAccessRoute(routeId, user) {
   if (routeId === "restaurant_dinner_board") return canAccessRestaurantDinnerBoard(user);
   if (isRestaurantFocusedUser(user)) {
     return RESTAURANT_FOCUS_NAV_IDS.has(routeId);
+  }
+  if (isSpaFocusedUser(user)) {
+    return SPA_FOCUS_NAV_IDS.has(routeId);
   }
   const allowed = ROUTE_ACCESS[routeId];
   if (!allowed) return true;

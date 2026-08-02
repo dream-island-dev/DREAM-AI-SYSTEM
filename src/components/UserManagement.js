@@ -274,6 +274,13 @@ function UserCard({ u, isSelf, saving, canEdit, onUpdate, onToggle }) {
 
 // ── Invite form ───────────────────────────────────────────────────────────────
 
+function generateTempPassword() {
+  const chars = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789";
+  let s = "Di";
+  for (let i = 0; i < 10; i += 1) s += chars[Math.floor(Math.random() * chars.length)];
+  return `${s}!`;
+}
+
 function InviteForm({ onSubmit, onCancel, busy }) {
   const [form, setForm] = useState({ name: "", username: "", role: "staff", department: "" });
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
@@ -302,7 +309,7 @@ function InviteForm({ onSubmit, onCancel, busy }) {
             <input
               type="text" value={form.username}
               onChange={(e) => set("username", e.target.value)}
-              placeholder="david"
+              placeholder="maayana@dream-island.co.il"
               style={{ direction: "ltr" }}
             />
           </div>
@@ -367,6 +374,10 @@ function InviteForm({ onSubmit, onCancel, busy }) {
               </label>
             ))}
           </div>
+        </div>
+
+        <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
+          לצוות ספא: תפקיד <strong>פקיד/ת קבלה</strong> + מחלקה <strong>ספא</strong> — מסך לידים ממוקד בלבד.
         </div>
 
         {/* Submit */}
@@ -600,10 +611,12 @@ export default function UserManagement({ currentUser }) {
     setInviting(true);
     const rawUsername = form.username.trim().toLowerCase().replace(/\s+/g, "");
     const inviteEmail = rawUsername.includes("@") ? rawUsername : `${rawUsername}@dream.io`;
+    const tempPassword = generateTempPassword();
     const { data, error } = await supabase.functions.invoke("invite-user", {
       body: {
         email:      inviteEmail,
         name:       form.name.trim(),
+        password:   tempPassword,
         role:       form.role,
         department: form.department || null,
       },
@@ -612,9 +625,12 @@ export default function UserManagement({ currentUser }) {
     if (error || !data?.ok) {
       return showToast("err", "שגיאה: " + (data?.error ?? error?.message ?? "unknown"));
     }
+    const deptHint = form.department === "ספא"
+      ? " · מסך «לידים ספא» ייפתח אוטומטית"
+      : "";
     showToast("ok", data.alreadyExists
-      ? `✅ פרופיל עודכן עבור ${form.username}`
-      : `✅ משתמש נוצר: ${form.username}`
+      ? `✅ פרופיל עודכן: ${inviteEmail}${deptHint}`
+      : `✅ נוצר: ${inviteEmail} · סיסמה זמנית: ${tempPassword}${deptHint}`
     );
     setShowInvite(false);
     await fetchUsers();

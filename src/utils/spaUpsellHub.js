@@ -63,6 +63,47 @@ export async function fetchSpaUpsellLeads(supabase, arrivalDate) {
   return { leads: data ?? [], error: null };
 }
 
+/** All open spa upsell acceptance leads — coordinator view (any arrival date). */
+export async function fetchAllOpenSpaUpsellLeads(supabase) {
+  if (!supabase) return { leads: [], error: null };
+
+  const { data, error } = await supabase
+    .from("guest_alerts")
+    .select("id, phone, message, created_at, resolved, alert_type, guests(id, name, phone, room, arrival_date, departure_date, status)")
+    .eq("alert_type", "spa_upsell_accept")
+    .eq("resolved", false)
+    .order("created_at", { ascending: false });
+
+  if (error) return { leads: [], error };
+
+  const leads = (data ?? []).filter((row) => row.guests);
+  return { leads, error: null };
+}
+
+export async function fetchOpenSpaUpsellLeadCount(supabase) {
+  if (!supabase) return 0;
+  const { count, error } = await supabase
+    .from("guest_alerts")
+    .select("id", { count: "exact", head: true })
+    .eq("alert_type", "spa_upsell_accept")
+    .eq("resolved", false);
+  if (error) return 0;
+  return count ?? 0;
+}
+
+export async function resolveSpaUpsellLead(supabase, leadId, notes = "סגור מלוח לידים ספא") {
+  if (!supabase || !leadId) return { error: new Error("חסר מזהה") };
+  const { data: authData } = await supabase.auth.getUser();
+  const patch = {
+    resolved: true,
+    resolved_by: authData?.user?.id ?? null,
+    resolved_at: new Date().toISOString(),
+    resolution_notes: notes,
+  };
+  const { error } = await supabase.from("guest_alerts").update(patch).eq("id", leadId);
+  return { error: error ?? null };
+}
+
 export async function fetchSpaUpsellSentCount(supabase, arrivalDate) {
   if (!supabase || !arrivalDate) return 0;
   const { count } = await supabase
