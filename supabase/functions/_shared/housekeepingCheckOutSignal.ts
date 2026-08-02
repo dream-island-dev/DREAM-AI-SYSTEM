@@ -114,6 +114,10 @@ export async function applyHousekeepingCheckOutSignal(
 
   const departingPick = await findDepartingGuestForSuite(supabase, roomId);
   if (departingPick.ambiguous.length) {
+    const roomSync = await syncRoomToCleaning(supabase, roomId);
+    if (!roomSync.ok) {
+      console.warn(`[housekeepingCheckOut] room_status sync failed for ${roomId}:`, roomSync.error);
+    }
     return {
       ok: false,
       roomNumber,
@@ -142,8 +146,12 @@ export async function applyHousekeepingCheckOutSignal(
     } else if (incomingName) {
       noGuestHint = `אין אורח יוצא פעיל — מגיע היום: ${incomingName}`;
     }
+    const roomSync = await syncRoomToCleaning(supabase, roomId);
+    if (!roomSync.ok) {
+      console.warn(`[housekeepingCheckOut] room_status sync failed for ${roomId}:`, roomSync.error);
+    }
     return {
-      ok: false,
+      ok: roomSync.ok,
       roomNumber,
       roomId,
       guestId: null,

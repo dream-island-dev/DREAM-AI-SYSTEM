@@ -1,6 +1,8 @@
 // Unified check-in sync — guests.status + room_status stay aligned (§0.5).
 // Deno mirror: supabase/functions/_shared/suiteCheckinSync.ts (keep in sync).
 
+import { roomCleaningResetRow } from "./roomApprovalGate";
+
 export function resolveGuestRoomId(guest) {
   return String(guest?.room ?? guest?.suite_name ?? "").trim();
 }
@@ -107,9 +109,16 @@ export async function releaseApprovalGateOnly(supabase, roomId) {
   return upsertRoomStatus(supabase, roomId, "פנוי");
 }
 
-/** Room only — idempotent housekeeping Co when guest already checked_out. */
+/** Room only — Co / turnover reset: לניקיון + clear approval-gate clean flags. */
 export async function syncRoomToCleaning(supabase, roomId) {
-  return upsertRoomStatus(supabase, roomId, "לניקיון");
+  const trimmed = String(roomId ?? "").trim();
+  if (!trimmed) return { ok: false, error: "אין מזהה חדר" };
+  const { error } = await supabase.from("room_status").upsert(
+    roomCleaningResetRow(trimmed),
+    { onConflict: "room_id" },
+  );
+  if (error) return { ok: false, error: error.message };
+  return { ok: true, roomId: trimmed, roomStatus: "לניקיון" };
 }
 
 /** Synced check-out: guests.checked_out + room_status.לניקיון */
@@ -138,7 +147,7 @@ export async function performSuiteCheckOut(supabase, guest, opts = {}) {
     return { ok: true, guestPatch, roomId: null, roomStatus: null, noRoomLinked: true };
   }
 
-  const roomResult = await upsertRoomStatus(supabase, roomId, "לניקיון");
+  const roomResult = await syncRoomToCleaning(supabase, roomId);
   if (!roomResult.ok) return { ok: false, error: roomResult.error, partial: true };
 
   return {

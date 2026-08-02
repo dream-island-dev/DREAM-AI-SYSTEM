@@ -11,8 +11,10 @@ import {
   markGuestRoomReadyAfterNotify,
   skipApprovalAndCheckIn,
   releaseApprovalGateOnly,
+  syncRoomToCleaning,
 } from "../utils/suiteCheckinSync";
 import { guestRoomMatchesSuiteId } from "../data/suiteRegistry";
+import { isApprovalGateStale, formatWaReadySource } from "../utils/roomApprovalGate";
 
 const FAB = 56;                  // bell diameter (px) — used for drag clamping
 const MARGIN = 8;                // min inset from viewport edges while dragging
@@ -169,6 +171,44 @@ export default function AICopilot({ user }) {
 
     const isEligible = isArrivalToday(guest?.arrival_date);
 
+    const [{ data: readyEvt }, { data: checkoutEvt }] = await Promise.all([
+      supabase
+        .from("housekeeping_wa_events")
+        .select("source_line, from_name, created_at")
+        .eq("room_id", roomRow.room_id)
+        .eq("event_type", "ready")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+      supabase
+        .from("housekeeping_wa_events")
+        .select("created_at")
+        .eq("room_id", roomRow.room_id)
+        .eq("event_type", "check_out")
+        .gt("created_at", roomRow.updated_at ?? "1970-01-01")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+    ]);
+
+    const waSource = formatWaReadySource(readyEvt);
+    const staleGate = isApprovalGateStale(roomRow.updated_at, {
+      checkoutAfterGateAt: checkoutEvt?.created_at,
+    });
+
+    if (staleGate) {
+      await syncRoomToCleaning(supabase, roomRow.room_id);
+      return {
+        ...roomRow,
+        guest: guest ?? null,
+        isEligible,
+        alreadyNotified: false,
+        staleGate: true,
+        waSource,
+        _alertId,
+      };
+    }
+
     let alreadyNotified = false;
     if (guest?.id) {
       const { data: suiteRows } = await supabase
@@ -197,7 +237,7 @@ export default function AICopilot({ user }) {
         .eq("status", "ממתין לאישור");
     }
 
-    return { ...roomRow, guest: guest ?? null, isEligible, alreadyNotified, _alertId };
+    return { ...roomRow, guest: guest ?? null, isEligible, alreadyNotified, staleGate: false, waSource, _alertId };
   }, []);
 
   // Initial load of any already-pending suites
@@ -209,7 +249,7 @@ export default function AICopilot({ user }) {
       .eq("status", "ממתין לאישור");
     if (data?.length) {
       const enriched = await Promise.all(data.map(enrichRoom));
-      setAlerts(enriched.filter((a) => !a.alreadyNotified));
+      setAlerts(enriched.filter((a) => !a.alreadyNotified && !a.staleGate));
     }
   }, [enrichRoom]);
 
@@ -227,7 +267,7 @@ export default function AICopilot({ user }) {
           const row = payload.new;
           if (row.status === "ממתין לאישור") {
             const enriched = await enrichRoom(row);
-            if (enriched.alreadyNotified) return;
+            if (enriched.alreadyNotified || enriched.staleGate) return;
             setAlerts(prev => {
               if (prev.some(a => a.room_id === row.room_id)) return prev;
               return [...prev, enriched];
@@ -489,6 +529,12 @@ export default function AICopilot({ user }) {
               <div style={{ fontWeight: 700, fontSize: "15px", color: "var(--black, #1A1A1A)", marginBottom: "8px", lineHeight: 1.5 }}>
                 🏨 סוויטה {alert.room_id} מוכנה עבור {alert.guest?.name ?? "אורח לא ידוע"} — לחץ לאישור שליחת הודעה
               </div>
+
+              {alert.waSource && (
+                <div style={{ fontSize: "12px", color: "#5C6B7A", marginBottom: "10px", lineHeight: 1.45 }}>
+                  📱 {alert.waSource}
+                </div>
+              )}
 
               {alert.guest?.spa_time && (
                 <div style={{ fontSize: "13px", color: "#A8843A", marginBottom: "10px" }}>

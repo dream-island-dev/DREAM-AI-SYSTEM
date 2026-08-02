@@ -1,6 +1,7 @@
 // Unified check-in/check-out sync — guests.status + room_status (mirrors src/utils/suiteCheckinSync.js).
 
 import type { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { roomCleaningResetRow } from "./roomApprovalGate.ts";
 
 export function resolveGuestRoomId(guest: {
   room?: string | null;
@@ -106,12 +107,19 @@ export interface PerformSuiteCheckOutResult {
   partial?: boolean;
 }
 
-/** Room only — idempotent housekeeping Co when guest already checked_out. */
+/** Room only — Co / turnover reset: לניקיון + clear approval-gate clean flags. */
 export async function syncRoomToCleaning(
   supabase: ReturnType<typeof createClient>,
   roomId: string,
 ): Promise<{ ok: boolean; error?: string }> {
-  return upsertRoomStatus(supabase, roomId, "לניקיון");
+  const trimmed = String(roomId ?? "").trim();
+  if (!trimmed) return { ok: false, error: "missing room_id" };
+  const { error } = await supabase.from("room_status").upsert(
+    roomCleaningResetRow(trimmed),
+    { onConflict: "room_id" },
+  );
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
 }
 
 /** Synced check-out: guests.checked_out + room_status.לניקיון */
@@ -152,7 +160,7 @@ export async function performSuiteCheckOut(
     return { ok: true, guestPatch, roomId: null, roomStatus: null, noRoomLinked: true };
   }
 
-  const roomResult = await upsertRoomStatus(supabase, roomId, "לניקיון");
+  const roomResult = await syncRoomToCleaning(supabase, roomId);
   if (!roomResult.ok) {
     return { ok: false, error: roomResult.error, partial: true, guestPatch, roomId };
   }
